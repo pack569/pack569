@@ -9416,7 +9416,9 @@
     if (!canEdit()) return '';
     return '<div class="card"><h2 class="section display">Import from Trail’s End</h2>' +
       '<p class="small muted" style="margin:0 0 8px">Export a report from the Trail’s End Leader Portal → <strong>Reports</strong> ' +
-      'as <strong>.xlsx</strong> or <strong>.csv</strong>. The app works out which of the three it is:</p>' +
+      'as <strong>.xlsx</strong> or <strong>.csv</strong>. The app works out which of the four it is:</p>' +
+      '<div class="assign-row"><span class="assign-name"><strong>Scout List</strong> ' +
+      '<span class="small muted">— everyone registered, whether they’ve sold or not</span></span><span class="small muted">→ your roster</span></div>' +
       '<div class="assign-row"><span class="assign-name"><strong>Storefront Shifts</strong> ' +
       '<span class="small muted">— your shift schedule</span></span><span class="small muted">→ here</span></div>' +
       '<div class="assign-row"><span class="assign-name"><strong>Inventory Transactions</strong> ' +
@@ -16094,11 +16096,92 @@
       return head +
         '<div class="row no-print" style="margin-bottom:12px"><button type="button" class="btn" data-act="close-overlay">&larr; Back</button></div>' +
         '<div class="card"><h2 class="section display">Not a Trail’s End report</h2>' +
-        '<p>This doesn’t look like a Trail’s End Shift, Sales, or Inventory report. Export the ' +
-        '<strong>Reports → Storefront schedule</strong>, <strong>Sales Transaction report</strong>, or ' +
-        '<strong>Inventory Transaction report</strong> as .xlsx or .csv and try again.</p>' +
+        '<p>This doesn’t look like a Trail’s End Shift, Sales, Inventory, or Scout List report. Export the ' +
+        '<strong>Reports → Storefront schedule</strong>, <strong>Sales Transaction report</strong>, ' +
+        '<strong>Inventory Transaction report</strong>, or <strong>Scout List</strong> as .xlsx or .csv and try again.</p>' +
         '<div class="row"><button type="button" class="btn" data-act="close-overlay">Close</button>' +
         '<button type="button" class="btn primary" data-act="te-import">Pick another file</button></div></div></div></div>';
+    }
+    if (o.report === 'roster') {
+      var addBtn = o.newCount
+        ? '<button type="button" class="btn primary" data-act="te-confirm-roster">Add ' + o.newCount +
+          ' scout' + (o.newCount === 1 ? '' : 's') + ' to the roster</button>'
+        : '<button type="button" class="btn" disabled>Everybody on this list is already on your roster</button>';
+      var q = head +
+        '<div class="row no-print" style="margin-bottom:12px">' +
+        '<button type="button" class="btn" data-act="close-overlay">&larr; Back</button>' +
+        addBtn + '<button type="button" class="btn" data-act="te-print">Print / Save PDF</button></div>' +
+        '<div class="summary-sheet">' +
+        '<div class="row" style="gap:10px;margin-bottom:2px"><span class="fleur">' + FLEUR + '</span>' +
+        '<h1 style="margin:0">Trail’s End scout list</h1></div>' +
+        '<p class="muted small" style="margin:0 0 14px">Found <strong>' + o.count + ' scout' + (o.count === 1 ? '' : 's') +
+        '</strong> registered on Trail’s End · <strong>' + o.newCount + '</strong> not yet on your roster</p>';
+      q += '<div class="row" style="margin-bottom:14px">' +
+        '<div class="stat"><span class="v">' + o.count + '</span><span class="l">On the list</span></div>' +
+        '<div class="stat"><span class="v">' + (o.count - o.newCount) + '</span><span class="l">Already yours</span></div>' +
+        '<div class="stat"><span class="v">' + o.newCount + '</span><span class="l">Will be added</span></div>' +
+        '<div class="stat"><span class="v money">' + fmt(o.salesCents) + '</span><span class="l">Their sales</span></div></div>';
+      q += '<div class="tbl-wrap"><table><thead><tr>' +
+        '<th scope="col">Scout</th><th scope="col">Den</th><th scope="col" class="num">Sales</th>' +
+        '<th scope="col" class="num">Goal</th><th scope="col" class="num">SF hours</th><th scope="col">Status</th>' +
+        '</tr></thead><tbody>';
+      o.items.forEach(function (it) {
+        var status = it.isNew
+          ? '<span class="pill">Will be added</span>'
+          : (it.wasArchived ? '<span class="pill">Archived — still selling</span>' : '<span class="pill navy">On your roster</span>');
+        // Hours claimed is what the scout says they worked; worked is what the shift schedule
+        // holds. They disagree often enough that showing only one of them would mislead.
+        var hrs = it.hoursClaimed || it.hoursWorked
+          ? (it.hoursWorked + (it.hoursClaimed !== it.hoursWorked ? ' <span class="muted">/ ' + it.hoursClaimed + '</span>' : ''))
+          : '—';
+        q += '<tr><td>' + esc(it.name) + '</td>' +
+          '<td>' + (it.isNew ? '<span class="muted">— you set it</span>' : (it.den ? esc(it.den) : '<span class="muted">no den</span>')) + '</td>' +
+          '<td class="num">' + (it.salesCents ? fmt(it.salesCents) : '—') + '</td>' +
+          '<td class="num">' + (it.goalCents ? fmt(it.goalCents) : '—') + '</td>' +
+          '<td class="num">' + hrs + '</td>' +
+          '<td>' + status + '</td></tr>';
+      });
+      q += '</tbody></table></div>';
+      if (o.missing.length) {
+        q += '<p class="small" style="margin:12px 0 0"><span class="pill navy">Not on this list</span> ' +
+          esc(o.missing.join(', ')) + ' — ' + (o.missing.length === 1 ? 'this scout is' : 'these scouts are') +
+          ' on your roster but not registered on Trail’s End (or registered under a different spelling). ' +
+          '<span class="muted">Nobody is ever removed or archived by an import — this is only worth knowing.</span></p>';
+      }
+      if (o.archivedCount) {
+        q += '<div class="warn" style="margin:12px 0 0">' + o.archivedCount + ' scout' + (o.archivedCount === 1 ? '' : 's') +
+          ' on this list ' + (o.archivedCount === 1 ? 'is' : 'are') + ' archived on your roster but still registered on Trail’s End. ' +
+          'If they’re back, un-archive them on <strong>Scouts</strong> — an import won’t undo archiving for you.</div>';
+      }
+      if (o.noDenCount) {
+        q += '<p class="small muted" style="margin:12px 0 0">' + o.noDenCount + ' scout' + (o.noDenCount === 1 ? '' : 's') +
+          ' already on your roster ' + (o.noDenCount === 1 ? 'has' : 'have') + ' no den set. Dens drive adventures, advancement and ' +
+          'which meetings they’re counted at, so they’re worth filling in on <strong>Scouts</strong>.</p>';
+      }
+      // The honest list of what this file holds and this import does not keep. A leader handing
+      // over an export with twenty families' phone numbers should not have to guess.
+      q += '<hr class="divider"><p class="eyebrow">What this import writes</p>' +
+        '<p class="small" style="margin:6px 0 8px"><strong>Names only.</strong> New scouts arrive with no den — set dens, ' +
+        'and archive anyone who has moved on, from the <strong>Scouts</strong> tab. Nothing already on your roster is changed.</p>' +
+        '<p class="small muted" style="margin:0">Deliberately <strong>not</strong> imported:</p>' +
+        '<div class="assign-row"><span class="assign-name"><strong>Sales</strong> ' +
+        '<span class="small muted">— one blended figure that already includes storefront credit</span></span>' +
+        '<span class="small muted">use the Sales Transaction report</span></div>' +
+        '<div class="assign-row"><span class="assign-name"><strong>Storefront hours</strong> ' +
+        '<span class="small muted">— your storefront blocks are the record of who worked</span></span>' +
+        '<span class="small muted">use the Storefront Shifts report</span></div>' +
+        '<div class="assign-row"><span class="assign-name"><strong>Goals</strong> ' +
+        '<span class="small muted">— the pack goal comes from your plan, per-scout goals aren’t stored</span></span>' +
+        '<span class="small muted">Popcorn · Standings</span></div>' +
+        (o.withContact
+          ? '<div class="assign-row"><span class="assign-name"><strong>Email and phone</strong> ' +
+            '<span class="small muted">— read for ' + o.withContact + ' famil' + (o.withContact === 1 ? 'y' : 'ies') +
+            ' on this file, stored for none</span></span><span class="small muted">a scout record has no contact fields</span></div>'
+          : '') +
+        '<p class="small muted" style="margin:10px 0 0">Importing the blended sales figure would count every storefront dollar twice — ' +
+        'once here and once on the storefront block that earned it — so it is left alone on purpose.</p>' +
+        '</div></div></div>';
+      return q;
     }
     if (o.report === 'shifts') {
       var alreadyCount = o.items.length - o.newCount;
@@ -17090,6 +17173,12 @@
       // Type | Transfer Party. 'Transfer Party' is optional so a trimmed export still maps.
       var invMap = idxOfHeaders(cells, ['Product', 'Quantity', 'Transaction Type']);
       if (invMap) return { type: 'inventory', headerRow: r, col: invMap };
+      // Wave 22 — Scout List: Name | ID | SF Hours Worked/Claimed | Sales | Goal | Email | Phone.
+      // LAST on purpose. 'Name' is the loosest header any of these reports is sniffed on, so it
+      // only ever gets to claim a file the three ledgers have already declined — an export that
+      // somehow carried both signatures keeps doing exactly what it did before this existed.
+      var rosterMap = idxOfHeaders(cells, ['Name', 'Goal']);
+      if (rosterMap) return { type: 'roster', headerRow: r, col: rosterMap };
     }
     return null;
   }
@@ -17245,7 +17334,70 @@
     };
   }
 
+  // Wave 22 — Scout List report → the pack's sellers as Trail's End knows them.
+  //
+  // This is the ONLY export that is a ROSTER rather than a ledger: one row per registered
+  // scout, whether or not they have sold a thing. That is exactly why it is worth importing.
+  // The Sales Transaction report only ever names a scout who has an order against them, so a
+  // child who joined in September and hasn't sold yet is invisible to every other import —
+  // and invisible on the roster is invisible on the attendance sheet, the dues list, and the
+  // advancement grid.
+  //
+  // Name + Goal is the signature. No other Trail's End export carries a 'Goal' column, and
+  // 'Name' alone is far too generic to sniff on. Everything else is optional so a trimmed
+  // export still maps: a pack that deletes the contact columns before sharing the file still
+  // gets its roster. Pure — no state, no DOM.
+  function mapRosterReport(rows, hdr) {
+    var col = hdr.col;
+    var cName = col['Name'], cId = col['ID'], cSales = col['Sales'], cGoal = col['Goal'],
+        cEmail = col['Email Address'], cPhone = col['Phone Number'],
+        cWorked = col['SF Hours Worked'], cClaimed = col['SF Hours Claimed'];
+    function cell(cells, ci) { return (ci != null && cells[ci] != null) ? String(cells[ci]).trim() : ''; }
+    function hours(v) { var n = parseFloat(String(v).replace(/[,\s]/g, '')); return isFinite(n) && n > 0 ? n : 0; }
+    var out = [], seen = {};
+    for (var r = hdr.headerRow + 1; r < rows.length; r++) {
+      var cells = rows[r] || [];
+      var name = cell(cells, cName);
+      if (!name) continue;
+      // A trailing "Totals" row carries a label in the name column on some exports. It has no
+      // ID and no contact details, and a roster row for "Totals" would be a scout named Totals.
+      if (/^totals?$/i.test(name)) continue;
+      // Trail's End can list the same child twice when a family re-registers mid-season. The
+      // roster only wants them once, and the first row is the one the report ordered first.
+      var key = teNameKey(name);
+      if (seen[key]) continue;
+      seen[key] = true;
+      out.push({
+        name: name, teId: cell(cells, cId),
+        email: cell(cells, cEmail), phone: cell(cells, cPhone),
+        salesCents: toCents(cell(cells, cSales)), goalCents: toCents(cell(cells, cGoal)),
+        hoursWorked: hours(cell(cells, cWorked)), hoursClaimed: hours(cell(cells, cClaimed))
+      });
+    }
+    // Alphabetical, because this report is read as a roster and the Scouts tab is alphabetical.
+    // The report's own order is by sales descending, which is the standings, not the roster.
+    out.sort(function (a, b) { return a.name.localeCompare(b.name); });
+    return { scouts: out, count: out.length };
+  }
+
   /* ----- Wave 13: import UI glue (impure — reads state, builds overlays, commits) ----- */
+  // One roster match key, shared by every importer that asks "do we already have this child?".
+  //
+  // Trim + lowercase was the whole rule, and it is one character short of correct: Trail's End
+  // exports a CURLY apostrophe (U+2019) and a leader typing into the roster field gets whatever
+  // their keyboard gives them, which on a Mac is usually curly and on Windows usually straight.
+  // "La’Maya Collier" and "La'Maya Collier" are the same child, and under the old key the
+  // importer read the second as missing and added her a second time — a duplicate scout, which
+  // then splits her attendance, her advancement and her share of a storefront block.
+  //
+  // Folding is deliberately narrow: apostrophe variants and runs of whitespace, nothing else.
+  // Hyphens and periods stay significant, because "Mayo-Drysdale" and "Mayo Drysdale" being the
+  // same person is a guess, not a fact, and a wrong merge is worse than a duplicate.
+  function teNameKey(name) {
+    return String(name == null ? '' : name)
+      .replace(/[\u2019\u02BC\u055A]/g, "'")
+      .trim().toLowerCase().replace(/\s+/g, ' ');
+  }
   // Match key for "is this storefront already on the schedule?": date + case-insensitive name.
   function teStorefrontKey(name, date) { return (date || '') + '|' + String(name || '').trim().toLowerCase(); }
 
@@ -17277,19 +17429,17 @@
   // scout on the roster fits. Two Bowies whose surnames both begin with G is a question for a
   // human, and this returns null rather than picking one.
   function teMatchShiftScout(name) {
-    var want = String(name == null ? '' : name).trim().toLowerCase().replace(/\s+/g, ' ');
+    var want = teNameKey(name);
     if (!want) return null;
     var roster = activeScouts();
-    var exact = roster.filter(function (s) {
-      return String(s.name || '').trim().toLowerCase().replace(/\s+/g, ' ') === want;
-    });
+    var exact = roster.filter(function (s) { return teNameKey(s.name) === want; });
     if (exact.length === 1) return exact[0].id;
     if (exact.length > 1) return null;
     var parts = want.split(' ');
     if (parts.length !== 2 || parts[1].replace(/\./g, '').length !== 1) return null;
     var first = parts[0], initial = parts[1].charAt(0);
     var byInitial = roster.filter(function (s) {
-      var p = String(s.name || '').trim().toLowerCase().replace(/\s+/g, ' ').split(' ');
+      var p = teNameKey(s.name).split(' ');
       return p.length >= 2 && p[0] === first && p[p.length - 1].charAt(0) === initial;
     });
     return byInitial.length === 1 ? byInitial[0].id : null;
@@ -17420,12 +17570,12 @@
   function teMatchScouts(arcScouts) {
     var byName = {};
     state.scouts.forEach(function (s) {
-      var k = String(s.name || '').trim().toLowerCase();
+      var k = teNameKey(s.name);
       if (k && byName[k] == null) byName[k] = s.id;
     });
     var matched = [], unmatched = [];
     arcScouts.forEach(function (s) {
-      var sid = byName[String(s.name || '').trim().toLowerCase()];
+      var sid = byName[teNameKey(s.name)];
       if (sid != null) matched.push({ scoutId: sid, name: s.name, onlineCents: s.onlineCents, wagonCents: s.wagonCents });
       else unmatched.push(s.name);
     });
@@ -17438,10 +17588,10 @@
   // longer active from the Scouts tab. Returns how many were added.
   function teAddMissingScouts(arcScouts) {
     var have = {};
-    state.scouts.forEach(function (s) { have[String(s.name || '').trim().toLowerCase()] = true; });
+    state.scouts.forEach(function (s) { have[teNameKey(s.name)] = true; });
     var added = 0;
     arcScouts.forEach(function (s) {
-      var k = String(s.name || '').trim().toLowerCase();
+      var k = teNameKey(s.name);
       if (!k || have[k]) return;
       state.scouts.push({ id: uid(), name: String(s.name).trim(), den: '', archived: false, renewalMonth: '', denLabel: '', note: '' });
       have[k] = true;
@@ -17449,6 +17599,77 @@
     });
     if (added) state.scouts.sort(function (a, b) { return a.name.localeCompare(b.name); });
     return added;
+  }
+  // Wave 22 — Scout List preview. What this import writes is NAMES, and only names that are
+  // missing. Everything else the report carries is shown and then deliberately dropped:
+  //
+  //  * Sales — the report's 'Sales' column is ONE blended figure that already includes
+  //    storefront credit. Storefront money lives on this app's storefront blocks, split across
+  //    the scouts assigned to them, so writing this figure in as well would count every
+  //    storefront dollar twice. The Sales Transaction report is the path for sales, and it
+  //    exists precisely because it separates online from wagon from storefront.
+  //  * Goal, Email, Phone, SF hours — a scout record has nowhere to put them. Inventing fields
+  //    to hold a family's email and phone number is a real decision about what this app stores
+  //    about children and where it syncs to, not a side effect of an import.
+  //
+  // So the preview says so, in the sheet, above the button. A leader who hands over a file
+  // holding twenty families' phone numbers should not have to guess which of it was kept.
+  function teBuildRosterPreview(mapped) {
+    var byKey = {};
+    state.scouts.forEach(function (s) {
+      var k = teNameKey(s.name);
+      if (k && byKey[k] == null) byKey[k] = s;
+    });
+    var seen = {};
+    var items = mapped.scouts.map(function (row) {
+      var existing = byKey[teNameKey(row.name)] || null;
+      if (existing) seen[existing.id] = true;
+      return {
+        name: row.name, teId: row.teId, email: row.email, phone: row.phone,
+        salesCents: row.salesCents, goalCents: row.goalCents,
+        hoursWorked: row.hoursWorked, hoursClaimed: row.hoursClaimed,
+        scoutId: existing ? existing.id : null,
+        den: existing ? String(existing.den || '') : '',
+        wasArchived: !!(existing && existing.archived),
+        isNew: !existing
+      };
+    });
+    // On the roster, absent from the report. NEVER touched — the shift import lets the report
+    // win because a shift is a slot on a schedule, but a scout is a child. A name missing here
+    // means they haven't registered on Trail's End (or registered under a different spelling),
+    // not that they left the pack, and archiving a child on that inference would take them off
+    // the attendance sheet and the advancement grid. Listed, because "who still isn't set up on
+    // Trail's End?" is a question this file can answer and the leader currently answers by eye.
+    var missing = state.scouts.filter(function (s) { return !s.archived && !seen[s.id]; })
+      .map(function (s) { return s.name; }).sort(function (a, b) { return a.localeCompare(b); });
+    var withContact = items.filter(function (it) { return !!(it.email || it.phone); }).length;
+    return {
+      kind: 'te-preview', report: 'roster', items: items,
+      newCount: items.filter(function (it) { return it.isNew; }).length,
+      // An archived scout who is on this year's Trail's End roster is back. Surfaced, not
+      // un-archived: archiving is how a leader records that somebody left, and quietly undoing
+      // it would overrule them. Un-archive is one tap on the Scouts tab.
+      archivedCount: items.filter(function (it) { return it.wasArchived; }).length,
+      noDenCount: items.filter(function (it) { return !it.isNew && !it.den; }).length,
+      missing: missing, withContact: withContact,
+      salesCents: items.reduce(function (n, it) { return n + it.salesCents; }, 0),
+      goalCents: items.reduce(function (n, it) { return n + it.goalCents; }, 0),
+      count: mapped.count
+    };
+  }
+  // Commit: names only, no den, nothing else on the report written anywhere. teAddMissingScouts
+  // is the same seam the sales import uses, so a scout created here is indistinguishable from
+  // one created there — and it is the seam that keys on teNameKey, so this cannot duplicate a
+  // child the roster already holds under a different apostrophe.
+  function teCommitRosterImport() {
+    var o = ui.overlay;
+    if (!o || o.report !== 'roster') return;
+    var added = teAddMissingScouts(o.items.filter(function (it) { return it.isNew; }));
+    ui.overlay = null;
+    commit();
+    showToast(added
+      ? ('Added ' + added + ' scout' + (added === 1 ? '' : 's') + ' to the roster — set their dens on Scouts')
+      : 'Everybody on that list is already on your roster');
   }
   function teBuildSalesPreview(arc) {
     var m = teMatchScouts(arc.scouts);
@@ -17705,6 +17926,7 @@
           if (!det) { ui.overlay = { kind: 'te-preview', report: 'unknown' }; render(); return; }
           if (det.type === 'shifts') ui.overlay = teBuildShiftPreview(mapShiftReport(parsed.rows, det));
           else if (det.type === 'inventory') ui.overlay = teBuildInventoryPreview(mapInventoryReport(parsed.rows, det));
+          else if (det.type === 'roster') ui.overlay = teBuildRosterPreview(mapRosterReport(parsed.rows, det));
           else ui.overlay = teBuildSalesPreview(mapSalesReport(parsed.rows, det));
           render();
         }).catch(function (err) {
@@ -19226,6 +19448,8 @@
       }
       return;
     }
+    // Wave 22 — Scout List import (names onto the roster)
+    if (act === 'te-confirm-roster') { teCommitRosterImport(); return; }
     // Wave 20 — Inventory Transaction Report import
     if (act === 'te-confirm-inventory') { teCommitInventory(); return; }
     if (act === 'te-inv-create') {

@@ -1733,7 +1733,8 @@ test('a sign-up matches the roster on "First L", and refuses to guess', () => {
   // The report abbreviates: "Bowie G", not "Bowie Gladden". teMatchScouts, which the SALES import
   // uses, compares whole names and would match almost nobody here.
   const ctx = vm.createContext({});
-  vm.runInContext(slice('teMatchShiftScout') + '\nvar ROSTER = []; function activeScouts() { return ROSTER; }', ctx);
+  vm.runInContext([slice('teMatchShiftScout'), slice('teNameKey')].join('\n') +
+    '\nvar ROSTER = []; function activeScouts() { return ROSTER; }', ctx);
   ctx.ROSTER = [{ id: 's1', name: 'Bowie Gladden' }, { id: 's2', name: 'Logan Dougherty' }];
   eq(ctx.teMatchShiftScout('Bowie G'), 's1', 'first name plus last initial does not match');
   eq(ctx.teMatchShiftScout('Bowie Gladden'), 's1', 'an exact full name does not match');
@@ -1754,7 +1755,7 @@ test('sign-ups never re-split money that has already been recorded', () => {
   // that already holds sales silently changes what every scout on it earned. This is the guard
   // that makes importing sign-ups safe to do at any point in the season.
   const ctx = vm.createContext({});
-  vm.runInContext([slice('teNewSignups'), slice('teMatchShiftScout')].join('\n') +
+  vm.runInContext([slice('teNewSignups'), slice('teMatchShiftScout'), slice('teNameKey')].join('\n') +
     '\nvar ROSTER = []; function activeScouts() { return ROSTER; }', ctx);
   ctx.ROSTER = [{ id: 's1', name: 'Bowie Gladden' }, { id: 's2', name: 'Phoenix Gladden' }];
   const shift = { start: '10:00 AM', scouts: ['Bowie G', 'Phoenix G'] };
@@ -1854,7 +1855,7 @@ test('the shift preview says what it is about to do', () => {
 
 const dropCtx = (() => {
   const ctx = vm.createContext({});
-  vm.runInContext([slice('teDroppedSignups'), slice('teMatchShiftScout')].join('\n') +
+  vm.runInContext([slice('teDroppedSignups'), slice('teMatchShiftScout'), slice('teNameKey')].join('\n') +
     '\nvar ROSTER = []; function activeScouts() { return ROSTER; }', ctx);
   ctx.ROSTER = [{ id: 's1', name: 'Bowie Gladden' }, { id: 's2', name: 'Phoenix Gladden' },
     { id: 's3', name: 'Logan Dougherty' }];
@@ -1894,7 +1895,7 @@ test('removal refuses on a shift carrying a name it could not resolve', () => {
   // block may BE the one the report meant. Removing on a guess deletes a sign-up the report is
   // still asking for, and nothing here can tell the difference. So the whole shift is left alone.
   const ctx = vm.createContext({});
-  vm.runInContext([slice('teDroppedSignups'), slice('teMatchShiftScout')].join('\n') +
+  vm.runInContext([slice('teDroppedSignups'), slice('teMatchShiftScout'), slice('teNameKey')].join('\n') +
     '\nvar ROSTER = []; function activeScouts() { return ROSTER; }', ctx);
   ctx.ROSTER = [{ id: 'a', name: 'Bowie Gladden' }, { id: 'b', name: 'Bowie Greene' }];
   eq(ctx.teDroppedSignups(emptyBlock(['a']), { start: '10:00 AM', scouts: ['Bowie G'] }).length, 0,
@@ -7302,6 +7303,152 @@ test('a manual tag is never overwritten by a lookup', () => {
   const body = src.slice(0, src.indexOf('\n  }'));
   ok(/source === 'manual'/.test(body) && /return false/.test(body),
     'weatherLookupable no longer exempts a hand-recorded tag');
+});
+
+/* ================================================================
+   Trail's End Scout List import — owner, 2026-09-16, handing over the pack's exported scout
+   list: "can you help me import this so we can add the missing scouts to our site".
+
+   The Scout List is the only Trail's End export that is a ROSTER rather than a ledger: it names
+   every registered scout, including the ones who have not sold a thing. Every other import only
+   ever learns about a child who has money or a shift against them.
+   ================================================================ */
+
+const rosterCtx = (() => {
+  const ctx = vm.createContext({});
+  vm.runInContext(['detectReport', 'mapRosterReport', 'teNameKey', 'toCents', 'teParseCsv'].map(slice).join('\n'), ctx);
+  return ctx;
+})();
+// The real export, trimmed to the rows that carry a decision. Note La’Maya's CURLY apostrophe:
+// that is what Trail's End actually sends, and it is why teNameKey exists.
+const ROSTER_ROWS = [
+  ['Name', 'ID', 'SF Hours Worked', 'SF Hours Claimed', 'Sales', 'Goal', 'Email Address', 'Phone Number'],
+  ['Logan Dougherty', '0IMGPN66', '13.5', '23.5', '1127', '2001', 'Kdougherty55@gmail.com', '6096724932'],
+  ['Bowie Gladden', '608GPG7M', '10', '18', '595.5', '1500', 'Sgladden20@gmail.com', '4043747627'],
+  ['La’Maya Collier', 'W1Q83PNE', '0', '0', '0', '0', 'Amberkalene@gmail.com', '4042056740'],
+  ['Talon Wallace', 'U97N4349', '0', '0', '70', '350', 'dwallace1971@gmail.com', '7708433098'],
+];
+
+test('the Scout List is sniffed as its own report, and never steals one of the other three', () => {
+  eq(rosterCtx.detectReport(ROSTER_ROWS).type, 'roster', 'the scout list is not recognised');
+  // Name + Goal is the signature: 'Goal' appears on no other export, and 'Name' alone would
+  // claim almost any spreadsheet. Drop Goal and it must stop matching rather than guess.
+  const noGoal = ROSTER_ROWS.map((r) => r.filter((_, i) => i !== 5));
+  eq(rosterCtx.detectReport(noGoal), null, "'Name' alone is being sniffed as a scout list");
+  // The three ledgers are checked FIRST, so a file carrying both signatures keeps its old
+  // destination. This is the guard that makes adding a fourth report safe.
+  eq(rosterCtx.detectReport([['Date', 'Site Name', 'Shift', 'Name', 'Goal']]).type, 'shifts',
+    'the scout list stole a shift report');
+  eq(rosterCtx.detectReport([['Order Number', 'Scout', 'Sale Type', 'Name', 'Goal']]).type, 'sales',
+    'the scout list stole a sales report');
+  eq(rosterCtx.detectReport([['Product', 'Quantity', 'Transaction Type', 'Name', 'Goal']]).type, 'inventory',
+    'the scout list stole an inventory report');
+});
+
+test('a trimmed export still maps — contact columns are optional, the roster is not', () => {
+  // A pack that strips the families' email and phone before sharing the file still gets its
+  // roster. Only Name and Goal are required, so everything else has to survive being absent.
+  const trimmed = [['Name', 'Goal'], ['Logan Dougherty', '2001'], ['Talon Wallace', '350']];
+  const det = rosterCtx.detectReport(trimmed);
+  eq(det.type, 'roster', 'a trimmed export is no longer recognised');
+  const mapped = rosterCtx.mapRosterReport(trimmed, det);
+  eq(mapped.scouts.map((s) => s.name), ['Logan Dougherty', 'Talon Wallace'], 'names were lost');
+  eq(mapped.scouts.map((s) => s.email + '|' + s.phone + '|' + s.teId), ['||', '||'],
+    'absent columns did not come back as empty strings');
+  eq(mapped.scouts[0].salesCents, 0, 'a missing Sales column did not read as zero');
+});
+
+test('the scout list maps to cents, hours and alphabetical order', () => {
+  const mapped = rosterCtx.mapRosterReport(ROSTER_ROWS, rosterCtx.detectReport(ROSTER_ROWS));
+  eq(mapped.count, 4, 'the wrong number of scouts came off the report');
+  // Alphabetical, because this is read as a roster. The report's own order is sales descending,
+  // which is the standings — a different question, already answered on Popcorn · Standings.
+  eq(mapped.scouts.map((s) => s.name),
+    ['Bowie Gladden', 'La’Maya Collier', 'Logan Dougherty', 'Talon Wallace'],
+    'the scout list is not in roster order');
+  const logan = mapped.scouts.find((s) => s.name === 'Logan Dougherty');
+  eq(logan.salesCents, 112700, '1127 dollars did not become cents');
+  eq(logan.goalCents, 200100, 'the goal did not become cents');
+  // Half hours are real: 13.5 worked against 23.5 claimed is the disagreement a leader is
+  // looking at this column to find, so it must not be rounded away.
+  eq([logan.hoursWorked, logan.hoursClaimed], [13.5, 23.5], 'half hours were rounded');
+  const bowie = mapped.scouts.find((s) => s.name === 'Bowie Gladden');
+  eq(bowie.salesCents, 59550, '595.50 did not survive as cents');
+  eq(bowie.teId, '608GPG7M', "the Trail's End id was dropped");
+});
+
+test('a Totals row is not a scout, and a re-registered child is not two scouts', () => {
+  // Some exports end with a labelled totals line. A roster row for it would create a scout
+  // named Totals, who then appears on the attendance sheet.
+  const rows = ROSTER_ROWS.concat([['Totals', '', '13.5', '23.5', '1792.5', '3851', '', '']]);
+  const mapped = rosterCtx.mapRosterReport(rows, rosterCtx.detectReport(rows));
+  eq(mapped.count, 4, 'a Totals row was imported as a scout');
+  // Trail's End can list the same child twice when a family re-registers mid-season.
+  const dupe = ROSTER_ROWS.concat([['logan  DOUGHERTY', '0IMGPN66', '0', '0', '0', '0', '', '']]);
+  eq(rosterCtx.mapRosterReport(dupe, rosterCtx.detectReport(dupe)).count, 4,
+    'the same child was mapped twice');
+});
+
+test('teNameKey folds the curly apostrophe Trail’s End actually exports', () => {
+  // The bug this exists to stop: the export sends U+2019, a leader typed U+0027, and the
+  // importer read La’Maya as a scout the pack did not have — then added her a second time.
+  // A duplicate scout splits her attendance, her advancement and her share of a block.
+  const k = rosterCtx.teNameKey;
+  eq(k('La’Maya Collier'), k("La'Maya Collier"), 'the curly apostrophe is not folded');
+  eq(k('  La’MAYA   Collier '), k("la'maya collier"), 'case and spacing are not folded');
+  // Narrow on purpose. "Mayo-Drysdale" and "Mayo Drysdale" being one child is a GUESS, and a
+  // wrong merge (two children treated as one) is worse than the duplicate it would prevent.
+  ok(k('Bryson Mayo-Drysdale') !== k('Bryson Mayo Drysdale'), 'hyphens are being folded away');
+  eq(k(null), '', 'a null name did not key as empty');
+});
+
+test('every importer asks "do we have this child?" the same way', () => {
+  // teNameKey is the single seam. If one importer keeps its own trim+lowercase, that importer
+  // is the one that quietly creates the duplicate — so none of them may.
+  for (const fn of ['teMatchScouts', 'teAddMissingScouts', 'teMatchShiftScout']) {
+    const src = slice(fn);
+    ok(/teNameKey\(/.test(src), `${fn} does not use the shared roster key`);
+    ok(!/\.trim\(\)\.toLowerCase\(\)/.test(codeOnly(src)),
+      `${fn} still has its own name normalisation, which can drift from teNameKey`);
+  }
+});
+
+test('the Scout List import writes NAMES, and says what it drops', () => {
+  // The sales figure on this report is ONE blended number that already includes storefront
+  // credit. Storefront money lives on the app's storefront blocks, split across the scouts
+  // assigned to them, so writing this in as well would count every storefront dollar twice.
+  const commit = slice('teCommitRosterImport');
+  ok(/teAddMissingScouts\(/.test(commit), 'the commit does not go through the shared roster seam');
+  const code = codeOnly(commit);
+  for (const field of ['salesCents', 'goalCents', 'email', 'phone', 'hoursWorked', 'hoursClaimed']) {
+    ok(!new RegExp(field).test(code), `the roster commit writes ${field}, which has nowhere to live`);
+  }
+  ok(!/state\.entries/.test(code), 'the roster import writes sales entries — that double-counts storefront');
+  // Only the new ones are passed in at all, so an existing scout cannot be touched.
+  ok(/it\.isNew/.test(commit), 'the commit hands teAddMissingScouts scouts it already has');
+  // And the preview has to SAY so: a leader handing over a file holding twenty families'
+  // phone numbers should not have to guess which of it was kept.
+  const preview = /if \(o\.report === 'roster'\) \{[\s\S]*?\n      return q;/.exec(SCRIPT);
+  ok(preview, "the roster preview branch of renderTePreview() not found");
+  ok(/Deliberately <strong>not<\/strong> imported/.test(preview[0]),
+    'the preview does not list what it drops');
+  ok(/stored for none/.test(preview[0]), 'the preview does not say the contact details are not stored');
+});
+
+test('an import never removes, archives or re-dens a scout it was not asked about', () => {
+  // The shift import lets the report win, because a shift is a slot on a schedule. A scout is
+  // a child: absent from Trail's End means not registered (or registered under a different
+  // spelling), not gone from the pack. Archiving on that inference would take them off the
+  // attendance sheet and the advancement grid.
+  const build = slice('teBuildRosterPreview');
+  ok(/missing/.test(build), 'roster-only scouts are not even surfaced');
+  const code = codeOnly(build + slice('teCommitRosterImport'));
+  ok(!/archived\s*=/.test(code), 'the roster import assigns archived');
+  ok(!/\.den\s*=/.test(code), 'the roster import assigns a den');
+  ok(!/splice|filter\(function \(x\) \{ return x\.id/.test(code), 'the roster import removes scouts');
+  // An archived scout who is back on this year's Trail's End list is surfaced, NOT un-archived:
+  // archiving is how a leader records that somebody left, and undoing it would overrule them.
+  ok(/wasArchived/.test(build), 'an archived scout still on the list is not surfaced');
 });
 
 /* ---------------- report ---------------- */
