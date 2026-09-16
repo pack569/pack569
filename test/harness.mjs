@@ -6883,8 +6883,9 @@ test('the year cost card opens a sheet, and so does every den after the first', 
   ok(/break-before: page/.test(yc[1]) && /page-break-before: always/.test(yc[1]),
     'the year cost break is not stated in both spellings');
 
-  // Per den, and the FIRST one excepted: it belongs under the heading and the paragraph that says
-  // what these figures are, and a sheet holding those two alone is a wasted page.
+  // Per den, and the FIRST one excepted: it belongs under the card's own heading, and a sheet
+  // holding that one line alone is a wasted page. (The paragraph that used to sit there beside it
+  // comes off the paper as of 2026-09-11 — see the lead-in test below.)
   const den = /\.pv-den \+ \.pv-den \{([^}]*)\}/.exec(SCRIPT_CSS);
   ok(den, 'the dens still run one into the next on paper');
   ok(/break-before: page/.test(den[1]) && /page-break-before: always/.test(den[1]),
@@ -6927,6 +6928,29 @@ test('a den folds at its tier table, and the ladder note comes off the paper', (
   // is named exactly once in the stylesheet and that one mention is the print rule.
   eq((SCRIPT_CSS.match(/\.pv-ladder-note\b/g) || []).length, 1,
     'the ladder note is styled somewhere besides the one print rule — check it still shows on screen');
+});
+
+test('the year cost lead-in comes off the paper, and the first den opens the sheet', () => {
+  // Owner ask, 2026-09-11. The card already breaks to a sheet of its own, and the lead-in was
+  // spending the top of that sheet restating the heading — so the first den, which is deliberately
+  // NOT broken to a page of its own, began a third of the way down. Off the paper, the first den
+  // is the first thing under the title, which is what the sheet is handed out to show.
+  const cost = /function parentFamilyCost\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(cost, 'parentFamilyCost() not found');
+  ok(/class="small muted pv-yearcost-note"/.test(cost[0]),
+    'the year cost lead-in carries no print hook');
+  ok(/\.pv-yearcost-note \{ display: none !important; \}/.test(SCRIPT_CSS),
+    'the year cost lead-in still prints');
+  // The LEADER card opens with the same sentence and must NOT have been hooked: it is a different
+  // card on a screen that never prints through this path, and hiding it there would be answering a
+  // parent's print question with a change to a leader's screen.
+  const leader = /function renderFamilyYearCost\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(leader, 'renderFamilyYearCost() not found');
+  ok(!/pv-yearcost-note/.test(leader[0]), 'the leader card picked up the parent print hook');
+  // PAPER only, like the ladder note and the pack goal bar before it: named exactly once in the
+  // stylesheet, and that one mention is the print rule.
+  eq((SCRIPT_CSS.match(/\.pv-yearcost-note\b/g) || []).length, 1,
+    'the year cost lead-in is styled somewhere besides the one print rule — check it still shows on screen');
 });
 
 test('each line of the family bill names the rung that buys it', () => {
