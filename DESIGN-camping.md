@@ -107,16 +107,38 @@ Two trips, written as a BALOO-trained leader would brief a new family, and resea
 invented. Everything is editable — the seed is a starting draft, not a fact the app insists on.
 
 **Dates and prices go stale every year** and are labelled with the year they came from, so a
-leader can see at a glance what needs updating. The fall figures are last-published 2025; the
-spring ones are 2026.
+leader can see at a glance what needs updating. Both were refreshed on 2026-09-26: fall is the
+2026 weekend; spring is still April 2026's, because the council had not posted 2027.
 
 | | Fall | Spring |
 |---|---|---|
+| Run by | **Apalachee District** (one weekend per district) | The council, for every district at once |
 | Camp | Scoutland, Lake Lanier | Camp Rainey Mountain, Clayton |
 | Address | 3685 Looper Lake Road, Gainesville GA 30506 | 1494 Rainey Mountain Road, Clayton GA 30525 |
 | Size | 140 acres | ~500 acres |
-| Typical dates | mid-October | late April |
-| Cost | $35/family (2025) | $36–$50/family (2026, three steps) |
+| Dates | Fri 2 – Sun 4 Oct 2026 ("Pirates of Scoutland") | late April (2026: 24–26 Apr; 2027 not posted) |
+| Cost | $30 early / $35 / $45 on site, per family (2026) | $36 / $40 / $50 per family (2026) |
+
+**Fall family camping is per district, and Pack 569 is Apalachee** (north Gwinnett). The council's
+family-camp page only ever shows the spring event, which is how the August seed ended up carrying
+somebody else's mid-October 2025 weekend. Every district runs its own fall weekend at Scoutland on
+a different date — search the council calendar for *Apalachee Fall Family Camping*, not *fall
+family camping*. The pack's own year plan names the theme ("Pirates of Scoutland"), which is a
+quick cross-check.
+
+The address is 3685. The Apalachee registration page's map pin says 3695; the council's other
+pages, and every directory listing, say 3685.
+
+### Refreshing the seed for an existing pack
+
+The seed only runs for a record with no `camping` at all, so a new year's text never reaches a
+pack that already has trips. `refreshCampingSeed` carries it across, once per `CAMP_SEED_REV`,
+into any field or section that still holds — byte for byte — text an earlier seed wrote.
+`CAMP_OLD_SEED` holds a hash of each such old value, keyed by trip name and section title (with
+`to` for a renamed section). A field or section a leader has edited is not matched and is left
+alone; so is a trip they renamed. To refresh again: edit the seed, bump `CAMP_SEED_REV`, and add
+the hashes of the text being replaced — the harness fails if any hash in the table matches the
+*current* seed, which is how you find an entry you forgot to update.
 
 Note the spelling: **Rainey**, not Rainy. Getting it wrong sends a family to the wrong search
 result.
@@ -149,8 +171,13 @@ on the water, **Lions and Tigers are passengers only** while Wolves and Bears ma
 ### Sources
 
 - Scoutland — <https://www.nega-bsa.org/Scoutland> (facilities, acreage, address)
+- Apalachee Fall Family Camping 2026 — <https://mycouncil.nega-bsa.org/Event/APFF-2026> (dates,
+  prices and deadlines, what registration includes), its flyer, and the council's *Scoutland
+  family camping packing list* linked from it. Short link: <https://www.nega-bsa.org/APFF>
+- Council districts — <https://www.nega-bsa.org/districts/> (Apalachee is north Gwinnett)
 - NEGA family camping — <https://www.nega-bsa.org/family-camp> (spring dates, cost, rules, meals)
-- Spring Family Camping 2026 — <https://www.nega-bsa.org/spring-camping>
+- Spring Family Camping 2026 — <https://www.nega-bsa.org/spring-camping> (uniform rule, gates,
+  site inspection, the adult rangemaster course, online registration closing 20 Apr)
 - Age Appropriate Guidelines for Scouting Activities —
   <https://filestore.scouting.org/filestore/HealthSafety/pdf/680-685.pdf> (the ranks table:
   camping, ranges, knives, fire, paddle sports)
@@ -158,8 +185,8 @@ on the water, **Lions and Tigers are passengers only** while Wolves and Bears ma
 - BALOO — <https://ncacscouting.org/training/baloo/>
 - Guide to Safe Scouting, Camping — <https://www.scouting.org/health-and-safety/gss/gss03/>
 
-Weather normals used for the sleeping-bag advice: Gainesville GA averages an October low near
-53F; Clayton GA averages an April low near 44F, and the camp sits above the town — which is why
+Weather normals used for the sleeping-bag advice: Gainesville GA averages an early-October low
+in the mid-50s; Clayton GA averages an April low near 44F, and the camp sits above the town — which is why
 the spring page leads with "they pack for Georgia in April and then sleep in the mountains in
 April".
 

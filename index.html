@@ -2201,7 +2201,71 @@
   // migration below sees an unflagged record, and a leader who deletes the trip gets it back on
   // the next load — which is precisely what the "never push a deleted trip back" rule forbids.
   // Verified by doing it: delete, reload, and it returned.
-  function freshCamping() { return { trips: seedCampingTrips(), yargoAdded: true }; }
+  function freshCamping() { return { trips: seedCampingTrips(), yargoAdded: true, seedRev: CAMP_SEED_REV }; }
+  // THE SEED IS REFRESHED, NOT RE-SEEDED. seedCampingTrips only ever runs for a record with no
+  // `camping` at all, so when a year's dates and prices change in the seed, a pack that already
+  // has its trips never sees them. This carries the new text across — but only into a field or
+  // section that still holds, byte for byte, text an EARLIER seed wrote. Anything a leader has
+  // touched is theirs, and the app does not argue with it (the same rule as the Fort Yargo add).
+  //
+  // Recognised by fingerprint rather than by keeping the old text: CAMP_OLD_SEED holds a hash of
+  // every value a previous seed version wrote, for exactly the fields and sections this revision
+  // changed, keyed by trip NAME (the council trips' ids were uid()s, so the name is all there is)
+  // and by section TITLE. A renamed section says where it went with `to`.
+  //
+  // To refresh again next year: edit the seed, bump CAMP_SEED_REV, and add the hashes of the
+  // text being replaced here. A trip or section the leader renamed simply is not matched.
+  var CAMP_SEED_REV = 1;
+  var CAMP_OLD_SEED = {
+    // rev 1, 2026-09-26: the fall weekend is the Apalachee District's (2 – 4 Oct 2026), not the
+    // 2025 mid-October one; spring gains the 2027-not-posted note and the council's own rules.
+    'Fall Family Camping': {
+      fields: { when: ['9odju1'], arrive: ['ita6dt'], depart: ['qr7nm'], cost: ['xafznd'],
+        url: ['1l0iaoa'], intro: ['1b0kg44'] },
+      sections: {
+        'What to expect': { h: ['1fpmqm7'] },
+        'Before you go': { h: ['1xgbmz6'] },
+        'What to bring': { h: ['1vqe8v'] },
+        'Food': { h: ['w1mzqi'] },
+        'A weekend, roughly': { h: ['4ocixi'] },
+        'Weather, and what mid-October does': { h: ['1b3uqsy'], to: 'Weather, and what early October does' }
+      }
+    },
+    'Spring Family Camping': {
+      fields: { when: ['p6nsn9'], arrive: ['okf2zu'], cost: ['91dpiz'], intro: ['svorvl'] },
+      sections: {
+        'Before you go': { h: ['1ww9vlw'] },
+        'What to bring': { h: ['fm4nln'] },
+        'A weekend, roughly': { h: ['3uhxrl'] }
+      }
+    }
+  };
+  // FNV-1a over UTF-16 code units, base 36. Not security — just "is this still the seed's text".
+  function campHash(s) {
+    var h = 0x811c9dc5;
+    s = String(s);
+    for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+    return h.toString(36);
+  }
+  function refreshCampingSeed(camping) {
+    var now = {};
+    seedCampingTrips().forEach(function (t) { now[t.name] = t; });
+    camping.trips.forEach(function (t) {
+      var old = CAMP_OLD_SEED[t.name], cur = now[t.name];
+      if (!old || !cur) return;
+      Object.keys(old.fields).forEach(function (k) {
+        if (old.fields[k].indexOf(campHash(t[k])) !== -1) t[k] = cur[k];
+      });
+      t.sections.forEach(function (s) {
+        var o = Object.prototype.hasOwnProperty.call(old.sections, s.title) ? old.sections[s.title] : null;
+        if (!o || o.h.indexOf(campHash(s.body)) === -1) return;
+        var to = o.to || s.title;
+        var n = cur.sections.filter(function (x) { return x.title === to; })[0];
+        // The section keeps its own id — it is the same section, with this year's words in it.
+        if (n) { s.title = n.title; s.body = n.body; }
+      });
+    });
+  }
   function freshTripSection(title, body) {
     return { id: uid(), title: String(title || ''), body: String(body || '') };
   }
@@ -2282,25 +2346,34 @@
     var fall = freshTrip('Fall Family Camping');
     fall.where = 'Scoutland, on Lake Lanier';
     fall.address = '3685 Looper Lake Road, Gainesville, GA 30506';
-    fall.when = 'A weekend in mid-October (2025: Fri 17 Oct – Sun 19 Oct)';
-    fall.arrive = 'Friday, check-in from 6:00 pm';
-    fall.depart = 'Sunday, out by 11:00 am';
-    fall.cost = '$35 per family (2025 regular rate) · $45 walk-up on site · +3.5% online card fee';
-    fall.url = 'https://www.nega-bsa.org/family-camp';
-    fall.intro = 'The council-run fall family weekend, and the easy one to start with — an hour away, gentle ground, and a camp built for Cub Scouts. Check the dates and price against the council page each year; the ones above are last published.';
+    // Refreshed 2026-09-26 from the Apalachee District's own event listing and flyer. Fall family
+    // camping in this council is run BY DISTRICT, each on its own weekend at Scoutland — the
+    // council-wide family-camp page only ever shows the spring event, which is how the 2025 figures
+    // came to be somebody else's. Pack 569 is Apalachee (north Gwinnett); the pack's own year plan
+    // names "Pirates of Scoutland", which is Apalachee's 2026 theme.
+    fall.when = 'Early October (2026: Fri 2 Oct – Sun 4 Oct) · Apalachee District';
+    fall.arrive = 'Friday — event opens 9:00 am';
+    fall.depart = 'Sunday — event ends 1:00 pm';
+    fall.cost = '2026: $35 per family online until Thu 1 Oct, 11:59 pm · $45 on site · early $30 rate closed in September · card fee added online';
+    fall.url = 'https://www.nega-bsa.org/APFF';
+    fall.intro = 'Our district’s own fall weekend. The Apalachee District runs it at Scoutland, and the 2026 theme is Pirates of Scoutland — a treasure hunt, trick-or-treating round the campsites, and a costume is very much expected. It is the easy one to start with: under an hour away, gentle ground, and a camp built for Cub Scouts. Every district runs its own fall weekend here on a different date, so make sure the registration you pick says Apalachee. Check the dates and price against the council page each year.';
     fall.sections = [
       freshTripSection('What to expect',
         'Scoutland is the council’s 140-acre camp on Lake Lanier and it is laid out for this age: twelve campsites with tent platforms, a shower house with real bathrooms, Fort Adventure (the Cub Scout playground), a BB range, three program shelters, and Council Rock for the Saturday campfire. Cleveland Hall, the air-conditioned dining building, is there for council events.\n' +
         '\n' +
         'This is family camp, not drop-off. You camp with your Scout, you cook with your Scout, and you walk them from station to station.\n' +
         '\n' +
-        'Friday is arrive, set up, and a short opening. Saturday is the program — archery, BB guns, crafts, fishing, hiking, nature, Scout skills, camp games and sports — run as stations you rotate through at your own pace, finishing with a campfire program. The fall weekend usually adds trick-or-treating around the campsites, so bring a costume. Sunday is pack up, police the site and go.\n' +
+        'Friday is arrive, set up, and a short opening. Saturday is the program — archery, BB guns, crafts, fishing, hiking, Scout skills and camp games, plus a treasure hunt for the pirate theme — run as stations you rotate through at your own pace, finishing with a campfire program. Trick-or-treating round the campsites is part of the weekend, so bring a costume (pirate, ideally) and something to hand out. Sunday is pack up, police the site and go.\n' +
         '\n' +
-        'It runs rain or shine.'),
+        'Registration covers the campsite, every activity and one patch per family. Meals are on your own.\n' +
+        '\n' +
+        'It runs rain or shine — the flyer’s words are “pirating is rain or shine”.'),
       freshTripSection('Why a council camp and not the woods', CAMP_WHY_COUNCIL),
       freshTripSection('Before you go',
-        '- Register through the council. The price steps up as the date gets closer and walk-up on site is the most expensive way to do it. Fees are non-refundable, but can be credited to another council event in the same calendar year.\n' +
-        '- Fill in the Annual Health and Medical Record, parts A and B, for every person coming — Scout, parents and siblings. Under 72 hours it is parts A and B only, no doctor’s signature. Bring the paper and your insurance card.\n' +
+        '- Register online at nega-bsa.org/APFF — one registration per family, not per person. 2026: $35 until Thu 1 Oct at 11:59 pm, then $45 on site. The early $30 rate closed in September; next year, register in the summer and take it. Fees are non-refundable; the council has usually credited them to another council event in the same calendar year, so ask.\n' +
+        '- Extra patches are $5 each. The T-shirt pre-order closed on 20 Sep.\n' +
+        '- Fill in the Annual Health and Medical Record, parts A and B, for every person coming — Scout, parents and siblings. Under 72 hours it is parts A and B only, no doctor’s signature. The council asks you to bring a copy for each member of the family, and your insurance card.\n' +
+        '- Talk to the other families before you buy anything. The council’s own packing list says it plainly: gear can be shared, and nobody has to go out and buy new kit because they do not have it.\n' +
         '- Put the tent up in the yard first. Every family that skips this does it for the first time in the dark, on a gravel pad, with a tired six-year-old.\n' +
         '- Charge a headlamp for every person, children included. A child with their own light is a child who is not frightened.\n' +
         '- Talk about the buddy system in the car. Nobody walks anywhere alone, including to the toilets at night.'),
@@ -2308,57 +2381,70 @@
         'The Cub Scout Six Essentials live in your Scout’s own daypack and stay with them all weekend: first-aid kit, water bottle, flashlight, trail food, sun protection, whistle.\n' +
         '\n' +
         'Sleeping\n' +
-        '- Tent, and a ground tarp cut smaller than the tent floor — a tarp poking out catches rain and runs it underneath you.\n' +
+        '- Tent — the council suggests a 4- or 6-person dome — and a ground tarp cut smaller than the tent floor. A tarp poking out catches rain and runs it underneath you.\n' +
         '- A sleeping pad or cot for everyone. The ground pulls heat out of you all night and a sleeping bag alone does not stop it. This matters more than what the bag is rated for.\n' +
-        '- Sleeping bag rated colder than you expect. Mid-October near Gainesville averages a low around 53F, and a clear night in the north Georgia foothills goes well under that.\n' +
+        '- Sleeping bag rated colder than you expect. Early October near Gainesville averages a low in the mid-50s, and a clear night by the lake feels colder than the number.\n' +
         '- Pillow, and one spare blanket per child.\n' +
         '\n' +
         'Wearing\n' +
-        '- Field uniform (the tan shirt) for travel, opening and the campfire — the council asks for it.\n' +
-        '- Layers rather than one thick coat: long sleeves, fleece, hat and gloves for the evening.\n' +
-        '- A complete second set of clothes and a second pair of shoes. A child soaked to the knees on Saturday morning with nothing dry is the quickest way to end a weekend early.\n' +
+        '- Field uniform (the tan shirt) for travel, opening and the campfire — it is on the council’s packing list.\n' +
+        '- A change of clothes for each day plus one extra set, and a second pair of shoes. A child soaked to the knees on Saturday morning with nothing dry is the quickest way to end a weekend early.\n' +
+        '- Layers rather than one thick coat: long pants, long sleeves and a fleece for the evening, shorts for the afternoon.\n' +
         '- Rain jacket or poncho for everyone. Rain or shine means rain or shine.\n' +
-        '- Closed-toe shoes. Ranges and camp stoves; no sandals.\n' +
+        '- Closed-toe shoes or hiking boots. Ranges and camp stoves; no sandals except in the shower.\n' +
+        '- Hat and sunglasses.\n' +
+        '\n' +
+        'Washing — Scoutland has a shower house\n' +
+        '- Two towels each, shower shoes or flip-flops, and toiletries.\n' +
         '\n' +
         'Camp\n' +
         '- Camp chairs, and a lantern for the site\n' +
         '- Two lights per person plus spare batteries\n' +
-        '- Cooler with ice, and a separate jug of drinking water\n' +
-        '- Your own cooking kit: stove or charcoal, fuel, matches, pot, pan, plates, cups, utensils\n' +
-        '- Wash tub, biodegradable soap, dish towel, bin bags\n' +
-        '- Sunscreen, insect repellent, hand sanitiser, loo roll\n' +
+        '- Two reusable water bottles per person. Skip bottled water and single-serve drinks — the council asks, to cut the rubbish.\n' +
+        '- Cooler, and buy the ice on the way: it is not sold at camp. A 5-gallon drink cooler for water (the camp can lend one).\n' +
+        '- Cooking: a two-burner stove and propane, or a trail grate over your site’s fire pit with your own charcoal and a chimney starter. Scouts never use liquid lighter fluid.\n' +
+        '- Pot, pan, reusable plates, cups and utensils — the council asks families to keep paper and disposables to a minimum\n' +
+        '- Wash basin, rinse basin, dish soap and sanitiser. Every site has running drinking water.\n' +
+        '- A plastic tote with a lid that locks, for food\n' +
+        '- Kitchen-size drawstring bin bags\n' +
+        '- A small folding table — you may be sharing the picnic table — and a pop-up canopy if you have one\n' +
+        '- A wagon or cart, if you have one; it saves a lot of trips from the car\n' +
+        '- Sunscreen (SPF 35 or more), insect repellent, hand sanitiser, loo roll\n' +
         '- Family first-aid kit and any medication, in its original labelled container\n' +
-        '- Costume for trick-or-treating, and a bag of sweets to hand out if our den takes a site\n' +
+        '- Pirate costume for trick-or-treating, and a bag of sweets to hand out if our den takes a site\n' +
+        '- A little spending money for the Trading Post\n' +
         '\n' +
-        'Leave at home: pets (service dogs excepted, with documentation), alcohol, fireworks, sheath knives, and anything electronic your Scout would be upset to lose.'),
+        'Leave at home: pets (service dogs excepted, with documentation), alcohol, fireworks, sheath knives or anything like a weapon, jewellery, and anything electronic your Scout would be upset to lose. Tobacco only in the camp’s designated area, never at a site or a program area.'),
       freshTripSection('Food',
         'Every family cooks its own meals. Plan Friday dinner, Saturday breakfast, lunch and dinner, and Sunday breakfast.\n' +
         '\n' +
         'Honestly, eat before you arrive on Friday. Setting up in daylight is worth more than a hot Friday meal, and you will not regret it at 9pm.\n' +
         '\n' +
-        'Do the shopping and the chopping at home. The camp menus that work are the ones where the cooking is really assembly: foil packets, taco meat browned in your own kitchen, pancake mix already in a bottle that only needs water, hot dogs. Keep raw meat below ready-to-eat food in the cooler, and bring a thermometer if you are cooking chicken.'),
+        'Do the shopping and the chopping at home. The camp menus that work are the ones where the cooking is really assembly: foil packets, taco meat browned in your own kitchen, pancake mix already in a bottle that only needs water, hot dogs. Keep raw meat below ready-to-eat food in the cooler, and bring a thermometer if you are cooking chicken.\n' +
+        '\n' +
+        'Stick to the menu. Every bit of food lives in the cooler or a lidded tote, and none of it ever goes in a tent \u2014 Scoutland has critters, and they will go through a tent wall to get at a packet of crackers. Ice is not sold at camp, so buy it on the way.'),
       freshTripSection('A weekend, roughly',
-        'The council sets the real timetable and hands it out at check-in. This is the shape it takes.\n' +
+        'The district sets the real timetable and hands it out at check-in. This is the shape it takes.\n' +
         '\n' +
         'Friday\n' +
-        '- Arrive from 6pm, check in, get your campsite.\n' +
-        '- Put the tent up while it is still light. That is the whole reason to leave home early.\n' +
+        '- The council listing opens the event at 9am; most families come after work. Check in, get your campsite.\n' +
+        '- Put the tent up while it is still light \u2014 sunset is around 7:20pm in early October. That is the whole reason to leave home early.\n' +
         '- Something simple to eat, a short opening, and bed.\n' +
         '\n' +
         'Saturday\n' +
         '- Breakfast at your own site.\n' +
-        '- Flags, then the program runs as stations you rotate through at your own pace: BB guns and archery, fishing, crafts, Scout skills, hiking, nature, field games. Some years there is a scavenger hunt.\n' +
+        '- Flags, then the program runs as stations you rotate through at your own pace: BB guns and archery, fishing, crafts, Scout skills, hiking, camp games \u2014 and in 2026, a pirate treasure hunt.\n' +
         '- Lunch and dinner at your site.\n' +
+        '- Trick-or-treating round the campsites, in costume.\n' +
         '- Campfire at Council Rock in the evening \u2014 skits and songs, and the part the children actually remember.\n' +
-        '- The fall weekend usually adds trick-or-treating round the campsites, so pack a costume.\n' +
         '\n' +
         'Sunday\n' +
         '- Breakfast, then a short chapel service most years.\n' +
-        '- Strike camp, police the site, and be out by 11am.'),
-      freshTripSection('Weather, and what mid-October does',
-        'Gainesville in mid-October is the kindest weather of anything we do, and that is the trap: you pack for the afternoon and get caught by the night.\n' +
+        '- Strike camp, police the site, and leave by the time you are given at check-in. The council listing ends the event at 1pm.'),
+      freshTripSection('Weather, and what early October does',
+        'Gainesville in early October is the kindest weather of anything we do, and that is the trap: you pack for the afternoon and get caught by the night.\n' +
         '\n' +
-        'Days are usually in the 70s and pleasant. Nights drop to the 40s or 50s, and a clear night by the lake feels colder than the number does. A summer sleeping bag with nothing under it is the commonest mistake on this trip, and the person who suffers is a seven-year-old who cannot tell you why they cannot sleep. Bring a sleeping mat for every person, not just the children.\n' +
+        'Days are usually in the upper 70s to low 80s, and early October can still feel like summer in the afternoon, so water, sunscreen and a hat matter at the ranges. Nights drop to the 50s, and a clear night by the lake feels colder than the number does. A summer sleeping bag with nothing under it is the commonest mistake on this trip, and the person who suffers is a seven-year-old who cannot tell you why they cannot sleep. Bring a sleeping mat for every person, not just the children.\n' +
         '\n' +
         'Rain is less likely than in spring but perfectly possible. A tarp under the tent \u2014 cut smaller than the floor, tucked under, never poking out \u2014 and a second one over the picnic table cover it.\n' +
         '\n' +
@@ -2375,12 +2461,14 @@
     var spring = freshTrip('Spring Family Camping');
     spring.where = 'Camp Rainey Mountain, Clayton';
     spring.address = '1494 Rainey Mountain Road, Clayton, GA 30525';
-    spring.when = 'A weekend in late April (2026: Fri 24 Apr – Sun 26 Apr)';
-    spring.arrive = 'Friday from 5:30 pm, check-in 6:00 pm';
+    // Refreshed 2026-09-26. Unlike the fall weekend this one is council-wide, not per district.
+    // The council had not posted 2027 yet, so the figures stay April 2026's, labelled as such.
+    spring.when = 'A weekend in late April (2026: Fri 24 Apr – Sun 26 Apr · 2027 dates not yet posted)';
+    spring.arrive = 'Friday — parking 5:30 pm, check-in 6:00 pm';
     spring.depart = 'Sunday, out by 10:00 am';
-    spring.cost = '2026: $36 per family before 26 Mar · $40 by 16 Apr · $50 from 17 Apr';
+    spring.cost = '2026: $36 per family before 26 Mar · $40 by 16 Apr · $50 from 17 Apr · +3.5% online card fee · 2027 not yet posted';
     spring.url = 'https://www.nega-bsa.org/spring-camping';
-    spring.intro = 'The bigger, wilder one — a Scouts BSA summer-camp property up in the mountains. Spelled Rainey, not Rainy, which matters when you are searching for it. Check the dates and price against the council page each year.';
+    spring.intro = 'The bigger, wilder one — a Scouts BSA summer-camp property up in the mountains, run by the council for every district at once. Spelled Rainey, not Rainy, which matters when you are searching for it. As of late September 2026 the council has not posted the 2027 dates or prices, so the figures above are April 2026’s; expect the same late-April weekend, and check the council page before you plan around them.';
     spring.sections = [
       freshTripSection('What to expect',
         'Camp Rainey Mountain is close to 500 acres, four miles south-east of Clayton in the north Georgia mountains. It is the council’s Scouts BSA summer camp, so it is larger and more rugged than Scoutland — there are real hills between the campsites and the programme areas, and you will walk them several times a day.\n' +
@@ -2396,10 +2484,12 @@
         'Spring in the mountains also means rain and mud. Rain gear you would genuinely wear, a spare pair of shoes each, and an extra tarp.'),
       freshTripSection('Why a council camp and not the woods', CAMP_WHY_COUNCIL),
       freshTripSection('Before you go',
-        '- Register through the council, and early: this one has three price steps and the last is nearly half again as much as the first. Fees are transferable but not refundable.\n' +
+        '- Register through the council, and early: this one has three price steps and the last is nearly half again as much as the first. In 2026 online registration closed four days before the weekend (20 Apr); after that it was by phone to the council office or on site. Fees are transferable but not refundable.\n' +
         '- Fill in the Annual Health and Medical Record, parts A and B, for every person coming — Scout, parents and siblings. Bring the paper and your insurance card.\n' +
         '- Unload on Friday. Vehicles go to the designated parking area and stay there on Saturday, so whatever you did not carry to the site on Friday night you will be carrying up a hill.\n' +
-        '- Pack the field uniform where you can reach it. The council asks for it for travel and for certain events.\n' +
+        '- Pack the field uniform where you can reach it. The council requires it for travel, flag ceremonies, meals and the Saturday campfire.\n' +
+        '- Adults 21 and over can take BB and Archery Rangemaster Training on the Saturday (2026: 9am–3pm), registered separately. The council’s ranges run on certified rangemasters, and a leader who has it is useful at every council event after this one.\n' +
+        '- Extra patches are $3 each.\n' +
         '- Put the tent up in the yard first, especially if it is new.'),
       freshTripSection('What to bring',
         'The Cub Scout Six Essentials live in your Scout’s own daypack and stay with them all weekend: first-aid kit, water bottle, flashlight, trail food, sun protection, whistle.\n' +
@@ -2411,7 +2501,7 @@
         '- Pillow.\n' +
         '\n' +
         'Wearing\n' +
-        '- Field uniform for travel and for events that ask for it.\n' +
+        '- Field uniform for travel, flag ceremonies, meals and the Saturday campfire \u2014 the council requires it for all four.\n' +
         '- Layers: long sleeves, fleece, warm hat and gloves. Mornings are cold and the afternoon can be shirtsleeves.\n' +
         '- A complete second set of clothes and a second pair of shoes. In April this is not optional.\n' +
         '- Proper rain gear for everyone, and closed-toe shoes with grip. There are hills and they will be wet.\n' +
@@ -2443,11 +2533,11 @@
         'Saturday\n' +
         '- The gates are locked all day. Whatever you forgot, you are doing without.\n' +
         '- Program stations: BB shooting and archery, fishing on Lake Toccoa, crafts, STEM, outdoor games, Scout skills. Partial adventures and rank work get signed off through the day.\n' +
-        '- Meals at your own site, except Saturday dinner, which is a pack group meal \u2014 beef or turkey, roughly $5\u2013$10 a head, with the money and your headcount collected beforehand so there is enough.\n' +
+        '- Meals at your own site \u2014 the council\u2019s rule is that each family or pack brings its own. If the pack organises a shared Saturday dinner, the headcount and money are collected beforehand so there is enough; do not count on one until you have been asked.\n' +
         '- Campfire programme at the Stewart Amphitheater in the evening.\n' +
         '\n' +
         'Sunday\n' +
-        '- Gates reopen so you can drive up and load straight into the car.\n' +
+        '- The gates unlock after the Saturday campfire, so on Sunday you can drive up and load straight into the car.\n' +
         '- A staff member inspects your site before you are allowed to leave. Out by 10am, which is earlier than it sounds when you are packing a wet tent.'),
       freshTripSection('Weather, and what late April does up there',
         'Rabun County is mountains, not Piedmont, and it runs colder and wetter than home. Late April can give you a warm afternoon and a night in the 30s in the same 24 hours.\n' +
@@ -2923,6 +3013,12 @@
         var seededYargo = seedCampingTrips().filter(function (t) { return t.id === YARGO_TRIP_ID; })[0];
         if (seededYargo) d.camping.trips.push(seededYargo);
       }
+    }
+    // Carry this year's seed text into trips that still hold an older seed's — see
+    // refreshCampingSeed. Once per revision, and it only ever replaces untouched seed text.
+    if (!(d.camping.seedRev >= CAMP_SEED_REV)) {
+      refreshCampingSeed(d.camping);
+      d.camping.seedRev = CAMP_SEED_REV;
     }
     if (!d.packName) d.packName = 'Pack 569';
     // Wave 22 — the weather lookup location. Defaulted rather than left blank so the feature

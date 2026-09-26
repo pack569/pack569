@@ -956,6 +956,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // Camping — normalizeState seeds the two council trips when the key is absent.
   'CAMP_SAFETY', 'CAMP_AGES', 'CAMP_WHY_COUNCIL', 'CAMP_FIRST_TIME',
   'freshTripSection', 'freshTrip', 'seedCampingTrips', 'freshCamping',
+  'CAMP_SEED_REV', 'CAMP_OLD_SEED', 'campHash', 'refreshCampingSeed',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
   'parseLegacyTime', 'migrateTierMakeUp', 'normalizeState', 'lineActualCents', 'entrySignedCents',
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
@@ -5160,6 +5161,74 @@ test('the seeded trips are real content, and are seeded exactly once', () => {
   eq(messy.camping.trips[0].sections.length, 1, 'non-object sections were kept');
   eq(messy.camping.trips[0].sections[0].body, '', 'a missing body was not defaulted');
   ok(messy.camping.trips[0].id && messy.camping.trips[0].sections[0].id, 'ids were not filled in');
+});
+
+test('a year’s new seed text reaches a pack that already has its trips — but only untouched text', () => {
+  // seedCampingTrips never runs again for a pack that has trips, so without this a pack seeded in
+  // August keeps last year's dates for ever. The refresh may only replace text an earlier seed
+  // wrote: a leader's own edit is theirs, and overwriting it would be the app arguing with them.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const seed = ctx.seedCampingTrips();
+  const byName = (name) => seed.find((t) => t.name === name);
+  const fall = byName('Fall Family Camping');
+
+  // The real table must be SANE: no hash in it may match what the current seed writes (or the
+  // refresh would be a no-op dressed up as a change), and every section it points at must exist.
+  Object.entries(ctx.CAMP_OLD_SEED).forEach(([name, old]) => {
+    const cur = byName(name);
+    ok(cur, `CAMP_OLD_SEED names a trip the seed no longer has: ${name}`);
+    Object.entries(old.fields).forEach(([k, hs]) =>
+      ok(!hs.includes(ctx.campHash(cur[k])), `${name}.${k}: the old hash is the CURRENT text`));
+    Object.entries(old.sections).forEach(([title, o]) => {
+      const to = o.to || title;
+      const s = cur.sections.find((x) => x.title === to);
+      ok(s, `${name}: "${title}" points at a section the seed does not have ("${to}")`);
+      ok(!o.h.includes(ctx.campHash(s.body)), `${name}: "${title}" old hash is the CURRENT text`);
+    });
+  });
+
+  // Behaviour, against a synthetic table so the test does not depend on last year's prose.
+  ctx.CAMP_OLD_SEED = {
+    'Fall Family Camping': {
+      fields: { when: [ctx.campHash('old when')], cost: [ctx.campHash('old cost')] },
+      sections: {
+        'Old weather': { h: [ctx.campHash('old weather body')], to: 'Weather, and what early October does' },
+        'Food': { h: [ctx.campHash('old food body')] }
+      }
+    }
+  };
+  const camping = () => ({
+    yargoAdded: true,
+    trips: [{
+      id: 'f', name: 'Fall Family Camping', when: 'old when', cost: 'Leader typed this', sections: [
+        { id: 's1', title: 'Old weather', body: 'old weather body' },
+        { id: 's2', title: 'Food', body: 'old food body, and then a leader added a line' },
+        { id: 's3', title: 'Our own section', body: 'kept' }
+      ]
+    }, {
+      // Renamed by a leader: not the seed's trip any more, so not the seed's to change.
+      id: 'r', name: 'Scoutland 2026', when: 'old when', sections: []
+    }]
+  });
+  const after = ctx.normalizeState(Object.assign(preMigrationState(), { camping: camping() })).camping;
+  const t = after.trips[0];
+  eq(t.when, fall.when, 'an untouched seeded field was not refreshed');
+  eq(t.cost, 'Leader typed this', 'a field the leader edited was overwritten');
+  eq(t.sections[0].title, 'Weather, and what early October does', 'a renamed section kept its old title');
+  eq(t.sections[0].body, fall.sections.find((s) => s.title === t.sections[0].title).body,
+    'an untouched seeded section was not refreshed');
+  eq(t.sections[0].id, 's1', 'the refreshed section lost its id');
+  eq(t.sections[1].body, 'old food body, and then a leader added a line', 'an edited section was overwritten');
+  eq(t.sections[2].body, 'kept', 'the pack’s own section was touched');
+  eq(after.trips[1].when, 'old when', 'a trip the leader renamed was refreshed');
+  eq(after.seedRev, ctx.CAMP_SEED_REV, 'the revision was not recorded, so it will run every load');
+
+  // Once per revision: a record already at this revision is left alone, whatever it holds.
+  const done = ctx.normalizeState(Object.assign(preMigrationState(),
+    { camping: Object.assign(camping(), { seedRev: ctx.CAMP_SEED_REV }) })).camping;
+  eq(done.trips[0].when, 'old when', 'the refresh ran again on a record already at this revision');
+  // A brand-new record is not normalised on load, so freshCamping must carry the revision itself.
+  eq(ctx.freshCamping().seedRev, ctx.CAMP_SEED_REV, 'freshCamping does not carry the seed revision');
 });
 
 test('the seeded content states the rules a pack actually has to follow', () => {
