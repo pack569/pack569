@@ -117,6 +117,12 @@ outliving, or being counted beside, the thing they belonged to. What changed, it
   carried-over deadline has passed, so every tier with one opened the year closed and billed
   everybody, and clearing it would silently turn a hard deadline into none. The Kernel should
   still check the new date — the council's own deadline moves a little each year.
+- **A make-up payment was spent twice (M5).** A family paying the difference to reach a tier
+  writes a ledger entry carrying the scout and the tier (`tierMakeup`). The tier then waives the
+  fee — and `paymentsForScout` *also* counted the same money against the family's other charges.
+  A treasurer reproduced a family shown owing $10 that really owed $40. Make-up entries no longer
+  settle charges (`entryPaysCharges`); `chargeTotals` reports them as `makeup`, the Dues card
+  says so on its own line instead of inside *Received*, and they still reach Funds in.
 
 ---
 

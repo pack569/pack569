@@ -2402,7 +2402,7 @@ test('one handler set serves every budget line, not parallel act-/exp- families'
    ================================================================ */
 
 const CHARGE_FNS = ['CHARGE_WHO', 'centsOf', 'chargeKey', 'chargeRowsFor', 'chargeIsOpen',
-  'paymentsForScout', 'familyOutstanding', 'chargeTotals'];
+  'entryPaysCharges', 'paymentsForScout', 'familyOutstanding', 'chargeTotals'];
 
 function line3b(patch) {
   return Object.assign({
@@ -4672,7 +4672,9 @@ test('a council-paid fee can be covered, and only ever as a reimbursement', () =
   ok(/receipt/.test(act[0]), 'nothing reminds the treasurer to keep the council receipt');
   // Money in is what settles a family's account; money out must not touch it.
   const pay = /function paymentsForScout\(ledger, scoutId\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(pay && /e\.direction === 'in' && e\.scoutId === scoutId/.test(pay[0]),
+  const pays = /function entryPaysCharges\(e\) \{[^\n]*\}/.exec(SCRIPT);
+  ok(pay && /entryPaysCharges\(e\) && e\.scoutId === scoutId/.test(pay[0]) &&
+    pays && /e\.direction === 'in'/.test(pays[0]),
     'a reimbursement OUT would be counted as a payment from the family');
 });
 
@@ -8514,6 +8516,24 @@ test('M3: a tier deadline moves on a year rather than opening the year closed', 
   eq(shiftISOYear(''), '', 'no deadline stays none');
   const fn = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/if \(t\.dueBy\) t\.dueBy = shiftISOYear\(t\.dueBy\);/.test(fn), 'last year’s deadline is carried unchanged');
+});
+
+test('M5: a tier make-up payment does not also settle the family’s other charges', () => {
+  // Treasurer's repro: dues $40 covered by a tier the family paid $30 to reach; a $40 campout
+  // still open. The $30 bought the tier. Counted as a payment too, it knocked the campout to $10.
+  const { familyOutstanding, chargeTotals } = sandbox(CHARGE_FNS);
+  const charges = [
+    { scoutId: 's1', lineId: 'dues', amountCents: 4000, waivedBy: 't1', forgiven: null },
+    { scoutId: 's1', lineId: 'camp', amountCents: 4000, waivedBy: '', forgiven: null }
+  ];
+  const ledger = [{ direction: 'in', scoutId: 's1', amountCents: 3000, source: 'family', tierMakeup: 't1' }];
+  eq(familyOutstanding(charges, ledger, 's1'), 4000, 'the campout is still owed in full');
+  const t = chargeTotals(charges, ledger);
+  eq(t.paid, 0, 'make-up money is not a charge payment');
+  eq(t.makeup, 3000, 'but it is reported, not lost');
+  eq(t.outstanding, 4000, 'still owed');
+  const fn = /function computeBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/feeIncomeCollected = chg\.paid \+ chg\.donated \+ chg\.makeup;/.test(fn), 'make-up money dropped out of Funds in');
 });
 
 /* ---------------- report ---------------- */

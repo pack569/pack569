@@ -4883,7 +4883,9 @@
     // AUDIT FIX — take the expected figure from fundingSummary so the Budget card and the
     // worksheet cannot disagree. It already blends real charges with the planning fallback.
     feeIncomeExpected = fundingSummary().fees;
-    feeIncomeCollected = chg.paid + chg.donated;
+    // M5 — a tier make-up payment is family money that arrived; it settles a tier rather than a
+    // charge, but it is in the bank all the same.
+    feeIncomeCollected = chg.paid + chg.donated + chg.makeup;
     // Wave 17 — other fundraisers a leader opted into funds-in (default off).
     var otherFundraiserIn = 0;
     state.fundraisers.forEach(function (fr) {
@@ -5523,9 +5525,16 @@
   // Every payment against a scout's account, whoever it came from. A donation settles a
   // charge exactly as a family payment does — the difference is who is thanked, and whether
   // the pack is left whole, which is reported separately rather than hidden here.
+  //
+  // TREASURER'S AUDIT, 2026-09-27 (M5) — EXCEPT a tier make-up payment. That money bought a
+  // TIER (tierMakeup names it), and the tier then waives the fee it covers; counting it here as
+  // well let the same dollars settle a second charge. A treasurer reproduced it: a family shown
+  // owing $10 that really owed $40. The make-up money is still income — chargeTotals reports it
+  // as `makeup`, and it reaches Funds in — it just is not a payment against anybody's charges.
+  function entryPaysCharges(e) { return e.direction === 'in' && !!e.scoutId && !e.tierMakeup; }
   function paymentsForScout(ledger, scoutId) {
     return ledger.reduce(function (n, e) {
-      return (e.direction === 'in' && e.scoutId === scoutId) ? n + (e.amountCents || 0) : n;
+      return (entryPaysCharges(e) && e.scoutId === scoutId) ? n + (e.amountCents || 0) : n;
     }, 0);
   }
   function chargeIsOpen(c) { return !c.waivedBy && !c.forgiven; }
@@ -5541,7 +5550,7 @@
   // attributable. `waived` is what fundraising bought the families. `forgiven` is what the
   // pack chose to absorb.
   function chargeTotals(charges, ledger) {
-    var t = { raised: 0, standing: 0, waived: 0, forgiven: 0, paid: 0, donated: 0, outstanding: 0 };
+    var t = { raised: 0, standing: 0, waived: 0, forgiven: 0, paid: 0, donated: 0, makeup: 0, outstanding: 0 };
     var byScout = {};
     charges.forEach(function (c) {
       t.raised += c.amountCents || 0;
@@ -5552,6 +5561,8 @@
     });
     ledger.forEach(function (e) {
       if (e.direction !== 'in' || !e.scoutId) return;
+      // M5 — bought a tier, not a charge: reported on its own so Received means what it says.
+      if (e.tierMakeup) { t.makeup += e.amountCents || 0; return; }
       if (e.source === 'donation') t.donated += e.amountCents || 0;
       else t.paid += e.amountCents || 0;
     });
@@ -14302,6 +14313,9 @@
     if (t.donated) settled.push('<span class="pill navy">Donated</span> <strong class="money">' + fmt(t.donated) + '</strong> came from somebody other than the family — the pack is whole, and the donor is worth thanking');
     if (t.waived) settled.push('<span class="pill navy">Waived</span> <strong class="money">' + fmt(t.waived) + '</strong> is what fundraising bought the families — the pack absorbed it');
     if (t.forgiven) settled.push('<span class="pill navy">Forgiven</span> <strong class="money">' + fmt(t.forgiven) + '</strong> the committee chose to absorb');
+    // M5 — make-up money is not in Received: it bought a tier, and the tier's waiver is what
+    // settled the fee. Said here so the ledger and this card can still be reconciled by eye.
+    if (t.makeup) settled.push('<span class="pill navy">Tier make-up</span> <strong class="money">' + fmt(t.makeup) + '</strong> came in from families paying the difference to reach a reward tier — it is in the bank, and the tier waives the fee, so it is not counted again under Received');
     if (settled.length) {
       h += '<hr class="divider">' + settled.map(function (l) { return '<p class="small" style="margin:6px 0 0">' + l + '.</p>'; }).join('');
     }
