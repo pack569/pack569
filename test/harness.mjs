@@ -7627,6 +7627,132 @@ test('an import never removes, archives or re-dens a scout it was not asked abou
 });
 
 /* ================================================================
+   The Part C security rules (SETUP.md) and the client that has to live under them. The rules
+   are pasted into the Firebase console by hand, so nothing but this file notices when the two
+   drift apart — and a drift here fails as "nobody can sign up", or worse, silently succeeds.
+   ================================================================ */
+
+const SETUP = readFileSync(join(ROOT, 'SETUP.md'), 'utf8');
+const RULES = (() => {
+  const at = SETUP.indexOf('## Part C');
+  const m = /```\n(rules_version[\s\S]*?)```/.exec(SETUP.slice(at));
+  return m ? m[1] : '';
+})();
+// The object literal a function hands to setDoc(<ref>, { … }), as a list of its keys.
+function setDocKeys(src, refPattern) {
+  const out = [];
+  const re = new RegExp('setDoc\\(' + refPattern + '[^{]*\\{([^}]*)\\}', 'g');
+  let m;
+  while ((m = re.exec(src))) out.push(m[1].split('\n').map((l) => (/^\s*(\w+):/.exec(l) || [])[1]).filter(Boolean));
+  return out;
+}
+
+test('the Part C rules carry the 2026-09-27 update, dated, at the top of Part C', () => {
+  ok(RULES, 'no rules block found under Part C');
+  const partC = SETUP.slice(SETUP.indexOf('## Part C'));
+  ok(/^> \*\*Rules updated 2026-09-27 — paste this whole block into the Firebase console\.\*\*/m
+    .test(partC.slice(0, 600)), 'the dated "paste this whole block" note is not at the top of Part C');
+});
+
+test('nobody joins the Members card with nothing but the pack id', () => {
+  const create = /allow create: if signedIn\(\) && request\.auth\.uid == uid[\s\S]*?;\n/.exec(RULES);
+  ok(create, 'members create rule not found');
+  const c = create[0];
+  ok(/viaGoogle\(\)/.test(c) && /sign_in_provider == 'google\.com'/.test(RULES), 'member create does not require Google');
+  ok(/ownEmail\(\)/.test(c) && /data\.email == request\.auth\.token\.email/.test(RULES), 'member email is not pinned to the token');
+  // The bare branch this replaced: `request.resource.data.role == 'pending' ||`. Every 'pending'
+  // must sit inside the join-code conjunction.
+  const pendings = c.split("role == 'pending'").length - 1;
+  eq(pendings, 1, "'pending' appears in more than one create branch");
+  ok(/role == 'pending'\s*&& exists\(joinPath\(\)\)\s*&& joinCfg\(\)\.open == true\s*&& request\.resource\.data\.joinCode == joinCfg\(\)\.code/
+    .test(c), 'a pending create is not bound to the open link and its current code');
+  ok(/invitedRole\(\) in \['editor', 'viewer', 'parent'\]\s*&& request\.resource\.data\.role == invitedRole\(\)/.test(c),
+    'the invite branch does not pin the role to a non-admin invite');
+});
+
+test('the member doc the client writes is exactly what the rules accept', () => {
+  const allowed = /function memberKeysOk\(\) \{\s*return request\.resource\.data\.keys\(\)\.hasOnly\(\[([^\]]*)\]\)/.exec(RULES);
+  ok(allowed, 'memberKeysOk() not found in the rules');
+  const keys = allowed[1].match(/'(\w+)'/g).map((k) => k.slice(1, -1));
+  const writes = setDocKeys(slice('ensureMyMemberDoc') + slice('joinCreateMemberDoc'), 'ref');
+  eq(writes.length, 2, 'expected one member create in each of ensureMyMemberDoc and joinCreateMemberDoc');
+  writes.forEach((w) => w.forEach((k) => ok(keys.indexOf(k) !== -1, `the client writes "${k}", which the rules refuse`)));
+  // The join path has to SEND the code, or the rule has nothing to check.
+  ok(writes.some((w) => w.indexOf('joinCode') !== -1), 'the join path no longer writes joinCode');
+  // Invites the same way.
+  const inv = /request\.resource\.data\.keys\(\)\.hasOnly\(\['role', 'email', 'invitedBy', 'invitedAt'\]\)/.test(RULES);
+  ok(inv, 'the invite field list changed in the rules');
+  const invWrite = setDocKeys(slice('createInvite'), "fs\\.doc\\(sync\\.db, 'packs', sync\\.docId, 'invites', email\\)");
+  eq(invWrite, [['role', 'email', 'invitedBy', 'invitedAt']], 'createInvite writes different fields from the rules');
+});
+
+test('the client never writes a bare pending member, and never reads the join code first', () => {
+  const ens = codeOnly(slice('ensureMyMemberDoc'));
+  // (Reading an existing doc's role with a 'pending' default is fine — WRITING one is not.)
+  ok(!/role = 'pending'|write\('pending'\)|\|\| 'pending'\)|role: 'pending'/.test(ens),
+    'ensureMyMemberDoc writes (or falls back to) pending outside the sign-up link');
+  ok(/joinRejected = 'nolink'/.test(ens), 'a signer with no link and no invite is not sent to the ask-a-leader gate');
+  const join = codeOnly(slice('joinCreateMemberDoc'));
+  ok(!/getDoc/.test(join) && !/'public'/.test(join), 'the join path reads public/join, which only leaders may read');
+});
+
+test('invites are admin-made and consumed only by their own invitee', () => {
+  const inv = /match \/invites\/\{email\} \{([\s\S]*?)\n      \}/.exec(RULES);
+  ok(inv, 'invites match not found');
+  ok(/allow read: if isAdmin\(\) \|\| \(signedIn\(\) && myEmailKey\(\) == email\);/.test(inv[1]), 'invite read');
+  ok(/allow create, update: if isAdmin\(\)\s*&& request\.resource\.data\.role in \['editor', 'viewer', 'parent'\]/.test(inv[1]),
+    'invite create/update is not admin-only with a non-admin role');
+  ok(/allow delete: if isAdmin\(\) \|\| \(signedIn\(\) && myEmailKey\(\) == email\);/.test(inv[1]), 'invite delete');
+  // The client looks invites up lowercased; the rule must too, or a capitalised Google email
+  // can never consume the invite an admin typed.
+  ok(/request\.auth\.token\.email\.lower\(\)/.test(RULES), 'the rules match invites on the raw token email');
+  ok(/inviteEmailKey\(user\.email\)/.test(slice('ensureMyMemberDoc')), 'the client no longer lowercases the invite key');
+});
+
+test('who may read what: roster, join code and parent view', () => {
+  ok(/function isLeader\(\) \{ return myRole\(\) in \['admin', 'editor', 'viewer'\]; \}/.test(RULES), 'isLeader()');
+  ok(/match \/members\/\{uid\} \{[\s\S]*?allow read: if isLeader\(\) \|\| \(signedIn\(\) && request\.auth\.uid == uid\);/.test(RULES),
+    'members read is wider than leaders + self');
+  ok(/match \/public\/join \{\s*allow read:  if isLeader\(\);\s*allow write: if isAdmin\(\);/.test(RULES), 'public/join');
+  ok(/match \/public\/view \{\s*allow read:  if myRole\(\) in \['admin', 'editor', 'viewer', 'parent'\];\s*allow write: if myRole\(\) in \['admin', 'editor'\];/
+    .test(RULES), 'public/view');
+  // Overlapping matches OR together: a /public/{d} wildcard would hand pending users the join code.
+  ok(!/match \/public\/\{/.test(RULES), 'a /public/{…} wildcard is back, and it ORs over public/join');
+  // …and the client has to live with a roster it can't read: non-leaders watch their own doc.
+  const sub = codeOnly(slice('applyMembersSubscription'));
+  ok(/LEADER_ROLES\.indexOf\(sync\.myRole\)/.test(sub) && /fs\.doc\(sync\.db, 'packs', sync\.docId, 'members', uid\)/.test(sub),
+    'parents and pending users still subscribe to the whole members collection');
+  eq(/var LEADER_ROLES = (\[[^\]]*\])/.exec(SCRIPT)[1], "['admin', 'editor', 'viewer']", 'LEADER_ROLES drifted from isLeader()');
+  ok(!/fs\.collection\(db, 'packs', docId, 'members'\)/.test(slice('startAccounts')),
+    'startAccounts subscribes the whole roster for every role again');
+});
+
+test('the parent-view banner names every key the view publishes', () => {
+  const src = slice('buildParentView');
+  const banner = /\/\/ PUBLISHED — the whole list;([\s\S]*?)\/\/ DELIBERATELY EXCLUDED/.exec(SCRIPT);
+  ok(banner, 'the PUBLISHED list above buildParentView is gone');
+  const keys = [...new Set([...src.matchAll(/out\.(\w+) = /g)].map((m) => m[1]))];
+  const named = { standings: /standings/, goals: /goal bar/, derby: /derby winners/, tiers: /reward tiers/,
+    tierLadder: /tierLadder/, familyCost: /familyCost/, camping: /camping trips/ };
+  keys.forEach((k) => {
+    ok(named[k], `buildParentView publishes out.${k}, which this test (and the banner) doesn't know about`);
+    ok(named[k].test(banner[1]), `out.${k} is published but not listed in the banner`);
+  });
+  ok(/salesCents/.test(banner[1]) && /cost line/.test(banner[1]), 'tier sales targets / camping cost are not declared');
+  // SETUP.md tells the pack the same thing.
+  ok(/including each\s+trip's cost line/.test(SETUP) && /sales that reach each tier/.test(SETUP) &&
+    /what the year is planned to cost/.test(SETUP), 'SETUP.md does not list what the parent view really publishes');
+  ok(!/activity costs or expenses/.test(SETUP), 'SETUP.md still claims activity costs are never published');
+});
+
+test('single-pack mode never signs in anonymously, which is why SETUP says to turn it off', () => {
+  ok(/src\.kind === 'pass'\s*\?\s*mods\.auth\.signInAnonymously/.test(SCRIPT), 'anonymous sign-in is no longer passphrase-only');
+  ok(/if \(src\.kind === 'fixed' && current && current\.isAnonymous\) current = null;/.test(SCRIPT),
+    'a stale anonymous session is reused in single-pack mode');
+  ok(/turn it \*\*off\*\*/.test(SETUP), 'SETUP.md does not tell a single-pack admin to turn Anonymous off');
+});
+
+/* ================================================================
    The repo is public. Real families' emails and phone numbers once sat in this file as test
    fixtures (a Trail's End export pasted in whole). Fixtures use @example.com and 555-01xx; the
    only real numbers allowed are the public ones the camping pages print on purpose.

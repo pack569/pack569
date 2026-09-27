@@ -6614,7 +6614,9 @@
     myRole: null,              // this user's role: 'admin' | 'editor' | 'viewer' | 'pending' | null
     ownerUid: null,            // packmeta/{docId}.owner — the first person to sign in / claim the pack
     accountsUnavailable: false,// true when packmeta/members reads are permission-denied (legacy rules) → roles NOT enforced
-    membersUnsub: null,        // second onSnapshot (the members subcollection)
+    membersUnsub: null,        // second onSnapshot (the members subcollection, or just our own doc)
+    membersScope: null,        // 'all' (leaders read the roster) | 'self' (parents/pending: own doc only)
+    membersDeniedAs: null,     // the role a roster read was last refused under — see applyMembersSubscription
     redirectChecked: false,    // one-time getRedirectResult() guard (mobile Google fallback)
     // ---- Parent phase (runtime-only, like everything above — never persisted) ----
     feed: null,                // which document this session is subscribed to: 'doc' | 'parent' | null
@@ -6627,7 +6629,7 @@
     joinCfg: null,             // packs/{docId}/public/join = { open, mode, code, showStandings }
     joinUnsub: null,           // onSnapshot for that config doc (leaders only)
     joinUnavailable: false,    // join-config read denied (older Part C rules) → hide the admin card ONLY
-    joinRejected: null,        // null | 'closed' | 'badcode' — a link visitor who can't join
+    joinRejected: null,        // null | 'closed' | 'badcode' | 'nolink' — signed in, but the pack won't take them
     deviceId: (function () {
       try {
         var id = localStorage.getItem(SYNC_DEVICE_KEY);
@@ -6886,6 +6888,8 @@
   // signed-in identity survives a passphrase change (which only re-points to a different pack).
   function clearAccountsRuntime() {
     if (sync.membersUnsub) { try { sync.membersUnsub(); } catch (e) { /* already gone */ } sync.membersUnsub = null; }
+    sync.membersScope = null;
+    sync.membersDeniedAs = null;
     sync.members = [];
     sync.myRole = null;
     sync.ownerUid = null;
@@ -7247,7 +7251,8 @@
   // order, and ALL of them require a signed-in-with-Google or link-arriving visitor, so a
   // passphrase-only / anonymous / legacy device can never land here.
   //   'setup'   — single-pack mode, but the Part C rules aren't published (admin-facing)
-  //   'closed'  — a link visitor the pack refused (join off, or a rotated code)
+  //   'closed'  — a link visitor the pack refused (join off, or a rotated code), or a signer
+  //               who came with no link and no invite ('nolink')
   //   'welcome' — nobody signed in yet (a link visitor; in single-pack mode, everybody)
   //   'waiting' — signed in, role 'pending', waiting on an admin
   // 'setup' is checked FIRST because it is the safety state: with a public pack id and no
@@ -7320,6 +7325,7 @@
     if (code.indexOf('permission-denied') !== -1) {
       sync.accountsUnavailable = true;
       if (sync.membersUnsub) { try { sync.membersUnsub(); } catch (e) { /* gone */ } sync.membersUnsub = null; }
+      sync.membersScope = null;
       sync.members = [];
       sync.myRole = null;
       sync.ownerUid = null;
@@ -7370,23 +7376,59 @@
       if (sync.joinRejected) return;
       applyInvitesSubscription(mine);
       applyJoinSubscription(mine);
-      var col = fs.collection(db, 'packs', docId, 'members');
-      sync.membersUnsub = fs.onSnapshot(col, function (qs) {
-        if (sync.session !== mine) return;
-        var arr = [];
-        qs.forEach(function (d) { var m = d.data() || {}; m.uid = d.id; arr.push(m); });
-        sync.members = arr;
-        recomputeMyRole();
-        // A role change can arrive at any time (an admin promoting a parent to editor, or
-        // demoting an editor to parent) — move this session onto the matching feed.
-        applyRoleSubscription(sync.myRole, mine);
-        applyInvitesSubscription(mine);
-        applyJoinSubscription(mine);
-        render(); // the read-only banner + Members card + hidden affordances all key off role
-      }, function (err) { if (sync.session === mine) handleAccountsError(err); });
+      applyMembersSubscription(mine);
     }).catch(function (err) {
       if (sync.session === mine) handleAccountsError(err);
       runAfter(null); // legacy-rules permission-denied still needs the pack record subscribed
+    });
+  }
+  // Who this session watches in the members subcollection. The rules let only leaders
+  // (admin/editor/viewer) read the whole roster of accounts — it holds every parent's email —
+  // so a parent or a pending user watches their OWN member doc and nothing else. That one doc
+  // is enough: it is how a waiting user learns they were approved, and how a promoted parent
+  // moves onto the pack record. The scope follows the role both ways, and a denied roster read
+  // (a leader demoted mid-session) drops to the own-doc watch rather than being read as "the
+  // rules aren't published", which is what handleAccountsError would conclude.
+  var LEADER_ROLES = ['admin', 'editor', 'viewer'];
+  function applyMembersSubscription(mine) {
+    if (sync.session !== mine || !sync.mods || !sync.db || !sync.docId || !sync.user) return;
+    var leader = LEADER_ROLES.indexOf(sync.myRole) !== -1;
+    // Denied as this role once already: don't ask again until the role itself changes.
+    var want = (leader && sync.membersDeniedAs !== sync.myRole) ? 'all' : 'self';
+    if (sync.membersUnsub && sync.membersScope === want) return;
+    if (sync.membersUnsub) { try { sync.membersUnsub(); } catch (e) { /* gone */ } sync.membersUnsub = null; }
+    sync.membersScope = want;
+    var fs = sync.mods.fs, uid = sync.user.uid;
+    var ref = want === 'all'
+      ? fs.collection(sync.db, 'packs', sync.docId, 'members')
+      : fs.doc(sync.db, 'packs', sync.docId, 'members', uid);
+    sync.membersUnsub = fs.onSnapshot(ref, function (snap) {
+      if (sync.session !== mine) return;
+      var arr = [];
+      if (want === 'all') {
+        snap.forEach(function (d) { var m = d.data() || {}; m.uid = d.id; arr.push(m); });
+      } else if (snap.exists()) {
+        var me = snap.data() || {}; me.uid = snap.id; arr.push(me);
+      }
+      sync.members = arr;
+      recomputeMyRole();
+      // A role change can arrive at any time (an admin promoting a parent to editor, or
+      // demoting an editor to parent) — move this session onto the matching feed.
+      applyRoleSubscription(sync.myRole, mine);
+      applyInvitesSubscription(mine);
+      applyJoinSubscription(mine);
+      applyMembersSubscription(mine);   // widen or narrow the watch to match the new role
+      render(); // the read-only banner + Members card + hidden affordances all key off role
+    }, function (err) {
+      if (sync.session !== mine) return;
+      var code = err && err.code ? String(err.code) : '';
+      if (want === 'all' && code.indexOf('permission-denied') !== -1) {
+        if (sync.membersUnsub) { try { sync.membersUnsub(); } catch (e) { /* gone */ } sync.membersUnsub = null; }
+        sync.membersDeniedAs = sync.myRole;
+        applyMembersSubscription(mine);
+        return;
+      }
+      handleAccountsError(err);
     });
   }
   // Roles an admin may hand out through an emailed invite. 'admin' is deliberately absent —
@@ -7396,8 +7438,9 @@
   // Register the signed-in user in the members subcollection and RESOLVE THE EFFECTIVE ROLE
   // (returned to the caller, which uses it to pick the pack record vs parent-view feed).
   // Owners write themselves an 'admin' doc; an invited email lands directly in the invited
-  // role; everyone else lands as 'pending'. NEVER overwrites an existing role (re-signing
-  // in as an approved editor must not silently demote you to pending).
+  // role; a sign-up-link visitor lands as 'pending'; anyone else gets the ask-a-leader gate and
+  // no doc at all. NEVER overwrites an existing role (re-signing in as an approved editor must
+  // not silently demote you to pending).
   function ensureMyMemberDoc(mods, user, docId) {
     var fs = mods.fs, db = sync.db, uid = user.uid;
     var ref = fs.doc(db, 'packs', docId, 'members', uid);
@@ -7420,7 +7463,7 @@
       var isOwner = sync.ownerUid === uid;
       var key = inviteEmailKey(user.email);
       // Invite lookup — the rules let a signed-in user read the invite addressed to their
-      // own email. A miss (or a denial on older rules) just means 'pending', as before.
+      // own email. A miss (or a denial on older rules) just means "no invite".
       var inviteRef = (!isOwner && key) ? fs.doc(db, 'packs', docId, 'invites', key) : null;
       var invitedP = inviteRef
         ? fs.getDoc(inviteRef).then(function (is) {
@@ -7434,64 +7477,70 @@
         // A closed pack or a stale code creates NOTHING and lands on the "closed" gate.
         var jr = (!isOwner && !invitedRole) ? activeJoin() : null;
         if (jr) return joinCreateMemberDoc(mods, user, docId, jr, ref);
-        var role = isOwner ? 'admin' : (invitedRole || 'pending');
-        function write(r) {
-          return fs.setDoc(ref, {
-            role: r,
-            name: user.displayName || '',
-            email: user.email || '',
-            addedAt: fs.serverTimestamp()
-          });
-        }
-        return write(role).catch(function (err) {
-          // The rules match the invite by the token email VERBATIM, so a mixed-case address
-          // (we look it up lowercased) could be denied. Never wedge sign-in over that —
-          // fall back to a plain 'pending' registration, which every rule set allows.
-          if (!invitedRole || isOwner) throw err;
-          role = 'pending';
-          return write('pending');
-        }).then(function () {
-          // Invites are single-use — but only consume one that was actually honoured (the
-          // fallback above lands as 'pending', and that invite should stay for the admin).
-          // Best-effort delete: a failure is harmless because the member doc now exists and
-          // wins on every later sign-in.
-          if (inviteRef && invitedRole && role === invitedRole) {
-            try { fs.deleteDoc(inviteRef).catch(function () { /* left for an admin to revoke */ }); }
-            catch (e) { /* ignore */ }
-          }
-          return role;
-        });
-      });
-    });
-  }
-  // Self-serve join: read packs/{docId}/public/join and, ONLY if it's open and the code this
-  // device arrived with still matches, write our own member doc — ALWAYS as 'pending'.
-  // Owner directive: a link plus a Google account must never by itself grant access; an
-  // admin approves every single person. `joinCode` goes into the doc so the security rules
-  // can verify the claim server-side; the client check alone would be worth nothing (and
-  // the rules independently pin the role to 'pending', so this can't be bypassed).
-  //
-  // Every other outcome (closed, missing, rotated code, denied write, network error) creates
-  // NOTHING, sets sync.joinRejected and resolves to null — the "ask a leader" gate, never a
-  // crash and never a spinner.
-  function joinCreateMemberDoc(mods, user, docId, jr, ref) {
-    var fs = mods.fs, db = sync.db;
-    try {
-      return fs.getDoc(fs.doc(db, 'packs', docId, 'public', 'join')).then(function (snap) {
-        var cfg = snap.exists() ? (snap.data() || {}) : null;
-        if (!cfg || cfg.open !== true) { sync.joinRejected = 'closed'; return null; }
-        var code = typeof cfg.code === 'string' ? cfg.code : '';
-        if (!code || !jr.code || jr.code !== code) { sync.joinRejected = 'badcode'; return null; }
-        var role = 'pending'; // always — see the note above; never derived from the config
+        // Nobody signs themselves up as 'pending' any more. The rules (SETUP.md Part C) only
+        // accept a member create from the owner, from an invitee, or through the sign-up link
+        // with its current code — otherwise the pack id, which single-pack mode prints in this
+        // page, would be all a stranger needed to land in the Members card. So with no owner
+        // claim, no invite and no link there is nothing to write: say so, and stop. (Writing
+        // anyway would be denied, and handleAccountsError would read that denial as "the rules
+        // aren't published" — the setup screen, shown to a family.)
+        if (!isOwner && !invitedRole) { sync.joinRejected = 'nolink'; return null; }
+        var role = isOwner ? 'admin' : invitedRole;
         return fs.setDoc(ref, {
           role: role,
           name: user.displayName || '',
           email: user.email || '',
-          joinCode: code,
           addedAt: fs.serverTimestamp()
-        }).then(function () { return role; })
-          .catch(function () { sync.joinRejected = 'closed'; return null; });
-      }).catch(function () { sync.joinRejected = 'closed'; return null; });
+        }).then(function () {
+          // Invites are single-use. Best-effort delete: a failure is harmless because the
+          // member doc now exists and wins on every later sign-in.
+          if (inviteRef && invitedRole) {
+            try { fs.deleteDoc(inviteRef).catch(function () { /* left for an admin to revoke */ }); }
+            catch (e) { /* ignore */ }
+          }
+          return role;
+        }, function (err) {
+          // The owner's own write being refused really does mean the rules are missing.
+          if (isOwner) throw err;
+          // An invite we could read but not honour (it changed underneath us). The sign-up
+          // link is still a way in if this device has one; otherwise it's the "ask" gate.
+          var jr2 = activeJoin();
+          if (jr2) return joinCreateMemberDoc(mods, user, docId, jr2, ref);
+          sync.joinRejected = 'nolink';
+          return null;
+        });
+      });
+    });
+  }
+  // Self-serve join: write our own member doc — ALWAYS as 'pending' — carrying the code this
+  // device arrived with. Owner directive: a link plus a Google account must never by itself
+  // grant access; an admin approves every single person. The SECURITY RULES are the check:
+  // they compare `joinCode` with packs/{docId}/public/join and refuse unless the link is
+  // switched on and the code is current, and they pin the role to 'pending'.
+  //
+  // There is deliberately no read of public/join first. The rules let only leaders read it,
+  // because it holds the live code: if any signed-in stranger could read it, knowing the pack
+  // id (printed in this page in single-pack mode) would be as good as holding the link, and
+  // "New code" would stop nobody. A closed link and a stale code look the same to the
+  // visitor anyway — one "ask a leader" screen — so the read bought nothing.
+  //
+  // Every refusal (closed, rotated code, network error) creates NOTHING, sets
+  // sync.joinRejected and resolves to null — the "ask a leader" gate, never a crash and never
+  // a spinner.
+  function joinCreateMemberDoc(mods, user, docId, jr, ref) {
+    var fs = mods.fs;
+    try {
+      var code = (jr && typeof jr.code === 'string') ? jr.code : '';
+      if (!code) { sync.joinRejected = 'badcode'; return Promise.resolve(null); }
+      var role = 'pending'; // always — see the note above; never derived from the config
+      return fs.setDoc(ref, {
+        role: role,
+        name: user.displayName || '',
+        email: user.email || '',
+        joinCode: code,
+        addedAt: fs.serverTimestamp()
+      }).then(function () { return role; })
+        .catch(function () { sync.joinRejected = 'closed'; return null; });
     } catch (e) {
       sync.joinRejected = 'closed';
       return Promise.resolve(null);
@@ -7673,12 +7722,23 @@
   // see. It is an allowlist by construction: every field below is written out explicitly,
   // and nothing else from `state` is ever copied.
   //
+  // PUBLISHED — the whole list; keep it and SETUP.md Part C ("What a parent sees") in step:
+  //   always: pack name, program year; the season's events (storefront dates with their shift
+  //   windows and the FIRST NAMES on each shift, meetings with time and where, activities
+  //   with time, place and dens); the derby's name and date; camping trips as leaders typed
+  //   them, including each trip's cost line.
+  //   with standings on (the default): standings (first name, den, total raised, reward-tier
+  //   progress), one pack goal bar, derby winners and design awards, the reward tiers (name,
+  //   reward, note, due-by, and `salesCents` — the sales that reach it), `tierLadder` (what a
+  //   full bar means), and `familyCost` — what the year is PLANNED to cost one scout and adult
+  //   in each den, line by line with its payee, and what each tier takes off that.
+  //
   // DELIBERATELY EXCLUDED — do not add these without re-reading the SETUP Part C notes:
-  //   budget (starting balance, planned/actual), activity costs, expenses, dues and
-  //   `collected`, reward-tier dues, inventory (products, cases, prices, hand-outs),
-  //   leaders (names, roles, phones, emails, training, notes), scouts' private notes and
-  //   den labels, RSVP/attendance detail, other fundraisers, past-season archives, and
-  //   `state` in any raw form.
+  //   the budget itself (starting balance, planned/actual totals, income, expenses), dues and
+  //   `collected`, any family's charges, payments or balance, who paid their way up a tier,
+  //   inventory (products, cases, prices, hand-outs), leaders (names, roles, phones, emails,
+  //   training, notes), last names, scouts' private notes and den labels, RSVP/attendance
+  //   detail, other fundraisers, past-season archives, and `state` in any raw form.
   //
   // Pure: it reads only the state it is given. `state` is swapped for the duration so the
   // existing money math (computePackTotals/computeScoutTotals/…) is reused verbatim rather
@@ -8822,7 +8882,8 @@
         '<button type="button" class="btn primary" data-act="sign-in-google">Sign in with Google</button>' +
         '</div>' +
         '<p class="small muted" style="margin-top:12px">Leaders see the planner; families get a view-only ' +
-        'calendar. A pack admin approves everyone — there’s no passphrase to type.</p>' +
+        'calendar. New here? Open the sign-up link a pack leader sent you, or ask to be invited — ' +
+        'a pack admin approves everyone, and there’s no passphrase to type.</p>' +
         (activeJoin()
           ? '<p class="small muted"><button type="button" class="btn small ghost" data-act="join-forget">Not your pack? Forget this link</button></p>'
           : ''));
@@ -8847,6 +8908,19 @@
       '<button type="button" class="btn small" data-act="sign-out-google">Sign out</button></div>');
   }
   function renderJoinClosed() {
+    // Signed in with no link and no invite: nothing was refused, there was just no way in.
+    if (sync.joinRejected === 'nolink') {
+      return joinGateShell('Ask a pack leader to let you in',
+        '<p class="small">You’re signed in, but this pack only adds people through its sign-up link ' +
+        'or an invite from a pack leader.</p>' +
+        '<p class="small muted">Ask a leader for the sign-up link (or to invite this Google account), ' +
+        'then open it on this device.</p>' +
+        '<div class="join-actions">' +
+        (sync.user
+          ? '<button type="button" class="btn small" data-act="sign-out-google">Sign out</button>'
+          : '') +
+        '</div>');
+    }
     return joinGateShell('This pack isn’t accepting sign-ups',
       '<p class="small">This pack isn’t accepting sign-ups right now — ask a pack leader for an invite.</p>' +
       '<p class="small muted">If you had a link that used to work, the pack may have issued a new one. ' +
