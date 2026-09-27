@@ -16979,8 +16979,12 @@
     }
 
     // 3. Popcorn — only when there's sale data or a goal set (reuses computePackTotals).
+    //
+    // ⚠ And only while standings are on (security review, 2026-09). This text is pasted to
+    // FAMILIES, and a pack that chose calendar-only (showStandings false) has told parents they
+    // will not see the sale's numbers — the parent view withholds them; this copy must too.
     var packT = computePackTotals();
-    if (state.storefronts.length || state.entries.length || packT.teGoal > 0) {
+    if (standingsEnabled() && (state.storefronts.length || state.entries.length || packT.teGoal > 0)) {
       lines.push('POPCORN');
       lines.push('Sales + donations so far: ' + fmt(packT.combined));
       if (packT.teGoal > 0) {

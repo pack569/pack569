@@ -8377,7 +8377,9 @@ function digestCtx() {
     function pad2(n) { return (n < 10 ? '0' : '') + n; }
     function firstLine(s) { return String(s).split('\\n')[0]; }
     function slotMonthKey() { return ''; }
-    function computePackTotals() { return { combined: 69000, teGoal: 100000, teEligible: 62000 }; }
+    function computePackTotals() { return { combined: 69000, teGoal: 100000, teBarGoal: 100000, teEligible: 62000 }; }
+    var STANDINGS = true;
+    function standingsEnabled() { return STANDINGS; }
     function fundraiserTotals() { return { total: 31500 }; }
     function leaderStatus(l) { return [{ label: 'YPT expired' }]; }
     function leaderJobLabels() { return 'Cubmaster'; }
@@ -9060,6 +9062,20 @@ test('B5: an unverified Google email gets its own gate before anything touches t
   ok(/if \(sync\.joinRejected === 'unverified'\)/.test(closed) &&
     /Google hasn’t verified this email address yet — verify it with Google, then sign in again\./.test(closed),
     'no screen tells them to verify with Google');
+});
+
+test('B6: the family digest carries no popcorn numbers while standings are off', () => {
+  const fn = slice('monthlyDigest');
+  const i = fn.indexOf("lines.push('POPCORN');");
+  ok(i !== -1, 'the POPCORN section was not found');
+  const guard = fn.slice(0, i).split('\n').filter((l) => /^\s*if \(/.test(l)).pop() || '';
+  ok(/standingsEnabled\(\)/.test(guard), 'the POPCORN section is not gated on standingsEnabled()');
+  const ctx = digestCtx();
+  ok(/POPCORN/.test(vm.runInContext("monthlyDigest('2026-10')", ctx)), 'standings on: the popcorn section is gone');
+  vm.runInContext('STANDINGS = false;', ctx);
+  const off = vm.runInContext("monthlyDigest('2026-10')", ctx);
+  ok(!/POPCORN/.test(off) && off.indexOf('690.00') === -1 && !/goal/i.test(off), 'calendar-only: popcorn numbers in the families’ digest');
+  ok(/EVENTS THIS MONTH/.test(off), 'calendar-only: the calendar went too');
 });
 
 /* ---------------- report ---------------- */
