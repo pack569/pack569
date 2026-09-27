@@ -103,6 +103,12 @@ outliving, or being counted beside, the thing they belonged to. What changed, it
   `source: 'commission'` exists — that is what §3.3 always intended ("posted once, on the day
   the council cheque clears — which is when it's actually true"). Until then the estimate is
   the best figure there is, and the Budget card says which one it is showing.
+- **Carryover was the projection (M2).** `rolloverYear` opened the new ledger at the closing
+  bank balance but set the Budget's *Starting funds* to `bud.balance` — the projection. Two
+  carryovers, and the Budget's was the guess. Now both are the bank balance whenever the closing
+  year had a ledger **with an opening figure** (`closingCarryover`). A ledger with no opening
+  date only knows net movement, which is not a balance, so that pack keeps the projection and
+  its new book is left unopened (the "Start from the carryover figure" button is right there).
 
 ---
 

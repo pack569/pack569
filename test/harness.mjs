@@ -8479,6 +8479,19 @@ test('M1: income-category lines are neither planned nor actual SPENDING', () => 
   ok(/income\.other/.test(fn), 'income that used to come off Actual spent no longer reaches Funds in');
 });
 
+test('M2: next year starts from the reconciled bank balance, not the projection', () => {
+  const { closingCarryover } = sandbox(['closingCarryover']);
+  eq(closingCarryover(50000, 42000, true), 42000, 'the bank balance is the carryover when the book has one');
+  eq(closingCarryover(50000, -3000, false), 50000, 'net movement with no opening figure is not a balance');
+  const fn = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/b\.startingBalance = closingCarryover\(bud\.balance, closingBank, closingBankKnown\);/.test(fn),
+    'Starting funds still carries the projection when a reconciled bank balance exists');
+  ok(/var closingBankKnown = closingHadLedger && !!state\.book\.openingDate;/.test(fn),
+    'a ledger with no opening figure is treated as a bank balance');
+  ok(/if \(closingBankKnown\) \{\s*state\.book\.openingCents = closingBank;/.test(fn),
+    "next year's book opens at net movement when there was no opening figure");
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

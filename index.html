@@ -18744,6 +18744,18 @@
     return { advanced: advanced, crossed: crossed };
   }
 
+  // What carries into next year as "Starting funds". TREASURER'S AUDIT, 2026-09-27 (M2): this
+  // used to be the Budget's projection whatever the book said — a figure built from the plan and
+  // an estimate of commission — while the new ledger opened at the reconciled bank balance. Two
+  // different carryovers, and the Budget's was the guess. DESIGN-money §3.6: "Carryover is the
+  // reconciled bank balance, not a derived figure." So the bank wins wherever there is one.
+  //
+  // "Wherever there is one" means a ledger WITH an opening figure. Without an opening date the
+  // ledger only knows what moved, not where the pack started, so its "balance" is net movement
+  // and carrying that forward would drop last year's own carryover on the floor. Pure.
+  function closingCarryover(projectionCents, bankCents, bankKnown) {
+    return bankKnown ? bankCents : projectionCents;
+  }
   // Roll the working state into next year. KEPT: packName, leaders, archives,
   // reward-tier config, commission rate + cash routing, product catalog, sync/rev.
   function rolloverYear() {
@@ -18753,6 +18765,8 @@
     // figure so the new book starts from a number that was checked against a statement.
     var closingBank = bookBalance();
     var closingHadLedger = state.ledger.length > 0;
+    // M2 — the bank balance is only a balance once the book has an opening figure.
+    var closingBankKnown = closingHadLedger && !!state.book.openingDate;
     var b = state.budget;
     var closingYear = b.programYear; // Wave 19(3) — compared against densAdvancedYear below
     // Phase 1/3a — next year's plan seeds from what things ACTUALLY cost, which is what this
@@ -18787,7 +18801,7 @@
       };
     });
     b.programYear += 1;
-    b.startingBalance = bud.balance;
+    b.startingBalance = closingCarryover(bud.balance, closingBank, closingBankKnown);
     // Re-seed the plan: same names, same months, dates cleared — a new year's calendar has
     // not been published yet. Location and notes are kept, because the campground and the
     // packing list rarely change.
@@ -18834,7 +18848,9 @@
     // them as uncategorised.
     state.ledger = [];
     state.book = freshBook();
-    if (closingHadLedger) {
+    // Only a real balance opens the new book. Net movement with no opening figure is not one,
+    // and the "Start from the carryover figure" button is there for that pack instead.
+    if (closingBankKnown) {
       state.book.openingCents = closingBank;
       state.book.openingDate = programYearStartISO(b.programYear);
     }
