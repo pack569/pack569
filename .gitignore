@@ -1,2 +1,16 @@
 # Local pre-change backups made before each build wave — kept on disk, not in git.
 .index.pre-*.html
+
+# The repo is public. Printouts, exports and photos from the pack almost always carry children's
+# names (Trail's End reports, the Ideal Year PDF, rosters, event photos), so none of them are
+# tracked. Nothing the site serves is one of these types today; if an image is ever needed, add
+# a negation for that one file (e.g. !icon.png) rather than removing a line here.
+*.pdf
+*.csv
+*.xlsx
+*.xls
+*.numbers
+*.png
+*.jpg
+*.jpeg
+*.heic
