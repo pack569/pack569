@@ -13678,9 +13678,11 @@
         'Bobcat comes first · ' + bobcats.slice(0, 4).map(function (s) { return s.name; }).join(', '),
         'scouts', 'advancement');
     }
+    // shopItems() is { groups, total }, not an array. AUDIT FIX 2026-09-27: this read
+    // the array length, which is undefined on an object, so the task never appeared.
     var shop = shopItems();
-    if (shop.length) {
-      add('advancement', 'week', shop.length + ' award' + (shop.length === 1 ? '' : 's') + ' ready to buy',
+    if (shop.total) {
+      add('advancement', 'week', shop.total + ' award' + (shop.total === 1 ? '' : 's') + ' ready to buy',
         'Not yet marked as awarded', 'scouts', 'advancement');
     }
     return out;

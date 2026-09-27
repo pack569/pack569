@@ -5670,6 +5670,24 @@ test('a scout who has been to no session at all is never credited', () => {
   eq(p.onTrack.length, 0, 'a scout with 0 sessions attended is on track to be marked done');
 });
 
+test('Home says when there are awards ready to buy', () => {
+  // Audit 2026-09-27: shopItems() returns { groups, total } and the Home task tested
+  // `shop.length` — undefined on an object — so "N awards ready to buy" never appeared.
+  const ctx = vm.createContext({});
+  vm.runInContext(`${slice('DENS')}
+    var ADVENTURES = {};
+    var state = { advancement: { a: { req: { Bobcat: 'done' }, elect: { Backyard: 'awarded' } } } };
+    function activeScouts() { return [{ id: 'a', den: 'Wolf' }]; }
+    function advRec(id) { return state.advancement[id] || null; }
+    ${slice('shopItems')}`, ctx);
+  const list = vm.runInContext('shopItems()', ctx);
+  eq(list.total, 1, 'one adventure is done and not yet awarded');
+  ok(list.length === undefined, 'shopItems() became an array — re-check the Home task');
+  const home = slice('homeTasks');
+  ok(!/shop\.length/.test(home), 'the Home task still reads shop.length, which is always undefined');
+  ok(/if \(shop\.total\)/.test(home), 'the Home task does not test shopItems().total');
+});
+
 test('attendance is evidence, and the app never says a missed meeting costs the adventure', () => {
   // Researched, and it decides the wording: Cub Scout advancement is per requirement, "Do Your
   // Best" is the standard, and work done at home is signed by a parent and approved by the den
