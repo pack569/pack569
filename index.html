@@ -18756,6 +18756,35 @@
   function closingCarryover(projectionCents, bankCents, bankKnown) {
     return bankKnown ? bankCents : projectionCents;
   }
+  // A reward tier's cover key names a budget line by ID — bare for an expense, 'act:'+id for an
+  // activity, either with an optional '#adult' / '#sibling' share after it (coverKeyOf). The
+  // rollover rebuilds every line with a fresh id, so every key has to be re-pointed or the tier
+  // covers nothing next year. TREASURER'S AUDIT, 2026-09-27 (M3): it wasn't, and year two waived
+  // nothing at all while every tier still listed what it covered. Pure: `idMap` is old → new.
+  // A key naming a line that is not in the map is returned unchanged — it already pointed at
+  // nothing, and the readers filter stale keys.
+  function remapCoverKey(key, idMap) {
+    var k = String(key || '');
+    var hash = k.indexOf('#');
+    var share = hash === -1 ? '' : k.slice(hash);
+    var base = hash === -1 ? k : k.slice(0, hash);
+    var pre = base.indexOf('act:') === 0 ? 'act:' : '';
+    var id = base.slice(pre.length);
+    return Object.prototype.hasOwnProperty.call(idMap, id) ? pre + idMap[id] + share : k;
+  }
+  // A tier's deadline, one year on. M3 — a carried-over deadline is last year's date, which has
+  // passed, so every tier with one opened the new year CLOSED and billed everybody. Moving it a
+  // year keeps the rule the pack chose ("dues are covered if you reach it by Oct 31"); clearing
+  // it would silently turn a hard deadline into none, which is the worse surprise. The Kernel
+  // should still check it — the date the council sets moves a little every year. Feb 29 lands on
+  // Feb 28. Pure.
+  function shiftISOYear(iso) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+    if (!m) return '';
+    var y = parseInt(m[1], 10) + 1;
+    var d = m[2] === '02' && m[3] === '29' ? '28' : m[3];
+    return y + '-' + m[2] + '-' + d;
+  }
   // Roll the working state into next year. KEPT: packName, leaders, archives,
   // reward-tier config, commission rate + cash routing, product catalog, sync/rev.
   function rolloverYear() {
@@ -18806,6 +18835,7 @@
     // not been published yet. Location and notes are kept, because the campground and the
     // packing list rarely change.
     state.events = [];
+    var oldExpenses = b.expenses;
     b.activities = carried.map(function (c) {
       var x = c.line;
       var ev = freshEvent({ kind: 'activity', name: x.name || '', slot: c.slot, location: c.location, note: c.note, dens: c.dens });
@@ -18840,6 +18870,16 @@
         // back as an ordinary expense that bills families.
         category: x.category
       });
+    });
+    // M3 — the reward tiers follow their lines into the new year. Both arrays were rebuilt in
+    // order, so old line i is new line i; every cover key is re-pointed through that map, and
+    // every deadline moves on a year (see remapCoverKey and shiftISOYear for why each).
+    var lineIdMap = {};
+    carried.forEach(function (c, i) { lineIdMap[c.line.id] = b.activities[i].id; });
+    oldExpenses.forEach(function (x, i) { lineIdMap[x.id] = b.expenses[i].id; });
+    state.rewardTiers.tiers.forEach(function (t) {
+      t.covers = arrOf(t.covers).map(function (k) { return remapCoverKey(k, lineIdMap); });
+      if (t.dueBy) t.dueBy = shiftISOYear(t.dueBy);
     });
     // Phase 0 — the ledger belongs to the year it recorded, and it went into the archive
     // with the rest of the season. Start a clean book, opened at the closing bank balance

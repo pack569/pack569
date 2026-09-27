@@ -109,6 +109,14 @@ outliving, or being counted beside, the thing they belonged to. What changed, it
   year had a ledger **with an opening figure** (`closingCarryover`). A ledger with no opening
   date only knows net movement, which is not a balance, so that pack keeps the projection and
   its new book is left unopened (the "Start from the carryover figure" button is right there).
+- **Year two waived nothing (M3).** The rollover rebuilds every line through `freshLine`, which
+  mints a new id, while each reward tier's `covers` kept last year's ids — so the tiers still
+  *listed* what they covered and matched no charge at all. Every cover key (bare, `act:`, and
+  `#adult`/`#sibling` shares) is now re-pointed through an old → new id map (`remapCoverKey`).
+  A tier's `dueBy` moves **forward one year** (`shiftISOYear`) rather than being cleared: a
+  carried-over deadline has passed, so every tier with one opened the year closed and billed
+  everybody, and clearing it would silently turn a hard deadline into none. The Kernel should
+  still check the new date — the council's own deadline moves a little each year.
 
 ---
 

@@ -8492,6 +8492,30 @@ test('M2: next year starts from the reconciled bank balance, not the projection'
     "next year's book opens at net movement when there was no opening figure");
 });
 
+test('M3: every reward-tier cover key follows its line into the new year', () => {
+  const { remapCoverKey } = sandbox(['remapCoverKey']);
+  const map = { E1: 'N1', A1: 'N2' };
+  eq(remapCoverKey('E1', map), 'N1', 'an expense scout share');
+  eq(remapCoverKey('E1#adult', map), 'N1#adult', 'an expense adult share');
+  eq(remapCoverKey('act:A1', map), 'act:N2', 'an activity scout share');
+  eq(remapCoverKey('act:A1#sibling', map), 'act:N2#sibling', 'an activity sibling share');
+  eq(remapCoverKey('act:GONE', map), 'act:GONE', 'a stale key is left alone');
+  const fn = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/t\.covers = arrOf\(t\.covers\)\.map\(function \(k\) \{ return remapCoverKey\(k, lineIdMap\); \}\);/.test(fn),
+    'the rollover rebuilds line ids and leaves every tier pointing at last year’s');
+  ok(/lineIdMap\[c\.line\.id\] = b\.activities\[i\]\.id/.test(fn) && /lineIdMap\[x\.id\] = b\.expenses\[i\]\.id/.test(fn),
+    'the old-to-new line map is incomplete');
+});
+
+test('M3: a tier deadline moves on a year rather than opening the year closed', () => {
+  const { shiftISOYear } = sandbox(['shiftISOYear']);
+  eq(shiftISOYear('2026-10-31'), '2027-10-31', 'one year on');
+  eq(shiftISOYear('2028-02-29'), '2029-02-28', 'a leap day');
+  eq(shiftISOYear(''), '', 'no deadline stays none');
+  const fn = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/if \(t\.dueBy\) t\.dueBy = shiftISOYear\(t\.dueBy\);/.test(fn), 'last year’s deadline is carried unchanged');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
