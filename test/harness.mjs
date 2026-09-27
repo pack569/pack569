@@ -8959,6 +8959,22 @@ test('P5: a per-family paid-direct fee is reimbursed once per family', () => {
   eq([web.paid, web.left], [8000, 0], 'a payment recorded against a sibling is not seen');
 });
 
+test('P7: a new popcorn order projects at the season rate, not a hard-coded 32%', () => {
+  const ctx = sandbox(['freshInventory', 'commissionRates', 'cashScoutRate', 'cashCreditOn', 'inventoryTotals']);
+  vm.runInContext(`
+    function containersOrdered() { return 0; } function productValueCents() { return 0; }
+    var state = { commissionPct: '35', commissionPctOnline: '30', cashScoutPct: '', cashThroughTrailsEnd: false,
+      inventory: freshInventory() };
+    state.inventory.orderTotalCents = 100000;`, ctx);
+  eq(ctx.state.inventory.commissionPct, '', 'a fresh inventory still carries a rate of its own');
+  const t = ctx.inventoryTotals();
+  eq([t.pct, t.earningsCents, t.pctFromSeason], [35, 35000, true], 'blank does not follow the season storefront rate');
+  vm.runInContext("state.inventory.commissionPct = '32';", ctx);
+  eq(ctx.inventoryTotals().earningsCents, 32000, 'a typed rate is no longer honoured');
+  ok(/inv\.commissionPct = typeof inv\.commissionPct === 'string' \? inv\.commissionPct : '';/.test(SCRIPT),
+    'normalize still invents 32% for a record without a rate');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

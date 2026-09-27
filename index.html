@@ -2722,8 +2722,13 @@
   // via the Inventory tab's empty state (TE_LINEUP below). Pack records that already carry an
   // inventory object are never touched by this — normalizeState only calls it when
   // d.inventory is absent entirely.
+  //
+  // commissionPct is BLANK, meaning "the season's rate" (inventoryTotals reads commissionRates).
+  // It was a hard-coded '32', so a pack earning 35% saw its order projected at somebody else's
+  // rate until it noticed and retyped it (Popcorn Kernel audit, 2026-09). A rate a pack has
+  // typed is a string and is kept exactly as it is.
   function freshInventory() {
-    return { commissionPct: '32', orderTotalCents: 0, products: [], distributions: [] };
+    return { commissionPct: '', orderTotalCents: 0, products: [], distributions: [] };
   }
   // Wave 15 — standard Trail's End product lineup: [name, containersPerCase]. A starting
   // template only: cases and prices start at 0, order total untouched.
@@ -3632,7 +3637,7 @@
       d.inventory = freshInventory();
     } else {
       var inv = d.inventory;
-      inv.commissionPct = typeof inv.commissionPct === 'string' ? inv.commissionPct : '32';
+      inv.commissionPct = typeof inv.commissionPct === 'string' ? inv.commissionPct : '';
       inv.orderTotalCents = (typeof inv.orderTotalCents === 'number' && isFinite(inv.orderTotalCents) && inv.orderTotalCents > 0) ? Math.round(inv.orderTotalCents) : 0;
       if (!Array.isArray(inv.products)) inv.products = [];
       inv.products = inv.products.filter(function (p) {
@@ -16160,13 +16165,17 @@
       computedValueCents += productValueCents(p);
       if (p.unitPriceCents > 0) anyPriced = true;
     });
-    var pct = parseFloat(inv.commissionPct);
-    var pctOk = isFinite(pct) && pct > 0;
+    // Blank = the season's storefront/wagon rate, which is what product off an order sells at.
+    var own = parseFloat(inv.commissionPct);
+    var fromSeason = !isFinite(own);
+    var pct = fromSeason ? commissionRates().base : own;
+    var pctOk = pct != null && isFinite(pct) && pct > 0;
     var earningsCents = pctOk ? Math.round(inv.orderTotalCents * pct / 100) : 0;
     return {
       totalCases: totalCases, totalContainers: totalContainers,
       computedValueCents: computedValueCents, anyPriced: anyPriced,
-      orderTotalCents: inv.orderTotalCents, pct: pct, pctOk: pctOk, earningsCents: earningsCents
+      orderTotalCents: inv.orderTotalCents, pct: pct, pctOk: pctOk, earningsCents: earningsCents,
+      pctFromSeason: fromSeason
     };
   }
   function distTargetName(t) {
@@ -16199,7 +16208,8 @@
       '<hr class="divider">' +
       '<div class="row">' +
       '<label class="fld">Order total ($)<input class="money-in" inputmode="decimal" data-ch="inv-order-total" value="' + dollars(inv.orderTotalCents) + '" placeholder="e.g. 4380"></label>' +
-      '<label class="fld">Commission (%)<input class="weight-in" type="number" min="0" max="100" step="0.1" inputmode="decimal" data-ch="inv-comm" value="' + esc(inv.commissionPct) + '" placeholder="e.g. 32"></label>' +
+      '<label class="fld">Commission (%)<input class="weight-in" type="number" min="0" max="100" step="0.1" inputmode="decimal" data-ch="inv-comm" value="' + esc(inv.commissionPct) + '" placeholder="' +
+        (tot.pctFromSeason && tot.pctOk ? esc(String(tot.pct)) + ' (season)' : 'season rate') + '"></label>' +
       '</div>' +
       (function () {
         // Wave 17 — flag a rate that drifted from the season rate in Season setup.
