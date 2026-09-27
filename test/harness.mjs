@@ -8975,6 +8975,28 @@ test('P7: a new popcorn order projects at the season rate, not a hard-coded 32%'
     'normalize still invents 32% for a record without a rate');
 });
 
+test('P8: a fundraiser card says what the council needs before the money is raised', () => {
+  const ctx = sandbox(['FUNDRAISER_KINDS', 'fundraiserPaperworkGap']);
+  eq(ctx.FUNDRAISER_KINDS.map((k) => k.id), ['council', 'sale', 'raffle'], 'kinds');
+  const rule = (id) => ctx.FUNDRAISER_KINDS.find((k) => k.id === id).rule;
+  ok(/no Unit Money-Earning Application/.test(rule('council')), 'a council product sale is not exempted');
+  ok(/34427/.test(rule('sale')) && /14 days/.test(rule('sale')), 'the other-sale rule lost the form or the lead time');
+  ok(/written approval/.test(rule('raffle')) && /November 2025/.test(rule('raffle')) && /four raffles/.test(rule('raffle')) &&
+    /only fundraiser that may be run online/.test(rule('raffle')) && /alcohol or a firearm/.test(rule('raffle')) &&
+    /Confirm with Northeast Georgia Council first/.test(rule('raffle')), 'the raffle rules are incomplete');
+  const gap = ctx.fundraiserPaperworkGap;
+  eq(gap({ kind: 'council' }), '', 'a council sale has nothing outstanding');
+  eq(gap({ kind: '' }), '', 'an unclassified fundraiser is not nagged');
+  ok(/34427/.test(gap({ kind: 'sale' })), 'a sale with no application is not flagged');
+  eq(gap({ kind: 'sale', appSubmitted: '2026-09-01' }), '', 'a submitted application still flagged');
+  ok(/approval/.test(gap({ kind: 'raffle', appSubmitted: '2026-09-01' })), 'a raffle without approval is not flagged');
+  eq(gap({ kind: 'raffle', appSubmitted: '2026-09-01', councilApproved: '2026-09-10' }), '', 'an approved raffle still flagged');
+  ok(/fr\.kind = \['council', 'sale', 'raffle'\]\.indexOf\(fr\.kind\) !== -1 \? fr\.kind : '';/.test(SCRIPT), 'normalize does not keep kind');
+  ok(/h \+= fundraiserPaperworkBlock\(fr\);/.test(/function renderFundraiserCard\(fr, roster\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0]),
+    'the card does not show it');
+  ok(/if \(ch === 'fr-kind' \|\| ch === 'fr-app' \|\| ch === 'fr-approved'\)/.test(SCRIPT), 'the fields are not saved');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

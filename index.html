@@ -3534,6 +3534,13 @@
       // pays the supplier first). 100 for every record written before the field existed, which
       // is what those records have always meant.
       fr.keepPct = (typeof fr.keepPct === 'number' && isFinite(fr.keepPct) && fr.keepPct >= 0 && fr.keepPct <= 100) ? fr.keepPct : 100;
+      // What kind of money-earner it is, and where its council paperwork stands (see
+      // FUNDRAISER_KINDS). '' = not said yet, which is every record written before 2026-09.
+      // Literal ids, not FUNDRAISER_KINDS: that var is initialised far below, and normalize can
+      // run before it is.
+      fr.kind = ['council', 'sale', 'raffle'].indexOf(fr.kind) !== -1 ? fr.kind : '';
+      fr.appSubmitted = typeof fr.appSubmitted === 'string' ? fr.appSubmitted : '';
+      fr.councilApproved = typeof fr.councilApproved === 'string' ? fr.councilApproved : '';
       if (!Array.isArray(fr.sales)) fr.sales = [];
       fr.sales = fr.sales.filter(function (sale) {
         if (!sale || typeof sale !== 'object' || Array.isArray(sale)) return false;
@@ -15578,6 +15585,54 @@
     var keep = (typeof fr.keepPct === 'number' && isFinite(fr.keepPct)) ? fr.keepPct : 100;
     return { total: total, net: Math.round(total * keep / 100), keepPct: keep, perScout: perScout };
   }
+  // THE COUNCIL'S PAPERWORK, BY KIND OF FUNDRAISER — Popcorn Kernel audit, 2026-09.
+  //
+  // The card tallied money and said nothing about whether the pack was allowed to raise it. The
+  // rules differ sharply by kind, and the costly mistake is a raffle run without approval. These
+  // facts came from the Kernel's audit, not from memory; the raffle rules in particular are the
+  // national ones effective November 2025, and the card says to confirm with the council because
+  // a council can be stricter. Wording changes belong with the content experts.
+  var FUNDRAISER_KINDS = [
+    { id: 'council', label: 'Council product sale (camp cards, popcorn)',
+      rule: 'A council product sale needs no Unit Money-Earning Application.' },
+    { id: 'sale', label: 'Other sale or event',
+      rule: 'Anything that isn’t a council product sale needs a Unit Money-Earning Application (form 34427) ' +
+        'submitted to the council at least 14 days before it starts.' },
+    { id: 'raffle', label: 'Raffle or game of chance',
+      rule: 'A raffle needs the council’s written approval before any ticket is sold (submit form 34427 with it). ' +
+        'Under the national rules effective November 2025 a unit may hold at most four raffles a year, raffles are the only ' +
+        'fundraiser that may be run online, and no prize may be alcohol or a firearm. Confirm with Northeast Georgia Council first.' }
+  ];
+  // What is still outstanding for this fundraiser, or '' when nothing is. Pure over the record.
+  function fundraiserPaperworkGap(fr) {
+    if (!fr || !fr.kind || fr.kind === 'council') return '';
+    if (fr.kind === 'raffle' && !fr.councilApproved) return 'No written council approval recorded — don’t sell tickets until you have it.';
+    if (!fr.appSubmitted) return 'No Unit Money-Earning Application recorded — submit form 34427 at least 14 days before the start.';
+    return '';
+  }
+  function fundraiserPaperworkBlock(fr) {
+    var kind = FUNDRAISER_KINDS.filter(function (k) { return k.id === fr.kind; })[0] || null;
+    var h = '<div class="row" style="margin:10px 0 4px">' +
+      '<label class="fld">Kind<select data-ch="fr-kind" data-id="' + fr.id + '">' +
+      '<option value=""' + (kind ? '' : ' selected') + '>Choose…</option>' +
+      FUNDRAISER_KINDS.map(function (k) {
+        return '<option value="' + k.id + '"' + (kind && kind.id === k.id ? ' selected' : '') + '>' + esc(k.label) + '</option>';
+      }).join('') + '</select></label>';
+    if (kind && kind.id !== 'council') {
+      h += '<label class="fld">Application submitted<input type="date" data-ch="fr-app" data-id="' + fr.id + '" value="' + esc(fr.appSubmitted || '') + '"></label>' +
+        '<label class="fld">Council approval<input type="date" data-ch="fr-approved" data-id="' + fr.id + '" value="' + esc(fr.councilApproved || '') + '"></label>';
+    }
+    h += '</div>';
+    if (!kind) {
+      h += '<p class="small muted" style="margin:0 0 8px">Say what kind of fundraiser this is and the card will show what the council needs from you first.</p>';
+      return h;
+    }
+    var gap = fundraiserPaperworkGap(fr);
+    h += '<p class="small' + (gap ? '' : ' muted') + '" style="margin:0 0 8px">' + esc(kind.rule) +
+      (kind.id === 'council' ? '' : ' Confirm the details with the council before you start.') + '</p>';
+    if (gap) h += '<div class="warn" style="margin:0 0 8px">' + esc(gap) + '</div>';
+    return h;
+  }
   function renderFundraisers() {
     var roster = activeScouts();
     var h = '<div class="card"><h2 class="section display">Other fundraisers</h2>' +
@@ -15603,6 +15658,7 @@
     var h = '<div class="block-card">' +
       '<div class="spread"><h3 class="section display" style="margin:0">' + esc(fr.name || 'Untitled fundraiser') + '</h3>' +
       tinyDangerBtn('del-fundraiser:' + fr.id, 'Remove ' + (fr.name || 'fundraiser')) + '</div>';
+    h += fundraiserPaperworkBlock(fr);
 
     // Sale entry — pick an active scout + amount (+ optional date / note).
     if (roster.length) {
@@ -21185,6 +21241,15 @@
       return;
     }
     if (ch === 'pack-name') { state.packName = el.value.trim(); commit(); return; }
+    if (ch === 'fr-kind' || ch === 'fr-app' || ch === 'fr-approved') {
+      var frP = getFundraiser(el.dataset.id);
+      if (!frP) return;
+      if (ch === 'fr-kind') frP.kind = el.value;
+      else if (ch === 'fr-app') frP.appSubmitted = el.value;
+      else frP.councilApproved = el.value;
+      commit();
+      return;
+    }
     if (ch === 'fr-keep') {
       var frK = getFundraiser(el.dataset.id);
       var kp = parseFloat(el.value);
@@ -21726,7 +21791,7 @@
     if (kind === 'add-fundraiser') {
       var frName = String(fd.get('name') || '').trim();
       if (!frName) return;
-      state.fundraisers.push({ id: uid(), name: frName, goalCents: toCents(fd.get('goal')), sales: [], countInFunds: false, keepPct: 100 });
+      state.fundraisers.push({ id: uid(), name: frName, goalCents: toCents(fd.get('goal')), sales: [], countInFunds: false, keepPct: 100, kind: '', appSubmitted: '', councilApproved: '' });
       commit(); return;
     }
     if (kind === 'add-reward-tier') {
