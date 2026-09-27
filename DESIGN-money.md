@@ -142,6 +142,15 @@ outliving, or being counted beside, the thing they belonged to. What changed, it
   total with nowhere to pay or forgive it. Families with nobody left on the roster and an account
   that is not square now get their own card, *Former scouts with a balance*, with the same
   controls as everyone else.
+- **One payment froze every charge (M8).** `syncCharges` refused to drop or re-price a charge
+  if the *scout* had paid anything at all, so a dues cheque froze the campout: a head count
+  corrected afterwards could not remove the parent who never came. Payments are now **allocated**
+  to charges (`chargePaidAllocation`) — a payment posted against a line pays that family's open
+  charges on the line first, the rest pays oldest first — and only a charge with money allocated
+  to it is kept or frozen. Derived every time, never stored: no `chargeId` on ledger entries, so
+  no migration and nothing to drift. And a per-family fee's scout charge is matched **by family**
+  (`chargeMatchKey`), so when the Arrow of Light scout carrying it crosses over and billing moves
+  to a sibling, the family keeps the charge it has instead of being billed a second time.
 
 ---
 

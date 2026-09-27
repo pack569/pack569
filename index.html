@@ -5625,12 +5625,74 @@
     return t;
   }
 
+  // WHICH CHARGE A PAYMENT PAID — Treasurer's audit, 2026-09-27 (M8).
+  //
+  // A payment names a scout (and often a line), never a charge, so "has this charge been paid?"
+  // was answered with "has this scout paid anything at all?". One $80 dues cheque froze every
+  // other charge the scout had: a campout head count corrected afterwards could neither drop the
+  // head nor re-price it, and the family was billed for a parent who never came.
+  //
+  // So payments are allocated to charges, per family (keyOf, as familyAccounts):
+  //   1. a payment posted against a LINE pays that family's open charges on that line first;
+  //   2. whatever is left, and every payment with no line, pays the family's remaining open
+  //      charges oldest first (charge date, then the order they were raised).
+  // Derived every time, never stored — so there is no second record of a payment to drift from
+  // the ledger, and no migration: every existing entry allocates exactly as it stands. Pure.
+  function chargePaidAllocation(charges, ledger, keyOf) {
+    var key = keyOf || function (id) { return id; };
+    var open = {};
+    charges.forEach(function (c, i) {
+      if (!chargeIsOpen(c)) return;
+      var k = key(c.scoutId);
+      (open[k] || (open[k] = [])).push({ c: c, i: i, left: c.amountCents || 0 });
+    });
+    Object.keys(open).forEach(function (k) {
+      open[k].sort(function (a, b) {
+        return String(a.c.date || '').localeCompare(String(b.c.date || '')) || (a.i - b.i);
+      });
+    });
+    var paid = {};
+    function pour(rows, cents) {
+      rows.forEach(function (r) {
+        if (cents <= 0 || r.left <= 0) return;
+        var take = Math.min(r.left, cents);
+        r.left -= take; cents -= take;
+        paid[r.c.id] = (paid[r.c.id] || 0) + take;
+      });
+      return cents;
+    }
+    var rest = [];
+    ledger.forEach(function (e) {
+      if (!entryPaysCharges(e)) return;
+      var rows = open[key(e.scoutId)] || [];
+      var cents = e.amountCents || 0;
+      if (e.lineId) cents = pour(rows.filter(function (r) { return r.c.lineId === e.lineId; }), cents);
+      if (cents > 0) rest.push({ rows: rows, cents: cents });
+    });
+    rest.forEach(function (x) { pour(x.rows, x.cents); });
+    return paid;
+  }
+  // How syncCharges recognises a charge it already has. A per-family fee's SCOUT charge is the
+  // FAMILY's, whichever child it is written against: when the Arrow of Light scout who carried it
+  // crosses over, the billing moves to a sibling (familyBillingScout reads the active roster),
+  // and matching by scout id saw a missing charge for the sibling and raised it again — the
+  // family billed twice for one campsite (M8). Matching by family keeps the charge it has.
+  function chargeMatchKey(c, line, keyOf) {
+    if (line && linePerFamily(line) && c.who === 'scout') {
+      return c.lineId + '|fam:' + keyOf(c.scoutId) + '|' + c.who + '|' + c.seq;
+    }
+    return chargeKey(c);
+  }
+
   // ---- reconcile stored charges against what should exist ----
   //
   // Charges are STORED, not derived: once raised, a charge stands and carries its reason.
   // But attendance gets corrected and rates get fixed, so this reconciles the two — and it
   // will not touch a charge that has been settled. Correcting a typo before anyone pays
   // fixes the charge; after they have paid, it stands and needs a deliberate decision.
+  //
+  // M8 — "they have paid" means THIS charge (chargePaidAllocation), not "the scout has paid
+  // anything anywhere", which froze every charge a family had after their first cheque.
   function syncCharges() {
     var want = {}, byKey = {};
     allBudgetLines().forEach(function (r) {
@@ -5643,15 +5705,17 @@
       // per family — and where the charges come from ATTENDANCE, the marks are collapsed the same
       // way first. chargeRowsFor itself never learns what a family is.
       chargeRowsFor(r.line, collapseMarkedToFamilies(r.line, marked), lineBillingRoster(r.line))
-        .forEach(function (row) { want[chargeKey(row)] = row; });
+        .forEach(function (row) { want[chargeMatchKey(row, r.line, chargeFamilyKey)] = row; });
     });
-    state.charges.forEach(function (c) { byKey[chargeKey(c)] = c; });
+    function mk(c) { return chargeMatchKey(c, getBudgetLine(c.lineId), chargeFamilyKey); }
+    state.charges.forEach(function (c) { byKey[mk(c)] = c; });
+    var paidOn = chargePaidAllocation(state.charges, state.ledger, chargeFamilyKey);
     // Drop charges that should no longer exist — but never one that is settled or paid
     // against. A book does not lose rows because somebody fixed a head count.
     state.charges = state.charges.filter(function (c) {
-      if (want[chargeKey(c)]) return true;
+      if (want[mk(c)]) return true;
       if (c.waivedBy || c.forgiven) return true;
-      return paymentsForScout(state.ledger, c.scoutId) > 0;
+      return (paidOn[c.id] || 0) > 0;
     });
     // Add what is missing, and re-price what is still open.
     Object.keys(want).forEach(function (k) {
@@ -5665,7 +5729,7 @@
         });
         return;
       }
-      if (chargeIsOpen(have) && paymentsForScout(state.ledger, have.scoutId) === 0) {
+      if (chargeIsOpen(have) && !(paidOn[have.id] > 0)) {
         have.amountCents = row.amountCents;
       }
     });

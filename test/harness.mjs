@@ -2599,9 +2599,10 @@ test('reconciling charges never removes one that has been settled or paid agains
   const fn = /function syncCharges\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'syncCharges() not found');
   ok(/if \(c\.waivedBy \|\| c\.forgiven\) return true;/.test(fn[0]), 'a settled charge can be dropped');
-  ok(/return paymentsForScout\(state\.ledger, c\.scoutId\) > 0;/.test(fn[0]),
+  // M8 — money against THIS charge (chargePaidAllocation), not against the scout in general.
+  ok(/return \(paidOn\[c\.id\] \|\| 0\) > 0;/.test(fn[0]),
     'a charge with money against it can be dropped');
-  ok(/paymentsForScout\(state\.ledger, have\.scoutId\) === 0/.test(fn[0]),
+  ok(/chargeIsOpen\(have\) && !\(paidOn\[have\.id\] > 0\)/.test(fn[0]),
     'a paid charge can be silently re-priced');
 });
 
@@ -8594,6 +8595,53 @@ test('M9: a former scout’s balance has a row to settle it from', () => {
     'former families are not given the same pay and forgive controls');
   const df = /function duesFamilies\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/state\.scouts\.filter/.test(df), 'family members are read from the active roster only');
+});
+
+test('M8: a payment freezes the charge it paid, not every charge the family has', () => {
+  // One $80 dues cheque used to freeze the scout's campout charges too, so a head count
+  // corrected afterwards could neither drop a parent who never came nor re-price the line.
+  const { chargePaidAllocation } = sandbox(CHARGE_FNS.concat(['chargePaidAllocation']));
+  const charges = [
+    { id: 'dues', scoutId: 's1', lineId: 'D', amountCents: 8000, date: '2026-09-01', waivedBy: '', forgiven: null },
+    { id: 'campS', scoutId: 's1', lineId: 'C', amountCents: 4000, date: '2026-10-10', waivedBy: '', forgiven: null },
+    { id: 'campA', scoutId: 's1', lineId: 'C', amountCents: 4000, date: '2026-10-10', waivedBy: '', forgiven: null },
+    { id: 'sib', scoutId: 's2', lineId: 'D', amountCents: 8000, date: '2026-09-01', waivedBy: '', forgiven: null }
+  ];
+  const onLine = chargePaidAllocation(charges, [
+    { direction: 'in', scoutId: 's1', lineId: 'D', amountCents: 8000, source: 'family' }
+  ]);
+  eq(onLine, { dues: 8000 }, 'a dues cheque paid the dues and nothing else');
+  // No line: oldest first. $100 pays the dues and half the first campout head.
+  const fifo = chargePaidAllocation(charges, [
+    { direction: 'in', scoutId: 's1', lineId: '', amountCents: 10000, source: 'family' }
+  ]);
+  eq(fifo, { dues: 8000, campS: 2000 }, 'oldest first');
+  // Per family: the sister's cheque reaches the brother's charge.
+  const fam = chargePaidAllocation(charges, [
+    { direction: 'in', scoutId: 's2', lineId: 'D', amountCents: 16000, source: 'family' }
+  ], (id) => 'F');
+  eq(fam.dues + fam.sib, 16000, 'a family cheque on the dues line pays both children’s dues');
+  // A tier make-up pays no charge at all (M5).
+  eq(chargePaidAllocation(charges, [
+    { direction: 'in', scoutId: 's1', lineId: '', amountCents: 3000, source: 'family', tierMakeup: 't' }
+  ]), {}, 'make-up money was allocated to a charge');
+});
+
+test('M8: a per-family fee is not billed again when the child carrying it crosses over', () => {
+  const { chargeMatchKey } = sandbox(['linePerFamily', 'chargeKey', 'chargeMatchKey']);
+  const fam = { aol: 'F', wolf: 'F' };
+  const keyOf = (id) => fam[id] || id;
+  const perFamily = { id: 'L', basis: 'per-family' };
+  const perHead = { id: 'L', basis: 'per-head' };
+  const old = { lineId: 'L', scoutId: 'aol', who: 'scout', seq: 0 };
+  const now = { lineId: 'L', scoutId: 'wolf', who: 'scout', seq: 0 };
+  eq(chargeMatchKey(old, perFamily, keyOf), chargeMatchKey(now, perFamily, keyOf),
+    'the sibling’s wanted charge does not match the charge the family already has');
+  ok(chargeMatchKey(old, perHead, keyOf) !== chargeMatchKey(now, perHead, keyOf),
+    'a per-head charge is pooled across siblings');
+  const fn = /function syncCharges\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/want\[chargeMatchKey\(row, r\.line, chargeFamilyKey\)\] = row/.test(fn) && /byKey\[mk\(c\)\] = c/.test(fn),
+    'syncCharges still matches charges by scout id');
 });
 
 /* ---------------- report ---------------- */
