@@ -4781,13 +4781,88 @@ test('a family link is one field, and survives the scout it points at leaving', 
   ok(!/familyId.*=.*getScout|resolve/.test(/if \(typeof s\.familyId !== 'string'\) s\.familyId = '';/.exec(SCRIPT)[0]),
     'the migration is resolving a reference');
   // Joining somebody joins their family, so a third scout linked to either sibling joins both.
-  const fn = /if \(ch === 'scout-family'\) \{[\s\S]*?\n      \}/.exec(SCRIPT);
-  ok(fn, 'the family handler was not found');
-  ok(/scEd\.familyId = tgt \? familyKeyOf\(tgt\) : '';/.test(fn[0]),
-    'linking copies a scout id rather than joining that scout’s family');
-  ok(/if \(scEd\.familyId === scEd\.id\) scEd\.familyId = '';/.test(fn[0]),
-    'a scout can be linked to themselves, which would mean two things at once');
-  ok(/data-ch="scout-family"/.test(SCRIPT), 'there is no way to link two scouts');
+  // Every change goes through the two helpers — never a bare familyId write in a handler.
+  const add = /if \(ch === 'scout-family-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(add, 'the add-a-sibling handler was not found');
+  ok(/joinFamily\(state\.scouts, famTo, famNew\);/.test(add[0]),
+    'adding a sibling does not go through joinFamily');
+  const rm = /if \(act === 'scout-family-remove'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(rm, 'the take-out-of-family handler was not found');
+  ok(/leaveFamily\(state\.scouts, famOut\);/.test(rm[0]),
+    'taking a scout out of a family does not go through leaveFamily');
+  ok(/addCh: 'scout-family-add'/.test(SCRIPT), 'there is no way to link two scouts');
+  ok(!/data-ch="scout-family"/.test(SCRIPT), 'the old one-sibling select is still on the page');
+});
+
+test('a family can be any size, and any one of them can leave it', () => {
+  // Owner ask, 2026-09-26: a family of three and a family of five. The model always allowed it;
+  // the single select did not, and the scout whose id IS the key could never be taken out.
+  const f = sandbox(['familyKeyOf', 'familiesOf', 'leaveFamily', 'joinFamily']);
+  const mk = (ids) => ids.map((id) => ({ id, name: id.toUpperCase(), familyId: '' }));
+  const groups = (list) => f.familiesOf(list).map((x) => x.members.map((s) => s.id));
+  const by = (list) => Object.fromEntries(list.map((s) => [s.id, s]));
+
+  // Five, one at a time, each added from a different sibling's page.
+  let r = mk(['a', 'b', 'c', 'd', 'e']); let s = by(r);
+  f.joinFamily(r, s.a, s.b); f.joinFamily(r, s.b, s.c); f.joinFamily(r, s.c, s.d); f.joinFamily(r, s.a, s.e);
+  eq(groups(r), [['a', 'b', 'c', 'd', 'e']], 'five siblings are one family of five');
+
+  // The scout whose id is the key leaves: the other four stay together, and a really is alone.
+  f.leaveFamily(r, s.a);
+  eq(groups(r), [['a'], ['b', 'c', 'd', 'e']], 'taking out the first-linked scout broke up the family');
+
+  // Moving a scout out of a family of three leaves the two behind together.
+  r = mk(['a', 'b', 'c', 'x']); s = by(r);
+  f.joinFamily(r, s.a, s.b); f.joinFamily(r, s.a, s.c);
+  f.joinFamily(r, s.x, s.a);
+  eq(groups(r), [['a', 'x'], ['b', 'c']], 'the two left behind were split up');
+
+  // Two scouts, one leaves: two families of one.
+  r = mk(['a', 'b']); s = by(r);
+  f.joinFamily(r, s.a, s.b); f.leaveFamily(r, s.b);
+  eq(groups(r), [['a'], ['b']], 'a family of two did not come apart');
+  f.joinFamily(r, s.a, s.b); f.leaveFamily(r, s.a);
+  eq(groups(r), [['a'], ['b']], 'the key-holder of two could not leave');
+
+  // A family of two and a family of three become one family of five, one scout at a time.
+  r = mk(['a', 'b', 'c', 'd', 'e']); s = by(r);
+  f.joinFamily(r, s.a, s.b);
+  f.joinFamily(r, s.c, s.d); f.joinFamily(r, s.c, s.e);
+  ['c', 'd', 'e'].forEach((id) => f.joinFamily(r, s.a, s[id]));
+  eq(groups(r), [['a', 'b', 'c', 'd', 'e']], 'two families could not be combined');
+
+  // An archived sibling pointing at the leaver moves with the others rather than staying on a
+  // key the leaver still answers to.
+  r = mk(['a', 'b', 'c']); s = by(r); s.c.archived = true;
+  f.joinFamily(r, s.a, s.b); f.joinFamily(r, s.a, s.c);
+  f.leaveFamily(r, s.a);
+  eq(f.familyKeyOf(s.b) === f.familyKeyOf(s.c) && f.familyKeyOf(s.a) !== f.familyKeyOf(s.c), true,
+    'an archived sibling was left answering to the scout who left');
+  // A scout cannot be linked to themselves.
+  f.joinFamily(r, s.a, s.a);
+  eq(s.a.familyId, '', 'a scout was linked to themselves');
+});
+
+test('a parent account links to scouts, and that link never leaves the pack record', () => {
+  // Owner ask, 2026-09-26: record which approved account is whose parent. Record only — the
+  // parent app does not change, so the field must never reach the published parent view.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const d = ctx.normalizeState({
+    version: 1,
+    scouts: [{ id: 'a', name: 'Ada' }, { id: 'b', name: 'Ben', parentUids: ['u1', 'u1', '', 7, 'u2'] }],
+    budget: { programYear: 2025, activities: [], expenses: [] }
+  });
+  eq(d.scouts[0].parentUids, [], 'a scout with no parents must migrate to an empty list');
+  eq(d.scouts[1].parentUids, ['u1', 'u2'], 'parent links are not deduplicated and cleaned');
+  ok(!/parentUids/.test(codeOnly(BPV())), 'the parent view publishes which account is whose parent');
+  ok(/addCh: 'member-scout-add'/.test(SCRIPT), 'the Members card has no way to link a parent');
+  const add = /if \(ch === 'member-scout-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(add && /familyMembers\(linkSc\)/.test(add[0]), 'linking a parent to one scout does not bring the siblings');
+  ok(add && /isAdmin\(\)/.test(add[0]), 'a non-admin can link parents');
+  const rmm = /function removeMember\(memberUid\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(rmm && /parentUids/.test(rmm[0]), 'removing a member leaves them linked as somebody’s parent');
+  ok((SCRIPT.match(/familyId: '', parentUids: \[\] \}\);/g) || []).length === 2,
+    'a newly added scout is not seeded with the family and parent fields');
 });
 
 /* ================================================================

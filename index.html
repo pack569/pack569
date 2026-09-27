@@ -2927,6 +2927,12 @@
       // resolved here (normalizeState never resolves references): a link to a deleted scout
       // simply stops matching, which makes them a family of one again.
       if (typeof s.familyId !== 'string') s.familyId = '';
+      // 2026-09-26 — the signed-in accounts that are this scout's parents, set by an admin in
+      // Members. A record for leaders only: parents never receive the pack record, and
+      // buildParentView does not publish it. Uids, deduplicated; nothing else survives.
+      s.parentUids = (Array.isArray(s.parentUids) ? s.parentUids : []).filter(function (u, i, a) {
+        return typeof u === 'string' && u !== '' && a.indexOf(u) === i;
+      });
     });
     // Wave 19(20) — SYT completed-on date; expiry is computed (+1 year) when set.
     // Legacy sytExpiry stays as-is and keeps working when sytCompleted is blank.
@@ -4008,6 +4014,13 @@
   // Linking Ben to Ada sets Ben.familyId to Ada's key; linking a third joins the same key. The
   // key is a scout id and nothing enforces that the scout still exists — a link to somebody who
   // left simply stops matching anyone else, and they are a family of one again.
+  //
+  // A family is any size — owner ask, 2026-09-26, for a family of three and a family of five.
+  // Every change goes through joinFamily / leaveFamily, because the scout whose id IS the key
+  // is the awkward one: clearing their own familyId changes nothing (their key was always their
+  // id), and moving them elsewhere would leave the rest pointing at somebody no longer there.
+  // leaveFamily re-roots whoever pointed at the leaver onto one of themselves first, so the ones
+  // left behind stay together and the leaver really is on their own.
   // ---------------------------------------------------------------------------
   function familyKeyOf(s) { return (s && s.familyId) || (s && s.id) || ''; }
   // Everyone on the ACTIVE roster who shares this scout's family key, themselves included.
@@ -4028,6 +4041,25 @@
     return out;
   }
   function activeFamilies() { return familiesOf(activeScouts()); }
+  // Pure over the WHOLE scout list, archived scouts included — an archived sibling pointing at
+  // the leaver has to move with the others, or they would rejoin anyone who later takes that key.
+  function leaveFamily(scouts, s) {
+    if (!s) return;
+    var pointing = (scouts || []).filter(function (o) { return o !== s && o.familyId === s.id; });
+    if (pointing.length) {
+      var root = pointing[0];
+      pointing.forEach(function (o) { o.familyId = o === root ? '' : root.id; });
+    }
+    s.familyId = '';
+  }
+  // Moves `other` into s's family, and only `other`: the family they came from stays together
+  // without them. Moving scouts one at a time is how two families become one.
+  function joinFamily(scouts, s, other) {
+    if (!s || !other || other === s) return;
+    leaveFamily(scouts, other);
+    var key = familyKeyOf(s);
+    other.familyId = key === other.id ? '' : key;
+  }
   // The one scout a family's single fee is billed to: the first of them on the roster. Stable, so
   // the charge key stays put — and if that scout leaves, the next one carries it.
   function familyBillingScout(fam) { return fam.members[0]; }
@@ -7539,6 +7571,16 @@
     var fs = sync.mods.fs;
     var ref = fs.doc(sync.db, 'packs', sync.docId, 'members', memberUid);
     fs.deleteDoc(ref).catch(function (err) { accountsToast(err); });
+    // Their scout links go with them. Left behind, a removed person who later came back on the
+    // same Google account would silently be somebody's parent again.
+    var hadKids = false;
+    state.scouts.forEach(function (sc) {
+      var had = arrOf(sc.parentUids);
+      if (had.indexOf(memberUid) === -1) return;
+      sc.parentUids = had.filter(function (u) { return u !== memberUid; });
+      hadKids = true;
+    });
+    if (hadKids) commit();
   }
   // ---- Parent phase: invite by email --------------------------------------------------
   // packs/{docId}/invites/{lowercased-email} = { role, email, invitedBy, invitedAt }. The
@@ -10675,29 +10717,54 @@
       // and billed once instead of once per scout — and deliberately nothing else: each scout
       // still gets their own place, their own dues and their own parent's place at everything
       // priced per head.
+      //
+      // Any number of them, 2026-09-26: the old single "Same family as" select could only ever
+      // show one sibling, so a family of three or five had no way to be seen or fixed. Chips
+      // list the whole family, this scout included, so anybody can be taken out from any
+      // sibling's page; the select adds one scout at a time (joinFamily / leaveFamily).
       (function () {
-        var others = byScoutName(activeScouts().filter(function (o) { return o.id !== s.id; }));
-        var mine = familyMembers(s).filter(function (o) { return o.id !== s.id; });
-        var h2 = '<div class="row" style="margin-bottom:10px;align-items:flex-end">' +
-          '<label class="fld">Same family as' +
-          '<select data-ch="scout-family" data-id="' + s.id + '">' +
-          '<option value="">— nobody else in the pack —</option>' +
-          others.map(function (o) {
-            var on = familyKeyOf(o) === familyKeyOf(s);
-            return '<option value="' + o.id + '"' + (on ? ' selected' : '') + '>' + esc(o.name || 'scout') + '</option>';
-          }).join('') +
-          '</select></label>' +
-          '<span class="small muted" style="flex:1 1 240px">' +
+        var fam = familyMembers(s);
+        var mine = fam.filter(function (o) { return o.id !== s.id; });
+        var famKey = familyKeyOf(s);
+        var addable = byScoutName(activeScouts().filter(function (o) { return familyKeyOf(o) !== famKey; }));
+        var h2 = '<div class="block-card" style="margin-bottom:10px"><p class="eyebrow">Family</p>' +
+          '<p class="small muted" style="margin:4px 0 0">' +
           (mine.length
-            ? 'One family with ' + esc(mine.map(function (o) { return o.name || 'scout'; }).join(', ')) +
-              '. A fee priced <strong>per family</strong> is counted and billed once for them. ' +
-              'Everything priced per head is unchanged \u2014 ' + (mine.length + 1) + ' scouts, ' +
-              (mine.length + 1) + ' places, and a parent\u2019s place each.'
-            : 'Link brothers and sisters so a <strong>per family</strong> fee \u2014 council camping \u2014 is ' +
+            ? 'One family of ' + fam.length + '. A fee priced <strong>per family</strong> is counted and billed once for them. ' +
+              'Everything priced per head is unchanged — ' + fam.length + ' scouts, ' +
+              fam.length + ' places, and a parent’s place each.'
+            : 'Link brothers and sisters so a <strong>per family</strong> fee — council camping — is ' +
               'counted once for them instead of once each. Nothing else changes: each scout keeps their own ' +
-              'place, their own dues and their own parent\u2019s place.') +
-          '</span></div>';
-        return h2;
+              'place, their own dues and their own parent’s place.') +
+          '</p>' +
+          chipPicker({
+            id: s.id, canEdit: canEdit(), removeAct: 'scout-family-remove', addCh: 'scout-family-add',
+            addLabel: mine.length ? '+ Add another brother or sister…' : '+ Add a brother or sister…',
+            chosen: mine.length ? byScoutName(fam).map(function (o) {
+              return { value: o.id, label: (o.name || 'scout') + (o.id === s.id ? ' (this scout)' : '') };
+            }) : [],
+            // Somebody already in another family is MOVED, not merged — say so before it happens.
+            addable: addable.map(function (o) {
+              var theirs = familyMembers(o).filter(function (x) { return x.id !== o.id; });
+              return { value: o.id, label: (o.name || 'scout') +
+                (theirs.length ? ' (with ' + familyLabel({ members: theirs }) + ')' : '') };
+            })
+          });
+        // A parent's account, linked in Members. Recorded for leaders only: parents never
+        // receive the pack record and buildParentView does not publish it.
+        if (accountsInForce()) {
+          var parents = arrOf(s.parentUids).map(function (u) {
+            return sync.members.find(function (m) { return m.uid === u; });
+          }).filter(Boolean);
+          h2 += '<p class="small muted" style="margin:10px 0 0">' +
+            (parents.length
+              ? 'Parent account' + (parents.length === 1 ? '' : 's') + ': <strong>' +
+                esc(parents.map(function (m) { return m.name || m.email || 'member'; }).join(', ')) + '</strong>'
+              : 'No parent accounts linked — an admin links them in Members.') +
+            (isAdmin() ? ' <button type="button" class="btn small ghost" data-act="goto" data-tab="pack" data-section="sharing">Members</button>' : '') +
+            '</p>';
+        }
+        return h2 + '</div>';
       })();
 
     // Wagon / online entry form.
@@ -13056,6 +13123,22 @@
           (jobsNote
             ? '<span class="small muted">· ' + esc(jobsNote) + '</span>'
             : '<span class="small muted">· no job set — they’ll see the whole pack’s list</span>') +
+          '</div>';
+      }
+      // 2026-09-26 — which scouts this account is a parent of. Offered for every approved role,
+      // not just `parent`, because leaders are parents too. A record for leaders only: it lives
+      // in the pack record, which parents never receive, and changes nothing in the parent app.
+      if (admin && m.role !== 'pending' && activeScouts().length) {
+        var kids = byScoutName(activeScouts());
+        var linkedKids = kids.filter(function (sc) { return arrOf(sc.parentUids).indexOf(m.uid) !== -1; });
+        h += '<div class="acct-link"><span class="small muted">Parent of' + (linkedKids.length ? '' : ' — nobody yet') + '</span>' +
+          chipPicker({
+            id: m.uid, canEdit: true, removeAct: 'member-scout-remove', addCh: 'member-scout-add',
+            addLabel: '+ Link a scout…',
+            chosen: linkedKids.map(function (sc) { return { value: sc.id, label: sc.name || 'scout' }; }),
+            addable: kids.filter(function (sc) { return linkedKids.indexOf(sc) === -1; })
+              .map(function (sc) { return { value: sc.id, label: sc.name || 'scout' }; })
+          }) +
           '</div>';
       }
       h += '</div>';
@@ -17689,7 +17772,7 @@
     arcScouts.forEach(function (s) {
       var k = teNameKey(s.name);
       if (!k || have[k]) return;
-      state.scouts.push({ id: uid(), name: String(s.name).trim(), den: '', archived: false, renewalMonth: '', denLabel: '', note: '' });
+      state.scouts.push({ id: uid(), name: String(s.name).trim(), den: '', archived: false, renewalMonth: '', denLabel: '', note: '', familyId: '', parentUids: [] });
       have[k] = true;
       added += 1;
     });
@@ -18968,6 +19051,20 @@
       rmTier.covers = arrOf(rmTier.covers).filter(function (k) { return k !== el.dataset.name; });
       commit(); return;
     }
+    // Takes one scout out of their family from any sibling's page — the one whose id is the
+    // family key included, which the old select could never do (see leaveFamily).
+    if (act === 'scout-family-remove') {
+      var famOut = getScout(el.dataset.name);
+      if (!famOut) return;
+      leaveFamily(state.scouts, famOut);
+      commit(); return;
+    }
+    if (act === 'member-scout-remove') {
+      var unSc = getScout(el.dataset.name), unUid = el.dataset.id;
+      if (!isAdmin() || !unSc || !unUid) return;
+      unSc.parentUids = arrOf(unSc.parentUids).filter(function (u) { return u !== unUid; });
+      commit(); return;
+    }
     if (act === 'ldr-job-remove' || act === 'ldr-den-remove') {
       var rmLdr = state.leaders.find(function (x) { return x.id === el.dataset.id; });
       if (!rmLdr) return;
@@ -19966,21 +20063,36 @@
     if (ch === 'join-open') { writeJoinConfig({ open: el.checked }); return; }
     if (ch === 'join-standings') { writeJoinConfig({ showStandings: el.checked }); return; }
     // Wave 19(4/23/24) — per-scout roster fields.
+    // The "+ Add a brother or sister…" select. Joining somebody joins their FAMILY, not just
+    // them, and moves only the scout picked: whoever they were with before stays together.
+    if (ch === 'scout-family-add') {
+      var famTo = getScout(el.dataset.id), famNew = el.value ? getScout(el.value) : null;
+      if (!famTo || !famNew) return;
+      joinFamily(state.scouts, famTo, famNew);
+      commit(); return;
+    }
+    // Accounts — "+ Link a scout…" on a member. A parent of one scout is a parent of the
+    // family, so the brothers and sisters come too; a chip then takes any one of them back off
+    // (a blended family is real). Pack-record edit, so through commit(), like member-leader.
+    if (ch === 'member-scout-add') {
+      var linkUid = el.dataset.id, linkSc = el.value ? getScout(el.value) : null;
+      if (!isAdmin() || !linkUid || !linkSc) return;
+      var linkFam = familyMembers(linkSc);
+      if (!linkFam.length) linkFam = [linkSc];
+      linkFam.forEach(function (o) {
+        var have = arrOf(o.parentUids);
+        if (have.indexOf(linkUid) === -1) o.parentUids = have.concat([linkUid]);
+      });
+      if (linkFam.length > 1) showToast('Linked to ' + familyLabel({ members: linkFam }) + '.');
+      commit(); return;
+    }
     if (ch === 'scout-name' || ch === 'scout-renew' || ch === 'scout-denlabel' || ch === 'scout-note' ||
-        ch === 'scout-den' || ch === 'scout-family') {
+        ch === 'scout-den') {
       var scEd = getScout(el.dataset.id);
       if (!scEd) return;
       // Trimmed on the way in, exactly like a leader's name — a trailing space is invisible
       // and would sort and shorten differently from the same name without one.
-      if (ch === 'scout-family') {
-        // Joining somebody joins their FAMILY, not just them: the key is taken from the scout
-        // picked, so linking a third to either of two siblings puts all three together. Choosing
-        // nobody makes this scout a family of one again and leaves the others as they were.
-        var tgt = el.value ? getScout(el.value) : null;
-        scEd.familyId = tgt ? familyKeyOf(tgt) : '';
-        // A scout cannot be their own link — that is what an empty familyId already means.
-        if (scEd.familyId === scEd.id) scEd.familyId = '';
-      } else if (ch === 'scout-name') scEd.name = el.value.trim();
+      if (ch === 'scout-name') scEd.name = el.value.trim();
       else if (ch === 'scout-renew') scEd.renewalMonth = el.value;
       else if (ch === 'scout-denlabel') scEd.denLabel = el.value;
       else if (ch === 'scout-den') scEd.den = DENS.indexOf(el.value) === -1 ? '' : el.value;
@@ -20319,7 +20431,7 @@
     if (kind === 'add-scout') {
       var name = String(fd.get('name') || '').trim();
       if (!name) return;
-      state.scouts.push({ id: uid(), name: name, den: String(fd.get('den') || '').trim(), archived: false, renewalMonth: '', denLabel: '', note: '' });
+      state.scouts.push({ id: uid(), name: name, den: String(fd.get('den') || '').trim(), archived: false, renewalMonth: '', denLabel: '', note: '', familyId: '', parentUids: [] });
       state.scouts.sort(function (a, b) { return a.name.localeCompare(b.name); });
       commit(); return;
     }
