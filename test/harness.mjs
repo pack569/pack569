@@ -5646,6 +5646,30 @@ test('the mark-off button credits the run, not the room', () => {
   ok(!/state\.attendance\[mam\.id\]/.test(m[0]), 'it still reads tonight’s attendance directly');
 });
 
+test('a scout who stayed home TONIGHT is not credited by tonight’s Mark-done', () => {
+  // Audit 2026-09-27: a session dated today counted as `pending`, so a scout not checked in
+  // tonight had "missed nothing" and the button — pressed at the end of tonight's meeting —
+  // credited them. m2 is tonight; Ada is checked in, Ben is not.
+  const ctx = runSandbox(RUN_SETUP.replace("var TODAY = '2026-08-13';", "var TODAY = '2026-08-12';"));
+  const p = vm.runInContext("runProgress(adventureRuns().find(function (r) { return r.den === 'Wolf'; }))", ctx);
+  const ben = p.scouts.find((r) => r.scout.name === 'Ben');
+  eq(ben.missed.map((e) => e.id), ['m2'], 'tonight’s session is not a miss for a scout who is not here');
+  eq(ben.pending.map((e) => e.id), ['m3'], 'only sessions AFTER today are still to come');
+  eq(p.onTrack.map((r) => r.scout.name), ['Ada'], 'a scout absent tonight is still offered for Mark done');
+});
+
+test('a scout who has been to no session at all is never credited', () => {
+  // "Missed nothing" is also true of a scout who has not been to anything. The day before the
+  // first session nobody has attended, so the button must have nobody to credit.
+  const ctx = runSandbox(RUN_SETUP
+    .replace("var TODAY = '2026-08-13';", "var TODAY = '2026-08-04';")
+    .replace(/var ATT = \{[\s\S]*?\};/, 'var ATT = {};'));
+  const p = vm.runInContext("runProgress(adventureRuns().find(function (r) { return r.den === 'Wolf'; }))", ctx);
+  p.scouts.forEach((r) => eq(r.missed.length, 0, `${r.scout.name} missed a session that has not happened`));
+  p.scouts.forEach((r) => eq(r.count, 0, `${r.scout.name} was checked in at something`));
+  eq(p.onTrack.length, 0, 'a scout with 0 sessions attended is on track to be marked done');
+});
+
 test('attendance is evidence, and the app never says a missed meeting costs the adventure', () => {
   // Researched, and it decides the wording: Cub Scout advancement is per requirement, "Do Your
   // Best" is the standard, and work done at home is signed by a parent and approved by the den

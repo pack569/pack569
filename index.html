@@ -6160,8 +6160,8 @@
   }
   // One run, resolved against the roster and the attendance book.
   //   attended  sessions this scout was checked in at
-  //   missed    sessions already PAST that they were not checked in at
-  //   pending   sessions still to come — the ones "missing this meeting" is about
+  //   missed    sessions ON OR BEFORE today that they were not checked in at
+  //   pending   sessions still to come (after today) — the ones "missing this meeting" is about
   //   full      attended every session in the run, past and planned
   //   status    already recorded on the Advancement tab ('', 'done', 'awarded')
   function runProgress(run, asOf) {
@@ -6171,7 +6171,12 @@
       var attended = [], missed = [], pending = [];
       run.sessions.forEach(function (ev) {
         if (wasCheckedIn(ev.id, s.id)) attended.push(ev);
-        else if (ev.date < today) missed.push(ev);
+        // AUDIT FIX 2026-09-27 — TONIGHT counts. This was `ev.date < today`, so tonight's
+        // session sat in `pending` for every scout who was not checked in, and "no misses"
+        // was true of a scout who stayed home tonight — the Mark-done button, pressed at the
+        // end of the meeting it exists for, credited them. A session dated today is one the
+        // leader is standing in: not checked in means not there.
+        else if (ev.date <= today) missed.push(ev);
         else pending.push(ev);
       });
       return {
@@ -6182,9 +6187,12 @@
     });
     return {
       run: run, total: total, scouts: scouts,
-      // Everyone who has been to every session that has HAPPENED. These are the scouts a
-      // leader is deciding about tonight; `full` is the stricter "and every planned one too".
-      onTrack: scouts.filter(function (r) { return !r.missed.length; }),
+      // Everyone who has been to every session that has HAPPENED (tonight included) — and to
+      // at least one. These are the scouts a leader is deciding about tonight; `full` is the
+      // stricter "and every planned one too". AUDIT FIX 2026-09-27: `count` is required
+      // because "missed nothing" is also true of a scout who has not been to anything yet,
+      // and the Mark-done button credits exactly this list.
+      onTrack: scouts.filter(function (r) { return r.count > 0 && !r.missed.length; }),
       complete: scouts.filter(function (r) { return r.full; }),
       short: scouts.filter(function (r) { return r.missed.length; })
     };
@@ -19801,7 +19809,8 @@
       // Session-aware since 2026-08-02: the scouts credited are the ones checked in at every
       // session of the RUN that has happened, not merely everyone who turned up tonight. On a
       // one-session adventure those are the same set, so this is a strict generalization of
-      // what the button did before.
+      // what the button did before. Since 2026-09-27 "has happened" includes TONIGHT and the
+      // scout must have been to at least one — see runProgress.onTrack.
       var mamRun = runForMeeting(mam);
       if (!mamRun) return;
       var mamDid = 0, mamHad = 0;
