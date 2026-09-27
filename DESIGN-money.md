@@ -171,6 +171,16 @@ outliving, or being counted beside, the thing they belonged to. What changed, it
   forgiveness appends a line to the charge's `note` (who forgave it, when, why, and when it was
   undone) instead of erasing it. Decision 11 (who may forgive) is still open; this does not gate
   it by job.
+- **The family-cost quote left out registration (M11).** `freshLine` defaults `fundedBy` to
+  `pack`, so the seeded *Youth registration* line was pack-paid and `familyYearCostForDen` — which
+  only counts what families pay — left the year's biggest single fee out of every quote. New packs
+  now seed it **families pay**. An existing pack's line is never changed (the seed only adds a
+  missing line); instead the leader card says, by name, when the pack pays national registration
+  and so it is not in the figure. Both cards stop calling the figure *"the most a family can be
+  asked for"* — it is the **typical cost for one scout and one parent** — and list what is not
+  included: a second parent, siblings, flat family-paid lines (named on the leader card), and the
+  council program fee or registration when the budget has no line for them. The parent card's
+  wording changed; what `buildParentView` publishes did not.
 
 ---
 

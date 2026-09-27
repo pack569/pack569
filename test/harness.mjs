@@ -6140,8 +6140,12 @@ test('the year-cost card says what it excludes, and points at the tiers', () => 
   // The owner's correction: one adult per scout is expected, and the card has to say both that
   // it counts one per scout AND that a two-scout family only has to send one parent — otherwise
   // the figure looks like it is double-charging them.
-  ok(/one scout and the adult who brings them/.test(flat),
+  // M11 (Treasurer's audit, 2026-09-27) — "typical", not "the most a family can be asked for":
+  // a second parent, siblings and flat family lines are all on top of it.
+  ok(/typical cost for one scout and one parent/.test(flat),
     'the headline does not say it includes the accompanying adult');
+  ok(!/the most a family can be asked/.test(flat), 'the card still calls a typical figure a maximum');
+  ok(/Not included:/.test(flat), 'the card does not list what it leaves out');
   ok(/counted <strong>per scout<\/strong>/.test(flat), 'the per-scout adult rule is not stated');
   ok(/two scouts only has to send one parent/.test(flat),
     'the card does not admit that a two-scout family needs only one parent');
@@ -8707,6 +8711,32 @@ test('M10: forgiving needs a reason and a name, and undoing it leaves a trace', 
   const n1 = forgivenessUndoneNote('', { date: '2026-10-01', by: 'Committee Chair', reason: 'hardship' }, 4000, '2026-10-09');
   ok(/undone 2026-10-09/.test(n1) && /by Committee Chair: hardship/.test(n1) && /\$40\.00/.test(n1), 'the trace: ' + n1);
   ok(forgivenessUndoneNote(n1, null, 4000, '2026-11-01').indexOf(n1) === 0, 'a second undo replaces the first trace');
+});
+
+test('M11: a new pack’s youth registration is paid by families, so the family cost counts it', () => {
+  // freshLine defaults to pack-pays, so the seeded registration was left out of every family quote.
+  const { SEED_EXPENSES, freshLine } = sandbox(REG_FNS);
+  const youth = freshLine(SEED_EXPENSES.filter(e => e.name === 'Youth registration')[0]);
+  eq(youth.fundedBy, 'families', 'youth registration seeds as pack-paid');
+  const adult = freshLine(SEED_EXPENSES.filter(e => e.name === 'Adult leader registration')[0]);
+  eq(adult.fundedBy, 'pack', 'leaders’ registration is the pack’s, and must not bill a family');
+});
+
+test('M11: the family-cost card says who pays registration and what else it leaves out', () => {
+  const ex = /function familyCostExclusions\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(ex, 'familyCostExclusions() not found');
+  ok(/!lineFamilyFunded\(l\) \? 'pack'/.test(ex[0]), 'a pack-paid registration is not detected');
+  ok(/lineFamilyFunded\(l\) && !linePerHead\(l\)/.test(ex[0]), 'flat family-paid lines are not named');
+  const fn = /function renderFamilyYearCost\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0].replace(/'\s*\+\s*'/g, '');
+  ok(/ex\.registration === 'pack'/.test(fn) && /The pack pays national youth registration/.test(fn),
+    'a pack that pays registration is not told it is missing from the figure');
+  ok(/a second parent/.test(fn), 'the second parent is not listed as excluded');
+  // Existing packs keep their choice: the seed is only used to ADD a missing line.
+  const seed = /function seedStandardYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/if \(existingExp\[t\.name\.toLowerCase\(\)\]\) return;/.test(seed), 'reseeding would overwrite a pack’s registration line');
+  const pv = /function parentFamilyCost\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0].replace(/'\s*\+\s*'/g, '');
+  ok(/typical cost for one scout and one parent/.test(pv) && /Not included:/.test(pv),
+    'the family view still reads as the most a family can be asked for');
 });
 
 /* ---------------- report ---------------- */

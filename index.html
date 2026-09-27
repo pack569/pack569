@@ -6844,8 +6844,13 @@
     unitCharterCents: 10000   // per UNIT, flat
   };
   var SEED_EXPENSES = [
+    // FAMILIES pay it (Treasurer's audit, 2026-09-27, M11). freshLine defaults every line to
+    // pack-pays, so this seeded as a cost the pack absorbs — and the family-cost card, which only
+    // counts what families pay, left the single biggest fee of the year out of every quote. Most
+    // packs collect it from families and remit it. A pack that pays it for them changes one
+    // control; a line already in a pack's plan is never touched by this.
     { name: 'Youth registration', category: 'registration', basis: 'per-head',
-      scoutRateCents: SA_FEES.youthCents },
+      scoutRateCents: SA_FEES.youthCents, fundedBy: 'families' },
     // Leaders only: no scout rate, the leader box ticked. Youth registration above is the
     // other half of the same national fee, at the other rate.
     { name: 'Adult leader registration', category: 'registration', basis: 'per-head',
@@ -9762,8 +9767,9 @@
   // joining-meeting question, and the only frame in which "sell $175" means anything — a target
   // with no bill beside it is just a number.
   // Per den, because den-limited events are most of what makes two families' years differ. This is
-  // the PLAN for one scout and the adult who brings them, gross, earning nothing: the most a
-  // family can be asked for. It is not anybody's balance.
+  // the PLAN for one scout and the adult who brings them, gross, earning nothing: a TYPICAL year,
+  // not a ceiling (Treasurer's audit, 2026-09-27, M11 — a second parent, siblings and anything
+  // charged as one flat amount are on top). It is not anybody's balance.
   function parentFamilyCost(pv) {
     var dens = Array.isArray(pv.familyCost) ? pv.familyCost : [];
     if (!dens.length) return '';
@@ -9775,10 +9781,11 @@
     // for itself. A parent reading online is still told what the figures are and are not; a parent
     // holding the sheet has the heading above it saying the same thing in five words.
     var h = '<div class="card pv-yearcost"><h2 class="section display">What a year costs a family</h2>' +
-      '<p class="small muted pv-yearcost-note" style="margin:0 0 10px">Out of pocket for <strong>one scout and the adult who ' +
-      'brings them</strong>, across the whole year, if the scout earns <strong>no reward tier at all</strong>. ' +
-      'It counts everything families pay, whether the pack collects it or a council does. Siblings are extra ' +
-      'and listed separately, because nothing requires one to come.</p>';
+      '<p class="small muted pv-yearcost-note" style="margin:0 0 10px">The <strong>typical cost for one scout and one ' +
+      'parent</strong> across the whole year, if the scout earns <strong>no reward tier at all</strong> — whether ' +
+      'the pack collects it or the council does. <strong>Not included:</strong> a second parent, brothers and sisters ' +
+      '(listed separately, because nothing requires one to come), and anything the pack charges as one flat amount. ' +
+      'Ask a leader if you are not sure what your family’s year will cost.</p>';
     dens.forEach(function (d) {
       var open = !!ui.parentCostOpen[d.den || ''];
       var label = String(d.den || '') || 'No den set';
@@ -12452,18 +12459,53 @@
   // with the scout / adult / sibling shares kept apart: a scout's share is owed, an adult's is a
   // choice the family makes per event. Expandable per den so the card is a figure at a glance and
   // a line-by-line answer when somebody asks "what is that made of?".
+  // WHAT THE FAMILY-COST FIGURE LEAVES OUT — Treasurer's audit, 2026-09-27 (M11).
+  //
+  // The card called its figure "the most a family can be asked for", and it is not: it prices
+  // one scout and one adult on per-head lines. A second parent, a sibling, a flat family-paid
+  // line and any fee the pack never entered are all on top. Worse, the seeded youth registration
+  // defaulted to pack-pays, so the year's biggest single fee was silently missing from the quote.
+  // This says which of those apply to THIS pack, by name, rather than a general disclaimer.
+  //
+  //   registration  'families' | 'pack' | 'direct' | 'none' — who pays national youth registration
+  //   flatFamily    names of family-paid FLAT lines (a flat total is not a per-family price)
+  //   councilFee    whether any line looks like the council's own program fee (never seeded)
+  function familyCostExclusions() {
+    var out = { registration: 'none', flatFamily: [], councilFee: false };
+    allBudgetLines().forEach(function (r) {
+      var l = r.line;
+      var nm = String(l.name || '');
+      if (l.category === 'registration' && linePerHead(l) && (l.scoutRateCents || 0) > 0 && out.registration === 'none') {
+        out.registration = !lineFamilyFunded(l) ? 'pack' : (lineThroughPack(l) ? 'families' : 'direct');
+      }
+      if (lineFamilyFunded(l) && !linePerHead(l) && linePlanned(l) > 0) out.flatFamily.push(nm || 'Untitled line');
+      if (/council|program fee/i.test(nm)) out.councilFee = true;
+    });
+    return out;
+  }
   function renderFamilyYearCost() {
     var rows = familyYearCost();
     if (!rows.length) return '';
     var tiers = sortedTiers().length;
     var planned = plannedTier();
+    var ex = familyCostExclusions();
+    var notIn = ['a second parent', 'brothers and sisters (shown separately)'];
+    if (ex.flatFamily.length) notIn.push('flat family-paid costs (' + ex.flatFamily.join(', ') + ')');
+    if (!ex.councilFee) notIn.push('your council’s program fee — it is not in the budget');
+    if (ex.registration === 'none') notIn.push('national registration — it is not in the budget');
     var h = '<div class="card"><h2 class="section display">What a year costs a family</h2>' +
-      '<p class="small muted" style="margin:0 0 10px">Out of pocket for <strong>one scout and the adult who ' +
-      'brings them</strong>, earning <strong>no reward tier at all</strong> — the most a family can be asked ' +
-      'for, which is the figure to quote to somebody deciding whether they can afford to join. It counts every ' +
-      '<strong>families pay</strong> line, whether the pack collects it or a council does, and nothing the pack ' +
-      'pays for out of its own funds.' +
+      '<p class="small muted" style="margin:0 0 10px">The <strong>typical cost for one scout and one parent</strong>, ' +
+      'earning <strong>no reward tier at all</strong> — the figure to quote to somebody deciding whether they can ' +
+      'afford to join. It counts every <strong>families pay</strong> line priced per person, whether the pack collects ' +
+      'it or a council does, and nothing the pack pays for out of its own funds.' +
       (tiers ? ' Anything a scout earns comes straight off it.' : '') + '</p>' +
+      // Registration said out loud, because it is the fee a joining family asks about first.
+      (ex.registration === 'pack'
+        ? '<p class="small" style="margin:0 0 10px"><span class="pill navy">Registration</span> The pack pays national ' +
+          'youth registration, so it is <strong>not</strong> in these figures. If families are meant to pay it, set that line to ' +
+          '<em>Families pay</em> under Other pack expenses.</p>'
+        : '') +
+      '<p class="small muted" style="margin:0 0 10px"><strong>Not included:</strong> ' + esc(notIn.join('; ')) + '.</p>' +
       '<p class="small muted" style="margin:0 0 10px">A Cub Scout does not come on their own, so one adult is ' +
       'counted <strong>per scout</strong> wherever an event prices one. A family with two scouts only has to ' +
       'send one parent — budgeting an adult each is the safe way round for a quote, and it is how the pack ' +
@@ -12901,7 +12943,7 @@
       '</div>' +
       '<div class="row" style="margin-top:10px">' + seedBtn() + '</div>' +
       '<p class="small muted" style="margin:6px 0 0">Adds the traditional slate — School Night, Pinewood Derby, Blue &amp; Gold, camps — with no dates set, ' +
-      'plus the three registration costs the app can work out for itself: youth registration at <strong>' + fmt(SA_FEES.youthCents) + ' a scout</strong>, ' +
+      'plus the three registration costs the app can work out for itself: youth registration at <strong>' + fmt(SA_FEES.youthCents) + ' a scout</strong> (paid by families — switch it to pack pays if the pack covers it), ' +
       'adult registration at <strong>' + fmt(SA_FEES.adultCents) + ' a registered leader</strong>, and the <strong>' + fmt(SA_FEES.unitCharterCents) + '</strong> unit charter fee ' +
       '(Scouting America national rates, checked ' + esc(fmtDate(SA_FEES.verified)) + '). All three follow your roster. ' +
       'Your council’s program fee isn’t seeded — only your council knows it. Skips anything already planned.</p>' +
