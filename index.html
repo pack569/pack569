@@ -14494,6 +14494,20 @@
     current.forEach(function (f) { h += duesFamilyBlock(f); });
     h += '</div>';
 
+    // TREASURER'S AUDIT, 2026-09-27 (M9) — families with nobody left on the roster. "Still owed"
+    // above has always included them, and the list only ever showed the current roster, so a
+    // crossed-over Webelos's unpaid campout sat in the total with no row to pay or forgive it
+    // from. They get their own card: the money is real, and so is the decision about it.
+    var former = fams.filter(function (f) { return !f.active.length && (f.acct.outstanding || f.acct.credit); });
+    if (former.length) {
+      h += '<div class="card"><h2 class="section display">Former scouts with a balance</h2>' +
+        '<p class="small muted" style="margin:0 0 8px">These families have nobody on the current roster — a scout crossed over, ' +
+        'moved or left — and their account is not square. What they owe is counted in <strong>Still owed</strong> above. ' +
+        'Record what they pay, or forgive it with a reason, exactly as for anyone else.</p>';
+      former.forEach(function (f) { h += duesFamilyBlock(f); });
+      h += '</div>';
+    }
+
     // Forgiveness is the practice the sample financial bylaws assume — the Treasurer is told
     // to "sympathetically counsel with a family which may be financially unable to pay fees"
     // and that "no boy should be left out of activities due to inability to pay". It is

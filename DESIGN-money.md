@@ -137,6 +137,11 @@ outliving, or being counted beside, the thing they belonged to. What changed, it
   "square". The Dues card is one block per household, titled *Family balances*, and "Square"
   counts families. Every "owes $X" beside a scout's name, the Treasurer's Home nag, and the amount
   prefilled by *Record a payment* all mean the household now.
+- **A former scout's balance had no row (M9).** *Still owed* counted every charge, and the list
+  under it showed only the current roster, so a crossed-over Webelos's unpaid campout was in the
+  total with nowhere to pay or forgive it. Families with nobody left on the roster and an account
+  that is not square now get their own card, *Former scouts with a balance*, with the same
+  controls as everyone else.
 
 ---
 

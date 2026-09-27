@@ -8584,6 +8584,18 @@ test('M7: every "owes" beside a name, and the Treasurer’s nag, is the family�
   ok(/Credit ' \+ fmt\(a\.credit\)/.test(blk), 'a family in credit still reads "square"');
 });
 
+test('M9: a former scout’s balance has a row to settle it from', () => {
+  // "Still owed" counts every family; the list showed only the current roster.
+  const dues = /function renderDues\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/Former scouts with a balance/.test(dues), 'archived scouts with a balance have nowhere to be paid or forgiven');
+  ok(/var former = fams\.filter\(function \(f\) \{ return !f\.active\.length && \(f\.acct\.outstanding \|\| f\.acct\.credit\); \}\);/.test(dues),
+    'the former-scouts list does not pick up families with nobody left on the roster');
+  ok(/former\.forEach\(function \(f\) \{ h \+= duesFamilyBlock\(f\); \}\);/.test(dues),
+    'former families are not given the same pay and forgive controls');
+  const df = /function duesFamilies\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/state\.scouts\.filter/.test(df), 'family members are read from the active roster only');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
