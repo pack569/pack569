@@ -13360,7 +13360,10 @@
                   (e.source === 'donation'
                     ? '<input class="lname" data-ch="led-donor" data-id="' + e.id + '" value="' + esc(e.donor) + '" placeholder="Who gave it" aria-label="Donor">'
                     : '')
-                : '') +
+                // M6 — a reimbursement says who it went to, since that is what marks it paid.
+                : (e.scoutId && getScout(e.scoutId)
+                  ? '<span class="small muted" style="align-self:center">Paid back to ' + esc(getScout(e.scoutId).name) + '</span>'
+                  : '')) +
             '</div>'
           : '') +
         '</div>';
@@ -20745,7 +20748,17 @@
       else if (lk === 'rec') led.reconciled = el.checked;
       // Money-in fields are meaningless on a payment out, so switching direction drops
       // them rather than leaving a stale donor attached to a cheque to the campground.
-      if (led.direction !== 'in') { led.source = ''; led.donor = ''; led.scoutId = ''; }
+      //
+      // TREASURER'S AUDIT, 2026-09-27 (M6) — but a money-OUT entry can carry a scout too: a
+      // reward-tier reimbursement names who was paid back, and tierReimbursements() reads that
+      // to know it is done. This used to clear scoutId on EVERY edit of a money-out entry, so
+      // adding the council receipt number — which the reimburse toast asks for — un-paid the
+      // family and put the Reimburse button back. Only flipping the direction clears it now,
+      // because the payer of money in is not the payee of money out.
+      if (led.direction !== 'in') {
+        led.source = ''; led.donor = '';
+        if (lk === 'dir') led.scoutId = '';
+      }
       if (led.source !== 'donation') led.donor = '';
       commit(); return;
     }

@@ -123,6 +123,11 @@ outliving, or being counted beside, the thing they belonged to. What changed, it
   A treasurer reproduced a family shown owing $10 that really owed $40. Make-up entries no longer
   settle charges (`entryPaysCharges`); `chargeTotals` reports them as `makeup`, the Dues card
   says so on its own line instead of inside *Received*, and they still reach Funds in.
+- **Editing a reimbursement un-paid it (M6).** A reimbursement is money *out* carrying the scout
+  it paid back, and that scout is how `tierReimbursements` knows it is done. The ledger editor
+  cleared `scoutId` on every edit of a money-out entry — including typing the receipt number the
+  reimburse toast asks for. Now only flipping the direction clears it; the entry's detail row says
+  who it was paid back to.
 
 ---
 

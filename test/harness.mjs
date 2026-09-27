@@ -8536,6 +8536,15 @@ test('M5: a tier make-up payment does not also settle the family’s other charg
   ok(/feeIncomeCollected = chg\.paid \+ chg\.donated \+ chg\.makeup;/.test(fn), 'make-up money dropped out of Funds in');
 });
 
+test('M6: editing a reimbursement keeps who it paid back', () => {
+  // tierReimbursements reads the scout off a money-OUT entry to know a family was paid back.
+  // Every edit used to clear it — including typing the receipt number the toast asks for.
+  const h = /if \(ch\.indexOf\('led-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(!/led\.direction !== 'in'\) \{ led\.source = ''; led\.donor = ''; led\.scoutId = ''; \}/.test(h),
+    'any edit of a money-out entry clears its scout');
+  ok(/if \(lk === 'dir'\) led\.scoutId = '';/.test(h), 'flipping the direction no longer drops the payer');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
