@@ -3525,6 +3525,10 @@
       fr.name = typeof fr.name === 'string' ? fr.name : '';
       fr.goalCents = (typeof fr.goalCents === 'number' && isFinite(fr.goalCents) && fr.goalCents > 0) ? Math.round(fr.goalCents) : 0;
       fr.countInFunds = fr.countInFunds === true; // Wave 17 — opt-in to Budget funds-in
+      // Share of each sale the pack actually keeps (camp cards pay a commission; a wreath sale
+      // pays the supplier first). 100 for every record written before the field existed, which
+      // is what those records have always meant.
+      fr.keepPct = (typeof fr.keepPct === 'number' && isFinite(fr.keepPct) && fr.keepPct >= 0 && fr.keepPct <= 100) ? fr.keepPct : 100;
       if (!Array.isArray(fr.sales)) fr.sales = [];
       fr.sales = fr.sales.filter(function (sale) {
         if (!sale || typeof sale !== 'object' || Array.isArray(sale)) return false;
@@ -4733,7 +4737,7 @@
     var tierExtra = tierCost.extra;
     expenses += tierExtra;
     var otherFr = 0;
-    state.fundraisers.forEach(function (fr) { if (fr.countInFunds) otherFr += fundraiserTotals(fr).total; });
+    state.fundraisers.forEach(function (fr) { if (fr.countInFunds) otherFr += fundraiserTotals(fr).net; });
     var cashGoal = state.cashGoalCents || 0;
     var income = carryover + fees + otherFr + cashGoal + incomeLines;
     var need = Math.max(0, expenses - income);
@@ -4897,7 +4901,7 @@
     // Wave 17 — other fundraisers a leader opted into funds-in (default off).
     var otherFundraiserIn = 0;
     state.fundraisers.forEach(function (fr) {
-      if (fr.countInFunds) otherFundraiserIn += fundraiserTotals(fr).total;
+      if (fr.countInFunds) otherFundraiserIn += fundraiserTotals(fr).net;
     });
     // Wave 8 legacy: a single typed "dues amount" the pack covers for scouts past the
     // lowest tier, added as a lump to actual spent because it wasn't tied to a budget line.
@@ -15499,6 +15503,11 @@
   // Total raised across ALL sales, plus per-active-scout credited totals. Sales logged to a
   // now-archived/deleted scout still count in the total but drop out of the standings — the
   // same way pack totals sum source records while standings filter to the roster.
+  //
+  // `net` is what the pack keeps (total × keepPct). The BUDGET reads net, never total: a $10
+  // camp card the pack keeps $4.50 of is $4.50 of funds-in, and counting the $10 overstated
+  // funds by everything the council and the supplier took (Popcorn Kernel audit, 2026-09).
+  // Standings and the goal stay in gross — that is what a scout sold.
   function fundraiserTotals(fr) {
     var perScout = {};
     activeScouts().forEach(function (s) { perScout[s.id] = 0; });
@@ -15507,7 +15516,8 @@
       total += sale.cents;
       if (perScout[sale.scoutId] != null) perScout[sale.scoutId] += sale.cents;
     });
-    return { total: total, perScout: perScout };
+    var keep = (typeof fr.keepPct === 'number' && isFinite(fr.keepPct)) ? fr.keepPct : 100;
+    return { total: total, net: Math.round(total * keep / 100), keepPct: keep, perScout: perScout };
   }
   function renderFundraisers() {
     var roster = activeScouts();
@@ -15555,8 +15565,13 @@
       '" value="' + dollars(fr.goalCents) + '" placeholder="0.00"></label>';
 
     // Wave 17 — opt this fundraiser's total into the Budget's funds-in (default off).
-    h += '<div class="row" style="margin:0 0 8px"><label class="perscout"><input type="checkbox" data-ch="fr-count" data-id="' + fr.id + '"' +
-      (fr.countInFunds ? ' checked' : '') + '> count toward Budget funds-in</label></div>';
+    h += '<div class="row" style="margin:0 0 8px">' +
+      '<label class="fld">Pack keeps (%)<input class="weight-in" type="number" min="0" max="100" step="0.1" inputmode="decimal" data-ch="fr-keep" data-id="' + fr.id +
+      '" value="' + esc(String(fr.keepPct == null ? 100 : fr.keepPct)) + '"></label>' +
+      '<label class="perscout" style="align-self:flex-end"><input type="checkbox" data-ch="fr-count" data-id="' + fr.id + '"' +
+      (fr.countInFunds ? ' checked' : '') + '> count toward Budget funds-in</label></div>' +
+      '<p class="small muted" style="margin:-4px 0 8px">The share of each sale the pack actually keeps after the council or supplier is paid — a camp card’s commission, say. ' +
+      'Only that share counts toward Budget funds-in; the standings below show what each scout sold.</p>';
 
     // Standings — active scouts ranked by amount raised for THIS fundraiser.
     if (roster.length) {
@@ -15593,6 +15608,7 @@
 
     // Total raised vs goal.
     h += '<p class="small" style="margin:8px 0 0"><strong class="money">' + fmt(ft.total) + '</strong> raised' +
+      (ft.keepPct < 100 ? ' (the pack keeps <span class="money">' + fmt(ft.net) + '</span>)' : '') +
       (fr.goalCents > 0
         ? ' of <span class="money">' + fmt(fr.goalCents) + '</span> goal (' + Math.min(100, Math.round(ft.total / fr.goalCents * 100)) + '%)' +
           (showGoal ? ' · per-scout target <span class="money">' + fmt(perTarget) + '</span> across ' + activeCount + ' active scouts' : '')
@@ -16795,7 +16811,8 @@
       state.fundraisers.forEach(function (fr) {
         var ft = fundraiserTotals(fr);
         lines.push('- ' + (fr.name || 'Fundraiser') + ': ' + fmt(ft.total) + ' raised' +
-          (fr.goalCents > 0 ? ' of ' + fmt(fr.goalCents) + ' goal' : ''));
+          (fr.goalCents > 0 ? ' of ' + fmt(fr.goalCents) + ' goal' : '') +
+          (ft.keepPct < 100 ? ' (the pack keeps ' + fmt(ft.net) + ')' : ''));
       });
       lines.push('');
     }
@@ -21104,6 +21121,12 @@
       return;
     }
     if (ch === 'pack-name') { state.packName = el.value.trim(); commit(); return; }
+    if (ch === 'fr-keep') {
+      var frK = getFundraiser(el.dataset.id);
+      var kp = parseFloat(el.value);
+      if (frK) { frK.keepPct = isFinite(kp) ? Math.max(0, Math.min(100, kp)) : 100; commit(); }
+      return;
+    }
     if (ch === 'fr-goal') {
       var frG = getFundraiser(el.dataset.id);
       if (frG) { frG.goalCents = toCents(el.value); commit(); }
@@ -21639,7 +21662,7 @@
     if (kind === 'add-fundraiser') {
       var frName = String(fd.get('name') || '').trim();
       if (!frName) return;
-      state.fundraisers.push({ id: uid(), name: frName, goalCents: toCents(fd.get('goal')), sales: [], countInFunds: false });
+      state.fundraisers.push({ id: uid(), name: frName, goalCents: toCents(fd.get('goal')), sales: [], countInFunds: false, keepPct: 100 });
       commit(); return;
     }
     if (kind === 'add-reward-tier') {

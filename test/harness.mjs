@@ -8845,6 +8845,20 @@ test('P6: the import preview lists unknown sale types and hand-entered duplicate
     'the preview does not show them');
 });
 
+test('P2: another fundraiser counts toward the budget at what the pack keeps', () => {
+  const ctx = sandbox(['fundraiserTotals']);
+  vm.runInContext('function activeScouts() { return [{ id: "a" }]; }', ctx);
+  const sales = [{ scoutId: 'a', cents: 1000 }, { scoutId: 'a', cents: 1000 }];
+  const camp = ctx.fundraiserTotals({ sales, keepPct: 45 });
+  eq([camp.total, camp.net, camp.perScout.a], [2000, 900, 2000], 'standings gross, budget net');
+  eq(ctx.fundraiserTotals({ sales }).net, 2000, 'an old record without keepPct keeps 100%');
+  const fs = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/otherFr \+= fundraiserTotals\(fr\)\.net/.test(fs), 'fundingSummary counts gross fundraiser sales');
+  ok(/otherFundraiserIn \+= fundraiserTotals\(fr\)\.net/.test(SCRIPT) && !/otherFundraiserIn \+= fundraiserTotals\(fr\)\.total/.test(SCRIPT),
+    'the Budget card counts gross fundraiser sales');
+  ok(/fr\.keepPct = \(typeof fr\.keepPct === 'number'[^\n]*: 100;/.test(SCRIPT), 'normalize does not default keepPct to 100');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
