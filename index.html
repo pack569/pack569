@@ -5236,6 +5236,16 @@
     if (!linePerFamily(l)) return roster;
     return familiesOf(roster).map(familyBillingScout);
   }
+  // The same roster as a set of ids — what a tier reader checks a covered scout against. A share
+  // reaches a scout only if the line BILLS that scout: a Webelos-only fee is nothing to a Wolf,
+  // and a per-family fee is one fee, carried by the one member it is billed to (the same member
+  // applyTierWaivers waives it for). Popcorn Kernel audit, 2026-09: the per-scout readers below
+  // skipped this and priced every scout against every line.
+  function lineBillingIds(l) {
+    var ids = {};
+    lineBillingRoster(l).forEach(function (s) { ids[s.id] = true; });
+    return ids;
+  }
   // What families pay directly, grouped by WHO they pay. `paidDirectTo` has always been a name
   // rather than a flag, so it already covers a council and a vendor equally — this is where
   // that pays off: council fees and vendor fees are two different conversations, and a single
@@ -11420,10 +11430,13 @@
     var out = {};
     if (!tierCoverageConfigured()) return out;
     var cov = packCoverage();
-    // Per SHARE, at that share's own rate: an adult shirt costs the adult price.
+    // Per SHARE, at that share's own rate: an adult shirt costs the adult price. Only for a
+    // scout the line bills (lineBillingIds) — earning a tier does not make a Wolf's family owe,
+    // or be spared, a Webelos-only fee, nor a family's one fee count once per sibling.
     coverableShares().forEach(function (s) {
+      var billed = lineBillingIds(s.item);
       Object.keys(cov[s.coverKey] || {}).forEach(function (sid) {
-        out[sid] = (out[sid] || 0) + s.rate;
+        if (billed[sid]) out[sid] = (out[sid] || 0) + s.rate;
       });
     });
     return out;
@@ -11713,9 +11726,14 @@
   // two rungs each, so the top adult tier's break-even claimed $629 handed back against a real
   // $582 — $47 of coverage the pack would have been asked to fund twice. Both readers now go
   // through this one function (2026-08-04).
-  function coverValueOfKeys(keys) {
+  //
+  // With `scout`, only the lines that bill that scout count (lineBillingIds) — what reaching the
+  // keys is worth to THIS family. Without it, the value to a scout every line applies to, which
+  // is what the pack-level readers (break-even, the ladder) want.
+  function coverValueOfKeys(keys, scout) {
     var cents = 0;
     coverableLines().forEach(function (r) {
+      if (scout && !lineBillingIds(r.line)[scout.id]) return;
       COVER_WHO.forEach(function (who) {
         if (keys[coverKeyOf(r.key, who)]) cents += lineRateForWho(r.line, who);
       });
@@ -11757,10 +11775,22 @@
     var rows = [];
     coverableShares().filter(function (s) { return s.reimburse && s.rate > 0; }).forEach(function (s) {
       var who = covered[s.coverKey] || {};
-      scoutsInDens(activeScouts(), lineDens(s.item)).forEach(function (sc) {
+      // ONE ROW PER FAMILY on a per-family line (Popcorn Kernel audit, 2026-09). Walking every
+      // scout in the dens gave two siblings two rows, and the pack paid one family fee back
+      // twice. The family's row is its billing scout's — the member lineBillingRoster bills and
+      // applyTierWaivers waives for — and what has gone back is read across ALL its members, so
+      // a reimbursement a treasurer happened to record against the other sibling still counts.
+      var roster = lineRoster(s.item);
+      var fams = linePerFamily(s.item)
+        ? familiesOf(roster)
+        : roster.map(function (sc) { return { members: [sc] }; });
+      fams.forEach(function (fam) {
+        var sc = familyBillingScout(fam);
         if (!who[sc.id]) return;
+        var ids = {};
+        fam.members.forEach(function (m) { ids[m.id] = true; });
         var paid = state.ledger.reduce(function (n, e) {
-          return (e.direction === 'out' && e.lineId === s.item.id && e.scoutId === sc.id)
+          return (e.direction === 'out' && e.lineId === s.item.id && ids[e.scoutId])
             ? n + (e.amountCents || 0) : n;
         }, 0);
         rows.push({ share: s, scout: sc, tier: who[sc.id], owed: s.rate, paid: paid, left: Math.max(0, s.rate - paid) });
@@ -11776,8 +11806,11 @@
     var net = pack.commission;
     var back = 0;
     var cov = packCoverage();
+    // Counted only for scouts the line bills — see lineBillingIds. Counting every scout who
+    // reached the tier overstated what goes back by every out-of-den scout and every sibling.
     coverableShares().forEach(function (s) {
-      back += Object.keys(cov[s.coverKey] || {}).length * s.rate;
+      var billed = lineBillingIds(s.item);
+      Object.keys(cov[s.coverKey] || {}).forEach(function (sid) { if (billed[sid]) back += s.rate; });
     });
     return {
       net: net, back: back,
@@ -11797,11 +11830,16 @@
   }
   // What a tier picks up per scout: the SCOUT share of every line it covers that can actually
   // raise a charge. This is what a missed deadline puts back onto a family.
-  function tierCoverCentsPerScout(t) {
+  //
+  // With `scout`, only the lines that bill that scout (lineBillingIds): a Wolf who missed a tier
+  // is not asked to make up a Webelos-only fee, and the make-up cap is what the tier would really
+  // have saved THIS family. Without it — the "does this tier cover anything" gate — every line.
+  function tierCoverCentsPerScout(t, scout) {
     var keys = {};
     arrOf(t.covers).forEach(function (k) { keys[k] = true; });
     var cents = 0;
     coverableLines().forEach(function (r) {
+      if (scout && !lineBillingIds(r.line)[scout.id]) return;
       COVER_WHO.forEach(function (who) {
         if (keys[coverKeyOf(r.key, who)]) cents += lineRateForWho(r.line, who);
       });
@@ -11828,10 +11866,11 @@
   // date, which is exactly what a live shortfall means.
   function tierShortfallRows(t, map) {
     var totals = computeScoutTotals(t.dueBy);
-    var cover = tierCoverCentsPerScout(t);
     var earned = map || tierEarnedMap();
     return activeScouts().filter(function (s) { return !(earned[t.id] || {})[s.id]; })
       .map(function (s) {
+        // Per scout: what this tier would have saved THIS family (den limits, per-family fees).
+        var cover = tierCoverCentsPerScout(t, s);
         var got = scoutCommissionOf({ t: totals[s.id] });
         var base = got == null ? 0 : got;
         var short = Math.max(0, (t.thresholdCents || 0) - base);
@@ -11925,13 +11964,9 @@
       plan: planAnchor, top: topAnchor, stretchOn: stretchOn,
       marksPlan: marksPlan, marksTop: marksTop, planPct: planPct
     };
-    // Cached per tier: tierCoverCentsPerScout walks every coverable line, and there is one row
-    // per scout all asking about the same handful of tiers.
-    var coverByTier = {};
-    function coverOf(t) {
-      if (coverByTier[t.id] == null) coverByTier[t.id] = tierCoverCentsPerScout(t);
-      return coverByTier[t.id];
-    }
+    // Per scout AND tier since 2026-09: a den-limited line is worth something to one scout and
+    // nothing to the next, so the cap on a make-up payment differs row to row.
+    function coverOf(t, s) { return tierCoverCentsPerScout(t, s); }
     return activeScouts().map(function (s) {
       var earned = earnedTierFor(s.id, tiers, map);
       var next = null, closedAhead = false;
@@ -11951,7 +11986,7 @@
       // written to the ledger cannot drift apart. Capped at what this tier actually covers,
       // because paying more to reach a tier than the tier saves you is nobody's rule; a
       // prize-only tier therefore offers nothing to pay.
-      var cover = next ? coverOf(next) : 0;
+      var cover = next ? coverOf(next, s) : 0;
       // The keys this scout already holds: every tier the shared map marks for them, unioned,
       // exactly the way packCoverage does it. Then the keys `next` would add on top.
       var addedKeys = {};
@@ -12034,7 +12069,7 @@
         // Two tiers can be pointed at the same line — Bronze and Silver both covering dues, say —
         // and the second one then adds nothing, because packCoverage unions the keys. Subtracting
         // cumulative totals would have reported that second tier as worth another full fee.
-        unlocks: next ? coverValueOfKeys(addedKeys) : 0,
+        unlocks: next ? coverValueOfKeys(addedKeys, s) : 0,
         // HOW CLOSE TO THE NEXT RUNG, as distinct from anchorPct's "how far along the ladder".
         // Owner, 2026-08-31: "you can no longer tell what a scout needs, or how close they are to
         // their next tier." This figure had been computed here and rendered nowhere ever since the

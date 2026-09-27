@@ -4337,7 +4337,7 @@ test('the shortfall is the gap, capped at the fee it buys', () => {
   ok(report, 'the deadline report heading was not found');
   ok(/if \(tierIsClosed\(t\) && tierCoverCentsPerScout\(t\) > 0\) \{/.test(SCRIPT),
     'the "Missed the deadline" report is no longer gated on the deadline having passed');
-  const cover = /function tierCoverCentsPerScout\(t\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  const cover = /function tierCoverCentsPerScout\(t, scout\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(cover && /coverableLines\(\)\.forEach/.test(cover[0]),
     'the fee counts lines a tier cannot be pointed at in the first place');
 });
@@ -4662,7 +4662,8 @@ test('a council-paid fee can be covered, and only ever as a reimbursement', () =
     'it does not describe a line families pay somebody else for');
   const rows = /function tierReimbursements\(map\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(rows, 'tierReimbursements() not found');
-  ok(/e\.direction === 'out' && e\.lineId === s\.item\.id && e\.scoutId === sc\.id/.test(rows[0]),
+  // Read across the whole family since 2026-09 (P5), so `ids` rather than one scout id.
+  ok(/e\.direction === 'out' && e\.lineId === s\.item\.id && ids\[e\.scoutId\]/.test(rows[0]),
     'what has already been paid back is not read from the ledger');
   ok(/left: Math\.max\(0, s\.rate - paid\)/.test(rows[0]), 'a part-paid reimbursement is not tracked');
   // The payment is a ledger entry OUT that carries the scout — that is what makes "who has been
@@ -8891,6 +8892,71 @@ test('P3: a cash goal run through Trail’s End counts only its commission', () 
   // so it stays consistent without change.
   ok(/var goalCents = \(pack\.teGoal \|\| 0\) \+ \(pack\.cashGoal \|\| 0\);/.test(BPV()) && /raisedCents: pack\.combined/.test(BPV()),
     'the parent goal bar changed shape');
+});
+
+// The tier readers below price a share for a scout only where the line BILLS that scout.
+function tierScopeSandbox() {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    ${slice('arrOf')} ${slice('COVER_WHO')} ${slice('coverKeyOf')} ${slice('lineRateForWho')}
+    ${slice('scoutsInDens')} ${slice('familiesOf')} ${slice('familyBillingScout')}
+    ${slice('lineBillingRoster')} ${slice('lineBillingIds')}
+    ${slice('coverValueOfKeys')} ${slice('tierCoverCentsPerScout')}
+    ${slice('packCoverageByScout')} ${slice('privateBenefitCheck')} ${slice('tierReimbursements')}
+    function familyKeyOf(s) { return s.familyId || s.id; }
+    function linePerFamily(l) { return !!l.perFamily; }
+    function lineDens(l) { return l.dens || []; }
+    function lineRoster(l) { return scoutsInDens(activeScouts(), lineDens(l)); }
+    function activeScouts() { return SCOUTS; }
+    function tierCoverageConfigured() { return true; }
+    // wolf, and two Webelos siblings (web1 bills the family), all reached every tier.
+    var SCOUTS = [{ id: 'wolf', den: 'Wolf' }, { id: 'web1', den: 'Webelos' }, { id: 'web2', den: 'Webelos', familyId: 'web1' }];
+    var WEB = { id: 'webfee', scoutRateCents: 5000, dens: ['Webelos'] };
+    var CAMP = { id: 'camp', scoutRateCents: 8000, perFamily: true };
+    var LINES = [{ key: 'webfee', line: WEB }, { key: 'camp', line: CAMP }];
+    function coverableLines() { return LINES; }
+    function coverableShares() {
+      return [{ coverKey: 'webfee', item: WEB, rate: 5000, reimburse: false },
+              { coverKey: 'camp', item: CAMP, rate: 8000, reimburse: true }];
+    }
+    var ALL = { wolf: true, web1: true, web2: true };
+    function packCoverage() { return { webfee: ALL, camp: ALL }; }
+    function computePackTotals() { return { commission: 100000 }; }
+    var T = { id: 't', covers: ['webfee', 'camp'] };
+    function sortedTiers() { return [T]; }
+    function tierEarnedMap() { return { t: ALL }; }
+    var state = { ledger: [] };
+  `, ctx);
+  return ctx;
+}
+
+test('P4: a tier prices a den-limited fee only for the dens it is for', () => {
+  const ctx = tierScopeSandbox();
+  const s = (id) => ctx.SCOUTS.find((x) => x.id === id);
+  const t = ctx.T;
+  eq(ctx.tierCoverCentsPerScout(t, s('wolf')), 8000, 'a Wolf is asked to make up a Webelos-only fee');
+  eq(ctx.tierCoverCentsPerScout(t, s('web1')), 13000, 'the Webelos billing scout');
+  eq(ctx.tierCoverCentsPerScout(t, s('web2')), 5000, 'a sibling carries the family fee a second time');
+  eq(ctx.tierCoverCentsPerScout(t), 13000, 'the unscoped pack-level figure changed');
+  eq(ctx.coverValueOfKeys({ webfee: true }, s('wolf')), 0, 'coverValueOfKeys ignores dens');
+  const by = ctx.packCoverageByScout();
+  eq([by.wolf, by.web1, by.web2], [8000, 13000, 5000], 'packCoverageByScout');
+  // 5000 × 2 Webelos + 8000 × 3 families would be 34000; the families are wolf and web1.
+  eq(ctx.privateBenefitCheck().back, 26000, 'privateBenefitCheck overstates what goes back');
+  const src = /function tierShortfallRows\(t, map\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/tierCoverCentsPerScout\(t, s\)/.test(src), 'the make-up cap is not per scout');
+  const tpr = /function tierProgressRows\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/coverOf\(next, s\)/.test(tpr) && /coverValueOfKeys\(addedKeys, s\)/.test(tpr), 'the progress row is not per scout');
+});
+
+test('P5: a per-family paid-direct fee is reimbursed once per family', () => {
+  const ctx = tierScopeSandbox();
+  const rows = ctx.tierReimbursements().map((r) => r.scout.id);
+  eq(rows, ['wolf', 'web1'], 'one reimbursement row per family');
+  // Paid back against the OTHER sibling still settles the family.
+  ctx.state.ledger = [{ direction: 'out', lineId: 'camp', scoutId: 'web2', amountCents: 8000 }];
+  const web = ctx.tierReimbursements().find((r) => r.scout.id === 'web1');
+  eq([web.paid, web.left], [8000, 0], 'a payment recorded against a sibling is not seen');
 });
 
 /* ---------------- report ---------------- */
