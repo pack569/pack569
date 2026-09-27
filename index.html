@@ -17407,6 +17407,19 @@
     g += '<p class="small" style="margin:0 0 8px">Writes each matched scout’s <strong>Online</strong> and <strong>Wagon</strong> sales ' +
       'into this year’s standings as imported entries, one per day the orders were taken — so a reward-tier deadline counts them on the day they were sold. Re-importing a newer report replaces those imported figures exactly; entries you added by hand are never touched. ' +
       '<strong>Storefront credit stays with your storefront blocks</strong> — importing Trail’s End’s storefront totals here would double-count that money.</p>';
+    if (arc.otherTypes && arc.otherTypes.length) {
+      g += '<div class="warn" style="margin:0 0 10px"><strong>Not imported — sale type not Online, Wagon or Storefront:</strong> ' +
+        arc.otherTypes.map(function (t) {
+          return esc(t.type) + ' (' + t.rows + ' order' + (t.rows === 1 ? '' : 's') + ', ' + fmt(t.cents) + ')';
+        }).join(' · ') +
+        '. These are in the grand total above but no scout is credited with them here — add any that belong to a scout by hand.</div>';
+    }
+    var overlap = teManualOverlap(teMatchScouts(arc.scouts).matched, state.entries);
+    if (overlap.length) {
+      g += '<div class="warn" style="margin:0 0 10px"><strong>' + esc(overlap.join(', ')) + '</strong> already ' +
+        (overlap.length === 1 ? 'has' : 'have') + ' online or wagon sales entered by hand. The import adds Trail’s End’s figures alongside them, ' +
+        'so if those hand entries are the same orders they will count twice — delete the hand entries on the scout’s page after updating.</div>';
+    }
     if (arc.undatedRows) {
       g += '<div class="warn" style="margin:0 0 10px"><strong>' + arc.undatedRows + ' online/wagon order' + (arc.undatedRows === 1 ? ' has' : 's have') +
         ' no date we can read</strong> in the Date Taken column, so ' + (arc.undatedRows === 1 ? 'it' : 'they') + ' will be dated today. ' +
@@ -18294,6 +18307,10 @@
     var scouts = {}, scoutOrder = [], locations = {}, locOrder = [];
     var channel = { onlineCents: 0, wagonCents: 0, storefrontCents: 0 };
     var grandCents = 0, maxYear = 0, undatedRows = 0;
+    // Rows whose Sale Type is none of the three we know. They still count in the grand total
+    // (it is money Trail's End reports) but no channel and no live import picks them up, so the
+    // preview lists them rather than letting them vanish.
+    var other = {}, otherOrder = [];
     for (var r = hdr.headerRow + 1; r < rows.length; r++) {
       var c = rows[r] || [];
       if (!cell(c, cOrder)) continue;
@@ -18306,6 +18323,11 @@
       if (yr && +yr[1] > maxYear) maxYear = +yr[1];
       var bucket = type === 'Online' ? 'onlineCents' : type === 'Wagon' ? 'wagonCents' : type === 'Storefront' ? 'storefrontCents' : null;
       if (bucket) channel[bucket] += cents;
+      else {
+        var tk = type || '(blank)';
+        if (!other[tk]) { other[tk] = { type: tk, rows: 0, cents: 0 }; otherOrder.push(tk); }
+        other[tk].rows += 1; other[tk].cents += cents;
+      }
       if (!scouts[name]) { scouts[name] = { name: name, code: code, onlineCents: 0, wagonCents: 0, storefrontCents: 0, totalCents: 0, byDate: {} }; scoutOrder.push(name); }
       var sc = scouts[name];
       if (!sc.code && code) sc.code = code;
@@ -18328,7 +18350,8 @@
     var year = maxYear || (defaultProgramYear() + 1);
     var scoutList = scoutOrder.map(function (k) { return scouts[k]; }).sort(function (a, b) { return b.totalCents - a.totalCents; });
     var locList = locOrder.map(function (k) { return locations[k]; }).sort(function (a, b) { return b.cents - a.cents; });
-    return { kind: 'trails-end', year: year, grandCents: grandCents, channel: channel, scouts: scoutList, locations: locList, undatedRows: undatedRows };
+    return { kind: 'trails-end', year: year, grandCents: grandCents, channel: channel, scouts: scoutList, locations: locList, undatedRows: undatedRows,
+      otherTypes: otherOrder.map(function (k) { return other[k]; }) };
   }
 
   // Wave 20 — Inventory Transaction Report → per-product container tallies.
@@ -18762,6 +18785,20 @@
   // An order with no readable date falls back to today, which is the old behavior and the
   // conservative one (it can only miss a deadline, never sneak under one); the preview says how
   // many there were so the Kernel can check the file.
+  // Scouts who would end up with BOTH hand-entered and imported online/wagon sales. The import
+  // never touches a manual entry, which is right — but if the Kernel typed a scout's online
+  // orders in by hand before the first import, the import adds them a second time and the scout
+  // is credited twice. The preview names them; deciding which to keep is a person's call.
+  // Pure: takes the matched rows and the entries.
+  function teManualOverlap(matched, entries) {
+    var manual = {};
+    (entries || []).forEach(function (e) {
+      if (e && e.source !== 'te-import' && (e.kind === 'online' || e.kind === 'wagon') && (e.salesCents || 0) > 0) manual[e.scoutId] = true;
+    });
+    return matched.filter(function (r) {
+      return manual[r.scoutId] && ((r.onlineCents || 0) > 0 || (r.wagonCents || 0) > 0);
+    }).map(function (r) { return r.name; });
+  }
   function teLiveEntriesFor(row, today) {
     var out = [];
     var byDate = row.byDate || {};

@@ -8826,6 +8826,25 @@ test('P1: a Trail’s End import keeps the day each online/wagon order was taken
   ok(/arc\.undatedRows/.test(SCRIPT), 'the preview no longer warns about undated orders');
 });
 
+test('P6: the import preview lists unknown sale types and hand-entered duplicates', () => {
+  const ctx = sandbox(['toCents', 'teSaleDateISO', 'mapSalesReport', 'teManualOverlap']);
+  vm.runInContext('function defaultProgramYear() { return 2026; }', ctx);
+  const hdr = { headerRow: 0, col: { 'Order Number': 0, 'Scout': 1, 'Sale Type': 2, 'Total Order Amount': 3, 'Date Taken': 4 } };
+  const arc = ctx.mapSalesReport([[],
+    ['1', 'Ada', 'Online', '10.00', '9/14/2026'],
+    ['2', 'Ada', 'Direct Ship', '30.00', '9/14/2026'],
+    ['3', 'Bo', 'Direct Ship', '12.00', '9/15/2026']], hdr);
+  eq(arc.otherTypes, [{ type: 'Direct Ship', rows: 2, cents: 4200 }], 'unknown sale types are dropped silently');
+  const matched = [{ scoutId: 'a', name: 'Ada', onlineCents: 1000, wagonCents: 0 }, { scoutId: 'b', name: 'Bo', onlineCents: 0, wagonCents: 0 }];
+  const entries = [
+    { scoutId: 'a', kind: 'online', salesCents: 1000 },
+    { scoutId: 'b', kind: 'wagon', salesCents: 500 },
+    { scoutId: 'a', kind: 'online', salesCents: 1000, source: 'te-import' }];
+  eq(ctx.teManualOverlap(matched, entries), ['Ada'], 'only a scout the import will also credit is flagged');
+  ok(/teManualOverlap\(teMatchScouts\(arc\.scouts\)\.matched, state\.entries\)/.test(SCRIPT) && /arc\.otherTypes\.map/.test(SCRIPT),
+    'the preview does not show them');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
