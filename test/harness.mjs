@@ -9048,6 +9048,20 @@ test('B3: the pack owner removed by another admin is healed, not wiped', () => {
   eq(vm.runInContext('[sync.myRole, sync.ownerHealing, removed.length]', ctx), ['admin', false, 0], 'the heal did not resolve the role');
 });
 
+test('B5: an unverified Google email gets its own gate before anything touches the cloud', () => {
+  const fn = slice('syncStart');
+  const gate = fn.indexOf("if (isGoogleUser(u) && u.emailVerified === false) {");
+  ok(gate !== -1, 'syncStart does not check emailVerified');
+  ok(gate < fn.indexOf('sync.db = mods.fs.getFirestore') && gate < fn.indexOf('startAccounts('),
+    'the verified check comes after the cloud is touched');
+  const blk = fn.slice(gate, fn.indexOf('sync.db = mods.fs.getFirestore'));
+  ok(/sync\.joinRejected = 'unverified';/.test(blk) && /return;/.test(blk), 'the unverified branch does not stop at a gate');
+  const closed = slice('renderJoinClosed');
+  ok(/if \(sync\.joinRejected === 'unverified'\)/.test(closed) &&
+    /Google hasn’t verified this email address yet — verify it with Google, then sign in again\./.test(closed),
+    'no screen tells them to verify with Google');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

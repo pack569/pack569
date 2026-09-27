@@ -7395,6 +7395,21 @@
               return;
             }
             setSyncUser(u);
+            // AN UNVERIFIED GOOGLE EMAIL GETS ITS OWN GATE (security review, 2026-09). The rules
+            // take only a verified Google account as a member (viaGoogle), so every read and the
+            // member-doc create would be denied — and handleAccountsError reads a denial as "the
+            // rules aren't published", which in single-pack mode is the setup screen, shown to
+            // a family. Say what is actually wrong instead, and touch nothing in the cloud: no
+            // db, no doc ref, no accounts bootstrap. `=== false`, not falsy, so an SDK that
+            // does not report the field changes nothing.
+            if (isGoogleUser(u) && u.emailVerified === false) {
+              sync.joinRejected = 'unverified';
+              sync.mode = 'local';
+              sync.error = '';
+              renderSyncPill();
+              render();
+              return;
+            }
             sync.db = mods.fs.getFirestore(sync.app);
             sync.docRef = mods.fs.doc(sync.db, 'packs', docId);
             if (isGoogleUser(u)) {
@@ -9443,6 +9458,15 @@
           ? '<button type="button" class="btn small" data-act="sign-out-google">Sign out</button>'
           : '') +
         '</div>');
+    }
+    // Signed in with a Google account whose email Google has not verified — see syncStart.
+    if (sync.joinRejected === 'unverified') {
+      return joinGateShell('Verify your email with Google first',
+        '<p class="small">Google hasn’t verified this email address yet — verify it with Google, then sign in again.</p>' +
+        '<p class="small muted">The pack only lets in accounts whose email Google has confirmed, so it knows who you are.</p>' +
+        '<div class="join-actions">' +
+        (sync.user && sync.user.email ? '<span class="small muted">Signed in as ' + esc(sync.user.email) + '</span>' : '') +
+        '<button type="button" class="btn small" data-act="sign-out-google">Sign out</button></div>');
     }
     // Signed in with no link and no invite: nothing was refused, there was just no way in.
     if (sync.joinRejected === 'nolink') {
