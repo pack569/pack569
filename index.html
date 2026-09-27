@@ -5609,7 +5609,7 @@
   // M7 — `outstanding` is summed per FAMILY (keyOf, as familyAccounts), and `credit` is what
   // families have overpaid. Per scout, one sibling's cheque left the other "owing".
   function chargeTotals(charges, ledger, keyOf) {
-    var t = { raised: 0, standing: 0, waived: 0, forgiven: 0, paid: 0, donated: 0, makeup: 0, outstanding: 0, credit: 0 };
+    var t = { raised: 0, standing: 0, waived: 0, forgiven: 0, paid: 0, donated: 0, makeup: 0, carried: 0, outstanding: 0, credit: 0 };
     charges.forEach(function (c) {
       t.raised += c.amountCents || 0;
       if (c.waivedBy) { t.waived += c.amountCents || 0; return; }
@@ -5620,6 +5620,10 @@
       if (e.direction !== 'in' || !e.scoutId) return;
       // M5 — bought a tier, not a charge: reported on its own so Received means what it says.
       if (e.tierMakeup) { t.makeup += e.amountCents || 0; return; }
+      // M4 — a family's credit brought forward from last year. It settles their charges like any
+      // payment, but it did not arrive THIS year: it is already inside the carryover, so counting
+      // it as received would put it in Funds in a second time.
+      if (e.source === 'carryover') { t.carried += e.amountCents || 0; return; }
       if (e.source === 'donation') t.donated += e.amountCents || 0;
       else t.paid += e.amountCents || 0;
     });
@@ -14700,6 +14704,7 @@
     if (t.forgiven) settled.push('<span class="pill navy">Forgiven</span> <strong class="money">' + fmt(t.forgiven) + '</strong> the committee chose to absorb');
     // M5 — make-up money is not in Received: it bought a tier, and the tier's waiver is what
     // settled the fee. Said here so the ledger and this card can still be reconciled by eye.
+    if (t.carried) settled.push('<span class="pill navy">Carried forward</span> <strong class="money">' + fmt(t.carried) + '</strong> is credit families had at the end of last year — it settles their charges, and is already in the carryover, so it is not counted under Received');
     if (t.makeup) settled.push('<span class="pill navy">Tier make-up</span> <strong class="money">' + fmt(t.makeup) + '</strong> came in from families paying the difference to reach a reward tier — it is in the bank, and the tier waives the fee, so it is not counted again under Received');
     if (settled.length) {
       h += '<hr class="divider">' + settled.map(function (l) { return '<p class="small" style="margin:6px 0 0">' + l + '.</p>'; }).join('');
@@ -14722,11 +14727,16 @@
     // above has always included them, and the list only ever showed the current roster, so a
     // crossed-over Webelos's unpaid campout sat in the total with no row to pay or forgive it
     // from. They get their own card: the money is real, and so is the decision about it.
-    var former = fams.filter(function (f) { return !f.active.length && (f.acct.outstanding || f.acct.credit); });
+    // ...and one whose balance was FORGIVEN stays listed, forgiven, so the decision can be read
+    // and undone. Dropping it at the moment it was forgiven would put it out of reach of Undo.
+    var former = fams.filter(function (f) {
+      return !f.active.length && (f.acct.outstanding || f.acct.credit ||
+        f.charges.some(function (c) { return !!c.forgiven; }));
+    });
     if (former.length) {
       h += '<div class="card"><h2 class="section display">Former scouts with a balance</h2>' +
         '<p class="small muted" style="margin:0 0 8px">These families have nobody on the current roster — a scout crossed over, ' +
-        'moved or left — and their account is not square. What they owe is counted in <strong>Still owed</strong> above. ' +
+        'moved or left — and their account is not square, or was settled by forgiving it. What they owe is counted in <strong>Still owed</strong> above. ' +
         'Record what they pay, or forgive it with a reason, exactly as for anyone else.</p>';
       former.forEach(function (f) { h += duesFamilyBlock(f); });
       h += '</div>';

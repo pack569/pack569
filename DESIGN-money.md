@@ -162,6 +162,9 @@ outliving, or being counted beside, the thing they belonged to. What changed, it
   new book opens — in the family's account, not in the bank twice (decision 12). Only when the
   new book has an opening date: without one there is no "before", so a pack that never set an
   opening balance does not get its credits carried, and the treasurer should re-enter them.
+  A carried credit settles charges but is reported as *Carried forward*, not *Received*, and stays
+  out of Funds in — it is already inside the carryover. A former family whose balance was
+  **forgiven** stays listed, so the decision can be read and undone.
 - **Reconciliation could agree with the wrong statement (M10).** *Tick all* ticked every entry
   since the opening date and `reconcileTotals` counted every ticked one, so an October cheque
   could move a September statement. Both now stop at the **statement date** (`entryOnStatement`);

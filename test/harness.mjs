@@ -8595,7 +8595,7 @@ test('M9: a former scout’s balance has a row to settle it from', () => {
   // "Still owed" counts every family; the list showed only the current roster.
   const dues = /function renderDues\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/Former scouts with a balance/.test(dues), 'archived scouts with a balance have nowhere to be paid or forgiven');
-  ok(/var former = fams\.filter\(function \(f\) \{ return !f\.active\.length && \(f\.acct\.outstanding \|\| f\.acct\.credit\); \}\);/.test(dues),
+  ok(/var former = fams\.filter\(function \(f\) \{\s*return !f\.active\.length && \(f\.acct\.outstanding \|\| f\.acct\.credit \|\|\s*f\.charges\.some\(function \(c\) \{ return !!c\.forgiven; \}\)\);/.test(dues),
     'the former-scouts list does not pick up families with nobody left on the roster');
   ok(/former\.forEach\(function \(f\) \{ h \+= duesFamilyBlock\(f\); \}\);/.test(dues),
     'former families are not given the same pay and forgive controls');
@@ -8784,6 +8784,17 @@ test('E9: budget vs actual, by category, with variance', () => {
   ok(/planned: lineThroughPack\(l\) \? linePlanned\(l\) : 0/.test(now), 'paid-direct money is planned as the pack’s');
   ok(/h \+= renderBudgetVsActual\(\);/.test(/function renderBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0]),
     'the Budget workspace does not show it');
+});
+
+test('M4: a credit carried from last year settles charges but is not new money in', () => {
+  // Found driving a real close-out in the browser: the carried credit is already inside the
+  // carryover, and counting it under Received put it in Funds in a second time.
+  const { chargeTotals, familyOutstanding } = sandbox(CHARGE_FNS);
+  const charges = [{ scoutId: 'cal', amountCents: 8000, waivedBy: '', forgiven: null }];
+  const ledger = [{ direction: 'in', scoutId: 'cal', amountCents: 5000, source: 'carryover', date: '2027-06-30' }];
+  eq(familyOutstanding(charges, ledger, 'cal'), 3000, 'the credit settles part of the new dues');
+  const t = chargeTotals(charges, ledger);
+  eq([t.paid, t.carried, t.outstanding], [0, 5000, 3000], 'carried, not received');
 });
 
 /* ---------------- report ---------------- */
