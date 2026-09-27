@@ -5688,6 +5688,61 @@ test('Home says when there are awards ready to buy', () => {
   ok(/if \(shop\.total\)/.test(home), 'the Home task does not test shopItems().total');
 });
 
+test('a scout who moves up a den leaves the old rank’s adventures behind', () => {
+  // Audit 2026-09-27: marks are keyed by adventure name only, and Bobcat is on every rank's
+  // list. The standalone "Advance dens" moved the roster without clearing, so a new Bear
+  // showed Wolf's Bobcat as done and Wolf electives counted toward Bear.
+  const ctx = vm.createContext({});
+  vm.runInContext(`${slice('DENS')}
+    var state = {
+      scouts: [
+        { id: 'w', den: 'Wolf' }, { id: 'aol', den: 'Arrow of Light' },
+        { id: 'gone', den: 'Tiger', archived: true }, { id: 'none', den: '' }
+      ],
+      advancement: {
+        w: { req: { Bobcat: 'awarded' }, elect: { Backyard: 'done' } },
+        aol: { req: { Bobcat: 'done' }, elect: {} },
+        gone: { req: { Bobcat: 'done' }, elect: {} },
+        none: { req: { Bobcat: 'done' }, elect: {} }
+      }
+    };
+    ${slice('advanceDens')}`, ctx);
+  const res = vm.runInContext('advanceDens()', ctx);
+  eq(res, { advanced: 1, crossed: 1 }, 'the move itself changed');
+  eq(vm.runInContext("state.scouts[0].den", ctx), 'Bear', 'the Wolf did not move up');
+  ok(!vm.runInContext("state.advancement.w", ctx), 'the new Bear still carries Wolf’s Bobcat');
+  ok(!vm.runInContext("state.advancement.aol", ctx), 'a crossed-over scout kept a rank they have left');
+  // Scouts the button did NOT move keep their marks — they are still in the rank they earned them in.
+  ok(vm.runInContext("!!state.advancement.gone && !!state.advancement.none", ctx),
+    'a scout who did not move lost their advancement');
+});
+
+test('the close-out never clears the marks earned since the dens were advanced', () => {
+  // Advance dens runs in spring; the close-out comes months later. Everything marked in
+  // between belongs to the rank the scout is in now, so the close-out must not wipe it — and
+  // the season's own summary, taken at the advance, is what the archive keeps.
+  const roll = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/var densAlreadyAdvanced = state\.densAdvancedYear === closingYear;/.test(roll), 'rollover does not know dens were advanced');
+  ok(/if \(!densAlreadyAdvanced\) state\.advancement = \{\};/.test(roll),
+    'rollover still clears the whole advancement book after a spring advance');
+  ok(/state\.densAdvancedSummary = null;/.test(roll), 'last season’s summary survives into the new year');
+  const handler = /if \(act === 'adv-dens' \|\| act === 'adv-dens-again'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(handler.indexOf('advPerDenSummary()') !== -1 && handler.indexOf('advPerDenSummary()') < handler.indexOf('advanceDens()'),
+    'the season summary is not taken BEFORE the advance clears the marks');
+  const arc = slice('buildSeasonArchive');
+  ok(/state\.densAdvancedYear === year && snap && snap\.year === year/.test(arc),
+    'the season archive ignores the summary taken at Advance dens');
+});
+
+test('the Advance-dens summary survives a reload, and junk does not', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const norm = (v) => { const d = preMigrationState(); d.densAdvancedSummary = v; return ctx.normalizeState(d).densAdvancedSummary; };
+  eq(norm({ year: 2026, perDen: [{ den: 'Wolf', scouts: 3, complete: 1, adventuresAwarded: 7 }, { den: 'Nope' }] }),
+    { year: 2026, perDen: [{ den: 'Wolf', scouts: 3, complete: 1, adventuresAwarded: 7 }] }, 'the summary did not round-trip');
+  eq(norm(undefined), null, 'a record from before this field is not null');
+  eq(norm({ year: 'x', perDen: [] }), null, 'a malformed summary was kept');
+});
+
 test('attendance is evidence, and the app never says a missed meeting costs the adventure', () => {
   // Researched, and it decides the wording: Cub Scout advancement is per requirement, "Do Your
   // Best" is the standard, and work done at home is signed by a parent and approved by the den

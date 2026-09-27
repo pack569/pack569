@@ -2787,6 +2787,7 @@
       camping: freshCamping(),   // one page per pack campout, published to parents
       archives: [],
       densAdvancedYear: 0,       // Wave 19(3) — program year dens were last advanced for (0 = never)
+      densAdvancedSummary: null, // { year, perDen } — the season's advancement, taken at Advance dens
       startHereDismissed: false, // Wave 19(19) — first-run "Start here" card dismissed
       movedNoticeDismissed: false, // Wave 21 — one-time "where things moved" card on Home
       rev: 0
@@ -2975,6 +2976,21 @@
     });
     // Wave 19(3) — program year the dens were last advanced for (0 = never).
     d.densAdvancedYear = (typeof d.densAdvancedYear === 'number' && isFinite(d.densAdvancedYear)) ? Math.floor(d.densAdvancedYear) : 0;
+    // The season's advancement summary taken when "Advance dens" cleared the marks — same
+    // row shape as a season archive's advancement.perDen. Anything malformed is dropped.
+    (function () {
+      var sn = d.densAdvancedSummary;
+      if (!sn || typeof sn !== 'object' || typeof sn.year !== 'number' || !isFinite(sn.year) || !Array.isArray(sn.perDen)) {
+        d.densAdvancedSummary = null; return;
+      }
+      function n(v) { return (typeof v === 'number' && isFinite(v)) ? Math.max(0, Math.floor(v)) : 0; }
+      d.densAdvancedSummary = {
+        year: Math.floor(sn.year),
+        perDen: sn.perDen.filter(function (r) { return r && DENS.indexOf(r.den) !== -1; }).map(function (r) {
+          return { den: r.den, scouts: n(r.scouts), complete: n(r.complete), adventuresAwarded: n(r.adventuresAwarded) };
+        })
+      };
+    })();
     // Wave 19(19) — first-run card dismissal.
     d.startHereDismissed = d.startHereDismissed === true;
     // Wave 21 — the one-time "nine tabs became six workspaces" notice on Home.
@@ -14280,7 +14296,9 @@
     } else {
       var advDensArmed = ui.armed === 'adv-dens';
       h += '<p class="small muted" style="margin:0 0 8px">Crossover time? Move every active scout up one rank now — ' +
-        'Arrow of Light scouts are archived as crossed over. The year-end close-out below will skip den advancement once this has run.</p>' +
+        'Arrow of Light scouts are archived as crossed over. Each scout’s adventure marks stay with the rank they were earned in, ' +
+        'so the Advancement grid starts fresh for the new rank (this year’s totals are kept for the close-out). ' +
+        'The year-end close-out below will skip den advancement once this has run.</p>' +
         '<button type="button" class="btn' + (advDensArmed ? ' danger armed' : '') + '" data-act="adv-dens">' +
         (advDensArmed ? 'Tap again to advance every den' : 'Advance dens to next ranks') + '</button>';
     }
@@ -18332,21 +18350,13 @@
       if (n > 0 && rosterN > 0) { attSum += Math.min(100, Math.round(n / rosterN * 100)); attN += 1; }
     });
     var fees = feesTotals();
-    var perDen = [];
-    DENS.forEach(function (den) {
-      var roster = byScoutName(activeScouts().filter(function (s) { return s.den === den; }));
-      if (!roster.length) return;
-      var complete = roster.filter(scoutAdvComplete).length;
-      var awarded = 0;
-      roster.forEach(function (s) {
-        var a = advRec(s.id);
-        if (!a) return;
-        ['req', 'elect'].forEach(function (kk) {
-          Object.keys(a[kk] || {}).forEach(function (nm) { if (a[kk][nm] === 'awarded') awarded += 1; });
-        });
-      });
-      perDen.push({ den: den, scouts: roster.length, complete: complete, adventuresAwarded: awarded });
-    });
+    // When the Pack tab's "Advance dens" already ran for this year, the ranks this season was
+    // worked in are gone from the roster and their marks were cleared with the move — so the
+    // summary taken at that moment IS this season's advancement. Otherwise read it live.
+    var snap = state.densAdvancedSummary;
+    var perDen = (state.densAdvancedYear === year && snap && snap.year === year)
+      ? snap.perDen.map(function (d) { return Object.assign({}, d); })
+      : advPerDenSummary();
     var winners = derbyWinners();
     var invT = inventoryTotals();
     var distributed = 0;
@@ -18397,10 +18407,42 @@
     };
   }
 
+  // The season's advancement, one row per den: how many scouts, how many finished the rank,
+  // how many adventures were handed over. What a season archive keeps of the marks.
+  function advPerDenSummary() {
+    var perDen = [];
+    DENS.forEach(function (den) {
+      var roster = byScoutName(activeScouts().filter(function (s) { return s.den === den; }));
+      if (!roster.length) return;
+      var complete = roster.filter(scoutAdvComplete).length;
+      var awarded = 0;
+      roster.forEach(function (s) {
+        var a = advRec(s.id);
+        if (!a) return;
+        ['req', 'elect'].forEach(function (kk) {
+          Object.keys(a[kk] || {}).forEach(function (nm) { if (a[kk][nm] === 'awarded') awarded += 1; });
+        });
+      });
+      perDen.push({ den: den, scouts: roster.length, complete: complete, adventuresAwarded: awarded });
+    });
+    return perDen;
+  }
+
   // Wave 19(3) — den advancement, extracted from rolloverYear so the Pack tab's
   // standalone "Advance dens" button and the close-out share ONE loop. Every active
   // scout with a recognized den moves up a rank; Arrow of Light scouts are archived
   // as crossed over (name kept for history). Does NOT commit — callers do.
+  //
+  // AUDIT FIX 2026-09-27 — a scout's advancement goes with the rank it was earned in.
+  // Marks are keyed by adventure NAME only, and several names are on more than one rank's
+  // list (Bobcat is on all six), so a Wolf moved up to Bear showed Wolf's Bobcat as Bear's
+  // and Wolf electives counted toward Bear. rolloverYear always cleared the whole book after
+  // calling this; the standalone button did not. So the scouts this moves lose their marks
+  // here, on both paths — on the close-out path the book is being cleared anyway, so this
+  // is not a second clear of anything that survives. The caller of the standalone button
+  // takes the season's summary first (densAdvancedSummary) so the archive still has it.
+  // Keying marks by rank instead was considered and not done: it changes the stored shape
+  // of a synced record every client reads, for a problem that only exists at the move.
   function advanceDens() {
     var advanced = 0, crossed = 0;
     state.scouts.forEach(function (s) {
@@ -18409,6 +18451,7 @@
       if (ix === -1) return;
       if (s.den === 'Arrow of Light') { s.archived = true; crossed += 1; }
       else { s.den = DENS[ix + 1]; advanced += 1; }
+      delete state.advancement[s.id];
     });
     return { advanced: advanced, crossed: crossed };
   }
@@ -18512,8 +18555,14 @@
     // Everyone moves up a den; Arrow of Light scouts crossed over — archived, name kept
     // for history. Wave 19(3): SKIPPED when the Pack tab's "Advance dens" button already
     // advanced this roster for the closing year (densAdvancedYear === closingYear).
-    if (state.densAdvancedYear !== closingYear) advanceDens();
+    // When dens were already advanced, their marks were cleared at that moment and every
+    // mark since then belongs to the rank the scout is in NOW — a Bear who finished Bear
+    // Habitat in June is still a Bear in September. Only clear the book when this close-out
+    // is the thing moving them. (AUDIT FIX 2026-09-27; this used to clear unconditionally.)
+    var densAlreadyAdvanced = state.densAdvancedYear === closingYear;
+    if (!densAlreadyAdvanced) advanceDens();
     state.densAdvancedYear = 0; // fresh year — the advanced roster hasn't been advanced AGAIN
+    state.densAdvancedSummary = null; // it was this season's, and the archive now holds it
     state.storefronts = [];
     state.entries = [];
     state.rsvps = {};
@@ -18525,7 +18574,7 @@
     // year's forgiveness against a "Removed line". Money that actually moved is in the
     // ledger, which the archive already captured.
     state.charges = [];
-    state.advancement = {};  // new rank = new adventures
+    if (!densAlreadyAdvanced) state.advancement = {};  // new rank = new adventures (see above)
     state.derby = { name: '', date: '', lanes: state.derby.lanes || 4, cars: [], awards: [] }; // Wave 19(18) — awards reset too
     state.fundraisers.forEach(function (fr) { fr.sales = []; });
     state.inventory.products.forEach(function (p) { p.cases = 0; }); // catalog kept, order cleared
@@ -18773,7 +18822,12 @@
       (state.densAdvancedYear === year
         ? 'den advancement is <strong>skipped</strong> — dens were already advanced for ' + year + ' from Pack'
         : 'scouts move up one den (Arrow of Light scouts are archived as crossed over)') +
-      '; and season data — storefronts, sales entries, meetings, RSVPs, attendance, dues collections, advancement marks, derby, fundraiser sales, and inventory hand-outs — is cleared.</li>' +
+      '; and season data — storefronts, sales entries, meetings, RSVPs, attendance, dues collections, ' +
+      (state.densAdvancedYear === year ? '' : 'advancement marks, ') +
+      'derby, fundraiser sales, and inventory hand-outs — is cleared.' +
+      (state.densAdvancedYear === year
+        ? ' Advancement marks are <strong>kept</strong>: they were cleared when the dens advanced, and everything since belongs to the rank each scout is in now.'
+        : '') + '</li>' +
       // Wave 19(38b)
       (state.densAdvancedYear === year ? '' :
         '<li>Arrow of Light scouts who crossed over in the spring should already be archived — anyone still active is archived now.</li>') +
@@ -19758,6 +19812,13 @@
     // Wave 19(3) — standalone den advancement (two-tap armed on both paths).
     if (act === 'adv-dens' || act === 'adv-dens-again') {
       arm(act, function () {
+        // The season's advancement summary, taken before the move clears the marks, so the
+        // year's close-out can still archive it. Only the FIRST advance of a year: "Advance
+        // again" would otherwise overwrite the real season with the empty book it left.
+        var advPy = state.budget.programYear;
+        if (!(state.densAdvancedSummary && state.densAdvancedSummary.year === advPy)) {
+          state.densAdvancedSummary = { year: advPy, perDen: advPerDenSummary() };
+        }
         var advRes = advanceDens();
         state.densAdvancedYear = state.budget.programYear;
         commit();
