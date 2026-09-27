@@ -841,7 +841,7 @@ test('a rung is set apart from its rows by more than a font weight', () => {
 // `state` — precisely so it can be exercised here rather than by clicking around.
 const LEDGER_FNS = ['ledgerSort', 'entrySignedCents', 'entryAfterOpening', 'ledgerBalance',
   'LEDGER_INCOME_SOURCES', 'entryIsRefund', 'lineIncomeCents', 'ledgerIncomeCents',
-  'lineActualCents', 'ledgerTotals', 'reconcileTotals', 'runningBalances'];
+  'lineActualCents', 'ledgerTotals', 'entryOnStatement', 'reconcileTotals', 'runningBalances'];
 
 function entry(o) {
   return Object.assign({ id: 'x', date: '2025-10-01', description: '', amountCents: 0,
@@ -8667,6 +8667,46 @@ test('M4: a family’s open balance survives the year-end as one prior-year char
   const { priorDayISO } = sandbox(['priorDayISO']);
   eq(priorDayISO('2027-07-01'), '2027-06-30', 'the day before the book opens');
   eq(priorDayISO('2028-03-01'), '2028-02-29', 'across a leap day');
+});
+
+test('M10: reconciling is against THIS statement — nothing dated after it counts', () => {
+  const { reconcileTotals } = sandbox(LEDGER_FNS);
+  const book = { openingCents: 10000, openingDate: '2026-07-01', statementCents: 15000, statementDate: '2026-09-30' };
+  const led = [
+    entry({ id: 'a', date: '2026-09-10', amountCents: 5000, direction: 'in', reconciled: true }),
+    entry({ id: 'b', date: '2026-10-02', amountCents: 900, direction: 'out', reconciled: true }),   // ticked by mistake
+    entry({ id: 'c', date: '2026-10-05', amountCents: 400, direction: 'out', reconciled: false })
+  ];
+  const rec = reconcileTotals(led, book);
+  eq(rec.cleared, 15000, 'an October entry moved a September statement');
+  eq(rec.difference, 0, 'the book agrees with the statement');
+  eq([rec.ticked, rec.open, rec.after], [1, 0, 2], 'counts');
+  const tick = /if \(act === 'ledger-tick-all' \|\| act === 'ledger-untick-all'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/entryOnStatement\(e, state\.book\)/.test(tick), 'Tick all ticks entries dated after the statement');
+});
+
+test('M10: a reconciled entry is read-only until it is deliberately un-reconciled', () => {
+  const rows = /function renderLedgerEntries\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/if \(e\.reconciled\) \{[\s\S]*?data-act="ledger-unreconcile:' \+ e\.id \+ '"[\s\S]*?return;\s*\}/.test(rows),
+    'a reconciled entry is rendered with editable fields');
+  const ch = /if \(ch\.indexOf\('led-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/if \(led\.reconciled && lk !== 'rec'\) \{ render\(\); return; \}/.test(ch), 'the change handler still edits a reconciled entry');
+  const un = /if \(act\.indexOf\('ledger-unreconcile:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(un && /arm\(act, function \(\) \{/.test(un[0]) && /urE\.reconciled = false;/.test(un[0]),
+    'there is no two-tap un-reconcile');
+  const del = /if \(act\.indexOf\('del-ledger:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/if \(state\.ledger\[dlIx\]\.reconciled\)/.test(del), 'a reconciled entry can be deleted');
+});
+
+test('M10: forgiving needs a reason and a name, and undoing it leaves a trace', () => {
+  const f = /if \(kind === 'charge-forgive'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/if \(!fgReason \|\| !fgBy\) \{/.test(f), 'a charge can be forgiven with no reason or nobody agreeing it');
+  const u = /if \(act === 'charge-unforgive'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/uc\.note = forgivenessUndoneNote\(/.test(u), 'undoing a forgiveness erases it without a trace');
+  const { forgivenessUndoneNote } = sandbox(['fmt', 'forgivenessUndoneNote']);
+  const n1 = forgivenessUndoneNote('', { date: '2026-10-01', by: 'Committee Chair', reason: 'hardship' }, 4000, '2026-10-09');
+  ok(/undone 2026-10-09/.test(n1) && /by Committee Chair: hardship/.test(n1) && /\$40\.00/.test(n1), 'the trace: ' + n1);
+  ok(forgivenessUndoneNote(n1, null, 4000, '2026-11-01').indexOf(n1) === 0, 'a second undo replaces the first trace');
 });
 
 /* ---------------- report ---------------- */

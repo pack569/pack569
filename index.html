@@ -3429,6 +3429,9 @@
       // M4 — what a charge on no line is called ("Prior-year balance (2026–27)"). '' on every
       // charge a line raised, which is named by its line.
       c.label = typeof c.label === 'string' ? c.label : '';
+      // M10 — what has happened to the charge that its fields no longer show (an undone
+      // forgiveness). '' on almost every charge.
+      c.note = typeof c.note === 'string' ? c.note : '';
       if (c.forgiven && typeof c.forgiven === 'object' && !Array.isArray(c.forgiven)) {
         c.forgiven = {
           date: typeof c.forgiven.date === 'string' ? c.forgiven.date : '',
@@ -5892,14 +5895,23 @@
   // equals the statement's closing balance the book agrees with the bank. When it doesn't,
   // the difference is exactly what's missing — which is the thing this app could not tell a
   // treasurer at all before.
+  //
+  // TREASURER'S AUDIT, 2026-09-27 (M10) — against THIS statement. An entry dated after the
+  // statement date cannot be on it, so it is neither cleared nor outstanding here; it waits for
+  // the next statement. Before this, one ticked by mistake (or by Tick all) moved the cleared
+  // balance and the book "agreed" with a statement it did not match.
+  function entryOnStatement(e, book) {
+    return !book.statementDate || String(e.date || '') <= book.statementDate;
+  }
   function reconcileTotals(ledger, book) {
-    var cleared = book.openingCents || 0, ticked = 0, open = 0;
+    var cleared = book.openingCents || 0, ticked = 0, open = 0, after = 0;
     ledger.forEach(function (e) {
       if (!entryAfterOpening(e, book)) return;
+      if (!entryOnStatement(e, book)) { after++; return; }
       if (e.reconciled) { cleared += entrySignedCents(e); ticked++; } else open++;
     });
     return {
-      cleared: cleared, ticked: ticked, open: open,
+      cleared: cleared, ticked: ticked, open: open, after: after,
       statement: book.statementCents || 0,
       difference: (book.statementCents || 0) - cleared
     };
@@ -6223,6 +6235,14 @@
       .map(function (e) { return { item: e, key: e.id, kind: 'expense' }; })
       .concat(state.budget.activities.filter(lineRaisesCharges)
         .map(function (a) { return { item: a, key: 'act:' + a.id, kind: 'activity' }; }));
+  }
+  // The line a charge keeps when its forgiveness is undone (M10). Appended, never replaced, so
+  // forgiving and un-forgiving twice reads as twice. Pure.
+  function forgivenessUndoneNote(prev, fg, cents, today) {
+    var line = 'Forgiveness of ' + fmt(cents || 0) + ' undone ' + today +
+      ' (had been forgiven ' + ((fg && fg.date) || 'on an unrecorded date') +
+      ((fg && fg.by) ? ' by ' + fg.by : '') + ((fg && fg.reason) ? ': ' + fg.reason : '') + ').';
+    return prev ? prev + ' ' + line : line;
   }
   // Which family a charge or payment belongs to. Reads ARCHIVED scouts too (getScout, not
   // familyMembers), so a scout who crossed over still pools with the siblings left behind; a
@@ -13469,6 +13489,28 @@
       var open = !!ui.ledgerOpen[e.id];
       var bal = run[e.id];
       var pre = bal === null;
+      // TREASURER'S AUDIT, 2026-09-27 (M10) — a RECONCILED entry is read-only. It has been
+      // checked against a bank statement, and an edit to its date or amount afterwards makes the
+      // book disagree with a statement the treasurer has already signed off, with nothing to
+      // say why. Changing one is a deliberate act: Un-reconcile (two taps), then edit.
+      if (e.reconciled) {
+        var rLine = getBudgetLine(e.lineId);
+        var rWho = e.scoutId ? getScout(e.scoutId) : null;
+        h += '<div class="lrow entry' + (e.direction === 'in' ? ' in' : '') + '">' +
+          '<span class="small muted rec-when">' + esc(fmtDateShort(e.date)) + '</span>' +
+          '<span class="lname small">' + esc(e.description || '(no description)') +
+            (rLine ? ' <span class="muted">· ' + esc(rLine.name || 'Untitled line') + '</span>' : '') +
+            (rWho ? ' <span class="muted">· ' + esc(rWho.name) + '</span>' : '') +
+            (e.ref ? ' <span class="muted">#' + esc(e.ref) + '</span>' : '') + '</span>' +
+          '<span class="money small">' + (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents) + '</span>' +
+          '<span class="lbal small muted money">' + (pre ? 'before opening' : fmt(bal)) + '</span>' +
+          '<span class="pill navy">reconciled</span>' +
+          '<button type="button" class="btn small ghost' + (ui.armed === 'ledger-unreconcile:' + e.id ? ' danger armed' : '') +
+            '" data-act="ledger-unreconcile:' + e.id + '">' +
+            (ui.armed === 'ledger-unreconcile:' + e.id ? 'Tap again to un-reconcile' : 'Un-reconcile to edit') + '</button>' +
+          '</div>';
+        return;
+      }
       h += '<div class="lrow entry' + (e.direction === 'in' ? ' in' : '') + '">' +
         '<input type="date" data-ch="led-date" data-id="' + e.id + '" value="' + esc(e.date) + '" aria-label="Date">' +
         '<select data-ch="led-dir" data-id="' + e.id + '" aria-label="In or out">' +
@@ -13533,7 +13575,7 @@
     }
     h += '</div>';
 
-    var pending = ledgerSort(state.ledger).filter(function (e) { return entryAfterOpening(e, bk); });
+    var pending = ledgerSort(state.ledger).filter(function (e) { return entryAfterOpening(e, bk) && entryOnStatement(e, bk); });
     h += '<div class="card"><h2 class="section display">Tick against the statement</h2>';
     if (!pending.length) {
       h += '<p class="empty">Nothing to reconcile yet.</p></div>';
@@ -13543,7 +13585,12 @@
       '<button type="button" class="btn small" data-act="ledger-tick-all">Tick all</button>' +
       '<button type="button" class="btn small" data-act="ledger-untick-all">Clear all ticks</button>' +
       '<span class="small muted" style="align-self:center">' + rec.ticked + ' ticked · ' + rec.open + ' outstanding</span>' +
-      '</div>';
+      '</div>' +
+      (rec.after
+        ? '<p class="small muted" style="margin:0 0 8px">' + rec.after + ' entr' + (rec.after === 1 ? 'y is' : 'ies are') +
+          ' dated after ' + esc(fmtDate(bk.statementDate)) + ', so ' + (rec.after === 1 ? 'it' : 'they') +
+          ' can’t be on this statement — ' + (rec.after === 1 ? 'it waits' : 'they wait') + ' for the next one.</p>'
+        : '');
     pending.reverse().forEach(function (e) {
       // THE WHOLE ROW IS THE TICK, the way an attendance row already is. This was a bare
       // checkbox: `.perscout input[type="checkbox"]` strips the global field sizing, so the one
@@ -14487,7 +14534,8 @@
         h += '<div class="att-row" style="cursor:default"><span class="att-name">' +
           (many && who ? esc((who.name || '').split(' ')[0]) + ' · ' : '') +
           esc(line ? (line.name || 'Untitled line') : (c.label || 'Removed line')) +
-          ' <span class="small muted">' + esc(chargeWhoLabel(c)) + '</span> ' + status2 + '</span>' +
+          ' <span class="small muted">' + esc(chargeWhoLabel(c)) + '</span> ' + status2 +
+          (c.note ? '<br><span class="small muted">' + esc(c.note) + '</span>' : '') + '</span>' +
           '<span class="money small">' + fmt(c.amountCents) + '</span>' +
           (c.waivedBy ? '' :
             (c.forgiven
@@ -14496,8 +14544,8 @@
           '</div>';
         if (ui.forgiveFor === c.id) {
           h += '<form data-form="charge-forgive" data-id="' + c.id + '" class="row" style="margin:4px 0 8px">' +
-            '<label class="fld">Why<input name="reason" placeholder="e.g. family unable to pay this term" style="min-width:220px"></label>' +
-            '<label class="fld">Agreed by<input name="by" placeholder="Committee Chair"></label>' +
+            '<label class="fld">Why<input name="reason" required placeholder="e.g. family unable to pay this term" style="min-width:220px"></label>' +
+            '<label class="fld">Agreed by<input name="by" required placeholder="Committee Chair"></label>' +
             '<button class="btn small primary" type="submit" style="align-self:flex-end">Forgive ' + fmt(c.amountCents) + '</button>' +
             '<button type="button" class="btn small ghost" data-act="charge-forgive-cancel" style="align-self:flex-end">Cancel</button>' +
             '</form>';
@@ -19963,7 +20011,13 @@
     if (act === 'charge-forgive-cancel') { ui.forgiveFor = null; render(); return; }
     if (act === 'charge-unforgive') {
       var uc = state.charges.find(function (c) { return c.id === el.dataset.id; });
-      if (uc) { uc.forgiven = null; commit(); }
+      // M10 — undoing a forgiveness leaves a trace of it. The charge is owed again, which is
+      // right, but "the committee forgave this and then changed its mind" is part of the book.
+      if (uc && uc.forgiven) {
+        uc.note = forgivenessUndoneNote(uc.note, uc.forgiven, uc.amountCents, todayISO());
+        uc.forgiven = null;
+        commit();
+      }
       return;
     }
     // Money arriving is a LEDGER entry that carries a scout — the same record any other
@@ -20159,11 +20213,26 @@
       ui.ledgerDraft.direction = dr.direction;
       commit(); return;
     }
+    // M10 — the one door back into a reconciled entry, and it takes two taps: it reopens
+    // something already checked against a statement.
+    if (act.indexOf('ledger-unreconcile:') === 0) {
+      var urId = act.split(':')[1];
+      var urE = state.ledger.find(function (e) { return e.id === urId; });
+      if (!urE) return;
+      arm(act, function () {
+        urE.reconciled = false;
+        showToast('Un-reconciled — tick it again against the statement once it is corrected.');
+        commit();
+      });
+      return;
+    }
     if (act.indexOf('del-ledger:') === 0) {
       var dlId = act.split(':')[1];
       var dlIx = -1;
       state.ledger.forEach(function (e, i) { if (e.id === dlId) dlIx = i; });
       if (dlIx === -1) return;
+      // M10 — nor can a reconciled entry be deleted from under the statement it was ticked on.
+      if (state.ledger[dlIx].reconciled) { showToast('That entry is reconciled. Un-reconcile it first.'); return; }
       var dlGone = state.ledger.splice(dlIx, 1)[0];
       // ⚠ NOTHING SPECIAL FOR A MAKE-UP PAYMENT, and that is the point (owner report, 2026-09-04:
       // "even after clearing the ledger items, the ranking bar and text for that scout does not
@@ -20182,7 +20251,12 @@
     }
     if (act === 'ledger-tick-all' || act === 'ledger-untick-all') {
       var tick = act === 'ledger-tick-all';
-      state.ledger.forEach(function (e) { if (entryAfterOpening(e, state.book)) e.reconciled = tick; });
+      // M10 — Tick all ticks what can be ON this statement: nothing dated after it. Clearing
+      // ticks is the same set, so it cannot un-tick an entry from an earlier statement's month
+      // that is dated after this one either.
+      state.ledger.forEach(function (e) {
+        if (entryAfterOpening(e, state.book) && entryOnStatement(e, state.book)) e.reconciled = tick;
+      });
       commit(); return;
     }
     if (act === 'ledger-reconcile-lock') {
@@ -20974,6 +21048,9 @@
       var led = state.ledger.find(function (e) { return e.id === el.dataset.id; });
       if (!led) return;
       var lk = ch.slice(4);
+      // M10 — a reconciled entry takes no edits but the tick itself (the Reconcile view's own
+      // control). The Entries list renders it read-only; this is the same rule where it bites.
+      if (led.reconciled && lk !== 'rec') { render(); return; }
       if (lk === 'date') led.date = el.value;
       else if (lk === 'desc') led.description = el.value;
       else if (lk === 'amount') led.amountCents = Math.abs(toCents(el.value));
@@ -21241,11 +21318,13 @@
     if (kind === 'charge-forgive') {
       var fc = state.charges.find(function (c) { return c.id === f.dataset.id; });
       if (fc) {
-        fc.forgiven = {
-          date: todayISO(),
-          by: String(fd.get('by') || '').trim(),
-          reason: String(fd.get('reason') || '').trim()
-        };
+        // TREASURER'S AUDIT, 2026-09-27 (M10) — both are REQUIRED. A forgiveness with no reason
+        // and nobody's name on it is the untraceable write-off this record exists to prevent
+        // (§3.4: "It is expected. It just has to leave a trace.").
+        var fgReason = String(fd.get('reason') || '').trim();
+        var fgBy = String(fd.get('by') || '').trim();
+        if (!fgReason || !fgBy) { showToast('Say why, and who agreed it — both are kept with the charge.'); return; }
+        fc.forgiven = { date: todayISO(), by: fgBy, reason: fgReason };
         ui.forgiveFor = null;
         showToast('Forgave ' + fmt(fc.amountCents) + ' — recorded with a reason.');
         commit();

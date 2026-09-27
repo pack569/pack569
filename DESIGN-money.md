@@ -162,6 +162,15 @@ outliving, or being counted beside, the thing they belonged to. What changed, it
   new book opens — in the family's account, not in the bank twice (decision 12). Only when the
   new book has an opening date: without one there is no "before", so a pack that never set an
   opening balance does not get its credits carried, and the treasurer should re-enter them.
+- **Reconciliation could agree with the wrong statement (M10).** *Tick all* ticked every entry
+  since the opening date and `reconcileTotals` counted every ticked one, so an October cheque
+  could move a September statement. Both now stop at the **statement date** (`entryOnStatement`);
+  later entries are listed as waiting for the next statement. A **reconciled entry is read-only**
+  in the ledger — no field edits, no delete — until an explicit two-tap *Un-reconcile*.
+  **Forgiving a charge now requires both a reason and who agreed it**, and **undoing** a
+  forgiveness appends a line to the charge's `note` (who forgave it, when, why, and when it was
+  undone) instead of erasing it. Decision 11 (who may forgive) is still open; this does not gate
+  it by job.
 
 ---
 
