@@ -17404,9 +17404,14 @@
       g += '<div class="warn" style="margin:6px 0 10px">This report looks like the <strong>' + arc.year + '</strong> season — your current program year is ' +
         py + '–' + (py + 1) + ', so updating current standings from it is probably not what you want. Archiving it as a past season is the safer move.</div>';
     }
-    g += '<p class="small" style="margin:0 0 8px">Writes each matched scout’s <strong>Online</strong> and <strong>Wagon</strong> season totals ' +
-      'into this year’s standings as imported entries. Re-importing a newer report replaces those imported figures exactly; entries you added by hand are never touched. ' +
+    g += '<p class="small" style="margin:0 0 8px">Writes each matched scout’s <strong>Online</strong> and <strong>Wagon</strong> sales ' +
+      'into this year’s standings as imported entries, one per day the orders were taken — so a reward-tier deadline counts them on the day they were sold. Re-importing a newer report replaces those imported figures exactly; entries you added by hand are never touched. ' +
       '<strong>Storefront credit stays with your storefront blocks</strong> — importing Trail’s End’s storefront totals here would double-count that money.</p>';
+    if (arc.undatedRows) {
+      g += '<div class="warn" style="margin:0 0 10px"><strong>' + arc.undatedRows + ' online/wagon order' + (arc.undatedRows === 1 ? ' has' : 's have') +
+        ' no date we can read</strong> in the Date Taken column, so ' + (arc.undatedRows === 1 ? 'it' : 'they') + ' will be dated today. ' +
+        'Today may be past a reward-tier deadline, so ' + (arc.undatedRows === 1 ? 'that sale' : 'those sales') + ' would not count toward it — check the file before updating.</div>';
+    }
     g += '<div class="row" style="margin-bottom:10px">' +
       '<div class="stat"><span class="v money">' + fmt(lt.onlineCents) + '</span><span class="l">Online to write</span></div>' +
       '<div class="stat"><span class="v money">' + fmt(lt.wagonCents) + '</span><span class="l">Wagon to write</span></div>' +
@@ -18253,7 +18258,34 @@
     });
     return { storefronts: storefronts, totalShifts: totalShifts };
   }
+  // A Trail's End "Date Taken" cell → 'YYYY-MM-DD', or '' when it can't be read.
+  //
+  // Tier deadlines measure sales dated ON OR BEFORE the deadline, so the import has to keep the
+  // day each order was taken — stamping them all with the import date moved every sale past a
+  // deadline that had closed, and a re-import after the deadline un-earned the tier. The report
+  // has come as ISO text, as US M/D/YYYY text (with or without a time), and — out of an .xlsx
+  // whose column is typed as a date — as an Excel day serial. Anything else is '' and the caller
+  // decides what to do with an undated sale; this never guesses. Pure.
+  function teSaleDateISO(v) {
+    var t = String(v == null ? '' : v).trim();
+    if (!t) return '';
+    var m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    var y, mo, d;
+    if (m) { y = +m[1]; mo = +m[2]; d = +m[3]; }
+    else if ((m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\b/))) {
+      y = +m[3]; mo = +m[1]; d = +m[2];
+      if (y < 100) y += 2000;
+    } else if (/^\d{5}(\.\d+)?$/.test(t)) {
+      // Excel's day 0 is 1899-12-30 (the 1900 leap-year bug is baked into that epoch).
+      var dt = new Date(Date.UTC(1899, 11, 30) + Math.floor(+t) * 86400000);
+      y = dt.getUTCFullYear(); mo = dt.getUTCMonth() + 1; d = dt.getUTCDate();
+    } else return '';
+    if (!(y >= 2000 && y <= 2100 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31)) return '';
+    return y + '-' + (mo < 10 ? '0' : '') + mo + '-' + (d < 10 ? '0' : '') + d;
+  }
   // Sales transactions → archive object (channel totals, per-scout, per-location).
+  // Each scout also carries `byDate` — online/wagon cents per sale day ('' = no usable date) —
+  // which is what the live import writes from. The archive never stores it.
   function mapSalesReport(rows, hdr) {
     var col = hdr.col;
     var cScout = col['Scout'], cCode = col['Scout Code'], cAmt = col['Total Order Amount'],
@@ -18261,7 +18293,7 @@
     function cell(cells, ci) { return (ci != null && cells[ci] != null) ? String(cells[ci]).trim() : ''; }
     var scouts = {}, scoutOrder = [], locations = {}, locOrder = [];
     var channel = { onlineCents: 0, wagonCents: 0, storefrontCents: 0 };
-    var grandCents = 0, maxYear = 0;
+    var grandCents = 0, maxYear = 0, undatedRows = 0;
     for (var r = hdr.headerRow + 1; r < rows.length; r++) {
       var c = rows[r] || [];
       if (!cell(c, cOrder)) continue;
@@ -18269,14 +18301,20 @@
       var cents = toCents((c[cAmt] != null ? c[cAmt] : 0));
       var dateTaken = cell(c, cDate), siteDate = cell(c, cSite);
       grandCents += cents;
-      var yr = dateTaken.match(/(\d{4})/);
+      var iso = teSaleDateISO(dateTaken);
+      var yr = iso ? [iso, iso.slice(0, 4)] : dateTaken.match(/(\d{4})/);
       if (yr && +yr[1] > maxYear) maxYear = +yr[1];
       var bucket = type === 'Online' ? 'onlineCents' : type === 'Wagon' ? 'wagonCents' : type === 'Storefront' ? 'storefrontCents' : null;
       if (bucket) channel[bucket] += cents;
-      if (!scouts[name]) { scouts[name] = { name: name, code: code, onlineCents: 0, wagonCents: 0, storefrontCents: 0, totalCents: 0 }; scoutOrder.push(name); }
+      if (!scouts[name]) { scouts[name] = { name: name, code: code, onlineCents: 0, wagonCents: 0, storefrontCents: 0, totalCents: 0, byDate: {} }; scoutOrder.push(name); }
       var sc = scouts[name];
       if (!sc.code && code) sc.code = code;
       if (bucket) sc[bucket] += cents;
+      if (bucket === 'onlineCents' || bucket === 'wagonCents') {
+        var day = sc.byDate[iso] || (sc.byDate[iso] = { onlineCents: 0, wagonCents: 0 });
+        day[bucket] += cents;
+        if (!iso) undatedRows += 1;
+      }
       sc.totalCents += cents;
       if (type === 'Storefront' && siteDate) {
         var locName = siteDate.split(':')[0].trim();
@@ -18290,7 +18328,7 @@
     var year = maxYear || (defaultProgramYear() + 1);
     var scoutList = scoutOrder.map(function (k) { return scouts[k]; }).sort(function (a, b) { return b.totalCents - a.totalCents; });
     var locList = locOrder.map(function (k) { return locations[k]; }).sort(function (a, b) { return b.cents - a.cents; });
-    return { kind: 'trails-end', year: year, grandCents: grandCents, channel: channel, scouts: scoutList, locations: locList };
+    return { kind: 'trails-end', year: year, grandCents: grandCents, channel: channel, scouts: scoutList, locations: locList, undatedRows: undatedRows };
   }
 
   // Wave 20 — Inventory Transaction Report → per-product container tallies.
@@ -18579,7 +18617,7 @@
     var matched = [], unmatched = [];
     arcScouts.forEach(function (s) {
       var sid = byName[teNameKey(s.name)];
-      if (sid != null) matched.push({ scoutId: sid, name: s.name, onlineCents: s.onlineCents, wagonCents: s.wagonCents });
+      if (sid != null) matched.push({ scoutId: sid, name: s.name, onlineCents: s.onlineCents, wagonCents: s.wagonCents, byDate: s.byDate || {} });
       else unmatched.push(s.name);
     });
     return { matched: matched, unmatched: unmatched };
@@ -18713,6 +18751,38 @@
   // every previously imported entry (source 'te-import') is removed globally, then fresh
   // online/wagon entries are written per matched scout. Manual entries (no source) are
   // never touched, so a re-import replaces prior imported figures exactly.
+  //
+  // ONE ENTRY PER SCOUT PER SALE DAY (Popcorn Kernel audit, 2026-09). This used to write one
+  // season-total row per channel dated the day of the import. Tier deadlines count sales dated on
+  // or before the deadline, and the import wipes every earlier imported row first — so importing
+  // a fresh report the week after a deadline re-dated every sale past it and quietly un-earned
+  // the tier for everyone who had made it on time. The report knows the day each order was
+  // taken; keeping it makes a re-import land exactly where the last one did.
+  //
+  // An order with no readable date falls back to today, which is the old behavior and the
+  // conservative one (it can only miss a deadline, never sneak under one); the preview says how
+  // many there were so the Kernel can check the file.
+  function teLiveEntriesFor(row, today) {
+    var out = [];
+    var byDate = row.byDate || {};
+    var days = Object.keys(byDate);
+    // Undated money merges into today's row, so today never appears twice.
+    var merged = {};
+    days.forEach(function (k) {
+      var key = k || today;
+      var m = merged[key] || (merged[key] = { onlineCents: 0, wagonCents: 0 });
+      m.onlineCents += byDate[k].onlineCents || 0;
+      m.wagonCents += byDate[k].wagonCents || 0;
+    });
+    // A row mapped before byDate existed carries season totals only.
+    if (!days.length) merged[today] = { onlineCents: row.onlineCents || 0, wagonCents: row.wagonCents || 0 };
+    Object.keys(merged).sort().forEach(function (date) {
+      var m = merged[date];
+      if (m.onlineCents > 0) out.push({ scoutId: row.scoutId, kind: 'online', date: date, salesCents: m.onlineCents, donationsCents: 0, source: 'te-import' });
+      if (m.wagonCents > 0) out.push({ scoutId: row.scoutId, kind: 'wagon', date: date, salesCents: m.wagonCents, donationsCents: 0, source: 'te-import' });
+    });
+    return out;
+  }
   function teCommitSalesLive() {
     var o = ui.overlay;
     if (!o || o.report !== 'sales' || !o.archive) return;
@@ -18722,13 +18792,9 @@
     state.entries = state.entries.filter(function (e) { return e.source !== 'te-import'; });
     var today = todayISO(), updated = 0;
     m.matched.forEach(function (row) {
-      if (row.onlineCents > 0) {
-        state.entries.push({ id: uid(), scoutId: row.scoutId, kind: 'online', date: today, salesCents: row.onlineCents, donationsCents: 0, source: 'te-import' });
-      }
-      if (row.wagonCents > 0) {
-        state.entries.push({ id: uid(), scoutId: row.scoutId, kind: 'wagon', date: today, salesCents: row.wagonCents, donationsCents: 0, source: 'te-import' });
-      }
-      if (row.onlineCents > 0 || row.wagonCents > 0) updated += 1;
+      var rows = teLiveEntriesFor(row, today);
+      rows.forEach(function (e) { e.id = uid(); state.entries.push(e); });
+      if (rows.length) updated += 1;
     });
     ui.overlay = null;
     commit();

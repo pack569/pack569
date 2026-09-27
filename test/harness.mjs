@@ -8797,6 +8797,35 @@ test('M4: a credit carried from last year settles charges but is not new money i
   eq([t.paid, t.carried, t.outstanding], [0, 5000, 3000], 'carried, not received');
 });
 
+/* ================================================================
+   Popcorn Kernel audit, 2026-09
+   ================================================================ */
+test('P1: a Trail’s End import keeps the day each online/wagon order was taken', () => {
+  const ctx = sandbox(['toCents', 'teSaleDateISO', 'mapSalesReport', 'teLiveEntriesFor']);
+  vm.runInContext('function defaultProgramYear() { return 2026; }', ctx);
+  eq(ctx.teSaleDateISO('9/14/2026 10:32 AM'), '2026-09-14', 'US text');
+  eq(ctx.teSaleDateISO('2026-10-01T12:00:00'), '2026-10-01', 'ISO text');
+  eq(ctx.teSaleDateISO('46279'), '2026-09-14', 'Excel serial');
+  eq(ctx.teSaleDateISO('soon'), '', 'unreadable');
+  const hdr = { headerRow: 0, col: { 'Order Number': 0, 'Scout': 1, 'Sale Type': 2, 'Total Order Amount': 3, 'Date Taken': 4 } };
+  const rows = [[],
+    ['1', 'Ada', 'Online', '100.00', '9/14/2026'],
+    ['2', 'Ada', 'Online', '50.00', '9/14/2026'],
+    ['3', 'Ada', 'Wagon', '20.00', '10/20/2026'],
+    ['4', 'Ada', 'Online', '5.00', '']];
+  const arc = ctx.mapSalesReport(rows, hdr);
+  eq(arc.undatedRows, 1, 'undated rows are counted for the preview warning');
+  const out = ctx.teLiveEntriesFor(Object.assign({ scoutId: 'a' }, arc.scouts[0]), '2026-11-02');
+  eq(out.map((e) => [e.date, e.kind, e.salesCents]),
+    [['2026-09-14', 'online', 15000], ['2026-10-20', 'wagon', 2000], ['2026-11-02', 'online', 500]],
+    'one row per scout per day, undated money falls back to today');
+  // A tier due 2026-10-01 must still see the September sale after an import in November.
+  const commit = /function teCommitSalesLive\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/teLiveEntriesFor\(row, today\)/.test(commit) && !/date: today/.test(commit),
+    'the live import stamps sales with the import date again');
+  ok(/arc\.undatedRows/.test(SCRIPT), 'the preview no longer warns about undated orders');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
