@@ -840,6 +840,7 @@ test('a rung is set apart from its rows by more than a font weight', () => {
 // The ledger math is deliberately pure — it takes (ledger, book) rather than reading
 // `state` — precisely so it can be exercised here rather than by clicking around.
 const LEDGER_FNS = ['ledgerSort', 'entrySignedCents', 'entryAfterOpening', 'ledgerBalance',
+  'LEDGER_INCOME_SOURCES', 'entryIsRefund', 'lineIncomeCents', 'ledgerIncomeCents',
   'lineActualCents', 'ledgerTotals', 'reconcileTotals', 'runningBalances'];
 
 function entry(o) {
@@ -959,7 +960,8 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'freshTripSection', 'freshTrip', 'seedCampingTrips', 'freshCamping',
   'CAMP_SEED_REV', 'CAMP_OLD_SEED', 'campHash', 'refreshCampingSeed',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
-  'parseLegacyTime', 'migrateTierMakeUp', 'normalizeState', 'lineActualCents', 'entrySignedCents',
+  'parseLegacyTime', 'migrateTierMakeUp', 'normalizeState', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
+  'lineActualCents', 'entrySignedCents',
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
@@ -8424,6 +8426,57 @@ test('no tracked file carries a real email address or phone number', () => {
   }
   // Report WHERE, never WHAT: a failing run's output is pasted into chats and issues too.
   eq(found, [], 'personal contact details in a tracked file');
+});
+
+/* ================================================================
+   Wave 4 — the Treasurer's audit, 2026-09-27 (money).
+   Every test here was checked to FAIL against the code it guards.
+   ================================================================ */
+
+test('M1: commission posted to an income line is not a refund off Actual spent', () => {
+  // DESIGN-money §3.6 tells the treasurer to post the council's cheque to "Popcorn income".
+  // lineActualCents read any money in without a scout as a vendor refund, so it came off
+  // Actual spent while Funds in already counted commission from sales — twice.
+  const { lineActualCents } = sandbox(LEDGER_FNS);
+  const led = [
+    entry({ id: '1', lineId: 'P', amountCents: 273000, direction: 'in', source: 'commission' }),
+    entry({ id: '2', lineId: 'C', amountCents: 50000, direction: 'out' }),
+    entry({ id: '3', lineId: 'C', amountCents: 5000, direction: 'in', source: '' }),          // real refund
+    entry({ id: '4', lineId: 'C', amountCents: 9000, direction: 'in', source: 'fundraiser' })  // income, not refund
+  ];
+  eq(lineActualCents(led, 'P'), 0, 'commission read as negative spending');
+  eq(lineActualCents(led, 'C'), 45000, 'a vendor refund still reduces the cost; income does not');
+});
+
+test('M1: posted commission replaces the sales estimate; other income moves to Funds in', () => {
+  const { ledgerIncomeCents } = sandbox(LEDGER_FNS);
+  const isInc = (id) => id === 'P';
+  const none = ledgerIncomeCents([entry({ lineId: 'C', direction: 'out', amountCents: 100 })], isInc);
+  eq(none.hasCommission, false, 'nothing posted means the estimate stands');
+  const t = ledgerIncomeCents([
+    entry({ lineId: 'P', amountCents: 273000, direction: 'in', source: 'commission' }),
+    entry({ lineId: '', amountCents: 1000, direction: 'in', source: 'commission' }),
+    entry({ lineId: 'P', amountCents: 2000, direction: 'in', source: '' }),     // on an income line
+    entry({ lineId: 'P', amountCents: 500, direction: 'out' }),                  // back out of it
+    entry({ lineId: 'C', amountCents: 9000, direction: 'in', source: 'fundraiser' }),
+    entry({ lineId: 'C', amountCents: 5000, direction: 'in', source: '' }),      // refund: stays on C
+    entry({ lineId: '', amountCents: 7000, direction: 'in', source: 'donation' }), // uncategorised: out, as ever
+    entry({ lineId: 'D', amountCents: 8000, direction: 'in', source: 'family', scoutId: 's1' })
+  ], isInc);
+  eq(t.hasCommission, true, 'posted');
+  eq(t.commission, 274000, 'every posted commission entry, on a line or not');
+  eq(t.other, 2000 - 500 + 9000, 'other income');
+});
+
+test('M1: income-category lines are neither planned nor actual SPENDING', () => {
+  const fn = /function computeBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/b\.activities\.forEach\(function \(a\) \{\s*if \(a\.category === 'income'\) return;/.test(fn),
+    'an income activity line is counted as planned spending');
+  ok(/b\.expenses\.forEach\(function \(e\) \{\s*if \(e\.category === 'income'\) return;/.test(fn),
+    'an income expense line is counted as planned spending');
+  ok(/var commission = income\.hasCommission \? income\.commission : commissionEstimate;/.test(fn),
+    'posted commission is added on top of the sales estimate');
+  ok(/income\.other/.test(fn), 'income that used to come off Actual spent no longer reaches Funds in');
 });
 
 /* ---------------- report ---------------- */

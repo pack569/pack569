@@ -86,6 +86,24 @@ actually cost, every activity comes back scheduled, nothing settled leaks into t
 and after a second close-out both archives still hold their own numbers with the bank chaining
 $420 → $372.50 → $272.50 unbroken.
 
+### Treasurer's audit, 2026-09-27
+
+A treasurer walked the books end to end and found the same family of defect again — records
+outliving, or being counted beside, the thing they belonged to. What changed, item by item:
+
+- **Commission was counted twice (M1).** §3.6 tells the treasurer to post the council's cheque
+  to a "Popcorn income" line. `lineActualCents` read any money in without a scout as a *vendor
+  refund*, so the posted commission came off Actual spent while Funds in was already counting
+  the same commission from sales. Now an entry whose `source` names it as income (commission,
+  fundraiser, donation, family, carryover) is never a refund (`entryIsRefund`), and income-
+  category lines are in **neither planned nor actual spending** — they were already in B, not
+  A, on the worksheet, so the Budget card's Planned read higher than A by every planned income
+  dollar. What an income line brought in reaches **Funds in** instead (`ledgerIncomeCents`).
+  **The posted commission replaces the sales-derived estimate** as soon as any entry with
+  `source: 'commission'` exists — that is what §3.3 always intended ("posted once, on the day
+  the council cheque clears — which is when it's actually true"). Until then the estimate is
+  the best figure there is, and the Budget card says which one it is showing.
+
 ---
 
 ## 1. The problem, concretely
@@ -1049,6 +1067,10 @@ entry** rather than the app inferring commission from three subsystems:
 ```
 IN  $2,730.00  "Trail's End commission"  line: Popcorn income  source: 'commission'
 ```
+
+From that moment the posted figure **replaces** the commission the Budget was working out from
+sales — it is not added to it. If the council pays in two cheques, post both; the Budget uses
+their total. (Treasurer's audit, 2026-09-27.)
 
 ### October — the Fall campout
 
