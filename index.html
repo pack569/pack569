@@ -4836,7 +4836,7 @@
     // Phase 3b — family money is now read off CHARGES and payments, not a tick grid. This
     // closes the 3a interim: the adult and sibling shares of a per-head line are real money
     // families owe, and they count here as soon as the heads are recorded.
-    var chg = chargeTotals(state.charges, state.ledger);
+    var chg = chargeTotals(state.charges, state.ledger, chargeFamilyKey);
     var feeIncomeExpected = 0, feeIncomeCollected = 0;
     // Wave 21 — reward tiers. A scout who earned coverage for a charge means the PACK is
     // paying it, so the family never owes it. The line's own cost is already counted in
@@ -5538,26 +5538,75 @@
     }, 0);
   }
   function chargeIsOpen(c) { return !c.waivedBy && !c.forgiven; }
+  // ---------------------------------------------------------------------------
+  // A BALANCE IS A FAMILY'S, NOT A SCOUT'S — Treasurer's audit, 2026-09-27 (M7).
+  //
+  // Charges and payments carry a scout id, and every balance used to be worked out per scout.
+  // So a parent who wrote one cheque for both children, and recorded it against the elder, left
+  // the elder "in credit" (shown as square — credits were floored at zero and vanished) and the
+  // younger still "owing" the whole of their fees. One household, one cheque, two wrong answers.
+  //
+  // `keyOf(scoutId)` says which family a scout id belongs to (chargeFamilyKey — the same
+  // familyKeyOf that pools a per-family fee, and it reads archived scouts too, so a crossed-over
+  // Webelos's charges stay with the brother still in the pack). Omitted, every scout is a family
+  // of one — which is exactly what the harness and every pack with no linked siblings get.
+  //
+  //   owed         Σ charges that still stand
+  //   paid         Σ payments against charges, any source (entryPaysCharges)
+  //   balance      owed − paid, SIGNED: a family that has overpaid is in credit, and says so
+  //   outstanding  max(0, balance)       credit  max(0, −balance)
+  // ---------------------------------------------------------------------------
+  function familyAccounts(charges, ledger, keyOf) {
+    var key = keyOf || function (id) { return id; };
+    var by = {}, order = [];
+    function acct(sid) {
+      var k = key(sid);
+      if (!by[k]) { by[k] = { key: k, owed: 0, paid: 0, scoutIds: [] }; order.push(k); }
+      if (by[k].scoutIds.indexOf(sid) === -1) by[k].scoutIds.push(sid);
+      return by[k];
+    }
+    charges.forEach(function (c) {
+      var a = acct(c.scoutId);
+      if (chargeIsOpen(c)) a.owed += c.amountCents || 0;
+    });
+    ledger.forEach(function (e) {
+      if (!entryPaysCharges(e)) return;
+      acct(e.scoutId).paid += e.amountCents || 0;
+    });
+    return order.map(function (k) {
+      var a = by[k];
+      a.balance = a.owed - a.paid;
+      a.outstanding = Math.max(0, a.balance);
+      a.credit = Math.max(0, -a.balance);
+      return a;
+    });
+  }
   // Outstanding for a family = Σ charges that still stand − Σ payments from any source.
-  function familyOutstanding(charges, ledger, scoutId) {
+  // M7 — for the scout's whole FAMILY when a keyOf is given (see familyAccounts).
+  function familyOutstanding(charges, ledger, scoutId, keyOf) {
+    var key = keyOf || function (id) { return id; };
+    var k = key(scoutId);
     var owed = charges.reduce(function (n, c) {
-      return (c.scoutId === scoutId && chargeIsOpen(c)) ? n + (c.amountCents || 0) : n;
+      return (key(c.scoutId) === k && chargeIsOpen(c)) ? n + (c.amountCents || 0) : n;
     }, 0);
-    return Math.max(0, owed - paymentsForScout(ledger, scoutId));
+    var paid = ledger.reduce(function (n, e) {
+      return (entryPaysCharges(e) && key(e.scoutId) === k) ? n + (e.amountCents || 0) : n;
+    }, 0);
+    return Math.max(0, owed - paid);
   }
   // The four settlements, counted apart, because collapsing them would misstate the pack's
   // position. `donated` is money that arrived from somebody else — good news, and
   // attributable. `waived` is what fundraising bought the families. `forgiven` is what the
   // pack chose to absorb.
-  function chargeTotals(charges, ledger) {
-    var t = { raised: 0, standing: 0, waived: 0, forgiven: 0, paid: 0, donated: 0, makeup: 0, outstanding: 0 };
-    var byScout = {};
+  // M7 — `outstanding` is summed per FAMILY (keyOf, as familyAccounts), and `credit` is what
+  // families have overpaid. Per scout, one sibling's cheque left the other "owing".
+  function chargeTotals(charges, ledger, keyOf) {
+    var t = { raised: 0, standing: 0, waived: 0, forgiven: 0, paid: 0, donated: 0, makeup: 0, outstanding: 0, credit: 0 };
     charges.forEach(function (c) {
       t.raised += c.amountCents || 0;
       if (c.waivedBy) { t.waived += c.amountCents || 0; return; }
       if (c.forgiven) { t.forgiven += c.amountCents || 0; return; }
       t.standing += c.amountCents || 0;
-      byScout[c.scoutId] = (byScout[c.scoutId] || 0) + (c.amountCents || 0);
     });
     ledger.forEach(function (e) {
       if (e.direction !== 'in' || !e.scoutId) return;
@@ -5566,8 +5615,12 @@
       if (e.source === 'donation') t.donated += e.amountCents || 0;
       else t.paid += e.amountCents || 0;
     });
-    Object.keys(byScout).forEach(function (sid) {
-      t.outstanding += Math.max(0, byScout[sid] - paymentsForScout(ledger, sid));
+    // Only families this set of charges touches: a per-line or per-scout subset must not pick up
+    // a credit from somebody with no charge in it.
+    familyAccounts(charges, ledger, keyOf).forEach(function (a) {
+      if (!charges.some(function (c) { return a.scoutIds.indexOf(c.scoutId) !== -1; })) return;
+      t.outstanding += a.outstanding;
+      t.credit += a.credit;
     });
     return t;
   }
@@ -5995,7 +6048,7 @@
   // mechanism with charges; until then it is the collection record.)
   // Phase 3b — the dues roll-up now reads charges, not a tick grid.
   function feesTotals() {
-    var t = chargeTotals(state.charges, state.ledger);
+    var t = chargeTotals(state.charges, state.ledger, chargeFamilyKey);
     return { any: t.raised > 0, collected: t.paid + t.donated, outstanding: t.outstanding, t: t };
   }
   // Every per-head, family-funded line the pack handles. Still used by the reward-tier
@@ -6101,7 +6154,17 @@
       .concat(state.budget.activities.filter(lineRaisesCharges)
         .map(function (a) { return { item: a, key: 'act:' + a.id, kind: 'activity' }; }));
   }
-  function scoutOwesCents(scoutId) { return familyOutstanding(state.charges, state.ledger, scoutId); }
+  // Which family a charge or payment belongs to. Reads ARCHIVED scouts too (getScout, not
+  // familyMembers), so a scout who crossed over still pools with the siblings left behind; a
+  // scout id nobody has any more is a family of one.
+  function chargeFamilyKey(scoutId) {
+    var sc = getScout(scoutId);
+    return sc ? familyKeyOf(sc) : scoutId;
+  }
+  // M7 — what this scout's FAMILY owes. Every caller that shows "owes $X" beside a scout's name
+  // means the household: a sibling's cheque covers them too.
+  function scoutOwesCents(scoutId) { return familyOutstanding(state.charges, state.ledger, scoutId, chargeFamilyKey); }
+  function familyAccountsNow() { return familyAccounts(state.charges, state.ledger, chargeFamilyKey); }
   function chargesForScout(scoutId) {
     return state.charges.filter(function (c) { return c.scoutId === scoutId; });
   }
@@ -13875,10 +13938,11 @@
     }
 
     /* ----- Treasurer ----- */
-    var owingScouts = activeScouts().filter(function (s) { return scoutOwesCents(s.id) > 0; });
-    if (owingScouts.length) {
-      var owedTotal = owingScouts.reduce(function (n, s) { return n + scoutOwesCents(s.id); }, 0);
-      add('treasurer', 'week', owingScouts.length + ' scout' + (owingScouts.length === 1 ? '' : 's') + ' still owe ' + fmt(owedTotal),
+    // M7 — per FAMILY. Counting scouts summed a household's balance once per child.
+    var owingFams = familyAccountsNow().filter(function (a) { return a.outstanding > 0; });
+    if (owingFams.length) {
+      var owedTotal = owingFams.reduce(function (n, a) { return n + a.outstanding; }, 0);
+      add('treasurer', 'week', owingFams.length + ' famil' + (owingFams.length === 1 ? 'y' : 'ies') + ' still owe ' + fmt(owedTotal),
         'Dues and per-scout fees', 'money', 'dues');
     }
     // Phase 1 — a past activity that was budgeted for but has nothing posted against it in
@@ -14288,9 +14352,96 @@
   // reach one was to tick "per scout" on a budget row and then expand it — the most buried
   // high-frequency Treasurer task in the app. Same renderCollectBlock, same state; this
   // just gathers every per-scout charge in one place and says who still owes.
+  // M7 — the Dues screen's unit is the FAMILY: one block per household, with every child's
+  // charges in it and the family's own balance — owed, square, or in CREDIT, which used to be
+  // floored at zero and simply disappear. A sibling's cheque settles the family.
+  //
+  // Members are read from the WHOLE scout list, archived scouts included, so a family whose
+  // Webelos crossed over still shows that child's unpaid campout beside the brother still here.
+  function duesFamilies() {
+    return familyAccountsNow().map(function (a) {
+      var members = state.scouts.filter(function (sc) { return familyKeyOf(sc) === a.key; });
+      return {
+        key: a.key, acct: a,
+        members: members,
+        active: members.filter(function (sc) { return !sc.archived; }),
+        charges: state.charges.filter(function (c) { return a.scoutIds.indexOf(c.scoutId) !== -1; })
+      };
+    }).filter(function (f) { return f.charges.length || f.acct.paid; })
+      .sort(function (a, b) {
+        return b.acct.outstanding - a.acct.outstanding ||
+          familyLabelOf(a).localeCompare(familyLabelOf(b));
+      });
+  }
+  function familyLabelOf(f) {
+    return f.members.length ? familyLabel({ members: f.members }) : 'A scout no longer on the roster';
+  }
+  function duesFamilyBlock(f) {
+    var a = f.acct;
+    var open = !!ui.collectOpen[f.key];
+    var many = f.members.length > 1;
+    var dens = [];
+    f.members.forEach(function (sc) { if (sc.den && !sc.archived && dens.indexOf(sc.den) === -1) dens.push(sc.den); });
+    var ft = chargeTotals(f.charges, state.ledger, chargeFamilyKey);
+    // Who a payment is recorded against: a child still here if there is one, since that is who a
+    // treasurer looks for in the ledger's picker. Any member settles the family either way.
+    var payTo = (f.active[0] || f.members[0] || { id: a.scoutIds[0] }).id;
+    var status = a.outstanding
+      ? '<span class="money" style="color:var(--accent-text)">' + fmt(a.outstanding) + ' owed</span>'
+      : (a.credit
+        ? '<span class="money" style="color:var(--good)">Credit ' + fmt(a.credit) + '</span>'
+        : '<span class="money">square</span>');
+    var h = '<div class="block-card" style="margin-top:8px">' +
+      '<div class="spread"><span class="assign-name">' + esc(familyLabelOf(f)) +
+      dens.map(function (d) { return ' <span class="pill navy">' + esc(d) + '</span>'; }).join('') + '</span>' +
+      status + '</div>' +
+      '<div class="rsvp-wrap' + (open ? ' open' : '') + '">' +
+      '<button type="button" class="exp-toggle" data-act="toggle-collect" data-id="' + esc(f.key) + '" aria-expanded="' + open + '">' +
+      '<span class="chev" aria-hidden="true">' + (open ? '▾' : '▸') + '</span>' +
+      f.charges.length + ' charge' + (f.charges.length === 1 ? '' : 's') + ' · ' + fmt(ft.raised) +
+      ' · ' + fmt(a.paid) + ' received</button>';
+    if (open) {
+      h += '<div class="rsvp-list">';
+      if (a.credit) {
+        h += '<p class="small muted" style="margin:4px 0 6px">This family has paid ' + fmt(a.credit) +
+          ' more than it owes. It settles their next charge automatically; refund it only if they ask, and record the refund as money out.</p>';
+      }
+      f.charges.forEach(function (c) {
+        var line = getBudgetLine(c.lineId);
+        var who = getScout(c.scoutId);
+        var status2 = c.waivedBy
+          ? '<span class="pill">waived</span>'
+          : (c.forgiven
+            ? '<span class="pill">forgiven' + (c.forgiven.reason ? ' — ' + esc(c.forgiven.reason) : '') + '</span>'
+            : '');
+        h += '<div class="att-row" style="cursor:default"><span class="att-name">' +
+          (many && who ? esc((who.name || '').split(' ')[0]) + ' · ' : '') +
+          esc(line ? (line.name || 'Untitled line') : (c.label || 'Removed line')) +
+          ' <span class="small muted">' + esc(chargeWhoLabel(c)) + '</span> ' + status2 + '</span>' +
+          '<span class="money small">' + fmt(c.amountCents) + '</span>' +
+          (c.waivedBy ? '' :
+            (c.forgiven
+              ? '<button type="button" class="btn small ghost" data-act="charge-unforgive" data-id="' + c.id + '">Undo</button>'
+              : '<button type="button" class="btn small ghost" data-act="charge-forgive" data-id="' + c.id + '">Forgive…</button>')) +
+          '</div>';
+        if (ui.forgiveFor === c.id) {
+          h += '<form data-form="charge-forgive" data-id="' + c.id + '" class="row" style="margin:4px 0 8px">' +
+            '<label class="fld">Why<input name="reason" placeholder="e.g. family unable to pay this term" style="min-width:220px"></label>' +
+            '<label class="fld">Agreed by<input name="by" placeholder="Committee Chair"></label>' +
+            '<button class="btn small primary" type="submit" style="align-self:flex-end">Forgive ' + fmt(c.amountCents) + '</button>' +
+            '<button type="button" class="btn small ghost" data-act="charge-forgive-cancel" style="align-self:flex-end">Cancel</button>' +
+            '</form>';
+        }
+      });
+      h += '</div>' +
+        '<div class="row no-print" style="margin-top:8px">' +
+        '<button type="button" class="btn small primary" data-act="charge-pay" data-scout="' + esc(payTo) + '">Record a payment…</button>' +
+        '</div>';
+    }
+    return h + '</div></div>';
+  }
   function renderDues() {
-    var roster = activeScouts();
-    var t = chargeTotals(state.charges, state.ledger);
+    var t = chargeTotals(state.charges, state.ledger, chargeFamilyKey);
     if (!state.charges.length) {
       return '<div class="card"><h2 class="section display">Dues &amp; fees</h2>' +
         '<div class="empty" style="margin:0">Nothing is charged to families yet. Mark a budget line ' +
@@ -14299,17 +14450,24 @@
         '<div class="row no-print" style="margin-top:10px">' +
         '<button type="button" class="btn" data-act="goto" data-tab="money" data-section="budget">Open the budget</button></div></div>';
     }
-    var owing = roster.map(function (s2) { return { s: s2, owe: scoutOwesCents(s2.id) }; })
-      .filter(function (r) { return r.owe > 0; })
-      .sort(function (a, b) { return b.owe - a.owe || a.s.name.localeCompare(b.s.name); });
+    var fams = duesFamilies();
+    var current = fams.filter(function (f) { return f.active.length; });
+    var rosterFams = activeFamilies();
+    var squareN = rosterFams.filter(function (fam) {
+      return !current.some(function (f) { return f.key === fam.key && f.acct.outstanding > 0; });
+    }).length;
 
     var h = '<div class="card"><h2 class="section display">Dues &amp; fees</h2>' +
       '<div class="row">' +
       '<div class="stat"><span class="v money">' + fmt(t.raised) + '</span><span class="l">Charged</span></div>' +
       '<div class="stat"><span class="v money">' + fmt(t.paid + t.donated) + '</span><span class="l">Received</span></div>' +
       '<div class="stat"><span class="v money"' + (t.outstanding ? ' style="color:var(--accent-text)"' : '') + '>' + fmt(t.outstanding) + '</span><span class="l">Still owed</span></div>' +
-      '<div class="stat"><span class="v">' + (roster.length - owing.length) + ' of ' + roster.length + '</span><span class="l">Square</span></div>' +
+      '<div class="stat"><span class="v">' + squareN + ' of ' + rosterFams.length + '</span><span class="l">Families square</span></div>' +
       '</div>';
+    if (t.credit) {
+      h += '<p class="small muted" style="margin:8px 0 0">Families in credit: <strong class="money">' + fmt(t.credit) +
+        '</strong> paid ahead of what they owe. It is not netted against what other families still owe.</p>';
+    }
     // The four settlements, apart. A donation left the pack whole; a waiver or forgiveness
     // did not, and the difference is the whole point of reporting them separately.
     var settled = [];
@@ -14325,61 +14483,15 @@
     h += '</div>';
 
     // ---- per family ----
-    h += '<div class="card"><h2 class="section display">By family</h2>' +
-      '<p class="small muted" style="margin:0 0 8px">Every charge stands until it is paid, donated for, waived by a reward tier, ' +
-      'or forgiven — and it keeps its reason either way. Record money arriving in <strong>Money · Ledger</strong>; ' +
+    // "Family balances", not "By family": each block IS a household's account now, siblings
+    // together (M7). The old title sat over a list of individual scouts.
+    h += '<div class="card"><h2 class="section display">Family balances</h2>' +
+      '<p class="small muted" style="margin:0 0 8px">One account per family — brothers and sisters linked on the roster share it, ' +
+      'so a payment recorded against either child settles both. Every charge stands until it is paid, donated for, waived by a ' +
+      'reward tier, or forgiven — and it keeps its reason either way. Record money arriving in <strong>Money · Ledger</strong>; ' +
       'it settles here as soon as it carries a scout.</p>';
-    var shown = roster.filter(function (s2) { return chargesForScout(s2.id).length; });
-    if (!shown.length) h += '<p class="empty">No charges against anyone on the current roster.</p>';
-    shown.forEach(function (s2) {
-      var rows = chargesForScout(s2.id);
-      var ft = chargeTotals(rows, state.ledger);
-      var owe = scoutOwesCents(s2.id);
-      var open = !!ui.collectOpen[s2.id];
-      h += '<div class="block-card" style="margin-top:8px">' +
-        '<div class="spread"><span class="assign-name">' + esc(s2.name) +
-        (s2.den ? ' <span class="pill navy">' + esc(s2.den) + '</span>' : '') + '</span>' +
-        '<span class="money"' + (owe ? ' style="color:var(--accent-text)"' : '') + '>' +
-        (owe ? fmt(owe) + ' owed' : 'square') + '</span></div>' +
-        '<div class="rsvp-wrap' + (open ? ' open' : '') + '">' +
-        '<button type="button" class="exp-toggle" data-act="toggle-collect" data-id="' + s2.id + '" aria-expanded="' + open + '">' +
-        '<span class="chev" aria-hidden="true">' + (open ? '▾' : '▸') + '</span>' +
-        rows.length + ' charge' + (rows.length === 1 ? '' : 's') + ' · ' + fmt(ft.raised) +
-        ' · ' + fmt(paymentsForScout(state.ledger, s2.id)) + ' received</button>';
-      if (open) {
-        h += '<div class="rsvp-list">';
-        rows.forEach(function (c) {
-          var line = getBudgetLine(c.lineId);
-          var status = c.waivedBy
-            ? '<span class="pill">waived</span>'
-            : (c.forgiven
-              ? '<span class="pill">forgiven' + (c.forgiven.reason ? ' — ' + esc(c.forgiven.reason) : '') + '</span>'
-              : '');
-          h += '<div class="att-row" style="cursor:default"><span class="att-name">' +
-            esc(line ? (line.name || 'Untitled line') : 'Removed line') +
-            ' <span class="small muted">' + esc(chargeWhoLabel(c)) + '</span> ' + status + '</span>' +
-            '<span class="money small">' + fmt(c.amountCents) + '</span>' +
-            (c.waivedBy ? '' :
-              (c.forgiven
-                ? '<button type="button" class="btn small ghost" data-act="charge-unforgive" data-id="' + c.id + '">Undo</button>'
-                : '<button type="button" class="btn small ghost" data-act="charge-forgive" data-id="' + c.id + '">Forgive…</button>')) +
-            '</div>';
-          if (ui.forgiveFor === c.id) {
-            h += '<form data-form="charge-forgive" data-id="' + c.id + '" class="row" style="margin:4px 0 8px">' +
-              '<label class="fld">Why<input name="reason" placeholder="e.g. family unable to pay this term" style="min-width:220px"></label>' +
-              '<label class="fld">Agreed by<input name="by" placeholder="Committee Chair"></label>' +
-              '<button class="btn small primary" type="submit" style="align-self:flex-end">Forgive ' + fmt(c.amountCents) + '</button>' +
-              '<button type="button" class="btn small ghost" data-act="charge-forgive-cancel" style="align-self:flex-end">Cancel</button>' +
-              '</form>';
-          }
-        });
-        h += '</div>' +
-          '<div class="row no-print" style="margin-top:8px">' +
-          '<button type="button" class="btn small primary" data-act="charge-pay" data-scout="' + s2.id + '">Record a payment…</button>' +
-          '</div>';
-      }
-      h += '</div></div>';
-    });
+    if (!current.length) h += '<p class="empty">No charges against anyone on the current roster.</p>';
+    current.forEach(function (f) { h += duesFamilyBlock(f); });
     h += '</div>';
 
     // Forgiveness is the practice the sample financial bylaws assume — the Treasurer is told

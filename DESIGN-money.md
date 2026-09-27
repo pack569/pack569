@@ -128,6 +128,15 @@ outliving, or being counted beside, the thing they belonged to. What changed, it
   cleared `scoutId` on every edit of a money-out entry — including typing the receipt number the
   reimburse toast asks for. Now only flipping the direction clears it; the entry's detail row says
   who it was paid back to.
+- **Balances were per scout, not per family (M7).** §3.4 has always said *"Outstanding for a
+  family"*, and the code worked it out per scout. One cheque for two siblings, recorded against
+  the elder, left the elder silently in credit (floored to "square") and the younger still owing
+  everything. Balances are now per **family** — `familyAccounts(charges, ledger, keyOf)`, keyed by
+  `chargeFamilyKey`, which is `familyKeyOf` read through `getScout` so an archived child still
+  pools with the siblings left behind. A family that has overpaid shows **Credit $X** instead of
+  "square". The Dues card is one block per household, titled *Family balances*, and "Square"
+  counts families. Every "owes $X" beside a scout's name, the Treasurer's Home nag, and the amount
+  prefilled by *Record a payment* all mean the household now.
 
 ---
 

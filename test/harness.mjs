@@ -2402,7 +2402,7 @@ test('one handler set serves every budget line, not parallel act-/exp- families'
    ================================================================ */
 
 const CHARGE_FNS = ['CHARGE_WHO', 'centsOf', 'chargeKey', 'chargeRowsFor', 'chargeIsOpen',
-  'entryPaysCharges', 'paymentsForScout', 'familyOutstanding', 'chargeTotals'];
+  'entryPaysCharges', 'paymentsForScout', 'familyAccounts', 'familyOutstanding', 'chargeTotals'];
 
 function line3b(patch) {
   return Object.assign({
@@ -8543,6 +8543,45 @@ test('M6: editing a reimbursement keeps who it paid back', () => {
   ok(!/led\.direction !== 'in'\) \{ led\.source = ''; led\.donor = ''; led\.scoutId = ''; \}/.test(h),
     'any edit of a money-out entry clears its scout');
   ok(/if \(lk === 'dir'\) led\.scoutId = '';/.test(h), 'flipping the direction no longer drops the payer');
+});
+
+test('M7: one cheque against either sibling settles the family, and a credit is shown', () => {
+  const { familyAccounts, familyOutstanding, chargeTotals } = sandbox(CHARGE_FNS);
+  const fam = { ada: 'F', ben: 'F', cal: 'cal' };
+  const keyOf = (id) => fam[id] || id;
+  const charges = [
+    { scoutId: 'ada', amountCents: 8000, waivedBy: '', forgiven: null },
+    { scoutId: 'ben', amountCents: 8000, waivedBy: '', forgiven: null },
+    { scoutId: 'cal', amountCents: 8000, waivedBy: '', forgiven: null }
+  ];
+  const ledger = [
+    { direction: 'in', scoutId: 'ada', amountCents: 16000, source: 'family' },  // one cheque, both children
+    { direction: 'in', scoutId: 'cal', amountCents: 10000, source: 'family' }   // $20 over
+  ];
+  eq(familyOutstanding(charges, ledger, 'ben', keyOf), 0, 'Ben still owes after his sister’s cheque covered him');
+  const accts = familyAccounts(charges, ledger, keyOf);
+  const f = accts.find((a) => a.key === 'F');
+  eq([f.owed, f.paid, f.outstanding, f.credit], [16000, 16000, 0, 0], 'the family account');
+  const c = accts.find((a) => a.key === 'cal');
+  eq(c.credit, 2000, 'an overpayment is a credit, not "square"');
+  const t = chargeTotals(charges, ledger, keyOf);
+  eq(t.outstanding, 0, 'nobody owes');
+  eq(t.credit, 2000, 'the credit is reported');
+  // Without a key every scout is a family of one — what an unlinked pack always had.
+  eq(familyOutstanding(charges, ledger, 'ben'), 8000, 'unlinked, Ben is his own account');
+});
+
+test('M7: every "owes" beside a name, and the Treasurer’s nag, is the family’s', () => {
+  ok(/function scoutOwesCents\(scoutId\) \{ return familyOutstanding\(state\.charges, state\.ledger, scoutId, chargeFamilyKey\); \}/.test(SCRIPT),
+    'scoutOwesCents is still per scout');
+  const key = /function chargeFamilyKey\(scoutId\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/getScout\(scoutId\)/.test(key) && /familyKeyOf\(sc\)/.test(key),
+    'the family key does not read archived scouts through getScout');
+  ok(/var owingFams = familyAccountsNow\(\)/.test(SCRIPT), 'the Treasurer’s nag counts a family once per child');
+  const dues = /function renderDues\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/duesFamilyBlock/.test(dues) && />Family balances</.test(dues), 'the Dues card still lists scouts one by one');
+  const blk = /function duesFamilyBlock\(f\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/Credit ' \+ fmt\(a\.credit\)/.test(blk), 'a family in credit still reads "square"');
 });
 
 /* ---------------- report ---------------- */
