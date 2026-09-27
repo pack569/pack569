@@ -8759,6 +8759,33 @@ test('a past season’s months read right whichever year-start it was closed und
   ok(/slotBase: 'july'/.test(build), 'a new archive does not say which slot numbering it uses');
 });
 
+test('E9: budget vs actual, by category, with variance', () => {
+  const { budgetVsActual, LINE_CATEGORIES } = sandbox(['LINE_CATEGORIES', 'budgetVsActual']);
+  const out = budgetVsActual([
+    { category: 'camp', planned: 80000, actual: 102000 },
+    { category: 'camp', planned: 20000, actual: 0 },
+    { category: 'registration', planned: 85000, actual: 85000 },
+    { category: 'advancement', planned: 35000, actual: 31250 },
+    { category: 'uniforms', planned: 0, actual: 0 }
+  ], LINE_CATEGORIES);
+  const byCat = {};
+  out.rows.forEach((r) => { byCat[r.category] = r; });
+  eq(byCat.camp && [byCat.camp.planned, byCat.camp.actual, byCat.camp.variance], [100000, 102000, 2000], 'camp, over by $20');
+  eq(byCat.advancement.variance, -3750, 'advancement, under');
+  eq(byCat.registration.variance, 0, 'registration on plan');
+  ok(!byCat.uniforms, 'an empty category is listed');
+  eq(out.total, { planned: 220000, actual: 218250, variance: -1750 }, 'total');
+  // In 510-278 order, which is how a committee reads it.
+  const order = LINE_CATEGORIES.map((c) => c[0]);
+  const got = out.rows.map((r) => order.indexOf(r.category));
+  eq(got, got.slice().sort((a, b) => a - b), 'rows are not in category order');
+  const now = /function budgetVsActualNow\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/if \(l\.category === 'income'\) return;/.test(now), 'income lines are reported as spending');
+  ok(/planned: lineThroughPack\(l\) \? linePlanned\(l\) : 0/.test(now), 'paid-direct money is planned as the pack’s');
+  ok(/h \+= renderBudgetVsActual\(\);/.test(/function renderBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0]),
+    'the Budget workspace does not show it');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

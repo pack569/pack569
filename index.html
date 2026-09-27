@@ -12902,6 +12902,69 @@
   }
 
 
+  // BUDGET VS ACTUAL BY CATEGORY — Treasurer's audit, 2026-09-27 (E9). DESIGN-money §3.6: "At the
+  // committee meeting, budget-vs-actual by category, with variance, straight off the plan." The
+  // plan was grouped by category and the ledger was per line, and nothing put the two side by side.
+  //
+  // Pure: `items` is one { category, planned, actual } per line, already decided by the caller,
+  // and `cats` is LINE_CATEGORIES. Categories come back in 510-278 order, empty ones dropped.
+  // Variance is actual − planned, so a positive figure is OVER budget.
+  function budgetVsActual(items, cats) {
+    var by = {};
+    items.forEach(function (it) {
+      var r = by[it.category] || (by[it.category] = { planned: 0, actual: 0 });
+      r.planned += it.planned || 0;
+      r.actual += it.actual || 0;
+    });
+    var rows = [], total = { planned: 0, actual: 0, variance: 0 };
+    cats.forEach(function (c) {
+      var r = by[c[0]];
+      if (!r || (!r.planned && !r.actual)) return;
+      rows.push({ category: c[0], label: c[1], planned: r.planned, actual: r.actual, variance: r.actual - r.planned });
+      total.planned += r.planned; total.actual += r.actual;
+    });
+    total.variance = total.actual - total.planned;
+    return { rows: rows, total: total };
+  }
+  // The same lines, the same rules as computeBudget: an income line is not spending (M1); a
+  // paid-direct line is out of the PLAN but its actual — a reimbursement — is real money out.
+  function budgetVsActualNow() {
+    var items = [];
+    allBudgetLines().forEach(function (r) {
+      var l = r.line;
+      if (l.category === 'income') return;
+      items.push({
+        category: l.category,
+        planned: lineThroughPack(l) ? linePlanned(l) : 0,
+        actual: lineActual(l.id)
+      });
+    });
+    return budgetVsActual(items, LINE_CATEGORIES);
+  }
+  function renderBudgetVsActual() {
+    var bva = budgetVsActualNow();
+    if (!bva.rows.length) return '';
+    function vcell(v) {
+      if (!v) return '<td class="num money">—</td>';
+      return '<td class="num money"' + (v > 0 ? ' style="color:var(--bad)"' : '') + '>' +
+        (v > 0 ? fmt(v) + ' over' : fmt(-v) + ' under') + '</td>';
+    }
+    var h = '<div class="card"><h2 class="section display">Budget vs actual</h2>' +
+      '<p class="small muted" style="margin:0 0 8px">What each category planned against what the ledger says was spent. ' +
+      'Planning generously is the point of a plan, so being under is normal; over is what the committee should hear about. ' +
+      'Income lines are not in here — they are money in, not spending.</p>' +
+      '<div class="tbl-wrap"><table><caption class="visually-hidden">Budget against actual spending by category</caption>' +
+      '<thead><tr><th scope="col">Category</th><th scope="col" class="num">Planned</th><th scope="col" class="num">Actual</th>' +
+      '<th scope="col" class="num">Variance</th></tr></thead><tbody>';
+    bva.rows.forEach(function (r) {
+      h += '<tr><td>' + esc(r.label) + '</td><td class="num money">' + fmt(r.planned) + '</td><td class="num money">' +
+        fmt(r.actual) + '</td>' + vcell(r.variance) + '</tr>';
+    });
+    h += '<tr><th scope="row">Total</th><td class="num money"><strong>' + fmt(bva.total.planned) + '</strong></td>' +
+      '<td class="num money"><strong>' + fmt(bva.total.actual) + '</strong></td>' + vcell(bva.total.variance) + '</tr>' +
+      '</tbody></table></div></div>';
+    return h;
+  }
   function renderBudget() {
     var b = state.budget;
     var bud = computeBudget();
@@ -13130,6 +13193,7 @@
     }
     h += '</div>';
 
+    h += renderBudgetVsActual();
     h += renderFamilyYearCost();
 
     // Phase 3a — the paid-direct question, asked once. Migration never guesses it: whether

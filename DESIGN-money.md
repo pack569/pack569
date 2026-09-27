@@ -186,6 +186,11 @@ outliving, or being counted beside, the thing they belonged to. What changed, it
   applied the July month names with the September year-turn, so a new archive's December read as
   the next year and an old archive's September read as July. New archives carry
   `slotBase: 'july'`; one without it is September-based if it was closed before 2026-07-27.
+- **Budget vs actual by category (E9).** §3.6 promised the committee *"budget-vs-actual by
+  category, with variance, straight off the plan"* and nothing showed it. The Budget workspace now
+  has a card under *Pack budget*: planned, actual and variance per 510-278 category and in total,
+  over-budget in red. Same rules as `computeBudget` — income lines are not spending, and a
+  paid-direct line is out of the plan but its reimbursements are in actual (`budgetVsActual`).
 
 ---
 
