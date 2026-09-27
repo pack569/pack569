@@ -16114,12 +16114,20 @@
 
     // The guidance's own test, run on this pack's numbers. Not advice — a number and the sentence
     // it comes from, so a committee can see where it stands before somebody else asks.
+    //
+    // ⚠ Popcorn Kernel audit, 2026-09: the panel used to close with "the pack is keeping the
+    // majority, which is the side of that line to be on", as if clearing 50% settled whether a
+    // reward setup is allowed. It does not — the guidance is one test among the council's and the
+    // chartered organization's own rules — so the panel now points there. And the figure is
+    // CONSERVATIVE: net here is popcorn commission alone, so any other money the pack raised is
+    // left out and the true share handed back is, if anything, lower than shown.
     var pb = privateBenefitCheck();
     if (pb.back > 0 && pb.net != null && pb.net > 0) {
       h += '<hr class="divider"><p class="eyebrow">Private benefit</p>' +
         '<p class="small" style="margin:0">Tiers have handed <strong class="money">' + fmt(pb.back) +
         '</strong> back to individual scouts, against <strong class="money">' + fmt(pb.net) +
-        '</strong> of commission the pack has earned \u2014 <strong>' + pb.pct + '%</strong>.</p>' +
+        '</strong> of commission the pack has earned \u2014 <strong>' + pb.pct + '%</strong> ' +
+        '<span class="muted">(a conservative figure: it counts popcorn commission only as the pack\u2019s net proceeds)</span>.</p>' +
         '<p class="small ' + (pb.over ? '' : 'muted') + '" style="margin:4px 0 0">' +
         (pb.over ? '<span class="pill bad">over half</span> ' : '') +
         'Scouting America\u2019s Unit Budgeting Guidelines: <em>"To avoid \u2018Direct Benefit\u2019 \u2014 the ' +
@@ -16127,7 +16135,8 @@
         (pb.over
           ? ' On these figures more than half is going to individuals. Lower a reward, raise a threshold, or move ' +
             'the spend to something the whole pack gets.'
-          : ' The pack is keeping the majority, which is the side of that line to be on.') + '</p>';
+          : ' On these figures the pack keeps the majority.') +
+        ' That line is one test, not a ruling \u2014 confirm this setup with the council and your chartered organization.</p>';
     }
 
     if (!coverable.length) {

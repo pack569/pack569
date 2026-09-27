@@ -8997,6 +8997,15 @@ test('P8: a fundraiser card says what the council needs before the money is rais
   ok(/if \(ch === 'fr-kind' \|\| ch === 'fr-app' \|\| ch === 'fr-approved'\)/.test(SCRIPT), 'the fields are not saved');
 });
 
+test('P9: the private-benefit panel is one test, not a ruling, and says its figure is conservative', () => {
+  const i = SCRIPT.indexOf('var pb = privateBenefitCheck();');
+  ok(i !== -1, 'the private-benefit panel was not found');
+  const blk = codeOnly(SCRIPT.slice(i, i + 2200));
+  ok(/confirm this setup with the council and your chartered organization/.test(blk), 'the panel does not send the pack to the council');
+  ok(/conservative figure: it counts popcorn commission only/.test(blk), 'the figure is not labelled conservative');
+  ok(!/side of that line to be on/.test(blk), 'the panel still implies 50% settles it');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
