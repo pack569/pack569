@@ -8312,8 +8312,12 @@ test('calendar-only puts the cost card on the Schedule tab, and the toggle says 
   ok(/h \+= parentFamilyCost\(pv\);/.test(slice('renderParentStandings')), 'the Standings page lost its cost card');
   const label = /Untick for a calendar-only page:([\s\S]*?)<\/p>/.exec(SCRIPT);
   ok(label, 'the calendar-only explanation under the toggle is gone');
-  ['scout names', 'storefront shifts', 'sales totals', 'goal bar', 'reward tiers', 'derby winners',
-    'what a year costs', 'camping'].forEach((w) => ok(label[1].indexOf(w) !== -1, `the toggle text does not mention ${w}`));
+  // B7 (2026-09): it is the reward-tier BOARD that goes; the year's cost keeps what each tier
+  // takes off it, and the toggle has to say both or it reads as though every tier figure vanishes.
+  ['scout names', 'storefront shifts', 'sales totals', 'goal bar', 'the reward-tier board', 'derby winners',
+    'the year’s cost', '(with what each tier takes off it) and the camping pages still show', 'monthly digest'
+  ].forEach((w) => ok(label[1].indexOf(w) !== -1, `the toggle text does not mention ${w}`));
+  ok(!/the reward tiers and derby/.test(label[1]), 'the toggle still says every reward tier is hidden');
   // The docs say the same thing.
   ok(/names on storefront\s+shifts are then left out/.test(SETUP), 'SETUP does not say shift names go in calendar-only mode');
   ok(/\*\*what a year costs\*\* each den moves onto it/.test(SETUP), 'SETUP does not say where the cost card goes');

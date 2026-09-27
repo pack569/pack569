@@ -14060,10 +14060,13 @@
     h += '<hr class="divider">' +
       '<label class="join-opt"><input type="checkbox" data-ch="join-standings"' + (standingsEnabled() ? ' checked' : '') + '>' +
       '<span>Include scout standings in the parent view</span></label>' +
+      // Says exactly what goes and what stays (security review, 2026-09). "The reward tiers" read as
+      // though every tier figure disappeared, when the year's cost still shows what each tier takes
+      // off it — it is the per-scout BOARD that goes.
       '<p class="small muted" style="margin:2px 0 0">Untick for a calendar-only page: scout names (on the ' +
-      'standings and on storefront shifts), sales totals, the goal bar, the reward tiers and derby winners are ' +
-      'left out of the published copy entirely — not just hidden. The calendar, what a year costs each den, ' +
-      'and the camping pages still show.</p>';
+      'standings and on storefront shifts), sales totals, the goal bar, the reward-tier board and derby winners are ' +
+      'left out of the published copy entirely — not just hidden — and the monthly digest leaves out its popcorn section. ' +
+      'The calendar, the year’s cost for each den (with what each tier takes off it) and the camping pages still show.</p>';
     return h + '</div>';
   }
   function syncModeLine() {

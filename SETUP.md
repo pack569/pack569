@@ -196,11 +196,12 @@ calendar but not the money" is impossible to do by permission alone. Instead the
 
 **Calendar-only mode.** If you'd rather not publish scout names and totals to a widely-shared
 link, untick **Include scout standings in the parent view** in the *Parent sign-up link* card.
-The standings, the goal bar, the derby winners, the reward tiers and the names on storefront
+The standings, the goal bar, the derby winners, the reward-tier board and the names on storefront
 shifts are then left out of `packs/{doc}/public/view` **entirely** — not merely hidden in the
-UI — so no child is named anywhere in it. Parents get the Schedule tab (the shift times
-still show, without names, and **what a year costs** each den moves onto it) and the Camping
-tab if you've written one. Tick it again and the next leader save republishes the rest. It's
+UI — so no child is named anywhere in it, and the monthly digest leaves out its popcorn
+section. Parents get the Schedule tab (the shift times still show, without names, and
+**what a year costs** each den moves onto it, still with what each tier takes off it) and
+the Camping tab if you've written one. Tick it again and the next leader save republishes the rest. It's
 on by default, so a pack that never touches this behaves exactly as before.
 
 ### 1. Enable Google sign-in in the Firebase console
