@@ -4334,7 +4334,12 @@
       teGoal: teGoalNow, goal: teGoalNow, target: teTarget, teTarget: teTarget,
       // The minimum is what the plan needs; the stretch is what the pack is reaching for.
       stretch: stretchNow,
-      cashGoal: state.cashGoalCents, activeCount: activeCount
+      cashGoal: state.cashGoalCents, activeCount: activeCount,
+      // What the Trail's End bar measures teEligible against. With cash run through Trail's End
+      // the donations land in teEligible, while the goal (fundingSummary) has already counted
+      // the cash goal's commission as income — so the bar's target carries the cash goal too, or
+      // every cash dollar would fill a bar sized as if it weren't coming.
+      teBarGoal: teGoalNow + (viaTE ? (state.cashGoalCents || 0) : 0)
     };
   }
   // Normalized match key for a location. Case, punctuation and spacing drift between a
@@ -4739,13 +4744,20 @@
     var otherFr = 0;
     state.fundraisers.forEach(function (fr) { if (fr.countInFunds) otherFr += fundraiserTotals(fr).net; });
     var cashGoal = state.cashGoalCents || 0;
-    var income = carryover + fees + otherFr + cashGoal + incomeLines;
+    var rates = commissionRates();
+    // What the cash goal puts in the pack's hands. Kept cash is 100% of it; cash run through
+    // Trail's End as Heroes & Helpers earns commission like any other in-person sale, so only the
+    // storefront/wagon rate of it is the pack's (Popcorn Kernel audit, 2026-09). Counting the
+    // whole goal there set the popcorn goal too low by everything Trail's End keeps. No rate set
+    // yet means no goal can be worked out anyway, so it counts nothing rather than guessing.
+    var cashGoalIn = !state.cashThroughTrailsEnd ? cashGoal
+      : (rates.base != null && rates.base > 0 ? Math.round(cashGoal * rates.base / 100) : 0);
+    var income = carryover + fees + otherFr + cashGoalIn + incomeLines;
     var need = Math.max(0, expenses - income);
     // At the LOWER of the pack's rates (commissionRates), so a mix of channels can only beat
     // the goal, never fall short of it. Selling everything at the better rate gets there early;
     // that is the right way for a minimum to be wrong.
     var leaderPlanned = leaderPlannedCents();
-    var rates = commissionRates();
     var pct = rates.goal;
     var pctOk = pct != null && pct > 0;
     var salesGoal = pctOk ? Math.round(need / (pct / 100)) : null;
@@ -4753,6 +4765,7 @@
       scouts: scouts, byCategory: byCategory,
       A: expenses, B: income, C: need,
       carryover: carryover, fees: fees, otherFr: otherFr, cashGoal: cashGoal,
+      cashGoalIn: cashGoalIn, cashViaTE: !!state.cashThroughTrailsEnd,
       // What the assumption moved off the families and onto popcorn. 0 when it is off.
       tierAssumed: tierAssumed,
       incomeLines: incomeLines, familyDirect: familyDirect,
@@ -13174,7 +13187,12 @@
         : '') +
       (fs2.incomeLines ? '<tr><td class="fund-sub">Budgeted income lines</td><td class="num money">' + fmt(fs2.incomeLines) + '</td></tr>' : '') +
       (fs2.otherFr ? '<tr><td class="fund-sub">Other fundraisers</td><td class="num money">' + fmt(fs2.otherFr) + '</td></tr>' : '') +
-      '<tr><td class="fund-sub">Cash donations goal</td><td class="num money">' + fmt(fs2.cashGoal) + '</td></tr>' +
+      '<tr><td class="fund-sub">Cash donations goal' +
+        (fs2.cashViaTE && fs2.cashGoal
+          ? ' <span class="muted">(' + fmt(fs2.cashGoal) + ' through Trail’s End — only the ' +
+            esc(String(fs2.basePct == null ? '—' : fs2.basePct)) + '% commission is the pack’s)</span>'
+          : '') +
+        '</td><td class="num money">' + fmt(fs2.cashGoalIn) + '</td></tr>' +
       '<tr><td><strong>B</strong> Income subtotal</td><td class="num money"><strong>' + fmt(fs2.B) + '</strong></td></tr>' +
       '<tr class="fund-c"><td><strong>C</strong> Total fundraising need <span class="muted">(A − B)</span></td>' +
         '<td class="num money"><strong>' + fmt(fs2.C) + '</strong></td></tr>' +
@@ -14410,7 +14428,7 @@
       // So Home shows what the goal is actually measured against — what the pack has SOLD —
       // and names the carryover separately, as the thing it is: money already in the bank that
       // was never part of this year's goal.
-      var soldPct = packT.teGoal > 0 ? Math.min(100, Math.round(packT.teEligible / packT.teGoal * 100)) : null;
+      var soldPct = packT.teGoal > 0 ? Math.min(100, Math.round(packT.teEligible / packT.teBarGoal * 100)) : null;
       h += '<div class="empty" style="margin:0 0 10px">Nothing needs you right now.</div>' +
         '<div class="row">' +
         // "Toward goal", NOT "Sold". teEligible is sales PLUS online donations — plus cash
@@ -15271,10 +15289,11 @@
 
     // Trail's End goal progress
     if (pack.teGoal > 0) {
-      var tePct = Math.min(100, Math.round(pack.teEligible / pack.teGoal * 100));
+      var tePct = Math.min(100, Math.round(pack.teEligible / pack.teBarGoal * 100));
       h += '<hr class="divider"><p class="eyebrow">Trail’s End goal</p>' +
         '<div class="bar" role="img" aria-label="Trail\'s End goal ' + tePct + ' percent"><div class="bar-fill" style="width:' + tePct + '%"></div></div>' +
-        '<p class="small" style="margin:6px 0 0"><strong class="money">' + fmt(pack.teEligible) + '</strong> of <span class="money">' + fmt(pack.teGoal) + '</span> needed (' + tePct + '%)' +
+        '<p class="small" style="margin:6px 0 0"><strong class="money">' + fmt(pack.teEligible) + '</strong> of <span class="money">' + fmt(pack.teBarGoal) + '</span> needed (' + tePct + '%)' +
+        (pack.teBarGoal !== pack.teGoal ? ' <span class="muted">— includes the ' + fmt(pack.cashGoal) + ' cash donations goal, which runs through Trail’s End</span>' : '') +
         (pack.teTarget != null ? ' · per-scout target <span class="money">' + fmt(pack.teTarget) + '</span> across ' + pack.activeCount + ' active scouts' : '') +
         '</p>';
       // The stretch gets its own bar rather than a marker on the first one: two scales on
@@ -16694,8 +16713,8 @@
       lines.push('Total to the pack: ' + fmt(pack.cashKept + pack.commission));
     }
     if (pack.teGoal > 0) {
-      lines.push('Trail\'s End goal: ' + fmt(pack.teEligible) + ' of ' + fmt(pack.teGoal) +
-        ' (' + Math.min(100, Math.round(pack.teEligible / pack.teGoal * 100)) + '%)' +
+      lines.push('Trail\'s End goal: ' + fmt(pack.teEligible) + ' of ' + fmt(pack.teBarGoal) +
+        ' (' + Math.min(100, Math.round(pack.teEligible / pack.teBarGoal * 100)) + '%)' +
         (pack.teTarget != null ? ' — per-scout target ' + fmt(pack.teTarget) : ''));
     }
     if (pack.stretch > 0) {
@@ -16790,8 +16809,8 @@
       lines.push('POPCORN');
       lines.push('Sales + donations so far: ' + fmt(packT.combined));
       if (packT.teGoal > 0) {
-        lines.push('Trail\'s End goal: ' + fmt(packT.teEligible) + ' of ' + fmt(packT.teGoal) +
-          ' (' + Math.min(100, Math.round(packT.teEligible / packT.teGoal * 100)) + '%)');
+        lines.push('Trail\'s End goal: ' + fmt(packT.teEligible) + ' of ' + fmt(packT.teBarGoal) +
+          ' (' + Math.min(100, Math.round(packT.teEligible / packT.teBarGoal * 100)) + '%)');
       }
       lines.push('');
     }
@@ -16917,10 +16936,10 @@
             esc(String(pack.onlinePct == null ? '—' : pack.onlinePct)) + '% = <strong class="money">' + fmt(pack.commissionOnline || 0) + '</strong>.</p>'
           : '') +
         (pack.teGoal > 0 ? (function () {
-          var gp = Math.min(100, Math.round(pack.teEligible / pack.teGoal * 100));
+          var gp = Math.min(100, Math.round(pack.teEligible / pack.teBarGoal * 100));
           return '<p class="eyebrow">Trail’s End goal</p>' +
             '<div class="bar"><div class="bar-fill" style="width:' + gp + '%"></div></div>' +
-            '<p class="small" style="margin:6px 0 ' + (pack.cashGoal > 0 ? '10' : '14') + 'px"><strong class="money">' + fmt(pack.teEligible) + '</strong> of <span class="money">' + fmt(pack.teGoal) + '</span> (' + gp + '%)</p>';
+            '<p class="small" style="margin:6px 0 ' + (pack.cashGoal > 0 ? '10' : '14') + 'px"><strong class="money">' + fmt(pack.teEligible) + '</strong> of <span class="money">' + fmt(pack.teBarGoal) + '</span> (' + gp + '%)</p>';
         })() : '') +
         // Its own bar, never a marker on the one above: two scales on one bar is how "we're at
         // 100%" and "we're at 76%" end up meaning the same picture (renderTotals, same reason).

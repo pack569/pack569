@@ -3273,10 +3273,11 @@ test('the two goals get separate bars, on their own scales', () => {
   const i = SCRIPT.indexOf('aria-label="Stretch goal ');
   ok(i !== -1, 'the stretch progress bar not found');
   const blk = SCRIPT.slice(Math.max(0, i - 1400), i + 900);
-  ok(/pack\.teEligible \/ pack\.teGoal/.test(blk), 'the minimum bar is not measured against the minimum');
+  // teBarGoal is teGoal plus a cash goal that runs through Trail's End (P3, 2026-09).
+  ok(/pack\.teEligible \/ pack\.teBarGoal/.test(blk), 'the minimum bar is not measured against the minimum');
   ok(/pack\.teEligible \/ pack\.stretch/.test(blk), 'the stretch bar is not measured against the stretch');
   ok(/beyond what the budget needs/.test(blk), 'the stretch does not say how far past the plan it reaches');
-  ok(/of <span class="money">' \+ fmt\(pack\.teGoal\) \+ '<\/span> needed/.test(blk),
+  ok(/of <span class="money">' \+ fmt\(pack\.teBarGoal\) \+ '<\/span> needed/.test(blk),
     'the minimum bar does not say the figure is what is NEEDED');
 });
 
@@ -4417,7 +4418,7 @@ test('the goal is worked out at the LOWER of the two rates', () => {
   // The goal itself must fall out of that rate, not out of state.commissionPct.
   const fn = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'fundingSummary() not found');
-  ok(/var rates = commissionRates\(\);\s*\n\s*var pct = rates\.goal;/.test(fn[0]),
+  ok(/var rates = commissionRates\(\);[\s\S]*\n\s*var pct = rates\.goal;/.test(fn[0]),
     'the sales goal is still derived from the storefront rate alone');
   ok(!/parseFloat\(state\.commissionPct\)/.test(fn[0]), 'fundingSummary reads a raw rate of its own');
   // And nothing may claim online is the better one — Pack 569's is not.
@@ -5984,7 +5985,7 @@ test('Home pairs two figures measured against the same thing', () => {
   ok(!/fmt\(bud0\(\)\.fundsIn\)/.test(card[0]), 'the Funds in tile is back beside a goal percentage');
   ok(!/<span class="l">Funds in<\/span>/.test(card[0]), 'the Funds in label is back on Home');
   // Both tiles now come off teEligible/teGoal, so they can never disagree.
-  ok(/var soldPct = packT\.teGoal > 0 \? Math\.min\(100, Math\.round\(packT\.teEligible \/ packT\.teGoal \* 100\)\)/.test(card[0]),
+  ok(/var soldPct = packT\.teGoal > 0 \? Math\.min\(100, Math\.round\(packT\.teEligible \/ packT\.teBarGoal \* 100\)\)/.test(card[0]),
     'the percentage is derived from something other than the Sold figure');
   // The carryover is still reported — as what it is, and only when there is one.
   ok(/bud0\(\)\.startingBalance > 0/.test(card[0]), 'the carryover is shown even when there is none');
@@ -8857,6 +8858,39 @@ test('P2: another fundraiser counts toward the budget at what the pack keeps', (
   ok(/otherFundraiserIn \+= fundraiserTotals\(fr\)\.net/.test(SCRIPT) && !/otherFundraiserIn \+= fundraiserTotals\(fr\)\.total/.test(SCRIPT),
     'the Budget card counts gross fundraiser sales');
   ok(/fr\.keepPct = \(typeof fr\.keepPct === 'number'[^\n]*: 100;/.test(SCRIPT), 'normalize does not default keepPct to 100');
+});
+
+test('P3: a cash goal run through Trail’s End counts only its commission', () => {
+  const ctx = sandbox(['fundingSummary', 'commissionRates', 'cashScoutRate', 'cashCreditOn', 'fundraiserTotals']);
+  vm.runInContext(`
+    var COVER_WHO = [];
+    function activeScouts() { return [{ id: 'a' }]; }
+    function allBudgetLines() { return [{ key: 'k', line: { id: 'l', category: 'camp' } }]; }
+    function linePlanned() { return 100000; }
+    function lineThroughPack() { return true; }
+    function plannedCoverKeys() { return {}; }
+    function lineRaisesCharges() { return false; }
+    function coverCostForKeys() { return { extra: 0, extraHeads: 0, extraReimburse: 0 }; }
+    function leaderPlannedCents() { return 0; }
+    function salesForCommission(c) { return c; }
+    var state = { budget: { startingBalance: 0 }, fundraisers: [], charges: [], ledger: [],
+      cashGoalCents: 50000, commissionPct: '30', commissionPctOnline: '', cashScoutPct: '10', cashThroughTrailsEnd: false };
+  `, ctx);
+  const kept = ctx.fundingSummary();
+  eq([kept.cashGoalIn, kept.C], [50000, 50000], 'kept cash is 100% the pack’s');
+  vm.runInContext('state.cashThroughTrailsEnd = true;', ctx);
+  const via = ctx.fundingSummary();
+  eq([via.cashGoal, via.cashGoalIn, via.B, via.C], [50000, 15000, 15000, 85000], 'via Trail’s End only 30% is the pack’s');
+  // No double credit: the scout cash credit is off while cash runs through Trail's End.
+  eq(ctx.commissionRates().cash, null, 'cashScoutPct still credits cash that earns commission');
+  // The Trail's End bars measure cash-inclusive teEligible against a cash-inclusive target.
+  const cpt = /function computePackTotals\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/teBarGoal: teGoalNow \+ \(viaTE \? \(state\.cashGoalCents \|\| 0\) : 0\)/.test(cpt), 'teBarGoal missing');
+  ok(!/teEligible \/ packT?\.teGoal\b/.test(SCRIPT), 'a Trail’s End bar still divides by teGoal');
+  // The parent bar adds the gross cash goal to the sales goal and measures every dollar raised,
+  // so it stays consistent without change.
+  ok(/var goalCents = \(pack\.teGoal \|\| 0\) \+ \(pack\.cashGoal \|\| 0\);/.test(BPV()) && /raisedCents: pack\.combined/.test(BPV()),
+    'the parent goal bar changed shape');
 });
 
 /* ---------------- report ---------------- */
