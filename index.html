@@ -2215,28 +2215,47 @@
   //
   // To refresh again next year: edit the seed, bump CAMP_SEED_REV, and add the hashes of the
   // text being replaced here. A trip or section the leader renamed simply is not matched.
-  var CAMP_SEED_REV = 1;
+  var CAMP_SEED_REV = 2;
   var CAMP_OLD_SEED = {
     // rev 1, 2026-09-26: the fall weekend is the Apalachee District's (2 – 4 Oct 2026), not the
     // 2025 mid-October one; spring gains the 2027-not-posted note and the council's own rules.
+    // rev 2, 2026-09-27 (expert-panel audit): the fall late rate as the council actually runs it
+    // and no promise that fees get credited elsewhere; the spring link goes to the council's
+    // family-camp page; the supervision and tenting rules as the pack states them (all three
+    // trips share CAMP_SAFETY); Fort Yargo's hospital, pets rule, uniform names, and no drive
+    // times that contradicted each other. Each array holds every older seed's text for that
+    // field — rev 0's first where rev 1 had already changed it.
     'Fall Family Camping': {
-      fields: { when: ['9odju1'], arrive: ['ita6dt'], depart: ['qr7nm'], cost: ['xafznd'],
-        url: ['1l0iaoa'], intro: ['1b0kg44'] },
+      fields: { when: ['9odju1'], arrive: ['ita6dt'], depart: ['qr7nm'], cost: ['xafznd', 'ci8n6h'],
+        url: ['1l0iaoa'], intro: ['1b0kg44', '1j8pyxs'] },
       sections: {
         'What to expect': { h: ['1fpmqm7'] },
-        'Before you go': { h: ['1xgbmz6'] },
+        'Before you go': { h: ['1xgbmz6', 'udngr6'] },
         'What to bring': { h: ['1vqe8v'] },
         'Food': { h: ['w1mzqi'] },
         'A weekend, roughly': { h: ['4ocixi'] },
-        'Weather, and what mid-October does': { h: ['1b3uqsy'], to: 'Weather, and what early October does' }
+        'Weather, and what mid-October does': { h: ['1b3uqsy'], to: 'Weather, and what early October does' },
+        'Weather, and what early October does': { h: ['1vcgzdu'] },
+        'Sleeping arrangements and supervision': { h: ['onbxj9'] }
       }
     },
     'Spring Family Camping': {
-      fields: { when: ['p6nsn9'], arrive: ['okf2zu'], cost: ['91dpiz'], intro: ['svorvl'] },
+      fields: { when: ['p6nsn9'], arrive: ['okf2zu'], cost: ['91dpiz'], url: ['cr5jkj'], intro: ['svorvl'] },
       sections: {
         'Before you go': { h: ['1ww9vlw'] },
         'What to bring': { h: ['fm4nln'] },
-        'A weekend, roughly': { h: ['3uhxrl'] }
+        'A weekend, roughly': { h: ['3uhxrl'] },
+        'Sleeping arrangements and supervision': { h: ['onbxj9'] }
+      }
+    },
+    'Pack Camping — Fort Yargo': {
+      fields: { intro: ['16q4gq7'] },
+      sections: {
+        'What to expect': { h: ['e31ujx'] },
+        'A pack trip, not a council one': { h: ['mr093w'] },
+        'What to bring': { h: ['1r69nct'] },
+        'Sleeping arrangements and supervision': { h: ['onbxj9'] },
+        'If something goes wrong': { h: ['zq20g4'] }
       }
     }
   };
@@ -2283,10 +2302,10 @@
   // Shared text used by both seeded trips. Camping rules do not change between camps, and a
   // parent reading the spring page should not have to remember what the fall page said.
   var CAMP_SAFETY = 'This part is Youth Protection, and it is not flexible.\n' +
-    '- Every youth is the responsibility of one named adult for the whole weekend. Lions and Tigers must have their own adult partner there.\n' +
-    '- Parents, guardians and siblings share a tent as a family. That is the normal arrangement at family camp.\n' +
-    '- Otherwise a Scout tents with another youth within two years of their age and of the same gender. No adult shares a tent with a youth who is not their own child.\n' +
-    '- Two registered adults with current Safeguarding Youth training are present at all times.\n' +
+    '- Every Cub Scout camps with their own parent or legal guardian; Lions and Tigers with their adult partner. Only in exceptional circumstances, agreed beforehand by the Cubmaster and the parent, may a Scout come under another registered adult who is the parent of a Cub Scout also on the trip.\n' +
+    '- Parents, guardians and siblings share a tent as a family. No adult shares a tent with a youth who is not their own child. Youth who share a tent are the same gender and within two years of age.\n' +
+    '- Two registered adults with current Safeguarding Youth Training, at least one of them 21 or older, are present at all times. When girls attend, a registered female adult 21 or older is there too.\n' +
+    '- Any adult staying overnight who is not the parent or guardian of a Cub Scout on the trip must be registered.\n' +
     '- At least one adult on the trip is BALOO-trained (Basic Adult Leader Outdoor Orientation) and at least one holds current Hazardous Weather training. Both are required for a pack to camp. If you would like to be one of them, tell the Cubmaster — BALOO is a weekend course and the pack should never be one person away from being unable to go.';
   var CAMP_AGES = 'Age matters here, and the guidelines are specific rather than a matter of judgement.\n' +
     '- Fire building is Webelos and up. Tigers, Wolves and Bears watch. An adult lights and tends the fire.\n' +
@@ -2326,7 +2345,7 @@
     'camping together does not make it a council event either. That is exactly what the spring council ' +
     'weekend is for; save the shooting for that one.\n' +
     '\n' +
-    'The trade is worth it. This is a public state park twenty minutes closer than anything else we do, ' +
+    'The trade is worth it. This is a public state park in Winder, off GA-316, ' +
     'on paved roads, with hot showers and a phone signal \u2014 which makes it the easiest first ' +
     'campout in the year for a family that has never done one.';
   // Where the emergency plan is the same everywhere: know it before you need it, and get the
@@ -2354,9 +2373,9 @@
     fall.when = 'Early October (2026: Fri 2 Oct – Sun 4 Oct) · Apalachee District';
     fall.arrive = 'Friday — event opens 9:00 am';
     fall.depart = 'Sunday — event ends 1:00 pm';
-    fall.cost = '2026: $35 per family online until Thu 1 Oct, 11:59 pm · $45 on site · early $30 rate closed in September · card fee added online';
+    fall.cost = '2026: $35 per family online through Wed 30 Sep · $45 late rate from 11:59 pm Wed 30 Sep until online registration closes Thu 1 Oct, 11:59 pm · $45 on site · card fee added online';
     fall.url = 'https://www.nega-bsa.org/APFF';
-    fall.intro = 'Our district’s own fall weekend. The Apalachee District runs it at Scoutland, and the 2026 theme is Pirates of Scoutland — a treasure hunt, trick-or-treating round the campsites, and a costume is very much expected. It is the easy one to start with: under an hour away, gentle ground, and a camp built for Cub Scouts. Every district runs its own fall weekend here on a different date, so make sure the registration you pick says Apalachee. Check the dates and price against the council page each year.';
+    fall.intro = 'Our district’s own fall weekend. The Apalachee District runs it at Scoutland, and the 2026 theme is Pirates of Scoutland — a treasure hunt, trick-or-treating round the campsites, and a costume is very much expected. It is the easy one to start with: gentle ground, and a camp built for Cub Scouts. Every district runs its own fall weekend here on a different date, so make sure the registration you pick says Apalachee. Check the dates and price against the council page each year.';
     fall.sections = [
       freshTripSection('What to expect',
         'Scoutland is the council’s 140-acre camp on Lake Lanier and it is laid out for this age: twelve campsites with tent platforms, a shower house with real bathrooms, Fort Adventure (the Cub Scout playground), a BB range, three program shelters, and Council Rock for the Saturday campfire. Cleveland Hall, the air-conditioned dining building, is there for council events.\n' +
@@ -2370,7 +2389,7 @@
         'It runs rain or shine — the flyer’s words are “pirating is rain or shine”.'),
       freshTripSection('Why a council camp and not the woods', CAMP_WHY_COUNCIL),
       freshTripSection('Before you go',
-        '- Register online at nega-bsa.org/APFF — one registration per family, not per person. 2026: $35 until Thu 1 Oct at 11:59 pm, then $45 on site. The early $30 rate closed in September; next year, register in the summer and take it. Fees are non-refundable; the council has usually credited them to another council event in the same calendar year, so ask.\n' +
+        '- Register online at nega-bsa.org/APFF — one registration per family, not per person. 2026: $35 through Wed 30 Sep; the $45 late rate from 11:59 pm Wed 30 Sep until online registration closes Thu 1 Oct at 11:59 pm; then $45 on site. The early $30 rate closed in September; next year, register in the summer and take it. Fees are non-refundable — if you cannot come, ask the council whether yours can go toward another event.\n' +
         '- Extra patches are $5 each. The T-shirt pre-order closed on 20 Sep.\n' +
         '- Fill in the Annual Health and Medical Record, parts A and B, for every person coming — Scout, parents and siblings. Under 72 hours it is parts A and B only, no doctor’s signature. The council asks you to bring a copy for each member of the family, and your insurance card.\n' +
         '- Talk to the other families before you buy anything. The council’s own packing list says it plainly: gear can be shared, and nobody has to go out and buy new kit because they do not have it.\n' +
@@ -2448,7 +2467,7 @@
         '\n' +
         'Rain is less likely than in spring but perfectly possible. A tarp under the tent \u2014 cut smaller than the floor, tucked under, never poking out \u2014 and a second one over the picnic table cover it.\n' +
         '\n' +
-        'It runs rain or shine. Fees are non-refundable, though the council will usually credit them to another council event in the same calendar year.'),
+        'It runs rain or shine, and fees are non-refundable — if you cannot come, ask the council whether yours can go toward another event.'),
       freshTripSection('Fire, knives and who does what', CAMP_AGES),
       freshTripSection('Sleeping arrangements and supervision', CAMP_SAFETY),
       freshTripSection('If something goes wrong', CAMP_EMERGENCY +
@@ -2467,7 +2486,7 @@
     spring.arrive = 'Friday — parking 5:30 pm, check-in 6:00 pm';
     spring.depart = 'Sunday, out by 10:00 am';
     spring.cost = '2026: $36 per family before 26 Mar · $40 by 16 Apr · $50 from 17 Apr · +3.5% online card fee · 2027 not yet posted';
-    spring.url = 'https://www.nega-bsa.org/spring-camping';
+    spring.url = 'https://www.nega-bsa.org/family-camp';
     spring.intro = 'The bigger, wilder one — a Scouts BSA summer-camp property up in the mountains, run by the council for every district at once. Spelled Rainey, not Rainy, which matters when you are searching for it. As of late September 2026 the council has not posted the 2027 dates or prices, so the figures above are April 2026’s; expect the same late-April weekend, and check the council page before you plan around them.';
     spring.sections = [
       freshTripSection('What to expect',
@@ -2568,14 +2587,14 @@
     yargo.depart = 'Sunday, out by 12 noon';
     yargo.cost = 'Campsite fee, booked through Georgia State Parks · plus $5 per vehicle per day to park, or a state parks annual pass';
     yargo.url = 'https://gastateparks.org/FortYargo';
-    yargo.intro = 'The pack’s own campout, and the gentlest one we do — an hour up I-85, paved roads to the site, hot showers, and a phone signal. Confirm the dates, the campsite booking and the parking with the park each year; the ones above are what we ran last spring.';
+    yargo.intro = 'The pack’s own campout, and the gentlest one we do — in Winder, off GA-316, with paved roads to the site, hot showers, and a phone signal. Confirm the dates, the campsite booking and the parking with the park each year; the ones above are what we ran last spring.';
     yargo.sections = [
       freshTripSection('What to expect',
-        'Fort Yargo is a 1,814-acre Georgia state park on the edge of Winder, about an hour from Atlanta. It is built around Lake Marbury, a 260-acre lake, and the 1792 log fort the park is named for still stands — one of the oldest buildings in the state, and a short walk from the car park.\n' +
+        'Fort Yargo is a 1,814-acre Georgia state park on the edge of Winder, off GA-316. It is built around Lake Marbury, a 260-acre lake, and the 1792 log fort the park is named for still stands — one of the oldest buildings in the state, and a short walk from the car park.\n' +
         '\n' +
         'What that means for a weekend with Cub Scouts: drive-up campsites with picnic tables and fire rings, some with water and electric if you book them that way, and modern toilet blocks with hot showers. Paved roads throughout, so no low-clearance worries and no shuttling gear up a mountain. A camp store for ice and firewood, and Winder five minutes away for everything it does not have. There is a small camp store, but bring what you need — the hours move around.\n' +
         '\n' +
-        'The park is open to the public while we are in it, which is the main difference from a council camp. Quiet hours run 10pm to 7am and are enforced. Dogs are allowed on a six-foot lead if your family brings one.\n' +
+        'The park is open to the public while we are in it, which is the main difference from a council camp. Quiet hours run 10pm to 7am and are enforced. Please leave pets at home unless you\u2019ve checked with the Cubmaster first (service animals are always welcome).\n' +
         '\n' +
         'It runs rain or shine. Campsite fees are generally not refundable once booked.'),
       freshTripSection('A pack trip, not a council one', CAMP_PACK_RUN),
@@ -2609,7 +2628,7 @@
         '- A proper rain jacket, and rain trousers if you have them. March earns them.\n' +
         '- Long trousers for the evening, four or five pairs of socks, a warm hat and light gloves.\n' +
         '- Two pairs of shoes. If the first pair soaks through on Saturday morning there is nothing else to wear.\n' +
-        '- Class A uniform for the flag ceremony and campfire; the yellow Class B pack shirt for Saturday, which is what lets leaders pick our scouts out of a public park at a glance.\n' +
+        '- Field uniform for the flag ceremony and campfire; the yellow pack shirt (the activity uniform) for Saturday, which is what lets leaders pick our scouts out of a public park at a glance.\n' +
         '\n' +
         'Camp\n' +
         '- Camp chairs — adult ones are too big for small scouts, so bring their size too.\n' +
@@ -2629,7 +2648,7 @@
       freshTripSection('If something goes wrong', CAMP_EMERGENCY +
         '\n' +
         '\n' +
-        'Fort Yargo makes all of that easier than the mountain camps do: there is generally a good phone signal, rangers are on site, and Winder is five minutes away. From the pack’s own guide — confirm at check-in, because these move — the park office is (770) 867-3489 and the nearest hospital is Barrow Regional Medical Center on North Broad Street in Winder. For anything urgent, call 911. Poison Control is 1-800-222-1222.'),
+        'Fort Yargo makes all of that easier than the mountain camps do: there is generally a good phone signal, rangers are on site, and Winder is five minutes away. From the pack’s own guide — confirm at check-in, because these move — the park office is (770) 867-3489 and the nearest hospital is Northeast Georgia Medical Center Barrow, 316 N Broad St, Winder · (770) 867-3400. For anything urgent, call 911. Poison Control is 1-800-222-1222.'),
       freshTripSection('If it is your first campout', CAMP_FIRST_TIME)
     ];
     return [fall, spring, yargo];
@@ -12974,7 +12993,7 @@
         '<option value="out"' + (dr.direction === 'out' ? ' selected' : '') + '>Money out</option>' +
         '<option value="in"' + (dr.direction === 'in' ? ' selected' : '') + '>Money in</option>' +
       '</select>' +
-      '<input class="lname" data-ch="ledn-desc" value="' + esc(dr.description) + '" placeholder="What was it? (e.g. Camp Rainey — fall campout)">' +
+      '<input class="lname" data-ch="ledn-desc" value="' + esc(dr.description) + '" placeholder="What was it? (e.g. Scoutland — fall campout)">' +
       '<input class="money-in" inputmode="decimal" data-ch="ledn-amount" value="' + esc(dr.amount) + '" placeholder="Amount" aria-label="Amount">' +
       '<select data-ch="ledn-line" aria-label="Budget line">' + lineSelectOptions(dr.lineId) + '</select>' +
       '<select data-ch="ledn-method" aria-label="Method">' + methodSelectOptions(dr.method) + '</select>' +
@@ -15736,6 +15755,18 @@
       '<input data-ch="trip-' + key + '" data-id="' + esc(t.id) + '" value="' + esc(t[key] || '') +
       '" placeholder="' + esc(ph) + '"' + (grow ? ' style="width:100%"' : '') + '></label>';
   }
+  // What a trip's link is, by who hosts it: [row label, link text]. It said "Council page" for
+  // every trip, including the pack's own at a state park, whose link books a campsite with
+  // Georgia State Parks and has nothing to do with the council.
+  function campLinkLabel(url) {
+    var host = '';
+    var m = /^https?:\/\/([^\/?#:]+)/i.exec(String(url || ''));
+    if (m) host = m[1].toLowerCase();
+    function on(d) { return host === d || host.slice(-(d.length + 1)) === '.' + d; }
+    if (on('nega-bsa.org')) return ['Register', 'Council page'];
+    if (on('gastateparks.org')) return ['Book', 'Park page'];
+    return ['Link', 'Event page'];
+  }
   // The read-only facts block — the same for a leader and a parent, which is why it takes a
   // plain trip object and touches no state.
   function campFacts(t) {
@@ -15752,7 +15783,8 @@
         '" target="_blank" rel="noopener noreferrer">Open in Maps</a>']);
     }
     if (/^https?:\/\//i.test(t.url || '')) {
-      rows.push(['Register', '<a href="' + esc(t.url) + '" target="_blank" rel="noopener noreferrer">Council page</a>']);
+      var link = campLinkLabel(t.url);
+      rows.push([link[0], '<a href="' + esc(t.url) + '" target="_blank" rel="noopener noreferrer">' + link[1] + '</a>']);
     }
     if (!rows.length) return '';
     return '<dl class="camp-facts">' + rows.map(function (r) {

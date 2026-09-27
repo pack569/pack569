@@ -10,8 +10,9 @@ permissions and exposed to parents."*
 
 ## 1. What it is
 
-A `Camping` workspace between Program and Scouts, with **one sub-tab per campout**. Two are
-seeded with real, researched content; a leader can add more, and each new one gets its own tab.
+A `Camping` workspace between Program and Scouts, with **one sub-tab per campout**. Three are
+seeded with real, researched content — the council's fall and spring family weekends and the
+pack's own Fort Yargo campout; a leader can add more, and each new one gets its own tab.
 Leaders with edit rights write the pages; everyone else — including every approved parent — reads
 them.
 
@@ -103,8 +104,11 @@ click handler** — every tap on Camping went to Schedule. Now it accepts any ta
 
 ## 5. The seeded content
 
-Two trips, written as a BALOO-trained leader would brief a new family, and researched rather than
-invented. Everything is editable — the seed is a starting draft, not a fact the app insists on.
+Three trips, written as a BALOO-trained leader would brief a new family, and researched rather
+than invented: the two council family weekends below, and **Pack Camping — Fort Yargo**, the
+pack's own late-March campout at Fort Yargo State Park in Winder (added 2026-08-02 from the pack's
+own guide and packing lists; pack-run, so BALOO applies and there is no BB or archery). The pack
+has camped at Fort Yargo before, so the page carries no site-approval text. Everything is editable — the seed is a starting draft, not a fact the app insists on.
 
 **Dates and prices go stale every year** and are labelled with the year they came from, so a
 leader can see at a glance what needs updating. Both were refreshed on 2026-09-26: fall is the
@@ -117,7 +121,7 @@ leader can see at a glance what needs updating. Both were refreshed on 2026-09-2
 | Address | 3685 Looper Lake Road, Gainesville GA 30506 | 1494 Rainey Mountain Road, Clayton GA 30525 |
 | Size | 140 acres | ~500 acres |
 | Dates | Fri 2 – Sun 4 Oct 2026 ("Pirates of Scoutland") | late April (2026: 24–26 Apr; 2027 not posted) |
-| Cost | $30 early / $35 / $45 on site, per family (2026) | $36 / $40 / $50 per family (2026) |
+| Cost | $30 early (closed) / $35 online through Wed 30 Sep / $45 late rate until online closes Thu 1 Oct, 11:59 pm / $45 on site, per family (2026) | $36 / $40 / $50 per family (2026) |
 
 **Fall family camping is per district, and Pack 569 is Apalachee** (north Gwinnett). The council's
 family-camp page only ever shows the spring event, which is how the August seed ended up carrying
@@ -158,8 +162,11 @@ page into a packing list with a reassuring tone, which is worse than nothing.
   pack drives to a council camp instead of finding a campground, and it is the single most useful
   thing on the page for a leader who has not been told it.
 - **No adult shares a tent with a youth who is not their own child.** Parents, guardians and
-  siblings share as a family; otherwise a Scout tents with a youth within two years of their age
-  and of the same gender.
+  siblings share as a family; youth who share a tent are the same gender and within two years
+  of age. (Since 2026-09-27 the supervision text is the pack's own statement: every Cub Scout
+  camps with their own parent or guardian, other arrangements only by prior agreement with the
+  Cubmaster, two registered adults with current Safeguarding Youth Training — one 21 or older —
+  and a registered female adult 21+ when girls attend.)
 - **Safeguarding Youth** — the current name for Youth Protection training.
 - **Lions do not shoot BB guns** (archery and size-appropriate slingshots only).
 - **Fire building is Webelos and up**; Tigers, Wolves and Bears watch.
@@ -176,8 +183,10 @@ on the water, **Lions and Tigers are passengers only** while Wolves and Bears ma
   family camping packing list* linked from it. Short link: <https://www.nega-bsa.org/APFF>
 - Council districts — <https://www.nega-bsa.org/districts/> (Apalachee is north Gwinnett)
 - NEGA family camping — <https://www.nega-bsa.org/family-camp> (spring dates, cost, rules, meals)
-- Spring Family Camping 2026 — <https://www.nega-bsa.org/spring-camping> (uniform rule, gates,
-  site inspection, the adult rangemaster course, online registration closing 20 Apr)
+- Spring Family Camping 2026 — the council's 2026 event page (uniform rule, gates, site
+  inspection, the adult rangemaster course, online registration closing 20 Apr). The seed's
+  spring link is the standing family-camp page above, <https://www.nega-bsa.org/family-camp>,
+  not the year's event page.
 - Age Appropriate Guidelines for Scouting Activities —
   <https://filestore.scouting.org/filestore/HealthSafety/pdf/680-685.pdf> (the ranks table:
   camping, ranges, knives, fire, paddle sports)

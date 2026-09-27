@@ -5336,6 +5336,74 @@ test('a year’s new seed text reaches a pack that already has its trips — but
   eq(ctx.freshCamping().seedRev, ctx.CAMP_SEED_REV, 'freshCamping does not carry the seed revision');
 });
 
+test('rev 2 carries the new supervision rules and spring link into a pack still on rev 1 text', () => {
+  // The synthetic-table test above proves the mechanism; this proves the REAL table. The rev 1
+  // wording is kept here verbatim because it is exactly what a live pack's record still holds,
+  // and a hash that doesn't match it would leave every existing pack on the old rules silently.
+  const OLD_SAFETY = 'This part is Youth Protection, and it is not flexible.\n' +
+    '- Every youth is the responsibility of one named adult for the whole weekend. Lions and Tigers must have their own adult partner there.\n' +
+    '- Parents, guardians and siblings share a tent as a family. That is the normal arrangement at family camp.\n' +
+    '- Otherwise a Scout tents with another youth within two years of their age and of the same gender. No adult shares a tent with a youth who is not their own child.\n' +
+    '- Two registered adults with current Safeguarding Youth training are present at all times.\n' +
+    '- At least one adult on the trip is BALOO-trained (Basic Adult Leader Outdoor Orientation) and at least one holds current Hazardous Weather training. Both are required for a pack to camp. If you would like to be one of them, tell the Cubmaster — BALOO is a weekend course and the pack should never be one person away from being unable to go.';
+  const ctx = sandbox(NORMALIZE_FNS);
+  ok(ctx.CAMP_SEED_REV >= 2, 'CAMP_SEED_REV was not bumped for the 2026-09-27 seed changes');
+  const seed = ctx.seedCampingTrips();
+  const SLEEP = 'Sleeping arrangements and supervision';
+  const rev1 = () => ({
+    yargoAdded: true, seedRev: 1,
+    trips: seed.map((t) => Object.assign({}, t, {
+      url: t.name === 'Spring Family Camping' ? 'https://www.nega-bsa.org/spring-camping' : t.url,
+      sections: t.sections.map((s) => Object.assign({}, s, s.title === SLEEP ? { body: OLD_SAFETY } : {}))
+    }))
+  });
+  const start = rev1();
+  // A leader on Fort Yargo rewrote the supervision section; theirs stays.
+  start.trips[2].sections.find((s) => s.title === SLEEP).body = OLD_SAFETY + '\n- Our own extra rule.';
+  const after = ctx.normalizeState(Object.assign(preMigrationState(), { camping: start })).camping;
+  const body = (i) => after.trips[i].sections.find((s) => s.title === SLEEP).body;
+  eq(body(0), ctx.CAMP_SAFETY, 'the fall trip kept the rev 1 supervision text');
+  eq(body(1), ctx.CAMP_SAFETY, 'the spring trip kept the rev 1 supervision text');
+  eq(body(2), OLD_SAFETY + '\n- Our own extra rule.', "a leader's edited supervision section was overwritten");
+  eq(after.trips[1].url, 'https://www.nega-bsa.org/family-camp', 'the spring link was not moved to the family-camp page');
+  ok(/own parent or legal guardian/.test(ctx.CAMP_SAFETY) && /must be registered/.test(ctx.CAMP_SAFETY) &&
+    /female adult 21 or older/.test(ctx.CAMP_SAFETY), 'the new supervision rules are not in CAMP_SAFETY');
+  eq(after.seedRev, ctx.CAMP_SEED_REV, 'the revision was not recorded');
+});
+
+test('the 2026-09-27 camping corrections hold', () => {
+  const ctx = sandbox(NORMALIZE_FNS.concat(['CAMP_PACK_RUN', 'CAMP_EMERGENCY', 'YARGO_TRIP_ID']));
+  const trips = ctx.seedCampingTrips();
+  const all = JSON.stringify(trips);
+  const [fall, spring, yargo] = trips;
+  eq(fall.cost, '2026: $35 per family online through Wed 30 Sep · $45 late rate from 11:59 pm Wed 30 Sep until online registration closes Thu 1 Oct, 11:59 pm · $45 on site · card fee added online',
+    'the fall cost line');
+  ok(/\$45 late rate from 11:59 pm Wed 30 Sep/.test(fall.sections.find((s) => s.title === 'Before you go').body),
+    '"Before you go" does not match the cost line');
+  ok(!/usually credit/.test(all), 'the seed still promises fees are usually credited elsewhere');
+  eq(spring.url, 'https://www.nega-bsa.org/family-camp', 'spring link');
+  ok(/Northeast Georgia Medical Center Barrow, 316 N Broad St, Winder · \(770\) 867-3400/.test(JSON.stringify(yargo)),
+    'Fort Yargo names the wrong hospital');
+  ok(!/Barrow Regional/.test(all), 'the old hospital name is still there');
+  // Drive times contradicted each other ("twenty minutes closer", "an hour up I-85"). None now.
+  ok(!/twenty minutes closer|an hour up|about an hour from Atlanta|under an hour away/.test(all), 'a drive-time claim is back');
+  ok(/leave pets at home unless you’ve checked with the Cubmaster first \(service animals are always welcome\)/i.test(all),
+    'the Fort Yargo pets line');
+  ok(!/Class [AB]\b/.test(all), 'Class A / Class B instead of field / activity uniform');
+  ok(!/site appraisal|site approval/.test(JSON.stringify(yargo)), 'site-approval text was added to Fort Yargo');
+  ok(!/Camp Rainey — fall/.test(SCRIPT), 'Camp Rainey is the spring campout, not the fall one');
+});
+
+test('a trip link is labelled by who hosts it', () => {
+  const ctx = sandbox(['campLinkLabel']);
+  eq(ctx.campLinkLabel('https://www.nega-bsa.org/APFF'), ['Register', 'Council page'], 'council');
+  eq(ctx.campLinkLabel('https://mycouncil.nega-bsa.org/Event/APFF-2026'), ['Register', 'Council page'], 'council subdomain');
+  eq(ctx.campLinkLabel('https://gastateparks.org/FortYargo'), ['Book', 'Park page'], 'state park');
+  eq(ctx.campLinkLabel('https://example.com/nega-bsa.org'), ['Link', 'Event page'], 'a path is not a host');
+  eq(ctx.campLinkLabel('https://notnega-bsa.org/'), ['Link', 'Event page'], 'a lookalike host');
+  ok(/campLinkLabel\(t\.url\)/.test(slice('campFacts')), 'campFacts does not use it');
+});
+
 test('the seeded content states the rules a pack actually has to follow', () => {
   // Not a style check — these are the four things a BALOO course exists to make sure somebody
   // on the trip knows. If a rewrite drops them the page becomes a packing list with a
@@ -7766,8 +7834,8 @@ test('no tracked file carries a real email address or phone number', () => {
     files = ['index.html', 'test/harness.mjs'];   // not a git checkout: scan the two that matter
   }
   const PUBLIC_NUMBERS = [
-    '(770) 867-3489',      // hospital nearest Fort Yargo, printed on the camping page
-    '(770) 867-3400',
+    '(770) 867-3489',      // Fort Yargo park office, printed on the camping page
+    '(770) 867-3400',      // Northeast Georgia Medical Center Barrow, the hospital nearest it
     '1-800-222-1222',      // Poison Control
   ];
   const ALLOWED_EMAIL = /@(example\.com|pack569\.com)$/i;
