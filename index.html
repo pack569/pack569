@@ -6129,8 +6129,39 @@
   // OWNER RULING, 2026-08-02: never more than one adventure per meeting, but an adventure can
   // take several meetings to complete. So the field stays a single string and the multiplicity
   // is on the other side — many meetings, one adventure.
+  // Read through advCanonicalName (AUDIT FIX 2026-09-27) so a meeting typed "council fire"
+  // and one picked as "Council Fire" are the same adventure everywhere a run is built or
+  // shown — including meetings saved before the editor started normalizing.
   function evAdventure(ev) {
-    return (ev && ev.kind === 'den') ? String(ev.adventure || '').trim() : '';
+    return (ev && ev.kind === 'den') ? advCanonicalName(ev.den, ev.adventure) : '';
+  }
+  // The official spelling of an adventure a leader typed, for a meeting of `den` ('' = all
+  // dens). The box is free text over a suggestion list, so "council fire", "Council  Fire" and
+  // "Lion Roar" all arrive. Order: squeeze spaces, apply the handbook renames (ADV_RENAMES,
+  // case-insensitive), then match case-insensitively against the den's own list, then any
+  // rank's list — a Bear meeting tagged "lion's roar" still gets the spelling right, and the
+  // editor separately warns that it is not a Bear adventure. Anything else is a custom
+  // adventure and is kept as typed. The lookup table is built once per den and cached on the
+  // function: ADVENTURES never changes at runtime, and runs are rebuilt on every render.
+  function advCanonicalName(den, raw) {
+    var nm = String(raw || '').replace(/\s+/g, ' ').trim();
+    if (!nm) return '';
+    var cache = advCanonicalName.cache || (advCanonicalName.cache = {});
+    var dk = (den && ADVENTURES[den]) ? den : '*';
+    if (!cache[dk]) {
+      var map = {};
+      Object.keys(ADV_RENAMES).forEach(function (k) { map[k.toLowerCase()] = ADV_RENAMES[k]; });
+      // Any rank's spelling first, then the den's own on top — so where two ranks spell a
+      // name differently the den's own version wins.
+      advOptionsForDen('').concat(dk === '*' ? [] : advOptionsForDen(dk)).forEach(function (n) { map[n.toLowerCase()] = n; });
+      cache[dk] = map;
+    }
+    return cache[dk][nm.toLowerCase()] || nm;
+  }
+  // True when a (canonical) adventure name is not on the list for a meeting of `den`. A
+  // warning, never a block: dens run custom adventures and the field is deliberately free text.
+  function advOffDenList(den, name) {
+    return !!name && advOptionsForDen(den).indexOf(name) === -1;
   }
   // Who a den meeting is for. A den meeting with no den set means all dens — the same
   // reading the meeting row shows ("All dens"), so the run's roster has to agree with it.
@@ -6157,7 +6188,9 @@
       // Den + adventure. A den name comes from the fixed DENS list, so ' :: ' cannot occur in
       // it and the key cannot collide. (It was briefly a NUL byte here, which worked and made
       // `grep` silently return nothing for this entire file. Never again.)
-      var key = (ev.den || '*') + ' :: ' + nm;
+      // Lower-cased: a custom adventure typed two ways ("Knot night" / "knot night") is still
+      // one run. Official names are already one spelling by the time they get here.
+      var key = (ev.den || '*') + ' :: ' + nm.toLowerCase();
       if (!byKey[key]) {
         byKey[key] = { key: key, den: ev.den || '', adventure: nm, sessions: [] };
         order.push(key);
@@ -6219,7 +6252,7 @@
     var nm = evAdventure(m);
     if (!nm || !m.date) return null;
     var run = adventureRuns().find(function (r) {
-      return r.adventure === nm && (r.den || '') === (m.den || '');
+      return r.adventure.toLowerCase() === nm.toLowerCase() && (r.den || '') === (m.den || '');
     });
     if (!run) return null;
     var idx = run.sessions.findIndex(function (ev) { return ev.id === m.id; });
@@ -10343,6 +10376,13 @@
       '<datalist id="advOpts-' + esc(m.id) + '">' +
       advOptionsForDen(m.den).map(function (n) { return '<option value="' + esc(n) + '">'; }).join('') +
       '</datalist>';
+    // Re-derived on every render, so changing the meeting's den re-checks it with no extra code.
+    var tagged = evAdventure(m);
+    if (advOffDenList(m.den, tagged)) {
+      h += '<p class="warn small" style="margin:4px 0 0">“' + esc(tagged) + '” is not on the ' +
+        esc(m.den ? m.den + ' list of adventures' : 'adventure list for any rank') +
+        '. That is fine for a custom adventure — check the spelling and the den if it is meant to be an official one.</p>';
+    }
     if (r && r.of > 1) {
       h += '<p class="small muted" style="margin:4px 0 0">' + esc(sessionLabel(r.position, r.of)) + ' · ' +
         esc(advRunDates(r.run, m.id)) + '</p>';
@@ -19876,6 +19916,9 @@
       // scout must have been to at least one — see runProgress.onTrack.
       var mamRun = runForMeeting(mam);
       if (!mamRun) return;
+      // Credit the run's official spelling, not whatever was typed on this one meeting — a
+      // mark written as "bobcat" would be a column the Advancement grid never shows.
+      mamAdv = mamRun.run.adventure;
       var mamDid = 0, mamHad = 0;
       mamRun.prog.onTrack.forEach(function (row) {
         if (advMarkDone(row.scout.id, advKindFor(row.scout, mamAdv), mamAdv)) mamDid += 1;
@@ -20491,6 +20534,11 @@
       // mtg-* control — including the internal note added above it — would have silently written
       // into the field that publishes to every family. An unknown key now does nothing.
       else if (ch === 'mtg-note') mtg.note = el.value;
+      // AUDIT FIX 2026-09-27 — the adventure is stored in its official spelling for the
+      // meeting's den, and re-spelled when the den changes ("lion roar" typed on a Lion
+      // meeting is saved as "Lion's Roar"). Never refused: the picker shows a warning when
+      // the name is not on that den's list, and a custom adventure is kept as typed.
+      if (ch === 'mtg-adv' || ch === 'mtg-den') mtg.adventure = advCanonicalName(mtg.den, mtg.adventure);
       commit(); return;
     }
 

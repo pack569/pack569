@@ -5518,6 +5518,12 @@ function runSandbox(setup) {
   const ctx = vm.createContext({});
   vm.runInContext(
     `${setup}
+     ${slice('DENS')}
+     ${slice('ADVENTURES')}
+     ${slice('ADV_RENAMES')}
+     ${slice('advOptionsForDen')}
+     ${slice('advCanonicalName')}
+     ${slice('advOffDenList')}
      ${slice('evAdventure')}
      ${slice('meetingRoster')}
      ${slice('wasCheckedIn')}
@@ -5741,6 +5747,46 @@ test('the Advance-dens summary survives a reload, and junk does not', () => {
     { year: 2026, perDen: [{ den: 'Wolf', scouts: 3, complete: 1, adventuresAwarded: 7 }] }, 'the summary did not round-trip');
   eq(norm(undefined), null, 'a record from before this field is not null');
   eq(norm({ year: 'x', perDen: [] }), null, 'a malformed summary was kept');
+});
+
+test('an adventure typed in lower case is the official adventure, and one run', () => {
+  // Audit 2026-09-27: the adventure box is free text over a suggestion list. "council fire" and
+  // "Council Fire" were two runs, and a Mark-done on the first wrote a mark the grid never shows.
+  const ctx = runSandbox(RUN_SETUP.replace("var EVENTS = [", `var EVENTS = [
+    { id: 'c1', kind: 'den', den: 'Wolf', date: '2026-09-02', adventure: 'council fire' },
+    { id: 'c2', kind: 'den', den: 'Wolf', date: '2026-09-09', adventure: '  Council  Fire ' },
+    { id: 'k1', kind: 'den', den: 'Wolf', date: '2026-09-16', adventure: 'Knot night' },
+    { id: 'k2', kind: 'den', den: 'Wolf', date: '2026-09-23', adventure: 'knot night' },`));
+  const canon = (den, raw) => vm.runInContext(`advCanonicalName(${JSON.stringify(den)}, ${JSON.stringify(raw)})`, ctx);
+  eq(canon('Wolf', 'council fire'), 'Council Fire', 'case is not matched to the official name');
+  eq(canon('Lion', 'lion roar'), "Lion's Roar", 'the handbook rename is not applied case-insensitively');
+  eq(canon('', 'BOBCAT'), 'Bobcat', 'an all-dens meeting does not match against every rank');
+  eq(canon('Wolf', 'Knot night'), 'Knot night', 'a custom adventure was rewritten');
+  eq(canon('Wolf', ''), '', 'an empty tag became something');
+  const runs = vm.runInContext("adventureRuns().filter(function (r) { return r.den === 'Wolf'; })", ctx);
+  const cf = runs.filter((r) => r.adventure.toLowerCase() === 'council fire');
+  eq(cf.length, 1, '"council fire" and "Council Fire" are still two runs');
+  eq(cf[0].adventure, 'Council Fire', 'the run is not named in the official spelling');
+  eq(cf[0].sessions.map((e) => e.id), ['c1', 'c2'], 'the run lost a session');
+  eq(runs.filter((r) => r.adventure.toLowerCase() === 'knot night').length, 1, 'a custom adventure typed two ways is two runs');
+  eq(vm.runInContext("runForMeeting(state.events[1]).of", ctx), 2, 'the lower-case meeting does not find its run');
+});
+
+test('an adventure that is not on the den’s list is warned about, never refused', () => {
+  const ctx = runSandbox(RUN_SETUP);
+  const off = (den, nm) => vm.runInContext(`advOffDenList(${JSON.stringify(den)}, ${JSON.stringify(nm)})`, ctx);
+  ok(off('Bear', "Lion's Roar"), 'a Lion adventure on a Bear meeting is not flagged');
+  ok(!off('Wolf', 'Council Fire'), 'a Wolf adventure on a Wolf meeting is flagged');
+  ok(off('Wolf', 'Knot night'), 'a custom adventure is not flagged');
+  ok(!off('Wolf', ''), 'an empty tag is flagged');
+  const picker = slice('advTargetPicker');
+  ok(/advOffDenList\(m\.den, tagged\)/.test(picker) && /class="warn small"/.test(picker),
+    'the meeting editor does not show the off-list warning');
+  // Save and den change both re-spell, and neither refuses the value.
+  ok(/if \(ch === 'mtg-adv' \|\| ch === 'mtg-den'\) mtg\.adventure = advCanonicalName\(mtg\.den, mtg\.adventure\);/.test(SCRIPT),
+    'saving the adventure or changing the den does not normalize the adventure');
+  const mark = /if \(act === 'mtg-adv-mark'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/mamAdv = mamRun\.run\.adventure;/.test(mark), 'Mark done credits the typed spelling, not the run’s');
 });
 
 test('attendance is evidence, and the app never says a missed meeting costs the adventure', () => {
