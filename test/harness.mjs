@@ -6382,7 +6382,9 @@ test('the printable day sheets list shifts in day order too', () => {
     const src = new RegExp(`function ${fn}\\(\\w*\\) \\{[\\s\\S]*?\\n  \\}`).exec(SCRIPT);
     ok(src, `${fn}() not found`);
     ok(/blocksInDayOrder\(sf\)/.test(src[0]), `${fn} walks the stored block order`);
-    ok(/blockScoutNames\(b\)/.test(src[0]), `${fn} lists the scouts in stored order`);
+    // …and by their PUBLIC names: the sheet is taped to a table outside a store (2026-09-27).
+    ok(/blockScoutNames\(b, pub\)/.test(src[0]), `${fn} lists the scouts in stored order, or by full name`);
+    ok(/var pub = publicNameMap\(state\.scouts\);/.test(src[0]), `${fn} does not use the shared public-name map`);
   }
 });
 
@@ -6923,9 +6925,11 @@ test('a storefront publishes who is on each shift, and never a penny of it', () 
 
 test('one public-name map, so no two surfaces call the same child different things', () => {
   const src = BPV();
-  // Built over the WHOLE roster before anything names a child.
-  ok(/var shown = shortNames\(all\.map\(function \(s\) \{ return s\.name; \}\)\);/.test(src),
+  // Built over the WHOLE roster before anything names a child — by the one helper every outbound
+  // builder shares (the day sheet and the copied standings use it too).
+  ok(/var shown = shortNames\(all\.map\(function \(s\) \{ return s\.name; \}\)\);/.test(slice('publicNameMap')),
     'the public-name map is not built from the full roster');
+  ok(/var pubName = publicNameMap\(state\.scouts\);/.test(src), 'the parent view builds its own name map');
   ok(/name: pubName\[r\.id\] \|\| ''/.test(src), 'the standings board names children from its own pass');
   // A SECOND shortNames() pass over a subset is exactly how the two boards drifted apart: the
   // derby list keeps one, but only as the fallback for a racer who is not a roster scout at all
@@ -6935,7 +6939,7 @@ test('one public-name map, so no two surfaces call the same child different thin
     'a design-award racer is not reconciled against the roster');
   ok(/scoutName: pubRacer\(w\.scoutName, derbyNames\[i\]\)/.test(src),
     'a derby winner is not reconciled against the roster');
-  eq((codeOnly(src).match(/shortNames\(/g) || []).length, 2,
+  eq((codeOnly(src).match(/shortNames\(/g) || []).length, 1,
     'an unexpected number of shortNames() passes — every extra one can name a child differently');
 });
 
@@ -8189,6 +8193,200 @@ test('the export and document types that carry children’s names stay out of th
     '*.pages', '*.numbers', '*.png', '*.jpg', '*.jpeg', '*.heic', '*.heif', '*.webp', '*.mov', '*.mp4']) {
     ok(gi.indexOf(pat) !== -1, `.gitignore does not ignore ${pat}`);
   }
+});
+
+/* ================================================================
+   Wave 3 (2026-09-27) — what leaves the app. Every outbound builder is run against one roster
+   with surnames nobody would type by accident, and none of them may carry one out.
+   ================================================================ */
+
+const PRIV_SCOUTS = [
+  { id: 's1', name: 'Ada Quenneville', den: 'Wolf', renewalMonth: '2026-01' },
+  { id: 's2', name: 'Beckett Hartwellington', den: 'Bear', renewalMonth: '2026-09' },
+  { id: 's3', name: 'Beckett Zimmerfield', den: 'Tiger', renewalMonth: '' }
+];
+const SURNAMES = ['Quenneville', 'Hartwellington', 'Zimmerfield'];
+const LEADER_SURNAME = 'Oyelaran-Pettigrew';
+function noSurname(text, what) {
+  SURNAMES.concat([LEADER_SURNAME]).forEach((n) => ok(String(text).indexOf(n) === -1, `${what} carries the surname ${n}`));
+}
+const PRIV_STATE = `
+  var state = {
+    packName: 'Pack 569', rev: 3,
+    scouts: ${JSON.stringify(PRIV_SCOUTS)},
+    leaders: [{ id: 'l1', name: 'Morgan ${LEADER_SURNAME}', jobs: [] }],
+    fundraisers: [{ id: 'f1', name: 'Wreaths', goalCents: 50000 }],
+    storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [
+      { id: 'b1', label: 'Block 1', start: '10:00', end: '12:00',
+        assignments: [{ scoutId: 's1', weight: 1 }, { scoutId: 's2', weight: 1 }] },
+      { id: 'b2', label: 'Block 2', start: '12:00', end: '14:00',
+        assignments: [{ scoutId: 's3', weight: 1 }] }] }],
+    events: [
+      { id: 'e1', kind: 'pack', date: '2026-10-06', time: '18:30', note: 'Gym' },
+      { id: 'e2', kind: 'activity', name: 'Fall campout', date: '2026-10-17', time: '09:00', location: 'Fort Yargo', dens: [] }
+    ],
+    entries: [],
+    budget: { programYear: 2026, activities: [{ id: 'a1', eventId: 'e2', planned: 124000 }], expenses: [] },
+    derby: { name: '', date: '' }
+  };
+  function getScout(id) { for (var i = 0; i < state.scouts.length; i++) if (state.scouts[i].id === id) return state.scouts[i]; return null; }
+  function fmtDate(d) { return String(d); }
+`;
+
+test('calendar-only publishes the calendar and the cost of a year, and no child’s name anywhere', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(PRIV_STATE + `
+    function standingsEnabled() { return true; }
+    function campingTrips() { return []; }
+    function familyYearCost() {
+      return [{ den: 'Wolf', scout: 18000, adult: 4000, sibling: 0, expected: 22000, covered: 9600,
+        steps: [{ name: 'Dues covered', salesCents: 17500, coveredCents: 9600, afterCents: 12400 }],
+        lines: [{ name: 'Youth registration', scout: 9600, adult: 0, sibling: 0, direct: true, payee: 'Council',
+          perFamily: false, coverScoutStep: 0, coverAdultStep: -1 }] }];
+    }
+    ${['shortNames', 'publicNameMap', 'buildParentView', 'blocksInDayOrder', 'fmtTimeRange', 'fmtClock',
+       'eventIsMeeting', 'eventLabel', 'denListLabel', 'eventDens'].map(slice).join('\n')}`, ctx);
+  const pv = vm.runInContext('buildParentView(state, { showStandings: false })', ctx);
+  const text = JSON.stringify(pv);
+  noSurname(text, 'the calendar-only view');
+  ['Ada', 'Beckett'].forEach((n) => ok(text.indexOf(n) === -1, `the calendar-only view names ${n}`));
+  ['standings', 'goals', 'derby', 'tiers', 'tierLadder'].forEach((k) =>
+    ok(!(k in pv), `calendar-only publishes ${k}`));
+  const sf = pv.events.find((e) => e.kind === 'storefront');
+  eq(sf.shifts, [{ when: '10:00 AM–12:00 PM' }, { when: '12:00 PM–2:00 PM' }],
+    'the shift windows are not published bare');
+  // J2 — the year's cost is the pack's plan, with nobody in it, and a calendar-only link is
+  // exactly who asks for it.
+  ok(Array.isArray(pv.familyCost) && pv.familyCost[0].den === 'Wolf', 'calendar-only drops what a year costs');
+  const gate = BPV().indexOf('if (!withStandings) return out;');
+  ok(BPV().indexOf('var familyCost = familyYearCost()') < gate, 'the year’s cost is behind the standings gate');
+});
+
+test('calendar-only puts the cost card on the Schedule tab, and the toggle says what it hides', () => {
+  const sched = slice('renderParentSchedule');
+  ok(/if \(!Array\.isArray\(pv\.standings\)\) h \+= parentFamilyCost\(pv\);/.test(sched),
+    'with no Standings tab the cost card is shown nowhere');
+  // Only there when there is no Standings tab — the Standings page is also the printed handout.
+  ok(/h \+= parentFamilyCost\(pv\);/.test(slice('renderParentStandings')), 'the Standings page lost its cost card');
+  const label = /Untick for a calendar-only page:([\s\S]*?)<\/p>/.exec(SCRIPT);
+  ok(label, 'the calendar-only explanation under the toggle is gone');
+  ['scout names', 'storefront shifts', 'sales totals', 'goal bar', 'reward tiers', 'derby winners',
+    'what a year costs', 'camping'].forEach((w) => ok(label[1].indexOf(w) !== -1, `the toggle text does not mention ${w}`));
+  // The docs say the same thing.
+  ok(/names on storefront\s+shifts are then left out/.test(SETUP), 'SETUP does not say shift names go in calendar-only mode');
+  ok(/\*\*what a year costs\*\* each den moves onto it/.test(SETUP), 'SETUP does not say where the cost card goes');
+  const banner = /\/\/ PUBLISHED — the whole list;([\s\S]*?)\/\/ DELIBERATELY EXCLUDED/.exec(SCRIPT)[1];
+  ok(banner.indexOf('familyCost') < banner.indexOf('with standings on'), 'the banner still files familyCost under standings');
+  ok(banner.indexOf('FIRST NAMES') > banner.indexOf('with standings on'), 'the banner still says shift names always publish');
+});
+
+test('the copied standings name children the way the parent view does, and nobody’s cash', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(PRIV_STATE + `
+    function computePackTotals() {
+      return { sales: 60000, don: 9000, combined: 69000, commission: null, pct: null, ratesSplit: false,
+        teGoal: 0, stretch: 0, cashGoal: 0, cashKept: 0, cashDon: 7000, teEligible: 62000 };
+    }
+    var T = { s1: { sales: 30000, onD: 1000, storeD: 4321, wagonD: 0 }, s2: { sales: 20000, onD: 1000, storeD: 1234, wagonD: 1445 },
+      s3: { sales: 10000, onD: 0, storeD: 0, wagonD: 0 } };
+    function computeScoutTotals() { return T; }
+    function visibleScoutRows() { return state.scouts.map(function (s) { return { id: s.id, name: s.name, den: s.den, t: T[s.id] }; }); }
+    function rankBy(rows, f) { return rows.slice().sort(function (a, b) { return f(b) - f(a); }); }
+    function eligibleOf(r) { return r.t.sales + r.t.onD; }
+    function cashDonOf(r) { return r.t.storeD + r.t.wagonD; }
+    function sortedTiers() { return []; }
+    function tierEarnedMap() { return {}; }
+    function earnedTierFor() { return null; }
+    function cashCreditTotals() { return { on: true }; }
+    function cashScoutCredit(c) { return c; }
+    ${['shortNames', 'publicNameMap', 'summaryText', 'fmt'].map(slice).join('\n')}`, ctx);
+  const txt = vm.runInContext('summaryText()', ctx);
+  noSurname(txt, 'the copied standings');
+  ok(/1\. Ada — /.test(txt) && /Beckett H\./.test(txt) && /Beckett Z\./.test(txt),
+    'the copied standings do not use the public names (an initial only to split the two Becketts)');
+  // Per-family cash: $43.21, $26.79 — neither may appear. The pack's cash total does.
+  ok(txt.indexOf('43.21') === -1 && txt.indexOf('26.79') === -1, 'a family’s cash donation is in the copied standings');
+  ok(/Cash donations \(storefront tables and wagons, all scouts\): \$70\.00/.test(txt), 'the pack’s cash total is gone');
+  // The printed twin of it, by scan: no raw roster name, and no per-scout cash table.
+  const sheet = /if \(o\.kind === 'summary'\) \{[\s\S]*?\n      return h;/.exec(SCRIPT)[0];
+  ok(!/esc\(r\.name\)/.test(sheet), 'the printed summary names children in full');
+  ok(/esc\(sumPub\[r\.id\] \|\| ''\)/.test(sheet), 'the printed summary does not use the public names');
+  ok(!/cashDonOf\(r\)|r\.t\.storeD|r\.t\.wagonD/.test(sheet), 'the printed summary lists each family’s cash');
+});
+
+test('the storefront day sheet names children by their public names', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(PRIV_STATE + ['shortNames', 'publicNameMap', 'daySheetText', 'blocksInDayOrder',
+    'blockScoutNames', 'fmtTimeRange', 'fmtClock'].map(slice).join('\n'), ctx);
+  const txt = vm.runInContext('daySheetText(state.storefronts[0])', ctx);
+  noSurname(txt, 'the day sheet');
+  ok(/Scouts: Ada, Beckett H\./.test(txt) && /Scouts: Beckett Z\./.test(txt), 'the day sheet does not use the public names');
+  // Leaders' own screen still shows the roster as typed.
+  eq(vm.runInContext('blockScoutNames(state.storefronts[0].blocks[0])', ctx), ['Ada Quenneville', 'Beckett Hartwellington'],
+    'the leaders’ shift list lost its full names');
+});
+
+function digestCtx() {
+  const ctx = vm.createContext({});
+  vm.runInContext(PRIV_STATE + `
+    function monthLabel(mk) { return 'October 2026'; }
+    function rsvpSummary() { return { any: false, yes: 0, adults: 0 }; }
+    function dayEventsForMonth() { return { 3: [{ type: 'storefront', sf: state.storefronts[0] }], 6: [{ type: 'event', ev: state.events[0] }] }; }
+    function pad2(n) { return (n < 10 ? '0' : '') + n; }
+    function firstLine(s) { return String(s).split('\\n')[0]; }
+    function slotMonthKey() { return ''; }
+    function computePackTotals() { return { combined: 69000, teGoal: 100000, teEligible: 62000 }; }
+    function fundraiserTotals() { return { total: 31500 }; }
+    function leaderStatus(l) { return [{ label: 'YPT expired' }]; }
+    function leaderJobLabels() { return 'Cubmaster'; }
+    function monthKey(d) { return String(d).slice(0, 7); }
+    function todayISO() { return '2026-09-27'; }
+    function renewalDue(m) { return !!m && m <= '2026-09'; }
+    function activeScouts() { return state.scouts; }
+    ${['monthlyDigest', 'monthlyDigestLeaders', 'eventIsMeeting', 'eventLabel', 'fmtClock', 'fmtTimeRange', 'fmt'].map(slice).join('\n')}`, ctx);
+  return ctx;
+}
+
+test('the monthly digest a leader pastes to families carries nothing for leaders only', () => {
+  const ctx = digestCtx();
+  const parents = vm.runInContext("monthlyDigest('2026-10')", ctx);
+  noSurname(parents, 'the families’ digest');
+  ok(parents.indexOf('ACTION NEEDED') === -1, 'renewals and leader training are in the families’ digest');
+  ok(parents.indexOf('OTHER FUNDRAISERS') === -1 && parents.indexOf('Wreaths') === -1,
+    'other fundraisers are in the families’ digest');
+  ok(parents.indexOf('YPT') === -1 && parents.indexOf('Morgan') === -1, 'a leader’s training is in the families’ digest');
+  ok(/EVENTS THIS MONTH/.test(parents) && /Pack meeting/.test(parents), 'the families’ digest lost the calendar');
+  // The leaders' copy is where it all went, labelled so nobody pastes it by mistake.
+  const leaders = vm.runInContext("monthlyDigestLeaders('2026-10')", ctx);
+  ok(/LEADERS ONLY, not for families/.test(leaders), 'the leaders’ copy is not labelled');
+  ok(/ACTION NEEDED/.test(leaders) && /Ada Quenneville: registration renewal overdue/.test(leaders) &&
+    /Morgan/.test(leaders) && /OTHER FUNDRAISERS/.test(leaders), 'the leaders’ copy dropped something');
+  // Nothing to chase → no second box at all.
+  vm.runInContext('state.fundraisers = []; state.leaders = []; state.scouts = [];', ctx);
+  eq(vm.runInContext("monthlyDigestLeaders('2026-10')", ctx), '', 'an empty leaders’ copy is still offered');
+  // …and the overlay keeps them in two boxes with two buttons.
+  ok(/data-act="copy-digest-leaders"/.test(SCRIPT) && /id="exportBoxLeaders"/.test(SCRIPT),
+    'the leaders’ copy has no box of its own');
+  ok(/if \(act === 'copy-digest-leaders'\) \{[\s\S]*?monthlyDigestLeaders\(ui\.calMonth\)[\s\S]*?'exportBoxLeaders'\);/.test(SCRIPT),
+    'the leaders’ copy button copies something else');
+});
+
+test('the calendar file carries no budget figure and no child', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(PRIV_STATE + `
+    function lineForEvent(id) { return state.budget.activities.find(function (a) { return a.eventId === id; }) || null; }
+    function linePlanned(a) { return a.planned; }
+    function linePerHead() { return false; }
+    function lineRateSummary() { return ''; }
+    function pad2(n) { return (n < 10 ? '0' : '') + n; }
+    ${['buildICS', 'icsStamp', 'icsDate', 'icsTime', 'icsNextDay', 'icsEndPlusHour', 'icsEscape', 'icsFold',
+       'eventIsMeeting', 'eventLabel', 'fmt'].map(slice).join('\n')}`, ctx);
+  const ics = vm.runInContext('buildICS()', ctx);
+  ok(/SUMMARY:Fall campout/.test(ics), 'the fixture did not reach the calendar file');
+  ok(!/Estimated/.test(ics) && ics.indexOf('$') === -1 && ics.indexOf('1,240') === -1,
+    'the budget line’s planned total is in the calendar file families subscribe to');
+  noSurname(ics, 'the calendar file');
+  ok(!/lineForEvent|linePlanned/.test(codeOnly(slice('buildICS'))), 'buildICS reads the budget again');
 });
 
 /* ================================================================

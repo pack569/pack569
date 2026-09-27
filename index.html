@@ -7894,14 +7894,15 @@
   //
   // PUBLISHED — the whole list; keep it and SETUP.md Part C ("What a parent sees") in step:
   //   always: pack name, program year; the season's events (storefront dates with their shift
-  //   windows and the FIRST NAMES on each shift, meetings with time and where, activities
-  //   with time, place and dens); the derby's name and date; camping trips as leaders typed
-  //   them, including each trip's cost line.
-  //   with standings on (the default): standings (first name, den, total raised, reward-tier
-  //   progress), one pack goal bar, derby winners and design awards, the reward tiers (name,
-  //   reward, note, due-by, and `salesCents` — the sales that reach it), `tierLadder` (what a
-  //   full bar means), and `familyCost` — what the year is PLANNED to cost one scout and adult
-  //   in each den, line by line with its payee, and what each tier takes off that.
+  //   windows, meetings with time and where, activities with time, place and dens); the
+  //   derby's name and date; camping trips as leaders typed them, including each trip's
+  //   cost line; and `familyCost` — what the year is PLANNED to cost one scout and adult in
+  //   each den, line by line with its payee, and what each tier (by name and sales target)
+  //   takes off that.
+  //   with standings on (the default): the FIRST NAMES on each storefront shift, standings
+  //   (first name, den, total raised, reward-tier progress), one pack goal bar, derby winners
+  //   and design awards, the reward tiers (name, reward, note, due-by, and `salesCents` — the
+  //   sales that reach it) and `tierLadder` (what a full bar means).
   //
   // DELIBERATELY EXCLUDED — do not add these without re-reading the SETUP Part C notes:
   //   the budget itself (starting balance, planned/actual totals, income, expenses), dues and
@@ -7916,9 +7917,11 @@
   //
   // Join link phase — opts.showStandings (defaulting to the pack's join config, and to TRUE
   // when there is no config, i.e. today's behaviour) decides whether the whole Standings tab
-  // is published at all. When it's false the `standings`, `goals` and `derby` keys are
-  // ABSENT from the document — not merely hidden in the UI — because all three carry scout
-  // names or pack money. That gives a widely-shared link a calendar-only mode.
+  // is published at all. When it's false the `standings`, `goals`, `derby`, `tiers` and
+  // `tierLadder` keys are ABSENT from the document — not merely hidden in the UI — and the
+  // shifts carry no `who`, so no child is named anywhere in it. That gives a widely-shared
+  // link a calendar-only mode. The year's cost and the camping pages still publish, and with
+  // no Standings tab to hold it the cost card moves onto the Schedule tab (renderParentSchedule).
   // Reduce a list of scout names to what parents are allowed to see: FIRST NAMES ONLY.
   // A last initial is appended only where two or more scouts share a first name, so a
   // parent can still pick their own child out of the standings. Returns a parallel array
@@ -7949,6 +7952,18 @@
       return (dupe && p.initial) ? p.first + ' ' + p.initial + '.' : p.first;
     });
   }
+  // THE public-name map: scout id → what anything leaving the leaders' app calls that child.
+  // Built over the WHOLE roster (archived scouts included), because the initial exists to tell
+  // two same-named children apart and must be the same on every surface that names them — the
+  // parent view, the copy-and-paste standings, the storefront day sheet. Every outbound builder
+  // takes its names from here; none of them runs its own shortNames() pass.
+  function publicNameMap(scouts) {
+    var all = scouts || [];
+    var shown = shortNames(all.map(function (s) { return s.name; }));
+    var map = {};
+    all.forEach(function (s, i) { map[s.id] = shown[i]; });
+    return map;
+  }
   function buildParentView(src, opts) {
     var withStandings = (opts && typeof opts.showStandings === 'boolean')
       ? opts.showStandings : standingsEnabled();
@@ -7965,12 +7980,7 @@
       // same child different things ("Beckett" on the shift list, "Beckett H." on the standings) is
       // worse than an extra initial — the initial exists precisely so a parent can pick their
       // own child out, and it can only do that if it is the same everywhere.
-      var pubName = {};
-      (function () {
-        var all = state.scouts;
-        var shown = shortNames(all.map(function (s) { return s.name; }));
-        all.forEach(function (s, i) { pubName[s.id] = shown[i]; });
-      })();
+      var pubName = publicNameMap(state.scouts);
       // First names only, alphabetical — the same order the leader's shift list uses, so a
       // rename never reshuffles a shift on either side.
       function shiftWho(b) {
@@ -7986,7 +7996,11 @@
         // questions every family actually asks about popcorn ("which shift are we on", "do you
         // still need someone Saturday") could only be answered by a group text. First names
         // only, from the shared map above; never the money on a block.
+        // ⚠ Calendar-only mode publishes NO child's name, and a shift's `who` is one — so there
+        // the windows go out alone (the parent app already draws a shift with no `who` as a
+        // bare time, which is how a document from before 2026-08-02 looks).
         var shifts = blocksInDayOrder(sf).map(function (b) {
+          if (!withStandings) return { when: fmtTimeRange(b.start, b.end) };
           return { when: fmtTimeRange(b.start, b.end), who: shiftWho(b) };
         }).filter(function (s) { return !!s.when; });
         var ev = { kind: 'storefront', date: sf.date, title: String(sf.name || 'Storefront'), detail: '' };
@@ -8065,6 +8079,51 @@
         events: events
       };
       if (camping.length) out.camping = camping;
+      // Owner ask, 2026-08-02: what a year actually costs a family, published as the pack plans
+      // it. This is the joining-meeting question, and it is the figure the reward tiers below are
+      // competing with — a family cannot judge "sell $175 and the pack covers your dues" without
+      // knowing what the year costs in the first place.
+      // ⚠ This is the PLAN, per den, for one scout and the adult who brings them. It is not any
+      // family's balance: no charge, no payment and no per-family total is consulted here, so
+      // nothing a parent sees is another family's business — or even their own account.
+      // ⚠ Above the calendar-only gate on purpose (2026-09-27): no scout, no family and no total
+      // raised is in it, and a calendar-only link — handed to families who have not joined yet —
+      // is exactly where "what does a year cost" gets asked.
+      var familyCost = familyYearCost().map(function (r) {
+        return {
+          den: String(r.den || ''),
+          scoutCents: r.scout, adultCents: r.adult, siblingCents: r.sibling,
+          expectedCents: r.expected,
+          // What every reward tier together takes off this den's figure — the union, valued
+          // once and den-aware. Published rather than derived in the parent app, because only
+          // this side can see which lines a den actually attends.
+          coveredCents: r.covered,
+          // The same thing rung by rung: what this den's year drops to at each tier. It is the
+          // only place a parent gets a money figure for the ladder, deliberately — the ladder
+          // card itself has no den, so any figure printed there is wrong for somebody.
+          steps: (r.steps || []).map(function (x) {
+            return {
+              name: String(x.name || ''), salesCents: x.salesCents,
+              coveredCents: x.coveredCents, afterCents: x.afterCents
+            };
+          }),
+          lines: (r.lines || []).map(function (x) {
+            return {
+              name: String(x.name || ''), scoutCents: x.scout, adultCents: x.adult,
+              siblingCents: x.sibling, direct: !!x.direct,
+              payee: String(x.payee || ''), perFamily: !!x.perFamily,
+              // Which rung buys each half of this line, as an index into `steps` above; -1 for a
+              // share no tier ever touches. Published rather than derived, for the same reason
+              // `steps` is: only this side knows which lines a den actually attends, and what a
+              // tier's cover keys point at. A payload written before 2026-09-07 carries neither,
+              // and the parent app then draws the one flat list it always did.
+              coverScoutStep: x.coverScoutStep, coverAdultStep: x.coverAdultStep
+            };
+          })
+        };
+      });
+      if (familyCost.length) out.familyCost = familyCost;
+
       // Calendar-only mode: nothing below is computed, let alone published.
       if (!withStandings) return out;
 
@@ -8255,53 +8314,11 @@
         };
       }).filter(function (t) { return t.name || t.reward; });
 
-      // Owner ask, 2026-08-02: what a year actually costs a family, published as the pack plans
-      // it. This is the joining-meeting question, and it is the figure the reward tiers above are
-      // competing with — a family cannot judge "sell $175 and the pack covers your dues" without
-      // knowing what the year costs in the first place.
-      // ⚠ This is the PLAN, per den, for one scout and the adult who brings them. It is not any
-      // family's balance: no charge, no payment and no per-family total is consulted here, so
-      // nothing a parent sees is another family's business — or even their own account.
-      var familyCost = familyYearCost().map(function (r) {
-        return {
-          den: String(r.den || ''),
-          scoutCents: r.scout, adultCents: r.adult, siblingCents: r.sibling,
-          expectedCents: r.expected,
-          // What every reward tier together takes off this den's figure — the union, valued
-          // once and den-aware. Published rather than derived in the parent app, because only
-          // this side can see which lines a den actually attends.
-          coveredCents: r.covered,
-          // The same thing rung by rung: what this den's year drops to at each tier. It is the
-          // only place a parent gets a money figure for the ladder, deliberately — the ladder
-          // card itself has no den, so any figure printed there is wrong for somebody.
-          steps: (r.steps || []).map(function (x) {
-            return {
-              name: String(x.name || ''), salesCents: x.salesCents,
-              coveredCents: x.coveredCents, afterCents: x.afterCents
-            };
-          }),
-          lines: (r.lines || []).map(function (x) {
-            return {
-              name: String(x.name || ''), scoutCents: x.scout, adultCents: x.adult,
-              siblingCents: x.sibling, direct: !!x.direct,
-              payee: String(x.payee || ''), perFamily: !!x.perFamily,
-              // Which rung buys each half of this line, as an index into `steps` above; -1 for a
-              // share no tier ever touches. Published rather than derived, for the same reason
-              // `steps` is: only this side knows which lines a den actually attends, and what a
-              // tier's cover keys point at. A payload written before 2026-09-07 carries neither,
-              // and the parent app then draws the one flat list it always did.
-              coverScoutStep: x.coverScoutStep, coverAdultStep: x.coverAdultStep
-            };
-          })
-        };
-      });
-
       out.standings = standings;
       out.goals = goals;
       out.derby = derby;
       if (tiers.length) out.tiers = tiers;
       if (ladderProg) out.tierLadder = ladderProg;
-      if (familyCost.length) out.familyCost = familyCost;
       return out;
     } finally {
       state = prev;
@@ -9358,6 +9375,10 @@
       if (open) earlier.forEach(function (e) { h += parentEventRow(e); });
       h += '</div>';
     }
+    // What a year costs, when there is no Standings tab to carry it (calendar-only mode). With
+    // standings on it stays there, and only there: that page is also the printed handout, and
+    // one card in two places is two places to wonder which is right.
+    if (!Array.isArray(pv.standings)) h += parentFamilyCost(pv);
     return h;
   }
   function parentGoalBar(label, raised, goal, pct) {
@@ -9924,10 +9945,14 @@
   // Who is signed up for one block, by name, alphabetically — the same rule every other list of
   // scouts in the app follows, so a rename never reshuffles a shift. Display only: the stored
   // assignments array keeps its own order, because blockShares() reads position from it.
-  function blockScoutNames(b) {
+  // `names` (optional) is a publicNameMap(): pass it wherever the list leaves the leaders' screen
+  // (the printed and copied day sheet), so a child is called there what the parent view calls
+  // them. Without it, leaders see the roster names as typed.
+  function blockScoutNames(b, names) {
     return ((b && b.assignments) || []).map(function (a) {
       var s = getScout(a.scoutId);
-      return s ? s.name : 'Unknown scout';
+      if (!s) return 'Unknown scout';
+      return names ? (names[s.id] || 'Unknown scout') : s.name;
     }).sort(function (x, y) { return String(x).localeCompare(String(y)); });
   }
 
@@ -13511,8 +13536,10 @@
     h += '<hr class="divider">' +
       '<label class="join-opt"><input type="checkbox" data-ch="join-standings"' + (standingsEnabled() ? ' checked' : '') + '>' +
       '<span>Include scout standings in the parent view</span></label>' +
-      '<p class="small muted" style="margin:2px 0 0">Untick for a calendar-only page: scout names, totals, goal ' +
-      'bars and derby winners are left out of the published copy entirely — not just hidden.</p>';
+      '<p class="small muted" style="margin:2px 0 0">Untick for a calendar-only page: scout names (on the ' +
+      'standings and on storefront shifts), sales totals, the goal bar, the reward tiers and derby winners are ' +
+      'left out of the published copy entirely — not just hidden. The calendar, what a year costs each den, ' +
+      'and the camping pages still show.</p>';
     return h + '</div>';
   }
   function syncModeLine() {
@@ -16161,10 +16188,15 @@
   }
 
   /* ----- Overlays ----- */
+  // The copy-and-paste standings. It goes wherever a leader pastes it — the pack group chat,
+  // a parent email — so it names children the way the parent view does (publicNameMap: first
+  // names, an initial only to split a clash), and it carries no one family's cash donation:
+  // how much a family handed over at a table is theirs to share. Pack totals stay.
   function summaryText() {
     var pack = computePackTotals();
     var totals = computeScoutTotals();
     var rows = visibleScoutRows(totals);
+    var pub = publicNameMap(state.scouts);
     var lines = [];
     lines.push((state.packName || 'Pack') + ' Popcorn Sale — Standings');
     lines.push('As of ' + new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }));
@@ -16202,21 +16234,20 @@
     var txEarned = txTiers.length ? tierEarnedMap() : {};
     rankBy(rows, eligibleOf).forEach(function (r, i) {
       var et = txTiers.length ? earnedTierFor(r.id, txTiers, txEarned) : null;
-      lines.push((i + 1) + '. ' + r.name + (et ? ' [' + (et.name || 'Tier') + ']' : '') +
+      lines.push((i + 1) + '. ' + (pub[r.id] || '') + (et ? ' [' + (et.name || 'Tier') + ']' : '') +
         ' — ' + fmt(eligibleOf(r)) + ' (' + fmt(r.t.sales) + ' sales, ' + fmt(r.t.onD) + ' online donations)');
     });
     lines.push('');
-    lines.push('Standings — cash donations:');
-    var ccx = cashCreditTotals();
-    rankBy(rows, cashDonOf).forEach(function (r, i) {
-      lines.push((i + 1) + '. ' + r.name + ' — ' + fmt(cashDonOf(r)) +
-        (ccx.on ? ' (' + fmt(cashScoutCredit(cashDonOf(r))) + ' toward their tiers)' : ''));
-    });
+    lines.push('Cash donations (storefront tables and wagons, all scouts): ' + fmt(pack.cashDon));
     return lines.join('\n');
   }
 
   // Wave 6 — plain-text month digest for pasting into a parent email / newsletter.
   // READ-ONLY: composes text from existing state; recomputes for whatever month is shown.
+  // ⚠ PARENT COPY (2026-09-27): it is pasted to every family, so it carries nothing the parent
+  // view withholds — no child's full name, no leader's training, no other fundraisers' money.
+  // Those went out in it until now, under ACTION NEEDED and OTHER FUNDRAISERS; they live in
+  // monthlyDigestLeaders() below, which the overlay offers as a separate, labelled copy.
   function monthlyDigest(mk) {
     var lines = [];
     var pack = state.packName || 'Pack';
@@ -16285,7 +16316,16 @@
       lines.push('');
     }
 
-    // 4. Other (non-popcorn) fundraisers (reuses fundraiserTotals).
+    lines.push('Thanks for being part of ' + pack + '!');
+    return lines.join('\n');
+  }
+  // The leaders' half of the month: what needs chasing. Never pasted to families — renewals name
+  // children in full and leader training is a leader's own business — so it is its own text
+  // with its own heading, and the overlay puts it under a "Leaders only" label. Empty string when
+  // there is nothing to chase, and the overlay then offers no second box.
+  function monthlyDigestLeaders(mk) {
+    var lines = [];
+    // 1. Other (non-popcorn) fundraisers (reuses fundraiserTotals).
     if (state.fundraisers.length) {
       lines.push('OTHER FUNDRAISERS');
       state.fundraisers.forEach(function (fr) {
@@ -16296,7 +16336,7 @@
       lines.push('');
     }
 
-    // 5. Leader training needing attention (reuses the Pack tab's leaderStatus expiry logic).
+    // 2. Leader training needing attention (reuses the Pack tab's leaderStatus expiry logic).
     var needs = [];
     state.leaders.forEach(function (l) {
       var pills = leaderStatus(l);
@@ -16320,8 +16360,9 @@
       lines.push('');
     }
 
-    lines.push('Thanks for being part of ' + pack + '!');
-    return lines.join('\n');
+    if (!lines.length) return '';
+    return ((state.packName || 'Pack') + ' — ' + monthLabel(mk) + ' — LEADERS ONLY, not for families\n\n' +
+      lines.join('\n')).replace(/\n+$/, '');
   }
 
   function renderOverlay() {
@@ -16355,6 +16396,8 @@
       // so the sheet somebody prints and the board they printed it from name the same tiers.
       var sumTiers = sortedTiers();
       var sumCovered = packCoverageByScout();
+      // Shared, so public names and no family's cash — the same rules as summaryText().
+      var sumPub = publicNameMap(state.scouts);
       var h = '<div class="overlay" role="dialog" aria-modal="true" aria-label="Share summary"><div class="overlay-inner">' +
         '<div class="row no-print" style="margin-bottom:12px">' +
         '<button type="button" class="btn" data-act="close-overlay">&larr; Back</button>' +
@@ -16421,20 +16464,15 @@
       rankBy(rows, eligibleOf).forEach(function (r, i) {
         // The rung this scout has actually reached, and what it takes off their family's bill.
         // The badges are the on-screen board's own, so the two cannot name different tiers.
-        h += '<tr><td class="num muted">' + (i + 1) + '</td><td>' + esc(r.name) + '</td>' +
+        h += '<tr><td class="num muted">' + (i + 1) + '</td><td>' + esc(sumPub[r.id] || '') + '</td>' +
           (sumTiers.length ? '<td style="white-space:normal">' + (tierBadgesFor(r, sumTiers, sumCovered) || '<span class="muted">—</span>') + '</td>' : '') +
           '<td class="num">' + fmt(r.t.sales) + '</td>' +
           '<td class="num">' + fmt(r.t.onD) + '</td><td class="num" style="font-weight:650">' + fmt(eligibleOf(r)) + '</td></tr>';
       });
       h += '</tbody></table></div>' +
-        '<p class="eyebrow" style="margin-top:16px">Standings — cash donations</p>' +
-        '<div class="tbl-wrap"><table><thead><tr><th scope="col"></th><th scope="col">Scout</th><th scope="col" class="num">Storefront</th><th scope="col" class="num">Wagon</th><th scope="col" class="num">Total cash</th></tr></thead><tbody>';
-      rankBy(rows, cashDonOf).forEach(function (r, i) {
-        h += '<tr><td class="num muted">' + (i + 1) + '</td><td>' + esc(r.name) + '</td>' +
-          '<td class="num">' + fmt(r.t.storeD) + '</td><td class="num">' + fmt(r.t.wagonD) + '</td>' +
-          '<td class="num" style="font-weight:650">' + fmt(cashDonOf(r)) + '</td></tr>';
-      });
-      h += '</tbody></table></div></div></div></div>';
+        '<p class="small" style="margin:14px 0 0">Cash donations at storefront tables and wagons, all scouts: ' +
+        '<strong class="money">' + fmt(pack.cashDon) + '</strong></p>' +
+        '</div></div></div>';
       return h;
     }
     if (o.kind === 'shop') {
@@ -16470,16 +16508,28 @@
     if (o.kind === 'digest') {
       // Wave 6 — recomputes for whatever month is shown; textarea id lets copyText fall back cleanly.
       var digest = monthlyDigest(ui.calMonth);
+      // The leaders' half is a SEPARATE box with its own copy button, never appended: one "Copy"
+      // that grabbed both is how renewals and training ended up in a family newsletter.
+      var digestLeaders = monthlyDigestLeaders(ui.calMonth);
       return '<div class="overlay" role="dialog" aria-modal="true" aria-label="Monthly digest"><div class="overlay-inner">' +
         '<div class="row no-print" style="margin-bottom:12px">' +
         '<button type="button" class="btn" data-act="close-overlay">&larr; Back</button>' +
-        '<button type="button" class="btn" data-act="copy-digest">' + (o.copied ? 'Copied ✓' : 'Copy as text') + '</button></div>' +
+        '<button type="button" class="btn" data-act="copy-digest">' + (o.copied ? 'Copied ✓' : 'Copy for families') + '</button></div>' +
         '<div class="summary-sheet">' +
         '<div class="row" style="gap:10px;margin-bottom:2px"><span class="fleur">' + FLEUR + '</span>' +
         '<h1 style="margin:0">Monthly digest</h1></div>' +
         '<p class="muted small" style="margin:0 0 14px">' + esc(monthLabel(ui.calMonth)) +
         ' · copy &amp; paste into a parent email or newsletter</p>' +
-        '<textarea class="export-box" id="exportBox" readonly style="height:340px">' + esc(digest) + '</textarea>' +
+        '<textarea class="export-box" id="exportBox" readonly style="height:340px" aria-label="Digest for families">' + esc(digest) + '</textarea>' +
+        (digestLeaders
+          ? '<div class="spread" style="margin:18px 0 6px"><h2 class="section display" style="margin:0">Leaders only — not for families</h2>' +
+            '<button type="button" class="btn small no-print" data-act="copy-digest-leaders">' +
+            (o.copiedLeaders ? 'Copied ✓' : 'Copy for leaders') + '</button></div>' +
+            '<p class="muted small" style="margin:0 0 8px">Renewals, leader training and the other fundraisers. ' +
+            'For the committee — it names scouts in full.</p>' +
+            '<textarea class="export-box" id="exportBoxLeaders" readonly style="height:200px" aria-label="Leaders-only notes">' +
+            esc(digestLeaders) + '</textarea>'
+          : '') +
         '</div></div></div>';
     }
     if (o.kind === 'export') {
@@ -16975,8 +17025,11 @@
   }
 
   /* ----- Wave 19(15): storefront day sheet (printable, per-storefront) ----- */
-  // Names only on purpose — scout notes (Wave 19(24)) never print on public sheets.
+  // Names only on purpose — scout notes (Wave 19(24)) never print on public sheets. And public
+  // names only (2026-09-27): the sheet is taped to a table outside a grocery store, and copied
+  // into group chats, so a child is on it by first name exactly as the parent view has them.
   function daySheetText(sf) {
+    var pub = publicNameMap(state.scouts);
     var lines = [];
     lines.push((state.packName || 'Pack') + ' — ' + (sf.name || 'Storefront') + ' day sheet');
     lines.push(fmtDate(sf.date));
@@ -16984,7 +17037,7 @@
       lines.push('');
       var rng = fmtTimeRange(b.start, b.end);
       lines.push(b.label + (rng ? ' — ' + rng : ''));
-      var dsScouts = blockScoutNames(b);
+      var dsScouts = blockScoutNames(b, pub);
       lines.push('  Scouts: ' + (dsScouts.length ? dsScouts.join(', ') : '—'));
       lines.push('  (each scout is accompanied by their parent)');
       lines.push('  Trail’s End $ ______   Cash donations $ ______');
@@ -16996,6 +17049,7 @@
   function renderDaySheet(o) {
     var sf = getStorefront(o.id);
     if (!sf) return '';
+    var pub = publicNameMap(state.scouts);   // the same names as daySheetText — see there
     var h = '<div class="overlay" role="dialog" aria-modal="true" aria-label="Storefront day sheet"><div class="overlay-inner">' +
       '<div class="row no-print" style="margin-bottom:12px">' +
       '<button type="button" class="btn" data-act="close-overlay">&larr; Back</button>' +
@@ -17007,7 +17061,7 @@
       '<p class="muted small" style="margin:0 0 14px">Day sheet · ' + esc(fmtDate(sf.date)) + '</p>';
     blocksInDayOrder(sf).forEach(function (b) {
       var rng = fmtTimeRange(b.start, b.end);
-      var dsScouts = blockScoutNames(b);
+      var dsScouts = blockScoutNames(b, pub);
       h += '<div class="block-card" style="margin-bottom:10px">' +
         '<p class="eyebrow" style="margin:0 0 6px">' + esc(b.label) + (rng ? ' · ' + esc(rng) : '') + '</p>' +
         '<p class="small" style="margin:0 0 4px"><strong>Scouts:</strong> ' + (dsScouts.length ? esc(dsScouts.join(', ')) : '<span class="muted">none assigned</span>') + '</p>' +
@@ -17147,9 +17201,10 @@
       setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
     } catch (e) { /* copy fallback remains available */ }
   }
-  function copyText(text, done) {
+  // boxId: the textarea to select if the clipboard API is refused (default: #exportBox).
+  function copyText(text, done, boxId) {
     function fallback() {
-      var ta = document.getElementById('exportBox');
+      var ta = document.getElementById(boxId || 'exportBox');
       var tmp = null;
       if (!ta) {
         tmp = document.createElement('textarea');
@@ -17274,13 +17329,11 @@
       }
       props.push('SUMMARY:' + icsEscape(eventLabel(ev)));
       if (ev.location) props.push('LOCATION:' + icsEscape(ev.location));
-      var desc = [];
-      if (ev.note) desc.push(ev.note);
-      // Phase 2 — the estimate belongs to the budget line, not the event. An unbudgeted
-      // event simply exports without a cost line.
-      var icsLine = lineForEvent(ev.id);
-      if (icsLine && linePlanned(icsLine)) desc.push('Estimated ' + fmt(linePlanned(icsLine)) + (linePerHead(icsLine) ? ' (' + lineRateSummary(icsLine) + ')' : ''));
-      if (desc.length) props.push('DESCRIPTION:' + icsEscape(desc.join('\n\n')));
+      // ⚠ No budget figure, ever (2026-09-27). This file is handed to BAND and subscribed to in
+      // families' own calendars, and the line's planned total ("Estimated $1,240") is the pack's
+      // budget, which parents are deliberately never shown. What a family pays is published per
+      // den in the parent view, where it can be right for their den.
+      if (ev.note) props.push('DESCRIPTION:' + icsEscape(ev.note));
       ev2(props);
     });
     lines.push('END:VCALENDAR');
@@ -19925,7 +19978,13 @@
     if (act === 'open-summary') { ui.overlay = { kind: 'summary' }; render(); return; }
     if (act === 'open-digest') { ui.overlay = { kind: 'digest' }; render(); return; }
     if (act === 'copy-digest') {
-      copyText(monthlyDigest(ui.calMonth), function () { ui.overlay.copied = true; render(); });
+      copyText(monthlyDigest(ui.calMonth), function () { ui.overlay.copied = true; ui.overlay.copiedLeaders = false; render(); });
+      return;
+    }
+    if (act === 'copy-digest-leaders') {
+      copyText(monthlyDigestLeaders(ui.calMonth), function () {
+        ui.overlay.copiedLeaders = true; ui.overlay.copied = false; render();
+      }, 'exportBoxLeaders');
       return;
     }
     if (act === 'close-overlay') { ui.overlay = null; render(); return; }
