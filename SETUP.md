@@ -235,13 +235,18 @@ service cloud.firestore {
     }
     match /packs/{doc} {
       function signedIn() { return request.auth != null; }
+      // A Google account whose address Google has verified. An unverified email is only a
+      // claim, and the rules match invites and member docs on it.
       function viaGoogle() {
-        return request.auth.token.firebase.sign_in_provider == 'google.com';
+        return request.auth.token.firebase.sign_in_provider == 'google.com'
+          && request.auth.token.email_verified == true;
       }
       function memberPath() {
         return /databases/$(database)/documents/packs/$(doc)/members/$(request.auth.uid);
       }
-      function isMember() { return signedIn() && exists(memberPath()); }
+      // A member doc only counts from a Google sign-in — never from an anonymous session that
+      // happens to share a uid with one.
+      function isMember() { return signedIn() && viaGoogle() && exists(memberPath()); }
       function myRole() { return isMember() ? get(memberPath()).data.role : 'none'; }
       function isLeader() { return myRole() in ['admin', 'editor', 'viewer']; }
       function isAdmin() { return myRole() == 'admin'; }
@@ -258,9 +263,12 @@ service cloud.firestore {
         return /databases/$(database)/documents/packs/$(doc)/public/join;
       }
       function joinCfg() { return get(joinPath()).data; }
-      // Every field the app writes on a member doc. Anything else is refused.
+      // Every field the app writes on a member doc. Anything else is refused, and the name
+      // (shown to every leader in the Members card) is a short string.
       function memberKeysOk() {
-        return request.resource.data.keys().hasOnly(['role', 'name', 'email', 'addedAt', 'joinCode']);
+        return request.resource.data.keys().hasOnly(['role', 'name', 'email', 'addedAt', 'joinCode'])
+          && request.resource.data.name is string
+          && request.resource.data.name.size() <= 120;
       }
       function ownEmail() { return request.resource.data.email == request.auth.token.email; }
 
@@ -329,9 +337,10 @@ What these rules guarantee:
   deleted), only by someone signed in with Google, and only by a user writing their own id
   as `owner`. Whoever creates it first wins and is the permanent owner/admin.
 - **Nobody can put themselves in the Members card.** A user may create only their **own**
-  member document, only while signed in with Google, only with the email on their Google
-  account, and only with the fields the app writes (`role`, `name`, `email`, `addedAt`,
-  `joinCode`). The role has to be one of exactly three things: `admin` for the pack owner,
+  member document, only while signed in with Google (with an address Google has verified),
+  only with the email on their Google account, and only with the fields the app writes
+  (`role`, `name`, `email`, `addedAt`, `joinCode`; the name a string of at most 120
+  characters). The role has to be one of exactly three things: `admin` for the pack owner,
   *exactly* the role in an invite an admin wrote for their email, or `pending` through the
   sign-up link. There is no fourth way — in particular, knowing the pack id is not enough to
   join the approval queue. (Single-pack mode prints the pack id in the page, so it is not a
@@ -397,8 +406,16 @@ safe default.** The app is built so it never breaks while the console is half-co
   Google, the first becomes admin, and everyone else comes in by the sign-up link or an
   invite, to be approved as editors, viewers or parents.
 
-**Already running an earlier version of the Part C rules?** The 2026-09-27 block changes
-these things, all deliberate:
+**Already running an earlier version of the Part C rules?** Do it in this order:
+**deploy this version of `index.html` first, reload it once, then publish these rules.**
+The new page works under the old rules too; an old page does not work under the new rules
+(a parent's old page asks for the whole members list, the new rules refuse it, and the old
+page reads that refusal as "rules not published" — the setup screen). One difference you
+may notice in the gap between the two steps: the new page never files a bare `pending`
+request, so someone who signs in with neither the sign-up link nor an invite is told to ask
+a leader, under the old rules as well as the new ones.
+
+The 2026-09-27 block changes these things, all deliberate:
 
 - A member doc can no longer be created as `pending` with nothing but the pack id — only
   through the sign-up link with its current code, an admin's invite, or the owner claim.
@@ -411,6 +428,21 @@ these things, all deliberate:
 - The members list is readable by leaders only; parents and pending users see their own
   record. The parent view is no longer readable by `pending` users. The join code is
   readable by leaders only, so a rotated code actually stops a leaked link.
+- Membership counts only from a Google sign-in whose email Google has verified. An
+  ordinary Gmail or Google Workspace account always is.
+
+**Then clean up what the old rules let in.** The new rules stop new ways in; they don't
+remove anyone who already used one. Once they are published, the owner should:
+
+1. **Pack tab → Members:** remove any **admin, editor or viewer** you didn't approve yourself.
+2. Still in Members: remove any **pending** request you don't recognise, and any with **no
+   email**.
+3. **Firebase console → Firestore Database → Data → `packs` → your pack id → `invites`:**
+   delete any invite whose `role` is `admin`. (The app never writes one; the old rules let
+   anybody who knew an email address write one.)
+4. **Firebase console → Authentication → Users:** delete the **anonymous** users (the ones
+   with no email, shown as "Anonymous" in the Providers column). Single-pack mode never uses
+   them, and the new rules give them nothing.
 
 Earlier still, re-publishing changed three things: (1) `pending` members lose ledger access and now see a
 "waiting for approval" screen with no pack content until an admin approves them, (2) the

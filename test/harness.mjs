@@ -7910,7 +7910,8 @@ test('the member doc the client writes is exactly what the rules accept', () => 
   ok(allowed, 'memberKeysOk() not found in the rules');
   const keys = allowed[1].match(/'(\w+)'/g).map((k) => k.slice(1, -1));
   const writes = setDocKeys(slice('ensureMyMemberDoc') + slice('joinCreateMemberDoc'), 'ref');
-  eq(writes.length, 2, 'expected one member create in each of ensureMyMemberDoc and joinCreateMemberDoc');
+  // The owner/invitee create, the owner's self-heal, and the sign-up-link create.
+  eq(writes.length, 3, 'expected the member create, the owner heal and the join create');
   writes.forEach((w) => w.forEach((k) => ok(keys.indexOf(k) !== -1, `the client writes "${k}", which the rules refuse`)));
   // The join path has to SEND the code, or the rule has nothing to check.
   ok(writes.some((w) => w.indexOf('joinCode') !== -1), 'the join path no longer writes joinCode');
@@ -7985,6 +7986,209 @@ test('single-pack mode never signs in anonymously, which is why SETUP says to tu
   ok(/if \(src\.kind === 'fixed' && current && current\.isAnonymous\) current = null;/.test(SCRIPT),
     'a stale anonymous session is reused in single-pack mode');
   ok(/turn it \*\*off\*\*/.test(SETUP), 'SETUP.md does not tell a single-pack admin to turn Anonymous off');
+});
+
+/* ================================================================
+   Wave 3 (2026-09-27) — the security reviewer's follow-ups on the Part C rules commit.
+   ================================================================ */
+
+test('the owner restores their admin role by rewriting their doc whole, and a refusal is not a trap', () => {
+  const ens = codeOnly(slice('ensureMyMemberDoc'));
+  ok(!/updateDoc/.test(ens), 'the owner heal is an updateDoc again — a junked doc makes the rules refuse it');
+  const heal = /if \(sync\.ownerUid === uid && cur !== 'admin'\) \{([\s\S]*?)\n        \}/.exec(ens);
+  ok(heal, 'the owner heal branch was not found');
+  const keys = setDocKeys(heal[1], 'ref');
+  eq(keys, [['role', 'name', 'email', 'addedAt']], 'the heal writes other keys than the rules accept');
+  ok(/role: 'admin'/.test(heal[1]), 'the heal does not write admin');
+  // Refused → carry on as the doc's role; never throw into handleAccountsError (setup screen).
+  ok(/\.then\(function \(\) \{ return 'admin'; \}, function \(\) \{ return cur; \}\)/.test(heal[1]),
+    'a refused heal is thrown, which handleAccountsError reads as "rules not published"');
+});
+
+// A fake Firestore that records what it was asked to do. Enough of the modular API for the
+// member-management functions, which only ever build refs and write them.
+const FAKE_FS = `
+  var calls = [];
+  var fakeFs = {
+    doc: function () { return { path: Array.prototype.slice.call(arguments, 1).join('/') }; },
+    collection: function () { return { path: Array.prototype.slice.call(arguments, 1).join('/') }; },
+    deleteDoc: function (r) { calls.push('delete ' + r.path); return Promise.resolve(); },
+    setDoc: function (r) { calls.push('set ' + r.path); return Promise.resolve(); },
+    updateDoc: function (r) { calls.push('update ' + r.path); return Promise.resolve(); },
+    serverTimestamp: function () { return 'TS'; }
+  };`;
+
+function removeMemberCtx() {
+  const ctx = vm.createContext({});
+  vm.runInContext(FAKE_FS + `
+    var committed = 0;
+    function commit() { committed += 1; }
+    function isAdmin() { return true; }
+    function isLastAdmin() { return false; }
+    function accountsToast() {}
+    function showToast() {}
+    var sync = { mods: { fs: fakeFs }, db: 'db', docId: 'P',
+      members: [{ uid: 'u1', email: ' Pat@Example.com ', role: 'editor' }, { uid: 'u2', email: 'x@example.com', role: 'admin' }] };
+    var state = {
+      scouts: [{ id: 's1', parentUids: ['u1', 'u9'] }, { id: 's2', parentUids: [] }],
+      leaders: [{ id: 'l1', uid: 'u1' }, { id: 'l2', uid: 'u2' }, { id: 'l3', uid: '' }]
+    };
+    ${slice('arrOf')}
+    ${slice('inviteEmailKey')}
+    ${slice('removeMember')}`, ctx);
+  return ctx;
+}
+
+test('removing a member also removes their leftover invite and their leader link', () => {
+  const ctx = removeMemberCtx();
+  vm.runInContext("removeMember('u1')", ctx);
+  const calls = vm.runInContext('calls', ctx);
+  ok(calls.indexOf('delete packs/P/members/u1') !== -1, 'the member doc was not deleted');
+  // Keyed exactly as createInvite keys it (trimmed, lowercased), or the delete misses.
+  ok(calls.indexOf('delete packs/P/invites/pat@example.com') !== -1,
+    'an invite under the removed member’s email survives them, and would let them straight back in');
+  eq(vm.runInContext('state.scouts[0].parentUids', ctx), ['u9'], 'their scout link survived');
+  eq(vm.runInContext('state.leaders.map(function (l) { return l.uid; })', ctx), ['', 'u2', ''],
+    'the leader record still claims the removed account (or another link was touched)');
+  eq(vm.runInContext('state.leaders.length', ctx), 3, 'the leader record itself was removed');
+  eq(vm.runInContext('committed', ctx), 1, 'the unlinking was not committed');
+  // A member with no email has no invite to delete — and must not try to delete invites/''.
+  const ctx2 = removeMemberCtx();
+  vm.runInContext("sync.members[0].email = ''; removeMember('u1')", ctx2);
+  ok(!vm.runInContext('calls', ctx2).some((c) => /invites/.test(c)), 'an emailless member triggered an invite delete');
+});
+
+function roleSubCtx(over) {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    var KEY = 'pack-popcorn-ledger-v1';
+    var removed = [], stopped = [], rendered = 0, subscribed = [];
+    var localStorage = { removeItem: function (k) { removed.push(k); } };
+    function freshState() { return { fresh: true }; }
+    function stopDocFeed() { stopped.push('doc'); }
+    function stopParentFeed() { stopped.push('parent'); }
+    function subscribeDoc() { subscribed.push('doc'); }
+    function subscribeParentView() { subscribed.push('parent'); }
+    function feedForRole(r) { return r === 'parent' ? 'parent' : r === 'pending' ? 'none' : 'doc'; }
+    function render() { rendered += 1; }
+    var inForce = ${over.inForce !== false};
+    function accountsInForce() { return inForce; }
+    var state = { money: 'the pack record' };
+    var sync = { session: 1, feed: 'doc', unsub: function () {}, parentView: { x: 1 }, mode: 'online',
+      membersScope: ${JSON.stringify(over.scope === undefined ? 'all' : over.scope)},
+      membersFromServer: ${over.server !== false}, joinRejected: null };
+    ${slice('applyRoleSubscription')}`, ctx);
+  return ctx;
+}
+
+test('a member removed mid-session loses the pack from this device, not just the next read', () => {
+  const ctx = roleSubCtx({});
+  vm.runInContext('applyRoleSubscription(null, 1)', ctx);
+  eq(vm.runInContext('removed', ctx), ['pack-popcorn-ledger-v1'], 'the cached pack record was left in localStorage');
+  eq(vm.runInContext('state', ctx), { fresh: true }, 'the pack record is still in memory');
+  eq(vm.runInContext('stopped.sort()', ctx), ['doc', 'parent'], 'a feed was left running');
+  eq(vm.runInContext('sync.parentView', ctx), null, 'the parent view was left on screen');
+  eq(vm.runInContext('sync.joinRejected', ctx), 'removed', 'no gate tells them why the page emptied');
+  eq(vm.runInContext('subscribed', ctx), [], 'something was subscribed for a removed member');
+  // Every other null is "we don't know yet" and leaves the feed exactly alone.
+  for (const [what, over] of [['legacy rules / no accounts', { inForce: false }],
+    ['no members watch of our own yet', { scope: null }],
+    ['a cache-only snapshot', { server: false }]]) {
+    const c = roleSubCtx(over);
+    vm.runInContext('applyRoleSubscription(null, 1)', c);
+    eq(vm.runInContext('[removed.length, stopped.length, state.money || null]', c), [0, 0, 'the pack record'],
+      `${what}: a null role wiped the device`);
+  }
+  // The gate it lands on says so.
+  ok(/if \(sync\.joinRejected === 'removed'\)/.test(slice('renderJoinClosed')), 'no screen for a removed member');
+});
+
+test('nothing is published to parents before the join config has said whether standings are on', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(FAKE_FS + `
+    var built = 0;
+    function buildParentView() { built += 1; return { events: [] }; }
+    function accountsInForce() { return true; }
+    function canEdit() { return true; }
+    function fixedSyncBlocked() { return false; }
+    function clearTimeout() {}
+    var parentViewTimer = null, parentViewFingerprint = null;
+    var state = {};
+    var sync = { mods: { fs: fakeFs }, db: 'db', docId: 'P', joinLoaded: false };
+    ${slice('writeParentView')}`, ctx);
+  vm.runInContext('writeParentView()', ctx);
+  eq(vm.runInContext('[built, calls.length]', ctx), [0, 0], 'the parent view was built and written before the join config loaded');
+  vm.runInContext('sync.joinLoaded = true; writeParentView()', ctx);
+  eq(vm.runInContext('calls', ctx), ['set packs/P/public/view'], 'once loaded, the view is not written');
+});
+
+test('the join config loads for every leader, and both of its answers release the parent view', () => {
+  function joinCtx(role) {
+    const ctx = vm.createContext({});
+    vm.runInContext(FAKE_FS + `
+      var onNext = null, onErr = null, scheduled = 0;
+      fakeFs.onSnapshot = function (r, a, b) { onNext = a; onErr = b; return function () {}; };
+      function accountsInForce() { return true; }
+      function scheduleParentViewRefresh() { scheduled += 1; }
+      function render() {}
+      var LEADER_ROLES = ['admin', 'editor', 'viewer'];
+      var sync = { session: 1, mods: { fs: fakeFs }, db: 'db', docId: 'P', myRole: '${role}',
+        joinUnsub: null, joinUnavailable: false, joinLoaded: false, joinCfg: null };
+      ${slice('applyJoinSubscription')}
+      applyJoinSubscription(1);`, ctx);
+    return ctx;
+  }
+  for (const role of ['admin', 'editor', 'viewer']) {
+    ok(vm.runInContext('!!onNext', joinCtx(role)), `a ${role} does not load the join config`);
+  }
+  // Parents and pending users are refused it by the rules, and never need it.
+  for (const role of ['parent', 'pending']) {
+    ok(vm.runInContext('!onNext', joinCtx(role)), `a ${role} asks for the join config the rules refuse them`);
+  }
+  const a = joinCtx('editor');
+  vm.runInContext("onNext({ exists: function () { return true; }, data: function () { return { showStandings: false }; } })", a);
+  eq(vm.runInContext('[sync.joinLoaded, scheduled]', a), [true, 1], 'the snapshot does not release the deferred write');
+  const b = joinCtx('editor');
+  vm.runInContext('onErr({ code: "permission-denied" })', b);
+  eq(vm.runInContext('[sync.joinLoaded, scheduled]', b), [true, 1], 'a denied read stalls the parent view for good');
+  // And a new session starts over.
+  ok(/sync\.joinLoaded = false;/.test(slice('clearAccountsRuntime')), 'clearAccountsRuntime keeps the last pack’s joinLoaded');
+});
+
+test('the rules take only a verified Google account as a member, and a short name', () => {
+  ok(/function viaGoogle\(\) \{\s*return request\.auth\.token\.firebase\.sign_in_provider == 'google\.com'\s*&& request\.auth\.token\.email_verified == true;\s*\}/
+    .test(RULES), 'viaGoogle() does not require a verified email');
+  ok(/function isMember\(\) \{ return signedIn\(\) && viaGoogle\(\) && exists\(memberPath\(\)\); \}/.test(RULES),
+    'isMember() counts a member doc from any sign-in');
+  ok(/function memberKeysOk\(\) \{[\s\S]*?&& request\.resource\.data\.name is string\s*&& request\.resource\.data\.name\.size\(\) <= 120;/
+    .test(RULES), 'memberKeysOk() does not bound the name');
+  // …and the client never writes a name the rules would refuse.
+  eq(/var MEMBER_NAME_MAX = (\d+);/.exec(SCRIPT)[1], '120', 'the client clips names to a different length than the rules allow');
+  const src = slice('ensureMyMemberDoc') + slice('joinCreateMemberDoc');
+  eq((src.match(/name: memberName\(user\)/g) || []).length, 3, 'a member write takes the raw displayName');
+  ok(!/name: user\.displayName/.test(src), 'a member write takes the raw displayName');
+  const ctx = sandbox(['MEMBER_NAME_MAX', 'memberName']);
+  eq(ctx.memberName({ displayName: 'x'.repeat(300) }).length, 120, 'a long name is not clipped');
+  eq(ctx.memberName({}), '', 'a missing name is not an empty string');
+});
+
+test('SETUP tells an upgrading pack the deploy order and the clean-up after publishing', () => {
+  ok(/deploy this version of `index\.html` first, reload it once, then publish these rules/.test(SETUP),
+    'the deploy order is missing');
+  ok(/The new page works under the old rules too; an old page does not work under the new rules/.test(SETUP),
+    'SETUP does not say which way round the versions are compatible');
+  ok(/remove any \*\*admin, editor or viewer\*\* you didn't approve/.test(SETUP), 'cleanup: unapproved leaders');
+  ok(/any with \*\*no\s+email\*\*/.test(SETUP), 'cleanup: unrecognised / emailless pending');
+  ok(/delete any invite whose `role` is `admin`/.test(SETUP), 'cleanup: admin invites');
+  ok(/Authentication → Users:\*\* delete the \*\*anonymous\*\* users/.test(SETUP), 'cleanup: anonymous users');
+});
+
+test('the export and document types that carry children’s names stay out of the public repo', () => {
+  const gi = readFileSync(join(ROOT, '.gitignore'), 'utf8').split('\n').map((l) => l.trim());
+  for (const pat of ['*.pdf', '*.csv', '*.xlsx', '*.xls', '*.tsv', '*.xlsm', '*.ods', '*.doc', '*.docx',
+    '*.pages', '*.numbers', '*.png', '*.jpg', '*.jpeg', '*.heic', '*.heif', '*.webp', '*.mov', '*.mp4']) {
+    ok(gi.indexOf(pat) !== -1, `.gitignore does not ignore ${pat}`);
+  }
 });
 
 /* ================================================================

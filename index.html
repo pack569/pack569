@@ -6721,7 +6721,9 @@
     joinCfg: null,             // packs/{docId}/public/join = { open, mode, code, showStandings }
     joinUnsub: null,           // onSnapshot for that config doc (leaders only)
     joinUnavailable: false,    // join-config read denied (older Part C rules) → hide the admin card ONLY
-    joinRejected: null,        // null | 'closed' | 'badcode' | 'nolink' — signed in, but the pack won't take them
+    joinLoaded: false,         // the join config has answered (either way) — parent-view writes wait on it
+    joinRejected: null,        // null | 'closed' | 'badcode' | 'nolink' | 'removed' — signed in, but the pack won't take them
+    membersFromServer: false,  // the last members snapshot came from the server, not the cache
     deviceId: (function () {
       try {
         var id = localStorage.getItem(SYNC_DEVICE_KEY);
@@ -7001,6 +7003,8 @@
     sync.joinCfg = null;
     sync.joinUnavailable = false;
     sync.joinRejected = null;
+    sync.joinLoaded = false;
+    sync.membersFromServer = false;
     parentViewFingerprint = null;
     clearTimeout(parentViewTimer);
     parentViewTimer = null;
@@ -7196,7 +7200,26 @@
   // reports a role change (an admin promoting a parent to editor, say).
   function applyRoleSubscription(role, mine) {
     if (sync.session !== mine) return;
-    if (!role) return; // unknown / just-removed member — leave the current feed alone
+    if (!role) {
+      // Removed (or a pending request declined) while signed in: the members watch — ours, so
+      // roles are in force and the answer is authoritative — no longer has our doc. The rules
+      // already refuse them a fresh copy of anything, but the listeners and this browser's
+      // cached pack record would otherwise keep showing, and keep holding, the pack's money.
+      // Drop all of it, exactly as the pending branch below does, and show the ask-a-leader
+      // gate. Every other null (legacy rules, accounts unavailable, a role not resolved yet)
+      // leaves the current feed alone, as it always has.
+      if (accountsInForce() && sync.membersScope && sync.membersFromServer) {
+        stopDocFeed();
+        stopParentFeed();
+        sync.parentView = null;
+        sync.feed = 'none';
+        try { localStorage.removeItem(KEY); } catch (e) { /* storage blocked */ }
+        state = freshState();
+        sync.joinRejected = 'removed';
+        render();
+      }
+      return;
+    }
     var want = feedForRole(role);
     if (want === 'none') {
       // Waiting for approval — subscribe NOTHING and drop this browser's cached pack record,
@@ -7263,30 +7286,44 @@
       render();
     });
   }
-  // The pack's self-serve join config (packs/{docId}/public/join) — leaders only. Admins
-  // need it for the "Parent sign-up link" card; editors need showStandings so the parent
-  // view they publish honours it. Deliberately NOT wired to handleAccountsError, for the
-  // same reason as invites: a denial here must never flip role enforcement off. It only
-  // hides the card (and leaves standings on, today's behaviour).
+  // The pack's self-serve join config (packs/{docId}/public/join) — leaders only, which is
+  // exactly who the rules let read it (isLeader). Admins need it for the "Parent sign-up link"
+  // card; editors need showStandings so the parent view they publish honours it; a viewer
+  // publishes nothing but reads it all the same, so the Pack tab tells them the truth about
+  // calendar-only mode. Parents and pending users never read it and never need to: what a
+  // parent sees is decided by what the published view contains.
+  // Deliberately NOT wired to handleAccountsError, for the same reason as invites: a denial
+  // here must never flip role enforcement off. It only hides the card (and leaves standings
+  // on, today's behaviour).
+  //
+  // joinLoaded: until the first answer arrives, standingsEnabled() cannot know the pack chose
+  // calendar-only, and reads "on" — so a leader's device that connected and saved inside that
+  // window published every scout's name and total to a pack that had switched them off.
+  // writeParentView waits for this; both callbacks set it, so a denial never stalls it.
   function applyJoinSubscription(mine) {
     if (sync.session !== mine || !sync.mods || !sync.db || !sync.docId) return;
-    var want = accountsInForce() && canEdit() && !sync.joinUnavailable;
+    var want = accountsInForce() && LEADER_ROLES.indexOf(sync.myRole) !== -1 && !sync.joinUnavailable;
     if (want === !!sync.joinUnsub) return;
     if (!want) {
       if (sync.joinUnsub) { try { sync.joinUnsub(); } catch (e) { /* gone */ } sync.joinUnsub = null; }
+      sync.joinLoaded = false;   // a later promotion must wait for a fresh answer
       return;
     }
     var fs = sync.mods.fs;
+    sync.joinLoaded = false;
     sync.joinUnsub = fs.onSnapshot(fs.doc(sync.db, 'packs', sync.docId, 'public', 'join'), function (snap) {
       if (sync.session !== mine) return;
       sync.joinCfg = snap.exists() ? (snap.data() || null) : null;
+      sync.joinLoaded = true;
       scheduleParentViewRefresh(); // showStandings may have just flipped
       render();
     }, function () {
       if (sync.session !== mine) return;
       sync.joinUnavailable = true;
       sync.joinCfg = null;
+      sync.joinLoaded = true;      // no config to wait for — standings stay on, today's behaviour
       if (sync.joinUnsub) { try { sync.joinUnsub(); } catch (e) { /* gone */ } sync.joinUnsub = null; }
+      scheduleParentViewRefresh(); // anything deferred while we waited goes out now
       render();
     });
   }
@@ -7503,6 +7540,9 @@
         var me = snap.data() || {}; me.uid = snap.id; arr.push(me);
       }
       sync.members = arr;
+      // A snapshot served from the local cache can be missing docs the server has; only the
+      // server may tell us we were removed (applyRoleSubscription wipes this device on that).
+      sync.membersFromServer = !(snap.metadata && snap.metadata.fromCache);
       recomputeMyRole();
       // A role change can arrive at any time (an admin promoting a parent to editor, or
       // demoting an editor to parent) — move this session onto the matching feed.
@@ -7527,6 +7567,13 @@
   // ownership/admin is granted in person, from the Members card.
   var INVITE_ROLES = ['editor', 'viewer', 'parent'];
   function inviteEmailKey(email) { return String(email == null ? '' : email).trim().toLowerCase(); }
+  // The name a member doc carries. The rules (memberKeysOk) refuse a name that is not a string
+  // or is longer than MEMBER_NAME_MAX, so it is clipped here rather than refused there — a
+  // refused create reads as "ask a leader", and nobody would guess their name was the reason.
+  var MEMBER_NAME_MAX = 120;
+  function memberName(user) {
+    return String((user && user.displayName) || '').slice(0, MEMBER_NAME_MAX);
+  }
   // Register the signed-in user in the members subcollection and RESOLVE THE EFFECTIVE ROLE
   // (returned to the caller, which uses it to pick the pack record vs parent-view feed).
   // Owners write themselves an 'admin' doc; an invited email lands directly in the invited
@@ -7546,9 +7593,20 @@
       if (snap.exists()) {
         var cur = (snap.data() || {}).role || 'pending';
         // The pack owner is always an admin — self-heal if a rogue admin ever demoted
-        // them (M-1). The Part C rules let the owner rewrite their own doc freely.
+        // them (M-1). The rules judge the WHOLE resulting doc (own email, only the member
+        // keys), so an update of `role` alone is refused whenever that admin also junked the
+        // rest of the doc — a stray key, someone else's email. Write the doc whole instead,
+        // from scratch, carrying nothing of what is there now.
+        // A refusal here must NOT reach handleAccountsError: that reads any denial as "rules
+        // not published", which in single-pack mode is the setup screen, for good. Carry on
+        // as the role the doc says; a lockout is better than a trap.
         if (sync.ownerUid === uid && cur !== 'admin') {
-          return fs.updateDoc(ref, { role: 'admin' }).then(function () { return 'admin'; });
+          return fs.setDoc(ref, {
+            role: 'admin',
+            name: memberName(user),
+            email: user.email || '',
+            addedAt: fs.serverTimestamp()
+          }).then(function () { return 'admin'; }, function () { return cur; });
         }
         return cur; // already a member — leave the role exactly as it is
       }
@@ -7580,7 +7638,7 @@
         var role = isOwner ? 'admin' : invitedRole;
         return fs.setDoc(ref, {
           role: role,
-          name: user.displayName || '',
+          name: memberName(user),
           email: user.email || '',
           addedAt: fs.serverTimestamp()
         }).then(function () {
@@ -7627,7 +7685,7 @@
       var role = 'pending'; // always — see the note above; never derived from the config
       return fs.setDoc(ref, {
         role: role,
-        name: user.displayName || '',
+        name: memberName(user),
         email: user.email || '',
         joinCode: code,
         addedAt: fs.serverTimestamp()
@@ -7721,18 +7779,38 @@
     if (!isAdmin() || !sync.mods || !sync.db || !sync.docId) return;
     if (isLastAdmin(memberUid)) { showToast('Keep at least one admin.'); return; }
     var fs = sync.mods.fs;
+    var gone = null;
+    for (var i = 0; i < sync.members.length; i++) {
+      if (sync.members[i].uid === memberUid) { gone = sync.members[i]; break; }
+    }
     var ref = fs.doc(sync.db, 'packs', sync.docId, 'members', memberUid);
     fs.deleteDoc(ref).catch(function (err) { accountsToast(err); });
+    // …and any invite still sitting under their email. An invite is consumed on first sign-in,
+    // but only best-effort, so one can outlive the member it made — and a removed person
+    // signing back in would walk straight through it into the role it names. Best-effort
+    // here too: a miss (no such invite, the usual case) is not worth a toast.
+    var key = gone ? inviteEmailKey(gone.email) : '';
+    if (key && !/[\/\s]/.test(key)) {
+      try { fs.deleteDoc(fs.doc(sync.db, 'packs', sync.docId, 'invites', key)).catch(function () { /* none, or gone */ }); }
+      catch (e) { /* a malformed key — nothing to delete */ }
+    }
     // Their scout links go with them. Left behind, a removed person who later came back on the
     // same Google account would silently be somebody's parent again.
-    var hadKids = false;
+    var changed = false;
     state.scouts.forEach(function (sc) {
       var had = arrOf(sc.parentUids);
       if (had.indexOf(memberUid) === -1) return;
       sc.parentUids = had.filter(function (u) { return u !== memberUid; });
-      hadKids = true;
+      changed = true;
     });
-    if (hadKids) commit();
+    // So does a leader record's link to their account (set from the Members card). Left
+    // behind, leaderForUser() would hand the same account its old jobs back the day it
+    // returned — and the leader card would keep claiming an account that no longer exists.
+    // The leader record itself stays: they may still be on the committee without a login.
+    state.leaders.forEach(function (l) {
+      if (l.uid && l.uid === memberUid) { l.uid = ''; changed = true; }
+    });
+    if (changed) commit();
   }
   // ---- Parent phase: invite by email --------------------------------------------------
   // packs/{docId}/invites/{lowercased-email} = { role, email, invitedBy, invitedAt }. The
@@ -8245,6 +8323,10 @@
     if (!accountsInForce() || !canEdit()) return;
     if (fixedSyncBlocked()) return;   // SAFETY: single-pack mode, rules unproven — never write
     if (!sync.mods || !sync.db || !sync.docId) return;
+    // Not before the join config has answered: until then "calendar-only" reads as "standings
+    // on" (see applyJoinSubscription). Nothing is lost by waiting — the answer, either way,
+    // schedules this again.
+    if (!sync.joinLoaded) return;
     var payload, fp;
     try {
       payload = buildParentView(state);
@@ -9000,6 +9082,19 @@
       '<button type="button" class="btn small" data-act="sign-out-google">Sign out</button></div>');
   }
   function renderJoinClosed() {
+    // Taken off the Members list while signed in (or a request declined). The pack's copy on
+    // this device is already gone — see applyRoleSubscription.
+    if (sync.joinRejected === 'removed') {
+      return joinGateShell('You no longer have access to this pack',
+        '<p class="small">A pack leader has removed this account from the pack, so there is nothing ' +
+        'to show here any more.</p>' +
+        '<p class="small muted">If that’s a mistake, ask a pack leader for an invite or the sign-up link.</p>' +
+        '<div class="join-actions">' +
+        (sync.user
+          ? '<button type="button" class="btn small" data-act="sign-out-google">Sign out</button>'
+          : '') +
+        '</div>');
+    }
     // Signed in with no link and no invite: nothing was refused, there was just no way in.
     if (sync.joinRejected === 'nolink') {
       return joinGateShell('Ask a pack leader to let you in',
