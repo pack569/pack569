@@ -7732,7 +7732,7 @@
 
       // ONE public-name map, built over the WHOLE roster before anything here names a child, so
       // every surface that shows a scout agrees on what to call them. Two surfaces calling the
-      // same child different things ("Bowie" on the shift list, "Bowie G." on the standings) is
+      // same child different things ("Beckett" on the shift list, "Beckett H." on the standings) is
       // worse than an extra initial — the initial exists precisely so a parent can pick their
       // own child out, and it can only do that if it is the same everywhere.
       var pubName = {};
@@ -16418,7 +16418,7 @@
         h += '<p class="small" style="margin:0 0 10px"><span class="pill">Not signed up</span> ' +
           'These names on the report do not match one scout on the roster, so their shifts are left ' +
           'empty: <strong>' + o.unmatched.map(esc).join(', ') + '</strong>. The report abbreviates ' +
-          '(“Bowie G”), so this is usually a spelling difference or a scout not on the roster yet — ' +
+          '(“Beckett H”), so this is usually a spelling difference or a scout not on the roster yet — ' +
           'and where two scouts share a first name and an initial it refuses to guess. Add them by ' +
           'hand on the storefront. Nobody is removed from those shifts either: a scout already on ' +
           'the block might BE the name it could not read, and taking them off on a guess would ' +
@@ -17587,12 +17587,12 @@
   // Trim + lowercase was the whole rule, and it is one character short of correct: Trail's End
   // exports a CURLY apostrophe (U+2019) and a leader typing into the roster field gets whatever
   // their keyboard gives them, which on a Mac is usually curly and on Windows usually straight.
-  // "La’Maya Collier" and "La'Maya Collier" are the same child, and under the old key the
+  // "La’Tavia Pruitt" and "La'Tavia Pruitt" are the same child, and under the old key the
   // importer read the second as missing and added her a second time — a duplicate scout, which
   // then splits her attendance, her advancement and her share of a storefront block.
   //
   // Folding is deliberately narrow: apostrophe variants and runs of whitespace, nothing else.
-  // Hyphens and periods stay significant, because "Mayo-Drysdale" and "Mayo Drysdale" being the
+  // Hyphens and periods stay significant, because "Ashby-Vance" and "Ashby Vance" being the
   // same person is a guess, not a fact, and a wrong merge is worse than a duplicate.
   function teNameKey(name) {
     return String(name == null ? '' : name)
@@ -17621,13 +17621,13 @@
   }
   // Match a Master Shift Report sign-up to a scout on the roster.
   //
-  // The report abbreviates: "Bowie G", not "Bowie Gladden". So teMatchScouts, which the SALES
+  // The report abbreviates: "Beckett H", not "Beckett Hartley". So teMatchScouts, which the SALES
   // import uses and which compares whole names, matches almost nobody here — and quietly
   // assigning the wrong child to a shift is worse than assigning none, because the shift is who
   // turns up on the day and, once sales are recorded against the block, who gets the credit.
   //
   // So: exact full name first, then first-name plus last-initial, and ONLY where exactly one
-  // scout on the roster fits. Two Bowies whose surnames both begin with G is a question for a
+  // scout on the roster fits. Two Becketts whose surnames both begin with H is a question for a
   // human, and this returns null rather than picking one.
   function teMatchShiftScout(name) {
     var want = teNameKey(name);
@@ -17682,7 +17682,7 @@
   //        removing one silently re-divides money already earned and changes what everybody else
   //        on that block made. An empty block splits nothing, so emptying it is free.
   //  ⚠ 2. ONLY WHERE EVERY NAME ON THE SHIFT RESOLVED. If one sign-up on the shift matched no
-  //        single scout ("Bowie G" with two Bowie G's on the roster), we do not know who the
+  //        single scout ("Beckett H" with two Beckett H's on the roster), we do not know who the
   //        report meant — and the scout already on the block may BE them. Removing on a guess
   //        would delete a correct sign-up that the report is, in fact, still asking for. Those
   //        names are already surfaced in the preview; the leader resolves them by hand.

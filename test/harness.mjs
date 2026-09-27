@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
+import { execSync } from 'node:child_process';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const HTML = readFileSync(join(ROOT, 'index.html'), 'utf8');
@@ -1691,10 +1692,10 @@ const shiftCtx = (() => {
 const SHIFT_ROWS = [
   ['Master Shift Report'],
   ['Date', 'Site Name', 'Address Line 1', 'Shift', 'Scout Name'],
-  ['2026-08-23', 'Kroger', '2100 Riverside Pkwy', '10:00 AM - 12:00 PM US/Eastern', 'Bowie G'],
-  ['2026-08-23', 'Kroger', '2100 Riverside Pkwy', '10:00 AM - 12:00 PM US/Eastern', 'Phoenix G'],
-  ['2026-08-23', 'Kroger', '2100 Riverside Pkwy', '12:00 PM - 02:00 PM US/Eastern', 'Logan D'],
-  ['2026-08-29', 'Kroger', '950 Herrington Rd', '10:00 AM - 12:00 PM US/Eastern', ''],
+  ['2026-08-23', 'Kroger', '100 Main St', '10:00 AM - 12:00 PM US/Eastern', 'Beckett H'],
+  ['2026-08-23', 'Kroger', '100 Main St', '10:00 AM - 12:00 PM US/Eastern', 'Piper H'],
+  ['2026-08-23', 'Kroger', '100 Main St', '12:00 PM - 02:00 PM US/Eastern', 'Lorenzo K'],
+  ['2026-08-29', 'Kroger', '200 Oak Ave', '10:00 AM - 12:00 PM US/Eastern', ''],
 ];
 
 test('one block per SHIFT, not one per scout who signed up for it', () => {
@@ -1706,7 +1707,7 @@ test('one block per SHIFT, not one per scout who signed up for it', () => {
   eq(mapped.totalShifts, 3, 'the shift count double-counts a shared slot');
   // Same site at two addresses is still disambiguated by address.
   eq(mapped.storefronts.map((sf) => sf.name),
-    ['Kroger – 2100 Riverside Pkwy', 'Kroger – 950 Herrington Rd'], 'two addresses were merged');
+    ['Kroger – 100 Main St', 'Kroger – 200 Oak Ave'], 'two addresses were merged');
 });
 
 test('an existing storefront gets the shifts it is missing, matched on start time', () => {
@@ -1731,24 +1732,24 @@ test('an existing storefront gets the shifts it is missing, matched on start tim
 });
 
 test('a sign-up matches the roster on "First L", and refuses to guess', () => {
-  // The report abbreviates: "Bowie G", not "Bowie Gladden". teMatchScouts, which the SALES import
+  // The report abbreviates: "Beckett H", not "Beckett Hartley". teMatchScouts, which the SALES import
   // uses, compares whole names and would match almost nobody here.
   const ctx = vm.createContext({});
   vm.runInContext([slice('teMatchShiftScout'), slice('teNameKey')].join('\n') +
     '\nvar ROSTER = []; function activeScouts() { return ROSTER; }', ctx);
-  ctx.ROSTER = [{ id: 's1', name: 'Bowie Gladden' }, { id: 's2', name: 'Logan Dougherty' }];
-  eq(ctx.teMatchShiftScout('Bowie G'), 's1', 'first name plus last initial does not match');
-  eq(ctx.teMatchShiftScout('Bowie Gladden'), 's1', 'an exact full name does not match');
-  eq(ctx.teMatchShiftScout('bowie  g'), 's1', 'case and spacing are not normalised');
-  eq(ctx.teMatchShiftScout('Bowie G.'), 's1', 'a trailing full stop on the initial breaks it');
+  ctx.ROSTER = [{ id: 's1', name: 'Beckett Hartley' }, { id: 's2', name: 'Lorenzo Kessler' }];
+  eq(ctx.teMatchShiftScout('Beckett H'), 's1', 'first name plus last initial does not match');
+  eq(ctx.teMatchShiftScout('Beckett Hartley'), 's1', 'an exact full name does not match');
+  eq(ctx.teMatchShiftScout('beckett  h'), 's1', 'case and spacing are not normalised');
+  eq(ctx.teMatchShiftScout('Beckett H.'), 's1', 'a trailing full stop on the initial breaks it');
   // Assigning the wrong child to a shift is worse than assigning none: the shift is who turns up,
   // and once sales land on the block it is who gets the credit. So ambiguity refuses.
-  ctx.ROSTER = [{ id: 'a', name: 'Bowie Gladden' }, { id: 'b', name: 'Bowie Greene' }];
-  eq(ctx.teMatchShiftScout('Bowie G'), null, 'it guessed between two scouts who both fit');
-  ctx.ROSTER = [{ id: 'a', name: 'Bowie Gladden' }];
+  ctx.ROSTER = [{ id: 'a', name: 'Beckett Hartley' }, { id: 'b', name: 'Beckett Hollis' }];
+  eq(ctx.teMatchShiftScout('Beckett H'), null, 'it guessed between two scouts who both fit');
+  ctx.ROSTER = [{ id: 'a', name: 'Beckett Hartley' }];
   eq(ctx.teMatchShiftScout('Casey T'), null, 'a name nobody on the roster fits was matched anyway');
   eq(ctx.teMatchShiftScout(''), null, 'an empty name matched something');
-  eq(ctx.teMatchShiftScout('Bowie'), null, 'a bare first name was matched on its own');
+  eq(ctx.teMatchShiftScout('Beckett'), null, 'a bare first name was matched on its own');
 });
 
 test('sign-ups never re-split money that has already been recorded', () => {
@@ -1758,8 +1759,8 @@ test('sign-ups never re-split money that has already been recorded', () => {
   const ctx = vm.createContext({});
   vm.runInContext([slice('teNewSignups'), slice('teMatchShiftScout'), slice('teNameKey')].join('\n') +
     '\nvar ROSTER = []; function activeScouts() { return ROSTER; }', ctx);
-  ctx.ROSTER = [{ id: 's1', name: 'Bowie Gladden' }, { id: 's2', name: 'Phoenix Gladden' }];
-  const shift = { start: '10:00 AM', scouts: ['Bowie G', 'Phoenix G'] };
+  ctx.ROSTER = [{ id: 's1', name: 'Beckett Hartley' }, { id: 's2', name: 'Piper Hartley' }];
+  const shift = { start: '10:00 AM', scouts: ['Beckett H', 'Piper H'] };
   eq(ctx.teNewSignups({ assignments: [], salesCents: 0, donationsCents: 0 }, shift).length, 2,
     'an empty block did not take its sign-ups');
   eq(ctx.teNewSignups({ assignments: [], salesCents: 48000, donationsCents: 0 }, shift).length, 0,
@@ -1770,7 +1771,7 @@ test('sign-ups never re-split money that has already been recorded', () => {
   eq(ctx.teNewSignups({ assignments: [{ scoutId: 's1', weight: 1 }], salesCents: 0, donationsCents: 0 }, shift)
     .map((m) => m.scoutId), ['s2'], 'a scout already signed up was added again');
   // A name that matches nobody is skipped rather than dropped in as a blank assignment.
-  ctx.ROSTER = [{ id: 's1', name: 'Bowie Gladden' }];
+  ctx.ROSTER = [{ id: 's1', name: 'Beckett Hartley' }];
   eq(ctx.teNewSignups({ assignments: [], salesCents: 0, donationsCents: 0 },
     { start: '10:00 AM', scouts: ['Nobody Q'] }).length, 0, 'an unmatched name became an assignment');
 });
@@ -1779,8 +1780,8 @@ test('the shift report carries its sign-ups through the parser', () => {
   // The rows that used to be discarded as duplicate shifts ARE the sign-ups.
   const mapped = shiftCtx.mapShiftReport(SHIFT_ROWS, shiftCtx.detectReport(SHIFT_ROWS));
   const first = mapped.storefronts[0];
-  eq(first.shifts[0].scouts, ['Bowie G', 'Phoenix G'], 'both scouts on one shift were not collected');
-  eq(first.shifts[1].scouts, ['Logan D'], 'the second shift lost its scout');
+  eq(first.shifts[0].scouts, ['Beckett H', 'Piper H'], 'both scouts on one shift were not collected');
+  eq(first.shifts[1].scouts, ['Lorenzo K'], 'the second shift lost its scout');
   eq(mapped.storefronts[1].shifts[0].scouts, [], 'an unstaffed shift invented a scout');
 });
 
@@ -1858,16 +1859,16 @@ const dropCtx = (() => {
   const ctx = vm.createContext({});
   vm.runInContext([slice('teDroppedSignups'), slice('teMatchShiftScout'), slice('teNameKey')].join('\n') +
     '\nvar ROSTER = []; function activeScouts() { return ROSTER; }', ctx);
-  ctx.ROSTER = [{ id: 's1', name: 'Bowie Gladden' }, { id: 's2', name: 'Phoenix Gladden' },
-    { id: 's3', name: 'Logan Dougherty' }];
+  ctx.ROSTER = [{ id: 's1', name: 'Beckett Hartley' }, { id: 's2', name: 'Piper Hartley' },
+    { id: 's3', name: 'Lorenzo Kessler' }];
   return ctx;
 })();
 const emptyBlock = (ids) => ({ assignments: ids.map((id) => ({ scoutId: id, weight: 1 })), salesCents: 0, donationsCents: 0 });
 
 test('a scout the report has dropped comes off the block', () => {
-  // The complaint: Logan is on the block here, the report no longer has him on that shift, and
+  // The complaint: Lorenzo is on the block here, the report no longer has him on that shift, and
   // the import left him standing there. The block is who turns up on the day.
-  const shift = { start: '10:00 AM', scouts: ['Bowie G', 'Phoenix G'] };
+  const shift = { start: '10:00 AM', scouts: ['Beckett H', 'Piper H'] };
   eq(dropCtx.teDroppedSignups(emptyBlock(['s1', 's2', 's3']), shift).map((a) => a.scoutId), ['s3'],
     'a scout no longer on the report was left signed up');
   // A shift the report has emptied out clears the block — the modal case, since a blank Scout Name
@@ -1884,7 +1885,7 @@ test('a scout the report has dropped comes off the block', () => {
 test('removal never re-splits money that has already been recorded', () => {
   // Symmetric with teNewSignups' guard, and for the identical reason: blockShares divides takings
   // by weight, so taking somebody OFF a paid block changes what everybody left on it earned.
-  const shift = { start: '10:00 AM', scouts: ['Bowie G'] };
+  const shift = { start: '10:00 AM', scouts: ['Beckett H'] };
   eq(dropCtx.teDroppedSignups({ assignments: [{ scoutId: 's3', weight: 1 }], salesCents: 48000, donationsCents: 0 }, shift).length, 0,
     'a block with recorded SALES lost an assignee, re-splitting the money');
   eq(dropCtx.teDroppedSignups({ assignments: [{ scoutId: 's3', weight: 1 }], salesCents: 0, donationsCents: 2500 }, shift).length, 0,
@@ -1892,18 +1893,18 @@ test('removal never re-splits money that has already been recorded', () => {
 });
 
 test('removal refuses on a shift carrying a name it could not resolve', () => {
-  // "Bowie G" with two Bowie G's on the roster resolves to nobody — and the scout already on the
+  // "Beckett H" with two Beckett H's on the roster resolves to nobody — and the scout already on the
   // block may BE the one the report meant. Removing on a guess deletes a sign-up the report is
   // still asking for, and nothing here can tell the difference. So the whole shift is left alone.
   const ctx = vm.createContext({});
   vm.runInContext([slice('teDroppedSignups'), slice('teMatchShiftScout'), slice('teNameKey')].join('\n') +
     '\nvar ROSTER = []; function activeScouts() { return ROSTER; }', ctx);
-  ctx.ROSTER = [{ id: 'a', name: 'Bowie Gladden' }, { id: 'b', name: 'Bowie Greene' }];
-  eq(ctx.teDroppedSignups(emptyBlock(['a']), { start: '10:00 AM', scouts: ['Bowie G'] }).length, 0,
+  ctx.ROSTER = [{ id: 'a', name: 'Beckett Hartley' }, { id: 'b', name: 'Beckett Hollis' }];
+  eq(ctx.teDroppedSignups(emptyBlock(['a']), { start: '10:00 AM', scouts: ['Beckett H'] }).length, 0,
     'an ambiguous name on the shift still removed somebody');
   // A name matching nobody at all is the same problem: it may be a roster spelling difference.
-  ctx.ROSTER = [{ id: 'a', name: 'Bowie Gladden' }];
-  eq(ctx.teDroppedSignups(emptyBlock(['a']), { start: '10:00 AM', scouts: ['Bowy Gladden'] }).length, 0,
+  ctx.ROSTER = [{ id: 'a', name: 'Beckett Hartley' }];
+  eq(ctx.teDroppedSignups(emptyBlock(['a']), { start: '10:00 AM', scouts: ['Becket Hartley'] }).length, 0,
     'a name that matched nobody was treated as "the shift is empty" and cleared the block');
 });
 
@@ -3529,7 +3530,7 @@ function inSlotNames(rows) {
 }
 
 test('a month lists its activities in DATE order, not the order they were added', () => {
-  // Keith's real October, in the array order his record actually held it: the group read
+  // A real pack's October, in the array order its record actually held it: the group read
   // "Oct 17, Oct 24, Oct 25, Oct 10, Oct 2".
   eq(inSlotNames([
     { name: 'Jamboree', date: '2026-10-17' },
@@ -4718,11 +4719,11 @@ test('a per-family fee counts FAMILIES, and a link is what makes that possible',
   // and the count follows it.
   const fam = sandbox(['familyKeyOf', 'familiesOf']);
   const roster = [
-    { id: 'a', name: 'Ada Dougherty' },
-    { id: 'b', name: 'Ben Dougherty', familyId: 'a' },
+    { id: 'a', name: 'Ada Porter' },
+    { id: 'b', name: 'Ben Porter', familyId: 'a' },
     { id: 'c', name: 'Cal Smith' }
   ];
-  eq(fam.familiesOf(roster).length, 2, 'two Doughertys and a Smith is two families');
+  eq(fam.familiesOf(roster).length, 2, 'two Porters and a Smith is two families');
   eq(fam.familiesOf(roster).map((f) => f.members.map((s) => s.id)), [['a', 'b'], ['c']], 'membership');
   eq(fam.familyKeyOf({ id: 'z' }), 'z', 'an unlinked scout is a family of one');
   eq(fam.familyKeyOf({ id: 'b', familyId: 'a' }), 'a', 'a linked scout takes the family key');
@@ -6095,12 +6096,12 @@ test('a storefront shows its shifts in the order the day happens, not the order 
 });
 
 test('the scouts on a shift read alphabetically, whatever order they signed up in', () => {
-  const ctx = shiftListCtx({ s1: 'Phoenix Gladden', s2: 'Ada Reyes', s3: 'Bowie Gladden' });
+  const ctx = shiftListCtx({ s1: 'Piper Hartley', s2: 'Ada Reyes', s3: 'Beckett Hartley' });
   // The sign-up order here matches NEITHER the alphabetical order nor the id order. With
   // ['s1','s2','s3'] a sort-in-place by id is a no-op, so the guard below passed on code that
   // reordered the stored array — the mutation probe is the only reason that showed up.
   const b = shiftBlk('Block 1', '10:00', '12:00', ['s1', 's3', 's2']);
-  eq(ctx.blockScoutNames(b), ['Ada Reyes', 'Bowie Gladden', 'Phoenix Gladden'], 'names');
+  eq(ctx.blockScoutNames(b), ['Ada Reyes', 'Beckett Hartley', 'Piper Hartley'], 'names');
   // Display only — the stored assignments keep their own order for the same reason as above.
   eq(b.assignments.map((a) => a.scoutId), ['s1', 's3', 's2'],
     'blockScoutNames mutated the stored assignments');
@@ -6735,11 +6736,11 @@ test('the reward ladder publishes what a scout must SELL, and never who paid ins
 test('a parent sees which shifts are open, and an old document still shows its windows', () => {
   const ctx = sandbox(['esc', 'parentShiftLines']);
   const html = ctx.parentShiftLines({ shifts: [
-    { when: '10:00 AM–12:00 PM', who: ['Ada', 'Bowie G.'] },
+    { when: '10:00 AM–12:00 PM', who: ['Ada', 'Beckett H.'] },
     { when: '12:00 PM–2:00 PM', who: [] }
   ] });
   eq((html.match(/class="sf-shift[ "]/g) || []).length, 2, 'one line per shift');
-  ok(/Ada, Bowie G\./.test(html), 'the names of a staffed shift');
+  ok(/Ada, Beckett H\./.test(html), 'the names of a staffed shift');
   ok(/class="sf-shift sf-open"/.test(html) && />Open</.test(html),
     'an open shift is not marked, so a parent cannot see what needs covering');
   // A document published before this shipped has `times` instead. Those render above as chips,
@@ -7492,14 +7493,15 @@ const rosterCtx = (() => {
   vm.runInContext(['detectReport', 'mapRosterReport', 'teNameKey', 'toCents', 'teParseCsv'].map(slice).join('\n'), ctx);
   return ctx;
 })();
-// The real export, trimmed to the rows that carry a decision. Note La’Maya's CURLY apostrophe:
-// that is what Trail's End actually sends, and it is why teNameKey exists.
+// The real export's shape, with invented families (the repo is public), trimmed to the rows that
+// carry a decision. Note La’Tavia's CURLY apostrophe: that is what Trail's End actually sends,
+// and it is why teNameKey exists.
 const ROSTER_ROWS = [
   ['Name', 'ID', 'SF Hours Worked', 'SF Hours Claimed', 'Sales', 'Goal', 'Email Address', 'Phone Number'],
-  ['Logan Dougherty', '0IMGPN66', '13.5', '23.5', '1127', '2001', 'Kdougherty55@gmail.com', '6096724932'],
-  ['Bowie Gladden', '608GPG7M', '10', '18', '595.5', '1500', 'Sgladden20@gmail.com', '4043747627'],
-  ['La’Maya Collier', 'W1Q83PNE', '0', '0', '0', '0', 'Amberkalene@gmail.com', '4042056740'],
-  ['Talon Wallace', 'U97N4349', '0', '0', '70', '350', 'dwallace1971@gmail.com', '7708433098'],
+  ['Lorenzo Kessler', 'TE00AA11', '13.5', '23.5', '1127', '2001', 'parent1@example.com', '4045550101'],
+  ['Beckett Hartley', 'TE00BB22', '10', '18', '595.5', '1500', 'parent2@example.com', '4045550102'],
+  ['La’Tavia Pruitt', 'TE00CC33', '0', '0', '0', '0', 'parent3@example.com', '4045550103'],
+  ['Tobin Castellano', 'TE00DD44', '0', '0', '70', '350', 'parent4@example.com', '4045550104'],
 ];
 
 test('the Scout List is sniffed as its own report, and never steals one of the other three', () => {
@@ -7521,11 +7523,11 @@ test('the Scout List is sniffed as its own report, and never steals one of the o
 test('a trimmed export still maps — contact columns are optional, the roster is not', () => {
   // A pack that strips the families' email and phone before sharing the file still gets its
   // roster. Only Name and Goal are required, so everything else has to survive being absent.
-  const trimmed = [['Name', 'Goal'], ['Logan Dougherty', '2001'], ['Talon Wallace', '350']];
+  const trimmed = [['Name', 'Goal'], ['Lorenzo Kessler', '2001'], ['Tobin Castellano', '350']];
   const det = rosterCtx.detectReport(trimmed);
   eq(det.type, 'roster', 'a trimmed export is no longer recognised');
   const mapped = rosterCtx.mapRosterReport(trimmed, det);
-  eq(mapped.scouts.map((s) => s.name), ['Logan Dougherty', 'Talon Wallace'], 'names were lost');
+  eq(mapped.scouts.map((s) => s.name), ['Lorenzo Kessler', 'Tobin Castellano'], 'names were lost');
   eq(mapped.scouts.map((s) => s.email + '|' + s.phone + '|' + s.teId), ['||', '||'],
     'absent columns did not come back as empty strings');
   eq(mapped.scouts[0].salesCents, 0, 'a missing Sales column did not read as zero');
@@ -7537,17 +7539,17 @@ test('the scout list maps to cents, hours and alphabetical order', () => {
   // Alphabetical, because this is read as a roster. The report's own order is sales descending,
   // which is the standings — a different question, already answered on Popcorn · Standings.
   eq(mapped.scouts.map((s) => s.name),
-    ['Bowie Gladden', 'La’Maya Collier', 'Logan Dougherty', 'Talon Wallace'],
+    ['Beckett Hartley', 'La’Tavia Pruitt', 'Lorenzo Kessler', 'Tobin Castellano'],
     'the scout list is not in roster order');
-  const logan = mapped.scouts.find((s) => s.name === 'Logan Dougherty');
-  eq(logan.salesCents, 112700, '1127 dollars did not become cents');
-  eq(logan.goalCents, 200100, 'the goal did not become cents');
+  const lorenzo = mapped.scouts.find((s) => s.name === 'Lorenzo Kessler');
+  eq(lorenzo.salesCents, 112700, '1127 dollars did not become cents');
+  eq(lorenzo.goalCents, 200100, 'the goal did not become cents');
   // Half hours are real: 13.5 worked against 23.5 claimed is the disagreement a leader is
   // looking at this column to find, so it must not be rounded away.
-  eq([logan.hoursWorked, logan.hoursClaimed], [13.5, 23.5], 'half hours were rounded');
-  const bowie = mapped.scouts.find((s) => s.name === 'Bowie Gladden');
-  eq(bowie.salesCents, 59550, '595.50 did not survive as cents');
-  eq(bowie.teId, '608GPG7M', "the Trail's End id was dropped");
+  eq([lorenzo.hoursWorked, lorenzo.hoursClaimed], [13.5, 23.5], 'half hours were rounded');
+  const beckett = mapped.scouts.find((s) => s.name === 'Beckett Hartley');
+  eq(beckett.salesCents, 59550, '595.50 did not survive as cents');
+  eq(beckett.teId, 'TE00BB22', "the Trail's End id was dropped");
 });
 
 test('a Totals row is not a scout, and a re-registered child is not two scouts', () => {
@@ -7557,21 +7559,21 @@ test('a Totals row is not a scout, and a re-registered child is not two scouts',
   const mapped = rosterCtx.mapRosterReport(rows, rosterCtx.detectReport(rows));
   eq(mapped.count, 4, 'a Totals row was imported as a scout');
   // Trail's End can list the same child twice when a family re-registers mid-season.
-  const dupe = ROSTER_ROWS.concat([['logan  DOUGHERTY', '0IMGPN66', '0', '0', '0', '0', '', '']]);
+  const dupe = ROSTER_ROWS.concat([['lorenzo  KESSLER', 'TE00AA11', '0', '0', '0', '0', '', '']]);
   eq(rosterCtx.mapRosterReport(dupe, rosterCtx.detectReport(dupe)).count, 4,
     'the same child was mapped twice');
 });
 
 test('teNameKey folds the curly apostrophe Trail’s End actually exports', () => {
   // The bug this exists to stop: the export sends U+2019, a leader typed U+0027, and the
-  // importer read La’Maya as a scout the pack did not have — then added her a second time.
+  // importer read La’Tavia as a scout the pack did not have — then added her a second time.
   // A duplicate scout splits her attendance, her advancement and her share of a block.
   const k = rosterCtx.teNameKey;
-  eq(k('La’Maya Collier'), k("La'Maya Collier"), 'the curly apostrophe is not folded');
-  eq(k('  La’MAYA   Collier '), k("la'maya collier"), 'case and spacing are not folded');
-  // Narrow on purpose. "Mayo-Drysdale" and "Mayo Drysdale" being one child is a GUESS, and a
+  eq(k('La’Tavia Pruitt'), k("La'Tavia Pruitt"), 'the curly apostrophe is not folded');
+  eq(k('  La’TAVIA   Pruitt '), k("la'tavia pruitt"), 'case and spacing are not folded');
+  // Narrow on purpose. "Ashby-Vance" and "Ashby Vance" being one child is a GUESS, and a
   // wrong merge (two children treated as one) is worse than the duplicate it would prevent.
-  ok(k('Bryson Mayo-Drysdale') !== k('Bryson Mayo Drysdale'), 'hyphens are being folded away');
+  ok(k('Desmond Ashby-Vance') !== k('Desmond Ashby Vance'), 'hyphens are being folded away');
   eq(k(null), '', 'a null name did not key as empty');
 });
 
@@ -7622,6 +7624,43 @@ test('an import never removes, archives or re-dens a scout it was not asked abou
   // An archived scout who is back on this year's Trail's End list is surfaced, NOT un-archived:
   // archiving is how a leader records that somebody left, and undoing it would overrule them.
   ok(/wasArchived/.test(build), 'an archived scout still on the list is not surfaced');
+});
+
+/* ================================================================
+   The repo is public. Real families' emails and phone numbers once sat in this file as test
+   fixtures (a Trail's End export pasted in whole). Fixtures use @example.com and 555-01xx; the
+   only real numbers allowed are the public ones the camping pages print on purpose.
+   ================================================================ */
+
+test('no tracked file carries a real email address or phone number', () => {
+  let files;
+  try {
+    files = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean);
+  } catch (e) {
+    files = ['index.html', 'test/harness.mjs'];   // not a git checkout: scan the two that matter
+  }
+  const PUBLIC_NUMBERS = [
+    '(770) 867-3489',      // hospital nearest Fort Yargo, printed on the camping page
+    '(770) 867-3400',
+    '1-800-222-1222',      // Poison Control
+  ];
+  const ALLOWED_EMAIL = /@(example\.com|pack569\.com)$/i;
+  const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+  const PHONE = /(?:1-800-\d{3}-\d{4})|\(?\b[2-9]\d{2}\)?[-. ]?\d{3}[-. ]\d{4}\b|\b[2-9]\d{9}\b/g;
+  const isFake = (p) => /555[-. ]?01\d\d$/.test(p.replace(/\s+$/, ''));
+  const found = [];
+  for (const f of files) {
+    if (/\.(png|jpe?g|gif|ico|pdf|heic|woff2?)$/i.test(f)) continue;
+    let text;
+    try { text = readFileSync(join(ROOT, f), 'utf8'); } catch (e) { continue; }
+    // This test's own allowlist is the one place a real public number may be written twice.
+    (text.match(EMAIL) || []).forEach((m) => { if (!ALLOWED_EMAIL.test(m)) found.push(f + ': an email'); });
+    (text.match(PHONE) || []).forEach((m) => {
+      if (!isFake(m) && PUBLIC_NUMBERS.indexOf(m) < 0) found.push(f + ': a phone number');
+    });
+  }
+  // Report WHERE, never WHAT: a failing run's output is pasted into chats and issues too.
+  eq(found, [], 'personal contact details in a tracked file');
 });
 
 /* ---------------- report ---------------- */
