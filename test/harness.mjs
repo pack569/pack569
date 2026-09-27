@@ -4857,12 +4857,41 @@ test('a parent account links to scouts, and that link never leaves the pack reco
   ok(!/parentUids/.test(codeOnly(BPV())), 'the parent view publishes which account is whose parent');
   ok(/addCh: 'member-scout-add'/.test(SCRIPT), 'the Members card has no way to link a parent');
   const add = /if \(ch === 'member-scout-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
-  ok(add && /familyMembers\(linkSc\)/.test(add[0]), 'linking a parent to one scout does not bring the siblings');
+  ok(add && /linkParentToFamily\(/.test(add[0]), 'linking a parent to one scout does not bring the siblings');
   ok(add && /isAdmin\(\)/.test(add[0]), 'a non-admin can link parents');
+  // 2026-09-27 — a scout has as many parents as they have, linked from the scout's own page too.
+  ok(/addCh: 'scout-parent-add'/.test(SCRIPT), 'the scout page has no way to link a parent');
+  const padd = /if \(ch === 'scout-parent-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(padd && /isAdmin\(\)/.test(padd[0]) && /linkParentToFamily\(/.test(padd[0]),
+    'linking a parent from the scout page skips the admin check or the siblings');
+  const lpf = /function linkParentToFamily\(uid, sc\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(lpf && /familyMembers\(sc\)/.test(lpf[0]) && /concat\(\[uid\]\)/.test(lpf[0]),
+    'a second parent replaces the first instead of joining the list');
   const rmm = /function removeMember\(memberUid\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(rmm && /parentUids/.test(rmm[0]), 'removing a member leaves them linked as somebody’s parent');
   ok((SCRIPT.match(/familyId: '', parentUids: \[\] \}\);/g) || []).length === 2,
     'a newly added scout is not seeded with the family and parent fields');
+});
+
+test('a scout keeps every parent linked to them, and so do their brothers and sisters', () => {
+  // Owner ask, 2026-09-27: link multiple parents to a scout. Mum and Dad both, from either page.
+  const f = sandbox(['arrOf', 'familyKeyOf', 'familyMembers', 'familyLabel', 'joinFamily', 'leaveFamily', 'linkParentToFamily']);
+  const toasts = [];
+  f.showToast = (m) => toasts.push(m);
+  const a = { id: 'a', name: 'Ada', familyId: '', parentUids: [] };
+  const b = { id: 'b', name: 'Ben', familyId: '', parentUids: [] };
+  const c = { id: 'c', name: 'Cal', familyId: '', parentUids: [] };
+  f.state = { scouts: [a, b, c] };
+  f.activeScouts = () => f.state.scouts;
+  f.joinFamily(f.state.scouts, a, b);
+  f.linkParentToFamily('mum', a);
+  f.linkParentToFamily('dad', b);
+  f.linkParentToFamily('dad', a);
+  eq([...a.parentUids], ['mum', 'dad'], 'the second parent did not join the first on the scout');
+  eq([...b.parentUids], ['mum', 'dad'], 'a sibling did not get both parents');
+  eq([...c.parentUids], [], 'a parent was linked to a scout outside the family');
+  f.linkParentToFamily('gran', c);
+  eq([...c.parentUids], ['gran'], 'a scout on their own could not be given a parent');
 });
 
 /* ================================================================

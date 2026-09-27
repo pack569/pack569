@@ -7565,6 +7565,17 @@
     fs.updateDoc(ref, { role: role }).catch(function (err) { accountsToast(err); });
     // onSnapshot refreshes the list + re-renders.
   }
+  // One account becomes a parent of this scout AND their brothers and sisters: a parent of one
+  // is a parent of the family. A chip takes any one of them back off (blended families are real).
+  function linkParentToFamily(uid, sc) {
+    var fam = familyMembers(sc);
+    if (!fam.length) fam = [sc];
+    fam.forEach(function (o) {
+      var have = arrOf(o.parentUids);
+      if (have.indexOf(uid) === -1) o.parentUids = have.concat([uid]);
+    });
+    if (fam.length > 1) showToast('Linked to ' + familyLabel({ members: fam }) + '.');
+  }
   function removeMember(memberUid) {
     if (!isAdmin() || !sync.mods || !sync.db || !sync.docId) return;
     if (isLastAdmin(memberUid)) { showToast('Keep at least one admin.'); return; }
@@ -10750,19 +10761,30 @@
                 (theirs.length ? ' (with ' + familyLabel({ members: theirs }) + ')' : '') };
             })
           });
-        // A parent's account, linked in Members. Recorded for leaders only: parents never
+        // The accounts that are this scout's parents — as many as the scout has. Linked here or
+        // from Members; both write the same list. Recorded for leaders only: parents never
         // receive the pack record and buildParentView does not publish it.
         if (accountsInForce()) {
+          var memberLabel = function (m) { return m.name || m.email || 'member'; };
           var parents = arrOf(s.parentUids).map(function (u) {
             return sync.members.find(function (m) { return m.uid === u; });
           }).filter(Boolean);
           h2 += '<p class="small muted" style="margin:10px 0 0">' +
             (parents.length
-              ? 'Parent account' + (parents.length === 1 ? '' : 's') + ': <strong>' +
-                esc(parents.map(function (m) { return m.name || m.email || 'member'; }).join(', ')) + '</strong>'
-              : 'No parent accounts linked — an admin links them in Members.') +
-            (isAdmin() ? ' <button type="button" class="btn small ghost" data-act="goto" data-tab="pack" data-section="sharing">Members</button>' : '') +
+              ? 'Parent account' + (parents.length === 1 ? '' : 's') + (isAdmin() ? '' : ': <strong>' +
+                esc(parents.map(memberLabel).join(', ')) + '</strong>')
+              : 'No parent accounts linked' + (isAdmin() ? ' yet.' : ' — an admin links them.')) +
             '</p>';
+          if (isAdmin()) {
+            h2 += chipPicker({
+              id: s.id, canEdit: true, removeAct: 'scout-parent-remove', addCh: 'scout-parent-add',
+              addLabel: parents.length ? '+ Link another parent…' : '+ Link a parent…',
+              chosen: parents.map(function (m) { return { value: m.uid, label: memberLabel(m) }; }),
+              addable: sync.members.filter(function (m) {
+                return m.role !== 'pending' && parents.indexOf(m) === -1;
+              }).map(function (m) { return { value: m.uid, label: memberLabel(m) }; })
+            });
+          }
         }
         return h2 + '</div>';
       })();
@@ -19059,8 +19081,11 @@
       leaveFamily(state.scouts, famOut);
       commit(); return;
     }
-    if (act === 'member-scout-remove') {
-      var unSc = getScout(el.dataset.name), unUid = el.dataset.id;
+    if (act === 'member-scout-remove' || act === 'scout-parent-remove') {
+      // Members carries the account in data-id; the scout page carries the scout there.
+      var fromScout = act === 'scout-parent-remove';
+      var unSc = getScout(fromScout ? el.dataset.id : el.dataset.name);
+      var unUid = fromScout ? el.dataset.name : el.dataset.id;
       if (!isAdmin() || !unSc || !unUid) return;
       unSc.parentUids = arrOf(unSc.parentUids).filter(function (u) { return u !== unUid; });
       commit(); return;
@@ -20077,13 +20102,15 @@
     if (ch === 'member-scout-add') {
       var linkUid = el.dataset.id, linkSc = el.value ? getScout(el.value) : null;
       if (!isAdmin() || !linkUid || !linkSc) return;
-      var linkFam = familyMembers(linkSc);
-      if (!linkFam.length) linkFam = [linkSc];
-      linkFam.forEach(function (o) {
-        var have = arrOf(o.parentUids);
-        if (have.indexOf(linkUid) === -1) o.parentUids = have.concat([linkUid]);
-      });
-      if (linkFam.length > 1) showToast('Linked to ' + familyLabel({ members: linkFam }) + '.');
+      linkParentToFamily(linkUid, linkSc);
+      commit(); return;
+    }
+    // "+ Link a parent…" on a scout's page — the same link from the other end, so the brothers
+    // and sisters get this parent too. Any number of parents; each is one more on the list.
+    if (ch === 'scout-parent-add') {
+      var parSc = getScout(el.dataset.id), parUid = el.value;
+      if (!isAdmin() || !parSc || !parUid) return;
+      linkParentToFamily(parUid, parSc);
       commit(); return;
     }
     if (ch === 'scout-name' || ch === 'scout-renew' || ch === 'scout-denlabel' || ch === 'scout-note' ||
