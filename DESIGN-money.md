@@ -181,6 +181,11 @@ outliving, or being counted beside, the thing they belonged to. What changed, it
   included: a second parent, siblings, flat family-paid lines (named on the leader card), and the
   council program fee or registration when the budget has no line for them. The parent card's
   wording changed; what `buildParentView` publishes did not.
+- **Past seasons read the wrong months.** Archived activity slots were never rebased when the
+  program year moved to a July start — correctly, an archive is a record — but `seasonSlotLabel`
+  applied the July month names with the September year-turn, so a new archive's December read as
+  the next year and an old archive's September read as July. New archives carry
+  `slotBase: 'july'`; one without it is September-based if it was closed before 2026-07-27.
 
 ---
 

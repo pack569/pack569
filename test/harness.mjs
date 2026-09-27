@@ -8741,6 +8741,24 @@ test('M11: the family-cost card says who pays registration and what else it leav
     'the family view still reads as the most a family can be asked for');
 });
 
+test('a past season’s months read right whichever year-start it was closed under', () => {
+  const { seasonSlotLabel } = sandbox(['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_JULY_SINCE', 'archiveSlotBase', 'seasonSlotLabel']);
+  const july = { year: 2026, slotBase: 'july', closedAt: '2027-06-30T12:00:00Z' };
+  eq(seasonSlotLabel(july, 0), 'July 2026', 'July-based slot 0');
+  eq(seasonSlotLabel(july, 5), 'December 2026', 'the July year still owns December');
+  eq(seasonSlotLabel(july, 6), 'January 2027', 'January is the following calendar year');
+  eq(seasonSlotLabel(july, 11), 'June 2027', 'June');
+  const sept = { year: 2025, closedAt: '2026-06-15T12:00:00Z' };   // closed before the switch, no marker
+  eq(seasonSlotLabel(sept, 0), 'September 2025', 'an old archive’s slot 0 is September, not July');
+  eq(seasonSlotLabel(sept, 3), 'December 2025', 'December');
+  eq(seasonSlotLabel(sept, 4), 'January 2026', 'January');
+  eq(seasonSlotLabel(sept, 11), 'August 2026', 'August');
+  eq(seasonSlotLabel({ year: 2026, closedAt: '2026-08-01T00:00:00Z' }, 6), 'January 2027',
+    'an archive closed after the switch, before the marker, is July-based');
+  const build = /function buildSeasonArchive\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/slotBase: 'july'/.test(build), 'a new archive does not say which slot numbering it uses');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

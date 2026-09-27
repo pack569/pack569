@@ -2809,6 +2809,8 @@
     }
     if (typeof a.closedAt !== 'string') a.closedAt = new Date().toISOString();
     a.packName = str(a.packName);
+    // Absent on every archive closed before 2026-09-27; archiveSlotBase decides those by date.
+    if (a.slotBase !== 'july' && a.slotBase !== 'sept') delete a.slotBase;
     var f = (a.fundraising && typeof a.fundraising === 'object' && !Array.isArray(a.fundraising)) ? a.fundraising : {};
     a.fundraising = {
       salesCents: cents(f.salesCents), donationsCents: cents(f.donationsCents), combinedCents: cents(f.combinedCents),
@@ -18956,6 +18958,8 @@
     var hasInv = state.inventory.products.length > 0 || state.inventory.orderTotalCents > 0;
     return {
       id: uid(), kind: 'season', year: year, closedAt: new Date().toISOString(), packName: state.packName || '',
+      // Which slot numbering budget.activities[].slot uses — see seasonSlotLabel.
+      slotBase: 'july',
       fundraising: {
         salesCents: pack.sales, donationsCents: pack.don, combinedCents: pack.combined,
         commissionCents: pack.commission, teGoalCents: state.goalCents || 0, cashGoalCents: state.cashGoalCents || 0,
@@ -19304,7 +19308,28 @@
 
   /* ----- Wave 7: season-archive rendering (browse rows, sheet, copy text) ----- */
   // Slot label pinned to the ARCHIVE's year, not the live budget's.
-  function seasonSlotLabel(a, slot) { return PROGRAM_MONTHS[slot] + ' ' + (slot <= 3 ? a.year : a.year + 1); }
+  //
+  // TWO SLOT NUMBERINGS, and an archive keeps the one it was closed under (Treasurer's audit,
+  // 2026-09-27). Until 2026-07-27 the program year started in SEPTEMBER, so slot 0 was September
+  // and slots 0–3 (Sep–Dec) were the archive's own year. It now starts in JULY (PROGRAM_MONTHS),
+  // and the load-time rebase moved live events only — archived activities were never rebased,
+  // and must not be: they are a record. This label used the September year-turn with the July
+  // month names, so a new archive's January (slot 6) read "January" of the wrong year, and an
+  // old archive's September (slot 0) read "July".
+  //
+  // A new archive says which it is (slotBase: 'july', written by buildSeasonArchive). One with no
+  // marker was closed under September numbering if it was closed before the switch; closedAt
+  // decides the handful closed in between, before the marker existed.
+  var PROGRAM_JULY_SINCE = '2026-07-27';
+  function archiveSlotBase(a) {
+    if (a.slotBase === 'july' || a.slotBase === 'sept') return a.slotBase;
+    return String(a.closedAt || '') >= PROGRAM_JULY_SINCE ? 'july' : 'sept';
+  }
+  function seasonSlotLabel(a, slot) {
+    if (archiveSlotBase(a) === 'july') return PROGRAM_MONTHS[slot] + ' ' + (slot <= PROGRAM_TURN ? a.year : a.year + 1);
+    // September-based: slot 0 is September, 3 December, 4 January, 11 August.
+    return PROGRAM_MONTHS[(slot + 2) % 12] + ' ' + (slot <= 3 ? a.year : a.year + 1);
+  }
   function seasonEventsLine(a) {
     var e = a.events;
     var parts = [
