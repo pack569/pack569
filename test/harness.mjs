@@ -8203,8 +8203,19 @@ test('SETUP tells an upgrading pack the deploy order and the clean-up after publ
 test('the export and document types that carry children’s names stay out of the public repo', () => {
   const gi = readFileSync(join(ROOT, '.gitignore'), 'utf8').split('\n').map((l) => l.trim());
   for (const pat of ['*.pdf', '*.csv', '*.xlsx', '*.xls', '*.tsv', '*.xlsm', '*.ods', '*.doc', '*.docx',
-    '*.pages', '*.numbers', '*.png', '*.jpg', '*.jpeg', '*.heic', '*.heif', '*.webp', '*.mov', '*.mp4']) {
+    '*.pages', '*.numbers', '*.png', '*.jpg', '*.jpeg', '*.heic', '*.heif', '*.webp', '*.mov', '*.mp4',
+    // B1 (2026-09): the app's own backups and snapshots are .json and carry the whole record.
+    '*.json', '*.ics', '*.zip', '*.vcf', '*.rtf', '*.eml']) {
     ok(gi.indexOf(pat) !== -1, `.gitignore does not ignore ${pat}`);
+  }
+  // And git agrees: the app's own download names really are ignored.
+  try {
+    const out = execSync('git check-ignore popcorn-backup.json pack-year-2026-snapshot.json pack-569.ics',
+      { cwd: ROOT, encoding: 'utf8' });
+    eq(out.split('\n').filter(Boolean).length, 3, 'git check-ignore');
+  } catch (e) {
+    if (e.status === 1) throw new Error('git does not ignore the app’s backup/snapshot/calendar downloads');
+    if (e.status !== 128) throw e;   // 128: not a git checkout — the pattern scan above is the check
   }
 });
 

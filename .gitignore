@@ -24,3 +24,14 @@
 *.heif
 *.mov
 *.mp4
+
+# The app's own downloads. A backup (popcorn-backup.json) or a year-close snapshot
+# (pack-year-*-snapshot.json) is the WHOLE pack record — every child, every family's money,
+# leaders' contact details. Calendar, contact, zip, rich-text and saved-email exports carry
+# names too. No tracked file is any of these today; if one ever has to be, negate just that file.
+*.json
+*.ics
+*.zip
+*.vcf
+*.rtf
+*.eml
