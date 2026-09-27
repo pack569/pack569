@@ -8093,7 +8093,14 @@ function roleSubCtx(over) {
     var state = { money: 'the pack record' };
     var sync = { session: 1, feed: 'doc', unsub: function () {}, parentView: { x: 1 }, mode: 'online',
       membersScope: ${JSON.stringify(over.scope === undefined ? 'all' : over.scope)},
-      membersFromServer: ${over.server !== false}, joinRejected: null };
+      membersFromServer: ${over.server !== false}, joinRejected: null,
+      user: { uid: 'me' }, ownerUid: ${JSON.stringify(over.owner || 'someone-else')},
+      pushTimer: 'push', dirty: true };
+    var parentViewTimer = 'pv', cleared = [];
+    function clearTimeout(t) { cleared.push(t); }
+    var healCalls = 0, HEAL = null;
+    function ensureMyMemberDoc() { healCalls += 1; return HEAL; }
+    ${slice('stopLocalWrites')}
     ${slice('applyRoleSubscription')}`, ctx);
   return ctx;
 }
@@ -8107,6 +8114,9 @@ test('a member removed mid-session loses the pack from this device, not just the
   eq(vm.runInContext('sync.parentView', ctx), null, 'the parent view was left on screen');
   eq(vm.runInContext('sync.joinRejected', ctx), 'removed', 'no gate tells them why the page emptied');
   eq(vm.runInContext('subscribed', ctx), [], 'something was subscribed for a removed member');
+  // B4 (2026-09): nothing this device was about to write survives the wipe.
+  eq(vm.runInContext('[cleared.sort(), sync.pushTimer, sync.dirty, parentViewTimer]', ctx), [['push', 'pv'], null, false, null],
+    'a pending pack push or parent-view publish survived the removal');
   // Every other null is "we don't know yet" and leaves the feed exactly alone.
   for (const [what, over] of [['legacy rules / no accounts', { inForce: false }],
     ['no members watch of our own yet', { scope: null }],
@@ -9023,6 +9033,19 @@ test('P9: the private-benefit panel is one test, not a ruling, and says its figu
   ok(/confirm this setup with the council and your chartered organization/.test(blk), 'the panel does not send the pack to the council');
   ok(/conservative figure: it counts popcorn commission only/.test(blk), 'the figure is not labelled conservative');
   ok(!/side of that line to be on/.test(blk), 'the panel still implies 50% settles it');
+});
+
+test('B3: the pack owner removed by another admin is healed, not wiped', () => {
+  const ctx = roleSubCtx({ owner: 'me' });
+  // ensureMyMemberDoc recreates the owner as admin; the subscription then resolves as admin.
+  vm.runInContext("var resolve; HEAL = { then: function (ok) { resolve = ok; } };", ctx);
+  vm.runInContext('applyRoleSubscription(null, 1)', ctx);
+  eq(vm.runInContext('[removed.length, stopped.length, state.money || null, sync.joinRejected]', ctx),
+    [0, 0, 'the pack record', null], 'the owner’s device was wiped');
+  vm.runInContext('applyRoleSubscription(null, 1)', ctx);
+  eq(vm.runInContext('healCalls', ctx), 1, 'a second removal signal started a second heal');
+  vm.runInContext("resolve('admin')", ctx);
+  eq(vm.runInContext('[sync.myRole, sync.ownerHealing, removed.length]', ctx), ['admin', false, 0], 'the heal did not resolve the role');
 });
 
 /* ---------------- report ---------------- */

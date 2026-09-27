@@ -6996,6 +6996,7 @@
     members: [],               // live roster from packs/{docId}/members — runtime only, lives in Firestore
     myRole: null,              // this user's role: 'admin' | 'editor' | 'viewer' | 'pending' | null
     ownerUid: null,            // packmeta/{docId}.owner — the first person to sign in / claim the pack
+    ownerHealing: false,       // the owner's member doc vanished and ensureMyMemberDoc is recreating it
     accountsUnavailable: false,// true when packmeta/members reads are permission-denied (legacy rules) → roles NOT enforced
     membersUnsub: null,        // second onSnapshot (the members subcollection, or just our own doc)
     membersScope: null,        // 'all' (leaders read the roster) | 'self' (parents/pending: own doc only)
@@ -7489,6 +7490,18 @@
   // Point this session at the feed its role is allowed to read, tearing the other one down
   // first. Called once when membership resolves and again whenever the members snapshot
   // reports a role change (an admin promoting a parent to editor, say).
+  // Cancel anything this device was about to write, before the pack record is dropped from it:
+  // a pending push of the pack record and a pending parent-view publish. Same four lines as
+  // haltFixedSync. Without them a timer set a moment before a removal could fire against the
+  // fresh, empty state that replaces the record (security review, 2026-09) — the rules would
+  // refuse it, but a removed device should not be trying.
+  function stopLocalWrites() {
+    clearTimeout(sync.pushTimer);
+    sync.pushTimer = null;
+    sync.dirty = false;
+    clearTimeout(parentViewTimer);
+    parentViewTimer = null;
+  }
   function applyRoleSubscription(role, mine) {
     if (sync.session !== mine) return;
     if (!role) {
@@ -7500,6 +7513,24 @@
       // gate. Every other null (legacy rules, accounts unavailable, a role not resolved yet)
       // leaves the current feed alone, as it always has.
       if (accountsInForce() && sync.membersScope && sync.membersFromServer) {
+        // THE OWNER IS NEVER REMOVED (security review, 2026-09). A rogue admin can delete the
+        // owner's member doc, and wiping the owner's device for it would lock the pack's owner
+        // out of their own pack. ensureMyMemberDoc already self-heals an owner it finds demoted;
+        // here the doc is gone, so run it again — it recreates the owner as admin — and resolve
+        // from what it returns. Nothing is wiped, and a failed heal leaves the feed as it is
+        // (the members watch fires again once the doc is back). One heal at a time.
+        if (sync.user && sync.ownerUid && sync.ownerUid === sync.user.uid) {
+          if (sync.ownerHealing) return;
+          sync.ownerHealing = true;
+          ensureMyMemberDoc(sync.mods, sync.user, sync.docId).then(function (healed) {
+            sync.ownerHealing = false;
+            if (sync.session !== mine || !healed) return;
+            sync.myRole = healed;
+            applyRoleSubscription(healed, mine);
+          }, function () { sync.ownerHealing = false; });
+          return;
+        }
+        stopLocalWrites();
         stopDocFeed();
         stopParentFeed();
         sync.parentView = null;
@@ -7516,6 +7547,7 @@
       // Waiting for approval — subscribe NOTHING and drop this browser's cached pack record,
       // exactly as the parent branch below does. The waiting screen carries no pack content.
       if (sync.feed !== 'none') {
+        stopLocalWrites();
         stopDocFeed();
         stopParentFeed();
         sync.parentView = null;
