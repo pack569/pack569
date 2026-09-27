@@ -151,6 +151,17 @@ outliving, or being counted beside, the thing they belonged to. What changed, it
   no migration and nothing to drift. And a per-family fee's scout charge is matched **by family**
   (`chargeMatchKey`), so when the Arrow of Light scout carrying it crosses over and billing moves
   to a sibling, the family keeps the charge it has instead of being billed a second time.
+- **Close-out erased what families owed (M4).** The 2026-07-26 audit made `rolloverYear` clear
+  `state.charges`, which was right about the *charges* — they belong to the year that raised them
+  and point at lines that no longer exist — and wrong about the *balances*. A family's unpaid $45
+  disappeared everywhere but the archive. Now each family's net open balance is read before
+  anything is cleared and comes forward as **one charge on no line**, labelled *Prior-year
+  balance (2026–27)*; `syncCharges` keeps line-less charges, since nothing raises them.
+  Crossed-over and archived scouts' families come forward too, under *Former scouts with a
+  balance*. A family **in credit** comes forward as a `carryover` payment dated the day before the
+  new book opens — in the family's account, not in the bank twice (decision 12). Only when the
+  new book has an opening date: without one there is no "before", so a pack that never set an
+  opening balance does not get its credits carried, and the treasurer should re-enter them.
 
 ---
 

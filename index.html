@@ -3426,6 +3426,9 @@
       c.amountCents = centsOf(c.amountCents);
       c.date = typeof c.date === 'string' ? c.date : '';
       c.waivedBy = typeof c.waivedBy === 'string' ? c.waivedBy : '';
+      // M4 — what a charge on no line is called ("Prior-year balance (2026–27)"). '' on every
+      // charge a line raised, which is named by its line.
+      c.label = typeof c.label === 'string' ? c.label : '';
       if (c.forgiven && typeof c.forgiven === 'object' && !Array.isArray(c.forgiven)) {
         c.forgiven = {
           date: typeof c.forgiven.date === 'string' ? c.forgiven.date : '',
@@ -5714,6 +5717,9 @@
     // against. A book does not lose rows because somebody fixed a head count.
     state.charges = state.charges.filter(function (c) {
       if (want[mk(c)]) return true;
+      // M4 — a charge on no line was put there on purpose (a prior-year balance). Nothing
+      // raises it, so nothing can want it; only paying or forgiving it settles it.
+      if (!c.lineId) return true;
       if (c.waivedBy || c.forgiven) return true;
       return (paidOn[c.id] || 0) > 0;
     });
@@ -18992,6 +18998,13 @@
     var d = m[2] === '02' && m[3] === '29' ? '28' : m[3];
     return y + '-' + m[2] + '-' + d;
   }
+  // The day before an ISO date. Pure; UTC so a DST change cannot move it.
+  function priorDayISO(iso) {
+    var d = new Date(String(iso) + 'T00:00:00Z');
+    if (isNaN(d.getTime())) return '';
+    d.setUTCDate(d.getUTCDate() - 1);
+    return d.toISOString().slice(0, 10);
+  }
   // Roll the working state into next year. KEPT: packName, leaders, archives,
   // reward-tier config, commission rate + cash routing, product catalog, sync/rev.
   function rolloverYear() {
@@ -19003,6 +19016,9 @@
     var closingHadLedger = state.ledger.length > 0;
     // M2 — the bank balance is only a balance once the book has an opening figure.
     var closingBankKnown = closingHadLedger && !!state.book.openingDate;
+    // M4 — what each family still owes (or has paid ahead), read before the ledger and the
+    // charges that produce it are cleared below.
+    var closingAccounts = familyAccountsNow().filter(function (a) { return a.balance !== 0; });
     var b = state.budget;
     var closingYear = b.programYear; // Wave 19(3) — compared against densAdvancedYear below
     // Phase 1/3a — next year's plan seeds from what things ACTUALLY cost, which is what this
@@ -19125,6 +19141,39 @@
     // year's forgiveness against a "Removed line". Money that actually moved is in the
     // ledger, which the archive already captured.
     state.charges = [];
+    // TREASURER'S AUDIT, 2026-09-27 (M4) — ...but a family's BALANCE is not the year's. Clearing
+    // every charge wiped what each family still owed, and a treasurer carrying $45 of unpaid
+    // campout into September had no record of it anywhere but the archive. So each family's net
+    // open balance comes forward as ONE charge, "Prior-year balance", on no line: the detail of
+    // how it arose stays with the year that raised it (in the archive, and the snapshot download),
+    // and the new year gets the one number it has to collect. syncCharges keeps line-less charges.
+    // Families with nobody left on the roster — a crossed-over Webelos — come forward too, and
+    // show under "Former scouts with a balance" until they are paid or forgiven.
+    //
+    // A family in CREDIT comes forward as a payment dated the day before the new book opens:
+    // an entry before the opening date is in the family's account but not in the bank balance,
+    // which already holds that money (DESIGN-money decision 12). Only when the book HAS an
+    // opening date — without one there is no "before", and the credit would count as new cash.
+    var carryLabel = 'Prior-year balance (' + closingYear + '–' + String(closingYear + 1).slice(2) + ')';
+    closingAccounts.forEach(function (a) {
+      var members = state.scouts.filter(function (sc) { return familyKeyOf(sc) === a.key; });
+      var here = members.filter(function (sc) { return !sc.archived; });
+      var to = (here[0] || members[0] || { id: a.scoutIds[0] }).id;
+      if (a.balance > 0) {
+        state.charges.push({
+          id: uid(), scoutId: to, lineId: '', who: 'scout', seq: 0,
+          amountCents: a.balance, date: programYearStartISO(b.programYear),
+          label: carryLabel, waivedBy: '', forgiven: null
+        });
+      } else if (a.balance < 0 && closingBankKnown) {
+        state.ledger.push({
+          id: uid(), date: priorDayISO(state.book.openingDate),
+          description: 'Prior-year credit carried forward', amountCents: -a.balance, direction: 'in',
+          lineId: '', method: '', ref: '', source: 'carryover', donor: '', scoutId: to,
+          tierMakeup: '', reconciled: false
+        });
+      }
+    });
     if (!densAlreadyAdvanced) state.advancement = {};  // new rank = new adventures (see above)
     state.derby = { name: '', date: '', lanes: state.derby.lanes || 4, cars: [], awards: [] }; // Wave 19(18) — awards reset too
     state.fundraisers.forEach(function (fr) { fr.sales = []; });

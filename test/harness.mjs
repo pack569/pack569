@@ -8644,6 +8644,31 @@ test('M8: a per-family fee is not billed again when the child carrying it crosse
     'syncCharges still matches charges by scout id');
 });
 
+test('M4: a family’s open balance survives the year-end as one prior-year charge', () => {
+  const fn = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  // Read before anything is cleared...
+  const read = fn.indexOf('var closingAccounts = familyAccountsNow()');
+  ok(read !== -1, 'family balances are not read at close-out');
+  ok(read < fn.indexOf('state.ledger = [];') && read < fn.indexOf('state.charges = [];'),
+    'family balances are read after the ledger or the charges were cleared');
+  // ...and written back after the clear, on no line, one per family.
+  const clear = fn.indexOf('state.charges = [];');
+  const carry = fn.indexOf('closingAccounts.forEach', clear);
+  ok(carry > clear, 'balances are not carried into the cleared charges');
+  ok(/lineId: '', who: 'scout', seq: 0,\s*amountCents: a\.balance/.test(fn), 'the carried charge is not the family’s net balance on no line');
+  ok(/label: carryLabel/.test(fn), 'the carried charge is not named');
+  // A credit is a payment BEFORE the opening date: in the family's account, not in the bank twice.
+  ok(/source: 'carryover', donor: '', scoutId: to/.test(fn) && /date: priorDayISO\(state\.book\.openingDate\)/.test(fn),
+    'a family credit is lost at close-out, or lands inside the new bank balance');
+  ok(/a\.balance < 0 && closingBankKnown/.test(fn), 'a credit is carried into a book with no opening date');
+  // syncCharges must not drop what it did not raise.
+  const sc = /function syncCharges\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/if \(!c\.lineId\) return true;/.test(sc), 'syncCharges drops a prior-year balance on the next commit');
+  const { priorDayISO } = sandbox(['priorDayISO']);
+  eq(priorDayISO('2027-07-01'), '2027-06-30', 'the day before the book opens');
+  eq(priorDayISO('2028-03-01'), '2028-02-29', 'across a leap day');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
