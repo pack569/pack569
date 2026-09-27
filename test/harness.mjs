@@ -390,9 +390,11 @@ test('the printable money map lists the same seams the UI does', () => {
   // is all a new treasurer gets. If they drift, the handoff document lies.
   const fn = /function renderPackSeason\(\) \{[\s\S]*?<\/ul><\/div>'/.exec(SCRIPT);
   ok(fn, 'the "Where the money lives" list was not found in renderPackSeason');
-  for (const seam of ['Dues &amp; fees', 'Fundraisers', 'Past seasons']) {
+  for (const seam of ['Dues &amp; fees', 'Money · Ledger', 'Fundraisers', 'Past seasons']) {
     ok(fn[0].includes(seam), `the printable money map no longer mentions ${seam}`);
   }
+  // The collect grids were replaced by charges in Phase 3b; the map kept pointing at them.
+  ok(!/collect grids/.test(fn[0].replace(/^\s*\/\/.*$/gm, '')), 'the money map points at collect grids that no longer exist');
 });
 
 /* ================================================================

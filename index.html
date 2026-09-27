@@ -14507,10 +14507,8 @@
   }
 
   /* ----- Money · Dues & fees ----- */
-  // Wave 21 — a real home for the collect grids. They existed before, but the only way to
-  // reach one was to tick "per scout" on a budget row and then expand it — the most buried
-  // high-frequency Treasurer task in the app. Same renderCollectBlock, same state; this
-  // just gathers every per-scout charge in one place and says who still owes.
+  // Wave 21 — a real home for what families owe. (It began as the collect grids; Phase 3b
+  // replaced those with charges, and M7 made the unit the family.)
   // M7 — the Dues screen's unit is the FAMILY: one block per household, with every child's
   // charges in it and the family's own balance — owed, square, or in CREDIT, which used to be
   // floored at zero and simply disappear. A sibling's cheque settles the family.
@@ -14826,7 +14824,10 @@
       '<li><strong>Popcorn · Standings</strong> — live per-scout sale standings for this season.</li>' +
       '<li><strong>Money · Budget</strong> — the year plan, plus Season setup (commission rate, goals, cash routing) and the funds-in math.</li>' +
       '<li><strong>Popcorn · Inventory</strong> — the popcorn <em>order</em> and its projected earnings; never added to funds-in.</li>' +
-      '<li><strong>Dues &amp; fees</strong> — collect grids on Money · Budget; fees marked “families pay” join funds-in as they’re collected.</li>' +
+      // Treasurer's audit, 2026-09-27 — this pointed at "collect grids on Money · Budget", which
+      // Phase 3b replaced with charges on their own screen, and never mentioned the ledger at all.
+      '<li><strong>Money · Dues &amp; fees</strong> — one balance per family: charges raised from “families pay” lines, settled by payments recorded in the ledger, or waived by a reward tier, or forgiven with a reason. What families pay joins funds-in.</li>' +
+      '<li><strong>Money · Ledger</strong> — every dollar that actually moved, ticked against the bank statement. The reconciled balance is next year’s carryover.</li>' +
       '<li><strong>Money · Fundraisers</strong> — the non-popcorn side tally; a fundraiser joins funds-in only when its “count toward Budget funds-in” box is ticked.</li>' +
       '<li><strong>Past seasons</strong> — read-only archives; never counted.</li>' +
       '</ul></div>';
