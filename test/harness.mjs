@@ -5789,6 +5789,30 @@ test('an adventure that is not on the den’s list is warned about, never refuse
   ok(/mamAdv = mamRun\.run\.adventure;/.test(mark), 'Mark done credits the typed spelling, not the run’s');
 });
 
+test('"nobody credited" means a finished run in this year that nobody in the den has', () => {
+  // Audit 2026-09-27: the nudge counted every past den MEETING ever, flagged a run after its
+  // first night, and any scout on the whole roster with the name hid it for every den.
+  const withSlice = (setup) => {
+    const ctx = runSandbox(setup);
+    vm.runInContext(slice('uncreditedRuns'), ctx);
+    return vm.runInContext('uncreditedRuns().map(function (r) { return r.den + ":" + r.adventure; })', ctx);
+  };
+  // Aug 13: Wolf's Bobcat has a session still to come; Bear's one-nighter is over, nobody marked.
+  eq(withSlice(RUN_SETUP), ['Bear:Bobcat'], 'a run with a session still to come was flagged, or a finished one was not');
+  // Aug 20: both over. Cy (Bear) has Bobcat — that must not hide the Wolf den's.
+  eq(withSlice(RUN_SETUP.replace("var TODAY = '2026-08-13';", "var TODAY = '2026-08-20';")
+    .replace('var STATUS = {};', "var STATUS = { c: { Bobcat: 'done' } };")), ['Wolf:Bobcat'],
+    'a Bear’s Bobcat hid the Wolf den’s uncredited run');
+  // One Wolf credited clears the Wolf run (the nudge is "nobody", not "not everybody").
+  eq(withSlice(RUN_SETUP.replace("var TODAY = '2026-08-13';", "var TODAY = '2026-08-20';")
+    .replace('var STATUS = {};', "var STATUS = { a: { Bobcat: 'done' }, c: { Bobcat: 'done' } };")), [],
+    'a run somebody was credited for is still flagged');
+  // Last program year's meeting is not this year's business.
+  eq(withSlice(RUN_SETUP.replace("{ id: 'x1', kind: 'den', den: 'Bear', date: '2026-08-05'",
+    "{ id: 'x1', kind: 'den', den: 'Bear', date: '2025-08-05'")), [], 'last year’s meeting was flagged');
+  ok(/var uncredited = uncreditedRuns\(\);/.test(slice('renderAdvancement')), 'the Advancement card does not use uncreditedRuns');
+});
+
 test('attendance is evidence, and the app never says a missed meeting costs the adventure', () => {
   // Researched, and it decides the wording: Cub Scout advancement is per requirement, "Do Your
   // Best" is the standard, and work done at home is signed by a parent and approved by the den

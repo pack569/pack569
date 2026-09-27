@@ -6258,6 +6258,25 @@
     var idx = run.sessions.findIndex(function (ev) { return ev.id === m.id; });
     return { run: run, index: idx, position: idx + 1, of: run.sessions.length, prog: runProgress(run) };
   }
+  // Runs that are OVER and that nobody in the den has a mark for — the Advancement tab's
+  // "you ran this and never credited anyone" nudge. AUDIT FIX 2026-09-27: this used to be
+  // every past den meeting ever with an adventure nobody on the WHOLE roster had, so it
+  // counted meetings not adventures (a three-night Bobcat was "3 meetings"), flagged a run
+  // after its first night while two were still to come, never expired last year's meetings,
+  // and a Bear's Bobcat hid the Wolf den's uncredited one. Now: this program year's runs
+  // (adventureRuns), every session before today, the den's own roster, nobody marked.
+  // A den with no active scouts has nobody to credit and is not flagged.
+  function uncreditedRuns(asOf) {
+    var t = asOf || todayISO();
+    return adventureRuns().filter(function (run) {
+      if (!run.sessions.every(function (ev) { return ev.date < t; })) return false;
+      var roster = meetingRoster({ den: run.den });
+      if (!roster.length) return false;
+      return !roster.some(function (s) {
+        return advStatus(s.id, 'req', run.adventure) || advStatus(s.id, 'elect', run.adventure);
+      });
+    });
+  }
   // "2 of 3" / "the only session". Said the same way everywhere it appears.
   function sessionLabel(pos, of) {
     return of <= 1 ? 'one session' : ('session ' + pos + ' of ' + of);
@@ -6393,15 +6412,12 @@
       // in, one tap. This is the other end of that — meetings that ran with an adventure
       // planned and nobody credited for it.
       (function () {
-        var t = todayISO();
-        var uncredited = state.events.filter(function (m) {
-          if (m.kind !== 'den' || !m.adventure || !m.date || m.date >= t) return false;
-          return !activeScouts().some(function (s) { return advStatus(s.id, 'req', m.adventure) || advStatus(s.id, 'elect', m.adventure); });
-        });
+        var uncredited = uncreditedRuns();
         if (!uncredited.length) return '';
         return handoffCard('Program', 'Scouts', 'calendar',
-          uncredited.length + (uncredited.length === 1 ? ' past meeting' : ' past meetings'),
-          'had an adventure planned that nobody has been credited for yet.');
+          uncredited.length + (uncredited.length === 1 ? ' adventure' : ' adventures'),
+          'finished at den meetings this year with nobody in the den credited for ' +
+          (uncredited.length === 1 ? 'it' : 'them') + ' yet.');
       })() +
       '</div>';
     h += renderAdventureRunsCard();
