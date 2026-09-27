@@ -8143,8 +8143,12 @@ test('the join config loads for every leader, and both of its answers release th
   function joinCtx(role) {
     const ctx = vm.createContext({});
     vm.runInContext(FAKE_FS + `
-      var onNext = null, onErr = null, scheduled = 0;
-      fakeFs.onSnapshot = function (r, a, b) { onNext = a; onErr = b; return function () {}; };
+      var onNext = null, onErr = null, scheduled = 0, opts = null;
+      // (ref, onNext, onErr) or (ref, options, onNext, onErr), as the SDK takes either.
+      fakeFs.onSnapshot = function (r, a, b, c) {
+        if (typeof a === 'function') { onNext = a; onErr = b; } else { opts = a; onNext = b; onErr = c; }
+        return function () {};
+      };
       function accountsInForce() { return true; }
       function scheduleParentViewRefresh() { scheduled += 1; }
       function render() {}
@@ -8163,7 +8167,11 @@ test('the join config loads for every leader, and both of its answers release th
     ok(vm.runInContext('!onNext', joinCtx(role)), `a ${role} asks for the join config the rules refuse them`);
   }
   const a = joinCtx('editor');
-  vm.runInContext("onNext({ exists: function () { return true; }, data: function () { return { showStandings: false }; } })", a);
+  // B2 (2026-09): a CACHED answer fills joinCfg but does not open the gate; the server's does.
+  ok(vm.runInContext('!!(opts && opts.includeMetadataChanges)', a), 'without includeMetadataChanges the server answer may never arrive');
+  vm.runInContext("onNext({ metadata: { fromCache: true }, exists: function () { return true; }, data: function () { return { showStandings: true }; } })", a);
+  eq(vm.runInContext('[sync.joinLoaded, scheduled, sync.joinCfg.showStandings]', a), [false, 0, true], 'a cached join config released the parent view');
+  vm.runInContext("onNext({ metadata: { fromCache: false }, exists: function () { return true; }, data: function () { return { showStandings: false }; } })", a);
   eq(vm.runInContext('[sync.joinLoaded, scheduled]', a), [true, 1], 'the snapshot does not release the deferred write');
   const b = joinCtx('editor');
   vm.runInContext('onErr({ code: "permission-denied" })', b);

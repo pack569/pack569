@@ -7602,11 +7602,20 @@
     }
     var fs = sync.mods.fs;
     sync.joinLoaded = false;
-    sync.joinUnsub = fs.onSnapshot(fs.doc(sync.db, 'packs', sync.docId, 'public', 'join'), function (snap) {
+    // ⚠ FROM THE SERVER, NOT THE CACHE (security review, 2026-09). A snapshot served from the
+    // local cache can be stale — or say "no config" for a doc the server has — so it may read
+    // showStandings as on for a pack that has switched it off. joinCfg takes whatever arrives (the
+    // Pack tab may as well show it), but only a server answer opens the parent-view gate.
+    // includeMetadataChanges is what makes that answer arrive at all: without it, a cached
+    // snapshot whose data the server then confirms unchanged raises no second event, and
+    // joinLoaded would stay false for the life of the session.
+    sync.joinUnsub = fs.onSnapshot(fs.doc(sync.db, 'packs', sync.docId, 'public', 'join'), { includeMetadataChanges: true }, function (snap) {
       if (sync.session !== mine) return;
       sync.joinCfg = snap.exists() ? (snap.data() || null) : null;
-      sync.joinLoaded = true;
-      scheduleParentViewRefresh(); // showStandings may have just flipped
+      if (!(snap.metadata && snap.metadata.fromCache)) {
+        sync.joinLoaded = true;
+        scheduleParentViewRefresh(); // showStandings may have just flipped
+      }
       render();
     }, function () {
       if (sync.session !== mine) return;
