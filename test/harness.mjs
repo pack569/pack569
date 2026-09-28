@@ -972,7 +972,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'freshTripSection', 'freshTrip', 'seedCampingTrips', 'freshCamping',
   'CAMP_SEED_REV', 'CAMP_OLD_SEED', 'campHash', 'refreshCampingSeed',
   // Wave C1 — and coerces each trip's ISO dates.
-  'CAMP_DATE_KEYS', 'campIsoOrBlank', 'CAMP_READINESS', 'normalizeReadiness',
+  'CAMP_DATE_KEYS', 'campIsoOrBlank', 'CAMP_READINESS', 'normalizeReadiness', 'CAMP_COUNCIL_TRIP_NAMES',
   // Wave C4 — refreshCampingSeed reads the den campout template as a current seed too.
   'CAMP_EMERGENCY', 'DEN_CAMP_TRIP_ID', 'campHeld', 'seedDenCampTrip', 'campTemplates',
   // Wave B1 — and seeds "New to the pack" the same way.
@@ -11324,7 +11324,7 @@ test('C1: the family’s Next up card says when online sign-up for a campout clo
 // C2 — the trip readiness checklist. Leaders only, never published.
 test('C2: readiness is seven known ticks, normalized on load, and clears when the weekend moves year', () => {
   const ctx = sandbox(['CAMP_DATE_KEYS', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'CAMP_READINESS',
-    'normalizeReadiness', 'tripReadiness', 'setTripDate']);
+    'normalizeReadiness', 'tripReadinessItems', 'tripReadiness', 'setTripDate']);
   eq(ctx.CAMP_READINESS.map((i) => i.key), ['baloo', 'weather', 'twoLeaders', 'female', 'health', 'emergency', 'paperwork'], 'items');
   const labels = ctx.CAMP_READINESS.map((i) => i.label).join(' | ');
   ['BALOO', 'Hazardous Weather', 'both 21 or older', 'female adult 21 or older, if girls attend', 'AHMR Parts A and B',
@@ -11382,7 +11382,7 @@ test('C2: Home asks the Camping Chair in the 14 days before a trip while anythin
     var TODAY = '2026-09-28';
     function todayISO() { return TODAY; }
     function fmtDate(d) { return String(d); }
-    ${['CAMP_DATE_KEYS', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'CAMP_READINESS', 'tripReadiness', 'daysUntil'].map(slice).join('\n')}
+    ${['CAMP_DATE_KEYS', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'CAMP_READINESS', 'tripReadinessItems', 'tripReadiness', 'daysUntil'].map(slice).join('\n')}
     var TRIPS = [];
     function campingTrips() { return TRIPS; }
     function tasks() {
@@ -11403,6 +11403,66 @@ test('C2: Home asks the Camping Chair in the 14 days before a trip while anythin
   eq(run([{ id: 'f', name: 'Fall', startDate: '2026-09-27', readiness: {} }]).length, 0, 'a task for a trip already begun');
   eq(run([{ id: 'f', name: 'Fall', readiness: {} }]).length, 0, 'a task for an undated trip');
   eq(run([{ id: 'f', name: 'Fall', startDate: '2026-09-29', readiness: {} }])[0].tier, 'now', 'the day before is not urgent');
+});
+// F3 (2026-09-28) — BALOO is the training for a PACK overnighter, so it is only on the list
+// (and in the count, and in Home's task) for a trip the pack runs.
+test('F3: the BALOO item counts only on a trip the pack runs', () => {
+  const ctx = sandbox(NORMALIZE_FNS.concat(['tripReadinessItems', 'tripReadiness']));
+  const seeds = ctx.seedCampingTrips();
+  const byName = {}; seeds.forEach((t) => { byName[t.name] = t; });
+  eq(byName['Fall Family Camping'].packRun, false, 'the fall council weekend is pack-run');
+  eq(byName['Spring Family Camping'].packRun, false, 'the spring council weekend is pack-run');
+  eq(seeds.find((t) => t.id === 'trip-fort-yargo').packRun, true, 'Fort Yargo is not pack-run');
+  eq(ctx.seedDenCampTrip().packRun, true, 'the den campout template is not pack-run');
+  eq(ctx.freshTrip('x').packRun, true, 'a trip a leader adds is not pack-run');
+  // The count: 7 on a pack trip, 6 on a council one; a stored BALOO tick is ignored, not lost.
+  eq(ctx.tripReadiness({ packRun: true, readiness: {} }).total, 7, 'a pack trip lost an item');
+  const c = ctx.tripReadiness({ packRun: false, readiness: { baloo: true, health: true } });
+  eq([c.done, c.total], [1, 6], 'a council trip still counts BALOO');
+  ok(!c.open.some((l) => /BALOO/.test(l)), 'a council trip still lists BALOO as open');
+  eq(ctx.tripReadiness({ readiness: {} }).total, 7, 'a trip with no flag dropped BALOO');
+  // A record saved before the flag: the council weekends by name, everything else pack-run.
+  const n = vm.createContext({});
+  vm.runInContext(NORMALIZE_FNS.map(slice).join('\n'), n);
+  const old = seeds.map((t) => { const o = JSON.parse(JSON.stringify(t)); delete o.packRun; return o; });
+  old.push({ id: 'mine', name: 'Our lake weekend', sections: [] });
+  old.push({ id: 'set', name: 'Fall Family Camping', packRun: true, sections: [] });
+  const out = n.normalizeState(Object.assign(preMigrationState(), { camping: { trips: old, yargoAdded: true, seedRev: 99 } }));
+  const got = {}; out.camping.trips.forEach((t) => { got[t.id === 'set' ? 'set' : t.name] = t.packRun; });
+  eq([got['Fall Family Camping'], got['Spring Family Camping'], got['Pack Camping — Fort Yargo'], got['Our lake weekend'], got.set],
+    [false, false, true, true, true], 'packRun was not migrated by name, or a leader’s own setting was overwritten');
+  // The card and the handler.
+  const card = slice('campReadinessCard');
+  ok(/tripReadinessItems\(t\)\.map\(/.test(card), 'the card still lists every item regardless of the flag');
+  ok(/data-ch="trip-packRun"/.test(card), 'the card has no pack-runs-it switch');
+  const h = /if \(typeof ch === 'string' && ch\.indexOf\('trip-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/if \(tK === 'packRun'\) \{[\s\S]*?tT\.packRun = !!el\.checked;/.test(h), 'the switch is not stored as a boolean');
+  // Leaders only, like the checklist.
+  ok(!/packRun/.test(codeOnly(BPV())), 'buildParentView reads packRun');
+  ok(/its `packRun` flag \(F3\)/.test(SCRIPT), 'the banner does not exclude packRun');
+});
+
+test('F3: Home does not chase BALOO on a council weekend', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    var TODAY = '2026-09-28';
+    function todayISO() { return TODAY; }
+    function fmtDate(d) { return String(d); }
+    ${['CAMP_DATE_KEYS', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'CAMP_READINESS', 'tripReadinessItems', 'tripReadiness', 'daysUntil'].map(slice).join('\n')}
+    var TRIPS = [];
+    function campingTrips() { return TRIPS; }
+    function tasks() {
+      var out = [];
+      function add(job, tier, title, detail, tab, section) { out.push({ job: job, tier: tier, title: title, detail: detail, tab: tab, section: section }); }
+      ${/\/\* ----- Outdoor \/ Camping Chair ----- \*\/([\s\S]*?)\/\* ----- Advancement/.exec(slice('homeTasks'))[1]}
+      return out;
+    }`, ctx);
+  const run = (trips) => { ctx.TRIPS = trips; return vm.runInContext('tasks()', ctx); };
+  const six = { weather: true, twoLeaders: true, female: true, health: true, emergency: true, paperwork: true };
+  eq(run([{ id: 'f', name: 'Fall', packRun: false, startDate: '2026-10-02', readiness: six }]).length, 0,
+    'a council weekend with everything else ticked still has a task (for BALOO)');
+  const t = run([{ id: 'y', name: 'Yargo', packRun: true, startDate: '2026-10-02', readiness: six }]);
+  ok(t.length === 1 && /1 readiness item still open/.test(t[0].title) && /BALOO/.test(t[0].detail), 'a pack overnighter lost its BALOO task');
 });
 // C3 — the printable packing list.
 test('C3: "What to bring" becomes a tickable list under its own headings, split only when the text says so', () => {

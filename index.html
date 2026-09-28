@@ -2383,6 +2383,7 @@
       where: '', address: '', when: '', arrive: '', depart: '', cost: '', url: '',
       startDate: '', endDate: '', registrationDeadline: '',
       readiness: {},   // Wave C2 — leaders only, never published
+      packRun: true,   // F3 — the pack runs it (BALOO applies); the council weekends say false
       intro: '', sections: []
     };
   }
@@ -2439,9 +2440,17 @@
      field and never names it (harness scan), and no family-facing renderer reads it.
      It belongs to a weekend, not to the page: when a trip's first day moves to a different YEAR
      (setTripDate), the ticks are cleared, because last year's health forms are not this year's.
-     Declared up here, above `var state = load()`, because normalizeState coerces it on load. */
+     Declared up here, above `var state = load()`, because normalizeState coerces it on load.
+
+     PACK-RUN ONLY (F3, 2026-09-28): BALOO is the training for a PACK overnighter. At a council
+     family weekend the council runs the camp and each family camps with its own Scout, so the
+     item is not the pack's to tick there. Each trip carries `packRun` (true = the pack organizes
+     it: Fort Yargo, the den campout template, any trip a leader adds; false = the two council
+     weekends). Where it is false the BALOO item is not shown and does not count toward "n of 7"
+     or the Home task. A tick already stored stays stored, so flipping the flag back restores it.
+     `packRun` is leaders-only like the rest of this block; buildParentView never reads it. */
   var CAMP_READINESS = [
-    { key: 'baloo', label: 'A BALOO-trained adult is named (pack overnighters)' },
+    { key: 'baloo', label: 'A BALOO-trained adult is named (pack overnighters)', packRunOnly: true },
     { key: 'weather', label: 'Hazardous Weather training is done' },
     { key: 'twoLeaders', label: 'Two registered adult leaders, both 21 or older' },
     { key: 'female', label: 'A registered female adult 21 or older, if girls attend' },
@@ -2456,12 +2465,22 @@
     CAMP_READINESS.forEach(function (it) { if (r[it.key] === true) out[it.key] = true; });
     return out;
   }
-  // { done, total, open: [labels still to tick] }.
-  function tripReadiness(t) {
-    var r = (t && t.readiness) || {};
-    var open = CAMP_READINESS.filter(function (it) { return r[it.key] !== true; }).map(function (it) { return it.label; });
-    return { done: CAMP_READINESS.length - open.length, total: CAMP_READINESS.length, open: open };
+  // The items that apply to this trip: all of them, less the pack-run-only ones on a trip the
+  // pack does not run. A trip with no flag counts as pack-run — the side that asks for more.
+  function tripReadinessItems(t) {
+    var packRun = !(t && t.packRun === false);
+    return CAMP_READINESS.filter(function (it) { return packRun || !it.packRunOnly; });
   }
+  // { done, total, open: [labels still to tick] }, over the items that apply to this trip.
+  function tripReadiness(t) {
+    var r = (t && t.readiness) || {}, items = tripReadinessItems(t);
+    var open = items.filter(function (it) { return r[it.key] !== true; }).map(function (it) { return it.label; });
+    return { done: items.length - open.length, total: items.length, open: open };
+  }
+  // The two council family weekends, by the names the seed gave them (their ids were uid()s, so
+  // the name is all there is — CAMP_OLD_SEED matches the same way). Only used to give a record
+  // saved before F3 its packRun flag; a renamed council trip simply keeps the BALOO item.
+  var CAMP_COUNCIL_TRIP_NAMES = ['Fall Family Camping', 'Spring Family Camping'];
   // Set one of a trip's ISO dates ('' clears it). False, and nothing changed, for a value that is
   // neither. When the trip's first day lands in a different YEAR the readiness ticks go: they were
   // for the old weekend. Setting a first date where there was none keeps them.
@@ -2562,6 +2581,7 @@
     fall.startDate = '2026-10-02';
     fall.endDate = '2026-10-04';
     fall.registrationDeadline = '2026-10-01';
+    fall.packRun = false;   // F3 — the district runs it; BALOO is not the pack's to tick
     fall.intro = 'Our district’s own fall weekend. The Apalachee District runs it at Scoutland, and the 2026 theme is Pirates of Scoutland — a treasure hunt, trick-or-treating round the campsites, and a costume is very much expected. It is the easy one to start with: gentle ground, and a camp built for Cub Scouts. Every district runs its own fall weekend here on a different date, so make sure the registration you pick says Apalachee. Check the dates and price against the council page each year.';
     fall.sections = [
       freshTripSection('What to expect',
@@ -2680,6 +2700,7 @@
     spring.startDate = '2026-04-24';
     spring.endDate = '2026-04-26';
     spring.registrationDeadline = '2026-04-20';
+    spring.packRun = false;   // F3 — the council runs it; BALOO is not the pack's to tick
     spring.intro = 'The bigger, wilder one — a Scouts BSA summer-camp property up in the mountains, run by the council for every district at once. Spelled Rainey, not Rainy, which matters when you are searching for it. As of late September 2026 the council has not posted the 2027 dates or prices, so the figures above are April 2026’s; expect the same late-April weekend, and check the council page before you plan around them.';
     spring.sections = [
       freshTripSection('What to expect',
@@ -3525,6 +3546,9 @@
       // Wave C1 — ISO or ''. Anything else a record holds is dropped rather than guessed at.
       CAMP_DATE_KEYS.forEach(function (k) { t[k] = campIsoOrBlank(t[k]); });
       t.readiness = normalizeReadiness(t.readiness);   // Wave C2 — leaders only
+      // F3 — a record saved before the flag: the council weekends by their seed names are not
+      // pack-run; every other trip is (Fort Yargo, the den template, anything a leader added).
+      if (typeof t.packRun !== 'boolean') t.packRun = CAMP_COUNCIL_TRIP_NAMES.indexOf(t.name) === -1;
       if (!Array.isArray(t.sections)) t.sections = [];
       t.sections = t.sections.filter(function (s) { return s && typeof s === 'object' && !Array.isArray(s); });
       t.sections.forEach(function (s) {
@@ -9334,7 +9358,7 @@
   //   inventory (products, cases, prices, hand-outs), leaders (names, roles, phones, emails,
   //   training, notes), last names, scouts' private notes and den labels, RSVP/attendance
   //   detail, other fundraisers, past-season archives, the School Night checklist (`recruitKit`),
-  //   each campout's readiness checklist (`readiness`, Wave C2),
+  //   each campout's readiness checklist (`readiness`, Wave C2), and its `packRun` flag (F3),
   //   the new-member tracker (`onboarding`, and each scout's `addedYear`),
   //   each pack meeting's agenda (`ev.agenda`), its Recognition list (packRecognition) and the
   //   printed leaders' copy of the agenda,
@@ -18840,7 +18864,12 @@
       '<p class="eyebrow note-cap note-cap-int" style="margin:0">Trip readiness \u00b7 leaders only</p>' +
       '<span class="pill' + (rd.done === rd.total ? ' navy' : '') + '">' +
       (rd.done === rd.total ? 'All ' + rd.total + ' ready' : rd.done + ' of ' + rd.total + ' ready') + '</span></div>' +
-      '<div class="camp-ready">' + CAMP_READINESS.map(function (it) {
+      // F3 — whether the pack runs this one decides whether BALOO is on the list.
+      '<div class="camp-ready"><label><input type="checkbox" data-ch="trip-packRun" data-id="' + esc(t.id) + '"' +
+      (t && t.packRun === false ? '' : ' checked') + dis + '><span><strong>The pack runs this overnighter</strong> ' +
+      '<span class="muted">\u2014 untick for a council or district weekend, where BALOO is not the pack\u2019s to tick</span></span></label></div>' +
+      '<hr class="divider">' +
+      '<div class="camp-ready">' + tripReadinessItems(t).map(function (it) {
         return '<label><input type="checkbox" data-ch="trip-ready" data-id="' + esc(t.id) + '" data-key="' + it.key + '"' +
           (r[it.key] === true ? ' checked' : '') + dis + '><span>' + esc(it.label) + '</span></label>';
       }).join('') + '</div>' +
@@ -24294,6 +24323,14 @@
         return;
       }
       // Wave C2 — one readiness tick. Leaders only; never published.
+      // F3 — whether the pack runs this trip (the BALOO item applies only when it does).
+      if (tK === 'packRun') {
+        tT = getTrip(el.dataset.id);
+        if (!tT) return;
+        tT.packRun = !!el.checked;
+        commit();
+        return;
+      }
       if (tK === 'ready') {
         tT = getTrip(el.dataset.id);
         var tRk = el.dataset.key;
