@@ -9581,9 +9581,17 @@
   }
   function renderJoinWaiting() {
     var who = (sync.user && (sync.user.displayName || sync.user.email)) || 'you';
+    // "Nothing else to do" was not true (New Member Coordinator, 2026-09-28): the wait is exactly
+    // when a new family should be registering with the council, and an adult partner who is not
+    // the parent needs registering and Safeguarding Youth Training before the first meeting.
+    // Wording from the parent-experience audit; the policy is theirs, not this file's.
     return joinGateShell('Waiting for approval',
-      '<p class="small">Your request is with the pack leaders — you’ll see the calendar here once they approve it.</p>' +
-      '<p class="small muted">Nothing else to do; this page updates on its own.</p>' +
+      '<p class="small">Your request is with the pack leaders. Once they approve it, the calendar appears ' +
+      'here on its own — usually within a day or two; if not, ask your den leader.</p>' +
+      '<p class="small muted">While you wait: register your scout with Scouting America at ' +
+      '<strong>beascout.scouting.org</strong> (your den leader can help), and if an adult other than a ' +
+      'parent will come with a Lion or Tiger, they’ll need to register too and take Safeguarding Youth ' +
+      'Training.</p>' +
       '<div class="join-actions">' +
       '<span class="small muted">Signed in as ' + esc(who) + '</span>' +
       '<button type="button" class="btn small" data-act="sign-out-google">Sign out</button></div>');

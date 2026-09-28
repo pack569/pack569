@@ -9405,6 +9405,14 @@ test('J1: the published calendar is the July-to-June program year, edges include
   ok(!/'-09-01'|'-08-31'/.test(BPV()), 'buildParentView still carries a September-to-August window');
 });
 
+test('J3: the waiting screen says what a family can do while they wait', () => {
+  const w = codeOnly(slice('renderJoinWaiting'));
+  ok(w.indexOf('Nothing else to do') === -1, 'the waiting screen still says there is nothing to do');
+  ok(/beascout\.scouting\.org/.test(w), 'the waiting screen does not point at council registration');
+  ok(/Safeguarding Youth\s*'?\s*\+?\s*'?\s*Training/.test(w), 'the adult-partner training is not named');
+  ok(/ask your den leader/.test(w), 'the waiting screen gives no one to ask when approval is slow');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
