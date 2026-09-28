@@ -1,2 +1,45 @@
 # Local pre-change backups made before each build wave — kept on disk, not in git.
 .index.pre-*.html
+
+# The repo is public. Printouts, exports and photos from the pack almost always carry children's
+# names (Trail's End reports, the Ideal Year PDF, rosters, event photos), so none of them are
+# tracked. Nothing the site serves is one of these types today; if an image is ever needed, add
+# a negation for that one file (e.g. !icon.png) rather than removing a line here.
+#
+# Every pattern is written case-blind ([Pp][Dd][Ff]) because a phone or a Windows export saves
+# IMG_0412.JPG and REPORT.PDF, and pattern matching here is case-sensitive on Linux and on a
+# case-sensitive disk. Plain text, GIF and binary Excel are here too (2026-09-28): a pasted
+# roster or a Trail's End export saved as .txt is exactly as full of names as the .csv.
+*.[Pp][Dd][Ff]
+*.[Cc][Ss][Vv]
+*.[Xx][Ll][Ss][Xx]
+*.[Xx][Ll][Ss]
+*.[Nn][Uu][Mm][Bb][Ee][Rr][Ss]
+*.[Pp][Nn][Gg]
+*.[Jj][Pp][Gg]
+*.[Jj][Pp][Ee][Gg]
+*.[Hh][Ee][Ii][Cc]
+*.[Tt][Ss][Vv]
+*.[Xx][Ll][Ss][Mm]
+*.[Oo][Dd][Ss]
+*.[Dd][Oo][Cc]
+*.[Dd][Oo][Cc][Xx]
+*.[Pp][Aa][Gg][Ee][Ss]
+*.[Ww][Ee][Bb][Pp]
+*.[Hh][Ee][Ii][Ff]
+*.[Mm][Oo][Vv]
+*.[Mm][Pp]4
+*.[Tt][Xx][Tt]
+*.[Gg][Ii][Ff]
+*.[Xx][Ll][Ss][Bb]
+
+# The app's own downloads. A backup (popcorn-backup.json) or a year-close snapshot
+# (pack-year-*-snapshot.json) is the WHOLE pack record — every child, every family's money,
+# leaders' contact details. Calendar, contact, zip, rich-text and saved-email exports carry
+# names too. No tracked file is any of these today; if one ever has to be, negate just that file.
+*.[Jj][Ss][Oo][Nn]
+*.[Ii][Cc][Ss]
+*.[Zz][Ii][Pp]
+*.[Vv][Cc][Ff]
+*.[Rr][Tt][Ff]
+*.[Ee][Mm][Ll]

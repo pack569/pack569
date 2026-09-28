@@ -86,6 +86,246 @@ actually cost, every activity comes back scheduled, nothing settled leaks into t
 and after a second close-out both archives still hold their own numbers with the bank chaining
 $420 → $372.50 → $272.50 unbroken.
 
+### Treasurer's audit, 2026-09-27
+
+A treasurer walked the books end to end and found the same family of defect again — records
+outliving, or being counted beside, the thing they belonged to. What changed, item by item:
+
+- **Commission was counted twice (M1).** §3.6 tells the treasurer to post the council's cheque
+  to a "Popcorn income" line. `lineActualCents` read any money in without a scout as a *vendor
+  refund*, so the posted commission came off Actual spent while Funds in was already counting
+  the same commission from sales. Now an entry whose `source` names it as income (commission,
+  fundraiser, donation, family, carryover) is never a refund (`entryIsRefund`), and income-
+  category lines are in **neither planned nor actual spending** — they were already in B, not
+  A, on the worksheet, so the Budget card's Planned read higher than A by every planned income
+  dollar. What an income line brought in reaches **Funds in** instead (`ledgerIncomeCents`).
+  **The posted commission replaces the sales-derived estimate** as soon as any entry with
+  `source: 'commission'` exists — that is what §3.3 always intended ("posted once, on the day
+  the council cheque clears — which is when it's actually true"). Until then the estimate is
+  the best figure there is, and the Budget card says which one it is showing.
+- **Carryover was the projection (M2).** `rolloverYear` opened the new ledger at the closing
+  bank balance but set the Budget's *Starting funds* to `bud.balance` — the projection. Two
+  carryovers, and the Budget's was the guess. Now both are the bank balance whenever the closing
+  year had a ledger **with an opening figure** (`closingCarryover`). A ledger with no opening
+  date only knows net movement, which is not a balance, so that pack keeps the projection and
+  its new book is left unopened (the "Start from the carryover figure" button is right there).
+- **Year two waived nothing (M3).** The rollover rebuilds every line through `freshLine`, which
+  mints a new id, while each reward tier's `covers` kept last year's ids — so the tiers still
+  *listed* what they covered and matched no charge at all. Every cover key (bare, `act:`, and
+  `#adult`/`#sibling` shares) is now re-pointed through an old → new id map (`remapCoverKey`).
+  A tier's `dueBy` moves **forward one year** (`shiftISOYear`) rather than being cleared: a
+  carried-over deadline has passed, so every tier with one opened the year closed and billed
+  everybody, and clearing it would silently turn a hard deadline into none. The Kernel should
+  still check the new date — the council's own deadline moves a little each year.
+- **A make-up payment was spent twice (M5).** A family paying the difference to reach a tier
+  writes a ledger entry carrying the scout and the tier (`tierMakeup`). The tier then waives the
+  fee — and `paymentsForScout` *also* counted the same money against the family's other charges.
+  A treasurer reproduced a family shown owing $10 that really owed $40. Make-up entries no longer
+  settle charges (`entryPaysCharges`); `chargeTotals` reports them as `makeup`, the Dues card
+  says so on its own line instead of inside *Received*, and they still reach Funds in.
+- **Editing a reimbursement un-paid it (M6).** A reimbursement is money *out* carrying the scout
+  it paid back, and that scout is how `tierReimbursements` knows it is done. The ledger editor
+  cleared `scoutId` on every edit of a money-out entry — including typing the receipt number the
+  reimburse toast asks for. Now only flipping the direction clears it; the entry's detail row says
+  who it was paid back to.
+- **Balances were per scout, not per family (M7).** §3.4 has always said *"Outstanding for a
+  family"*, and the code worked it out per scout. One cheque for two siblings, recorded against
+  the elder, left the elder silently in credit (floored to "square") and the younger still owing
+  everything. Balances are now per **family** — `familyAccounts(charges, ledger, keyOf)`, keyed by
+  `chargeFamilyKey`, which is `familyKeyOf` read through `getScout` so an archived child still
+  pools with the siblings left behind. A family that has overpaid shows **Credit $X** instead of
+  "square". The Dues card is one block per household, titled *Family balances*, and "Square"
+  counts families. Every "owes $X" beside a scout's name, the Treasurer's Home nag, and the amount
+  prefilled by *Record a payment* all mean the household now.
+- **A former scout's balance had no row (M9).** *Still owed* counted every charge, and the list
+  under it showed only the current roster, so a crossed-over Webelos's unpaid campout was in the
+  total with nowhere to pay or forgive it. Families with nobody left on the roster and an account
+  that is not square now get their own card, *Former scouts with a balance*, with the same
+  controls as everyone else.
+- **One payment froze every charge (M8).** `syncCharges` refused to drop or re-price a charge
+  if the *scout* had paid anything at all, so a dues cheque froze the campout: a head count
+  corrected afterwards could not remove the parent who never came. Payments are now **allocated**
+  to charges (`chargePaidAllocation`) — a payment posted against a line pays that family's open
+  charges on the line first, the rest pays oldest first — and only a charge with money allocated
+  to it is kept or frozen. Derived every time, never stored: no `chargeId` on ledger entries, so
+  no migration and nothing to drift. And a per-family fee's scout charge is matched **by family**
+  (`chargeMatchKey`), so when the Arrow of Light scout carrying it crosses over and billing moves
+  to a sibling, the family keeps the charge it has instead of being billed a second time.
+- **Close-out erased what families owed (M4).** The 2026-07-26 audit made `rolloverYear` clear
+  `state.charges`, which was right about the *charges* — they belong to the year that raised them
+  and point at lines that no longer exist — and wrong about the *balances*. A family's unpaid $45
+  disappeared everywhere but the archive. Now each family's net open balance is read before
+  anything is cleared and comes forward as **one charge on no line**, labelled *Prior-year
+  balance (2026–27)*; `syncCharges` keeps line-less charges, since nothing raises them.
+  Crossed-over and archived scouts' families come forward too, under *Former scouts with a
+  balance*. A family **in credit** comes forward as a `carryover` payment dated the day before the
+  new book opens — in the family's account, not in the bank twice (decision 12). (This first
+  required an opening date and dropped credits without one; see T3 below.)
+  A carried credit settles charges but is reported as *Carried forward*, not *Received*, and stays
+  out of Funds in — it is already inside the carryover. A former family whose balance was
+  **forgiven** stays listed, so the decision can be read and undone.
+- **Reconciliation could agree with the wrong statement (M10).** *Tick all* ticked every entry
+  since the opening date and `reconcileTotals` counted every ticked one, so an October cheque
+  could move a September statement. Both now stop at the **statement date** (`entryOnStatement`);
+  later entries are listed as waiting for the next statement. A **reconciled entry is read-only**
+  in the ledger — no field edits, no delete — until an explicit two-tap *Un-reconcile*.
+  **Forgiving a charge now requires both a reason and who agreed it**, and **undoing** a
+  forgiveness appends a line to the charge's `note` (who forgave it, when, why, and when it was
+  undone) instead of erasing it. Decision 11 (who may forgive) is still open; this does not gate
+  it by job.
+- **The family-cost quote left out registration (M11).** `freshLine` defaults `fundedBy` to
+  `pack`, so the seeded *Youth registration* line was pack-paid and `familyYearCostForDen` — which
+  only counts what families pay — left the year's biggest single fee out of every quote. New packs
+  now seed it **families pay**. An existing pack's line is never changed (the seed only adds a
+  missing line); instead the leader card says, by name, when the pack pays national registration
+  and so it is not in the figure. Both cards stop calling the figure *"the most a family can be
+  asked for"* — it is the **typical cost for one scout and one parent** — and list what is not
+  included: a second parent, siblings, flat family-paid lines (named on the leader card), and the
+  council program fee or registration when the budget has no line for them. The parent card's
+  wording changed; what `buildParentView` publishes did not.
+- **Past seasons read the wrong months.** Archived activity slots were never rebased when the
+  program year moved to a July start — correctly, an archive is a record — but `seasonSlotLabel`
+  applied the July month names with the September year-turn, so a new archive's December read as
+  the next year and an old archive's September read as July. New archives carry
+  `slotBase: 'july'`; one without it is September-based if it was closed before 2026-07-27.
+- **Budget vs actual by category (E9).** §3.6 promised the committee *"budget-vs-actual by
+  category, with variance, straight off the plan"* and nothing showed it. The Budget workspace now
+  has a card under *Pack budget*: planned, actual and variance per 510-278 category and in total,
+  over-budget in red. Same rules as `computeBudget` — income lines are not spending, and a
+  paid-direct line is out of the plan but its reimbursements are in actual (`budgetVsActual`).
+
+### Treasurer's review of those fixes, 2026-09-28
+
+The treasurer re-read the fixes above against the books (verdict: OK with changes). What changed:
+
+- **A refunded credit never left the account (T1).** The Dues card told the treasurer to
+  "record the refund as money out", and money out could not name a family — so the credit stayed
+  on the account after the cheque went, and at close-out came forward as a carryover payment: the
+  family was paid back twice. Money out can now carry a family as a **refund**
+  (`source: 'refund'`, `entryRefundsFamily`); the Dues block has *Record a refund…* beside a
+  credit, and the ledger has a *Refunded to* picker on money out. `familyAccounts`,
+  `familyOutstanding` and `chargePaidAllocation` take a refund off what the family paid — off
+  their unallocated credit first, and only past that off the newest charge. `chargeTotals`
+  reports it as `refunded`, Funds in loses it, and it is not a cost of any line it sits on. A
+  reward-tier **reimbursement** is also money out carrying a scout, and is not a refund: it is
+  now marked `reimbursement: true`, and one recorded before the mark has no source, so it can
+  never read as one. `tierReimbursements` ignores refunds.
+- **The close-out preview promised the projection (T2).** It still said the starting balance
+  becomes "this year's ending balance" and showed the Budget's projection, when since M2 a book
+  with an opening date carries its bank balance. It now shows
+  `closingCarryover(projection, bookBalance(), bank known)` — the figure `rolloverYear` will
+  carry, decided the same way — and says whether that is the bank balance or the projection.
+- **Credits vanished without an opening date, and said nothing (T3).** M4 carried a family's
+  credit only when the closing book had an opening date, so a pack that never set one lost every
+  credit at close-out with nothing on screen. The credit now always comes forward, dated the day
+  before the program year starts — which is where *Start from the carryover figure* opens the
+  book, so once that pack sets its opening balance the credit is already before it. Until then it
+  sits in the ledger's net movement, which is not a bank balance anyway, and it is never Funds in.
+  The close-out preview now has a *Family accounts* line (`closeoutFamilyLine`): "N families'
+  unpaid balances ($X) come forward as Prior-year balance; M families' credits ($Y) come forward."
+  It no longer lists the dues among what is cleared; it says the year's charges and ledger entries
+  are.
+- **An old commission cheque could still be counted twice (T4).** A cheque posted before M1 to an
+  income line with a blank or "fundraiser" source is counted in Funds in as other income, while
+  the sales estimate — still in use, since no entry says `commission` — is counted too. The app
+  does not guess from the description: while the estimate is in use, the Budget card lists each
+  income line with such money in (`commissionLookalikes`: source blank, fundraiser or other) and
+  asks "Is this the council's commission cheque? Set its source to Popcorn commission so it isn't
+  counted twice." And a **$0** commission entry no longer counts as posted — it used to switch
+  the estimate off and leave commission at nothing.
+- **The carryover could be counted twice (T5).** A money-in entry with source *Carryover* and
+  no family, filed to a line, reached Funds in as other income — on top of Starting funds, which
+  is the same money. `ledgerIncomeCents` now skips it. (A family's carried credit has a scout and
+  was already reported as *Carried forward*, never Funds in.)
+- **A part-paid commission (T6).** When the posted commission is less than sales work out to,
+  the Funds in line adds "— $Y still expected from the council". Funds in still counts only what
+  has arrived.
+- **Totals on part of the book (T7).** `chargeTotals` reads its payment figures off the whole
+  ledger and a family's outstanding off its whole account, so handed one line's charges it
+  reported every payment in the pack as paid for that line. Nothing displayed those figures for a
+  subset, but three callers passed one. The charge-only figures (raised, standing, waived,
+  forgiven) are now `chargeSetTotals(charges)`, which the subset callers use, and `chargeTotals`
+  is documented — and tested — as whole-book only. Per-charge payment is `chargePaidAllocation`,
+  which needs every charge to answer.
+- **Reimbursements read as over budget (T8).** Budget vs actual planned a paid-direct line at $0
+  (it is out of the plan) and counted its reimbursements as actual, so every one was "over". But
+  Planned already counts what the planned tiers will pay back (`coverCostForKeys().extraReimburse`,
+  inside `tierExtra`). Paid-direct lines now have their own row, *Reward-tier reimbursements*,
+  planned at that figure and actual at what those lines have paid out, instead of sitting in
+  their 510-278 category against nothing.
+- **Wording (T9).** A roster pill on linked siblings says **family owes $X**, not "owes $X" on
+  every child (it is one balance, and archived siblings count). A family block's "received" is
+  money that arrived this year; a credit carried from last year is shown apart as *carried
+  forward* (`familyAccounts` now reports `carried`), and a refund as *refunded*. The parents'
+  cost card calls its figure the **fees in the pack's plan** for one scout and one parent across
+  a typical year — the plan has no line for a fee it does not know about. What `buildParentView`
+  publishes did not change.
+- **Forgiveness undone on one tap; duplicates left from before M8 (T10).** Undoing a forgiveness
+  now takes two taps, armed per charge. And the per-family charges M8 stopped raising twice are
+  still there where they were raised before it — both match what `syncCharges` wants, so it keeps
+  both. `duplicateCharges` finds them (same `chargeMatchKey`; keeps the one that is settled or
+  paid against, else the oldest; lists the rest only if open and unpaid). The Dues screen lists
+  them under *Charged twice?* and the Treasurer's Home says how many; a leader removes each with
+  two taps, re-checked at the second tap, with Undo. Nothing removes one automatically.
+
+### Final review, 2026-09-28
+
+- **A refund bigger than the credit was an invisible debt (M1).** Past a family's credit a
+  refund un-pays their charges, and a family with no charges and no payments — only the refund —
+  was filtered off the Dues screen, so the debt was on no page. `duesFamilies` now keeps any
+  family with a refund. The ledger warns, on add and on editing the amount or family, when a
+  refund is more than the family's credit without it (`refundCreditBefore`): "This is more than
+  <family>'s credit of $Y. Refunds give back money a family paid; to repay a council fee for a
+  reward tier, use Reimburse on the Budget." It still records the entry. And on a line families
+  pay directly (`lineIsFamilyDirect`) the family picker on money out reads *Paid back to
+  (reimbursement)* and saves `reimbursement: true` with no source — they paid the pack nothing
+  on that line, so there is nothing to refund.
+- **The Funds in sentence did not add up (M2).** Each term was printed only when it was above
+  zero, so a pack that had refunded more fees than it collected lost the fees term, and an
+  other-fundraiser loss was in the total but not the words. Every term is now printed with its
+  sign (`fundsInTerm`), and refunds are their own term: "+ family-paid fees collected ($X) −
+  refunds to families ($Y)". Funds in itself is unchanged. `feesTotals().collected` is what
+  families handed over (paid + donated + tier make-ups) and no longer nets refunds off; the
+  Per-scout fees line shows the refunds beside it. A season closed from now on archives that
+  gross figure as its dues collected.
+- **T5 dropped the carryover when Starting funds was empty (M3).** T5 skipped every pack-own
+  *Carryover* entry because Starting funds already holds that money. A treasurer who recorded the
+  carryover only in the ledger, leaving Starting funds at $0, lost it from Funds in altogether.
+  `ledgerIncomeCents(ledger, isIncomeLine, startingCents)` now skips them only when Starting funds
+  is above $0; otherwise it counts them (line or no line) as `carryover`, which is its own term
+  in Funds in, and the Budget card says: "A Carryover entry of $X is in the ledger but Starting
+  funds is $0 — set Starting funds to it and this entry stops counting." The funding goal still
+  reads Starting funds only, which is why the card asks.
+- **The commission question could not be answered "no" (M4).** T4's Check line asked about every
+  lookalike entry on every render until the commission was posted, so a real fundraiser deposit
+  on an income line kept it up all season, or tempted a treasurer to relabel honest money. Each
+  entry now has a *Not the commission* button beside the question; it sets
+  `notCommission: true` on the entry, which `commissionLookalikes` skips. Any edit to the
+  entry's amount, source, line or direction clears it, because the answer was about the entry
+  as it stood.
+- **Budget vs actual planned less than the Budget card (M5).** T8 gave the reimbursement half of
+  `tierExtra` its own row, but the other half — `extraHeads`, an adult or sibling share the
+  planned tiers cover on a line the pack collects — was in `computeBudget`'s Planned and in no row
+  of the table, so the two totals disagreed by exactly that. `coverCostForKeys` now tags each
+  covered share with its `bucket` (fees, heads or reimburse) and its line's category, and
+  `budgetVsActualNow` plans each *heads* share under its own line's category, where the money is
+  spent. The table's total Planned now equals `computeBudget().planned`, and a harness test holds
+  the two together on a fixture with one share of each kind.
+- **The archive's "ending balance" was not what carried (M6).** Since M2 a book with an opening
+  figure carries its bank balance, but the close-out preview and every Past season still showed
+  the Budget's projection as "Ending balance", so next year's Starting funds disagreed with it
+  and nothing said why. The archive now stores `budget.carriedCents` and `budget.carriedFrom`
+  (`'bank' | 'projection'`, from `closingCarryNow`, the same decision `rolloverYear` makes).
+  When the bank carried, the stat reads **Projected ending balance** and a line says "Carried
+  forward: $X (bank balance)" — in the preview, the Past seasons row and sheet, and the copied
+  text. An archive closed before this has neither field and reads exactly as it did.
+- **Minor (M7).** A refund to a family and a *Carryover* entry are right with no budget line, but
+  `ledgerTotals` counted them as uncategorised, so the Treasurer's Home nag "N entries have no
+  budget line" could never clear. They are left out now (`entryWantsLine`), and the ledger's
+  *No budget line* filter lists exactly what the count counts. T6's part-payment wording is now
+  "— $Y less than sales work out to; still expected from the council, or check the rate with
+  the Kernel": the gap may be a second cheque or a mistyped rate, and the app cannot tell which.
+
 ---
 
 ## 1. The problem, concretely
@@ -610,6 +850,43 @@ Verified end to end: linking two of four scouts took a $75 per-family council fe
 $225** and a pack-collected $50 per-family fee from four charges to **three** — while $80 per-head
 dues stayed at **four charges of $80**, one for each scout including the linked sibling.
 
+#### A tier covering a per-family fee — the sibling rule
+
+*Owner decision, 2026-09-28.* **If any scout in a family earns a tier that covers a per-family
+fee, the whole family is covered** — not only the billing scout. Until then only the first of them
+on the roster counted, so a younger sibling who sold enough left the family paying.
+
+- **Who counts:** any member in the **line's own dens** (`lineRoster`). A Tiger's tier does not
+  cover a Bear-only family fee. A **make-up payment** by any member counts the same as a sale; it
+  is in the earned map like one.
+- **Once per family, everywhere.** `familyFeeHolder(line, key, coverage, familyKey)` names the one
+  member the family's cover is *credited* to: the billing scout if they earned it, otherwise the
+  first earning member in family order. `familyCoverage(coverage, 'billing' | 'credit')` applies
+  that to a whole coverage map.
+  - `applyTierWaivers` waives the family's charge when any member holds the share, and records the
+    tier of the member who earned it.
+  - `computeBudget`'s absorbed fees use the *billing* attribution (one per family, where the charge
+    sits).
+  - `tierReimbursements` keeps one row per family, on the billing scout, owed when any member earned
+    it; `earner` names whose tier bought it. What has gone back is still read across every member,
+    so a reimbursement recorded against either sibling settles it.
+  - `packCoverageByScout`, `privateBenefitCheck`, the Rewards card's "what the pack is covering" and
+    a scout's itemised coverage use the *credit* attribution. The fee is counted once, on one
+    sibling, never two.
+- **What a tier is worth to one scout** (`coverValueOfKeys` / `tierCoverCentsPerScout` with a scout,
+  via `shareCountsForScout`). The scout must be in the line's dens, and either nobody in the family
+  holds the fee yet (whoever reaches it covers it) or this scout is the one credited. So a scout
+  whose sibling already holds it is not offered it again, and their **make-up cap** leaves it out.
+  A family cannot pay towards one fee twice. This does not touch M5 (a make-up is income, not a
+  charge payment) or T1 (a refund is never a reimbursement).
+- **The published board** (`tierProgressRows(true)`) measures "what reaching it takes off your
+  year" (`nextUnlocksCents`) against coverage built from the **sales-only** map. A sibling who sold
+  their way to the fee makes it **$0** for the others, which is true, and their tier is public
+  anyway. A sibling's **make-up** does not exist in that map, so the others still see the fee. That
+  overstates it for that family, which is the same trade-off as S3. Showing $0 there would tell
+  every other family that somebody paid their way in. Leaders' screens use the full map and show
+  the true $0.
+
 **Tiers stack, so a higher tier names only what it ADDS.** The adult-shirt tier covers
 `L-shirt#adult` alone — the scout's shirt already came from the tier below — which is exactly what
 makes the per-tier margin figure meaningful:
@@ -1049,6 +1326,10 @@ entry** rather than the app inferring commission from three subsystems:
 ```
 IN  $2,730.00  "Trail's End commission"  line: Popcorn income  source: 'commission'
 ```
+
+From that moment the posted figure **replaces** the commission the Budget was working out from
+sales — it is not added to it. If the council pays in two cheques, post both; the Budget uses
+their total. (Treasurer's audit, 2026-09-27.)
 
 ### October — the Fall campout
 

@@ -40,16 +40,22 @@ Three details that are the whole correctness of it:
 
 - **`pending` is not `missed`.** A session in the future that a scout has not attended is *still to
   come*. Counting it as a miss would report every scout as behind the moment a den schedules next
-  month's meetings. `missed` requires `ev.date < today`.
+  month's meetings. `missed` requires `ev.date <= today`.
+- **Tonight is not the future.** *(Audit fix, 2026-09-27.)* This was `ev.date < today`, which left
+  tonight's session in `pending` for every scout not checked in — so a scout who stayed home
+  tonight had "missed nothing", and the Mark-done button, pressed at the end of the very meeting it
+  is for, credited them. A session dated today that a scout is not checked in at is a miss.
 - **Scoped to the program year.** A den works the same adventure again next year with a different
   set of children. Counting last year's meetings would report a scout as finished who has never
   been to one.
 - **Grouped per den.** Wolf and Bear both working Bobcat is two runs, not one. A den meeting with
   no den set means all dens, matching what the meeting row already displays.
 
-`onTrack` (missed nothing that has happened) and `complete` (attended every session, including the
-planned ones) are different questions and both get asked. The mark-off button uses `onTrack`; the
-"every session" badge uses `complete`.
+`onTrack` (attended at least one session, and missed nothing that has happened, tonight
+included) and `complete` (attended every session, including the planned ones) are different
+questions and both get asked. The mark-off button uses `onTrack`; the "every session" badge uses
+`complete`. The "at least one" half is also a 2026-09-27 audit fix: "missed nothing" is true of a
+scout who has not been to anything, and the button credits exactly this list.
 
 ## 3. What attendance is — the part that decided the copy
 

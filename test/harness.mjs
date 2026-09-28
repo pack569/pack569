@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
+import { execSync } from 'node:child_process';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const HTML = readFileSync(join(ROOT, 'index.html'), 'utf8');
@@ -389,9 +390,11 @@ test('the printable money map lists the same seams the UI does', () => {
   // is all a new treasurer gets. If they drift, the handoff document lies.
   const fn = /function renderPackSeason\(\) \{[\s\S]*?<\/ul><\/div>'/.exec(SCRIPT);
   ok(fn, 'the "Where the money lives" list was not found in renderPackSeason');
-  for (const seam of ['Dues &amp; fees', 'Fundraisers', 'Past seasons']) {
+  for (const seam of ['Dues &amp; fees', 'Money · Ledger', 'Fundraisers', 'Past seasons']) {
     ok(fn[0].includes(seam), `the printable money map no longer mentions ${seam}`);
   }
+  // The collect grids were replaced by charges in Phase 3b; the map kept pointing at them.
+  ok(!/collect grids/.test(fn[0].replace(/^\s*\/\/.*$/gm, '')), 'the money map points at collect grids that no longer exist');
 });
 
 /* ================================================================
@@ -704,7 +707,7 @@ test('the legacy dues lump switches off once coverage is configured', () => {
 test('coverage is derived, never written into state.collected', () => {
   // The collect grids stay a record of what FAMILIES paid. Mixing the two is what would
   // let the same dues be counted as both a pack cost and family income.
-  const fn = /function packCoverage\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  const fn = /function packCoverage\(\w*\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'packCoverage() not found');
   ok(!/state\.collected/.test(fn[0]), 'packCoverage writes or reads state.collected');
 });
@@ -722,6 +725,8 @@ function tierGroupSandbox(setup) {
      }
      function tierEarnedMap() { return EARNED; }
      function coverableShares() { return SHARES; }
+     // The sibling rule only looks further for a per-family share; none of these are.
+     function linePerFamily(l) { return !!(l && l.perFamily); }
      ${slice('coveredSharesByTier')}
      var RESULT = coveredSharesByTier('kid');`, ctx);
   return ctx;
@@ -839,7 +844,8 @@ test('a rung is set apart from its rows by more than a font weight', () => {
 // The ledger math is deliberately pure — it takes (ledger, book) rather than reading
 // `state` — precisely so it can be exercised here rather than by clicking around.
 const LEDGER_FNS = ['ledgerSort', 'entrySignedCents', 'entryAfterOpening', 'ledgerBalance',
-  'lineActualCents', 'ledgerTotals', 'reconcileTotals', 'runningBalances'];
+  'LEDGER_INCOME_SOURCES', 'entryIsRefund', 'entryRefundsFamily', 'lineIncomeCents', 'ledgerIncomeCents',
+  'lineActualCents', 'entryWantsLine', 'ledgerTotals', 'entryOnStatement', 'reconcileTotals', 'runningBalances'];
 
 function entry(o) {
   return Object.assign({ id: 'x', date: '2025-10-01', description: '', amountCents: 0,
@@ -958,7 +964,8 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'freshTripSection', 'freshTrip', 'seedCampingTrips', 'freshCamping',
   'CAMP_SEED_REV', 'CAMP_OLD_SEED', 'campHash', 'refreshCampingSeed',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
-  'parseLegacyTime', 'migrateTierMakeUp', 'normalizeState', 'lineActualCents', 'entrySignedCents',
+  'parseLegacyTime', 'migrateTierMakeUp', 'normalizeState', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
+  'lineActualCents', 'entryRefundsFamily', 'entrySignedCents',
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
@@ -1158,6 +1165,7 @@ const tpCtx = (() => {
     }
     function tierCumulativeCoverCents(t) { return t.cover || 0; }
     function tierCoverCentsPerScout(t) { return t.fee == null ? (t.cover || 0) : t.fee; }
+    function packCoverage() { return {}; }   // the sibling rule's input; the stubs above ignore it
     ${slice('arrOf')}
     // Values a key set: each stub tier declares covers:['k'] and KEY_VALUE prices them, so the
     // set-difference behaviour can be tested without a budget.
@@ -1477,7 +1485,12 @@ test('the three notch treatments are three treatments, not three shades of one',
   ok(!/\.tprog-tick\.ahead \{[^}]*var\(--surface/.test(SCRIPT_CSS),
     'a notch ahead of the fill is painted in a track colour, which is invisible on the track');
   // Both legends describe all three states — a mark nobody can name is decoration.
-  for (const fn of ['renderTierProgress', 'renderParentStandings']) {
+  // (The parent legend says it in a family's words since 2026-09-28 — "the darkest mark is the one
+  // your scout is working toward next", "a light gap in the filled part" — so it is checked apart.)
+  const pstand = slice('renderParentStandings');
+  ok(/marks along the bar/.test(pstand) && /darkest mark is the one your scout is working toward next/.test(pstand) &&
+    /light gap in the filled part/.test(pstand), 'renderParentStandings does not say what the three notch states mean');
+  for (const fn of ['renderTierProgress']) {
     const src = new RegExp(`function ${fn}\\(\\w*\\) \\{[\\s\\S]*?\\n  \\}`).exec(SCRIPT);
     ok(src, `${fn}() not found`);
     ok(/gap<\/strong>/.test(src[0]) && /mark<\/strong>/.test(src[0]) && /chasing/.test(src[0]),
@@ -1517,7 +1530,7 @@ test('rows are ordered by what a scout has brought in, exactly as the family boa
   eq(tied.map((r) => r.scout.name), ['Al', 'Bo'], 'equal totals do not fall back to the name');
   // Unfiltered by any tier deadline — it is what they have brought in, not what counted toward
   // a rung that closed in November.
-  const fn = /function tierProgressRows\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  const fn = /function tierProgressRows\(\w*\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(/combined: \(totalsFor\(''\)\[s\.id\] \|\| \{\}\)\.combined/.test(fn[0]),
     'the sort figure is measured against a deadline');
 });
@@ -1527,7 +1540,7 @@ test('the tier-progress rows never recompute what "earned" means', () => {
   // deadline report, "so those four can never disagree about who earned what". This is the fifth
   // reader. A private threshold comparison here would let this card promise a tier the budget
   // does not waive fees for.
-  const fn = /function tierProgressRows\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  const fn = /function tierProgressRows\(\w*\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'tierProgressRows() not found');
   ok(/tierEarnedMap\(\)/.test(fn[0]), 'it no longer reads the shared earned map');
   ok(/earnedTierFor\(/.test(fn[0]), 'it no longer uses the shared "highest tier reached" helper');
@@ -1566,7 +1579,7 @@ test('the amount on the button is the amount written to the ledger', () => {
   // Two code paths compute it — the card, and the handler recomputing from tierShortfallRows on
   // click. If they ever disagree the button becomes a lie about a real payment, so both must be
   // the same expression over the same inputs.
-  const prog = /function tierProgressRows\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  const prog = /function tierProgressRows\(\w*\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   const shortfall = /function tierShortfallRows\(t, map\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/makeup: next \? Math\.min\(short, cover\) : 0/.test(prog), 'the card no longer caps at the fee');
   ok(/makeup: Math\.min\(short, cover\)/.test(shortfall), 'the handler path no longer caps at the fee');
@@ -1627,7 +1640,7 @@ test('a bought tier says so on the board, and can be taken back there', () => {
   ok(/tinyDangerBtn\('tier-unmakeup:' \+ r\.earned\.id \+ ':' \+ r\.scout\.id/.test(card),
     'there is no way back from the board the credit shows on');
   // …and it comes off the shared map, not off a second calculation of its own.
-  const rows = /function tierProgressRows\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  const rows = /function tierProgressRows\(\w*\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/earnedBy: earned \? \(\(map\[earned\.id\] \|\| \{\}\)\[s\.id\] \|\| ''\) : '',/.test(rows),
     'the row works out how a tier was credited on its own instead of reading the shared map');
   // The explanation has to outlive the offer: gated on `makeup` alone the paragraph vanished the
@@ -1691,10 +1704,10 @@ const shiftCtx = (() => {
 const SHIFT_ROWS = [
   ['Master Shift Report'],
   ['Date', 'Site Name', 'Address Line 1', 'Shift', 'Scout Name'],
-  ['2026-08-23', 'Kroger', '2100 Riverside Pkwy', '10:00 AM - 12:00 PM US/Eastern', 'Bowie G'],
-  ['2026-08-23', 'Kroger', '2100 Riverside Pkwy', '10:00 AM - 12:00 PM US/Eastern', 'Phoenix G'],
-  ['2026-08-23', 'Kroger', '2100 Riverside Pkwy', '12:00 PM - 02:00 PM US/Eastern', 'Logan D'],
-  ['2026-08-29', 'Kroger', '950 Herrington Rd', '10:00 AM - 12:00 PM US/Eastern', ''],
+  ['2026-08-23', 'Kroger', '100 Main St', '10:00 AM - 12:00 PM US/Eastern', 'Beckett H'],
+  ['2026-08-23', 'Kroger', '100 Main St', '10:00 AM - 12:00 PM US/Eastern', 'Piper H'],
+  ['2026-08-23', 'Kroger', '100 Main St', '12:00 PM - 02:00 PM US/Eastern', 'Lorenzo K'],
+  ['2026-08-29', 'Kroger', '200 Oak Ave', '10:00 AM - 12:00 PM US/Eastern', ''],
 ];
 
 test('one block per SHIFT, not one per scout who signed up for it', () => {
@@ -1706,7 +1719,7 @@ test('one block per SHIFT, not one per scout who signed up for it', () => {
   eq(mapped.totalShifts, 3, 'the shift count double-counts a shared slot');
   // Same site at two addresses is still disambiguated by address.
   eq(mapped.storefronts.map((sf) => sf.name),
-    ['Kroger – 2100 Riverside Pkwy', 'Kroger – 950 Herrington Rd'], 'two addresses were merged');
+    ['Kroger – 100 Main St', 'Kroger – 200 Oak Ave'], 'two addresses were merged');
 });
 
 test('an existing storefront gets the shifts it is missing, matched on start time', () => {
@@ -1731,24 +1744,24 @@ test('an existing storefront gets the shifts it is missing, matched on start tim
 });
 
 test('a sign-up matches the roster on "First L", and refuses to guess', () => {
-  // The report abbreviates: "Bowie G", not "Bowie Gladden". teMatchScouts, which the SALES import
+  // The report abbreviates: "Beckett H", not "Beckett Hartley". teMatchScouts, which the SALES import
   // uses, compares whole names and would match almost nobody here.
   const ctx = vm.createContext({});
   vm.runInContext([slice('teMatchShiftScout'), slice('teNameKey')].join('\n') +
     '\nvar ROSTER = []; function activeScouts() { return ROSTER; }', ctx);
-  ctx.ROSTER = [{ id: 's1', name: 'Bowie Gladden' }, { id: 's2', name: 'Logan Dougherty' }];
-  eq(ctx.teMatchShiftScout('Bowie G'), 's1', 'first name plus last initial does not match');
-  eq(ctx.teMatchShiftScout('Bowie Gladden'), 's1', 'an exact full name does not match');
-  eq(ctx.teMatchShiftScout('bowie  g'), 's1', 'case and spacing are not normalised');
-  eq(ctx.teMatchShiftScout('Bowie G.'), 's1', 'a trailing full stop on the initial breaks it');
+  ctx.ROSTER = [{ id: 's1', name: 'Beckett Hartley' }, { id: 's2', name: 'Lorenzo Kessler' }];
+  eq(ctx.teMatchShiftScout('Beckett H'), 's1', 'first name plus last initial does not match');
+  eq(ctx.teMatchShiftScout('Beckett Hartley'), 's1', 'an exact full name does not match');
+  eq(ctx.teMatchShiftScout('beckett  h'), 's1', 'case and spacing are not normalised');
+  eq(ctx.teMatchShiftScout('Beckett H.'), 's1', 'a trailing full stop on the initial breaks it');
   // Assigning the wrong child to a shift is worse than assigning none: the shift is who turns up,
   // and once sales land on the block it is who gets the credit. So ambiguity refuses.
-  ctx.ROSTER = [{ id: 'a', name: 'Bowie Gladden' }, { id: 'b', name: 'Bowie Greene' }];
-  eq(ctx.teMatchShiftScout('Bowie G'), null, 'it guessed between two scouts who both fit');
-  ctx.ROSTER = [{ id: 'a', name: 'Bowie Gladden' }];
+  ctx.ROSTER = [{ id: 'a', name: 'Beckett Hartley' }, { id: 'b', name: 'Beckett Hollis' }];
+  eq(ctx.teMatchShiftScout('Beckett H'), null, 'it guessed between two scouts who both fit');
+  ctx.ROSTER = [{ id: 'a', name: 'Beckett Hartley' }];
   eq(ctx.teMatchShiftScout('Casey T'), null, 'a name nobody on the roster fits was matched anyway');
   eq(ctx.teMatchShiftScout(''), null, 'an empty name matched something');
-  eq(ctx.teMatchShiftScout('Bowie'), null, 'a bare first name was matched on its own');
+  eq(ctx.teMatchShiftScout('Beckett'), null, 'a bare first name was matched on its own');
 });
 
 test('sign-ups never re-split money that has already been recorded', () => {
@@ -1758,8 +1771,8 @@ test('sign-ups never re-split money that has already been recorded', () => {
   const ctx = vm.createContext({});
   vm.runInContext([slice('teNewSignups'), slice('teMatchShiftScout'), slice('teNameKey')].join('\n') +
     '\nvar ROSTER = []; function activeScouts() { return ROSTER; }', ctx);
-  ctx.ROSTER = [{ id: 's1', name: 'Bowie Gladden' }, { id: 's2', name: 'Phoenix Gladden' }];
-  const shift = { start: '10:00 AM', scouts: ['Bowie G', 'Phoenix G'] };
+  ctx.ROSTER = [{ id: 's1', name: 'Beckett Hartley' }, { id: 's2', name: 'Piper Hartley' }];
+  const shift = { start: '10:00 AM', scouts: ['Beckett H', 'Piper H'] };
   eq(ctx.teNewSignups({ assignments: [], salesCents: 0, donationsCents: 0 }, shift).length, 2,
     'an empty block did not take its sign-ups');
   eq(ctx.teNewSignups({ assignments: [], salesCents: 48000, donationsCents: 0 }, shift).length, 0,
@@ -1770,7 +1783,7 @@ test('sign-ups never re-split money that has already been recorded', () => {
   eq(ctx.teNewSignups({ assignments: [{ scoutId: 's1', weight: 1 }], salesCents: 0, donationsCents: 0 }, shift)
     .map((m) => m.scoutId), ['s2'], 'a scout already signed up was added again');
   // A name that matches nobody is skipped rather than dropped in as a blank assignment.
-  ctx.ROSTER = [{ id: 's1', name: 'Bowie Gladden' }];
+  ctx.ROSTER = [{ id: 's1', name: 'Beckett Hartley' }];
   eq(ctx.teNewSignups({ assignments: [], salesCents: 0, donationsCents: 0 },
     { start: '10:00 AM', scouts: ['Nobody Q'] }).length, 0, 'an unmatched name became an assignment');
 });
@@ -1779,8 +1792,8 @@ test('the shift report carries its sign-ups through the parser', () => {
   // The rows that used to be discarded as duplicate shifts ARE the sign-ups.
   const mapped = shiftCtx.mapShiftReport(SHIFT_ROWS, shiftCtx.detectReport(SHIFT_ROWS));
   const first = mapped.storefronts[0];
-  eq(first.shifts[0].scouts, ['Bowie G', 'Phoenix G'], 'both scouts on one shift were not collected');
-  eq(first.shifts[1].scouts, ['Logan D'], 'the second shift lost its scout');
+  eq(first.shifts[0].scouts, ['Beckett H', 'Piper H'], 'both scouts on one shift were not collected');
+  eq(first.shifts[1].scouts, ['Lorenzo K'], 'the second shift lost its scout');
   eq(mapped.storefronts[1].shifts[0].scouts, [], 'an unstaffed shift invented a scout');
 });
 
@@ -1858,16 +1871,16 @@ const dropCtx = (() => {
   const ctx = vm.createContext({});
   vm.runInContext([slice('teDroppedSignups'), slice('teMatchShiftScout'), slice('teNameKey')].join('\n') +
     '\nvar ROSTER = []; function activeScouts() { return ROSTER; }', ctx);
-  ctx.ROSTER = [{ id: 's1', name: 'Bowie Gladden' }, { id: 's2', name: 'Phoenix Gladden' },
-    { id: 's3', name: 'Logan Dougherty' }];
+  ctx.ROSTER = [{ id: 's1', name: 'Beckett Hartley' }, { id: 's2', name: 'Piper Hartley' },
+    { id: 's3', name: 'Lorenzo Kessler' }];
   return ctx;
 })();
 const emptyBlock = (ids) => ({ assignments: ids.map((id) => ({ scoutId: id, weight: 1 })), salesCents: 0, donationsCents: 0 });
 
 test('a scout the report has dropped comes off the block', () => {
-  // The complaint: Logan is on the block here, the report no longer has him on that shift, and
+  // The complaint: Lorenzo is on the block here, the report no longer has him on that shift, and
   // the import left him standing there. The block is who turns up on the day.
-  const shift = { start: '10:00 AM', scouts: ['Bowie G', 'Phoenix G'] };
+  const shift = { start: '10:00 AM', scouts: ['Beckett H', 'Piper H'] };
   eq(dropCtx.teDroppedSignups(emptyBlock(['s1', 's2', 's3']), shift).map((a) => a.scoutId), ['s3'],
     'a scout no longer on the report was left signed up');
   // A shift the report has emptied out clears the block — the modal case, since a blank Scout Name
@@ -1884,7 +1897,7 @@ test('a scout the report has dropped comes off the block', () => {
 test('removal never re-splits money that has already been recorded', () => {
   // Symmetric with teNewSignups' guard, and for the identical reason: blockShares divides takings
   // by weight, so taking somebody OFF a paid block changes what everybody left on it earned.
-  const shift = { start: '10:00 AM', scouts: ['Bowie G'] };
+  const shift = { start: '10:00 AM', scouts: ['Beckett H'] };
   eq(dropCtx.teDroppedSignups({ assignments: [{ scoutId: 's3', weight: 1 }], salesCents: 48000, donationsCents: 0 }, shift).length, 0,
     'a block with recorded SALES lost an assignee, re-splitting the money');
   eq(dropCtx.teDroppedSignups({ assignments: [{ scoutId: 's3', weight: 1 }], salesCents: 0, donationsCents: 2500 }, shift).length, 0,
@@ -1892,18 +1905,18 @@ test('removal never re-splits money that has already been recorded', () => {
 });
 
 test('removal refuses on a shift carrying a name it could not resolve', () => {
-  // "Bowie G" with two Bowie G's on the roster resolves to nobody — and the scout already on the
+  // "Beckett H" with two Beckett H's on the roster resolves to nobody — and the scout already on the
   // block may BE the one the report meant. Removing on a guess deletes a sign-up the report is
   // still asking for, and nothing here can tell the difference. So the whole shift is left alone.
   const ctx = vm.createContext({});
   vm.runInContext([slice('teDroppedSignups'), slice('teMatchShiftScout'), slice('teNameKey')].join('\n') +
     '\nvar ROSTER = []; function activeScouts() { return ROSTER; }', ctx);
-  ctx.ROSTER = [{ id: 'a', name: 'Bowie Gladden' }, { id: 'b', name: 'Bowie Greene' }];
-  eq(ctx.teDroppedSignups(emptyBlock(['a']), { start: '10:00 AM', scouts: ['Bowie G'] }).length, 0,
+  ctx.ROSTER = [{ id: 'a', name: 'Beckett Hartley' }, { id: 'b', name: 'Beckett Hollis' }];
+  eq(ctx.teDroppedSignups(emptyBlock(['a']), { start: '10:00 AM', scouts: ['Beckett H'] }).length, 0,
     'an ambiguous name on the shift still removed somebody');
   // A name matching nobody at all is the same problem: it may be a roster spelling difference.
-  ctx.ROSTER = [{ id: 'a', name: 'Bowie Gladden' }];
-  eq(ctx.teDroppedSignups(emptyBlock(['a']), { start: '10:00 AM', scouts: ['Bowy Gladden'] }).length, 0,
+  ctx.ROSTER = [{ id: 'a', name: 'Beckett Hartley' }];
+  eq(ctx.teDroppedSignups(emptyBlock(['a']), { start: '10:00 AM', scouts: ['Becket Hartley'] }).length, 0,
     'a name that matched nobody was treated as "the shift is empty" and cleared the block');
 });
 
@@ -1960,7 +1973,8 @@ test('a meeting\u2019s internal note never reaches ANY outbound surface', () => 
   // The ICS builder is not a single named function, so scan the block that writes DESCRIPTION.
   const ics = /function buildICS\(\)[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(ics, 'buildICS() was not found — the ICS guard is not scanning anything');
-  ok(/icsEscape\(ev\.note\)/.test(ics[0]), 'buildICS no longer writes the published note, so this guard is aimed at the wrong code');
+  // Since B8 (2026-09) the .ics carries no note of either kind — see the next test.
+  ok(/function buildICS\(\)/.test(ics[0]) && /LOCATION:/.test(ics[0]), 'this guard is aimed at the wrong code');
   ok(!/noteInternal/.test(ics[0]), 'the .ics export carries the leaders-only note');
   // ...and it DOES appear where it is supposed to: the leader-facing printable agenda.
   ok(/m\.noteInternal/.test(SCRIPT), 'the internal note is never rendered anywhere');
@@ -2399,7 +2413,7 @@ test('one handler set serves every budget line, not parallel act-/exp- families'
    ================================================================ */
 
 const CHARGE_FNS = ['CHARGE_WHO', 'centsOf', 'chargeKey', 'chargeRowsFor', 'chargeIsOpen',
-  'paymentsForScout', 'familyOutstanding', 'chargeTotals'];
+  'entryPaysCharges', 'entryRefundsFamily', 'paymentsForScout', 'familyAccounts', 'familyOutstanding', 'chargeSetTotals', 'chargeTotals'];
 
 function line3b(patch) {
   return Object.assign({
@@ -2523,7 +2537,7 @@ test('a tier waives a head other than the scout only where it NAMES that share',
   ok(fn, 'applyTierWaivers() not found');
   ok(!/if \(c\.who !== 'scout'\) \{ c\.waivedBy = ''; return; \}/.test(fn[0]),
     'the blanket refusal is back, so a named adult share can never be honoured');
-  ok(/var hit = \(covered\[coverKeyOf\(key, c\.who\)\] \|\| \{\}\)\[c\.scoutId\];/.test(fn[0]),
+  ok(/var ck = coverKeyOf\(key, c\.who\);/.test(fn[0]) && /\(covered\[ck\] \|\| \{\}\)\[c\.scoutId\]/.test(fn[0]),
     'the waiver does not look up the charge’s own head kind');
   ok(/c\.waivedBy = et \? et\.id/.test(fn[0]),
     'the waiver does not record WHICH tier bought it — total waived stops being measurable');
@@ -2596,9 +2610,10 @@ test('reconciling charges never removes one that has been settled or paid agains
   const fn = /function syncCharges\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'syncCharges() not found');
   ok(/if \(c\.waivedBy \|\| c\.forgiven\) return true;/.test(fn[0]), 'a settled charge can be dropped');
-  ok(/return paymentsForScout\(state\.ledger, c\.scoutId\) > 0;/.test(fn[0]),
+  // M8 — money against THIS charge (chargePaidAllocation), not against the scout in general.
+  ok(/return \(paidOn\[c\.id\] \|\| 0\) > 0;/.test(fn[0]),
     'a charge with money against it can be dropped');
-  ok(/paymentsForScout\(state\.ledger, have\.scoutId\) === 0/.test(fn[0]),
+  ok(/chargeIsOpen\(have\) && !\(paidOn\[have\.id\] > 0\)/.test(fn[0]),
     'a paid charge can be silently re-priced');
 });
 
@@ -2717,7 +2732,7 @@ test('Phase 4: a family-funded event counts as income before anyone has attended
   // raise money it was never going to spend.
   const fn = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'fundingSummary() not found');
-  ok(/rows\.length \? chargeTotals\(rows, state\.ledger\)\.standing : lineFamilyPlanned\(l\)/.test(fn[0]),
+  ok(/rows\.length \? chargeSetTotals\(rows\)\.standing : lineFamilyPlanned\(l\)/.test(fn[0]),
     'a family-funded line with no charges yet contributes nothing to income');
   // ...and the fallback is what FAMILIES would be billed, not the whole planned cost: a leader's
   // place is in linePlanned and no family is ever billed for one.
@@ -3267,10 +3282,12 @@ test('the two goals get separate bars, on their own scales', () => {
   const i = SCRIPT.indexOf('aria-label="Stretch goal ');
   ok(i !== -1, 'the stretch progress bar not found');
   const blk = SCRIPT.slice(Math.max(0, i - 1400), i + 900);
-  ok(/pack\.teEligible \/ pack\.teGoal/.test(blk), 'the minimum bar is not measured against the minimum');
-  ok(/pack\.teEligible \/ pack\.stretch/.test(blk), 'the stretch bar is not measured against the stretch');
+  // teBarGoal is teGoal plus a cash goal that runs through Trail's End (P3, 2026-09).
+  ok(/pack\.teEligible \/ pack\.teBarGoal/.test(blk), 'the minimum bar is not measured against the minimum');
+  // teBarStretch is the stretch plus the same cash goal (K2, 2026-09-28).
+  ok(/pack\.teEligible \/ pack\.teBarStretch/.test(blk), 'the stretch bar is not measured against the stretch');
   ok(/beyond what the budget needs/.test(blk), 'the stretch does not say how far past the plan it reaches');
-  ok(/of <span class="money">' \+ fmt\(pack\.teGoal\) \+ '<\/span> needed/.test(blk),
+  ok(/of <span class="money">' \+ fmt\(pack\.teBarGoal\) \+ '<\/span> needed/.test(blk),
     'the minimum bar does not say the figure is what is NEEDED');
 });
 
@@ -3529,7 +3546,7 @@ function inSlotNames(rows) {
 }
 
 test('a month lists its activities in DATE order, not the order they were added', () => {
-  // Keith's real October, in the array order his record actually held it: the group read
+  // A real pack's October, in the array order its record actually held it: the group read
   // "Oct 17, Oct 24, Oct 25, Oct 10, Oct 2".
   eq(inSlotNames([
     { name: 'Jamboree', date: '2026-10-17' },
@@ -4330,8 +4347,9 @@ test('the shortfall is the gap, capped at the fee it buys', () => {
   ok(report, 'the deadline report heading was not found');
   ok(/if \(tierIsClosed\(t\) && tierCoverCentsPerScout\(t\) > 0\) \{/.test(SCRIPT),
     'the "Missed the deadline" report is no longer gated on the deadline having passed');
-  const cover = /function tierCoverCentsPerScout\(t\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(cover && /coverableLines\(\)\.forEach/.test(cover[0]),
+  const cover = /function tierCoverCentsPerScout\(t, scout, cov\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(cover && /return coverValueOfKeys\(keys, scout, cov\);/.test(cover[0]) &&
+     /coverableLines\(\)\.forEach/.test(slice('coverValueOfKeys')),
     'the fee counts lines a tier cannot be pointed at in the first place');
 });
 
@@ -4370,7 +4388,8 @@ test('the deadline drives coverage, waivers, badges and the counts from ONE map'
     ok(fn, f + '() not found');
     ok(/tierEarnedMap\(\)/.test(fn[0]), f + ' works out who earned a tier on its own');
   });
-  ok(/var et = earnedTierFor\(r\.id, tiers, tierEarnedMap\(\)\);/.test(SCRIPT),
+  // A caller may hand it the sales-only VIEW of the same map (salesOnlyTierMap), never its own.
+  ok(/var et = earnedTierFor\(r\.id, tiers, map \|\| tierEarnedMap\(\)\);/.test(SCRIPT),
     'the standings badge still uses live sales, so it would show a tier somebody missed');
   ok(/function earnedTierFor\(scoutId, tiers, map\)/.test(SCRIPT), 'earnedTierFor() not found');
 });
@@ -4411,7 +4430,7 @@ test('the goal is worked out at the LOWER of the two rates', () => {
   // The goal itself must fall out of that rate, not out of state.commissionPct.
   const fn = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'fundingSummary() not found');
-  ok(/var rates = commissionRates\(\);\s*\n\s*var pct = rates\.goal;/.test(fn[0]),
+  ok(/var rates = commissionRates\(\);[\s\S]*\n\s*var pct = rates\.goal;/.test(fn[0]),
     'the sales goal is still derived from the storefront rate alone');
   ok(!/parseFloat\(state\.commissionPct\)/.test(fn[0]), 'fundingSummary reads a raw rate of its own');
   // And nothing may claim online is the better one — Pack 569's is not.
@@ -4655,7 +4674,8 @@ test('a council-paid fee can be covered, and only ever as a reimbursement', () =
     'it does not describe a line families pay somebody else for');
   const rows = /function tierReimbursements\(map\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(rows, 'tierReimbursements() not found');
-  ok(/e\.direction === 'out' && e\.lineId === s\.item\.id && e\.scoutId === sc\.id/.test(rows[0]),
+  // Read across the whole family since 2026-09 (P5), so `ids` rather than one scout id.
+  ok(/e\.direction === 'out' && e\.lineId === s\.item\.id && ids\[e\.scoutId\]/.test(rows[0]),
     'what has already been paid back is not read from the ledger');
   ok(/left: Math\.max\(0, s\.rate - paid\)/.test(rows[0]), 'a part-paid reimbursement is not tracked');
   // The payment is a ledger entry OUT that carries the scout — that is what makes "who has been
@@ -4669,7 +4689,9 @@ test('a council-paid fee can be covered, and only ever as a reimbursement', () =
   ok(/receipt/.test(act[0]), 'nothing reminds the treasurer to keep the council receipt');
   // Money in is what settles a family's account; money out must not touch it.
   const pay = /function paymentsForScout\(ledger, scoutId\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(pay && /e\.direction === 'in' && e\.scoutId === scoutId/.test(pay[0]),
+  const pays = /function entryPaysCharges\(e\) \{[^\n]*\}/.exec(SCRIPT);
+  ok(pay && /entryPaysCharges\(e\) && e\.scoutId === scoutId/.test(pay[0]) &&
+    pays && /e\.direction === 'in'/.test(pays[0]),
     'a reimbursement OUT would be counted as a payment from the family');
 });
 
@@ -4718,11 +4740,11 @@ test('a per-family fee counts FAMILIES, and a link is what makes that possible',
   // and the count follows it.
   const fam = sandbox(['familyKeyOf', 'familiesOf']);
   const roster = [
-    { id: 'a', name: 'Ada Dougherty' },
-    { id: 'b', name: 'Ben Dougherty', familyId: 'a' },
+    { id: 'a', name: 'Ada Porter' },
+    { id: 'b', name: 'Ben Porter', familyId: 'a' },
     { id: 'c', name: 'Cal Smith' }
   ];
-  eq(fam.familiesOf(roster).length, 2, 'two Doughertys and a Smith is two families');
+  eq(fam.familiesOf(roster).length, 2, 'two Porters and a Smith is two families');
   eq(fam.familiesOf(roster).map((f) => f.members.map((s) => s.id)), [['a', 'b'], ['c']], 'membership');
   eq(fam.familyKeyOf({ id: 'z' }), 'z', 'an unlinked scout is a family of one');
   eq(fam.familyKeyOf({ id: 'b', familyId: 'a' }), 'a', 'a linked scout takes the family key');
@@ -5335,6 +5357,107 @@ test('a year’s new seed text reaches a pack that already has its trips — but
   eq(ctx.freshCamping().seedRev, ctx.CAMP_SEED_REV, 'freshCamping does not carry the seed revision');
 });
 
+test('rev 2 carries the new supervision rules and spring link into a pack still on rev 1 text', () => {
+  // The synthetic-table test above proves the mechanism; this proves the REAL table. The rev 1
+  // wording is kept here verbatim because it is exactly what a live pack's record still holds,
+  // and a hash that doesn't match it would leave every existing pack on the old rules silently.
+  const OLD_SAFETY = 'This part is Youth Protection, and it is not flexible.\n' +
+    '- Every youth is the responsibility of one named adult for the whole weekend. Lions and Tigers must have their own adult partner there.\n' +
+    '- Parents, guardians and siblings share a tent as a family. That is the normal arrangement at family camp.\n' +
+    '- Otherwise a Scout tents with another youth within two years of their age and of the same gender. No adult shares a tent with a youth who is not their own child.\n' +
+    '- Two registered adults with current Safeguarding Youth training are present at all times.\n' +
+    '- At least one adult on the trip is BALOO-trained (Basic Adult Leader Outdoor Orientation) and at least one holds current Hazardous Weather training. Both are required for a pack to camp. If you would like to be one of them, tell the Cubmaster — BALOO is a weekend course and the pack should never be one person away from being unable to go.';
+  const ctx = sandbox(NORMALIZE_FNS);
+  ok(ctx.CAMP_SEED_REV >= 2, 'CAMP_SEED_REV was not bumped for the 2026-09-27 seed changes');
+  const seed = ctx.seedCampingTrips();
+  const SLEEP = 'Sleeping arrangements and supervision';
+  const rev1 = () => ({
+    yargoAdded: true, seedRev: 1,
+    trips: seed.map((t) => Object.assign({}, t, {
+      url: t.name === 'Spring Family Camping' ? 'https://www.nega-bsa.org/spring-camping' : t.url,
+      sections: t.sections.map((s) => Object.assign({}, s, s.title === SLEEP ? { body: OLD_SAFETY } : {}))
+    }))
+  });
+  const start = rev1();
+  // A leader on Fort Yargo rewrote the supervision section; theirs stays.
+  start.trips[2].sections.find((s) => s.title === SLEEP).body = OLD_SAFETY + '\n- Our own extra rule.';
+  const after = ctx.normalizeState(Object.assign(preMigrationState(), { camping: start })).camping;
+  const body = (i) => after.trips[i].sections.find((s) => s.title === SLEEP).body;
+  eq(body(0), ctx.CAMP_SAFETY, 'the fall trip kept the rev 1 supervision text');
+  eq(body(1), ctx.CAMP_SAFETY, 'the spring trip kept the rev 1 supervision text');
+  eq(body(2), OLD_SAFETY + '\n- Our own extra rule.', "a leader's edited supervision section was overwritten");
+  eq(after.trips[1].url, 'https://www.nega-bsa.org/family-camp', 'the spring link was not moved to the family-camp page');
+  ok(/own parent or legal guardian/.test(ctx.CAMP_SAFETY) && /must be registered/.test(ctx.CAMP_SAFETY) &&
+    /female adult 21 or older/.test(ctx.CAMP_SAFETY), 'the new supervision rules are not in CAMP_SAFETY');
+  eq(after.seedRev, ctx.CAMP_SEED_REV, 'the revision was not recorded');
+});
+
+test('rev 3 carries the 2026-09-28 supervision wording into a pack still on rev 2 text', () => {
+  // The rev 2 CAMP_SAFETY, verbatim — it is what every live pack's three trips hold today.
+  const REV2_SAFETY = 'This part is Youth Protection, and it is not flexible.\n' +
+    '- Every Cub Scout camps with their own parent or legal guardian; Lions and Tigers with their adult partner. Only in exceptional circumstances, agreed beforehand by the Cubmaster and the parent, may a Scout come under another registered adult who is the parent of a Cub Scout also on the trip.\n' +
+    '- Parents, guardians and siblings share a tent as a family. No adult shares a tent with a youth who is not their own child. Youth who share a tent are the same gender and within two years of age.\n' +
+    '- Two registered adults with current Safeguarding Youth Training, at least one of them 21 or older, are present at all times. When girls attend, a registered female adult 21 or older is there too.\n' +
+    '- Any adult staying overnight who is not the parent or guardian of a Cub Scout on the trip must be registered.\n' +
+    '- At least one adult on the trip is BALOO-trained (Basic Adult Leader Outdoor Orientation) and at least one holds current Hazardous Weather training. Both are required for a pack to camp. If you would like to be one of them, tell the Cubmaster — BALOO is a weekend course and the pack should never be one person away from being unable to go.';
+  const ctx = sandbox(NORMALIZE_FNS);
+  ok(ctx.CAMP_SEED_REV >= 3, 'CAMP_SEED_REV was not bumped for the 2026-09-28 supervision wording');
+  ok(/Two registered adult leaders, both 21 or older/.test(ctx.CAMP_SAFETY), 'CAMP_SAFETY does not say both leaders are 21 or older');
+  ok(!/at least one of them 21 or older/.test(ctx.CAMP_SAFETY), 'CAMP_SAFETY still says only one needs to be 21');
+  ok(/never applies to a Lion or Tiger/.test(ctx.CAMP_SAFETY) && /more than one Scout from outside their own family/.test(ctx.CAMP_SAFETY),
+    'the exceptional-circumstances limits are missing');
+  ok(/required for a pack overnighter/.test(ctx.CAMP_SAFETY) && !/required for a pack to camp/.test(ctx.CAMP_SAFETY),
+    'the BALOO line still reads as if every family camper needs it');
+  const SLEEP = 'Sleeping arrangements and supervision';
+  const start = {
+    yargoAdded: true, seedRev: 2,
+    trips: ctx.seedCampingTrips().map((t) => Object.assign({}, t, {
+      sections: t.sections.map((s) => Object.assign({}, s, s.title === SLEEP ? { body: REV2_SAFETY } : {}))
+    }))
+  };
+  start.trips[1].sections.find((s) => s.title === SLEEP).body = REV2_SAFETY + '\n- Ours.';
+  const after = ctx.normalizeState(Object.assign(preMigrationState(), { camping: start })).camping;
+  const body = (i) => after.trips[i].sections.find((s) => s.title === SLEEP).body;
+  eq(body(0), ctx.CAMP_SAFETY, 'the fall trip kept the rev 2 supervision text');
+  eq(body(2), ctx.CAMP_SAFETY, 'Fort Yargo kept the rev 2 supervision text');
+  eq(body(1), REV2_SAFETY + '\n- Ours.', "a leader's edited supervision section was overwritten");
+  eq(after.seedRev, ctx.CAMP_SEED_REV, 'the revision was not recorded');
+  ok(/both 21 or older/.test(readFileSync(join(ROOT, 'DESIGN-camping.md'), 'utf8')), 'DESIGN-camping.md still says one 21 or older');
+});
+
+test('the 2026-09-27 camping corrections hold', () => {
+  const ctx = sandbox(NORMALIZE_FNS.concat(['CAMP_PACK_RUN', 'CAMP_EMERGENCY', 'YARGO_TRIP_ID']));
+  const trips = ctx.seedCampingTrips();
+  const all = JSON.stringify(trips);
+  const [fall, spring, yargo] = trips;
+  eq(fall.cost, '2026: $35 per family online through Wed 30 Sep · $45 late rate from 11:59 pm Wed 30 Sep until online registration closes Thu 1 Oct, 11:59 pm · $45 on site · card fee added online',
+    'the fall cost line');
+  ok(/\$45 late rate from 11:59 pm Wed 30 Sep/.test(fall.sections.find((s) => s.title === 'Before you go').body),
+    '"Before you go" does not match the cost line');
+  ok(!/usually credit/.test(all), 'the seed still promises fees are usually credited elsewhere');
+  eq(spring.url, 'https://www.nega-bsa.org/family-camp', 'spring link');
+  ok(/Northeast Georgia Medical Center Barrow, 316 N Broad St, Winder · \(770\) 867-3400/.test(JSON.stringify(yargo)),
+    'Fort Yargo names the wrong hospital');
+  ok(!/Barrow Regional/.test(all), 'the old hospital name is still there');
+  // Drive times contradicted each other ("twenty minutes closer", "an hour up I-85"). None now.
+  ok(!/twenty minutes closer|an hour up|about an hour from Atlanta|under an hour away/.test(all), 'a drive-time claim is back');
+  ok(/leave pets at home unless you’ve checked with the Cubmaster first \(service animals are always welcome\)/i.test(all),
+    'the Fort Yargo pets line');
+  ok(!/Class [AB]\b/.test(all), 'Class A / Class B instead of field / activity uniform');
+  ok(!/site appraisal|site approval/.test(JSON.stringify(yargo)), 'site-approval text was added to Fort Yargo');
+  ok(!/Camp Rainey — fall/.test(SCRIPT), 'Camp Rainey is the spring campout, not the fall one');
+});
+
+test('a trip link is labelled by who hosts it', () => {
+  const ctx = sandbox(['campLinkLabel']);
+  eq(ctx.campLinkLabel('https://www.nega-bsa.org/APFF'), ['Register', 'Council page'], 'council');
+  eq(ctx.campLinkLabel('https://mycouncil.nega-bsa.org/Event/APFF-2026'), ['Register', 'Council page'], 'council subdomain');
+  eq(ctx.campLinkLabel('https://gastateparks.org/FortYargo'), ['Book', 'Park page'], 'state park');
+  eq(ctx.campLinkLabel('https://example.com/nega-bsa.org'), ['Link', 'Event page'], 'a path is not a host');
+  eq(ctx.campLinkLabel('https://notnega-bsa.org/'), ['Link', 'Event page'], 'a lookalike host');
+  ok(/campLinkLabel\(t\.url\)/.test(slice('campFacts')), 'campFacts does not use it');
+});
+
 test('the seeded content states the rules a pack actually has to follow', () => {
   // Not a style check — these are the four things a BALOO course exists to make sure somebody
   // on the trip knows. If a rewrite drops them the page becomes a packing list with a
@@ -5449,6 +5572,12 @@ function runSandbox(setup) {
   const ctx = vm.createContext({});
   vm.runInContext(
     `${setup}
+     ${slice('DENS')}
+     ${slice('ADVENTURES')}
+     ${slice('ADV_RENAMES')}
+     ${slice('advOptionsForDen')}
+     ${slice('advCanonicalName')}
+     ${slice('advOffDenList')}
      ${slice('evAdventure')}
      ${slice('meetingRoster')}
      ${slice('wasCheckedIn')}
@@ -5575,6 +5704,167 @@ test('the mark-off button credits the run, not the room', () => {
   ok(/mamRun\.prog\.onTrack\.forEach/.test(m[0]),
     'it still credits the attendance book for this one meeting');
   ok(!/state\.attendance\[mam\.id\]/.test(m[0]), 'it still reads tonight’s attendance directly');
+});
+
+test('a scout who stayed home TONIGHT is not credited by tonight’s Mark-done', () => {
+  // Audit 2026-09-27: a session dated today counted as `pending`, so a scout not checked in
+  // tonight had "missed nothing" and the button — pressed at the end of tonight's meeting —
+  // credited them. m2 is tonight; Ada is checked in, Ben is not.
+  const ctx = runSandbox(RUN_SETUP.replace("var TODAY = '2026-08-13';", "var TODAY = '2026-08-12';"));
+  const p = vm.runInContext("runProgress(adventureRuns().find(function (r) { return r.den === 'Wolf'; }))", ctx);
+  const ben = p.scouts.find((r) => r.scout.name === 'Ben');
+  eq(ben.missed.map((e) => e.id), ['m2'], 'tonight’s session is not a miss for a scout who is not here');
+  eq(ben.pending.map((e) => e.id), ['m3'], 'only sessions AFTER today are still to come');
+  eq(p.onTrack.map((r) => r.scout.name), ['Ada'], 'a scout absent tonight is still offered for Mark done');
+});
+
+test('a scout who has been to no session at all is never credited', () => {
+  // "Missed nothing" is also true of a scout who has not been to anything. The day before the
+  // first session nobody has attended, so the button must have nobody to credit.
+  const ctx = runSandbox(RUN_SETUP
+    .replace("var TODAY = '2026-08-13';", "var TODAY = '2026-08-04';")
+    .replace(/var ATT = \{[\s\S]*?\};/, 'var ATT = {};'));
+  const p = vm.runInContext("runProgress(adventureRuns().find(function (r) { return r.den === 'Wolf'; }))", ctx);
+  p.scouts.forEach((r) => eq(r.missed.length, 0, `${r.scout.name} missed a session that has not happened`));
+  p.scouts.forEach((r) => eq(r.count, 0, `${r.scout.name} was checked in at something`));
+  eq(p.onTrack.length, 0, 'a scout with 0 sessions attended is on track to be marked done');
+});
+
+test('Home says when there are awards ready to buy', () => {
+  // Audit 2026-09-27: shopItems() returns { groups, total } and the Home task tested
+  // `shop.length` — undefined on an object — so "N awards ready to buy" never appeared.
+  const ctx = vm.createContext({});
+  vm.runInContext(`${slice('DENS')}
+    var ADVENTURES = {};
+    var state = { advancement: { a: { req: { Bobcat: 'done' }, elect: { Backyard: 'awarded' } } } };
+    function activeScouts() { return [{ id: 'a', den: 'Wolf' }]; }
+    function advRec(id) { return state.advancement[id] || null; }
+    ${slice('shopItems')}`, ctx);
+  const list = vm.runInContext('shopItems()', ctx);
+  eq(list.total, 1, 'one adventure is done and not yet awarded');
+  ok(list.length === undefined, 'shopItems() became an array — re-check the Home task');
+  const home = slice('homeTasks');
+  ok(!/shop\.length/.test(home), 'the Home task still reads shop.length, which is always undefined');
+  ok(/if \(shop\.total\)/.test(home), 'the Home task does not test shopItems().total');
+});
+
+test('a scout who moves up a den leaves the old rank’s adventures behind', () => {
+  // Audit 2026-09-27: marks are keyed by adventure name only, and Bobcat is on every rank's
+  // list. The standalone "Advance dens" moved the roster without clearing, so a new Bear
+  // showed Wolf's Bobcat as done and Wolf electives counted toward Bear.
+  const ctx = vm.createContext({});
+  vm.runInContext(`${slice('DENS')}
+    var state = {
+      scouts: [
+        { id: 'w', den: 'Wolf' }, { id: 'aol', den: 'Arrow of Light' },
+        { id: 'gone', den: 'Tiger', archived: true }, { id: 'none', den: '' }
+      ],
+      advancement: {
+        w: { req: { Bobcat: 'awarded' }, elect: { Backyard: 'done' } },
+        aol: { req: { Bobcat: 'done' }, elect: {} },
+        gone: { req: { Bobcat: 'done' }, elect: {} },
+        none: { req: { Bobcat: 'done' }, elect: {} }
+      }
+    };
+    ${slice('advanceDens')}`, ctx);
+  const res = vm.runInContext('advanceDens()', ctx);
+  eq(res, { advanced: 1, crossed: 1 }, 'the move itself changed');
+  eq(vm.runInContext("state.scouts[0].den", ctx), 'Bear', 'the Wolf did not move up');
+  ok(!vm.runInContext("state.advancement.w", ctx), 'the new Bear still carries Wolf’s Bobcat');
+  ok(!vm.runInContext("state.advancement.aol", ctx), 'a crossed-over scout kept a rank they have left');
+  // Scouts the button did NOT move keep their marks — they are still in the rank they earned them in.
+  ok(vm.runInContext("!!state.advancement.gone && !!state.advancement.none", ctx),
+    'a scout who did not move lost their advancement');
+});
+
+test('the close-out never clears the marks earned since the dens were advanced', () => {
+  // Advance dens runs in spring; the close-out comes months later. Everything marked in
+  // between belongs to the rank the scout is in now, so the close-out must not wipe it — and
+  // the season's own summary, taken at the advance, is what the archive keeps.
+  const roll = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/var densAlreadyAdvanced = state\.densAdvancedYear === closingYear;/.test(roll), 'rollover does not know dens were advanced');
+  ok(/if \(!densAlreadyAdvanced\) state\.advancement = \{\};/.test(roll),
+    'rollover still clears the whole advancement book after a spring advance');
+  ok(/state\.densAdvancedSummary = null;/.test(roll), 'last season’s summary survives into the new year');
+  const handler = /if \(act === 'adv-dens' \|\| act === 'adv-dens-again'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(handler.indexOf('advPerDenSummary()') !== -1 && handler.indexOf('advPerDenSummary()') < handler.indexOf('advanceDens()'),
+    'the season summary is not taken BEFORE the advance clears the marks');
+  const arc = slice('buildSeasonArchive');
+  ok(/state\.densAdvancedYear === year && snap && snap\.year === year/.test(arc),
+    'the season archive ignores the summary taken at Advance dens');
+});
+
+test('the Advance-dens summary survives a reload, and junk does not', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const norm = (v) => { const d = preMigrationState(); d.densAdvancedSummary = v; return ctx.normalizeState(d).densAdvancedSummary; };
+  eq(norm({ year: 2026, perDen: [{ den: 'Wolf', scouts: 3, complete: 1, adventuresAwarded: 7 }, { den: 'Nope' }] }),
+    { year: 2026, perDen: [{ den: 'Wolf', scouts: 3, complete: 1, adventuresAwarded: 7 }] }, 'the summary did not round-trip');
+  eq(norm(undefined), null, 'a record from before this field is not null');
+  eq(norm({ year: 'x', perDen: [] }), null, 'a malformed summary was kept');
+});
+
+test('an adventure typed in lower case is the official adventure, and one run', () => {
+  // Audit 2026-09-27: the adventure box is free text over a suggestion list. "council fire" and
+  // "Council Fire" were two runs, and a Mark-done on the first wrote a mark the grid never shows.
+  const ctx = runSandbox(RUN_SETUP.replace("var EVENTS = [", `var EVENTS = [
+    { id: 'c1', kind: 'den', den: 'Wolf', date: '2026-09-02', adventure: 'council fire' },
+    { id: 'c2', kind: 'den', den: 'Wolf', date: '2026-09-09', adventure: '  Council  Fire ' },
+    { id: 'k1', kind: 'den', den: 'Wolf', date: '2026-09-16', adventure: 'Knot night' },
+    { id: 'k2', kind: 'den', den: 'Wolf', date: '2026-09-23', adventure: 'knot night' },`));
+  const canon = (den, raw) => vm.runInContext(`advCanonicalName(${JSON.stringify(den)}, ${JSON.stringify(raw)})`, ctx);
+  eq(canon('Wolf', 'council fire'), 'Council Fire', 'case is not matched to the official name');
+  eq(canon('Lion', 'lion roar'), "Lion's Roar", 'the handbook rename is not applied case-insensitively');
+  eq(canon('', 'BOBCAT'), 'Bobcat', 'an all-dens meeting does not match against every rank');
+  eq(canon('Wolf', 'Knot night'), 'Knot night', 'a custom adventure was rewritten');
+  eq(canon('Wolf', ''), '', 'an empty tag became something');
+  const runs = vm.runInContext("adventureRuns().filter(function (r) { return r.den === 'Wolf'; })", ctx);
+  const cf = runs.filter((r) => r.adventure.toLowerCase() === 'council fire');
+  eq(cf.length, 1, '"council fire" and "Council Fire" are still two runs');
+  eq(cf[0].adventure, 'Council Fire', 'the run is not named in the official spelling');
+  eq(cf[0].sessions.map((e) => e.id), ['c1', 'c2'], 'the run lost a session');
+  eq(runs.filter((r) => r.adventure.toLowerCase() === 'knot night').length, 1, 'a custom adventure typed two ways is two runs');
+  eq(vm.runInContext("runForMeeting(state.events[1]).of", ctx), 2, 'the lower-case meeting does not find its run');
+});
+
+test('an adventure that is not on the den’s list is warned about, never refused', () => {
+  const ctx = runSandbox(RUN_SETUP);
+  const off = (den, nm) => vm.runInContext(`advOffDenList(${JSON.stringify(den)}, ${JSON.stringify(nm)})`, ctx);
+  ok(off('Bear', "Lion's Roar"), 'a Lion adventure on a Bear meeting is not flagged');
+  ok(!off('Wolf', 'Council Fire'), 'a Wolf adventure on a Wolf meeting is flagged');
+  ok(off('Wolf', 'Knot night'), 'a custom adventure is not flagged');
+  ok(!off('Wolf', ''), 'an empty tag is flagged');
+  const picker = slice('advTargetPicker');
+  ok(/advOffDenList\(m\.den, tagged\)/.test(picker) && /class="warn small"/.test(picker),
+    'the meeting editor does not show the off-list warning');
+  // Save and den change both re-spell, and neither refuses the value.
+  ok(/if \(ch === 'mtg-adv' \|\| ch === 'mtg-den'\) mtg\.adventure = advCanonicalName\(mtg\.den, mtg\.adventure\);/.test(SCRIPT),
+    'saving the adventure or changing the den does not normalize the adventure');
+  const mark = /if \(act === 'mtg-adv-mark'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/mamAdv = mamRun\.run\.adventure;/.test(mark), 'Mark done credits the typed spelling, not the run’s');
+});
+
+test('"nobody credited" means a finished run in this year that nobody in the den has', () => {
+  // Audit 2026-09-27: the nudge counted every past den MEETING ever, flagged a run after its
+  // first night, and any scout on the whole roster with the name hid it for every den.
+  const withSlice = (setup) => {
+    const ctx = runSandbox(setup);
+    vm.runInContext(slice('uncreditedRuns'), ctx);
+    return vm.runInContext('uncreditedRuns().map(function (r) { return r.den + ":" + r.adventure; })', ctx);
+  };
+  // Aug 13: Wolf's Bobcat has a session still to come; Bear's one-nighter is over, nobody marked.
+  eq(withSlice(RUN_SETUP), ['Bear:Bobcat'], 'a run with a session still to come was flagged, or a finished one was not');
+  // Aug 20: both over. Cy (Bear) has Bobcat — that must not hide the Wolf den's.
+  eq(withSlice(RUN_SETUP.replace("var TODAY = '2026-08-13';", "var TODAY = '2026-08-20';")
+    .replace('var STATUS = {};', "var STATUS = { c: { Bobcat: 'done' } };")), ['Wolf:Bobcat'],
+    'a Bear’s Bobcat hid the Wolf den’s uncredited run');
+  // One Wolf credited clears the Wolf run (the nudge is "nobody", not "not everybody").
+  eq(withSlice(RUN_SETUP.replace("var TODAY = '2026-08-13';", "var TODAY = '2026-08-20';")
+    .replace('var STATUS = {};', "var STATUS = { a: { Bobcat: 'done' }, c: { Bobcat: 'done' } };")), [],
+    'a run somebody was credited for is still flagged');
+  // Last program year's meeting is not this year's business.
+  eq(withSlice(RUN_SETUP.replace("{ id: 'x1', kind: 'den', den: 'Bear', date: '2026-08-05'",
+    "{ id: 'x1', kind: 'den', den: 'Bear', date: '2025-08-05'")), [], 'last year’s meeting was flagged');
+  ok(/var uncredited = uncreditedRuns\(\);/.test(slice('renderAdvancement')), 'the Advancement card does not use uncreditedRuns');
 });
 
 test('attendance is evidence, and the app never says a missed meeting costs the adventure', () => {
@@ -5741,7 +6031,7 @@ test('Home pairs two figures measured against the same thing', () => {
   ok(!/fmt\(bud0\(\)\.fundsIn\)/.test(card[0]), 'the Funds in tile is back beside a goal percentage');
   ok(!/<span class="l">Funds in<\/span>/.test(card[0]), 'the Funds in label is back on Home');
   // Both tiles now come off teEligible/teGoal, so they can never disagree.
-  ok(/var soldPct = packT\.teGoal > 0 \? Math\.min\(100, Math\.round\(packT\.teEligible \/ packT\.teGoal \* 100\)\)/.test(card[0]),
+  ok(/var soldPct = packT\.teGoal > 0 \? Math\.min\(100, Math\.round\(packT\.teEligible \/ packT\.teBarGoal \* 100\)\)/.test(card[0]),
     'the percentage is derived from something other than the Sold figure');
   // The carryover is still reported — as what it is, and only when there is one.
   ok(/bud0\(\)\.startingBalance > 0/.test(card[0]), 'the carryover is shown even when there is none');
@@ -5899,8 +6189,12 @@ test('the year-cost card says what it excludes, and points at the tiers', () => 
   // The owner's correction: one adult per scout is expected, and the card has to say both that
   // it counts one per scout AND that a two-scout family only has to send one parent — otherwise
   // the figure looks like it is double-charging them.
-  ok(/one scout and the adult who brings them/.test(flat),
+  // M11 (Treasurer's audit, 2026-09-27) — "typical", not "the most a family can be asked for":
+  // a second parent, siblings and flat family lines are all on top of it.
+  ok(/typical cost for one scout and one parent/.test(flat),
     'the headline does not say it includes the accompanying adult');
+  ok(!/the most a family can be asked/.test(flat), 'the card still calls a typical figure a maximum');
+  ok(/Not included:/.test(flat), 'the card does not list what it leaves out');
   ok(/counted <strong>per scout<\/strong>/.test(flat), 'the per-scout adult rule is not stated');
   ok(/two scouts only has to send one parent/.test(flat),
     'the card does not admit that a two-scout family needs only one parent');
@@ -6095,12 +6389,12 @@ test('a storefront shows its shifts in the order the day happens, not the order 
 });
 
 test('the scouts on a shift read alphabetically, whatever order they signed up in', () => {
-  const ctx = shiftListCtx({ s1: 'Phoenix Gladden', s2: 'Ada Reyes', s3: 'Bowie Gladden' });
+  const ctx = shiftListCtx({ s1: 'Piper Hartley', s2: 'Ada Reyes', s3: 'Beckett Hartley' });
   // The sign-up order here matches NEITHER the alphabetical order nor the id order. With
   // ['s1','s2','s3'] a sort-in-place by id is a no-op, so the guard below passed on code that
   // reordered the stored array — the mutation probe is the only reason that showed up.
   const b = shiftBlk('Block 1', '10:00', '12:00', ['s1', 's3', 's2']);
-  eq(ctx.blockScoutNames(b), ['Ada Reyes', 'Bowie Gladden', 'Phoenix Gladden'], 'names');
+  eq(ctx.blockScoutNames(b), ['Ada Reyes', 'Beckett Hartley', 'Piper Hartley'], 'names');
   // Display only — the stored assignments keep their own order for the same reason as above.
   eq(b.assignments.map((a) => a.scoutId), ['s1', 's3', 's2'],
     'blockScoutNames mutated the stored assignments');
@@ -6146,7 +6440,9 @@ test('the printable day sheets list shifts in day order too', () => {
     const src = new RegExp(`function ${fn}\\(\\w*\\) \\{[\\s\\S]*?\\n  \\}`).exec(SCRIPT);
     ok(src, `${fn}() not found`);
     ok(/blocksInDayOrder\(sf\)/.test(src[0]), `${fn} walks the stored block order`);
-    ok(/blockScoutNames\(b\)/.test(src[0]), `${fn} lists the scouts in stored order`);
+    // …and by their PUBLIC names: the sheet is taped to a table outside a store (2026-09-27).
+    ok(/blockScoutNames\(b, pub\)/.test(src[0]), `${fn} lists the scouts in stored order, or by full name`);
+    ok(/var pub = publicNameMap\(state\.scouts\);/.test(src[0]), `${fn} does not use the shared public-name map`);
   }
 });
 
@@ -6196,7 +6492,8 @@ test('parents see ONE goal, not the pack’s internal cash split', () => {
   // decides which of the two old bars it landed in, without any family having done anything
   // differently — so a family watched money move between bars for reasons that were not about them.
   const src = codeOnly(BPV());
-  ok(/goalCents: goalCents,\s*raisedCents: pack\.combined,/.test(src),
+  ok(/var raised = withAmounts \? pack\.combined : Math\.round\(pack\.combined \/ 5000\) \* 5000;/.test(src) &&
+     /goalCents: goalCents,\s*raisedCents: raised,/.test(src),
     'the goal is not published as one combined figure');
   ok(!/teGoalCents|cashGoalCents|tePct|cashPct/.test(src),
     'the two-bar split is still published');
@@ -6216,7 +6513,7 @@ test('every scout on the board gets a progress bar, and it is a list so the bar 
   // The table this replaced was right when a row was four short figures. A bar needs width, and a
   // 10px track in a fifth column is either unreadably narrow or — on a phone, inside .tbl-wrap —
   // only reachable by swiping the table sideways to find your own scout.
-  ok(/rows\.forEach\(function \(r, i\) \{ h \+= parentStandingRow\(r, i, ladder\); \}\);/.test(fn[0]),
+  ok(/rows\.forEach\(function \(r, i\) \{ h \+= parentStandingRow\(r, i, ladder, ranked\); \}\);/.test(fn[0]),
     'the board does not render one list row per scout');
   ok(!/tbl-wrap|<th scope="col"/.test(codeOnly(fn[0])),
     'the board is a table again, which puts the bar behind a sideways scroll on a phone');
@@ -6234,7 +6531,7 @@ test('the family bar runs to the planned tier, the same one the leaders’ card 
   ok(!/Math\.round\(p\.base \/ p\.need \* 100\)/.test(src),
     'the old next-rung ratio is still being published alongside it');
   // Clamping and the top-of-ladder case moved with it, onto tierProgressRows.anchorPct.
-  const rows = /function tierProgressRows\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  const rows = /function tierProgressRows\(\w*\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/Math\.max\(0, Math\.min\(100, Math\.round\(base \/ anchor\.thresholdCents \* 100\)\)\)/.test(rows),
     'the percentage is not clamped to 0-100');
   ok(/anchor && anchor\.thresholdCents > 0/.test(rows),
@@ -6436,7 +6733,7 @@ test('the two fills are not told apart by colour alone', () => {
   for (const fn of ['renderTierProgress', 'renderParentStandings']) {
     const src = new RegExp(`function ${fn}\\(\\w*\\) \\{[\\s\\S]*?\\n  \\}`).exec(SCRIPT);
     ok(src, `${fn}() not found`);
-    ok(/hatched/.test(src[0]), `${fn} does not tell a reader what the second fill looks like`);
+    ok(/hatched|striped part/.test(codeOnly(src[0])), `${fn} does not tell a reader what the second fill looks like`);
     ok(!/\bgreen\b/i.test(codeOnly(src[0])), `${fn} names a colour a reader may not be able to see`);
   }
 });
@@ -6445,10 +6742,10 @@ test('the published standings carry the tier progress, from the shared tier map'
   const src = codeOnly(BPV());
   // One call, two readers: the per-scout map below and the pack-wide ladder legend. tierProgressRows
   // walks every storefront and every entry, so calling it twice per publish is not free.
-  ok(/var progRows = tierProgressRows\(\);/.test(src) &&
+  ok(/var progRows = tierProgressRows\(true\);/.test(src) &&
      /progRows\.forEach\(function \(p\) \{ progById\[p\.scout\.id\] = p; \}\)/.test(src),
     'per-scout tier progress is not taken from tierProgressRows');
-  ok((src.match(/tierProgressRows\(\)/g) || []).length === 1,
+  ok((src.match(/tierProgressRows\(/g) || []).length === 1,
     'the publish walks every scout’s totals more than once');
   // Sales, never the commission shortfall — the same rule the ladder follows.
   ok(/nextSalesCents: \(p && p\.next && typeof p\.shortSales === 'number'\) \? p\.shortSales : null/.test(src),
@@ -6541,7 +6838,7 @@ test('the parent calendar is a real month grid, driven only by the published eve
   ok(/ui\.parentCalMonth/.test(fn[0]) && !/ui\.calMonth/.test(fn[0]),
     'the parent grid shares ui.calMonth with the leader calendar');
   // A hollow storefront dot means an open shift on both sides now that parents can see coverage.
-  ok(/return covered \? 'dot-store' : 'dot-store-open';/.test(fn[0]),
+  ok(/cls: covered \? 'dot-store' : 'dot-store-open'/.test(fn[0]),
     'a storefront dot does not distinguish a fully staffed day');
   ok(/shifts\.every\(function \(s\) \{/.test(fn[0]), 'coverage is not computed from every shift');
   // Same tab-stop diet as the leader grid, and every focusable cell carries its own date.
@@ -6687,9 +6984,11 @@ test('a storefront publishes who is on each shift, and never a penny of it', () 
 
 test('one public-name map, so no two surfaces call the same child different things', () => {
   const src = BPV();
-  // Built over the WHOLE roster before anything names a child.
-  ok(/var shown = shortNames\(all\.map\(function \(s\) \{ return s\.name; \}\)\);/.test(src),
+  // Built over the WHOLE roster before anything names a child — by the one helper every outbound
+  // builder shares (the day sheet and the copied standings use it too).
+  ok(/var shown = shortNames\(all\.map\(function \(s\) \{ return s\.name; \}\)\);/.test(slice('publicNameMap')),
     'the public-name map is not built from the full roster');
+  ok(/var pubName = publicNameMap\(state\.scouts\);/.test(src), 'the parent view builds its own name map');
   ok(/name: pubName\[r\.id\] \|\| ''/.test(src), 'the standings board names children from its own pass');
   // A SECOND shortNames() pass over a subset is exactly how the two boards drifted apart: the
   // derby list keeps one, but only as the fallback for a racer who is not a roster scout at all
@@ -6699,7 +6998,7 @@ test('one public-name map, so no two surfaces call the same child different thin
     'a design-award racer is not reconciled against the roster');
   ok(/scoutName: pubRacer\(w\.scoutName, derbyNames\[i\]\)/.test(src),
     'a derby winner is not reconciled against the roster');
-  eq((codeOnly(src).match(/shortNames\(/g) || []).length, 2,
+  eq((codeOnly(src).match(/shortNames\(/g) || []).length, 1,
     'an unexpected number of shortNames() passes — every extra one can name a child differently');
 });
 
@@ -6735,11 +7034,11 @@ test('the reward ladder publishes what a scout must SELL, and never who paid ins
 test('a parent sees which shifts are open, and an old document still shows its windows', () => {
   const ctx = sandbox(['esc', 'parentShiftLines']);
   const html = ctx.parentShiftLines({ shifts: [
-    { when: '10:00 AM–12:00 PM', who: ['Ada', 'Bowie G.'] },
+    { when: '10:00 AM–12:00 PM', who: ['Ada', 'Beckett H.'] },
     { when: '12:00 PM–2:00 PM', who: [] }
   ] });
   eq((html.match(/class="sf-shift[ "]/g) || []).length, 2, 'one line per shift');
-  ok(/Ada, Bowie G\./.test(html), 'the names of a staffed shift');
+  ok(/Ada, Beckett H\./.test(html), 'the names of a staffed shift');
   ok(/class="sf-shift sf-open"/.test(html) && />Open</.test(html),
     'an open shift is not marked, so a parent cannot see what needs covering');
   // A document published before this shipped has `times` instead. Those render above as chips,
@@ -6992,9 +7291,9 @@ test('the shared sheet says which tier each scout reached, and what the pack end
   const sheet = /if \(o\.kind === 'summary'\) \{[\s\S]*?\n      return h;/.exec(SCRIPT)[0];
   // The reward ladder is the pack's main lever and the shared standings sheet never mentioned it,
   // while the board it is printed from shows a badge per scout.
-  ok(/tierBadgesFor\(r, sumTiers, sumCovered\)/.test(sheet),
+  ok(/tierBadgesFor\(r, sumTiers, sumCovered, sumMap\)/.test(sheet),
     'the sheet builds its own idea of who earned what, or shows none at all');
-  ok(/var sumTiers = sortedTiers\(\);/.test(sheet) && /var sumCovered = packCoverageByScout\(\);/.test(sheet),
+  ok(/var sumTiers = sortedTiers\(\);/.test(sheet) && /var sumCovered = packCoverageByScout\(sumMap\);/.test(sheet),
     'the badges are not taken from the same two calls the Standings card makes');
   // A pack with no tiers gets no empty column.
   ok(/sumTiers\.length \? '<th scope="col">Tier<\/th>' : ''/.test(sheet),
@@ -7222,7 +7521,7 @@ test('the family bill is grouped rung by rung, with the floor last', () => {
     steps: steps,
     lines: [{ name: 'Blue & Gold', scoutCents: 4200, adultCents: 5600, coverScoutStep: 0, coverAdultStep: -1 }]
   });
-  ok(/the adult’s place stays yours/.test(stuck),
+  ok(/you still pay the adult’s share/.test(stuck),
     'a line whose adult half no rung ever buys reads as fully covered');
 
   // A line that prices no scout at all has no scout share to group on, and sits with the rung
@@ -7492,14 +7791,15 @@ const rosterCtx = (() => {
   vm.runInContext(['detectReport', 'mapRosterReport', 'teNameKey', 'toCents', 'teParseCsv'].map(slice).join('\n'), ctx);
   return ctx;
 })();
-// The real export, trimmed to the rows that carry a decision. Note La’Maya's CURLY apostrophe:
-// that is what Trail's End actually sends, and it is why teNameKey exists.
+// The real export's shape, with invented families (the repo is public), trimmed to the rows that
+// carry a decision. Note La’Tavia's CURLY apostrophe: that is what Trail's End actually sends,
+// and it is why teNameKey exists.
 const ROSTER_ROWS = [
   ['Name', 'ID', 'SF Hours Worked', 'SF Hours Claimed', 'Sales', 'Goal', 'Email Address', 'Phone Number'],
-  ['Logan Dougherty', '0IMGPN66', '13.5', '23.5', '1127', '2001', 'Kdougherty55@gmail.com', '6096724932'],
-  ['Bowie Gladden', '608GPG7M', '10', '18', '595.5', '1500', 'Sgladden20@gmail.com', '4043747627'],
-  ['La’Maya Collier', 'W1Q83PNE', '0', '0', '0', '0', 'Amberkalene@gmail.com', '4042056740'],
-  ['Talon Wallace', 'U97N4349', '0', '0', '70', '350', 'dwallace1971@gmail.com', '7708433098'],
+  ['Lorenzo Kessler', 'TE00AA11', '13.5', '23.5', '1127', '2001', 'parent1@example.com', '4045550101'],
+  ['Beckett Hartley', 'TE00BB22', '10', '18', '595.5', '1500', 'parent2@example.com', '4045550102'],
+  ['La’Tavia Pruitt', 'TE00CC33', '0', '0', '0', '0', 'parent3@example.com', '4045550103'],
+  ['Tobin Castellano', 'TE00DD44', '0', '0', '70', '350', 'parent4@example.com', '4045550104'],
 ];
 
 test('the Scout List is sniffed as its own report, and never steals one of the other three', () => {
@@ -7521,11 +7821,11 @@ test('the Scout List is sniffed as its own report, and never steals one of the o
 test('a trimmed export still maps — contact columns are optional, the roster is not', () => {
   // A pack that strips the families' email and phone before sharing the file still gets its
   // roster. Only Name and Goal are required, so everything else has to survive being absent.
-  const trimmed = [['Name', 'Goal'], ['Logan Dougherty', '2001'], ['Talon Wallace', '350']];
+  const trimmed = [['Name', 'Goal'], ['Lorenzo Kessler', '2001'], ['Tobin Castellano', '350']];
   const det = rosterCtx.detectReport(trimmed);
   eq(det.type, 'roster', 'a trimmed export is no longer recognised');
   const mapped = rosterCtx.mapRosterReport(trimmed, det);
-  eq(mapped.scouts.map((s) => s.name), ['Logan Dougherty', 'Talon Wallace'], 'names were lost');
+  eq(mapped.scouts.map((s) => s.name), ['Lorenzo Kessler', 'Tobin Castellano'], 'names were lost');
   eq(mapped.scouts.map((s) => s.email + '|' + s.phone + '|' + s.teId), ['||', '||'],
     'absent columns did not come back as empty strings');
   eq(mapped.scouts[0].salesCents, 0, 'a missing Sales column did not read as zero');
@@ -7537,17 +7837,17 @@ test('the scout list maps to cents, hours and alphabetical order', () => {
   // Alphabetical, because this is read as a roster. The report's own order is sales descending,
   // which is the standings — a different question, already answered on Popcorn · Standings.
   eq(mapped.scouts.map((s) => s.name),
-    ['Bowie Gladden', 'La’Maya Collier', 'Logan Dougherty', 'Talon Wallace'],
+    ['Beckett Hartley', 'La’Tavia Pruitt', 'Lorenzo Kessler', 'Tobin Castellano'],
     'the scout list is not in roster order');
-  const logan = mapped.scouts.find((s) => s.name === 'Logan Dougherty');
-  eq(logan.salesCents, 112700, '1127 dollars did not become cents');
-  eq(logan.goalCents, 200100, 'the goal did not become cents');
+  const lorenzo = mapped.scouts.find((s) => s.name === 'Lorenzo Kessler');
+  eq(lorenzo.salesCents, 112700, '1127 dollars did not become cents');
+  eq(lorenzo.goalCents, 200100, 'the goal did not become cents');
   // Half hours are real: 13.5 worked against 23.5 claimed is the disagreement a leader is
   // looking at this column to find, so it must not be rounded away.
-  eq([logan.hoursWorked, logan.hoursClaimed], [13.5, 23.5], 'half hours were rounded');
-  const bowie = mapped.scouts.find((s) => s.name === 'Bowie Gladden');
-  eq(bowie.salesCents, 59550, '595.50 did not survive as cents');
-  eq(bowie.teId, '608GPG7M', "the Trail's End id was dropped");
+  eq([lorenzo.hoursWorked, lorenzo.hoursClaimed], [13.5, 23.5], 'half hours were rounded');
+  const beckett = mapped.scouts.find((s) => s.name === 'Beckett Hartley');
+  eq(beckett.salesCents, 59550, '595.50 did not survive as cents');
+  eq(beckett.teId, 'TE00BB22', "the Trail's End id was dropped");
 });
 
 test('a Totals row is not a scout, and a re-registered child is not two scouts', () => {
@@ -7557,21 +7857,21 @@ test('a Totals row is not a scout, and a re-registered child is not two scouts',
   const mapped = rosterCtx.mapRosterReport(rows, rosterCtx.detectReport(rows));
   eq(mapped.count, 4, 'a Totals row was imported as a scout');
   // Trail's End can list the same child twice when a family re-registers mid-season.
-  const dupe = ROSTER_ROWS.concat([['logan  DOUGHERTY', '0IMGPN66', '0', '0', '0', '0', '', '']]);
+  const dupe = ROSTER_ROWS.concat([['lorenzo  KESSLER', 'TE00AA11', '0', '0', '0', '0', '', '']]);
   eq(rosterCtx.mapRosterReport(dupe, rosterCtx.detectReport(dupe)).count, 4,
     'the same child was mapped twice');
 });
 
 test('teNameKey folds the curly apostrophe Trail’s End actually exports', () => {
   // The bug this exists to stop: the export sends U+2019, a leader typed U+0027, and the
-  // importer read La’Maya as a scout the pack did not have — then added her a second time.
+  // importer read La’Tavia as a scout the pack did not have — then added her a second time.
   // A duplicate scout splits her attendance, her advancement and her share of a block.
   const k = rosterCtx.teNameKey;
-  eq(k('La’Maya Collier'), k("La'Maya Collier"), 'the curly apostrophe is not folded');
-  eq(k('  La’MAYA   Collier '), k("la'maya collier"), 'case and spacing are not folded');
-  // Narrow on purpose. "Mayo-Drysdale" and "Mayo Drysdale" being one child is a GUESS, and a
+  eq(k('La’Tavia Pruitt'), k("La'Tavia Pruitt"), 'the curly apostrophe is not folded');
+  eq(k('  La’TAVIA   Pruitt '), k("la'tavia pruitt"), 'case and spacing are not folded');
+  // Narrow on purpose. "Ashby-Vance" and "Ashby Vance" being one child is a GUESS, and a
   // wrong merge (two children treated as one) is worse than the duplicate it would prevent.
-  ok(k('Bryson Mayo-Drysdale') !== k('Bryson Mayo Drysdale'), 'hyphens are being folded away');
+  ok(k('Desmond Ashby-Vance') !== k('Desmond Ashby Vance'), 'hyphens are being folded away');
   eq(k(null), '', 'a null name did not key as empty');
 });
 
@@ -7622,6 +7922,2529 @@ test('an import never removes, archives or re-dens a scout it was not asked abou
   // An archived scout who is back on this year's Trail's End list is surfaced, NOT un-archived:
   // archiving is how a leader records that somebody left, and undoing it would overrule them.
   ok(/wasArchived/.test(build), 'an archived scout still on the list is not surfaced');
+});
+
+/* ================================================================
+   The Part C security rules (SETUP.md) and the client that has to live under them. The rules
+   are pasted into the Firebase console by hand, so nothing but this file notices when the two
+   drift apart — and a drift here fails as "nobody can sign up", or worse, silently succeeds.
+   ================================================================ */
+
+const SETUP = readFileSync(join(ROOT, 'SETUP.md'), 'utf8');
+const RULES = (() => {
+  const at = SETUP.indexOf('## Part C');
+  const m = /```\n(rules_version[\s\S]*?)```/.exec(SETUP.slice(at));
+  return m ? m[1] : '';
+})();
+// The object literal a function hands to setDoc(<ref>, { … }), as a list of its keys.
+function setDocKeys(src, refPattern) {
+  const out = [];
+  const re = new RegExp('setDoc\\(' + refPattern + '[^{]*\\{([^}]*)\\}', 'g');
+  let m;
+  while ((m = re.exec(src))) out.push(m[1].split('\n').map((l) => (/^\s*(\w+):/.exec(l) || [])[1]).filter(Boolean));
+  return out;
+}
+
+test('the Part C rules carry the 2026-09-27 update, dated, at the top of Part C', () => {
+  ok(RULES, 'no rules block found under Part C');
+  const partC = SETUP.slice(SETUP.indexOf('## Part C'));
+  ok(/^> \*\*Rules updated 2026-09-27 — paste this whole block into the Firebase console\.\*\*/m
+    .test(partC.slice(0, 600)), 'the dated "paste this whole block" note is not at the top of Part C');
+});
+
+test('nobody joins the Members card with nothing but the pack id', () => {
+  const create = /allow create: if signedIn\(\) && request\.auth\.uid == uid[\s\S]*?;\n/.exec(RULES);
+  ok(create, 'members create rule not found');
+  const c = create[0];
+  ok(/viaGoogle\(\)/.test(c) && /sign_in_provider == 'google\.com'/.test(RULES), 'member create does not require Google');
+  ok(/ownEmail\(\)/.test(c) && /data\.email == request\.auth\.token\.email/.test(RULES), 'member email is not pinned to the token');
+  // The bare branch this replaced: `request.resource.data.role == 'pending' ||`. Every 'pending'
+  // must sit inside the join-code conjunction.
+  const pendings = c.split("role == 'pending'").length - 1;
+  eq(pendings, 1, "'pending' appears in more than one create branch");
+  ok(/role == 'pending'\s*&& exists\(joinPath\(\)\)\s*&& joinCfg\(\)\.open == true\s*&& request\.resource\.data\.joinCode == joinCfg\(\)\.code/
+    .test(c), 'a pending create is not bound to the open link and its current code');
+  ok(/invitedRole\(\) in \['editor', 'viewer', 'parent'\]\s*&& request\.resource\.data\.role == invitedRole\(\)/.test(c),
+    'the invite branch does not pin the role to a non-admin invite');
+});
+
+test('the member doc the client writes is exactly what the rules accept', () => {
+  const allowed = /function memberKeysOk\(\) \{\s*return request\.resource\.data\.keys\(\)\.hasOnly\(\[([^\]]*)\]\)/.exec(RULES);
+  ok(allowed, 'memberKeysOk() not found in the rules');
+  const keys = allowed[1].match(/'(\w+)'/g).map((k) => k.slice(1, -1));
+  const writes = setDocKeys(slice('ensureMyMemberDoc') + slice('joinCreateMemberDoc'), 'ref');
+  // The owner/invitee create, the owner's self-heal, and the sign-up-link create.
+  eq(writes.length, 3, 'expected the member create, the owner heal and the join create');
+  writes.forEach((w) => w.forEach((k) => ok(keys.indexOf(k) !== -1, `the client writes "${k}", which the rules refuse`)));
+  // The join path has to SEND the code, or the rule has nothing to check.
+  ok(writes.some((w) => w.indexOf('joinCode') !== -1), 'the join path no longer writes joinCode');
+  // Invites the same way.
+  const inv = /request\.resource\.data\.keys\(\)\.hasOnly\(\['role', 'email', 'invitedBy', 'invitedAt'\]\)/.test(RULES);
+  ok(inv, 'the invite field list changed in the rules');
+  const invWrite = setDocKeys(slice('createInvite'), "fs\\.doc\\(sync\\.db, 'packs', sync\\.docId, 'invites', email\\)");
+  eq(invWrite, [['role', 'email', 'invitedBy', 'invitedAt']], 'createInvite writes different fields from the rules');
+});
+
+test('the client never writes a bare pending member, and never reads the join code first', () => {
+  const ens = codeOnly(slice('ensureMyMemberDoc'));
+  // (Reading an existing doc's role with a 'pending' default is fine — WRITING one is not.)
+  ok(!/role = 'pending'|write\('pending'\)|\|\| 'pending'\)|role: 'pending'/.test(ens),
+    'ensureMyMemberDoc writes (or falls back to) pending outside the sign-up link');
+  ok(/joinRejected = 'nolink'/.test(ens), 'a signer with no link and no invite is not sent to the ask-a-leader gate');
+  const join = codeOnly(slice('joinCreateMemberDoc'));
+  ok(!/getDoc/.test(join) && !/'public'/.test(join), 'the join path reads public/join, which only leaders may read');
+});
+
+test('invites are admin-made and consumed only by their own invitee', () => {
+  const inv = /match \/invites\/\{email\} \{([\s\S]*?)\n      \}/.exec(RULES);
+  ok(inv, 'invites match not found');
+  ok(/allow read: if isAdmin\(\) \|\| \(signedIn\(\) && myEmailKey\(\) == email\);/.test(inv[1]), 'invite read');
+  ok(/allow create, update: if isAdmin\(\)\s*&& request\.resource\.data\.role in \['editor', 'viewer', 'parent'\]/.test(inv[1]),
+    'invite create/update is not admin-only with a non-admin role');
+  ok(/allow delete: if isAdmin\(\) \|\| \(signedIn\(\) && myEmailKey\(\) == email\);/.test(inv[1]), 'invite delete');
+  // The client looks invites up lowercased; the rule must too, or a capitalised Google email
+  // can never consume the invite an admin typed.
+  ok(/request\.auth\.token\.email\.lower\(\)/.test(RULES), 'the rules match invites on the raw token email');
+  ok(/inviteEmailKey\(user\.email\)/.test(slice('ensureMyMemberDoc')), 'the client no longer lowercases the invite key');
+});
+
+test('who may read what: roster, join code and parent view', () => {
+  ok(/function isLeader\(\) \{ return myRole\(\) in \['admin', 'editor', 'viewer'\]; \}/.test(RULES), 'isLeader()');
+  ok(/match \/members\/\{uid\} \{[\s\S]*?allow read: if isLeader\(\) \|\| \(signedIn\(\) && request\.auth\.uid == uid\);/.test(RULES),
+    'members read is wider than leaders + self');
+  ok(/match \/public\/join \{\s*allow read:  if isLeader\(\);\s*allow write: if isAdmin\(\);/.test(RULES), 'public/join');
+  ok(/match \/public\/view \{\s*allow read:  if myRole\(\) in \['admin', 'editor', 'viewer', 'parent'\];\s*allow write: if myRole\(\) in \['admin', 'editor'\];/
+    .test(RULES), 'public/view');
+  // Overlapping matches OR together: a /public/{d} wildcard would hand pending users the join code.
+  ok(!/match \/public\/\{/.test(RULES), 'a /public/{…} wildcard is back, and it ORs over public/join');
+  // …and the client has to live with a roster it can't read: non-leaders watch their own doc.
+  const sub = codeOnly(slice('applyMembersSubscription'));
+  ok(/LEADER_ROLES\.indexOf\(sync\.myRole\)/.test(sub) && /fs\.doc\(sync\.db, 'packs', sync\.docId, 'members', uid\)/.test(sub),
+    'parents and pending users still subscribe to the whole members collection');
+  eq(/var LEADER_ROLES = (\[[^\]]*\])/.exec(SCRIPT)[1], "['admin', 'editor', 'viewer']", 'LEADER_ROLES drifted from isLeader()');
+  ok(!/fs\.collection\(db, 'packs', docId, 'members'\)/.test(slice('startAccounts')),
+    'startAccounts subscribes the whole roster for every role again');
+});
+
+test('the parent-view banner names every key the view publishes', () => {
+  const src = slice('buildParentView');
+  const banner = /\/\/ PUBLISHED — the whole list;([\s\S]*?)\/\/ DELIBERATELY EXCLUDED/.exec(SCRIPT);
+  ok(banner, 'the PUBLISHED list above buildParentView is gone');
+  const keys = [...new Set([...src.matchAll(/out\.(\w+) = /g)].map((m) => m[1]))];
+  const named = { standings: /standings/, goals: /goal bar/, derby: /derby winners/, tiers: /reward tiers/,
+    tierLadder: /tierLadder/, familyCost: /familyCost/, camping: /camping trips/, contact: /`contact`.*who to ask/ };
+  keys.forEach((k) => {
+    ok(named[k], `buildParentView publishes out.${k}, which this test (and the banner) doesn't know about`);
+    ok(named[k].test(banner[1]), `out.${k} is published but not listed in the banner`);
+  });
+  ok(/salesCents/.test(banner[1]) && /cost line/.test(banner[1]), 'tier sales targets / camping cost are not declared');
+  // SETUP.md tells the pack the same thing.
+  ok(/including each\s+trip's cost line/.test(SETUP) && /sales that reach each tier/.test(SETUP) &&
+    /what the year is planned to cost/.test(SETUP) && /"who to ask" line/.test(SETUP),
+    'SETUP.md does not list what the parent view really publishes');
+  ok(!/activity costs or expenses/.test(SETUP), 'SETUP.md still claims activity costs are never published');
+  // S5 (2026-09-28): every per-row field, both ways, named in the banner AND in SETUP.md.
+  const bpv = codeOnly(src);
+  const rowLit = /var row = \{([\s\S]*?)\n          \};/.exec(bpv);
+  ok(rowLit, 'the standings row literal was not found');
+  const rowKeys = [...rowLit[1].matchAll(/^\s*(\w+):/gm)].map((m) => m[1]);
+  const offLit = /if \(withAmounts\) return row;[\s\S]*?return \{([\s\S]*?)\};/.exec(bpv);
+  ok(offLit, 'the amounts-off row was not found');
+  const offKeys = [...offLit[1].matchAll(/(\w+):/g)].map((m) => m[1]);
+  ok(rowKeys.length >= 12 && offKeys.length >= 7, 'the row key scan found too little');
+  rowKeys.forEach((k) => {
+    ok(new RegExp('\\b' + k + '\\b').test(banner[1]) || k === 'name' || k === 'den', `row field ${k} is not in the banner`);
+    ok(k === 'name' || k === 'den' || new RegExp('`' + k + '`').test(SETUP), `row field ${k} is not in SETUP.md`);
+  });
+  const offPara = /With "Show dollar amounts and rank" off, a row is ONLY([\s\S]*?)are removed\./.exec(banner[1]);
+  ok(offPara, 'the banner does not say what an amounts-off row is');
+  offKeys.forEach((k) => ok(new RegExp('\\b' + k + '\\b').test(offPara[1]), `amounts-off field ${k} is not in the banner`));
+  rowKeys.filter((k) => offKeys.indexOf(k) === -1).forEach((k) =>
+    ok(offPara[1].indexOf(k) !== -1,
+      `the banner does not say amounts-off removes ${k}`));
+  ok(/With \*\*Show dollar amounts and rank\*\* off, a row is only/.test(SETUP), 'SETUP.md does not say what amounts-off leaves');
+});
+
+test('single-pack mode never signs in anonymously, which is why SETUP says to turn it off', () => {
+  ok(/src\.kind === 'pass'\s*\?\s*mods\.auth\.signInAnonymously/.test(SCRIPT), 'anonymous sign-in is no longer passphrase-only');
+  ok(/if \(src\.kind === 'fixed' && current && current\.isAnonymous\) current = null;/.test(SCRIPT),
+    'a stale anonymous session is reused in single-pack mode');
+  ok(/turn it \*\*off\*\*/.test(SETUP), 'SETUP.md does not tell a single-pack admin to turn Anonymous off');
+});
+
+/* ================================================================
+   Wave 3 (2026-09-27) — the security reviewer's follow-ups on the Part C rules commit.
+   ================================================================ */
+
+test('the owner restores their admin role by rewriting their doc whole, and a refusal is not a trap', () => {
+  const ens = codeOnly(slice('ensureMyMemberDoc'));
+  ok(!/updateDoc/.test(ens), 'the owner heal is an updateDoc again — a junked doc makes the rules refuse it');
+  const heal = /if \(sync\.ownerUid === uid && cur !== 'admin'\) \{([\s\S]*?)\n        \}/.exec(ens);
+  ok(heal, 'the owner heal branch was not found');
+  const keys = setDocKeys(heal[1], 'ref');
+  eq(keys, [['role', 'name', 'email', 'addedAt']], 'the heal writes other keys than the rules accept');
+  ok(/role: 'admin'/.test(heal[1]), 'the heal does not write admin');
+  // Refused → carry on as the doc's role; never throw into handleAccountsError (setup screen).
+  ok(/\.then\(function \(\) \{ return 'admin'; \}, function \(\) \{ return cur; \}\)/.test(heal[1]),
+    'a refused heal is thrown, which handleAccountsError reads as "rules not published"');
+});
+
+// A fake Firestore that records what it was asked to do. Enough of the modular API for the
+// member-management functions, which only ever build refs and write them.
+const FAKE_FS = `
+  var calls = [];
+  var fakeFs = {
+    doc: function () { return { path: Array.prototype.slice.call(arguments, 1).join('/') }; },
+    collection: function () { return { path: Array.prototype.slice.call(arguments, 1).join('/') }; },
+    deleteDoc: function (r) { calls.push('delete ' + r.path); return Promise.resolve(); },
+    setDoc: function (r) { calls.push('set ' + r.path); return Promise.resolve(); },
+    updateDoc: function (r) { calls.push('update ' + r.path); return Promise.resolve(); },
+    serverTimestamp: function () { return 'TS'; }
+  };`;
+
+function removeMemberCtx() {
+  const ctx = vm.createContext({});
+  vm.runInContext(FAKE_FS + `
+    var committed = 0;
+    function commit() { committed += 1; }
+    function isAdmin() { return true; }
+    function isLastAdmin() { return false; }
+    function accountsToast() {}
+    function showToast() {}
+    var sync = { mods: { fs: fakeFs }, db: 'db', docId: 'P',
+      members: [{ uid: 'u1', email: ' Pat@Example.com ', role: 'editor' }, { uid: 'u2', email: 'x@example.com', role: 'admin' }] };
+    var state = {
+      scouts: [{ id: 's1', parentUids: ['u1', 'u9'] }, { id: 's2', parentUids: [] }],
+      leaders: [{ id: 'l1', uid: 'u1' }, { id: 'l2', uid: 'u2' }, { id: 'l3', uid: '' }]
+    };
+    ${slice('arrOf')}
+    ${slice('inviteEmailKey')}
+    ${slice('removeMember')}`, ctx);
+  return ctx;
+}
+
+test('removing a member also removes their leftover invite and their leader link', () => {
+  const ctx = removeMemberCtx();
+  vm.runInContext("removeMember('u1')", ctx);
+  const calls = vm.runInContext('calls', ctx);
+  ok(calls.indexOf('delete packs/P/members/u1') !== -1, 'the member doc was not deleted');
+  // Keyed exactly as createInvite keys it (trimmed, lowercased), or the delete misses.
+  ok(calls.indexOf('delete packs/P/invites/pat@example.com') !== -1,
+    'an invite under the removed member’s email survives them, and would let them straight back in');
+  eq(vm.runInContext('state.scouts[0].parentUids', ctx), ['u9'], 'their scout link survived');
+  eq(vm.runInContext('state.leaders.map(function (l) { return l.uid; })', ctx), ['', 'u2', ''],
+    'the leader record still claims the removed account (or another link was touched)');
+  eq(vm.runInContext('state.leaders.length', ctx), 3, 'the leader record itself was removed');
+  eq(vm.runInContext('committed', ctx), 1, 'the unlinking was not committed');
+  // A member with no email has no invite to delete — and must not try to delete invites/''.
+  const ctx2 = removeMemberCtx();
+  vm.runInContext("sync.members[0].email = ''; removeMember('u1')", ctx2);
+  ok(!vm.runInContext('calls', ctx2).some((c) => /invites/.test(c)), 'an emailless member triggered an invite delete');
+});
+
+test('B9: removing someone who came in on a still-open sign-up link offers New code', () => {
+  const run = (joinCode, open) => {
+    const ctx = removeMemberCtx();
+    vm.runInContext(`
+      var toasts = [], rotated = [];
+      showToast = function (m, o) { toasts.push({ m: m, o: o || null }); };
+      function joinOpen() { return ${open}; }
+      function newJoinCode() { return 'NEWCODE'; }
+      function writeJoinConfig(p) { rotated.push(p.code); }
+      sync.members[0].joinCode = ${JSON.stringify(joinCode)};
+      removeMember('u1');`, ctx);
+    return ctx;
+  };
+  const ctx = run('abc123', true);
+  const t = vm.runInContext('toasts', ctx);
+  ok(t.length === 1 && t[0].o && t[0].o.actionLabel === 'New code', 'no New code toast after removing a link arrival');
+  ok(/still open/.test(t[0].m), 'the toast does not say why');
+  eq(vm.runInContext('rotated', ctx), [], 'the code rotated without the admin asking');
+  vm.runInContext('toasts[0].o.onAction()', ctx);
+  eq(vm.runInContext('rotated', ctx), ['NEWCODE'], 'the toast button does not mint a new code');
+  eq(vm.runInContext('toasts.length', run('abc123', false)), 0, 'a closed link still nags');
+  eq(vm.runInContext('toasts.length', run('', true)), 0, 'an invited (non-link) member still nags');
+});
+
+function roleSubCtx(over) {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    var KEY = 'pack-popcorn-ledger-v1';
+    var removed = [], stopped = [], rendered = 0, subscribed = [];
+    var localStorage = { removeItem: function (k) { removed.push(k); } };
+    function freshState() { return { fresh: true }; }
+    function stopDocFeed() { stopped.push('doc'); }
+    function stopParentFeed() { stopped.push('parent'); }
+    function subscribeDoc() { subscribed.push('doc'); }
+    function subscribeParentView() { subscribed.push('parent'); }
+    function feedForRole(r) { return r === 'parent' ? 'parent' : r === 'pending' ? 'none' : 'doc'; }
+    function render() { rendered += 1; }
+    var inForce = ${over.inForce !== false};
+    function accountsInForce() { return inForce; }
+    var state = { money: 'the pack record' };
+    var sync = { session: 1, feed: 'doc', unsub: function () {}, parentView: { x: 1 }, mode: 'online',
+      membersScope: ${JSON.stringify(over.scope === undefined ? 'all' : over.scope)},
+      membersFromServer: ${over.server !== false}, joinRejected: null,
+      user: { uid: 'me' }, ownerUid: ${JSON.stringify(over.owner || 'someone-else')},
+      pushTimer: 'push', dirty: true };
+    var parentViewTimer = 'pv', cleared = [];
+    function clearTimeout(t) { cleared.push(t); }
+    var healCalls = 0, HEAL = null;
+    function ensureMyMemberDoc() { healCalls += 1; return HEAL; }
+    ${slice('stopLocalWrites')}
+    ${slice('applyRoleSubscription')}`, ctx);
+  return ctx;
+}
+
+test('a member removed mid-session loses the pack from this device, not just the next read', () => {
+  const ctx = roleSubCtx({});
+  vm.runInContext('applyRoleSubscription(null, 1)', ctx);
+  eq(vm.runInContext('removed', ctx), ['pack-popcorn-ledger-v1'], 'the cached pack record was left in localStorage');
+  eq(vm.runInContext('state', ctx), { fresh: true }, 'the pack record is still in memory');
+  eq(vm.runInContext('stopped.sort()', ctx), ['doc', 'parent'], 'a feed was left running');
+  eq(vm.runInContext('sync.parentView', ctx), null, 'the parent view was left on screen');
+  eq(vm.runInContext('sync.joinRejected', ctx), 'removed', 'no gate tells them why the page emptied');
+  eq(vm.runInContext('subscribed', ctx), [], 'something was subscribed for a removed member');
+  // B4 (2026-09): nothing this device was about to write survives the wipe.
+  eq(vm.runInContext('[cleared.sort(), sync.pushTimer, sync.dirty, parentViewTimer]', ctx), [['push', 'pv'], null, false, null],
+    'a pending pack push or parent-view publish survived the removal');
+  // Every other null is "we don't know yet" and leaves the feed exactly alone.
+  for (const [what, over] of [['legacy rules / no accounts', { inForce: false }],
+    ['no members watch of our own yet', { scope: null }],
+    ['a cache-only snapshot', { server: false }]]) {
+    const c = roleSubCtx(over);
+    vm.runInContext('applyRoleSubscription(null, 1)', c);
+    eq(vm.runInContext('[removed.length, stopped.length, state.money || null]', c), [0, 0, 'the pack record'],
+      `${what}: a null role wiped the device`);
+  }
+  // The gate it lands on says so.
+  ok(/if \(sync\.joinRejected === 'removed'\)/.test(slice('renderJoinClosed')), 'no screen for a removed member');
+});
+
+test('nothing is published to parents before the join config has said whether standings are on', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(FAKE_FS + `
+    var built = 0;
+    function buildParentView() { built += 1; return { events: [] }; }
+    function accountsInForce() { return true; }
+    function canEdit() { return true; }
+    function fixedSyncBlocked() { return false; }
+    function clearTimeout() {}
+    var parentViewTimer = null, parentViewFingerprint = null;
+    var state = {};
+    var sync = { mods: { fs: fakeFs }, db: 'db', docId: 'P', joinLoaded: false };
+    ${slice('writeParentView')}`, ctx);
+  vm.runInContext('writeParentView()', ctx);
+  eq(vm.runInContext('[built, calls.length]', ctx), [0, 0], 'the parent view was built and written before the join config loaded');
+  vm.runInContext('sync.joinLoaded = true; writeParentView()', ctx);
+  eq(vm.runInContext('calls', ctx), ['set packs/P/public/view'], 'once loaded, the view is not written');
+});
+
+test('the join config loads for every leader, and both of its answers release the parent view', () => {
+  function joinCtx(role) {
+    const ctx = vm.createContext({});
+    vm.runInContext(FAKE_FS + `
+      var onNext = null, onErr = null, scheduled = 0, opts = null;
+      // (ref, onNext, onErr) or (ref, options, onNext, onErr), as the SDK takes either.
+      fakeFs.onSnapshot = function (r, a, b, c) {
+        if (typeof a === 'function') { onNext = a; onErr = b; } else { opts = a; onNext = b; onErr = c; }
+        return function () {};
+      };
+      function accountsInForce() { return true; }
+      function scheduleParentViewRefresh() { scheduled += 1; }
+      function render() {}
+      var LEADER_ROLES = ['admin', 'editor', 'viewer'];
+      var sync = { session: 1, mods: { fs: fakeFs }, db: 'db', docId: 'P', myRole: '${role}',
+        joinUnsub: null, joinUnavailable: false, joinLoaded: false, joinCfg: null };
+      ${slice('applyJoinSubscription')}
+      applyJoinSubscription(1);`, ctx);
+    return ctx;
+  }
+  for (const role of ['admin', 'editor', 'viewer']) {
+    ok(vm.runInContext('!!onNext', joinCtx(role)), `a ${role} does not load the join config`);
+  }
+  // Parents and pending users are refused it by the rules, and never need it.
+  for (const role of ['parent', 'pending']) {
+    ok(vm.runInContext('!onNext', joinCtx(role)), `a ${role} asks for the join config the rules refuse them`);
+  }
+  const a = joinCtx('editor');
+  // B2 (2026-09): a CACHED answer fills joinCfg but does not open the gate; the server's does.
+  ok(vm.runInContext('!!(opts && opts.includeMetadataChanges)', a), 'without includeMetadataChanges the server answer may never arrive');
+  vm.runInContext("onNext({ metadata: { fromCache: true }, exists: function () { return true; }, data: function () { return { showStandings: true }; } })", a);
+  eq(vm.runInContext('[sync.joinLoaded, scheduled, sync.joinCfg.showStandings]', a), [false, 0, true], 'a cached join config released the parent view');
+  vm.runInContext("onNext({ metadata: { fromCache: false }, exists: function () { return true; }, data: function () { return { showStandings: false }; } })", a);
+  eq(vm.runInContext('[sync.joinLoaded, scheduled]', a), [true, 1], 'the snapshot does not release the deferred write');
+  const b = joinCtx('editor');
+  vm.runInContext('onErr({ code: "permission-denied" })', b);
+  eq(vm.runInContext('[sync.joinLoaded, scheduled]', b), [true, 1], 'a denied read stalls the parent view for good');
+  // And a new session starts over.
+  ok(/sync\.joinLoaded = false;/.test(slice('clearAccountsRuntime')), 'clearAccountsRuntime keeps the last pack’s joinLoaded');
+});
+
+test('the rules take only a verified Google account as a member, and a short name', () => {
+  ok(/function viaGoogle\(\) \{\s*return request\.auth\.token\.firebase\.sign_in_provider == 'google\.com'\s*&& request\.auth\.token\.email_verified == true;\s*\}/
+    .test(RULES), 'viaGoogle() does not require a verified email');
+  ok(/function isMember\(\) \{ return signedIn\(\) && viaGoogle\(\) && exists\(memberPath\(\)\); \}/.test(RULES),
+    'isMember() counts a member doc from any sign-in');
+  ok(/function memberKeysOk\(\) \{[\s\S]*?&& request\.resource\.data\.name is string\s*&& request\.resource\.data\.name\.size\(\) <= 120;/
+    .test(RULES), 'memberKeysOk() does not bound the name');
+  // …and the client never writes a name the rules would refuse.
+  eq(/var MEMBER_NAME_MAX = (\d+);/.exec(SCRIPT)[1], '120', 'the client clips names to a different length than the rules allow');
+  const src = slice('ensureMyMemberDoc') + slice('joinCreateMemberDoc');
+  eq((src.match(/name: memberName\(user\)/g) || []).length, 3, 'a member write takes the raw displayName');
+  ok(!/name: user\.displayName/.test(src), 'a member write takes the raw displayName');
+  const ctx = sandbox(['MEMBER_NAME_MAX', 'memberName']);
+  eq(ctx.memberName({ displayName: 'x'.repeat(300) }).length, 120, 'a long name is not clipped');
+  eq(ctx.memberName({}), '', 'a missing name is not an empty string');
+});
+
+test('SETUP tells an upgrading pack the deploy order and the clean-up after publishing', () => {
+  ok(/deploy this version of `index\.html` first, reload it once, then publish these rules/.test(SETUP),
+    'the deploy order is missing');
+  ok(/The new page works under the old rules too; an old page does not work under the new rules/.test(SETUP),
+    'SETUP does not say which way round the versions are compatible');
+  ok(/remove any \*\*admin, editor or viewer\*\* you didn't approve/.test(SETUP), 'cleanup: unapproved leaders');
+  ok(/any with \*\*no\s+email\*\*/.test(SETUP), 'cleanup: unrecognised / emailless pending');
+  ok(/delete any invite whose `role` is `admin`/.test(SETUP), 'cleanup: admin invites');
+  ok(/Authentication → Users:\*\* delete the \*\*anonymous\*\* users/.test(SETUP), 'cleanup: anonymous users');
+});
+
+test('the export and document types that carry children’s names stay out of the public repo', () => {
+  const gi = readFileSync(join(ROOT, '.gitignore'), 'utf8').split('\n').map((l) => l.trim());
+  for (const pat of ['*.pdf', '*.csv', '*.xlsx', '*.xls', '*.tsv', '*.xlsm', '*.ods', '*.doc', '*.docx',
+    '*.pages', '*.numbers', '*.png', '*.jpg', '*.jpeg', '*.heic', '*.heif', '*.webp', '*.mov', '*.mp4',
+    // B1 (2026-09): the app's own backups and snapshots are .json and carry the whole record.
+    '*.json', '*.ics', '*.zip', '*.vcf', '*.rtf', '*.eml',
+    // 2026-09-28: pasted rosters as .txt, GIFs, binary Excel.
+    '*.txt', '*.gif', '*.xlsb']) {
+    // Case-blind (2026-09-28): a phone saves IMG_0412.JPG, and *.jpg does not match it.
+    const blind = pat.replace(/[a-z]/g, (c) => '[' + c.toUpperCase() + c + ']');
+    ok(gi.indexOf(blind) !== -1, `.gitignore does not ignore ${pat} in every case (${blind})`);
+  }
+  // And git agrees: the app's own download names really are ignored.
+  try {
+    const out = execSync('git check-ignore popcorn-backup.json pack-year-2026-snapshot.json pack-569.ics',
+      { cwd: ROOT, encoding: 'utf8' });
+    eq(out.split('\n').filter(Boolean).length, 3, 'git check-ignore');
+    const upper = execSync('git check-ignore --no-index IMG_0412.JPG REPORT.PDF Roster.Txt SCOUTS.CSV',
+      { cwd: ROOT, encoding: 'utf8' });
+    eq(upper.split('\n').filter(Boolean).length, 4, 'git check-ignore, upper-case names');
+    // And nothing the site actually serves is caught by it.
+    eq(execSync('git ls-files -ci --exclude-standard', { cwd: ROOT, encoding: 'utf8' }).trim(), '',
+      'a tracked file matches .gitignore');
+  } catch (e) {
+    if (e.status === 1) throw new Error('git does not ignore the app’s backup/snapshot/calendar downloads');
+    if (e.status !== 128) throw e;   // 128: not a git checkout — the pattern scan above is the check
+  }
+});
+
+/* ================================================================
+   Wave 3 (2026-09-27) — what leaves the app. Every outbound builder is run against one roster
+   with surnames nobody would type by accident, and none of them may carry one out.
+   ================================================================ */
+
+const PRIV_SCOUTS = [
+  { id: 's1', name: 'Ada Quenneville', den: 'Wolf', renewalMonth: '2026-01' },
+  { id: 's2', name: 'Beckett Hartwellington', den: 'Bear', renewalMonth: '2026-09' },
+  { id: 's3', name: 'Beckett Zimmerfield', den: 'Tiger', renewalMonth: '' }
+];
+const SURNAMES = ['Quenneville', 'Hartwellington', 'Zimmerfield'];
+const LEADER_SURNAME = 'Oyelaran-Pettigrew';
+function noSurname(text, what) {
+  SURNAMES.concat([LEADER_SURNAME]).forEach((n) => ok(String(text).indexOf(n) === -1, `${what} carries the surname ${n}`));
+}
+const PRIV_STATE = `
+  var state = {
+    packName: 'Pack 569', rev: 3,
+    scouts: ${JSON.stringify(PRIV_SCOUTS)},
+    leaders: [{ id: 'l1', name: 'Morgan ${LEADER_SURNAME}', jobs: [] }],
+    fundraisers: [{ id: 'f1', name: 'Wreaths', goalCents: 50000 }],
+    storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [
+      { id: 'b1', label: 'Block 1', start: '10:00', end: '12:00',
+        assignments: [{ scoutId: 's1', weight: 1 }, { scoutId: 's2', weight: 1 }] },
+      { id: 'b2', label: 'Block 2', start: '12:00', end: '14:00',
+        assignments: [{ scoutId: 's3', weight: 1 }] }] }],
+    events: [
+      { id: 'e1', kind: 'pack', date: '2026-10-06', time: '18:30', note: 'Gym' },
+      { id: 'e2', kind: 'activity', name: 'Fall campout', date: '2026-10-17', time: '09:00', location: 'Fort Yargo', dens: [] }
+    ],
+    entries: [],
+    budget: { programYear: 2026, activities: [{ id: 'a1', eventId: 'e2', planned: 124000 }], expenses: [] },
+    derby: { name: '', date: '' }
+  };
+  function getScout(id) { for (var i = 0; i < state.scouts.length; i++) if (state.scouts[i].id === id) return state.scouts[i]; return null; }
+  function fmtDate(d) { return String(d); }
+`;
+
+test('calendar-only publishes the calendar and the cost of a year, and no child’s name anywhere', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(PRIV_STATE + `
+    function standingsEnabled() { return true; }
+    function campingTrips() { return []; }
+    function familyYearCost() {
+      return [{ den: 'Wolf', scout: 18000, adult: 4000, sibling: 0, expected: 22000, covered: 9600,
+        steps: [{ name: 'Dues covered', salesCents: 17500, coveredCents: 9600, afterCents: 12400 }],
+        lines: [{ name: 'Youth registration', scout: 9600, adult: 0, sibling: 0, direct: true, payee: 'Council',
+          perFamily: false, coverScoutStep: 0, coverAdultStep: -1 }] }];
+    }
+    ${['shortNames', 'publicNameMap', 'buildParentView', 'blocksInDayOrder', 'fmtTimeRange', 'fmtClock',
+       'eventIsMeeting', 'eventLabel', 'denListLabel', 'eventDens', 'programYearStartISO',
+       'programYearEndISO', 'cleanContactLine', 'parentContactLine', 'amountsEnabled'].map(slice).join('\n')}
+    var sync = {};`, ctx);
+  const pv = vm.runInContext('buildParentView(state, { showStandings: false })', ctx);
+  const text = JSON.stringify(pv);
+  noSurname(text, 'the calendar-only view');
+  ['Ada', 'Beckett'].forEach((n) => ok(text.indexOf(n) === -1, `the calendar-only view names ${n}`));
+  ['standings', 'goals', 'derby', 'tiers', 'tierLadder'].forEach((k) =>
+    ok(!(k in pv), `calendar-only publishes ${k}`));
+  const sf = pv.events.find((e) => e.kind === 'storefront');
+  eq(sf.shifts, [{ when: '10:00 AM–12:00 PM' }, { when: '12:00 PM–2:00 PM' }],
+    'the shift windows are not published bare');
+  // J2 — the year's cost is the pack's plan, with nobody in it, and a calendar-only link is
+  // exactly who asks for it.
+  ok(Array.isArray(pv.familyCost) && pv.familyCost[0].den === 'Wolf', 'calendar-only drops what a year costs');
+  const gate = BPV().indexOf('if (!withStandings) return out;');
+  ok(BPV().indexOf('var familyCost = familyYearCost()') < gate, 'the year’s cost is behind the standings gate');
+});
+
+test('calendar-only puts the cost card on the Schedule tab, and the toggle says what it hides', () => {
+  const sched = slice('renderParentSchedule');
+  ok(/if \(!Array\.isArray\(pv\.standings\)\) h \+= parentFamilyCost\(pv\);/.test(sched),
+    'with no Standings tab the cost card is shown nowhere');
+  // Only there when there is no Standings tab — the Standings page is also the printed handout.
+  ok(/h \+= parentFamilyCost\(pv\);/.test(slice('renderParentStandings')), 'the Standings page lost its cost card');
+  const label = /Untick for a calendar-only page:([\s\S]*?)<\/p>/.exec(SCRIPT);
+  ok(label, 'the calendar-only explanation under the toggle is gone');
+  // B7 (2026-09): it is the reward-tier BOARD that goes; the year's cost keeps what each tier
+  // takes off it, and the toggle has to say both or it reads as though every tier figure vanishes.
+  ['scout names', 'storefront shifts', 'sales totals', 'goal bar', 'the reward-tier board', 'derby winners',
+    'the year’s cost', '(with what each tier takes off it) and the camping pages still show', 'monthly digest'
+  ].forEach((w) => ok(label[1].indexOf(w) !== -1, `the toggle text does not mention ${w}`));
+  ok(!/the reward tiers and derby/.test(label[1]), 'the toggle still says every reward tier is hidden');
+  // The docs say the same thing.
+  ok(/names on storefront\s+shifts are then left out/.test(SETUP), 'SETUP does not say shift names go in calendar-only mode');
+  ok(/\*\*what a year costs\*\* each den moves onto it/.test(SETUP), 'SETUP does not say where the cost card goes');
+  const banner = /\/\/ PUBLISHED — the whole list;([\s\S]*?)\/\/ DELIBERATELY EXCLUDED/.exec(SCRIPT)[1];
+  ok(banner.indexOf('familyCost') < banner.indexOf('with standings on'), 'the banner still files familyCost under standings');
+  ok(banner.indexOf('FIRST NAMES') > banner.indexOf('with standings on'), 'the banner still says shift names always publish');
+});
+
+test('the copied standings name children the way the parent view does, and nobody’s cash', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(PRIV_STATE + `
+    function computePackTotals() {
+      return { sales: 60000, don: 9000, combined: 69000, commission: null, pct: null, ratesSplit: false,
+        teGoal: 0, stretch: 0, cashGoal: 0, cashKept: 0, cashDon: 7000, teEligible: 62000 };
+    }
+    var T = { s1: { sales: 30000, onD: 1000, storeD: 4321, wagonD: 0 }, s2: { sales: 20000, onD: 1000, storeD: 1234, wagonD: 1445 },
+      s3: { sales: 10000, onD: 0, storeD: 0, wagonD: 0 } };
+    function computeScoutTotals() { return T; }
+    function visibleScoutRows() { return state.scouts.map(function (s) { return { id: s.id, name: s.name, den: s.den, t: T[s.id] }; }); }
+    function rankBy(rows, f) { return rows.slice().sort(function (a, b) { return f(b) - f(a); }); }
+    function eligibleOf(r) { return r.t.sales + r.t.onD; }
+    function cashDonOf(r) { return r.t.storeD + r.t.wagonD; }
+    function sortedTiers() { return []; }
+    function tierEarnedMap() { return {}; }
+    function earnedTierFor() { return null; }
+    function cashCreditTotals() { return { on: true }; }
+    function cashScoutCredit(c) { return c; }
+    function standingsEnabled() { return true; }
+    function amountsEnabled() { return true; }
+    function sharingSettingsKnown() { return true; }
+    ${['shortNames', 'publicNameMap', 'salesOnlyTierMap', 'summaryText', 'fmt'].map(slice).join('\n')}`, ctx);
+  const txt = vm.runInContext('summaryText()', ctx);
+  noSurname(txt, 'the copied standings');
+  ok(/1\. Ada — /.test(txt) && /Beckett H\./.test(txt) && /Beckett Z\./.test(txt),
+    'the copied standings do not use the public names (an initial only to split the two Becketts)');
+  // Per-family cash: $43.21, $26.79 — neither may appear. The pack's cash total does.
+  ok(txt.indexOf('43.21') === -1 && txt.indexOf('26.79') === -1, 'a family’s cash donation is in the copied standings');
+  ok(/Cash donations \(storefront tables and wagons, all scouts\): \$70\.00/.test(txt), 'the pack’s cash total is gone');
+  // The printed twin of it, by scan: no raw roster name, and no per-scout cash table.
+  const sheet = /if \(o\.kind === 'summary'\) \{[\s\S]*?\n      return h;/.exec(SCRIPT)[0];
+  ok(!/esc\(r\.name\)/.test(sheet), 'the printed summary names children in full');
+  ok(/esc\(sumPub\[r\.id\] \|\| ''\)/.test(sheet), 'the printed summary does not use the public names');
+  ok(!/cashDonOf\(r\)|r\.t\.storeD|r\.t\.wagonD/.test(sheet), 'the printed summary lists each family’s cash');
+});
+
+test('the storefront day sheet names children by their public names', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(PRIV_STATE + ['shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'daySheetText', 'blocksInDayOrder',
+    'blockScoutNames', 'fmtTimeRange', 'fmtClock'].map(slice).join('\n'), ctx);
+  const txt = vm.runInContext('daySheetText(state.storefronts[0])', ctx);
+  noSurname(txt, 'the day sheet');
+  // It lists which children are at which store when: a leaders' copy, and it says so on the paper.
+  ok(txt.split('\n').indexOf('Leaders\u2019 copy \u2014 keep with the shift leader, do not post') !== -1,
+    'the copied day sheet does not say it is a leaders\u2019 copy');
+  ok(/esc\(DAY_SHEET_KEEP\)/.test(slice('renderDaySheet')), 'the printed day sheet does not say it is a leaders\u2019 copy');
+  ok(!/taped to a table/.test(SCRIPT), 'a comment still describes taping the day sheet up outside a store');
+  ok(/Scouts: Ada, Beckett H\./.test(txt) && /Scouts: Beckett Z\./.test(txt), 'the day sheet does not use the public names');
+  // Leaders' own screen still shows the roster as typed.
+  eq(vm.runInContext('blockScoutNames(state.storefronts[0].blocks[0])', ctx), ['Ada Quenneville', 'Beckett Hartwellington'],
+    'the leaders’ shift list lost its full names');
+});
+
+function digestCtx() {
+  const ctx = vm.createContext({});
+  vm.runInContext(PRIV_STATE + `
+    function monthLabel(mk) { return 'October 2026'; }
+    function rsvpSummary() { return { any: false, yes: 0, adults: 0 }; }
+    function dayEventsForMonth() { return { 3: [{ type: 'storefront', sf: state.storefronts[0] }], 6: [{ type: 'event', ev: state.events[0] }] }; }
+    function pad2(n) { return (n < 10 ? '0' : '') + n; }
+    function firstLine(s) { return String(s).split('\\n')[0]; }
+    function slotMonthKey() { return ''; }
+    function computePackTotals() { return { combined: 69000, teGoal: 100000, teBarGoal: 100000, teEligible: 62000 }; }
+    var STANDINGS = true;
+    function standingsEnabled() { return STANDINGS; }
+    function fundraiserTotals() { return { total: 31500 }; }
+    function leaderStatus(l) { return [{ label: 'YPT expired' }]; }
+    function leaderJobLabels() { return 'Cubmaster'; }
+    function monthKey(d) { return String(d).slice(0, 7); }
+    function todayISO() { return '2026-09-27'; }
+    function renewalDue(m) { return !!m && m <= '2026-09'; }
+    function activeScouts() { return state.scouts; }
+    ${['monthlyDigest', 'monthlyDigestLeaders', 'eventIsMeeting', 'eventLabel', 'fmtClock', 'fmtTimeRange', 'fmt'].map(slice).join('\n')}`, ctx);
+  return ctx;
+}
+
+test('the monthly digest a leader pastes to families carries nothing for leaders only', () => {
+  const ctx = digestCtx();
+  const parents = vm.runInContext("monthlyDigest('2026-10')", ctx);
+  noSurname(parents, 'the families’ digest');
+  ok(parents.indexOf('ACTION NEEDED') === -1, 'renewals and leader training are in the families’ digest');
+  ok(parents.indexOf('OTHER FUNDRAISERS') === -1 && parents.indexOf('Wreaths') === -1,
+    'other fundraisers are in the families’ digest');
+  ok(parents.indexOf('YPT') === -1 && parents.indexOf('Morgan') === -1, 'a leader’s training is in the families’ digest');
+  ok(/EVENTS THIS MONTH/.test(parents) && /Pack meeting/.test(parents), 'the families’ digest lost the calendar');
+  // The leaders' copy is where it all went, labelled so nobody pastes it by mistake.
+  const leaders = vm.runInContext("monthlyDigestLeaders('2026-10')", ctx);
+  ok(/LEADERS ONLY, not for families/.test(leaders), 'the leaders’ copy is not labelled');
+  ok(/ACTION NEEDED/.test(leaders) && /Ada Quenneville: registration renewal overdue/.test(leaders) &&
+    /Morgan/.test(leaders) && /OTHER FUNDRAISERS/.test(leaders), 'the leaders’ copy dropped something');
+  // Nothing to chase → no second box at all.
+  vm.runInContext('state.fundraisers = []; state.leaders = []; state.scouts = [];', ctx);
+  eq(vm.runInContext("monthlyDigestLeaders('2026-10')", ctx), '', 'an empty leaders’ copy is still offered');
+  // …and the overlay keeps them in two boxes with two buttons.
+  ok(/data-act="copy-digest-leaders"/.test(SCRIPT) && /id="exportBoxLeaders"/.test(SCRIPT),
+    'the leaders’ copy has no box of its own');
+  ok(/if \(act === 'copy-digest-leaders'\) \{[\s\S]*?monthlyDigestLeaders\(ui\.calMonth\)[\s\S]*?'exportBoxLeaders'\);/.test(SCRIPT),
+    'the leaders’ copy button copies something else');
+});
+
+test('the calendar file carries no budget figure and no child', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(PRIV_STATE + `
+    function lineForEvent(id) { return state.budget.activities.find(function (a) { return a.eventId === id; }) || null; }
+    function linePlanned(a) { return a.planned; }
+    function linePerHead() { return false; }
+    function lineRateSummary() { return ''; }
+    function pad2(n) { return (n < 10 ? '0' : '') + n; }
+    ${['buildICS', 'icsStamp', 'icsDate', 'icsTime', 'icsNextDay', 'icsEndPlusHour', 'icsEscape', 'icsFold',
+       'eventIsMeeting', 'eventLabel', 'fmt'].map(slice).join('\n')}`, ctx);
+  const ics = vm.runInContext('buildICS()', ctx);
+  ok(/SUMMARY:Fall campout/.test(ics), 'the fixture did not reach the calendar file');
+  ok(!/Estimated/.test(ics) && ics.indexOf('$') === -1 && ics.indexOf('1,240') === -1,
+    'the budget line’s planned total is in the calendar file families subscribe to');
+  noSurname(ics, 'the calendar file');
+  ok(!/lineForEvent|linePlanned/.test(codeOnly(slice('buildICS'))), 'buildICS reads the budget again');
+});
+
+/* ================================================================
+   The repo is public. Real families' emails and phone numbers once sat in this file as test
+   fixtures (a Trail's End export pasted in whole). Fixtures use @example.com and 555-01xx; the
+   only real numbers allowed are the public ones the camping pages print on purpose.
+   ================================================================ */
+
+test('no tracked file carries a real email address or phone number', () => {
+  let files;
+  try {
+    files = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean);
+  } catch (e) {
+    files = ['index.html', 'test/harness.mjs'];   // not a git checkout: scan the two that matter
+  }
+  const PUBLIC_NUMBERS = [
+    '(770) 867-3489',      // Fort Yargo park office, printed on the camping page
+    '(770) 867-3400',      // Northeast Georgia Medical Center Barrow, the hospital nearest it
+    '1-800-222-1222',      // Poison Control
+  ];
+  const ALLOWED_EMAIL = /@(example\.com|pack569\.com)$/i;
+  const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+  const PHONE = /(?:1-800-\d{3}-\d{4})|\(?\b[2-9]\d{2}\)?[-. ]?\d{3}[-. ]\d{4}\b|\b[2-9]\d{9}\b/g;
+  const isFake = (p) => /555[-. ]?01\d\d$/.test(p.replace(/\s+$/, ''));
+  const found = [];
+  for (const f of files) {
+    if (/\.(png|jpe?g|gif|ico|pdf|heic|woff2?)$/i.test(f)) continue;
+    let text;
+    try { text = readFileSync(join(ROOT, f), 'utf8'); } catch (e) { continue; }
+    // This test's own allowlist is the one place a real public number may be written twice.
+    (text.match(EMAIL) || []).forEach((m) => { if (!ALLOWED_EMAIL.test(m)) found.push(f + ': an email'); });
+    (text.match(PHONE) || []).forEach((m) => {
+      if (!isFake(m) && PUBLIC_NUMBERS.indexOf(m) < 0) found.push(f + ': a phone number');
+    });
+  }
+  // Report WHERE, never WHAT: a failing run's output is pasted into chats and issues too.
+  eq(found, [], 'personal contact details in a tracked file');
+});
+
+/* ================================================================
+   Wave 4 — the Treasurer's audit, 2026-09-27 (money).
+   Every test here was checked to FAIL against the code it guards.
+   ================================================================ */
+
+test('M1: commission posted to an income line is not a refund off Actual spent', () => {
+  // DESIGN-money §3.6 tells the treasurer to post the council's cheque to "Popcorn income".
+  // lineActualCents read any money in without a scout as a vendor refund, so it came off
+  // Actual spent while Funds in already counted commission from sales — twice.
+  const { lineActualCents } = sandbox(LEDGER_FNS);
+  const led = [
+    entry({ id: '1', lineId: 'P', amountCents: 273000, direction: 'in', source: 'commission' }),
+    entry({ id: '2', lineId: 'C', amountCents: 50000, direction: 'out' }),
+    entry({ id: '3', lineId: 'C', amountCents: 5000, direction: 'in', source: '' }),          // real refund
+    entry({ id: '4', lineId: 'C', amountCents: 9000, direction: 'in', source: 'fundraiser' })  // income, not refund
+  ];
+  eq(lineActualCents(led, 'P'), 0, 'commission read as negative spending');
+  eq(lineActualCents(led, 'C'), 45000, 'a vendor refund still reduces the cost; income does not');
+});
+
+test('M1: posted commission replaces the sales estimate; other income moves to Funds in', () => {
+  const { ledgerIncomeCents } = sandbox(LEDGER_FNS);
+  const isInc = (id) => id === 'P';
+  const none = ledgerIncomeCents([entry({ lineId: 'C', direction: 'out', amountCents: 100 })], isInc);
+  eq(none.hasCommission, false, 'nothing posted means the estimate stands');
+  const t = ledgerIncomeCents([
+    entry({ lineId: 'P', amountCents: 273000, direction: 'in', source: 'commission' }),
+    entry({ lineId: '', amountCents: 1000, direction: 'in', source: 'commission' }),
+    entry({ lineId: 'P', amountCents: 2000, direction: 'in', source: '' }),     // on an income line
+    entry({ lineId: 'P', amountCents: 500, direction: 'out' }),                  // back out of it
+    entry({ lineId: 'C', amountCents: 9000, direction: 'in', source: 'fundraiser' }),
+    entry({ lineId: 'C', amountCents: 5000, direction: 'in', source: '' }),      // refund: stays on C
+    entry({ lineId: '', amountCents: 7000, direction: 'in', source: 'donation' }), // uncategorised: out, as ever
+    entry({ lineId: 'D', amountCents: 8000, direction: 'in', source: 'family', scoutId: 's1' })
+  ], isInc);
+  eq(t.hasCommission, true, 'posted');
+  eq(t.commission, 274000, 'every posted commission entry, on a line or not');
+  eq(t.other, 2000 - 500 + 9000, 'other income');
+});
+
+test('M1: income-category lines are neither planned nor actual SPENDING', () => {
+  const fn = /function computeBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/b\.activities\.forEach\(function \(a\) \{\s*if \(a\.category === 'income'\) return;/.test(fn),
+    'an income activity line is counted as planned spending');
+  ok(/b\.expenses\.forEach\(function \(e\) \{\s*if \(e\.category === 'income'\) return;/.test(fn),
+    'an income expense line is counted as planned spending');
+  ok(/var commission = income\.hasCommission \? income\.commission : commissionEstimate;/.test(fn),
+    'posted commission is added on top of the sales estimate');
+  ok(/income\.other/.test(fn), 'income that used to come off Actual spent no longer reaches Funds in');
+});
+
+test('M2: next year starts from the reconciled bank balance, not the projection', () => {
+  const { closingCarryover } = sandbox(['closingCarryover']);
+  eq(closingCarryover(50000, 42000, true), 42000, 'the bank balance is the carryover when the book has one');
+  eq(closingCarryover(50000, -3000, false), 50000, 'net movement with no opening figure is not a balance');
+  const fn = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/b\.startingBalance = closingCarryover\(bud\.balance, closingBank, closingBankKnown\);/.test(fn),
+    'Starting funds still carries the projection when a reconciled bank balance exists');
+  ok(/var closingBankKnown = closingHadLedger && !!state\.book\.openingDate;/.test(fn),
+    'a ledger with no opening figure is treated as a bank balance');
+  ok(/if \(closingBankKnown\) \{\s*state\.book\.openingCents = closingBank;/.test(fn),
+    "next year's book opens at net movement when there was no opening figure");
+});
+
+test('M3: every reward-tier cover key follows its line into the new year', () => {
+  const { remapCoverKey } = sandbox(['remapCoverKey']);
+  const map = { E1: 'N1', A1: 'N2' };
+  eq(remapCoverKey('E1', map), 'N1', 'an expense scout share');
+  eq(remapCoverKey('E1#adult', map), 'N1#adult', 'an expense adult share');
+  eq(remapCoverKey('act:A1', map), 'act:N2', 'an activity scout share');
+  eq(remapCoverKey('act:A1#sibling', map), 'act:N2#sibling', 'an activity sibling share');
+  eq(remapCoverKey('act:GONE', map), 'act:GONE', 'a stale key is left alone');
+  const fn = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/t\.covers = arrOf\(t\.covers\)\.map\(function \(k\) \{ return remapCoverKey\(k, lineIdMap\); \}\);/.test(fn),
+    'the rollover rebuilds line ids and leaves every tier pointing at last year’s');
+  ok(/lineIdMap\[c\.line\.id\] = b\.activities\[i\]\.id/.test(fn) && /lineIdMap\[x\.id\] = b\.expenses\[i\]\.id/.test(fn),
+    'the old-to-new line map is incomplete');
+});
+
+test('M3: a tier deadline moves on a year rather than opening the year closed', () => {
+  const { shiftISOYear } = sandbox(['shiftISOYear']);
+  eq(shiftISOYear('2026-10-31'), '2027-10-31', 'one year on');
+  eq(shiftISOYear('2028-02-29'), '2029-02-28', 'a leap day');
+  eq(shiftISOYear(''), '', 'no deadline stays none');
+  const fn = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/if \(t\.dueBy\) t\.dueBy = shiftISOYear\(t\.dueBy\);/.test(fn), 'last year’s deadline is carried unchanged');
+});
+
+test('M5: a tier make-up payment does not also settle the family’s other charges', () => {
+  // Treasurer's repro: dues $40 covered by a tier the family paid $30 to reach; a $40 campout
+  // still open. The $30 bought the tier. Counted as a payment too, it knocked the campout to $10.
+  const { familyOutstanding, chargeTotals } = sandbox(CHARGE_FNS);
+  const charges = [
+    { scoutId: 's1', lineId: 'dues', amountCents: 4000, waivedBy: 't1', forgiven: null },
+    { scoutId: 's1', lineId: 'camp', amountCents: 4000, waivedBy: '', forgiven: null }
+  ];
+  const ledger = [{ direction: 'in', scoutId: 's1', amountCents: 3000, source: 'family', tierMakeup: 't1' }];
+  eq(familyOutstanding(charges, ledger, 's1'), 4000, 'the campout is still owed in full');
+  const t = chargeTotals(charges, ledger);
+  eq(t.paid, 0, 'make-up money is not a charge payment');
+  eq(t.makeup, 3000, 'but it is reported, not lost');
+  eq(t.outstanding, 4000, 'still owed');
+  const fn = /function computeBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/var feeIncomeGross = chg\.paid \+ chg\.donated \+ chg\.makeup;/.test(fn) &&
+     /feeIncomeCollected = feeIncomeGross - chg\.refunded;/.test(fn), 'make-up money dropped out of Funds in');
+});
+
+test('M6: editing a reimbursement keeps who it paid back', () => {
+  // tierReimbursements reads the scout off a money-OUT entry to know a family was paid back.
+  // Every edit used to clear it — including typing the receipt number the toast asks for.
+  const h = /if \(ch\.indexOf\('led-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(!/led\.direction !== 'in'\) \{ led\.source = ''; led\.donor = ''; led\.scoutId = ''; \}/.test(h),
+    'any edit of a money-out entry clears its scout');
+  ok(/if \(lk === 'dir'\) \{ led\.scoutId = '';/.test(h), 'flipping the direction no longer drops the payer');
+});
+
+test('T1: a refunded family credit leaves the account, and nothing is carried', () => {
+  // The Dues card says "record the refund as money out" — and money out could not name the
+  // family, so the credit outlived the cheque and came forward at close-out: paid back twice.
+  const ctx = sandbox(CHARGE_FNS.concat(['chargePaidAllocation', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
+    'entrySignedCents', 'lineActualCents']));
+  const charges = [{ id: 'd', scoutId: 'ada', lineId: 'D', amountCents: 8000, date: '2026-09-01', waivedBy: '', forgiven: null }];
+  const paid = { direction: 'in', scoutId: 'ada', amountCents: 12000, source: 'family' };      // $40 over
+  const refund = { direction: 'out', scoutId: 'ada', amountCents: 4000, source: 'refund', lineId: 'D' };
+  const before = ctx.familyAccounts(charges, [paid]);
+  eq(before[0].credit, 4000, 'the credit before the refund');
+  const after = ctx.familyAccounts(charges, [paid, refund]);
+  eq([after[0].balance, after[0].credit, after[0].outstanding], [0, 0, 0], 'square after the refund');
+  // rolloverYear carries every family whose balance is not 0 — so a square family carries nothing.
+  const roll = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/var closingAccounts = familyAccountsNow\(\)\.filter\(function \(a\) \{ return a\.balance !== 0; \}\);/.test(roll),
+    'close-out does not read the refunded balance');
+  eq(ctx.familyOutstanding(charges, [paid, refund], 'ada'), 0, 'familyOutstanding');
+  const t = ctx.chargeTotals(charges, [paid, refund]);
+  eq([t.paid, t.refunded, t.credit, t.outstanding], [12000, 4000, 0, 0], 'chargeTotals reports it');
+  eq(ctx.chargePaidAllocation(charges, [paid, refund]), { d: 8000 }, 'a refund of credit un-paid a charge');
+  // Refunding more than the credit un-pays the charge it has to.
+  const big = Object.assign({}, refund, { amountCents: 6000 });
+  eq(ctx.chargePaidAllocation(charges, [paid, big]), { d: 6000 }, 'a refund past the credit');
+  eq(ctx.familyOutstanding(charges, [paid, big], 'ada'), 2000, 'and the family owes it again');
+  // Not a cost of the line it sits on.
+  eq(ctx.lineActualCents([refund], 'D'), 0, 'a refund counted as spending on its line');
+  // A reward-tier reimbursement is never a refund — marked, or from before the mark (no source).
+  eq(ctx.entryRefundsFamily({ direction: 'out', scoutId: 'ada', source: '' }), false, 'an old reimbursement reads as a refund');
+  eq(ctx.entryRefundsFamily({ direction: 'out', scoutId: 'ada', source: 'refund', reimbursement: true }), false,
+    'a marked reimbursement reads as a refund');
+  eq(ctx.familyAccounts(charges, [paid, { direction: 'out', scoutId: 'ada', amountCents: 4000, source: '' }])[0].credit, 4000,
+    'a reimbursement took the family’s credit away');
+  // Wiring: the reimburse button marks what it records, the reimbursement list skips refunds,
+  // Funds in loses the money, and the ledger lets money out name a family.
+  const rb = /if \(act\.indexOf\('tier-reimburse:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/reimbursement: true/.test(rb), 'a reimbursement is not marked as one');
+  const tr = /function tierReimbursements\(map\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/!entryRefundsFamily\(e\)/.test(tr), 'a refund on a paid-direct line counts as a reimbursement');
+  const add = /if \(act === 'ledger-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/source: dr\.direction === 'in' \? dr\.source : \(\(dr\.scoutId && !drReimb\) \? 'refund' : ''\)/.test(add) && /scoutId: dr\.scoutId,/.test(add),
+    'a new money-out entry cannot name the family refunded');
+  const rows = /function renderLedgerEntries\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/data-ch="led-scout"[^\n]*Refunded to which family/.test(rows) && /data-ch="ledn-scout" aria-label="Refunded to which family"/.test(rows),
+    'the ledger has no family picker on money out');
+  ok(/if \(act === 'charge-refund'\) \{/.test(SCRIPT) && /data-act="charge-refund"/.test(SCRIPT), 'no Record a refund button');
+  ok(!/record the refund as money out/.test(SCRIPT), 'the old instruction is still there');
+});
+
+test('T2: the close-out preview names the starting funds rolloverYear will actually carry', () => {
+  // It said "the starting balance becomes this year's ending balance" and showed the projection,
+  // when a book with an opening date carries its bank balance (M2).
+  const ov = /function renderCloseoutOverlay\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(!/the starting balance becomes this year’s ending balance/.test(ov), 'the old projection-only sentence is still there');
+  ok(/var coCarry = closingCarryover\(coBud\.balance, bookBalance\(\), coBankKnown\);/.test(ov),
+    'the preview does not work the carryover out the way close-out does');
+  ok(/var coBankKnown = state\.ledger\.length > 0 && !!state\.book\.openingDate;/.test(ov),
+    'the preview decides "bank balance known" differently from rolloverYear');
+  const roll = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/var closingHadLedger = state\.ledger\.length > 0;/.test(roll) &&
+    /var closingBankKnown = closingHadLedger && !!state\.book\.openingDate;/.test(roll) &&
+    /closingCarryover\(bud\.balance, closingBank, closingBankKnown\)/.test(roll) && /var closingBank = bookBalance\(\);/.test(roll),
+    'rolloverYear no longer matches what the preview promises');
+  ok(/bank balance<\/strong> \(' \+ fmt\(coCarry\)/.test(ov) && /projected ending balance<\/strong> \(' \+ fmt\(coCarry\)/.test(ov),
+    'the preview does not say which figure it is carrying');
+  ok(/' \+ coCarryLine \+ '/.test(ov), 'the carry line is not in the list');
+});
+
+test('T3: a family credit comes forward even when the book had no opening date, and the preview says so', () => {
+  const fn = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/\} else if \(a\.balance < 0\) \{/.test(fn) && !/a\.balance < 0 && closingBankKnown/.test(fn),
+    'a credit is dropped when the closing book had no opening date');
+  // Dated before the program year starts — where "Start from the carryover figure" opens the book —
+  // not off state.book.openingDate, which a pack with no opening balance does not have.
+  ok(/date: priorDayISO\(programYearStartISO\(b\.programYear\)\)/.test(fn) && !/priorDayISO\(state\.book\.openingDate\)/.test(fn),
+    'the carried credit is dated off an opening date that may not exist');
+  ok(fn.indexOf('b.programYear += 1;') < fn.indexOf('priorDayISO(programYearStartISO(b.programYear))'),
+    'the credit is dated in the closing year, not before the new one');
+  const use = /data-act="ledger-use-carryover"/.test(SCRIPT) &&
+    /if \(act === 'ledger-use-carryover'\) \{[\s\S]*?programYearStartISO\(state\.budget\.programYear\)/.test(SCRIPT);
+  ok(use, 'the carryover button no longer opens the book on the first day of the program year');
+  const ctx = sandbox(['fmt', 'closeoutFamilyLine']);
+  eq(ctx.closeoutFamilyLine([{ balance: 4500 }, { balance: 1000 }, { balance: -2000 }, { balance: 0 }]),
+    '2 families’ unpaid balances ($55.00) come forward as Prior-year balance; 1 family’s credit ($20.00) comes forward.',
+    'the preview line');
+  eq(ctx.closeoutFamilyLine([{ balance: 0 }]), 'Every family account is square, so no balance comes forward.', 'all square');
+  const ov = /function renderCloseoutOverlay\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/closeoutFamilyLine\(familyAccountsNow\(\)\)/.test(ov), 'the preview does not say what happens to family balances');
+  ok(!/dues collections/.test(ov), 'the preview still says dues collections are cleared');
+});
+
+test('T4: an income-line cheque that may be the commission is asked about, and $0 is not a posted commission', () => {
+  const ctx = sandbox(LEDGER_FNS.concat(['COMMISSION_LOOKALIKE_SOURCES', 'commissionLookalikes']));
+  const isInc = (id) => id === 'POP';
+  // (b) A $0 "commission" entry switched the sales estimate off and left commission at $0.
+  const zero = ctx.ledgerIncomeCents([entry({ direction: 'in', source: 'commission', amountCents: 0, lineId: 'POP' })], isInc);
+  eq([zero.commission, zero.hasCommission], [0, false], 'a $0 commission entry counts as posted');
+  eq(ctx.ledgerIncomeCents([entry({ direction: 'in', source: 'commission', amountCents: 1, lineId: '' })], isInc).hasCommission, true,
+    'a real commission entry is not posted');
+  // (a) Old cheques posted before M1, with a blank or "fundraiser" source, on the income line.
+  const led = [
+    entry({ id: 'a', direction: 'in', source: 'fundraiser', amountCents: 90000, lineId: 'POP' }),
+    entry({ id: 'b', direction: 'in', source: '', amountCents: 10000, lineId: 'POP' }),
+    entry({ id: 'c', direction: 'in', source: 'donation', amountCents: 5000, lineId: 'POP' }),     // says what it is
+    entry({ id: 'd', direction: 'in', source: '', amountCents: 7000, lineId: 'CAMP' }),            // not an income line
+    entry({ id: 'e', direction: 'in', source: '', amountCents: 4000, lineId: 'POP', scoutId: 'ada' }), // a family's
+    entry({ id: 'f', direction: 'out', source: '', amountCents: 3000, lineId: 'POP' })
+  ];
+  eq(JSON.parse(JSON.stringify(ctx.commissionLookalikes(led, isInc))).map((x) => ({ lineId: x.lineId, cents: x.cents, count: x.count })),
+    [{ lineId: 'POP', cents: 100000, count: 2 }], 'lookalikes');
+  // M4 — an entry the treasurer has answered "not the commission" for is not asked about again.
+  const answered = led.map((x) => x.id === 'a' ? Object.assign({}, x, { notCommission: true }) : x);
+  eq(JSON.parse(JSON.stringify(ctx.commissionLookalikes(answered, isInc))),
+    [{ lineId: 'POP', cents: 10000, count: 1, entries: [{ id: 'b', cents: 10000, date: led[1].date }] }], 'an answered entry is still asked about');
+  eq(ctx.commissionLookalikes(led.map((x) => Object.assign({}, x, { notCommission: true })), isInc).length, 0,
+    'every entry answered, and the line is still listed');
+  // Only while the estimate is what Funds in counts, and never guessed from the description.
+  const fn = /function computeBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/var lookalikes = \(!income\.hasCommission && commissionEstimate > 0\)\s*\? commissionLookalikes\(state\.ledger, isIncomeLine\) : \[\];/.test(fn),
+    'the question is asked when no estimate is being counted, or after the commission is posted');
+  ok(!/description/.test(/function commissionLookalikes\([^)]*\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0]), 'it guesses from the description');
+  const card = /function renderBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0].replace(/'\s*\+\s*'/g, '');
+  ok(/bud\.commissionLookalikes\.map/.test(card) && /Is this the council’s commission cheque\?/.test(card) &&
+    /so it isn’t counted twice/.test(card), 'the Budget card does not ask');
+});
+
+test('T5: a carryover entry is not counted as income on top of Starting funds', () => {
+  const ctx = sandbox(LEDGER_FNS);
+  const isInc = (id) => id === 'INC';
+  const t = ctx.ledgerIncomeCents([
+    entry({ direction: 'in', source: 'carryover', amountCents: 42000, lineId: 'INC' }),
+    entry({ direction: 'in', source: 'carryover', amountCents: 1000, lineId: 'CAMP' }),
+    entry({ direction: 'in', source: 'fundraiser', amountCents: 5000, lineId: 'INC' })
+  ], isInc, 42000);
+  eq(t.other, 5000, 'the carryover reached Funds in a second time');
+  eq(t.carryover, 0, 'the carryover was counted on its own term as well as in Starting funds');
+});
+
+test('M3: with Starting funds at $0, a carryover entry counts, and the card asks for it to be moved', () => {
+  const ctx = sandbox(LEDGER_FNS);
+  const isInc = (id) => id === 'INC';
+  const L = [
+    entry({ direction: 'in', source: 'carryover', amountCents: 42000, lineId: '' }),
+    entry({ direction: 'in', source: 'carryover', amountCents: 1000, lineId: 'CAMP' }),
+    // A family's carried credit is never the pack's carryover.
+    entry({ direction: 'in', source: 'carryover', amountCents: 700, lineId: '', scoutId: 'ada' }),
+    entry({ direction: 'in', source: 'fundraiser', amountCents: 5000, lineId: 'INC' })
+  ];
+  const zero = ctx.ledgerIncomeCents(L, isInc, 0);
+  eq([zero.carryover, zero.other], [43000, 5000], 'with Starting funds $0');
+  eq(ctx.ledgerIncomeCents(L, isInc).carryover, 43000, 'no Starting funds given reads as $0');
+  const set = ctx.ledgerIncomeCents(L, isInc, 43000);
+  eq([set.carryover, set.other], [0, 5000], 'with Starting funds set');
+  const fn = slice('computeBudget');
+  ok(/ledgerIncomeCents\(state\.ledger, isIncomeLine, b\.startingBalance \|\| 0\)/.test(fn), 'computeBudget does not pass Starting funds');
+  ok(/ledgerCarryover: income\.carryover,/.test(fn), 'the counted carryover is not reported');
+  const card = /function renderBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0].replace(/'\s*\+\s*'/g, '');
+  ok(/bud\.ledgerCarryover > 0/.test(card) &&
+     /A Carryover entry of <strong class="money">' \+\s*fmt\(bud\.ledgerCarryover\) \+ '<\/strong> is in the ledger but Starting funds is \$0 \\u2014 set Starting funds to it and this entry stops counting\./.test(card),
+    'the Budget card does not ask for the carryover to be moved into Starting funds');
+});
+
+test('T6: a part-paid commission says how much is still expected from the council', () => {
+  const card = /function renderBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  const at = card.indexOf("' as posted to the ledger'");
+  ok(at !== -1, 'the posted-commission wording is gone');
+  const bit = card.slice(at, at + 900);
+  ok(/bud\.commissionEstimate > bud\.commission\s*\? ' — ' \+ fmt\(bud\.commissionEstimate - bud\.commission\) \+ ' less than sales work out to; still expected from the council, or check the rate with the Kernel'/.test(bit),
+    'a part-payment does not say what is still to come');
+});
+
+test('T7: chargeTotals is only ever asked about the whole book; a subset uses chargeSetTotals', () => {
+  // Handed one line's charges, chargeTotals counted every payment in the ledger as paid for that
+  // line and each touched family's whole balance as owed on it.
+  const calls = codeOnly(SCRIPT).match(/chargeTotals\([^)]*\)/g) || [];
+  const bad = calls.filter((c) => !/^chargeTotals\((state\.charges, state\.ledger, chargeFamilyKey|charges, ledger, keyOf)\)$/.test(c));
+  eq(bad, [], 'chargeTotals called on something other than state.charges');
+  const { chargeSetTotals } = sandbox(CHARGE_FNS);
+  eq(chargeSetTotals([
+    { amountCents: 4000, waivedBy: 't', forgiven: null },
+    { amountCents: 3000, waivedBy: '', forgiven: { reason: 'x' } },
+    { amountCents: 2000, waivedBy: '', forgiven: null }
+  ]), { raised: 9000, standing: 2000, waived: 4000, forgiven: 3000 }, 'the charge-only figures');
+});
+
+test('T8: reward-tier reimbursements are measured against what the plan set aside for them', () => {
+  // A paid-direct line is out of the plan, so every reimbursement on it read as over budget
+  // against $0 — though Planned (A) already counts what the planned tiers will pay back.
+  const now = /function budgetVsActualNow\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/var bvaCover = coverCostForKeys\(plannedCoverKeys\(\)\);\s*items\.push\(\{ category: BVA_REIMBURSE, planned: bvaCover\.extraReimburse, actual: 0 \}\);/.test(now),
+    'the reimbursements row is not planned at what A counts for them');
+  ok(/LINE_CATEGORIES\.concat\(\[\[BVA_REIMBURSE, 'Reward-tier reimbursements'\]\]\)/.test(now), 'no row of their own');
+  // A covers exactly that figure, via tierExtra — so the row and Planned agree.
+  ok(/extra \+= cents; extraReimburse \+= cents;/.test(SCRIPT) && /function tierExtraPackCostCents\(\) \{ return coverCostForKeys\(plannedCoverKeys\(\)\)\.extra; \}/.test(SCRIPT),
+    'what Planned counts for reimbursements has moved');
+  const { budgetVsActual, LINE_CATEGORIES } = sandbox(['LINE_CATEGORIES', 'budgetVsActual']);
+  const out = budgetVsActual([
+    { category: 'registration', planned: 8500, actual: 8500 },
+    { category: 'tier-reimburse', planned: 0, actual: 6000 },      // two scouts paid back
+    { category: 'tier-reimburse', planned: 9000, actual: 0 }       // the plan: three scouts
+  ], LINE_CATEGORIES.concat([['tier-reimburse', 'Reward-tier reimbursements']]));
+  const r = out.rows.find((x) => x.category === 'tier-reimburse');
+  eq([r.label, r.planned, r.actual, r.variance], ['Reward-tier reimbursements', 9000, 6000, -3000], 'under plan, not over');
+  eq(out.rows[out.rows.length - 1].category, 'tier-reimburse', 'the row is not last');
+});
+
+test('T9: a shared balance, a carried credit and the parents’ cost card say what they are', () => {
+  // (a) Linked siblings each carried "owes $120" — the family's one balance, read as two.
+  const roster = SCRIPT.slice(SCRIPT.indexOf('var owe = scoutOwesCents(s.id);'), SCRIPT.indexOf('var owe = scoutOwesCents(s.id);') + 1600);
+  ok(/\(shared \? 'family owes ' : 'owes '\)/.test(roster), 'a sibling’s pill does not say the balance is the family’s');
+  ok(/state\.scouts\.filter\(function \(o\) \{ return familyKeyOf\(o\) === famKey; \}\)\.length > 1/.test(roster),
+    'an archived sibling does not count as sharing the account');
+  // (b) "received" included last year's carried credit.
+  const { familyAccounts } = sandbox(CHARGE_FNS);
+  const a = familyAccounts([{ scoutId: 'ada', amountCents: 8000, waivedBy: '', forgiven: null }], [
+    { direction: 'in', scoutId: 'ada', amountCents: 3000, source: 'carryover' },
+    { direction: 'in', scoutId: 'ada', amountCents: 5000, source: 'family' }
+  ])[0];
+  eq([a.paid, a.carried, a.balance], [8000, 3000, 0], 'the family account');
+  const blk = /function duesFamilyBlock\(f\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/fmt\(a\.paid - a\.carried\) \+ ' received'/.test(blk) && /' carried forward'/.test(blk),
+    'the family block counts a carried credit as received');
+  // (c) The parents' card is the fees in the plan, not everything a year costs. No new published fields.
+  const pv = /function parentFamilyCost\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/fees in the pack’s plan/.test(pv), 'the parents’ cost card is not softened');
+});
+
+test('T10: undoing a forgiveness takes two taps', () => {
+  const u = /if \(act\.indexOf\('charge-unforgive:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/arm\(act, function \(\) \{[\s\S]*uc\.forgiven = null;/.test(u), 'a forgiveness is undone on one tap');
+  const blk = /function duesFamilyBlock\(f\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/data-act="charge-unforgive:' \+ c\.id \+ '"/.test(blk) && /Tap again to undo/.test(blk),
+    'the Undo button is not keyed per charge, so it cannot show it is armed');
+  ok(!/data-act="charge-unforgive" /.test(SCRIPT), 'the old one-tap button is still drawn');
+});
+
+test('T10: unpaid duplicate charges are listed for a leader, never removed on their own', () => {
+  const ctx = sandbox(['chargeIsOpen', 'duplicateCharges']);
+  const fam = { aol: 'F', wolf: 'F' };
+  const mk = (c) => c.lineId === 'FAM' && c.who === 'scout' ? 'FAM|fam:' + (fam[c.scoutId] || c.scoutId) : c.id;
+  const open = (id, sid, extra) => Object.assign({ id: id, scoutId: sid, lineId: 'FAM', who: 'scout', seq: 0,
+    amountCents: 6000, waivedBy: '', forgiven: null }, extra || {});
+  // The old charge (crossed-over AoL) and the one raised again for the sibling.
+  let out = ctx.duplicateCharges([open('c1', 'aol'), open('c2', 'wolf'), open('x', 'ben')], mk, {});
+  eq(out.map((d) => [d.charge.id, d.keep.id]), [['c2', 'c1']], 'the later one is listed, the oldest kept');
+  // The one money went to is kept, whichever it is.
+  out = ctx.duplicateCharges([open('c1', 'aol'), open('c2', 'wolf')], mk, { c2: 6000 });
+  eq(out.map((d) => [d.charge.id, d.keep.id]), [['c1', 'c2']], 'a paid charge was listed for removal');
+  // Both paid against, or the other settled: nothing is listed for removal as "unpaid".
+  eq(ctx.duplicateCharges([open('c1', 'aol'), open('c2', 'wolf')], mk, { c1: 100, c2: 100 }).length, 0, 'paid duplicates listed');
+  eq(ctx.duplicateCharges([open('c1', 'aol', { forgiven: { reason: 'r' } }), open('c2', 'wolf', { waivedBy: 't' })], mk, {}).length, 0,
+    'settled duplicates listed');
+  // Nothing in the code removes one without the leader's second tap.
+  const rm = /if \(act\.indexOf\('charge-dup-remove:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(rm && /arm\(act, function \(\) \{/.test(rm[0]) && /duplicateChargesNow\(\)\.filter/.test(rm[0]) && /deleteWithUndo\(/.test(rm[0]),
+    'removing a duplicate is not two taps, re-checked, with Undo');
+  const sc = /function syncCharges\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(!/duplicateCharges/.test(sc), 'syncCharges removes duplicates on its own');
+  const dues = /function renderDues\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/var dups = duplicateChargesNow\(\);/.test(dues) && /Charged twice\?/.test(dues), 'the Dues card does not list them');
+  ok(/dupN \+ ' charge' \+ \(dupN === 1 \? '' : 's'\) \+ ' may be a duplicate'/.test(SCRIPT), 'the Treasurer is not told on Home');
+});
+
+test('T1: a refund source only survives on money out that names a family', () => {
+  const ns = /function normalizeState\(d\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/if \(e\.source === 'refund' && \(e\.direction !== 'out' \|\| !e\.scoutId\)\) e\.source = '';/.test(ns),
+    'a stray refund source is kept on money in, or with no family');
+  ok(/e\.reimbursement = e\.reimbursement === true;/.test(ns), 'the reimbursement mark is not normalized');
+  const opts = /function sourceSelectOptions\(sel\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/s !== 'refund'/.test(opts), 'Refund is offered as a source of money IN');
+});
+
+test('M7: one cheque against either sibling settles the family, and a credit is shown', () => {
+  const { familyAccounts, familyOutstanding, chargeTotals } = sandbox(CHARGE_FNS);
+  const fam = { ada: 'F', ben: 'F', cal: 'cal' };
+  const keyOf = (id) => fam[id] || id;
+  const charges = [
+    { scoutId: 'ada', amountCents: 8000, waivedBy: '', forgiven: null },
+    { scoutId: 'ben', amountCents: 8000, waivedBy: '', forgiven: null },
+    { scoutId: 'cal', amountCents: 8000, waivedBy: '', forgiven: null }
+  ];
+  const ledger = [
+    { direction: 'in', scoutId: 'ada', amountCents: 16000, source: 'family' },  // one cheque, both children
+    { direction: 'in', scoutId: 'cal', amountCents: 10000, source: 'family' }   // $20 over
+  ];
+  eq(familyOutstanding(charges, ledger, 'ben', keyOf), 0, 'Ben still owes after his sister’s cheque covered him');
+  const accts = familyAccounts(charges, ledger, keyOf);
+  const f = accts.find((a) => a.key === 'F');
+  eq([f.owed, f.paid, f.outstanding, f.credit], [16000, 16000, 0, 0], 'the family account');
+  const c = accts.find((a) => a.key === 'cal');
+  eq(c.credit, 2000, 'an overpayment is a credit, not "square"');
+  const t = chargeTotals(charges, ledger, keyOf);
+  eq(t.outstanding, 0, 'nobody owes');
+  eq(t.credit, 2000, 'the credit is reported');
+  // Without a key every scout is a family of one — what an unlinked pack always had.
+  eq(familyOutstanding(charges, ledger, 'ben'), 8000, 'unlinked, Ben is his own account');
+});
+
+test('M7: every "owes" beside a name, and the Treasurer’s nag, is the family’s', () => {
+  ok(/function scoutOwesCents\(scoutId\) \{ return familyOutstanding\(state\.charges, state\.ledger, scoutId, chargeFamilyKey\); \}/.test(SCRIPT),
+    'scoutOwesCents is still per scout');
+  const key = /function chargeFamilyKey\(scoutId\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/getScout\(scoutId\)/.test(key) && /familyKeyOf\(sc\)/.test(key),
+    'the family key does not read archived scouts through getScout');
+  ok(/var owingFams = familyAccountsNow\(\)/.test(SCRIPT), 'the Treasurer’s nag counts a family once per child');
+  const dues = /function renderDues\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/duesFamilyBlock/.test(dues) && />Family balances</.test(dues), 'the Dues card still lists scouts one by one');
+  const blk = /function duesFamilyBlock\(f\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/Credit ' \+ fmt\(a\.credit\)/.test(blk), 'a family in credit still reads "square"');
+});
+
+test('M9: a former scout’s balance has a row to settle it from', () => {
+  // "Still owed" counts every family; the list showed only the current roster.
+  const dues = /function renderDues\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/Former scouts with a balance/.test(dues), 'archived scouts with a balance have nowhere to be paid or forgiven');
+  ok(/var former = fams\.filter\(function \(f\) \{\s*return !f\.active\.length && \(f\.acct\.outstanding \|\| f\.acct\.credit \|\|\s*f\.charges\.some\(function \(c\) \{ return !!c\.forgiven; \}\)\);/.test(dues),
+    'the former-scouts list does not pick up families with nobody left on the roster');
+  ok(/former\.forEach\(function \(f\) \{ h \+= duesFamilyBlock\(f\); \}\);/.test(dues),
+    'former families are not given the same pay and forgive controls');
+  const df = /function duesFamilies\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/state\.scouts\.filter/.test(df), 'family members are read from the active roster only');
+});
+
+test('M8: a payment freezes the charge it paid, not every charge the family has', () => {
+  // One $80 dues cheque used to freeze the scout's campout charges too, so a head count
+  // corrected afterwards could neither drop a parent who never came nor re-price the line.
+  const { chargePaidAllocation } = sandbox(CHARGE_FNS.concat(['chargePaidAllocation']));
+  const charges = [
+    { id: 'dues', scoutId: 's1', lineId: 'D', amountCents: 8000, date: '2026-09-01', waivedBy: '', forgiven: null },
+    { id: 'campS', scoutId: 's1', lineId: 'C', amountCents: 4000, date: '2026-10-10', waivedBy: '', forgiven: null },
+    { id: 'campA', scoutId: 's1', lineId: 'C', amountCents: 4000, date: '2026-10-10', waivedBy: '', forgiven: null },
+    { id: 'sib', scoutId: 's2', lineId: 'D', amountCents: 8000, date: '2026-09-01', waivedBy: '', forgiven: null }
+  ];
+  const onLine = chargePaidAllocation(charges, [
+    { direction: 'in', scoutId: 's1', lineId: 'D', amountCents: 8000, source: 'family' }
+  ]);
+  eq(onLine, { dues: 8000 }, 'a dues cheque paid the dues and nothing else');
+  // No line: oldest first. $100 pays the dues and half the first campout head.
+  const fifo = chargePaidAllocation(charges, [
+    { direction: 'in', scoutId: 's1', lineId: '', amountCents: 10000, source: 'family' }
+  ]);
+  eq(fifo, { dues: 8000, campS: 2000 }, 'oldest first');
+  // Per family: the sister's cheque reaches the brother's charge.
+  const fam = chargePaidAllocation(charges, [
+    { direction: 'in', scoutId: 's2', lineId: 'D', amountCents: 16000, source: 'family' }
+  ], (id) => 'F');
+  eq(fam.dues + fam.sib, 16000, 'a family cheque on the dues line pays both children’s dues');
+  // A tier make-up pays no charge at all (M5).
+  eq(chargePaidAllocation(charges, [
+    { direction: 'in', scoutId: 's1', lineId: '', amountCents: 3000, source: 'family', tierMakeup: 't' }
+  ]), {}, 'make-up money was allocated to a charge');
+});
+
+test('M8: a per-family fee is not billed again when the child carrying it crosses over', () => {
+  const { chargeMatchKey } = sandbox(['linePerFamily', 'chargeKey', 'chargeMatchKey']);
+  const fam = { aol: 'F', wolf: 'F' };
+  const keyOf = (id) => fam[id] || id;
+  const perFamily = { id: 'L', basis: 'per-family' };
+  const perHead = { id: 'L', basis: 'per-head' };
+  const old = { lineId: 'L', scoutId: 'aol', who: 'scout', seq: 0 };
+  const now = { lineId: 'L', scoutId: 'wolf', who: 'scout', seq: 0 };
+  eq(chargeMatchKey(old, perFamily, keyOf), chargeMatchKey(now, perFamily, keyOf),
+    'the sibling’s wanted charge does not match the charge the family already has');
+  ok(chargeMatchKey(old, perHead, keyOf) !== chargeMatchKey(now, perHead, keyOf),
+    'a per-head charge is pooled across siblings');
+  const fn = /function syncCharges\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/want\[chargeMatchKey\(row, r\.line, chargeFamilyKey\)\] = row/.test(fn) && /byKey\[mk\(c\)\] = c/.test(fn),
+    'syncCharges still matches charges by scout id');
+});
+
+test('M4: a family’s open balance survives the year-end as one prior-year charge', () => {
+  const fn = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  // Read before anything is cleared...
+  const read = fn.indexOf('var closingAccounts = familyAccountsNow()');
+  ok(read !== -1, 'family balances are not read at close-out');
+  ok(read < fn.indexOf('state.ledger = [];') && read < fn.indexOf('state.charges = [];'),
+    'family balances are read after the ledger or the charges were cleared');
+  // ...and written back after the clear, on no line, one per family.
+  const clear = fn.indexOf('state.charges = [];');
+  const carry = fn.indexOf('closingAccounts.forEach', clear);
+  ok(carry > clear, 'balances are not carried into the cleared charges');
+  ok(/lineId: '', who: 'scout', seq: 0,\s*amountCents: a\.balance/.test(fn), 'the carried charge is not the family’s net balance on no line');
+  ok(/label: carryLabel/.test(fn), 'the carried charge is not named');
+  // A credit is a payment BEFORE the opening date: in the family's account, not in the bank twice.
+  ok(/source: 'carryover', donor: '', scoutId: to/.test(fn) && /date: priorDayISO\(programYearStartISO\(b\.programYear\)\)/.test(fn),
+    'a family credit is lost at close-out, or lands inside the new bank balance');
+  // syncCharges must not drop what it did not raise.
+  const sc = /function syncCharges\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/if \(!c\.lineId\) return true;/.test(sc), 'syncCharges drops a prior-year balance on the next commit');
+  const { priorDayISO } = sandbox(['priorDayISO']);
+  eq(priorDayISO('2027-07-01'), '2027-06-30', 'the day before the book opens');
+  eq(priorDayISO('2028-03-01'), '2028-02-29', 'across a leap day');
+});
+
+test('M10: reconciling is against THIS statement — nothing dated after it counts', () => {
+  const { reconcileTotals } = sandbox(LEDGER_FNS);
+  const book = { openingCents: 10000, openingDate: '2026-07-01', statementCents: 15000, statementDate: '2026-09-30' };
+  const led = [
+    entry({ id: 'a', date: '2026-09-10', amountCents: 5000, direction: 'in', reconciled: true }),
+    entry({ id: 'b', date: '2026-10-02', amountCents: 900, direction: 'out', reconciled: true }),   // ticked by mistake
+    entry({ id: 'c', date: '2026-10-05', amountCents: 400, direction: 'out', reconciled: false })
+  ];
+  const rec = reconcileTotals(led, book);
+  eq(rec.cleared, 15000, 'an October entry moved a September statement');
+  eq(rec.difference, 0, 'the book agrees with the statement');
+  eq([rec.ticked, rec.open, rec.after], [1, 0, 2], 'counts');
+  const tick = /if \(act === 'ledger-tick-all' \|\| act === 'ledger-untick-all'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/entryOnStatement\(e, state\.book\)/.test(tick), 'Tick all ticks entries dated after the statement');
+});
+
+test('M10: a reconciled entry is read-only until it is deliberately un-reconciled', () => {
+  const rows = /function renderLedgerEntries\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/if \(e\.reconciled\) \{[\s\S]*?data-act="ledger-unreconcile:' \+ e\.id \+ '"[\s\S]*?return;\s*\}/.test(rows),
+    'a reconciled entry is rendered with editable fields');
+  const ch = /if \(ch\.indexOf\('led-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/if \(led\.reconciled && lk !== 'rec'\) \{ render\(\); return; \}/.test(ch), 'the change handler still edits a reconciled entry');
+  const un = /if \(act\.indexOf\('ledger-unreconcile:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(un && /arm\(act, function \(\) \{/.test(un[0]) && /urE\.reconciled = false;/.test(un[0]),
+    'there is no two-tap un-reconcile');
+  const del = /if \(act\.indexOf\('del-ledger:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/if \(state\.ledger\[dlIx\]\.reconciled\)/.test(del), 'a reconciled entry can be deleted');
+});
+
+test('M10: forgiving needs a reason and a name, and undoing it leaves a trace', () => {
+  const f = /if \(kind === 'charge-forgive'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/if \(!fgReason \|\| !fgBy\) \{/.test(f), 'a charge can be forgiven with no reason or nobody agreeing it');
+  const u = /if \(act\.indexOf\('charge-unforgive:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/uc\.note = forgivenessUndoneNote\(/.test(u), 'undoing a forgiveness erases it without a trace');
+  const { forgivenessUndoneNote } = sandbox(['fmt', 'forgivenessUndoneNote']);
+  const n1 = forgivenessUndoneNote('', { date: '2026-10-01', by: 'Committee Chair', reason: 'hardship' }, 4000, '2026-10-09');
+  ok(/undone 2026-10-09/.test(n1) && /by Committee Chair: hardship/.test(n1) && /\$40\.00/.test(n1), 'the trace: ' + n1);
+  ok(forgivenessUndoneNote(n1, null, 4000, '2026-11-01').indexOf(n1) === 0, 'a second undo replaces the first trace');
+});
+
+test('M11: a new pack’s youth registration is paid by families, so the family cost counts it', () => {
+  // freshLine defaults to pack-pays, so the seeded registration was left out of every family quote.
+  const { SEED_EXPENSES, freshLine } = sandbox(REG_FNS);
+  const youth = freshLine(SEED_EXPENSES.filter(e => e.name === 'Youth registration')[0]);
+  eq(youth.fundedBy, 'families', 'youth registration seeds as pack-paid');
+  const adult = freshLine(SEED_EXPENSES.filter(e => e.name === 'Adult leader registration')[0]);
+  eq(adult.fundedBy, 'pack', 'leaders’ registration is the pack’s, and must not bill a family');
+});
+
+test('M11: the family-cost card says who pays registration and what else it leaves out', () => {
+  const ex = /function familyCostExclusions\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(ex, 'familyCostExclusions() not found');
+  ok(/!lineFamilyFunded\(l\) \? 'pack'/.test(ex[0]), 'a pack-paid registration is not detected');
+  ok(/lineFamilyFunded\(l\) && !linePerHead\(l\)/.test(ex[0]), 'flat family-paid lines are not named');
+  const fn = /function renderFamilyYearCost\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0].replace(/'\s*\+\s*'/g, '');
+  ok(/ex\.registration === 'pack'/.test(fn) && /The pack pays national youth registration/.test(fn),
+    'a pack that pays registration is not told it is missing from the figure');
+  ok(/a second parent/.test(fn), 'the second parent is not listed as excluded');
+  // Existing packs keep their choice: the seed is only used to ADD a missing line.
+  const seed = /function seedStandardYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/if \(existingExp\[t\.name\.toLowerCase\(\)\]\) return;/.test(seed), 'reseeding would overwrite a pack’s registration line');
+  const pv = /function parentFamilyCost\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0].replace(/'\s*\+\s*'/g, '');
+  ok(/fees in the pack’s plan<\/strong> for one scout and one parent across a typical year/.test(pv) && /Not included:/.test(pv),
+    'the family view still reads as the most a family can be asked for');
+});
+
+test('a past season’s months read right whichever year-start it was closed under', () => {
+  const { seasonSlotLabel } = sandbox(['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_JULY_SINCE', 'archiveSlotBase', 'seasonSlotLabel']);
+  const july = { year: 2026, slotBase: 'july', closedAt: '2027-06-30T12:00:00Z' };
+  eq(seasonSlotLabel(july, 0), 'July 2026', 'July-based slot 0');
+  eq(seasonSlotLabel(july, 5), 'December 2026', 'the July year still owns December');
+  eq(seasonSlotLabel(july, 6), 'January 2027', 'January is the following calendar year');
+  eq(seasonSlotLabel(july, 11), 'June 2027', 'June');
+  const sept = { year: 2025, closedAt: '2026-06-15T12:00:00Z' };   // closed before the switch, no marker
+  eq(seasonSlotLabel(sept, 0), 'September 2025', 'an old archive’s slot 0 is September, not July');
+  eq(seasonSlotLabel(sept, 3), 'December 2025', 'December');
+  eq(seasonSlotLabel(sept, 4), 'January 2026', 'January');
+  eq(seasonSlotLabel(sept, 11), 'August 2026', 'August');
+  eq(seasonSlotLabel({ year: 2026, closedAt: '2026-08-01T00:00:00Z' }, 6), 'January 2027',
+    'an archive closed after the switch, before the marker, is July-based');
+  const build = /function buildSeasonArchive\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/slotBase: 'july'/.test(build), 'a new archive does not say which slot numbering it uses');
+});
+
+test('E9: budget vs actual, by category, with variance', () => {
+  const { budgetVsActual, LINE_CATEGORIES } = sandbox(['LINE_CATEGORIES', 'budgetVsActual']);
+  const out = budgetVsActual([
+    { category: 'camp', planned: 80000, actual: 102000 },
+    { category: 'camp', planned: 20000, actual: 0 },
+    { category: 'registration', planned: 85000, actual: 85000 },
+    { category: 'advancement', planned: 35000, actual: 31250 },
+    { category: 'uniforms', planned: 0, actual: 0 }
+  ], LINE_CATEGORIES);
+  const byCat = {};
+  out.rows.forEach((r) => { byCat[r.category] = r; });
+  eq(byCat.camp && [byCat.camp.planned, byCat.camp.actual, byCat.camp.variance], [100000, 102000, 2000], 'camp, over by $20');
+  eq(byCat.advancement.variance, -3750, 'advancement, under');
+  eq(byCat.registration.variance, 0, 'registration on plan');
+  ok(!byCat.uniforms, 'an empty category is listed');
+  eq(out.total, { planned: 220000, actual: 218250, variance: -1750 }, 'total');
+  // In 510-278 order, which is how a committee reads it.
+  const order = LINE_CATEGORIES.map((c) => c[0]);
+  const got = out.rows.map((r) => order.indexOf(r.category));
+  eq(got, got.slice().sort((a, b) => a - b), 'rows are not in category order');
+  const now = /function budgetVsActualNow\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/if \(l\.category === 'income'\) return;/.test(now), 'income lines are reported as spending');
+  ok(/if \(!lineThroughPack\(l\)\) \{\s*items\.push\(\{ category: BVA_REIMBURSE, planned: 0, actual: lineActual\(l\.id\) \}\);/.test(now),
+    'paid-direct money is planned as the pack’s, or its reimbursements are filed under the line’s category');
+  ok(/h \+= renderBudgetVsActual\(\);/.test(/function renderBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0]),
+    'the Budget workspace does not show it');
+});
+
+test('M4: a credit carried from last year settles charges but is not new money in', () => {
+  // Found driving a real close-out in the browser: the carried credit is already inside the
+  // carryover, and counting it under Received put it in Funds in a second time.
+  const { chargeTotals, familyOutstanding } = sandbox(CHARGE_FNS);
+  const charges = [{ scoutId: 'cal', amountCents: 8000, waivedBy: '', forgiven: null }];
+  const ledger = [{ direction: 'in', scoutId: 'cal', amountCents: 5000, source: 'carryover', date: '2027-06-30' }];
+  eq(familyOutstanding(charges, ledger, 'cal'), 3000, 'the credit settles part of the new dues');
+  const t = chargeTotals(charges, ledger);
+  eq([t.paid, t.carried, t.outstanding], [0, 5000, 3000], 'carried, not received');
+});
+
+/* ================================================================
+   Popcorn Kernel audit, 2026-09
+   ================================================================ */
+test('P1: a Trail’s End import keeps the day each online/wagon order was taken', () => {
+  const ctx = sandbox(['toCents', 'teSaleDateISO', 'mapSalesReport', 'teLiveEntriesFor']);
+  vm.runInContext('function defaultProgramYear() { return 2026; }', ctx);
+  eq(ctx.teSaleDateISO('9/14/2026 10:32 AM'), '2026-09-14', 'US text');
+  eq(ctx.teSaleDateISO('2026-10-01T12:00:00'), '2026-10-01', 'ISO text');
+  eq(ctx.teSaleDateISO('46279'), '2026-09-14', 'Excel serial');
+  eq(ctx.teSaleDateISO('soon'), '', 'unreadable');
+  // K3 — a day the month does not have is undated, not a string that compares like a date.
+  eq(ctx.teSaleDateISO('2/31/2026'), '', '2/31');
+  eq(ctx.teSaleDateISO('2026-04-31'), '', 'April 31st, ISO');
+  eq(ctx.teSaleDateISO('2/29/2027'), '', 'Feb 29 in a common year');
+  eq(ctx.teSaleDateISO('2/29/2028'), '2028-02-29', 'Feb 29 in a leap year');
+  eq(ctx.teSaleDateISO('12/31/2026'), '2026-12-31', 'the last day of a month');
+  const hdr = { headerRow: 0, col: { 'Order Number': 0, 'Scout': 1, 'Sale Type': 2, 'Total Order Amount': 3, 'Date Taken': 4 } };
+  const rows = [[],
+    ['1', 'Ada', 'Online', '100.00', '9/14/2026'],
+    ['2', 'Ada', 'Online', '50.00', '9/14/2026'],
+    ['3', 'Ada', 'Wagon', '20.00', '10/20/2026'],
+    ['4', 'Ada', 'Online', '5.00', '']];
+  const arc = ctx.mapSalesReport(rows, hdr);
+  eq(arc.undatedRows, 1, 'undated rows are counted for the preview warning');
+  const out = ctx.teLiveEntriesFor(Object.assign({ scoutId: 'a' }, arc.scouts[0]), '2026-11-02');
+  eq(out.map((e) => [e.date, e.kind, e.salesCents]),
+    [['2026-09-14', 'online', 15000], ['2026-10-20', 'wagon', 2000], ['2026-11-02', 'online', 500]],
+    'one row per scout per day, undated money falls back to today');
+  // A tier due 2026-10-01 must still see the September sale after an import in November.
+  const commit = /function teCommitSalesLive\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/teLiveEntriesFor\(row, today\)/.test(commit) && !/date: today/.test(commit),
+    'the live import stamps sales with the import date again');
+  ok(/arc\.undatedRows/.test(SCRIPT), 'the preview no longer warns about undated orders');
+});
+
+test('P6: the import preview lists unknown sale types and hand-entered duplicates', () => {
+  const ctx = sandbox(['toCents', 'teSaleDateISO', 'mapSalesReport', 'teManualOverlap']);
+  vm.runInContext('function defaultProgramYear() { return 2026; }', ctx);
+  const hdr = { headerRow: 0, col: { 'Order Number': 0, 'Scout': 1, 'Sale Type': 2, 'Total Order Amount': 3, 'Date Taken': 4 } };
+  const arc = ctx.mapSalesReport([[],
+    ['1', 'Ada', 'Online', '10.00', '9/14/2026'],
+    ['2', 'Ada', 'Direct Ship', '30.00', '9/14/2026'],
+    ['3', 'Bo', 'Direct Ship', '12.00', '9/15/2026']], hdr);
+  eq(arc.otherTypes, [{ type: 'Direct Ship', rows: 2, cents: 4200 }], 'unknown sale types are dropped silently');
+  const matched = [{ scoutId: 'a', name: 'Ada', onlineCents: 1000, wagonCents: 0 }, { scoutId: 'b', name: 'Bo', onlineCents: 0, wagonCents: 0 }];
+  const entries = [
+    { scoutId: 'a', kind: 'online', salesCents: 1000 },
+    { scoutId: 'b', kind: 'wagon', salesCents: 500 },
+    { scoutId: 'a', kind: 'online', salesCents: 1000, source: 'te-import' }];
+  eq(ctx.teManualOverlap(matched, entries), ['Ada'], 'only a scout the import will also credit is flagged');
+  ok(/teManualOverlap\(teMatchScouts\(arc\.scouts\)\.matched, state\.entries\)/.test(SCRIPT) && /arc\.otherTypes\.map/.test(SCRIPT),
+    'the preview does not show them');
+});
+
+test('P2: another fundraiser counts toward the budget at what the pack keeps', () => {
+  const ctx = sandbox(['fundraiserTotals']);
+  vm.runInContext('function activeScouts() { return [{ id: "a" }]; }', ctx);
+  const sales = [{ scoutId: 'a', cents: 1000 }, { scoutId: 'a', cents: 1000 }];
+  const camp = ctx.fundraiserTotals({ sales, keepPct: 45 });
+  eq([camp.total, camp.net, camp.perScout.a], [2000, 900, 2000], 'standings gross, budget net');
+  eq(ctx.fundraiserTotals({ sales }).net, 2000, 'an old record without keepPct keeps 100%');
+  const fs = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/otherFr \+= fundraiserTotals\(fr\)\.net/.test(fs), 'fundingSummary counts gross fundraiser sales');
+  ok(/otherFundraiserIn \+= fundraiserTotals\(fr\)\.net/.test(SCRIPT) && !/otherFundraiserIn \+= fundraiserTotals\(fr\)\.total/.test(SCRIPT),
+    'the Budget card counts gross fundraiser sales');
+  ok(/fr\.keepPct = \(typeof fr\.keepPct === 'number'[^\n]*: 100;/.test(SCRIPT), 'normalize does not default keepPct to 100');
+});
+
+test('P3: a cash goal run through Trail’s End counts only its commission', () => {
+  const ctx = sandbox(['fundingSummary', 'commissionRates', 'cashScoutRate', 'cashCreditOn', 'fundraiserTotals']);
+  vm.runInContext(`
+    var COVER_WHO = [];
+    function activeScouts() { return [{ id: 'a' }]; }
+    function allBudgetLines() { return [{ key: 'k', line: { id: 'l', category: 'camp' } }]; }
+    function linePlanned() { return 100000; }
+    function lineThroughPack() { return true; }
+    function plannedCoverKeys() { return {}; }
+    function lineRaisesCharges() { return false; }
+    function coverCostForKeys() { return { extra: 0, extraHeads: 0, extraReimburse: 0 }; }
+    function leaderPlannedCents() { return 0; }
+    function salesForCommission(c) { return c; }
+    var state = { budget: { startingBalance: 0 }, fundraisers: [], charges: [], ledger: [],
+      cashGoalCents: 50000, commissionPct: '30', commissionPctOnline: '', cashScoutPct: '10', cashThroughTrailsEnd: false };
+  `, ctx);
+  const kept = ctx.fundingSummary();
+  eq([kept.cashGoalIn, kept.C], [50000, 50000], 'kept cash is 100% the pack’s');
+  vm.runInContext('state.cashThroughTrailsEnd = true;', ctx);
+  const via = ctx.fundingSummary();
+  eq([via.cashGoal, via.cashGoalIn, via.B, via.C], [50000, 15000, 15000, 85000], 'via Trail’s End only 30% is the pack’s');
+  // No double credit: the scout cash credit is off while cash runs through Trail's End.
+  eq(ctx.commissionRates().cash, null, 'cashScoutPct still credits cash that earns commission');
+  // The Trail's End bars measure cash-inclusive teEligible against a cash-inclusive target.
+  const cpt = /function computePackTotals\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/teBarGoal: teGoalNow \+ \(viaTE \? \(state\.cashGoalCents \|\| 0\) : 0\)/.test(cpt), 'teBarGoal missing');
+  ok(!/teEligible \/ packT?\.teGoal\b/.test(SCRIPT), 'a Trail’s End bar still divides by teGoal');
+  // The parent bar adds the gross cash goal to the sales goal and measures every dollar raised,
+  // so it stays consistent without change.
+  ok(/var goalCents = \(pack\.teGoal \|\| 0\) \+ \(pack\.cashGoal \|\| 0\);/.test(BPV()) && /var raised = withAmounts \? pack\.combined :/.test(BPV()),
+    'the parent goal bar changed shape');
+});
+
+// The tier readers below price a share for a scout only where the line BILLS that scout.
+function tierScopeSandbox() {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    ${slice('arrOf')} ${slice('COVER_WHO')} ${slice('coverKeyOf')} ${slice('lineRateForWho')}
+    ${slice('scoutsInDens')} ${slice('familiesOf')} ${slice('familyBillingScout')}
+    ${slice('lineBillingRoster')} ${slice('lineBillingIds')}
+    ${slice('coverValueOfKeys')} ${slice('tierCoverCentsPerScout')}
+    ${slice('familyFeeHolder')} ${slice('familyCoverage')} ${slice('shareCountsForScout')}
+    ${slice('packCoverageByScout')} ${slice('privateBenefitCheck')} ${slice('entryRefundsFamily')} ${slice('tierReimbursements')}
+    function familyKeyOf(s) { return s.familyId || s.id; }
+    function linePerFamily(l) { return !!l.perFamily; }
+    function lineDens(l) { return l.dens || []; }
+    function lineRoster(l) { return scoutsInDens(activeScouts(), lineDens(l)); }
+    function activeScouts() { return SCOUTS; }
+    function tierCoverageConfigured() { return true; }
+    // wolf, and two Webelos siblings (web1 bills the family), all reached every tier.
+    var SCOUTS = [{ id: 'wolf', den: 'Wolf' }, { id: 'web1', den: 'Webelos' }, { id: 'web2', den: 'Webelos', familyId: 'web1' }];
+    var WEB = { id: 'webfee', scoutRateCents: 5000, dens: ['Webelos'] };
+    var CAMP = { id: 'camp', scoutRateCents: 8000, perFamily: true };
+    var LINES = [{ key: 'webfee', line: WEB }, { key: 'camp', line: CAMP }];
+    function coverableLines() { return LINES; }
+    function coverableShares() {
+      return [{ coverKey: 'webfee', item: WEB, rate: 5000, reimburse: false },
+              { coverKey: 'camp', item: CAMP, rate: 8000, reimburse: true }];
+    }
+    var ALL = { wolf: true, web1: true, web2: true };
+    function packCoverage() { return { webfee: ALL, camp: ALL }; }
+    function computePackTotals() { return { commission: 100000 }; }
+    var T = { id: 't', covers: ['webfee', 'camp'] };
+    function sortedTiers() { return [T]; }
+    function tierEarnedMap() { return { t: ALL }; }
+    var state = { ledger: [] };
+  `, ctx);
+  return ctx;
+}
+
+test('P4: a tier prices a den-limited fee only for the dens it is for', () => {
+  const ctx = tierScopeSandbox();
+  const s = (id) => ctx.SCOUTS.find((x) => x.id === id);
+  const t = ctx.T;
+  eq(ctx.tierCoverCentsPerScout(t, s('wolf')), 8000, 'a Wolf is asked to make up a Webelos-only fee');
+  eq(ctx.tierCoverCentsPerScout(t, s('web1')), 13000, 'the Webelos billing scout');
+  eq(ctx.tierCoverCentsPerScout(t, s('web2')), 5000, 'a sibling carries the family fee a second time');
+  eq(ctx.tierCoverCentsPerScout(t), 13000, 'the unscoped pack-level figure changed');
+  eq(ctx.coverValueOfKeys({ webfee: true }, s('wolf')), 0, 'coverValueOfKeys ignores dens');
+  const by = ctx.packCoverageByScout();
+  eq([by.wolf, by.web1, by.web2], [8000, 13000, 5000], 'packCoverageByScout');
+  // 5000 × 2 Webelos + 8000 × 3 families would be 34000; the families are wolf and web1.
+  eq(ctx.privateBenefitCheck().back, 26000, 'privateBenefitCheck overstates what goes back');
+  const src = /function tierShortfallRows\(t, map\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/tierCoverCentsPerScout\(t, s, cov\)/.test(src), 'the make-up cap is not per scout');
+  const tpr = /function tierProgressRows\(\w*\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/coverOf\(next, s\)/.test(tpr) && /coverValueOfKeys\(addedKeys, s, famCov\)/.test(tpr), 'the progress row is not per scout');
+});
+
+test('P5: a per-family paid-direct fee is reimbursed once per family', () => {
+  const ctx = tierScopeSandbox();
+  const rows = ctx.tierReimbursements().map((r) => r.scout.id);
+  eq(rows, ['wolf', 'web1'], 'one reimbursement row per family');
+  // Paid back against the OTHER sibling still settles the family.
+  ctx.state.ledger = [{ direction: 'out', lineId: 'camp', scoutId: 'web2', amountCents: 8000 }];
+  const web = ctx.tierReimbursements().find((r) => r.scout.id === 'web1');
+  eq([web.paid, web.left], [8000, 0], 'a payment recorded against a sibling is not seen');
+});
+
+test('P7: a new popcorn order projects at the season rate, not a hard-coded 32%', () => {
+  const ctx = sandbox(['freshInventory', 'commissionRates', 'cashScoutRate', 'cashCreditOn', 'inventoryTotals']);
+  vm.runInContext(`
+    function containersOrdered() { return 0; } function productValueCents() { return 0; }
+    var state = { commissionPct: '35', commissionPctOnline: '30', cashScoutPct: '', cashThroughTrailsEnd: false,
+      inventory: freshInventory() };
+    state.inventory.orderTotalCents = 100000;`, ctx);
+  eq(ctx.state.inventory.commissionPct, '', 'a fresh inventory still carries a rate of its own');
+  const t = ctx.inventoryTotals();
+  eq([t.pct, t.earningsCents, t.pctFromSeason], [35, 35000, true], 'blank does not follow the season storefront rate');
+  vm.runInContext("state.inventory.commissionPct = '32';", ctx);
+  eq(ctx.inventoryTotals().earningsCents, 32000, 'a typed rate is no longer honoured');
+  ok(/inv\.commissionPct = typeof inv\.commissionPct === 'string' \? inv\.commissionPct : '';/.test(SCRIPT),
+    'normalize still invents 32% for a record without a rate');
+});
+
+test('P8: a fundraiser card says what the council needs before the money is raised', () => {
+  const ctx = sandbox(['FUNDRAISER_KINDS', 'fundraiserPaperworkGap']);
+  eq(ctx.FUNDRAISER_KINDS.map((k) => k.id), ['council', 'sale', 'raffle'], 'kinds');
+  const rule = (id) => ctx.FUNDRAISER_KINDS.find((k) => k.id === id).rule;
+  ok(/no Unit Money-Earning Application/.test(rule('council')), 'a council product sale is not exempted');
+  ok(/34427/.test(rule('sale')) && /14 days/.test(rule('sale')), 'the other-sale rule lost the form or the lead time');
+  // K1 (final review, 2026-09-28) — the Kernel's wording, verbatim where it is load-bearing.
+  eq(ctx.FUNDRAISER_KINDS[0].label, 'Council product sale (e.g. popcorn)', 'council label');
+  eq(rule('council'), 'A council-coordinated product sale needs no Unit Money-Earning Application (form 34427). ' +
+    'If you\u2019re not sure the council runs this sale, ask first.', 'council rule');
+  ok(/written approval at least 14 days before the pack commits to it \u2014 before anything is signed, ordered or paid for\./.test(rule('sale')) &&
+    /sell on its own merit, not as a gift to Scouting/.test(rule('sale')) && /signed by a person, never in Scouting America\u2019s name/.test(rule('sale')) &&
+    /wearing the uniform needs council approval/.test(rule('sale')), 'the sale rule is not the Kernel\u2019s');
+  ok(/before you advertise it, sell a ticket or organize it/.test(rule('raffle')) &&
+    /form 34427 still says raffles are forbidden/.test(rule('raffle')) && /November 7, 2025/.test(rule('raffle')) &&
+    /at most four games of chance a calendar year in total/.test(rule('raffle')) && /only raffles may be run online/.test(rule('raffle')) &&
+    /no alcohol or firearm prizes/.test(rule('raffle')) && /casino night or bingo/.test(rule('raffle')) &&
+    /name the pack by its number/.test(rule('raffle')) && /raffle license from the county sheriff/.test(rule('raffle')) &&
+    /may be stricter or not allow raffles at all/.test(rule('raffle')), 'the raffle rules are incomplete');
+  ok(!/four raffles|before it starts|before the start/.test(JSON.stringify(ctx.FUNDRAISER_KINDS)), 'the old wording is still there');
+  const gap = ctx.fundraiserPaperworkGap;
+  eq(gap({ kind: 'council' }), '', 'a council sale has nothing outstanding');
+  eq(gap({ kind: '' }), '', 'an unclassified fundraiser is not nagged');
+  ok(/34427/.test(gap({ kind: 'sale' })) && /before the pack commits to it\./.test(gap({ kind: 'sale' })), 'a sale with no application is not flagged');
+  eq(gap({ kind: 'sale', appSubmitted: '2026-09-01' }),
+    'Application in, no approval recorded yet \u2014 don\u2019t sign, order or pay for anything until the council approves it.',
+    'an application in is treated as permission');
+  eq(gap({ kind: 'sale', appSubmitted: '2026-09-01', councilApproved: '2026-09-05' }), '', 'an approved sale still flagged');
+  ok(/approval/.test(gap({ kind: 'raffle', appSubmitted: '2026-09-01' })), 'a raffle without approval is not flagged');
+  eq(gap({ kind: 'raffle', appSubmitted: '2026-09-01', councilApproved: '2026-09-10' }), '', 'an approved raffle still flagged');
+  ok(/fr\.kind = \['council', 'sale', 'raffle'\]\.indexOf\(fr\.kind\) !== -1 \? fr\.kind : '';/.test(SCRIPT), 'normalize does not keep kind');
+  ok(/h \+= fundraiserPaperworkBlock\(fr\);/.test(/function renderFundraiserCard\(fr, roster\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0]),
+    'the card does not show it');
+  ok(/if \(ch === 'fr-kind' \|\| ch === 'fr-app' \|\| ch === 'fr-approved'\)/.test(SCRIPT), 'the fields are not saved');
+});
+
+test('P9: the private-benefit panel is one test, not a ruling, and says its figure is conservative', () => {
+  const i = SCRIPT.indexOf('var pb = privateBenefitCheck();');
+  ok(i !== -1, 'the private-benefit panel was not found');
+  const blk = codeOnly(SCRIPT.slice(i, i + 2200));
+  ok(/confirm this setup with the council and your chartered organization/.test(blk), 'the panel does not send the pack to the council');
+  ok(/conservative figure: it counts popcorn commission only/.test(blk), 'the figure is not labelled conservative');
+  ok(!/side of that line to be on/.test(blk), 'the panel still implies 50% settles it');
+});
+
+test('B3: the pack owner removed by another admin is healed, not wiped', () => {
+  const ctx = roleSubCtx({ owner: 'me' });
+  // ensureMyMemberDoc recreates the owner as admin; the subscription then resolves as admin.
+  vm.runInContext("var resolve; HEAL = { then: function (ok) { resolve = ok; } };", ctx);
+  vm.runInContext('applyRoleSubscription(null, 1)', ctx);
+  eq(vm.runInContext('[removed.length, stopped.length, state.money || null, sync.joinRejected]', ctx),
+    [0, 0, 'the pack record', null], 'the owner’s device was wiped');
+  vm.runInContext('applyRoleSubscription(null, 1)', ctx);
+  eq(vm.runInContext('healCalls', ctx), 1, 'a second removal signal started a second heal');
+  vm.runInContext("resolve('admin')", ctx);
+  eq(vm.runInContext('[sync.myRole, sync.ownerHealing, removed.length]', ctx), ['admin', false, 0], 'the heal did not resolve the role');
+});
+
+test('B5: an unverified Google email gets its own gate before anything touches the cloud', () => {
+  const fn = slice('syncStart');
+  const gate = fn.indexOf("if (isGoogleUser(u) && u.emailVerified === false) {");
+  ok(gate !== -1, 'syncStart does not check emailVerified');
+  ok(gate < fn.indexOf('sync.db = mods.fs.getFirestore') && gate < fn.indexOf('startAccounts('),
+    'the verified check comes after the cloud is touched');
+  const blk = fn.slice(gate, fn.indexOf('sync.db = mods.fs.getFirestore'));
+  ok(/sync\.joinRejected = 'unverified';/.test(blk) && /return;/.test(blk), 'the unverified branch does not stop at a gate');
+  const closed = slice('renderJoinClosed');
+  ok(/if \(sync\.joinRejected === 'unverified'\)/.test(closed) &&
+    /Google hasn’t verified this email address yet — verify it with Google, then sign in again\./.test(closed),
+    'no screen tells them to verify with Google');
+});
+
+test('B6: the family digest carries no popcorn numbers while standings are off', () => {
+  const fn = slice('monthlyDigest');
+  const i = fn.indexOf("lines.push('POPCORN');");
+  ok(i !== -1, 'the POPCORN section was not found');
+  const guard = fn.slice(0, i).split('\n').filter((l) => /^\s*if \(/.test(l)).pop() || '';
+  ok(/standingsEnabled\(\)/.test(guard), 'the POPCORN section is not gated on standingsEnabled()');
+  const ctx = digestCtx();
+  ok(/POPCORN/.test(vm.runInContext("monthlyDigest('2026-10')", ctx)), 'standings on: the popcorn section is gone');
+  vm.runInContext('STANDINGS = false;', ctx);
+  const off = vm.runInContext("monthlyDigest('2026-10')", ctx);
+  ok(!/POPCORN/.test(off) && off.indexOf('690.00') === -1 && !/goal/i.test(off), 'calendar-only: popcorn numbers in the families’ digest');
+  ok(/EVENTS THIS MONTH/.test(off), 'calendar-only: the calendar went too');
+});
+
+test('B8: the calendar file carries where an event is, but no free-text note', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(PRIV_STATE + `
+    state.events[0].note = 'Gym — Ada Q. needs a ride, call 555-0101';
+    state.events[0].location = 'Church hall';
+    state.events[1].note = 'Gate code 4411';
+    function pad2(n) { return (n < 10 ? '0' : '') + n; }
+    ${['buildICS', 'icsStamp', 'icsDate', 'icsTime', 'icsNextDay', 'icsEndPlusHour', 'icsEscape', 'icsFold',
+       'eventIsMeeting', 'eventLabel', 'fmt'].map(slice).join('\n')}`, ctx);
+  const ics = vm.runInContext('buildICS()', ctx);
+  ok(!/DESCRIPTION:/.test(ics) && ics.indexOf('555-0101') === -1 && ics.indexOf('4411') === -1,
+    'a free-text note is in the calendar file');
+  ok(/LOCATION:Fort Yargo/.test(ics) && /LOCATION:Church hall/.test(ics), 'the where was dropped with the note');
+  ok(/not its notes/.test(SCRIPT.slice(SCRIPT.indexOf('Sync with BAND'), SCRIPT.indexOf('Sync with BAND') + 2000)),
+    'the export card does not say notes are left out');
+});
+
+/* ========================================================================
+   Wave 6 — parents and joining (2026-09-28)
+   ===================================================================== */
+
+// A runnable buildParentView over PRIV_STATE, with the pieces it leans on stubbed. `extra` runs
+// after the state is declared, so a test can move dates or add rows before the build.
+function pvCtx(extra) {
+  const ctx = vm.createContext({});
+  vm.runInContext(PRIV_STATE + `
+    function standingsEnabled() { return true; }
+    function campingTrips() { return []; }
+    function familyYearCost() { return []; }
+    var sync = {};
+    ${['shortNames', 'publicNameMap', 'buildParentView', 'coarseBarPct', 'blocksInDayOrder', 'fmtTimeRange', 'fmtClock',
+       'eventIsMeeting', 'eventLabel', 'denListLabel', 'eventDens', 'programYearStartISO',
+       'programYearEndISO', 'cleanContactLine', 'parentContactLine', 'amountsEnabled'].map(slice).join('\n')}
+    ${extra || ''}`, ctx);
+  return ctx;
+}
+
+test('J1: the published calendar is the July-to-June program year, edges included', () => {
+  const ctx = pvCtx(`
+    state.events = [
+      { id: 'j0', kind: 'activity', name: 'Last June hike', date: '2026-06-30', dens: [] },
+      { id: 'j1', kind: 'activity', name: 'School Night', date: '2026-07-01', dens: [] },
+      { id: 'j2', kind: 'activity', name: 'Summer outing', date: '2026-08-15', dens: [] },
+      { id: 'j3', kind: 'activity', name: 'Crossover', date: '2027-06-30', dens: [] },
+      { id: 'j4', kind: 'activity', name: 'Next kickoff', date: '2027-07-01', dens: [] }
+    ];
+    state.storefronts[0].date = '2026-07-20';
+    state.derby = { name: 'Derby', date: '2026-08-01' };`);
+  const pv = vm.runInContext('buildParentView(state, { showStandings: false })', ctx);
+  const titles = pv.events.map((e) => e.title);
+  ['School Night', 'Summer outing', 'Crossover'].forEach((t) =>
+    ok(titles.indexOf(t) > -1, `${t} is inside the program year and did not publish`));
+  ['Last June hike', 'Next kickoff'].forEach((t) =>
+    ok(titles.indexOf(t) === -1, `${t} is outside the program year and published`));
+  ok(pv.events.some((e) => e.kind === 'storefront' && e.date === '2026-07-20'), 'a July storefront did not publish');
+  ok(pv.events.some((e) => e.kind === 'derby' && e.date === '2026-08-01'), 'an August derby date did not publish');
+  ok(!/'-09-01'|'-08-31'/.test(BPV()), 'buildParentView still carries a September-to-August window');
+});
+
+test('J3: the waiting screen says what a family can do while they wait', () => {
+  const w = codeOnly(slice('renderJoinWaiting'));
+  ok(w.indexOf('Nothing else to do') === -1, 'the waiting screen still says there is nothing to do');
+  ok(/beascout\.scouting\.org/.test(w), 'the waiting screen does not point at council registration');
+  ok(/Safeguarding Youth\s*'?\s*\+?\s*'?\s*Training/.test(w), 'the adult-partner training is not named');
+  ok(/ask your den leader/.test(w), 'the waiting screen gives no one to ask when approval is slow');
+});
+
+test('J4: the invite promises the standings only where they are known to be on', () => {
+  const run = (setup) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`${setup}
+      function standingsEnabled() { return !(sync.joinCfg && sync.joinCfg.showStandings === false); }
+      ${slice('joinStandingsKnownOn')}
+      ${slice('joinWhatYouSee')}`, ctx);
+    return vm.runInContext('joinWhatYouSee()', ctx);
+  };
+  const plain = 'the pack calendar and campout details';
+  eq(run('var sync = {}; function parentDoc() { return null; }'), plain, 'a signed-out visitor was promised standings');
+  eq(run('var sync = { joinCfg: { showStandings: false } }; function parentDoc() { return null; }'), plain,
+    'a calendar-only pack promised standings');
+  eq(run('var sync = {}; function parentDoc() { return { events: [] }; }'), plain,
+    'a published calendar-only view promised standings');
+  ok(/scout standings/.test(run('var sync = {}; function parentDoc() { return { standings: [] }; }')),
+    'a view that publishes standings does not say so');
+  ok(/joinWhatYouSee\(\)/.test(slice('renderJoinWelcome')), 'the welcome screen does not use the branch');
+  ok(!/and the scout standings\./.test(slice('renderJoinWelcome')), 'the welcome screen still promises standings outright');
+});
+
+test('J5: what is left to sell reads as a choice, in a family’s words', () => {
+  const ctx = sandbox(['esc', 'fmt', 'parentBar', 'parentRouteLabel', 'parentRouteNoun', 'parentTierProgress']);
+  const row = (routes) => ctx.parentTierProgress({ tier: '', nextTier: 'Gold', nextPct: 40,
+    nextSalesCents: routes[0].cents, nextRoutes: routes });
+  const onlineBetter = row([{ label: 'at a storefront or wagon', pct: 25, cents: 24000 },
+    { label: 'online', pct: 30, cents: 20000 }]);
+  ok(/Still to sell: <strong class="money">\$240\.00<\/strong> at a storefront or door to door — or <strong class="money">\$200\.00<\/strong> online/.test(onlineBetter),
+    'the two figures are not one sentence joined by "or"');
+  ok(/\(online sales count for more toward the reward\)/.test(onlineBetter), 'the better channel is not named');
+  ok(!/wagon/.test(onlineBetter) && !/\d%\)/.test(onlineBetter), 'the parent line still says "wagon" or quotes a rate');
+  // This pack's own case: online is the LOWER rate, so the storefront is the one that counts for more.
+  const storeBetter = row([{ label: 'online', pct: 25, cents: 24000 },
+    { label: 'at a storefront or wagon', pct: 30, cents: 20000 }]);
+  ok(/\(storefront and door-to-door sales count for more toward the reward\)/.test(storeBetter),
+    'the better channel is assumed to be online');
+  // One route: the figure alone, no rate.
+  const one = row([{ label: 'in popcorn', pct: 25, cents: 24000 }]);
+  ok(/\$240\.00<\/strong> more to sell/.test(one) && !/%\)/.test(one), 'a single route still quotes its rate');
+});
+
+test('J6: a family sees the sync status as words, never as a button that does nothing', () => {
+  const span = /<span class="sync-pill sync-text no-print" id="syncText"[^>]*>/.exec(HTML);
+  ok(span, 'there is no text-only sync status for parents');
+  ok(!/data-act/.test(span[0]), 'the parents’ sync status carries an action');
+  const fn = slice('renderSyncPill');
+  ok(/var asText = !gm && parentMode\(\)/.test(fn), 'the text status is not tied to parent mode');
+  ok(/el\.hidden = gm \|\| asText;/.test(fn), 'the goto-pack button still shows for parents');
+  const acts = /var PARENT_ACTS = \[([\s\S]*?)\];/.exec(SCRIPT);
+  ok(acts[1].indexOf("'goto-pack'") === -1, 'goto-pack became a parent action — revisit this test');
+  ok(/offline: 'Offline — showing what was saved last'/.test(SCRIPT), 'offline is not explained to families');
+  ok(/tabsEl\.setAttribute\('aria-label', parent \? 'Pack pages' : 'Workspaces'\)/.test(SCRIPT),
+    'the parent nav is still announced as "Workspaces"');
+});
+
+test('J7: a family’s controls are 44px, and the calendar says what is on a day without colour', () => {
+  const css = SCRIPT_CSS;
+  ok(/body\.parent-mode button\.btn\.small, \.join-gate button\.btn \{ min-height: 44px/.test(css),
+    'Sign out / Show N / Forget this link are under 44px for families');
+  ok(/body\.parent-mode \.cal-nav \{ width: 44px; height: 44px; \}/.test(css), 'the month arrows are under 44px');
+  ok(/body\.parent-mode \.tab, body\.parent-mode \.snav \{ min-height: 44px; \}/.test(css),
+    'the parent tabs or campout sub-tabs are under 44px');
+  ok(/body\.parent-mode \.camp-toc-secs a \{[^}]*min-height: 44px[^}]*padding: 10px 0/.test(css),
+    'the camping "On this page" links are not padded to a tap target');
+  // Letter per kind, and the kinds in the day's spoken label.
+  const ctx = vm.createContext({});
+  vm.runInContext(`var ui = {}; function monthKey(d) { return String(d).slice(0, 7); }
+    function monthLabel(k) { return k; } function fmtDate(d) { return 'Sat, Oct 3'; }
+    ${['esc', 'pad2', 'parentEventRow', 'parentShiftLines', 'parentCalendar'].map(slice).join('\n')}`, ctx);
+  ctx.pv = { events: [
+    { kind: 'meeting', date: '2026-10-03', title: 'Wolf den meeting' },
+    { kind: 'storefront', date: '2026-10-03', title: 'Kroger', shifts: [{ when: '10–12', who: [] }] }] };
+  const cal = vm.runInContext("parentCalendar(pv, '2026-10-01')", ctx);
+  ok(/aria-label="Sat, Oct 3: den meeting, storefront"/.test(cal), 'the day does not say what is on it');
+  ok(/class="cal-dot2 cal-glyph dot-mtg" aria-hidden="true">D</.test(cal), 'a den meeting dot has no letter');
+  ok(/class="cal-dot2 cal-glyph dot-store-open" aria-hidden="true">S</.test(cal), 'a storefront dot has no letter');
+  // Print.
+  ok(/\.pv-row, \.camp-facts, \.camp-list li \{ break-inside: avoid; \}/.test(css), 'an event or a campout fact can split across sheets');
+  ok(/\.pill, \.cal-dot2 \{ -webkit-print-color-adjust: exact/.test(css), 'the calendar dots print without their colour');
+  ok(/class="btn small no-print" data-act="parent-earlier"/.test(SCRIPT), 'the Show N button prints');
+  ok(/<div class="card no-print"><nav class="camp-toc"/.test(SCRIPT), 'the camping contents menu prints');
+  ok(/'<p class="print-only pv-print-head">'/.test(slice('renderParentApp')) && / · printed /.test(slice('renderParentApp')),
+    'the printout does not say whose it is or when it was printed');
+});
+
+test('J8: the parent app speaks a family’s language', () => {
+  // No "rung" in anything a parent reads. Code only — the comments are the leaders' notes.
+  const start = SCRIPT.indexOf('  function renderParentApp()');
+  const end = SCRIPT.indexOf('  function parentFooter(');
+  ok(start > -1 && end > start, 'the parent block moved');
+  const block = codeOnly(SCRIPT.slice(start, end));
+  const strings = block.match(/'[^'\n]*'/g) || [];
+  ok(!strings.some((q) => /\brungs?\b/.test(q)), 'a parent-facing string still says "rung": ' +
+    strings.filter((q) => /\brungs?\b/.test(q)).join(' | '));
+  ok(/<th scope="col">Sell by<\/th>/.test(block), 'the tier table’s date column is still headed "By"');
+  ok(/you still pay the adult\\u2019s share/.test(block), 'the adult’s share is still "your place"');
+  ok(/one fee covers the whole family/.test(block), 'a per-family fee still says "one fee per family"');
+  ok(/Storefront \(popcorn booth outside a store\)/.test(block) && /Booth: all shifts filled/.test(block) &&
+    /Booth: a shift still needs a family/.test(block), 'the calendar legend still uses the leaders’ words');
+  ok(/Your pack hasn’t posted its calendar yet\. Check back in a few days, or ask your den leader\./.test(SCRIPT),
+    'the empty calendar does not say who to ask');
+  ok(/Families get a view-only calendar\. Leaders sign in ' \+\s*'here too\. A pack leader approves each account — there’s no password to remember\./.test(slice('renderJoinWelcome')),
+    'the sign-in intro is not the plain version');
+});
+
+test('J8: the standings legend names the pack’s own levels, in plain words', () => {
+  const ctx = sandbox(['esc', 'fmt', 'fmtDate', 'parentBar', 'parentRouteLabel', 'parentRouteNoun',
+    'parentTierProgress', 'parentStandingRow', 'parentStepName', 'parentTierLadder', 'parentCostLine',
+    'parentCostLines', 'parentFamilyCost', 'parentGoalBar', 'renderParentStandings']);
+  ctx.ui = { parentCostOpen: {} };
+  const html = ctx.renderParentStandings({
+    standings: [{ name: 'Ada', combinedCents: 100, nextTier: 'Acorn', nextPct: 10 }],
+    tierLadder: { anchorName: 'Oak', planned: true,
+      marks: [{ name: 'Seed', pct: 20 }, { name: 'Acorn', pct: 50 }, { name: 'Oak', pct: 100, plan: true }],
+      stretch: { topName: 'Redwood', planPct: 70, marks: [] } }
+  });
+  ok(/A full bar means <strong>Oak<\/strong>, the level the pack is aiming for\./.test(html), 'the full bar is not explained');
+  ok(/smaller rewards on the way \(Seed, Acorn\)/.test(html), 'the marks are not named from the pack’s own tiers');
+  ok(!/Bronze|Silver|Gold|Platinum|rung|Notches/.test(html), 'the legend hard-codes tier names or keeps the old jargon');
+  ok(/Scouts who have passed <strong>Oak<\/strong> are measured against <strong>Redwood<\/strong> instead\. The striped part of their bar is what they sold beyond Oak\./.test(html),
+    'the stretch scale is not explained in plain words');
+});
+
+test('J8: What’s coming up is the next 30 days by month, with the rest one tap away', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`var ui = { parentCostOpen: {} };
+    function todayISO() { return '2026-09-28'; }
+    function monthKey(d) { return String(d).slice(0, 7); }
+    function monthLabel(k) { return k === '2026-10' ? 'October 2026' : k === '2026-09' ? 'September 2026' : k; }
+    function fmtDate(d) { return String(d); }
+    function parentCalendar() { return ''; }
+    function parentFamilyCost() { return ''; }
+    ${['esc', 'pad2', 'PARENT_EMPTY_CAL', 'isoPlusDays', 'parentEventsByMonth', 'parentEventRow',
+       'parentShiftLines', 'renderParentSchedule'].map(slice).join('\n')}`, ctx);
+  eq(vm.runInContext("isoPlusDays('2026-09-28', 30)", ctx), '2026-10-28', 'thirty days on');
+  eq(vm.runInContext("isoPlusDays('2026-03-01', 30)", ctx), '2026-03-31', 'across a DST change');
+  ctx.pv = { standings: [], events: [
+    { kind: 'activity', date: '2026-09-01', title: 'Kickoff' },
+    { kind: 'activity', date: '2026-09-30', title: 'Hike' },
+    { kind: 'activity', date: '2026-10-28', title: 'Trunk or treat' },
+    { kind: 'activity', date: '2026-10-29', title: 'Late one' },
+    { kind: 'activity', date: '2027-02-20', title: 'Blue and Gold' }] };
+  const shut = vm.runInContext('renderParentSchedule(pv)', ctx);
+  ok(/Hike/.test(shut) && /Trunk or treat/.test(shut), 'something in the next 30 days is missing');
+  ok(!/Late one/.test(shut) && !/Blue and Gold/.test(shut), 'the rest of the year is shown before it is asked for');
+  ok(/September 2026<\/p>[\s\S]*Hike[\s\S]*October 2026<\/p>[\s\S]*Trunk or treat/.test(shut), 'the events are not grouped by month');
+  ok(/data-act="parent-rest" aria-expanded="false">Show the rest of the year \(2\)/.test(shut), 'no button, or the wrong count');
+  ctx.ui.parentRestOpen = true;
+  const open = vm.runInContext('renderParentSchedule(pv)', ctx);
+  ok(/Late one/.test(open) && /2027-02<\/p>[\s\S]*Blue and Gold/.test(open), 'the rest of the year does not open');
+  ctx.pv = { events: [] };
+  ok(/Your pack hasn’t posted its calendar yet/.test(vm.runInContext('renderParentSchedule(pv)', ctx)),
+    'an empty calendar does not say so plainly');
+  ok(/'parent-rest'/.test(/var PARENT_ACTS = \[([\s\S]*?)\];/.exec(SCRIPT)[1]), 'the rest-of-year button is refused in parent mode');
+});
+
+test('J9: a campout says when to arrive and when to leave, each on its own labelled row', () => {
+  const ctx = sandbox(['esc', 'campLinkLabel', 'campFacts']);
+  const both = ctx.campFacts({ arrive: 'Friday 6:00 pm', depart: 'Sunday 11:00 am' });
+  ok(/<dt>Arrive<\/dt><dd>Friday 6:00 pm<\/dd><dt>Leave by<\/dt><dd>Sunday 11:00 am<\/dd>/.test(both),
+    'arrive and leave are not two labelled rows');
+  ok(!/Times/.test(both), 'the merged "Times" row is back');
+  const leaveOnly = ctx.campFacts({ depart: 'Sunday 11:00 am' });
+  ok(/<dt>Leave by<\/dt>/.test(leaveOnly) && !/Arrive/.test(leaveOnly), 'a leave-only trip is not labelled as leaving');
+});
+
+test('J10: the single-pack sign-in screen names the pack and helps someone with no Google account', () => {
+  const run = (packName) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`var PACK_PUBLIC_NAME = 'Cub Scout Pack 569';
+      function fixedPackMode() { return true; } function activeJoin() { return null; }
+      function parentDoc() { return ${packName ? `{ packName: '${packName}' }` : 'null'}; }
+      var FLEUR = '';
+      ${['esc', 'joinPackName', 'joinGateShell', 'renderJoinWelcome'].map(slice).join('\n')}`, ctx);
+    return vm.runInContext('renderJoinWelcome()', ctx);
+  };
+  const out = run('');
+  ok(/<h2 class="section display">Cub Scout Pack 569<\/h2>/.test(out), 'the signed-out title is still generic');
+  ok(!/Pack sign-in/.test(out), 'the generic title is showing in single-pack mode');
+  ok(/No Google account\? Any email address can be made into one at <strong>accounts\.google\.com<\/strong>/.test(out),
+    'no help for somebody without a Google account');
+  ok(/var PACK_PUBLIC_NAME = 'Cub Scout Pack 569';/.test(SCRIPT), 'the public name constant is gone');
+});
+
+test('J11: a leader-written "who to ask" line reaches the foot of every family’s page, and nothing else rides with it', () => {
+  const run = (cfg, show) => {
+    const ctx = pvCtx(`var sync = { joinCfg: ${JSON.stringify(cfg)} };
+      ${slice('cleanContactLine')}
+      ${slice('parentContactLine')}`);
+    return vm.runInContext(`buildParentView(state, { showStandings: ${show} })`, ctx);
+  };
+  eq(run({ contact: '  Membership chair —\n pack569@example.com ' }, false).contact,
+    'Membership chair — pack569@example.com', 'the line is not published, or not cleaned to one line');
+  ok(!('contact' in run({ contact: '   ' }, false)), 'an empty line is published');
+  ok(!('contact' in run(null, false)), 'no join config still publishes a contact key');
+  eq(run({ contact: 'x'.repeat(500) }, false).contact.length, 160, 'the line is not capped');
+  // Calendar-only packs get it too — it names no child.
+  ok(BPV().indexOf('out.contact = contactLine') < BPV().indexOf('if (!withStandings) return out;'),
+    'the contact line sits behind the standings gate');
+  // The footer uses it, escaped; without it the old sentence stands.
+  const ctx = vm.createContext({});
+  vm.runInContext(`var sync = { user: null }; ${slice('esc')} ${slice('parentFooter')}`, ctx);
+  const withC = vm.runInContext(`parentFooter({ packName: 'Pack 569', contact: 'Chair <b>' })`, ctx);
+  ok(/Ask: <strong>Chair &lt;b&gt;<\/strong>/.test(withC), 'the footer does not show the line, or does not escape it');
+  ok(/Ask a pack leader/.test(vm.runInContext(`parentFooter({ packName: 'Pack 569' })`, ctx)), 'the fallback is gone');
+  // The settings field warns that it is public to families.
+  const card = slice('renderJoinCard');
+  ok(/data-ch="join-contact"/.test(card) && /every approved ' \+\s*'family/.test(card) && /not a personal phone/.test(card),
+    'the setting does not say who sees it and what not to put in it');
+  ok(/contact: next\.contact/.test(slice('writeJoinConfig')), 'the line is not saved with the join config');
+});
+
+test('J12: with amounts and rank off, the board keeps each scout’s progress and no per-scout money', () => {
+  const build = (showAmounts) => {
+    const ctx = pvCtx(`
+      state.derby = { name: '', date: '', awards: [] };
+      function computePackTotals() { return { combined: 99000, teGoal: 200000, cashGoal: 0 }; }
+      var TOT = { s1: 30000, s2: 60000, s3: 9000 };
+      function computeScoutTotals() { return TOT; }
+      function visibleScoutRows(t) {
+        return state.scouts.map(function (s) { return { id: s.id, den: s.den, t: { combined: t[s.id] } }; });
+      }
+      function rankBy(rows, key) { return rows.slice().sort(function (a, b) { return key(b) - key(a); }); }
+      function tierProgressRows() {
+        return state.scouts.map(function (s) {
+          return { scout: s, earned: { name: 'Bronze' }, next: { name: 'Gold', reward: 'Camp' }, shortSales: 12345,
+            unlocks: 4000, sellRoutes: [{ label: 'online', pct: 30, cents: 12345 }], anchorPct: 40, pct: 55,
+            nextMarkPct: 100, pastPlan: false, ladder: { plan: { name: 'Gold' }, marksPlan: [] } };
+        });
+      }
+      function plannedTier() { return { name: 'Gold' }; }
+      function derbyWinners() { return []; }
+      function sortedTiers() { return []; }
+      function salesForCommission(c) { return c; }`);
+    return vm.runInContext(`buildParentView(state, { showStandings: true, showAmounts: ${showAmounts} })`, ctx);
+  };
+  const on = build(true);
+  eq(on.standings.map((r) => r.name), ['Beckett H.', 'Ada', 'Beckett Z.'], 'with amounts on the board is not ranked by sales');
+  ok(on.standings.every((r) => typeof r.combinedCents === 'number'), 'amounts on lost the totals');
+  const off = build(false);
+  eq(off.standings.map((r) => r.name), ['Ada', 'Beckett H.', 'Beckett Z.'], 'with amounts off the board is not alphabetical');
+  off.standings.forEach((r) => {
+    Object.keys(r).forEach((k) => ok(!/Cents$|Routes$/.test(k), `amounts off still publishes ${k} for ${r.name}`));
+    // 40% of a 0–100 segment, banded in quarters (coarseBarPct) → 25.
+    ok(r.nextTier === 'Gold' && r.tier === 'Bronze' && r.nextPct === 25,
+      'amounts off dropped the reward-level progress too');
+    ok(!('nextRungPct' in r), 'amounts off still publishes the near-rung percentage');
+  });
+  ok(off.goals && off.goals.goalCents === 200000, 'the pack-wide goal bar went with the per-scout amounts');
+  // The renderer: unnumbered, no total, and says it is in name order.
+  const ctx = sandbox(['esc', 'fmt', 'fmtDate', 'parentBar', 'parentRouteLabel', 'parentRouteNoun',
+    'parentTierProgress', 'parentStandingRow', 'parentStepName', 'parentTierLadder', 'parentCostLine',
+    'parentCostLines', 'parentFamilyCost', 'parentGoalBar', 'renderParentStandings']);
+  ctx.ui = { parentCostOpen: {} };
+  const html = ctx.renderParentStandings({ standings: off.standings });
+  ok(!/pv-scout-rank/.test(html) && !/pv-scout-total/.test(html), 'an alphabetical board still shows a rank or a total');
+  ok(/Scouts are listed by name\./.test(html), 'the board does not say it is in name order');
+  ok(/pv-scout-rank/.test(ctx.renderParentStandings({ standings: on.standings })), 'a ranked board lost its numbers');
+  ok(/data-ch="join-amounts"/.test(slice('renderJoinCard')) && /showAmounts: next\.showAmounts/.test(slice('writeJoinConfig')),
+    'the option is not on the join card, or not saved');
+});
+
+test('S1: with amounts off, a scout’s bar cannot be multiplied back into what they sold', () => {
+  // The ladder publishes every tier's sales target, so an exact percentage against the anchor IS
+  // the child's sales. Real figures chosen off the 10% grid, as real sales almost always are.
+  const TIERS = [
+    { id: 'b', name: 'Bronze', thresholdCents: 25000 },
+    { id: 's', name: 'Silver', thresholdCents: 50000 },
+    { id: 'g', name: 'Gold', thresholdCents: 100000 }
+  ];
+  const SALES = { s1: 34567, s2: 61234, s3: 9012 };
+  const build = (showAmounts) => {
+    const ctx = pvCtx(`
+      state.derby = { name: '', date: '', awards: [] };
+      var TIERS = ${JSON.stringify(TIERS)};
+      var SALES = ${JSON.stringify(SALES)};
+      function computePackTotals() { return { combined: 104813, teGoal: 200000, cashGoal: 0 }; }
+      function computeScoutTotals() { return SALES; }
+      function visibleScoutRows(t) {
+        return state.scouts.map(function (s) { return { id: s.id, den: s.den, t: { combined: t[s.id] } }; });
+      }
+      function rankBy(rows, key) { return rows.slice().sort(function (a, b) { return key(b) - key(a); }); }
+      // The real row shape, from a real threshold walk: commission = sales (rate 1) for clarity.
+      function tierProgressRows() {
+        var anchor = TIERS[2];
+        return state.scouts.map(function (s) {
+          var base = SALES[s.id], earned = null, next = null;
+          TIERS.forEach(function (t) { if (base >= t.thresholdCents) earned = t; else if (!next) next = t; });
+          return { scout: s, earned: earned, next: next, anchor: anchor, shortSales: next.thresholdCents - base,
+            unlocks: 0, sellRoutes: [], pastPlan: false,
+            anchorPct: Math.round(base / anchor.thresholdCents * 100),
+            pct: Math.round(base / next.thresholdCents * 100),
+            nextMarkPct: next.thresholdCents < anchor.thresholdCents ? Math.round(next.thresholdCents / anchor.thresholdCents * 100) : null,
+            ladder: { plan: anchor, marksPlan: [] } };
+        });
+      }
+      function plannedTier() { return TIERS[2]; }
+      function derbyWinners() { return []; }
+      function sortedTiers() { return TIERS; }
+      function salesForCommission(c) { return c; }`);
+    return vm.runInContext(`buildParentView(state, { showStandings: true, showAmounts: ${showAmounts} })`, ctx);
+  };
+  const off = build(false);
+  const byName = { Ada: 's1', 'Beckett H.': 's2', 'Beckett Z.': 's3' };
+  const anchorSales = off.tiers.find((t) => t.name === 'Gold').salesCents;
+  off.standings.forEach((r) => {
+    const real = SALES[byName[r.name]];
+    ok(!('nextRungPct' in r), `${r.name}: the near-rung percentage is published`);
+    ok(Math.abs(r.nextPct / 100 * anchorSales - real) > 500,
+      `${r.name}: nextPct × the anchor’s target is within $5 of what they sold`);
+  });
+  // Banded inside each scout's own segment (wave 7b): Ada holds Bronze (25) chasing Silver (50) at
+  // 34.6 → the bottom of [25, 37.5); Beckett H. holds Silver (50) chasing Gold (the anchor) at 61.2
+  // → the bottom of [50, 62.5); Beckett Z. holds nothing, Bronze at 25, 9.0 → 0.
+  eq(off.standings.find((r) => r.name === 'Ada').nextPct, 25, 'Ada');
+  eq(off.standings.find((r) => r.name === 'Beckett H.').nextPct, 50, 'Beckett H.');
+  eq(off.standings.find((r) => r.name === 'Beckett Z.').nextPct, 0, 'Beckett Z.');
+  ok(/coarse = coarseBarPct\(row\.nextPct, segLo, segHi\);/.test(BPV()), 'the published bar is not banded by segment');
+  // Amounts ON is unchanged: the exact figure, and the near rung.
+  const on = build(true);
+  eq(on.standings.find((r) => r.name === 'Ada').nextPct, 35, 'amounts on lost the exact bar');
+  ok(on.standings.every((r) => typeof r.nextRungPct === 'number'), 'amounts on lost the near-rung figure');
+  // The setting says what is and is not left.
+  const card = slice('renderJoinCard');
+  ok(/a progress bar shown only in broad steps between levels/.test(card), 'the join card does not say the bar is coarse');
+  ok(/Families will see each level\\u2019s sales target but not their own scout\\u2019s ' \+\s*'remaining gap\./.test(card),
+    'the join card does not say the level targets still show');
+});
+
+test('S3: a rung a family paid for never shows on the published board or the shared standings', () => {
+  // Bronze by selling, Silver by a make-up payment. Leaders see Silver; everybody else sees Bronze,
+  // and the rung after it is Silver — not Gold, which would give the skipped rung away.
+  const planned = TP_TIERS[1];
+  const MAP = { b: { a: 'earned' }, s: { a: 'madeUp' } };
+  const leader = tp({ tiers: TP_TIERS, scouts: TP_ONE, map: MAP, comm: 9000, keyValue: TP_KEYS, planned })[0];
+  eq(leader.earned.name, 'Silver', 'the leaders’ card lost the paid-for rung');
+  eq(leader.earnedBy, 'madeUp', 'the leaders’ card no longer says how the rung was credited');
+  Object.assign(tpCtx, { TIERS: TP_TIERS, MAP, SCOUTS: TP_ONE, COMM: 9000, KEY_VALUE: TP_KEYS, PLANNED: planned });
+  vm.runInContext(slice('salesOnlyTierMap'), tpCtx);
+  const pub = tpCtx.tierProgressRows(true)[0];
+  ok(pub.earned.name !== 'Silver', 'the published row names the rung the family paid for');
+  eq(pub.earned.name, 'Bronze', 'the published row does not carry the rung actually sold to');
+  eq(pub.next.name, 'Silver', 'the published next rung skips the paid-for one, which gives it away');
+  eq(pub.earnedBy, 'earned', 'the published row carries a made-up mark');
+  // A scout with nothing sold holds nothing on the board.
+  Object.assign(tpCtx, { MAP: { s: { a: 'madeUp' } }, COMM: 1000 });
+  const none = tpCtx.tierProgressRows(true)[0];
+  eq(none.earned, null, 'a scout who only paid is shown holding a tier');
+  // The published board takes that view, and so do both halves of the shared standings.
+  ok(/var progRows = tierProgressRows\(true\);/.test(codeOnly(BPV())), 'the parent view reads the full map');
+  ok(/tier: \(p && p\.earned\) \? String\(p\.earned\.name/.test(codeOnly(BPV())), 'the published tier is not the row’s own');
+  ok(/var txEarned = txTiers\.length \? salesOnlyTierMap\(tierEarnedMap\(\)\) : \{\};/.test(slice('summaryText')),
+    'the copied standings name a paid-for rung');
+  const sheet = /if \(o\.kind === 'summary'\) \{[\s\S]*?\n      return h;/.exec(SCRIPT)[0];
+  ok(/var sumMap = sumTiers\.length \? salesOnlyTierMap\(tierEarnedMap\(\)\) : \{\};/.test(sheet) &&
+     /packCoverageByScout\(sumMap\)/.test(sheet), 'the printed standings name a paid-for rung, or price it');
+  // The helper keeps only sold marks.
+  const ctx = sandbox(['salesOnlyTierMap']);
+  eq(JSON.parse(JSON.stringify(ctx.salesOnlyTierMap({ b: { a: 'earned', c: 'madeUp' }, s: { a: 'madeUp' } }))),
+    { b: { a: 'earned' }, s: {} }, 'salesOnlyTierMap');
+  const SETUP = readFileSync(join(ROOT, 'SETUP.md'), 'utf8');
+  ok(/\*\*never\*\* contains:[^]*?who\s+paid their way up a reward tier/.test(SETUP), 'SETUP.md dropped the promise this keeps');
+});
+
+test('S2: the copied and printed standings honour the pack’s two sharing switches', () => {
+  const make = (stand, amt, known) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(PRIV_STATE + `
+      function computePackTotals() {
+        return { sales: 60000, don: 9000, combined: 69000, commission: null, pct: null, ratesSplit: false,
+          teGoal: 0, stretch: 0, cashGoal: 0, cashKept: 0, cashDon: 7000, teEligible: 62000 };
+      }
+      var T = { s1: { sales: 30000, onD: 1000 }, s2: { sales: 20000, onD: 1000 }, s3: { sales: 10000, onD: 0 } };
+      function computeScoutTotals() { return T; }
+      function visibleScoutRows() { return state.scouts.map(function (s) { return { id: s.id, name: s.name, den: s.den, t: T[s.id] }; }); }
+      function rankBy(rows, f) { return rows.slice().sort(function (a, b) { return f(b) - f(a); }); }
+      function eligibleOf(r) { return r.t.sales + r.t.onD; }
+      var TIERS = [{ id: 'b', name: 'Bronze', thresholdCents: 1 }, { id: 'g', name: 'Gold', thresholdCents: 2 }];
+      function sortedTiers() { return TIERS; }
+      // Ada sold to Bronze and PAID her way to Gold; Beckett H. sold to Gold.
+      function tierEarnedMap() { return { b: { s1: 'earned', s2: 'earned' }, g: { s1: 'madeUp', s2: 'earned' } }; }
+      function standingsEnabled() { return ${stand}; }
+      function amountsEnabled() { return ${amt}; }
+      var KNOWN = true; function sharingSettingsKnown() { return KNOWN; }
+      ${['shortNames', 'publicNameMap', 'salesOnlyTierMap', 'earnedTierFor', 'summaryText', 'fmt'].map(slice).join('\n')}`, ctx);
+    return vm.runInContext(known === false ? 'KNOWN = false; summaryText()' : 'summaryText()', ctx);
+  };
+  const full = make(true, true);
+  // Wave 7b — before the sharing settings load, both switches count as off.
+  const waiting = make(true, true, false);
+  ok(!/\$|Ada|Beckett|Pack total/.test(waiting) && /Loading the pack\u2019s sharing settings/.test(waiting),
+    'the copied text publishes before the sharing settings are known');
+  ok(/1\. Ada \[Bronze\] — \$310\.00/.test(full), 'the full copy lost its ranked line, or names Ada’s paid-for Gold');
+  ok(/Beckett H\. \[Gold\]/.test(full), 'a tier sold to is missing from the full copy');
+  const off = make(false, true);
+  ok(!/Ada|Beckett|Standings —/.test(off), 'standings off still lists scouts in the copied text');
+  // Wave 7b — and no money or goal line at all: standings off is calendar-only.
+  ok(!/\$|Pack total|commission|goal|Cash donations/i.test(off), 'standings off still publishes pack money in the copied text');
+  ok(/not sharing popcorn standings or totals/.test(off), 'standings off does not say why the copy is empty');
+  const noAmt = make(true, false);
+  ok(/Scouts, by name — reward level reached:\n- Ada — Bronze\n- Beckett H\. — Gold\n- Beckett Z\.\n/.test(noAmt),
+    'amounts off is not public name + tier, alphabetically');
+  const lines = noAmt.split('\n');
+  const block = lines.slice(lines.indexOf('Scouts, by name — reward level reached:'));
+  ok(!block.slice(0, 4).some((l) => /\$|^\d+\./.test(l)), 'amounts off still carries a figure or a rank number');
+  ok(!/\[Gold\]|Ada — Gold/.test(noAmt), 'amounts off names Ada’s paid-for Gold');
+  // The printed sheet: the same switches, and a note saying why the table is short.
+  const sheet = /if \(o\.kind === 'summary'\) \{[\s\S]*?\n      return h;/.exec(SCRIPT)[0];
+  ok(/var sumStand = sumKnown && standingsEnabled\(\), sumAmt = sumKnown && amountsEnabled\(\);/.test(sheet), 'the sheet ignores the switches');
+  ok(/if \(sumStand && sumAmt\) \{/.test(sheet) && /\} else if \(sumStand\) \{/.test(sheet), 'the sheet does not branch on them');
+  const alpha = sheet.slice(sheet.indexOf('} else if (sumStand) {'));
+  ok(!/fmt\(|\(i \+ 1\)|rankBy/.test(alpha.slice(0, alpha.indexOf('h += \'<p class="small" style="margin:14px 0 0">'))),
+    'the amounts-off table carries a figure or a rank');
+  ok(/tierBadgesFor\(r, sumTiers, \{\}, sumMap\)/.test(alpha), 'the amounts-off table shows what the pack covers per family');
+  ok(/Scout standings are off for families/.test(sheet) && /Dollar amounts and rank are off for families/.test(sheet),
+    'the sheet does not say why its table is missing or short');
+});
+
+test('S4: the sharing settings cannot be written before the pack’s own copy has loaded', () => {
+  // writeJoinConfig writes the WHOLE doc from sync.joinCfg, so a tick made while that is still
+  // null would put standings and amounts back on and blank the contact line.
+  const run = (loaded) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`
+      var FIREBASE_CONFIG = {}, WRITES = [];
+      var sync = { user: {}, joinLoaded: ${loaded}, joinCfg: ${loaded ? "{ open: true, code: 'abc', showStandings: false, showAmounts: false, contact: 'Chair' }" : 'null'},
+        mods: { fs: { doc: function () { return {}; }, serverTimestamp: function () { return 0; },
+          setDoc: function (ref, data) { WRITES.push(data); return { then: function () { return { catch: function () {} }; } }; } } },
+        db: {}, docId: 'p' };
+      function isAdmin() { return true; }
+      function render() {} function scheduleParentViewRefresh() {} function showToast() {}
+      function accountsToast() {} function joinLinkUrl() { return 'https://x/?join=abc'; }
+      function dangerBtn(k, l) { return '<button data-act="' + k + '">' + l + '</button>'; }
+      ${['esc', 'JOIN_CODE_RE', 'newJoinCode', 'joinOpen', 'standingsEnabled', 'amountsEnabled',
+         'cleanContactLine', 'parentContactLine', 'writeJoinConfig', 'renderJoinCard'].map(slice).join('\n')}`, ctx);
+    return ctx;
+  };
+  const early = run(false);
+  early.writeJoinConfig({ showStandings: true });
+  eq(early.WRITES.length, 0, 'a change was written before the settings loaded');
+  const card = early.renderJoinCard();
+  ['join-open', 'join-standings', 'join-amounts', 'join-contact'].forEach((k) => {
+    const m = new RegExp(`<input[^>]*data-ch="${k}"[^>]*>`).exec(card);
+    ok(m && / disabled/.test(m[0]), `${k} is live before the settings loaded`);
+  });
+  ok(/Loading the pack’s current settings/.test(card), 'the card does not say it is waiting');
+  const ready = run(true);
+  ready.writeJoinConfig({ showStandings: true });
+  eq(ready.WRITES.length, 1, 'a loaded card cannot save');
+  eq(ready.WRITES[0].showAmounts, false, 'the untouched switch was not carried over');
+  eq(ready.WRITES[0].contact, 'Chair', 'the untouched contact line was not carried over');
+  ok(!/ disabled/.test(ready.renderJoinCard()), 'a loaded card is still disabled');
+});
+
+test('M1: a refund past the family’s credit is flagged, shown, and never used for a reimbursement', () => {
+  const ctx = sandbox(CHARGE_FNS.concat(['refundCreditBefore']));
+  const charges = [{ id: 'd', scoutId: 'ada', lineId: 'D', amountCents: 8000, date: '2026-09-01', waivedBy: '', forgiven: null }];
+  const paid = { id: 'p', direction: 'in', scoutId: 'ada', amountCents: 12000, source: 'family' };       // $40 credit
+  const small = { id: 'r1', direction: 'out', scoutId: 'ada', amountCents: 4000, source: 'refund' };
+  const big = { id: 'r2', direction: 'out', scoutId: 'ada', amountCents: 9000, source: 'refund' };
+  eq(ctx.refundCreditBefore(charges, [paid], null, big), 4000, 'the credit before an unsaved refund');
+  eq(ctx.refundCreditBefore(charges, [paid, big], null, big), 4000, 'a saved refund counted against itself');
+  eq(ctx.refundCreditBefore(charges, [paid, small], null, small), 4000, 'the credit before a refund that fits');
+  eq(ctx.refundCreditBefore(charges, [paid], null, { direction: 'out', scoutId: 'ada', amountCents: 1, source: '', reimbursement: true }),
+    null, 'a reimbursement is measured as if it were a refund');
+  // No credit, no charges: every cent is over.
+  eq(ctx.refundCreditBefore([], [], null, big), 0, 'a family with nothing gets a credit');
+  // The warning's words, and where it fires.
+  const w = slice('refundOverCreditWarning');
+  ok(/This is more than ' \+/.test(w) && /\\u2019s credit of ' \+ fmt\(credit\) \+ '\. Refunds give back money a family paid; to repay a council ' \+\s*'fee for a reward tier, use Reimburse on the Budget\.'/.test(w),
+    'the warning does not say what the reviewer asked it to');
+  const add = /if \(act === 'ledger-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/var drWarn = refundOverCreditWarning\(drEntry\);\s*state\.ledger\.push\(drEntry\);/.test(add), 'a new refund is not checked before it is added');
+  const ed = /if \(ch\.indexOf\('led-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/\(lk === 'amount' \|\| lk === 'scout'\) \? refundOverCreditWarning\(led\)/.test(ed), 'an edited refund is not checked');
+  // (a) A family whose refund left them owing is still on the Dues screen.
+  ok(/\.filter\(function \(f\) \{ return f\.charges\.length \|\| f\.acct\.paid \|\| f\.acct\.refunded; \}\)/.test(slice('duesFamilies')),
+    'a family with only a refund is filtered off the Dues screen');
+  // (c) On a family-direct line the picker is a reimbursement, and saves as one.
+  const rows = /function renderLedgerEntries\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/ledgerLineIsDirect\(dr\.lineId\)[\s\S]*?aria-label="Paid back to \(reimbursement\)"/.test(rows), 'the new-entry picker is always a refund');
+  ok(/ledgerLineIsDirect\(e\.lineId\)[\s\S]*?aria-label="Paid back to \(reimbursement\)"/.test(rows), 'the entry picker is always a refund');
+  ok(/var drReimb = dr\.direction !== 'in' && !!dr\.scoutId && ledgerLineIsDirect\(dr\.lineId\);/.test(add) &&
+     /if \(drReimb\) drEntry\.reimbursement = true;/.test(add), 'a family-direct payback is saved as a refund');
+  ok(/if \(lk === 'scout' && led\.scoutId && ledgerLineIsDirect\(led\.lineId\)\) \{ led\.source = ''; led\.reimbursement = true; \}/.test(ed),
+    'an edited family-direct payback is saved as a refund');
+  ok(/if \(nk === 'line' && nd\.direction !== 'in'\) \{ nd\.lineId = el\.value; render\(\); return; \}/.test(SCRIPT),
+    'the picker does not follow the line chosen in the form');
+});
+
+test('M2: the Funds in sentence adds up, with refunds as their own term', () => {
+  const ctx = sandbox(['fmt', 'fundsInTerm']);
+  eq(ctx.fundsInTerm('refunds to families', -2000), ' − refunds to families ($20.00)', 'a refund term');
+  eq(ctx.fundsInTerm('family-paid fees collected', 12000), ' + family-paid fees collected ($120.00)', 'a fee term');
+  eq(ctx.fundsInTerm('other fundraisers', -500), ' − other fundraisers ($5.00)', 'a loss is dropped from the sentence');
+  eq(ctx.fundsInTerm('x', 0), '', 'a $0 term is printed');
+  // Every addend of fundsIn after carryover and commission is a fundsInTerm, and none is gated on > 0.
+  const fn = slice('computeBudget');
+  ok(/var fundsIn = startingBalance \+ commission \+ retainedCash \+ feeIncomeCollected \+ otherFundraiserIn \+ income\.other \+\s*income\.carryover;/.test(fn),
+    'Funds in gained a term this test does not know about');
+  ok(/feeIncomeGross: feeIncomeGross, feeRefunds: chg\.refunded,/.test(fn), 'the two halves of the fee income are not reported');
+  const card = /'<p class="small muted" style="margin:8px 0 0"><strong>Funds in<\/strong> = carryover[\s\S]*?Balance<\/strong> = funds in/.exec(SCRIPT);
+  ok(card, 'the Funds in sentence was not found');
+  ['bud.ledgerCarryover', 'bud.incomePosted', 'bud.retainedCash', 'bud.feeIncomeGross', '-(bud.feeRefunds || 0)', 'bud.otherFundraiserIn'].forEach((x) =>
+    ok(card[0].indexOf(x + ')') !== -1 && new RegExp("fundsInTerm\\('[^']+', " + x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\)').test(card[0]),
+      `${x} is not a term of the sentence`));
+  ok(/fundsInTerm\('refunds to families', -\(bud\.feeRefunds \|\| 0\)\)/.test(card[0]), 'refunds are not their own term');
+  ok(!/> 0 \? ' \+/.test(card[0]), 'a term is still printed only when it is above zero');
+  // "Collected" is what families handed over, never net of refunds.
+  ok(/collected: t\.paid \+ t\.donated \+ t\.makeup, refunded: t\.refunded,/.test(slice('feesTotals')),
+    'collected is net of refunds again');
+});
+
+test('M4: "Not the commission" is answered per entry, and any edit to the entry asks again', () => {
+  const card = /function renderBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/data-act="not-commission:' \+ esc\(le\.id\) \+ '"/.test(card) && /the commission<\/button>/.test(card),
+    'the Check line offers no per-entry answer');
+  const h = /if \(act\.indexOf\('not-commission:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(h && /ncE\.notCommission = true;/.test(h[0]) && /commit\(\)/.test(h[0]), 'the answer is not saved');
+  const ed = /if \(ch\.indexOf\('led-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/if \(lk === 'amount' \|\| lk === 'source' \|\| lk === 'line' \|\| lk === 'dir'\) led\.notCommission = false;/.test(ed),
+    'editing the entry does not clear the answer');
+  // It survives a reload, as a boolean.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const d = ctx.normalizeState(Object.assign(preMigrationState(), {
+    ledger: [{ id: 'x', direction: 'in', amountCents: 100, notCommission: true }, { id: 'y', direction: 'in', amountCents: 100, notCommission: 'yes' }]
+  }));
+  eq(d.ledger.filter((e) => e.id === 'x' || e.id === 'y').map((e) => e.notCommission), [true, false], 'normalizeState');
+});
+
+test('M5: Budget vs actual plans every dollar the Budget card plans, adult and sibling shares included', () => {
+  // Three lines, and the planned tiers cover one share of each kind: an adult share on a line the
+  // pack collects (extraHeads), the scout share of a collected line (fees — already planned), and a
+  // paid-direct line (extraReimburse).
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    var A1 = { id: 'A1', name: 'Campout', category: 'camp', through: true, planned: 10000, rates: { scout: 1000, adult: 2000 } };
+    var E1 = { id: 'E1', name: 'Shirts', category: 'uniforms', through: true, planned: 5000, rates: { scout: 500, adult: 1500 } };
+    var D1 = { id: 'D1', name: 'Registration', category: 'registration', through: false, planned: 3000, rates: { scout: 3000 } };
+    var state = { budget: { activities: [A1], expenses: [E1, D1], startingBalance: 0 }, ledger: [], charges: [], fundraisers: [], collected: {} };
+    function allBudgetLines() { return [{ line: A1, key: 'act:A1', kind: 'activity' }, { line: E1, key: 'E1', kind: 'expense' }, { line: D1, key: 'D1', kind: 'expense' }]; }
+    function coverableLines() { return allBudgetLines(); }
+    function lineIsFamilyDirect(l) { return !l.through; }
+    function lineThroughPack(l) { return l.through; }
+    function linePlanned(l) { return l.planned; }
+    function lineActual() { return 0; }
+    function lineActualCents() { return 0; }
+    function lineRateForWho(l, who) { return l.rates[who] || 0; }
+    function lineBillingRoster() { return [{ id: 'a' }, { id: 'b' }, { id: 'c' }]; }
+    function linePerFamily() { return false; }
+    function plannedCoverKeys() { return { 'act:A1#adult': true, 'E1': true, 'D1': true }; }
+    function activeScouts() { return [{}, {}, {}]; }
+    function chargeTotals() { return { paid: 0, donated: 0, makeup: 0, refunded: 0 }; }
+    function chargeFamilyKey(x) { return x; }
+    function tierCoverageConfigured() { return true; }
+    function packCoverage() { return {}; }
+    function linePerHead() { return false; }
+    function lineFamilyFunded() { return false; }
+    function fundingSummary() { return { fees: 0, cashGoal: 0, C: 0, salesGoal: 0, perScoutGoal: 0 }; }
+    function rewardTierSummary() { return { rewardDues: 0 }; }
+    function computePackTotals() { return { commission: 0, retainedCash: 0 }; }
+    function getBudgetLine() { return null; }
+    function ledgerIncomeCents() { return { commission: 0, hasCommission: false, other: 0, carryover: 0 }; }
+    function commissionLookalikes() { return []; }
+    function familyCoverage(c) { return c; }   // no per-family line in this fixture
+    ${['COVER_WHO', 'coverKeyOf', 'coverCostForKeys', 'tierExtraPackCostCents', 'LINE_CATEGORIES',
+       'budgetVsActual', 'BVA_REIMBURSE', 'budgetVsActualNow', 'computeBudget'].map(slice).join('\n')}`, ctx);
+  const planned = vm.runInContext('computeBudget().planned', ctx);
+  eq(planned, 10000 + 5000 + 6000 + 9000, 'computeBudget’s Planned (the fixture)');
+  const bva = vm.runInContext('budgetVsActualNow()', ctx);
+  eq(bva.total.planned, planned, 'Budget vs actual’s total Planned is not the Budget card’s Planned');
+  const camp = bva.rows.find((r) => r.category === 'camp');
+  eq(camp && camp.planned, 16000, 'the covered adult share is not planned under its own line’s category');
+});
+
+test('M6: an archived season says what actually carried forward, and old archives read as before', () => {
+  const ctx = sandbox(['fmt', 'esc', 'normalizeSeasonArchive', 'seasonBalanceLabel', 'seasonCarriedLine', 'closingCarryover']);
+  const norm = (a) => { ctx.normalizeSeasonArchive(a); return a; };
+  const base = () => ({ id: 'a', kind: 'season', year: 2026, closedAt: '2027-07-01T00:00:00Z',
+    fundraising: {}, budget: { plannedCents: 100000, actualCents: 90000, startingBalanceCents: 5000, fundsInCents: 120000, balanceCents: 30000 },
+    events: {}, dues: {}, advancement: {} });
+  const bank = norm(Object.assign(base(), {
+    budget: Object.assign(base().budget, { carriedCents: 28712, carriedFrom: 'bank' }) }));
+  eq([bank.budget.carriedFrom, bank.budget.carriedCents], ['bank', 28712], 'the carried figure did not survive a reload');
+  const old = norm(base());
+  ok(!('carriedFrom' in old.budget) && !('carriedCents' in old.budget), 'an old archive gained a carried figure it never had');
+  const junk = norm(Object.assign(base(), { budget: Object.assign(base().budget, { carriedFrom: 'guess', carriedCents: 5 }) }));
+  ok(!('carriedFrom' in junk.budget), 'an unknown carriedFrom was kept');
+  eq(ctx.seasonBalanceLabel(bank.budget), 'Projected ending balance', 'bank-carried label');
+  eq(ctx.seasonCarriedLine(bank.budget), 'Carried forward: $287.12 (bank balance)', 'carried line');
+  eq(ctx.seasonBalanceLabel(old.budget), 'Ending balance', 'an old archive’s label changed');
+  eq(ctx.seasonCarriedLine(old.budget), '', 'an old archive gained a carried line');
+  eq(ctx.seasonBalanceLabel({ carriedFrom: 'projection', carriedCents: 30000 }), 'Ending balance', 'a projection carry is relabelled');
+  // Stored by the archive builder from the same decision rolloverYear makes; used by every reader.
+  const arc = slice('buildSeasonArchive');
+  ok(/var carry = closingCarryNow\(bud\);/.test(arc) && /carriedCents: carry\.cents, carriedFrom: carry\.from,/.test(arc),
+    'the archive does not store what carried');
+  ok(/var bankKnown = state\.ledger\.length > 0 && !!state\.book\.openingDate;/.test(slice('closingCarryNow')) &&
+     /var closingBankKnown = closingHadLedger && !!state\.book\.openingDate;/.test(slice('rolloverYear')),
+    'the archive and the rollover decide the carry differently');
+  ['renderCloseoutOverlay', 'seasonArchiveTables', 'seasonArchiveText', 'seasonArchiveRow'].forEach((fn) => {
+    const src = slice(fn);
+    ok(/seasonBalanceLabel\(/.test(src) && /seasonCarriedLine\(/.test(src), `${fn} does not say which balance it shows`);
+    ok(!/<span class="l">Ending balance<\/span>|' · ending balance '/.test(src), `${fn} still hard-codes "Ending balance"`);
+  });
+});
+
+test('M7: a refund or a carryover with no budget line does not keep the Home nag up', () => {
+  const ctx = sandbox(LEDGER_FNS);
+  const book = { openingCents: 0, openingDate: '' };
+  const L = [
+    entry({ id: '1', direction: 'out', scoutId: 'ada', source: 'refund', lineId: '', amountCents: 4000 }),
+    entry({ id: '2', direction: 'in', source: 'carryover', lineId: '', amountCents: 42000 }),
+    entry({ id: '3', direction: 'in', source: 'carryover', scoutId: 'ada', lineId: '', amountCents: 700 }),
+    entry({ id: '4', direction: 'out', source: '', lineId: '', amountCents: 1500 }),          // a real one
+    entry({ id: '5', direction: 'out', scoutId: 'ada', reimbursement: true, lineId: '', amountCents: 900 }) // still wants a line
+  ];
+  eq(ctx.ledgerTotals(L, book).uncategorised, 2, 'uncategorised');
+  // The ledger's "No budget line" filter lists what the count counts.
+  const lm = slice('ledgerMatches');
+  ok(/if \(f\.dir === 'uncategorised' && !entryWantsLine\(e\)\) return false;/.test(lm), 'the filter and the count disagree');
+});
+
+test('K2: with cash through Trail’s End, the stretch bar carries the cash goal too', () => {
+  const fn = slice('computePackTotals');
+  ok(/teBarStretch: stretchNow > 0 \? stretchNow \+ \(viaTE \? \(state\.cashGoalCents \|\| 0\) : 0\) : 0/.test(fn),
+    'teBarStretch is not the stretch plus a cash goal that runs through Trail’s End');
+  // Every stretch bar, percentage and "to go" reads it — none still divides by the bare stretch.
+  ok(!/pack\.teEligible \/ pack\.stretch\b|fmt\(pack\.stretch\)|pack\.stretch - pack\.teEligible/.test(SCRIPT),
+    'a stretch figure is still measured against the stretch without the cash goal');
+  const card = SCRIPT.slice(SCRIPT.indexOf('aria-label="Stretch goal '), SCRIPT.indexOf('aria-label="Stretch goal ') + 900);
+  ok(/var stLeft = Math\.max\(0, pack\.teBarStretch - pack\.teEligible\);/.test(SCRIPT), '"to go" is not against teBarStretch');
+  ok(/Stretch goal: ' \+ fmt\(pack\.teEligible\) \+ ' of ' \+ fmt\(pack\.teBarStretch\)/.test(slice('summaryText')), 'the copied text');
+  ok(/var sp = Math\.min\(100, Math\.round\(pack\.teEligible \/ pack\.teBarStretch \* 100\)\);/.test(SCRIPT), 'the printed sheet');
+  ok(card.length > 0, 'the card');
+});
+
+test('K4: the "one entry per scout per sale day" comment sits on the code it describes', () => {
+  const overlap = SCRIPT.indexOf('  function teManualOverlap(');
+  const note = SCRIPT.indexOf('// ONE ENTRY PER SCOUT PER SALE DAY');
+  const entries = SCRIPT.indexOf('  function teLiveEntriesFor(');
+  ok(overlap !== -1 && note !== -1 && entries !== -1, 'a landmark is missing');
+  ok(overlap < note && note < entries, 'teManualOverlap still sits between the sale-day comment and teLiveEntriesFor');
+  ok(!/\n  function /.test(SCRIPT.slice(note, entries)), 'another declaration sits between the comment and its function');
+});
+
+test('N1: the waiting screen says how to register, and who the adult partner is', () => {
+  const run = (fixed) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`var PACK_PUBLIC_NAME = 'Cub Scout Pack 569'; var FLEUR = '';
+      var sync = { user: { displayName: 'Sam <b>' } };
+      function fixedPackMode() { return ${fixed}; } function activeJoin() { return null; } function parentDoc() { return null; }
+      ${['esc', 'joinPackName', 'joinGateShell', 'renderJoinWaiting'].map(slice).join('\n')}`, ctx);
+    return vm.runInContext('renderJoinWaiting()', ctx);
+  };
+  const out = run(true);
+  ok(out.indexOf('While you wait: register your scout with Scouting America at <strong>beascout.scouting.org</strong> — ' +
+    'enter your ZIP, choose <strong>Cub Scout Pack 569</strong>, then <em>Apply now</em> (your den leader can help). ' +
+    'For a Lion or Tiger, a parent or guardian is usually the adult partner and just ticks that box on the form. ' +
+    'If another adult will be the partner, they may need their own adult application. ' +
+    'Every adult who comes along is encouraged to take the free online Safeguarding Youth Training.</p>') !== -1,
+    'the waiting screen is not the New Member Coordinator’s wording');
+  ok(!/they’ll need to register too/.test(out), 'the old wording is still there');
+  ok(/Sam &lt;b&gt;/.test(out), 'the signed-in name is not escaped');
+  ok(/choose your pack, then/.test(run(false)), 'a multi-pack build names Pack 569');
+  ok(!/an adult partner who is not\s+\/\/ the parent needs registering/.test(SCRIPT), 'the old comment is still there');
+});
+
+test('N2: both family-cost cards say an adult partner who isn’t a parent is not included', () => {
+  const pv = slice('parentFamilyCost').replace(/'\s*\+\s*(\/\/[^\n]*\n\s*)*'/g, '');
+  ok(/<strong>Not included:<\/strong> a second parent, brothers and sisters \(listed separately, because nothing requires one to come\), an adult partner who isn’t a parent \(may pay an adult registration fee\), and anything the pack charges as one flat amount\./.test(pv),
+    'the parents’ card does not list the adult partner');
+  const leaders = /var notIn = \[[^\]]*\];/.exec(SCRIPT);
+  ok(leaders && /'an adult partner who isn’t a parent \(may pay an adult registration fee\)'/.test(leaders[0]),
+    'the leaders’ card does not list the adult partner');
+});
+
+test('S1: with no near-rung figure, the caption names the next rung before its reward', () => {
+  const ctx = sandbox(['esc', 'fmt', 'parentBar', 'parentTierProgress']);
+  const LADDER = { anchorName: 'Silver', planned: true, marks: [{ name: 'Bronze', pct: 33, plan: false }] };
+  const cal = ctx.parentTierProgress({ nextTier: 'Bronze', nextReward: 'Pack patch', nextPct: 10, nextMarkPct: 33 }, LADDER);
+  ok(/10% of the way to <strong>Silver<\/strong> · next: <strong>Bronze<\/strong> <span class="muted">— Pack patch<\/span>/.test(cal),
+    'Bronze’s reward is printed against Silver');
+  const straight = ctx.parentTierProgress({ nextTier: 'Silver', nextReward: 'Dues covered', nextPct: 80 }, LADDER);
+  ok(!/next:/.test(straight), 'a scout heading straight for the anchor is told the next rung twice');
+});
+
+test('7b-1: an amounts-off bar never pins a scout near a notch into a narrow band', () => {
+  const { coarseBarPct } = sandbox(['coarseBarPct']);
+  // A ladder with notches at 31% and 39% of the anchor: segments [0,31), [31,39), [39,100).
+  const segs = [[0, 31], [31, 39], [39, 100]];
+  segs.forEach(([lo, hi]) => {
+    // Preimage of every published value, sampled at 0.01 across the segment.
+    const pre = {};
+    for (let i = lo * 100; i < hi * 100; i++) {
+      const x = i / 100;
+      const v = coarseBarPct(x, lo, hi);
+      ok(v >= lo && v < hi, `[${lo},${hi}): ${x} published outside its segment (${v})`);
+      (pre[v] || (pre[v] = [x, x]))[1] = x;
+    }
+    Object.keys(pre).forEach((v) => {
+      const width = pre[v][1] - pre[v][0] + 0.01;
+      // Every band is at least 10 points of the anchor wide — or it is the WHOLE segment, whose
+      // ends the tier and the next tier already publish.
+      ok(width >= 9.99 || (Object.keys(pre).length === 1 && hi - lo < 10),
+        `[${lo},${hi}): published ${v} covers only ${width.toFixed(2)} points`);
+    });
+  });
+  // The old failure: held notch 39, sold 39.5 → it published 39, a one-point band.
+  eq(coarseBarPct(39.5, 39, 100), 39, 'the bottom of the first band');
+  eq(coarseBarPct(54.3, 39, 100), 54, 'the second band of four (step 15.25)');
+  eq(coarseBarPct(35, 31, 39), 31, 'a narrow segment is one band');
+  eq(coarseBarPct(30.9, 0, 31), 21, 'the third of three bands under 31');
+  eq(coarseBarPct(100, 39, 100), 100, 'the top of the ladder is a full bar');
+  eq(coarseBarPct(null, 0, 100), null, 'no figure');
+});
+
+test('7b-2: with standings off, the printed summary carries no pack money or goal bar', () => {
+  const sheet = /if \(o\.kind === 'summary'\) \{[\s\S]*?\n      return h;/.exec(SCRIPT)[0];
+  const money = sheet.indexOf("if (sumStand) h += '<div class=\"row\" style=\"margin-bottom:14px\">'");
+  ok(money !== -1, 'the stat row is not behind the standings switch');
+  // Everything from the stat row to the per-scout tables is one guarded expression.
+  const block = sheet.slice(money, sheet.indexOf('if (sumStand && sumAmt) {'));
+  ['Trail’s End', 'Pack commission', 'Total to the pack', 'Trail’s End goal', 'Stretch goal', 'Cash donations goal'].forEach((w) =>
+    ok(block.indexOf(w) !== -1, `${w} is not inside the guarded block`));
+  ok(!/;\s*\n\s*'/.test(block.slice(0, block.lastIndexOf("'';"))), 'the guarded block ends early, leaving money outside it');
+  ok(/if \(sumStand\) \{\s*h \+= '<p class="small" style="margin:14px 0 0">Cash donations at storefront tables/.test(sheet),
+    'the cash donations line prints with standings off');
+  ok(/Scout standings are off for families/.test(sheet), 'the on-screen note is gone');
+});
+
+test('7b-3: Copy and Print of the summary wait for the pack’s sharing settings', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`var sync = { user: {}, accountsUnavailable: false, joinLoaded: false };
+    ${['accountsInForce', 'sharingSettingsKnown'].map(slice).join('\n')}`, ctx);
+  eq(ctx.sharingSettingsKnown(), false, 'signed in, config not loaded');
+  ctx.sync.joinLoaded = true;
+  eq(ctx.sharingSettingsKnown(), true, 'config loaded');
+  ctx.sync.user = null; ctx.sync.joinLoaded = false;
+  eq(ctx.sharingSettingsKnown(), true, 'local-only use has nothing to wait for');
+  const sheet = /if \(o\.kind === 'summary'\) \{[\s\S]*?\n      return h;/.exec(SCRIPT)[0];
+  ok(/var sumStand = sumKnown && standingsEnabled\(\), sumAmt = sumKnown && amountsEnabled\(\);/.test(sheet), 'the sheet trusts unloaded switches');
+  ok(/data-act="copy-summary"' \+ sumDis/.test(sheet) && /data-act="print-summary"' \+ sumDis/.test(sheet), 'the buttons are live before load');
+  ok(/Loading the pack\\u2019s sharing settings\\u2026/.test(sheet), 'the sheet does not say it is waiting');
+  ok(/if \(\(act === 'copy-summary' \|\| act === 'print-summary'\) && !sharingSettingsKnown\(\)\)/.test(SCRIPT), 'a stale button still copies');
+});
+
+test('7b-4: with amounts off, the pack goal bar is rounded to $50 and its percent follows', () => {
+  const build = (showAmounts, combined) => {
+    const ctx = pvCtx(`
+      state.derby = { name: '', date: '', awards: [] };
+      function computePackTotals() { return { combined: ${combined}, teGoal: 200000, cashGoal: 0 }; }
+      function computeScoutTotals() { return {}; }
+      function visibleScoutRows() { return []; }
+      function rankBy(rows) { return rows; }
+      function tierProgressRows() { return []; }
+      function plannedTier() { return null; }
+      function derbyWinners() { return []; }
+      function sortedTiers() { return []; }
+      function salesForCommission(c) { return c; }`);
+    return vm.runInContext(`buildParentView(state, { showStandings: true, showAmounts: ${showAmounts} })`, ctx).goals;
+  };
+  eq(build(true, 123456), { goalCents: 200000, raisedCents: 123456, pct: 62 }, 'amounts on is exact');
+  eq(build(false, 123456), { goalCents: 200000, raisedCents: 125000, pct: 63 }, 'amounts off: $1,234.56 → $1,250, 63%');
+  eq(build(false, 122499), { goalCents: 200000, raisedCents: 120000, pct: 60 }, 'rounds down below the half');
+  // One family's $15 sale does not move the published figure.
+  eq(build(false, 120500).raisedCents, build(false, 122000).raisedCents, 'a $15 sale shows on the goal bar');
+  ok(/pack goal bar's amount raised is rounded to the nearest \$50/.test(SETUP), 'SETUP.md does not say so');
+  ok(/`raisedCents` is rounded to the nearest \$50/.test(SCRIPT), 'the banner does not say so');
+});
+
+// The sibling rule for a per-family fee — owner decision, 2026-09-28. One family: Bea (Bear, first
+// on the roster, so the fee is BILLED to her) and her younger brother Tig (Tiger). Web is a
+// Webelos on his own. Three per-family lines, all covered by the one tier T:
+//   FAM   collected by the pack, every den             — a charge on Bea, waived or not
+//   DIR   paid straight to the council, every den      — reimbursed, one row per family
+//   BFAM  collected by the pack, BEAR den only         — Tig's tier must not count for it
+function siblingSandbox(earned) {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    ${['arrOf', 'COVER_WHO', 'coverKeyOf', 'lineRateForWho', 'scoutsInDens', 'familiesOf', 'familyBillingScout',
+       'lineBillingRoster', 'lineBillingIds', 'familyFeeHolder', 'familyCoverage', 'shareCountsForScout',
+       'coverValueOfKeys', 'tierCoverCentsPerScout', 'packCoverage', 'packCoverageByScout', 'privateBenefitCheck',
+       'entryRefundsFamily', 'tierReimbursements', 'earnedTierFor', 'applyTierWaivers', 'salesOnlyTierMap'].map(slice).join('\n')}
+    function familyKeyOf(s) { return (s && s.familyId) || (s && s.id) || ''; }
+    function linePerFamily(l) { return l.basis === 'per-family'; }
+    function lineDens(l) { return l.dens || []; }
+    function lineRoster(l) { return scoutsInDens(activeScouts(), lineDens(l)); }
+    var SCOUTS = [{ id: 'bea', den: 'Bear' }, { id: 'tig', den: 'Tiger', familyId: 'bea' }, { id: 'web', den: 'Webelos' }];
+    function activeScouts() { return SCOUTS; }
+    function getScout(id) { return SCOUTS.filter(function (s) { return s.id === id; })[0] || null; }
+    function chargeFamilyKey(id) { return familyKeyOf(getScout(id)); }
+    function tierCoverageConfigured() { return true; }
+    var FAM = { id: 'FAM', basis: 'per-family', scoutRateCents: 5000 };
+    var DIR = { id: 'DIR', basis: 'per-family', scoutRateCents: 3000 };
+    var BFAM = { id: 'BFAM', basis: 'per-family', scoutRateCents: 4000, dens: ['Bear'] };
+    var LINES = [{ key: 'FAM', line: FAM }, { key: 'DIR', line: DIR }, { key: 'BFAM', line: BFAM }];
+    function coverableLines() { return LINES; }
+    function coverableShares() {
+      return [{ coverKey: 'FAM', item: FAM, rate: 5000, reimburse: false, who: 'scout' },
+              { coverKey: 'DIR', item: DIR, rate: 3000, reimburse: true, who: 'scout' },
+              { coverKey: 'BFAM', item: BFAM, rate: 4000, reimburse: false, who: 'scout' }];
+    }
+    var T = { id: 't', thresholdCents: 100, covers: ['FAM', 'DIR', 'BFAM'] };
+    function sortedTiers() { return [T]; }
+    var EARNED = ${JSON.stringify({ t: earned })};
+    function tierEarnedMap() { return EARNED; }
+    function computePackTotals() { return { commission: 100000 }; }
+    function getBudgetLine(id) { return [FAM, DIR, BFAM].filter(function (l) { return l.id === id; })[0] || null; }
+    var state = {
+      budget: { expenses: [FAM, DIR, BFAM], activities: [] },
+      charges: [
+        { id: 'c1', scoutId: 'bea', lineId: 'FAM', who: 'scout', amountCents: 5000, waivedBy: '', forgiven: null },
+        { id: 'c2', scoutId: 'bea', lineId: 'BFAM', who: 'scout', amountCents: 4000, waivedBy: '', forgiven: null }
+      ],
+      ledger: []
+    };
+    applyTierWaivers();`, ctx);
+  const sc = (id) => ctx.SCOUTS.find((s) => s.id === id);
+  const waived = () => ctx.state.charges.map((c) => c.waivedBy);
+  return { ctx, sc, waived };
+}
+
+test('7c: only the younger sibling earns the tier, and the family fee is waived — once, and only in her dens', () => {
+  const { ctx, sc, waived } = siblingSandbox({ tig: 'earned' });
+  eq(waived(), ['t', ''], 'FAM is waived for the family; BFAM (Bear only) is not — Tig is a Tiger');
+  const rows = ctx.tierReimbursements();
+  eq(rows.map((r) => [r.share.coverKey, r.scout.id, r.earner.id]), [['DIR', 'bea', 'tig']],
+    'one reimbursement row, on the billing scout, earned by the sibling');
+  eq(JSON.parse(JSON.stringify(ctx.packCoverageByScout())), { tig: 8000 }, 'the family fees are credited to the sibling who earned them');
+  eq(ctx.privateBenefitCheck().back, 8000, 'what goes back');
+  // What a tier is still worth to each of them: Bea's family already has FAM and DIR through Tig,
+  // so only the Bear-only fee is left for her to earn; Tig is credited, and BFAM was never his.
+  const cov = ctx.packCoverage();
+  eq(ctx.tierCoverCentsPerScout(ctx.T, sc('bea'), cov), 4000, 'Bea is offered the family fee her brother already covered');
+  eq(ctx.tierCoverCentsPerScout(ctx.T, sc('tig'), cov), 8000, 'Tig');
+  eq(ctx.coverValueOfKeys({ FAM: true, DIR: true }, sc('bea'), cov), 0, 'reaching it is worth the family fee to Bea again');
+});
+
+test('7c: both siblings earn it, and the family fee is waived once with no double reimbursement', () => {
+  const { ctx, sc, waived } = siblingSandbox({ bea: 'earned', tig: 'earned' });
+  eq(waived(), ['t', 't'], 'both of Bea’s charges are waived');
+  let rows = ctx.tierReimbursements();
+  eq(rows.map((r) => [r.share.coverKey, r.scout.id, r.earner.id]), [['DIR', 'bea', 'bea']], 'one row, credited to the billing scout');
+  // Paid back against Tig: the family's one row is settled, and no second one appears.
+  ctx.state.ledger = [{ direction: 'out', lineId: 'DIR', scoutId: 'tig', amountCents: 3000, source: '', reimbursement: true }];
+  rows = ctx.tierReimbursements();
+  eq(rows.map((r) => [r.paid, r.left]), [[3000, 0]], 'the family is reimbursed twice');
+  eq(JSON.parse(JSON.stringify(ctx.packCoverageByScout())), { bea: 12000 }, 'a sibling is credited the same family fee');
+  eq(ctx.privateBenefitCheck().back, 12000, 'the family fee counted per sibling');
+  const cov = ctx.packCoverage();
+  eq(ctx.tierCoverCentsPerScout(ctx.T, sc('tig'), cov), 0, 'Tig is credited family fees his sister holds');
+});
+
+test('7c: no sibling earns it, and nothing is waived', () => {
+  const { ctx, sc, waived } = siblingSandbox({});
+  eq(waived(), ['', ''], 'a fee is waived with nobody earning it');
+  eq(ctx.tierReimbursements().length, 0, 'a reimbursement is owed');
+  eq(JSON.parse(JSON.stringify(ctx.packCoverageByScout())), {}, 'coverage');
+  eq(ctx.privateBenefitCheck().back, 0, 'what goes back');
+  // Nobody holds it, so reaching it is worth the family fee to whichever of them gets there.
+  const cov = ctx.packCoverage();
+  eq(ctx.tierCoverCentsPerScout(ctx.T, sc('bea'), cov), 12000, 'Bea');
+  eq(ctx.tierCoverCentsPerScout(ctx.T, sc('tig'), cov), 8000, 'Tig (not the Bear-only fee)');
+});
+
+test('7c: a sibling in a den outside the line’s dens does not count', () => {
+  // Web earning it covers nothing of Bea's family's, and Tig's tier cannot reach the Bear-only fee.
+  const a = siblingSandbox({ web: 'earned' });
+  eq(a.waived(), ['', ''], 'another family’s tier waived this family’s fee');
+  const b = siblingSandbox({ tig: 'earned' });
+  eq(b.waived()[1], '', 'a Tiger’s tier waived a Bear-only family fee');
+  eq(b.ctx.familyFeeHolder(b.ctx.BFAM, 'BFAM', b.ctx.packCoverage(), 'bea'), '', 'the out-of-den sibling is a holder');
+});
+
+test('7c: a sibling’s make-up covers the family fee once, and never shows on the published board', () => {
+  const { ctx, sc, waived } = siblingSandbox({ tig: 'madeUp' });
+  eq(waived(), ['t', ''], 'a make-up by a sibling does not cover the family fee');
+  eq(ctx.tierReimbursements().length, 1, 'one reimbursement row');
+  // Bea's make-up cap for the same tier does not include the fee Tig already paid towards.
+  eq(ctx.tierCoverCentsPerScout(ctx.T, sc('bea'), ctx.packCoverage()), 4000, 'the family could pay towards the fee twice');
+  // Published: built from the sales-only map, where Tig's make-up does not exist — so Bea's
+  // "what reaching it takes off" still shows the fee, and nothing reveals the payment.
+  const pub = ctx.packCoverage(ctx.salesOnlyTierMap(ctx.EARNED));
+  eq(ctx.coverValueOfKeys({ FAM: true }, sc('bea'), pub), 5000, 'the published board reveals a sibling’s make-up');
+  // By selling, it is public anyway, and the board says so: $0 off.
+  const sold = siblingSandbox({ tig: 'earned' });
+  eq(sold.ctx.coverValueOfKeys({ FAM: true }, sold.sc('bea'), sold.ctx.packCoverage(sold.ctx.salesOnlyTierMap(sold.ctx.EARNED))), 0,
+    'the published board offers a fee a sibling already sold her way to');
+  // Wiring: the progress rows read the same map for both figures.
+  const tpr = slice('tierProgressRows');
+  ok(/var famCov = packCoverage\(map\);/.test(tpr), 'the progress rows do not read coverage from their own map');
 });
 
 /* ---------------- report ---------------- */
