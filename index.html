@@ -17461,6 +17461,10 @@
      because the paper outlives this comment. First names only, as the Dues screen shows them.
      Forgiveness reasons and donors' names stay off it: they are the committee's, not the family's. */
   var STATEMENT_KEEP = 'Leaders\u2019 copy \u2014 send only to this family';
+  // Security review (2026-09-28) — a season close-out sheet carries every family's closing balance
+  // (E3), and it is printed and copied as text. Both say so at the very top, before the title,
+  // because the paper and the pasted text outlive this comment.
+  var SEASON_SHEET_KEEP = 'Leaders\u2019 copy \u2014 holds every family\u2019s balance; do not share';
   // One charge's status line. Pure given its row, today, and two formatters.
   function statementRowStatus(r, today, money, dateLabel) {
     if (r.settled === 'tier') return 'Covered by a reward tier';
@@ -21192,6 +21196,7 @@
     // Wave 7 — season close-out sheet (same shell + print rules as the Trail's End one).
     if (a.kind === 'season') {
       return head + '<div class="summary-sheet">' +
+        '<p class="small" style="margin:0 0 6px"><strong>' + esc(SEASON_SHEET_KEEP) + '</strong></p>' +
         '<div class="row" style="gap:10px;margin-bottom:2px"><span class="fleur">' + FLEUR + '</span>' +
         '<h1 style="margin:0">' + esc(a.packName || state.packName || 'Pack') + ' — ' + a.year + ' program year</h1></div>' +
         '<p class="muted small" style="margin:0 0 14px">Season close-out · closed ' + esc(fmtArchiveDate(a.closedAt)) + '</p>' +
@@ -23769,6 +23774,7 @@
   function seasonArchiveText(a) {
     var f = a.fundraising, b = a.budget;
     var lines = [];
+    lines.push(SEASON_SHEET_KEEP);
     lines.push((a.packName || state.packName || 'Pack') + ' — ' + a.year + ' program year (season close-out)');
     lines.push('Closed ' + fmtArchiveDate(a.closedAt));
     lines.push('');

@@ -12211,6 +12211,17 @@ test('E3: close-out archives the ledger and the family balances, sized against t
   ok(!/seasonLedger|seasonFamilyBalances|\.archives\b/.test(codeOnly(BPV())), 'buildParentView reads the archive');
 });
 
+// Security review (2026-09-28) — the season sheet holds every family's balance, and says so first.
+test('E3: the season sheet and its copied text open with a do-not-share line', () => {
+  const ctx = sandbox(['SEASON_SHEET_KEEP']);
+  eq(ctx.SEASON_SHEET_KEEP, 'Leaders’ copy — holds every family’s balance; do not share', 'the line');
+  ok(/var lines = \[\];\s*lines\.push\(SEASON_SHEET_KEEP\);/.test(slice('seasonArchiveText')), 'the copied text does not open with it');
+  const sh = slice('renderArchiveSheet');
+  ok(/if \(a\.kind === 'season'\) \{\s*return head \+ '<div class="summary-sheet">' \+\s*'<p class="small" style="margin:0 0 6px"><strong>' \+ esc\(SEASON_SHEET_KEEP\)/.test(sh),
+    'the printed season sheet does not open with it');
+  ok(!/SEASON_SHEET_KEEP/.test(codeOnly(BPV())), 'buildParentView reads the season sheet');
+});
+
 test('E3: an archive closed before keeps its shape; a new one is normalized', () => {
   const ctx = sandbox(['normalizeSeasonArchive']);
   const old = { id: 'x', kind: 'season', year: 2025, closedAt: '2026-06-30T00:00:00Z' };
