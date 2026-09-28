@@ -71,7 +71,8 @@ function sandbox(names) {
 }
 // Wave C1 — buildParentView sorts the trips by date and re-checks their ISO dates, so every
 // sandbox that builds it needs these. todayISO only where the sandbox has none of its own.
-const CAMP_DATE_SRC = ['CAMP_DATE_KEYS', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'sortTripsByDate']
+const CAMP_DATE_SRC = ['CAMP_DATE_KEYS', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'sortTripsByDate',
+  'DEN_CAMP_TRIP_ID', 'campHeld']
   .map(slice).join('\n') +
   "\nvar todayISO = typeof todayISO === 'function' ? todayISO : function () { return '2026-09-28'; };\n";
 
@@ -972,6 +973,8 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'CAMP_SEED_REV', 'CAMP_OLD_SEED', 'campHash', 'refreshCampingSeed',
   // Wave C1 — and coerces each trip's ISO dates.
   'CAMP_DATE_KEYS', 'campIsoOrBlank', 'CAMP_READINESS', 'normalizeReadiness',
+  // Wave C4 — refreshCampingSeed reads the den campout template as a current seed too.
+  'CAMP_EMERGENCY', 'DEN_CAMP_TRIP_ID', 'campHeld', 'seedDenCampTrip', 'campTemplates',
   // Wave B1 — and seeds "New to the pack" the same way.
   'WELCOME_SEED_REV', 'WELCOME_OLD_SEED', 'WELCOME_FILL_RE', 'freshWelcomeSection', 'seedWelcomeSections',
   'freshWelcome', 'refreshWelcomeSeed',
@@ -5542,13 +5545,14 @@ test('camping edits are behind canEdit, and deletes are two-tap with an undo', (
 test('every trip is published to parents, rebuilt field by field', () => {
   const fn = /function buildParentView\(src, opts\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'buildParentView() not found');
-  ok(/var camping = sortTripsByDate\(campingTrips\(\), todayISO\(\)\)\.map/.test(fn[0]), 'the trips are not published');
+  ok(/var camping = sortTripsByDate\(campingTrips\(\), todayISO\(\)\)\.filter\(/.test(fn[0]), 'the trips are not published');
   // Never a spread: a field added to a trip in some later wave must not ride along unseen.
   ok(!/\.\.\.t\b/.test(fn[0]), 'the published trip spreads the source object');
   ['name', 'where', 'address', 'when', 'arrive', 'depart', 'cost', 'url', 'intro'].forEach((k) => {
     ok(new RegExp(`${k}: String\\(t\\.${k} \\|\\| ''\\)`).test(fn[0]), `the published trip drops ${k}`);
   });
-  ok(/return \{ title: String\(s\.title \|\| ''\), body: String\(s\.body \|\| ''\) \};/.test(fn[0]),
+  ok(/return \{ title: String\(s\.title \|\| ''\), body: String\(s\.body \|\| ''\) \};/.test(fn[0]) &&
+    /\.filter\(function \(s\) \{ return \(s\.title \|\| s\.body\) && !campHeld\(s\.title \+ '\\n' \+ s\.body\); \}\)/.test(fn[0]),
     'a section is published with more than its title and body');
   ok(/if \(camping\.length\) out\.camping = camping;/.test(fn[0]),
     'an empty camping list still publishes a key, so parents get an empty tab');
@@ -11423,12 +11427,68 @@ test('C3: families get a Print packing list button, built from the published tri
   ok(h && /pkWant >= 0 && pkWant < parentTrips\(\)\.length/.test(h[0]), 'the handler trusts the clicked index');
   // Rendered: escaped text, one checkbox per item, the side headings when split.
   const ctx = vm.createContext({});
-  vm.runInContext(['esc', 'packingList', 'renderParentPackList'].map(slice).join('\n'), ctx);
+  vm.runInContext(['esc', 'packingList', 'renderParentPackList', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'tripDatesLabel'].map(slice).join('\n') +
+    '\nfunction fmtDate(d) { return d; }', ctx);
   const out = ctx.renderParentPackList({ name: 'Den <campout>', when: 'May' },
     { body: 'Per person\n- Bag & pad\n\nPer family\n- Tent' });
   eq((out.match(/type="checkbox"/g) || []).length, 2, 'one box per item');
   ok(/Per person/.test(out) && /Per family/.test(out), 'the split sheet has no side headings');
+  ok(!/pk-head">Per person/.test(out), 'the split sheet repeats "Per person" as a group heading');
+  ok(/2027-05-07/.test(ctx.renderParentPackList({ name: 'Den', startDate: '2027-05-07' }, { body: '- Tent' })), 'no date on a sheet with no When line');
   ok(/Bag &amp; pad/.test(out) && /Den &lt;campout&gt;/.test(out) && !/<campout>/.test(out), 'the sheet does not escape the text');
+});
+// C4 — the Webelos / Arrow of Light den campout template.
+test('C4: the den campout is a template added on request, never seeded, and states the experts’ rules', () => {
+  const ctx = sandbox(NORMALIZE_FNS.concat(['CAMP_PACK_RUN', 'YARGO_TRIP_ID', 'packingList', 'packingSection']));
+  ok(!ctx.seedCampingTrips().some((t) => t.id === ctx.DEN_CAMP_TRIP_ID), 'the den campout is seeded');
+  ok(!ctx.freshCamping().trips.some((t) => t.id === ctx.DEN_CAMP_TRIP_ID), 'a fresh pack gets the den campout');
+  // A live pack is never given it on load, at any seed revision.
+  const loaded = ctx.normalizeState(Object.assign(preMigrationState(), { camping: { yargoAdded: true, seedRev: 0, trips: ctx.seedCampingTrips() } })).camping;
+  ok(!loaded.trips.some((t) => t.id === ctx.DEN_CAMP_TRIP_ID), 'loading a record added the den campout');
+  const den = ctx.seedDenCampTrip();
+  eq(den.id, 'trip-den-campout', 'a stable id, so a second tap finds the first copy');
+  eq(den.name, 'Den campout — Webelos & Arrow of Light', 'name');
+  const all = JSON.stringify(den);
+  [['Den-level overnight camping is for Webelos and Arrow of Light dens only', 'Webelos and AoL only'],
+   ['own parent or guardian', 'with a parent or guardian'],
+   ['BALOO is not required for a den campout', 'BALOO not required'],
+   ['A trained leader is required, as the Guide to Safe Scouting sets out', 'a trained leader per the GSS'],
+   ['[verify with council', 'the unverified-rule marker']].forEach(([needle, what]) => ok(all.includes(needle), 'the template does not state ' + what));
+  ok(!/BALOO[^.]*required for a den/.test(all.replace('BALOO is not required for a den campout', '')), 'the template says BALOO is required');
+  // Its packing list splits per person / per family (C3).
+  const pl = ctx.packingList(ctx.packingSection(den).body);
+  ok(pl.split && pl.groups.some((g) => g.who === 'person') && pl.groups.some((g) => g.who === 'family'), 'the den packing list is not split');
+  // Same refresh mechanism: an added copy is a "current seed" for refreshCampingSeed.
+  ok(/seedCampingTrips\(\)\.concat\(campTemplates\(\)\)/.test(slice('refreshCampingSeed')), 'templates are outside the refresh');
+  // Added only by the leader, once, behind canEdit().
+  const h = /if \(act === 'camp-add-den'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(h && /if \(!canEdit\(\)\) return;/.test(h[0]) && /if \(!getTrip\(DEN_CAMP_TRIP_ID\)\)/.test(h[0]), 'the add is ungated or can duplicate');
+  ok(/data-act="camp-add-den"/.test(slice('renderCamping')), 'no button to add the template');
+});
+
+test('C4: an unverified rule, and an undated den campout, do not reach families', () => {
+  const ctx = pvCtx(`
+    var DEN = { id: 'trip-den-campout', name: 'Den campout', when: '', startDate: '', sections: [
+      { id: 'a', title: 'Who', body: 'Webelos and AoL only.' },
+      { id: 'b', title: 'Leaders', body: '- A trained leader. [verify with council: which course]' }] };
+    function campingTrips() { return [DEN, { id: 'x', name: 'Ours', when: 'May', sections: [
+      { id: 'c', title: 'Site', body: 'Booked. [Verify with council]' }, { id: 'd', title: 'Food', body: 'Bring it.' }] }]; }`);
+  const build = () => vm.runInContext('buildParentView(state, { showStandings: false })', ctx);
+  let pv = build();
+  eq(pv.camping.map((t) => t.name), ['Ours'], 'an undated den campout was published');
+  eq(pv.camping[0].sections.map((s) => s.title), ['Food'], 'a section marked [verify with council] was published');
+  vm.runInContext("DEN.startDate = '2027-05-07';", ctx);
+  pv = build();
+  const den = pv.camping.find((t) => t.name === 'Den campout');
+  ok(den, 'a dated den campout is still held back');
+  eq(den.sections.map((s) => s.title), ['Who'], 'the den campout published its unverified section');
+  ok(!/verify with council/i.test(JSON.stringify(pv)), 'a [verify with council] marker reached families');
+  // The editor says so, on the section and on the trip.
+  const rc = slice('renderCamping');
+  ok(/Held back from families: check the rule marked \[verify with council\]/.test(rc), 'the editor does not say a section is held back');
+  ok(/Families will not see this den campout until it has a date/.test(rc), 'the editor does not say the trip is held back');
+  ok(/"\[verify with council" and the den\s+\/\/\s+campout template until it has a date/.test(SCRIPT), 'the parent-view banner does not say so');
+  ok(/still marked "\[verify with council", and\s+the Webelos \/ Arrow of Light den campout template until it has a date/.test(SETUP), 'SETUP.md does not say so');
 });
 /* ---------------- report ---------------- */
 if (fails.length) {

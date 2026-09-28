@@ -250,6 +250,23 @@ split into **Per person** and **Per family** only when the text has headings tha
 otherwise it is one list under the section's own headings (Sleeping, Wearing, Camp …). It reads
 the published trip only — no new published keys.
 
+### Den campout template — Webelos & Arrow of Light (Wave C4, 2026-09-28)
+
+A fourth trip a leader can **add on request** ("+ Den campout template"), never seeded:
+`seedDenCampTrip` (stable id `trip-den-campout`) is offered through `campTemplates`, and a second
+tap goes to the copy already there. It uses the seed machinery: `refreshCampingSeed` reads
+templates as well as seeded trips, so a later revision reaches an added copy through
+`CAMP_OLD_SEED`, only where untouched.
+
+Its rules are the content experts': den-level overnight camping is for Webelos and Arrow of Light
+dens only; every Scout with their own parent or guardian; BALOO not required, a trained leader
+required per the Guide to Safe Scouting; plus the pack's supervision wording. Anything not
+verified is marked **[verify with council]** — which course the leader needs, Hazardous Weather,
+site approval and tour paperwork. A section holding that marker is **not published** until a
+leader removes it (the editor says so on the section), and the whole trip is held back from
+families until it has a date. Its "What to bring" has Per person / Per family headings, so its
+printable list (C3) is split.
+
 ## 6. What deliberately does not happen
 
 - **Rollover does not clear it.** A campout page is reference content that carries across years;

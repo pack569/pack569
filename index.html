@@ -2340,7 +2340,8 @@
   }
   function refreshCampingSeed(camping) {
     var now = {};
-    seedCampingTrips().forEach(function (t) { now[t.name] = t; });
+    // Wave C4 — templates too, so an added den campout gets its text refreshed like a seeded trip.
+    seedCampingTrips().concat(campTemplates()).forEach(function (t) { now[t.name] = t; });
     camping.trips.forEach(function (t) {
       var old = CAMP_OLD_SEED[t.name], cur = now[t.name];
       if (!cur) return;
@@ -2846,6 +2847,75 @@
     ];
     return [fall, spring, yargo];
   }
+  /* ----- Trip templates: offered, never seeded (Wave C4, 2026-09-28) -------------------------
+     A template is a trip a leader ADDS on purpose ("+ Den campout template"), never one the app
+     puts in a pack by itself: seedCampingTrips is untouched, and normalizeState never adds one.
+     It is written, stored and refreshed exactly like a seeded trip — refreshCampingSeed builds
+     its "current seed" map from seedCampingTrips AND campTemplates, so a later revision of this
+     text reaches an added copy through CAMP_OLD_SEED like any other, and only where untouched.
+
+     DEN CAMPOUT — WEBELOS & ARROW OF LIGHT. The rules in it are the ones the pack's content
+     experts gave (den-level overnight camping is for Webelos and Arrow of Light dens only; with a
+     parent or guardian; BALOO not required, a trained leader required per the Guide to Safe
+     Scouting) plus the pack's own supervision wording from CAMP_SAFETY. Anything not verified is
+     marked "[verify with council]" in the text, and a SECTION holding that marker is NOT published
+     (campHeld, buildParentView) until a leader has checked it and taken the marker out.
+     The trip as a whole is held back until it has a date (startDate or a When line): a template
+     with no weekend is not news for a family. */
+  var DEN_CAMP_TRIP_ID = 'trip-den-campout';
+  // True for text still carrying an unverified-rule marker. Local regex, so the harness can slice it.
+  function campHeld(text) { return /\[verify with council/i.test(String(text == null ? '' : text)); }
+  function seedDenCampTrip() {
+    var den = freshTrip('Den campout \u2014 Webelos & Arrow of Light');
+    den.id = DEN_CAMP_TRIP_ID;
+    den.intro = 'A den overnighter for our Webelos and Arrow of Light Scouts \u2014 one den, its leader and its families, ' +
+      'rather than the whole pack. The den leader plans it; the where and the when go at the top of this page once the site is booked.';
+    den.sections = [
+      freshTripSection('Who this campout is for',
+        'Den-level overnight camping is for Webelos and Arrow of Light dens only. Lions, Tigers, Wolves and Bears camp with the whole pack, or at the council family weekends, not as a den.\n' +
+        '\n' +
+        'Every Scout comes with their own parent or guardian, and camps with them.'),
+      freshTripSection('Leaders and training',
+        '- BALOO is not required for a den campout; BALOO is the training for a pack overnighter.\n' +
+        '- A trained leader is required, as the Guide to Safe Scouting sets out. [verify with council: which course the den leader in charge needs]\n' +
+        '- Two registered adult leaders, both 21 or older and with current Safeguarding Youth Training, are present at all times. When girls attend, a registered female adult 21 or older is there too.\n' +
+        '- At least one adult holds current Hazardous Weather training. [verify with council]'),
+      freshTripSection('Before you go',
+        '- The den leader tells the Cubmaster the dates and the site before anything is booked, so it goes on the pack calendar.\n' +
+        '- The site is a council-designated location, or has passed a site appraisal. [verify with council]\n' +
+        '- Any tour or activity paperwork the council asks for is filed before the trip. [verify with council]\n' +
+        '- Fill in the Annual Health and Medical Record, parts A and B, for every person coming. Under 72 hours it is parts A and B only, no doctor\u2019s signature.\n' +
+        '- Put the tent up in the yard first.'),
+      freshTripSection('What to bring',
+        'The Cub Scout Six Essentials live in your Scout\u2019s own daypack and stay with them all weekend: first-aid kit, water bottle, flashlight, trail food, sun protection, whistle.\n' +
+        '\n' +
+        'Per person\n' +
+        '- Sleeping bag, and a sleeping pad or cot\n' +
+        '- Pillow\n' +
+        '- A change of clothes for each day plus one extra set, and a second pair of shoes\n' +
+        '- Rain jacket\n' +
+        '- Field uniform for the flag ceremony and the campfire\n' +
+        '- Headlamp or flashlight, and spare batteries\n' +
+        '- Towel and toiletries\n' +
+        '- Your Scout\u2019s handbook, for the Adventure sign-offs\n' +
+        '\n' +
+        'Per family\n' +
+        '- Tent, and a ground tarp cut smaller than the tent floor\n' +
+        '- Camp chairs\n' +
+        '- Cooler with ice\n' +
+        '- Cooking kit, unless the den is cooking together\n' +
+        '- Family first-aid kit and any medication, in its original labelled container\n' +
+        '- Sunscreen and insect repellent\n' +
+        '\n' +
+        'Leave at home: pets, alcohol, fireworks and sheath knives.'),
+      freshTripSection('Fire, knives and who does what', CAMP_AGES),
+      freshTripSection('Sleeping arrangements',
+        'Parents, guardians and siblings share a tent as a family. No adult shares a tent with a youth who is not their own child. Youth who share a tent are the same gender and within two years of age.'),
+      freshTripSection('If something goes wrong', CAMP_EMERGENCY)
+    ];
+    return den;
+  }
+  function campTemplates() { return [seedDenCampTrip()]; }
   function campingTrips() {
     var c = state.camping;
     return (c && Array.isArray(c.trips)) ? c.trips : [];
@@ -9231,7 +9301,8 @@
   //   windows, meetings with time and where, activities with time, place and dens); the
   //   derby's name and date; camping trips as leaders typed them, including each trip's
   //   cost line, in date order, with each trip's ISO startDate, endDate and registrationDeadline
-  //   (Wave C1); `welcome` — the "New to the pack" page's sections (title, body, url) as leaders
+  //   (Wave C1), leaving out any section that still says "[verify with council" and the den
+  //   campout template until it has a date (Wave C4); `welcome` — the "New to the pack" page's sections (title, body, url) as leaders
   //   typed them, once the page is switched on and leaving out any section that is hidden or
   //   still says "[pack to fill in"; and `familyCost` — what the year is PLANNED to cost one scout and adult in
   //   each den, line by line with its payee, and what each tier (by name and sales target)
@@ -9420,7 +9491,10 @@
       // key added to a trip in some later wave cannot ride along unnoticed. A trip with no
       // name and nothing written on it is skipped: a half-made tab is not news for a parent.
       // Wave C1 — in date order (sortTripsByDate), and each trip's three ISO dates, re-checked.
-      var camping = sortTripsByDate(campingTrips(), todayISO()).map(function (t) {
+      // Wave C4 — the den campout template is held back until it has a date (a When line or a first day).
+      var camping = sortTripsByDate(campingTrips(), todayISO()).filter(function (t) {
+        return t.id !== DEN_CAMP_TRIP_ID || !!tripStartDate(t) || !!String(t.when || '').trim();
+      }).map(function (t) {
         return {
           name: String(t.name || ''), where: String(t.where || ''), address: String(t.address || ''),
           when: String(t.when || ''), arrive: String(t.arrive || ''), depart: String(t.depart || ''),
@@ -9429,7 +9503,8 @@
           registrationDeadline: campIsoOrBlank(t.registrationDeadline),
           sections: (t.sections || []).map(function (s) {
             return { title: String(s.title || ''), body: String(s.body || '') };
-          }).filter(function (s) { return s.title || s.body; })
+          // Wave C4 — a section still marked "[verify with council" stays with the leaders.
+          }).filter(function (s) { return (s.title || s.body) && !campHeld(s.title + '\n' + s.body); })
         };
       }).filter(function (t) {
         return t.name || t.where || t.when || t.intro || t.sections.length;
@@ -10800,8 +10875,10 @@
   // Reads the published trip it is handed and nothing else.
   function renderParentPackList(t, sec) {
     var pl = packingList(sec.body);
+    // A heading that only names the side ("Per person", "Each family") is the column title already.
+    var SIDE_ONLY = /^(per|each|every|for each)\s+(person|people|camper|scout|family)$/i;
     function group(g) {
-      return (g.title ? '<p class="pk-head">' + esc(g.title) + '</p>' : '') +
+      return (g.title && !(pl.split && SIDE_ONLY.test(g.title)) ? '<p class="pk-head">' + esc(g.title) + '</p>' : '') +
         '<ul class="pk-list">' + g.items.map(function (it) {
           return '<li><label><input type="checkbox"> <span>' + esc(it) + '</span></label></li>';
         }).join('') + '</ul>';
@@ -10815,7 +10892,7 @@
       '<button type="button" class="btn" data-act="parent-pack-list" data-section="-1">&larr; Back to the campout</button>' +
       '<button type="button" class="btn primary" data-act="parent-print">Print / Save PDF</button></div></div>' +
       '<div class="card pk-sheet"><h2 class="section display" style="margin-bottom:2px">Packing list \u2014 ' + esc(String(t.name || 'Campout')) + '</h2>' +
-      (t.when ? '<p class="small muted" style="margin:0 0 8px">' + esc(String(t.when)) + '</p>' : '');
+      ((t.when || tripDatesLabel(t)) ? '<p class="small muted" style="margin:0 0 8px">' + esc(String(t.when || tripDatesLabel(t))) + '</p>' : '');
     if (pl.split) {
       h += '<div class="pk-cols">' +
         block('Per person', pl.groups.filter(function (g) { return g.who === 'person'; })) +
@@ -18639,7 +18716,8 @@
       return '<div class="card"><h2 class="section display">Camping</h2>' +
         '<p class="small muted" style="margin:0 0 10px">No campouts on file. Each one gets its own tab up there, ' +
         'with what to expect, how to prepare and what to bring — and parents see all of it.</p>' +
-        (edit ? '<button type="button" class="btn primary" data-act="camp-add-trip">Add a campout</button>'
+        (edit ? '<div class="row"><button type="button" class="btn primary" data-act="camp-add-trip">Add a campout</button>' +
+                '<button type="button" class="btn" data-act="camp-add-den">Den campout template (Webelos &amp; AoL)</button></div>'
               : '<p class="small muted" style="margin:0">A leader will add them here.</p>') +
         '</div>';
     }
@@ -18706,6 +18784,8 @@
         'section below, exactly as written. Nothing else about the pack goes with it: no budget, no ' +
         'dues, no roster, and not the readiness checklist above. Write it for the family reading it in the car park. ' +
         (t.name ? '' : 'An unnamed campout is not published at all, so give it a name when it is ready.') +
+        (t.id === DEN_CAMP_TRIP_ID && !tripStartDate(t) && !String(t.when || '').trim()
+          ? ' Families will not see this den campout until it has a date.' : '') +
         '</p></div>';
     }
 
@@ -18721,7 +18801,11 @@
           // rows is only the height before the grow pass runs, so a small number avoids a short
           // section briefly reserving eight rows of empty box on first paint.
           'rows="3" placeholder="What families need to know. Blank line for a new paragraph; start a line with - for a bullet." ' +
-          'aria-label="Section text">' + esc(s.body) + '</textarea>';
+          'aria-label="Section text">' + esc(s.body) + '</textarea>' +
+          // Wave C4 — said where it applies: this section is not reaching families yet.
+          (campHeld(s.title + '\n' + s.body)
+            ? '<p class="warn small" style="margin:6px 0 0">Held back from families: check the rule marked [verify with council] with the council, then take the marker out.</p>'
+            : '');
       } else {
         h += '<h2 class="section display">' + esc(s.title || 'Untitled section') + '</h2>' +
           '<div class="camp-body">' + proseText(s.body) + '</div>';
@@ -18733,6 +18817,7 @@
       h += '<div class="card"><div class="row">' +
         '<button type="button" class="btn" data-act="camp-add-sec:' + esc(t.id) + '">+ Add a section</button>' +
         '<button type="button" class="btn" data-act="camp-add-trip">+ Add a campout</button>' +
+        (getTrip(DEN_CAMP_TRIP_ID) ? '' : '<button type="button" class="btn" data-act="camp-add-den">+ Den campout template (Webelos &amp; AoL)</button>') +
         '<span style="flex:1 1 auto"></span>' +
         dangerBtn('camp-del-trip:' + t.id, 'Delete this campout') +
         '</div>' +
@@ -22891,6 +22976,16 @@
     // ----- Camping. Every one of these edits the pack record, so they all sit behind
     // canEdit(): a viewer-role leader never sees the buttons, but the action handler is
     // reachable from a stale DOM after a role change and must not take their word for it.
+    // Wave C4 — add the den campout template, once. A second tap goes to the one already there.
+    if (act === 'camp-add-den') {
+      if (!canEdit()) return;
+      if (!getTrip(DEN_CAMP_TRIP_ID)) {
+        state.camping.trips.push(seedDenCampTrip());
+        commit();
+      }
+      gotoNav('camping', DEN_CAMP_TRIP_ID, false);
+      return;
+    }
     if (act === 'camp-add-trip') {
       if (!canEdit()) return;
       var ntTrip = freshTrip('');
