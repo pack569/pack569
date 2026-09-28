@@ -3883,6 +3883,7 @@
     sfDraft: { name: '', dates: [] }, // Wave 11 — transient new-storefront draft (name + queued dates); NOT persisted
     archiveOpen: {},    // Wave 13 — { archiveId: true } expanded Past Seasons summaries (not persisted)
     repeatOffer: null,  // Wave 19(22) — meeting id showing the one-time "Repeat weekly" mini-form (not persisted)
+    planAdv: null,      // Wave A — { den, name } the den planner's open "plan a meeting" form ('' name = an elective)
     agendaOpen: {},     // Wave 20 — { eventKey: true } expanded month-agenda rows (not persisted)
     // Phase 0 — Money · Ledger. All transient, like the rest of `ui`.
     ledgerView: 'entries',   // 'entries' | 'reconcile'
@@ -7058,6 +7059,135 @@
     });
     return h + '</div>';
   }
+  /* ----- Den year planner (Wave A, 2026-09-28) -------------------------------------------
+     The Cubmaster's ask: for each den, the rank's required adventures against the den
+     meetings actually planned for them, so a gap shows in September rather than in May.
+
+     NO NEW STORED DATA. "Planned" means a den meeting in this program year names the
+     adventure — i.e. there is a run for it (adventureRuns). A meeting held and a meeting
+     still to come both count; the planner is about whether the year covers the rank, and
+     Advancement already says who has been to what.
+
+     An "All dens" meeting is a session for every den (meetingRoster reads it the same way),
+     so it counts here too — but only for names on THIS den's list, or an All-dens Council
+     Fire would show up as a Bear elective. A den's own custom adventure counts as an elective,
+     which is how advKindFor files it on the Advancement grid. */
+  function denPlan(den, runs) {
+    var adv = ADVENTURES[den] || { required: [], electives: [] };
+    var mine = (runs || []).filter(function (r) {
+      if (r.den === den) return true;
+      return !r.den && (adv.required.indexOf(r.adventure) !== -1 || adv.electives.indexOf(r.adventure) !== -1);
+    });
+    function sessionsOf(list) {
+      var all = [];
+      list.forEach(function (r) { all = all.concat(r.sessions); });
+      return all.sort(function (a, b) { return String(a.date).localeCompare(String(b.date)); });
+    }
+    var required = adv.required.map(function (nm) {
+      var rs = mine.filter(function (r) { return r.adventure === nm; });
+      return { name: nm, sessions: sessionsOf(rs), allDens: rs.length > 0 && rs.every(function (r) { return !r.den; }) };
+    });
+    var byName = {}, electives = [];
+    mine.forEach(function (r) {
+      if (adv.required.indexOf(r.adventure) !== -1) return;
+      var k = r.adventure.toLowerCase();
+      if (!byName[k]) { byName[k] = { name: r.adventure, runs: [] }; electives.push(byName[k]); }
+      byName[k].runs.push(r);
+    });
+    electives = electives.map(function (e) { return { name: e.name, sessions: sessionsOf(e.runs) }; });
+    return {
+      den: den, required: required, electives: electives,
+      unplanned: required.filter(function (r) { return !r.sessions.length; }),
+      electivesPlanned: electives.length, electivesNeeded: 2
+    };
+  }
+  // Where the planner's "plan a meeting" form starts: two weeks after this den's last meeting
+  // (dens usually meet twice a month — DESIGN-adventures.md §6), or today if the den has
+  // nothing on the calendar from today on. Only a starting value — the form shows the date.
+  function denPlanDefaultDate(den, events, today) {
+    var last = '';
+    (events || []).forEach(function (e) {
+      if (e.kind === 'den' && (e.den || '') === den && e.date && e.date >= today && e.date > last) last = e.date;
+    });
+    if (!last) return today;
+    var p = last.split('-');
+    var d = new Date(+p[0], +p[1] - 1, +p[2] + 14);
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+  // "Sep 1 · Sep 15 · Oct 6", marking the ones already held.
+  function denPlanDates(sessions, today) {
+    return sessions.map(function (ev) { return fmtDateShort(ev.date) + (ev.date < today ? ' ✓' : ''); }).join(' · ');
+  }
+  function denPlanForm(den, name, today) {
+    var py = state.budget.programYear;
+    var idx = DENS.indexOf(den);
+    var adv = ADVENTURES[den] || { electives: [] };
+    return '<form data-form="plan-adv" data-den="' + esc(den) + '" class="row no-print" style="margin:6px 0 8px;gap:6px;align-items:flex-end">' +
+      (name
+        ? '<input type="hidden" name="name" value="' + esc(name) + '">'
+        : '<label class="fld">Elective<input name="name" list="planElect-' + idx + '" required placeholder="Pick or type one" style="min-width:180px"></label>' +
+          '<datalist id="planElect-' + idx + '">' + adv.electives.map(function (n) { return '<option value="' + esc(n) + '">'; }).join('') + '</datalist>') +
+      '<label class="fld">Den meeting on<input type="date" name="date" required value="' + esc(denPlanDefaultDate(den, state.events, today)) +
+        '" min="' + programYearStartISO(py) + '" max="' + programYearEndISO(py) + '"></label>' +
+      '<button class="btn small primary" type="submit">Add den meeting</button>' +
+      '<button type="button" class="btn small ghost" data-act="plan-adv-cancel">Cancel</button></form>';
+  }
+  function renderDenPlanner() {
+    var today = todayISO();
+    var runs = adventureRuns();
+    var py = state.budget.programYear;
+    var edit = canEdit();
+    var h = '<div class="card"><h2 class="section display">Den year plans</h2>' +
+      '<p class="small muted" style="margin:0">Each den’s required adventures against the den meetings tagged with them in the ' +
+      py + '–' + (py + 1) + ' program year. A rank is the six required ' +
+      'adventures and at least two electives. A meeting counts once it names the adventure' +
+      (edit ? ' — tap one that has no meeting to add one, already tagged' : '') + '. ✓ marks a meeting already held.</p></div>';
+    // Dens with scouts or with anything planned; with neither anywhere, every den, so a new pack
+    // can plan before the roster is in. A den leader's own dens first — order only, never a filter.
+    var mineFirst = myDens();
+    var dens = DENS.filter(function (dn) {
+      return ADVENTURES[dn] && (activeScouts().some(function (s) { return s.den === dn; }) ||
+        runs.some(function (r) { return r.den === dn; }));
+    });
+    if (!dens.length) dens = DENS.filter(function (dn) { return ADVENTURES[dn]; });
+    dens.sort(function (a, b) {
+      return (mineFirst.indexOf(b) !== -1) - (mineFirst.indexOf(a) !== -1) || DENS.indexOf(a) - DENS.indexOf(b);
+    });
+    dens.forEach(function (den) {
+      var plan = denPlan(den, runs);
+      var done = plan.required.length - plan.unplanned.length;
+      h += '<div class="card"><h2 class="section display">' + esc(den) +
+        ' <span class="pill ' + (plan.unplanned.length ? 'navy' : 'good') + '">' + done + ' of ' + plan.required.length + ' required planned</span></h2>';
+      plan.required.forEach(function (rq) {
+        var open = ui.planAdv && ui.planAdv.den === den && ui.planAdv.name === rq.name;
+        if (rq.sessions.length) {
+          h += '<div class="assign-row"><span class="assign-name">✓ ' + esc(rq.name) + '</span>' +
+            '<span class="small muted">' + rq.sessions.length + (rq.sessions.length === 1 ? ' meeting' : ' meetings') +
+            (rq.allDens ? ' (all dens)' : '') + ' · ' + esc(denPlanDates(rq.sessions, today)) + '</span></div>';
+        } else {
+          h += '<div class="assign-row"><span class="assign-name">' + esc(rq.name) + ' <span class="pill navy">no meeting planned</span></span>' +
+            (edit && !open ? '<button type="button" class="btn small" data-act="plan-adv" data-den="' + esc(den) + '" data-name="' + esc(rq.name) +
+              '" aria-label="' + esc('Plan a ' + den + ' den meeting for ' + rq.name) + '">Plan a meeting</button>' : '') + '</div>';
+          if (open) h += denPlanForm(den, rq.name, today);
+        }
+      });
+      var n = plan.electivesPlanned;
+      h += '<p class="eyebrow" style="margin:12px 0 4px">Electives</p>' +
+        '<div class="assign-row"><span class="assign-name">' +
+        (n > plan.electivesNeeded ? n + ' electives planned (2 needed)' : n + ' of 2 electives planned') +
+        (n >= plan.electivesNeeded ? ' ✓' : '') + '</span>' +
+        (edit && !(ui.planAdv && ui.planAdv.den === den && !ui.planAdv.name)
+          ? '<button type="button" class="btn small ghost" data-act="plan-adv" data-den="' + esc(den) + '" data-name="">Plan an elective</button>' : '') +
+        '</div>';
+      if (ui.planAdv && ui.planAdv.den === den && !ui.planAdv.name) h += denPlanForm(den, '', today);
+      plan.electives.forEach(function (el) {
+        h += '<div class="assign-row"><span class="assign-name">' + esc(el.name) + '</span>' +
+          '<span class="small muted">' + esc(denPlanDates(el.sessions, today)) + '</span></div>';
+      });
+      h += '</div>';
+    });
+    return h;
+  }
   function renderAdvancement() {
     var h = '<div class="card"><div class="spread">' +
       '<h2 class="section display" style="margin-bottom:0">Advancement</h2>' +
@@ -9519,6 +9649,7 @@
     ] },
     { id: 'program', label: 'Program', sections: [
       { id: 'calendar', label: 'Calendar' },
+      { id: 'denplan', label: 'Den plans' },   // Wave A — the den year planner
       { id: 'derby', label: 'Derby' }
     ] },
     // The only workspace whose sections are DATA rather than a literal: one sub-tab per
@@ -9830,6 +9961,7 @@
     else if (sec === 'people') v.innerHTML = renderPackPeople();
     else if (sec === 'season') v.innerHTML = renderPackSeason();
     else if (sec === 'derby') v.innerHTML = renderDerby();
+    else if (sec === 'denplan') v.innerHTML = renderDenPlanner();
     else v.innerHTML = renderTotals();
     // Persistent read-only banner for a signed-in viewer (roles in force). Parents/pending
     // users are on the parent app instead, which carries its own notices.
@@ -21931,6 +22063,9 @@
       commit(); return;
     }
     if (act === 'mtg-repeat-dismiss') { ui.repeatOffer = null; render(); return; } // Wave 19(22)
+    // Wave A — the den planner's inline "plan a meeting" form. Opening it writes nothing.
+    if (act === 'plan-adv') { ui.planAdv = { den: el.dataset.den || '', name: el.dataset.name || '' }; render(); return; }
+    if (act === 'plan-adv-cancel') { ui.planAdv = null; render(); return; }
     // Phase 2 — one delete for every calendar row, meeting or activity.
     //
     // It removes the EVENT and its RSVP/attendance, and deliberately leaves any budget line
@@ -23167,6 +23302,30 @@
       if (dNote) dist.note = dNote;
       state.inventory.distributions.push(dist);
       commit(); return;
+    }
+    // Wave A — a den meeting from the den planner, already tagged with the adventure. Lands on
+    // the calendar day with the Repeat offer open, so a three-meeting adventure is one more tap
+    // (Repeat, every other week, same adventure).
+    if (kind === 'plan-adv') {
+      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      var paDen = f.dataset.den || '';
+      var paName = advCanonicalName(paDen, fd.get('name'));
+      var paDate = String(fd.get('date') || '');
+      if (!paName || !/^\d{4}-\d{2}-\d{2}$/.test(paDate) || DENS.indexOf(paDen) === -1) return;
+      var paLast = state.events.filter(function (e) { return e.kind === 'den' && e.den === paDen && e.time; })
+        .sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); })[0];
+      var paMtg = freshEvent({ kind: 'den', den: paDen, date: paDate, slot: dateToSlot(paDate),
+        time: paLast ? paLast.time : '19:00', adventure: paName });
+      state.events.push(paMtg);
+      ui.planAdv = null;
+      ui.repeatOffer = paMtg.id;
+      commit();
+      showToast(paDen + ' den meeting added for ' + paName + ' — ' + fmtDate(paDate));
+      ui.calMonth = monthKey(paDate);
+      ui.calSelectedDate = paDate;
+      ui.scrollToId = 'dayDetail';
+      gotoNav('program', 'calendar', false);
+      return;
     }
     if (kind === 'mtg-repeat') {
       // Wave 19(22) — bulk-create N more meetings on subsequent same-weekday dates.

@@ -10562,6 +10562,70 @@ test('A3: the message is copy-only — first names, nothing stored, nothing publ
   ok(/makeupMsgBtn\(run, row\)/.test(slice('renderAdventureRunsCard')), 'no button on the Advancement make-up list');
 });
 
+// A1 — the den year planner.
+function planSandbox(events) {
+  const ctx = runSandbox(RUN_SETUP.replace(/var EVENTS = \[[\s\S]*?\n  \];/, `var EVENTS = ${JSON.stringify(events)};`));
+  vm.runInContext(`${slice('denPlan')}\n${slice('denPlanDefaultDate')}`, ctx);
+  return ctx;
+}
+const PLAN_EVENTS = [
+  { id: 'w1', kind: 'den', den: 'Wolf', date: '2026-09-01', adventure: 'Bobcat' },
+  { id: 'w2', kind: 'den', den: 'Wolf', date: '2026-09-15', adventure: 'Bobcat' },
+  { id: 'w3', kind: 'den', den: 'Wolf', date: '2026-10-06', adventure: 'council fire' },   // typed lower-case
+  { id: 'w4', kind: 'den', den: 'Wolf', date: '2026-10-20', adventure: 'Germs Alive!' },   // elective
+  { id: 'w5', kind: 'den', den: 'Wolf', date: '2026-11-03', adventure: 'Knot night' },     // custom = elective
+  { id: 'a1', kind: 'den', den: '', date: '2026-11-17', adventure: 'Safety in Numbers' },  // all dens, Wolf required
+  { id: 'a2', kind: 'den', den: '', date: '2026-12-01', adventure: 'Bear Strong' },        // all dens, not a Wolf one
+  { id: 'b1', kind: 'den', den: 'Bear', date: '2026-09-02', adventure: 'Footsteps' },      // another den's meeting
+  { id: 'old', kind: 'den', den: 'Wolf', date: '2025-09-01', adventure: 'Footsteps' },     // last program year
+  { id: 'p1', kind: 'pack', den: '', date: '2026-09-22', adventure: '' }
+];
+
+test('A1: the den planner shows which required adventures have a meeting this program year', () => {
+  const ctx = planSandbox(PLAN_EVENTS);
+  const plan = vm.runInContext("denPlan('Wolf', adventureRuns())", ctx);
+  const req = Object.fromEntries(plan.required.map((r) => [r.name, r.sessions.map((s) => s.id)]));
+  eq(req.Bobcat, ['w1', 'w2'], 'Bobcat’s two meetings');
+  eq(req['Council Fire'], ['w3'], 'a lower-case tag is not the official adventure');
+  eq(req['Safety in Numbers'], ['a1'], 'an All-dens meeting does not count for the den');
+  eq(req.Footsteps, [], 'last year’s meeting, or the Bear den’s, counted for this year’s Wolves');
+  eq(plan.unplanned.map((r) => r.name), ['Footsteps', 'Paws on the Path', 'Running with the Pack'], 'the gaps');
+  ok(plan.required.find((r) => r.name === 'Safety in Numbers').allDens, 'the All-dens meeting is not marked as one');
+});
+
+test('A1: electives planned are counted against the two a rank needs', () => {
+  const ctx = planSandbox(PLAN_EVENTS);
+  const plan = vm.runInContext("denPlan('Wolf', adventureRuns())", ctx);
+  eq(plan.electives.map((e) => e.name), ['Germs Alive!', 'Knot night'], 'electives: an official one and a custom one');
+  eq([plan.electivesPlanned, plan.electivesNeeded], [2, 2], 'N of 2');
+  // An All-dens meeting on another rank's adventure is not a Wolf elective.
+  ok(!plan.electives.some((e) => e.name === 'Bear Strong'), 'an All-dens Bear adventure became a Wolf elective');
+  const bear = vm.runInContext("denPlan('Bear', adventureRuns())", ctx);
+  eq(bear.required.find((r) => r.name === 'Bear Strong').sessions.map((s) => s.id), ['a2'], 'the All-dens Bear meeting');
+  eq(bear.electives.map((e) => e.name), ['Footsteps'], 'a Bear meeting on a Wolf adventure is the Bear den’s own custom elective');
+});
+
+test('A1: the planner form starts two weeks after the den’s last meeting, or today', () => {
+  const ctx = planSandbox(PLAN_EVENTS);
+  eq(vm.runInContext("denPlanDefaultDate('Wolf', EVENTS, '2026-09-28')", ctx), '2026-11-17', 'after Nov 3');
+  eq(vm.runInContext("denPlanDefaultDate('Lion', EVENTS, '2026-09-28')", ctx), '2026-09-28', 'a den with nothing ahead');
+  eq(vm.runInContext("denPlanDefaultDate('Wolf', EVENTS, '2026-12-01')", ctx), '2026-12-01', 'only meetings from today on');
+});
+
+test('A1: the planner is a Program section, writes only through a tagged den meeting, and never publishes', () => {
+  const prog = nav.WORKSPACES.find((w) => w.id === 'program');
+  ok(prog.sections.some((s) => s.id === 'denplan'), 'no Den plans section in Program');
+  ok(/sec === 'denplan'\) v\.innerHTML = renderDenPlanner\(\)/.test(SCRIPT), 'the section is not dispatched');
+  const h = /if \(kind === 'plan-adv'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/if \(!canEdit\(\)\)/.test(h), 'a viewer can add a meeting from the planner');
+  ok(/freshEvent\(\{ kind: 'den', den: paDen, date: paDate[\s\S]*adventure: paName \}\)/.test(h), 'the meeting is not pre-tagged');
+  ok(/advCanonicalName\(paDen, fd\.get\('name'\)\)/.test(h), 'the typed elective is not canonicalised');
+  // Buttons that edit are offered only to editors — a job never decides it.
+  const r = slice('renderDenPlanner');
+  ok(/var edit = canEdit\(\);/.test(r) && !/hasJob\(/.test(r), 'the planner gates on something other than the role');
+  ok(!/denPlan|renderDenPlanner/.test(BPV()), 'the den planner reached the parent view');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
