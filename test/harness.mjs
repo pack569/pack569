@@ -707,7 +707,7 @@ test('the legacy dues lump switches off once coverage is configured', () => {
 test('coverage is derived, never written into state.collected', () => {
   // The collect grids stay a record of what FAMILIES paid. Mixing the two is what would
   // let the same dues be counted as both a pack cost and family income.
-  const fn = /function packCoverage\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  const fn = /function packCoverage\(\w*\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'packCoverage() not found');
   ok(!/state\.collected/.test(fn[0]), 'packCoverage writes or reads state.collected');
 });
@@ -1527,7 +1527,7 @@ test('rows are ordered by what a scout has brought in, exactly as the family boa
   eq(tied.map((r) => r.scout.name), ['Al', 'Bo'], 'equal totals do not fall back to the name');
   // Unfiltered by any tier deadline — it is what they have brought in, not what counted toward
   // a rung that closed in November.
-  const fn = /function tierProgressRows\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  const fn = /function tierProgressRows\(\w*\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(/combined: \(totalsFor\(''\)\[s\.id\] \|\| \{\}\)\.combined/.test(fn[0]),
     'the sort figure is measured against a deadline');
 });
@@ -1537,7 +1537,7 @@ test('the tier-progress rows never recompute what "earned" means', () => {
   // deadline report, "so those four can never disagree about who earned what". This is the fifth
   // reader. A private threshold comparison here would let this card promise a tier the budget
   // does not waive fees for.
-  const fn = /function tierProgressRows\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  const fn = /function tierProgressRows\(\w*\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'tierProgressRows() not found');
   ok(/tierEarnedMap\(\)/.test(fn[0]), 'it no longer reads the shared earned map');
   ok(/earnedTierFor\(/.test(fn[0]), 'it no longer uses the shared "highest tier reached" helper');
@@ -1576,7 +1576,7 @@ test('the amount on the button is the amount written to the ledger', () => {
   // Two code paths compute it — the card, and the handler recomputing from tierShortfallRows on
   // click. If they ever disagree the button becomes a lie about a real payment, so both must be
   // the same expression over the same inputs.
-  const prog = /function tierProgressRows\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  const prog = /function tierProgressRows\(\w*\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   const shortfall = /function tierShortfallRows\(t, map\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/makeup: next \? Math\.min\(short, cover\) : 0/.test(prog), 'the card no longer caps at the fee');
   ok(/makeup: Math\.min\(short, cover\)/.test(shortfall), 'the handler path no longer caps at the fee');
@@ -1637,7 +1637,7 @@ test('a bought tier says so on the board, and can be taken back there', () => {
   ok(/tinyDangerBtn\('tier-unmakeup:' \+ r\.earned\.id \+ ':' \+ r\.scout\.id/.test(card),
     'there is no way back from the board the credit shows on');
   // …and it comes off the shared map, not off a second calculation of its own.
-  const rows = /function tierProgressRows\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  const rows = /function tierProgressRows\(\w*\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/earnedBy: earned \? \(\(map\[earned\.id\] \|\| \{\}\)\[s\.id\] \|\| ''\) : '',/.test(rows),
     'the row works out how a tier was credited on its own instead of reading the shared map');
   // The explanation has to outlive the offer: gated on `makeup` alone the paragraph vanished the
@@ -4383,7 +4383,8 @@ test('the deadline drives coverage, waivers, badges and the counts from ONE map'
     ok(fn, f + '() not found');
     ok(/tierEarnedMap\(\)/.test(fn[0]), f + ' works out who earned a tier on its own');
   });
-  ok(/var et = earnedTierFor\(r\.id, tiers, tierEarnedMap\(\)\);/.test(SCRIPT),
+  // A caller may hand it the sales-only VIEW of the same map (salesOnlyTierMap), never its own.
+  ok(/var et = earnedTierFor\(r\.id, tiers, map \|\| tierEarnedMap\(\)\);/.test(SCRIPT),
     'the standings badge still uses live sales, so it would show a tier somebody missed');
   ok(/function earnedTierFor\(scoutId, tiers, map\)/.test(SCRIPT), 'earnedTierFor() not found');
 });
@@ -6524,7 +6525,7 @@ test('the family bar runs to the planned tier, the same one the leaders’ card 
   ok(!/Math\.round\(p\.base \/ p\.need \* 100\)/.test(src),
     'the old next-rung ratio is still being published alongside it');
   // Clamping and the top-of-ladder case moved with it, onto tierProgressRows.anchorPct.
-  const rows = /function tierProgressRows\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  const rows = /function tierProgressRows\(\w*\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/Math\.max\(0, Math\.min\(100, Math\.round\(base \/ anchor\.thresholdCents \* 100\)\)\)/.test(rows),
     'the percentage is not clamped to 0-100');
   ok(/anchor && anchor\.thresholdCents > 0/.test(rows),
@@ -6735,10 +6736,10 @@ test('the published standings carry the tier progress, from the shared tier map'
   const src = codeOnly(BPV());
   // One call, two readers: the per-scout map below and the pack-wide ladder legend. tierProgressRows
   // walks every storefront and every entry, so calling it twice per publish is not free.
-  ok(/var progRows = tierProgressRows\(\);/.test(src) &&
+  ok(/var progRows = tierProgressRows\(true\);/.test(src) &&
      /progRows\.forEach\(function \(p\) \{ progById\[p\.scout\.id\] = p; \}\)/.test(src),
     'per-scout tier progress is not taken from tierProgressRows');
-  ok((src.match(/tierProgressRows\(\)/g) || []).length === 1,
+  ok((src.match(/tierProgressRows\(/g) || []).length === 1,
     'the publish walks every scout’s totals more than once');
   // Sales, never the commission shortfall — the same rule the ladder follows.
   ok(/nextSalesCents: \(p && p\.next && typeof p\.shortSales === 'number'\) \? p\.shortSales : null/.test(src),
@@ -7284,9 +7285,9 @@ test('the shared sheet says which tier each scout reached, and what the pack end
   const sheet = /if \(o\.kind === 'summary'\) \{[\s\S]*?\n      return h;/.exec(SCRIPT)[0];
   // The reward ladder is the pack's main lever and the shared standings sheet never mentioned it,
   // while the board it is printed from shows a badge per scout.
-  ok(/tierBadgesFor\(r, sumTiers, sumCovered\)/.test(sheet),
+  ok(/tierBadgesFor\(r, sumTiers, sumCovered, sumMap\)/.test(sheet),
     'the sheet builds its own idea of who earned what, or shows none at all');
-  ok(/var sumTiers = sortedTiers\(\);/.test(sheet) && /var sumCovered = packCoverageByScout\(\);/.test(sheet),
+  ok(/var sumTiers = sortedTiers\(\);/.test(sheet) && /var sumCovered = packCoverageByScout\(sumMap\);/.test(sheet),
     'the badges are not taken from the same two calls the Standings card makes');
   // A pack with no tiers gets no empty column.
   ok(/sumTiers\.length \? '<th scope="col">Tier<\/th>' : ''/.test(sheet),
@@ -9300,7 +9301,7 @@ test('P4: a tier prices a den-limited fee only for the dens it is for', () => {
   eq(ctx.privateBenefitCheck().back, 26000, 'privateBenefitCheck overstates what goes back');
   const src = /function tierShortfallRows\(t, map\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/tierCoverCentsPerScout\(t, s\)/.test(src), 'the make-up cap is not per scout');
-  const tpr = /function tierProgressRows\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  const tpr = /function tierProgressRows\(\w*\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/coverOf\(next, s\)/.test(tpr) && /coverValueOfKeys\(addedKeys, s\)/.test(tpr), 'the progress row is not per scout');
 });
 
@@ -9794,6 +9795,41 @@ test('S1: with amounts off, a scout’s bar cannot be multiplied back into what 
   ok(/rounded down to the nearest 10%/.test(card), 'the join card does not say the bar is rounded');
   ok(/Families will see each level\\u2019s sales target but not their own scout\\u2019s ' \+\s*'remaining gap\./.test(card),
     'the join card does not say the level targets still show');
+});
+
+test('S3: a rung a family paid for never shows on the published board or the shared standings', () => {
+  // Bronze by selling, Silver by a make-up payment. Leaders see Silver; everybody else sees Bronze,
+  // and the rung after it is Silver — not Gold, which would give the skipped rung away.
+  const planned = TP_TIERS[1];
+  const MAP = { b: { a: 'earned' }, s: { a: 'madeUp' } };
+  const leader = tp({ tiers: TP_TIERS, scouts: TP_ONE, map: MAP, comm: 9000, keyValue: TP_KEYS, planned })[0];
+  eq(leader.earned.name, 'Silver', 'the leaders’ card lost the paid-for rung');
+  eq(leader.earnedBy, 'madeUp', 'the leaders’ card no longer says how the rung was credited');
+  Object.assign(tpCtx, { TIERS: TP_TIERS, MAP, SCOUTS: TP_ONE, COMM: 9000, KEY_VALUE: TP_KEYS, PLANNED: planned });
+  vm.runInContext(slice('salesOnlyTierMap'), tpCtx);
+  const pub = tpCtx.tierProgressRows(true)[0];
+  ok(pub.earned.name !== 'Silver', 'the published row names the rung the family paid for');
+  eq(pub.earned.name, 'Bronze', 'the published row does not carry the rung actually sold to');
+  eq(pub.next.name, 'Silver', 'the published next rung skips the paid-for one, which gives it away');
+  eq(pub.earnedBy, 'earned', 'the published row carries a made-up mark');
+  // A scout with nothing sold holds nothing on the board.
+  Object.assign(tpCtx, { MAP: { s: { a: 'madeUp' } }, COMM: 1000 });
+  const none = tpCtx.tierProgressRows(true)[0];
+  eq(none.earned, null, 'a scout who only paid is shown holding a tier');
+  // The published board takes that view, and so do both halves of the shared standings.
+  ok(/var progRows = tierProgressRows\(true\);/.test(codeOnly(BPV())), 'the parent view reads the full map');
+  ok(/tier: \(p && p\.earned\) \? String\(p\.earned\.name/.test(codeOnly(BPV())), 'the published tier is not the row’s own');
+  ok(/var txEarned = txTiers\.length \? salesOnlyTierMap\(tierEarnedMap\(\)\) : \{\};/.test(slice('summaryText')),
+    'the copied standings name a paid-for rung');
+  const sheet = /if \(o\.kind === 'summary'\) \{[\s\S]*?\n      return h;/.exec(SCRIPT)[0];
+  ok(/var sumMap = sumTiers\.length \? salesOnlyTierMap\(tierEarnedMap\(\)\) : \{\};/.test(sheet) &&
+     /packCoverageByScout\(sumMap\)/.test(sheet), 'the printed standings name a paid-for rung, or price it');
+  // The helper keeps only sold marks.
+  const ctx = sandbox(['salesOnlyTierMap']);
+  eq(JSON.parse(JSON.stringify(ctx.salesOnlyTierMap({ b: { a: 'earned', c: 'madeUp' }, s: { a: 'madeUp' } }))),
+    { b: { a: 'earned' }, s: {} }, 'salesOnlyTierMap');
+  const SETUP = readFileSync(join(ROOT, 'SETUP.md'), 'utf8');
+  ok(/\*\*never\*\* contains:[^]*?who\s+paid their way up a reward tier/.test(SETUP), 'SETUP.md dropped the promise this keeps');
 });
 
 /* ---------------- report ---------------- */
