@@ -10213,6 +10213,16 @@ test('N2: both family-cost cards say an adult partner who isn’t a parent is no
     'the leaders’ card does not list the adult partner');
 });
 
+test('S1: with no near-rung figure, the caption names the next rung before its reward', () => {
+  const ctx = sandbox(['esc', 'fmt', 'parentBar', 'parentTierProgress']);
+  const LADDER = { anchorName: 'Silver', planned: true, marks: [{ name: 'Bronze', pct: 33, plan: false }] };
+  const cal = ctx.parentTierProgress({ nextTier: 'Bronze', nextReward: 'Pack patch', nextPct: 10, nextMarkPct: 33 }, LADDER);
+  ok(/10% of the way to <strong>Silver<\/strong> · next: <strong>Bronze<\/strong> <span class="muted">— Pack patch<\/span>/.test(cal),
+    'Bronze’s reward is printed against Silver');
+  const straight = ctx.parentTierProgress({ nextTier: 'Silver', nextReward: 'Dues covered', nextPct: 80 }, LADDER);
+  ok(!/next:/.test(straight), 'a scout heading straight for the anchor is told the next rung twice');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

@@ -10513,6 +10513,10 @@
       '<p class="pv-prog-note">' +
       ((past && planName) ? '<strong>' + esc(planName) + '</strong> met · ' : '') +
       headPct + '% of the way to <strong>' + esc(headName) + '</strong>';
+    // A row with no near-rung figure — amounts off (S1, 2026-09-28), or a payload from before it —
+    // leads with the anchor. If the rung actually next is a different one, NAME it before its
+    // reward: "10% of the way to Silver — Pack patch" put Bronze's prize on Silver.
+    if (!split && anchorName && anchorName !== name) out += ' · next: <strong>' + esc(name) + '</strong>';
     // The prize in words, where there is room for it: the tier's NAME is a label, its reward is
     // the reason to knock on a door.
     if (r.nextReward) out += ' <span class="muted">— ' + esc(String(r.nextReward)) + '</span>';
