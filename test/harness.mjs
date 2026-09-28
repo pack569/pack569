@@ -14,11 +14,14 @@
 // Run:  node test/harness.mjs
 // Exit: 0 all green, 1 on any failure.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync, cpSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 import vm from 'node:vm';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
+import * as site from '../scripts/build-site.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const HTML = readFileSync(join(ROOT, 'index.html'), 'utf8');
@@ -12339,6 +12342,180 @@ test('Y2: photo permission is NEVER published, printed or exported', () => {
   const ctx = pvCtx('');
   vm.runInContext("state.scouts.forEach(function (s) { s.photoOk = true; });", ctx);
   ok(!/photoOk/.test(JSON.stringify(vm.runInContext('buildParentView(state, { showStandings: false })', ctx))), 'photoOk reached the parent view');
+});
+
+/* ================================================================
+   Cloudflare hosting (2026-09-28). The site is built by scripts/build-site.mjs and deployed
+   only by hand from .github/workflows/website.yml. What is served is an allowlist of two
+   files; a preview is device-only; the CSP carries the script's hash instead of
+   'unsafe-inline'. Builds go to a temp folder, never into the repo.
+   ================================================================ */
+
+const SITE_TMP = mkdtempSync(join(tmpdir(), 'pack569-site-'));
+process.on('exit', () => { try { rmSync(SITE_TMP, { recursive: true, force: true }); } catch (e) { /* best effort */ } });
+const siteDir = (target) => join(SITE_TMP, target);
+let siteBuilt = null;
+function siteBuild() {
+  if (!siteBuilt) {
+    siteBuilt = { preview: site.build({ target: 'preview', out: siteDir('preview') }),
+      production: site.build({ target: 'production', out: siteDir('production') }) };
+  }
+  return siteBuilt;
+}
+const siteFile = (target, f) => readFileSync(join(siteDir(target), f), 'utf8');
+// Hashed here, independently of the build script: the exact text between <script> and </script>.
+const scriptHash = (html) => createHash('sha256')
+  .update(html.slice(html.indexOf('<script>') + 8, html.indexOf('</script>')), 'utf8').digest('base64');
+const LIVE = site.liveConfig(HTML);
+const throwsBuild = (fn, what) => {
+  try { fn(); } catch (e) { if (e instanceof site.BuildError) return e.message; throw e; }
+  throw new Error(what);
+};
+
+test('the preview build is two files, cannot reach the live pack, allows no Google origin, and is noindex', () => {
+  siteBuild();
+  eq(readdirSync(siteDir('preview')).sort(), ['_headers', 'index.html'], 'the preview folder');
+  const html = siteFile('preview', 'index.html');
+  ok(/^  var FIREBASE_CONFIG = null;$/m.test(html), 'the preview keeps a Firebase config');
+  ok(/^  var PACK_DOC_ID = null;$/m.test(html), 'the preview keeps the pack id');
+  // The live values really are live in the source, so their absence below means something.
+  ok(LIVE.config && LIVE.config.apiKey && LIVE.config.projectId && /^[0-9a-f]{64}$/.test(LIVE.docId),
+    'index.html has no live config to strip — the test below proves nothing');
+  const values = Object.keys(LIVE.config).map((k) => LIVE.config[k]).concat([LIVE.docId]);
+  values.forEach((v) => ok(html.indexOf(v) === -1, 'a live config value is in the preview'));
+  ok(!/pack-569|AIza[0-9A-Za-z_-]{20,}|firebaseapp\.com/.test(html), 'the preview still names the live project');
+  const headers = siteFile('preview', '_headers');
+  const csp = site.cspOf(headers);
+  ok(!/google|gstatic|firebase/i.test(csp), 'the preview CSP allows a Google origin');
+  eq(site.cspDirectives(csp)['connect-src'], ['https://api.open-meteo.com', 'https://archive-api.open-meteo.com'],
+    'the preview connects to more than the weather');
+  eq(site.cspDirectives(csp)['frame-src'], ["'none'"], 'the preview can frame something');
+  ok(csp.indexOf(`'sha256-${scriptHash(html)}'`) >= 0, 'the preview CSP hash is not its script’s');
+  ok(/^  X-Robots-Tag: noindex$/m.test(headers), 'the preview can be indexed');
+});
+
+test('the production build is the committed page, and its CSP hashes the script and allows Firebase', () => {
+  siteBuild();
+  eq(readdirSync(siteDir('production')).sort(), ['_headers', 'index.html'], 'the production folder');
+  ok(siteFile('production', 'index.html') === HTML, 'production is not byte-for-byte index.html');
+  const headers = siteFile('production', '_headers');
+  const d = site.cspDirectives(site.cspOf(headers));
+  const hash = createHash('sha256').update(SCRIPT, 'utf8').digest('base64');
+  eq(d['script-src'], [`'sha256-${hash}'`, 'https://www.gstatic.com', 'https://apis.google.com'], 'script-src');
+  eq(d['default-src'], ["'none'"], 'default-src');
+  for (const o of ['https://firestore.googleapis.com', 'https://identitytoolkit.googleapis.com',
+    'https://securetoken.googleapis.com', 'https://api.open-meteo.com']) {
+    ok(d['connect-src'].indexOf(o) >= 0, `production cannot reach ${o}`);
+  }
+  ok(d['frame-src'].indexOf('https://' + LIVE.config.authDomain) >= 0, 'Google sign-in cannot frame the authDomain');
+  ok(!/'unsafe-eval'/.test(headers) && d['script-src'].indexOf("'unsafe-inline'") < 0, 'the CSP allows inline or eval’d script');
+  ok(/^  Cross-Origin-Opener-Policy: same-origin-allow-popups$/m.test(headers), 'the sign-in popup cannot report back');
+  ok(/^  Referrer-Policy: strict-origin-when-cross-origin$/m.test(headers), 'referrer policy');
+  ok(/^  Strict-Transport-Security: max-age=31536000; includeSubDomains$/m.test(headers), 'HSTS');
+  ok(!/X-Robots-Tag/.test(headers), 'production is noindex');
+});
+
+test('index.html has no inline event handler, and the print pages wire Print from the opener', () => {
+  eq(site.cspHazards(HTML), [], 'index.html has what the CSP would block');
+  ok(!/ on[a-z]+="/.test(HTML), 'an inline on…= handler');
+  // The scanner itself catches one.
+  eq(site.cspHazards('<p>\n<button onclick="x()">').map((h) => h.line), [2], 'the scanner misses an onclick');
+  const ctx = vm.createContext({});
+  vm.runInContext(['esc', 'QR_M_ECC', 'QR_M_BLOCKS', 'qrMatrix', 'qrSvg', 'kitFlyerHtml', 'kitQrSheetHtml'].map(slice).join('\n'), ctx);
+  for (const page of [ctx.kitFlyerHtml({ packName: 'P' }), ctx.kitQrSheetHtml({ packName: 'P', url: 'https://pack569.com/?join=q' })]) {
+    ok(/<button type="button" data-print>Print<\/button>/.test(page), 'a print page has no data-print button');
+    ok(!/onclick|<script/i.test(page), 'a print page carries inline script');
+  }
+  // window.open('') inherits this page's CSP, so the opener attaches the listener after writing.
+  const opp = slice('openPrintPage');
+  ok(/w\.document\.close\(\);\s*var btns = w\.document\.querySelectorAll\('\[data-print\]'\);/.test(opp),
+    'openPrintPage does not look for the Print buttons after writing the page');
+  ok(/btns\[i\]\.addEventListener\('click', function \(\) \{ w\.print\(\); \}\);/.test(opp), 'Print is not wired to w.print()');
+});
+
+test('--verify refuses a production build passed as preview, the reverse, and a tampered one', () => {
+  siteBuild();
+  throwsBuild(() => site.verify({ dir: siteDir('production'), target: 'preview' }), 'production passed as preview');
+  throwsBuild(() => site.verify({ dir: siteDir('preview'), target: 'production' }), 'preview passed as production');
+  eq(site.verify({ dir: siteDir('preview'), target: 'preview' }).files.map((f) => f.file), ['_headers', 'index.html'], 'a good preview');
+  // A third file, a wrong hash, a live value slipped back in: each is refused.
+  const t = join(SITE_TMP, 'tampered');
+  const fresh = () => { rmSync(t, { recursive: true, force: true }); cpSync(siteDir('preview'), t, { recursive: true }); };
+  fresh(); writeFileSync(join(t, 'SETUP.md'), 'x');
+  ok(/exactly/.test(throwsBuild(() => site.verify({ dir: t, target: 'preview' }), 'an extra file')), 'an extra file');
+  fresh(); writeFileSync(join(t, '_headers'), siteFile('preview', '_headers').replace(/sha256-[^']+/, 'sha256-AAAA'));
+  throwsBuild(() => site.verify({ dir: t, target: 'preview' }), 'a wrong CSP hash');
+  fresh(); writeFileSync(join(t, 'index.html'), siteFile('preview', 'index.html').replace('  var PACK_DOC_ID = null;', `  var PACK_DOC_ID = '${LIVE.docId}';`));
+  throwsBuild(() => site.verify({ dir: t, target: 'preview' }), 'the live pack id');
+  // The build will not empty a folder holding anything it did not write.
+  fresh(); writeFileSync(join(t, 'notes.txt'), 'x');
+  throwsBuild(() => site.build({ target: 'preview', out: t }), 'built over a folder with a stray file');
+  ok(readFileSync(join(t, 'notes.txt'), 'utf8') === 'x', 'the stray file was deleted');
+  throwsBuild(() => site.build({ target: 'preview', out: ROOT }), 'built into the repo');
+  // And the CLI the preflight runs exits non-zero.
+  const r = spawnSync(process.execPath, [join(ROOT, 'scripts/build-site.mjs'), '--verify', siteDir('production'), '--target', 'preview'], { encoding: 'utf8' });
+  eq(r.status, 1, 'the --verify CLI exit code');
+});
+
+test('the workflow deploys only by hand, production only from main, with every action pinned', () => {
+  const WF = readFileSync(join(ROOT, '.github/workflows/website.yml'), 'utf8');
+  const uses = WF.match(/^\s*(?:- )?uses:.*$/gm) || [];
+  ok(uses.length >= 5, 'no uses: lines found');
+  uses.forEach((u) => ok(/uses: [\w.-]+\/[\w.-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/.test(u.trim().replace(/^- /, '')), 'not pinned to a SHA: ' + u.trim()));
+  ok(/uses: cloudflare\/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4\.0\.0/.test(WF), 'wrangler-action pin');
+  ok(/^on:\n  (?:#.*\n  )*push:\n  pull_request:\n  workflow_dispatch:\n    inputs:\n      deploy_target:/m.test(WF), 'the triggers');
+  ok(/options: \[preview, production\]\n\s+default: preview/.test(WF), 'deploy_target is not preview|production, default preview');
+  ok(!/pull_request_target|schedule:/.test(WF), 'an unexpected trigger');
+  ok(/^permissions:\n  contents: read$/m.test(WF) && !/: write/.test(WF), 'permissions are not read-only');
+  // Split into jobs by their two-space headers under jobs:.
+  const jobsText = WF.slice(WF.indexOf('\njobs:\n'));
+  const jobs = {};
+  jobsText.split(/\n(?=  [a-z-]+:\n)/).slice(1).forEach((b) => { jobs[/^  ([a-z-]+):/.exec(b)[1]] = b; });
+  eq(Object.keys(jobs), ['website-gates', 'deploy-preflight', 'deploy'], 'the jobs');
+  for (const j of ['deploy-preflight', 'deploy']) {
+    ok(/\n    if: github\.event_name == 'workflow_dispatch'\n/.test(jobs[j]), `${j} is not dispatch-only`);
+  }
+  ok(/needs: \[website-gates, deploy-preflight\]/.test(jobs.deploy), 'deploy does not need the preflight');
+  ok(/if: inputs\.deploy_target == 'production' && github\.ref != 'refs\/heads\/main'\n[\s\S]*?exit 1/.test(jobs['deploy-preflight']),
+    'the preflight does not refuse production off main');
+  ok(/environments\/website-production[\s\S]*?required_reviewers/.test(jobs['deploy-preflight']), 'the preflight does not check the reviewer');
+  ok(/--verify _site --target "\$TARGET"/.test(jobs['deploy-preflight']), 'the preflight does not verify the artifact');
+  // Nothing that deploys, or holds a secret, outside the deploy job; the gates build and test.
+  for (const j of ['website-gates', 'deploy-preflight']) {
+    ok(!/wrangler|pages deploy|secrets\./.test(jobs[j]), `${j} can deploy`);
+  }
+  ok(/node test\/harness\.mjs/.test(jobs['website-gates']) && /--target preview/.test(jobs['website-gates']) &&
+    /--target production/.test(jobs['website-gates']), 'the gates do not test and build both targets');
+  ok(/if: github\.event_name == 'workflow_dispatch'\n\s+uses: actions\/upload-artifact/.test(jobs['website-gates']), 'the artifact is uploaded on push');
+  ok(/--branch=\$\{\{ inputs\.deploy_target == 'production' && 'main' \|\| format\('preview-\{0\}', github\.sha\) \}\}/.test(jobs.deploy),
+    'the Pages branch is not main-for-production-only');
+  ok(/website-production/.test(jobs.deploy) && /cancel-in-progress: false/.test(jobs.deploy), 'the deploy environment or concurrency');
+});
+
+test('wrangler.toml publishes _site, and git ignores the build output', () => {
+  const W = readFileSync(join(ROOT, 'wrangler.toml'), 'utf8');
+  ok(/^name = "pack569"$/m.test(W) && /^pages_build_output_dir = "_site"$/m.test(W), 'wrangler.toml');
+  const gi = readFileSync(join(ROOT, '.gitignore'), 'utf8').split('\n').map((l) => l.trim());
+  ok(gi.indexOf('_site/') >= 0 && gi.indexOf('_site-*/') >= 0, '.gitignore does not cover _site/');
+  try {
+    const out = execSync('git check-ignore --no-index _site/index.html _site-preview/_headers', { cwd: ROOT, encoding: 'utf8' });
+    eq(out.split('\n').filter(Boolean).length, 2, 'git check-ignore');
+  } catch (e) {
+    if (e.status === 1) throw new Error('git does not ignore the build output');
+    if (e.status !== 128) throw e;
+  }
+});
+
+test('a backup from an older page imports through normalizeState', () => {
+  // Testing a preview with real data means Import backup of a file the live page wrote.
+  const imp = slice('handleImportFile');
+  ok(/data = normalizeState\(data\);\s*if \(!data\) \{[^}]*\}\s*ui\.overlay = \{ kind: 'import', data: data \};/.test(imp),
+    'an imported backup is not normalized before it is offered');
+  const ctx = sandbox(NORMALIZE_FNS);
+  const after = ctx.normalizeState(JSON.parse(JSON.stringify(preMigrationState())));   // as read from a file
+  ok(after && Array.isArray(after.ledger) && after.scouts.length === 4, 'an old-shape backup does not import');
+  eq(ctx.normalizeState({ hello: 1 }), null, 'a JSON file that is not a pack record');
+  // The migrations on that path are pinned by the Phase 1–3 tests above ("Phase 1 migration: …").
 });
 
 /* ---------------- report ---------------- */

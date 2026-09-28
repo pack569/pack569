@@ -16492,7 +16492,7 @@
       '@media print{.no-print{display:none}.fill{background:none;border:none;padding:0}}</style></head><body>' +
       '<div class="note no-print"><strong>Before you print:</strong> click each yellow <em>[pack to fill in]</em> and type the ' +
       'date, time and place. <strong>Youth Protection:</strong> do not add any child’s last name, and no photo of a child ' +
-      'without their parent’s permission. <button type="button" onclick="window.print()">Print</button></div>' +
+      'without their parent’s permission. <button type="button" data-print>Print</button></div>' +
       '<h1>Join Cub Scouts!</h1><h2>' + name + '</h2>' +
       '<p class="big">Cub Scouting is for kids in kindergarten through fifth grade — and their families.</p>' +
       '<p class="big"><strong>School Night:</strong> ' + fill + '</p>' +
@@ -16514,13 +16514,15 @@
       '<style>body{font-family:system-ui,sans-serif;text-align:center;padding:.6in .4in;color:#111}' +
       'h1{font-size:30px;margin:0 0 6px}p{font-size:18px}.url{font-family:monospace;font-size:14px;word-break:break-all}' +
       'button{font-size:16px;padding:8px 16px}@media print{.no-print{display:none}}</style></head><body>' +
-      '<p class="no-print"><button type="button" onclick="window.print()">Print</button></p>' +
+      '<p class="no-print"><button type="button" data-print>Print</button></p>' +
       '<h1>' + name + '</h1><p>Scan to ask for the pack’s family calendar</p>' +
       '<div>' + qrSvg(url, 380) + '</div><p class="url">' + esc(url) + '</p>' +
       '<p>A pack leader approves each family before anything is shown.</p></body></html>';
   }
   // Opens the page in a new tab to print. From a click, so a pop-up blocker lets it through;
   // if one does not, say so rather than doing nothing.
+  // Its Print buttons are `data-print`, wired from here: a window.open('') page runs under this
+  // page's Content-Security-Policy, which runs no inline handler attribute (scripts/build-site.mjs).
   function openPrintPage(html) {
     var w = null;
     try { w = window.open('', '_blank'); } catch (e) { w = null; }
@@ -16528,6 +16530,10 @@
     w.document.open();
     w.document.write(html);
     w.document.close();
+    var btns = w.document.querySelectorAll('[data-print]');
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].addEventListener('click', function () { w.print(); });
+    }
   }
   function renderRecruitKit() {
     var rk = state.recruitKit || freshRecruitKit();
