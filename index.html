@@ -2909,6 +2909,27 @@
       return { title: String(s.title || ''), body: String(s.body || ''), url: /^https?:\/\//i.test(url) ? url : '' };
     });
   }
+  // The pack meeting agenda's sections (Wave A; see packAgendaLabel for the rest). Declared
+  // HERE, above `var state = load()`, because normalizeAgenda runs inside the loader: declared
+  // beside its renderer it was still undefined at load, normalizeState threw on any record
+  // holding an agenda, and load() started the pack over from a fresh record.
+  var PACK_AGENDA = [
+    { key: 'gathering', label: 'Gathering' },
+    { key: 'opening', label: 'Opening / flag ceremony' },
+    { key: 'welcome', label: 'Welcome' },
+    { key: 'skits', label: 'Den skits / demos' },
+    { key: 'recognition', label: 'Recognition' },
+    { key: 'minute', label: 'Cubmaster\u2019s Minute' },
+    { key: 'closing', label: 'Closing' }
+  ];
+  // The School Night checklist's items (Wave B4). Declared above `var state = load()`
+  // because normalizeState reads them while the script is still starting up.
+  var RECRUIT_KIT_ITEMS = [
+    { id: 'pin', label: 'Update the pack’s BeAScout pin' },
+    { id: 'qr', label: 'Print a QR code of the sign-up link' },
+    { id: 'flyer', label: 'Print a flyer' },
+    { id: 'cost', label: 'Bring the cost sheet' }
+  ];
   // Wave 14/15: a fresh inventory is a generic blank — no pre-seeded order. The standard
   // Trail's End lineup (names + containers/case only) is offered as an opt-in template
   // via the Inventory tab's empty state (TE_LINEUP below). Pack records that already carry an
@@ -12190,15 +12211,8 @@
      a who or a note. Recognition also counts when the automatic list has something on it — the
      awards ARE the plan for that section. Any note text on the meeting used to be enough, which
      said a meeting was planned because somebody wrote "bring a chair". */
-  var PACK_AGENDA = [
-    { key: 'gathering', label: 'Gathering' },
-    { key: 'opening', label: 'Opening / flag ceremony' },
-    { key: 'welcome', label: 'Welcome' },
-    { key: 'skits', label: 'Den skits / demos' },
-    { key: 'recognition', label: 'Recognition' },
-    { key: 'minute', label: 'Cubmaster\u2019s Minute' },
-    { key: 'closing', label: 'Closing' }
-  ];
+  // PACK_AGENDA — the seven sections — is declared further up, above `var state = load()`,
+  // because normalizeAgenda reads it while the pack record is being loaded.
   var PACK_AGENDA_NEEDED = ['opening', 'recognition', 'closing'];
   function packAgendaLabel(key) {
     var sec = PACK_AGENDA.filter(function (x) { return x.key === key; })[0];
@@ -15625,12 +15639,6 @@
      this year, AND the link is on, AND this device can see it (joinLinkUrl — admins only). A flyer
      goes on a school noticeboard; the link on it puts anyone who scans it into the approval
      queue, which is the admin's call to make, every year, not a default. */
-  var RECRUIT_KIT_ITEMS = [
-    { id: 'pin', label: 'Update the pack’s BeAScout pin' },
-    { id: 'qr', label: 'Print a QR code of the sign-up link' },
-    { id: 'flyer', label: 'Print a flyer' },
-    { id: 'cost', label: 'Bring the cost sheet' }
-  ];
   function freshRecruitKit() { return { year: 0, done: {}, flyerLink: false }; }
   // This year's tick for one item — false for any tick left over from another year.
   function recruitKitDone(rk, py, id) {

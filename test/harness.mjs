@@ -11053,6 +11053,33 @@ test('B4: the flyer carries the sign-up link only when it is handed one, and the
   eq(JSON.stringify(out.recruitKit), JSON.stringify({ year: 0, done: { pin: true }, flyerLink: false }), 'the kit is not normalized');
   ok(n.normalizeState(preMigrationState()).recruitKit.flyerLink === false, 'a record without the kit is not given one, link off');
 });
+
+test('every constant the loader reads is assigned before the pack record is loaded', () => {
+  // `var state = load()` runs while the script is still starting, so any `var` the normalizer or
+  // the fresh record reads has to be ASSIGNED above that line — a function is hoisted, a var's
+  // value is not. The sandbox above defines everything before running anything, so it can never
+  // see this; Wave B shipped RECRUIT_KIT_ITEMS below it once, and every saved record then failed
+  // to load (normalizeState threw, load() fell back to a fresh pack).
+  const loadAt = SCRIPT.indexOf('  var state = load();');
+  ok(loadAt > -1, 'the load line moved');
+  // Everything reachable from load(): normalizeState and freshState, and every function of
+  // theirs the sandbox knows, followed call by call. Then every `var` read anywhere in that.
+  const isVar = (n) => new RegExp(`^  var ${n} =`, 'm').test(SCRIPT);
+  const reached = new Set(['normalizeState', 'freshState']);
+  let text = '', grew = true;
+  while (grew) {
+    grew = false;
+    text = [...reached].map(slice).join('\n');
+    NORMALIZE_FNS.concat(['freshState']).forEach((n) => {
+      if (!reached.has(n) && !isVar(n) && new RegExp(`\\b${n}\\(`).test(text)) { reached.add(n); grew = true; }
+    });
+  }
+  ok(reached.has('normalizeAgenda') && reached.has('refreshWelcomeSeed'), 'the call walk found too little');
+  NORMALIZE_FNS.filter(isVar).filter((n) => new RegExp(`\\b${n}\\b`).test(text)).forEach((name) => {
+    const m = new RegExp(`^  var ${name} =`, 'm').exec(SCRIPT);
+    ok(m.index < loadAt, `var ${name} is read by the loader but assigned after load() runs`);
+  });
+});
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
