@@ -4946,12 +4946,16 @@
     // M1 — the commission is counted ONCE. Worked out from sales until the council's payment is
     // posted to the ledger (source "Popcorn commission"); from then on the posted figure is the
     // answer and the estimate is only shown beside it. Adding both is what double-counted it.
-    var income = ledgerIncomeCents(state.ledger, function (id) {
+    var isIncomeLine = function (id) {
       var il = getBudgetLine(id);
       return !!il && il.category === 'income';
-    });
+    };
+    var income = ledgerIncomeCents(state.ledger, isIncomeLine);
     var commissionEstimate = pack.commission || 0;
     var commission = income.hasCommission ? income.commission : commissionEstimate;
+    // T4a — only a question while the estimate is what Funds in is counting.
+    var lookalikes = (!income.hasCommission && commissionEstimate > 0)
+      ? commissionLookalikes(state.ledger, isIncomeLine) : [];
     // Cash the pack keeps in full (only when it isn't run through Trail's End).
     var retainedCash = pack.retainedCash || 0;
     var startingBalance = b.startingBalance || 0;
@@ -4973,7 +4977,7 @@
       expPlanned: expPlanned, expActual: expActual, scouts: scouts,
       commission: commission, commissionKnown: pack.commission != null || income.hasCommission,
       commissionPosted: income.hasCommission, commissionEstimate: commissionEstimate,
-      incomePosted: income.other,
+      incomePosted: income.other, commissionLookalikes: lookalikes,
       retainedCash: retainedCash, viaTE: pack.viaTE,
       startingBalance: startingBalance, cashGoal: cashGoal, teNeed: teNeed,
       // Phase 3a — what a year costs a family OUTSIDE the pack's books (council camps,
@@ -5956,7 +5960,8 @@
       var amt = e.amountCents || 0;
       if (e.direction === 'in') {
         if (e.scoutId) return;
-        if (e.source === 'commission') { t.commission += amt; t.hasCommission = true; return; }
+        // T4(b) — a $0 entry is not the council's cheque, and must not switch the estimate off.
+        if (e.source === 'commission') { t.commission += amt; if (amt > 0) t.hasCommission = true; return; }
         // Uncategorised income stays out, exactly as it always has: it never reached the
         // balance through a line, and counting it now could double a fundraiser or a cash
         // donation the budget already takes from its own subsystem.
@@ -5969,6 +5974,25 @@
       }
     });
     return t;
+  }
+  // Treasurer's review (T4a) — money in on an INCOME line that may be the council's commission
+  // cheque under another name. Before M1 a treasurer followed §3.6 and posted the cheque to
+  // "Popcorn income" with whatever source came to hand; now that entry is counted in Funds in as
+  // other income WHILE the sales estimate is still counted as commission — the same money twice.
+  // We do not guess from the description: this only lists the entries whose source leaves the
+  // question open (blank, "fundraiser", "other"), by line, for the Budget card to ask about. The
+  // caller asks only while no commission is posted and the estimate is in use. Pure.
+  var COMMISSION_LOOKALIKE_SOURCES = ['', 'fundraiser', 'other'];
+  function commissionLookalikes(ledger, isIncomeLine) {
+    var by = {}, order = [];
+    ledger.forEach(function (e) {
+      if (e.direction !== 'in' || e.scoutId || !e.lineId || !isIncomeLine(e.lineId)) return;
+      if (COMMISSION_LOOKALIKE_SOURCES.indexOf(e.source || '') === -1 || !(e.amountCents > 0)) return;
+      if (!by[e.lineId]) { by[e.lineId] = { lineId: e.lineId, cents: 0, count: 0 }; order.push(e.lineId); }
+      by[e.lineId].cents += e.amountCents;
+      by[e.lineId].count += 1;
+    });
+    return order.map(function (k) { return by[k]; });
   }
   function ledgerTotals(ledger, book) {
     var inC = 0, outC = 0, pre = 0, unrec = 0, uncat = 0;
@@ -13221,6 +13245,17 @@
       (bud.otherFundraiserIn > 0 ? ' + other fundraisers (' + fmt(bud.otherFundraiserIn) + ')' : '') +
       '. <strong>Balance</strong> = funds in − actual spent.' +
       (bud.viaTE ? ' Cash donations run through Trail’s End (Heroes & Helpers), so they reach the pack via commission.' : ' The pack keeps 100% of cash donations, so they’re added here in full.') + '</p>' +
+      // T4a — money in on an income line while commission is still the sales estimate may be the
+      // council's cheque counted twice. Asked, never assumed: the treasurer knows what it was.
+      bud.commissionLookalikes.map(function (lk) {
+        var lkLine = getBudgetLine(lk.lineId);
+        return '<p class="small" style="margin:8px 0 0"><span class="pill navy">Check</span> <strong>' +
+          esc(lkLine ? (lkLine.name || 'An income line') : 'An income line') + '</strong> has <strong class="money">' + fmt(lk.cents) +
+          '</strong> of money in posted to it, and Funds in is also counting popcorn commission worked out from sales (' +
+          fmt(bud.commissionEstimate) + '). Is this the council’s commission cheque? Set its source to <strong>Popcorn commission</strong> ' +
+          'in the ledger so it isn’t counted twice. ' +
+          '<button type="button" class="btn small ghost" data-act="goto" data-tab="money" data-section="ledger">Open the ledger</button></p>';
+      }).join('') +
       // Phase 0/1 — this Balance is still a MODEL figure: every term feeding it is derived
       // from another part of the app. The ledger's balance is the real cash position. When
       // the two disagree that gap is information, not an error — so say so, rather than

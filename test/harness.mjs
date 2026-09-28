@@ -8704,6 +8704,34 @@ test('T3: a family credit comes forward even when the book had no opening date, 
   ok(!/dues collections/.test(ov), 'the preview still says dues collections are cleared');
 });
 
+test('T4: an income-line cheque that may be the commission is asked about, and $0 is not a posted commission', () => {
+  const ctx = sandbox(LEDGER_FNS.concat(['COMMISSION_LOOKALIKE_SOURCES', 'commissionLookalikes']));
+  const isInc = (id) => id === 'POP';
+  // (b) A $0 "commission" entry switched the sales estimate off and left commission at $0.
+  const zero = ctx.ledgerIncomeCents([entry({ direction: 'in', source: 'commission', amountCents: 0, lineId: 'POP' })], isInc);
+  eq([zero.commission, zero.hasCommission], [0, false], 'a $0 commission entry counts as posted');
+  eq(ctx.ledgerIncomeCents([entry({ direction: 'in', source: 'commission', amountCents: 1, lineId: '' })], isInc).hasCommission, true,
+    'a real commission entry is not posted');
+  // (a) Old cheques posted before M1, with a blank or "fundraiser" source, on the income line.
+  const led = [
+    entry({ id: 'a', direction: 'in', source: 'fundraiser', amountCents: 90000, lineId: 'POP' }),
+    entry({ id: 'b', direction: 'in', source: '', amountCents: 10000, lineId: 'POP' }),
+    entry({ id: 'c', direction: 'in', source: 'donation', amountCents: 5000, lineId: 'POP' }),     // says what it is
+    entry({ id: 'd', direction: 'in', source: '', amountCents: 7000, lineId: 'CAMP' }),            // not an income line
+    entry({ id: 'e', direction: 'in', source: '', amountCents: 4000, lineId: 'POP', scoutId: 'ada' }), // a family's
+    entry({ id: 'f', direction: 'out', source: '', amountCents: 3000, lineId: 'POP' })
+  ];
+  eq(JSON.parse(JSON.stringify(ctx.commissionLookalikes(led, isInc))), [{ lineId: 'POP', cents: 100000, count: 2 }], 'lookalikes');
+  // Only while the estimate is what Funds in counts, and never guessed from the description.
+  const fn = /function computeBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/var lookalikes = \(!income\.hasCommission && commissionEstimate > 0\)\s*\? commissionLookalikes\(state\.ledger, isIncomeLine\) : \[\];/.test(fn),
+    'the question is asked when no estimate is being counted, or after the commission is posted');
+  ok(!/description/.test(/function commissionLookalikes\([^)]*\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0]), 'it guesses from the description');
+  const card = /function renderBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0].replace(/'\s*\+\s*'/g, '');
+  ok(/bud\.commissionLookalikes\.map/.test(card) && /Is this the council’s commission cheque\?/.test(card) &&
+    /so it isn’t counted twice/.test(card), 'the Budget card does not ask');
+});
+
 test('T1: a refund source only survives on money out that names a family', () => {
   const ns = /function normalizeState\(d\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/if \(e\.source === 'refund' && \(e\.direction !== 'out' \|\| !e\.scoutId\)\) e\.source = '';/.test(ns),

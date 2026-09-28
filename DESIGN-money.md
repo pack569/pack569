@@ -225,6 +225,14 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   unpaid balances ($X) come forward as Prior-year balance; M families' credits ($Y) come forward."
   It no longer lists the dues among what is cleared; it says the year's charges and ledger entries
   are.
+- **An old commission cheque could still be counted twice (T4).** A cheque posted before M1 to an
+  income line with a blank or "fundraiser" source is counted in Funds in as other income, while
+  the sales estimate — still in use, since no entry says `commission` — is counted too. The app
+  does not guess from the description: while the estimate is in use, the Budget card lists each
+  income line with such money in (`commissionLookalikes`: source blank, fundraiser or other) and
+  asks "Is this the council's commission cheque? Set its source to Popcorn commission so it isn't
+  counted twice." And a **$0** commission entry no longer counts as posted — it used to switch
+  the estimate off and leave commission at nothing.
 
 ---
 
