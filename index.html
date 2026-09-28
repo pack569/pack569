@@ -954,6 +954,8 @@
        nonsense split in half — a progress bar orphaned from the name above it, or a
        den's line items under someone else's heading. */
     .pv-scout, .pv-den, .block-card, .pv-stand, .stat { break-inside: avoid; }
+    /* And for families: one event, a campout's facts block, one bullet of a camping list. */
+    .pv-row, .camp-facts, .camp-list li { break-inside: avoid; }
     /* Tables: never split a row, and repeat the header on every sheet a long standings
        table runs to — a column of figures with no heading is unreadable on page two. */
     tr, .brow, .tprog { break-inside: avoid; }
@@ -967,7 +969,7 @@
     p, li { orphans: 3; widows: 3; }
     /* The bars carry meaning through a background colour, and browsers drop backgrounds
        by default. Ask for them; a viewer who declines still has every figure in words. */
-    .bar, .bar-fill, .bar-fill-stretch, .pill { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .bar, .bar-fill, .bar-fill-stretch, .pill, .cal-dot2 { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   }
   @media (prefers-reduced-motion: no-preference) {
     .card { transition: border-color 0.15s ease; }
@@ -1444,6 +1446,29 @@
      report the pack's money as missing, so it has to read as scaffolding at a glance. */
   .pv-preview { background: var(--accent-soft); border: 1px solid var(--accent); }
   .pv-foot { margin-top: 4px; }
+  /* 44px TAP TARGETS FOR FAMILIES — parent-experience audit, 2026-09-28. The parent app is read
+     on a phone, one-handed, by somebody who does not use it every day; the leaders' 32-40px
+     controls were built for a desk. Scoped to parent mode (and the join gates, which families
+     also meet first), so the leaders' dense screens keep their measure. */
+  body.parent-mode button.btn.small, .join-gate button.btn { min-height: 44px; padding-top: 8px; padding-bottom: 8px; }
+  body.parent-mode .cal-nav { width: 44px; height: 44px; }
+  body.parent-mode .cal-cell { min-height: 44px; }
+  body.parent-mode .tab, body.parent-mode .snav { min-height: 44px; }
+  body.parent-mode .camp-toc-secs a { display: inline-flex; align-items: center; min-height: 44px; padding: 10px 0; box-sizing: border-box; }
+  /* A calendar dot that says what it is in a letter as well as a colour — D den meeting, P pack,
+     A activity, S storefront — so the grid reads for a colour-blind parent and on a black-and-white
+     printout. Parent grid only; the leaders' grid keeps its plain dots. */
+  .cal-glyph {
+    width: 12px; height: 12px; font-size: 0.5rem; font-weight: 800; line-height: 12px;
+    text-align: center; color: var(--ground); font-family: inherit; box-sizing: border-box;
+  }
+  .cal-glyph.dot-store-open { color: var(--accent-text); line-height: 9px; }
+  .cal-legend .cal-glyph { vertical-align: 1px; }
+  .print-only { display: none; }
+  @media print {
+    .print-only { display: block !important; }
+    .pv-print-head { font-size: 0.8rem; color: #555; margin: 0 0 8px; }
+  }
   /* The normal print sheet hides <main> (only overlays print). Parents have no overlays,
      so let their schedule print instead of a blank page. */
   @media print { body.parent-mode main { display: block !important; } }
@@ -9718,6 +9743,10 @@
       return h + parentFooter(pv);
     }
     var pTab = parentTab();
+    // On paper only: whose sheet this is and how old it is. A printout pinned to a board outlives
+    // the calendar it was taken from, and a family holding it cannot tell otherwise.
+    h += '<p class="print-only pv-print-head">' +
+      esc(String(pv.packName || '').trim() || 'Pack calendar') + ' · printed ' + esc(fmtDate(todayISO())) + '</p>';
     h += pTab === 'standings' ? renderParentStandings(pv)
       : pTab === 'camping' ? renderParentCamping(pv)
       : renderParentSchedule(pv);
@@ -9780,7 +9809,7 @@
   function campSectionNav(trip, tripIdx) {
     var secs = (trip && Array.isArray(trip.sections)) ? trip.sections : [];
     if (secs.length < 4) return '';
-    return '<div class="card"><nav class="camp-toc" aria-label="On this page">' +
+    return '<div class="card no-print"><nav class="camp-toc" aria-label="On this page">' +
       '<p class="eyebrow" style="margin:0 0 8px">On this page</p>' +
       '<div class="camp-toc-secs">' + secs.map(function (s, si) {
         return '<a href="#' + campAnchor(tripIdx, si) + '">' + esc(String(s.title || 'Details')) + '</a>';
@@ -9854,18 +9883,28 @@
     var firstDow = new Date(year, mon, 1).getDay();
     var daysInMonth = new Date(year, mon + 1, 0).getDate();
     var dows = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
-    function dotFor(e) {
+    // Colour, letter and spoken word for one event, decided once so the dot, the legend and the
+    // day's aria-label cannot disagree. A letter as well as a colour (parent-experience audit,
+    // 2026-09-28): colour alone failed a colour-blind parent and every black-and-white printer.
+    function markFor(e) {
       var k = e && e.kind;
       if (k === 'storefront') {
         var shifts = Array.isArray(e.shifts) ? e.shifts : [];
         var covered = shifts.length && shifts.every(function (s) {
           return s && Array.isArray(s.who) && s.who.length > 0;
         });
-        return covered ? 'dot-store' : 'dot-store-open';
+        return { cls: covered ? 'dot-store' : 'dot-store-open', letter: 'S', word: 'storefront' };
       }
-      if (k === 'meeting') return String(e.title || '').indexOf('Pack') === 0 ? 'dot-pack' : 'dot-mtg';
-      if (k === 'derby') return 'dot-pack';
-      return 'dot-act';
+      if (k === 'meeting') {
+        return String(e.title || '').indexOf('Pack') === 0
+          ? { cls: 'dot-pack', letter: 'P', word: 'pack meeting' }
+          : { cls: 'dot-mtg', letter: 'D', word: 'den meeting' };
+      }
+      if (k === 'derby') return { cls: 'dot-pack', letter: 'P', word: 'derby' };
+      return { cls: 'dot-act', letter: 'A', word: 'activity' };
+    }
+    function glyph(m) {
+      return '<span class="cal-dot2 cal-glyph ' + m.cls + '" aria-hidden="true">' + m.letter + '</span>';
     }
     var h = '<div class="card"><div class="cal-head">' +
       '<button type="button" class="cal-nav" data-act="parent-cal-prev" aria-label="Previous month">‹</button>' +
@@ -9884,24 +9923,26 @@
       var mark = '';
       if (dayEvs) {
         mark = '<span class="cal-marks">' +
-          dayEvs.slice(0, 3).map(function (e) { return '<span class="cal-dot2 ' + dotFor(e) + '"></span>'; }).join('') +
+          dayEvs.slice(0, 3).map(function (e) { return glyph(markFor(e)); }).join('') +
           (dayEvs.length > 3 ? '<span class="cal-more">+</span>' : '') + '</span>';
       }
       // Same tab-stop diet as the leader grid: only today and days with something on are
       // focusable, and the rest stay clickable through the delegated handler.
       var focusable = iso === today || !!dayEvs;
+      // What is ON the day, not how many things: "Sat, Oct 3: den meeting, storefront". Every
+      // event is named here, including any past the three dots the cell has room for.
       h += '<div class="' + cls + '" data-act="parent-cal-day" data-date="' + iso + '"' +
         (focusable ? ' role="button" tabindex="0" aria-label="' + esc(fmtDate(iso)) +
-          (dayEvs ? ', ' + dayEvs.length + ' event' + (dayEvs.length === 1 ? '' : 's') : '') + '"' : '') +
+          (dayEvs ? ': ' + dayEvs.map(function (e) { return markFor(e).word; }).join(', ') : '') + '"' : '') +
         '>' + day + mark + '</div>';
     }
     h += '</div>';
-    h += '<div class="row small" style="gap:12px;margin-top:10px;color:var(--ink-soft)">' +
-      '<span><span class="cal-dot2 dot-store"></span> Storefront (full)</span>' +
-      '<span><span class="cal-dot2 dot-store-open"></span> open shift</span>' +
-      '<span><span class="cal-dot2 dot-mtg"></span> Den meeting</span>' +
-      '<span><span class="cal-dot2 dot-pack"></span> Pack</span>' +
-      '<span><span class="cal-dot2 dot-act"></span> Activity</span></div>';
+    h += '<div class="row small cal-legend" style="gap:12px;margin-top:10px;color:var(--ink-soft)">' +
+      '<span>' + glyph({ cls: 'dot-store', letter: 'S' }) + ' Storefront (full)</span>' +
+      '<span>' + glyph({ cls: 'dot-store-open', letter: 'S' }) + ' open shift</span>' +
+      '<span>' + glyph({ cls: 'dot-mtg', letter: 'D' }) + ' Den meeting</span>' +
+      '<span>' + glyph({ cls: 'dot-pack', letter: 'P' }) + ' Pack</span>' +
+      '<span>' + glyph({ cls: 'dot-act', letter: 'A' }) + ' Activity</span></div>';
     // The tapped day, in full, right under the grid it was tapped on.
     if (ui.parentCalDay && monthKey(ui.parentCalDay) === mk) {
       var sel = byDay[+ui.parentCalDay.slice(8, 10)];
@@ -9926,7 +9967,7 @@
       var open = !!ui.parentEarlierOpen;
       h += '<div class="card"><div class="spread">' +
         '<h2 class="section display" style="margin-bottom:0">Earlier this year</h2>' +
-        '<button type="button" class="btn small" data-act="parent-earlier" aria-expanded="' + open + '">' +
+        '<button type="button" class="btn small no-print" data-act="parent-earlier" aria-expanded="' + open + '">' +
         (open ? 'Hide' : 'Show ' + earlier.length) + '</button></div>';
       if (open) earlier.forEach(function (e) { h += parentEventRow(e); });
       h += '</div>';

@@ -6793,7 +6793,7 @@ test('the parent calendar is a real month grid, driven only by the published eve
   ok(/ui\.parentCalMonth/.test(fn[0]) && !/ui\.calMonth/.test(fn[0]),
     'the parent grid shares ui.calMonth with the leader calendar');
   // A hollow storefront dot means an open shift on both sides now that parents can see coverage.
-  ok(/return covered \? 'dot-store' : 'dot-store-open';/.test(fn[0]),
+  ok(/cls: covered \? 'dot-store' : 'dot-store-open'/.test(fn[0]),
     'a storefront dot does not distinguish a fully staffed day');
   ok(/shifts\.every\(function \(s\) \{/.test(fn[0]), 'coverage is not computed from every shift');
   // Same tab-stop diet as the leader grid, and every focusable cell carries its own date.
@@ -9466,6 +9466,36 @@ test('J6: a family sees the sync status as words, never as a button that does no
   ok(/offline: 'Offline — showing what was saved last'/.test(SCRIPT), 'offline is not explained to families');
   ok(/tabsEl\.setAttribute\('aria-label', parent \? 'Pack pages' : 'Workspaces'\)/.test(SCRIPT),
     'the parent nav is still announced as "Workspaces"');
+});
+
+test('J7: a family’s controls are 44px, and the calendar says what is on a day without colour', () => {
+  const css = SCRIPT_CSS;
+  ok(/body\.parent-mode button\.btn\.small, \.join-gate button\.btn \{ min-height: 44px/.test(css),
+    'Sign out / Show N / Forget this link are under 44px for families');
+  ok(/body\.parent-mode \.cal-nav \{ width: 44px; height: 44px; \}/.test(css), 'the month arrows are under 44px');
+  ok(/body\.parent-mode \.tab, body\.parent-mode \.snav \{ min-height: 44px; \}/.test(css),
+    'the parent tabs or campout sub-tabs are under 44px');
+  ok(/body\.parent-mode \.camp-toc-secs a \{[^}]*min-height: 44px[^}]*padding: 10px 0/.test(css),
+    'the camping "On this page" links are not padded to a tap target');
+  // Letter per kind, and the kinds in the day's spoken label.
+  const ctx = vm.createContext({});
+  vm.runInContext(`var ui = {}; function monthKey(d) { return String(d).slice(0, 7); }
+    function monthLabel(k) { return k; } function fmtDate(d) { return 'Sat, Oct 3'; }
+    ${['esc', 'pad2', 'parentEventRow', 'parentShiftLines', 'parentCalendar'].map(slice).join('\n')}`, ctx);
+  ctx.pv = { events: [
+    { kind: 'meeting', date: '2026-10-03', title: 'Wolf den meeting' },
+    { kind: 'storefront', date: '2026-10-03', title: 'Kroger', shifts: [{ when: '10–12', who: [] }] }] };
+  const cal = vm.runInContext("parentCalendar(pv, '2026-10-01')", ctx);
+  ok(/aria-label="Sat, Oct 3: den meeting, storefront"/.test(cal), 'the day does not say what is on it');
+  ok(/class="cal-dot2 cal-glyph dot-mtg" aria-hidden="true">D</.test(cal), 'a den meeting dot has no letter');
+  ok(/class="cal-dot2 cal-glyph dot-store-open" aria-hidden="true">S</.test(cal), 'a storefront dot has no letter');
+  // Print.
+  ok(/\.pv-row, \.camp-facts, \.camp-list li \{ break-inside: avoid; \}/.test(css), 'an event or a campout fact can split across sheets');
+  ok(/\.pill, \.cal-dot2 \{ -webkit-print-color-adjust: exact/.test(css), 'the calendar dots print without their colour');
+  ok(/class="btn small no-print" data-act="parent-earlier"/.test(SCRIPT), 'the Show N button prints');
+  ok(/<div class="card no-print"><nav class="camp-toc"/.test(SCRIPT), 'the camping contents menu prints');
+  ok(/'<p class="print-only pv-print-head">'/.test(slice('renderParentApp')) && / · printed /.test(slice('renderParentApp')),
+    'the printout does not say whose it is or when it was printed');
 });
 
 /* ---------------- report ---------------- */
