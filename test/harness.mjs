@@ -953,6 +953,8 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // DENS: the event coercion rebuilds `dens` in rank order against it.
   'DENS',
   'programYearEndISO', 'EVENT_KINDS', 'freshEvent', 'ADV_RENAMES', 'dateToSlot',
+  // Wave A — the event coercion normalizes a pack meeting's agenda.
+  'PACK_AGENDA', 'normalizeAgenda',
   'ATT_MAX_HEADS', 'attHeads', 'freshAttendance', 'attEmpty', 'attTotals',
   'centsOf', 'freshLine', 'LINE_BASES', 'LINE_FUNDERS', 'freshCamping',
   'LINE_CATEGORIES', 'LINE_CATEGORY_KEYS', 'CHARGE_WHO',
@@ -10624,6 +10626,96 @@ test('A1: the planner is a Program section, writes only through a tagged den mee
   const r = slice('renderDenPlanner');
   ok(/var edit = canEdit\(\);/.test(r) && !/hasJob\(/.test(r), 'the planner gates on something other than the role');
   ok(!/denPlan|renderDenPlanner/.test(BPV()), 'the den planner reached the parent view');
+});
+
+// A2 — the pack meeting agenda.
+test('A2: the agenda has the seven standard sections, and a stored one keeps only what it should', () => {
+  const ctx = sandbox(['PACK_AGENDA', 'normalizeAgenda']);
+  eq(ctx.PACK_AGENDA.map((s) => s.key), ['gathering', 'opening', 'welcome', 'skits', 'recognition', 'minute', 'closing'], 'sections');
+  eq(ctx.normalizeAgenda(null), null, 'no agenda');
+  eq(ctx.normalizeAgenda([]), null, 'an array is not an agenda');
+  eq(ctx.normalizeAgenda({ opening: { who: '', notes: ' ' } }), null, 'an empty section is kept');
+  eq(JSON.parse(JSON.stringify(ctx.normalizeAgenda({
+    opening: { who: 'Bear den', notes: 7 }, bogus: { who: 'x' }, closing: 'Taps', minute: { notes: 'Kindness' }
+  }))), { opening: { who: 'Bear den', notes: '' }, minute: { who: '', notes: 'Kindness' } }, 'junk survived normalizing');
+});
+
+test('A2: a pack meeting is planned when Opening, Recognition and Closing are', () => {
+  const ctx = sandbox(['PACK_AGENDA_NEEDED', 'packAgendaMissing']);
+  const miss = ctx.packAgendaMissing;
+  eq(miss(undefined, 0), ['opening', 'recognition', 'closing'], 'no agenda');
+  eq(miss({ opening: { who: 'Wolves', notes: '' }, closing: { who: '', notes: 'Living circle' } }, 0), ['recognition'], 'no recognition');
+  // The awards are the plan for Recognition.
+  eq(miss({ opening: { who: 'Wolves', notes: '' }, closing: { who: 'CM', notes: '' } }, 3), [], 'awards to present');
+  eq(miss({ opening: { who: '  ', notes: '' }, recognition: { who: 'ACM', notes: '' }, closing: { who: 'CM', notes: '' } }, 0),
+    ['opening'], 'whitespace counted as planned');
+  eq(miss({ gathering: { who: 'x', notes: 'y' }, welcome: { who: 'x', notes: '' } }, 0),
+    ['opening', 'recognition', 'closing'], 'other sections stood in for the three');
+});
+
+function recognitionSandbox(att, extraEvents, adv) {
+  const setup = RUN_SETUP
+    .replace("{ id: 'a', name: 'Ada', den: 'Wolf' }", "{ id: 'a', name: 'Ada Kent', den: 'Wolf' }")
+    .replace("{ id: 'b', name: 'Ben', den: 'Wolf' }", "{ id: 'b', name: 'Ben Doe', den: 'Wolf' }")
+    .replace("{ id: 'c', name: 'Cy', den: 'Bear' }", "{ id: 'c', name: 'Cy Roe', den: 'Bear' }")
+    .replace("m3: {}", att)
+    .replace("    { id: 'p1',", extraEvents + "\n    { id: 'p1',");
+  const ctx = runSandbox(setup);
+  vm.runInContext(`${slice('PACK_AGENDA')}\n${slice('shortNames')}\n${slice('publicNameMap')}\n${slice('packRecognition')}
+    var ADV = ${JSON.stringify(adv || {})};
+    function advRec(id) { return ADV[id] || null; }
+    state.scouts = SCOUTS;`, ctx);
+  return ctx;
+}
+
+test('A2: Recognition lists awards ready and adventures finished since the last pack meeting, by first name', () => {
+  const ctx = recognitionSandbox("m3: { a: { scout: true } }", '', { c: { req: { Bobcat: 'done', Fellowship: 'awarded' }, elect: {} } });
+  const rec = vm.runInContext("packRecognition(state.events.filter(function (e) { return e.id === 'p1'; })[0])", ctx);
+  eq(rec.groups.map((g) => g.den), ['Wolf', 'Bear'], 'grouped by den, in rank order');
+  const wolf = rec.groups[0], bear = rec.groups[1];
+  // Ada was at all three Bobcat sessions and has nothing recorded; Ben missed one.
+  eq(JSON.parse(JSON.stringify(wolf.finished)), [{ adventure: 'Bobcat', who: ['Ada'] }], 'finished at den meetings');
+  // Cy's Bobcat is marked done (ready to hand over); the awarded one is not listed again.
+  eq(JSON.parse(JSON.stringify(bear.ready)), [{ adventure: 'Bobcat', who: ['Cy'] }], 'awards ready');
+  eq(rec.total, 2, 'total');
+  ok(!JSON.stringify(rec).includes('Kent') && !JSON.stringify(rec).includes('Roe'), 'a surname is on the recognition list');
+});
+
+test('A2: an adventure finished before the previous pack meeting is not recognised again', () => {
+  // A pack meeting on Aug 20: Bobcat's last session (Aug 19) was before it, so the Aug 26
+  // meeting has nothing new from den meetings.
+  const ctx = recognitionSandbox("m3: { a: { scout: true } }", "{ id: 'p0', kind: 'pack', den: '', date: '2026-08-20', adventure: '' },");
+  const p1 = vm.runInContext("packRecognition(state.events.filter(function (e) { return e.id === 'p1'; })[0])", ctx);
+  eq(p1.total, 0, 'the Aug 20 meeting’s recognition is repeated on Aug 26');
+  eq(p1.since, '2026-08-20', 'the window starts at the previous pack meeting');
+  const p0 = vm.runInContext("packRecognition(state.events.filter(function (e) { return e.id === 'p0'; })[0])", ctx);
+  eq(p0.groups.map((g) => g.finished.map((f) => f.adventure)), [['Bobcat']], 'the Aug 20 meeting does not recognise Bobcat');
+});
+
+test('A2: the agenda is leaders-only — no outbound surface reads it', () => {
+  const agendaRe = /\.agenda\b|packAgenda|packRecognition|PACK_AGENDA/;
+  for (const name of ['buildParentView', 'monthlyDigest']) {
+    const fn = new RegExp('function ' + name + '\\([\\s\\S]*?\\n  \\}').exec(SCRIPT);
+    ok(fn, name + '() not found');
+    ok(!agendaRe.test(codeOnly(fn[0])), name + ' reads the pack meeting agenda');
+  }
+  const ics = /function buildICS\(\)[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(!agendaRe.test(codeOnly(ics)), 'the .ics export reads the agenda');
+  // Its change handler has its own prefix, sits before the mtg-* gate, and never writes a note.
+  const h = /if \(ch === 'pk-agenda-who' \|\| ch === 'pk-agenda-notes'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(h, 'the agenda change handler was not found');
+  ok(!/\.note\b|noteInternal/.test(h[0]), 'the agenda handler writes a meeting note');
+  ok(/pkEv\.kind !== 'pack'/.test(h[0]), 'the agenda can be written onto a den meeting');
+  ok(SCRIPT.indexOf("if (ch === 'pk-agenda-who'") < SCRIPT.indexOf("if (ch === 'mtg-kind' ||"), 'the agenda handler sits after the mtg gate');
+  // The editor only on a pack meeting.
+  ok(/\(m\.kind === 'pack' \? packAgendaBlock\(m\) : ''\)/.test(slice('renderMeetingRow')), 'the editor is not on the pack meeting row');
+});
+
+test('A2: Home calls a pack meeting planned from its agenda, not from any note', () => {
+  const fn = /function homeTasks\(\) \{[\s\S]*?\n    return out;\n  \}/.exec(SCRIPT)[0];
+  ok(/packAgendaMissing\(nextPack\.agenda, packRecognition\(nextPack\)\.total\)/.test(fn), 'Home does not read the agenda');
+  ok(!/!nextPack\.note && !nextPack\.noteInternal/.test(fn), 'any note still counts as a plan');
+  ok(/normalizeAgenda\(e\.agenda\)/.test(slice('normalizeState')), 'a stored agenda is not normalized on load');
 });
 
 /* ---------------- report ---------------- */

@@ -3427,6 +3427,11 @@
       e.dens = e.kind === 'activity' ? DENS.filter(function (dn) { return e.dens.indexOf(dn) !== -1; }) : [];
       // Wave 15 — handbook renames apply to the free-text adventure field (exact match).
       if (e.adventure && ADV_RENAMES[e.adventure]) e.adventure = ADV_RENAMES[e.adventure];
+      // Wave A — the pack meeting agenda. Kept on any kind, not cleared when a meeting is
+      // switched to a den meeting: switching back should not have thrown the Cubmaster's
+      // plan away, and it is only ever shown (and only counts) on a pack meeting.
+      var ag = normalizeAgenda(e.agenda);
+      if (ag) e.agenda = ag; else delete e.agenda;
     });
     // -----------------------------------------------------------------------
     // The program year moved from a September start to a JULY one, because July is when
@@ -3884,6 +3889,7 @@
     archiveOpen: {},    // Wave 13 — { archiveId: true } expanded Past Seasons summaries (not persisted)
     repeatOffer: null,  // Wave 19(22) — meeting id showing the one-time "Repeat weekly" mini-form (not persisted)
     planAdv: null,      // Wave A — { den, name } the den planner's open "plan a meeting" form ('' name = an elective)
+    pkAgendaOpen: {},   // Wave A — { eventId: true } pack meetings with the agenda editor open
     agendaOpen: {},     // Wave 20 — { eventKey: true } expanded month-agenda rows (not persisted)
     // Phase 0 — Money · Ledger. All transient, like the rest of `ui`.
     ledgerView: 'entries',   // 'entries' | 'reconcile'
@@ -11292,11 +11298,19 @@
       // the room — so this is where the internal note belongs, and the only rendered place it
       // appears besides its own editor.
       if (m.noteInternal) h += line('Leaders only', esc(m.noteInternal));
+      if (m.kind === 'pack') {
+        var mMissing = packAgendaMissing(m.agenda, packRecognition(m).total);
+        h += line('Agenda', mMissing.length
+          ? '<span class="muted">still to plan: ' + esc(mMissing.map(packAgendaLabel).join(', ')) + '</span>'
+          : 'Opening, Recognition and Closing planned');
+      }
       h += line('RSVP', esc(rsvpSummaryLine(rsvpSummary(m.id))));
       var attT = attTotals(state.attendance[m.id]);
       if (attT.scouts) h += line('Attendance', attT.scouts + ' checked in');
       h += '<div class="row no-print" style="margin-top:8px">' +
-        '<button type="button" class="btn small primary" data-act="cal-jump-day" data-date="' + iso + '">Edit this meeting</button></div>';
+        '<button type="button" class="btn small primary" data-act="cal-jump-day" data-date="' + iso + '">Edit this meeting</button>' +
+        (m.kind === 'pack' ? '<button type="button" class="btn small" data-act="pk-agenda-print" data-id="' + esc(m.id) + '">Print agenda</button>' : '') +
+        '</div>';
     } else {
       var ev = e.ev;
       // Phase 2 — the event carries the schedule; the budget line (if any) carries the money.
@@ -11642,6 +11656,7 @@
       '<p class="eyebrow note-cap note-cap-int">Leaders only \u00b7 never published</p>' +
       '<input data-ch="mtg-note-internal" data-id="' + m.id + '" value="' + esc(m.noteInternal || '') +
         '" placeholder="Who is bringing what, follow-ups, anything not for families" aria-label="Internal note, leaders only" style="width:100%">' +
+      (m.kind === 'pack' ? packAgendaBlock(m) : '') +
       '<div class="row" style="margin-top:8px;align-items:flex-start">' +
       renderRsvpBlock(m.id) + renderAttendanceBlock(m) +
       '</div>' +
@@ -11820,6 +11835,194 @@
       out.push(d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()));
     }
     return out;
+  }
+  /* ----- The pack meeting agenda (Wave A, 2026-09-28) -------------------------------------
+     The Cubmaster's ask: a pack meeting has a standard shape, so give it one. Seven sections,
+     each with an optional WHO and NOTES, stored on the pack meeting as
+         ev.agenda = { opening: { who, notes }, … }      (only sections with something in them)
+     A sparse object keyed by section, not a list, so the order and the labels live here and a
+     renamed label never has to migrate anybody's record. normalizeAgenda drops unknown keys.
+
+     ⚠ LEADERS ONLY. The notes will name children ("Ben — Bobcat, ask his dad to pin it") and
+     the recognition list names scouts. Nothing here reaches buildParentView (an allowlist),
+     monthlyDigest or the .ics — a harness test scans all three, as it does for noteInternal.
+
+     RECOGNITION FILLS ITSELF (packRecognition): what is ready to hand over (marked done, not yet
+     awarded — the Scout Shop list's rule, shopItems), plus the adventures den meetings FINISHED
+     since the last pack meeting whose scouts nobody has recorded yet — the ones to sort out on
+     Advancement before the night. First names, from the public-name map.
+
+     "PLANNED" (packAgendaMissing, which Home reads): Opening, Recognition and Closing each have
+     a who or a note. Recognition also counts when the automatic list has something on it — the
+     awards ARE the plan for that section. Any note text on the meeting used to be enough, which
+     said a meeting was planned because somebody wrote "bring a chair". */
+  var PACK_AGENDA = [
+    { key: 'gathering', label: 'Gathering' },
+    { key: 'opening', label: 'Opening / flag ceremony' },
+    { key: 'welcome', label: 'Welcome' },
+    { key: 'skits', label: 'Den skits / demos' },
+    { key: 'recognition', label: 'Recognition' },
+    { key: 'minute', label: 'Cubmaster\u2019s Minute' },
+    { key: 'closing', label: 'Closing' }
+  ];
+  var PACK_AGENDA_NEEDED = ['opening', 'recognition', 'closing'];
+  function packAgendaLabel(key) {
+    var sec = PACK_AGENDA.filter(function (x) { return x.key === key; })[0];
+    return sec ? sec.label : '';
+  }
+  // Coerce a stored agenda: known sections only, strings only, empty sections dropped. Returns
+  // null when nothing is left, so an event with no agenda carries no key at all.
+  function normalizeAgenda(a) {
+    if (!a || typeof a !== 'object' || Array.isArray(a)) return null;
+    var out = {}, any = false;
+    PACK_AGENDA.forEach(function (sec) {
+      var v = a[sec.key];
+      if (!v || typeof v !== 'object') return;
+      var who = typeof v.who === 'string' ? v.who : '', notes = typeof v.notes === 'string' ? v.notes : '';
+      if (!who.trim() && !notes.trim()) return;
+      out[sec.key] = { who: who, notes: notes };
+      any = true;
+    });
+    return any ? out : null;
+  }
+  function packAgendaSection(ev, key) {
+    var v = ev && ev.agenda && ev.agenda[key];
+    return { who: (v && typeof v.who === 'string') ? v.who : '', notes: (v && typeof v.notes === 'string') ? v.notes : '' };
+  }
+  // The needed sections this agenda has not planned yet, in agenda order. [] = planned.
+  function packAgendaMissing(agenda, recognitionCount) {
+    return PACK_AGENDA_NEEDED.filter(function (key) {
+      var v = agenda && agenda[key];
+      var filled = !!(v && ((typeof v.who === 'string' && v.who.trim()) || (typeof v.notes === 'string' && v.notes.trim())));
+      if (key === 'recognition' && recognitionCount > 0) filled = true;
+      return !filled;
+    });
+  }
+  // Who is recognised at pack meeting `m`, grouped by den:
+  //   ready     adventures marked done and not yet awarded — hand these over
+  //   finished  den-meeting runs whose last session fell after the previous pack meeting and on
+  //             or before this one, with the scouts who were at every session and have nothing
+  //             recorded — confirm and record on Advancement first
+  // Names are first names (publicNameMap). Leaders only.
+  function packRecognition(m) {
+    var names = publicNameMap(state.scouts);
+    function first(s) { return names[s.id] || String(s.name || '').trim().split(/\s+/)[0] || 'A scout'; }
+    var byDen = {}, total = 0;
+    function den(d) {
+      var k = d || 'No den';
+      return byDen[k] || (byDen[k] = { den: k, ready: {}, finished: [] });
+    }
+    activeScouts().forEach(function (s) {
+      var a = advRec(s.id);
+      if (!a) return;
+      ['req', 'elect'].forEach(function (kk) {
+        Object.keys(a[kk] || {}).forEach(function (nm) {
+          if (a[kk][nm] !== 'done') return;
+          var g = den(s.den);
+          (g.ready[nm] = g.ready[nm] || []).push(first(s));
+          total += 1;
+        });
+      });
+    });
+    var when = (m && m.date) || '';
+    var prev = when ? state.events.filter(function (e) {
+      return e.kind === 'pack' && e.date && e.date < when && e.id !== m.id;
+    }).sort(function (a, b) { return b.date.localeCompare(a.date); })[0] : null;
+    if (when) {
+      adventureRuns().forEach(function (run) {
+        var last = run.sessions[run.sessions.length - 1].date;
+        if (last > when || (prev && last <= prev.date)) return;
+        var who = runProgress(run, when).complete.filter(function (row) { return !row.status; });
+        if (!who.length) return;
+        den(run.den || 'All dens').finished.push({ adventure: run.adventure, who: who.map(function (row) { return first(row.scout); }) });
+        total += who.length;
+      });
+    }
+    var groups = [];
+    DENS.concat(['All dens', 'No den']).forEach(function (d) {
+      var g = byDen[d];
+      if (!g) return;
+      var reqOrder = (ADVENTURES[d] && ADVENTURES[d].required) || [];
+      var readyNames = Object.keys(g.ready).sort(function (a, b) {
+        var ia = reqOrder.indexOf(a), ib = reqOrder.indexOf(b);
+        if (ia !== -1 || ib !== -1) return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+        return a.localeCompare(b);
+      });
+      groups.push({ den: d, ready: readyNames.map(function (nm) { return { adventure: nm, who: g.ready[nm] }; }), finished: g.finished });
+    });
+    return { groups: groups, total: total, since: prev ? prev.date : '' };
+  }
+  // The recognition list as markup — the editor and the printed sheet show the same thing.
+  function packRecognitionHtml(rec) {
+    if (!rec.total) {
+      return '<p class="small muted" style="margin:4px 0 0">Nothing ready to present yet. Adventures marked done on ' +
+        'Advancement, and ones den meetings finish before this meeting, appear here.</p>';
+    }
+    return rec.groups.map(function (g) {
+      var h = '<p class="small" style="margin:6px 0 2px"><strong>' + esc(g.den) + '</strong></p>';
+      g.ready.forEach(function (it) {
+        h += '<p class="small" style="margin:0 0 2px 10px">' + esc(it.adventure) + ' — ' + esc(it.who.join(', ')) + '</p>';
+      });
+      g.finished.forEach(function (it) {
+        h += '<p class="small" style="margin:0 0 2px 10px">' + esc(it.adventure) + ' — ' + esc(it.who.join(', ')) +
+          ' <span class="muted">(finished at den meetings; record it on Advancement first)</span></p>';
+      });
+      return h;
+    }).join('');
+  }
+  // The agenda on a pack meeting's row: a one-line status, and the editor behind a toggle
+  // (fourteen fields are too many to show on every pack meeting on the calendar).
+  function packAgendaBlock(m) {
+    var rec = packRecognition(m);
+    var missing = packAgendaMissing(m.agenda, rec.total);
+    var open = !!ui.pkAgendaOpen[m.id];
+    var h = '<p class="eyebrow note-cap note-cap-int">Agenda \u00b7 leaders only</p>' +
+      '<div class="row no-print" style="gap:6px;align-items:center;flex-wrap:wrap">' +
+      '<span class="small' + (missing.length ? ' muted' : '') + '">' +
+      (missing.length
+        ? 'Still to plan: ' + esc(missing.map(packAgendaLabel).join(', '))
+        : '\u2713 Opening, Recognition and Closing planned') + '</span>' +
+      '<button type="button" class="btn small" data-act="pk-agenda-toggle" data-id="' + esc(m.id) + '" aria-expanded="' + open + '">' +
+      (open ? 'Hide agenda' : 'Plan the agenda') + '</button>' +
+      '<button type="button" class="btn small ghost" data-act="pk-agenda-print" data-id="' + esc(m.id) + '">Print agenda</button></div>';
+    if (!open) return h;
+    PACK_AGENDA.forEach(function (sec) {
+      var v = packAgendaSection(m, sec.key);
+      h += '<div class="block-card" style="margin:8px 0 0;text-align:left">' +
+        '<p class="small" style="margin:0 0 4px;font-weight:650">' + esc(sec.label) + '</p>' +
+        '<input data-ch="pk-agenda-who" data-id="' + esc(m.id) + '" data-key="' + sec.key + '" value="' + esc(v.who) +
+        '" placeholder="Who leads it (optional)" aria-label="' + esc(sec.label + ': who leads it') + '" style="width:100%">' +
+        '<textarea class="notes-in" data-ch="pk-agenda-notes" data-id="' + esc(m.id) + '" data-key="' + sec.key + '" rows="2" ' +
+        'placeholder="Notes (optional)" aria-label="' + esc(sec.label + ': notes') + '" style="margin-top:6px">' + esc(v.notes) + '</textarea>' +
+        (sec.key === 'recognition' ? packRecognitionHtml(rec) : '') +
+        '</div>';
+    });
+    return h;
+  }
+  // The printed agenda — carried to the meeting. Leaders only, like the agenda itself.
+  function renderPackAgendaSheet(o) {
+    var m = getEvent(o.id);
+    if (!m) return '';
+    var rec = packRecognition(m);
+    var h = '<div class="overlay" role="dialog" aria-modal="true" aria-label="Pack meeting agenda"><div class="overlay-inner">' +
+      '<div class="row no-print" style="margin-bottom:12px">' +
+      '<button type="button" class="btn" data-act="close-overlay">&larr; Back</button>' +
+      '<button type="button" class="btn primary" data-act="print-pk-agenda">Print / Save PDF</button></div>' +
+      '<div class="summary-sheet">' +
+      '<div class="row" style="gap:10px;margin-bottom:2px"><span class="fleur">' + FLEUR + '</span>' +
+      '<h1 style="margin:0">' + esc(state.packName || 'Pack') + ' — Pack meeting</h1></div>' +
+      '<p class="muted small" style="margin:0 0 14px">' + esc(fmtDate(m.date)) +
+      (fmtClock(m.time) ? ' · ' + esc(fmtClock(m.time)) : '') + (m.note ? ' · ' + esc(m.note) : '') +
+      ' · leaders’ copy</p>';
+    PACK_AGENDA.forEach(function (sec, i) {
+      var v = packAgendaSection(m, sec.key);
+      h += '<div style="margin:0 0 12px"><p style="margin:0"><strong>' + (i + 1) + '. ' + esc(sec.label) + '</strong>' +
+        (v.who.trim() ? ' <span class="muted">— ' + esc(v.who) + '</span>' : '') + '</p>' +
+        (v.notes.trim() ? '<p class="small" style="margin:2px 0 0">' + esc(v.notes).replace(/\n/g, '<br>') + '</p>' : '') +
+        (sec.key === 'recognition' ? packRecognitionHtml(rec) : '') + '</div>';
+    });
+    if (m.noteInternal) h += '<hr class="divider"><p class="small" style="margin:0"><strong>Leaders only:</strong> ' + esc(m.noteInternal) + '</p>';
+    return h + '</div></div></div>';
   }
   // The next pack meeting on or after a date — where adventure awards are formally presented.
   function nextPackMeetingAfter(iso) {
@@ -15398,11 +15601,16 @@
     var upcomingMeetings = state.events.filter(function (m) { return eventIsMeeting(m) && m.date && m.date >= today; })
       .sort(function (a, b) { return a.date.localeCompare(b.date); });
     var nextPack = upcomingMeetings.find(function (m) { return m.kind === 'pack'; });
-    // Either note counts: a Cubmaster who wrote the run-of-show in the leaders-only field has
-    // planned the meeting, and being told they haven't would be wrong.
-    if (nextPack && !nextPack.note && !nextPack.noteInternal) {
-      add('cubmaster', 'week', 'The next pack meeting has no plan yet',
-        fmtDate(nextPack.date) + (fmtClock(nextPack.time) ? ' · ' + fmtClock(nextPack.time) : ''), 'program', 'calendar');
+    // Wave A — planned means the AGENDA has an Opening, Recognition and Closing (see
+    // packAgendaMissing). It used to be any note text at all, so "bring a chair" in the parents'
+    // note was a planned meeting.
+    var npMissing = nextPack ? packAgendaMissing(nextPack.agenda, packRecognition(nextPack).total) : [];
+    if (npMissing.length) {
+      add('cubmaster', 'week', npMissing.length === PACK_AGENDA_NEEDED.length
+        ? 'The next pack meeting has no plan yet'
+        : 'The next pack meeting’s agenda still needs ' + npMissing.map(packAgendaLabel).join(' and '),
+        fmtDate(nextPack.date) + (fmtClock(nextPack.time) ? ' · ' + fmtClock(nextPack.time) : '') +
+        ' · Opening, Recognition and Closing make it planned', 'program', 'calendar');
     }
     var vagueActivities = state.events.filter(function (a) {
       if (a.kind !== 'activity') return false;
@@ -18479,6 +18687,8 @@
     if (o.kind === 'closeout') return renderCloseoutOverlay();
     // Wave 19(15) — printable storefront day sheet.
     if (o.kind === 'day-sheet') return renderDaySheet(o);
+    // Wave A — the printable pack meeting agenda.
+    if (o.kind === 'pk-agenda') return renderPackAgendaSheet(o);
     // Wave 19(15b) — full-schedule table, one glance.
     if (o.kind === 'sf-glance') return renderGlance(o);
     return '';
@@ -22066,6 +22276,10 @@
     // Wave A — the den planner's inline "plan a meeting" form. Opening it writes nothing.
     if (act === 'plan-adv') { ui.planAdv = { den: el.dataset.den || '', name: el.dataset.name || '' }; render(); return; }
     if (act === 'plan-adv-cancel') { ui.planAdv = null; render(); return; }
+    // Wave A — the pack meeting agenda: open/close the editor, and the printable sheet.
+    if (act === 'pk-agenda-toggle') { ui.pkAgendaOpen[el.dataset.id] = !ui.pkAgendaOpen[el.dataset.id]; render(); return; }
+    if (act === 'pk-agenda-print') { ui.overlay = { kind: 'pk-agenda', id: el.dataset.id }; render(); return; }
+    if (act === 'print-pk-agenda') { window.print(); return; }
     // Phase 2 — one delete for every calendar row, meeting or activity.
     //
     // It removes the EVENT and its RSVP/attendance, and deliberately leaves any budget line
@@ -23017,6 +23231,21 @@
         evr.dens = DENS.filter(function (dn) { return evNext.indexOf(dn) !== -1; });
       }
       else return;
+      commit(); return;
+    }
+    // Wave A — the pack meeting agenda. Its own prefix, deliberately NOT an mtg-* key: nothing
+    // about it can fall into the meeting handler below and land in a published field.
+    if (ch === 'pk-agenda-who' || ch === 'pk-agenda-notes') {
+      var pkEv = getEvent(el.dataset.id);
+      var pkKey = el.dataset.key;
+      if (!pkEv || pkEv.kind !== 'pack' || !packAgendaLabel(pkKey)) return;
+      var pkAg = (pkEv.agenda && typeof pkEv.agenda === 'object') ? pkEv.agenda : {};
+      var pkSec = packAgendaSection(pkEv, pkKey);
+      pkSec[ch === 'pk-agenda-who' ? 'who' : 'notes'] = el.value;
+      pkAg[pkKey] = pkSec;
+      // Through the normalizer, so an emptied section (and an emptied agenda) is removed.
+      var pkNext = normalizeAgenda(pkAg);
+      if (pkNext) pkEv.agenda = pkNext; else delete pkEv.agenda;
       commit(); return;
     }
     // ⚠ THIS GATE IS ITSELF AN ALLOWLIST. A new mtg-* field needs adding in BOTH places — here
