@@ -260,6 +260,13 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   cost card calls its figure the **fees in the pack's plan** for one scout and one parent across
   a typical year — the plan has no line for a fee it does not know about. What `buildParentView`
   publishes did not change.
+- **Forgiveness undone on one tap; duplicates left from before M8 (T10).** Undoing a forgiveness
+  now takes two taps, armed per charge. And the per-family charges M8 stopped raising twice are
+  still there where they were raised before it — both match what `syncCharges` wants, so it keeps
+  both. `duplicateCharges` finds them (same `chargeMatchKey`; keeps the one that is settled or
+  paid against, else the oldest; lists the rest only if open and unpaid). The Dues screen lists
+  them under *Charged twice?* and the Treasurer's Home says how many; a leader removes each with
+  two taps, re-checked at the second tap, with Undo. Nothing removes one automatically.
 
 ---
 

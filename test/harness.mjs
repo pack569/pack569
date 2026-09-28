@@ -8808,6 +8808,42 @@ test('T9: a shared balance, a carried credit and the parents’ cost card say wh
   ok(/fees in the pack’s plan/.test(pv), 'the parents’ cost card is not softened');
 });
 
+test('T10: undoing a forgiveness takes two taps', () => {
+  const u = /if \(act\.indexOf\('charge-unforgive:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/arm\(act, function \(\) \{[\s\S]*uc\.forgiven = null;/.test(u), 'a forgiveness is undone on one tap');
+  const blk = /function duesFamilyBlock\(f\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/data-act="charge-unforgive:' \+ c\.id \+ '"/.test(blk) && /Tap again to undo/.test(blk),
+    'the Undo button is not keyed per charge, so it cannot show it is armed');
+  ok(!/data-act="charge-unforgive" /.test(SCRIPT), 'the old one-tap button is still drawn');
+});
+
+test('T10: unpaid duplicate charges are listed for a leader, never removed on their own', () => {
+  const ctx = sandbox(['chargeIsOpen', 'duplicateCharges']);
+  const fam = { aol: 'F', wolf: 'F' };
+  const mk = (c) => c.lineId === 'FAM' && c.who === 'scout' ? 'FAM|fam:' + (fam[c.scoutId] || c.scoutId) : c.id;
+  const open = (id, sid, extra) => Object.assign({ id: id, scoutId: sid, lineId: 'FAM', who: 'scout', seq: 0,
+    amountCents: 6000, waivedBy: '', forgiven: null }, extra || {});
+  // The old charge (crossed-over AoL) and the one raised again for the sibling.
+  let out = ctx.duplicateCharges([open('c1', 'aol'), open('c2', 'wolf'), open('x', 'ben')], mk, {});
+  eq(out.map((d) => [d.charge.id, d.keep.id]), [['c2', 'c1']], 'the later one is listed, the oldest kept');
+  // The one money went to is kept, whichever it is.
+  out = ctx.duplicateCharges([open('c1', 'aol'), open('c2', 'wolf')], mk, { c2: 6000 });
+  eq(out.map((d) => [d.charge.id, d.keep.id]), [['c1', 'c2']], 'a paid charge was listed for removal');
+  // Both paid against, or the other settled: nothing is listed for removal as "unpaid".
+  eq(ctx.duplicateCharges([open('c1', 'aol'), open('c2', 'wolf')], mk, { c1: 100, c2: 100 }).length, 0, 'paid duplicates listed');
+  eq(ctx.duplicateCharges([open('c1', 'aol', { forgiven: { reason: 'r' } }), open('c2', 'wolf', { waivedBy: 't' })], mk, {}).length, 0,
+    'settled duplicates listed');
+  // Nothing in the code removes one without the leader's second tap.
+  const rm = /if \(act\.indexOf\('charge-dup-remove:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(rm && /arm\(act, function \(\) \{/.test(rm[0]) && /duplicateChargesNow\(\)\.filter/.test(rm[0]) && /deleteWithUndo\(/.test(rm[0]),
+    'removing a duplicate is not two taps, re-checked, with Undo');
+  const sc = /function syncCharges\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(!/duplicateCharges/.test(sc), 'syncCharges removes duplicates on its own');
+  const dues = /function renderDues\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/var dups = duplicateChargesNow\(\);/.test(dues) && /Charged twice\?/.test(dues), 'the Dues card does not list them');
+  ok(/dupN \+ ' charge' \+ \(dupN === 1 \? '' : 's'\) \+ ' may be a duplicate'/.test(SCRIPT), 'the Treasurer is not told on Home');
+});
+
 test('T1: a refund source only survives on money out that names a family', () => {
   const ns = /function normalizeState\(d\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/if \(e\.source === 'refund' && \(e\.direction !== 'out' \|\| !e\.scoutId\)\) e\.source = '';/.test(ns),
@@ -8971,7 +9007,7 @@ test('M10: a reconciled entry is read-only until it is deliberately un-reconcile
 test('M10: forgiving needs a reason and a name, and undoing it leaves a trace', () => {
   const f = /if \(kind === 'charge-forgive'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/if \(!fgReason \|\| !fgBy\) \{/.test(f), 'a charge can be forgiven with no reason or nobody agreeing it');
-  const u = /if \(act === 'charge-unforgive'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  const u = /if \(act\.indexOf\('charge-unforgive:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/uc\.note = forgivenessUndoneNote\(/.test(u), 'undoing a forgiveness erases it without a trace');
   const { forgivenessUndoneNote } = sandbox(['fmt', 'forgivenessUndoneNote']);
   const n1 = forgivenessUndoneNote('', { date: '2026-10-01', by: 'Committee Chair', reason: 'hardship' }, 4000, '2026-10-09');

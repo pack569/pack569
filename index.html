@@ -5802,6 +5802,41 @@
     return chargeKey(c);
   }
 
+  // Treasurer's review (T10) — charges that are the SAME charge twice. Before M8, a per-family
+  // fee was matched by scout id, so when the scout carrying it crossed over and billing moved to a
+  // sibling, the family was charged the fee a second time. M8 stopped new ones; the ones already
+  // raised both match what syncCharges wants (same chargeMatchKey), so it keeps both for good.
+  //
+  // This only FINDS them: `matchKeyOf(c)` groups charges ('' = never a duplicate), and in each
+  // group of two or more one is kept — the first that is settled or has money allocated to it,
+  // else the oldest — and the rest are listed only if they are open and nothing paid them. A
+  // duplicate somebody has paid against is a conversation, not a cleanup. Nothing is deleted
+  // here or automatically anywhere; a leader removes each one. Pure.
+  function duplicateCharges(charges, matchKeyOf, paidOn) {
+    var groups = {}, order = [];
+    charges.forEach(function (c) {
+      var k = matchKeyOf(c);
+      if (!k) return;
+      if (!groups[k]) { groups[k] = []; order.push(k); }
+      groups[k].push(c);
+    });
+    var out = [];
+    order.forEach(function (k) {
+      var g = groups[k];
+      if (g.length < 2) return;
+      var keep = g.filter(function (c) { return !chargeIsOpen(c) || (paidOn[c.id] || 0) > 0; })[0] || g[0];
+      g.forEach(function (c) {
+        if (c !== keep && chargeIsOpen(c) && !((paidOn[c.id] || 0) > 0)) out.push({ charge: c, keep: keep });
+      });
+    });
+    return out;
+  }
+  function duplicateChargesNow() {
+    return duplicateCharges(state.charges, function (c) {
+      return c.lineId ? chargeMatchKey(c, getBudgetLine(c.lineId), chargeFamilyKey) : '';
+    }, chargePaidAllocation(state.charges, state.ledger, chargeFamilyKey));
+  }
+
   // ---- reconcile stored charges against what should exist ----
   //
   // Charges are STORED, not derived: once raised, a charge stands and carries its reason.
@@ -14459,6 +14494,12 @@
       add('treasurer', 'week', owingFams.length + ' famil' + (owingFams.length === 1 ? 'y' : 'ies') + ' still owe ' + fmt(owedTotal),
         'Dues and per-scout fees', 'money', 'dues');
     }
+    // T10 — a family charged the same fee twice (from before M8). Listed on Dues for a leader to check.
+    var dupN = duplicateChargesNow().length;
+    if (dupN) {
+      add('treasurer', 'week', dupN + ' charge' + (dupN === 1 ? '' : 's') + ' may be a duplicate',
+        'Check them on Dues & fees', 'money', 'dues');
+    }
     // Phase 1 — a past activity that was budgeted for but has nothing posted against it in
     // the ledger is half a book: the pack knows what it planned and not what it paid.
     var unposted = state.budget.activities.filter(function (a) {
@@ -14941,7 +14982,11 @@
           '<span class="money small">' + fmt(c.amountCents) + '</span>' +
           (c.waivedBy ? '' :
             (c.forgiven
-              ? '<button type="button" class="btn small ghost" data-act="charge-unforgive" data-id="' + c.id + '">Undo</button>'
+              // T10 — two taps, like every other control that changes the book: a forgiveness is a
+              // committee decision, and one stray tap put the money back on a family's account.
+              ? '<button type="button" class="btn small ' + (ui.armed === 'charge-unforgive:' + c.id ? 'danger armed' : 'ghost') +
+                '" data-act="charge-unforgive:' + c.id + '">' +
+                (ui.armed === 'charge-unforgive:' + c.id ? 'Tap again to undo' : 'Undo') + '</button>'
               : '<button type="button" class="btn small ghost" data-act="charge-forgive" data-id="' + c.id + '">Forgive…</button>')) +
           '</div>';
         if (ui.forgiveFor === c.id) {
@@ -15006,6 +15051,26 @@
       h += '<hr class="divider">' + settled.map(function (l) { return '<p class="small" style="margin:6px 0 0">' + l + '.</p>'; }).join('');
     }
     h += '</div>';
+
+    // T10 — duplicates from before M8, listed for a leader to remove one at a time.
+    var dups = duplicateChargesNow();
+    if (dups.length) {
+      h += '<div class="card"><h2 class="section display">Charged twice?</h2>' +
+        '<p class="small muted" style="margin:0 0 8px">Each of these is the same fee as another charge the family already has — ' +
+        'usually a per-family fee raised again for a sibling when the scout carrying it crossed over, before that was fixed. ' +
+        'Nothing has been paid against them. Check each one and remove it if it is a duplicate; nothing here is removed for you.</p>';
+      dups.forEach(function (d) {
+        var dc = d.charge, dLine = getBudgetLine(dc.lineId), dWho = getScout(dc.scoutId), kWho = getScout(d.keep.scoutId);
+        var dAct = 'charge-dup-remove:' + dc.id;
+        h += '<div class="att-row" style="cursor:default"><span class="att-name">' +
+          esc(dWho ? dWho.name : 'A scout no longer on the roster') + ' · ' + esc(dLine ? (dLine.name || 'Untitled line') : 'Removed line') +
+          ' <span class="small muted">— also charged to ' + esc(kWho ? kWho.name : 'the family') + '</span></span>' +
+          '<span class="money small">' + fmt(dc.amountCents) + '</span>' +
+          '<button type="button" class="btn small ' + (ui.armed === dAct ? 'danger armed' : 'ghost') + '" data-act="' + dAct + '">' +
+          (ui.armed === dAct ? 'Tap again to remove' : 'Remove') + '</button></div>';
+      });
+      h += '</div>';
+    }
 
     // ---- per family ----
     // "Family balances", not "By family": each block IS a household's account now, siblings
@@ -20680,15 +20745,35 @@
     /* ----- Phase 3b — settling a charge ----- */
     if (act === 'charge-forgive') { ui.forgiveFor = el.dataset.id; render(); return; }
     if (act === 'charge-forgive-cancel') { ui.forgiveFor = null; render(); return; }
-    if (act === 'charge-unforgive') {
-      var uc = state.charges.find(function (c) { return c.id === el.dataset.id; });
-      // M10 — undoing a forgiveness leaves a trace of it. The charge is owed again, which is
-      // right, but "the committee forgave this and then changed its mind" is part of the book.
-      if (uc && uc.forgiven) {
-        uc.note = forgivenessUndoneNote(uc.note, uc.forgiven, uc.amountCents, todayISO());
-        uc.forgiven = null;
-        commit();
-      }
+    if (act.indexOf('charge-unforgive:') === 0) {
+      var ucId = act.slice('charge-unforgive:'.length);
+      // T10 — armed on the act, so only this charge's Undo reads "Tap again".
+      arm(act, function () {
+        var uc = state.charges.find(function (c) { return c.id === ucId; });
+        // M10 — undoing a forgiveness leaves a trace of it. The charge is owed again, which is
+        // right, but "the committee forgave this and then changed its mind" is part of the book.
+        if (uc && uc.forgiven) {
+          uc.note = forgivenessUndoneNote(uc.note, uc.forgiven, uc.amountCents, todayISO());
+          uc.forgiven = null;
+          commit();
+        }
+      });
+      return;
+    }
+    // T10 — remove ONE duplicate charge a leader has looked at. Re-checked against the list at the
+    // moment of the second tap, so this can never remove a charge that is not (or no longer) an
+    // unpaid duplicate. Undo puts it back.
+    if (act.indexOf('charge-dup-remove:') === 0) {
+      var dupId = act.slice('charge-dup-remove:'.length);
+      arm(act, function () {
+        var hit = duplicateChargesNow().filter(function (d) { return d.charge.id === dupId; })[0];
+        if (!hit) { showToast('That charge is no longer a duplicate — nothing removed.'); render(); return; }
+        var dupIx = state.charges.indexOf(hit.charge);
+        state.charges.splice(dupIx, 1);
+        deleteWithUndo('the duplicate charge', function () {
+          state.charges.splice(Math.min(dupIx, state.charges.length), 0, hit.charge);
+        });
+      });
       return;
     }
     // Money arriving is a LEDGER entry that carries a scout — the same record any other
