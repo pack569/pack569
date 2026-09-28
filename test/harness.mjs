@@ -10173,6 +10173,15 @@ test('K2: with cash through Trail’s End, the stretch bar carries the cash goal
   ok(card.length > 0, 'the card');
 });
 
+test('K4: the "one entry per scout per sale day" comment sits on the code it describes', () => {
+  const overlap = SCRIPT.indexOf('  function teManualOverlap(');
+  const note = SCRIPT.indexOf('// ONE ENTRY PER SCOUT PER SALE DAY');
+  const entries = SCRIPT.indexOf('  function teLiveEntriesFor(');
+  ok(overlap !== -1 && note !== -1 && entries !== -1, 'a landmark is missing');
+  ok(overlap < note && note < entries, 'teManualOverlap still sits between the sale-day comment and teLiveEntriesFor');
+  ok(!/\n  function /.test(SCRIPT.slice(note, entries)), 'another declaration sits between the comment and its function');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

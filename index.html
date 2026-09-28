@@ -19745,6 +19745,20 @@
     });
     return { onlineCents: onlineCents, wagonCents: wagonCents, scouts: scoutN, matched: m.matched.length, unmatched: m.unmatched };
   }
+  // Scouts who would end up with BOTH hand-entered and imported online/wagon sales. The import
+  // never touches a manual entry, which is right — but if the Kernel typed a scout's online
+  // orders in by hand before the first import, the import adds them a second time and the scout
+  // is credited twice. The preview names them; deciding which to keep is a person's call.
+  // Pure: takes the matched rows and the entries.
+  function teManualOverlap(matched, entries) {
+    var manual = {};
+    (entries || []).forEach(function (e) {
+      if (e && e.source !== 'te-import' && (e.kind === 'online' || e.kind === 'wagon') && (e.salesCents || 0) > 0) manual[e.scoutId] = true;
+    });
+    return matched.filter(function (r) {
+      return manual[r.scoutId] && ((r.onlineCents || 0) > 0 || (r.wagonCents || 0) > 0);
+    }).map(function (r) { return r.name; });
+  }
   // Wave 16 — commit the live-season import: the report is a full-season snapshot, so
   // every previously imported entry (source 'te-import') is removed globally, then fresh
   // online/wagon entries are written per matched scout. Manual entries (no source) are
@@ -19760,20 +19774,6 @@
   // An order with no readable date falls back to today, which is the old behavior and the
   // conservative one (it can only miss a deadline, never sneak under one); the preview says how
   // many there were so the Kernel can check the file.
-  // Scouts who would end up with BOTH hand-entered and imported online/wagon sales. The import
-  // never touches a manual entry, which is right — but if the Kernel typed a scout's online
-  // orders in by hand before the first import, the import adds them a second time and the scout
-  // is credited twice. The preview names them; deciding which to keep is a person's call.
-  // Pure: takes the matched rows and the entries.
-  function teManualOverlap(matched, entries) {
-    var manual = {};
-    (entries || []).forEach(function (e) {
-      if (e && e.source !== 'te-import' && (e.kind === 'online' || e.kind === 'wagon') && (e.salesCents || 0) > 0) manual[e.scoutId] = true;
-    });
-    return matched.filter(function (r) {
-      return manual[r.scoutId] && ((r.onlineCents || 0) > 0 || (r.wagonCents || 0) > 0);
-    }).map(function (r) { return r.name; });
-  }
   function teLiveEntriesFor(row, today) {
     var out = [];
     var byDate = row.byDate || {};
