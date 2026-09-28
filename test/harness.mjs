@@ -8732,7 +8732,7 @@ test('T1: a refunded family credit leaves the account, and nothing is carried', 
   const tr = /function tierReimbursements\(map\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/!entryRefundsFamily\(e\)/.test(tr), 'a refund on a paid-direct line counts as a reimbursement');
   const add = /if \(act === 'ledger-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/source: dr\.direction === 'in' \? dr\.source : \(dr\.scoutId \? 'refund' : ''\)/.test(add) && /scoutId: dr\.scoutId,/.test(add),
+  ok(/source: dr\.direction === 'in' \? dr\.source : \(\(dr\.scoutId && !drReimb\) \? 'refund' : ''\)/.test(add) && /scoutId: dr\.scoutId,/.test(add),
     'a new money-out entry cannot name the family refunded');
   const rows = /function renderLedgerEntries\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/data-ch="led-scout"[^\n]*Refunded to which family/.test(rows) && /data-ch="ledn-scout" aria-label="Refunded to which family"/.test(rows),
@@ -9935,6 +9935,42 @@ test('S4: the sharing settings cannot be written before the pack’s own copy ha
   eq(ready.WRITES[0].showAmounts, false, 'the untouched switch was not carried over');
   eq(ready.WRITES[0].contact, 'Chair', 'the untouched contact line was not carried over');
   ok(!/ disabled/.test(ready.renderJoinCard()), 'a loaded card is still disabled');
+});
+
+test('M1: a refund past the family’s credit is flagged, shown, and never used for a reimbursement', () => {
+  const ctx = sandbox(CHARGE_FNS.concat(['refundCreditBefore']));
+  const charges = [{ id: 'd', scoutId: 'ada', lineId: 'D', amountCents: 8000, date: '2026-09-01', waivedBy: '', forgiven: null }];
+  const paid = { id: 'p', direction: 'in', scoutId: 'ada', amountCents: 12000, source: 'family' };       // $40 credit
+  const small = { id: 'r1', direction: 'out', scoutId: 'ada', amountCents: 4000, source: 'refund' };
+  const big = { id: 'r2', direction: 'out', scoutId: 'ada', amountCents: 9000, source: 'refund' };
+  eq(ctx.refundCreditBefore(charges, [paid], null, big), 4000, 'the credit before an unsaved refund');
+  eq(ctx.refundCreditBefore(charges, [paid, big], null, big), 4000, 'a saved refund counted against itself');
+  eq(ctx.refundCreditBefore(charges, [paid, small], null, small), 4000, 'the credit before a refund that fits');
+  eq(ctx.refundCreditBefore(charges, [paid], null, { direction: 'out', scoutId: 'ada', amountCents: 1, source: '', reimbursement: true }),
+    null, 'a reimbursement is measured as if it were a refund');
+  // No credit, no charges: every cent is over.
+  eq(ctx.refundCreditBefore([], [], null, big), 0, 'a family with nothing gets a credit');
+  // The warning's words, and where it fires.
+  const w = slice('refundOverCreditWarning');
+  ok(/This is more than ' \+/.test(w) && /\\u2019s credit of ' \+ fmt\(credit\) \+ '\. Refunds give back money a family paid; to repay a council ' \+\s*'fee for a reward tier, use Reimburse on the Budget\.'/.test(w),
+    'the warning does not say what the reviewer asked it to');
+  const add = /if \(act === 'ledger-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/var drWarn = refundOverCreditWarning\(drEntry\);\s*state\.ledger\.push\(drEntry\);/.test(add), 'a new refund is not checked before it is added');
+  const ed = /if \(ch\.indexOf\('led-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/\(lk === 'amount' \|\| lk === 'scout'\) \? refundOverCreditWarning\(led\)/.test(ed), 'an edited refund is not checked');
+  // (a) A family whose refund left them owing is still on the Dues screen.
+  ok(/\.filter\(function \(f\) \{ return f\.charges\.length \|\| f\.acct\.paid \|\| f\.acct\.refunded; \}\)/.test(slice('duesFamilies')),
+    'a family with only a refund is filtered off the Dues screen');
+  // (c) On a family-direct line the picker is a reimbursement, and saves as one.
+  const rows = /function renderLedgerEntries\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/ledgerLineIsDirect\(dr\.lineId\)[\s\S]*?aria-label="Paid back to \(reimbursement\)"/.test(rows), 'the new-entry picker is always a refund');
+  ok(/ledgerLineIsDirect\(e\.lineId\)[\s\S]*?aria-label="Paid back to \(reimbursement\)"/.test(rows), 'the entry picker is always a refund');
+  ok(/var drReimb = dr\.direction !== 'in' && !!dr\.scoutId && ledgerLineIsDirect\(dr\.lineId\);/.test(add) &&
+     /if \(drReimb\) drEntry\.reimbursement = true;/.test(add), 'a family-direct payback is saved as a refund');
+  ok(/if \(lk === 'scout' && led\.scoutId && ledgerLineIsDirect\(led\.lineId\)\) \{ led\.source = ''; led\.reimbursement = true; \}/.test(ed),
+    'an edited family-direct payback is saved as a refund');
+  ok(/if \(nk === 'line' && nd\.direction !== 'in'\) \{ nd\.lineId = el\.value; render\(\); return; \}/.test(SCRIPT),
+    'the picker does not follow the line chosen in the form');
 });
 
 /* ---------------- report ---------------- */

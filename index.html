@@ -5721,6 +5721,20 @@
     }, 0);
     return Math.max(0, owed - paid);
   }
+  // M1 (final review, 2026-09-28) — A REFUND BIGGER THAN THE CREDIT IS A NEW DEBT. A refund
+  // gives back money a family paid ahead; anything past their credit un-pays their charges, and
+  // the family quietly owes it again. The usual cause is a treasurer repaying a council fee for a
+  // reward tier as a "refund" when it is a reimbursement. So the ledger warns when it happens.
+  // Returns the family's credit NOT counting `e` (it may or may not be in `ledger` yet), or null
+  // when `e` is not a refund. Pure.
+  function refundCreditBefore(charges, ledger, keyOf, e) {
+    if (!e || !entryRefundsFamily(e)) return null;
+    var key = keyOf || function (id) { return id; };
+    var others = ledger.filter(function (x) { return x !== e && !(e.id && x.id === e.id); });
+    var k = key(e.scoutId);
+    var a = familyAccounts(charges, others, keyOf).filter(function (x) { return x.key === k; })[0];
+    return a ? a.credit : 0;
+  }
   // The four settlements, counted apart, because collapsing them would misstate the pack's
   // position. `donated` is money that arrived from somebody else — good news, and
   // attributable. `waived` is what fundraising bought the families. `forgiven` is what the
@@ -6475,6 +6489,23 @@
   // means the household: a sibling's cheque covers them too.
   function scoutOwesCents(scoutId) { return familyOutstanding(state.charges, state.ledger, scoutId, chargeFamilyKey); }
   function familyAccountsNow() { return familyAccounts(state.charges, state.ledger, chargeFamilyKey); }
+  // The ledger's warning for a refund past the family's credit (refundCreditBefore), or ''.
+  function refundOverCreditWarning(e) {
+    var credit = refundCreditBefore(state.charges, state.ledger, chargeFamilyKey, e);
+    if (credit == null || (e.amountCents || 0) <= credit) return '';
+    var k = chargeFamilyKey(e.scoutId);
+    var members = state.scouts.filter(function (sc) { return familyKeyOf(sc) === k; });
+    return 'This is more than ' + (members.length ? familyLabel({ members: members }) : 'this family') +
+      '\u2019s credit of ' + fmt(credit) + '. Refunds give back money a family paid; to repay a council ' +
+      'fee for a reward tier, use Reimburse on the Budget.';
+  }
+  // M1(c) — money out against a line families pay the council for directly can only be a
+  // REIMBURSEMENT (the pack giving back a receipted fee), never a refund of the family's credit:
+  // they paid the pack nothing on that line. So the family picker says so, and saves it as one.
+  function ledgerLineIsDirect(lineId) {
+    var l = lineId ? getBudgetLine(lineId) : null;
+    return !!(l && lineIsFamilyDirect(l));
+  }
   function chargesForScout(scoutId) {
     return state.charges.filter(function (c) { return c.scoutId === scoutId; });
   }
@@ -14161,8 +14192,12 @@
             ? '<input class="lname" data-ch="ledn-donor" value="' + esc(dr.donor) + '" placeholder="Who gave it" aria-label="Donor">'
             : '')
         // T1 — money out can be a family's credit handed back; picking the family says so.
-        : '<select data-ch="ledn-scout" aria-label="Refunded to which family">' +
-            scoutSelectOptions(dr.scoutId, '— not a refund to a family —') + '</select>') +
+        // M1(c) — on a line families pay directly, the only family money out is a reimbursement.
+        : (ledgerLineIsDirect(dr.lineId)
+          ? '<select data-ch="ledn-scout" aria-label="Paid back to (reimbursement)">' +
+            scoutSelectOptions(dr.scoutId, 'Paid back to (reimbursement)\u2026') + '</select>'
+          : '<select data-ch="ledn-scout" aria-label="Refunded to which family">' +
+            scoutSelectOptions(dr.scoutId, '— not a refund to a family —') + '</select>')) +
       '<button type="button" class="btn small primary" data-act="ledger-add">Add entry</button>' +
       '</div>' +
       '<p class="small muted" style="margin:8px 0 0">Pick the budget line it belongs to and this entry becomes part of that line’s actual cost. ' +
@@ -14250,9 +14285,13 @@
                   ? (getScout(e.scoutId)
                     ? '<span class="small muted" style="align-self:center">Paid back to ' + esc(getScout(e.scoutId).name) + '</span>'
                     : '')
-                  // T1 — any other money out can be a refund of a family's credit.
-                  : '<select data-ch="led-scout" data-id="' + e.id + '" aria-label="Refunded to which family">' +
-                    scoutSelectOptions(e.scoutId, '— not a refund to a family —') + '</select>')) +
+                  // T1 — any other money out can be a refund of a family's credit. M1(c) — except
+                  // on a line families pay directly, where it can only be a reimbursement.
+                  : ((!e.scoutId && ledgerLineIsDirect(e.lineId))
+                    ? '<select data-ch="led-scout" data-id="' + e.id + '" aria-label="Paid back to (reimbursement)">' +
+                      scoutSelectOptions('', 'Paid back to (reimbursement)\u2026') + '</select>'
+                    : '<select data-ch="led-scout" data-id="' + e.id + '" aria-label="Refunded to which family">' +
+                      scoutSelectOptions(e.scoutId, '— not a refund to a family —') + '</select>'))) +
             '</div>'
           : '') +
         '</div>';
@@ -15231,7 +15270,9 @@
         active: members.filter(function (sc) { return !sc.archived; }),
         charges: state.charges.filter(function (c) { return a.scoutIds.indexOf(c.scoutId) !== -1; })
       };
-    }).filter(function (f) { return f.charges.length || f.acct.paid; })
+    // M1 — a family with nothing but a refund is still here: past their credit, a refund is a
+    // balance they owe, and filtered out it was a debt nobody could see.
+    }).filter(function (f) { return f.charges.length || f.acct.paid || f.acct.refunded; })
       .sort(function (a, b) {
         return b.acct.outstanding - a.acct.outstanding ||
           familyLabelOf(a).localeCompare(familyLabelOf(b));
@@ -21333,17 +21374,24 @@
       // no date can't be placed in the running balance or ticked against a statement.
       if (!amt) { showToast('Enter an amount first.'); return; }
       if (!dr.date) { showToast('Enter the date it moved.'); return; }
-      state.ledger.push({
+      // M1(c) — money out to a family on a family-direct line is a reimbursement, not a refund.
+      var drReimb = dr.direction !== 'in' && !!dr.scoutId && ledgerLineIsDirect(dr.lineId);
+      var drEntry = {
         id: uid(), date: dr.date, description: dr.description.trim(),
         amountCents: amt, direction: dr.direction === 'in' ? 'in' : 'out',
         lineId: dr.lineId, method: dr.method, ref: dr.ref.trim(),
         // T1 — money out carrying a family is a refund of their money, and says so.
-        source: dr.direction === 'in' ? dr.source : (dr.scoutId ? 'refund' : ''),
+        source: dr.direction === 'in' ? dr.source : ((dr.scoutId && !drReimb) ? 'refund' : ''),
         donor: (dr.direction === 'in' && dr.source === 'donation') ? dr.donor.trim() : '',
         // Phase 3b — a payment carries the scout whose account it settles. Set from the
         // Dues screen, or picked here. T1 — a refund carries the family it went back to.
         scoutId: dr.scoutId, reconciled: false
-      });
+      };
+      if (drReimb) drEntry.reimbursement = true;
+      // M1(b) — said BEFORE it is added, measured against the credit as it stands without it.
+      var drWarn = refundOverCreditWarning(drEntry);
+      state.ledger.push(drEntry);
+      if (drWarn) showToast(drWarn);
       // Keep the date and direction — a treasurer posting a stack of receipts is nearly
       // always entering several from the same day, the same way.
       ui.ledgerDraft = ledgerDraftDefault();
@@ -22193,6 +22241,9 @@
       if (nk === 'dir') { nd.direction = el.value === 'in' ? 'in' : 'out'; nd.scoutId = ''; render(); return; }
       if (nk === 'source') { nd.source = el.value; render(); return; }
       if (nk === 'scout') { nd.scoutId = el.value; return; }
+      // M1(c) — on money out, the line decides whether the family picker is a refund or a
+      // reimbursement, so it re-renders like the two selects above.
+      if (nk === 'line' && nd.direction !== 'in') { nd.lineId = el.value; render(); return; }
       if (nk === 'date') nd.date = el.value;
       else if (nk === 'desc') nd.description = el.value;
       else if (nk === 'amount') nd.amount = el.value;
@@ -22236,10 +22287,15 @@
       if (lk === 'dir') { led.scoutId = ''; led.reimbursement = false; if (led.direction !== 'in' || led.source === 'refund') led.source = ''; }
       if (led.direction !== 'in') {
         led.donor = '';
-        if (lk === 'scout') led.source = led.scoutId ? 'refund' : '';
+        // M1(c) — a family picked on a family-direct line is paid BACK, not refunded.
+        if (lk === 'scout' && led.scoutId && ledgerLineIsDirect(led.lineId)) { led.source = ''; led.reimbursement = true; }
+        else if (lk === 'scout') led.source = led.scoutId ? 'refund' : '';
         else if (led.source !== 'refund') led.source = '';
       }
       if (led.source !== 'donation') led.donor = '';
+      // M1(b) — a refund that now reaches past the family's credit says so.
+      var ledWarn = (lk === 'amount' || lk === 'scout') ? refundOverCreditWarning(led) : '';
+      if (ledWarn) showToast(ledWarn);
       commit(); return;
     }
     // Phase 3a — ONE handler set for every budget line, activity or expense, resolved

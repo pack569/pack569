@@ -268,6 +268,19 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   them under *Charged twice?* and the Treasurer's Home says how many; a leader removes each with
   two taps, re-checked at the second tap, with Undo. Nothing removes one automatically.
 
+### Final review, 2026-09-28
+
+- **A refund bigger than the credit was an invisible debt (M1).** Past a family's credit a
+  refund un-pays their charges, and a family with no charges and no payments — only the refund —
+  was filtered off the Dues screen, so the debt was on no page. `duesFamilies` now keeps any
+  family with a refund. The ledger warns, on add and on editing the amount or family, when a
+  refund is more than the family's credit without it (`refundCreditBefore`): "This is more than
+  <family>'s credit of $Y. Refunds give back money a family paid; to repay a council fee for a
+  reward tier, use Reimburse on the Budget." It still records the entry. And on a line families
+  pay directly (`lineIsFamilyDirect`) the family picker on money out reads *Paid back to
+  (reimbursement)* and saves `reimbursement: true` with no source — they paid the pack nothing
+  on that line, so there is nothing to refund.
+
 ---
 
 ## 1. The problem, concretely
