@@ -9434,6 +9434,26 @@ test('J4: the invite promises the standings only where they are known to be on',
   ok(!/and the scout standings\./.test(slice('renderJoinWelcome')), 'the welcome screen still promises standings outright');
 });
 
+test('J5: what is left to sell reads as a choice, in a family’s words', () => {
+  const ctx = sandbox(['esc', 'fmt', 'parentBar', 'parentRouteLabel', 'parentRouteNoun', 'parentTierProgress']);
+  const row = (routes) => ctx.parentTierProgress({ tier: '', nextTier: 'Gold', nextPct: 40,
+    nextSalesCents: routes[0].cents, nextRoutes: routes });
+  const onlineBetter = row([{ label: 'at a storefront or wagon', pct: 25, cents: 24000 },
+    { label: 'online', pct: 30, cents: 20000 }]);
+  ok(/Still to sell: <strong class="money">\$240\.00<\/strong> at a storefront or door to door — or <strong class="money">\$200\.00<\/strong> online/.test(onlineBetter),
+    'the two figures are not one sentence joined by "or"');
+  ok(/\(online sales count for more toward the reward\)/.test(onlineBetter), 'the better channel is not named');
+  ok(!/wagon/.test(onlineBetter) && !/\d%\)/.test(onlineBetter), 'the parent line still says "wagon" or quotes a rate');
+  // This pack's own case: online is the LOWER rate, so the storefront is the one that counts for more.
+  const storeBetter = row([{ label: 'online', pct: 25, cents: 24000 },
+    { label: 'at a storefront or wagon', pct: 30, cents: 20000 }]);
+  ok(/\(storefront and door-to-door sales count for more toward the reward\)/.test(storeBetter),
+    'the better channel is assumed to be online');
+  // One route: the figure alone, no rate.
+  const one = row([{ label: 'in popcorn', pct: 25, cents: 24000 }]);
+  ok(/\$240\.00<\/strong> more to sell/.test(one) && !/%\)/.test(one), 'a single route still quotes its rate');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

@@ -10218,16 +10218,26 @@
     // What is left to SELL, and where. The routes are the same list the leaders' card shows —
     // biggest first, which is the safe one — so a family gets the choice rather than one blended
     // figure. Older payloads carry no routes and fall back to the single figure they published.
+    //
+    // SAID AS A CHOICE, NOT A SUM (parent-experience audit, 2026-09-28). "$240.00 at a storefront or
+    // wagon (25%) · $200.00 online (30%)" read as two amounts to add up, in two percentages and a
+    // word ("wagon") only a leader uses. Now it is one sentence with an "or" in it, and the channel
+    // that gets there sooner is named in words. WHICH channel that is comes from the figures — the
+    // smallest sale is the better rate — never from the label: this pack's online rate is the LOWER
+    // one (owner correction, 2026-08-31), so "online counts for more" hard-wired would be wrong here.
     var routes = (r && Array.isArray(r.nextRoutes)) ? r.nextRoutes : [];
     var bits = [];
     if (routes.length > 1) {
-      routes.forEach(function (rt) {
-        bits.push('<strong class="money">' + fmt(rt.cents) + '</strong> ' + esc(String(rt.label || '')) +
-          ' <span class="muted">(' + esc(String(rt.pct)) + '%)</span>');
-      });
+      var best = routes[0];
+      routes.forEach(function (rt) { if (rt.cents < best.cents) best = rt; });
+      bits.push('Still to sell: ' + routes.map(function (rt) {
+        return '<strong class="money">' + fmt(rt.cents) + '</strong> ' + esc(parentRouteLabel(rt.label));
+      }).join(' — or ') +
+        (best.cents < routes[0].cents
+          ? ' <span class="muted">(' + esc(parentRouteNoun(best.label)) + ' count for more toward the reward)</span>'
+          : ''));
     } else if (typeof r.nextSalesCents === 'number' && r.nextSalesCents > 0) {
-      bits.push('<strong class="money">' + fmt(r.nextSalesCents) + '</strong> more to sell' +
-        (routes.length === 1 ? ' <span class="muted">(at ' + esc(String(routes[0].pct)) + '%)</span>' : ''));
+      bits.push('<strong class="money">' + fmt(r.nextSalesCents) + '</strong> more to sell');
     }
     // Zero for a prize-only rung — a patch is worth having and costs the family nothing either way.
     if ((r.nextUnlocksCents || 0) > 0) {
@@ -10235,6 +10245,19 @@
     }
     if (bits.length) out += '<p class="pv-prog-note muted">' + bits.join(' · ') + '</p>';
     return out + '</div>';
+  }
+  // A selling route in a family's words. sellingRoutes() labels are the leaders' ("wagon" is
+  // popcorn-kernel jargon for going door to door); the payload keeps them as published, so an older
+  // document reads the same way, and only this side translates.
+  function parentRouteLabel(label) {
+    var l = String(label || '');
+    return l === 'at a storefront or wagon' ? 'at a storefront or door to door' : l;
+  }
+  function parentRouteNoun(label) {
+    var l = String(label || '');
+    if (l === 'online') return 'online sales';
+    if (l === 'at a storefront or wagon') return 'storefront and door-to-door sales';
+    return 'those sales';
   }
   // A bar carries no text of its own, so role="img" plus a label is the only way it reaches a
   // screen reader — and the caption beneath repeats the figure in words for everyone else, because
