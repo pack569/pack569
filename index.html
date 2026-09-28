@@ -16324,22 +16324,41 @@
   // facts came from the Kernel's audit, not from memory; the raffle rules in particular are the
   // national ones effective November 2025, and the card says to confirm with the council because
   // a council can be stricter. Wording changes belong with the content experts.
+  //
+  // Final review, 2026-09-28 (Kernel): reworded as the Kernel gave it. The deadline is "before the
+  // pack COMMITS to it" — signing, ordering or paying — not "before it starts", which a pack read
+  // as the day of the sale, long after the money was spent. "Camp cards" left the council label at
+  // the Kernel's request: only a sale the council coordinates is exempt, so ask if unsure. The raffle
+  // rule carries the national limits as written (four games of chance a calendar year IN TOTAL,
+  // not four raffles), Georgia's sheriff's licence, and that form 34427 itself still says raffles
+  // are forbidden — which is why it says to ask which form the council wants.
   var FUNDRAISER_KINDS = [
-    { id: 'council', label: 'Council product sale (camp cards, popcorn)',
-      rule: 'A council product sale needs no Unit Money-Earning Application.' },
+    { id: 'council', label: 'Council product sale (e.g. popcorn)',
+      rule: 'A council-coordinated product sale needs no Unit Money-Earning Application (form 34427). ' +
+        'If you’re not sure the council runs this sale, ask first.' },
     { id: 'sale', label: 'Other sale or event',
-      rule: 'Anything that isn’t a council product sale needs a Unit Money-Earning Application (form 34427) ' +
-        'submitted to the council at least 14 days before it starts.' },
+      rule: 'Anything the council doesn’t run needs a Unit Money-Earning Application (form 34427) and the council’s ' +
+        'written approval at least 14 days before the pack commits to it — before anything is signed, ordered or paid for. ' +
+        'The product must sell on its own merit, not as a gift to Scouting; any contract is signed by a person, never in ' +
+        'Scouting America’s name; wearing the uniform needs council approval.' },
     { id: 'raffle', label: 'Raffle or game of chance',
-      rule: 'A raffle needs the council’s written approval before any ticket is sold (submit form 34427 with it). ' +
-        'Under the national rules effective November 2025 a unit may hold at most four raffles a year, raffles are the only ' +
-        'fundraiser that may be run online, and no prize may be alcohol or a firearm. Confirm with Northeast Georgia Council first.' }
+      rule: 'A raffle or other game of chance needs the council’s written approval before you advertise it, sell a ticket ' +
+        'or organize it — ask which form they want (form 34427 still says raffles are forbidden). National rules effective ' +
+        'November 7, 2025: at most four games of chance a calendar year in total; only raffles may be run online; no alcohol ' +
+        'or firearm prizes; no Scout may attend, promote or sell for a casino night or bingo; every ticket and flyer must name ' +
+        'the pack by its number (“Scouting” alone isn’t enough). Georgia also requires a raffle license from the county ' +
+        'sheriff. Northeast Georgia Council may be stricter or not allow raffles at all — confirm with the council first.' }
   ];
   // What is still outstanding for this fundraiser, or '' when nothing is. Pure over the record.
+  // An application IN is not permission: until the approval is recorded, the pack still may not
+  // sign, order or pay (final review, 2026-09-28).
   function fundraiserPaperworkGap(fr) {
     if (!fr || !fr.kind || fr.kind === 'council') return '';
-    if (fr.kind === 'raffle' && !fr.councilApproved) return 'No written council approval recorded — don’t sell tickets until you have it.';
-    if (!fr.appSubmitted) return 'No Unit Money-Earning Application recorded — submit form 34427 at least 14 days before the start.';
+    if (fr.kind === 'raffle' && !fr.councilApproved) {
+      return 'No written council approval recorded — don’t advertise it, sell a ticket or organize it until you have it.';
+    }
+    if (!fr.appSubmitted) return 'No Unit Money-Earning Application recorded — submit form 34427 at least 14 days before the pack commits to it.';
+    if (!fr.councilApproved) return 'Application in, no approval recorded yet — don’t sign, order or pay for anything until the council approves it.';
     return '';
   }
   function fundraiserPaperworkBlock(fr) {
@@ -16360,8 +16379,9 @@
       return h;
     }
     var gap = fundraiserPaperworkGap(fr);
+    // The raffle rule already ends by saying to confirm with the council; the sale rule says when.
     h += '<p class="small' + (gap ? '' : ' muted') + '" style="margin:0 0 8px">' + esc(kind.rule) +
-      (kind.id === 'council' ? '' : ' Confirm the details with the council before you start.') + '</p>';
+      (kind.id === 'sale' ? ' Confirm the details with the council before the pack commits to it.' : '') + '</p>';
     if (gap) h += '<div class="warn" style="margin:0 0 8px">' + esc(gap) + '</div>';
     return h;
   }

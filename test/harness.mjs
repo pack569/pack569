@@ -9392,14 +9392,28 @@ test('P8: a fundraiser card says what the council needs before the money is rais
   const rule = (id) => ctx.FUNDRAISER_KINDS.find((k) => k.id === id).rule;
   ok(/no Unit Money-Earning Application/.test(rule('council')), 'a council product sale is not exempted');
   ok(/34427/.test(rule('sale')) && /14 days/.test(rule('sale')), 'the other-sale rule lost the form or the lead time');
-  ok(/written approval/.test(rule('raffle')) && /November 2025/.test(rule('raffle')) && /four raffles/.test(rule('raffle')) &&
-    /only fundraiser that may be run online/.test(rule('raffle')) && /alcohol or a firearm/.test(rule('raffle')) &&
-    /Confirm with Northeast Georgia Council first/.test(rule('raffle')), 'the raffle rules are incomplete');
+  // K1 (final review, 2026-09-28) — the Kernel's wording, verbatim where it is load-bearing.
+  eq(ctx.FUNDRAISER_KINDS[0].label, 'Council product sale (e.g. popcorn)', 'council label');
+  eq(rule('council'), 'A council-coordinated product sale needs no Unit Money-Earning Application (form 34427). ' +
+    'If you\u2019re not sure the council runs this sale, ask first.', 'council rule');
+  ok(/written approval at least 14 days before the pack commits to it \u2014 before anything is signed, ordered or paid for\./.test(rule('sale')) &&
+    /sell on its own merit, not as a gift to Scouting/.test(rule('sale')) && /signed by a person, never in Scouting America\u2019s name/.test(rule('sale')) &&
+    /wearing the uniform needs council approval/.test(rule('sale')), 'the sale rule is not the Kernel\u2019s');
+  ok(/before you advertise it, sell a ticket or organize it/.test(rule('raffle')) &&
+    /form 34427 still says raffles are forbidden/.test(rule('raffle')) && /November 7, 2025/.test(rule('raffle')) &&
+    /at most four games of chance a calendar year in total/.test(rule('raffle')) && /only raffles may be run online/.test(rule('raffle')) &&
+    /no alcohol or firearm prizes/.test(rule('raffle')) && /casino night or bingo/.test(rule('raffle')) &&
+    /name the pack by its number/.test(rule('raffle')) && /raffle license from the county sheriff/.test(rule('raffle')) &&
+    /may be stricter or not allow raffles at all/.test(rule('raffle')), 'the raffle rules are incomplete');
+  ok(!/four raffles|before it starts|before the start/.test(JSON.stringify(ctx.FUNDRAISER_KINDS)), 'the old wording is still there');
   const gap = ctx.fundraiserPaperworkGap;
   eq(gap({ kind: 'council' }), '', 'a council sale has nothing outstanding');
   eq(gap({ kind: '' }), '', 'an unclassified fundraiser is not nagged');
-  ok(/34427/.test(gap({ kind: 'sale' })), 'a sale with no application is not flagged');
-  eq(gap({ kind: 'sale', appSubmitted: '2026-09-01' }), '', 'a submitted application still flagged');
+  ok(/34427/.test(gap({ kind: 'sale' })) && /before the pack commits to it\./.test(gap({ kind: 'sale' })), 'a sale with no application is not flagged');
+  eq(gap({ kind: 'sale', appSubmitted: '2026-09-01' }),
+    'Application in, no approval recorded yet \u2014 don\u2019t sign, order or pay for anything until the council approves it.',
+    'an application in is treated as permission');
+  eq(gap({ kind: 'sale', appSubmitted: '2026-09-01', councilApproved: '2026-09-05' }), '', 'an approved sale still flagged');
   ok(/approval/.test(gap({ kind: 'raffle', appSubmitted: '2026-09-01' })), 'a raffle without approval is not flagged');
   eq(gap({ kind: 'raffle', appSubmitted: '2026-09-01', councilApproved: '2026-09-10' }), '', 'an approved raffle still flagged');
   ok(/fr\.kind = \['council', 'sale', 'raffle'\]\.indexOf\(fr\.kind\) !== -1 \? fr\.kind : '';/.test(SCRIPT), 'normalize does not keep kind');
