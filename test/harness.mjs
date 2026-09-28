@@ -725,6 +725,8 @@ function tierGroupSandbox(setup) {
      }
      function tierEarnedMap() { return EARNED; }
      function coverableShares() { return SHARES; }
+     // The sibling rule only looks further for a per-family share; none of these are.
+     function linePerFamily(l) { return !!(l && l.perFamily); }
      ${slice('coveredSharesByTier')}
      var RESULT = coveredSharesByTier('kid');`, ctx);
   return ctx;
@@ -1163,6 +1165,7 @@ const tpCtx = (() => {
     }
     function tierCumulativeCoverCents(t) { return t.cover || 0; }
     function tierCoverCentsPerScout(t) { return t.fee == null ? (t.cover || 0) : t.fee; }
+    function packCoverage() { return {}; }   // the sibling rule's input; the stubs above ignore it
     ${slice('arrOf')}
     // Values a key set: each stub tier declares covers:['k'] and KEY_VALUE prices them, so the
     // set-difference behaviour can be tested without a budget.
@@ -2534,7 +2537,7 @@ test('a tier waives a head other than the scout only where it NAMES that share',
   ok(fn, 'applyTierWaivers() not found');
   ok(!/if \(c\.who !== 'scout'\) \{ c\.waivedBy = ''; return; \}/.test(fn[0]),
     'the blanket refusal is back, so a named adult share can never be honoured');
-  ok(/var hit = \(covered\[coverKeyOf\(key, c\.who\)\] \|\| \{\}\)\[c\.scoutId\];/.test(fn[0]),
+  ok(/var ck = coverKeyOf\(key, c\.who\);/.test(fn[0]) && /\(covered\[ck\] \|\| \{\}\)\[c\.scoutId\]/.test(fn[0]),
     'the waiver does not look up the charge’s own head kind');
   ok(/c\.waivedBy = et \? et\.id/.test(fn[0]),
     'the waiver does not record WHICH tier bought it — total waived stops being measurable');
@@ -4344,8 +4347,9 @@ test('the shortfall is the gap, capped at the fee it buys', () => {
   ok(report, 'the deadline report heading was not found');
   ok(/if \(tierIsClosed\(t\) && tierCoverCentsPerScout\(t\) > 0\) \{/.test(SCRIPT),
     'the "Missed the deadline" report is no longer gated on the deadline having passed');
-  const cover = /function tierCoverCentsPerScout\(t, scout\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
-  ok(cover && /coverableLines\(\)\.forEach/.test(cover[0]),
+  const cover = /function tierCoverCentsPerScout\(t, scout, cov\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  ok(cover && /return coverValueOfKeys\(keys, scout, cov\);/.test(cover[0]) &&
+     /coverableLines\(\)\.forEach/.test(slice('coverValueOfKeys')),
     'the fee counts lines a tier cannot be pointed at in the first place');
 });
 
@@ -9322,6 +9326,7 @@ function tierScopeSandbox() {
     ${slice('scoutsInDens')} ${slice('familiesOf')} ${slice('familyBillingScout')}
     ${slice('lineBillingRoster')} ${slice('lineBillingIds')}
     ${slice('coverValueOfKeys')} ${slice('tierCoverCentsPerScout')}
+    ${slice('familyFeeHolder')} ${slice('familyCoverage')} ${slice('shareCountsForScout')}
     ${slice('packCoverageByScout')} ${slice('privateBenefitCheck')} ${slice('entryRefundsFamily')} ${slice('tierReimbursements')}
     function familyKeyOf(s) { return s.familyId || s.id; }
     function linePerFamily(l) { return !!l.perFamily; }
@@ -9364,9 +9369,9 @@ test('P4: a tier prices a den-limited fee only for the dens it is for', () => {
   // 5000 × 2 Webelos + 8000 × 3 families would be 34000; the families are wolf and web1.
   eq(ctx.privateBenefitCheck().back, 26000, 'privateBenefitCheck overstates what goes back');
   const src = /function tierShortfallRows\(t, map\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
-  ok(/tierCoverCentsPerScout\(t, s\)/.test(src), 'the make-up cap is not per scout');
+  ok(/tierCoverCentsPerScout\(t, s, cov\)/.test(src), 'the make-up cap is not per scout');
   const tpr = /function tierProgressRows\(\w*\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
-  ok(/coverOf\(next, s\)/.test(tpr) && /coverValueOfKeys\(addedKeys, s\)/.test(tpr), 'the progress row is not per scout');
+  ok(/coverOf\(next, s\)/.test(tpr) && /coverValueOfKeys\(addedKeys, s, famCov\)/.test(tpr), 'the progress row is not per scout');
 });
 
 test('P5: a per-family paid-direct fee is reimbursed once per family', () => {
@@ -10112,6 +10117,7 @@ test('M5: Budget vs actual plans every dollar the Budget card plans, adult and s
     function getBudgetLine() { return null; }
     function ledgerIncomeCents() { return { commission: 0, hasCommission: false, other: 0, carryover: 0 }; }
     function commissionLookalikes() { return []; }
+    function familyCoverage(c) { return c; }   // no per-family line in this fixture
     ${['COVER_WHO', 'coverKeyOf', 'coverCostForKeys', 'tierExtraPackCostCents', 'LINE_CATEGORIES',
        'budgetVsActual', 'BVA_REIMBURSE', 'budgetVsActualNow', 'computeBudget'].map(slice).join('\n')}`, ctx);
   const planned = vm.runInContext('computeBudget().planned', ctx);
@@ -10316,6 +10322,129 @@ test('7b-4: with amounts off, the pack goal bar is rounded to $50 and its percen
   eq(build(false, 120500).raisedCents, build(false, 122000).raisedCents, 'a $15 sale shows on the goal bar');
   ok(/pack goal bar's amount raised is rounded to the nearest \$50/.test(SETUP), 'SETUP.md does not say so');
   ok(/`raisedCents` is rounded to the nearest \$50/.test(SCRIPT), 'the banner does not say so');
+});
+
+// The sibling rule for a per-family fee — owner decision, 2026-09-28. One family: Bea (Bear, first
+// on the roster, so the fee is BILLED to her) and her younger brother Tig (Tiger). Web is a
+// Webelos on his own. Three per-family lines, all covered by the one tier T:
+//   FAM   collected by the pack, every den             — a charge on Bea, waived or not
+//   DIR   paid straight to the council, every den      — reimbursed, one row per family
+//   BFAM  collected by the pack, BEAR den only         — Tig's tier must not count for it
+function siblingSandbox(earned) {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    ${['arrOf', 'COVER_WHO', 'coverKeyOf', 'lineRateForWho', 'scoutsInDens', 'familiesOf', 'familyBillingScout',
+       'lineBillingRoster', 'lineBillingIds', 'familyFeeHolder', 'familyCoverage', 'shareCountsForScout',
+       'coverValueOfKeys', 'tierCoverCentsPerScout', 'packCoverage', 'packCoverageByScout', 'privateBenefitCheck',
+       'entryRefundsFamily', 'tierReimbursements', 'earnedTierFor', 'applyTierWaivers', 'salesOnlyTierMap'].map(slice).join('\n')}
+    function familyKeyOf(s) { return (s && s.familyId) || (s && s.id) || ''; }
+    function linePerFamily(l) { return l.basis === 'per-family'; }
+    function lineDens(l) { return l.dens || []; }
+    function lineRoster(l) { return scoutsInDens(activeScouts(), lineDens(l)); }
+    var SCOUTS = [{ id: 'bea', den: 'Bear' }, { id: 'tig', den: 'Tiger', familyId: 'bea' }, { id: 'web', den: 'Webelos' }];
+    function activeScouts() { return SCOUTS; }
+    function getScout(id) { return SCOUTS.filter(function (s) { return s.id === id; })[0] || null; }
+    function chargeFamilyKey(id) { return familyKeyOf(getScout(id)); }
+    function tierCoverageConfigured() { return true; }
+    var FAM = { id: 'FAM', basis: 'per-family', scoutRateCents: 5000 };
+    var DIR = { id: 'DIR', basis: 'per-family', scoutRateCents: 3000 };
+    var BFAM = { id: 'BFAM', basis: 'per-family', scoutRateCents: 4000, dens: ['Bear'] };
+    var LINES = [{ key: 'FAM', line: FAM }, { key: 'DIR', line: DIR }, { key: 'BFAM', line: BFAM }];
+    function coverableLines() { return LINES; }
+    function coverableShares() {
+      return [{ coverKey: 'FAM', item: FAM, rate: 5000, reimburse: false, who: 'scout' },
+              { coverKey: 'DIR', item: DIR, rate: 3000, reimburse: true, who: 'scout' },
+              { coverKey: 'BFAM', item: BFAM, rate: 4000, reimburse: false, who: 'scout' }];
+    }
+    var T = { id: 't', thresholdCents: 100, covers: ['FAM', 'DIR', 'BFAM'] };
+    function sortedTiers() { return [T]; }
+    var EARNED = ${JSON.stringify({ t: earned })};
+    function tierEarnedMap() { return EARNED; }
+    function computePackTotals() { return { commission: 100000 }; }
+    function getBudgetLine(id) { return [FAM, DIR, BFAM].filter(function (l) { return l.id === id; })[0] || null; }
+    var state = {
+      budget: { expenses: [FAM, DIR, BFAM], activities: [] },
+      charges: [
+        { id: 'c1', scoutId: 'bea', lineId: 'FAM', who: 'scout', amountCents: 5000, waivedBy: '', forgiven: null },
+        { id: 'c2', scoutId: 'bea', lineId: 'BFAM', who: 'scout', amountCents: 4000, waivedBy: '', forgiven: null }
+      ],
+      ledger: []
+    };
+    applyTierWaivers();`, ctx);
+  const sc = (id) => ctx.SCOUTS.find((s) => s.id === id);
+  const waived = () => ctx.state.charges.map((c) => c.waivedBy);
+  return { ctx, sc, waived };
+}
+
+test('7c: only the younger sibling earns the tier, and the family fee is waived — once, and only in her dens', () => {
+  const { ctx, sc, waived } = siblingSandbox({ tig: 'earned' });
+  eq(waived(), ['t', ''], 'FAM is waived for the family; BFAM (Bear only) is not — Tig is a Tiger');
+  const rows = ctx.tierReimbursements();
+  eq(rows.map((r) => [r.share.coverKey, r.scout.id, r.earner.id]), [['DIR', 'bea', 'tig']],
+    'one reimbursement row, on the billing scout, earned by the sibling');
+  eq(JSON.parse(JSON.stringify(ctx.packCoverageByScout())), { tig: 8000 }, 'the family fees are credited to the sibling who earned them');
+  eq(ctx.privateBenefitCheck().back, 8000, 'what goes back');
+  // What a tier is still worth to each of them: Bea's family already has FAM and DIR through Tig,
+  // so only the Bear-only fee is left for her to earn; Tig is credited, and BFAM was never his.
+  const cov = ctx.packCoverage();
+  eq(ctx.tierCoverCentsPerScout(ctx.T, sc('bea'), cov), 4000, 'Bea is offered the family fee her brother already covered');
+  eq(ctx.tierCoverCentsPerScout(ctx.T, sc('tig'), cov), 8000, 'Tig');
+  eq(ctx.coverValueOfKeys({ FAM: true, DIR: true }, sc('bea'), cov), 0, 'reaching it is worth the family fee to Bea again');
+});
+
+test('7c: both siblings earn it, and the family fee is waived once with no double reimbursement', () => {
+  const { ctx, sc, waived } = siblingSandbox({ bea: 'earned', tig: 'earned' });
+  eq(waived(), ['t', 't'], 'both of Bea’s charges are waived');
+  let rows = ctx.tierReimbursements();
+  eq(rows.map((r) => [r.share.coverKey, r.scout.id, r.earner.id]), [['DIR', 'bea', 'bea']], 'one row, credited to the billing scout');
+  // Paid back against Tig: the family's one row is settled, and no second one appears.
+  ctx.state.ledger = [{ direction: 'out', lineId: 'DIR', scoutId: 'tig', amountCents: 3000, source: '', reimbursement: true }];
+  rows = ctx.tierReimbursements();
+  eq(rows.map((r) => [r.paid, r.left]), [[3000, 0]], 'the family is reimbursed twice');
+  eq(JSON.parse(JSON.stringify(ctx.packCoverageByScout())), { bea: 12000 }, 'a sibling is credited the same family fee');
+  eq(ctx.privateBenefitCheck().back, 12000, 'the family fee counted per sibling');
+  const cov = ctx.packCoverage();
+  eq(ctx.tierCoverCentsPerScout(ctx.T, sc('tig'), cov), 0, 'Tig is credited family fees his sister holds');
+});
+
+test('7c: no sibling earns it, and nothing is waived', () => {
+  const { ctx, sc, waived } = siblingSandbox({});
+  eq(waived(), ['', ''], 'a fee is waived with nobody earning it');
+  eq(ctx.tierReimbursements().length, 0, 'a reimbursement is owed');
+  eq(JSON.parse(JSON.stringify(ctx.packCoverageByScout())), {}, 'coverage');
+  eq(ctx.privateBenefitCheck().back, 0, 'what goes back');
+  // Nobody holds it, so reaching it is worth the family fee to whichever of them gets there.
+  const cov = ctx.packCoverage();
+  eq(ctx.tierCoverCentsPerScout(ctx.T, sc('bea'), cov), 12000, 'Bea');
+  eq(ctx.tierCoverCentsPerScout(ctx.T, sc('tig'), cov), 8000, 'Tig (not the Bear-only fee)');
+});
+
+test('7c: a sibling in a den outside the line’s dens does not count', () => {
+  // Web earning it covers nothing of Bea's family's, and Tig's tier cannot reach the Bear-only fee.
+  const a = siblingSandbox({ web: 'earned' });
+  eq(a.waived(), ['', ''], 'another family’s tier waived this family’s fee');
+  const b = siblingSandbox({ tig: 'earned' });
+  eq(b.waived()[1], '', 'a Tiger’s tier waived a Bear-only family fee');
+  eq(b.ctx.familyFeeHolder(b.ctx.BFAM, 'BFAM', b.ctx.packCoverage(), 'bea'), '', 'the out-of-den sibling is a holder');
+});
+
+test('7c: a sibling’s make-up covers the family fee once, and never shows on the published board', () => {
+  const { ctx, sc, waived } = siblingSandbox({ tig: 'madeUp' });
+  eq(waived(), ['t', ''], 'a make-up by a sibling does not cover the family fee');
+  eq(ctx.tierReimbursements().length, 1, 'one reimbursement row');
+  // Bea's make-up cap for the same tier does not include the fee Tig already paid towards.
+  eq(ctx.tierCoverCentsPerScout(ctx.T, sc('bea'), ctx.packCoverage()), 4000, 'the family could pay towards the fee twice');
+  // Published: built from the sales-only map, where Tig's make-up does not exist — so Bea's
+  // "what reaching it takes off" still shows the fee, and nothing reveals the payment.
+  const pub = ctx.packCoverage(ctx.salesOnlyTierMap(ctx.EARNED));
+  eq(ctx.coverValueOfKeys({ FAM: true }, sc('bea'), pub), 5000, 'the published board reveals a sibling’s make-up');
+  // By selling, it is public anyway, and the board says so: $0 off.
+  const sold = siblingSandbox({ tig: 'earned' });
+  eq(sold.ctx.coverValueOfKeys({ FAM: true }, sold.sc('bea'), sold.ctx.packCoverage(sold.ctx.salesOnlyTierMap(sold.ctx.EARNED))), 0,
+    'the published board offers a fee a sibling already sold her way to');
+  // Wiring: the progress rows read the same map for both figures.
+  const tpr = slice('tierProgressRows');
+  ok(/var famCov = packCoverage\(map\);/.test(tpr), 'the progress rows do not read coverage from their own map');
 });
 
 /* ---------------- report ---------------- */

@@ -850,6 +850,43 @@ Verified end to end: linking two of four scouts took a $75 per-family council fe
 $225** and a pack-collected $50 per-family fee from four charges to **three** — while $80 per-head
 dues stayed at **four charges of $80**, one for each scout including the linked sibling.
 
+#### A tier covering a per-family fee — the sibling rule
+
+*Owner decision, 2026-09-28.* **If any scout in a family earns a tier that covers a per-family
+fee, the whole family is covered** — not only the billing scout. Until then only the first of them
+on the roster counted, so a younger sibling who sold enough left the family paying.
+
+- **Who counts:** any member in the **line's own dens** (`lineRoster`). A Tiger's tier does not
+  cover a Bear-only family fee. A **make-up payment** by any member counts the same as a sale; it
+  is in the earned map like one.
+- **Once per family, everywhere.** `familyFeeHolder(line, key, coverage, familyKey)` names the one
+  member the family's cover is *credited* to: the billing scout if they earned it, otherwise the
+  first earning member in family order. `familyCoverage(coverage, 'billing' | 'credit')` applies
+  that to a whole coverage map.
+  - `applyTierWaivers` waives the family's charge when any member holds the share, and records the
+    tier of the member who earned it.
+  - `computeBudget`'s absorbed fees use the *billing* attribution (one per family, where the charge
+    sits).
+  - `tierReimbursements` keeps one row per family, on the billing scout, owed when any member earned
+    it; `earner` names whose tier bought it. What has gone back is still read across every member,
+    so a reimbursement recorded against either sibling settles it.
+  - `packCoverageByScout`, `privateBenefitCheck`, the Rewards card's "what the pack is covering" and
+    a scout's itemised coverage use the *credit* attribution. The fee is counted once, on one
+    sibling, never two.
+- **What a tier is worth to one scout** (`coverValueOfKeys` / `tierCoverCentsPerScout` with a scout,
+  via `shareCountsForScout`). The scout must be in the line's dens, and either nobody in the family
+  holds the fee yet (whoever reaches it covers it) or this scout is the one credited. So a scout
+  whose sibling already holds it is not offered it again, and their **make-up cap** leaves it out.
+  A family cannot pay towards one fee twice. This does not touch M5 (a make-up is income, not a
+  charge payment) or T1 (a refund is never a reimbursement).
+- **The published board** (`tierProgressRows(true)`) measures "what reaching it takes off your
+  year" (`nextUnlocksCents`) against coverage built from the **sales-only** map. A sibling who sold
+  their way to the fee makes it **$0** for the others, which is true, and their tier is public
+  anyway. A sibling's **make-up** does not exist in that map, so the others still see the fee. That
+  overstates it for that family, which is the same trade-off as S3. Showing $0 there would tell
+  every other family that somebody paid their way in. Leaders' screens use the full map and show
+  the true $0.
+
 **Tiers stack, so a higher tier names only what it ADDS.** The adult-shirt tier covers
 `L-shirt#adult` alone — the scout's shirt already came from the tier below — which is exactly what
 makes the per-tier margin figure meaningful:
