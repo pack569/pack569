@@ -11660,7 +11660,9 @@ test('D1: the council dates are seeded once from the 2026 schedule, marked to ve
   eq(Object.keys(seed.dates), ['finalTakeOrders', 'rewards', 'pickup', 'payment', 'commissionDrop'], 'the dates');
   eq(Object.values(seed.dates).map((d) => d.date), ['2026-11-01', '2026-11-04', '2026-11-13', '2026-12-02', '2026-12-03'], 'the seeded dates');
   ok(Object.values(seed.dates).every((d) => d.note === '[verify with council]'), 'a seeded date is not marked to verify');
-  eq([seed.returnsCents, seed.commissionCents, seed.paidOn], [0, null, ''], 'a fresh settlement');
+  eq([seed.takeOrderCents, seed.cardCollectedCents, seed.commissionCents, seed.statementBalanceCents, seed.paidOn], [0, 0, null, null, ''],
+    'a fresh settlement');
+  ok(!('returnsCents' in seed), 'a fresh settlement has a returns line (NEGA takes no returns)');
   const labels = ctx.POPCORN_COUNCIL_DATES.map((d) => d.label).join(' | ');
   ['Final take orders', 'rewards qualify', 'commission calculated', 'post-dated check', 'Payment due', 'drops 10%']
     .forEach((w) => ok(labels.includes(w), 'no council date for ' + w));
@@ -11668,12 +11670,13 @@ test('D1: the council dates are seeded once from the 2026 schedule, marked to ve
   ok(ctx.normalizeState(preMigrationState()).popcornCouncil.dates.payment.date === '2026-12-02', 'a record without it was not seeded');
   const out = ctx.normalizeState(Object.assign(preMigrationState(), { popcornCouncil: {
     dates: { rewards: { date: '2026-11-05', note: 'checked' }, payment: { date: 'Dec 2' }, bogus: { date: '2026-01-01' } },
-    returnsCents: -5, commissionCents: '12', paidOn: 7, secret: 1 } }));
+    returnsCents: 20000, takeOrderCents: -5, cardCollectedCents: 'x', commissionCents: '12', statementBalanceCents: -1234.4, paidOn: 7, secret: 1 } }));
   const pc = out.popcornCouncil;
   eq(Object.keys(pc.dates), ['finalTakeOrders', 'rewards', 'pickup', 'payment', 'commissionDrop'], 'unknown dates survived');
   eq([pc.dates.rewards.date, pc.dates.rewards.note, pc.dates.payment.date, pc.dates.pickup.date], ['2026-11-05', 'checked', '', ''],
     'dates were not coerced, or a missing one was re-seeded');
-  eq([pc.returnsCents, pc.commissionCents, pc.paidOn, pc.secret], [0, null, '', undefined], 'the settlement was not coerced');
+  eq([pc.returnsCents, pc.takeOrderCents, pc.cardCollectedCents, pc.commissionCents, pc.statementBalanceCents, pc.paidOn, pc.secret],
+    [undefined, 0, 0, null, -1234, '', undefined], 'the settlement was not coerced, or an old returns figure survived');
   eq(ctx.normalizePopcornCouncil({ commissionCents: 0 }).commissionCents, 0, 'a statement commission of $0 was lost');
   ok(/popcornCouncil: freshPopcornCouncil\(\)/.test(slice('freshState')), 'a new pack has no council dates');
   // Read by normalizeState, so declared above `var state = load()`.
@@ -11704,20 +11707,42 @@ test('D1: the countdown, the tier nudge, and last season\'s dates', () => {
     'the nudge is missing from Rewards or the Council page');
 });
 
-test('D1: what the pack owes the council is product taken, less returns, less commission', () => {
+// Popcorn Kernel review (2026-09-28): NEGA Show & Sell is cases only with no returns; the sum is
+// Show & Sell + take order − card/app sales already collected − commission on (S&S + take order).
+test('D1: what the pack owes the council is Show & Sell + take order, less card sales collected, less commission', () => {
   const ctx = sandbox(['councilSettlement']);
   const inv = { orderTotalCents: 438000, computedValueCents: 1, anyPriced: true, pct: 32, pctOk: true };
-  const pc = { returnsCents: 20000, commissionCents: null };
+  const pc = { takeOrderCents: 100000, cardCollectedCents: 50000, commissionCents: null, statementBalanceCents: null };
   const st = JSON.parse(JSON.stringify(ctx.councilSettlement(pc, inv)));
-  eq([st.takenCents, st.takenFrom, st.netCents, st.commissionCents, st.commissionFrom, st.owedCents],
-    [438000, 'order', 418000, 133760, 'rate', 284240], 'the worked sum');
-  eq(ctx.councilSettlement({ returnsCents: 20000, commissionCents: 130000 }, inv).owedCents, 288000, 'the statement commission is not used');
-  const priced = ctx.councilSettlement({ returnsCents: 0, commissionCents: null }, { orderTotalCents: 0, computedValueCents: 50000, anyPriced: true, pct: 30, pctOk: true });
+  // 438000 + 100000 = 538000; 32% = 172160; 538000 − 50000 − 172160 = 315840
+  eq([st.takenCents, st.takenFrom, st.productCents, st.commissionCents, st.commissionFrom, st.owedCents, st.payout],
+    [438000, 'order', 538000, 172160, 'rate', 315840, false], 'the worked sum');
+  // A returns figure from an old record is ignored, not subtracted.
+  eq(ctx.councilSettlement(Object.assign({ returnsCents: 20000 }, pc), inv).owedCents, 315840, 'returns still come off');
+  eq(ctx.councilSettlement(Object.assign({}, pc, { commissionCents: 130000 }), inv).owedCents, 358000, 'the statement commission is not used');
+  const priced = ctx.councilSettlement({ commissionCents: null }, { orderTotalCents: 0, computedValueCents: 50000, anyPriced: true, pct: 30, pctOk: true });
   eq([priced.takenFrom, priced.owedCents], ['priced', 35000], 'no fallback to the priced products');
-  const noRate = ctx.councilSettlement({ returnsCents: 0, commissionCents: null }, { orderTotalCents: 10000, pctOk: false });
+  const noRate = ctx.councilSettlement({ commissionCents: null }, { orderTotalCents: 10000, pctOk: false });
   eq([noRate.commissionCents, noRate.owedCents], [null, null], 'an owed figure with no commission rate');
-  // The page reads Inventory rather than asking for the figure again.
-  ok(/councilSettlement\(pc, inventoryTotals\(\)\)/.test(slice('renderPopcornCouncil')), 'the settlement does not read Inventory');
+  // Card sales bigger than the rest: a payout due to the pack, not an error.
+  const pay = ctx.councilSettlement({ takeOrderCents: 0, cardCollectedCents: 90000, commissionCents: null }, { orderTotalCents: 100000, pct: 30, pctOk: true });
+  eq([pay.owedCents, pay.payout], [-20000, true], 'a payout is not recognised');
+  // The statement balance is a cross-check only.
+  const chk = ctx.councilSettlement(Object.assign({}, pc, { statementBalanceCents: 315840 }), inv);
+  eq([chk.owedCents, chk.statementCents, chk.statementDiffers], [315840, 315840, false], 'a matching statement is flagged');
+  const off = ctx.councilSettlement(Object.assign({}, pc, { statementBalanceCents: 300000 }), inv);
+  eq([off.owedCents, off.statementDiffers], [315840, true], 'a differing statement is not flagged, or it changed the sum');
+  const rp = slice('renderPopcornCouncil');
+  ok(/councilSettlement\(pc, inventoryTotals\(\)\)/.test(rp), 'the settlement does not read Inventory');
+  ok(/Show &amp; Sell product \(all pickups and reorders\)/.test(rp), 'the Show & Sell line is not renamed');
+  ok(!/returned to the council|pc-returns/i.test(rp) && !/pc-returns/.test(SCRIPT), 'a returns line is still on the page');
+  ok(/NEGA Show &amp; Sell is cases only, no returns — unsold stock is the pack’s; use it to fill take orders\./.test(rp), 'no no-returns note');
+  ok(/Take-order product picked up/.test(rp) && /\(post-dated check\)/.test(rp) && /Card and app sales Trail’s End already collected/.test(rp),
+    'the take-order or card lines are missing');
+  ok(/Payout due to the pack/.test(rp) && /Balance on the council statement/.test(rp) && /The statement is the authority/.test(rp),
+    'the payout label or the statement cross-check is missing');
+  ok(/Online direct sales are not part of it/.test(rp), 'the page does not say online direct is excluded');
+  ok(/if \(ch === 'pc-statement'\) \{[^}]*toCentsSigned\(el\.value\)/.test(SCRIPT), 'a payout balance cannot be typed');
 });
 
 test('D1: the council page is a Popcorn section, rolls over, and is NEVER published', () => {
@@ -11731,7 +11756,8 @@ test('D1: the council page is a Popcorn section, rolls over, and is NEVER publis
   // Rollover: dates on a year and back to verify; the settlement clears.
   const ro = slice('rolloverYear');
   ok(/pcd\.date = shiftISOYear\(pcd\.date\); pcd\.note = POPCORN_COUNCIL_VERIFY;/.test(ro), 'rollover leaves last year\'s council dates');
-  ok(/popcornCouncil\.returnsCents = 0;/.test(ro) && /popcornCouncil\.commissionCents = null;/.test(ro) && /popcornCouncil\.paidOn = '';/.test(ro),
+  ok(/popcornCouncil\.takeOrderCents = 0;/.test(ro) && /popcornCouncil\.cardCollectedCents = 0;/.test(ro) &&
+    /popcornCouncil\.commissionCents = null;/.test(ro) && /popcornCouncil\.statementBalanceCents = null;/.test(ro) && /popcornCouncil\.paidOn = '';/.test(ro),
     'rollover carries last season\'s settlement');
   // Never published.
   const leak = /popcornCouncil|councilSettlement|councilDateList|POPCORN_COUNCIL/;

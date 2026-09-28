@@ -3274,14 +3274,24 @@
          state.popcornCouncil = {
            dates: { finalTakeOrders: { date, note }, rewards: {…}, pickup: {…}, payment: {…},
                     commissionDrop: {…} },       ISO date or '', and a free note
-           returnsCents,                          product the pack sent back to the council
+           takeOrderCents,                        take-order product picked up (post-dated check)
+           cardCollectedCents,                    card and app sales Trail's End already collected
            commissionCents,                       null = worked out at the order's rate; a number
                                                   = what the council's statement says
+           statementBalanceCents,                 null, or the balance the council's statement
+                                                  shows (signed: a payout is negative) — a
+                                                  cross-check only, never used in the sum
            paidOn                                 ISO date the pack paid the council, or ''
          }
-     What the pack owes (councilSettlement) = Show & Sell product taken (Inventory's order total,
-     or its priced products when no total is typed) − returns − commission. Nothing is re-entered
-     that Inventory already holds.
+     What the pack owes (councilSettlement) = Show & Sell product (Inventory's order total — every
+     pickup and reorder — or its priced products when no total is typed) + take-order product −
+     card/app sales Trail's End already collected − commission, the commission worked at the
+     order's rate on Show & Sell + take order. A negative result is a payout due to the pack.
+     Online direct sales are not in it at all: Trail's End ships them and pays the pack itself.
+     NEGA's Show & Sell is cases only with NO returns (Popcorn Kernel, from nega-bsa.org/popcorn
+     and the council's 2026 deck), so there is no returns line; an old `returnsCents` from the
+     first cut of this page is dropped by normalizePopcornCouncil. Nothing is re-entered that
+     Inventory already holds.
 
      ⚠ LEADERS ONLY, NEVER PUBLISHED. The settlement is pack money. buildParentView is an
      allowlist and never names this key; a harness test scans it, the digest and the .ics.
@@ -3303,11 +3313,13 @@
   function freshPopcornCouncil() {
     var dates = {};
     POPCORN_COUNCIL_DATES.forEach(function (d) { dates[d.key] = { date: d.seed, note: POPCORN_COUNCIL_VERIFY }; });
-    return { dates: dates, returnsCents: 0, commissionCents: null, paidOn: '' };
+    return { dates: dates, takeOrderCents: 0, cardCollectedCents: 0, commissionCents: null,
+      statementBalanceCents: null, paidOn: '' };
   }
   // Absent → the seed. Present → known dates only, ISO or '', strings for notes, whole
-  // non-negative cents. A date key a record lacks comes back blank, not seeded: a leader who
-  // cleared a date meant it.
+  // non-negative cents (the statement balance may be negative: a payout). A date key a record
+  // lacks comes back blank, not seeded: a leader who cleared a date meant it. An old
+  // `returnsCents` is dropped — NEGA's Show & Sell takes no returns.
   function normalizePopcornCouncil(pc) {
     if (!pc || typeof pc !== 'object' || Array.isArray(pc)) return freshPopcornCouncil();
     var src = (pc.dates && typeof pc.dates === 'object' && !Array.isArray(pc.dates)) ? pc.dates : {};
@@ -3319,9 +3331,12 @@
     function cents(v) { return (typeof v === 'number' && isFinite(v) && v > 0) ? Math.round(v) : 0; }
     return {
       dates: dates,
-      returnsCents: cents(pc.returnsCents),
+      takeOrderCents: cents(pc.takeOrderCents),
+      cardCollectedCents: cents(pc.cardCollectedCents),
       commissionCents: (typeof pc.commissionCents === 'number' && isFinite(pc.commissionCents) && pc.commissionCents >= 0)
         ? Math.round(pc.commissionCents) : null,
+      statementBalanceCents: (typeof pc.statementBalanceCents === 'number' && isFinite(pc.statementBalanceCents))
+        ? Math.round(pc.statementBalanceCents) : null,
       paidOn: campIsoOrBlank(pc.paidOn)
     };
   }
@@ -19202,24 +19217,34 @@
   }
   // What the pack owes the council for its Show & Sell product. Pure: `invTot` is what
   // inventoryTotals() returns, so the figure is read from Inventory, never retyped.
-  //   taken      — Inventory's order total; its priced products when no total is typed
-  //   returns    — product sent back to the council
-  //   commission — the council statement's figure when one is typed, else net × the order's rate
-  //   owed       — taken − returns − commission (null when the commission can't be worked out)
+  //   taken      — Show & Sell: Inventory's order total (every pickup and reorder); its priced
+  //                products when no total is typed
+  //   takeOrder  — take-order product picked up (typed; the council's figure)
+  //   card       — card and app sales Trail's End already collected (typed)
+  //   commission — the council statement's figure when one is typed, else
+  //                (taken + takeOrder) × the order's rate
+  //   owed       — taken + takeOrder − card − commission (null when the commission can't be
+  //                worked out); negative = a payout due to the pack
+  //   statement  — the statement's balance, if typed, and whether it differs from `owed`
+  // No returns (NEGA's Show & Sell is cases only) and no online direct sales (not the council's).
   function councilSettlement(pc, invTot) {
     var it = invTot || {};
     var taken = 0, takenFrom = '';
     if (it.orderTotalCents > 0) { taken = it.orderTotalCents; takenFrom = 'order'; }
     else if (it.anyPriced && it.computedValueCents > 0) { taken = it.computedValueCents; takenFrom = 'priced'; }
-    var returns = (pc && pc.returnsCents) || 0;
-    var net = taken - returns;
+    var takeOrder = (pc && pc.takeOrderCents) || 0;
+    var card = (pc && pc.cardCollectedCents) || 0;
+    var product = taken + takeOrder;
     var commission = null, commissionFrom = '';
     if (pc && typeof pc.commissionCents === 'number') { commission = pc.commissionCents; commissionFrom = 'statement'; }
-    else if (it.pctOk) { commission = Math.round(Math.max(net, 0) * it.pct / 100); commissionFrom = 'rate'; }
+    else if (it.pctOk) { commission = Math.round(product * it.pct / 100); commissionFrom = 'rate'; }
+    var owed = commission == null ? null : product - card - commission;
+    var bal = (pc && typeof pc.statementBalanceCents === 'number') ? pc.statementBalanceCents : null;
     return {
-      takenCents: taken, takenFrom: takenFrom, returnsCents: returns, netCents: net,
-      commissionCents: commission, commissionFrom: commissionFrom, pct: it.pctOk ? it.pct : null,
-      owedCents: commission == null ? null : net - commission
+      takenCents: taken, takenFrom: takenFrom, takeOrderCents: takeOrder, productCents: product,
+      cardCents: card, commissionCents: commission, commissionFrom: commissionFrom, pct: it.pctOk ? it.pct : null,
+      owedCents: owed, payout: owed != null && owed < 0,
+      statementCents: bal, statementDiffers: bal != null && owed != null && bal !== owed
     };
   }
   // The nudge Rewards and the Council page both show. '' when the tiers already line up.
@@ -19269,41 +19294,56 @@
 
     // Settling up: the worked sum, every line of it on the page.
     var st = councilSettlement(pc, inventoryTotals());
-    var pay = pc.dates.payment.date, drop = pc.dates.commissionDrop.date;
+    var pay = pc.dates.payment.date, drop = pc.dates.commissionDrop.date, pickup = pc.dates.pickup.date;
     function line(label, cents, sign, strong) {
       return '<div class="assign-row"><span class="assign-name">' + (strong ? '<strong>' + label + '</strong>' : label) + '</span>' +
         '<span class="money">' + (cents == null ? '—' : (sign || '') + (strong ? '<strong>' + fmt(cents) + '</strong>' : fmt(cents))) + '</span></div>';
     }
     h += '<div class="card"><div class="spread"><h2 class="section display" style="margin:0">Settling up with the council</h2>' +
       '<span class="pill navy">Leaders only</span></div>' +
-      '<p class="small muted" style="margin:6px 0 10px">What the pack owes the council for its Show &amp; Sell product. ' +
-      'The product figure comes from <button type="button" class="btn small ghost" data-act="goto" data-tab="popcorn" data-section="inventory">Inventory</button>.</p>' +
-      line('Show &amp; Sell product taken <span class="small muted">' +
+      '<p class="small muted" style="margin:6px 0 10px">What the pack owes the council for its product, or the payout the council owes the pack. ' +
+      'The Show &amp; Sell figure comes from <button type="button" class="btn small ghost" data-act="goto" data-tab="popcorn" data-section="inventory">Inventory</button>. ' +
+      'Online direct sales are not part of it.</p>' +
+      line('Show &amp; Sell product (all pickups and reorders) <span class="small muted">' +
         (st.takenFrom === 'order' ? '(Inventory · order total)' : st.takenFrom === 'priced' ? '(Inventory · priced products)' : '(no order total on Inventory yet)') +
         '</span>', st.takenCents) +
-      line('Product returned to the council', st.returnsCents, '− ') +
-      line('Net product', st.netCents, '= ') +
+      line('Take-order product picked up' + (pickup ? ' ' + esc(fmtDateShort(pickup)) : '') + ' (post-dated check)', st.takeOrderCents, '+ ') +
+      line('Card and app sales Trail’s End already collected', st.cardCents, '− ') +
       line('Commission <span class="small muted">' +
         (st.commissionFrom === 'statement' ? '(from the council’s statement)'
-          : st.commissionFrom === 'rate' ? '(' + esc(String(st.pct)) + '% of net product)' : '(no commission rate set)') +
+          : st.commissionFrom === 'rate' ? '(' + esc(String(st.pct)) + '% of Show &amp; Sell + take order)' : '(no commission rate set)') +
         '</span>', st.commissionCents, '− ') +
       '<hr class="divider">' +
-      line('Owed to the council' + (pay ? ' <span class="small muted">· due ' + esc(fmtDate(pay)) + '</span>' : ''), st.owedCents, '= ', true) +
+      (st.payout
+        ? line('Payout due to the pack', -st.owedCents, '= ', true)
+        : line('Owed to the council' + (pay ? ' <span class="small muted">· due ' + esc(fmtDate(pay)) + '</span>' : ''), st.owedCents, '= ', true)) +
+      (st.statementCents != null
+        ? line('Balance on the council statement <span class="small muted">(' + (st.statementCents < 0 ? 'payout to the pack' : 'owed to the council') + ')</span>',
+            Math.abs(st.statementCents))
+        : '') +
+      '<p class="small muted" style="margin:8px 0 0">NEGA Show &amp; Sell is cases only, no returns — unsold stock is the pack’s; use it to fill take orders.</p>' +
       '<div class="row" style="margin-top:12px">' +
-      '<label class="fld">Returned to the council ($)<input class="money-in" inputmode="decimal" data-ch="pc-returns" value="' + dollars(pc.returnsCents) + '" placeholder="0.00"></label>' +
+      '<label class="fld">Take-order product picked up ($)<input class="money-in" inputmode="decimal" data-ch="pc-takeorder" value="' + dollars(pc.takeOrderCents) + '" placeholder="0.00"></label>' +
+      '<label class="fld">Card and app sales already collected ($)<input class="money-in" inputmode="decimal" data-ch="pc-card" value="' + dollars(pc.cardCollectedCents) + '" placeholder="0.00"></label>' +
       '<label class="fld">Commission on the statement ($)<input class="money-in" inputmode="decimal" data-ch="pc-commission" value="' +
         (typeof pc.commissionCents === 'number' ? (pc.commissionCents / 100).toFixed(2) : '') + '" placeholder="worked out"></label>' +
+      '<label class="fld">Balance on the council statement ($)<input class="money-in" inputmode="decimal" data-ch="pc-statement" value="' +
+        (typeof pc.statementBalanceCents === 'number' ? (pc.statementBalanceCents / 100).toFixed(2) : '') + '" placeholder="optional; − for a payout"></label>' +
       '<label class="fld">Paid to the council on<input type="date" data-ch="pc-paid" value="' + esc(pc.paidOn) + '"></label>' +
       '</div>' +
-      '<p class="small muted" style="margin:6px 0 0">Leave the commission blank to work it out at the order’s rate; type the figure on the council’s statement once you have it.</p>';
+      '<p class="small muted" style="margin:6px 0 0">Leave the commission blank to work it out at the order’s rate; type the figure on the council’s statement once you have it. ' +
+      'The statement balance is only a cross-check: type it as it appears, with a minus sign if the council owes the pack.</p>';
+    if (st.statementDiffers) {
+      h += '<p class="warn small" style="margin:10px 0 0">The council statement says ' +
+        (st.statementCents < 0 ? 'a payout of ' + esc(fmt(-st.statementCents)) : esc(fmt(st.statementCents)) + ' owed') +
+        '; the sum above comes to ' + (st.payout ? 'a payout of ' + esc(fmt(-st.owedCents)) : esc(fmt(st.owedCents)) + ' owed') +
+        '. The statement is the authority — check the figures above against it.</p>';
+    }
     if (!pc.paidOn && drop && today > drop) {
       h += '<p class="warn small" style="margin:10px 0 0">Past ' + esc(fmtDate(drop)) + ' and not marked paid: the council’s commission drops 10%. ' +
         'Check the statement and type the commission it shows.</p>';
     } else if (!pc.paidOn && pay && today > pay) {
       h += '<p class="warn small" style="margin:10px 0 0">Payment was due ' + esc(fmtDate(pay)) + ' and is not marked paid.</p>';
-    }
-    if (st.owedCents != null && st.owedCents < 0) {
-      h += '<p class="warn small" style="margin:10px 0 0">The returns and commission come to more than the product taken — check the figures.</p>';
     }
     h += '<p class="small muted" style="margin:10px 0 0">Not published to families, and not on the Budget: record the payment itself on the Ledger.</p></div>';
     return h;
@@ -23430,8 +23470,10 @@
       var pcd = state.popcornCouncil.dates[cd.key];
       if (pcd && pcd.date) { pcd.date = shiftISOYear(pcd.date); pcd.note = POPCORN_COUNCIL_VERIFY; }
     });
-    state.popcornCouncil.returnsCents = 0;
+    state.popcornCouncil.takeOrderCents = 0;
+    state.popcornCouncil.cardCollectedCents = 0;
     state.popcornCouncil.commissionCents = null;
+    state.popcornCouncil.statementBalanceCents = null;
     state.popcornCouncil.paidOn = '';
     state.inventory.distributions = [];
     state.inventory.orderTotalCents = 0; // inventory.commissionPct KEPT
@@ -25898,7 +25940,13 @@
       }
       commit(); return;
     }
-    if (ch === 'pc-returns') { state.popcornCouncil.returnsCents = toCents(el.value); commit(); return; }
+    if (ch === 'pc-takeorder') { state.popcornCouncil.takeOrderCents = toCents(el.value); commit(); return; }
+    if (ch === 'pc-card') { state.popcornCouncil.cardCollectedCents = toCents(el.value); commit(); return; }
+    if (ch === 'pc-statement') {
+      // Signed: a statement showing a payout to the pack is typed with a minus. Blank = none.
+      state.popcornCouncil.statementBalanceCents = String(el.value).trim() === '' ? null : toCentsSigned(el.value);
+      commit(); return;
+    }
     if (ch === 'pc-commission') {
       state.popcornCouncil.commissionCents = String(el.value).trim() === '' ? null : toCents(el.value);
       commit(); return;
