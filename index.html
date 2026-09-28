@@ -2887,6 +2887,12 @@
         return { name: str(x.name), estCents: cents(x.estCents), actualCents: cents(x.actualCents), perScout: x.perScout === true };
       })
     };
+    // M6 (final review, 2026-09-28) — what actually carried into next year, and from where. Absent
+    // on every archive closed before, which then reads exactly as it always did.
+    if (b.carriedFrom === 'bank' || b.carriedFrom === 'projection') {
+      a.budget.carriedFrom = b.carriedFrom;
+      a.budget.carriedCents = cents(b.carriedCents);
+    }
     var ev = (a.events && typeof a.events === 'object' && !Array.isArray(a.events)) ? a.events : {};
     a.events = {
       storefronts: int(ev.storefronts), denMeetings: int(ev.denMeetings), packMeetings: int(ev.packMeetings),
@@ -20025,6 +20031,7 @@
   function buildSeasonArchive() {
     var pack = computePackTotals();
     var bud = computeBudget();
+    var carry = closingCarryNow(bud);   // M6 — see budget.carriedCents below
     var totals = computeScoutTotals();
     var year = state.budget.programYear;
     // Active + credited-archived scouts (same roster rule as the Totals boards), desc by combined.
@@ -20071,6 +20078,11 @@
       budget: {
         plannedCents: bud.planned, actualCents: bud.actual, startingBalanceCents: bud.startingBalance,
         fundsInCents: bud.fundsIn, balanceCents: bud.balance,
+        // M6 — balanceCents is the Budget's PROJECTION. Since M2 a book with an opening figure
+        // carries its bank balance instead, so the archive says which figure carried and what it
+        // was; otherwise "ending balance" and next year's Starting funds disagree with no reason
+        // given. Same decision as rolloverYear (closingCarryNow).
+        carriedCents: carry.cents, carriedFrom: carry.from,
         // Phase 1 — the archive finally stores REAL actuals (what the ledger says was paid)
         // instead of estimate × roster. The archived shape is unchanged, so every past
         // season still reads exactly as it did; only the source of the number is better.
@@ -20186,6 +20198,19 @@
   // and carrying that forward would drop last year's own carryover on the floor. Pure.
   function closingCarryover(projectionCents, bankCents, bankKnown) {
     return bankKnown ? bankCents : projectionCents;
+  }
+  // What closing today would carry, and from where — rolloverYear's own inputs, read the same way.
+  function closingCarryNow(bud) {
+    var bankKnown = state.ledger.length > 0 && !!state.book.openingDate;
+    return { cents: closingCarryover(bud.balance, bookBalance(), bankKnown), from: bankKnown ? 'bank' : 'projection' };
+  }
+  // M6 — how an archived (or about-to-be-archived) season names its balance. When the BANK
+  // balance carried, balanceCents is only the projection, and saying "Ending balance" beside it
+  // invited a treasurer to reconcile next year's Starting funds against the wrong number. An
+  // archive from before carriedFrom existed reads as it always did. Pure.
+  function seasonBalanceLabel(b) { return (b && b.carriedFrom === 'bank') ? 'Projected ending balance' : 'Ending balance'; }
+  function seasonCarriedLine(b) {
+    return (b && b.carriedFrom === 'bank') ? 'Carried forward: ' + fmt(b.carriedCents || 0) + ' (bank balance)' : '';
   }
   // A reward tier's cover key names a budget line by ID — bare for an expense, 'act:'+id for an
   // activity, either with an optional '#adult' / '#sibling' share after it (coverKeyOf). The
@@ -20495,8 +20520,9 @@
       '<div class="stat"><span class="v money">' + fmt(f.combinedCents) + '</span><span class="l">Raised</span></div>' +
       '<div class="stat"><span class="v money">' + (f.commissionCents == null ? '—' : fmt(f.commissionCents)) + '</span><span class="l">Commission</span></div>' +
       '<div class="stat"><span class="v money">' + fmt(b.actualCents) + '</span><span class="l">Spent</span></div>' +
-      '<div class="stat"><span class="v money" style="color:' + (b.balanceCents >= 0 ? 'var(--good)' : 'var(--bad)') + '">' + fmt(b.balanceCents) + '</span><span class="l">Ending balance</span></div>' +
-      '</div>';
+      '<div class="stat"><span class="v money" style="color:' + (b.balanceCents >= 0 ? 'var(--good)' : 'var(--bad)') + '">' + fmt(b.balanceCents) + '</span><span class="l">' + seasonBalanceLabel(b) + '</span></div>' +
+      '</div>' +
+      (seasonCarriedLine(b) ? '<p class="small" style="margin:0 0 10px"><strong>' + esc(seasonCarriedLine(b)) + '</strong></p>' : '');
     if (f.scouts.length) {
       h += '<p class="eyebrow">Scout standings</p><div class="tbl-wrap"><table><caption class="visually-hidden">' + a.year + ' program year — scout standings</caption>' +
         '<thead><tr><th scope="col"></th><th scope="col">Scout</th><th scope="col">Den</th><th scope="col" class="num">Sales</th><th scope="col" class="num">Donations</th><th scope="col" class="num">Combined</th></tr></thead><tbody>';
@@ -20520,7 +20546,8 @@
     h += '<p class="eyebrow" style="margin-top:14px">Budget</p>' +
       '<p class="small" style="margin:0 0 8px">Planned <span class="money">' + fmt(b.plannedCents) + '</span> · actual <span class="money">' + fmt(b.actualCents) +
       '</span> · funds in <span class="money">' + fmt(b.fundsInCents) + '</span> (started ' + fmt(b.startingBalanceCents) +
-      ') · ending balance <strong class="money">' + fmt(b.balanceCents) + '</strong></p>';
+      ') · ' + seasonBalanceLabel(b).toLowerCase() + ' <strong class="money">' + fmt(b.balanceCents) + '</strong>' +
+      (seasonCarriedLine(b) ? ' · ' + esc(seasonCarriedLine(b).replace(/^C/, 'c')) : '') + '</p>';
     if (b.activities.length) {
       h += '<div class="tbl-wrap"><table><thead><tr><th scope="col">Activity</th><th scope="col">Month</th><th scope="col" class="num">Planned</th><th scope="col" class="num">Actual</th></tr></thead><tbody>';
       b.activities.forEach(function (x) {
@@ -20568,7 +20595,8 @@
     lines.push('Raised: ' + fmt(f.salesCents) + ' sales + ' + fmt(f.donationsCents) + ' donations = ' + fmt(f.combinedCents));
     if (f.commissionCents != null) lines.push('Pack commission: ' + fmt(f.commissionCents));
     lines.push('Budget: planned ' + fmt(b.plannedCents) + ' · actual ' + fmt(b.actualCents) +
-      ' · funds in ' + fmt(b.fundsInCents) + ' · ending balance ' + fmt(b.balanceCents));
+      ' · funds in ' + fmt(b.fundsInCents) + ' · ' + seasonBalanceLabel(b).toLowerCase() + ' ' + fmt(b.balanceCents));
+    if (seasonCarriedLine(b)) lines.push(seasonCarriedLine(b));
     lines.push('Events: ' + seasonEventsLine(a));
     if (a.dues.collectedCents || a.dues.outstandingCents) {
       lines.push('Dues: ' + fmt(a.dues.collectedCents) + ' collected · ' + fmt(a.dues.outstandingCents) + ' outstanding');
@@ -20616,7 +20644,8 @@
       ' <span class="pill navy">Season close-out</span></button>' +
       tinyDangerBtn('del-archive:' + a.id, 'Delete ' + a.year + ' close-out') + '</div>' +
       '<p class="small muted" style="margin:6px 0 0">Closed ' + esc(fmtArchiveDate(a.closedAt)) + ' · raised ' + fmt(a.fundraising.combinedCents) +
-      ' · spent ' + fmt(a.budget.actualCents) + ' · ending balance ' + fmt(a.budget.balanceCents) + '</p>';
+      ' · spent ' + fmt(a.budget.actualCents) + ' · ' + seasonBalanceLabel(a.budget).toLowerCase() + ' ' + fmt(a.budget.balanceCents) +
+      (seasonCarriedLine(a.budget) ? ' · ' + esc(seasonCarriedLine(a.budget).replace(/^C/, 'c')) : '') + '</p>';
     if (open) {
       h += '<div style="margin-top:10px">' + seasonArchiveTables(a) + '</div>' +
         '<div class="row no-print" style="margin-top:10px">' +
@@ -20655,8 +20684,10 @@
       '<div class="stat"><span class="v money">' + fmt(f.combinedCents) + '</span><span class="l">Raised</span></div>' +
       '<div class="stat"><span class="v money">' + (f.commissionCents == null ? '—' : fmt(f.commissionCents)) + '</span><span class="l">Commission</span></div>' +
       '<div class="stat"><span class="v money">' + fmt(b.actualCents) + '</span><span class="l">Spent</span></div>' +
-      '<div class="stat"><span class="v money" style="color:' + (b.balanceCents >= 0 ? 'var(--good)' : 'var(--bad)') + '">' + fmt(b.balanceCents) + '</span><span class="l">Ending balance</span></div>' +
+      // M6 — the same label and line the archive will show, from the archive being previewed.
+      '<div class="stat"><span class="v money" style="color:' + (b.balanceCents >= 0 ? 'var(--good)' : 'var(--bad)') + '">' + fmt(b.balanceCents) + '</span><span class="l">' + seasonBalanceLabel(b) + '</span></div>' +
       '</div>' +
+      (seasonCarriedLine(b) ? '<p class="small" style="margin:0 0 4px"><strong>' + esc(seasonCarriedLine(b)) + '</strong></p>' : '') +
       '<p class="small" style="margin:0 0 4px"><strong>Budget:</strong> planned ' + fmt(b.plannedCents) + ' vs actual ' + fmt(b.actualCents) + '</p>';
     var top3 = f.scouts.slice(0, 3);
     if (top3.length) {

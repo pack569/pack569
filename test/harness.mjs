@@ -10090,6 +10090,38 @@ test('M5: Budget vs actual plans every dollar the Budget card plans, adult and s
   eq(camp && camp.planned, 16000, 'the covered adult share is not planned under its own line’s category');
 });
 
+test('M6: an archived season says what actually carried forward, and old archives read as before', () => {
+  const ctx = sandbox(['fmt', 'esc', 'normalizeSeasonArchive', 'seasonBalanceLabel', 'seasonCarriedLine', 'closingCarryover']);
+  const norm = (a) => { ctx.normalizeSeasonArchive(a); return a; };
+  const base = () => ({ id: 'a', kind: 'season', year: 2026, closedAt: '2027-07-01T00:00:00Z',
+    fundraising: {}, budget: { plannedCents: 100000, actualCents: 90000, startingBalanceCents: 5000, fundsInCents: 120000, balanceCents: 30000 },
+    events: {}, dues: {}, advancement: {} });
+  const bank = norm(Object.assign(base(), {
+    budget: Object.assign(base().budget, { carriedCents: 28712, carriedFrom: 'bank' }) }));
+  eq([bank.budget.carriedFrom, bank.budget.carriedCents], ['bank', 28712], 'the carried figure did not survive a reload');
+  const old = norm(base());
+  ok(!('carriedFrom' in old.budget) && !('carriedCents' in old.budget), 'an old archive gained a carried figure it never had');
+  const junk = norm(Object.assign(base(), { budget: Object.assign(base().budget, { carriedFrom: 'guess', carriedCents: 5 }) }));
+  ok(!('carriedFrom' in junk.budget), 'an unknown carriedFrom was kept');
+  eq(ctx.seasonBalanceLabel(bank.budget), 'Projected ending balance', 'bank-carried label');
+  eq(ctx.seasonCarriedLine(bank.budget), 'Carried forward: $287.12 (bank balance)', 'carried line');
+  eq(ctx.seasonBalanceLabel(old.budget), 'Ending balance', 'an old archive’s label changed');
+  eq(ctx.seasonCarriedLine(old.budget), '', 'an old archive gained a carried line');
+  eq(ctx.seasonBalanceLabel({ carriedFrom: 'projection', carriedCents: 30000 }), 'Ending balance', 'a projection carry is relabelled');
+  // Stored by the archive builder from the same decision rolloverYear makes; used by every reader.
+  const arc = slice('buildSeasonArchive');
+  ok(/var carry = closingCarryNow\(bud\);/.test(arc) && /carriedCents: carry\.cents, carriedFrom: carry\.from,/.test(arc),
+    'the archive does not store what carried');
+  ok(/var bankKnown = state\.ledger\.length > 0 && !!state\.book\.openingDate;/.test(slice('closingCarryNow')) &&
+     /var closingBankKnown = closingHadLedger && !!state\.book\.openingDate;/.test(slice('rolloverYear')),
+    'the archive and the rollover decide the carry differently');
+  ['renderCloseoutOverlay', 'seasonArchiveTables', 'seasonArchiveText', 'seasonArchiveRow'].forEach((fn) => {
+    const src = slice(fn);
+    ok(/seasonBalanceLabel\(/.test(src) && /seasonCarriedLine\(/.test(src), `${fn} does not say which balance it shows`);
+    ok(!/<span class="l">Ending balance<\/span>|' · ending balance '/.test(src), `${fn} still hard-codes "Ending balance"`);
+  });
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

@@ -311,6 +311,14 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   `budgetVsActualNow` plans each *heads* share under its own line's category, where the money is
   spent. The table's total Planned now equals `computeBudget().planned`, and a harness test holds
   the two together on a fixture with one share of each kind.
+- **The archive's "ending balance" was not what carried (M6).** Since M2 a book with an opening
+  figure carries its bank balance, but the close-out preview and every Past season still showed
+  the Budget's projection as "Ending balance", so next year's Starting funds disagreed with it
+  and nothing said why. The archive now stores `budget.carriedCents` and `budget.carriedFrom`
+  (`'bank' | 'projection'`, from `closingCarryNow`, the same decision `rolloverYear` makes).
+  When the bank carried, the stat reads **Projected ending balance** and a line says "Carried
+  forward: $X (bank balance)" — in the preview, the Past seasons row and sheet, and the copied
+  text. An archive closed before this has neither field and reads exactly as it did.
 
 ---
 
