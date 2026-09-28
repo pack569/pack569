@@ -213,7 +213,8 @@ calendar but not the money" is impossible to do by permission alone. Instead the
   sections, the Recognition list or the printed leaders' copy), the School Night checklist
   (`recruitKit`), the new-member tracker (`onboarding`, and when each scout joined —
   `addedYear`), the council's popcorn dates and what the pack owes the council
-  (`popcornCouncil`), who counted and verified a storefront's cash, scout notes or den labels, RSVP/attendance detail, or the ledger in any raw
+  (`popcornCouncil`), who counted and verified a storefront's cash, when each charge or the
+  pack's dues fall due, any family's statement, scout notes or den labels, RSVP/attendance detail, or the ledger in any raw
   form.
 - Parents and pending users are **denied the ledger document outright** by the rules below,
   so this isn't a UI choice — the pack's finances never reach their browser at all.

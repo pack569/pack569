@@ -8957,7 +8957,7 @@ test('T9: a shared balance, a carried credit and the parents’ cost card say wh
     { direction: 'in', scoutId: 'ada', amountCents: 5000, source: 'family' }
   ])[0];
   eq([a.paid, a.carried, a.balance], [8000, 3000, 0], 'the family account');
-  const blk = /function duesFamilyBlock\(f\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  const blk = /function duesFamilyBlock\(f, paidOn\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/fmt\(a\.paid - a\.carried\) \+ ' received'/.test(blk) && /' carried forward'/.test(blk),
     'the family block counts a carried credit as received');
   // (c) The parents' card is the fees in the plan, not everything a year costs. No new published fields.
@@ -8968,7 +8968,7 @@ test('T9: a shared balance, a carried credit and the parents’ cost card say wh
 test('T10: undoing a forgiveness takes two taps', () => {
   const u = /if \(act\.indexOf\('charge-unforgive:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/arm\(act, function \(\) \{[\s\S]*uc\.forgiven = null;/.test(u), 'a forgiveness is undone on one tap');
-  const blk = /function duesFamilyBlock\(f\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  const blk = /function duesFamilyBlock\(f, paidOn\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/data-act="charge-unforgive:' \+ c\.id \+ '"/.test(blk) && /Tap again to undo/.test(blk),
     'the Undo button is not keyed per charge, so it cannot show it is armed');
   ok(!/data-act="charge-unforgive" /.test(SCRIPT), 'the old one-tap button is still drawn');
@@ -9045,7 +9045,7 @@ test('M7: every "owes" beside a name, and the Treasurer’s nag, is the family�
   ok(/var owingFams = familyAccountsNow\(\)/.test(SCRIPT), 'the Treasurer’s nag counts a family once per child');
   const dues = /function renderDues\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/duesFamilyBlock/.test(dues) && />Family balances</.test(dues), 'the Dues card still lists scouts one by one');
-  const blk = /function duesFamilyBlock\(f\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  const blk = /function duesFamilyBlock\(f, paidOn\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/Credit ' \+ fmt\(a\.credit\)/.test(blk), 'a family in credit still reads "square"');
 });
 
@@ -9055,7 +9055,7 @@ test('M9: a former scout’s balance has a row to settle it from', () => {
   ok(/Former scouts with a balance/.test(dues), 'archived scouts with a balance have nowhere to be paid or forgiven');
   ok(/var former = fams\.filter\(function \(f\) \{\s*return !f\.active\.length && \(f\.acct\.outstanding \|\| f\.acct\.credit \|\|\s*f\.charges\.some\(function \(c\) \{ return !!c\.forgiven; \}\)\);/.test(dues),
     'the former-scouts list does not pick up families with nobody left on the roster');
-  ok(/former\.forEach\(function \(f\) \{ h \+= duesFamilyBlock\(f\); \}\);/.test(dues),
+  ok(/former\.forEach\(function \(f\) \{ h \+= duesFamilyBlock\(f, paidOn\); \}\);/.test(dues),
     'former families are not given the same pay and forgive controls');
   const df = /function duesFamilies\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/state\.scouts\.filter/.test(df), 'family members are read from the active roster only');
@@ -11822,6 +11822,107 @@ test('D3: the kickoff note uses the real tiers, targets and dates, and hides tar
   ok(/if \(act === 'copy-kickoff'\) \{\s*copyText\(kickoffNoteNow\(\)/.test(SCRIPT), 'the copy button does not copy the note');
   ok(!/kickoff/i.test(codeOnly(BPV())), 'buildParentView reads the kickoff note');
   ok(!/state\.kickoff|kickoffNote:/.test(SCRIPT), 'the kickoff note is stored');
+});
+
+/* ================================================================
+   E1 (2026-09-28) — charge due dates and family statements. Leaders only.
+   ================================================================ */
+test('E1: a charge is due 14 days before its event, by the dues date for dues, and otherwise not at all', () => {
+  const ctx = sandbox(['campIsoOrBlank', 'isoPlusDays', 'CHARGE_DUE_DAYS_BEFORE_EVENT', 'lineIsDues', 'chargeDefaultDue', 'chargeDueDate']);
+  const ev = { id: 'l1', eventId: 'e1', category: 'camp', name: 'Fall campout' };
+  eq(ctx.chargeDefaultDue(ev, '2026-10-16', '2026-09-30'), '2026-10-02', 'event line');
+  eq(ctx.chargeDefaultDue(ev, '2026-03-10', ''), '2026-02-24', 'across a month end');
+  eq(ctx.chargeDefaultDue(ev, '', '2026-09-30'), '', 'an undated event has a due date');
+  eq(ctx.chargeDefaultDue({ name: 'Youth registration', category: 'registration' }, '', '2026-09-30'), '2026-09-30', 'registration line');
+  eq(ctx.chargeDefaultDue({ name: 'Pack dues', category: 'other' }, '', '2026-09-30'), '2026-09-30', 'a line called dues');
+  eq(ctx.chargeDefaultDue({ name: 'Pack dues', category: 'other' }, '', ''), '', 'no dues date set');
+  eq(ctx.chargeDefaultDue({ name: 'Neckerchiefs', category: 'uniforms' }, '', '2026-09-30'), '', 'an ordinary line has a due date');
+  eq(ctx.chargeDefaultDue(null, '', '2026-09-30'), '', 'a prior-year balance (no line) has a due date');
+  eq(ctx.chargeDueDate({ dueDate: '2026-11-01' }, ev, '2026-10-16', ''), '2026-11-01', 'the leader’s own date lost');
+  eq(ctx.chargeDueDate({ dueDate: 'soon' }, ev, '2026-10-16', ''), '2026-10-02', 'a junk override was used');
+  // Derived, not stored: the event moving moves the due date.
+  eq(ctx.chargeDueDate({ dueDate: '' }, ev, '2026-10-23', ''), '2026-10-09', 'the due date did not follow the event');
+});
+
+test('E1: overdue is what is left unpaid past its due date, never on the day itself', () => {
+  const ctx = sandbox(['chargeIsOpen', 'chargesOverdue']);
+  const cs = [
+    { id: 'a', amountCents: 5000, due: '2026-09-01' },
+    { id: 'b', amountCents: 3000, due: '2026-09-15' },
+    { id: 'c', amountCents: 2000, due: '2026-09-28' },
+    { id: 'd', amountCents: 4000, due: '2026-08-01', waivedBy: 't1' },
+    { id: 'e', amountCents: 4000, due: '2026-08-01', forgiven: { by: 'CC' } },
+    { id: 'f', amountCents: 1000, due: '' },
+    { id: 'g', amountCents: 1000, due: '2026-08-15' }
+  ];
+  const r = ctx.chargesOverdue(cs, { a: 2000, g: 1000 }, (c) => c.due, '2026-09-28');
+  eq([r.cents, r.n, r.oldest], [6000, 2, '2026-09-01'], 'overdue');
+  eq(ctx.chargesOverdue([], {}, () => '', '2026-09-28').cents, 0, 'nothing');
+});
+
+test('E1: due dates are normalized, carried a year at close-out, and editable only as a leader', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const d = ctx.normalizeState(Object.assign(preMigrationState(), {
+    budget: { programYear: 2026, startingBalance: 0, activities: [], expenses: [], duesDueDate: 'Sept' },
+    charges: [{ id: 'c1', scoutId: 's1', lineId: '', amountCents: 100, dueDate: '2026-10-01' }, { id: 'c2', scoutId: 's1', amountCents: 1, dueDate: 7 }]
+  }));
+  eq(d.budget.duesDueDate, '', 'a junk dues date was kept');
+  eq(d.charges.map((c) => c.dueDate), ['2026-10-01', ''], 'charge due dates');
+  ok(/duesDueDate: ''/.test(slice('freshBudget')), 'freshBudget has no dues date');
+  const ro = slice('rolloverYear');
+  ok(/if \(b\.duesDueDate\) b\.duesDueDate = shiftISOYear\(b\.duesDueDate\);/.test(ro), 'close-out does not move the dues date on a year');
+  ok(/dueDate: '', waivedBy/.test(ro) && /dueDate: '', waivedBy/.test(slice('syncCharges')), 'a new charge is born with an override');
+  ok(/data-ch="bud-dues-due"/.test(slice('renderBudget')), 'no dues date on the Budget');
+  ok(/if \(ch === 'bud-dues-due'\) \{ state\.budget\.duesDueDate = campIsoOrBlank\(el\.value\); commit\(\); return; \}/.test(SCRIPT), 'dues date handler');
+  const blk = slice('duesFamilyBlock');
+  ok(/data-ch="charge-due"/.test(blk) && /canEdit\(\) \? '' : ' disabled'/.test(blk), 'the charge date is not editable, or not gated');
+  ok(/chargesOverdue\(f\.charges, paidOn, chargeDueNow, todayISO\(\)\)/.test(blk) && / overdue<\/span>/.test(blk), 'a family block does not say what is overdue');
+  ok(/overdue\.<\/strong>/.test(slice('renderDues')), 'Family balances does not total the overdue');
+});
+
+test('E1: a family statement says what, how much, by when and what came in — and never who forgave it or which donor paid', () => {
+  const ctx = sandbox(['STATEMENT_KEEP', 'statementRowStatus', 'familyStatementText']);
+  const money = (c) => '$' + (c / 100).toFixed(2), dl = (d) => 'D' + d;
+  const d = {
+    pack: 'Pack 569', family: 'Ada and Ben', today: '2026-09-28',
+    rows: [
+      { what: 'Ada · Youth registration', amountCents: 8500, paidCents: 8500, due: '', settled: '' },
+      { what: 'Ben · Fall campout', amountCents: 4000, paidCents: 1000, due: '2026-09-20', settled: '' },
+      { what: 'Ben · Blue & Gold', amountCents: 1500, paidCents: 0, due: '2026-10-20', settled: '' },
+      { what: 'Ada · Day camp', amountCents: 14500, paidCents: 0, due: '', settled: 'tier' },
+      { what: 'Ben · Den dues', amountCents: 2000, paidCents: 0, due: '', settled: 'forgiven' }
+    ],
+    payments: [{ date: '2026-09-02', label: 'Payment · check 1041', cents: 9500, out: false }],
+    owed: 14000, paid: 9500, refunded: 0, balance: 4500, overdueCents: 3000
+  };
+  const t = ctx.familyStatementText(d, money, dl);
+  const L = t.split('\n');
+  eq(L[2], 'Leaders’ copy — send only to this family', 'the statement does not say who it is for');
+  ok(/Youth registration — \$85\.00 — Paid$/m.test(t), 'paid');
+  ok(/Fall campout — \$40\.00 — Part paid, \$30\.00 left, overdue — was due D2026-09-20$/m.test(t), 'part paid and overdue: ' + t);
+  ok(/Blue & Gold — \$15\.00 — Due by D2026-10-20$/m.test(t), 'due by');
+  ok(/Day camp — \$145\.00 — Covered by a reward tier$/m.test(t) && /Den dues — \$20\.00 — Forgiven by the pack$/m.test(t), 'settled');
+  ok(/^Balance due: \$45\.00$/m.test(t) && /^Overdue now: \$30\.00$/m.test(t), 'totals');
+  ok(/In credit: \$5\.00/.test(ctx.familyStatementText(Object.assign({}, d, { balance: -500, overdueCents: 0 }), money, dl)), 'credit');
+  // What the data builder reads: never the forgiveness reason, the donor, or the treasurer's description.
+  const data = codeOnly(slice('familyStatementData'));
+  ok(!/\.reason|\.donor|\.description|\.note\b/.test(data), 'the statement reads a field the family should not get');
+  ok(/split\(' '\)\[0\]/.test(data), 'the statement uses more than first names');
+});
+
+test('E1: due dates and family statements are NEVER published', () => {
+  const bpv = codeOnly(BPV());
+  ok(!/dueDate|duesDueDate|familyStatement|STATEMENT_KEEP|chargesOverdue|chargeDue/.test(bpv), 'buildParentView reads due dates or statements');
+  for (const f of ['renderParentApp', 'renderParentSchedule', 'renderParentStandings', 'renderParentCamping', 'monthlyDigest']) {
+    ok(!/dueDate|duesDueDate|familyStatement|chargesOverdue/.test(codeOnly(slice(f))), f + ' reads due dates or statements');
+  }
+  const pa = /var PARENT_ACTS = \[([^\]]*)\]/.exec(SCRIPT)[1];
+  ok(!/statement/.test(pa), 'a parent can open a statement');
+  ok(!/state\.statements|statement: \{|lastStatement/.test(SCRIPT), 'a statement is stored');
+  ok(/each charge's due date \(`dueDate`\), the pack's dues date \(`budget\.duesDueDate`\) and every\s+\/\/\s+family statement \(E1\)/.test(SCRIPT), 'the banner does not exclude them');
+  ok(/\*\*never\*\* contains:[^]*?when each charge or the\s+pack's dues fall due, any family's statement/.test(SETUP), 'SETUP.md does not exclude them');
+  ok(/data-act="family-statement"/.test(slice('duesFamilyBlock')), 'no Statement button');
+  ok(/STATEMENT_KEEP/.test(slice('renderFamilyStatement')), 'the printed sheet does not say who it is for');
 });
 
 /* ---------------- report ---------------- */

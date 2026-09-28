@@ -326,6 +326,26 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   "— $Y less than sales work out to; still expected from the council, or check the rate with
   the Kernel": the gap may be a second cheque or a mistyped rate, and the app cannot tell which.
 
+### Treasurer's enhancements, 2026-09-28 (E1–E3)
+
+- **Due dates and family statements (E1).** A charge said how much and for what, never by
+  when, so nothing could be overdue. The due date is **derived**, not stored
+  (`chargeDefaultDue`): an event's charges are due 14 days before the event, dues and
+  registration (the *Registration & fees* category, or a line named "dues") by the pack's
+  `budget.duesDueDate` (set on the Budget beside Starting funds), anything else — a prior-year
+  balance — has none. Derived, so an event that moves takes its due date with it. A leader can
+  override one charge (`charge.dueDate`, typed on the charge in its family block; typing the
+  default back, or clearing it, returns to the default). Overdue is what is left unpaid after
+  `chargePaidAllocation`, past the due date and not on it (`chargesOverdue`); Family balances
+  totals it and each family block says how much and since when. Close-out moves the dues date
+  on a year (as a tier's `dueBy`), and the overrides go with the year's charges.
+  Each family block has a **Statement**: an overlay to print or copy, built on demand
+  (`familyStatementData`, `familyStatementText`) — every charge with its status (paid, part
+  paid, due by, overdue, covered by a reward tier, forgiven), every payment, credit and refund,
+  and the balance. It says **"Leaders' copy — send only to this family"** on it. First names
+  only; the forgiveness reason, donors' names and ledger descriptions stay off it. Nothing is
+  stored and nothing is published (harness guard).
+
 ---
 
 ## 1. The problem, concretely

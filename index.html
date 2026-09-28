@@ -1949,6 +1949,7 @@
   function freshBudget() {
     return {
       programYear: defaultProgramYear(), startingBalance: 0, activities: [], expenses: [],
+      duesDueDate: '',     // E1 — when dues/registration charges are due; leaders only
       slotsRebased: true   // born July-based; nothing to migrate
     };
   }
@@ -3725,6 +3726,8 @@
     if (!d.budget || typeof d.budget !== 'object') d.budget = freshBudget();
     if (typeof d.budget.programYear !== 'number') d.budget.programYear = defaultProgramYear();
     if (typeof d.budget.startingBalance !== 'number') d.budget.startingBalance = 0;
+    // E1 — when dues and registration are due ('' = no date). Leaders only.
+    d.budget.duesDueDate = campIsoOrBlank(d.budget.duesDueDate);
     // Phase 3a — the paid-direct question is asked once, per pack, not per upgrade.
     d.budget.directPrompted = d.budget.directPrompted === true;
     if (!Array.isArray(d.budget.activities)) d.budget.activities = [];
@@ -4097,6 +4100,8 @@
       // M10 — what has happened to the charge that its fields no longer show (an undone
       // forgiveness). '' on almost every charge.
       c.note = typeof c.note === 'string' ? c.note : '';
+      // E1 — a leader's own due date for this charge, or '' for the default (chargeDefaultDue).
+      c.dueDate = campIsoOrBlank(c.dueDate);
       if (c.forgiven && typeof c.forgiven === 'object' && !Array.isArray(c.forgiven)) {
         c.forgiven = {
           date: typeof c.forgiven.date === 'string' ? c.forgiven.date : '',
@@ -6534,6 +6539,53 @@
     });
     return paid;
   }
+  // ---------------------------------------------------------------------------
+  // E1 — WHEN A CHARGE IS DUE (Treasurer's ask, 2026-09-28).
+  //
+  // A charge said how much and for what, never by when, so "overdue" could not be said at all and
+  // every family's balance looked equally urgent. The DEFAULT is derived, never stored, so it
+  // follows the thing it comes from: an event moved a week keeps its charges due 14 days before
+  // the new date, and a dues date changed in the budget moves every dues charge with it.
+  //   an event's line                       14 days before the event (none while it is undated)
+  //   a dues or registration line           the pack's "dues due" date (budget.duesDueDate)
+  //   anything else (a prior-year balance)  no due date
+  // `charge.dueDate` is an optional override a leader types on the charge ('' = the default). It
+  // lives and dies with its charge — cleared at close-out with the rest of the year's charges.
+  // LEADERS ONLY: never published (buildParentView has no charges at all; harness scan).
+  // ---------------------------------------------------------------------------
+  var CHARGE_DUE_DAYS_BEFORE_EVENT = 14;
+  // "Dues" is the Registration & fees category, or a line the pack has called dues. Pure.
+  function lineIsDues(line) {
+    return !!line && (line.category === 'registration' || /\bdues\b/i.test(String(line.name || '')));
+  }
+  function chargeDefaultDue(line, evDate, duesDue) {
+    if (!line) return '';
+    if (line.eventId) {
+      var ed = campIsoOrBlank(evDate);
+      return ed ? isoPlusDays(ed, -CHARGE_DUE_DAYS_BEFORE_EVENT) : '';
+    }
+    return lineIsDues(line) ? campIsoOrBlank(duesDue) : '';
+  }
+  function chargeDueDate(c, line, evDate, duesDue) {
+    return campIsoOrBlank(c && c.dueDate) || chargeDefaultDue(line, evDate, duesDue);
+  }
+  // What part of these charges is past its due date and still unpaid. `paidOn` is
+  // chargePaidAllocation's map (so a part-paid charge is overdue only by what is left), `dueOf(c)`
+  // the charge's due date. Due ON the day is not overdue; the day after is. Pure.
+  function chargesOverdue(charges, paidOn, dueOf, today) {
+    var out = { cents: 0, n: 0, oldest: '' };
+    charges.forEach(function (c) {
+      if (!chargeIsOpen(c)) return;
+      var due = dueOf(c);
+      if (!due || due >= today) return;
+      var left = (c.amountCents || 0) - ((paidOn && paidOn[c.id]) || 0);
+      if (left <= 0) return;
+      out.cents += left;
+      out.n += 1;
+      if (!out.oldest || due < out.oldest) out.oldest = due;
+    });
+    return out;
+  }
   // How syncCharges recognises a charge it already has. A per-family fee's SCOUT charge is the
   // FAMILY's, whichever child it is written against: when the Arrow of Light scout who carried it
   // crosses over, the billing moves to a sibling (familyBillingScout reads the active roster),
@@ -6625,7 +6677,7 @@
         state.charges.push({
           id: uid(), scoutId: row.scoutId, lineId: row.lineId, who: row.who, seq: row.seq,
           amountCents: row.amountCents, date: (ev && ev.date) || todayISO(),
-          waivedBy: '', forgiven: null
+          dueDate: '', waivedBy: '', forgiven: null
         });
         return;
       }
@@ -7210,6 +7262,12 @@
   // means the household: a sibling's cheque covers them too.
   function scoutOwesCents(scoutId) { return familyOutstanding(state.charges, state.ledger, scoutId, chargeFamilyKey); }
   function familyAccountsNow() { return familyAccounts(state.charges, state.ledger, chargeFamilyKey); }
+  // E1 — this charge's due date, from its line and the line's event as they stand now.
+  function chargeDueNow(c) {
+    var line = getBudgetLine(c.lineId);
+    var ev = line ? eventForLine(line) : null;
+    return chargeDueDate(c, line, ev && ev.date, state.budget.duesDueDate);
+  }
   // The ledger's warning for a refund past the family's credit (refundCreditBefore), or ''.
   function refundOverCreditWarning(e) {
     var credit = refundCreditBefore(state.charges, state.ledger, chargeFamilyKey, e);
@@ -9464,6 +9522,8 @@
   //   printed leaders' copy of the agenda,
   //   the council's popcorn dates and the settlement (`popcornCouncil`, Wave D1),
   //   who counted and verified each storefront block's cash (`cashCountedBy`, `cashVerifiedBy`, D2),
+  //   each charge's due date (`dueDate`), the pack's dues date (`budget.duesDueDate`) and every
+  //   family statement (E1),
   //   and `state` in any raw form.
   //
   // Pure: it reads only the state it is given. `state` is swapped for the duration so the
@@ -15154,6 +15214,8 @@
       '<div class="row">' +
       '<label class="fld">Program year (July start)<input class="weight-in" type="number" step="1" inputmode="numeric" data-ch="bud-year" value="' + esc(b.programYear) + '"></label>' +
       '<label class="fld">Starting funds — carryover from last year ($)<input class="money-in" inputmode="decimal" data-ch="bud-start" value="' + dollars(b.startingBalance) + '" placeholder="0.00"></label>' +
+      // E1 — when dues and registration charges fall due (chargeDefaultDue). Leaders only.
+      '<label class="fld">Dues &amp; registration due by<input type="date" data-ch="bud-dues-due" value="' + esc(b.duesDueDate || '') + '"></label>' +
       '</div>' +
       '<div class="row" style="margin-top:10px">' + seedBtn() + '</div>' +
       '<p class="small muted" style="margin:6px 0 0">Adds the traditional slate — School Night, Pinewood Derby, Blue &amp; Gold, camps — with no dates set, ' +
@@ -17025,8 +17087,131 @@
   function familyLabelOf(f) {
     return f.members.length ? familyLabel({ members: f.members }) : 'A scout no longer on the roster';
   }
-  function duesFamilyBlock(f) {
+  /* ----- E1: a family's statement (Treasurer's ask, 2026-09-28) ------------------------------
+     What one household owes, for what, by when, and what has come in — to print or paste into a
+     message to THAT family. ⚠ LEADERS ONLY, NEVER PUBLISHED: it is built on demand from the pack
+     record, shown in an overlay, and copied or printed by a leader; nothing is stored, and
+     buildParentView and the parent app never read it (harness scan). The sheet says so itself,
+     because the paper outlives this comment. First names only, as the Dues screen shows them.
+     Forgiveness reasons and donors' names stay off it: they are the committee's, not the family's. */
+  var STATEMENT_KEEP = 'Leaders\u2019 copy \u2014 send only to this family';
+  // One charge's status line. Pure given its row, today, and two formatters.
+  function statementRowStatus(r, today, money, dateLabel) {
+    if (r.settled === 'tier') return 'Covered by a reward tier';
+    if (r.settled === 'forgiven') return 'Forgiven by the pack';
+    var left = r.amountCents - r.paidCents;
+    if (left <= 0) return 'Paid';
+    var part = r.paidCents > 0 ? 'Part paid, ' + money(left) + ' left' : '';
+    if (!r.due) return part || 'Open';
+    var when = r.due < today ? 'overdue \u2014 was due ' + dateLabel(r.due) : 'due by ' + dateLabel(r.due);
+    return part ? part + ', ' + when : when.charAt(0).toUpperCase() + when.slice(1);
+  }
+  // The copyable text. `d` is familyStatementData's shape. Pure.
+  function familyStatementText(d, money, dateLabel) {
+    var lines = [];
+    lines.push((d.pack || 'Pack') + ' \u2014 statement for ' + d.family);
+    lines.push('As of ' + dateLabel(d.today));
+    lines.push(STATEMENT_KEEP);
+    lines.push('');
+    lines.push('Charges');
+    if (!d.rows.length) lines.push('  None');
+    d.rows.forEach(function (r) {
+      lines.push('  ' + r.what + ' \u2014 ' + money(r.amountCents) + ' \u2014 ' + statementRowStatus(r, d.today, money, dateLabel));
+    });
+    lines.push('');
+    lines.push('Payments and credits');
+    if (!d.payments.length) lines.push('  None yet');
+    d.payments.forEach(function (p) {
+      lines.push('  ' + (p.date ? dateLabel(p.date) + ' \u2014 ' : '') + p.label + ' \u2014 ' + (p.out ? '\u2212' : '') + money(p.cents));
+    });
+    lines.push('');
+    lines.push('Charges still standing: ' + money(d.owed));
+    lines.push('Paid and credited: ' + money(d.paid));
+    if (d.refunded) lines.push('Refunded to you: ' + money(d.refunded));
+    lines.push(d.balance > 0 ? 'Balance due: ' + money(d.balance)
+      : (d.balance < 0 ? 'In credit: ' + money(-d.balance) + ' (it settles your next charge)' : 'Nothing owed \u2014 thank you'));
+    if (d.overdueCents) lines.push('Overdue now: ' + money(d.overdueCents));
+    return lines.join('\n');
+  }
+  // The statement's data, for one family key. Reads state; the text and the sheet are built from it.
+  function familyStatementData(key) {
+    var f = duesFamilies().filter(function (x) { return x.key === key; })[0];
+    if (!f) return null;
+    var today = todayISO();
+    var paidOn = chargePaidAllocation(state.charges, state.ledger, chargeFamilyKey);
+    var many = f.members.length > 1;
+    var rows = f.charges.slice().sort(function (a, b) {
+      return String(a.date || '').localeCompare(String(b.date || ''));
+    }).map(function (c) {
+      var line = getBudgetLine(c.lineId), who = getScout(c.scoutId);
+      return {
+        what: (many && who ? (who.name || '').split(' ')[0] + ' \u00b7 ' : '') +
+          (line ? (line.name || 'Pack fee') : (c.label || 'Earlier charge')) +
+          (c.who !== 'scout' ? ' (' + chargeWhoLabel(c) + ')' : ''),
+        amountCents: c.amountCents || 0,
+        paidCents: paidOn[c.id] || 0,
+        due: chargeIsOpen(c) ? chargeDueNow(c) : '',
+        settled: c.waivedBy ? 'tier' : (c.forgiven ? 'forgiven' : '')
+      };
+    });
+    var payments = ledgerSort(state.ledger.filter(function (e) {
+      return e.scoutId && chargeFamilyKey(e.scoutId) === key &&
+        (entryPaysCharges(e) || entryRefundsFamily(e) || (e.direction === 'in' && e.tierMakeup));
+    })).map(function (e) {
+      var label = e.source === 'carryover' ? 'Credit carried from last year'
+        : (entryRefundsFamily(e) ? 'Refund to you'
+          : (e.tierMakeup ? 'Paid to reach a reward tier (not toward the charges above)'
+            : (e.source === 'donation' ? 'Donation toward your fees'
+              : 'Payment' + (e.method ? ' \u00b7 ' + e.method : '') + (e.ref ? ' ' + e.ref : ''))));
+      return { date: e.date || '', label: label, cents: e.amountCents || 0, out: entryRefundsFamily(e) };
+    });
+    return {
+      pack: state.packName || 'Pack', family: familyLabelOf(f), today: today,
+      rows: rows, payments: payments,
+      owed: f.acct.owed, paid: f.acct.paid, refunded: f.acct.refunded, balance: f.acct.balance,
+      overdueCents: chargesOverdue(f.charges, paidOn, chargeDueNow, today).cents
+    };
+  }
+  function renderFamilyStatement(o) {
+    var d = familyStatementData(o.id);
+    if (!d) return '';
+    var h = '<div class="overlay" role="dialog" aria-modal="true" aria-label="Family statement"><div class="overlay-inner">' +
+      '<div class="row no-print" style="margin-bottom:12px">' +
+      '<button type="button" class="btn" data-act="close-overlay">&larr; Back</button>' +
+      '<button type="button" class="btn" data-act="copy-statement">' + (o.copied ? 'Copied \u2713' : 'Copy as text') + '</button>' +
+      '<button type="button" class="btn" data-act="te-print">Print / Save PDF</button></div>' +
+      '<div class="summary-sheet">' +
+      '<div class="row" style="gap:10px;margin-bottom:2px"><span class="fleur">' + FLEUR + '</span>' +
+      '<h1 style="margin:0">' + esc(d.pack) + ' \u2014 ' + esc(d.family) + '</h1></div>' +
+      '<p class="muted small" style="margin:0 0 4px">Statement as of ' + esc(fmtDate(d.today)) + '</p>' +
+      '<p class="small" style="margin:0 0 14px"><strong>' + esc(STATEMENT_KEEP) + '</strong></p>' +
+      '<p class="eyebrow">Charges</p><div class="tbl-wrap"><table><caption class="visually-hidden">Charges</caption>' +
+      '<thead><tr><th scope="col">For</th><th scope="col" class="num">Amount</th><th scope="col">Status</th></tr></thead><tbody>' +
+      (d.rows.length ? d.rows.map(function (r) {
+        return '<tr><td>' + esc(r.what) + '</td><td class="num">' + fmt(r.amountCents) + '</td><td>' +
+          esc(statementRowStatus(r, d.today, fmt, fmtDate)) + '</td></tr>';
+      }).join('') : '<tr><td colspan="3" class="muted">None</td></tr>') +
+      '</tbody></table></div>' +
+      '<p class="eyebrow" style="margin-top:16px">Payments and credits</p><div class="tbl-wrap"><table><caption class="visually-hidden">Payments and credits</caption>' +
+      '<thead><tr><th scope="col">Date</th><th scope="col">What</th><th scope="col" class="num">Amount</th></tr></thead><tbody>' +
+      (d.payments.length ? d.payments.map(function (p) {
+        return '<tr><td>' + esc(fmtDate(p.date)) + '</td><td>' + esc(p.label) + '</td><td class="num">' + (p.out ? '\u2212' : '') + fmt(p.cents) + '</td></tr>';
+      }).join('') : '<tr><td colspan="3" class="muted">None yet</td></tr>') +
+      '</tbody></table></div>' +
+      '<div class="row" style="margin-top:14px">' +
+      '<div class="stat"><span class="v money">' + fmt(d.owed) + '</span><span class="l">Charges standing</span></div>' +
+      '<div class="stat"><span class="v money">' + fmt(d.paid) + '</span><span class="l">Paid &amp; credited</span></div>' +
+      (d.refunded ? '<div class="stat"><span class="v money">' + fmt(d.refunded) + '</span><span class="l">Refunded</span></div>' : '') +
+      '<div class="stat"><span class="v money">' + fmt(Math.abs(d.balance)) + '</span><span class="l">' +
+      (d.balance > 0 ? 'Balance due' : (d.balance < 0 ? 'In credit' : 'Nothing owed')) + '</span></div>' +
+      (d.overdueCents ? '<div class="stat"><span class="v money" style="color:var(--accent-text)">' + fmt(d.overdueCents) + '</span><span class="l">Overdue</span></div>' : '') +
+      '</div></div></div></div>';
+    return h;
+  }
+  function duesFamilyBlock(f, paidOn) {
     var a = f.acct;
+    // E1 — what is past its due date and still unpaid, for this household.
+    var od = chargesOverdue(f.charges, paidOn, chargeDueNow, todayISO());
     var open = !!ui.collectOpen[f.key];
     var many = f.members.length > 1;
     var dens = [];
@@ -17044,6 +17229,10 @@
       '<div class="spread"><span class="assign-name">' + esc(familyLabelOf(f)) +
       dens.map(function (d) { return ' <span class="pill navy">' + esc(d) + '</span>'; }).join('') + '</span>' +
       status + '</div>' +
+      (od.cents
+        ? '<p class="small" style="margin:2px 0 0"><span class="pill" style="color:var(--accent-text)">' + fmt(od.cents) + ' overdue</span> ' +
+          '<span class="muted">since ' + esc(fmtDate(od.oldest)) + '</span></p>'
+        : '') +
       '<div class="rsvp-wrap' + (open ? ' open' : '') + '">' +
       '<button type="button" class="exp-toggle" data-act="toggle-collect" data-id="' + esc(f.key) + '" aria-expanded="' + open + '">' +
       '<span class="chev" aria-hidden="true">' + (open ? '▾' : '▸') + '</span>' +
@@ -17070,11 +17259,21 @@
           : (c.forgiven
             ? '<span class="pill">forgiven' + (c.forgiven.reason ? ' — ' + esc(c.forgiven.reason) : '') + '</span>'
             : '');
+        // E1 — by when. Open charges only: a settled one is not due any more.
+        var cDue = chargeIsOpen(c) ? chargeDueNow(c) : '';
+        var cLeft = (c.amountCents || 0) - ((paidOn && paidOn[c.id]) || 0);
+        var cLate = !!cDue && cDue < todayISO() && cLeft > 0;
         h += '<div class="att-row" style="cursor:default"><span class="att-name">' +
           (many && who ? esc((who.name || '').split(' ')[0]) + ' · ' : '') +
           esc(line ? (line.name || 'Untitled line') : (c.label || 'Removed line')) +
           ' <span class="small muted">' + esc(chargeWhoLabel(c)) + '</span> ' + status2 +
-          (c.note ? '<br><span class="small muted">' + esc(c.note) + '</span>' : '') + '</span>' +
+          (cLate ? ' <span class="pill" style="color:var(--accent-text)">overdue</span>' : '') +
+          (c.note ? '<br><span class="small muted">' + esc(c.note) + '</span>' : '') +
+          (chargeIsOpen(c)
+            ? '<br><label class="small muted charge-due">Due <input type="date" data-ch="charge-due" data-id="' + esc(c.id) + '" value="' + esc(cDue) + '"' +
+              (canEdit() ? '' : ' disabled') + ' aria-label="Due date"></label>' +
+              (c.dueDate ? ' <span class="small muted">(set by hand)</span>' : '')
+            : '') + '</span>' +
           '<span class="money small">' + fmt(c.amountCents) + '</span>' +
           (c.waivedBy ? '' :
             (c.forgiven
@@ -17100,6 +17299,8 @@
         (a.credit
           ? '<button type="button" class="btn small" data-act="charge-refund" data-scout="' + esc(payTo) + '">Record a refund…</button>'
           : '') +
+        // E1 — the family's statement: leaders' copy, never published.
+        '<button type="button" class="btn small" data-act="family-statement" data-id="' + esc(f.key) + '">Statement</button>' +
         '</div>';
     }
     return h + '</div></div>';
@@ -17171,13 +17372,27 @@
     // ---- per family ----
     // "Family balances", not "By family": each block IS a household's account now, siblings
     // together (M7). The old title sat over a list of individual scouts.
+    // E1 — overdue, over the families on this card.
+    var paidOn = chargePaidAllocation(state.charges, state.ledger, chargeFamilyKey);
+    var odFams = 0, odCents = 0;
+    current.forEach(function (f) {
+      var fo = chargesOverdue(f.charges, paidOn, chargeDueNow, todayISO());
+      if (fo.cents) { odFams += 1; odCents += fo.cents; }
+    });
     h += '<div class="card"><h2 class="section display">Family balances</h2>' +
       '<p class="small muted" style="margin:0 0 8px">One account per family — brothers and sisters linked on the roster share it, ' +
       'so a payment recorded against either child settles both. Every charge stands until it is paid, donated for, waived by a ' +
       'reward tier, or forgiven — and it keeps its reason either way. Record money arriving in <strong>Money · Ledger</strong>; ' +
-      'it settles here as soon as it carries a scout.</p>';
+      'it settles here as soon as it carries a scout.</p>' +
+      (odFams
+        ? '<p class="small" style="margin:0 0 8px"><strong style="color:var(--accent-text)">' + odFams + ' famil' + (odFams === 1 ? 'y has ' : 'ies have ') +
+          '<span class="money">' + fmt(odCents) + '</span> overdue.</strong> <span class="muted">An event\u2019s charges are due ' +
+          CHARGE_DUE_DAYS_BEFORE_EVENT + ' days before it; dues and registration by the date on the Budget.</span></p>'
+        : '<p class="small muted" style="margin:0 0 8px">An event\u2019s charges are due ' + CHARGE_DUE_DAYS_BEFORE_EVENT +
+          ' days before it; dues and registration by the date on the Budget' + (state.budget.duesDueDate ? '' : ' (none set yet)') +
+          '. Change one charge\u2019s date on the charge itself.</p>');
     if (!current.length) h += '<p class="empty">No charges against anyone on the current roster.</p>';
-    current.forEach(function (f) { h += duesFamilyBlock(f); });
+    current.forEach(function (f) { h += duesFamilyBlock(f, paidOn); });
     h += '</div>';
 
     // TREASURER'S AUDIT, 2026-09-27 (M9) — families with nobody left on the roster. "Still owed"
@@ -17195,7 +17410,7 @@
         '<p class="small muted" style="margin:0 0 8px">These families have nobody on the current roster — a scout crossed over, ' +
         'moved or left — and their account is not square, or was settled by forgiving it. What they owe is counted in <strong>Still owed</strong> above. ' +
         'Record what they pay, or forgive it with a reason, exactly as for anyone else.</p>';
-      former.forEach(function (f) { h += duesFamilyBlock(f); });
+      former.forEach(function (f) { h += duesFamilyBlock(f, paidOn); });
       h += '</div>';
     }
 
@@ -20169,6 +20384,8 @@
     if (o.kind === 'closeout') return renderCloseoutOverlay();
     // Wave 19(15) — printable storefront day sheet.
     if (o.kind === 'day-sheet') return renderDaySheet(o);
+    // E1 — one family's statement. Leaders' copy; never published.
+    if (o.kind === 'family-statement') return renderFamilyStatement(o);
     // Wave A — the printable pack meeting agenda.
     if (o.kind === 'pk-agenda') return renderPackAgendaSheet(o);
     // Wave 19(15b) — full-schedule table, one glance.
@@ -22751,6 +22968,9 @@
       t.covers = arrOf(t.covers).map(function (k) { return remapCoverKey(k, lineIdMap); });
       if (t.dueBy) t.dueBy = shiftISOYear(t.dueBy);
     });
+    // E1 — the dues date moves on a year, as a tier's deadline does: cleared, the new year's dues
+    // would simply have no date; kept, every dues charge would open the year overdue.
+    if (b.duesDueDate) b.duesDueDate = shiftISOYear(b.duesDueDate);
     // Phase 0 — the ledger belongs to the year it recorded, and it went into the archive
     // with the rest of the season. Start a clean book, opened at the closing bank balance
     // on the first day of the new program year. Note the new line ids above mean nothing
@@ -22819,7 +23039,7 @@
         state.charges.push({
           id: uid(), scoutId: to, lineId: '', who: 'scout', seq: 0,
           amountCents: a.balance, date: programYearStartISO(b.programYear),
-          label: carryLabel, waivedBy: '', forgiven: null
+          label: carryLabel, dueDate: '', waivedBy: '', forgiven: null
         });
       } else if (a.balance < 0) {
         state.ledger.push({
@@ -24410,6 +24630,13 @@
       return;
     }
     if (act === 'sf-day-sheet') { ui.overlay = { kind: 'day-sheet', id: el.dataset.id }; render(); return; }
+    // E1 — a family's statement. Built on demand, copied or printed; nothing stored.
+    if (act === 'family-statement') { ui.overlay = { kind: 'family-statement', id: el.dataset.id }; render(); return; }
+    if (act === 'copy-statement') {
+      var stD = ui.overlay && ui.overlay.kind === 'family-statement' ? familyStatementData(ui.overlay.id) : null;
+      if (stD) copyText(familyStatementText(stD, fmt, fmtDate), function () { ui.overlay.copied = true; render(); });
+      return;
+    }
     // Wave D3 — the kickoff note. Copy only.
     if (act === 'copy-kickoff') {
       copyText(kickoffNoteNow(), function (okK) {
@@ -24935,6 +25162,18 @@
     // Phase 0 added a second (book-opening) for the same reason — a pack can open a season
     // overdrawn, and a ledger that can't say so isn't a record of anything.
     if (ch === 'bud-start') { state.budget.startingBalance = toCentsSigned(el.value); commit(); return; }
+    // E1 — the pack's dues date, and one charge's own due date ('' goes back to the default).
+    if (ch === 'bud-dues-due') { state.budget.duesDueDate = campIsoOrBlank(el.value); commit(); return; }
+    if (ch === 'charge-due') {
+      var cdC = state.charges.find(function (c) { return c.id === el.dataset.id; });
+      if (!cdC) return;
+      cdC.dueDate = campIsoOrBlank(el.value);
+      // Typing the date the charge would have had anyway is not an override: keep it derived.
+      var cdLine = getBudgetLine(cdC.lineId), cdEv = cdLine ? eventForLine(cdLine) : null;
+      if (cdC.dueDate === chargeDefaultDue(cdLine, cdEv && cdEv.date, state.budget.duesDueDate)) cdC.dueDate = '';
+      commit();
+      return;
+    }
 
     /* ----- Money · Ledger (Phase 0) ----- */
     if (ch === 'book-opening') { state.book.openingCents = toCentsSigned(el.value); commit(); return; }
