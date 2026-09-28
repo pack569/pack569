@@ -1965,7 +1965,8 @@ test('a meeting\u2019s internal note never reaches ANY outbound surface', () => 
   // The ICS builder is not a single named function, so scan the block that writes DESCRIPTION.
   const ics = /function buildICS\(\)[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(ics, 'buildICS() was not found — the ICS guard is not scanning anything');
-  ok(/icsEscape\(ev\.note\)/.test(ics[0]), 'buildICS no longer writes the published note, so this guard is aimed at the wrong code');
+  // Since B8 (2026-09) the .ics carries no note of either kind — see the next test.
+  ok(/function buildICS\(\)/.test(ics[0]) && /LOCATION:/.test(ics[0]), 'this guard is aimed at the wrong code');
   ok(!/noteInternal/.test(ics[0]), 'the .ics export carries the leaders-only note');
   // ...and it DOES appear where it is supposed to: the leader-facing printable agenda.
   ok(/m\.noteInternal/.test(SCRIPT), 'the internal note is never rendered anywhere');
@@ -9080,6 +9081,23 @@ test('B6: the family digest carries no popcorn numbers while standings are off',
   const off = vm.runInContext("monthlyDigest('2026-10')", ctx);
   ok(!/POPCORN/.test(off) && off.indexOf('690.00') === -1 && !/goal/i.test(off), 'calendar-only: popcorn numbers in the families’ digest');
   ok(/EVENTS THIS MONTH/.test(off), 'calendar-only: the calendar went too');
+});
+
+test('B8: the calendar file carries where an event is, but no free-text note', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(PRIV_STATE + `
+    state.events[0].note = 'Gym — Ada Q. needs a ride, call 555-0101';
+    state.events[0].location = 'Church hall';
+    state.events[1].note = 'Gate code 4411';
+    function pad2(n) { return (n < 10 ? '0' : '') + n; }
+    ${['buildICS', 'icsStamp', 'icsDate', 'icsTime', 'icsNextDay', 'icsEndPlusHour', 'icsEscape', 'icsFold',
+       'eventIsMeeting', 'eventLabel', 'fmt'].map(slice).join('\n')}`, ctx);
+  const ics = vm.runInContext('buildICS()', ctx);
+  ok(!/DESCRIPTION:/.test(ics) && ics.indexOf('555-0101') === -1 && ics.indexOf('4411') === -1,
+    'a free-text note is in the calendar file');
+  ok(/LOCATION:Fort Yargo/.test(ics) && /LOCATION:Church hall/.test(ics), 'the where was dropped with the note');
+  ok(/not its notes/.test(SCRIPT.slice(SCRIPT.indexOf('Sync with BAND'), SCRIPT.indexOf('Sync with BAND') + 2000)),
+    'the export card does not say notes are left out');
 });
 
 /* ---------------- report ---------------- */

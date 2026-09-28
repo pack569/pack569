@@ -10710,7 +10710,9 @@
       'calendar link (or its text). Each event keeps its <strong>time, location, and details</strong>, ' +
       'and re-importing an updated calendar refreshes those events in place instead of duplicating them. ' +
       'BAND has no live sync, so this is a one-time pull, not a subscription — ' +
-      'and only dated events (storefronts, meetings, dated activities) export.</p></div>';
+      'and only dated events (storefronts, meetings, dated activities) export. ' +
+      'The download carries each event’s name, date, time and place, but <strong>not its notes</strong>: ' +
+      'those are free text written for leaders, and this file ends up in families’ own calendars.</p></div>';
 
     // Selected-day detail (Wave 20: sits directly under the month list so tapping an
     // agenda row lands the day's editable detail right below it; BAND sync follows).
@@ -18011,7 +18013,14 @@
           'DTSTART:' + icsDate(ev.date) + 'T' + icsTime(t) + '00',
           'DTEND:' + icsDate(ev.date) + 'T' + icsEndPlusHour(t) + '00',
           'SUMMARY:' + icsEscape(eventLabel(ev).replace(' · ', ' — '))];
-        if (ev.note) props.push('DESCRIPTION:' + icsEscape(ev.note));
+        // ⚠ No free-text note, for meetings or activities (security review, 2026-09). Even the
+        // "Parents see this" note is free text — a child's name, a phone number, a gate code — and
+        // the parent view shows it only to approved members, where a leader can still edit it.
+        // This file goes into BAND, gets forwarded, and sits in families' own calendars, where
+        // nobody can take it back. Where it is (LOCATION) is the part a family needs, and stays.
+        // A meeting keeps its "where" in that note today (there is no separate field), so a
+        // meeting exports with no place unless it carries a location.
+        if (ev.location) props.push('LOCATION:' + icsEscape(ev.location));
         ev2(props);
         return;
       }
@@ -18033,7 +18042,7 @@
       // families' own calendars, and the line's planned total ("Estimated $1,240") is the pack's
       // budget, which parents are deliberately never shown. What a family pays is published per
       // den in the parent view, where it can be right for their den.
-      if (ev.note) props.push('DESCRIPTION:' + icsEscape(ev.note));
+      // And no free-text note either — see the meeting branch above.
       ev2(props);
     });
     lines.push('END:VCALENDAR');
