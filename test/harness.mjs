@@ -12401,7 +12401,10 @@ test('the production build is the committed page, and its CSP hashes the script 
   const headers = siteFile('production', '_headers');
   const d = site.cspDirectives(site.cspOf(headers));
   const hash = createHash('sha256').update(SCRIPT, 'utf8').digest('base64');
-  eq(d['script-src'], [`'sha256-${hash}'`, 'https://www.gstatic.com', 'https://apis.google.com'], 'script-src');
+  // The SDK is allowed by its exact versioned path, as loadFirebase() imports it — not all of gstatic.
+  const sdkBase = /^  var SYNC_SDK_BASE = '([^']+)';$/m.exec(SCRIPT)[1];
+  ok(/^https:\/\/www\.gstatic\.com\/firebasejs\/\d+\.\d+\.\d+\/$/.test(sdkBase), 'SYNC_SDK_BASE is not a versioned gstatic path');
+  eq(d['script-src'], [`'sha256-${hash}'`, sdkBase, 'https://apis.google.com'], 'script-src');
   eq(d['default-src'], ["'none'"], 'default-src');
   for (const o of ['https://firestore.googleapis.com', 'https://identitytoolkit.googleapis.com',
     'https://securetoken.googleapis.com', 'https://api.open-meteo.com']) {
@@ -12490,6 +12493,16 @@ test('the workflow deploys only by hand, production only from main, with every a
   ok(/--branch=\$\{\{ inputs\.deploy_target == 'production' && 'main' \|\| format\('preview-\{0\}', github\.sha\) \}\}/.test(jobs.deploy),
     'the Pages branch is not main-for-production-only');
   ok(/website-production/.test(jobs.deploy) && /cancel-in-progress: false/.test(jobs.deploy), 'the deploy environment or concurrency');
+  // Review round (2026-09-28): the environment must be limited to chosen branches, too.
+  ok(/jq -e '\.deployment_branch_policy != null'[\s\S]*?exit 1/.test(jobs['deploy-preflight']), 'the preflight accepts an environment open to every branch');
+  // wrangler runs from a folder holding only the verified site, with an exact version, and never beside a functions/.
+  ok(/if \[ -e functions \]; then[\s\S]*?exit 1/.test(jobs.deploy), 'a functions/ folder in the checkout is not refused');
+  ok(/cp -R _site "\$RUNNER_TEMP\/deploy\/_site"/.test(jobs.deploy) && /workingDirectory: \$\{\{ runner\.temp \}\}\/deploy/.test(jobs.deploy),
+    'wrangler does not run from the clean folder');
+  ok(/wranglerVersion: "\d+\.\d+\.\d+"/.test(jobs.deploy), 'wrangler is not pinned to an exact version');
+  // A dispatch has a concurrency group of its own, so a pending approval blocks nothing.
+  ok(/group: \$\{\{ github\.event_name == 'workflow_dispatch' && format\('website-dispatch-\{0\}', github\.run_id\)/.test(WF),
+    'dispatches share a concurrency group');
 });
 
 test('wrangler.toml publishes _site, and git ignores the build output', () => {
