@@ -72,7 +72,7 @@ function sandbox(names) {
 // Wave C1 — buildParentView sorts the trips by date and re-checks their ISO dates, so every
 // sandbox that builds it needs these. todayISO only where the sandbox has none of its own.
 const CAMP_DATE_SRC = ['CAMP_DATE_KEYS', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'sortTripsByDate',
-  'DEN_CAMP_TRIP_ID', 'campHeld', 'campBalooWrong']
+  'DEN_CAMP_TRIP_ID', 'campHeld', 'campBalooWrong', 'CAMP_TRIP_HELD_FIELDS', 'campPubField', 'campHeldTripFields']
   .map(slice).join('\n') +
   "\nvar todayISO = typeof todayISO === 'function' ? todayISO : function () { return '2026-09-28'; };\n";
 
@@ -5553,8 +5553,12 @@ test('every trip is published to parents, rebuilt field by field', () => {
   ok(/var camping = sortTripsByDate\(campingTrips\(\), todayISO\(\)\)\.filter\(/.test(fn[0]), 'the trips are not published');
   // Never a spread: a field added to a trip in some later wave must not ride along unseen.
   ok(!/\.\.\.t\b/.test(fn[0]), 'the published trip spreads the source object');
-  ['name', 'where', 'address', 'when', 'arrive', 'depart', 'cost', 'url', 'intro'].forEach((k) => {
+  ['name', 'address', 'url'].forEach((k) => {
     ok(new RegExp(`${k}: String\\(t\\.${k} \\|\\| ''\\)`).test(fn[0]), `the published trip drops ${k}`);
+  });
+  // Security review — the free-prose trip fields go out through campPubField (blank while marked).
+  ['where', 'when', 'arrive', 'depart', 'cost', 'intro'].forEach((k) => {
+    ok(new RegExp(`${k}: campPubField\\(t\\.${k}\\)`).test(fn[0]), `the published trip drops ${k}, or publishes it unfiltered`);
   });
   ok(/return \{ title: String\(s\.title \|\| ''\), body: String\(s\.body \|\| ''\) \};/.test(fn[0]) &&
     /\.filter\(function \(s\) \{ return \(s\.title \|\| s\.body\) && !campHeld\(s\.title \+ '\\n' \+ s\.body\) && !campBalooWrong\(s\.body\); \}\)/.test(fn[0]),
@@ -11638,10 +11642,34 @@ test('C4: an unverified rule, and an undated den campout, do not reach families'
   const rc = slice('renderCamping');
   ok(/Held back from families: check the rule marked \[verify with council\]/.test(rc), 'the editor does not say a section is held back');
   ok(/Families will not see this den campout until it has a date/.test(rc), 'the editor does not say the trip is held back');
-  ok(/"\[verify with council" or whose text\s+\/\/\s+says "BALOO is not required" \(a wrong safety rule, held back until corrected\), and the den\s+\/\/\s+campout template until it has a date/.test(SCRIPT),
+  ok(/blanking any trip-level intro, cost, when, where, arrive or depart that still\s+\/\/\s+says "\[verify with council", leaving out any section that still says it or whose text\s+\/\/\s+says "BALOO is not required" \(a wrong safety rule, held back until corrected\), and the den\s+\/\/\s+campout template until it has a date/.test(SCRIPT),
     'the parent-view banner does not say so');
-  ok(/still marked "\[verify with council" or\s+still saying "BALOO is not required" \(a wrong safety rule, held back until a leader corrects\s+it\), and\s+the Webelos \/ Arrow of Light den campout template until it has a date/.test(SETUP),
+  ok(/sending a trip's intro, cost, when, camp, arrive or leave-by line\s+blank while it still says "\[verify with council", leaving out any section still marked\s+"\[verify with council" or\s+still saying "BALOO is not required" \(a wrong safety rule, held back until a leader corrects\s+it\), and\s+the Webelos \/ Arrow of Light den campout template until it has a date/.test(SETUP),
     'SETUP.md does not say so');
+});
+
+// Security review (2026-09-28) — the marker held back sections only; a trip-level field carrying it
+// was published as typed. Those fields now go out blank, and the editor says which.
+test('C4: a trip-level field marked [verify with council] goes to families blank, and the editor says so', () => {
+  const ctx = pvCtx(`
+    var T = { id: 'x', name: 'Fall camp', address: '1 Camp Rd', url: 'https://example.org',
+      where: 'Scoutland [verify with council]', when: 'Oct 16-18 [Verify with council: dates]', arrive: 'Fri 6pm',
+      depart: 'Sun [verify with council', cost: '$35 per family [verify with council]', intro: 'A weekend. [VERIFY WITH COUNCIL]',
+      sections: [{ id: 's', title: 'Food', body: 'Bring it.' }] };
+    var DEN = { id: 'trip-den-campout', name: 'Den campout', when: 'TBD [verify with council]', startDate: '', sections: [] };
+    function campingTrips() { return [T, DEN]; }`);
+  const pv = vm.runInContext('buildParentView(state, { showStandings: false })', ctx);
+  eq(pv.camping.map((t) => t.name), ['Fall camp'], 'a den campout whose only When line is marked was published as dated');
+  const t = pv.camping[0];
+  eq([t.where, t.when, t.arrive, t.depart, t.cost, t.intro, t.name, t.address, t.url],
+    ['', '', 'Fri 6pm', '', '', '', 'Fall camp', '1 Camp Rd', 'https://example.org'], 'the trip-level fields');
+  ok(!/verify with council/i.test(JSON.stringify(pv)), 'a [verify with council] marker reached families');
+  const cx = sandbox(['campHeld', 'CAMP_TRIP_HELD_FIELDS', 'campPubField', 'campHeldTripFields']);
+  eq(cx.campHeldTripFields({ where: 'x', cost: '[verify with council]', intro: 'a [Verify with council' }), ['Short intro', 'Cost'], 'the held-field list');
+  eq([cx.campPubField(null), cx.campPubField('ok')], ['', 'ok'], 'campPubField');
+  const rc = slice('renderCamping');
+  ok(/var heldF = campHeldTripFields\(t\);/.test(rc) && /Held back from families: ' \+ esc\(heldF\.join\(', '\)\)/.test(rc),
+    'the trip editor does not say which fields are held back');
 });
 
 // Camping review (2026-09-28, SAFETY) — a leader-edited den campout still saying "BALOO is not

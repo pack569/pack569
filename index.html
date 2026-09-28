@@ -2922,6 +2922,18 @@
   // True for a section body still carrying rev 4's wrong rule. Held back from families exactly
   // like campHeld; local regex, so the harness can slice it.
   function campBalooWrong(text) { return /BALOO is not required/i.test(String(text == null ? '' : text)); }
+  // Security review (2026-09-28) — campHeld used to be applied to SECTIONS only, so a marker a
+  // leader typed into a trip's intro, cost, When line, camp, arrive or leave-by went out as it
+  // stood. Those six trip-level strings are published blank while they carry the marker; the
+  // trip editor lists which ones (campHeldTripFields). Name, address and url are not free prose
+  // a rule would be written into, and a blank name would unpublish the trip.
+  var CAMP_TRIP_HELD_FIELDS = [['intro', 'Short intro'], ['cost', 'Cost'], ['when', 'When'],
+    ['where', 'Camp'], ['arrive', 'Arrive'], ['depart', 'Leave by']];
+  function campPubField(v) { var x = String(v == null ? '' : v); return campHeld(x) ? '' : x; }
+  function campHeldTripFields(t) {
+    return CAMP_TRIP_HELD_FIELDS.filter(function (f) { return t && campHeld(t[f[0]]); })
+      .map(function (f) { return f[1]; });
+  }
   // K1 (2026-09-28, SAFETY) — trips still carrying rev 4's wrong rule. A den campout a leader had
   // already edited keeps its own words (refreshCampingSeed never overwrites an edit), so if those
   // words still say BALOO is not required, the leaders are told on Home and on the trip's page
@@ -9646,7 +9658,8 @@
   //   windows, meetings with time and where, activities with time, place and dens); the
   //   derby's name and date; camping trips as leaders typed them, including each trip's
   //   cost line, in date order, with each trip's ISO startDate, endDate and registrationDeadline
-  //   (Wave C1), leaving out any section that still says "[verify with council" or whose text
+  //   (Wave C1), blanking any trip-level intro, cost, when, where, arrive or depart that still
+  //   says "[verify with council", leaving out any section that still says it or whose text
   //   says "BALOO is not required" (a wrong safety rule, held back until corrected), and the den
   //   campout template until it has a date (Wave C4); `welcome` — the "New to the pack" page's sections (title, body, url) as leaders
   //   typed them, once the page is switched on and leaving out any section that is hidden or
@@ -9847,12 +9860,13 @@
       // Wave C1 — in date order (sortTripsByDate), and each trip's three ISO dates, re-checked.
       // Wave C4 — the den campout template is held back until it has a date (a When line or a first day).
       var camping = sortTripsByDate(campingTrips(), todayISO()).filter(function (t) {
-        return t.id !== DEN_CAMP_TRIP_ID || !!tripStartDate(t) || !!String(t.when || '').trim();
+        return t.id !== DEN_CAMP_TRIP_ID || !!tripStartDate(t) || !!campPubField(t.when).trim();
       }).map(function (t) {
         return {
-          name: String(t.name || ''), where: String(t.where || ''), address: String(t.address || ''),
-          when: String(t.when || ''), arrive: String(t.arrive || ''), depart: String(t.depart || ''),
-          cost: String(t.cost || ''), url: String(t.url || ''), intro: String(t.intro || ''),
+          // A trip-level field still marked "[verify with council" goes out blank (campPubField).
+          name: String(t.name || ''), where: campPubField(t.where), address: String(t.address || ''),
+          when: campPubField(t.when), arrive: campPubField(t.arrive), depart: campPubField(t.depart),
+          cost: campPubField(t.cost), url: String(t.url || ''), intro: campPubField(t.intro),
           startDate: campIsoOrBlank(t.startDate), endDate: campIsoOrBlank(t.endDate),
           registrationDeadline: campIsoOrBlank(t.registrationDeadline),
           sections: (t.sections || []).map(function (s) {
@@ -19754,6 +19768,12 @@
         '<label class="fld" style="margin-bottom:4px">Short intro' +
         '<textarea class="notes-in" data-ch="trip-intro" data-id="' + esc(t.id) + '" rows="2" ' +
         'placeholder="One or two lines at the top of the page">' + esc(t.intro) + '</textarea></label>';
+      var heldF = campHeldTripFields(t);
+      if (heldF.length) {
+        h += '<p class="warn small" style="margin:6px 0 0">Held back from families: ' + esc(heldF.join(', ')) +
+          (heldF.length === 1 ? ' still says' : ' still say') + ' [verify with council], so families see ' +
+          (heldF.length === 1 ? 'it' : 'them') + ' blank. Check with the council, then take the marker out.</p>';
+      }
     } else {
       h += campFacts(t, today);
       if (t.intro) h += '<div class="camp-body">' + proseText(t.intro) + '</div>';
@@ -19773,7 +19793,7 @@
         'section below, exactly as written. Nothing else about the pack goes with it: no budget, no ' +
         'dues, no roster, and not the readiness checklist above. Write it for the family reading it in the car park. ' +
         (t.name ? '' : 'An unnamed campout is not published at all, so give it a name when it is ready.') +
-        (t.id === DEN_CAMP_TRIP_ID && !tripStartDate(t) && !String(t.when || '').trim()
+        (t.id === DEN_CAMP_TRIP_ID && !tripStartDate(t) && !campPubField(t.when).trim()
           ? ' Families will not see this den campout until it has a date.' : '') +
         '</p></div>';
     }
