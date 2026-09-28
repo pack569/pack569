@@ -10480,6 +10480,34 @@ test('A5: the adventure list carries a verified date, and the July check reads i
     'the Home task is not wired to the advancement job');
 });
 
+// A6 — the seeded slate's gaps.
+test('A6: the seeded slate covers planning, recruiting, pack meetings, summer and both spring campouts', () => {
+  const { SEED_ACTIVITIES, PROGRAM_MONTHS } = sandbox(['PROGRAM_MONTHS', 'PROGRAM_TURN',
+    'PROGRAM_START_MONTH', 'SA_FEES', 'SEED_EXPENSES', 'SEED_ACTIVITIES']);
+  const month = (n) => {
+    const a = SEED_ACTIVITIES.filter((x) => x.name.indexOf(n) === 0)[0];
+    ok(a, `no seeded "${n}"`);
+    return PROGRAM_MONTHS[a.slot];
+  };
+  eq(month('Program planning conference'), 'July', 'planning conference');
+  eq(month('Back-to-school recruiting night'), 'August', 'recruiting night');
+  eq(month('Monthly pack meeting'), 'September', 'pack meeting placeholder');
+  eq(month('Summertime Fun'), 'July', 'Summertime Fun');
+  eq(month('Pack campout — Fort Yargo'), 'March', 'Fort Yargo');
+  eq(month('Spring family campout'), 'April', 'spring family camp');
+  eq(month('Crossover'), 'May', 'crossover stays in May');
+  // Idempotence is by name, so two seeds with one name would silently seed only one.
+  const names = SEED_ACTIVITIES.map((a) => a.name.toLowerCase());
+  eq(names.length, new Set(names).size, 'two seeded activities share a name');
+  ok(/Crossover stays in May\. Many packs hold it at the Blue & Gold/.test(SCRIPT), 'the crossover comment is gone');
+});
+
+test('A6: seeding stays additive — it never edits or removes an event a pack already has', () => {
+  const fn = slice('seedStandardYear');
+  ok(/if \(existing\[t\.name\.toLowerCase\(\)\]\) return;/.test(fn), 'the name-idempotence guard is gone');
+  ok(!/state\.events\s*=|\.splice\(/.test(fn), 'seedStandardYear rewrites or removes events');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

@@ -7233,16 +7233,36 @@
   // did — only the slot number moved. The exception is resident camp: under a September
   // start it was the last month of the year, and a straight remap would have put it in the
   // very month a pack is doing this planning. It sits with day camp at the end instead.
+  //
+  // Wave A (2026-09-28) filled the gaps the Cubmaster found: nothing in July or August, when a
+  // pack plans its year and recruits; no pack meeting at all; and two campouts the Camping tab
+  // already has pages for (seedCampingTrips) that the calendar never had. Additive and
+  // name-idempotent like everything here: re-seeding an existing pack adds only the new names,
+  // and no event a pack already has is touched.
+  //
+  // THE PACK MEETING is ONE placeholder, not twelve. A seeded row is an undated ACTIVITY with
+  // a budget line; a real pack meeting is a calendar event of kind 'pack', and an undated one
+  // has no editor anywhere (a meeting is edited from its day). So this row holds the year's
+  // pack-meeting costs on the budget and reminds the pack to put them on the calendar —
+  // "+ Pack meeting" on a day, then Repeat.
   var SEED_ACTIVITIES = [
+    { slot: 0, name: 'Program planning conference' },        // July
+    { slot: 0, name: 'Summertime Fun pack activity' },       // July
+    { slot: 1, name: 'Back-to-school recruiting night / open house' }, // August
     { slot: 2, name: 'School Night — join & recruiting' },   // September
     { slot: 2, name: 'Popcorn kickoff' },                    // September
+    { slot: 2, name: 'Monthly pack meeting' },               // September — see above
     { slot: 3, name: 'Fall family campout' },                // October
     { slot: 4, name: 'Scouting for Food' },                  // November
     { slot: 5, name: 'Holiday pack party' },                 // December
     { slot: 6, name: 'Pinewood Derby' },                     // January
     { slot: 7, name: 'Blue & Gold banquet' },                // February
     { slot: 8, name: 'Raingutter Regatta' },                 // March
+    { slot: 8, name: 'Pack campout — Fort Yargo' },          // March — the Camping tab's Fort Yargo trip
     { slot: 9, name: 'Spring hike / service project' },      // April
+    { slot: 9, name: 'Spring family campout' },              // April — the Camping tab's Spring Family Camping
+    // Crossover stays in May. Many packs hold it at the Blue & Gold banquet in February instead;
+    // a pack that does just moves this row's date — the slot is only where it starts.
     { slot: 10, name: 'Crossover & graduation' },            // May
     { slot: 11, name: 'Day camp week' },                     // June
     { slot: 11, name: 'Resident camp' }                      // June
