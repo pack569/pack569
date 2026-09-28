@@ -11,8 +11,66 @@
 #
 # pages_build_output_dir is what `wrangler pages deploy` uploads. Never point it at the repo.
 # To build by hand:  node scripts/build-site.mjs --target preview
-# Owner setup (account, project, token, secrets, DNS): docs/cloudflare-setup.md.
+# Owner setup (account, project, token, secrets, DNS, databases): docs/cloudflare-setup.md.
 
 name = "pack569"
 pages_build_output_dir = "_site"
 compatibility_date = "2026-09-28"
+
+# ---- The API and its database (Phase 2) ------------------------------------------------------
+#
+# functions/ is the API: Pages Functions, deployed with the site by `wrangler pages deploy`
+# from the folder that holds this file. It reads the pack from D1 through the binding DB.
+#
+# TWO DATABASES, AND A PREVIEW CAN NEVER SEE THE LIVE ONE. Pages picks the environment by
+# branch: --branch=main is production and gets [env.production]; every other branch (every
+# preview-<sha> link, and staging) is a preview and gets [env.preview]. The top level is the
+# same as [env.preview], and is what `wrangler pages dev` and the d1 commands read by default.
+# Pages does not merge bindings or vars into an environment that sets its own, so each block
+# below is complete on purpose.
+#
+# database_id: the owner pastes each database's id here after creating it
+# (docs/cloudflare-setup.md, "The pack's database"). The deploy job refuses to run while any
+# REPLACE_WITH_ placeholder is left.
+#
+# vars (read by functions/_lib/pack.js):
+#   FIREBASE_PROJECT_ID  whose Google sign-ins the API accepts.
+#   PACK_IDS             the packs this deployment serves: the id already printed in index.html
+#                        (PACK_DOC_ID). Any other id is a 404; nobody starts a pack here.
+#   OWNER_MODE           production: "fixed" — the owner is the account in the PACK_OWNER_UID
+#                        secret, never whoever signs in first. Previews: "first-signer", so a
+#                        test pack on the preview database can be claimed and tried out.
+# PACK_OWNER_UID is a secret, not a var: it is set in the Cloudflare dashboard, never here.
+
+[vars]
+FIREBASE_PROJECT_ID = "pack-569"
+PACK_IDS = "42391b9710be9ef3be1b7e84da4e0bf829318e277fdac2f12ba641d2acb665c0"
+OWNER_MODE = "first-signer"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "pack569-preview"
+database_id = "REPLACE_WITH_PACK569_PREVIEW_DATABASE_ID"
+migrations_dir = "migrations"
+
+[env.preview.vars]
+FIREBASE_PROJECT_ID = "pack-569"
+PACK_IDS = "42391b9710be9ef3be1b7e84da4e0bf829318e277fdac2f12ba641d2acb665c0"
+OWNER_MODE = "first-signer"
+
+[[env.preview.d1_databases]]
+binding = "DB"
+database_name = "pack569-preview"
+database_id = "REPLACE_WITH_PACK569_PREVIEW_DATABASE_ID"
+migrations_dir = "migrations"
+
+[env.production.vars]
+FIREBASE_PROJECT_ID = "pack-569"
+PACK_IDS = "42391b9710be9ef3be1b7e84da4e0bf829318e277fdac2f12ba641d2acb665c0"
+OWNER_MODE = "fixed"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "pack569-prod"
+database_id = "REPLACE_WITH_PACK569_PROD_DATABASE_ID"
+migrations_dir = "migrations"

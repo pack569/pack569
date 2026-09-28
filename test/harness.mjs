@@ -12622,10 +12622,17 @@ test('the workflow deploys only by hand, production only from main, with every a
   ok(/website-production/.test(jobs.deploy) && /cancel-in-progress: false/.test(jobs.deploy), 'the deploy environment or concurrency');
   // Review round (2026-09-28): the environment must be limited to chosen branches, too.
   ok(/jq -e '\.deployment_branch_policy != null'[\s\S]*?exit 1/.test(jobs['deploy-preflight']), 'the preflight accepts an environment open to every branch');
-  // wrangler runs from a folder holding only the verified site, with an exact version, and never beside a functions/.
-  ok(/if \[ -e functions \]; then[\s\S]*?exit 1/.test(jobs.deploy), 'a functions/ folder in the checkout is not refused');
+  // wrangler runs from a folder holding only the verified site, the API and wrangler.toml, with an exact version.
+  // Phase 2 (2026-09-28): functions/ is the D1 API and ships on purpose, so the step that refused it
+  // became one that stages it — only .js modules — and one that refuses unfilled database ids.
+  ok(!/if \[ -e functions \]; then/.test(jobs.deploy), 'the deploy still refuses the API it has to ship');
+  ok(/find functions -type f ! -name '\*\.js'[\s\S]*?exit 1/.test(jobs.deploy), 'a non-.js file in functions/ is not refused');
+  ok(/cp -R functions "\$RUNNER_TEMP\/deploy\/functions"/.test(jobs.deploy), 'the API is not staged beside the site');
+  ok(/grep -n 'REPLACE_WITH_' wrangler\.toml; then[\s\S]*?exit 1/.test(jobs.deploy), 'a placeholder D1 id is not refused');
+  ok(jobs.deploy.indexOf('REPLACE_WITH_') < jobs.deploy.indexOf('uses: cloudflare/wrangler-action'), 'the placeholder check runs after the deploy');
   ok(/cp -R _site "\$RUNNER_TEMP\/deploy\/_site"/.test(jobs.deploy) && /workingDirectory: \$\{\{ runner\.temp \}\}\/deploy/.test(jobs.deploy),
     'wrangler does not run from the clean folder');
+  eq((jobs.deploy.match(/^\s+cp /gm) || []).length, 3, 'the clean folder holds more than _site, functions and wrangler.toml');
   ok(/wranglerVersion: "\d+\.\d+\.\d+"/.test(jobs.deploy), 'wrangler is not pinned to an exact version');
   // A dispatch has a concurrency group of its own, so a pending approval blocks nothing.
   ok(/group: \$\{\{ github\.event_name == 'workflow_dispatch' && format\('website-dispatch-\{0\}', github\.run_id\)/.test(WF),
@@ -12635,6 +12642,27 @@ test('the workflow deploys only by hand, production only from main, with every a
 test('wrangler.toml publishes _site, and git ignores the build output', () => {
   const W = readFileSync(join(ROOT, 'wrangler.toml'), 'utf8');
   ok(/^name = "pack569"$/m.test(W) && /^pages_build_output_dir = "_site"$/m.test(W), 'wrangler.toml');
+  // Phase 2: the D1 bindings. A preview (the top level and [env.preview]) binds pack569-preview and only that;
+  // production binds pack569-prod, and only production owns its pack by PACK_OWNER_UID.
+  const blocks = {};
+  let cur = 'top';
+  W.split('\n').forEach((l) => {
+    const h = /^\[\[?([a-z0-9_.]+)\]\]?$/.exec(l.trim());
+    if (h) { cur = /^env\.(preview|production)\./.test(h[1]) ? h[1].split('.')[1] : (h[1].indexOf('env.') === 0 ? h[1] : 'top'); return; }
+    if (!/^\s*#/.test(l)) blocks[cur] = (blocks[cur] || '') + l + '\n';
+  });
+  eq(Object.keys(blocks).sort(), ['preview', 'production', 'top'], 'wrangler.toml environments');
+  for (const [env, dbName, mode] of [['top', 'pack569-preview', 'first-signer'], ['preview', 'pack569-preview', 'first-signer'],
+    ['production', 'pack569-prod', 'fixed']]) {
+    const b = blocks[env];
+    ok(/^binding = "DB"$/m.test(b) && /^migrations_dir = "migrations"$/m.test(b), `${env}: no DB binding with the migrations`);
+    eq((b.match(/^database_name = "([^"]+)"$/gm) || []), [`database_name = "${dbName}"`], `${env}: the database`);
+    ok(new RegExp(`^OWNER_MODE = "${mode}"$`, 'm').test(b), `${env}: OWNER_MODE is not ${mode}`);
+    ok(/^FIREBASE_PROJECT_ID = "pack-569"$/m.test(b), `${env}: FIREBASE_PROJECT_ID`);
+    eq(/^PACK_IDS = "([^"]*)"$/m.exec(b)[1], LIVE.docId, `${env}: PACK_IDS is not the pack in index.html`);
+    ok(!/PACK_OWNER_UID/.test(b), `${env}: the owner's account id is committed (it is a dashboard secret)`);
+  }
+  ok(W.indexOf('pack569-prod') === W.lastIndexOf('pack569-prod'), 'pack569-prod is named outside [env.production]');
   const gi = readFileSync(join(ROOT, '.gitignore'), 'utf8').split('\n').map((l) => l.trim());
   ok(gi.indexOf('_site/') >= 0 && gi.indexOf('_site-*/') >= 0, '.gitignore does not cover _site/');
   try {

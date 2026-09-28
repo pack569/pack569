@@ -1,8 +1,8 @@
 # Hosting pack569.com on Cloudflare Pages
 
 > **Owner steps.** Everything below is a dashboard, DNS or GitHub-settings action for the
-> pack's site owner. The repo side is `scripts/build-site.mjs`, `_headers`, `wrangler.toml`
-> and `.github/workflows/website.yml`.
+> pack's site owner. The repo side is `scripts/build-site.mjs`, `_headers`, `wrangler.toml`,
+> `.github/workflows/website.yml`, and for the pack's database `functions/` and `migrations/`.
 
 Until the nameservers change (step 4 of the cutover), pack569.com keeps serving from GitHub
 Pages. Creating the Cloudflare account, the Pages project or the zone changes nothing live.
@@ -22,7 +22,10 @@ Pages. Creating the Cloudflare account, the Pages project or the zone changes no
   on GitHub; it just isn't on the website.
 - **When it changes.** Pushing or merging never deploys. The site changes only when someone
   runs the **website** workflow by hand, and production only from `main`, after you approve.
-- **Firebase is unchanged.** Same project, same sign-in, same pack record, same rules.
+- **Firebase is unchanged, for now.** Same project, same sign-in, same pack record, same
+  rules. Phase 2 adds a small server to the site (`functions/`, "the API") that keeps the pack
+  in a Cloudflare database instead; until the page is switched over to it, the API sits
+  unused. Its setup is [The pack's database](#the-packs-database-phase-2) below.
 
 ## Why Direct Upload, not the Git integration
 
@@ -111,6 +114,10 @@ Actions → **website** → **Run workflow**:
 The run goes: gates (the harness and both builds) → preflight (checks the built files
 again; for production, the branch, the reviewer and the branch rule) → deploy. Production
 then waits for your approval. The link is in the run's summary.
+
+Every deploy also sends the API (`functions/`) with the site. The deploy stops with
+"wrangler.toml still has placeholder D1 ids" until you have done step A of
+[The pack's database](#the-packs-database-phase-2).
 
 A **preview** is device-only. Its `FIREBASE_CONFIG` and `PACK_DOC_ID` are null and its
 Content-Security-Policy allows no Google address, so it cannot read or write the live pack,
@@ -225,3 +232,117 @@ Firestore, Firebase Auth and the open-meteo weather service. Preview: weather on
 After DNS moves, check on a real phone: sign-in and sync work, `/SETUP.md` and
 `/test/harness.mjs` return the app page, not the file (the site has no 404 page, so Pages
 answers every unknown address with `index.html`), and securityheaders.com shows the headers.
+
+## The pack's database (Phase 2)
+
+Phase 2 moves the pack out of Firestore and into **Cloudflare D1**, a database that lives
+with the site. Firebase stays for one job only: signing in with Google. The site carries a
+small server for this, the `functions/` folder ("the API"). It checks who is signed in, and
+applies the same who-may-see-what rules as SETUP.md Part C, plus two the old rules could not
+hold: the pack always keeps at least one admin, and the sign-up link only ever files a request.
+
+There are **two databases**, and a preview can never reach the live one:
+
+| Database | Used by |
+|---|---|
+| `pack569-prod` | production only (`--branch=main`, pack569.com) |
+| `pack569-preview` | every preview link, and the `staging` link below |
+
+`wrangler.toml` says which is which. Until the page itself is switched over to the API (a
+later change), the page keeps using Firestore and the API sits unused.
+
+**Do A before the next deploy of any branch that has `functions/`.** Until the database ids
+are in `wrangler.toml`, the deploy job stops on purpose.
+
+### A. Create the two databases (once)
+
+On your own computer, in the repo folder:
+
+- [ ] `npx wrangler login`. A browser opens; sign in to Cloudflare and allow it.
+- [ ] `npx wrangler d1 create pack569-prod`
+- [ ] `npx wrangler d1 create pack569-preview`
+
+Each prints a `database_id` (a long id with dashes). In `wrangler.toml`, replace:
+
+- [ ] `REPLACE_WITH_PACK569_PROD_DATABASE_ID` with the `pack569-prod` id. It appears once,
+      under `[[env.production.d1_databases]]`.
+- [ ] `REPLACE_WITH_PACK569_PREVIEW_DATABASE_ID` with the `pack569-preview` id. It appears
+      **twice**, under `[[d1_databases]]` and `[[env.preview.d1_databases]]`.
+
+Commit that on a branch. A database id is not a secret: nothing can open the database
+without a Cloudflare login or token for your account.
+
+### B. Create the tables
+
+Still on your computer, from the repo folder:
+
+- [ ] `npx wrangler d1 migrations apply pack569-preview --remote`
+- [ ] `npx wrangler d1 migrations apply pack569-prod --remote --env production`
+
+Each one lists `0001_init.sql`, asks you to confirm, and creates the tables. Later changes
+add files such as `migrations/0002_….sql`; apply those the same way, preview first. To check:
+
+```
+npx wrangler d1 execute pack569-preview --remote --command "SELECT name FROM sqlite_master WHERE type = 'table'"
+```
+
+**Unverified:** that `--env production` is how wrangler finds `pack569-prod` in this Pages
+project's `wrangler.toml`. If wrangler says it cannot find the database, stop and ask. Do not
+run the `.sql` file by hand: the migrations list would not know it had run, and would try to
+run it again later.
+
+### C. Say who owns the pack (production only)
+
+In production, the pack's owner is set by you, not by whoever signs in first. That owner is
+the only person who can ever copy the pack in from Firestore, and is always an admin.
+
+- [ ] Find your account id: Firebase console → **Firestore Database** → `packmeta` → the
+      pack's document → the `owner` field. (It is also your row's **User UID** under
+      Authentication → Users. The two must match.)
+- [ ] Cloudflare → Workers & Pages → `pack569` → Settings → **Variables and Secrets** →
+      **Production** → Add → type **Secret**, name `PACK_OWNER_UID`, value the id. Or, from
+      your computer: `npx wrangler pages secret put PACK_OWNER_UID --project-name pack569`.
+
+Don't set it for previews. There the first person to sign in owns the test pack, so you can
+try things out. If production has no `PACK_OWNER_UID`, the pack has no owner: nobody is made
+admin and nothing can be copied in. That is the safe way for it to fail.
+
+The other settings (`FIREBASE_PROJECT_ID`, `PACK_IDS`, `OWNER_MODE`) are in `wrangler.toml`.
+Because the file sets them, the dashboard shows them read-only; change them in the file.
+
+**Unverified:** that the deploy token from step 2 (Pages · Edit) is enough to deploy a site
+whose API uses a database. If a deploy fails with a permission error about D1, stop and ask
+rather than widening the token.
+
+### D. A preview you can sign in to: `staging.pack569.pages.dev`
+
+Google sign-in works only on addresses listed in Firebase, exactly, and every
+`preview-<commit>` link is new. So a preview that needs sign-in is deployed to one fixed
+branch name, **`staging`**, which Pages serves at **`https://staging.pack569.pages.dev`**.
+It is a preview: it uses `pack569-preview`, never the live pack.
+
+- [ ] Firebase console → Authentication → Settings → **Authorized domains** → Add
+      `staging.pack569.pages.dev`. (If the Google API key has a website restriction in
+      Google Cloud, add it there too.)
+- [ ] Put the Cloudflare Access lock on preview deployments ([above](#recommended-lock-previews-to-you))
+      and check it covers the staging link, since real Google accounts can sign in there.
+
+Today's preview build is device-only, with sign-in switched off, so staging is of no use
+yet. The change that switches the page over to the API also adds a `staging` choice to the
+workflow. Until then, nothing deploys to `staging`.
+
+**Only made-up data goes in `pack569-preview`.** Never copy the real pack into it: preview
+links are easier to reach than the live site, and it has none of production's protections.
+
+### E. Copying the pack in (later)
+
+When the page is ready to switch, you, signed in as the owner on the last Firestore version
+of the page, copy the pack across once. The API takes it only from `PACK_OWNER_UID`, only
+while the pack is empty here, and only once; after that it refuses every copy. Try the whole
+thing first on `staging` with a made-up pack.
+
+### Backups
+
+D1 keeps 7 days of history (Time Travel), so a bad day can be undone:
+`npx wrangler d1 time-travel info pack569-prod` shows where you can go back to. A weekly copy
+to private storage is a later step. Never put a database export in the repo or in CI.

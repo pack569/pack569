@@ -9,6 +9,9 @@
 # A preview is device-only: scripts/build-site.mjs writes FIREBASE_CONFIG and PACK_DOC_ID as
 # null and its CSP allows no Google origin, so a preview cannot reach the live pack.
 # The deploy ships the artifact the gates built and checked; nothing is rebuilt after approval.
+# It also ships functions/, the API, which reads and writes the pack in Cloudflare D1: the
+# production deploy binds the pack569-prod database and every preview binds pack569-preview
+# (wrangler.toml), so a preview's API cannot reach the live pack either.
 # Owner setup (Cloudflare project, token, secrets, environments): docs/cloudflare-setup.md.
 #
 # Every `uses:` is pinned to a full commit SHA. wrangler-action receives the Cloudflare token,
@@ -186,26 +189,36 @@ jobs:
           TARGET: ${{ inputs.deploy_target }}
         run: node scripts/build-site.mjs --verify _site --target "$TARGET"
 
-      # `wrangler pages deploy` also uploads a ./functions/ folder from where it runs, as
-      # server code. The site has none, and a stray one must not ship by accident.
-      # Phase 2 (the D1 API) deliberately adds functions/; that change replaces this step.
-      - name: Refuse a functions/ folder
+      # The API (functions/) talks to a D1 database named in wrangler.toml. Until the owner
+      # has created the databases and pasted their ids in, the ids are REPLACE_WITH_…
+      # placeholders, and a deploy would fail inside wrangler, or bind nothing. Say so here.
+      - name: Refuse placeholder database ids
         run: |
-          if [ -e functions ]; then
-            echo "::error title=functions/ in the checkout::Pages would deploy it as server code. The static site has none; remove it, or change this step on purpose."
+          if grep -n 'REPLACE_WITH_' wrangler.toml; then
+            echo "::error title=wrangler.toml still has placeholder D1 ids::Create pack569-prod and pack569-preview and paste their ids into wrangler.toml (docs/cloudflare-setup.md, The pack's database)."
             exit 1
           fi
 
-      # Deploy from a folder holding only the verified site and wrangler.toml, so wrangler
-      # cannot pick up anything else from the checkout.
-      - name: Stage the site in a clean folder
+      # Deploy from a folder holding only the verified site, the API and wrangler.toml, so
+      # wrangler cannot pick up anything else from the checkout. `wrangler pages deploy`
+      # builds ./functions/ (next to wrangler.toml, not inside _site) into the site's server
+      # code. The API is this commit's functions/, the same commit the gates tested; only
+      # plain .js modules are allowed in it, so nothing else can ride along.
+      - name: Stage the site and the API in a clean folder
         run: |
           set -eu
+          stray=$(find functions -type f ! -name '*.js' | head -5)
+          if [ -n "$stray" ]; then
+            echo "::error title=Not a .js module in functions/::$stray — Pages would try to deploy it as server code."
+            exit 1
+          fi
           rm -rf "$RUNNER_TEMP/deploy"
           mkdir -p "$RUNNER_TEMP/deploy"
           cp -R _site "$RUNNER_TEMP/deploy/_site"
+          cp -R functions "$RUNNER_TEMP/deploy/functions"
           cp wrangler.toml "$RUNNER_TEMP/deploy/wrangler.toml"
           ls -la "$RUNNER_TEMP/deploy" "$RUNNER_TEMP/deploy/_site"
+          find "$RUNNER_TEMP/deploy/functions" -type f | sort
 
       # Pages decides production by branch name: --branch=main goes to pack569.com (the
       # project's production branch), anything else gets its own pages.dev link. Cloudflare
