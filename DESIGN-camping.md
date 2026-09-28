@@ -153,7 +153,8 @@ Eight statements are pinned by a harness test. They are not style — they are t
 course exists to make sure somebody on the trip knows, and a rewrite that drops them turns the
 page into a packing list with a reassuring tone, which is worse than nothing.
 
-- **BALOO** — at least one adult on a pack overnighter must be BALOO-trained.
+- **BALOO** — at least one adult on a pack overnighter must be BALOO-trained. (A family at a
+  council-run weekend does not need it; the seed says "required for a pack overnighter".)
 - **Hazardous Weather** training is required of adults taking the pack camping.
 - **Medical form parts A and B** for every participant, youth and adult (under 72 hours: no
   doctor's signature).
@@ -165,8 +166,10 @@ page into a packing list with a reassuring tone, which is worse than nothing.
   siblings share as a family; youth who share a tent are the same gender and within two years
   of age. (Since 2026-09-27 the supervision text is the pack's own statement: every Cub Scout
   camps with their own parent or guardian, other arrangements only by prior agreement with the
-  Cubmaster, two registered adults with current Safeguarding Youth Training — one 21 or older —
-  and a registered female adult 21+ when girls attend.)
+  Cubmaster, and never for a Lion or Tiger, with no adult responsible for more than one Scout
+  from outside their own family; two registered adult leaders, both 21 or older, with current
+  Safeguarding Youth Training; and a registered female adult 21+ when girls attend. Wording as
+  of 2026-09-28, seed rev 3.)
 - **Safeguarding Youth** — the current name for Youth Protection training.
 - **Lions do not shoot BB guns** (archery and size-appropriate slingshots only).
 - **Fire building is Webelos and up**; Tigers, Wolves and Bears watch.

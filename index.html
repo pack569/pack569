@@ -2260,7 +2260,7 @@
   //
   // To refresh again next year: edit the seed, bump CAMP_SEED_REV, and add the hashes of the
   // text being replaced here. A trip or section the leader renamed simply is not matched.
-  var CAMP_SEED_REV = 2;
+  var CAMP_SEED_REV = 3;
   var CAMP_OLD_SEED = {
     // rev 1, 2026-09-26: the fall weekend is the Apalachee District's (2 – 4 Oct 2026), not the
     // 2025 mid-October one; spring gains the 2027-not-posted note and the council's own rules.
@@ -2270,6 +2270,10 @@
     // trips share CAMP_SAFETY); Fort Yargo's hospital, pets rule, uniform names, and no drive
     // times that contradicted each other. Each array holds every older seed's text for that
     // field — rev 0's first where rev 1 had already changed it.
+    // rev 3, 2026-09-28 (final review): CAMP_SAFETY only — both leaders 21 or older, the
+    // exceptional-circumstances arrangement is Wolf and up and one outside youth per adult, and
+    // BALOO is required for a pack overnighter (not "for a pack to camp", which read as if every
+    // family at a council weekend needed it). '32mg1p' is the rev 2 text, on all three trips.
     'Fall Family Camping': {
       fields: { when: ['9odju1'], arrive: ['ita6dt'], depart: ['qr7nm'], cost: ['xafznd', 'ci8n6h'],
         url: ['1l0iaoa'], intro: ['1b0kg44', '1j8pyxs'] },
@@ -2281,7 +2285,7 @@
         'A weekend, roughly': { h: ['4ocixi'] },
         'Weather, and what mid-October does': { h: ['1b3uqsy'], to: 'Weather, and what early October does' },
         'Weather, and what early October does': { h: ['1vcgzdu'] },
-        'Sleeping arrangements and supervision': { h: ['onbxj9'] }
+        'Sleeping arrangements and supervision': { h: ['onbxj9', '32mg1p'] }
       }
     },
     'Spring Family Camping': {
@@ -2290,7 +2294,7 @@
         'Before you go': { h: ['1ww9vlw'] },
         'What to bring': { h: ['fm4nln'] },
         'A weekend, roughly': { h: ['3uhxrl'] },
-        'Sleeping arrangements and supervision': { h: ['onbxj9'] }
+        'Sleeping arrangements and supervision': { h: ['onbxj9', '32mg1p'] }
       }
     },
     'Pack Camping — Fort Yargo': {
@@ -2299,7 +2303,7 @@
         'What to expect': { h: ['e31ujx'] },
         'A pack trip, not a council one': { h: ['mr093w'] },
         'What to bring': { h: ['1r69nct'] },
-        'Sleeping arrangements and supervision': { h: ['onbxj9'] },
+        'Sleeping arrangements and supervision': { h: ['onbxj9', '32mg1p'] },
         'If something goes wrong': { h: ['zq20g4'] }
       }
     }
@@ -2347,11 +2351,11 @@
   // Shared text used by both seeded trips. Camping rules do not change between camps, and a
   // parent reading the spring page should not have to remember what the fall page said.
   var CAMP_SAFETY = 'This part is Youth Protection, and it is not flexible.\n' +
-    '- Every Cub Scout camps with their own parent or legal guardian; Lions and Tigers with their adult partner. Only in exceptional circumstances, agreed beforehand by the Cubmaster and the parent, may a Scout come under another registered adult who is the parent of a Cub Scout also on the trip.\n' +
+    '- Every Cub Scout camps with their own parent or legal guardian; Lions and Tigers with their adult partner. Only in exceptional circumstances, agreed beforehand by the Cubmaster and the parent, may a Wolf, Bear, Webelos or Arrow of Light Scout come under another registered adult who is the parent of a Cub Scout also on the trip. That never applies to a Lion or Tiger, and no adult may take responsibility for more than one Scout from outside their own family.\n' +
     '- Parents, guardians and siblings share a tent as a family. No adult shares a tent with a youth who is not their own child. Youth who share a tent are the same gender and within two years of age.\n' +
-    '- Two registered adults with current Safeguarding Youth Training, at least one of them 21 or older, are present at all times. When girls attend, a registered female adult 21 or older is there too.\n' +
+    '- Two registered adult leaders, both 21 or older and with current Safeguarding Youth Training, are present at all times. When girls attend, a registered female adult 21 or older is there too.\n' +
     '- Any adult staying overnight who is not the parent or guardian of a Cub Scout on the trip must be registered.\n' +
-    '- At least one adult on the trip is BALOO-trained (Basic Adult Leader Outdoor Orientation) and at least one holds current Hazardous Weather training. Both are required for a pack to camp. If you would like to be one of them, tell the Cubmaster — BALOO is a weekend course and the pack should never be one person away from being unable to go.';
+    '- At least one adult on the trip is BALOO-trained (Basic Adult Leader Outdoor Orientation) and at least one holds current Hazardous Weather training. Both are required for a pack overnighter. If you would like to be one of them, tell the Cubmaster — BALOO is a weekend course and the pack should never be one person away from being unable to go.';
   var CAMP_AGES = 'Age matters here, and the guidelines are specific rather than a matter of judgement.\n' +
     '- Fire building is Webelos and up. Tigers, Wolves and Bears watch. An adult lights and tends the fire.\n' +
     '- Pocketknives: a Cub Scout must earn the knife safety Adventure for their rank before carrying one, and recertify each year. No sheath knives, ever.\n' +

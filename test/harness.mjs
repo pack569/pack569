@@ -5386,6 +5386,39 @@ test('rev 2 carries the new supervision rules and spring link into a pack still 
   eq(after.seedRev, ctx.CAMP_SEED_REV, 'the revision was not recorded');
 });
 
+test('rev 3 carries the 2026-09-28 supervision wording into a pack still on rev 2 text', () => {
+  // The rev 2 CAMP_SAFETY, verbatim — it is what every live pack's three trips hold today.
+  const REV2_SAFETY = 'This part is Youth Protection, and it is not flexible.\n' +
+    '- Every Cub Scout camps with their own parent or legal guardian; Lions and Tigers with their adult partner. Only in exceptional circumstances, agreed beforehand by the Cubmaster and the parent, may a Scout come under another registered adult who is the parent of a Cub Scout also on the trip.\n' +
+    '- Parents, guardians and siblings share a tent as a family. No adult shares a tent with a youth who is not their own child. Youth who share a tent are the same gender and within two years of age.\n' +
+    '- Two registered adults with current Safeguarding Youth Training, at least one of them 21 or older, are present at all times. When girls attend, a registered female adult 21 or older is there too.\n' +
+    '- Any adult staying overnight who is not the parent or guardian of a Cub Scout on the trip must be registered.\n' +
+    '- At least one adult on the trip is BALOO-trained (Basic Adult Leader Outdoor Orientation) and at least one holds current Hazardous Weather training. Both are required for a pack to camp. If you would like to be one of them, tell the Cubmaster — BALOO is a weekend course and the pack should never be one person away from being unable to go.';
+  const ctx = sandbox(NORMALIZE_FNS);
+  ok(ctx.CAMP_SEED_REV >= 3, 'CAMP_SEED_REV was not bumped for the 2026-09-28 supervision wording');
+  ok(/Two registered adult leaders, both 21 or older/.test(ctx.CAMP_SAFETY), 'CAMP_SAFETY does not say both leaders are 21 or older');
+  ok(!/at least one of them 21 or older/.test(ctx.CAMP_SAFETY), 'CAMP_SAFETY still says only one needs to be 21');
+  ok(/never applies to a Lion or Tiger/.test(ctx.CAMP_SAFETY) && /more than one Scout from outside their own family/.test(ctx.CAMP_SAFETY),
+    'the exceptional-circumstances limits are missing');
+  ok(/required for a pack overnighter/.test(ctx.CAMP_SAFETY) && !/required for a pack to camp/.test(ctx.CAMP_SAFETY),
+    'the BALOO line still reads as if every family camper needs it');
+  const SLEEP = 'Sleeping arrangements and supervision';
+  const start = {
+    yargoAdded: true, seedRev: 2,
+    trips: ctx.seedCampingTrips().map((t) => Object.assign({}, t, {
+      sections: t.sections.map((s) => Object.assign({}, s, s.title === SLEEP ? { body: REV2_SAFETY } : {}))
+    }))
+  };
+  start.trips[1].sections.find((s) => s.title === SLEEP).body = REV2_SAFETY + '\n- Ours.';
+  const after = ctx.normalizeState(Object.assign(preMigrationState(), { camping: start })).camping;
+  const body = (i) => after.trips[i].sections.find((s) => s.title === SLEEP).body;
+  eq(body(0), ctx.CAMP_SAFETY, 'the fall trip kept the rev 2 supervision text');
+  eq(body(2), ctx.CAMP_SAFETY, 'Fort Yargo kept the rev 2 supervision text');
+  eq(body(1), REV2_SAFETY + '\n- Ours.', "a leader's edited supervision section was overwritten");
+  eq(after.seedRev, ctx.CAMP_SEED_REV, 'the revision was not recorded');
+  ok(/both 21 or older/.test(readFileSync(join(ROOT, 'DESIGN-camping.md'), 'utf8')), 'DESIGN-camping.md still says one 21 or older');
+});
+
 test('the 2026-09-27 camping corrections hold', () => {
   const ctx = sandbox(NORMALIZE_FNS.concat(['CAMP_PACK_RUN', 'CAMP_EMERGENCY', 'YARGO_TRIP_ID']));
   const trips = ctx.seedCampingTrips();
