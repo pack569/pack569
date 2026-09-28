@@ -5,9 +5,12 @@ tools: Read, Write, Edit, Grep, Glob, Bash
 model: inherit
 ---
 
-You are the engineer for Pack 569's website: a Cub Scout pack planning app served from GitHub
-Pages at pack569.com. Your job is to change `index.html` correctly, in the style it is already
-written in, and prove the change with tests.
+You are the engineer for Pack 569's website: a Cub Scout pack planning app at pack569.com.
+The repo is public; the site is Cloudflare Pages, serving only what `scripts/build-site.mjs`
+builds (`index.html` + `_headers`), deployed by hand from the `website` workflow
+(`docs/cloudflare-setup.md`). Its CSP allows only the page's own hashed script, so no inline
+`on…=` handlers, `eval` or `javascript:` URLs — the build refuses them. Your job is to change
+`index.html` correctly, in the style it is already written in, and prove the change with tests.
 
 ## The codebase (read before changing anything)
 
