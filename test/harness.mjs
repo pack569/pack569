@@ -12134,6 +12134,37 @@ test('Y1: leaders carry private yes/no/blank answers; the check reads the cash-c
   ok(/\*\*never\*\* contains:[^]*?whether each leader is registered, 21 or\s+older or female/.test(SETUP), 'SETUP.md does not exclude them');
 });
 
+/* ================================================================
+   Y2 (2026-09-28) — photo permission on file. Leaders only.
+   ================================================================ */
+test('Y2: each scout has a private "photo permission on file" flag, off unless ticked, shown on the roster', () => {
+  const n = sandbox(NORMALIZE_FNS);
+  const d = n.normalizeState(Object.assign(preMigrationState(), {
+    scouts: [{ id: 's1', name: 'Ada', photoOk: true }, { id: 's2', name: 'Ben', photoOk: 'yes' }, { id: 's3', name: 'Cal' }]
+  }));
+  eq(d.scouts.map((s) => s.photoOk), [true, false, false], 'photoOk');
+  const row = slice('renderScoutRow');
+  ok(/s\.photoOk \? ' <span class="pill navy">photo OK<\/span>'/.test(row), 'the roster does not show it');
+  ok(/<label class="perscout"><input type="checkbox" data-ch="scout-photo"/.test(row) && /Photo permission on file/.test(row), 'no checkbox to set it');
+  ok(/if \(ch === 'scout-photo'\) \{[\s\S]*?scPh\.photoOk = !!el\.checked;\s*commit\(\); return;/.test(SCRIPT), 'the handler does not store a boolean');
+  // The rule, in Pack settings, in the exact words.
+  ok(/var PHOTO_RULE = 'Before posting photos: only scouts with permission on file; first names only in captions, never last names or locations\.';/.test(SCRIPT), 'the photo rule is not the agreed wording');
+  ok(/esc\(PHOTO_RULE\)/.test(slice('renderPackSharing')), 'Pack settings does not show the rule');
+});
+
+test('Y2: photo permission is NEVER published, printed or exported', () => {
+  ok(!/photoOk|photo permission/i.test(codeOnly(BPV())), 'buildParentView reads photo permission');
+  for (const f of ['buildCsv', 'daySheetText', 'renderDaySheet', 'buildSeasonArchive', 'monthlyDigest', 'renderParentApp', 'renderParentStandings']) {
+    ok(!/photoOk/.test(codeOnly(slice(f))), f + ' reads photo permission');
+  }
+  ok(/each scout's photo\s+\/\/\s+permission \(`photoOk`, Y2\)/.test(SCRIPT), 'the banner does not exclude it');
+  ok(/\*\*never\*\* contains:[^]*?which scouts have\s+photo permission on file/.test(SETUP), 'SETUP.md does not exclude it');
+  // A runtime check: a scout with permission publishes nothing about it.
+  const ctx = pvCtx('');
+  vm.runInContext("state.scouts.forEach(function (s) { s.photoOk = true; });", ctx);
+  ok(!/photoOk/.test(JSON.stringify(vm.runInContext('buildParentView(state, { showStandings: false })', ctx))), 'photoOk reached the parent view');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

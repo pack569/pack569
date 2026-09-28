@@ -3592,6 +3592,9 @@
       // Wave B5 — the program year a scout was added in, so the new-member tracker knows who is
       // new. 0 = before the field existed (unknown); those families can be added to it by hand.
       s.addedYear = (typeof s.addedYear === 'number' && isFinite(s.addedYear)) ? Math.floor(s.addedYear) : 0;
+      // Y2 — "Photo permission on file". Absent → false: no permission is the safe default.
+      // LEADERS ONLY: never published, printed or exported.
+      s.photoOk = s.photoOk === true;
     });
     // Wave 19(20) — SYT completed-on date; expiry is computed (+1 year) when set.
     // Legacy sytExpiry stays as-is and keeps working when sytCompleted is blank.
@@ -9614,7 +9617,8 @@
   //   who counted and verified each storefront block's cash (`cashCountedBy`, `cashVerifiedBy`, D2),
   //   each charge's due date (`dueDate`), the pack's dues date (`budget.duesDueDate`) and every
   //   family statement (E1), each leader's supervision answers (`ypRegistered`, `ypOver21`,
-  //   `ypFemale`) and the supervision check built from them (Y1),
+  //   `ypFemale`) and the supervision check built from them (Y1), each scout's photo
+  //   permission (`photoOk`, Y2),
   //   and `state` in any raw form.
   //
   // Pure: it reads only the state it is given. `state` is swapped for the duration so the
@@ -13350,6 +13354,8 @@
       (s.archived ? ' <span class="pill navy">archived</span>' : '') +
       // Wave 19(4) — amber renewal pill, mirroring the leader pill.
       (!s.archived && renewalDue(s.renewalMonth) ? ' <span class="pill">Renewal due</span>' : '') +
+      // Y2 — photo permission on file. Leaders only; no pill means no permission.
+      (!s.archived && s.photoOk ? ' <span class="pill navy">photo OK</span>' : '') +
       (function () {
         // Wave 3 — outstanding per-scout fees (active scouts only)
         // Wave 18(13) — bad: money owed is a negative status, not gold.
@@ -13454,6 +13460,10 @@
       '<label class="fld">Den label (optional)<input data-ch="scout-denlabel" data-id="' + s.id + '" value="' + esc(s.denLabel || '') + '" placeholder="Wolf — Mrs. K" style="width:160px"></label>' +
       '<label class="fld" style="flex:1 1 200px">Note<input data-ch="scout-note" data-id="' + s.id + '" value="' + esc(s.note || '') + '" placeholder="e.g. application turned in 9/12"></label>' +
       '</div>' +
+      // Y2 — photo permission. Private to leaders; the roster pill reads it.
+      '<div class="row" style="margin:-4px 0 10px"><label class="perscout"><input type="checkbox" data-ch="scout-photo" data-id="' + s.id + '"' +
+      (s.photoOk ? ' checked' : '') + '> Photo permission on file</label>' +
+      '<span class="small muted" style="align-self:center">Leaders only \u2014 never published.</span></div>' +
       // Brothers and sisters. It changes exactly one thing — a fee priced PER FAMILY is counted
       // and billed once instead of once per scout — and deliberately nothing else: each scout
       // still gets their own place, their own dues and their own parent's place at everything
@@ -17694,6 +17704,8 @@
   }
 
 
+  // Y2 — the rule a leader reads before posting a photo of the pack anywhere.
+  var PHOTO_RULE = 'Before posting photos: only scouts with permission on file; first names only in captions, never last names or locations.';
   /* ----- Pack · Sharing — who can get in, and how the pack is published ----- */
   function renderPackSharing() {
     // Wave 21 — the pack's NAME, moved out of Budget's Season setup. It was never a money
@@ -17703,7 +17715,11 @@
       '<div class="row">' +
       '<label class="fld">Pack name<input data-ch="pack-name" value="' + esc(state.packName) + '" placeholder="Pack 569" style="width:200px"></label>' +
       '</div>' +
-      '<p class="small muted" style="margin:8px 0 0">Shown in the header, on printed sheets and exports, and on the family view a parent sees.</p></div>';
+      '<p class="small muted" style="margin:8px 0 0">Shown in the header, on printed sheets and exports, and on the family view a parent sees.</p>' +
+      // Y2 — the photo rule, where a leader posting for the pack will look. The permission itself
+      // is ticked per scout on the roster (Scouts), and shows there as "photo OK".
+      '<p class="small" style="margin:8px 0 0"><strong>' + esc(PHOTO_RULE) + '</strong> ' +
+      '<span class="muted">Permission is ticked on each scout\u2019s roster row, and shows there as \u201cphoto OK\u201d.</span></p></div>';
 
     // Sync card
     h += '<div class="card"><h2 class="section display">Shared sync</h2>' +
@@ -25544,6 +25560,13 @@
       var parSc = getScout(el.dataset.id), parUid = el.value;
       if (!isAdmin() || !parSc || !parUid) return;
       linkParentToFamily(parUid, parSc);
+      commit(); return;
+    }
+    // Y2 — photo permission on file.
+    if (ch === 'scout-photo') {
+      var scPh = getScout(el.dataset.id);
+      if (!scPh) return;
+      scPh.photoOk = !!el.checked;
       commit(); return;
     }
     if (ch === 'scout-name' || ch === 'scout-renew' || ch === 'scout-denlabel' || ch === 'scout-note' ||
