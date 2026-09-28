@@ -514,6 +514,17 @@ test('Start here lives on Home, not Calendar', () => {
   ok(/Start here<\/h2>/.test(hm[0]), 'the Start here card is not on Home');
 });
 
+test('the month agenda hides days that have passed until asked', () => {
+  const fn = /function monthAgendaCard\(mk, today\) \{[\s\S]*?\n  \}\n/.exec(SCRIPT);
+  ok(fn, 'monthAgendaCard not found');
+  ok(/if \(!showPast\) days = days\.filter\(function \(d\) \{ return mk \+ '-' \+ pad2\(d\) >= today; \}\)/.test(fn[0]),
+    'past days are still listed by default');
+  ok(/data-act="agenda-past-toggle"/.test(fn[0]), 'there is no way to bring the earlier events back');
+  ok(/past \? ' wk-past' : ''/.test(fn[0]), 'earlier events, when shown, are not greyed');
+  ok(/act === 'agenda-past-toggle'/.test(SCRIPT), 'the toggle has no handler');
+  ok(/agendaShowPast: false/.test(SCRIPT), 'the agenda does not start with past days hidden');
+});
+
 /* ================================================================
    Wave 21 — handoff cards and den scoping
    ================================================================ */

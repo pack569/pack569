@@ -4588,6 +4588,7 @@
     planAdv: null,      // Wave A — { den, name } the den planner's open "plan a meeting" form ('' name = an elective)
     pkAgendaOpen: {},   // Wave A — { eventId: true } pack meetings with the agenda editor open
     agendaOpen: {},     // Wave 20 — { eventKey: true } expanded month-agenda rows (not persisted)
+    agendaShowPast: false, // true = the month agenda also lists days before today (not persisted)
     // Phase 0 — Money · Ledger. All transient, like the rest of `ui`.
     ledgerView: 'entries',   // 'entries' | 'reconcile'
     ledgerOpen: {},          // { entryId: true } expanded entry detail (method/ref/source/donor)
@@ -12458,9 +12459,22 @@
     // Undated activities whose program slot lands in this month — same filter the digest uses.
     var tbd = state.events.filter(function (ev) { return !ev.date && slotMonthKey(ev.slot) === mk; });
 
+    // Days before today drop out of the list: what a leader opens this for is what is still
+    // coming. They stay on the grid above, and one tap brings them back here, greyed.
+    var pastCount = days.reduce(function (n, d) {
+      return n + (mk + '-' + pad2(d) < today ? byDay[d].length : 0);
+    }, 0);
+    var showPast = ui.agendaShowPast;
+    if (!showPast) days = days.filter(function (d) { return mk + '-' + pad2(d) >= today; });
+    var shownCount = evCount - (showPast ? 0 : pastCount);
+    var countLabel = !evCount ? 'Nothing scheduled'
+      : (pastCount && !showPast)
+        ? (shownCount ? shownCount + ' coming up' : 'All passed')
+        : evCount + ' event' + (evCount === 1 ? '' : 's');
+
     var h = '<div class="card"><div class="spread">' +
       '<h2 class="section display" style="margin-bottom:0">' + esc(monthLabel(mk)) + '</h2>' +
-      '<span class="small muted">' + (evCount ? evCount + ' event' + (evCount === 1 ? '' : 's') : 'Nothing scheduled') + '</span>' +
+      '<span class="small muted">' + countLabel + '</span>' +
       '</div>';
 
     if (!evCount && !tbd.length) {
@@ -12468,8 +12482,19 @@
         'Tap any day above to add a den or pack meeting, a storefront, or an activity.</p></div>';
     }
 
+    if (pastCount) {
+      h += '<button type="button" class="btn small" data-act="agenda-past-toggle" aria-expanded="' + showPast + '"' +
+        ' style="margin-top:8px">' +
+        (showPast ? 'Hide earlier events'
+          : 'Show ' + pastCount + ' earlier event' + (pastCount === 1 ? '' : 's')) + '</button>';
+    }
+    if (!showPast && pastCount && !shownCount && !tbd.length) {
+      h += '<p class="small muted" style="margin:8px 0 0">Everything on the calendar this month has already happened.</p>';
+    }
+
     days.forEach(function (day) {
       var iso = mk + '-' + pad2(day);
+      var past = iso < today;
       h += '<p class="mo-day">' + esc(fmtDate(iso)) + (iso === today ? ' · Today' : '') + '</p>';
       byDay[day].forEach(function (e) {
         var label = '', meta = [], evKey = '';
@@ -12497,7 +12522,7 @@
         }
         var pill = rsvpPill(evKey);
         var open = !!ui.agendaOpen[evKey];
-        h += '<div class="list-row mo-row' + (iso === ui.calSelectedDate ? ' sel' : '') + (open ? ' open' : '') + '"' +
+        h += '<div class="list-row mo-row' + (iso === ui.calSelectedDate ? ' sel' : '') + (open ? ' open' : '') + (past ? ' wk-past' : '') + '"' +
           ' data-act="agenda-toggle" data-key="' + evKey + '" role="button" tabindex="0"' +
           ' aria-expanded="' + open + '"' +
           ' aria-label="' + esc(label + ', ' + fmtDate(iso)) + '">' +
@@ -24517,6 +24542,7 @@
     }
     // Wave 20 — month-agenda rows expand in place; one row open at a time so a long
     // month never becomes a wall of open panels.
+    if (act === 'agenda-past-toggle') { ui.agendaShowPast = !ui.agendaShowPast; render(); return; }
     if (act === 'agenda-toggle') {
       var agKey = el.dataset.key;
       var wasOpen = !!ui.agendaOpen[agKey];
