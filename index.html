@@ -13164,18 +13164,26 @@
   }
   // The same lines, the same rules as computeBudget: an income line is not spending (M1); a
   // paid-direct line is out of the PLAN but its actual — a reimbursement — is real money out.
+  //
+  // Treasurer's review (T8) — so a paid-direct line showed every reimbursement as over budget
+  // against a plan of $0, when the plan HAD budgeted for them: computeBudget's Planned counts what
+  // the planned tiers will pay back (coverCostForKeys().extraReimburse, inside tierExtra). They
+  // get their own row, planned at that figure and actual at what the paid-direct lines have paid
+  // out, rather than being spread across categories the plan never priced them under.
+  var BVA_REIMBURSE = 'tier-reimburse';
   function budgetVsActualNow() {
     var items = [];
     allBudgetLines().forEach(function (r) {
       var l = r.line;
       if (l.category === 'income') return;
-      items.push({
-        category: l.category,
-        planned: lineThroughPack(l) ? linePlanned(l) : 0,
-        actual: lineActual(l.id)
-      });
+      if (!lineThroughPack(l)) {
+        items.push({ category: BVA_REIMBURSE, planned: 0, actual: lineActual(l.id) });
+        return;
+      }
+      items.push({ category: l.category, planned: linePlanned(l), actual: lineActual(l.id) });
     });
-    return budgetVsActual(items, LINE_CATEGORIES);
+    items.push({ category: BVA_REIMBURSE, planned: coverCostForKeys(plannedCoverKeys()).extraReimburse, actual: 0 });
+    return budgetVsActual(items, LINE_CATEGORIES.concat([[BVA_REIMBURSE, 'Reward-tier reimbursements']]));
   }
   function renderBudgetVsActual() {
     var bva = budgetVsActualNow();
@@ -13188,7 +13196,9 @@
     var h = '<div class="card"><h2 class="section display">Budget vs actual</h2>' +
       '<p class="small muted" style="margin:0 0 8px">What each category planned against what the ledger says was spent. ' +
       'Planning generously is the point of a plan, so being under is normal; over is what the committee should hear about. ' +
-      'Income lines are not in here — they are money in, not spending.</p>' +
+      'Income lines are not in here — they are money in, not spending. Fees families pay the council directly are not the ' +
+      'pack’s to plan; what the pack pays back on them for a reward tier is its own row, <strong>Reward-tier reimbursements</strong>, ' +
+      'planned at what the planned tiers promise.</p>' +
       '<div class="tbl-wrap"><table><caption class="visually-hidden">Budget against actual spending by category</caption>' +
       '<thead><tr><th scope="col">Category</th><th scope="col" class="num">Planned</th><th scope="col" class="num">Actual</th>' +
       '<th scope="col" class="num">Variance</th></tr></thead><tbody>';

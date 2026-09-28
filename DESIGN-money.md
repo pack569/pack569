@@ -247,6 +247,12 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   forgiven) are now `chargeSetTotals(charges)`, which the subset callers use, and `chargeTotals`
   is documented — and tested — as whole-book only. Per-charge payment is `chargePaidAllocation`,
   which needs every charge to answer.
+- **Reimbursements read as over budget (T8).** Budget vs actual planned a paid-direct line at $0
+  (it is out of the plan) and counted its reimbursements as actual, so every one was "over". But
+  Planned already counts what the planned tiers will pay back (`coverCostForKeys().extraReimburse`,
+  inside `tierExtra`). Paid-direct lines now have their own row, *Reward-tier reimbursements*,
+  planned at that figure and actual at what those lines have paid out, instead of sitting in
+  their 510-278 category against nothing.
 
 ---
 

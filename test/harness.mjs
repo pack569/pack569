@@ -8766,6 +8766,27 @@ test('T7: chargeTotals is only ever asked about the whole book; a subset uses ch
   ]), { raised: 9000, standing: 2000, waived: 4000, forgiven: 3000 }, 'the charge-only figures');
 });
 
+test('T8: reward-tier reimbursements are measured against what the plan set aside for them', () => {
+  // A paid-direct line is out of the plan, so every reimbursement on it read as over budget
+  // against $0 — though Planned (A) already counts what the planned tiers will pay back.
+  const now = /function budgetVsActualNow\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/items\.push\(\{ category: BVA_REIMBURSE, planned: coverCostForKeys\(plannedCoverKeys\(\)\)\.extraReimburse, actual: 0 \}\);/.test(now),
+    'the reimbursements row is not planned at what A counts for them');
+  ok(/LINE_CATEGORIES\.concat\(\[\[BVA_REIMBURSE, 'Reward-tier reimbursements'\]\]\)/.test(now), 'no row of their own');
+  // A covers exactly that figure, via tierExtra — so the row and Planned agree.
+  ok(/extra \+= cents; extraReimburse \+= cents;/.test(SCRIPT) && /function tierExtraPackCostCents\(\) \{ return coverCostForKeys\(plannedCoverKeys\(\)\)\.extra; \}/.test(SCRIPT),
+    'what Planned counts for reimbursements has moved');
+  const { budgetVsActual, LINE_CATEGORIES } = sandbox(['LINE_CATEGORIES', 'budgetVsActual']);
+  const out = budgetVsActual([
+    { category: 'registration', planned: 8500, actual: 8500 },
+    { category: 'tier-reimburse', planned: 0, actual: 6000 },      // two scouts paid back
+    { category: 'tier-reimburse', planned: 9000, actual: 0 }       // the plan: three scouts
+  ], LINE_CATEGORIES.concat([['tier-reimburse', 'Reward-tier reimbursements']]));
+  const r = out.rows.find((x) => x.category === 'tier-reimburse');
+  eq([r.label, r.planned, r.actual, r.variance], ['Reward-tier reimbursements', 9000, 6000, -3000], 'under plan, not over');
+  eq(out.rows[out.rows.length - 1].category, 'tier-reimburse', 'the row is not last');
+});
+
 test('T1: a refund source only survives on money out that names a family', () => {
   const ns = /function normalizeState\(d\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/if \(e\.source === 'refund' && \(e\.direction !== 'out' \|\| !e\.scoutId\)\) e\.source = '';/.test(ns),
@@ -9003,7 +9024,8 @@ test('E9: budget vs actual, by category, with variance', () => {
   eq(got, got.slice().sort((a, b) => a - b), 'rows are not in category order');
   const now = /function budgetVsActualNow\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/if \(l\.category === 'income'\) return;/.test(now), 'income lines are reported as spending');
-  ok(/planned: lineThroughPack\(l\) \? linePlanned\(l\) : 0/.test(now), 'paid-direct money is planned as the pack’s');
+  ok(/if \(!lineThroughPack\(l\)\) \{\s*items\.push\(\{ category: BVA_REIMBURSE, planned: 0, actual: lineActual\(l\.id\) \}\);/.test(now),
+    'paid-direct money is planned as the pack’s, or its reimbursements are filed under the line’s category');
   ok(/h \+= renderBudgetVsActual\(\);/.test(/function renderBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0]),
     'the Budget workspace does not show it');
 });
