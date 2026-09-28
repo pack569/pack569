@@ -10447,6 +10447,22 @@ test('7c: a sibling’s make-up covers the family fee once, and never shows on t
   ok(/var famCov = packCoverage\(map\);/.test(tpr), 'the progress rows do not read coverage from their own map');
 });
 
+/* ========================================================================
+   Enhancements wave A — program and advancement tools
+   ===================================================================== */
+
+// A7 — a reimbursement row sits on the billing scout; when a sibling's tier bought it, say whose.
+test('A7: a reimbursement row says which sibling earned it, and only when that is someone else', () => {
+  const ctx = sandbox(['reimbEarnerNote']);
+  const bea = { id: 'bea', name: 'Bea Kent' }, tig = { id: 'tig', name: 'Tig Kent' };
+  eq(ctx.reimbEarnerNote({ scout: bea, earner: tig }, { tig: 'Tig' }), 'earned by Tig', 'sibling earner');
+  eq(ctx.reimbEarnerNote({ scout: bea, earner: bea }, { bea: 'Bea' }), '', 'repeats the row’s own scout');
+  // No map entry: still a first name, never the surname.
+  eq(ctx.reimbEarnerNote({ scout: bea, earner: tig }, {}), 'earned by Tig', 'fell back to the full name');
+  ok(/var byWho = reimbEarnerNote\(r, reimbNames\);/.test(SCRIPT), 'the reimbursement row does not show the earner');
+  ok(!/reimbEarnerNote/.test(BPV()), 'the earner note reached the parent view');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

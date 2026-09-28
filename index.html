@@ -12527,6 +12527,16 @@
     });
     return rows;
   }
+  // "earned by Tig" on a reimbursement row. The row sits on the family's BILLING scout (that is
+  // where the ledger entry lands), so when a sibling's tier is what bought it the row would
+  // otherwise name a child who earned nothing and say nothing about the one who did. Only said
+  // when the two differ — on a scout's own row it would just repeat the name. First name, from
+  // the one public-name map, though this card is leaders-only.
+  function reimbEarnerNote(r, names) {
+    if (!r || !r.earner || !r.scout || r.earner.id === r.scout.id) return '';
+    var nm = (names && names[r.earner.id]) || String(r.earner.name || '').trim().split(/\s+/)[0];
+    return nm ? 'earned by ' + nm : '';
+  }
   // The private-benefit sanity check the Unit Budgeting Guidelines ask for: "the majority of the
   // NET PROCEEDS of a fundraiser have to go to the unit, not individual Scouts." Net proceeds
   // here is the commission — the only part of a Trail's End sale the pack ever keeps.
@@ -16853,11 +16863,14 @@
         // the ledger entry that settles it.
         var reimb = tierReimbursements(tierEarned).filter(function (r) { return r.tier.id === t.id; });
         if (reimb.length) {
+          var reimbNames = publicNameMap(state.scouts);
           h += '<p class="eyebrow" style="margin:10px 0 4px">Reimbursements this tier owes</p>';
           reimb.forEach(function (r) {
+            var byWho = reimbEarnerNote(r, reimbNames);
             h += '<div class="assign-row"><span class="assign-name">' + esc(r.scout.name) +
               ' <span class="small muted">' + esc(r.share.item.name || 'a council fee') +
-              ' · paid to ' + esc(r.share.item.paidDirectTo || 'the council') + '</span></span>' +
+              ' · paid to ' + esc(r.share.item.paidDirectTo || 'the council') +
+              (byWho ? ' · ' + esc(byWho) : '') + '</span></span>' +
               (r.left > 0
                 ? '<span class="small">owed <strong class="money">' + fmt(r.left) + '</strong></span>' +
                   '<button type="button" class="btn small" data-act="tier-reimburse:' + esc(r.share.item.id) + ':' +
