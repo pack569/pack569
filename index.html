@@ -1848,6 +1848,11 @@
 
   /* ---------------- State ---------------- */
   var DENS = ['Lion', 'Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light'];
+  // Y1 (2026-09-28) — what a leader record says for the supervision check (supervisionCheck):
+  // is this adult registered, 21 or older, female. Each is 'yes', 'no' or '' (not filled in —
+  // the check then says it cannot tell, rather than guessing). ⚠ PRIVATE: leaders only, never
+  // published, never printed. Declared above `var state = load()`: normalizeState reads it.
+  var YP_LEADER_KEYS = ['ypRegistered', 'ypOver21', 'ypFemale'];
   // Wave 21 — the pack's real committee/program jobs, from the Scouting America pack
   // organization (chair, secretary and treasurer are the three every pack must have; the
   // rest are the usual additions). `home` is the workspace that job mostly lives in — it
@@ -3607,6 +3612,8 @@
       else l.jobs = l.jobs.filter(function (j) { return !!JOB_BY_ID[j]; });
       if (!Array.isArray(l.dens)) l.dens = densFromRoleText(l.role);
       else l.dens = l.dens.filter(function (dn) { return DENS.indexOf(dn) !== -1; });
+      // Y1 — the supervision answers: 'yes', 'no', or '' (unknown). Private.
+      YP_LEADER_KEYS.forEach(function (k) { if (l[k] !== 'yes' && l[k] !== 'no') l[k] = ''; });
     });
     // Wave 19(3) — program year the dens were last advanced for (0 = never).
     d.densAdvancedYear = (typeof d.densAdvancedYear === 'number' && isFinite(d.densAdvancedYear)) ? Math.floor(d.densAdvancedYear) : 0;
@@ -9606,7 +9613,8 @@
   //   the council's popcorn dates and the settlement (`popcornCouncil`, Wave D1),
   //   who counted and verified each storefront block's cash (`cashCountedBy`, `cashVerifiedBy`, D2),
   //   each charge's due date (`dueDate`), the pack's dues date (`budget.duesDueDate`) and every
-  //   family statement (E1),
+  //   family statement (E1), each leader's supervision answers (`ypRegistered`, `ypOver21`,
+  //   `ypFemale`) and the supervision check built from them (Y1),
   //   and `state` in any raw form.
   //
   // Pure: it reads only the state it is given. `state` is swapped for the duration so the
@@ -13247,6 +13255,12 @@
     var cashChk = blockCashCheck(b, sf.date, todayISO());
     if (cashChk === 'blank') h += '<p class="warn small" style="margin:8px 0 0">Name both adults who counted this block\u2019s cash \u2014 one counts, a second checks.</p>';
     else if (cashChk === 'same') h += '<p class="warn small" style="margin:8px 0 0">The same person counted and verified this cash. A second adult has to check it.</p>';
+    // Y1 — whether the named adults are two registered adults 21+. Leaders only.
+    var bSup = blockSupervision(b);
+    if (bSup) {
+      h += '<p class="small' + (bSup.status === 'ok' ? ' muted' : ' warn') + '" style="margin:8px 0 0">' +
+        '<strong>Supervision:</strong> ' + esc(supervisionMessage(bSup)) + '</p>';
+    }
 
     if (hasMoney && !b.assignments.length) {
       h += '<p class="warn" style="margin:10px 0 0">Money is entered but no scouts are assigned — nobody is getting credit for this block yet.</p>';
@@ -16561,6 +16575,134 @@
     }
     return h;
   }
+  /* ----- Y1: the per-event supervision check (Youth Protection, 2026-09-28) ------------------
+     The rule the pack states: two registered adults, both 21 or older, at every activity, and a
+     registered female adult 21 or older when a girl attends. The app checks it only where it
+     KNOWS who the adults were, and says so everywhere else:
+       * a storefront block — the two adults named on its cash count (cashCountedBy /
+         cashVerifiedBy, D2), matched to the leader roster by name (leaderByName);
+       * a campout — its readiness ticks (twoLeaders, female), since trips record no adults;
+       * meetings record no leaders at all, so they are not checked.
+     Whether an adult is registered, 21+ or female comes from the leader's own record
+     (YP_LEADER_KEYS). Unanswered, the check says "can't check — fill in leader details" rather
+     than guess. Scouts have no gender on the roster, so the female-adult rule is NOT checked,
+     and the card says that too. ⚠ LEADERS ONLY: none of it is published or printed. */
+  function ypNorm(n) { return String(n || '').trim().toLowerCase().replace(/\s+/g, ' '); }
+  // The active leader a typed name means, or null. An exact match first; else a first-name match
+  // when only one active leader has that first name AND any second word agrees (an initial or a
+  // surname start), so "Keith D" finds "Keith Dougherty" but not "Keith Smith". Pure.
+  function leaderByName(name, leaders) {
+    var n = ypNorm(name);
+    if (!n) return null;
+    var active = (leaders || []).filter(function (l) { return l && !l.archived && ypNorm(l.name); });
+    var exact = active.filter(function (l) { return ypNorm(l.name) === n; });
+    if (exact.length) return exact.length === 1 ? exact[0] : null;
+    var t = n.split(' ');
+    var byFirst = active.filter(function (l) {
+      var lt = ypNorm(l.name).split(' ');
+      if (lt[0] !== t[0]) return false;
+      if (t[1] && lt[1]) return lt[1].indexOf(t[1]) === 0 || t[1].indexOf(lt[1]) === 0;
+      return true;
+    });
+    return byFirst.length === 1 ? byFirst[0] : null;
+  }
+  // adults: [{ name, leader|null }]; girls: true / false / null (null = the app cannot tell).
+  // { status: 'ok'|'unknown'|'short', qualified, unknown: [names], notQualified: [names],
+  //   offRoster: [names], female: ''|'ok'|'unknown'|'short'|'not-checked' }. Pure.
+  function supervisionCheck(adults, girls) {
+    var seen = {}, ok = [], unknown = [], no = [], off = [];
+    (adults || []).forEach(function (a) {
+      var nm = String((a && a.name) || '').trim();
+      var k = a && a.leader ? 'L' + a.leader.id : 'N' + ypNorm(nm);
+      if (k === 'N' || seen[k]) return;
+      seen[k] = true;
+      var label = a.leader ? (a.leader.name || nm) : nm;
+      if (!a.leader) { off.push(label); return; }
+      var r = a.leader.ypRegistered, o = a.leader.ypOver21;
+      if (r === 'yes' && o === 'yes') ok.push(a);
+      else if (r === 'no' || o === 'no') no.push(label);
+      else unknown.push(a);
+    });
+    function names(xs) { return xs.map(function (a) { return a.leader.name || a.name; }); }
+    var res = { status: 'ok', qualified: ok.length, unknown: names(unknown), notQualified: no, offRoster: off, female: '' };
+    if (ok.length < 2) res.status = (ok.length + unknown.length >= 2) ? 'unknown' : 'short';
+    if (girls === true) {
+      var fem = ok.some(function (a) { return a.leader.ypFemale === 'yes'; });
+      var femMaybe = ok.concat(unknown).some(function (a) { return a.leader.ypFemale !== 'no'; });
+      res.female = fem ? 'ok' : (femMaybe ? 'unknown' : 'short');
+      if (res.status === 'ok' && res.female !== 'ok') res.status = res.female;
+    } else if (girls == null) res.female = 'not-checked';
+    return res;
+  }
+  // One sentence for a check. Pure.
+  function supervisionMessage(res) {
+    if (res.status === 'ok') {
+      return 'Two registered adults 21 or older' + (res.female === 'ok' ? ', including a registered female adult' : '') + '.';
+    }
+    var why = [];
+    if (res.unknown.length) why.push('fill in whether ' + res.unknown.join(' and ') + ' ' + (res.unknown.length === 1 ? 'is' : 'are') + ' registered and 21 or older');
+    if (res.notQualified.length) why.push(res.notQualified.join(' and ') + (res.notQualified.length === 1 ? ' is' : ' are') + ' not recorded as a registered adult 21 or older');
+    if (res.offRoster.length) why.push(res.offRoster.join(' and ') + (res.offRoster.length === 1 ? ' is' : ' are') + ' not on the leader roster');
+    if (res.female === 'short') why.push('no registered female adult 21 or older is named, and a girl is signed up');
+    if (res.female === 'unknown') why.push('fill in whether a named adult is female');
+    if (res.status === 'unknown') return 'Can\u2019t check \u2014 fill in leader details: ' + why.join('; ') + '.';
+    return 'Not two registered adults 21 or older' + (res.qualified ? ' (only ' + res.qualified + ')' : '') +
+      (why.length ? ': ' + why.join('; ') : '') + '.';
+  }
+  // A storefront block's adults, as the check reads them: the two cash-count names.
+  function blockSupervision(b) {
+    var names = [b.cashCountedBy, b.cashVerifiedBy].filter(function (n) { return String(n || '').trim(); });
+    if (!names.length) return null;
+    return supervisionCheck(names.map(function (n) { return { name: n, leader: leaderByName(n, state.leaders) }; }), null);
+  }
+  // Leaders only. Storefront blocks from the last 30 days on that name an adult, and campouts not
+  // yet over. Pack · People, under the leader roster whose answers it reads.
+  function supervisionCard() {
+    var today = todayISO(), from = isoPlusDays(today, -30);
+    var rows = [];
+    state.storefronts.forEach(function (sf) {
+      if (!sf.date || sf.date < from) return;
+      (sf.blocks || []).forEach(function (b) {
+        var r = blockSupervision(b);
+        if (!r) return;
+        rows.push({ when: sf.date, what: (sf.name || 'Storefront') + ' \u00b7 ' + (b.label || 'Block'), ok: r.status === 'ok', msg: supervisionMessage(r) });
+      });
+    });
+    campingTrips().forEach(function (t) {
+      var st = tripStartDate(t);
+      if (!st || tripEndDate(t) < today) return;
+      var rd = t.readiness || {};
+      rows.push({
+        when: st, what: t.name || 'A campout', ok: rd.twoLeaders === true,
+        msg: rd.twoLeaders === true
+          ? 'Two registered adult leaders 21 or older ticked on the readiness list' +
+            (rd.female === true ? ', and a registered female adult' : '; the female-adult item is not ticked') + '.'
+          : 'Two registered adult leaders 21 or older are not yet ticked on the trip\u2019s readiness list.'
+      });
+    });
+    rows.sort(function (a, b) { return a.when.localeCompare(b.when); });
+    var blank = activeLeaders().filter(function (l) { return !l.ypRegistered || !l.ypOver21; }).length;
+    var h = '<div class="card"><p class="eyebrow note-cap note-cap-int" style="margin:0 0 6px">Supervision check \u00b7 leaders only</p>' +
+      '<p class="small muted" style="margin:0 0 8px">Two registered adults 21 or older at every activity, and a registered female adult 21 or older ' +
+      'when girls attend. Checked only where the app knows who the adults were: the two names on a storefront block\u2019s cash count, ' +
+      'and each campout\u2019s readiness ticks. Meetings don\u2019t record which leaders came, so they aren\u2019t checked.</p>' +
+      '<p class="small muted" style="margin:0 0 8px">Scouts have no gender on the roster, so the app can\u2019t tell when a girl is signed up ' +
+      'and does not check the female-adult rule for storefronts \u2014 confirm it yourself.</p>';
+    if (blank) {
+      h += '<p class="small" style="margin:0 0 8px">' + blank + ' leader' + (blank === 1 ? ' has' : 's have') +
+        ' no answer for registered or 21 or older \u2014 fill them in on the roster above, or the check can\u2019t count them.</p>';
+    }
+    if (!rows.length) {
+      h += '<p class="empty" style="margin:0">Nothing to check yet \u2014 name the two adults on a storefront block\u2019s cash count, or date a campout.</p>';
+    }
+    rows.forEach(function (r) {
+      h += '<div class="att-row" style="cursor:default"><span class="att-name">' + esc(r.what) +
+        ' <span class="small muted">' + esc(fmtDate(r.when)) + '</span><br><span class="small' + (r.ok ? ' muted' : '') + '"' +
+        (r.ok ? '' : ' style="color:var(--accent-text)"') + '>' + esc(r.msg) + '</span></span>' +
+        (r.ok ? '<span class="pill navy">ok</span>' : '<span class="pill">check</span>') + '</div>';
+    });
+    return h + '<p class="small muted" style="margin:8px 0 0">Not published to families.</p></div>';
+  }
   function renderLeaderRow(l) {
     var pills = l.archived ? [] : leaderStatus(l);
     var pillHtml = pills.map(function (p) { return '<span class="pill' + p.cls + '">' + esc(p.label) + '</span>'; }).join(' ');
@@ -16622,6 +16764,17 @@
       })() +
       '<label class="fld">Registration renews<input type="month" data-ch="ldr-renew" data-id="' + l.id + '" value="' + esc(l.renewalMonth) + '"></label>' +
       '<label class="fld" style="flex:1 1 160px">Notes<input data-ch="ldr-notes" data-id="' + l.id + '" value="' + esc(l.notes) + '" placeholder="Optional"></label>' +
+      '</div>' +
+      // Y1 — for the supervision check only. Private: never published or printed.
+      '<div class="row" style="align-items:flex-end;margin-top:6px">' +
+      [['ypRegistered', 'Registered adult'], ['ypOver21', '21 or older'], ['ypFemale', 'Female']].map(function (q) {
+        var v = l[q[0]] || '';
+        return '<label class="fld">' + q[1] + '<select data-ch="ldr-yp" data-key="' + q[0] + '" data-id="' + l.id + '">' +
+          '<option value=""' + (v ? '' : ' selected') + '>\u2014</option>' +
+          '<option value="yes"' + (v === 'yes' ? ' selected' : '') + '>Yes</option>' +
+          '<option value="no"' + (v === 'no' ? ' selected' : '') + '>No</option></select></label>';
+      }).join('') +
+      '<span class="small muted" style="align-self:flex-end;padding-bottom:9px">For the supervision check \u2014 private, never published.</span>' +
       (canEdit()
         ? '<button type="button" class="btn small" data-act="' + (l.archived ? 'restore-leader' : 'archive-leader') + '" data-id="' + l.id + '" style="align-self:flex-end">' +
           (l.archived ? 'Bring back' : 'Moved on (keeps history)') + '</button>'
@@ -17672,6 +17825,8 @@
     // no longer track adults at all (a parent comes with each scout), so that seam is gone:
     // leaders here are about jobs, training and renewals, not staffing.
     h += '</div>';
+    // Y1 — the supervision check, reading the roster's answers above and the cash-count names.
+    h += supervisionCard();
 
     // Wave 19(40) — AHMR pointer (plain text, deliberately not a link).
     h += '<p class="small muted" style="margin:4px 2px 0">Health forms (AHMR) and activity consent forms live at scouting.org/health-and-safety/ahmr — council and Scoutbook remain the source of truth for medical/consent records.</p>';
@@ -25414,6 +25569,10 @@
       else if (ch === 'ldr-sytdone') ldr.sytCompleted = el.value; // Wave 19(20)
       else if (ch === 'ldr-renew') ldr.renewalMonth = el.value;
       else if (ch === 'ldr-notes') ldr.notes = el.value;
+      // Y1 — the supervision answers; anything but yes/no is "not filled in".
+      else if (ch === 'ldr-yp') {
+        if (YP_LEADER_KEYS.indexOf(el.dataset.key) !== -1) ldr[el.dataset.key] = (el.value === 'yes' || el.value === 'no') ? el.value : '';
+      }
       // Wave 21 — the "+ Add a job…" / "+ Add a den…" selects. Each is a one-shot: it adds
       // the value, then the select re-renders back to its placeholder because the chosen
       // option has moved into the chip row above it.

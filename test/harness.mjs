@@ -12064,6 +12064,76 @@ test('E3: an archive closed before keeps its shape; a new one is normalized', ()
   eq(JSON.parse(JSON.stringify(a.families)), [{ name: 'Ada', owedCents: 8500, paidCents: 8500, balanceCents: -100 }], 'families');
 });
 
+/* ================================================================
+   Y1 (2026-09-28) — the per-event supervision check. Leaders only.
+   ================================================================ */
+test('Y1: a typed name finds the one leader it means, and no other', () => {
+  const ctx = sandbox(['ypNorm', 'leaderByName']);
+  const L = [
+    { id: 'k', name: 'Keith Dougherty' }, { id: 'd', name: 'Dana' }, { id: 'a1', name: 'Alex Smith' },
+    { id: 'a2', name: 'Alex Jones' }, { id: 'x', name: 'Sam Old', archived: true }
+  ];
+  const f = (n) => { const l = ctx.leaderByName(n, L); return l ? l.id : null; };
+  eq([f('Keith Dougherty'), f(' keith  dougherty '), f('Keith D'), f('Keith'), f('Keith Smith')], ['k', 'k', 'k', 'k', null], 'Keith');
+  eq([f('Dana'), f('Dana Q')], ['d', 'd'], 'a first-name-only leader');
+  eq([f('Alex'), f('Alex J'), f('Alex Smith')], [null, 'a2', 'a1'], 'two Alexes');
+  eq([f('Sam Old'), f(''), f('Pat')], [null, null, null], 'archived, blank, unknown');
+});
+
+test('Y1: the check counts registered adults 21+, says "can’t check" when details are missing, and never guesses', () => {
+  const ctx = sandbox(['ypNorm', 'supervisionCheck', 'supervisionMessage']);
+  const yes = (id, name, fem) => ({ id, name, ypRegistered: 'yes', ypOver21: 'yes', ypFemale: fem || '' });
+  const blank = (id, name) => ({ id, name, ypRegistered: '', ypOver21: '', ypFemale: '' });
+  const A = (name, leader) => ({ name, leader });
+  const run = (adults, girls) => JSON.parse(JSON.stringify(ctx.supervisionCheck(adults, girls)));
+  let r = run([A('Keith', yes('k', 'Keith')), A('Dana', yes('d', 'Dana'))], null);
+  eq([r.status, r.female], ['ok', 'not-checked'], 'two qualified');
+  ok(/^Two registered adults 21 or older\.$/.test(ctx.supervisionMessage(r)), ctx.supervisionMessage(r));
+  r = run([A('Keith', yes('k', 'Keith')), A('Dana', blank('d', 'Dana'))], null);
+  eq(r.status, 'unknown', 'one unanswered leader');
+  ok(/^Can’t check — fill in leader details: fill in whether Dana is registered/.test(ctx.supervisionMessage(r)), ctx.supervisionMessage(r));
+  r = run([A('Keith', yes('k', 'Keith')), A('Pat Parent', null)], null);
+  eq(r.status, 'short', 'a name not on the roster counted');
+  ok(/only 1\): Pat Parent is not on the leader roster/.test(ctx.supervisionMessage(r)), ctx.supervisionMessage(r));
+  r = run([A('Keith', yes('k', 'Keith')), A('Dana', Object.assign(yes('d', 'Dana'), { ypOver21: 'no' }))], null);
+  eq(r.status, 'short', 'an under-21 adult counted');
+  ok(/Dana is not recorded as a registered adult 21 or older/.test(ctx.supervisionMessage(r)), 'no reason given');
+  // The same person twice is one adult.
+  eq(run([A('Keith', yes('k', 'Keith')), A('Keith D', yes('k', 'Keith'))], null).qualified, 1, 'one person counted twice');
+  // Girls: only when the app actually knows one is signed up.
+  eq(run([A('K', yes('k', 'K', 'no')), A('D', yes('d', 'D', 'yes'))], true).status, 'ok', 'a female leader present');
+  eq(run([A('K', yes('k', 'K', 'no')), A('D', yes('d', 'D', 'no'))], true).status, 'short', 'no female leader');
+  eq(run([A('K', yes('k', 'K', 'no')), A('D', yes('d', 'D', ''))], true).status, 'unknown', 'female unanswered');
+  eq(run([A('K', yes('k', 'K', 'no')), A('D', yes('d', 'D', 'no'))], false).female, '', 'no girls, still judged');
+});
+
+test('Y1: leaders carry private yes/no/blank answers; the check reads the cash-count names and campout readiness only', () => {
+  const n = sandbox(NORMALIZE_FNS);
+  const d = n.normalizeState(Object.assign(preMigrationState(), {
+    leaders: [{ id: 'l1', name: 'Dana', ypRegistered: 'yes', ypOver21: true, ypFemale: 'maybe' }, { id: 'l2', name: 'Sam' }]
+  }));
+  eq(d.leaders.map((l) => [l.ypRegistered, l.ypOver21, l.ypFemale]), [['yes', '', ''], ['', '', '']], 'leader answers');
+  ok(/var YP_LEADER_KEYS = \['ypRegistered', 'ypOver21', 'ypFemale'\];/.test(SCRIPT), 'no keys');
+  ok(SCRIPT.indexOf('var YP_LEADER_KEYS') < SCRIPT.search(/^  var state = load\(\);/m), 'YP_LEADER_KEYS is declared after load() reads it');
+  const row = slice('renderLeaderRow');
+  ok(/data-ch="ldr-yp" data-key="' \+ q\[0\] \+ '"/.test(row) && /private, never published/.test(row), 'no leader fields, or not marked private');
+  ok(/if \(YP_LEADER_KEYS\.indexOf\(el\.dataset\.key\) !== -1\) ldr\[el\.dataset\.key\] = \(el\.value === 'yes' \|\| el\.value === 'no'\) \? el\.value : '';/.test(SCRIPT), 'the handler stores anything');
+  const bs = slice('blockSupervision');
+  ok(/\[b\.cashCountedBy, b\.cashVerifiedBy\]/.test(bs) && /leaderByName\(n, state\.leaders\)/.test(bs) && /, null\);/.test(bs), 'storefronts are not read from the cash count, or guess at girls');
+  const card = slice('supervisionCard');
+  ok(/rd\.twoLeaders === true/.test(card) && /Meetings don\\u2019t record which leaders came/.test(card), 'campouts or meetings are not handled as specified');
+  ok(/Scouts have no gender on the roster/.test(card), 'the card does not say the female rule is unchecked');
+  ok(/supervisionCard\(\)/.test(slice('renderPackPeople')), 'no card on Pack · People');
+  ok(/blockSupervision\(b\)/.test(slice('renderBlock')), 'no line on the storefront block');
+  // Never published or printed.
+  ok(!/ypRegistered|ypOver21|ypFemale|supervision/i.test(codeOnly(BPV())), 'buildParentView reads the supervision answers');
+  for (const f of ['daySheetText', 'renderDaySheet', 'buildCsv', 'buildSeasonArchive']) {
+    ok(!/ypRegistered|ypOver21|ypFemale|supervision/i.test(codeOnly(slice(f))), f + ' prints the supervision answers');
+  }
+  ok(/each leader's supervision answers \(`ypRegistered`, `ypOver21`,\s+\/\/\s+`ypFemale`\) and the supervision check built from them \(Y1\)/.test(SCRIPT), 'the banner does not exclude them');
+  ok(/\*\*never\*\* contains:[^]*?whether each leader is registered, 21 or\s+older or female/.test(SETUP), 'SETUP.md does not exclude them');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
