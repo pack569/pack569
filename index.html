@@ -3927,9 +3927,12 @@
       e.notCommission = e.notCommission === true;
       e.reconciled = e.reconciled === true;
       // E2 — the audit trail. '' on everything recorded before it existed.
-      ['enteredBy', 'enteredAt', 'approvedBy', 'approvedAt'].forEach(function (k) {
+      ['enteredBy', 'enteredAt', 'approvedBy', 'approvedAt', 'enteredByUid', 'approvedByUid'].forEach(function (k) {
         if (typeof e[k] !== 'string') e[k] = '';
       });
+      // Never an email (see the E2 banner): a stamp written before that rule is neutralised.
+      e.enteredBy = ledgerStampClean(e.enteredBy);
+      e.approvedBy = ledgerStampClean(e.approvedBy);
     });
     if (!d.book || typeof d.book !== 'object' || Array.isArray(d.book)) d.book = freshBook();
     // The opening figure is the one money field that may legitimately be negative — a pack
@@ -3942,7 +3945,7 @@
     else d.book.statementCents = Math.round(d.book.statementCents);
     if (typeof d.book.reconciledThrough !== 'string') d.book.reconciledThrough = '';
     // E2 — who marked the last statement reconciled, and when.
-    if (typeof d.book.reconciledBy !== 'string') d.book.reconciledBy = '';
+    d.book.reconciledBy = ledgerStampClean(d.book.reconciledBy);   // never an email (E2)
     if (typeof d.book.reconciledAt !== 'string') d.book.reconciledAt = '';
     // -----------------------------------------------------------------------
     // MONEY REDESIGN, Phase 1 — actual cost is now Σ ledger (DESIGN-money.md §5).
@@ -4185,7 +4188,7 @@
           by: typeof c.forgiven.by === 'string' ? c.forgiven.by : '',
           reason: typeof c.forgiven.reason === 'string' ? c.forgiven.reason : '',
           // E2 — who recorded it (`by` is who agreed it). '' on one recorded before.
-          enteredBy: typeof c.forgiven.enteredBy === 'string' ? c.forgiven.enteredBy : ''
+          enteredBy: ledgerStampClean(c.forgiven.enteredBy)
         };
       } else c.forgiven = null;
     });
@@ -6997,15 +7000,38 @@
   // An auditor's first question of any entry is "who put this in, and when?", and of a ticked
   // one "who checked it?". The book could answer neither. Now:
   //   entry.enteredBy / enteredAt        who recorded it, stamped once when it is created
+  //   entry.enteredByUid                 the signed-in account's uid ('' with no account)
   //   entry.approvedBy / approvedAt      who ticked it against a statement; cleared if un-ticked
+  //   entry.approvedByUid                ditto, the account's uid
   //   book.reconciledBy / reconciledAt   who marked the statement reconciled, and when
   //   charge.forgiven.enteredBy          who recorded a forgiveness (`by` was already who AGREED it)
-  // The name is the signed-in Google account's display name, else its email, else "this
-  // device" — a pack with no accounts has nobody to name, and saying so beats guessing.
+  // The name is the signed-in Google account's display name; else the name on the leader record
+  // an admin linked to that account (l.uid); else "a signed-in leader". With no account at all it
+  // is "this device" — a pack with no accounts has nobody to name, and saying so beats guessing.
+  // ⚠ NEVER AN EMAIL (security review, 2026-09-28): the ledger outlives the season in the
+  // archive and gets printed, and an address is contact detail, not a name. normalizeState
+  // replaces any stored stamp that looks like one.
+  // ⚠ A CONVENIENCE RECORD, NOT PROOF. The client writes these stamps, so anyone with edit rights
+  // could write any name or uid into them; the Firestore rules do not check them. They answer
+  // "who do I ask about this entry?", not "who provably did it" — the bank statement and the
+  // receipts are the evidence.
   // Entries recorded before this carry '' and show nothing. LEADERS ONLY, like the whole ledger.
   // ---------------------------------------------------------------------------
-  function ledgerActorName(user) {
-    return (user && (String(user.displayName || '').trim() || String(user.email || '').trim())) || 'this device';
+  function ledgerActorName(user, leaders) {
+    if (!user) return 'this device';
+    var dn = String(user.displayName || '').trim();
+    if (dn && dn.indexOf('@') === -1) return dn;
+    var uid = String(user.uid || '');
+    var l = uid ? (leaders || []).filter(function (x) { return x && x.uid && x.uid === uid; })[0] : null;
+    var ln = l ? String(l.name || '').trim() : '';
+    if (ln && ln.indexOf('@') === -1) return ln;
+    return 'a signed-in leader';
+  }
+  // A stored stamp that is an email address (a record stamped before the rule above) → the
+  // neutral wording. Anything else is kept as it is.
+  function ledgerStampClean(v) {
+    if (typeof v !== 'string') return '';
+    return v.indexOf('@') === -1 ? v : 'a signed-in leader';
   }
   // A reimbursement pays back a receipted expense (Unit Budgeting Guidelines), so it should name
   // the receipt. A reward-tier reimbursement says it is one; a leader paying back a volunteer's
@@ -7382,15 +7408,17 @@
   function scoutOwesCents(scoutId) { return familyOutstanding(state.charges, state.ledger, scoutId, chargeFamilyKey); }
   function familyAccountsNow() { return familyAccounts(state.charges, state.ledger, chargeFamilyKey); }
   // E2 — who is doing this, for the audit trail (ledgerActorName), and the stamps it leaves.
-  function ledgerActor() { return ledgerActorName(sync.user); }
+  function ledgerActor() { return ledgerActorName(sync.user, state.leaders); }
+  function ledgerActorUid() { return (sync.user && sync.user.uid) ? String(sync.user.uid) : ''; }
   function stampEntered(e) {
     e.enteredBy = ledgerActor();
+    e.enteredByUid = ledgerActorUid();
     e.enteredAt = new Date().toISOString();
     return e;
   }
   function stampApproved(e, on) {
-    if (on) { e.approvedBy = ledgerActor(); e.approvedAt = new Date().toISOString(); }
-    else { e.approvedBy = ''; e.approvedAt = ''; }
+    if (on) { e.approvedBy = ledgerActor(); e.approvedByUid = ledgerActorUid(); e.approvedAt = new Date().toISOString(); }
+    else { e.approvedBy = ''; e.approvedByUid = ''; e.approvedAt = ''; }
   }
   // E1 — this charge's due date, from its line and the line's event as they stand now.
   function chargeDueNow(c) {
@@ -23503,7 +23531,7 @@
           lineId: '', method: '', ref: '', source: 'carryover', donor: '', scoutId: to,
           tierMakeup: '', reconciled: false,
           // E2 — whoever closed the year out is who wrote it.
-          enteredBy: ledgerActor() + ' (close-out)', enteredAt: new Date().toISOString()
+          enteredBy: ledgerActor() + ' (close-out)', enteredByUid: ledgerActorUid(), enteredAt: new Date().toISOString()
         });
       }
     });
@@ -24932,7 +24960,7 @@
           description: 'Made up the difference to ' + (mkT.name || 'a reward tier') + ' — ' + (mkS.name || 'scout'),
           amountCents: mkRow.makeup, direction: 'in', lineId: '', method: '', ref: '',
           source: 'family', donor: '', scoutId: mkS.id, tierMakeup: mkT.id, reconciled: false,
-          enteredBy: ledgerActor(), enteredAt: new Date().toISOString()   // E2
+          enteredBy: ledgerActor(), enteredByUid: ledgerActorUid(), enteredAt: new Date().toISOString()   // E2
         });
         showToast(fmt(mkRow.makeup) + ' recorded — ' + (mkS.name || 'they') + ' now counts as reaching ' +
           (mkT.name || 'the tier') + '. Deleting the ledger entry undoes it.');
@@ -24959,7 +24987,7 @@
         source: '', donor: '', scoutId: rbS.id, reconciled: false,
         // T1 — says what it is, so it can never be read as a refund of the family's credit.
         reimbursement: true,
-        enteredBy: ledgerActor(), enteredAt: new Date().toISOString()   // E2
+        enteredBy: ledgerActor(), enteredByUid: ledgerActorUid(), enteredAt: new Date().toISOString()   // E2
       });
       showToast(fmt(rbCents) + ' recorded \u2014 add the council receipt number to the entry in the ledger.');
       commit(); return;

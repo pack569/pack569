@@ -984,6 +984,8 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'ONBOARD_TICKS',
   // Wave D1 — and the council's popcorn dates and settlement.
   'POPCORN_COUNCIL_DATES', 'POPCORN_COUNCIL_VERIFY', 'freshPopcornCouncil', 'normalizePopcornCouncil',
+  // Security review — a stored ledger stamp that is an email is neutralised on load.
+  'ledgerStampClean',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
   'parseLegacyTime', 'migrateTierMakeUp', 'normalizeState', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'entrySignedCents',
@@ -12036,15 +12038,31 @@ test('E1: due dates and family statements are NEVER published', () => {
 test('E2: who entered an entry, who reconciled it, and who recorded a forgiveness are kept', () => {
   const ctx = sandbox(['ledgerActorName']);
   eq(ctx.ledgerActorName({ displayName: 'Dana Q', email: 'd@example.com' }), 'Dana Q', 'display name first');
-  eq(ctx.ledgerActorName({ displayName: '  ', email: 'd@example.com' }), 'd@example.com', 'email when there is no name');
+  // Security review (2026-09-28) — never an email: the linked leader's name, else a neutral phrase.
+  const leaders = [{ uid: 'u1', name: 'Dana Quinn' }, { uid: '', name: 'Nobody' }];
+  ok(!/@/.test(ctx.ledgerActorName({ displayName: '', email: 'x@y' })), 'an email was stored as the actor');
+  eq(ctx.ledgerActorName({ displayName: '', email: 'x@y' }), 'a signed-in leader', 'the neutral fallback');
+  eq(ctx.ledgerActorName({ displayName: '  ', email: 'd@example.com', uid: 'u1' }, leaders), 'Dana Quinn', 'the linked leader record');
+  eq(ctx.ledgerActorName({ displayName: '', email: 'x@y', uid: 'u2' }, leaders), 'a signed-in leader', 'an unlinked uid');
+  eq(ctx.ledgerActorName({ displayName: 'x@y', uid: 'u1' }, leaders), 'Dana Quinn', 'a display name that is an email');
+  eq(ctx.ledgerActorName({ displayName: '', uid: 'u1' }, [{ uid: 'u1', name: 'a@b.c' }]), 'a signed-in leader', 'a leader name that is an email');
   eq(ctx.ledgerActorName(null), 'this device', 'no account');
+  ok(/ledgerActorName\(sync\.user, state\.leaders\)/.test(SCRIPT), 'ledgerActor does not pass the leaders');
+  ok(!/user\.email/.test(slice('ledgerActorName')), 'ledgerActorName reads the email');
+  // The account uids ride along, on every stamp.
+  ok(/e\.enteredByUid = ledgerActorUid\(\);/.test(slice('stampEntered')), 'stampEntered lacks the uid');
+  ok(/e\.approvedByUid = ledgerActorUid\(\);/.test(slice('stampApproved')) && /e\.approvedByUid = '';/.test(slice('stampApproved')),
+    'stampApproved lacks or keeps the uid');
+  eq((SCRIPT.match(/enteredBy: ledgerActor\(\)(?: \+ ' \(close-out\)')?, enteredByUid: ledgerActorUid\(\)/g) || []).length, 3,
+    'an inline entry is stamped without its uid');
+  ok(/A CONVENIENCE RECORD, NOT PROOF\. The client writes these stamps/.test(SCRIPT), 'the E2 banner does not say the stamps are not proof');
   // Every place a new entry is made stamps it.
   const add = /if \(act === 'ledger-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/stampEntered\(drEntry\);/.test(add), 'a typed entry is not stamped');
   const mk = /if \(act\.indexOf\('tier-makeup:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
-  ok(mk && /enteredBy: ledgerActor\(\), enteredAt: new Date\(\)\.toISOString\(\)/.test(mk[0]), 'a tier make-up is not stamped');
+  ok(mk && /enteredBy: ledgerActor\(\), enteredByUid: ledgerActorUid\(\), enteredAt: new Date\(\)\.toISOString\(\)/.test(mk[0]), 'a tier make-up is not stamped');
   const rb = /if \(act\.indexOf\('tier-reimburse:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/enteredBy: ledgerActor\(\), enteredAt: new Date\(\)\.toISOString\(\)/.test(rb), 'a reimbursement is not stamped');
+  ok(/enteredBy: ledgerActor\(\), enteredByUid: ledgerActorUid\(\), enteredAt: new Date\(\)\.toISOString\(\)/.test(rb), 'a reimbursement is not stamped');
   ok(/enteredBy: ledgerActor\(\) \+ ' \(close-out\)'/.test(slice('rolloverYear')), 'a carried credit is not stamped');
   // Reconciling: every way an entry is ticked or un-ticked stamps or clears who did it.
   ok(/if \(led\.reconciled !== el\.checked\) stampApproved\(led, el\.checked\);/.test(SCRIPT), 'a single tick is not stamped');
@@ -12055,12 +12073,19 @@ test('E2: who entered an entry, who reconciled it, and who recorded a forgivenes
   // Normalized, so old records carry '' and a round-trip keeps the fields.
   const n = sandbox(NORMALIZE_FNS);
   const d = n.normalizeState(Object.assign(preMigrationState(), {
-    ledger: [{ id: 'e1', date: '2026-09-01', amountCents: 100, direction: 'in', enteredBy: 'Dana', enteredAt: '2026-09-01T10:00:00Z', approvedBy: 7 }],
-    charges: [{ id: 'c1', scoutId: 's1', amountCents: 1, forgiven: { date: '2026-09-01', by: 'CC', reason: 'r', enteredBy: 'Dana' } }]
+    ledger: [{ id: 'e1', date: '2026-09-01', amountCents: 100, direction: 'in', enteredBy: 'Dana', enteredAt: '2026-09-01T10:00:00Z', approvedBy: 7, enteredByUid: 'u1' },
+      { id: 'e2', date: '2026-09-01', amountCents: 100, direction: 'in', enteredBy: 'dana@example.com', approvedBy: 'x@y', approvedByUid: 5 }],
+    charges: [{ id: 'c1', scoutId: 's1', amountCents: 1, forgiven: { date: '2026-09-01', by: 'CC', reason: 'r', enteredBy: 'Dana' } },
+      { id: 'c2', scoutId: 's1', amountCents: 1, forgiven: { date: '2026-09-01', by: 'CC', reason: 'r', enteredBy: 'd@e.f' } }],
+    book: { reconciledBy: 'd@e.f' }
   }));
-  eq([d.ledger[0].enteredBy, d.ledger[0].enteredAt, d.ledger[0].approvedBy, d.ledger[0].approvedAt], ['Dana', '2026-09-01T10:00:00Z', '', ''], 'ledger trail');
-  eq([d.book.reconciledBy, d.book.reconciledAt], ['', ''], 'book trail');
+  eq([d.ledger[0].enteredBy, d.ledger[0].enteredAt, d.ledger[0].approvedBy, d.ledger[0].approvedAt, d.ledger[0].enteredByUid, d.ledger[0].approvedByUid],
+    ['Dana', '2026-09-01T10:00:00Z', '', '', 'u1', ''], 'ledger trail');
+  eq([d.ledger[1].enteredBy, d.ledger[1].approvedBy, d.ledger[1].approvedByUid], ['a signed-in leader', 'a signed-in leader', ''], 'a stored email stamp survived');
+  eq([d.book.reconciledBy, d.book.reconciledAt], ['a signed-in leader', ''], 'book trail');
   eq(d.charges[0].forgiven.enteredBy, 'Dana', 'forgiveness trail');
+  eq(d.charges[1].forgiven.enteredBy, 'a signed-in leader', 'a stored email on a forgiveness survived');
+  eq(n.normalizeState(preMigrationState()).book.reconciledBy, '', 'an empty book trail');
   // Shown: in the entry's detail and under a reconciled row; the Reconcile card says who signed off.
   const le = slice('renderLedgerEntries');
   ok((le.match(/ledgerTrailLine\(e\)/g) || []).length === 2, 'the trail is not shown on both kinds of row');
