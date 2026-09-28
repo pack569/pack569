@@ -211,6 +211,11 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   reward-tier **reimbursement** is also money out carrying a scout, and is not a refund: it is
   now marked `reimbursement: true`, and one recorded before the mark has no source, so it can
   never read as one. `tierReimbursements` ignores refunds.
+- **The close-out preview promised the projection (T2).** It still said the starting balance
+  becomes "this year's ending balance" and showed the Budget's projection, when since M2 a book
+  with an opening date carries its bank balance. It now shows
+  `closingCarryover(projection, bookBalance(), bank known)` — the figure `rolloverYear` will
+  carry, decided the same way — and says whether that is the bank balance or the projection.
 
 ---
 

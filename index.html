@@ -19981,6 +19981,18 @@
     var f = arc.fundraising, b = arc.budget;
     var armed = ui.armed === 'closeout-confirm';
     var hasPrevSeason = state.archives.some(function (x) { return x.kind === 'season' && x.year === year; });
+    // Treasurer's review (T2) — say the figure rolloverYear will actually carry, and which one it
+    // is. This said "the starting balance becomes this year's ending balance" and showed the
+    // projection, when since M2 a book with an opening date carries its bank balance instead.
+    // Same inputs as rolloverYear's closingBankKnown / closingCarryover, read the same way.
+    var coBud = computeBudget();
+    var coBankKnown = state.ledger.length > 0 && !!state.book.openingDate;
+    var coCarry = closingCarryover(coBud.balance, bookBalance(), coBankKnown);
+    var coCarryLine = coBankKnown
+      ? 'starting funds become the ledger’s <strong>bank balance</strong> (' + fmt(coCarry) + '), and the new ledger opens at it — ' +
+        'not the Budget’s projected ending balance (' + fmt(coBud.balance) + ')'
+      : 'starting funds become the Budget’s <strong>projected ending balance</strong> (' + fmt(coCarry) + ') — the ledger has no ' +
+        'opening balance, so it has no bank balance to carry, and the new ledger starts without one';
     var h = '<div class="overlay" role="dialog" aria-modal="true" aria-label="Close out the year"><div class="overlay-inner">' +
       '<div class="row no-print" style="margin-bottom:12px">' +
       '<button type="button" class="btn" data-act="close-overlay">&larr; Cancel</button></div>' +
@@ -20012,7 +20024,7 @@
       '<li>Saves this summary to <strong>Past seasons</strong>' +
       (hasPrevSeason ? ' — <strong>replacing the earlier ' + year + ' close-out</strong>.' : ' (closing ' + year + ' again later would replace it).') + '</li>' +
       '<li>Downloads a full JSON snapshot — your complete backup of the year. Keep it somewhere safe.</li>' +
-      '<li>Starts <strong>' + (year + 1) + '</strong>: activities are re-seeded into the same months with dates cleared and last year’s actual costs as the new estimates; the starting balance becomes this year’s ending balance (' + fmt(b.balanceCents) + '); ' +
+      '<li>Starts <strong>' + (year + 1) + '</strong>: activities are re-seeded into the same months with dates cleared and last year’s actual costs as the new estimates; ' + coCarryLine + '; ' +
       // Wave 19(3) — dynamic: skip the den-advance step when the Pack tab already ran it this year.
       (state.densAdvancedYear === year
         ? 'den advancement is <strong>skipped</strong> — dens were already advanced for ' + year + ' from Pack'

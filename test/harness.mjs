@@ -8662,6 +8662,25 @@ test('T1: a refunded family credit leaves the account, and nothing is carried', 
   ok(!/record the refund as money out/.test(SCRIPT), 'the old instruction is still there');
 });
 
+test('T2: the close-out preview names the starting funds rolloverYear will actually carry', () => {
+  // It said "the starting balance becomes this year's ending balance" and showed the projection,
+  // when a book with an opening date carries its bank balance (M2).
+  const ov = /function renderCloseoutOverlay\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(!/the starting balance becomes this year’s ending balance/.test(ov), 'the old projection-only sentence is still there');
+  ok(/var coCarry = closingCarryover\(coBud\.balance, bookBalance\(\), coBankKnown\);/.test(ov),
+    'the preview does not work the carryover out the way close-out does');
+  ok(/var coBankKnown = state\.ledger\.length > 0 && !!state\.book\.openingDate;/.test(ov),
+    'the preview decides "bank balance known" differently from rolloverYear');
+  const roll = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/var closingHadLedger = state\.ledger\.length > 0;/.test(roll) &&
+    /var closingBankKnown = closingHadLedger && !!state\.book\.openingDate;/.test(roll) &&
+    /closingCarryover\(bud\.balance, closingBank, closingBankKnown\)/.test(roll) && /var closingBank = bookBalance\(\);/.test(roll),
+    'rolloverYear no longer matches what the preview promises');
+  ok(/bank balance<\/strong> \(' \+ fmt\(coCarry\)/.test(ov) && /projected ending balance<\/strong> \(' \+ fmt\(coCarry\)/.test(ov),
+    'the preview does not say which figure it is carrying');
+  ok(/' \+ coCarryLine \+ '/.test(ov), 'the carry line is not in the list');
+});
+
 test('T1: a refund source only survives on money out that names a family', () => {
   const ns = /function normalizeState\(d\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/if \(e\.source === 'refund' && \(e\.direction !== 'out' \|\| !e\.scoutId\)\) e\.source = '';/.test(ns),
