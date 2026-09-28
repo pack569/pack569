@@ -1393,6 +1393,7 @@
   .badge-store { background: var(--accent-soft); color: var(--accent-text); }
   .pv-row { padding: 10px 2px; border-bottom: 1px solid var(--line); }
   .pv-row:last-child { border-bottom: none; }
+  .pv-ics { margin-top: 6px; }
   .pv-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .pv-title { font-weight: 650; }
   .pv-when { font-size: 0.85rem; color: var(--ink-soft); margin-top: 2px; }
@@ -10568,7 +10569,55 @@
     if (e && e.where) h += '<div class="pv-detail">' + esc(String(e.where)) + '</div>';
     if (e && e.detail) h += '<div class="pv-detail">' + esc(String(e.detail)) + '</div>';
     if (kind === 'storefront') h += parentShiftLines(e);
+    // Wave B3 — one event into the family's own calendar. Found again by date and title in the
+    // handler (the published events carry no ids); a date with two same-named events gets the first.
+    if (e && e.date) {
+      h += '<button type="button" class="btn small ghost no-print pv-ics" data-act="parent-ics" data-date="' +
+        esc(String(e.date)) + '" data-name="' + esc(title) + '">Add to my calendar</button>';
+    }
     return h + '</div>';
+  }
+  // ONE EVENT AS AN .ics FILE — Wave B3, 2026-09-28. Built from the PUBLISHED event and nothing
+  // else, so it cannot carry more than the family is already looking at; and less than that on
+  // purpose: the name, the date, the time and the place. No shift names, no den line, and no
+  // meeting `detail` — that is the meeting's free-text note, and the leaders' calendar export
+  // keeps free-text notes out of .ics files for the reason written in buildICS (a file sits in a
+  // family's calendar, gets forwarded, and nobody can take it back). So a meeting's file has no
+  // place unless the pack gives meetings a real location field — worth a security-reviewer look.
+  // Reuses the export's escaping and folding. The published times are display strings
+  // ("7:00 PM–8:30 PM"), read back with parseLegacyTime; anything unreadable becomes all-day.
+  function parentEventICS(e, stamp) {
+    var date = String((e && e.date) || '');
+    var title = String((e && e.title) || '');
+    var start = '', end = '';
+    function take(range) {
+      var p = String(range || '').split('–');
+      var a = parseLegacyTime(p[0] || ''), b = parseLegacyTime(p[1] || '');
+      if (a && (!start || a < start)) start = a;
+      if (b && (!end || b > end)) end = b;
+    }
+    if (e && e.kind === 'storefront' && Array.isArray(e.shifts) && e.shifts.length) {
+      e.shifts.forEach(function (s) { take(s && s.when); });
+    } else if (e && Array.isArray(e.times) && e.times.length) take(e.times[0]);
+    var lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Ideal Year of Scouting//Family calendar//EN',
+      'CALSCALE:GREGORIAN', 'BEGIN:VEVENT',
+      'UID:pv-' + icsDate(date) + '-' + campHash(String((e && e.kind) || '') + '|' + title) + '@ideal-year-of-scouting',
+      'DTSTAMP:' + stamp];
+    if (start) {
+      lines.push('DTSTART:' + icsDate(date) + 'T' + icsTime(start) + '00');
+      lines.push('DTEND:' + icsDate(date) + 'T' + (end && end > start ? icsTime(end) : icsEndPlusHour(start)) + '00');
+    } else {
+      lines.push('DTSTART;VALUE=DATE:' + icsDate(date));
+      lines.push('DTEND;VALUE=DATE:' + icsNextDay(date));
+    }
+    lines.push('SUMMARY:' + icsEscape(e && e.kind === 'storefront' ? 'Popcorn — ' + title : title));
+    if (e && e.where) lines.push('LOCATION:' + icsEscape(String(e.where)));
+    lines.push('END:VEVENT', 'END:VCALENDAR');
+    return lines.map(icsFold).join('\r\n') + '\r\n';
+  }
+  function parentEventFileName(e) {
+    var slug = String((e && e.title) || 'event').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+    return (slug || 'event') + '-' + String((e && e.date) || '') + '.ics';
   }
   // A storefront's shifts, with who is on each — the two questions a family actually asks about
   // popcorn. Same shape as the leaders' list: the time in a fixed column, names beside it, and an
@@ -21973,7 +22022,7 @@
   // other leader action is refused while parentMode() is true, so an exit that was not allowlisted
   // would leave an admin stuck until they reloaded.
   var PARENT_ACTS = ['parent-tab', 'parent-camp-trip', 'parent-earlier', 'parent-rest', 'parent-cal-prev', 'parent-cal-next',
-    'parent-cal-day', 'parent-cost-toggle', 'parent-preview-off', 'parent-print', 'sign-out-google', 'toast-action'];
+    'parent-cal-day', 'parent-cost-toggle', 'parent-preview-off', 'parent-print', 'parent-ics', 'sign-out-google', 'toast-action'];
   // Join link phase — the three gate screens emit only these. Anything else that somehow
   // reaches the handler while a gate is up is ignored, so no code path can read or mutate
   // the pack record on a link visitor's / not-yet-approved user's device.
@@ -22129,6 +22178,15 @@
     }
     // Reads nothing and mutates nothing — the browser prints the page that is already on screen.
     if (act === 'parent-print') { window.print(); return; }
+    // Wave B3 — reads the published document only (parentDoc) and mutates nothing.
+    if (act === 'parent-ics') {
+      var piDoc = parentDoc();
+      var piEv = ((piDoc && Array.isArray(piDoc.events)) ? piDoc.events : []).filter(function (e) {
+        return e && String(e.date) === (el.dataset.date || '') && String(e.title) === (el.dataset.name || '');
+      })[0];
+      if (piEv) download(parentEventFileName(piEv), 'text/calendar', parentEventICS(piEv, icsStamp()));
+      return;
+    }
     if (act === 'parent-cost-toggle') {
       var pcDen = el.dataset.name || '';
       ui.parentCostOpen[pcDen] = !ui.parentCostOpen[pcDen];

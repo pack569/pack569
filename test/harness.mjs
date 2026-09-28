@@ -10940,6 +10940,39 @@ test('B2: Next up heads the family Schedule with everything on the next date, an
     'Next up is not at the top of the Schedule');
   ok(!/\.cost|\.when|camping/.test(codeOnly(slice('parentNextUp'))), 'Next up reads a trip’s free text for a deadline');
 });
+
+test('B3: one event goes into a family calendar with its name, date, time and place — and nothing else', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`${['pad2', 'campHash', 'parseLegacyTime', 'icsEscape', 'icsFold', 'icsDate', 'icsTime', 'icsNextDay',
+    'icsEndPlusHour', 'parentEventICS', 'parentEventFileName'].map(slice).join('\n')}`, ctx);
+  const S = '20260928T120000Z';
+  const act = ctx.parentEventICS({ kind: 'activity', date: '2026-10-03', title: 'Fall Hike, day 1', times: ['9:30 AM–12:00 PM'],
+    where: 'Sweetwater Creek; GA', detail: 'Tigers only' }, S);
+  ok(/^BEGIN:VCALENDAR\r\n/.test(act) && /END:VCALENDAR\r\n$/.test(act), 'not a calendar file');
+  ok(/\r\nDTSTART:20261003T093000\r\nDTEND:20261003T120000\r\n/.test(act), 'the time was not read back from the published range');
+  ok(/\r\nSUMMARY:Fall Hike\\, day 1\r\n/.test(act) && /\r\nLOCATION:Sweetwater Creek\\; GA\r\n/.test(act), 'name or place missing, or not escaped');
+  ok(!/Tigers only/.test(act) && !/DESCRIPTION/.test(act), 'the detail line went into the file');
+  eq((act.match(/BEGIN:VEVENT/g) || []).length, 1, 'more than one event in the file');
+  // A meeting's detail is its free-text note: never in the file (the buildICS ruling).
+  const mtg = ctx.parentEventICS({ kind: 'meeting', date: '2026-10-06', title: 'Wolf den meeting', times: ['7:00 PM'], detail: 'Call Sam 555-0101' }, S);
+  ok(!/555-0101|LOCATION/.test(mtg), 'a meeting note reached the calendar file');
+  ok(/DTSTART:20261006T190000\r\nDTEND:20261006T200000/.test(mtg), 'a start-only meeting is not an hour long');
+  // A storefront spans its shifts, and never carries who is on them.
+  const sf = ctx.parentEventICS({ kind: 'storefront', date: '2026-10-10', title: 'Kroger',
+    shifts: [{ when: '1:00 PM–3:00 PM', who: ['Ada'] }, { when: '9:00 AM–11:00 AM', who: ['Ben'] }] }, S);
+  ok(/DTSTART:20261010T090000\r\nDTEND:20261010T150000/.test(sf), 'the storefront does not span its shifts');
+  ok(/SUMMARY:Popcorn — Kroger/.test(sf) && !/Ada|Ben/.test(sf), 'a child’s name went into the file, or the summary is wrong');
+  // No time → all day.
+  ok(/DTSTART;VALUE=DATE:20261031\r\nDTEND;VALUE=DATE:20261101/.test(ctx.parentEventICS({ kind: 'derby', date: '2026-10-31', title: 'Derby' }, S)),
+    'an untimed event is not all-day');
+  eq(ctx.parentEventFileName({ title: 'Blue & Gold Banquet!', date: '2027-02-20' }), 'blue-gold-banquet-2027-02-20.ics', 'the file name');
+  // Built from the published event only, and the button works in the parent app.
+  ok(!/\bstate\./.test(slice('parentEventICS')), 'the family file reads the pack record');
+  ok(/'parent-ics'/.test(/var PARENT_ACTS = \[([\s\S]*?)\];/.exec(SCRIPT)[1]), 'the calendar button is refused in parent mode');
+  const h = /if \(act === 'parent-ics'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(h && /parentDoc\(\)/.test(h[0]) && !/state\./.test(h[0]), 'the handler does not read the published document');
+  ok(/data-act="parent-ics"/.test(slice('parentEventRow')), 'no button on the event row');
+});
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
