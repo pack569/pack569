@@ -11501,6 +11501,20 @@ test('C4: an unverified rule, and an undated den campout, do not reach families'
   ok(/"\[verify with council" and the den\s+\/\/\s+campout template until it has a date/.test(SCRIPT), 'the parent-view banner does not say so');
   ok(/still marked "\[verify with council", and\s+the Webelos \/ Arrow of Light den campout template until it has a date/.test(SETUP), 'SETUP.md does not say so');
 });
+// F2 (2026-09-28) — a checkbox wrapped in a label class must undo the global `input` rule's
+// 40px min-height and field padding, or it draws as a tall padded box off its own text
+// (the readiness boxes, then the new-member ticks).
+test('F2: every label class that wraps a checkbox resets the global field height', () => {
+  const classes = [...new Set([...SCRIPT.matchAll(/<label class="([\w-]+)"[^>]*><input type="checkbox"/g)].map((m) => m[1]))];
+  ok(classes.indexOf('ob-tick') !== -1 && classes.length >= 4, 'the checkbox-label scan found too little: ' + classes);
+  classes.forEach((c) => {
+    const rule = new RegExp('\\.' + c + ' input(?:\\[type="checkbox"\\])? \\{([^}]*)\\}').exec(SCRIPT_CSS);
+    ok(rule, `.${c} has no rule for its checkbox`);
+    ok(rule && /min-height: (?:auto|20px)/.test(rule[1]), `.${c}'s checkbox keeps the global 40px min-height`);
+  });
+  ok(/\.camp-ready input\[type="checkbox"\] \{[^}]*min-height: 20px/.test(SCRIPT_CSS), 'the readiness boxes lost their size');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

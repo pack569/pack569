@@ -666,7 +666,7 @@
     display: inline-flex; align-items: center; gap: 6px;
     min-height: 34px; font-size: 0.82rem; color: var(--ink);
   }
-  .chk-mini input { margin: 0; }
+  .chk-mini input { margin: 0; min-height: auto; padding: 0; flex: 0 0 auto; }
   .den-pick-all { text-transform: none; letter-spacing: 0; font-weight: 650; color: var(--ink); }
   .den-chip {
     display: inline-flex; align-items: center; gap: 6px;
@@ -1397,6 +1397,9 @@
   .ob-row { padding: 10px 0; border-top: 1px solid var(--line); }
   .ob-ticks { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 6px 0; }
   .ob-tick { display: inline-flex; align-items: center; gap: 6px; font-size: .92rem; }
+  /* The global `input` rule gives every input a 40px min-height and field padding; a checkbox
+     left to it draws as a tall padded box off its own label. Sized like the readiness boxes. */
+  .ob-tick input[type="checkbox"] { width: 20px; height: 20px; min-height: 20px; padding: 0; margin: 0; flex: 0 0 auto; accent-color: var(--accent); }
   /* Wave C2 — the trip readiness checklist: one item a line, the box sized like attendance's. */
   .camp-ready { margin: 6px 0; }
   .camp-ready label { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: .92rem; }
