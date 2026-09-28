@@ -6,8 +6,8 @@
 #
 # Content-Security-Policy, one directive at a time:
 #   script-src   the sha256 of the page's one inline <script>, computed by the build, plus
-#                (production only) gstatic for the Firebase SDK and apis.google.com for
-#                Google sign-in. No 'unsafe-inline', so inline onclick="…" handlers do not run;
+#                (production only) the Firebase SDK's exact gstatic path, read from
+#                SYNC_SDK_BASE in index.html, and apis.google.com for Google sign-in. No 'unsafe-inline', so inline onclick="…" handlers do not run;
 #                the build refuses a page that has one.
 #   style-src    'unsafe-inline': the page is one <style> block and hundreds of style="…".
 #   img-src      the page's own images, data: and blob: (downloads, QR codes).
