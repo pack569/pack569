@@ -8428,10 +8428,15 @@ test('the copied standings name children the way the parent view does, and nobod
 
 test('the storefront day sheet names children by their public names', () => {
   const ctx = vm.createContext({});
-  vm.runInContext(PRIV_STATE + ['shortNames', 'publicNameMap', 'daySheetText', 'blocksInDayOrder',
+  vm.runInContext(PRIV_STATE + ['shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'daySheetText', 'blocksInDayOrder',
     'blockScoutNames', 'fmtTimeRange', 'fmtClock'].map(slice).join('\n'), ctx);
   const txt = vm.runInContext('daySheetText(state.storefronts[0])', ctx);
   noSurname(txt, 'the day sheet');
+  // It lists which children are at which store when: a leaders' copy, and it says so on the paper.
+  ok(txt.split('\n').indexOf('Leaders\u2019 copy \u2014 keep with the shift leader, do not post') !== -1,
+    'the copied day sheet does not say it is a leaders\u2019 copy');
+  ok(/esc\(DAY_SHEET_KEEP\)/.test(slice('renderDaySheet')), 'the printed day sheet does not say it is a leaders\u2019 copy');
+  ok(!/taped to a table/.test(SCRIPT), 'a comment still describes taping the day sheet up outside a store');
   ok(/Scouts: Ada, Beckett H\./.test(txt) && /Scouts: Beckett Z\./.test(txt), 'the day sheet does not use the public names');
   // Leaders' own screen still shows the roster as typed.
   eq(vm.runInContext('blockScoutNames(state.storefronts[0].blocks[0])', ctx), ['Ada Quenneville', 'Beckett Hartwellington'],

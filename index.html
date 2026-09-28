@@ -18195,14 +18195,19 @@
   }
 
   /* ----- Wave 19(15): storefront day sheet (printable, per-storefront) ----- */
-  // Names only on purpose — scout notes (Wave 19(24)) never print on public sheets. And public
-  // names only (2026-09-27): the sheet is taped to a table outside a grocery store, and copied
-  // into group chats, so a child is on it by first name exactly as the parent view has them.
+  // Names only on purpose — scout notes (Wave 19(24)) never go on the sheet. And public names
+  // only (2026-09-27): it is a list of which children are at which store at which hour, so it
+  // is a LEADERS' copy — kept with the shift leader, never posted at the table — and it still
+  // gets copied into group chats, so a child is on it by first name exactly as the parent view
+  // has them. The sheet says "do not post" itself (2026-09-28), because the paper outlives this
+  // comment.
+  var DAY_SHEET_KEEP = 'Leaders\u2019 copy \u2014 keep with the shift leader, do not post';
   function daySheetText(sf) {
     var pub = publicNameMap(state.scouts);
     var lines = [];
     lines.push((state.packName || 'Pack') + ' — ' + (sf.name || 'Storefront') + ' day sheet');
     lines.push(fmtDate(sf.date));
+    lines.push(DAY_SHEET_KEEP);
     blocksInDayOrder(sf).forEach(function (b) {
       lines.push('');
       var rng = fmtTimeRange(b.start, b.end);
@@ -18228,7 +18233,8 @@
       '<div class="summary-sheet">' +
       '<div class="row" style="gap:10px;margin-bottom:2px"><span class="fleur">' + FLEUR + '</span>' +
       '<h1 style="margin:0">' + esc(state.packName || 'Pack') + ' — ' + esc(sf.name || 'Storefront') + '</h1></div>' +
-      '<p class="muted small" style="margin:0 0 14px">Day sheet · ' + esc(fmtDate(sf.date)) + '</p>';
+      '<p class="muted small" style="margin:0 0 4px">Day sheet · ' + esc(fmtDate(sf.date)) + '</p>' +
+      '<p class="small" style="margin:0 0 14px"><strong>' + esc(DAY_SHEET_KEEP) + '</strong></p>';
     blocksInDayOrder(sf).forEach(function (b) {
       var rng = fmtTimeRange(b.start, b.end);
       var dsScouts = blockScoutNames(b, pub);
