@@ -10703,12 +10703,37 @@
     });
     return h;
   }
+  // NEXT UP — Wave B2, 2026-09-28. The one question a family opens the app to answer, above the
+  // month grid instead of under it: what is the next thing, and how long until it. Every event on
+  // that next date is shown (a den meeting and a storefront can share a Saturday), from the
+  // published list only. `today` is passed in so the harness can pin it.
+  //
+  // ⚠ NO CAMPOUT DEADLINE HERE, deliberately. The ask was "plus any campout registration deadline
+  // in the next 30 days from the trips' cost/deadline data" — but a published trip has no
+  // deadline FIELD: `cost` and `when` are free text a leader types ("$35 online through Wed 30
+  // Sep"), and reading a date back out of prose would be a guess presented as a fact. A
+  // structured registration-deadline field on a trip would be the way to add it (and a new
+  // published key — the security reviewer's call).
+  function parentNextUp(evs, today) {
+    var next = '';
+    (evs || []).forEach(function (e) {
+      var d = String((e && e.date) || '');
+      if (d >= today && (!next || d < next)) next = d;
+    });
+    if (!next) return '';
+    var days = Math.round((Date.parse(next + 'T12:00:00Z') - Date.parse(today + 'T12:00:00Z')) / 86400000);
+    var when = days === 0 ? 'Today' : days === 1 ? 'Tomorrow' : isFinite(days) ? 'In ' + days + ' days' : '';
+    var h = '<div class="card pv-next"><div class="spread"><h2 class="section display" style="margin-bottom:0">Next up</h2>' +
+      (when ? '<span class="pill navy">' + esc(when) + '</span>' : '') + '</div>';
+    (evs || []).forEach(function (e) { if (String((e && e.date) || '') === next) h += parentEventRow(e); });
+    return h + '</div>';
+  }
   function renderParentSchedule(pv) {
     var today = todayISO();
     var evs = Array.isArray(pv.events) ? pv.events : [];
     var upcoming = evs.filter(function (e) { return String((e && e.date) || '') >= today; });
     var earlier = evs.filter(function (e) { return String((e && e.date) || '') < today; });
-    var h = parentCalendar(pv, today);
+    var h = parentNextUp(evs, today) + parentCalendar(pv, today);
     // THE NEXT 30 DAYS, BY MONTH — parent-experience audit, 2026-09-28. The whole rest of the year
     // in one list was a scroll past March to reach the footer, when the question on a Tuesday is
     // "what is on this month". The rest is one tap away, and says how much of it there is.

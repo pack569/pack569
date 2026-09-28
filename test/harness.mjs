@@ -9694,6 +9694,7 @@ test('J8: What’s coming up is the next 30 days by month, with the rest one tap
     function fmtDate(d) { return String(d); }
     function parentCalendar() { return ''; }
     function parentFamilyCost() { return ''; }
+    function parentNextUp() { return ''; }   // B2 has its own test
     ${['esc', 'pad2', 'PARENT_EMPTY_CAL', 'isoPlusDays', 'parentEventsByMonth', 'parentEventRow',
        'parentShiftLines', 'renderParentSchedule'].map(slice).join('\n')}`, ctx);
   eq(vm.runInContext("isoPlusDays('2026-09-28', 30)", ctx), '2026-10-28', 'thirty days on');
@@ -10914,6 +10915,30 @@ test('B1: every leader edit to the page is behind canEdit, and the editor says w
   ok(/calendar-only link too/.test(ed), 'the editor does not say calendar-only families see it');
   ok(/no phone numbers, no children(’|\\u2019)s names/.test(ed), 'the editor does not warn against contact details and names');
   ok(/\{ id: 'joining', label: 'New families' \}/.test(SCRIPT), 'the New families section is gone');
+});
+
+test('B2: Next up heads the family Schedule with everything on the next date, and how long until it', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`var ui = {};
+    function fmtDate(d) { return String(d); }
+    ${['esc', 'parentEventRow', 'parentShiftLines', 'parentNextUp'].map(slice).join('\n')}`, ctx);
+  const evs = [
+    { kind: 'activity', date: '2026-09-20', title: 'Past hike' },
+    { kind: 'meeting', date: '2026-10-03', title: 'Wolf den meeting', detail: 'Room 4' },
+    { kind: 'storefront', date: '2026-10-03', title: 'Kroger', shifts: [{ when: '9:00 AM–11:00 AM', who: ['Ada'] }] },
+    { kind: 'activity', date: '2026-10-10', title: 'Later' }];
+  const out = ctx.parentNextUp(evs, '2026-09-28');
+  ok(/Next up/.test(out) && /In 5 days/.test(out), 'no heading, or the wrong count of days');
+  ok(/Wolf den meeting/.test(out) && /Kroger/.test(out), 'something on the next date is missing');
+  ok(!/Past hike/.test(out) && !/Later/.test(out), 'Next up shows more than the next date');
+  ok(/Today/.test(ctx.parentNextUp(evs, '2026-10-03')), 'an event today is not "Today"');
+  ok(/Tomorrow/.test(ctx.parentNextUp(evs, '2026-10-02')), 'an event tomorrow is not "Tomorrow"');
+  eq(ctx.parentNextUp(evs, '2026-10-11'), '', 'a card with nothing in it');
+  eq(ctx.parentNextUp(undefined, '2026-10-11'), '', 'no events list throws or draws a card');
+  // First on the page, and the campout deadline is left out on purpose — there is no field for it.
+  ok(/var h = parentNextUp\(evs, today\) \+ parentCalendar\(pv, today\);/.test(slice('renderParentSchedule')),
+    'Next up is not at the top of the Schedule');
+  ok(!/\.cost|\.when|camping/.test(codeOnly(slice('parentNextUp'))), 'Next up reads a trip’s free text for a deadline');
 });
 /* ---------------- report ---------------- */
 if (fails.length) {
