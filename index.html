@@ -3228,6 +3228,64 @@
   function freshInventory() {
     return { commissionPct: '', orderTotalCents: 0, products: [], distributions: [] };
   }
+  /* ----- The council's popcorn dates, and settling up (Wave D1, 2026-09-28) -----------------
+     The Popcorn Kernel's ask: the council runs the sale to its own calendar, and the dates that
+     cost the pack money (the rewards cut-off, the payment date, the commission drop) lived in a
+     PDF nobody had open. One record, leaders only:
+         state.popcornCouncil = {
+           dates: { finalTakeOrders: { date, note }, rewards: {…}, pickup: {…}, payment: {…},
+                    commissionDrop: {…} },       ISO date or '', and a free note
+           returnsCents,                          product the pack sent back to the council
+           commissionCents,                       null = worked out at the order's rate; a number
+                                                  = what the council's statement says
+           paidOn                                 ISO date the pack paid the council, or ''
+         }
+     What the pack owes (councilSettlement) = Show & Sell product taken (Inventory's order total,
+     or its priced products when no total is typed) − returns − commission. Nothing is re-entered
+     that Inventory already holds.
+
+     ⚠ LEADERS ONLY, NEVER PUBLISHED. The settlement is pack money. buildParentView is an
+     allowlist and never names this key; a harness test scans it, the digest and the .ics.
+
+     THE SEED IS THE COUNCIL'S 2026 SCHEDULE AS THE KERNEL READ IT, and every date carries
+     "[verify with council]" in its note until a leader checks it and takes the marker out. It is
+     seeded only when the key is absent (the camping rule), so a live pack gets it once. At
+     rollover the dates move on a year (shiftISOYear) and the marker goes back on each: next
+     year's council calendar is not this year's.
+     Declared up here, above `var state = load()`, because normalizeState reads them. */
+  var POPCORN_COUNCIL_DATES = [
+    { key: 'finalTakeOrders', label: 'Final take orders due', seed: '2026-11-01' },
+    { key: 'rewards', label: 'Council rewards qualify by \u00b7 commission calculated', seed: '2026-11-04' },
+    { key: 'pickup', label: 'Take-order pickup (bring a post-dated check)', seed: '2026-11-13' },
+    { key: 'payment', label: 'Payment due to the council', seed: '2026-12-02' },
+    { key: 'commissionDrop', label: 'Commission drops 10% after this date', seed: '2026-12-03' }
+  ];
+  var POPCORN_COUNCIL_VERIFY = '[verify with council]';
+  function freshPopcornCouncil() {
+    var dates = {};
+    POPCORN_COUNCIL_DATES.forEach(function (d) { dates[d.key] = { date: d.seed, note: POPCORN_COUNCIL_VERIFY }; });
+    return { dates: dates, returnsCents: 0, commissionCents: null, paidOn: '' };
+  }
+  // Absent → the seed. Present → known dates only, ISO or '', strings for notes, whole
+  // non-negative cents. A date key a record lacks comes back blank, not seeded: a leader who
+  // cleared a date meant it.
+  function normalizePopcornCouncil(pc) {
+    if (!pc || typeof pc !== 'object' || Array.isArray(pc)) return freshPopcornCouncil();
+    var src = (pc.dates && typeof pc.dates === 'object' && !Array.isArray(pc.dates)) ? pc.dates : {};
+    var dates = {};
+    POPCORN_COUNCIL_DATES.forEach(function (d) {
+      var v = (src[d.key] && typeof src[d.key] === 'object') ? src[d.key] : {};
+      dates[d.key] = { date: campIsoOrBlank(v.date), note: typeof v.note === 'string' ? v.note : '' };
+    });
+    function cents(v) { return (typeof v === 'number' && isFinite(v) && v > 0) ? Math.round(v) : 0; }
+    return {
+      dates: dates,
+      returnsCents: cents(pc.returnsCents),
+      commissionCents: (typeof pc.commissionCents === 'number' && isFinite(pc.commissionCents) && pc.commissionCents >= 0)
+        ? Math.round(pc.commissionCents) : null,
+      paidOn: campIsoOrBlank(pc.paidOn)
+    };
+  }
   // Wave 15 — standard Trail's End product lineup: [name, containersPerCase]. A starting
   // template only: cases and prices start at 0, order total untouched.
   var TE_LINEUP = [
@@ -3287,6 +3345,7 @@
       derby: { name: '', date: '', lanes: 4, cars: [], awards: [] },
       rewardTiers: { duesCents: 0, tiers: [], planOnTierId: '' },
       inventory: freshInventory(),
+      popcornCouncil: freshPopcornCouncil(), // Wave D1 — council dates + settlement; leaders only, never published
       camping: freshCamping(),   // one page per pack campout, published to parents
       onboarding: {},            // Wave B5 — new-member checklist by scout id; leaders only, never published
       recruitKit: freshRecruitKit(), // Wave B4 — School Night checklist; leaders only, never published
@@ -4198,6 +4257,8 @@
       return true;
     });
     migrateTierMakeUp(d);
+    // Wave D1 — the council's popcorn dates and the settlement. Seeded when absent.
+    d.popcornCouncil = normalizePopcornCouncil(d.popcornCouncil);
     // Wave 14: Inventory — Trail's End popcorn order (ordered / on-hand / handed out).
     // { commissionPct:string, orderTotalCents:int>=0, products:[{id,name,perCase,cases,loose,unitPriceCents}],
     //   distributions:[{id,productId,target:{kind,id?,den?},containers,date,note}] }.
@@ -9362,6 +9423,7 @@
   //   the new-member tracker (`onboarding`, and each scout's `addedYear`),
   //   each pack meeting's agenda (`ev.agenda`), its Recognition list (packRecognition) and the
   //   printed leaders' copy of the agenda,
+  //   the council's popcorn dates and the settlement (`popcornCouncil`, Wave D1),
   //   and `state` in any raw form.
   //
   // Pure: it reads only the state it is given. `state` is swapped for the duration so the
@@ -10201,7 +10263,9 @@
       { id: 'storefronts', label: 'Storefronts' },
       { id: 'totals', label: 'Standings' }, // Wave 17 renamed the label; the id stays 'totals'
       { id: 'rewards', label: 'Rewards' },
-      { id: 'inventory', label: 'Inventory' }
+      { id: 'inventory', label: 'Inventory' },
+      // Wave D1 — the council's dates and the settlement. Leaders only (the whole leader app is).
+      { id: 'council', label: 'Council' }
     ] },
     // Wave 21 — "Other fundraisers" lives here, not under Popcorn: it is defined as the
     // money that ISN'T popcorn, and its only systemic effect is on the budget's funds-in.
@@ -10531,6 +10595,7 @@
     else if (sec === 'fundraisers') v.innerHTML = renderFundraisers();
     else if (sec === 'rewards') v.innerHTML = renderRewardTiers();
     else if (sec === 'inventory') v.innerHTML = renderInventory();
+    else if (sec === 'council') v.innerHTML = renderPopcornCouncil();
     else if (sec === 'sharing') v.innerHTML = renderPackSharing();
     else if (sec === 'people') v.innerHTML = renderPackPeople();
     else if (sec === 'season') v.innerHTML = renderPackSeason();
@@ -18045,6 +18110,9 @@
         'Set it in <strong>Season setup</strong> and every tier below fills in.</p>';
     }
 
+    // Wave D1 — a tier that closes after the council's rewards date.
+    h += councilTierNudgeHtml();
+
     // The ladder is a promise made to families, and the room it gets made in is the parents
     // meeting. One button, because a leader reading this card is already looking at the thing
     // they want on paper.
@@ -18462,6 +18530,144 @@
           'of covered dues is booked as actual spending on the budget.');
     }
     return h + '</div>';
+  }
+
+  /* ----- Wave D1: the council's dates, and settling up (see POPCORN_COUNCIL_DATES) ----- */
+  // Every council date with its label, soonest first; undated ones last, in schedule order. Pure.
+  function councilDateList(pc) {
+    var dates = (pc && pc.dates) || {};
+    return POPCORN_COUNCIL_DATES.map(function (d, i) {
+      var v = dates[d.key] || {};
+      return { key: d.key, label: d.label, date: campIsoOrBlank(v.date), note: String(v.note || ''), i: i };
+    }).sort(function (a, b) {
+      if (!a.date !== !b.date) return a.date ? -1 : 1;
+      return a.date.localeCompare(b.date) || a.i - b.i;
+    });
+  }
+  // The next council date on or after `today`, or null. Pure.
+  function nextCouncilDate(pc, today) {
+    return councilDateList(pc).filter(function (d) { return d.date && d.date >= today; })[0] || null;
+  }
+  // Last season's dates: every date set is before this program year began. Pure.
+  function councilDatesStale(pc, py) {
+    var set = councilDateList(pc).filter(function (d) { return d.date; });
+    var start = programYearStartISO(py);
+    return set.length > 0 && set.every(function (d) { return d.date < start; });
+  }
+  // Pack tiers whose deadline falls AFTER the council's rewards date: a scout could reach the
+  // pack's tier after the council has stopped counting for its own. Pure; tiers in, tiers out.
+  function councilLateTiers(tiers, pc) {
+    var rd = campIsoOrBlank(pc && pc.dates && pc.dates.rewards && pc.dates.rewards.date);
+    if (!rd) return [];
+    return (tiers || []).filter(function (t) { return t && t.dueBy && t.dueBy > rd; });
+  }
+  // What the pack owes the council for its Show & Sell product. Pure: `invTot` is what
+  // inventoryTotals() returns, so the figure is read from Inventory, never retyped.
+  //   taken      — Inventory's order total; its priced products when no total is typed
+  //   returns    — product sent back to the council
+  //   commission — the council statement's figure when one is typed, else net × the order's rate
+  //   owed       — taken − returns − commission (null when the commission can't be worked out)
+  function councilSettlement(pc, invTot) {
+    var it = invTot || {};
+    var taken = 0, takenFrom = '';
+    if (it.orderTotalCents > 0) { taken = it.orderTotalCents; takenFrom = 'order'; }
+    else if (it.anyPriced && it.computedValueCents > 0) { taken = it.computedValueCents; takenFrom = 'priced'; }
+    var returns = (pc && pc.returnsCents) || 0;
+    var net = taken - returns;
+    var commission = null, commissionFrom = '';
+    if (pc && typeof pc.commissionCents === 'number') { commission = pc.commissionCents; commissionFrom = 'statement'; }
+    else if (it.pctOk) { commission = Math.round(Math.max(net, 0) * it.pct / 100); commissionFrom = 'rate'; }
+    return {
+      takenCents: taken, takenFrom: takenFrom, returnsCents: returns, netCents: net,
+      commissionCents: commission, commissionFrom: commissionFrom, pct: it.pctOk ? it.pct : null,
+      owedCents: commission == null ? null : net - commission
+    };
+  }
+  // The nudge Rewards and the Council page both show. '' when the tiers already line up.
+  function councilTierNudgeHtml() {
+    var late = councilLateTiers(state.rewardTiers.tiers, state.popcornCouncil);
+    if (!late.length) return '';
+    var rd = state.popcornCouncil.dates.rewards.date;
+    return '<p class="warn small" style="margin:0 0 10px">Set tier deadlines on or before ' + esc(fmtDate(rd)) +
+      ' so pack and council rewards line up. ' +
+      late.map(function (t) { return '<strong>' + esc(t.name || 'A tier') + '</strong> closes ' + esc(fmtDate(t.dueBy)); }).join(' · ') +
+      '.</p>';
+  }
+  // Leaders only. The Popcorn Kernel's page for the council side of the sale.
+  function renderPopcornCouncil() {
+    var pc = state.popcornCouncil, today = todayISO();
+    var list = councilDateList(pc), next = nextCouncilDate(pc, today);
+    var h = '';
+    if (councilDatesStale(pc, state.budget.programYear)) {
+      h += '<div class="warn no-print" role="note" style="margin:0 0 14px"><strong>These are last season’s dates — confirm.</strong> ' +
+        'Put in this year’s from the council’s popcorn schedule.</div>';
+    }
+    h += '<div class="card"><div class="spread">' +
+      '<h2 class="section display" style="margin:0">Council dates</h2>' +
+      '<span class="pill navy">Leaders only</span></div>';
+    if (next) {
+      var dd = daysUntil(next.date);
+      h += '<p style="margin:8px 0 10px"><strong>Next: ' + esc(next.label) + '</strong> — ' + esc(fmtDate(next.date)) +
+        ' · ' + (dd === 0 ? 'today' : dd === 1 ? 'tomorrow' : 'in ' + dd + ' days') + '</p>';
+    } else {
+      h += '<p class="small muted" style="margin:8px 0 10px">No council date still ahead.</p>';
+    }
+    h += list.map(function (d) {
+      var past = d.date && d.date < today;
+      return '<div class="erow' + (past ? ' muted' : '') + '" style="flex-wrap:wrap;gap:6px 10px;padding:6px 0">' +
+        '<label class="fld" style="flex:1 1 220px">' + esc(d.label) +
+        '<input type="date" data-ch="pc-date" data-key="' + d.key + '" value="' + esc(d.date) + '"></label>' +
+        '<label class="fld" style="flex:1 1 200px">Note' +
+        '<input data-ch="pc-note" data-key="' + d.key + '" value="' + esc(d.note) + '" placeholder="e.g. at the council service center"></label>' +
+        '</div>';
+    }).join('') +
+      '<p class="small muted" style="margin:8px 0 0">Seeded from the council’s 2026 schedule. Check each date with the council and take ' +
+      '“' + esc(POPCORN_COUNCIL_VERIFY) + '” out of its note once it is right. Not published to families.</p></div>';
+
+    var nudge = councilTierNudgeHtml();
+    if (nudge) h += '<div class="card">' + nudge +
+      '<button type="button" class="btn small" data-act="goto" data-tab="popcorn" data-section="rewards">Rewards</button></div>';
+
+    // Settling up: the worked sum, every line of it on the page.
+    var st = councilSettlement(pc, inventoryTotals());
+    var pay = pc.dates.payment.date, drop = pc.dates.commissionDrop.date;
+    function line(label, cents, sign, strong) {
+      return '<div class="assign-row"><span class="assign-name">' + (strong ? '<strong>' + label + '</strong>' : label) + '</span>' +
+        '<span class="money">' + (cents == null ? '—' : (sign || '') + (strong ? '<strong>' + fmt(cents) + '</strong>' : fmt(cents))) + '</span></div>';
+    }
+    h += '<div class="card"><div class="spread"><h2 class="section display" style="margin:0">Settling up with the council</h2>' +
+      '<span class="pill navy">Leaders only</span></div>' +
+      '<p class="small muted" style="margin:6px 0 10px">What the pack owes the council for its Show &amp; Sell product. ' +
+      'The product figure comes from <button type="button" class="btn small ghost" data-act="goto" data-tab="popcorn" data-section="inventory">Inventory</button>.</p>' +
+      line('Show &amp; Sell product taken <span class="small muted">' +
+        (st.takenFrom === 'order' ? '(Inventory · order total)' : st.takenFrom === 'priced' ? '(Inventory · priced products)' : '(no order total on Inventory yet)') +
+        '</span>', st.takenCents) +
+      line('Product returned to the council', st.returnsCents, '− ') +
+      line('Net product', st.netCents, '= ') +
+      line('Commission <span class="small muted">' +
+        (st.commissionFrom === 'statement' ? '(from the council’s statement)'
+          : st.commissionFrom === 'rate' ? '(' + esc(String(st.pct)) + '% of net product)' : '(no commission rate set)') +
+        '</span>', st.commissionCents, '− ') +
+      '<hr class="divider">' +
+      line('Owed to the council' + (pay ? ' <span class="small muted">· due ' + esc(fmtDate(pay)) + '</span>' : ''), st.owedCents, '= ', true) +
+      '<div class="row" style="margin-top:12px">' +
+      '<label class="fld">Returned to the council ($)<input class="money-in" inputmode="decimal" data-ch="pc-returns" value="' + dollars(pc.returnsCents) + '" placeholder="0.00"></label>' +
+      '<label class="fld">Commission on the statement ($)<input class="money-in" inputmode="decimal" data-ch="pc-commission" value="' +
+        (typeof pc.commissionCents === 'number' ? (pc.commissionCents / 100).toFixed(2) : '') + '" placeholder="worked out"></label>' +
+      '<label class="fld">Paid to the council on<input type="date" data-ch="pc-paid" value="' + esc(pc.paidOn) + '"></label>' +
+      '</div>' +
+      '<p class="small muted" style="margin:6px 0 0">Leave the commission blank to work it out at the order’s rate; type the figure on the council’s statement once you have it.</p>';
+    if (!pc.paidOn && drop && today > drop) {
+      h += '<p class="warn small" style="margin:10px 0 0">Past ' + esc(fmtDate(drop)) + ' and not marked paid: the council’s commission drops 10%. ' +
+        'Check the statement and type the commission it shows.</p>';
+    } else if (!pc.paidOn && pay && today > pay) {
+      h += '<p class="warn small" style="margin:10px 0 0">Payment was due ' + esc(fmtDate(pay)) + ' and is not marked paid.</p>';
+    }
+    if (st.owedCents != null && st.owedCents < 0) {
+      h += '<p class="warn small" style="margin:10px 0 0">The returns and commission come to more than the product taken — check the figures.</p>';
+    }
+    h += '<p class="small muted" style="margin:10px 0 0">Not published to families, and not on the Budget: record the payment itself on the Ledger.</p></div>';
+    return h;
   }
 
   /* ----- Wave 14: Inventory (Trail's End popcorn order) ----- */
@@ -22477,6 +22683,15 @@
     state.derby = { name: '', date: '', lanes: state.derby.lanes || 4, cars: [], awards: [] }; // Wave 19(18) — awards reset too
     state.fundraisers.forEach(function (fr) { fr.sales = []; });
     state.inventory.products.forEach(function (p) { p.cases = 0; }); // catalog kept, order cleared
+    // Wave D1 — the council's dates move on a year and go back to "[verify with council]": next
+    // year's calendar is the council's to set. The settlement was this season's and clears.
+    POPCORN_COUNCIL_DATES.forEach(function (cd) {
+      var pcd = state.popcornCouncil.dates[cd.key];
+      if (pcd && pcd.date) { pcd.date = shiftISOYear(pcd.date); pcd.note = POPCORN_COUNCIL_VERIFY; }
+    });
+    state.popcornCouncil.returnsCents = 0;
+    state.popcornCouncil.commissionCents = null;
+    state.popcornCouncil.paidOn = '';
     state.inventory.distributions = [];
     state.inventory.orderTotalCents = 0; // inventory.commissionPct KEPT
     // Reset transient UI that pointed at cleared records.
@@ -24808,6 +25023,30 @@
         if (isFinite(wxN) && Math.abs(wxN) <= wxMax) state.packLoc[ch === 'wx-lat' ? 'lat' : 'lon'] = wxN;
         else showToast(ch === 'wx-lat' ? 'Latitude has to be between −90 and 90.' : 'Longitude has to be between −180 and 180.');
       }
+      commit(); return;
+    }
+    // Wave D1 — the council's dates and the settlement. Leaders only; never published.
+    if (ch === 'pc-date' || ch === 'pc-note') {
+      var pcD = state.popcornCouncil.dates[el.dataset.key];
+      if (!pcD) return;   // only the known dates
+      if (ch === 'pc-note') pcD.note = el.value;
+      else {
+        // ISO or cleared; a half-typed date is ignored rather than stored.
+        var pcV = campIsoOrBlank(el.value);
+        if (!pcV && el.value) return;
+        pcD.date = pcV;
+      }
+      commit(); return;
+    }
+    if (ch === 'pc-returns') { state.popcornCouncil.returnsCents = toCents(el.value); commit(); return; }
+    if (ch === 'pc-commission') {
+      state.popcornCouncil.commissionCents = String(el.value).trim() === '' ? null : toCents(el.value);
+      commit(); return;
+    }
+    if (ch === 'pc-paid') {
+      var pcP = campIsoOrBlank(el.value);
+      if (!pcP && el.value) return;
+      state.popcornCouncil.paidOn = pcP;
       commit(); return;
     }
     // Wave 14: Inventory

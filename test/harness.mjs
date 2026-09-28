@@ -982,6 +982,8 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'RECRUIT_KIT_ITEMS', 'freshRecruitKit',
   // Wave B5 — and the new-member tracker.
   'ONBOARD_TICKS',
+  // Wave D1 — and the council's popcorn dates and settlement.
+  'POPCORN_COUNCIL_DATES', 'POPCORN_COUNCIL_VERIFY', 'freshPopcornCouncil', 'normalizePopcornCouncil',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
   'parseLegacyTime', 'migrateTierMakeUp', 'normalizeState', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'entrySignedCents',
@@ -11573,6 +11575,95 @@ test('F2: every label class that wraps a checkbox resets the global field height
     ok(rule && /min-height: (?:auto|20px)/.test(rule[1]), `.${c}'s checkbox keeps the global 40px min-height`);
   });
   ok(/\.camp-ready input\[type="checkbox"\] \{[^}]*min-height: 20px/.test(SCRIPT_CSS), 'the readiness boxes lost their size');
+});
+
+// D1 (2026-09-28) — the council's popcorn dates and the settlement. Leaders only.
+test('D1: the council dates are seeded once from the 2026 schedule, marked to verify, and normalized', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const seed = ctx.freshPopcornCouncil();
+  eq(Object.keys(seed.dates), ['finalTakeOrders', 'rewards', 'pickup', 'payment', 'commissionDrop'], 'the dates');
+  eq(Object.values(seed.dates).map((d) => d.date), ['2026-11-01', '2026-11-04', '2026-11-13', '2026-12-02', '2026-12-03'], 'the seeded dates');
+  ok(Object.values(seed.dates).every((d) => d.note === '[verify with council]'), 'a seeded date is not marked to verify');
+  eq([seed.returnsCents, seed.commissionCents, seed.paidOn], [0, null, ''], 'a fresh settlement');
+  const labels = ctx.POPCORN_COUNCIL_DATES.map((d) => d.label).join(' | ');
+  ['Final take orders', 'rewards qualify', 'commission calculated', 'post-dated check', 'Payment due', 'drops 10%']
+    .forEach((w) => ok(labels.includes(w), 'no council date for ' + w));
+  // Absent → seeded; present → coerced, and a cleared date stays cleared.
+  ok(ctx.normalizeState(preMigrationState()).popcornCouncil.dates.payment.date === '2026-12-02', 'a record without it was not seeded');
+  const out = ctx.normalizeState(Object.assign(preMigrationState(), { popcornCouncil: {
+    dates: { rewards: { date: '2026-11-05', note: 'checked' }, payment: { date: 'Dec 2' }, bogus: { date: '2026-01-01' } },
+    returnsCents: -5, commissionCents: '12', paidOn: 7, secret: 1 } }));
+  const pc = out.popcornCouncil;
+  eq(Object.keys(pc.dates), ['finalTakeOrders', 'rewards', 'pickup', 'payment', 'commissionDrop'], 'unknown dates survived');
+  eq([pc.dates.rewards.date, pc.dates.rewards.note, pc.dates.payment.date, pc.dates.pickup.date], ['2026-11-05', 'checked', '', ''],
+    'dates were not coerced, or a missing one was re-seeded');
+  eq([pc.returnsCents, pc.commissionCents, pc.paidOn, pc.secret], [0, null, '', undefined], 'the settlement was not coerced');
+  eq(ctx.normalizePopcornCouncil({ commissionCents: 0 }).commissionCents, 0, 'a statement commission of $0 was lost');
+  ok(/popcornCouncil: freshPopcornCouncil\(\)/.test(slice('freshState')), 'a new pack has no council dates');
+  // Read by normalizeState, so declared above `var state = load()`.
+  const load = /^  var state = load\(\);/m.exec(SCRIPT).index;
+  ok(SCRIPT.indexOf('var POPCORN_COUNCIL_DATES') < load && SCRIPT.indexOf('var POPCORN_COUNCIL_VERIFY') < load,
+    'the council-date constants are declared below `var state = load()`');
+});
+
+test('D1: the countdown, the tier nudge, and last season\'s dates', () => {
+  const ctx = sandbox(['POPCORN_COUNCIL_DATES', 'POPCORN_COUNCIL_VERIFY', 'freshPopcornCouncil', 'campIsoOrBlank',
+    'programYearStartISO', 'councilDateList', 'nextCouncilDate', 'councilDatesStale', 'councilLateTiers']);
+  const pc = ctx.freshPopcornCouncil();
+  eq(ctx.nextCouncilDate(pc, '2026-09-28').key, 'finalTakeOrders', 'the next date');
+  eq(ctx.nextCouncilDate(pc, '2026-11-04').key, 'rewards', 'a date today is not "next"');
+  eq(ctx.nextCouncilDate(pc, '2026-12-04'), null, 'a date after the last one');
+  pc.dates.pickup.date = '';
+  eq(ctx.councilDateList(pc).map((d) => d.key).pop(), 'pickup', 'an undated date is not listed last');
+  const tiers = [{ name: 'Dues', dueBy: '2026-10-31' }, { name: 'Shirt', dueBy: '2026-11-15' }, { name: 'Patch', dueBy: '' }];
+  eq(ctx.councilLateTiers(tiers, pc).map((t) => t.name), ['Shirt'], 'the late tiers');
+  pc.dates.rewards.date = '';
+  eq(ctx.councilLateTiers(tiers, pc).length, 0, 'a nudge with no council rewards date');
+  const f = ctx.freshPopcornCouncil();
+  ok(!ctx.councilDatesStale(f, 2026) && ctx.councilDatesStale(f, 2027), 'last season\'s dates are not flagged');
+  // The nudge text, on Rewards and on the Council page.
+  ok(/Set tier deadlines on or before ' \+ esc\(fmtDate\(rd\)\) \+\s*' so pack and council rewards line up/.test(slice('councilTierNudgeHtml')),
+    'the nudge does not say what the Kernel asked for');
+  ok(/councilTierNudgeHtml\(\)/.test(slice('renderRewardTiers')) && /councilTierNudgeHtml\(\)/.test(slice('renderPopcornCouncil')),
+    'the nudge is missing from Rewards or the Council page');
+});
+
+test('D1: what the pack owes the council is product taken, less returns, less commission', () => {
+  const ctx = sandbox(['councilSettlement']);
+  const inv = { orderTotalCents: 438000, computedValueCents: 1, anyPriced: true, pct: 32, pctOk: true };
+  const pc = { returnsCents: 20000, commissionCents: null };
+  const st = JSON.parse(JSON.stringify(ctx.councilSettlement(pc, inv)));
+  eq([st.takenCents, st.takenFrom, st.netCents, st.commissionCents, st.commissionFrom, st.owedCents],
+    [438000, 'order', 418000, 133760, 'rate', 284240], 'the worked sum');
+  eq(ctx.councilSettlement({ returnsCents: 20000, commissionCents: 130000 }, inv).owedCents, 288000, 'the statement commission is not used');
+  const priced = ctx.councilSettlement({ returnsCents: 0, commissionCents: null }, { orderTotalCents: 0, computedValueCents: 50000, anyPriced: true, pct: 30, pctOk: true });
+  eq([priced.takenFrom, priced.owedCents], ['priced', 35000], 'no fallback to the priced products');
+  const noRate = ctx.councilSettlement({ returnsCents: 0, commissionCents: null }, { orderTotalCents: 10000, pctOk: false });
+  eq([noRate.commissionCents, noRate.owedCents], [null, null], 'an owed figure with no commission rate');
+  // The page reads Inventory rather than asking for the figure again.
+  ok(/councilSettlement\(pc, inventoryTotals\(\)\)/.test(slice('renderPopcornCouncil')), 'the settlement does not read Inventory');
+});
+
+test('D1: the council page is a Popcorn section, rolls over, and is NEVER published', () => {
+  ok(/\{ id: 'inventory', label: 'Inventory' \},[\s\S]{0,160}\{ id: 'council', label: 'Council' \}/.test(SCRIPT), 'no Council section in Popcorn');
+  ok(/else if \(sec === 'council'\) v\.innerHTML = renderPopcornCouncil\(\);/.test(SCRIPT), 'the section does not render');
+  const rp = slice('renderPopcornCouncil');
+  ok((rp.match(/Leaders only/g) || []).length >= 2 && /Not published to families/.test(rp), 'the page does not say it is leaders-only');
+  // Handlers: known dates only; blank commission means "worked out".
+  ok(/var pcD = state\.popcornCouncil\.dates\[el\.dataset\.key\];\s*if \(!pcD\) return;/.test(SCRIPT), 'a council date is stored under any key');
+  ok(/commissionCents = String\(el\.value\)\.trim\(\) === '' \? null : toCents\(el\.value\)/.test(SCRIPT), 'a blank commission is stored as $0');
+  // Rollover: dates on a year and back to verify; the settlement clears.
+  const ro = slice('rolloverYear');
+  ok(/pcd\.date = shiftISOYear\(pcd\.date\); pcd\.note = POPCORN_COUNCIL_VERIFY;/.test(ro), 'rollover leaves last year\'s council dates');
+  ok(/popcornCouncil\.returnsCents = 0;/.test(ro) && /popcornCouncil\.commissionCents = null;/.test(ro) && /popcornCouncil\.paidOn = '';/.test(ro),
+    'rollover carries last season\'s settlement');
+  // Never published.
+  const leak = /popcornCouncil|councilSettlement|councilDateList|POPCORN_COUNCIL/;
+  ok(!leak.test(codeOnly(BPV())), 'buildParentView reads the council record');
+  for (const f of ['monthlyDigest', 'parentNextUp']) ok(!leak.test(codeOnly(slice(f))), f + ' reads the council record');
+  ok(!leak.test(codeOnly(/function buildICS\(\)[\s\S]*?\n  \}/.exec(SCRIPT)[0])), 'the .ics reads the council record');
+  ok(/the council's popcorn dates and the settlement \(`popcornCouncil`, Wave D1\)/.test(SCRIPT), 'the banner does not exclude it');
+  ok(/\*\*never\*\* contains:[^]*?the council's popcorn dates and what the pack owes the council\s+\(`popcornCouncil`\)/.test(SETUP), 'SETUP.md does not exclude it');
 });
 
 /* ---------------- report ---------------- */
