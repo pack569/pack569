@@ -298,6 +298,10 @@
     color: var(--ink-soft);
   }
   .camp-body .camp-sub:first-child { margin-top: 0; }
+  /* An All-dens meeting: what each den works on under the pack-wide choice. */
+  .den-adv-list { margin-top: 6px; display: grid; gap: 3px; }
+  .den-adv { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+  .den-adv-name { font-weight: 650; min-width: 5.5em; }
   /* A reward tier's small print, inside the parent ladder's table cell: table-sized, not page-sized. */
   .camp-body.pv-tier-note { font-size: 0.85rem; line-height: 1.45; margin-top: 4px; }
   .pv-tier-note p, .pv-tier-note .camp-list { margin-bottom: 6px; }
@@ -4151,6 +4155,22 @@
       e.dens = e.kind === 'activity' ? DENS.filter(function (dn) { return e.dens.indexOf(dn) !== -1; }) : [];
       // Wave 15 — handbook renames apply to the free-text adventure field (exact match).
       if (e.adventure && ADV_RENAMES[e.adventure]) e.adventure = ADV_RENAMES[e.adventure];
+      // An ALL-DENS night (see meetingAdvs): `packAdv`, the adventure every den works on, and
+      // `denAdv`, a den leader's change for their own den — a name, or false for "not at this
+      // meeting" (a den running its own make-up that night). Only an All-dens den meeting
+      // carries either; only DENS keys survive, in rank order.
+      var allDensMtg = e.kind === 'den' && !e.den;
+      if (!allDensMtg || typeof e.packAdv !== 'string' || !packAdvLabel(e.packAdv)) delete e.packAdv;
+      var dAdv = {};
+      if (allDensMtg && e.denAdv && typeof e.denAdv === 'object' && !Array.isArray(e.denAdv)) {
+        DENS.forEach(function (dn) {
+          var v = e.denAdv[dn];
+          if (v === false) { dAdv[dn] = false; return; }
+          v = typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '';
+          if (v) dAdv[dn] = ADV_RENAMES[v] || v;
+        });
+      }
+      if (Object.keys(dAdv).length) e.denAdv = dAdv; else delete e.denAdv;
       // Wave A — the pack meeting agenda. Kept on any kind, not cleared when a meeting is
       // switched to a den meeting: switching back should not have thrown the Cubmaster's
       // plan away, and it is only ever shown (and only counts) on a pack meeting.
@@ -4624,6 +4644,7 @@
     planAdv: null,      // Wave A — { den, name } the den planner's open "plan a meeting" form ('' name = an elective)
     pkAgendaOpen: {},   // Wave A — { eventId: true } pack meetings with the agenda editor open
     agendaOpen: {},     // Wave 20 — { eventKey: true } expanded month-agenda rows (not persisted)
+    denPlanPast: {},    // { den: true } Den plans also lists that den's held meetings (not persisted)
     agendaShowPast: false, // true = the month agenda also lists days before today (not persisted)
     // Phase 0 — Money · Ledger. All transient, like the rest of `ui`.
     ledgerView: 'entries',   // 'entries' | 'reconcile'
@@ -7581,6 +7602,56 @@
         'High Tech Outdoors', 'Summertime Fun', 'Swimming']
     }
   };
+  // THE SAME ADVENTURE FOR EVERY DEN. Each rank's six required adventures are listed above in
+  // the same category order, so index 2 is every rank's Family & Reverence adventure — Lion's
+  // Pride, Tiger Circles, Footsteps… That is what "the whole pack works on the same adventure"
+  // means when the dens meet together: the same category, each den in its own rank's version.
+  // Keep ADVENTURES' required lists in this order; the harness checks it. (Checked 2026-09-28
+  // against the council requirement sheets: Bobcat is the Character & Leadership adventure.)
+  var ADV_REQ_CATEGORIES = ['Bobcat', 'Citizenship', 'Family & Reverence', 'Outdoors', 'Personal Fitness', 'Personal Safety'];
+  // Electives that are the same adventure in every rank under a different name (same check).
+  var ADV_ELECTIVE_THEMES = [
+    { key: 'th:cycling', label: 'Cycling', byDen: { 'Lion': 'On a Roll', 'Tiger': 'Rolling Tigers', 'Wolf': 'Pedal with the Pack',
+      'Bear': 'Bears on Bikes', 'Webelos': 'Pedal Away', 'Arrow of Light': 'Cycling' } },
+    { key: 'th:fishing', label: 'Fishing', byDen: { 'Lion': 'Go Fish', 'Tiger': 'Fish On', 'Wolf': 'A Wolf Goes Fishing',
+      'Bear': 'A Bear Goes Fishing', 'Webelos': 'Catch the Big One', 'Arrow of Light': 'Fishing' } },
+    { key: 'th:swimming', label: 'Swimming', byDen: { 'Lion': 'Time to Swim', 'Tiger': 'Tigers in the Water', 'Wolf': 'Paws for Water',
+      'Bear': 'Salmon Run', 'Webelos': 'Aquanaut', 'Arrow of Light': 'Swimming' } }
+  ];
+  // What an All-dens night can put every den on: a required category ('req:2'), an elective
+  // theme ('th:fishing'), or an elective that more than one rank shares by name ('el:Archery'). Built once — ADVENTURES is fixed.
+  function packAdvChoices() {
+    if (packAdvChoices.cache) return packAdvChoices.cache;
+    var seen = {}, order = [];
+    DENS.forEach(function (dn) {
+      ((ADVENTURES[dn] || {}).electives || []).forEach(function (n) {
+        if (!seen[n]) { seen[n] = 0; order.push(n); }
+        seen[n] += 1;
+      });
+    });
+    return (packAdvChoices.cache = {
+      required: ADV_REQ_CATEGORIES.map(function (label, i) { return { key: 'req:' + i, label: label }; }),
+      electives: ADV_ELECTIVE_THEMES.map(function (t) { return { key: t.key, label: t.label }; })
+        .concat(order.filter(function (n) { return seen[n] > 1; }).map(function (n) { return { key: 'el:' + n, label: n }; }))
+        .sort(function (a, b) { return a.label.localeCompare(b.label); })
+    });
+  }
+  // One den's adventure for a pack-wide choice: its rank's version of the category, or the shared
+  // elective if its rank has it ('' if not — Lions have no BB Gun).
+  function packAdvName(key, den) {
+    var adv = ADVENTURES[den];
+    var k = String(key || '');
+    if (!adv || !k) return '';
+    if (k.indexOf('req:') === 0) return adv.required[+k.slice(4)] || '';
+    if (k.indexOf('el:') === 0) return adv.electives.indexOf(k.slice(3)) !== -1 ? k.slice(3) : '';
+    var th = ADV_ELECTIVE_THEMES.find(function (t) { return t.key === k; });
+    return th ? (th.byDen[den] || '') : '';
+  }
+  function packAdvLabel(key) {
+    var c = packAdvChoices();
+    var hit = c.required.concat(c.electives).find(function (x) { return x.key === key; });
+    return hit ? hit.label : '';
+  }
   // Short column headers for the grid; full names live in the title attr / aria-label.
   var ADV_SHORT = {
     'Bobcat': 'Bobcat', 'King of the Jungle': 'Jungle', "Lion's Pride": 'Pride', 'Mountain Lion': 'Mtn Lion',
@@ -7619,6 +7690,40 @@
   // shown — including meetings saved before the editor started normalizing.
   function evAdventure(ev) {
     return (ev && ev.kind === 'den') ? advCanonicalName(ev.den, ev.adventure) : '';
+  }
+  // Every (den, adventure) a den meeting works on. OWNER, 2026-09-28: Pack 569's dens all meet
+  // on the same night ("All dens") and all work the same adventure — each in its own rank's
+  // version (packAdv, ADV_REQ_CATEGORIES) — unless a den is behind, ahead, or running its own
+  // make-up meeting, which its leader sets on Den plans (denAdv). Still one adventure per den
+  // per meeting (the ruling above); it is the MEETING that is shared. A den's scouts checked in
+  // that night are at that den's session: attendance was already keyed by meeting and read per
+  // den through meetingRoster, so nothing else moves.
+  //   → [{ den: '' | den, name }]   den '' = a free-typed adventure on an All-dens meeting,
+  //                                  from before packAdv existed; still honoured
+  function meetingAdvs(ev) {
+    if (!ev || ev.kind !== 'den') return [];
+    var out = [];
+    var whole = evAdventure(ev);
+    if (whole) out.push({ den: ev.den || '', name: whole });
+    if (!ev.den) {
+      DENS.forEach(function (dn) {
+        var at = denAdvAt(ev, dn);
+        if (at.name) out.push({ den: dn, name: at.name });
+      });
+    }
+    return out;
+  }
+  // What ONE den works on at an All-dens meeting, and why:
+  //   { name, from: 'pack' | 'den' | 'off' | '' }
+  // The pack's choice counts only for a den that has scouts, so an empty rank does not grow a
+  // run on every night; a den leader's own change always counts.
+  function denAdvAt(ev, den) {
+    var v = ev.denAdv ? ev.denAdv[den] : undefined;
+    if (v === false) return { name: '', from: 'off' };
+    if (v) return { name: advCanonicalName(den, v), from: 'den' };
+    var nm = packAdvName(ev.packAdv, den);
+    if (nm && activeScouts().some(function (s) { return s.den === den; })) return { name: nm, from: 'pack' };
+    return { name: '', from: '' };
   }
   // The official spelling of an adventure a leader typed, for a meeting of `den` ('' = all
   // dens). The box is free text over a suggestion list, so "council fire", "Council  Fire" and
@@ -7668,20 +7773,21 @@
     var byKey = {}, order = [];
     state.events.forEach(function (ev) {
       if (!ev.date || ev.date < from || ev.date > to) return;
-      var nm = evAdventure(ev);
-      if (!nm) return;
+      meetingAdvs(ev).forEach(function (pair) { addSession(ev, pair.den, pair.name); });
+    });
+    function addSession(ev, den, nm) {
       // Den + adventure. A den name comes from the fixed DENS list, so ' :: ' cannot occur in
       // it and the key cannot collide. (It was briefly a NUL byte here, which worked and made
       // `grep` silently return nothing for this entire file. Never again.)
       // Lower-cased: a custom adventure typed two ways ("Knot night" / "knot night") is still
       // one run. Official names are already one spelling by the time they get here.
-      var key = (ev.den || '*') + ' :: ' + nm.toLowerCase();
+      var key = (den || '*') + ' :: ' + nm.toLowerCase();
       if (!byKey[key]) {
-        byKey[key] = { key: key, den: ev.den || '', adventure: nm, sessions: [] };
+        byKey[key] = { key: key, den: den || '', adventure: nm, sessions: [] };
         order.push(key);
       }
       byKey[key].sessions.push(ev);
-    });
+    }
     return order.map(function (k) { return byKey[k]; }).map(function (run) {
       run.sessions.sort(function (a, b) {
         return String(a.date).localeCompare(String(b.date)) || String(a.time).localeCompare(String(b.time));
@@ -7733,15 +7839,24 @@
   }
   // The run this meeting belongs to, and its place in it. Null when the meeting names no
   // adventure, or has no date (an undated meeting is not a session of anything yet).
-  function runForMeeting(m) {
-    var nm = evAdventure(m);
-    if (!nm || !m.date) return null;
+  // `den` picks one den's run on an All-dens night (meetingAdvs); left out, it is the
+  // meeting's own adventure — the only one a single-den meeting has.
+  function runForMeeting(m, den) {
+    if (!m || !m.date) return null;
+    var want = den === undefined ? (m.den || '') : den;
+    var pair = meetingAdvs(m).find(function (x) { return x.den === want; });
+    if (!pair) return null;
+    var nm = pair.name;
     var run = adventureRuns().find(function (r) {
-      return r.adventure.toLowerCase() === nm.toLowerCase() && (r.den || '') === (m.den || '');
+      return r.adventure.toLowerCase() === nm.toLowerCase() && (r.den || '') === pair.den;
     });
     if (!run) return null;
     var idx = run.sessions.findIndex(function (ev) { return ev.id === m.id; });
     return { run: run, index: idx, position: idx + 1, of: run.sessions.length, prog: runProgress(run) };
+  }
+  // Every run this meeting is a session of — one, or one per den on an All-dens night.
+  function runsForMeeting(m) {
+    return meetingAdvs(m).map(function (x) { return runForMeeting(m, x.den); }).filter(Boolean);
   }
   // Runs that are OVER and that nobody in the den has a mark for — the Advancement tab's
   // "you ran this and never credited anyone" nudge. AUDIT FIX 2026-09-27: this used to be
@@ -8015,8 +8130,10 @@
     var h = '<div class="card"><h2 class="section display">Den year plans</h2>' +
       '<p class="small muted" style="margin:0">Each den’s required adventures against the den meetings tagged with them in the ' +
       py + '–' + (py + 1) + ' program year. A rank is the six required ' +
-      'adventures and at least two electives. A meeting counts once it names the adventure' +
-      (edit ? ' — tap one that has no meeting to add one, already tagged' : '') + '. ✓ marks a meeting already held.</p></div>';
+      'adventures and at least two electives. A meeting counts once it names the adventure — on an All-dens night, ' +
+      'every den works the adventure the pack picked on the calendar unless its leader changes it under ' +
+      '<strong>Meetings</strong> below' + (edit ? '; Plan a meeting adds a meeting for one den' : '') +
+      '. ✓ marks a meeting already held.</p></div>';
     // Dens with scouts or with anything planned; with neither anywhere, every den, so a new pack
     // can plan before the roster is in. A den leader's own dens first — order only, never a filter.
     var mineFirst = myDens();
@@ -8059,7 +8176,59 @@
         h += '<div class="assign-row"><span class="assign-name">' + esc(el.name) + '</span>' +
           '<span class="small muted">' + esc(denPlanDates(el.sessions, today)) + '</span></div>';
       });
+      h += denMeetingsBlock(den, today, edit);
       h += '</div>';
+    });
+    return h;
+  }
+  // Every meeting this den is at this program year — its own and the All-dens nights — and what
+  // the den works on at each. This is where a den leader changes their den's line on an
+  // All-dens night: still on last week's adventure, ahead, or not there (a make-up of its own).
+  // Upcoming only until asked; a held meeting is changed to record what really happened.
+  function denMeetingsBlock(den, today, edit) {
+    var py = state.budget.programYear;
+    var from = programYearStartISO(py), to = programYearEndISO(py);
+    var all = state.events.filter(function (e) {
+      return e.kind === 'den' && e.date && e.date >= from && e.date <= to && (!e.den || e.den === den);
+    }).sort(function (a, b) {
+      return String(a.date).localeCompare(String(b.date)) || String(a.time || '').localeCompare(String(b.time || ''));
+    });
+    if (!all.length) return '';
+    var showPast = !!(ui.denPlanPast && ui.denPlanPast[den]);
+    var past = all.filter(function (e) { return e.date < today; }).length;
+    var list = showPast ? all : all.filter(function (e) { return e.date >= today; });
+    var adv = ADVENTURES[den] || { required: [], electives: [] };
+    var h = '<div class="spread" style="margin:12px 0 4px"><p class="eyebrow" style="margin:0">Meetings</p>' +
+      (past ? '<button type="button" class="btn small ghost" data-act="denplan-past" data-den="' + esc(den) + '" aria-expanded="' + showPast + '">' +
+        (showPast ? 'Hide held meetings' : 'Show ' + past + ' held') + '</button>' : '') + '</div>';
+    if (!list.length) return h + '<p class="small muted" style="margin:0">No more meetings on the calendar this year.</p>';
+    list.forEach(function (e) {
+      var shared = !e.den;
+      var at = shared ? denAdvAt(e, den) : { name: evAdventure(e), from: 'own' };
+      var r = at.name ? runForMeeting(e, shared ? den : undefined) : null;
+      var when = fmtDate(e.date) + (fmtClock(e.time) ? ' · ' + fmtClock(e.time) : '') + (shared ? ' · All dens' : ' · ' + den + ' only');
+      var right;
+      if (edit) {
+        var cur = at.from === 'off' ? '-' : (at.from === 'den' || at.from === 'own') ? at.name : '';
+        var packNm = shared ? packAdvName(e.packAdv, den) : '';
+        var inList = !cur || cur === '-' || adv.required.indexOf(cur) !== -1 || adv.electives.indexOf(cur) !== -1;
+        function opt(n) { return '<option value="' + esc(n) + '"' + (n === cur ? ' selected' : '') + '>' + esc(n) + '</option>'; }
+        right = '<select data-ch="den-mtg-adv" data-id="' + esc(e.id) + '" data-den="' + esc(den) + '" aria-label="' +
+          esc(den + ' adventure on ' + fmtDate(e.date)) + '" style="max-width:100%">' +
+          '<option value=""' + (cur === '' ? ' selected' : '') + '>' +
+            esc(shared ? (packNm ? 'Pack’s pick: ' + packNm : 'Pack’s pick: none yet') : 'No adventure') + '</option>' +
+          (shared ? '<option value="-"' + (cur === '-' ? ' selected' : '') + '>Not at this meeting</option>' : '') +
+          (inList ? '' : opt(cur)) +
+          '<optgroup label="Required">' + adv.required.map(opt).join('') + '</optgroup>' +
+          '<optgroup label="Electives">' + adv.electives.map(opt).join('') + '</optgroup></select>';
+      } else {
+        right = '<span class="small">' + (at.from === 'off' ? '<span class="muted">not at this meeting</span>'
+          : at.name ? esc(at.name) : '<span class="muted">no adventure</span>') + '</span>';
+      }
+      h += '<div class="assign-row' + (e.date < today ? ' wk-past' : '') + '"><span class="assign-name" style="font-weight:500">' +
+        esc(when) + (r && r.of > 1 ? ' <span class="small muted">· ' + esc(sessionLabel(r.position, r.of)) + '</span>' : '') +
+        (shared && (at.from === 'den' || at.from === 'off') ? ' <span class="pill navy">changed for ' + esc(den) + '</span>' : '') +
+        '</span>' + right + '</div>';
     });
     return h;
   }
@@ -12414,9 +12583,10 @@
       h += line('Who', m.kind === 'pack' ? 'Whole pack' : (m.den ? esc(m.den) + ' den' : 'All dens'));
       // The adventure, and — the reason any of this exists — where tonight sits in the run and
       // who has the attendance behind it. This sheet gets printed and carried to the meeting.
-      if (evAdventure(m)) {
-        var mRun = runForMeeting(m);
-        h += line('Adventure', esc(evAdventure(m)) +
+      // An All-dens night lists every den's adventure, each with its own run and progress.
+      meetingAdvs(m).forEach(function (pair) {
+        var mRun = runForMeeting(m, pair.den);
+        h += line(pair.den && !m.den ? pair.den : 'Adventure', esc(pair.name) +
           (mRun && mRun.of > 1 ? ' <span class="muted">· ' + esc(sessionLabel(mRun.position, mRun.of)) + '</span>' : ''));
         if (mRun) {
           var mDone = mRun.prog.complete.length, mShort = mRun.prog.short.length;
@@ -12425,7 +12595,7 @@
             : mRun.prog.onTrack.length + ' of ' + mRun.prog.scouts.length + ' checked in') +
             (mShort ? ' <span class="muted">· ' + mShort + ' with a session to make up</span>' : ''));
         }
-      }
+      });
       h += line('Where', m.note ? esc(m.note) : '<span class="muted">no location or notes yet</span>');
       // The agenda sheet is the LEADER-facing surface — it is what gets printed and carried into
       // the room — so this is where the internal note belongs, and the only rendered place it
@@ -12546,10 +12716,11 @@
           var evWhen = fmtTimeRange(e.ev.time, e.ev.endTime);
           if (evWhen) meta.push(evWhen);
           if (e.ev.location) meta.push(firstLine(e.ev.location));
-          if (evAdventure(e.ev)) {
-            var agRun = runForMeeting(e.ev);
-            meta.push(evAdventure(e.ev) + (agRun && agRun.of > 1 ? ' (' + agRun.position + '/' + agRun.of + ')' : ''));
-          }
+          meetingAdvs(e.ev).forEach(function (pair) {
+            var agRun = runForMeeting(e.ev, pair.den);
+            meta.push((pair.den && !e.ev.den ? pair.den + ': ' : '') + pair.name +
+              (agRun && agRun.of > 1 ? ' (' + agRun.position + '/' + agRun.of + ')' : ''));
+          });
           if (e.ev.note) meta.push(firstLine(e.ev.note));
           // Phase 2 — cost is the linked BUDGET LINE's, not the event's. An event with no
           // line shows no money, which is exactly right for an imported calendar entry.
@@ -12845,10 +13016,16 @@
   // that this is the second of three nights on Bobcat, and that is the question a den leader
   // and a parent both actually have.
   function advTargetPicker(m) {
-    var r = runForMeeting(m);
+    // An All-dens night picks from the pack-wide list instead; its free-text box is shown only
+    // while it still holds an adventure typed before that list existed, so it can be cleared.
+    if (!m.den) return packAdvPicker(m) + (m.adventure ? advFreeBox(m, runForMeeting(m)) : '');
+    return advFreeBox(m, runForMeeting(m));
+  }
+  function advFreeBox(m, r) {
+    var allDens = !m.den;
     var h = '<input data-ch="mtg-adv" data-id="' + esc(m.id) + '" list="advOpts-' + esc(m.id) + '" value="' +
       esc(m.adventure || '') + '" placeholder="Adventure this meeting works toward (optional)" ' +
-      'aria-label="Adventure this meeting works toward" style="width:100%;margin-top:6px">' +
+      'aria-label="' + (allDens ? 'Adventure typed for all dens' : 'Adventure this meeting works toward') + '" style="width:100%;margin-top:6px">' +
       '<datalist id="advOpts-' + esc(m.id) + '">' +
       advOptionsForDen(m.den).map(function (n) { return '<option value="' + esc(n) + '">'; }).join('') +
       '</datalist>';
@@ -12867,6 +13044,51 @@
         'tag the same adventure on the other meetings that work it.</p>';
     }
     return h;
+  }
+  // The pack-wide adventure <select>: the six required categories, then the electives more than
+  // one rank shares. `value` is a packAdv key.
+  function packAdvOptions(value, noneLabel) {
+    var c = packAdvChoices();
+    function opt(x) { return '<option value="' + esc(x.key) + '"' + (x.key === value ? ' selected' : '') + '>' + esc(x.label) + '</option>'; }
+    return '<option value="">' + esc(noneLabel) + '</option>' +
+      '<optgroup label="Required — each den’s own">' + c.required.map(opt).join('') + '</optgroup>' +
+      '<optgroup label="Electives">' + c.electives.map(opt).join('') + '</optgroup>';
+  }
+  // An All-dens night: one choice for the whole pack, then what that means den by den. A den
+  // leader changes their own den's line on Den plans, not here — this row is the Cubmaster's.
+  function packAdvPicker(m) {
+    var h = '<label class="fld" style="margin-top:6px">Adventure for every den' +
+      '<select data-ch="mtg-pack-adv" data-id="' + esc(m.id) + '">' + packAdvOptions(m.packAdv || '', 'None set') + '</select></label>';
+    var dens = DENS.filter(function (dn) {
+      return ADVENTURES[dn] && (denAdvAt(m, dn).from === 'den' || denAdvAt(m, dn).from === 'off' ||
+        activeScouts().some(function (s) { return s.den === dn; }));
+    });
+    var lines = dens.map(function (dn) {
+      var at = denAdvAt(m, dn);
+      if (!at.name && at.from !== 'off') return '';
+      var r = at.name ? runForMeeting(m, dn) : null;
+      return '<div class="den-adv"><span class="den-adv-name">' + esc(dn) + '</span>' +
+        '<span>' + (at.from === 'off' ? '<span class="muted">not at this meeting</span>' : esc(at.name)) + '</span>' +
+        (r && r.of > 1 ? '<span class="small muted">' + esc(sessionLabel(r.position, r.of)) + '</span>' : '') +
+        (at.from === 'den' || at.from === 'off' ? '<span class="pill navy">set by the den</span>' : '') + '</div>';
+    }).join('');
+    if (lines) {
+      h += '<div class="den-adv-list">' + lines + '</div>' +
+        '<p class="small muted" style="margin:4px 0 0">A den that is behind, ahead or meeting on its own changes its line on ' +
+        '<button type="button" class="btn small ghost" data-act="goto" data-tab="program" data-section="denplan">Den plans</button>.</p>';
+    }
+    return h;
+  }
+  // A pack meeting works no adventure: everything a den meeting held goes.
+  function clearMeetingAdvs(mtg) {
+    mtg.den = ''; mtg.adventure = ''; delete mtg.denAdv; delete mtg.packAdv;
+  }
+  // An All-dens night narrowed to one den keeps THAT den's adventure as its own; the other
+  // dens' go with the other dens.
+  function setMeetingDen(mtg, den) {
+    if (den && !mtg.den && !mtg.adventure) mtg.adventure = denAdvAt(mtg, den).name || '';
+    if (den) { delete mtg.denAdv; delete mtg.packAdv; }
+    mtg.den = den;
   }
   // "Aug 5 · Aug 12 (this one) · Aug 19" — what the run actually IS, which no single meeting
   // row can show on its own.
@@ -12893,8 +13115,9 @@
      make-up-at-home list. That is what these two lists are, and the copy says so. `advMarkDone`
      remains the only writer — nothing here marks anything on its own. */
   function renderMeetingAdvMark(m) {
-    var r = runForMeeting(m);
-    if (!r) return '';
+    return runsForMeeting(m).map(function (r) { return meetingAdvMarkFor(m, r); }).join('');
+  }
+  function meetingAdvMarkFor(m, r) {
     var p = r.prog, advName = r.run.adventure;
     var multi = r.of > 1;
     // Anyone with an attendance mark anywhere in the run, or already recorded. A den with no
@@ -12907,7 +13130,7 @@
     var recorded = p.scouts.filter(function (row) { return row.status; });
 
     var h = '<div class="adv-run">' +
-      '<div class="spread"><strong>' + esc(advName) + '</strong>' +
+      '<div class="spread"><strong>' + esc((r.run.den && !m.den ? r.run.den + ' · ' : '') + advName) + '</strong>' +
       '<span class="small muted">' + esc(sessionLabel(r.position, r.of)) + '</span></div>';
 
     // The per-scout line the owner asked for: n of N, and what they are missing.
@@ -12936,7 +13159,7 @@
       var left = run_pendingCount(r);
       var who = backed.length + (backed.length === 1 ? ' scout' : ' scouts');
       h += '<div class="row" style="margin-top:8px"><button type="button" class="btn small" ' +
-        'data-act="mtg-adv-mark" data-id="' + esc(m.id) + '" data-name="' + esc(advName) + '">' +
+        'data-act="mtg-adv-mark" data-id="' + esc(m.id) + '" data-den="' + esc(r.run.den || '') + '" data-name="' + esc(advName) + '">' +
         'Mark “' + esc(advName) + '” done for ' + who +
         (multi ? (left ? ' who have been to every session so far' : ' with all ' + r.of + ' sessions') : '') +
         '</button></div>';
@@ -24951,6 +25174,11 @@
     // Wave A — the den planner's inline "plan a meeting" form. Opening it writes nothing.
     if (act === 'plan-adv') { ui.planAdv = { den: el.dataset.den || '', name: el.dataset.name || '' }; render(); return; }
     if (act === 'plan-adv-cancel') { ui.planAdv = null; render(); return; }
+    if (act === 'denplan-past') {
+      ui.denPlanPast = ui.denPlanPast || {};
+      ui.denPlanPast[el.dataset.den] = !ui.denPlanPast[el.dataset.den];
+      render(); return;
+    }
     // Wave A — the pack meeting agenda: open/close the editor, and the printable sheet.
     if (act === 'pk-agenda-toggle') { ui.pkAgendaOpen[el.dataset.id] = !ui.pkAgendaOpen[el.dataset.id]; render(); return; }
     if (act === 'pk-agenda-print') { ui.overlay = { kind: 'pk-agenda', id: el.dataset.id }; render(); return; }
@@ -25250,15 +25478,14 @@
     if (act === 'mtg-adv-mark') {
       var mam = getEvent(el.dataset.id);
       if (!mam || mam.kind !== 'den') return;
-      var mamAdv = String(mam.adventure || '').trim();
-      if (!mamAdv) return;
-      mamAdv = ADV_RENAMES[mamAdv] || mamAdv;
+      var mamAdv;
       // Session-aware since 2026-08-02: the scouts credited are the ones checked in at every
       // session of the RUN that has happened, not merely everyone who turned up tonight. On a
       // one-session adventure those are the same set, so this is a strict generalization of
       // what the button did before. Since 2026-09-27 "has happened" includes TONIGHT and the
       // scout must have been to at least one — see runProgress.onTrack.
-      var mamRun = runForMeeting(mam);
+      // data-den names WHICH den's run on an All-dens night; a single-den meeting has just one.
+      var mamRun = runForMeeting(mam, el.dataset.den);
       if (!mamRun) return;
       // Credit the run's official spelling, not whatever was typed on this one meeting — a
       // mark written as "bobcat" would be a column the Advancement grid never shows.
@@ -26036,14 +26263,48 @@
       if (pkNext) pkEv.agenda = pkNext; else delete pkEv.agenda;
       commit(); return;
     }
+    // The Cubmaster's pack-wide adventure on an All-dens night. Its own branch rather than a
+    // key in the mtg-* gate below: it writes a choice key, never a published field. A den line
+    // that now says the same as the new choice stops being a change and follows it again.
+    if (ch === 'mtg-pack-adv') {
+      var paM = getEvent(el.dataset.id);
+      if (!canEdit() || !paM || paM.kind !== 'den' || paM.den) return;
+      if (el.value && packAdvLabel(el.value)) paM.packAdv = el.value; else delete paM.packAdv;
+      if (paM.denAdv) {
+        Object.keys(paM.denAdv).forEach(function (dn) {
+          if (paM.denAdv[dn] && advCanonicalName(dn, paM.denAdv[dn]) === packAdvName(paM.packAdv, dn)) delete paM.denAdv[dn];
+        });
+        if (!Object.keys(paM.denAdv).length) delete paM.denAdv;
+      }
+      commit(); return;
+    }
+    // Den plans: one den's adventure at one meeting. On the den's own meeting that is the
+    // meeting's adventure; on an All-dens night it is that den's line — '' follows the pack's
+    // choice again, '-' is "not at this meeting".
+    if (ch === 'den-mtg-adv') {
+      var dmM = getEvent(el.dataset.id), dmDen = el.dataset.den;
+      if (!canEdit() || !dmM || dmM.kind !== 'den' || DENS.indexOf(dmDen) === -1) return;
+      var dmVal = el.value === '-' ? '-' : advCanonicalName(dmDen, el.value);
+      if (dmM.den) {
+        if (dmM.den !== dmDen) return;
+        dmM.adventure = dmVal === '-' ? '' : dmVal;
+      } else {
+        var dmMap = dmM.denAdv || {};
+        if (dmVal === '-') dmMap[dmDen] = false;
+        else if (!dmVal || dmVal === packAdvName(dmM.packAdv, dmDen)) delete dmMap[dmDen];
+        else dmMap[dmDen] = dmVal;
+        if (Object.keys(dmMap).length) dmM.denAdv = dmMap; else delete dmM.denAdv;
+      }
+      commit(); return;
+    }
     // ⚠ THIS GATE IS ITSELF AN ALLOWLIST. A new mtg-* field needs adding in BOTH places — here
     // and in the branch chain below — or its handler is dead code that looks alive.
     if (ch === 'mtg-kind' || ch === 'mtg-den' || ch === 'mtg-time' || ch === 'mtg-note' ||
         ch === 'mtg-note-internal' || ch === 'mtg-adv') {
       var mtg = getEvent(el.dataset.id);   // Phase 2 — a meeting is an Event
       if (!mtg) return;
-      if (ch === 'mtg-kind') { mtg.kind = el.value; if (mtg.kind === 'pack') { mtg.den = ''; mtg.adventure = ''; } }
-      else if (ch === 'mtg-den') mtg.den = el.value;
+      if (ch === 'mtg-kind') { mtg.kind = el.value; if (mtg.kind === 'pack') clearMeetingAdvs(mtg); }
+      else if (ch === 'mtg-den') setMeetingDen(mtg, el.value);
       else if (ch === 'mtg-time') mtg.time = el.value;
       else if (ch === 'mtg-adv') mtg.adventure = el.value;
       else if (ch === 'mtg-note-internal') mtg.noteInternal = el.value;

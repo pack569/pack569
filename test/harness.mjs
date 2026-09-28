@@ -5652,9 +5652,15 @@ function runSandbox(setup) {
      ${slice('evAdventure')}
      ${slice('meetingRoster')}
      ${slice('wasCheckedIn')}
+     ${slice('ADV_REQ_CATEGORIES')}
+     ${slice('ADV_ELECTIVE_THEMES')}
+     ${slice('packAdvName')}
+     ${slice('meetingAdvs')}
+     ${slice('denAdvAt')}
      ${slice('adventureRuns')}
      ${slice('runProgress')}
      ${slice('runForMeeting')}
+     ${slice('runsForMeeting')}
      ${slice('sessionLabel')}
      ${slice('nextPackMeetingAfter')}
      ${slice('programYearStartISO')}
@@ -5697,6 +5703,62 @@ test('meetings tagged with the same adventure form one run, per den', () => {
     'sessions are not in date order');
   // A pack meeting is not a session of anything, and an untagged meeting is not either.
   ok(!runs.some((r) => r.sessions.some((s) => s.kind === 'pack')), 'a pack meeting became a session');
+});
+
+test('an All-dens night puts every den on its own rank’s version of one adventure', () => {
+  // Owner, 2026-09-28: the dens meet together and work the same adventure — the same CATEGORY,
+  // each in its own rank's version — unless a den leader changes their den's line.
+  const ctx = runSandbox(`
+    var TODAY = '2026-09-20';
+    var SCOUTS = [{ id: 'l', name: 'Lia', den: 'Lion' }, { id: 't', name: 'Tam', den: 'Tiger' }];
+    var STATUS = {};
+    var EVENTS = [
+      { id: 'n1', kind: 'den', den: '', date: '2026-09-08', packAdv: 'req:0' },
+      { id: 'n2', kind: 'den', den: '', date: '2026-09-22', packAdv: 'req:1', denAdv: { Lion: 'Bobcat' } },
+      { id: 'n3', kind: 'den', den: '', date: '2026-10-06', packAdv: 'req:1', denAdv: { Tiger: false } },
+      { id: 'n4', kind: 'den', den: '', date: '2026-10-20', packAdv: 'th:fishing' }
+    ];
+    var ATT = { n1: { l: { scout: true }, t: { scout: true } }, n2: { l: { scout: true } } };`);
+  const runs = vm.runInContext('adventureRuns()', ctx);
+  eq(runs.map((r) => r.den + ':' + r.adventure + ':' + r.sessions.map((e) => e.id).join('+')).sort(), [
+    'Lion:Bobcat:n1+n2', 'Lion:Go Fish:n4', 'Lion:King of the Jungle:n3',
+    'Tiger:Bobcat:n1', 'Tiger:Fish On:n4', 'Tiger:Team Tiger:n2'
+  ], 'the pack’s pick, the Lions staying on Bobcat, or the Tigers’ night off is wrong');
+  ok(!runs.some((r) => ['Wolf', 'Bear', 'Webelos', 'Arrow of Light'].includes(r.den)),
+    'a rank with no scouts grew a run from the pack’s pick');
+  const lion = vm.runInContext("runProgress(adventureRuns().find(function (r) { return r.den === 'Lion' && r.adventure === 'Bobcat'; }))", ctx);
+  eq(lion.scouts.map((r) => r.scout.name + ':' + r.count), ['Lia:2'], 'the Lion run is not the Lion den at both nights');
+  eq(vm.runInContext("(function () { var r = runForMeeting(EVENTS[1], 'Lion'); return r.position + '/' + r.of; })()", ctx), '2/2',
+    'the Lions’ second Bobcat night is not session 2 of 2');
+  eq(vm.runInContext('runForMeeting(EVENTS[0])', ctx), null, 'an All-dens night resolved to a whole-pack run');
+  eq(vm.runInContext("denAdvAt(EVENTS[2], 'Tiger').from", ctx), 'off', 'a den marked away is not off');
+});
+
+test('every rank lists its required adventures in the same category order', () => {
+  // packAdvName('req:i') reads index i of every rank's list, so the lists must line up.
+  const ctx = vm.createContext({});
+  vm.runInContext(`${slice('DENS')}\n${slice('ADVENTURES')}\n${slice('ADV_REQ_CATEGORIES')}\n${slice('ADV_ELECTIVE_THEMES')}`, ctx);
+  const A = vm.runInContext('ADVENTURES', ctx);
+  eq(['Lion', 'Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light'].map((d) => A[d].required[1]),
+    ['King of the Jungle', 'Team Tiger', 'Council Fire', 'Paws for Action', 'My Community', 'Citizenship'], 'Citizenship is out of line');
+  eq(['Lion', 'Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light'].map((d) => A[d].required[5]),
+    ["Lion's Roar", 'Tiger Roar', 'Safety in Numbers', 'Standing Tall', 'My Safety', 'First Aid'], 'Personal Safety is out of line');
+  for (const t of vm.runInContext('ADV_ELECTIVE_THEMES', ctx)) {
+    for (const [den, name] of Object.entries(t.byDen)) ok(A[den].electives.includes(name), `${t.label}: "${name}" is not a ${den} elective`);
+  }
+});
+
+test('Den plans is where a den changes its line on an All-dens night', () => {
+  const blk = slice('denMeetingsBlock');
+  ok(/data-ch="den-mtg-adv"/.test(blk), 'Den plans has no per-meeting adventure for the den');
+  ok(/Not at this meeting/.test(blk), 'a den cannot mark itself away for its own make-up meeting');
+  const h = /if \(ch === 'den-mtg-adv'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/dmMap\[dmDen\] = false/.test(h), '"not at this meeting" is not stored');
+  ok(/dmVal === packAdvName\(dmM\.packAdv, dmDen\)\) delete dmMap\[dmDen\]/.test(h),
+    'picking the pack’s own choice leaves a stale change behind');
+  ok(/canEdit\(\)/.test(h), 'a viewer can change a den’s adventure');
+  // Never published: the parent view is an allowlist, and these are leader planning.
+  ok(!/denAdv|packAdv/.test(BPV()), 'the den adventures reached the parent view');
 });
 
 test('a scout is 2 of 3, and the missed night is named', () => {
@@ -5771,7 +5833,7 @@ test('the mark-off button credits the run, not the room', () => {
   // checked in TONIGHT, so a scout marked at session one who then missed two kept the credit.
   const m = /if \(act === 'mtg-adv-mark'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
   ok(m, 'the mtg-adv-mark action is missing');
-  ok(/var mamRun = runForMeeting\(mam\);/.test(m[0]), 'it does not resolve the run');
+  ok(/var mamRun = runForMeeting\(mam, el\.dataset\.den\);/.test(m[0]), 'it does not resolve the run');
   ok(/mamRun\.prog\.onTrack\.forEach/.test(m[0]),
     'it still credits the attendance book for this one meeting');
   ok(!/state\.attendance\[mam\.id\]/.test(m[0]), 'it still reads tonight’s attendance directly');
@@ -5904,7 +5966,7 @@ test('an adventure that is not on the den’s list is warned about, never refuse
   ok(!off('Wolf', 'Council Fire'), 'a Wolf adventure on a Wolf meeting is flagged');
   ok(off('Wolf', 'Knot night'), 'a custom adventure is not flagged');
   ok(!off('Wolf', ''), 'an empty tag is flagged');
-  const picker = slice('advTargetPicker');
+  const picker = slice('advFreeBox');
   ok(/advOffDenList\(m\.den, tagged\)/.test(picker) && /class="warn small"/.test(picker),
     'the meeting editor does not show the off-list warning');
   // Save and den change both re-spell, and neither refuses the value.
@@ -10647,7 +10709,7 @@ test('A3: the message is copy-only — first names, nothing stored, nothing publ
   ok(!/commit\(\)|save\(\)/.test(h), 'composing the message writes the pack record');
   ok(!/makeupMessage|makeup-msg/.test(BPV()), 'the make-up message reached the parent view');
   // Offered on both make-up lists: the meeting's and the Advancement card's.
-  ok(/makeupMsgBtn\(r\.run, row\)/.test(slice('renderMeetingAdvMark')), 'no button on the meeting’s make-up list');
+  ok(/makeupMsgBtn\(r\.run, row\)/.test(slice('meetingAdvMarkFor')), 'no button on the meeting’s make-up list');
   ok(/makeupMsgBtn\(run, row\)/.test(slice('renderAdventureRunsCard')), 'no button on the Advancement make-up list');
 });
 
