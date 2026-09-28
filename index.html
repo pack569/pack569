@@ -18098,6 +18098,41 @@
   }
 
   /* ----- Wave 8: reward tiers card (Standings tab) ----- */
+  /* ----- Wave D3: the parent kickoff note (2026-09-28) ------------------------------------
+     The Kernel's ask: one note to paste into BAND or an email at kickoff, written from the tier
+     ladder as it stands, so the targets, rewards and dates are the real ones. COPY ONLY: nothing
+     is stored and nothing is published — the leader decides where it goes.
+     Respects "Show dollar amounts and rank" (amountsEnabled): with it off the note gives no
+     dollar target, only each tier's reward and date, and says to ask a leader for the targets.
+     A tier's target is its SALES figure (salesForCommission, the same one the family page shows),
+     rounded UP to a whole dollar so it is still a minimum. A tier already closed is left out. */
+  // Pure given its inputs: `tiers` sorted, `salesOf(tier)` → cents or null, `dateLabel(iso)`.
+  function popcornKickoffNote(tiers, finalDate, withAmounts, today, salesOf, dateLabel) {
+    var lines = [];
+    lines.push(finalDate ? 'Popcorn runs through ' + dateLabel(finalDate) + '.' : 'Popcorn season is here.');
+    var open = (tiers || []).filter(function (t) { return (t.name || t.reward) && !(t.dueBy && t.dueBy < today); });
+    var anyHidden = !withAmounts;
+    open.forEach(function (t) {
+      var what = t.reward ? String(t.reward) + (t.name && t.name !== t.reward ? ' (' + t.name + ')' : '') : String(t.name);
+      var by = t.dueBy ? ', if it\u2019s in by ' + dateLabel(t.dueBy) : '';
+      var c = withAmounts ? salesOf(t) : null;
+      if (c != null && c > 0) {
+        lines.push('Sell $' + Math.ceil(c / 100).toLocaleString('en-US') + ' and your scout earns ' + what + by + '.');
+      } else {
+        if (withAmounts) anyHidden = true;   // no rate yet: no honest figure to give
+        lines.push((t.name || 'A reward') + ': ' + (t.reward || t.name) + by + '.');
+      }
+    });
+    if (open.length && anyHidden) lines.push('Ask a leader for the targets.');
+    lines.push('Online and storefront sales both count.');
+    lines.push('Always sell with a buddy and a parent, and never go inside a customer\u2019s home.');
+    return lines.join('\n');
+  }
+  function kickoffNoteNow() {
+    var fin = state.popcornCouncil && state.popcornCouncil.dates.finalTakeOrders.date;
+    return popcornKickoffNote(sortedTiers(), fin, amountsEnabled(), todayISO(),
+      function (t) { return salesForCommission(t.thresholdCents); }, fmtDate);
+  }
   function renderRewardTiers() {
     var rt = state.rewardTiers;
     var sum = rewardTierSummary();
@@ -18565,7 +18600,19 @@
         handoffCard('Popcorn', 'Money', 'budget', fmt(sum.rewardDues),
           'of covered dues is booked as actual spending on the budget.');
     }
-    return h + '</div>';
+    h += '</div>';
+    // Wave D3 — the kickoff note. Copy only; nothing stored, nothing published.
+    if (sum.tiers.length) {
+      var kn = kickoffNoteNow();
+      h += '<div class="card no-print"><div class="spread"><h2 class="section display" style="margin:0">Kickoff note for families</h2>' +
+        '<button type="button" class="btn small" data-act="copy-kickoff">' + (ui.kickoffCopied ? 'Copied \u2713' : 'Copy') + '</button></div>' +
+        '<p class="small muted" style="margin:6px 0 8px">Written from the tiers above' +
+        (state.popcornCouncil.dates.finalTakeOrders.date ? ' and the council\u2019s final take-order date' : '') +
+        '. Paste it where families will read it; nothing here is published on its own.' +
+        (amountsEnabled() ? '' : ' Dollar targets are left out because <strong>Show dollar amounts and rank</strong> is off.') + '</p>' +
+        '<textarea class="export-box" id="kickoffBox" readonly rows="7" style="height:auto" aria-label="Kickoff note for families">' + esc(kn) + '</textarea></div>';
+    }
+    return h;
   }
 
   /* ----- Wave D1: the council's dates, and settling up (see POPCORN_COUNCIL_DATES) ----- */
@@ -24304,6 +24351,14 @@
       return;
     }
     if (act === 'sf-day-sheet') { ui.overlay = { kind: 'day-sheet', id: el.dataset.id }; render(); return; }
+    // Wave D3 — the kickoff note. Copy only.
+    if (act === 'copy-kickoff') {
+      copyText(kickoffNoteNow(), function (okK) {
+        ui.kickoffCopied = !!okK; render();
+        if (!okK) showToast('Couldn\u2019t copy \u2014 select the note and copy it.');
+      }, 'kickoffBox');
+      return;
+    }
     if (act === 'copy-day-sheet') {
       var dsSf = getStorefront(ui.overlay && ui.overlay.id);
       if (dsSf) copyText(daySheetText(dsSf), function () { ui.overlay.copied = true; render(); });
