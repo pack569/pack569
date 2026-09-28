@@ -176,7 +176,9 @@ calendar but not the money" is impossible to do by permission alone. Instead the
     with time, place and which dens; the derby's name and date; the camping trips as leaders
     wrote them, **including each trip's cost line**; and **what the year is planned to cost**
     one scout and one adult in each den, line by line with who it's paid to, and what each
-    reward tier (by name and the **sales that reach each tier**) takes off that;
+    reward tier (by name and the **sales that reach each tier**) takes off that; and the
+    **"who to ask" line** an admin types on the Parent sign-up link card (shown at the foot of
+    every family's page — use a role and the pack's email, not a personal phone);
   - with standings on (the default): the **first names** of the scouts on each storefront
     shift, the scout standings (first name — plus a last initial only where two scouts share
     a first name — den, total raised, and progress toward the reward tiers), one pack goal

@@ -7992,7 +7992,7 @@ test('the parent-view banner names every key the view publishes', () => {
   ok(banner, 'the PUBLISHED list above buildParentView is gone');
   const keys = [...new Set([...src.matchAll(/out\.(\w+) = /g)].map((m) => m[1]))];
   const named = { standings: /standings/, goals: /goal bar/, derby: /derby winners/, tiers: /reward tiers/,
-    tierLadder: /tierLadder/, familyCost: /familyCost/, camping: /camping trips/ };
+    tierLadder: /tierLadder/, familyCost: /familyCost/, camping: /camping trips/, contact: /`contact`.*who to ask/ };
   keys.forEach((k) => {
     ok(named[k], `buildParentView publishes out.${k}, which this test (and the banner) doesn't know about`);
     ok(named[k].test(banner[1]), `out.${k} is published but not listed in the banner`);
@@ -8000,7 +8000,8 @@ test('the parent-view banner names every key the view publishes', () => {
   ok(/salesCents/.test(banner[1]) && /cost line/.test(banner[1]), 'tier sales targets / camping cost are not declared');
   // SETUP.md tells the pack the same thing.
   ok(/including each\s+trip's cost line/.test(SETUP) && /sales that reach each tier/.test(SETUP) &&
-    /what the year is planned to cost/.test(SETUP), 'SETUP.md does not list what the parent view really publishes');
+    /what the year is planned to cost/.test(SETUP) && /"who to ask" line/.test(SETUP),
+    'SETUP.md does not list what the parent view really publishes');
   ok(!/activity costs or expenses/.test(SETUP), 'SETUP.md still claims activity costs are never published');
 });
 
@@ -8318,7 +8319,8 @@ test('calendar-only publishes the calendar and the cost of a year, and no child�
     }
     ${['shortNames', 'publicNameMap', 'buildParentView', 'blocksInDayOrder', 'fmtTimeRange', 'fmtClock',
        'eventIsMeeting', 'eventLabel', 'denListLabel', 'eventDens', 'programYearStartISO',
-       'programYearEndISO'].map(slice).join('\n')}`, ctx);
+       'programYearEndISO', 'cleanContactLine', 'parentContactLine'].map(slice).join('\n')}
+    var sync = {};`, ctx);
   const pv = vm.runInContext('buildParentView(state, { showStandings: false })', ctx);
   const text = JSON.stringify(pv);
   noSurname(text, 'the calendar-only view');
@@ -9381,9 +9383,10 @@ function pvCtx(extra) {
     function standingsEnabled() { return true; }
     function campingTrips() { return []; }
     function familyYearCost() { return []; }
+    var sync = {};
     ${['shortNames', 'publicNameMap', 'buildParentView', 'blocksInDayOrder', 'fmtTimeRange', 'fmtClock',
        'eventIsMeeting', 'eventLabel', 'denListLabel', 'eventDens', 'programYearStartISO',
-       'programYearEndISO'].map(slice).join('\n')}
+       'programYearEndISO', 'cleanContactLine', 'parentContactLine'].map(slice).join('\n')}
     ${extra || ''}`, ctx);
   return ctx;
 }
@@ -9600,6 +9603,34 @@ test('J10: the single-pack sign-in screen names the pack and helps someone with 
   ok(/No Google account\? Any email address can be made into one at <strong>accounts\.google\.com<\/strong>/.test(out),
     'no help for somebody without a Google account');
   ok(/var PACK_PUBLIC_NAME = 'Cub Scout Pack 569';/.test(SCRIPT), 'the public name constant is gone');
+});
+
+test('J11: a leader-written "who to ask" line reaches the foot of every family’s page, and nothing else rides with it', () => {
+  const run = (cfg, show) => {
+    const ctx = pvCtx(`var sync = { joinCfg: ${JSON.stringify(cfg)} };
+      ${slice('cleanContactLine')}
+      ${slice('parentContactLine')}`);
+    return vm.runInContext(`buildParentView(state, { showStandings: ${show} })`, ctx);
+  };
+  eq(run({ contact: '  Membership chair —\n pack569@example.com ' }, false).contact,
+    'Membership chair — pack569@example.com', 'the line is not published, or not cleaned to one line');
+  ok(!('contact' in run({ contact: '   ' }, false)), 'an empty line is published');
+  ok(!('contact' in run(null, false)), 'no join config still publishes a contact key');
+  eq(run({ contact: 'x'.repeat(500) }, false).contact.length, 160, 'the line is not capped');
+  // Calendar-only packs get it too — it names no child.
+  ok(BPV().indexOf('out.contact = contactLine') < BPV().indexOf('if (!withStandings) return out;'),
+    'the contact line sits behind the standings gate');
+  // The footer uses it, escaped; without it the old sentence stands.
+  const ctx = vm.createContext({});
+  vm.runInContext(`var sync = { user: null }; ${slice('esc')} ${slice('parentFooter')}`, ctx);
+  const withC = vm.runInContext(`parentFooter({ packName: 'Pack 569', contact: 'Chair <b>' })`, ctx);
+  ok(/Ask: <strong>Chair &lt;b&gt;<\/strong>/.test(withC), 'the footer does not show the line, or does not escape it');
+  ok(/Ask a pack leader/.test(vm.runInContext(`parentFooter({ packName: 'Pack 569' })`, ctx)), 'the fallback is gone');
+  // The settings field warns that it is public to families.
+  const card = slice('renderJoinCard');
+  ok(/data-ch="join-contact"/.test(card) && /every approved ' \+\s*'family/.test(card) && /not a personal phone/.test(card),
+    'the setting does not say who sees it and what not to put in it');
+  ok(/contact: next\.contact/.test(slice('writeJoinConfig')), 'the line is not saved with the join config');
 });
 
 /* ---------------- report ---------------- */

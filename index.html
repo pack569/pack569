@@ -7385,6 +7385,12 @@
   // Standings (names + totals + derby winners) in the parent view. Default TRUE — a pack with
   // no join config behaves exactly as it always has.
   function standingsEnabled() { return !(sync.joinCfg && sync.joinCfg.showStandings === false); }
+  // The pack's "who to ask" line for families (J11, 2026-09-28): one line, plain text, capped so a
+  // paste of a whole email cannot turn the footer into a page. Pure, so the harness can pin it.
+  function cleanContactLine(v) {
+    return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, 160);
+  }
+  function parentContactLine() { return cleanContactLine(sync.joinCfg && sync.joinCfg.contact); }
 
   // ---- SAFETY: the single-pack-mode cloud gate --------------------------------------------
   // The pack id is public the moment it's baked into this page, so in single-pack mode the
@@ -8397,7 +8403,10 @@
       mode: 'request',
       code: (patch && patch.code) ? patch.code : (curCode || newJoinCode()),
       showStandings: (patch && typeof patch.showStandings === 'boolean')
-        ? patch.showStandings : !(cur.showStandings === false)
+        ? patch.showStandings : !(cur.showStandings === false),
+      // "Who to ask", for the foot of every family's page. Admin-written free text; see
+      // parentContactLine for the cap and buildParentView for where it goes.
+      contact: cleanContactLine((patch && typeof patch.contact === 'string') ? patch.contact : cur.contact)
     };
     // Optimistic local copy so the card responds instantly; the snapshot confirms it, and a
     // denied write rolls it back rather than leaving the card claiming something untrue.
@@ -8406,7 +8415,8 @@
     render();
     scheduleParentViewRefresh();
     var fs = sync.mods.fs;
-    var data = { open: next.open, mode: next.mode, code: next.code, showStandings: next.showStandings, updatedAt: fs.serverTimestamp() };
+    var data = { open: next.open, mode: next.mode, code: next.code, showStandings: next.showStandings,
+      contact: next.contact, updatedAt: fs.serverTimestamp() };
     fs.setDoc(fs.doc(sync.db, 'packs', sync.docId, 'public', 'join'), data).then(function () {
       if (toast) showToast(toast);
     }).catch(function (err) {
@@ -8428,7 +8438,9 @@
   //   derby's name and date; camping trips as leaders typed them, including each trip's
   //   cost line; and `familyCost` — what the year is PLANNED to cost one scout and adult in
   //   each den, line by line with its payee, and what each tier (by name and sales target)
-  //   takes off that.
+  //   takes off that; and `contact` — the admin-typed "who to ask" line for the page footer
+  //   (free text an admin writes FOR families; the join card tells them to use a role and a pack
+  //   email, never a personal phone).
   //   with standings on (the default): the FIRST NAMES on each storefront shift, standings
   //   (first name, den, total raised, reward-tier progress), one pack goal bar, derby winners
   //   and design awards, the reward tiers (name, reward, note, due-by, and `salesCents` — the
@@ -8497,6 +8509,7 @@
   function buildParentView(src, opts) {
     var withStandings = (opts && typeof opts.showStandings === 'boolean')
       ? opts.showStandings : standingsEnabled();
+    var contactLine = cleanContactLine((opts && typeof opts.contact === 'string') ? opts.contact : parentContactLine());
     var prev = state;
     if (src) state = src;
     try {
@@ -8613,6 +8626,12 @@
         events: events
       };
       if (camping.length) out.camping = camping;
+      // WHO TO ASK — J11, 2026-09-28. The one published field a leader types straight into, for the
+      // foot of every family's page in place of a bare "ask a pack leader" (which leader?). An admin
+      // writes it on the join card, which says there that it goes to every approved family and
+      // should be a role and a pack address, never a personal phone. Above the standings gate: it
+      // names no child, and a calendar-only family needs someone to ask just as much.
+      if (contactLine) out.contact = contactLine;
       // Owner ask, 2026-08-02: what a year actually costs a family, published as the pack plans
       // it. This is the joining-meeting question, and it is the figure the reward tiers below are
       // competing with — a family cannot judge "sell $175 and the pack covers your dues" without
@@ -10501,8 +10520,11 @@
   function parentFooter(pv) {
     var who = (sync.user && (sync.user.displayName || sync.user.email)) || 'you';
     var name = (pv && pv.packName) ? String(pv.packName) : 'your pack';
-    return '<p class="small muted pv-foot">View-only — from ' + esc(name) +
-      '. Ask a pack leader for anything you don’t see here.</p>' +
+    var contact = (pv && typeof pv.contact === 'string') ? pv.contact.trim() : '';
+    return '<p class="small muted pv-foot">View-only — from ' + esc(name) + '. ' +
+      (contact
+        ? 'Anything you don’t see here? Ask: <strong>' + esc(contact) + '</strong></p>'
+        : 'Ask a pack leader for anything you don’t see here.</p>') +
       '<div class="row no-print" style="margin-top:8px">' +
       '<span class="small muted">Signed in as ' + esc(who) + '</span>' +
       '<button type="button" class="btn small" data-act="sign-out-google">Sign out</button></div>';
@@ -14424,6 +14446,14 @@
       'standings and on storefront shifts), sales totals, the goal bar, the reward-tier board and derby winners are ' +
       'left out of the published copy entirely — not just hidden — and the monthly digest leaves out its popcorn section. ' +
       'The calendar, the year’s cost for each den (with what each tier takes off it) and the camping pages still show.</p>';
+    // Saved on change (blur), like every other text field, so it is one write rather than one per key.
+    h += '<hr class="divider">' +
+      '<label class="fld" style="display:block">Who families should ask' +
+      '<input data-ch="join-contact" maxlength="160" style="width:100%" value="' + esc(parentContactLine()) + '"' +
+      ' placeholder="e.g. Membership chair — pack569@example.com"></label>' +
+      '<p class="small muted" style="margin:4px 0 0">Shown at the foot of the parent view, to <strong>every approved ' +
+      'family</strong>. Use a role and the pack’s email address — not a personal phone number or home address. ' +
+      'Left empty, the page just says to ask a pack leader.</p>';
     return h + '</div>';
   }
   function syncModeLine() {
@@ -21914,6 +21944,7 @@
     // Join link phase — the self-serve config doc (admin-only; never touches the pack record).
     if (ch === 'join-open') { writeJoinConfig({ open: el.checked }); return; }
     if (ch === 'join-standings') { writeJoinConfig({ showStandings: el.checked }); return; }
+    if (ch === 'join-contact') { writeJoinConfig({ contact: el.value }, 'Saved — families see it on their next visit'); return; }
     // Wave 19(4/23/24) — per-scout roster fields.
     // The "+ Add a brother or sister…" select. Joining somebody joins their FAMILY, not just
     // them, and moves only the scout picked: whoever they were with before stays together.
