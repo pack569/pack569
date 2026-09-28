@@ -10704,7 +10704,20 @@ test('A2: Recognition lists awards ready and adventures finished since the last 
   // Cy's Bobcat is marked done (ready to hand over); the awarded one is not listed again.
   eq(JSON.parse(JSON.stringify(bear.ready)), [{ adventure: 'Bobcat', who: ['Cy'] }], 'awards ready');
   eq(rec.total, 2, 'total');
+  eq(rec.readyCount, 1, 'readyCount counts only awards ready to present');
   ok(!JSON.stringify(rec).includes('Kent') && !JSON.stringify(rec).includes('Roe'), 'a surname is on the recognition list');
+});
+
+// Cubmaster review P2 — "finished but not recorded" is not a Recognition plan.
+test('P2: adventures finished but not recorded do not make Recognition planned', () => {
+  const ctx = recognitionSandbox("m3: { a: { scout: true } }", '', {});
+  const rec = vm.runInContext("packRecognition(state.events.filter(function (e) { return e.id === 'p1'; })[0])", ctx);
+  eq(rec.total, 1, 'Ada\'s finished Bobcat is on the list');
+  eq(rec.readyCount, 0, 'a finished-but-unrecorded adventure counted as ready');
+  // Every "planned" check reads readyCount, none reads total.
+  const calls = SCRIPT.split('\n').filter((l) => /packAgendaMissing\(/.test(l) && !/function packAgendaMissing/.test(l));
+  eq(calls.length, 3, 'planned checks (agenda row, meeting sheet, Home)');
+  for (const u of calls) ok(/readyCount\)/.test(u) && !/\.total\)/.test(u), 'a planned check reads total: ' + u.trim());
 });
 
 test('A2: an adventure finished before the previous pack meeting is not recognised again', () => {
@@ -10739,7 +10752,7 @@ test('A2: the agenda is leaders-only — no outbound surface reads it', () => {
 
 test('A2: Home calls a pack meeting planned from its agenda, not from any note', () => {
   const fn = /function homeTasks\(\) \{[\s\S]*?\n    return out;\n  \}/.exec(SCRIPT)[0];
-  ok(/packAgendaMissing\(nextPack\.agenda, packRecognition\(nextPack\)\.total\)/.test(fn), 'Home does not read the agenda');
+  ok(/packAgendaMissing\(nextPack\.agenda, packRecognition\(nextPack\)\.readyCount\)/.test(fn), 'Home does not read the agenda');
   ok(!/!nextPack\.note && !nextPack\.noteInternal/.test(fn), 'any note still counts as a plan');
   ok(/normalizeAgenda\(e\.agenda\)/.test(slice('normalizeState')), 'a stored agenda is not normalized on load');
 });

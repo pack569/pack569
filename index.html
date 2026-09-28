@@ -11681,7 +11681,7 @@
       // appears besides its own editor.
       if (m.noteInternal) h += line('Leaders only', esc(m.noteInternal));
       if (m.kind === 'pack') {
-        var mMissing = packAgendaMissing(m.agenda, packRecognition(m).total);
+        var mMissing = packAgendaMissing(m.agenda, packRecognition(m).readyCount);
         h += line('Agenda', mMissing.length
           ? '<span class="muted">still to plan: ' + esc(mMissing.map(packAgendaLabel).join(', ')) + '</span>'
           : 'Opening, Recognition and Closing planned');
@@ -12235,8 +12235,10 @@
      Advancement before the night. First names, from the public-name map.
 
      "PLANNED" (packAgendaMissing, which Home reads): Opening, Recognition and Closing each have
-     a who or a note. Recognition also counts when the automatic list has something on it — the
-     awards ARE the plan for that section. Any note text on the meeting used to be enough, which
+     a who or a note. Recognition also counts when there are awards READY to present
+     (packRecognition's readyCount) — those awards ARE the plan for that section. Adventures
+     "finished but not recorded" do not count: nobody has confirmed them yet, so there is
+     nothing to hand over until someone records them (Cubmaster review). Any note text on the meeting used to be enough, which
      said a meeting was planned because somebody wrote "bring a chair". */
   // PACK_AGENDA — the seven sections — is declared further up, above `var state = load()`,
   // because normalizeAgenda reads it while the pack record is being loaded.
@@ -12265,6 +12267,7 @@
     return { who: (v && typeof v.who === 'string') ? v.who : '', notes: (v && typeof v.notes === 'string') ? v.notes : '' };
   }
   // The needed sections this agenda has not planned yet, in agenda order. [] = planned.
+  // recognitionCount is packRecognition's readyCount — awards ready to present, never `total`.
   function packAgendaMissing(agenda, recognitionCount) {
     return PACK_AGENDA_NEEDED.filter(function (key) {
       var v = agenda && agenda[key];
@@ -12278,11 +12281,12 @@
   //   finished  den-meeting runs whose last session fell after the previous pack meeting and on
   //             or before this one, with the scouts who were at every session and have nothing
   //             recorded — confirm and record on Advancement first
-  // Names are first names (publicNameMap). Leaders only.
+  // Names are first names (publicNameMap). Leaders only. `total` counts both (the list is not
+  // empty); `readyCount` counts only the ready-to-present awards — the one "planned" reads.
   function packRecognition(m) {
     var names = publicNameMap(state.scouts);
     function first(s) { return names[s.id] || String(s.name || '').trim().split(/\s+/)[0] || 'A scout'; }
-    var byDen = {}, total = 0;
+    var byDen = {}, total = 0, readyCount = 0;
     function den(d) {
       var k = d || 'No den';
       return byDen[k] || (byDen[k] = { den: k, ready: {}, finished: [] });
@@ -12296,6 +12300,7 @@
           var g = den(s.den);
           (g.ready[nm] = g.ready[nm] || []).push(first(s));
           total += 1;
+          readyCount += 1;
         });
       });
     });
@@ -12325,7 +12330,7 @@
       });
       groups.push({ den: d, ready: readyNames.map(function (nm) { return { adventure: nm, who: g.ready[nm] }; }), finished: g.finished });
     });
-    return { groups: groups, total: total, since: prev ? prev.date : '' };
+    return { groups: groups, total: total, readyCount: readyCount, since: prev ? prev.date : '' };
   }
   // The recognition list as markup — the editor and the printed sheet show the same thing.
   function packRecognitionHtml(rec) {
@@ -12349,7 +12354,7 @@
   // (fourteen fields are too many to show on every pack meeting on the calendar).
   function packAgendaBlock(m) {
     var rec = packRecognition(m);
-    var missing = packAgendaMissing(m.agenda, rec.total);
+    var missing = packAgendaMissing(m.agenda, rec.readyCount);
     var open = !!ui.pkAgendaOpen[m.id];
     var h = '<p class="eyebrow note-cap note-cap-int">Agenda \u00b7 leaders only</p>' +
       '<div class="row no-print" style="gap:6px;align-items:center;flex-wrap:wrap">' +
@@ -16107,7 +16112,7 @@
     // Wave A — planned means the AGENDA has an Opening, Recognition and Closing (see
     // packAgendaMissing). It used to be any note text at all, so "bring a chair" in the parents'
     // note was a planned meeting.
-    var npMissing = nextPack ? packAgendaMissing(nextPack.agenda, packRecognition(nextPack).total) : [];
+    var npMissing = nextPack ? packAgendaMissing(nextPack.agenda, packRecognition(nextPack).readyCount) : [];
     if (npMissing.length) {
       add('cubmaster', 'week', npMissing.length === PACK_AGENDA_NEEDED.length
         ? 'The next pack meeting has no plan yet'
