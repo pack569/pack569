@@ -1482,7 +1482,12 @@ test('the three notch treatments are three treatments, not three shades of one',
   ok(!/\.tprog-tick\.ahead \{[^}]*var\(--surface/.test(SCRIPT_CSS),
     'a notch ahead of the fill is painted in a track colour, which is invisible on the track');
   // Both legends describe all three states — a mark nobody can name is decoration.
-  for (const fn of ['renderTierProgress', 'renderParentStandings']) {
+  // (The parent legend says it in a family's words since 2026-09-28 — "the darkest mark is the one
+  // your scout is working toward next", "a light gap in the filled part" — so it is checked apart.)
+  const pstand = slice('renderParentStandings');
+  ok(/marks along the bar/.test(pstand) && /darkest mark is the one your scout is working toward next/.test(pstand) &&
+    /light gap in the filled part/.test(pstand), 'renderParentStandings does not say what the three notch states mean');
+  for (const fn of ['renderTierProgress']) {
     const src = new RegExp(`function ${fn}\\(\\w*\\) \\{[\\s\\S]*?\\n  \\}`).exec(SCRIPT);
     ok(src, `${fn}() not found`);
     ok(/gap<\/strong>/.test(src[0]) && /mark<\/strong>/.test(src[0]) && /chasing/.test(src[0]),
@@ -6688,7 +6693,7 @@ test('the two fills are not told apart by colour alone', () => {
   for (const fn of ['renderTierProgress', 'renderParentStandings']) {
     const src = new RegExp(`function ${fn}\\(\\w*\\) \\{[\\s\\S]*?\\n  \\}`).exec(SCRIPT);
     ok(src, `${fn}() not found`);
-    ok(/hatched/.test(src[0]), `${fn} does not tell a reader what the second fill looks like`);
+    ok(/hatched|striped part/.test(codeOnly(src[0])), `${fn} does not tell a reader what the second fill looks like`);
     ok(!/\bgreen\b/i.test(codeOnly(src[0])), `${fn} names a colour a reader may not be able to see`);
   }
 });
@@ -7476,7 +7481,7 @@ test('the family bill is grouped rung by rung, with the floor last', () => {
     steps: steps,
     lines: [{ name: 'Blue & Gold', scoutCents: 4200, adultCents: 5600, coverScoutStep: 0, coverAdultStep: -1 }]
   });
-  ok(/the adult’s place stays yours/.test(stuck),
+  ok(/you still pay the adult’s share/.test(stuck),
     'a line whose adult half no rung ever buys reads as fully covered');
 
   // A line that prices no scout at all has no scout share to group on, and sits with the rung
@@ -9496,6 +9501,77 @@ test('J7: a family’s controls are 44px, and the calendar says what is on a day
   ok(/<div class="card no-print"><nav class="camp-toc"/.test(SCRIPT), 'the camping contents menu prints');
   ok(/'<p class="print-only pv-print-head">'/.test(slice('renderParentApp')) && / · printed /.test(slice('renderParentApp')),
     'the printout does not say whose it is or when it was printed');
+});
+
+test('J8: the parent app speaks a family’s language', () => {
+  // No "rung" in anything a parent reads. Code only — the comments are the leaders' notes.
+  const start = SCRIPT.indexOf('  function renderParentApp()');
+  const end = SCRIPT.indexOf('  function parentFooter(');
+  ok(start > -1 && end > start, 'the parent block moved');
+  const block = codeOnly(SCRIPT.slice(start, end));
+  const strings = block.match(/'[^'\n]*'/g) || [];
+  ok(!strings.some((q) => /\brungs?\b/.test(q)), 'a parent-facing string still says "rung": ' +
+    strings.filter((q) => /\brungs?\b/.test(q)).join(' | '));
+  ok(/<th scope="col">Sell by<\/th>/.test(block), 'the tier table’s date column is still headed "By"');
+  ok(/you still pay the adult\\u2019s share/.test(block), 'the adult’s share is still "your place"');
+  ok(/one fee covers the whole family/.test(block), 'a per-family fee still says "one fee per family"');
+  ok(/Storefront \(popcorn booth outside a store\)/.test(block) && /Booth: all shifts filled/.test(block) &&
+    /Booth: a shift still needs a family/.test(block), 'the calendar legend still uses the leaders’ words');
+  ok(/Your pack hasn’t posted its calendar yet\. Check back in a few days, or ask your den leader\./.test(SCRIPT),
+    'the empty calendar does not say who to ask');
+  ok(/Families get a view-only calendar\. Leaders sign in ' \+\s*'here too\. A pack leader approves each account — there’s no password to remember\./.test(slice('renderJoinWelcome')),
+    'the sign-in intro is not the plain version');
+});
+
+test('J8: the standings legend names the pack’s own levels, in plain words', () => {
+  const ctx = sandbox(['esc', 'fmt', 'fmtDate', 'parentBar', 'parentRouteLabel', 'parentRouteNoun',
+    'parentTierProgress', 'parentStandingRow', 'parentStepName', 'parentTierLadder', 'parentCostLine',
+    'parentCostLines', 'parentFamilyCost', 'parentGoalBar', 'renderParentStandings']);
+  ctx.ui = { parentCostOpen: {} };
+  const html = ctx.renderParentStandings({
+    standings: [{ name: 'Ada', combinedCents: 100, nextTier: 'Acorn', nextPct: 10 }],
+    tierLadder: { anchorName: 'Oak', planned: true,
+      marks: [{ name: 'Seed', pct: 20 }, { name: 'Acorn', pct: 50 }, { name: 'Oak', pct: 100, plan: true }],
+      stretch: { topName: 'Redwood', planPct: 70, marks: [] } }
+  });
+  ok(/A full bar means <strong>Oak<\/strong>, the level the pack is aiming for\./.test(html), 'the full bar is not explained');
+  ok(/smaller rewards on the way \(Seed, Acorn\)/.test(html), 'the marks are not named from the pack’s own tiers');
+  ok(!/Bronze|Silver|Gold|Platinum|rung|Notches/.test(html), 'the legend hard-codes tier names or keeps the old jargon');
+  ok(/Scouts who have passed <strong>Oak<\/strong> are measured against <strong>Redwood<\/strong> instead\. The striped part of their bar is what they sold beyond Oak\./.test(html),
+    'the stretch scale is not explained in plain words');
+});
+
+test('J8: What’s coming up is the next 30 days by month, with the rest one tap away', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`var ui = { parentCostOpen: {} };
+    function todayISO() { return '2026-09-28'; }
+    function monthKey(d) { return String(d).slice(0, 7); }
+    function monthLabel(k) { return k === '2026-10' ? 'October 2026' : k === '2026-09' ? 'September 2026' : k; }
+    function fmtDate(d) { return String(d); }
+    function parentCalendar() { return ''; }
+    function parentFamilyCost() { return ''; }
+    ${['esc', 'pad2', 'PARENT_EMPTY_CAL', 'isoPlusDays', 'parentEventsByMonth', 'parentEventRow',
+       'parentShiftLines', 'renderParentSchedule'].map(slice).join('\n')}`, ctx);
+  eq(vm.runInContext("isoPlusDays('2026-09-28', 30)", ctx), '2026-10-28', 'thirty days on');
+  eq(vm.runInContext("isoPlusDays('2026-03-01', 30)", ctx), '2026-03-31', 'across a DST change');
+  ctx.pv = { standings: [], events: [
+    { kind: 'activity', date: '2026-09-01', title: 'Kickoff' },
+    { kind: 'activity', date: '2026-09-30', title: 'Hike' },
+    { kind: 'activity', date: '2026-10-28', title: 'Trunk or treat' },
+    { kind: 'activity', date: '2026-10-29', title: 'Late one' },
+    { kind: 'activity', date: '2027-02-20', title: 'Blue and Gold' }] };
+  const shut = vm.runInContext('renderParentSchedule(pv)', ctx);
+  ok(/Hike/.test(shut) && /Trunk or treat/.test(shut), 'something in the next 30 days is missing');
+  ok(!/Late one/.test(shut) && !/Blue and Gold/.test(shut), 'the rest of the year is shown before it is asked for');
+  ok(/September 2026<\/p>[\s\S]*Hike[\s\S]*October 2026<\/p>[\s\S]*Trunk or treat/.test(shut), 'the events are not grouped by month');
+  ok(/data-act="parent-rest" aria-expanded="false">Show the rest of the year \(2\)/.test(shut), 'no button, or the wrong count');
+  ctx.ui.parentRestOpen = true;
+  const open = vm.runInContext('renderParentSchedule(pv)', ctx);
+  ok(/Late one/.test(open) && /2027-02<\/p>[\s\S]*Blue and Gold/.test(open), 'the rest of the year does not open');
+  ctx.pv = { events: [] };
+  ok(/Your pack hasn’t posted its calendar yet/.test(vm.runInContext('renderParentSchedule(pv)', ctx)),
+    'an empty calendar does not say so plainly');
+  ok(/'parent-rest'/.test(/var PARENT_ACTS = \[([\s\S]*?)\];/.exec(SCRIPT)[1]), 'the rest-of-year button is refused in parent mode');
 });
 
 /* ---------------- report ---------------- */

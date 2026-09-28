@@ -3883,6 +3883,7 @@
     // Parent phase — the parent/pending app's own tiny ui state (never persisted).
     parentTab: 'schedule',    // 'schedule' | 'camping' | 'standings'
     parentEarlierOpen: false, // "Earlier this year" disclosure on the parent Schedule tab
+    parentRestOpen: false,    // "Show the rest of the year" on the parent Schedule tab
     // Which campout the parent Camping tab is showing, as an INDEX into the published
     // camping array — the published trips carry no ids (buildParentView rebuilds each one
     // field by field, and a leader's local trip id is not a parent's business). Like the
@@ -9636,9 +9637,8 @@
         '<div class="join-actions">' +
         '<button type="button" class="btn primary" data-act="sign-in-google">Sign in with Google</button>' +
         '</div>' +
-        '<p class="small muted" style="margin-top:12px">Leaders see the planner; families get a view-only ' +
-        'calendar. New here? Open the sign-up link a pack leader sent you, or ask to be invited — ' +
-        'a pack admin approves everyone, and there’s no passphrase to type.</p>' +
+        '<p class="small muted" style="margin-top:12px">Families get a view-only calendar. Leaders sign in ' +
+        'here too. A pack leader approves each account — there’s no password to remember.</p>' +
         (activeJoin()
           ? '<p class="small muted"><button type="button" class="btn small ghost" data-act="join-forget">Not your pack? Forget this link</button></p>'
           : ''));
@@ -9738,7 +9738,7 @@
         '<p class="small muted" style="margin:0">' +
         (loading
           ? 'Fetching your pack’s schedule.'
-          : 'Your pack hasn’t published a schedule yet — it shows up here as soon as a leader saves a change.') +
+          : PARENT_EMPTY_CAL) +
         '</p></div>';
       return h + parentFooter(pv);
     }
@@ -9938,8 +9938,10 @@
     }
     h += '</div>';
     h += '<div class="row small cal-legend" style="gap:12px;margin-top:10px;color:var(--ink-soft)">' +
-      '<span>' + glyph({ cls: 'dot-store', letter: 'S' }) + ' Storefront (full)</span>' +
-      '<span>' + glyph({ cls: 'dot-store-open', letter: 'S' }) + ' open shift</span>' +
+      // "Storefront" is the council's word; a family new to popcorn has never heard it.
+      '<span>Storefront (popcorn booth outside a store):</span>' +
+      '<span>' + glyph({ cls: 'dot-store', letter: 'S' }) + ' Booth: all shifts filled</span>' +
+      '<span>' + glyph({ cls: 'dot-store-open', letter: 'S' }) + ' Booth: a shift still needs a family</span>' +
       '<span>' + glyph({ cls: 'dot-mtg', letter: 'D' }) + ' Den meeting</span>' +
       '<span>' + glyph({ cls: 'dot-pack', letter: 'P' }) + ' Pack</span>' +
       '<span>' + glyph({ cls: 'dot-act', letter: 'A' }) + ' Activity</span></div>';
@@ -9953,15 +9955,53 @@
     }
     return h + '</div>';
   }
+  // What the parent app says when the pack has published no events at all.
+  var PARENT_EMPTY_CAL = 'Your pack hasn’t posted its calendar yet. Check back in a few days, or ask your den leader.';
+  // An ISO date n days on. Pinned to midday UTC, like daysFromToday, so a daylight-saving change
+  // cannot land it on the wrong day.
+  function isoPlusDays(iso, n) {
+    var t = Date.parse(String(iso) + 'T12:00:00Z');
+    if (!isFinite(t)) return '';
+    return new Date(t + n * 86400000).toISOString().slice(0, 10);
+  }
+  // Event rows under a small heading per month, in the order given (the payload is date-sorted).
+  function parentEventsByMonth(list) {
+    var h = '', cur = '';
+    list.forEach(function (e) {
+      var mk = monthKey(String((e && e.date) || ''));
+      if (mk !== cur) {
+        cur = mk;
+        h += '<p class="eyebrow" style="margin:10px 0 0">' + esc(monthLabel(mk)) + '</p>';
+      }
+      h += parentEventRow(e);
+    });
+    return h;
+  }
   function renderParentSchedule(pv) {
     var today = todayISO();
     var evs = Array.isArray(pv.events) ? pv.events : [];
     var upcoming = evs.filter(function (e) { return String((e && e.date) || '') >= today; });
     var earlier = evs.filter(function (e) { return String((e && e.date) || '') < today; });
     var h = parentCalendar(pv, today);
+    // THE NEXT 30 DAYS, BY MONTH — parent-experience audit, 2026-09-28. The whole rest of the year
+    // in one list was a scroll past March to reach the footer, when the question on a Tuesday is
+    // "what is on this month". The rest is one tap away, and says how much of it there is.
+    var cutoff = isoPlusDays(today, 30);
+    var soon = upcoming.filter(function (e) { return String(e.date) <= cutoff; });
+    var later = upcoming.filter(function (e) { return String(e.date) > cutoff; });
+    var restOpen = !!ui.parentRestOpen;
     h += '<div class="card"><h2 class="section display">What’s coming up</h2>';
-    if (!upcoming.length) h += '<p class="small muted" style="margin:0">Nothing scheduled yet — check back soon.</p>';
-    else upcoming.forEach(function (e) { h += parentEventRow(e); });
+    if (!evs.length) h += '<p class="small muted" style="margin:0">' + PARENT_EMPTY_CAL + '</p>';
+    else if (!upcoming.length) h += '<p class="small muted" style="margin:0">Nothing else on the calendar this year yet.</p>';
+    else {
+      if (!soon.length) h += '<p class="small muted" style="margin:0 0 6px">Nothing in the next 30 days.</p>';
+      h += parentEventsByMonth(restOpen ? upcoming : soon);
+      if (later.length) {
+        h += '<button type="button" class="btn small no-print" style="margin-top:8px" data-act="parent-rest" aria-expanded="' +
+          restOpen + '">' + (restOpen ? 'Show only the next 30 days' : 'Show the rest of the year (' + later.length + ')') +
+          '</button>';
+      }
+    }
     h += '</div>';
     if (earlier.length) {
       var open = !!ui.parentEarlierOpen;
@@ -9999,7 +10039,7 @@
     var h = '<div class="card pv-ladder"><h2 class="section display">Reward tiers</h2>' +
       '<div class="tbl-wrap"><table><thead><tr>' +
       '<th scope="col">Sell</th><th scope="col">Tier</th>' +
-      '<th scope="col">What it gets you</th><th scope="col">By</th>' +
+      '<th scope="col">What it gets you</th><th scope="col">Sell by</th>' +
       '</tr></thead><tbody>';
     tiers.forEach(function (t) {
       var target = (t && typeof t.salesCents === 'number') ? fmt(t.salesCents) : '—';
@@ -10022,7 +10062,7 @@
     // money, under your den — is the card that begins on the very next page.
     return h + '</tbody></table></div>' +
       '<p class="small muted pv-ladder-note" style="margin:10px 0 0">Figures are what a scout needs to <strong>sell</strong> ' +
-      'to reach each tier, and each rung keeps everything the ones below it cover. What that is worth ' +
+      'to reach each tier, and each reward level keeps everything the ones below it cover. What that is worth ' +
       'in money is under your den in <strong>What a year costs a family</strong>. Ask a pack leader if ' +
       'you are not sure where your scout stands.</p></div>';
   }
@@ -10033,7 +10073,7 @@
   function parentStepName(st) {
     var n = String((st && st.name) || '');
     if (n) return n;
-    return (st && typeof st.salesCents === 'number') ? 'the ' + fmt(st.salesCents) + ' rung' : 'a reward tier';
+    return (st && typeof st.salesCents === 'number') ? 'the ' + fmt(st.salesCents) + ' reward level' : 'a reward tier';
   }
   // One line of the bill, with one clause the flat list never needed: what the rung heading above
   // it is NOT buying. A line sitting under "Comes off at Gold" whose accompanying adult is still
@@ -10051,13 +10091,13 @@
         // is the opposite of what it says: that half of this line is not bought until a rung
         // further up.
         ? ' <span class="muted">\u00b7 the adult\u2019s cost comes off at ' + esc(parentStepName(steps[ai])) + '</span>'
-        : ' <span class="muted">\u00b7 the adult\u2019s place stays yours</span>';
+        : ' <span class="muted">\u00b7 you still pay the adult\u2019s share</span>';
     }
     return '<li>' + esc(String(x.name || '')) + ' \u2014 <span class="money">' +
       fmt((x.scoutCents || 0) + (x.adultCents || 0)) + '</span>' +
       ((x.adultCents || 0) ? ' <span class="muted">(scout ' + fmt(x.scoutCents || 0) +
         ' + adult ' + fmt(x.adultCents) + ')</span>' : '') +
-      (x.perFamily ? ' <span class="muted">one fee per family</span>' : '') +
+      (x.perFamily ? ' <span class="muted">one fee covers the whole family</span>' : '') +
       ((x.siblingCents || 0) ? ' <span class="muted">\u00b7 sibling ' + fmt(x.siblingCents) + '</span>' : '') +
       (x.direct ? ' <span class="pill navy">' + esc(String(x.payee || 'paid direct')) + '</span>' : '') +
       note + '</li>';
@@ -10197,7 +10237,7 @@
             '</td><td style="white-space:normal">' + esc(String(x.name || '')) + '</td>' +
             '<td class="money" style="font-weight:650;white-space:nowrap">' + fmt(x.afterCents || 0) + '</td></tr>';
         }).join('') + '</tbody></table></div>' +
-        '<p class="small muted" style="margin:6px 0 10px">Each rung includes the ones below it, so ' +
+        '<p class="small muted" style="margin:6px 0 10px">Each reward level includes the ones below it, so ' +
         'reaching a higher tier keeps everything the earlier ones cover. Figures are what a scout ' +
         'needs to <strong>sell</strong>.</p>' +
         '</div></div>';
@@ -10398,30 +10438,32 @@
       // published before 2026-08-31, and the rows then draw plain bars exactly as they used to.
       var ladder = (pv.tierLadder && typeof pv.tierLadder === 'object' && !Array.isArray(pv.tierLadder))
         ? pv.tierLadder : null;
+      // PLAIN WORDS — parent-experience audit, 2026-09-28. "Notches are the other rungs (Bronze at
+      // 25%…)" was the app's vocabulary, not a family's. Every name comes from the payload — a pack
+      // that calls its levels something else gets its own names here, never "Bronze".
       if (ladder) {
-        var lmarks = Array.isArray(ladder.marks) ? ladder.marks : [];
-        h += '<p class="small muted" style="margin:0 0 10px">A full bar is <strong>' +
-          esc(String(ladder.anchorName || 'the top tier')) + '</strong>' +
-          (ladder.planned ? ' — the level the pack plans on' : ', the top of the ladder') +
+        var lmarks = (Array.isArray(ladder.marks) ? ladder.marks : []).filter(function (m) {
+          return m && !m.plan && String(m.name || '');
+        });
+        var anchorNm = esc(String(ladder.anchorName || 'the top reward level'));
+        h += '<p class="small muted" style="margin:0 0 10px">A full bar means <strong>' + anchorNm + '</strong>' +
+          (ladder.planned ? ', the level the pack is aiming for.' : ', the top reward level.') +
           (lmarks.length
-            ? '. Notches are the other rungs (' +
-              lmarks.map(function (m) {
-                return esc(String(m.name || 'a tier')) + ' at ' + esc(String(m.pct)) + '%';
-              }).join(', ') + ') — a <strong>gap</strong> in the bar where your scout has passed one, ' +
-              'a <strong>mark</strong> on the empty track where they have not, and the boldest mark ' +
-              'on the one they are chasing'
-            : '') + '.</p>';
+            ? ' The marks along the bar are the smaller rewards on the way (' +
+              lmarks.map(function (m) { return esc(String(m.name)); }).join(', ') + '). ' +
+              'The darkest mark is the one your scout is working toward next; one they have already ' +
+              'passed shows as a light gap in the filled part.'
+            : '') + '</p>';
         // The second scale, only where the pack has a rung above the plan. Names no colour: the
         // two fills are within 1.09:1 of each other in luminance, so the hatching is what actually
         // tells them apart and "the green part" would fail exactly the readers this sentence is
         // written for. A notch is a position, and everyone can find a position.
         var lstretch = (ladder.stretch && typeof ladder.stretch === 'object') ? ladder.stretch : null;
         if (lstretch) {
-          h += '<p class="small muted" style="margin:0 0 10px">A scout who has passed <strong>' +
-            esc(String(ladder.anchorName || 'the planned tier')) + '</strong> is measured to <strong>' +
-            esc(String(lstretch.topName || 'the top tier')) + '</strong> instead, so their bar is drawn to a ' +
-            'different scale. The part past the wide gap is shaded and hatched — that is what ' +
-            'they have done beyond what the pack planned for.</p>';
+          var planNm = esc(String(ladder.anchorName || 'the planned level'));
+          h += '<p class="small muted" style="margin:0 0 10px">Scouts who have passed <strong>' + planNm +
+            '</strong> are measured against <strong>' + esc(String(lstretch.topName || 'the top reward level')) +
+            '</strong> instead. The striped part of their bar is what they sold beyond ' + planNm + '.</p>';
         }
       }
       rows.forEach(function (r, i) { h += parentStandingRow(r, i, ladder); });
@@ -20543,7 +20585,7 @@
   // 'parent-preview-off' is on this list because it is the only way OUT of the preview: every
   // other leader action is refused while parentMode() is true, so an exit that was not allowlisted
   // would leave an admin stuck until they reloaded.
-  var PARENT_ACTS = ['parent-tab', 'parent-camp-trip', 'parent-earlier', 'parent-cal-prev', 'parent-cal-next',
+  var PARENT_ACTS = ['parent-tab', 'parent-camp-trip', 'parent-earlier', 'parent-rest', 'parent-cal-prev', 'parent-cal-next',
     'parent-cal-day', 'parent-cost-toggle', 'parent-preview-off', 'parent-print', 'sign-out-google', 'toast-action'];
   // Join link phase — the three gate screens emit only these. Anything else that somehow
   // reaches the handler while a gate is up is ignored, so no code path can read or mutate
@@ -20647,6 +20689,7 @@
       render(); return;
     }
     if (act === 'parent-earlier') { ui.parentEarlierOpen = !ui.parentEarlierOpen; render(); return; }
+    if (act === 'parent-rest') { ui.parentRestOpen = !ui.parentRestOpen; render(); return; }
     // A campout sub-tab. Validated against the published list rather than trusted, and
     // parentCampTrip() re-validates on the way out, so a trip the pack deletes between renders
     // falls back to the first one instead of rendering an empty page.
