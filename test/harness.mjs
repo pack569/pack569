@@ -10534,6 +10534,34 @@ test('A4: repeated copies take the adventure only when asked, and so become sess
   eq([r.position, r.of], [2, 3], 'the repeated meetings are not one run');
 });
 
+// A3 — the make-up-at-home message.
+test('A3: the make-up message names the scout by first name, the adventure, the night, and who signs', () => {
+  const ctx = sandbox(['makeupMessage']);
+  const wolf = ctx.makeupMessage({ first: 'Ben', den: 'Wolf', adventure: 'Council Fire', dates: ['Wed, Aug 12'], packName: 'Pack 569' });
+  ok(/^Hi! Ben missed the Wolf den meeting on Wed, Aug 12, when we worked on the Council Fire adventure\./.test(wolf), wolf);
+  ok(/do the Council Fire requirement we covered that night at home with Ben, sign it in the handbook, and tell your den leader/.test(wolf),
+    'a Wolf family is not told to do it at home, sign it and tell the den leader');
+  ok(/— Pack 569$/.test(wolf), 'no sign-off');
+  // Webelos and Arrow of Light: the den leader signs (DESIGN-adventures.md §3).
+  const web = ctx.makeupMessage({ first: 'Cy', den: 'Webelos', adventure: 'My Safety', dates: ['Sep 1', 'Sep 15'] });
+  ok(/tell your den leader, who will check it and sign it off/.test(web), 'a Webelos family is told to sign it themselves');
+  ok(!/sign it in the handbook/.test(web), 'a Webelos family is told to sign it themselves');
+  ok(/the Webelos den meetings on Sep 1 and Sep 15/.test(web), 'two missed nights are not both named');
+  for (const m of [wolf, web]) ok(!/cannot earn|forfeit|missed out/i.test(m), 'the message says the adventure is lost');
+});
+
+test('A3: the message is copy-only — first names, nothing stored, nothing published', () => {
+  const btn = slice('makeupMsgBtn');
+  ok(/publicNameMap\(state\.scouts\)/.test(btn), 'the button labels the scout by full name');
+  const h = /if \(act === 'makeup-msg'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/var mmFirst = publicNameMap\(state\.scouts\)\[mmRow\.scout\.id\]/.test(h), 'the message uses the full name');
+  ok(!/commit\(\)|save\(\)/.test(h), 'composing the message writes the pack record');
+  ok(!/makeupMessage|makeup-msg/.test(BPV()), 'the make-up message reached the parent view');
+  // Offered on both make-up lists: the meeting's and the Advancement card's.
+  ok(/makeupMsgBtn\(r\.run, row\)/.test(slice('renderMeetingAdvMark')), 'no button on the meeting’s make-up list');
+  ok(/makeupMsgBtn\(run, row\)/.test(slice('renderAdventureRunsCard')), 'no button on the Advancement make-up list');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

@@ -6893,6 +6893,48 @@
   function sessionLabel(pos, of) {
     return of <= 1 ? 'one session' : ('session ' + pos + ' of ' + of);
   }
+  /* ----- Make-up at home: the message for the family (Wave A, 2026-09-28) ----------------
+     The make-up list says who missed a session; this is the note a den leader sends them.
+     PLAIN TEXT TO COPY — nothing is published, stored or sent. The leader pastes it into
+     whatever they already use (BAND, text, email), and can edit it first.
+
+     Who signs is the one fact the wording depends on, and it is from the researched
+     advancement guidance in DESIGN-adventures.md §3: for Lion, Tiger, Wolf and Bear a
+     requirement done at home is signed by the parent or adult partner and then approved by the
+     den leader; for Webelos and Arrow of Light the den leader signs. A den-less ("All dens")
+     run gets the first wording, the common case.
+
+     The app tracks adventures, not requirements, so the message names the adventure and the
+     night — the leader adds the requirement number if they have it (the overlay says so). First
+     name only, from the public-name map. Nothing in it may suggest the adventure is lost (harness scan). */
+  function makeupMessage(o) {
+    var first = o.first || 'your Scout';
+    var nights = (o.dates || []).filter(Boolean);
+    var when = nights.length > 1
+      ? nights.slice(0, -1).join(', ') + ' and ' + nights[nights.length - 1]
+      : (nights[0] || 'a recent meeting');
+    var mtg = o.den ? 'the ' + o.den + ' den meeting' + (nights.length > 1 ? 's' : '') : 'our den meeting' + (nights.length > 1 ? 's' : '');
+    var leaderSigns = o.den === 'Webelos' || o.den === 'Arrow of Light';
+    var lines = [];
+    lines.push('Hi! ' + first + ' missed ' + mtg + ' on ' + when + ', when we worked on the ' + o.adventure + ' adventure.');
+    lines.push('');
+    lines.push('That is easy to make up. Please do the ' + o.adventure + ' requirement' + (nights.length > 1 ? 's' : '') +
+      ' we covered that night at home with ' + first + ', ' +
+      (leaderSigns
+        ? 'then tell your den leader, who will check it and sign it off.'
+        : 'sign it in the handbook, and tell your den leader so it can be approved.'));
+    lines.push('Ask me if you would like to know exactly what we did.');
+    if (o.packName) { lines.push(''); lines.push('— ' + o.packName); }
+    return lines.join('\n');
+  }
+  // The "Message for the family" button for one scout on a run's make-up list. The run is
+  // found again by its key when tapped, so nothing about it rides in the DOM but ids.
+  function makeupMsgBtn(run, row) {
+    var first = publicNameMap(state.scouts)[row.scout.id] || row.scout.name;
+    return '<button type="button" class="btn small ghost" data-act="makeup-msg" data-key="' + esc(run.key) +
+      '" data-scout="' + esc(row.scout.id) + '" aria-label="' + esc('Message for ' + first + '’s family') + '">' +
+      'Message for the family</button>';
+  }
   function advRec(scoutId) { return state.advancement[scoutId] || null; }
   function advStatus(scoutId, kind, name) {
     var a = advRec(scoutId);
@@ -7000,7 +7042,8 @@
           '<span class="adv-prog-n">' + row.count + ' of ' + row.total + '</span>' +
           (badge ? ' ' + badge : '') +
           (row.missed.length && !row.status
-            ? '<span class="small muted">make up ' + esc(row.missed.map(function (ev) { return fmtDateShort(ev.date); }).join(', ')) + '</span>'
+            ? '<span class="small muted">make up ' + esc(row.missed.map(function (ev) { return fmtDateShort(ev.date); }).join(', ')) + '</span>' +
+              makeupMsgBtn(run, row)
             : '') + '</div>';
       }).join('') + '</div>';
       if (done.length === p.scouts.length) {
@@ -11605,7 +11648,11 @@
         shortOf.map(function (row) { return esc(row.scout.name); }).join(', ') +
         (shortOf.length === 1 ? ' has ' : ' have ') + 'missed a session. That does not cost them the ' +
         'adventure — “Do Your Best” is the standard and the work can be done at home, signed by a ' +
-        'parent, then approved by you. Mark them on <strong>Advancement</strong> once it is.</p>';
+        'parent, then approved by you. Mark them on <strong>Advancement</strong> once it is.</p>' +
+        '<div class="row no-print" style="margin-top:6px;gap:6px">' + shortOf.map(function (row) {
+          return '<span class="small">' + esc(publicNameMap(state.scouts)[row.scout.id] || row.scout.name) + '</span>' +
+            makeupMsgBtn(r.run, row);
+        }).join('') + '</div>';
     }
     if (!backed.length && recorded.length === p.scouts.length && p.scouts.length) {
       h += '<p class="small muted" style="margin:6px 0 0">Recorded for every scout in the den.</p>';
@@ -18199,6 +18246,19 @@
           : '') +
         '</div></div></div>';
     }
+    // Wave A — the make-up message. Editable: the leader adds the requirement number, or says
+    // it their own way. Copy takes whatever is in the box. Nothing here is stored or sent.
+    if (o.kind === 'makeup-msg') {
+      return '<div class="overlay" role="dialog" aria-modal="true" aria-label="Message for the family"><div class="overlay-inner">' +
+        '<div class="row no-print" style="margin-bottom:12px">' +
+        '<button type="button" class="btn" data-act="close-overlay">&larr; Back</button>' +
+        '<button type="button" class="btn primary" data-act="copy-makeup-msg">' + (o.copied ? 'Copied ✓' : 'Copy') + '</button></div>' +
+        '<div class="card"><p class="eyebrow">Message for ' + esc(o.first) + '’s family · ' + esc(o.adventure) + '</p>' +
+        '<textarea class="export-box" id="makeupMsgBox" style="height:200px" aria-label="Message for the family">' + esc(o.text) + '</textarea>' +
+        '<p class="small muted" style="margin:8px 0 0">Copy it into BAND, a text or an email — the app does not send it, ' +
+        'and nothing here is published. The app tracks adventures, not requirements, so add the requirement number ' +
+        'if you have it.</p></div></div></div>';
+    }
     if (o.kind === 'export') {
       return '<div class="overlay" role="dialog" aria-modal="true" aria-label="' + esc(o.title) + '"><div class="overlay-inner">' +
         '<div class="row no-print" style="margin-bottom:12px">' +
@@ -21189,6 +21249,9 @@
     // Wave 11 — keep the new-storefront name draft live so it survives re-renders while queuing dates.
     var sfName = e.target.closest('input[data-ch="sf-new-name"]');
     if (sfName) ui.sfDraft.name = sfName.value;
+    // Wave A — the make-up message box is edited in place; keep the draft so a re-render
+    // (a sync pull, say) does not throw the leader's wording away.
+    if (e.target.id === 'makeupMsgBox' && ui.overlay && ui.overlay.kind === 'makeup-msg') ui.overlay.text = e.target.value;
     // Grow as you type. Deliberately NOT routed through handleChange: that commits and
     // re-renders, and re-rendering on every keystroke inside a long body would fight the caret.
     // The text still saves on change/blur exactly as before — this only changes the box's height.
@@ -22069,6 +22132,24 @@
     if (act === 'export-csv') {
       ui.overlay = { kind: 'export', title: 'Scout totals (CSV)', name: 'popcorn-totals.csv', mime: 'text/csv', text: buildCsv() };
       render(); return;
+    }
+    // Wave A — compose the make-up message for one scout on one run. Copy only.
+    if (act === 'makeup-msg') {
+      var mmRun = adventureRuns().find(function (r) { return r.key === el.dataset.key; });
+      var mmRow = mmRun && runProgress(mmRun).scouts.find(function (row) { return row.scout.id === el.dataset.scout; });
+      if (!mmRow) return;
+      var mmFirst = publicNameMap(state.scouts)[mmRow.scout.id] || mmRow.scout.name;
+      ui.overlay = { kind: 'makeup-msg', first: mmFirst, adventure: mmRun.adventure, text: makeupMessage({
+        first: mmFirst, den: mmRun.den, adventure: mmRun.adventure, packName: state.packName || '',
+        dates: mmRow.missed.map(function (ev) { return fmtDate(ev.date); })
+      }) };
+      render(); return;
+    }
+    if (act === 'copy-makeup-msg') {
+      var mmBox = document.getElementById('makeupMsgBox');
+      if (mmBox) ui.overlay.text = mmBox.value;
+      copyText(ui.overlay.text, function () { ui.overlay.copied = true; render(); }, 'makeupMsgBox');
+      return;
     }
     if (act === 'copy-export') {
       copyText(ui.overlay.text, function () { ui.overlay.copied = true; render(); });
