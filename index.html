@@ -7120,8 +7120,10 @@
      Who signs is the one fact the wording depends on, and it is from the researched
      advancement guidance in DESIGN-adventures.md §3: for Lion, Tiger, Wolf and Bear a
      requirement done at home is signed by the parent or adult partner and then approved by the
-     den leader; for Webelos and Arrow of Light the den leader signs. A den-less ("All dens")
-     run gets the first wording, the common case.
+     den leader; for Webelos and Arrow of Light the den leader signs. Who signs follows the
+     SCOUT's den (o.signDen), not the run's: on an "All dens" run (o.den '') a Webelos or Arrow
+     of Light scout still gets the leader-signs wording. With no den to name, the meeting is
+     "our pack meeting" — an all-dens run is not any one den's meeting. (Cubmaster review.)
 
      The app tracks adventures, not requirements, so the message names the adventure and the
      night — the leader adds the requirement number if they have it (the overlay says so). First
@@ -7132,8 +7134,9 @@
     var when = nights.length > 1
       ? nights.slice(0, -1).join(', ') + ' and ' + nights[nights.length - 1]
       : (nights[0] || 'a recent meeting');
-    var mtg = o.den ? 'the ' + o.den + ' den meeting' + (nights.length > 1 ? 's' : '') : 'our den meeting' + (nights.length > 1 ? 's' : '');
-    var leaderSigns = o.den === 'Webelos' || o.den === 'Arrow of Light';
+    var mtg = o.den ? 'the ' + o.den + ' den meeting' + (nights.length > 1 ? 's' : '') : 'our pack meeting' + (nights.length > 1 ? 's' : '');
+    var signDen = o.signDen || o.den;
+    var leaderSigns = signDen === 'Webelos' || signDen === 'Arrow of Light';
     var lines = [];
     lines.push('Hi! ' + first + ' missed ' + mtg + ' on ' + when + ', when we worked on the ' + o.adventure + ' adventure.');
     lines.push('');
@@ -23454,7 +23457,7 @@
       if (!mmRow) return;
       var mmFirst = publicNameMap(state.scouts)[mmRow.scout.id] || mmRow.scout.name;
       ui.overlay = { kind: 'makeup-msg', first: mmFirst, adventure: mmRun.adventure, text: makeupMessage({
-        first: mmFirst, den: mmRun.den, adventure: mmRun.adventure, packName: state.packName || '',
+        first: mmFirst, den: mmRun.den, signDen: mmRow.scout.den || mmRun.den, adventure: mmRun.adventure, packName: state.packName || '',
         dates: mmRow.missed.map(function (ev) { return fmtDate(ev.date); })
       }) };
       render(); return;

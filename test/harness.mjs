@@ -10576,6 +10576,20 @@ test('A3: the message is copy-only — first names, nothing stored, nothing publ
   ok(/makeupMsgBtn\(run, row\)/.test(slice('renderAdventureRunsCard')), 'no button on the Advancement make-up list');
 });
 
+// Cubmaster review P1 — on an "All dens" run, who signs follows the scout's own den.
+test('P1: an All-dens make-up message signs by the scout\'s den and names no den meeting', () => {
+  const ctx = sandbox(['makeupMessage']);
+  const aol = ctx.makeupMessage({ first: 'Ada', den: '', signDen: 'Arrow of Light', adventure: 'Outdoor Adventurer', dates: ['Sep 1'] });
+  ok(/tell your den leader, who will check it and sign it off/.test(aol), 'an AoL scout on an All-dens run got parent-signs wording');
+  ok(!/sign it in the handbook/.test(aol), 'an AoL scout on an All-dens run was told to sign it');
+  ok(/missed our pack meeting on Sep 1/.test(aol), aol);
+  ok(!/den meeting/.test(aol), 'an All-dens run called "our den meeting"');
+  const tiger = ctx.makeupMessage({ first: 'Tom', den: '', signDen: 'Tiger', adventure: 'Tiger Bites', dates: ['Sep 1'] });
+  ok(/sign it in the handbook/.test(tiger), 'a Tiger on an All-dens run lost parent-signs wording');
+  const h = /if \(act === 'makeup-msg'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/signDen: mmRow\.scout\.den/.test(h), 'the caller does not pass the scout\'s own den');
+});
+
 // A1 — the den year planner.
 function planSandbox(events) {
   const ctx = runSandbox(RUN_SETUP.replace(/var EVENTS = \[[\s\S]*?\n  \];/, `var EVENTS = ${JSON.stringify(events)};`));
