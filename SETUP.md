@@ -174,7 +174,10 @@ calendar but not the money" is impossible to do by permission alone. Instead the
   - always: the pack name and program year; the program year's events (July 1 to June 30) — storefront dates with
     their shift windows, den/pack meetings with time and location note, dated activities
     with time, place and which dens; the derby's name and date; the camping trips as leaders
-    wrote them, **including each trip's cost line**; and **what the year is planned to cost**
+    wrote them, **including each trip's cost line**; the **New to the pack** page (`welcome`)
+    as leaders wrote it — each section's heading, text and link — once a leader has ticked
+    **Show this page to families** (Scouts → New families), leaving out any section that is
+    hidden or still says "[pack to fill in"; and **what the year is planned to cost**
     one scout and one adult in each den, line by line with who it's paid to, and what each
     reward tier (by name and the **sales that reach each tier**) takes off that; and the
     **"who to ask" line** an admin types on the Parent sign-up link card (shown at the foot of
@@ -207,7 +210,9 @@ calendar but not the money" is impossible to do by permission alone. Instead the
   any raw form.
 - Parents and pending users are **denied the ledger document outright** by the rules below,
   so this isn't a UI choice — the pack's finances never reach their browser at all.
-- In the app, a parent gets a stripped-down two-tab view (**Schedule** and **Standings**).
+- In the app, a parent gets a stripped-down view: **Schedule** and **Standings**, plus
+  **Camping** and **New to the pack** when the pack has published them (a family opens on New
+  to the pack until they have seen it once on that device).
   The Pack tab, Members card, Budget, Inventory, Scouts, Advancement and Derby tabs aren't
   rendered for them at all.
 
@@ -218,7 +223,7 @@ shifts are then left out of `packs/{doc}/public/view` **entirely** — not merel
 UI — so no child is named anywhere in it, and the monthly digest leaves out its popcorn
 section. Parents get the Schedule tab (the shift times still show, without names, and
 **what a year costs** each den moves onto it, still with what each tier takes off it) and
-the Camping tab if you've written one. Tick it again and the next leader save republishes the rest. It's
+the Camping and New to the pack tabs if you've written them. Tick it again and the next leader save republishes the rest. It's
 on by default, so a pack that never touches this behaves exactly as before.
 
 ### 1. Enable Google sign-in in the Firebase console

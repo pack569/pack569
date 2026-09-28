@@ -965,6 +965,9 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'CAMP_SAFETY', 'CAMP_AGES', 'CAMP_WHY_COUNCIL', 'CAMP_FIRST_TIME',
   'freshTripSection', 'freshTrip', 'seedCampingTrips', 'freshCamping',
   'CAMP_SEED_REV', 'CAMP_OLD_SEED', 'campHash', 'refreshCampingSeed',
+  // Wave B1 — and seeds "New to the pack" the same way.
+  'WELCOME_SEED_REV', 'WELCOME_OLD_SEED', 'WELCOME_FILL_RE', 'freshWelcomeSection', 'seedWelcomeSections',
+  'freshWelcome', 'refreshWelcomeSeed',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
   'parseLegacyTime', 'migrateTierMakeUp', 'normalizeState', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'entrySignedCents',
@@ -8034,7 +8037,8 @@ test('the parent-view banner names every key the view publishes', () => {
   ok(banner, 'the PUBLISHED list above buildParentView is gone');
   const keys = [...new Set([...src.matchAll(/out\.(\w+) = /g)].map((m) => m[1]))];
   const named = { standings: /standings/, goals: /goal bar/, derby: /derby winners/, tiers: /reward tiers/,
-    tierLadder: /tierLadder/, familyCost: /familyCost/, camping: /camping trips/, contact: /`contact`.*who to ask/ };
+    tierLadder: /tierLadder/, familyCost: /familyCost/, camping: /camping trips/, contact: /`contact`.*who to ask/,
+    welcome: /`welcome`[\s\S]*New to the pack/ };
   keys.forEach((k) => {
     ok(named[k], `buildParentView publishes out.${k}, which this test (and the banner) doesn't know about`);
     ok(named[k].test(banner[1]), `out.${k} is published but not listed in the banner`);
@@ -8042,7 +8046,8 @@ test('the parent-view banner names every key the view publishes', () => {
   ok(/salesCents/.test(banner[1]) && /cost line/.test(banner[1]), 'tier sales targets / camping cost are not declared');
   // SETUP.md tells the pack the same thing.
   ok(/including each\s+trip's cost line/.test(SETUP) && /sales that reach each tier/.test(SETUP) &&
-    /what the year is planned to cost/.test(SETUP) && /"who to ask" line/.test(SETUP),
+    /what the year is planned to cost/.test(SETUP) && /"who to ask" line/.test(SETUP) &&
+    /\*\*New to the pack\*\* page/.test(SETUP),
     'SETUP.md does not list what the parent view really publishes');
   ok(!/activity costs or expenses/.test(SETUP), 'SETUP.md still claims activity costs are never published');
   // S5 (2026-09-28): every per-row field, both ways, named in the banner AND in SETUP.md.
@@ -8389,7 +8394,8 @@ test('calendar-only publishes the calendar and the cost of a year, and no child�
         lines: [{ name: 'Youth registration', scout: 9600, adult: 0, sibling: 0, direct: true, payee: 'Council',
           perFamily: false, coverScoutStep: 0, coverAdultStep: -1 }] }];
     }
-    ${['shortNames', 'publicNameMap', 'buildParentView', 'blocksInDayOrder', 'fmtTimeRange', 'fmtClock',
+    ${['shortNames', 'publicNameMap', 'buildParentView', 'WELCOME_FILL_RE', 'welcomeHoldReason', 'publishedWelcome',
+       'blocksInDayOrder', 'fmtTimeRange', 'fmtClock',
        'eventIsMeeting', 'eventLabel', 'denListLabel', 'eventDens', 'programYearStartISO',
        'programYearEndISO', 'cleanContactLine', 'parentContactLine', 'amountsEnabled'].map(slice).join('\n')}
     var sync = {};`, ctx);
@@ -9518,7 +9524,8 @@ function pvCtx(extra) {
     function campingTrips() { return []; }
     function familyYearCost() { return []; }
     var sync = {};
-    ${['shortNames', 'publicNameMap', 'buildParentView', 'coarseBarPct', 'blocksInDayOrder', 'fmtTimeRange', 'fmtClock',
+    ${['shortNames', 'publicNameMap', 'buildParentView', 'WELCOME_FILL_RE', 'welcomeHoldReason', 'publishedWelcome',
+       'coarseBarPct', 'blocksInDayOrder', 'fmtTimeRange', 'fmtClock',
        'eventIsMeeting', 'eventLabel', 'denListLabel', 'eventDens', 'programYearStartISO',
        'programYearEndISO', 'cleanContactLine', 'parentContactLine', 'amountsEnabled'].map(slice).join('\n')}
     ${extra || ''}`, ctx);
@@ -10718,6 +10725,196 @@ test('A2: Home calls a pack meeting planned from its agenda, not from any note',
   ok(/normalizeAgenda\(e\.agenda\)/.test(slice('normalizeState')), 'a stored agenda is not normalized on load');
 });
 
+/* ========================================================================
+   Wave B — families and joining (2026-09-28)
+   ===================================================================== */
+
+// The welcome page's pure pieces, with a counting uid() so ids are predictable.
+function wCtx() {
+  const ctx = vm.createContext({});
+  vm.runInContext(`var __n = 0; function uid() { __n += 1; return 'w' + __n; }
+    ${['campHash', 'WELCOME_SEED_REV', 'WELCOME_OLD_SEED', 'WELCOME_FILL_RE', 'freshWelcomeSection',
+       'seedWelcomeSections', 'freshWelcome', 'refreshWelcomeSeed', 'welcomeHoldReason', 'publishedWelcome'].map(slice).join('\n')}`, ctx);
+  return ctx;
+}
+
+test('B1: the "New to the pack" seed says what the New Member Coordinator gave, and invents no figure', () => {
+  const ctx = wCtx();
+  const secs = ctx.seedWelcomeSections();
+  const titles = secs.map((s) => s.title);
+  eq(titles, ['Welcome', 'Your first month', 'How to register with Scouting America', 'What it costs',
+    'Uniform and handbook', 'Health form', 'Keeping kids safe', 'Questions families ask'], 'the seeded sections');
+  eq(new Set(secs.map((s) => s.id)).size, secs.length, 'two seeded sections share an id');
+  const by = (t) => secs.find((s) => s.title === t);
+  const reg = by('How to register with Scouting America').body;
+  ok(/beascout\.scouting\.org/.test(reg) && /ZIP/.test(reg) && /Cub Scout Pack 569/.test(reg) && /Apply now/.test(reg),
+    'the registration steps are not the beascout ones');
+  ok(/Lion or a Tiger, a parent or guardian is usually the adult partner/.test(reg), 'the Lion/Tiger adult partner is not explained');
+  ok(/their own adult application/.test(reg), 'another adult partner is not told about the adult application');
+  ok(/Safeguarding Youth Training is free/.test(reg) && /encouraged/.test(reg) && !/must take|required to take/.test(reg),
+    'SYT is not described as free and encouraged');
+  ok(/Annual Health and Medical Record, Parts A and B/.test(by('Health form').body) && /first campout/.test(by('Health form').body),
+    'the health form is not named with its parts, or not tied to the first campout');
+  eq(by('Keeping kids safe').url, 'https://www.scouting.org/training/safeguarding-youth/', 'the parents’ guide link');
+  ok(/How to Protect Your Children from Child Abuse/.test(by('Keeping kids safe').body), 'the parents’ guide is not named');
+  ok(!/\.pdf/i.test(JSON.stringify(secs)), 'the seed invents a PDF address');
+  const cost = by('What it costs').body;
+  ok(/National/.test(cost) && /Council/.test(cost) && /Pack/.test(cost) && /What a year costs a family/.test(cost),
+    'the cost section does not separate the three payees or point at the cost card');
+  ok(!/\$\s?\d/.test(JSON.stringify(secs)), 'the seed invents a dollar figure');
+  const faq = by('Questions families ask').body;
+  ['What’s a den?', 'What’s a pack meeting?', 'Do we have to camp?', 'What if we miss meetings?', 'Do we have to sell popcorn?']
+    .forEach((q) => ok(faq.indexOf(q) > -1, `the FAQ does not ask "${q}"`));
+  ok(/how the pack funds the year/.test(faq) && /encouraged, but it is not required/.test(faq), 'the popcorn answer is not the honest one');
+  ok(ctx.WELCOME_FILL_RE.test(by('Your first month').body) && ctx.WELCOME_FILL_RE.test(by('Uniform and handbook').body),
+    'the pack-specific facts are not left as [pack to fill in]');
+  // Seeded switched OFF, and carrying its revision (a brand-new record is never normalized on load).
+  const fresh = ctx.freshWelcome();
+  eq(fresh.published, false, 'the seed is published before any leader has read it');
+  eq(fresh.seedRev, ctx.WELCOME_SEED_REV, 'freshWelcome does not carry the seed revision');
+});
+
+test('B1: only a switched-on page, and only its finished, visible sections, are published — as title, body and link', () => {
+  const ctx = wCtx();
+  const w = ctx.freshWelcome();
+  eq(ctx.publishedWelcome(w).length, 0, 'a page that is switched off published');
+  w.published = true;
+  const out = ctx.publishedWelcome(w);
+  const titles = out.map((s) => s.title);
+  ok(titles.indexOf('Your first month') === -1 && titles.indexOf('Uniform and handbook') === -1,
+    'a section still saying [pack to fill in] published');
+  eq(out.length, 6, 'the finished seed sections did not all publish');
+  out.forEach((s) => eq(Object.keys(s), ['title', 'body', 'url'], 'a published section carries more than title, body, url'));
+  // Filled in, it goes; hidden, it does not; a non-http link never becomes an href.
+  const month = w.sections.find((s) => s.title === 'Your first month');
+  month.body = 'Tuesdays at 7 pm, the church hall.';
+  month.url = 'javascript:alert(1)';
+  const safety = w.sections.find((s) => s.title === 'Keeping kids safe');
+  safety.hidden = true;
+  const again = ctx.publishedWelcome(w);
+  const m = again.find((s) => s.title === 'Your first month');
+  ok(m && m.url === '', 'a filled-in section did not publish, or a javascript: link published');
+  ok(!again.some((s) => s.title === 'Keeping kids safe'), 'a hidden section published');
+  eq(ctx.welcomeHoldReason({ title: '', body: '  ' }), 'empty', 'an empty section is not held back');
+  eq(ctx.welcomeHoldReason({ title: 'Uniform [Pack to fill in]', body: 'x' }), 'fill', 'a placeholder in the title is not caught');
+});
+
+test('B1: the page is seeded once, never pushed back, and a later seed only replaces untouched text', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(NORMALIZE_FNS.map(slice).join('\n'), ctx);
+  const seeded = ctx.normalizeState(preMigrationState());
+  ok(seeded.welcome && seeded.welcome.sections.length === 8, 'a record without the page was not seeded');
+  eq(seeded.welcome.published, false, 'a live pack gets the seed switched ON');
+  // A pack that deleted sections keeps them deleted.
+  const trimmed = ctx.normalizeState(Object.assign(preMigrationState(), {
+    welcome: { published: true, seedRev: 1, sections: [{ id: 'a', title: 'Welcome', body: 'Hi' }, 'junk', null] }
+  }));
+  eq(trimmed.welcome.sections.length, 1, 'deleted sections came back, or junk survived');
+  eq(trimmed.welcome.sections[0].url, '', 'a missing url was not defaulted');
+  eq(trimmed.welcome.sections[0].hidden, false, 'a missing hidden flag was not defaulted');
+  eq(trimmed.welcome.published, true, 'a published page was switched off by the normalizer');
+  eq(ctx.normalizeState(Object.assign(preMigrationState(), { welcome: { published: 'yes', sections: [] } })).welcome.published,
+    false, 'a non-boolean switch is read as on');
+  // The refresh: text an older seed wrote is replaced; a leader's edit is not.
+  const r = wCtx();
+  vm.runInContext(`WELCOME_OLD_SEED['Welcome'] = { h: [campHash('old seed words')] };`, r);
+  const w = { sections: [
+    { id: 'k1', title: 'Welcome', body: 'old seed words', url: '', hidden: true },
+    { id: 'k2', title: 'Welcome', body: 'a leader wrote this', url: '', hidden: false }
+  ] };
+  r.refreshWelcomeSeed(w);
+  ok(/Welcome to Cub Scout Pack 569/.test(w.sections[0].body), 'untouched old seed text was not refreshed');
+  eq(w.sections[0].id, 'k1', 'the refreshed section lost its id');
+  eq(w.sections[0].hidden, true, 'the refresh un-hid a section');
+  eq(w.sections[1].body, 'a leader wrote this', 'the refresh overwrote a leader’s edit');
+  ok(/if \(!\(d\.welcome\.seedRev >= WELCOME_SEED_REV\)\) \{\s*refreshWelcomeSeed\(d\.welcome\);/.test(slice('normalizeState')),
+    'the refresh is not run once per revision on load');
+});
+
+test('B1: the page publishes in calendar-only mode, and nothing but it rides along', () => {
+  const run = (welcome, show) => {
+    const ctx = pvCtx(`state.welcome = ${JSON.stringify(welcome)};`);
+    return vm.runInContext(`buildParentView(state, { showStandings: ${show} })`, ctx);
+  };
+  const on = { published: true, sections: [{ id: 'x', title: 'Welcome', body: 'Hello', url: 'https://beascout.scouting.org', hidden: false, secret: 'no' }] };
+  const pv = run(on, false);
+  eq(pv.welcome, [{ title: 'Welcome', body: 'Hello', url: 'https://beascout.scouting.org' }], 'the calendar-only view lost the page');
+  ok(!('standings' in pv), 'calendar-only mode published standings');
+  ok(!('welcome' in run(Object.assign({}, on, { published: false }), false)), 'a switched-off page was published');
+  ok(!('welcome' in run(undefined, false)), 'a record with no page published a welcome key');
+  ok(BPV().indexOf('out.welcome = welcome') < BPV().indexOf('if (!withStandings) return out;'),
+    'the page sits behind the standings gate');
+});
+
+test('B1: families see the tab only when it is published, and land on it until they have seen it once', () => {
+  const mk = (pv, store) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`var ui = { parentTab: 'schedule', parentLanded: false }; var PV = ${JSON.stringify(pv)};
+      function parentDoc() { return PV; }
+      var localStorage = ${store === 'throws'
+        ? `{ getItem: function () { throw new Error('denied'); }, setItem: function () { throw new Error('denied'); } }`
+        : `{ d: ${JSON.stringify(store || {})}, getItem: function (k) { return this.d[k] == null ? null : this.d[k]; }, setItem: function (k, v) { this.d[k] = String(v); } }`};
+      ${['PARENT_TABS', 'parentHasStandings', 'parentHasCamping', 'parentHasWelcome', 'parentTabDefs', 'parentTab',
+         'WELCOME_SEEN_KEY', 'welcomeSeen', 'markWelcomeSeen', 'parentWelcomeLanding'].map(slice).join('\n')}`, ctx);
+    return ctx;
+  };
+  const pub = { events: [], welcome: [{ title: 'Welcome', body: 'Hi', url: '' }] };
+  const first = mk(pub, {});
+  ok(first.parentTabDefs().some((t) => t.id === 'welcome' && t.label === 'New to the pack'), 'no tab for a published page');
+  first.parentWelcomeLanding();
+  eq(first.parentTab(), 'welcome', 'a first-time family does not land on the page');
+  eq(first.localStorage.d['pack569-welcome-seen'], '1', 'the visit is not remembered');
+  // Once only per load: tapping Schedule afterwards is not overruled.
+  first.ui.parentTab = 'schedule'; first.parentWelcomeLanding();
+  eq(first.parentTab(), 'schedule', 'the landing overrules a family who chose another tab');
+  const back = mk(pub, { 'pack569-welcome-seen': '1' });
+  back.parentWelcomeLanding();
+  eq(back.parentTab(), 'schedule', 'a family who has seen it is still sent there');
+  const none = mk({ events: [] }, {});
+  none.parentWelcomeLanding();
+  ok(!none.parentTabDefs().some((t) => t.id === 'welcome'), 'an unpublished page still has a tab');
+  eq(none.parentTab(), 'schedule', 'a family lands on a page that does not exist');
+  const denied = mk(pub, 'throws');
+  denied.parentWelcomeLanding();
+  eq(denied.parentTab(), 'welcome', 'refused storage broke the landing');
+  // Before the strip is drawn, and only in parent mode.
+  ok(/if \(parent\) parentWelcomeLanding\(\);\s*[\s\S]{0,400}var tabsEl = document\.getElementById\('tabs'\)/.test(SCRIPT),
+    'the landing is decided after the tab strip is drawn');
+});
+
+test('B1: the family page is escaped prose, links only to http(s), and the cost button goes where the card is', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`${['esc', 'proseText', 'renderParentWelcome'].map(slice).join('\n')}`, ctx);
+  const pv = { welcome: [
+    { title: 'Welcome <b>', body: 'Hi <script>', url: 'https://beascout.scouting.org' },
+    { title: 'What it costs', body: 'See the card', url: 'javascript:alert(1)' }
+  ], familyCost: [{ den: 'Lion' }] };
+  const out = ctx.renderParentWelcome(pv);
+  ok(out.indexOf('<script>') === -1 && out.indexOf('<b>') === -1, 'leader text is not escaped');
+  ok(/href="https:\/\/beascout\.scouting\.org" target="_blank" rel="noopener noreferrer">Open beascout\.scouting\.org/.test(out),
+    'the link is missing or not opened safely');
+  ok(out.indexOf('javascript:') === -1, 'a javascript: link was rendered');
+  ok(/What it costs<\/h2>[\s\S]*data-act="parent-tab" data-tab="schedule">See what a year costs/.test(out),
+    'calendar-only: the cost button does not go to the Schedule tab');
+  pv.standings = [];
+  ok(/data-tab="standings">See what a year costs/.test(ctx.renderParentWelcome(pv)), 'the cost button does not follow the card to Standings');
+  delete pv.familyCost;
+  ok(!/See what a year costs/.test(ctx.renderParentWelcome(pv)), 'a cost button with no cost card to go to');
+});
+
+test('B1: every leader edit to the page is behind canEdit, and the editor says who reads it', () => {
+  ['welcome-add-sec', 'welcome-sec-hide:', 'welcome-del-sec:'].forEach((a) => {
+    const i = SCRIPT.indexOf(`act${a.slice(-1) === ':' ? `.indexOf('${a}') === 0` : ` === '${a}'`}`);
+    ok(i > -1, `no handler for ${a}`);
+    ok(/^\) \{\s*if \(!canEdit\(\)\) return;/.test(SCRIPT.slice(i + (a.slice(-1) === ':' ? `act.indexOf('${a}') === 0`.length : `act === '${a}'`.length))),
+      `${a} is not behind canEdit()`);
+  });
+  const ed = slice('renderWelcomeEditor');
+  ok(/Everything shown here goes to families exactly as/.test(ed), 'the editor does not say the page is published verbatim');
+  ok(/calendar-only link too/.test(ed), 'the editor does not say calendar-only families see it');
+  ok(/no phone numbers, no children(’|\\u2019)s names/.test(ed), 'the editor does not warn against contact details and names');
+  ok(/\{ id: 'joining', label: 'New families' \}/.test(SCRIPT), 'the New families section is gone');
+});
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

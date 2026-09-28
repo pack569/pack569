@@ -303,9 +303,9 @@
      body-text bar. Dark was fine at 7.07:1, which is exactly why it went unseen: dark is the
      default theme. --accent-text is the SAME VALUE as --accent in dark (byte-identical there) and
      lifts light to 5.82:1. The links stay underlined, so nothing was ever colour-only. */
-  .camp-facts a, .camp-body a { color: var(--accent-text); text-underline-offset: 2px; }
-  .camp-facts a:hover, .camp-body a:hover { text-decoration-thickness: 2px; }
-  .camp-facts a:focus-visible, .camp-body a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+  .camp-facts a, .camp-body a, .camp-link a { color: var(--accent-text); text-underline-offset: 2px; }
+  .camp-facts a:hover, .camp-body a:hover, .camp-link a:hover { text-decoration-thickness: 2px; }
+  .camp-facts a:focus-visible, .camp-body a:focus-visible, .camp-link a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
   @media (max-width: 420px) {
     .camp-facts { grid-template-columns: 1fr; gap: 0; }
     .camp-facts dt { margin-top: 8px; }
@@ -2766,6 +2766,145 @@
       }).join('');
     }).join('');
   }
+  /* ---------------- New to the pack: the families' welcome page (Wave B1, 2026-09-28) --------
+     One leader-written page for a family in its first weeks, built the way the camping pages are:
+     stored sections, seeded text, a seed revision, and published to parents VERBATIM. The New
+     Member Coordinator writes it; the parent app shows it as its own tab, "New to the pack".
+
+     Three things decide whether a section reaches a family, and all three are on the editor:
+       - the page switch, `published`. OFF for the seed. The seed was written for every pack and
+         carries [pack to fill in] where the facts are this pack's; a pack that has never read it
+         must not have it appear on every family's phone the next time a leader saves.
+       - the section's own `hidden` flag, so a leader can keep a section and not show it.
+       - the placeholder. A section still saying "[pack to fill in" is held back on its own, so a
+         half-finished page can go live without "Meeting night: [pack to fill in]" going with it.
+
+     Seeded ONLY when the key is absent — the camping rule, for the camping reason: a pack that
+     deleted a section must never have it pushed back. Later seed text reaches a live pack only
+     through refreshWelcomeSeed, which replaces a section still holding, byte for byte, text an
+     EARLIER seed wrote (WELCOME_OLD_SEED holds those hashes, by title; campHash is the hash).
+     To refresh: edit the seed, bump WELCOME_SEED_REV, add the old text's hashes below.
+
+     The policy wording (registration, adult partners, Safeguarding Youth Training, the health
+     form, the popcorn answer) is the New Member Coordinator's, given 2026-09-28 — not this file's.
+     No figure appears anywhere in it: what a year costs is the cost card's job, per den. */
+  var WELCOME_SEED_REV = 1;
+  // title → { h: [campHash of each older seed body], to: 'renamed title' }. Empty at rev 1.
+  var WELCOME_OLD_SEED = {};
+  // The placeholder the seed uses wherever a fact is this pack's to supply. Matched loosely
+  // ("[pack to fill in — what the pack asks…]" counts) and case-blind.
+  var WELCOME_FILL_RE = /\[pack to fill in/i;
+  function freshWelcomeSection(title, body, url) {
+    return { id: uid(), title: String(title || ''), body: String(body || ''), url: String(url || ''), hidden: false };
+  }
+  function seedWelcomeSections() {
+    return [
+      freshWelcomeSection('Welcome',
+        'Welcome to Cub Scout Pack 569. This page is for families in their first few weeks with us — ' +
+        'the questions every new family asks, answered in one place, so you are not left wondering who to ask.\n' +
+        '\n' +
+        'Nobody expects you to know how any of this works yet. Every family here started exactly where you are, ' +
+        'and asking is completely normal.'),
+      freshWelcomeSection('Your first month',
+        'Meeting night and place: [pack to fill in]\n' +
+        '\n' +
+        'What happens at a den meeting\n' +
+        '- Your scout meets with their den: a small group of scouts in the same grade, run by a den leader, who is a parent volunteer.\n' +
+        '- This is where most of the year happens. The den works through Adventures together — hands-on activities that add up to your scout’s badge for the year.\n' +
+        '\n' +
+        'What happens at a pack meeting\n' +
+        '- Every den comes together: the whole pack, families included.\n' +
+        '- Scouts are recognised for what they have done since the last one, and there is usually a game, a show or a ceremony.\n' +
+        '- When and where: [pack to fill in]'),
+      freshWelcomeSection('How to register with Scouting America',
+        'Joining the pack here and registering with Scouting America are two different things, and your scout needs both.\n' +
+        '- Go to beascout.scouting.org, enter your ZIP code, choose Cub Scout Pack 569, then Apply now. Your den leader can help.\n' +
+        '- For a Lion or a Tiger, a parent or guardian is usually the adult partner and just ticks that box on the scout’s application.\n' +
+        '- If another adult will be the adult partner, they may need their own adult application.\n' +
+        '- Safeguarding Youth Training is free and online, and every adult who comes along is encouraged to take it.',
+        'https://beascout.scouting.org'),
+      freshWelcomeSection('What it costs',
+        'A Cub Scout year has three kinds of cost, and they are paid separately, to different people:\n' +
+        '- National: Scouting America’s own registration.\n' +
+        '- Council: our local council, for its fees and for council events such as the family camping weekends.\n' +
+        '- Pack: dues and the pack’s own activities.\n' +
+        '\n' +
+        'The card called What a year costs a family, in this app, lists what the pack plans the year to cost for each den, ' +
+        'line by line, and says who each line is paid to. If the pack’s popcorn reward levels take anything off it, the same card shows what.'),
+      freshWelcomeSection('Uniform and handbook',
+        '- Uniform: [pack to fill in — what the pack asks a new scout to have, and by when]\n' +
+        '- Handbook: each rank has its own handbook, and your scout’s den works from it through the year.\n' +
+        '- The nearest Scout Shop: [pack to fill in]\n' +
+        '\n' +
+        'Ask before you buy. A family whose scout has moved up a rank often has a uniform or a handbook to pass on.'),
+      freshWelcomeSection('Health form',
+        'Before your first campout, fill in the Annual Health and Medical Record, Parts A and B, for every person coming — ' +
+        'your scout, and the adults and siblings who come too. Bring the paper and your insurance card.\n' +
+        '\n' +
+        'It is easiest done now, while nothing is urgent, and kept somewhere you will find it in the spring.',
+        'https://www.scouting.org/health-and-safety/ahmr/'),
+      freshWelcomeSection('Keeping kids safe',
+        'Scouting America’s Youth Protection rules apply to every meeting and every trip, and they are written down so ' +
+        'that you can read them yourself.\n' +
+        '\n' +
+        'The parents’ guide How to Protect Your Children from Child Abuse is on Scouting America’s Safeguarding Youth page. ' +
+        'It is written for parents, and it is worth half an hour before your scout’s first trip.',
+        'https://www.scouting.org/training/safeguarding-youth/'),
+      freshWelcomeSection('Questions families ask',
+        'What’s a den?\n' +
+        '- Your scout’s small group: scouts in the same grade, with a den leader. It is where most of the year happens.\n' +
+        '\n' +
+        'What’s a pack meeting?\n' +
+        '- Every den together, families included — recognition for what scouts have done, and usually something fun.\n' +
+        '\n' +
+        'Do we have to camp?\n' +
+        '- No. Every family is welcome on every campout, and nobody has to go. The Camping tab has everything about each one.\n' +
+        '\n' +
+        'What if we miss meetings?\n' +
+        '- It happens to every family. Tell your den leader — they can help your scout catch up on what the den did.\n' +
+        '\n' +
+        'Do we have to sell popcorn?\n' +
+        '- No. Selling popcorn is how the pack funds the year, so it is encouraged, but it is not required.')
+    ];
+  }
+  function freshWelcome() { return { published: false, sections: seedWelcomeSections(), seedRev: WELCOME_SEED_REV }; }
+  // Only ever replaces text an earlier seed wrote — see the note above. Pure over its argument.
+  function refreshWelcomeSeed(w) {
+    var now = {};
+    seedWelcomeSections().forEach(function (s) { now[s.title] = s; });
+    (w.sections || []).forEach(function (s) {
+      var o = Object.prototype.hasOwnProperty.call(WELCOME_OLD_SEED, s.title) ? WELCOME_OLD_SEED[s.title] : null;
+      if (!o || o.h.indexOf(campHash(s.body)) === -1) return;
+      var n = now[o.to || s.title];
+      // The section keeps its own id and its hidden flag — only the words are the seed's.
+      if (n) { s.title = n.title; s.body = n.body; s.url = n.url; }
+    });
+  }
+  function welcomeSections() {
+    var w = state.welcome;
+    return (w && Array.isArray(w.sections)) ? w.sections : [];
+  }
+  function getWelcomeSection(id) {
+    return welcomeSections().find(function (s) { return s.id === id; }) || null;
+  }
+  // Why a section is or is not on the families' page — one answer, read by the publisher and
+  // by the editor's label, so the two cannot disagree. '' means it publishes.
+  function welcomeHoldReason(s) {
+    if (!s) return 'empty';
+    if (s.hidden) return 'hidden';
+    if (!String(s.title || '').trim() && !String(s.body || '').trim()) return 'empty';
+    if (WELCOME_FILL_RE.test(String(s.title || '')) || WELCOME_FILL_RE.test(String(s.body || ''))) return 'fill';
+    return '';
+  }
+  // THE published page: what buildParentView writes, and nothing else. Rebuilt field by field.
+  // A link is published only when it is an http(s) address, so nothing else can become an href.
+  function publishedWelcome(w) {
+    if (!w || w.published !== true || !Array.isArray(w.sections)) return [];
+    return w.sections.filter(function (s) { return !welcomeHoldReason(s); }).map(function (s) {
+      var url = String(s.url || '').trim();
+      return { title: String(s.title || ''), body: String(s.body || ''), url: /^https?:\/\//i.test(url) ? url : '' };
+    });
+  }
   // Wave 14/15: a fresh inventory is a generic blank — no pre-seeded order. The standard
   // Trail's End lineup (names + containers/case only) is offered as an opt-in template
   // via the Inventory tab's empty state (TE_LINEUP below). Pack records that already carry an
@@ -2839,6 +2978,7 @@
       rewardTiers: { duesCents: 0, tiers: [], planOnTierId: '' },
       inventory: freshInventory(),
       camping: freshCamping(),   // one page per pack campout, published to parents
+      welcome: freshWelcome(),   // Wave B1 — "New to the pack", published once a leader switches it on
       archives: [],
       densAdvancedYear: 0,       // Wave 19(3) — program year dens were last advanced for (0 = never)
       densAdvancedSummary: null, // { year, perDen } — the season's advancement, taken at Advance dens
@@ -3122,6 +3262,21 @@
     if (!(d.camping.seedRev >= CAMP_SEED_REV)) {
       refreshCampingSeed(d.camping);
       d.camping.seedRev = CAMP_SEED_REV;
+    }
+    // Wave B1 — "New to the pack". Seeded only when the key is absent (the camping rule), so a
+    // live pack gets the page once, switched OFF, and a section a leader deletes stays deleted.
+    if (!d.welcome || typeof d.welcome !== 'object' || Array.isArray(d.welcome)) d.welcome = freshWelcome();
+    d.welcome.published = d.welcome.published === true;
+    if (!Array.isArray(d.welcome.sections)) d.welcome.sections = [];
+    d.welcome.sections = d.welcome.sections.filter(function (s) { return s && typeof s === 'object' && !Array.isArray(s); });
+    d.welcome.sections.forEach(function (s) {
+      if (typeof s.id !== 'string' || !s.id) s.id = uid();
+      ['title', 'body', 'url'].forEach(function (k) { if (typeof s[k] !== 'string') s[k] = ''; });
+      s.hidden = s.hidden === true;
+    });
+    if (!(d.welcome.seedRev >= WELCOME_SEED_REV)) {
+      refreshWelcomeSeed(d.welcome);
+      d.welcome.seedRev = WELCOME_SEED_REV;
     }
     if (!d.packName) d.packName = 'Pack 569';
     // Wave 22 — the weather lookup location. Defaulted rather than left blank so the feature
@@ -3906,7 +4061,8 @@
     budgetShowPast: false,  // Budget — reveal the already-gone months that carry no lines
     forgiveFor: null,   // Phase 3b — charge id showing the inline "why" form
     // Parent phase — the parent/pending app's own tiny ui state (never persisted).
-    parentTab: 'schedule',    // 'schedule' | 'camping' | 'standings'
+    parentTab: 'schedule',    // 'schedule' | 'camping' | 'standings' | 'welcome'
+    parentLanded: false,      // Wave B1 — the once-per-load "New to the pack" landing has been decided
     parentEarlierOpen: false, // "Earlier this year" disclosure on the parent Schedule tab
     parentRestOpen: false,    // "Show the rest of the year" on the parent Schedule tab
     // Which campout the parent Camping tab is showing, as an INDEX into the published
@@ -8825,7 +8981,9 @@
   //   always: pack name, program year; the season's events (storefront dates with their shift
   //   windows, meetings with time and where, activities with time, place and dens); the
   //   derby's name and date; camping trips as leaders typed them, including each trip's
-  //   cost line; and `familyCost` — what the year is PLANNED to cost one scout and adult in
+  //   cost line; `welcome` — the "New to the pack" page's sections (title, body, url) as leaders
+  //   typed them, once the page is switched on and leaving out any section that is hidden or
+  //   still says "[pack to fill in"; and `familyCost` — what the year is PLANNED to cost one scout and adult in
   //   each den, line by line with its payee, and what each tier (by name and sales target)
   //   takes off that; and `contact` — the admin-typed "who to ask" line for the page footer
   //   (free text an admin writes FOR families; the join card tells them to use a role and a pack
@@ -8862,7 +9020,8 @@
   // is published at all. When it's false the `standings`, `goals`, `derby`, `tiers` and
   // `tierLadder` keys are ABSENT from the document — not merely hidden in the UI — and the
   // shifts carry no `who`, so no child is named anywhere in it. That gives a widely-shared
-  // link a calendar-only mode. The year's cost and the camping pages still publish, and with
+  // link a calendar-only mode. The year's cost, the camping pages and the "New to the pack" page
+  // still publish, and with
   // no Standings tab to hold it the cost card moves onto the Schedule tab (renderParentSchedule).
   // Reduce a list of scout names to what parents are allowed to see: FIRST NAMES ONLY.
   // A last initial is appended only where two or more scouts share a first name, so a
@@ -9027,6 +9186,14 @@
         events: events
       };
       if (camping.length) out.camping = camping;
+      // NEW TO THE PACK — Wave B1, 2026-09-28. Leader-written like the camping pages and published
+      // the same way: verbatim, rebuilt field by field in publishedWelcome, and only once a leader
+      // has switched the page on (a section that is hidden or still says "[pack to fill in" stays
+      // back on its own). Each section is { title, body, url } and nothing else. Above the
+      // standings gate: it names no child and holds no pack data, and a calendar-only link is
+      // exactly what a family that has not joined yet is holding.
+      var welcome = publishedWelcome(state.welcome);
+      if (welcome.length) out.welcome = welcome;
       // WHO TO ASK — J11, 2026-09-28. The one published field a leader types straight into, for the
       // foot of every family's page in place of a bare "ask a pack leader" (which leader?). An admin
       // writes it on the join card, which says there that it goes to every approved family and
@@ -9665,7 +9832,10 @@
     { id: 'camping', label: 'Camping', dynamic: 'camping', sections: [] },
     { id: 'scouts', label: 'Scouts', sections: [
       { id: 'roster', label: 'Roster' },
-      { id: 'advancement', label: 'Advancement' }
+      { id: 'advancement', label: 'Advancement' },
+      // Wave B — the Membership Chair's (New Member Coordinator's) section: the families' "New to
+      // the pack" page, and where each new family has got to.
+      { id: 'joining', label: 'New families' }
     ] },
     { id: 'popcorn', label: 'Popcorn', sections: [
       { id: 'storefronts', label: 'Storefronts' },
@@ -9763,7 +9933,10 @@
   var PARENT_TABS = [
     { id: 'schedule', label: 'Schedule' },
     { id: 'camping', label: 'Camping' },
-    { id: 'standings', label: 'Standings' }
+    { id: 'standings', label: 'Standings' },
+    // Wave B1 — last in the strip (a family of three years does not need it in front of them),
+    // but it is where a family LANDS until they have seen it once: parentWelcomeLanding.
+    { id: 'welcome', label: 'New to the pack' }
   ];
   // Join link phase — the pack can publish a calendar-only view (join config
   // showStandings:false). Then the parent document simply has no `standings` key, the
@@ -9779,17 +9952,45 @@
     var pv = parentDoc();
     return !!(pv && Array.isArray(pv.camping) && pv.camping.length);
   }
+  // The same rule for "New to the pack": no page published, no tab.
+  function parentHasWelcome() {
+    var pv = parentDoc();
+    return !!(pv && Array.isArray(pv.welcome) && pv.welcome.length);
+  }
   function parentTabDefs() {
     return PARENT_TABS.filter(function (t) {
       if (t.id === 'standings') return parentHasStandings();
       if (t.id === 'camping') return parentHasCamping();
+      if (t.id === 'welcome') return parentHasWelcome();
       return true;
     });
   }
   function parentTab() {
     if (ui.parentTab === 'standings' && parentHasStandings()) return 'standings';
     if (ui.parentTab === 'camping' && parentHasCamping()) return 'camping';
+    if (ui.parentTab === 'welcome' && parentHasWelcome()) return 'welcome';
     return 'schedule';
+  }
+  // A family opens on "New to the pack" until they have seen it once (Wave B1). Remembered on
+  // THIS DEVICE only, in localStorage — it is a courtesy, not a record, and nothing about it goes
+  // anywhere. A browser that refuses storage (private mode) just lands there every time, which is
+  // the harmless way to fail. Once per page load, and only once there is a document to look at:
+  // the first paint of a parent's app is usually "Loading…", and deciding then would decide
+  // nothing.
+  var WELCOME_SEEN_KEY = 'pack569-welcome-seen';
+  function welcomeSeen() {
+    try { return localStorage.getItem(WELCOME_SEEN_KEY) === '1'; } catch (e) { return false; }
+  }
+  function markWelcomeSeen() {
+    try { localStorage.setItem(WELCOME_SEEN_KEY, '1'); } catch (e) { /* storage refused — see above */ }
+  }
+  function parentWelcomeLanding() {
+    if (ui.parentLanded || !parentDoc()) return;
+    ui.parentLanded = true;
+    if (parentHasWelcome() && !welcomeSeen()) {
+      ui.parentTab = 'welcome';
+      markWelcomeSeen();
+    }
   }
   // The published campouts, or [] — the one place the parent app reads that array, so every
   // caller below agrees on what "trip 2" means.
@@ -9898,6 +10099,8 @@
     // so an admin who edits a camping page and flips to the preview sees what the pack record now
     // says; cleared when not previewing, so a stale copy can never be served to a real parent.
     parentPreviewDoc = previewingParent() ? buildParentView(state) : null;
+    // Before the tab strip is drawn, so the strip and the page agree about where a family landed.
+    if (parent) parentWelcomeLanding();
 
     // Gates show no pack label at all (they may not even be allowed to know the name yet).
     document.getElementById('hdrPack').textContent = gate ? ''
@@ -9957,6 +10160,7 @@
     else if (sec === 'storefronts') v.innerHTML = ui.storefrontId ? renderStorefrontDetail() : renderStorefrontList();
     else if (sec === 'roster') v.innerHTML = renderScouts();
     else if (sec === 'advancement') v.innerHTML = renderAdvancement();
+    else if (sec === 'joining') v.innerHTML = renderJoining();
     else if (sec === 'budget') v.innerHTML = renderBudget();
     else if (sec === 'ledger') v.innerHTML = renderLedger();
     else if (sec === 'dues') v.innerHTML = renderDues();
@@ -10227,6 +10431,7 @@
       esc(String(pv.packName || '').trim() || 'Pack calendar') + ' · printed ' + esc(fmtDate(todayISO())) + '</p>';
     h += pTab === 'standings' ? renderParentStandings(pv)
       : pTab === 'camping' ? renderParentCamping(pv)
+      : pTab === 'welcome' ? renderParentWelcome(pv)
       : renderParentSchedule(pv);
     return h + parentFooter(pv);
   }
@@ -10239,6 +10444,49 @@
       '<span class="small">This is what a family sees — built from the pack record as it stands now.</span></p>' +
       '<button type="button" class="btn small primary" data-act="parent-preview-off">Back to leader view</button>' +
       '</div></div>';
+  }
+  // "New to the pack" (Wave B1) — the leader-written page, rendered with the same proseText the
+  // camping pages use, so a leader's editor and a family's page are the identical render of the
+  // identical text. Reads the published document and nothing else.
+  // The one thing added to what the leaders typed: a button to the cost card, under the section
+  // about cost (or at the end when no section is titled that way), because "what does it cost"
+  // should be one tap from the page that asks it — and the card is per den, which prose is not.
+  function renderParentWelcome(pv) {
+    var secs = Array.isArray(pv.welcome) ? pv.welcome : [];
+    if (!secs.length) {
+      return '<div class="card"><h2 class="section display">New to the pack</h2>' +
+        '<p class="small muted" style="margin:0">Nothing posted yet.</p></div>';
+    }
+    var costTab = Array.isArray(pv.familyCost) && pv.familyCost.length
+      ? (Array.isArray(pv.standings) ? 'standings' : 'schedule') : '';
+    var costBtn = costTab
+      ? '<p class="no-print" style="margin:10px 0 0"><button type="button" class="btn small" data-act="parent-tab" data-tab="' +
+        costTab + '">See what a year costs for your den</button></p>'
+      : '';
+    var costAt = -1;
+    secs.forEach(function (s, i) { if (costAt < 0 && /cost/i.test(String((s && s.title) || ''))) costAt = i; });
+    var h = '';
+    // The same contents strip the camping pages have, from four sections up, for the same reason:
+    // on a phone the health form is several screens below the welcome.
+    if (secs.length >= 4) {
+      h += '<div class="card no-print"><nav class="camp-toc" aria-label="On this page">' +
+        '<p class="eyebrow" style="margin:0 0 8px">On this page</p>' +
+        '<div class="camp-toc-secs">' + secs.map(function (s, i) {
+          return '<a href="#pw-s' + i + '">' + esc(String((s && s.title) || 'Details')) + '</a>';
+        }).join('') + '</div></nav></div>';
+    }
+    secs.forEach(function (s, i) {
+      var url = String((s && s.url) || '');
+      var host = (/^https?:\/\/([^\/?#:]+)/i.exec(url) || [])[1] || '';
+      h += '<div class="card"><h2 class="section display camp-anchor" id="pw-s' + i + '">' +
+        esc(String((s && s.title) || 'Details')) + '</h2>' +
+        '<div class="camp-body">' + proseText(s && s.body) + '</div>' +
+        (host ? '<p class="small camp-link" style="margin:8px 0 0"><a href="' + esc(url) +
+          '" target="_blank" rel="noopener noreferrer">Open ' + esc(host.replace(/^www\./i, '')) + '</a></p>' : '') +
+        (i === costAt ? costBtn : '') + '</div>';
+    });
+    if (costAt < 0 && costBtn) h += '<div class="card no-print">' + costBtn + '</div>';
+    return h;
   }
   // The parent's camping page. No sub-tab strip in the parent app, so the trips stack — a pack
   // has two or three of these, not twenty. Reuses campFacts/proseText, which is the point: a
@@ -17975,6 +18223,83 @@
       return '<dt>' + r[0] + '</dt><dd>' + r[1] + '</dd>';
     }).join('') + '</dl>';
   }
+  /* ---------------- Scouts → New families (Wave B, 2026-09-28) ---------------- */
+  // The New Member Coordinator's section. Everything a family needs in its first weeks, from the
+  // leaders' side: the page families read ("New to the pack"), and — for leaders only — where
+  // each new family has got to.
+  function renderJoining() {
+    return renderWelcomeEditor();
+  }
+  // The "New to the pack" editor. One renderer for both modes, as renderCamping is: a viewer-role
+  // leader reads the same page an editor is writing, so the two cannot drift.
+  var WELCOME_HOLD_LABEL = {
+    hidden: 'Hidden from families',
+    fill: 'Not shown to families until every [pack to fill in] is replaced',
+    empty: 'Empty — not shown'
+  };
+  function renderWelcomeEditor() {
+    var w = state.welcome || { published: false, sections: [] };
+    var secs = welcomeSections();
+    var edit = canEdit();
+    var live = publishedWelcome(w).length;
+    var h = '<div class="card"><h2 class="section display">New to the pack</h2>' +
+      '<p class="small muted" style="margin:0 0 8px">The page a new family reads: what a den and a pack meeting are, ' +
+      'how to register with Scouting America, what it costs, the health form, and the questions every family asks. ' +
+      'Families see it as its own tab, and it opens there for them until they have seen it once.</p>';
+    if (edit) {
+      h += '<label class="join-opt"><input type="checkbox" data-ch="welcome-published"' + (w.published ? ' checked' : '') + '>' +
+        '<span>Show this page to families</span></label>';
+    }
+    // Says what is actually going out, in numbers, because three separate things decide it.
+    h += '<p class="small" style="margin:6px 0 0">' +
+      (!w.published
+        ? '<span class="pill">Not published</span> Families do not see this page yet. Read it through, fill in the ' +
+          '[pack to fill in] parts, then tick the box above.'
+        : live
+          ? '<span class="pill navy">Published</span> ' + live + ' of ' + secs.length + ' section' + (secs.length === 1 ? '' : 's') +
+            ' shown to families, on the calendar-only link too.'
+          : '<span class="pill">Nothing to show</span> The page is switched on, but every section is hidden, empty or still ' +
+            'has a [pack to fill in] in it, so families see no tab.') +
+      '</p>';
+    if (edit) {
+      h += '<p class="small muted" style="margin:8px 0 0"><strong>Everything shown here goes to families exactly as ' +
+        'written</strong> — to every family the pack approves, and on the calendar-only link too. Nothing else about the ' +
+        'pack goes with it. Write it for a family who has never met anyone here: no phone numbers, no children’s names.</p>';
+    }
+    h += '</div>';
+    secs.forEach(function (s) {
+      var why = welcomeHoldReason(s);
+      h += '<div class="card">';
+      if (edit) {
+        h += '<div class="spread" style="margin-bottom:6px">' +
+          '<input class="ename" data-ch="welcome-sec-title" data-sec="' + esc(s.id) + '" value="' + esc(s.title) + '" ' +
+          'placeholder="Section heading" aria-label="Section heading" style="flex:1 1 200px">' +
+          '<button type="button" class="btn small ghost" data-act="welcome-sec-hide:' + esc(s.id) + '" aria-pressed="' + !!s.hidden + '">' +
+          (s.hidden ? 'Show to families' : 'Hide from families') + '</button>' +
+          tinyDangerBtn('welcome-del-sec:' + s.id, 'Delete this section') +
+          '</div>' +
+          '<textarea class="notes-in" data-ch="welcome-sec-body" data-sec="' + esc(s.id) + '" rows="3" ' +
+          'placeholder="What a new family needs to know. Blank line for a new paragraph; start a line with - for a bullet." ' +
+          'aria-label="Section text">' + esc(s.body) + '</textarea>' +
+          '<label class="fld" style="margin-top:6px">Link (optional)<input data-ch="welcome-sec-url" data-sec="' + esc(s.id) + '" ' +
+          'value="' + esc(s.url) + '" placeholder="https://…" style="width:100%"></label>';
+      } else {
+        h += '<h2 class="section display">' + esc(s.title || 'Untitled section') + '</h2>' +
+          '<div class="camp-body">' + proseText(s.body) + '</div>' +
+          (/^https?:\/\//i.test(s.url) ? '<p class="small camp-link" style="margin:8px 0 0"><a href="' + esc(s.url) +
+            '" target="_blank" rel="noopener noreferrer">' + esc(s.url) + '</a></p>' : '');
+      }
+      if (why) h += '<p class="small muted" style="margin:6px 0 0"><span class="pill">' + esc(WELCOME_HOLD_LABEL[why]) + '</span></p>';
+      h += '</div>';
+    });
+    if (edit) {
+      h += '<div class="card"><div class="row">' +
+        '<button type="button" class="btn" data-act="welcome-add-sec">+ Add a section</button>' +
+        (canPreviewParent() ? '<button type="button" class="btn ghost" data-act="parent-preview-on">See it as a family does</button>' : '') +
+        '</div></div>';
+    }
+    return h;
+  }
   function renderDerby() {
     var d = state.derby;
     var roster = activeScouts();
@@ -21704,6 +22029,34 @@
       });
       return;
     }
+    // ----- "New to the pack" (Wave B1). Behind canEdit() for the camping reason above.
+    if (act === 'welcome-add-sec') {
+      if (!canEdit()) return;
+      state.welcome.sections.push(freshWelcomeSection('', '', ''));
+      commit();
+      return;
+    }
+    if (act.indexOf('welcome-sec-hide:') === 0) {
+      if (!canEdit()) return;
+      var whS = getWelcomeSection(act.slice('welcome-sec-hide:'.length));
+      if (!whS) return;
+      whS.hidden = !whS.hidden;
+      commit();
+      return;
+    }
+    if (act.indexOf('welcome-del-sec:') === 0) {
+      if (!canEdit()) return;
+      arm(act, function () {
+        var wdId = act.slice('welcome-del-sec:'.length);
+        var wdIx = state.welcome.sections.findIndex(function (s) { return s.id === wdId; });
+        if (wdIx === -1) return;
+        var wdGone = state.welcome.sections.splice(wdIx, 1)[0];
+        deleteWithUndo(wdGone.title || 'section', function () {
+          state.welcome.sections.splice(Math.min(wdIx, state.welcome.sections.length), 0, wdGone);
+        });
+      });
+      return;
+    }
     if (act === 'toggle-home-rest') { ui.homeRestOpen = !ui.homeRestOpen; render(); return; }
     if (act === 'den-filter') { ui.denFilter = el.dataset.name || ''; ui.resetScroll = true; render(); return; }
     // Wave 21 — the one-time "where things moved" card. Using a row to navigate counts as
@@ -21722,6 +22075,7 @@
       // parentTab() re-validates on the way out, so a tab that vanishes falls back safely.
       var ptWant = el.dataset.tab;
       ui.parentTab = parentTabDefs().some(function (t) { return t.id === ptWant; }) ? ptWant : 'schedule';
+      if (ui.parentTab === 'welcome') markWelcomeSeen();
       ui.resetScroll = true;
       render(); return;
     }
@@ -22882,6 +23236,15 @@
       var tT = getTrip(el.dataset.id);
       if (!tT) return;
       tT[tK] = el.value;
+      commit();
+      return;
+    }
+    // "New to the pack" (Wave B1). Stored verbatim, like the camping prose.
+    if (ch === 'welcome-published') { state.welcome.published = !!el.checked; commit(); return; }
+    if (ch === 'welcome-sec-title' || ch === 'welcome-sec-body' || ch === 'welcome-sec-url') {
+      var wsS = getWelcomeSection(el.dataset.sec);
+      if (!wsS) return;
+      wsS[ch.slice('welcome-sec-'.length)] = el.value;
       commit();
       return;
     }
