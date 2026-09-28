@@ -8882,7 +8882,7 @@ test('T8: reward-tier reimbursements are measured against what the plan set asid
   // A paid-direct line is out of the plan, so every reimbursement on it read as over budget
   // against $0 — though Planned (A) already counts what the planned tiers will pay back.
   const now = /function budgetVsActualNow\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
-  ok(/items\.push\(\{ category: BVA_REIMBURSE, planned: coverCostForKeys\(plannedCoverKeys\(\)\)\.extraReimburse, actual: 0 \}\);/.test(now),
+  ok(/var bvaCover = coverCostForKeys\(plannedCoverKeys\(\)\);\s*items\.push\(\{ category: BVA_REIMBURSE, planned: bvaCover\.extraReimburse, actual: 0 \}\);/.test(now),
     'the reimbursements row is not planned at what A counts for them');
   ok(/LINE_CATEGORIES\.concat\(\[\[BVA_REIMBURSE, 'Reward-tier reimbursements'\]\]\)/.test(now), 'no row of their own');
   // A covers exactly that figure, via tierExtra — so the row and Planned agree.
@@ -10044,6 +10044,50 @@ test('M4: "Not the commission" is answered per entry, and any edit to the entry 
     ledger: [{ id: 'x', direction: 'in', amountCents: 100, notCommission: true }, { id: 'y', direction: 'in', amountCents: 100, notCommission: 'yes' }]
   }));
   eq(d.ledger.filter((e) => e.id === 'x' || e.id === 'y').map((e) => e.notCommission), [true, false], 'normalizeState');
+});
+
+test('M5: Budget vs actual plans every dollar the Budget card plans, adult and sibling shares included', () => {
+  // Three lines, and the planned tiers cover one share of each kind: an adult share on a line the
+  // pack collects (extraHeads), the scout share of a collected line (fees — already planned), and a
+  // paid-direct line (extraReimburse).
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    var A1 = { id: 'A1', name: 'Campout', category: 'camp', through: true, planned: 10000, rates: { scout: 1000, adult: 2000 } };
+    var E1 = { id: 'E1', name: 'Shirts', category: 'uniforms', through: true, planned: 5000, rates: { scout: 500, adult: 1500 } };
+    var D1 = { id: 'D1', name: 'Registration', category: 'registration', through: false, planned: 3000, rates: { scout: 3000 } };
+    var state = { budget: { activities: [A1], expenses: [E1, D1], startingBalance: 0 }, ledger: [], charges: [], fundraisers: [], collected: {} };
+    function allBudgetLines() { return [{ line: A1, key: 'act:A1', kind: 'activity' }, { line: E1, key: 'E1', kind: 'expense' }, { line: D1, key: 'D1', kind: 'expense' }]; }
+    function coverableLines() { return allBudgetLines(); }
+    function lineIsFamilyDirect(l) { return !l.through; }
+    function lineThroughPack(l) { return l.through; }
+    function linePlanned(l) { return l.planned; }
+    function lineActual() { return 0; }
+    function lineActualCents() { return 0; }
+    function lineRateForWho(l, who) { return l.rates[who] || 0; }
+    function lineBillingRoster() { return [{ id: 'a' }, { id: 'b' }, { id: 'c' }]; }
+    function linePerFamily() { return false; }
+    function plannedCoverKeys() { return { 'act:A1#adult': true, 'E1': true, 'D1': true }; }
+    function activeScouts() { return [{}, {}, {}]; }
+    function chargeTotals() { return { paid: 0, donated: 0, makeup: 0, refunded: 0 }; }
+    function chargeFamilyKey(x) { return x; }
+    function tierCoverageConfigured() { return true; }
+    function packCoverage() { return {}; }
+    function linePerHead() { return false; }
+    function lineFamilyFunded() { return false; }
+    function fundingSummary() { return { fees: 0, cashGoal: 0, C: 0, salesGoal: 0, perScoutGoal: 0 }; }
+    function rewardTierSummary() { return { rewardDues: 0 }; }
+    function computePackTotals() { return { commission: 0, retainedCash: 0 }; }
+    function getBudgetLine() { return null; }
+    function ledgerIncomeCents() { return { commission: 0, hasCommission: false, other: 0, carryover: 0 }; }
+    function commissionLookalikes() { return []; }
+    ${['COVER_WHO', 'coverKeyOf', 'coverCostForKeys', 'tierExtraPackCostCents', 'LINE_CATEGORIES',
+       'budgetVsActual', 'BVA_REIMBURSE', 'budgetVsActualNow', 'computeBudget'].map(slice).join('\n')}`, ctx);
+  const planned = vm.runInContext('computeBudget().planned', ctx);
+  eq(planned, 10000 + 5000 + 6000 + 9000, 'computeBudget’s Planned (the fixture)');
+  const bva = vm.runInContext('budgetVsActualNow()', ctx);
+  eq(bva.total.planned, planned, 'Budget vs actual’s total Planned is not the Budget card’s Planned');
+  const camp = bva.rows.find((r) => r.category === 'camp');
+  eq(camp && camp.planned, 16000, 'the covered adult share is not planned under its own line’s category');
 });
 
 /* ---------------- report ---------------- */

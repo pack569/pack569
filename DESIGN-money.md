@@ -303,6 +303,14 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   `notCommission: true` on the entry, which `commissionLookalikes` skips. Any edit to the
   entry's amount, source, line or direction clears it, because the answer was about the entry
   as it stood.
+- **Budget vs actual planned less than the Budget card (M5).** T8 gave the reimbursement half of
+  `tierExtra` its own row, but the other half — `extraHeads`, an adult or sibling share the
+  planned tiers cover on a line the pack collects — was in `computeBudget`'s Planned and in no row
+  of the table, so the two totals disagreed by exactly that. `coverCostForKeys` now tags each
+  covered share with its `bucket` (fees, heads or reimburse) and its line's category, and
+  `budgetVsActualNow` plans each *heads* share under its own line's category, where the money is
+  spent. The table's total Planned now equals `computeBudget().planned`, and a harness test holds
+  the two together on a fixture with one share of each kind.
 
 ---
 

@@ -12774,9 +12774,15 @@
         if (!keys[coverKeyOf(r.key, who)]) return;
         var cents = lineRateForWho(r.line, who) * lineBillingRoster(r.line).length;
         if (cents <= 0) return;
+        var planned = who === 'scout' || (who === 'adult' && r.line.includeAdults && !linePerFamily(r.line));
         lines.push({
           name: (r.line.name || ('Untitled ' + r.kind)) + (who === 'scout' ? '' : ' · ' + who),
-          who: who, cents: cents, reimburse: reimb
+          who: who, cents: cents, reimburse: reimb,
+          // Which of the three sums below this share went into, and the line's 510-278 category,
+          // so budgetVsActualNow can plan an adult or sibling share under the category it is
+          // spent in (M5, final review 2026-09-28).
+          bucket: reimb ? 'reimburse' : (planned ? 'fees' : 'heads'),
+          category: r.line.category || ''
         });
         picked += cents;
         // A reimbursement is money leaving the pack for something it never collected, so it can
@@ -12789,8 +12795,7 @@
         //   any share of a paid-direct line   never collected → adds to A as a reimbursement
         // The middle case is new and matters: with "one parent per scout" ticked, that parent's
         // fee IS in the plan, so covering it must reduce expected income rather than invent a
-        // second cost on top of the one already sitting in A.
-        var planned = who === 'scout' || (who === 'adult' && r.line.includeAdults && !linePerFamily(r.line));
+        // second cost on top of the one already sitting in A. (`planned` is worked out above.)
         if (reimb) { extra += cents; extraReimburse += cents; }
         else if (!planned) { extra += cents; extraHeads += cents; }
         else fees += cents;
@@ -13569,6 +13574,13 @@
   // the planned tiers will pay back (coverCostForKeys().extraReimburse, inside tierExtra). They
   // get their own row, planned at that figure and actual at what the paid-direct lines have paid
   // out, rather than being spread across categories the plan never priced them under.
+  //
+  // M5 (final review, 2026-09-28) — and the OTHER half of tierExtra, extraHeads: an adult or
+  // sibling share the planned tiers cover on a line the pack collects. It is in computeBudget's
+  // Planned and was in no row here, so the table's total Planned came up short of the Budget card's
+  // by exactly that. Each share is planned under its own line's category, which is where the
+  // money is actually spent (an adult's campout fee is camp spending). The total now equals
+  // computeBudget().planned — a harness test holds the two together.
   var BVA_REIMBURSE = 'tier-reimburse';
   function budgetVsActualNow() {
     var items = [];
@@ -13581,7 +13593,11 @@
       }
       items.push({ category: l.category, planned: linePlanned(l), actual: lineActual(l.id) });
     });
-    items.push({ category: BVA_REIMBURSE, planned: coverCostForKeys(plannedCoverKeys()).extraReimburse, actual: 0 });
+    var bvaCover = coverCostForKeys(plannedCoverKeys());
+    items.push({ category: BVA_REIMBURSE, planned: bvaCover.extraReimburse, actual: 0 });
+    bvaCover.lines.forEach(function (x) {
+      if (x.bucket === 'heads') items.push({ category: x.category, planned: x.cents, actual: 0 });
+    });
     return budgetVsActual(items, LINE_CATEGORIES.concat([[BVA_REIMBURSE, 'Reward-tier reimbursements']]));
   }
   function renderBudgetVsActual() {
