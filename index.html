@@ -7385,6 +7385,9 @@
   // Standings (names + totals + derby winners) in the parent view. Default TRUE — a pack with
   // no join config behaves exactly as it always has.
   function standingsEnabled() { return !(sync.joinCfg && sync.joinCfg.showStandings === false); }
+  // "Show dollar amounts and rank" (J12, 2026-09-28). On unless an admin turned it off — the
+  // behaviour every pack had before the option existed.
+  function amountsEnabled() { return !(sync.joinCfg && sync.joinCfg.showAmounts === false); }
   // The pack's "who to ask" line for families (J11, 2026-09-28): one line, plain text, capped so a
   // paste of a whole email cannot turn the footer into a page. Pure, so the harness can pin it.
   function cleanContactLine(v) {
@@ -8406,7 +8409,9 @@
         ? patch.showStandings : !(cur.showStandings === false),
       // "Who to ask", for the foot of every family's page. Admin-written free text; see
       // parentContactLine for the cap and buildParentView for where it goes.
-      contact: cleanContactLine((patch && typeof patch.contact === 'string') ? patch.contact : cur.contact)
+      contact: cleanContactLine((patch && typeof patch.contact === 'string') ? patch.contact : cur.contact),
+      showAmounts: (patch && typeof patch.showAmounts === 'boolean')
+        ? patch.showAmounts : !(cur.showAmounts === false)
     };
     // Optimistic local copy so the card responds instantly; the snapshot confirms it, and a
     // denied write rolls it back rather than leaving the card claiming something untrue.
@@ -8416,7 +8421,7 @@
     scheduleParentViewRefresh();
     var fs = sync.mods.fs;
     var data = { open: next.open, mode: next.mode, code: next.code, showStandings: next.showStandings,
-      contact: next.contact, updatedAt: fs.serverTimestamp() };
+      contact: next.contact, showAmounts: next.showAmounts, updatedAt: fs.serverTimestamp() };
     fs.setDoc(fs.doc(sync.db, 'packs', sync.docId, 'public', 'join'), data).then(function () {
       if (toast) showToast(toast);
     }).catch(function (err) {
@@ -8442,7 +8447,9 @@
   //   (free text an admin writes FOR families; the join card tells them to use a role and a pack
   //   email, never a personal phone).
   //   with standings on (the default): the FIRST NAMES on each storefront shift, standings
-  //   (first name, den, total raised, reward-tier progress), one pack goal bar, derby winners
+  //   (first name, den, total raised, reward-tier progress — or, with "Show dollar amounts and
+  //   rank" off, first name, den and reward-tier progress only, in name order, with no per-scout
+  //   money figure of any kind), one pack goal bar, derby winners
   //   and design awards, the reward tiers (name, reward, note, due-by, and `salesCents` — the
   //   sales that reach it) and `tierLadder` (what a full bar means).
   //
@@ -8510,6 +8517,7 @@
     var withStandings = (opts && typeof opts.showStandings === 'boolean')
       ? opts.showStandings : standingsEnabled();
     var contactLine = cleanContactLine((opts && typeof opts.contact === 'string') ? opts.contact : parentContactLine());
+    var withAmounts = (opts && typeof opts.showAmounts === 'boolean') ? opts.showAmounts : amountsEnabled();
     var prev = state;
     if (src) state = src;
     try {
@@ -8701,7 +8709,7 @@
       progRows.forEach(function (p) { progById[p.scout.id] = p; });
       var standings = ranked.map(function (r) {
           var p = progById[r.id];
-          return {
+          var row = {
             name: pubName[r.id] || '',
             den: String(r.den || ''),               // the rank only — never s.denLabel or s.note
             combinedCents: r.t.combined,
@@ -8760,7 +8768,21 @@
             nextRungPct: (p && p.next && typeof p.pct === 'number') ? p.pct : null,
             nextMarkPct: (p && typeof p.nextMarkPct === 'number') ? p.nextMarkPct : null
           };
+          // AMOUNTS AND RANK OFF (J12, 2026-09-28): a pack that would rather not print what each
+          // child sold, or who sold most, keeps each scout's progress toward the reward levels and
+          // loses every per-scout money figure. Rebuilt from an allowlist rather than deleting keys,
+          // so a money field added to the row above later cannot slip through this mode.
+          if (withAmounts) return row;
+          return {
+            name: row.name, den: row.den, tier: row.tier, nextTier: row.nextTier, nextReward: row.nextReward,
+            nextPct: row.nextPct, pastPlan: row.pastPlan, nextRungPct: row.nextRungPct, nextMarkPct: row.nextMarkPct
+          };
         });
+      // ...and no rank: the board is alphabetical by the name it publishes, so its ORDER cannot say
+      // who sold most either.
+      if (!withAmounts) {
+        standings.sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
+      }
       // WHAT A FULL BAR MEANS, published once. Pack-wide — the anchor and the notches are a
       // property of the ladder, not of a scout — so the board can caption itself instead of
       // leaving a parent to guess what 43% is 43% of. Absent on an older payload, and the
@@ -10274,13 +10296,16 @@
   // One scout on the board: the money they have brought in, then how close they are to the next
   // rung and what it is worth. The bar is the point — a figure says where you are, a bar says how
   // close, and "how close" is what gets a family out on a Saturday.
-  function parentStandingRow(r, i, ladder) {
+  function parentStandingRow(r, i, ladder, ranked) {
+    // `ranked` is false for a board published with amounts and rank switched off: then the rows
+    // are alphabetical, so a number beside each would claim a ranking that is not there.
+    var hasTotal = !!(r && typeof r.combinedCents === 'number');
     var h = '<div class="pv-scout"><div class="pv-scout-head">' +
-      '<span class="pv-scout-rank">' + (i + 1) + '</span>' +
+      (ranked === false ? '' : '<span class="pv-scout-rank">' + (i + 1) + '</span>') +
       '<span class="pv-scout-name">' + esc(String((r && r.name) || '')) +
       ((r && r.den) ? ' <span class="pill navy">' + esc(String(r.den)) + '</span>' : '') +
       ((r && r.tier) ? ' <span class="pill good">' + esc(String(r.tier)) + '</span>' : '') + '</span>' +
-      '<span class="pv-scout-total money">' + fmt((r && r.combinedCents) || 0) + '</span></div>';
+      (hasTotal ? '<span class="pv-scout-total money">' + fmt(r.combinedCents) + '</span>' : '') + '</div>';
     return h + parentTierProgress(r, ladder) + '</div>';
   }
   // The bar and its caption. Deliberately absent — not a zero-width bar — when there is nothing to
@@ -10492,7 +10517,11 @@
             '</strong> instead. The striped part of their bar is what they sold beyond ' + planNm + '.</p>';
         }
       }
-      rows.forEach(function (r, i) { h += parentStandingRow(r, i, ladder); });
+      // A board published with amounts and rank off carries no total on any row (every payload
+      // before J12 carries one on every row), and is in name order — so it is drawn unnumbered.
+      var ranked = rows.some(function (r) { return r && typeof r.combinedCents === 'number'; });
+      if (!ranked) h += '<p class="small muted" style="margin:0 0 10px">Scouts are listed by name.</p>';
+      rows.forEach(function (r, i) { h += parentStandingRow(r, i, ladder, ranked); });
     }
     h += '</div>';
     h += parentTierLadder(pv);
@@ -14446,6 +14475,14 @@
       'standings and on storefront shifts), sales totals, the goal bar, the reward-tier board and derby winners are ' +
       'left out of the published copy entirely — not just hidden — and the monthly digest leaves out its popcorn section. ' +
       'The calendar, the year’s cost for each den (with what each tier takes off it) and the camping pages still show.</p>';
+    if (standingsEnabled()) {
+      h += '<label class="join-opt" style="margin-top:10px"><input type="checkbox" data-ch="join-amounts"' +
+        (amountsEnabled() ? ' checked' : '') + '>' +
+        '<span>Show dollar amounts and rank on the standings</span></label>' +
+        '<p class="small muted" style="margin:2px 0 0">Untick to list scouts by name with only their progress toward ' +
+        'each reward level: what each scout has sold, what they still need to sell, and who is ahead of whom are ' +
+        'left out of the published copy. The pack goal bar and the reward tiers still show.</p>';
+    }
     // Saved on change (blur), like every other text field, so it is one write rather than one per key.
     h += '<hr class="divider">' +
       '<label class="fld" style="display:block">Who families should ask' +
@@ -21944,6 +21981,7 @@
     // Join link phase — the self-serve config doc (admin-only; never touches the pack record).
     if (ch === 'join-open') { writeJoinConfig({ open: el.checked }); return; }
     if (ch === 'join-standings') { writeJoinConfig({ showStandings: el.checked }); return; }
+    if (ch === 'join-amounts') { writeJoinConfig({ showAmounts: el.checked }); return; }
     if (ch === 'join-contact') { writeJoinConfig({ contact: el.value }, 'Saved — families see it on their next visit'); return; }
     // Wave 19(4/23/24) — per-scout roster fields.
     // The "+ Add a brother or sister…" select. Joining somebody joins their FAMILY, not just

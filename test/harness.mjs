@@ -6473,7 +6473,7 @@ test('every scout on the board gets a progress bar, and it is a list so the bar 
   // The table this replaced was right when a row was four short figures. A bar needs width, and a
   // 10px track in a fifth column is either unreadably narrow or â€” on a phone, inside .tbl-wrap â€”
   // only reachable by swiping the table sideways to find your own scout.
-  ok(/rows\.forEach\(function \(r, i\) \{ h \+= parentStandingRow\(r, i, ladder\); \}\);/.test(fn[0]),
+  ok(/rows\.forEach\(function \(r, i\) \{ h \+= parentStandingRow\(r, i, ladder, ranked\); \}\);/.test(fn[0]),
     'the board does not render one list row per scout');
   ok(!/tbl-wrap|<th scope="col"/.test(codeOnly(fn[0])),
     'the board is a table again, which puts the bar behind a sideways scroll on a phone');
@@ -8319,7 +8319,7 @@ test('calendar-only publishes the calendar and the cost of a year, and no childâ
     }
     ${['shortNames', 'publicNameMap', 'buildParentView', 'blocksInDayOrder', 'fmtTimeRange', 'fmtClock',
        'eventIsMeeting', 'eventLabel', 'denListLabel', 'eventDens', 'programYearStartISO',
-       'programYearEndISO', 'cleanContactLine', 'parentContactLine'].map(slice).join('\n')}
+       'programYearEndISO', 'cleanContactLine', 'parentContactLine', 'amountsEnabled'].map(slice).join('\n')}
     var sync = {};`, ctx);
   const pv = vm.runInContext('buildParentView(state, { showStandings: false })', ctx);
   const text = JSON.stringify(pv);
@@ -9386,7 +9386,7 @@ function pvCtx(extra) {
     var sync = {};
     ${['shortNames', 'publicNameMap', 'buildParentView', 'blocksInDayOrder', 'fmtTimeRange', 'fmtClock',
        'eventIsMeeting', 'eventLabel', 'denListLabel', 'eventDens', 'programYearStartISO',
-       'programYearEndISO', 'cleanContactLine', 'parentContactLine'].map(slice).join('\n')}
+       'programYearEndISO', 'cleanContactLine', 'parentContactLine', 'amountsEnabled'].map(slice).join('\n')}
     ${extra || ''}`, ctx);
   return ctx;
 }
@@ -9631,6 +9631,54 @@ test('J11: a leader-written "who to ask" line reaches the foot of every familyâ€
   ok(/data-ch="join-contact"/.test(card) && /every approved ' \+\s*'family/.test(card) && /not a personal phone/.test(card),
     'the setting does not say who sees it and what not to put in it');
   ok(/contact: next\.contact/.test(slice('writeJoinConfig')), 'the line is not saved with the join config');
+});
+
+test('J12: with amounts and rank off, the board keeps each scoutâ€™s progress and no per-scout money', () => {
+  const build = (showAmounts) => {
+    const ctx = pvCtx(`
+      state.derby = { name: '', date: '', awards: [] };
+      function computePackTotals() { return { combined: 99000, teGoal: 200000, cashGoal: 0 }; }
+      var TOT = { s1: 30000, s2: 60000, s3: 9000 };
+      function computeScoutTotals() { return TOT; }
+      function visibleScoutRows(t) {
+        return state.scouts.map(function (s) { return { id: s.id, den: s.den, t: { combined: t[s.id] } }; });
+      }
+      function rankBy(rows, key) { return rows.slice().sort(function (a, b) { return key(b) - key(a); }); }
+      function tierProgressRows() {
+        return state.scouts.map(function (s) {
+          return { scout: s, earned: { name: 'Bronze' }, next: { name: 'Gold', reward: 'Camp' }, shortSales: 12345,
+            unlocks: 4000, sellRoutes: [{ label: 'online', pct: 30, cents: 12345 }], anchorPct: 40, pct: 55,
+            nextMarkPct: 100, pastPlan: false, ladder: { plan: { name: 'Gold' }, marksPlan: [] } };
+        });
+      }
+      function plannedTier() { return { name: 'Gold' }; }
+      function derbyWinners() { return []; }
+      function sortedTiers() { return []; }
+      function salesForCommission(c) { return c; }`);
+    return vm.runInContext(`buildParentView(state, { showStandings: true, showAmounts: ${showAmounts} })`, ctx);
+  };
+  const on = build(true);
+  eq(on.standings.map((r) => r.name), ['Beckett H.', 'Ada', 'Beckett Z.'], 'with amounts on the board is not ranked by sales');
+  ok(on.standings.every((r) => typeof r.combinedCents === 'number'), 'amounts on lost the totals');
+  const off = build(false);
+  eq(off.standings.map((r) => r.name), ['Ada', 'Beckett H.', 'Beckett Z.'], 'with amounts off the board is not alphabetical');
+  off.standings.forEach((r) => {
+    Object.keys(r).forEach((k) => ok(!/Cents$|Routes$/.test(k), `amounts off still publishes ${k} for ${r.name}`));
+    ok(r.nextTier === 'Gold' && r.tier === 'Bronze' && r.nextPct === 40 && r.nextRungPct === 55,
+      'amounts off dropped the reward-level progress too');
+  });
+  ok(off.goals && off.goals.goalCents === 200000, 'the pack-wide goal bar went with the per-scout amounts');
+  // The renderer: unnumbered, no total, and says it is in name order.
+  const ctx = sandbox(['esc', 'fmt', 'fmtDate', 'parentBar', 'parentRouteLabel', 'parentRouteNoun',
+    'parentTierProgress', 'parentStandingRow', 'parentStepName', 'parentTierLadder', 'parentCostLine',
+    'parentCostLines', 'parentFamilyCost', 'parentGoalBar', 'renderParentStandings']);
+  ctx.ui = { parentCostOpen: {} };
+  const html = ctx.renderParentStandings({ standings: off.standings });
+  ok(!/pv-scout-rank/.test(html) && !/pv-scout-total/.test(html), 'an alphabetical board still shows a rank or a total');
+  ok(/Scouts are listed by name\./.test(html), 'the board does not say it is in name order');
+  ok(/pv-scout-rank/.test(ctx.renderParentStandings({ standings: on.standings })), 'a ranked board lost its numbers');
+  ok(/data-ch="join-amounts"/.test(slice('renderJoinCard')) && /showAmounts: next\.showAmounts/.test(slice('writeJoinConfig')),
+    'the option is not on the join card, or not saved');
 });
 
 /* ---------------- report ---------------- */

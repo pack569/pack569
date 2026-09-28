@@ -181,7 +181,9 @@ calendar but not the money" is impossible to do by permission alone. Instead the
     every family's page — use a role and the pack's email, not a personal phone);
   - with standings on (the default): the **first names** of the scouts on each storefront
     shift, the scout standings (first name — plus a last initial only where two scouts share
-    a first name — den, total raised, and progress toward the reward tiers), one pack goal
+    a first name — den, total raised, and progress toward the reward tiers; with **Show dollar
+    amounts and rank** off, only first name, den and reward-tier progress, listed by name with no
+    per-scout dollar figures), one pack goal
     bar, the derby winners and design awards, the reward tiers (name, reward, note, due
     date and sales target), and what a full progress bar means (the tier ladder).
 - It **never** contains: the budget itself (starting balance, planned or actual totals,
