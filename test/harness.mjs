@@ -8738,6 +8738,9 @@ test('no tracked file carries a real email address or phone number', () => {
     '1-800-222-1222',      // Poison Control
   ];
   const ALLOWED_EMAIL = /@(example\.com|pack569\.com)$/i;
+  // Machine addresses, by exact value: Google's signing-key service, which the API's token check
+  // fetches keys from (it is part of a URL, not a person).
+  const PUBLIC_EMAILS = ['securetoken@system.gserviceaccount.com'];
   const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
   const PHONE = /(?:1-800-\d{3}-\d{4})|\(?\b[2-9]\d{2}\)?[-. ]?\d{3}[-. ]\d{4}\b|\b[2-9]\d{9}\b/g;
   const isFake = (p) => /555[-. ]?01\d\d$/.test(p.replace(/\s+$/, ''));
@@ -8747,7 +8750,7 @@ test('no tracked file carries a real email address or phone number', () => {
     let text;
     try { text = readFileSync(join(ROOT, f), 'utf8'); } catch (e) { continue; }
     // This test's own allowlist is the one place a real public number may be written twice.
-    (text.match(EMAIL) || []).forEach((m) => { if (!ALLOWED_EMAIL.test(m)) found.push(f + ': an email'); });
+    (text.match(EMAIL) || []).forEach((m) => { if (!ALLOWED_EMAIL.test(m) && PUBLIC_EMAILS.indexOf(m) < 0) found.push(f + ': an email'); });
     (text.match(PHONE) || []).forEach((m) => {
       if (!isFake(m) && PUBLIC_NUMBERS.indexOf(m) < 0) found.push(f + ': a phone number');
     });
@@ -12659,7 +12662,750 @@ test('a backup from an older page imports through normalizeState', () => {
   // The migrations on that path are pinned by the Phase 1–3 tests above ("Phase 1 migration: …").
 });
 
+/* ================================================================
+   The D1 API (Phase 2, stage A, 2026-09-28). functions/ re-implements SETUP.md Part C on the
+   server. These tests run the real handlers in Node: node:sqlite stands in for D1 (an
+   in-memory database with migrations/0001_init.sql applied, behind a thin adapter with D1's
+   prepare().bind().first()/all()/run() and batch()), and tokens are signed with an RSA key
+   made here, served to the verifier in place of Google's. Each Part C rule gets an allow AND
+   a deny; every 403 must be the one fixed body. Names and emails are made up (example.com).
+   The handlers are async, so these tests queue up (atest) and run just before the report.
+   ================================================================ */
+
+const asyncTests = [];
+function atest(name, fn) { asyncTests.push([name, fn]); }
+
+// node:sqlite is still marked experimental in some Node versions; its one-time warning is
+// noise here. Only that warning is dropped.
+async function loadSqlite() {
+  const emit = process.emitWarning;
+  process.emitWarning = function (w, ...rest) {
+    const type = typeof rest[0] === 'string' ? rest[0] : (rest[0] && rest[0].type) || (w && w.name);
+    if (type === 'ExperimentalWarning' && /sqlite/i.test(String(w && w.message || w))) return;
+    return emit.call(process, w, ...rest);
+  };
+  try { return await import('node:sqlite'); } finally { process.emitWarning = emit; }
+}
+const MIGRATION = readFileSync(join(ROOT, 'migrations/0001_init.sql'), 'utf8');
+let sqliteMod = null;
+// D1's API over node:sqlite: prepare(sql).bind(...).first()/all()/run(), and batch(), which is
+// one transaction — any statement failing rolls the whole batch back, as D1's does.
+async function apiD1() {
+  sqliteMod = sqliteMod || await loadSqlite();
+  const raw = new sqliteMod.DatabaseSync(':memory:');
+  raw.exec('PRAGMA foreign_keys = ON;');
+  raw.exec(MIGRATION);
+  const stmt = (sql, args) => ({
+    bind(...a) {
+      a.forEach((v) => { if (v === undefined) throw new Error('D1 refuses undefined, bound in: ' + sql); });
+      return stmt(sql, a);
+    },
+    exec() {
+      const s = raw.prepare(sql);
+      if (s.columns().length) {
+        const rows = s.all(...args).map((r) => Object.assign({}, r));
+        return { results: rows, success: true, meta: { changes: raw.prepare('SELECT changes() AS c').get().c } };
+      }
+      const r = s.run(...args);
+      return { results: [], success: true, meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } };
+    },
+    async first(col) { const r = this.exec().results[0]; return r === undefined ? null : (col ? r[col] : r); },
+    async all() { return this.exec(); },
+    async run() { return this.exec(); }
+  });
+  return {
+    raw,
+    prepare: (sql) => stmt(sql, []),
+    async batch(list) {
+      raw.exec('BEGIN');
+      try { const out = list.map((s) => s.exec()); raw.exec('COMMIT'); return out; }
+      catch (e) { raw.exec('ROLLBACK'); throw e; }
+    }
+  };
+}
+
+const API_PROJECT = 'pack-569';
+const API_PACK = 'a'.repeat(64);          // two made-up packs, both served
+const API_PACK_B = 'b'.repeat(64);
+const PEOPLE = {
+  owner: ['uid-owner', 'owner@example.com'], admin2: ['uid-admin2', 'admin2@example.com'],
+  editor: ['uid-editor', 'editor1@example.com'], viewer: ['uid-viewer', 'viewer1@example.com'],
+  parent: ['uid-parent', 'parent1@example.com'], pending: ['uid-pending', 'pending1@example.com'],
+  stranger: ['uid-stranger', 'stranger@example.com'], newbie: ['uid-newbie', 'newbie@example.com']
+};
+const FORBIDDEN_TEXT = '{"error":"forbidden","code":"permission-denied"}';
+let apiReady = null;
+const API = {};
+function apiSetup() {
+  if (!apiReady) {
+    apiReady = (async () => {
+      const gen = () => crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048,
+        publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify']);
+      API.key = await gen();
+      API.rogue = await gen();
+      API.jwk = Object.assign(await crypto.subtle.exportKey('jwk', API.key.publicKey), { kid: 'test-kid-1', alg: 'RS256', use: 'sig' });
+      const load = (p) => import(new URL('../functions/' + p, import.meta.url).href);
+      API.token = await load('_lib/token.js');
+      API.rules = await load('_lib/rules.js');
+      API.http = await load('_lib/http.js');
+      API.fetches = 0;
+      API.useTestKeys = () => API.token.setJwksFetcher(async () => { API.fetches++; return { keys: [API.jwk], maxAge: 3600 }; });
+      API.useTestKeys();
+      const mods = { session: 'api/session.js', pack: 'api/pack/[id]/index.js', rev: 'api/pack/[id]/rev.js',
+        members: 'api/pack/[id]/members/index.js', member: 'api/pack/[id]/members/[uid].js',
+        invites: 'api/pack/[id]/invites/index.js', invite: 'api/pack/[id]/invites/[email].js',
+        join: 'api/pack/[id]/join.js', view: 'api/pack/[id]/view.js', import: 'api/pack/[id]/import.js' };
+      API.mod = {};
+      for (const k of Object.keys(mods)) API.mod[k] = await load(mods[k]);
+    })();
+  }
+  return apiReady;
+}
+const b64u = (x) => Buffer.from(typeof x === 'string' ? x : JSON.stringify(x)).toString('base64url');
+// A Firebase-shaped ID token. `over` replaces claims (undefined deletes one); opts.header, opts.key.
+async function mint(over, opts) {
+  opts = opts || {};
+  const now = Math.floor(Date.now() / 1000);
+  const c = Object.assign({ iss: 'https://securetoken.google.com/' + API_PROJECT, aud: API_PROJECT, auth_time: now - 60,
+    iat: now - 30, exp: now + 3000, sub: 'uid-x', email: 'x@example.com', email_verified: true, name: 'Test Person',
+    firebase: { sign_in_provider: 'google.com', identities: {} } }, over || {});
+  Object.keys(c).forEach((k) => { if (c[k] === undefined) delete c[k]; });
+  const h = Object.assign({ alg: 'RS256', kid: 'test-kid-1', typ: 'JWT' }, opts.header || {});
+  const signing = b64u(h) + '.' + b64u(c);
+  const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', (opts.key || API.key).privateKey, new TextEncoder().encode(signing));
+  return signing + '.' + Buffer.from(sig).toString('base64url');
+}
+const tokenFor = (who, over) => mint(Object.assign({ sub: PEOPLE[who][0], email: PEOPLE[who][1], name: 'Test ' + who }, over || {}));
+
+async function callApi(env, mod, o) {
+  const h = Object.assign({}, o.headers || {});
+  if (o.token) h.authorization = 'Bearer ' + o.token;
+  let body;
+  if (o.body !== undefined) { body = typeof o.body === 'string' ? o.body : JSON.stringify(o.body); h['content-type'] = 'application/json'; }
+  const request = new Request('https://staging.pack569.pages.dev' + o.path, { method: o.method || 'GET', headers: h, body });
+  const res = await mod.onRequest({ request, env, params: o.params || {}, data: {}, waitUntil() {}, next() { throw new Error('next()'); } });
+  const text = await res.text();
+  let parsed = null;
+  try { parsed = JSON.parse(text); } catch (e) { /* not JSON */ }
+  return { status: res.status, body: parsed, text, headers: res.headers };
+}
+
+// A fresh database with the two packs, and helpers that call each endpoint as a named person.
+async function apiWorld(envOver) {
+  await apiSetup();
+  const db = await apiD1();
+  const env = Object.assign({ DB: db, FIREBASE_PROJECT_ID: API_PROJECT, PACK_IDS: API_PACK + ',' + API_PACK_B,
+    OWNER_MODE: 'first-signer' }, envOver || {});
+  const w = { db, env };
+  w.session = async (who, join, pack, over) => callApi(env, API.mod.session, { method: 'POST',
+    path: '/api/session?pack=' + (pack || API_PACK), token: await tokenFor(who, over), body: join === undefined ? undefined : { join } });
+  // w.call(who, 'PUT', 'invite', { email: 'x@example.com' }, { body, headers, pack })
+  w.call = async (who, method, what, params, o) => {
+    o = o || {};
+    const id = o.pack || API_PACK;
+    const p = Object.assign({ id }, params || {});
+    const tail = { pack: '', rev: '/rev', members: '/members', member: '/members/' + p.uid, invites: '/invites',
+      invite: '/invites/' + p.email, join: '/join', view: '/view', import: '/import' }[what];
+    return callApi(env, API.mod[what], { method, path: '/api/pack/' + id + tail, params: p,
+      token: who ? await tokenFor(who, o.claims) : o.token, body: o.body, headers: o.headers });
+  };
+  w.sql = (q, ...a) => db.raw.prepare(q).all(...a).map((r) => Object.assign({}, r));
+  w.one = (q, ...a) => w.sql(q, ...a)[0];
+  w.audit = (action) => w.sql('SELECT uid, action, detail FROM audit WHERE action = ? ORDER BY id', action);
+  // The owner claims through the API; everyone else is put in the members table directly.
+  w.seed = async (roles) => {
+    const s = await w.session('owner');
+    eq(s.body.role, 'admin', 'the seeding owner');
+    const r = roles || { admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent', pending: 'pending' };
+    for (const who of Object.keys(r)) {
+      db.raw.prepare('INSERT INTO members (pack_id, uid, role, name, email, join_code, added_at) VALUES (?, ?, ?, ?, ?, NULL, ?)')
+        .run(API_PACK, PEOPLE[who][0], r[who], 'Test ' + who, PEOPLE[who][1], Date.now());
+    }
+    return w;
+  };
+  w.state = (rev, obj) => db.raw.prepare('INSERT INTO pack_state (pack_id, rev, json, device, updated_at) VALUES (?, ?, ?, ?, ?)')
+    .run(API_PACK, rev, JSON.stringify(obj || { scouts: [] }), 'seed', 1);
+  w.joinCfg = (open, code) => db.raw.prepare("INSERT INTO join_config (pack_id, open, mode, code, updated_at) VALUES (?, ?, 'request', ?, ?) " +
+    'ON CONFLICT (pack_id) DO UPDATE SET open = excluded.open, code = excluded.code').run(API_PACK, open ? 1 : 0, code, 1);
+  return w;
+}
+// Every 403 is the same body, whatever was refused.
+function denied(r, what) {
+  eq(r.status, 403, what + ' status');
+  ok(r.text === FORBIDDEN_TEXT, `${what}: the 403 body is ${r.text}`);
+}
+// Expected status per person, for one call.
+async function matrix(w, method, what, expect, o) {
+  for (const who of Object.keys(expect)) {
+    const r = await w.call(who, method, what, o && o.params, o && (typeof o.opts === 'function' ? o.opts(who) : o.opts));
+    if (expect[who] === 403) denied(r, `${who} ${method} ${what}`);
+    else eq(r.status, expect[who], `${who} ${method} ${what} (${r.text.slice(0, 120)})`);
+  }
+}
+const ALL = ['owner', 'admin2', 'editor', 'viewer', 'parent', 'pending', 'stranger'];
+const expectFor = (allowed, okStatus) => Object.fromEntries(ALL.map((w) => [w, allowed.indexOf(w) >= 0 ? (okStatus || 200) : 403]));
+
+/* ---- tokens ---- */
+
+atest('api token: a verified Google token is believed, and every other kind is refused with a reason', async () => {
+  await apiSetup();
+  const V = (t) => API.token.verifyIdToken(t, API_PROJECT);
+  const reason = async (t) => { try { await V(t); return 'accepted'; } catch (e) { ok(e instanceof API.token.TokenError, 'not a TokenError: ' + e); return e.reason; } };
+  const good = await V(await mint({ sub: 'uid-a', email: 'Parent1@Example.COM' }));
+  eq([good.uid, good.email, good.emailKey], ['uid-a', 'Parent1@Example.COM', 'parent1@example.com'], 'the verified identity');
+  const now = Math.floor(Date.now() / 1000);
+  const cases = [
+    ['malformed', 'a.b'], ['malformed', 'not a token at all'], ['malformed', '!!.??.**'],
+    ['bad-header', await mint({}, { header: { alg: 'none' } })],
+    ['bad-header', await mint({}, { header: { alg: 'HS256' } })],
+    ['bad-header', await mint({}, { header: { kid: '' } })],
+    ['unknown-key', await mint({}, { header: { kid: 'some-other-kid' } })],
+    ['bad-signature', await mint({}, { key: API.rogue })],
+    ['wrong-audience', await mint({ aud: 'some-other-project' })],
+    ['wrong-issuer', await mint({ iss: 'https://securetoken.google.com/some-other-project' })],
+    ['wrong-issuer', await mint({ iss: 'https://accounts.google.com' })],
+    ['expired', await mint({ exp: now - 120 })],
+    ['expired', await mint({ exp: undefined })],
+    ['issued-in-future', await mint({ iat: now + 600 })],
+    ['auth-in-future', await mint({ auth_time: now + 600 })],
+    ['auth-in-future', await mint({ auth_time: undefined })],
+    ['no-subject', await mint({ sub: '' })],
+    ['no-subject', await mint({ sub: undefined })],
+    ['email-not-verified', await mint({ email_verified: false })],
+    ['email-not-verified', await mint({ email_verified: 'true' })],
+    ['not-google', await mint({ firebase: { sign_in_provider: 'anonymous' } })],
+    ['not-google', await mint({ firebase: { sign_in_provider: 'password' } })],
+    ['not-google', await mint({ firebase: undefined })],
+    ['no-email', await mint({ email: undefined })],
+    ['no-email', await mint({ email: '  ' })]
+  ];
+  for (const [want, t] of cases) eq(await reason(t), want, 'token refusal');
+  // A signature is over the exact header and claims: a payload lifted onto another token's signature fails.
+  const a = (await mint({ sub: 'uid-a' })).split('.'), b = (await mint({ sub: 'uid-admin' })).split('.');
+  eq(await reason([a[0], b[1], a[2]].join('.')), 'bad-signature', 'a swapped payload');
+  // Inside the clock slack is fine; the slack is small.
+  eq(await reason(await mint({ exp: now - 30 })), 'accepted', 'an exp 30 s ago (skew)');
+  eq(await reason(await mint({ iat: now + 30, auth_time: now + 30 })), 'accepted', 'an iat 30 s ahead (skew)');
+  let noProject = null;
+  try { await API.token.verifyIdToken(await mint(), ''); } catch (e) { noProject = e.reason; }
+  eq(noProject, 'no-project', 'a verifier with no project');
+});
+
+atest('api token: the endpoints answer 401 without a believable token, and 503 when Google\'s keys cannot be fetched', async () => {
+  const w = await apiWorld();
+  await w.seed();
+  for (const headers of [{}, { authorization: 'Basic abc' }, { authorization: 'Bearer' }, { authorization: 'Bearer a.b.c' }]) {
+    const r = await callApi(w.env, API.mod.pack, { path: '/api/pack/' + API_PACK, params: { id: API_PACK }, headers });
+    eq([r.status, r.body.code], [401, 'unauthenticated'], 'no believable token: ' + JSON.stringify(headers));
+    eq(r.headers.get('www-authenticate'), 'Bearer', 'the 401 challenge');
+  }
+  const r = await w.call(null, 'GET', 'pack', null, { token: await tokenFor('owner', { firebase: { sign_in_provider: 'anonymous' } }) });
+  eq([r.status, r.body.reason], [401, 'not-google'], 'an anonymous session of the owner');
+  const s = await callApi(w.env, API.mod.session, { method: 'POST', path: '/api/session?pack=' + API_PACK,
+    token: await tokenFor('owner', { email_verified: false }) });
+  eq(s.status, 401, 'an unverified email at /api/session');
+  // Google unreachable: 503, never a 401 that would sign the page out.
+  API.token.setJwksFetcher(async () => { throw new API.token.TokenError('jwks-unavailable'); });
+  try {
+    const u = await w.call('owner', 'GET', 'pack');
+    eq([u.status, u.body.code], [503, 'unavailable'], 'Google\'s keys unreachable');
+  } finally { API.useTestKeys(); }
+  // Keys are cached: many calls, one fetch; an unknown kid refetches at most once a minute.
+  API.useTestKeys();
+  const before = API.fetches;
+  for (let i = 0; i < 5; i++) await w.call('owner', 'GET', 'rev');
+  eq(API.fetches - before, 1, 'the key set is fetched once and cached');
+  await w.call(null, 'GET', 'rev', null, { token: await mint({}, { header: { kid: 'unknown-1' } }) });
+  await w.call(null, 'GET', 'rev', null, { token: await mint({}, { header: { kid: 'unknown-2' } }) });
+  eq(API.fetches - before, 1, 'an unknown kid refetches the key set (the first fetch was just now)');
+});
+
+/* ---- /api/session: the owner claim, invites, the sign-up link ---- */
+
+atest('api session: the first Google sign-in claims an unowned pack, as admin, for good (packmeta.create, packmeta.immutable, members.create.owner)', async () => {
+  const w = await apiWorld();
+  const s = await w.session('owner');
+  eq([s.status, s.body.role, s.body.ownerUid, s.body.rejected], [200, 'admin', 'uid-owner', null], 'the first signer');
+  eq(s.body.member.email, 'owner@example.com', 'the member row carries the token email');
+  const t = await w.session('stranger');
+  eq([t.status, t.body.role, t.body.ownerUid, t.body.rejected, t.body.member], [200, null, 'uid-owner', 'nolink', null], 'the second signer');
+  eq(w.sql('SELECT uid FROM members'), [{ uid: 'uid-owner' }], 'the second signer got a member row');
+  eq(w.audit('owner.claim').length + w.audit('member.create').length, 2, 'the claim and the admin row are audited');
+  // The owner never changes: not by a later sign-in, not by SQL.
+  let threw = false;
+  try { w.db.raw.prepare('UPDATE packs SET owner_uid = ? WHERE id = ?').run('uid-stranger', API_PACK); } catch (e) { threw = /permanent/.test(e.message); }
+  ok(threw, 'the owner can be changed');
+  // A second sign-in by the owner is the same admin, and writes nothing new.
+  const again = await w.session('owner');
+  eq([again.body.role, w.sql('SELECT count(*) AS n FROM audit')[0].n], ['admin', 2], 'the owner signing in again');
+});
+
+atest('api session: in production (OWNER_MODE fixed) only PACK_OWNER_UID is the owner, and with none set there is no owner', async () => {
+  const w = await apiWorld({ OWNER_MODE: undefined, PACK_OWNER_UID: 'uid-owner' });   // unset means fixed
+  const s = await w.session('stranger');
+  eq([s.body.role, s.body.ownerUid, s.body.rejected], [null, 'uid-owner', 'nolink'], 'a stranger signing in first claims nothing');
+  eq((await w.session('owner')).body.role, 'admin', 'the configured owner');
+  const w2 = await apiWorld({ OWNER_MODE: 'fixed' });
+  const s2 = await w2.session('owner');
+  eq([s2.body.role, s2.body.ownerUid], [null, null], 'fixed mode with no PACK_OWNER_UID');
+  eq(w2.sql('SELECT count(*) AS n FROM members')[0].n, 0, 'fixed mode with no owner made a member');
+});
+
+atest('api session: a sign-up link visitor never claims an unowned pack', async () => {
+  const w = await apiWorld();
+  const s = await w.session('stranger', 'abc123');
+  eq([s.body.role, s.body.ownerUid, s.body.rejected], [null, null, 'closed'], 'a join visitor on an unowned pack');
+  eq(w.one('SELECT owner_uid FROM packs').owner_uid, null, 'the pack got an owner');
+});
+
+atest('api session: the owner is healed back to admin, whoever demoted them (members.update.owner)', async () => {
+  const w = await (await apiWorld()).seed();
+  eq((await w.call('admin2', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { role: 'viewer' } })).status, 200, 'a co-admin demotes the owner');
+  w.db.raw.prepare("UPDATE members SET join_code = 'abc', email = 'someone-else@example.com' WHERE uid = 'uid-owner'").run();
+  const s = await w.session('owner');
+  eq([s.body.role, s.body.member.email, s.body.member.joinCode], ['admin', 'owner@example.com', undefined], 'the healed owner, written whole');
+  eq(w.audit('member.heal').map((a) => JSON.parse(a.detail)), [{ from: 'viewer', to: 'admin' }], 'the heal is audited');
+  // Never anyone else: a demoted co-admin signing in stays demoted.
+  await w.call('owner', 'PATCH', 'member', { uid: 'uid-admin2' }, { body: { role: 'viewer' } });
+  eq((await w.session('admin2')).body.role, 'viewer', 'a demoted non-owner');
+});
+
+atest('api session: an invite admits exactly its role, matched on the lowercased email, and is used up (members.create.invite)', async () => {
+  const w = await (await apiWorld()).seed({});
+  eq((await w.call('owner', 'PUT', 'invite', { email: 'newbie@example.com' }, { body: { role: 'editor' } })).status, 200, 'the invite');
+  const s = await w.session('newbie', undefined, undefined, { email: 'NewBie@Example.com' });
+  eq([s.body.role, s.body.member.email], ['editor', 'NewBie@Example.com'], 'the invitee, with capitals in their Google email');
+  eq(w.sql('SELECT count(*) AS n FROM invites')[0].n, 0, 'the invite was not used up');
+  eq(w.audit('invite.consume').map((a) => [a.uid, JSON.parse(a.detail).role]), [['uid-newbie', 'editor']], 'the audit row');
+  // Someone already in the pack keeps their role; a waiting invite does not change it.
+  await w.call('owner', 'PUT', 'invite', { email: 'parent1@example.com' }, { body: { role: 'viewer' } });
+  w.db.raw.prepare("INSERT INTO members (pack_id, uid, role, name, email, added_at) VALUES (?, 'uid-parent', 'parent', 'P', 'parent1@example.com', 1)").run(API_PACK);
+  eq((await w.session('parent')).body.role, 'parent', 'an existing parent with an editor invite waiting');
+  // An invite row the rules would refuse (an old 'admin' invite, forced in by SQL around the CHECK) admits nothing.
+  w.db.raw.exec('PRAGMA ignore_check_constraints = ON');
+  w.db.raw.prepare("INSERT INTO invites (pack_id, email, role, invited_by_uid, invited_at) VALUES (?, 'stranger@example.com', 'admin', 'uid-owner', 1)").run(API_PACK);
+  w.db.raw.exec('PRAGMA ignore_check_constraints = OFF');
+  const t = await w.session('stranger');
+  eq([t.body.role, t.body.rejected], [null, 'nolink'], 'an admin invite');
+});
+
+atest('api session: the sign-up link files a pending request only while open and only with the current code (members.create.join, request mode)', async () => {
+  const w = await (await apiWorld()).seed({ editor: 'editor' });
+  w.joinCfg(true, 'Code123abc');
+  const s = await callApi(w.env, API.mod.session, { method: 'POST', path: '/api/session?pack=' + API_PACK,
+    token: await tokenFor('newbie'), body: { join: 'Code123abc', role: 'admin' } });   // a role in the body is ignored
+  eq([s.body.role, s.body.member.joinCode], ['pending', 'Code123abc'], 'a link visitor with the current code');
+  eq(w.audit('join.request').length, 1, 'the request is audited');
+  eq(JSON.stringify(w.audit('join.request')).indexOf('Code123abc'), -1, 'the audit row holds the code');
+  eq([(await w.session('stranger', 'WrongCode1')).body.rejected, (await w.session('stranger', 'bad code!')).body.rejected],
+    ['closed', 'badcode'], 'a stale code, a malformed one');
+  w.joinCfg(false, 'Code123abc');
+  eq((await w.session('stranger', 'Code123abc')).body.rejected, 'closed', 'the right code with the link switched off');
+  w.joinCfg(true, 'NewCode456');
+  eq((await w.session('stranger', 'Code123abc')).body.rejected, 'closed', 'a code from before New code');
+  eq(w.sql("SELECT count(*) AS n FROM members WHERE uid = 'uid-stranger'")[0].n, 0, 'a refused visitor got a row');
+  eq((await w.session('editor', 'NewCode456')).body.role, 'editor', 'an editor following the link is still an editor');
+  eq((await w.session('stranger', 'NewCode456')).body.role, 'pending', 'the current code');
+});
+
+atest('api session: sign-up link tries are rate-limited per account, and the limit resets after its window', async () => {
+  const w = await (await apiWorld()).seed({});
+  w.joinCfg(true, 'Code123abc');
+  const max = API.mod.session.JOIN_MAX_TRIES;
+  for (let i = 0; i < max; i++) eq((await w.session('stranger', 'Guess' + i)).body.rejected, 'closed', 'guess ' + i);
+  const r = await w.session('stranger', 'Code123abc');
+  eq([r.status, r.body.code], [429, 'resource-exhausted'], 'the try after the limit, even with the right code');
+  ok(Number(r.headers.get('retry-after')) > 0, 'no Retry-After');
+  eq(w.sql("SELECT count(*) AS n FROM members WHERE uid = 'uid-stranger'")[0].n, 0, 'a rate-limited try made a row');
+  eq((await w.session('newbie', 'Code123abc')).body.role, 'pending', 'another account is not limited');
+  w.db.raw.prepare('UPDATE join_attempts SET window_start = ? WHERE uid = ?').run(Date.now() - API.mod.session.JOIN_WINDOW_MS - 1, 'uid-stranger');
+  eq((await w.session('stranger', 'Code123abc')).body.role, 'pending', 'after the window');
+});
+
+atest('api session: only the packs this deployment serves, and the pack id comes from the URL', async () => {
+  const w = await apiWorld();
+  for (const path of ['/api/session', '/api/session?pack=' + 'c'.repeat(64), '/api/session?pack=../x']) {
+    const r = await callApi(w.env, API.mod.session, { method: 'POST', path, token: await tokenFor('owner') });
+    eq(r.status, 404, 'an unserved pack: ' + path);
+  }
+  eq((await callApi(w.env, API.mod.session, { method: 'GET', path: '/api/session?pack=' + API_PACK, token: await tokenFor('owner') })).status,
+    405, 'GET /api/session');
+  eq((await w.call('owner', 'GET', 'pack', null, { pack: 'c'.repeat(64) })).status, 404, 'an unserved pack id in the path');
+  const noDb = await callApi(Object.assign({}, w.env, { DB: undefined }), API.mod.session,
+    { method: 'POST', path: '/api/session?pack=' + API_PACK, token: await tokenFor('owner') });
+  eq(noDb.status, 503, 'no database bound');
+});
+
+atest('api tenancy: a role in one pack is nothing in another', async () => {
+  const w = await (await apiWorld()).seed();
+  await w.session('stranger', undefined, API_PACK_B);   // the stranger owns pack B
+  for (const what of ['pack', 'members', 'invites', 'join', 'view']) {
+    denied(await w.call('owner', 'GET', what, null, { pack: API_PACK_B }), `pack A's owner reading pack B's ${what}`);
+  }
+  denied(await w.call('owner', 'PUT', 'pack', null, { pack: API_PACK_B, body: {}, headers: { 'if-match': '0' } }), "A's owner writing B");
+  denied(await w.call('stranger', 'GET', 'pack'), "B's owner reading A");
+  // An invite to pack A admits nobody to pack B.
+  await w.call('owner', 'PUT', 'invite', { email: 'newbie@example.com' }, { body: { role: 'editor' } });
+  eq((await w.session('newbie', undefined, API_PACK_B)).body.role, null, "A's invite used on B");
+});
+
+/* ---- the pack record ---- */
+
+atest('api Part C pack.read / pack.write: leaders read the pack record, admins and editors write it, nobody else either', async () => {
+  const w = await (await apiWorld()).seed();
+  w.state(5, { scouts: [{ id: 's1', name: 'Test Scout' }] });
+  await matrix(w, 'GET', 'pack', expectFor(['owner', 'admin2', 'editor', 'viewer']));
+  const got = await w.call('viewer', 'GET', 'pack');
+  eq([got.body.exists, got.body.rev, JSON.parse(got.body.json).scouts[0].id], [true, 5, 's1'], 'the record a viewer reads');
+  let rev = 5;
+  const writeAs = (who) => ({ body: { rev: 'x', by: who }, headers: { 'if-match': String(rev), 'x-pack-device': 'dev-' + who } });
+  for (const who of ALL) {
+    const r = await w.call(who, 'PUT', 'pack', null, writeAs(who));
+    if (['owner', 'admin2', 'editor'].indexOf(who) >= 0) { eq([r.status, r.body.rev], [200, rev + 1], who + ' writes'); rev += 1; }
+    else denied(r, who + ' PUT pack');
+  }
+  eq(w.one('SELECT rev, device FROM pack_state'), { rev: 8, device: 'dev-editor' }, 'the stored record');
+});
+
+atest('api pack PUT is compare-and-swap: a stale rev gets 409 with the stored copy, and a retry on it lands', async () => {
+  const w = await (await apiWorld()).seed();
+  const put = (who, rev, body) => w.call(who, 'PUT', 'pack', null, { body, headers: { 'if-match': String(rev), 'x-pack-device': who } });
+  // The first write to an empty pack is from rev 0; a second "first write" loses.
+  eq((await put('editor', 0, { ledger: ['e1'] })).body.rev, 1, 'the first write');
+  const lost = await put('owner', 0, { ledger: ['o1'] });
+  eq([lost.status, lost.body.code, lost.body.rev, lost.body.device], [409, 'aborted', 1, 'editor'], 'a second first write');
+  eq(JSON.parse(lost.body.json), { ledger: ['e1'] }, 'the 409 carries the stored copy');
+  // Two devices both at rev 1: one lands, the other gets the remote copy, merges, retries on its rev.
+  eq((await put('editor', 1, { ledger: ['e1', 'e2'] })).body.rev, 2, 'editor from rev 1');
+  const stale = await put('owner', 1, { ledger: ['e1', 'o1'] });
+  eq([stale.status, stale.body.rev], [409, 2], 'owner from rev 1');
+  eq((await put('owner', stale.body.rev, { ledger: ['e1', 'e2', 'o1'] })).body.rev, 3, 'the retry on the remote rev');
+  eq(JSON.parse(w.one('SELECT json FROM pack_state').json).ledger, ['e1', 'e2', 'o1'], 'the merged record');
+  // A write from the future is a conflict too, never a jump.
+  eq((await put('owner', 99, { a: 1 })).status, 409, 'a rev ahead of the stored one');
+  eq((await w.call('owner', 'PUT', 'pack', null, { body: { a: 1 } })).status, 400, 'no If-Match');
+  eq(w.one('SELECT rev FROM pack_state').rev, 3, 'a refused write moved the rev');
+});
+
+atest('api pack PUT refuses a record over 1.5 MB (413), and anything that is not a JSON object (400)', async () => {
+  const w = await (await apiWorld()).seed();
+  const put = (body, headers) => w.call('owner', 'PUT', 'pack', null, { body, headers: Object.assign({ 'if-match': '0' }, headers || {}) });
+  const MAX = API.http.MAX_STATE_BYTES;
+  eq(MAX, 1.5 * 1024 * 1024, 'the limit');
+  const big = '{"x":"' + 'a'.repeat(MAX) + '"}';
+  eq([(await put(big)).status, (await put(big)).body.code], [413, 'resource-exhausted'], 'a record over 1.5 MB');
+  // Without a Content-Length the stream is counted as it arrives.
+  const streamed = await callApi(w.env, API.mod.pack, { method: 'PUT', path: '/api/pack/' + API_PACK, params: { id: API_PACK },
+    token: await tokenFor('owner'), headers: { 'if-match': '0' }, body: undefined });
+  eq(streamed.status, 400, 'an empty body');
+  const chunked = new Request('https://staging.pack569.pages.dev/api/pack/' + API_PACK, { method: 'PUT', duplex: 'half',
+    headers: { authorization: 'Bearer ' + await tokenFor('owner'), 'if-match': '0' },
+    body: new ReadableStream({ start(c) { for (let i = 0; i < 4; i++) c.enqueue(new TextEncoder().encode('a'.repeat(MAX / 2))); c.close(); } }) });
+  eq((await API.mod.pack.onRequest({ request: chunked, env: w.env, params: { id: API_PACK } })).status, 413, 'a streamed body over the limit');
+  const just = '{"x":"' + 'a'.repeat(MAX - 10) + '"}';
+  eq((await put(just)).status, 200, 'a record just under the limit');
+  for (const bad of ['not json', '[1,2]', 'null', '"a string"']) eq((await put(bad, { 'if-match': '1' })).status, 400, 'body ' + bad);
+});
+
+atest('api rev poll: leaders get the rev, parents only when the view changed, pending users nothing', async () => {
+  const w = await (await apiWorld()).seed();
+  w.state(7);
+  await matrix(w, 'GET', 'rev', expectFor(['owner', 'admin2', 'editor', 'viewer', 'parent']));
+  eq((await w.call('viewer', 'GET', 'rev')).body, { viewAt: null, rev: 7 }, 'a viewer');
+  eq((await w.call('parent', 'GET', 'rev')).body, { viewAt: null }, 'a parent (no rev: that is part of the pack record)');
+  await w.call('editor', 'PUT', 'view', null, { body: { packName: 'Test Pack' } });
+  ok((await w.call('parent', 'GET', 'rev')).body.viewAt > 0, 'the parent does not see the view change');
+});
+
+/* ---- members ---- */
+
+atest('api Part C members.read: the roster to leaders; anyone else only their own record', async () => {
+  const w = await (await apiWorld()).seed();
+  await matrix(w, 'GET', 'members', expectFor(['owner', 'admin2', 'editor', 'viewer']));
+  const roster = (await w.call('viewer', 'GET', 'members')).body.members;
+  eq(roster.map((m) => m.uid).sort(), ['uid-admin2', 'uid-editor', 'uid-owner', 'uid-parent', 'uid-pending', 'uid-viewer'], 'the roster');
+  ok(roster.every((m) => /@example\.com$/.test(m.email)), 'the roster has no emails');
+  // Your own record, whoever you are — including the answer "you have none".
+  for (const who of ['pending', 'parent']) {
+    const r = await w.call(who, 'GET', 'member', { uid: PEOPLE[who][0] });
+    eq([r.status, r.body.exists, r.body.role], [200, true, who], who + ' reading their own record');
+  }
+  eq((await w.call('stranger', 'GET', 'member', { uid: 'uid-stranger' })).body, { exists: false }, 'a stranger reading their own (none)');
+  denied(await w.call('pending', 'GET', 'member', { uid: 'uid-owner' }), 'pending reading the owner');
+  denied(await w.call('parent', 'GET', 'member', { uid: 'uid-editor' }), 'a parent reading an editor');
+  eq((await w.call('editor', 'GET', 'member', { uid: 'uid-parent' })).body.email, 'parent1@example.com', 'a leader reading a parent');
+});
+
+atest('api Part C members.admin / members.update.self / members.update.owner / members.keys: who may change a member', async () => {
+  const w = await (await apiWorld()).seed();
+  const patch = (who, uid, body) => w.call(who, 'PATCH', 'member', { uid }, { body });
+  // members.admin: an admin changes anyone's role.
+  eq((await patch('admin2', 'uid-parent', { role: 'editor' })).body.role, 'editor', 'an admin promoting a parent');
+  eq(w.audit('member.role').map((a) => JSON.parse(a.detail)), [{ target: 'uid-parent', from: 'parent', to: 'editor' }], 'the role change audit');
+  denied(await patch('editor', 'uid-viewer', { role: 'editor' }), 'an editor promoting a viewer');
+  denied(await patch('viewer', 'uid-pending', { role: 'parent' }), 'a viewer approving a request');
+  // members.update.self: your own row, same role. Promoting yourself is the attack.
+  denied(await patch('pending', 'uid-pending', { role: 'admin' }), 'pending making themselves admin');
+  denied(await patch('pending', 'uid-pending', { role: 'parent' }), 'pending approving themselves');
+  denied(await patch('viewer', 'uid-viewer', { role: 'editor' }), 'a viewer promoting themselves');
+  const renamed = await patch('pending', 'uid-pending', { name: 'Test Renamed', role: 'pending' });
+  eq([renamed.status, renamed.body.name, renamed.body.role], [200, 'Test Renamed', 'pending'], 'pending renaming themselves');
+  // Your own row carries your own email (ownEmail()), whatever was there.
+  w.db.raw.prepare("UPDATE members SET email = 'wrong@example.com' WHERE uid = 'uid-viewer'").run();
+  eq((await patch('viewer', 'uid-viewer', { name: 'V' })).body.email, 'viewer1@example.com', 'the email after a self-update');
+  // members.keys: a name is a string of at most 120 characters; nothing but role and name.
+  denied(await patch('viewer', 'uid-viewer', { name: 'x'.repeat(121) }), 'a 121-character name');
+  eq((await patch('viewer', 'uid-viewer', { name: 'x'.repeat(120) })).status, 200, 'a 120-character name');
+  denied(await patch('viewer', 'uid-viewer', { name: 42 }), 'a name that is not a string');
+  denied(await patch('viewer', 'uid-viewer', { email: 'viewer1@example.com' }), 'a field other than role and name');
+  denied(await patch('owner', 'uid-viewer', { joinCode: 'abc' }), 'an admin sending another field');
+  eq((await patch('owner', 'uid-viewer', { role: 'owner' })).status, 400, 'a role that does not exist');
+  // members.update.owner: the owner restores their own admin role; nobody else can.
+  await patch('admin2', 'uid-owner', { role: 'viewer' });
+  eq((await patch('owner', 'uid-owner', { role: 'admin' })).body.role, 'admin', 'the owner restoring their admin role');
+  denied(await patch('stranger', 'uid-stranger', { role: 'admin' }), 'a stranger with no row');
+  eq((await patch('owner', 'uid-nobody', { role: 'editor' })).status, 404, 'an admin changing a row that is not there');
+});
+
+atest('api last admin: no change or removal leaves a pack with no admin', async () => {
+  const w = await (await apiWorld()).seed({ editor: 'editor' });
+  const r1 = await w.call('owner', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { role: 'editor' } });
+  eq([r1.status, r1.body.code], [409, 'failed-precondition'], 'the only admin demoting themselves');
+  eq((await w.call('owner', 'DELETE', 'member', { uid: 'uid-owner' })).status, 409, 'the only admin removing themselves');
+  eq(w.one("SELECT role FROM members WHERE uid = 'uid-owner'").role, 'admin', 'the only admin was changed');
+  eq(w.audit('member.role').length + w.audit('member.remove').length, 0, 'a refused change was audited');
+  // With two admins, either may step down — but then the other is the last.
+  await w.call('owner', 'PATCH', 'member', { uid: 'uid-editor' }, { body: { role: 'admin' } });
+  eq((await w.call('editor', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { role: 'viewer' } })).status, 200, 'one of two admins demoted');
+  eq((await w.call('editor', 'DELETE', 'member', { uid: 'uid-editor' })).status, 409, 'the remaining admin removing themselves');
+  // Renaming the last admin is not a demotion.
+  eq((await w.call('editor', 'PATCH', 'member', { uid: 'uid-editor' }, { body: { name: 'Test Admin' } })).status, 200, 'renaming the last admin');
+  // The owner, demoted, heals on their next sign-in — and a removed owner comes back as admin.
+  eq((await w.session('owner')).body.role, 'admin', 'the demoted owner signing in');
+  eq((await w.call('editor', 'DELETE', 'member', { uid: 'uid-owner' })).status, 200, 'a co-admin removing the owner (Part C allows it)');
+  eq((await w.session('owner')).body.role, 'admin', 'the removed owner signing back in');
+});
+
+atest('api Part C members.admin (delete): only admins remove members, and the removed member\'s invite goes with them', async () => {
+  const w = await (await apiWorld()).seed();
+  for (const who of ['editor', 'viewer', 'parent', 'pending', 'stranger']) denied(await w.call(who, 'DELETE', 'member', { uid: 'uid-parent' }), who + ' removing a parent');
+  denied(await w.call('parent', 'DELETE', 'member', { uid: 'uid-parent' }), 'a parent removing themselves');
+  w.db.raw.prepare("INSERT INTO invites (pack_id, email, role, invited_by_uid, invited_at) VALUES (?, 'parent1@example.com', 'editor', 'uid-owner', 1)").run(API_PACK);
+  eq((await w.call('admin2', 'DELETE', 'member', { uid: 'uid-parent' })).status, 200, 'an admin removing a parent');
+  eq(w.sql("SELECT count(*) AS n FROM invites WHERE email = 'parent1@example.com'")[0].n, 0, 'their invite outlived them');
+  eq(w.audit('member.remove').map((a) => [a.uid, JSON.parse(a.detail).target]), [['uid-admin2', 'uid-parent']], 'the removal audit');
+  eq((await w.session('parent')).body.role, null, 'the removed parent signing back in');
+  eq((await w.call('owner', 'DELETE', 'member', { uid: 'uid-parent' })).status, 404, 'removing them twice');
+});
+
+/* ---- invites ---- */
+
+atest('api Part C invites.write: only admins invite, never as admin, and the inviter is recorded by account id', async () => {
+  const w = await (await apiWorld()).seed();
+  const inv = (who, email, body) => w.call(who, 'PUT', 'invite', { email }, { body });
+  for (const role of ['editor', 'viewer', 'parent']) {
+    const r = await inv('admin2', role + '9@example.com', { role });
+    eq([r.status, r.body.role, r.body.invitedByUid], [200, role, 'uid-admin2'], 'an admin inviting a ' + role);
+    ok(r.text.indexOf('admin2@example.com') === -1, 'the invite carries the inviter\'s email');
+  }
+  denied(await inv('owner', 'x9@example.com', { role: 'admin' }), 'an admin invite');
+  denied(await inv('owner', 'x9@example.com', { role: 'pending' }), 'a pending invite');
+  denied(await inv('owner', 'x9@example.com', {}), 'an invite with no role');
+  for (const who of ['editor', 'viewer', 'parent', 'pending']) denied(await inv(who, 'x9@example.com', { role: 'parent' }), who + ' inviting');
+  // THE SELF-INVITE (audit attack case): a stranger, or a pending user, inviting their own email as admin — or as anything.
+  for (const who of ['stranger', 'pending']) {
+    denied(await inv(who, PEOPLE[who][1], { role: 'admin' }), who + ' inviting themselves as admin');
+    denied(await inv(who, PEOPLE[who][1], { role: 'editor' }), who + ' inviting themselves as editor');
+  }
+  eq((await w.session('stranger')).body.role, null, 'the stranger after trying to invite themselves');
+  // The body cannot name another address, carry other fields, or set the inviter.
+  denied(await inv('owner', 'x9@example.com', { role: 'parent', email: 'y9@example.com' }), 'a body email that is not the path\'s');
+  denied(await inv('owner', 'x9@example.com', { role: 'parent', invitedBy: 'uid-stranger' }), 'a body naming the inviter');
+  eq((await inv('owner', 'x9@example.com', { role: 'parent', email: 'x9@example.com' })).status, 200, 'the same email in the body');
+  eq((await inv('owner', 'X9@example.com', { role: 'parent' })).status, 404, 'an address that is not lowercased');
+  eq((await inv('owner', 'not-an-email', { role: 'parent' })).status, 404, 'not an address');
+  eq((await inv('owner', encodeURIComponent('x9@example.com'), { role: 'viewer' })).body.role, 'viewer', 'a percent-encoded path');
+  eq(w.audit('invite.write').length, 5, 'each invite written is audited, and no refused one');
+});
+
+atest('api Part C invites.read / invites.delete: admins list and revoke; an invitee reads and declines only their own', async () => {
+  const w = await (await apiWorld()).seed();
+  await w.call('owner', 'PUT', 'invite', { email: 'stranger@example.com' }, { body: { role: 'parent' } });
+  await w.call('owner', 'PUT', 'invite', { email: 'newbie@example.com' }, { body: { role: 'editor' } });
+  await matrix(w, 'GET', 'invites', expectFor(['owner', 'admin2']));
+  eq((await w.call('owner', 'GET', 'invites')).body.invites.map((i) => i.email).sort(), ['newbie@example.com', 'stranger@example.com'], 'the list');
+  // Your own, matched on your Google email lowercased.
+  const mine = await w.call('stranger', 'GET', 'invite', { email: 'stranger@example.com' }, { claims: { email: 'Stranger@Example.com' } });
+  eq([mine.status, mine.body.role], [200, 'parent'], 'the invitee reading their own');
+  for (const who of ['stranger', 'editor', 'pending']) denied(await w.call(who, 'GET', 'invite', { email: 'newbie@example.com' }), who + ' reading someone else\'s invite');
+  denied(await w.call('editor', 'DELETE', 'invite', { email: 'newbie@example.com' }), 'an editor revoking');
+  denied(await w.call('stranger', 'DELETE', 'invite', { email: 'newbie@example.com' }), 'a stranger revoking someone else\'s');
+  eq((await w.call('stranger', 'DELETE', 'invite', { email: 'stranger@example.com' })).body.removed, true, 'the invitee declining their own');
+  eq((await w.call('admin2', 'DELETE', 'invite', { email: 'newbie@example.com' })).body.removed, true, 'an admin revoking');
+  eq((await w.call('admin2', 'DELETE', 'invite', { email: 'newbie@example.com' })).body.removed, false, 'revoking twice');
+  eq([w.audit('invite.decline').length, w.audit('invite.revoke').length], [1, 1], 'the audit (nothing for the no-op)');
+  eq((await w.session('newbie')).body.role, null, 'the revoked invitee signing in');
+});
+
+/* ---- the sign-up link switch ---- */
+
+atest('api Part C join.read / join.write: leaders read the live code, admins write it, and it only ever means request', async () => {
+  const w = await (await apiWorld()).seed();
+  const cfg = { open: true, code: 'Code123abc', showStandings: false, showAmounts: true, contact: '  Ask   the\ncubmaster  ' };
+  denied(await w.call('editor', 'PUT', 'join', null, { body: cfg }), 'an editor writing the join config');
+  await matrix(w, 'PUT', 'join', Object.assign(expectFor(['owner', 'admin2']), {}), { opts: () => ({ body: cfg }) });
+  await matrix(w, 'GET', 'join', expectFor(['owner', 'admin2', 'editor', 'viewer']));
+  eq((await w.call('viewer', 'GET', 'join')).body, { exists: true, open: true, mode: 'request', code: 'Code123abc',
+    showStandings: false, showAmounts: true, contact: 'Ask the cubmaster', updatedAt: w.one('SELECT updated_at FROM join_config').updated_at }, 'what a leader reads');
+  // Request mode: nothing else can be written, by anyone.
+  denied(await w.call('owner', 'PUT', 'join', null, { body: Object.assign({}, cfg, { mode: 'auto' }) }), 'mode auto');
+  eq((await w.call('owner', 'PUT', 'join', null, { body: Object.assign({}, cfg, { mode: 'request' }) })).status, 200, 'mode request');
+  let threw = false;
+  try { w.db.raw.prepare("UPDATE join_config SET mode = 'auto'").run(); } catch (e) { threw = /CHECK/.test(e.message); }
+  ok(threw, 'the table accepts mode auto');
+  // Whole writes only: a missing switch is refused, not defaulted back on.
+  const partial = Object.assign({}, cfg); delete partial.showAmounts;
+  eq((await w.call('owner', 'PUT', 'join', null, { body: partial })).status, 400, 'a write missing a switch');
+  eq((await w.call('owner', 'PUT', 'join', null, { body: Object.assign({}, cfg, { code: 'has space' }) })).status, 400, 'a bad code');
+  eq((await w.call('owner', 'PUT', 'join', null, { body: Object.assign({}, cfg, { extra: 1 }) })).status, 400, 'an unknown field');
+  // The audit says whether the code changed, never what it is.
+  await w.call('owner', 'PUT', 'join', null, { body: Object.assign({}, cfg, { code: 'Rotated999' }) });
+  const rows = w.audit('join.write');
+  eq(rows.map((a) => JSON.parse(a.detail).codeChanged), [true, false, false, true], 'codeChanged');
+  ok(!/Code123abc|Rotated999/.test(JSON.stringify(rows)), 'the audit holds the join code');
+});
+
+/* ---- the parent view ---- */
+
+atest('api Part C view.read / view.write: approved members read the parent view (never pending); admins and editors write it', async () => {
+  const w = await (await apiWorld()).seed();
+  eq((await w.call('parent', 'GET', 'view')).body, { exists: false }, 'no view yet');
+  await matrix(w, 'PUT', 'view', expectFor(['owner', 'admin2', 'editor']), { opts: (who) => ({ body: { packName: 'Test Pack', by: who } }) });
+  await matrix(w, 'GET', 'view', expectFor(['owner', 'admin2', 'editor', 'viewer', 'parent']));
+  const r = await w.call('parent', 'GET', 'view');
+  eq([r.body.exists, r.body.view], [true, { packName: 'Test Pack', by: 'editor' }], 'what a parent reads');
+  ok(typeof r.body.generatedAt === 'number', 'generatedAt');
+  for (const bad of ['[1]', 'nope', 'null']) eq((await w.call('editor', 'PUT', 'view', null, { body: bad })).status, 400, 'a view of ' + bad);
+});
+
+/* ---- the one-time import ---- */
+
+function importBody(over) {
+  return Object.assign({
+    pack: { rev: 41, device: 'dev-old', json: JSON.stringify({ scouts: [{ id: 's1', name: 'Test Scout' }], ledger: [] }) },
+    members: [
+      { uid: 'uid-owner', role: 'admin', name: 'Test Owner', email: 'owner@example.com', addedAt: 1000 },
+      { uid: 'uid-editor', role: 'editor', name: 'Test Editor', email: 'editor1@example.com', addedAt: 2000 },
+      { uid: 'uid-pending', role: 'pending', name: 'Test Pending', email: 'pending1@example.com', joinCode: 'Code123abc', addedAt: 3000 }
+    ],
+    invites: [{ email: 'Parent1@Example.com', role: 'parent', invitedBy: 'owner@example.com', invitedAt: 4000 },
+      { email: 'sneaky@example.com', role: 'admin', invitedAt: 5000 }],
+    join: { open: true, mode: 'auto', code: 'Code123abc', showStandings: true, showAmounts: false, contact: 'Ask a leader' },
+    view: { packName: 'Test Pack', generatedAt: { seconds: 1 } }
+  }, over || {});
+}
+
+atest('api import: only the pack owner, only into an empty pack, only once — and all or nothing', async () => {
+  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor' });
+  // Not the owner: a co-admin, an editor, a stranger.
+  for (const who of ['admin2', 'editor', 'stranger']) denied(await w.call(who, 'POST', 'import', null, { body: importBody() }), who + ' importing');
+  // All or nothing: one bad member refuses the whole import, and leaves the lock open.
+  const bad = importBody({ members: importBody().members.concat([{ uid: 'uid-x', role: 'superuser' }]) });
+  eq((await w.call('owner', 'POST', 'import', null, { body: bad })).status, 400, 'an import with a bad role');
+  eq(w.sql('SELECT (SELECT count(*) FROM pack_state) + (SELECT count(*) FROM import_lock) AS n')[0].n, 0, 'a refused import wrote something');
+  const r = await w.call('owner', 'POST', 'import', null, { body: importBody() });
+  eq([r.status, r.body.rev, r.body.members, r.body.invites, r.body.invitesSkipped], [200, 41, 3, 1, 1], 'the owner\'s import');
+  eq((await w.call('editor', 'GET', 'pack')).body.rev, 41, 'the imported rev');
+  eq(JSON.parse((await w.call('editor', 'GET', 'pack')).body.json).scouts[0].id, 's1', 'the imported record');
+  eq(w.one("SELECT role, join_code FROM members WHERE uid = 'uid-pending'"), { role: 'pending', join_code: 'Code123abc' }, 'an imported request');
+  eq(w.one('SELECT email, role, invited_by_uid FROM invites'), { email: 'parent1@example.com', role: 'parent', invited_by_uid: 'uid-owner' },
+    'the imported invite (lowercased, the importer as inviter, the admin invite left behind)');
+  eq(w.one('SELECT mode, open, show_amounts FROM join_config'), { mode: 'request', open: 1, show_amounts: 0 }, 'the imported join config (mode forced to request)');
+  eq(JSON.parse(w.one('SELECT payload FROM parent_views').payload), { packName: 'Test Pack' }, 'the imported view');
+  eq(w.one("SELECT role FROM members WHERE uid = 'uid-owner'").role, 'admin', 'the owner after the import');
+  eq(w.audit('import').length, 1, 'the import is audited');
+  // Once only: the second import is refused, and so is one into a pack that has a record.
+  denied(await w.call('owner', 'POST', 'import', null, { body: importBody() }), 'a second import');
+  // The lock outlives the record: with the pack record gone (a wipe, a restore), it still refuses.
+  w.db.raw.prepare('DELETE FROM pack_state').run();
+  denied(await w.call('owner', 'POST', 'import', null, { body: importBody() }), 'an import after the record was deleted');
+  const w2 = await (await apiWorld()).seed({});
+  await w2.call('owner', 'PUT', 'pack', null, { body: { scouts: [] }, headers: { 'if-match': '0' } });
+  denied(await w2.call('owner', 'POST', 'import', null, { body: importBody() }), 'an import over a saved record');
+  eq(w2.sql('SELECT count(*) AS n FROM import_lock')[0].n, 0, 'a refused import took the lock');
+});
+
+atest('api import: the owner comes out an admin even if Firestore said otherwise, and existing rows win', async () => {
+  const w = await (await apiWorld()).seed({ editor: 'viewer' });
+  const body = importBody({ members: [{ uid: 'uid-owner', role: 'viewer', name: 'O', email: 'owner@example.com' },
+    { uid: 'uid-editor', role: 'admin', name: 'E', email: 'editor1@example.com' }] });
+  eq((await w.call('owner', 'POST', 'import', null, { body })).status, 200, 'the import');
+  eq(w.sql('SELECT uid, role FROM members ORDER BY uid'), [{ uid: 'uid-editor', role: 'viewer' }, { uid: 'uid-owner', role: 'admin' }],
+    'the roles after the import');
+});
+
+/* ---- the schema, and the code's shape ---- */
+
+atest('api schema: the tables themselves refuse what Part C refuses', async () => {
+  const w = await (await apiWorld()).seed({});
+  const refused = (sql, ...a) => { try { w.db.raw.prepare(sql).run(...a); return false; } catch (e) { return true; } };
+  const P = API_PACK;
+  ok(refused("INSERT INTO members (pack_id, uid, role, added_at) VALUES (?, 'u1', 'owner', 1)", P), 'a role that is not one of the five');
+  ok(refused("INSERT INTO members (pack_id, uid, role, name, added_at) VALUES (?, 'u1', 'parent', ?, 1)", P, 'x'.repeat(121)), 'a 121-character name');
+  ok(!refused("INSERT INTO members (pack_id, uid, role, name, added_at) VALUES (?, 'u1', 'parent', ?, 1)", P, 'x'.repeat(120)), 'a 120-character name');
+  ok(refused("INSERT INTO members (pack_id, uid, role, added_at) VALUES (?, 'u2', 'parent', 1)", 'no-such-pack'), 'a member of no pack');
+  ok(refused("INSERT INTO invites VALUES (?, 'x@example.com', 'admin', 'uid-owner', 1)", P), 'an admin invite');
+  ok(refused("INSERT INTO invites VALUES (?, 'X@example.com', 'parent', 'uid-owner', 1)", P), 'an invite key that is not lowercased');
+  ok(refused("INSERT INTO join_config (pack_id, open, mode, code, updated_at) VALUES (?, 1, 'auto', 'abc', 1)", P), 'join mode auto');
+  ok(refused("INSERT INTO join_config (pack_id, open, code, updated_at) VALUES (?, 1, 'a b', 1)", P), 'a join code with a space');
+  ok(refused("INSERT INTO join_config (pack_id, open, code, contact, updated_at) VALUES (?, 1, 'abc', ?, 1)", P, 'x'.repeat(161)), 'a 161-character contact');
+  ok(refused('INSERT INTO pack_state (pack_id, rev, json, updated_at) VALUES (?, -1, ?, 1)', P, '{}'), 'a negative rev');
+  ok(refused('UPDATE packs SET owner_uid = NULL'), 'an owner cleared');
+  ok(refused('DELETE FROM packs'), 'a pack deleted');
+  ok(refused('INSERT INTO import_lock VALUES (?, ?, 1)', P, 'u') === false && refused('INSERT INTO import_lock VALUES (?, ?, 2)', P, 'u'), 'a second import lock');
+});
+
+test('api rules.js quotes SETUP.md Part C word for word, and every endpoint keeps pack_id and roles off the body', () => {
+  // The quotes are loaded by the async setup; read the file here so this stays a plain source scan.
+  const RULES = readFileSync(join(ROOT, 'functions/_lib/rules.js'), 'utf8');
+  const block = /```\nrules_version = '2';[\s\S]*?```/.exec(SETUP.slice(SETUP.indexOf('## Part C')));
+  ok(block && /match \/invites\/\{email\}/.test(block[0]), 'the Part C rules block is not in SETUP.md');
+  const partC = RULES.slice(RULES.indexOf('export const PART_C = {'), RULES.indexOf('\n};', RULES.indexOf('export const PART_C = {')));
+  const quotes = [...partC.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => JSON.parse('"' + m[1] + '"'));
+  ok(quotes.length >= 20, 'too few Part C quotes found: ' + quotes.length);
+  quotes.forEach((q) => ok(block[0].indexOf(q) >= 0, 'Part C no longer says: ' + q));
+  // Every rule id is used by a function comment (so the table maps somewhere).
+  const ids = [...partC.matchAll(/'([a-zA-Z.]+)': \[/g)].map((m) => m[1]);
+  const code = RULES + readdirSync(join(ROOT, 'functions/api'), { recursive: true }).filter((f) => /\.js$/.test(f))
+    .map((f) => readFileSync(join(ROOT, 'functions/api', f), 'utf8')).join('\n');
+  ids.forEach((id) => ok(code.split("'" + id + "'").length > 2 || id === 'viaGoogle' || /^packmeta\./.test(id), 'no endpoint names rule ' + id));
+});
+
+test('api functions/ is plain modules: relative imports only, routes only under api/, nothing in _lib that Pages would route', () => {
+  const files = readdirSync(join(ROOT, 'functions'), { recursive: true }).filter((f) => !/\/$/.test(f) && /\./.test(f)).map((f) => f.split('\\').join('/'));
+  ok(files.every((f) => /\.js$/.test(f)), 'a file in functions/ that is not .js: ' + files.filter((f) => !/\.js$/.test(f)));
+  for (const f of files) {
+    const src = readFileSync(join(ROOT, 'functions', f), 'utf8');
+    const imports = [...src.matchAll(/^import [^;]*? from '([^']+)';$/gm)].map((m) => m[1]);
+    imports.forEach((s) => ok(/^\.\.?\//.test(s), `${f} imports ${s} — no packages, no node: modules`));
+    ok(!/\brequire\(|import\(/.test(src), `${f} loads code dynamically`);
+    const routes = /export (?:const|async function|function) onRequest\w*/.test(src);
+    if (f.indexOf('_lib/') === 0) ok(!routes, `${f} exports a route handler; Pages would serve it`);
+    else ok(/^api\//.test(f) && routes, `${f} is not an api/ route`);
+    // Nothing takes identity or a role from what the caller sent.
+    ok(!/body\.(uid|owner|ownerUid|invitedBy|invitedByUid)\b/.test(src), `${f} reads an identity from the body`);
+  }
+  eq(files.filter((f) => /^api\//.test(f)).sort(), ['api/pack/[id]/import.js', 'api/pack/[id]/index.js', 'api/pack/[id]/invites/[email].js',
+    'api/pack/[id]/invites/index.js', 'api/pack/[id]/join.js', 'api/pack/[id]/members/[uid].js', 'api/pack/[id]/members/index.js',
+    'api/pack/[id]/rev.js', 'api/pack/[id]/view.js', 'api/session.js'], 'the routes');
+});
+
 /* ---------------- report ---------------- */
+// The API tests are async; they run here, one at a time, each on its own database.
+for (const [name, fn] of asyncTests) {
+  try { await fn(); pass++; }
+  catch (e) { fails.push(`${name}\n      ${e && e.message}`); }
+}
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
   for (const f of fails) console.error(`  ✗ ${f}\n`);
