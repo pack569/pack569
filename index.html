@@ -1394,6 +1394,9 @@
   .pv-row { padding: 10px 2px; border-bottom: 1px solid var(--line); }
   .pv-row:last-child { border-bottom: none; }
   .pv-ics { margin-top: 6px; }
+  .kit-item { padding: 8px 0; border-top: 1px solid var(--line); }
+  .kit-help { margin: 2px 0 0 26px; }
+  .kit-help .btn { margin-top: 6px; }
   .pv-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .pv-title { font-weight: 650; }
   .pv-when { font-size: 0.85rem; color: var(--ink-soft); margin-top: 2px; }
@@ -2979,6 +2982,7 @@
       rewardTiers: { duesCents: 0, tiers: [], planOnTierId: '' },
       inventory: freshInventory(),
       camping: freshCamping(),   // one page per pack campout, published to parents
+      recruitKit: freshRecruitKit(), // Wave B4 — School Night checklist; leaders only, never published
       welcome: freshWelcome(),   // Wave B1 — "New to the pack", published once a leader switches it on
       archives: [],
       densAdvancedYear: 0,       // Wave 19(3) — program year dens were last advanced for (0 = never)
@@ -3279,6 +3283,13 @@
       refreshWelcomeSeed(d.welcome);
       d.welcome.seedRev = WELCOME_SEED_REV;
     }
+    // Wave B4 — the School Night checklist. Only the four known items survive, as booleans.
+    if (!d.recruitKit || typeof d.recruitKit !== 'object' || Array.isArray(d.recruitKit)) d.recruitKit = freshRecruitKit();
+    d.recruitKit.year = (typeof d.recruitKit.year === 'number' && isFinite(d.recruitKit.year)) ? Math.floor(d.recruitKit.year) : 0;
+    var rkDone = (d.recruitKit.done && typeof d.recruitKit.done === 'object') ? d.recruitKit.done : {};
+    d.recruitKit.done = {};
+    RECRUIT_KIT_ITEMS.forEach(function (x) { if (rkDone[x.id] === true) d.recruitKit.done[x.id] = true; });
+    d.recruitKit.flyerLink = d.recruitKit.flyerLink === true;
     if (!d.packName) d.packName = 'Pack 569';
     // Wave 22 — the weather lookup location. Defaulted rather than left blank so the feature
     // works on an existing pack record without anyone visiting a settings screen first; every
@@ -9010,7 +9021,8 @@
   //   `collected`, any family's charges, payments or balance, who paid their way up a tier,
   //   inventory (products, cases, prices, hand-outs), leaders (names, roles, phones, emails,
   //   training, notes), last names, scouts' private notes and den labels, RSVP/attendance
-  //   detail, other fundraisers, past-season archives, and `state` in any raw form.
+  //   detail, other fundraisers, past-season archives, the School Night checklist (`recruitKit`),
+  //   and `state` in any raw form.
   //
   // Pure: it reads only the state it is given. `state` is swapped for the duration so the
   // existing money math (computePackTotals/computeScoutTotals/…) is reused verbatim rather
@@ -15600,6 +15612,140 @@
       'Left empty, the page just says to ask a pack leader.</p>';
     return h + '</div>';
   }
+  /* ---------------- School Night recruiting kit (Wave B4, 2026-09-28) ----------------
+     The four things a leader needs in hand the night the pack recruits at a school, as a
+     checklist on Pack → Sharing, beside the sign-up link it prints. LEADERS ONLY: it is in the
+     pack record (`recruitKit`) and buildParentView never reads it.
+
+     The ticks belong to a program year: a kit ticked off last September is not this year's, so a
+     tick from an earlier year simply reads as unticked, and the first tick of a new year starts
+     a clean list. No rollover code needed, and nothing is carried that could go stale.
+
+     ⚠ The flyer carries the sign-up link ONLY when an admin has ticked "Include the sign-up link"
+     this year, AND the link is on, AND this device can see it (joinLinkUrl — admins only). A flyer
+     goes on a school noticeboard; the link on it puts anyone who scans it into the approval
+     queue, which is the admin's call to make, every year, not a default. */
+  var RECRUIT_KIT_ITEMS = [
+    { id: 'pin', label: 'Update the pack’s BeAScout pin' },
+    { id: 'qr', label: 'Print a QR code of the sign-up link' },
+    { id: 'flyer', label: 'Print a flyer' },
+    { id: 'cost', label: 'Bring the cost sheet' }
+  ];
+  function freshRecruitKit() { return { year: 0, done: {}, flyerLink: false }; }
+  // This year's tick for one item — false for any tick left over from another year.
+  function recruitKitDone(rk, py, id) {
+    return !!(rk && rk.year === py && rk.done && rk.done[id] === true);
+  }
+  function recruitKitFlyerLink(rk, py) { return !!(rk && rk.year === py && rk.flyerLink === true); }
+  // The sign-up link, when THIS device may print it: an admin, the link switched on, a real code.
+  // The name families will find on beascout.scouting.org: the pack's public name where this file
+  // IS one pack (single-pack mode), else whatever the pack calls itself.
+  function kitPackName() {
+    return fixedPackMode() ? PACK_PUBLIC_NAME : (String(state.packName || '').trim() || PACK_PUBLIC_NAME);
+  }
+  function kitJoinUrl() {
+    if (!isAdmin() || !joinOpen()) return '';
+    var u = joinLinkUrl();
+    return /[?&]join=[^&]+/.test(u) ? u : '';
+  }
+  // A standalone printable page. Pure: everything it shows comes in through `o`.
+  //   o.packName   the pack's public name
+  //   o.url        the sign-up link, or '' for none (then no link and no QR appear anywhere on it)
+  function kitFlyerHtml(o) {
+    var name = esc(String((o && o.packName) || 'Cub Scout Pack'));
+    var url = String((o && o.url) || '');
+    var fill = '<span class="fill" contenteditable="true">[pack to fill in]</span>';
+    return '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>' + name + ' — School Night flyer</title>' +
+      '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+      '<style>body{font-family:Georgia,serif;color:#111;max-width:7.5in;margin:0 auto;padding:.5in .4in;line-height:1.35}' +
+      'h1{font-size:44px;margin:0 0 4px}h2{font-size:24px;margin:0 0 24px;font-weight:normal}' +
+      '.big{font-size:22px;margin:14px 0}.fill{background:#fff3c4;padding:0 4px;border-bottom:2px dashed #b58a00}' +
+      '.qr{text-align:center;margin:28px 0 8px}.url{font-family:monospace;font-size:13px;word-break:break-all;text-align:center}' +
+      '.note{font-family:system-ui,sans-serif;font-size:14px;background:#eef3fb;border:1px solid #9bb3d6;padding:10px 12px;border-radius:6px;margin-bottom:18px}' +
+      'button{font-size:16px;padding:8px 16px}' +
+      '@media print{.no-print{display:none}.fill{background:none;border:none;padding:0}}</style></head><body>' +
+      '<div class="note no-print"><strong>Before you print:</strong> click each yellow <em>[pack to fill in]</em> and type the ' +
+      'date, time and place. <strong>Youth Protection:</strong> do not add any child’s last name, and no photo of a child ' +
+      'without their parent’s permission. <button type="button" onclick="window.print()">Print</button></div>' +
+      '<h1>Join Cub Scouts!</h1><h2>' + name + '</h2>' +
+      '<p class="big">Cub Scouting is for kids in kindergarten through fifth grade — and their families.</p>' +
+      '<p class="big"><strong>School Night:</strong> ' + fill + '</p>' +
+      '<p class="big"><strong>Where:</strong> ' + fill + '</p>' +
+      '<p class="big">Come and meet the pack, ask anything, and sign up on the night.</p>' +
+      '<p class="big"><strong>Register online:</strong> go to <strong>beascout.scouting.org</strong>, enter your ZIP code, ' +
+      'choose <strong>' + name + '</strong>, then <em>Apply now</em>.</p>' +
+      (url
+        ? '<div class="qr">' + qrSvg(url, 220) + '</div><p class="url">Scan to ask for the pack’s family calendar: ' + esc(url) + '</p>'
+        : '') +
+      '</body></html>';
+  }
+  // The QR code on its own sheet, large, with the link printed under it for anyone whose camera
+  // will not read it.
+  function kitQrSheetHtml(o) {
+    var name = esc(String((o && o.packName) || 'Cub Scout Pack'));
+    var url = String((o && o.url) || '');
+    return '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>' + name + ' — sign-up QR code</title>' +
+      '<style>body{font-family:system-ui,sans-serif;text-align:center;padding:.6in .4in;color:#111}' +
+      'h1{font-size:30px;margin:0 0 6px}p{font-size:18px}.url{font-family:monospace;font-size:14px;word-break:break-all}' +
+      'button{font-size:16px;padding:8px 16px}@media print{.no-print{display:none}}</style></head><body>' +
+      '<p class="no-print"><button type="button" onclick="window.print()">Print</button></p>' +
+      '<h1>' + name + '</h1><p>Scan to ask for the pack’s family calendar</p>' +
+      '<div>' + qrSvg(url, 380) + '</div><p class="url">' + esc(url) + '</p>' +
+      '<p>A pack leader approves each family before anything is shown.</p></body></html>';
+  }
+  // Opens the page in a new tab to print. From a click, so a pop-up blocker lets it through;
+  // if one does not, say so rather than doing nothing.
+  function openPrintPage(html) {
+    var w = null;
+    try { w = window.open('', '_blank'); } catch (e) { w = null; }
+    if (!w) { showToast('Your browser blocked the new tab — allow pop-ups for this site and try again.'); return; }
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+  }
+  function renderRecruitKit() {
+    var rk = state.recruitKit || freshRecruitKit();
+    var py = state.budget.programYear;
+    var edit = canEdit();
+    var url = kitJoinUrl();
+    var dis = edit ? '' : ' disabled';
+    function item(id, label, help) {
+      return '<div class="kit-item"><label class="join-opt"><input type="checkbox" data-ch="kit-done" data-name="' + id + '"' +
+        (recruitKitDone(rk, py, id) ? ' checked' : '') + dis + '><span>' + esc(label) + '</span></label>' +
+        '<div class="small muted kit-help">' + help + '</div></div>';
+    }
+    var labels = {};
+    RECRUIT_KIT_ITEMS.forEach(function (x) { labels[x.id] = x.label; });
+    var h = '<div class="card"><h2 class="section display">School Night recruiting kit</h2>' +
+      '<p class="small muted" style="margin:0 0 10px">The four things to have in hand the night the pack recruits. ' +
+      'Ticks are for this program year only, and leaders are the only people who see this card.</p>';
+    h += item('pin', labels.pin,
+      'Search <strong>beascout.scouting.org</strong> for your ZIP and check the pack’s pin shows this year’s contact and ' +
+      'meeting place. The pack’s Key 3 can change it through my.scouting.org.');
+    h += item('qr', labels.qr, url
+      ? 'Made on this device — the link is never sent to a QR website. If you press <strong>New code</strong> on the ' +
+        'sign-up link card, every printed code stops working. ' +
+        '<button type="button" class="btn small" data-act="kit-print-qr">Print the QR code</button>'
+      : 'A pack admin prints this, with <strong>Let people request access with a link</strong> switched on in the ' +
+        'Parent sign-up link card — the link carries the pack’s join code, so only admins can see it.');
+    var flyerHelp = 'A one-page flyer with [pack to fill in] for the date and place — you type them in before printing. ' +
+      '<strong>Youth Protection:</strong> no child’s last name on it, and no photo of a child without their parent’s permission. ';
+    if (url) {
+      flyerHelp += '<label class="join-opt" style="margin:6px 0"><input type="checkbox" data-ch="kit-flyer-link"' +
+        (recruitKitFlyerLink(rk, py) ? ' checked' : '') + dis + '><span>Include the sign-up link (and its QR code) on the flyer</span></label>' +
+        '<span class="small muted" style="display:block;margin-bottom:6px">Off unless you tick it, each year. Anyone who scans a ' +
+        'flyer on a noticeboard lands in your approval queue.</span>';
+    } else {
+      flyerHelp += 'The flyer has no sign-up link on it. ';
+    }
+    flyerHelp += '<button type="button" class="btn small" data-act="kit-print-flyer">Open the flyer to print</button>';
+    h += item('flyer', labels.flyer, flyerHelp);
+    h += item('cost', labels.cost,
+      'Print <strong>What a year costs a family</strong> from the family view — a family finds it under Standings, or under ' +
+      'Schedule when standings are off — so the question every family asks has a printed answer. ' +
+      (canPreviewParent() ? '<button type="button" class="btn small" data-act="parent-preview-on">Open the family view</button>' : ''));
+    return h + '</div>';
+  }
   function syncModeLine() {
     if (!FIREBASE_CONFIG) return 'Device-only mode — everything is saved in this browser.';
     var fixed = fixedPackMode();
@@ -16542,6 +16688,8 @@
     h += renderMembersCard();
     // Join link phase — self-serve parent sign-up link (admins only).
     h += renderJoinCard();
+    // Wave B4 — the School Night kit, beside the link it prints. Every leader sees it.
+    h += renderRecruitKit();
     // Owner ask, 2026-08-02 — see the family view without a second account.
     h += renderParentPreviewCard();
 
@@ -19726,6 +19874,225 @@
     reader.readAsText(file);
   }
 
+  /* ---------------- A small QR encoder (Wave B4, 2026-09-28) ----------------
+     For the School Night kit: the sign-up link as a QR code, made in the browser, with no library
+     and nothing sent anywhere (a hosted QR service would be handed the pack's join code).
+     Deliberately narrow: byte mode, error correction level M (about 15% of the code can be
+     scuffed or covered and it still scans), versions 1–10 — up to 213 bytes, several times the
+     length of a join link. Anything longer returns null and the caller says so.
+     The construction is the standard one (ISO/IEC 18004), laid out as in Project Nayuki's
+     reference encoder: data codewords, Reed–Solomon error correction over GF(256) with 0x11D, the
+     blocks interleaved, function patterns, the zigzag placement, and the mask with the lowest
+     penalty. The penalty here counts the four standard rules; finder-like runs are matched as a
+     pattern rather than scored exactly, which can only change WHICH valid mask is picked, never
+     whether the code is valid. Verified by decoding its output with an independent QR reader. */
+  var QR_M_ECC = [0, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26];   // ECC codewords per block, by version
+  var QR_M_BLOCKS = [0, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5];         // blocks, by version
+  // Returns an array of rows of booleans (true = dark), or null when the text will not fit.
+  function qrMatrix(text) {
+    var bytes = [];
+    var utf8 = unescape(encodeURIComponent(String(text == null ? '' : text)));
+    for (var bi = 0; bi < utf8.length; bi++) bytes.push(utf8.charCodeAt(bi));
+    function rawModules(v) {
+      var r = (16 * v + 128) * v + 64;
+      if (v >= 2) {
+        var na = Math.floor(v / 7) + 2;
+        r -= (25 * na - 10) * na - 55;
+        if (v >= 7) r -= 36;
+      }
+      return r;
+    }
+    function dataCodewords(v) { return Math.floor(rawModules(v) / 8) - QR_M_ECC[v] * QR_M_BLOCKS[v]; }
+    var ver = 0;
+    for (var v = 1; v <= 10; v++) {
+      if (4 + (v < 10 ? 8 : 16) + bytes.length * 8 <= dataCodewords(v) * 8) { ver = v; break; }
+    }
+    if (!ver) return null;
+    // The bit stream: mode 0100 (byte), the count, the bytes, a terminator, then pad bytes.
+    var bits = [];
+    function put(val, len) { for (var i = len - 1; i >= 0; i--) bits.push((val >>> i) & 1); }
+    put(4, 4);
+    put(bytes.length, ver < 10 ? 8 : 16);
+    bytes.forEach(function (b) { put(b, 8); });
+    var cap = dataCodewords(ver) * 8;
+    put(0, Math.min(4, cap - bits.length));
+    put(0, (8 - bits.length % 8) % 8);
+    for (var pad = 0xEC; bits.length < cap; pad ^= 0xEC ^ 0x11) put(pad, 8);
+    var data = [];
+    for (var di = 0; di < bits.length; di += 8) {
+      var byte = 0;
+      for (var dj = 0; dj < 8; dj++) byte = (byte << 1) | bits[di + dj];
+      data.push(byte);
+    }
+    // Reed–Solomon over GF(256), polynomial 0x11D.
+    function mul(x, y) {
+      var z = 0;
+      for (var i = 7; i >= 0; i--) { z = (z << 1) ^ ((z >>> 7) * 0x11D); z ^= ((y >>> i) & 1) * x; }
+      return z;
+    }
+    var eccLen = QR_M_ECC[ver];
+    var divisor = [];
+    for (var i0 = 0; i0 < eccLen - 1; i0++) divisor.push(0);
+    divisor.push(1);
+    var root = 1;
+    for (var i1 = 0; i1 < eccLen; i1++) {
+      for (var j1 = 0; j1 < divisor.length; j1++) {
+        divisor[j1] = mul(divisor[j1], root);
+        if (j1 + 1 < divisor.length) divisor[j1] ^= divisor[j1 + 1];
+      }
+      root = mul(root, 0x02);
+    }
+    function remainder(dat) {
+      var res = divisor.map(function () { return 0; });
+      dat.forEach(function (b) {
+        var f = b ^ res.shift();
+        res.push(0);
+        divisor.forEach(function (c, k) { res[k] ^= mul(c, f); });
+      });
+      return res;
+    }
+    // Split into blocks, add each block's error correction, interleave.
+    var numBlocks = QR_M_BLOCKS[ver], rawCw = Math.floor(rawModules(ver) / 8);
+    var numShort = numBlocks - rawCw % numBlocks, shortLen = Math.floor(rawCw / numBlocks);
+    var blocks = [];
+    for (var b0 = 0, k0 = 0; b0 < numBlocks; b0++) {
+      var dat = data.slice(k0, k0 + shortLen - eccLen + (b0 < numShort ? 0 : 1));
+      k0 += dat.length;
+      var ecc = remainder(dat);
+      if (b0 < numShort) dat.push(0);
+      blocks.push(dat.concat(ecc));
+    }
+    var cw = [];
+    for (var c0 = 0; c0 < blocks[0].length; c0++) {
+      for (var c1 = 0; c1 < blocks.length; c1++) {
+        if (c0 !== shortLen - eccLen || c1 >= numShort) cw.push(blocks[c1][c0]);
+      }
+    }
+    // The grid. mod[y][x]; fn marks the modules the data may not use.
+    var size = ver * 4 + 17, mod = [], fn = [];
+    for (var y0 = 0; y0 < size; y0++) {
+      mod.push([]); fn.push([]);
+      for (var x0 = 0; x0 < size; x0++) { mod[y0].push(false); fn[y0].push(false); }
+    }
+    function setF(x, y, dark) { mod[y][x] = !!dark; fn[y][x] = true; }
+    for (var t = 0; t < size; t++) { setF(6, t, t % 2 === 0); setF(t, 6, t % 2 === 0); }
+    [[3, 3], [size - 4, 3], [3, size - 4]].forEach(function (c) {
+      for (var dy = -4; dy <= 4; dy++) {
+        for (var dx = -4; dx <= 4; dx++) {
+          var d = Math.max(Math.abs(dx), Math.abs(dy)), xx = c[0] + dx, yy = c[1] + dy;
+          if (xx >= 0 && xx < size && yy >= 0 && yy < size) setF(xx, yy, d !== 2 && d !== 4);
+        }
+      }
+    });
+    var align = [];
+    if (ver > 1) {
+      var na2 = Math.floor(ver / 7) + 2;
+      var step = Math.ceil((ver * 4 + 4) / (na2 * 2 - 2)) * 2;
+      align = [6];
+      for (var pos = size - 7; align.length < na2; pos -= step) align.splice(1, 0, pos);
+    }
+    align.forEach(function (ax, ai) {
+      align.forEach(function (ay, aj) {
+        var last = align.length - 1;
+        if ((ai === 0 && aj === 0) || (ai === 0 && aj === last) || (ai === last && aj === 0)) return;
+        for (var dy = -2; dy <= 2; dy++) {
+          for (var dx = -2; dx <= 2; dx++) setF(ax + dx, ay + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
+        }
+      });
+    });
+    function drawFormat(mask) {
+      var fd = (0 << 3) | mask, rem = fd;   // level M's format bits are 00
+      for (var i = 0; i < 10; i++) rem = (rem << 1) ^ ((rem >>> 9) * 0x537);
+      var fb = ((fd << 10) | rem) ^ 0x5412;
+      function g(i) { return ((fb >>> i) & 1) !== 0; }
+      for (var i2 = 0; i2 <= 5; i2++) setF(8, i2, g(i2));
+      setF(8, 7, g(6)); setF(8, 8, g(7)); setF(7, 8, g(8));
+      for (var i3 = 9; i3 < 15; i3++) setF(14 - i3, 8, g(i3));
+      for (var i4 = 0; i4 < 8; i4++) setF(size - 1 - i4, 8, g(i4));
+      for (var i5 = 8; i5 < 15; i5++) setF(8, size - 15 + i5, g(i5));
+      setF(8, size - 8, true);
+    }
+    drawFormat(0);   // reserves the format areas before the data goes in
+    if (ver >= 7) {
+      var vr = ver;
+      for (var i6 = 0; i6 < 12; i6++) vr = (vr << 1) ^ ((vr >>> 11) * 0x1F25);
+      var vb = (ver << 12) | vr;
+      for (var i7 = 0; i7 < 18; i7++) {
+        var vbit = ((vb >>> i7) & 1) !== 0, va = size - 11 + i7 % 3, vbb = Math.floor(i7 / 3);
+        setF(va, vbb, vbit); setF(vbb, va, vbit);
+      }
+    }
+    // Zigzag placement, two columns at a time from the right, skipping the vertical timing column.
+    var n = 0;
+    for (var right = size - 1; right >= 1; right -= 2) {
+      if (right === 6) right = 5;
+      for (var vert = 0; vert < size; vert++) {
+        for (var jj = 0; jj < 2; jj++) {
+          var x = right - jj, up = ((right + 1) & 2) === 0, yv = up ? size - 1 - vert : vert;
+          if (!fn[yv][x] && n < cw.length * 8) { mod[yv][x] = ((cw[n >>> 3] >>> (7 - (n & 7))) & 1) !== 0; n++; }
+        }
+      }
+    }
+    function maskBit(m, x, y) {
+      switch (m) {
+        case 0: return (x + y) % 2 === 0;
+        case 1: return y % 2 === 0;
+        case 2: return x % 3 === 0;
+        case 3: return (x + y) % 3 === 0;
+        case 4: return (Math.floor(x / 3) + Math.floor(y / 2)) % 2 === 0;
+        case 5: return x * y % 2 + x * y % 3 === 0;
+        case 6: return (x * y % 2 + x * y % 3) % 2 === 0;
+        default: return ((x + y) % 2 + x * y % 3) % 2 === 0;
+      }
+    }
+    function applyMask(m) {
+      for (var y = 0; y < size; y++) for (var x = 0; x < size; x++) if (!fn[y][x] && maskBit(m, x, y)) mod[y][x] = !mod[y][x];
+    }
+    function penalty() {
+      var p = 0, dark = 0, lines = [];
+      for (var y = 0; y < size; y++) {
+        var row = '', col = '';
+        for (var x = 0; x < size; x++) { row += mod[y][x] ? '1' : '0'; col += mod[x][y] ? '1' : '0'; if (mod[y][x]) dark++; }
+        lines.push(row, col);
+      }
+      lines.forEach(function (s) {
+        (s.match(/0{5,}|1{5,}/g) || []).forEach(function (r) { p += r.length - 2; });
+        var q = '0000' + s + '0000';
+        p += 40 * ((q.match(/(?=10111010000)/g) || []).length + (q.match(/(?=00001011101)/g) || []).length);
+      });
+      for (var y2 = 0; y2 < size - 1; y2++) {
+        for (var x2 = 0; x2 < size - 1; x2++) {
+          var c = mod[y2][x2];
+          if (c === mod[y2][x2 + 1] && c === mod[y2 + 1][x2] && c === mod[y2 + 1][x2 + 1]) p += 3;
+        }
+      }
+      p += 10 * Math.floor(Math.abs(dark * 20 - size * size * 10) / (size * size));
+      return p;
+    }
+    var best = 0, bestP = Infinity;
+    for (var m = 0; m < 8; m++) {
+      applyMask(m); drawFormat(m);
+      var pm = penalty();
+      if (pm < bestP) { bestP = pm; best = m; }
+      applyMask(m);
+    }
+    applyMask(best); drawFormat(best);
+    return mod;
+  }
+  // The matrix as an SVG, with the four-module quiet zone the standard asks for. One path, so it
+  // prints crisply at any size.
+  function qrSvg(text, px) {
+    var m = qrMatrix(text);
+    if (!m) return '';
+    var size = m.length, d = '';
+    m.forEach(function (row, y) {
+      row.forEach(function (on, x) { if (on) d += 'M' + (x + 4) + ' ' + (y + 4) + 'h1v1h-1z'; });
+    });
+    var w = size + 8;
+    return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + w + '" width="' + (px || 240) + '" height="' + (px || 240) +
+      '" shape-rendering="crispEdges" role="img" aria-label="QR code"><rect width="' + w + '" height="' + w + '" fill="#fff"/>' +
+      '<path d="' + d + '" fill="#000"/></svg>';
+  }
   /* ---------------- Calendar (.ics) interchange (Wave 10) ---------------- */
   // BAND (band.us) has no live sync API, but it imports/exports .ics calendar files.
   // The same file works with Google/Apple/Outlook. Everything here is additive — it
@@ -22104,6 +22471,19 @@
       return;
     }
     // ----- "New to the pack" (Wave B1). Behind canEdit() for the camping reason above.
+    // ----- Wave B4 — School Night kit. Printing changes nothing, so no canEdit(); the link is
+    // re-checked here (kitJoinUrl: admin, link on, real code) rather than trusted from the page.
+    if (act === 'kit-print-flyer') {
+      var kfUrl = recruitKitFlyerLink(state.recruitKit, state.budget.programYear) ? kitJoinUrl() : '';
+      openPrintPage(kitFlyerHtml({ packName: kitPackName(), url: kfUrl }));
+      return;
+    }
+    if (act === 'kit-print-qr') {
+      var kqUrl = kitJoinUrl();
+      if (!kqUrl) { showToast('Only a pack admin, with the sign-up link switched on, can print this.'); return; }
+      openPrintPage(kitQrSheetHtml({ packName: kitPackName(), url: kqUrl }));
+      return;
+    }
     if (act === 'welcome-add-sec') {
       if (!canEdit()) return;
       state.welcome.sections.push(freshWelcomeSection('', '', ''));
@@ -23323,6 +23703,17 @@
       return;
     }
     // "New to the pack" (Wave B1). Stored verbatim, like the camping prose.
+    // Wave B4 — the School Night checklist. A tick in a new program year starts a clean list.
+    if (ch === 'kit-done' || ch === 'kit-flyer-link') {
+      var rk = state.recruitKit, rkPy = state.budget.programYear;
+      // Putting the join link on a flyer is the admin's call — the same people who can see it.
+      if (ch === 'kit-flyer-link' && !isAdmin()) { render(); return; }
+      if (rk.year !== rkPy) { rk.year = rkPy; rk.done = {}; rk.flyerLink = false; }
+      if (ch === 'kit-flyer-link') rk.flyerLink = !!el.checked;
+      else if (RECRUIT_KIT_ITEMS.some(function (x) { return x.id === el.dataset.name; })) rk.done[el.dataset.name] = !!el.checked;
+      commit();
+      return;
+    }
     if (ch === 'welcome-published') { state.welcome.published = !!el.checked; commit(); return; }
     if (ch === 'welcome-sec-title' || ch === 'welcome-sec-body' || ch === 'welcome-sec-url') {
       var wsS = getWelcomeSection(el.dataset.sec);

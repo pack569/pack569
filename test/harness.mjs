@@ -968,6 +968,8 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // Wave B1 — and seeds "New to the pack" the same way.
   'WELCOME_SEED_REV', 'WELCOME_OLD_SEED', 'WELCOME_FILL_RE', 'freshWelcomeSection', 'seedWelcomeSections',
   'freshWelcome', 'refreshWelcomeSeed',
+  // Wave B4 — and the School Night checklist.
+  'RECRUIT_KIT_ITEMS', 'freshRecruitKit',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
   'parseLegacyTime', 'migrateTierMakeUp', 'normalizeState', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'entrySignedCents',
@@ -10972,6 +10974,84 @@ test('B3: one event goes into a family calendar with its name, date, time and pl
   const h = /if \(act === 'parent-ics'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
   ok(h && /parentDoc\(\)/.test(h[0]) && !/state\./.test(h[0]), 'the handler does not read the published document');
   ok(/data-act="parent-ics"/.test(slice('parentEventRow')), 'no button on the event row');
+});
+
+// The QR encoder, run on its own. Its output was decoded by an independent reader (macOS Core
+// Image) for versions 1, 3, 5, 6, 8, 9 and 10, and with 36 modules deliberately flipped; the
+// golden fingerprint below pins that verified output so a later edit cannot quietly break it.
+const QR_GOLDEN = 'wqfkwd';   // 'https://pack569.com/?join=abc123xyz9', as decoded 2026-09-28
+function qrCtx() {
+  const ctx = vm.createContext({});
+  vm.runInContext(['QR_M_ECC', 'QR_M_BLOCKS', 'qrMatrix', 'qrSvg'].map(slice).join('\n'), ctx);
+  return ctx;
+}
+test('B4: the inline QR encoder draws a well-formed code, and the verified one has not changed', () => {
+  const ctx = qrCtx();
+  const url = 'https://pack569.com/?join=abc123xyz9';
+  const m = ctx.qrMatrix(url);
+  eq(m.length, 29, 'a 36-byte link at level M is not version 3 (29 modules)');
+  // Finder patterns in three corners: dark ring, light ring, dark 3x3 core.
+  const finder = (x0, y0) => {
+    for (let y = 0; y < 7; y++) for (let x = 0; x < 7; x++) {
+      const d = Math.max(Math.abs(x - 3), Math.abs(y - 3));
+      if (m[y0 + y][x0 + x] !== (d !== 2)) return false;
+    }
+    return true;
+  };
+  ok(finder(0, 0) && finder(22, 0) && finder(0, 22), 'a finder pattern is malformed');
+  for (let i = 8; i < 21; i++) ok(m[6][i] === (i % 2 === 0) && m[i][6] === (i % 2 === 0), 'the timing pattern is broken');
+  ok(m[21][8] === true, 'the dark module is missing');
+  // The two copies of the format information agree.
+  const a = [], b = [];
+  for (let i = 0; i <= 5; i++) a.push(m[i][8]);
+  a.push(m[7][8], m[8][8], m[8][7]);
+  for (let i = 9; i < 15; i++) a.push(m[8][14 - i]);
+  for (let i = 0; i < 8; i++) b.push(m[8][28 - i]);
+  for (let i = 8; i < 15; i++) b.push(m[29 - 15 + i][8]);
+  eq(a.map(Number).join(''), b.map(Number).join(''), 'the two format-information copies disagree');
+  const fp = m.map((r) => r.map((x) => (x ? 1 : 0)).join('')).join('');
+  let h = 0x811c9dc5;
+  for (let i = 0; i < fp.length; i++) { h ^= fp.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  eq(h.toString(36), QR_GOLDEN, 'the encoder’s output changed from the independently decoded one');
+  eq(ctx.qrMatrix('z'.repeat(300)), null, 'an over-long text did not say it will not fit');
+  ok(ctx.qrMatrix('y'.repeat(205)).length === 57, 'version 10 (16-bit count) is not reached');
+  const svg = ctx.qrSvg(url, 200);
+  ok(/^<svg [^>]*viewBox="0 0 37 37"/.test(svg), 'the SVG has no quiet zone');
+  eq(ctx.qrSvg('z'.repeat(300)), '', 'an over-long text still drew an SVG');
+  ok(!/https?:\/\/(?!www\.w3\.org)/.test(slice('qrMatrix') + slice('qrSvg')), 'the QR code is fetched from somewhere');
+});
+
+test('B4: the flyer carries the sign-up link only when it is handed one, and the kit is leaders-only', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(['esc', 'QR_M_ECC', 'QR_M_BLOCKS', 'qrMatrix', 'qrSvg', 'kitFlyerHtml', 'kitQrSheetHtml',
+    'freshRecruitKit', 'recruitKitDone', 'recruitKitFlyerLink'].map(slice).join('\n'), ctx);
+  const bare = ctx.kitFlyerHtml({ packName: 'Pack 569 <x>' });
+  ok(!/join=|<svg/.test(bare), 'a flyer with no link handed to it has a link or a QR code');
+  ok((bare.match(/contenteditable="true">\[pack to fill in\]/g) || []).length === 2, 'the date and the place are not left to fill in');
+  ok(/Youth Protection:<\/strong> do not add any child’s last name, and no photo of a child/.test(bare), 'no Youth Protection note');
+  ok(/class="note no-print"/.test(bare), 'the note to the leader would print on the flyer');
+  ok(/Pack 569 &lt;x&gt;/.test(bare) && !/<x>/.test(bare), 'the pack name is not escaped');
+  ok(/beascout\.scouting\.org/.test(bare), 'the flyer does not say how to register');
+  const withLink = ctx.kitFlyerHtml({ packName: 'Pack 569', url: 'https://pack569.com/?join=abc123xyz9' });
+  ok(/<svg/.test(withLink) && /join=abc123xyz9/.test(withLink), 'a ticked flyer lost the link');
+  ok(/<svg/.test(ctx.kitQrSheetHtml({ packName: 'P', url: 'https://pack569.com/?join=q' })), 'the QR sheet has no code');
+  // Ticks belong to their year; the link tick too.
+  const rk = { year: 2026, done: { pin: true }, flyerLink: true };
+  ok(ctx.recruitKitDone(rk, 2026, 'pin') && !ctx.recruitKitDone(rk, 2027, 'pin'), 'last year’s tick counts this year');
+  ok(ctx.recruitKitFlyerLink(rk, 2026) && !ctx.recruitKitFlyerLink(rk, 2027), 'last year’s "include the link" carries over');
+  // Printing the flyer asks for the link only through the ticked, admin-checked path.
+  const pf = /if \(act === 'kit-print-flyer'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/recruitKitFlyerLink\(state\.recruitKit, state\.budget\.programYear\) \? kitJoinUrl\(\) : ''/.test(pf),
+    'the flyer can get the link without the tick');
+  ok(/if \(!isAdmin\(\) \|\| !joinOpen\(\)\) return '';/.test(slice('kitJoinUrl')), 'a non-admin can put the link on paper');
+  ok(/if \(ch === 'kit-flyer-link' && !isAdmin\(\)\) \{ render\(\); return; \}/.test(SCRIPT), 'a non-admin can tick the link onto the flyer');
+  ok(!/recruitKit/.test(codeOnly(BPV())), 'the parent view reads the kit');
+  // Normalized: only the four items, only booleans.
+  const n = vm.createContext({});
+  vm.runInContext(NORMALIZE_FNS.map(slice).join('\n'), n);
+  const out = n.normalizeState(Object.assign(preMigrationState(), { recruitKit: { year: '2026', done: { pin: true, qr: 'yes', evil: true }, flyerLink: 1 } }));
+  eq(JSON.stringify(out.recruitKit), JSON.stringify({ year: 0, done: { pin: true }, flyerLink: false }), 'the kit is not normalized');
+  ok(n.normalizeState(preMigrationState()).recruitKit.flyerLink === false, 'a record without the kit is not given one, link off');
 });
 /* ---------------- report ---------------- */
 if (fails.length) {
