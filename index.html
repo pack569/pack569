@@ -1394,6 +1394,9 @@
   .pv-row { padding: 10px 2px; border-bottom: 1px solid var(--line); }
   .pv-row:last-child { border-bottom: none; }
   .pv-ics { margin-top: 6px; }
+  .ob-row { padding: 10px 0; border-top: 1px solid var(--line); }
+  .ob-ticks { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 6px 0; }
+  .ob-tick { display: inline-flex; align-items: center; gap: 6px; font-size: .92rem; }
   .kit-item { padding: 8px 0; border-top: 1px solid var(--line); }
   .kit-help { margin: 2px 0 0 26px; }
   .kit-help .btn { margin-top: 6px; }
@@ -2909,6 +2912,17 @@
       return { title: String(s.title || ''), body: String(s.body || ''), url: /^https?:\/\//i.test(url) ? url : '' };
     });
   }
+  // The School Night checklist's items (Wave B4) and the new-member tracker's ticks (Wave B5).
+  // Declared HERE, above `var state = load()`, because normalizeState reads them while the
+  // script is still starting up: declared beside their renderers they were still undefined
+  // then, normalizeState threw, and load() treated every saved record as unreadable.
+  var RECRUIT_KIT_ITEMS = [
+    { id: 'pin', label: 'Update the pack’s BeAScout pin' },
+    { id: 'qr', label: 'Print a QR code of the sign-up link' },
+    { id: 'flyer', label: 'Print a flyer' },
+    { id: 'cost', label: 'Bring the cost sheet' }
+  ];
+  var ONBOARD_TICKS = ['registered', 'duesPaid', 'handbook', 'uniform', 'partnerNotParent', 'partnerSyt'];
   // The pack meeting agenda's sections (Wave A; see packAgendaLabel for the rest). Declared
   // HERE, above `var state = load()`, because normalizeAgenda runs inside the loader: declared
   // beside its renderer it was still undefined at load, normalizeState threw on any record
@@ -2921,14 +2935,6 @@
     { key: 'recognition', label: 'Recognition' },
     { key: 'minute', label: 'Cubmaster\u2019s Minute' },
     { key: 'closing', label: 'Closing' }
-  ];
-  // The School Night checklist's items (Wave B4). Declared above `var state = load()`
-  // because normalizeState reads them while the script is still starting up.
-  var RECRUIT_KIT_ITEMS = [
-    { id: 'pin', label: 'Update the pack’s BeAScout pin' },
-    { id: 'qr', label: 'Print a QR code of the sign-up link' },
-    { id: 'flyer', label: 'Print a flyer' },
-    { id: 'cost', label: 'Bring the cost sheet' }
   ];
   // Wave 14/15: a fresh inventory is a generic blank — no pre-seeded order. The standard
   // Trail's End lineup (names + containers/case only) is offered as an opt-in template
@@ -3003,6 +3009,7 @@
       rewardTiers: { duesCents: 0, tiers: [], planOnTierId: '' },
       inventory: freshInventory(),
       camping: freshCamping(),   // one page per pack campout, published to parents
+      onboarding: {},            // Wave B5 — new-member checklist by scout id; leaders only, never published
       recruitKit: freshRecruitKit(), // Wave B4 — School Night checklist; leaders only, never published
       welcome: freshWelcome(),   // Wave B1 — "New to the pack", published once a leader switches it on
       archives: [],
@@ -3181,6 +3188,9 @@
       s.parentUids = (Array.isArray(s.parentUids) ? s.parentUids : []).filter(function (u, i, a) {
         return typeof u === 'string' && u !== '' && a.indexOf(u) === i;
       });
+      // Wave B5 — the program year a scout was added in, so the new-member tracker knows who is
+      // new. 0 = before the field existed (unknown); those families can be added to it by hand.
+      s.addedYear = (typeof s.addedYear === 'number' && isFinite(s.addedYear)) ? Math.floor(s.addedYear) : 0;
     });
     // Wave 19(20) — SYT completed-on date; expiry is computed (+1 year) when set.
     // Legacy sytExpiry stays as-is and keeps working when sytCompleted is blank.
@@ -3304,6 +3314,19 @@
       refreshWelcomeSeed(d.welcome);
       d.welcome.seedRev = WELCOME_SEED_REV;
     }
+    // Wave B5 — where each new family has got to, keyed by scout id. Leaders only: buildParentView
+    // never reads it. Only the known ticks survive, as booleans. Like every reference here it is
+    // NOT resolved against the roster — deleting a scout removes its entry (del-scout), and one
+    // that somehow outlives its scout is simply never shown.
+    var obIn = (d.onboarding && typeof d.onboarding === 'object' && !Array.isArray(d.onboarding)) ? d.onboarding : {};
+    d.onboarding = {};
+    Object.keys(obIn).forEach(function (k) {
+      var o = obIn[k];
+      if (!k || !o || typeof o !== 'object' || Array.isArray(o)) return;
+      var n = { year: (typeof o.year === 'number' && isFinite(o.year)) ? Math.floor(o.year) : 0 };
+      ONBOARD_TICKS.forEach(function (t) { n[t] = o[t] === true; });
+      d.onboarding[k] = n;
+    });
     // Wave B4 — the School Night checklist. Only the four known items survive, as booleans.
     if (!d.recruitKit || typeof d.recruitKit !== 'object' || Array.isArray(d.recruitKit)) d.recruitKit = freshRecruitKit();
     d.recruitKit.year = (typeof d.recruitKit.year === 'number' && isFinite(d.recruitKit.year)) ? Math.floor(d.recruitKit.year) : 0;
@@ -9043,6 +9066,7 @@
   //   inventory (products, cases, prices, hand-outs), leaders (names, roles, phones, emails,
   //   training, notes), last names, scouts' private notes and den labels, RSVP/attendance
   //   detail, other fundraisers, past-season archives, the School Night checklist (`recruitKit`),
+  //   the new-member tracker (`onboarding`, and each scout's `addedYear`),
   //   and `state` in any raw form.
   //
   // Pure: it reads only the state it is given. `state` is swapped for the duration so the
@@ -18453,12 +18477,119 @@
       return '<dt>' + r[0] + '</dt><dd>' + r[1] + '</dd>';
     }).join('') + '</dl>';
   }
+  /* ---------------- New-member tracker (Wave B5, 2026-09-28) ----------------
+     Where each family that joined this program year has got to: registered with Scouting
+     America, dues paid, a den, a handbook, a uniform, and — when the adult partner is not a
+     parent or guardian — that adult's Safeguarding Youth Training. The New Member Coordinator's
+     list, on Scouts → New families. LEADERS ONLY: `state.onboarding` and `addedYear` never reach
+     buildParentView, the digest or any export built for families.
+
+     Two of the six are DERIVED, never ticked, so they cannot disagree with the rest of the app:
+       - den: the scout's den on the roster.
+       - dues: read from the books when the scout has a roster charge (a budget line with no
+         event — dues, registration). Paid means every such charge is settled, waived or
+         forgiven, using the same family-aware allocation the Dues card uses. Only a scout with
+         NO such charge falls back to a hand tick, and the row says which it is.
+     Who is on the list: active scouts added this program year (addedYear, set when a scout is
+     added), plus anyone a leader adds by hand — which is how a family added before this existed,
+     or one still unfinished after the year closed, gets on it. The year's list is cleared at
+     close-out (rolloverYear). */
+  function freshOnboard(py) {
+    var o = { year: py };
+    ONBOARD_TICKS.forEach(function (t) { o[t] = false; });
+    return o;
+  }
+  // Pure: who is on this year's list, in roster order. `ob` is state.onboarding.
+  function onboardScouts(scouts, ob, py) {
+    return (scouts || []).filter(function (s) {
+      if (!s || s.archived) return false;
+      var o = ob && ob[s.id];
+      return s.addedYear === py || !!(o && o.year === py);
+    });
+  }
+  // true / false from the books, or null when the scout has no roster charge to read.
+  // paidMap is chargePaidAllocation's result; lineOf(id) returns the budget line or null.
+  function onboardDuesFromCharges(scoutId, charges, paidMap, lineOf) {
+    var rows = (charges || []).filter(function (c) {
+      if (c.scoutId !== scoutId) return false;
+      var l = lineOf(c.lineId);
+      return !!(l && !l.eventId);
+    });
+    if (!rows.length) return null;
+    return rows.every(function (c) { return !chargeIsOpen(c) || (paidMap[c.id] || 0) >= (c.amountCents || 0); });
+  }
+  // What counts toward "done" for one family, in the order the row shows them.
+  function onboardSteps(s, o, dues) {
+    var steps = [
+      { id: 'registered', done: !!(o && o.registered) },
+      { id: 'duesPaid', done: dues === null ? !!(o && o.duesPaid) : dues },
+      { id: 'den', done: !!(s && s.den) },
+      { id: 'handbook', done: !!(o && o.handbook) },
+      { id: 'uniform', done: !!(o && o.uniform) }
+    ];
+    if (o && o.partnerNotParent) steps.push({ id: 'partnerSyt', done: !!o.partnerSyt });
+    return steps;
+  }
+  function renderOnboarding() {
+    var py = state.budget.programYear;
+    var ob = state.onboarding || {};
+    var list = onboardScouts(state.scouts, ob, py);
+    var edit = canEdit();
+    var dis = edit ? '' : ' disabled';
+    var paidMap = chargePaidAllocation(state.charges, state.ledger, chargeFamilyKey);
+    var h = '<div class="card"><h2 class="section display">New families this year</h2>' +
+      '<p class="small muted" style="margin:0 0 8px">Every scout added to the roster this program year, and where their family ' +
+      'has got to. For leaders only — none of this is ever shown to families.</p>';
+    if (!list.length) {
+      h += '<div class="empty">No new scouts yet this year. A scout added to the roster shows up here on their own.</div>';
+    }
+    list.forEach(function (s) {
+      var o = ob[s.id] || freshOnboard(py);
+      var dues = onboardDuesFromCharges(s.id, state.charges, paidMap, getBudgetLine);
+      var steps = onboardSteps(s, o, dues);
+      var done = steps.filter(function (x) { return x.done; }).length;
+      function tick(key, label) {
+        return '<label class="ob-tick"><input type="checkbox" data-ch="ob-tick" data-scout="' + esc(s.id) + '" data-name="' + key + '"' +
+          (o[key] ? ' checked' : '') + dis + '><span>' + label + '</span></label>';
+      }
+      function fact(ok, label, note) {
+        return '<span class="ob-tick ob-fact"><span class="pill' + (ok ? ' navy' : '') + '">' + (ok ? '✓' : '–') + '</span> ' +
+          label + (note ? ' <span class="muted">' + note + '</span>' : '') + '</span>';
+      }
+      h += '<div class="ob-row"><div class="spread"><strong>' + esc(s.name || 'Unnamed scout') + '</strong>' +
+        '<span class="pill' + (done === steps.length ? ' navy' : '') + '">' + (done === steps.length ? 'All done' : done + ' of ' + steps.length) + '</span></div>' +
+        '<div class="ob-ticks">' +
+        tick('registered', 'Registered with Scouting America') +
+        (dues === null
+          ? tick('duesPaid', 'Dues paid <span class="muted">(no dues charge on the books)</span>')
+          : fact(dues, dues ? 'Dues paid' : 'Dues not paid yet', '(from Dues &amp; fees)')) +
+        fact(!!s.den, s.den ? esc(s.den) + ' den' : 'No den yet', s.den ? '' : '(set it on the Roster)') +
+        tick('handbook', 'Handbook') +
+        tick('uniform', 'Uniform') +
+        tick('partnerNotParent', 'Adult partner is not a parent or guardian') +
+        (o.partnerNotParent ? tick('partnerSyt', 'Adult partner’s Safeguarding Youth Training done') : '') +
+        '</div>' +
+        (s.addedYear !== py && edit
+          ? '<button type="button" class="btn small ghost" data-act="ob-untrack:' + esc(s.id) + '">Take off this list</button>'
+          : '') +
+        '</div>';
+    });
+    // Families added before the tracker existed, or carried over unfinished, go on by hand.
+    var others = activeScouts().filter(function (s) { return list.indexOf(s) === -1; });
+    if (edit && others.length) {
+      h += '<label class="fld" style="margin-top:10px">Add a family already on the roster' +
+        '<select data-ch="ob-track"><option value="">Choose a scout…</option>' +
+        others.map(function (s) { return '<option value="' + esc(s.id) + '">' + esc(s.name) + '</option>'; }).join('') +
+        '</select></label>';
+    }
+    return h + '</div>';
+  }
   /* ---------------- Scouts → New families (Wave B, 2026-09-28) ---------------- */
   // The New Member Coordinator's section. Everything a family needs in its first weeks, from the
   // leaders' side: the page families read ("New to the pack"), and — for leaders only — where
   // each new family has got to.
   function renderJoining() {
-    return renderWelcomeEditor();
+    return renderOnboarding() + renderWelcomeEditor();
   }
   // The "New to the pack" editor. One renderer for both modes, as renderCamping is: a viewer-role
   // leader reads the same page an editor is writing, so the two cannot drift.
@@ -21056,7 +21187,7 @@
     arcScouts.forEach(function (s) {
       var k = teNameKey(s.name);
       if (!k || have[k]) return;
-      state.scouts.push({ id: uid(), name: String(s.name).trim(), den: '', archived: false, renewalMonth: '', denLabel: '', note: '', familyId: '', parentUids: [] });
+      state.scouts.push({ id: uid(), name: String(s.name).trim(), den: '', archived: false, renewalMonth: '', denLabel: '', note: '', familyId: '', parentUids: [], addedYear: state.budget.programYear });
       have[k] = true;
       added += 1;
     });
@@ -21851,6 +21982,9 @@
     // year's forgiveness against a "Removed line". Money that actually moved is in the
     // ledger, which the archive already captured.
     state.charges = [];
+    // Wave B5 — the new-member checklist is the year's intake. Next year's new families are new
+    // next year; a family still unfinished can be added back to the list by hand in one tap.
+    state.onboarding = {};
     // TREASURER'S AUDIT, 2026-09-27 (M4) — ...but a family's BALANCE is not the year's. Clearing
     // every charge wiped what each family still owed, and a treasurer carrying $45 of unpaid
     // campout into September had no record of it anywhere but the archive. So each family's net
@@ -22490,6 +22624,12 @@
       var kqUrl = kitJoinUrl();
       if (!kqUrl) { showToast('Only a pack admin, with the sign-up link switched on, can print this.'); return; }
       openPrintPage(kitQrSheetHtml({ packName: kitPackName(), url: kqUrl }));
+      return;
+    }
+    if (act.indexOf('ob-untrack:') === 0) {
+      if (!canEdit()) return;
+      delete state.onboarding[act.slice('ob-untrack:'.length)];
+      commit();
       return;
     }
     if (act === 'welcome-add-sec') {
@@ -23587,6 +23727,8 @@
         state.charges = state.charges.filter(function (c) { return c.scoutId !== id; });
         state.ledger.forEach(function (e) { if (e.scoutId === id) e.scoutId = ''; });
         delete state.advancement[id];
+        // Wave B5 — and their new-member checklist.
+        delete state.onboarding[id];
         // Wave 4: strip the scout's other-fundraiser sales
         state.fundraisers.forEach(function (fr5) {
           fr5.sales = fr5.sales.filter(function (sale) { return sale.scoutId !== id; });
@@ -23711,6 +23853,23 @@
       return;
     }
     // "New to the pack" (Wave B1). Stored verbatim, like the camping prose.
+    // Wave B5 — the new-member tracker. An entry is made the first time anything is ticked, and
+    // stamped with this program year, which is what keeps a hand-added family on the list.
+    if (ch === 'ob-tick' || ch === 'ob-track') {
+      var obId = ch === 'ob-track' ? el.value : el.dataset.scout;
+      var obSc = obId ? getScout(obId) : null;
+      if (!obSc) return;
+      var obPy = state.budget.programYear;
+      if (!state.onboarding[obId]) state.onboarding[obId] = freshOnboard(obPy);
+      var obE = state.onboarding[obId];
+      obE.year = obPy;
+      if (ch === 'ob-tick') {
+        if (ONBOARD_TICKS.indexOf(el.dataset.name) === -1) return;
+        obE[el.dataset.name] = !!el.checked;
+      }
+      commit();
+      return;
+    }
     // Wave B4 — the School Night checklist. A tick in a new program year starts a clean list.
     if (ch === 'kit-done' || ch === 'kit-flyer-link') {
       var rk = state.recruitKit, rkPy = state.budget.programYear;
@@ -24260,7 +24419,7 @@
     if (kind === 'add-scout') {
       var name = String(fd.get('name') || '').trim();
       if (!name) return;
-      state.scouts.push({ id: uid(), name: name, den: String(fd.get('den') || '').trim(), archived: false, renewalMonth: '', denLabel: '', note: '', familyId: '', parentUids: [] });
+      state.scouts.push({ id: uid(), name: name, den: String(fd.get('den') || '').trim(), archived: false, renewalMonth: '', denLabel: '', note: '', familyId: '', parentUids: [], addedYear: state.budget.programYear });
       state.scouts.sort(function (a, b) { return a.name.localeCompare(b.name); });
       commit(); return;
     }

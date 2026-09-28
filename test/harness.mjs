@@ -970,6 +970,8 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'freshWelcome', 'refreshWelcomeSeed',
   // Wave B4 — and the School Night checklist.
   'RECRUIT_KIT_ITEMS', 'freshRecruitKit',
+  // Wave B5 — and the new-member tracker.
+  'ONBOARD_TICKS',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
   'parseLegacyTime', 'migrateTierMakeUp', 'normalizeState', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'entrySignedCents',
@@ -4898,7 +4900,7 @@ test('a parent account links to scouts, and that link never leaves the pack reco
     'a second parent replaces the first instead of joining the list');
   const rmm = /function removeMember\(memberUid\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(rmm && /parentUids/.test(rmm[0]), 'removing a member leaves them linked as somebody’s parent');
-  ok((SCRIPT.match(/familyId: '', parentUids: \[\] \}\);/g) || []).length === 2,
+  ok((SCRIPT.match(/familyId: '', parentUids: \[\](, addedYear: state\.budget\.programYear)? \}\);/g) || []).length === 2,
     'a newly added scout is not seeded with the family and parent fields');
 });
 
@@ -11052,6 +11054,66 @@ test('B4: the flyer carries the sign-up link only when it is handed one, and the
   const out = n.normalizeState(Object.assign(preMigrationState(), { recruitKit: { year: '2026', done: { pin: true, qr: 'yes', evil: true }, flyerLink: 1 } }));
   eq(JSON.stringify(out.recruitKit), JSON.stringify({ year: 0, done: { pin: true }, flyerLink: false }), 'the kit is not normalized');
   ok(n.normalizeState(preMigrationState()).recruitKit.flyerLink === false, 'a record without the kit is not given one, link off');
+});
+
+test('B5: the new-member list is this year’s new scouts plus hand-added families, with dues read from the books', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(['ONBOARD_TICKS', 'freshOnboard', 'onboardScouts', 'chargeIsOpen', 'onboardDuesFromCharges', 'onboardSteps']
+    .map(slice).join('\n'), ctx);
+  const scouts = [
+    { id: 'a', name: 'Ada', den: 'Lion', addedYear: 2026 },
+    { id: 'b', name: 'Ben', den: '', addedYear: 2025 },
+    { id: 'c', name: 'Cy', den: 'Wolf', addedYear: 0 },
+    { id: 'd', name: 'Di', den: 'Bear', addedYear: 2026, archived: true }];
+  const ob = { c: ctx.freshOnboard(2026), b: ctx.freshOnboard(2025) };
+  eq(ctx.onboardScouts(scouts, ob, 2026).map((s) => s.id), ['a', 'c'],
+    'the list is not "added this year, or added by hand this year, and active"');
+  // Dues: roster (no-event) charges only, settled / waived / paid all count; none → null (hand tick).
+  const lines = { dues: { id: 'dues' }, camp: { id: 'camp', eventId: 'e1' } };
+  const lineOf = (id) => lines[id] || null;
+  const charges = [
+    { id: 'c1', scoutId: 'a', lineId: 'dues', amountCents: 5000 },
+    { id: 'c2', scoutId: 'a', lineId: 'camp', amountCents: 3500 },
+    { id: 'c3', scoutId: 'c', lineId: 'dues', amountCents: 5000, waivedBy: 't1' }];
+  eq(ctx.onboardDuesFromCharges('a', charges, { c1: 4999 }, lineOf), false, 'a part-paid dues charge reads as paid');
+  eq(ctx.onboardDuesFromCharges('a', charges, { c1: 5000 }, lineOf), true, 'paid dues read as unpaid (or the camp fee counted)');
+  eq(ctx.onboardDuesFromCharges('c', charges, {}, lineOf), true, 'a waived dues charge reads as unpaid');
+  eq(ctx.onboardDuesFromCharges('b', charges, {}, lineOf), null, 'no dues charge did not fall back to a hand tick');
+  // Steps: den derived; the partner's SYT counts only when the partner is not a parent.
+  const o = Object.assign(ctx.freshOnboard(2026), { registered: true, handbook: true });
+  eq(ctx.onboardSteps(scouts[0], o, true).filter((x) => x.done).length, 4, 'registered, dues, den and handbook are not all counted');
+  eq(ctx.onboardSteps(scouts[0], o, null).length, 5, 'the partner’s SYT is asked of a parent');
+  o.partnerNotParent = true;
+  const st = ctx.onboardSteps(scouts[0], o, null);
+  ok(st.length === 6 && st[5].id === 'partnerSyt' && !st[5].done, 'a non-parent partner’s SYT is not asked for');
+  ok(st.find((x) => x.id === 'duesPaid').done === false, 'with no charge on the books, dues are not the hand tick');
+});
+
+test('B5: the tracker is normalized, cleared at close-out, removed with its scout, and never published', () => {
+  const n = vm.createContext({});
+  vm.runInContext(NORMALIZE_FNS.map(slice).join('\n'), n);
+  const out = n.normalizeState(Object.assign(preMigrationState(), {
+    onboarding: { s1: { year: 2026, registered: true, uniform: 'yes', secret: 'x' }, s2: 'junk', s3: [] }
+  }));
+  eq(Object.keys(out.onboarding), ['s1'], 'junk entries survived');
+  eq(out.onboarding.s1, { year: 2026, registered: true, duesPaid: false, handbook: false, uniform: false, partnerNotParent: false, partnerSyt: false },
+    'an entry is not coerced to the known ticks');
+  ok(out.scouts.every((s) => typeof s.addedYear === 'number'), 'a scout without addedYear is not defaulted');
+  eq(JSON.stringify(n.normalizeState(preMigrationState()).onboarding), '{}', 'a record without the tracker is not given an empty one');
+  // Both places a scout is added stamp the program year.
+  eq((SCRIPT.match(/parentUids: \[\], addedYear: state\.budget\.programYear \}\);/g) || []).length, 2,
+    'a newly added scout is not stamped with the year');
+  const del = /if \(act\.indexOf\('del-scout:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/delete state\.onboarding\[id\];/.test(del), 'deleting a scout leaves their checklist behind');
+  ok(/state\.onboarding = \{\};/.test(slice('rolloverYear')), 'close-out carries the year’s intake into the next');
+  // Never published, and every write is behind the read-only gate.
+  const bpv = codeOnly(BPV());
+  ok(!/onboarding|addedYear/.test(bpv), 'the parent view reads the tracker');
+  ok(!/onboarding/.test(codeOnly(slice('monthlyDigest'))), 'the family digest reads the tracker');
+  const h = /if \(ch === 'ob-tick' \|\| ch === 'ob-track'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/commit\(\);/.test(h) && /ONBOARD_TICKS\.indexOf\(el\.dataset\.name\) === -1/.test(h), 'the tick handler writes unknown keys or skips commit()');
+  ok(/if \(act\.indexOf\('ob-untrack:'\) === 0\) \{\s*if \(!canEdit\(\)\) return;/.test(SCRIPT), 'untracking is not behind canEdit()');
+  ok(/renderOnboarding\(\) \+ renderWelcomeEditor\(\)/.test(slice('renderJoining')), 'the tracker is not on Scouts → New families');
 });
 
 test('every constant the loader reads is assigned before the pack record is loaded', () => {
