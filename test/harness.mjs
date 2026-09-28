@@ -12136,8 +12136,15 @@ test('E3: the archived ledger is compact rows with words, not ids, and totals th
   const led = JSON.parse(JSON.stringify(ctx.seasonLedgerRows(ledger, (id) => (id === 'L1' ? 'Fall campout' : ''), (sid) => (sid === 's1' ? 'Ada and Ben' : ''))));
   eq(led.rows, [
     { d: '2026-09-02', c: 8500, t: 'Dues', s: 'family', f: 'Ada and Ben' },
-    { d: '2026-10-02', c: -12000, t: 'Scoutland', l: 'Fall campout', r: '1044', b: 'Dana', k: 1 }
-  ], 'rows (date order, empty keys left out, signed cents)');
+    { d: '2026-10-02', c: -12000, t: 'Scoutland', l: 'Fall campout', r: '1044', k: 1 }
+  ], 'rows (date order, empty keys left out, signed cents, no entered-by)');
+  // Security review — who entered an entry is never archived, and an old archive loses it on load.
+  ok(!/Dana/.test(JSON.stringify(led)), 'a leader name reached the archive rows');
+  ok(!/r\.b = /.test(slice('seasonLedgerRows')), 'seasonLedgerRows still writes entered-by');
+  const nz = sandbox(NORMALIZE_FNS);
+  const arch = nz.normalizeState(Object.assign(preMigrationState(), { archives: [{ kind: 'season', year: 2025, id: 'a1',
+    ledger: { totals: {}, rows: [{ d: '2025-09-01', c: 100, t: 'Dues', b: 'Dana', f: 'Ada' }] } }] })).archives[0];
+  eq(JSON.parse(JSON.stringify(arch.ledger.rows)), [{ d: '2025-09-01', c: 100, t: 'Dues', f: 'Ada' }], 'an archived entered-by survived load');
   eq(led.totals, { inCents: 8500, outCents: 12000, entries: 2, reconciled: 1 }, 'totals');
   ok(!/"s1"|"L1"|scoutId|lineId/.test(JSON.stringify(led)), 'an id reached the archive');
   // Fitting: kept under the limit, dropped (totals kept) over it.

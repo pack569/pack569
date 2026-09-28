@@ -3526,7 +3526,9 @@
           .filter(function (r) { return r && typeof r === 'object' && !Array.isArray(r); })
           .map(function (r) {
             var o = { d: str(r.d), c: cents(r.c), t: str(r.t) };
-            ['l', 'r', 's', 'f', 'b'].forEach(function (k) { if (typeof r[k] === 'string' && r[k]) o[k] = r[k]; });
+            // No `b` (entered by): dropped from the archive (security review, 2026-09-28) — see
+            // seasonLedgerRows. An archive closed before that loses it here.
+            ['l', 'r', 's', 'f'].forEach(function (k) { if (typeof r[k] === 'string' && r[k]) o[k] = r[k]; });
             if (r.k === 1 || r.k === true) o.k = 1;
             return o;
           }),
@@ -23057,8 +23059,10 @@
      snapshot, if anybody still had it. The archive now keeps both — but it lives INSIDE the pack
      record, which is one Firestore document with a 1 MiB limit, so:
        * rows are COMPACT: { d: date, c: signed cents (in +, out −), t: description, l: line name,
-         r: ref, s: source, f: family (first names), b: entered by, k: 1 if reconciled }, with
-         empty keys left out;
+         r: ref, s: source, f: family (first names), k: 1 if reconciled }, with empty keys left
+         out. NOT who entered it (security review, 2026-09-28): it was never shown, and it kept
+         leaders' names in the pack record for good. The live ledger's E2 stamps are enough;
+         the downloaded JSON snapshot still has them;
        * if the record would pass ~700 KB with them (ARCHIVE_DOC_SOFT_LIMIT — room for next year
          to grow), the rows are dropped and only the ledger's totals and the family balances are
          kept (`trimmed: true`), and the close-out preview and Past seasons tell the treasurer to
@@ -23091,7 +23095,6 @@
       if (e.source) r.s = e.source;
       var fam = e.scoutId ? familyOf(e.scoutId) : '';
       if (fam) r.f = fam;
-      if (e.enteredBy) r.b = e.enteredBy;
       if (e.reconciled) r.k = 1;
       return r;
     });

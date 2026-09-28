@@ -364,8 +364,10 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   the downloaded snapshot. A season archive now has `families` (each family's charged, paid and
   signed balance as the year closed, first names) and `ledger`: `totals` (in, out, entries,
   reconciled) and compact `rows` — `{ d, c (signed cents), t, l (line name), r (ref), s (source),
-  f (family), b (entered by), k: 1 if reconciled }`, empty keys left out, names rather than ids
-  because the year's lines and roster move on. The archive lives in the pack record, one
+  f (family), k: 1 if reconciled }`, empty keys left out, names rather than ids
+  because the year's lines and roster move on. Not who entered each row: it was never shown and
+  kept leaders' names in the record for good (security review), so an older archive's `b` is
+  dropped on load. The archive lives in the pack record, one
   Firestore document with a 1 MiB limit, so the rows are kept only while the whole record stays
   under ~700 KB (`ARCHIVE_DOC_SOFT_LIMIT`, measured on the record as it stands plus the new
   archive — an overestimate, since this year's ledger is about to be cleared). Past that the
