@@ -2910,12 +2910,18 @@
      own supervision wording. ⚠ Rev 4 of this text said "BALOO is not required" — wrong, and
      fixed in rev 5 (CAMP_OLD_SEED, campBalooStale). No rule in it is unverified any more, but
      the marker still works: a SECTION holding "[verify with council]" is NOT published (campHeld,
-     buildParentView) until a leader has checked it and taken the marker out.
+     buildParentView) until a leader has checked it and taken the marker out. The same goes for a
+     section whose body still says "BALOO is not required" (campBalooWrong — Popcorn Kernel /
+     Camping review, 2026-09-28): a leader-edited copy of rev 4 kept that sentence and was still
+     going to families. It stays with the leaders until the sentence is corrected.
      The trip as a whole is held back until it has a date (startDate or a When line): a template
      with no weekend is not news for a family. */
   var DEN_CAMP_TRIP_ID = 'trip-den-campout';
   // True for text still carrying an unverified-rule marker. Local regex, so the harness can slice it.
   function campHeld(text) { return /\[verify with council/i.test(String(text == null ? '' : text)); }
+  // True for a section body still carrying rev 4's wrong rule. Held back from families exactly
+  // like campHeld; local regex, so the harness can slice it.
+  function campBalooWrong(text) { return /BALOO is not required/i.test(String(text == null ? '' : text)); }
   // K1 (2026-09-28, SAFETY) — trips still carrying rev 4's wrong rule. A den campout a leader had
   // already edited keeps its own words (refreshCampingSeed never overwrites an edit), so if those
   // words still say BALOO is not required, the leaders are told on Home and on the trip's page
@@ -2924,7 +2930,7 @@
   function campBalooStale(trips) {
     return (trips || []).filter(function (t) {
       return t && Array.isArray(t.sections) && t.sections.some(function (s) {
-        return s && /BALOO is not required/i.test(String(s.body || ''));
+        return s && campBalooWrong(s.body);
       });
     });
   }
@@ -9610,7 +9616,8 @@
   //   windows, meetings with time and where, activities with time, place and dens); the
   //   derby's name and date; camping trips as leaders typed them, including each trip's
   //   cost line, in date order, with each trip's ISO startDate, endDate and registrationDeadline
-  //   (Wave C1), leaving out any section that still says "[verify with council" and the den
+  //   (Wave C1), leaving out any section that still says "[verify with council" or whose text
+  //   says "BALOO is not required" (a wrong safety rule, held back until corrected), and the den
   //   campout template until it has a date (Wave C4); `welcome` — the "New to the pack" page's sections (title, body, url) as leaders
   //   typed them, once the page is switched on and leaving out any section that is hidden or
   //   still says "[pack to fill in"; and `familyCost` — what the year is PLANNED to cost one scout and adult in
@@ -9820,8 +9827,9 @@
           registrationDeadline: campIsoOrBlank(t.registrationDeadline),
           sections: (t.sections || []).map(function (s) {
             return { title: String(s.title || ''), body: String(s.body || '') };
-          // Wave C4 — a section still marked "[verify with council" stays with the leaders.
-          }).filter(function (s) { return (s.title || s.body) && !campHeld(s.title + '\n' + s.body); })
+          // Wave C4 — a section still marked "[verify with council" stays with the leaders, and so
+          // does one still saying "BALOO is not required" (a wrong safety rule, 2026-09-28).
+          }).filter(function (s) { return (s.title || s.body) && !campHeld(s.title + '\n' + s.body) && !campBalooWrong(s.body); })
         };
       }).filter(function (t) {
         return t.name || t.where || t.when || t.intro || t.sections.length;
@@ -17135,7 +17143,7 @@
         '<p class="warn small" style="margin:6px 0 8px">BALOO <b>is</b> required for a den campout: the Guide to Safe Scouting asks for a ' +
         'BALOO-trained adult on every overnight a Webelos or Arrow of Light den runs itself, as for a pack overnighter. ' +
         'An earlier version of the den campout template said otherwise, and these pages still do. Please correct the ' +
-        '\u201cLeaders and training\u201d section.</p>' +
+        '\u201cLeaders and training\u201d section; until then that section is held back from families.</p>' +
         balooStale.map(function (t) {
           return '<div class="assign-row"><span class="assign-name">' + esc(t.name || 'Untitled trip') + '</span>' +
             '<button type="button" class="btn small ghost" data-act="goto" data-tab="camping" data-section="' + esc(t.id) + '">Open</button></div>';
@@ -19758,8 +19766,8 @@
             ? '<p class="warn small" style="margin:6px 0 0">Held back from families: check the rule marked [verify with council] with the council, then take the marker out.</p>'
             : '') +
           // K1 (SAFETY) — rev 4's wrong rule, still in a leader-edited copy.
-          (/BALOO is not required/i.test(s.body)
-            ? '<p class="warn small" style="margin:6px 0 0">This is wrong: BALOO is required for a den campout, as for a pack overnighter (Guide to Safe Scouting). Please correct it.</p>'
+          (campBalooWrong(s.body)
+            ? '<p class="warn small" style="margin:6px 0 0">Held back from families: this says BALOO is not required, which is wrong. BALOO is required for a den campout, as for a pack overnighter (Guide to Safe Scouting). Correct it and the section goes back to families.</p>'
             : '');
       } else {
         h += '<h2 class="section display">' + esc(s.title || 'Untitled section') + '</h2>' +

@@ -176,7 +176,9 @@ calendar but not the money" is impossible to do by permission alone. Instead the
     with time, place and which dens; the derby's name and date; the camping trips as leaders
     wrote them, **including each trip's cost line**, in date order, with each trip's first and
     last day and online sign-up deadline as dates (`startDate`, `endDate`,
-    `registrationDeadline`) — leaving out any section still marked "[verify with council", and
+    `registrationDeadline`) — leaving out any section still marked "[verify with council" or
+    still saying "BALOO is not required" (a wrong safety rule, held back until a leader corrects
+    it), and
     the Webelos / Arrow of Light den campout template until it has a date; the **New to the pack** page (`welcome`)
     as leaders wrote it — each section's heading, text and link — once a leader has ticked
     **Show this page to families** (Scouts → New families), leaving out any section that is

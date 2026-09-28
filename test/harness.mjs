@@ -72,7 +72,7 @@ function sandbox(names) {
 // Wave C1 — buildParentView sorts the trips by date and re-checks their ISO dates, so every
 // sandbox that builds it needs these. todayISO only where the sandbox has none of its own.
 const CAMP_DATE_SRC = ['CAMP_DATE_KEYS', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'sortTripsByDate',
-  'DEN_CAMP_TRIP_ID', 'campHeld']
+  'DEN_CAMP_TRIP_ID', 'campHeld', 'campBalooWrong']
   .map(slice).join('\n') +
   "\nvar todayISO = typeof todayISO === 'function' ? todayISO : function () { return '2026-09-28'; };\n";
 
@@ -5555,7 +5555,7 @@ test('every trip is published to parents, rebuilt field by field', () => {
     ok(new RegExp(`${k}: String\\(t\\.${k} \\|\\| ''\\)`).test(fn[0]), `the published trip drops ${k}`);
   });
   ok(/return \{ title: String\(s\.title \|\| ''\), body: String\(s\.body \|\| ''\) \};/.test(fn[0]) &&
-    /\.filter\(function \(s\) \{ return \(s\.title \|\| s\.body\) && !campHeld\(s\.title \+ '\\n' \+ s\.body\); \}\)/.test(fn[0]),
+    /\.filter\(function \(s\) \{ return \(s\.title \|\| s\.body\) && !campHeld\(s\.title \+ '\\n' \+ s\.body\) && !campBalooWrong\(s\.body\); \}\)/.test(fn[0]),
     'a section is published with more than its title and body');
   ok(/if \(camping\.length\) out\.camping = camping;/.test(fn[0]),
     'an empty camping list still publishes a key, so parents get an empty tab');
@@ -11610,7 +11610,7 @@ test('K1: leaders are told, on Home once and on the trip page, when a den campou
   ok(/data-act="baloo-dismiss"/.test(home), 'the Home card cannot be dismissed');
   ok(/if \(act === 'baloo-dismiss'\) \{ state\.balooNoticeDismissed = true; commit\(\); return; \}/.test(SCRIPT), 'no dismiss handler');
   ok(/balooNoticeDismissed: false/.test(slice('freshState')), 'freshState lacks balooNoticeDismissed');
-  ok(/BALOO is not required\/i\.test\(s\.body\)/.test(slice('renderCamping')), 'the trip page does not warn on the section');
+  ok(/campBalooWrong\(s\.body\)/.test(slice('renderCamping')), 'the trip page does not warn on the section');
   ok(!/balooNotice|campBalooStale/.test(codeOnly(BPV())), 'buildParentView reads the leaders’ notice');
   ok(/BALOO required, as for a pack\s+overnighter \(GSS\)/.test(readFileSync(join(ROOT, 'DESIGN-camping.md'), 'utf8')), 'DESIGN-camping.md still says BALOO is not required');
 });
@@ -11636,8 +11636,32 @@ test('C4: an unverified rule, and an undated den campout, do not reach families'
   const rc = slice('renderCamping');
   ok(/Held back from families: check the rule marked \[verify with council\]/.test(rc), 'the editor does not say a section is held back');
   ok(/Families will not see this den campout until it has a date/.test(rc), 'the editor does not say the trip is held back');
-  ok(/"\[verify with council" and the den\s+\/\/\s+campout template until it has a date/.test(SCRIPT), 'the parent-view banner does not say so');
-  ok(/still marked "\[verify with council", and\s+the Webelos \/ Arrow of Light den campout template until it has a date/.test(SETUP), 'SETUP.md does not say so');
+  ok(/"\[verify with council" or whose text\s+\/\/\s+says "BALOO is not required" \(a wrong safety rule, held back until corrected\), and the den\s+\/\/\s+campout template until it has a date/.test(SCRIPT),
+    'the parent-view banner does not say so');
+  ok(/still marked "\[verify with council" or\s+still saying "BALOO is not required" \(a wrong safety rule, held back until a leader corrects\s+it\), and\s+the Webelos \/ Arrow of Light den campout template until it has a date/.test(SETUP),
+    'SETUP.md does not say so');
+});
+
+// Camping review (2026-09-28, SAFETY) — a leader-edited den campout still saying "BALOO is not
+// required" was being published. The section is held back exactly like "[verify with council".
+test('K1: a section saying BALOO is not required is held back from families until corrected', () => {
+  const ctx = pvCtx(`
+    var DEN = { id: 'trip-den-campout', name: 'Den campout', when: 'May', startDate: '2027-05-07', sections: [
+      { id: 'a', title: 'Who', body: 'Webelos and AoL only.' },
+      { id: 'b', title: 'Leaders and training', body: '- baloo IS NOT REQUIRED for a den campout; it is the training for a pack overnighter.' },
+      { id: 'c', title: 'BALOO is not required', body: 'Heading only says it; the body is fine.' }] };
+    function campingTrips() { return [DEN]; }`);
+  const build = () => vm.runInContext('buildParentView(state, { showStandings: false })', ctx);
+  let pv = build();
+  eq(pv.camping[0].sections.map((s) => s.title), ['Who', 'BALOO is not required'], 'a body saying BALOO is not required was published (any case)');
+  ok(!/is not required for a den campout/i.test(JSON.stringify(pv)), 'the wrong rule reached families');
+  vm.runInContext("DEN.sections[1].body = '- At least one adult on the campout is BALOO-trained.';", ctx);
+  pv = build();
+  eq(pv.camping[0].sections.map((s) => s.title), ['Who', 'Leaders and training', 'BALOO is not required'], 'a corrected section is still held back');
+  const cx = sandbox(['campBalooWrong', 'campBalooStale']);
+  ok(cx.campBalooWrong('x\nBaloo is NOT required.') && !cx.campBalooWrong('BALOO is required') && !cx.campBalooWrong(null), 'campBalooWrong');
+  ok(/campBalooWrong\(s\.body\)/.test(slice('campBalooStale')), 'the Home card and the hold-back use different tests');
+  ok(/Held back from families: this says BALOO is not required, which is wrong\./.test(slice('renderCamping')), 'the editor does not say why it is held back');
 });
 // F2 (2026-09-28) — a checkbox wrapped in a label class must undo the global `input` rule's
 // 40px min-height and field padding, or it draws as a tall padded box off its own text
