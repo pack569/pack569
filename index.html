@@ -3856,6 +3856,10 @@
       // or direction: the answer was about the entry as it stood.
       e.notCommission = e.notCommission === true;
       e.reconciled = e.reconciled === true;
+      // E2 — the audit trail. '' on everything recorded before it existed.
+      ['enteredBy', 'enteredAt', 'approvedBy', 'approvedAt'].forEach(function (k) {
+        if (typeof e[k] !== 'string') e[k] = '';
+      });
     });
     if (!d.book || typeof d.book !== 'object' || Array.isArray(d.book)) d.book = freshBook();
     // The opening figure is the one money field that may legitimately be negative — a pack
@@ -3867,6 +3871,9 @@
     if (typeof d.book.statementCents !== 'number' || !isFinite(d.book.statementCents)) d.book.statementCents = 0;
     else d.book.statementCents = Math.round(d.book.statementCents);
     if (typeof d.book.reconciledThrough !== 'string') d.book.reconciledThrough = '';
+    // E2 — who marked the last statement reconciled, and when.
+    if (typeof d.book.reconciledBy !== 'string') d.book.reconciledBy = '';
+    if (typeof d.book.reconciledAt !== 'string') d.book.reconciledAt = '';
     // -----------------------------------------------------------------------
     // MONEY REDESIGN, Phase 1 — actual cost is now Σ ledger (DESIGN-money.md §5).
     //
@@ -4106,7 +4113,9 @@
         c.forgiven = {
           date: typeof c.forgiven.date === 'string' ? c.forgiven.date : '',
           by: typeof c.forgiven.by === 'string' ? c.forgiven.by : '',
-          reason: typeof c.forgiven.reason === 'string' ? c.forgiven.reason : ''
+          reason: typeof c.forgiven.reason === 'string' ? c.forgiven.reason : '',
+          // E2 — who recorded it (`by` is who agreed it). '' on one recorded before.
+          enteredBy: typeof c.forgiven.enteredBy === 'string' ? c.forgiven.enteredBy : ''
         };
       } else c.forgiven = null;
     });
@@ -6912,6 +6921,46 @@
       difference: (book.statementCents || 0) - cleared
     };
   }
+  // ---------------------------------------------------------------------------
+  // E2 — THE LEDGER'S AUDIT TRAIL (Treasurer's ask, 2026-09-28).
+  //
+  // An auditor's first question of any entry is "who put this in, and when?", and of a ticked
+  // one "who checked it?". The book could answer neither. Now:
+  //   entry.enteredBy / enteredAt        who recorded it, stamped once when it is created
+  //   entry.approvedBy / approvedAt      who ticked it against a statement; cleared if un-ticked
+  //   book.reconciledBy / reconciledAt   who marked the statement reconciled, and when
+  //   charge.forgiven.enteredBy          who recorded a forgiveness (`by` was already who AGREED it)
+  // The name is the signed-in Google account's display name, else its email, else "this
+  // device" — a pack with no accounts has nobody to name, and saying so beats guessing.
+  // Entries recorded before this carry '' and show nothing. LEADERS ONLY, like the whole ledger.
+  // ---------------------------------------------------------------------------
+  function ledgerActorName(user) {
+    return (user && (String(user.displayName || '').trim() || String(user.email || '').trim())) || 'this device';
+  }
+  // A reimbursement pays back a receipted expense (Unit Budgeting Guidelines), so it should name
+  // the receipt. A reward-tier reimbursement says it is one; a leader paying back a volunteer's
+  // receipt usually just says "reimburse" in the description. Money out only, never a refund.
+  function entryNeedsReceipt(e) {
+    return !!e && e.direction === 'out' && !entryRefundsFamily(e) &&
+      (e.reimbursement === true || /reimburs/i.test(String(e.description || '')));
+  }
+  // Home asks the Treasurer to reconcile when the last statement reconciled is more than 35 days
+  // old — one monthly statement and a few days' grace. A book never reconciled asks once its
+  // oldest entry (after the opening date) is that old. Null when there is nothing to ask. Pure.
+  var RECONCILE_STALE_DAYS = 35;
+  function reconcileStale(ledger, book, today) {
+    function days(a, b) { return Math.round((Date.parse(b + 'T12:00:00Z') - Date.parse(a + 'T12:00:00Z')) / 86400000); }
+    var live = ledger.filter(function (e) { return e.date && entryAfterOpening(e, book); });
+    if (!live.length) return null;
+    var since = /^\d{4}-\d{2}-\d{2}$/.test(String(book.reconciledThrough || '')) ? book.reconciledThrough : '';
+    if (!since) {
+      var first = live.map(function (e) { return e.date; }).sort()[0];
+      var fd = days(first, today);
+      return fd > RECONCILE_STALE_DAYS ? { days: fd, since: '' } : null;
+    }
+    var d = days(since, today);
+    return d > RECONCILE_STALE_DAYS ? { days: d, since: since } : null;
+  }
 
   // ---- state-reading wrappers ----
   function bookBalance() { return ledgerBalance(state.ledger, state.book); }
@@ -7262,6 +7311,17 @@
   // means the household: a sibling's cheque covers them too.
   function scoutOwesCents(scoutId) { return familyOutstanding(state.charges, state.ledger, scoutId, chargeFamilyKey); }
   function familyAccountsNow() { return familyAccounts(state.charges, state.ledger, chargeFamilyKey); }
+  // E2 — who is doing this, for the audit trail (ledgerActorName), and the stamps it leaves.
+  function ledgerActor() { return ledgerActorName(sync.user); }
+  function stampEntered(e) {
+    e.enteredBy = ledgerActor();
+    e.enteredAt = new Date().toISOString();
+    return e;
+  }
+  function stampApproved(e, on) {
+    if (on) { e.approvedBy = ledgerActor(); e.approvedAt = new Date().toISOString(); }
+    else { e.approvedBy = ''; e.approvedAt = ''; }
+  }
   // E1 — this charge's due date, from its line and the line's event as they stand now.
   function chargeDueNow(c) {
     var line = getBudgetLine(c.lineId);
@@ -15795,6 +15855,15 @@
     h += bookCard();
     return h + (ui.ledgerView === 'reconcile' ? renderReconcile() : renderLedgerEntries());
   }
+  // E2 — "Entered by … · reconciled by …", or '' for an entry from before the trail.
+  function ledgerTrailLine(e) {
+    var bits = [];
+    if (e.enteredBy) bits.push('Entered by ' + esc(e.enteredBy) + (e.enteredAt ? ' on ' + esc(fmtDate(e.enteredAt.slice(0, 10))) : ''));
+    if (e.reconciled && e.approvedBy) bits.push((bits.length ? 'reconciled' : 'Reconciled') + ' by ' + esc(e.approvedBy) +
+      (e.approvedAt ? ' on ' + esc(fmtDate(e.approvedAt.slice(0, 10))) : ''));
+    if (!bits.length) return '';
+    return '<p class="small muted ltrail" style="margin:6px 0 0;flex-basis:100%">' + bits.join(' \u00b7 ') + '</p>';
+  }
   function renderLedgerEntries() {
     var dr = ledgerDraft();
     var h = '<div class="card"><h2 class="section display">Record a transaction</h2>' +
@@ -15877,6 +15946,7 @@
           '<button type="button" class="btn small ghost' + (ui.armed === 'ledger-unreconcile:' + e.id ? ' danger armed' : '') +
             '" data-act="ledger-unreconcile:' + e.id + '">' +
             (ui.armed === 'ledger-unreconcile:' + e.id ? 'Tap again to un-reconcile' : 'Un-reconcile to edit') + '</button>' +
+          ledgerTrailLine(e) +   // E2 — a reconciled row has no Detail, so the trail sits under it
           '</div>';
         return;
       }
@@ -15916,6 +15986,11 @@
                       scoutSelectOptions('', 'Paid back to (reimbursement)\u2026') + '</select>'
                     : '<select data-ch="led-scout" data-id="' + e.id + '" aria-label="Refunded to which family">' +
                       scoutSelectOptions(e.scoutId, '— not a refund to a family —') + '</select>'))) +
+              // E2 — a reimbursement with no receipt, and the trail.
+              (entryNeedsReceipt(e) && !e.ref
+                ? '<p class="small" style="margin:6px 0 0;flex-basis:100%;color:var(--accent-text)">A reimbursement should name its receipt \u2014 add the receipt number above.</p>'
+                : '') +
+              ledgerTrailLine(e) +
             '</div>'
           : '') +
         '</div>';
@@ -15940,6 +16015,12 @@
       '<div class="stat"><span class="v money" style="color:' + (agrees ? 'var(--good)' : 'var(--bad)') + '">' +
         fmt(rec.difference) + '</span><span class="l">Difference</span></div>' +
       '</div>';
+    // E2 — who signed off the last statement.
+    if (bk.reconciledThrough) {
+      h += '<p class="small muted" style="margin:10px 0 0">Last reconciled through ' + esc(fmtDate(bk.reconciledThrough)) +
+        (bk.reconciledBy ? ' by ' + esc(bk.reconciledBy) : '') +
+        (bk.reconciledAt ? ' on ' + esc(fmtDate(bk.reconciledAt.slice(0, 10))) : '') + '.</p>';
+    }
     if (agrees && rec.ticked) {
       h += '<p class="small" style="margin:10px 0 0"><span class="pill navy">Agreed</span> The book matches the statement. ' +
         '<button type="button" class="btn small primary" data-act="ledger-reconcile-lock">Mark reconciled through ' +
@@ -16644,6 +16725,15 @@
       add('treasurer', 'whenever', ledTot.unreconciled + ' ledger entries not yet reconciled',
         'Tick them against the bank statement', 'money', 'ledger');
     }
+    // E2 — the last statement reconciled is more than 35 days old (reconcileStale).
+    var recStale = reconcileStale(state.ledger, state.book, today);
+    if (recStale) {
+      add('treasurer', 'week', recStale.since
+        ? 'The bank was last reconciled ' + recStale.days + ' days ago'
+        : 'The bank has not been reconciled yet',
+        recStale.since ? 'Through ' + fmtDate(recStale.since) + ' \u00b7 tick the latest statement' : 'Tick the ledger against the latest bank statement',
+        'money', 'ledger');
+    }
     if (ledTot.uncategorised) {
       add('treasurer', 'whenever', ledTot.uncategorised + ' ledger entr' + (ledTot.uncategorised === 1 ? 'y has' : 'ies have') + ' no budget line',
         'They don’t count toward any line’s actual cost', 'money', 'ledger');
@@ -17257,7 +17347,10 @@
         var status2 = c.waivedBy
           ? '<span class="pill">waived</span>'
           : (c.forgiven
-            ? '<span class="pill">forgiven' + (c.forgiven.reason ? ' — ' + esc(c.forgiven.reason) : '') + '</span>'
+            ? '<span class="pill">forgiven' + (c.forgiven.reason ? ' — ' + esc(c.forgiven.reason) : '') + '</span>' +
+              // E2 — who agreed it, and who recorded it.
+              ' <span class="small muted">agreed by ' + esc(c.forgiven.by || '\u2014') +
+              (c.forgiven.enteredBy ? ', recorded by ' + esc(c.forgiven.enteredBy) : '') + '</span>'
             : '');
         // E1 — by when. Open charges only: a settled one is not due any more.
         var cDue = chargeIsOpen(c) ? chargeDueNow(c) : '';
@@ -23046,7 +23139,9 @@
           id: uid(), date: priorDayISO(programYearStartISO(b.programYear)),
           description: 'Prior-year credit carried forward', amountCents: -a.balance, direction: 'in',
           lineId: '', method: '', ref: '', source: 'carryover', donor: '', scoutId: to,
-          tierMakeup: '', reconciled: false
+          tierMakeup: '', reconciled: false,
+          // E2 — whoever closed the year out is who wrote it.
+          enteredBy: ledgerActor() + ' (close-out)', enteredAt: new Date().toISOString()
         });
       }
     });
@@ -24216,8 +24311,14 @@
         scoutId: dr.scoutId, reconciled: false
       };
       if (drReimb) drEntry.reimbursement = true;
+      stampEntered(drEntry);   // E2
       // M1(b) — said BEFORE it is added, measured against the credit as it stands without it.
       var drWarn = refundOverCreditWarning(drEntry);
+      // E2 — a reimbursement names its receipt. A warning, not a block: the money has moved
+      // whether or not the receipt is to hand, and an unrecorded payment is the worse outcome.
+      if (!drWarn && entryNeedsReceipt(drEntry) && !drEntry.ref) {
+        drWarn = 'Saved \u2014 but a reimbursement should name its receipt. Add the receipt number under Detail.';
+      }
       state.ledger.push(drEntry);
       if (drWarn) showToast(drWarn);
       // Keep the date and direction — a treasurer posting a stack of receipts is nearly
@@ -24235,6 +24336,7 @@
       if (!urE) return;
       arm(act, function () {
         urE.reconciled = false;
+        stampApproved(urE, false);   // E2 — nobody has checked it as it now stands
         showToast('Un-reconciled — tick it again against the statement once it is corrected.');
         commit();
       });
@@ -24269,12 +24371,18 @@
       // ticks is the same set, so it cannot un-tick an entry from an earlier statement's month
       // that is dated after this one either.
       state.ledger.forEach(function (e) {
-        if (entryAfterOpening(e, state.book) && entryOnStatement(e, state.book)) e.reconciled = tick;
+        if (entryAfterOpening(e, state.book) && entryOnStatement(e, state.book)) {
+          // E2 — stamp only a change: an entry already ticked keeps who ticked it first.
+          if (e.reconciled !== tick) stampApproved(e, tick);
+          e.reconciled = tick;
+        }
       });
       commit(); return;
     }
     if (act === 'ledger-reconcile-lock') {
       state.book.reconciledThrough = state.book.statementDate || todayISO();
+      state.book.reconciledBy = ledgerActor();                 // E2
+      state.book.reconciledAt = new Date().toISOString();
       // The statement is done with — clear the working figures so the next one starts blank
       // rather than silently reconciling against a month that's already closed.
       state.book.statementCents = 0;
@@ -24401,7 +24509,8 @@
           id: uid(), date: todayISO(),
           description: 'Made up the difference to ' + (mkT.name || 'a reward tier') + ' — ' + (mkS.name || 'scout'),
           amountCents: mkRow.makeup, direction: 'in', lineId: '', method: '', ref: '',
-          source: 'family', donor: '', scoutId: mkS.id, tierMakeup: mkT.id, reconciled: false
+          source: 'family', donor: '', scoutId: mkS.id, tierMakeup: mkT.id, reconciled: false,
+          enteredBy: ledgerActor(), enteredAt: new Date().toISOString()   // E2
         });
         showToast(fmt(mkRow.makeup) + ' recorded — ' + (mkS.name || 'they') + ' now counts as reaching ' +
           (mkT.name || 'the tier') + '. Deleting the ledger entry undoes it.');
@@ -24427,7 +24536,8 @@
         amountCents: rbCents, direction: 'out', lineId: rbLine.id, method: '', ref: '',
         source: '', donor: '', scoutId: rbS.id, reconciled: false,
         // T1 — says what it is, so it can never be read as a refund of the family's credit.
-        reimbursement: true
+        reimbursement: true,
+        enteredBy: ledgerActor(), enteredAt: new Date().toISOString()   // E2
       });
       showToast(fmt(rbCents) + ' recorded \u2014 add the council receipt number to the entry in the ledger.');
       commit(); return;
@@ -25222,9 +25332,16 @@
       else if (lk === 'source') led.source = el.value;
       else if (lk === 'scout') led.scoutId = el.value;
       else if (lk === 'donor') led.donor = el.value;
-      else if (lk === 'rec') led.reconciled = el.checked;
+      else if (lk === 'rec') {
+        if (led.reconciled !== el.checked) stampApproved(led, el.checked);   // E2
+        led.reconciled = el.checked;
+      }
       // M4 — "not the commission" was an answer about this entry as it stood.
       if (lk === 'amount' || lk === 'source' || lk === 'line' || lk === 'dir') led.notCommission = false;
+      // E2 — clearing a reimbursement's receipt number is allowed, and said.
+      if (lk === 'ref' && !String(led.ref).trim() && entryNeedsReceipt(led)) {
+        showToast('A reimbursement should name its receipt \u2014 the entry is kept without one.');
+      }
       // Money-in fields are meaningless on a payment out, so switching direction drops
       // them rather than leaving a stale donor attached to a cheque to the campground.
       //
@@ -25539,7 +25656,7 @@
         var fgReason = String(fd.get('reason') || '').trim();
         var fgBy = String(fd.get('by') || '').trim();
         if (!fgReason || !fgBy) { showToast('Say why, and who agreed it — both are kept with the charge.'); return; }
-        fc.forgiven = { date: todayISO(), by: fgBy, reason: fgReason };
+        fc.forgiven = { date: todayISO(), by: fgBy, reason: fgReason, enteredBy: ledgerActor() };   // E2
         ui.forgiveFor = null;
         showToast('Forgave ' + fmt(fc.amountCents) + ' — recorded with a reason.');
         commit();

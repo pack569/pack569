@@ -345,6 +345,20 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   and the balance. It says **"Leaders' copy — send only to this family"** on it. First names
   only; the forgiveness reason, donors' names and ledger descriptions stay off it. Nothing is
   stored and nothing is published (harness guard).
+- **The ledger's audit trail (E2).** Every entry made from now on carries `enteredBy` and
+  `enteredAt` (typed entries, tier make-ups, reimbursements, the close-out's carried credits).
+  Ticking an entry against a statement stamps `approvedBy`/`approvedAt`; un-ticking or
+  un-reconciling clears them, because nobody has checked the entry as it now stands. *Mark
+  reconciled* stamps `book.reconciledBy`/`reconciledAt`, and the Reconcile card says who signed
+  off the last statement. A forgiveness already required who **agreed** it (`forgiven.by`); it
+  now also records who **entered** it (`forgiven.enteredBy`). The name is the signed-in account's
+  display name, else its email, else "this device" (`ledgerActorName`). Entries from before carry
+  `''` and show nothing. The trail shows in an entry's Detail and under a reconciled row.
+  A **reimbursement** (`reimbursement: true`, or money out whose description says "reimburse")
+  with no receipt number is saved with a warning, and its Detail says so until one is added —
+  a warning, not a block, because an unrecorded payment is the worse outcome. Home gives the
+  Treasurer a task when the last statement reconciled is more than **35 days** old, or when a
+  book never reconciled has an entry that old (`reconcileStale`).
 
 ---
 

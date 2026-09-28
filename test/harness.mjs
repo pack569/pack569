@@ -10066,7 +10066,7 @@ test('M1: a refund past the family’s credit is flagged, shown, and never used 
   ok(/This is more than ' \+/.test(w) && /\\u2019s credit of ' \+ fmt\(credit\) \+ '\. Refunds give back money a family paid; to repay a council ' \+\s*'fee for a reward tier, use Reimburse on the Budget\.'/.test(w),
     'the warning does not say what the reviewer asked it to');
   const add = /if \(act === 'ledger-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/var drWarn = refundOverCreditWarning\(drEntry\);\s*state\.ledger\.push\(drEntry\);/.test(add), 'a new refund is not checked before it is added');
+  ok(/var drWarn = refundOverCreditWarning\(drEntry\);(?:(?!state\.ledger\.push)[^])*state\.ledger\.push\(drEntry\);/.test(add), 'a new refund is not checked before it is added');
   const ed = /if \(ch\.indexOf\('led-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/\(lk === 'amount' \|\| lk === 'scout'\) \? refundOverCreditWarning\(led\)/.test(ed), 'an edited refund is not checked');
   // (a) A family whose refund left them owing is still on the Dues screen.
@@ -11923,6 +11923,75 @@ test('E1: due dates and family statements are NEVER published', () => {
   ok(/\*\*never\*\* contains:[^]*?when each charge or the\s+pack's dues fall due, any family's statement/.test(SETUP), 'SETUP.md does not exclude them');
   ok(/data-act="family-statement"/.test(slice('duesFamilyBlock')), 'no Statement button');
   ok(/STATEMENT_KEEP/.test(slice('renderFamilyStatement')), 'the printed sheet does not say who it is for');
+});
+
+/* ================================================================
+   E2 (2026-09-28) — the ledger's audit trail. Leaders only.
+   ================================================================ */
+test('E2: who entered an entry, who reconciled it, and who recorded a forgiveness are kept', () => {
+  const ctx = sandbox(['ledgerActorName']);
+  eq(ctx.ledgerActorName({ displayName: 'Dana Q', email: 'd@example.com' }), 'Dana Q', 'display name first');
+  eq(ctx.ledgerActorName({ displayName: '  ', email: 'd@example.com' }), 'd@example.com', 'email when there is no name');
+  eq(ctx.ledgerActorName(null), 'this device', 'no account');
+  // Every place a new entry is made stamps it.
+  const add = /if \(act === 'ledger-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/stampEntered\(drEntry\);/.test(add), 'a typed entry is not stamped');
+  const mk = /if \(act\.indexOf\('tier-makeup:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(mk && /enteredBy: ledgerActor\(\), enteredAt: new Date\(\)\.toISOString\(\)/.test(mk[0]), 'a tier make-up is not stamped');
+  const rb = /if \(act\.indexOf\('tier-reimburse:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/enteredBy: ledgerActor\(\), enteredAt: new Date\(\)\.toISOString\(\)/.test(rb), 'a reimbursement is not stamped');
+  ok(/enteredBy: ledgerActor\(\) \+ ' \(close-out\)'/.test(slice('rolloverYear')), 'a carried credit is not stamped');
+  // Reconciling: every way an entry is ticked or un-ticked stamps or clears who did it.
+  ok(/if \(led\.reconciled !== el\.checked\) stampApproved\(led, el\.checked\);/.test(SCRIPT), 'a single tick is not stamped');
+  ok(/if \(e\.reconciled !== tick\) stampApproved\(e, tick\);/.test(SCRIPT), 'Tick all does not stamp');
+  ok(/urE\.reconciled = false;\s*stampApproved\(urE, false\);/.test(SCRIPT), 'un-reconciling keeps the old approver');
+  ok(/state\.book\.reconciledBy = ledgerActor\(\);/.test(SCRIPT), 'the statement lock does not say who');
+  ok(/fc\.forgiven = \{ date: todayISO\(\), by: fgBy, reason: fgReason, enteredBy: ledgerActor\(\) \};/.test(SCRIPT), 'forgiveness does not record who entered it');
+  // Normalized, so old records carry '' and a round-trip keeps the fields.
+  const n = sandbox(NORMALIZE_FNS);
+  const d = n.normalizeState(Object.assign(preMigrationState(), {
+    ledger: [{ id: 'e1', date: '2026-09-01', amountCents: 100, direction: 'in', enteredBy: 'Dana', enteredAt: '2026-09-01T10:00:00Z', approvedBy: 7 }],
+    charges: [{ id: 'c1', scoutId: 's1', amountCents: 1, forgiven: { date: '2026-09-01', by: 'CC', reason: 'r', enteredBy: 'Dana' } }]
+  }));
+  eq([d.ledger[0].enteredBy, d.ledger[0].enteredAt, d.ledger[0].approvedBy, d.ledger[0].approvedAt], ['Dana', '2026-09-01T10:00:00Z', '', ''], 'ledger trail');
+  eq([d.book.reconciledBy, d.book.reconciledAt], ['', ''], 'book trail');
+  eq(d.charges[0].forgiven.enteredBy, 'Dana', 'forgiveness trail');
+  // Shown: in the entry's detail and under a reconciled row; the Reconcile card says who signed off.
+  const le = slice('renderLedgerEntries');
+  ok((le.match(/ledgerTrailLine\(e\)/g) || []).length === 2, 'the trail is not shown on both kinds of row');
+  ok(/Last reconciled through/.test(slice('renderReconcile')) && /bk\.reconciledBy/.test(slice('renderReconcile')), 'Reconcile does not say who signed off');
+  ok(/recorded by ' \+ esc\(c\.forgiven\.enteredBy\)/.test(slice('duesFamilyBlock')), 'the Dues row does not say who recorded a forgiveness');
+  // Leaders only, like the ledger.
+  ok(!/enteredBy|approvedBy|reconciledBy|ledgerActor/.test(codeOnly(BPV())), 'buildParentView reads the audit trail');
+});
+
+test('E2: a reimbursement without a receipt number is saved, with a warning', () => {
+  const ctx = sandbox(['entryRefundsFamily', 'entryNeedsReceipt']);
+  ok(ctx.entryNeedsReceipt({ direction: 'out', reimbursement: true, scoutId: 's1' }), 'a tier reimbursement');
+  ok(ctx.entryNeedsReceipt({ direction: 'out', description: 'Reimburse Dana for craft supplies' }), 'a leader reimbursement by description');
+  ok(!ctx.entryNeedsReceipt({ direction: 'out', description: 'Scoutland deposit' }), 'an ordinary payment');
+  ok(!ctx.entryNeedsReceipt({ direction: 'in', description: 'Reimbursement from council' }), 'money in');
+  ok(!ctx.entryNeedsReceipt({ direction: 'out', scoutId: 's1', source: 'refund', description: 'reimburse' }), 'a refund');
+  const add = /if \(act === 'ledger-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/if \(!drWarn && entryNeedsReceipt\(drEntry\) && !drEntry\.ref\) \{/.test(add), 'no warning on add');
+  ok(!/entryNeedsReceipt\(drEntry\)[^;]*\)\s*return;/.test(add), 'a missing receipt blocks the save');
+  ok(/state\.ledger\.push\(drEntry\);/.test(add.slice(add.indexOf('entryNeedsReceipt'))), 'the entry is not saved after the warning');
+  ok(/entryNeedsReceipt\(e\) && !e\.ref/.test(slice('renderLedgerEntries')), 'the entry detail does not flag a missing receipt');
+});
+
+test('E2: Home asks the Treasurer to reconcile once the last statement is over 35 days old', () => {
+  const ctx = sandbox(['entryAfterOpening', 'RECONCILE_STALE_DAYS', 'reconcileStale']);
+  const led = [{ date: '2026-08-01' }, { date: '2026-09-20' }];
+  eq(ctx.reconcileStale([], { openingDate: '' }, '2026-09-28'), null, 'an empty book');
+  const R = (l, b, t) => JSON.parse(JSON.stringify(ctx.reconcileStale(l, b, t)));
+  eq(R(led, { reconciledThrough: '2026-08-24' }, '2026-09-28'), null, '35 days is not overdue');
+  eq(R(led, { reconciledThrough: '2026-08-23' }, '2026-09-28'), { days: 36, since: '2026-08-23' }, '36 days');
+  eq(R(led, { reconciledThrough: '' }, '2026-09-28'), { days: 58, since: '' }, 'never reconciled, oldest entry 58 days ago');
+  eq(R([{ date: '2026-09-01' }], { reconciledThrough: '' }, '2026-09-28'), null, 'never reconciled, but nothing old yet');
+  eq(R(led, { reconciledThrough: '', openingDate: '2026-09-01' }, '2026-09-28'), null, 'an entry before the opening date counted');
+  const ht = slice('homeTasks');
+  ok(/var recStale = reconcileStale\(state\.ledger, state\.book, today\);/.test(ht) && /add\('treasurer', 'week', recStale\.since/.test(ht),
+    'no Treasurer task for a stale reconciliation');
 });
 
 /* ---------------- report ---------------- */
