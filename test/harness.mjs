@@ -10508,6 +10508,32 @@ test('A6: seeding stays additive — it never edits or removes an event a pack a
   ok(!/state\.events\s*=|\.splice\(/.test(fn), 'seedStandardYear rewrites or removes events');
 });
 
+// A4 — repeat every other week, optionally as sessions of one adventure.
+test('A4: a meeting repeats weekly or every other week, across a month end and DST', () => {
+  const ctx = sandbox(['pad2', 'repeatDates']);
+  eq(ctx.repeatDates('2026-10-20', 3, 7), ['2026-10-27', '2026-11-03', '2026-11-10'], 'weekly across DST');
+  eq(ctx.repeatDates('2026-10-20', 3, 14), ['2026-11-03', '2026-11-17', '2026-12-01'], 'every other week');
+  eq(ctx.repeatDates('2026-12-22', 1, 14), ['2027-01-05'], 'across the new year');
+  eq(ctx.repeatDates('', 2, 7), [], 'an undated meeting has nothing to repeat');
+});
+
+test('A4: repeated copies take the adventure only when asked, and so become sessions of one run', () => {
+  const h = /if \(kind === 'mtg-repeat'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/var rAdv = \(fd\.get\('sameAdv'\) && rMtg\.kind === 'den'\) \? evAdventure\(rMtg\) : '';/.test(h),
+    'the adventure is copied without the opt-in, or onto a pack meeting');
+  ok(/adventure: rAdv/.test(h), 'the copies do not carry the adventure');
+  ok(!/noteInternal/.test(h), 'the leaders-only note is copied onto every repeat');
+  ok(/'14' \? 14 : 7/.test(h), 'every other week is not read from the form');
+  // End to end: three meetings tagged the same way are one run, "session n of 3".
+  const ctx = runSandbox(RUN_SETUP.replace("m3: {}", "m3: {}").replace(
+    "{ id: 'x1', kind: 'den', den: 'Bear', date: '2026-08-05', adventure: 'Bobcat' }",
+    "{ id: 'x1', kind: 'den', den: 'Bear', date: '2026-09-01', adventure: 'Bear Strong' }," +
+    "{ id: 'x2', kind: 'den', den: 'Bear', date: '2026-09-15', adventure: 'Bear Strong' }," +
+    "{ id: 'x3', kind: 'den', den: 'Bear', date: '2026-09-29', adventure: 'Bear Strong' }"));
+  const r = vm.runInContext("runForMeeting(state.events.filter(function (e) { return e.id === 'x2'; })[0])", ctx);
+  eq([r.position, r.of], [2, 3], 'the repeated meetings are not one run');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

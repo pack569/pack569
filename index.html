@@ -11471,12 +11471,22 @@
       renderRsvpBlock(m.id) + renderAttendanceBlock(m) +
       '</div>' +
       renderMeetingAdvMark(m) +
-      // Wave 19(22) — one-time weekly-repeat offer, only on the just-added meeting.
+      // Wave 19(22) — one-time repeat offer, only on the just-added meeting.
       // Bulk-create like the storefront "Add weekly" — no recurrence model.
+      // Wave A: every week OR every other week (dens that meet twice a month), and — only once
+      // the meeting names an adventure — an opt-in to tag the copies with it, which is all it
+      // takes for them to read "session 2 of 3" (adventureRuns derives the run). Off by default:
+      // a twelve-week repeat is rarely twelve weeks of one adventure.
       (ui.repeatOffer === m.id
         ? '<form data-form="mtg-repeat" data-id="' + m.id + '" class="row no-print" style="margin-top:8px">' +
-          '<label class="fld">Repeat weekly ×<input class="weight-in" type="number" name="weeks" min="1" max="12" step="1" inputmode="numeric" value="4"></label>' +
-          '<button class="btn small" type="submit" style="align-self:flex-end">Repeat weekly</button>' +
+          '<label class="fld">Repeat<select name="every" aria-label="How often">' +
+          '<option value="7">every week</option><option value="14">every other week</option></select></label>' +
+          '<label class="fld">× more<input class="weight-in" type="number" name="weeks" min="1" max="12" step="1" inputmode="numeric" value="4"></label>' +
+          (evAdventure(m)
+            ? '<label class="small" style="align-self:flex-end;display:flex;gap:6px;align-items:center">' +
+              '<input type="checkbox" name="sameAdv" value="1">Same adventure on each — ' + esc(evAdventure(m)) + ' as session 1 of N</label>'
+            : '') +
+          '<button class="btn small" type="submit" style="align-self:flex-end">Repeat</button>' +
           '<button type="button" class="btn small ghost" data-act="mtg-repeat-dismiss" style="align-self:flex-end">No thanks</button>' +
           '</form>'
         : '') +
@@ -11617,6 +11627,20 @@
   function run_pendingCount(r) {
     var t = todayISO();
     return r.run.sessions.filter(function (ev) { return ev.date > t; }).length;
+  }
+  // The dates a repeated meeting lands on: n more, `step` days apart (7 = weekly, 14 = every
+  // other week), after `iso`. DST-safe: Date(y, m, d + k) local date math, the same as the
+  // storefront Add weekly. [] for a date that does not parse.
+  function repeatDates(iso, n, step) {
+    var p = String(iso || '').split('-');
+    var base = new Date(+p[0], +p[1] - 1, +p[2]);
+    if (p.length !== 3 || isNaN(base.getTime())) return [];
+    var out = [];
+    for (var i = 1; i <= n; i++) {
+      var d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + i * step);
+      out.push(d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()));
+    }
+    return out;
   }
   // The next pack meeting on or after a date — where adventure awards are formally presented.
   function nextPackMeetingAfter(iso) {
@@ -23065,24 +23089,26 @@
     }
     if (kind === 'mtg-repeat') {
       // Wave 19(22) — bulk-create N more meetings on subsequent same-weekday dates.
-      // Copies kind/den/time/note only — NOT the adventure (each week differs).
-      // DST-safe: Date(y, m, d + 7i) local date math, same as the storefront Add weekly.
+      // Copies kind/den/time/note — and the adventure ONLY when asked (Wave A; see the form).
+      // Never the internal note: that was written about this one meeting.
       var rMtg = getEvent(f.dataset.id);
       ui.repeatOffer = null;
       if (!rMtg || !rMtg.date) { render(); return; }
       var rN = parseInt(String(fd.get('weeks') || ''), 10);
       if (!isFinite(rN) || rN < 1) rN = 1;
       if (rN > 12) rN = 12;
-      var rp = rMtg.date.split('-');
-      var rBase = new Date(+rp[0], +rp[1] - 1, +rp[2]);
-      if (isNaN(rBase.getTime())) { render(); return; }
-      for (var ri = 1; ri <= rN; ri++) {
-        var rd = new Date(rBase.getFullYear(), rBase.getMonth(), rBase.getDate() + ri * 7);
-        var rIso = rd.getFullYear() + '-' + pad2(rd.getMonth() + 1) + '-' + pad2(rd.getDate());
-        state.events.push(freshEvent({ kind: rMtg.kind, den: rMtg.den || '', date: rIso, slot: dateToSlot(rIso), time: rMtg.time || '', note: rMtg.note || '' }));
-      }
+      var rStep = String(fd.get('every') || '7') === '14' ? 14 : 7;
+      var rAdv = (fd.get('sameAdv') && rMtg.kind === 'den') ? evAdventure(rMtg) : '';
+      var rDates = repeatDates(rMtg.date, rN, rStep);
+      if (!rDates.length) { render(); return; }
+      rDates.forEach(function (rIso) {
+        state.events.push(freshEvent({ kind: rMtg.kind, den: rMtg.den || '', date: rIso, slot: dateToSlot(rIso),
+          time: rMtg.time || '', note: rMtg.note || '', adventure: rAdv }));
+      });
       commit();
-      showToast('Added ' + rN + ' more weekly ' + (rMtg.kind === 'pack' ? 'pack' : 'den') + ' meeting' + (rN === 1 ? '' : 's'));
+      showToast('Added ' + rN + ' more ' + (rStep === 14 ? 'every-other-week ' : 'weekly ') +
+        (rMtg.kind === 'pack' ? 'pack' : 'den') + ' meeting' + (rN === 1 ? '' : 's') +
+        (rAdv ? ' — ' + rAdv + ', ' + (rN + 1) + ' sessions' : ''));
       return;
     }
     if (kind === 'add-derby-award') {
