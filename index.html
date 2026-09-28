@@ -1397,6 +1397,10 @@
   .ob-row { padding: 10px 0; border-top: 1px solid var(--line); }
   .ob-ticks { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 6px 0; }
   .ob-tick { display: inline-flex; align-items: center; gap: 6px; font-size: .92rem; }
+  /* Wave C2 — the trip readiness checklist: one item a line, the box sized like attendance's. */
+  .camp-ready { margin: 6px 0; }
+  .camp-ready label { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: .92rem; }
+  .camp-ready input[type="checkbox"] { width: 20px; height: 20px; min-height: 20px; padding: 0; margin: 0; flex: 0 0 auto; accent-color: var(--accent); }
   .kit-item { padding: 8px 0; border-top: 1px solid var(--line); }
   .kit-help { margin: 2px 0 0 26px; }
   .kit-help .btn { margin-top: 6px; }
@@ -1472,6 +1476,15 @@
   .cal-glyph.dot-store-open { color: var(--accent-text); line-height: 9px; }
   .cal-legend .cal-glyph { vertical-align: 1px; }
   .print-only { display: none; }
+  /* Wave C3 — the printable packing list. Two columns when the list is split per person / per
+     family and there is room; one on a phone. Big enough boxes to tick with a pen. */
+  .pk-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0 24px; }
+  .pk-head { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-soft); margin: 10px 0 2px; }
+  .pk-list { list-style: none; margin: 0; padding: 0; }
+  .pk-list li { margin: 3px 0; break-inside: avoid; page-break-inside: avoid; }
+  .pk-list label { display: flex; gap: 8px; align-items: flex-start; }
+  .pk-list input[type="checkbox"] { width: 18px; height: 18px; min-height: 18px; padding: 0; margin: 2px 0 0; flex: 0 0 auto; }
+  @media print { .pk-sheet { border: none; box-shadow: none; padding: 0; } .pk-head { color: #333; } }
   @media print {
     .print-only { display: block !important; }
     .pv-print-head { font-size: 0.8rem; color: #555; margin: 0 0 8px; }
@@ -2897,6 +2910,51 @@
       }).join('');
     }).join('');
   }
+  /* ----- The printable packing list (Wave C3, 2026-09-28) --------------------------------------
+     A trip's "What to bring" section, turned into a list a family can tick with a pen. Built from
+     the SAME text the page shows, by the same authoring rules proseText follows — a line starting
+     "- " is an item; a short unpunctuated line directly above items is a heading — so nobody
+     maintains a second list. Other prose (the Six Essentials sentence, "Leave at home: …") comes
+     through as notes, printed but not tickable.
+     SPLIT per person / per family only when the text itself has headings saying so ("Per person",
+     "Each family", "Family gear" …); otherwise it is one list under its own headings. Guessing
+     which of "tent" and "towel" is per family would be the app making up the packing list.
+     Family side: the parent app builds it from the PUBLISHED trip (pv.camping) and nothing else. */
+  function packingSection(trip) {
+    var secs = (trip && Array.isArray(trip.sections)) ? trip.sections : [];
+    return secs.filter(function (x) { return x && /what to bring|packing list/i.test(String(x.title || '')); })[0] || null;
+  }
+  function packingList(body) {
+    var BULLET_LINE = /^\s*[-\u2022]\s+/;
+    var lines = String(body == null ? '' : body).replace(/\r\n?/g, '\n').split('\n');
+    var groups = [], notes = [], cur = null;
+    function whoOf(title) {
+      if (/\b(per|each|every|for each)\s+(person|people|camper|scout)\b|\beveryone\b|\bpersonal\b/i.test(title)) return 'person';
+      if (/\b(per|each|every|for each|the)\s+family\b|\bfamily (gear|kit|items)\b|\bshared\b/i.test(title)) return 'family';
+      return '';
+    }
+    lines.forEach(function (l, i) {
+      var tx = l.trim();
+      if (!tx) return;
+      if (BULLET_LINE.test(l)) {
+        if (!cur) { cur = { title: '', who: '', items: [] }; groups.push(cur); }
+        cur.items.push(l.replace(BULLET_LINE, '').trim());
+        return;
+      }
+      var nxt = lines[i + 1] || '';
+      if (BULLET_LINE.test(nxt) && tx.length <= 48 && !/[.?!:]$/.test(tx)) {
+        cur = { title: tx, who: whoOf(tx), items: [] };
+        groups.push(cur);
+        return;
+      }
+      notes.push(tx);
+      cur = null;
+    });
+    groups = groups.filter(function (g) { return g.items.length; });
+    var hasP = groups.some(function (g) { return g.who === 'person'; });
+    var hasF = groups.some(function (g) { return g.who === 'family'; });
+    return { groups: groups, notes: notes, split: hasP && hasF };
+  }
   /* ---------------- New to the pack: the families' welcome page (Wave B1, 2026-09-28) --------
      One leader-written page for a family in its first weeks, built the way the camping pages are:
      stored sections, seeded text, a seed revision, and published to parents VERBATIM. The New
@@ -4256,6 +4314,8 @@
     // field by field, and a leader's local trip id is not a parent's business). Like the
     // rest of `ui` this is never persisted, so every visit opens on the first trip.
     parentCampTrip: 0,
+    // Wave C3 — the printable packing list is showing for this trip index (-1 = not showing).
+    parentPackList: -1,
     // The parent Schedule tab's month grid. Separate from ui.calMonth so a leader who is also a
     // parent on another device cannot have one view's month dragged around by the other's.
     parentCalMonth: '',
@@ -10702,6 +10762,9 @@
     // only appears from two trips up, so with one trip this is simply the page.
     var ti = parentCampTrip();
     var t = trips[ti] || trips[0];
+    // Wave C3 — the printable packing list, in place of the page while it is open.
+    var pk = packingSection(t);
+    if (pk && ui.parentPackList === ti) return renderParentPackList(t, pk);
     // Wave C1 — point the family at the next campout. The first tab already IS the next one (the
     // trips are in date order), so on it this is a pill; on any other tab, a way back to it.
     var nx = nextTrip(trips, today), nxAt = nx ? trips.indexOf(nx) : -1;
@@ -10720,6 +10783,10 @@
         cost: String(t.cost || ''), url: String(t.url || ''),
         registrationDeadline: campIsoOrBlank(t.registrationDeadline)
       }, today);
+    if (pk && packingList(pk.body).groups.length) {
+      h += '<p class="no-print" style="margin:10px 0 0"><button type="button" class="btn small" data-act="parent-pack-list" data-section="' +
+        ti + '">Print packing list</button></p>';
+    }
     if (t.intro) h += '<div class="camp-body" style="margin-top:10px">' + proseText(t.intro) + '</div>';
     h += '</div>';
     (Array.isArray(t.sections) ? t.sections : []).forEach(function (s, si) {
@@ -10728,6 +10795,39 @@
         '<div class="camp-body">' + proseText(s.body) + '</div></div>';
     });
     return h;
+  }
+  // Wave C3 — the packing list as a sheet: tick boxes, the trip's own headings, and a Print button.
+  // Reads the published trip it is handed and nothing else.
+  function renderParentPackList(t, sec) {
+    var pl = packingList(sec.body);
+    function group(g) {
+      return (g.title ? '<p class="pk-head">' + esc(g.title) + '</p>' : '') +
+        '<ul class="pk-list">' + g.items.map(function (it) {
+          return '<li><label><input type="checkbox"> <span>' + esc(it) + '</span></label></li>';
+        }).join('') + '</ul>';
+    }
+    function block(title, list) {
+      if (!list.length) return '';
+      return '<div class="pk-col">' + (title ? '<h3 class="section display" style="font-size:1.05rem;margin:8px 0 4px">' + esc(title) + '</h3>' : '') +
+        list.map(group).join('') + '</div>';
+    }
+    var h = '<div class="card no-print"><div class="row">' +
+      '<button type="button" class="btn" data-act="parent-pack-list" data-section="-1">&larr; Back to the campout</button>' +
+      '<button type="button" class="btn primary" data-act="parent-print">Print / Save PDF</button></div></div>' +
+      '<div class="card pk-sheet"><h2 class="section display" style="margin-bottom:2px">Packing list \u2014 ' + esc(String(t.name || 'Campout')) + '</h2>' +
+      (t.when ? '<p class="small muted" style="margin:0 0 8px">' + esc(String(t.when)) + '</p>' : '');
+    if (pl.split) {
+      h += '<div class="pk-cols">' +
+        block('Per person', pl.groups.filter(function (g) { return g.who === 'person'; })) +
+        block('Per family', pl.groups.filter(function (g) { return g.who === 'family'; })) + '</div>' +
+        block('', pl.groups.filter(function (g) { return !g.who; }));
+    } else {
+      h += block('', pl.groups);
+    }
+    if (pl.notes.length) {
+      h += '<div class="pk-notes">' + pl.notes.map(function (n) { return '<p class="small" style="margin:6px 0 0">' + esc(n) + '</p>'; }).join('') + '</div>';
+    }
+    return h + '</div>';
   }
   // Stable, collision-free ids for the camping section headings. Index-based on purpose: a trip
   // has no id in the published document, and slugging the title would collide the moment two
@@ -18650,8 +18750,8 @@
       '<p class="eyebrow note-cap note-cap-int" style="margin:0">Trip readiness \u00b7 leaders only</p>' +
       '<span class="pill' + (rd.done === rd.total ? ' navy' : '') + '">' +
       (rd.done === rd.total ? 'All ' + rd.total + ' ready' : rd.done + ' of ' + rd.total + ' ready') + '</span></div>' +
-      '<div class="ob-ticks">' + CAMP_READINESS.map(function (it) {
-        return '<label class="ob-tick"><input type="checkbox" data-ch="trip-ready" data-id="' + esc(t.id) + '" data-key="' + it.key + '"' +
+      '<div class="camp-ready">' + CAMP_READINESS.map(function (it) {
+        return '<label><input type="checkbox" data-ch="trip-ready" data-id="' + esc(t.id) + '" data-key="' + it.key + '"' +
           (r[it.key] === true ? ' checked' : '') + dis + '><span>' + esc(it.label) + '</span></label>';
       }).join('') + '</div>' +
       '<p class="small muted" style="margin:4px 0 0">Not published to families. The ticks clear when this trip\u2019s dates move to another year.</p></div>';
@@ -22761,7 +22861,7 @@
   // other leader action is refused while parentMode() is true, so an exit that was not allowlisted
   // would leave an admin stuck until they reloaded.
   var PARENT_ACTS = ['parent-tab', 'parent-camp-trip', 'parent-earlier', 'parent-rest', 'parent-cal-prev', 'parent-cal-next',
-    'parent-cal-day', 'parent-cost-toggle', 'parent-preview-off', 'parent-print', 'parent-ics', 'sign-out-google', 'toast-action'];
+    'parent-cal-day', 'parent-cost-toggle', 'parent-preview-off', 'parent-print', 'parent-ics', 'parent-pack-list', 'sign-out-google', 'toast-action'];
   // Join link phase — the three gate screens emit only these. Anything else that somehow
   // reaches the handler while a gate is up is ignored, so no code path can read or mutate
   // the pack record on a link visitor's / not-yet-approved user's device.
@@ -22908,10 +23008,18 @@
       var ptWant = el.dataset.tab;
       ui.parentTab = parentTabDefs().some(function (t) { return t.id === ptWant; }) ? ptWant : 'schedule';
       if (ui.parentTab === 'welcome') markWelcomeSeen();
+      ui.parentPackList = -1;
       ui.resetScroll = true;
       render(); return;
     }
     if (act === 'parent-earlier') { ui.parentEarlierOpen = !ui.parentEarlierOpen; render(); return; }
+    // Wave C3 — open (a trip index) or close (-1) the printable packing list. Validated like a sub-tab.
+    if (act === 'parent-pack-list') {
+      var pkWant = parseInt(el.dataset.section, 10);
+      ui.parentPackList = (pkWant >= 0 && pkWant < parentTrips().length) ? pkWant : -1;
+      ui.resetScroll = true;
+      render(); return;
+    }
     if (act === 'parent-rest') { ui.parentRestOpen = !ui.parentRestOpen; render(); return; }
     // A campout sub-tab. Validated against the published list rather than trusted, and
     // parentCampTrip() re-validates on the way out, so a trip the pack deletes between renders
@@ -22919,6 +23027,7 @@
     if (act === 'parent-camp-trip') {
       var pcWant = parseInt(el.dataset.section, 10);
       if (pcWant >= 0 && pcWant < parentTrips().length) ui.parentCampTrip = pcWant;
+      ui.parentPackList = -1;
       ui.resetScroll = true;
       render(); return;
     }

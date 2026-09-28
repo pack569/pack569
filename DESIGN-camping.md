@@ -240,6 +240,16 @@ council requires.
 - The trip page shows "n of 7 ready"; Home gives the Outdoor / Camping Chair a task in the 14
   days before the first day while anything is open.
 
+### Printable packing list (Wave C3, 2026-09-28)
+
+A family's Camping page has a **Print packing list** button whenever the trip has a section
+titled "What to bring" (or "Packing list") with items in it. It opens a tickable sheet built by
+`packingList` from that section's text, by the same rules `proseText` renders it: `- ` lines are
+items, a short unpunctuated line above them is a heading, other prose is printed as notes. It is
+split into **Per person** and **Per family** only when the text has headings that say so;
+otherwise it is one list under the section's own headings (Sleeping, Wearing, Camp …). It reads
+the published trip only — no new published keys.
+
 ## 6. What deliberately does not happen
 
 - **Rollover does not clear it.** A campout page is reference content that carries across years;

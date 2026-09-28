@@ -11389,6 +11389,47 @@ test('C2: Home asks the Camping Chair in the 14 days before a trip while anythin
   eq(run([{ id: 'f', name: 'Fall', readiness: {} }]).length, 0, 'a task for an undated trip');
   eq(run([{ id: 'f', name: 'Fall', startDate: '2026-09-29', readiness: {} }])[0].tier, 'now', 'the day before is not urgent');
 });
+// C3 — the printable packing list.
+test('C3: "What to bring" becomes a tickable list under its own headings, split only when the text says so', () => {
+  const ctx = sandbox(NORMALIZE_FNS.concat(['packingSection', 'packingList']));
+  const fall = ctx.seedCampingTrips()[0];
+  const sec = ctx.packingSection(fall);
+  ok(sec && sec.title === 'What to bring', 'the fall trip’s packing section was not found');
+  const pl = JSON.parse(JSON.stringify(ctx.packingList(sec.body)));
+  eq(pl.groups.map((g) => g.title), ['Sleeping', 'Wearing', 'Washing — Scoutland has a shower house', 'Camp'], 'headings');
+  eq(pl.split, false, 'a list with no per-person/per-family headings was split');
+  ok(pl.groups[0].items[0].startsWith('Tent — the council suggests'), 'the first item lost its text, or kept its bullet');
+  ok(pl.notes.some((n) => /Six Essentials/.test(n)) && pl.notes.some((n) => /^Leave at home:/.test(n)), 'the prose notes were dropped');
+  ok(!pl.groups.some((g) => g.items.some((i) => /^-/.test(i))), 'an item kept its hyphen');
+  // Split when the text says so; groups without a side stay in a general list.
+  const sp = ctx.packingList('Per person\n- Sleeping bag\n- Headlamp\n\nPer family\n- Tent\n- Cooler\n\nExtras\n- Fishing rod\n\nLabel everything.');
+  eq(sp.split, true, 'headings saying per person / per family did not split the list');
+  eq(sp.groups.map((g) => [g.title, g.who]), [['Per person', 'person'], ['Per family', 'family'], ['Extras', '']], 'sides');
+  eq(ctx.packingList('Each family\n- Tent').split, false, 'one side alone split the list');
+  eq(ctx.packingList('').groups.length, 0, 'an empty section has items');
+  eq(ctx.packingSection({ sections: [{ title: 'Food', body: '- x' }] }), null, 'a section that is not the packing list was used');
+});
+
+test('C3: families get a Print packing list button, built from the published trip only', () => {
+  const rpc = slice('renderParentCamping');
+  ok(/var pk = packingSection\(t\);/.test(rpc), 'the family page does not look for the packing list');
+  ok(/data-act="parent-pack-list"/.test(rpc) && /Print packing list/.test(rpc), 'no Print packing list button');
+  ok(/if \(pk && ui\.parentPackList === ti\) return renderParentPackList\(t, pk\);/.test(rpc), 'the sheet does not replace the page');
+  const sheet = slice('renderParentPackList');
+  ok(!/\bstate\b/.test(codeOnly(sheet)) && !/\bstate\b/.test(codeOnly(slice('packingList'))), 'the packing list reads the pack record');
+  ok(/data-act="parent-print"/.test(sheet), 'the sheet has no Print button');
+  ok(/var PARENT_ACTS = \[[^\]]*'parent-pack-list'/.test(SCRIPT), 'parent-pack-list is not allowed in the parent app, so the button is inert');
+  const h = /if \(act === 'parent-pack-list'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(h && /pkWant >= 0 && pkWant < parentTrips\(\)\.length/.test(h[0]), 'the handler trusts the clicked index');
+  // Rendered: escaped text, one checkbox per item, the side headings when split.
+  const ctx = vm.createContext({});
+  vm.runInContext(['esc', 'packingList', 'renderParentPackList'].map(slice).join('\n'), ctx);
+  const out = ctx.renderParentPackList({ name: 'Den <campout>', when: 'May' },
+    { body: 'Per person\n- Bag & pad\n\nPer family\n- Tent' });
+  eq((out.match(/type="checkbox"/g) || []).length, 2, 'one box per item');
+  ok(/Per person/.test(out) && /Per family/.test(out), 'the split sheet has no side headings');
+  ok(/Bag &amp; pad/.test(out) && /Den &lt;campout&gt;/.test(out) && !/<campout>/.test(out), 'the sheet does not escape the text');
+});
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
