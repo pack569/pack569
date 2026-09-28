@@ -842,7 +842,7 @@ test('a rung is set apart from its rows by more than a font weight', () => {
 // The ledger math is deliberately pure — it takes (ledger, book) rather than reading
 // `state` — precisely so it can be exercised here rather than by clicking around.
 const LEDGER_FNS = ['ledgerSort', 'entrySignedCents', 'entryAfterOpening', 'ledgerBalance',
-  'LEDGER_INCOME_SOURCES', 'entryIsRefund', 'lineIncomeCents', 'ledgerIncomeCents',
+  'LEDGER_INCOME_SOURCES', 'entryIsRefund', 'entryRefundsFamily', 'lineIncomeCents', 'ledgerIncomeCents',
   'lineActualCents', 'ledgerTotals', 'entryOnStatement', 'reconcileTotals', 'runningBalances'];
 
 function entry(o) {
@@ -963,7 +963,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'CAMP_SEED_REV', 'CAMP_OLD_SEED', 'campHash', 'refreshCampingSeed',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
   'parseLegacyTime', 'migrateTierMakeUp', 'normalizeState', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
-  'lineActualCents', 'entrySignedCents',
+  'lineActualCents', 'entryRefundsFamily', 'entrySignedCents',
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
@@ -2405,7 +2405,7 @@ test('one handler set serves every budget line, not parallel act-/exp- families'
    ================================================================ */
 
 const CHARGE_FNS = ['CHARGE_WHO', 'centsOf', 'chargeKey', 'chargeRowsFor', 'chargeIsOpen',
-  'entryPaysCharges', 'paymentsForScout', 'familyAccounts', 'familyOutstanding', 'chargeTotals'];
+  'entryPaysCharges', 'entryRefundsFamily', 'paymentsForScout', 'familyAccounts', 'familyOutstanding', 'chargeTotals'];
 
 function line3b(patch) {
   return Object.assign({
@@ -8602,7 +8602,7 @@ test('M5: a tier make-up payment does not also settle the family’s other charg
   eq(t.makeup, 3000, 'but it is reported, not lost');
   eq(t.outstanding, 4000, 'still owed');
   const fn = /function computeBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
-  ok(/feeIncomeCollected = chg\.paid \+ chg\.donated \+ chg\.makeup;/.test(fn), 'make-up money dropped out of Funds in');
+  ok(/feeIncomeCollected = chg\.paid \+ chg\.donated \+ chg\.makeup - chg\.refunded;/.test(fn), 'make-up money dropped out of Funds in');
 });
 
 test('M6: editing a reimbursement keeps who it paid back', () => {
@@ -8611,7 +8611,64 @@ test('M6: editing a reimbursement keeps who it paid back', () => {
   const h = /if \(ch\.indexOf\('led-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(!/led\.direction !== 'in'\) \{ led\.source = ''; led\.donor = ''; led\.scoutId = ''; \}/.test(h),
     'any edit of a money-out entry clears its scout');
-  ok(/if \(lk === 'dir'\) led\.scoutId = '';/.test(h), 'flipping the direction no longer drops the payer');
+  ok(/if \(lk === 'dir'\) \{ led\.scoutId = '';/.test(h), 'flipping the direction no longer drops the payer');
+});
+
+test('T1: a refunded family credit leaves the account, and nothing is carried', () => {
+  // The Dues card says "record the refund as money out" — and money out could not name the
+  // family, so the credit outlived the cheque and came forward at close-out: paid back twice.
+  const ctx = sandbox(CHARGE_FNS.concat(['chargePaidAllocation', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
+    'entrySignedCents', 'lineActualCents']));
+  const charges = [{ id: 'd', scoutId: 'ada', lineId: 'D', amountCents: 8000, date: '2026-09-01', waivedBy: '', forgiven: null }];
+  const paid = { direction: 'in', scoutId: 'ada', amountCents: 12000, source: 'family' };      // $40 over
+  const refund = { direction: 'out', scoutId: 'ada', amountCents: 4000, source: 'refund', lineId: 'D' };
+  const before = ctx.familyAccounts(charges, [paid]);
+  eq(before[0].credit, 4000, 'the credit before the refund');
+  const after = ctx.familyAccounts(charges, [paid, refund]);
+  eq([after[0].balance, after[0].credit, after[0].outstanding], [0, 0, 0], 'square after the refund');
+  // rolloverYear carries every family whose balance is not 0 — so a square family carries nothing.
+  const roll = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/var closingAccounts = familyAccountsNow\(\)\.filter\(function \(a\) \{ return a\.balance !== 0; \}\);/.test(roll),
+    'close-out does not read the refunded balance');
+  eq(ctx.familyOutstanding(charges, [paid, refund], 'ada'), 0, 'familyOutstanding');
+  const t = ctx.chargeTotals(charges, [paid, refund]);
+  eq([t.paid, t.refunded, t.credit, t.outstanding], [12000, 4000, 0, 0], 'chargeTotals reports it');
+  eq(ctx.chargePaidAllocation(charges, [paid, refund]), { d: 8000 }, 'a refund of credit un-paid a charge');
+  // Refunding more than the credit un-pays the charge it has to.
+  const big = Object.assign({}, refund, { amountCents: 6000 });
+  eq(ctx.chargePaidAllocation(charges, [paid, big]), { d: 6000 }, 'a refund past the credit');
+  eq(ctx.familyOutstanding(charges, [paid, big], 'ada'), 2000, 'and the family owes it again');
+  // Not a cost of the line it sits on.
+  eq(ctx.lineActualCents([refund], 'D'), 0, 'a refund counted as spending on its line');
+  // A reward-tier reimbursement is never a refund — marked, or from before the mark (no source).
+  eq(ctx.entryRefundsFamily({ direction: 'out', scoutId: 'ada', source: '' }), false, 'an old reimbursement reads as a refund');
+  eq(ctx.entryRefundsFamily({ direction: 'out', scoutId: 'ada', source: 'refund', reimbursement: true }), false,
+    'a marked reimbursement reads as a refund');
+  eq(ctx.familyAccounts(charges, [paid, { direction: 'out', scoutId: 'ada', amountCents: 4000, source: '' }])[0].credit, 4000,
+    'a reimbursement took the family’s credit away');
+  // Wiring: the reimburse button marks what it records, the reimbursement list skips refunds,
+  // Funds in loses the money, and the ledger lets money out name a family.
+  const rb = /if \(act\.indexOf\('tier-reimburse:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/reimbursement: true/.test(rb), 'a reimbursement is not marked as one');
+  const tr = /function tierReimbursements\(map\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/!entryRefundsFamily\(e\)/.test(tr), 'a refund on a paid-direct line counts as a reimbursement');
+  const add = /if \(act === 'ledger-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/source: dr\.direction === 'in' \? dr\.source : \(dr\.scoutId \? 'refund' : ''\)/.test(add) && /scoutId: dr\.scoutId,/.test(add),
+    'a new money-out entry cannot name the family refunded');
+  const rows = /function renderLedgerEntries\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/data-ch="led-scout"[^\n]*Refunded to which family/.test(rows) && /data-ch="ledn-scout" aria-label="Refunded to which family"/.test(rows),
+    'the ledger has no family picker on money out');
+  ok(/if \(act === 'charge-refund'\) \{/.test(SCRIPT) && /data-act="charge-refund"/.test(SCRIPT), 'no Record a refund button');
+  ok(!/record the refund as money out/.test(SCRIPT), 'the old instruction is still there');
+});
+
+test('T1: a refund source only survives on money out that names a family', () => {
+  const ns = /function normalizeState\(d\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/if \(e\.source === 'refund' && \(e\.direction !== 'out' \|\| !e\.scoutId\)\) e\.source = '';/.test(ns),
+    'a stray refund source is kept on money in, or with no family');
+  ok(/e\.reimbursement = e\.reimbursement === true;/.test(ns), 'the reimbursement mark is not normalized');
+  const opts = /function sourceSelectOptions\(sel\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/s !== 'refund'/.test(opts), 'Refund is offered as a source of money IN');
 });
 
 test('M7: one cheque against either sibling settles the family, and a credit is shown', () => {
@@ -8962,7 +9019,7 @@ function tierScopeSandbox() {
     ${slice('scoutsInDens')} ${slice('familiesOf')} ${slice('familyBillingScout')}
     ${slice('lineBillingRoster')} ${slice('lineBillingIds')}
     ${slice('coverValueOfKeys')} ${slice('tierCoverCentsPerScout')}
-    ${slice('packCoverageByScout')} ${slice('privateBenefitCheck')} ${slice('tierReimbursements')}
+    ${slice('packCoverageByScout')} ${slice('privateBenefitCheck')} ${slice('entryRefundsFamily')} ${slice('tierReimbursements')}
     function familyKeyOf(s) { return s.familyId || s.id; }
     function linePerFamily(l) { return !!l.perFamily; }
     function lineDens(l) { return l.dens || []; }

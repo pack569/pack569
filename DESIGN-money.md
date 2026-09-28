@@ -195,6 +195,23 @@ outliving, or being counted beside, the thing they belonged to. What changed, it
   over-budget in red. Same rules as `computeBudget` — income lines are not spending, and a
   paid-direct line is out of the plan but its reimbursements are in actual (`budgetVsActual`).
 
+### Treasurer's review of those fixes, 2026-09-28
+
+The treasurer re-read the fixes above against the books (verdict: OK with changes). What changed:
+
+- **A refunded credit never left the account (T1).** The Dues card told the treasurer to
+  "record the refund as money out", and money out could not name a family — so the credit stayed
+  on the account after the cheque went, and at close-out came forward as a carryover payment: the
+  family was paid back twice. Money out can now carry a family as a **refund**
+  (`source: 'refund'`, `entryRefundsFamily`); the Dues block has *Record a refund…* beside a
+  credit, and the ledger has a *Refunded to* picker on money out. `familyAccounts`,
+  `familyOutstanding` and `chargePaidAllocation` take a refund off what the family paid — off
+  their unallocated credit first, and only past that off the newest charge. `chargeTotals`
+  reports it as `refunded`, Funds in loses it, and it is not a cost of any line it sits on. A
+  reward-tier **reimbursement** is also money out carrying a scout, and is not a refund: it is
+  now marked `reimbursement: true`, and one recorded before the mark has no source, so it can
+  never read as one. `tierReimbursements` ignores refunds.
+
 ---
 
 ## 1. The problem, concretely

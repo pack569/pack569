@@ -2152,10 +2152,12 @@
   // Where money came from, for income. Two $80 entries that both settle Ben's dues are very
   // different events if one came from Ben's family and the other from the chartered
   // organisation — and the pack should be able to see and thank the second.
-  var LEDGER_SOURCES = ['family', 'donation', 'fundraiser', 'commission', 'carryover', 'other'];
+  // 'refund' is the one source for money OUT: a family's own money handed back (T1,
+  // entryRefundsFamily). It is never offered on money in.
+  var LEDGER_SOURCES = ['family', 'donation', 'fundraiser', 'commission', 'carryover', 'other', 'refund'];
   var LEDGER_SOURCE_LABELS = {
     family: 'Family payment', donation: 'Donation', fundraiser: 'Fundraiser',
-    commission: 'Popcorn commission', carryover: 'Carryover', other: 'Other'
+    commission: 'Popcorn commission', carryover: 'Carryover', other: 'Other', refund: 'Refund to a family'
   };
   // The book — where the ledger's running balance starts. Decision 12 in DESIGN-money.md
   // asked whether the ledger should open at the current bank balance or backfill the
@@ -3199,6 +3201,9 @@
       // credit back off these entries, so deleting one takes the tier with it. Every other ledger
       // entry carries '' and behaves exactly as it always has.
       e.tierMakeup = typeof e.tierMakeup === 'string' ? e.tierMakeup : '';
+      // T1 — a refund is money out to a family, nothing else; a reimbursement says it is one.
+      if (e.source === 'refund' && (e.direction !== 'out' || !e.scoutId)) e.source = '';
+      e.reimbursement = e.reimbursement === true;
       e.reconciled = e.reconciled === true;
     });
     if (!d.book || typeof d.book !== 'object' || Array.isArray(d.book)) d.book = freshBook();
@@ -4922,7 +4927,8 @@
     feeIncomeExpected = fundingSummary().fees;
     // M5 — a tier make-up payment is family money that arrived; it settles a tier rather than a
     // charge, but it is in the bank all the same.
-    feeIncomeCollected = chg.paid + chg.donated + chg.makeup;
+    // T1 — less what was handed back to families: it left the bank.
+    feeIncomeCollected = chg.paid + chg.donated + chg.makeup - chg.refunded;
     // Wave 17 — other fundraisers a leader opted into funds-in (default off).
     var otherFundraiserIn = 0;
     state.fundraisers.forEach(function (fr) {
@@ -5579,6 +5585,20 @@
   // owing $10 that really owed $40. The make-up money is still income — chargeTotals reports it
   // as `makeup`, and it reaches Funds in — it just is not a payment against anybody's charges.
   function entryPaysCharges(e) { return e.direction === 'in' && !!e.scoutId && !e.tierMakeup; }
+  // Treasurer's review of Wave 4 (T1) — money OUT that gives a family's own money back. The
+  // Dues card tells a treasurer to refund a credit "as money out", and nothing could record it
+  // against the family: the ledger offered no scout on money out, so the credit stayed on the
+  // account after the cheque went, and at close-out it came forward as a carryover payment — the
+  // family paid back once in cash and once again in credit.
+  //
+  // A refund is money out carrying the scout and source 'refund'. A reward-tier REIMBURSEMENT is
+  // also money out carrying a scout, and is a different thing entirely (the pack paying a fee the
+  // family paid the council; it settles nothing in the family's account). It is marked
+  // `reimbursement: true` where it is recorded; one recorded before the mark existed carries no
+  // source, and a refund always does, so the old ones can never read as refunds.
+  function entryRefundsFamily(e) {
+    return e.direction === 'out' && !!e.scoutId && e.source === 'refund' && e.reimbursement !== true;
+  }
   function paymentsForScout(ledger, scoutId) {
     return ledger.reduce(function (n, e) {
       return (entryPaysCharges(e) && e.scoutId === scoutId) ? n + (e.amountCents || 0) : n;
@@ -5600,7 +5620,8 @@
   //
   //   owed         Σ charges that still stand
   //   paid         Σ payments against charges, any source (entryPaysCharges)
-  //   balance      owed − paid, SIGNED: a family that has overpaid is in credit, and says so
+  //   refunded     Σ money given back to the family (entryRefundsFamily, T1)
+  //   balance      owed − paid + refunded, SIGNED: a family that has overpaid is in credit, and says so
   //   outstanding  max(0, balance)       credit  max(0, −balance)
   // ---------------------------------------------------------------------------
   function familyAccounts(charges, ledger, keyOf) {
@@ -5608,7 +5629,7 @@
     var by = {}, order = [];
     function acct(sid) {
       var k = key(sid);
-      if (!by[k]) { by[k] = { key: k, owed: 0, paid: 0, scoutIds: [] }; order.push(k); }
+      if (!by[k]) { by[k] = { key: k, owed: 0, paid: 0, refunded: 0, scoutIds: [] }; order.push(k); }
       if (by[k].scoutIds.indexOf(sid) === -1) by[k].scoutIds.push(sid);
       return by[k];
     }
@@ -5617,12 +5638,12 @@
       if (chargeIsOpen(c)) a.owed += c.amountCents || 0;
     });
     ledger.forEach(function (e) {
-      if (!entryPaysCharges(e)) return;
-      acct(e.scoutId).paid += e.amountCents || 0;
+      if (entryPaysCharges(e)) acct(e.scoutId).paid += e.amountCents || 0;
+      else if (entryRefundsFamily(e)) acct(e.scoutId).refunded += e.amountCents || 0;
     });
     return order.map(function (k) {
       var a = by[k];
-      a.balance = a.owed - a.paid;
+      a.balance = a.owed - a.paid + a.refunded;
       a.outstanding = Math.max(0, a.balance);
       a.credit = Math.max(0, -a.balance);
       return a;
@@ -5637,7 +5658,10 @@
       return (key(c.scoutId) === k && chargeIsOpen(c)) ? n + (c.amountCents || 0) : n;
     }, 0);
     var paid = ledger.reduce(function (n, e) {
-      return (entryPaysCharges(e) && key(e.scoutId) === k) ? n + (e.amountCents || 0) : n;
+      if (!e.scoutId || key(e.scoutId) !== k) return n;
+      if (entryPaysCharges(e)) return n + (e.amountCents || 0);
+      // T1 — money given back is money no longer paid.
+      return entryRefundsFamily(e) ? n - (e.amountCents || 0) : n;
     }, 0);
     return Math.max(0, owed - paid);
   }
@@ -5648,7 +5672,7 @@
   // M7 — `outstanding` is summed per FAMILY (keyOf, as familyAccounts), and `credit` is what
   // families have overpaid. Per scout, one sibling's cheque left the other "owing".
   function chargeTotals(charges, ledger, keyOf) {
-    var t = { raised: 0, standing: 0, waived: 0, forgiven: 0, paid: 0, donated: 0, makeup: 0, carried: 0, outstanding: 0, credit: 0 };
+    var t = { raised: 0, standing: 0, waived: 0, forgiven: 0, paid: 0, donated: 0, makeup: 0, carried: 0, refunded: 0, outstanding: 0, credit: 0 };
     charges.forEach(function (c) {
       t.raised += c.amountCents || 0;
       if (c.waivedBy) { t.waived += c.amountCents || 0; return; }
@@ -5656,6 +5680,9 @@
       t.standing += c.amountCents || 0;
     });
     ledger.forEach(function (e) {
+      // T1 — money handed back to a family, reported on its own: it left the bank, and it is
+      // what took a credit off the account.
+      if (entryRefundsFamily(e)) { t.refunded += e.amountCents || 0; return; }
       if (e.direction !== 'in' || !e.scoutId) return;
       // M5 — bought a tier, not a charge: reported on its own so Received means what it says.
       if (e.tierMakeup) { t.makeup += e.amountCents || 0; return; }
@@ -5712,15 +5739,34 @@
       });
       return cents;
     }
-    var rest = [];
+    var rest = [], refunded = {};
     ledger.forEach(function (e) {
+      if (entryRefundsFamily(e)) {
+        var rk = key(e.scoutId);
+        refunded[rk] = (refunded[rk] || 0) + (e.amountCents || 0);
+        return;
+      }
       if (!entryPaysCharges(e)) return;
-      var rows = open[key(e.scoutId)] || [];
+      var k = key(e.scoutId);
+      var rows = open[k] || [];
       var cents = e.amountCents || 0;
       if (e.lineId) cents = pour(rows.filter(function (r) { return r.c.lineId === e.lineId; }), cents);
-      if (cents > 0) rest.push({ rows: rows, cents: cents });
+      if (cents > 0) rest.push({ k: k, rows: rows, cents: cents });
     });
-    rest.forEach(function (x) { pour(x.rows, x.cents); });
+    var spare = {};
+    rest.forEach(function (x) { spare[x.k] = (spare[x.k] || 0) + pour(x.rows, x.cents); });
+    // T1 — a refund gives back the family's CREDIT first: money that paid no charge. Only a
+    // refund bigger than that un-pays anything, and then the newest charge first — the reverse
+    // of the order payments settle them in.
+    Object.keys(refunded).forEach(function (k) {
+      var over = refunded[k] - (spare[k] || 0);
+      (open[k] || []).slice().reverse().forEach(function (r) {
+        if (over <= 0 || !paid[r.c.id]) return;
+        var back = Math.min(paid[r.c.id], over);
+        paid[r.c.id] -= back; over -= back;
+        if (!paid[r.c.id]) delete paid[r.c.id];
+      });
+    });
     return paid;
   }
   // How syncCharges recognises a charge it already has. A per-family fee's SCOUT charge is the
@@ -5874,6 +5920,8 @@
       // from the vendor carries no scoutId and still reduces the cost, as it should.
       // M1 — nor is money in that says it is income (see entryIsRefund).
       if (e.direction === 'in' && !entryIsRefund(e)) return n;
+      // T1 — nor is a family's own money handed back: it comes off what families paid.
+      if (entryRefundsFamily(e)) return n;
       return n - entrySignedCents(e);
     }, 0);
   }
@@ -5916,7 +5964,7 @@
         // A refund on an ordinary line comes off that line's cost instead (lineActualCents).
         if (entryIsRefund(e) && !isIncomeLine(e.lineId)) return;
         t.other += amt;
-      } else if (e.lineId && isIncomeLine(e.lineId)) {
+      } else if (e.lineId && isIncomeLine(e.lineId) && !entryRefundsFamily(e)) {
         t.other -= amt;
       }
     });
@@ -6176,7 +6224,7 @@
   // Phase 3b — the dues roll-up now reads charges, not a tick grid.
   function feesTotals() {
     var t = chargeTotals(state.charges, state.ledger, chargeFamilyKey);
-    return { any: t.raised > 0, collected: t.paid + t.donated, outstanding: t.outstanding, t: t };
+    return { any: t.raised > 0, collected: t.paid + t.donated - t.refunded, outstanding: t.outstanding, t: t };
   }
   // Every per-head, family-funded line the pack handles. Still used by the reward-tier
   // picker, which points a tier at the charges it buys.
@@ -11880,8 +11928,9 @@
         if (!who[sc.id]) return;
         var ids = {};
         fam.members.forEach(function (m) { ids[m.id] = true; });
+        // T1 — a refund of the family's credit is not a reimbursement, whatever line it sits on.
         var paid = state.ledger.reduce(function (n, e) {
-          return (e.direction === 'out' && e.lineId === s.item.id && ids[e.scoutId])
+          return (e.direction === 'out' && e.lineId === s.item.id && ids[e.scoutId] && !entryRefundsFamily(e))
             ? n + (e.amountCents || 0) : n;
         }, 0);
         rows.push({ share: s, scout: sc, tier: who[sc.id], owed: s.rate, paid: paid, left: Math.max(0, s.rate - paid) });
@@ -13611,16 +13660,17 @@
       return '<option value="' + m + '"' + (sel === m ? ' selected' : '') + '>' + m + '</option>';
     }).join('');
   }
-  // Phase 3b — which family's account an incoming payment settles.
-  function scoutSelectOptions(sel) {
-    var h = '<option value=""' + (sel ? '' : ' selected') + '>— not a family payment —</option>';
+  // Phase 3b — which family's account an incoming payment settles. T1 — and, on money OUT,
+  // which family a refund went back to (`blank` says which question the select is asking).
+  function scoutSelectOptions(sel, blank) {
+    var h = '<option value=""' + (sel ? '' : ' selected') + '>' + esc(blank || '— not a family payment —') + '</option>';
     state.scouts.filter(function (s2) { return !s2.archived || s2.id === sel; }).forEach(function (s2) {
       h += '<option value="' + esc(s2.id) + '"' + (sel === s2.id ? ' selected' : '') + '>' + esc(s2.name) + '</option>';
     });
     return h;
   }
   function sourceSelectOptions(sel) {
-    return '<option value="">Source…</option>' + LEDGER_SOURCES.map(function (s) {
+    return '<option value="">Source…</option>' + LEDGER_SOURCES.filter(function (s) { return s !== 'refund'; }).map(function (s) {
       return '<option value="' + s + '"' + (sel === s ? ' selected' : '') + '>' + esc(LEDGER_SOURCE_LABELS[s]) + '</option>';
     }).join('');
   }
@@ -13712,7 +13762,9 @@
           (dr.source === 'donation'
             ? '<input class="lname" data-ch="ledn-donor" value="' + esc(dr.donor) + '" placeholder="Who gave it" aria-label="Donor">'
             : '')
-        : '') +
+        // T1 — money out can be a family's credit handed back; picking the family says so.
+        : '<select data-ch="ledn-scout" aria-label="Refunded to which family">' +
+            scoutSelectOptions(dr.scoutId, '— not a refund to a family —') + '</select>') +
       '<button type="button" class="btn small primary" data-act="ledger-add">Add entry</button>' +
       '</div>' +
       '<p class="small muted" style="margin:8px 0 0">Pick the budget line it belongs to and this entry becomes part of that line’s actual cost. ' +
@@ -13796,9 +13848,13 @@
                     ? '<input class="lname" data-ch="led-donor" data-id="' + e.id + '" value="' + esc(e.donor) + '" placeholder="Who gave it" aria-label="Donor">'
                     : '')
                 // M6 — a reimbursement says who it went to, since that is what marks it paid.
-                : (e.scoutId && getScout(e.scoutId)
-                  ? '<span class="small muted" style="align-self:center">Paid back to ' + esc(getScout(e.scoutId).name) + '</span>'
-                  : '')) +
+                : (e.scoutId && !entryRefundsFamily(e)
+                  ? (getScout(e.scoutId)
+                    ? '<span class="small muted" style="align-self:center">Paid back to ' + esc(getScout(e.scoutId).name) + '</span>'
+                    : '')
+                  // T1 — any other money out can be a refund of a family's credit.
+                  : '<select data-ch="led-scout" data-id="' + e.id + '" aria-label="Refunded to which family">' +
+                    scoutSelectOptions(e.scoutId, '— not a refund to a family —') + '</select>')) +
             '</div>'
           : '') +
         '</div>';
@@ -14781,8 +14837,11 @@
     if (open) {
       h += '<div class="rsvp-list">';
       if (a.credit) {
+        // T1 — the refund is recorded AGAINST the family, or the credit outlives the cheque and
+        // comes forward at close-out as a second repayment.
         h += '<p class="small muted" style="margin:4px 0 6px">This family has paid ' + fmt(a.credit) +
-          ' more than it owes. It settles their next charge automatically; refund it only if they ask, and record the refund as money out.</p>';
+          ' more than it owes. It settles their next charge automatically; refund it only if they ask, and record the refund ' +
+          'here so it comes off their account.</p>';
       }
       f.charges.forEach(function (c) {
         var line = getBudgetLine(c.lineId);
@@ -14815,6 +14874,9 @@
       h += '</div>' +
         '<div class="row no-print" style="margin-top:8px">' +
         '<button type="button" class="btn small primary" data-act="charge-pay" data-scout="' + esc(payTo) + '">Record a payment…</button>' +
+        (a.credit
+          ? '<button type="button" class="btn small" data-act="charge-refund" data-scout="' + esc(payTo) + '">Record a refund…</button>'
+          : '') +
         '</div>';
     }
     return h + '</div></div>';
@@ -14856,6 +14918,7 @@
     // M5 — make-up money is not in Received: it bought a tier, and the tier's waiver is what
     // settled the fee. Said here so the ledger and this card can still be reconciled by eye.
     if (t.carried) settled.push('<span class="pill navy">Carried forward</span> <strong class="money">' + fmt(t.carried) + '</strong> is credit families had at the end of last year — it settles their charges, and is already in the carryover, so it is not counted under Received');
+    if (t.refunded) settled.push('<span class="pill navy">Refunded</span> <strong class="money">' + fmt(t.refunded) + '</strong> was handed back to families who had paid ahead — it left the bank, so it comes off what families paid');
     if (t.makeup) settled.push('<span class="pill navy">Tier make-up</span> <strong class="money">' + fmt(t.makeup) + '</strong> came in from families paying the difference to reach a reward tier — it is in the bank, and the tier waives the fee, so it is not counted again under Received');
     if (settled.length) {
       h += '<hr class="divider">' + settled.map(function (l) { return '<p class="small" style="margin:6px 0 0">' + l + '.</p>'; }).join('');
@@ -20520,6 +20583,22 @@
       gotoNav('money', 'ledger');
       return;
     }
+    // T1 — a family's credit handed back: money OUT carrying the family (source 'refund'), so it
+    // comes off their account rather than outliving the cheque.
+    if (act === 'charge-refund') {
+      var rfSid = el.dataset.scout;
+      var rfScout = getScout(rfSid);
+      var rfAcct = familyAccountsNow().find(function (a) { return a.scoutIds.indexOf(rfSid) !== -1; });
+      ui.ledgerDraft = ledgerDraftDefault();
+      ui.ledgerDraft.direction = 'out';
+      ui.ledgerDraft.scoutId = rfSid;
+      ui.ledgerDraft.description = rfScout ? (rfScout.name + ' — refund of credit') : 'Refund of credit';
+      ui.ledgerDraft.amount = dollars(rfAcct ? rfAcct.credit : 0);
+      ui.ledgerView = 'entries';
+      ui.ledgerFilter = { dir: '', lineId: '', text: '' };
+      gotoNav('money', 'ledger');
+      return;
+    }
     if (act === 'adv-toggle') { ui.advOpen[el.dataset.id] = !ui.advOpen[el.dataset.id]; render(); return; }
     if (act === 'adv-cycle') {
       var aKind = el.dataset.kind;
@@ -20684,11 +20763,12 @@
         id: uid(), date: dr.date, description: dr.description.trim(),
         amountCents: amt, direction: dr.direction === 'in' ? 'in' : 'out',
         lineId: dr.lineId, method: dr.method, ref: dr.ref.trim(),
-        source: dr.direction === 'in' ? dr.source : '',
+        // T1 — money out carrying a family is a refund of their money, and says so.
+        source: dr.direction === 'in' ? dr.source : (dr.scoutId ? 'refund' : ''),
         donor: (dr.direction === 'in' && dr.source === 'donation') ? dr.donor.trim() : '',
         // Phase 3b — a payment carries the scout whose account it settles. Set from the
-        // Dues screen, or picked here.
-        scoutId: dr.direction === 'in' ? dr.scoutId : '', reconciled: false
+        // Dues screen, or picked here. T1 — a refund carries the family it went back to.
+        scoutId: dr.scoutId, reconciled: false
       });
       // Keep the date and direction — a treasurer posting a stack of receipts is nearly
       // always entering several from the same day, the same way.
@@ -20888,7 +20968,9 @@
         description: 'Reimbursed ' + (rbS.name || 'a scout') + ' \u2014 ' + (rbLine.name || 'council fee') +
           ' (reward tier)',
         amountCents: rbCents, direction: 'out', lineId: rbLine.id, method: '', ref: '',
-        source: '', donor: '', scoutId: rbS.id, reconciled: false
+        source: '', donor: '', scoutId: rbS.id, reconciled: false,
+        // T1 — says what it is, so it can never be read as a refund of the family's credit.
+        reimbursement: true
       });
       showToast(fmt(rbCents) + ' recorded \u2014 add the council receipt number to the entry in the ledger.');
       commit(); return;
@@ -21531,7 +21613,8 @@
     if (ch.indexOf('ledn-') === 0) {
       var nd = ledgerDraft();
       var nk = ch.slice(5);
-      if (nk === 'dir') { nd.direction = el.value === 'in' ? 'in' : 'out'; render(); return; }
+      // T1 — the payer of money in is not the family refunded by money out: flipping clears it.
+      if (nk === 'dir') { nd.direction = el.value === 'in' ? 'in' : 'out'; nd.scoutId = ''; render(); return; }
       if (nk === 'source') { nd.source = el.value; render(); return; }
       if (nk === 'scout') { nd.scoutId = el.value; return; }
       if (nk === 'date') nd.date = el.value;
@@ -21570,9 +21653,15 @@
       // adding the council receipt number — which the reimburse toast asks for — un-paid the
       // family and put the Reimburse button back. Only flipping the direction clears it now,
       // because the payer of money in is not the payee of money out.
+      //
+      // T1 — and a money-out entry can carry a family as a REFUND of their credit (source
+      // 'refund'). Picking the family is what makes it one; clearing it makes it plain money out.
+      // A reimbursement keeps its scout and no source, exactly as M6 left it.
+      if (lk === 'dir') { led.scoutId = ''; led.reimbursement = false; if (led.direction !== 'in' || led.source === 'refund') led.source = ''; }
       if (led.direction !== 'in') {
-        led.source = ''; led.donor = '';
-        if (lk === 'dir') led.scoutId = '';
+        led.donor = '';
+        if (lk === 'scout') led.source = led.scoutId ? 'refund' : '';
+        else if (led.source !== 'refund') led.source = '';
       }
       if (led.source !== 'donation') led.donor = '';
       commit(); return;
