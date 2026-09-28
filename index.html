@@ -8400,6 +8400,12 @@
   // on immediately shows a usable link.
   function writeJoinConfig(patch, toast) {
     if (!isAdmin() || !sync.mods || !sync.db || !sync.docId) return;
+    // ⚠ NOT BEFORE THE SERVER HAS ANSWERED (final review, 2026-09-28). The write is WHOLE — every
+    // field not in `patch` is copied from sync.joinCfg — so a tick made while joinCfg is still
+    // null, or a stale cached copy, would write the defaults back over the pack's real choices:
+    // standings and amounts switched back on, the contact line blanked, the code re-minted. The
+    // card renders its inputs disabled until then (renderJoinCard); this is the backstop.
+    if (!sync.joinLoaded) return;
     var cur = sync.joinCfg || {};
     var curCode = (typeof cur.code === 'string' && JOIN_CODE_RE.test(cur.code)) ? cur.code : '';
     var next = {
@@ -14491,10 +14497,16 @@
         '(SETUP guide, Part C) — publish them to hand parents a self-serve link.</p></div>';
     }
     var open = joinOpen();
+    // Every input waits for the server's copy of the settings — see writeJoinConfig for why a
+    // change made before then would overwrite them.
+    var dis = sync.joinLoaded ? '' : ' disabled';
+    if (!sync.joinLoaded) {
+      h += '<p class="small muted" role="status" style="margin:0 0 8px">Loading the pack\u2019s current settings\u2026</p>';
+    }
     h += '<p class="small muted" style="margin:0 0 8px">One link you can send to everyone — leaders and families ' +
       'alike. They tap <strong>Sign in with Google</strong>, land in your approval queue, and you pick their ' +
       'access level when you accept them. No passphrase, ever.</p>' +
-      '<label class="join-opt"><input type="checkbox" data-ch="join-open"' + (open ? ' checked' : '') + '>' +
+      '<label class="join-opt"><input type="checkbox" data-ch="join-open"' + (open ? ' checked' : '') + dis + '>' +
       '<span>Let people request access with a link</span></label>';
     if (open) {
       var url = joinLinkUrl();
@@ -14513,7 +14525,7 @@
         'Invite people by email in the Members card instead.</p>';
     }
     h += '<hr class="divider">' +
-      '<label class="join-opt"><input type="checkbox" data-ch="join-standings"' + (standingsEnabled() ? ' checked' : '') + '>' +
+      '<label class="join-opt"><input type="checkbox" data-ch="join-standings"' + (standingsEnabled() ? ' checked' : '') + dis + '>' +
       '<span>Include scout standings in the parent view</span></label>' +
       // Says exactly what goes and what stays (security review, 2026-09). "The reward tiers" read as
       // though every tier figure disappeared, when the year's cost still shows what each tier takes
@@ -14524,7 +14536,7 @@
       'The calendar, the year’s cost for each den (with what each tier takes off it) and the camping pages still show.</p>';
     if (standingsEnabled()) {
       h += '<label class="join-opt" style="margin-top:10px"><input type="checkbox" data-ch="join-amounts"' +
-        (amountsEnabled() ? ' checked' : '') + '>' +
+        (amountsEnabled() ? ' checked' : '') + dis + '>' +
         '<span>Show dollar amounts and rank on the standings</span></label>' +
         // Says what the bar still shows (2026-09-28): the reward level each scout holds, and a bar
         // rounded DOWN to a tenth — not "their progress", which read as the exact figure it was.
@@ -14537,7 +14549,7 @@
     // Saved on change (blur), like every other text field, so it is one write rather than one per key.
     h += '<hr class="divider">' +
       '<label class="fld" style="display:block">Who families should ask' +
-      '<input data-ch="join-contact" maxlength="160" style="width:100%" value="' + esc(parentContactLine()) + '"' +
+      '<input data-ch="join-contact" maxlength="160" style="width:100%" value="' + esc(parentContactLine()) + '"' + dis +
       ' placeholder="e.g. Membership chair — pack569@example.com"></label>' +
       '<p class="small muted" style="margin:4px 0 0">Shown at the foot of the parent view, to <strong>every approved ' +
       'family</strong>. Use a role and the pack’s email address — not a personal phone number or home address. ' +

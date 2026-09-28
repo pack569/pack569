@@ -9881,6 +9881,42 @@ test('S2: the copied and printed standings honour the pack’s two sharing switc
     'the sheet does not say why its table is missing or short');
 });
 
+test('S4: the sharing settings cannot be written before the pack’s own copy has loaded', () => {
+  // writeJoinConfig writes the WHOLE doc from sync.joinCfg, so a tick made while that is still
+  // null would put standings and amounts back on and blank the contact line.
+  const run = (loaded) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`
+      var FIREBASE_CONFIG = {}, WRITES = [];
+      var sync = { user: {}, joinLoaded: ${loaded}, joinCfg: ${loaded ? "{ open: true, code: 'abc', showStandings: false, showAmounts: false, contact: 'Chair' }" : 'null'},
+        mods: { fs: { doc: function () { return {}; }, serverTimestamp: function () { return 0; },
+          setDoc: function (ref, data) { WRITES.push(data); return { then: function () { return { catch: function () {} }; } }; } } },
+        db: {}, docId: 'p' };
+      function isAdmin() { return true; }
+      function render() {} function scheduleParentViewRefresh() {} function showToast() {}
+      function accountsToast() {} function joinLinkUrl() { return 'https://x/?join=abc'; }
+      function dangerBtn(k, l) { return '<button data-act="' + k + '">' + l + '</button>'; }
+      ${['esc', 'JOIN_CODE_RE', 'newJoinCode', 'joinOpen', 'standingsEnabled', 'amountsEnabled',
+         'cleanContactLine', 'parentContactLine', 'writeJoinConfig', 'renderJoinCard'].map(slice).join('\n')}`, ctx);
+    return ctx;
+  };
+  const early = run(false);
+  early.writeJoinConfig({ showStandings: true });
+  eq(early.WRITES.length, 0, 'a change was written before the settings loaded');
+  const card = early.renderJoinCard();
+  ['join-open', 'join-standings', 'join-amounts', 'join-contact'].forEach((k) => {
+    const m = new RegExp(`<input[^>]*data-ch="${k}"[^>]*>`).exec(card);
+    ok(m && / disabled/.test(m[0]), `${k} is live before the settings loaded`);
+  });
+  ok(/Loading the pack’s current settings/.test(card), 'the card does not say it is waiting');
+  const ready = run(true);
+  ready.writeJoinConfig({ showStandings: true });
+  eq(ready.WRITES.length, 1, 'a loaded card cannot save');
+  eq(ready.WRITES[0].showAmounts, false, 'the untouched switch was not carried over');
+  eq(ready.WRITES[0].contact, 'Chair', 'the untouched contact line was not carried over');
+  ok(!/ disabled/.test(ready.renderJoinCard()), 'a loaded card is still disabled');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
