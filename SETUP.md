@@ -244,9 +244,12 @@ on by default, so a pack that never touches this behaves exactly as before.
 
 1. **Build → Authentication → Sign-in method → Add new provider → Google → Enable → Save.**
 2. Set a support email if prompted.
-3. **Authentication → Settings → Authorized domains** — make sure the domain you serve the
-   page from is listed (for GitHub Pages that's `<your-user>.github.io`; `localhost` is
-   already allowed for testing).
+3. **Authentication → Settings → Authorized domains** — make sure every domain you serve the
+   page from is listed. For pack569.com on Cloudflare Pages that's `pack569.com`,
+   `www.pack569.com` and `pack569.pages.dev` (see
+   [docs/cloudflare-setup.md](docs/cloudflare-setup.md)); `localhost` is already allowed for
+   testing. A preview link on `pages.dev` is device-only and never signs in, so it needs no
+   entry.
 
 **Anonymous sign-in: on for passphrase mode, OFF once you're in single-pack mode.** In
 passphrase mode the app signs devices in anonymously so leaders who haven't signed in with
@@ -605,7 +608,11 @@ var PACK_DOC_ID = null;                 // before
 var PACK_DOC_ID = '3f8a…64 hex chars';  // after
 ```
 
-Redeploy the page (for GitHub Pages: commit and push). That's the whole change.
+Redeploy the page. On Cloudflare Pages that means committing to `main`, then **Actions →
+website → Run workflow** from `main` with `production`, and approving it
+([docs/cloudflare-setup.md](docs/cloudflare-setup.md)); pushing alone changes nothing live.
+(While the site is still on GitHub Pages, the push to `main` is the deploy.) That's the whole
+change.
 
 Just below it, `PACK_PUBLIC_NAME` is what the sign-in screen calls the pack before anyone
 signs in (it can't read the pack's own name until then). It ships as `'Cub Scout Pack 569'`;
