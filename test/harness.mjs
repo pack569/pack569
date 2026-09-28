@@ -9221,6 +9221,12 @@ test('P1: a Trail’s End import keeps the day each online/wagon order was taken
   eq(ctx.teSaleDateISO('2026-10-01T12:00:00'), '2026-10-01', 'ISO text');
   eq(ctx.teSaleDateISO('46279'), '2026-09-14', 'Excel serial');
   eq(ctx.teSaleDateISO('soon'), '', 'unreadable');
+  // K3 — a day the month does not have is undated, not a string that compares like a date.
+  eq(ctx.teSaleDateISO('2/31/2026'), '', '2/31');
+  eq(ctx.teSaleDateISO('2026-04-31'), '', 'April 31st, ISO');
+  eq(ctx.teSaleDateISO('2/29/2027'), '', 'Feb 29 in a common year');
+  eq(ctx.teSaleDateISO('2/29/2028'), '2028-02-29', 'Feb 29 in a leap year');
+  eq(ctx.teSaleDateISO('12/31/2026'), '2026-12-31', 'the last day of a month');
   const hdr = { headerRow: 0, col: { 'Order Number': 0, 'Scout': 1, 'Sale Type': 2, 'Total Order Amount': 3, 'Date Taken': 4 } };
   const rows = [[],
     ['1', 'Ada', 'Online', '100.00', '9/14/2026'],

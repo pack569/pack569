@@ -19262,6 +19262,13 @@
       y = dt.getUTCFullYear(); mo = dt.getUTCMonth() + 1; d = dt.getUTCDate();
     } else return '';
     if (!(y >= 2000 && y <= 2100 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31)) return '';
+    // K3 (final review, 2026-09-28) — a day the month does not have (2/31, 4/31, 2/29/2027) is
+    // not a date. It used to pass the 1–31 check and go out as '2026-02-31', which sorts and
+    // compares as text against a tier deadline as though it were real. Round-trip it through
+    // Date.UTC: an impossible day rolls into the next month, so it no longer matches, and the
+    // sale is undated — the caller's own path for that (today, with a warning).
+    var rt = new Date(Date.UTC(y, mo - 1, d));
+    if (rt.getUTCFullYear() !== y || rt.getUTCMonth() !== mo - 1 || rt.getUTCDate() !== d) return '';
     return y + '-' + (mo < 10 ? '0' : '') + mo + '-' + (d < 10 ? '0' : '') + d;
   }
   // Sales transactions → archive object (channel totals, per-scout, per-location).
