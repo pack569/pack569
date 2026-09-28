@@ -2934,6 +2934,9 @@
     { key: 'skits', label: 'Den skits / demos' },
     { key: 'recognition', label: 'Recognition' },
     { key: 'minute', label: 'Cubmaster\u2019s Minute' },
+    // Cubmaster review: dates, sign-ups and reminders get their own slot before Closing, so they
+    // stop being squeezed into the Minute. Optional — not one of PACK_AGENDA_NEEDED.
+    { key: 'announcements', label: 'Announcements' },
     { key: 'closing', label: 'Closing' }
   ];
   // Wave 14/15: a fresh inventory is a generic blank — no pre-seeded order. The standard
@@ -12219,7 +12222,7 @@
     return out;
   }
   /* ----- The pack meeting agenda (Wave A, 2026-09-28) -------------------------------------
-     The Cubmaster's ask: a pack meeting has a standard shape, so give it one. Seven sections,
+     The Cubmaster's ask: a pack meeting has a standard shape, so give it one. Eight sections,
      each with an optional WHO and NOTES, stored on the pack meeting as
          ev.agenda = { opening: { who, notes }, … }      (only sections with something in them)
      A sparse object keyed by section, not a list, so the order and the labels live here and a
@@ -12240,7 +12243,7 @@
      "finished but not recorded" do not count: nobody has confirmed them yet, so there is
      nothing to hand over until someone records them (Cubmaster review). Any note text on the meeting used to be enough, which
      said a meeting was planned because somebody wrote "bring a chair". */
-  // PACK_AGENDA — the seven sections — is declared further up, above `var state = load()`,
+  // PACK_AGENDA — the eight sections — is declared further up, above `var state = load()`,
   // because normalizeAgenda reads it while the pack record is being loaded.
   var PACK_AGENDA_NEEDED = ['opening', 'recognition', 'closing'];
   function packAgendaLabel(key) {
@@ -12351,7 +12354,7 @@
     }).join('');
   }
   // The agenda on a pack meeting's row: a one-line status, and the editor behind a toggle
-  // (fourteen fields are too many to show on every pack meeting on the calendar).
+  // (sixteen fields are too many to show on every pack meeting on the calendar).
   function packAgendaBlock(m) {
     var rec = packRecognition(m);
     var missing = packAgendaMissing(m.agenda, rec.readyCount);

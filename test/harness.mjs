@@ -10655,9 +10655,9 @@ test('A1: the planner is a Program section, writes only through a tagged den mee
 });
 
 // A2 — the pack meeting agenda.
-test('A2: the agenda has the seven standard sections, and a stored one keeps only what it should', () => {
+test('A2: the agenda has the eight standard sections, and a stored one keeps only what it should', () => {
   const ctx = sandbox(['PACK_AGENDA', 'normalizeAgenda']);
-  eq(ctx.PACK_AGENDA.map((s) => s.key), ['gathering', 'opening', 'welcome', 'skits', 'recognition', 'minute', 'closing'], 'sections');
+  eq(ctx.PACK_AGENDA.map((s) => s.key), ['gathering', 'opening', 'welcome', 'skits', 'recognition', 'minute', 'announcements', 'closing'], 'sections');
   eq(ctx.normalizeAgenda(null), null, 'no agenda');
   eq(ctx.normalizeAgenda([]), null, 'an array is not an agenda');
   eq(ctx.normalizeAgenda({ opening: { who: '', notes: ' ' } }), null, 'an empty section is kept');
@@ -10675,6 +10675,11 @@ test('A2: a pack meeting is planned when Opening, Recognition and Closing are', 
   eq(miss({ opening: { who: 'Wolves', notes: '' }, closing: { who: 'CM', notes: '' } }, 3), [], 'awards to present');
   eq(miss({ opening: { who: '  ', notes: '' }, recognition: { who: 'ACM', notes: '' }, closing: { who: 'CM', notes: '' } }, 0),
     ['opening'], 'whitespace counted as planned');
+  // Announcements is optional (Cubmaster review P3): planned without it, and it stands in for nothing.
+  eq(miss({ opening: { who: 'W', notes: '' }, recognition: { who: 'A', notes: '' }, closing: { who: 'C', notes: '' } }, 0), [], 'Announcements required');
+  eq(miss({ announcements: { who: 'CC', notes: 'Popcorn' } }, 0), ['opening', 'recognition', 'closing'], 'Announcements stood in for a needed section');
+  eq(JSON.parse(JSON.stringify(sandbox(['PACK_AGENDA', 'normalizeAgenda']).normalizeAgenda({ announcements: { who: '', notes: 'Popcorn due' } }))),
+    { announcements: { who: '', notes: 'Popcorn due' } }, 'a stored Announcements section is dropped on load');
   eq(miss({ gathering: { who: 'x', notes: 'y' }, welcome: { who: 'x', notes: '' } }, 0),
     ['opening', 'recognition', 'closing'], 'other sections stood in for the three');
 });
