@@ -17608,6 +17608,15 @@
     lines.push((state.packName || 'Pack') + ' Popcorn Sale — Standings');
     lines.push('As of ' + new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }));
     lines.push('');
+    // THE PACK'S TWO SHARING SWITCHES — see below. Standings OFF (security review, wave 7b) is
+    // calendar-only: the parent view then publishes no sales total, goal bar or commission, and the
+    // family digest drops its popcorn section, so this text drops every money and goal line too,
+    // not only the per-scout block. It says so in one line rather than arriving empty.
+    var txStand = standingsEnabled(), txAmt = amountsEnabled();
+    if (!txStand) {
+      lines.push('The pack is not sharing popcorn standings or totals with families.');
+      return lines.join('\n');
+    }
     lines.push('Pack total: ' + fmt(pack.sales) + ' sales + ' + fmt(pack.don) + ' donations = ' + fmt(pack.combined));
     if (pack.commission != null) {
       // ⚠ Same fix as the printed sheet: pack.pct is the STOREFRONT rate alone, so naming it over
@@ -17643,7 +17652,7 @@
     var txTiers = sortedTiers();
     var txEarned = txTiers.length ? salesOnlyTierMap(tierEarnedMap()) : {};
     function txTier(r) { return txTiers.length ? earnedTierFor(r.id, txTiers, txEarned) : null; }
-    if (standingsEnabled() && amountsEnabled()) {
+    if (txAmt) {
       lines.push('');
       lines.push('Standings — sales + online donations:');
       rankBy(rows, eligibleOf).forEach(function (r, i) {
@@ -17651,7 +17660,7 @@
         lines.push((i + 1) + '. ' + (pub[r.id] || '') + (et ? ' [' + (et.name || 'Tier') + ']' : '') +
           ' — ' + fmt(eligibleOf(r)) + ' (' + fmt(r.t.sales) + ' sales, ' + fmt(r.t.onD) + ' online donations)');
       });
-    } else if (standingsEnabled()) {
+    } else {
       lines.push('');
       lines.push(txTiers.length ? 'Scouts, by name — reward level reached:' : 'Scouts, by name:');
       rows.slice().sort(function (a, b) { return String(pub[a.id] || '').localeCompare(String(pub[b.id] || '')); })
@@ -17849,8 +17858,10 @@
           : !sumAmt
             ? '<p class="small no-print" style="margin:0 0 14px"><strong>Dollar amounts and rank are off for families</strong> ' +
               '(Pack · Sharing), so scouts are listed by name with the reward level each has reached.</p>'
-            : '') +
-        '<div class="row" style="margin-bottom:14px">' +
+            : '');
+      // Standings OFF drops the whole money half of the sheet — the stat row, the rate split, every
+      // goal bar and the cash line — as summaryText does (wave 7b). The note above stays.
+      if (sumStand) h += '<div class="row" style="margin-bottom:14px">' +
         // Wave 21 — same two buckets as the Standings card, so the shared sheet and the
         // screen can't tell different stories.
         '<div class="stat"><span class="v money">' + fmt(pack.teEligible) + '</span><span class="l">Trail’s End</span></div>' +
@@ -17928,9 +17939,11 @@
           });
         h += '</tbody></table></div>';
       }
-      h += '<p class="small" style="margin:14px 0 0">Cash donations at storefront tables and wagons, all scouts: ' +
-        '<strong class="money">' + fmt(pack.cashDon) + '</strong></p>' +
-        '</div></div></div>';
+      if (sumStand) {
+        h += '<p class="small" style="margin:14px 0 0">Cash donations at storefront tables and wagons, all scouts: ' +
+          '<strong class="money">' + fmt(pack.cashDon) + '</strong></p>';
+      }
+      h += '</div></div></div>';
       return h;
     }
     if (o.kind === 'shop') {

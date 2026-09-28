@@ -9937,7 +9937,9 @@ test('S2: the copied and printed standings honour the pack’s two sharing switc
   ok(/Beckett H\. \[Gold\]/.test(full), 'a tier sold to is missing from the full copy');
   const off = make(false, true);
   ok(!/Ada|Beckett|Standings —/.test(off), 'standings off still lists scouts in the copied text');
-  ok(/Pack total: \$600\.00/.test(off), 'standings off dropped the pack totals too');
+  // Wave 7b — and no money or goal line at all: standings off is calendar-only.
+  ok(!/\$|Pack total|commission|goal|Cash donations/i.test(off), 'standings off still publishes pack money in the copied text');
+  ok(/not sharing popcorn standings or totals/.test(off), 'standings off does not say why the copy is empty');
   const noAmt = make(true, false);
   ok(/Scouts, by name — reward level reached:\n- Ada — Bronze\n- Beckett H\. — Gold\n- Beckett Z\.\n/.test(noAmt),
     'amounts off is not public name + tier, alphabetically');
@@ -10253,6 +10255,20 @@ test('7b-1: an amounts-off bar never pins a scout near a notch into a narrow ban
   eq(coarseBarPct(30.9, 0, 31), 21, 'the third of three bands under 31');
   eq(coarseBarPct(100, 39, 100), 100, 'the top of the ladder is a full bar');
   eq(coarseBarPct(null, 0, 100), null, 'no figure');
+});
+
+test('7b-2: with standings off, the printed summary carries no pack money or goal bar', () => {
+  const sheet = /if \(o\.kind === 'summary'\) \{[\s\S]*?\n      return h;/.exec(SCRIPT)[0];
+  const money = sheet.indexOf("if (sumStand) h += '<div class=\"row\" style=\"margin-bottom:14px\">'");
+  ok(money !== -1, 'the stat row is not behind the standings switch');
+  // Everything from the stat row to the per-scout tables is one guarded expression.
+  const block = sheet.slice(money, sheet.indexOf('if (sumStand && sumAmt) {'));
+  ['Trail’s End', 'Pack commission', 'Total to the pack', 'Trail’s End goal', 'Stretch goal', 'Cash donations goal'].forEach((w) =>
+    ok(block.indexOf(w) !== -1, `${w} is not inside the guarded block`));
+  ok(!/;\s*\n\s*'/.test(block.slice(0, block.lastIndexOf("'';"))), 'the guarded block ends early, leaving money outside it');
+  ok(/if \(sumStand\) \{\s*h \+= '<p class="small" style="margin:14px 0 0">Cash donations at storefront tables/.test(sheet),
+    'the cash donations line prints with standings off');
+  ok(/Scout standings are off for families/.test(sheet), 'the on-screen note is gone');
 });
 
 /* ---------------- report ---------------- */
