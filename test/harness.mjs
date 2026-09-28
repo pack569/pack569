@@ -2405,7 +2405,7 @@ test('one handler set serves every budget line, not parallel act-/exp- families'
    ================================================================ */
 
 const CHARGE_FNS = ['CHARGE_WHO', 'centsOf', 'chargeKey', 'chargeRowsFor', 'chargeIsOpen',
-  'entryPaysCharges', 'entryRefundsFamily', 'paymentsForScout', 'familyAccounts', 'familyOutstanding', 'chargeTotals'];
+  'entryPaysCharges', 'entryRefundsFamily', 'paymentsForScout', 'familyAccounts', 'familyOutstanding', 'chargeSetTotals', 'chargeTotals'];
 
 function line3b(patch) {
   return Object.assign({
@@ -2724,7 +2724,7 @@ test('Phase 4: a family-funded event counts as income before anyone has attended
   // raise money it was never going to spend.
   const fn = /function fundingSummary\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'fundingSummary() not found');
-  ok(/rows\.length \? chargeTotals\(rows, state\.ledger\)\.standing : lineFamilyPlanned\(l\)/.test(fn[0]),
+  ok(/rows\.length \? chargeSetTotals\(rows\)\.standing : lineFamilyPlanned\(l\)/.test(fn[0]),
     'a family-funded line with no charges yet contributes nothing to income');
   // ...and the fallback is what FAMILIES would be billed, not the whole planned cost: a leader's
   // place is in linePlanned and no family is ever billed for one.
@@ -8750,6 +8750,20 @@ test('T6: a part-paid commission says how much is still expected from the counci
   const bit = card.slice(at, at + 900);
   ok(/bud\.commissionEstimate > bud\.commission\s*\? ' — ' \+ fmt\(bud\.commissionEstimate - bud\.commission\) \+ ' still expected from the council'/.test(bit),
     'a part-payment does not say what is still to come');
+});
+
+test('T7: chargeTotals is only ever asked about the whole book; a subset uses chargeSetTotals', () => {
+  // Handed one line's charges, chargeTotals counted every payment in the ledger as paid for that
+  // line and each touched family's whole balance as owed on it.
+  const calls = codeOnly(SCRIPT).match(/chargeTotals\([^)]*\)/g) || [];
+  const bad = calls.filter((c) => !/^chargeTotals\((state\.charges, state\.ledger, chargeFamilyKey|charges, ledger, keyOf)\)$/.test(c));
+  eq(bad, [], 'chargeTotals called on something other than state.charges');
+  const { chargeSetTotals } = sandbox(CHARGE_FNS);
+  eq(chargeSetTotals([
+    { amountCents: 4000, waivedBy: 't', forgiven: null },
+    { amountCents: 3000, waivedBy: '', forgiven: { reason: 'x' } },
+    { amountCents: 2000, waivedBy: '', forgiven: null }
+  ]), { raised: 9000, standing: 2000, waived: 4000, forgiven: 3000 }, 'the charge-only figures');
 });
 
 test('T1: a refund source only survives on money out that names a family', () => {

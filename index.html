@@ -4728,7 +4728,7 @@
       var rows = state.charges.filter(function (c) { return c.lineId === l.id; });
       // No charges yet → fall back to what FAMILIES would be billed, which is the scout share.
       // Not linePlanned: that includes the leaders' places, and no family is billed for those.
-      var owed = rows.length ? chargeTotals(rows, state.ledger).standing : lineFamilyPlanned(l);
+      var owed = rows.length ? chargeSetTotals(rows).standing : lineFamilyPlanned(l);
       COVER_WHO.forEach(function (who) {
         if (!assumeCov[coverKeyOf(r.key, who)]) return;
         // Only what still STANDS can move onto the pack: a charge already waived by a tier left
@@ -5675,14 +5675,27 @@
   // pack chose to absorb.
   // M7 — `outstanding` is summed per FAMILY (keyOf, as familyAccounts), and `credit` is what
   // families have overpaid. Per scout, one sibling's cheque left the other "owing".
-  function chargeTotals(charges, ledger, keyOf) {
-    var t = { raised: 0, standing: 0, waived: 0, forgiven: 0, paid: 0, donated: 0, makeup: 0, carried: 0, refunded: 0, outstanding: 0, credit: 0 };
+  //
+  // Treasurer's review (T7) — FOR THE WHOLE BOOK ONLY: pass state.charges. The payment figures
+  // (paid, donated, …) are read off the whole ledger, and a family's outstanding is its whole
+  // account — so handed one line's charges, this reported every payment in the pack as paid for
+  // that line and every touched family's full balance as owed on it. What a subset can honestly
+  // say is what its charges came to and how they were settled: chargeSetTotals, below. (Which
+  // payment paid which charge is chargePaidAllocation, and it needs every charge to answer.)
+  function chargeSetTotals(charges) {
+    var t = { raised: 0, standing: 0, waived: 0, forgiven: 0 };
     charges.forEach(function (c) {
       t.raised += c.amountCents || 0;
       if (c.waivedBy) { t.waived += c.amountCents || 0; return; }
       if (c.forgiven) { t.forgiven += c.amountCents || 0; return; }
       t.standing += c.amountCents || 0;
     });
+    return t;
+  }
+  function chargeTotals(charges, ledger, keyOf) {
+    var set = chargeSetTotals(charges);
+    var t = { raised: set.raised, standing: set.standing, waived: set.waived, forgiven: set.forgiven,
+      paid: 0, donated: 0, makeup: 0, carried: 0, refunded: 0, outstanding: 0, credit: 0 };
     ledger.forEach(function (e) {
       // T1 — money handed back to a family, reported on its own: it left the bank, and it is
       // what took a credit off the account.
@@ -6395,7 +6408,7 @@
           ? 'No charges yet — record who came on the event and they raise themselves.'
           : 'No charges yet — set a scout rate and they raise from the roster.') + '</span>';
     }
-    var t = chargeTotals(rows, state.ledger);
+    var t = chargeSetTotals(rows);
     var bits = [rows.length + ' charge' + (rows.length === 1 ? '' : 's') + ' · ' + fmt(t.raised)];
     if (t.waived) bits.push(fmt(t.waived) + ' waived');
     if (t.forgiven) bits.push(fmt(t.forgiven) + ' forgiven');
@@ -14859,7 +14872,7 @@
     var many = f.members.length > 1;
     var dens = [];
     f.members.forEach(function (sc) { if (sc.den && !sc.archived && dens.indexOf(sc.den) === -1) dens.push(sc.den); });
-    var ft = chargeTotals(f.charges, state.ledger, chargeFamilyKey);
+    var ft = chargeSetTotals(f.charges);
     // Who a payment is recorded against: a child still here if there is one, since that is who a
     // treasurer looks for in the ledger's picker. Any member settles the family either way.
     var payTo = (f.active[0] || f.members[0] || { id: a.scoutIds[0] }).id;

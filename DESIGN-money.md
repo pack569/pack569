@@ -240,6 +240,13 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
 - **A part-paid commission (T6).** When the posted commission is less than sales work out to,
   the Funds in line adds "— $Y still expected from the council". Funds in still counts only what
   has arrived.
+- **Totals on part of the book (T7).** `chargeTotals` reads its payment figures off the whole
+  ledger and a family's outstanding off its whole account, so handed one line's charges it
+  reported every payment in the pack as paid for that line. Nothing displayed those figures for a
+  subset, but three callers passed one. The charge-only figures (raised, standing, waived,
+  forgiven) are now `chargeSetTotals(charges)`, which the subset callers use, and `chargeTotals`
+  is documented — and tested — as whole-book only. Per-charge payment is `chargePaidAllocation`,
+  which needs every charge to answer.
 
 ---
 
