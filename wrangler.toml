@@ -1,0 +1,18 @@
+# Pack 569 — Cloudflare Pages (Direct Upload).
+#
+# DIRECT UPLOAD, NOT GIT INTEGRATION, for two reasons:
+#   1. A Git-connected Pages project with no build command serves the repo root as it is:
+#      SETUP.md, the design docs, test/, .claude/ — everything GitHub Pages serves today.
+#      Direct Upload sends only what scripts/build-site.mjs writes to _site/ (index.html and
+#      _headers), so nothing else is ever on the site.
+#   2. A Git integration deploys on every push. Here a deploy happens only when someone runs
+#      the "website" workflow by hand (.github/workflows/website.yml), and production only
+#      from main, after the website-production reviewer approves. Merging never deploys.
+#
+# pages_build_output_dir is what `wrangler pages deploy` uploads. Never point it at the repo.
+# To build by hand:  node scripts/build-site.mjs --target preview
+# Owner setup (account, project, token, secrets, DNS): docs/cloudflare-setup.md.
+
+name = "pack569"
+pages_build_output_dir = "_site"
+compatibility_date = "2026-09-28"
