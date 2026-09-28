@@ -2456,7 +2456,8 @@
      (setTripDate), the ticks are cleared, because last year's health forms are not this year's.
      Declared up here, above `var state = load()`, because normalizeState coerces it on load.
 
-     PACK-RUN ONLY (F3, 2026-09-28): BALOO is the training for a PACK overnighter. At a council
+     PACK-RUN ONLY (F3, 2026-09-28): BALOO is the training for any overnight the pack, or a
+     Webelos / AoL den, runs itself (K1 — the den campout counts as pack-run). At a council
      family weekend the council runs the camp and each family camps with its own Scout, so the
      item is not the pack's to tick there. Each trip carries `packRun` (true = the pack organizes
      it: Fort Yargo, the den campout template, any trip a leader adds; false = the two council
@@ -2464,13 +2465,17 @@
      or the Home task. A tick already stored stays stored, so flipping the flag back restores it.
      `packRun` is leaders-only like the rest of this block; buildParentView never reads it. */
   var CAMP_READINESS = [
-    { key: 'baloo', label: 'A BALOO-trained adult is named (pack overnighters)', packRunOnly: true },
-    { key: 'weather', label: 'Hazardous Weather training is done' },
-    { key: 'twoLeaders', label: 'Two registered adult leaders, both 21 or older' },
+    { key: 'baloo', label: 'A BALOO-trained adult is on the trip (any overnight the pack or a Webelos/AoL den runs itself)', packRunOnly: true },
+    { key: 'weather', label: 'At least one adult on the trip is current in Hazardous Weather training' },
+    { key: 'twoLeaders', label: 'Two registered adult leaders, both 21 or older, with current Safeguarding Youth training' },
     { key: 'female', label: 'A registered female adult 21 or older, if girls attend' },
-    { key: 'health', label: 'Health forms (AHMR Parts A and B) collected' },
+    { key: 'health', label: 'Health forms (AHMR Parts A and B) collected for every youth and adult' },
     { key: 'emergency', label: 'Emergency contacts and the nearest hospital confirmed' },
-    { key: 'paperwork', label: 'Tour and site paperwork, as the council requires' }
+    // K2 (Camping Chair review) — was 'paperwork' ("Tour and site paperwork, as the council
+    // requires"), which named no real form. A NEW key rather than a relabel, so an old tick on
+    // the vaguer item is not silently counted as "the site is approved": normalizeReadiness
+    // drops the unknown 'paperwork' key and the leader ticks this one on purpose.
+    { key: 'site', label: 'Site is council-approved (or council-appraised) and booked' }
   ];
   // Known items, ticked ones only. Anything else a record holds is dropped.
   function normalizeReadiness(r) {

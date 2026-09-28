@@ -228,10 +228,15 @@ April".
 ### Trip readiness (Wave C2, 2026-09-28) — leaders only
 
 Each trip carries `readiness`, a map of ticked items (`CAMP_READINESS`): a BALOO-trained adult
-named (pack overnighters); Hazardous Weather training done; two registered adult leaders, both
-21+; a registered female adult 21+ if girls attend; health forms (AHMR Parts A and B)
-collected; emergency contacts and the nearest hospital confirmed; tour/site paperwork as the
-council requires.
+on the trip (any overnight the pack or a Webelos/AoL den runs itself); an adult current in
+Hazardous Weather training; two registered adult leaders, both 21+, with current Safeguarding
+Youth training; a registered female adult 21+ if girls attend; health forms (AHMR Parts A and
+B) for every youth and adult; emergency contacts and the nearest hospital confirmed; the site
+council-approved (or council-appraised) and booked (`site`).
+
+The labels are the Camping Chair's (review K2, 2026-09-28). `site` replaced an older
+`paperwork` item ("tour and site paperwork, as the council requires") as a NEW key, so a tick
+on the vaguer item is dropped by `normalizeReadiness` rather than read as "the site is approved".
 
 - **Never published.** It says which safety boxes are not yet ticked for a named weekend.
   `buildParentView` rebuilds each trip field by field and does not name it (harness scan), and

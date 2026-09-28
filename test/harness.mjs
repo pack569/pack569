@@ -11328,10 +11328,10 @@ test('C1: the family’s Next up card says when online sign-up for a campout clo
 test('C2: readiness is seven known ticks, normalized on load, and clears when the weekend moves year', () => {
   const ctx = sandbox(['CAMP_DATE_KEYS', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'CAMP_READINESS',
     'normalizeReadiness', 'tripReadinessItems', 'tripReadiness', 'setTripDate']);
-  eq(ctx.CAMP_READINESS.map((i) => i.key), ['baloo', 'weather', 'twoLeaders', 'female', 'health', 'emergency', 'paperwork'], 'items');
+  eq(ctx.CAMP_READINESS.map((i) => i.key), ['baloo', 'weather', 'twoLeaders', 'female', 'health', 'emergency', 'site'], 'items');
   const labels = ctx.CAMP_READINESS.map((i) => i.label).join(' | ');
   ['BALOO', 'Hazardous Weather', 'both 21 or older', 'female adult 21 or older, if girls attend', 'AHMR Parts A and B',
-    'nearest hospital', 'paperwork'].forEach((w) => ok(labels.includes(w), 'no readiness item for ' + w));
+    'nearest hospital', 'council-approved'].forEach((w) => ok(labels.includes(w), 'no readiness item for ' + w));
   eq(JSON.parse(JSON.stringify(ctx.normalizeReadiness({ baloo: true, health: 'yes', bogus: true, weather: false }))), { baloo: true }, 'normalize');
   eq(JSON.parse(JSON.stringify(ctx.normalizeReadiness([true]))), {}, 'an array is not a checklist');
   const rd = ctx.tripReadiness({ readiness: { baloo: true, health: true } });
@@ -11348,6 +11348,24 @@ test('C2: readiness is seven known ticks, normalized on load, and clears when th
   // A fresh trip and a loaded one both carry the key.
   ok(/readiness: \{\},/.test(slice('freshTrip')), 'a new trip has no readiness');
   ok(/t\.readiness = normalizeReadiness\(t\.readiness\);/.test(slice('normalizeState')), 'readiness is not normalized on load');
+});
+
+// K2 (Camping Chair review) — the labels say what the Guide to Safe Scouting asks, and the vague
+// "paperwork" item became a new 'site' key; an old 'paperwork' tick does not count as the site.
+test('K2: readiness labels are the Camping Chair’s, and an old paperwork tick is dropped, not carried', () => {
+  const ctx = sandbox(['CAMP_READINESS', 'normalizeReadiness', 'tripReadinessItems', 'tripReadiness']);
+  const L = {}; ctx.CAMP_READINESS.forEach((i) => { L[i.key] = i.label; });
+  eq(L.baloo, 'A BALOO-trained adult is on the trip (any overnight the pack or a Webelos/AoL den runs itself)', 'baloo');
+  eq(L.weather, 'At least one adult on the trip is current in Hazardous Weather training', 'weather');
+  eq(L.twoLeaders, 'Two registered adult leaders, both 21 or older, with current Safeguarding Youth training', 'twoLeaders');
+  eq(L.health, 'Health forms (AHMR Parts A and B) collected for every youth and adult', 'health');
+  eq(L.site, 'Site is council-approved (or council-appraised) and booked', 'site');
+  ok(!('paperwork' in L), 'the paperwork item is still on the list');
+  eq(JSON.parse(JSON.stringify(ctx.normalizeReadiness({ paperwork: true, health: true }))), { health: true }, 'an old paperwork tick survived');
+  const rd = ctx.tripReadiness({ packRun: true, readiness: { paperwork: true } });
+  eq([rd.done, rd.total], [0, 7], 'an old paperwork tick counted toward readiness');
+  // Nothing else in the app still names the old key.
+  ok(!/'paperwork'/.test(codeOnly(SCRIPT)), "something still hard-codes 'paperwork'");
 });
 
 test('C2: the readiness checklist is NEVER published, and says so on the page', () => {
@@ -11395,7 +11413,7 @@ test('C2: Home asks the Camping Chair in the 14 days before a trip while anythin
       return out;
     }`, ctx);
   const run = (trips) => { ctx.TRIPS = trips; return vm.runInContext('tasks()', ctx); };
-  const all = {}; ['baloo', 'weather', 'twoLeaders', 'female', 'health', 'emergency', 'paperwork'].forEach((k) => { all[k] = true; });
+  const all = {}; ['baloo', 'weather', 'twoLeaders', 'female', 'health', 'emergency', 'site'].forEach((k) => { all[k] = true; });
   const t1 = run([{ id: 'f', name: 'Fall', startDate: '2026-10-02', readiness: { baloo: true } }]);
   eq(t1.length, 1, 'no task four days out with six items open');
   eq([t1[0].job, t1[0].tab, t1[0].section], ['outdoors', 'camping', 'f'], 'the task goes to the wrong job or page');
@@ -11461,7 +11479,7 @@ test('F3: Home does not chase BALOO on a council weekend', () => {
       return out;
     }`, ctx);
   const run = (trips) => { ctx.TRIPS = trips; return vm.runInContext('tasks()', ctx); };
-  const six = { weather: true, twoLeaders: true, female: true, health: true, emergency: true, paperwork: true };
+  const six = { weather: true, twoLeaders: true, female: true, health: true, emergency: true, site: true };
   eq(run([{ id: 'f', name: 'Fall', packRun: false, startDate: '2026-10-02', readiness: six }]).length, 0,
     'a council weekend with everything else ticked still has a task (for BALOO)');
   const t = run([{ id: 'y', name: 'Yargo', packRun: true, startDate: '2026-10-02', readiness: six }]);
