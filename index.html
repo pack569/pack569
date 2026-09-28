@@ -4414,7 +4414,12 @@
       // the donations land in teEligible, while the goal (fundingSummary) has already counted
       // the cash goal's commission as income — so the bar's target carries the cash goal too, or
       // every cash dollar would fill a bar sized as if it weren't coming.
-      teBarGoal: teGoalNow + (viaTE ? (state.cashGoalCents || 0) : 0)
+      teBarGoal: teGoalNow + (viaTE ? (state.cashGoalCents || 0) : 0),
+      // K2 (final review, 2026-09-28) — the STRETCH bar needs the same correction, for the same
+      // reason: with cash through Trail's End every cash dollar is in teEligible, and a stretch
+      // measured without the cash goal read as reached (or "$0 to go") while the pack was still
+      // short of it by the whole cash goal. 0 when there is no stretch, like `stretch`.
+      teBarStretch: stretchNow > 0 ? stretchNow + (viaTE ? (state.cashGoalCents || 0) : 0) : 0
     };
   }
   // Normalized match key for a location. Case, punctuation and spacing drift between a
@@ -16078,11 +16083,12 @@
       // The stretch gets its own bar rather than a marker on the first one: two scales on
       // one bar is how "we're at 100%" and "we're at 76%" end up meaning the same picture.
       if (pack.stretch > 0) {
-        var stPct = Math.min(100, Math.round(pack.teEligible / pack.stretch * 100));
-        var stLeft = Math.max(0, pack.stretch - pack.teEligible);
+        // Against teBarStretch, as the bar above is against teBarGoal (K2).
+        var stPct = Math.min(100, Math.round(pack.teEligible / pack.teBarStretch * 100));
+        var stLeft = Math.max(0, pack.teBarStretch - pack.teEligible);
         h += '<p class="eyebrow" style="margin-top:12px">Stretch goal</p>' +
           '<div class="bar" role="img" aria-label="Stretch goal ' + stPct + ' percent"><div class="bar-fill" style="width:' + stPct + '%"></div></div>' +
-          '<p class="small" style="margin:6px 0 0"><strong class="money">' + fmt(pack.teEligible) + '</strong> of <span class="money">' + fmt(pack.stretch) + '</span> (' + stPct + '%)' +
+          '<p class="small" style="margin:6px 0 0"><strong class="money">' + fmt(pack.teEligible) + '</strong> of <span class="money">' + fmt(pack.teBarStretch) + '</span> (' + stPct + '%)' +
           (stLeft > 0
             ? ' · <span class="money">' + fmt(stLeft) + '</span> to go'
             : ' · <strong>reached</strong>') +
@@ -17581,8 +17587,8 @@
         (pack.teTarget != null ? ' — per-scout target ' + fmt(pack.teTarget) : ''));
     }
     if (pack.stretch > 0) {
-      lines.push('Stretch goal: ' + fmt(pack.teEligible) + ' of ' + fmt(pack.stretch) +
-        ' (' + Math.min(100, Math.round(pack.teEligible / pack.stretch * 100)) + '%)');
+      lines.push('Stretch goal: ' + fmt(pack.teEligible) + ' of ' + fmt(pack.teBarStretch) +
+        ' (' + Math.min(100, Math.round(pack.teEligible / pack.teBarStretch * 100)) + '%)');
     }
     if (pack.cashGoal > 0) {
       lines.push('Cash donations goal: ' + fmt(pack.cashKept) + ' of ' + fmt(pack.cashGoal) +
@@ -17841,11 +17847,11 @@
         // Its own bar, never a marker on the one above: two scales on one bar is how "we're at
         // 100%" and "we're at 76%" end up meaning the same picture (renderTotals, same reason).
         (pack.stretch > 0 ? (function () {
-          var sp = Math.min(100, Math.round(pack.teEligible / pack.stretch * 100));
+          var sp = Math.min(100, Math.round(pack.teEligible / pack.teBarStretch * 100));
           return '<p class="eyebrow">Stretch goal</p>' +
             '<div class="bar"><div class="bar-fill" style="width:' + sp + '%"></div></div>' +
             '<p class="small" style="margin:6px 0 ' + (pack.cashGoal > 0 ? '10' : '14') + 'px"><strong class="money">' + fmt(pack.teEligible) +
-            '</strong> of <span class="money">' + fmt(pack.stretch) + '</span> (' + sp + '%) — ' +
+            '</strong> of <span class="money">' + fmt(pack.teBarStretch) + '</span> (' + sp + '%) — ' +
             fmt(Math.max(0, pack.stretch - pack.teGoal)) + ' beyond what the budget needs</p>';
         })() : '') +
         (pack.cashGoal > 0 ? (function () {

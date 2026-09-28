@@ -3281,7 +3281,8 @@ test('the two goals get separate bars, on their own scales', () => {
   const blk = SCRIPT.slice(Math.max(0, i - 1400), i + 900);
   // teBarGoal is teGoal plus a cash goal that runs through Trail's End (P3, 2026-09).
   ok(/pack\.teEligible \/ pack\.teBarGoal/.test(blk), 'the minimum bar is not measured against the minimum');
-  ok(/pack\.teEligible \/ pack\.stretch/.test(blk), 'the stretch bar is not measured against the stretch');
+  // teBarStretch is the stretch plus the same cash goal (K2, 2026-09-28).
+  ok(/pack\.teEligible \/ pack\.teBarStretch/.test(blk), 'the stretch bar is not measured against the stretch');
   ok(/beyond what the budget needs/.test(blk), 'the stretch does not say how far past the plan it reaches');
   ok(/of <span class="money">' \+ fmt\(pack\.teBarGoal\) \+ '<\/span> needed/.test(blk),
     'the minimum bar does not say the figure is what is NEEDED');
@@ -10150,6 +10151,20 @@ test('M7: a refund or a carryover with no budget line does not keep the Home nag
   // The ledger's "No budget line" filter lists what the count counts.
   const lm = slice('ledgerMatches');
   ok(/if \(f\.dir === 'uncategorised' && !entryWantsLine\(e\)\) return false;/.test(lm), 'the filter and the count disagree');
+});
+
+test('K2: with cash through Trail’s End, the stretch bar carries the cash goal too', () => {
+  const fn = slice('computePackTotals');
+  ok(/teBarStretch: stretchNow > 0 \? stretchNow \+ \(viaTE \? \(state\.cashGoalCents \|\| 0\) : 0\) : 0/.test(fn),
+    'teBarStretch is not the stretch plus a cash goal that runs through Trail’s End');
+  // Every stretch bar, percentage and "to go" reads it — none still divides by the bare stretch.
+  ok(!/pack\.teEligible \/ pack\.stretch\b|fmt\(pack\.stretch\)|pack\.stretch - pack\.teEligible/.test(SCRIPT),
+    'a stretch figure is still measured against the stretch without the cash goal');
+  const card = SCRIPT.slice(SCRIPT.indexOf('aria-label="Stretch goal '), SCRIPT.indexOf('aria-label="Stretch goal ') + 900);
+  ok(/var stLeft = Math\.max\(0, pack\.teBarStretch - pack\.teEligible\);/.test(SCRIPT), '"to go" is not against teBarStretch');
+  ok(/Stretch goal: ' \+ fmt\(pack\.teEligible\) \+ ' of ' \+ fmt\(pack\.teBarStretch\)/.test(slice('summaryText')), 'the copied text');
+  ok(/var sp = Math\.min\(100, Math\.round\(pack\.teEligible \/ pack\.teBarStretch \* 100\)\);/.test(SCRIPT), 'the printed sheet');
+  ok(card.length > 0, 'the card');
 });
 
 /* ---------------- report ---------------- */
