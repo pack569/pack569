@@ -9413,6 +9413,27 @@ test('J3: the waiting screen says what a family can do while they wait', () => {
   ok(/ask your den leader/.test(w), 'the waiting screen gives no one to ask when approval is slow');
 });
 
+test('J4: the invite promises the standings only where they are known to be on', () => {
+  const run = (setup) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`${setup}
+      function standingsEnabled() { return !(sync.joinCfg && sync.joinCfg.showStandings === false); }
+      ${slice('joinStandingsKnownOn')}
+      ${slice('joinWhatYouSee')}`, ctx);
+    return vm.runInContext('joinWhatYouSee()', ctx);
+  };
+  const plain = 'the pack calendar and campout details';
+  eq(run('var sync = {}; function parentDoc() { return null; }'), plain, 'a signed-out visitor was promised standings');
+  eq(run('var sync = { joinCfg: { showStandings: false } }; function parentDoc() { return null; }'), plain,
+    'a calendar-only pack promised standings');
+  eq(run('var sync = {}; function parentDoc() { return { events: [] }; }'), plain,
+    'a published calendar-only view promised standings');
+  ok(/scout standings/.test(run('var sync = {}; function parentDoc() { return { standings: [] }; }')),
+    'a view that publishes standings does not say so');
+  ok(/joinWhatYouSee\(\)/.test(slice('renderJoinWelcome')), 'the welcome screen does not use the branch');
+  ok(!/and the scout standings\./.test(slice('renderJoinWelcome')), 'the welcome screen still promises standings outright');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

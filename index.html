@@ -9522,6 +9522,22 @@
     var n = (pv && pv.packName) ? String(pv.packName).trim() : '';
     return n || '';
   }
+  // What the invite promises. "The scout standings" used to be promised unconditionally, and a
+  // pack that switched them off (calendar-only) was promising families a page they would never
+  // get. Standings are named only where this device can actually KNOW they are on: the published
+  // view is already readable, or the join config has loaded (a leader's own device). A visitor
+  // holding an invite link knows neither, so they are promised only what every pack publishes.
+  function joinStandingsKnownOn() {
+    var pv = parentDoc();
+    if (pv) return Array.isArray(pv.standings);
+    if (sync.joinCfg) return standingsEnabled();
+    return false;
+  }
+  function joinWhatYouSee() {
+    return joinStandingsKnownOn()
+      ? 'the pack calendar, campout details and the scout standings'
+      : 'the pack calendar and campout details';
+  }
   function joinGateShell(title, body) {
     return '<div class="card join-gate">' +
       '<span class="join-mark" aria-hidden="true">' + FLEUR + '</span>' +
@@ -9571,7 +9587,7 @@
     }
     return joinGateShell(name || 'Pack sign-up',
       '<p class="small">You’ve been invited to follow <strong>' + who + '</strong>. ' +
-      'Sign in and you’ll see the pack calendar and the scout standings.</p>' +
+      'Sign in and you’ll see ' + joinWhatYouSee() + '.</p>' +
       '<div class="join-actions">' +
       '<button type="button" class="btn primary" data-act="sign-in-google">Sign in with Google</button>' +
       '</div>' +
