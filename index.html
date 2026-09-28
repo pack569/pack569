@@ -7477,6 +7477,11 @@
   // "Show dollar amounts and rank" (J12, 2026-09-28). On unless an admin turned it off — the
   // behaviour every pack had before the option existed.
   function amountsEnabled() { return !(sync.joinCfg && sync.joinCfg.showAmounts === false); }
+  // Can this device trust the two switches above yet? (Security review, wave 7b.) Both read "on"
+  // until the join config arrives, so with accounts in force and no server answer yet, a leader's
+  // Copy or Print of the standings would publish what the pack may have switched off. Local-only
+  // use has no config to wait for. The same flag the parent-view publish waits on (joinLoaded).
+  function sharingSettingsKnown() { return !(accountsInForce() && !sync.joinLoaded); }
   // The pack's "who to ask" line for families (J11, 2026-09-28): one line, plain text, capped so a
   // paste of a whole email cannot turn the footer into a page. Pure, so the harness can pin it.
   function cleanContactLine(v) {
@@ -17612,7 +17617,14 @@
     // calendar-only: the parent view then publishes no sales total, goal bar or commission, and the
     // family digest drops its popcorn section, so this text drops every money and goal line too,
     // not only the per-scout block. It says so in one line rather than arriving empty.
-    var txStand = standingsEnabled(), txAmt = amountsEnabled();
+    // Until the settings are known, both switches count as OFF (the backstop behind the disabled
+    // buttons — see sharingSettingsKnown), and the text says it is waiting rather than "not sharing".
+    var txKnown = sharingSettingsKnown();
+    var txStand = txKnown && standingsEnabled(), txAmt = txKnown && amountsEnabled();
+    if (!txKnown) {
+      lines.push('Loading the pack\u2019s sharing settings \u2014 copy this again in a moment.');
+      return lines.join('\n');
+    }
     if (!txStand) {
       lines.push('The pack is not sharing popcorn standings or totals with families.');
       return lines.join('\n');
@@ -17837,14 +17849,17 @@
       var sumMap = sumTiers.length ? salesOnlyTierMap(tierEarnedMap()) : {};
       var sumCovered = packCoverageByScout(sumMap);
       // The pack's sharing switches, as summaryText honours them — see there.
-      var sumStand = standingsEnabled(), sumAmt = amountsEnabled();
+      // Wave 7b — not before the settings are known: both count as off, and Copy/Print wait.
+      var sumKnown = sharingSettingsKnown();
+      var sumStand = sumKnown && standingsEnabled(), sumAmt = sumKnown && amountsEnabled();
+      var sumDis = sumKnown ? '' : ' disabled';
       // Shared, so public names and no family's cash — the same rules as summaryText().
       var sumPub = publicNameMap(state.scouts);
       var h = '<div class="overlay" role="dialog" aria-modal="true" aria-label="Share summary"><div class="overlay-inner">' +
         '<div class="row no-print" style="margin-bottom:12px">' +
         '<button type="button" class="btn" data-act="close-overlay">&larr; Back</button>' +
-        '<button type="button" class="btn" data-act="copy-summary">' + (o.copied ? 'Copied ✓' : 'Copy as text') + '</button>' +
-        '<button type="button" class="btn" data-act="print-summary">Print / Save PDF</button></div>' +
+        '<button type="button" class="btn" data-act="copy-summary"' + sumDis + '>' + (o.copied ? 'Copied ✓' : 'Copy as text') + '</button>' +
+        '<button type="button" class="btn" data-act="print-summary"' + sumDis + '>Print / Save PDF</button></div>' +
         '<div class="summary-sheet">' +
         '<div class="row" style="gap:10px;margin-bottom:2px"><span class="fleur">' + FLEUR + '</span>' +
         '<h1 style="margin:0">' + esc(state.packName || 'Pack') + ' Popcorn Sale</h1></div>' +
@@ -17852,7 +17867,9 @@
         new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) + '</p>' +
         // Says, on the sheet, why a scout's line is missing or short — so a leader who expected the
         // full table knows it is the pack's own setting, and where to change it.
-        (!sumStand
+        (!sumKnown
+          ? '<p class="small no-print" role="status" style="margin:0 0 14px">Loading the pack\u2019s sharing settings\u2026</p>'
+          : !sumStand
           ? '<p class="small no-print" style="margin:0 0 14px"><strong>Scout standings are off for families</strong> ' +
             '(Pack · Sharing), so this sheet leaves out each scout\u2019s line.</p>'
           : !sumAmt
@@ -21855,6 +21872,12 @@
     if (act === 'close-overlay') { ui.overlay = null; render(); return; }
     if (act === 'paste-ics') { ui.overlay = { kind: 'ics-paste', text: '' }; render(); return; }
     if (act === 'ics-paste-go') { submitIcsPaste(); return; }
+    // Wave 7b — the buttons are disabled until the sharing settings are known; this is the same
+    // rule where it bites, for a stale button.
+    if ((act === 'copy-summary' || act === 'print-summary') && !sharingSettingsKnown()) {
+      showToast('Loading the pack\u2019s sharing settings \u2014 try again in a moment.');
+      return;
+    }
     if (act === 'copy-summary') {
       copyText(summaryText(), function () { ui.overlay.copied = true; render(); });
       return;

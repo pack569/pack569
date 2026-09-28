@@ -8445,6 +8445,7 @@ test('the copied standings name children the way the parent view does, and nobod
     function cashScoutCredit(c) { return c; }
     function standingsEnabled() { return true; }
     function amountsEnabled() { return true; }
+    function sharingSettingsKnown() { return true; }
     ${['shortNames', 'publicNameMap', 'salesOnlyTierMap', 'summaryText', 'fmt'].map(slice).join('\n')}`, ctx);
   const txt = vm.runInContext('summaryText()', ctx);
   noSurname(txt, 'the copied standings');
@@ -9911,7 +9912,7 @@ test('S3: a rung a family paid for never shows on the published board or the sha
 });
 
 test('S2: the copied and printed standings honour the pack’s two sharing switches', () => {
-  const make = (stand, amt) => {
+  const make = (stand, amt, known) => {
     const ctx = vm.createContext({});
     vm.runInContext(PRIV_STATE + `
       function computePackTotals() {
@@ -9929,10 +9930,15 @@ test('S2: the copied and printed standings honour the pack’s two sharing switc
       function tierEarnedMap() { return { b: { s1: 'earned', s2: 'earned' }, g: { s1: 'madeUp', s2: 'earned' } }; }
       function standingsEnabled() { return ${stand}; }
       function amountsEnabled() { return ${amt}; }
+      var KNOWN = true; function sharingSettingsKnown() { return KNOWN; }
       ${['shortNames', 'publicNameMap', 'salesOnlyTierMap', 'earnedTierFor', 'summaryText', 'fmt'].map(slice).join('\n')}`, ctx);
-    return vm.runInContext('summaryText()', ctx);
+    return vm.runInContext(known === false ? 'KNOWN = false; summaryText()' : 'summaryText()', ctx);
   };
   const full = make(true, true);
+  // Wave 7b — before the sharing settings load, both switches count as off.
+  const waiting = make(true, true, false);
+  ok(!/\$|Ada|Beckett|Pack total/.test(waiting) && /Loading the pack\u2019s sharing settings/.test(waiting),
+    'the copied text publishes before the sharing settings are known');
   ok(/1\. Ada \[Bronze\] — \$310\.00/.test(full), 'the full copy lost its ranked line, or names Ada’s paid-for Gold');
   ok(/Beckett H\. \[Gold\]/.test(full), 'a tier sold to is missing from the full copy');
   const off = make(false, true);
@@ -9949,7 +9955,7 @@ test('S2: the copied and printed standings honour the pack’s two sharing switc
   ok(!/\[Gold\]|Ada — Gold/.test(noAmt), 'amounts off names Ada’s paid-for Gold');
   // The printed sheet: the same switches, and a note saying why the table is short.
   const sheet = /if \(o\.kind === 'summary'\) \{[\s\S]*?\n      return h;/.exec(SCRIPT)[0];
-  ok(/var sumStand = standingsEnabled\(\), sumAmt = amountsEnabled\(\);/.test(sheet), 'the sheet ignores the switches');
+  ok(/var sumStand = sumKnown && standingsEnabled\(\), sumAmt = sumKnown && amountsEnabled\(\);/.test(sheet), 'the sheet ignores the switches');
   ok(/if \(sumStand && sumAmt\) \{/.test(sheet) && /\} else if \(sumStand\) \{/.test(sheet), 'the sheet does not branch on them');
   const alpha = sheet.slice(sheet.indexOf('} else if (sumStand) {'));
   ok(!/fmt\(|\(i \+ 1\)|rankBy/.test(alpha.slice(0, alpha.indexOf('h += \'<p class="small" style="margin:14px 0 0">'))),
@@ -10269,6 +10275,22 @@ test('7b-2: with standings off, the printed summary carries no pack money or goa
   ok(/if \(sumStand\) \{\s*h \+= '<p class="small" style="margin:14px 0 0">Cash donations at storefront tables/.test(sheet),
     'the cash donations line prints with standings off');
   ok(/Scout standings are off for families/.test(sheet), 'the on-screen note is gone');
+});
+
+test('7b-3: Copy and Print of the summary wait for the pack’s sharing settings', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`var sync = { user: {}, accountsUnavailable: false, joinLoaded: false };
+    ${['accountsInForce', 'sharingSettingsKnown'].map(slice).join('\n')}`, ctx);
+  eq(ctx.sharingSettingsKnown(), false, 'signed in, config not loaded');
+  ctx.sync.joinLoaded = true;
+  eq(ctx.sharingSettingsKnown(), true, 'config loaded');
+  ctx.sync.user = null; ctx.sync.joinLoaded = false;
+  eq(ctx.sharingSettingsKnown(), true, 'local-only use has nothing to wait for');
+  const sheet = /if \(o\.kind === 'summary'\) \{[\s\S]*?\n      return h;/.exec(SCRIPT)[0];
+  ok(/var sumStand = sumKnown && standingsEnabled\(\), sumAmt = sumKnown && amountsEnabled\(\);/.test(sheet), 'the sheet trusts unloaded switches');
+  ok(/data-act="copy-summary"' \+ sumDis/.test(sheet) && /data-act="print-summary"' \+ sumDis/.test(sheet), 'the buttons are live before load');
+  ok(/Loading the pack\\u2019s sharing settings\\u2026/.test(sheet), 'the sheet does not say it is waiting');
+  ok(/if \(\(act === 'copy-summary' \|\| act === 'print-summary'\) && !sharingSettingsKnown\(\)\)/.test(SCRIPT), 'a stale button still copies');
 });
 
 /* ---------------- report ---------------- */
