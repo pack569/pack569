@@ -319,6 +319,12 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   When the bank carried, the stat reads **Projected ending balance** and a line says "Carried
   forward: $X (bank balance)" — in the preview, the Past seasons row and sheet, and the copied
   text. An archive closed before this has neither field and reads exactly as it did.
+- **Minor (M7).** A refund to a family and a *Carryover* entry are right with no budget line, but
+  `ledgerTotals` counted them as uncategorised, so the Treasurer's Home nag "N entries have no
+  budget line" could never clear. They are left out now (`entryWantsLine`), and the ledger's
+  *No budget line* filter lists exactly what the count counts. T6's part-payment wording is now
+  "— $Y less than sales work out to; still expected from the council, or check the rate with
+  the Kernel": the gap may be a second cheque or a mistyped rate, and the app cannot tell which.
 
 ---
 

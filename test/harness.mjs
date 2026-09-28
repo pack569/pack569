@@ -843,7 +843,7 @@ test('a rung is set apart from its rows by more than a font weight', () => {
 // `state` — precisely so it can be exercised here rather than by clicking around.
 const LEDGER_FNS = ['ledgerSort', 'entrySignedCents', 'entryAfterOpening', 'ledgerBalance',
   'LEDGER_INCOME_SOURCES', 'entryIsRefund', 'entryRefundsFamily', 'lineIncomeCents', 'ledgerIncomeCents',
-  'lineActualCents', 'ledgerTotals', 'entryOnStatement', 'reconcileTotals', 'runningBalances'];
+  'lineActualCents', 'entryWantsLine', 'ledgerTotals', 'entryOnStatement', 'reconcileTotals', 'runningBalances'];
 
 function entry(o) {
   return Object.assign({ id: 'x', date: '2025-10-01', description: '', amountCents: 0,
@@ -8860,7 +8860,7 @@ test('T6: a part-paid commission says how much is still expected from the counci
   const at = card.indexOf("' as posted to the ledger'");
   ok(at !== -1, 'the posted-commission wording is gone');
   const bit = card.slice(at, at + 900);
-  ok(/bud\.commissionEstimate > bud\.commission\s*\? ' — ' \+ fmt\(bud\.commissionEstimate - bud\.commission\) \+ ' still expected from the council'/.test(bit),
+  ok(/bud\.commissionEstimate > bud\.commission\s*\? ' — ' \+ fmt\(bud\.commissionEstimate - bud\.commission\) \+ ' less than sales work out to; still expected from the council, or check the rate with the Kernel'/.test(bit),
     'a part-payment does not say what is still to come');
 });
 
@@ -10120,6 +10120,22 @@ test('M6: an archived season says what actually carried forward, and old archive
     ok(/seasonBalanceLabel\(/.test(src) && /seasonCarriedLine\(/.test(src), `${fn} does not say which balance it shows`);
     ok(!/<span class="l">Ending balance<\/span>|' · ending balance '/.test(src), `${fn} still hard-codes "Ending balance"`);
   });
+});
+
+test('M7: a refund or a carryover with no budget line does not keep the Home nag up', () => {
+  const ctx = sandbox(LEDGER_FNS);
+  const book = { openingCents: 0, openingDate: '' };
+  const L = [
+    entry({ id: '1', direction: 'out', scoutId: 'ada', source: 'refund', lineId: '', amountCents: 4000 }),
+    entry({ id: '2', direction: 'in', source: 'carryover', lineId: '', amountCents: 42000 }),
+    entry({ id: '3', direction: 'in', source: 'carryover', scoutId: 'ada', lineId: '', amountCents: 700 }),
+    entry({ id: '4', direction: 'out', source: '', lineId: '', amountCents: 1500 }),          // a real one
+    entry({ id: '5', direction: 'out', scoutId: 'ada', reimbursement: true, lineId: '', amountCents: 900 }) // still wants a line
+  ];
+  eq(ctx.ledgerTotals(L, book).uncategorised, 2, 'uncategorised');
+  // The ledger's "No budget line" filter lists what the count counts.
+  const lm = slice('ledgerMatches');
+  ok(/if \(f\.dir === 'uncategorised' && !entryWantsLine\(e\)\) return false;/.test(lm), 'the filter and the count disagree');
 });
 
 /* ---------------- report ---------------- */

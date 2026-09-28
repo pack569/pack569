@@ -6142,13 +6142,20 @@
     });
     return order.map(function (k) { return by[k]; });
   }
+  // Does this entry want a budget line? M7 (final review, 2026-09-28) — not a refund to a family
+  // (it gives back their money; it is no line's cost, T1) and not a carryover (it is the opening
+  // money, T5/M3). Both are right with no line, and counting them left the Treasurer's Home nag
+  // "N entries have no budget line" up for ever, with nothing a treasurer could do to clear it. Pure.
+  function entryWantsLine(e) {
+    return !e.lineId && !entryRefundsFamily(e) && e.source !== 'carryover';
+  }
   function ledgerTotals(ledger, book) {
     var inC = 0, outC = 0, pre = 0, unrec = 0, uncat = 0;
     ledger.forEach(function (e) {
       if (!entryAfterOpening(e, book)) { pre++; return; }
       if (e.direction === 'in') inC += (e.amountCents || 0); else outC += (e.amountCents || 0);
       if (!e.reconciled) unrec++;
-      if (!e.lineId) uncat++;
+      if (entryWantsLine(e)) uncat++;
     });
     return {
       count: ledger.length, inCents: inC, outCents: outC,
@@ -13688,8 +13695,10 @@
             ? ' — sales work out to ' + fmt(bud.commissionEstimate) +
               // T6 — a part-payment (the council often pays in two cheques) says what is still to come.
               // Funds in counts only what has arrived; this is the reminder that more should.
+              // M7 — "still expected" assumed the shortfall was a second cheque. It may equally be
+              // a rate typed wrong, which only the Kernel can check against the council's sheet.
               (bud.commissionEstimate > bud.commission
-                ? ' — ' + fmt(bud.commissionEstimate - bud.commission) + ' still expected from the council' : '')
+                ? ' — ' + fmt(bud.commissionEstimate - bud.commission) + ' less than sales work out to; still expected from the council, or check the rate with the Kernel' : '')
             : '')
           : (bud.commissionKnown ? ' worked out from sales until the council’s payment is posted to the ledger' : ' — set a rate in Season setup above')) + ')' +
       // M2 (final review, 2026-09-28) — EVERY TERM THAT MOVES FUNDS IN IS PRINTED, WITH ITS SIGN,
@@ -14134,7 +14143,8 @@
     if (f.dir === 'in' && e.direction !== 'in') return false;
     if (f.dir === 'out' && e.direction !== 'out') return false;
     if (f.dir === 'unreconciled' && e.reconciled) return false;
-    if (f.dir === 'uncategorised' && e.lineId) return false;
+    // The filter shows what the count counts (entryWantsLine), so the nag's number matches the list.
+    if (f.dir === 'uncategorised' && !entryWantsLine(e)) return false;
     if (f.lineId && e.lineId !== f.lineId) return false;
     var q = String(f.text || '').trim().toLowerCase();
     if (q) {
