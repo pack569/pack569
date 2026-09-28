@@ -2267,7 +2267,7 @@
   //
   // To refresh again next year: edit the seed, bump CAMP_SEED_REV, and add the hashes of the
   // text being replaced here. A trip or section the leader renamed simply is not matched.
-  var CAMP_SEED_REV = 3;
+  var CAMP_SEED_REV = 4;
   var CAMP_OLD_SEED = {
     // rev 1, 2026-09-26: the fall weekend is the Apalachee District's (2 – 4 Oct 2026), not the
     // 2025 mid-October one; spring gains the 2027-not-posted note and the council's own rules.
@@ -2281,6 +2281,9 @@
     // exceptional-circumstances arrangement is Wolf and up and one outside youth per adult, and
     // BALOO is required for a pack overnighter (not "for a pack to camp", which read as if every
     // family at a council weekend needed it). '32mg1p' is the rev 2 text, on all three trips.
+    // rev 4, 2026-09-28 (Wave C1): no text changes — the structured dates (startDate, endDate,
+    // registrationDeadline) are FILLED into seeded trips that have none, and only while the trip's
+    // `when` is still the seed's own words (see refreshCampingSeed). Nothing to hash.
     'Fall Family Camping': {
       fields: { when: ['9odju1'], arrive: ['ita6dt'], depart: ['qr7nm'], cost: ['xafznd', 'ci8n6h'],
         url: ['1l0iaoa'], intro: ['1b0kg44', '1j8pyxs'] },
@@ -2327,18 +2330,27 @@
     seedCampingTrips().forEach(function (t) { now[t.name] = t; });
     camping.trips.forEach(function (t) {
       var old = CAMP_OLD_SEED[t.name], cur = now[t.name];
-      if (!old || !cur) return;
-      Object.keys(old.fields).forEach(function (k) {
-        if (old.fields[k].indexOf(campHash(t[k])) !== -1) t[k] = cur[k];
-      });
-      t.sections.forEach(function (s) {
-        var o = Object.prototype.hasOwnProperty.call(old.sections, s.title) ? old.sections[s.title] : null;
-        if (!o || o.h.indexOf(campHash(s.body)) === -1) return;
-        var to = o.to || s.title;
-        var n = cur.sections.filter(function (x) { return x.title === to; })[0];
-        // The section keeps its own id — it is the same section, with this year's words in it.
-        if (n) { s.title = n.title; s.body = n.body; }
-      });
+      if (!cur) return;
+      if (old) {
+        Object.keys(old.fields).forEach(function (k) {
+          if (old.fields[k].indexOf(campHash(t[k])) !== -1) t[k] = cur[k];
+        });
+        t.sections.forEach(function (s) {
+          var o = Object.prototype.hasOwnProperty.call(old.sections, s.title) ? old.sections[s.title] : null;
+          if (!o || o.h.indexOf(campHash(s.body)) === -1) return;
+          var to = o.to || s.title;
+          var n = cur.sections.filter(function (x) { return x.title === to; })[0];
+          // The section keeps its own id — it is the same section, with this year's words in it.
+          if (n) { s.title = n.title; s.body = n.body; }
+        });
+      }
+      // Wave C1 — the structured dates. Only into an EMPTY date, and only while `when` still says
+      // what the seed says: a leader who has retyped the dates in words has moved the trip, and the
+      // seed's ISO dates would then contradict the page. (`when` was refreshed just above, so a trip
+      // still on an older seed's words gets this year's words and this year's dates together.)
+      if (t.when === cur.when) {
+        CAMP_DATE_KEYS.forEach(function (k) { if (!t[k] && cur[k]) t[k] = cur[k]; });
+      }
     });
   }
   function freshTripSection(title, body) {
@@ -2352,8 +2364,60 @@
     return {
       id: uid(), name: String(name || ''),
       where: '', address: '', when: '', arrive: '', depart: '', cost: '', url: '',
+      startDate: '', endDate: '', registrationDeadline: '',
       intro: '', sections: []
     };
+  }
+  /* ----- Structured trip dates (Wave C1, 2026-09-28) --------------------------------------
+     `when` stays what it was — the words a family reads ("Early October (2026: Fri 2 Oct – Sun 4
+     Oct)"). Beside it, three optional ISO dates ('' = not set) the app can DO something with:
+       startDate, endDate          sort the trips, point a family at the next one, and tell a
+                                   leader when last year's dates are still on the page;
+       registrationDeadline        the council's ONLINE sign-up close, which the family's Next up
+                                   card shows in the 30 days before it (B2 had to skip it: reading
+                                   a date back out of the `cost` prose would be a guess).
+     PUBLISHED, all three (buildParentView) — they say nothing a parent cannot already read in
+     `when` and `cost`. Declared up here, above `var state = load()`, because normalizeState
+     coerces them while the pack record loads. */
+  var CAMP_DATE_KEYS = ['startDate', 'endDate', 'registrationDeadline'];
+  function campIsoOrBlank(v) {
+    v = String(v == null ? '' : v);
+    return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '';
+  }
+  // A trip's first and last day, each falling back on the other, so a one-night trip with only a
+  // start date still sorts and still counts as over once that day has passed.
+  function tripStartDate(t) { return campIsoOrBlank(t && t.startDate) || campIsoOrBlank(t && t.endDate); }
+  function tripEndDate(t) { return campIsoOrBlank(t && t.endDate) || campIsoOrBlank(t && t.startDate); }
+  // The trips in date order: those still ahead, or under way, soonest first; then the undated ones
+  // in the order they were added; then the ones that are over, oldest first. "Over" is judged on the
+  // LAST day, so a weekend in progress still leads. The next campout is therefore always first,
+  // which is what the leader's first tab and the family's first tab both open on. Pure — `today`
+  // is passed in so the harness can pin it. Returns a new array; the stored order is untouched.
+  function sortTripsByDate(trips, today) {
+    function band(t) { var st = tripStartDate(t); return !st ? 1 : (tripEndDate(t) >= today ? 0 : 2); }
+    return (trips || []).map(function (t, i) { return { t: t, i: i, b: band(t) }; }).sort(function (a, b) {
+      if (a.b !== b.b) return a.b - b.b;
+      if (a.b !== 1) { var c = tripStartDate(a.t).localeCompare(tripStartDate(b.t)); if (c) return c; }
+      return a.i - b.i;
+    }).map(function (x) { return x.t; });
+  }
+  // The next campout a family is heading to (or is on), or null when no trip ahead has a date.
+  function nextTrip(trips, today) {
+    return (trips || []).filter(function (t) { return tripStartDate(t) && tripEndDate(t) >= today; })
+      .sort(function (a, b) { return tripStartDate(a).localeCompare(tripStartDate(b)); })[0] || null;
+  }
+  // LEADERS ONLY. Last year's dates: the trip is over AND it ended before this program year began —
+  // the seed's April weekend once July has turned the year. A trip that simply happened earlier in
+  // THIS program year is history, not a stale page, and gets no banner.
+  function tripDatesStale(t, today, py) {
+    var end = tripEndDate(t);
+    return !!end && end < today && end < programYearStartISO(py);
+  }
+  // "Fri, Oct 2 – Sun, Oct 4" / "Sat, Mar 7" / ''. For the next-campout pointer and the banner.
+  function tripDatesLabel(t) {
+    var a = tripStartDate(t), b = tripEndDate(t);
+    if (!a) return '';
+    return a === b ? fmtDate(a) : fmtDate(a) + ' \u2013 ' + fmtDate(b);
   }
   // Shared text used by both seeded trips. Camping rules do not change between camps, and a
   // parent reading the spring page should not have to remember what the fall page said.
@@ -2431,6 +2495,11 @@
     fall.depart = 'Sunday — event ends 1:00 pm';
     fall.cost = '2026: $35 per family online through Wed 30 Sep · $45 late rate from 11:59 pm Wed 30 Sep until online registration closes Thu 1 Oct, 11:59 pm · $45 on site · card fee added online';
     fall.url = 'https://www.nega-bsa.org/APFF';
+    // Wave C1 — the same weekend as dates. The deadline is the council's ONLINE close (Thu 1 Oct,
+    // 11:59 pm); on-site registration after it is in the cost line.
+    fall.startDate = '2026-10-02';
+    fall.endDate = '2026-10-04';
+    fall.registrationDeadline = '2026-10-01';
     fall.intro = 'Our district’s own fall weekend. The Apalachee District runs it at Scoutland, and the 2026 theme is Pirates of Scoutland — a treasure hunt, trick-or-treating round the campsites, and a costume is very much expected. It is the easy one to start with: gentle ground, and a camp built for Cub Scouts. Every district runs its own fall weekend here on a different date, so make sure the registration you pick says Apalachee. Check the dates and price against the council page each year.';
     fall.sections = [
       freshTripSection('What to expect',
@@ -2543,6 +2612,12 @@
     spring.depart = 'Sunday, out by 10:00 am';
     spring.cost = '2026: $36 per family before 26 Mar · $40 by 16 Apr · $50 from 17 Apr · +3.5% online card fee · 2027 not yet posted';
     spring.url = 'https://www.nega-bsa.org/family-camp';
+    // Wave C1 — from the seed's own words: the 2026 weekend (24–26 Apr), online registration
+    // closing 20 Apr ("Before you go"). Last year's by the time most packs read it; the leader
+    // banner says so (tripDatesStale).
+    spring.startDate = '2026-04-24';
+    spring.endDate = '2026-04-26';
+    spring.registrationDeadline = '2026-04-20';
     spring.intro = 'The bigger, wilder one — a Scouts BSA summer-camp property up in the mountains, run by the council for every district at once. Spelled Rainey, not Rainy, which matters when you are searching for it. As of late September 2026 the council has not posted the 2027 dates or prices, so the figures above are April 2026’s; expect the same late-April weekend, and check the council page before you plan around them.';
     spring.sections = [
       freshTripSection('What to expect',
@@ -2643,6 +2718,10 @@
     yargo.depart = 'Sunday, out by 12 noon';
     yargo.cost = 'Campsite fee, booked through Georgia State Parks · plus $5 per vehicle per day to park, or a state parks annual pass';
     yargo.url = 'https://gastateparks.org/FortYargo';
+    // Wave C1 — the 2026 weekend the seed's `when` names. No registration deadline: the pack books
+    // the campsite, families do not register anywhere.
+    yargo.startDate = '2026-03-27';
+    yargo.endDate = '2026-03-29';
     yargo.intro = 'The pack’s own campout, and the gentlest one we do — in Winder, off GA-316, with paved roads to the site, hot showers, and a phone signal. Confirm the dates, the campsite booking and the parking with the park each year; the ones above are what we ran last spring.';
     yargo.sections = [
       freshTripSection('What to expect',
@@ -3267,6 +3346,8 @@
       ['name', 'where', 'address', 'when', 'arrive', 'depart', 'cost', 'url', 'intro'].forEach(function (k) {
         if (typeof t[k] !== 'string') t[k] = '';
       });
+      // Wave C1 — ISO or ''. Anything else a record holds is dropped rather than guessed at.
+      CAMP_DATE_KEYS.forEach(function (k) { t[k] = campIsoOrBlank(t[k]); });
       if (!Array.isArray(t.sections)) t.sections = [];
       t.sections = t.sections.filter(function (s) { return s && typeof s === 'object' && !Array.isArray(s); });
       t.sections.forEach(function (s) {
@@ -9043,7 +9124,8 @@
   //   always: pack name, program year; the season's events (storefront dates with their shift
   //   windows, meetings with time and where, activities with time, place and dens); the
   //   derby's name and date; camping trips as leaders typed them, including each trip's
-  //   cost line; `welcome` — the "New to the pack" page's sections (title, body, url) as leaders
+  //   cost line, in date order, with each trip's ISO startDate, endDate and registrationDeadline
+  //   (Wave C1); `welcome` — the "New to the pack" page's sections (title, body, url) as leaders
   //   typed them, once the page is switched on and leaving out any section that is hidden or
   //   still says "[pack to fill in"; and `familyCost` — what the year is PLANNED to cost one scout and adult in
   //   each den, line by line with its payee, and what each tier (by name and sales target)
@@ -9230,11 +9312,14 @@
       // across as typed. Rebuilt field by field (never spread) like everything else here, so a
       // key added to a trip in some later wave cannot ride along unnoticed. A trip with no
       // name and nothing written on it is skipped: a half-made tab is not news for a parent.
-      var camping = campingTrips().map(function (t) {
+      // Wave C1 — in date order (sortTripsByDate), and each trip's three ISO dates, re-checked.
+      var camping = sortTripsByDate(campingTrips(), todayISO()).map(function (t) {
         return {
           name: String(t.name || ''), where: String(t.where || ''), address: String(t.address || ''),
           when: String(t.when || ''), arrive: String(t.arrive || ''), depart: String(t.depart || ''),
           cost: String(t.cost || ''), url: String(t.url || ''), intro: String(t.intro || ''),
+          startDate: campIsoOrBlank(t.startDate), endDate: campIsoOrBlank(t.endDate),
+          registrationDeadline: campIsoOrBlank(t.registrationDeadline),
           sections: (t.sections || []).map(function (s) {
             return { title: String(s.title || ''), body: String(s.body || '') };
           }).filter(function (s) { return s.title || s.body; })
@@ -9955,7 +10040,8 @@
     if (w.dynamic !== 'camping') return w.sections;
     var trips = campingTrips();
     if (!trips.length) return [{ id: 'camp-none', label: 'Camping' }];
-    return trips.map(function (t) { return { id: t.id, label: tripTabLabel(t) }; });
+    // Wave C1 — in date order, so the first tab is the next campout.
+    return sortTripsByDate(trips, todayISO()).map(function (t) { return { id: t.id, label: tripTabLabel(t) }; });
   }
   // The remembered section for this workspace, validated — a stale id (from an alias jump,
   // or a section renamed in a later phase) falls back to the first section rather than
@@ -10058,9 +10144,12 @@
   }
   // The published campouts, or [] — the one place the parent app reads that array, so every
   // caller below agrees on what "trip 2" means.
+  // Wave C1 — re-sorted here, at render time, not just at publication: a copy published in August
+  // would otherwise still lead with a weekend that is now over. renderParentCamping sorts the same
+  // way, so "trip 2" means the same trip to the strip and to the page.
   function parentTrips() {
     var pv = parentDoc();
-    return (pv && Array.isArray(pv.camping)) ? pv.camping : [];
+    return sortTripsByDate((pv && Array.isArray(pv.camping)) ? pv.camping : [], todayISO());
   }
   // Parents get a section strip on exactly ONE tab: Camping, one sub-tab per campout, the same
   // shape the leader side has. Everywhere else it is empty and the strip hides itself, so a
@@ -10556,7 +10645,8 @@
   // has two or three of these, not twenty. Reuses campFacts/proseText, which is the point: a
   // parent and a leader are reading the identical render of the identical text.
   function renderParentCamping(pv) {
-    var trips = Array.isArray(pv.camping) ? pv.camping : [];
+    var today = todayISO();
+    var trips = sortTripsByDate(Array.isArray(pv.camping) ? pv.camping : [], today);
     if (!trips.length) {
       return '<div class="card"><h2 class="section display">Camping</h2>' +
         '<p class="small muted" style="margin:0">Nothing posted yet.</p></div>';
@@ -10565,13 +10655,24 @@
     // only appears from two trips up, so with one trip this is simply the page.
     var ti = parentCampTrip();
     var t = trips[ti] || trips[0];
-    var h = campSectionNav(t, ti);
-    h += '<div class="card"><h2 class="section display">' + esc(String(t.name || 'Campout')) + '</h2>' +
+    // Wave C1 — point the family at the next campout. The first tab already IS the next one (the
+    // trips are in date order), so on it this is a pill; on any other tab, a way back to it.
+    var nx = nextTrip(trips, today), nxAt = nx ? trips.indexOf(nx) : -1;
+    var h = '';
+    if (nx && nxAt !== trips.indexOf(t)) {
+      h += '<div class="card no-print"><div class="spread"><p class="small" style="margin:0"><strong>Next campout:</strong> ' +
+        esc(String(nx.name || 'Campout')) + ' \u00b7 ' + esc(tripDatesLabel(nx)) + '</p>' +
+        '<button type="button" class="btn small" data-act="parent-camp-trip" data-section="' + nxAt + '">Show it</button></div></div>';
+    }
+    h += campSectionNav(t, ti);
+    h += '<div class="card"><div class="spread"><h2 class="section display" style="margin-bottom:0">' + esc(String(t.name || 'Campout')) + '</h2>' +
+      (nx && nx === t ? '<span class="pill">Next campout</span>' : '') + '</div>' +
       campFacts({
         where: String(t.where || ''), address: String(t.address || ''), when: String(t.when || ''),
         arrive: String(t.arrive || ''), depart: String(t.depart || ''),
-        cost: String(t.cost || ''), url: String(t.url || '')
-      });
+        cost: String(t.cost || ''), url: String(t.url || ''),
+        registrationDeadline: campIsoOrBlank(t.registrationDeadline)
+      }, today);
     if (t.intro) h += '<div class="camp-body" style="margin-top:10px">' + proseText(t.intro) + '</div>';
     h += '</div>';
     (Array.isArray(t.sections) ? t.sections : []).forEach(function (s, si) {
@@ -10820,24 +10921,36 @@
   // that next date is shown (a den meeting and a storefront can share a Saturday), from the
   // published list only. `today` is passed in so the harness can pin it.
   //
-  // ⚠ NO CAMPOUT DEADLINE HERE, deliberately. The ask was "plus any campout registration deadline
-  // in the next 30 days from the trips' cost/deadline data" — but a published trip has no
-  // deadline FIELD: `cost` and `when` are free text a leader types ("$35 online through Wed 30
-  // Sep"), and reading a date back out of prose would be a guess presented as a fact. A
-  // structured registration-deadline field on a trip would be the way to add it (and a new
-  // published key — the security reviewer's call).
-  function parentNextUp(evs, today) {
+  // CAMPOUT DEADLINES (Wave C1): B2 left them out because a trip had no deadline FIELD — `cost`
+  // and `when` are prose, and reading a date back out of "$35 online through Wed 30 Sep" would be
+  // a guess presented as a fact. Now a trip has `registrationDeadline` (ISO, published), and a
+  // deadline in the next 30 days is a line here: "Online sign-up for <trip> closes <date>". Still
+  // never parsed from the prose (harness scan). `trips` is the published camping list.
+  function parentNextUp(evs, today, trips) {
     var next = '';
     (evs || []).forEach(function (e) {
       var d = String((e && e.date) || '');
       if (d >= today && (!next || d < next)) next = d;
     });
-    if (!next) return '';
-    var days = Math.round((Date.parse(next + 'T12:00:00Z') - Date.parse(today + 'T12:00:00Z')) / 86400000);
-    var when = days === 0 ? 'Today' : days === 1 ? 'Tomorrow' : isFinite(days) ? 'In ' + days + ' days' : '';
+    var cutoff = isoPlusDays(today, 30);
+    var closing = (trips || []).filter(function (t) {
+      var d = campIsoOrBlank(t && t.registrationDeadline);
+      return d && d >= today && d <= cutoff && String((t && t.name) || '').trim();
+    }).sort(function (a, b) { return a.registrationDeadline.localeCompare(b.registrationDeadline); });
+    if (!next && !closing.length) return '';
+    function inDays(iso) {
+      var n = Math.round((Date.parse(iso + 'T12:00:00Z') - Date.parse(today + 'T12:00:00Z')) / 86400000);
+      return n === 0 ? 'Today' : n === 1 ? 'Tomorrow' : isFinite(n) ? 'In ' + n + ' days' : '';
+    }
+    var when = next ? inDays(next) : '';
     var h = '<div class="card pv-next"><div class="spread"><h2 class="section display" style="margin-bottom:0">Next up</h2>' +
       (when ? '<span class="pill navy">' + esc(when) + '</span>' : '') + '</div>';
-    (evs || []).forEach(function (e) { if (String((e && e.date) || '') === next) h += parentEventRow(e); });
+    (evs || []).forEach(function (e) { if (next && String((e && e.date) || '') === next) h += parentEventRow(e); });
+    closing.forEach(function (t) {
+      var d = t.registrationDeadline, lead = inDays(d);
+      h += '<p class="small" style="margin:8px 0 0"><strong>Online sign-up for ' + esc(String(t.name).trim()) + ' closes ' +
+        esc(fmtDate(d)) + '</strong>' + (lead ? ' <span class="muted">\u00b7 ' + esc(lead.toLowerCase()) + '</span>' : '') + '</p>';
+    });
     return h + '</div>';
   }
   function renderParentSchedule(pv) {
@@ -10845,7 +10958,7 @@
     var evs = Array.isArray(pv.events) ? pv.events : [];
     var upcoming = evs.filter(function (e) { return String((e && e.date) || '') >= today; });
     var earlier = evs.filter(function (e) { return String((e && e.date) || '') < today; });
-    var h = parentNextUp(evs, today) + parentCalendar(pv, today);
+    var h = parentNextUp(evs, today, Array.isArray(pv.camping) ? pv.camping : []) + parentCalendar(pv, today);
     // THE NEXT 30 DAYS, BY MONTH — parent-experience audit, 2026-09-28. The whole rest of the year
     // in one list was a scroll past March to reach the footer, when the question on a Tuesday is
     // "what is on this month". The rest is one tap away, and says how much of it there is.
@@ -18370,8 +18483,19 @@
               : '<p class="small muted" style="margin:0">A leader will add them here.</p>') +
         '</div>';
     }
-    var t = getTrip(sec) || trips[0];
+    var today = todayISO();
+    var t = getTrip(sec) || sortTripsByDate(trips, today)[0];
     var h = '';
+
+    // Wave C1 — LEADERS ONLY: this renderer is the leader side (the parent app and the preview
+    // draw renderParentCamping, from the published copy). Last year's dates still on the page.
+    if (tripDatesStale(t, today, state.budget.programYear)) {
+      h += '<div class="warn no-print" role="note" style="margin:0 0 14px"><strong>These are last year\u2019s dates \u2014 confirm.</strong> ' +
+        esc(t.name || 'This campout') + ' ran ' + esc(tripDatesLabel(t)) + ', before this program year began. ' +
+        (edit ? 'Put this year\u2019s dates in below, with the When line and the cost, once the council or park has posted them.'
+              : 'A leader with edit rights can update them.') +
+        ' <span class="muted">Only leaders see this note.</span></div>';
+    }
 
     // Header: the logistics a parent checks on the way out of the door.
     h += '<div class="card"><h2 class="section display">' + esc(t.name || 'Untitled trip') + '</h2>';
@@ -18392,14 +18516,22 @@
         '<div class="row" style="margin-bottom:8px">' +
         campField(t, 'url', 'Council page', 'https://…', 'grow') +
         '</div>' +
+        // Wave C1 — the dates as dates. Optional; `when` above is still what families read.
+        '<div class="row" style="margin-bottom:4px">' +
+        campDateField(t, 'startDate', 'First day') +
+        campDateField(t, 'endDate', 'Last day') +
+        campDateField(t, 'registrationDeadline', 'Online sign-up closes') +
+        '</div>' +
+        '<p class="small muted" style="margin:0 0 8px">Dates put the campouts in order, point families to the next one, ' +
+        'and show the sign-up deadline on their Next up card in the 30 days before it.</p>' +
         '<label class="fld" style="margin-bottom:4px">Short intro' +
         '<textarea class="notes-in" data-ch="trip-intro" data-id="' + esc(t.id) + '" rows="2" ' +
         'placeholder="One or two lines at the top of the page">' + esc(t.intro) + '</textarea></label>';
     } else {
-      h += campFacts(t);
+      h += campFacts(t, today);
       if (t.intro) h += '<div class="camp-body">' + proseText(t.intro) + '</div>';
     }
-    if (edit && (t.where || t.address || t.when || t.cost)) h += '<hr class="divider">' + campFacts(t);
+    if (edit && (t.where || t.address || t.when || t.cost)) h += '<hr class="divider">' + campFacts(t, today);
     h += '</div>';
 
     // The published-to-parents notice. On the page, not in a comment: the whole point of this
@@ -18445,6 +18577,11 @@
     }
     return h;
   }
+  // Wave C1 — one date input. The value is re-checked (campIsoOrBlank) on the way in and out.
+  function campDateField(t, key, label) {
+    return '<label class="fld">' + esc(label) +
+      '<input type="date" data-ch="trip-' + key + '" data-id="' + esc(t.id) + '" value="' + esc(campIsoOrBlank(t[key])) + '"></label>';
+  }
   // One header input. Separate so the six of them cannot drift apart.
   function campField(t, key, label, ph, grow) {
     return '<label class="fld"' + (grow ? ' style="flex:1 1 180px"' : '') + '>' + esc(label) +
@@ -18465,7 +18602,7 @@
   }
   // The read-only facts block — the same for a leader and a parent, which is why it takes a
   // plain trip object and touches no state.
-  function campFacts(t) {
+  function campFacts(t, today) {
     var rows = [];
     if (t.where) rows.push(['Where', esc(t.where) + (t.address ? '<br><span class="muted">' + esc(t.address) + '</span>' : '')]);
     else if (t.address) rows.push(['Where', esc(t.address)]);
@@ -18475,6 +18612,9 @@
     if (t.arrive) rows.push(['Arrive', esc(t.arrive)]);
     if (t.depart) rows.push(['Leave by', esc(t.depart)]);
     if (t.cost) rows.push(['Cost', esc(t.cost)]);
+    // Wave C1 — while it is still ahead (`today` optional: without it, always).
+    var dl = campIsoOrBlank(t.registrationDeadline);
+    if (dl && (!today || dl >= today)) rows.push(['Sign up by', esc(fmtDate(dl)) + ' <span class="muted">(online)</span>']);
     if (t.address) {
       rows.push(['Map', '<a href="https://maps.google.com/?q=' + encodeURIComponent(t.address) +
         '" target="_blank" rel="noopener noreferrer">Open in Maps</a>']);
@@ -23856,8 +23996,18 @@
     }
     if (typeof ch === 'string' && ch.indexOf('trip-') === 0) {
       var tK = ch.slice(5);
+      var tT;
+      // Wave C1 — a date is ISO or cleared; a half-typed one is ignored rather than stored.
+      if (CAMP_DATE_KEYS.indexOf(tK) >= 0) {
+        tT = getTrip(el.dataset.id);
+        var tDv = campIsoOrBlank(el.value);
+        if (!tT || (el.value && !tDv)) return;
+        tT[tK] = tDv;
+        commit();
+        return;
+      }
       if (['name', 'where', 'address', 'when', 'arrive', 'depart', 'cost', 'url', 'intro'].indexOf(tK) < 0) return;
-      var tT = getTrip(el.dataset.id);
+      tT = getTrip(el.dataset.id);
       if (!tT) return;
       tT[tK] = el.value;
       commit();

@@ -69,6 +69,11 @@ function sandbox(names) {
   vm.runInContext(names.map(slice).join('\n'), ctx);
   return ctx;
 }
+// Wave C1 — buildParentView sorts the trips by date and re-checks their ISO dates, so every
+// sandbox that builds it needs these. todayISO only where the sandbox has none of its own.
+const CAMP_DATE_SRC = ['CAMP_DATE_KEYS', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'sortTripsByDate']
+  .map(slice).join('\n') +
+  "\nvar todayISO = typeof todayISO === 'function' ? todayISO : function () { return '2026-09-28'; };\n";
 
 /* ================================================================
    Wave 21 — the jobs model
@@ -965,6 +970,8 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'CAMP_SAFETY', 'CAMP_AGES', 'CAMP_WHY_COUNCIL', 'CAMP_FIRST_TIME',
   'freshTripSection', 'freshTrip', 'seedCampingTrips', 'freshCamping',
   'CAMP_SEED_REV', 'CAMP_OLD_SEED', 'campHash', 'refreshCampingSeed',
+  // Wave C1 — and coerces each trip's ISO dates.
+  'CAMP_DATE_KEYS', 'campIsoOrBlank',
   // Wave B1 — and seeds "New to the pack" the same way.
   'WELCOME_SEED_REV', 'WELCOME_OLD_SEED', 'WELCOME_FILL_RE', 'freshWelcomeSection', 'seedWelcomeSections',
   'freshWelcome', 'refreshWelcomeSeed',
@@ -5487,7 +5494,7 @@ test('the seeded content states the rules a pack actually has to follow', () => 
 
 test('Camping sections are one per trip, and a trip id is never a route', () => {
   const ctx = vm.createContext({ state: { camping: { trips: [] } } });
-  vm.runInContext(slice('campingTrips') + slice('tripTabLabel') + slice('sectionsOf'), ctx);
+  vm.runInContext(slice('campingTrips') + slice('tripTabLabel') + slice('sectionsOf') + '\n' + CAMP_DATE_SRC, ctx);
   const secs = (trips) => {
     ctx.state.camping.trips = trips;
     return vm.runInContext('sectionsOf({ id: "camping", dynamic: "camping", sections: [] })', ctx);
@@ -5535,7 +5542,7 @@ test('camping edits are behind canEdit, and deletes are two-tap with an undo', (
 test('every trip is published to parents, rebuilt field by field', () => {
   const fn = /function buildParentView\(src, opts\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'buildParentView() not found');
-  ok(/var camping = campingTrips\(\)\.map/.test(fn[0]), 'the trips are not published');
+  ok(/var camping = sortTripsByDate\(campingTrips\(\), todayISO\(\)\)\.map/.test(fn[0]), 'the trips are not published');
   // Never a spread: a field added to a trip in some later wave must not ride along unseen.
   ok(!/\.\.\.t\b/.test(fn[0]), 'the published trip spreads the source object');
   ['name', 'where', 'address', 'when', 'arrive', 'depart', 'cost', 'url', 'intro'].forEach((k) => {
@@ -8392,6 +8399,7 @@ test('calendar-only publishes the calendar and the cost of a year, and no child�
   vm.runInContext(PRIV_STATE + `
     function standingsEnabled() { return true; }
     function campingTrips() { return []; }
+    ${CAMP_DATE_SRC}
     function familyYearCost() {
       return [{ den: 'Wolf', scout: 18000, adult: 4000, sibling: 0, expected: 22000, covered: 9600,
         steps: [{ name: 'Dues covered', salesCents: 17500, coveredCents: 9600, afterCents: 12400 }],
@@ -9526,6 +9534,7 @@ function pvCtx(extra) {
   vm.runInContext(PRIV_STATE + `
     function standingsEnabled() { return true; }
     function campingTrips() { return []; }
+    ${CAMP_DATE_SRC}
     function familyYearCost() { return []; }
     var sync = {};
     ${['shortNames', 'publicNameMap', 'buildParentView', 'WELCOME_FILL_RE', 'welcomeHoldReason', 'publishedWelcome',
@@ -9724,7 +9733,7 @@ test('J8: What’s coming up is the next 30 days by month, with the rest one tap
 });
 
 test('J9: a campout says when to arrive and when to leave, each on its own labelled row', () => {
-  const ctx = sandbox(['esc', 'campLinkLabel', 'campFacts']);
+  const ctx = sandbox(['esc', 'campLinkLabel', 'campIsoOrBlank', 'campFacts']);
   const both = ctx.campFacts({ arrive: 'Friday 6:00 pm', depart: 'Sunday 11:00 am' });
   ok(/<dt>Arrive<\/dt><dd>Friday 6:00 pm<\/dd><dt>Leave by<\/dt><dd>Sunday 11:00 am<\/dd>/.test(both),
     'arrive and leave are not two labelled rows');
@@ -10957,7 +10966,7 @@ test('B2: Next up heads the family Schedule with everything on the next date, an
   const ctx = vm.createContext({});
   vm.runInContext(`var ui = {};
     function fmtDate(d) { return String(d); }
-    ${['esc', 'parentEventRow', 'parentShiftLines', 'parentNextUp'].map(slice).join('\n')}`, ctx);
+    ${['esc', 'parentEventRow', 'parentShiftLines', 'parentNextUp', 'isoPlusDays', 'campIsoOrBlank'].map(slice).join('\n')}`, ctx);
   const evs = [
     { kind: 'activity', date: '2026-09-20', title: 'Past hike' },
     { kind: 'meeting', date: '2026-10-03', title: 'Wolf den meeting', detail: 'Room 4' },
@@ -10971,10 +10980,10 @@ test('B2: Next up heads the family Schedule with everything on the next date, an
   ok(/Tomorrow/.test(ctx.parentNextUp(evs, '2026-10-02')), 'an event tomorrow is not "Tomorrow"');
   eq(ctx.parentNextUp(evs, '2026-10-11'), '', 'a card with nothing in it');
   eq(ctx.parentNextUp(undefined, '2026-10-11'), '', 'no events list throws or draws a card');
-  // First on the page, and the campout deadline is left out on purpose — there is no field for it.
-  ok(/var h = parentNextUp\(evs, today\) \+ parentCalendar\(pv, today\);/.test(slice('renderParentSchedule')),
-    'Next up is not at the top of the Schedule');
-  ok(!/\.cost|\.when|camping/.test(codeOnly(slice('parentNextUp'))), 'Next up reads a trip’s free text for a deadline');
+  // First on the page. A campout deadline comes from the structured field (Wave C1), never the prose.
+  ok(/var h = parentNextUp\(evs, today, Array\.isArray\(pv\.camping\) \? pv\.camping : \[\]\) \+ parentCalendar\(pv, today\);/.test(slice('renderParentSchedule')),
+    'Next up is not at the top of the Schedule, or is not handed the published trips');
+  ok(!/\.cost|\.when/.test(codeOnly(slice('parentNextUp'))), 'Next up reads a trip’s free text for a deadline');
 });
 
 test('B3: one event goes into a family calendar with its name, date, time and place — and nothing else', () => {
@@ -11173,6 +11182,129 @@ test('every constant the loader reads is assigned before the pack record is load
     const m = new RegExp(`^  var ${name} =`, 'm').exec(SCRIPT);
     ok(m.index < loadAt, `var ${name} is read by the loader but assigned after load() runs`);
   });
+});
+/* ========================================================================
+   Wave C — camping (Outdoor / Camping Chair), 2026-09-28
+   ===================================================================== */
+// C1 — structured trip dates.
+test('C1: a trip carries three optional ISO dates, and the seed fills them from its own words', () => {
+  const ctx = sandbox(NORMALIZE_FNS.concat(['CAMP_PACK_RUN', 'CAMP_EMERGENCY', 'YARGO_TRIP_ID']));
+  const ft = ctx.freshTrip('x');
+  eq([ft.startDate, ft.endDate, ft.registrationDeadline], ['', '', ''], 'a new trip is born with dates');
+  const by = {};
+  ctx.seedCampingTrips().forEach((t) => { by[t.name] = t; });
+  const d = (t) => [t.startDate, t.endDate, t.registrationDeadline];
+  eq(d(by['Fall Family Camping']), ['2026-10-02', '2026-10-04', '2026-10-01'], 'the fall weekend');
+  eq(d(by['Spring Family Camping']), ['2026-04-24', '2026-04-26', '2026-04-20'], 'the spring weekend');
+  eq(d(by['Pack Camping — Fort Yargo']), ['2026-03-27', '2026-03-29', ''], 'Fort Yargo');
+  // Each seeded date is one the seed's own words already state.
+  ok(/Fri 2 Oct – Sun 4 Oct/.test(by['Fall Family Camping'].when) && /Thu 1 Oct/.test(by['Fall Family Camping'].cost), 'fall words');
+  ok(/Fri 24 Apr – Sun 26 Apr/.test(by['Spring Family Camping'].when), 'spring words');
+  ok(/Fri 27 Mar – Sun 29 Mar/.test(by['Pack Camping — Fort Yargo'].when), 'Fort Yargo words');
+  // Normalizing keeps an ISO date and drops anything else.
+  const n = ctx.normalizeState(Object.assign(preMigrationState(), { camping: { yargoAdded: true, seedRev: ctx.CAMP_SEED_REV, trips: [
+    { id: 't', name: 'Ours', startDate: '2026-11-06', endDate: 'next Sunday', registrationDeadline: 20261101 }] } })).camping.trips[0];
+  eq(d(n), ['2026-11-06', '', ''], 'a junk date survived loading');
+});
+
+test('C1: an existing pack gets the seeded dates only where they are empty and `when` is still the seed’s', () => {
+  const ctx = sandbox(NORMALIZE_FNS.concat(['CAMP_PACK_RUN', 'CAMP_EMERGENCY', 'YARGO_TRIP_ID']));
+  ok(ctx.CAMP_SEED_REV >= 4, 'CAMP_SEED_REV was not bumped for the structured dates');
+  const seed = ctx.seedCampingTrips();
+  const start = { yargoAdded: true, seedRev: 3, trips: seed.map((t) => Object.assign({}, t, { startDate: '', endDate: '', registrationDeadline: '' })) };
+  start.trips[1].when = 'A weekend in late April (2027: Fri 23 Apr – Sun 25 Apr)';   // a leader moved spring
+  start.trips[2].startDate = '2027-03-26';                                            // and dated Fort Yargo
+  const after = ctx.normalizeState(Object.assign(preMigrationState(), { camping: start })).camping.trips;
+  eq([after[0].startDate, after[0].endDate, after[0].registrationDeadline], ['2026-10-02', '2026-10-04', '2026-10-01'], 'fall was not filled');
+  eq([after[1].startDate, after[1].registrationDeadline], ['', ''], 'a trip whose words a leader changed was given the seed’s dates');
+  eq([after[2].startDate, after[2].endDate], ['2027-03-26', '2026-03-29'], 'a leader’s date was overwritten (or an empty one not filled)');
+  // Once per revision.
+  const again = ctx.normalizeState(Object.assign(preMigrationState(),
+    { camping: { yargoAdded: true, seedRev: ctx.CAMP_SEED_REV, trips: [Object.assign({}, seed[0], { startDate: '' })] } })).camping.trips;
+  eq(again[0].startDate, '', 'the date fill ran on a record already at this revision');
+});
+
+test('C1: trips sort by date with the next one first; last year’s dates are flagged to leaders only', () => {
+  const ctx = sandbox(['CAMP_DATE_KEYS', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'sortTripsByDate', 'nextTrip',
+    'programYearStartISO', 'tripDatesStale']);
+  const trips = [
+    { name: 'Spring', startDate: '2026-04-24', endDate: '2026-04-26' },
+    { name: 'Undated A' },
+    { name: 'Yargo', startDate: '2027-03-26', endDate: '2027-03-28' },
+    { name: 'Fall', startDate: '2026-10-02', endDate: '2026-10-04' },
+    { name: 'Undated B' },
+    { name: 'Old', startDate: '2025-10-10', endDate: '2025-10-12' }];
+  const names = (a) => a.map((t) => t.name);
+  eq(names(ctx.sortTripsByDate(trips, '2026-09-28')), ['Fall', 'Yargo', 'Undated A', 'Undated B', 'Old', 'Spring'], 'order');
+  eq(names(ctx.sortTripsByDate(trips, '2026-10-03')).slice(0, 1), ['Fall'], 'a weekend under way is not still first');
+  eq(ctx.nextTrip(trips, '2026-09-28').name, 'Fall', 'next trip');
+  eq(ctx.nextTrip(trips, '2026-10-05').name, 'Yargo', 'next trip after the fall weekend');
+  eq(ctx.nextTrip([{ name: 'x' }], '2026-10-05'), null, 'an undated trip is "next"');
+  eq(names(trips).slice(0, 2), ['Spring', 'Undated A'], 'sorting reordered the stored list');
+  // Stale = over AND before this program year began (2026 starts 2026-07-01).
+  ok(ctx.tripDatesStale(trips[0], '2026-09-28', 2026), 'April 2026 is not stale in program year 2026');
+  ok(!ctx.tripDatesStale(trips[3], '2026-10-05', 2026), 'a trip earlier THIS program year is flagged');
+  ok(!ctx.tripDatesStale(trips[1], '2026-09-28', 2026), 'an undated trip is flagged');
+  ok(!ctx.tripDatesStale(trips[0], '2026-05-01', 2025), 'a trip is flagged before the year has moved on');
+  // The banner is on the leader page and nowhere a family reads.
+  ok(/tripDatesStale\(t, today, state\.budget\.programYear\)/.test(slice('renderCamping')), 'the leader page has no banner');
+  ok(/These are last year\\u2019s dates \\u2014 confirm\./.test(slice('renderCamping')), 'the banner wording');
+  for (const f of ['renderParentCamping', 'buildParentView', 'parentNextUp']) {
+    ok(!/tripDatesStale|last year/.test(codeOnly(slice(f))), f + ' shows the leaders’ stale-dates note');
+  }
+  // The leader's tabs and the family's tabs both run in date order.
+  ok(/sortTripsByDate\(trips, todayISO\(\)\)/.test(slice('sectionsOf')), 'the leader tabs are not in date order');
+  ok(/sortTripsByDate\(/.test(slice('parentTrips')) && /sortTripsByDate\(/.test(slice('renderParentCamping')),
+    'the family strip and the family page could disagree on "trip 2"');
+  ok(/nextTrip\(trips, today\)/.test(slice('renderParentCamping')), 'the family page does not point to the next campout');
+});
+
+test('C1: the dates are published, re-checked, and the published trip carries exactly its allowlisted keys', () => {
+  const ctx = pvCtx(`
+    function campingTrips() { return [
+      { id: 'a', name: 'Spring', when: 'April', startDate: '2026-04-24', endDate: '2026-04-26', registrationDeadline: 'soon',
+        readiness: { baloo: true }, noteInternal: 'x', sections: [{ id: 's', title: 'T', body: 'B', secret: 1 }] },
+      { id: 'b', name: 'Fall', when: 'October', startDate: '2026-10-02', endDate: '2026-10-04', registrationDeadline: '2026-10-01', sections: [] }]; }
+    function todayISO() { return '2026-09-28'; }`);
+  const pv = vm.runInContext('buildParentView(state, { showStandings: false })', ctx);
+  eq(pv.camping.map((t) => t.name), ['Fall', 'Spring'], 'published out of date order');
+  eq(Object.keys(pv.camping[0]).sort(), ['address', 'arrive', 'cost', 'depart', 'endDate', 'intro', 'name', 'registrationDeadline',
+    'sections', 'startDate', 'url', 'when', 'where'], 'the published trip keys');
+  eq([pv.camping[0].startDate, pv.camping[0].endDate, pv.camping[0].registrationDeadline], ['2026-10-02', '2026-10-04', '2026-10-01'], 'dates');
+  eq(pv.camping[1].registrationDeadline, '', 'a junk deadline was published');
+  eq(Object.keys(pv.camping[1].sections[0]).sort(), ['body', 'title'], 'section keys');
+  const bpv = BPV();
+  ['startDate', 'endDate', 'registrationDeadline'].forEach((k) =>
+    ok(new RegExp(`${k}: campIsoOrBlank\\(t\\.${k}\\)`).test(bpv), `${k} is not re-checked on the way out`));
+  // Kept in step: the banner comment and SETUP.md say so.
+  const banner = SCRIPT.slice(SCRIPT.indexOf('// PUBLISHED — the whole list'), SCRIPT.indexOf('// DELIBERATELY EXCLUDED'));
+  ok(/ISO startDate, endDate and registrationDeadline/.test(banner), 'the parent-view banner does not list the dates');
+  ok(/`startDate`, `endDate`,\s+`registrationDeadline`/.test(SETUP), 'SETUP.md “What a parent sees” does not list the dates');
+  // The editor stores only an ISO date or a clear.
+  const h = /if \(typeof ch === 'string' && ch\.indexOf\('trip-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/CAMP_DATE_KEYS\.indexOf\(tK\) >= 0/.test(h) && /if \(!tT \|\| \(el\.value && !tDv\)\) return;/.test(h), 'a junk date can be typed into the record');
+});
+
+test('C1: the family’s Next up card says when online sign-up for a campout closes, within 30 days', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`var ui = {};
+    function fmtDate(d) { return 'D' + String(d); }
+    ${['esc', 'parentEventRow', 'parentShiftLines', 'parentNextUp', 'isoPlusDays', 'campIsoOrBlank'].map(slice).join('\n')}`, ctx);
+  const trips = [
+    { name: 'Fall Family Camping', registrationDeadline: '2026-10-01' },
+    { name: 'Spring Family Camping', registrationDeadline: '2027-04-20' },
+    { name: 'Old', registrationDeadline: '2026-09-01' },
+    { name: '', registrationDeadline: '2026-10-02' }];
+  const evs = [{ kind: 'meeting', date: '2026-10-06', title: 'Pack meeting' }];
+  const out = ctx.parentNextUp(evs, '2026-09-28', trips);
+  ok(/Online sign-up for Fall Family Camping closes D2026-10-01/.test(out), out);
+  ok(/in 3 days/.test(out), 'no lead time on the deadline');
+  ok(!/Spring|Old/.test(out), 'a deadline outside the next 30 days is on the card');
+  ok(/Pack meeting/.test(out), 'the deadline pushed the next event off the card');
+  // A deadline alone still makes a card; the day itself says "today".
+  ok(/closes D2026-10-01/.test(ctx.parentNextUp([], '2026-10-01', trips)) && /today/.test(ctx.parentNextUp([], '2026-10-01', trips)),
+    'a deadline with no event on the calendar is dropped');
+  eq(ctx.parentNextUp([], '2026-10-02', trips.slice(0, 3)), '', 'a passed deadline makes a card');
 });
 /* ---------------- report ---------------- */
 if (fails.length) {

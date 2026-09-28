@@ -174,7 +174,9 @@ calendar but not the money" is impossible to do by permission alone. Instead the
   - always: the pack name and program year; the program year's events (July 1 to June 30) — storefront dates with
     their shift windows, den/pack meetings with time and location note, dated activities
     with time, place and which dens; the derby's name and date; the camping trips as leaders
-    wrote them, **including each trip's cost line**; the **New to the pack** page (`welcome`)
+    wrote them, **including each trip's cost line**, in date order, with each trip's first and
+    last day and online sign-up deadline as dates (`startDate`, `endDate`,
+    `registrationDeadline`); the **New to the pack** page (`welcome`)
     as leaders wrote it — each section's heading, text and link — once a leader has ticked
     **Show this page to families** (Scouts → New families), leaving out any section that is
     hidden or still says "[pack to fill in"; and **what the year is planned to cost**

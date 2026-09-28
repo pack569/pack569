@@ -25,10 +25,33 @@ of the decisions below.
 state.camping = {
   trips: [{
     id, name, where, address, when, arrive, depart, cost, url, intro,
+    startDate, endDate, registrationDeadline,   // ISO or '' (Wave C1)
     sections: [{ id, title, body }]     // ordered, free-form
   }]
 }
 ```
+
+### Structured dates (Wave C1, 2026-09-28)
+
+`when` stays the words a family reads. Beside it are three optional ISO dates, edited under the
+trip header: `startDate`, `endDate` and `registrationDeadline` (the council's **online** close).
+They:
+
+- **sort the trips** (`sortTripsByDate`): still ahead or under way, soonest first; then undated,
+  in the order added; then the ones that are over. The first tab — leader and family alike — is
+  therefore the next campout, and a family's page says which one that is.
+- **flag last year's dates to leaders** (`tripDatesStale`): once a trip has ended *and* ended
+  before the current program year began, the leader page says "These are last year's dates —
+  confirm". Never shown to families.
+- **put the sign-up deadline on the family's Next up card** in the 30 days before it: "Online
+  sign-up for Fall Family Camping closes Thu, Oct 1". Read from the field, never from the prose.
+
+All three are published. They say nothing a parent cannot already read in `when` and `cost`.
+
+Seeded (rev 4): fall 2 – 4 Oct 2026, online close 1 Oct; spring 24 – 26 Apr 2026, online close
+20 Apr (from the seed's own "Before you go"); Fort Yargo 27 – 29 Mar 2026, no deadline. A live
+pack gets them through `refreshCampingSeed`, **only into empty date fields and only while the
+trip's `when` still holds the seed's words** — a leader who retyped the dates has moved the trip.
 
 A small fixed header (the things a parent checks on the way out of the door) plus an **ordered
 list of free-form sections**. Not fixed "what to bring" / "what to expect" fields: what a pack
