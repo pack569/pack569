@@ -8158,6 +8158,18 @@
       if (l.uid && l.uid === memberUid) { l.uid = ''; changed = true; }
     });
     if (changed) commit();
+    // Someone who came in on the sign-up link still has it. While the link is open, removing
+    // them only sends them back to the approval queue on their next tap — so say so, and put
+    // "New code" one tap away. A suggestion, not an automatic rotation: every family still
+    // holding the old link would be locked out too, and that is the admin's call.
+    if (gone && gone.joinCode && joinOpen()) {
+      showToast('Removed. The sign-up link is still open, so they can ask again — a new code retires it.', {
+        actionLabel: 'New code', duration: 9000,
+        onAction: function () {
+          writeJoinConfig({ code: newJoinCode() }, 'New link created — the old link no longer works.');
+        }
+      });
+    }
   }
   // ---- Parent phase: invite by email --------------------------------------------------
   // packs/{docId}/invites/{lowercased-email} = { role, email, invitedBy, invitedAt }. The

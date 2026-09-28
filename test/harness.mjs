@@ -8076,6 +8076,30 @@ test('removing a member also removes their leftover invite and their leader link
   ok(!vm.runInContext('calls', ctx2).some((c) => /invites/.test(c)), 'an emailless member triggered an invite delete');
 });
 
+test('B9: removing someone who came in on a still-open sign-up link offers New code', () => {
+  const run = (joinCode, open) => {
+    const ctx = removeMemberCtx();
+    vm.runInContext(`
+      var toasts = [], rotated = [];
+      showToast = function (m, o) { toasts.push({ m: m, o: o || null }); };
+      function joinOpen() { return ${open}; }
+      function newJoinCode() { return 'NEWCODE'; }
+      function writeJoinConfig(p) { rotated.push(p.code); }
+      sync.members[0].joinCode = ${JSON.stringify(joinCode)};
+      removeMember('u1');`, ctx);
+    return ctx;
+  };
+  const ctx = run('abc123', true);
+  const t = vm.runInContext('toasts', ctx);
+  ok(t.length === 1 && t[0].o && t[0].o.actionLabel === 'New code', 'no New code toast after removing a link arrival');
+  ok(/still open/.test(t[0].m), 'the toast does not say why');
+  eq(vm.runInContext('rotated', ctx), [], 'the code rotated without the admin asking');
+  vm.runInContext('toasts[0].o.onAction()', ctx);
+  eq(vm.runInContext('rotated', ctx), ['NEWCODE'], 'the toast button does not mint a new code');
+  eq(vm.runInContext('toasts.length', run('abc123', false)), 0, 'a closed link still nags');
+  eq(vm.runInContext('toasts.length', run('', true)), 0, 'an invited (non-link) member still nags');
+});
+
 function roleSubCtx(over) {
   const ctx = vm.createContext({});
   vm.runInContext(`
