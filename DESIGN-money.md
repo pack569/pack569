@@ -296,6 +296,13 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   in Funds in, and the Budget card says: "A Carryover entry of $X is in the ledger but Starting
   funds is $0 — set Starting funds to it and this entry stops counting." The funding goal still
   reads Starting funds only, which is why the card asks.
+- **The commission question could not be answered "no" (M4).** T4's Check line asked about every
+  lookalike entry on every render until the commission was posted, so a real fundraiser deposit
+  on an income line kept it up all season, or tempted a treasurer to relabel honest money. Each
+  entry now has a *Not the commission* button beside the question; it sets
+  `notCommission: true` on the entry, which `commissionLookalikes` skips. Any edit to the
+  entry's amount, source, line or direction clears it, because the answer was about the entry
+  as it stood.
 
 ---
 

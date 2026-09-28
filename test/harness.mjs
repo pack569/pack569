@@ -8801,7 +8801,14 @@ test('T4: an income-line cheque that may be the commission is asked about, and $
     entry({ id: 'e', direction: 'in', source: '', amountCents: 4000, lineId: 'POP', scoutId: 'ada' }), // a family's
     entry({ id: 'f', direction: 'out', source: '', amountCents: 3000, lineId: 'POP' })
   ];
-  eq(JSON.parse(JSON.stringify(ctx.commissionLookalikes(led, isInc))), [{ lineId: 'POP', cents: 100000, count: 2 }], 'lookalikes');
+  eq(JSON.parse(JSON.stringify(ctx.commissionLookalikes(led, isInc))).map((x) => ({ lineId: x.lineId, cents: x.cents, count: x.count })),
+    [{ lineId: 'POP', cents: 100000, count: 2 }], 'lookalikes');
+  // M4 — an entry the treasurer has answered "not the commission" for is not asked about again.
+  const answered = led.map((x) => x.id === 'a' ? Object.assign({}, x, { notCommission: true }) : x);
+  eq(JSON.parse(JSON.stringify(ctx.commissionLookalikes(answered, isInc))),
+    [{ lineId: 'POP', cents: 10000, count: 1, entries: [{ id: 'b', cents: 10000, date: led[1].date }] }], 'an answered entry is still asked about');
+  eq(ctx.commissionLookalikes(led.map((x) => Object.assign({}, x, { notCommission: true })), isInc).length, 0,
+    'every entry answered, and the line is still listed');
   // Only while the estimate is what Funds in counts, and never guessed from the description.
   const fn = /function computeBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/var lookalikes = \(!income\.hasCommission && commissionEstimate > 0\)\s*\? commissionLookalikes\(state\.ledger, isIncomeLine\) : \[\];/.test(fn),
@@ -10020,6 +10027,23 @@ test('M2: the Funds in sentence adds up, with refunds as their own term', () => 
   // "Collected" is what families handed over, never net of refunds.
   ok(/collected: t\.paid \+ t\.donated \+ t\.makeup, refunded: t\.refunded,/.test(slice('feesTotals')),
     'collected is net of refunds again');
+});
+
+test('M4: "Not the commission" is answered per entry, and any edit to the entry asks again', () => {
+  const card = /function renderBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/data-act="not-commission:' \+ esc\(le\.id\) \+ '"/.test(card) && /the commission<\/button>/.test(card),
+    'the Check line offers no per-entry answer');
+  const h = /if \(act\.indexOf\('not-commission:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(h && /ncE\.notCommission = true;/.test(h[0]) && /commit\(\)/.test(h[0]), 'the answer is not saved');
+  const ed = /if \(ch\.indexOf\('led-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/if \(lk === 'amount' \|\| lk === 'source' \|\| lk === 'line' \|\| lk === 'dir'\) led\.notCommission = false;/.test(ed),
+    'editing the entry does not clear the answer');
+  // It survives a reload, as a boolean.
+  const ctx = sandbox(NORMALIZE_FNS);
+  const d = ctx.normalizeState(Object.assign(preMigrationState(), {
+    ledger: [{ id: 'x', direction: 'in', amountCents: 100, notCommission: true }, { id: 'y', direction: 'in', amountCents: 100, notCommission: 'yes' }]
+  }));
+  eq(d.ledger.filter((e) => e.id === 'x' || e.id === 'y').map((e) => e.notCommission), [true, false], 'normalizeState');
 });
 
 /* ---------------- report ---------------- */

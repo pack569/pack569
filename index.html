@@ -3251,6 +3251,10 @@
       // T1 — a refund is money out to a family, nothing else; a reimbursement says it is one.
       if (e.source === 'refund' && (e.direction !== 'out' || !e.scoutId)) e.source = '';
       e.reimbursement = e.reimbursement === true;
+      // M4 (final review) — the treasurer has said this income is NOT the council's commission
+      // cheque, so the Budget card stops asking. Cleared by any edit to its amount, source, line
+      // or direction: the answer was about the entry as it stood.
+      e.notCommission = e.notCommission === true;
       e.reconciled = e.reconciled === true;
     });
     if (!d.book || typeof d.book !== 'object' || Array.isArray(d.book)) d.book = freshBook();
@@ -6112,15 +6116,23 @@
   // We do not guess from the description: this only lists the entries whose source leaves the
   // question open (blank, "fundraiser", "other"), by line, for the Budget card to ask about. The
   // caller asks only while no commission is posted and the estimate is in use. Pure.
+  //
+  // M4 (final review, 2026-09-28) — and it stops asking about an entry once the treasurer has
+  // answered "no" (`notCommission`, set per entry from the card). Without that a pack whose income
+  // line holds a real fundraiser deposit saw the same question under every render until it
+  // posted the commission — or relabelled honest money to make the question go away. `entries`
+  // carries each one so the card can offer the answer entry by entry.
   var COMMISSION_LOOKALIKE_SOURCES = ['', 'fundraiser', 'other'];
   function commissionLookalikes(ledger, isIncomeLine) {
     var by = {}, order = [];
     ledger.forEach(function (e) {
       if (e.direction !== 'in' || e.scoutId || !e.lineId || !isIncomeLine(e.lineId)) return;
       if (COMMISSION_LOOKALIKE_SOURCES.indexOf(e.source || '') === -1 || !(e.amountCents > 0)) return;
-      if (!by[e.lineId]) { by[e.lineId] = { lineId: e.lineId, cents: 0, count: 0 }; order.push(e.lineId); }
+      if (e.notCommission === true) return;
+      if (!by[e.lineId]) { by[e.lineId] = { lineId: e.lineId, cents: 0, count: 0, entries: [] }; order.push(e.lineId); }
       by[e.lineId].cents += e.amountCents;
       by[e.lineId].count += 1;
+      by[e.lineId].entries.push({ id: e.id, cents: e.amountCents, date: e.date || '' });
     });
     return order.map(function (k) { return by[k]; });
   }
@@ -13686,7 +13698,13 @@
           '</strong> of money in posted to it, and Funds in is also counting popcorn commission worked out from sales (' +
           fmt(bud.commissionEstimate) + '). Is this the council’s commission cheque? Set its source to <strong>Popcorn commission</strong> ' +
           'in the ledger so it isn’t counted twice. ' +
-          '<button type="button" class="btn small ghost" data-act="goto" data-tab="money" data-section="ledger">Open the ledger</button></p>';
+          '<button type="button" class="btn small ghost" data-act="goto" data-tab="money" data-section="ledger">Open the ledger</button>' +
+          // M4 — or say it isn't, one entry at a time, and the question goes away for that entry.
+          (lk.entries || []).map(function (le) {
+            return ' <button type="button" class="btn small ghost" data-act="not-commission:' + esc(le.id) + '">' +
+              ((lk.entries.length > 1) ? esc(fmt(le.cents) + (le.date ? ' on ' + fmtDateShort(le.date) : '')) + ' is not' : 'Not') +
+              ' the commission</button>';
+          }).join('') + '</p>';
       }).join('') +
       // Phase 0/1 — this Balance is still a MODEL figure: every term feeding it is derived
       // from another part of the app. The ledger's balance is the real cash position. When
@@ -21405,6 +21423,15 @@
       return;
     }
     if (act === 'ledger-toggle') { ui.ledgerOpen[el.dataset.id] = !ui.ledgerOpen[el.dataset.id]; render(); return; }
+    // M4 — the treasurer's answer to "is this the council's commission cheque?": no.
+    if (act.indexOf('not-commission:') === 0) {
+      var ncId = act.slice('not-commission:'.length);
+      var ncE = state.ledger.find(function (e) { return e.id === ncId; });
+      if (!ncE) return;
+      ncE.notCommission = true;
+      showToast('Noted \u2014 it stays counted as other income. Change the entry and the question comes back.');
+      commit(); return;
+    }
     if (act === 'ledger-add') {
       var dr = ledgerDraft();
       var amt = toCents(dr.amount);
@@ -22309,6 +22336,8 @@
       else if (lk === 'scout') led.scoutId = el.value;
       else if (lk === 'donor') led.donor = el.value;
       else if (lk === 'rec') led.reconciled = el.checked;
+      // M4 — "not the commission" was an answer about this entry as it stood.
+      if (lk === 'amount' || lk === 'source' || lk === 'line' || lk === 'dir') led.notCommission = false;
       // Money-in fields are meaningless on a payment out, so switching direction drops
       // them rather than leaving a stale donor attached to a cheque to the campground.
       //
