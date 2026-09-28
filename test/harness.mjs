@@ -11994,6 +11994,76 @@ test('E2: Home asks the Treasurer to reconcile once the last statement is over 3
     'no Treasurer task for a stale reconciliation');
 });
 
+/* ================================================================
+   E3 (2026-09-28) — the season archive keeps the ledger and each family's closing balance.
+   ================================================================ */
+test('E3: the archived ledger is compact rows with words, not ids, and totals that add up', () => {
+  const ctx = sandbox(['ledgerSort', 'utf8Bytes', 'seasonLedgerRows', 'fitSeasonLedger', 'seasonFamilyBalances']);
+  const ledger = [
+    { id: 'b', date: '2026-10-02', description: 'Scoutland', amountCents: 12000, direction: 'out', lineId: 'L1', ref: '1044', source: '', scoutId: '', reconciled: true, enteredBy: 'Dana' },
+    { id: 'a', date: '2026-09-02', description: 'Dues', amountCents: 8500, direction: 'in', lineId: '', ref: '', source: 'family', scoutId: 's1', reconciled: false, enteredBy: '' }
+  ];
+  const led = JSON.parse(JSON.stringify(ctx.seasonLedgerRows(ledger, (id) => (id === 'L1' ? 'Fall campout' : ''), (sid) => (sid === 's1' ? 'Ada and Ben' : ''))));
+  eq(led.rows, [
+    { d: '2026-09-02', c: 8500, t: 'Dues', s: 'family', f: 'Ada and Ben' },
+    { d: '2026-10-02', c: -12000, t: 'Scoutland', l: 'Fall campout', r: '1044', b: 'Dana', k: 1 }
+  ], 'rows (date order, empty keys left out, signed cents)');
+  eq(led.totals, { inCents: 8500, outCents: 12000, entries: 2, reconciled: 1 }, 'totals');
+  ok(!/"s1"|"L1"|scoutId|lineId/.test(JSON.stringify(led)), 'an id reached the archive');
+  // Fitting: kept under the limit, dropped (totals kept) over it.
+  const size = ctx.utf8Bytes(JSON.stringify(led.rows));
+  eq(ctx.fitSeasonLedger(led, 1000, 1000 + size).trimmed, false, 'rows that fit were dropped');
+  const cut = JSON.parse(JSON.stringify(ctx.fitSeasonLedger(led, 1001, 1000 + size)));
+  eq([cut.trimmed, cut.rows.length, cut.totals.entries], [true, 0, 2], 'rows that do not fit were kept, or the totals went with them');
+  eq([ctx.utf8Bytes('abc'), ctx.utf8Bytes('é'), ctx.utf8Bytes('—'), ctx.utf8Bytes('😀')], [3, 2, 3, 4], 'UTF-8 byte count');
+  // Families: anyone with money moving, credit as a negative balance.
+  const fams = JSON.parse(JSON.stringify(ctx.seasonFamilyBalances([
+    { key: 'f1', owed: 17000, paid: 8500, refunded: 0, balance: 8500 },
+    { key: 'f2', owed: 0, paid: 0, refunded: 0, balance: 0 },
+    { key: 'f3', owed: 4000, paid: 5000, refunded: 0, balance: -1000 }
+  ], (a) => a.key.toUpperCase())));
+  eq(fams, [{ name: 'F1', owedCents: 17000, paidCents: 8500, balanceCents: 8500 }, { name: 'F3', owedCents: 4000, paidCents: 5000, balanceCents: -1000 }], 'families');
+});
+
+test('E3: close-out archives the ledger and the family balances, sized against the pack record', () => {
+  const b = slice('buildSeasonArchive');
+  ok(/families: seasonFamilyBalances\(familyAccountsNow\(\),/.test(b), 'the family balances are not archived');
+  ok(/arc\.ledger = seasonLedgerNow\(arc\);\s*return arc;/.test(b), 'the ledger is not archived, or is sized before the rest of the record');
+  const now = slice('seasonLedgerNow');
+  ok(/utf8Bytes\(JSON\.stringify\(state\)\) \+ utf8Bytes\(JSON\.stringify\(arcWithout\)\)/.test(now) && /ARCHIVE_DOC_SOFT_LIMIT/.test(now), 'not sized against the whole record');
+  ok(/var ARCHIVE_DOC_SOFT_LIMIT = 700 \* 1024;/.test(SCRIPT), 'the limit is not ~700 KB');
+  // The archive is built BEFORE rolloverYear clears the ledger and charges.
+  const pc = slice('performCloseout');
+  ok(pc.indexOf('buildSeasonArchive()') < pc.indexOf('rolloverYear()'), 'the archive is built after the ledger is cleared');
+  ok(/record\.ledger && record\.ledger\.trimmed/.test(pc) && /keep the downloaded JSON/.test(pc), 'no word to the treasurer when the ledger is trimmed');
+  const pre = slice('renderCloseoutOverlay');
+  ok(/arc\.ledger\.trimmed/.test(pre) && /SEASON_LEDGER_TRIMMED/.test(pre), 'the preview does not say the ledger will be trimmed');
+  ok(/keep that file/.test(SCRIPT), 'the trimmed notice does not say to keep the JSON');
+  const tb = slice('seasonArchiveTables');
+  ok(/Family balances at close/.test(tb) && /a\.ledger\.trimmed/.test(tb), 'Past seasons does not show them');
+  ok(/Family balances at close:/.test(slice('seasonArchiveText')), 'the copied text leaves them out');
+  // Leaders only: archives are never published.
+  ok(!/seasonLedger|seasonFamilyBalances|\.archives\b/.test(codeOnly(BPV())), 'buildParentView reads the archive');
+});
+
+test('E3: an archive closed before keeps its shape; a new one is normalized', () => {
+  const ctx = sandbox(['normalizeSeasonArchive']);
+  const old = { id: 'x', kind: 'season', year: 2025, closedAt: '2026-06-30T00:00:00Z' };
+  ctx.normalizeSeasonArchive(old);
+  ok(!('ledger' in old) && !('families' in old), 'an old archive gained ledger or families keys');
+  const rows = [{ d: '2026-09-02', c: 8500, t: 'Dues', f: 'Ada', k: true, zz: 'x' }, 'junk', { d: 5, c: 'x' }];
+  for (let i = 0; i < 6000; i++) rows.push({ d: '2026-09-03', c: 1, t: 'x' });
+  const a = { id: 'y', kind: 'season', year: 2026, closedAt: '2027-06-30T00:00:00Z',
+    ledger: { totals: { inCents: 8500, outCents: 'x', entries: 2, reconciled: 1 }, rows: rows, trimmed: 'yes' },
+    families: [{ name: 'Ada', owedCents: 8500, paidCents: 8500, balanceCents: -100 }, 'junk'] };
+  ctx.normalizeSeasonArchive(a);
+  eq(JSON.parse(JSON.stringify(a.ledger.rows[0])), { d: '2026-09-02', c: 8500, t: 'Dues', f: 'Ada', k: 1 }, 'a row');
+  eq(JSON.parse(JSON.stringify(a.ledger.rows[1])), { d: '', c: 0, t: '' }, 'a junk row');
+  ok(a.ledger.rows.length <= 5000, 'the rows are not capped');
+  eq([a.ledger.totals.outCents, a.ledger.trimmed], [0, false], 'totals and flag');
+  eq(JSON.parse(JSON.stringify(a.families)), [{ name: 'Ada', owedCents: 8500, paidCents: 8500, balanceCents: -100 }], 'families');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

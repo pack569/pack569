@@ -3473,6 +3473,29 @@
       };
     } else a.inventory = null;
     a.leaders = list(a.leaders).map(function (x) { return { name: str(x.name), role: str(x.role) }; });
+    // E3 — the season's ledger, as compact rows (seasonLedgerRows), and each family's closing
+    // balance. Both absent on every archive closed before, which then reads as it always did.
+    // The row cap is far above a pack's year and far below what the pack record can hold.
+    if (a.ledger && typeof a.ledger === 'object' && !Array.isArray(a.ledger)) {
+      var lt = (a.ledger.totals && typeof a.ledger.totals === 'object') ? a.ledger.totals : {};
+      a.ledger = {
+        totals: { inCents: cents(lt.inCents), outCents: cents(lt.outCents), entries: int(lt.entries), reconciled: int(lt.reconciled) },
+        rows: (Array.isArray(a.ledger.rows) ? a.ledger.rows.slice(0, 5000) : [])
+          .filter(function (r) { return r && typeof r === 'object' && !Array.isArray(r); })
+          .map(function (r) {
+            var o = { d: str(r.d), c: cents(r.c), t: str(r.t) };
+            ['l', 'r', 's', 'f', 'b'].forEach(function (k) { if (typeof r[k] === 'string' && r[k]) o[k] = r[k]; });
+            if (r.k === 1 || r.k === true) o.k = 1;
+            return o;
+          }),
+        trimmed: a.ledger.trimmed === true
+      };
+    } else delete a.ledger;
+    if (Array.isArray(a.families)) {
+      a.families = list(a.families).map(function (x) {
+        return { name: str(x.name), owedCents: cents(x.owedCents), paidCents: cents(x.paidCents), balanceCents: cents(x.balanceCents) };
+      });
+    } else delete a.families;
     return true;
   }
   // -----------------------------------------------------------------------
@@ -22742,6 +22765,79 @@
 
   // Snapshot the whole season into one kind:'season' archive record. Pure read —
   // never mutates state — so it doubles as the close-out preview's data source.
+  /* ----- E3: the season archive keeps the ledger and each family's closing balance ----------
+     The close-out cleared the ledger and the charges and kept only totals, so "what did we pay
+     Scoutland in March?" or "what did the Smiths owe when the year closed?" needed the downloaded
+     snapshot, if anybody still had it. The archive now keeps both — but it lives INSIDE the pack
+     record, which is one Firestore document with a 1 MiB limit, so:
+       * rows are COMPACT: { d: date, c: signed cents (in +, out −), t: description, l: line name,
+         r: ref, s: source, f: family (first names), b: entered by, k: 1 if reconciled }, with
+         empty keys left out;
+       * if the record would pass ~700 KB with them (ARCHIVE_DOC_SOFT_LIMIT — room for next year
+         to grow), the rows are dropped and only the ledger's totals and the family balances are
+         kept (`trimmed: true`), and the close-out preview and Past seasons tell the treasurer to
+         keep the downloaded JSON, which always has everything.
+     LEADERS ONLY: past-season archives are never published (buildParentView). */
+  var ARCHIVE_DOC_SOFT_LIMIT = 700 * 1024;
+  // UTF-8 length of a string, without TextEncoder so the harness sandbox can run it. Pure.
+  function utf8Bytes(str) {
+    var n = 0;
+    str = String(str);
+    for (var i = 0; i < str.length; i++) {
+      var c = str.charCodeAt(i);
+      n += c < 0x80 ? 1 : (c < 0x800 ? 2 : (c >= 0xd800 && c <= 0xdfff ? 2 : 3));
+    }
+    return n;
+  }
+  // The compact rows and their totals. `lineNameOf(id)` and `familyOf(scoutId)` turn ids into the
+  // words a later reader needs — the ids mean nothing once the year's lines and roster have moved on.
+  function seasonLedgerRows(ledger, lineNameOf, familyOf) {
+    var totals = { inCents: 0, outCents: 0, entries: 0, reconciled: 0 };
+    var rows = ledgerSort(ledger).map(function (e) {
+      var amt = e.amountCents || 0;
+      if (e.direction === 'in') totals.inCents += amt; else totals.outCents += amt;
+      totals.entries += 1;
+      if (e.reconciled) totals.reconciled += 1;
+      var r = { d: e.date || '', c: e.direction === 'in' ? amt : -amt, t: e.description || '' };
+      var ln = e.lineId ? lineNameOf(e.lineId) : '';
+      if (ln) r.l = ln;
+      if (e.ref) r.r = e.ref;
+      if (e.source) r.s = e.source;
+      var fam = e.scoutId ? familyOf(e.scoutId) : '';
+      if (fam) r.f = fam;
+      if (e.enteredBy) r.b = e.enteredBy;
+      if (e.reconciled) r.k = 1;
+      return r;
+    });
+    return { totals: totals, rows: rows };
+  }
+  // Keep the rows only if the pack record stays under the limit with them. `otherBytes` is the
+  // record's size without them. Pure.
+  function fitSeasonLedger(led, otherBytes, limit) {
+    if (otherBytes + utf8Bytes(JSON.stringify(led.rows)) <= limit) return { totals: led.totals, rows: led.rows, trimmed: false };
+    return { totals: led.totals, rows: [], trimmed: true };
+  }
+  // Each family's closing balance: any family with a charge, a payment or a refund this year.
+  function seasonFamilyBalances(accounts, nameOf) {
+    return accounts.filter(function (a) { return a.owed || a.paid || a.refunded || a.balance; }).map(function (a) {
+      return { name: nameOf(a), owedCents: a.owed, paidCents: a.paid, balanceCents: a.balance };
+    });
+  }
+  // The archive's ledger for this state: the rows, fitted to the pack record as it will be. The
+  // size is measured on the record as it stands (which still holds this year's ledger, so the
+  // estimate errs large) plus the archive being added.
+  function seasonLedgerNow(arcWithout) {
+    var led = seasonLedgerRows(state.ledger, function (id) {
+      var l = getBudgetLine(id);
+      return l ? (l.name || 'Untitled line') : '';
+    }, function (sid) {
+      var k = chargeFamilyKey(sid);
+      var members = state.scouts.filter(function (sc) { return familyKeyOf(sc) === k; });
+      return members.length ? familyLabel({ members: members }) : '';
+    });
+    var other = utf8Bytes(JSON.stringify(state)) + utf8Bytes(JSON.stringify(arcWithout));
+    return fitSeasonLedger(led, other, ARCHIVE_DOC_SOFT_LIMIT);
+  }
   function buildSeasonArchive() {
     var pack = computePackTotals();
     var bud = computeBudget();
@@ -22780,7 +22876,7 @@
     var distributed = 0;
     state.inventory.distributions.forEach(function (dd) { distributed += dd.containers; });
     var hasInv = state.inventory.products.length > 0 || state.inventory.orderTotalCents > 0;
-    return {
+    var arc = {
       id: uid(), kind: 'season', year: year, closedAt: new Date().toISOString(), packName: state.packName || '',
       // Which slot numbering budget.activities[].slot uses — see seasonSlotLabel.
       slotBase: 'july',
@@ -22828,8 +22924,16 @@
       } : null,
       // Wave 21 — flatten structured jobs into the archive's existing 2-field leader shape,
       // so archives gain no new fields and every already-stored archive still renders.
-      leaders: state.leaders.map(function (l) { return { name: l.name || '', role: leaderJobLabels(l) }; })
+      leaders: state.leaders.map(function (l) { return { name: l.name || '', role: leaderJobLabels(l) }; }),
+      // E3 — each family's balance as the year closed (first names), read before rolloverYear
+      // clears the charges. The ledger is added below, once the rest of the record is sized.
+      families: seasonFamilyBalances(familyAccountsNow(), function (a) {
+        var members = state.scouts.filter(function (sc) { return familyKeyOf(sc) === a.key; });
+        return members.length ? familyLabel({ members: members }) : 'A scout no longer on the roster';
+      })
     };
+    arc.ledger = seasonLedgerNow(arc);
+    return arc;
   }
 
   // The season's advancement, one row per den: how many scouts, how many finished the rank,
@@ -23188,7 +23292,10 @@
     rolloverYear();
     ui.overlay = null;
     commit();
-    showToast('Welcome to the ' + (year + 1) + ' program year');
+    // E3 — the one case where the archive is not the whole story.
+    showToast(record.ledger && record.ledger.trimmed
+      ? 'Welcome to the ' + (year + 1) + ' program year. The ledger was too large for Past seasons \u2014 keep the downloaded JSON.'
+      : 'Welcome to the ' + (year + 1) + ' program year');
   }
 
   /* ----- Wave 7: season-archive rendering (browse rows, sheet, copy text) ----- */
@@ -23314,8 +23421,39 @@
         (a.inventory.earningsCents ? ' · projected earnings ' + fmt(a.inventory.earningsCents) : ''));
     }
     lines.forEach(function (ln) { h += '<p class="small" style="margin:10px 0 0">' + ln + '</p>'; });
+    // E3 — each family's closing balance, and the year's ledger. Absent on older archives.
+    if (a.families && a.families.length) {
+      h += '<p class="eyebrow" style="margin-top:14px">Family balances at close</p><div class="tbl-wrap"><table>' +
+        '<caption class="visually-hidden">' + a.year + ' program year — family balances at close</caption>' +
+        '<thead><tr><th scope="col">Family</th><th scope="col" class="num">Charged</th><th scope="col" class="num">Paid</th><th scope="col" class="num">Balance</th></tr></thead><tbody>';
+      a.families.forEach(function (x) {
+        h += '<tr><td>' + esc(x.name || '—') + '</td><td class="num">' + fmt(x.owedCents) + '</td><td class="num">' + fmt(x.paidCents) + '</td>' +
+          '<td class="num">' + (x.balanceCents < 0 ? 'credit ' + fmt(-x.balanceCents) : fmt(x.balanceCents)) + '</td></tr>';
+      });
+      h += '</tbody></table></div>';
+    }
+    if (a.ledger) {
+      var lt = a.ledger.totals;
+      h += '<p class="eyebrow" style="margin-top:14px">Ledger</p>' +
+        '<p class="small" style="margin:0 0 8px">' + lt.entries + ' entr' + (lt.entries === 1 ? 'y' : 'ies') + ' · ' +
+        fmt(lt.inCents) + ' in · ' + fmt(lt.outCents) + ' out · ' + lt.reconciled + ' reconciled</p>';
+      if (a.ledger.trimmed) {
+        h += '<p class="small" style="margin:0 0 8px">' + esc(SEASON_LEDGER_TRIMMED) + '</p>';
+      } else if (a.ledger.rows.length) {
+        h += '<div class="tbl-wrap"><table><caption class="visually-hidden">' + a.year + ' program year — ledger</caption>' +
+          '<thead><tr><th scope="col">Date</th><th scope="col">What</th><th scope="col">Line</th><th scope="col" class="num">Amount</th></tr></thead><tbody>';
+        a.ledger.rows.forEach(function (r) {
+          h += '<tr><td>' + esc(r.d) + '</td><td>' + esc(r.t || '—') + (r.f ? ' <span class="muted">· ' + esc(r.f) + '</span>' : '') +
+            (r.r ? ' <span class="muted">#' + esc(r.r) + '</span>' : '') + '</td><td>' + esc(r.l || '') + '</td>' +
+            '<td class="num">' + (r.c < 0 ? '\u2212' : '+') + fmt(Math.abs(r.c)) + '</td></tr>';
+        });
+        h += '</tbody></table></div>';
+      }
+    }
     return h;
   }
+  var SEASON_LEDGER_TRIMMED = 'The ledger was too large to keep in the shared pack record, so only its totals and the family ' +
+    'balances are here. Every entry is in the JSON snapshot downloaded at close-out \u2014 keep that file.';
   // Plain-text mirror of the season sheet for the Copy button (same role as archiveText).
   function seasonArchiveText(a) {
     var f = a.fundraising, b = a.budget;
@@ -23363,6 +23501,25 @@
     if (a.leaders.length) {
       lines.push('');
       lines.push('Leaders: ' + a.leaders.map(function (l) { return l.name + (l.role ? ' (' + l.role + ')' : ''); }).join(', '));
+    }
+    // E3 — family balances and the ledger, as the sheet shows them.
+    if (a.families && a.families.length) {
+      lines.push('');
+      lines.push('Family balances at close:');
+      a.families.forEach(function (x) {
+        lines.push('  ' + x.name + ' — charged ' + fmt(x.owedCents) + ', paid ' + fmt(x.paidCents) + ', ' +
+          (x.balanceCents < 0 ? 'credit ' + fmt(-x.balanceCents) : 'balance ' + fmt(x.balanceCents)));
+      });
+    }
+    if (a.ledger) {
+      var lt = a.ledger.totals;
+      lines.push('');
+      lines.push('Ledger: ' + lt.entries + ' entries · ' + fmt(lt.inCents) + ' in · ' + fmt(lt.outCents) + ' out · ' + lt.reconciled + ' reconciled');
+      if (a.ledger.trimmed) lines.push(SEASON_LEDGER_TRIMMED);
+      a.ledger.rows.forEach(function (r) {
+        lines.push('  ' + r.d + '  ' + (r.c < 0 ? '-' : '+') + fmt(Math.abs(r.c)) + '  ' + (r.t || '—') +
+          (r.l ? ' [' + r.l + ']' : '') + (r.f ? ' · ' + r.f : '') + (r.r ? ' #' + r.r : ''));
+      });
     }
     return lines.join('\n');
   }
@@ -23451,6 +23608,11 @@
         ? ' Advancement marks are <strong>kept</strong>: they were cleared when the dens advanced, and everything since belongs to the rank each scout is in now.'
         : '') + '</li>' +
       '<li><strong>Family accounts:</strong> ' + esc(closeoutFamilyLine(familyAccountsNow())) + '</li>' +
+      // E3 — what the archive keeps of the ledger, or why it cannot keep all of it.
+      '<li><strong>Ledger:</strong> ' + (arc.ledger.trimmed
+        ? '<strong>too large to keep in full.</strong> ' + esc(SEASON_LEDGER_TRIMMED)
+        : 'Past seasons keeps all ' + arc.ledger.totals.entries + ' entr' + (arc.ledger.totals.entries === 1 ? 'y' : 'ies') +
+          ' and each family\u2019s closing balance (' + arc.families.length + ' famil' + (arc.families.length === 1 ? 'y' : 'ies') + ').') + '</li>' +
       // Wave 19(38b)
       (state.densAdvancedYear === year ? '' :
         '<li>Arrow of Light scouts who crossed over in the spring should already be archived — anyone still active is archived now.</li>') +

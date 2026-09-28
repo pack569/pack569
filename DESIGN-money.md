@@ -359,6 +359,19 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   a warning, not a block, because an unrecorded payment is the worse outcome. Home gives the
   Treasurer a task when the last statement reconciled is more than **35 days** old, or when a
   book never reconciled has an entry that old (`reconcileStale`).
+- **The season archive keeps the ledger and the family balances (E3).** Close-out used to
+  archive totals only, so the year's entries and what each family owed at the end lived only in
+  the downloaded snapshot. A season archive now has `families` (each family's charged, paid and
+  signed balance as the year closed, first names) and `ledger`: `totals` (in, out, entries,
+  reconciled) and compact `rows` — `{ d, c (signed cents), t, l (line name), r (ref), s (source),
+  f (family), b (entered by), k: 1 if reconciled }`, empty keys left out, names rather than ids
+  because the year's lines and roster move on. The archive lives in the pack record, one
+  Firestore document with a 1 MiB limit, so the rows are kept only while the whole record stays
+  under ~700 KB (`ARCHIVE_DOC_SOFT_LIMIT`, measured on the record as it stands plus the new
+  archive — an overestimate, since this year's ledger is about to be cleared). Past that the
+  rows are dropped (`trimmed: true`); the totals and family balances stay, and the close-out
+  preview, the closing toast and Past seasons all say to keep the downloaded JSON. Older
+  archives have neither field and read as they always did.
 
 ---
 
