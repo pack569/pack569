@@ -13240,7 +13240,12 @@
       '<p class="small muted" style="margin:8px 0 0"><strong>Funds in</strong> = carryover (' + fmt(bud.startingBalance) + ') + popcorn commission (' + fmt(bud.commission) +
         (bud.commissionPosted
           ? ' as posted to the ledger' + (bud.commissionEstimate && bud.commissionEstimate !== bud.commission
-            ? ' — sales work out to ' + fmt(bud.commissionEstimate) : '')
+            ? ' — sales work out to ' + fmt(bud.commissionEstimate) +
+              // T6 — a part-payment (the council often pays in two cheques) says what is still to come.
+              // Funds in counts only what has arrived; this is the reminder that more should.
+              (bud.commissionEstimate > bud.commission
+                ? ' — ' + fmt(bud.commissionEstimate - bud.commission) + ' still expected from the council' : '')
+            : '')
           : (bud.commissionKnown ? ' worked out from sales until the council’s payment is posted to the ledger' : ' — set a rate in Season setup above')) + ')' +
       (bud.incomePosted ? ' + other income posted to the ledger (' + fmt(bud.incomePosted) + ')' : '') +
       (bud.retainedCash > 0 ? ' + cash donations kept in full (' + fmt(bud.retainedCash) + ')' : '') +

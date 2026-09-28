@@ -8743,6 +8743,15 @@ test('T5: a carryover entry is not counted as income on top of Starting funds', 
   eq(t.other, 5000, 'the carryover reached Funds in a second time');
 });
 
+test('T6: a part-paid commission says how much is still expected from the council', () => {
+  const card = /function renderBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  const at = card.indexOf("' as posted to the ledger'");
+  ok(at !== -1, 'the posted-commission wording is gone');
+  const bit = card.slice(at, at + 900);
+  ok(/bud\.commissionEstimate > bud\.commission\s*\? ' — ' \+ fmt\(bud\.commissionEstimate - bud\.commission\) \+ ' still expected from the council'/.test(bit),
+    'a part-payment does not say what is still to come');
+});
+
 test('T1: a refund source only survives on money out that names a family', () => {
   const ns = /function normalizeState\(d\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/if \(e\.source === 'refund' && \(e\.direction !== 'out' \|\| !e\.scoutId\)\) e\.source = '';/.test(ns),

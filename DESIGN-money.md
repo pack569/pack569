@@ -237,6 +237,9 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   no family, filed to a line, reached Funds in as other income — on top of Starting funds, which
   is the same money. `ledgerIncomeCents` now skips it. (A family's carried credit has a scout and
   was already reported as *Carried forward*, never Funds in.)
+- **A part-paid commission (T6).** When the posted commission is less than sales work out to,
+  the Funds in line adds "— $Y still expected from the council". Funds in still counts only what
+  has arrived.
 
 ---
 
