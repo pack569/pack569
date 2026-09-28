@@ -8505,7 +8505,7 @@ test('the copied standings name children the way the parent view does, and nobod
 
 test('the storefront day sheet names children by their public names', () => {
   const ctx = vm.createContext({});
-  vm.runInContext(PRIV_STATE + ['shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'daySheetText', 'blocksInDayOrder',
+  vm.runInContext(PRIV_STATE + ['shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'STOREFRONT_SAFETY', 'sheetFirstName', 'daySheetText', 'blocksInDayOrder',
     'blockScoutNames', 'fmtTimeRange', 'fmtClock'].map(slice).join('\n'), ctx);
   const txt = vm.runInContext('daySheetText(state.storefronts[0])', ctx);
   noSurname(txt, 'the day sheet');
@@ -11664,6 +11664,53 @@ test('D1: the council page is a Popcorn section, rolls over, and is NEVER publis
   ok(!leak.test(codeOnly(/function buildICS\(\)[\s\S]*?\n  \}/.exec(SCRIPT)[0])), 'the .ics reads the council record');
   ok(/the council's popcorn dates and the settlement \(`popcornCouncil`, Wave D1\)/.test(SCRIPT), 'the banner does not exclude it');
   ok(/\*\*never\*\* contains:[^]*?the council's popcorn dates and what the pack owes the council\s+\(`popcornCouncil`\)/.test(SETUP), 'SETUP.md does not exclude it');
+});
+
+// D2 (2026-09-28) — two adults count each block's cash; the table's safety rules go on the sheet.
+test('D2: a worked block past its day warns when the cash count lacks two different adults', () => {
+  const ctx = sandbox(['blockCashCheck', 'sheetFirstName']);
+  const w = { assignments: [{ scoutId: 's' }], salesCents: 0, donationsCents: 0 };
+  const chk = (b, today) => ctx.blockCashCheck(Object.assign({}, w, b), '2026-10-10', today || '2026-10-11');
+  eq(chk({}), 'blank', 'no warning with nobody named');
+  eq(chk({ cashCountedBy: 'Keith D' }), 'blank', 'no warning with only one adult');
+  eq(chk({ cashCountedBy: 'Keith  Dougherty', cashVerifiedBy: ' keith dougherty' }), 'same', 'one person as both is not caught');
+  eq(chk({ cashCountedBy: 'Keith', cashVerifiedBy: 'Dana' }), '', 'two adults still warned');
+  eq(chk({}, '2026-10-10'), '', 'a warning on the day itself');
+  eq(ctx.blockCashCheck({ assignments: [], salesCents: 0, donationsCents: 0 }, '2026-10-10', '2026-10-11'), '', 'a warning on an unworked block');
+  eq(ctx.blockCashCheck({ assignments: [], salesCents: 500 }, '2026-10-10', '2026-10-11'), 'blank', 'a block with money but no scouts is not checked');
+  eq([ctx.sheetFirstName(' Keith Dougherty '), ctx.sheetFirstName('')], ['Keith', ''], 'first names');
+  // Stored, normalized, and on every new block.
+  ok(/cashCountedBy: '', cashVerifiedBy: ''/.test(slice('newBlock')), 'a new block has no cash-count fields');
+  ok(/b\.cashCountedBy = typeof b\.cashCountedBy === 'string' \? b\.cashCountedBy : '';/.test(SCRIPT) &&
+    /b\.cashVerifiedBy = typeof b\.cashVerifiedBy === 'string' \? b\.cashVerifiedBy : '';/.test(SCRIPT), 'the cash count is not normalized');
+  const rb = slice('renderBlock');
+  ok(/data-ch="b-cash-counted"/.test(rb) && /data-ch="b-cash-verified"/.test(rb) && /blockCashCheck\(b, sf\.date, todayISO\(\)\)/.test(rb),
+    'the block editor has no cash-count fields or warning');
+  ok(/if \(ch === 'b-cash-counted'\) \{ b\.cashCountedBy = el\.value;/.test(SCRIPT) && /if \(ch === 'b-cash-verified'\) \{ b\.cashVerifiedBy = el\.value;/.test(SCRIPT),
+    'the fields are not stored');
+});
+
+test('D2: the day sheet carries the safety rules and the cash count, first names only, and nothing is published', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(PRIV_STATE + ['shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'STOREFRONT_SAFETY', 'sheetFirstName', 'daySheetText',
+    'blocksInDayOrder', 'blockScoutNames', 'fmtTimeRange', 'fmtClock'].map(slice).join('\n'), ctx);
+  vm.runInContext("state.storefronts[0].blocks[0].cashCountedBy = 'Dana Quenneville'; state.storefronts[0].blocks[0].cashVerifiedBy = 'Sam Hartwellington';", ctx);
+  const txt = vm.runInContext('daySheetText(state.storefronts[0])', ctx);
+  const rule = 'Buddy system · an adult at the table at all times · never go inside a customer’s home · no door-to-door alone';
+  eq(ctx.STOREFRONT_SAFETY, rule, 'the safety line');
+  const nBlocks = vm.runInContext('state.storefronts[0].blocks.length', ctx);
+  eq(txt.split('\n').filter((l) => l.trim() === rule).length, nBlocks + 1, 'the safety line is not on the sheet and on every shift');
+  ok(/Cash counted by Dana {3}Verified by Sam/.test(txt), 'the cash count is not on the sheet by first name');
+  ok(!/Quenneville|Hartwellington/.test(txt), 'a last name is on the day sheet');
+  ok(/Cash counted by ______ {3}Verified by ______/.test(txt), 'an unnamed block has no blanks to fill in');
+  const rd = slice('renderDaySheet');
+  ok((rd.match(/esc\(STOREFRONT_SAFETY\)/g) || []).length === 2, 'the printed sheet lacks the safety line at the top or on a shift');
+  ok(/sheetFirstName\(b\.cashCountedBy\)/.test(rd) && /sheetFirstName\(b\.cashVerifiedBy\)/.test(rd), 'the printed sheet does not use first names');
+  // Leaders only.
+  ok(!/cashCountedBy|cashVerifiedBy|blockCashCheck/.test(codeOnly(BPV())), 'buildParentView reads the cash count');
+  for (const f of ['monthlyDigest', 'parentShiftLines']) ok(!/cashCountedBy|cashVerifiedBy/.test(codeOnly(slice(f))), f + ' reads the cash count');
+  ok(/`cashCountedBy`, `cashVerifiedBy`, D2/.test(SCRIPT), 'the banner does not exclude the cash count');
+  ok(/\*\*never\*\* contains:[^]*?who counted and verified a storefront's cash/.test(SETUP), 'SETUP.md does not exclude the cash count');
 });
 
 /* ---------------- report ---------------- */

@@ -4370,6 +4370,9 @@
           // Wave 17 — cash-box sanity: "of which card" portion of a block's total.
           // A reconciliation aid only — no other math consumes it.
           b.cardCents = (typeof b.cardCents === 'number' && isFinite(b.cardCents) && b.cardCents > 0) ? Math.round(b.cardCents) : 0;
+          // Wave D2 — the two adults who counted the cash. Free text; leaders only.
+          b.cashCountedBy = typeof b.cashCountedBy === 'string' ? b.cashCountedBy : '';
+          b.cashVerifiedBy = typeof b.cashVerifiedBy === 'string' ? b.cashVerifiedBy : '';
         });
         // Wave 22 — recorded weather, shape-checked here and nowhere else. A record whose tag
         // isn't one of the four is DROPPED rather than kept as a broken half-value:
@@ -9424,6 +9427,7 @@
   //   each pack meeting's agenda (`ev.agenda`), its Recognition list (packRecognition) and the
   //   printed leaders' copy of the agenda,
   //   the council's popcorn dates and the settlement (`popcornCouncil`, Wave D1),
+  //   who counted and verified each storefront block's cash (`cashCountedBy`, `cashVerifiedBy`, D2),
   //   and `state` in any raw form.
   //
   // Pure: it reads only the state it is given. `state` is swapped for the duration so the
@@ -10213,7 +10217,9 @@
   function newBlock(n, start, end) {
     // Wave 16: adults = leader ids (state.leaders) staffing this block, for two-deep tracking.
     // Wave 17: cardCents = "of which card" portion of the block total (cash-box sanity aid).
-    return { id: uid(), label: 'Block ' + n, start: start || '', end: end || '', assignments: [], salesCents: 0, donationsCents: 0, cardCents: 0 };
+    // Wave D2: cashCountedBy / cashVerifiedBy = the two adults who counted the cash box.
+    return { id: uid(), label: 'Block ' + n, start: start || '', end: end || '', assignments: [], salesCents: 0, donationsCents: 0, cardCents: 0,
+      cashCountedBy: '', cashVerifiedBy: '' };
   }
   function addStorefront(name, date) {
     state.storefronts.push({
@@ -12967,6 +12973,27 @@
     return esc(t.label) + (w.source === 'forecast' ? ' <span class="muted">(forecast)</span>' : '');
   }
 
+  /* ----- Wave D2: the cash count, and the table's safety line (2026-09-28) -----------------
+     Two adults count a block's cash box: one counts, the other checks. Each block records both
+     (cashCountedBy, cashVerifiedBy — free text, as the leader types them). LEADERS ONLY: never
+     in buildParentView, and the day sheet (a leaders' copy) prints first names only. */
+  // The table rules, printed on the day sheet and on each shift in it. One string, so the
+  // sheet and its text copy cannot drift.
+  var STOREFRONT_SAFETY = 'Buddy system \u00b7 an adult at the table at all times \u00b7 never go inside a customer\u2019s home \u00b7 no door-to-door alone';
+  // What is wrong with a block's cash count, once the storefront's day has passed: 'blank' when
+  // either adult is missing, 'same' when one person is both; '' when it is fine, when the day has
+  // not passed yet, or when the block was never worked (no scouts, no money). Pure.
+  function blockCashCheck(b, sfDate, today) {
+    if (!b || !sfDate || !(today > sfDate)) return '';
+    var worked = (b.assignments || []).length > 0 || (b.salesCents || 0) + (b.donationsCents || 0) > 0;
+    if (!worked) return '';
+    var a = String(b.cashCountedBy || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    var v = String(b.cashVerifiedBy || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    if (!a || !v) return 'blank';
+    return a === v ? 'same' : '';
+  }
+  // An adult's name as the day sheet prints it: first name only. '' stays '' (a blank to fill).
+  function sheetFirstName(n) { return String(n || '').trim().split(/\s+/)[0] || ''; }
   function renderBlock(sf, b) {
     var roster = activeScouts();
     var assignedIds = b.assignments.map(function (a) { return a.scoutId; });
@@ -13032,6 +13059,15 @@
       (state.cashThroughTrailsEnd
         ? 'Cash donations are being entered as Heroes &amp; Helpers, so they earn commission too.'
         : 'The pack keeps cash donations in full.') + '</p>';
+
+    // Wave D2 — the cash count: two adults, both named.
+    h += '<div class="row" style="margin-top:10px">' +
+      '<label class="fld">Cash counted by<input data-ch="b-cash-counted" data-sf="' + sf.id + '" data-id="' + b.id + '" value="' + esc(b.cashCountedBy || '') + '" placeholder="Adult\u2019s name" style="width:160px"></label>' +
+      '<label class="fld">Verified by<input data-ch="b-cash-verified" data-sf="' + sf.id + '" data-id="' + b.id + '" value="' + esc(b.cashVerifiedBy || '') + '" placeholder="A second adult" style="width:160px"></label>' +
+      '</div>';
+    var cashChk = blockCashCheck(b, sf.date, todayISO());
+    if (cashChk === 'blank') h += '<p class="warn small" style="margin:8px 0 0">Name both adults who counted this block\u2019s cash \u2014 one counts, a second checks.</p>';
+    else if (cashChk === 'same') h += '<p class="warn small" style="margin:8px 0 0">The same person counted and verified this cash. A second adult has to check it.</p>';
 
     if (hasMoney && !b.assignments.length) {
       h += '<p class="warn" style="margin:10px 0 0">Money is entered but no scouts are assigned — nobody is getting credit for this block yet.</p>';
@@ -20466,6 +20502,7 @@
     lines.push((state.packName || 'Pack') + ' — ' + (sf.name || 'Storefront') + ' day sheet');
     lines.push(fmtDate(sf.date));
     lines.push(DAY_SHEET_KEEP);
+    lines.push(STOREFRONT_SAFETY);
     blocksInDayOrder(sf).forEach(function (b) {
       lines.push('');
       var rng = fmtTimeRange(b.start, b.end);
@@ -20473,7 +20510,11 @@
       var dsScouts = blockScoutNames(b, pub);
       lines.push('  Scouts: ' + (dsScouts.length ? dsScouts.join(', ') : '—'));
       lines.push('  (each scout is accompanied by their parent)');
+      lines.push('  ' + STOREFRONT_SAFETY);
       lines.push('  Trail’s End $ ______   Cash donations $ ______');
+      // Wave D2 — first names only, or a blank to fill in at the table.
+      lines.push('  Cash counted by ' + (sheetFirstName(b.cashCountedBy) || '______') +
+        '   Verified by ' + (sheetFirstName(b.cashVerifiedBy) || '______'));
     });
     lines.push('');
     lines.push('Two-deep leadership required at all times.');
@@ -20492,14 +20533,19 @@
       '<div class="row" style="gap:10px;margin-bottom:2px"><span class="fleur">' + FLEUR + '</span>' +
       '<h1 style="margin:0">' + esc(state.packName || 'Pack') + ' — ' + esc(sf.name || 'Storefront') + '</h1></div>' +
       '<p class="muted small" style="margin:0 0 4px">Day sheet · ' + esc(fmtDate(sf.date)) + '</p>' +
-      '<p class="small" style="margin:0 0 14px"><strong>' + esc(DAY_SHEET_KEEP) + '</strong></p>';
+      '<p class="small" style="margin:0 0 4px"><strong>' + esc(DAY_SHEET_KEEP) + '</strong></p>' +
+      '<p class="small" style="margin:0 0 14px">' + esc(STOREFRONT_SAFETY) + '</p>';
     blocksInDayOrder(sf).forEach(function (b) {
       var rng = fmtTimeRange(b.start, b.end);
       var dsScouts = blockScoutNames(b, pub);
       h += '<div class="block-card" style="margin-bottom:10px">' +
         '<p class="eyebrow" style="margin:0 0 6px">' + esc(b.label) + (rng ? ' · ' + esc(rng) : '') + '</p>' +
         '<p class="small" style="margin:0 0 4px"><strong>Scouts:</strong> ' + (dsScouts.length ? esc(dsScouts.join(', ')) : '<span class="muted">none assigned</span>') + '</p>' +
+        '<p class="small" style="margin:0 0 4px">' + esc(STOREFRONT_SAFETY) + '</p>' +
         '<p class="small money" style="margin:8px 0 0">Trail’s End $ ________&nbsp;&nbsp;&nbsp;Cash donations $ ________</p>' +
+        // Wave D2 — the two adults who count the cash box. First names only; blanks to fill in.
+        '<p class="small" style="margin:6px 0 0">Cash counted by ' + (esc(sheetFirstName(b.cashCountedBy)) || '________') +
+        '&nbsp;&nbsp;&nbsp;Verified by ' + (esc(sheetFirstName(b.cashVerifiedBy)) || '________') + '</p>' +
         '</div>';
     });
     h += '<p class="small" style="margin:6px 0 0"><strong>Two-deep leadership required at all times.</strong></p>' +
@@ -25105,6 +25151,8 @@
     if (ch === 'b-end') { b.end = el.value.trim(); commit(); return; }
     if (ch === 'b-sales') { b.salesCents = toCents(el.value); commit(); return; }
     if (ch === 'b-don') { b.donationsCents = toCents(el.value); commit(); return; }
+    if (ch === 'b-cash-counted') { b.cashCountedBy = el.value; commit(); return; }
+    if (ch === 'b-cash-verified') { b.cashVerifiedBy = el.value; commit(); return; }
     if (ch === 'weight') {
       var a = b.assignments.find(function (x) { return x.scoutId === el.dataset.scout; });
       if (a) {
