@@ -19531,6 +19531,26 @@
     return { advanced: advanced, crossed: crossed };
   }
 
+  // What the close-out does to family accounts, in one sentence for the preview (T3). The
+  // treasurer's review found credits dropped with nothing on screen to say so; whatever
+  // rolloverYear carries, this says, from the same accounts (familyAccountsNow, balance ≠ 0). Pure.
+  function closeoutFamilyLine(accounts) {
+    var owe = 0, owedC = 0, cred = 0, credC = 0;
+    (accounts || []).forEach(function (a) {
+      if (a.balance > 0) { owe++; owedC += a.balance; } else if (a.balance < 0) { cred++; credC -= a.balance; }
+    });
+    if (!owe && !cred) return 'Every family account is square, so no balance comes forward.';
+    var parts = [];
+    if (owe) {
+      parts.push(owe + (owe === 1 ? ' family’s unpaid balance (' : ' families’ unpaid balances (') + fmt(owedC) + ') ' +
+        (owe === 1 ? 'comes' : 'come') + ' forward as Prior-year balance');
+    }
+    if (cred) {
+      parts.push(cred + (cred === 1 ? ' family’s credit (' : ' families’ credits (') + fmt(credC) + ') ' +
+        (cred === 1 ? 'comes' : 'come') + ' forward');
+    }
+    return parts.join('; ') + '.';
+  }
   // What carries into next year as "Starting funds". TREASURER'S AUDIT, 2026-09-27 (M2): this
   // used to be the Budget's projection whatever the book said — a figure built from the plan and
   // an estimate of commission — while the new ledger opened at the reconciled bank balance. Two
@@ -19726,8 +19746,14 @@
     //
     // A family in CREDIT comes forward as a payment dated the day before the new book opens:
     // an entry before the opening date is in the family's account but not in the bank balance,
-    // which already holds that money (DESIGN-money decision 12). Only when the book HAS an
-    // opening date — without one there is no "before", and the credit would count as new cash.
+    // which already holds that money (DESIGN-money decision 12).
+    //
+    // Treasurer's review (T3) — ALWAYS, opening date or not. This used to require one, so a pack
+    // that never set an opening balance lost every family's credit at close-out, silently. The
+    // entry is dated the day before the program year starts, which is where "Start from the
+    // carryover figure" opens the book — so the day that pack sets its opening balance, the credit
+    // is already before it. Until then it is inside the ledger's net movement, which is not a bank
+    // balance anyway; and it is never Funds in (chargeTotals reports it as carried).
     var carryLabel = 'Prior-year balance (' + closingYear + '–' + String(closingYear + 1).slice(2) + ')';
     closingAccounts.forEach(function (a) {
       var members = state.scouts.filter(function (sc) { return familyKeyOf(sc) === a.key; });
@@ -19739,9 +19765,9 @@
           amountCents: a.balance, date: programYearStartISO(b.programYear),
           label: carryLabel, waivedBy: '', forgiven: null
         });
-      } else if (a.balance < 0 && closingBankKnown) {
+      } else if (a.balance < 0) {
         state.ledger.push({
-          id: uid(), date: priorDayISO(state.book.openingDate),
+          id: uid(), date: priorDayISO(programYearStartISO(b.programYear)),
           description: 'Prior-year credit carried forward', amountCents: -a.balance, direction: 'in',
           lineId: '', method: '', ref: '', source: 'carryover', donor: '', scoutId: to,
           tierMakeup: '', reconciled: false
@@ -20029,12 +20055,16 @@
       (state.densAdvancedYear === year
         ? 'den advancement is <strong>skipped</strong> — dens were already advanced for ' + year + ' from Pack'
         : 'scouts move up one den (Arrow of Light scouts are archived as crossed over)') +
-      '; and season data — storefronts, sales entries, meetings, RSVPs, attendance, dues collections, ' +
+      // T3 — this listed the dues among what is cleared, which read as though what families owe is wiped. The year's
+      // charges and ledger go (into the archive and the snapshot); the BALANCES come forward, and
+      // the next item says exactly which.
+      '; and season data — storefronts, sales entries, meetings, RSVPs, attendance, this year’s charges and ledger entries, ' +
       (state.densAdvancedYear === year ? '' : 'advancement marks, ') +
       'derby, fundraiser sales, and inventory hand-outs — is cleared.' +
       (state.densAdvancedYear === year
         ? ' Advancement marks are <strong>kept</strong>: they were cleared when the dens advanced, and everything since belongs to the rank each scout is in now.'
         : '') + '</li>' +
+      '<li><strong>Family accounts:</strong> ' + esc(closeoutFamilyLine(familyAccountsNow())) + '</li>' +
       // Wave 19(38b)
       (state.densAdvancedYear === year ? '' :
         '<li>Arrow of Light scouts who crossed over in the spring should already be archived — anyone still active is archived now.</li>') +

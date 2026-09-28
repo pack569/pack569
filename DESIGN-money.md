@@ -159,9 +159,8 @@ outliving, or being counted beside, the thing they belonged to. What changed, it
   balance (2026–27)*; `syncCharges` keeps line-less charges, since nothing raises them.
   Crossed-over and archived scouts' families come forward too, under *Former scouts with a
   balance*. A family **in credit** comes forward as a `carryover` payment dated the day before the
-  new book opens — in the family's account, not in the bank twice (decision 12). Only when the
-  new book has an opening date: without one there is no "before", so a pack that never set an
-  opening balance does not get its credits carried, and the treasurer should re-enter them.
+  new book opens — in the family's account, not in the bank twice (decision 12). (This first
+  required an opening date and dropped credits without one; see T3 below.)
   A carried credit settles charges but is reported as *Carried forward*, not *Received*, and stays
   out of Funds in — it is already inside the carryover. A former family whose balance was
   **forgiven** stays listed, so the decision can be read and undone.
@@ -216,6 +215,16 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   with an opening date carries its bank balance. It now shows
   `closingCarryover(projection, bookBalance(), bank known)` — the figure `rolloverYear` will
   carry, decided the same way — and says whether that is the bank balance or the projection.
+- **Credits vanished without an opening date, and said nothing (T3).** M4 carried a family's
+  credit only when the closing book had an opening date, so a pack that never set one lost every
+  credit at close-out with nothing on screen. The credit now always comes forward, dated the day
+  before the program year starts — which is where *Start from the carryover figure* opens the
+  book, so once that pack sets its opening balance the credit is already before it. Until then it
+  sits in the ledger's net movement, which is not a bank balance anyway, and it is never Funds in.
+  The close-out preview now has a *Family accounts* line (`closeoutFamilyLine`): "N families'
+  unpaid balances ($X) come forward as Prior-year balance; M families' credits ($Y) come forward."
+  It no longer lists the dues among what is cleared; it says the year's charges and ledger entries
+  are.
 
 ---
 

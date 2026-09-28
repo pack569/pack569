@@ -8681,6 +8681,29 @@ test('T2: the close-out preview names the starting funds rolloverYear will actua
   ok(/' \+ coCarryLine \+ '/.test(ov), 'the carry line is not in the list');
 });
 
+test('T3: a family credit comes forward even when the book had no opening date, and the preview says so', () => {
+  const fn = /function rolloverYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/\} else if \(a\.balance < 0\) \{/.test(fn) && !/a\.balance < 0 && closingBankKnown/.test(fn),
+    'a credit is dropped when the closing book had no opening date');
+  // Dated before the program year starts — where "Start from the carryover figure" opens the book —
+  // not off state.book.openingDate, which a pack with no opening balance does not have.
+  ok(/date: priorDayISO\(programYearStartISO\(b\.programYear\)\)/.test(fn) && !/priorDayISO\(state\.book\.openingDate\)/.test(fn),
+    'the carried credit is dated off an opening date that may not exist');
+  ok(fn.indexOf('b.programYear += 1;') < fn.indexOf('priorDayISO(programYearStartISO(b.programYear))'),
+    'the credit is dated in the closing year, not before the new one');
+  const use = /data-act="ledger-use-carryover"/.test(SCRIPT) &&
+    /if \(act === 'ledger-use-carryover'\) \{[\s\S]*?programYearStartISO\(state\.budget\.programYear\)/.test(SCRIPT);
+  ok(use, 'the carryover button no longer opens the book on the first day of the program year');
+  const ctx = sandbox(['fmt', 'closeoutFamilyLine']);
+  eq(ctx.closeoutFamilyLine([{ balance: 4500 }, { balance: 1000 }, { balance: -2000 }, { balance: 0 }]),
+    '2 families’ unpaid balances ($55.00) come forward as Prior-year balance; 1 family’s credit ($20.00) comes forward.',
+    'the preview line');
+  eq(ctx.closeoutFamilyLine([{ balance: 0 }]), 'Every family account is square, so no balance comes forward.', 'all square');
+  const ov = /function renderCloseoutOverlay\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/closeoutFamilyLine\(familyAccountsNow\(\)\)/.test(ov), 'the preview does not say what happens to family balances');
+  ok(!/dues collections/.test(ov), 'the preview still says dues collections are cleared');
+});
+
 test('T1: a refund source only survives on money out that names a family', () => {
   const ns = /function normalizeState\(d\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/if \(e\.source === 'refund' && \(e\.direction !== 'out' \|\| !e\.scoutId\)\) e\.source = '';/.test(ns),
@@ -8802,9 +8825,8 @@ test('M4: a family’s open balance survives the year-end as one prior-year char
   ok(/lineId: '', who: 'scout', seq: 0,\s*amountCents: a\.balance/.test(fn), 'the carried charge is not the family’s net balance on no line');
   ok(/label: carryLabel/.test(fn), 'the carried charge is not named');
   // A credit is a payment BEFORE the opening date: in the family's account, not in the bank twice.
-  ok(/source: 'carryover', donor: '', scoutId: to/.test(fn) && /date: priorDayISO\(state\.book\.openingDate\)/.test(fn),
+  ok(/source: 'carryover', donor: '', scoutId: to/.test(fn) && /date: priorDayISO\(programYearStartISO\(b\.programYear\)\)/.test(fn),
     'a family credit is lost at close-out, or lands inside the new bank balance');
-  ok(/a\.balance < 0 && closingBankKnown/.test(fn), 'a credit is carried into a book with no opening date');
   // syncCharges must not drop what it did not raise.
   const sc = /function syncCharges\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/if \(!c\.lineId\) return true;/.test(sc), 'syncCharges drops a prior-year balance on the next commit');
