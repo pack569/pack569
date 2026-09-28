@@ -6661,6 +6661,11 @@
   // Elective names drop the rank suffix ("Let's Camp! Wolf" → "Let's Camp!") — the den
   // supplies the rank. Lions have no BB Gun and no Summertime Fun electives (per program).
   // VERIFY against the current handbook each year — adventures get added and renamed.
+  // ADVENTURES_VERIFIED is when that was last done, like SA_FEES.verified: whoever re-checks
+  // the lists below against scouting.org sets it to that day. It drives a July Home task for
+  // the Advancement Chair (adventureCheckDue). 2026-07-18 is the day this list was entered from
+  // the sources above (the commit that added it); nobody has re-checked it since.
+  var ADVENTURES_VERIFIED = '2026-07-18';
   var ADVENTURES = {
     'Lion': {
       required: ['Bobcat', 'King of the Jungle', "Lion's Pride", 'Mountain Lion', 'Fun on the Run', "Lion's Roar"],
@@ -15040,6 +15045,18 @@
   //   whenever — true but never worth interrupting for; disclosure only
   var TIER_ORDER = { now: 0, week: 1, whenever: 2 };
 
+  // The yearly adventure-list check (see ADVENTURES_VERIFIED). July is when the pack plans the
+  // year, and the handbook changes land over the summer, so the task only shows in July, and
+  // only when the list was last checked 12 or more CALENDAR months ago. Counted in months, not
+  // days: checked on July 18, a day count would hide the task until July 19 next year and give
+  // it twelve days of July to be seen in.
+  function adventureCheckDue(verifiedISO, today) {
+    var v = String(verifiedISO || ''), t = String(today || '');
+    if (!/^\d{4}-\d{2}/.test(t) || t.slice(5, 7) !== '07') return false;
+    if (!/^\d{4}-\d{2}/.test(v)) return true;   // never checked
+    var months = (+t.slice(0, 4) * 12 + +t.slice(5, 7)) - (+v.slice(0, 4) * 12 + +v.slice(5, 7));
+    return months >= 12;
+  }
   // Every open item in the pack, tagged with the job that owns it. Pure read.
   // Each task: { job, tier, title, detail, tab, section }.
   function homeTasks() {
@@ -15190,6 +15207,12 @@
     if (shop.total) {
       add('advancement', 'week', shop.total + ' award' + (shop.total === 1 ? '' : 's') + ' ready to buy',
         'Not yet marked as awarded', 'scouts', 'advancement');
+    }
+    // Yearly: the adventure lists are hard-coded, and a renamed or new adventure is a den
+    // leader typing one the app then calls off-list. The fix is an edit to ADVENTURES here.
+    if (adventureCheckDue(ADVENTURES_VERIFIED, today)) {
+      add('advancement', 'whenever', 'Check the Cub Scout adventure list against scouting.org for this year',
+        'Last checked ' + fmtDate(ADVENTURES_VERIFIED) + ' · new or renamed adventures need the app updated', 'scouts', 'advancement');
     }
     return out;
   }

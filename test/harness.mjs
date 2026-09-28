@@ -10463,6 +10463,23 @@ test('A7: a reimbursement row says which sibling earned it, and only when that i
   ok(!/reimbEarnerNote/.test(BPV()), 'the earner note reached the parent view');
 });
 
+// A5 — the yearly adventure-list check.
+test('A5: the adventure list carries a verified date, and the July check reads it', () => {
+  const ctx = sandbox(['ADVENTURES_VERIFIED', 'adventureCheckDue']);
+  ok(/^\d{4}-\d{2}-\d{2}$/.test(ctx.ADVENTURES_VERIFIED), 'ADVENTURES_VERIFIED is not an ISO date');
+  const due = ctx.adventureCheckDue;
+  eq(due('2026-07-18', '2027-07-01'), true, 'twelve months on, in July');
+  eq(due('2026-07-18', '2027-07-31'), true, 'late July');
+  eq(due('2026-07-18', '2026-07-30'), false, 'checked this July');
+  eq(due('2026-09-01', '2027-07-15'), false, 'ten months is not a year');
+  eq(due('2025-07-01', '2026-08-01'), false, 'only a July task');
+  eq(due('2025-07-01', '2026-06-30'), false, 'June is not July');
+  eq(due('', '2026-07-10'), true, 'a list never checked is due');
+  const fn = /function homeTasks\(\) \{[\s\S]*?\n    return out;\n  \}/.exec(SCRIPT)[0];
+  ok(/adventureCheckDue\(ADVENTURES_VERIFIED, today\)\) \{\s*add\('advancement'/.test(fn),
+    'the Home task is not wired to the advancement job');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
