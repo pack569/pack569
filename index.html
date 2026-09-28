@@ -3273,7 +3273,8 @@
      PDF nobody had open. One record, leaders only:
          state.popcornCouncil = {
            dates: { finalTakeOrders: { date, note }, rewards: {…}, pickup: {…}, payment: {…},
-                    commissionDrop: {…} },       ISO date or '', and a free note
+                    commissionDrop: {…}, patchOrderOpens, patchOrderCloses, partyRegistration,
+                    giftCardPoints },            ISO date or '', and a free note
            takeOrderCents,                        take-order product picked up (post-dated check)
            cardCollectedCents,                    card and app sales Trail's End already collected
            commissionCents,                       null = worked out at the order's rate; a number
@@ -3309,7 +3310,14 @@
     { key: 'payment', label: 'Payment due to the council', seed: '2026-12-02' },
     // The council's own wording, which does not say whether "10%" is ten points off the rate or
     // a tenth of it — so the app never calculates the drop (councilPaymentWarning).
-    { key: 'commissionDrop', label: 'Unit commission drops by 10% if not paid (council\u2019s wording; ask whether that\u2019s 10 points or a tenth) [verify with council]', seed: '2026-12-03' }
+    { key: 'commissionDrop', label: 'Unit commission drops by 10% if not paid (council\u2019s wording; ask whether that\u2019s 10 points or a tenth) [verify with council]', seed: '2026-12-03' },
+    // Popcorn Kernel review (2026-09-28) — the council's optional extras. `added: true` = these
+    // came after the first five, so a record that has never had the key is seeded with it
+    // (normalizePopcornCouncil); a key that is present, even blank, is the leader's and is kept.
+    { key: 'patchOrderOpens', label: 'Patch and pin ordering opens', seed: '2026-11-16', added: true },
+    { key: 'patchOrderCloses', label: 'Patch and pin ordering closes', seed: '2026-12-07', added: true },
+    { key: 'partyRegistration', label: 'Council party registration closes', seed: '2026-12-02', added: true },
+    { key: 'giftCardPoints', label: 'Gift-card points must be redeemed in the Trail\u2019s End app by', seed: '2027-03-31', added: true }
   ];
   var POPCORN_COUNCIL_VERIFY = '[verify with council]';
   function freshPopcornCouncil() {
@@ -3319,14 +3327,20 @@
       statementBalanceCents: null, paidOn: '' };
   }
   // Absent → the seed. Present → known dates only, ISO or '', strings for notes, whole
-  // non-negative cents (the statement balance may be negative: a payout). A date key a record
-  // lacks comes back blank, not seeded: a leader who cleared a date meant it. An old
+  // non-negative cents (the statement balance may be negative: a payout). One of the first five
+  // date keys a record lacks comes back blank, not seeded: a leader who cleared a date meant it.
+  // An `added` date the record has never had is seeded (marked to verify) — that's the only way
+  // a live pack gets it; once present, even blank, it is the leader's. An old
   // `returnsCents` is dropped — NEGA's Show & Sell takes no returns.
   function normalizePopcornCouncil(pc) {
     if (!pc || typeof pc !== 'object' || Array.isArray(pc)) return freshPopcornCouncil();
     var src = (pc.dates && typeof pc.dates === 'object' && !Array.isArray(pc.dates)) ? pc.dates : {};
     var dates = {};
     POPCORN_COUNCIL_DATES.forEach(function (d) {
+      if (d.added && !Object.prototype.hasOwnProperty.call(src, d.key)) {
+        dates[d.key] = { date: d.seed, note: POPCORN_COUNCIL_VERIFY };
+        return;
+      }
       var v = (src[d.key] && typeof src[d.key] === 'object') ? src[d.key] : {};
       dates[d.key] = { date: campIsoOrBlank(v.date), note: typeof v.note === 'string' ? v.note : '' };
     });

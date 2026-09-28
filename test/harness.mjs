@@ -11657,8 +11657,11 @@ test('F2: every label class that wraps a checkbox resets the global field height
 test('D1: the council dates are seeded once from the 2026 schedule, marked to verify, and normalized', () => {
   const ctx = sandbox(NORMALIZE_FNS);
   const seed = ctx.freshPopcornCouncil();
-  eq(Object.keys(seed.dates), ['finalTakeOrders', 'rewards', 'pickup', 'payment', 'commissionDrop'], 'the dates');
-  eq(Object.values(seed.dates).map((d) => d.date), ['2026-11-01', '2026-11-04', '2026-11-13', '2026-12-02', '2026-12-03'], 'the seeded dates');
+  const KEYS = ['finalTakeOrders', 'rewards', 'pickup', 'payment', 'commissionDrop',
+    'patchOrderOpens', 'patchOrderCloses', 'partyRegistration', 'giftCardPoints'];
+  eq(Object.keys(seed.dates), KEYS, 'the dates');
+  eq(Object.values(seed.dates).map((d) => d.date), ['2026-11-01', '2026-11-04', '2026-11-13', '2026-12-02', '2026-12-03',
+    '2026-11-16', '2026-12-07', '2026-12-02', '2027-03-31'], 'the seeded dates');
   ok(Object.values(seed.dates).every((d) => d.note === '[verify with council]'), 'a seeded date is not marked to verify');
   eq([seed.takeOrderCents, seed.cardCollectedCents, seed.commissionCents, seed.statementBalanceCents, seed.paidOn], [0, 0, null, null, ''],
     'a fresh settlement');
@@ -11672,12 +11675,24 @@ test('D1: the council dates are seeded once from the 2026 schedule, marked to ve
     dates: { rewards: { date: '2026-11-05', note: 'checked' }, payment: { date: 'Dec 2' }, bogus: { date: '2026-01-01' } },
     returnsCents: 20000, takeOrderCents: -5, cardCollectedCents: 'x', commissionCents: '12', statementBalanceCents: -1234.4, paidOn: 7, secret: 1 } }));
   const pc = out.popcornCouncil;
-  eq(Object.keys(pc.dates), ['finalTakeOrders', 'rewards', 'pickup', 'payment', 'commissionDrop'], 'unknown dates survived');
+  eq(Object.keys(pc.dates), KEYS, 'unknown dates survived');
   eq([pc.dates.rewards.date, pc.dates.rewards.note, pc.dates.payment.date, pc.dates.pickup.date], ['2026-11-05', 'checked', '', ''],
     'dates were not coerced, or a missing one was re-seeded');
   eq([pc.returnsCents, pc.takeOrderCents, pc.cardCollectedCents, pc.commissionCents, pc.statementBalanceCents, pc.paidOn, pc.secret],
     [undefined, 0, 0, null, -1234, '', undefined], 'the settlement was not coerced, or an old returns figure survived');
   eq(ctx.normalizePopcornCouncil({ commissionCents: 0 }).commissionCents, 0, 'a statement commission of $0 was lost');
+  // Kernel review — the optional extras reach a live record once, only where the key is missing.
+  eq(['patchOrderOpens', 'patchOrderCloses', 'partyRegistration', 'giftCardPoints'].map((k) => [pc.dates[k].date, pc.dates[k].note]),
+    [['2026-11-16', '[verify with council]'], ['2026-12-07', '[verify with council]'], ['2026-12-02', '[verify with council]'],
+     ['2027-03-31', '[verify with council]']], 'an existing record did not get the extra dates, marked to verify');
+  const kept = ctx.normalizePopcornCouncil({ dates: { patchOrderOpens: { date: '', note: '' }, giftCardPoints: { date: '2027-03-30', note: 'checked' } } });
+  eq([kept.dates.patchOrderOpens.date, kept.dates.giftCardPoints.date, kept.dates.giftCardPoints.note], ['', '2027-03-30', 'checked'],
+    'a cleared or checked extra date was re-seeded');
+  ok(ctx.POPCORN_COUNCIL_DATES.filter((d) => d.added).length === 4 && ctx.POPCORN_COUNCIL_DATES.slice(0, 5).every((d) => !d.added),
+    'the added flag is on the wrong dates');
+  const extra = ctx.POPCORN_COUNCIL_DATES.slice(5).map((d) => d.label).join(' | ');
+  ['Patch and pin ordering opens', 'Patch and pin ordering closes', 'Council party registration closes', 'redeemed in the Trail’s End app']
+    .forEach((w) => ok(extra.includes(w), 'no council date for ' + w));
   ok(/popcornCouncil: freshPopcornCouncil\(\)/.test(slice('freshState')), 'a new pack has no council dates');
   // Read by normalizeState, so declared above `var state = load()`.
   const load = /^  var state = load\(\);/m.exec(SCRIPT).index;
@@ -11691,7 +11706,9 @@ test('D1: the countdown, the tier nudge, and last season\'s dates', () => {
   const pc = ctx.freshPopcornCouncil();
   eq(ctx.nextCouncilDate(pc, '2026-09-28').key, 'finalTakeOrders', 'the next date');
   eq(ctx.nextCouncilDate(pc, '2026-11-04').key, 'rewards', 'a date today is not "next"');
-  eq(ctx.nextCouncilDate(pc, '2026-12-04'), null, 'a date after the last one');
+  eq(ctx.nextCouncilDate(pc, '2026-12-04').key, 'patchOrderCloses', 'the next date in December');
+  eq(ctx.nextCouncilDate(pc, '2026-12-08').key, 'giftCardPoints', 'the gift-card deadline is not next after the sale');
+  eq(ctx.nextCouncilDate(pc, '2027-04-01'), null, 'a date after the last one');
   pc.dates.pickup.date = '';
   eq(ctx.councilDateList(pc).map((d) => d.key).pop(), 'pickup', 'an undated date is not listed last');
   const tiers = [{ name: 'Dues', dueBy: '2026-10-31' }, { name: 'Shirt', dueBy: '2026-11-15' }, { name: 'Patch', dueBy: '' }];
