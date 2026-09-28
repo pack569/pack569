@@ -8732,6 +8732,17 @@ test('T4: an income-line cheque that may be the commission is asked about, and $
     /so it isn’t counted twice/.test(card), 'the Budget card does not ask');
 });
 
+test('T5: a carryover entry is not counted as income on top of Starting funds', () => {
+  const ctx = sandbox(LEDGER_FNS);
+  const isInc = (id) => id === 'INC';
+  const t = ctx.ledgerIncomeCents([
+    entry({ direction: 'in', source: 'carryover', amountCents: 42000, lineId: 'INC' }),
+    entry({ direction: 'in', source: 'carryover', amountCents: 1000, lineId: 'CAMP' }),
+    entry({ direction: 'in', source: 'fundraiser', amountCents: 5000, lineId: 'INC' })
+  ], isInc);
+  eq(t.other, 5000, 'the carryover reached Funds in a second time');
+});
+
 test('T1: a refund source only survives on money out that names a family', () => {
   const ns = /function normalizeState\(d\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/if \(e\.source === 'refund' && \(e\.direction !== 'out' \|\| !e\.scoutId\)\) e\.source = '';/.test(ns),

@@ -233,6 +233,10 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   asks "Is this the council's commission cheque? Set its source to Popcorn commission so it isn't
   counted twice." And a **$0** commission entry no longer counts as posted — it used to switch
   the estimate off and leave commission at nothing.
+- **The carryover could be counted twice (T5).** A money-in entry with source *Carryover* and
+  no family, filed to a line, reached Funds in as other income — on top of Starting funds, which
+  is the same money. `ledgerIncomeCents` now skips it. (A family's carried credit has a scout and
+  was already reported as *Carried forward*, never Funds in.)
 
 ---
 

@@ -5960,6 +5960,9 @@
       var amt = e.amountCents || 0;
       if (e.direction === 'in') {
         if (e.scoutId) return;
+        // T5 — the carryover is already in Funds in as Starting funds. An entry recording it (the
+        // pack's own, with no family) is the same money, wherever the treasurer filed it.
+        if (e.source === 'carryover') return;
         // T4(b) — a $0 entry is not the council's cheque, and must not switch the estimate off.
         if (e.source === 'commission') { t.commission += amt; if (amt > 0) t.hasCommission = true; return; }
         // Uncategorised income stays out, exactly as it always has: it never reached the
