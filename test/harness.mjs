@@ -5196,6 +5196,34 @@ test('a checkbox and its label are styled wherever they are used', () => {
    Camping — a page per campout, published to parents. 2026-08-02
    ===================================================================== */
 
+test('proseText turns a list typed on one line into a real list', () => {
+  // The uniform-reimbursement tier note, as a leader pasted it: every item on one line behind
+  // " -", a "Patches:" group label mid-list, and a "*…*" aside at the end. It rendered as one
+  // wall of text with the hyphens still in it.
+  const ctx = sandbox(['esc', 'proseText']);
+  const run = (s) => ctx.proseText(s);
+  const out = run('Items are: -shirt -web belt cut-to-size -hat Patches: -USA flag -council patch *Sewing is extra*');
+  eq(out, '<p>Items are:</p>' +
+    '<ul class="camp-list"><li>shirt</li><li>web belt cut-to-size</li><li>hat</li></ul>' +
+    '<p class="camp-sub">Patches</p>' +
+    '<ul class="camp-list"><li>USA flag</li><li>council patch</li></ul>' +
+    '<p>Sewing is extra</p>', 'the one-line list was not unfolded');
+  // What must NOT become a list: a spaced dash in a sentence, a hyphen inside a word or after
+  // one, and a single " -word" on its own.
+  eq(run('Mon - Fri only'), '<p>Mon - Fri only</p>', 'a spaced dash was read as a bullet');
+  eq(run('Camping- per family- reimbursement'), '<p>Camping- per family- reimbursement</p>',
+    'a trailing hyphen was read as a bullet');
+  eq(run('one -two'), '<p>one -two</p>', 'a single inline dash made a list');
+  ok(!/<script/.test(run('x -<script>a</script> -b')), 'an unfolded item escaped the escaping');
+});
+
+test('the parent reward ladder renders a tier note as prose, not raw text', () => {
+  const fn = /function parentTierLadder\(pv\) \{[\s\S]*?\n  \}\n/.exec(SCRIPT);
+  ok(fn, 'parentTierLadder not found');
+  ok(/proseText\(note\)/.test(fn[0]), 'the ladder prints the tier note without its list structure');
+  ok(!/esc\(note\)/.test(fn[0]), 'the ladder still prints the note as one escaped string');
+});
+
 test('proseText escapes first and only ever emits tags it built', () => {
   // A section body is prose a leader typed into a textarea and it is republished verbatim to
   // every parent in the pack. If anything here can emit an attacker-chosen tag, the parent
@@ -7091,7 +7119,7 @@ test('a parent sees which shifts are open, and an old document still shows its w
 });
 
 test('the ladder shows a rung with no measurable target, rather than a target of nothing', () => {
-  const ctx = sandbox(['esc', 'fmt', 'fmtDate', 'parentTierLadder']);
+  const ctx = sandbox(['esc', 'fmt', 'fmtDate', 'proseText', 'parentTierLadder']);
   const rows = (html) => (html.match(/<tr>/g) || []).length;
   const full = ctx.parentTierLadder({ tiers: [
     { name: 'Dues covered', reward: 'The pack pays your dues', note: '', dueBy: '2026-10-15', salesCents: 17500 },

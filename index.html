@@ -298,6 +298,11 @@
     color: var(--ink-soft);
   }
   .camp-body .camp-sub:first-child { margin-top: 0; }
+  /* A reward tier's small print, inside the parent ladder's table cell: table-sized, not page-sized. */
+  .camp-body.pv-tier-note { font-size: 0.85rem; line-height: 1.45; margin-top: 4px; }
+  .pv-tier-note p, .pv-tier-note .camp-list { margin-bottom: 6px; }
+  .pv-tier-note .camp-list li { margin-bottom: 2px; }
+  .pv-tier-note .camp-sub { margin-top: 8px; }
   /* --accent-text, not --accent. These are the two things a parent actually taps — "Open in Maps"
      and the council page — and in LIGHT mode #C8820A on #FFFDF7 measured 3.10:1, under the 4.5:1
      body-text bar. Dark was fine at 7.07:1, which is exactly why it went unseen: dark is the
@@ -3023,8 +3028,39 @@
     // Local, not hoisted: the Node harness slice-evaluates this function on its own, and keeping
     // it self-contained is what makes that possible.
     var BULLET_LINE = /^\s*[-•]\s+/;
+    // A LIST TYPED ON ONE LINE. Pasted from an email or a phone, a list often arrives as
+    // "items are: -shirt -pants -belt Patches: -number -flag *Sewing is extra*" with no line
+    // breaks at all, and came out as one wall of text with the hyphens in it. A dash that
+    // follows a space and touches the next word is an item marker; two or more of them on a
+    // line make that line a list. A spaced " - " is left alone (that is a dash in a
+    // sentence), and so is "cut-to-size" (no space before it).
+    var INLINE_MARK = /(?:^|\s+)[-•](?=[^\s\-•])/;
+    function unfold(line) {
+      if (BULLET_LINE.test(line)) return [line];
+      var parts = line.split(new RegExp(INLINE_MARK.source, 'g'));
+      if (parts.length < 3) return [line];
+      var out = [];
+      if (parts[0].trim()) out.push(parts[0].trim());
+      parts.slice(1).forEach(function (item) {
+        item = item.trim();
+        // A closing "*…*" aside belongs to the whole list, not to the item it trails.
+        var aside = /^(.*?)\s*\*([^*]+)\*\s*$/.exec(item);
+        if (aside) item = aside[1];
+        // "…partner guide Patches:" — a capitalised word and a colon at the end of an item
+        // is the label of the next group, not part of this item.
+        var label = /^(.*\S)\s+([A-Z][A-Za-z]*(?: [A-Za-z]+){0,2}):$/.exec(item);
+        if (label) item = label[1];
+        if (item) out.push('- ' + item);
+        if (label) out.push(label[2]);
+        if (aside) out.push(aside[2].trim());
+      });
+      return out;
+    }
     return src.split(/\n{2,}/).map(function (para) {
-      var lines = para.split('\n').filter(function (l) { return l.trim() !== ''; });
+      var lines = [];
+      para.split('\n').forEach(function (l) {
+        if (l.trim() !== '') lines.push.apply(lines, unfold(l));
+      });
       if (!lines.length) return '';
       // GROUP THE PARAGRAPH INTO RUNS OF ONE KIND. The test used to be all-or-nothing —
       // `bullets.length === lines.length`, "every line is a bullet or none is" — so the shape
@@ -11627,7 +11663,7 @@
         // cover a den-limited event — Tigermania is worth $20 to a Tiger and nothing to a Wolf —
         // so any figure printed in this column is wrong for somebody. The money lives per den in
         // "What a year costs a family", where it is exact and sits next to the bill it reduces.
-        (note ? '<br><span class="small muted">' + esc(note) + '</span>' : '') + '</td>' +
+        (note.trim() ? '<div class="small muted camp-body pv-tier-note">' + proseText(note) + '</div>' : '') + '</td>' +
         '<td style="white-space:nowrap">' + (t && t.dueBy ? esc(fmtDate(String(t.dueBy))) : '<span class="muted">any time</span>') +
         '</td></tr>';
     });
