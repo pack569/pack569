@@ -4997,7 +4997,7 @@
       fund: fund
     };
   }
-  // Is this date inside the program year? Pure — the window is Sept 1 to Aug 31.
+  // Is this date inside the program year? Pure — the window is July 1 to June 30.
   function dateInProgramYear(iso, py) {
     return !!iso && iso >= programYearStartISO(py) && iso <= programYearEndISO(py);
   }
@@ -8457,8 +8457,12 @@
     if (src) state = src;
     try {
       var py = state.budget.programYear;
-      // Program year runs July → June.
-      var winStart = py + '-09-01', winEnd = (py + 1) + '-08-31';
+      // Program year runs July → June, and the published calendar is that year exactly.
+      // Until 2026-09-28 this window was September → August, so every July and August event —
+      // School Night, the kickoff, the summer den outing — was a leader's calendar entry no
+      // family ever saw. One window, from the same two helpers the rest of the app uses, for the
+      // storefronts, the events and the derby date alike.
+      var winStart = programYearStartISO(py), winEnd = programYearEndISO(py);
       function inYear(d) { return typeof d === 'string' && d >= winStart && d <= winEnd; }
 
       // ONE public-name map, built over the WHOLE roster before anything here names a child, so

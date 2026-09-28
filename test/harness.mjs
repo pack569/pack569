@@ -8312,7 +8312,8 @@ test('calendar-only publishes the calendar and the cost of a year, and no childâ
           perFamily: false, coverScoutStep: 0, coverAdultStep: -1 }] }];
     }
     ${['shortNames', 'publicNameMap', 'buildParentView', 'blocksInDayOrder', 'fmtTimeRange', 'fmtClock',
-       'eventIsMeeting', 'eventLabel', 'denListLabel', 'eventDens'].map(slice).join('\n')}`, ctx);
+       'eventIsMeeting', 'eventLabel', 'denListLabel', 'eventDens', 'programYearStartISO',
+       'programYearEndISO'].map(slice).join('\n')}`, ctx);
   const pv = vm.runInContext('buildParentView(state, { showStandings: false })', ctx);
   const text = JSON.stringify(pv);
   noSurname(text, 'the calendar-only view');
@@ -9361,6 +9362,47 @@ test('B8: the calendar file carries where an event is, but no free-text note', (
   ok(/LOCATION:Fort Yargo/.test(ics) && /LOCATION:Church hall/.test(ics), 'the where was dropped with the note');
   ok(/not its notes/.test(SCRIPT.slice(SCRIPT.indexOf('Sync with BAND'), SCRIPT.indexOf('Sync with BAND') + 2000)),
     'the export card does not say notes are left out');
+});
+
+/* ========================================================================
+   Wave 6 â€” parents and joining (2026-09-28)
+   ===================================================================== */
+
+// A runnable buildParentView over PRIV_STATE, with the pieces it leans on stubbed. `extra` runs
+// after the state is declared, so a test can move dates or add rows before the build.
+function pvCtx(extra) {
+  const ctx = vm.createContext({});
+  vm.runInContext(PRIV_STATE + `
+    function standingsEnabled() { return true; }
+    function campingTrips() { return []; }
+    function familyYearCost() { return []; }
+    ${['shortNames', 'publicNameMap', 'buildParentView', 'blocksInDayOrder', 'fmtTimeRange', 'fmtClock',
+       'eventIsMeeting', 'eventLabel', 'denListLabel', 'eventDens', 'programYearStartISO',
+       'programYearEndISO'].map(slice).join('\n')}
+    ${extra || ''}`, ctx);
+  return ctx;
+}
+
+test('J1: the published calendar is the July-to-June program year, edges included', () => {
+  const ctx = pvCtx(`
+    state.events = [
+      { id: 'j0', kind: 'activity', name: 'Last June hike', date: '2026-06-30', dens: [] },
+      { id: 'j1', kind: 'activity', name: 'School Night', date: '2026-07-01', dens: [] },
+      { id: 'j2', kind: 'activity', name: 'Summer outing', date: '2026-08-15', dens: [] },
+      { id: 'j3', kind: 'activity', name: 'Crossover', date: '2027-06-30', dens: [] },
+      { id: 'j4', kind: 'activity', name: 'Next kickoff', date: '2027-07-01', dens: [] }
+    ];
+    state.storefronts[0].date = '2026-07-20';
+    state.derby = { name: 'Derby', date: '2026-08-01' };`);
+  const pv = vm.runInContext('buildParentView(state, { showStandings: false })', ctx);
+  const titles = pv.events.map((e) => e.title);
+  ['School Night', 'Summer outing', 'Crossover'].forEach((t) =>
+    ok(titles.indexOf(t) > -1, `${t} is inside the program year and did not publish`));
+  ['Last June hike', 'Next kickoff'].forEach((t) =>
+    ok(titles.indexOf(t) === -1, `${t} is outside the program year and published`));
+  ok(pv.events.some((e) => e.kind === 'storefront' && e.date === '2026-07-20'), 'a July storefront did not publish');
+  ok(pv.events.some((e) => e.kind === 'derby' && e.date === '2026-08-01'), 'an August derby date did not publish');
+  ok(!/'-09-01'|'-08-31'/.test(BPV()), 'buildParentView still carries a September-to-August window');
 });
 
 /* ---------------- report ---------------- */
