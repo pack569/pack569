@@ -42,9 +42,12 @@ export const ALLOWLIST = ['_headers', 'index.html'];
 // what keeps it out. Each pattern must match exactly once, or the build stops.
 const CONFIG_RE = /^  var FIREBASE_CONFIG = (\{[^{}]*\}|null);$/gm;
 const DOC_ID_RE = /^  var PACK_DOC_ID = ('[0-9a-f]{64}'|null);$/gm;
+// Where loadFirebase() imports the SDK from. Production's script-src allows this exact path,
+// not all of www.gstatic.com, so a version bump in index.html moves the CSP with it.
+const SDK_BASE_RE = /^  var SYNC_SDK_BASE = '(https:\/\/[a-z0-9.-]+\/[A-Za-z0-9._\/-]*\/)';$/gm;
 
 // What the Content-Security-Policy lets the page talk to, per target.
-// Production: the Firebase SDK is imported from gstatic; Google sign-in loads apis.google.com
+// Production: the Firebase SDK is imported from its gstatic path; Google sign-in loads apis.google.com
 // and frames the project's authDomain; Firestore and Auth are the googleapis hosts; weather
 // is open-meteo. Preview: device-only, so loadFirebase() is never called (syncStart and
 // signInWithGoogle both return early when FIREBASE_CONFIG is null) and no Google origin is
@@ -52,9 +55,11 @@ const DOC_ID_RE = /^  var PACK_DOC_ID = ('[0-9a-f]{64}'|null);$/gm;
 // The calendar-from-a-link fetch (submitIcsPaste) is deliberately NOT allowed on either: it
 // fails like a CORS refusal and the dialog switches to "paste the calendar text instead".
 const WEATHER = ['https://api.open-meteo.com', 'https://archive-api.open-meteo.com'];
+// www.googleapis.com is a guess at what sign-in may call; drop it after the first real
+// sign-in test on pack569.pages.dev if the Network tab shows nothing going there.
 const GOOGLE_CONNECT = ['https://firestore.googleapis.com', 'https://identitytoolkit.googleapis.com',
   'https://securetoken.googleapis.com', 'https://www.googleapis.com'];
-const GOOGLE_SCRIPTS = ['https://www.gstatic.com', 'https://apis.google.com'];
+const SIGN_IN_SCRIPT = 'https://apis.google.com';
 
 export class BuildError extends Error {}
 function fail(msg) { throw new BuildError(msg); }
@@ -107,7 +112,9 @@ export function liveConfig(html) {
   if (doc.length !== 1) fail(`expected exactly one "  var PACK_DOC_ID = …;" declaration; found ${doc.length}`);
   const config = vm.runInNewContext('(' + cfg[0][1] + ')', Object.create(null), { timeout: 100 });
   const docId = doc[0][1] === 'null' ? null : doc[0][1].slice(1, -1);
-  return { config, docId };
+  const sdk = [...html.matchAll(SDK_BASE_RE)];
+  const sdkBase = sdk.length === 1 ? sdk[0][1] : null;
+  return { config, docId, sdkBase };
 }
 
 // Every value that would let a page reach the live pack. A preview must contain none of them.
@@ -135,6 +142,7 @@ export function transform(html, target) {
     }
     if (!/^[a-z0-9.-]+$/.test(c.authDomain)) fail('FIREBASE_CONFIG.authDomain is not a plain host name');
     if (!live.docId) fail('production needs PACK_DOC_ID set in index.html; it is null');
+    if (!live.sdkBase) fail("production needs exactly one \"  var SYNC_SDK_BASE = 'https://…/';\" in index.html");
     return { html, live };
   }
   const out = html
@@ -150,7 +158,7 @@ export function transform(html, target) {
 export function cspSources(target, live) {
   if (target === 'production') {
     return {
-      SCRIPT_ORIGINS: GOOGLE_SCRIPTS.join(' '),
+      SCRIPT_ORIGINS: [live.sdkBase, SIGN_IN_SCRIPT].join(' '),
       CONNECT: GOOGLE_CONNECT.concat(WEATHER).join(' '),
       FRAME: ['https://' + live.config.authDomain, 'https://apis.google.com'].join(' ')
     };
@@ -288,7 +296,7 @@ export function verify({ dir, target, root = ROOT }) {
     if (!/frame-src 'none'/.test(csp)) fail("the preview CSP must have frame-src 'none'");
     if (!noindex) fail('the preview must send X-Robots-Tag: noindex');
   } else {
-    const want = GOOGLE_SCRIPTS.concat(GOOGLE_CONNECT, ['https://' + live.config.authDomain]);
+    const want = [live.sdkBase, SIGN_IN_SCRIPT].concat(GOOGLE_CONNECT, ['https://' + live.config.authDomain]);
     for (const o of want) if (csp.indexOf(o) < 0) fail(`the production CSP is missing ${o}`);
     if (noindex) fail('production must not send X-Robots-Tag: noindex');
   }

@@ -31,11 +31,13 @@ on:
 permissions:
   contents: read
 
-# Concurrency groups are repo-wide, hence the prefix. A newer push cancels an older gate run,
-# but a dispatch is never cancelled by another: the workflow-level group wins over a job's own
-# setting, and cancelling would kill a production deploy that is waiting for approval.
+# Concurrency groups are repo-wide, hence the prefix. Push and PR runs share a group per ref,
+# so a newer push cancels an older gate run. Each dispatch gets a group of its own (its run id),
+# so a production run waiting for approval never blocks or cancels another dispatch, and is
+# never cancelled by one. Deploys to the same target still queue one behind another through
+# the deploy job's own group below.
 concurrency:
-  group: website-${{ github.event_name }}-${{ github.ref }}
+  group: ${{ github.event_name == 'workflow_dispatch' && format('website-dispatch-{0}', github.run_id) || format('website-{0}-{1}', github.event_name, github.ref) }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
@@ -114,7 +116,12 @@ jobs:
             echo "::error title=website-production has no required reviewer::Add one under Settings → Environments → website-production (docs/cloudflare-setup.md) and run again."
             exit 1
           fi
-          echo "website-production requires a reviewer."
+          # And it must be limited to chosen branches: with no policy, any branch may use it.
+          if ! printf '%s' "$body" | jq -e '.deployment_branch_policy != null' >/dev/null; then
+            echo "::error title=website-production allows every branch::Set Deployment branches to Selected branches → main under Settings → Environments → website-production (docs/cloudflare-setup.md) and run again."
+            exit 1
+          fi
+          echo "website-production requires a reviewer and is limited to chosen branches."
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -179,15 +186,39 @@ jobs:
           TARGET: ${{ inputs.deploy_target }}
         run: node scripts/build-site.mjs --verify _site --target "$TARGET"
 
+      # `wrangler pages deploy` also uploads a ./functions/ folder from where it runs, as
+      # server code. The site has none, and a stray one must not ship by accident.
+      # Phase 2 (the D1 API) deliberately adds functions/; that change replaces this step.
+      - name: Refuse a functions/ folder
+        run: |
+          if [ -e functions ]; then
+            echo "::error title=functions/ in the checkout::Pages would deploy it as server code. The static site has none; remove it, or change this step on purpose."
+            exit 1
+          fi
+
+      # Deploy from a folder holding only the verified site and wrangler.toml, so wrangler
+      # cannot pick up anything else from the checkout.
+      - name: Stage the site in a clean folder
+        run: |
+          set -eu
+          rm -rf "$RUNNER_TEMP/deploy"
+          mkdir -p "$RUNNER_TEMP/deploy"
+          cp -R _site "$RUNNER_TEMP/deploy/_site"
+          cp wrangler.toml "$RUNNER_TEMP/deploy/wrangler.toml"
+          ls -la "$RUNNER_TEMP/deploy" "$RUNNER_TEMP/deploy/_site"
+
       # Pages decides production by branch name: --branch=main goes to pack569.com (the
       # project's production branch), anything else gets its own pages.dev link. Cloudflare
       # shortens a long branch name in the alias, so read the link from the summary below.
+      # wranglerVersion is exact: npm installs it in this job, which holds the token.
       - name: Deploy
         id: deploy
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4.143.0"
+          workingDirectory: ${{ runner.temp }}/deploy
           command: >-
             pages deploy _site
             --project-name=pack569
@@ -215,6 +246,7 @@ jobs:
               echo "Device-only: nothing it does reaches the live pack. Check DevTools → Network shows no"
               echo "firestore.googleapis.com, and the Console shows no Content-Security-Policy errors."
             else
-              echo "Check sign-in and sync, and that /SETUP.md and /test/harness.mjs return 404."
+              echo "Check sign-in and sync, and that /SETUP.md and /test/harness.mjs return the app page,"
+              echo "not the file (with no 404.html, Pages answers every unknown path with index.html)."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
