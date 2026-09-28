@@ -9712,8 +9712,9 @@ test('J12: with amounts and rank off, the board keeps each scout’s progress an
   eq(off.standings.map((r) => r.name), ['Ada', 'Beckett H.', 'Beckett Z.'], 'with amounts off the board is not alphabetical');
   off.standings.forEach((r) => {
     Object.keys(r).forEach((k) => ok(!/Cents$|Routes$/.test(k), `amounts off still publishes ${k} for ${r.name}`));
-    ok(r.nextTier === 'Gold' && r.tier === 'Bronze' && r.nextPct === 40 && r.nextRungPct === 55,
+    ok(r.nextTier === 'Gold' && r.tier === 'Bronze' && r.nextPct === 40,
       'amounts off dropped the reward-level progress too');
+    ok(!('nextRungPct' in r), 'amounts off still publishes the near-rung percentage');
   });
   ok(off.goals && off.goals.goalCents === 200000, 'the pack-wide goal bar went with the per-scout amounts');
   // The renderer: unnumbered, no total, and says it is in name order.
@@ -9727,6 +9728,72 @@ test('J12: with amounts and rank off, the board keeps each scout’s progress an
   ok(/pv-scout-rank/.test(ctx.renderParentStandings({ standings: on.standings })), 'a ranked board lost its numbers');
   ok(/data-ch="join-amounts"/.test(slice('renderJoinCard')) && /showAmounts: next\.showAmounts/.test(slice('writeJoinConfig')),
     'the option is not on the join card, or not saved');
+});
+
+test('S1: with amounts off, a scout’s bar cannot be multiplied back into what they sold', () => {
+  // The ladder publishes every tier's sales target, so an exact percentage against the anchor IS
+  // the child's sales. Real figures chosen off the 10% grid, as real sales almost always are.
+  const TIERS = [
+    { id: 'b', name: 'Bronze', thresholdCents: 25000 },
+    { id: 's', name: 'Silver', thresholdCents: 50000 },
+    { id: 'g', name: 'Gold', thresholdCents: 100000 }
+  ];
+  const SALES = { s1: 34567, s2: 61234, s3: 9012 };
+  const build = (showAmounts) => {
+    const ctx = pvCtx(`
+      state.derby = { name: '', date: '', awards: [] };
+      var TIERS = ${JSON.stringify(TIERS)};
+      var SALES = ${JSON.stringify(SALES)};
+      function computePackTotals() { return { combined: 104813, teGoal: 200000, cashGoal: 0 }; }
+      function computeScoutTotals() { return SALES; }
+      function visibleScoutRows(t) {
+        return state.scouts.map(function (s) { return { id: s.id, den: s.den, t: { combined: t[s.id] } }; });
+      }
+      function rankBy(rows, key) { return rows.slice().sort(function (a, b) { return key(b) - key(a); }); }
+      // The real row shape, from a real threshold walk: commission = sales (rate 1) for clarity.
+      function tierProgressRows() {
+        var anchor = TIERS[2];
+        return state.scouts.map(function (s) {
+          var base = SALES[s.id], earned = null, next = null;
+          TIERS.forEach(function (t) { if (base >= t.thresholdCents) earned = t; else if (!next) next = t; });
+          return { scout: s, earned: earned, next: next, anchor: anchor, shortSales: next.thresholdCents - base,
+            unlocks: 0, sellRoutes: [], pastPlan: false,
+            anchorPct: Math.round(base / anchor.thresholdCents * 100),
+            pct: Math.round(base / next.thresholdCents * 100),
+            nextMarkPct: next.thresholdCents < anchor.thresholdCents ? Math.round(next.thresholdCents / anchor.thresholdCents * 100) : null,
+            ladder: { plan: anchor, marksPlan: [] } };
+        });
+      }
+      function plannedTier() { return TIERS[2]; }
+      function derbyWinners() { return []; }
+      function sortedTiers() { return TIERS; }
+      function salesForCommission(c) { return c; }`);
+    return vm.runInContext(`buildParentView(state, { showStandings: true, showAmounts: ${showAmounts} })`, ctx);
+  };
+  const off = build(false);
+  const byName = { Ada: 's1', 'Beckett H.': 's2', 'Beckett Z.': 's3' };
+  const anchorSales = off.tiers.find((t) => t.name === 'Gold').salesCents;
+  off.standings.forEach((r) => {
+    const real = SALES[byName[r.name]];
+    ok(!('nextRungPct' in r), `${r.name}: the near-rung percentage is published`);
+    ok(r.nextPct % 10 === 0 || off.tiers.some((t) => Math.round(t.salesCents / anchorSales * 100) === r.nextPct),
+      `${r.name}: nextPct ${r.nextPct} is neither a 10% step nor a published notch`);
+    ok(Math.abs(r.nextPct / 100 * anchorSales - real) > 500,
+      `${r.name}: nextPct × the anchor’s target is within $5 of what they sold`);
+  });
+  // Flooring never drags a scout's bar below the tier they hold (Ada holds Bronze at 25%, sold 34.6%).
+  eq(off.standings.find((r) => r.name === 'Ada').nextPct, 30, 'Ada');
+  eq(off.standings.find((r) => r.name === 'Beckett H.').nextPct, 60, 'Beckett H.');
+  eq(off.standings.find((r) => r.name === 'Beckett Z.').nextPct, 0, 'Beckett Z.');
+  // Amounts ON is unchanged: the exact figure, and the near rung.
+  const on = build(true);
+  eq(on.standings.find((r) => r.name === 'Ada').nextPct, 35, 'amounts on lost the exact bar');
+  ok(on.standings.every((r) => typeof r.nextRungPct === 'number'), 'amounts on lost the near-rung figure');
+  // The setting says what is and is not left.
+  const card = slice('renderJoinCard');
+  ok(/rounded down to the nearest 10%/.test(card), 'the join card does not say the bar is rounded');
+  ok(/Families will see each level\\u2019s sales target but not their own scout\\u2019s ' \+\s*'remaining gap\./.test(card),
+    'the join card does not say the level targets still show');
 });
 
 /* ---------------- report ---------------- */

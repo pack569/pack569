@@ -8777,9 +8777,28 @@
           // loses every per-scout money figure. Rebuilt from an allowlist rather than deleting keys,
           // so a money field added to the row above later cannot slip through this mode.
           if (withAmounts) return row;
+          // ⚠ A PERCENTAGE IS AN AMOUNT when the denominator is published. Every tier's sales
+          // target goes out on `tierLadder` (salesCents), so nextPct × the anchor's target gave back
+          // what the child sold to within a dollar — the very figure this mode exists to withhold
+          // (security + popcorn review, 2026-09-28). So:
+          //   · nextRungPct is dropped — it is the same leak against a second denominator;
+          //   · nextPct is floored to a 10% step, so it says "somewhere in this tenth", never a sum;
+          //   · but never below the notch of the tier the scout HOLDS, which is published anyway
+          //     (`tier` + the ladder's marks) — otherwise flooring would draw a Bronze scout's fill
+          //     short of the Bronze notch, and the bar would contradict the pill beside it.
+          //   · nextMarkPct stays: it is next-rung ÷ anchor, a property of the ladder, not the child.
+          var coarse = null;
+          if (typeof row.nextPct === 'number') {
+            coarse = Math.floor(row.nextPct / 10) * 10;
+            var held = p && p.earned, anc = p && p.anchor;
+            if (held && anc && anc.thresholdCents > 0 && held.thresholdCents > 0 &&
+                held.thresholdCents < anc.thresholdCents) {
+              coarse = Math.max(coarse, Math.round(held.thresholdCents / anc.thresholdCents * 100));
+            }
+          }
           return {
             name: row.name, den: row.den, tier: row.tier, nextTier: row.nextTier, nextReward: row.nextReward,
-            nextPct: row.nextPct, pastPlan: row.pastPlan, nextRungPct: row.nextRungPct, nextMarkPct: row.nextMarkPct
+            nextPct: coarse, pastPlan: row.pastPlan, nextMarkPct: row.nextMarkPct
           };
         });
       // ...and no rank: the board is alphabetical by the name it publishes, so its ORDER cannot say
@@ -14483,9 +14502,13 @@
       h += '<label class="join-opt" style="margin-top:10px"><input type="checkbox" data-ch="join-amounts"' +
         (amountsEnabled() ? ' checked' : '') + '>' +
         '<span>Show dollar amounts and rank on the standings</span></label>' +
-        '<p class="small muted" style="margin:2px 0 0">Untick to list scouts by name with only their progress toward ' +
-        'each reward level: what each scout has sold, what they still need to sell, and who is ahead of whom are ' +
-        'left out of the published copy. The pack goal bar and the reward tiers still show.</p>';
+        // Says what the bar still shows (2026-09-28): the reward level each scout holds, and a bar
+        // rounded DOWN to a tenth — not "their progress", which read as the exact figure it was.
+        '<p class="small muted" style="margin:2px 0 0">Untick to list scouts in name order with the reward level ' +
+        'each has reached and a progress bar rounded down to the nearest 10%: what each scout has sold, what they ' +
+        'still need to sell, and who is ahead of whom are left out of the published copy. The pack goal bar and the ' +
+        'reward tiers still show. Families will see each level\u2019s sales target but not their own scout\u2019s ' +
+        'remaining gap.</p>';
     }
     // Saved on change (blur), like every other text field, so it is one write rather than one per key.
     h += '<hr class="divider">' +
