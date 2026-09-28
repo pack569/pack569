@@ -8578,7 +8578,8 @@
   //   nextReward, nextPct (the bottom of a band inside the scout's notch-to-notch segment —
   //   coarseBarPct: at most four bands, each at least 10 points),
   //   pastPlan and nextMarkPct, in name order: combinedCents, nextSalesCents, nextRoutes,
-  //   nextUnlocksCents, nextRungPct and the ranking are removed.
+  //   nextUnlocksCents, nextRungPct and the ranking are removed. The pack goal bar's
+  //   `raisedCents` is rounded to the nearest $50, and its `pct` worked out from that figure.
   //
   // DELIBERATELY EXCLUDED — do not add these without re-reading the SETUP Part C notes:
   //   the budget itself (starting balance, planned/actual totals, income, expenses), dues and
@@ -8967,10 +8968,15 @@
       var goals = null;
       var goalCents = (pack.teGoal || 0) + (pack.cashGoal || 0);
       if (goalCents > 0) {
+        // AMOUNTS OFF (security review, wave 7b): the pack total is rounded to $50 and the
+        // percentage worked out from the ROUNDED figure. Exact, it moves by exactly what one family
+        // sold between two looks at the page — and a family that knows its own child's sale, or
+        // watches the board after one storefront shift, can read the rest off the difference.
+        var raised = withAmounts ? pack.combined : Math.round(pack.combined / 5000) * 5000;
         goals = {
           goalCents: goalCents,
-          raisedCents: pack.combined,
-          pct: Math.min(100, Math.round(pack.combined / goalCents * 100))
+          raisedCents: raised,
+          pct: Math.min(100, Math.round(raised / goalCents * 100))
         };
       }
 

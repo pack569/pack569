@@ -6488,7 +6488,8 @@ test('parents see ONE goal, not the pack’s internal cash split', () => {
   // decides which of the two old bars it landed in, without any family having done anything
   // differently — so a family watched money move between bars for reasons that were not about them.
   const src = codeOnly(BPV());
-  ok(/goalCents: goalCents,\s*raisedCents: pack\.combined,/.test(src),
+  ok(/var raised = withAmounts \? pack\.combined : Math\.round\(pack\.combined \/ 5000\) \* 5000;/.test(src) &&
+     /goalCents: goalCents,\s*raisedCents: raised,/.test(src),
     'the goal is not published as one combined figure');
   ok(!/teGoalCents|cashGoalCents|tePct|cashPct/.test(src),
     'the two-bar split is still published');
@@ -9309,7 +9310,7 @@ test('P3: a cash goal run through Trail’s End counts only its commission', () 
   ok(!/teEligible \/ packT?\.teGoal\b/.test(SCRIPT), 'a Trail’s End bar still divides by teGoal');
   // The parent bar adds the gross cash goal to the sales goal and measures every dollar raised,
   // so it stays consistent without change.
-  ok(/var goalCents = \(pack\.teGoal \|\| 0\) \+ \(pack\.cashGoal \|\| 0\);/.test(BPV()) && /raisedCents: pack\.combined/.test(BPV()),
+  ok(/var goalCents = \(pack\.teGoal \|\| 0\) \+ \(pack\.cashGoal \|\| 0\);/.test(BPV()) && /var raised = withAmounts \? pack\.combined :/.test(BPV()),
     'the parent goal bar changed shape');
 });
 
@@ -10291,6 +10292,30 @@ test('7b-3: Copy and Print of the summary wait for the pack’s sharing settings
   ok(/data-act="copy-summary"' \+ sumDis/.test(sheet) && /data-act="print-summary"' \+ sumDis/.test(sheet), 'the buttons are live before load');
   ok(/Loading the pack\\u2019s sharing settings\\u2026/.test(sheet), 'the sheet does not say it is waiting');
   ok(/if \(\(act === 'copy-summary' \|\| act === 'print-summary'\) && !sharingSettingsKnown\(\)\)/.test(SCRIPT), 'a stale button still copies');
+});
+
+test('7b-4: with amounts off, the pack goal bar is rounded to $50 and its percent follows', () => {
+  const build = (showAmounts, combined) => {
+    const ctx = pvCtx(`
+      state.derby = { name: '', date: '', awards: [] };
+      function computePackTotals() { return { combined: ${combined}, teGoal: 200000, cashGoal: 0 }; }
+      function computeScoutTotals() { return {}; }
+      function visibleScoutRows() { return []; }
+      function rankBy(rows) { return rows; }
+      function tierProgressRows() { return []; }
+      function plannedTier() { return null; }
+      function derbyWinners() { return []; }
+      function sortedTiers() { return []; }
+      function salesForCommission(c) { return c; }`);
+    return vm.runInContext(`buildParentView(state, { showStandings: true, showAmounts: ${showAmounts} })`, ctx).goals;
+  };
+  eq(build(true, 123456), { goalCents: 200000, raisedCents: 123456, pct: 62 }, 'amounts on is exact');
+  eq(build(false, 123456), { goalCents: 200000, raisedCents: 125000, pct: 63 }, 'amounts off: $1,234.56 → $1,250, 63%');
+  eq(build(false, 122499), { goalCents: 200000, raisedCents: 120000, pct: 60 }, 'rounds down below the half');
+  // One family's $15 sale does not move the published figure.
+  eq(build(false, 120500).raisedCents, build(false, 122000).raisedCents, 'a $15 sale shows on the goal bar');
+  ok(/pack goal bar's amount raised is rounded to the nearest \$50/.test(SETUP), 'SETUP.md does not say so');
+  ok(/`raisedCents` is rounded to the nearest \$50/.test(SCRIPT), 'the banner does not say so');
 });
 
 /* ---------------- report ---------------- */

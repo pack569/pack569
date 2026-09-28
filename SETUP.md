@@ -196,7 +196,9 @@ calendar but not the money" is impossible to do by permission alone. Instead the
     between the tier held and the next one (at most four bands per gap, each at least 10% of the
     bar; one band where the gap is narrower), `pastPlan` and `nextMarkPct` — listed by name. Total
     raised, what is left to sell, the per-rate routes, what reaching the next tier is worth,
-    `nextRungPct` and the ranking are all removed. Each tier's sales target still shows.
+    `nextRungPct` and the ranking are all removed. Each tier's sales target still shows. The
+    pack goal bar's amount raised is rounded to the nearest $50, and its percentage is worked
+    out from that rounded figure.
 - It **never** contains: the budget itself (starting balance, planned or actual totals,
   income, expenses), dues or who has paid, any family's charges, payments or balance, who
   paid their way up a reward tier, inventory (products, cases, prices, hand-outs), the
