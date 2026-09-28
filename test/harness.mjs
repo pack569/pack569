@@ -8085,6 +8085,17 @@ test('the parent-view banner names every key the view publishes', () => {
     ok(offPara[1].indexOf(k) !== -1,
       `the banner does not say amounts-off removes ${k}`));
   ok(/With \*\*Show dollar amounts and rank\*\* off, a row is only/.test(SETUP), 'SETUP.md does not say what amounts-off leaves');
+  // F1 (2026-09-28): the leaders-only things added since, named on BOTH exclusion lists.
+  const excl = SCRIPT.slice(SCRIPT.indexOf('// DELIBERATELY EXCLUDED'), SCRIPT.indexOf('function shortNames('));
+  const never = /It \*\*never\*\* contains:([\s\S]*?)\n- /.exec(SETUP);
+  ok(never, 'SETUP.md lost its "never contains" list');
+  [['`ev.agenda`', /pack meeting's agenda/], ['Recognition list', /Recognition list/],
+    ["printed leaders' copy", /printed leaders' copy/], ['`recruitKit`', /`recruitKit`/],
+    ['`onboarding`', /`onboarding`/], ['`addedYear`', /`addedYear`/], ['`readiness`', /readiness checklist/]
+  ].forEach(([b, sre]) => {
+    ok(excl.indexOf(b) !== -1, `the banner's DELIBERATELY EXCLUDED list does not name ${b}`);
+    ok(sre.test(never[1]), `SETUP.md's "never contains" list does not name ${sre}`);
+  });
 });
 
 test('single-pack mode never signs in anonymously, which is why SETUP says to turn it off', () => {
