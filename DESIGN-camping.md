@@ -225,6 +225,21 @@ in the mid-50s; Clayton GA averages an April low near 44F, and the camp sits abo
 the spring page leads with "they pack for Georgia in April and then sleep in the mountains in
 April".
 
+### Trip readiness (Wave C2, 2026-09-28) — leaders only
+
+Each trip carries `readiness`, a map of ticked items (`CAMP_READINESS`): a BALOO-trained adult
+named (pack overnighters); Hazardous Weather training done; two registered adult leaders, both
+21+; a registered female adult 21+ if girls attend; health forms (AHMR Parts A and B)
+collected; emergency contacts and the nearest hospital confirmed; tour/site paperwork as the
+council requires.
+
+- **Never published.** It says which safety boxes are not yet ticked for a named weekend.
+  `buildParentView` rebuilds each trip field by field and does not name it (harness scan), and
+  the editor's "everything on this page is published" notice says the checklist is the exception.
+- **Belongs to the weekend**: when the trip's first day moves to another year, the ticks clear.
+- The trip page shows "n of 7 ready"; Home gives the Outdoor / Camping Chair a task in the 14
+  days before the first day while anything is open.
+
 ## 6. What deliberately does not happen
 
 - **Rollover does not clear it.** A campout page is reference content that carries across years;

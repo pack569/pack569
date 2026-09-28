@@ -2365,6 +2365,7 @@
       id: uid(), name: String(name || ''),
       where: '', address: '', when: '', arrive: '', depart: '', cost: '', url: '',
       startDate: '', endDate: '', registrationDeadline: '',
+      readiness: {},   // Wave C2 — leaders only, never published
       intro: '', sections: []
     };
   }
@@ -2412,6 +2413,50 @@
   function tripDatesStale(t, today, py) {
     var end = tripEndDate(t);
     return !!end && end < today && end < programYearStartISO(py);
+  }
+  /* ----- Trip readiness (Wave C2, 2026-09-28) ------------------------------------------------
+     The Outdoor / Camping Chair's list of what has to be true before a trip goes, one per trip:
+         trip.readiness = { baloo: true, health: true, … }     (ticked items only)
+     ⚠ LEADERS ONLY, NEVER PUBLISHED. It says which safety boxes are NOT yet ticked for a named
+     weekend — not something to hand every family. buildParentView rebuilds each trip field by
+     field and never names it (harness scan), and no family-facing renderer reads it.
+     It belongs to a weekend, not to the page: when a trip's first day moves to a different YEAR
+     (setTripDate), the ticks are cleared, because last year's health forms are not this year's.
+     Declared up here, above `var state = load()`, because normalizeState coerces it on load. */
+  var CAMP_READINESS = [
+    { key: 'baloo', label: 'A BALOO-trained adult is named (pack overnighters)' },
+    { key: 'weather', label: 'Hazardous Weather training is done' },
+    { key: 'twoLeaders', label: 'Two registered adult leaders, both 21 or older' },
+    { key: 'female', label: 'A registered female adult 21 or older, if girls attend' },
+    { key: 'health', label: 'Health forms (AHMR Parts A and B) collected' },
+    { key: 'emergency', label: 'Emergency contacts and the nearest hospital confirmed' },
+    { key: 'paperwork', label: 'Tour and site paperwork, as the council requires' }
+  ];
+  // Known items, ticked ones only. Anything else a record holds is dropped.
+  function normalizeReadiness(r) {
+    var out = {};
+    if (!r || typeof r !== 'object' || Array.isArray(r)) return out;
+    CAMP_READINESS.forEach(function (it) { if (r[it.key] === true) out[it.key] = true; });
+    return out;
+  }
+  // { done, total, open: [labels still to tick] }.
+  function tripReadiness(t) {
+    var r = (t && t.readiness) || {};
+    var open = CAMP_READINESS.filter(function (it) { return r[it.key] !== true; }).map(function (it) { return it.label; });
+    return { done: CAMP_READINESS.length - open.length, total: CAMP_READINESS.length, open: open };
+  }
+  // Set one of a trip's ISO dates ('' clears it). False, and nothing changed, for a value that is
+  // neither. When the trip's first day lands in a different YEAR the readiness ticks go: they were
+  // for the old weekend. Setting a first date where there was none keeps them.
+  function setTripDate(t, key, value) {
+    if (!t || CAMP_DATE_KEYS.indexOf(key) === -1) return false;
+    var v = campIsoOrBlank(value);
+    if (value && !v) return false;
+    var before = tripStartDate(t).slice(0, 4);
+    t[key] = v;
+    var after = tripStartDate(t).slice(0, 4);
+    if (before && after && before !== after) t.readiness = {};
+    return true;
   }
   // "Fri, Oct 2 – Sun, Oct 4" / "Sat, Mar 7" / ''. For the next-campout pointer and the banner.
   function tripDatesLabel(t) {
@@ -3348,6 +3393,7 @@
       });
       // Wave C1 — ISO or ''. Anything else a record holds is dropped rather than guessed at.
       CAMP_DATE_KEYS.forEach(function (k) { t[k] = campIsoOrBlank(t[k]); });
+      t.readiness = normalizeReadiness(t.readiness);   // Wave C2 — leaders only
       if (!Array.isArray(t.sections)) t.sections = [];
       t.sections = t.sections.filter(function (s) { return s && typeof s === 'object' && !Array.isArray(s); });
       t.sections.forEach(function (s) {
@@ -9154,6 +9200,7 @@
   //   inventory (products, cases, prices, hand-outs), leaders (names, roles, phones, emails,
   //   training, notes), last names, scouts' private notes and den labels, RSVP/attendance
   //   detail, other fundraisers, past-season archives, the School Night checklist (`recruitKit`),
+  //   each campout's readiness checklist (`readiness`, Wave C2),
   //   the new-member tracker (`onboarding`, and each scout's `addedYear`),
   //   and `state` in any raw form.
   //
@@ -16246,6 +16293,19 @@
         vagueActivities.slice(0, 3).map(function (a) { return a.name || 'Untitled'; }).join(', '), 'program', 'calendar');
     }
 
+    /* ----- Outdoor / Camping Chair ----- */
+    // Wave C2 — in the 14 days before a trip's first day, while any readiness item is open.
+    campingTrips().forEach(function (t) {
+      var cSt = tripStartDate(t), cD = daysUntil(cSt);
+      if (cD == null || cD < 0 || cD > 14) return;
+      var cRd = tripReadiness(t);
+      if (!cRd.open.length) return;
+      add('outdoors', cD <= 3 ? 'now' : 'week',
+        (t.name || 'A campout') + ' \u2014 ' + cRd.open.length + ' readiness item' + (cRd.open.length === 1 ? '' : 's') + ' still open',
+        fmtDate(cSt) + (cD === 0 ? ' \u00b7 today' : cD === 1 ? ' \u00b7 tomorrow' : ' \u00b7 in ' + cD + ' days') +
+        ' \u00b7 ' + cRd.open[0] + (cRd.open.length > 1 ? '\u2026' : ''), 'camping', t.id);
+    });
+
     /* ----- Advancement / Den leaders ----- */
     var dens = myDens();
     var advRoster = activeScouts().filter(function (s) { return s.den && (!dens.length || dens.indexOf(s.den) !== -1); });
@@ -18534,13 +18594,17 @@
     if (edit && (t.where || t.address || t.when || t.cost)) h += '<hr class="divider">' + campFacts(t, today);
     h += '</div>';
 
+    // Wave C2 — the readiness checklist. LEADERS ONLY: this is the leader renderer, and the card
+    // says so, because the notice under it says everything else here is published.
+    h += campReadinessCard(t, edit);
+
     // The published-to-parents notice. On the page, not in a comment: the whole point of this
     // tab is that parents read it, and somebody will otherwise type a phone number into it.
     if (edit) {
       h += '<div class="card"><p class="small muted" style="margin:0">' +
         '<strong>Everything on this page is published to parents</strong> — the trip details and every ' +
         'section below, exactly as written. Nothing else about the pack goes with it: no budget, no ' +
-        'dues, no roster. Write it for the family reading it in the car park. ' +
+        'dues, no roster, and not the readiness checklist above. Write it for the family reading it in the car park. ' +
         (t.name ? '' : 'An unnamed campout is not published at all, so give it a name when it is ready.') +
         '</p></div>';
     }
@@ -18576,6 +18640,21 @@
         'tab and everything written on it, and takes it off the parents’ view too.</p></div>';
     }
     return h;
+  }
+  // Wave C2 — the trip readiness checklist, with its count. Leaders only; a viewer sees the ticks
+  // but cannot change them.
+  function campReadinessCard(t, edit) {
+    var r = (t && t.readiness) || {}, rd = tripReadiness(t);
+    var dis = edit ? '' : ' disabled';
+    return '<div class="card no-print"><div class="spread">' +
+      '<p class="eyebrow note-cap note-cap-int" style="margin:0">Trip readiness \u00b7 leaders only</p>' +
+      '<span class="pill' + (rd.done === rd.total ? ' navy' : '') + '">' +
+      (rd.done === rd.total ? 'All ' + rd.total + ' ready' : rd.done + ' of ' + rd.total + ' ready') + '</span></div>' +
+      '<div class="ob-ticks">' + CAMP_READINESS.map(function (it) {
+        return '<label class="ob-tick"><input type="checkbox" data-ch="trip-ready" data-id="' + esc(t.id) + '" data-key="' + it.key + '"' +
+          (r[it.key] === true ? ' checked' : '') + dis + '><span>' + esc(it.label) + '</span></label>';
+      }).join('') + '</div>' +
+      '<p class="small muted" style="margin:4px 0 0">Not published to families. The ticks clear when this trip\u2019s dates move to another year.</p></div>';
   }
   // Wave C1 — one date input. The value is re-checked (campIsoOrBlank) on the way in and out.
   function campDateField(t, key, label) {
@@ -24000,9 +24079,18 @@
       // Wave C1 — a date is ISO or cleared; a half-typed one is ignored rather than stored.
       if (CAMP_DATE_KEYS.indexOf(tK) >= 0) {
         tT = getTrip(el.dataset.id);
-        var tDv = campIsoOrBlank(el.value);
-        if (!tT || (el.value && !tDv)) return;
-        tT[tK] = tDv;
+        // setTripDate also clears the readiness ticks when the weekend moves to another year.
+        if (!setTripDate(tT, tK, el.value)) return;
+        commit();
+        return;
+      }
+      // Wave C2 — one readiness tick. Leaders only; never published.
+      if (tK === 'ready') {
+        tT = getTrip(el.dataset.id);
+        var tRk = el.dataset.key;
+        if (!tT || !CAMP_READINESS.some(function (it) { return it.key === tRk; })) return;
+        tT.readiness = normalizeReadiness(tT.readiness);
+        if (el.checked) tT.readiness[tRk] = true; else delete tT.readiness[tRk];
         commit();
         return;
       }

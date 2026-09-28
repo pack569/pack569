@@ -971,7 +971,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'freshTripSection', 'freshTrip', 'seedCampingTrips', 'freshCamping',
   'CAMP_SEED_REV', 'CAMP_OLD_SEED', 'campHash', 'refreshCampingSeed',
   // Wave C1 — and coerces each trip's ISO dates.
-  'CAMP_DATE_KEYS', 'campIsoOrBlank',
+  'CAMP_DATE_KEYS', 'campIsoOrBlank', 'CAMP_READINESS', 'normalizeReadiness',
   // Wave B1 — and seeds "New to the pack" the same way.
   'WELCOME_SEED_REV', 'WELCOME_OLD_SEED', 'WELCOME_FILL_RE', 'freshWelcomeSection', 'seedWelcomeSections',
   'freshWelcome', 'refreshWelcomeSeed',
@@ -11282,7 +11282,7 @@ test('C1: the dates are published, re-checked, and the published trip carries ex
   ok(/`startDate`, `endDate`,\s+`registrationDeadline`/.test(SETUP), 'SETUP.md “What a parent sees” does not list the dates');
   // The editor stores only an ISO date or a clear.
   const h = /if \(typeof ch === 'string' && ch\.indexOf\('trip-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/CAMP_DATE_KEYS\.indexOf\(tK\) >= 0/.test(h) && /if \(!tT \|\| \(el\.value && !tDv\)\) return;/.test(h), 'a junk date can be typed into the record');
+  ok(/CAMP_DATE_KEYS\.indexOf\(tK\) >= 0/.test(h) && /if \(!setTripDate\(tT, tK, el\.value\)\) return;/.test(h), 'a junk date can be typed into the record');
 });
 
 test('C1: the family’s Next up card says when online sign-up for a campout closes, within 30 days', () => {
@@ -11305,6 +11305,89 @@ test('C1: the family’s Next up card says when online sign-up for a campout clo
   ok(/closes D2026-10-01/.test(ctx.parentNextUp([], '2026-10-01', trips)) && /today/.test(ctx.parentNextUp([], '2026-10-01', trips)),
     'a deadline with no event on the calendar is dropped');
   eq(ctx.parentNextUp([], '2026-10-02', trips.slice(0, 3)), '', 'a passed deadline makes a card');
+});
+// C2 — the trip readiness checklist. Leaders only, never published.
+test('C2: readiness is seven known ticks, normalized on load, and clears when the weekend moves year', () => {
+  const ctx = sandbox(['CAMP_DATE_KEYS', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'CAMP_READINESS',
+    'normalizeReadiness', 'tripReadiness', 'setTripDate']);
+  eq(ctx.CAMP_READINESS.map((i) => i.key), ['baloo', 'weather', 'twoLeaders', 'female', 'health', 'emergency', 'paperwork'], 'items');
+  const labels = ctx.CAMP_READINESS.map((i) => i.label).join(' | ');
+  ['BALOO', 'Hazardous Weather', 'both 21 or older', 'female adult 21 or older, if girls attend', 'AHMR Parts A and B',
+    'nearest hospital', 'paperwork'].forEach((w) => ok(labels.includes(w), 'no readiness item for ' + w));
+  eq(JSON.parse(JSON.stringify(ctx.normalizeReadiness({ baloo: true, health: 'yes', bogus: true, weather: false }))), { baloo: true }, 'normalize');
+  eq(JSON.parse(JSON.stringify(ctx.normalizeReadiness([true]))), {}, 'an array is not a checklist');
+  const rd = ctx.tripReadiness({ readiness: { baloo: true, health: true } });
+  eq([rd.done, rd.total, rd.open.length], [2, 7, 5], 'count');
+  // Dates: a same-year move keeps the ticks; a new year clears them; a first date keeps them.
+  const t = { startDate: '', endDate: '', registrationDeadline: '', readiness: { baloo: true } };
+  ok(ctx.setTripDate(t, 'startDate', '2026-10-02') && t.readiness.baloo, 'setting a first date cleared the ticks');
+  ok(ctx.setTripDate(t, 'startDate', '2026-10-09') && t.readiness.baloo, 'a same-year move cleared the ticks');
+  ok(!ctx.setTripDate(t, 'startDate', 'Oct 9') && t.startDate === '2026-10-09', 'a junk date was stored');
+  ok(!ctx.setTripDate(t, 'readiness', '2026-10-09'), 'setTripDate writes a key that is not a date');
+  ok(ctx.setTripDate(t, 'startDate', '2027-10-08') && !t.readiness.baloo, 'moving the weekend a year on kept last year’s ticks');
+  t.readiness = { health: true };
+  ok(ctx.setTripDate(t, 'startDate', '') && t.readiness.health, 'clearing the date cleared the ticks');
+  // A fresh trip and a loaded one both carry the key.
+  ok(/readiness: \{\},/.test(slice('freshTrip')), 'a new trip has no readiness');
+  ok(/t\.readiness = normalizeReadiness\(t\.readiness\);/.test(slice('normalizeState')), 'readiness is not normalized on load');
+});
+
+test('C2: the readiness checklist is NEVER published, and says so on the page', () => {
+  // The allowlist names every published trip key; readiness is not one of them.
+  const bpv = codeOnly(BPV());
+  ok(!/readiness|CAMP_READINESS|tripReadiness/.test(bpv), 'buildParentView reads the readiness checklist');
+  for (const f of ['renderParentCamping', 'parentNextUp', 'parentTrips', 'monthlyDigest']) {
+    ok(!/readiness|CAMP_READINESS|tripReadiness/.test(codeOnly(slice(f))), f + ' reads the readiness checklist');
+  }
+  ok(!/readiness/.test(codeOnly(/function buildICS\(\)[\s\S]*?\n  \}/.exec(SCRIPT)[0])), 'the .ics reads the readiness checklist');
+  // A trip holding ticks publishes none of them (a runtime check, not just a scan).
+  const ctx = pvCtx(`
+    function campingTrips() { return [{ id: 'a', name: 'Fall', when: 'Oct', startDate: '2026-10-02',
+      readiness: { baloo: true, health: true }, sections: [] }]; }`);
+  const pv = vm.runInContext('buildParentView(state, { showStandings: false })', ctx);
+  ok(!/readiness|baloo|BALOO/.test(JSON.stringify(pv)), 'the readiness checklist reached the parent view');
+  // The leader page: its own card, labelled leaders-only, and the published notice excludes it.
+  const rc = slice('renderCamping');
+  ok(/campReadinessCard\(t, edit\)/.test(rc), 'the trip page has no readiness card');
+  ok(/not the readiness checklist above/.test(rc), 'the published notice does not exclude the checklist');
+  const card = slice('campReadinessCard');
+  ok(/Trip readiness \\u00b7 leaders only/.test(card) && /Not published to families/.test(card), 'the card does not say it is leaders-only');
+  ok(/ of ' \+ rd\.total \+ ' ready/.test(card), 'the card shows no count');
+  // Kept in step with the banner and SETUP.md.
+  ok(/each campout's readiness checklist \(`readiness`, Wave C2\)/.test(SCRIPT), 'the parent-view banner does not exclude it');
+  ok(/\*\*never\*\* contains:[^]*?any campout's readiness checklist/.test(SETUP), 'SETUP.md does not exclude it');
+  // The tick handler: known items only.
+  const h = /if \(typeof ch === 'string' && ch\.indexOf\('trip-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/if \(tK === 'ready'\)/.test(h) && /CAMP_READINESS\.some\(/.test(h), 'a readiness tick is stored without checking its key');
+});
+
+test('C2: Home asks the Camping Chair in the 14 days before a trip while anything is open', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    var TODAY = '2026-09-28';
+    function todayISO() { return TODAY; }
+    function fmtDate(d) { return String(d); }
+    ${['CAMP_DATE_KEYS', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'CAMP_READINESS', 'tripReadiness', 'daysUntil'].map(slice).join('\n')}
+    var TRIPS = [];
+    function campingTrips() { return TRIPS; }
+    function tasks() {
+      var out = [];
+      function add(job, tier, title, detail, tab, section) { out.push({ job: job, tier: tier, title: title, detail: detail, tab: tab, section: section }); }
+      ${/\/\* ----- Outdoor \/ Camping Chair ----- \*\/([\s\S]*?)\/\* ----- Advancement/.exec(slice('homeTasks'))[1]}
+      return out;
+    }`, ctx);
+  const run = (trips) => { ctx.TRIPS = trips; return vm.runInContext('tasks()', ctx); };
+  const all = {}; ['baloo', 'weather', 'twoLeaders', 'female', 'health', 'emergency', 'paperwork'].forEach((k) => { all[k] = true; });
+  const t1 = run([{ id: 'f', name: 'Fall', startDate: '2026-10-02', readiness: { baloo: true } }]);
+  eq(t1.length, 1, 'no task four days out with six items open');
+  eq([t1[0].job, t1[0].tab, t1[0].section], ['outdoors', 'camping', 'f'], 'the task goes to the wrong job or page');
+  ok(/Fall — 6 readiness items still open/.test(t1[0].title), t1[0].title);
+  eq(run([{ id: 'f', name: 'Fall', startDate: '2026-10-02', readiness: all }]).length, 0, 'a task with everything ticked');
+  eq(run([{ id: 'f', name: 'Fall', startDate: '2026-10-13', readiness: {} }]).length, 0, 'a task fifteen days out');
+  eq(run([{ id: 'f', name: 'Fall', startDate: '2026-10-12', readiness: {} }]).length, 1, 'no task fourteen days out');
+  eq(run([{ id: 'f', name: 'Fall', startDate: '2026-09-27', readiness: {} }]).length, 0, 'a task for a trip already begun');
+  eq(run([{ id: 'f', name: 'Fall', readiness: {} }]).length, 0, 'a task for an undated trip');
+  eq(run([{ id: 'f', name: 'Fall', startDate: '2026-09-29', readiness: {} }])[0].tier, 'now', 'the day before is not urgent');
 });
 /* ---------------- report ---------------- */
 if (fails.length) {

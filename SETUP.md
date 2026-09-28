@@ -208,7 +208,7 @@ calendar but not the money" is impossible to do by permission alone. Instead the
   income, expenses), dues or who has paid, any family's charges, payments or balance, who
   paid their way up a reward tier, inventory (products, cases, prices, hand-outs), the
   leader roster (names, phones, emails, training dates, notes), children's last names,
-  past-season archives, scout notes or den labels, RSVP/attendance detail, or the ledger in
+  past-season archives, any campout's readiness checklist, scout notes or den labels, RSVP/attendance detail, or the ledger in
   any raw form.
 - Parents and pending users are **denied the ledger document outright** by the rules below,
   so this isn't a UI choice — the pack's finances never reach their browser at all.
