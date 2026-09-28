@@ -1004,6 +1004,19 @@
     .sync-pill { padding: 4px 7px; }
     .sync-pill .sync-lbl { display: none; }
   }
+  /* The parent's copy of the pill: words, not a control (see renderSyncPill). "Synced" can shrink
+     to the dot on a phone like the leaders' pill, but stays readable to a screen reader; "Offline"
+     is the one state a family has to be TOLD, so it keeps its words and wraps instead. */
+  .sync-text { cursor: default; }
+  .sync-text:hover { border-color: color-mix(in srgb, var(--navy-ink) 30%, transparent); }
+  @media (max-width: 480px) {
+    .sync-text:not(.offline) .sync-lbl {
+      display: inline; position: absolute; width: 1px; height: 1px; overflow: hidden;
+      clip: rect(0 0 0 0); white-space: nowrap;
+    }
+    .sync-text.offline { white-space: normal; max-width: 55vw; line-height: 1.25; }
+    .sync-text.offline .sync-lbl { display: inline; }
+  }
   .leader-row { padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
   .leader-row:last-of-type { border-bottom: none; }
   .leader-row input { min-height: 36px; }
@@ -1696,6 +1709,7 @@
     <div class="hdr-row">
       <h1 class="wordmark"><span class="fleur" id="fleurSlot" aria-hidden="true"></span><span>Ideal <span class="gold">Year</span> of Scouting</span><small id="hdrPack"></small></h1>
       <button type="button" class="sync-pill no-print" id="syncPill" data-act="goto-pack"></button>
+      <span class="sync-pill sync-text no-print" id="syncText" role="status" hidden></span>
     </div>
     <div class="tabs-wrap"><nav class="tabs" id="tabs" aria-label="Workspaces"></nav></div>
   </div>
@@ -9090,13 +9104,30 @@
     online: { cls: 'online', label: 'Synced' },
     offline: { cls: 'offline', label: 'Offline' }
   };
+  // What a family is told instead. Only "Offline" needs more words: to a parent it is the one
+  // state that changes what they are looking at — the calendar is the copy this device last saw.
+  var SYNC_PILL_PARENT = { offline: 'Offline — showing what was saved last' };
   function renderSyncPill() {
     var el = document.getElementById('syncPill');
     if (!el) return;
+    var gm = !!gateMode();
+    var p = SYNC_PILL[sync.mode] || SYNC_PILL.local;
+    // PARENTS GET TEXT, NOT A BUTTON (parent-experience audit, 2026-09-28). The pill's action is
+    // goto-pack, which is not on PARENT_ACTS — so for a family it was a button that did nothing
+    // when pressed. A status they can read, in a <span> that is never in the tab order.
+    var txt = document.getElementById('syncText');
+    var asText = !gm && parentMode() && !!txt;
+    if (txt) {
+      txt.hidden = !asText;
+      if (asText) {
+        txt.className = 'sync-pill sync-text no-print ' + p.cls;
+        txt.innerHTML = '<span class="sync-dot" aria-hidden="true"></span><span class="sync-lbl">' +
+          esc(SYNC_PILL_PARENT[sync.mode] || p.label) + '</span>';
+      }
+    }
     // Join link phase — the gate screens have no Pack tab to jump to, so the pill is hidden
     // (CSS: .sync-pill[hidden] beats the class's display:inline-flex).
-    el.hidden = !!gateMode();
-    var p = SYNC_PILL[sync.mode] || SYNC_PILL.local;
+    el.hidden = gm || asText;
     el.className = 'sync-pill no-print ' + p.cls;
     el.innerHTML = '<span class="sync-dot"></span><span class="sync-lbl">' + p.label + '</span>';
     el.setAttribute('aria-label', 'Sync status: ' + p.label + '. Opens Pack.');
@@ -9384,6 +9415,8 @@
     document.getElementById('hdrPack').textContent = gate ? ''
       : (parent ? ((parentDoc() && parentDoc().packName) || '') : (state.packName || ''));
     var tabsEl = document.getElementById('tabs');
+    // A family has no "workspaces" — that is the leaders' word for their six job areas.
+    tabsEl.setAttribute('aria-label', parent ? 'Pack pages' : 'Workspaces');
     var secEl = document.getElementById('sections');
     var tabDefs = gate ? [] : (parent ? parentTabDefs() : WORKSPACES);
     var tabAct = parent ? 'parent-tab' : 'tab';

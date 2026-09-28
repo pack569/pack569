@@ -9454,6 +9454,20 @@ test('J5: what is left to sell reads as a choice, in a family’s words', () => 
   ok(/\$240\.00<\/strong> more to sell/.test(one) && !/%\)/.test(one), 'a single route still quotes its rate');
 });
 
+test('J6: a family sees the sync status as words, never as a button that does nothing', () => {
+  const span = /<span class="sync-pill sync-text no-print" id="syncText"[^>]*>/.exec(HTML);
+  ok(span, 'there is no text-only sync status for parents');
+  ok(!/data-act/.test(span[0]), 'the parents’ sync status carries an action');
+  const fn = slice('renderSyncPill');
+  ok(/var asText = !gm && parentMode\(\)/.test(fn), 'the text status is not tied to parent mode');
+  ok(/el\.hidden = gm \|\| asText;/.test(fn), 'the goto-pack button still shows for parents');
+  const acts = /var PARENT_ACTS = \[([\s\S]*?)\];/.exec(SCRIPT);
+  ok(acts[1].indexOf("'goto-pack'") === -1, 'goto-pack became a parent action — revisit this test');
+  ok(/offline: 'Offline — showing what was saved last'/.test(SCRIPT), 'offline is not explained to families');
+  ok(/tabsEl\.setAttribute\('aria-label', parent \? 'Pack pages' : 'Workspaces'\)/.test(SCRIPT),
+    'the parent nav is still announced as "Workspaces"');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
