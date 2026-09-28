@@ -12635,8 +12635,12 @@ test('wrangler.toml publishes _site, and git ignores the build output', () => {
   const gi = readFileSync(join(ROOT, '.gitignore'), 'utf8').split('\n').map((l) => l.trim());
   ok(gi.indexOf('_site/') >= 0 && gi.indexOf('_site-*/') >= 0, '.gitignore does not cover _site/');
   try {
-    const out = execSync('git check-ignore --no-index _site/index.html _site-preview/_headers', { cwd: ROOT, encoding: 'utf8' });
-    eq(out.split('\n').filter(Boolean).length, 2, 'git check-ignore');
+    const out = execSync('git check-ignore --no-index _site/index.html _site-preview/_headers .wrangler/state/d1/x.sqlite pack569-prod.sql backup.SQL',
+      { cwd: ROOT, encoding: 'utf8' });
+    eq(out.split('\n').filter(Boolean).length, 5, 'git check-ignore (the build output, wrangler\'s local state, a database export)');
+    // …but the schema is tracked.
+    const tracked = spawnSync('git', ['check-ignore', '--no-index', 'migrations/0001_init.sql'], { cwd: ROOT, encoding: 'utf8' });
+    if (tracked.status !== 128) eq(tracked.status, 1, 'git ignores migrations/0001_init.sql');
   } catch (e) {
     if (e.status === 1) throw new Error('git does not ignore the build output');
     if (e.status !== 128) throw e;
