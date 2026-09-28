@@ -5624,6 +5624,7 @@
   //
   //   owed         Σ charges that still stand
   //   paid         Σ payments against charges, any source (entryPaysCharges)
+  //   carried      the part of `paid` that is a credit carried from last year (source 'carryover')
   //   refunded     Σ money given back to the family (entryRefundsFamily, T1)
   //   balance      owed − paid + refunded, SIGNED: a family that has overpaid is in credit, and says so
   //   outstanding  max(0, balance)       credit  max(0, −balance)
@@ -5633,7 +5634,7 @@
     var by = {}, order = [];
     function acct(sid) {
       var k = key(sid);
-      if (!by[k]) { by[k] = { key: k, owed: 0, paid: 0, refunded: 0, scoutIds: [] }; order.push(k); }
+      if (!by[k]) { by[k] = { key: k, owed: 0, paid: 0, carried: 0, refunded: 0, scoutIds: [] }; order.push(k); }
       if (by[k].scoutIds.indexOf(sid) === -1) by[k].scoutIds.push(sid);
       return by[k];
     }
@@ -5642,8 +5643,11 @@
       if (chargeIsOpen(c)) a.owed += c.amountCents || 0;
     });
     ledger.forEach(function (e) {
-      if (entryPaysCharges(e)) acct(e.scoutId).paid += e.amountCents || 0;
-      else if (entryRefundsFamily(e)) acct(e.scoutId).refunded += e.amountCents || 0;
+      if (entryPaysCharges(e)) {
+        acct(e.scoutId).paid += e.amountCents || 0;
+        // T9(b) — the part of `paid` that is last year's credit, not money that arrived this year.
+        if (e.source === 'carryover') acct(e.scoutId).carried += e.amountCents || 0;
+      } else if (entryRefundsFamily(e)) acct(e.scoutId).refunded += e.amountCents || 0;
     });
     return order.map(function (k) {
       var a = by[k];
@@ -9991,9 +9995,12 @@
     // for itself. A parent reading online is still told what the figures are and are not; a parent
     // holding the sheet has the heading above it saying the same thing in five words.
     var h = '<div class="card pv-yearcost"><h2 class="section display">What a year costs a family</h2>' +
-      '<p class="small muted pv-yearcost-note" style="margin:0 0 10px">The <strong>typical cost for one scout and one ' +
-      'parent</strong> across the whole year, if the scout earns <strong>no reward tier at all</strong> — whether ' +
-      'the pack collects it or the council does. <strong>Not included:</strong> a second parent, brothers and sisters ' +
+      // T9(c) — "fees in the pack's plan", not a year's cost outright: it is built from the budget, and a
+      // fee the budget has no line for (the council program fee, say) is not in it. Wording only —
+      // what buildParentView publishes is unchanged.
+      '<p class="small muted pv-yearcost-note" style="margin:0 0 10px">The <strong>fees in the pack’s plan</strong> for ' +
+      'one scout and one parent across a typical year, if the scout earns <strong>no reward tier at all</strong> — whether ' +
+      'the pack collects them or the council does. <strong>Not included:</strong> a second parent, brothers and sisters ' +
       '(listed separately, because nothing requires one to come), and anything the pack charges as one flat amount. ' +
       'Ask a leader if you are not sure what your family’s year will cost.</p>';
     dens.forEach(function (d) {
@@ -11393,7 +11400,12 @@
         // pack is paying for them". .pill.good already means a good outcome on this tab
         // (awarded / recorded) and carries its own dark-theme ink flip.
         if (coveredCents > 0) pills += ' <span class="pill good">pack covers ' + fmt(coveredCents) + '</span>';
-        if (owe > 0) pills += ' <span class="pill bad">owes ' + fmt(owe) + '</span>';
+        // T9(a) — the balance is the FAMILY's (M7), so on linked siblings the same figure sits on
+        // every child's row. "owes $120" twice read as $240; say whose it is. Archived siblings
+        // count: their balance is in the account too.
+        var famKey = familyKeyOf(s);
+        var shared = state.scouts.filter(function (o) { return familyKeyOf(o) === famKey; }).length > 1;
+        if (owe > 0) pills += ' <span class="pill bad">' + (shared ? 'family owes ' : 'owes ') + fmt(owe) + '</span>';
         else if (coveredCents > 0) pills += ' <span class="pill navy">paid up</span>';
         return pills;
       })() + '</div>' +
@@ -14899,7 +14911,11 @@
       '<button type="button" class="exp-toggle" data-act="toggle-collect" data-id="' + esc(f.key) + '" aria-expanded="' + open + '">' +
       '<span class="chev" aria-hidden="true">' + (open ? '▾' : '▸') + '</span>' +
       f.charges.length + ' charge' + (f.charges.length === 1 ? '' : 's') + ' · ' + fmt(ft.raised) +
-      ' · ' + fmt(a.paid) + ' received</button>';
+      // T9(b) — "received" is money that arrived this year. A credit carried from last year settles
+      // charges too, but saying it was received made this line disagree with the ledger.
+      ' · ' + fmt(a.paid - a.carried) + ' received' +
+      (a.carried ? ' · ' + fmt(a.carried) + ' carried forward' : '') +
+      (a.refunded ? ' · ' + fmt(a.refunded) + ' refunded' : '') + '</button>';
     if (open) {
       h += '<div class="rsvp-list">';
       if (a.credit) {

@@ -8787,6 +8787,27 @@ test('T8: reward-tier reimbursements are measured against what the plan set asid
   eq(out.rows[out.rows.length - 1].category, 'tier-reimburse', 'the row is not last');
 });
 
+test('T9: a shared balance, a carried credit and the parents’ cost card say what they are', () => {
+  // (a) Linked siblings each carried "owes $120" — the family's one balance, read as two.
+  const roster = SCRIPT.slice(SCRIPT.indexOf('var owe = scoutOwesCents(s.id);'), SCRIPT.indexOf('var owe = scoutOwesCents(s.id);') + 1600);
+  ok(/\(shared \? 'family owes ' : 'owes '\)/.test(roster), 'a sibling’s pill does not say the balance is the family’s');
+  ok(/state\.scouts\.filter\(function \(o\) \{ return familyKeyOf\(o\) === famKey; \}\)\.length > 1/.test(roster),
+    'an archived sibling does not count as sharing the account');
+  // (b) "received" included last year's carried credit.
+  const { familyAccounts } = sandbox(CHARGE_FNS);
+  const a = familyAccounts([{ scoutId: 'ada', amountCents: 8000, waivedBy: '', forgiven: null }], [
+    { direction: 'in', scoutId: 'ada', amountCents: 3000, source: 'carryover' },
+    { direction: 'in', scoutId: 'ada', amountCents: 5000, source: 'family' }
+  ])[0];
+  eq([a.paid, a.carried, a.balance], [8000, 3000, 0], 'the family account');
+  const blk = /function duesFamilyBlock\(f\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/fmt\(a\.paid - a\.carried\) \+ ' received'/.test(blk) && /' carried forward'/.test(blk),
+    'the family block counts a carried credit as received');
+  // (c) The parents' card is the fees in the plan, not everything a year costs. No new published fields.
+  const pv = /function parentFamilyCost\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/fees in the pack’s plan/.test(pv), 'the parents’ cost card is not softened');
+});
+
 test('T1: a refund source only survives on money out that names a family', () => {
   const ns = /function normalizeState\(d\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/if \(e\.source === 'refund' && \(e\.direction !== 'out' \|\| !e\.scoutId\)\) e\.source = '';/.test(ns),
@@ -8980,7 +9001,7 @@ test('M11: the family-cost card says who pays registration and what else it leav
   const seed = /function seedStandardYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/if \(existingExp\[t\.name\.toLowerCase\(\)\]\) return;/.test(seed), 'reseeding would overwrite a pack’s registration line');
   const pv = /function parentFamilyCost\(pv\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0].replace(/'\s*\+\s*'/g, '');
-  ok(/typical cost for one scout and one parent/.test(pv) && /Not included:/.test(pv),
+  ok(/fees in the pack’s plan<\/strong> for one scout and one parent across a typical year/.test(pv) && /Not included:/.test(pv),
     'the family view still reads as the most a family can be asked for');
 });
 

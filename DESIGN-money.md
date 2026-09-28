@@ -253,6 +253,13 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   inside `tierExtra`). Paid-direct lines now have their own row, *Reward-tier reimbursements*,
   planned at that figure and actual at what those lines have paid out, instead of sitting in
   their 510-278 category against nothing.
+- **Wording (T9).** A roster pill on linked siblings says **family owes $X**, not "owes $X" on
+  every child (it is one balance, and archived siblings count). A family block's "received" is
+  money that arrived this year; a credit carried from last year is shown apart as *carried
+  forward* (`familyAccounts` now reports `carried`), and a refund as *refunded*. The parents'
+  cost card calls its figure the **fees in the pack's plan** for one scout and one parent across
+  a typical year — the plan has no line for a fee it does not know about. What `buildParentView`
+  publishes did not change.
 
 ---
 
