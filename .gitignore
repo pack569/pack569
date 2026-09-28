@@ -1,2 +1,7 @@
+# The deploy build's output (scripts/build-site.mjs). Built fresh for every deploy, never committed.
+# (Kept at the top of this file so it merges cleanly beside the patterns other branches add below.)
+_site/
+_site-*/
+
 # Local pre-change backups made before each build wave — kept on disk, not in git.
 .index.pre-*.html
