@@ -1007,6 +1007,29 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
 
+test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(NORMALIZE_FNS.map(slice).join('\n'), ctx);
+  const d = ctx.normalizeState({
+    version: 1, scouts: [{ id: 't1', name: 'Tam', den: 'Tiger' }],
+    advancement: { t1: { req: { 'Tiger Roar': 'done' }, elect: {} } },
+    events: [
+      { id: 'm1', kind: 'den', den: 'Tiger', date: '2026-10-06', adventure: 'Tiger Roar' },
+      { id: 'm2', kind: 'den', den: '', date: '2026-10-06', packAdv: 'req:5',
+        denAdv: { Tiger: 'Tiger Roar', Lion: false, Wolf: '  ', Nobody: 'x' } },
+      { id: 'm3', kind: 'den', den: '', date: '2026-10-20', packAdv: 'nonsense' },
+      { id: 'm4', kind: 'den', den: 'Wolf', date: '2026-10-20', packAdv: 'req:1', denAdv: { Wolf: 'Footsteps' } }
+    ]
+  });
+  eq(Object.keys(d.advancement.t1.req), ["Tiger's Roar"], 'a scout’s saved Tiger Roar mark was not carried over');
+  eq(d.events[0].adventure, "Tiger's Roar", 'a meeting tagged Tiger Roar was not renamed');
+  eq(d.events[1].packAdv, 'req:5', 'a valid pack-wide choice was dropped');
+  eq(JSON.stringify(d.events[1].denAdv), JSON.stringify({ Lion: false, Tiger: "Tiger's Roar" }),
+    'the per-den lines were not renamed, cleaned and kept in rank order');
+  ok(!('packAdv' in d.events[2]), 'an unknown pack-wide choice survived');
+  ok(!('packAdv' in d.events[3]) && !('denAdv' in d.events[3]), 'a one-den meeting kept All-dens fields');
+});
+
 function preMigrationState() {
   // A pre-Phase-0 pack record, with the two shapes that matter: a flat line and a
   // per-scout line (whose actualCents was a RATE multiplied by the roster on every read).
@@ -5742,7 +5765,7 @@ test('every rank lists its required adventures in the same category order', () =
   eq(['Lion', 'Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light'].map((d) => A[d].required[1]),
     ['King of the Jungle', 'Team Tiger', 'Council Fire', 'Paws for Action', 'My Community', 'Citizenship'], 'Citizenship is out of line');
   eq(['Lion', 'Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light'].map((d) => A[d].required[5]),
-    ["Lion's Roar", 'Tiger Roar', 'Safety in Numbers', 'Standing Tall', 'My Safety', 'First Aid'], 'Personal Safety is out of line');
+    ["Lion's Roar", "Tiger's Roar", 'Safety in Numbers', 'Standing Tall', 'My Safety', 'First Aid'], 'Personal Safety is out of line');
   for (const t of vm.runInContext('ADV_ELECTIVE_THEMES', ctx)) {
     for (const [den, name] of Object.entries(t.byDen)) ok(A[den].electives.includes(name), `${t.label}: "${name}" is not a ${den} elective`);
   }

@@ -1939,7 +1939,9 @@
   // normalizeState (every scout's advancement req/elect keys AND meetings[].adventure
   // free text, exact match). Future handbook renames are one-line 'old': 'new' additions
   // here — nothing else to touch. Must be defined BEFORE `var state = load()` runs.
-  var ADV_RENAMES = { 'Lion Roar': "Lion's Roar" };
+  // 'Tiger Roar' was this app's own misspelling, not a handbook rename: the adventure has always
+  // been "Tiger's Roar" (council requirement sheets, checked 2026-09-28). Same migration.
+  var ADV_RENAMES = { 'Lion Roar': "Lion's Roar", 'Tiger Roar': "Tiger's Roar" };
   // The program year runs JULY → JUNE, because July is when this pack starts planning the
   // year ahead. Scouting America's own "Ideal Year of Scouting" worksheet runs September →
   // August; a pack that plans in the summer would spend two months with no year to plan
@@ -4160,7 +4162,9 @@
       // meeting" (a den running its own make-up that night). Only an All-dens den meeting
       // carries either; only DENS keys survive, in rank order.
       var allDensMtg = e.kind === 'den' && !e.den;
-      if (!allDensMtg || typeof e.packAdv !== 'string' || !packAdvLabel(e.packAdv)) delete e.packAdv;
+      // Shape only. ADVENTURES and the choice list are assigned AFTER load() runs, so the loader
+      // must not read them (the harness enforces that); an unknown key reads as no adventure.
+      if (!allDensMtg || typeof e.packAdv !== 'string' || !/^(req:[0-5]|th:[a-z]+|el:\S.*)$/.test(e.packAdv)) delete e.packAdv;
       var dAdv = {};
       if (allDensMtg && e.denAdv && typeof e.denAdv === 'object' && !Array.isArray(e.denAdv)) {
         DENS.forEach(function (dn) {
@@ -7568,7 +7572,7 @@
         'Build It Up, Knock It Down', 'Count On Me', 'Ready, Set, Grow', 'Everyday Tech', 'Time to Swim']
     },
     'Tiger': {
-      required: ['Bobcat', 'Team Tiger', 'Tiger Circles', 'Tigers in the Wild', 'Tiger Bites', 'Tiger Roar'],
+      required: ['Bobcat', 'Team Tiger', 'Tiger Circles', 'Tigers in the Wild', 'Tiger Bites', "Tiger's Roar"],
       electives: ['Safe and Smart', 'Rolling Tigers', "Let's Camp!", 'Good Knights', 'Champions for Nature',
         'Fish On', 'Curiosity, Intrigue, and Magical Mysteries', 'Tiger Tag', 'Tiger-iffic!', 'Floats and Boats',
         'Race Time', 'Archery', 'BB Gun', 'Slingshot', 'Designed by Tiger', 'Stories in Shapes',
@@ -7656,7 +7660,7 @@
   var ADV_SHORT = {
     'Bobcat': 'Bobcat', 'King of the Jungle': 'Jungle', "Lion's Pride": 'Pride', 'Mountain Lion': 'Mtn Lion',
     'Fun on the Run': 'Fun Run', "Lion's Roar": 'Roar', 'Team Tiger': 'Team', 'Tiger Circles': 'Circles',
-    'Tigers in the Wild': 'Wild', 'Tiger Bites': 'Bites', 'Tiger Roar': 'Roar', 'Council Fire': 'Council',
+    'Tigers in the Wild': 'Wild', 'Tiger Bites': 'Bites', "Tiger's Roar": 'Roar', 'Council Fire': 'Council',
     'Footsteps': 'Steps', 'Paws on the Path': 'Path', 'Running with the Pack': 'Running', 'Safety in Numbers': 'Safety',
     'Paws for Action': 'Action', 'Fellowship': 'Fellow.', 'Bear Habitat': 'Habitat', 'Bear Strong': 'Strong',
     'Standing Tall': 'Tall', 'My Community': 'Commun.', 'My Family': 'Family', 'Webelos Walkabout': 'Walkabt',
