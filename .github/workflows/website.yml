@@ -1,0 +1,220 @@
+# Pack 569 — the website's gates, and the only way the site is ever deployed.
+#
+#   push / pull_request   run the harness and build both targets. Nothing is deployed.
+#   workflow_dispatch     the same gates, then a hand-started deploy of the chosen target to
+#                         Cloudflare Pages. This is the ONLY path to a deploy: merging to main
+#                         never deploys. Production is refused unless the run is from main, and
+#                         then waits for the website-production reviewer to approve it.
+#
+# A preview is device-only: scripts/build-site.mjs writes FIREBASE_CONFIG and PACK_DOC_ID as
+# null and its CSP allows no Google origin, so a preview cannot reach the live pack.
+# The deploy ships the artifact the gates built and checked; nothing is rebuilt after approval.
+# Owner setup (Cloudflare project, token, secrets, environments): docs/cloudflare-setup.md.
+#
+# Every `uses:` is pinned to a full commit SHA. wrangler-action receives the Cloudflare token,
+# and a moved tag must not be able to change what runs with it. Re-pin on purpose, not to a tag.
+name: website
+
+on:
+  # No branch filter: every branch is gated, and a gate that only runs on main finds problems
+  # after they have merged. A branch with an open PR runs twice; that is accepted.
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: "preview = a throwaway pages.dev link, device-only, safe from any branch. production = pack569.com, from main only, needs approval."
+        type: choice
+        options: [preview, production]
+        default: preview
+
+permissions:
+  contents: read
+
+# Concurrency groups are repo-wide, hence the prefix. A newer push cancels an older gate run,
+# but a dispatch is never cancelled by another: the workflow-level group wins over a job's own
+# setting, and cancelling would kill a production deploy that is waiting for approval.
+concurrency:
+  group: website-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+jobs:
+  website-gates:
+    name: Website gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Harness
+        run: node test/harness.mjs
+
+      # Both targets, every run, so a change that breaks either build is caught on its branch
+      # and not at deploy time. Each build re-verifies its own output before it exits.
+      - name: Build preview and production
+        run: |
+          node scripts/build-site.mjs --target preview --out _site-preview
+          node scripts/build-site.mjs --target production --out _site-production
+
+      - name: Upload the site to deploy
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: site
+          path: _site-${{ inputs.deploy_target }}
+          if-no-files-found: error
+          # Must outlast the approval wait: an approval given after the artifact expires
+          # fails at download. Approve within a week, or run the workflow again.
+          retention-days: 7
+
+  deploy-preflight:
+    name: Deploy preflight (${{ inputs.deploy_target }})
+    needs: website-gates
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read   # to read the website-production environment's protection rules
+    steps:
+      # The branch guard lives here, in code, and FAILS rather than skips: a skipped job shows
+      # grey and reads like nothing went wrong. `deploy` needs this job, so red here stops it.
+      - name: Refuse production from a branch other than main
+        if: inputs.deploy_target == 'production' && github.ref != 'refs/heads/main'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error title=Production deploys only from main::This run is from $REF. Pick main under 'Use workflow from', or deploy a preview instead."
+          exit 1
+
+      # GitHub creates an environment a job names if it does not exist yet, with NO protection
+      # rules, so the first production run would deploy without anyone approving it. Check that
+      # the required reviewer is really there before the deploy job asks for the environment.
+      - name: Refuse production without a required reviewer
+        if: inputs.deploy_target == 'production'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          if ! body=$(gh api "repos/$REPO/environments/website-production" 2>/tmp/env.err); then
+            echo "::error title=No website-production environment::$(tr '\n' ' ' </tmp/env.err). Create it under Settings → Environments with a required reviewer (docs/cloudflare-setup.md) and run again."
+            exit 1
+          fi
+          n=$(printf '%s' "$body" | jq '[.protection_rules[]? | select(.type == "required_reviewers")] | length')
+          if [ "${n:-0}" -lt 1 ]; then
+            echo "::error title=website-production has no required reviewer::Add one under Settings → Environments → website-production (docs/cloudflare-setup.md) and run again."
+            exit 1
+          fi
+          echo "website-production requires a reviewer."
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Download the site
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: site
+          path: _site
+
+      # A second check in a second job: exactly index.html + _headers, byte-for-byte this
+      # commit's build for the chosen target, the CSP hash matching the script, and a preview
+      # carrying none of the live config.
+      - name: Verify the site
+        env:
+          TARGET: ${{ inputs.deploy_target }}
+        run: node scripts/build-site.mjs --verify _site --target "$TARGET"
+
+  deploy:
+    name: Deploy to Cloudflare Pages (${{ inputs.deploy_target }})
+    needs: [website-gates, deploy-preflight]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    # The approval click. Defence in depth: the branch guard is the preflight above.
+    environment:
+      name: ${{ inputs.deploy_target == 'production' && 'website-production' || 'website-preview' }}
+      url: ${{ steps.deploy.outputs.deployment-url }}
+    # Never cancel a deploy in flight or waiting for approval; queue the next one behind it.
+    concurrency:
+      group: website-deploy-${{ inputs.deploy_target }}
+      cancel-in-progress: false
+    steps:
+      # Not only for the script: `wrangler pages deploy` reads wrangler.toml from here.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Download the site
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: site
+          path: _site
+
+      - name: Verify the site again
+        env:
+          TARGET: ${{ inputs.deploy_target }}
+        run: node scripts/build-site.mjs --verify _site --target "$TARGET"
+
+      # Pages decides production by branch name: --branch=main goes to pack569.com (the
+      # project's production branch), anything else gets its own pages.dev link. Cloudflare
+      # shortens a long branch name in the alias, so read the link from the summary below.
+      - name: Deploy
+        id: deploy
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: >-
+            pages deploy _site
+            --project-name=pack569
+            --branch=${{ inputs.deploy_target == 'production' && 'main' || format('preview-{0}', github.sha) }}
+
+      - name: Write the link to the summary
+        env:
+          URL: ${{ steps.deploy.outputs.deployment-url }}
+          ALIAS_URL: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
+          TARGET: ${{ inputs.deploy_target }}
+        run: |
+          if [ -z "$URL" ]; then
+            echo "::warning title=No deployment URL::wrangler returned no URL; the pages.dev address is in the Deploy step's log."
+            echo "### Deployed ($TARGET), no URL returned; see the Deploy step's log" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "::notice title=Website $TARGET deployed::$URL${ALIAS_URL:+ (alias: $ALIAS_URL)}"
+          {
+            echo "### Deployed ($TARGET)"
+            echo ""
+            echo "- Deployment: $URL"
+            if [ -n "$ALIAS_URL" ]; then echo "- Alias: $ALIAS_URL"; fi
+            echo ""
+            if [ "$TARGET" = "preview" ]; then
+              echo "Device-only: nothing it does reaches the live pack. Check DevTools → Network shows no"
+              echo "firestore.googleapis.com, and the Console shows no Content-Security-Policy errors."
+            else
+              echo "Check sign-in and sync, and that /SETUP.md and /test/harness.mjs return 404."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
