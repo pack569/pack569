@@ -2283,7 +2283,7 @@
   //
   // To refresh again next year: edit the seed, bump CAMP_SEED_REV, and add the hashes of the
   // text being replaced here. A trip or section the leader renamed simply is not matched.
-  var CAMP_SEED_REV = 4;
+  var CAMP_SEED_REV = 5;
   var CAMP_OLD_SEED = {
     // rev 1, 2026-09-26: the fall weekend is the Apalachee District's (2 – 4 Oct 2026), not the
     // 2025 mid-October one; spring gains the 2027-not-posted note and the council's own rules.
@@ -2300,6 +2300,12 @@
     // rev 4, 2026-09-28 (Wave C1): no text changes — the structured dates (startDate, endDate,
     // registrationDeadline) are FILLED into seeded trips that have none, and only while the trip's
     // `when` is still the seed's own words (see refreshCampingSeed). Nothing to hash.
+    // rev 5, 2026-09-28 (Camping Chair review, K1 — SAFETY): the den campout template said BALOO
+    // was not required for a den overnighter. It is: the Guide to Safe Scouting requires a
+    // BALOO-trained adult on every overnight a Webelos or AoL den runs itself, as for a pack
+    // overnighter. Its three rule sections are rewritten with the chair's own words and carry no
+    // "[verify with council]" marker any more. A copy a leader has edited is not touched — the
+    // one-time notice on Home and a warning on the trip's page (campBalooStale) tell them instead.
     'Fall Family Camping': {
       fields: { when: ['9odju1'], arrive: ['ita6dt'], depart: ['qr7nm'], cost: ['xafznd', 'ci8n6h'],
         url: ['1l0iaoa'], intro: ['1b0kg44', '1j8pyxs'] },
@@ -2331,6 +2337,14 @@
         'What to bring': { h: ['1r69nct'] },
         'Sleeping arrangements and supervision': { h: ['onbxj9', '32mg1p'] },
         'If something goes wrong': { h: ['zq20g4'] }
+      }
+    },
+    'Den campout \u2014 Webelos & Arrow of Light': {
+      fields: {},
+      sections: {
+        'Who this campout is for': { h: ['cre3hc'] },
+        'Leaders and training': { h: ['jm2ot1'] },
+        'Before you go': { h: ['1f4z5y7'] }
       }
     }
   };
@@ -2878,17 +2892,31 @@
      its "current seed" map from seedCampingTrips AND campTemplates, so a later revision of this
      text reaches an added copy through CAMP_OLD_SEED like any other, and only where untouched.
 
-     DEN CAMPOUT — WEBELOS & ARROW OF LIGHT. The rules in it are the ones the pack's content
-     experts gave (den-level overnight camping is for Webelos and Arrow of Light dens only; with a
-     parent or guardian; BALOO not required, a trained leader required per the Guide to Safe
-     Scouting) plus the pack's own supervision wording from CAMP_SAFETY. Anything not verified is
-     marked "[verify with council]" in the text, and a SECTION holding that marker is NOT published
-     (campHeld, buildParentView) until a leader has checked it and taken the marker out.
+     DEN CAMPOUT — WEBELOS & ARROW OF LIGHT. The rules in it are the ones the pack's Camping
+     Chair gave (den-level overnight camping is for Webelos and Arrow of Light dens only; with a
+     parent or guardian, or by prior agreement under two registered leaders; BALOO required, as
+     for a pack overnighter (GSS); a council-approved or council-appraised site) plus the pack's
+     own supervision wording. ⚠ Rev 4 of this text said "BALOO is not required" — wrong, and
+     fixed in rev 5 (CAMP_OLD_SEED, campBalooStale). No rule in it is unverified any more, but
+     the marker still works: a SECTION holding "[verify with council]" is NOT published (campHeld,
+     buildParentView) until a leader has checked it and taken the marker out.
      The trip as a whole is held back until it has a date (startDate or a When line): a template
      with no weekend is not news for a family. */
   var DEN_CAMP_TRIP_ID = 'trip-den-campout';
   // True for text still carrying an unverified-rule marker. Local regex, so the harness can slice it.
   function campHeld(text) { return /\[verify with council/i.test(String(text == null ? '' : text)); }
+  // K1 (2026-09-28, SAFETY) — trips still carrying rev 4's wrong rule. A den campout a leader had
+  // already edited keeps its own words (refreshCampingSeed never overwrites an edit), so if those
+  // words still say BALOO is not required, the leaders are told on Home and on the trip's page
+  // rather than the app rewriting their text. Any section, any trip: a renamed copy still counts.
+  // Leaders only — the Home card and the editor warning are never part of the parent view.
+  function campBalooStale(trips) {
+    return (trips || []).filter(function (t) {
+      return t && Array.isArray(t.sections) && t.sections.some(function (s) {
+        return s && /BALOO is not required/i.test(String(s.body || ''));
+      });
+    });
+  }
   function seedDenCampTrip() {
     var den = freshTrip('Den campout \u2014 Webelos & Arrow of Light');
     den.id = DEN_CAMP_TRIP_ID;
@@ -2898,16 +2926,16 @@
       freshTripSection('Who this campout is for',
         'Den-level overnight camping is for Webelos and Arrow of Light dens only. Lions, Tigers, Wolves and Bears camp with the whole pack, or at the council family weekends, not as a den.\n' +
         '\n' +
-        'Every Scout comes with their own parent or guardian, and camps with them.'),
+        'Every Scout comes with their own parent or guardian, and camps with them. If a parent truly cannot come, the Scout may still attend only if the parent and the den\u2019s leaders agree beforehand, under the supervision of at least two registered leaders, and never sharing a tent with an adult who is not their own parent or guardian.'),
       freshTripSection('Leaders and training',
-        '- BALOO is not required for a den campout; BALOO is the training for a pack overnighter.\n' +
-        '- A trained leader is required, as the Guide to Safe Scouting sets out. [verify with council: which course the den leader in charge needs]\n' +
+        '- At least one adult on the campout is BALOO-trained (Basic Adult Leader Outdoor Orientation). The Guide to Safe Scouting requires it for every overnight a Webelos or Arrow of Light den runs itself, just as for a pack overnighter. If the den leader has not done it, another BALOO-trained adult from the pack comes along.\n' +
         '- Two registered adult leaders, both 21 or older and with current Safeguarding Youth Training, are present at all times. When girls attend, a registered female adult 21 or older is there too.\n' +
-        '- At least one adult holds current Hazardous Weather training. [verify with council]'),
+        '- At least one adult on the campout holds current Hazardous Weather training.\n' +
+        '- Any adult staying overnight who is not the parent or guardian of a Scout on the trip must be registered.'),
       freshTripSection('Before you go',
         '- The den leader tells the Cubmaster the dates and the site before anything is booked, so it goes on the pack calendar.\n' +
-        '- The site is a council-designated location, or has passed a site appraisal. [verify with council]\n' +
-        '- Any tour or activity paperwork the council asks for is filed before the trip. [verify with council]\n' +
+        '- The site is one the council has approved for Cub Scout camping \u2014 the council\u2019s own camps, Scoutland and Camp Rainey Mountain, are \u2014 or one the council has appraised. A den cannot approve a site itself.\n' +
+        '- The den leader plans the trip with the Guide to Safe Scouting\u2019s activity planning and risk assessment, and books a council camp with the council\u2019s reservation form.\n' +
         '- Fill in the Annual Health and Medical Record, parts A and B, for every person coming. Under 72 hours it is parts A and B only, no doctor\u2019s signature.\n' +
         '- Put the tent up in the yard first.'),
       freshTripSection('What to bring',
@@ -3355,6 +3383,7 @@
       densAdvancedSummary: null, // { year, perDen } — the season's advancement, taken at Advance dens
       startHereDismissed: false, // Wave 19(19) — first-run "Start here" card dismissed
       movedNoticeDismissed: false, // Wave 21 — one-time "where things moved" card on Home
+      balooNoticeDismissed: false, // K1 — one-time "den campout says BALOO is not required" card on Home
       rev: 0
     };
   }
@@ -3571,6 +3600,8 @@
     d.startHereDismissed = d.startHereDismissed === true;
     // Wave 21 — the one-time "nine tabs became six workspaces" notice on Home.
     d.movedNoticeDismissed = d.movedNoticeDismissed === true;
+    // K1 — the one-time "BALOO is required for a den campout" card on Home.
+    d.balooNoticeDismissed = d.balooNoticeDismissed === true;
     if (typeof d.rev !== 'number') d.rev = 0;
     // The online rate. Absent → '' , which means "the same as the main rate" — so no existing
     // pack record's commission moves until somebody types a different figure.
@@ -16713,6 +16744,24 @@
       h += '</div>';
     }
 
+    // K1 (SAFETY) — a den campout still saying BALOO is not required. Leaders only (Home is
+    // never the parent app). Shown once, until dismissed; the trip page keeps its own warning
+    // for as long as the words are there.
+    var balooStale = campBalooStale(campingTrips());
+    if (balooStale.length && !state.balooNoticeDismissed) {
+      h += '<div class="card"><div class="spread"><h2 class="section display" style="margin-bottom:0">A campout page has a wrong rule</h2>' +
+        '<button type="button" class="btn small ghost" data-act="baloo-dismiss">Dismiss</button></div>' +
+        '<p class="warn small" style="margin:6px 0 8px">BALOO <b>is</b> required for a den campout: the Guide to Safe Scouting asks for a ' +
+        'BALOO-trained adult on every overnight a Webelos or Arrow of Light den runs itself, as for a pack overnighter. ' +
+        'An earlier version of the den campout template said otherwise, and these pages still do. Please correct the ' +
+        '\u201cLeaders and training\u201d section.</p>' +
+        balooStale.map(function (t) {
+          return '<div class="assign-row"><span class="assign-name">' + esc(t.name || 'Untitled trip') + '</span>' +
+            '<button type="button" class="btn small ghost" data-act="goto" data-tab="camping" data-section="' + esc(t.id) + '">Open</button></div>';
+        }).join('') +
+        '</div>';
+    }
+
     // Start here — relocated from the Calendar tab, where a first-run checklist never belonged.
     if (startHereVisible(state)) {
       h += '<div class="card"><div class="spread"><h2 class="section display" style="margin-bottom:0">Start here</h2>' +
@@ -19123,6 +19172,10 @@
           // Wave C4 — said where it applies: this section is not reaching families yet.
           (campHeld(s.title + '\n' + s.body)
             ? '<p class="warn small" style="margin:6px 0 0">Held back from families: check the rule marked [verify with council] with the council, then take the marker out.</p>'
+            : '') +
+          // K1 (SAFETY) — rev 4's wrong rule, still in a leader-edited copy.
+          (/BALOO is not required/i.test(s.body)
+            ? '<p class="warn small" style="margin:6px 0 0">This is wrong: BALOO is required for a den campout, as for a pack overnighter (Guide to Safe Scouting). Please correct it.</p>'
             : '');
       } else {
         h += '<h2 class="section display">' + esc(s.title || 'Untitled section') + '</h2>' +
@@ -23431,6 +23484,7 @@
     // Wave 21 — the one-time "where things moved" card. Using a row to navigate counts as
     // having understood it, so that dismisses it too.
     if (act === 'moved-dismiss') { state.movedNoticeDismissed = true; commit(); return; }
+    if (act === 'baloo-dismiss') { state.balooNoticeDismissed = true; commit(); return; } // K1
     if (act === 'moved-go') {
       state.movedNoticeDismissed = true;
       if (canEdit()) save();

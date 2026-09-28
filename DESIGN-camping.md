@@ -258,13 +258,23 @@ tap goes to the copy already there. It uses the seed machinery: `refreshCampingS
 templates as well as seeded trips, so a later revision reaches an added copy through
 `CAMP_OLD_SEED`, only where untouched.
 
-Its rules are the content experts': den-level overnight camping is for Webelos and Arrow of Light
-dens only; every Scout with their own parent or guardian; BALOO not required, a trained leader
-required per the Guide to Safe Scouting; plus the pack's supervision wording. Anything not
-verified is marked **[verify with council]** — which course the leader needs, Hazardous Weather,
-site approval and tour paperwork. A section holding that marker is **not published** until a
-leader removes it (the editor says so on the section), and the whole trip is held back from
-families until it has a date. Its "What to bring" has Per person / Per family headings, so its
+Its rules are the Camping Chair's: den-level overnight camping is for Webelos and Arrow of Light
+dens only; every Scout with their own parent or guardian (or, by prior agreement, under at least
+two registered leaders and never tenting with an unrelated adult); **BALOO required, as for a pack
+overnighter (GSS)**; two registered leaders 21+ with current Safeguarding Youth Training, and a
+registered female adult 21+ when girls attend; an adult with Hazardous Weather training; any
+non-parent adult staying overnight registered; a council-approved or council-appraised site, and
+the GSS activity planning and risk assessment.
+
+**Rev 4 of this text said "BALOO is not required" — that was wrong.** Rev 5 (`CAMP_SEED_REV` 5,
+Camping Chair review K1) replaced the three rule sections wherever they were still untouched
+(`CAMP_OLD_SEED`). A copy a leader had edited keeps its words, so `campBalooStale` finds any
+section still saying "BALOO is not required": Home shows leaders a one-time card
+(`balooNoticeDismissed`), and the trip page warns on that section until it is corrected.
+
+No rule in the template carries a **[verify with council]** marker any more, but the mechanism
+stays: a section holding that marker is **not published** until a leader removes it (the editor
+says so on the section), and the whole trip is held back from families until it has a date. Its "What to bring" has Per person / Per family headings, so its
 printable list (C3) is split.
 
 ## 6. What deliberately does not happen

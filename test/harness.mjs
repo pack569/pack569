@@ -5315,7 +5315,8 @@ test('a year’s new seed text reaches a pack that already has its trips — but
   // August keeps last year's dates for ever. The refresh may only replace text an earlier seed
   // wrote: a leader's own edit is theirs, and overwriting it would be the app arguing with them.
   const ctx = sandbox(NORMALIZE_FNS);
-  const seed = ctx.seedCampingTrips();
+  // The templates are "current seed" for refreshCampingSeed too (Wave C4, K1).
+  const seed = ctx.seedCampingTrips().concat(ctx.campTemplates());
   const byName = (name) => seed.find((t) => t.name === name);
   const fall = byName('Fall Family Camping');
 
@@ -11524,10 +11525,13 @@ test('C4: the den campout is a template added on request, never seeded, and stat
   const all = JSON.stringify(den);
   [['Den-level overnight camping is for Webelos and Arrow of Light dens only', 'Webelos and AoL only'],
    ['own parent or guardian', 'with a parent or guardian'],
-   ['BALOO is not required for a den campout', 'BALOO not required'],
-   ['A trained leader is required, as the Guide to Safe Scouting sets out', 'a trained leader per the GSS'],
-   ['[verify with council', 'the unverified-rule marker']].forEach(([needle, what]) => ok(all.includes(needle), 'the template does not state ' + what));
-  ok(!/BALOO[^.]*required for a den/.test(all.replace('BALOO is not required for a den campout', '')), 'the template says BALOO is required');
+   ['At least one adult on the campout is BALOO-trained', 'BALOO required (K1)'],
+   ['every overnight a Webelos or Arrow of Light den runs itself', 'why BALOO applies'],
+   ['Any adult staying overnight who is not the parent or guardian', 'non-parent adults registered'],
+   ['A den cannot approve a site itself', 'the site rule']].forEach(([needle, what]) => ok(all.includes(needle), 'the template does not state ' + what));
+  // K1 (SAFETY) — rev 4 said the opposite. Never again, and no rule left unverified.
+  ok(!/not required/i.test(all), 'the template says something is not required');
+  ok(!/verify with council/i.test(all), 'the template still carries a [verify with council] marker');
   // Its packing list splits per person / per family (C3).
   const pl = ctx.packingList(ctx.packingSection(den).body);
   ok(pl.split && pl.groups.some((g) => g.who === 'person') && pl.groups.some((g) => g.who === 'family'), 'the den packing list is not split');
@@ -11537,6 +11541,60 @@ test('C4: the den campout is a template added on request, never seeded, and stat
   const h = /if \(act === 'camp-add-den'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
   ok(h && /if \(!canEdit\(\)\) return;/.test(h[0]) && /if \(!getTrip\(DEN_CAMP_TRIP_ID\)\)/.test(h[0]), 'the add is ungated or can duplicate');
   ok(/data-act="camp-add-den"/.test(slice('renderCamping')), 'no button to add the template');
+});
+
+// K1 (2026-09-28, SAFETY) — rev 4's den campout said BALOO was not required. Rev 5 refreshes an
+// untouched copy and tells leaders about an edited one.
+test('K1: an untouched rev-4 den campout gets the BALOO-required text; an edited one keeps its words', () => {
+  const ctx = sandbox(NORMALIZE_FNS.concat(['campBalooStale']));
+  eq(ctx.CAMP_SEED_REV, 5, 'CAMP_SEED_REV was not bumped for the den campout text');
+  // The rev-4 bodies, exactly as they were written (the hashes in CAMP_OLD_SEED are of these).
+  const REV4 = {
+    'Who this campout is for': 'Den-level overnight camping is for Webelos and Arrow of Light dens only. Lions, Tigers, Wolves and Bears camp with the whole pack, or at the council family weekends, not as a den.\n\nEvery Scout comes with their own parent or guardian, and camps with them.',
+    'Leaders and training': '- BALOO is not required for a den campout; BALOO is the training for a pack overnighter.\n' +
+      '- A trained leader is required, as the Guide to Safe Scouting sets out. [verify with council: which course the den leader in charge needs]\n' +
+      '- Two registered adult leaders, both 21 or older and with current Safeguarding Youth Training, are present at all times. When girls attend, a registered female adult 21 or older is there too.\n' +
+      '- At least one adult holds current Hazardous Weather training. [verify with council]',
+    'Before you go': '- The den leader tells the Cubmaster the dates and the site before anything is booked, so it goes on the pack calendar.\n' +
+      '- The site is a council-designated location, or has passed a site appraisal. [verify with council]\n' +
+      '- Any tour or activity paperwork the council asks for is filed before the trip. [verify with council]\n' +
+      '- Fill in the Annual Health and Medical Record, parts A and B, for every person coming. Under 72 hours it is parts A and B only, no doctor\u2019s signature.\n' +
+      '- Put the tent up in the yard first.'
+  };
+  const cur = ctx.seedDenCampTrip();
+  const rev4 = () => { const t = JSON.parse(JSON.stringify(cur)); t.sections.forEach((x) => { if (REV4[x.title]) x.body = REV4[x.title]; }); return t; };
+  const untouched = rev4();
+  const edited = rev4(); edited.id = 'edited';
+  const lt = edited.sections.find((x) => x.title === 'Leaders and training');
+  lt.body = lt.body.replace('[verify with council]', '(checked)');
+  const secIds = untouched.sections.map((x) => x.id);
+  const camping = { trips: [untouched, edited] };
+  ctx.refreshCampingSeed(camping);
+  const body = (t, title) => t.sections.find((x) => x.title === title).body;
+  ['Who this campout is for', 'Leaders and training', 'Before you go'].forEach((title) =>
+    eq(body(untouched, title), body(cur, title), 'the untouched "' + title + '" was not refreshed'));
+  eq(untouched.sections.map((x) => x.id), secIds, 'a refreshed section lost its id');
+  ok(/BALOO is not required/.test(body(edited, 'Leaders and training')), 'a leader’s edited section was overwritten');
+  eq(body(edited, 'Who this campout is for'), body(cur, 'Who this campout is for'), 'an untouched section beside an edited one was not refreshed');
+  // The edited one is what the notice finds; the refreshed one is not.
+  eq(ctx.campBalooStale(camping.trips).map((t) => t.id), ['edited'], 'campBalooStale');
+  eq(ctx.campBalooStale([{ sections: [{ body: 'BALOO is required.' }] }, null, { sections: 'x' }]).length, 0, 'a false positive');
+  // Through normalizeState at rev 4, as a live pack would load it.
+  const d = ctx.normalizeState(Object.assign(preMigrationState(), { camping: { yargoAdded: true, seedRev: 4, trips: [rev4()] } }));
+  ok(!/BALOO is not required|verify with council/.test(JSON.stringify(d.camping.trips)), 'loading a rev-4 pack kept the wrong rule');
+  eq(d.camping.seedRev, 5, 'seedRev');
+  eq(d.balooNoticeDismissed, false, 'balooNoticeDismissed is not defaulted');
+});
+
+test('K1: leaders are told, on Home once and on the trip page, when a den campout still says BALOO is not required', () => {
+  const home = slice('renderHome');
+  ok(/var balooStale = campBalooStale\(campingTrips\(\)\);/.test(home) && /!state\.balooNoticeDismissed/.test(home), 'no Home card');
+  ok(/data-act="baloo-dismiss"/.test(home), 'the Home card cannot be dismissed');
+  ok(/if \(act === 'baloo-dismiss'\) \{ state\.balooNoticeDismissed = true; commit\(\); return; \}/.test(SCRIPT), 'no dismiss handler');
+  ok(/balooNoticeDismissed: false/.test(slice('freshState')), 'freshState lacks balooNoticeDismissed');
+  ok(/BALOO is not required\/i\.test\(s\.body\)/.test(slice('renderCamping')), 'the trip page does not warn on the section');
+  ok(!/balooNotice|campBalooStale/.test(codeOnly(BPV())), 'buildParentView reads the leaders’ notice');
+  ok(/BALOO required, as for a pack\s+overnighter \(GSS\)/.test(readFileSync(join(ROOT, 'DESIGN-camping.md'), 'utf8')), 'DESIGN-camping.md still says BALOO is not required');
 });
 
 test('C4: an unverified rule, and an undated den campout, do not reach families', () => {
