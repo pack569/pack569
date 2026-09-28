@@ -10204,6 +10204,15 @@ test('N1: the waiting screen says how to register, and who the adult partner is'
   ok(!/an adult partner who is not\s+\/\/ the parent needs registering/.test(SCRIPT), 'the old comment is still there');
 });
 
+test('N2: both family-cost cards say an adult partner who isn’t a parent is not included', () => {
+  const pv = slice('parentFamilyCost').replace(/'\s*\+\s*(\/\/[^\n]*\n\s*)*'/g, '');
+  ok(/<strong>Not included:<\/strong> a second parent, brothers and sisters \(listed separately, because nothing requires one to come\), an adult partner who isn’t a parent \(may pay an adult registration fee\), and anything the pack charges as one flat amount\./.test(pv),
+    'the parents’ card does not list the adult partner');
+  const leaders = /var notIn = \[[^\]]*\];/.exec(SCRIPT);
+  ok(leaders && /'an adult partner who isn’t a parent \(may pay an adult registration fee\)'/.test(leaders[0]),
+    'the leaders’ card does not list the adult partner');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

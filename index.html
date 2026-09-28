@@ -10360,7 +10360,10 @@
       '<p class="small muted pv-yearcost-note" style="margin:0 0 10px">The <strong>fees in the pack’s plan</strong> for ' +
       'one scout and one parent across a typical year, if the scout earns <strong>no reward tier at all</strong> — whether ' +
       'the pack collects them or the council does. <strong>Not included:</strong> a second parent, brothers and sisters ' +
-      '(listed separately, because nothing requires one to come), and anything the pack charges as one flat amount. ' +
+      // N2 (New Member Coordinator, 2026-09-28) — a Lion's or Tiger's adult partner who is not a parent
+      // is a real case, and their fee is not in "one scout and one parent".
+      '(listed separately, because nothing requires one to come), an adult partner who isn’t a parent (may pay an ' +
+      'adult registration fee), and anything the pack charges as one flat amount. ' +
       'Ask a leader if you are not sure what your family’s year will cost.</p>';
     dens.forEach(function (d) {
       var open = !!ui.parentCostOpen[d.den || ''];
@@ -13161,7 +13164,9 @@
     var tiers = sortedTiers().length;
     var planned = plannedTier();
     var ex = familyCostExclusions();
-    var notIn = ['a second parent', 'brothers and sisters (shown separately)'];
+    // N2 — the adult partner who isn't a parent, as on the parents' card (parentFamilyCost).
+    var notIn = ['a second parent', 'brothers and sisters (shown separately)',
+      'an adult partner who isn’t a parent (may pay an adult registration fee)'];
     if (ex.flatFamily.length) notIn.push('flat family-paid costs (' + ex.flatFamily.join(', ') + ')');
     if (!ex.councilFee) notIn.push('your council’s program fee — it is not in the budget');
     if (ex.registration === 'none') notIn.push('national registration — it is not in the budget');
