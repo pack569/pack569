@@ -8526,6 +8526,25 @@
       accountsToast(err);
     });
   }
+  // THE AMOUNTS-OFF BAR, BANDED INSIDE ITS OWN SEGMENT (security review, 2026-09-28, wave 7b).
+  // `lo` is the notch of the tier the scout holds (0 if none) and `hi` the next rung's notch (100
+  // if the next rung is the bar's anchor) — both are published, as the tier pill and the ladder's
+  // marks. Flooring to a global 10% step pinned a scout near a notch into a 1-point band: held
+  // notch at 39 and a floor of 30 published 39, i.e. "39 to 40". So the segment itself is cut into
+  // at most four equal bands, each at least 10 points wide, and the scout is published at the
+  // bottom of theirs. A segment narrower than 10 points gets one band — its bottom, lo — because
+  // the tier and the next tier already say that much and nothing finer goes out. Pure; integers.
+  function coarseBarPct(pct, lo, hi) {
+    if (typeof pct !== 'number' || !isFinite(pct)) return null;
+    lo = Math.max(0, lo || 0);
+    hi = (typeof hi === 'number' && hi > lo) ? Math.min(100, hi) : 100;
+    if (pct >= hi) return hi;
+    var width = hi - lo;
+    var bands = Math.min(4, Math.floor(width / 10));
+    if (bands < 2 || pct <= lo) return lo;
+    var step = width / bands;
+    return Math.round(lo + Math.floor((pct - lo) / step) * step);
+  }
   // ---- Parent phase: the derived, sanitized parent view -------------------------------
   // Firestore rules gate a DOCUMENT, not parts of one, so parents must never receive the
   // pack record. buildParentView derives a SEPARATE document containing only what a parent may
@@ -8551,7 +8570,8 @@
   //     nextRungPct, nextMarkPct. `tier` and everything after it come from what the scout SOLD —
   //     a rung a family paid for is never shown (salesOnlyTierMap).
   //   With "Show dollar amounts and rank" off, a row is ONLY name, den, tier, nextTier,
-  //   nextReward, nextPct (rounded down to a 10% step, never below the held tier's notch),
+  //   nextReward, nextPct (the bottom of a band inside the scout's notch-to-notch segment —
+  //   coarseBarPct: at most four bands, each at least 10 points),
   //   pastPlan and nextMarkPct, in name order: combinedCents, nextSalesCents, nextRoutes,
   //   nextUnlocksCents, nextRungPct and the ranking are removed.
   //
@@ -8881,19 +8901,17 @@
           // what the child sold to within a dollar — the very figure this mode exists to withhold
           // (security + popcorn review, 2026-09-28). So:
           //   · nextRungPct is dropped — it is the same leak against a second denominator;
-          //   · nextPct is floored to a 10% step, so it says "somewhere in this tenth", never a sum;
-          //   · but never below the notch of the tier the scout HOLDS, which is published anyway
-          //     (`tier` + the ladder's marks) — otherwise flooring would draw a Bronze scout's fill
-          //     short of the Bronze notch, and the bar would contradict the pill beside it.
+          //   · nextPct is banded WITHIN the scout's own notch-to-notch segment (coarseBarPct), whose
+          //     ends — the held tier's notch and the next rung's — are published anyway;
           //   · nextMarkPct stays: it is next-rung ÷ anchor, a property of the ladder, not the child.
           var coarse = null;
           if (typeof row.nextPct === 'number') {
-            coarse = Math.floor(row.nextPct / 10) * 10;
             var held = p && p.earned, anc = p && p.anchor;
-            if (held && anc && anc.thresholdCents > 0 && held.thresholdCents > 0 &&
-                held.thresholdCents < anc.thresholdCents) {
-              coarse = Math.max(coarse, Math.round(held.thresholdCents / anc.thresholdCents * 100));
-            }
+            var segLo = (held && anc && anc.thresholdCents > 0 && held.thresholdCents > 0 &&
+                held.thresholdCents < anc.thresholdCents)
+              ? Math.round(held.thresholdCents / anc.thresholdCents * 100) : 0;
+            var segHi = (typeof row.nextMarkPct === 'number') ? row.nextMarkPct : 100;
+            coarse = coarseBarPct(row.nextPct, segLo, segHi);
           }
           return {
             name: row.name, den: row.den, tier: row.tier, nextTier: row.nextTier, nextReward: row.nextReward,
@@ -14699,9 +14717,9 @@
         (amountsEnabled() ? ' checked' : '') + dis + '>' +
         '<span>Show dollar amounts and rank on the standings</span></label>' +
         // Says what the bar still shows (2026-09-28): the reward level each scout holds, and a bar
-        // rounded DOWN to a tenth — not "their progress", which read as the exact figure it was.
+        // shown only in broad steps (coarseBarPct) — not "their progress", which read as exact.
         '<p class="small muted" style="margin:2px 0 0">Untick to list scouts in name order with the reward level ' +
-        'each has reached and a progress bar rounded down to the nearest 10%: what each scout has sold, what they ' +
+        'each has reached and a progress bar shown only in broad steps between levels: what each scout has sold, what they ' +
         'still need to sell, and who is ahead of whom are left out of the published copy. The pack goal bar and the ' +
         'reward tiers still show. Families will see each level\u2019s sales target but not their own scout\u2019s ' +
         'remaining gap.</p>';

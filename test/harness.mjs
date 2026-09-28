@@ -9509,7 +9509,7 @@ function pvCtx(extra) {
     function campingTrips() { return []; }
     function familyYearCost() { return []; }
     var sync = {};
-    ${['shortNames', 'publicNameMap', 'buildParentView', 'blocksInDayOrder', 'fmtTimeRange', 'fmtClock',
+    ${['shortNames', 'publicNameMap', 'buildParentView', 'coarseBarPct', 'blocksInDayOrder', 'fmtTimeRange', 'fmtClock',
        'eventIsMeeting', 'eventLabel', 'denListLabel', 'eventDens', 'programYearStartISO',
        'programYearEndISO', 'cleanContactLine', 'parentContactLine', 'amountsEnabled'].map(slice).join('\n')}
     ${extra || ''}`, ctx);
@@ -9789,7 +9789,8 @@ test('J12: with amounts and rank off, the board keeps each scout’s progress an
   eq(off.standings.map((r) => r.name), ['Ada', 'Beckett H.', 'Beckett Z.'], 'with amounts off the board is not alphabetical');
   off.standings.forEach((r) => {
     Object.keys(r).forEach((k) => ok(!/Cents$|Routes$/.test(k), `amounts off still publishes ${k} for ${r.name}`));
-    ok(r.nextTier === 'Gold' && r.tier === 'Bronze' && r.nextPct === 40,
+    // 40% of a 0–100 segment, banded in quarters (coarseBarPct) → 25.
+    ok(r.nextTier === 'Gold' && r.tier === 'Bronze' && r.nextPct === 25,
       'amounts off dropped the reward-level progress too');
     ok(!('nextRungPct' in r), 'amounts off still publishes the near-rung percentage');
   });
@@ -9853,22 +9854,23 @@ test('S1: with amounts off, a scout’s bar cannot be multiplied back into what 
   off.standings.forEach((r) => {
     const real = SALES[byName[r.name]];
     ok(!('nextRungPct' in r), `${r.name}: the near-rung percentage is published`);
-    ok(r.nextPct % 10 === 0 || off.tiers.some((t) => Math.round(t.salesCents / anchorSales * 100) === r.nextPct),
-      `${r.name}: nextPct ${r.nextPct} is neither a 10% step nor a published notch`);
     ok(Math.abs(r.nextPct / 100 * anchorSales - real) > 500,
       `${r.name}: nextPct × the anchor’s target is within $5 of what they sold`);
   });
-  // Flooring never drags a scout's bar below the tier they hold (Ada holds Bronze at 25%, sold 34.6%).
-  eq(off.standings.find((r) => r.name === 'Ada').nextPct, 30, 'Ada');
-  eq(off.standings.find((r) => r.name === 'Beckett H.').nextPct, 60, 'Beckett H.');
+  // Banded inside each scout's own segment (wave 7b): Ada holds Bronze (25) chasing Silver (50) at
+  // 34.6 → the bottom of [25, 37.5); Beckett H. holds Silver (50) chasing Gold (the anchor) at 61.2
+  // → the bottom of [50, 62.5); Beckett Z. holds nothing, Bronze at 25, 9.0 → 0.
+  eq(off.standings.find((r) => r.name === 'Ada').nextPct, 25, 'Ada');
+  eq(off.standings.find((r) => r.name === 'Beckett H.').nextPct, 50, 'Beckett H.');
   eq(off.standings.find((r) => r.name === 'Beckett Z.').nextPct, 0, 'Beckett Z.');
+  ok(/coarse = coarseBarPct\(row\.nextPct, segLo, segHi\);/.test(BPV()), 'the published bar is not banded by segment');
   // Amounts ON is unchanged: the exact figure, and the near rung.
   const on = build(true);
   eq(on.standings.find((r) => r.name === 'Ada').nextPct, 35, 'amounts on lost the exact bar');
   ok(on.standings.every((r) => typeof r.nextRungPct === 'number'), 'amounts on lost the near-rung figure');
   // The setting says what is and is not left.
   const card = slice('renderJoinCard');
-  ok(/rounded down to the nearest 10%/.test(card), 'the join card does not say the bar is rounded');
+  ok(/a progress bar shown only in broad steps between levels/.test(card), 'the join card does not say the bar is coarse');
   ok(/Families will see each level\\u2019s sales target but not their own scout\\u2019s ' \+\s*'remaining gap\./.test(card),
     'the join card does not say the level targets still show');
 });
@@ -10221,6 +10223,36 @@ test('S1: with no near-rung figure, the caption names the next rung before its r
     'Bronze’s reward is printed against Silver');
   const straight = ctx.parentTierProgress({ nextTier: 'Silver', nextReward: 'Dues covered', nextPct: 80 }, LADDER);
   ok(!/next:/.test(straight), 'a scout heading straight for the anchor is told the next rung twice');
+});
+
+test('7b-1: an amounts-off bar never pins a scout near a notch into a narrow band', () => {
+  const { coarseBarPct } = sandbox(['coarseBarPct']);
+  // A ladder with notches at 31% and 39% of the anchor: segments [0,31), [31,39), [39,100).
+  const segs = [[0, 31], [31, 39], [39, 100]];
+  segs.forEach(([lo, hi]) => {
+    // Preimage of every published value, sampled at 0.01 across the segment.
+    const pre = {};
+    for (let i = lo * 100; i < hi * 100; i++) {
+      const x = i / 100;
+      const v = coarseBarPct(x, lo, hi);
+      ok(v >= lo && v < hi, `[${lo},${hi}): ${x} published outside its segment (${v})`);
+      (pre[v] || (pre[v] = [x, x]))[1] = x;
+    }
+    Object.keys(pre).forEach((v) => {
+      const width = pre[v][1] - pre[v][0] + 0.01;
+      // Every band is at least 10 points of the anchor wide — or it is the WHOLE segment, whose
+      // ends the tier and the next tier already publish.
+      ok(width >= 9.99 || (Object.keys(pre).length === 1 && hi - lo < 10),
+        `[${lo},${hi}): published ${v} covers only ${width.toFixed(2)} points`);
+    });
+  });
+  // The old failure: held notch 39, sold 39.5 → it published 39, a one-point band.
+  eq(coarseBarPct(39.5, 39, 100), 39, 'the bottom of the first band');
+  eq(coarseBarPct(54.3, 39, 100), 54, 'the second band of four (step 15.25)');
+  eq(coarseBarPct(35, 31, 39), 31, 'a narrow segment is one band');
+  eq(coarseBarPct(30.9, 0, 31), 21, 'the third of three bands under 31');
+  eq(coarseBarPct(100, 39, 100), 100, 'the top of the ladder is a full bar');
+  eq(coarseBarPct(null, 0, 100), null, 'no figure');
 });
 
 /* ---------------- report ---------------- */

@@ -192,8 +192,9 @@ calendar but not the money" is impossible to do by permission alone. Instead the
     - the progress bar (`nextPct`, `pastPlan`, `nextRungPct`, `nextMarkPct`).
 
     With **Show dollar amounts and rank** off, a row is only first name, den, `tier`,
-    `nextTier`, `nextReward`, and the bar — `nextPct` rounded down to the nearest 10% (never
-    below the notch of the tier held), `pastPlan` and `nextMarkPct` — listed by name. Total
+    `nextTier`, `nextReward`, and the bar — `nextPct` shown only as the bottom of a broad band
+    between the tier held and the next one (at most four bands per gap, each at least 10% of the
+    bar; one band where the gap is narrower), `pastPlan` and `nextMarkPct` — listed by name. Total
     raised, what is left to sell, the per-rate routes, what reaching the next tier is worth,
     `nextRungPct` and the ranking are all removed. Each tier's sales target still shows.
 - It **never** contains: the budget itself (starting balance, planned or actual totals,
