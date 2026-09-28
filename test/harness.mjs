@@ -8037,6 +8037,26 @@ test('the parent-view banner names every key the view publishes', () => {
     /what the year is planned to cost/.test(SETUP) && /"who to ask" line/.test(SETUP),
     'SETUP.md does not list what the parent view really publishes');
   ok(!/activity costs or expenses/.test(SETUP), 'SETUP.md still claims activity costs are never published');
+  // S5 (2026-09-28): every per-row field, both ways, named in the banner AND in SETUP.md.
+  const bpv = codeOnly(src);
+  const rowLit = /var row = \{([\s\S]*?)\n          \};/.exec(bpv);
+  ok(rowLit, 'the standings row literal was not found');
+  const rowKeys = [...rowLit[1].matchAll(/^\s*(\w+):/gm)].map((m) => m[1]);
+  const offLit = /if \(withAmounts\) return row;[\s\S]*?return \{([\s\S]*?)\};/.exec(bpv);
+  ok(offLit, 'the amounts-off row was not found');
+  const offKeys = [...offLit[1].matchAll(/(\w+):/g)].map((m) => m[1]);
+  ok(rowKeys.length >= 12 && offKeys.length >= 7, 'the row key scan found too little');
+  rowKeys.forEach((k) => {
+    ok(new RegExp('\\b' + k + '\\b').test(banner[1]) || k === 'name' || k === 'den', `row field ${k} is not in the banner`);
+    ok(k === 'name' || k === 'den' || new RegExp('`' + k + '`').test(SETUP), `row field ${k} is not in SETUP.md`);
+  });
+  const offPara = /With "Show dollar amounts and rank" off, a row is ONLY([\s\S]*?)are removed\./.exec(banner[1]);
+  ok(offPara, 'the banner does not say what an amounts-off row is');
+  offKeys.forEach((k) => ok(new RegExp('\\b' + k + '\\b').test(offPara[1]), `amounts-off field ${k} is not in the banner`));
+  rowKeys.filter((k) => offKeys.indexOf(k) === -1).forEach((k) =>
+    ok(offPara[1].indexOf(k) !== -1,
+      `the banner does not say amounts-off removes ${k}`));
+  ok(/With \*\*Show dollar amounts and rank\*\* off, a row is only/.test(SETUP), 'SETUP.md does not say what amounts-off leaves');
 });
 
 test('single-pack mode never signs in anonymously, which is why SETUP says to turn it off', () => {

@@ -8456,12 +8456,19 @@
   //   takes off that; and `contact` — the admin-typed "who to ask" line for the page footer
   //   (free text an admin writes FOR families; the join card tells them to use a role and a pack
   //   email, never a personal phone).
-  //   with standings on (the default): the FIRST NAMES on each storefront shift, standings
-  //   (first name, den, total raised, reward-tier progress — or, with "Show dollar amounts and
-  //   rank" off, first name, den and reward-tier progress only, in name order, with no per-scout
-  //   money figure of any kind), one pack goal bar, derby winners
-  //   and design awards, the reward tiers (name, reward, note, due-by, and `salesCents` — the
-  //   sales that reach it) and `tierLadder` (what a full bar means).
+  //   with standings on (the default): the FIRST NAMES on each storefront shift, standings, one
+  //   pack goal bar, derby winners and design awards, the reward tiers (name, reward, note,
+  //   due-by, and `salesCents` — the sales that reach it) and `tierLadder` (what a full bar means).
+  //   Each standings ROW, exactly:
+  //     name, den (the rank only), combinedCents (total raised), tier, nextTier, nextSalesCents
+  //     and nextRoutes (what is left to sell, and at each rate), nextUnlocksCents (what reaching
+  //     it takes off that family's bill), nextReward, and the bar fields nextPct, pastPlan,
+  //     nextRungPct, nextMarkPct. `tier` and everything after it come from what the scout SOLD —
+  //     a rung a family paid for is never shown (salesOnlyTierMap).
+  //   With "Show dollar amounts and rank" off, a row is ONLY name, den, tier, nextTier,
+  //   nextReward, nextPct (rounded down to a 10% step, never below the held tier's notch),
+  //   pastPlan and nextMarkPct, in name order: combinedCents, nextSalesCents, nextRoutes,
+  //   nextUnlocksCents, nextRungPct and the ranking are removed.
   //
   // DELIBERATELY EXCLUDED — do not add these without re-reading the SETUP Part C notes:
   //   the budget itself (starting balance, planned/actual totals, income, expenses), dues and

@@ -180,12 +180,22 @@ calendar but not the money" is impossible to do by permission alone. Instead the
     **"who to ask" line** an admin types on the Parent sign-up link card (shown at the foot of
     every family's page — use a role and the pack's email, not a personal phone);
   - with standings on (the default): the **first names** of the scouts on each storefront
-    shift, the scout standings (first name — plus a last initial only where two scouts share
-    a first name — den, total raised, and progress toward the reward tiers; with **Show dollar
-    amounts and rank** off, only first name, den and reward-tier progress, listed by name with no
-    per-scout dollar figures), one pack goal
-    bar, the derby winners and design awards, the reward tiers (name, reward, note, due
-    date and sales target), and what a full progress bar means (the tier ladder).
+    shift, the scout standings, one pack goal bar, the derby winners and design awards, the
+    reward tiers (name, reward, note, due date and sales target), and what a full progress bar
+    means (the tier ladder). Each scout's standings row is exactly:
+    - first name (plus a last initial only where two scouts share a first name) and den;
+    - total raised (`combinedCents`);
+    - the reward tier reached **by selling** (`tier` — a tier a family paid the difference
+      for is not shown) and the next one (`nextTier`, `nextReward`);
+    - what is left to sell for it, overall and at each commission rate (`nextSalesCents`,
+      `nextRoutes`), and what reaching it takes off that family's bill (`nextUnlocksCents`);
+    - the progress bar (`nextPct`, `pastPlan`, `nextRungPct`, `nextMarkPct`).
+
+    With **Show dollar amounts and rank** off, a row is only first name, den, `tier`,
+    `nextTier`, `nextReward`, and the bar — `nextPct` rounded down to the nearest 10% (never
+    below the notch of the tier held), `pastPlan` and `nextMarkPct` — listed by name. Total
+    raised, what is left to sell, the per-rate routes, what reaching the next tier is worth,
+    `nextRungPct` and the ranking are all removed. Each tier's sales target still shows.
 - It **never** contains: the budget itself (starting balance, planned or actual totals,
   income, expenses), dues or who has paid, any family's charges, payments or balance, who
   paid their way up a reward tier, inventory (products, cases, prices, hand-outs), the
