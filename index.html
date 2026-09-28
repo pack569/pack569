@@ -18696,35 +18696,40 @@
      The Kernel's ask: one note to paste into BAND or an email at kickoff, written from the tier
      ladder as it stands, so the targets, rewards and dates are the real ones. COPY ONLY: nothing
      is stored and nothing is published — the leader decides where it goes.
-     Respects "Show dollar amounts and rank" (amountsEnabled): with it off the note gives no
-     dollar target, only each tier's reward and date, and says to ask a leader for the targets.
+     The pack-wide dollar targets are ALWAYS in it, whatever "Show dollar amounts and rank" says
+     (Popcorn Kernel review, 2026-09-28): that setting hides each scout's own figures and rank,
+     and the tier targets already go to families on the parent view (buildParentView's `tiers`,
+     salesCents, published whatever that setting says). Only when no
+     commission rate is set — so there is no honest figure — does it say to ask a leader.
      A tier's target is its SALES figure (salesForCommission, the same one the family page shows),
-     rounded UP to a whole dollar so it is still a minimum. A tier already closed is left out. */
+     rounded UP to a whole dollar so it is still a minimum. A tier already closed is left out.
+     The opening line is the LATEST open tier's deadline ("Get sales in by …"), the date the
+     pack's own rewards stop counting — not the council's take-order date. */
   // Pure given its inputs: `tiers` sorted, `salesOf(tier)` → cents or null, `dateLabel(iso)`.
-  function popcornKickoffNote(tiers, finalDate, withAmounts, today, salesOf, dateLabel) {
+  function popcornKickoffNote(tiers, today, salesOf, dateLabel) {
     var lines = [];
-    lines.push(finalDate ? 'Popcorn runs through ' + dateLabel(finalDate) + '.' : 'Popcorn season is here.');
     var open = (tiers || []).filter(function (t) { return (t.name || t.reward) && !(t.dueBy && t.dueBy < today); });
-    var anyHidden = !withAmounts;
+    var last = open.reduce(function (m, t) { return t.dueBy && t.dueBy > m ? t.dueBy : m; }, '');
+    lines.push(last ? 'Get sales in by ' + dateLabel(last) + '.' : 'Popcorn season is here.');
+    var anyHidden = false;
     open.forEach(function (t) {
       var what = t.reward ? String(t.reward) + (t.name && t.name !== t.reward ? ' (' + t.name + ')' : '') : String(t.name);
-      var by = t.dueBy ? ', if it\u2019s in by ' + dateLabel(t.dueBy) : '';
-      var c = withAmounts ? salesOf(t) : null;
+      var by = t.dueBy ? ' by ' + dateLabel(t.dueBy) : '';
+      var c = salesOf(t);
       if (c != null && c > 0) {
-        lines.push('Sell $' + Math.ceil(c / 100).toLocaleString('en-US') + ' and your scout earns ' + what + by + '.');
+        lines.push('Sell $' + Math.ceil(c / 100).toLocaleString('en-US') + by + ' and your scout earns: ' + what + '.');
       } else {
-        if (withAmounts) anyHidden = true;   // no rate yet: no honest figure to give
-        lines.push((t.name || 'A reward') + ': ' + (t.reward || t.name) + by + '.');
+        anyHidden = true;   // no rate yet: no honest figure to give
+        lines.push((by ? 'Sell' + by + ' and your scout earns: ' : 'Your scout can earn: ') + what + '.');
       }
     });
     if (open.length && anyHidden) lines.push('Ask a leader for the targets.');
-    lines.push('Online and storefront sales both count.');
+    lines.push('Storefront, wagon, take-order and online sales all count. Record every sale in the Trail\u2019s End app.');
     lines.push('Always sell with a buddy and a parent, and never go inside a customer\u2019s home.');
     return lines.join('\n');
   }
   function kickoffNoteNow() {
-    var fin = state.popcornCouncil && state.popcornCouncil.dates.finalTakeOrders.date;
-    return popcornKickoffNote(sortedTiers(), fin, amountsEnabled(), todayISO(),
+    return popcornKickoffNote(sortedTiers(), todayISO(),
       function (t) { return salesForCommission(t.thresholdCents); }, fmtDate);
   }
   function renderRewardTiers() {
@@ -19200,10 +19205,8 @@
       var kn = kickoffNoteNow();
       h += '<div class="card no-print"><div class="spread"><h2 class="section display" style="margin:0">Kickoff note for families</h2>' +
         '<button type="button" class="btn small" data-act="copy-kickoff">' + (ui.kickoffCopied ? 'Copied \u2713' : 'Copy') + '</button></div>' +
-        '<p class="small muted" style="margin:6px 0 8px">Written from the tiers above' +
-        (state.popcornCouncil.dates.finalTakeOrders.date ? ' and the council\u2019s final take-order date' : '') +
-        '. Paste it where families will read it; nothing here is published on its own.' +
-        (amountsEnabled() ? '' : ' Dollar targets are left out because <strong>Show dollar amounts and rank</strong> is off.') + '</p>' +
+        '<p class="small muted" style="margin:6px 0 8px">Written from the tiers above. ' +
+        'Paste it where families will read it; nothing here is published on its own.</p>' +
         '<textarea class="export-box" id="kickoffBox" readonly rows="7" style="height:auto" aria-label="Kickoff note for families">' + esc(kn) + '</textarea></div>';
     }
     return h;

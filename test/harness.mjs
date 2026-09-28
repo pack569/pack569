@@ -11865,34 +11865,40 @@ test('D2: the day sheet carries the safety rules and the cash count, first names
 });
 
 // D3 (2026-09-28) — the parent kickoff note, from the real tier ladder. Copy only.
-test('D3: the kickoff note uses the real tiers, targets and dates, and hides targets when amounts are off', () => {
+test('D3: the kickoff note gives the real targets, dates and rewards, whatever the amounts setting', () => {
   const ctx = sandbox(['popcornKickoffNote']);
   const tiers = [
-    { name: 'Dues covered', reward: 'Pack pays dues', thresholdCents: 5000, dueBy: '2026-10-31' },
+    { name: 'Bronze', reward: 'Dues covered', thresholdCents: 5000, dueBy: '2026-10-31' },
     { name: 'Pack shirt', reward: 'A pack t-shirt', thresholdCents: 10000, dueBy: '' },
+    { name: 'Silver', reward: 'A pocketknife', thresholdCents: 20000, dueBy: '2026-11-04' },
     { name: 'Early bird', reward: 'A patch', thresholdCents: 1000, dueBy: '2026-09-01' }];
-  const sales = { 'Dues covered': 15625, 'Pack shirt': 31250, 'Early bird': 3125 };
+  const sales = { 'Bronze': 15625, 'Pack shirt': 31250, 'Silver': 62500, 'Early bird': 3125 };
   const salesOf = (t) => sales[t.name];
   const d = (iso) => 'D' + iso;
-  const on = ctx.popcornKickoffNote(tiers, '2026-11-01', true, '2026-09-28', salesOf, d);
+  // Popcorn Kernel review: date before the reward; the latest open deadline opens it; all channels count.
+  const on = ctx.popcornKickoffNote(tiers, '2026-09-28', salesOf, d);
   eq(on.split('\n'), [
-    'Popcorn runs through D2026-11-01.',
-    'Sell $157 and your scout earns Pack pays dues (Dues covered), if it’s in by D2026-10-31.',
-    'Sell $313 and your scout earns A pack t-shirt (Pack shirt).',
-    'Online and storefront sales both count.',
-    'Always sell with a buddy and a parent, and never go inside a customer’s home.'], 'the note with amounts');
-  const off = ctx.popcornKickoffNote(tiers, '2026-11-01', false, '2026-09-28', salesOf, d);
-  ok(!/\$/.test(off), 'a dollar figure is in the note with amounts off: ' + off);
-  ok(/Dues covered: Pack pays dues, if it’s in by D2026-10-31\./.test(off) && /Ask a leader for the targets\./.test(off),
-    'the amounts-off note lost the rewards, the dates, or the ask-a-leader line');
-  ok(!/Early bird|A patch/.test(on + off), 'a closed tier is in the note');
-  // No rate yet: no figure to give, so it asks rather than printing $0.
-  const noRate = ctx.popcornKickoffNote(tiers.slice(0, 1), '', true, '2026-09-28', () => null, d);
-  ok(/^Popcorn season is here\./.test(noRate) && /Ask a leader for the targets\./.test(noRate) && !/\$/.test(noRate), noRate);
+    'Get sales in by D2026-11-04.',
+    'Sell $157 by D2026-10-31 and your scout earns: Dues covered (Bronze).',
+    'Sell $313 and your scout earns: A pack t-shirt (Pack shirt).',
+    'Sell $625 by D2026-11-04 and your scout earns: A pocketknife (Silver).',
+    'Storefront, wagon, take-order and online sales all count. Record every sale in the Trail’s End app.',
+    'Always sell with a buddy and a parent, and never go inside a customer’s home.'], 'the note');
+  ok(!/Early bird|A patch|D2026-09-01/.test(on), 'a closed tier is in the note');
+  ok(!/Ask a leader/.test(on), 'asks a leader with a rate set');
+  // The amounts setting no longer reaches the note at all.
+  ok(!/withAmounts|amountsEnabled/.test(slice('popcornKickoffNote') + slice('kickoffNoteNow')), 'the note still reads the amounts setting');
+  ok(!/Dollar targets are left out/.test(SCRIPT), 'the "Dollar targets are left out" caption is still there');
+  // No rate yet: no figure to give, so it asks rather than printing $0; still date before reward.
+  const noRate = ctx.popcornKickoffNote(tiers.slice(0, 2), '2026-09-28', () => null, d);
+  eq(noRate.split('\n').slice(0, 4), ['Get sales in by D2026-10-31.', 'Sell by D2026-10-31 and your scout earns: Dues covered (Bronze).',
+    'Your scout can earn: A pack t-shirt (Pack shirt).', 'Ask a leader for the targets.'], 'the no-rate note');
+  ok(!/\$/.test(noRate), 'a dollar figure with no rate');
+  // No dated open tier: the fallback opening.
+  ok(/^Popcorn season is here\./.test(ctx.popcornKickoffNote(tiers.slice(1, 2), '2026-09-28', salesOf, d)), 'no fallback opening');
   // Wired to the real inputs, and copy only.
   const now = slice('kickoffNoteNow');
-  ok(/sortedTiers\(\)/.test(now) && /amountsEnabled\(\)/.test(now) && /salesForCommission\(t\.thresholdCents\)/.test(now) &&
-    /popcornCouncil\.dates\.finalTakeOrders\.date/.test(now), 'the note is not built from the tiers, the amounts setting and the council date');
+  ok(/sortedTiers\(\)/.test(now) && /salesForCommission\(t\.thresholdCents\)/.test(now), 'the note is not built from the tiers');
   ok(/kickoffNoteNow\(\)/.test(slice('renderRewardTiers')) && /id="kickoffBox" readonly/.test(slice('renderRewardTiers')), 'Rewards has no kickoff note');
   ok(/if \(act === 'copy-kickoff'\) \{\s*copyText\(kickoffNoteNow\(\)/.test(SCRIPT), 'the copy button does not copy the note');
   ok(!/kickoff/i.test(codeOnly(BPV())), 'buildParentView reads the kickoff note');
