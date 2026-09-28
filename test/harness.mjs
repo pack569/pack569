@@ -9584,6 +9584,24 @@ test('J9: a campout says when to arrive and when to leave, each on its own label
   ok(/<dt>Leave by<\/dt>/.test(leaveOnly) && !/Arrive/.test(leaveOnly), 'a leave-only trip is not labelled as leaving');
 });
 
+test('J10: the single-pack sign-in screen names the pack and helps someone with no Google account', () => {
+  const run = (packName) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`var PACK_PUBLIC_NAME = 'Cub Scout Pack 569';
+      function fixedPackMode() { return true; } function activeJoin() { return null; }
+      function parentDoc() { return ${packName ? `{ packName: '${packName}' }` : 'null'}; }
+      var FLEUR = '';
+      ${['esc', 'joinPackName', 'joinGateShell', 'renderJoinWelcome'].map(slice).join('\n')}`, ctx);
+    return vm.runInContext('renderJoinWelcome()', ctx);
+  };
+  const out = run('');
+  ok(/<h2 class="section display">Cub Scout Pack 569<\/h2>/.test(out), 'the signed-out title is still generic');
+  ok(!/Pack sign-in/.test(out), 'the generic title is showing in single-pack mode');
+  ok(/No Google account\? Any email address can be made into one at <strong>accounts\.google\.com<\/strong>/.test(out),
+    'no help for somebody without a Google account');
+  ok(/var PACK_PUBLIC_NAME = 'Cub Scout Pack 569';/.test(SCRIPT), 'the public name constant is gone');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

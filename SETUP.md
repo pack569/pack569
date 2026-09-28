@@ -571,6 +571,10 @@ var PACK_DOC_ID = '3f8a…64 hex chars';  // after
 
 Redeploy the page (for GitHub Pages: commit and push). That's the whole change.
 
+Just below it, `PACK_PUBLIC_NAME` is what the sign-in screen calls the pack before anyone
+signs in (it can't read the pack's own name until then). It ships as `'Cub Scout Pack 569'`;
+a different pack running this file should change it to its own public name.
+
 If the value isn't a 64-character lowercase hex string, the app ignores it completely, logs a
 one-line warning to the browser console, and stays in passphrase mode — it never half-applies
 a bad id and lands you on the wrong pack.

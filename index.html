@@ -1799,6 +1799,10 @@
   // admin → copy the Pack ID → paste it here → redeploy.
   // ---------------------------------------------------------------------------
   var PACK_DOC_ID = '42391b9710be9ef3be1b7e84da4e0bf829318e277fdac2f12ba641d2acb665c0';
+  // What the sign-in screen calls this pack in single-pack mode, where nobody signed out can read
+  // the pack's own name (it lives behind the rules). A constant, not a Firestore read: it is
+  // already public — it is the site's own name — and a pre-sign-in read would need a rules change.
+  var PACK_PUBLIC_NAME = 'Cub Scout Pack 569';
 
   // The id is a sha256 hex digest — anything else is a paste accident, and a
   // half-applied one would be worse than none at all (a wrong pack, or a pack id
@@ -9632,11 +9636,14 @@
     // Single-pack mode: EVERYONE lands here signed out, leaders included, so the copy can't
     // promise a view-only page — what they get depends on the role an admin gave them.
     if (fixedPackMode()) {
-      return joinGateShell(name || 'Pack sign-in',
-        '<p class="small">Sign in to open <strong>' + who + '</strong>.</p>' +
+      var fixedName = name || PACK_PUBLIC_NAME;
+      return joinGateShell(fixedName || 'Pack sign-in',
+        '<p class="small">Sign in to open <strong>' + (fixedName ? esc(fixedName) : who) + '</strong>.</p>' +
         '<div class="join-actions">' +
         '<button type="button" class="btn primary" data-act="sign-in-google">Sign in with Google</button>' +
         '</div>' +
+        '<p class="small muted" style="margin-top:8px">No Google account? Any email address can be made into ' +
+        'one at <strong>accounts.google.com</strong> — or ask a pack leader to send you an invite.</p>' +
         '<p class="small muted" style="margin-top:12px">Families get a view-only calendar. Leaders sign in ' +
         'here too. A pack leader approves each account — there’s no password to remember.</p>' +
         (activeJoin()
