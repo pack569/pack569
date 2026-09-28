@@ -11831,12 +11831,24 @@ test('D2: a worked block past its day warns when the cash count lacks two differ
 
 test('D2: the day sheet carries the safety rules and the cash count, first names only, and nothing is published', () => {
   const ctx = vm.createContext({});
-  vm.runInContext(PRIV_STATE + ['shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'STOREFRONT_SAFETY', 'sheetFirstName', 'daySheetText',
+  vm.runInContext(PRIV_STATE + ['shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'STOREFRONT_SAFETY', 'STOREFRONT_CASH_TO_CREDIT', 'sheetFirstName', 'daySheetText',
     'blocksInDayOrder', 'blockScoutNames', 'fmtTimeRange', 'fmtClock'].map(slice).join('\n'), ctx);
   vm.runInContext("state.storefronts[0].blocks[0].cashCountedBy = 'Dana Quenneville'; state.storefronts[0].blocks[0].cashVerifiedBy = 'Sam Hartwellington';", ctx);
   const txt = vm.runInContext('daySheetText(state.storefronts[0])', ctx);
-  const rule = 'Buddy system · an adult at the table at all times · never go inside a customer’s home · no door-to-door alone';
+  // Popcorn Kernel review — the table's rules; the door-to-door ones are wagon guidance only.
+  const rule = 'Buddy system · a parent with every scout, an adult at the table at all times · scouts stay at the table and never approach cars · two adults count the cash before it leaves the table';
   eq(ctx.STOREFRONT_SAFETY, rule, 'the safety line');
+  const credit = 'Parents can convert cash to credit in the Trail’s End app at the end of the shift.';
+  eq(ctx.STOREFRONT_CASH_TO_CREDIT, credit, 'the cash-to-credit line');
+  const tl = txt.split('\n');
+  const afterCount = tl.map((l, i) => /Cash counted by/.test(l) ? tl[i + 1] : null).filter((l) => l != null);
+  ok(afterCount.length === vm.runInContext('state.storefronts[0].blocks.length', ctx) && afterCount.every((l) => l.trim() === credit),
+    'the cash-to-credit line does not follow each cash count');
+  ok(/Verified by ' \+ \(esc\(sheetFirstName\(b\.cashVerifiedBy\)\) \|\| '________'\) \+ '<\/p>' \+\s*'<p class="small" style="margin:4px 0 0">' \+ esc\(STOREFRONT_CASH_TO_CREDIT\)/.test(slice('renderDaySheet')),
+    'the printed sheet lacks the cash-to-credit line after the cash count');
+  ok(!/door-to-door|inside a customer/.test(txt), 'the door-to-door rules are still on the storefront sheet');
+  ok(/var WAGON_SAFETY = 'Door to door: never go inside a customer\\u2019s home, and no door-to-door alone\.';/.test(SCRIPT) &&
+    /esc\(WAGON_SAFETY\)/.test(SCRIPT), 'the door-to-door rules are not kept for wagon sales');
   const nBlocks = vm.runInContext('state.storefronts[0].blocks.length', ctx);
   eq(txt.split('\n').filter((l) => l.trim() === rule).length, nBlocks + 1, 'the safety line is not on the sheet and on every shift');
   ok(/Cash counted by Dana {3}Verified by Sam/.test(txt), 'the cash count is not on the sheet by first name');

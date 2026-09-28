@@ -13200,8 +13200,14 @@
      (cashCountedBy, cashVerifiedBy — free text, as the leader types them). LEADERS ONLY: never
      in buildParentView, and the day sheet (a leaders' copy) prints first names only. */
   // The table rules, printed on the day sheet and on each shift in it. One string, so the
-  // sheet and its text copy cannot drift.
-  var STOREFRONT_SAFETY = 'Buddy system \u00b7 an adult at the table at all times \u00b7 never go inside a customer\u2019s home \u00b7 no door-to-door alone';
+  // sheet and its text copy cannot drift. Popcorn Kernel review (2026-09-28): the table's rules
+  // are about the table — a parent with every scout, scouts never walking up to cars, two adults
+  // on the cash. "Never go inside a customer's home / no door-to-door alone" is WAGON guidance,
+  // so it moved to WAGON_SAFETY (the wagon form) and stays in the kickoff note.
+  var STOREFRONT_SAFETY = 'Buddy system \u00b7 a parent with every scout, an adult at the table at all times \u00b7 scouts stay at the table and never approach cars \u00b7 two adults count the cash before it leaves the table';
+  // Printed after each shift's cash count: the family can move its cash into Trail's End credit.
+  var STOREFRONT_CASH_TO_CREDIT = 'Parents can convert cash to credit in the Trail\u2019s End app at the end of the shift.';
+  var WAGON_SAFETY = 'Door to door: never go inside a customer\u2019s home, and no door-to-door alone.';
   // What is wrong with a block's cash count, once the storefront's day has passed: 'blank' when
   // either adult is missing, 'same' when one person is both; '' when it is fine, when the day has
   // not passed yet, or when the block was never worked (no scouts, no money). Pure.
@@ -13579,7 +13585,8 @@
       '</form>' +
       '<p class="small muted" style="margin:0 0 10px">All of it is credited to ' + esc(s.name || 'this scout') + '. ' +
       'An <strong>online</strong> donation goes through Trail’s End and earns commission; a <strong>wagon</strong> donation is cash the pack keeps' +
-      (state.cashThroughTrailsEnd ? ' — though cash is being entered as Heroes &amp; Helpers right now, so it earns commission too.' : '.') + '</p>';
+      (state.cashThroughTrailsEnd ? ' — though cash is being entered as Heroes &amp; Helpers right now, so it earns commission too.' : '.') + '</p>' +
+      '<p class="small muted" style="margin:0 0 10px">' + esc(WAGON_SAFETY) + '</p>';
 
     // Entry log
     var entries = state.entries.filter(function (e) { return e.scoutId === s.id; })
@@ -21191,6 +21198,7 @@
       // Wave D2 — first names only, or a blank to fill in at the table.
       lines.push('  Cash counted by ' + (sheetFirstName(b.cashCountedBy) || '______') +
         '   Verified by ' + (sheetFirstName(b.cashVerifiedBy) || '______'));
+      lines.push('  ' + STOREFRONT_CASH_TO_CREDIT);
     });
     lines.push('');
     lines.push('Two-deep leadership required at all times.');
@@ -21222,6 +21230,7 @@
         // Wave D2 — the two adults who count the cash box. First names only; blanks to fill in.
         '<p class="small" style="margin:6px 0 0">Cash counted by ' + (esc(sheetFirstName(b.cashCountedBy)) || '________') +
         '&nbsp;&nbsp;&nbsp;Verified by ' + (esc(sheetFirstName(b.cashVerifiedBy)) || '________') + '</p>' +
+        '<p class="small" style="margin:4px 0 0">' + esc(STOREFRONT_CASH_TO_CREDIT) + '</p>' +
         '</div>';
     });
     h += '<p class="small" style="margin:6px 0 0"><strong>Two-deep leadership required at all times.</strong></p>' +
