@@ -10182,6 +10182,28 @@ test('K4: the "one entry per scout per sale day" comment sits on the code it des
   ok(!/\n  function /.test(SCRIPT.slice(note, entries)), 'another declaration sits between the comment and its function');
 });
 
+test('N1: the waiting screen says how to register, and who the adult partner is', () => {
+  const run = (fixed) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`var PACK_PUBLIC_NAME = 'Cub Scout Pack 569'; var FLEUR = '';
+      var sync = { user: { displayName: 'Sam <b>' } };
+      function fixedPackMode() { return ${fixed}; } function activeJoin() { return null; } function parentDoc() { return null; }
+      ${['esc', 'joinPackName', 'joinGateShell', 'renderJoinWaiting'].map(slice).join('\n')}`, ctx);
+    return vm.runInContext('renderJoinWaiting()', ctx);
+  };
+  const out = run(true);
+  ok(out.indexOf('While you wait: register your scout with Scouting America at <strong>beascout.scouting.org</strong> — ' +
+    'enter your ZIP, choose <strong>Cub Scout Pack 569</strong>, then <em>Apply now</em> (your den leader can help). ' +
+    'For a Lion or Tiger, a parent or guardian is usually the adult partner and just ticks that box on the form. ' +
+    'If another adult will be the partner, they may need their own adult application. ' +
+    'Every adult who comes along is encouraged to take the free online Safeguarding Youth Training.</p>') !== -1,
+    'the waiting screen is not the New Member Coordinator’s wording');
+  ok(!/they’ll need to register too/.test(out), 'the old wording is still there');
+  ok(/Sam &lt;b&gt;/.test(out), 'the signed-in name is not escaped');
+  ok(/choose your pack, then/.test(run(false)), 'a multi-pack build names Pack 569');
+  ok(!/an adult partner who is not\s+\/\/ the parent needs registering/.test(SCRIPT), 'the old comment is still there');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

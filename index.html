@@ -9826,16 +9826,28 @@
   function renderJoinWaiting() {
     var who = (sync.user && (sync.user.displayName || sync.user.email)) || 'you';
     // "Nothing else to do" was not true (New Member Coordinator, 2026-09-28): the wait is exactly
-    // when a new family should be registering with the council, and an adult partner who is not
-    // the parent needs registering and Safeguarding Youth Training before the first meeting.
-    // Wording from the parent-experience audit; the policy is theirs, not this file's.
+    // when a new family should be registering with the council. Final review, same day (NMC's
+    // wording): how to find the pack on beascout, that a Lion or Tiger's parent or guardian is
+    // usually the adult partner and just ticks that box on the scout's form, that a different
+    // adult partner may need their own adult application, and that Safeguarding Youth Training is
+    // ENCOURAGED for every adult who comes along — not a requirement put on a parent. The policy
+    // is theirs, not this file's.
+    //
+    // The pack's "who families should ask" line is NOT shown here: it lives in public/join and the
+    // parent view, and a pending member may read neither (SETUP Part C). Showing it would need a
+    // new read and a rules change — the security reviewer's call, not a wording fix.
+    //
+    // The pack's public name only where this app IS that pack (single-pack mode); a multi-pack
+    // build cannot know which pack the family is waiting on, so it says "your pack".
+    var pickPack = fixedPackMode() ? '<strong>' + esc(PACK_PUBLIC_NAME) + '</strong>' : 'your pack';
     return joinGateShell('Waiting for approval',
       '<p class="small">Your request is with the pack leaders. Once they approve it, the calendar appears ' +
       'here on its own — usually within a day or two; if not, ask your den leader.</p>' +
       '<p class="small muted">While you wait: register your scout with Scouting America at ' +
-      '<strong>beascout.scouting.org</strong> (your den leader can help), and if an adult other than a ' +
-      'parent will come with a Lion or Tiger, they’ll need to register too and take Safeguarding Youth ' +
-      'Training.</p>' +
+      '<strong>beascout.scouting.org</strong> — enter your ZIP, choose ' + pickPack + ', then <em>Apply now</em> ' +
+      '(your den leader can help). For a Lion or Tiger, a parent or guardian is usually the adult partner and ' +
+      'just ticks that box on the form. If another adult will be the partner, they may need their own adult ' +
+      'application. Every adult who comes along is encouraged to take the free online Safeguarding Youth Training.</p>' +
       '<div class="join-actions">' +
       '<span class="small muted">Signed in as ' + esc(who) + '</span>' +
       '<button type="button" class="btn small" data-act="sign-out-google">Sign out</button></div>');
