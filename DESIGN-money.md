@@ -280,6 +280,14 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   pay directly (`lineIsFamilyDirect`) the family picker on money out reads *Paid back to
   (reimbursement)* and saves `reimbursement: true` with no source — they paid the pack nothing
   on that line, so there is nothing to refund.
+- **The Funds in sentence did not add up (M2).** Each term was printed only when it was above
+  zero, so a pack that had refunded more fees than it collected lost the fees term, and an
+  other-fundraiser loss was in the total but not the words. Every term is now printed with its
+  sign (`fundsInTerm`), and refunds are their own term: "+ family-paid fees collected ($X) −
+  refunds to families ($Y)". Funds in itself is unchanged. `feesTotals().collected` is what
+  families handed over (paid + donated + tier make-ups) and no longer nets refunds off; the
+  Per-scout fees line shows the refunds beside it. A season closed from now on archives that
+  gross figure as its dues collected.
 
 ---
 

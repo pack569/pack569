@@ -4975,8 +4975,11 @@
     feeIncomeExpected = fundingSummary().fees;
     // M5 — a tier make-up payment is family money that arrived; it settles a tier rather than a
     // charge, but it is in the bank all the same.
-    // T1 — less what was handed back to families: it left the bank.
-    feeIncomeCollected = chg.paid + chg.donated + chg.makeup - chg.refunded;
+    // T1 — less what was handed back to families: it left the bank. M2 — the two halves are also
+    // reported apart (feeIncomeGross, feeRefunds), so the Funds in sentence can show the refund as
+    // its own term; a single net figure of −$20 was dropped from the sentence as "not > 0".
+    var feeIncomeGross = chg.paid + chg.donated + chg.makeup;
+    feeIncomeCollected = feeIncomeGross - chg.refunded;
     // Wave 17 — other fundraisers a leader opted into funds-in (default off).
     var otherFundraiserIn = 0;
     state.fundraisers.forEach(function (fr) {
@@ -5040,6 +5043,7 @@
       // rather than discover it as a gap at year end.
       charges: chg,
       feeIncomeExpected: feeIncomeExpected, feeIncomeCollected: feeIncomeCollected,
+      feeIncomeGross: feeIncomeGross, feeRefunds: chg.refunded,
       otherFundraiserIn: otherFundraiserIn,
       pct: pct, salesGoal: salesGoal, perScoutGoal: perScoutGoal,
       fund: fund
@@ -6363,9 +6367,20 @@
   // fronts. Amount owed per scout is the line's SCOUT rate. (Phase 3b replaces this whole
   // mechanism with charges; until then it is the collection record.)
   // Phase 3b — the dues roll-up now reads charges, not a tick grid.
+  // `collected` is what families HANDED OVER (paid + donated + tier make-ups) — money that arrived.
+  // A refund is a separate movement the other way, reported as `refunded` (final review M2,
+  // 2026-09-28): netting it in here made "collected" shrink, or go negative, whenever a treasurer
+  // gave a credit back, and it was then a figure nobody had collected.
+  // One term of the Funds in sentence: " + label ($X)", " − label ($X)" for money out, or
+  // nothing at all for $0. Pure.
+  function fundsInTerm(label, cents) {
+    if (!cents) return '';
+    return (cents < 0 ? ' \u2212 ' : ' + ') + label + ' (' + fmt(Math.abs(cents)) + ')';
+  }
   function feesTotals() {
     var t = chargeTotals(state.charges, state.ledger, chargeFamilyKey);
-    return { any: t.raised > 0, collected: t.paid + t.donated - t.refunded, outstanding: t.outstanding, t: t };
+    return { any: t.raised > 0, collected: t.paid + t.donated + t.makeup, refunded: t.refunded,
+      outstanding: t.outstanding, t: t };
   }
   // Every per-head, family-funded line the pack handles. Still used by the reward-tier
   // picker, which points a tier at the charges it buys.
@@ -13594,7 +13609,8 @@
         var fees = feesTotals();
         return fees.any
           ? '<p class="small muted" style="margin:8px 0 0">Per-scout fees: <span class="money">' + fmt(fees.collected) +
-            '</span> collected · <span class="money">' + fmt(fees.outstanding) + '</span> outstanding</p>'
+            '</span> collected' + (fees.refunded ? ' · <span class="money">' + fmt(fees.refunded) + '</span> refunded to families' : '') +
+            ' · <span class="money">' + fmt(fees.outstanding) + '</span> outstanding</p>'
           : '';
       })() +
       // Wave 8 — dues the pack absorbs for scouts who earned the reward tier (in "Actual spent").
@@ -13633,10 +13649,15 @@
                 ? ' — ' + fmt(bud.commissionEstimate - bud.commission) + ' still expected from the council' : '')
             : '')
           : (bud.commissionKnown ? ' worked out from sales until the council’s payment is posted to the ledger' : ' — set a rate in Season setup above')) + ')' +
-      (bud.incomePosted ? ' + other income posted to the ledger (' + fmt(bud.incomePosted) + ')' : '') +
-      (bud.retainedCash > 0 ? ' + cash donations kept in full (' + fmt(bud.retainedCash) + ')' : '') +
-      (bud.feeIncomeCollected > 0 ? ' + family-paid fees collected (' + fmt(bud.feeIncomeCollected) + ')' : '') +
-      (bud.otherFundraiserIn > 0 ? ' + other fundraisers (' + fmt(bud.otherFundraiserIn) + ')' : '') +
+      // M2 (final review, 2026-09-28) — EVERY TERM THAT MOVES FUNDS IN IS PRINTED, WITH ITS SIGN,
+      // so the sentence adds up to the stat above it. It used to show a term only when it was
+      // > 0: a pack that refunded more than it had collected lost the fees term entirely, and an
+      // other-fundraiser loss was silently in the total but not the sentence.
+      fundsInTerm('other income posted to the ledger', bud.incomePosted) +
+      fundsInTerm('cash donations kept in full', bud.retainedCash) +
+      fundsInTerm('family-paid fees collected', bud.feeIncomeGross) +
+      fundsInTerm('refunds to families', -(bud.feeRefunds || 0)) +
+      fundsInTerm('other fundraisers', bud.otherFundraiserIn) +
       '. <strong>Balance</strong> = funds in − actual spent.' +
       (bud.viaTE ? ' Cash donations run through Trail’s End (Heroes & Helpers), so they reach the pack via commission.' : ' The pack keeps 100% of cash donations, so they’re added here in full.') + '</p>' +
       // T4a — money in on an income line while commission is still the sales estimate may be the

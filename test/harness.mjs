@@ -8681,7 +8681,8 @@ test('M5: a tier make-up payment does not also settle the family’s other charg
   eq(t.makeup, 3000, 'but it is reported, not lost');
   eq(t.outstanding, 4000, 'still owed');
   const fn = /function computeBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
-  ok(/feeIncomeCollected = chg\.paid \+ chg\.donated \+ chg\.makeup - chg\.refunded;/.test(fn), 'make-up money dropped out of Funds in');
+  ok(/var feeIncomeGross = chg\.paid \+ chg\.donated \+ chg\.makeup;/.test(fn) &&
+     /feeIncomeCollected = feeIncomeGross - chg\.refunded;/.test(fn), 'make-up money dropped out of Funds in');
 });
 
 test('M6: editing a reimbursement keeps who it paid back', () => {
@@ -9971,6 +9972,29 @@ test('M1: a refund past the family’s credit is flagged, shown, and never used 
     'an edited family-direct payback is saved as a refund');
   ok(/if \(nk === 'line' && nd\.direction !== 'in'\) \{ nd\.lineId = el\.value; render\(\); return; \}/.test(SCRIPT),
     'the picker does not follow the line chosen in the form');
+});
+
+test('M2: the Funds in sentence adds up, with refunds as their own term', () => {
+  const ctx = sandbox(['fmt', 'fundsInTerm']);
+  eq(ctx.fundsInTerm('refunds to families', -2000), ' − refunds to families ($20.00)', 'a refund term');
+  eq(ctx.fundsInTerm('family-paid fees collected', 12000), ' + family-paid fees collected ($120.00)', 'a fee term');
+  eq(ctx.fundsInTerm('other fundraisers', -500), ' − other fundraisers ($5.00)', 'a loss is dropped from the sentence');
+  eq(ctx.fundsInTerm('x', 0), '', 'a $0 term is printed');
+  // Every addend of fundsIn after carryover and commission is a fundsInTerm, and none is gated on > 0.
+  const fn = slice('computeBudget');
+  ok(/var fundsIn = startingBalance \+ commission \+ retainedCash \+ feeIncomeCollected \+ otherFundraiserIn \+ income\.other;/.test(fn),
+    'Funds in gained a term this test does not know about');
+  ok(/feeIncomeGross: feeIncomeGross, feeRefunds: chg\.refunded,/.test(fn), 'the two halves of the fee income are not reported');
+  const card = /'<p class="small muted" style="margin:8px 0 0"><strong>Funds in<\/strong> = carryover[\s\S]*?Balance<\/strong> = funds in/.exec(SCRIPT);
+  ok(card, 'the Funds in sentence was not found');
+  ['bud.incomePosted', 'bud.retainedCash', 'bud.feeIncomeGross', '-(bud.feeRefunds || 0)', 'bud.otherFundraiserIn'].forEach((x) =>
+    ok(card[0].indexOf(x + ')') !== -1 && new RegExp("fundsInTerm\\('[^']+', " + x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\)').test(card[0]),
+      `${x} is not a term of the sentence`));
+  ok(/fundsInTerm\('refunds to families', -\(bud\.feeRefunds \|\| 0\)\)/.test(card[0]), 'refunds are not their own term');
+  ok(!/> 0 \? ' \+/.test(card[0]), 'a term is still printed only when it is above zero');
+  // "Collected" is what families handed over, never net of refunds.
+  ok(/collected: t\.paid \+ t\.donated \+ t\.makeup, refunded: t\.refunded,/.test(slice('feesTotals')),
+    'collected is net of refunds again');
 });
 
 /* ---------------- report ---------------- */
