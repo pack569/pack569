@@ -5001,7 +5001,7 @@
       var il = getBudgetLine(id);
       return !!il && il.category === 'income';
     };
-    var income = ledgerIncomeCents(state.ledger, isIncomeLine);
+    var income = ledgerIncomeCents(state.ledger, isIncomeLine, b.startingBalance || 0);
     var commissionEstimate = pack.commission || 0;
     var commission = income.hasCommission ? income.commission : commissionEstimate;
     // T4a — only a question while the estimate is what Funds in is counting.
@@ -5010,7 +5010,8 @@
     // Cash the pack keeps in full (only when it isn't run through Trail's End).
     var retainedCash = pack.retainedCash || 0;
     var startingBalance = b.startingBalance || 0;
-    var fundsIn = startingBalance + commission + retainedCash + feeIncomeCollected + otherFundraiserIn + income.other;
+    var fundsIn = startingBalance + commission + retainedCash + feeIncomeCollected + otherFundraiserIn + income.other +
+      income.carryover;
     var pct = pack.pct;
     var pctOk = isFinite(pct) && pct > 0;
     // Funding streams covering the plan: carryover + expected cash donations (kept 100%)
@@ -5029,6 +5030,8 @@
       commission: commission, commissionKnown: pack.commission != null || income.hasCommission,
       commissionPosted: income.hasCommission, commissionEstimate: commissionEstimate,
       incomePosted: income.other, commissionLookalikes: lookalikes,
+      // M3 — carryover entries counted because Starting funds is $0 (ledgerIncomeCents).
+      ledgerCarryover: income.carryover,
       retainedCash: retainedCash, viaTE: pack.viaTE,
       startingBalance: startingBalance, cashGoal: cashGoal, teNeed: teNeed,
       // Phase 3a — what a year costs a family OUTSIDE the pack's books (council camps,
@@ -6072,15 +6075,21 @@
   //                  unchanged, so the balance only changes by the commission it double-counted.
   //                  (Uncategorised income is left out, as it always was.)
   // A family's payment (scoutId set) is none of these — it is counted through its charges.
-  function ledgerIncomeCents(ledger, isIncomeLine) {
-    var t = { commission: 0, hasCommission: false, other: 0 };
+  // `startingCents` is the budget's Starting funds. `carryover` in the result is the pack's own
+  // carryover entries, counted only when Starting funds is $0 (M3, below).
+  function ledgerIncomeCents(ledger, isIncomeLine, startingCents) {
+    var t = { commission: 0, hasCommission: false, other: 0, carryover: 0 };
     ledger.forEach(function (e) {
       var amt = e.amountCents || 0;
       if (e.direction === 'in') {
         if (e.scoutId) return;
         // T5 — the carryover is already in Funds in as Starting funds. An entry recording it (the
         // pack's own, with no family) is the same money, wherever the treasurer filed it.
-        if (e.source === 'carryover') return;
+        // M3 (final review, 2026-09-28) — ONLY WHEN STARTING FUNDS HOLDS IT. With Starting funds
+        // at $0 the entry is the one record of the carryover there is, and skipping it dropped the
+        // pack's opening money out of Funds in altogether. Then it counts, on its own term, line
+        // or no line, and the Budget card asks for it to be moved into Starting funds.
+        if (e.source === 'carryover') { if (!(startingCents > 0)) t.carryover += amt; return; }
         // T4(b) — a $0 entry is not the council's cheque, and must not switch the estimate off.
         if (e.source === 'commission') { t.commission += amt; if (amt > 0) t.hasCommission = true; return; }
         // Uncategorised income stays out, exactly as it always has: it never reached the
@@ -13653,6 +13662,7 @@
       // so the sentence adds up to the stat above it. It used to show a term only when it was
       // > 0: a pack that refunded more than it had collected lost the fees term entirely, and an
       // other-fundraiser loss was silently in the total but not the sentence.
+      fundsInTerm('carryover entered in the ledger', bud.ledgerCarryover) +
       fundsInTerm('other income posted to the ledger', bud.incomePosted) +
       fundsInTerm('cash donations kept in full', bud.retainedCash) +
       fundsInTerm('family-paid fees collected', bud.feeIncomeGross) +
@@ -13660,6 +13670,13 @@
       fundsInTerm('other fundraisers', bud.otherFundraiserIn) +
       '. <strong>Balance</strong> = funds in − actual spent.' +
       (bud.viaTE ? ' Cash donations run through Trail’s End (Heroes & Helpers), so they reach the pack via commission.' : ' The pack keeps 100% of cash donations, so they’re added here in full.') + '</p>' +
+      // M3 — the carryover lives in Starting funds. Counted from the ledger only while that is $0,
+      // and said so, because the funding goal reads Starting funds and does not see the entry.
+      (bud.ledgerCarryover > 0
+        ? '<p class="small" style="margin:8px 0 0"><span class="pill navy">Check</span> A Carryover entry of <strong class="money">' +
+          fmt(bud.ledgerCarryover) + '</strong> is in the ledger but Starting funds is $0 \u2014 set Starting funds to it ' +
+          'and this entry stops counting.</p>'
+        : '') +
       // T4a — money in on an income line while commission is still the sales estimate may be the
       // council's cheque counted twice. Asked, never assumed: the treasurer knows what it was.
       bud.commissionLookalikes.map(function (lk) {

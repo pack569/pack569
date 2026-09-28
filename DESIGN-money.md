@@ -288,6 +288,14 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   families handed over (paid + donated + tier make-ups) and no longer nets refunds off; the
   Per-scout fees line shows the refunds beside it. A season closed from now on archives that
   gross figure as its dues collected.
+- **T5 dropped the carryover when Starting funds was empty (M3).** T5 skipped every pack-own
+  *Carryover* entry because Starting funds already holds that money. A treasurer who recorded the
+  carryover only in the ledger, leaving Starting funds at $0, lost it from Funds in altogether.
+  `ledgerIncomeCents(ledger, isIncomeLine, startingCents)` now skips them only when Starting funds
+  is above $0; otherwise it counts them (line or no line) as `carryover`, which is its own term
+  in Funds in, and the Budget card says: "A Carryover entry of $X is in the ledger but Starting
+  funds is $0 — set Starting funds to it and this entry stops counting." The funding goal still
+  reads Starting funds only, which is why the card asks.
 
 ---
 

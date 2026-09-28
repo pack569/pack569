@@ -8819,8 +8819,33 @@ test('T5: a carryover entry is not counted as income on top of Starting funds', 
     entry({ direction: 'in', source: 'carryover', amountCents: 42000, lineId: 'INC' }),
     entry({ direction: 'in', source: 'carryover', amountCents: 1000, lineId: 'CAMP' }),
     entry({ direction: 'in', source: 'fundraiser', amountCents: 5000, lineId: 'INC' })
-  ], isInc);
+  ], isInc, 42000);
   eq(t.other, 5000, 'the carryover reached Funds in a second time');
+  eq(t.carryover, 0, 'the carryover was counted on its own term as well as in Starting funds');
+});
+
+test('M3: with Starting funds at $0, a carryover entry counts, and the card asks for it to be moved', () => {
+  const ctx = sandbox(LEDGER_FNS);
+  const isInc = (id) => id === 'INC';
+  const L = [
+    entry({ direction: 'in', source: 'carryover', amountCents: 42000, lineId: '' }),
+    entry({ direction: 'in', source: 'carryover', amountCents: 1000, lineId: 'CAMP' }),
+    // A family's carried credit is never the pack's carryover.
+    entry({ direction: 'in', source: 'carryover', amountCents: 700, lineId: '', scoutId: 'ada' }),
+    entry({ direction: 'in', source: 'fundraiser', amountCents: 5000, lineId: 'INC' })
+  ];
+  const zero = ctx.ledgerIncomeCents(L, isInc, 0);
+  eq([zero.carryover, zero.other], [43000, 5000], 'with Starting funds $0');
+  eq(ctx.ledgerIncomeCents(L, isInc).carryover, 43000, 'no Starting funds given reads as $0');
+  const set = ctx.ledgerIncomeCents(L, isInc, 43000);
+  eq([set.carryover, set.other], [0, 5000], 'with Starting funds set');
+  const fn = slice('computeBudget');
+  ok(/ledgerIncomeCents\(state\.ledger, isIncomeLine, b\.startingBalance \|\| 0\)/.test(fn), 'computeBudget does not pass Starting funds');
+  ok(/ledgerCarryover: income\.carryover,/.test(fn), 'the counted carryover is not reported');
+  const card = /function renderBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0].replace(/'\s*\+\s*'/g, '');
+  ok(/bud\.ledgerCarryover > 0/.test(card) &&
+     /A Carryover entry of <strong class="money">' \+\s*fmt\(bud\.ledgerCarryover\) \+ '<\/strong> is in the ledger but Starting funds is \$0 \\u2014 set Starting funds to it and this entry stops counting\./.test(card),
+    'the Budget card does not ask for the carryover to be moved into Starting funds');
 });
 
 test('T6: a part-paid commission says how much is still expected from the council', () => {
@@ -9982,12 +10007,12 @@ test('M2: the Funds in sentence adds up, with refunds as their own term', () => 
   eq(ctx.fundsInTerm('x', 0), '', 'a $0 term is printed');
   // Every addend of fundsIn after carryover and commission is a fundsInTerm, and none is gated on > 0.
   const fn = slice('computeBudget');
-  ok(/var fundsIn = startingBalance \+ commission \+ retainedCash \+ feeIncomeCollected \+ otherFundraiserIn \+ income\.other;/.test(fn),
+  ok(/var fundsIn = startingBalance \+ commission \+ retainedCash \+ feeIncomeCollected \+ otherFundraiserIn \+ income\.other \+\s*income\.carryover;/.test(fn),
     'Funds in gained a term this test does not know about');
   ok(/feeIncomeGross: feeIncomeGross, feeRefunds: chg\.refunded,/.test(fn), 'the two halves of the fee income are not reported');
   const card = /'<p class="small muted" style="margin:8px 0 0"><strong>Funds in<\/strong> = carryover[\s\S]*?Balance<\/strong> = funds in/.exec(SCRIPT);
   ok(card, 'the Funds in sentence was not found');
-  ['bud.incomePosted', 'bud.retainedCash', 'bud.feeIncomeGross', '-(bud.feeRefunds || 0)', 'bud.otherFundraiserIn'].forEach((x) =>
+  ['bud.ledgerCarryover', 'bud.incomePosted', 'bud.retainedCash', 'bud.feeIncomeGross', '-(bud.feeRefunds || 0)', 'bud.otherFundraiserIn'].forEach((x) =>
     ok(card[0].indexOf(x + ')') !== -1 && new RegExp("fundsInTerm\\('[^']+', " + x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\)').test(card[0]),
       `${x} is not a term of the sentence`));
   ok(/fundsInTerm\('refunds to families', -\(bud\.feeRefunds \|\| 0\)\)/.test(card[0]), 'refunds are not their own term');
