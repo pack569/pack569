@@ -8422,7 +8422,9 @@ test('the copied standings name children the way the parent view does, and nobod
     function earnedTierFor() { return null; }
     function cashCreditTotals() { return { on: true }; }
     function cashScoutCredit(c) { return c; }
-    ${['shortNames', 'publicNameMap', 'summaryText', 'fmt'].map(slice).join('\n')}`, ctx);
+    function standingsEnabled() { return true; }
+    function amountsEnabled() { return true; }
+    ${['shortNames', 'publicNameMap', 'salesOnlyTierMap', 'summaryText', 'fmt'].map(slice).join('\n')}`, ctx);
   const txt = vm.runInContext('summaryText()', ctx);
   noSurname(txt, 'the copied standings');
   ok(/1\. Ada — /.test(txt) && /Beckett H\./.test(txt) && /Beckett Z\./.test(txt),
@@ -9830,6 +9832,53 @@ test('S3: a rung a family paid for never shows on the published board or the sha
     { b: { a: 'earned' }, s: {} }, 'salesOnlyTierMap');
   const SETUP = readFileSync(join(ROOT, 'SETUP.md'), 'utf8');
   ok(/\*\*never\*\* contains:[^]*?who\s+paid their way up a reward tier/.test(SETUP), 'SETUP.md dropped the promise this keeps');
+});
+
+test('S2: the copied and printed standings honour the pack’s two sharing switches', () => {
+  const make = (stand, amt) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(PRIV_STATE + `
+      function computePackTotals() {
+        return { sales: 60000, don: 9000, combined: 69000, commission: null, pct: null, ratesSplit: false,
+          teGoal: 0, stretch: 0, cashGoal: 0, cashKept: 0, cashDon: 7000, teEligible: 62000 };
+      }
+      var T = { s1: { sales: 30000, onD: 1000 }, s2: { sales: 20000, onD: 1000 }, s3: { sales: 10000, onD: 0 } };
+      function computeScoutTotals() { return T; }
+      function visibleScoutRows() { return state.scouts.map(function (s) { return { id: s.id, name: s.name, den: s.den, t: T[s.id] }; }); }
+      function rankBy(rows, f) { return rows.slice().sort(function (a, b) { return f(b) - f(a); }); }
+      function eligibleOf(r) { return r.t.sales + r.t.onD; }
+      var TIERS = [{ id: 'b', name: 'Bronze', thresholdCents: 1 }, { id: 'g', name: 'Gold', thresholdCents: 2 }];
+      function sortedTiers() { return TIERS; }
+      // Ada sold to Bronze and PAID her way to Gold; Beckett H. sold to Gold.
+      function tierEarnedMap() { return { b: { s1: 'earned', s2: 'earned' }, g: { s1: 'madeUp', s2: 'earned' } }; }
+      function standingsEnabled() { return ${stand}; }
+      function amountsEnabled() { return ${amt}; }
+      ${['shortNames', 'publicNameMap', 'salesOnlyTierMap', 'earnedTierFor', 'summaryText', 'fmt'].map(slice).join('\n')}`, ctx);
+    return vm.runInContext('summaryText()', ctx);
+  };
+  const full = make(true, true);
+  ok(/1\. Ada \[Bronze\] — \$310\.00/.test(full), 'the full copy lost its ranked line, or names Ada’s paid-for Gold');
+  ok(/Beckett H\. \[Gold\]/.test(full), 'a tier sold to is missing from the full copy');
+  const off = make(false, true);
+  ok(!/Ada|Beckett|Standings —/.test(off), 'standings off still lists scouts in the copied text');
+  ok(/Pack total: \$600\.00/.test(off), 'standings off dropped the pack totals too');
+  const noAmt = make(true, false);
+  ok(/Scouts, by name — reward level reached:\n- Ada — Bronze\n- Beckett H\. — Gold\n- Beckett Z\.\n/.test(noAmt),
+    'amounts off is not public name + tier, alphabetically');
+  const lines = noAmt.split('\n');
+  const block = lines.slice(lines.indexOf('Scouts, by name — reward level reached:'));
+  ok(!block.slice(0, 4).some((l) => /\$|^\d+\./.test(l)), 'amounts off still carries a figure or a rank number');
+  ok(!/\[Gold\]|Ada — Gold/.test(noAmt), 'amounts off names Ada’s paid-for Gold');
+  // The printed sheet: the same switches, and a note saying why the table is short.
+  const sheet = /if \(o\.kind === 'summary'\) \{[\s\S]*?\n      return h;/.exec(SCRIPT)[0];
+  ok(/var sumStand = standingsEnabled\(\), sumAmt = amountsEnabled\(\);/.test(sheet), 'the sheet ignores the switches');
+  ok(/if \(sumStand && sumAmt\) \{/.test(sheet) && /\} else if \(sumStand\) \{/.test(sheet), 'the sheet does not branch on them');
+  const alpha = sheet.slice(sheet.indexOf('} else if (sumStand) {'));
+  ok(!/fmt\(|\(i \+ 1\)|rankBy/.test(alpha.slice(0, alpha.indexOf('h += \'<p class="small" style="margin:14px 0 0">'))),
+    'the amounts-off table carries a figure or a rank');
+  ok(/tierBadgesFor\(r, sumTiers, \{\}, sumMap\)/.test(alpha), 'the amounts-off table shows what the pack covers per family');
+  ok(/Scout standings are off for families/.test(sheet) && /Dollar amounts and rank are off for families/.test(sheet),
+    'the sheet does not say why its table is missing or short');
 });
 
 /* ---------------- report ---------------- */

@@ -17420,18 +17420,33 @@
       lines.push('Cash donations goal: ' + fmt(pack.cashKept) + ' of ' + fmt(pack.cashGoal) +
         ' (' + Math.min(100, Math.round(pack.cashKept / pack.cashGoal * 100)) + '%)');
     }
-    lines.push('');
-    lines.push('Standings — sales + online donations:');
+    // THE PACK'S TWO SHARING SWITCHES APPLY HERE TOO (final review, 2026-09-28). This text is
+    // pasted to the same families the parent view serves, so a pack that switched standings off
+    // there, or amounts and rank, must not publish them by the back door of a group chat.
+    // Standings off: no per-scout block at all. Amounts off: public name and reward level only,
+    // in name order, no figures and no numbering — the same shape as the parent board.
     // The earned rung, from the same map the badges and the budget read, so no two surfaces can
-    // disagree about who reached what.
-    // Sales-only, like the parent view: this text is pasted to families (salesOnlyTierMap).
+    // disagree about who reached what — sales-only, like the parent view (salesOnlyTierMap).
     var txTiers = sortedTiers();
     var txEarned = txTiers.length ? salesOnlyTierMap(tierEarnedMap()) : {};
-    rankBy(rows, eligibleOf).forEach(function (r, i) {
-      var et = txTiers.length ? earnedTierFor(r.id, txTiers, txEarned) : null;
-      lines.push((i + 1) + '. ' + (pub[r.id] || '') + (et ? ' [' + (et.name || 'Tier') + ']' : '') +
-        ' — ' + fmt(eligibleOf(r)) + ' (' + fmt(r.t.sales) + ' sales, ' + fmt(r.t.onD) + ' online donations)');
-    });
+    function txTier(r) { return txTiers.length ? earnedTierFor(r.id, txTiers, txEarned) : null; }
+    if (standingsEnabled() && amountsEnabled()) {
+      lines.push('');
+      lines.push('Standings — sales + online donations:');
+      rankBy(rows, eligibleOf).forEach(function (r, i) {
+        var et = txTier(r);
+        lines.push((i + 1) + '. ' + (pub[r.id] || '') + (et ? ' [' + (et.name || 'Tier') + ']' : '') +
+          ' — ' + fmt(eligibleOf(r)) + ' (' + fmt(r.t.sales) + ' sales, ' + fmt(r.t.onD) + ' online donations)');
+      });
+    } else if (standingsEnabled()) {
+      lines.push('');
+      lines.push(txTiers.length ? 'Scouts, by name — reward level reached:' : 'Scouts, by name:');
+      rows.slice().sort(function (a, b) { return String(pub[a.id] || '').localeCompare(String(pub[b.id] || '')); })
+        .forEach(function (r) {
+          var et = txTier(r);
+          lines.push('- ' + (pub[r.id] || '') + (et ? ' — ' + (et.name || 'Tier') : ''));
+        });
+    }
     lines.push('');
     lines.push('Cash donations (storefront tables and wagons, all scouts): ' + fmt(pack.cashDon));
     return lines.join('\n');
@@ -17599,6 +17614,8 @@
       var sumTiers = sortedTiers();
       var sumMap = sumTiers.length ? salesOnlyTierMap(tierEarnedMap()) : {};
       var sumCovered = packCoverageByScout(sumMap);
+      // The pack's sharing switches, as summaryText honours them — see there.
+      var sumStand = standingsEnabled(), sumAmt = amountsEnabled();
       // Shared, so public names and no family's cash — the same rules as summaryText().
       var sumPub = publicNameMap(state.scouts);
       var h = '<div class="overlay" role="dialog" aria-modal="true" aria-label="Share summary"><div class="overlay-inner">' +
@@ -17611,6 +17628,15 @@
         '<h1 style="margin:0">' + esc(state.packName || 'Pack') + ' Popcorn Sale</h1></div>' +
         '<p class="muted small" style="margin:0 0 14px">Standings as of ' +
         new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) + '</p>' +
+        // Says, on the sheet, why a scout's line is missing or short — so a leader who expected the
+        // full table knows it is the pack's own setting, and where to change it.
+        (!sumStand
+          ? '<p class="small no-print" style="margin:0 0 14px"><strong>Scout standings are off for families</strong> ' +
+            '(Pack · Sharing), so this sheet leaves out each scout\u2019s line.</p>'
+          : !sumAmt
+            ? '<p class="small no-print" style="margin:0 0 14px"><strong>Dollar amounts and rank are off for families</strong> ' +
+              '(Pack · Sharing), so scouts are listed by name with the reward level each has reached.</p>'
+            : '') +
         '<div class="row" style="margin-bottom:14px">' +
         // Wave 21 — same two buckets as the Standings card, so the shared sheet and the
         // screen can't tell different stories.
@@ -17660,20 +17686,36 @@
             '<div class="bar"><div class="bar-fill" style="width:' + cp + '%"></div></div>' +
             '<p class="small" style="margin:6px 0 14px"><strong class="money">' + fmt(pack.cashKept) + '</strong> of <span class="money">' + fmt(pack.cashGoal) + '</span> (' + cp + '%)</p>';
         })() : '') +
-        '<p class="eyebrow">Standings — sales + online donations</p>' +
-        '<div class="tbl-wrap"><table><thead><tr><th scope="col"></th><th scope="col">Scout</th>' +
-        (sumTiers.length ? '<th scope="col">Tier</th>' : '') +
-        '<th scope="col" class="num">Sales</th><th scope="col" class="num">Online don.</th><th scope="col" class="num">Total</th></tr></thead><tbody>';
-      rankBy(rows, eligibleOf).forEach(function (r, i) {
-        // The rung this scout has actually reached, and what it takes off their family's bill.
-        // The badges are the on-screen board's own, so the two cannot name different tiers.
-        h += '<tr><td class="num muted">' + (i + 1) + '</td><td>' + esc(sumPub[r.id] || '') + '</td>' +
-          (sumTiers.length ? '<td style="white-space:normal">' + (tierBadgesFor(r, sumTiers, sumCovered, sumMap) || '<span class="muted">—</span>') + '</td>' : '') +
-          '<td class="num">' + fmt(r.t.sales) + '</td>' +
-          '<td class="num">' + fmt(r.t.onD) + '</td><td class="num" style="font-weight:650">' + fmt(eligibleOf(r)) + '</td></tr>';
-      });
-      h += '</tbody></table></div>' +
-        '<p class="small" style="margin:14px 0 0">Cash donations at storefront tables and wagons, all scouts: ' +
+        '';
+      if (sumStand && sumAmt) {
+        h += '<p class="eyebrow">Standings — sales + online donations</p>' +
+          '<div class="tbl-wrap"><table><thead><tr><th scope="col"></th><th scope="col">Scout</th>' +
+          (sumTiers.length ? '<th scope="col">Tier</th>' : '') +
+          '<th scope="col" class="num">Sales</th><th scope="col" class="num">Online don.</th><th scope="col" class="num">Total</th></tr></thead><tbody>';
+        rankBy(rows, eligibleOf).forEach(function (r, i) {
+          // The rung this scout has actually reached, and what it takes off their family's bill.
+          // The badges are the on-screen board's own, so the two cannot name different tiers.
+          h += '<tr><td class="num muted">' + (i + 1) + '</td><td>' + esc(sumPub[r.id] || '') + '</td>' +
+            (sumTiers.length ? '<td style="white-space:normal">' + (tierBadgesFor(r, sumTiers, sumCovered, sumMap) || '<span class="muted">—</span>') + '</td>' : '') +
+            '<td class="num">' + fmt(r.t.sales) + '</td>' +
+            '<td class="num">' + fmt(r.t.onD) + '</td><td class="num" style="font-weight:650">' + fmt(eligibleOf(r)) + '</td></tr>';
+        });
+        h += '</tbody></table></div>';
+      } else if (sumStand) {
+        // Amounts and rank off: name order, no number column, and the badge with {} coverage —
+        // the tier NAME only, because "pack covers $X" is a per-family money figure.
+        h += '<p class="eyebrow">Scouts, by name</p>' +
+          '<div class="tbl-wrap"><table><thead><tr><th scope="col">Scout</th>' +
+          (sumTiers.length ? '<th scope="col">Reward level</th>' : '') + '</tr></thead><tbody>';
+        rows.slice().sort(function (a, b) { return String(sumPub[a.id] || '').localeCompare(String(sumPub[b.id] || '')); })
+          .forEach(function (r) {
+            h += '<tr><td>' + esc(sumPub[r.id] || '') + '</td>' +
+              (sumTiers.length ? '<td style="white-space:normal">' + (tierBadgesFor(r, sumTiers, {}, sumMap) || '<span class="muted">—</span>') + '</td>' : '') +
+              '</tr>';
+          });
+        h += '</tbody></table></div>';
+      }
+      h += '<p class="small" style="margin:14px 0 0">Cash donations at storefront tables and wagons, all scouts: ' +
         '<strong class="money">' + fmt(pack.cashDon) + '</strong></p>' +
         '</div></div></div>';
       return h;
