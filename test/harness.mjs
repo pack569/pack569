@@ -11664,7 +11664,7 @@ test('D1: the council dates are seeded once from the 2026 schedule, marked to ve
     'a fresh settlement');
   ok(!('returnsCents' in seed), 'a fresh settlement has a returns line (NEGA takes no returns)');
   const labels = ctx.POPCORN_COUNCIL_DATES.map((d) => d.label).join(' | ');
-  ['Final take orders', 'rewards qualify', 'commission calculated', 'post-dated check', 'Payment due', 'drops 10%']
+  ['Final take orders', 'rewards qualify', 'commission calculated', 'post-dated check', 'Payment due', 'drops by 10% if not paid']
     .forEach((w) => ok(labels.includes(w), 'no council date for ' + w));
   // Absent → seeded; present → coerced, and a cleared date stays cleared.
   ok(ctx.normalizeState(preMigrationState()).popcornCouncil.dates.payment.date === '2026-12-02', 'a record without it was not seeded');
@@ -11743,6 +11743,26 @@ test('D1: what the pack owes the council is Show & Sell + take order, less card 
     'the payout label or the statement cross-check is missing');
   ok(/Online direct sales are not part of it/.test(rp), 'the page does not say online direct is excluded');
   ok(/if \(ch === 'pc-statement'\) \{[^}]*toCentsSigned\(el\.value\)/.test(SCRIPT), 'a payout balance cannot be typed');
+});
+
+// Popcorn Kernel review — the drop is the council's wording, fires on its date, and is never worked out.
+test('D1: the commission-drop warning fires on the drop date and never calculates the drop', () => {
+  const ctx = sandbox(['POPCORN_COUNCIL_DATES', 'POPCORN_COUNCIL_VERIFY', 'freshPopcornCouncil', 'councilPaymentWarning']);
+  const lbl = ctx.POPCORN_COUNCIL_DATES.find((d) => d.key === 'commissionDrop').label;
+  eq(lbl, 'Unit commission drops by 10% if not paid (council’s wording; ask whether that’s 10 points or a tenth) [verify with council]', 'the label');
+  const pc = ctx.freshPopcornCouncil();   // payment 2026-12-02, drop 2026-12-03
+  const d = (iso) => 'D' + iso;
+  eq(ctx.councilPaymentWarning(pc, '2026-12-02', d), '', 'a warning on the payment date itself');
+  eq(ctx.councilPaymentWarning(pc, '2026-12-03', d),
+    'Not marked paid, and the council’s commission drop took effect D2026-12-03. Type the commission from the statement.',
+    'the drop does not fire on its own date, or the words changed');
+  ok(/took effect/.test(ctx.councilPaymentWarning(pc, '2026-12-20', d)), 'the drop warning stopped after its date');
+  pc.dates.commissionDrop.date = '';
+  eq(ctx.councilPaymentWarning(pc, '2026-12-03', d), 'Payment was due D2026-12-02 and is not marked paid.', 'the late-payment warning');
+  pc.paidOn = '2026-12-10';
+  eq(ctx.councilPaymentWarning(pc, '2026-12-20', d), '', 'a warning after it was paid');
+  ok(!/\* ?0?\.9|\* ?\(1 ?- ?0?\.1|pct ?- ?10|0\.1 ?\*/.test(slice('councilPaymentWarning') + slice('councilSettlement')), 'the drop is calculated');
+  ok(/councilPaymentWarning\(pc, today, fmtDate\)/.test(slice('renderPopcornCouncil')), 'the page does not show the warning');
 });
 
 test('D1: the council page is a Popcorn section, rolls over, and is NEVER published', () => {

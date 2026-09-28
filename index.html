@@ -3307,7 +3307,9 @@
     { key: 'rewards', label: 'Council rewards qualify by \u00b7 commission calculated', seed: '2026-11-04' },
     { key: 'pickup', label: 'Take-order pickup (bring a post-dated check)', seed: '2026-11-13' },
     { key: 'payment', label: 'Payment due to the council', seed: '2026-12-02' },
-    { key: 'commissionDrop', label: 'Commission drops 10% after this date', seed: '2026-12-03' }
+    // The council's own wording, which does not say whether "10%" is ten points off the rate or
+    // a tenth of it — so the app never calculates the drop (councilPaymentWarning).
+    { key: 'commissionDrop', label: 'Unit commission drops by 10% if not paid (council\u2019s wording; ask whether that\u2019s 10 points or a tenth) [verify with council]', seed: '2026-12-03' }
   ];
   var POPCORN_COUNCIL_VERIFY = '[verify with council]';
   function freshPopcornCouncil() {
@@ -19247,6 +19249,21 @@
       statementCents: bal, statementDiffers: bal != null && owed != null && bal !== owed
     };
   }
+  // The unpaid-settlement warning, or ''. Pure. The drop fires ON its date (the council's date is
+  // when it takes effect, not the last day before it). It never works out the reduced commission:
+  // the council's "drops by 10%" doesn't say whether that is ten points or a tenth of the rate, so
+  // the leader types what the statement shows.
+  function councilPaymentWarning(pc, today, dateLabel) {
+    if (!pc || pc.paidOn) return '';
+    var d = pc.dates || {};
+    var drop = d.commissionDrop && d.commissionDrop.date, pay = d.payment && d.payment.date;
+    if (drop && today >= drop) {
+      return 'Not marked paid, and the council\u2019s commission drop took effect ' + dateLabel(drop) +
+        '. Type the commission from the statement.';
+    }
+    if (pay && today > pay) return 'Payment was due ' + dateLabel(pay) + ' and is not marked paid.';
+    return '';
+  }
   // The nudge Rewards and the Council page both show. '' when the tiers already line up.
   function councilTierNudgeHtml() {
     var late = councilLateTiers(state.rewardTiers.tiers, state.popcornCouncil);
@@ -19339,12 +19356,8 @@
         '; the sum above comes to ' + (st.payout ? 'a payout of ' + esc(fmt(-st.owedCents)) : esc(fmt(st.owedCents)) + ' owed') +
         '. The statement is the authority — check the figures above against it.</p>';
     }
-    if (!pc.paidOn && drop && today > drop) {
-      h += '<p class="warn small" style="margin:10px 0 0">Past ' + esc(fmtDate(drop)) + ' and not marked paid: the council’s commission drops 10%. ' +
-        'Check the statement and type the commission it shows.</p>';
-    } else if (!pc.paidOn && pay && today > pay) {
-      h += '<p class="warn small" style="margin:10px 0 0">Payment was due ' + esc(fmtDate(pay)) + ' and is not marked paid.</p>';
-    }
+    var payWarn = councilPaymentWarning(pc, today, fmtDate);
+    if (payWarn) h += '<p class="warn small" style="margin:10px 0 0">' + esc(payWarn) + '</p>';
     h += '<p class="small muted" style="margin:10px 0 0">Not published to families, and not on the Budget: record the payment itself on the Ledger.</p></div>';
     return h;
   }
