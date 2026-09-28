@@ -9574,6 +9574,16 @@ test('J8: What’s coming up is the next 30 days by month, with the rest one tap
   ok(/'parent-rest'/.test(/var PARENT_ACTS = \[([\s\S]*?)\];/.exec(SCRIPT)[1]), 'the rest-of-year button is refused in parent mode');
 });
 
+test('J9: a campout says when to arrive and when to leave, each on its own labelled row', () => {
+  const ctx = sandbox(['esc', 'campLinkLabel', 'campFacts']);
+  const both = ctx.campFacts({ arrive: 'Friday 6:00 pm', depart: 'Sunday 11:00 am' });
+  ok(/<dt>Arrive<\/dt><dd>Friday 6:00 pm<\/dd><dt>Leave by<\/dt><dd>Sunday 11:00 am<\/dd>/.test(both),
+    'arrive and leave are not two labelled rows');
+  ok(!/Times/.test(both), 'the merged "Times" row is back');
+  const leaveOnly = ctx.campFacts({ depart: 'Sunday 11:00 am' });
+  ok(/<dt>Leave by<\/dt>/.test(leaveOnly) && !/Arrive/.test(leaveOnly), 'a leave-only trip is not labelled as leaving');
+});
+
 /* ---------------- report ---------------- */
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);

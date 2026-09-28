@@ -17048,9 +17048,10 @@
     if (t.where) rows.push(['Where', esc(t.where) + (t.address ? '<br><span class="muted">' + esc(t.address) + '</span>' : '')]);
     else if (t.address) rows.push(['Where', esc(t.address)]);
     if (t.when) rows.push(['When', esc(t.when)]);
-    if (t.arrive || t.depart) {
-      rows.push(['Times', [t.arrive, t.depart].filter(Boolean).map(esc).join('<br>')]);
-    }
+    // Two rows, labelled as the editor labels them. Merged under "Times", a trip with only one of
+    // the two typed left a family guessing whether "Sunday 11:00 am" was when to come or when to go.
+    if (t.arrive) rows.push(['Arrive', esc(t.arrive)]);
+    if (t.depart) rows.push(['Leave by', esc(t.depart)]);
     if (t.cost) rows.push(['Cost', esc(t.cost)]);
     if (t.address) {
       rows.push(['Map', '<a href="https://maps.google.com/?q=' + encodeURIComponent(t.address) +
