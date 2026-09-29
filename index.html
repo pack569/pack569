@@ -7776,7 +7776,10 @@
   // `by` is never an email. Null for an op this page does not know, or no row.
   // C2 added 'add' (a back-dated add the leader was warned about; ordinary adds are not logged,
   // their E2 stamps say who and when) and 'opening' (the opening figure or date, row 'book').
-  var LEDGER_OPS = ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening'];
+  // The security review of C2 added 'delete' (an open row removed: `f` carries its amount, date
+  // and direction, [before, null]; a locked row can't be), and logs as an 'add' a row put back by
+  // Undo, or written by another screen (a tier make-up or reimbursement), `why` saying which.
+  var LEDGER_OPS = ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete'];
   function ledgerEvent(op, rowId, who, more) {
     if (LEDGER_OPS.indexOf(op) === -1 || typeof rowId !== 'string' || !rowId) return null;
     who = who || {};
@@ -18455,7 +18458,8 @@
       // Phase 3, C2 — so is one dated in the reconciled period (ledgerLocked), ticked or not:
       // un-reconciling does not open it. Its date, direction and amount are shown, not fields;
       // its labels stay fields (owner, 2026-09-29: LEDGER_LOCKED_FIELDS), and every change is
-      // logged. An unticked one keeps its ✕ until C3 makes removing it a void.
+      // logged. Security review of C2 (#2) — nor is a locked row deleted: no ✕, and the pill says
+      // why (del-ledger refuses it too). C3 makes removing it a void.
       var eLocked = ledgerLocked(e, state.book), ePeriod = ledgerDateReconciled(e.date, state.book);
       h += '<div class="lrow entry' + (e.direction === 'in' ? ' in' : '') + '">' +
         (eLocked
@@ -18478,13 +18482,14 @@
               (ui.armed === 'ledger-unreconcile:' + e.id ? 'Tap again to un-reconcile' : 'Un-reconcile') + '</button>'
           : (ePeriod
             ? '<span class="pill navy" title="Dated on or before ' + esc(fmtDate(state.book.reconciledThrough)) +
-                ', which is already reconciled: its amount, date and direction can’t be changed">reconciled period</span>'
+                ', which is already reconciled: it can’t be removed, and its amount, date and direction can’t be changed">reconciled period</span>'
             : '') +
             '<label class="perscout"><input type="checkbox" data-ch="led-rec" data-id="' + e.id + '"' + (e.reconciled ? ' checked' : '') + '> reconciled</label>') +
         '<button type="button" class="exp-toggle lmore" data-act="ledger-toggle" data-id="' + e.id + '" aria-expanded="' + open + '">' +
           '<span class="chev">' + (open ? '▾' : '▸') + '</span> Detail</button>' +
-        // M10 — a reconciled entry can't be deleted from under its statement (del-ledger says so).
-        (e.reconciled ? '' : tinyDangerBtn('del-ledger:' + e.id, 'Remove this entry')) +
+        // M10 — a reconciled entry can't be deleted from under its statement (del-ledger says so);
+        // since the security review of C2 (#2), nor can any locked one.
+        (eLocked ? '' : tinyDangerBtn('del-ledger:' + e.id, 'Remove this entry')) +
         (open
           ? '<div class="ldetail">' +
               '<select data-ch="led-method" data-id="' + e.id + '" aria-label="Method">' + methodSelectOptions(e.method) + '</select>' +
@@ -27445,8 +27450,15 @@
       state.ledger.forEach(function (e, i) { if (e.id === dlId) dlIx = i; });
       if (dlIx === -1) return;
       // M10 — nor can a reconciled entry be deleted from under the statement it was ticked on.
-      if (state.ledger[dlIx].reconciled) { showToast('That entry is reconciled. Un-reconcile it first.'); return; }
+      // Security review of C2 (#2) — nor one dated in the reconciled period, ticked or not
+      // (ledgerLocked): deleting it would change a month already checked against the bank, and
+      // was the way round the lock on its amount. Its ✕ is not shown; this says why if reached.
+      // Removing a locked row becomes a void in C3.
+      var dlWhy = ledgerLockedWhy(state.ledger[dlIx], state.book);
+      if (dlWhy) { showToast(dlWhy); return; }
       var dlGone = state.ledger.splice(dlIx, 1)[0];
+      // Logged, with what the money was, so the log still says what left the book.
+      logLedger('delete', dlGone.id, { f: { amountCents: [dlGone.amountCents, null], date: [dlGone.date, null], direction: [dlGone.direction, null] } });
       // ⚠ NOTHING SPECIAL FOR A MAKE-UP PAYMENT, and that is the point (owner report, 2026-09-04:
       // "even after clearing the ledger items, the ranking bar and text for that scout does not
       // reset"). The tier credit such an entry buys is DERIVED from the entry — see
@@ -27456,6 +27468,7 @@
       deleteWithUndo(dlGone.description || 'entry', function () {
         state.ledger.splice(Math.min(dlIx, state.ledger.length), 0, dlGone);
         markGone('ledger', [dlGone], true);
+        logLedger('add', dlGone.id, { why: 'Put back by Undo after it was deleted.' });
       });
       return;
     }
@@ -27623,17 +27636,30 @@
       // a family handed over money, and nothing that says that should happen on a single tap.
       // Same arm() the deletions use, keyed on the act itself so both renderers of this button can
       // show the confirm state without inventing a second key.
+      // Security review of C2 (minor) — it is dated today, and today can be inside the period
+      // already reconciled (Reconcile's lock takes the statement date, or today): the first tap
+      // then says so, as the add form does, and the second saves it, logged as warned.
+      var mkBack = ledgerDateReconciled(todayISO(), state.book);
+      if (mkBack && ui.armed !== act) {
+        showToast('Today is inside the period already reconciled (through ' + fmtDate(state.book.reconciledThrough) +
+          '). This payment will be dated today, and once saved its amount, date and direction can’t be changed here. ' +
+          'Tap again to record it anyway.', { duration: 8000 });
+      }
       arm(act, function () {
         // ONE write, and it is the money. The tier credit is derived from this entry by
         // tierMakeupMap(), so there is nothing else to keep in step with it: delete the entry and
         // the credit goes, undo the delete and it comes back.
+        var mkId = uid();
         state.ledger.push({
-          id: uid(), date: todayISO(),
+          id: mkId, date: todayISO(),
           description: 'Made up the difference to ' + (mkT.name || 'a reward tier') + ' — ' + (mkS.name || 'scout'),
           amountCents: mkRow.makeup, direction: 'in', lineId: '', method: '', ref: '',
           source: 'family', donor: '', scoutId: mkS.id, tierMakeup: mkT.id, reconciled: false,
           enteredBy: ledgerActor(), enteredByUid: ledgerActorUid(), enteredAt: new Date().toISOString()   // E2
         });
+        // Security review of C2 (minor) — written by this screen, not the add form, so logged.
+        logLedger('add', mkId, { why: 'A reward-tier make-up payment, recorded from the tier board' +
+          (mkBack ? '; dated inside the period reconciled through ' + state.book.reconciledThrough + ', saved after the warning.' : '.') });
         showToast(fmt(mkRow.makeup) + ' recorded — ' + (mkS.name || 'they') + ' now counts as reaching ' +
           (mkT.name || 'the tier') + '. Deleting the ledger entry undoes it.');
         commit();
@@ -27651,8 +27677,9 @@
       var rbS = getScout(rbP[2]);
       var rbCents = parseInt(rbP[3], 10);
       if (!rbLine || !rbS || !isFinite(rbCents) || rbCents <= 0) return;
+      var rbId = uid(), rbBack = ledgerDateReconciled(todayISO(), state.book);
       state.ledger.push({
-        id: uid(), date: todayISO(),
+        id: rbId, date: todayISO(),
         description: 'Reimbursed ' + (rbS.name || 'a scout') + ' \u2014 ' + (rbLine.name || 'council fee') +
           ' (reward tier)',
         amountCents: rbCents, direction: 'out', lineId: rbLine.id, method: '', ref: '',
@@ -27661,7 +27688,14 @@
         reimbursement: true,
         enteredBy: ledgerActor(), enteredByUid: ledgerActorUid(), enteredAt: new Date().toISOString()   // E2
       });
-      showToast(fmt(rbCents) + ' recorded \u2014 add the council receipt number to the entry in the ledger.');
+      // Security review of C2 (minor) \u2014 written by this screen, not the add form, so logged. One
+      // tap, with no step to warn in: dated inside the period already reconciled (today can be),
+      // it is saved, and the notice says so in the add form's words.
+      logLedger('add', rbId, { why: 'A reward-tier reimbursement, recorded from the tier board' +
+        (rbBack ? '; dated inside the period reconciled through ' + state.book.reconciledThrough + ', saved with a notice.' : '.') });
+      showToast(fmt(rbCents) + ' recorded \u2014 add the council receipt number to the entry in the ledger.' +
+        (rbBack ? ' It is dated today, inside the period already reconciled (through ' + fmtDate(state.book.reconciledThrough) +
+          '), so its amount, date and direction can\u2019t be changed here.' : ''), rbBack ? { duration: 8000 } : undefined);
       commit(); return;
     }
     if (act.indexOf('tier-unmakeup:') === 0) {
@@ -28020,8 +28054,13 @@
     if (act.indexOf('del-scout:') === 0) {
       arm(act, function () {
         var id = act.split(':')[1];
+        // Security review of C2 (minor) — dropScout unlinks the scout's ledger entries (the money
+        // stays); a label change on each, so logged here, on the deleting device, as ONE
+        // 'reassign'. Not in dropScout: a merge runs it too, for another device's delete.
+        var dsRows = state.ledger.filter(function (e) { return e.scoutId === id; }).map(function (e) { return e.id; });
         markGone('scouts', [id]);   // LIVE STOPGAP — so no stale copy brings them back
         dropScout(id);
+        if (dsRows.length) logLedger('reassign', dsRows[0], { f: { scoutId: [id, ''] }, rows: dsRows.slice(1) });
         commit();
       });
       return;

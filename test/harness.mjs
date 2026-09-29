@@ -10148,7 +10148,7 @@ test('M10: a reconciled entry is read-only until it is deliberately un-reconcile
   ok(un && /arm\(act, function \(\) \{/.test(un[0]) && /urE\.reconciled = false;/.test(un[0]),
     'there is no two-tap un-reconcile');
   const del = /if \(act\.indexOf\('del-ledger:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/if \(state\.ledger\[dlIx\]\.reconciled\)/.test(del), 'a reconciled entry can be deleted');
+  ok(/var dlWhy = ledgerLockedWhy\(state\.ledger\[dlIx\], state\.book\);\s*if \(dlWhy\) \{ showToast\(dlWhy\); return; \}/.test(del), 'a reconciled entry can be deleted');
 });
 
 test('M10: forgiving needs a reason and a name, and undoing it leaves a trace', () => {
@@ -17933,8 +17933,8 @@ test('C1: ledgerEvent builds one log entry, and nothing else', () => {
     { id: 'lg-mfo2kz3a1b2c3d', at: '2026-09-29T12:00:00.000Z', by: 'Pat', byUid: 'u1', dev: 'd1', row: 'l1', op: 'void', why: 'entered twice' }, 'a void, empty parts left out');
   eq(ev('reverse', 'l1', who, { rows: ['rv-l1'] }).rows, ['rv-l1'], 'a reversal names its row');
   eq(ev('tick', 'l1', { id: 'x', by: 'pat@example.com' }), { id: 'lg-x', at: '', by: 'a signed-in leader', byUid: '', dev: '', row: 'l1', op: 'tick' }, 'never an email');
-  eq([ctx.ledgerEvent('delete', 'l1', who), ctx.ledgerEvent('edit', '', who), ctx.ledgerEvent('edit', 7, who)], [null, null, null], 'an unknown op, or no row');
-  eq([...ctx.LEDGER_OPS], ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening'], 'the ops');
+  eq([ctx.ledgerEvent('someday', 'l1', who), ctx.ledgerEvent('edit', '', who), ctx.ledgerEvent('edit', 7, who)], [null, null, null], 'an unknown op, or no row');
+  eq([...ctx.LEDGER_OPS], ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete'], 'the ops');
   // The rows it names are copied, not shared.
   const rows = ['a'];
   const e2 = ctx.ledgerEvent('correct', 'l1', who, { rows });
@@ -18172,6 +18172,7 @@ function c2Page(o) {
       (function () {\n${C2_CHANGE}\n})();
     }
     function act(act, el) { el = el || { dataset: {} }; (function () {\n${C2_ACT}\n})(); }
+    ${o.more || ''}
     function row(id) { return state.ledger.find(function (e) { return e.id === id; }); }
     function log() { return state.ledgerLog; }`, ctx);
   const get = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, ctx)));
@@ -18414,6 +18415,89 @@ test('C2 review (minor): what a merge did to a row is said once a session, and l
   eq(JSON.parse(JSON.stringify(vm.runInContext('[sync.fatesNote, sync.fatesSeen]', ctx))), ['', {}], 'syncStop kept the note');
   ctx.noteReconciledFates({ kept: [l1], lost: [] });
   ok(/“Dues”/.test(vm.runInContext('sync.fatesNote', ctx)), 'after syncStop a row is not said again');
+});
+
+// The page's own del-ledger, tier-makeup, tier-reimburse and del-scout blocks, run as act2() on a
+// c2Page, with the screens around them stubbed.
+const C2R_ACT = [
+  c2Block(/    if \(act\.indexOf\('del-ledger:'\) === 0\) \{[\s\S]*?\n    \}/, 'del-ledger'),
+  c2Block(/    if \(act\.indexOf\('tier-makeup:'\) === 0\) \{[\s\S]*?\n    \}/, 'tier-makeup'),
+  c2Block(/    if \(act\.indexOf\('tier-reimburse:'\) === 0\) \{[\s\S]*?\n    \}/, 'tier-reimburse'),
+  c2Block(/    if \(act\.indexOf\('del-scout:'\) === 0\) \{[\s\S]*?\n    \}/, 'del-scout')].join('\n');
+const C2R_MORE = `
+  var undo = null, marks = [];
+  function markGone(log, rows, back) { marks.push([log, rows.map(function (x) { return typeof x === 'string' ? x : x.id; }), !!back]); }
+  function deleteWithUndo(label, restore) { undo = restore; commit(); }
+  function getBudgetLine(id) { return { id: id, name: 'Council fee' }; }
+  function getScout(id) { return { id: id, name: 'Ada' }; }
+  function tierShortfallRows() { return [{ scout: { id: 's1' }, makeup: 1500 }]; }
+  function dropScout(id) { state.ledger.forEach(function (e) { if (e.scoutId === id) e.scoutId = ''; }); }
+  function act2(act, el) { el = el || { dataset: {} }; (function () {\n${C2R_ACT}\n})(); }`;
+const c2rPage = (o) => c2Page(Object.assign({ more: C2R_MORE }, o || {}));
+
+test('C2 review #2: a locked entry can’t be deleted, not even unticked in the reconciled period; an open one’s delete is logged', () => {
+  const p = c2rPage();
+  // p1: dated in the period, not ticked. r1: ticked, after the period. q1: both.
+  for (const id of ['p1', 'r1', 'q1']) {
+    p.run(`toasts = []; commits = 0; act2('del-ledger:${id}')`);
+    eq([p.get(`!!row('${id}')`), p.get('log().length'), p.get('commits'), p.get('marks.length')], [true, 0, 0, 0], id + ' was deleted');
+    eq(p.get('toasts'), [p.get(`ledgerLockedWhy(row('${id}'), state.book)`)], id + ': the reason');
+  }
+  ok(/^That entry is dated .*, inside the period already reconciled \(through .*\), so it can’t be changed\.$/.test(p.get('toasts[0]')), p.get('toasts[0]'));
+  // u1 is open: deleted, marked, and logged with what the money was.
+  p.run("act2('del-ledger:u1')");
+  eq([p.get("!!row('u1')"), p.get('marks'), p.get('commits')], [false, [['ledger', ['u1'], false]], 1], 'the open row');
+  const ev = p.get('log()[0]');
+  eq([ev.op, ev.row, ev.f, ev.by, ev.dev], ['delete', 'u1', { amountCents: [8400, null], date: ['2026-09-10', null], direction: ['out', null] }, 'Pat Treasurer', 'dev1'],
+    'the delete event');
+  // Undo puts it back, marked back, and the log says so (nothing is taken out of the log).
+  p.run('undo()');
+  eq([p.get("!!row('u1')"), p.get('marks[1]'), p.get('log().map(function (e) { return [e.op, e.row, e.why || \'\']; })')],
+    [true, ['ledger', ['u1'], true], [['delete', 'u1', ''], ['add', 'u1', 'Put back by Undo after it was deleted.']]], 'the Undo');
+  // The Entries list offers no ✕ on a locked row.
+  ok(/\(eLocked \? '' : tinyDangerBtn\('del-ledger:' \+ e\.id, 'Remove this entry'\)\)/.test(slice('renderLedgerEntries')), 'a locked row shows its ✕');
+  ok(/\?\s*'<span class="pill navy" title="Dated on or before ' \+ esc\(fmtDate\(state\.book\.reconciledThrough\)\) \+\s*', which is already reconciled: it can’t be removed, and its amount, date and direction can’t be changed">reconciled period<\/span>'/
+    .test(slice('renderLedgerEntries')), 'the reconciled-period pill does not say why there is no ✕');
+});
+
+test('C2 review (minor): a tier make-up or reimbursement is logged as an add, and one dated in the reconciled period is warned about', () => {
+  // Today (Oct 15) is after the period: logged, no warning, make-up still two taps.
+  const p = c2rPage();
+  p.run("toasts = []; act2('tier-makeup:t1:s1')");
+  eq([p.get('state.ledger.length'), p.get('toasts'), p.get('ui.armed')], [6, [], 'tier-makeup:t1:s1'], 'the first tap');
+  p.run("act2('tier-makeup:t1:s1'); act2('tier-reimburse:x1:s1:2500')");
+  const log = p.get('log()'), rows = p.get('state.ledger.slice(6)');
+  eq(log.map((e) => [e.op, e.row, e.why]), [
+    ['add', rows[0].id, 'A reward-tier make-up payment, recorded from the tier board.'],
+    ['add', rows[1].id, 'A reward-tier reimbursement, recorded from the tier board.']], 'the adds');
+  eq([rows[0].tierMakeup, rows[0].amountCents, rows[1].reimbursement, rows[1].amountCents], ['t1', 1500, true, 2500], 'the rows');
+  eq(p.get('toasts.length'), 2, 'a warning after the period');
+  ok(!/reconciled/.test(p.get('toasts.join(" ")')), 'a notice after the period');
+  // Reconciled through Oct 31: today is inside it.
+  const q = c2rPage({ book: { reconciledThrough: '2026-10-31' } });
+  q.run("toasts = []; act2('tier-makeup:t1:s1')");
+  eq([q.get('state.ledger.length'), q.get('ui.armed')], [6, 'tier-makeup:t1:s1'], 'the warned first tap saved it');
+  ok(/^Today is inside the period already reconciled \(through .*\)\. This payment will be dated today, .*Tap again to record it anyway\.$/.test(q.get('toasts[0]')),
+    'the make-up’s warning: ' + q.get('toasts[0]'));
+  q.run("act2('tier-makeup:t1:s1'); toasts = []; act2('tier-reimburse:x1:s1:2500')");
+  eq(q.get('log().map(function (e) { return e.why; })'), [
+    'A reward-tier make-up payment, recorded from the tier board; dated inside the period reconciled through 2026-10-31, saved after the warning.',
+    'A reward-tier reimbursement, recorded from the tier board; dated inside the period reconciled through 2026-10-31, saved with a notice.'], 'the warned adds');
+  ok(/It is dated today, inside the period already reconciled \(through .*\), so its amount, date and direction can’t be changed here\.$/.test(q.get('toasts[0]')),
+    'the reimbursement’s notice: ' + q.get('toasts[0]'));
+});
+
+test('C2 review (minor): deleting a scout logs their ledger entries’ unlinking as one reassign, on the deleting device only', () => {
+  const p = c2rPage();
+  p.run("row('u1').scoutId = 's1'; act2('del-scout:s1'); act2('del-scout:s1')");
+  eq(p.get('state.ledger.filter(function (e) { return e.scoutId === "s1"; }).length'), 0, 'the rows were not unlinked');
+  const ev = p.get('log()');
+  eq(ev.map((e) => [e.op, e.row, e.f, e.rows]), [['reassign', 'u1', { scoutId: ['s1', ''] }, ['r1', 'm1']]], 'the reassign');
+  // A scout with no ledger entries: nothing logged.
+  p.run("act2('del-scout:s9'); act2('del-scout:s9')");
+  eq(p.get('log().length'), 1, 'a scout with no entries was logged');
+  // The merge's dropScout (another device's delete) logs nothing: the event is the deleting device's.
+  ok(!/logLedger/.test(slice('dropScout')) && !/logLedger\('reassign'/.test(slice('mergeRemoteAppendOnly')), 'the merge logs the unlinking too');
 });
 
 /* ---------------- report ---------------- */
