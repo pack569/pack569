@@ -1002,7 +1002,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // Security review — a stored ledger stamp that is an email is neutralised on load.
   'ledgerStampClean',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
-  'parseLegacyTime', 'migrateTierMakeUp', 'normalizeState', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
+  'parseLegacyTime', 'migrateTierMakeUp', 'freshGone', 'normalizeState', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'entrySignedCents',
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
@@ -1178,7 +1178,7 @@ test('a divergence merge never drops a ledger entry', () => {
   // Popcorn sales are protected there; transactions must be too.
   const fn = /function mergeRemoteAppendOnly\(d\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'mergeRemoteAppendOnly() not found');
-  ok(/unionById\(state\.ledger, remote\.ledger\)/.test(fn[0]),
+  ok(/unionById\(state\.ledger, remote\.ledger, 'ledger'\)/.test(fn[0]),
     'ledger entries are not unioned on merge — one device could lose another device\'s transactions');
 });
 
@@ -8710,7 +8710,7 @@ test('Firestore: an editor’s copy waiting on a choice is dropped for "view-onl
       conflict: null, dirty: false, clobber: false, pushTimer: null, packMissing: false };
     ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'feedForRole', 'recomputeMyRole',
        'stopLocalWrites', 'stopDocFeed', 'subscribeDoc', 'applyRoleSubscription', 'applyMembersSubscription', 'isStateEmpty',
-       'stateFingerprint', 'mergeRemoteAppendOnly', 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush'].map(decl).join('\n')}
+       'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', 'GONE_KEEP_MS', 'GONE_MAX', 'pruneGone', 'markGone', 'teBatchOf', 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush'].map(decl).join('\n')}
     subscribeDoc(1);
     applyMembersSubscription(1);
     function roster(role, md) {
@@ -8761,7 +8761,7 @@ test('Firestore: the server confirming a cached roster is heard, and a viewer’
       conflict: null, dirty: false, clobber: false, pushTimer: null, packMissing: false };
     ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'feedForRole', 'recomputeMyRole',
        'stopLocalWrites', 'stopDocFeed', 'subscribeDoc', 'applyRoleSubscription', 'applyMembersSubscription', 'isStateEmpty',
-       'stateFingerprint', 'mergeRemoteAppendOnly', 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush'].map(decl).join('\n')}
+       'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', 'GONE_KEEP_MS', 'GONE_MAX', 'pruneGone', 'markGone', 'teBatchOf', 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush'].map(decl).join('\n')}
     subscribeDoc(1);
     applyMembersSubscription(1);
     function roster(role, md) {
@@ -8916,6 +8916,7 @@ test('a push reads, merges and writes in one retried step, and the rev always cl
         dirty: true, mode: 'online', remoteRec: ${JSON.stringify(over.remotes[0])} };
       ${slice('packLinked')}
       ${slice('syncPush')}
+      ${decl('seasonMoved')}
       syncPush();`, ctx);
     return ctx;
   };
@@ -8952,7 +8953,7 @@ test('Firestore: a save before the pack record’s first answer never writes ove
         dirty: true, mode: 'online', notice: '', firstSnap: ${o.firstSnap}, conflict: null, pushTimer: null,
         remoteRec: ${o.firstSnap ? 'null' : JSON.stringify(o.remote || null)} };   // once answered, the feed brought it
       ${o.remote ? `reads['packs/P'] = ${JSON.stringify(o.remote)};` : ''}
-      ${['packLinked', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'adoptRemote', 'onRemoteSnap', 'syncPush'].map(decl).join('\n')}
+      ${['packLinked', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', 'GONE_KEEP_MS', 'GONE_MAX', 'pruneGone', 'markGone', 'teBatchOf', 'adoptRemote', 'onRemoteSnap', 'syncPush'].map(decl).join('\n')}
       syncPush();`);
     return JSON.parse(JSON.stringify(vm.runInContext(`({ sets: txSets.map(function (s) { return s[1].rev; }),
       overlay: ui.overlay && ui.overlay.kind, conflict: sync.conflict && sync.conflict.rev, firstSnap: sync.firstSnap,
@@ -8991,7 +8992,7 @@ function fsFeedCtx(local, extra) {
     var sync = { backend: firestoreBackend, pack: firestoreBackend.open('P'), session: 1, deviceId: 'dev1', clobber: false,
       dirty: false, mode: 'connecting', notice: '', firstSnap: true, remoteRec: null, conflict: null, pushTimer: null,
       unsub: null, feed: null, packMissing: false };
-    ${['packLinked', 'subscribeDoc', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'adoptRemote', 'onRemoteSnap',
+    ${['packLinked', 'subscribeDoc', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', 'GONE_KEEP_MS', 'GONE_MAX', 'pruneGone', 'markGone', 'teBatchOf', 'adoptRemote', 'onRemoteSnap',
        'scheduleSyncPush', 'syncPush'].map(decl).join('\n')}
     ${extra || ''}
     subscribeDoc(1);`);
@@ -9252,7 +9253,7 @@ test('once single-pack mode halts, nothing can push the pack record, even with t
     function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
     var state = { rev: 1 };
     var sync = { backend: fakeBe, pack: { docId: 'P' }, session: 1, deviceId: 'd', mode: 'online' };
-    ${['packLinked', 'haltFixedSync', 'scheduleSyncPush', 'syncPush'].map(slice).join('\n')}`, ctx);
+    ${['packLinked', 'haltFixedSync', 'scheduleSyncPush', 'syncPush', 'seasonMoved'].map(slice).join('\n')}`, ctx);
   vm.runInContext('scheduleSyncPush()', ctx);
   eq(vm.runInContext('timers.length', ctx), 1, 'a linked device cannot schedule a push (the test proves nothing)');
   vm.runInContext('haltFixedSync(); timers = []; scheduleSyncPush(); syncPush();', ctx);
@@ -9275,7 +9276,7 @@ test('every guard in front of the pack feed, the parent feed and a push holds on
       function fixedFeedBlocked() { return feedBlocked; } function fixedSyncBlocked() { return syncBlocked; }
       function accountsInForce() { return inForce; } function canEdit() { return edit; }
       var sync = { backend: fakeBe, pack: { docId: 'P' }, docId: 'P', session: 1, deviceId: 'd', mode: 'online', parentUnsub: null };
-      ${['cloudReady', 'packLinked', 'haltFixedSync', 'subscribeDoc', 'subscribeParentView', 'syncPush'].map(slice).join('\n')}`, c);
+      ${['cloudReady', 'packLinked', 'haltFixedSync', 'subscribeDoc', 'subscribeParentView', 'syncPush', 'seasonMoved'].map(slice).join('\n')}`, c);
     return c;
   };
   const got = (c, js) => { vm.runInContext(js, c); return vm.runInContext('[!!subs.pack, !!subs.view, pushed]', c); };
@@ -15385,7 +15386,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'ensureMyMemberDoc', 'joinCreateMemberDoc', 'signOutGoogle', 'accountsToast', 'MEMBER_ROLES', 'setMemberRole', 'removeMember',
   'createInvite', 'revokeInvite', 'joinOpen', 'standingsEnabled', 'cleanContactLine', 'MOVE_KIND', 'MOVE_UID_RE', 'MOVE_ROLES',
   'isPackOwner', 'canDownloadMoveFile', 'canImportPack', 'moveFileReady', 'moveFileProblem', 'moveTime', 'buildMoveFile', 'downloadMoveFile', 'moveImportBody', 'importMoveFile',
-  'scheduleParentViewRefresh', 'writeParentView', 'scheduleSyncPush', 'holdPushes', 'mergeRemoteAppendOnly', 'syncPush',
+  'scheduleParentViewRefresh', 'writeParentView', 'scheduleSyncPush', 'holdPushes', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', 'GONE_KEEP_MS', 'GONE_MAX', 'pruneGone', 'markGone', 'teBatchOf', 'syncPush',
   'isStateEmpty', 'stateFingerprint', 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'keepLocalCopy', 'SERVER_NOTICES', 'serverNotice'];
 const CLIENT_SRC = CLIENT_FNS.map(decl).join('\n');
 
@@ -16130,7 +16131,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
       var sync = { backend: fakeBe, pack: { docId: 'P' }, session: 1, deviceId: 'd', clobber: false, dirty: true, mode: 'online',
         notice: '${over.notice || ''}', firstSnap: false,
         remoteRec: ${JSON.stringify(over.heard === undefined ? { rev: over.localRev, device: 'x', json: '{}' } : over.heard)} };
-      ${['packLinked', 'syncPush'].map(decl).join('\n')}
+      ${['packLinked', 'syncPush', 'seasonMoved'].map(decl).join('\n')}
       syncPush();`, ctx);
     const out = vm.runInContext('[records.length ? records[0].rev : null, merged, state.rev]', ctx);
     if (over.answers) out.push(JSON.parse(JSON.stringify(vm.runInContext('[firstAnswers, sync.dirty, sync.remoteRec && sync.remoteRec.rev]', ctx))));
@@ -16570,6 +16571,359 @@ test('api client: the move file carries what the import takes, for this pack onl
   eq(offer('firestore', { user: { uid: 'other' } }), [false, false], 'another admin on Firestore');
   eq(offer('api', { user: { uid: 'other' } }), [false, false], 'another admin on the server');
   eq(offer('firestore', { myRole: 'editor', ownerUid: 'own' }), [false, false], 'a demoted owner');
+});
+
+/* ================================================================
+   LIVE STOPGAP (2026-09-29) — deletions survive the sync merge. mergeRemoteAppendOnly unions
+   the four money logs by id; state.gone is what stops a device still holding a deleted row
+   (or the Trail's End rows a re-import replaced, or last season) from bringing it back.
+   ================================================================ */
+const GONE_SEED = {
+  version: 1, packName: 'Test Pack',
+  scouts: [{ id: 's1', name: 'Ada', den: 'Wolf' }, { id: 's2', name: 'Bo', den: 'Bear' }],
+  budget: { programYear: 2026, activities: [], expenses: [] },
+  entries: [
+    { id: 'x1', scoutId: 's1', kind: 'wagon', date: '2026-09-20', salesCents: 1000, donationsCents: 0 },
+    { id: 'x2', scoutId: 's2', kind: 'wagon', date: '2026-09-20', salesCents: 500, donationsCents: 0 },
+    // A Trail's End import from before batches: random ids.
+    { id: 'old1', scoutId: 's1', kind: 'online', date: '2026-09-21', salesCents: 4000, donationsCents: 0, source: 'te-import' },
+    { id: 'old2', scoutId: 's2', kind: 'online', date: '2026-09-21', salesCents: 3000, donationsCents: 0, source: 'te-import' }
+  ],
+  ledger: [{ id: 'l1', date: '2026-09-01', description: 'Dues', amountCents: 2500, direction: 'in' }],
+  fundraisers: [{ id: 'f1', name: 'Raffle', sales: [{ id: 'fs1', scoutId: 's1', cents: 700 }] }],
+  inventory: { products: [{ id: 'p1', name: 'Caramel', cases: 1, perCase: 8, unitPriceCents: 1500 }],
+    distributions: [{ id: 'd1', productId: 'p1', target: { kind: 'scout', id: 's1' }, containers: 3 }] }
+};
+// The report every import here reads: Ada sold $50 online, Bo $20. teMatchScouts is stubbed to it.
+const GONE_TE_ROWS = [{ scoutId: 's1', name: 'Ada', onlineCents: 5000, wagonCents: 0, byDate: { '2026-09-22': { onlineCents: 5000, wagonCents: 0 } } },
+  { scoutId: 's2', name: 'Bo', onlineCents: 2000, wagonCents: 0, byDate: { '2026-09-22': { onlineCents: 2000, wagonCents: 0 } } }];
+// The real importer and scout totals, on stubs for the preview's matching. Each device's clock
+// only moves forward, a second per reading, so a delete and its Undo are never the same ms.
+const GONE_EXTRA = (dev) => `
+  ${['blockShares', 'computeScoutTotals', 'teLiveEntriesFor', 'teCommitSalesLive'].map(slice).join('\n')}
+  var batchSeq = 0;
+  uid = function () { batchSeq += 1; return '${dev}b' + batchSeq; };
+  Date.now = (function () { var t = 1790000000000; return function () { t += 1000; return t; }; })();
+  todayISO = function () { return '2026-09-29'; };
+  function teMatchScouts() { return { matched: ${JSON.stringify(GONE_TE_ROWS)} }; }
+  function teAddMissingScouts() {}
+  function commit() { save(); scheduleSyncPush(); }
+  function reimport() { ui.overlay = { report: 'sales', archive: { scouts: [] } }; teCommitSalesLive(); }
+  function totals() { var t = computeScoutTotals(), o = {}; Object.keys(t).forEach(function (k) { o[k] = t[k].sales; }); return o; }
+  function ids(a) { return a.map(function (x) { return x.id; }); }`;
+function goneSeedNorm() {
+  const ctx = sandbox(NORMALIZE_FNS);
+  return JSON.parse(JSON.stringify(ctx.normalizeState(JSON.parse(JSON.stringify(GONE_SEED)))));
+}
+// Two devices on the real firestoreBackend and the fake SDK, sharing one pack record, each on
+// the page's real normalizeState. Both have heard rev 3 (the seed) and hold it unchanged.
+function fsGonePair() {
+  const seed = goneSeedNorm();
+  let server = { rev: 3, device: 'd0', updatedAt: 'TS', json: JSON.stringify(Object.assign({}, seed, { rev: 3 })) };
+  const dev = (name) => {
+    const ctx = fsFeedCtx(Object.assign({}, seed, { rev: 3 }), NORMALIZE_FNS.map(slice).join('\n') + decl('keepLocalCopy') + GONE_EXTRA(name) + `
+      sync.deviceId = '${name}';
+      fakeFirestore.runTransaction = function (db, body) {
+        return body({ get: function (ref) { return now(snapOf(ref.path)); },
+          set: function (ref, d) { txSets.push([ref.path, d]); reads[ref.path] = JSON.parse(JSON.stringify(d)); } });
+      };`);
+    const d = {
+      ctx,
+      run: (js) => vm.runInContext(js, ctx),
+      get: (js) => JSON.parse(JSON.stringify(vm.runInContext(js, ctx))),
+      // The pack feed delivers what the server holds now.
+      hear: () => { vm.runInContext(`reads['packs/P'] = ${JSON.stringify(server)}; watches[0].next(snapOf('packs/P', {}));`, ctx); },
+      // The 800 ms push runs against what the server holds now.
+      push: () => {
+        vm.runInContext(`reads['packs/P'] = ${JSON.stringify(server)}; runTimers();`, ctx);
+        server = JSON.parse(JSON.stringify(vm.runInContext("reads['packs/P']", ctx)));
+      }
+    };
+    d.hear();
+    eq(d.get('[sync.firstSnap, sync.dirty, state.rev]'), [false, false, 3], `${name}: did not start on the shared copy`);
+    return d;
+  };
+  return { a: dev('devA'), b: dev('devB'), server: () => JSON.parse(server.json), rev: () => server.rev };
+}
+const eIds = (st) => st.entries.map((e) => e.id).sort();
+const B1 = "state.entries.push({ id: 'b1', scoutId: 's2', kind: 'wagon', date: '', salesCents: 100, donationsCents: 0 }); commit()";
+
+test('stopgap, Firestore: a row deleted on one device stays gone when another saves over it with the row still there', () => {
+  // All four logs. B has an unsaved edit and still holds every row; A deletes one of each.
+  const { a, b, server, rev } = fsGonePair();
+  b.run(B1);
+  a.run(`markGone('entries', state.entries.splice(0, 1));
+    markGone('ledger', state.ledger.splice(0, 1));
+    markGone('distributions', state.inventory.distributions.splice(0, 1));
+    markGone('sales', state.fundraisers[0].sales.splice(0, 1));
+    commit();`);
+  a.push();
+  eq(rev(), 4, 'A did not save');
+  // B hears A's save while dirty (flagged), then saves.
+  b.hear();
+  eq(b.get('sync.clobber'), true, 'B was not flagged');
+  b.push();
+  const s = server();
+  eq([rev(), eIds(s), s.ledger.length, s.inventory.distributions.length, s.fundraisers[0].sales.length],
+    [5, ['b1', 'old1', 'old2', 'x2'], 0, 0, 0], 'a deleted row came back');
+  eq(b.get('[ids(state.entries).sort(), state.ledger.length, state.inventory.distributions.length, state.fundraisers[0].sales.length]'),
+    [['b1', 'old1', 'old2', 'x2'], 0, 0, 0], 'B still shows the deleted rows');
+  eq([Object.keys(s.gone.entries), Object.keys(s.gone.ledger), Object.keys(s.gone.distributions), Object.keys(s.gone.sales)],
+    [['x1'], ['l1'], ['d1'], ['fs1']], 'the deletion marks did not travel');
+  // A takes B's save, and nothing A deleted is back.
+  a.hear();
+  eq(a.get('ids(state.entries).sort()'), ['b1', 'old1', 'old2', 'x2'], 'A after B’s save');
+  // The race: B's push reads A's save before B's feed has delivered it. Same answer.
+  const p2 = fsGonePair();
+  p2.b.run(B1);
+  p2.a.run("markGone('entries', state.entries.splice(0, 1)); commit()");
+  p2.a.push();
+  p2.b.push();
+  eq([p2.rev(), eIds(p2.server())], [5, ['b1', 'old1', 'old2', 'x2']], 'a deleted row came back (push read before the feed)');
+});
+
+test('stopgap, Firestore: a device that deleted a row keeps it deleted when it saves over a copy that still has it', () => {
+  // The reverse: A deletes x1 but has not saved; B saves first (x1 still in it); A saves over it.
+  const { a, b, server, rev } = fsGonePair();
+  a.run("markGone('entries', state.entries.splice(0, 1)); commit()");
+  b.run("state.ledger.push({ id: 'lb', date: '2026-09-02', description: 'B', amountCents: 5, direction: 'in' }); commit()");
+  b.push();
+  a.hear();
+  a.push();
+  eq([rev(), eIds(server()), server().ledger.map((l) => l.id).sort()], [5, ['old1', 'old2', 'x2'], ['l1', 'lb']],
+    'the deleting device lost its deletion (or B’s entry)');
+});
+
+test('stopgap, Firestore: Undo after a delete puts the row back on every device', () => {
+  const { a, b, server } = fsGonePair();
+  a.run("var gone1 = state.entries.splice(0, 1); markGone('entries', gone1); commit()");
+  a.push();
+  b.hear();                                   // B takes the delete (nothing unsaved there)
+  eq(b.get('ids(state.entries).sort()'), ['old1', 'old2', 'x2'], 'B did not take the delete');
+  b.run(B1);
+  // A's Undo, as deleteWithUndo's restore does it: the row back where it was, marked back.
+  a.run("state.entries.splice(0, 0, gone1[0]); markGone('entries', gone1, true); commit()");
+  a.push();
+  b.hear();
+  b.push();                                   // B holds the delete mark; A's later Undo wins
+  eq(eIds(server()), ['b1', 'old1', 'old2', 'x1', 'x2'], 'the undone row did not come back');
+  ok(server().gone.entries.x1 < 0, 'the Undo mark was lost');
+  a.hear();
+  eq(a.get('ids(state.entries).sort()'), ['b1', 'old1', 'old2', 'x1', 'x2'], 'A after B’s save');
+});
+
+test('stopgap, Firestore: a Trail’s End re-import is never counted twice by a device still holding the old import', () => {
+  const single = { s1: 5000 + 1000, s2: 2000 + 500 };   // one import, plus the typed-in wagon sales
+  const { a, b, server } = fsGonePair();
+  b.run(B1);
+  a.run('reimport()');
+  eq(a.get('totals()'), single, 'the import itself');
+  a.push();
+  b.hear();
+  b.push();
+  eq(server().entries.filter((e) => e.source === 'te-import').map((e) => e.id), ['te-devAb1-0', 'te-devAb1-1'], 'the imported rows');
+  eq(b.get('totals()'), { s1: single.s1, s2: single.s2 + 100 }, 'B counts the import twice');
+  a.hear();
+  eq(a.get('totals()'), { s1: single.s1, s2: single.s2 + 100 }, 'A after B’s save');
+  // Again, from a batch this time: B takes the first re-import and edits; A imports again.
+  b.run("state.entries.push({ id: 'b2', scoutId: 's1', kind: 'wagon', date: '', salesCents: 1, donationsCents: 0 }); commit()");
+  a.run('reimport()');
+  eq(Object.keys(a.get('state.gone.imports')), ['devAb1'], 'the second import was not remembered by its batch');
+  a.push();
+  b.hear();
+  b.push();
+  eq(server().entries.filter((e) => e.source === 'te-import').map((e) => e.id), ['te-devAb2-0', 'te-devAb2-1'], 'the second re-import');
+  eq(b.get('totals()'), { s1: single.s1 + 1, s2: single.s2 + 100 }, 'B counts the second import twice');
+  // Typed-in entries are never marked by an import.
+  eq(Object.keys(server().gone.entries).sort(), ['old1', 'old2'], 'an import marked a typed-in entry');
+});
+
+test('stopgap, Firestore: last season does not come back from a device that has not closed it out', () => {
+  // A closes the year out (what rolloverYear does to these fields: the year moves on, the logs
+  // and the marks are cleared). B, with an unsaved edit in last season, writes nothing, and asks.
+  const closeOut = "state.budget.programYear += 1; state.entries = []; state.ledger = []; state.inventory.distributions = []; " +
+    'state.fundraisers.forEach(function (f) { f.sales = []; }); state.gone = freshGone(); commit()';
+  const { a, b, server, rev } = fsGonePair();
+  b.run(B1);
+  a.run(closeOut);
+  a.push();
+  b.hear();
+  b.push();
+  eq([rev(), server().budget.programYear, server().entries.length], [4, 2027, 0], 'last season came back');
+  eq(b.get('[ui.overlay && ui.overlay.kind, sync.conflict && sync.conflict.rev, sync.dirty]'), ['sync-conflict', 4, true],
+    'B was not asked which copy to keep');
+  // "Use cloud copy": B takes the new season.
+  b.run('adoptRemote(ui.overlay.remote, {}); ui.overlay = null');
+  eq(b.get('[state.budget.programYear, state.entries.length, sync.dirty]'), [2027, 0, false], 'use the cloud copy');
+  // "Keep this device's copy" is the leader's call: saved once, whole — not asked again, and
+  // nothing of the new season merged into it.
+  const p = fsGonePair();
+  p.b.run(B1);
+  p.a.run(closeOut + "; state.entries.push({ id: 'new1', scoutId: 's1', kind: 'wagon', date: '', salesCents: 9, donationsCents: 0 })");
+  p.a.push();
+  p.b.push();                                  // the race: B's push reads it before its feed does
+  eq([p.rev(), p.b.get('ui.overlay && ui.overlay.kind')], [4, 'sync-conflict'], 'B (push read first) was not asked');
+  p.b.hear();                                  // the feed catches up while the choice waits
+  p.b.run('keepLocalCopy()');
+  p.b.push();
+  eq([p.rev(), p.server().budget.programYear, eIds(p.server())], [5, 2026, ['b1', 'old1', 'old2', 'x1', 'x2']], 'keeping this device’s copy');
+  eq(p.b.get('[ui.overlay, sync.conflict, sync.dirty, sync.clobber]'), [null, null, false, false], 'B after keeping its copy');
+  // Control: the same year on both sides merges as before.
+  const c = fsGonePair();
+  c.b.run(B1);
+  c.a.run("state.entries.push({ id: 'a1', scoutId: 's1', kind: 'wagon', date: '', salesCents: 1, donationsCents: 0 }); commit()");
+  c.a.push(); c.b.hear(); c.b.push();
+  eq([c.rev(), eIds(c.server())], [5, ['a1', 'b1', 'old1', 'old2', 'x1', 'x2']], 'control: an ordinary merge');
+});
+
+test('stopgap: the deletion marks are normalized, merged by the later mark, and kept small', () => {
+  const ctx = sandbox(NORMALIZE_FNS.concat(['GONE_KEEP_MS', 'GONE_MAX', 'pruneGone', 'markGone', 'teBatchOf']));
+  // Missing and malformed: an empty record of each log; junk dropped; nothing else kept.
+  const n = (g) => JSON.parse(JSON.stringify(ctx.normalizeState({ version: 1, scouts: [], gone: g }).gone));
+  const empty = { entries: {}, ledger: {}, distributions: {}, sales: {}, imports: {} };
+  eq(n(undefined), empty, 'missing');
+  eq(n([1, 2]), empty, 'an array');
+  eq(n('x'), empty, 'a string');
+  eq(n({ entries: { a: 5, b: -7, c: 0, d: 'x', e: null, f: Infinity, g: 2.6, h: 0.2 }, ledger: [1], sales: null, junk: { z: 1 } }),
+    Object.assign({}, empty, { entries: { a: 5, b: -7, g: 3 } }), 'malformed');
+  const once = ctx.normalizeState({ version: 1, scouts: [], gone: { entries: { a: 5, b: -7 }, imports: { q: 9 } } });
+  eq(JSON.stringify(ctx.normalizeState(JSON.parse(JSON.stringify(once))).gone), JSON.stringify(once.gone), 'not a fixed point');
+  ok(/gone: freshGone\(\)/.test(slice('freshState')), 'a new pack has no deletion record');
+  // Kept small: older than 60 days goes; past GONE_MAX, the oldest go.
+  vm.runInContext(`var state = { gone: freshGone() }; var DAY = 86400000, NOW = 200 * DAY; Date.now = function () { return NOW; };
+    state.gone.entries.old = NOW - 61 * DAY; state.gone.entries.back = -(NOW - 61 * DAY); state.gone.entries.recent = NOW - 59 * DAY;
+    markGone('ledger', ['l1', { id: 'l2' }, { id: '' }, null, 7]);`, ctx);
+  eq(JSON.parse(JSON.stringify(vm.runInContext('state.gone.entries', ctx))), { recent: 141 * 86400000 }, 'old marks were kept');
+  eq(Object.keys(vm.runInContext('state.gone.ledger', ctx)), ['l1', 'l2'], 'markGone took ids and rows');
+  vm.runInContext(`for (var i = 0; i < GONE_MAX + 5; i++) state.gone.sales['s' + i] = NOW - (GONE_MAX + 5 - i);
+    pruneGone(state.gone, NOW);`, ctx);
+  const sales = Object.keys(vm.runInContext('state.gone.sales', ctx));
+  eq([sales.length, sales[0], sales[sales.length - 1]], [1000, 's5', 's1004'], 'the cap did not keep the newest');
+  eq(['te-abc12-0', 'te-dev-owner-3', 'te-x', 'x1', 7].map((i) => ctx.teBatchOf(i)), ['abc12', 'dev-owner', '', '', ''], 'teBatchOf');
+  // The merge: per id the later mark wins either way, a tie goes to the deletion, and a mark
+  // only this side has is kept.
+  vm.runInContext(`${['mergeRemoteAppendOnly'].map(slice).join('\n')}
+    state = normalizeState({ version: 1, scouts: [], budget: { programYear: 2026, activities: [], expenses: [] },
+      gone: { entries: { a: NOW - 10, b: -(NOW - 5), c: -(NOW - 3), mine: NOW - 1 } } });
+    var remoteGone = { entries: { a: -(NOW - 4), b: NOW - 6, c: NOW - 3, theirs: NOW - 2 } };
+    mergeRemoteAppendOnly({ json: JSON.stringify({ version: 1, scouts: [], gone: remoteGone }) });`, ctx);
+  eq(JSON.parse(JSON.stringify(vm.runInContext('state.gone.entries', ctx))),
+    { a: -(200 * 86400000 - 4), b: -(200 * 86400000 - 5), c: 200 * 86400000 - 3, mine: 200 * 86400000 - 1, theirs: 200 * 86400000 - 2 },
+    'the marks did not merge by the later mark');
+});
+
+test('stopgap: every path that deletes a money-log row marks it, an Undo marks it back, and close-out clears the marks', () => {
+  const h = slice('handleAction');
+  const block = (act) => { const i = h.indexOf(`act.indexOf('${act}:') === 0`); ok(i >= 0, `${act} not found`); return h.slice(i, h.indexOf('\n      return;\n    }', i)); };
+  for (const [act, log] of [['del-ledger', 'ledger'], ['del-entry', 'entries'], ['del-distribution', 'distributions']]) {
+    const b = block(act);
+    ok(new RegExp(`markGone\\('${log}', \\[\\w+\\]\\);`).test(b), `${act} does not mark the row gone`);
+    ok(new RegExp(`deleteWithUndo\\([\\s\\S]*markGone\\('${log}', \\[\\w+\\], true\\)`).test(b), `${act}'s Undo does not mark the row back`);
+  }
+  ok(/markGone\('sales', frS\.sales\.filter/.test(block('del-fundraiser-sale')), 'del-fundraiser-sale does not mark the sale');
+  ok(/markGone\('sales', fr\.sales\)/.test(block('del-fundraiser')), 'del-fundraiser does not mark its sales');
+  const sc = block('del-scout');
+  for (const log of ['entries', 'sales', 'distributions']) ok(new RegExp(`markGone\\('${log}'`).test(sc), `del-scout does not mark its ${log}`);
+  ok(/markGone\('distributions'/.test(block('del-inv-product')), 'del-inv-product does not mark its hand-outs');
+  const te = slice('teCommitSalesLive');
+  ok(/markGone\('imports', \[b\]\)/.test(te) && /else markGone\('entries', \[e\]\)/.test(te), 'the re-import does not mark what it replaces');
+  ok(/e\.id = 'te-' \+ batch \+ '-' \+ \(n\+\+\)/.test(te), 'imported rows do not carry their batch');
+  const roll = slice('rolloverYear');
+  ok(/state\.gone = freshGone\(\);/.test(roll) && /b\.programYear \+= 1;/.test(roll),
+    'close-out does not clear the marks and move the year (the season check depends on both)');
+  ok(/if \(clobbered && seasonMoved\(remote\)\) return \{ record: null/.test(slice('syncPush')), 'syncPush does not check the season');
+  const chooser = slice('renderOverlay');
+  ok(/rc\.budget\.programYear !== state\.budget\.programYear\s*\? '<p><strong>The cloud copy is in the '/.test(chooser),
+    'the chooser does not say the two copies are in different program years');
+  // No other removal from a money log slipped in without a mark: this count moves only with a
+  // new one, and whoever moves it has to look. (The ten: the nine above, and normalizeState
+  // dropping a malformed fundraiser sale, which no copy can hold either.)
+  const removals = SCRIPT.match(/state\.(entries|ledger) = state\.\1\.filter|distributions = state\.inventory\.distributions\.filter|\.sales = \w+\.sales\.filter|(ledger|entries|distributions)\.splice\(\w+, 1\)/g) || [];
+  eq(removals.length, 10, 'a new removal from a money log — does it mark what it removes?');
+});
+
+// The same, end to end: the page's real sync layer and apiBackend against the real server.
+const GONE_API_STATE = () => PACK_STATE(JSON.parse(JSON.stringify({
+  scouts: GONE_SEED.scouts, budget: GONE_SEED.budget, entries: GONE_SEED.entries, ledger: GONE_SEED.ledger, fundraisers: GONE_SEED.fundraisers,
+  inventory: GONE_SEED.inventory, gone: { entries: {}, ledger: {}, distributions: {}, sales: {}, imports: {} } })));
+async function apiGonePair() {
+  const w = await (await apiWorld()).seed();
+  w.state(3, GONE_API_STATE());
+  const a = await (await apiClient(w, 'owner')).start();
+  const b = await (await apiClient(w, 'editor')).start();
+  for (const c of [a, b]) c.run(GONE_EXTRA(c.who));
+  eq([a.get('state.rev'), b.get('state.rev')], [3, 3], 'both start on rev 3');
+  return { w, a, b, server: () => serverState(w).json, rev: () => serverState(w).rev };
+}
+
+atest('stopgap, api: a delete, a re-import and an Undo on one device survive another device’s save', async () => {
+  // A deletes one row of each log while B has an unsaved edit and every row.
+  let { a, b, server, rev } = await apiGonePair();
+  b.run(B1);
+  await a.edit(`markGone('entries', state.entries.splice(0, 1)); markGone('ledger', state.ledger.splice(0, 1));
+    markGone('distributions', state.inventory.distributions.splice(0, 1)); markGone('sales', state.fundraisers[0].sales.splice(0, 1))`);
+  eq(rev(), 4, 'A did not save');
+  await settle([b], 800);
+  let s = server();
+  eq([rev(), eIds(s), s.ledger.length, s.inventory.distributions.length, s.fundraisers[0].sales.length],
+    [5, ['b1', 'old1', 'old2', 'x2'], 0, 0, 0], 'a deleted row came back');
+  await a.poll();
+  eq(a.get('[state.rev, ids(state.entries).sort()]'), [5, ['b1', 'old1', 'old2', 'x2']], 'A after B’s save');
+  // The reverse: B deletes (unsaved), A saves first, B saves over it.
+  await b.run("markGone('entries', state.entries.filter(function (e) { return e.id === 'x2'; })); " +
+    "state.entries = state.entries.filter(function (e) { return e.id !== 'x2'; }); commit()");
+  await a.edit("state.ledger.push({ id: 'la', date: '2026-09-03', description: 'A', amountCents: 5, direction: 'in' })");
+  await settle([b], 800);
+  eq([rev(), eIds(server()), server().ledger.map((l) => l.id)], [7, ['b1', 'old1', 'old2'], ['la']], 'the deleting device lost its deletion');
+
+  // The Trail's End re-import, twice, with B holding the import before each.
+  ({ a, b, server, rev } = await apiGonePair());
+  const single = { s1: 5000 + 1000, s2: 2000 + 500 };
+  b.run(B1);
+  await a.edit('reimport()');
+  await settle([b], 800);
+  eq(b.get('totals()'), { s1: single.s1, s2: single.s2 + 100 }, 'B counted the re-import twice');
+  await a.poll();
+  eq(a.get('totals()'), { s1: single.s1, s2: single.s2 + 100 }, 'A counts the re-import twice');
+  b.run("state.entries.push({ id: 'b2', scoutId: 's1', kind: 'wagon', date: '', salesCents: 1, donationsCents: 0 }); commit()");
+  await a.edit('reimport()');
+  await settle([b], 800);
+  eq(server().entries.filter((e) => e.source === 'te-import').map((e) => e.id), ['te-ownerb2-0', 'te-ownerb2-1'], 'the second re-import');
+  eq(b.get('totals()'), { s1: single.s1 + 1, s2: single.s2 + 100 }, 'B counted the second re-import twice');
+
+  // Undo: A deletes and saves; B takes it, then edits; A undoes and saves; B saves.
+  ({ a, b, server, rev } = await apiGonePair());
+  await a.edit("var gone1 = state.entries.splice(0, 1); markGone('entries', gone1)");
+  await b.poll();
+  eq(b.get('ids(state.entries).sort()'), ['old1', 'old2', 'x2'], 'B did not take the delete');
+  b.run(B1);
+  await a.edit("state.entries.splice(0, 0, gone1[0]); markGone('entries', gone1, true)");
+  await settle([b], 800);
+  eq([rev(), eIds(server())], [6, ['b1', 'old1', 'old2', 'x1', 'x2']], 'the undone row did not come back');
+  await a.poll();
+  eq(a.get('ids(state.entries).sort()'), ['b1', 'old1', 'old2', 'x1', 'x2'], 'A after B’s save');
+});
+
+atest('stopgap, api: last season does not come back from a device that has not closed it out', async () => {
+  const { a, b, server, rev } = await apiGonePair();
+  b.run(B1);
+  await a.edit("state.budget.programYear += 1; state.entries = []; state.ledger = []; state.inventory.distributions = []; " +
+    'state.fundraisers.forEach(function (f) { f.sales = []; }); state.gone = freshGone()');
+  b.reset();
+  await settle([b], 800);
+  eq(b.log.filter((l) => /^PUT/.test(l)), [], 'B wrote over the closed-out season');
+  eq([rev(), server().budget.programYear, server().entries.length], [4, 2027, 0], 'last season came back');
+  eq(b.get('[ui.overlay && ui.overlay.kind, sync.conflict && sync.conflict.rev, sync.dirty]'), ['sync-conflict', 4, true],
+    'B was not asked which copy to keep');
+  // Escape, and an edit: still nothing sent, and the chooser comes back.
+  b.run('ui.overlay = null');
+  await b.edit("state.entries.push({ id: 'b3', scoutId: 's1', kind: 'wagon', date: '', salesCents: 1, donationsCents: 0 })");
+  eq([b.log.filter((l) => /^PUT/.test(l)), b.get('ui.overlay && ui.overlay.kind')], [[], 'sync-conflict'], 'an edit after Escape');
+  // "Use cloud copy".
+  b.run('adoptRemote(ui.overlay.remote, {}); ui.overlay = null');
+  await settle([b], 800);
+  eq([b.log.filter((l) => /^PUT/.test(l)), b.get('[state.budget.programYear, state.entries.length, sync.dirty]')], [[], [2027, 0, false]],
+    'use the cloud copy');
 });
 
 /* ---------------- report ---------------- */
