@@ -4879,6 +4879,7 @@
     // The new-entry draft. Held here rather than in the DOM so a re-render (which this app
     // does on every commit) can't wipe half-typed input.
     ledgerDraft: null,
+    ledgerAddWarned: '',    // Phase 3, C2 — the draft date already warned as in the reconciled period
     lineOpen: {},           // Budget — { lineId: true } rows with their settings showing
     // Rewards — { tierId: true } tiers showing an empty date box because somebody asked for
     // one. A tier that HAS a deadline shows the box regardless; this is only the empty case,
@@ -7769,11 +7770,13 @@
   // LEDGER_OPS) to which row (`rowId`; a statement's id for 'reopen'), by whom, when, on which
   // device (`who`: { id, at, by, byUid, dev } — the caller's uid() and clock, so this stays pure).
   // `more`: `f` { field: [before, after] } for an edit, `rows` the other rows a reverse, correct or
-  // reassign touched (or a Tick all ticked), `why` a void's reason. Absent parts are left out, not
-  // written empty.
+  // reassign touched (or a Tick all ticked), `why` a void's reason or what an add was warned of.
+  // Absent parts are left out, not written empty.
   // ⚠ A CONVENIENCE RECORD, NOT PROOF, like the E2 stamps: on Firestore the client writes it.
   // `by` is never an email. Null for an op this page does not know, or no row.
-  var LEDGER_OPS = ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen'];
+  // C2 added 'add' (a back-dated add the leader was warned about; ordinary adds are not logged,
+  // their E2 stamps say who and when) and 'opening' (the opening figure or date, row 'book').
+  var LEDGER_OPS = ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening'];
   function ledgerEvent(op, rowId, who, more) {
     if (LEDGER_OPS.indexOf(op) === -1 || typeof rowId !== 'string' || !rowId) return null;
     who = who || {};
@@ -7836,7 +7839,13 @@
   // its amount, date and direction (LEDGER_LOCKED_FIELDS); its labels and its tick still change,
   // logged. An edit is refused for a blank or $0 amount (A3), one over LEDGER_MAX_CENTS, a
   // cleared date (A4: the row would drop out of the bank balance) or a date moved INTO the
-  // reconciled period (it would lock itself).
+  // reconciled period (it would lock itself, and a new entry there is warned about instead).
+  //
+  // Not the commission and undoing a tier make-up change what the money meant, so a locked row
+  // takes neither (A7); on an open row each is logged, as is a change to the opening figure or
+  // date, which is read-only once a statement is reconciled (H2). A NEW entry dated in the
+  // reconciled period is only warned about, and saved on the second tap (owner's decision: the
+  // money did move); its 'add' event records that the leader was warned.
   //
   // SIZE (Firestore holds the whole record in one ~1 MiB document): an edit event is about 250
   // bytes, a tick about 190. A season of ~250 entries, each ticked once, a fifth of them edited
@@ -7849,7 +7858,7 @@
   // The money fields that commit on change only, not as typed (the 'input' listener): each change
   // is one logged event, and "2", "25", "25.0" are not three edits. A blank amount mid-typing
   // would otherwise be refused under the leader's fingers.
-  var LEDGER_NOT_LIVE = ['led-amount'];
+  var LEDGER_NOT_LIVE = ['led-amount', 'book-opening'];
   // The fields an edit can change (and so the ones an 'edit' event carries). The tick and its
   // stamps are 'tick'/'untick' events, not edits; ids and the E2 entry stamps never change.
   var LEDGER_EDIT_FIELDS = ['date', 'description', 'amountCents', 'direction', 'lineId', 'method', 'ref', 'source', 'scoutId', 'donor', 'reimbursement', 'notCommission', 'tierMakeup'];
@@ -7898,10 +7907,18 @@
       if (ledgerDateReconciled(value, book)) {
         return 'That date is inside the period already reconciled (through ' + fmtDate(book.reconciledThrough) +
           '), and an entry can’t be moved into it. It was left at ' + was + '. If it really belongs there, ' +
-          'remove this entry and add it again with that date.';
+          'remove this entry and add it again with that date — you’ll be asked to confirm.';
       }
     }
     return '';
+  }
+  // What a leader is told before a NEW entry dated in the reconciled period is saved, or ''.
+  // Only a warning (owner's decision): the second tap saves it. Pure.
+  function ledgerBackdateWarning(date, book) {
+    if (!ledgerDateReconciled(date, book)) return '';
+    return 'This entry is dated ' + fmtDate(date) + ', inside the period already reconciled (through ' +
+      fmtDate(book.reconciledThrough) + '). Adding it changes the book for a month already checked against the bank, ' +
+      'and once saved its amount, date and direction can’t be changed here. If the date is right, tap Save it anyway.';
   }
   // One led-* change, applied to the row with everything it implies (the handler has already
   // asked ledgerEditRefusal). `value` as for ledgerEditRefusal.
@@ -7944,6 +7961,22 @@
       else if (led.source !== 'refund') led.source = '';
     }
     if (led.source !== 'donation') led.donor = '';
+  }
+  // The opening figure or date changed from `was` ({ openingCents, openingDate }): logged.
+  function logOpening(was) {
+    var f = {};
+    if (was.openingCents !== state.book.openingCents) f.openingCents = [was.openingCents, state.book.openingCents];
+    if (was.openingDate !== state.book.openingDate) f.openingDate = [was.openingDate, state.book.openingDate];
+    if (Object.keys(f).length) logLedger('opening', 'book', { f: f });
+  }
+  // H2 (treasurer review of C1) — the opening figure and date are read-only once a statement is
+  // reconciled: changing where the book starts would change every balance already checked against
+  // the bank. The way back is an admin reopening the reconciliation (C5, not built yet).
+  function openingLockedWhy(book) {
+    if (!book || !book.reconciledThrough) return '';
+    return 'The opening balance is locked: the book is reconciled through ' + fmtDate(book.reconciledThrough) +
+      ', and changing where it starts would change every balance already checked against the bank. ' +
+      'Only an admin reopening the last statement can unlock it, and that isn’t in the app yet.';
   }
   // E1 — this charge's due date, from its line and the line's event as they stand now.
   function chargeDueNow(c) {
@@ -18234,6 +18267,19 @@
     var bk = state.book;
     var tot = ledgerTotals(state.ledger, bk);
     var h = '<div class="card"><h2 class="section display">Opening balance</h2>';
+    // Phase 3, C2 (H2) — read-only once a statement is reconciled (openingLockedWhy).
+    var obLocked = openingLockedWhy(bk);
+    if (obLocked) {
+      h += '<p style="margin:0 0 8px"><strong class="money">' + fmt(bk.openingCents || 0) + '</strong>' +
+        (bk.openingDate ? ' as it stood on ' + esc(fmtDate(bk.openingDate)) : ', no opening date') + '</p>' +
+        '<p class="small muted" style="margin:0">' + esc(obLocked) + '</p>';
+      if (tot.preOpening) {
+        h += '<p class="small" style="margin:8px 0 0"><span class="pill navy">Before the opening date</span> ' +
+          tot.preOpening + ' entr' + (tot.preOpening === 1 ? 'y is' : 'ies are') + ' dated before ' + esc(fmtDate(bk.openingDate)) +
+          ' and don’t move the bank balance.</p>';
+      }
+      return h + '</div>';
+    }
     if (!bk.openingDate) {
       h += '<p class="small muted" style="margin:0 0 8px">No opening figure yet, so the balance below is just money in minus money out. ' +
         'Set the bank balance and the date it was true, and the ledger runs forward from there.</p>';
@@ -18313,6 +18359,7 @@
   }
   function renderLedgerEntries() {
     var dr = ledgerDraft();
+    var addWarn = (ui.ledgerAddWarned && ui.ledgerAddWarned === dr.date) ? ledgerBackdateWarning(dr.date, state.book) : '';
     var h = '<div class="card"><h2 class="section display">Record a transaction</h2>' +
       '<div class="lrow">' +
       '<input type="date" data-ch="ledn-date" value="' + esc(dr.date) + '" aria-label="Date">' +
@@ -18338,8 +18385,10 @@
             scoutSelectOptions(dr.scoutId, 'Paid back to (reimbursement)\u2026') + '</select>'
           : '<select data-ch="ledn-scout" aria-label="Refunded to which family">' +
             scoutSelectOptions(dr.scoutId, '— not a refund to a family —') + '</select>')) +
-      '<button type="button" class="btn small primary" data-act="ledger-add">Add entry</button>' +
+      '<button type="button" class="btn small primary" data-act="ledger-add">' + (addWarn ? 'Save it anyway' : 'Add entry') + '</button>' +
       '</div>' +
+      // Phase 3, C2 — the reconciled-period warning, after the first tap (see ledger-add).
+      (addWarn ? '<p class="small" role="alert" style="margin:8px 0 0;color:var(--accent-text)">' + esc(addWarn) + '</p>' : '') +
       '<p class="small muted" style="margin:8px 0 0">Pick the budget line it belongs to and this entry becomes part of that line’s actual cost. ' +
       'Leave it blank if it doesn’t belong to one — you can set it later.</p></div>';
 
@@ -26546,8 +26595,8 @@
   }
   // Dollar fields (text money-in) update live as you type — caret is restored on re-render.
   // Wave 18(14): the liveEdit flag makes commit() render now but debounce save+sync.
-  // Phase 3, C2 — except a ledger row's amount: each change to it is one logged event, so it
-  // commits once, on change, not a keystroke at a time (LEDGER_NOT_LIVE).
+  // Phase 3, C2 — except a ledger row's amount and the opening figure: each change to those is
+  // one logged event, so they commit once, on change, not a keystroke at a time (LEDGER_NOT_LIVE).
   document.addEventListener('input', function (e) {
     var el = e.target.closest('input.money-in[data-ch]');
     if (el && LEDGER_NOT_LIVE.indexOf(el.getAttribute('data-ch')) === -1) {
@@ -27287,6 +27336,10 @@
       var ncId = act.slice('not-commission:'.length);
       var ncE = state.ledger.find(function (e) { return e.id === ncId; });
       if (!ncE) return;
+      // Phase 3, C2 (A7) — an answer about a locked row is a change to it: refused, and logged.
+      var ncWhy = ledgerLockedWhy(ncE, state.book);
+      if (ncWhy) { showToast(ncWhy); return; }
+      if (ncE.notCommission !== true) logLedger('notcommission', ncE.id, { f: { notCommission: [false, true] } });
       ncE.notCommission = true;
       showToast('Noted \u2014 it stays counted as other income. Change the entry and the question comes back.');
       commit(); return;
@@ -27297,7 +27350,16 @@
       // Both are genuinely required: an entry with no amount records nothing, and one with
       // no date can't be placed in the running balance or ticked against a statement.
       if (!amt) { showToast('Enter an amount first.'); return; }
+      // Phase 3, C2 — the owner's ceiling for one entry. Bigger is a typo.
+      if (amt > LEDGER_MAX_CENTS) { showToast('That’s more than ' + fmt(LEDGER_MAX_CENTS) + ' for one entry — check the amount.'); return; }
       if (!dr.date) { showToast('Enter the date it moved.'); return; }
+      // Phase 3, C2 — dated inside the period already reconciled: WARNED, not refused (owner's
+      // decision; the money did move). The first tap says so under the form and the button
+      // becomes "Save it anyway"; the second saves it, and the log records that it was warned.
+      // Warned for this date only: change the date and it asks again. Before the opening date
+      // is not in the period, and is taken as before.
+      var drBack = ledgerDateReconciled(dr.date, state.book);
+      if (drBack && ui.ledgerAddWarned !== dr.date) { ui.ledgerAddWarned = dr.date; render(); return; }
       // M1(c) — money out to a family on a family-direct line is a reimbursement, not a refund.
       var drReimb = dr.direction !== 'in' && !!dr.scoutId && ledgerLineIsDirect(dr.lineId);
       var drEntry = {
@@ -27321,6 +27383,10 @@
         drWarn = 'Saved \u2014 but a reimbursement should name its receipt. Add the receipt number under Detail.';
       }
       state.ledger.push(drEntry);
+      if (drBack) {
+        logLedger('add', drEntry.id, { why: 'Dated inside the period reconciled through ' + state.book.reconciledThrough + '; saved after the warning.' });
+      }
+      ui.ledgerAddWarned = '';
       if (drWarn) showToast(drWarn);
       // Keep the date and direction — a treasurer posting a stack of receipts is nearly
       // always entering several from the same day, the same way.
@@ -27370,8 +27436,12 @@
     }
     if (act === 'ledger-fates-dismiss') { sync.fatesNote = ''; render(); return; }
     if (act === 'ledger-use-carryover') {
+      // Phase 3, C2 (H2) — not once a statement is reconciled; and logged.
+      if (openingLockedWhy(state.book)) { showToast(openingLockedWhy(state.book)); render(); return; }
+      var ucWas = { openingCents: state.book.openingCents, openingDate: state.book.openingDate };
       state.book.openingCents = state.budget.startingBalance || 0;
       state.book.openingDate = programYearStartISO(state.budget.programYear);
+      logOpening(ucWas);
       commit(); return;
     }
     if (act === 'ledger-tick-all' || act === 'ledger-untick-all') {
@@ -27578,6 +27648,13 @@
       var umP = act.split(':');
       var umT = state.rewardTiers.tiers.find(function (t) { return t.id === umP[1]; });
       if (!umT) return;
+      // Phase 3, C2 (A7) — it changes what a payment means, so not on a locked one; said on the
+      // first tap, before anything is armed.
+      var umWhy = '';
+      state.ledger.forEach(function (e) {
+        if (!umWhy && e.tierMakeup === umT.id && e.scoutId === umP[2]) umWhy = ledgerLockedWhy(e, state.book, 'The make-up payment');
+      });
+      if (umWhy) { showToast(umWhy); return; }
       // ⚠ ARMED ON THE ACT, not a key of its own. It used to arm on 'unmakeup-<tier>-<scout>',
       // which no button carries — so tinyDangerBtn's `ui.armed === key` test never matched and the
       // ✕ never reddened or said "Tap again to confirm". The confirm worked; it just gave no sign
@@ -27586,7 +27663,10 @@
       arm(act, function () {
         var n = 0;
         state.ledger.forEach(function (e) {
-          if (e.tierMakeup === umT.id && e.scoutId === umP[2]) { e.tierMakeup = ''; n++; }
+          if (e.tierMakeup === umT.id && e.scoutId === umP[2]) {
+            e.tierMakeup = ''; n++;
+            logLedger('unmakeup', e.id, { f: { tierMakeup: [umT.id, ''] } });   // Phase 3, C2 (A7)
+          }
         });
         showToast(n
           ? 'Removed — the payment stays in the ledger as a family payment.'
@@ -28297,8 +28377,16 @@
     }
 
     /* ----- Money · Ledger (Phase 0) ----- */
-    if (ch === 'book-opening') { state.book.openingCents = toCentsSigned(el.value); commit(); return; }
-    if (ch === 'book-opening-date') { state.book.openingDate = el.value; commit(); return; }
+    // Phase 3, C2 (H2) — the opening is read-only once a statement is reconciled, and a change
+    // before then is logged. (The figure commits on change, not as it is typed: see 'input'.)
+    if (ch === 'book-opening' || ch === 'book-opening-date') {
+      if (openingLockedWhy(state.book)) { showToast(openingLockedWhy(state.book)); render(); return; }
+      var obWas = { openingCents: state.book.openingCents, openingDate: state.book.openingDate };
+      if (ch === 'book-opening') state.book.openingCents = toCentsSigned(el.value);
+      else state.book.openingDate = el.value;
+      logOpening(obWas);
+      commit(); return;
+    }
     if (ch === 'book-statement') { state.book.statementCents = toCentsSigned(el.value); commit(); return; }
     if (ch === 'book-statement-date') { state.book.statementDate = el.value; commit(); return; }
     // Filters live in `ui`, so they re-render but never persist.
@@ -28317,7 +28405,8 @@
       // M1(c) — on money out, the line decides whether the family picker is a refund or a
       // reimbursement, so it re-renders like the two selects above.
       if (nk === 'line' && nd.direction !== 'in') { nd.lineId = el.value; render(); return; }
-      if (nk === 'date') nd.date = el.value;
+      // Phase 3, C2 — a new date takes down the reconciled-period warning; the next tap asks again.
+      if (nk === 'date') { nd.date = el.value; if (ui.ledgerAddWarned) { ui.ledgerAddWarned = ''; render(); } }
       else if (nk === 'desc') nd.description = el.value;
       else if (nk === 'amount') nd.amount = el.value;
       else if (nk === 'line') nd.lineId = el.value;

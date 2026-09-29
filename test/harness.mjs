@@ -17934,7 +17934,7 @@ test('C1: ledgerEvent builds one log entry, and nothing else', () => {
   eq(ev('reverse', 'l1', who, { rows: ['rv-l1'] }).rows, ['rv-l1'], 'a reversal names its row');
   eq(ev('tick', 'l1', { id: 'x', by: 'pat@example.com' }), { id: 'lg-x', at: '', by: 'a signed-in leader', byUid: '', dev: '', row: 'l1', op: 'tick' }, 'never an email');
   eq([ctx.ledgerEvent('delete', 'l1', who), ctx.ledgerEvent('edit', '', who), ctx.ledgerEvent('edit', 7, who)], [null, null, null], 'an unknown op, or no row');
-  eq([...ctx.LEDGER_OPS], ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen'], 'the ops');
+  eq([...ctx.LEDGER_OPS], ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening'], 'the ops');
   // The rows it names are copied, not shared.
   const rows = ['a'];
   const e2 = ctx.ledgerEvent('correct', 'l1', who, { rows });
@@ -18125,13 +18125,19 @@ atest('C2, api: a reconciled row dated in the reconciled period is kept over a d
    ================================================================ */
 const c2Block = (re, what) => { const m = re.exec(SCRIPT); ok(m, 'C2: handler block not found: ' + what); return m[0]; };
 const C2_CHANGE = [
+  c2Block(/    if \(ch === 'book-opening' \|\| ch === 'book-opening-date'\) \{[\s\S]*?\n    \}/, 'book-opening'),
   c2Block(/    if \(ch\.indexOf\('led-'\) === 0\) \{[\s\S]*?\n    \}/, 'led-*')].join('\n');
 const C2_ACT = [
+  c2Block(/    if \(act\.indexOf\('not-commission:'\) === 0\) \{[\s\S]*?\n    \}/, 'not-commission'),
+  c2Block(/    if \(act === 'ledger-add'\) \{[\s\S]*?\n    \}/, 'ledger-add'),
   c2Block(/    if \(act\.indexOf\('ledger-unreconcile:'\) === 0\) \{[\s\S]*?\n    \}/, 'ledger-unreconcile'),
-  c2Block(/    if \(act === 'ledger-tick-all' \|\| act === 'ledger-untick-all'\) \{[\s\S]*?\n    \}/, 'tick-all')].join('\n');
+  c2Block(/    if \(act === 'ledger-use-carryover'\) \{[\s\S]*?\n    \}/, 'ledger-use-carryover'),
+  c2Block(/    if \(act === 'ledger-tick-all' \|\| act === 'ledger-untick-all'\) \{[\s\S]*?\n    \}/, 'tick-all'),
+  c2Block(/    if \(act\.indexOf\('tier-unmakeup:'\) === 0\) \{[\s\S]*?\n    \}/, 'tier-unmakeup')].join('\n');
 const C2_FNS = ['fmt', 'fmtDate', 'fmtDateShort', 'toCents', 'toCentsSigned', 'entryAfterOpening', 'entryOnStatement', 'ledgerLocked',
   'ledgerDateReconciled', 'ledgerLockedWhy', 'LEDGER_MAX_CENTS', 'LEDGER_EDIT_FIELDS', 'LEDGER_LOCKED_FIELDS', 'ledgerRowDiff',
-  'ledgerRowFields', 'ledgerEditRefusal', 'applyLedgerEdit', 'ledgerWho', 'logLedger', 'LEDGER_OPS', 'ledgerEvent', 'ledgerStampClean', 'stampApproved', 'stampEntered', 'ledgerActorName',
+  'ledgerRowFields', 'ledgerEditRefusal', 'ledgerBackdateWarning', 'applyLedgerEdit', 'ledgerWho', 'logLedger', 'logOpening',
+  'openingLockedWhy', 'LEDGER_OPS', 'ledgerEvent', 'ledgerStampClean', 'stampApproved', 'stampEntered', 'ledgerActorName',
   'ledgerDraftDefault', 'ledgerDraft', 'arm'];
 // The book is reconciled through Aug 31 from a Jul 1 opening. u1 is open; r1 is ticked (after the
 // period); p1 is dated in the period, not ticked; q1 is ticked in the period by a page from before
@@ -18191,7 +18197,7 @@ test('C2: each change to an entry is one logged edit — every field it changed,
   p.run("change('led-ref', 'u1', '102'); change('led-amount', 'u1', '90.00')");
   eq(p.get('log().length'), 7, 'a change to the same value was logged');
   // The amount commits once, on change — not a keystroke at a time (each would be an edit).
-  ok(/var LEDGER_NOT_LIVE = \['led-amount'\];/.test(SCRIPT) &&
+  ok(/var LEDGER_NOT_LIVE = \['led-amount', 'book-opening'\];/.test(SCRIPT) &&
      /if \(el && LEDGER_NOT_LIVE\.indexOf\(el\.getAttribute\('data-ch'\)\) === -1\) \{/.test(SCRIPT), 'the amount is committed as it is typed');
 });
 
@@ -18210,7 +18216,7 @@ test('C2: an edit is refused for a blank or $0 amount, one over $25,000, a clear
   ok(/^An entry needs an amount — it was left at \$84\.00\.$/.test(t[0]), t[0]);
   ok(/^That’s more than \$25,000\.00 for one entry — check the amount\. It was left at \$84\.00\.$/.test(t[1]), t[1]);
   ok(/^An entry needs a date, or it drops out of the bank balance — it was left at /.test(t[2]), t[2]);
-  ok(/^That date is inside the period already reconciled \(through .*\), and an entry can’t be moved into it\. .*remove this entry and add it again with that date\.$/.test(t[3]), t[3]);
+  ok(/^That date is inside the period already reconciled \(through .*\), and an entry can’t be moved into it\. .*remove this entry and add it again with that date — you’ll be asked to confirm\.$/.test(t[3]), t[3]);
   // The edges: exactly $25,000, and a date before the opening (not in the period) are taken.
   p.run("change('led-amount', 'u1', '25000'); change('led-date', 'u1', '2026-06-30')");
   eq([p.get('row("u1").amountCents'), p.get('row("u1").date'), p.get('log().length')], [2500000, '2026-06-30', 2], 'the edges were refused');
@@ -18291,6 +18297,66 @@ test('C2: Tick all is one logged event; Clear all ticks leaves rows from an earl
   eq([p.get('log()[1].op'), p.get('log()[1].row'), p.get('log()[1].rows')], ['untick', 'u1', ['r1']], 'Clear all');
   ok(/^3 entries reconciled on an earlier statement \(through .*\) kept their ticks\. To un-tick one, use Un-reconcile under Entries\.$/.test(p.get('toasts[0]')), p.get('toasts[0]'));
   eq(p.get('row("r1").approvedBy'), 'Sam', 'Clear all erased an approval');
+});
+
+test('C2: an entry dated in the reconciled period is warned about, then saved and logged; over $25,000 is refused', () => {
+  const p = c2Page();
+  p.run("ui.ledgerDraft = ledgerDraftDefault(); ui.ledgerDraft.date = '2026-08-20'; ui.ledgerDraft.amount = '42'; ui.ledgerDraft.description = 'Late receipt'; act('ledger-add')");
+  eq([p.get('state.ledger.length'), p.get('ui.ledgerAddWarned'), p.get('log().length')], [6, '2026-08-20', 0], 'the first tap saved it, or did not warn');
+  ok(/^This entry is dated .*, inside the period already reconciled \(through .*\)\. .*If the date is right, tap Save it anyway\.$/.test(
+    p.get("ledgerBackdateWarning('2026-08-20', state.book)")), 'the warning');
+  const le = slice('renderLedgerEntries');
+  ok(/\(addWarn \? 'Save it anyway' : 'Add entry'\)/.test(le) && /\(addWarn \? '<p class="small" role="alert"/.test(le), 'the form does not show the warning');
+  p.run("act('ledger-add')");
+  const added = p.get('state.ledger[6]');
+  eq([added.date, added.amountCents, added.enteredBy, p.get('ui.ledgerAddWarned')], ['2026-08-20', 4200, 'Pat Treasurer', ''], 'the second tap');
+  eq([p.get('log()[0].op'), p.get('log()[0].row'), p.get('log()[0].why')],
+    ['add', added.id, 'Dated inside the period reconciled through 2026-08-31; saved after the warning.'], 'the warned add was not logged');
+  // A changed date asks again; an ordinary add is not logged; nor is one before the opening date.
+  p.run("ui.ledgerDraft.date = '2026-08-21'; ui.ledgerDraft.amount = '5'; ui.ledgerAddWarned = '2026-08-20'; act('ledger-add')");
+  eq([p.get('state.ledger.length'), p.get('ui.ledgerAddWarned')], [7, '2026-08-21'], 'a different date was saved on the old warning');
+  p.run("ui.ledgerAddWarned = ''; ui.ledgerDraft.date = '2026-09-20'; ui.ledgerDraft.amount = '5'; act('ledger-add'); ui.ledgerDraft.date = '2026-06-01'; ui.ledgerDraft.amount = '5'; act('ledger-add')");
+  eq([p.get('state.ledger.length'), p.get('log().length')], [9, 1], 'an add outside the period was warned about or logged');
+  p.run("toasts = []; ui.ledgerDraft.date = '2026-09-20'; ui.ledgerDraft.amount = '25000.01'; act('ledger-add')");
+  eq([p.get('state.ledger.length'), p.get('toasts')], [9, ['That’s more than $25,000.00 for one entry — check the amount.']], 'over the ceiling');
+  p.run("ui.ledgerDraft.amount = '25000'; act('ledger-add')");
+  eq(p.get('state.ledger.length'), 10, 'exactly $25,000 was refused');
+});
+
+test('C2: "not the commission" and undoing a tier make-up are refused on a locked entry, and logged on an open one', () => {
+  const p = c2Page();
+  p.run("toasts = []; act('not-commission:q1')");
+  eq([p.get('row("q1").notCommission'), p.get('log().length'), p.get('toasts.length')], [false, 0, 1], 'not-commission on a locked row');
+  p.run("act('not-commission:u1'); act('not-commission:u1')");
+  const ev = p.get('log()');
+  eq([p.get('row("u1").notCommission'), ev.length, ev[0].op, ev[0].row, ev[0].f], [true, 1, 'notcommission', 'u1', { notCommission: [false, true] }],
+    'not-commission, answered twice, logged once');
+  // m1 is dated in the period: refused on the first tap, before anything is armed.
+  p.run("toasts = []; act('tier-unmakeup:t1:s1'); act('tier-unmakeup:t1:s1')");
+  eq([p.get('row("m1").tierMakeup'), p.get('ui.armed'), p.get('log().length'), /^The make-up payment is dated/.test(p.get('toasts[0]'))],
+    ['t1', null, 1, true], 'an unmakeup on a locked row');
+  const q = c2Page({ book: { reconciledThrough: '' } });
+  q.run("act('tier-unmakeup:t1:s1'); act('tier-unmakeup:t1:s1')");
+  eq([q.get('row("m1").tierMakeup'), q.get('log()[0].op'), q.get('log()[0].row'), q.get('log()[0].f')], ['', 'unmakeup', 'm1', { tierMakeup: ['t1', ''] }],
+    'an unmakeup on an open row');
+});
+
+test('C2: the opening figure and date are read-only once a statement is reconciled, and logged before then', () => {
+  const p = c2Page();
+  for (const js of ["change('book-opening', '', '999')", "change('book-opening-date', '', '2026-06-01')", "act('ledger-use-carryover')"]) {
+    p.run(`toasts = []; ${js}`);
+    eq([p.get('state.book.openingCents'), p.get('state.book.openingDate'), p.get('log().length'), p.get('commits')], [10000, '2026-07-01', 0, 0],
+      js + ' changed a reconciled book’s opening');
+    ok(/^The opening balance is locked: the book is reconciled through .*Only an admin reopening the last statement can unlock it, and that isn’t in the app yet\.$/.test(p.get('toasts[0]')),
+      p.get('toasts[0]'));
+  }
+  const q = c2Page({ book: { reconciledThrough: '' } });
+  q.run("change('book-opening', '', '123.45'); change('book-opening-date', '', '2026-06-01'); act('ledger-use-carryover')");
+  eq(q.get('log().map(function (e) { return [e.op, e.row, e.f]; })'), [['opening', 'book', { openingCents: [10000, 12345] }],
+    ['opening', 'book', { openingDate: ['2026-07-01', '2026-06-01'] }],
+    ['opening', 'book', { openingCents: [12345, 7700], openingDate: ['2026-06-01', '2026-07-01'] }]], 'the opening changes');
+  // The card: the figure as text, and why, with no fields.
+  ok(/var obLocked = openingLockedWhy\(bk\);\s*if \(obLocked\) \{[\s\S]*?return h \+ '<\/div>';\s*\}/.test(slice('bookCard')), 'the opening card still offers its fields when locked');
 });
 
 test('C2: a season of ledger events costs what the banner says', () => {
