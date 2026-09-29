@@ -10543,12 +10543,31 @@
   function moveFileReady() {
     return sync.mode === 'online' && !sync.dirty && sync.membersScope === 'all' && sync.membersFromServer && sync.joinLoaded;
   }
+  // Why the move file can't be made from this device now, or '' (security review of stage C,
+  // item 2). The file carries the pack record as the SERVER last had it (sync.remoteRec), never
+  // this device's copy, and only while the two are the same pack: a device whose sync-conflict
+  // was closed with Escape reads "Synced" over a copy the server does not have. Both sides go
+  // through the same JSON round trip and normalizeState before they are compared.
+  function moveFileProblem() {
+    if (!moveFileReady()) return 'Wait for this device to finish syncing with the pack, then try again.';
+    if (sync.conflict) return 'This device and the pack’s shared copy differ. Choose which copy to keep first.';
+    var rec = sync.remoteRec, remote = null, here = null;
+    try {
+      remote = rec && typeof rec.json === 'string' ? normalizeState(JSON.parse(rec.json)) : null;
+      here = normalizeState(JSON.parse(JSON.stringify(state)));
+    } catch (e) { remote = null; }
+    if (!remote || !here || stateFingerprint(remote) !== stateFingerprint(here)) {
+      return 'This device’s copy isn’t the pack’s latest. Reload the page, wait for Synced, and try again.';
+    }
+    return '';
+  }
   function moveTime(v) {
     if (typeof v === 'number' && isFinite(v) && v >= 0) return Math.floor(v);
     if (v && typeof v.toMillis === 'function') { try { return v.toMillis(); } catch (e) { return null; } }
     return null;
   }
-  // Pure. o = { packId, state, device, members, invites, joinCfg, at }. A member the server would
+  // Pure. o = { packId, record, members, invites, joinCfg, at }, record = the pack record
+  // { rev, device, json } exactly as the server holds it. A member the server would
   // refuse (no role it knows, an odd account id) would fail the whole import, so it is left out
   // and counted in `skipped` — the owner sees the number before copying in.
   function buildMoveFile(o) {
@@ -10562,10 +10581,10 @@
       if (typeof m.joinCode === 'string' && JOIN_CODE_RE.test(m.joinCode)) out.joinCode = m.joinCode;
       members.push(out);
     });
-    var j = o.joinCfg;
+    var j = o.joinCfg, rec = o.record || {};
     return {
       kind: MOVE_KIND, v: 1, packId: o.packId, madeAt: o.at || '', skipped: skipped,
-      pack: { rev: typeof o.state.rev === 'number' ? o.state.rev : 0, device: String(o.device || ''), json: JSON.stringify(o.state) },
+      pack: { rev: typeof rec.rev === 'number' ? rec.rev : 0, device: String(rec.device || ''), json: String(rec.json || '') },
       members: members,
       invites: arrOf(o.invites).map(function (v) { return { email: String((v && v.email) || ''), role: v && v.role }; }),
       join: (j && typeof j.code === 'string' && JOIN_CODE_RE.test(j.code)) ? {
@@ -10594,8 +10613,14 @@
   }
   function downloadMoveFile() {
     if (!canDownloadMoveFile()) return;
-    if (!moveFileReady()) { showToast('Wait for this device to finish syncing with the pack, then try again.'); return; }
-    var mf = buildMoveFile({ packId: sync.docId, state: state, device: sync.deviceId, members: sync.members,
+    var why = moveFileProblem();
+    if (why) {
+      // An unanswered sync-conflict: bring the chooser back, so there is a way on.
+      if (sync.conflict && !ui.overlay) { ui.overlay = { kind: 'sync-conflict', remote: sync.conflict }; render(); }
+      showToast(why);
+      return;
+    }
+    var mf = buildMoveFile({ packId: sync.docId, record: sync.remoteRec, members: sync.members,
       invites: sync.invites, joinCfg: sync.joinCfg, at: new Date().toISOString() });
     ui.overlay = { kind: 'export', title: 'The pack, for the new server', name: 'pack569-move-' + todayISO() + '.json',
       mime: 'application/json', text: JSON.stringify(mf, null, 2) };

@@ -14504,7 +14504,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'LEADER_ROLES', 'applyMembersSubscription', 'INVITE_ROLES', 'inviteEmailKey', 'MEMBER_NAME_MAX', 'memberName',
   'ensureMyMemberDoc', 'joinCreateMemberDoc', 'signOutGoogle', 'accountsToast', 'MEMBER_ROLES', 'setMemberRole', 'removeMember',
   'createInvite', 'revokeInvite', 'joinOpen', 'standingsEnabled', 'cleanContactLine', 'MOVE_KIND', 'MOVE_UID_RE', 'MOVE_ROLES',
-  'isPackOwner', 'canDownloadMoveFile', 'canImportPack', 'moveTime', 'buildMoveFile', 'moveImportBody', 'importMoveFile',
+  'isPackOwner', 'canDownloadMoveFile', 'canImportPack', 'moveFileReady', 'moveFileProblem', 'moveTime', 'buildMoveFile', 'downloadMoveFile', 'moveImportBody', 'importMoveFile',
   'scheduleParentViewRefresh', 'writeParentView', 'scheduleSyncPush', 'holdPushes', 'mergeRemoteAppendOnly', 'syncPush',
   'isStateEmpty', 'stateFingerprint', 'adoptRemote', 'onRemoteSnap', 'keepLocalCopy', 'SERVER_NOTICES', 'serverNotice'];
 const CLIENT_SRC = CLIENT_FNS.map(decl).join('\n');
@@ -14832,7 +14832,7 @@ atest('api client: before the owner copies the pack in, a leader’s device keep
     'the device stopped waiting after a blip (or its pill says Synced)');
   // The copy-in, from the move file the old page made.
   ok(owner.get('canImportPack()'), 'the owner is not offered the copy-in');
-  const mf = owner.get(`buildMoveFile({ packId: '${API_PACK}', state: ${JSON.stringify(local)}, device: 'fs-dev',
+  const mf = owner.get(`buildMoveFile({ packId: '${API_PACK}', record: { rev: 41, device: 'fs-dev', json: ${JSON.stringify(JSON.stringify(local))} },
     members: [{ uid: 'uid-owner', role: 'admin', name: 'O', email: 'owner@example.com', addedAt: 5 },
       { uid: 'uid-editor', role: 'editor', name: 'E', email: 'editor1@example.com', addedAt: { toMillis: function () { return 7; } } }],
     invites: [{ email: 'viewer1@example.com', role: 'viewer' }], joinCfg: { open: true, code: 'Code123abc', showStandings: false }, at: 'now' })`);
@@ -14910,6 +14910,47 @@ atest('api client: a pack copied in after a leader’s device heard "no pack" is
       eq([serverState(w).rev, serverState(w).json.packName], [11, 'Test Pack'], `${path}: keeping this device’s copy`);
     }
   }
+});
+
+atest('the move file is the pack as the server last had it, and is refused while this device’s copy differs or a choice waits', async () => {
+  // Security review of stage C, item 2. The download lives on the Firestore page; here the page's
+  // real sync layer runs against the real server, with BACKEND read as 'firestore' for the button.
+  const w = await (await apiWorld()).seed();
+  w.state(3, PACK_STATE());
+  const serverJson = () => w.one('SELECT json FROM pack_state WHERE pack_id = ?', API_PACK).json;
+  const o = await (await apiClient(w, 'owner')).start();
+  o.run("BACKEND = 'firestore'");
+  const download = () => {
+    o.run("ui.overlay = null; toasts.length = 0; downloadMoveFile()");
+    const ov = o.get('ui.overlay');
+    return { kind: ov && ov.kind, file: ov && ov.text ? JSON.parse(ov.text) : null, toast: o.get('toasts')[0] || '' };
+  };
+  eq(o.get('[canDownloadMoveFile(), moveFileProblem()]'), [true, ''], 'the owner, synced, cannot download (the test proves nothing)');
+  let d = download();
+  eq([d.file && d.file.pack.rev, d.file && d.file.pack.device, d.file && d.file.pack.json === serverJson()], [3, 'seed', true],
+    'the move file is not the record the server sent');
+  // After this device's own save, the record is the one it wrote.
+  await o.edit("state.ledger.push({ id: 'l1', amountCents: 5 })");
+  d = download();
+  eq([d.file.pack.rev, d.file.pack.device, d.file.pack.json === serverJson()], [4, 'dev-owner', true], 'the move file is not the record this device saved');
+  // A copy here the server does not have (with nothing flagged unsaved): refused.
+  o.run("state.scouts.push({ id: 'ghost', name: 'Nobody' })");
+  d = download();
+  eq([d.kind, /isn’t the pack’s latest/.test(d.toast)], [null, true], 'a move file was made from a copy that differs from the server’s');
+  o.run('state.scouts.pop()');
+  eq(download().kind, 'export', 'control: the same device, back in step, cannot download');
+  // A sync-conflict closed with Escape: refused, and the chooser comes back — even with this
+  // device's copy made to match, since nobody has chosen.
+  const w2 = await (await apiWorld()).seed();
+  w2.state(3, PACK_STATE());
+  const c = await (await apiClient(w2, 'owner', { state: PACK_STATE({ scouts: [{ id: 's2', name: 'Bo' }] }) })).start();
+  c.run("BACKEND = 'firestore'");
+  eq(c.get('ui.overlay && ui.overlay.kind'), 'sync-conflict', 'no conflict (the test proves nothing)');
+  c.run('ui.overlay = null; state.scouts = JSON.parse(sync.conflict.json).scouts; toasts.length = 0; downloadMoveFile()');
+  eq([c.get('ui.overlay && ui.overlay.kind'), /Choose which copy to keep first/.test(c.get('toasts')[0] || '')], ['sync-conflict', true],
+    'a move file was made with a sync-conflict unanswered');
+  c.run('adoptRemote(ui.overlay.remote, {}); ui.overlay = null; downloadMoveFile()');
+  eq(c.get('ui.overlay && ui.overlay.kind'), 'export', 'control: once the cloud copy is chosen, the file cannot be made');
 });
 
 atest('api client: a server that is not set up is said plainly, and the device keeps its copy', async () => {
@@ -15242,7 +15283,7 @@ test('api client: the move file carries what the import takes, for this pack onl
     var sync = {};
     ${['arrOf', 'JOIN_CODE_RE', 'cleanContactLine', 'MOVE_KIND', 'MOVE_UID_RE', 'MOVE_ROLES', 'moveTime', 'buildMoveFile', 'moveImportBody'].map(decl).join('\n')}
     normalizeState = function (p) { return p && typeof p === 'object' && Array.isArray(p.scouts) ? p : null; };`, ctx);
-  const mf = JSON.parse(JSON.stringify(vm.runInContext(`buildMoveFile({ packId: 'P', state: { rev: 9, scouts: [{ id: 's' }] }, device: 'd',
+  const mf = JSON.parse(JSON.stringify(vm.runInContext(`buildMoveFile({ packId: 'P', record: { rev: 9, device: 'd', json: '{"rev":9,"scouts":[{"id":"s"}]}', updatedAt: 'x' },
     members: [{ uid: 'u1', role: 'admin', name: 'A', email: 'a@example.com', addedAt: 3, extra: 1 }, { uid: 'bad/uid', role: 'admin' },
       { uid: 'u2', role: 'owner' }, { uid: 'u3', role: 'pending', joinCode: 'abc', addedAt: { toMillis: function () { return 4; } } }],
     invites: [{ email: 'i@example.com', role: 'parent', invitedBy: 'someone' }],
@@ -15254,6 +15295,7 @@ test('api client: the move file carries what the import takes, for this pack onl
   eq(mf.invites, [{ email: 'i@example.com', role: 'parent' }], 'the invites');
   eq(mf.join, { open: true, code: 'abc', showStandings: false, showAmounts: false, contact: 'Ask me' }, 'the join settings');
   eq([mf.pack.rev, mf.pack.device, JSON.parse(mf.pack.json).scouts.length], [9, 'd', 1], 'the pack record');
+  eq(mf.pack, { rev: 9, device: 'd', json: '{"rev":9,"scouts":[{"id":"s"}]}' }, 'the pack record is not the server’s, exactly');
   ok(!('view' in mf), 'the move file carries the parent view');
   eq(vm.runInContext(`moveImportBody(${JSON.stringify(mf)}, 'Q')`, ctx).error, 'That file is for a different pack.', 'another pack’s file');
   const plain = JSON.parse(JSON.stringify(vm.runInContext(`moveImportBody({ rev: 2, scouts: [] }, 'P')`, ctx)));
