@@ -19655,6 +19655,27 @@ test('C3 review (minor): a ledger id is escaped wherever it goes into an attribu
   }
 });
 
+test('C3 re-check (minor): a past season’s id is escaped in every attribute of its row, so a stored id can’t add markup or a second action', () => {
+  // A restored backup can hold any string as an archive id (Pack · Past seasons, both kinds of row).
+  const bad = 'x" data-act="del-scout:s1"><img src=y>\'';
+  const x = sandbox(['esc', 'tinyDangerBtn', 'seasonArchiveRow', 'renderPastSeasons']);
+  vm.runInContext(`var ui = { armed: null, archiveOpen: {} }; ui.archiveOpen[${JSON.stringify(bad)}] = true;
+    var state = { archives: [
+      { id: ${JSON.stringify(bad)}, kind: 'season', year: 2025, closedAt: '', fundraising: { combinedCents: 0 }, budget: { actualCents: 0, balanceCents: 0 } },
+      { id: ${JSON.stringify(bad)}, kind: 'trails-end', year: 2024, grandCents: 0, importedAt: '', scouts: [], channel: { onlineCents: 0, wagonCents: 0, storefrontCents: 0 } }] };
+    function fmt() { return '$0.00'; } function fmtArchiveDate() { return ''; } function seasonBalanceLabel() { return 'Balance'; }
+    function seasonCarriedLine() { return ''; } function seasonArchiveTables() { return ''; } function archiveTables() { return ''; }`, x);
+  const decode = (v) => v.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  const attrs = (h) => [...h.matchAll(/\s(data-[a-z-]+)="([^"]*)"/g)].map((m) => [m[1], decode(m[2])]);
+  const h = x.renderPastSeasons();
+  ok(!/<img/.test(h) && !/del-scout:s1"/.test(h), 'the id added markup: ' + h);
+  const row = [['data-act', 'toggle-archive'], ['data-id', bad], ['data-act', 'del-archive:' + bad], ['data-act', 'archive-sheet:' + bad]];
+  eq(attrs(h), row.concat(row), 'a close-out row, then a Trail’s End row');
+  // Armed, the ✕ still knows it is the one armed: ui.armed holds the id as the handler read it.
+  vm.runInContext(`ui.armed = 'del-archive:' + ${JSON.stringify(bad)}`, x);
+  eq((x.renderPastSeasons().match(/class="btiny armed"/g) || []).length, 2, 'the armed ✕');
+});
+
 test('C3 review (minor): a viewer’s Un-void is refused on the tap, before anything moves', () => {
   const p = c2rPage();
   p.run("void2('u1', 'Entered twice'); editor = false; toasts = []; commits = 0; marks = []; act2('ledger-unvoid:u1'); act2('ledger-unvoid:u1')");

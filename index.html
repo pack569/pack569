@@ -7623,10 +7623,12 @@
       (armed ? 'Tap again to confirm' : esc(o.label || '')) + '</button>';
   }
   // ✕-style two-tap confirm for tight rows — same arm() contract as dangerBtn.
+  // Re-check of C3 (minor) — `key` carries a stored id (a past season's, say), so it is escaped
+  // into the attribute; ui.armed is compared with it as the handler reads it, decoded.
   function tinyDangerBtn(key, label) {
     var armed = ui.armed === key;
     var title = armed ? 'Tap again to confirm' : label;
-    return '<button type="button" class="btiny' + (armed ? ' armed' : '') + '" data-act="' + key + '" aria-label="' + esc(title) + '" title="' + esc(title) + '">✕</button>';
+    return '<button type="button" class="btiny' + (armed ? ' armed' : '') + '" data-act="' + esc(key) + '" aria-label="' + esc(title) + '" title="' + esc(title) + '">✕</button>';
   }
 
   /* ---------------- Wave 2: RSVP / headcounts ---------------- */
@@ -21114,7 +21116,7 @@
       if (a.kind === 'season') { h += seasonArchiveRow(a); return; }
       var open = !!ui.archiveOpen[a.id];
       h += '<div class="block-card">' +
-        '<div class="spread"><button type="button" class="exp-toggle" data-act="toggle-archive" data-id="' + a.id + '" aria-expanded="' + open + '">' +
+        '<div class="spread"><button type="button" class="exp-toggle" data-act="toggle-archive" data-id="' + esc(a.id) + '" aria-expanded="' + open + '">' +
         '<span class="chev">' + (open ? '▾' : '▸') + '</span><strong>' + a.year + ' season</strong> · ' + fmt(a.grandCents) +
         ' <span class="pill navy">Trail’s End import</span></button>' +
         tinyDangerBtn('del-archive:' + a.id, 'Delete ' + a.year + ' season') + '</div>' +
@@ -21124,7 +21126,7 @@
       if (open) {
         h += '<div style="margin-top:10px">' + archiveTables(a) + '</div>' +
           '<div class="row no-print" style="margin-top:10px">' +
-          '<button type="button" class="btn small" data-act="archive-sheet:' + a.id + '">Print / Copy</button></div>';
+          '<button type="button" class="btn small" data-act="archive-sheet:' + esc(a.id) + '">Print / Copy</button></div>';
       }
       h += '</div>';
     });
@@ -27035,7 +27037,7 @@
   function seasonArchiveRow(a) {
     var open = !!ui.archiveOpen[a.id];
     var h = '<div class="block-card">' +
-      '<div class="spread"><button type="button" class="exp-toggle" data-act="toggle-archive" data-id="' + a.id + '" aria-expanded="' + open + '">' +
+      '<div class="spread"><button type="button" class="exp-toggle" data-act="toggle-archive" data-id="' + esc(a.id) + '" aria-expanded="' + open + '">' +
       '<span class="chev">' + (open ? '▾' : '▸') + '</span><strong>' + a.year + ' program year</strong> · ' + fmt(a.fundraising.combinedCents) +
       ' <span class="pill navy">Season close-out</span></button>' +
       tinyDangerBtn('del-archive:' + a.id, 'Delete ' + a.year + ' close-out') + '</div>' +
@@ -27045,7 +27047,7 @@
     if (open) {
       h += '<div style="margin-top:10px">' + seasonArchiveTables(a) + '</div>' +
         '<div class="row no-print" style="margin-top:10px">' +
-        '<button type="button" class="btn small" data-act="archive-sheet:' + a.id + '">Print / Copy</button></div>';
+        '<button type="button" class="btn small" data-act="archive-sheet:' + esc(a.id) + '">Print / Copy</button></div>';
     }
     return h + '</div>';
   }
