@@ -9116,6 +9116,18 @@ test('Firestore: an edit made while a save is out is still sent, and another dev
     'control: a save with no edit behind it left the device unsaved');
 });
 
+test('Firestore: only the server’s answer, not the cache’s, puts the pill back to "Synced"', () => {
+  // Review of 86dfe38..4347cc6, item 2. Offline, a save fails (syncFail: 'offline'); the feed,
+  // which asks for metadata changes, then answers from the cache. That is not the server.
+  const mine = { rev: 2, packName: 'Pack', scouts: [{ id: 'a' }], ledger: [], fundraisers: [] };
+  const ctx = fsFeedCtx(mine, `reads['packs/P'] = ${JSON.stringify({ rev: 2, device: 'd2', json: JSON.stringify(mine) })};`);
+  vm.runInContext("watches[0].next(snapOf('packs/P', {})); sync.mode = 'offline'; sync.error = 'unavailable';", ctx);
+  vm.runInContext("watches[0].next(snapOf('packs/P', { fromCache: true }))", ctx);
+  eq(vm.runInContext('[sync.mode, sync.error]', ctx), ['offline', 'unavailable'], 'a cached answer after a failed save read as back online');
+  vm.runInContext("watches[0].next(snapOf('packs/P', {}))", ctx);
+  eq(vm.runInContext('[sync.mode, sync.error]', ctx), ['online', ''], 'control: the server’s answer did not read as back online');
+});
+
 test('Firestore: another device’s save that lands while this device’s save is out is never lost', () => {
   // Review of 86dfe38..4347cc6, item 1 (its reproduction is the first half). While this
   // device's push is out, another device saves ledger row l9. Two orders, both real: its save

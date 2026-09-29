@@ -11583,7 +11583,10 @@
     // rather than writing on top of it.
     var wasFirst = sync.firstSnap || !!(serverRevs && rec && !sync.remoteRec);
     sync.firstSnap = false;
-    if (sync.mode !== 'online') { sync.mode = 'online'; sync.error = ''; renderSyncPill(); if (ui.tab === 'pack') render(); }
+    // Only the server's answer says this device is back online (review of 86dfe38..4347cc6,
+    // item 2): the feed asks for metadata changes, so offline, after a failed save, the cache
+    // answers too, and the pill would read "Synced" over edits that are not.
+    if (fromServer && sync.mode !== 'online') { sync.mode = 'online'; sync.error = ''; renderSyncPill(); if (ui.tab === 'pack') render(); }
     // Parent phase — publish the sanitized copy once per connection too, so parents aren't
     // waiting on the next leader edit for their first schedule. Debounced + fingerprinted,
     // so the rest of this function settles on the winning state before anything is written,
