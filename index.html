@@ -11457,9 +11457,16 @@
       // 15 s behind, where Firestore's listener would already have flagged it), so it is merged
       // exactly as a clobber is. Setting the flag again on a rerun changes nothing.
       if (be.serverRevs && remote && remoteRev !== (state.rev || 0)) sync.clobber = true;
+      // Firestore (review of 86dfe38..4347cc6, item 1): the listener does not always flag it
+      // first. This read and the feed race, so another device's save can be read here before
+      // its snapshot arrives. A rev newer than any this device has had (its own, or the last
+      // the server sent) is such a save, and is merged the same way.
+      var heardRev = Math.max(state.rev || 0, sync.remoteRec && typeof sync.remoteRec.rev === 'number' ? sync.remoteRec.rev : 0);
+      if (!be.serverRevs && remote && remoteRev > heardRev) sync.clobber = true;
       // Wave 18(5) — about to overwrite a newer remote copy we skipped while dirty:
       // pull its append-only log items in first (fresh from THIS attempt's read).
-      var mergedN = (sync.clobber && remote) ? mergeRemoteAppendOnly(remote) : 0;
+      var clobbered = !!(sync.clobber && remote);
+      var mergedN = clobbered ? mergeRemoteAppendOnly(remote) : 0;
       var nextRev = be.serverRevs ? remoteRev + 1 : Math.max(state.rev || 0, remoteRev) + 1;
       var record = {
         rev: nextRev,
@@ -11467,7 +11474,7 @@
         device: sync.deviceId,
         json: JSON.stringify(state)
       };
-      return { record: record, result: { nextRev: nextRev, mergedN: mergedN, record: record } };
+      return { record: record, result: { nextRev: nextRev, mergedN: mergedN, clobbered: clobbered, heard: sync.remoteRec, record: record } };
     }).then(function (res) {
       if (sync.session !== mine) return;
       if (res.unheard) {
@@ -11489,18 +11496,30 @@
       // its save asks for a push (schedulePersist). Read before state.rev moves on, as the sent
       // copy was.
       var editedSince = JSON.stringify(state) !== res.record.json;
+      // Another device's save that landed on top of this one while it was out (review of
+      // 86dfe38..4347cc6, item 1): the feed's server answer (sync.remoteRec) came after the copy
+      // was built and is newer than what was written. It is not in what was sent, and its
+      // snapshot has come and gone, so it is kept here: with no edit since, this device takes
+      // it; with one, it stays dirty and flagged (onRemoteSnap set sync.clobber), and the next
+      // push merges it.
+      var rr = sync.remoteRec;
+      var later = rr && rr !== res.heard && typeof rr.rev === 'number' && rr.rev > res.nextRev ? rr : null;
       state.rev = res.nextRev;
-      // What the server now holds is exactly what this device sent.
-      sync.remoteRec = { rev: res.record.rev, device: res.record.device, json: res.record.json };
-      if (!editedSince) sync.dirty = false;
-      else if (sync.dirty) scheduleSyncPush();
-      save(); // no re-render needed — nothing visible changed…
-      scheduleParentViewRefresh(); // Parent phase — regenerate the sanitized copy (leaders only)
-      if (sync.clobber) {
-        sync.clobber = false;
-        if (res.mergedN > 0) render(); // …unless the merge appended remote items
+      // What the server now holds is exactly what this device sent, unless a later save is.
+      if (!later) sync.remoteRec = { rev: res.record.rev, device: res.record.device, json: res.record.json };
+      if (res.clobbered) {
+        if (res.mergedN > 0) render(); // the merge appended remote items
         showToast('Another device saved changes while you were editing — check recent entries.');
       }
+      // Everything heard so far was in what was merged and sent, unless a later save came.
+      if (!later) sync.clobber = false;
+      if (later && !editedSince) adoptRemote(later, { toast: true });
+      else {
+        if (!editedSince) sync.dirty = false;
+        else if (sync.dirty) scheduleSyncPush();
+        save(); // no re-render needed — nothing visible changed
+      }
+      scheduleParentViewRefresh(); // Parent phase — regenerate the sanitized copy (leaders only)
       if (sync.mode !== 'online') { sync.mode = 'online'; sync.error = ''; renderSyncPill(); if (ui.tab === 'pack') render(); }
     }).catch(function (err) {
       if (sync.session !== mine) return;

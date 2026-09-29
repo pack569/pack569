@@ -8911,8 +8911,9 @@ test('a push reads, merges and writes in one retried step, and the rev always cl
       function clearTimeout() {} function setTimeout() {}
       var ui = { tab: 'home' };
       var state = { rev: ${over.localRev}, scouts: [] };
+      // The device has heard the first attempt's record (the feed brought it): only a later one is new to it.
       var sync = { backend: fakeBe, pack: { docId: 'P' }, session: 1, deviceId: 'dev1', clobber: ${!!over.clobber},
-        dirty: true, mode: 'online' };
+        dirty: true, mode: 'online', remoteRec: ${JSON.stringify(over.remotes[0])} };
       ${slice('packLinked')}
       ${slice('syncPush')}
       syncPush();`, ctx);
@@ -8948,7 +8949,8 @@ test('Firestore: a save before the pack record’s first answer never writes ove
       var ui = { tab: 'home', overlay: null };
       var state = ${JSON.stringify(o.local)};
       var sync = { backend: firestoreBackend, pack: firestoreBackend.open('P'), session: 1, deviceId: 'dev1', clobber: false,
-        dirty: true, mode: 'online', notice: '', firstSnap: ${o.firstSnap}, remoteRec: null, conflict: null, pushTimer: null };
+        dirty: true, mode: 'online', notice: '', firstSnap: ${o.firstSnap}, conflict: null, pushTimer: null,
+        remoteRec: ${o.firstSnap ? 'null' : JSON.stringify(o.remote || null)} };   // once answered, the feed brought it
       ${o.remote ? `reads['packs/P'] = ${JSON.stringify(o.remote)};` : ''}
       ${['packLinked', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'adoptRemote', 'onRemoteSnap', 'syncPush'].map(decl).join('\n')}
       syncPush();`);
@@ -9112,6 +9114,56 @@ test('Firestore: an edit made while a save is out is still sent, and another dev
   // Control: nothing changed during the save, so the device is clean and takes the other save.
   eq(run(''), { afterPush: [false, 0, 1], name: 'Pack', dirty: false, sent: ['Pack', ['l1']], sets: 1 },
     'control: a save with no edit behind it left the device unsaved');
+});
+
+test('Firestore: another device’s save that lands while this device’s save is out is never lost', () => {
+  // Review of 86dfe38..4347cc6, item 1 (its reproduction is the first half). While this
+  // device's push is out, another device saves ledger row l9. Two orders, both real: its save
+  // lands on top of this one (rev 4 over this device's 3), or the transaction reads it before
+  // its snapshot arrives (this device writes 5 over it). Either way l9 must not be lost, with
+  // or without an edit made while the push was out.
+  const mine = { rev: 2, packName: 'Pack', scouts: [{ id: 'a' }], ledger: [], fundraisers: [] };
+  const otherAt = (rev) => ({ rev, device: 'd3', json: JSON.stringify({ rev, packName: 'Pack', scouts: [{ id: 'a' }], ledger: [{ id: 'l9' }], fundraisers: [] }) });
+  // `before`: runs before the push. `during`: once the push's copy is built, before its
+  // result comes back. `after`: once the push is done.
+  const run = (before, during, after) => {
+    const ctx = fsFeedCtx(mine, `
+      var realTx = fakeFirestore.runTransaction, done = false;
+      fakeFirestore.runTransaction = function (db, body) {
+        var out = realTx(db, body);
+        if (!done) { done = true; ${during} }
+        return out;
+      };
+      reads['packs/P'] = ${JSON.stringify({ rev: 2, device: 'd2', json: JSON.stringify(mine) })};`);
+    vm.runInContext("watches[0].next(snapOf('packs/P', {})); state.ledger.push({ id: 'l1' }); scheduleSyncPush(); " + before + ' runTimers();', ctx);
+    vm.runInContext(after + ' runTimers();', ctx);
+    return JSON.parse(JSON.stringify(vm.runInContext(`({ sets: txSets.map(function (s) { var j = JSON.parse(s[1].json); return [s[1].rev, j.ledger.map(function (l) { return l.id; }), j.packName]; }),
+      ledger: state.ledger.map(function (l) { return l.id; }), name: state.packName, dirty: sync.dirty, clobber: sync.clobber, rev: state.rev,
+      heard: sync.remoteRec && sync.remoteRec.rev, toasts: toasts })`, ctx)));
+  };
+  const lands = `reads['packs/P'] = ${JSON.stringify(otherAt(4))}; watches[0].next(snapOf('packs/P', {}));`;
+  const merged = 'Another device saved changes while you were editing — check recent entries.';
+  // It lands on top, no edit since: this device takes it (the server's copy is the later one).
+  eq(run('', lands, ''), { sets: [[3, ['l1'], 'Pack']], ledger: ['l9'], name: 'Pack', dirty: false, clobber: false, rev: 4, heard: 4,
+    toasts: ['Updated from another device'] }, 'a save that landed on this one while it was out was lost (no edit since)');
+  // It lands on top, with an edit since: this device stays unsaved and its next save merges l9.
+  eq(run('', lands + " state.packName = 'X';", ''), { sets: [[3, ['l1'], 'Pack'], [5, ['l1', 'l9'], 'X']], ledger: ['l1', 'l9'], name: 'X',
+    dirty: false, clobber: false, rev: 5, heard: 5, toasts: [merged] }, 'a save that landed on this one while it was out was lost (edit since)');
+  // The push reads it before its snapshot arrives, which comes during the push or after it.
+  const read = `reads['packs/P'] = ${JSON.stringify(otherAt(4))};`;
+  const snap = "watches[0].next(snapOf('packs/P', {}));";
+  for (const [during, after, how] of [[snap, '', 'during'], ['', snap, 'after'], [snap + " state.packName = 'X';", '', 'during, edit since']]) {
+    const edited = /'X'/.test(during);
+    // A snapshot after the push is the server's answer as it came (rev 4); the echo of this
+    // device's own save, not played here, moves it on. Its rev is below this device's, so
+    // nothing is adopted or merged from it.
+    eq(run(read, during, after), { sets: [[5, ['l1', 'l9'], 'Pack']].concat(edited ? [[6, ['l1', 'l9'], 'X']] : []), ledger: ['l1', 'l9'],
+      name: edited ? 'X' : 'Pack', dirty: false, clobber: false, rev: edited ? 6 : 5, heard: after ? 4 : edited ? 6 : 5, toasts: [merged] },
+      'a save the push read before its snapshot came (' + how + ') was written over');
+  }
+  // Control: no other save; the push is as before, with no toast.
+  eq(run('', '', ''), { sets: [[3, ['l1'], 'Pack']], ledger: ['l1'], name: 'Pack', dirty: false, clobber: false, rev: 3, heard: 3, toasts: [] },
+    'control: a plain save changed');
 });
 
 test('the pack record feed ignores its own echoes and keeps the raw record for the conflict screen', () => {
@@ -16019,7 +16071,7 @@ atest('api client: sign-out and a halt stop every poll', async () => {
   eq(c.get('[apiBackend.feeds.length, apiBackend.timer, sync.user]'), [0, null, null], 'polling after sign-out');
 });
 
-test('api client: on the pack’s server the rev is the server’s, a save it has not seen is merged, and Firestore is unchanged', () => {
+test('api client: on the pack’s server the rev is the server’s, and a save it has not seen is merged', () => {
   const push = (over) => {
     const ctx = vm.createContext({});
     vm.runInContext(`
@@ -16056,8 +16108,10 @@ test('api client: on the pack’s server the rev is the server’s, a save it ha
   eq(push({ serverRevs: true, remote: { rev: 9 }, localRev: 7 }), [10, [9], 10], 'a save this device had not seen was not merged');
   eq(push({ serverRevs: true, remote: { rev: 2 }, localRev: 5 }), [3, [2], 3], 'a local rev ahead of the server’s was kept (the server stores 3)');
   eq(push({ serverRevs: true, remote: null, localRev: 5 }), [1, [], 1], 'a first save');
-  // Firestore: exactly as before.
-  eq(push({ remote: { rev: 9 }, localRev: 7 }), [10, [], 10], 'Firestore merged without a clobber');
+  // Firestore: a save this device has heard of is not merged without a clobber; one it has not
+  // heard of (the push read it before the feed brought it) is (review of 86dfe38..4347cc6, item 1).
+  eq(push({ remote: { rev: 9 }, localRev: 9 }), [10, [], 10], 'Firestore merged without a clobber');
+  eq(push({ remote: { rev: 9 }, localRev: 7 }), [10, [9], 10], 'Firestore: a save this device had not heard of was not merged');
   eq(push({ remote: { rev: 2 }, localRev: 5 }), [6, [], 6], 'Firestore no longer keeps a local rev ahead');
   // The first answer sets the server's rev whichever copy wins; an empty device seeds nothing.
   const snap = (over) => {
