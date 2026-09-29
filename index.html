@@ -7843,11 +7843,14 @@
   }
   // Append one event to the pack's ledger log; returns it (null if ledgerEvent refused it). The
   // one way anything is added to state.ledgerLog.
+  // Security re-review of C2 (minor) — capped as it is written (mergeLedgerLog), not only at the
+  // next load or merge: until then a device's log could grow past the cap, into the save.
   function logLedger(op, rowId, more) {
     var ev = ledgerEvent(op, rowId, ledgerWho(), more);
     if (!ev) return null;
     if (!Array.isArray(state.ledgerLog)) state.ledgerLog = [];
     state.ledgerLog.push(ev);
+    state.ledgerLog = mergeLedgerLog(state.ledgerLog, []);
     return ev;
   }
   // The two devices' logs as one: every event from either, by id, in time order (then id), so
@@ -28197,7 +28200,12 @@
     }
     if (act === 'import-ics') { document.getElementById('icsFile').click(); return; }
     if (act === 'confirm-import') {
+      var ciLog = state.ledgerLog;
       state = restoreGone(ui.overlay.data, state.gone, Date.now());
+      // Security re-review of C2 (#1) — the book is the backup's, but its history is not: this
+      // device's log and the backup's, as one (mergeLedgerLog). The backup's alone lost every
+      // change made since it was taken, for good, and so let anyone restore away their own trail.
+      state.ledgerLog = mergeLedgerLog(ciLog, state.ledgerLog);
       // Treasurer review of C2 (L-5) — the ledger's log says a backup was restored, and what the
       // book held afterwards: from here on the book is the backup's, whatever it held before.
       logLedger('restore', 'book', { why: 'A backup was restored on this device. The book now holds the backup’s ' +

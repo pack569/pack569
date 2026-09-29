@@ -17186,7 +17186,7 @@ test('stopgap follow-up 4: the Trail’s End import says a re-import puts stale 
 
 test('stopgap follow-up 6: a restored backup puts back what the pack had deleted since, on every device', () => {
   // The handler restores through restoreGone, with this device's marks, now.
-  ok(/if \(act === 'confirm-import'\) \{\s*state = restoreGone\(ui\.overlay\.data, state\.gone, Date\.now\(\)\);/.test(SCRIPT),
+  ok(/if \(act === 'confirm-import'\) \{\s*var ciLog = state\.ledgerLog;\s*state = restoreGone\(ui\.overlay\.data, state\.gone, Date\.now\(\)\);/.test(SCRIPT),
     'confirm-import does not mark what the backup puts back');
   const seed = JSON.stringify(goneSeedNorm());
   const RESTORE = `state = restoreGone(normalizeState(${seed}), state.gone, Date.now()); commit()`;
@@ -17961,11 +17961,13 @@ test('C1: close-out opens a new book for the new year, without last year’s asi
   const bpv = codeOnly(BPV());
   ok(!/ledgerAside|ledgerLog|statements|closedBooks|teImport|ledgerLocked|ledgerEvent/.test(bpv), 'buildParentView reads the audit model');
   // C2 made the page read them. The log is append-only: only logLedger adds to it, and only the
-  // normalizer, the sync merge (a union), freshState and close-out set it.
+  // normalizer, the sync merge (a union), freshState, close-out and a restore (a union, security
+  // re-review of C2 #1) set it.
   const writes = codeOnly(SCRIPT).split('\n').filter((l) => /ledgerLog\s*(=[^=]|\.(push|splice|pop|shift|unshift|length\s*=))/.test(l.replace(/\/\/.*$/, '')));
   eq(writes.map((l) => l.trim()), ['if (!Array.isArray(d.ledgerLog)) d.ledgerLog = [];', 'd.ledgerLog = d.ledgerLog.filter(plainObj);',
     'd.ledgerLog = mergeLedgerLog(d.ledgerLog, []);', 'if (!Array.isArray(state.ledgerLog)) state.ledgerLog = [];', 'state.ledgerLog.push(ev);',
-    'state.ledgerLog = mergeLedgerLog(state.ledgerLog, remote.ledgerLog);', 'state.ledgerLog = [];'], 'something else writes the ledger log');
+    'state.ledgerLog = mergeLedgerLog(state.ledgerLog, []);', 'state.ledgerLog = mergeLedgerLog(state.ledgerLog, remote.ledgerLog);', 'state.ledgerLog = [];',
+    'state.ledgerLog = mergeLedgerLog(ciLog, state.ledgerLog);'], 'something else writes the ledger log');
 });
 
 /* ================================================================
@@ -18156,7 +18158,7 @@ const C2_FNS = ['fmt', 'fmtDate', 'fmtDateShort', 'toCents', 'toCentsSigned', 'e
   'ledgerDateReconciled', 'ledgerLockedWhy', 'LEDGER_MAX_CENTS', 'LEDGER_EDIT_FIELDS', 'LEDGER_LOCKED_FIELDS', 'ledgerRowDiff',
   'ledgerRowFields', 'ledgerEditRefusal', 'ledgerBackdateWarning', 'applyLedgerEdit', 'ledgerWho', 'logLedger', 'logOpening',
   'openingLockedWhy', 'LEDGER_OPS', 'ledgerEvent', 'ledgerLogClip', 'ledgerStampClean', 'stampApproved', 'stampEntered', 'ledgerActorName',
-  'ledgerDraftDefault', 'ledgerDraft', 'arm'];
+  'ledgerDraftDefault', 'ledgerDraft', 'arm', 'mergeLedgerLog', 'utf8Bytes'];
 // The book is reconciled through Aug 31 from a Jul 1 opening. u1 is open; r1 is ticked (after the
 // period); p1 is dated in the period, not ticked; q1 is ticked in the period by a page from before
 // any stamps; pre is before the opening date; m1 is a tier make-up in the period.
@@ -18181,6 +18183,9 @@ function c2Page(o) {
     var ui = { armed: null }, sync = { deviceId: 'dev1', user: { uid: 'u1', displayName: 'Pat Treasurer' } };
     var toasts = [], toastOpts = [], armMs = [], commits = 0, renders = 0, seq = 0;
     function uid() { seq += 1; return 'id' + seq; }
+    // The clock moves on a millisecond a reading: logLedger keeps the log in time order (then id,
+    // and 'lg-id10' sorts before 'lg-id9'), so events one test writes stay in the order written.
+    Date.now = (function (f) { var t = 0; return function () { t += 1; return f() + t; }; })(Date.now);
     function showToast(m, o) { toasts.push(m); toastOpts.push(o === undefined ? null : o); } function render() { renders += 1; } function commit() { commits += 1; }
     function setTimeout(f, ms) { armMs.push(ms); return 0; } function clearTimeout() {}
     function refundOverCreditWarning() { return ''; } function entryNeedsReceipt() { return false; } function ledgerLineIsDirect() { return false; }
@@ -18422,7 +18427,7 @@ test('C2: the opening figure and date are read-only once a statement is reconcil
 test('C2: a season of ledger events costs what the banner says', () => {
   // The C2 banner: an edit about 250 bytes, a tick about 190, a season (~330 events) about 65 KB.
   const p = c2Page();
-  p.run("sync.user = { uid: 'Xy3kP0aQ9bT2cR7dE4fG5hJ6kL8m', displayName: 'Patricia Treasurer' }; sync.deviceId = 'mfo2kz3a1b2c3d'; uid = function () { return 'mfo2kz3a1b2c3d'; }");
+  p.run("sync.user = { uid: 'Xy3kP0aQ9bT2cR7dE4fG5hJ6kL8m', displayName: 'Patricia Treasurer' }; sync.deviceId = 'mfo2kz3a1b2c3d'; uid = (function (n) { return function () { n += 1; return 'mfo2kz3a1b2c3' + n; }; })(0)");
   p.run("row('u1').id = 'mfo2kz3a9z8y7x'; change('led-desc', 'mfo2kz3a9z8y7x', 'Pinewood trophies and ribbons'); change('led-rec', 'mfo2kz3a9z8y7x', '', true)");
   const [edit, tick] = p.get('log().map(function (e) { return JSON.stringify(e).length; })');
   ok(edit > 200 && edit < 300, `an edit event is ${edit} bytes`);
@@ -18745,12 +18750,13 @@ test('C2 treasurer L-5: un-reconciling takes an optional why, logged with it; re
   const le = slice('renderLedgerEntries');
   ok(/\(ui\.armed === 'ledger-unreconcile:' \+ e\.id\s*\? '<input class="lname" data-ch="ledger-unrec-why" value="' \+ esc\(ui\.unrecWhy \|\| ''\) \+ '"/.test(le), 'the why box');
   ok(/var urWhyEl = e\.target\.closest\('input\[data-ch="ledger-unrec-why"\]'\);\s*if \(urWhyEl\) ui\.unrecWhy = urWhyEl\.value;/.test(SCRIPT), 'the why is not kept as typed');
-  // Restoring a backup: one 'restore' event, row 'book', saying what the book then holds.
+  // Restoring a backup: one 'restore' event, row 'book', saying what the book then holds, after
+  // this device's log and the backup's as one (security re-review of C2, #1: lg-old is kept).
   const q = c2tPage();
   q.run("state.ledgerLog = [{ id: 'lg-old', op: 'tick', row: 'u1' }]; ui.overlay = { data: { ledger: [{ id: 'a' }, { id: 'b' }], book: { reconciledThrough: '2026-07-31' }, ledgerLog: [{ id: 'lg-b', op: 'tick', row: 'a' }] } };" +
     " act3('confirm-import')");
   eq([q.get('state.ledger.length'), q.get('log().map(function (e) { return [e.id, e.op, e.row, e.why || \'\', e.by]; })'), q.get('commits'), q.get('ui.overlay')],
-    [2, [['lg-b', 'tick', 'a', '', undefined], ['lg-id1', 'restore', 'book', 'A backup was restored on this device. The book now holds the backup’s 2 entries, reconciled through 2026-07-31.', 'Pat Treasurer']], 1, null],
+    [2, [['lg-b', 'tick', 'a', '', undefined], ['lg-old', 'tick', 'u1', '', undefined], ['lg-id1', 'restore', 'book', 'A backup was restored on this device. The book now holds the backup’s 2 entries, reconciled through 2026-07-31.', 'Pat Treasurer']], 1, null],
     'the restore event');
   const r = c2tPage();
   r.run("ui.overlay = { data: { ledger: [{ id: 'a' }], book: { reconciledThrough: '' }, ledgerLog: [] } }; act3('confirm-import')");
@@ -18849,6 +18855,64 @@ test('C2 treasurer M-4: the log’s screens are leaders-only, and close-out says
   }
   ok(/'<li><strong>Change history:<\/strong> Download the snapshot — the ledger’s change history is only kept there\.<\/li>'/.test(slice('renderCloseoutOverlay')),
     'the close-out screen does not say where the change history is kept');
+});
+
+/* ================================================================
+   Security re-review of C2 (fd73721, FIX FIRST) — the fixes.
+   ================================================================ */
+// The page's own confirm-import block, on a device of a pair, logging through the page's logLedger.
+const C2S_EXTRA = `${C2_LOG_EXTRA}
+  function confirmImport(data) { ui.overlay = { kind: 'import', data: data }; var act = 'confirm-import';
+    (function () {\n${c2Block(/    if \(act === 'confirm-import'\) \{[\s\S]*?\n    \}/, 'confirm-import')}\n})(); }`;
+// A backup from before A's edit: the seed, its log one tick from Sep 1.
+const C2S_BACKUP = () => JSON.stringify(goneSeedNorm({ ledgerLog: [{ id: 'lg-bk', at: '2026-09-01T00:00:00.000Z', by: 'Sam', row: 'l1', op: 'tick' }] }));
+const C2S_EDIT = "logLedger('edit', 'l1', { f: { description: ['Dues', 'Dues (Ada)'] } }); state.ledger[0].description = 'Dues (Ada)'; commit()";
+const opRows = (log) => log.map((e) => [e.op, e.row]);
+const C2S_AFTER = [['tick', 'l1'], ['edit', 'l1'], ['restore', 'book']];
+test('C2 re-review #1, Firestore: restoring a backup keeps the ledger’s history since it was taken, and logs the restore last', () => {
+  const { a, b, server } = fsGonePair();
+  a.run(C2S_EXTRA); b.run(C2S_EXTRA);
+  a.run(C2S_EDIT); a.push(); b.hear();
+  a.run(`confirmImport(normalizeState(${C2S_BACKUP()}))`);
+  eq([a.get('state.ledger[0].description'), opRows(a.get('state.ledgerLog'))], ['Dues', C2S_AFTER], 'A after the restore: the edit since the backup was lost');
+  a.push();
+  eq(opRows(server().ledgerLog), C2S_AFTER, 'the pack record');
+  // A device that heard the edit takes the restore, and loses nothing; nor, dirty, does its own save.
+  b.hear();
+  eq(opRows(b.get('state.ledgerLog')), C2S_AFTER, 'B after the restore');
+  b.run(B1); b.run(C2S_EDIT); b.push();
+  eq(opRows(server().ledgerLog), C2S_AFTER.concat([['edit', 'l1']]), 'B’s save after the restore');
+  // A device with an unsaved change from before the restore merges it, the restore still last.
+  const p = fsGonePair();
+  p.a.run(C2S_EXTRA); p.b.run(C2S_EXTRA);
+  p.a.run(C2S_EDIT); p.a.push();
+  p.b.run(B1);
+  p.a.run(`confirmImport(normalizeState(${C2S_BACKUP()}))`); p.a.push();
+  p.b.hear(); p.b.push();
+  eq(opRows(p.server().ledgerLog), C2S_AFTER, 'a dirty device’s merge');
+});
+
+atest('C2 re-review #1, api: restoring a backup keeps the ledger’s history since it was taken, and logs the restore last', async () => {
+  const { a, b, server } = await apiGonePair();
+  a.run(C2S_EXTRA); b.run(C2S_EXTRA);
+  await a.edit(C2S_EDIT);
+  await b.poll();
+  b.run(B1);
+  // Read on A before its save: a save here merges with the pack's copy (the backup's rev is older),
+  // which would bring the edit back and hide the loss.
+  a.run(`confirmImport(${C2S_BACKUP()})`);
+  eq(opRows(a.get('state.ledgerLog')), C2S_AFTER, 'A after the restore: the edit since the backup was lost');
+  await settle([a], 800);
+  eq(opRows(server().ledgerLog), C2S_AFTER, 'the restore');
+  await settle([b], 800);
+  eq(opRows(server().ledgerLog), C2S_AFTER, 'B’s save after the restore');
+});
+
+test('C2 re-review (minor): the ledger log is capped as each event is written', () => {
+  const p = c2Page();
+  p.run("for (var i = 0; i < 1000; i++) state.ledgerLog.push({ id: 'lg-' + (1000 + i), at: new Date(Date.UTC(2026, 8, 1) + i * 60000).toISOString(), row: 'u1', op: 'tick' });" +
+    " logLedger('untick', 'u1')");
+  eq([p.get('log().length'), p.get('log()[0].id'), p.get('log()[999].op')], [1000, 'lg-1001', 'untick'], 'the cap');
 });
 
 /* ---------------- report ---------------- */
