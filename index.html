@@ -8643,6 +8643,10 @@
     // keepLocalCopy). Closing the chooser with Escape leaves it set: nothing is written, and no
     // move file is made, until they choose.
     conflict: null,
+    // LIVE STOPGAP — the rev of the copy from the other side of a close-out that the leader chose
+    // to write over ("Keep this device's copy", keepLocalCopy). syncPush writes over exactly that
+    // copy whole; any other is merged or asked about as usual. Cleared by a save, and by syncStop.
+    seasonKeptRev: null,
     session: null,     // token — a passphrase change cancels in-flight work from the old session
     backend: null,     // the loaded backend adapter (firestoreBackend or apiBackend) — see loadBackend
     pack: null,        // the pack-record handle from backend.open(); null = nothing may push
@@ -8940,6 +8944,7 @@
     sync.firstSnap = true;
     sync.remoteRec = null;
     sync.conflict = null;
+    sync.seasonKeptRev = null;
     sync.dirty = false;
     sync.session = null;
     sync.mode = 'local';
@@ -11640,7 +11645,9 @@
       // pull its append-only log items in first (fresh from THIS attempt's read).
       var clobbered = !!(sync.clobber && remote);
       // LIVE STOPGAP — a save from the other side of a close-out is not merged into or written
-      // over (seasonMoved). Nothing is sent; the leader is asked which copy to keep.
+      // over (seasonMoved). Nothing is sent; the leader is asked which copy to keep. The one copy
+      // they chose to write over (sync.seasonKeptRev) is written over whole, and only that one.
+      if (clobbered && remoteRev === sync.seasonKeptRev) clobbered = false;
       if (clobbered && seasonMoved(remote)) return { record: null, result: { season: remote } };
       var mergedN = clobbered ? mergeRemoteAppendOnly(remote, keptRows) : 0;
       var nextRev = be.serverRevs ? remoteRev + 1 : Math.max(state.rev || 0, remoteRev) + 1;
@@ -11700,6 +11707,7 @@
       if (keptRows.length) showToast(keptReconciledText(keptRows), { duration: 10000 });
       // Everything heard so far was in what was merged and sent, unless a later save came.
       if (!later) sync.clobber = false;
+      sync.seasonKeptRev = null;
       if (later && !editedSince) adoptRemote(later, { toast: true });
       else {
         if (!editedSince) sync.dirty = false;
@@ -11877,10 +11885,12 @@
     // BACKEND 'api': the copy being overwritten is the one this leader was just shown, so it
     // counts as seen; only a save made after it is merged in at the push (syncPush).
     if (sync.backend && sync.backend.serverRevs && kept && kept.remote && typeof kept.remote.rev === 'number') state.rev = kept.remote.rev;
-    // Nor is anything merged from it: this copy goes over it whole. (A copy from the other side
-    // of a close-out, seasonMoved, is asked about while a newer save is flagged, and would
-    // otherwise be asked about again, or merged into the year it is not in.)
-    sync.clobber = false;
+    // A copy from the other side of a close-out (seasonMoved) is not merged from: this copy goes
+    // over exactly that one, whole (syncPush), and a save made after it is asked about again.
+    // Anything else leaves sync.clobber as it was (security review of the stopgap, S2): the
+    // flag can be another leader's same-year save, heard before a re-subscribe brought this
+    // chooser up, and its sales are merged in as they always were.
+    if (kept && kept.remote && seasonMoved(kept.remote)) sync.seasonKeptRev = kept.remote.rev;
     render();
     scheduleSyncPush(); // rev bumps past the cloud copy's in the push transaction
   }

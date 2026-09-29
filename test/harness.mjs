@@ -16190,7 +16190,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
       function canEdit() { return true; } function render() {} function showToast() {} function scheduleSyncPush() { pushed += 1; }
       var ui = { overlay: { kind: 'sync-conflict', remote: { rev: 9 } } }, state = { rev: 2 };
       var sync = { backend: { serverRevs: ${serverRevs} } };
-      ${decl('keepLocalCopy')}
+      ${['seasonMoved', 'keepLocalCopy'].map(decl).join('\n')}
       keepLocalCopy();`, ctx);
     return vm.runInContext('[state.rev, pushed, ui.overlay]', ctx);
   };
@@ -16821,6 +16821,51 @@ test('stopgap, Firestore: last season does not come back from a device that has 
   eq([c.rev(), eIds(c.server())], [5, ['a1', 'b1', 'old1', 'old2', 'x1', 'x2']], 'control: an ordinary merge');
 });
 
+test('stopgap, Firestore: "Keep this device’s copy" merges another leader’s same-year save it had heard, and writes over only the close-out it was shown', () => {
+  // Security S2. B has an unsaved edit and hears A's save (flagged); then the pack feed starts
+  // again (a sign-in change, a re-subscribe) and the first answer brings the chooser up.
+  const { a, b, server } = fsGonePair();
+  b.run(B1);
+  a.run("state.entries.push({ id: 'a1', scoutId: 's1', kind: 'wagon', date: '', salesCents: 1, donationsCents: 0 }); commit()");
+  a.push();
+  b.hear();
+  eq(b.get('sync.clobber'), true, 'B was not flagged');
+  b.run('sync.firstSnap = true');
+  b.hear();
+  eq(b.get('ui.overlay && ui.overlay.kind'), 'sync-conflict', 'B was not asked');
+  b.run('keepLocalCopy()');
+  b.push();
+  eq(eIds(server()), ['a1', 'b1', 'old1', 'old2', 'x1', 'x2'], 'keeping this device’s copy threw away A’s sale');
+  eq(b.get('[sync.clobber, sync.seasonKeptRev]'), [false, null], 'B after the save');
+  // The close-out chooser, but the cloud copy went back to this year while it waited: merged.
+  const p = fsGonePair();
+  p.b.run(B1);
+  p.a.run('state.budget.programYear += 1; commit()');
+  p.a.push(); p.b.hear(); p.b.push();
+  eq(p.b.get('ui.overlay && ui.overlay.kind'), 'sync-conflict', 'B was not asked about the close-out');
+  p.a.run("state.budget.programYear -= 1; state.entries.push({ id: 'a1', scoutId: 's1', kind: 'wagon', date: '', salesCents: 1, donationsCents: 0 }); commit()");
+  p.a.push(); p.b.hear();
+  p.b.run('keepLocalCopy()');
+  p.b.push();
+  eq([p.server().budget.programYear, eIds(p.server())], [2026, ['a1', 'b1', 'old1', 'old2', 'x1', 'x2']], 'the year came back, and A’s sale was lost');
+  // The close-out it was shown, then a newer save on that side: asked again, nothing written.
+  const q = fsGonePair();
+  q.b.run(B1);
+  q.a.run('state.budget.programYear += 1; commit()');
+  q.a.push(); q.b.hear(); q.b.push();
+  q.b.run('keepLocalCopy()');
+  eq(q.b.get('sync.seasonKeptRev'), 4, 'the copy the leader chose to write over');
+  q.a.run("state.entries.push({ id: 'a2', scoutId: 's1', kind: 'wagon', date: '', salesCents: 1, donationsCents: 0 }); commit()");
+  q.a.push(); q.b.hear(); q.b.push();
+  eq([q.rev(), q.server().budget.programYear, q.b.get('ui.overlay && ui.overlay.kind')], [5, 2027, 'sync-conflict'],
+    'a close-out saved after the choice was written over');
+  // …and keeping it again writes over that one, whole.
+  q.b.run('keepLocalCopy()');
+  q.b.push();
+  eq([q.rev(), q.server().budget.programYear, eIds(q.server())], [6, 2026, ['b1', 'old1', 'old2', 'x1', 'x2']], 'keeping it the second time');
+  eq(q.b.get('[sync.seasonKeptRev, sync.clobber]'), [null, false], 'the choice outlived the save it was for');
+});
+
 test('stopgap: the deletion marks are normalized, merged by the later mark, and kept small', () => {
   const ctx = sandbox(NORMALIZE_FNS.concat(GONE_FNS));
   // Missing and malformed: an empty record of each log; junk dropped; nothing else kept.
@@ -16962,6 +17007,20 @@ atest('stopgap, api: a ledger row reconciled on one device is kept when another 
   a.run(DELETE_L1);
   await settle([a], 800);
   eq(server().ledger.map((l) => [l.id, l.reconciled]), [['l1', true]], 'the deleting device dropped the reconciled row');
+});
+
+atest('stopgap, api: "Keep this device’s copy" merges another leader’s save it had heard', async () => {
+  // Security S2, on the pack's server: B has an unsaved edit and has heard A's save; the feed
+  // starts again and its first answer brings the chooser up; B keeps its copy.
+  const { a, b, server } = await apiGonePair();
+  b.run(B1);
+  await a.edit("state.entries.push({ id: 'a1', scoutId: 's1', kind: 'wagon', date: '', salesCents: 1, donationsCents: 0 })");
+  b.run('sync.clobber = true; sync.firstSnap = true; sync.remoteRec = null; clearTimeout(sync.pushTimer)');
+  await b.poll();
+  eq(b.get('ui.overlay && ui.overlay.kind'), 'sync-conflict', 'B was not asked');
+  b.run('keepLocalCopy()');
+  await settle([b], 800);
+  eq(eIds(server()), ['a1', 'b1', 'old1', 'old2', 'x1', 'x2'], 'keeping this device’s copy threw away A’s sale');
 });
 
 atest('stopgap, api: last season does not come back from a device that has not closed it out', async () => {
