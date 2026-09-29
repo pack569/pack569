@@ -4693,9 +4693,7 @@
     // two. A second one is RENAMED, never dropped — it is money either way, and dropping it would
     // change a total — to '<id>-d2' (then -d3 …), the same on every device.
     dedupeRowIds(d.entries);
-    // Phase 3, C1 — the counted rows and the ones set aside are one id space: a row is either.
-    // On a clash the aside row keeps the id ('a' sorts first), and the counted one is renamed.
-    dedupeRowIds(d.ledgerAside.concat(d.ledger), d.ledgerAside.map(function () { return 'a'; }).concat(d.ledger.map(function () { return 'l'; })));
+    // (The ledger's two lists are deduped at the end, once the marks and the log are read.)
     if (d.inventory && Array.isArray(d.inventory.distributions)) dedupeRowIds(d.inventory.distributions);
     // Every fundraiser's sales are one log; each sale's fundraiser decides a tie (dedupeRowIds).
     var allSales = [], saleFr = [];
@@ -4727,6 +4725,30 @@
     // outlive the real history, and on a restore push it out of the pack's log for good.
     clampLogTimes(d.ledgerLog, Date.now());
     d.ledgerLog = mergeLedgerLog(d.ledgerLog, []);
+    // Security review of C3 (finding 1) — a row saved in BOTH lists is one row in two places, not
+    // two rows: a page from C2 (whose merge does not settle them) can save one so, voided and
+    // Undone while another device's copy came in. It settles into one list here, as the merge
+    // settles it (ledgerAsideSettle: the marks, then the log, then voided), BEFORE the dedupe
+    // below, which would keep both and rename the counted copy '-d2', which a device still
+    // holding the original then unions in and counts twice. Only when it is plainly the same row:
+    // one in each list, with the same amount, date and direction. Anything else is two rows, and
+    // the dedupe renames one, as before: dropping either would change a total.
+    var inLive = Object.create(null), inAside = Object.create(null);
+    d.ledger.forEach(function (e) { inLive[e.id] = inLive[e.id] ? 'twice' : e; });
+    d.ledgerAside.forEach(function (e) { inAside[e.id] = inAside[e.id] ? 'twice' : e; });
+    var bothLists = d.ledgerAside.filter(function (a) {
+      var e = inLive[a.id];
+      return inAside[a.id] === a && !!e && e !== 'twice' &&
+        e.amountCents === a.amountCents && e.date === a.date && e.direction === a.direction;
+    });
+    if (bothLists.length) {
+      var settled = ledgerAsideSettle(d.ledger, bothLists, d.gone.ledger, d.ledgerLog);
+      d.ledger = settled.ledger;
+      d.ledgerAside = d.ledgerAside.filter(function (a) { return bothLists.indexOf(a) === -1 || settled.aside.indexOf(a) !== -1; });
+    }
+    // Phase 3, C1 — the counted rows and the ones set aside are one id space: a row is either.
+    // On a clash the aside row keeps the id ('a' sorts first), and the counted one is renamed.
+    dedupeRowIds(d.ledgerAside.concat(d.ledger), d.ledgerAside.map(function () { return 'a'; }).concat(d.ledger.map(function () { return 'l'; })));
     return d;
   }
   // Phase 3, C1 — why a row is in the book but not counted (state.ledgerAside): voided (with a

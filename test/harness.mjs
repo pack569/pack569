@@ -1003,6 +1003,8 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'ledgerStampClean',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
   'parseLegacyTime', 'migrateTierMakeUp', 'freshGone', 'clampGone', 'clampTickTimes', 'clampLogTimes', 'mergeLedgerLog', 'ledgerLogClip', 'utf8Bytes', 'campHash', 'stableRowId', 'newStableId', 'dedupeRowIds', 'normalizeState',
+  // Security review of C3 (finding 1) — a row in both lists settles as the merge settles it.
+  'ledgerAsideSettle',
   // Phase 3, C1 — the ledger row normalizer, shared by the rows set aside.
   'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeLedgerRow', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'entrySignedCents',
@@ -19481,6 +19483,76 @@ test('C3, Firestore: deleting a scout unlinks their voided payments too, on this
   r.a.hear(); r.a.push();
   eq([r.server().ledgerAside.map((e) => [e.id, e.scoutId]), r.a.get("state.ledgerAside.map(function (e) { return e.scoutId; })")], [[['l3', '']], ['']], 'the deleting device’s merge');
   void a; void server;
+});
+
+/* Security review of C3, finding 1 — a row an old page saved in BOTH lists. */
+// Device A stands in for a page from C2: it voids l2 and takes the Undo while another device's copy
+// comes in, and saves l2 counted AND voided, with the mark the Undo left (`back`: put back).
+const C3F1_BOTH = (back) => `var was = JSON.parse(JSON.stringify(state.ledger[1]));
+  voidRow('l2', 'Entered twice'); state.ledger.splice(1, 0, was); markGone('ledger', ['l2'], ${back}); commit()`;
+const c3NoRename = (st) => st.ledger.concat(st.ledgerAside || []).filter((e) => /-d\d+$/.test(e.id)).map((e) => e.id);
+const c3Counted = (st) => st.ledger.reduce((s, e) => s + (e.direction === 'in' ? 1 : -1) * e.amountCents, 0);
+
+test('C3 review (finding 1): a row an old page saved in both lists counts once, is never renamed, and settles the same on both devices', () => {
+  for (const back of [true, false]) {
+    const want = back ? [['l1', 'l2', 'l3'], []] : [['l1', 'l3'], ['l2']];
+    const cents = back ? 2500 - 4000 + 8500 : 2500 + 8500;
+    const { a, b, server } = c3FsPair();
+    a.run(C3F1_BOTH(back)); a.push();
+    const raw = server();
+    eq([raw.ledger.map((e) => e.id), raw.ledgerAside.map((e) => e.id), raw.gone.ledger.l2 < 0], [['l1', 'l2', 'l3'], ['l2'], back], back + ': the old page’s save');
+    // B, still counting l2, with a change of its own, merges it as it saves.
+    b.run(B1); b.hear(); b.push();
+    eq([c3Where(server()), c3NoRename(server()), c3Counted(server())], [want, [], cents], back + ': the pack record after B’s save');
+    eq([c3Where(b.get('state')), c3NoRename(b.get('state'))], [want, []], back + ': B');
+    a.hear();
+    eq([c3Where(a.get('state')), c3NoRename(a.get('state')), c3Counted(a.get('state'))], [want, [], cents], back + ': A after B’s save');
+    // A device with nothing unsaved takes the old page's copy as it is: the same.
+    const q = c3FsPair();
+    q.a.run(C3F1_BOTH(back)); q.a.push();
+    q.b.hear();
+    eq([c3Where(q.b.get('state')), c3NoRename(q.b.get('state')), c3Counted(q.b.get('state'))], [want, [], cents], back + ': a clean device');
+  }
+  // Two DIFFERENT rows under one id (another amount) are still two rows: one is renamed, neither dropped.
+  const n = sandbox(NORMALIZE_FNS);
+  const d = JSON.parse(JSON.stringify(n.normalizeState(JSON.parse(JSON.stringify(Object.assign({}, GONE_SEED, {
+    ledger: [{ id: 'R', date: '2026-09-10', description: 'Pizza', amountCents: 4000, direction: 'out' }],
+    ledgerAside: [{ id: 'R', date: '2026-09-10', description: 'Pizza', amountCents: 4100, direction: 'out', off: 'void', voidReason: 'x' }],
+    gone: { ledger: { R: -5 } } }))))));
+  eq([d.ledger.map((e) => [e.id, e.amountCents]), d.ledgerAside.map((e) => [e.id, e.amountCents])], [[['R-d2', 4000]], [['R', 4100]]], 'two rows, one id');
+});
+
+test('C3 review (finding 1) property: after normalizeState no id is in both lists, or twice; only a same-row pair loses a copy; twice gives the same', () => {
+  const n = sandbox(NORMALIZE_FNS);
+  const r = c3Rand(1569);
+  const pick = (xs) => xs[Math.floor(r() * xs.length)];
+  const ids = ['A', 'B', 'C', 'D', 'E'];
+  let pairs = 0;
+  for (let k = 0; k < 500; k++) {
+    const row = (id) => ({ id, date: pick(['2026-09-01', '2026-09-10']), description: 'Row ' + id, amountCents: pick([100, 200]), direction: pick(['in', 'out']) });
+    const ledger = Array.from({ length: Math.floor(r() * 5) }, () => row(pick(ids)));
+    // Half the aside rows copy a counted row (the old page's save), the rest are drawn afresh.
+    const ledgerAside = Array.from({ length: Math.floor(r() * 4) }, () =>
+      Object.assign(ledger.length && r() < 0.5 ? JSON.parse(JSON.stringify(pick(ledger))) : row(pick(ids)), { off: 'void', voidReason: 'x' }));
+    const marks = {};
+    ids.forEach((id) => { const m = pick([0, 0, 5, -5]); if (m) marks[id] = m; });
+    const ledgerLog = ids.filter(() => r() < 0.3).map((id, i) => ({ id: 'ev' + k + i, at: '2026-09-2' + i + 'T00:00:00.000Z', row: id, op: pick(['void', 'unvoid']) }));
+    const rec = Object.assign({}, GONE_SEED, { ledger, ledgerAside, ledgerLog, gone: { ledger: marks } });
+    // How many ids are plainly one row in both lists: exactly one in each, the same money.
+    const one = (xs, id) => xs.filter((e) => e.id === id);
+    const same = ids.filter((id) => {
+      const l = one(ledger, id), s = one(ledgerAside, id);
+      return l.length === 1 && s.length === 1 && l[0].amountCents === s[0].amountCents && l[0].date === s[0].date && l[0].direction === s[0].direction;
+    }).length;
+    pairs += same;
+    const d = JSON.parse(JSON.stringify(n.normalizeState(JSON.parse(JSON.stringify(rec)))));
+    const live = d.ledger.map((e) => e.id), off = d.ledgerAside.map((e) => e.id), all = live.concat(off);
+    ok(!live.some((id) => off.indexOf(id) !== -1), `case ${k}: an id in both lists: ${JSON.stringify([live, off])}`);
+    eq(new Set(all).size, all.length, `case ${k}: an id twice`);
+    eq(all.length, ledger.length + ledgerAside.length - same, `case ${k}: a row dropped, or a same-row pair kept twice`);
+    eq(JSON.stringify(n.normalizeState(JSON.parse(JSON.stringify(d)))), JSON.stringify(d), `case ${k}: a second load changed it`);
+  }
+  ok(pairs > 100, 'too few same-row pairs: ' + pairs);
 });
 
 atest('C3, api: a void, an un-void and a locked row settle the same way across two devices', async () => {
