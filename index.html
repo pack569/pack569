@@ -11673,9 +11673,13 @@
   }
   // A leader made view-only while a sync-conflict waited: this device takes the shared copy
   // (there is no other it may keep), and says why its own changes are gone.
+  // An unreadable shared copy is not taken (adoptRemote refuses it, and draws nothing): the
+  // closed chooser is drawn closed, and sync.conflict stays, so the pill brings it back (review
+  // of 86dfe38..4347cc6, item 3).
   function takeSharedAsViewer(d) {
     if (ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay = null;
     if (adoptRemote(d, {})) showToast('You’re now view-only, so this device took the pack’s shared copy.');
+    else render();
   }
   // "Keep this device's copy" on the sync-conflict overlay (armed, two taps, in the click handler).
   function keepLocalCopy() {

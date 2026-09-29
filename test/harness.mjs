@@ -9128,6 +9128,25 @@ test('Firestore: only the server’s answer, not the cache’s, puts the pill ba
   eq(vm.runInContext('[sync.mode, sync.error]', ctx), ['online', ''], 'control: the server’s answer did not read as back online');
 });
 
+test('a device made view-only that cannot read the shared copy is not left showing a closed chooser', () => {
+  // Review of 86dfe38..4347cc6, item 3. takeSharedAsViewer closes the chooser before taking the
+  // shared copy; adoptRemote draws the page only when it takes it.
+  const take = (adopts) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`var renders = [], toasts = [];
+      function render() { renders.push(ui.overlay && ui.overlay.kind); } function showToast(m) { toasts.push(m); }
+      function adoptRemote() { if (!${adopts}) return false; sync.conflict = null; render(); return true; }
+      var ui = { overlay: { kind: 'sync-conflict', remote: { rev: 9 } } }, sync = { conflict: { rev: 9 } };
+      ${decl('takeSharedAsViewer')}
+      takeSharedAsViewer({ rev: 9, json: 'not json' });`, ctx);
+    return JSON.parse(JSON.stringify(vm.runInContext('({ overlay: ui.overlay, renders: renders, toasts: toasts.length, conflict: !!sync.conflict })', ctx)));
+  };
+  // Unreadable: the page is drawn without the chooser, and the choice still waits (the pill brings it back).
+  eq(take(false), { overlay: null, renders: [null], toasts: 0, conflict: true }, 'the closed chooser was left on the page');
+  // Control: taken, drawn once (by adoptRemote), with the toast.
+  eq(take(true), { overlay: null, renders: [null], toasts: 1, conflict: false }, 'control: taking the shared copy changed');
+});
+
 test('Firestore: another device’s save that lands while this device’s save is out is never lost', () => {
   // Review of 86dfe38..4347cc6, item 1 (its reproduction is the first half). While this
   // device's push is out, another device saves ledger row l9. Two orders, both real: its save
