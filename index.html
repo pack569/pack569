@@ -7929,12 +7929,13 @@
   // "Backup (JSON)": it holds the whole record, the log with it.
   function ledgerLogRoomNotice(room) {
     if (room.full) {
-      return 'The ledger’s change history is full, and changes before ' + (room.since ? fmtDateShort(room.since) : 'the oldest shown') +
-        ' are no longer kept in the app. Download a backup (Pack · Sharing, Backup) to keep them.';
+      return 'The ledger’s change history is full. It now goes back to ' + (room.since ? fmtDateShort(room.since) : 'the oldest change shown') +
+        ', and from here on the oldest changes are dropped to make room for new ones. Download a backup now ' +
+        '(Pack · Sharing, Backup (JSON)) to keep a copy of what’s there.';
     }
     if (room.share >= 0.75) {
-      return 'The ledger’s change history is three-quarters full. Once it fills, the oldest changes stop being kept in the app, ' +
-        'so download a backup (Pack · Sharing, Backup) now and then to keep them.';
+      return 'The ledger’s change history is three-quarters full. Once it fills, the oldest changes are dropped, ' +
+        'so download a backup (Pack · Sharing, Backup (JSON)) now and then to keep a copy.';
     }
     return '';
   }
@@ -7947,8 +7948,8 @@
   };
   var LEDGER_FIELD_LABELS = {
     date: 'date', description: 'description', amountCents: 'amount', direction: 'in or out', lineId: 'budget line',
-    method: 'method', ref: 'reference', source: 'source', scoutId: 'family', donor: 'donor', reimbursement: 'reimbursement',
-    notCommission: 'not the commission', tierMakeup: 'tier make-up', openingCents: 'opening balance', openingDate: 'opening date',
+    method: 'method', ref: 'reference', source: 'source', scoutId: 'scout (family)', donor: 'donor', reimbursement: 'reimbursement',
+    notCommission: 'counted as other income', tierMakeup: 'tier make-up', openingCents: 'opening balance', openingDate: 'opening date',
     reconciledThrough: 'reconciled through'
   };
   // One value from an event's `f`, as a leader reads it. `names` turns an id into a name
@@ -8014,7 +8015,7 @@
       if (id === 'book') return 'The book';
       return entry(id) || gone[id] || 'A removed entry';
     }
-    var out = [['Date', 'Who', 'Entry', 'What changed', 'Before', 'After', 'Why'].join(',')];
+    var out = [['When (this device’s time)', 'Who', 'Entry', 'What changed', 'Before', 'After', 'Why'].join(',')];
     (log || []).forEach(function (ev) {
       if (!ev) return;
       var ids = [ev.row].concat(Array.isArray(ev.rows) ? ev.rows : []);
@@ -8222,7 +8223,9 @@
   function reconcileLockAhead(book, today) {
     return !!(book && book.reconciledThrough && String(book.reconciledThrough) > today);
   }
-  var RECONCILE_AHEAD_WHY = 'The book was marked reconciled through a date that hasn’t happened yet, so it can be corrected.';
+  // Treasurer sign-off: the card says how to put it right; the log says what was put right.
+  var RECONCILE_AHEAD_WHY = 'The book is marked reconciled through a date that hasn’t happened yet. To correct it, enter your latest bank statement’s ending date and closing balance, tick its entries, and mark it reconciled; the lock moves back to that date.';
+  var RECONCILE_AHEAD_LOGGED = 'Corrected: it had been marked reconciled through a date that hadn’t happened yet.';
   // E1 — this charge's due date, from its line and the line's event as they stand now.
   function chargeDueNow(c) {
     var line = getBudgetLine(c.lineId);
@@ -18694,7 +18697,7 @@
   function ledgerHistoryHtml(e) {
     var evs = ledgerRowHistory(state.ledgerLog, e.id);
     var h = '<div class="lhist" style="flex-basis:100%;margin:6px 0 0"><p class="small muted" style="margin:0 0 2px"><strong>Change history</strong></p>';
-    if (!evs.length) return h + '<p class="small muted" style="margin:0">No changes recorded since it was entered.</p></div>';
+    if (!evs.length) return h + '<p class="small muted" style="margin:0">No changes recorded.</p></div>';
     var names = ledgerLogNames();
     return h + '<ul class="small muted" style="margin:0;padding-left:18px">' + evs.map(function (ev) {
       var when = ledgerLogWhen(ev.at);
@@ -27866,9 +27869,9 @@
         logLedger('add', dlGone.id, { why: 'Put back by Undo after it was deleted' +
           (dlIn ? '; dated inside the period reconciled through ' + state.book.reconciledThrough + '.' : '.') });
         if (dlIn) {
-          return '“' + (dlGone.description || 'The entry') + '” is back. It is dated ' + fmtDateShort(dlGone.date) +
-            ', inside the period already reconciled (through ' + fmtDateShort(state.book.reconciledThrough) + '), so check it ' +
-            'is on that statement. If it isn’t, record an opposite entry dated today and say in its description which entry it cancels.';
+          return '“' + (dlGone.description || 'The entry') + '” is back, but it is dated ' + fmtDateShort(dlGone.date) +
+            ', inside the period reconciled (through ' + fmtDateShort(state.book.reconciledThrough) + ') while it was deleted, so it is ' +
+            'now locked. If it isn’t on that statement, record an opposite entry dated today and say in its description which entry it cancels.';
         }
       });
       return;
@@ -27929,7 +27932,7 @@
     if (act === 'ledger-reconcile-lock') {
       var rlNo = reconcileLockRefusal(state.book, todayISO());
       var rlRec = reconcileTotals(state.ledger, state.book);
-      if (!rlNo && (rlRec.difference !== 0 || !rlRec.ticked)) rlNo = 'The ticked entries don’t add up to the statement’s closing balance, so it can’t be marked reconciled yet.';
+      if (!rlNo && (rlRec.difference !== 0 || !rlRec.ticked)) rlNo = 'The ticked entries no longer match the statement’s closing balance (the book may have changed on another device), so it wasn’t marked reconciled. Check the difference and try again.';
       if (rlNo) { if (ui.armed === act) ui.armed = null; showToast(rlNo); render(); return; }
       arm(act, function () {
         var rlWas = state.book.reconciledThrough || '';
@@ -27938,7 +27941,7 @@
         state.book.reconciledBy = ledgerActor();                 // E2
         state.book.reconciledAt = new Date().toISOString();
         logLedger('reconcile', 'book', rlFix
-          ? { f: { reconciledThrough: [rlWas, state.book.reconciledThrough] }, why: RECONCILE_AHEAD_WHY }
+          ? { f: { reconciledThrough: [rlWas, state.book.reconciledThrough] }, why: RECONCILE_AHEAD_LOGGED }
           : { f: { reconciledThrough: [rlWas, state.book.reconciledThrough] } });
         // The statement is done with — clear the working figures so the next one starts blank
         // rather than silently reconciling against a month that's already closed.

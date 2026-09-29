@@ -18640,6 +18640,7 @@ const C2T_CHANGE = c2Block(/    if \(ch === 'ledger-unrec-why'\) \{[^\n]*\}/, 'l
 const C2T_MORE = `
   ${['reconcileLockRefusal', 'reconcileLockAhead', 'reconcileTotals', 'entrySignedCents'].map(slice).join('\n')}
   ${decl('RECONCILE_AHEAD_WHY')}
+  ${decl('RECONCILE_AHEAD_LOGGED')}
   // The statement's closing balance that agrees with what is ticked through its date.
   function agree() { state.book.statementCents = reconcileTotals(state.ledger, state.book).cleared; }
   function restoreGone(data) { return data; }
@@ -18774,14 +18775,14 @@ test('C2 treasurer M-4: the change history says when it is three-quarters full a
   // By count: 740 small events is under three-quarters; 760 is over; 981 is full.
   const small = (n) => Array.from({ length: n }, (_, i) => ev(i));
   eq([ctx.ledgerLogRoomNotice(room(small(740))), room(small(760)).full, room(small(980)).full, room(small(981)).full], ['', false, false, true], 'by count');
-  eq(ctx.ledgerLogRoomNotice(room(small(760))), 'The ledger’s change history is three-quarters full. Once it fills, the oldest changes stop being ' +
-    'kept in the app, so download a backup (Pack · Sharing, Backup) now and then to keep them.', 'the gentle notice');
+  eq(ctx.ledgerLogRoomNotice(room(small(760))), 'The ledger’s change history is three-quarters full. Once it fills, the oldest changes are dropped, ' +
+    'so download a backup (Pack · Sharing, Backup (JSON)) now and then to keep a copy.', 'the gentle notice');
   // By bytes: 270 events of ~480 bytes (~126 KB) is full; the oldest kept is from Oct 3.
   const big = Array.from({ length: 270 }, (_, i) => ev(i, { op: 'edit', f: { description: ['x'.repeat(190), 'y'.repeat(190)] } }));
   const r = room(big);
   ok(r.bytes > 124 * 1024 && r.bytes <= 128 * 1024 && r.full && r.count === 270, JSON.stringify(r));
-  eq(ctx.ledgerLogRoomNotice(r), 'The ledger’s change history is full, and changes before Oct 3 are no longer kept in the app. ' +
-    'Download a backup (Pack · Sharing, Backup) to keep them.', 'the full notice');
+  eq(ctx.ledgerLogRoomNotice(r), 'The ledger’s change history is full. It now goes back to Oct 3, and from here on the oldest changes are ' +
+    'dropped to make room for new ones. Download a backup now (Pack · Sharing, Backup (JSON)) to keep a copy of what’s there.', 'the full notice');
   eq(room([ev(0, { at: '' }), ev(1)]).since, '2026-10-03', 'an event with no time is not the oldest date');
   // Three-quarters by bytes, with few events: 210 of those (~98 KB) is 77%.
   const most = room(big.slice(0, 210));
@@ -18796,7 +18797,7 @@ test('C2 treasurer M-4: an entry’s Detail shows its change history, read-only 
   const p = c2tPage({ more: `${['esc', 'LEDGER_OP_LABELS', 'LEDGER_FIELD_LABELS', 'ledgerLogValue', 'ledgerEventLines', 'ledgerLogWhen', 'ledgerRowHistory',
     'ledgerLogNames', 'ledgerHistoryHtml'].map(slice).join('\n')}` });
   eq(p.get("ledgerHistoryHtml(row('u1'))"), '<div class="lhist" style="flex-basis:100%;margin:6px 0 0"><p class="small muted" style="margin:0 0 2px">' +
-    '<strong>Change history</strong></p><p class="small muted" style="margin:0">No changes recorded since it was entered.</p></div>', 'no history');
+    '<strong>Change history</strong></p><p class="small muted" style="margin:0">No changes recorded.</p></div>', 'no history');
   p.run("change('led-desc', 'u1', '<img src=x onerror=alert(1)>'); change('led-amount', 'u1', '90'); ui.armed = null; act('ledger-tick-all'); change('led-line', 'u1', 'x2')");
   const h = p.get("ledgerHistoryHtml(row('u1'))");
   ok(!/<img/.test(h) && /&lt;img src=x onerror=alert\(1\)&gt;/.test(h), 'a description is not escaped: ' + h);
@@ -18827,7 +18828,7 @@ test('C2 treasurer M-4: the change history downloads as a CSV — date, who, ent
   const when = (at) => ctx.ledgerLogWhen(at);
   const csv = ctx.ledgerLogCsv(log, entry, names).split('\n');
   eq(csv, [
-    'Date,Who,Entry,What changed,Before,After,Why',
+    'When (this device’s time),Who,Entry,What changed,Before,After,Why',
     `${when(log[0].at)},Pat,Trophies · Oct 1 · −$90.00,Changed: amount,$84.00,$90.00,`,
     `${when(log[0].at)},Pat,Trophies · Oct 1 · −$90.00,Changed: description,Trophies,"'=HYPERLINK(""x"")",`,
     `${when(log[1].at)},Sam,Trophies · Oct 1 · −$90.00,Ticked against a statement,,,`,
@@ -18836,6 +18837,8 @@ test('C2 treasurer M-4: the change history downloads as a CSV — date, who, ent
     ',Pat,"Deleted: Pizza, large",Deleted: description,"Pizza, large",(none),',
     `${when(log[3].at)},Pat,The book,Marked reconciled: reconciled through,Aug 31,Sep 30,"Sept ""statement"""`,
     `${when(log[4].at)},'+Mallory,A removed entry,Un-ticked,,,`], 'the CSV');
+  // Treasurer sign-off: what a family link and a not-the-commission answer are called.
+  eq([ctx.LEDGER_FIELD_LABELS.scoutId, ctx.LEDGER_FIELD_LABELS.notCommission], ['scout (family)', 'counted as other income'], 'the field labels');
   ok(/^2026-10-0[34] \d\d:\d\d$/.test(when(log[0].at)) && when('') === '' && when('junk') === '', 'the time: ' + when(log[0].at));
   for (const c of ['=1', '+1', '-1', '@x', '\tx']) ok(ctx.ledgerCsvCell(c).startsWith("'") || ctx.ledgerCsvCell(c).startsWith("\"'"), c + ' can run as a formula');
   // The button and its handler: the export overlay, from the pack's own log.
@@ -18969,7 +18972,7 @@ test('C2 re-review (minor): Mark reconciled can lower a lock after today, and lo
   // Today is Oct 15; the book says Jan 31, 2027.
   const p = c2tPage({ book: { reconciledThrough: '2027-01-31', statementDate: '2026-09-30' } });
   p.run("agree(); act3('ledger-reconcile-lock'); act3('ledger-reconcile-lock')");
-  const why = 'The book was marked reconciled through a date that hasn’t happened yet, so it can be corrected.';
+  const why = 'Corrected: it had been marked reconciled through a date that hadn’t happened yet.';
   eq([p.get('state.book.reconciledThrough'), p.get('log().map(function (e) { return [e.op, e.row, e.f, e.why]; })')],
     ['2026-09-30', [['reconcile', 'book', { reconciledThrough: ['2027-01-31', '2026-09-30'] }, why]]], 'the correction');
   // A lock not after today is not lowered (as the H-1 test), and an ordinary lock carries no why.
@@ -18982,11 +18985,14 @@ test('C2 re-review (minor): Mark reconciled can lower a lock after today, and lo
   // The Reconcile card says so, under the last lock.
   ok(/if \(reconcileLockAhead\(bk, todayISO\(\)\)\) h \+= '<p class="small" style="margin:6px 0 0;color:var\(--accent-text\)">' \+ esc\(RECONCILE_AHEAD_WHY\) \+ '<\/p>';/
     .test(slice('renderReconcile')), 'the Reconcile card does not say the lock can be corrected');
-  eq(p.get('RECONCILE_AHEAD_WHY'), why, 'the words');
+  eq(p.get('RECONCILE_AHEAD_WHY'), 'The book is marked reconciled through a date that hasn’t happened yet. To correct it, enter your ' +
+    'latest bank statement’s ending date and closing balance, tick its entries, and mark it reconciled; the lock moves back to that date.', 'the card’s words');
+  eq(p.get('RECONCILE_AHEAD_LOGGED'), why, 'the logged words');
 });
 
 test('C2 re-review (minor): Mark reconciled re-checks that the ticked entries agree with the statement', () => {
-  const nope = 'The ticked entries don’t add up to the statement’s closing balance, so it can’t be marked reconciled yet.';
+  const nope = 'The ticked entries no longer match the statement’s closing balance (the book may have changed on another device), ' +
+    'so it wasn’t marked reconciled. Check the difference and try again.';
   const p = c2tPage({ book: { statementDate: '2026-09-30', statementCents: 12300 } });
   p.run("act3('ledger-reconcile-lock'); act3('ledger-reconcile-lock')");
   eq([p.get('state.book.reconciledThrough'), p.get('log().length'), p.get('ui.armed'), p.get('toasts')], ['2026-08-31', 0, null, [nope, nope]], 'a book that doesn’t agree');
@@ -19003,8 +19009,8 @@ test('C2 re-review (minor): Mark reconciled re-checks that the ticked entries ag
 test('C2 re-review (minor): an Undo that puts an entry back inside a period reconciled meanwhile says so', () => {
   const p = c2rPage();
   p.run("act2('del-ledger:u1'); state.book.reconciledThrough = '2026-09-30'; var said = undo()");
-  eq(p.get('said'), '“Pinewood trophies” is back. It is dated Sep 10, inside the period already reconciled (through Sep 30), so check it is on that ' +
-    'statement. If it isn’t, record an opposite entry dated today and say in its description which entry it cancels.', 'the notice');
+  eq(p.get('said'), '“Pinewood trophies” is back, but it is dated Sep 10, inside the period reconciled (through Sep 30) while it was deleted, ' +
+    'so it is now locked. If it isn’t on that statement, record an opposite entry dated today and say in its description which entry it cancels.', 'the notice');
   eq([p.get("!!row('u1')"), p.get('log()[1].op'), p.get('log()[1].why')],
     [true, 'add', 'Put back by Undo after it was deleted; dated inside the period reconciled through 2026-09-30.'], 'put back and logged');
   // An Undo outside the period says nothing more than before.
