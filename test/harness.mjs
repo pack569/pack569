@@ -14298,7 +14298,36 @@ atest('api parent view: the server stores only buildParentView\'s shape — its 
   await w.call('owner', 'PUT', 'join', null, { body: Object.assign({}, cfg, { showStandings: true }) });
   eq((await put(full)).status, 200, 'standings back on');
   eq(stored().standings, full.standings, 'switching standings on left the view alone');
+  // Security review of 5690c3a..20b4fd6, item 2: SQLite's JSON functions stop at 1000 levels, so
+  // a view nested past that would store, then fail PUT /join's json_remove and roll back the
+  // switch — standings left showing, and a 500. It is refused on the way in instead.
+  const nest = (n) => { let v = 'x'; for (let i = 0; i < n; i++) v = [v]; return v; };
+  const deep = Object.assign({}, full, { events: nest(1000) });   // the view is level 1: 1,001 deep
+  eq(viewDepth(deep), 1001, 'the deep view is not 1,001 levels (the test is stale)');
+  const rd = await put(deep);
+  eq([rd.status, rd.body.reason], [400, 'view-too-deep'], 'a 1,001-deep view');
+  eq(stored(), full, 'a too-deep view replaced the stored one');
+  const off = await w.call('owner', 'PUT', 'join', null, { body: cfg });
+  eq(off.status, 200, 'standings switched off after a too-deep view was sent (' + off.text.slice(0, 80) + ')');
+  eq(Object.keys(stored()).sort(), ['contact', 'events', 'packName', 'programYear', 'rev'], 'the stored view after standings went off');
+  // The cap, exactly: the view itself is level 1.
+  const calm = { rev: 5, packName: 'Test Pack', events: nest(API.rules.PARENT_VIEW_MAX_DEPTH - 1) };
+  eq(viewDepth(calm), API.rules.PARENT_VIEW_MAX_DEPTH, 'the view at the cap (the test is stale)');
+  eq([API.rules.parentViewProblem(calm, false), API.rules.parentViewProblem(Object.assign({}, calm, { events: [calm.events] }), false)],
+    [null, 'view-too-deep'], 'a view at the cap, and one level past it');
 });
+// How many objects and arrays deep a value nests (a plain value is 0), as parentViewProblem counts.
+function viewDepth(v) {
+  let max = 0;
+  const stack = [[v, 1]];
+  while (stack.length) {
+    const [x, d] = stack.pop();
+    if (!x || typeof x !== 'object') continue;
+    if (d > max) max = d;
+    for (const k of Object.keys(x)) stack.push([x[k], d + 1]);
+  }
+  return max;
+}
 
 // Security re-review of stage A, follow-up 2. The DB, but the moment the endpoint has read the
 // standings switch, a PUT /join elsewhere turns standings off: the check-then-write race.
@@ -14482,7 +14511,8 @@ atest('api import: a parent view PUT /view would refuse is left behind and named
   const cases = [
     [{ join: off, view: { packName: 'Test Pack', standings: [{ name: 'Test' }] } }, 'view-standings-off', 'standings, with the imported join config saying off'],
     [{ view: { packName: 'Test Pack', events: [{ noteInternal: 'x' }] } }, 'view-note-internal', 'a noteInternal'],
-    [{ view: { packName: 'Test Pack', budget: {} } }, 'view-key', 'a key buildParentView never writes']
+    [{ view: { packName: 'Test Pack', budget: {} } }, 'view-key', 'a key buildParentView never writes'],
+    [{ view: { packName: 'Test Pack', events: JSON.parse('['.repeat(1000) + ']'.repeat(1000)) } }, 'view-too-deep', 'a view 1,001 deep']
   ];
   for (const [over, reason, what] of cases) {
     const w = await (await apiWorld()).seed({});
@@ -15490,6 +15520,9 @@ atest('api client: buildParentView’s real output passes the server’s view ch
       function salesForCommission(c) { return c; }`);
     const pv = JSON.parse(JSON.stringify(vm.runInContext(`buildParentView(state, { showStandings: ${shown} })`, ctx)));
     eq(API.rules.parentViewProblem(pv, shown), null, `standings ${shown ? 'on' : 'off'}, amounts ${amounts ? 'on' : 'off'}`);
+    // Item 2 of the review of 5690c3a..20b4fd6: the page's view sits far below the depth cap.
+    const depth = viewDepth(pv);
+    ok(depth >= 3 && depth <= API.rules.PARENT_VIEW_MAX_DEPTH / 4, `buildParentView nests ${depth} deep; the server's cap is ${API.rules.PARENT_VIEW_MAX_DEPTH}`);
     if (shown) ok('standings' in pv, 'standings on, and none were built (the test proves nothing)');
     else eq(API.rules.PARENT_VIEW_STANDINGS_KEYS.filter((k) => k in pv), [], 'standings off, and a standings key was built');
     // …and through the adapter to the real endpoint, with the pack's switch set to match.

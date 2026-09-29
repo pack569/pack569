@@ -123,12 +123,15 @@ export const canDeleteInvite = (role, emailKey, target) => isAdmin(role) || emai
 //   - none of PARENT_VIEW_STANDINGS_KEYS while the pack has "show standings" off: those are
 //     exactly what buildParentView writes after `if (!withStandings) return out;`;
 //   - no key named noteInternal anywhere in it (leaders-only meeting notes; the page's
-//     "MUST NOT reach any outbound surface").
+//     "MUST NOT reach any outbound surface");
+//   - nested no deeper than PARENT_VIEW_MAX_DEPTH, so the database can always edit it.
 // generatedAt is not in the list: the server stamps its own, and drops one that is sent.
 export const PARENT_VIEW_KEYS = ['rev', 'packName', 'programYear', 'events', 'camping', 'welcome', 'contact', 'familyCost',
   'standings', 'goals', 'derby', 'tiers', 'tierLadder'];
 export const PARENT_VIEW_STANDINGS_KEYS = ['standings', 'goals', 'derby', 'tiers', 'tierLadder'];
 export const PARENT_VIEW_NEVER_KEYS = ['noteInternal'];
+// How many objects and arrays deep a view may nest, the view itself being 1. See below.
+export const PARENT_VIEW_MAX_DEPTH = 64;
 // Why this view may not be stored, or null if it may. `view` is a parsed JSON object.
 export function parentViewProblem(view, showStandings) {
   for (const k of Object.keys(view)) {
@@ -136,14 +139,19 @@ export function parentViewProblem(view, showStandings) {
     if (!showStandings && PARENT_VIEW_STANDINGS_KEYS.indexOf(k) !== -1) return 'view-standings-off';
   }
   // Every key at every depth, without recursion (a deep payload cannot blow the stack).
-  const stack = [view];
+  // And no deeper than PARENT_VIEW_MAX_DEPTH: SQLite's JSON functions refuse nesting past
+  // 1000, so a deeper view would store, and then make the json_remove in PUT /join fail —
+  // rolling back the switch that turns standings off, and leaving them showing (security
+  // review of 5690c3a..20b4fd6, item 2). buildParentView writes a handful of levels.
+  const stack = [[view, 1]];
   while (stack.length) {
-    const v = stack.pop();
+    const [v, depth] = stack.pop();
     if (!v || typeof v !== 'object') continue;
+    if (depth > PARENT_VIEW_MAX_DEPTH) return 'view-too-deep';
     if (!Array.isArray(v)) {
       for (const k of Object.keys(v)) if (PARENT_VIEW_NEVER_KEYS.indexOf(k) !== -1) return 'view-note-internal';
     }
-    for (const k of Object.keys(v)) stack.push(v[k]);
+    for (const k of Object.keys(v)) stack.push([v[k], depth + 1]);
   }
   return null;
 }
