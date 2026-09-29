@@ -16096,6 +16096,8 @@ atest('api adapter: only the server’s fixed 403 is a refusal, and each answer 
     [jsonRes(409, { error: 'conflict', code: 'aborted', exists: true, rev: 4, json: '{}' }), 'aborted'],
     [jsonRes(429, { error: 'rate-limited', code: 'resource-exhausted' }, { 'retry-after': '120' }), 'resource-exhausted'],
     [jsonRes(503, { error: 'unavailable', code: 'unavailable', reason: 'deployment-unset' }), 'unavailable/deployment-unset'],
+    [jsonRes(503, { error: 'unavailable', code: 'unavailable', reason: 'wrong-project' }), 'unavailable/wrong-project'],
+    [jsonRes(503, { error: 'unavailable', code: 'unavailable', reason: 'jwks-unavailable' }), 'unavailable/jwks-unavailable'],
     [jsonRes(500, { error: 'internal', code: 'internal' }), 'unavailable'],
     [new Response('<html>ok</html>', { status: 200, headers: { 'content-type': 'text/html' } }), 'unavailable'],
     [jsonRes(200, '[1]'), 'unavailable']
@@ -16107,8 +16109,16 @@ atest('api adapter: only the server’s fixed 403 is a refusal, and each answer 
     eq(err.code + (err.reason && want.indexOf('/') > 0 ? '/' + err.reason : ''), want, `answer ${res.status}`);
     if (want === 'aborted') eq(err.remote.rev, 4, 'a conflict does not carry the server’s copy');
     if (want === 'resource-exhausted') eq(err.retryAfter, 120, 'Retry-After');
-    eq(err.notSetUp, want === 'unavailable/deployment-unset', `${want}: notSetUp`);
+    eq(err.notSetUp, want === 'unavailable/deployment-unset' || want === 'unavailable/wrong-project', `${want}: notSetUp`);
   }
+  // Every way the server says it is set up wrong reads as "isn't set up", not "couldn't reach"
+  // (review of c7aac0a..b4c1d7e, item 3): each literal reason database() and firebaseProject()
+  // refuse with is on the page's NOT_SET_UP list.
+  const packSrc = readFileSync(new URL('../functions/_lib/pack.js', import.meta.url), 'utf8');
+  const setupReasons = [...packSrc.matchAll(/refuse\(unavailable\('([a-z-]+)'\)\)/g)].map((m) => m[1]);
+  ok(setupReasons.indexOf('wrong-project') !== -1 && setupReasons.length >= 5, 'the scan of pack.js found the set-up refusals');
+  const notSetUp = JSON.parse(vm.runInContext('JSON.stringify(apiBackend.NOT_SET_UP)', apiAdapterCtx(() => jsonRes(200, {}))));
+  for (const r of setupReasons) ok(notSetUp.indexOf(r) !== -1, 'the page does not call "' + r + '" not set up');
   const net = apiAdapterCtx(() => { throw new TypeError('offline'); });
   eq(await vm.runInContext("apiBackend.call('GET', '/x').then(null, function (e) { return e.code; })", net), 'unavailable', 'no answer');
   // A failed answer never reaches a subscriber: only a 2xx JSON object is delivered, as fromServer.

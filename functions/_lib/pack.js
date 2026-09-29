@@ -92,8 +92,11 @@ export function ownerClaim(env, uid, viaJoinLink) {
 // 'pack-569' everywhere and scripts/check-wrangler.mjs refuses anything else, but a dashboard
 // override of the var would slip past that file; so production also checks it here, and
 // answers nothing rather than believe another project's sign-ins on the live pack (review of
-// eb504db..366f6c9, optional item). database() has already checked DEPLOY_ENV against the
-// bound database's own row, so 'prod' here is the live database.
+// eb504db..366f6c9, optional item). This runs first, in authenticate(), before database()
+// has looked at anything, so DEPLOY_ENV here is only what the settings say. That is enough:
+// the pin cannot be dodged by setting DEPLOY_ENV to something other than 'prod' on the live
+// site, because database() then refuses the mismatch with the bound database's own row before
+// any read (review of c7aac0a..b4c1d7e, item 3).
 export const PROD_FIREBASE_PROJECT = 'pack-569';
 export function firebaseProject(env) {
   const p = env && typeof env.FIREBASE_PROJECT_ID === 'string' ? env.FIREBASE_PROJECT_ID : '';
