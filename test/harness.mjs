@@ -8603,16 +8603,32 @@ test('the join config loads for every leader, and both of its answers release th
    when a second adapter (the pack's own server) arrives.
    ================================================================ */
 
-test('only the backend adapter touches the Firebase SDK', () => {
-  const outside = codeOnly(SCRIPT.replace(slice('firestoreBackend'), ''));
+test('only the backend adapters touch the Firebase SDK, and the server’s adapter never loads Firestore', () => {
+  const outside = codeOnly(SCRIPT.replace(slice('firestoreBackend'), '').replace(slice('apiBackend'), ''));
   ['getFirestore', 'onSnapshot', 'setDoc', 'getDoc', 'updateDoc', 'deleteDoc', 'runTransaction', 'serverTimestamp',
     'getAuth', 'getRedirectResult', 'signInWithPopup', 'signInWithRedirect', 'GoogleAuthProvider', 'initializeApp',
-    'sync.mods', 'sync.db', 'sync.docRef', 'sync.app'].forEach((w) =>
-    ok(outside.indexOf(w) === -1, `${w} is used outside firestoreBackend`));
+    'getIdToken', "'/api/", 'sync.mods', 'sync.db', 'sync.docRef', 'sync.app'].forEach((w) =>
+    ok(outside.indexOf(w) === -1, `${w} is used outside the adapters`));
   // FIREBASE_CONFIG is read in exactly two places: whether there is a cloud, and the adapter's init.
   eq((outside.match(/FIREBASE_CONFIG/g) || []).length, 3, 'FIREBASE_CONFIG is read outside backendConfigured/loadBackend');
-  ok(/function backendConfigured\(\) \{ return !!FIREBASE_CONFIG; \}/.test(outside) &&
-    /firestoreBackend\.init\(FIREBASE_CONFIG\)/.test(outside), 'the two readers of FIREBASE_CONFIG moved');
+  ok(/function backendConfigured\(\) \{ return !!FIREBASE_CONFIG && \(BACKEND !== 'api' \|\| fixedPackMode\(\)\); \}/.test(outside) &&
+    /\(BACKEND === 'api' \? apiBackend : firestoreBackend\)\.init\(FIREBASE_CONFIG\)/.test(outside), 'the two readers of FIREBASE_CONFIG moved');
+  // BACKEND is chosen in one place, and nothing else branches on it but the move-file offer.
+  eq((outside.match(/\bBACKEND\b/g) || []).length, 4, 'BACKEND is read somewhere new');
+  ok(/^  var BACKEND = 'firestore';$/m.test(SCRIPT), 'the committed page is not the Firestore build');
+  // apiBackend: Google sign-in only. It imports Firebase's app and auth modules and nothing else.
+  const api = codeOnly(slice('apiBackend'));
+  eq((api.match(/import\(SYNC_SDK_BASE \+ '([^']+)'\)/g) || []).map((m) => /'([^']+)'/.exec(m)[1]),
+    ['firebase-app.js', 'firebase-auth.js'], 'apiBackend imports something other than app and auth');
+  const apiCode = api.split('\n').map((l) => l.replace(/\s\/\/ .*$/, '')).join('\n');   // trailing comments too
+  ok(!/firestore|onSnapshot|runTransaction/i.test(apiCode), 'apiBackend touches Firestore');
+  // …and offers every method the app calls on a backend, except the Firestore-only ones the api
+  // path never reaches (packmeta, member/invite reads and creates: POST /api/session does those).
+  const fsMethods = [...slice('firestoreBackend').matchAll(/^    (\w+): function/gm)].map((m) => m[1]);
+  const apiMethods = new Set([...slice('apiBackend').matchAll(/^    (\w+): function/gm)].map((m) => m[1]));
+  eq(fsMethods.filter((m) => !apiMethods.has(m)).sort(),
+    ['dataOf', 'get', 'getInvite', 'getMember', 'getPackMeta', 'metaOf', 'putMember', 'putPackMeta', 'ref', 'signInAnonymously', 'watch'],
+    'apiBackend is missing a method the app calls');
 });
 
 test('a device is told it was removed only by the server, end to end through the Firestore adapter', () => {
@@ -10576,7 +10592,7 @@ test('S4: the sharing settings cannot be written before the pack’s own copy ha
   const run = (loaded) => {
     const ctx = vm.createContext({});
     vm.runInContext(`
-      var FIREBASE_CONFIG = {}, WRITES = [];
+      var FIREBASE_CONFIG = {}, BACKEND = 'firestore', WRITES = [];
       var sync = { user: {}, joinLoaded: ${loaded}, joinCfg: ${loaded ? "{ open: true, code: 'abc', showStandings: false, showAmounts: false, contact: 'Chair' }" : 'null'},
         backend: { isOpen: function () { return true; }, serverTime: function () { return 0; },
           writeJoin: function (docId, data) { WRITES.push(data); return { then: function () { return { catch: function () {} }; } }; } },
@@ -14178,6 +14194,720 @@ test('api functions/ is plain modules: relative imports only, routes only under 
   eq(files.filter((f) => /^api\//.test(f)).sort(), ['api/pack/[id]/import.js', 'api/pack/[id]/index.js', 'api/pack/[id]/invites/[email].js',
     'api/pack/[id]/invites/index.js', 'api/pack/[id]/join.js', 'api/pack/[id]/members/[uid].js', 'api/pack/[id]/members/index.js',
     'api/pack/[id]/rev.js', 'api/pack/[id]/view.js', 'api/session.js'], 'the routes');
+});
+
+/* ================================================================
+   Phase 2 stage C (2026-09-28) — the page's apiBackend against the real server, end to end.
+   Each "client" is a sandbox running the page's REAL sync layer (syncStart, the session, the
+   feeds, syncPush, onRemoteSnap, removeMember, …) and the REAL apiBackend, sliced from
+   index.html; only the DOM, rendering and the money screens are stubbed. Its fetch goes to the
+   real functions/ handlers over node:sqlite (apiWorld above), so a client and the server are
+   tested together: a sign-in per role, two devices saving at once, a removal, a family's
+   polling, the empty pack before the owner's copy-in, a server not set up, a stale token.
+   Timers are fake: a test runs the page's 800 ms push and 1200 ms publish itself, and polls
+   with apiBackend.pollNow() rather than waiting 15 seconds.
+   ================================================================ */
+
+// One declaration, exactly. slice() runs to the next closing brace at two-space indent, which for
+// a one-line declaration is the END OF THE NEXT FUNCTION: it would drag real code over a stub.
+function decl(name) {
+  const re = new RegExp(`^  (?:function ${name}\\(|var ${name} =)[^\\n]*$`, 'm');
+  const m = re.exec(SCRIPT);
+  if (!m) throw new Error(`harness: could not find declaration "${name}"`);
+  const line = m[0];
+  const opens = (line.match(/[{[(]/g) || []).length, closes = (line.match(/[}\])]/g) || []).length;
+  return opens === closes && /[;}]\s*(\/\/.*)?$/.test(line) ? line : slice(name);
+}
+const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_DOC_RE', 'JOIN_CODE_RE', 'loadJoin', 'activeJoin',
+  'syncDocIdSource', 'sync', 'fixedSyncBlocked', 'fixedFeedBlocked', 'haltFixedSync', 'syncStop', 'clearAccountsRuntime',
+  'syncFail', 'apiBackend', 'backendConfigured', 'loadBackend', 'cloudReady', 'packLinked', 'syncStart', 'subscribeDoc',
+  'stopDocFeed', 'stopParentFeed', 'subscribeParentView', 'feedForRole', 'stopLocalWrites', 'applyRoleSubscription',
+  'applyInvitesSubscription', 'applyJoinSubscription', 'isGoogleUser', 'setSyncUser', 'accountsInForce', 'canEdit',
+  'parentMode', 'canPreviewParent', 'previewingParent', 'pendingMode', 'gateMode', 'isAdmin', 'adminCount', 'isLastAdmin',
+  'recomputeMyRole', 'handleAccountsError', 'startAccounts', 'SESSION_REJECTS', 'startSessionAccounts', 'sessionRole',
+  'LEADER_ROLES', 'applyMembersSubscription', 'INVITE_ROLES', 'inviteEmailKey', 'MEMBER_NAME_MAX', 'memberName',
+  'ensureMyMemberDoc', 'joinCreateMemberDoc', 'signOutGoogle', 'accountsToast', 'MEMBER_ROLES', 'setMemberRole', 'removeMember',
+  'createInvite', 'revokeInvite', 'joinOpen', 'standingsEnabled', 'cleanContactLine', 'MOVE_KIND', 'MOVE_UID_RE', 'MOVE_ROLES',
+  'isPackOwner', 'canDownloadMoveFile', 'canImportPack', 'moveTime', 'buildMoveFile', 'moveImportBody', 'importMoveFile',
+  'scheduleParentViewRefresh', 'writeParentView', 'scheduleSyncPush', 'holdPushes', 'mergeRemoteAppendOnly', 'syncPush',
+  'isStateEmpty', 'stateFingerprint', 'adoptRemote', 'onRemoteSnap', 'keepLocalCopy', 'SERVER_NOTICES', 'serverNotice'];
+const CLIENT_SRC = CLIENT_FNS.map(decl).join('\n');
+
+// Every fetch in flight, across every client, so settle() knows when the server has answered.
+const inflight = new Set();
+// The routes as Pages would map them: functions/api/… by path.
+function apiRoute(pathname) {
+  if (pathname === '/api/session') return { mod: API.mod.session, params: {} };
+  const m = /^\/api\/pack\/([^/]+)(?:\/(rev|members|invites|join|view|import)(?:\/([^/]+))?)?$/.exec(pathname);
+  if (!m) return null;
+  const params = { id: m[1] };
+  let what = m[2] || 'pack';
+  if (m[3] !== undefined) {
+    if (what === 'members') { what = 'member'; params.uid = decodeURIComponent(m[3]); }
+    else if (what === 'invites') { what = 'invite'; params.email = m[3]; }   // left encoded: the handler decodes
+    else return null;
+  }
+  return { mod: API.mod[what], params };
+}
+function clientFetch(w, client) {
+  return (path, init) => {
+    const p = (async () => {
+      if (client.before) { const b = client.before; client.before = null; await b(init.method, path); }
+      const u = new URL(path, 'https://staging.pack569.pages.dev');
+      client.log.push(init.method + ' ' + u.pathname.replace('/api/pack/' + API_PACK, '/P'));
+      if (client.intercept) { const r = await client.intercept(init.method, u.pathname, init); if (r) return r; }
+      const route = apiRoute(u.pathname);
+      if (!route) return new Response('not found', { status: 404, headers: { 'content-type': 'text/html' } });
+      const request = new Request(u.href, { method: init.method, headers: init.headers, body: init.body });
+      return route.mod.onRequest({ request, env: w.env, params: route.params, data: {}, waitUntil() {}, next() { throw new Error('next()'); } });
+    })();
+    inflight.add(p);
+    p.then(() => inflight.delete(p), () => inflight.delete(p));
+    return p;
+  };
+}
+
+// A client: `who` signs in (PEOPLE), with `o.state` on the device, `o.join` a stored sign-up code,
+// `o.firstToken` the token Firebase hands out before any refresh.
+async function apiClient(w, who, o) {
+  o = o || {};
+  const client = { who, log: [], tokens: [], before: null, intercept: null, errors: [] };
+  let cached = o.firstToken ? await o.firstToken() : await tokenFor(who);
+  const ctx = vm.createContext({
+    console: { error: (...a) => client.errors.push(a.map(String).join(' ')), warn() {}, log() {} },
+    fetch: clientFetch(w, client), Response, URL,
+    hostToken: (fresh) => {
+      client.tokens.push(!!fresh);
+      const p = (async () => {
+        if (fresh) cached = o.freshToken ? await o.freshToken() : await tokenFor(who);
+        return cached;
+      })();
+      inflight.add(p);   // minting is async too: settle() must wait for it
+      p.then(() => inflight.delete(p), () => inflight.delete(p));
+      return p;
+    }
+  });
+  const initialState = Object.assign({ rev: 0, packName: '', scouts: [], storefronts: [], entries: [], events: [], ledger: [],
+    leaders: [], fundraisers: [], inventory: { distributions: [] } }, o.state || {});
+  vm.runInContext(`
+    var PACK_DOC_ID = '${API_PACK}', PACK_DOC_ID_RE = /^[0-9a-f]{64}$/, packDocIdWarned = false;
+    var FIREBASE_CONFIG = { apiKey: 'test', authDomain: 'test.invalid', projectId: '${API_PROJECT}' }, BACKEND = 'api';
+    var SYNC_SDK_BASE = 'https://unused.invalid/';
+    var KEY = 'pack-popcorn-ledger-v1', JOIN_KEY = 'pack-planner-join', SYNC_PASS_KEY = 'pack-planner-sync-pass',
+      SYNC_DEVICE_KEY = 'pack-planner-sync-device';
+    var store = {};
+    var localStorage = { getItem: function (k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
+      setItem: function (k, v) { store[k] = String(v); }, removeItem: function (k) { delete store[k]; } };
+    function uid() { return 'dev-${who}'; }
+    var ui = { tab: 'home', overlay: null, previewParent: false };
+    var parentViewFingerprint = null, parentViewTimer = null;
+    var toasts = [], renders = 0, saves = 0, timers = {}, timerSeq = 0;
+    ${CLIENT_SRC}
+    // ---- stubs, AFTER the slices so no sliced declaration can replace one ----
+    setTimeout = function (fn, ms) { timerSeq += 1; timers[timerSeq] = { fn: fn, ms: ms || 0 }; return timerSeq; };
+    clearTimeout = function (id) { delete timers[id]; };
+    render = function () { renders += 1; };
+    renderSyncPill = function () {};
+    showToast = function (m) { toasts.push(m); };
+    freshState = function () { return { rev: 0, packName: '', scouts: [], storefronts: [], entries: [], events: [], ledger: [],
+      leaders: [], fundraisers: [], inventory: { distributions: [] }, fresh: true }; };
+    normalizeState = function (p) {
+      if (!p || typeof p !== 'object' || Array.isArray(p)) return null;
+      var o = JSON.parse(JSON.stringify(p));
+      ['scouts', 'storefronts', 'entries', 'events', 'ledger', 'leaders', 'fundraisers'].forEach(function (k) { if (!Array.isArray(o[k])) o[k] = []; });
+      if (!o.inventory) o.inventory = { distributions: [] };
+      return o;
+    };
+    save = function () { saves += 1; store[KEY] = JSON.stringify(state); };
+    commit = function () { if (!canEdit()) return; save(); scheduleSyncPush(); };
+    todayISO = function () { return '2026-09-28'; };
+    // A made-up family view, with the keys the real one uses (the shape itself is tested against
+    // the real buildParentView below).
+    buildParentView = function (st) {
+      var v = { rev: st.rev || 0, packName: st.packName || '', events: (st.events || []).map(function (e) { return { title: e.name || '', date: e.date || '' }; }) };
+      if (standingsEnabled()) v.standings = [];
+      return v;
+    };
+    var state = ${JSON.stringify(initialState)};
+    store[KEY] = JSON.stringify(state);
+    ${o.join ? `store[JOIN_KEY] = JSON.stringify({ docId: '${API_PACK}', code: ${JSON.stringify(o.join)} });` : ''}
+    // Firebase Auth, as the page sees it: a signed-in Google account whose getIdToken the host answers.
+    var AUTH = { currentUser: { uid: '${PEOPLE[who][0]}', email: '${PEOPLE[who][1]}', displayName: 'Test ${who}',
+      emailVerified: true, isAnonymous: false, getIdToken: function (fresh) { return hostToken(!!fresh); } } };
+    apiBackend.mods = { app: {}, auth: {
+      getAuth: function () { return AUTH; },
+      getRedirectResult: function () { return Promise.resolve(null); },
+      signOut: function () { AUTH.currentUser = null; return Promise.resolve(); } } };
+    apiBackend.app = 'APP';`, ctx);
+  client.ctx = ctx;
+  client.run = (js) => vm.runInContext(js, ctx);
+  client.get = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, ctx)));
+  // Fire the page's own timers up to `maxMs` (0: the adapter's "poll now"; 800: a push; 1200: a publish).
+  client.runTimers = (maxMs) => vm.runInContext(`(function (max) {
+      var ran = false;
+      Object.keys(timers).forEach(function (id) {
+        var t = timers[id];
+        if (t && t.ms <= max) { delete timers[id]; t.fn(); ran = true; }
+      });
+      return ran;
+    })(${maxMs || 0})`, ctx);
+  client.start = async (maxMs) => { client.run('syncStart()'); await settle([client], maxMs); return client; };
+  client.poll = async (others) => { client.run('apiBackend.pollNow()'); await settle([client].concat(others || [])); };
+  client.edit = async (js, others) => { client.run(js + '; commit();'); await settle([client].concat(others || []), 800); };
+  client.reset = () => { client.log.length = 0; };
+  return client;
+}
+// Let every client's promises, zero-delay timers (and, with maxMs, the page's short timers) run
+// until nothing is in flight on the server and nothing more is scheduled.
+async function settle(clients, maxMs) {
+  for (let quiet = 0, n = 0; quiet < 3; n++) {
+    if (n > 2000) throw new Error('settle: the clients never went quiet');
+    await new Promise((r) => setImmediate(r));
+    let ran = false;
+    for (const c of clients) ran = c.runTimers(maxMs || 0) || ran;
+    if (!ran && inflight.size === 0) quiet++; else quiet = 0;
+  }
+}
+const PACK_STATE = (extra) => Object.assign({ rev: 3, packName: 'Test Pack', scouts: [{ id: 's1', name: 'Ada' }], storefronts: [],
+  entries: [], events: [{ id: 'e1', name: 'Pack meeting', date: '2026-10-06' }], ledger: [{ id: 'l0', amountCents: 100 }],
+  leaders: [], fundraisers: [], inventory: { distributions: [] } }, extra || {});
+const serverState = (w) => {
+  const row = w.one('SELECT rev, json, device FROM pack_state WHERE pack_id = ?', API_PACK);
+  return row ? Object.assign({}, row, { json: JSON.parse(row.json) }) : null;
+};
+
+atest('api client: each role signs in with one session call and lands on the feed its role allows', async () => {
+  const w = await (await apiWorld()).seed();
+  w.state(3, PACK_STATE());
+  for (const [who, role, feed, gate] of [['owner', 'admin', 'doc', null], ['admin2', 'admin', 'doc', null],
+    ['editor', 'editor', 'doc', null], ['viewer', 'viewer', 'doc', null], ['parent', 'parent', 'parent', null],
+    ['pending', 'pending', 'none', 'waiting']]) {
+    const c = await (await apiClient(w, who)).start();
+    eq(c.get('[sync.myRole, sync.feed, gateMode(), sync.accountsUnavailable, sync.mode]'), [role, feed, gate, false, 'online'],
+      `${who}: role, feed, gate`);
+    // Firestore's packmeta / member / invite reads are gone: the first call is the session.
+    eq(c.log[0], 'POST /api/session', `${who}: the first call is not the session`);
+    ok(!c.log.some((l) => /packmeta|\/invites\//.test(l)), `${who}: a Firestore-style read`);
+    const leader = ['admin', 'editor', 'viewer'].indexOf(role) >= 0;
+    eq(c.get('sync.membersScope'), leader ? 'all' : 'self', `${who}: the members watch`);
+    ok(c.log.indexOf('GET /P') >= 0 === leader, `${who}: the pack record was ${leader ? 'not ' : ''}read`);
+    if (leader) eq(c.get('[state.rev, state.scouts.length]'), [3, 1], `${who}: the pack record was not adopted`);
+    if (role === 'parent') ok(c.log.indexOf('GET /P/rev') >= 0, 'the parent does not poll /rev');
+    if (role === 'pending') eq(c.get('[state.fresh === true, store[KEY] === undefined]'), [true, true], 'a pending device kept the pack');
+    ok(c.errors.length === 0, `${who}: ${c.errors.join('; ')}`);
+  }
+  // The sign-up link: a stranger with the current code files a pending request; the server writes
+  // the code with it. A stale code and no link at all are the two "ask a leader" gates.
+  w.joinCfg(true, 'Code123abc');
+  const n = await (await apiClient(w, 'newbie', { join: 'Code123abc' })).start();
+  eq(n.get('[sync.myRole, gateMode(), sync.feed]'), ['pending', 'waiting', 'none'], 'a sign-up link visitor');
+  eq(w.one('SELECT role, join_code FROM members WHERE uid = ?', 'uid-newbie'), { role: 'pending', join_code: 'Code123abc' }, 'the pending row');
+  const stale = await (await apiClient(w, 'stranger', { join: 'OldCode999' })).start();
+  eq(stale.get('[sync.myRole, sync.joinRejected, gateMode(), sync.pack]'), [null, 'closed', 'closed', null], 'a stale code');
+  w.db.raw.prepare('DELETE FROM join_attempts').run();
+  const none = await (await apiClient(w, 'stranger')).start();
+  eq(none.get('[sync.joinRejected, gateMode()]'), ['nolink', 'closed'], 'no link and no invite');
+  eq(none.log, ['POST /api/session'], 'a refused visitor read something after the session');
+  // An admin approves the request; the waiting device moves onto the family feed at its next poll.
+  const owner = await (await apiClient(w, 'owner')).start();
+  owner.run("setMemberRole('uid-newbie', 'parent')");
+  await settle([owner]);
+  await n.poll();
+  eq(n.get('[sync.myRole, sync.feed, gateMode()]'), ['parent', 'parent', null], 'the approved request is not a parent now');
+});
+
+atest('api client: the rate-limited sign-up link is its own gate, not "the rules aren’t published"', async () => {
+  const w = await (await apiWorld()).seed();
+  w.joinCfg(true, 'Code123abc');
+  w.db.raw.prepare('INSERT INTO join_attempts (pack_id, uid, window_start, attempts) VALUES (?, ?, ?, 10)').run(API_PACK, 'uid-newbie', Date.now());
+  const c = await (await apiClient(w, 'newbie', { join: 'Code123abc' })).start();
+  eq(c.get('[sync.joinRejected, gateMode(), sync.accountsUnavailable, sync.pack]'), ['busy', 'closed', false, null], 'a 429');
+  ok(/if \(sync\.joinRejected === 'busy'\)/.test(slice('renderJoinClosed')), 'no screen for too many tries');
+});
+
+atest('api client: two leaders save at once — the second is refused (409), merges, and both money entries are kept', async () => {
+  const w = await (await apiWorld()).seed();
+  w.state(3, PACK_STATE());
+  const a = await (await apiClient(w, 'owner')).start();
+  const b = await (await apiClient(w, 'editor')).start();
+  eq([a.get('state.rev'), b.get('state.rev')], [3, 3], 'both start on rev 3');
+  // b has read rev 3 and is about to write it; a's save lands in between.
+  a.run("state.ledger.push({ id: 'la', amountCents: 500 }); commit()");
+  b.run("state.ledger.push({ id: 'lb', amountCents: 700 }); commit()");
+  let heldOnce = false;
+  b.before = async function hold(method) {
+    if (method !== 'PUT' || heldOnce) { if (!heldOnce) b.before = hold; return; }
+    heldOnce = true;
+    a.runTimers(800);   // a pushes, completely, while b's PUT waits
+    for (let i = 0; i < 5000 && !(serverState(w) && serverState(w).rev === 4); i++) await new Promise((r) => setImmediate(r));
+  };
+  b.reset();
+  await settle([b], 800);
+  eq(b.log.filter((l) => /^PUT \/P$/.test(l)).length, 2, 'b did not retry after the conflict');
+  const s = serverState(w);
+  eq([s.rev, s.json.ledger.map((l) => l.id).sort()], [5, ['l0', 'la', 'lb']], 'the server lost an entry');
+  eq(s.device, 'dev-editor', 'the last writer');
+  eq(b.get('[state.rev, sync.dirty, sync.clobber, state.ledger.length]'), [5, false, false, 3], 'b after the retry');
+  ok(b.get('toasts').some((t) => /Another device saved changes/.test(t)), 'b was not told another device saved');
+  // a hears of it at its next poll, and adopts it.
+  await a.poll();
+  eq(a.get('[state.rev, state.ledger.map(function (l) { return l.id; }).sort()]'), [5, ['l0', 'la', 'lb']], 'a did not adopt the merged record');
+  // No 409 at all: b's poll is behind (a saved, b has not polled), and b saves. Its GET shows a rev
+  // it never saw, so the append-only logs merge before the PUT.
+  await a.edit("state.ledger.push({ id: 'la2', amountCents: 1 })");
+  eq(serverState(w).rev, 6, 'a’s second save');
+  b.reset();
+  await b.edit("state.ledger.push({ id: 'lb2', amountCents: 2 })");
+  eq(b.log.filter((l) => /^PUT/.test(l)).length, 1, 'a save one poll behind needed a retry');
+  eq(serverState(w).json.ledger.map((l) => l.id).sort(), ['l0', 'la', 'la2', 'lb', 'lb2'], 'a save one poll behind lost an entry');
+  // Our own save is not fetched back: a's next poll reads /rev, adopts b's rev 7, and b's poll after
+  // its own save reads nothing but /rev.
+  b.reset();
+  await b.poll();
+  eq(b.log.filter((l) => /^GET \/P$/.test(l)).length, 0, 'b fetched its own save back');
+});
+
+atest('api client: a removed member’s device is wiped only on the server’s word, and nothing else wipes it', async () => {
+  const w = await (await apiWorld()).seed();
+  w.state(3, PACK_STATE());
+  const owner = await (await apiClient(w, 'owner')).start();
+  const ed = await (await apiClient(w, 'editor')).start();
+  const par = await (await apiClient(w, 'parent')).start();
+  eq(ed.get('[sync.feed, state.ledger.length]'), ['doc', 1], 'the editor has the pack');
+  // A 403 that is not the server's fixed body (Cloudflare Access, a proxy) and a network failure:
+  // nothing is wiped, the feeds stay, and the pill says offline.
+  for (const [what, res] of [['an Access page', () => new Response('<html>Access</html>', { status: 403, headers: { 'content-type': 'text/html' } })],
+    ['a JSON 403 with more in it', () => new Response('{"error":"forbidden","code":"permission-denied","x":1}', { status: 403, headers: { 'content-type': 'application/json' } })],
+    ['no answer', () => { throw new TypeError('network'); }]]) {
+    ed.intercept = async () => res();
+    await ed.poll();
+    ed.intercept = null;
+    eq(ed.get('[sync.joinRejected, sync.feed, state.ledger.length, !!store[KEY], sync.mode]'), [null, 'doc', 1, true, 'offline'], what);
+    await ed.poll();
+    eq(ed.get('sync.mode'), 'online', `${what}: the device did not come back online`);
+  }
+  owner.run("removeMember('uid-editor'); removeMember('uid-parent')");
+  await settle([owner]);
+  eq(w.sql('SELECT uid FROM members WHERE uid IN (?, ?)', 'uid-editor', 'uid-parent'), [], 'the rows are still there');
+  await ed.poll();
+  eq(ed.get('[sync.joinRejected, gateMode(), sync.feed, state.fresh === true, store[KEY] === undefined, sync.members]'),
+    ['removed', 'closed', 'none', true, true, []], 'the removed editor’s device kept the pack');
+  eq(ed.get('[sync.unsub, sync.pushTimer, sync.dirty]'), [null, null, false], 'a removed device can still push');
+  await par.poll();
+  eq(par.get('[sync.joinRejected, sync.parentView, store[KEY] === undefined]'), ['removed', null, true], 'the removed parent kept the view');
+  // The admin's own roster shows them gone.
+  await owner.poll();
+  ok(owner.get('sync.members').every((m) => m.uid !== 'uid-editor'), 'the owner’s roster still lists the editor');
+});
+
+atest('api client: a family’s page polls /rev and fetches the view only when it changed', async () => {
+  const w = await (await apiWorld()).seed();
+  w.state(3, PACK_STATE());
+  const par = await (await apiClient(w, 'parent')).start();
+  eq(par.get('[sync.feed, sync.parentView]'), ['parent', null], 'no view yet');
+  const owner = await (await apiClient(w, 'owner')).start();
+  await settle([owner], 1200);   // the first answer schedules the publish
+  ok(w.one('SELECT payload FROM parent_views WHERE pack_id = ?', API_PACK), 'the owner did not publish a view');
+  par.reset();
+  await par.poll();
+  eq(par.get('sync.parentView.events.map(function (e) { return e.title; })'), ['Pack meeting'], 'the family did not get the view');
+  ok(par.log.indexOf('GET /P/view') >= 0 && par.log.indexOf('GET /P') < 0, 'the family read the pack record');
+  // Nothing changed: /rev only (and the family's own member row), never the view.
+  par.reset();
+  await par.poll();
+  ok(par.log.indexOf('GET /P/view') < 0 && par.log.indexOf('GET /P/rev') >= 0, 'an unchanged view was fetched again: ' + par.log.join(', '));
+  // A leader's edit republishes, and the family sees it at the next poll.
+  await owner.edit("state.events.push({ id: 'e2', name: 'Campout', date: '2026-10-17' })");
+  await settle([owner], 1200);
+  await par.poll();
+  eq(par.get('sync.parentView.events.length'), 2, 'the new view did not reach the family');
+  // A family polls every 60 s, a leader every 15 s; a hidden tab not at all.
+  const period = (c) => c.get('(function () { var t = timers[apiBackend.timer]; return t ? t.ms : null; })()');
+  eq([period(par), period(owner)], [60000, 15000], 'the poll periods');
+});
+
+atest('api client: before the owner copies the pack in, a leader’s device keeps its edits and stops pushing', async () => {
+  const w = await apiWorld({ OWNER_MODE: 'fixed', PACK_OWNER_UID: 'uid-owner', DEPLOY_ENV: 'prod', seedEnv: 'prod' });
+  const local = PACK_STATE({ rev: 41 });
+  const owner = await (await apiClient(w, 'owner', { state: local })).start(800);   // 800: its first save
+  eq(owner.get('sync.myRole'), 'admin', 'the fixed owner');
+  eq(owner.get('[sync.notice, sync.mode, sync.firstSnap, sync.dirty, state.ledger.length]'), ['awaiting-import', 'offline', true, true, 1],
+    'the owner’s device after the refused first save');
+  ok(/Waiting for the pack’s owner to copy the pack over/.test(owner.get('serverNotice()')), 'no plain message');
+  eq(owner.get('Object.keys(timers).map(function (k) { return timers[k].ms; }).filter(function (ms) { return ms === 10000 || ms === 800; })'), [],
+    'a retry is scheduled');
+  // More edits: kept on the device, nothing sent.
+  owner.reset();
+  owner.run("state.ledger.push({ id: 'held', amountCents: 9 }); commit()");
+  eq(owner.get('Object.keys(timers).filter(function (k) { return timers[k].ms === 800; }).length'), 0, 'a push was scheduled while waiting');
+  await settle([owner], 800);
+  eq(owner.log.filter((l) => /^PUT/.test(l)), [], 'an edit was pushed while waiting');
+  ok(JSON.parse(owner.get('store[KEY]')).ledger.some((l) => l.id === 'held'), 'the edit was not kept on the device');
+  eq(w.sql('SELECT count(*) AS n FROM pack_state')[0].n, 0, 'something was written');
+  // A network blip, then the server again: the empty pack is delivered again, and the device is
+  // still waiting — it does not try another save.
+  owner.intercept = async () => { throw new TypeError('offline'); };
+  await owner.poll();
+  owner.intercept = null;
+  owner.reset();
+  await owner.poll();
+  await settle([owner], 800);
+  eq([owner.get('sync.notice'), owner.get('sync.mode'), owner.log.filter((l) => /^PUT/.test(l))], ['awaiting-import', 'offline', []],
+    'the device stopped waiting after a blip (or its pill says Synced)');
+  // The copy-in, from the move file the old page made.
+  ok(owner.get('canImportPack()'), 'the owner is not offered the copy-in');
+  const mf = owner.get(`buildMoveFile({ packId: '${API_PACK}', state: ${JSON.stringify(local)}, device: 'fs-dev',
+    members: [{ uid: 'uid-owner', role: 'admin', name: 'O', email: 'owner@example.com', addedAt: 5 },
+      { uid: 'uid-editor', role: 'editor', name: 'E', email: 'editor1@example.com', addedAt: { toMillis: function () { return 7; } } }],
+    invites: [{ email: 'viewer1@example.com', role: 'viewer' }], joinCfg: { open: true, code: 'Code123abc', showStandings: false }, at: 'now' })`);
+  const got = owner.get(`moveImportBody(${JSON.stringify(mf)}, '${API_PACK}')`);
+  eq([got.scouts, got.members, got.invites, got.backupOnly], [1, 2, 1, false], 'what the file would copy in');
+  owner.run(`importMoveFile(${JSON.stringify(got.body)})`);
+  await settle([owner], 800);
+  eq(serverState(w).rev, 41, 'the copy-in');
+  // What arrives is a FIRST answer: this device holds an edit the file does not, so the owner is
+  // asked which copy wins, rather than either being overwritten.
+  eq(owner.get('[ui.overlay && ui.overlay.kind, sync.notice, state.rev]'), ['sync-conflict', '', 41], 'the held edit was not put to the owner');
+  owner.run('keepLocalCopy()');
+  await settle([owner], 800);
+  eq(serverState(w).rev, 42, 'keeping this device’s copy did not save it (41 imported, then one save)');
+  eq(serverState(w).json.ledger.map((l) => l.id).sort(), ['held', 'l0'], 'the held edit');
+  eq(owner.get('[sync.notice, sync.mode, state.rev]'), ['', 'online', 42], 'the owner’s device after the copy-in');
+  eq(w.sql('SELECT uid, role FROM members ORDER BY uid'), [{ uid: 'uid-editor', role: 'editor' }, { uid: 'uid-owner', role: 'admin' }], 'the members');
+  eq(w.one('SELECT added_at FROM members WHERE uid = ?', 'uid-editor').added_at, 7, 'a Firestore timestamp');
+  eq(w.one('SELECT open, code, show_standings FROM join_config'), { open: 1, code: 'Code123abc', show_standings: 0 }, 'the join settings');
+  // An editor who signs in now is let in by the copied roster, and reads the pack.
+  const ed = await (await apiClient(w, 'editor')).start();
+  eq(ed.get('[sync.myRole, state.rev]'), ['editor', 42], 'the editor after the copy-in');
+  // The copy-in happens once: the page stops offering it, and the server refuses it anyway.
+  owner.reset();
+  owner.run(`importMoveFile(${JSON.stringify(got.body)})`);
+  await settle([owner]);
+  eq([owner.get('canImportPack()'), owner.log.filter((l) => /import/.test(l))], [false, []], 'the copy-in is still offered');
+  const again = await vm.runInContext(`sync.backend.importPack('${API_PACK}', ${JSON.stringify(got.body)}).then(function () { return 'ok'; }, function (e) { return e.code; })`, owner.ctx);
+  eq(again, 'permission-denied', 'a second copy-in');
+});
+
+atest('api client: a server that is not set up is said plainly, and the device keeps its copy', async () => {
+  const logged = [];
+  const log = console.error;
+  console.error = (...a) => { logged.push(a.join(' ')); };
+  try {
+    for (const [over, reason] of [[{ seedEnv: null }, 'deployment-unset'], [{ DEPLOY_ENV: 'preview', seedEnv: 'prod' }, 'wrong-database']]) {
+      const w = await apiWorld(over);
+      const c = await (await apiClient(w, 'owner', { state: PACK_STATE() })).start();
+      eq(c.get('[sync.notice, sync.mode, sync.pack, sync.accountsUnavailable, gateMode(), state.ledger.length, !!store[KEY]]'),
+        ['not-set-up', 'offline', null, false, null, 1, true], reason);
+      ok(/isn’t set up yet/.test(c.get('serverNotice()')) && /isn’t set up yet/.test(c.get('sync.error')), reason + ': no plain message');
+      eq(c.log, ['POST /api/session'], reason + ': it kept asking');
+      eq(c.get('apiBackend.feeds.length'), 0, reason + ': something is still polled');
+    }
+  } finally { console.error = log; }
+});
+
+atest('api client: a stale token is refreshed once and the call retried once, never more', async () => {
+  await apiSetup();
+  const w = await (await apiWorld()).seed();
+  w.state(3, PACK_STATE());
+  const expired = () => mint({ sub: PEOPLE.editor[0], email: PEOPLE.editor[1], exp: Math.floor(Date.now() / 1000) - 120 });
+  const c = await (await apiClient(w, 'editor', { firstToken: expired })).start();
+  eq(c.log.slice(0, 2), ['POST /api/session', 'POST /api/session'], 'the 401 was not retried');
+  eq(c.tokens.slice(0, 2), [false, true], 'the retry did not ask Firebase for a fresh token');
+  eq(c.tokens.filter((t) => t).length, 1, 'more than one refresh');
+  eq(c.get('[sync.myRole, state.rev]'), ['editor', 3], 'the refreshed session');
+  // A token Firebase keeps handing back bad: one retry, then a plain failure — no loop.
+  const bad = await (await apiClient(w, 'viewer', { firstToken: expired, freshToken: expired })).start();
+  eq(bad.log, ['POST /api/session', 'POST /api/session'], 'a bad token was retried more than once');
+  eq(bad.get('[sync.notice, sync.pack]'), ['no-session', null], 'a failed sign-in');
+});
+
+atest('api client: sign-out and a halt stop every poll', async () => {
+  const w = await (await apiWorld()).seed();
+  w.state(3, PACK_STATE());
+  const c = await (await apiClient(w, 'owner')).start();
+  ok(c.get('apiBackend.feeds.length') >= 3 && c.get('!!apiBackend.timer'), 'nothing is polled (the test proves nothing)');
+  c.run('haltFixedSync()');
+  eq(c.get('apiBackend.feeds.map(function (f) { return f.what; }).sort()'), ['invites', 'join', 'members'], 'the halt left the pack feed');
+  c.run('signOutGoogle()');
+  await settle([c]);
+  eq(c.get('[apiBackend.feeds.length, apiBackend.timer, sync.user]'), [0, null, null], 'polling after sign-out');
+});
+
+test('api client: on the pack’s server the rev is the server’s, a save it has not seen is merged, and Firestore is unchanged', () => {
+  const push = (over) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`
+      function now(v) { return { then: function (ok) { var r = ok ? ok(v) : v; return (r && r.then) ? r : now(r); }, catch: function () { return this; } }; }
+      var records = [], merged = [], toasts = [];
+      var fakeBe = { serverRevs: ${!!over.serverRevs}, serverTime: function () { return null; },
+        pushPack: function (h, build) { var out = build(${JSON.stringify(over.remote)}); records.push(out.record); return now(out.result); } };
+      function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
+      function mergeRemoteAppendOnly(d) { merged.push(d.rev); return 0; } function holdPushes() { return false; }
+      function save() {} function scheduleParentViewRefresh() {} function render() {}
+      function showToast(m) { toasts.push(m); } function renderSyncPill() {} function syncFail() {}
+      function clearTimeout() {} function setTimeout() {}
+      var ui = { tab: 'home' }, state = { rev: ${over.localRev} };
+      var sync = { backend: fakeBe, pack: { docId: 'P' }, session: 1, deviceId: 'd', clobber: false, dirty: true, mode: 'online',
+        notice: '${over.notice || ''}' };
+      ${['packLinked', 'syncPush'].map(decl).join('\n')}
+      syncPush();`, ctx);
+    return vm.runInContext('[records.length ? records[0].rev : null, merged, state.rev]', ctx);
+  };
+  // Holding edits (holdPushes): a push that fires anyway — a timer set before the hold — sends nothing.
+  eq(push({ serverRevs: true, remote: { rev: 7 }, localRev: 7, notice: 'awaiting-import' }), [null, [], 7], 'a held device pushed');
+  eq(push({ serverRevs: true, remote: { rev: 7 }, localRev: 7 }), [8, [], 8], 'the server’s rev + 1, nothing to merge');
+  eq(push({ serverRevs: true, remote: { rev: 9 }, localRev: 7 }), [10, [9], 10], 'a save this device had not seen was not merged');
+  eq(push({ serverRevs: true, remote: { rev: 2 }, localRev: 5 }), [3, [2], 3], 'a local rev ahead of the server’s was kept (the server stores 3)');
+  eq(push({ serverRevs: true, remote: null, localRev: 5 }), [1, [], 1], 'a first save');
+  // Firestore: exactly as before.
+  eq(push({ remote: { rev: 9 }, localRev: 7 }), [10, [], 10], 'Firestore merged without a clobber');
+  eq(push({ remote: { rev: 2 }, localRev: 5 }), [6, [], 6], 'Firestore no longer keeps a local rev ahead');
+  // The first answer sets the server's rev whichever copy wins; an empty device seeds nothing.
+  const snap = (over) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`
+      var timers = [], adopted = 0;
+      function scheduleParentViewRefresh() {} function renderSyncPill() {} function render() {} function syncPush() {}
+      function clearTimeout() {} function setTimeout(fn) { timers.push(fn); return 't'; }
+      function canEdit() { return true; } function save() {} function showToast() {}
+      function normalizeState(p) { return p && typeof p === 'object' ? p : null; }
+      function adoptRemote(d) { adopted += 1; state.rev = d.rev; return true; }
+      var ui = { tab: 'home', overlay: null };
+      var state = ${JSON.stringify(over.local)};
+      var sync = { firstSnap: true, mode: 'online', deviceId: 'dev1', dirty: false, clobber: false,
+        backend: { serverRevs: ${!!over.serverRevs} } };
+      ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap', 'keepLocalCopy'].map(decl).join('\n')}
+      onRemoteSnap(${JSON.stringify(over.rec)}, { fromServer: true, pendingWrites: false });`, ctx);
+    return vm.runInContext('[timers.length, state.rev, ui.overlay ? ui.overlay.kind : null]', ctx);
+  };
+  const empty = { rev: 4, scouts: [] }, full = { rev: 4, scouts: [{ id: 'a' }] };
+  eq(snap({ serverRevs: true, local: empty, rec: null }), [0, 4, null], 'an empty device seeded an empty pack on the server');
+  eq(snap({ serverRevs: true, local: full, rec: null }), [1, 4, null], 'a device with a pack did not seed it');
+  eq(snap({ local: empty, rec: null }), [1, 4, null], 'Firestore: an empty device no longer seeds');
+  const rec = { rev: 2, device: 'd2', json: JSON.stringify({ scouts: [{ id: 'b' }] }) };
+  eq(snap({ serverRevs: true, local: full, rec }), [0, 2, 'sync-conflict'], 'the server’s rev was not taken at the first answer');
+  eq(snap({ local: full, rec }), [0, 4, 'sync-conflict'], 'Firestore: the first answer changed the local rev');
+  // Keep this device's copy: the copy it overwrites counts as seen (a newer one arrived meanwhile).
+  const keep = (serverRevs) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`
+      var pushed = 0;
+      function canEdit() { return true; } function render() {} function showToast() {} function scheduleSyncPush() { pushed += 1; }
+      var ui = { overlay: { kind: 'sync-conflict', remote: { rev: 9 } } }, state = { rev: 2 };
+      var sync = { backend: { serverRevs: ${serverRevs} } };
+      ${decl('keepLocalCopy')}
+      keepLocalCopy();`, ctx);
+    return vm.runInContext('[state.rev, pushed, ui.overlay]', ctx);
+  };
+  eq(keep(true), [9, 1, null], 'keeping this device’s copy on the server');
+  eq(keep(false), [2, 1, null], 'Firestore: keeping this device’s copy changed its rev');
+  ok(/arm\(act, keepLocalCopy\);/.test(SCRIPT), 'the overlay’s button does not run keepLocalCopy');
+});
+
+/* ---- the adapter on its own: answers, the poller's timing ---- */
+
+function apiAdapterCtx(responder) {
+  const ctx = vm.createContext({ console: { error() {} }, Response });
+  ctx.fetch = async (path, init) => responder(path, init);
+  vm.runInContext(`
+    var SYNC_SDK_BASE = 'x', timers = {}, timerSeq = 0, visible = 'visible';
+    ${slice('apiBackend')}
+    setTimeout = function (fn, ms) { timerSeq += 1; timers[timerSeq] = { fn: fn, ms: ms }; return timerSeq; };
+    clearTimeout = function (id) { delete timers[id]; };
+    var document = { get visibilityState() { return visible; } };
+    apiBackend.mods = { auth: { getAuth: function () { return { currentUser: { getIdToken: function () { return Promise.resolve('t'); } } }; } } };
+    apiBackend.app = 'APP';`, ctx);
+  return ctx;
+}
+const jsonRes = (status, body, headers) => new Response(typeof body === 'string' ? body : JSON.stringify(body),
+  { status, headers: Object.assign({ 'content-type': 'application/json; charset=utf-8' }, headers || {}) });
+
+atest('api adapter: only the server’s fixed 403 is a refusal, and each answer keeps its code', async () => {
+  const cases = [
+    [jsonRes(403, { error: 'forbidden', code: 'permission-denied' }), 'permission-denied'],
+    [jsonRes(403, { error: 'forbidden', code: 'permission-denied', why: 'x' }), 'unavailable'],
+    [new Response('<h1>Forbidden</h1>', { status: 403, headers: { 'content-type': 'text/html' } }), 'unavailable'],
+    [new Response('{"error":"forbidden","code":"permission-denied"}', { status: 403, headers: { 'content-type': 'text/plain' } }), 'unavailable'],
+    [jsonRes(409, { error: 'awaiting-import', code: 'failed-precondition', reason: 'awaiting-import' }), 'failed-precondition/awaiting-import'],
+    [jsonRes(409, { error: 'last-admin', code: 'failed-precondition' }), 'failed-precondition/last-admin'],
+    [jsonRes(409, { error: 'conflict', code: 'aborted', exists: true, rev: 4, json: '{}' }), 'aborted'],
+    [jsonRes(429, { error: 'rate-limited', code: 'resource-exhausted' }, { 'retry-after': '120' }), 'resource-exhausted'],
+    [jsonRes(503, { error: 'unavailable', code: 'unavailable', reason: 'deployment-unset' }), 'unavailable/deployment-unset'],
+    [jsonRes(500, { error: 'internal', code: 'internal' }), 'unavailable'],
+    [new Response('<html>ok</html>', { status: 200, headers: { 'content-type': 'text/html' } }), 'unavailable'],
+    [jsonRes(200, '[1]'), 'unavailable']
+  ];
+  for (const [res, want] of cases) {
+    const ctx = apiAdapterCtx(() => res);
+    const err = await vm.runInContext("apiBackend.call('GET', '/api/x').then(function () { return null; }, function (e) { return e; })", ctx);
+    ok(err, `${want}: an error answer resolved`);
+    eq(err.code + (err.reason && want.indexOf('/') > 0 ? '/' + err.reason : ''), want, `answer ${res.status}`);
+    if (want === 'aborted') eq(err.remote.rev, 4, 'a conflict does not carry the server’s copy');
+    if (want === 'resource-exhausted') eq(err.retryAfter, 120, 'Retry-After');
+    eq(err.notSetUp, want === 'unavailable/deployment-unset', `${want}: notSetUp`);
+  }
+  const net = apiAdapterCtx(() => { throw new TypeError('offline'); });
+  eq(await vm.runInContext("apiBackend.call('GET', '/x').then(null, function (e) { return e.code; })", net), 'unavailable', 'no answer');
+  // A failed answer never reaches a subscriber: only a 2xx JSON object is delivered, as fromServer.
+  let n = 0;
+  const flaky = apiAdapterCtx((path) => {
+    n += 1;
+    if (/\/rev$/.test(path)) return jsonRes(200, { rev: 2, viewAt: null });
+    return n < 4 ? new Response('<html>', { status: 200, headers: { 'content-type': 'text/html' } }) : jsonRes(200, { exists: true, rev: 2, json: '{}', device: 'd' });
+  });
+  await vm.runInContext(`var got = [], errs = [];
+    apiBackend.subscribePack({ docId: 'P' }, function (r, m) { got.push([r && r.rev, m]); }, function (e) { errs.push(e.code); });
+    apiBackend.pollNow()`, flaky);
+  eq(vm.runInContext('[got, errs]', flaky), [[], ['unavailable']], 'a non-JSON 200 was delivered');
+  await vm.runInContext('apiBackend.pollNow()', flaky);
+  await vm.runInContext('apiBackend.pollNow()', flaky);
+  eq(JSON.parse(JSON.stringify(vm.runInContext('got', flaky))), [[2, { fromServer: true, pendingWrites: false }]], 'the server’s answer, as fromServer');
+});
+
+atest('api adapter: the poll waits 15 s for a leader, 60 s for a family, doubles on failures, and stops when hidden', async () => {
+  let fail = false;
+  const ctx = apiAdapterCtx((path) => fail ? jsonRes(503, { error: 'unavailable', code: 'unavailable', reason: '' })
+    : (/\/rev$/.test(path) ? jsonRes(200, { rev: 1, viewAt: null }) : jsonRes(200, { exists: false, rev: 0 })));
+  const next = () => vm.runInContext('(function () { var t = timers[apiBackend.timer]; return t ? t.ms : null; })()', ctx);
+  await vm.runInContext('var un = apiBackend.subscribeView("P", function () {}, function () {}); apiBackend.pollNow()', ctx);
+  eq(next(), 60000, 'a family');
+  await vm.runInContext('var unp = apiBackend.subscribePack({ docId: "P" }, function () {}, function () {}); apiBackend.pollNow()', ctx);
+  eq(next(), 15000, 'a leader');
+  fail = true;
+  await vm.runInContext('apiBackend.pollNow()', ctx);
+  eq(next(), 30000, 'one failure');
+  await vm.runInContext('apiBackend.pollNow()', ctx);
+  eq(next(), 60000, 'two failures');
+  for (let i = 0; i < 6; i++) await vm.runInContext('apiBackend.pollNow()', ctx);
+  eq(next(), 300000, 'the back-off is not capped at 5 minutes');
+  fail = false;
+  await vm.runInContext('apiBackend.pollNow()', ctx);
+  eq(next(), 15000, 'a success does not reset the back-off');
+  vm.runInContext('visible = "hidden"', ctx);
+  await vm.runInContext('apiBackend.pollNow()', ctx);
+  eq(next(), null, 'a hidden tab is still polled');
+  vm.runInContext('visible = "visible"; un(); unp();', ctx);
+  eq(vm.runInContext('[apiBackend.feeds.length, apiBackend.timer, apiBackend.kickTimer]', ctx), [0, null, null], 'polling with nothing subscribed');
+});
+
+atest('api adapter: writes send only what the server takes', async () => {
+  const sent = [];
+  const ctx = apiAdapterCtx((path, init) => { sent.push([init.method, path, init.body ? JSON.parse(init.body) : null, init.headers]); return jsonRes(200, {}); });
+  await vm.runInContext(`Promise.all([
+    apiBackend.writeJoin('P', { open: true, mode: 'request', code: 'abc', showStandings: false, contact: 'x', showAmounts: true, updatedAt: null }),
+    apiBackend.writeView('P', { events: [], generatedAt: null }),
+    apiBackend.putInvite('P', 'a+b@example.com', { role: 'parent', email: 'a+b@example.com', invitedBy: 'me@example.com', invitedAt: null }),
+    apiBackend.updateMemberRole('P', 'u1', 'viewer'),
+    apiBackend.deleteMember('P', 'u1'),
+    apiBackend.startSession('P', 'code1'),
+    apiBackend.startSession('P', '')])`, ctx);
+  eq(sent.map((s) => [s[0], s[1], s[2]]), [
+    ['PUT', '/api/pack/P/join', { open: true, mode: 'request', code: 'abc', showStandings: false, showAmounts: true, contact: 'x' }],
+    ['PUT', '/api/pack/P/view', { events: [] }],
+    ['PUT', '/api/pack/P/invites/a%2Bb%40example.com', { role: 'parent', email: 'a+b@example.com' }],
+    ['PATCH', '/api/pack/P/members/u1', { role: 'viewer' }],
+    ['DELETE', '/api/pack/P/members/u1', null],
+    ['POST', '/api/session?pack=P', { join: 'code1' }],
+    ['POST', '/api/session?pack=P', null]], 'what was sent');
+  ok(sent.every((s) => s[3].authorization === 'Bearer t'), 'a call without the token');
+  // pushPack: If-Match the rev read, the device id, and the record's json as the body; a conflict
+  // runs build() again on the server's copy, at most PUSH_TRIES times in all.
+  const calls = [];
+  const cx = apiAdapterCtx((path, init) => {
+    calls.push([init.method, init.headers['if-match'] || null]);
+    if (init.method === 'GET') return jsonRes(200, { exists: true, rev: 1, json: '{}', device: 'x' });
+    return jsonRes(409, { error: 'conflict', code: 'aborted', exists: true, rev: calls.length, json: '{}', device: 'y' });
+  });
+  const res = await vm.runInContext(`var built = [];
+    apiBackend.pushPack({ docId: 'P' }, function (remote) {
+      built.push(remote.rev);
+      return { record: { rev: remote.rev + 1, device: 'dev1', json: '{"a":1}' }, result: 'ok' };
+    }).then(null, function (e) { return e.code; })`, cx);
+  eq([res, calls.length, vm.runInContext('built', cx).length], ['aborted', 5, 4], 'the conflict retries are not bounded');
+  eq(calls.slice(0, 3), [['GET', null], ['PUT', '1'], ['PUT', '2']], 'If-Match does not follow the server’s copy');
+});
+
+atest('api client: buildParentView’s real output passes the server’s view check, standings on and off', async () => {
+  await apiSetup();
+  for (const [shown, amounts] of [[true, true], [true, false], [false, true]]) {
+    // The standings pieces stubbed as J12 stubs them; what is tested is the view's SHAPE.
+    const ctx = pvCtx(`
+      state.derby = { name: 'Derby', date: '2026-11-01', awards: [{ award: 'Fastest', racerName: 'Ada Quenneville' }] };
+      amountsEnabled = function () { return ${amounts}; };
+      function computePackTotals() { return { combined: 99000, teGoal: 200000, cashGoal: 0 }; }
+      function computeScoutTotals() { return { s1: 30000, s2: 60000, s3: 9000 }; }
+      function visibleScoutRows(t) { return state.scouts.map(function (s) { return { id: s.id, den: s.den, t: { combined: t[s.id] } }; }); }
+      function rankBy(rows, key) { return rows.slice().sort(function (a, b) { return key(b) - key(a); }); }
+      function tierProgressRows() {
+        return state.scouts.map(function (s) {
+          return { scout: s, earned: { name: 'Bronze' }, next: { name: 'Gold', reward: 'Camp' }, shortSales: 12345,
+            unlocks: 4000, sellRoutes: [{ label: 'online', pct: 30, cents: 12345 }], anchorPct: 40, pct: 55,
+            nextMarkPct: 100, pastPlan: false, ladder: { plan: { name: 'Gold' }, marksPlan: [] } };
+        });
+      }
+      function plannedTier() { return { name: 'Gold' }; }
+      function derbyWinners() { return [{ place: 1, scoutName: 'Ada Quenneville' }]; }
+      function sortedTiers() { return [{ name: 'Gold', reward: 'Camp', thresholdCents: 4000 }]; }
+      function salesForCommission(c) { return c; }`);
+    const pv = JSON.parse(JSON.stringify(vm.runInContext(`buildParentView(state, { showStandings: ${shown} })`, ctx)));
+    eq(API.rules.parentViewProblem(pv, shown), null, `standings ${shown ? 'on' : 'off'}, amounts ${amounts ? 'on' : 'off'}`);
+    if (shown) ok('standings' in pv, 'standings on, and none were built (the test proves nothing)');
+    else eq(API.rules.PARENT_VIEW_STANDINGS_KEYS.filter((k) => k in pv), [], 'standings off, and a standings key was built');
+    // …and through the adapter to the real endpoint, with the pack's switch set to match.
+    const w = await (await apiWorld()).seed({});
+    if (!shown) eq((await w.call('owner', 'PUT', 'join', null, { body: { open: false, code: 'Code123abc', showStandings: false, showAmounts: true } })).status, 200, 'standings off');
+    const c = await apiClient(w, 'owner');
+    const r = await vm.runInContext(`apiBackend.writeView('${API_PACK}', ${JSON.stringify(Object.assign({ generatedAt: null }, pv))})
+      .then(function () { return 'ok'; }, function (e) { return e.code + ' ' + e.reason; })`, c.ctx);
+    eq(r, 'ok', `the server refused the page’s own view (standings ${shown ? 'on' : 'off'})`);
+    // The check is live: the standings-on view is refused by a pack with standings off.
+    if (!shown) {
+      const on = JSON.parse(JSON.stringify(vm.runInContext('buildParentView(state, { showStandings: true })', ctx)));
+      const r2 = await vm.runInContext(`apiBackend.writeView('${API_PACK}', ${JSON.stringify(on)}).then(function () { return 'ok'; }, function (e) { return e.reason; })`, c.ctx);
+      eq(r2, 'view-standings-off', 'a standings view was stored while standings are off');
+    }
+  }
+});
+
+test('api client: the move file carries what the import takes, for this pack only, and never the parent view', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    var sync = {};
+    ${['arrOf', 'JOIN_CODE_RE', 'cleanContactLine', 'MOVE_KIND', 'MOVE_UID_RE', 'MOVE_ROLES', 'moveTime', 'buildMoveFile', 'moveImportBody'].map(decl).join('\n')}
+    normalizeState = function (p) { return p && typeof p === 'object' && Array.isArray(p.scouts) ? p : null; };`, ctx);
+  const mf = JSON.parse(JSON.stringify(vm.runInContext(`buildMoveFile({ packId: 'P', state: { rev: 9, scouts: [{ id: 's' }] }, device: 'd',
+    members: [{ uid: 'u1', role: 'admin', name: 'A', email: 'a@example.com', addedAt: 3, extra: 1 }, { uid: 'bad/uid', role: 'admin' },
+      { uid: 'u2', role: 'owner' }, { uid: 'u3', role: 'pending', joinCode: 'abc', addedAt: { toMillis: function () { return 4; } } }],
+    invites: [{ email: 'i@example.com', role: 'parent', invitedBy: 'someone' }],
+    joinCfg: { open: true, code: 'abc', showStandings: false, showAmounts: false, contact: ' Ask  me ', updatedAt: 1 }, at: 't' })`, ctx)));
+  eq(Object.keys(mf).sort(), ['invites', 'join', 'kind', 'madeAt', 'members', 'pack', 'packId', 'skipped', 'v'], 'the move file’s keys');
+  eq(mf.members, [{ uid: 'u1', role: 'admin', name: 'A', email: 'a@example.com', addedAt: 3 },
+    { uid: 'u3', role: 'pending', name: '', email: '', addedAt: 4, joinCode: 'abc' }], 'the members');
+  eq(mf.skipped, 2, 'the members the server would refuse');
+  eq(mf.invites, [{ email: 'i@example.com', role: 'parent' }], 'the invites');
+  eq(mf.join, { open: true, code: 'abc', showStandings: false, showAmounts: false, contact: 'Ask me' }, 'the join settings');
+  eq([mf.pack.rev, mf.pack.device, JSON.parse(mf.pack.json).scouts.length], [9, 'd', 1], 'the pack record');
+  ok(!('view' in mf), 'the move file carries the parent view');
+  eq(vm.runInContext(`moveImportBody(${JSON.stringify(mf)}, 'Q')`, ctx).error, 'That file is for a different pack.', 'another pack’s file');
+  const plain = JSON.parse(JSON.stringify(vm.runInContext(`moveImportBody({ rev: 2, scouts: [] }, 'P')`, ctx)));
+  eq([plain.backupOnly, plain.body.members, plain.body.pack.rev], [true, [], 2], 'a plain backup');
+  ok(vm.runInContext('moveImportBody({ hello: 1 }, "P")', ctx).error, 'a file that is neither');
+  // Offered to the pack's owner only: on Firestore the download, on the server the copy-in while it is empty.
+  const offer = (backend, over) => {
+    const c = vm.createContext({});
+    vm.runInContext(`var BACKEND = '${backend}';
+      var sync = Object.assign({ user: { uid: 'own' }, ownerUid: 'own', myRole: 'admin', packMissing: true,
+        backend: ${backend === 'api' ? '{ importPack: function () {} }' : '{}'} }, ${JSON.stringify(over || {})});
+      function fixedPackMode() { return true; } function accountsInForce() { return true; }
+      ${['isAdmin', 'isPackOwner', 'canDownloadMoveFile', 'canImportPack'].map(decl).join('\n')}`, c);
+    return vm.runInContext('[canDownloadMoveFile(), canImportPack()]', c);
+  };
+  eq(offer('firestore'), [true, false], 'the owner on Firestore');
+  eq(offer('api'), [false, true], 'the owner on the server, pack empty');
+  eq(offer('api', { packMissing: false }), [false, false], 'the owner on the server, pack there');
+  eq(offer('firestore', { user: { uid: 'other' } }), [false, false], 'another admin on Firestore');
+  eq(offer('api', { user: { uid: 'other' } }), [false, false], 'another admin on the server');
+  eq(offer('firestore', { myRole: 'editor', ownerUid: 'own' }), [false, false], 'a demoted owner');
 });
 
 /* ---------------- report ---------------- */
