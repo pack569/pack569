@@ -8197,6 +8197,23 @@
     });
     return out.join('\n');
   }
+  // Treasurer sign-off on C3 — the voided entries as a CSV, for the annual review: one line each,
+  // by date (then when voided), with who voided it, when (this device's time) and why. Every cell
+  // through ledgerCsvCell, so a description or reason starting "=" never runs as a formula. LEADERS
+  // ONLY, as the change history is: it is on Money · Ledger, and buildParentView carries neither
+  // the ledger nor the voided rows. Pure.
+  function ledgerVoidedCsv(aside) {
+    var rows = (aside || []).filter(function (e) { return e && e.off === 'void'; }).slice().sort(function (a, b) {
+      var da = String(a.date || ''), db = String(b.date || ''), va = String(a.voidedAt || ''), vb = String(b.voidedAt || '');
+      return da < db ? -1 : da > db ? 1 : va < vb ? -1 : va > vb ? 1 : 0;
+    });
+    var out = [['Date', 'Amount', 'In or out', 'Description', 'Voided by', 'Voided (this device’s time)', 'Reason'].join(',')];
+    rows.forEach(function (e) {
+      out.push([e.date || '', fmt(e.amountCents || 0), e.direction === 'in' ? 'Money in' : 'Money out', e.description || '',
+        e.voidedBy || '', ledgerLogWhen(e.voidedAt), e.voidReason || ''].map(ledgerCsvCell).join(','));
+    });
+    return out.join('\n');
+  }
   // ---------------------------------------------------------------------------
   // PHASE 3, C2 — LEDGER EDITS ARE LOGGED, AND THE LOCK RULES APPLY (owner, 2026-09-29).
   //
@@ -18937,6 +18954,9 @@
       '<button type="button" class="btn small' + (ui.ledgerView === 'reconcile' ? ' primary' : '') + '" data-act="ledger-view" data-view="reconcile">Reconcile</button>' +
       // Treasurer review of C2 (M-4) — the whole log, as a CSV (the export overlay: copy or download).
       (state.ledgerLog.length ? '<button type="button" class="btn small ghost" data-act="ledger-log-csv">Change history (CSV)</button>' : '') +
+      // Treasurer sign-off on C3 — and the voided entries, for the annual review.
+      ((state.ledgerAside || []).some(function (e) { return e.off === 'void'; })
+        ? '<button type="button" class="btn small ghost" data-act="ledger-voided-csv">Voided entries (CSV)</button>' : '') +
       '</div></div>';
     h += bookCard();
     return h + (ui.ledgerView === 'reconcile' ? renderReconcile() : renderLedgerEntries());
@@ -28288,6 +28308,12 @@
     if (act === 'ledger-log-csv') {
       ui.overlay = { kind: 'export', title: 'Ledger change history (CSV)', name: 'ledger-change-history.csv', mime: 'text/csv',
         text: ledgerLogCsv(state.ledgerLog, ledgerEntryLabel, ledgerLogNames()) };
+      render(); return;
+    }
+    // Treasurer sign-off on C3 — the voided entries as a CSV, leaders only, as above.
+    if (act === 'ledger-voided-csv') {
+      ui.overlay = { kind: 'export', title: 'Voided entries (CSV)', name: 'ledger-voided-entries.csv', mime: 'text/csv',
+        text: ledgerVoidedCsv(state.ledgerAside) };
       render(); return;
     }
     if (act === 'ledger-use-carryover') {

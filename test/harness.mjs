@@ -18653,6 +18653,32 @@ test('C3 treasurer: un-voiding takes an optional why, logged with it, as un-reco
     /if \(ch === 'ledger-unvoid-why'\) \{ ui\.unvoidWhy = el\.value; return; \}/.test(slice('handleChange')), 'the why is not kept as typed');
 });
 
+test('C3 treasurer: the voided entries download as a CSV for the annual review — leaders only, and no formula runs', () => {
+  const ctx = sandbox(['fmt', 'ledgerLogWhen', 'ledgerCsvCell', 'ledgerVoidedCsv']);
+  const aside = [
+    { id: 'v2', off: 'void', date: '2026-09-12', amountCents: 2500, direction: 'in', description: 'Dues, Ada', voidedBy: 'Pat', voidedAt: '2026-10-03T15:04:00.000Z', voidReason: 'Entered twice' },
+    { id: 'v1', off: 'void', date: '2026-09-10', amountCents: 8400, direction: 'out', description: '=HYPERLINK("x")', voidedBy: '@Sam', voidedAt: '', voidReason: '-1 "typo"' },
+    { id: 'r1', off: 'reversed', date: '2026-09-01', amountCents: 100, direction: 'out', description: 'Not a void' }];
+  const when = ctx.ledgerLogWhen(aside[0].voidedAt);
+  eq(ctx.ledgerVoidedCsv(aside).split('\n'), [
+    'Date,Amount,In or out,Description,Voided by,Voided (this device’s time),Reason',
+    `2026-09-10,$84.00,Money out,"'=HYPERLINK(""x"")",'@Sam,,"'-1 ""typo"""`,
+    `2026-09-12,$25.00,Money in,"Dues, Ada",Pat,${when},Entered twice`], 'the CSV');
+  eq(ctx.ledgerVoidedCsv([]), 'Date,Amount,In or out,Description,Voided by,Voided (this device’s time),Reason', 'none voided');
+  // The button (only with a voided row) and its handler: the export overlay, from the pack's voided rows.
+  const p = c2rPage({ more: C2R_MORE + `
+    ${['ledgerLogWhen', 'ledgerCsvCell', 'ledgerVoidedCsv'].map(slice).join('\n')}
+    function act5(act) { (function () {\n${c2Block(/    if \(act === 'ledger-voided-csv'\) \{[\s\S]*?\n    \}/, 'ledger-voided-csv')}\n})(); }` });
+  p.run("void2('u1', 'Entered twice'); act5('ledger-voided-csv')");
+  const o = p.get('ui.overlay');
+  eq([o.kind, o.name, o.mime, o.title, o.text.split('\n').length, /^2026-09-10,\$84\.00,Money out,Pinewood trophies,Pat Treasurer,[^,]+,Entered twice$/.test(o.text.split('\n')[1])],
+    ['export', 'ledger-voided-entries.csv', 'text/csv', 'Voided entries (CSV)', 2, true], 'the export: ' + o.text);
+  ok(/\(\(state\.ledgerAside \|\| \[\]\)\.some\(function \(e\) \{ return e\.off === 'void'; \}\)\s*\? '<button type="button" class="btn small ghost" data-act="ledger-voided-csv">Voided entries \(CSV\)<\/button>' : ''\)/.test(slice('renderLedger')),
+    'Money · Ledger offers no CSV of the voided entries');
+  const bpv = codeOnly(BPV()), parent = codeOnly(slice('renderParentApp'));
+  for (const name of ['ledgerVoidedCsv', 'ledger-voided-csv', 'ledgerAside']) ok(bpv.indexOf(name) === -1 && parent.indexOf(name) === -1, name + ' reaches the parents');
+});
+
 test('C3 treasurer: the void form, the refusals, the toasts and the sync notes say it in the treasurer’s words', () => {
   // The void form.
   const x = sandbox(['esc', 'LEDGER_VOID_REASON_MAX', 'ledgerVoidFormHtml']);
@@ -18785,11 +18811,15 @@ test('C3: nothing outside the book’s own plumbing reads the voided rows, so no
     if (!/^\s*\/\//.test(line) && /ledgerAside/.test(line.replace(/\/\/.*$/, ''))) users.add(fn);
   });
   eq([...users].sort(), ['dropScout', 'freshState', 'handleAction', 'isStateEmpty', 'keepLostVoids', 'ledgerAsideListHtml', 'ledgerAsideSettle', 'ledgerEntryLabel', 'ledgerUnvoidRow',
-    'ledgerVoidRow', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderLedgerEntries', 'restoreGone', 'rolloverYear'], 'who reads the voided rows');
-  // In handleAction: the void handlers and del-scout's log line only.
+    'ledgerVoidRow', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderLedger', 'renderLedgerEntries', 'restoreGone', 'rolloverYear'], 'who reads the voided rows');
+  // In handleAction: the void handlers, del-scout's log line, and (treasurer sign-off on C3) the voided CSV only.
   const h = slice('handleAction').split('\n').filter((l) => /ledgerAside/.test(l) && !/^\s*\/\//.test(l));
-  eq(h.length, 2, 'handleAction reads the voided rows somewhere new: ' + h.join(' | '));
-  ok(/var uvRow = \(state\.ledgerAside \|\| \[\]\)\.find/.test(h.join('\n')) && /var dsRows = state\.ledger\.concat\(state\.ledgerAside \|\| \[\]\)/.test(h.join('\n')), h.join('\n'));
+  eq(h.length, 3, 'handleAction reads the voided rows somewhere new: ' + h.join(' | '));
+  ok(/var uvRow = \(state\.ledgerAside \|\| \[\]\)\.find/.test(h.join('\n')) && /var dsRows = state\.ledger\.concat\(state\.ledgerAside \|\| \[\]\)/.test(h.join('\n')) &&
+    /text: ledgerVoidedCsv\(state\.ledgerAside\) \};/.test(h.join('\n')), h.join('\n'));
+  // renderLedger only asks whether there is a voided row, for the CSV button.
+  eq(slice('renderLedger').split('\n').filter((l) => /ledgerAside/.test(l) && !/^\s*\/\//.test(l)).map((l) => l.trim()),
+    ["((state.ledgerAside || []).some(function (e) { return e.off === 'void'; })"], 'renderLedger reads the voided rows');
   // And none of it reaches the parents.
   ok(!/ledgerAside|voidReason|voidedBy/.test(codeOnly(BPV())), 'buildParentView publishes a voided row');
 });
