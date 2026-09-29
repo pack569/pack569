@@ -6790,7 +6790,12 @@
   // well let the same dollars settle a second charge. A treasurer reproduced it: a family shown
   // owing $10 that really owed $40. The make-up money is still income — chargeTotals reports it
   // as `makeup`, and it reaches Funds in — it just is not a payment against anybody's charges.
-  function entryPaysCharges(e) { return e.direction === 'in' && !!e.scoutId && !e.tierMakeup; }
+  //
+  // Security review of C4 (finding 1) — NOR A REVERSAL. A reversal is the same money the other
+  // way; it settles nothing in a family's account. Set aside with its entry it counts nowhere; a
+  // pair that came apart is moved back COUNTED (ledgerPairCheck), and then the reversal of a
+  // reimbursement (money in, with the scout) read as a payment. See ledgerUnpaired.
+  function entryPaysCharges(e) { return e.direction === 'in' && !!e.scoutId && !e.tierMakeup && !e.reverses; }
   // Treasurer's review of Wave 4 (T1) — money OUT that gives a family's own money back. The
   // Dues card tells a treasurer to refund a credit "as money out", and nothing could record it
   // against the family: the ledger offered no scout on money out, so the credit stayed on the
@@ -6803,10 +6808,43 @@
   // `reimbursement: true` where it is recorded; one recorded before the mark existed carries no
   // source, and a refund always does, so the old ones can never read as refunds.
   function entryRefundsFamily(e) {
-    return e.direction === 'out' && !!e.scoutId && e.source === 'refund' && e.reimbursement !== true;
+    return e.direction === 'out' && !!e.scoutId && e.source === 'refund' && e.reimbursement !== true && !e.reverses;
+  }
+  // Security review of C4 (finding 1) — A BROKEN PAIR, BOTH COUNTED, IS STILL A PAIR. When a
+  // reversed entry and its reversal come apart (a page from before C4 keeps the entry ticked over
+  // its mark, or a backup from before the reverse is restored), ledgerPairCheck moves both back to
+  // the ledger, counted. The pack's totals net to $0, but anything that reads a row by what it IS
+  // did not: the family payment still paid its charges (its reversal has no source, so is no
+  // refund), a reimbursement's reversal read as a payment, a tier make-up still bought the tier.
+  // So every reader that sorts rows by family, scout, tier, line or source reads the ledger through
+  // this: both rows of a COUNTED pair left out (a row whose `reverses`, which ledgerPairCheck keeps,
+  // names another counted row). A reversal on its own, its entry deleted, is kept, and is still no
+  // payment or refund (above). A chain (a reversal reversed) pairs from its newest end, so a
+  // reversal reversed leaves the entry counting, as the cash does. Returns `ledger` itself when
+  // there is no pair. Pure.
+  function ledgerUnpaired(ledger) {
+    var byId = Object.create(null), reversed = Object.create(null), any = false;
+    ledger.forEach(function (e) {
+      if (!e || typeof e.id !== 'string') return;
+      if (!byId[e.id]) byId[e.id] = e;
+      if (typeof e.reverses === 'string' && e.reverses) { reversed[e.reverses] = true; any = true; }
+    });
+    if (!any) return ledger;
+    var paired = Object.create(null);
+    ledger.forEach(function (e) {
+      if (!e || byId[e.id] !== e || reversed[e.id]) return;   // start at a chain's newest end
+      var cur = e;
+      while (cur && typeof cur.reverses === 'string' && cur.reverses && !paired[cur.id]) {
+        var t = byId[cur.reverses];
+        if (!t || t === cur || paired[t.id]) break;
+        paired[cur.id] = true; paired[t.id] = true;
+        cur = typeof t.reverses === 'string' && t.reverses ? byId[t.reverses] : null;
+      }
+    });
+    return ledger.filter(function (e) { return !(e && typeof e.id === 'string' && paired[e.id]); });
   }
   function paymentsForScout(ledger, scoutId) {
-    return ledger.reduce(function (n, e) {
+    return ledgerUnpaired(ledger).reduce(function (n, e) {
       return (entryPaysCharges(e) && e.scoutId === scoutId) ? n + (e.amountCents || 0) : n;
     }, 0);
   }
@@ -6844,7 +6882,7 @@
       var a = acct(c.scoutId);
       if (chargeIsOpen(c)) a.owed += c.amountCents || 0;
     });
-    ledger.forEach(function (e) {
+    ledgerUnpaired(ledger).forEach(function (e) {
       if (entryPaysCharges(e)) {
         acct(e.scoutId).paid += e.amountCents || 0;
         // T9(b) — the part of `paid` that is last year's credit, not money that arrived this year.
@@ -6867,7 +6905,7 @@
     var owed = charges.reduce(function (n, c) {
       return (key(c.scoutId) === k && chargeIsOpen(c)) ? n + (c.amountCents || 0) : n;
     }, 0);
-    var paid = ledger.reduce(function (n, e) {
+    var paid = ledgerUnpaired(ledger).reduce(function (n, e) {
       if (!e.scoutId || key(e.scoutId) !== k) return n;
       if (entryPaysCharges(e)) return n + (e.amountCents || 0);
       // T1 — money given back is money no longer paid.
@@ -6916,7 +6954,7 @@
     var set = chargeSetTotals(charges);
     var t = { raised: set.raised, standing: set.standing, waived: set.waived, forgiven: set.forgiven,
       paid: 0, donated: 0, makeup: 0, carried: 0, refunded: 0, outstanding: 0, credit: 0 };
-    ledger.forEach(function (e) {
+    ledgerUnpaired(ledger).forEach(function (e) {
       // T1 — money handed back to a family, reported on its own: it left the bank, and it is
       // what took a credit off the account.
       if (entryRefundsFamily(e)) { t.refunded += e.amountCents || 0; return; }
@@ -6977,7 +7015,7 @@
       return cents;
     }
     var rest = [], refunded = {};
-    ledger.forEach(function (e) {
+    ledgerUnpaired(ledger).forEach(function (e) {
       if (entryRefundsFamily(e)) {
         var rk = key(e.scoutId);
         refunded[rk] = (refunded[rk] || 0) + (e.amountCents || 0);
@@ -7238,7 +7276,7 @@
   // the line cost, even though the opening balance already accounts for the cash leaving.
   function lineActualCents(ledger, lineId) {
     if (!lineId) return 0;
-    return ledger.reduce(function (n, e) {
+    return ledgerUnpaired(ledger).reduce(function (n, e) {
       if (e.lineId !== lineId) return n;
       // Phase 3b — money in that settles a FAMILY's account is not a refund of what the
       // pack spent; it is income against a charge. Counting it here would make a dues line
@@ -7257,7 +7295,7 @@
   // lineActualCents is what made commission look like negative spending.
   function lineIncomeCents(ledger, lineId) {
     if (!lineId) return 0;
-    return ledger.reduce(function (n, e) {
+    return ledgerUnpaired(ledger).reduce(function (n, e) {
       if (e.lineId !== lineId || e.scoutId) return n;
       return n + entrySignedCents(e);
     }, 0);
@@ -7280,7 +7318,7 @@
   // carryover entries, counted only when Starting funds is $0 (M3, below).
   function ledgerIncomeCents(ledger, isIncomeLine, startingCents) {
     var t = { commission: 0, hasCommission: false, other: 0, carryover: 0 };
-    ledger.forEach(function (e) {
+    ledgerUnpaired(ledger).forEach(function (e) {
       var amt = e.amountCents || 0;
       if (e.direction === 'in') {
         if (e.scoutId) return;
@@ -7322,7 +7360,7 @@
   var COMMISSION_LOOKALIKE_SOURCES = ['', 'fundraiser', 'other'];
   function commissionLookalikes(ledger, isIncomeLine) {
     var by = {}, order = [];
-    ledger.forEach(function (e) {
+    ledgerUnpaired(ledger).forEach(function (e) {
       if (e.direction !== 'in' || e.scoutId || !e.lineId || !isIncomeLine(e.lineId)) return;
       if (COMMISSION_LOOKALIKE_SOURCES.indexOf(e.source || '') === -1 || !(e.amountCents > 0)) return;
       if (e.notCommission === true) return;
@@ -7659,9 +7697,12 @@
   // ordinary entry "Reversal of …" dated the day it was made, the opposite entry the treasurer
   // would have written by hand, and can be voided like one. How a pair comes apart: a page from
   // before C4 keeps a ticked row over the deletion mark its reverse left (C2 H1), or a hand-edited
-  // backup. Moved rows lose what setting them aside gave them. Repeated until nothing moves (a
-  // reversal of a reversal can free another pair), so running it twice gives the same. Literals
-  // only: normalizeState runs it before the script's vars are set. Returns { ledger, aside, moved }.
+  // backup. Moved rows lose what setting them aside gave them, except a reversal's `reverses`
+  // (security review of C4, finding 1): it is what tells the readers that sort rows by family,
+  // tier or line that the two are a pair, and must net to $0 there too (ledgerUnpaired), not only
+  // in the pack's totals. Repeated until nothing moves (a reversal of a reversal can free another
+  // pair), so running it twice gives the same. Literals only: normalizeState runs it before the
+  // script's vars are set. Returns { ledger, aside, moved }.
   // Pure apart from the fields taken off the rows it moves.
   function ledgerPairCheck(ledger, aside) {
     var moved = [];
@@ -7685,7 +7726,8 @@
       if (!back.length) break;
       aside = aside.filter(function (a) { return back.indexOf(a) === -1; });
       back.forEach(function (a) {
-        ['off', 'reverses', 'reversedBy', 'voidReason', 'voidedBy', 'voidedByUid', 'voidedAt', 'carriedFrom'].forEach(function (k) { delete a[k]; });
+        ['off', 'reversedBy', 'voidReason', 'voidedBy', 'voidedByUid', 'voidedAt', 'carriedFrom'].forEach(function (k) { delete a[k]; });
+        if (!a.reverses) delete a.reverses;
         ledger.push(a);
         moved.push(a.id);
       });
@@ -17129,7 +17171,7 @@
   // un-earn every capped tier in the pack.
   function tierMakeupMap() {
     var out = {};
-    state.ledger.forEach(function (e) {
+    ledgerUnpaired(state.ledger).forEach(function (e) {
       if (!e || !e.tierMakeup || !e.scoutId || e.direction !== 'in') return;
       (out[e.tierMakeup] || (out[e.tierMakeup] = {}))[e.scoutId] = true;
     });
@@ -17140,7 +17182,7 @@
   // payment, not by editing the first one away.
   function tierMakeupPaidCents(tierId, scoutId) {
     var cents = 0;
-    state.ledger.forEach(function (e) {
+    ledgerUnpaired(state.ledger).forEach(function (e) {
       if (e && e.tierMakeup === tierId && e.scoutId === scoutId && e.direction === 'in') {
         cents += e.amountCents || 0;
       }
@@ -17286,7 +17328,7 @@
         var ids = {};
         fam.members.forEach(function (m) { ids[m.id] = true; });
         // T1 — a refund of the family's credit is not a reimbursement, whatever line it sits on.
-        var paid = state.ledger.reduce(function (n, e) {
+        var paid = ledgerUnpaired(state.ledger).reduce(function (n, e) {
           return (e.direction === 'out' && e.lineId === s.item.id && ids[e.scoutId] && !entryRefundsFamily(e))
             ? n + (e.amountCents || 0) : n;
         }, 0);
@@ -21009,7 +21051,7 @@
         settled: c.waivedBy ? 'tier' : (c.forgiven ? 'forgiven' : '')
       };
     });
-    var payments = ledgerSort(state.ledger.filter(function (e) {
+    var payments = ledgerSort(ledgerUnpaired(state.ledger).filter(function (e) {
       return e.scoutId && chargeFamilyKey(e.scoutId) === key &&
         (entryPaysCharges(e) || entryRefundsFamily(e) || (e.direction === 'in' && e.tierMakeup));
     })).map(function (e) {

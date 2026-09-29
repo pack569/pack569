@@ -650,7 +650,7 @@ function coverageSandbox(setup) {
        return { sales: (store || 0) + on, onS: on, onD: 0, storeD: 0, wagonD: 0 };
      }
      ${setup}
-     ${slice('tierMakeupMap')}
+     ${slice('tierMakeupMap')} ${slice('ledgerUnpaired')}
      ${slice('tierEarnedMap')}
      ${slice('packCoverage')}
      ${slice('scoutCommissionOf')}
@@ -865,7 +865,7 @@ test('a rung is set apart from its rows by more than a font weight', () => {
 // The ledger math is deliberately pure — it takes (ledger, book) rather than reading
 // `state` — precisely so it can be exercised here rather than by clicking around.
 const LEDGER_FNS = ['ledgerSort', 'entrySignedCents', 'entryAfterOpening', 'ledgerBalance',
-  'LEDGER_INCOME_SOURCES', 'entryIsRefund', 'entryRefundsFamily', 'lineIncomeCents', 'ledgerIncomeCents',
+  'LEDGER_INCOME_SOURCES', 'entryIsRefund', 'entryRefundsFamily', 'ledgerUnpaired', 'lineIncomeCents', 'ledgerIncomeCents',
   'lineActualCents', 'entryWantsLine', 'ledgerTotals', 'entryOnStatement', 'reconcileTotals', 'runningBalances'];
 
 function entry(o) {
@@ -1009,7 +1009,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'ledgerPairCheck',
   // Phase 3, C1 — the ledger row normalizer, shared by the rows set aside.
   'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeLedgerRow', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
-  'lineActualCents', 'entryRefundsFamily', 'entrySignedCents',
+  'lineActualCents', 'entryRefundsFamily', 'ledgerUnpaired', 'entrySignedCents',
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
@@ -2482,7 +2482,7 @@ test('one handler set serves every budget line, not parallel act-/exp- families'
    ================================================================ */
 
 const CHARGE_FNS = ['CHARGE_WHO', 'centsOf', 'chargeKey', 'chargeRowsFor', 'chargeIsOpen',
-  'entryPaysCharges', 'entryRefundsFamily', 'paymentsForScout', 'familyAccounts', 'familyOutstanding', 'chargeSetTotals', 'chargeTotals'];
+  'entryPaysCharges', 'entryRefundsFamily', 'ledgerUnpaired', 'paymentsForScout', 'familyAccounts', 'familyOutstanding', 'chargeSetTotals', 'chargeTotals'];
 
 function line3b(patch) {
   return Object.assign({
@@ -9729,7 +9729,7 @@ test('T1: a refunded family credit leaves the account, and nothing is carried', 
   // The Dues card says "record the refund as money out" — and money out could not name the
   // family, so the credit outlived the cheque and came forward at close-out: paid back twice.
   const ctx = sandbox(CHARGE_FNS.concat(['chargePaidAllocation', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
-    'entrySignedCents', 'lineActualCents']));
+    'entrySignedCents', 'lineActualCents', 'ledgerUnpaired']));
   const charges = [{ id: 'd', scoutId: 'ada', lineId: 'D', amountCents: 8000, date: '2026-09-01', waivedBy: '', forgiven: null }];
   const paid = { direction: 'in', scoutId: 'ada', amountCents: 12000, source: 'family' };      // $40 over
   const refund = { direction: 'out', scoutId: 'ada', amountCents: 4000, source: 'refund', lineId: 'D' };
@@ -10360,7 +10360,7 @@ function tierScopeSandbox() {
     ${slice('lineBillingRoster')} ${slice('lineBillingIds')}
     ${slice('coverValueOfKeys')} ${slice('tierCoverCentsPerScout')}
     ${slice('familyFeeHolder')} ${slice('familyCoverage')} ${slice('shareCountsForScout')}
-    ${slice('packCoverageByScout')} ${slice('privateBenefitCheck')} ${slice('entryRefundsFamily')} ${slice('tierReimbursements')}
+    ${slice('packCoverageByScout')} ${slice('privateBenefitCheck')} ${slice('entryRefundsFamily')} ${slice('ledgerUnpaired')} ${slice('tierReimbursements')}
     function familyKeyOf(s) { return s.familyId || s.id; }
     function linePerFamily(l) { return !!l.perFamily; }
     function lineDens(l) { return l.dens || []; }
@@ -11389,7 +11389,7 @@ function siblingSandbox(earned) {
     ${['arrOf', 'COVER_WHO', 'coverKeyOf', 'lineRateForWho', 'scoutsInDens', 'familiesOf', 'familyBillingScout',
        'lineBillingRoster', 'lineBillingIds', 'familyFeeHolder', 'familyCoverage', 'shareCountsForScout',
        'coverValueOfKeys', 'tierCoverCentsPerScout', 'packCoverage', 'packCoverageByScout', 'privateBenefitCheck',
-       'entryRefundsFamily', 'tierReimbursements', 'earnedTierFor', 'applyTierWaivers', 'salesOnlyTierMap'].map(slice).join('\n')}
+       'entryRefundsFamily', 'ledgerUnpaired', 'tierReimbursements', 'earnedTierFor', 'applyTierWaivers', 'salesOnlyTierMap'].map(slice).join('\n')}
     function familyKeyOf(s) { return (s && s.familyId) || (s && s.id) || ''; }
     function linePerFamily(l) { return l.basis === 'per-family'; }
     function lineDens(l) { return l.dens || []; }
@@ -17755,7 +17755,7 @@ const CLOSEOUT_SIZE_FNS = ['seasonLedgerNow', 'seasonLedgerRows', 'ledgerSort', 
   'familyKeyOf', 'familyLabel', 'rolloverYear', 'computeBudget', 'activeScouts', 'lineThroughPack', 'linePlanned', 'lineRoster',
   'eventForLine', 'activeLeaders', 'familiesOf', 'tierExtraPackCostCents', 'coverCostForKeys', 'plannedCoverKeys', 'plannedTiers',
   'plannedTier', 'coverableLines', 'allBudgetLines', 'lineRaisesCharges', 'lineIsFamilyDirect', 'chargeTotals', 'chargeSetTotals',
-  'familyAccounts', 'chargeIsOpen', 'entryPaysCharges', 'tierCoverageConfigured', 'sortedTiers', 'fundingSummary', 'commissionRates',
+  'familyAccounts', 'chargeIsOpen', 'entryPaysCharges', 'ledgerUnpaired', 'tierCoverageConfigured', 'sortedTiers', 'fundingSummary', 'commissionRates',
   'cashCreditOn', 'cashScoutRate', 'leaderPlannedCents', 'rewardTierSummary', 'earnedTierFor', 'computePackTotals', 'packGoalCents',
   'stretchGoalOf', 'ledgerIncomeCents', 'bookBalance', 'ledgerBalance', 'familyAccountsNow', 'closingCarryover', 'advanceDens',
   'priorDayISO', 'ledgerActorName', 'shiftISOYear', 'utf8Bytes', 'GONE_ROOM_BYTES', 'LEDGER_LOG_ROOM_BYTES', 'fitSeasonLedger', 'ARCHIVE_DOC_SOFT_LIMIT'];
@@ -18748,8 +18748,15 @@ const C3_READERS = {
   reconcileTotals: (L, x, c) => x.reconcileTotals(L, c.book),
   reconcileStale: (L, x, c) => x.reconcileStale(L, c.book, '2026-12-15'),
   runningBalances: (L, x, c) => x.runningBalances(L, c.book),
-  seasonLedgerRows: (L, x) => x.seasonLedgerRows(L, (id) => 'line ' + id, (id) => 'family ' + id)
+  seasonLedgerRows: (L, x) => x.seasonLedgerRows(L, (id) => 'line ' + id, (id) => 'family ' + id),
+  ledgerUnpaired: (L, x) => x.ledgerUnpaired(L).map((e) => e.id)
 };
+// Security review of C4 (finding 1) — the readers that LIST or COUNT the rows, or tick them. A pair
+// that came apart and was sent back to the ledger is two counted rows that net to $0: these show
+// both (the treasurer ticks the reversal against the statement it is on), and only the balance is
+// the entry deleted (when the entry is after the opening date: its reversal, dated the day it was
+// made, always is). Every other reader is the entry deleted outright.
+const C4_LISTING_READERS = ['ledgerBalance', 'ledgerSort', 'ledgerTotals', 'reconcileTotals', 'reconcileStale', 'runningBalances', 'seasonLedgerRows', 'ledgerUnpaired'];
 const C3_STATE_READERS = {
   tierMakeupMap: (x) => x.tierMakeupMap(),
   tierMakeupPaidCents: (x) => [['t1', 's1'], ['t1', 's2'], ['t2', 's3']].map(([t, s]) => x.tierMakeupPaidCents(t, s))
@@ -20092,7 +20099,7 @@ test('C4 property: readers after Reverse equal the entry deleted; after Correct,
   const TODAY = '2026-12-01';
   const r = c3Rand(4569);
   const pick = (a) => a[Math.floor(r() * a.length)];
-  let rev = 0, cor = 0, same = 0;
+  let rev = 0, cor = 0, same = 0, bal = 0;
   for (let n = 0; n < 250; n++) {
     const rows = Array.from({ length: 3 + Math.floor(r() * 14) }, (_, i) => {
       const dir = pick(['in', 'out']);
@@ -20126,6 +20133,27 @@ test('C4 property: readers after Reverse equal the entry deleted; after Correct,
     eq([JSON.stringify(vo.ledger), vo.ledgerAside.map((e) => [e.id, e.off])], [JSON.stringify(del.ledger), [[X, 'reversed'], ['rv-' + X, 'reversal']]], `case ${n}: the counted rows after Reverse`);
     eq(all(vo), all(del), `case ${n}: a reader counts the reversed ${X} or its reversal`);
     rev += 1;
+    // Security review of C4 (finding 1) — the pair comes apart, and ledgerPairCheck sends both back
+    // to the ledger, counted: a page from before C4 kept the entry (ticked) over its mark, or the
+    // entry was voided rather than reversed on another device. Every reader that sorts rows by
+    // family, tier, line or source is the entry deleted; the listing ones net to its balance.
+    const broken = clone(); x.ledgerReverseRow(broken, X, 'Entered in error', stamp, TODAY);
+    if (n % 2) {
+      const back = broken.ledgerAside.find((z) => z.id === X);
+      ['off', 'reversedBy', 'voidReason', 'voidedBy', 'voidedByUid', 'voidedAt', 'carriedFrom'].forEach((k) => { delete back[k]; });
+      broken.ledgerAside = broken.ledgerAside.filter((z) => z !== back);
+      broken.ledger.push(back);
+    } else broken.ledgerAside.find((z) => z.id === X).off = 'void';
+    const pc = x.ledgerPairCheck(broken.ledger, broken.ledgerAside);
+    broken.ledger = pc.ledger; broken.ledgerAside = pc.aside;
+    eq([broken.ledger.map((z) => z.id).filter((id) => id === X || id === 'rv-' + X).sort(), broken.ledgerAside.length], [[X, 'rv-' + X].sort(), 0], `case ${n}: the broken pair is counted`);
+    const drop = (st) => { const o = JSON.parse(all(st)); C4_LISTING_READERS.forEach((k) => delete o[k]); return JSON.stringify(o); };
+    eq(drop(broken), drop(del), `case ${n}: a reader counts one half of the broken pair ${X}`);
+    if (x.entryAfterOpening(rows.find((z) => z.id === X), book)) {
+      eq([x.ledgerBalance(broken.ledger, book), x.ledgerTotals(broken.ledger, book).balance], [x.ledgerBalance(del.ledger, book), x.ledgerTotals(del.ledger, book).balance],
+        `case ${n}: the broken pair moves the balance`);
+      bal += 1;
+    }
     // Correct ≡ edit in place.
     const draft = {};
     const orig = rows.find((e) => e.id === X);
@@ -20151,7 +20179,7 @@ test('C4 property: readers after Reverse equal the entry deleted; after Correct,
     }
     cor += 1;
   }
-  ok(rev === 250 && cor === 250 && same > 60, 'too few cases: ' + [rev, cor, same]);
+  ok(rev === 250 && cor === 250 && same > 60 && bal > 100, 'too few cases: ' + [rev, cor, same, bal]);
 });
 
 test('C4 (M3): a reversed entry and its reversal are set aside together, or both counted, and a second load changes nothing', () => {
@@ -20187,8 +20215,10 @@ test('C4 (M3): a reversed entry and its reversal are set aside together, or both
   for (const [what, ledger, aside, more, want, cents] of cases) {
     const d = load(ledger, aside, more, what);
     eq([where(d), net(d)], [want, cents], what);
-    // A row moved back is a plain counted row again.
-    d.ledger.forEach((e) => ok(!Object.keys(e).some((k) => /^(off|reverses|reversedBy|void|carried)/.test(k)), what + ': ' + e.id + ' kept what setting aside gave it'));
+    // A row moved back is a plain counted row again, except that a reversal still says what it
+    // reverses (security review of C4, finding 1: ledgerUnpaired reads it).
+    d.ledger.forEach((e) => ok(!Object.keys(e).some((k) => /^(off|reversedBy|void|carried)/.test(k)), what + ': ' + e.id + ' kept what setting aside gave it'));
+    d.ledger.forEach((e) => eq(e.reverses, e.id === 'rv-X' ? aside.concat(ledger).find((a) => a.id === 'rv-X').reverses : undefined, what + ': ' + e.id + '’s reverses'));
   }
   // A chain (a reversal reversed): settles in one load.
   load([L1], [X(), V({ off: 'reversed', reversedBy: 'rv-rv-X' }), row('rv-rv-X', 4000, 'out', { off: 'reversal', reverses: 'rv-X' })], null, 'a chain');
@@ -20198,6 +20228,70 @@ test('C4 (M3): a reversed entry and its reversal are set aside together, or both
     [X(), V()], null, 'the links');
   eq(d.ledger.map((e) => [e.id, 'replaces' in e ? e.replaces : '-', 'reverses' in e ? e.reverses : '-']),
     [['l1', '-', '-'], ['rc-X', 'X', '-'], ['J', '-', '-'], ['rv-2025-Z', '-', '2025:Z']], 'the links');
+});
+
+// Security review of C4 (finding 1) — a pair that came apart is sent back to the ledger, both
+// counted, and nets to $0 for the family's account, a reward tier's reimbursement and a tier make-up,
+// not only for the pack's totals. Loaded as a page from before C4 would leave it: the entry kept
+// counted (ticked, over its deletion mark), its reversal set aside.
+function c4BrokenPair(orig) {
+  const n = sandbox(NORMALIZE_FNS);
+  const X = Object.assign({ id: 'X', date: '2026-09-10', description: 'Row X', reconciled: true }, orig);
+  const V = { id: 'rv-X', date: '2026-09-29', description: 'Reversal of “Row X”', amountCents: X.amountCents,
+    direction: X.direction === 'in' ? 'out' : 'in', lineId: X.lineId || '', source: '', scoutId: X.scoutId, tierMakeup: '',
+    reimbursement: false, off: 'reversal', reverses: 'X' };
+  const d = JSON.parse(JSON.stringify(n.normalizeState(JSON.parse(JSON.stringify(Object.assign({}, GONE_SEED, { ledger: [X], ledgerAside: [V] }))))));
+  eq([d.ledger.map((e) => [e.id, e.reverses]), d.ledgerAside.length], [[['X', undefined], ['rv-X', 'X']], 0], 'both counted, the reversal still naming its entry');
+  return d.ledger;
+}
+test('C4 review (finding 1): a broken pair for a family payment settles nothing, and the family still owes', () => {
+  const pair = c4BrokenPair({ amountCents: 4000, direction: 'in', scoutId: 's1', source: 'family', lineId: 'L1' });
+  const x = sandbox(['entryPaysCharges', 'entryRefundsFamily', 'ledgerUnpaired', 'chargeIsOpen', 'paymentsForScout', 'familyAccounts',
+    'familyOutstanding', 'refundCreditBefore', 'chargeSetTotals', 'chargeTotals', 'chargePaidAllocation']);
+  const charges = [{ id: 'c1', scoutId: 's1', lineId: 'L1', amountCents: 4000, date: '2026-09-01', waivedBy: '', forgiven: false }];
+  const read = (L) => JSON.stringify([x.paymentsForScout(L, 's1'), x.familyAccounts(charges, L), x.familyOutstanding(charges, L, 's1'),
+    x.chargeTotals(charges, L), x.chargePaidAllocation(charges, L),
+    x.refundCreditBefore(charges, L, null, { id: 'n', direction: 'out', scoutId: 's1', source: 'refund', amountCents: 100 })]);
+  eq(read(pair), read([]), 'the family’s account reads a payment that was reversed');
+  eq([x.paymentsForScout(pair, 's1'), x.familyOutstanding(charges, pair, 's1')], [0, 4000], 'the figures');
+  // A reversal whose entry is gone for good is still no payment: it is no family's money.
+  eq(x.paymentsForScout([pair[1]], 's1'), 0, 'a lone reversal of a refund');
+});
+test('C4 review (finding 1): a broken pair for a reward-tier reimbursement leaves it owed, and is no payment on the family’s account', () => {
+  const pair = c4BrokenPair({ amountCents: 3000, direction: 'out', scoutId: 'bea', lineId: 'DIR', reimbursement: true });
+  const { ctx } = siblingSandbox({ bea: 'earned' });
+  ctx.state.ledger = pair;
+  eq(ctx.tierReimbursements().map((r) => [r.paid, r.left]), [[0, 3000]], 'the reimbursement reads as paid back');
+  const x = sandbox(['entryPaysCharges', 'entryRefundsFamily', 'ledgerUnpaired', 'chargeIsOpen', 'familyAccounts', 'paymentsForScout']);
+  eq([x.paymentsForScout(pair, 'bea'), JSON.parse(JSON.stringify(x.familyAccounts([], pair)))], [0, []], 'its reversal reads as a family payment');
+  eq(x.paymentsForScout([pair[1]], 'bea'), 0, 'a lone reversal of a reimbursement reads as a family payment');
+});
+test('C4 review (finding 1): a broken pair for a tier make-up buys no tier', () => {
+  const pair = c4BrokenPair({ amountCents: 1500, direction: 'in', scoutId: 's1', tierMakeup: 't1', source: 'family' });
+  const x = sandbox(['ledgerUnpaired', 'tierMakeupMap', 'tierMakeupPaidCents']);
+  x.state = { ledger: pair };
+  eq([JSON.parse(JSON.stringify(x.tierMakeupMap())), x.tierMakeupPaidCents('t1', 's1')], [{}, 0], 'the make-up still buys the tier');
+  x.state = { ledger: [pair[0]] };
+  eq([JSON.parse(JSON.stringify(x.tierMakeupMap())), x.tierMakeupPaidCents('t1', 's1')], [{ t1: { s1: true } }, 1500], 'the make-up on its own');
+  // Wiring: the family statement and every ledger reader that sorts rows by what they are read through ledgerUnpaired.
+  ok(/var payments = ledgerSort\(ledgerUnpaired\(state\.ledger\)\.filter\(/.test(slice('familyStatementData')), 'the family statement lists a reversed payment');
+  ok(/var paid = ledgerUnpaired\(state\.ledger\)\.reduce\(/.test(slice('tierReimbursements')), 'tierReimbursements');
+});
+test('C4 review (finding 1): a chain pairs from its newest end, so a reversal reversed leaves the entry counting', () => {
+  const x = sandbox(['ledgerUnpaired']);
+  const r = (id, rev) => (rev ? { id, reverses: rev } : { id });
+  eq(x.ledgerUnpaired([r('X'), r('rv-X', 'X'), r('rv-rv-X', 'rv-X')]).map((e) => e.id), ['X'], 'three');
+  eq(x.ledgerUnpaired([r('A'), r('B', 'A'), r('C', 'B'), r('D', 'C')]).map((e) => e.id), [], 'four');
+  eq(x.ledgerUnpaired([r('X'), r('R1', 'X'), r('R2', 'X')]).map((e) => e.id), ['R2'], 'reversed twice: one pair');
+  eq(x.ledgerUnpaired([r('A', 'B'), r('B', 'A')]).map((e) => e.id), ['A', 'B'], 'a loop is no pair, and ends');
+  eq(x.ledgerUnpaired([r('rv-2025-Z', '2025:Z'), r('Z')]).map((e) => e.id), ['rv-2025-Z', 'Z'], 'a closed year’s reversal');
+  const L = [r('a'), r('b')];
+  ok(x.ledgerUnpaired(L) === L, 'no pair: the ledger itself');
+  // A reversal is never a family's payment or refund, whatever it says.
+  const f = sandbox(['entryPaysCharges', 'entryRefundsFamily']);
+  eq([f.entryPaysCharges({ direction: 'in', scoutId: 's1', reverses: 'X' }), f.entryRefundsFamily({ direction: 'out', scoutId: 's1', source: 'refund', reverses: 'X' }),
+    f.entryPaysCharges({ direction: 'in', scoutId: 's1', reverses: '' }), f.entryRefundsFamily({ direction: 'out', scoutId: 's1', source: 'refund' })],
+    [false, false, true, true], 'a reversal as a payment or a refund');
 });
 
 test('C4 (M3) property: after any load every reversed entry has its reversal beside it and every reversal its entry; no row is lost; a second load is the same', () => {
