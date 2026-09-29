@@ -1008,7 +1008,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
 // LIVE STOPGAP — what every slice of the sync merge needs besides it (freshGone is in NORMALIZE_FNS).
-const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'pruneGone', 'markGone', 'teBatchOf', 'keptReconciledText'];
+const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'keptReconciledText'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
   const ctx = vm.createContext({});
@@ -16730,14 +16730,51 @@ test('stopgap, Firestore: a Trail’s End re-import is never counted twice by a 
   // Again, from a batch this time: B takes the first re-import and edits; A imports again.
   b.run("state.entries.push({ id: 'b2', scoutId: 's1', kind: 'wagon', date: '', salesCents: 1, donationsCents: 0 }); commit()");
   a.run('reimport()');
-  eq(Object.keys(a.get('state.gone.imports')), ['devAb1'], 'the second import was not remembered by its batch');
+  eq(Object.keys(a.get('state.gone.imports')), ['pre-batch', 'devAb1'], 'the second import was not remembered by its batch');
   a.push();
   b.hear();
   b.push();
   eq(server().entries.filter((e) => e.source === 'te-import').map((e) => e.id), ['te-devAb2-0', 'te-devAb2-1'], 'the second re-import');
   eq(b.get('totals()'), { s1: single.s1 + 1, s2: single.s2 + 100 }, 'B counts the second import twice');
-  // Typed-in entries are never marked by an import.
-  eq(Object.keys(server().gone.entries).sort(), ['old1', 'old2'], 'an import marked a typed-in entry');
+  // The rows from before batches were one mark, not one each (popcorn review 2); typed-in
+  // entries are never marked by an import.
+  eq([Object.keys(server().gone.entries), Object.keys(server().gone.imports)], [[], ['pre-batch', 'devAb1']], 'what the imports marked');
+});
+
+test('stopgap, Firestore: two devices that both re-import before either saves count only the latest import', () => {
+  // Popcorn review 1 / security S7. Each device's import replaces the rows from before batches,
+  // neither has seen the other's. B's batch is the later one (teBatchOf: 'devBb1' > 'devAb1').
+  const single = { s1: 5000 + 1000, s2: 2000 + 500 };
+  for (const bFirst of [false, true]) {
+    const { a, b, server } = fsGonePair();
+    a.run('reimport()');
+    b.run('reimport()');
+    const [first, last] = bFirst ? [b, a] : [a, b];
+    first.push();
+    last.hear();
+    last.push();
+    const how = bFirst ? 'the later import saved first' : 'the earlier import saved first';
+    eq(server().entries.filter((e) => e.source === 'te-import').map((e) => e.id), ['te-devBb1-0', 'te-devBb1-1'], `${how}: the imported rows`);
+    eq(last.get('totals()'), single, `${how}: counted twice`);
+    eq(server().gone.imports.devAb1 > 0, true, `${how}: the earlier import was not marked`);
+    first.hear();
+    eq(first.get('totals()'), single, `${how}: the first device after the save`);
+  }
+  // A device still holding the rows from before batches, against a copy whose import has since
+  // been replaced by a later one and whose marks are gone: the old rows go too (older than any batch).
+  const p = fsGonePair();
+  p.b.run(B1);
+  p.a.run("reimport(); reimport(); state.gone = freshGone(); commit()");
+  p.a.push(); p.b.hear(); p.b.push();
+  eq(p.server().entries.filter((e) => e.source === 'te-import').map((e) => e.id), ['te-devAb2-0', 'te-devAb2-1'], 'rows from before batches came back');
+  // A report that matched nobody replaces the rows from before batches with none: the one mark
+  // (popcorn review 2) is all that keeps a device still holding them from bringing them back.
+  const z = fsGonePair();
+  z.b.run(B1);
+  z.a.run('teMatchScouts = function () { return { matched: [] }; }; reimport()');
+  eq([z.a.get('state.gone.imports'), z.a.get('state.gone.entries')], [{ 'pre-batch': 1790000001000 }, {}], 'one mark for the rows from before batches');
+  z.a.push(); z.b.hear(); z.b.push();
+  eq(eIds(z.server()), ['b1', 'x1', 'x2'], 'rows from before batches came back');
 });
 
 // Treasurer M1 / security S1: one device deletes an unreconciled ledger row, another ticks it
@@ -16890,6 +16927,12 @@ test('stopgap: the deletion marks are normalized, merged by the later mark, and 
   const sales = Object.keys(vm.runInContext('state.gone.sales', ctx));
   eq([sales.length, sales[0], sales[sales.length - 1]], [1000, 's5', 's1004'], 'the cap did not keep the newest');
   eq(['te-abc12-0', 'te-dev-owner-3', 'te-x', 'x1', 7].map((i) => ctx.teBatchOf(i)), ['abc12', 'dev-owner', '', '', ''], 'teBatchOf');
+  // A batch is a uid(): of two, the greater string is the later import (the merge keeps it).
+  const later = vm.runInContext(`${slice('uid')}
+    var ts = [1790000000000, 1790000000001, 1790000000000 + 86400000 * 400], got = [], was = Date.now;
+    ts.forEach(function (t) { Date.now = function () { return t; }; got.push(teBatchOf('te-' + uid() + '-0')); });
+    Date.now = was; got[0] < got[1] && got[1] < got[2]`, ctx);
+  ok(later, 'a later uid() does not sort after an earlier one');
   // The merge: per id the later mark wins either way, a tie goes to the deletion, and a mark
   // only this side has is kept.
   vm.runInContext(`${['mergeRemoteAppendOnly'].map(slice).join('\n')}
@@ -16916,7 +16959,8 @@ test('stopgap: every path that deletes a money-log row marks it, an Undo marks i
   for (const log of ['entries', 'sales', 'distributions']) ok(new RegExp(`markGone\\('${log}'`).test(sc), `del-scout does not mark its ${log}`);
   ok(/markGone\('distributions'/.test(block('del-inv-product')), 'del-inv-product does not mark its hand-outs');
   const te = slice('teCommitSalesLive');
-  ok(/markGone\('imports', \[b\]\)/.test(te) && /else markGone\('entries', \[e\]\)/.test(te), 'the re-import does not mark what it replaces');
+  ok(/replaced\[teBatchOf\(e\.id\) \|\| TE_PRE_BATCH\] = true/.test(te) && /markGone\('imports', Object\.keys\(replaced\)\)/.test(te),
+    'the re-import does not mark what it replaces');
   ok(/e\.id = 'te-' \+ batch \+ '-' \+ \(n\+\+\)/.test(te), 'imported rows do not carry their batch');
   const roll = slice('rolloverYear');
   ok(/state\.gone = freshGone\(\);/.test(roll) && /b\.programYear \+= 1;/.test(roll),
@@ -16992,6 +17036,20 @@ atest('stopgap, api: a delete, a re-import and an Undo on one device survive ano
   eq([rev(), eIds(server())], [6, ['b1', 'old1', 'old2', 'x1', 'x2']], 'the undone row did not come back');
   await a.poll();
   eq(a.get('ids(state.entries).sort()'), ['b1', 'old1', 'old2', 'x1', 'x2'], 'A after B’s save');
+});
+
+atest('stopgap, api: two devices that both re-import before either saves count only the latest import', async () => {
+  const { a, b, server } = await apiGonePair();
+  a.run('reimport()');
+  b.run('reimport()');
+  await settle([a], 800);
+  await settle([b], 800);
+  const single = { s1: 5000 + 1000, s2: 2000 + 500 };
+  const batch = [a, b].map((c) => c.get("teBatchOf(state.entries.filter(function (e) { return e.source === 'te-import'; })[0].id)"));
+  eq(server().entries.filter((e) => e.source === 'te-import').map((e) => e.id), [0, 1].map((i) => `te-${batch.sort()[1]}-${i}`), 'the imported rows');
+  eq(b.get('totals()'), single, 'counted twice');
+  await a.poll();
+  eq(a.get('totals()'), single, 'A after B’s save');
 });
 
 atest('stopgap, api: a ledger row reconciled on one device is kept when another deleted it', async () => {

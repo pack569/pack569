@@ -11499,9 +11499,23 @@
     });
   }
   // 'te-<batch>-<n>' → '<batch>'; '' for a row imported before batches (or typed in).
+  // A batch is a uid(), which starts with Date.now() in base 36 (eight digits until 2059), so of
+  // two batches the greater string is the later import, by the importing devices' clocks; a tie
+  // goes to the greater random tail, which is the same answer on every device.
   function teBatchOf(id) {
     var m = /^te-(.+)-\d+$/.exec(typeof id === 'string' ? id : '');
     return m ? m[1] : '';
+  }
+  // The one gone.imports key for every row imported before batches existed (popcorn review of
+  // the stopgap, 2): a re-import marks them all at once, not row by row. Not a uid(): no hyphen.
+  var TE_PRE_BATCH = 'pre-batch';
+  // A Trail's End row is gone when its import was replaced. A row from before batches has no
+  // import of its own: it is gone once any import has been replaced, since every later import
+  // replaced it.
+  function teImportGone(imports, id) {
+    var b = teBatchOf(id);
+    if (b) return imports[b] > 0;
+    return Object.keys(imports).some(function (k) { return imports[k] > 0; });
   }
   // Wave 18(5) — append-only id-union merge, used only when sync.clobber is set.
   // Unions exactly FOUR collections by id — state.entries, the ledger, inventory hand-outs,
@@ -11538,8 +11552,7 @@
       if (!gone) return false;
       if (gone[log] && gone[log][x.id] > 0) return true;
       if (log !== 'entries' || x.source !== 'te-import' || !gone.imports) return false;
-      var b = teBatchOf(x.id);
-      return !!(b && gone.imports[b] > 0);
+      return teImportGone(gone.imports, x.id);
     }
     // A reconciled ledger row another copy deleted: kept, and marked put back (see above).
     function keepReconciled(log, x) {
@@ -11564,6 +11577,22 @@
     }
     state.entries = dropGone(state.entries, 'entries');
     unionById(state.entries, remote.entries, 'entries');
+    // Two devices that each re-imported Trail's End before either saved (popcorn review 1,
+    // security S7): neither import marked the other's, so both are here now and every imported
+    // scout is counted twice. Only the latest import is kept (teBatchOf), and the others are
+    // marked as a replaced import is; rows from before batches are older than any, and go too.
+    var teNewest = '', teOlder = {};
+    (state.entries || []).forEach(function (x) { if (x && x.source === 'te-import' && teBatchOf(x.id) > teNewest) teNewest = teBatchOf(x.id); });
+    if (teNewest) {
+      var teLeft = state.entries.filter(function (x) {
+        if (!x || x.source !== 'te-import' || teBatchOf(x.id) === teNewest) return true;
+        teOlder[teBatchOf(x.id) || TE_PRE_BATCH] = true;
+        return false;
+      });
+      removed += state.entries.length - teLeft.length;
+      state.entries = teLeft;
+      if (gone && gone.imports) Object.keys(teOlder).forEach(function (b) { if (!(gone.imports[b] > 0)) gone.imports[b] = Date.now(); });
+    }
     // Phase 0 — ledger entries get the same append-only protection as popcorn sales, and
     // for a stronger reason: two leaders posting receipts from two devices must not be able
     // to lose one another's transactions. A book that silently drops a row is not a book.
@@ -24499,13 +24528,10 @@
     var m = teMatchScouts(arc.scouts); // re-match AFTER any creation, against live state
     // LIVE STOPGAP — the rows replaced are marked gone, so a device still holding them does not
     // merge them back beside the new ones (every imported scout counted twice). Rows from a batch
-    // are marked by the batch; rows imported before batches existed, one by one, this once.
-    var batch = uid(), n = 0;
-    state.entries.forEach(function (e) {
-      if (e.source !== 'te-import') return;
-      var b = teBatchOf(e.id);
-      if (b) markGone('imports', [b]); else markGone('entries', [e]);
-    });
+    // are marked by the batch; rows imported before batches existed, all by one mark (TE_PRE_BATCH).
+    var batch = uid(), n = 0, replaced = {};
+    state.entries.forEach(function (e) { if (e.source === 'te-import') replaced[teBatchOf(e.id) || TE_PRE_BATCH] = true; });
+    markGone('imports', Object.keys(replaced));
     state.entries = state.entries.filter(function (e) { return e.source !== 'te-import'; });
     var today = todayISO(), updated = 0;
     m.matched.forEach(function (row) {
