@@ -22657,6 +22657,9 @@
         '<p>The imported backup has <strong>' + o.data.scouts.length + ' scouts</strong>, <strong>' + o.data.storefronts.length +
         ' storefronts</strong>, and <strong>' + o.data.entries.length + ' wagon/online entries</strong>. ' +
         'This replaces everything currently in the pack record.</p>' +
+        // LIVE STOPGAP (security review of the stopgap, S9): the pack's deletion marks outlive it.
+        '<p class="small muted">If this backup is older than the pack’s latest changes, a sale, payment or hand-out ' +
+        'deleted since it was made can be deleted again the next time another device saves.</p>' +
         '<div class="row"><button type="button" class="btn danger" data-act="confirm-import">Replace my data</button>' +
         '<button type="button" class="btn" data-act="close-overlay">Cancel</button></div>' +
         '</div></div></div>';
@@ -25002,6 +25005,11 @@
          keep the downloaded JSON, which always has everything.
      LEADERS ONLY: past-season archives are never published (buildParentView). */
   var ARCHIVE_DOC_SOFT_LIMIT = 700 * 1024;
+  // LIVE STOPGAP (security review of the stopgap, S8) — room for a year of deletion marks
+  // (state.gone), which close-out clears and the year then fills again: every log at its cap
+  // (GONE_MAX, GONE_MAX_PARENT) with the longest ids the page makes comes to about 226 KB, which
+  // the harness checks against this.
+  var GONE_ROOM_BYTES = 250 * 1024;
   // UTF-8 length of a string, without TextEncoder so the harness sandbox can run it. Pure.
   function utf8Bytes(str) {
     var n = 0;
@@ -25047,7 +25055,8 @@
   }
   // The archive's ledger for this state: the rows, fitted to the pack record as it will be. The
   // size is measured on the record as it stands (which still holds this year's ledger, so the
-  // estimate errs large) plus the archive being added.
+  // estimate errs large) plus the archive being added, with this year's deletion marks swapped
+  // for room for next year's (GONE_ROOM_BYTES).
   function seasonLedgerNow(arcWithout) {
     var led = seasonLedgerRows(state.ledger, function (id) {
       var l = getBudgetLine(id);
@@ -25057,7 +25066,8 @@
       var members = state.scouts.filter(function (sc) { return familyKeyOf(sc) === k; });
       return members.length ? familyLabel({ members: members }) : '';
     });
-    var other = utf8Bytes(JSON.stringify(state)) + utf8Bytes(JSON.stringify(arcWithout));
+    var other = utf8Bytes(JSON.stringify(state)) + utf8Bytes(JSON.stringify(arcWithout)) -
+      utf8Bytes(JSON.stringify(state.gone || {})) + GONE_ROOM_BYTES;
     return fitSeasonLedger(led, other, ARCHIVE_DOC_SOFT_LIMIT);
   }
   function buildSeasonArchive() {

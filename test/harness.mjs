@@ -13186,7 +13186,7 @@ test('E3: close-out archives the ledger and the family balances, sized against t
   ok(/families: seasonFamilyBalances\(familyAccountsNow\(\),/.test(b), 'the family balances are not archived');
   ok(/arc\.ledger = seasonLedgerNow\(arc\);\s*return arc;/.test(b), 'the ledger is not archived, or is sized before the rest of the record');
   const now = slice('seasonLedgerNow');
-  ok(/utf8Bytes\(JSON\.stringify\(state\)\) \+ utf8Bytes\(JSON\.stringify\(arcWithout\)\)/.test(now) && /ARCHIVE_DOC_SOFT_LIMIT/.test(now), 'not sized against the whole record');
+  ok(/utf8Bytes\(JSON\.stringify\(state\)\) \+ utf8Bytes\(JSON\.stringify\(arcWithout\)\) -/.test(now) && /ARCHIVE_DOC_SOFT_LIMIT/.test(now), 'not sized against the whole record');
   ok(/var ARCHIVE_DOC_SOFT_LIMIT = 700 \* 1024;/.test(SCRIPT), 'the limit is not ~700 KB');
   // The archive is built BEFORE rolloverYear clears the ledger and charges.
   const pc = slice('performCloseout');
@@ -17440,6 +17440,41 @@ test('Phase 3 step 0: which of two rows sharing an id keeps it does not depend o
   const m = sandbox(NORMALIZE_FNS.concat(GONE_FNS, ['mergeRemoteAppendOnly']));
   vm.runInContext(`var state = normalizeState(${JSON.stringify(legacy())});`, m);
   eq(vm.runInContext(`mergeRemoteAppendOnly({ json: ${JSON.stringify(JSON.stringify(r))} })`, m), 0, 'merging the same rows in another order added rows');
+});
+
+test('stopgap: close-out keeps room for a year of deletion marks, and a restore says what they do', () => {
+  // Security S8. The worst case: every log at its cap, with the longest ids the page makes
+  // (a 'mig-' ledger row of an id-less line and a scout, renamed; a Trail's End row; a stable
+  // id renamed), every mark a 13-digit put-back.
+  const ctx = sandbox(['freshGone', 'GONE_MAX', 'GONE_MAX_PARENT', 'GONE_ROOM_BYTES', 'utf8Bytes']);
+  const worst = JSON.parse(JSON.stringify(ctx.freshGone()));
+  const T = -1790000000000, uidLike = 'mfo2kz3a1b2c3d', stable = 'ne1z141z31z141z3-d99';
+  const longest = { ledger: 'mig-nb1z141z31z141z3-d99-' + uidLike + '-d99', entries: 'te-' + uidLike + '-999', distributions: stable,
+    sales: stable, imports: uidLike, scouts: stable, fundraisers: stable, products: stable };
+  for (const log of Object.keys(worst)) {
+    const cap = ['scouts', 'fundraisers', 'products'].includes(log) ? ctx.GONE_MAX_PARENT : ctx.GONE_MAX;
+    for (let i = 0; i < cap; i++) worst[log][longest[log].slice(0, -3) + String(i).padStart(3, '0')] = T;
+  }
+  const bytes = ctx.utf8Bytes(JSON.stringify(worst));
+  ok(bytes <= ctx.GONE_ROOM_BYTES && bytes > ctx.GONE_ROOM_BYTES * 0.8, `the room kept for deletion marks is not their worst case (${bytes} bytes)`);
+  // Close-out sizes the archive against the record with this year's marks swapped for that room.
+  const s = vm.createContext({});
+  vm.runInContext(`${['utf8Bytes', 'fitSeasonLedger', 'ARCHIVE_DOC_SOFT_LIMIT', 'GONE_ROOM_BYTES', 'seasonLedgerNow'].map(slice).join('\n')}
+    function seasonLedgerRows() { return { totals: { entries: 1 }, rows: [{ d: '2026-09-01', c: 1, t: 'x' }] }; }
+    function getBudgetLine() { return null; } function chargeFamilyKey() { return ''; } function familyKeyOf() { return ''; }
+    var state = { ledger: [], scouts: [], filler: '', gone: {} };
+    function fits(fill, gone) { state.filler = new Array(fill + 1).join('x'); state.gone = gone; return !seasonLedgerNow({}).trimmed; }`, s);
+  const room = ctx.GONE_ROOM_BYTES, limit = 700 * 1024;
+  eq([vm.runInContext(`fits(${limit - room - 400}, {})`, s), vm.runInContext(`fits(${limit - room}, {})`, s)], [true, false],
+    'the archive is not sized with room for next year’s marks');
+  eq(vm.runInContext(`fits(${limit - room - 400 - 100000}, { entries: { big: '${'y'.repeat(100000)}' } })`, s), true,
+    'this year’s marks, which close-out clears, were counted too');
+  const now = slice('seasonLedgerNow');
+  ok(/- utf8Bytes\(JSON\.stringify\(state\.gone \|\| \{\}\)\) \+ GONE_ROOM_BYTES/.test(now.replace(/\s+/g, ' ')), 'seasonLedgerNow');
+  // Security S9: the restore screen.
+  const o = slice('renderOverlay');
+  ok(/If this backup is older than the pack’s latest changes, a sale, payment or hand-out ' \+\s*'deleted since it was made can be deleted again the next time another device saves\./.test(o),
+    'the restore screen does not say an older backup’s deleted rows can be deleted again');
 });
 
 /* ---------------- report ---------------- */
