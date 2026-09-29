@@ -9147,6 +9147,16 @@ test('a device made view-only that cannot read the shared copy is not left showi
   eq(take(true), { overlay: null, renders: [null], toasts: 1, conflict: false }, 'control: taking the shared copy changed');
 });
 
+test('the sync card offline does not promise every change will simply sync', () => {
+  // Review of 86dfe38..4347cc6, item 4: back online, a leader may be asked which copy to keep.
+  const ctx = vm.createContext({});
+  vm.runInContext(`var sync = { mode: 'offline', error: 'unavailable', conflict: null, notice: '' };
+    function backendConfigured() { return true; } function fixedPackMode() { return true; } function serverNotice() { return ''; }
+    ${decl('syncModeLine')}`, ctx);
+  eq(vm.runInContext('syncModeLine()', ctx), 'Offline — changes are saved on this device. When the connection returns they are sent, or, ' +
+    'if the shared copy has changed, you may be asked which copy to keep. (unavailable)', 'the offline line');
+});
+
 test('Firestore: another device’s save that lands while this device’s save is out is never lost', () => {
   // Review of 86dfe38..4347cc6, item 1 (its reproduction is the first half). While this
   // device's push is out, another device saves ledger row l9. Two orders, both real: its save

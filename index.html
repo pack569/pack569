@@ -18021,7 +18021,9 @@
     }
     if (sync.mode === 'connecting') return 'Connecting to the shared pack record…';
     if (sync.mode === 'offline') {
-      return 'Offline — changes are saved on this device and will sync when the connection returns.' +
+      // Not "will sync": if the shared copy changed meanwhile, a leader may be asked which copy
+      // to keep (review of 86dfe38..4347cc6, item 4).
+      return 'Offline — changes are saved on this device. When the connection returns they are sent, or, if the shared copy has changed, you may be asked which copy to keep.' +
         (sync.error ? ' (' + sync.error + ')' : '');
     }
     if (fixed) return 'Device-only for now — sign in with Google to open your pack’s shared record.';
