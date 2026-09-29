@@ -14,11 +14,14 @@
 // Run:  node test/harness.mjs
 // Exit: 0 all green, 1 on any failure.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync, cpSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 import vm from 'node:vm';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
+import * as site from '../scripts/build-site.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const HTML = readFileSync(join(ROOT, 'index.html'), 'utf8');
@@ -511,6 +514,17 @@ test('Start here lives on Home, not Calendar', () => {
   ok(/Start here<\/h2>/.test(hm[0]), 'the Start here card is not on Home');
 });
 
+test('the month agenda hides days that have passed until asked', () => {
+  const fn = /function monthAgendaCard\(mk, today\) \{[\s\S]*?\n  \}\n/.exec(SCRIPT);
+  ok(fn, 'monthAgendaCard not found');
+  ok(/if \(!showPast\) days = days\.filter\(function \(d\) \{ return mk \+ '-' \+ pad2\(d\) >= today; \}\)/.test(fn[0]),
+    'past days are still listed by default');
+  ok(/data-act="agenda-past-toggle"/.test(fn[0]), 'there is no way to bring the earlier events back');
+  ok(/past \? ' wk-past' : ''/.test(fn[0]), 'earlier events, when shown, are not greyed');
+  ok(/act === 'agenda-past-toggle'/.test(SCRIPT), 'the toggle has no handler');
+  ok(/agendaShowPast: false/.test(SCRIPT), 'the agenda does not start with past days hidden');
+});
+
 /* ================================================================
    Wave 21 — handoff cards and den scoping
    ================================================================ */
@@ -992,6 +1006,29 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
+
+test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(NORMALIZE_FNS.map(slice).join('\n'), ctx);
+  const d = ctx.normalizeState({
+    version: 1, scouts: [{ id: 't1', name: 'Tam', den: 'Tiger' }],
+    advancement: { t1: { req: { 'Tiger Roar': 'done' }, elect: {} } },
+    events: [
+      { id: 'm1', kind: 'den', den: 'Tiger', date: '2026-10-06', adventure: 'Tiger Roar' },
+      { id: 'm2', kind: 'den', den: '', date: '2026-10-06', packAdv: 'req:5',
+        denAdv: { Tiger: 'Tiger Roar', Lion: false, Wolf: '  ', Nobody: 'x' } },
+      { id: 'm3', kind: 'den', den: '', date: '2026-10-20', packAdv: 'nonsense' },
+      { id: 'm4', kind: 'den', den: 'Wolf', date: '2026-10-20', packAdv: 'req:1', denAdv: { Wolf: 'Footsteps' } }
+    ]
+  });
+  eq(Object.keys(d.advancement.t1.req), ["Tiger's Roar"], 'a scout’s saved Tiger Roar mark was not carried over');
+  eq(d.events[0].adventure, "Tiger's Roar", 'a meeting tagged Tiger Roar was not renamed');
+  eq(d.events[1].packAdv, 'req:5', 'a valid pack-wide choice was dropped');
+  eq(JSON.stringify(d.events[1].denAdv), JSON.stringify({ Lion: false, Tiger: "Tiger's Roar" }),
+    'the per-den lines were not renamed, cleaned and kept in rank order');
+  ok(!('packAdv' in d.events[2]), 'an unknown pack-wide choice survived');
+  ok(!('packAdv' in d.events[3]) && !('denAdv' in d.events[3]), 'a one-den meeting kept All-dens fields');
+});
 
 function preMigrationState() {
   // A pre-Phase-0 pack record, with the two shapes that matter: a flat line and a
@@ -5182,6 +5219,34 @@ test('a checkbox and its label are styled wherever they are used', () => {
    Camping — a page per campout, published to parents. 2026-08-02
    ===================================================================== */
 
+test('proseText turns a list typed on one line into a real list', () => {
+  // The uniform-reimbursement tier note, as a leader pasted it: every item on one line behind
+  // " -", a "Patches:" group label mid-list, and a "*…*" aside at the end. It rendered as one
+  // wall of text with the hyphens still in it.
+  const ctx = sandbox(['esc', 'proseText']);
+  const run = (s) => ctx.proseText(s);
+  const out = run('Items are: -shirt -web belt cut-to-size -hat Patches: -USA flag -council patch *Sewing is extra*');
+  eq(out, '<p>Items are:</p>' +
+    '<ul class="camp-list"><li>shirt</li><li>web belt cut-to-size</li><li>hat</li></ul>' +
+    '<p class="camp-sub">Patches</p>' +
+    '<ul class="camp-list"><li>USA flag</li><li>council patch</li></ul>' +
+    '<p>Sewing is extra</p>', 'the one-line list was not unfolded');
+  // What must NOT become a list: a spaced dash in a sentence, a hyphen inside a word or after
+  // one, and a single " -word" on its own.
+  eq(run('Mon - Fri only'), '<p>Mon - Fri only</p>', 'a spaced dash was read as a bullet');
+  eq(run('Camping- per family- reimbursement'), '<p>Camping- per family- reimbursement</p>',
+    'a trailing hyphen was read as a bullet');
+  eq(run('one -two'), '<p>one -two</p>', 'a single inline dash made a list');
+  ok(!/<script/.test(run('x -<script>a</script> -b')), 'an unfolded item escaped the escaping');
+});
+
+test('the parent reward ladder renders a tier note as prose, not raw text', () => {
+  const fn = /function parentTierLadder\(pv\) \{[\s\S]*?\n  \}\n/.exec(SCRIPT);
+  ok(fn, 'parentTierLadder not found');
+  ok(/proseText\(note\)/.test(fn[0]), 'the ladder prints the tier note without its list structure');
+  ok(!/esc\(note\)/.test(fn[0]), 'the ladder still prints the note as one escaped string');
+});
+
 test('proseText escapes first and only ever emits tags it built', () => {
   // A section body is prose a leader typed into a textarea and it is republished verbatim to
   // every parent in the pack. If anything here can emit an attacker-chosen tag, the parent
@@ -5610,9 +5675,15 @@ function runSandbox(setup) {
      ${slice('evAdventure')}
      ${slice('meetingRoster')}
      ${slice('wasCheckedIn')}
+     ${slice('ADV_REQ_CATEGORIES')}
+     ${slice('ADV_ELECTIVE_THEMES')}
+     ${slice('packAdvName')}
+     ${slice('meetingAdvs')}
+     ${slice('denAdvAt')}
      ${slice('adventureRuns')}
      ${slice('runProgress')}
      ${slice('runForMeeting')}
+     ${slice('runsForMeeting')}
      ${slice('sessionLabel')}
      ${slice('nextPackMeetingAfter')}
      ${slice('programYearStartISO')}
@@ -5655,6 +5726,62 @@ test('meetings tagged with the same adventure form one run, per den', () => {
     'sessions are not in date order');
   // A pack meeting is not a session of anything, and an untagged meeting is not either.
   ok(!runs.some((r) => r.sessions.some((s) => s.kind === 'pack')), 'a pack meeting became a session');
+});
+
+test('an All-dens night puts every den on its own rank’s version of one adventure', () => {
+  // Owner, 2026-09-28: the dens meet together and work the same adventure — the same CATEGORY,
+  // each in its own rank's version — unless a den leader changes their den's line.
+  const ctx = runSandbox(`
+    var TODAY = '2026-09-20';
+    var SCOUTS = [{ id: 'l', name: 'Lia', den: 'Lion' }, { id: 't', name: 'Tam', den: 'Tiger' }];
+    var STATUS = {};
+    var EVENTS = [
+      { id: 'n1', kind: 'den', den: '', date: '2026-09-08', packAdv: 'req:0' },
+      { id: 'n2', kind: 'den', den: '', date: '2026-09-22', packAdv: 'req:1', denAdv: { Lion: 'Bobcat' } },
+      { id: 'n3', kind: 'den', den: '', date: '2026-10-06', packAdv: 'req:1', denAdv: { Tiger: false } },
+      { id: 'n4', kind: 'den', den: '', date: '2026-10-20', packAdv: 'th:fishing' }
+    ];
+    var ATT = { n1: { l: { scout: true }, t: { scout: true } }, n2: { l: { scout: true } } };`);
+  const runs = vm.runInContext('adventureRuns()', ctx);
+  eq(runs.map((r) => r.den + ':' + r.adventure + ':' + r.sessions.map((e) => e.id).join('+')).sort(), [
+    'Lion:Bobcat:n1+n2', 'Lion:Go Fish:n4', 'Lion:King of the Jungle:n3',
+    'Tiger:Bobcat:n1', 'Tiger:Fish On:n4', 'Tiger:Team Tiger:n2'
+  ], 'the pack’s pick, the Lions staying on Bobcat, or the Tigers’ night off is wrong');
+  ok(!runs.some((r) => ['Wolf', 'Bear', 'Webelos', 'Arrow of Light'].includes(r.den)),
+    'a rank with no scouts grew a run from the pack’s pick');
+  const lion = vm.runInContext("runProgress(adventureRuns().find(function (r) { return r.den === 'Lion' && r.adventure === 'Bobcat'; }))", ctx);
+  eq(lion.scouts.map((r) => r.scout.name + ':' + r.count), ['Lia:2'], 'the Lion run is not the Lion den at both nights');
+  eq(vm.runInContext("(function () { var r = runForMeeting(EVENTS[1], 'Lion'); return r.position + '/' + r.of; })()", ctx), '2/2',
+    'the Lions’ second Bobcat night is not session 2 of 2');
+  eq(vm.runInContext('runForMeeting(EVENTS[0])', ctx), null, 'an All-dens night resolved to a whole-pack run');
+  eq(vm.runInContext("denAdvAt(EVENTS[2], 'Tiger').from", ctx), 'off', 'a den marked away is not off');
+});
+
+test('every rank lists its required adventures in the same category order', () => {
+  // packAdvName('req:i') reads index i of every rank's list, so the lists must line up.
+  const ctx = vm.createContext({});
+  vm.runInContext(`${slice('DENS')}\n${slice('ADVENTURES')}\n${slice('ADV_REQ_CATEGORIES')}\n${slice('ADV_ELECTIVE_THEMES')}`, ctx);
+  const A = vm.runInContext('ADVENTURES', ctx);
+  eq(['Lion', 'Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light'].map((d) => A[d].required[1]),
+    ['King of the Jungle', 'Team Tiger', 'Council Fire', 'Paws for Action', 'My Community', 'Citizenship'], 'Citizenship is out of line');
+  eq(['Lion', 'Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light'].map((d) => A[d].required[5]),
+    ["Lion's Roar", "Tiger's Roar", 'Safety in Numbers', 'Standing Tall', 'My Safety', 'First Aid'], 'Personal Safety is out of line');
+  for (const t of vm.runInContext('ADV_ELECTIVE_THEMES', ctx)) {
+    for (const [den, name] of Object.entries(t.byDen)) ok(A[den].electives.includes(name), `${t.label}: "${name}" is not a ${den} elective`);
+  }
+});
+
+test('Den plans is where a den changes its line on an All-dens night', () => {
+  const blk = slice('denMeetingsBlock');
+  ok(/data-ch="den-mtg-adv"/.test(blk), 'Den plans has no per-meeting adventure for the den');
+  ok(/Not at this meeting/.test(blk), 'a den cannot mark itself away for its own make-up meeting');
+  const h = /if \(ch === 'den-mtg-adv'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/dmMap\[dmDen\] = false/.test(h), '"not at this meeting" is not stored');
+  ok(/dmVal === packAdvName\(dmM\.packAdv, dmDen\)\) delete dmMap\[dmDen\]/.test(h),
+    'picking the pack’s own choice leaves a stale change behind');
+  ok(/canEdit\(\)/.test(h), 'a viewer can change a den’s adventure');
+  // Never published: the parent view is an allowlist, and these are leader planning.
+  ok(!/denAdv|packAdv/.test(BPV()), 'the den adventures reached the parent view');
 });
 
 test('a scout is 2 of 3, and the missed night is named', () => {
@@ -5729,7 +5856,7 @@ test('the mark-off button credits the run, not the room', () => {
   // checked in TONIGHT, so a scout marked at session one who then missed two kept the credit.
   const m = /if \(act === 'mtg-adv-mark'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
   ok(m, 'the mtg-adv-mark action is missing');
-  ok(/var mamRun = runForMeeting\(mam\);/.test(m[0]), 'it does not resolve the run');
+  ok(/var mamRun = runForMeeting\(mam, el\.dataset\.den\);/.test(m[0]), 'it does not resolve the run');
   ok(/mamRun\.prog\.onTrack\.forEach/.test(m[0]),
     'it still credits the attendance book for this one meeting');
   ok(!/state\.attendance\[mam\.id\]/.test(m[0]), 'it still reads tonight’s attendance directly');
@@ -5862,7 +5989,7 @@ test('an adventure that is not on the den’s list is warned about, never refuse
   ok(!off('Wolf', 'Council Fire'), 'a Wolf adventure on a Wolf meeting is flagged');
   ok(off('Wolf', 'Knot night'), 'a custom adventure is not flagged');
   ok(!off('Wolf', ''), 'an empty tag is flagged');
-  const picker = slice('advTargetPicker');
+  const picker = slice('advFreeBox');
   ok(/advOffDenList\(m\.den, tagged\)/.test(picker) && /class="warn small"/.test(picker),
     'the meeting editor does not show the off-list warning');
   // Save and den change both re-spell, and neither refuses the value.
@@ -7077,7 +7204,7 @@ test('a parent sees which shifts are open, and an old document still shows its w
 });
 
 test('the ladder shows a rung with no measurable target, rather than a target of nothing', () => {
-  const ctx = sandbox(['esc', 'fmt', 'fmtDate', 'parentTierLadder']);
+  const ctx = sandbox(['esc', 'fmt', 'fmtDate', 'proseText', 'parentTierLadder']);
   const rows = (html) => (html.match(/<tr>/g) || []).length;
   const full = ctx.parentTierLadder({ tiers: [
     { name: 'Dues covered', reward: 'The pack pays your dues', note: '', dueBy: '2026-10-15', salesCents: 17500 },
@@ -10605,7 +10732,7 @@ test('A3: the message is copy-only — first names, nothing stored, nothing publ
   ok(!/commit\(\)|save\(\)/.test(h), 'composing the message writes the pack record');
   ok(!/makeupMessage|makeup-msg/.test(BPV()), 'the make-up message reached the parent view');
   // Offered on both make-up lists: the meeting's and the Advancement card's.
-  ok(/makeupMsgBtn\(r\.run, row\)/.test(slice('renderMeetingAdvMark')), 'no button on the meeting’s make-up list');
+  ok(/makeupMsgBtn\(r\.run, row\)/.test(slice('meetingAdvMarkFor')), 'no button on the meeting’s make-up list');
   ok(/makeupMsgBtn\(run, row\)/.test(slice('renderAdventureRunsCard')), 'no button on the Advancement make-up list');
 });
 
@@ -12339,6 +12466,193 @@ test('Y2: photo permission is NEVER published, printed or exported', () => {
   const ctx = pvCtx('');
   vm.runInContext("state.scouts.forEach(function (s) { s.photoOk = true; });", ctx);
   ok(!/photoOk/.test(JSON.stringify(vm.runInContext('buildParentView(state, { showStandings: false })', ctx))), 'photoOk reached the parent view');
+});
+
+/* ================================================================
+   Cloudflare hosting (2026-09-28). The site is built by scripts/build-site.mjs and deployed
+   only by hand from .github/workflows/website.yml. What is served is an allowlist of two
+   files; a preview is device-only; the CSP carries the script's hash instead of
+   'unsafe-inline'. Builds go to a temp folder, never into the repo.
+   ================================================================ */
+
+const SITE_TMP = mkdtempSync(join(tmpdir(), 'pack569-site-'));
+process.on('exit', () => { try { rmSync(SITE_TMP, { recursive: true, force: true }); } catch (e) { /* best effort */ } });
+const siteDir = (target) => join(SITE_TMP, target);
+let siteBuilt = null;
+function siteBuild() {
+  if (!siteBuilt) {
+    siteBuilt = { preview: site.build({ target: 'preview', out: siteDir('preview') }),
+      production: site.build({ target: 'production', out: siteDir('production') }) };
+  }
+  return siteBuilt;
+}
+const siteFile = (target, f) => readFileSync(join(siteDir(target), f), 'utf8');
+// Hashed here, independently of the build script: the exact text between <script> and </script>.
+const scriptHash = (html) => createHash('sha256')
+  .update(html.slice(html.indexOf('<script>') + 8, html.indexOf('</script>')), 'utf8').digest('base64');
+const LIVE = site.liveConfig(HTML);
+const throwsBuild = (fn, what) => {
+  try { fn(); } catch (e) { if (e instanceof site.BuildError) return e.message; throw e; }
+  throw new Error(what);
+};
+
+test('the preview build is two files, cannot reach the live pack, allows no Google origin, and is noindex', () => {
+  siteBuild();
+  eq(readdirSync(siteDir('preview')).sort(), ['_headers', 'index.html'], 'the preview folder');
+  const html = siteFile('preview', 'index.html');
+  ok(/^  var FIREBASE_CONFIG = null;$/m.test(html), 'the preview keeps a Firebase config');
+  ok(/^  var PACK_DOC_ID = null;$/m.test(html), 'the preview keeps the pack id');
+  // The live values really are live in the source, so their absence below means something.
+  ok(LIVE.config && LIVE.config.apiKey && LIVE.config.projectId && /^[0-9a-f]{64}$/.test(LIVE.docId),
+    'index.html has no live config to strip — the test below proves nothing');
+  const values = Object.keys(LIVE.config).map((k) => LIVE.config[k]).concat([LIVE.docId]);
+  values.forEach((v) => ok(html.indexOf(v) === -1, 'a live config value is in the preview'));
+  ok(!/pack-569|AIza[0-9A-Za-z_-]{20,}|firebaseapp\.com/.test(html), 'the preview still names the live project');
+  const headers = siteFile('preview', '_headers');
+  const csp = site.cspOf(headers);
+  ok(!/google|gstatic|firebase/i.test(csp), 'the preview CSP allows a Google origin');
+  eq(site.cspDirectives(csp)['connect-src'], ['https://api.open-meteo.com', 'https://archive-api.open-meteo.com'],
+    'the preview connects to more than the weather');
+  eq(site.cspDirectives(csp)['frame-src'], ["'none'"], 'the preview can frame something');
+  ok(csp.indexOf(`'sha256-${scriptHash(html)}'`) >= 0, 'the preview CSP hash is not its script’s');
+  ok(/^  X-Robots-Tag: noindex$/m.test(headers), 'the preview can be indexed');
+});
+
+test('the production build is the committed page, and its CSP hashes the script and allows Firebase', () => {
+  siteBuild();
+  eq(readdirSync(siteDir('production')).sort(), ['_headers', 'index.html'], 'the production folder');
+  ok(siteFile('production', 'index.html') === HTML, 'production is not byte-for-byte index.html');
+  const headers = siteFile('production', '_headers');
+  const d = site.cspDirectives(site.cspOf(headers));
+  const hash = createHash('sha256').update(SCRIPT, 'utf8').digest('base64');
+  // The SDK is allowed by its exact versioned path, as loadFirebase() imports it — not all of gstatic.
+  const sdkBase = /^  var SYNC_SDK_BASE = '([^']+)';$/m.exec(SCRIPT)[1];
+  ok(/^https:\/\/www\.gstatic\.com\/firebasejs\/\d+\.\d+\.\d+\/$/.test(sdkBase), 'SYNC_SDK_BASE is not a versioned gstatic path');
+  eq(d['script-src'], [`'sha256-${hash}'`, sdkBase, 'https://apis.google.com'], 'script-src');
+  eq(d['default-src'], ["'none'"], 'default-src');
+  for (const o of ['https://firestore.googleapis.com', 'https://identitytoolkit.googleapis.com',
+    'https://securetoken.googleapis.com', 'https://api.open-meteo.com']) {
+    ok(d['connect-src'].indexOf(o) >= 0, `production cannot reach ${o}`);
+  }
+  ok(d['frame-src'].indexOf('https://' + LIVE.config.authDomain) >= 0, 'Google sign-in cannot frame the authDomain');
+  ok(!/'unsafe-eval'/.test(headers) && d['script-src'].indexOf("'unsafe-inline'") < 0, 'the CSP allows inline or eval’d script');
+  ok(/^  Cross-Origin-Opener-Policy: same-origin-allow-popups$/m.test(headers), 'the sign-in popup cannot report back');
+  ok(/^  Referrer-Policy: strict-origin-when-cross-origin$/m.test(headers), 'referrer policy');
+  ok(/^  Strict-Transport-Security: max-age=31536000; includeSubDomains$/m.test(headers), 'HSTS');
+  ok(!/X-Robots-Tag/.test(headers), 'production is noindex');
+});
+
+test('index.html has no inline event handler, and the print pages wire Print from the opener', () => {
+  eq(site.cspHazards(HTML), [], 'index.html has what the CSP would block');
+  ok(!/ on[a-z]+="/.test(HTML), 'an inline on…= handler');
+  // The scanner itself catches one.
+  eq(site.cspHazards('<p>\n<button onclick="x()">').map((h) => h.line), [2], 'the scanner misses an onclick');
+  const ctx = vm.createContext({});
+  vm.runInContext(['esc', 'QR_M_ECC', 'QR_M_BLOCKS', 'qrMatrix', 'qrSvg', 'kitFlyerHtml', 'kitQrSheetHtml'].map(slice).join('\n'), ctx);
+  for (const page of [ctx.kitFlyerHtml({ packName: 'P' }), ctx.kitQrSheetHtml({ packName: 'P', url: 'https://pack569.com/?join=q' })]) {
+    ok(/<button type="button" data-print>Print<\/button>/.test(page), 'a print page has no data-print button');
+    ok(!/onclick|<script/i.test(page), 'a print page carries inline script');
+  }
+  // window.open('') inherits this page's CSP, so the opener attaches the listener after writing.
+  const opp = slice('openPrintPage');
+  ok(/w\.document\.close\(\);\s*var btns = w\.document\.querySelectorAll\('\[data-print\]'\);/.test(opp),
+    'openPrintPage does not look for the Print buttons after writing the page');
+  ok(/btns\[i\]\.addEventListener\('click', function \(\) \{ w\.print\(\); \}\);/.test(opp), 'Print is not wired to w.print()');
+});
+
+test('--verify refuses a production build passed as preview, the reverse, and a tampered one', () => {
+  siteBuild();
+  throwsBuild(() => site.verify({ dir: siteDir('production'), target: 'preview' }), 'production passed as preview');
+  throwsBuild(() => site.verify({ dir: siteDir('preview'), target: 'production' }), 'preview passed as production');
+  eq(site.verify({ dir: siteDir('preview'), target: 'preview' }).files.map((f) => f.file), ['_headers', 'index.html'], 'a good preview');
+  // A third file, a wrong hash, a live value slipped back in: each is refused.
+  const t = join(SITE_TMP, 'tampered');
+  const fresh = () => { rmSync(t, { recursive: true, force: true }); cpSync(siteDir('preview'), t, { recursive: true }); };
+  fresh(); writeFileSync(join(t, 'SETUP.md'), 'x');
+  ok(/exactly/.test(throwsBuild(() => site.verify({ dir: t, target: 'preview' }), 'an extra file')), 'an extra file');
+  fresh(); writeFileSync(join(t, '_headers'), siteFile('preview', '_headers').replace(/sha256-[^']+/, 'sha256-AAAA'));
+  throwsBuild(() => site.verify({ dir: t, target: 'preview' }), 'a wrong CSP hash');
+  fresh(); writeFileSync(join(t, 'index.html'), siteFile('preview', 'index.html').replace('  var PACK_DOC_ID = null;', `  var PACK_DOC_ID = '${LIVE.docId}';`));
+  throwsBuild(() => site.verify({ dir: t, target: 'preview' }), 'the live pack id');
+  // The build will not empty a folder holding anything it did not write.
+  fresh(); writeFileSync(join(t, 'notes.txt'), 'x');
+  throwsBuild(() => site.build({ target: 'preview', out: t }), 'built over a folder with a stray file');
+  ok(readFileSync(join(t, 'notes.txt'), 'utf8') === 'x', 'the stray file was deleted');
+  throwsBuild(() => site.build({ target: 'preview', out: ROOT }), 'built into the repo');
+  // And the CLI the preflight runs exits non-zero.
+  const r = spawnSync(process.execPath, [join(ROOT, 'scripts/build-site.mjs'), '--verify', siteDir('production'), '--target', 'preview'], { encoding: 'utf8' });
+  eq(r.status, 1, 'the --verify CLI exit code');
+});
+
+test('the workflow deploys only by hand, production only from main, with every action pinned', () => {
+  const WF = readFileSync(join(ROOT, '.github/workflows/website.yml'), 'utf8');
+  const uses = WF.match(/^\s*(?:- )?uses:.*$/gm) || [];
+  ok(uses.length >= 5, 'no uses: lines found');
+  uses.forEach((u) => ok(/uses: [\w.-]+\/[\w.-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/.test(u.trim().replace(/^- /, '')), 'not pinned to a SHA: ' + u.trim()));
+  ok(/uses: cloudflare\/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4\.0\.0/.test(WF), 'wrangler-action pin');
+  ok(/^on:\n  (?:#.*\n  )*push:\n  pull_request:\n  workflow_dispatch:\n    inputs:\n      deploy_target:/m.test(WF), 'the triggers');
+  ok(/options: \[preview, production\]\n\s+default: preview/.test(WF), 'deploy_target is not preview|production, default preview');
+  ok(!/pull_request_target|schedule:/.test(WF), 'an unexpected trigger');
+  ok(/^permissions:\n  contents: read$/m.test(WF) && !/: write/.test(WF), 'permissions are not read-only');
+  // Split into jobs by their two-space headers under jobs:.
+  const jobsText = WF.slice(WF.indexOf('\njobs:\n'));
+  const jobs = {};
+  jobsText.split(/\n(?=  [a-z-]+:\n)/).slice(1).forEach((b) => { jobs[/^  ([a-z-]+):/.exec(b)[1]] = b; });
+  eq(Object.keys(jobs), ['website-gates', 'deploy-preflight', 'deploy'], 'the jobs');
+  for (const j of ['deploy-preflight', 'deploy']) {
+    ok(/\n    if: github\.event_name == 'workflow_dispatch'\n/.test(jobs[j]), `${j} is not dispatch-only`);
+  }
+  ok(/needs: \[website-gates, deploy-preflight\]/.test(jobs.deploy), 'deploy does not need the preflight');
+  ok(/if: inputs\.deploy_target == 'production' && github\.ref != 'refs\/heads\/main'\n[\s\S]*?exit 1/.test(jobs['deploy-preflight']),
+    'the preflight does not refuse production off main');
+  ok(/environments\/website-production[\s\S]*?required_reviewers/.test(jobs['deploy-preflight']), 'the preflight does not check the reviewer');
+  ok(/--verify _site --target "\$TARGET"/.test(jobs['deploy-preflight']), 'the preflight does not verify the artifact');
+  // Nothing that deploys, or holds a secret, outside the deploy job; the gates build and test.
+  for (const j of ['website-gates', 'deploy-preflight']) {
+    ok(!/wrangler|pages deploy|secrets\./.test(jobs[j]), `${j} can deploy`);
+  }
+  ok(/node test\/harness\.mjs/.test(jobs['website-gates']) && /--target preview/.test(jobs['website-gates']) &&
+    /--target production/.test(jobs['website-gates']), 'the gates do not test and build both targets');
+  ok(/if: github\.event_name == 'workflow_dispatch'\n\s+uses: actions\/upload-artifact/.test(jobs['website-gates']), 'the artifact is uploaded on push');
+  ok(/--branch=\$\{\{ inputs\.deploy_target == 'production' && 'main' \|\| format\('preview-\{0\}', github\.sha\) \}\}/.test(jobs.deploy),
+    'the Pages branch is not main-for-production-only');
+  ok(/website-production/.test(jobs.deploy) && /cancel-in-progress: false/.test(jobs.deploy), 'the deploy environment or concurrency');
+  // Review round (2026-09-28): the environment must be limited to chosen branches, too.
+  ok(/jq -e '\.deployment_branch_policy != null'[\s\S]*?exit 1/.test(jobs['deploy-preflight']), 'the preflight accepts an environment open to every branch');
+  // wrangler runs from a folder holding only the verified site, with an exact version, and never beside a functions/.
+  ok(/if \[ -e functions \]; then[\s\S]*?exit 1/.test(jobs.deploy), 'a functions/ folder in the checkout is not refused');
+  ok(/cp -R _site "\$RUNNER_TEMP\/deploy\/_site"/.test(jobs.deploy) && /workingDirectory: \$\{\{ runner\.temp \}\}\/deploy/.test(jobs.deploy),
+    'wrangler does not run from the clean folder');
+  ok(/wranglerVersion: "\d+\.\d+\.\d+"/.test(jobs.deploy), 'wrangler is not pinned to an exact version');
+  // A dispatch has a concurrency group of its own, so a pending approval blocks nothing.
+  ok(/group: \$\{\{ github\.event_name == 'workflow_dispatch' && format\('website-dispatch-\{0\}', github\.run_id\)/.test(WF),
+    'dispatches share a concurrency group');
+});
+
+test('wrangler.toml publishes _site, and git ignores the build output', () => {
+  const W = readFileSync(join(ROOT, 'wrangler.toml'), 'utf8');
+  ok(/^name = "pack569"$/m.test(W) && /^pages_build_output_dir = "_site"$/m.test(W), 'wrangler.toml');
+  const gi = readFileSync(join(ROOT, '.gitignore'), 'utf8').split('\n').map((l) => l.trim());
+  ok(gi.indexOf('_site/') >= 0 && gi.indexOf('_site-*/') >= 0, '.gitignore does not cover _site/');
+  try {
+    const out = execSync('git check-ignore --no-index _site/index.html _site-preview/_headers', { cwd: ROOT, encoding: 'utf8' });
+    eq(out.split('\n').filter(Boolean).length, 2, 'git check-ignore');
+  } catch (e) {
+    if (e.status === 1) throw new Error('git does not ignore the build output');
+    if (e.status !== 128) throw e;
+  }
+});
+
+test('a backup from an older page imports through normalizeState', () => {
+  // Testing a preview with real data means Import backup of a file the live page wrote.
+  const imp = slice('handleImportFile');
+  ok(/data = normalizeState\(data\);\s*if \(!data\) \{[^}]*\}\s*ui\.overlay = \{ kind: 'import', data: data \};/.test(imp),
+    'an imported backup is not normalized before it is offered');
+  const ctx = sandbox(NORMALIZE_FNS);
+  const after = ctx.normalizeState(JSON.parse(JSON.stringify(preMigrationState())));   // as read from a file
+  ok(after && Array.isArray(after.ledger) && after.scouts.length === 4, 'an old-shape backup does not import');
+  eq(ctx.normalizeState({ hello: 1 }), null, 'a JSON file that is not a pack record');
+  // The migrations on that path are pinned by the Phase 1–3 tests above ("Phase 1 migration: …").
 });
 
 /* ---------------- report ---------------- */
