@@ -7279,7 +7279,8 @@
   function entryOnStatement(e, book) {
     return !book.statementDate || String(e.date || '') <= book.statementDate;
   }
-  // Phase 3, C1 (not used until C2) — a row that can no longer be edited or voided, only
+  // Phase 3, C1 — a row whose amount, date and direction can no longer be edited (its labels can,
+  // logged: owner, 2026-09-29, and LEDGER_LOCKED_FIELDS), and that can't be voided, only
   // corrected by a reversing entry (the owner's rule, 2026-09-29): it is reconciled, or dated in
   // the reconciled period (from the opening date through book.reconciledThrough), or its book is
   // closed. A row before the opening date is history the opening figure holds, not on any
@@ -7296,6 +7297,24 @@
   function ledgerDateReconciled(date, book) {
     var d = String(date || ''), rt = String((book && book.reconciledThrough) || '');
     return !!(rt && d && d <= rt && entryAfterOpening({ date: d }, book));
+  }
+  // Phase 3, C2 — why this row can't be changed, in the treasurer's words, or '' when it can.
+  // `what` names it ('That entry' by default); `money` says it is the amount, date or direction
+  // being refused (the owner's rule: only those lock; see LEDGER_LOCKED_FIELDS). A row both
+  // ticked and dated in the period is told about the period: un-reconciling it would not open it.
+  // Correcting a locked row with a reversing entry comes in C4; until then the reconciled one
+  // says to un-reconcile first.
+  function ledgerLockedWhy(e, book, what, money) {
+    if (!ledgerLocked(e, book)) return '';
+    what = what || 'That entry';
+    var it = money ? 'its amount, date and direction' : 'it';
+    if (book.closedAt) return what + ' is in a year already closed out, so it can’t be changed.';
+    if (ledgerDateReconciled(e.date, book)) {
+      return what + ' is dated ' + fmtDate(e.date) + ', inside the period already reconciled (through ' +
+        fmtDate(book.reconciledThrough) + '), so ' + it + ' can’t be changed.';
+    }
+    return what + ' is reconciled against a bank statement, so ' + it + ' can’t be changed. ' +
+      'Un-reconcile it first (Money · Ledger, two taps), then change it.';
   }
   function reconcileTotals(ledger, book) {
     var cleared = book.openingCents || 0, ticked = 0, open = 0, after = 0;
@@ -7318,7 +7337,7 @@
   //   entry.enteredBy / enteredAt        who recorded it, stamped once when it is created
   //   entry.enteredByUid                 the signed-in account's uid ('' with no account)
   //   entry.approvedBy / approvedAt      who last ticked it against a statement; KEPT if un-ticked
-  //                                      (Phase 3, C2, A6: who approved it is history)
+  //                                      (Phase 3, C2, A6: un-ticking is logged, not erased)
   //   entry.approvedByUid                ditto, the account's uid
   //   book.reconciledBy / reconciledAt   who marked the statement reconciled, and when
   //   charge.forgiven.enteredBy          who recorded a forgiveness (`by` was already who AGREED it)
@@ -7738,9 +7757,10 @@
   // copy of a row keeps it over a delete only if it was ticked after the delete (see keepReconciled).
   // Not shown anywhere. An untick removes it. C6's per-row merge, which reads the tick and untick
   // events in state.ledgerLog, will make it redundant.
-  // Phase 3, C2 (treasurer, A6) — an untick no longer erases who approved it: that is history.
-  // The trail line shows an approval only on a ticked row (ledgerTrailLine), and the next tick
-  // writes over it. reconciledAt still goes, so a merge reads an unticked row as unticked (26a2685).
+  // Phase 3, C2 (treasurer, A6) — an untick no longer erases who approved it: that is history, and
+  // the untick itself is logged (ledgerLog, 'untick'). The trail line shows an approval only on a
+  // ticked row (ledgerTrailLine), and the next tick writes over it. reconciledAt still goes, so a
+  // merge reads an unticked row as unticked (26a2685).
   function stampApproved(e, on) {
     if (on) { e.approvedBy = ledgerActor(); e.approvedByUid = ledgerActorUid(); e.approvedAt = new Date().toISOString(); e.reconciledAt = Date.now(); }
     else delete e.reconciledAt;
@@ -7749,7 +7769,8 @@
   // LEDGER_OPS) to which row (`rowId`; a statement's id for 'reopen'), by whom, when, on which
   // device (`who`: { id, at, by, byUid, dev } — the caller's uid() and clock, so this stays pure).
   // `more`: `f` { field: [before, after] } for an edit, `rows` the other rows a reverse, correct or
-  // reassign touched, `why` a void's reason. Absent parts are left out, not written empty.
+  // reassign touched (or a Tick all ticked), `why` a void's reason. Absent parts are left out, not
+  // written empty.
   // ⚠ A CONVENIENCE RECORD, NOT PROOF, like the E2 stamps: on Firestore the client writes it.
   // `by` is never an email. Null for an op this page does not know, or no row.
   var LEDGER_OPS = ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen'];
@@ -7804,6 +7825,125 @@
       return x < y ? -1 : x > y ? 1 : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     });
     return all.length > 1000 ? all.slice(all.length - 1000) : all;
+  }
+  // ---------------------------------------------------------------------------
+  // PHASE 3, C2 — LEDGER EDITS ARE LOGGED, AND THE LOCK RULES APPLY (owner, 2026-09-29).
+  //
+  // Every change to a row after it is entered appends one event to state.ledgerLog (logLedger):
+  // one per edit (with each field it changed, before and after), one per tick or untick, and ONE
+  // for a Tick all or Clear all ticks (`rows` names the rest). Who, when and which device ride on
+  // every one. A locked row (ledgerLocked: reconciled, or dated in the reconciled period) keeps
+  // its amount, date and direction (LEDGER_LOCKED_FIELDS); its labels and its tick still change,
+  // logged. An edit is refused for a blank or $0 amount (A3), one over LEDGER_MAX_CENTS, a
+  // cleared date (A4: the row would drop out of the bank balance) or a date moved INTO the
+  // reconciled period (it would lock itself).
+  //
+  // SIZE (Firestore holds the whole record in one ~1 MiB document): an edit event is about 250
+  // bytes, a tick about 190. A season of ~250 entries, each ticked once, a fifth of them edited
+  // once or twice, a few unticks and warnings: ~330 events, ~65 KB, cleared at close-out with
+  // the ledger (C8 will keep it in closedBooks). Ticking by Tick all is one event of ~20 bytes a
+  // row. The test 'C2: a season of ledger events' pins these figures.
+  //
+  // The largest single entry the book takes: $25,000 (owner's ceiling). Bigger is a typo.
+  var LEDGER_MAX_CENTS = 2500000;
+  // The money fields that commit on change only, not as typed (the 'input' listener): each change
+  // is one logged event, and "2", "25", "25.0" are not three edits. A blank amount mid-typing
+  // would otherwise be refused under the leader's fingers.
+  var LEDGER_NOT_LIVE = ['led-amount'];
+  // The fields an edit can change (and so the ones an 'edit' event carries). The tick and its
+  // stamps are 'tick'/'untick' events, not edits; ids and the E2 entry stamps never change.
+  var LEDGER_EDIT_FIELDS = ['date', 'description', 'amountCents', 'direction', 'lineId', 'method', 'ref', 'source', 'scoutId', 'donor', 'reimbursement', 'notCommission', 'tierMakeup'];
+  // { field: [before, after] } for each LEDGER_EDIT_FIELDS field that differs. Pure.
+  function ledgerRowDiff(before, after) {
+    var f = {};
+    LEDGER_EDIT_FIELDS.forEach(function (k) {
+      if (before[k] !== after[k]) f[k] = [before[k] === undefined ? null : before[k], after[k] === undefined ? null : after[k]];
+    });
+    return f;
+  }
+  // The led-* fields a LOCKED row refuses (owner, 2026-09-29): what the money was — how much,
+  // which way, when. Everything else on a locked row (budget line, description, family, method,
+  // reference, source, donor) is a label: fixed in place, and each change logged. A wrong amount,
+  // date or direction on a locked row is put right with a reversing entry (Correct, C4).
+  var LEDGER_LOCKED_FIELDS = ['amount', 'dir', 'date'];
+  // Just those fields, copied, for ledgerRowDiff to compare with afterwards. Pure.
+  function ledgerRowFields(e) {
+    var c = {};
+    LEDGER_EDIT_FIELDS.forEach(function (k) { c[k] = e[k]; });
+    return c;
+  }
+  // Why the led-* change `lk` to `value` is refused, or ''. `value` is the field's text, or for
+  // 'rec' (the tick) whether it is now ticked. Pure.
+  function ledgerEditRefusal(e, lk, value, book) {
+    if (lk === 'rec') {
+      // The tick is the one change a locked row takes. But a row ticked on an earlier statement
+      // (dated in the reconciled period) is un-ticked only by the two-tap Un-reconcile (M1).
+      if (value || e.reconciled !== true || !ledgerDateReconciled(e.date, book)) return '';
+      return 'That entry was reconciled on an earlier statement (through ' + fmtDate(book.reconciledThrough) +
+        '). To un-tick it, use Un-reconcile under Entries — two taps.';
+    }
+    // A closed year takes nothing. Otherwise only the money fields lock (owner, 2026-09-29): the
+    // budget line, description, family and the rest are labels, fixed in place and logged.
+    if (book && book.closedAt) return ledgerLockedWhy(e, book);
+    var why = LEDGER_LOCKED_FIELDS.indexOf(lk) !== -1 ? ledgerLockedWhy(e, book, '', true) : '';
+    if (why) return why;
+    if (lk === 'amount') {
+      var c = Math.abs(toCents(value));
+      if (!c) return 'An entry needs an amount — it was left at ' + fmt(e.amountCents || 0) + '.';
+      if (c > LEDGER_MAX_CENTS) return 'That’s more than ' + fmt(LEDGER_MAX_CENTS) + ' for one entry — check the amount. It was left at ' + fmt(e.amountCents || 0) + '.';
+    }
+    if (lk === 'date') {
+      var was = e.date ? fmtDate(e.date) : 'no date';
+      if (!value) return 'An entry needs a date, or it drops out of the bank balance — it was left at ' + was + '.';
+      if (ledgerDateReconciled(value, book)) {
+        return 'That date is inside the period already reconciled (through ' + fmtDate(book.reconciledThrough) +
+          '), and an entry can’t be moved into it. It was left at ' + was + '. If it really belongs there, ' +
+          'remove this entry and add it again with that date.';
+      }
+    }
+    return '';
+  }
+  // One led-* change, applied to the row with everything it implies (the handler has already
+  // asked ledgerEditRefusal). `value` as for ledgerEditRefusal.
+  function applyLedgerEdit(led, lk, value) {
+    if (lk === 'date') led.date = value;
+    else if (lk === 'desc') led.description = value;
+    else if (lk === 'amount') led.amountCents = Math.abs(toCents(value));
+    else if (lk === 'dir') led.direction = value === 'in' ? 'in' : 'out';
+    else if (lk === 'line') led.lineId = value;
+    else if (lk === 'method') led.method = value;
+    else if (lk === 'ref') led.ref = value;
+    else if (lk === 'source') led.source = value;
+    else if (lk === 'scout') led.scoutId = value;
+    else if (lk === 'donor') led.donor = value;
+    else if (lk === 'rec') {
+      if (led.reconciled !== !!value) stampApproved(led, !!value);   // E2
+      led.reconciled = !!value;
+    }
+    // M4 — "not the commission" was an answer about this entry as it stood.
+    if (lk === 'amount' || lk === 'source' || lk === 'line' || lk === 'dir') led.notCommission = false;
+    // Money-in fields are meaningless on a payment out, so switching direction drops
+    // them rather than leaving a stale donor attached to a cheque to the campground.
+    //
+    // TREASURER'S AUDIT, 2026-09-27 (M6) — but a money-OUT entry can carry a scout too: a
+    // reward-tier reimbursement names who was paid back, and tierReimbursements() reads that
+    // to know it is done. This used to clear scoutId on EVERY edit of a money-out entry, so
+    // adding the council receipt number — which the reimburse toast asks for — un-paid the
+    // family and put the Reimburse button back. Only flipping the direction clears it now,
+    // because the payer of money in is not the payee of money out.
+    //
+    // T1 — and a money-out entry can carry a family as a REFUND of their credit (source
+    // 'refund'). Picking the family is what makes it one; clearing it makes it plain money out.
+    // A reimbursement keeps its scout and no source, exactly as M6 left it.
+    if (lk === 'dir') { led.scoutId = ''; led.reimbursement = false; if (led.direction !== 'in' || led.source === 'refund') led.source = ''; }
+    if (led.direction !== 'in') {
+      led.donor = '';
+      // M1(c) — a family picked on a family-direct line is paid BACK, not refunded.
+      if (lk === 'scout' && led.scoutId && ledgerLineIsDirect(led.lineId)) { led.source = ''; led.reimbursement = true; }
+      else if (lk === 'scout') led.source = led.scoutId ? 'refund' : '';
+      else if (led.source !== 'refund') led.source = '';
+    }
+    if (led.source !== 'donation') led.donor = '';
   }
   // E1 — this charge's due date, from its line and the line's event as they stand now.
   function chargeDueNow(c) {
@@ -18234,43 +18374,43 @@
       var open = !!ui.ledgerOpen[e.id];
       var bal = run[e.id];
       var pre = bal === null;
-      // TREASURER'S AUDIT, 2026-09-27 (M10) — a RECONCILED entry is read-only. It has been
-      // checked against a bank statement, and an edit to its date or amount afterwards makes the
-      // book disagree with a statement the treasurer has already signed off, with nothing to
-      // say why. Changing one is a deliberate act: Un-reconcile (two taps), then edit.
-      if (e.reconciled) {
-        var rLine = getBudgetLine(e.lineId);
-        var rWho = e.scoutId ? getScout(e.scoutId) : null;
-        h += '<div class="lrow entry' + (e.direction === 'in' ? ' in' : '') + '">' +
-          '<span class="small muted rec-when">' + esc(fmtDateShort(e.date)) + '</span>' +
-          '<span class="lname small">' + esc(e.description || '(no description)') +
-            (rLine ? ' <span class="muted">· ' + esc(rLine.name || 'Untitled line') + '</span>' : '') +
-            (rWho ? ' <span class="muted">· ' + esc(rWho.name) + '</span>' : '') +
-            (e.ref ? ' <span class="muted">#' + esc(e.ref) + '</span>' : '') + '</span>' +
-          '<span class="money small">' + (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents) + '</span>' +
-          '<span class="lbal small muted money">' + (pre ? 'before opening' : fmt(bal)) + '</span>' +
-          '<span class="pill navy">reconciled</span>' +
-          '<button type="button" class="btn small ghost' + (ui.armed === 'ledger-unreconcile:' + e.id ? ' danger armed' : '') +
-            '" data-act="ledger-unreconcile:' + e.id + '">' +
-            (ui.armed === 'ledger-unreconcile:' + e.id ? 'Tap again to un-reconcile' : 'Un-reconcile to edit') + '</button>' +
-          ledgerTrailLine(e) +   // E2 — a reconciled row has no Detail, so the trail sits under it
-          '</div>';
-        return;
-      }
+      // TREASURER'S AUDIT, 2026-09-27 (M10) — a RECONCILED entry's money is read-only. It has
+      // been checked against a bank statement, and an edit to its date or amount afterwards makes
+      // the book disagree with a statement the treasurer has already signed off, with nothing to
+      // say why. Changing it is a deliberate act: Un-reconcile (two taps), then edit.
+      // Phase 3, C2 — so is one dated in the reconciled period (ledgerLocked), ticked or not:
+      // un-reconciling does not open it. Its date, direction and amount are shown, not fields;
+      // its labels stay fields (owner, 2026-09-29: LEDGER_LOCKED_FIELDS), and every change is
+      // logged. An unticked one keeps its ✕ until C3 makes removing it a void.
+      var eLocked = ledgerLocked(e, state.book), ePeriod = ledgerDateReconciled(e.date, state.book);
       h += '<div class="lrow entry' + (e.direction === 'in' ? ' in' : '') + '">' +
-        '<input type="date" data-ch="led-date" data-id="' + e.id + '" value="' + esc(e.date) + '" aria-label="Date">' +
-        '<select data-ch="led-dir" data-id="' + e.id + '" aria-label="In or out">' +
-          '<option value="out"' + (e.direction === 'out' ? ' selected' : '') + '>Out</option>' +
-          '<option value="in"' + (e.direction === 'in' ? ' selected' : '') + '>In</option>' +
-        '</select>' +
+        (eLocked
+          ? '<span class="small muted rec-when">' + esc(fmtDateShort(e.date)) + '</span>'
+          : '<input type="date" data-ch="led-date" data-id="' + e.id + '" value="' + esc(e.date) + '" aria-label="Date">' +
+            '<select data-ch="led-dir" data-id="' + e.id + '" aria-label="In or out">' +
+              '<option value="out"' + (e.direction === 'out' ? ' selected' : '') + '>Out</option>' +
+              '<option value="in"' + (e.direction === 'in' ? ' selected' : '') + '>In</option>' +
+            '</select>') +
         '<input class="lname" data-ch="led-desc" data-id="' + e.id + '" value="' + esc(e.description) + '" placeholder="Description">' +
-        '<input class="money-in" inputmode="decimal" data-ch="led-amount" data-id="' + e.id + '" value="' + dollars(e.amountCents) + '" placeholder="0.00" aria-label="Amount">' +
+        (eLocked
+          ? '<span class="money small">' + (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents) + '</span>'
+          : '<input class="money-in" inputmode="decimal" data-ch="led-amount" data-id="' + e.id + '" value="' + dollars(e.amountCents) + '" placeholder="0.00" aria-label="Amount">') +
         '<select data-ch="led-line" data-id="' + e.id + '" aria-label="Budget line">' + lineSelectOptions(e.lineId) + '</select>' +
         '<span class="lbal small muted money">' + (pre ? 'before opening' : fmt(bal)) + '</span>' +
-        '<label class="perscout"><input type="checkbox" data-ch="led-rec" data-id="' + e.id + '"' + (e.reconciled ? ' checked' : '') + '> reconciled</label>' +
+        (e.reconciled
+          ? '<span class="pill navy">reconciled</span>' +
+            '<button type="button" class="btn small ghost' + (ui.armed === 'ledger-unreconcile:' + e.id ? ' danger armed' : '') +
+              '" data-act="ledger-unreconcile:' + e.id + '">' +
+              (ui.armed === 'ledger-unreconcile:' + e.id ? 'Tap again to un-reconcile' : 'Un-reconcile') + '</button>'
+          : (ePeriod
+            ? '<span class="pill navy" title="Dated on or before ' + esc(fmtDate(state.book.reconciledThrough)) +
+                ', which is already reconciled: its amount, date and direction can’t be changed">reconciled period</span>'
+            : '') +
+            '<label class="perscout"><input type="checkbox" data-ch="led-rec" data-id="' + e.id + '"' + (e.reconciled ? ' checked' : '') + '> reconciled</label>') +
         '<button type="button" class="exp-toggle lmore" data-act="ledger-toggle" data-id="' + e.id + '" aria-expanded="' + open + '">' +
           '<span class="chev">' + (open ? '▾' : '▸') + '</span> Detail</button>' +
-        tinyDangerBtn('del-ledger:' + e.id, 'Remove this entry') +
+        // M10 — a reconciled entry can't be deleted from under its statement (del-ledger says so).
+        (e.reconciled ? '' : tinyDangerBtn('del-ledger:' + e.id, 'Remove this entry')) +
         (open
           ? '<div class="ldetail">' +
               '<select data-ch="led-method" data-id="' + e.id + '" aria-label="Method">' + methodSelectOptions(e.method) + '</select>' +
@@ -18299,7 +18439,8 @@
                 : '') +
               ledgerTrailLine(e) +
             '</div>'
-          : '') +
+          // E2 — who reconciled it stays in view on a reconciled row, as before C2 gave it a Detail.
+          : (e.reconciled ? ledgerTrailLine(e) : '')) +
         '</div>';
     });
     return h + '</div>';
@@ -18366,8 +18507,12 @@
       // Safe to make the row a <label>: it holds no other control, and the click handler only
       // intercepts [data-act], which this row has none of.
       var recWho = e.description || '(no description)';
-      h += '<label class="lrow entry rec-row' + (e.direction === 'in' ? ' in' : '') + '">' +
-        '<input type="checkbox" data-ch="led-rec" data-id="' + e.id + '"' + (e.reconciled ? ' checked' : '') +
+      // Phase 3, C2 (M1) — ticked on an earlier statement (dated in the reconciled period): shown
+      // ticked, and un-ticked only by the two-tap Un-reconcile under Entries (ledgerEditRefusal).
+      var recFixed = e.reconciled && ledgerDateReconciled(e.date, bk);
+      h += '<label class="lrow entry rec-row' + (e.direction === 'in' ? ' in' : '') + '"' +
+          (recFixed ? ' title="Reconciled on an earlier statement — to un-tick it, use Un-reconcile under Entries"' : '') + '>' +
+        '<input type="checkbox" data-ch="led-rec" data-id="' + e.id + '"' + (e.reconciled ? ' checked' : '') + (recFixed ? ' disabled' : '') +
           ' aria-label="Ticked against the statement: ' + esc(recWho) + ', ' +
           (e.direction === 'in' ? 'money in ' : 'money out ') + fmt(e.amountCents) + '">' +
         // fmtDateShort, in a fixed well: the weekday tripled the date's width for nothing, and a
@@ -26401,9 +26546,11 @@
   }
   // Dollar fields (text money-in) update live as you type — caret is restored on re-render.
   // Wave 18(14): the liveEdit flag makes commit() render now but debounce save+sync.
+  // Phase 3, C2 — except a ledger row's amount: each change to it is one logged event, so it
+  // commits once, on change, not a keystroke at a time (LEDGER_NOT_LIVE).
   document.addEventListener('input', function (e) {
     var el = e.target.closest('input.money-in[data-ch]');
-    if (el) {
+    if (el && LEDGER_NOT_LIVE.indexOf(el.getAttribute('data-ch')) === -1) {
       liveEdit = true;
       try { handleChange(el); } finally { liveEdit = false; }
     }
@@ -27190,8 +27337,13 @@
       if (!urE) return;
       arm(act, function () {
         urE.reconciled = false;
-        stampApproved(urE, false);   // E2 — nobody has checked it as it now stands
-        showToast('Un-reconciled — tick it again against the statement once it is corrected.');
+        stampApproved(urE, false);   // E2 — the tick time goes; who approved it stays (C2, A6)
+        logLedger('untick', urE.id);   // Phase 3, C2
+        // Still locked if it is dated in the reconciled period: un-reconciling does not open it.
+        showToast(ledgerDateReconciled(urE.date, state.book)
+          ? 'Un-reconciled — but it is dated inside the period already reconciled (through ' + fmtDate(state.book.reconciledThrough) +
+            '), so it still can’t be changed. Tick it again if it is on the statement.'
+          : 'Un-reconciled — tick it again against the statement once it is corrected.');
         commit();
       });
       return;
@@ -27227,13 +27379,26 @@
       // M10 — Tick all ticks what can be ON this statement: nothing dated after it. Clearing
       // ticks is the same set, so it cannot un-tick an entry from an earlier statement's month
       // that is dated after this one either.
+      // Phase 3, C2 — ONE log event for the lot (`rows` names all but the first). And Clear all
+      // ticks leaves a row ticked on an earlier statement (dated in the reconciled period) as it
+      // is (treasurer, M1): that takes the two-tap Un-reconcile, one row at a time.
+      var tkIds = [], tkKept = 0;
       state.ledger.forEach(function (e) {
         if (entryAfterOpening(e, state.book) && entryOnStatement(e, state.book)) {
+          if (e.reconciled === tick) return;
+          if (!tick && ledgerDateReconciled(e.date, state.book)) { tkKept++; return; }
           // E2 — stamp only a change: an entry already ticked keeps who ticked it first.
-          if (e.reconciled !== tick) stampApproved(e, tick);
+          stampApproved(e, tick);
           e.reconciled = tick;
+          tkIds.push(e.id);
         }
       });
+      if (tkIds.length) logLedger(tick ? 'tick' : 'untick', tkIds[0], { rows: tkIds.slice(1) });
+      if (tkKept) {
+        showToast(tkKept + ' entr' + (tkKept === 1 ? 'y' : 'ies') + ' reconciled on an earlier statement (through ' +
+          fmtDate(state.book.reconciledThrough) + ') kept ' + (tkKept === 1 ? 'its tick' : 'their ticks') +
+          '. To un-tick one, use Un-reconcile under Entries.');
+      }
       commit(); return;
     }
     if (act === 'ledger-reconcile-lock') {
@@ -28165,51 +28330,27 @@
       var led = state.ledger.find(function (e) { return e.id === el.dataset.id; });
       if (!led) return;
       var lk = ch.slice(4);
-      // M10 — a reconciled entry takes no edits but the tick itself (the Reconcile view's own
-      // control). The Entries list renders it read-only; this is the same rule where it bites.
-      if (led.reconciled && lk !== 'rec') { render(); return; }
-      if (lk === 'date') led.date = el.value;
-      else if (lk === 'desc') led.description = el.value;
-      else if (lk === 'amount') led.amountCents = Math.abs(toCents(el.value));
-      else if (lk === 'dir') led.direction = el.value === 'in' ? 'in' : 'out';
-      else if (lk === 'line') led.lineId = el.value;
-      else if (lk === 'method') led.method = el.value;
-      else if (lk === 'ref') led.ref = el.value;
-      else if (lk === 'source') led.source = el.value;
-      else if (lk === 'scout') led.scoutId = el.value;
-      else if (lk === 'donor') led.donor = el.value;
-      else if (lk === 'rec') {
-        if (led.reconciled !== el.checked) stampApproved(led, el.checked);   // E2
-        led.reconciled = el.checked;
+      var lv = lk === 'rec' ? el.checked : el.value;
+      // M10 — a reconciled entry's money can't be edited from under the statement it was ticked
+      // on. Phase 3, C2 — nor can one dated in the reconciled period; but their labels can
+      // (owner, 2026-09-29: LEDGER_LOCKED_FIELDS). An edit that would blank the amount or the
+      // date, go over the ceiling, or move the row into the period is refused too, the field
+      // put back, and the leader told why (ledgerEditRefusal).
+      var ledNo = ledgerEditRefusal(led, lk, lv, state.book);
+      if (ledNo) { showToast(ledNo); render(); return; }
+      var ledWas = ledgerRowFields(led), ledTicked = led.reconciled;
+      applyLedgerEdit(led, lk, lv);   // the field, and what it implies (M4, M6, T1, M1(c))
+      // C2 — one event for this change: the tick, or every field it changed, before and after.
+      if (lk === 'rec') {
+        if (led.reconciled !== ledTicked) logLedger(led.reconciled ? 'tick' : 'untick', led.id);
+      } else {
+        var ledF = ledgerRowDiff(ledWas, led);
+        if (Object.keys(ledF).length) logLedger('edit', led.id, { f: ledF });
       }
-      // M4 — "not the commission" was an answer about this entry as it stood.
-      if (lk === 'amount' || lk === 'source' || lk === 'line' || lk === 'dir') led.notCommission = false;
       // E2 — clearing a reimbursement's receipt number is allowed, and said.
       if (lk === 'ref' && !String(led.ref).trim() && entryNeedsReceipt(led)) {
         showToast('A reimbursement should name its receipt \u2014 the entry is kept without one.');
       }
-      // Money-in fields are meaningless on a payment out, so switching direction drops
-      // them rather than leaving a stale donor attached to a cheque to the campground.
-      //
-      // TREASURER'S AUDIT, 2026-09-27 (M6) — but a money-OUT entry can carry a scout too: a
-      // reward-tier reimbursement names who was paid back, and tierReimbursements() reads that
-      // to know it is done. This used to clear scoutId on EVERY edit of a money-out entry, so
-      // adding the council receipt number — which the reimburse toast asks for — un-paid the
-      // family and put the Reimburse button back. Only flipping the direction clears it now,
-      // because the payer of money in is not the payee of money out.
-      //
-      // T1 — and a money-out entry can carry a family as a REFUND of their credit (source
-      // 'refund'). Picking the family is what makes it one; clearing it makes it plain money out.
-      // A reimbursement keeps its scout and no source, exactly as M6 left it.
-      if (lk === 'dir') { led.scoutId = ''; led.reimbursement = false; if (led.direction !== 'in' || led.source === 'refund') led.source = ''; }
-      if (led.direction !== 'in') {
-        led.donor = '';
-        // M1(c) — a family picked on a family-direct line is paid BACK, not refunded.
-        if (lk === 'scout' && led.scoutId && ledgerLineIsDirect(led.lineId)) { led.source = ''; led.reimbursement = true; }
-        else if (lk === 'scout') led.source = led.scoutId ? 'refund' : '';
-        else if (led.source !== 'refund') led.source = '';
-      }
-      if (led.source !== 'donation') led.donor = '';
       // M1(b) — a refund that now reaches past the family's credit says so.
       var ledWarn = (lk === 'amount' || lk === 'scout') ? refundOverCreditWarning(led) : '';
       if (ledWarn) showToast(ledWarn);

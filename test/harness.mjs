@@ -9715,7 +9715,7 @@ test('M5: a tier make-up payment does not also settle the family’s other charg
 test('M6: editing a reimbursement keeps who it paid back', () => {
   // tierReimbursements reads the scout off a money-OUT entry to know a family was paid back.
   // Every edit used to clear it — including typing the receipt number the toast asks for.
-  const h = /if \(ch\.indexOf\('led-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  const h = slice('applyLedgerEdit');   // Phase 3, C2 — the led-* handler's field logic moved here
   ok(!/led\.direction !== 'in'\) \{ led\.source = ''; led\.donor = ''; led\.scoutId = ''; \}/.test(h),
     'any edit of a money-out entry clears its scout');
   ok(/if \(lk === 'dir'\) \{ led\.scoutId = '';/.test(h), 'flipping the direction no longer drops the payer');
@@ -10133,11 +10133,17 @@ test('M10: reconciling is against THIS statement — nothing dated after it coun
 });
 
 test('M10: a reconciled entry is read-only until it is deliberately un-reconciled', () => {
+  // Phase 3, C2 — its MONEY is read-only (amount, date, direction: shown, not fields); its labels
+  // are fields, and logged (owner, 2026-09-29). The C2 tests check the rule itself.
   const rows = /function renderLedgerEntries\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
-  ok(/if \(e\.reconciled\) \{[\s\S]*?data-act="ledger-unreconcile:' \+ e\.id \+ '"[\s\S]*?return;\s*\}/.test(rows),
+  ok(/var eLocked = ledgerLocked\(e, state\.book\)/.test(rows) &&
+     /\(eLocked\s*\? '<span class="small muted rec-when">'[\s\S]*?: '<input type="date" data-ch="led-date"[\s\S]*?data-ch="led-dir"/.test(rows) &&
+     /\(eLocked\s*\? '<span class="money small">'[\s\S]*?: '<input class="money-in" inputmode="decimal" data-ch="led-amount"/.test(rows) &&
+     /data-act="ledger-unreconcile:' \+ e\.id \+ '"/.test(rows),
     'a reconciled entry is rendered with editable fields');
   const ch = /if \(ch\.indexOf\('led-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/if \(led\.reconciled && lk !== 'rec'\) \{ render\(\); return; \}/.test(ch), 'the change handler still edits a reconciled entry');
+  ok(/var ledNo = ledgerEditRefusal\(led, lk, lv, state\.book\);\s*if \(ledNo\) \{ showToast\(ledNo\); render\(\); return; \}/.test(ch),
+    'the change handler still edits a reconciled entry');
   const un = /if \(act\.indexOf\('ledger-unreconcile:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
   ok(un && /arm\(act, function \(\) \{/.test(un[0]) && /urE\.reconciled = false;/.test(un[0]),
     'there is no two-tap un-reconcile');
@@ -11079,7 +11085,7 @@ test('M1: a refund past the family’s credit is flagged, shown, and never used 
   ok(/ledgerLineIsDirect\(e\.lineId\)[\s\S]*?aria-label="Paid back to \(reimbursement\)"/.test(rows), 'the entry picker is always a refund');
   ok(/var drReimb = dr\.direction !== 'in' && !!dr\.scoutId && ledgerLineIsDirect\(dr\.lineId\);/.test(add) &&
      /if \(drReimb\) drEntry\.reimbursement = true;/.test(add), 'a family-direct payback is saved as a refund');
-  ok(/if \(lk === 'scout' && led\.scoutId && ledgerLineIsDirect\(led\.lineId\)\) \{ led\.source = ''; led\.reimbursement = true; \}/.test(ed),
+  ok(/if \(lk === 'scout' && led\.scoutId && ledgerLineIsDirect\(led\.lineId\)\) \{ led\.source = ''; led\.reimbursement = true; \}/.test(slice('applyLedgerEdit')),
     'an edited family-direct payback is saved as a refund');
   ok(/if \(nk === 'line' && nd\.direction !== 'in'\) \{ nd\.lineId = el\.value; render\(\); return; \}/.test(SCRIPT),
     'the picker does not follow the line chosen in the form');
@@ -11114,8 +11120,7 @@ test('M4: "Not the commission" is answered per entry, and any edit to the entry 
     'the Check line offers no per-entry answer');
   const h = /if \(act\.indexOf\('not-commission:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
   ok(h && /ncE\.notCommission = true;/.test(h[0]) && /commit\(\)/.test(h[0]), 'the answer is not saved');
-  const ed = /if \(ch\.indexOf\('led-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/if \(lk === 'amount' \|\| lk === 'source' \|\| lk === 'line' \|\| lk === 'dir'\) led\.notCommission = false;/.test(ed),
+  ok(/if \(lk === 'amount' \|\| lk === 'source' \|\| lk === 'line' \|\| lk === 'dir'\) led\.notCommission = false;/.test(slice('applyLedgerEdit')),
     'editing the entry does not clear the answer');
   // It survives a reload, as a boolean.
   const ctx = sandbox(NORMALIZE_FNS);
@@ -13095,8 +13100,8 @@ test('E2: who entered an entry, who reconciled it, and who recorded a forgivenes
   ok(/enteredBy: ledgerActor\(\), enteredByUid: ledgerActorUid\(\), enteredAt: new Date\(\)\.toISOString\(\)/.test(rb), 'a reimbursement is not stamped');
   ok(/enteredBy: ledgerActor\(\) \+ ' \(close-out\)'/.test(slice('rolloverYear')), 'a carried credit is not stamped');
   // Reconciling: every way an entry is ticked or un-ticked stamps or clears who did it.
-  ok(/if \(led\.reconciled !== el\.checked\) stampApproved\(led, el\.checked\);/.test(SCRIPT), 'a single tick is not stamped');
-  ok(/if \(e\.reconciled !== tick\) stampApproved\(e, tick\);/.test(SCRIPT), 'Tick all does not stamp');
+  ok(/if \(led\.reconciled !== !!value\) stampApproved\(led, !!value\);/.test(slice('applyLedgerEdit')), 'a single tick is not stamped');
+  ok(/if \(e\.reconciled === tick\) return;[\s\S]*?stampApproved\(e, tick\);/.test(SCRIPT), 'Tick all does not stamp');
   ok(/urE\.reconciled = false;\s*stampApproved\(urE, false\);/.test(SCRIPT), 'un-reconciling keeps the old approver');
   ok(/state\.book\.reconciledBy = ledgerActor\(\);/.test(SCRIPT), 'the statement lock does not say who');
   ok(/fc\.forgiven = \{ date: todayISO\(\), by: fgBy, reason: fgReason, enteredBy: ledgerActor\(\) \};/.test(SCRIPT), 'forgiveness does not record who entered it');
@@ -13116,7 +13121,7 @@ test('E2: who entered an entry, who reconciled it, and who recorded a forgivenes
   eq(d.charges[0].forgiven.enteredBy, 'Dana', 'forgiveness trail');
   eq(d.charges[1].forgiven.enteredBy, 'a signed-in leader', 'a stored email on a forgiveness survived');
   eq(n.normalizeState(preMigrationState()).book.reconciledBy, '', 'an empty book trail');
-  // Shown: in the entry's detail and under a reconciled row; the Reconcile card says who signed off.
+  // Shown: in the entry’s detail, and under a reconciled row while that is closed; the Reconcile card says who signed off.
   const le = slice('renderLedgerEntries');
   ok((le.match(/ledgerTrailLine\(e\)/g) || []).length === 2, 'the trail is not shown on both kinds of row');
   ok(/Last reconciled through/.test(slice('renderReconcile')) && /bk\.reconciledBy/.test(slice('renderReconcile')), 'Reconcile does not say who signed off');
@@ -18110,6 +18115,194 @@ atest('C2, api: a reconciled row dated in the reconciled period is kept over a d
   a.run(B1);
   await settle([a], 800);
   eq(server().ledger.length, 0, 'control: a tick with no time, after the period, beat the delete');
+});
+
+/* ================================================================
+   Phase 3, C2 (2026-09-29) — ledger edits are logged, and the lock rules apply (owner's
+   decisions: a locked row keeps only its amount, date and direction; a back-dated add is warned,
+   not refused; a reconciled row in the reconciled period always beats a delete). These run the
+   page's own handler blocks, cut from handleChange and the click handler, in a sandbox.
+   ================================================================ */
+const c2Block = (re, what) => { const m = re.exec(SCRIPT); ok(m, 'C2: handler block not found: ' + what); return m[0]; };
+const C2_CHANGE = [
+  c2Block(/    if \(ch\.indexOf\('led-'\) === 0\) \{[\s\S]*?\n    \}/, 'led-*')].join('\n');
+const C2_ACT = [
+  c2Block(/    if \(act\.indexOf\('ledger-unreconcile:'\) === 0\) \{[\s\S]*?\n    \}/, 'ledger-unreconcile'),
+  c2Block(/    if \(act === 'ledger-tick-all' \|\| act === 'ledger-untick-all'\) \{[\s\S]*?\n    \}/, 'tick-all')].join('\n');
+const C2_FNS = ['fmt', 'fmtDate', 'fmtDateShort', 'toCents', 'toCentsSigned', 'entryAfterOpening', 'entryOnStatement', 'ledgerLocked',
+  'ledgerDateReconciled', 'ledgerLockedWhy', 'LEDGER_MAX_CENTS', 'LEDGER_EDIT_FIELDS', 'LEDGER_LOCKED_FIELDS', 'ledgerRowDiff',
+  'ledgerRowFields', 'ledgerEditRefusal', 'applyLedgerEdit', 'ledgerWho', 'logLedger', 'LEDGER_OPS', 'ledgerEvent', 'ledgerStampClean', 'stampApproved', 'stampEntered', 'ledgerActorName',
+  'ledgerDraftDefault', 'ledgerDraft', 'arm'];
+// The book is reconciled through Aug 31 from a Jul 1 opening. u1 is open; r1 is ticked (after the
+// period); p1 is dated in the period, not ticked; q1 is ticked in the period by a page from before
+// any stamps; pre is before the opening date; m1 is a tier make-up in the period.
+const C2_ROW = (o) => Object.assign({ lineId: '', method: '', ref: '', source: '', scoutId: '', donor: '', reimbursement: false,
+  notCommission: false, tierMakeup: '', reconciled: false }, o);
+const C2_LEDGER = () => [
+  C2_ROW({ id: 'u1', date: '2026-09-10', description: 'Pinewood trophies', amountCents: 8400, direction: 'out', lineId: 'x1', method: 'check', ref: '101' }),
+  C2_ROW({ id: 'r1', date: '2026-09-05', description: 'Dues', amountCents: 2500, direction: 'in', scoutId: 's1', reconciled: true,
+    approvedBy: 'Sam', approvedByUid: 'u9', approvedAt: '2026-09-06T10:00:00.000Z', reconciledAt: 1789000000000 }),
+  C2_ROW({ id: 'p1', date: '2026-08-15', description: 'Council fee', amountCents: 1200, direction: 'out' }),
+  C2_ROW({ id: 'q1', date: '2026-08-10', description: 'Popcorn commission', amountCents: 50000, direction: 'in', source: 'popcorn', reconciled: true }),
+  C2_ROW({ id: 'pre', date: '2026-06-20', description: 'Last year', amountCents: 300, direction: 'in' }),
+  C2_ROW({ id: 'm1', date: '2026-08-20', description: 'Make-up', amountCents: 1500, direction: 'in', scoutId: 's1', tierMakeup: 't1' })];
+function c2Page(o) {
+  o = o || {};
+  const ctx = vm.createContext({});
+  vm.runInContext(`${C2_FNS.map(slice).join('\n')}
+    ${['ledgerActor', 'ledgerActorUid'].map(decl).join('\n')}
+    var state = { ledger: ${JSON.stringify(o.ledger || C2_LEDGER())}, ledgerLog: [], leaders: [],
+      book: ${JSON.stringify(Object.assign({ openingCents: 10000, openingDate: '2026-07-01', reconciledThrough: '2026-08-31', statementDate: '', statementCents: 0 }, o.book || {}))},
+      budget: { programYear: 2026, startingBalance: 7700 }, rewardTiers: { tiers: [{ id: 't1' }] } };
+    var ui = { armed: null }, sync = { deviceId: 'dev1', user: { uid: 'u1', displayName: 'Pat Treasurer' } };
+    var toasts = [], commits = 0, renders = 0, seq = 0;
+    function uid() { seq += 1; return 'id' + seq; }
+    function showToast(m) { toasts.push(m); } function render() { renders += 1; } function commit() { commits += 1; }
+    function setTimeout() { return 0; } function clearTimeout() {}
+    function refundOverCreditWarning() { return ''; } function entryNeedsReceipt() { return false; } function ledgerLineIsDirect() { return false; }
+    function todayISO() { return '2026-10-15'; } function programYearStartISO(py) { return py + '-07-01'; }
+    function change(ch, id, value, checked) {
+      var el = { value: value, checked: !!checked, dataset: { id: id } };
+      (function () {\n${C2_CHANGE}\n})();
+    }
+    function act(act, el) { el = el || { dataset: {} }; (function () {\n${C2_ACT}\n})(); }
+    function row(id) { return state.ledger.find(function (e) { return e.id === id; }); }
+    function log() { return state.ledgerLog; }`, ctx);
+  const get = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, ctx)));
+  return { ctx, run: (js) => vm.runInContext(js, ctx), get };
+}
+
+test('C2: each change to an entry is one logged edit — every field it changed, before and after, who, when, which device', () => {
+  const p = c2Page();
+  p.run("change('led-desc', 'u1', 'Pinewood trophies (12)')");
+  const ev = p.get('log()[0]');
+  eq([ev.id, ev.op, ev.row, ev.by, ev.byUid, ev.dev, /^\d{4}-\d\d-\d\dT/.test(ev.at), ev.f],
+    ['lg-id1', 'edit', 'u1', 'Pat Treasurer', 'u1', 'dev1', true, { description: ['Pinewood trophies', 'Pinewood trophies (12)'] }], 'the edit event');
+  p.run("change('led-amount', 'u1', '90')");
+  eq(p.get('log()[1].f'), { amountCents: [8400, 9000] }, 'the amount');
+  // One change that moves several fields is ONE event naming each (a flip of direction drops the
+  // family it was refunded to: applyLedgerEdit).
+  p.run("row('u1').scoutId = 's1'; change('led-dir', 'u1', 'in')");
+  eq(p.get('log()[2]').f, { direction: ['out', 'in'], scoutId: ['s1', ''] }, 'a direction flip');
+  p.run("change('led-date', 'u1', '2026-09-12'); change('led-line', 'u1', 'x2'); change('led-method', 'u1', 'cash'); change('led-ref', 'u1', '102')");
+  eq(p.get('log().map(function (e) { return Object.keys(e.f).join(); })'),
+    ['description', 'amountCents', 'direction,scoutId', 'date', 'lineId', 'method', 'ref'], 'one event per change');
+  // Nothing changed, nothing logged.
+  p.run("change('led-ref', 'u1', '102'); change('led-amount', 'u1', '90.00')");
+  eq(p.get('log().length'), 7, 'a change to the same value was logged');
+  // The amount commits once, on change — not a keystroke at a time (each would be an edit).
+  ok(/var LEDGER_NOT_LIVE = \['led-amount'\];/.test(SCRIPT) &&
+     /if \(el && LEDGER_NOT_LIVE\.indexOf\(el\.getAttribute\('data-ch'\)\) === -1\) \{/.test(SCRIPT), 'the amount is committed as it is typed');
+});
+
+test('C2: an edit is refused for a blank or $0 amount, one over $25,000, a cleared date, or a date moved into the reconciled period', () => {
+  const p = c2Page();
+  const tries = [['led-amount', ''], ['led-amount', '0'], ['led-amount', '-5'], ['led-amount', 'abc'], ['led-amount', '25000.01'],
+    ['led-date', ''], ['led-date', '2026-08-31'], ['led-date', '2026-07-01']];
+  for (const [ch, v] of tries) {
+    p.run(`toasts = []; renders = 0; change('${ch}', 'u1', '${v}')`);
+    eq([p.get('row("u1").amountCents'), p.get('row("u1").date'), p.get('log().length'), p.get('commits'), p.get('renders'), p.get('toasts.length')],
+      [8400, '2026-09-10', 0, 0, 1, 1], `${ch} = "${v}" was not refused, put back and said`);
+  }
+  // What the leader is told, plainly.
+  p.run("toasts = []; change('led-amount', 'u1', ''); change('led-amount', 'u1', '30000'); change('led-date', 'u1', ''); change('led-date', 'u1', '2026-08-20')");
+  const t = p.get('toasts');
+  ok(/^An entry needs an amount — it was left at \$84\.00\.$/.test(t[0]), t[0]);
+  ok(/^That’s more than \$25,000\.00 for one entry — check the amount\. It was left at \$84\.00\.$/.test(t[1]), t[1]);
+  ok(/^An entry needs a date, or it drops out of the bank balance — it was left at /.test(t[2]), t[2]);
+  ok(/^That date is inside the period already reconciled \(through .*\), and an entry can’t be moved into it\. .*remove this entry and add it again with that date\.$/.test(t[3]), t[3]);
+  // The edges: exactly $25,000, and a date before the opening (not in the period) are taken.
+  p.run("change('led-amount', 'u1', '25000'); change('led-date', 'u1', '2026-06-30')");
+  eq([p.get('row("u1").amountCents'), p.get('row("u1").date'), p.get('log().length')], [2500000, '2026-06-30', 2], 'the edges were refused');
+});
+
+test('C2: a locked entry refuses only its amount, date and direction; its labels are edited in place and logged', () => {
+  for (const id of ['r1', 'p1', 'q1']) {
+    const p = c2Page();
+    const was = p.get(`row('${id}')`);
+    for (const [ch, v] of [['led-amount', '1'], ['led-date', '2026-09-20'], ['led-dir', was.direction === 'in' ? 'out' : 'in']]) {
+      p.run(`toasts = []; change('${ch}', '${id}', '${v}')`);
+      eq([p.get(`row('${id}')`), p.get('log().length'), p.get('toasts.length')], [was, 0, 1], `${id}: ${ch} was not refused`);
+      ok(/can’t be changed/.test(p.get('toasts[0]')), `${id}: the refusal does not say why: ${p.get('toasts[0]')}`);
+    }
+    // The labels: budget line, description, family, method, reference.
+    p.run(`change('led-line', '${id}', 'x9'); change('led-desc', '${id}', 'Renamed'); change('led-scout', '${id}', 's2');
+      change('led-method', '${id}', 'cash'); change('led-ref', '${id}', 'R7')`);
+    const now = p.get(`row('${id}')`);
+    eq([now.lineId, now.description, now.scoutId, now.method, now.ref, now.amountCents, now.date, now.direction, now.reconciled],
+      ['x9', 'Renamed', 's2', 'cash', 'R7', was.amountCents, was.date, was.direction, was.reconciled], `${id}: the labels`);
+    // (On money out, picking a family makes the entry a refund to them: one edit, both fields.)
+    eq(p.get('log().map(function (e) { return e.op + ":" + e.row + ":" + Object.keys(e.f).join("+"); })'),
+      [`edit:${id}:lineId`, `edit:${id}:description`, `edit:${id}:${was.direction === 'in' ? 'scoutId' : 'source+scoutId'}`, `edit:${id}:method`, `edit:${id}:ref`],
+      `${id}: the label edits were not logged`);
+  }
+  // The messages: the period, not the tick, for a row in it; the tick for one after it.
+  const p = c2Page();
+  p.run("change('led-amount', 'r1', '1'); change('led-amount', 'p1', '1')");
+  const t = p.get('toasts');
+  ok(/^That entry is reconciled against a bank statement, so its amount, date and direction can’t be changed\. Un-reconcile it first/.test(t[0]), t[0]);
+  ok(/^That entry is dated .*, inside the period already reconciled \(through .*\), so its amount, date and direction can’t be changed\.$/.test(t[1]), t[1]);
+  eq(vm.runInContext('LEDGER_LOCKED_FIELDS', p.ctx).slice(), ['amount', 'dir', 'date'], 'the locked fields');
+  // The Entries list: a locked row's amount, date and direction are text; its labels are fields.
+  const rows = slice('renderLedgerEntries');
+  ok(/'<input class="lname" data-ch="led-desc"/.test(rows) && /'<select data-ch="led-line"/.test(rows) &&
+     /\(eLocked\s*\? '<span class="money small">'/.test(rows), 'a locked row’s labels are not fields, or its amount is');
+});
+
+test('C2: ticking and un-ticking are logged; un-ticking keeps who approved it; a row ticked on an earlier statement takes the two-tap Un-reconcile', () => {
+  const p = c2Page();
+  p.run("change('led-rec', 'u1', '', true)");
+  eq([p.get('row("u1").reconciled'), p.get('row("u1").approvedBy'), p.get('log()[0].op'), p.get('log()[0].row'), 'f' in p.get('log()[0]')],
+    [true, 'Pat Treasurer', 'tick', 'u1', false], 'a tick');
+  p.run("change('led-rec', 'u1', '', false)");
+  eq([p.get('row("u1").reconciled'), p.get('row("u1").approvedBy'), p.get('row("u1").approvedByUid'), !!p.get('row("u1").approvedAt'),
+    'reconciledAt' in p.get('row("u1")'), p.get('log()[1].op')], [false, 'Pat Treasurer', 'u1', true, false, 'untick'], 'an untick erased the approval, or was not logged');
+  // q1 is ticked and dated in the period: its checkbox is not how it is un-ticked.
+  p.run("toasts = []; change('led-rec', 'q1', '', false)");
+  eq([p.get('row("q1").reconciled'), p.get('log().length')], [true, 2], 'a tick from an earlier statement came off with one tap');
+  ok(/use Un-reconcile under Entries — two taps\.$/.test(p.get('toasts[0]')), p.get('toasts[0]'));
+  ok(/var recFixed = e\.reconciled && ledgerDateReconciled\(e\.date, bk\);[\s\S]*?\(recFixed \? ' disabled' : ''\)/.test(slice('renderReconcile')),
+    'the Reconcile view offers the one-tap untick');
+  // Un-reconcile: two taps, logged, the approval kept. r1 is then open; q1 stays locked (its date).
+  p.run("act('ledger-unreconcile:r1')");
+  eq([p.get('row("r1").reconciled'), p.get('log().length')], [true, 2], 'one tap un-reconciled');
+  p.run("act('ledger-unreconcile:r1')");
+  eq([p.get('row("r1").reconciled'), p.get('row("r1").approvedBy'), p.get('row("r1").approvedAt'), p.get('log()[2].op'), p.get('log()[2].row')],
+    [false, 'Sam', '2026-09-06T10:00:00.000Z', 'untick', 'r1'], 'the un-reconcile');
+  p.run("change('led-amount', 'r1', '26')");
+  eq(p.get('row("r1").amountCents'), 2600, 'r1, dated after the period, did not open when un-reconciled');
+  p.run("toasts = []; act('ledger-unreconcile:q1'); act('ledger-unreconcile:q1'); change('led-amount', 'q1', '1')");
+  eq([p.get('row("q1").reconciled'), p.get('row("q1").amountCents')], [false, 50000], 'q1 opened by un-reconciling it');
+  ok(/^Un-reconciled — but it is dated inside the period already reconciled .* so it still can’t be changed\./.test(p.get('toasts[0]')), p.get('toasts[0]'));
+});
+
+test('C2: Tick all is one logged event; Clear all ticks leaves rows from an earlier statement ticked', () => {
+  const p = c2Page({ book: { statementDate: '2026-09-30' } });
+  p.run("act('ledger-tick-all')");
+  // Everything after the opening and on this statement that was not ticked: u1, p1, m1 (pre is before the opening).
+  const ev = p.get('log()');
+  eq([ev.length, ev[0].op, ev[0].row, ev[0].rows], [1, 'tick', 'u1', ['p1', 'm1']], 'Tick all');
+  eq(p.get('state.ledger.filter(function (e) { return e.reconciled; }).map(function (e) { return e.id; })'), ['u1', 'r1', 'p1', 'q1', 'm1'], 'ticked');
+  p.run("act('ledger-tick-all')");
+  eq(p.get('log().length'), 1, 'a Tick all that ticked nothing was logged');
+  // Clear all: u1 and r1 come off; p1, q1 and m1 (dated in the period) stay, and the leader is told.
+  p.run("toasts = []; act('ledger-untick-all')");
+  eq(p.get('state.ledger.filter(function (e) { return e.reconciled; }).map(function (e) { return e.id; })'), ['p1', 'q1', 'm1'], 'Clear all took a tick from an earlier statement');
+  eq([p.get('log()[1].op'), p.get('log()[1].row'), p.get('log()[1].rows')], ['untick', 'u1', ['r1']], 'Clear all');
+  ok(/^3 entries reconciled on an earlier statement \(through .*\) kept their ticks\. To un-tick one, use Un-reconcile under Entries\.$/.test(p.get('toasts[0]')), p.get('toasts[0]'));
+  eq(p.get('row("r1").approvedBy'), 'Sam', 'Clear all erased an approval');
+});
+
+test('C2: a season of ledger events costs what the banner says', () => {
+  // The C2 banner: an edit about 250 bytes, a tick about 190, a season (~330 events) about 65 KB.
+  const p = c2Page();
+  p.run("sync.user = { uid: 'Xy3kP0aQ9bT2cR7dE4fG5hJ6kL8m', displayName: 'Patricia Treasurer' }; sync.deviceId = 'mfo2kz3a1b2c3d'; uid = function () { return 'mfo2kz3a1b2c3d'; }");
+  p.run("row('u1').id = 'mfo2kz3a9z8y7x'; change('led-desc', 'mfo2kz3a9z8y7x', 'Pinewood trophies and ribbons'); change('led-rec', 'mfo2kz3a9z8y7x', '', true)");
+  const [edit, tick] = p.get('log().map(function (e) { return JSON.stringify(e).length; })');
+  ok(edit > 200 && edit < 300, `an edit event is ${edit} bytes`);
+  ok(tick > 150 && tick < 220, `a tick event is ${tick} bytes`);
+  const season = 250 * tick + 60 * edit + 20 * tick;
+  ok(season > 50 * 1024 && season < 80 * 1024, `a season is ${season} bytes`);
 });
 
 /* ---------------- report ---------------- */
