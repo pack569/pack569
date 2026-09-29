@@ -11470,6 +11470,11 @@
   // space), plus 'imports': a Trail's End import is remembered once, by the batch in its rows'
   // ids (teBatchOf), not row by row. Two copies' marks merge per id, the later mark winning, so
   // an Undo beats the delete it undoes on every device.
+  // And 'scouts', 'fundraisers' and 'products' (treasurer M2, security S4 of the stopgap): those
+  // lists are last-write-wins, so a device still holding a deleted one wrote it back, with none
+  // of its money rows (a fundraiser back at $0 in the budget's funds in). One mark each keeps
+  // it out, and its rows with it: a fundraiser's sales live inside it, and a scout's popcorn
+  // entries, sales and hand-outs, and a product's hand-outs, count as gone with it.
   // KEPT SMALL: at most GONE_MAX per log are kept (newest first), and a mark older than
   // GONE_KEEP_MS is dropped when two copies merge — a device that sits on an unsaved copy for two
   // months can bring a row back, as any device could before. Close-out clears the lot:
@@ -11483,9 +11488,11 @@
   // clock is read as made now (clampGone), and marks are aged out only in a merge, and only when
   // the other copy's newest mark says this clock is plausible (goneClockOk).
   // Literals, not a var: normalizeState runs before this part of the script has.
-  function freshGone() { return { entries: {}, ledger: {}, distributions: {}, sales: {}, imports: {} }; }
+  function freshGone() { return { entries: {}, ledger: {}, distributions: {}, sales: {}, imports: {}, scouts: {}, fundraisers: {}, products: {} }; }
   var GONE_KEEP_MS = 60 * 24 * 60 * 60 * 1000;
   var GONE_MAX = 1000;
+  // Fewer for the three lists of whole things: a pack deletes a handful of scouts in a year.
+  var GONE_MAX_PARENT = 200;
   // Record rows (or bare ids) as deleted — or, with `back`, as put back by an Undo. Only the cap
   // is applied here: on its own, a device cannot tell whether its clock is right.
   function markGone(log, rows, back) {
@@ -11532,9 +11539,10 @@
       var m = g[log];
       if (byAge && log !== 'ledger') Object.keys(m).forEach(function (id) { if (Math.abs(m[id]) < now - GONE_KEEP_MS) delete m[id]; });
       var ids = Object.keys(m);
-      if (ids.length <= GONE_MAX) return;
+      var cap = (log === 'scouts' || log === 'fundraisers' || log === 'products') ? GONE_MAX_PARENT : GONE_MAX;
+      if (ids.length <= cap) return;
       ids.sort(function (a, b) { return Math.abs(m[a]) - Math.abs(m[b]); });
-      ids.slice(0, ids.length - GONE_MAX).forEach(function (id) { delete m[id]; });
+      ids.slice(0, ids.length - cap).forEach(function (id) { delete m[id]; });
     });
   }
   // 'te-<batch>-<n>' → '<batch>'; '' for a row imported before batches (or typed in).
@@ -11590,9 +11598,15 @@
       clampGone(gone, now);
       pruneGone(gone, now, goneClockOk(remoteNewest, now));
     }
+    function parentGone(log, id) { return !!(gone && gone[log] && typeof id === 'string' && gone[log][id] > 0); }
     function isGone(log, x) {
       if (!gone) return false;
       if (gone[log] && gone[log][x.id] > 0) return true;
+      // A deleted scout's or product's rows, whichever device wrote them (the ledger's are kept,
+      // unlinked, below).
+      if ((log === 'entries' || log === 'sales') && parentGone('scouts', x.scoutId)) return true;
+      if (log === 'distributions' && (parentGone('products', x.productId) ||
+        (x.target && x.target.kind === 'scout' && parentGone('scouts', x.target.id)))) return true;
       if (log !== 'entries' || x.source !== 'te-import' || !gone.imports) return false;
       return teImportGone(gone.imports, x.id);
     }
@@ -11617,6 +11631,19 @@
         if (x && typeof x.id === 'string' && !have[x.id] && (!isGone(log, x) || keepReconciled(log, x))) { la.push(x); have[x.id] = true; added += 1; }
       });
     }
+    // A deleted scout, fundraiser or product this copy still holds goes, as the delete took it
+    // (dropScout: the scout's charges, sign-ups and the rest go with them).
+    if (Array.isArray(state.scouts)) state.scouts.filter(function (sc) { return sc && parentGone('scouts', sc.id); }).forEach(function (sc) { dropScout(sc.id); removed += 1; });
+    if (Array.isArray(state.fundraisers)) {
+      var frLeft = state.fundraisers.filter(function (fr) { return !(fr && parentGone('fundraisers', fr.id)); });
+      removed += state.fundraisers.length - frLeft.length;
+      state.fundraisers = frLeft;
+    }
+    if (state.inventory && Array.isArray(state.inventory.products)) {
+      var prLeft = state.inventory.products.filter(function (pr) { return !(pr && parentGone('products', pr.id)); });
+      removed += state.inventory.products.length - prLeft.length;
+      state.inventory.products = prLeft;
+    }
     state.entries = dropGone(state.entries, 'entries');
     unionById(state.entries, remote.entries, 'entries');
     // Two devices that each re-imported Trail's End before either saved (popcorn review 1,
@@ -11640,6 +11667,8 @@
     // to lose one another's transactions. A book that silently drops a row is not a book.
     state.ledger = dropGone(state.ledger, 'ledger');
     unionById(state.ledger, remote.ledger, 'ledger');
+    // A deleted scout's payments stay (that money moved), pointing at nobody, as del-scout leaves them.
+    if (Array.isArray(state.ledger)) state.ledger.forEach(function (e) { if (e && parentGone('scouts', e.scoutId)) e.scoutId = ''; });
     if (state.inventory) state.inventory.distributions = dropGone(state.inventory.distributions, 'distributions');
     if (state.inventory && remote.inventory) unionById(state.inventory.distributions, remote.inventory.distributions, 'distributions');
     var frById = {};
@@ -25915,6 +25944,71 @@
   // reaches the handler while a gate is up is ignored, so no code path can read or mutate
   // the pack record on a link visitor's / not-yet-approved user's device.
   var GATE_ACTS = ['sign-in-google', 'sign-out-google', 'join-forget', 'toast-action'];
+  // Remove a scout and everything that is theirs alone (del-scout; and the sync merge, for a
+  // scout another device deleted — LIVE STOPGAP, see freshGone). Does not save.
+  function dropScout(id) {
+    var goneScout = getScout(id); // capture before removal so we can preserve derby names
+    state.scouts = state.scouts.filter(function (x) { return x.id !== id; });
+    // Safety: strip any lingering references
+    state.storefronts.forEach(function (sf4) {
+      sf4.blocks.forEach(function (b2) {
+        b2.assignments = b2.assignments.filter(function (a) { return a.scoutId !== id; });
+      });
+    });
+    // LIVE STOPGAP — each log row removed below is marked, so no stale copy brings it back.
+    markGone('entries', state.entries.filter(function (x) { return x.scoutId === id; }));
+    state.entries = state.entries.filter(function (x) { return x.scoutId !== id; });
+    // Wave 2: strip the scout's RSVP + attendance entries too
+    Object.keys(state.rsvps).forEach(function (k) {
+      if (state.rsvps[k][id]) {
+        delete state.rsvps[k][id];
+        if (!Object.keys(state.rsvps[k]).length) delete state.rsvps[k];
+      }
+    });
+    Object.keys(state.attendance).forEach(function (k) {
+      if (state.attendance[k][id]) {
+        delete state.attendance[k][id];
+        if (!Object.keys(state.attendance[k]).length) delete state.attendance[k];
+      }
+    });
+    // Wave 3: strip fee-collection marks + advancement record
+    Object.keys(state.collected).forEach(function (k) {
+      if (state.collected[k][id]) {
+        delete state.collected[k][id];
+        if (!Object.keys(state.collected[k]).length) delete state.collected[k];
+      }
+    });
+    // AUDIT FIX (Phase 3b) — a removed scout's charges go with them; a settled one would
+    // otherwise sit in the totals against a family who is not on the roster. Their
+    // LEDGER entries stay — that money really did move — but they stop pointing at a
+    // scout who no longer exists, so they read as ordinary pack income.
+    state.charges = state.charges.filter(function (c) { return c.scoutId !== id; });
+    state.ledger.forEach(function (e) { if (e.scoutId === id) e.scoutId = ''; });
+    delete state.advancement[id];
+    // Wave B5 — and their new-member checklist.
+    delete state.onboarding[id];
+    // Wave 4: strip the scout's other-fundraiser sales
+    state.fundraisers.forEach(function (fr5) {
+      markGone('sales', fr5.sales.filter(function (sale) { return sale.scoutId === id; }));
+      fr5.sales = fr5.sales.filter(function (sale) { return sale.scoutId !== id; });
+    });
+    // Wave 5: unlink (don't delete) the scout's derby cars — a car is a physical
+    // entry, so preserve it as a freeform racer, keeping the name and any times.
+    state.derby.cars.forEach(function (c) {
+      if (c.scoutId === id) {
+        if (!c.racerName && goneScout) c.racerName = goneScout.name;
+        if (!c.den && goneScout && goneScout.den) c.den = goneScout.den;
+        c.scoutId = null;
+      }
+    });
+    // Wave 14: drop popcorn hand-outs pointed at the deleted scout.
+    markGone('distributions', state.inventory.distributions.filter(function (dst) {
+      return dst.target.kind === 'scout' && dst.target.id === id;
+    }));
+    state.inventory.distributions = state.inventory.distributions.filter(function (dst) {
+      return !(dst.target.kind === 'scout' && dst.target.id === id);
+    });
+  }
   function handleAction(act, el) {
     var gm = gateMode();
     if (gm) { if (GATE_ACTS.indexOf(act) === -1) return; }
@@ -27143,67 +27237,8 @@
     if (act.indexOf('del-scout:') === 0) {
       arm(act, function () {
         var id = act.split(':')[1];
-        var goneScout = getScout(id); // capture before removal so we can preserve derby names
-        state.scouts = state.scouts.filter(function (x) { return x.id !== id; });
-        // Safety: strip any lingering references
-        state.storefronts.forEach(function (sf4) {
-          sf4.blocks.forEach(function (b2) {
-            b2.assignments = b2.assignments.filter(function (a) { return a.scoutId !== id; });
-          });
-        });
-        // LIVE STOPGAP — each log row removed below is marked, so no stale copy brings it back.
-        markGone('entries', state.entries.filter(function (x) { return x.scoutId === id; }));
-        state.entries = state.entries.filter(function (x) { return x.scoutId !== id; });
-        // Wave 2: strip the scout's RSVP + attendance entries too
-        Object.keys(state.rsvps).forEach(function (k) {
-          if (state.rsvps[k][id]) {
-            delete state.rsvps[k][id];
-            if (!Object.keys(state.rsvps[k]).length) delete state.rsvps[k];
-          }
-        });
-        Object.keys(state.attendance).forEach(function (k) {
-          if (state.attendance[k][id]) {
-            delete state.attendance[k][id];
-            if (!Object.keys(state.attendance[k]).length) delete state.attendance[k];
-          }
-        });
-        // Wave 3: strip fee-collection marks + advancement record
-        Object.keys(state.collected).forEach(function (k) {
-          if (state.collected[k][id]) {
-            delete state.collected[k][id];
-            if (!Object.keys(state.collected[k]).length) delete state.collected[k];
-          }
-        });
-        // AUDIT FIX (Phase 3b) — a removed scout's charges go with them; a settled one would
-        // otherwise sit in the totals against a family who is not on the roster. Their
-        // LEDGER entries stay — that money really did move — but they stop pointing at a
-        // scout who no longer exists, so they read as ordinary pack income.
-        state.charges = state.charges.filter(function (c) { return c.scoutId !== id; });
-        state.ledger.forEach(function (e) { if (e.scoutId === id) e.scoutId = ''; });
-        delete state.advancement[id];
-        // Wave B5 — and their new-member checklist.
-        delete state.onboarding[id];
-        // Wave 4: strip the scout's other-fundraiser sales
-        state.fundraisers.forEach(function (fr5) {
-          markGone('sales', fr5.sales.filter(function (sale) { return sale.scoutId === id; }));
-          fr5.sales = fr5.sales.filter(function (sale) { return sale.scoutId !== id; });
-        });
-        // Wave 5: unlink (don't delete) the scout's derby cars — a car is a physical
-        // entry, so preserve it as a freeform racer, keeping the name and any times.
-        state.derby.cars.forEach(function (c) {
-          if (c.scoutId === id) {
-            if (!c.racerName && goneScout) c.racerName = goneScout.name;
-            if (!c.den && goneScout && goneScout.den) c.den = goneScout.den;
-            c.scoutId = null;
-          }
-        });
-        // Wave 14: drop popcorn hand-outs pointed at the deleted scout.
-        markGone('distributions', state.inventory.distributions.filter(function (dst) {
-          return dst.target.kind === 'scout' && dst.target.id === id;
-        }));
-        state.inventory.distributions = state.inventory.distributions.filter(function (dst) {
-          return !(dst.target.kind === 'scout' && dst.target.id === id);
-        });
+        markGone('scouts', [id]);   // LIVE STOPGAP — so no stale copy brings them back
+        dropScout(id);
         commit();
       });
       return;
@@ -27222,8 +27257,8 @@
     if (act.indexOf('del-fundraiser:') === 0) {
       arm(act, function () {
         var fid = act.split(':')[1];
-        // LIVE STOPGAP — its sales, so a stale copy of them is not merged into anything.
-        state.fundraisers.forEach(function (fr) { if (fr.id === fid) markGone('sales', fr.sales); });
+        // LIVE STOPGAP — one mark, so no stale copy brings it back; its sales go with it.
+        markGone('fundraisers', [fid]);
         state.fundraisers = state.fundraisers.filter(function (fr) { return fr.id !== fid; });
         commit();
       });
@@ -27240,6 +27275,7 @@
     if (act.indexOf('del-inv-product:') === 0) {
       arm(act, function () {
         var pid = act.split(':')[1];
+        markGone('products', [pid]);   // LIVE STOPGAP — so no stale copy brings it back
         state.inventory.products = state.inventory.products.filter(function (p) { return p.id !== pid; });
         // Drop hand-outs of a product that no longer exists (marked: LIVE STOPGAP).
         markGone('distributions', state.inventory.distributions.filter(function (d) { return d.productId === pid; }));

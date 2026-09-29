@@ -1008,7 +1008,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
 // LIVE STOPGAP — what every slice of the sync merge needs besides it (freshGone is in NORMALIZE_FNS).
-const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'keptReconciledText'];
+const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'keptReconciledText'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
   const ctx = vm.createContext({});
@@ -12160,7 +12160,7 @@ test('B5: the tracker is normalized, cleared at close-out, removed with its scou
   eq((SCRIPT.match(/parentUids: \[\], addedYear: state\.budget\.programYear \}\);/g) || []).length, 2,
     'a newly added scout is not stamped with the year');
   const del = /if \(act\.indexOf\('del-scout:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/delete state\.onboarding\[id\];/.test(del), 'deleting a scout leaves their checklist behind');
+  ok(/dropScout\(id\);/.test(del) && /delete state\.onboarding\[id\];/.test(slice('dropScout')), 'deleting a scout leaves their checklist behind');
   ok(/state\.onboarding = \{\};/.test(slice('rolloverYear')), 'close-out carries the year’s intake into the next');
   // Never published, and every write is behind the read-only gate.
   const bpv = codeOnly(BPV());
@@ -16602,7 +16602,7 @@ const GONE_TE_ROWS = [{ scoutId: 's1', name: 'Ada', onlineCents: 5000, wagonCent
 // The real importer and scout totals, on stubs for the preview's matching. Each device's clock
 // only moves forward, a second per reading, so a delete and its Undo are never the same ms.
 const GONE_EXTRA = (dev) => `
-  ${['blockShares', 'computeScoutTotals', 'teLiveEntriesFor', 'teCommitSalesLive'].map(slice).join('\n')}
+  ${['blockShares', 'computeScoutTotals', 'teLiveEntriesFor', 'teCommitSalesLive', 'getScout', 'dropScout'].map(slice).join('\n')}
   var batchSeq = 0;
   uid = function () { batchSeq += 1; return '${dev}b' + batchSeq; };
   Date.now = (function () { var t = 1790000000000; return function () { t += 1000; return t; }; })();
@@ -16777,6 +16777,57 @@ test('stopgap, Firestore: two devices that both re-import before either saves co
   eq(eIds(z.server()), ['b1', 'x1', 'x2'], 'rows from before batches came back');
 });
 
+// Treasurer M2 / security S4: a deleted scout, fundraiser or product, as the three delete
+// handlers do it, against a device still holding it that has since added to it.
+const DEL_FR = "markGone('fundraisers', ['f1']); state.fundraisers = state.fundraisers.filter(function (f) { return f.id !== 'f1'; }); commit()";
+const DEL_SCOUT = "markGone('scouts', ['s1']); dropScout('s1'); commit()";
+const DEL_PROD = "markGone('products', ['p1']); markGone('distributions', state.inventory.distributions.filter(function (d) { return d.productId === 'p1'; })); " +
+  "state.inventory.products = []; state.inventory.distributions = state.inventory.distributions.filter(function (d) { return d.productId !== 'p1'; }); commit()";
+const ADD_TO_ALL = "state.fundraisers[0].sales.push({ id: 'fs2', scoutId: 's2', cents: 300 }); " +
+  "state.entries.push({ id: 'bs1', scoutId: 's1', kind: 'wagon', date: '', salesCents: 50, donationsCents: 0 }); " +
+  "state.inventory.distributions.push({ id: 'd2', productId: 'p1', target: { kind: 'den', den: 'Bear' }, containers: 1 }); " +
+  "state.charges.push({ id: 'c1', scoutId: 's1', lineId: 'x', amountCents: 500 }); " +
+  "state.ledger.push({ id: 'ls1', date: '2026-09-05', description: 'Ada dues', amountCents: 500, direction: 'in', scoutId: 's1' }); commit()";
+test('stopgap, Firestore: a deleted scout, fundraiser or product does not come back from a device still holding it', () => {
+  const check = (st, how) => {
+    eq([st.fundraisers.map((f) => f.id), st.scouts.map((x) => x.id), st.inventory.products.map((x) => x.id)], [[], ['s2'], []], `${how}: a deleted one came back`);
+    eq([eIds(st), st.inventory.distributions.map((d) => d.id), st.charges.map((c) => c.id)], [['old2', 'x2'], [], []], `${how}: rows of a deleted one came back`);
+    eq(st.ledger.map((l) => [l.id, l.scoutId]), [['l1', ''], ['ls1', '']], `${how}: a payment was lost, or still points at the deleted scout`);
+  };
+  // The stale device saves last.
+  const { a, b, server } = fsGonePair();
+  a.run(`${DEL_FR}; ${DEL_SCOUT}; ${DEL_PROD}`);
+  a.push();
+  b.run(ADD_TO_ALL);
+  b.hear();
+  b.push();
+  check(server(), 'the stale device saved last');
+  eq([Object.keys(server().gone.fundraisers), Object.keys(server().gone.sales), Object.keys(server().gone.scouts), Object.keys(server().gone.products)],
+    [['f1'], ['fs1'], ['s1'], ['p1']], 'the marks (a fundraiser is one; fs1 is the scout’s own sale)');
+  a.hear();
+  check(a.get('state'), 'A after B’s save');
+  // The deleting device saves last.
+  const p = fsGonePair();
+  p.b.run(ADD_TO_ALL);
+  p.b.push();
+  p.a.run(`${DEL_FR}; ${DEL_SCOUT}; ${DEL_PROD}`);
+  p.a.hear();
+  p.a.push();
+  check(p.server(), 'the deleting device saved last');
+  // A hand-out to the deleted scout, of a product that is still there, both ways.
+  const ADD_D3 = "state.inventory.distributions.push({ id: 'd3', productId: 'p1', target: { kind: 'scout', id: 's1' }, containers: 1 }); commit()";
+  for (const staleLast of [true, false]) {
+    const q = fsGonePair();
+    const [first, last] = staleLast ? [q.a, q.b] : [q.b, q.a];
+    (staleLast ? q.a : q.b).run(staleLast ? DEL_SCOUT : ADD_D3);
+    first.push();
+    (staleLast ? q.b : q.a).run(staleLast ? ADD_D3 : DEL_SCOUT);
+    last.hear();
+    last.push();
+    eq(q.server().inventory.distributions.map((d) => d.id), [], `a hand-out to the deleted scout came back (${staleLast ? 'stale' : 'deleting'} device last)`);
+  }
+});
+
 // Security S3: a device clock set a year ahead or behind. `skew` moves one device's clock.
 const YEAR = 365 * 86400000;
 const skew = (ms) => `Date.now = (function (f) { return function () { return f() + (${ms}); }; })(Date.now)`;
@@ -16945,7 +16996,7 @@ test('stopgap: the deletion marks are normalized, merged by the later mark, and 
   const ctx = sandbox(NORMALIZE_FNS.concat(GONE_FNS));
   // Missing and malformed: an empty record of each log; junk dropped; nothing else kept.
   const n = (g) => JSON.parse(JSON.stringify(ctx.normalizeState({ version: 1, scouts: [], gone: g }).gone));
-  const empty = { entries: {}, ledger: {}, distributions: {}, sales: {}, imports: {} };
+  const empty = { entries: {}, ledger: {}, distributions: {}, sales: {}, imports: {}, scouts: {}, fundraisers: {}, products: {} };
   eq(n(undefined), empty, 'missing');
   eq(n([1, 2]), empty, 'an array');
   eq(n('x'), empty, 'a string');
@@ -16968,6 +17019,8 @@ test('stopgap: the deletion marks are normalized, merged by the later mark, and 
   vm.runInContext(`for (var i = 0; i < GONE_MAX + 5; i++) { state.gone.sales['s' + i] = NOW - (GONE_MAX + 5 - i); state.gone.ledger['k' + i] = NOW - (GONE_MAX + 5 - i); }
     pruneGone(state.gone, NOW, false);`, ctx);
   eq(Object.keys(vm.runInContext('state.gone.ledger', ctx)).length, 1000, 'the ledger’s cap');
+  vm.runInContext(`for (var i = 0; i < 205; i++) state.gone.scouts['c' + i] = NOW - (205 - i); pruneGone(state.gone, NOW, false);`, ctx);
+  eq(Object.keys(vm.runInContext('state.gone.scouts', ctx)).length, 200, 'the cap on deleted scouts');
   // The clock checks: a mark over a day ahead reads as now; the other copy's newest mark decides
   // whether this clock may age marks out.
   eq(JSON.parse(JSON.stringify(ctx.normalizeState({ version: 1, scouts: [], gone: { entries: { f: 9e15, b: -9e15, ok: 5 } } }).gone.entries)).ok, 5, 'a past mark moved');
@@ -17007,9 +17060,12 @@ test('stopgap: every path that deletes a money-log row marks it, an Undo marks i
     ok(new RegExp(`deleteWithUndo\\([\\s\\S]*markGone\\('${log}', \\[\\w+\\], true\\)`).test(b), `${act}'s Undo does not mark the row back`);
   }
   ok(/markGone\('sales', frS\.sales\.filter/.test(block('del-fundraiser-sale')), 'del-fundraiser-sale does not mark the sale');
-  ok(/markGone\('sales', fr\.sales\)/.test(block('del-fundraiser')), 'del-fundraiser does not mark its sales');
-  const sc = block('del-scout');
+  ok(/markGone\('fundraisers', \[fid\]\)/.test(block('del-fundraiser')) && !/markGone\('sales'/.test(block('del-fundraiser')),
+    'del-fundraiser is not one mark');
+  const sc = slice('dropScout');
   for (const log of ['entries', 'sales', 'distributions']) ok(new RegExp(`markGone\\('${log}'`).test(sc), `del-scout does not mark its ${log}`);
+  ok(/markGone\('scouts', \[id\]\);[^\n]*\n\s*dropScout\(id\);/.test(block('del-scout')), 'del-scout does not mark the scout, or does not drop them');
+  ok(/markGone\('products', \[pid\]\)/.test(block('del-inv-product')), 'del-inv-product does not mark the product');
   ok(/markGone\('distributions'/.test(block('del-inv-product')), 'del-inv-product does not mark its hand-outs');
   const te = slice('teCommitSalesLive');
   ok(/replaced\[teBatchOf\(e\.id\) \|\| TE_PRE_BATCH\] = true/.test(te) && /markGone\('imports', Object\.keys\(replaced\)\)/.test(te),
@@ -17032,7 +17088,8 @@ test('stopgap: every path that deletes a money-log row marks it, an Undo marks i
 // The same, end to end: the page's real sync layer and apiBackend against the real server.
 const GONE_API_STATE = () => PACK_STATE(JSON.parse(JSON.stringify({
   scouts: GONE_SEED.scouts, budget: GONE_SEED.budget, entries: GONE_SEED.entries, ledger: GONE_SEED.ledger, fundraisers: GONE_SEED.fundraisers,
-  inventory: GONE_SEED.inventory, gone: { entries: {}, ledger: {}, distributions: {}, sales: {}, imports: {} } })));
+  inventory: GONE_SEED.inventory, rsvps: {}, attendance: {}, collected: {}, charges: [], advancement: {}, onboarding: {}, derby: { cars: [] },
+  gone: { entries: {}, ledger: {}, distributions: {}, sales: {}, imports: {}, scouts: {}, fundraisers: {}, products: {} } })));
 async function apiGonePair() {
   const w = await (await apiWorld()).seed();
   w.state(3, GONE_API_STATE());
@@ -17103,6 +17160,23 @@ atest('stopgap, api: two devices that both re-import before either saves count o
   eq(b.get('totals()'), single, 'counted twice');
   await a.poll();
   eq(a.get('totals()'), single, 'A after B’s save');
+});
+
+atest('stopgap, api: a deleted scout, fundraiser or product does not come back from a device still holding it', async () => {
+  let { a, b, server } = await apiGonePair();
+  await a.edit(`${DEL_FR}; ${DEL_SCOUT}; ${DEL_PROD}`);
+  b.run(ADD_TO_ALL);
+  await settle([b], 800);
+  let st = server();
+  eq([st.fundraisers.length, st.scouts.map((x) => x.id), st.inventory.products.length, eIds(st), st.inventory.distributions.length, st.charges.length],
+    [0, ['s2'], 0, ['old2', 'x2'], 0, 0], 'the stale device saved last');
+  ({ a, b, server } = await apiGonePair());
+  await b.edit(ADD_TO_ALL);
+  a.run(`${DEL_FR}; ${DEL_SCOUT}; ${DEL_PROD}`);
+  await settle([a], 800);
+  st = server();
+  eq([st.fundraisers.length, st.scouts.map((x) => x.id), st.inventory.products.length, eIds(st), st.inventory.distributions.length, st.ledger.map((l) => l.scoutId || '')],
+    [0, ['s2'], 0, ['old2', 'x2'], 0, ['', '']], 'the deleting device saved last');
 });
 
 atest('stopgap, api: a device clock set a year ahead or behind neither wipes the pack’s deletions nor loses its own', async () => {
