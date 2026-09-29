@@ -13791,12 +13791,78 @@ atest('api Part C join.read / join.write: leaders read the live code, admins wri
 atest('api Part C view.read / view.write: approved members read the parent view (never pending); admins and editors write it', async () => {
   const w = await (await apiWorld()).seed();
   eq((await w.call('parent', 'GET', 'view')).body, { exists: false }, 'no view yet');
-  await matrix(w, 'PUT', 'view', expectFor(['owner', 'admin2', 'editor']), { opts: (who) => ({ body: { packName: 'Test Pack', by: who } }) });
+  await matrix(w, 'PUT', 'view', expectFor(['owner', 'admin2', 'editor']), { opts: (who) => ({ body: { packName: 'Test Pack', contact: 'by ' + who } }) });
   await matrix(w, 'GET', 'view', expectFor(['owner', 'admin2', 'editor', 'viewer', 'parent']));
   const r = await w.call('parent', 'GET', 'view');
-  eq([r.body.exists, r.body.view], [true, { packName: 'Test Pack', by: 'editor' }], 'what a parent reads');
+  eq([r.body.exists, r.body.view], [true, { packName: 'Test Pack', contact: 'by editor' }], 'what a parent reads');
   ok(typeof r.body.generatedAt === 'number', 'generatedAt');
   for (const bad of ['[1]', 'nope', 'null']) eq((await w.call('editor', 'PUT', 'view', null, { body: bad })).status, 400, 'a view of ' + bad);
+});
+
+test('api parent view: the server\'s allowlist is buildParentView\'s own top-level keys, and its standings keys are exactly those behind the standings gate', () => {
+  // Security review of stage A, finding 7. The two lists live in functions/_lib/rules.js; the
+  // truth is index.html. A key added to buildParentView and not to the server would be refused
+  // (a family stops seeing it); a key the server allows that the page never writes is room for
+  // a device to publish something no one reviewed. Either way this fails until they agree.
+  const fn = codeOnly(BPV());
+  const gate = fn.indexOf('if (!withStandings) return out;');
+  ok(gate > 0, 'buildParentView has no standings gate (if (!withStandings) return out;)');
+  ok(!/\bout\[/.test(fn), 'buildParentView writes out[…]: a key this test cannot read');
+  eq((fn.match(/\breturn out;/g) || []).length, 2, 'buildParentView returns out in more than two places');
+  const lit = /var out = \{([\s\S]*?)\n\s*\};/.exec(fn);
+  ok(lit, 'buildParentView has no var out = { … }');
+  const litKeys = [...lit[1].matchAll(/^\s*([A-Za-z]\w*):/gm)].map((m) => m[1]);
+  ok(litKeys.length >= 3, 'too few keys read from var out: ' + litKeys);
+  const assigned = [...fn.matchAll(/\bout\.([A-Za-z]\w*) = /g)];
+  ok(assigned.every((m) => m.index > lit.index), 'buildParentView writes out.… before var out');
+  const pageAll = [...new Set(litKeys.concat(assigned.map((m) => m[1])))].sort();
+  const pageGated = [...new Set(assigned.filter((m) => m.index > gate).map((m) => m[1]))].sort();
+  ok(pageGated.every((k) => assigned.filter((m) => m[1] === k).every((m) => m.index > gate)) && litKeys.every((k) => pageGated.indexOf(k) === -1),
+    'a standings key is also written above the gate');
+  const RULES = readFileSync(join(ROOT, 'functions/_lib/rules.js'), 'utf8');
+  const list = (name) => {
+    const m = new RegExp(`export const ${name} = \\[([^\\]]*)\\];`).exec(RULES);
+    ok(m, 'rules.js has no ' + name);
+    return [...m[1].matchAll(/'([^']*)'/g)].map((x) => x[1]).sort();
+  };
+  eq(list('PARENT_VIEW_KEYS'), pageAll, 'rules.js PARENT_VIEW_KEYS vs buildParentView\'s keys');
+  eq(list('PARENT_VIEW_STANDINGS_KEYS'), pageGated, 'rules.js PARENT_VIEW_STANDINGS_KEYS vs the keys behind the standings gate');
+  ok(list('PARENT_VIEW_NEVER_KEYS').indexOf('noteInternal') >= 0, 'noteInternal is not refused');
+});
+
+atest('api parent view: the server stores only buildParentView\'s shape — its keys, no standings while they are off, no noteInternal', async () => {
+  // Security review of stage A, finding 7.
+  const w = await (await apiWorld()).seed();
+  const put = (body) => w.call('editor', 'PUT', 'view', null, { body });
+  const stored = () => { const r = w.one('SELECT payload FROM parent_views'); return r && JSON.parse(r.payload); };
+  const full = { rev: 3, packName: 'Test Pack', programYear: '2026-27', events: [], contact: 'Ask the cubmaster',
+    standings: [{ name: 'Test' }], goals: null, derby: null, tiers: [{ name: 'Gold' }], tierLadder: { anchorName: 'Gold' } };
+  eq((await put(Object.assign({ generatedAt: { '.sv': 'timestamp' } }, full))).status, 200, 'a whole view, standings on (no join config yet)');
+  eq(stored(), full, 'the stored view (generatedAt dropped: the server stamps its own)');
+  for (const [body, reason, what] of [
+    [Object.assign({}, full, { ledger: [] }), 'view-key', 'a key buildParentView never writes'],
+    [Object.assign({}, full, { budget: { total: 1 } }), 'view-key', 'the budget'],
+    [Object.assign({}, full, { events: [{ title: 'Den meeting', noteInternal: 'leaders only' }] }), 'view-note-internal', 'a nested noteInternal'],
+    [Object.assign({}, full, { camping: [{ sections: [[{ noteInternal: '' }]] }] }), 'view-note-internal', 'a deeply nested noteInternal (even empty)']
+  ]) {
+    const r = await put(body);
+    eq([r.status, r.body.reason], [400, reason], what);
+  }
+  eq(stored(), full, 'a refused view replaced the stored one');
+  // A noteInternal as a VALUE (a leader typing the word) is not a key and is fine.
+  eq((await put(Object.assign({}, full, { packName: 'noteInternal' }))).status, 200, 'the word as a value');
+  // Standings off: each gated key is refused, and switching them off takes them out of the stored view at once.
+  const cfg = { open: false, code: 'Code123abc', showStandings: false, showAmounts: true, contact: '' };
+  eq((await w.call('owner', 'PUT', 'join', null, { body: cfg })).status, 200, 'standings switched off');
+  eq(Object.keys(stored()).sort(), ['contact', 'events', 'packName', 'programYear', 'rev'], 'the stored view after standings went off');
+  for (const k of API.rules.PARENT_VIEW_STANDINGS_KEYS) {
+    const r = await put({ rev: 4, packName: 'Test Pack', programYear: '2026-27', events: [], [k]: null });
+    eq([r.status, r.body.reason], [400, 'view-standings-off'], k + ' while standings are off (even null)');
+  }
+  eq((await put({ rev: 4, packName: 'Test Pack', programYear: '2026-27', events: [] })).status, 200, 'a calendar-only view');
+  await w.call('owner', 'PUT', 'join', null, { body: Object.assign({}, cfg, { showStandings: true }) });
+  eq((await put(full)).status, 200, 'standings back on');
+  eq(stored().standings, full.standings, 'switching standings on left the view alone');
 });
 
 /* ---- the one-time import ---- */
@@ -13870,6 +13936,28 @@ atest('api import: in production a save cannot create the pack record before the
   eq((await p.call('editor', 'PUT', 'pack', null, { body: {}, headers: { 'if-match': '0' } })).status, 200, 'a preview\'s first save');
   // The client contract is written down where the next stage will look.
   ok(/409 \{error:'awaiting-import', code:'failed-precondition'\}/.test(readFileSync(join(ROOT, 'functions/_lib/http.js'), 'utf8')), 'http.js does not document awaiting-import');
+});
+
+atest('api import: a parent view PUT /view would refuse is left behind and named, and the rest imports', async () => {
+  // Security review of stage A, finding 7: the import is not a way around the view allowlist.
+  const off = Object.assign({}, importBody().join, { showStandings: false });
+  const cases = [
+    [{ join: off, view: { packName: 'Test Pack', standings: [{ name: 'Test' }] } }, 'view-standings-off', 'standings, with the imported join config saying off'],
+    [{ view: { packName: 'Test Pack', events: [{ noteInternal: 'x' }] } }, 'view-note-internal', 'a noteInternal'],
+    [{ view: { packName: 'Test Pack', budget: {} } }, 'view-key', 'a key buildParentView never writes']
+  ];
+  for (const [over, reason, what] of cases) {
+    const w = await (await apiWorld()).seed({});
+    const r = await w.call('owner', 'POST', 'import', null, { body: importBody(over) });
+    eq([r.status, r.body.view, r.body.viewSkipped], [200, false, reason], what);
+    eq(w.sql('SELECT count(*) AS n FROM parent_views')[0].n, 0, what + ': the view was stored');
+    eq(JSON.parse(w.audit('import')[0].detail).viewSkipped, reason, what + ': the audit');
+  }
+  // A join config already here wins over the imported one, for the check as for the row.
+  const w = await (await apiWorld()).seed({});
+  await w.call('owner', 'PUT', 'join', null, { body: { open: false, code: 'Code123abc', showStandings: false, showAmounts: true } });
+  const r = await w.call('owner', 'POST', 'import', null, { body: importBody({ view: { packName: 'Test Pack', goals: null } }) });
+  eq(r.body.viewSkipped, 'view-standings-off', 'standings off here, on in the import');
 });
 
 atest('api import: the owner comes out an admin even if Firestore said otherwise, and existing rows win', async () => {

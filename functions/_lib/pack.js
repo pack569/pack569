@@ -92,6 +92,13 @@ export async function authenticate(request, env) {
   }
 }
 
+// Whether the pack shares its standings with families (join_config.show_standings). With no
+// join config yet it does, as the page's standingsEnabled() says and the column defaults to.
+export async function standingsShown(db, packId) {
+  const row = await db.prepare('SELECT show_standings FROM join_config WHERE pack_id = ?').bind(packId).first();
+  return !row || row.show_standings === 1;
+}
+
 export function memberOf(db, packId, uid) {
   return db.prepare('SELECT uid, role, name, email, join_code, added_at FROM members WHERE pack_id = ? AND uid = ?')
     .bind(packId, uid).first();

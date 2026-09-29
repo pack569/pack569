@@ -9,11 +9,12 @@
 // refused, not quietly corrected, so an old page writing 'auto' finds out.
 // The write is whole, as the page's writeJoinConfig sends it: a missing switch is a 400, not
 // a default, so a half-loaded card cannot turn standings or amounts back on.
-// The audit row says whether the code changed, never what it is.
+// The audit row says whether the code changed, never what it is. Switching standings off also
+// takes them out of the stored parent view, in the same batch.
 
 import { route, json, readObject, refuse, forbidden, badRequest } from '../../../_lib/http.js';
 import { withMember, auditStmt } from '../../../_lib/pack.js';
-import { canReadJoin, canWriteJoin, JOIN_CODE_RE, cleanContactLine } from '../../../_lib/rules.js';
+import { canReadJoin, canWriteJoin, JOIN_CODE_RE, cleanContactLine, PARENT_VIEW_STANDINGS_KEYS } from '../../../_lib/rules.js';
 
 const KEYS = ['open', 'mode', 'code', 'showStandings', 'showAmounts', 'contact'];
 
@@ -46,7 +47,11 @@ async function put({ request, db, packId, role, user }) {
       'contact = excluded.contact, updated_at = excluded.updated_at')
       .bind(packId, b.open ? 1 : 0, b.code, b.showStandings ? 1 : 0, b.showAmounts ? 1 : 0, cleanContactLine(b.contact), now),
     auditStmt(db, packId, user.uid, 'join.write', { open: b.open, codeChanged: !prev || prev.code !== b.code,
-      showStandings: b.showStandings, showAmounts: b.showAmounts }, now)
+      showStandings: b.showStandings, showAmounts: b.showAmounts }, now),
+    // Standings switched off: the parent view already stored stops showing them now, not when
+    // a leader's page next republishes it. The keys are the ones PUT /view then refuses.
+    db.prepare('UPDATE parent_views SET payload = json_remove(payload, ' + PARENT_VIEW_STANDINGS_KEYS.map(() => '?').join(', ') +
+      ') WHERE pack_id = ? AND ? = 0').bind(...PARENT_VIEW_STANDINGS_KEYS.map((k) => '$.' + k), packId, b.showStandings ? 1 : 0)
   ]);
   return json(200, joinOut(await readJoin(db, packId)));
 }

@@ -114,6 +114,40 @@ export const canWriteInvite = (role, inviteRole) => isAdmin(role) && INVITE_ROLE
 // invites — 'invites.delete': an admin revokes; the invitee consumes their own.
 export const canDeleteInvite = (role, emailKey, target) => isAdmin(role) || emailKey === target;
 
+// public/view — WHAT a parent view may hold (security review of stage A, finding 7). Part C
+// only said who may write it; the page's buildParentView (index.html) is the allowlist of what
+// a family may see, and the server used to store whatever a leader's device sent. Now it
+// holds the view to the same shape:
+//   - top-level keys only from PARENT_VIEW_KEYS, which are buildParentView's own (the harness
+//     reads the function and fails if the two lists drift apart);
+//   - none of PARENT_VIEW_STANDINGS_KEYS while the pack has "show standings" off: those are
+//     exactly what buildParentView writes after `if (!withStandings) return out;`;
+//   - no key named noteInternal anywhere in it (leaders-only meeting notes; the page's
+//     "MUST NOT reach any outbound surface").
+// generatedAt is not in the list: the server stamps its own, and drops one that is sent.
+export const PARENT_VIEW_KEYS = ['rev', 'packName', 'programYear', 'events', 'camping', 'welcome', 'contact', 'familyCost',
+  'standings', 'goals', 'derby', 'tiers', 'tierLadder'];
+export const PARENT_VIEW_STANDINGS_KEYS = ['standings', 'goals', 'derby', 'tiers', 'tierLadder'];
+export const PARENT_VIEW_NEVER_KEYS = ['noteInternal'];
+// Why this view may not be stored, or null if it may. `view` is a parsed JSON object.
+export function parentViewProblem(view, showStandings) {
+  for (const k of Object.keys(view)) {
+    if (PARENT_VIEW_KEYS.indexOf(k) === -1) return 'view-key';
+    if (!showStandings && PARENT_VIEW_STANDINGS_KEYS.indexOf(k) !== -1) return 'view-standings-off';
+  }
+  // Every key at every depth, without recursion (a deep payload cannot blow the stack).
+  const stack = [view];
+  while (stack.length) {
+    const v = stack.pop();
+    if (!v || typeof v !== 'object') continue;
+    if (!Array.isArray(v)) {
+      for (const k of Object.keys(v)) if (PARENT_VIEW_NEVER_KEYS.indexOf(k) !== -1) return 'view-note-internal';
+    }
+    for (const k of Object.keys(v)) stack.push(v[k]);
+  }
+  return null;
+}
+
 // The page's cleanContactLine: one line, plain text, capped.
 export function cleanContactLine(v) {
   return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, CONTACT_MAX);

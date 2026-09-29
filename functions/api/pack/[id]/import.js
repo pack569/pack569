@@ -14,11 +14,12 @@
 // Everything is written in one batch: all of it lands, or none of it.
 // Rows that already exist here win (a member who signed in before the import keeps their row),
 // except that the owner always ends up an admin. Invites the rules would refuse today (an
-// 'admin' invite, a bad address) are left behind and counted in the answer, not copied.
+// 'admin' invite, a bad address) are left behind and counted in the answer, not copied; so is
+// a parent view that PUT /view would refuse (viewSkipped says why).
 
 import { route, json, readObject, refuse, forbidden, badRequest, MAX_STATE_BYTES } from '../../../_lib/http.js';
 import { withMember, auditStmt } from '../../../_lib/pack.js';
-import { ROLES, INVITE_ROLES, UID_RE, MEMBER_NAME_MAX, JOIN_CODE_RE, cleanContactLine, emailKey } from '../../../_lib/rules.js';
+import { ROLES, INVITE_ROLES, UID_RE, MEMBER_NAME_MAX, JOIN_CODE_RE, cleanContactLine, emailKey, parentViewProblem } from '../../../_lib/rules.js';
 
 const MAX_ROWS = 2000;
 const time = (v, dflt) => (typeof v === 'number' && isFinite(v) && v >= 0 ? Math.floor(v) : dflt);
@@ -69,11 +70,21 @@ async function importPack({ request, db, packId, user }) {
   const view = b.view;
   if (view != null && (typeof view !== 'object' || Array.isArray(view))) refuse(badRequest('view'));
   let viewText = null;
+  let viewSkipped = null;
   if (view) {
     const v = Object.assign({}, view);
     delete v.generatedAt;   // a Firestore timestamp; the server stamps its own
-    viewText = JSON.stringify(v);
-    if (new TextEncoder().encode(viewText).byteLength > MAX_STATE_BYTES) refuse(json(413, { error: 'too-large', code: 'resource-exhausted' }));
+    // Held to the same shape as PUT /view (rules.js parentViewProblem), against the standings
+    // switch this pack will have after the import: its join config here if it has one (the
+    // import never overwrites it), else the imported one. A view that fails is left behind and
+    // named in the answer, like a refused invite; the next leader save publishes a fresh one.
+    const cur = await db.prepare('SELECT show_standings FROM join_config WHERE pack_id = ?').bind(packId).first();
+    const shown = cur ? cur.show_standings === 1 : !(j && j.showStandings === false);
+    viewSkipped = parentViewProblem(v, shown);
+    if (!viewSkipped) {
+      viewText = JSON.stringify(v);
+      if (new TextEncoder().encode(viewText).byteLength > MAX_STATE_BYTES) refuse(json(413, { error: 'too-large', code: 'resource-exhausted' }));
+    }
   }
 
   const stmts = [
@@ -99,7 +110,7 @@ async function importPack({ request, db, packId, user }) {
       .bind(packId, viewText, now));
   }
   stmts.push(auditStmt(db, packId, user.uid, 'import',
-    { rev, members: mRows.length, invites: iRows.length, invitesSkipped: skipped, join: !!j, view: !!viewText }, now));
+    { rev, members: mRows.length, invites: iRows.length, invitesSkipped: skipped, join: !!j, view: !!viewText, viewSkipped }, now));
   try {
     await db.batch(stmts);
   } catch (e) {
@@ -108,7 +119,7 @@ async function importPack({ request, db, packId, user }) {
     throw e;
   }
   return json(200, { imported: true, rev, members: mRows.length, invites: iRows.length, invitesSkipped: skipped,
-    join: !!j, view: !!viewText });
+    join: !!j, view: !!viewText, viewSkipped });
 }
 
 export const onRequest = route({ POST: withMember(importPack) });
