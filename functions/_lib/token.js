@@ -14,15 +14,20 @@
 //
 // Google's public keys are cached: in the Workers Cache API where there is one (Google's
 // response says how long to keep them, counting the Age it already had), and in memory for
-// the life of the isolate either way. A kid we have never seen refetches from Google itself,
-// skipping the cached copy, at most once a minute, and a failed fetch counts; a cached copy
-// without the kid is never taken as the answer. Requests waiting on the same fetch share it. Tests swap the fetcher, or stub fetch and caches under the real one.
+// the life of the isolate either way. There is only ever one fetch of the key set under way,
+// shared by every request waiting on it whatever kid it names, and the time it started is
+// stamped as it starts. A kid we do not have, while the keys we hold are current, starts a
+// fetch at most once a minute; with no current keys (a cold isolate, or keys past their life)
+// a fetch starts at most once every ten seconds, and in between the answer is "Google's keys
+// are unavailable". A failed fetch counts. A cached copy without a wanted kid is never taken
+// as the answer. Tests swap the fetcher, or stub fetch and caches under the real one.
 //
 // Plain ES module: runs in Cloudflare Workers and in Node (the harness).
 
 export const JWKS_URL = 'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com';
 const SKEW = 60;              // seconds of clock difference forgiven either way
-const REFETCH_GAP = 60;       // seconds between refetches for an unknown kid
+const REFETCH_GAP = 60;       // seconds between fetches for an unknown kid while our keys are current
+const MIN_GAP = 10;           // seconds between fetches when we have no current keys at all
 const MAX_KEY_AGE = 6 * 3600; // never trust a cached key set longer than this
 
 export class TokenError extends Error {
@@ -60,27 +65,30 @@ function lifetimeOf(res) {
   const held = at > 0 ? Math.max(0, (Date.now() - at) / 1000) : 0;
   return Math.max(0, Math.floor(maxAge - age - held));
 }
-// Google's key set, as { keys: [jwk…], maxAge: seconds left }. `fresh` skips the Cache API:
-// it is set when a token names a kid we do not have, which is what a key rotation looks like,
-// and a cached copy from before the rotation would not have it either (finding 6).
-// `kid` is the key the token names. A cold isolate has no copy in memory, so it asks without
-// `fresh` and may be handed the Cache API's pre-rotation copy; if that copy lacks the kid, it
-// goes to Google once, now, rather than refusing the token and then refusing to look again
-// for REFETCH_GAP (security re-review of stage A, follow-up 4).
+// Google's key set, as { keys: [jwk…], maxAge: seconds left, fromCache }. `fresh` skips the
+// Cache API: it is set when a token names a kid we do not have while our keys are current,
+// which is what a key rotation looks like, and a cached copy from before the rotation would
+// not have it either (finding 6). `kids` is every kid the requests sharing this fetch are
+// waiting for; it is read after the Cache API answers, so a request that joined in the
+// meantime counts. A cold isolate asks without `fresh` and may be handed the Cache API's
+// pre-rotation copy; if that copy lacks any wanted kid, this same fetch goes to Google, now,
+// rather than refusing the token and then refusing to look again (security re-review of
+// stage A, follow-up 4; review of eb504db..366f6c9, item 1).
 async function defaultFetchJwks(opts) {
   const fresh = !!(opts && opts.fresh);
-  const kid = opts && opts.kid;
+  const kids = opts && opts.kids;
   const cache = globalThis.caches && globalThis.caches.default;
-  let res = null;
+  let res = null, fromCache = false;
   if (cache && !fresh) {
     try { res = await cache.match(JWKS_URL); } catch (e) { res = null; }
     if (res && lifetimeOf(res) <= 0) res = null;
-    if (res && kid) {
+    if (res && kids && kids.size) {
       let cached = null;
       try { cached = await res.clone().json(); } catch (e) { cached = null; }
-      const has = cached && Array.isArray(cached.keys) && cached.keys.some((k) => k && k.kid === kid);
-      if (!has) res = null;
+      const held = cached && Array.isArray(cached.keys) ? cached.keys : [];
+      for (const kid of kids) if (!held.some((k) => k && k.kid === kid)) { res = null; break; }
     }
+    fromCache = !!res;
   }
   if (!res) {
     try { res = await fetch(JWKS_URL); } catch (e) { bad('jwks-unavailable'); }
@@ -97,52 +105,70 @@ async function defaultFetchJwks(opts) {
   }
   let body;
   try { body = await res.json(); } catch (e) { bad('jwks-unavailable'); }
-  return { keys: body && Array.isArray(body.keys) ? body.keys : [], maxAge: lifetimeOf(res) };
+  return { keys: body && Array.isArray(body.keys) ? body.keys : [], maxAge: lifetimeOf(res), fromCache };
 }
 
 let fetchJwks = defaultFetchJwks;
-let jwks = { keys: [], expires: 0, fetchedAt: -Infinity };
+// `seq` numbers fetches in the order they started; the key set in memory is from fetch jwks.seq.
+let seq = 0;
+let jwks = { keys: [], expires: 0, seq: 0 };
+let lastStart = -Infinity;    // when (token-clock seconds) the last fetch that could reach Google started
+let pending = null;           // { seq, kids, promise }: the one fetch under way, or null
 const imported = new Map();   // kid -> CryptoKey
-const inFlight = new Map();   // kid -> the one fetch for it in progress, shared by every request waiting
 // For the harness: serve keys from a local test key instead of Google. null restores Google.
+// A fresh isolate, as far as this module knows: a fetch still under way from before is older
+// than anything after, so it can neither overwrite the new key set nor clear the new fetch.
 export function setJwksFetcher(fn) {
   fetchJwks = fn || defaultFetchJwks;
-  jwks = { keys: [], expires: 0, fetchedAt: -Infinity };
+  seq++;
+  jwks = { keys: [], expires: 0, seq };
+  lastStart = -Infinity;
+  pending = null;
   imported.clear();
-  inFlight.clear();
 }
 
-// One fetch of the key set. Requests that arrive while it is under way wait for it rather
-// than each starting their own, and a failed fetch still counts as a fetch for REFETCH_GAP, so
-// a stream of tokens naming unknown kids cannot turn an outage at Google into one fetch per
-// request (review of 5690c3a..20b4fd6, item 5). Shared per kid: a cold isolate's fetch may be
-// answered from the Cache API only when that copy has the kid (defaultFetchJwks), so a fetch
-// made for one kid is not the answer for another.
+// The one fetch of the key set (review of 5690c3a..20b4fd6, item 5; review of
+// eb504db..366f6c9, item 1). A request that needs a fetch while one is under way waits for
+// that one, adding its kid to the kids it wants, whatever kid it was started for. Its start
+// time is stamped as it starts, success or not, so a stream of tokens naming made-up kids
+// cannot turn an outage at Google, or a cold isolate, into one fetch per request. A fetch the
+// Cache API answered never reached Google, so it gives the stamp back when it finishes.
 function refreshJwks(kid, now) {
-  if (inFlight.has(kid)) return inFlight.get(kid);
-  // Started on a later tick, so it is in the map before it can finish (a fetcher that throws
-  // at once would otherwise delete its entry before there was one, and leave the rejection in).
-  const p = Promise.resolve().then(async () => {
+  if (pending) { pending.kids.add(kid); return pending.promise; }
+  const mine = ++seq;
+  const before = lastStart;
+  lastStart = now;
+  const kids = new Set([kid]);
+  // Still-current keys without this kid: go to Google itself, not to the Cache API's copy.
+  const fresh = now < jwks.expires;
+  // Started on a later tick, so it is pending before it can finish (a fetcher that throws at
+  // once would otherwise clear the entry before there was one, and leave the rejection in).
+  const promise = Promise.resolve().then(async () => {
     try {
-      // Still-current keys without this kid: go to Google itself, not to the Cache API's copy.
-      const got = await fetchJwks({ fresh: now < jwks.expires, kid });
-      const age = Math.max(0, Math.min(Number(got.maxAge) || 0, MAX_KEY_AGE));
-      jwks = { keys: got.keys || [], expires: now + age, fetchedAt: now };
-      imported.clear();
-    } catch (e) {
-      jwks = { keys: jwks.keys, expires: jwks.expires, fetchedAt: now };
-      throw e;
-    } finally { inFlight.delete(kid); }
+      const got = await fetchJwks({ fresh, kids });
+      // Never older over newer: only a fetch that started after the one in memory replaces it.
+      if (mine > jwks.seq) {
+        const age = Math.max(0, Math.min(Number(got.maxAge) || 0, MAX_KEY_AGE));
+        jwks = { keys: got.keys || [], expires: now + age, seq: mine };
+        imported.clear();
+      }
+      if (got.fromCache && mine === seq) lastStart = before;
+    } finally {
+      if (pending && pending.seq === mine) pending = null;
+    }
   });
-  inFlight.set(kid, p);
-  return p;
+  pending = { seq: mine, kids, promise };
+  return promise;
 }
 
 async function keyFor(kid, now) {
   let jwk = now < jwks.expires ? jwks.keys.find((k) => k && k.kid === kid) : null;
-  if (!jwk && (now >= jwks.expires || now - jwks.fetchedAt >= REFETCH_GAP)) {
-    await refreshJwks(kid, now);
-    jwk = jwks.keys.find((k) => k && k.kid === kid);
+  if (!jwk) {
+    const current = now < jwks.expires;
+    if (pending || now - lastStart >= (current ? REFETCH_GAP : MIN_GAP)) {
+      await refreshJwks(kid, now);
+      jwk = jwks.keys.find((k) => k && k.kid === kid);
+    } else if (!current) bad('jwks-unavailable');   // no keys to check it with, and too soon to ask
   }
   if (!jwk || jwk.kty !== 'RSA' || typeof jwk.n !== 'string' || typeof jwk.e !== 'string') bad('unknown-key');
   if (!imported.has(kid)) {

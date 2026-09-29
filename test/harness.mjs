@@ -13729,7 +13729,107 @@ atest('api token: requests waiting for Google\'s keys share one fetch, and a fai
     g.syncThrow = true;
     eq(await V(tok, T), 'jwks-unavailable', 'a fetcher that throws at once');
     g.syncThrow = false;
-    eq(await V(tok, T + 1), 'ok', 'the next request after a fetcher threw at once');
+    // With no keys at all, the next fetch waits ten seconds after the last one started
+    // (review of eb504db..366f6c9, item 1): inside them the answer is "unavailable", not a hang.
+    eq(await V(tok, T + 1), 'jwks-unavailable', 'a cold isolate one second after a failed fetch');
+    eq(await V(tok, T + 10), 'ok', 'the next request after a fetcher threw at once, ten seconds on');
+  } finally { API.useTestKeys(); }
+});
+
+atest('api token: made-up kids get one fetch of Google\'s keys between them, cold or expired, up or down, and an older fetch never replaces a newer key set', async () => {
+  // Review of eb504db..366f6c9, item 1.
+  await apiSetup();
+  const V = async (tok, at) => { try { await API.token.verifyIdToken(tok, API_PROJECT, at); return 'ok'; } catch (e) { return e.reason; } };
+  const T = Math.floor(Date.now() / 1000);
+  const tok = await mint({});
+  const unk = (i) => mint({}, { header: { kid: 'made-up-' + i } });
+  const N = 40;
+  const kids = await Promise.all(Array.from({ length: N }, (_, i) => unk(i)));
+  const g = { fetches: 0, fail: false, gate: null, keys: [API.jwk], maxAge: 3600 };
+  const fetcher = (opts) => {
+    g.fetches++;
+    const keys = g.keys, gate = g.gate;      // what Google said when this fetch reached it
+    return (async () => {
+      if (gate) await gate;
+      if (g.fail) throw new API.token.TokenError('jwks-unavailable');
+      return { keys, maxAge: g.maxAge };
+    })();
+  };
+  const tick = () => new Promise((res) => setTimeout(res, 5));
+  try {
+    // Cold, Google up, N distinct made-up kids at once: one fetch, and a real token among them gets in.
+    API.token.setJwksFetcher(fetcher);
+    let open;
+    g.gate = new Promise((res) => { open = res; });
+    const all = Promise.all(kids.map((k) => V(k, T)).concat([V(tok, T)]));
+    await tick(); open();
+    const got = await all;
+    eq([g.fetches, got[N], got.slice(0, N).every((r) => r === 'unknown-key')], [1, 'ok', true], 'cold, up, N kids at once');
+    // Cold, Google down, N distinct kids at once: one fetch.
+    API.token.setJwksFetcher(fetcher);
+    g.fetches = 0; g.fail = true;
+    g.gate = new Promise((res) => { open = res; });
+    const down = Promise.all(kids.map((k) => V(k, T)));
+    await tick(); open();
+    eq([g.fetches, (await down).every((r) => r === 'jwks-unavailable')], [1, true], 'cold, down, N kids at once');
+    // …and N more, one after another in the same second: none. A real token too: 503, not 401.
+    g.gate = null;
+    for (const k of kids) eq(await V(k, T), 'jwks-unavailable', 'cold, down, one after another');
+    eq([await V(tok, T + 9), g.fetches], ['jwks-unavailable', 1], 'cold, down, a real token inside the ten seconds');
+    // Expired keys, Google down, N sequential in the same second (the real kid, then made-up ones): one fetch.
+    API.token.setJwksFetcher(fetcher);
+    g.fetches = 0; g.fail = false; g.maxAge = 60;
+    eq(await V(tok, T), 'ok', 'keys for a minute');
+    g.fail = true;
+    eq(await V(tok, T + 61), 'jwks-unavailable', 'expired, down, the real kid');
+    for (const k of kids) eq(await V(k, T + 61), 'jwks-unavailable', 'expired, down, made-up kids');
+    for (let i = 0; i < 5; i++) eq(await V(tok, T + 61), 'jwks-unavailable', 'expired, down, the real kid again');
+    eq(g.fetches, 2, 'expired + down + N sequential in the same second');
+    g.fail = false; g.maxAge = 3600;
+    eq([await V(tok, T + 71), g.fetches], ['ok', 3], 'ten seconds on, Google back: asked once, and let in');
+    // Current keys, the gap passed, Google up, N distinct kids at once: one fetch.
+    g.gate = new Promise((res) => { open = res; });
+    const later = Promise.all(kids.map((k) => V(k, T + 131)));
+    await tick(); open();
+    eq([g.fetches, (await later).every((r) => r === 'unknown-key')], [4, true], 'current keys, gap passed, N kids at once');
+    g.gate = null;
+    // Out of order: a fetch that started first and finishes last does not replace the newer key set.
+    API.token.setJwksFetcher(fetcher);
+    g.fetches = 0; g.maxAge = 3600;
+    let openOld;
+    g.gate = new Promise((res) => { openOld = res; });
+    g.keys = [];                             // the older fetch answers with a key set lacking our kid
+    const old = V(tok, T);
+    await tick();
+    g.keys = [API.jwk];
+    g.gate = null;
+    API.token.setJwksFetcher(fetcher);       // a newer fetch starts (a reset isolate) and finishes first
+    eq(await V(tok, T + 1), 'ok', 'the newer fetch');
+    openOld();
+    eq(await old, 'ok', 'the request that waited on the older fetch is checked against the newer key set');
+    eq([await V(tok, T + 2), g.fetches], ['ok', 2], 'the older fetch finished last and replaced the newer key set');
+    // …nor did it clear the newer one's place: a made-up kid now, inside the gap, fetches nothing.
+    eq([await V(await unk('late'), T + 3), g.fetches], ['unknown-key', 2], 'the older fetch cleared the newer one\'s stamp');
+    // The older fetch finishing while the newer one is still under way leaves the newer one
+    // shared: a request arriving then waits on it, rather than being turned away or starting another.
+    API.token.setJwksFetcher(fetcher);
+    g.fetches = 0;
+    g.gate = new Promise((res) => { openOld = res; });
+    g.keys = [];
+    const older = V(tok, T);
+    await tick();
+    let openNew;
+    g.keys = [API.jwk];
+    g.gate = new Promise((res) => { openNew = res; });
+    API.token.setJwksFetcher(fetcher);
+    const newer = V(tok, T + 1);
+    await tick();
+    openOld();
+    eq(await older, 'unknown-key', 'the older fetch, finishing first, did not put its key set over the newer isolate\'s');
+    const joined = V(tok, T + 1);
+    await tick();
+    openNew();
+    eq([await newer, await joined, g.fetches], ['ok', 'ok', 2], 'the older fetch cleared the newer one while it was under way');
   } finally { API.useTestKeys(); }
 });
 
@@ -13807,6 +13907,29 @@ atest('api token: a cold isolate handed a cached key set without the token\'s ki
     // …and the fresh copy it fetched is the one the Cache API now holds.
     API.token.setJwksFetcher(null);
     eq([await V(tok2, T + 4), google.fetches], ['ok', 2], 'the next cold isolate did not get the new copy from the Cache API');
+    // One fetch for every kid waiting on it (review of eb504db..366f6c9, item 1): a cold
+    // isolate whose old and rotated-in kids arrive together, the Cache API holding only the
+    // old one, goes to Google once, and both are let in.
+    store.clear();
+    google.keys = [API.jwk];
+    API.token.setJwksFetcher(null);
+    eq(await V(tok1, T + 5), 'ok', 'the Cache API holds the pre-rotation copy');
+    google.keys = [API.jwk, jwk2];
+    API.token.setJwksFetcher(null);
+    let f0 = google.fetches;
+    eq(await Promise.all([V(tok1, T + 6), V(tok2, T + 6)]), ['ok', 'ok'], 'old and new kid together, cold');
+    eq(google.fetches - f0, 1, 'the shared fetch did not go to Google once for the kid that joined it');
+    // A cold isolate the Cache API answered has not asked Google, so the rotated-in kid a
+    // second later is not held back a minute.
+    store.clear();
+    google.keys = [API.jwk];
+    API.token.setJwksFetcher(null);
+    eq(await V(tok1, T + 7), 'ok', 'the Cache API holds the pre-rotation copy again');
+    google.keys = [API.jwk, jwk2];
+    API.token.setJwksFetcher(null);
+    f0 = google.fetches;
+    eq([await V(tok1, T + 8), google.fetches - f0], ['ok', 0], 'a cold isolate answered by the Cache API');
+    eq([await V(tok2, T + 9), google.fetches - f0], ['ok', 1], 'the rotated-in kid a second later was held back by a fetch that never reached Google');
   } finally {
     globalThis.fetch = had.fetch;
     if (had.caches) Object.defineProperty(globalThis, 'caches', had.caches); else delete globalThis.caches;
