@@ -19599,6 +19599,27 @@ test('C3 re-check (minor): two versions of a row the settle can’t join keep th
 
 // Treasurer sign-off on C3 — the note a split leaves on Money · Ledger, in the treasurer's words.
 const TWO_PIZZA = 'Two versions of “Pizza” were found: one voided, one counted. Check which is right.';
+test('C3 treasurer: a void is one line of the change-history CSV, and close-out says the snapshot keeps the voided entries', () => {
+  const ctx = sandbox(['fmt', 'fmtDateShort', 'LEDGER_OP_LABELS', 'LEDGER_FIELD_LABELS', 'ledgerLogValue', 'ledgerEventLines', 'ledgerLogWhen', 'ledgerCsvCell', 'ledgerLogCsv']);
+  const names = { line: () => 'Council fee', scout: () => 'Ada', tier: () => '' };
+  const entry = (id) => ({ u1: 'Pinewood trophies · Sep 10 · −$84.00 (voided)' })[id] || '';
+  // The event the page writes for a void (ledger-void-go), then an un-void, then a void of an older
+  // shape with no fields.
+  const log = [
+    { id: 'a', at: '', by: 'Pat', row: 'u1', op: 'void', why: 'Entered twice', f: {
+      amountCents: [8400, null], date: ['2026-09-10', null], direction: ['out', null], description: ['Pinewood trophies', null],
+      lineId: ['x1', null], scoutId: ['', null], method: ['check', null], ref: ['101', null] } },
+    { id: 'b', at: '', by: 'Sam', row: 'u1', op: 'unvoid', why: 'Cashed after all' },
+    { id: 'c', at: '', by: '=Mallory', row: 'u9', op: 'void', why: '+1' }];
+  eq(ctx.ledgerLogCsv(log, entry, names).split('\n').slice(1), [
+    ',Pat,Pinewood trophies · Sep 10 · −$84.00 (voided),Voided,$84.00 · Sep 10 · money out,not counted,Entered twice',
+    ',Sam,Pinewood trophies · Sep 10 · −$84.00 (voided),Un-voided,,,Cashed after all',
+    ",'=Mallory,A removed entry,Voided,,not counted,'+1"], 'one line per void');
+  const co = slice('renderCloseoutOverlay');
+  ok(co.indexOf("'<li><strong>Voided entries:</strong> Download the snapshot. Voided entries, with who voided them and why, are only kept there.</li>'") >
+    co.indexOf('<li><strong>Change history:</strong>'), 'the close-out screen does not say where the voided entries are kept');
+});
+
 test('C3 treasurer, Firestore: a device that had ticked an entry another leader voided is told where it is', () => {
   // B ticks l2 (unsaved); A voids it a minute later and saves; B merges that as it saves.
   const { a, b } = c3FsPair();

@@ -8166,6 +8166,8 @@
   // that named several). `entry(id)` says which entry an id is ('' when it is gone); `names` as for
   // ledgerLogValue. An entry that is gone is named from its delete event, if the log has it. Pure
   // given `entry` and `names`.
+  // Treasurer sign-off on C3 — a void is ONE line: "Voided", Before the amount, date and direction it
+  // had, After "not counted" (its event carries every field, which would otherwise be eight lines).
   function ledgerLogCsv(log, entry, names) {
     var gone = {};
     (log || []).forEach(function (ev) {
@@ -8180,6 +8182,12 @@
       if (!ev) return;
       var ids = [ev.row].concat(Array.isArray(ev.rows) ? ev.rows : []);
       var lines = ledgerEventLines(ev, names);
+      if (ev.op === 'void') {
+        var was = ['amountCents', 'date', 'direction'].filter(function (k) {
+          return ev.f && Object.prototype.hasOwnProperty.call(ev.f, k) && Array.isArray(ev.f[k]);
+        }).map(function (k) { return ledgerLogValue(k, ev.f[k][0], names); });
+        lines = [{ what: LEDGER_OP_LABELS['void'], before: was.join(' · '), after: 'not counted' }];
+      }
       ids.forEach(function (id) {
         lines.forEach(function (ln) {
           out.push([ledgerLogWhen(ev.at), ev.by || '', label(id), ln.what, ln.before, ln.after, ev.why || ''].map(ledgerCsvCell).join(','));
@@ -27155,6 +27163,8 @@
       // Treasurer review of C2 (M-4) — close-out clears the ledger's change history, and until C8
       // keeps it in closedBooks the snapshot download is the only copy.
       '<li><strong>Change history:</strong> Download the snapshot — the ledger’s change history is only kept there.</li>' +
+      // Treasurer sign-off on C3 — and so, until C8, are the voided entries (state.ledgerAside).
+      '<li><strong>Voided entries:</strong> Download the snapshot. Voided entries, with who voided them and why, are only kept there.</li>' +
       // Wave 19(38b)
       (state.densAdvancedYear === year ? '' :
         '<li>Arrow of Light scouts who crossed over in the spring should already be archived — anyone still active is archived now.</li>') +
