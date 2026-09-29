@@ -4732,7 +4732,7 @@
     // below, which would keep both and rename the counted copy '-d2', which a device still
     // holding the original then unions in and counts twice. Only when it is plainly the same row:
     // one in each list, with the same amount, date and direction. Anything else is two rows, and
-    // the dedupe renames one, as before: dropping either would change a total.
+    // the dedupe renames one (the aside copy: see below): dropping either would change a total.
     var inLive = Object.create(null), inAside = Object.create(null);
     d.ledger.forEach(function (e) { inLive[e.id] = inLive[e.id] ? 'twice' : e; });
     d.ledgerAside.forEach(function (e) { inAside[e.id] = inAside[e.id] ? 'twice' : e; });
@@ -4747,8 +4747,15 @@
       d.ledgerAside = d.ledgerAside.filter(function (a) { return bothLists.indexOf(a) === -1 || settled.aside.indexOf(a) !== -1; });
     }
     // Phase 3, C1 — the counted rows and the ones set aside are one id space: a row is either.
-    // On a clash the aside row keeps the id ('a' sorts first), and the counted one is renamed.
-    dedupeRowIds(d.ledgerAside.concat(d.ledger), d.ledgerAside.map(function () { return 'a'; }).concat(d.ledger.map(function () { return 'l'; })));
+    // On a clash the aside row keeps the id ('0' sorts first), and the counted one is renamed —
+    // except a VOIDED row (re-check of C3, minor): on a clash left after the settle above (the
+    // money differs) the counted row keeps the id ('1') and the voided one ('2') is renamed. The
+    // other way, a device still holding the row counted under its own id unions the renamed
+    // counted copy in and counts it twice; this way it unions in a voided copy, which counts in
+    // nothing, and the counted row keeps its id and so its change history (the log is by id).
+    // Reversed rows and reversals (C4) keep the C1 rule: their partner names them by id.
+    dedupeRowIds(d.ledger.concat(d.ledgerAside), d.ledger.map(function () { return '1'; })
+      .concat(d.ledgerAside.map(function (a) { return a.off === 'void' ? '2' : '0'; })));
     return d;
   }
   // Phase 3, C1 — why a row is in the book but not counted (state.ledgerAside): voided (with a

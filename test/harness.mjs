@@ -19519,7 +19519,37 @@ test('C3 review (finding 1): a row an old page saved in both lists counts once, 
     ledger: [{ id: 'R', date: '2026-09-10', description: 'Pizza', amountCents: 4000, direction: 'out' }],
     ledgerAside: [{ id: 'R', date: '2026-09-10', description: 'Pizza', amountCents: 4100, direction: 'out', off: 'void', voidReason: 'x' }],
     gone: { ledger: { R: -5 } } }))))));
-  eq([d.ledger.map((e) => [e.id, e.amountCents]), d.ledgerAside.map((e) => [e.id, e.amountCents])], [[['R-d2', 4000]], [['R', 4100]]], 'two rows, one id');
+  // Re-check of C3 (minor) — the counted one keeps the id; the voided one is renamed.
+  eq([d.ledger.map((e) => [e.id, e.amountCents]), d.ledgerAside.map((e) => [e.id, e.amountCents])], [[['R', 4000]], [['R-d2', 4100]]], 'two rows, one id');
+});
+
+/* Re-check of C3, minor — a clash the settle leaves (the money differs) renames the VOIDED copy. */
+// A page from C2 voids l2, takes the Undo while another device's copy comes in, and edits the
+// amount on one copy: it saves l2 counted at $40 and voided at $41, marked put back.
+const C3M_SPLIT = `var was = JSON.parse(JSON.stringify(state.ledger[1]));
+  voidRow('l2', 'Entered twice'); state.ledgerAside[0].amountCents = 4100; state.ledger.splice(1, 0, was); markGone('ledger', ['l2'], true); commit()`;
+
+test('C3 re-check (minor): two versions of a row the settle can’t join keep the counted one under its id; a device holding it counted still counts it once', () => {
+  const want = [['l1', 'l2', 'l3'], ['l2-d2']];
+  const cents = 2500 - 4000 + 8500;
+  const { a, b, server } = c3FsPair();
+  a.run(C3M_SPLIT); a.push();
+  eq([server().ledger.map((e) => [e.id, e.amountCents]), server().ledgerAside.map((e) => [e.id, e.amountCents])],
+    [[['l1', 2500], ['l2', 4000], ['l3', 8500]], [['l2', 4100]]], 'the old page’s save');
+  // B, still counting l2 at $40 under its own id, with a change of its own, merges it as it saves.
+  b.run(B1); b.hear(); b.push();
+  eq([c3Where(server()), c3Counted(server())], [want, cents], 'the pack record after B’s save');
+  eq(server().ledgerAside.map((e) => [e.id, e.amountCents, e.off]), [['l2-d2', 4100, 'void']], 'the $41 copy, voided');
+  eq([c3Where(b.get('state')), c3Counted(b.get('state'))], [want, cents], 'B');
+  a.hear();
+  eq([c3Where(a.get('state')), c3Counted(a.get('state'))], [want, cents], 'A after B’s save');
+  // The counted row keeps its id, so the history logged under l2 is still its history.
+  eq([server().ledger.find((e) => e.id === 'l2').amountCents, server().ledgerLog.filter((e) => e.row === 'l2').map((e) => e.op)], [4000, ['void']], 'l2’s history');
+  // A device with nothing unsaved takes the old page's copy as it is: the same.
+  const q = c3FsPair();
+  q.a.run(C3M_SPLIT); q.a.push();
+  q.b.hear();
+  eq([c3Where(q.b.get('state')), c3Counted(q.b.get('state'))], [want, cents], 'a clean device');
 });
 
 test('C3 review (finding 1) property: after normalizeState no id is in both lists, or twice; only a same-row pair loses a copy; twice gives the same', () => {
