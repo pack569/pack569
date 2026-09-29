@@ -11505,8 +11505,13 @@
   // retried transaction can't duplicate.
   // LIVE STOPGAP (see freshGone) — except what either copy has deleted: the two copies' marks are
   // merged first, then a row deleted on either side is neither taken from there nor kept here.
+  // EXCEPT a reconciled ledger row (treasurer and security reviews of the stopgap, M1/S1): one
+  // device deleted it while another ticked it against the bank statement, and a book that loses
+  // a reconciled row no longer matches the statement it was checked on. It is kept from either
+  // copy, its mark is turned into a put-back that beats the delete, and it is added to `kept`
+  // (when given) so syncPush can name it. Deleting it takes an un-reconcile first, as always.
   // Returns how many items were appended or removed.
-  function mergeRemoteAppendOnly(d) {
+  function mergeRemoteAppendOnly(d, kept) {
     var parsed = null;
     try { parsed = JSON.parse(typeof d.json === 'string' ? d.json : ''); } catch (e) { return 0; }
     var remote = normalizeState(parsed);
@@ -11531,18 +11536,25 @@
       var b = teBatchOf(x.id);
       return !!(b && gone.imports[b] > 0);
     }
+    // A reconciled ledger row another copy deleted: kept, and marked put back (see above).
+    function keepReconciled(log, x) {
+      if (log !== 'ledger' || x.reconciled !== true) return false;
+      gone.ledger[x.id] = -Math.max(Date.now(), gone.ledger[x.id] + 1);
+      if (Array.isArray(kept)) kept.push(x);
+      return true;
+    }
     function dropGone(la, log) {
       if (!Array.isArray(la)) return la;
-      var kept = la.filter(function (x) { return !(x && typeof x.id === 'string' && isGone(log, x)); });
-      removed += la.length - kept.length;
-      return kept;
+      var left = la.filter(function (x) { return !(x && typeof x.id === 'string' && isGone(log, x) && !keepReconciled(log, x)); });
+      removed += la.length - left.length;
+      return left;
     }
     function unionById(la, ra, log) {
       if (!Array.isArray(la) || !Array.isArray(ra)) return;
       var have = {};
       la.forEach(function (x) { if (x && typeof x.id === 'string') have[x.id] = true; });
       ra.forEach(function (x) {
-        if (x && typeof x.id === 'string' && !have[x.id] && !isGone(log, x)) { la.push(x); have[x.id] = true; added += 1; }
+        if (x && typeof x.id === 'string' && !have[x.id] && (!isGone(log, x) || keepReconciled(log, x))) { la.push(x); have[x.id] = true; added += 1; }
       });
     }
     state.entries = dropGone(state.entries, 'entries');
@@ -11561,6 +11573,15 @@
       if (lfr) unionById(lfr.sales, rfr.sales, 'sales');
     });
     return added + removed;
+  }
+  // The toast for reconciled ledger rows the merge kept (mergeRemoteAppendOnly). Named, so the
+  // treasurer can find each one. Pure.
+  function keptReconciledText(rows) {
+    var one = rows.length === 1;
+    var names = rows.map(function (x) { return '“' + (x.description || 'an entry of ' + fmt(x.amountCents || 0)) + '”'; });
+    return (one ? names[0] + ' was' : names.join(', ') + ' were') + ' deleted on another device, but ' +
+      (one ? 'it is' : 'they are') + ' reconciled, so ' + (one ? 'it was' : 'they were') +
+      ' kept. To remove one, un-reconcile it and delete it again.';
   }
   // LIVE STOPGAP — the two copies are on either side of a close-out (or a leader changed the
   // program year by hand): one has closed the season the other is still in. Nothing in either
@@ -11585,6 +11606,9 @@
       return;
     }
     var be = sync.backend, h = sync.pack, mine = sync.session;
+    // Reconciled ledger rows the merge kept although another device deleted them (named below).
+    // Outside the attempt: a rerun finds their marks already turned, and adds nothing.
+    var keptRows = [];
     // `remote` is the record as it stands at this attempt (null if none). The backend may run
     // this more than once when another device writes in between; the merge is id-guarded, so
     // a rerun appends nothing twice, and the rev is re-derived from each fresh read.
@@ -11618,7 +11642,7 @@
       // LIVE STOPGAP — a save from the other side of a close-out is not merged into or written
       // over (seasonMoved). Nothing is sent; the leader is asked which copy to keep.
       if (clobbered && seasonMoved(remote)) return { record: null, result: { season: remote } };
-      var mergedN = clobbered ? mergeRemoteAppendOnly(remote) : 0;
+      var mergedN = clobbered ? mergeRemoteAppendOnly(remote, keptRows) : 0;
       var nextRev = be.serverRevs ? remoteRev + 1 : Math.max(state.rev || 0, remoteRev) + 1;
       var record = {
         rev: nextRev,
@@ -11673,6 +11697,7 @@
         if (res.mergedN > 0) render(); // the merge appended remote items
         showToast('Another device saved changes while you were editing — check recent entries.');
       }
+      if (keptRows.length) showToast(keptReconciledText(keptRows), { duration: 10000 });
       // Everything heard so far was in what was merged and sent, unless a later save came.
       if (!later) sync.clobber = false;
       if (later && !editedSince) adoptRemote(later, { toast: true });

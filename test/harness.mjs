@@ -1007,6 +1007,8 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
+// LIVE STOPGAP — what every slice of the sync merge needs besides it (freshGone is in NORMALIZE_FNS).
+const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'pruneGone', 'markGone', 'teBatchOf', 'keptReconciledText'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
   const ctx = vm.createContext({});
@@ -1176,7 +1178,7 @@ test('the year rollover clears the ledger and opens next year at the bank balanc
 test('a divergence merge never drops a ledger entry', () => {
   // The append-only merge is the recovery path when two copies of a pack record diverge.
   // Popcorn sales are protected there; transactions must be too.
-  const fn = /function mergeRemoteAppendOnly\(d\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  const fn = /function mergeRemoteAppendOnly\(d, kept\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'mergeRemoteAppendOnly() not found');
   ok(/unionById\(state\.ledger, remote\.ledger, 'ledger'\)/.test(fn[0]),
     'ledger entries are not unioned on merge — one device could lose another device\'s transactions');
@@ -8710,7 +8712,7 @@ test('Firestore: an editor’s copy waiting on a choice is dropped for "view-onl
       conflict: null, dirty: false, clobber: false, pushTimer: null, packMissing: false };
     ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'feedForRole', 'recomputeMyRole',
        'stopLocalWrites', 'stopDocFeed', 'subscribeDoc', 'applyRoleSubscription', 'applyMembersSubscription', 'isStateEmpty',
-       'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', 'GONE_KEEP_MS', 'GONE_MAX', 'pruneGone', 'markGone', 'teBatchOf', 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush'].map(decl).join('\n')}
+       'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush'].map(decl).join('\n')}
     subscribeDoc(1);
     applyMembersSubscription(1);
     function roster(role, md) {
@@ -8761,7 +8763,7 @@ test('Firestore: the server confirming a cached roster is heard, and a viewer’
       conflict: null, dirty: false, clobber: false, pushTimer: null, packMissing: false };
     ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'feedForRole', 'recomputeMyRole',
        'stopLocalWrites', 'stopDocFeed', 'subscribeDoc', 'applyRoleSubscription', 'applyMembersSubscription', 'isStateEmpty',
-       'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', 'GONE_KEEP_MS', 'GONE_MAX', 'pruneGone', 'markGone', 'teBatchOf', 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush'].map(decl).join('\n')}
+       'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush'].map(decl).join('\n')}
     subscribeDoc(1);
     applyMembersSubscription(1);
     function roster(role, md) {
@@ -8953,7 +8955,7 @@ test('Firestore: a save before the pack record’s first answer never writes ove
         dirty: true, mode: 'online', notice: '', firstSnap: ${o.firstSnap}, conflict: null, pushTimer: null,
         remoteRec: ${o.firstSnap ? 'null' : JSON.stringify(o.remote || null)} };   // once answered, the feed brought it
       ${o.remote ? `reads['packs/P'] = ${JSON.stringify(o.remote)};` : ''}
-      ${['packLinked', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', 'GONE_KEEP_MS', 'GONE_MAX', 'pruneGone', 'markGone', 'teBatchOf', 'adoptRemote', 'onRemoteSnap', 'syncPush'].map(decl).join('\n')}
+      ${['packLinked', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap', 'syncPush'].map(decl).join('\n')}
       syncPush();`);
     return JSON.parse(JSON.stringify(vm.runInContext(`({ sets: txSets.map(function (s) { return s[1].rev; }),
       overlay: ui.overlay && ui.overlay.kind, conflict: sync.conflict && sync.conflict.rev, firstSnap: sync.firstSnap,
@@ -8992,7 +8994,7 @@ function fsFeedCtx(local, extra) {
     var sync = { backend: firestoreBackend, pack: firestoreBackend.open('P'), session: 1, deviceId: 'dev1', clobber: false,
       dirty: false, mode: 'connecting', notice: '', firstSnap: true, remoteRec: null, conflict: null, pushTimer: null,
       unsub: null, feed: null, packMissing: false };
-    ${['packLinked', 'subscribeDoc', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', 'GONE_KEEP_MS', 'GONE_MAX', 'pruneGone', 'markGone', 'teBatchOf', 'adoptRemote', 'onRemoteSnap',
+    ${['packLinked', 'subscribeDoc', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap',
        'scheduleSyncPush', 'syncPush'].map(decl).join('\n')}
     ${extra || ''}
     subscribeDoc(1);`);
@@ -15386,7 +15388,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'ensureMyMemberDoc', 'joinCreateMemberDoc', 'signOutGoogle', 'accountsToast', 'MEMBER_ROLES', 'setMemberRole', 'removeMember',
   'createInvite', 'revokeInvite', 'joinOpen', 'standingsEnabled', 'cleanContactLine', 'MOVE_KIND', 'MOVE_UID_RE', 'MOVE_ROLES',
   'isPackOwner', 'canDownloadMoveFile', 'canImportPack', 'moveFileReady', 'moveFileProblem', 'moveTime', 'buildMoveFile', 'downloadMoveFile', 'moveImportBody', 'importMoveFile',
-  'scheduleParentViewRefresh', 'writeParentView', 'scheduleSyncPush', 'holdPushes', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', 'GONE_KEEP_MS', 'GONE_MAX', 'pruneGone', 'markGone', 'teBatchOf', 'syncPush',
+  'scheduleParentViewRefresh', 'writeParentView', 'scheduleSyncPush', 'holdPushes', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', ...GONE_FNS, 'syncPush',
   'isStateEmpty', 'stateFingerprint', 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'keepLocalCopy', 'SERVER_NOTICES', 'serverNotice'];
 const CLIENT_SRC = CLIENT_FNS.map(decl).join('\n');
 
@@ -16738,6 +16740,49 @@ test('stopgap, Firestore: a Trail’s End re-import is never counted twice by a 
   eq(Object.keys(server().gone.entries).sort(), ['old1', 'old2'], 'an import marked a typed-in entry');
 });
 
+// Treasurer M1 / security S1: one device deletes an unreconciled ledger row, another ticks it
+// against the statement. The reconciled row is kept, whichever device saves last, and named.
+const RECONCILE_L1 = "state.ledger[0].reconciled = true; commit()";
+const DELETE_L1 = "markGone('ledger', state.ledger.splice(0, 1)); commit()";
+test('stopgap, Firestore: a ledger row reconciled on one device is kept when another deleted it', () => {
+  // B reconciles while A's delete is saved; B saves last.
+  const { a, b, server } = fsGonePair();
+  a.run(DELETE_L1);
+  a.push();
+  b.run(RECONCILE_L1);
+  b.hear();
+  b.push();
+  eq([server().ledger.map((l) => [l.id, l.reconciled]), server().gone.ledger.l1 < 0], [[['l1', true]], true], 'the reconciled row was dropped');
+  eq(b.get('toasts').filter((t) => /reconciled/.test(t)),
+    ['“Dues” was deleted on another device, but it is reconciled, so it was kept. To remove one, un-reconcile it and delete it again.'],
+    'the treasurer was not told which row was kept');
+  a.hear();
+  eq(a.get('state.ledger.map(function (l) { return l.id; })'), ['l1'], 'A after B’s save');
+  // The reverse: B's reconcile is saved first; A, holding its delete, saves last.
+  const p = fsGonePair();
+  p.b.run(RECONCILE_L1);
+  p.b.push();
+  p.a.run(DELETE_L1);
+  p.a.hear();
+  p.a.push();
+  eq(p.server().ledger.map((l) => [l.id, l.reconciled]), [['l1', true]], 'the deleting device dropped the reconciled row');
+  eq(p.a.get('[state.ledger.length, toasts.filter(function (t) { return /reconciled/.test(t); }).length]'), [1, 1], 'A did not keep it, or say so');
+  // And it stays: the next merge either way does not drop it again.
+  p.b.run(B1);
+  p.a.run("state.entries.push({ id: 'a9', scoutId: 's1', kind: 'wagon', date: '', salesCents: 1, donationsCents: 0 }); commit()");
+  p.a.push(); p.b.hear(); p.b.push();
+  eq(p.server().ledger.map((l) => l.id), ['l1'], 'a later merge dropped it');
+  // Not reconciled: an edit does not beat the delete. Row fields are last-write-wins, and only
+  // the reconcile tick says a row is on a bank statement. (Deliberately unchanged.)
+  const e = fsGonePair();
+  e.a.run(DELETE_L1);
+  e.a.push();
+  e.b.run("state.ledger[0].amountCents = 2600; commit()");
+  e.b.hear();
+  e.b.push();
+  eq([e.server().ledger.length, e.b.get('toasts').filter((t) => /reconciled/.test(t))], [0, []], 'an unreconciled edited row');
+});
+
 test('stopgap, Firestore: last season does not come back from a device that has not closed it out', () => {
   // A closes the year out (what rolloverYear does to these fields: the year moves on, the logs
   // and the marks are cleared). B, with an unsaved edit in last season, writes nothing, and asks.
@@ -16777,7 +16822,7 @@ test('stopgap, Firestore: last season does not come back from a device that has 
 });
 
 test('stopgap: the deletion marks are normalized, merged by the later mark, and kept small', () => {
-  const ctx = sandbox(NORMALIZE_FNS.concat(['GONE_KEEP_MS', 'GONE_MAX', 'pruneGone', 'markGone', 'teBatchOf']));
+  const ctx = sandbox(NORMALIZE_FNS.concat(GONE_FNS));
   // Missing and malformed: an empty record of each log; junk dropped; nothing else kept.
   const n = (g) => JSON.parse(JSON.stringify(ctx.normalizeState({ version: 1, scouts: [], gone: g }).gone));
   const empty = { entries: {}, ledger: {}, distributions: {}, sales: {}, imports: {} };
@@ -16904,6 +16949,21 @@ atest('stopgap, api: a delete, a re-import and an Undo on one device survive ano
   eq(a.get('ids(state.entries).sort()'), ['b1', 'old1', 'old2', 'x1', 'x2'], 'A after B’s save');
 });
 
+atest('stopgap, api: a ledger row reconciled on one device is kept when another deleted it', async () => {
+  let { a, b, server } = await apiGonePair();
+  await a.edit("markGone('ledger', state.ledger.splice(0, 1))");
+  b.run(RECONCILE_L1);
+  await settle([b], 800);
+  eq([server().ledger.map((l) => [l.id, l.reconciled]), server().gone.ledger.l1 < 0], [[['l1', true]], true], 'the reconciled row was dropped');
+  eq(b.get('toasts').filter((t) => /“Dues” was deleted on another device, but it is reconciled/.test(t)).length, 1, 'not named');
+  // The reverse: the reconcile is saved first, the deleting device saves last.
+  ({ a, b, server } = await apiGonePair());
+  await b.edit('state.ledger[0].reconciled = true');
+  a.run(DELETE_L1);
+  await settle([a], 800);
+  eq(server().ledger.map((l) => [l.id, l.reconciled]), [['l1', true]], 'the deleting device dropped the reconciled row');
+});
+
 atest('stopgap, api: last season does not come back from a device that has not closed it out', async () => {
   const { a, b, server, rev } = await apiGonePair();
   b.run(B1);
@@ -16997,7 +17057,7 @@ test('Phase 3 step 0: normalizeState gives every money-log row one id, the same 
     [[7500, 'out', 'x1', ''], [300, 'in', 'x2', 's1'], [300, 'in', 'x2', 's2']], 'the migrated ledger rows');
   eq(st.entries.map((e) => e.salesCents), [1000, 1000, 700, 1, 2], 'an entry changed');
   // What this is for: a device merging the same old record from another adds nothing twice.
-  const m = sandbox(NORMALIZE_FNS.concat(['GONE_KEEP_MS', 'GONE_MAX', 'pruneGone', 'teBatchOf', 'mergeRemoteAppendOnly']));
+  const m = sandbox(NORMALIZE_FNS.concat(GONE_FNS, ['mergeRemoteAppendOnly']));
   vm.runInContext(`var state = normalizeState(${JSON.stringify(legacy())});`, m);
   eq(vm.runInContext(`mergeRemoteAppendOnly({ json: ${JSON.stringify(JSON.stringify(legacy()))} })`, m), 0,
     'merging the same old record from another device added rows');
