@@ -1010,7 +1010,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
 // LIVE STOPGAP — what every slice of the sync merge needs besides it (freshGone is in NORMALIZE_FNS).
-const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'ledgerTickedAt', 'reconciledFates', 'reconciledFatesText', 'restoreGone', 'mergeLedgerLog'];
+const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'ledgerTickedAt', 'reconciledFates', 'reconciledFatesText', 'noteReconciledFates', 'restoreGone', 'entryAfterOpening', 'ledgerDateReconciled', 'fmt', 'fmtDateShort', 'mergeLedgerLog'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
   const ctx = vm.createContext({});
@@ -8920,7 +8920,7 @@ test('a push reads, merges and writes in one retried step, and the rev always cl
         dirty: true, mode: 'online', remoteRec: ${JSON.stringify(over.remotes[0])} };
       ${slice('packLinked')}
       ${slice('syncPush')}
-      ${decl('seasonMoved')}
+      ${['seasonMoved', 'reconciledFatesText', 'noteReconciledFates'].map(decl).join('\n')}
       syncPush();`, ctx);
     return ctx;
   };
@@ -16145,7 +16145,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
       var sync = { backend: fakeBe, pack: { docId: 'P' }, session: 1, deviceId: 'd', clobber: false, dirty: true, mode: 'online',
         notice: '${over.notice || ''}', firstSnap: false,
         remoteRec: ${JSON.stringify(over.heard === undefined ? { rev: over.localRev, device: 'x', json: '{}' } : over.heard)} };
-      ${['packLinked', 'syncPush', 'seasonMoved'].map(decl).join('\n')}
+      ${['packLinked', 'syncPush', 'seasonMoved', 'reconciledFatesText', 'noteReconciledFates'].map(decl).join('\n')}
       syncPush();`, ctx);
     const out = vm.runInContext('[records.length ? records[0].rev : null, merged, state.rev]', ctx);
     if (over.answers) out.push(JSON.parse(JSON.stringify(vm.runInContext('[firstAnswers, sync.dirty, sync.remoteRec && sync.remoteRec.rev]', ctx))));
@@ -16626,14 +16626,15 @@ const GONE_EXTRA = (dev) => `
   function reimport() { ui.overlay = { report: 'sales', archive: { scouts: [] } }; teCommitSalesLive(); }
   function totals() { var t = computeScoutTotals(), o = {}; Object.keys(t).forEach(function (k) { o[k] = t[k].sales; }); return o; }
   function ids(a) { return a.map(function (x) { return x.id; }); }`;
-function goneSeedNorm() {
+// `over` (Phase 3, C2): fields to put over the seed's, e.g. a reconciled book.
+function goneSeedNorm(over) {
   const ctx = sandbox(NORMALIZE_FNS);
-  return JSON.parse(JSON.stringify(ctx.normalizeState(JSON.parse(JSON.stringify(GONE_SEED)))));
+  return JSON.parse(JSON.stringify(ctx.normalizeState(JSON.parse(JSON.stringify(Object.assign({}, GONE_SEED, over || {}))))));
 }
 // Two devices on the real firestoreBackend and the fake SDK, sharing one pack record, each on
 // the page's real normalizeState. Both have heard rev 3 (the seed) and hold it unchanged.
-function fsGonePair() {
-  const seed = goneSeedNorm();
+function fsGonePair(over) {
+  const seed = goneSeedNorm(over);
   let server = { rev: 3, device: 'd0', updatedAt: 'TS', json: JSON.stringify(Object.assign({}, seed, { rev: 3 })) };
   const dev = (name) => {
     const ctx = fsFeedCtx(Object.assign({}, seed, { rev: 3 }), NORMALIZE_FNS.map(slice).join('\n') + decl('keepLocalCopy') + GONE_EXTRA(name) + `
@@ -16950,8 +16951,11 @@ test('stopgap, Firestore: a device clock set a year ahead or behind neither wipe
 const RECONCILE_L1 = "stampApproved(state.ledger[0], true); state.ledger[0].reconciled = true; commit()";
 const UNRECONCILE_L1 = "stampApproved(state.ledger[0], false); state.ledger[0].reconciled = false; commit()";
 const DELETE_L1 = "markGone('ledger', state.ledger.splice(0, 1)); commit()";
-const KEPT_L1 = '“Dues” was deleted, but it was reconciled after that, so it was kept. To remove one, un-reconcile it and delete it again.';
-const LOST_L1 = '“Dues” was reconciled, but deleted on another device after that, so it is gone. Check the reconciliation against the bank statement.';
+// Phase 3, C2 — each row with its amount and date; a lost one in the treasurer's words (H1, m1).
+const KEPT_L1 = '“Dues” ($25.00, Sep 1) was deleted, but it is reconciled against the bank statement, so it was kept. ' +
+  'To remove it, un-reconcile it first, then delete it. (Kept on Money · Ledger.)';
+const LOST_L1 = '“Dues” ($25.00, Sep 1) was reconciled on this device, but another leader deleted it afterwards, so it has been removed. ' +
+  'If it is on the bank statement, enter it again and tick it. If not, nothing needs doing. (Kept on Money · Ledger.)';
 const recToasts = (d) => d.get('toasts').filter((t) => /reconciled/.test(t));
 test('stopgap, Firestore: a ledger row reconciled on one device after another deleted it is kept', () => {
   // B ticks it a minute after A's delete; B saves last.
@@ -17352,13 +17356,13 @@ test('stopgap: every path that deletes a money-log row marks it, an Undo marks i
 });
 
 // The same, end to end: the page's real sync layer and apiBackend against the real server.
-const GONE_API_STATE = () => PACK_STATE(JSON.parse(JSON.stringify({
+const GONE_API_STATE = (over) => PACK_STATE(JSON.parse(JSON.stringify(Object.assign({
   scouts: GONE_SEED.scouts, budget: GONE_SEED.budget, entries: GONE_SEED.entries, ledger: GONE_SEED.ledger, fundraisers: GONE_SEED.fundraisers,
   inventory: GONE_SEED.inventory, rsvps: {}, attendance: {}, collected: {}, charges: [], advancement: {}, onboarding: {}, derby: { cars: [] },
-  gone: { entries: {}, ledger: {}, distributions: {}, sales: {}, imports: {}, scouts: {}, fundraisers: {}, products: {} } })));
-async function apiGonePair() {
+  gone: { entries: {}, ledger: {}, distributions: {}, sales: {}, imports: {}, scouts: {}, fundraisers: {}, products: {} } }, over || {}))));
+async function apiGonePair(over) {
   const w = await (await apiWorld()).seed();
-  w.state(3, GONE_API_STATE());
+  w.state(3, GONE_API_STATE(over));
   const a = await (await apiClient(w, 'owner')).start();
   const b = await (await apiClient(w, 'editor')).start();
   for (const c of [a, b]) c.run(GONE_EXTRA(c.who));
@@ -17885,7 +17889,7 @@ test('C1: the statement book.reconciledThrough records is synthesized once, figu
 });
 
 test('C1: ledgerLocked — reconciled, in the reconciled period, or in a closed book', () => {
-  const ctx = sandbox(['entryAfterOpening', 'ledgerLocked']);
+  const ctx = sandbox(['entryAfterOpening', 'ledgerDateReconciled', 'ledgerLocked']);
   const book = { openingDate: '2025-07-01', reconciledThrough: '2025-09-30' };
   const L = (e, b) => ctx.ledgerLocked(e, b === undefined ? book : b);
   const table = [
@@ -17907,7 +17911,7 @@ test('C1: ledgerLocked — reconciled, in the reconciled period, or in a closed 
     [{ date: '2025-09-15' }, null, false, 'no book']
   ];
   for (const [e, b, want, what] of table) eq(L(e, b), want, what);
-  ok(!/\buid\(|Date|state\b/.test(codeOnly(slice('ledgerLocked'))), 'ledgerLocked is not pure');
+  for (const fn of ['ledgerLocked', 'ledgerDateReconciled']) ok(!/\buid\(|\bDate\b|state\b/.test(codeOnly(slice(fn))), fn + ' is not pure');
 });
 
 test('C1: ledgerEvent builds one log entry, and nothing else', () => {
@@ -18009,6 +18013,99 @@ atest('C2, api: two devices’ ledger logs are one log after a merge', async () 
   b.run("logLedger('tick', 'l1'); commit()");
   await settle([b], 800);
   eq(server().ledgerLog.map((e) => [e.op, e.dev]), [['edit', 'dev-owner'], ['tick', 'dev-editor']], 'the merged log');
+});
+
+/* ================================================================
+   Phase 3, C2 (2026-09-29) — H1 (owner's decision): a reconciled row dated in the reconciled
+   period always beats a delete; what a sync did to reconciled rows waits on Money · Ledger.
+   ================================================================ */
+test('C2: what a sync did to a reconciled row is said with its amount and date, and stays on Money · Ledger until dismissed', () => {
+  const ctx = sandbox(['fmt', 'fmtDateShort', 'reconciledFatesText', 'noteReconciledFates']);
+  vm.runInContext("var sync = { fatesNote: '' }, toasts = [], renders = 0; function showToast(m, o) { toasts.push([m, o]); } function render() { renders += 1; }", ctx);
+  const lost = { description: 'Pinewood trophies', amountCents: 8400, date: '2026-09-12' };
+  eq(ctx.reconciledFatesText({ kept: [], lost: [lost] }),
+    '“Pinewood trophies” ($84.00, Sep 12) was reconciled on this device, but another leader deleted it afterwards, so it has been removed. ' +
+    'If it is on the bank statement, enter it again and tick it. If not, nothing needs doing.', 'the treasurer’s wording');
+  ctx.noteReconciledFates({ kept: [], lost: [] });
+  eq(JSON.parse(JSON.stringify(vm.runInContext('[sync.fatesNote, toasts.length, renders]', ctx))), ['', 0, 0], 'nothing to say was said');
+  ctx.noteReconciledFates({ kept: [], lost: [lost] });
+  ctx.noteReconciledFates({ kept: [{ description: '', amountCents: 500, date: '' }], lost: [] });
+  const [note, toasts] = JSON.parse(JSON.stringify(vm.runInContext('[sync.fatesNote, toasts]', ctx)));
+  ok(note.indexOf('“Pinewood trophies” ($84.00, Sep 12)') === 0 && / “An entry” \(\$5\.00\) was deleted, but it is reconciled/.test(note), 'the note: ' + note);
+  eq(toasts.map((t) => [/\(Kept on Money · Ledger\.\)$/.test(t[0]), t[1].duration]), [[true, 10000], [true, 10000]], 'the toast');
+  // On the screen until Got it; said after adoptRemote's toast, which used to replace it (m1).
+  ok(/var h = sync\.fatesNote\s*\? '<div class="card" role="status">[\s\S]*?esc\(sync\.fatesNote\)[\s\S]*?data-act="ledger-fates-dismiss">Got it<\/button>/.test(slice('renderLedger')),
+    'the Ledger screen does not show the note');
+  ok(/if \(act === 'ledger-fates-dismiss'\) \{ sync\.fatesNote = ''; render\(\); return; \}/.test(SCRIPT), 'Got it does not dismiss it');
+  const push = slice('syncPush');
+  ok(push.indexOf('noteReconciledFates({ kept: keptRows, lost: lostRows });') > push.indexOf('if (later && !editedSince) adoptRemote(later, { toast: true });'),
+    'the fates are said before adoptRemote’s toast replaces them');
+  const ad = slice('adoptRemote');
+  ok(ad.indexOf('noteReconciledFates(fates);') > ad.indexOf("showToast('Updated from another device')"), 'adoptRemote says the fates first');
+  ok(!/fatesNote/.test(codeOnly(BPV())) && !/fatesNote/.test(slice('normalizeState')), 'the note reaches the pack record or the parents');
+});
+
+// H1 — the book reconciled through Sep 30, with l1 (Sep 1) ticked by a page from before any tick
+// stamps: no reconciledAt, no approvedAt. A delete on the other device always loses to it.
+const H1_BOOK = { book: { openingCents: 0, openingDate: '2026-07-01', reconciledThrough: '2026-09-30' },
+  ledger: [{ id: 'l1', date: '2026-09-01', description: 'Dues', amountCents: 2500, direction: 'in', reconciled: true }] };
+const H1_OVER = (book, row) => Object.assign({}, H1_BOOK, { book: Object.assign({}, H1_BOOK.book, book || {}), ledger: [Object.assign({}, H1_BOOK.ledger[0], row || {})] });
+test('C2, Firestore: a reconciled row dated in the reconciled period is kept over a delete, whatever the clocks say', () => {
+  // B deletes it (un-ticked first on B, as the page asks), and saves; A, holding the legacy tick and
+  // an unsaved edit, saves last, with a clock an hour BEHIND the delete.
+  const { a, b, server } = fsGonePair(H1_BOOK);
+  eq(a.get('[state.ledger[0].reconciled, "reconciledAt" in state.ledger[0], state.ledger[0].approvedAt]'), [true, false, ''], 'the legacy tick');
+  b.run("state.ledger[0].reconciled = false; " + DELETE_L1);
+  b.push();
+  a.run(skew(-3600000));
+  a.run(B1);
+  a.hear(); a.push();
+  eq(server().ledger.map((l) => [l.id, l.reconciled]), [['l1', true]], 'the reconciled row in the period was dropped');
+  eq(server().gone.ledger.l1 < 0, true, 'its mark was not turned into a put-back');
+  b.hear();
+  eq([b.get('state.ledger.map(function (l) { return l.id; })'), recToasts(b)], [['l1'], [KEPT_L1]], 'the deleting device');
+  ok(b.get('sync.fatesNote') === KEPT_L1.replace(' (Kept on Money · Ledger.)', ''), 'the deleting device’s note');
+  // The reverse: the deleting device, with a clock an hour AHEAD, saves last against the ticked copy.
+  const p = fsGonePair(H1_BOOK);
+  p.b.run(B1); p.b.push();
+  p.a.run(skew(3600000));
+  p.a.run(DELETE_L1);
+  p.a.hear(); p.a.push();
+  eq(p.server().ledger.map((l) => [l.id, l.reconciled]), [['l1', true]], 'the deleting device dropped it');
+  eq(recToasts(p.a), [KEPT_L1], 'the deleting device was not told');
+  // Controls: a row dated after the period keeps the old rule (a tick with no time loses), and an
+  // unticked row in the period is not protected.
+  const c = fsGonePair(H1_OVER({ reconciledThrough: '2026-08-31' }));
+  c.b.run("state.ledger[0].reconciled = false; " + DELETE_L1); c.b.push();
+  c.a.run(B1); c.a.hear(); c.a.push();
+  eq(c.server().ledger.length, 0, 'control: a tick with no time, after the period, beat the delete');
+  const u = fsGonePair(H1_OVER({}, { reconciled: false }));
+  u.b.run(DELETE_L1); u.b.push();
+  u.a.run(B1); u.a.hear(); u.a.push();
+  eq(u.server().ledger.length, 0, 'control: an unticked row in the period beat the delete');
+});
+
+atest('C2, api: a reconciled row dated in the reconciled period is kept over a delete, whatever the clocks say', async () => {
+  let { a, b, server } = await apiGonePair(H1_BOOK);
+  await b.edit("state.ledger[0].reconciled = false; markGone('ledger', state.ledger.splice(0, 1))");
+  a.run(skew(-3600000));
+  a.run(B1);
+  await settle([a], 800);
+  eq(server().ledger.map((l) => [l.id, l.reconciled]), [['l1', true]], 'the reconciled row in the period was dropped');
+  await b.poll();
+  eq([b.get('state.ledger.length'), recToasts(b)], [1, [KEPT_L1]], 'the deleting device');
+  ({ a, b, server } = await apiGonePair(H1_BOOK));
+  await b.edit("state.entries.push({ id: 'b1', scoutId: 's2', kind: 'wagon', date: '', salesCents: 100, donationsCents: 0 })");
+  a.run(skew(3600000));
+  a.run(DELETE_L1);
+  await settle([a], 800);
+  eq(server().ledger.map((l) => [l.id, l.reconciled]), [['l1', true]], 'the deleting device dropped it');
+  // Control: after the period, the tick with no time loses.
+  ({ a, b, server } = await apiGonePair(H1_OVER({ reconciledThrough: '2026-08-31' })));
+  await b.edit("state.ledger[0].reconciled = false; markGone('ledger', state.ledger.splice(0, 1))");
+  a.run(B1);
+  await settle([a], 800);
+  eq(server().ledger.length, 0, 'control: a tick with no time, after the period, beat the delete');
 });
 
 /* ---------------- report ---------------- */

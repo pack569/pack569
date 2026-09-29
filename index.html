@@ -7289,8 +7289,13 @@
     if (!e || !book) return false;
     if (book.closedAt) return true;
     if (e.reconciled === true) return true;
-    var d = String(e.date || ''), rt = String(book.reconciledThrough || '');
-    return !!(rt && d && d <= rt && entryAfterOpening(e, book));
+    return ledgerDateReconciled(e.date, book);
+  }
+  // Phase 3, C2 — is this date inside the reconciled period: from the opening date through
+  // book.reconciledThrough? Before the opening date is not. Pure.
+  function ledgerDateReconciled(date, book) {
+    var d = String(date || ''), rt = String((book && book.reconciledThrough) || '');
+    return !!(rt && d && d <= rt && entryAfterOpening({ date: d }, book));
   }
   function reconcileTotals(ledger, book) {
     var cleared = book.openingCents || 0, ticked = 0, open = 0, after = 0;
@@ -8869,6 +8874,9 @@
     // to write over ("Keep this device's copy", keepLocalCopy). syncPush writes over exactly that
     // copy whole; any other is merged or asked about as usual. Cleared by a save, and by syncStop.
     seasonKeptRev: null,
+    // Phase 3, C2 (m1) — what a merge did to reconciled ledger rows (noteReconciledFates), shown on
+    // Money · Ledger until a leader taps Got it. This session only, like everything here.
+    fatesNote: '',
     session: null,     // token — a passphrase change cancels in-flight work from the old session
     backend: null,     // the loaded backend adapter (firestoreBackend or apiBackend) — see loadBackend
     pack: null,        // the pack-record handle from backend.open(); null = nothing may push
@@ -11875,8 +11883,14 @@
       return teImportGone(gone.imports, x.id);
     }
     // A ledger row reconciled after another copy deleted it: kept, and marked put back (see above).
+    // Phase 3, C2 (treasurer review of C1, H1; owner, 2026-09-29) — and a reconciled row dated in
+    // the period this book is reconciled through is ALWAYS kept, whatever the clocks say: it is on
+    // a statement already signed off. A tick from before the tick times existed has no time at
+    // all (ledgerTickedAt 0), and lost to every delete. This device's book decides: it is the one
+    // this merge writes.
     function keepReconciled(log, x) {
-      if (log !== 'ledger' || x.reconciled !== true || !(ledgerTickedAt(x) > gone.ledger[x.id])) return false;
+      if (log !== 'ledger' || x.reconciled !== true) return false;
+      if (!(ledgerTickedAt(x) > gone.ledger[x.id]) && !ledgerDateReconciled(x.date, state.book)) return false;
       gone.ledger[x.id] = -Math.max(Date.now(), gone.ledger[x.id] + 1);
       keptHere.push(x);
       return true;
@@ -12003,23 +12017,35 @@
     });
     return { kept: kept, lost: lost };
   }
-  // The toast for reconciledFates. Each row named, so the treasurer can find it. Pure.
+  // The words for reconciledFates. Each row named with its amount and date, so the treasurer can
+  // find it on the statement. Phase 3, C2 (treasurer review of C1, H1) — a lost row in the
+  // treasurer's words: whether anything needs doing depends on the bank statement. Pure.
   function reconciledFatesText(f) {
-    function names(rows) {
-      return rows.map(function (x) { return '“' + (x.description || 'an entry of ' + fmt(x.amountCents || 0)) + '”'; }).join(', ');
+    function name(x) {
+      return '“' + (x.description || 'An entry') + '” (' + fmt(x.amountCents || 0) + (x.date ? ', ' + fmtDateShort(x.date) : '') + ')';
     }
     var out = [];
-    if (f.kept.length) {
-      var one = f.kept.length === 1;
-      out.push(names(f.kept) + (one ? ' was deleted, but it was' : ' were deleted, but they were') + ' reconciled after that, so ' +
-        (one ? 'it was' : 'they were') + ' kept. To remove one, un-reconcile it and delete it again.');
-    }
-    if (f.lost.length) {
-      var oneL = f.lost.length === 1;
-      out.push(names(f.lost) + (oneL ? ' was' : ' were') + ' reconciled, but deleted on another device after that, so ' +
-        (oneL ? 'it is' : 'they are') + ' gone. Check the reconciliation against the bank statement.');
-    }
+    f.kept.forEach(function (x) {
+      out.push(name(x) + ' was deleted, but it is reconciled against the bank statement, so it was kept. ' +
+        'To remove it, un-reconcile it first, then delete it.');
+    });
+    f.lost.forEach(function (x) {
+      out.push(name(x) + ' was reconciled on this device, but another leader deleted it afterwards, so it has been removed. ' +
+        'If it is on the bank statement, enter it again and tick it. If not, nothing needs doing.');
+    });
     return out.join(' ');
+  }
+  // Phase 3, C2 (security review of C1, m1) — reconciledFates said where the treasurer will see
+  // it. A toast alone went: adoptRemote's "Updated from another device" replaced it at once, and
+  // ten seconds is not long for a paragraph. So the words also wait on Money · Ledger
+  // (sync.fatesNote: this session only, not pack data) until someone taps Got it, and the toast
+  // is shown last, after anything else the save says.
+  function noteReconciledFates(f) {
+    var text = reconciledFatesText(f);
+    if (!text) return;
+    sync.fatesNote = (sync.fatesNote ? sync.fatesNote + ' ' : '') + text;
+    showToast(text + ' (Kept on Money · Ledger.)', { duration: 10000 });
+    render();
   }
   // LIVE STOPGAP — the two copies are on either side of a close-out (or a leader changed the
   // program year by hand): one has closed the season the other is still in. Nothing in either
@@ -12137,7 +12163,6 @@
         if (res.mergedN > 0) render(); // the merge appended remote items
         showToast('Another device saved changes while you were editing — check recent entries.');
       }
-      if (keptRows.length || lostRows.length) showToast(reconciledFatesText({ kept: keptRows, lost: lostRows }), { duration: 10000 });
       // Everything heard so far was in what was merged and sent, unless a later save came.
       if (!later) sync.clobber = false;
       sync.seasonKeptRev = null;
@@ -12147,6 +12172,8 @@
         else if (sync.dirty) scheduleSyncPush();
         save(); // no re-render needed — nothing visible changed
       }
+      // After adoptRemote, whose toast would otherwise replace it (C2, m1).
+      noteReconciledFates({ kept: keptRows, lost: lostRows });
       scheduleParentViewRefresh(); // Parent phase — regenerate the sanitized copy (leaders only)
       if (sync.mode !== 'online') { sync.mode = 'online'; sync.error = ''; renderSyncPill(); if (ui.tab === 'pack') render(); }
     }).catch(function (err) {
@@ -12197,7 +12224,7 @@
     save();
     render();
     if (opts && opts.toast) showToast('Updated from another device');
-    if (fates.kept.length || fates.lost.length) showToast(reconciledFatesText(fates), { duration: 10000 });
+    noteReconciledFates(fates);
     return true;
   }
   // `rec` is the pack record as the backend sent it — { rev, device, json, … } — or null when
@@ -18096,7 +18123,13 @@
     var bk = state.book;
     var tot = ledgerTotals(state.ledger, bk);
     var balColor = tot.balance >= 0 ? 'var(--good)' : 'var(--bad)';
-    var h = '<div class="card"><h2 class="section display">Ledger</h2>' +
+    // Phase 3, C2 (m1) — what a sync did to reconciled rows, until someone has read it.
+    var h = sync.fatesNote
+      ? '<div class="card" role="status"><h2 class="section display">Reconciled entries changed by a sync</h2>' +
+        '<p style="margin:0 0 10px">' + esc(sync.fatesNote) + '</p>' +
+        '<button type="button" class="btn small" data-act="ledger-fates-dismiss">Got it</button></div>'
+      : '';
+    h += '<div class="card"><h2 class="section display">Ledger</h2>' +
       '<p class="small muted" style="margin:0 0 10px">Every dollar that actually moved. Unlike the budget — which is a plan — this is a record, ' +
       'so the balance below can be held next to a bank statement and checked.</p>' +
       '<div class="row">' +
@@ -27178,6 +27211,7 @@
       });
       return;
     }
+    if (act === 'ledger-fates-dismiss') { sync.fatesNote = ''; render(); return; }
     if (act === 'ledger-use-carryover') {
       state.book.openingCents = state.budget.startingBalance || 0;
       state.book.openingDate = programYearStartISO(state.budget.programYear);
