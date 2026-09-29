@@ -19946,7 +19946,7 @@ atest('C3, api: a void, an un-void and a locked row settle the same way across t
    treasurer review of C1, M1 and M3). The page's own handler blocks on a c2Page, the pure
    functions in sandboxes, and two devices on the Firestore fake and the api.
    ================================================================ */
-const C4_FNS = ['ledgerReversalId', 'ledgerReplacementId', 'ledgerReverseRefusal', 'ledgerCorrectPlan', 'ledgerCorrectRefusal',
+const C4_FNS = ['ledgerReversalId', 'ledgerReplacementId', 'ledgerReverseRefusal', 'ledgerCorrectPlan', 'LEDGER_FIX_DESC_ONLY', 'ledgerCorrectRefusal',
   'ledgerReverseRow', 'ledgerCorrectRow', 'ledgerPairCheck'];
 const C4_ACT = [
   c2Block(/    if \(act\.indexOf\('ledger-fix:'\) === 0\) \{[\s\S]*?\n    \}/, 'ledger-fix'),
@@ -20040,25 +20040,30 @@ test('C4: Reverse and Correct need a reason, an editor, an open book, and an ent
 });
 
 test('C4: Correct reverses the entry and puts the right figures in its place; the date and tick stay only when the money is unchanged', () => {
-  // A label only (q1: ticked, in the period): the date, the tick and its stamps stay, and no total moves.
+  // A label only (q1: ticked, in the period): refused (treasurer review of C4, 6). A description is
+  // changed in place, logged; three rows for it would read as an error under Voided & reversed.
+  const DESC_ONLY = 'Only the description is different. A description can be changed in place (the change is logged): close this and edit it in the entry above.';
   const p = c4Page();
   const before = p.get('totals4()');
-  const ix = p.get("state.ledger.findIndex(function (e) { return e.id === 'q1'; })");
   const q1 = p.get("row('q1')");
-  p.run("toasts = []; correct2('q1', { desc: '  Popcorn commission (council check)  ' }, 'Say what it was')");
+  p.run("toasts = []; commits = 0; correct2('q1', { desc: '  Popcorn commission (council check)  ' }, 'Say what it was')");
+  eq([p.get('totals4()'), p.get("!!row('q1')"), p.get("!!row('rc-q1')"), p.get('state.ledgerAside.length'), p.get('log().length'), p.get('commits'),
+    p.get('marks.length'), p.get("ui.armed || ''"), p.get('toasts')], [before, true, false, 0, 0, 0, 0, '', [DESC_ONLY, DESC_ONLY]], 'a label only');
+  // …and a date typed the same as it was, with the label, is still only the label.
+  p.run(`toasts = []; correct2('q1', { date: '${q1.date}', desc: 'Council check' }, 'Say what it was')`);
+  eq([p.get("!!row('rc-q1')"), p.get('toasts')], [false, [DESC_ONLY, DESC_ONLY]], 'the same date, a new label');
+  // The same-money path is kept underneath, for safety: ledgerCorrectRow, asked directly, keeps the
+  // date, the tick and its stamps, in the entry's place, and no total moves.
+  const ix = p.get("state.ledger.findIndex(function (e) { return e.id === 'q1'; })");
+  p.run("var sm = ledgerCorrectRow(state, 'q1', { desc: 'Popcorn commission (council check)' }, 'Say what it was', { by: 'Pat Treasurer', byUid: 'u1', at: '2026-10-15T00:00:00.000Z' }, '2026-10-15', state.book)");
   const rc = p.get("row('rc-q1')");
-  eq([p.get('totals4()'), p.get("state.ledger.findIndex(function (e) { return e.id === 'rc-q1'; })"), p.get('state.ledgerAside.map(function (e) { return [e.id, e.off]; })')],
-    [before, ix, [['q1', 'reversed'], ['rv-q1', 'reversal']]], 'the totals, its place, the pair');
+  eq([p.get('sm.same'), p.get('totals4()'), p.get("state.ledger.findIndex(function (e) { return e.id === 'rc-q1'; })"), p.get('state.ledgerAside.map(function (e) { return [e.id, e.off]; })')],
+    [true, before, ix, [['q1', 'reversed'], ['rv-q1', 'reversal']]], 'the totals, its place, the pair');
   eq([rc.replaces, rc.date, rc.amountCents, rc.direction, rc.description, rc.reconciled, rc.approvedBy, rc.approvedAt, rc.source, rc.enteredBy, rc.enteredByUid, 'off' in rc],
     ['q1', q1.date, q1.amountCents, q1.direction, 'Popcorn commission (council check)', true, q1.approvedBy, q1.approvedAt, 'popcorn', 'Pat Treasurer', 'u1', false], 'the corrected entry');
-  const ev = p.get('log()[0]');
-  eq([p.get('log().length'), ev.op, ev.row, ev.why, ev.rows, ev.f], [1, 'correct', 'q1', 'Say what it was', ['rv-q1', 'rc-q1'],
-    { description: ['Popcorn commission', 'Popcorn commission (council check)'] }], 'the correct event');
-  eq([p.get('marks'), p.get('toasts')], [[['ledger', ['q1'], false]],
-    ['Corrected “Popcorn commission”. The corrected entry is in its place, with the same date and tick. The original is under Voided & reversed.']], 'marked; the toast');
   // r1, ticked after the period by Sam: the same money keeps the tick and who ticked it, and when.
   const s = c4Page();
-  s.run("correct2('r1', { desc: 'Dues (Ada)' }, 'Name the family')");
+  s.run("ledgerCorrectRow(state, 'r1', { desc: 'Dues (Ada)' }, 'Name the family', { by: 'Pat Treasurer', byUid: 'u1', at: '' }, '2026-10-15', state.book)");
   const r4 = s.get("row('rc-r1')");
   eq([r4.reconciled, r4.reconciledAt, r4.approvedBy, r4.approvedByUid, r4.approvedAt, r4.scoutId, r4.date],
     [true, 1789000000000, 'Sam', 'u9', '2026-09-06T10:00:00.000Z', 's1', '2026-09-05'], 'same money keeps the tick');
@@ -20390,7 +20395,7 @@ test('C4: the change history says a reverse in one line and a correction field b
 });
 
 test('C4: the Reverse or correct form says what each does and what the corrected entry will be, and every id in it is escaped', () => {
-  const x = sandbox(['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'LEDGER_VOID_REASON_MAX', 'ledgerFixFormHtml', 'ledgerAsideListHtml', 'ledgerReplacementId',
+  const x = sandbox(['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'LEDGER_VOID_REASON_MAX', 'LEDGER_FIX_DESC_ONLY', 'ledgerFixFormHtml', 'ledgerAsideListHtml', 'ledgerReplacementId',
     'ledgerCorrectPlan', 'applyLedgerEdit', 'toCents', 'ledgerRowFields', 'LEDGER_EDIT_FIELDS', 'ledgerDateReconciled', 'entryAfterOpening']);
   const bad = 'x" data-act="del-scout:s1"><img src=y>\'';
   vm.runInContext(`var ui = { ledgerOpen: {}, armed: null, fixDraft: null, fixWhy: '' };
@@ -20406,7 +20411,8 @@ test('C4: the Reverse or correct form says what each does and what the corrected
   };
   const own = { date: '2026-08-10', dir: 'in', amount: '500.00', desc: 'Popcorn commission' };
   eq(note(own), 'To correct it, change what is wrong above. To take it out of the totals, reverse it.', 'nothing changed');
-  eq(note(Object.assign({}, own, { desc: 'Council check' })), 'The corrected entry keeps its date and its reconciled tick, so no balance changes.', 'a label');
+  // Treasurer review of C4 (6): a label alone is changed in place, and the form says so before the tap.
+  eq(note(Object.assign({}, own, { desc: 'Council check' })), 'Only the description is different. A description can be changed in place (the change is logged): close this and edit it in the entry above.', 'a label');
   eq(note(Object.assign({}, own, { amount: '450' })), 'The corrected entry will be dated today (Oct 15), because Aug 10 is inside the period already reconciled (through Aug 31). It won’t be ticked as reconciled.', 'money, in the period');
   eq(note(Object.assign({}, own, { amount: '450', date: '2026-09-02' })), 'The corrected entry won’t be ticked as reconciled: tick it against the statement it shows up on.', 'money, a date after the period');
   // The words above the figures, and the buttons, armed and not.

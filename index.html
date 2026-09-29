@@ -7691,6 +7691,13 @@
     }
     return { row: r, same: same, today: dated, changed: changed };
   }
+  // Treasurer review of C4 (6) — a Correct that changes only the description would make three rows
+  // (reversed, reversal, replacement) for what an edit in place does in one, and put an entry under
+  // Voided & reversed for no money reason, which an auditor reads as an error. The description is a
+  // label, changed in place and logged (LEDGER_LOCKED_FIELDS), so that is refused, and the form says
+  // so before the tap. (ledgerCorrectPlan still copies the tick and stamps when the money is the
+  // same, for safety.)
+  var LEDGER_FIX_DESC_ONLY = 'Only the description is different. A description can be changed in place (the change is logged): close this and edit it in the entry above.';
   // Why Correct can't go ahead with this draft and reason, or ''. The reverse's refusals first,
   // then the figures the replacement would have. Pure.
   function ledgerCorrectRefusal(e, st, book, draft, reason) {
@@ -7701,7 +7708,9 @@
     if (!c) return 'Enter the right amount.';
     if (c > LEDGER_MAX_CENTS) return 'That’s more than ' + fmt(LEDGER_MAX_CENTS) + ' for one entry — check the amount.';
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(d.date || ''))) return 'Enter the right date.';
-    if (!ledgerCorrectPlan(e, d, book, '').changed) return 'Nothing is different yet. Change what is wrong above, then tap Correct it — or tap Reverse it to take the entry out of the totals.';
+    var plan = ledgerCorrectPlan(e, d, book, '');
+    if (!plan.changed) return 'Nothing is different yet. Change what is wrong above, then tap Correct it — or tap Reverse it to take the entry out of the totals.';
+    if (plan.same) return LEDGER_FIX_DESC_ONLY;
     return ledgerReverseRefusal(e, st, book, reason, 'correct');
   }
   // Reverse the counted row `id` in place (see above): `reason` (trimmed), `stamp` { by, byUid, at }
@@ -19519,7 +19528,7 @@
     var plan = ledgerCorrectPlan(e, d, bk, today);
     var note;
     if (!plan.changed) note = 'To correct it, change what is wrong above. To take it out of the totals, reverse it.';
-    else if (plan.same) note = 'The corrected entry keeps its date' + (e.reconciled ? ' and its reconciled tick' : '') + ', so no balance changes.';
+    else if (plan.same) note = LEDGER_FIX_DESC_ONLY;   // refused (ledgerCorrectRefusal): said before the tap
     else if (plan.today) {
       note = 'The corrected entry will be dated today (' + fmtDateShort(today) + '), because ' + fmtDateShort(d.date || e.date) +
         ' is inside the period already reconciled (through ' + fmtDateShort(bk.reconciledThrough) + '). It won’t be ticked as reconciled.';
