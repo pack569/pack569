@@ -269,6 +269,10 @@ Each prints a `database_id` (a long id with dashes). In `wrangler.toml`, replace
 - [ ] `REPLACE_WITH_PACK569_PREVIEW_DATABASE_ID` with the `pack569-preview` id. It appears
       **twice**, under `[[d1_databases]]` and `[[env.preview.d1_databases]]`.
 
+The preview id must be the same in both places, and must not be the prod id. The harness and
+the deploy job both refuse a `wrangler.toml` where that does not hold, and so does the API
+itself once it is running (step B's last line).
+
 Commit that on a branch. A database id is not a secret: nothing can open the database
 without a Cloudflare login or token for your account.
 
@@ -279,12 +283,28 @@ Still on your computer, from the repo folder:
 - [ ] `npx wrangler d1 migrations apply pack569-preview --remote`
 - [ ] `npx wrangler d1 migrations apply pack569-prod --remote --env production`
 
-Each one lists `0001_init.sql`, asks you to confirm, and creates the tables. Later changes
-add files such as `migrations/0002_….sql`; apply those the same way, preview first. To check:
+Each one lists the files in `migrations/` it has not run yet (`0001_init.sql`,
+`0002_deployment.sql`, …), asks you to confirm, and creates the tables. Later changes add more
+files; apply those the same way, preview first. To check:
 
 ```
 npx wrangler d1 execute pack569-preview --remote --command "SELECT name FROM sqlite_master WHERE type = 'table'"
 ```
+
+Then tell each database, once, which deployment it belongs to. **Copy these exactly; the
+word at the end is different for each:**
+
+- [ ] `npx wrangler d1 execute pack569-preview --remote --command "INSERT INTO deployment (id, env) VALUES (1, 'preview')"`
+- [ ] `npx wrangler d1 execute pack569-prod --remote --env production --command "INSERT INTO deployment (id, env) VALUES (1, 'prod')"`
+
+The API compares that row with the deployment it is running in (`DEPLOY_ENV` in
+`wrangler.toml`) on every request, and answers nothing but an error (503) if they differ,
+or if the row is not there yet. So if a preview were ever bound to `pack569-prod` by mistake,
+it would refuse to serve the live pack rather than hand it to whoever has the preview link.
+Until you run these two lines, the API answers `deployment-unset` everywhere, which is the
+safe way for it to fail. To check a database: `npx wrangler d1 execute pack569-prod --remote
+--env production --command "SELECT env FROM deployment"` should say `prod`. Nothing in the
+site ever changes this row; if you seeded one wrongly, stop and ask.
 
 **Unverified:** that `--env production` is how wrangler finds `pack569-prod` in this Pages
 project's `wrangler.toml`. If wrangler says it cannot find the database, stop and ask. Do not

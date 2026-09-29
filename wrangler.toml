@@ -33,7 +33,16 @@ compatibility_date = "2026-09-28"
 # (docs/cloudflare-setup.md, "The pack's database"). The deploy job refuses to run while any
 # REPLACE_WITH_ placeholder is left.
 #
+# THE SAME ID TWICE, AND NEVER THE THIRD. The top-level database_id and [env.preview]'s must be
+# the same (pack569-preview's), and neither may be production's. The harness and the deploy
+# job both refuse a wrangler.toml where that does not hold. And the check does not stop at this
+# file: each database carries a one-row `deployment` table saying which deployment it belongs
+# to (migrations/0002_deployment.sql), seeded once by the owner, and the API answers 503 to
+# everything when it does not match DEPLOY_ENV below.
+#
 # vars (read by functions/_lib/pack.js):
+#   DEPLOY_ENV           "prod" in production, "preview" everywhere else. Must match the bound
+#                        database's `deployment` row.
 #   FIREBASE_PROJECT_ID  whose Google sign-ins the API accepts.
 #   PACK_IDS             the packs this deployment serves: the id already printed in index.html
 #                        (PACK_DOC_ID). Any other id is a 404; nobody starts a pack here.
@@ -43,6 +52,7 @@ compatibility_date = "2026-09-28"
 # PACK_OWNER_UID is a secret, not a var: it is set in the Cloudflare dashboard, never here.
 
 [vars]
+DEPLOY_ENV = "preview"
 FIREBASE_PROJECT_ID = "pack-569"
 PACK_IDS = "42391b9710be9ef3be1b7e84da4e0bf829318e277fdac2f12ba641d2acb665c0"
 OWNER_MODE = "first-signer"
@@ -54,6 +64,7 @@ database_id = "REPLACE_WITH_PACK569_PREVIEW_DATABASE_ID"
 migrations_dir = "migrations"
 
 [env.preview.vars]
+DEPLOY_ENV = "preview"
 FIREBASE_PROJECT_ID = "pack-569"
 PACK_IDS = "42391b9710be9ef3be1b7e84da4e0bf829318e277fdac2f12ba641d2acb665c0"
 OWNER_MODE = "first-signer"
@@ -65,6 +76,7 @@ database_id = "REPLACE_WITH_PACK569_PREVIEW_DATABASE_ID"
 migrations_dir = "migrations"
 
 [env.production.vars]
+DEPLOY_ENV = "prod"
 FIREBASE_PROJECT_ID = "pack-569"
 PACK_IDS = "42391b9710be9ef3be1b7e84da4e0bf829318e277fdac2f12ba641d2acb665c0"
 OWNER_MODE = "fixed"

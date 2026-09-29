@@ -12995,8 +12995,35 @@ test('the workflow deploys only by hand, production only from main, with every a
   ok(!/if \[ -e functions \]; then/.test(jobs.deploy), 'the deploy still refuses the API it has to ship');
   ok(/find functions -type f ! -name '\*\.js'[\s\S]*?exit 1/.test(jobs.deploy), 'a non-.js file in functions/ is not refused');
   ok(/cp -R functions "\$RUNNER_TEMP\/deploy\/functions"/.test(jobs.deploy), 'the API is not staged beside the site');
-  ok(/grep -n 'REPLACE_WITH_' wrangler\.toml; then[\s\S]*?exit 1/.test(jobs.deploy), 'a placeholder D1 id is not refused');
+  ok(/grep -n '\^\[\^#\]\*REPLACE_WITH_' wrangler\.toml; then[\s\S]*?exit 1/.test(jobs.deploy), 'a placeholder D1 id is not refused');
   ok(jobs.deploy.indexOf('REPLACE_WITH_') < jobs.deploy.indexOf('uses: cloudflare/wrangler-action'), 'the placeholder check runs after the deploy');
+  // Finding 1 (security review of stage A): the same step refuses crossed ids. Run the step's own
+  // script against a filled-in wrangler.toml, then against each way of crossing it.
+  const stepM = /- name: Refuse placeholder or crossed database ids\n\s+run: \|\n((?: {10}.*\n| *\n)+)/.exec(jobs.deploy);
+  ok(stepM, 'no step refusing crossed database ids');
+  if (stepM && process.platform !== 'win32') {
+    const script = stepM[1].split('\n').map((l) => l.slice(10)).join('\n');
+    const W0 = readFileSync(join(ROOT, 'wrangler.toml'), 'utf8');
+    const PRE = '11111111-1111-4111-8111-111111111111', PROD = '22222222-2222-4222-8222-222222222222';
+    const filled = W0.split('REPLACE_WITH_PACK569_PREVIEW_DATABASE_ID').join(PRE).split('REPLACE_WITH_PACK569_PROD_DATABASE_ID').join(PROD);
+    const dir = mkdtempSync(join(tmpdir(), 'pack569-ids-'));
+    const runStep = (toml) => {
+      writeFileSync(join(dir, 'wrangler.toml'), toml);
+      return spawnSync('bash', ['-c', script], { cwd: dir, encoding: 'utf8' }).status;
+    };
+    // The n-th (0-based) occurrence of `id` replaced by `to`.
+    const nth = (t, id, n, to) => { const p = t.split(id); return p.slice(0, n + 1).join(id) + to + p.slice(n + 1).join(id); };
+    try {
+      eq(runStep(filled), 0, 'the step refuses a correct wrangler.toml');
+      eq(runStep(W0), 1, 'the step accepts placeholders');
+      eq(runStep(filled.split(PROD).join(PRE)), 1, 'the step accepts production bound to the preview database');
+      eq(runStep(nth(filled, PRE, 1, PROD)), 1, 'the step accepts [env.preview] bound to the production database');
+      eq(runStep(nth(filled, PRE, 0, PROD)), 1, 'the step accepts the top level bound to the production database');
+      eq(runStep(filled.replace('DEPLOY_ENV = "prod"', 'DEPLOY_ENV = "preview"')), 1, 'the step accepts production saying DEPLOY_ENV preview');
+      eq(runStep(filled.replace('database_id = "' + PROD + '"', 'database_id = "' + PROD + '"\ndatabase_id = "' + PRE + '"')), 1,
+        'the step accepts two ids under one block');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
   ok(/cp -R _site "\$RUNNER_TEMP\/deploy\/_site"/.test(jobs.deploy) && /workingDirectory: \$\{\{ runner\.temp \}\}\/deploy/.test(jobs.deploy),
     'wrangler does not run from the clean folder');
   eq((jobs.deploy.match(/^\s+cp /gm) || []).length, 3, 'the clean folder holds more than _site, functions and wrangler.toml');
@@ -13005,6 +13032,19 @@ test('the workflow deploys only by hand, production only from main, with every a
   ok(/group: \$\{\{ github\.event_name == 'workflow_dispatch' && format\('website-dispatch-\{0\}', github\.run_id\)/.test(WF),
     'dispatches share a concurrency group');
 });
+
+// Each block's database_id, by the block it sits under: { top, preview, production }.
+function wranglerDbIds(W) {
+  const out = {};
+  let cur = null;
+  W.split('\n').forEach((l) => {
+    const h = /^\[\[?([a-z0-9_.]+)\]\]?$/.exec(l.trim());
+    if (h) { cur = { d1_databases: 'top', 'env.preview.d1_databases': 'preview', 'env.production.d1_databases': 'production' }[h[1]] || null; return; }
+    const m = /^database_id = "([^"]*)"$/.exec(l);
+    if (m && cur) out[cur] = out[cur] === undefined ? m[1] : out[cur] + '|' + m[1];
+  });
+  return out;
+}
 
 test('wrangler.toml publishes _site, and git ignores the build output', () => {
   const W = readFileSync(join(ROOT, 'wrangler.toml'), 'utf8');
@@ -13028,8 +13068,16 @@ test('wrangler.toml publishes _site, and git ignores the build output', () => {
     ok(/^FIREBASE_PROJECT_ID = "pack-569"$/m.test(b), `${env}: FIREBASE_PROJECT_ID`);
     eq(/^PACK_IDS = "([^"]*)"$/m.exec(b)[1], LIVE.docId, `${env}: PACK_IDS is not the pack in index.html`);
     ok(!/PACK_OWNER_UID/.test(b), `${env}: the owner's account id is committed (it is a dashboard secret)`);
+    // Security review of stage A, finding 1: the API checks DEPLOY_ENV against the database's own row.
+    eq((b.match(/^DEPLOY_ENV = "([^"]*)"$/gm) || []), [`DEPLOY_ENV = "${env === 'production' ? 'prod' : 'preview'}"`], `${env}: DEPLOY_ENV`);
   }
   ok(W.indexOf('pack569-prod') === W.lastIndexOf('pack569-prod'), 'pack569-prod is named outside [env.production]');
+  // Finding 1: a name is a label; the id is what wrangler binds. The preview's id twice, production's never.
+  const ids = wranglerDbIds(W);
+  ok(ids.top && ids.production, 'a database_id is missing');
+  eq(ids.top, ids.preview, 'the top level and [env.preview] bind different databases');
+  ok(ids.top !== ids.production && ids.preview !== ids.production, 'a preview binds the production database id');
+  eq((W.match(/^database_id = /gm) || []).length, 3, 'database_id lines');
   const gi = readFileSync(join(ROOT, '.gitignore'), 'utf8').split('\n').map((l) => l.trim());
   ok(gi.indexOf('_site/') >= 0 && gi.indexOf('_site-*/') >= 0, '.gitignore does not cover _site/');
   try {
@@ -13037,8 +13085,10 @@ test('wrangler.toml publishes _site, and git ignores the build output', () => {
       { cwd: ROOT, encoding: 'utf8' });
     eq(out.split('\n').filter(Boolean).length, 5, 'git check-ignore (the build output, wrangler\'s local state, a database export)');
     // …but the schema is tracked.
-    const tracked = spawnSync('git', ['check-ignore', '--no-index', 'migrations/0001_init.sql'], { cwd: ROOT, encoding: 'utf8' });
-    if (tracked.status !== 128) eq(tracked.status, 1, 'git ignores migrations/0001_init.sql');
+    for (const f of readdirSync(join(ROOT, 'migrations'))) {
+      const tracked = spawnSync('git', ['check-ignore', '--no-index', 'migrations/' + f], { cwd: ROOT, encoding: 'utf8' });
+      if (tracked.status !== 128) eq(tracked.status, 1, 'git ignores migrations/' + f);
+    }
   } catch (e) {
     if (e.status === 1) throw new Error('git does not ignore the build output');
     if (e.status !== 128) throw e;
@@ -13060,7 +13110,7 @@ test('a backup from an older page imports through normalizeState', () => {
 /* ================================================================
    The D1 API (Phase 2, stage A, 2026-09-28). functions/ re-implements SETUP.md Part C on the
    server. These tests run the real handlers in Node: node:sqlite stands in for D1 (an
-   in-memory database with migrations/0001_init.sql applied, behind a thin adapter with D1's
+   in-memory database with every migrations/*.sql applied, behind a thin adapter with D1's
    prepare().bind().first()/all()/run() and batch()), and tokens are signed with an RSA key
    made here, served to the verifier in place of Google's. Each Part C rule gets an allow AND
    a deny; every 403 must be the one fixed body. Names and emails are made up (example.com).
@@ -13081,7 +13131,9 @@ async function loadSqlite() {
   };
   try { return await import('node:sqlite'); } finally { process.emitWarning = emit; }
 }
-const MIGRATION = readFileSync(join(ROOT, 'migrations/0001_init.sql'), 'utf8');
+// Every migration, in order, as wrangler applies them.
+const MIGRATION_FILES = readdirSync(join(ROOT, 'migrations')).filter((f) => /^\d{4}_[a-z0-9_]+\.sql$/.test(f)).sort();
+const MIGRATION = MIGRATION_FILES.map((f) => readFileSync(join(ROOT, 'migrations', f), 'utf8')).join('\n');
 let sqliteMod = null;
 // D1's API over node:sqlite: prepare(sql).bind(...).first()/all()/run(), and batch(), which is
 // one transaction — any statement failing rolls the whole batch back, as D1's does.
@@ -13190,7 +13242,9 @@ async function apiWorld(envOver) {
   await apiSetup();
   const db = await apiD1();
   const env = Object.assign({ DB: db, FIREBASE_PROJECT_ID: API_PROJECT, PACK_IDS: API_PACK + ',' + API_PACK_B,
-    OWNER_MODE: 'first-signer' }, envOver || {});
+    OWNER_MODE: 'first-signer', DEPLOY_ENV: 'preview' }, envOver || {});
+  // The owner's one-time seed of the database's `deployment` row (migrations/0002_deployment.sql).
+  if (env.seedEnv !== null) db.raw.prepare('INSERT INTO deployment (id, env) VALUES (1, ?)').run(env.seedEnv || 'preview');
   const w = { db, env };
   w.session = async (who, join, pack, over) => callApi(env, API.mod.session, { method: 'POST',
     path: '/api/session?pack=' + (pack || API_PACK), token: await tokenFor(who, over), body: join === undefined ? undefined : { join } });
@@ -13429,6 +13483,58 @@ atest('api session: only the packs this deployment serves, and the pack id comes
   const noDb = await callApi(Object.assign({}, w.env, { DB: undefined }), API.mod.session,
     { method: 'POST', path: '/api/session?pack=' + API_PACK, token: await tokenFor('owner') });
   eq(noDb.status, 503, 'no database bound');
+});
+
+test('api deployment: the owner guide seeds each database with its own deployment row, and only the owner writes it', () => {
+  const DOC = readFileSync(join(ROOT, 'docs/cloudflare-setup.md'), 'utf8');
+  ok(DOC.indexOf(`npx wrangler d1 execute pack569-preview --remote --command "INSERT INTO deployment (id, env) VALUES (1, 'preview')"`) >= 0,
+    'the guide does not seed pack569-preview');
+  ok(DOC.indexOf(`npx wrangler d1 execute pack569-prod --remote --env production --command "INSERT INTO deployment (id, env) VALUES (1, 'prod')"`) >= 0,
+    'the guide does not seed pack569-prod');
+  ok(MIGRATION_FILES.indexOf('0002_deployment.sql') >= 0, 'no deployment migration');
+  const code = readdirSync(join(ROOT, 'functions'), { recursive: true }).filter((f) => /\.js$/.test(f))
+    .map((f) => readFileSync(join(ROOT, 'functions', f), 'utf8')).join('\n');
+  ok(!/(INSERT INTO|UPDATE|DELETE FROM) deployment\b/.test(code), 'the API writes its own deployment row');
+});
+
+atest('api deployment: a database answers only the deployment its own row names (DEPLOY_ENV), and nothing is touched otherwise', async () => {
+  // Security review of stage A, finding 1: a preview bound to the live database must answer nothing.
+  const cases = [
+    [{ DEPLOY_ENV: 'preview', seedEnv: 'prod' }, 'wrong-database', 'a preview bound to the production database'],
+    [{ DEPLOY_ENV: 'prod', seedEnv: 'preview' }, 'wrong-database', 'production bound to the preview database'],
+    [{ DEPLOY_ENV: 'preview', seedEnv: null }, 'deployment-unset', 'a database nobody has seeded'],
+    [{ DEPLOY_ENV: undefined }, 'no-deploy-env', 'no DEPLOY_ENV'],
+    [{ DEPLOY_ENV: 'production' }, 'no-deploy-env', 'a DEPLOY_ENV that is not prod or preview']
+  ];
+  const logged = [];
+  const log = console.error;
+  console.error = (...a) => { logged.push(a.join(' ')); };   // the refusal is logged for the owner; not noise here
+  try {
+    for (const [over, reason, what] of cases) {
+      const w = await apiWorld(over);
+      const s = await w.session('owner');
+      eq([s.status, s.body.code, s.body.reason], [503, 'unavailable', reason], what + ' (session)');
+      eq((await w.call('owner', 'GET', 'pack')).status, 503, what + ' (pack)');
+      eq(w.sql('SELECT count(*) AS n FROM packs')[0].n, 0, what + ': a pack row was written');
+    }
+  } finally { console.error = log; }
+  ok(logged.some((l) => /bound database says prod/.test(l)), 'a crossed database is not logged');
+  // No table at all (migration 0002 never applied) is the same 503.
+  const w0 = await apiWorld({ seedEnv: null });
+  w0.db.raw.exec('DROP TABLE deployment');
+  eq((await w0.session('owner')).body.reason, 'deployment-unset', 'no deployment table');
+  // Matching: production on its own database works; seeding a refused database takes effect at once.
+  eq((await (await apiWorld({ DEPLOY_ENV: 'prod', seedEnv: 'prod', OWNER_MODE: 'first-signer' })).session('owner')).body.role, 'admin', 'prod on prod');
+  const w1 = await apiWorld({ seedEnv: null });
+  eq((await w1.session('owner')).status, 503, 'before the seed');
+  w1.db.raw.prepare("INSERT INTO deployment (id, env) VALUES (1, 'preview')").run();
+  eq((await w1.session('owner')).body.role, 'admin', 'after the seed');
+  // One row, and only 'prod' or 'preview'.
+  let refused = 0;
+  for (const sql of ["INSERT INTO deployment (id, env) VALUES (2, 'prod')", "UPDATE deployment SET env = 'staging'"]) {
+    try { w1.db.raw.prepare(sql).run(); } catch (e) { refused++; }
+  }
+  eq(refused, 2, 'a second deployment row, or an env that is neither');
 });
 
 atest('api tenancy: a role in one pack is nothing in another', async () => {

@@ -6,6 +6,8 @@
 //
 // Configuration (wrangler.toml [vars], plus one secret; docs/cloudflare-setup.md):
 //   DB                   the D1 binding: pack569-prod in production, pack569-preview otherwise.
+//   DEPLOY_ENV           'prod' in production, 'preview' otherwise. Must match the bound
+//                        database's own `deployment` row, or every request is a 503.
 //   FIREBASE_PROJECT_ID  the Firebase project whose sign-ins we accept ('pack-569').
 //   PACK_IDS             the pack ids this deployment serves, comma-separated. Anything else
 //                        is 404: no one can start a new pack through this API (that is Phase 4,
@@ -31,8 +33,29 @@ export function servedPack(env, id) {
   if (typeof id !== 'string' || !PACK_ID_RE.test(id) || packIds(env).indexOf(id) === -1) refuse(notFound());
   return id;
 }
-export function database(env) {
+// The bound database, once it has said it belongs to this deployment; otherwise a 503.
+// DEPLOY_ENV (wrangler.toml: 'prod' in production, 'preview' everywhere else) must match the
+// one row of the database's `deployment` table (migrations/0002_deployment.sql), which the
+// owner writes once by hand. A preview bound to the live database by mistake — a pasted id, a
+// dashboard override — therefore answers nothing. No DEPLOY_ENV, no row, no table, or a
+// mismatch: all 503, before any other table is touched. A match is remembered for the life of
+// the isolate; a refusal is not, so seeding the row takes effect on the next request.
+const DEPLOY_ENVS = ['prod', 'preview'];
+const deploymentOk = new WeakMap();   // DB binding -> the DEPLOY_ENV it was checked against
+export async function database(env) {
   if (!env || !env.DB || typeof env.DB.prepare !== 'function') refuse(unavailable('no-database'));
+  const want = typeof env.DEPLOY_ENV === 'string' ? env.DEPLOY_ENV : '';
+  if (DEPLOY_ENVS.indexOf(want) === -1) refuse(unavailable('no-deploy-env'));
+  if (deploymentOk.get(env.DB) === want) return env.DB;
+  let row = null;
+  try { row = await env.DB.prepare('SELECT env FROM deployment WHERE id = 1').first(); }
+  catch (e) { row = null; }   // no table yet: migration 0002 not applied
+  if (!row) refuse(unavailable('deployment-unset'));
+  if (row.env !== want) {
+    console.error('api refused: DEPLOY_ENV is', want, 'but the bound database says', row.env);
+    refuse(unavailable('wrong-database'));
+  }
+  deploymentOk.set(env.DB, want);
   return env.DB;
 }
 
@@ -75,7 +98,7 @@ export function withMember(handler) {
   return async function (context) {
     const user = await authenticate(context.request, context.env);
     const packId = servedPack(context.env, context.params && context.params.id);
-    const db = database(context.env);
+    const db = await database(context.env);
     const member = await memberOf(db, packId, user.uid);
     return handler(Object.assign({}, context, { db, user, packId, member, role: member ? member.role : 'none' }));
   };

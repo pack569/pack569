@@ -9,9 +9,13 @@
 # A preview is device-only: scripts/build-site.mjs writes FIREBASE_CONFIG and PACK_DOC_ID as
 # null and its CSP allows no Google origin, so a preview cannot reach the live pack.
 # The deploy ships the artifact the gates built and checked; nothing is rebuilt after approval.
-# It also ships functions/, the API, which reads and writes the pack in Cloudflare D1: the
-# production deploy binds the pack569-prod database and every preview binds pack569-preview
-# (wrangler.toml), so a preview's API cannot reach the live pack either.
+# It also ships functions/, the API, which reads and writes the pack in Cloudflare D1. What
+# keeps a preview's API off the live pack is checked, not assumed: wrangler.toml gives the
+# production deploy pack569-prod's id and every preview pack569-preview's, the harness and the
+# deploy job below refuse a file where those ids are crossed, and at run time the API answers
+# 503 unless the bound database's own `deployment` row matches the deploy (DEPLOY_ENV). What
+# this does NOT separate is sign-in: previews and production accept the same Firebase
+# project's Google accounts (docs/cloudflare-setup.md, "One Firebase project").
 # Owner setup (Cloudflare project, token, secrets, environments): docs/cloudflare-setup.md.
 #
 # Every `uses:` is pinned to a full commit SHA. wrangler-action receives the Cloudflare token,
@@ -192,12 +196,31 @@ jobs:
       # The API (functions/) talks to a D1 database named in wrangler.toml. Until the owner
       # has created the databases and pasted their ids in, the ids are REPLACE_WITH_…
       # placeholders, and a deploy would fail inside wrangler, or bind nothing. Say so here.
-      - name: Refuse placeholder database ids
+      # And the ids must pair up: the top level and [env.preview] carry the same id (the
+      # preview database's), and neither is production's. A name is only a label; the id is
+      # what wrangler binds. (The API checks the same thing again at run time, against the
+      # database's own `deployment` row: functions/_lib/pack.js database().)
+      - name: Refuse placeholder or crossed database ids
         run: |
-          if grep -n 'REPLACE_WITH_' wrangler.toml; then
+          set -eu
+          if grep -n '^[^#]*REPLACE_WITH_' wrangler.toml; then
             echo "::error title=wrangler.toml still has placeholder D1 ids::Create pack569-prod and pack569-preview and paste their ids into wrangler.toml (docs/cloudflare-setup.md, The pack's database)."
             exit 1
           fi
+          id_in() { awk -v want="$1" '/^\[/ { s = $0; next } s == want && /^database_id = "/ { split($0, a, "\""); print a[2] }' wrangler.toml; }
+          top=$(id_in '[[d1_databases]]')
+          pre=$(id_in '[[env.preview.d1_databases]]')
+          prod=$(id_in '[[env.production.d1_databases]]')
+          if [ "$(grep -c '^database_id = ' wrangler.toml)" != 3 ] || [ -z "$top" ] || [ -z "$prod" ] \
+            || [ "$top" != "$pre" ] || [ "$top" = "$prod" ]; then
+            echo "::error title=wrangler.toml database ids are crossed::The top level and [env.preview] must both carry pack569-preview's id, and [env.production] pack569-prod's, a different one (docs/cloudflare-setup.md, The pack's database)."
+            exit 1
+          fi
+          if [ "$(grep -c '^DEPLOY_ENV = "preview"$' wrangler.toml)" != 2 ] || [ "$(grep -c '^DEPLOY_ENV = "prod"$' wrangler.toml)" != 1 ]; then
+            echo "::error title=wrangler.toml DEPLOY_ENV::The top level and [env.preview] must say DEPLOY_ENV = \"preview\", and [env.production] DEPLOY_ENV = \"prod\"."
+            exit 1
+          fi
+          echo "Database ids: preview $top (top level and [env.preview]), production $prod."
 
       # Deploy from a folder holding only the verified site, the API and wrangler.toml, so
       # wrangler cannot pick up anything else from the checkout. `wrangler pages deploy`

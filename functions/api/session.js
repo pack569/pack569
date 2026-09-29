@@ -29,7 +29,7 @@ async function session(context) {
   const { request, env } = context;
   const user = await authenticate(request, env);
   const packId = servedPack(env, new URL(request.url).searchParams.get('pack'));
-  const db = database(env);
+  const db = await database(env);
   const body = await readObject(request, 4096, true);
   const joinCode = typeof body.join === 'string' && body.join !== '' ? body.join : null;
   const now = Date.now();
