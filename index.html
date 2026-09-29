@@ -11752,8 +11752,12 @@
         if (!Object.prototype.hasOwnProperty.call(m, id) || Math.abs(t) > Math.abs(m[id]) || (Math.abs(t) === Math.abs(m[id]) && t > 0)) m[id] = t;
       });
     });
+    // Phase 3, C2 (security review of C1, m3) — just after the delete, but never later than just
+    // after now: a delete stamped ahead of this clock (up to a day, clampGone) would otherwise
+    // give a put-back that far ahead, beating every real delete of the row for as long. A delete
+    // stamped ahead of now therefore keeps winning; the restore is not worth a day of that.
     function back(log, id) {
-      if (typeof id === 'string' && id && g[log][id] > 0) g[log][id] = -Math.max(now, g[log][id] + 1);
+      if (typeof id === 'string' && id && g[log][id] > 0) g[log][id] = -Math.max(now, Math.min(g[log][id], now) + 1);
     }
     function each(log, rows) { arrOf(rows).forEach(function (x) { back(log, x && x.id); }); }
     each('entries', rec.entries);
@@ -23001,9 +23005,10 @@
         'This replaces everything currently in the pack record.</p>' +
         // LIVE STOPGAP (security review of the stopgap, S9; re-review, item 6): the pack's deletion
         // marks outlive it, and the restore marks what it brings back put back (restoreGone).
+        // Phase 3, C2 (security review of C1, m4) — as it is: this device can only put back the
+        // deletions it has heard of.
         '<p class="small muted">Anything in this backup that was deleted since it was made comes back on every device, ' +
-        'except a scout, fundraiser, product, sale, payment or hand-out deleted on a device that has not saved yet: ' +
-        'that is deleted again when it saves.</p>' +
+        'except something deleted on another device whose save this one hasn’t received yet: that is deleted again.</p>' +
         '<div class="row"><button type="button" class="btn danger" data-act="confirm-import">Replace my data</button>' +
         '<button type="button" class="btn" data-act="close-overlay">Cancel</button></div>' +
         '</div></div></div>';

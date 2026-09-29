@@ -17211,7 +17211,7 @@ test('stopgap follow-up 6: a restored backup puts back what the pack had deleted
   p.a.run(RESTORE); p.a.push();
   p.b.hear(); p.b.push();
   eq(eIds(p.server()), ['b1', 'old1', 'old2', 'x1', 'x2'], 'a row deleted since the backup came back from a device still holding it');
-  // What the screen says: a delete on a device that has not saved yet wins when it saves.
+  // What the screen says: a delete on another device whose save this one hasn't received is deleted again.
   const q = fsGonePair();
   q.b.run("markGone('entries', state.entries.filter(function (e) { return e.id === 'x2'; })); state.entries = state.entries.filter(function (e) { return e.id !== 'x2'; }); commit()");
   q.a.run(RESTORE); q.a.push();
@@ -17233,8 +17233,11 @@ test('stopgap follow-up 6: restoreGone merges the marks, puts back only what the
   eq([g.scouts, g.fundraisers, g.products, g.distributions, g.sales], [{ s1: -T, s9: T - 3 }, { f1: -T }, { p1: -T }, { d1: -T }, { fs1: -T }],
     'the parent logs and their rows');
   eq(g.imports, { abc: -T, old: T - 4 }, 'the backup’s import is put back; another stays replaced');
-  // A put-back is later than the delete it answers, even with a slow clock.
-  eq(ctx.restoreGone(ctx.normalizeState(JSON.parse(JSON.stringify(GONE_SEED))), { entries: { x1: T + 50 } }, T).gone.entries.x1, -(T + 51), 'a slow clock');
+  // Phase 3, C2 (security review of C1, m3) — a put-back is never later than just after now: a
+  // delete stamped ahead of this clock (up to a day, after clampGone) no longer buys a put-back
+  // that far ahead, which would beat every real delete of the row until then.
+  const ahead = (m) => ctx.restoreGone(ctx.normalizeState(JSON.parse(JSON.stringify(GONE_SEED))), { entries: { x1: m } }, T).gone.entries.x1;
+  eq([ahead(T + 50), ahead(T + 20 * 3600000), ahead(T - 50)], [-(T + 1), -(T + 1), -T], 'a put-back after a delete stamped ahead of this clock');
   // Only marked ids: a big backup does not fill the log with put-backs and push deletions out.
   const big = ctx.normalizeState({ version: 1, scouts: [], entries: Array.from({ length: 1500 }, (_, i) => ({ id: 'e' + i, scoutId: 's', kind: 'wagon', salesCents: 1 })) });
   const kept = ctx.restoreGone(big, { entries: Object.fromEntries(Array.from({ length: 900 }, (_, i) => ['z' + i, T - 1000 - i])) }, T).gone.entries;
@@ -17718,7 +17721,8 @@ test('stopgap: close-out keeps room for a year of deletion marks, and a restore 
   ok(/- utf8Bytes\(JSON\.stringify\(after\.gone \|\| \{\}\)\) \+ GONE_ROOM_BYTES/.test(now.replace(/\s+/g, ' ')), 'seasonLedgerNow');
   // Security S9: the restore screen.
   const o = slice('renderOverlay');
-  ok(/Anything in this backup that was deleted since it was made comes back on every device, ' \+\s*'except a scout, fundraiser, product, sale, payment or hand-out deleted on a device that has not saved yet: ' \+\s*'that is deleted again when it saves\./.test(o),
+  // Phase 3, C2 (security review of C1, m4) — worded as it works: only deletions this device has heard of are put back.
+  ok(/Anything in this backup that was deleted since it was made comes back on every device, ' \+\s*'except something deleted on another device whose save this one hasn’t received yet: that is deleted again\./.test(o),
     'the restore screen does not say what comes back, and what can be deleted again');
 });
 
