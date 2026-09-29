@@ -20871,6 +20871,26 @@ test('reload gate: a newer page’s record whose "fmt" key is spelled with an es
   eq(push(own), [1, false, 'Edited', false], 'control: an escaped key in this page’s format');
 });
 
+test('reload gate: SETUP.md says how the owner recovers a record whose fmt is too high, starting with each device’s copy', () => {
+  // Security review of the gate, finding 4: nothing in the app lifts such a hold.
+  const at = SETUP.indexOf('## If a page stays "out of date" after a reload (the reload gate)');
+  ok(at > 0, 'SETUP.md has no recovery section');
+  const sec = SETUP.slice(at);
+  const first = sec.indexOf('Download or copy each device\'s stored record before changing `fmt`');
+  ok(first > 0 && first < sec.indexOf('\n### '), 'the recovery does not start with keeping each device’s copy');
+  const steps = ['### 1. First, download or copy each device', '### 2.', '### 3. Set `fmt` back', '### 4.', '### 5. Reload every device'].map((h) => sec.indexOf(h));
+  ok(steps.every((i, n) => i > 0 && (n === 0 || i > steps[n - 1])), 'the steps are missing or out of order');
+  // The names it tells the owner to type are the real ones.
+  const KEY = /var KEY = '([^']+)'/.exec(SCRIPT)[1];
+  ok(sec.split(`localStorage.getItem('${KEY}')`).length === 2 && sec.includes(`var k = '${KEY}'`), 'the storage key in SETUP.md is not the page’s');
+  ok(/CREATE TABLE pack_state \(/.test(readFileSync(join(ROOT, 'migrations/0001_init.sql'), 'utf8')) &&
+    /FROM pack_state/.test(sec) && /UPDATE pack_state SET json = json_set\(json, '\$\.fmt', 1\)/.test(sec), 'the D1 steps');
+  ok(/Firestore Database\*\* → \*\*Data\*\* →\s+`packs` → the Pack ID document → the `json` field/.test(sec), 'the Firestore steps');
+  // …and the page's own note on rolling back points at it.
+  ok(/ROLLING BACK[\s\S]{0,400}SETUP\.md \("If a page stays out of date after a\s*\/\/ reload"\)/.test(SCRIPT.slice(0, SCRIPT.indexOf('var PACK_FORMAT = '))),
+    'PACK_FORMAT has no note on rolling back');
+});
+
 test('reload gate: holding stops every timer, drops a waiting choice, and draws the pill and sync card once', () => {
   const ctx = vm.createContext({});
   vm.runInContext(`var cleared = [], renders = 0, pills = 0, state = {};
