@@ -13808,6 +13808,32 @@ test('api docs: the shared Firebase project is written down as an accepted risk,
     'the page\'s own HSTS changed; the cutover\'s HSTS settings say to match it');
 });
 
+test('api docs: staging\'s Access lock is required, a staging sign-in is not said to end in an hour, and the guide says how to end it', () => {
+  // Security re-review of stage A, follow-up 3.
+  const DOC = readFileSync(join(ROOT, 'docs/cloudflare-setup.md'), 'utf8');
+  // A token lasts an hour; the refresh token in staging's storage keeps making new ones.
+  ok(!/for up to an hour/.test(DOC), 'the guide still says a staging sign-in works on the live pack for up to an hour');
+  const risk = DOC.slice(DOC.indexOf('#### One Firebase project: an accepted risk'), DOC.indexOf('### E. Moving the pack'));
+  ok(/refresh token/.test(risk) && /until the account signs out there or\n  its sessions are revoked/.test(risk), 'the risk does not say the refresh token keeps a sign-in alive');
+  // How to end one: sign out and close the window, and, if it may have been misused, disable and revoke.
+  ok(/sign out on `staging`, then close the private window/.test(risk), 'no routine sign-out on staging');
+  ok(/Authentication\*\* → \*\*Users\*\* → find the account →\n  its menu → \*\*Disable account\*\*/.test(risk), 'no way to disable a misused account');
+  ok(/revokeRefreshTokens/.test(risk) && /treat the next hour as exposed/.test(risk), 'no revocation, or no word on the token already made');
+  // The Access lock: required for staging, in the section, the checklist and the risk.
+  ok(!/Recommended: lock previews|recommended-lock-previews/.test(DOC), 'the Access lock is still only recommended');
+  const lock = DOC.slice(DOC.indexOf('### Lock previews to you (required before staging)'), DOC.indexOf('## What the Content-Security-Policy blocks'));
+  ok(lock.length > 100 && /For \*\*`staging` it is required\*\*/.test(lock) && /Do not deploy to `staging` until the lock is on/.test(lock),
+    'the lock section does not make the lock required for staging');
+  const stagingD = DOC.slice(DOC.indexOf('### D. A preview you can sign in to'), DOC.indexOf('What to check on staging'));
+  ok(/- \[ \] \*\*Required:\*\* put the Cloudflare Access lock/.test(stagingD) && /No lock, no staging deploy\./.test(stagingD),
+    'the staging checklist does not require the lock');
+  ok(/The Cloudflare Access lock on preview deployments is \*\*required\*\*/.test(risk), 'the accepted risk still only says to keep the lock');
+  // Every in-page link in the guide lands on a heading (GitHub's slugs).
+  const slug = (h) => h.trim().toLowerCase().replace(/[^\w\- ]/g, '').replace(/ /g, '-');
+  const heads = (DOC.match(/^#{1,6} .*$/gm) || []).map((h) => slug(h.replace(/^#+ /, '')));
+  for (const [, a] of DOC.matchAll(/\]\(#([^)]+)\)/g)) ok(heads.indexOf(a) >= 0, 'a link to #' + a + ' lands on no heading');
+});
+
 atest('api deployment: a database answers only the deployment its own row names (DEPLOY_ENV), and nothing is touched otherwise', async () => {
   // Security review of stage A, finding 1: a preview bound to the live database must answer nothing.
   const cases = [

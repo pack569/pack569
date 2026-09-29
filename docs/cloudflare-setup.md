@@ -160,17 +160,24 @@ The data stays in that one private window. It never goes to Cloudflare, Firestor
 or CI, and the live pack is never written. This covers every leader screen and "Preview as
 parent". It can't test sign-in, roles or sync between devices.
 
-### Recommended: lock previews to you
+### Lock previews to you (required before staging)
 
 Cloudflare Access (free up to 50 people) can put a sign-in in front of preview links. In the
 Pages project → Settings → General, turn on the access policy for preview deployments, and
 allow only your own account. Production is not affected.
 
+For a plain preview link this is recommended: the page there is device-only and nobody can
+sign in. For **`staging` it is required**: real Google accounts sign in there, and those
+sign-ins work on the live pack too ([D](#d-a-preview-you-can-sign-in-to-stagingpack569pagesdev)).
+Do not deploy to `staging` until the lock is on and you have checked that it covers the
+staging link.
+
 **Unverified:** Cloudflare says this covers each deployment's own hash link
 (`<hash>.pack569.pages.dev`), not `*.pages.dev` as a whole or custom domains. It is not
-confirmed whether it also covers the `preview-<commit>` branch alias the workflow creates.
-Before relying on it, open both links from the run summary in a private window and check
-that each asks you to sign in.
+confirmed whether it also covers the `preview-<commit>` and `staging` branch aliases the
+workflow creates. Before relying on it, open the links from the run summary in a private
+window and check that each asks you to sign in. If `https://staging.pack569.pages.dev` does
+not, stop and ask before deploying there again.
 
 ## What the Content-Security-Policy blocks
 
@@ -384,8 +391,10 @@ live pack's sign-in; read the next part before you add it.
 - [ ] Firebase console → Authentication → Settings → **Authorized domains** → Add
       `staging.pack569.pages.dev`. (If the Google API key has a website restriction in
       Google Cloud, add it there too.)
-- [ ] Put the Cloudflare Access lock on preview deployments ([above](#recommended-lock-previews-to-you))
-      and check it covers the staging link, since real Google accounts can sign in there.
+- [ ] **Required:** put the Cloudflare Access lock on preview deployments
+      ([above](#lock-previews-to-you-required-before-staging)), and check in a private window
+      that `https://staging.pack569.pages.dev` asks you to sign in to Cloudflare before it
+      shows the page. Real Google accounts sign in there. No lock, no staging deploy.
 
 To deploy there: Actions → **website** → Run workflow, from the branch, with `deploy_target`
 **`staging`**. The build is the branch's page with `BACKEND = 'api'`; nothing else in it
@@ -415,9 +424,12 @@ made on pack569.com. So:
 
 - **The code running on `staging` handles real sign-ins that also work on the live pack.**
   When a leader signs in on `staging`, the page there holds a token that the live API would
-  accept as that leader, with their live role, for up to an hour. Code on `staging` that
-  sent that token somewhere else, or used it against pack569.com itself, could read or change
-  the live pack as them. The database separation above does not stop this; it only keeps the
+  accept as that leader, with their live role. Each token lasts an hour, but that is not the
+  limit: Firebase also keeps a refresh token in that browser's storage for `staging`, and
+  mints a new hour-long token from it whenever asked, until the account signs out there or
+  its sessions are revoked. Code on `staging` that sent those tokens somewhere else, or used
+  them against pack569.com itself, could read or change the live pack as that leader for as
+  long as that lasts. The database separation above does not stop this; it only keeps the
   *preview's own server* off the live database.
 - The same holds the other way: a token from pack569.com is accepted by a preview's server,
   but that server only has the made-up pack in it.
@@ -430,8 +442,18 @@ accept the risk and keep one Firebase project.** What that asks of you instead:
   hand-started run of the website workflow, which anyone with write access to the repository
   can start, so keep that list to yourself. Deploying a branch to `staging` means trusting
   its code with real sign-ins: the same trust as merging it.
-- Keep the Cloudflare Access lock on preview deployments (above), so only you can open
-  `staging` and sign in there. Sign in there only with your own account.
+- The Cloudflare Access lock on preview deployments is **required** (above), so only you can
+  open `staging` and sign in there. Sign in there only with your own account, in a private
+  window, and when you are done: sign out on `staging`, then close the private window. Signing
+  out removes the refresh token from that browser; closing the window throws away the rest.
+- **If a sign-in on `staging` may have been misused** (you deployed code you now doubt, or
+  someone else got in): Firebase console → **Authentication** → **Users** → find the account →
+  its menu → **Disable account**. A disabled account gets no new tokens, so the refresh token
+  is dead; a token already made still works on the live API until its hour runs out, so
+  treat the next hour as exposed. Then revoke the account's sessions before you enable it
+  again (Firebase's `revokeRefreshTokens`, one Admin SDK call; if the console does not offer
+  it, ask for help rather than re-enabling). Disabling your own account signs you out of the
+  live pack too, so make sure another admin can still get in first.
 - If you ever stop being the only person who can run the workflow, or want other leaders to
   try `staging`, revisit this: that is when the second Firebase project is worth making.
 
