@@ -8705,7 +8705,7 @@ test('Firestore: an editor’s copy waiting on a choice is dropped for "view-onl
     var state = { rev: 2, packName: 'Mine', scouts: [{ id: 'a' }] };
     var sync = { session: 1, backend: firestoreBackend, docId: 'P', pack: firestoreBackend.open('P'), deviceId: 'dev1',
       user: { uid: 'me' }, myRole: 'editor', accountsUnavailable: false, ownerUid: 'someone-else', joinRejected: null,
-      membersUnsub: null, membersScope: null, membersDeniedAs: null, membersFromServer: false, members: [],
+      membersUnsub: null, membersScope: null, membersDeniedAs: null, membersFromServer: false, membersHeard: false, members: [],
       feed: 'doc', unsub: null, parentUnsub: null, mode: 'connecting', notice: '', firstSnap: true, remoteRec: null,
       conflict: null, dirty: false, clobber: false, pushTimer: null, packMissing: false };
     ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'feedForRole', 'recomputeMyRole',
@@ -8733,6 +8733,99 @@ test('Firestore: an editor’s copy waiting on a choice is dropped for "view-onl
   vm.runInContext("roster('viewer', { fromCache: false })", ctx);
   eq(got(), ['viewer', true, false, null, null, 'Newer', [TOAST]], 'the server’s "viewer" left the device waiting');
   eq(vm.runInContext('[txSets.length, sync.dirty]', ctx), [0, false], 'a viewer’s device wrote, or kept its copy to write');
+});
+
+test('Firestore: the server confirming a cached roster is heard, and a viewer’s first answer waits for the server’s word', () => {
+  // Review of cd7078e..4347cc6, open items A and B. The page's real members watch, role
+  // handling, pack feed and first-answer comparison, on the real Firestore adapter over the fake SDK.
+  const shared = { rev: 9, device: 'd2', json: JSON.stringify({ rev: 9, packName: 'Shared', scouts: [{ id: 'b' }] }) };
+  const empty = { rev: 9, device: 'd2', json: JSON.stringify({ rev: 9, packName: '' }) };
+  const TOAST = 'You’re now view-only, so this device took the pack’s shared copy.';
+  const world = () => fsAdapterCtx(`
+    var KEY = 'pack-popcorn-ledger-v1', removed = [], parentViewTimer = null, toasts = [], saves = 0, renders = 0;
+    var localStorage = { removeItem: function (k) { removed.push(k); } };
+    function freshState() { return { fresh: true }; }
+    function stopParentFeed() {} function subscribeParentView() {} function applyInvitesSubscription() {}
+    function applyJoinSubscription() {} function handleAccountsError() {} function ensureMyMemberDoc() { return null; }
+    function fixedSyncBlocked() { return false; } function fixedFeedBlocked() { return false; }
+    function holdPushes() { return false; } function scheduleParentViewRefresh() {} function render() { renders += 1; } function renderSyncPill() {}
+    function save() { saves += 1; } function showToast(m) { toasts.push(m); } function syncFail(e) { throw e; }
+    function clearTimeout() {} var timers = 0; function setTimeout() { timers += 1; return 't'; }
+    function normalizeState(p) { return p && typeof p === 'object' && !Array.isArray(p) ? JSON.parse(JSON.stringify(p)) : null; }
+    var ui = { tab: 'home', overlay: null };
+    var state = { rev: 2, packName: 'Mine', scouts: [{ id: 'a' }] };
+    var sync = { session: 1, backend: firestoreBackend, docId: 'P', pack: firestoreBackend.open('P'), deviceId: 'dev1',
+      user: { uid: 'me' }, myRole: 'editor', accountsUnavailable: false, ownerUid: 'someone-else', joinRejected: null,
+      membersUnsub: null, membersScope: null, membersDeniedAs: null, membersFromServer: false, membersHeard: false, members: [],
+      feed: 'doc', unsub: null, parentUnsub: null, mode: 'connecting', notice: '', firstSnap: true, remoteRec: null,
+      conflict: null, dirty: false, clobber: false, pushTimer: null, packMissing: false };
+    ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'feedForRole', 'recomputeMyRole',
+       'stopLocalWrites', 'stopDocFeed', 'subscribeDoc', 'applyRoleSubscription', 'applyMembersSubscription', 'isStateEmpty',
+       'stateFingerprint', 'mergeRemoteAppendOnly', 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush'].map(decl).join('\n')}
+    subscribeDoc(1);
+    applyMembersSubscription(1);
+    function roster(role, md) {
+      watches[1].next(qsOf([{ id: 'me', data: function () { return { role: role }; } }], md));
+    }
+    function pack(rec) { reads['packs/P'] = rec; watches[0].next(snapOf('packs/P', {})); }`);
+  const got = (ctx) => JSON.parse(JSON.stringify(vm.runInContext(`[sync.myRole, sync.membersFromServer, canEdit(),
+    sync.conflict && sync.conflict.rev, ui.overlay && ui.overlay.kind, state.packName, toasts]`, ctx)));
+  const wrote = (ctx) => vm.runInContext('[txSets.length, sync.dirty, timers]', ctx);
+
+  // A: the roster watch asks Firestore for metadata changes, as the pack and join watches do.
+  const a = world();
+  eq(vm.runInContext('[watches[1].ref.path, watches[1].opts]', a), ['packs/P/members', { includeMetadataChanges: true }],
+    'the members watch does not ask for metadata changes');
+  // B: a CACHED roster says viewer, then the pack's first answer differs from this device's
+  // copy. The device keeps its copy and is asked, as an editor would be; nothing is written.
+  vm.runInContext("roster('viewer', { fromCache: true })", a);
+  vm.runInContext(`pack(${JSON.stringify(shared)})`, a);
+  eq(got(a), ['viewer', false, false, 9, 'sync-conflict', 'Mine', []], 'a cached "viewer" took the shared copy at the first answer');
+  eq(wrote(a), [0, false, 0], 'a device waiting on the server’s word wrote, or set out to');
+  // A: the server confirms the cached roster unchanged (metadata only). That answer reaches the
+  // app, and the server's "viewer" takes the shared copy, says so, and writes nothing.
+  vm.runInContext("roster('viewer', { fromCache: false })", a);
+  eq(got(a), ['viewer', true, false, null, null, 'Shared', [TOAST]], 'the server confirming "viewer" left the choice open');
+  eq(wrote(a), [0, false, 0], 'a viewer’s device wrote');
+  // …and an event that changes neither the roster nor where it came from (our own write
+  // confirmed) is not passed on: no role handling, no redraw.
+  const before = vm.runInContext('[renders, sync.members]', a);
+  vm.runInContext("roster('viewer', { fromCache: false, hasPendingWrites: true }); roster('viewer', { fromCache: false })", a);
+  const after = vm.runInContext('[renders, sync.members]', a);
+  ok(after[0] === before[0] && after[1] === before[1], 'a metadata-only event that changed nothing reached the app');
+  // A real change still does, and so does going back to the cache.
+  vm.runInContext("roster('parent', { fromCache: false })", a);
+  eq(vm.runInContext('sync.myRole', a), 'parent', 'a changed roster did not reach the app');
+  vm.runInContext("roster('parent', { fromCache: true })", a);
+  eq(vm.runInContext('sync.membersFromServer', a), false, 'a roster back to the cache still counts as the server’s');
+
+  // B: the server said viewer before the pack's first answer: the shared copy, silently, as before.
+  const b = world();
+  vm.runInContext(`roster('viewer', { fromCache: false }); pack(${JSON.stringify(shared)})`, b);
+  eq(got(b), ['viewer', true, false, null, null, 'Shared', []], 'a viewer on the server’s word is not shown the shared copy');
+  eq(wrote(b), [0, false, 0], 'a viewer’s device wrote');
+  // B: the members watch has not answered yet (the pack feed is subscribed first): the role is
+  // the session start's server read, so a viewer takes the shared copy silently, as before.
+  const s = world();
+  vm.runInContext(`sync.myRole = 'viewer'; pack(${JSON.stringify(shared)})`, s);
+  eq(got(s), ['viewer', false, false, null, null, 'Shared', []], 'a viewer’s first answer before the members watch answered');
+  eq(wrote(s), [0, false, 0], 'a viewer’s device wrote');
+  // …and a new session has not heard the members yet either.
+  ok(/sync\.membersFromServer = false;\n\s*sync\.membersHeard = false;/.test(slice('clearAccountsRuntime')), 'clearAccountsRuntime keeps the last session’s membersHeard');
+  // B: an EMPTY shared copy — a viewer never seeds it, and takes it only on the server's word.
+  const c = world();
+  vm.runInContext(`roster('viewer', { fromCache: true }); pack(${JSON.stringify(empty)})`, c);
+  eq(got(c), ['viewer', false, false, 9, 'sync-conflict', 'Mine', []], 'a cached "viewer" took the empty shared copy');
+  eq(wrote(c), [0, false, 0], 'a cached "viewer" seeded the shared copy');
+  vm.runInContext("roster('viewer', { fromCache: false })", c);
+  eq(got(c), ['viewer', true, false, null, null, '', [TOAST]], 'the server’s "viewer" did not take the empty shared copy');
+  const d = world();
+  vm.runInContext(`roster('viewer', { fromCache: false }); pack(${JSON.stringify(empty)})`, d);
+  eq([got(d), wrote(d)], [['viewer', true, false, null, null, '', []], [0, false, 0]], 'a viewer on the server’s word and an empty shared copy');
+  // An editor, cached or not, still seeds an empty shared copy as before.
+  const e = world();
+  vm.runInContext(`roster('editor', { fromCache: true }); pack(${JSON.stringify(empty)})`, e);
+  eq([got(e)[4], wrote(e)], [null, [0, true, 1]], 'an editor no longer seeds an empty shared copy');
 });
 
 test('the Firestore adapter hands the app plain records, keeps error codes, and writes exactly what it is handed', () => {

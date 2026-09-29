@@ -8612,6 +8612,7 @@
     joinLoaded: false,         // the join config has answered (either way) — parent-view writes wait on it
     joinRejected: null,        // null | 'closed' | 'badcode' | 'nolink' | 'removed' — signed in, but the pack won't take them
     membersFromServer: false,  // the last members snapshot came from the server, not the cache
+    membersHeard: false,       // a members snapshot has come at all (before one, myRole is the session start's)
     deviceId: (function () {
       try {
         var id = localStorage.getItem(SYNC_DEVICE_KEY);
@@ -8911,6 +8912,7 @@
     sync.joinRejected = null;
     sync.joinLoaded = false;
     sync.membersFromServer = false;
+    sync.membersHeard = false;
     parentViewFingerprint = null;
     clearTimeout(parentViewTimer);
     parentViewTimer = null;
@@ -9050,19 +9052,29 @@
     putPackMeta: function (docId, data) { return this.mods.fs.setDoc(this.mods.fs.doc(this.db, 'packmeta', docId), data); },
     // Members: scope 'all' watches the roster (leaders only); 'self' watches only uid's own
     // doc, and reports [] when it does not exist. Each member carries its doc id as `uid`.
+    // includeMetadataChanges, as for the pack record: the server confirming an unchanged
+    // cached roster is what sets sync.membersFromServer, and without it no event comes, so a
+    // choice waiting on the server's word never ends (review of cd7078e..4347cc6, open item A).
+    // Only that answer is wanted: an event whose members and fromServer are both as before
+    // (our own write confirmed, say) is not passed on, so the app hears what it heard before.
     subscribeMembers: function (docId, scope, uid, onNext, onErr) {
       var self = this, fs = self.mods.fs;
       var ref = scope === 'all'
         ? fs.collection(self.db, 'packs', docId, 'members')
         : fs.doc(self.db, 'packs', docId, 'members', uid);
-      return fs.onSnapshot(ref, function (snap) {
+      var last = null;
+      return fs.onSnapshot(ref, { includeMetadataChanges: true }, function (snap) {
         var arr = [];
         if (scope === 'all') {
           snap.forEach(function (d) { var m = d.data() || {}; m.uid = d.id; arr.push(m); });
         } else if (snap.exists()) {
           var me = snap.data() || {}; me.uid = snap.id; arr.push(me);
         }
-        onNext(arr, self.metaOf(snap));
+        var meta = self.metaOf(snap), seen = null;
+        try { seen = meta.fromServer + '|' + JSON.stringify(arr); } catch (e) { seen = null; }
+        if (seen !== null && seen === last) return;
+        last = seen;
+        onNext(arr, meta);
       }, onErr);
     },
     getMember: function (docId, uid) { return this.get(this.ref(docId, 'members', uid)); },
@@ -10202,6 +10214,7 @@
       // server may tell us we were removed (applyRoleSubscription wipes this device on that).
       // A missing meta is never read as a server answer.
       sync.membersFromServer = !!(meta && meta.fromServer === true);
+      sync.membersHeard = true;
       recomputeMyRole();
       // A role change can arrive at any time (an admin promoting a parent to editor, or
       // demoting an editor to parent) — move this session onto the matching feed.
@@ -11597,14 +11610,21 @@
         save();
         return;
       }
-      if (isStateEmpty(remoteNorm)) {
-        if (canEdit()) { sync.dirty = true; clearTimeout(sync.pushTimer); sync.pushTimer = setTimeout(syncPush, 800); } // M-3: read-only viewers never seed
-        else adoptRemote(d, {}); // a viewer just takes the (empty) cloud copy
+      if (isStateEmpty(remoteNorm) && canEdit()) { // M-3: read-only viewers never seed
+        sync.dirty = true; clearTimeout(sync.pushTimer); sync.pushTimer = setTimeout(syncPush, 800);
         return;
       }
-      // Both sides have real data and they differ. A read-only viewer can't "keep local",
-      // so don't offer the choice — just show them the cloud copy (M-3).
-      if (!canEdit()) { adoptRemote(d, {}); return; }
+      // Both sides differ (or the cloud copy is empty). A read-only viewer can't "keep local",
+      // so don't offer the choice — just show them the cloud copy (M-3). Only on the server's
+      // word, as applyRoleSubscription (review of cd7078e..4347cc6, open item B): "viewer" from a
+      // cached roster can be an old one, and would throw away an editor's copy. Before the
+      // members watch has answered at all, the role is the session start's own read of this
+      // account's member doc, a server read (the pack feed is subscribed first, so a viewer's
+      // first answer usually comes then, and is taken silently, as it always was). After a
+      // cached answer, this device is asked like an editor until the server's; nothing is
+      // written while the choice waits ("keep mine" refuses a viewer), and the server's
+      // "viewer" takes the shared copy then (applyRoleSubscription, with a toast).
+      if (!canEdit() && (sync.membersFromServer || !sync.membersHeard)) { adoptRemote(d, {}); return; }
       // Editors/admins pick which copy wins (two-tap each way).
       ui.overlay = { kind: 'sync-conflict', remote: d };
       sync.conflict = d;
