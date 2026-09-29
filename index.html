@@ -9323,6 +9323,11 @@
             var mark = f.what === 'pack' ? r.rev : r.viewAt;
             // A /rev answer without the mark this feed goes by is not the server's (item 3 below).
             if (f.what === 'pack' ? typeof mark !== 'number' : !(mark === null || typeof mark === 'number')) {
+              // No rev for the pack feed is also what the server answers someone who is no
+              // longer a leader: the members are re-read in this same round, as after a refusal,
+              // so a device whose leader role was taken away hears it now, not at the next slow
+              // read (security review of 260f467..db851c7, F5).
+              if (f.what === 'pack') tick.denied = true;
               self.miss(f, self.fail('unavailable', 0, null), tick);
               return null;
             }

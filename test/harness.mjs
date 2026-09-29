@@ -15665,6 +15665,22 @@ atest('api adapter: an answer of the wrong shape is "unavailable", never "none",
   const rv = apiAdapterCtx((path) => /\/rev$/.test(path) ? jsonRes(200, { viewAt: 5 }) : jsonRes(200, good.pack));
   await vm.runInContext('var got = [], errs = []; apiBackend.subscribePack({ docId: "P" }, function (d) { got.push(d); }, function (e) { errs.push(e.code); }); apiBackend.pollNow()', rv);
   eq(JSON.parse(JSON.stringify(vm.runInContext('[got, errs]', rv))), [[], ['unavailable']], 'a /rev with no rev');
+  // …and, since no rev is what the server tells someone who is no longer a leader, the members are
+  // re-read in the same round, as after a refusal (security review of 260f467..db851c7, F5).
+  for (const [revBody, want] of [[{ viewAt: 5 }, 1], [{ rev: 2, viewAt: 5 }, 0]]) {
+    let noRev = false, reads = 0;
+    const mc = apiAdapterCtx((path) => {
+      if (/\/rev$/.test(path)) return jsonRes(200, noRev ? revBody : { rev: 2, viewAt: 5 });
+      if (/\/members$/.test(path)) { reads += 1; return jsonRes(200, good.roster); }
+      return jsonRes(200, good.pack);
+    });
+    await vm.runInContext(`apiBackend.subscribePack({ docId: "P" }, function () {}, function () {});
+      apiBackend.subscribeMembers("P", "all", "u1", function () {}, function () {}); apiBackend.pollNow()`, mc);
+    reads = 0;
+    noRev = true;
+    await vm.runInContext('apiBackend.poll(false)', mc);
+    eq(reads, want, `a /rev of ${JSON.stringify(revBody)}: the members were ${want ? 'not ' : ''}re-read in the same round`);
+  }
   // The push's own read, and a 409 whose copy is not a record: no PUT on top of either.
   const puts = [];
   const px = apiAdapterCtx((path, init) => {
