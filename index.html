@@ -13238,6 +13238,12 @@
       //     so it scheduled a seed (or a 10 s retry), and the owner copied the pack in before
       //     that push ran.
       if (remote && (sync.firstSnap || (be.serverRevs && !sync.remoteRec))) return { record: null, result: { unheard: remote } };
+      // The reload gate, again, of the record parsed: it is about to be merged into or written
+      // over, and a key the text scan misses ("fmt") is still a newer page's (onRemoteSnap).
+      // One parse a push; an unreadable record is written over as before.
+      var remoteParsed = null;
+      if (remote) { try { remoteParsed = JSON.parse(typeof remote.json === 'string' ? remote.json : ''); } catch (e) { /* unreadable */ } }
+      if (formatAhead(remoteParsed)) return { record: null, result: { newer: true } };
       var remoteRev = remote && typeof remote.rev === 'number' ? remote.rev : 0;
       // BACKEND 'api' (be.serverRevs): the server stores exactly remoteRev + 1, and from the
       // pack record's first answer on, state.rev is a rev the server gave this device. Any other
@@ -13400,6 +13406,8 @@
     if (packFormatHeld() || packFormatAhead(d)) { holdNewerFormat(); return false; }
     var parsed = null;
     try { parsed = JSON.parse(typeof d.json === 'string' ? d.json : ''); } catch (e) { /* corrupt remote */ }
+    // …and asked of the record as parsed, which the text scan can miss (onRemoteSnap).
+    if (formatAhead(parsed)) { holdNewerFormat(); return false; }
     var splitRows = [];   // Treasurer sign-off on C3 — rows the copy held in two versions
     var ns = normalizeState(parsed, splitRows);
     if (!ns) return false;
@@ -13473,12 +13481,19 @@
       return;
     }
     if (meta && meta.pendingWrites) return; // our own optimistic write
+    // The reload gate — a first answer is parsed (to compare it, below), so its own fmt is asked
+    // too, before anything is kept from it: a key the text scan misses ("fmt") is still held
+    // (security review of the gate, finding 3). A later answer is parsed where it is taken or
+    // merged (adoptRemote, syncPush), and asked there.
+    var parsed = null;
+    if (wasFirst) {
+      try { parsed = JSON.parse(typeof rec.json === 'string' ? rec.json : ''); } catch (e) { /* corrupt remote */ }
+      if (formatAhead(parsed)) { holdNewerFormat(); return; }
+    }
     if (fromServer) sync.remoteRec = { rev: rec.rev, device: rec.device, json: rec.json };
     var d = rec;
     var remoteRev = typeof d.rev === 'number' ? d.rev : 0;
     if (wasFirst) {
-      var parsed = null;
-      try { parsed = JSON.parse(typeof d.json === 'string' ? d.json : ''); } catch (e) { /* corrupt remote */ }
       var remoteNorm = normalizeState(parsed);
       if (!remoteNorm) return; // unreadable cloud copy — leave local data alone
       // BACKEND 'api': from the first answer on, state.rev is the server's rev — whichever copy

@@ -20828,6 +20828,49 @@ test('reload gate, Firestore: a save that reads a newer page’s record writes n
     'a newer page’s record was taken');
 });
 
+test('reload gate: a newer page’s record whose "fmt" key is spelled with an escape is still held, as a first answer, when taken, and under a push', () => {
+  // Security review of the gate, finding 3: the text scan looks for a literal "fmt"; JSON.parse
+  // reads "fmt" as the same key.
+  const escRec = (rev) => {
+    const r = newerRec(rev);
+    return Object.assign(r, { json: r.json.replace('"fmt":', '"\\u0066mt":') });
+  };
+  const rec = escRec(12);
+  ok(!/"fmt"/.test(rec.json) && JSON.parse(rec.json).fmt === NEWER_FMT, 'the record is not spelled as meant (the test proves nothing)');
+  const mine = { rev: 2, packName: 'Old', scouts: [{ id: 'a' }] };
+  const LOGS = { storefronts: [], entries: [], events: [], ledger: [], leaders: [], fundraisers: [], inventory: { distributions: [] } };
+  // The first answer, on a device with its own copy and on an empty one.
+  for (const local of [mine, { rev: 0, packName: '', scouts: [] }]) {
+    const ctx = fsFeedCtx(local);
+    eq(vm.runInContext(`packFormatAhead(${JSON.stringify(rec)})`, ctx), false, 'the text scan now catches it (the test proves nothing)');
+    vm.runInContext(`reads['packs/P'] = ${JSON.stringify(rec)}; watches[0].next(snapOf('packs/P', {})); runTimers();`, ctx);
+    eq(vm.runInContext('[sync.newerFormat, state.packName, state.rev, txSets.length, sync.remoteRec, !!sync.conflict]', ctx),
+      [true, local.packName, local.rev, 0, null, false], `first answer (${local.packName || 'empty'})`);
+  }
+  // Taken: a later answer to a device with nothing unsaved (and the chooser's "Use cloud copy").
+  const ad = fsFeedCtx(mine);
+  vm.runInContext(`reads['packs/P'] = ${JSON.stringify({ rev: 2, device: 'd2', json: JSON.stringify(mine) })};
+    watches[0].next(snapOf('packs/P', {}));
+    reads['packs/P'] = ${JSON.stringify(escRec(13))}; watches[0].next(snapOf('packs/P', {})); runTimers();`, ad);
+  eq(vm.runInContext('[sync.newerFormat, state.packName, state.rev, txSets.length]', ad), [true, 'Old', 2, 0], 'a later answer was taken');
+  const ad2 = fsFeedCtx(mine);
+  eq(vm.runInContext(`[adoptRemote(${JSON.stringify(rec)}, {}), state.packName, !!sync.newerFormat]`, ad2), [false, 'Old', true], 'adoptRemote took it');
+  // Under a push: another device's save this one has not heard yet.
+  const push = (remote) => {
+    const ctx = fsFeedCtx(Object.assign({}, mine, LOGS));
+    vm.runInContext(`reads['packs/P'] = ${JSON.stringify({ rev: 2, device: 'd2', json: JSON.stringify(Object.assign({}, mine, LOGS)) })};
+      watches[0].next(snapOf('packs/P', {}));
+      reads['packs/P'] = ${JSON.stringify(remote)};
+      state.packName = 'Edited'; scheduleSyncPush(); runTimers();`, ctx);
+    return JSON.parse(JSON.stringify(vm.runInContext('[txSets.length, !!sync.newerFormat, state.packName, sync.dirty]', ctx)));
+  };
+  eq(push(Object.assign(escRec(5), { json: escRec(5).json.replace('"scouts"', '"storefronts":[],"entries":[],"events":[],"ledger":[],"leaders":[],"fundraisers":[],"scouts"') })),
+    [0, true, 'Edited', true], 'a push over it');
+  // Control: the same record in this page's format is merged and written over as ever.
+  const own = { rev: 5, device: 'd2', json: JSON.stringify(Object.assign({ rev: 5, packName: 'Other', scouts: [{ id: 'a' }] }, LOGS)).replace('"rev":5,', '"rev":5,"\\u0066mt":1,') };
+  eq(push(own), [1, false, 'Edited', false], 'control: an escaped key in this page’s format');
+});
+
 test('reload gate: holding stops every timer, drops a waiting choice, and draws the pill and sync card once', () => {
   const ctx = vm.createContext({});
   vm.runInContext(`var cleared = [], renders = 0, pills = 0, state = {};
