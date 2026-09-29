@@ -11,9 +11,15 @@
 // It lands only if the stored rev is still <rev>, and the new rev is <rev> + 1. Otherwise 409
 // with the stored copy, the same shape as GET, so the page can run mergeRemoteAppendOnly on
 // it and try again. The body is checked to be a JSON object and then stored as it came.
+//
+// AWAITING IMPORT (production, OWNER_MODE fixed): the pack record is created only by the
+// owner's one-time import. Until then a PUT from rev 0 is 409 {error:'awaiting-import',
+// code:'failed-precondition'} — not a conflict to merge and retry, but "the owner has not
+// copied the pack over yet". GET answers {exists:false, rev:0} meanwhile. Previews create
+// the record on the first save.
 
-import { route, json, readText, refuse, forbidden, badRequest, MAX_STATE_BYTES } from '../../../_lib/http.js';
-import { withMember } from '../../../_lib/pack.js';
+import { route, json, readText, refuse, forbidden, badRequest, awaitingImport, MAX_STATE_BYTES } from '../../../_lib/http.js';
+import { withMember, fixedOwnerMode } from '../../../_lib/pack.js';
 import { canReadPack, canWritePack } from '../../../_lib/rules.js';
 
 function stateOut(row) {
@@ -29,7 +35,7 @@ async function get({ db, packId, role }) {
   return json(200, stateOut(await readState(db, packId)));
 }
 
-async function put({ request, db, packId, role }) {
+async function put({ request, env, db, packId, role }) {
   if (!canWritePack(role)) return forbidden();
   const m = /^\s*"?(\d{1,15})"?\s*$/.exec(request.headers.get('if-match') || '');
   if (!m) refuse(badRequest('if-match'));
@@ -45,8 +51,21 @@ async function put({ request, db, packId, role }) {
   let r = await db.prepare('UPDATE pack_state SET rev = rev + 1, json = ?, device = ?, updated_at = ? WHERE pack_id = ? AND rev = ?')
     .bind(text, device, now, packId, base).run();
   if (!(r.meta && r.meta.changes === 1) && base === 0) {
-    r = await db.prepare('INSERT INTO pack_state (pack_id, rev, json, device, updated_at) VALUES (?, 1, ?, ?, ?) ' +
-      'ON CONFLICT (pack_id) DO NOTHING').bind(packId, text, device, now).run();
+    // In production the pack record is CREATED only by the import. Otherwise the first leader
+    // to save after the switch — on an empty pack here, before the owner has copied it in —
+    // would create a near-empty record, and import refuses any pack that has one, so the real
+    // pack could never be brought across (security review of stage A, finding 4). So until
+    // import_lock exists, the create is refused, in the same statement. Previews
+    // (first-signer) create on the first save, as Firestore did.
+    const fixed = fixedOwnerMode(env);
+    r = await db.prepare('INSERT INTO pack_state (pack_id, rev, json, device, updated_at) SELECT ?, 1, ?, ?, ? ' +
+      'WHERE ? = 0 OR EXISTS (SELECT 1 FROM import_lock WHERE pack_id = ?) ON CONFLICT (pack_id) DO NOTHING')
+      .bind(packId, text, device, now, fixed ? 1 : 0, packId).run();
+    if (!(r.meta && r.meta.changes === 1) && fixed) {
+      const cur = await readState(db, packId);
+      if (!cur) return awaitingImport();
+      return json(409, Object.assign({ error: 'conflict', code: 'aborted' }, stateOut(cur)));
+    }
   }
   if (r.meta && r.meta.changes === 1) return json(200, { rev: base + 1, updatedAt: now });
   return json(409, Object.assign({ error: 'conflict', code: 'aborted' }, stateOut(await readState(db, packId))));

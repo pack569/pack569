@@ -18,6 +18,8 @@
 //                        Firestore's packmeta did.
 //   PACK_OWNER_UID       (secret) the owner's Firebase account id, copied from Firestore's
 //                        packmeta document. Unset in fixed mode means no owner and no import.
+//                        It is written to packs.owner_uid only when that account signs in,
+//                        and from then on it can never change.
 
 import { verifyIdToken, TokenError } from './token.js';
 import { refuse, unauthenticated, notFound, unavailable } from './http.js';
@@ -59,12 +61,21 @@ export async function database(env) {
   return env.DB;
 }
 
+// Production's rule for who owns a pack (OWNER_MODE 'fixed', the default). Also what decides
+// that a pack starts empty until the owner copies it in (api/pack/[id]/index.js PUT).
+export const fixedOwnerMode = (env) => !(env && env.OWNER_MODE === 'first-signer');
+
 // The owner an unowned pack gets, or null. See OWNER_MODE above. A caller who arrived on a
 // sign-up link never claims a pack (the page: "a join-link visitor must NEVER claim ownership").
+// In fixed mode the owner is written only when PACK_OWNER_UID ITSELF signs in (security review
+// of stage A, finding 3). The owner is permanent once written (the packs_owner_is_permanent
+// trigger), so writing it on anyone's sign-in would make a mistyped PACK_OWNER_UID permanent
+// the first time a parent opened the page; this way a typo just means nobody is the owner yet,
+// and correcting the secret fixes it.
 export function ownerClaim(env, uid, viaJoinLink) {
-  if (env && env.OWNER_MODE === 'first-signer') return viaJoinLink ? null : uid;
+  if (!fixedOwnerMode(env)) return viaJoinLink ? null : uid;
   const fixed = env && typeof env.PACK_OWNER_UID === 'string' ? env.PACK_OWNER_UID.trim() : '';
-  return UID_RE.test(fixed) ? fixed : null;
+  return UID_RE.test(fixed) && uid === fixed ? fixed : null;
 }
 
 // The signed-in account, or a 401 (503 if Google's keys cannot be fetched).

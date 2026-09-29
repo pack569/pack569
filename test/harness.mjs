@@ -13392,8 +13392,18 @@ atest('api session: the first Google sign-in claims an unowned pack, as admin, f
 atest('api session: in production (OWNER_MODE fixed) only PACK_OWNER_UID is the owner, and with none set there is no owner', async () => {
   const w = await apiWorld({ OWNER_MODE: undefined, PACK_OWNER_UID: 'uid-owner' });   // unset means fixed
   const s = await w.session('stranger');
-  eq([s.body.role, s.body.ownerUid, s.body.rejected], [null, 'uid-owner', 'nolink'], 'a stranger signing in first claims nothing');
+  eq([s.body.role, s.body.ownerUid, s.body.rejected], [null, null, 'nolink'], 'a stranger signing in first claims nothing');
+  // Finding 3 (security review of stage A): nobody else's sign-in writes the owner — not a
+  // stranger's, not a join-link visitor's — so a mistyped PACK_OWNER_UID is never made permanent.
+  await w.session('newbie', 'Code123abc');
+  eq([w.one('SELECT owner_uid FROM packs').owner_uid, w.audit('owner.claim').length], [null, 0], 'the owner written on another account\'s sign-in');
   eq((await w.session('owner')).body.role, 'admin', 'the configured owner');
+  eq([w.one('SELECT owner_uid FROM packs').owner_uid, w.audit('owner.claim').map((a) => a.uid)], ['uid-owner', ['uid-owner']], 'the owner, on their own sign-in');
+  // A typo in the secret: nobody owns the pack, and correcting the secret still works.
+  const typo = await apiWorld({ OWNER_MODE: 'fixed', PACK_OWNER_UID: 'uid-owner-typo' });
+  for (const who of ['stranger', 'owner']) eq((await typo.session(who)).body.ownerUid, null, who + ' signing in under a mistyped PACK_OWNER_UID');
+  typo.env.PACK_OWNER_UID = 'uid-owner';
+  eq((await typo.session('owner')).body.role, 'admin', 'the owner after the secret is corrected');
   const w2 = await apiWorld({ OWNER_MODE: 'fixed' });
   const s2 = await w2.session('owner');
   eq([s2.body.role, s2.body.ownerUid], [null, null], 'fixed mode with no PACK_OWNER_UID');
@@ -13834,6 +13844,32 @@ atest('api import: only the pack owner, only into an empty pack, only once — a
   await w2.call('owner', 'PUT', 'pack', null, { body: { scouts: [] }, headers: { 'if-match': '0' } });
   denied(await w2.call('owner', 'POST', 'import', null, { body: importBody() }), 'an import over a saved record');
   eq(w2.sql('SELECT count(*) AS n FROM import_lock')[0].n, 0, 'a refused import took the lock');
+});
+
+atest('api import: in production a save cannot create the pack record before the import (409 awaiting-import), so the import is never blocked', async () => {
+  // Security review of stage A, finding 4.
+  const w = await (await apiWorld({ OWNER_MODE: 'fixed', PACK_OWNER_UID: 'uid-owner' })).seed({ editor: 'editor' });
+  const put = (who, rev, body) => w.call(who, 'PUT', 'pack', null, { body, headers: { 'if-match': String(rev), 'x-pack-device': who } });
+  for (const who of ['editor', 'owner']) {
+    const r = await put(who, 0, { scouts: [] });
+    eq([r.status, r.body.error, r.body.code, r.body.reason], [409, 'awaiting-import', 'failed-precondition', 'awaiting-import'], who + ' saving before the import');
+    ok(r.body.json === undefined && r.body.rev === undefined, 'the awaiting-import answer carries a record to merge');
+  }
+  eq((await w.call('editor', 'GET', 'pack')).body, { exists: false, rev: 0 }, 'GET before the import');
+  eq(w.sql('SELECT count(*) AS n FROM pack_state')[0].n, 0, 'a save before the import created the record');
+  eq((await w.call('owner', 'POST', 'import', null, { body: importBody() })).status, 200, 'the import after refused saves');
+  // After it: an ordinary compare-and-swap. A stale "first write" is a conflict carrying the record.
+  const late = await put('editor', 0, { scouts: [] });
+  eq([late.status, late.body.code, late.body.rev], [409, 'aborted', 41], 'a rev-0 save after the import');
+  eq((await put('editor', 41, { scouts: [1] })).body.rev, 42, 'a save on the imported rev');
+  // A record lost after the import (a wipe, a restore) can be written again from rev 0: the lock is there.
+  w.db.raw.prepare('DELETE FROM pack_state').run();
+  eq((await put('editor', 0, { scouts: [2] })).status, 200, 'a rev-0 save after the import and a wipe');
+  // Previews (first-signer) are unchanged: the first save creates the record.
+  const p = await (await apiWorld()).seed({ editor: 'editor' });
+  eq((await p.call('editor', 'PUT', 'pack', null, { body: {}, headers: { 'if-match': '0' } })).status, 200, 'a preview\'s first save');
+  // The client contract is written down where the next stage will look.
+  ok(/409 \{error:'awaiting-import', code:'failed-precondition'\}/.test(readFileSync(join(ROOT, 'functions/_lib/http.js'), 'utf8')), 'http.js does not document awaiting-import');
 });
 
 atest('api import: the owner comes out an admin even if Firestore said otherwise, and existing rows win', async () => {

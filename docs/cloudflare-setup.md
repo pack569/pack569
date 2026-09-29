@@ -323,6 +323,13 @@ the only person who can ever copy the pack in from Firestore, and is always an a
       **Production** → Add → type **Secret**, name `PACK_OWNER_UID`, value the id. Or, from
       your computer: `npx wrangler pages secret put PACK_OWNER_UID --project-name pack569`.
 
+**The owner is permanent once it is written.** It is written the first time *that* account
+signs in on the live site, and never on anyone else's sign-in. So if you mistype the id,
+nobody is the owner yet (you will not come in as admin): fix the secret and sign in again.
+But once you have signed in and come in as admin, the pack's owner can never be changed
+here, not by you, not by the dashboard, so check the id against Firestore before that
+first sign-in.
+
 Don't set it for previews. There the first person to sign in owns the test pack, so you can
 try things out. If production has no `PACK_OWNER_UID`, the pack has no owner: nobody is made
 admin and nothing can be copied in. That is the safe way for it to fail.
@@ -360,6 +367,12 @@ When the page is ready to switch, you, signed in as the owner on the last Firest
 of the page, copy the pack across once. The API takes it only from `PACK_OWNER_UID`, only
 while the pack is empty here, and only once; after that it refuses every copy. Try the whole
 thing first on `staging` with a made-up pack.
+
+Until that copy is made, the live pack here is empty, and **no one's save can start it**: the
+API refuses the first save to an empty pack in production (it answers `awaiting-import`), so
+a leader who opens the new page before you have copied the pack across cannot create a blank
+pack that would then block the real one. Their page should say it is waiting for you to copy
+the pack over. Previews are different: the first save there starts the test pack.
 
 ### Backups
 

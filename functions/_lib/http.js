@@ -8,6 +8,10 @@
 //        pack exists.
 //   409 {error:'conflict', code:'aborted', …remote}          the pack record moved on: here it is
 //   409 {error:'last-admin', code:'failed-precondition'}     the change would leave no admin
+//   409 {error:'awaiting-import', code:'failed-precondition'} production's pack is empty until the
+//        owner copies it in from Firestore (POST /import). A save, a first write from rev 0,
+//        is refused until then. The page should say "waiting for the pack's owner to copy the
+//        pack over" and stop pushing, NOT retry: nothing but the import changes the answer.
 //   413 {error:'too-large', code:'resource-exhausted'}       over the size limit
 //   429 {error:'rate-limited', code:'resource-exhausted'}    too many sign-up link tries
 //
@@ -39,6 +43,7 @@ export const badRequest = (why) => json(400, { error: 'bad-request', code: 'inva
 export const notFound = () => json(404, { error: 'not-found', code: 'not-found' });
 export const tooLarge = () => json(413, { error: 'too-large', code: 'resource-exhausted' });
 export const lastAdmin = () => json(409, { error: 'last-admin', code: 'failed-precondition' });
+export const awaitingImport = () => json(409, { error: 'awaiting-import', code: 'failed-precondition', reason: 'awaiting-import' });
 export const unavailable = (why) => json(503, { error: 'unavailable', code: 'unavailable', reason: why || '' });
 
 // Thrown anywhere under a route; the router sends its response.
