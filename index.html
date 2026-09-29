@@ -12856,13 +12856,25 @@
   // copy taken (`ns`, normalized) has in neither list, and still marks deleted, is kept, voided,
   // in `ns` (same year's book only): the next save from here puts it back in the pack's copy. A
   // row put back, or not marked at all (a close-out clears the marks), is not. In place on `ns`.
+  // Security review of C3 (minors) — a row kept is unlinked from a scout the copy taken has deleted,
+  // or does not have, as del-scout and the merge unlink one: a payment stays, pointing at nobody.
+  // And a restore of a backup from before the row was voided does not stop it being kept: the
+  // restore leaves its mark (restoreGone puts back only what the backup holds), and a device with
+  // an unsaved change would bring the row back voided in its merge anyway (settleVoided). Kept
+  // voided it counts in nothing; dropped it would be gone from the book for good.
   function keepLostVoids(cur, ns) {
     if (!cur || !Array.isArray(cur.ledgerAside) || !ns || !Array.isArray(ns.ledgerAside) || !Array.isArray(ns.ledger)) return;
     if (!cur.book || !ns.book || cur.book.year !== ns.book.year) return;
-    var marks = ns.gone && ns.gone.ledger, have = {};
+    var marks = ns.gone && ns.gone.ledger, have = {}, scouts = {};
+    var scoutsGone = (ns.gone && ns.gone.scouts) || {};
     ns.ledger.concat(ns.ledgerAside).forEach(function (x) { if (x && typeof x.id === 'string') have[x.id] = true; });
+    (ns.scouts || []).forEach(function (s) { if (s && typeof s.id === 'string') scouts[s.id] = true; });
     cur.ledgerAside.forEach(function (x) {
-      if (x && x.off === 'void' && typeof x.id === 'string' && !have[x.id] && marks && marks[x.id] > 0) { ns.ledgerAside.push(x); have[x.id] = true; }
+      if (!(x && x.off === 'void' && typeof x.id === 'string' && !have[x.id] && marks && marks[x.id] > 0)) return;
+      var y = JSON.parse(JSON.stringify(x));
+      if (y.scoutId && (scoutsGone[y.scoutId] > 0 || scouts[y.scoutId] !== true)) y.scoutId = '';
+      ns.ledgerAside.push(y);
+      have[y.id] = true;
     });
   }
   function adoptRemote(d, opts) {

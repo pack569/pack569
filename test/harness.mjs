@@ -19588,6 +19588,49 @@ test('C3 review (minor): a viewer’s Un-void is refused on the tap, before anyt
   eq([p.get("!!row('u1')"), p.get('commits')], [true, 1], 'an editor');
 });
 
+test('C3 review (minor): a voided row kept from a copy that lost it is unlinked from a scout that copy deleted or lacks', () => {
+  const k = sandbox(['keepLostVoids']);
+  const cur = { book: { year: 2026 }, ledgerAside: [
+    { id: 'v1', off: 'void', scoutId: 's1' }, { id: 'v2', off: 'void', scoutId: 's9' }, { id: 'v3', off: 'void', scoutId: 's2' }, { id: 'v4', off: 'void', scoutId: '' }] };
+  const ns = { ledger: [], ledgerAside: [], book: { year: 2026 }, scouts: [{ id: 's1' }, { id: 's2' }],
+    gone: { ledger: { v1: 5, v2: 5, v3: 5, v4: 5 }, scouts: { s1: 7, s2: -7 } } };
+  k.keepLostVoids(cur, ns);
+  eq(JSON.parse(JSON.stringify(ns.ledgerAside.map((e) => [e.id, e.scoutId]))), [['v1', ''], ['v2', ''], ['v3', 's2'], ['v4', '']],
+    'deleted there (s1), not there (s9), there and put back (s2)');
+  eq(cur.ledgerAside.map((e) => e.scoutId), ['s1', 's9', 's2', ''], 'this device’s copy was changed');
+  // Two devices: B voids Ada's payment (l3) and saves; A, a page from before C3 that also deleted
+  // Ada, saves over it with l3 in neither list. B keeps l3 voided, pointing at nobody.
+  const merge = slice('mergeRemoteAppendOnly');
+  const old = merge.replace('    settleVoided();\n', '').replace(/\n    if \(Array\.isArray\(state\.ledgerAside\)\) state\.ledgerAside\.forEach[^\n]*/, '');
+  const { a, b, server } = c3FsPair();
+  a.run(old);
+  b.run("voidRow('l3', 'Wrong family')"); b.push();
+  a.run("markGone('scouts', ['s1']); state.scouts = state.scouts.filter(function (s) { return s.id !== 's1'; }); commit()");
+  a.hear(); a.push();
+  eq(c3Where(server()), [['l1', 'l2'], []], 'what the old page saved');
+  b.hear();
+  eq([c3Where(b.get('state')), b.get("state.ledgerAside.map(function (e) { return e.scoutId; })")], [[['l1', 'l2'], ['l3']], ['']], 'B kept it, still Ada’s');
+});
+
+test('C3 review (minor): restoring a backup from before a row was voided leaves it voided, not counted, on every device', () => {
+  // Chosen rule: the row is kept, voided. The restore leaves its mark, and a device with an unsaved
+  // change brings it back in its merge anyway; kept voided it counts in nothing.
+  for (const dirty of [false, true]) {
+    const { a, b, server } = c3FsPair();
+    a.run(C2S_EXTRA);
+    const backup = a.get('JSON.stringify(state)');
+    a.run("state.ledger.push({ id: 'l4', date: '2026-09-15', description: 'Tents', amountCents: 3000, direction: 'out' }); commit()"); a.push();
+    a.run("voidRow('l4', 'Entered twice')"); a.push();
+    b.hear();
+    eq(c3Where(b.get('state')), [['l1', 'l2', 'l3'], ['l4']], dirty + ': B took the void');
+    if (dirty) b.run(B1);
+    a.run(`confirmImport(normalizeState(JSON.parse(${JSON.stringify(backup)})))`); a.push();
+    eq(c3Where(server()), [['l1', 'l2', 'l3'], []], dirty + ': the restore');
+    if (dirty) b.push(); else b.hear();
+    eq([c3Where(b.get('state')), c3Counted(b.get('state'))], [[['l1', 'l2', 'l3'], ['l4']], 2500 - 4000 + 8500], dirty + ': B after the restore');
+  }
+});
+
 atest('C3, api: a void, an un-void and a locked row settle the same way across two devices', async () => {
   const over = { ledger: C3_ROWS, ledgerAside: [], book: C3_SEED.book, ledgerLog: [] };
   let { a, b, server } = await apiGonePair(over);
