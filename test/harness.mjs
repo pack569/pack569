@@ -8899,6 +8899,41 @@ test('Firestore: a cached first answer is never the first answer, so it can neit
   eq([fsFeedGot(e).name, fsFeedGot(e).rev], ['Shared', 9], 'control: a newer record after the first answer is not adopted');
 });
 
+test('Firestore: a save handed over before the first answer is not compared again once the feed has answered', () => {
+  // Security review of 6747945..6fa61c2, item 2. An edit made while the pack feed connects is
+  // pushed; the transaction reads the shared pack and hands it over unwritten (unheard). The
+  // feed answers while that push is still out. Its answer is the first answer; the handed-over
+  // record, compared again, would reopen the chooser on an older copy.
+  const older = { rev: 9, device: 'd2', json: JSON.stringify({ rev: 9, packName: 'Shared', scouts: [{ id: 'b' }] }) };
+  const newer = { rev: 10, device: 'd3', json: JSON.stringify({ rev: 10, packName: 'Newer', scouts: [{ id: 'b' }, { id: 'c' }] }) };
+  const mine = { rev: 2, packName: 'Old', scouts: [{ id: 'a' }] };
+  const run = (local, feedSays, feedFirst) => {
+    const ctx = fsFeedCtx(local, `
+      var feedAnswer = ${JSON.stringify(feedSays)}, handedOver = 0;
+      var realTx = fakeFirestore.runTransaction;
+      fakeFirestore.runTransaction = function (db, body) {
+        var out = realTx(db, body);
+        // The push is out: the feed answers before its result comes back.
+        if (${feedFirst}) { reads['packs/P'] = feedAnswer; watches[0].next(snapOf('packs/P', {})); }
+        return out.then(function (r) { if (r && r.unheard) handedOver += 1; return r; });
+      };
+      sync.dirty = true;
+      reads['packs/P'] = ${JSON.stringify(older)};`);
+    vm.runInContext('syncPush(); runTimers();', ctx);
+    return Object.assign(fsFeedGot(ctx), { handedOver: vm.runInContext('handedOver', ctx) });
+  };
+  // The feed brought a newer copy: the chooser stays on it, and nothing is written.
+  eq(run(mine, newer, true), { sets: [], overlay: 'sync-conflict', conflict: 10, firstSnap: false, dirty: true, rev: 2,
+    name: 'Old', mode: 'online', handedOver: 1 }, 'the chooser went back to the older copy the push handed over');
+  // The feed brought this device's own pack: nothing to choose, and nothing reopens the chooser.
+  const same = { rev: 9, device: 'd2', json: JSON.stringify(mine) };
+  eq(run(mine, same, true), { sets: [], overlay: null, conflict: null, firstSnap: false, dirty: false, rev: 9,
+    name: 'Old', mode: 'online', handedOver: 1 }, 'a record handed over after the first answer was compared as a first answer');
+  // Control: with no feed answer yet, the handed-over record is the first answer, as before.
+  eq(run(mine, null, false), { sets: [], overlay: 'sync-conflict', conflict: 9, firstSnap: false, dirty: true, rev: 2,
+    name: 'Old', mode: 'online', handedOver: 1 }, 'control: a record handed over before the first answer is compared');
+});
+
 test('the pack record feed ignores its own echoes and keeps the raw record for the conflict screen', () => {
   const ctx = vm.createContext({});
   vm.runInContext(`

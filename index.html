@@ -11458,8 +11458,15 @@
     }).then(function (res) {
       if (sync.session !== mine) return;
       if (res.unheard) {
-        sync.firstSnap = true;
-        onRemoteSnap(res.unheard, { fromServer: true, pendingWrites: false });
+        // Compared as the first answer only if it still is one. The pack feed may have answered
+        // while this push was out. That answer has been compared already, the feed brings anything
+        // newer the usual way, and comparing this record again could open the chooser on an older
+        // copy, or adopt one (security review of 6747945..6fa61c2, item 2). The held edit goes
+        // out now, as any save does.
+        if (sync.firstSnap || (be.serverRevs && !sync.remoteRec)) {
+          sync.firstSnap = true;
+          onRemoteSnap(res.unheard, { fromServer: true, pendingWrites: false });
+        } else if (sync.dirty && !sync.conflict) scheduleSyncPush();
         return;
       }
       state.rev = res.nextRev;
