@@ -40,7 +40,10 @@ async function importPack({ request, db, packId, user }) {
   let st;
   try { st = JSON.parse(p.json); } catch (e) { refuse(badRequest('pack.json')); }
   if (!st || typeof st !== 'object' || Array.isArray(st)) refuse(badRequest('pack.json'));
-  const rev = time(p.rev, 0);
+  // At least 1: a stored rev of 0 is what a first save's If-Match 0 names, so a leader's device
+  // that heard "no pack" just before the copy-in would write straight over it (security review
+  // of 260f467..db851c7, F2). From 1, that save is a conflict, and the page compares the two.
+  const rev = Math.max(time(p.rev, 0), 1);
   // A rev PUT's If-Match could never name again (it takes at most 15 digits) would leave the
   // pack unwritable for good (security review of stage A, finding 8).
   if (rev > MAX_REV) refuse(badRequest('pack.rev'));

@@ -10655,7 +10655,8 @@
     var ns = normalizeState(parsed);
     if (!ns) return { error: 'That file isn’t a pack backup or a move file.' };
     a = about(ns);
-    return { body: { pack: { rev: typeof ns.rev === 'number' ? ns.rev : 0, device: '', json: JSON.stringify(ns) },
+    // A rev of at least 1, as the server stores it (import.js): never the 0 a first save names.
+    return { body: { pack: { rev: Math.max(typeof ns.rev === 'number' ? ns.rev : 0, 1), device: '', json: JSON.stringify(ns) },
       members: [], invites: [], join: null }, packName: a.packName, newestEvent: a.newestEvent,
       scouts: ns.scouts.length, members: 0, invites: 0, backupOnly: true };
   }

@@ -15098,6 +15098,42 @@ atest('api client: on switch day the owner’s copy is the one copied in, so it 
   }
 });
 
+atest('api client: a pack copied in at rev 0 goes in at rev 1, so a first save racing it is a conflict, not an overwrite', async () => {
+  // Security review of 260f467..db851c7, F2. The editor's device heard "no pack" and seeds: its
+  // save reads the pack (none), and the owner's copy-in, from a backup with no rev, lands before
+  // the save's PUT If-Match 0. Stored at rev 0, the PUT would match it and write straight over it.
+  const copied = PACK_STATE({ packName: 'Copied Pack', scouts: [{ id: 's9', name: 'Zed' }] });
+  delete copied.rev;
+  for (const env of [{}, { OWNER_MODE: 'fixed', PACK_OWNER_UID: 'uid-owner', DEPLOY_ENV: 'prod', seedEnv: 'prod' }]) {
+    const where = env.DEPLOY_ENV ? 'production' : 'staging';
+    const w = env.DEPLOY_ENV ? await apiWorld(env) : await (await apiWorld()).seed();
+    if (env.DEPLOY_ENV) {
+      // In production the editor gets in through the copied roster: bring it in first, then take
+      // the record away again, as if the copy-in were still to come.
+      await w.session('owner');
+      eq((await w.call('owner', 'POST', 'import', null, { body: importBody() })).status, 200, 'the roster');
+      w.db.raw.prepare('DELETE FROM pack_state').run();
+      w.db.raw.prepare('DELETE FROM import_lock').run();
+    }
+    const ed = await (await apiClient(w, 'editor', { state: PACK_STATE() })).start();
+    eq(ed.get('[sync.packMissing, sync.dirty]'), [true, true], `${where}: the editor did not hear "no pack" (the test proves nothing)`);
+    let imported = null;
+    ed.intercept = async (method) => {
+      if (method !== 'PUT' || imported) return null;
+      imported = await w.call('owner', 'POST', 'import', null,
+        { body: { pack: { rev: 0, device: 'fs-dev', json: JSON.stringify(copied) }, members: [], invites: [], join: null } });
+      return null;
+    };
+    await settle([ed], 800);
+    ed.intercept = null;
+    eq([imported && imported.status, imported && imported.body.rev], [200, 1], `${where}: the copy-in did not land between the read and the save`);
+    const s = serverState(w);
+    eq([s.rev, s.json.packName, s.device], [1, 'Copied Pack', 'fs-dev'], `${where}: the racing first save wrote over the copied-in pack`);
+    eq(ed.get('[ui.overlay && ui.overlay.kind, state.rev, state.packName]'), ['sync-conflict', 1, 'Test Pack'],
+      `${where}: the editor was not asked which copy to keep`);
+  }
+});
+
 atest('api client: a pack copied in after a leader’s device heard "no pack" is compared, never saved over', async () => {
   // Security review of stage C, item 1. Staging's server (first-signer, no awaiting-import): the
   // editor's device holds an older copy, hears "no pack", and schedules a seed. The owner's
@@ -15678,6 +15714,10 @@ test('api client: the move file carries what the import takes, for this pack onl
   eq(vm.runInContext(`moveImportBody(${JSON.stringify(mf)}, 'Q')`, ctx).error, 'That file is for a different pack.', 'another pack’s file');
   const plain = JSON.parse(JSON.stringify(vm.runInContext(`moveImportBody({ rev: 2, scouts: [] }, 'P')`, ctx)));
   eq([plain.backupOnly, plain.body.members, plain.body.pack.rev], [true, [], 2], 'a plain backup');
+  // Security review of 260f467..db851c7, F2: a backup with no rev, or rev 0, goes in at rev 1.
+  for (const bk of ['{ scouts: [] }', '{ rev: 0, scouts: [] }', '{ rev: -3, scouts: [] }']) {
+    eq(vm.runInContext(`moveImportBody(${bk}, 'P').body.pack.rev`, ctx), 1, 'a plain backup’s rev floor: ' + bk);
+  }
   ok(vm.runInContext('moveImportBody({ hello: 1 }, "P")', ctx).error, 'a file that is neither');
   // YP review of stage C, item 2: staging refuses the real move file, whatever pack it is for,
   // and takes a plain (made-up) backup; either way the owner is shown the pack's name and newest event.
