@@ -12407,9 +12407,9 @@
   // un-reconciled a row and then deleted it meant it, and another device's copy still ticked from
   // before is not a reason to bring it back), or, since Phase 3 C2 (H1), if it is dated in the
   // period this book is reconciled through, whenever it was ticked (keepReconciled). On this
-  // page a reconciled row is never deleted, nor, since the security review of C2 (#2), is one
-  // dated in the reconciled period (del-ledger): only an older page, or a row un-reconciled
-  // after the period, gets here.
+  // page a reconciled row is never voided (since C3 a void is what marks a ledger row deleted),
+  // nor, since the security review of C2 (#2), is one dated in the reconciled period
+  // (ledgerVoidRefusal): only an older page, or a row un-reconciled after the period, gets here.
   // `kept` and `lost` (when given) collect the reconciled rows this merge kept over a delete, and
   // the ones this device had reconciled that a later delete took (reconciledFates), for syncPush
   // to name. Returns how many items were appended or removed.
@@ -21263,8 +21263,8 @@
       h += '<div class="tprog">' +
         '<div class="tprog-main"><span class="tprog-name">' + name + '</span>' +
         // The ✕ takes back only the TIER: the entry is unstamped and the money stays in the
-        // ledger as an ordinary family payment, because it happened. Deleting the entry itself is
-        // the other door and takes both — see del-ledger.
+        // ledger as an ordinary family payment, because it happened. Voiding the entry itself is
+        // the other door and takes both — see ledger-void-go.
         (r.earnedBy === 'madeUp' && r.earned
           ? tinyDangerBtn('tier-unmakeup:' + r.earned.id + ':' + r.scout.id,
               'Undo ' + (r.earned.name || 'the tier') + ' for ' + (r.scout.name || 'this scout') +

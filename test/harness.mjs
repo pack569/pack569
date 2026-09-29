@@ -19631,6 +19631,13 @@ test('C3 review (minor): restoring a backup from before a row was voided leaves 
   }
 });
 
+test('C3 review (minor): no comment points a reader at del-ledger, which C3 replaced', () => {
+  // A comment that names a handler is where the next reader looks; del-ledger is gone (the void
+  // blocks replaced it), so every pointer names what is there now.
+  ok(!/del-ledger/.test(SCRIPT), 'the page still mentions del-ledger: ' + (SCRIPT.match(/[^\n]*del-ledger[^\n]*/) || [''])[0].trim());
+  ok(/if \(act\.indexOf\('ledger-void-go:'\) === 0\) \{/.test(SCRIPT) && /^  function ledgerVoidRefusal\(/m.test(SCRIPT), 'what the comments point to now is gone');
+});
+
 atest('C3, api: a void, an un-void and a locked row settle the same way across two devices', async () => {
   const over = { ledger: C3_ROWS, ledgerAside: [], book: C3_SEED.book, ledgerLog: [] };
   let { a, b, server } = await apiGonePair(over);
