@@ -23102,6 +23102,9 @@
     }
     g += '<p class="small" style="margin:0 0 8px">Writes each matched scout’s <strong>Online</strong> and <strong>Wagon</strong> sales ' +
       'into this year’s standings as imported entries, one per day the orders were taken — so a reward-tier deadline counts them on the day they were sold. Re-importing a newer report replaces those imported figures exactly; entries you added by hand are never touched. ' +
+      // LIVE STOPGAP (re-review of the stopgap, item 4) — two imports saved at once keep the later
+      // by the importing devices' clocks (teBatchOf), so a wrong clock can keep the older one.
+      'If two leaders import at about the same time, or a device’s clock is wrong, the standings can keep the older report; importing the newest report again always puts them right. ' +
       '<strong>Storefront credit stays with your storefront blocks</strong> — importing Trail’s End’s storefront totals here would double-count that money.</p>';
     if (arc.otherTypes && arc.otherTypes.length) {
       g += '<div class="warn" style="margin:0 0 10px"><strong>Not imported — sale type not Online, Wagon or Storefront:</strong> ' +

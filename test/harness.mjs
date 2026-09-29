@@ -17128,6 +17128,28 @@ test('stopgap, Firestore: "Keep this device’s copy" merges another leader’s 
   eq(q.b.get('[sync.seasonKeptRev, sync.clobber]'), [null, false], 'the choice outlived the save it was for');
 });
 
+test('stopgap follow-up 4: the Trail’s End import says a re-import puts stale standings right', () => {
+  // Two imports saved at once keep the later by the devices' clocks (teBatchOf), so a wrong
+  // clock can keep the older. The live-season update is where a leader reads what it writes.
+  const tp = slice('renderTePreview');
+  const at = tp.indexOf('Update this season’s standings');
+  const say = tp.indexOf('If two leaders import at about the same time, or a device’s clock is wrong, the standings can keep the older report; ' +
+    'importing the newest report again always puts them right.');
+  ok(at > 0 && say > at, 'the live-season import does not say that importing the newest report again puts the standings right');
+  // What it promises. Here B's batch ids always sort after A's, as a device whose clock runs
+  // ahead would: A imports last, but B's import is the one both keep. A imports again, and that
+  // one is kept everywhere, B's marked replaced.
+  const p = fsGonePair();
+  const teBatches = (st) => [...new Set(st.entries.filter((e) => e.source === 'te-import').map((e) => e.id.replace(/-\d+$/, '')))];
+  p.b.run('reimport()'); p.b.push();
+  p.a.run('reimport()'); p.a.hear(); p.a.push();
+  eq(teBatches(p.server()), ['te-devBb1'], 'the fixture: the import with the later-sorting batch is kept');
+  p.a.run('reimport()'); p.a.push();
+  p.b.hear();
+  eq([teBatches(p.server()), p.server().gone.imports['devBb1'] > 0], [['te-devAb2'], true], 'importing again did not put it right');
+  eq([teBatches(p.b.get('state')), p.b.get('totals()')], [['te-devAb2'], { s1: 6000, s2: 2500 }], 'B after the re-import');
+});
+
 test('stopgap follow-up 5: taking the cloud copy forgets a copy chosen to write over', () => {
   // B keeps its copy over A's close-out (rev 4), but A saves again (rev 5) before B's save goes,
   // so B is asked again, and this time takes the cloud copy. The choice was about rev 4.
