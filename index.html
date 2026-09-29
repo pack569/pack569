@@ -4017,6 +4017,10 @@
       // or direction: the answer was about the entry as it stood.
       e.notCommission = e.notCommission === true;
       e.reconciled = e.reconciled === true;
+      // LIVE STOPGAP (see stampApproved) — when it was ticked, in ms. Absent (not 0) when unknown,
+      // so a record from before it gains nothing.
+      if (typeof e.reconciledAt === 'number' && isFinite(e.reconciledAt) && e.reconciledAt > 0) e.reconciledAt = Math.round(e.reconciledAt);
+      else delete e.reconciledAt;
       // E2 — the audit trail. '' on everything recorded before it existed.
       ['enteredBy', 'enteredAt', 'approvedBy', 'approvedAt', 'enteredByUid', 'approvedByUid'].forEach(function (k) {
         if (typeof e[k] !== 'string') e[k] = '';
@@ -7609,9 +7613,14 @@
     e.enteredAt = new Date().toISOString();
     return e;
   }
+  // LIVE STOPGAP (re-review of the stopgap, item 2) — and reconciledAt, when it was ticked, in
+  // this device's ms (Date.now), which the sync merge compares with a deletion mark: a reconciled
+  // copy of a row keeps it over a delete only if it was ticked after the delete (see keepReconciled).
+  // Not shown anywhere. An untick removes it. C6's per-row merge, which reads the tick and untick
+  // events in state.ledgerLog, will make it redundant.
   function stampApproved(e, on) {
-    if (on) { e.approvedBy = ledgerActor(); e.approvedByUid = ledgerActorUid(); e.approvedAt = new Date().toISOString(); }
-    else { e.approvedBy = ''; e.approvedByUid = ''; e.approvedAt = ''; }
+    if (on) { e.approvedBy = ledgerActor(); e.approvedByUid = ledgerActorUid(); e.approvedAt = new Date().toISOString(); e.reconciledAt = Date.now(); }
+    else { e.approvedBy = ''; e.approvedByUid = ''; e.approvedAt = ''; delete e.reconciledAt; }
   }
   // E1 — this charge's due date, from its line and the line's event as they stand now.
   function chargeDueNow(c) {
@@ -11607,10 +11616,14 @@
   // EXCEPT a reconciled ledger row (treasurer and security reviews of the stopgap, M1/S1): one
   // device deleted it while another ticked it against the bank statement, and a book that loses
   // a reconciled row no longer matches the statement it was checked on. It is kept from either
-  // copy, its mark is turned into a put-back that beats the delete, and it is added to `kept`
-  // (when given) so syncPush can name it. Deleting it takes an un-reconcile first, as always.
-  // Returns how many items were appended or removed.
-  function mergeRemoteAppendOnly(d, kept) {
+  // copy, and its mark is turned into a put-back that beats the delete — but only if it was
+  // ticked AFTER the delete (re-review, item 2): a treasurer who un-reconciled a row and then
+  // deleted it meant it, and another device's copy still ticked from before is not a reason to
+  // bring it back. Deleting a reconciled row takes an un-reconcile first, as always.
+  // `kept` and `lost` (when given) collect the reconciled rows this merge kept over a delete, and
+  // the ones this device had reconciled that a later delete took (reconciledFates), for syncPush
+  // to name. Returns how many items were appended or removed.
+  function mergeRemoteAppendOnly(d, kept, lost) {
     var parsed = null;
     try { parsed = JSON.parse(typeof d.json === 'string' ? d.json : ''); } catch (e) { return 0; }
     var remoteNewest = goneNewest(parsed && parsed.gone);
@@ -11618,6 +11631,9 @@
     if (!remote) return 0;
     var added = 0, removed = 0;
     var gone = state.gone && typeof state.gone === 'object' ? state.gone : null;
+    var ledgerWas = Array.isArray(state.ledger) ? state.ledger.slice() : [];
+    var marksWas = gone && gone.ledger ? Object.assign({}, gone.ledger) : {};
+    var keptHere = [];
     if (gone && remote.gone && typeof remote.gone === 'object') {
       var now = Date.now();
       Object.keys(gone).forEach(function (log) {
@@ -11643,11 +11659,11 @@
       if (log !== 'entries' || x.source !== 'te-import' || !gone.imports) return false;
       return teImportGone(gone.imports, x.id);
     }
-    // A reconciled ledger row another copy deleted: kept, and marked put back (see above).
+    // A ledger row reconciled after another copy deleted it: kept, and marked put back (see above).
     function keepReconciled(log, x) {
-      if (log !== 'ledger' || x.reconciled !== true) return false;
+      if (log !== 'ledger' || x.reconciled !== true || !(ledgerTickedAt(x) > gone.ledger[x.id])) return false;
       gone.ledger[x.id] = -Math.max(Date.now(), gone.ledger[x.id] + 1);
-      if (Array.isArray(kept)) kept.push(x);
+      keptHere.push(x);
       return true;
     }
     function dropGone(la, log) {
@@ -11710,16 +11726,55 @@
       var lfr = frById[rfr.id];
       if (lfr) unionById(lfr.sales, rfr.sales, 'sales');
     });
+    if (gone && gone.ledger) {
+      var fates = reconciledFates(ledgerWas, marksWas, state.ledger, gone.ledger);
+      // What this device deleted and a copy here kept (fates), and what it kept of another's delete.
+      if (Array.isArray(kept)) fates.kept.concat(keptHere).forEach(function (x) { if (kept.indexOf(x) === -1) kept.push(x); });
+      if (Array.isArray(lost)) Array.prototype.push.apply(lost, fates.lost);
+    }
     return added + removed;
   }
-  // The toast for reconciled ledger rows the merge kept (mergeRemoteAppendOnly). Named, so the
-  // treasurer can find each one. Pure.
-  function keptReconciledText(rows) {
-    var one = rows.length === 1;
-    var names = rows.map(function (x) { return '“' + (x.description || 'an entry of ' + fmt(x.amountCents || 0)) + '”'; });
-    return (one ? names[0] + ' was' : names.join(', ') + ' were') + ' deleted on another device, but ' +
-      (one ? 'it is' : 'they are') + ' reconciled, so ' + (one ? 'it was' : 'they were') +
-      ' kept. To remove one, un-reconcile it and delete it again.';
+  // When a ledger row was ticked, in ms: reconciledAt (stampApproved); for one ticked before that
+  // existed, or by a page from before it, the approval stamp written at the same moment; else 0.
+  function ledgerTickedAt(e) {
+    if (typeof e.reconciledAt === 'number' && e.reconciledAt > 0) return e.reconciledAt;
+    var t = Date.parse(typeof e.approvedAt === 'string' ? e.approvedAt : '');
+    return isFinite(t) ? t : 0;
+  }
+  // LIVE STOPGAP (re-review of the stopgap, item 2) — what a merge or an adopted copy did to
+  // reconciled ledger rows, from this device's ledger and marks before it and after. `kept`: a
+  // row this device had deleted that is back, reconciled, put back by another device's merge
+  // (keepReconciled) — so the deleting device is told as well as the one that kept it. `lost`: a
+  // row this device had reconciled that is gone, deleted after it was ticked. Pure.
+  function reconciledFates(ledgerWas, marksWas, ledgerNow, marksNow) {
+    var was = marksWas || {}, now = marksNow || {}, here = {}, kept = [], lost = [];
+    (ledgerNow || []).forEach(function (x) {
+      if (!x || typeof x.id !== 'string') return;
+      here[x.id] = true;
+      if (x.reconciled === true && was[x.id] > 0 && now[x.id] < 0) kept.push(x);
+    });
+    (ledgerWas || []).forEach(function (x) {
+      if (x && typeof x.id === 'string' && x.reconciled === true && !here[x.id] && now[x.id] > 0) lost.push(x);
+    });
+    return { kept: kept, lost: lost };
+  }
+  // The toast for reconciledFates. Each row named, so the treasurer can find it. Pure.
+  function reconciledFatesText(f) {
+    function names(rows) {
+      return rows.map(function (x) { return '“' + (x.description || 'an entry of ' + fmt(x.amountCents || 0)) + '”'; }).join(', ');
+    }
+    var out = [];
+    if (f.kept.length) {
+      var one = f.kept.length === 1;
+      out.push(names(f.kept) + (one ? ' was deleted, but it was' : ' were deleted, but they were') + ' reconciled after that, so ' +
+        (one ? 'it was' : 'they were') + ' kept. To remove one, un-reconcile it and delete it again.');
+    }
+    if (f.lost.length) {
+      var oneL = f.lost.length === 1;
+      out.push(names(f.lost) + (oneL ? ' was' : ' were') + ' reconciled, but deleted on another device after that, so ' +
+        (oneL ? 'it is' : 'they are') + ' gone. Check the reconciliation against the bank statement.');
+    }
+    return out.join(' ');
   }
   // LIVE STOPGAP — the two copies are on either side of a close-out (or a leader changed the
   // program year by hand): one has closed the season the other is still in. Nothing in either
@@ -11744,9 +11799,9 @@
       return;
     }
     var be = sync.backend, h = sync.pack, mine = sync.session;
-    // Reconciled ledger rows the merge kept although another device deleted them (named below).
-    // Outside the attempt: a rerun finds their marks already turned, and adds nothing.
-    var keptRows = [];
+    // Reconciled ledger rows the merge kept over a delete, or a delete took (named below).
+    // Outside the attempt: a rerun finds them already settled, and adds nothing.
+    var keptRows = [], lostRows = [];
     // `remote` is the record as it stands at this attempt (null if none). The backend may run
     // this more than once when another device writes in between; the merge is id-guarded, so
     // a rerun appends nothing twice, and the rev is re-derived from each fresh read.
@@ -11782,7 +11837,7 @@
       // they chose to write over (sync.seasonKeptRev) is written over whole, and only that one.
       if (clobbered && remoteRev === sync.seasonKeptRev) clobbered = false;
       if (clobbered && seasonMoved(remote)) return { record: null, result: { season: remote } };
-      var mergedN = clobbered ? mergeRemoteAppendOnly(remote, keptRows) : 0;
+      var mergedN = clobbered ? mergeRemoteAppendOnly(remote, keptRows, lostRows) : 0;
       var nextRev = be.serverRevs ? remoteRev + 1 : Math.max(state.rev || 0, remoteRev) + 1;
       var record = {
         rev: nextRev,
@@ -11837,7 +11892,7 @@
         if (res.mergedN > 0) render(); // the merge appended remote items
         showToast('Another device saved changes while you were editing — check recent entries.');
       }
-      if (keptRows.length) showToast(keptReconciledText(keptRows), { duration: 10000 });
+      if (keptRows.length || lostRows.length) showToast(reconciledFatesText({ kept: keptRows, lost: lostRows }), { duration: 10000 });
       // Everything heard so far was in what was merged and sent, unless a later save came.
       if (!later) sync.clobber = false;
       sync.seasonKeptRev = null;
@@ -11876,6 +11931,8 @@
     try { parsed = JSON.parse(typeof d.json === 'string' ? d.json : ''); } catch (e) { /* corrupt remote */ }
     var ns = normalizeState(parsed);
     if (!ns) return false;
+    // Re-review of the stopgap, item 2 — what the copy taken did to reconciled rows, said below.
+    var fates = reconciledFates(state && state.ledger, state && state.gone && state.gone.ledger, ns.ledger, ns.gone && ns.gone.ledger);
     state = ns;
     state.rev = typeof d.rev === 'number' ? d.rev : 0;
     // This device now holds the server's copy: nothing is left to send or to merge at a save (a
@@ -11889,6 +11946,7 @@
     save();
     render();
     if (opts && opts.toast) showToast('Updated from another device');
+    if (fates.kept.length || fates.lost.length) showToast(reconciledFatesText(fates), { duration: 10000 });
     return true;
   }
   // `rec` is the pack record as the backend sent it — { rev, device, json, … } — or null when

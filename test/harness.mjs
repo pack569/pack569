@@ -1008,7 +1008,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
 // LIVE STOPGAP — what every slice of the sync merge needs besides it (freshGone is in NORMALIZE_FNS).
-const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'keptReconciledText'];
+const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'ledgerTickedAt', 'reconciledFates', 'reconciledFatesText'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
   const ctx = vm.createContext({});
@@ -1178,7 +1178,7 @@ test('the year rollover clears the ledger and opens next year at the bank balanc
 test('a divergence merge never drops a ledger entry', () => {
   // The append-only merge is the recovery path when two copies of a pack record diverge.
   // Popcorn sales are protected there; transactions must be too.
-  const fn = /function mergeRemoteAppendOnly\(d, kept\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  const fn = /function mergeRemoteAppendOnly\(d, kept, lost\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'mergeRemoteAppendOnly() not found');
   ok(/unionById\(state\.ledger, remote\.ledger, 'ledger'\)/.test(fn[0]),
     'ledger entries are not unioned on merge — one device could lose another device\'s transactions');
@@ -16603,7 +16603,8 @@ const GONE_TE_ROWS = [{ scoutId: 's1', name: 'Ada', onlineCents: 5000, wagonCent
 // The real importer and scout totals, on stubs for the preview's matching. Each device's clock
 // only moves forward, a second per reading, so a delete and its Undo are never the same ms.
 const GONE_EXTRA = (dev) => `
-  ${['blockShares', 'computeScoutTotals', 'teLiveEntriesFor', 'teCommitSalesLive', 'getScout', 'dropScout'].map(slice).join('\n')}
+  ${['blockShares', 'computeScoutTotals', 'teLiveEntriesFor', 'teCommitSalesLive', 'getScout', 'dropScout', 'ledgerActorName', 'stampApproved'].map(slice).join('\n')}
+  ${['ledgerActor', 'ledgerActorUid'].map(decl).join('\n')}
   var batchSeq = 0;
   uid = function () { batchSeq += 1; return '${dev}b' + batchSeq; };
   Date.now = (function () { var t = 1790000000000; return function () { t += 1000; return t; }; })();
@@ -16932,37 +16933,45 @@ test('stopgap, Firestore: a device clock set a year ahead or behind neither wipe
 });
 
 // Treasurer M1 / security S1: one device deletes an unreconciled ledger row, another ticks it
-// against the statement. The reconciled row is kept, whichever device saves last, and named.
-const RECONCILE_L1 = "state.ledger[0].reconciled = true; commit()";
+// against the statement. A tick AFTER the delete keeps the row, whichever device saves last,
+// and both devices are told (re-review, item 2: a tick from before the delete does not).
+// Ticked through the page's own stamp (stampApproved), as the Reconcile view does.
+const RECONCILE_L1 = "stampApproved(state.ledger[0], true); state.ledger[0].reconciled = true; commit()";
+const UNRECONCILE_L1 = "stampApproved(state.ledger[0], false); state.ledger[0].reconciled = false; commit()";
 const DELETE_L1 = "markGone('ledger', state.ledger.splice(0, 1)); commit()";
-test('stopgap, Firestore: a ledger row reconciled on one device is kept when another deleted it', () => {
-  // B reconciles while A's delete is saved; B saves last.
+const KEPT_L1 = '“Dues” was deleted, but it was reconciled after that, so it was kept. To remove one, un-reconcile it and delete it again.';
+const LOST_L1 = '“Dues” was reconciled, but deleted on another device after that, so it is gone. Check the reconciliation against the bank statement.';
+const recToasts = (d) => d.get('toasts').filter((t) => /reconciled/.test(t));
+test('stopgap, Firestore: a ledger row reconciled on one device after another deleted it is kept', () => {
+  // B ticks it a minute after A's delete; B saves last.
   const { a, b, server } = fsGonePair();
   a.run(DELETE_L1);
   a.push();
+  b.run(skew(60000));
   b.run(RECONCILE_L1);
   b.hear();
   b.push();
   eq([server().ledger.map((l) => [l.id, l.reconciled]), server().gone.ledger.l1 < 0], [[['l1', true]], true], 'the reconciled row was dropped');
-  eq(b.get('toasts').filter((t) => /reconciled/.test(t)),
-    ['“Dues” was deleted on another device, but it is reconciled, so it was kept. To remove one, un-reconcile it and delete it again.'],
-    'the treasurer was not told which row was kept');
+  eq(recToasts(b), [KEPT_L1], 'the treasurer was not told which row was kept');
+  // The deleting device takes that copy, and is told why its delete did not hold.
   a.hear();
-  eq(a.get('state.ledger.map(function (l) { return l.id; })'), ['l1'], 'A after B’s save');
-  // The reverse: B's reconcile is saved first; A, holding its delete, saves last.
+  eq([a.get('state.ledger.map(function (l) { return l.id; })'), recToasts(a)], [['l1'], [KEPT_L1]], 'A after B’s save');
+  // The reverse: B's reconcile is saved first; A, holding its earlier delete, saves last.
   const p = fsGonePair();
+  p.a.run(DELETE_L1);
+  p.b.run(skew(60000));
   p.b.run(RECONCILE_L1);
   p.b.push();
-  p.a.run(DELETE_L1);
   p.a.hear();
   p.a.push();
   eq(p.server().ledger.map((l) => [l.id, l.reconciled]), [['l1', true]], 'the deleting device dropped the reconciled row');
-  eq(p.a.get('[state.ledger.length, toasts.filter(function (t) { return /reconciled/.test(t); }).length]'), [1, 1], 'A did not keep it, or say so');
-  // And it stays: the next merge either way does not drop it again.
+  eq([p.a.get('state.ledger.length'), recToasts(p.a)], [1, [KEPT_L1]], 'A did not keep it, or say so once');
+  // And it stays: the next merge either way does not drop it again, or say it again.
   p.b.run(B1);
   p.a.run("state.entries.push({ id: 'a9', scoutId: 's1', kind: 'wagon', date: '', salesCents: 1, donationsCents: 0 }); commit()");
   p.a.push(); p.b.hear(); p.b.push();
   eq(p.server().ledger.map((l) => l.id), ['l1'], 'a later merge dropped it');
+  eq([recToasts(p.a).length, recToasts(p.b)], [1, []], 'a later merge named it again');
   // Not reconciled: an edit does not beat the delete. Row fields are last-write-wins, and only
   // the reconcile tick says a row is on a bank statement. (Deliberately unchanged.)
   const e = fsGonePair();
@@ -16971,7 +16980,69 @@ test('stopgap, Firestore: a ledger row reconciled on one device is kept when ano
   e.b.run("state.ledger[0].amountCents = 2600; commit()");
   e.b.hear();
   e.b.push();
-  eq([e.server().ledger.length, e.b.get('toasts').filter((t) => /reconciled/.test(t))], [0, []], 'an unreconciled edited row');
+  eq([e.server().ledger.length, recToasts(e.b)], [0, []], 'an unreconciled edited row');
+});
+
+test('stopgap follow-up 2: a ledger row un-reconciled and deleted on purpose stays deleted', () => {
+  // The re-review's probe. A reconciles l1; B hears it, then has an unsaved edit. A un-reconciles
+  // l1 and deletes it. B, still holding the ticked copy, saves last.
+  const { a, b, server } = fsGonePair();
+  a.run(RECONCILE_L1); a.push(); b.hear();
+  b.run(B1);
+  a.run(UNRECONCILE_L1); a.push();
+  a.run(DELETE_L1); a.push();
+  b.hear(); b.push();
+  eq([server().ledger.map((l) => l.id), server().gone.ledger.l1 > 0], [[], true], 'a stale ticked copy brought the deleted row back');
+  eq(eIds(server()), ['b1', 'old1', 'old2', 'x1', 'x2'], 'B’s edit');
+  // B, whose copy had it reconciled, is told; A, whose delete held, is not.
+  eq(recToasts(b), [LOST_L1], 'B was not told its reconciled row went');
+  a.hear();
+  eq([a.get('state.ledger.length'), recToasts(a)], [0, []], 'A after B’s save');
+  // Ticked on B, then deleted on A a minute later from a copy that had not heard the tick: the
+  // delete is the later act, and holds; B hears it, and is told.
+  const p = fsGonePair();
+  p.b.run(RECONCILE_L1); p.b.push();
+  p.a.run(skew(60000));
+  p.a.run(DELETE_L1); p.a.hear(); p.a.push();
+  eq(p.server().ledger.length, 0, 'a tick from before the delete kept the row');
+  p.b.hear();
+  eq([p.b.get('state.ledger.length'), recToasts(p.b)], [0, [LOST_L1]], 'B after A’s save');
+  // A page from before reconciledAt stamps only the approval: its time is read the same way.
+  const q = fsGonePair();
+  q.a.run(DELETE_L1); q.a.push();
+  q.b.run(skew(60000));
+  q.b.run("state.ledger[0].reconciled = true; state.ledger[0].approvedAt = new Date(Date.now()).toISOString(); commit()");
+  q.b.hear(); q.b.push();
+  eq(q.server().ledger.map((l) => [l.id, l.reconciled]), [['l1', true]], 'a tick by an older page, after the delete');
+  // A tick with no time at all (from before either stamp) does not beat a delete.
+  const r = fsGonePair();
+  r.a.run(DELETE_L1); r.a.push();
+  r.b.run("state.ledger[0].reconciled = true; commit()");
+  r.b.hear(); r.b.push();
+  eq(r.server().ledger.length, 0, 'a tick with no time kept the row');
+});
+
+test('stopgap follow-up 2: the tick time is stamped, cleared by an untick, and kept small', () => {
+  const ctx = sandbox(NORMALIZE_FNS.concat(['ledgerTickedAt', 'reconciledFates']));
+  vm.runInContext(`${['ledgerActorName', 'stampApproved'].map(slice).join('\n')} ${['ledgerActor', 'ledgerActorUid'].map(decl).join('\n')}
+    var sync = {}, state = { leaders: [] }; Date.now = function () { return 1790000000000; };`, ctx);
+  const e = vm.runInContext('var e = { id: "l1" }; stampApproved(e, true); e', ctx);
+  eq([e.reconciledAt, ctx.ledgerTickedAt(e)], [1790000000000, 1790000000000], 'the tick time');
+  vm.runInContext('stampApproved(e, false)', ctx);
+  eq(['reconciledAt' in e, ctx.ledgerTickedAt(e)], [false, 0], 'an untick kept the time');
+  eq(ctx.ledgerTickedAt({ approvedAt: '2026-09-29T12:00:00.000Z' }), Date.parse('2026-09-29T12:00:00.000Z'), 'the approval stamp');
+  // normalizeState: kept when it is a time, gone when not, and a row without one gains nothing.
+  const n = ctx.normalizeState({ version: 1, scouts: [], ledger: [
+    { id: 'a', reconciled: true, reconciledAt: 1790000000000.4 }, { id: 'b', reconciledAt: 'x' }, { id: 'c', reconciledAt: -5 }, { id: 'd' }] });
+  eq(n.ledger.map((x) => 'reconciledAt' in x ? x.reconciledAt : null), [1790000000000, null, null, null], 'normalized');
+  // reconciledFates, pure: only a row this device deleted comes back as kept; only a row it had
+  // reconciled goes as lost.
+  const f = JSON.parse(JSON.stringify(ctx.reconciledFates(
+    [{ id: 'r', reconciled: true }, { id: 'u', reconciled: false }, { id: 'k', reconciled: true }],
+    { p: 5, q: -3 },
+    [{ id: 'p', reconciled: true }, { id: 'q', reconciled: true }, { id: 'k', reconciled: true }, { id: 'n', reconciled: true }],
+    { p: -9, q: -9, r: 7, u: 7, n: -2 })));
+  eq([f.kept.map((x) => x.id), f.lost.map((x) => x.id)], [['p'], ['r']], 'reconciledFates');
 });
 
 test('stopgap, Firestore: last season does not come back from a device that has not closed it out', () => {
@@ -17259,19 +17330,32 @@ atest('stopgap, api: a device clock set a year ahead or behind neither wipes the
   eq(eIds(server()), ['b1', 'old1', 'old2', 'x2'], 'a slow clock’s deletion was aged out, and the row came back');
 });
 
-atest('stopgap, api: a ledger row reconciled on one device is kept when another deleted it', async () => {
+atest('stopgap, api: a ledger row reconciled on one device after another deleted it is kept', async () => {
   let { a, b, server } = await apiGonePair();
   await a.edit("markGone('ledger', state.ledger.splice(0, 1))");
+  b.run(skew(60000));
   b.run(RECONCILE_L1);
   await settle([b], 800);
   eq([server().ledger.map((l) => [l.id, l.reconciled]), server().gone.ledger.l1 < 0], [[['l1', true]], true], 'the reconciled row was dropped');
-  eq(b.get('toasts').filter((t) => /“Dues” was deleted on another device, but it is reconciled/.test(t)).length, 1, 'not named');
-  // The reverse: the reconcile is saved first, the deleting device saves last.
+  eq(recToasts(b), [KEPT_L1], 'not named');
+  await a.poll();
+  eq([a.get('state.ledger.length'), recToasts(a)], [1, [KEPT_L1]], 'the deleting device was not told');
+  // The reverse: the reconcile is saved first, the deleting device (its delete earlier) saves last.
   ({ a, b, server } = await apiGonePair());
-  await b.edit('state.ledger[0].reconciled = true');
   a.run(DELETE_L1);
+  b.run(skew(60000));
+  await b.edit('stampApproved(state.ledger[0], true); state.ledger[0].reconciled = true');
   await settle([a], 800);
   eq(server().ledger.map((l) => [l.id, l.reconciled]), [['l1', true]], 'the deleting device dropped the reconciled row');
+  // Follow-up 2: un-reconciled and deleted on purpose, while B holds the ticked copy.
+  ({ a, b, server } = await apiGonePair());
+  await a.edit('stampApproved(state.ledger[0], true); state.ledger[0].reconciled = true');
+  await b.poll();
+  b.run(B1);
+  await a.edit('stampApproved(state.ledger[0], false); state.ledger[0].reconciled = false');
+  await a.edit("markGone('ledger', state.ledger.splice(0, 1))");
+  await settle([b], 800);
+  eq([server().ledger.length, recToasts(b)], [0, [LOST_L1]], 'a stale ticked copy brought the deleted row back');
 });
 
 atest('stopgap, api: "Keep this device’s copy" merges another leader’s save it had heard', async () => {
