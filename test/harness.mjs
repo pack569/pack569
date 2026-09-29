@@ -18371,6 +18371,51 @@ test('C2: a season of ledger events costs what the banner says', () => {
   ok(season > 50 * 1024 && season < 80 * 1024, `a season is ${season} bytes`);
 });
 
+/* ================================================================
+   Security review of C2 (a932e01, FIX FIRST) — the fixes.
+   ================================================================ */
+test('C2 review #1, Firestore: a delete from a fast clock, kept over in the period, does not outrank a later deliberate delete', () => {
+  // B, its clock 20 hours ahead, un-ticks and deletes l1 (in the period); A, holding the tick,
+  // saves last, and H1 keeps the row. The put-back is just after A's now, not 20 hours ahead.
+  const { a, b, server } = fsGonePair(H1_BOOK);
+  b.run(skew(20 * 3600000));
+  b.run("state.ledger[0].reconciled = false; " + DELETE_L1);
+  b.push();
+  a.run(B1); a.hear(); a.push();
+  const mark = server().gone.ledger.l1;
+  eq([server().ledger.map((l) => [l.id, l.reconciled]), mark < 0], [[['l1', true]], true], 'H1 did not keep the row');
+  const aNow = a.get('Date.now()');
+  ok(-mark <= aNow + 1, `the put-back is ${Math.round((-mark - aNow) / 60000)} minutes ahead of A's now`);
+  // A minute later the treasurer on A un-reconciles it and saves, then deletes it; B, holding
+  // the row and the put-back, saves something else first, so A's delete meets B's copy in a merge.
+  a.run(skew(60000));
+  a.run(UNRECONCILE_L1); a.push();
+  b.hear();
+  a.run(DELETE_L1);
+  b.run("state.entries.push({ id: 'b2', scoutId: 's2', kind: 'wagon', date: '', salesCents: 100, donationsCents: 0 }); commit()");
+  b.push();
+  a.hear(); a.push();
+  eq(server().ledger.length, 0, 'the fast clock’s put-back beat a later deliberate delete');
+});
+
+test('C2 review (minor): what a merge did to a row is said once a session, and leaving the pack clears it', () => {
+  const ctx = sandbox(['fmt', 'fmtDateShort', 'reconciledFatesText', 'noteReconciledFates', 'syncStop']);
+  vm.runInContext("var sync = { fatesNote: '', fatesSeen: {} }, toasts = []; function showToast(m) { toasts.push(m); } function render() {}" +
+    ' function clearTimeout() {} function clearAccountsRuntime() {}', ctx);
+  const l1 = { id: 'l1', description: 'Dues', amountCents: 2500, date: '2026-09-01' };
+  const l2 = { id: 'l2', description: 'Trophies', amountCents: 8400, date: '2026-09-12' };
+  ctx.noteReconciledFates({ kept: [l1], lost: [] });
+  ctx.noteReconciledFates({ kept: [l1], lost: [] });
+  ctx.noteReconciledFates({ kept: [l1, l2], lost: [l1] });
+  const [note, toasts] = JSON.parse(JSON.stringify(vm.runInContext('[sync.fatesNote, toasts]', ctx)));
+  eq([note.split('“Dues”').length - 1, note.split('“Trophies”').length - 1, toasts.length], [2, 1, 2], 'a row said twice: ' + note);
+  ok(/“Dues” \(\$25\.00, Sep 1\) was reconciled on this device/.test(note), 'a different fate of the same row is still said');
+  ctx.syncStop();
+  eq(JSON.parse(JSON.stringify(vm.runInContext('[sync.fatesNote, sync.fatesSeen]', ctx))), ['', {}], 'syncStop kept the note');
+  ctx.noteReconciledFates({ kept: [l1], lost: [] });
+  ok(/“Dues”/.test(vm.runInContext('sync.fatesNote', ctx)), 'after syncStop a row is not said again');
+});
+
 /* ---------------- report ---------------- */
 // The API tests are async; they run here, one at a time, each on its own database.
 for (const [name, fn] of asyncTests) {

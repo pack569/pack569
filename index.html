@@ -9050,6 +9050,7 @@
     // Phase 3, C2 (m1) — what a merge did to reconciled ledger rows (noteReconciledFates), shown on
     // Money · Ledger until a leader taps Got it. This session only, like everything here.
     fatesNote: '',
+    fatesSeen: {},     // …and the rows it has named this session, so each is said once
     session: null,     // token — a passphrase change cancels in-flight work from the old session
     backend: null,     // the loaded backend adapter (firestoreBackend or apiBackend) — see loadBackend
     pack: null,        // the pack-record handle from backend.open(); null = nothing may push
@@ -9348,6 +9349,9 @@
     sync.remoteRec = null;
     sync.conflict = null;
     sync.seasonKeptRev = null;
+    // Security review of C2 (minor) — what a merge did here belongs to the pack just left.
+    sync.fatesNote = '';
+    sync.fatesSeen = {};
     sync.dirty = false;
     sync.session = null;
     sync.mode = 'local';
@@ -12016,10 +12020,14 @@
   // EXCEPT a reconciled ledger row (treasurer and security reviews of the stopgap, M1/S1): one
   // device deleted it while another ticked it against the bank statement, and a book that loses
   // a reconciled row no longer matches the statement it was checked on. It is kept from either
-  // copy, and its mark is turned into a put-back that beats the delete — but only if it was
-  // ticked AFTER the delete (re-review, item 2): a treasurer who un-reconciled a row and then
-  // deleted it meant it, and another device's copy still ticked from before is not a reason to
-  // bring it back. Deleting a reconciled row takes an un-reconcile first, as always.
+  // copy, and its mark is turned into a put-back that beats the delete (never later than just
+  // after now) — if it was ticked AFTER the delete (re-review, item 2: a treasurer who
+  // un-reconciled a row and then deleted it meant it, and another device's copy still ticked from
+  // before is not a reason to bring it back), or, since Phase 3 C2 (H1), if it is dated in the
+  // period this book is reconciled through, whenever it was ticked (keepReconciled). On this
+  // page a reconciled row is never deleted, nor, since the security review of C2 (#2), is one
+  // dated in the reconciled period (del-ledger): only an older page, or a row un-reconciled
+  // after the period, gets here.
   // `kept` and `lost` (when given) collect the reconciled rows this merge kept over a delete, and
   // the ones this device had reconciled that a later delete took (reconciledFates), for syncPush
   // to name. Returns how many items were appended or removed.
@@ -12068,7 +12076,11 @@
     function keepReconciled(log, x) {
       if (log !== 'ledger' || x.reconciled !== true) return false;
       if (!(ledgerTickedAt(x) > gone.ledger[x.id]) && !ledgerDateReconciled(x.date, state.book)) return false;
-      gone.ledger[x.id] = -Math.max(Date.now(), gone.ledger[x.id] + 1);
+      // Security review of C2, #1 — clamped as restoreGone's put-back is: never later than just
+      // after now. H1 keeps a row in the period whatever the delete's time, so a delete stamped
+      // ahead by a fast clock would otherwise become a put-back that far ahead, beating a later,
+      // deliberate un-reconcile and delete for up to a day.
+      gone.ledger[x.id] = -Math.max(Date.now(), Math.min(gone.ledger[x.id], Date.now()) + 1);
       keptHere.push(x);
       return true;
     }
@@ -12217,7 +12229,20 @@
   // ten seconds is not long for a paragraph. So the words also wait on Money · Ledger
   // (sync.fatesNote: this session only, not pack data) until someone taps Got it, and the toast
   // is shown last, after anything else the save says.
+  // Security review of C2 (minor) — each row said once a session: a merge can report a row an
+  // earlier one (or adoptRemote) already did, and the note grew by the same paragraph each time.
+  // sync.fatesSeen ('kept:<id>', 'lost:<id>') is cleared with the note by syncStop.
   function noteReconciledFates(f) {
+    var seen = sync.fatesSeen || (sync.fatesSeen = {});
+    function fresh(kind) {
+      return function (x) {
+        if (!x || typeof x.id !== 'string' || !x.id) return true;
+        if (seen[kind + ':' + x.id]) return false;
+        seen[kind + ':' + x.id] = true;
+        return true;
+      };
+    }
+    f = { kept: (f.kept || []).filter(fresh('kept')), lost: (f.lost || []).filter(fresh('lost')) };
     var text = reconciledFatesText(f);
     if (!text) return;
     sync.fatesNote = (sync.fatesNote ? sync.fatesNote + ' ' : '') + text;
