@@ -8092,13 +8092,111 @@ const RULES = (() => {
   const m = /```\n(rules_version[\s\S]*?)```/.exec(SETUP.slice(at));
   return m ? m[1] : '';
 })();
-// The object literal a function hands to setDoc(<ref>, { … }), as a list of its keys.
-function setDocKeys(src, refPattern) {
+// The object literal a function hands to a backend write — be.putMember(docId, uid, { … }) —
+// as a list of its keys. `callPattern` is a regex source for everything up to the literal.
+// (The adapter writes that literal as-is: see 'the Firestore adapter writes exactly what it is
+// handed' below, which is what makes a scan of the app's literal a scan of the stored doc.)
+function writeKeys(src, callPattern) {
   const out = [];
-  const re = new RegExp('setDoc\\(' + refPattern + '[^{]*\\{([^}]*)\\}', 'g');
+  const re = new RegExp(callPattern + '[^{]*\\{([^}]*)\\}', 'g');
   let m;
   while ((m = re.exec(src))) out.push(m[1].split('\n').map((l) => (/^\s*(\w+):/.exec(l) || [])[1]).filter(Boolean));
   return out;
+}
+
+// A fake backend adapter (the sync.backend seam, see firestoreBackend in index.html). Writes are
+// logged as '<verb> <path>' in the Firestore layout, so a test reads the same either side of the
+// seam. Every subscription is captured in subs[<what>] = { next, err, … }, so a test can play the
+// server: subs.join.next(cfg, { fromServer: false }) is a cached answer, fromServer: true the
+// server's, and subs.join.err({ code: 'permission-denied' }) a refusal.
+const FAKE_BE = `
+  var calls = [], subs = {};
+  function beLog(verb, parts) { calls.push(verb + ' packs/' + parts.join('/')); return Promise.resolve(); }
+  function beSub(what, rec) { subs[what] = rec; return function () { rec.off = true; }; }
+  var fakeBe = {
+    isOpen: function () { return true; },
+    serverTime: function () { return 'TS'; },
+    putMember: function (p, u) { return beLog('set', [p, 'members', u]); },
+    updateMemberRole: function (p, u) { return beLog('update', [p, 'members', u]); },
+    deleteMember: function (p, u) { return beLog('delete', [p, 'members', u]); },
+    putInvite: function (p, k) { return beLog('set', [p, 'invites', k]); },
+    deleteInvite: function (p, k) { return beLog('delete', [p, 'invites', k]); },
+    writeJoin: function (p) { return beLog('set', [p, 'public', 'join']); },
+    writeView: function (p) { return beLog('set', [p, 'public', 'view']); },
+    subscribePack: function (h, next, err) { return beSub('pack', { h: h, next: next, err: err }); },
+    subscribeView: function (p, next, err) { return beSub('view', { p: p, next: next, err: err }); },
+    subscribeJoin: function (p, next, err) { return beSub('join', { p: p, next: next, err: err }); },
+    subscribeInvites: function (p, next, err) { return beSub('invites', { p: p, next: next, err: err }); },
+    subscribeMembers: function (p, scope, uid, next, err) {
+      return beSub('members', { p: p, scope: scope, uid: uid, next: next, err: err });
+    }
+  };`;
+
+// The REAL firestoreBackend, sliced out of index.html and run against a fake of the Firestore
+// modular SDK — for proving what the adapter asks Firestore for, and what it hands the app.
+// Promises here are synchronous thenables (now/failed), because a test in this file is synchronous.
+//   reads[path] = data     what getDoc / a transaction's read sees (absent = no such doc)
+//   readErr = { code }     every getDoc rejects with it
+//   watches[]              every onSnapshot: { ref, opts, next, err }
+//   txRuns / txBetween     run a transaction body that many times, calling txBetween(i) before
+//                          each rerun (another device writing in between); txSets logs its writes
+//   fsLog                  getFirestore, getAuth, gets, and every write as [verb, path, data]
+function fsAdapterCtx(extra) {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    var SYNC_SDK_BASE = 'https://unused.invalid/';
+    var fsLog = [], watches = [], reads = {}, readErr = null, txRuns = 1, txBetween = null, txSets = [];
+    function now(v) {
+      return { then: function (ok) { var r = ok ? ok(v) : v; return (r && typeof r.then === 'function') ? r : now(r); },
+        catch: function () { return this; } };
+    }
+    function failed(e) {
+      return { then: function (ok, bad) { return bad ? now(bad(e)) : failed(e); },
+        catch: function (bad) { return now(bad(e)); } };
+    }
+    function pathOf(args) { return Array.prototype.slice.call(args, 1).join('/'); }
+    function snapOf(path, md) {
+      var data = reads[path];
+      return { id: path.split('/').pop(), exists: function () { return data !== undefined; },
+        data: function () { return data === undefined ? undefined : JSON.parse(JSON.stringify(data)); }, metadata: md || {} };
+    }
+    function qsOf(docs, md) { return { forEach: function (fn) { docs.forEach(fn); }, metadata: md || {} }; }
+    var fakeFirestore = {
+      getFirestore: function () { fsLog.push('getFirestore'); return 'DB'; },
+      doc: function () { return { kind: 'doc', path: pathOf(arguments) }; },
+      collection: function () { return { kind: 'collection', path: pathOf(arguments) }; },
+      onSnapshot: function (ref, a, b, c) {
+        var w = typeof a === 'function' ? { ref: ref, opts: null, next: a, err: b } : { ref: ref, opts: a, next: b, err: c };
+        watches.push(w);
+        return function () { w.off = true; };
+      },
+      getDoc: function (ref) { fsLog.push('get ' + ref.path); return readErr ? failed(readErr) : now(snapOf(ref.path)); },
+      setDoc: function (ref, data) { fsLog.push(['set', ref.path, data]); return now(); },
+      updateDoc: function (ref, data) { fsLog.push(['update', ref.path, data]); return now(); },
+      deleteDoc: function (ref) { fsLog.push(['delete', ref.path]); return now(); },
+      serverTimestamp: function () { return 'TS'; },
+      runTransaction: function (db, body) {
+        var out;
+        for (var i = 0; i < txRuns; i++) {
+          if (i && txBetween) txBetween(i);
+          out = body({ get: function (ref) { return now(snapOf(ref.path)); },
+            set: function (ref, d) { txSets.push([ref.path, d]); } });
+        }
+        return out;
+      }
+    };
+    var authObj = { currentUser: null };
+    var fakeAuth = {
+      getAuth: function () { fsLog.push('getAuth'); return authObj; },
+      getRedirectResult: function () { return now(null); },
+      signInAnonymously: function () { return now({ user: { uid: 'anon', isAnonymous: true } }); },
+      signOut: function () { return now(); }
+    };
+    ${slice('firestoreBackend')}
+    firestoreBackend.mods = { app: {}, auth: fakeAuth, fs: fakeFirestore };
+    firestoreBackend.app = 'APP';
+    ${extra || ''}`, ctx);
+  return ctx;
 }
 
 test('the Part C rules carry the 2026-09-27 update, dated, at the top of Part C', () => {
@@ -8128,16 +8226,21 @@ test('the member doc the client writes is exactly what the rules accept', () => 
   const allowed = /function memberKeysOk\(\) \{\s*return request\.resource\.data\.keys\(\)\.hasOnly\(\[([^\]]*)\]\)/.exec(RULES);
   ok(allowed, 'memberKeysOk() not found in the rules');
   const keys = allowed[1].match(/'(\w+)'/g).map((k) => k.slice(1, -1));
-  const writes = setDocKeys(slice('ensureMyMemberDoc') + slice('joinCreateMemberDoc'), 'ref');
+  const memberSrc = codeOnly(slice('ensureMyMemberDoc') + slice('joinCreateMemberDoc'));
+  const writes = writeKeys(memberSrc, 'be\\.putMember\\(');
   // The owner/invitee create, the owner's self-heal, and the sign-up-link create.
   eq(writes.length, 3, 'expected the member create, the owner heal and the join create');
+  // …and those three are every member write the two functions make: nothing writes a member
+  // doc by any other call the scan above would not see.
+  eq((memberSrc.match(/\bbe\.(\w+)\(/g) || []).filter((c) => !/getMember|getInvite|deleteInvite|serverTime/.test(c)),
+    ['be.putMember(', 'be.putMember(', 'be.putMember('], 'a member write that is not a putMember literal');
   writes.forEach((w) => w.forEach((k) => ok(keys.indexOf(k) !== -1, `the client writes "${k}", which the rules refuse`)));
   // The join path has to SEND the code, or the rule has nothing to check.
   ok(writes.some((w) => w.indexOf('joinCode') !== -1), 'the join path no longer writes joinCode');
   // Invites the same way.
   const inv = /request\.resource\.data\.keys\(\)\.hasOnly\(\['role', 'email', 'invitedBy', 'invitedAt'\]\)/.test(RULES);
   ok(inv, 'the invite field list changed in the rules');
-  const invWrite = setDocKeys(slice('createInvite'), "fs\\.doc\\(sync\\.db, 'packs', sync\\.docId, 'invites', email\\)");
+  const invWrite = writeKeys(slice('createInvite'), 'be\\.putInvite\\(sync\\.docId, email, ');
   eq(invWrite, [['role', 'email', 'invitedBy', 'invitedAt']], 'createInvite writes different fields from the rules');
 });
 
@@ -8148,7 +8251,12 @@ test('the client never writes a bare pending member, and never reads the join co
     'ensureMyMemberDoc writes (or falls back to) pending outside the sign-up link');
   ok(/joinRejected = 'nolink'/.test(ens), 'a signer with no link and no invite is not sent to the ask-a-leader gate');
   const join = codeOnly(slice('joinCreateMemberDoc'));
-  ok(!/getDoc/.test(join) && !/'public'/.test(join), 'the join path reads public/join, which only leaders may read');
+  // The join path makes ONE backend call, the member write (and the timestamp inside it) —
+  // no read of any kind, so nothing that could fetch public/join.
+  eq([...new Set((join.match(/\bbe\.(\w+)\(/g) || []))].sort(), ['be.putMember(', 'be.serverTime('],
+    'the join path calls the backend for something other than its own member write');
+  ok(!/Join|'public'|getDoc/.test(join), 'the join path reads public/join, which only leaders may read');
+  ok(!/getJoin|subscribeJoin/.test(ens), 'ensureMyMemberDoc reads the join config, which only leaders may read');
 });
 
 test('invites are admin-made and consumed only by their own invitee', () => {
@@ -8174,11 +8282,24 @@ test('who may read what: roster, join code and parent view', () => {
   // Overlapping matches OR together: a /public/{d} wildcard would hand pending users the join code.
   ok(!/match \/public\/\{/.test(RULES), 'a /public/{…} wildcard is back, and it ORs over public/join');
   // …and the client has to live with a roster it can't read: non-leaders watch their own doc.
-  const sub = codeOnly(slice('applyMembersSubscription'));
-  ok(/LEADER_ROLES\.indexOf\(sync\.myRole\)/.test(sub) && /fs\.doc\(sync\.db, 'packs', sync\.docId, 'members', uid\)/.test(sub),
-    'parents and pending users still subscribe to the whole members collection');
+  // Run it: a parent or pending user asks the backend for scope 'self' (their own doc), a
+  // leader for 'all'. The adapter test further down proves 'self' is one doc, not the collection.
+  const scopeFor = (role) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(FAKE_BE + `
+      var sync = { session: 1, backend: fakeBe, docId: 'P', user: { uid: 'me' }, myRole: '${role}',
+        membersUnsub: null, membersScope: null, membersDeniedAs: null };
+      ${slice('LEADER_ROLES')}
+      ${slice('cloudReady')}
+      ${slice('applyMembersSubscription')}
+      applyMembersSubscription(1);`, ctx);
+    return vm.runInContext('subs.members ? [subs.members.scope, subs.members.uid] : null', ctx);
+  };
+  eq(scopeFor('parent'), ['self', 'me'], 'a parent subscribes to the whole members collection');
+  eq(scopeFor('pending'), ['self', 'me'], 'a pending user subscribes to the whole members collection');
+  eq(scopeFor('editor'), ['all', 'me'], 'a leader does not watch the roster');
   eq(/var LEADER_ROLES = (\[[^\]]*\])/.exec(SCRIPT)[1], "['admin', 'editor', 'viewer']", 'LEADER_ROLES drifted from isLeader()');
-  ok(!/fs\.collection\(db, 'packs', docId, 'members'\)/.test(slice('startAccounts')),
+  ok(!/subscribeMembers/.test(slice('startAccounts')) && /applyMembersSubscription\(mine\)/.test(slice('startAccounts')),
     'startAccounts subscribes the whole roster for every role again');
 });
 
@@ -8235,7 +8356,10 @@ test('the parent-view banner names every key the view publishes', () => {
 });
 
 test('single-pack mode never signs in anonymously, which is why SETUP says to turn it off', () => {
-  ok(/src\.kind === 'pass'\s*\?\s*mods\.auth\.signInAnonymously/.test(SCRIPT), 'anonymous sign-in is no longer passphrase-only');
+  ok(/src\.kind === 'pass'\s*\?\s*be\.signInAnonymously\(\)/.test(SCRIPT), 'anonymous sign-in is no longer passphrase-only');
+  // …and that is the only anonymous sign-in the app makes (the adapter's own method aside).
+  const outsideAdapter = SCRIPT.replace(slice('firestoreBackend'), '');
+  eq((outsideAdapter.match(/signInAnonymously\(/g) || []).length, 1, 'a second anonymous sign-in path');
   ok(/if \(src\.kind === 'fixed' && current && current\.isAnonymous\) current = null;/.test(SCRIPT),
     'a stale anonymous session is reused in single-pack mode');
   ok(/turn it \*\*off\*\*/.test(SETUP), 'SETUP.md does not tell a single-pack admin to turn Anonymous off');
@@ -8247,10 +8371,10 @@ test('single-pack mode never signs in anonymously, which is why SETUP says to tu
 
 test('the owner restores their admin role by rewriting their doc whole, and a refusal is not a trap', () => {
   const ens = codeOnly(slice('ensureMyMemberDoc'));
-  ok(!/updateDoc/.test(ens), 'the owner heal is an updateDoc again — a junked doc makes the rules refuse it');
+  ok(!/updateDoc|updateMemberRole/.test(ens), 'the owner heal is a role-only update again — a junked doc makes the rules refuse it');
   const heal = /if \(sync\.ownerUid === uid && cur !== 'admin'\) \{([\s\S]*?)\n        \}/.exec(ens);
   ok(heal, 'the owner heal branch was not found');
-  const keys = setDocKeys(heal[1], 'ref');
+  const keys = writeKeys(heal[1], 'be\\.putMember\\(docId, uid, ');
   eq(keys, [['role', 'name', 'email', 'addedAt']], 'the heal writes other keys than the rules accept');
   ok(/role: 'admin'/.test(heal[1]), 'the heal does not write admin');
   // Refused → carry on as the doc's role; never throw into handleAccountsError (setup screen).
@@ -8258,29 +8382,17 @@ test('the owner restores their admin role by rewriting their doc whole, and a re
     'a refused heal is thrown, which handleAccountsError reads as "rules not published"');
 });
 
-// A fake Firestore that records what it was asked to do. Enough of the modular API for the
-// member-management functions, which only ever build refs and write them.
-const FAKE_FS = `
-  var calls = [];
-  var fakeFs = {
-    doc: function () { return { path: Array.prototype.slice.call(arguments, 1).join('/') }; },
-    collection: function () { return { path: Array.prototype.slice.call(arguments, 1).join('/') }; },
-    deleteDoc: function (r) { calls.push('delete ' + r.path); return Promise.resolve(); },
-    setDoc: function (r) { calls.push('set ' + r.path); return Promise.resolve(); },
-    updateDoc: function (r) { calls.push('update ' + r.path); return Promise.resolve(); },
-    serverTimestamp: function () { return 'TS'; }
-  };`;
-
 function removeMemberCtx() {
   const ctx = vm.createContext({});
-  vm.runInContext(FAKE_FS + `
+  vm.runInContext(FAKE_BE + `
     var committed = 0;
     function commit() { committed += 1; }
     function isAdmin() { return true; }
     function isLastAdmin() { return false; }
     function accountsToast() {}
     function showToast() {}
-    var sync = { mods: { fs: fakeFs }, db: 'db', docId: 'P',
+    ${slice('cloudReady')}
+    var sync = { backend: fakeBe, docId: 'P',
       members: [{ uid: 'u1', email: ' Pat@Example.com ', role: 'editor' }, { uid: 'u2', email: 'x@example.com', role: 'admin' }] };
     var state = {
       scouts: [{ id: 's1', parentUids: ['u1', 'u9'] }, { id: 's2', parentUids: [] }],
@@ -8392,7 +8504,7 @@ test('a member removed mid-session loses the pack from this device, not just the
 
 test('nothing is published to parents before the join config has said whether standings are on', () => {
   const ctx = vm.createContext({});
-  vm.runInContext(FAKE_FS + `
+  vm.runInContext(FAKE_BE + `
     var built = 0;
     function buildParentView() { built += 1; return { events: [] }; }
     function accountsInForce() { return true; }
@@ -8401,7 +8513,8 @@ test('nothing is published to parents before the join config has said whether st
     function clearTimeout() {}
     var parentViewTimer = null, parentViewFingerprint = null;
     var state = {};
-    var sync = { mods: { fs: fakeFs }, db: 'db', docId: 'P', joinLoaded: false };
+    var sync = { backend: fakeBe, docId: 'P', joinLoaded: false };
+    ${slice('cloudReady')}
     ${slice('writeParentView')}`, ctx);
   vm.runInContext('writeParentView()', ctx);
   eq(vm.runInContext('[built, calls.length]', ctx), [0, 0], 'the parent view was built and written before the join config loaded');
@@ -8410,42 +8523,52 @@ test('nothing is published to parents before the join config has said whether st
 });
 
 test('the join config loads for every leader, and both of its answers release the parent view', () => {
-  function joinCtx(role) {
-    const ctx = vm.createContext({});
-    vm.runInContext(FAKE_FS + `
-      var onNext = null, onErr = null, scheduled = 0, opts = null;
-      // (ref, onNext, onErr) or (ref, options, onNext, onErr), as the SDK takes either.
-      fakeFs.onSnapshot = function (r, a, b, c) {
-        if (typeof a === 'function') { onNext = a; onErr = b; } else { opts = a; onNext = b; onErr = c; }
-        return function () {};
-      };
+  const JOIN_APP = (role) => `
+      var scheduled = 0;
       function accountsInForce() { return true; }
       function scheduleParentViewRefresh() { scheduled += 1; }
       function render() {}
       var LEADER_ROLES = ['admin', 'editor', 'viewer'];
-      var sync = { session: 1, mods: { fs: fakeFs }, db: 'db', docId: 'P', myRole: '${role}',
+      var sync = { session: 1, backend: BE, docId: 'P', myRole: '${role}',
         joinUnsub: null, joinUnavailable: false, joinLoaded: false, joinCfg: null };
+      ${slice('cloudReady')}
       ${slice('applyJoinSubscription')}
-      applyJoinSubscription(1);`, ctx);
+      applyJoinSubscription(1);`;
+  function joinCtx(role) {
+    const ctx = vm.createContext({});
+    vm.runInContext(FAKE_BE + 'var BE = fakeBe;' + JOIN_APP(role), ctx);
     return ctx;
   }
   for (const role of ['admin', 'editor', 'viewer']) {
-    ok(vm.runInContext('!!onNext', joinCtx(role)), `a ${role} does not load the join config`);
+    ok(vm.runInContext('!!subs.join', joinCtx(role)), `a ${role} does not load the join config`);
   }
   // Parents and pending users are refused it by the rules, and never need it.
   for (const role of ['parent', 'pending']) {
-    ok(vm.runInContext('!onNext', joinCtx(role)), `a ${role} asks for the join config the rules refuse them`);
+    ok(vm.runInContext('!subs.join', joinCtx(role)), `a ${role} asks for the join config the rules refuse them`);
   }
   const a = joinCtx('editor');
   // B2 (2026-09): a CACHED answer fills joinCfg but does not open the gate; the server's does.
-  ok(vm.runInContext('!!(opts && opts.includeMetadataChanges)', a), 'without includeMetadataChanges the server answer may never arrive');
-  vm.runInContext("onNext({ metadata: { fromCache: true }, exists: function () { return true; }, data: function () { return { showStandings: true }; } })", a);
+  vm.runInContext('subs.join.next({ showStandings: true }, { fromServer: false, pendingWrites: false })', a);
   eq(vm.runInContext('[sync.joinLoaded, scheduled, sync.joinCfg.showStandings]', a), [false, 0, true], 'a cached join config released the parent view');
-  vm.runInContext("onNext({ metadata: { fromCache: false }, exists: function () { return true; }, data: function () { return { showStandings: false }; } })", a);
+  // An answer that does not say where it came from is not the server's.
+  vm.runInContext('subs.join.next({ showStandings: true })', a);
+  eq(vm.runInContext('[sync.joinLoaded, scheduled]', a), [false, 0], 'an answer with no meta released the parent view');
+  vm.runInContext('subs.join.next({ showStandings: false }, { fromServer: true, pendingWrites: false })', a);
   eq(vm.runInContext('[sync.joinLoaded, scheduled]', a), [true, 1], 'the snapshot does not release the deferred write');
   const b = joinCtx('editor');
-  vm.runInContext('onErr({ code: "permission-denied" })', b);
+  vm.runInContext('subs.join.err({ code: "permission-denied" })', b);
   eq(vm.runInContext('[sync.joinLoaded, scheduled]', b), [true, 1], 'a denied read stalls the parent view for good');
+  // The same thing end to end through the real Firestore adapter: it must ask for metadata
+  // changes (without them, the server confirming an unchanged cached doc raises no event and
+  // the gate never opens), watch public/join, and turn fromCache into fromServer.
+  const c = fsAdapterCtx('firestoreBackend.open("P"); var BE = firestoreBackend;' + JOIN_APP('editor'));
+  const w = vm.runInContext('watches[0]', c);
+  ok(w && w.opts && w.opts.includeMetadataChanges === true, 'without includeMetadataChanges the server answer may never arrive');
+  eq(w.ref.path, 'packs/P/public/join', 'the join watch is not on public/join');
+  vm.runInContext("reads['packs/P/public/join'] = { showStandings: false }; watches[0].next(snapOf('packs/P/public/join', { fromCache: true }))", c);
+  eq(vm.runInContext('[sync.joinLoaded, scheduled, sync.joinCfg.showStandings]', c), [false, 0, false], 'Firestore: a cached join config released the parent view');
+  vm.runInContext("watches[0].next(snapOf('packs/P/public/join', { fromCache: false }))", c);
+  eq(vm.runInContext('[sync.joinLoaded, scheduled]', c), [true, 1], 'Firestore: the server’s answer does not release the parent view');
   // And a new session starts over.
   ok(/sync\.joinLoaded = false;/.test(slice('clearAccountsRuntime')), 'clearAccountsRuntime keeps the last pack’s joinLoaded');
 });
@@ -9636,10 +9759,27 @@ test('B5: an unverified Google email gets its own gate before anything touches t
   const fn = slice('syncStart');
   const gate = fn.indexOf("if (isGoogleUser(u) && u.emailVerified === false) {");
   ok(gate !== -1, 'syncStart does not check emailVerified');
-  ok(gate < fn.indexOf('sync.db = mods.fs.getFirestore') && gate < fn.indexOf('startAccounts('),
+  const open = fn.indexOf('sync.pack = be.open(docId);');
+  ok(open !== -1, 'syncStart no longer opens the pack through the backend');
+  ok(gate < open && gate < fn.indexOf('startAccounts('),
     'the verified check comes after the cloud is touched');
-  const blk = fn.slice(gate, fn.indexOf('sync.db = mods.fs.getFirestore'));
+  const blk = fn.slice(gate, open);
   ok(/sync\.joinRejected = 'unverified';/.test(blk) && /return;/.test(blk), 'the unverified branch does not stop at a gate');
+  // Before the gate, syncStart asks the backend only about sign-in…
+  const before = [...codeOnly(fn.slice(0, gate)).matchAll(/\bbe\.(\w+)\(/g)].map((m) => m[1]);
+  ok(before.length >= 2, 'the scan for backend calls before the gate found nothing');
+  before.forEach((n) => ok(['completeRedirect', 'currentUser', 'signInAnonymously'].indexOf(n) !== -1,
+    `syncStart calls be.${n}() before the unverified-email gate`));
+  // …and none of those, nor init(), opens the data store: only open() makes the Firestore instance.
+  const fb = codeOnly(slice('firestoreBackend'));
+  eq((fb.match(/getFirestore/g) || []).length, 1, 'the adapter makes its Firestore instance in more than one place');
+  ok(/\n    open: function \(docId\) \{\n      if \(!this\.db\) this\.db = this\.mods\.fs\.getFirestore\(this\.app\);/.test(fb),
+    'the Firestore instance is made somewhere other than open()');
+  const c = fsAdapterCtx();
+  vm.runInContext('firestoreBackend.completeRedirect(); firestoreBackend.currentUser(); firestoreBackend.signInAnonymously()', c);
+  ok(vm.runInContext('fsLog.indexOf("getFirestore") === -1 && !firestoreBackend.isOpen()', c), 'a sign-in call opened the data store');
+  vm.runInContext('firestoreBackend.open("P")', c);
+  ok(vm.runInContext('fsLog.indexOf("getFirestore") !== -1 && firestoreBackend.isOpen()', c), 'open() did not open the data store');
   const closed = slice('renderJoinClosed');
   ok(/if \(sync\.joinRejected === 'unverified'\)/.test(closed) &&
     /Google hasn’t verified this email address yet — verify it with Google, then sign in again\./.test(closed),
@@ -10156,14 +10296,14 @@ test('S4: the sharing settings cannot be written before the pack’s own copy ha
     vm.runInContext(`
       var FIREBASE_CONFIG = {}, WRITES = [];
       var sync = { user: {}, joinLoaded: ${loaded}, joinCfg: ${loaded ? "{ open: true, code: 'abc', showStandings: false, showAmounts: false, contact: 'Chair' }" : 'null'},
-        mods: { fs: { doc: function () { return {}; }, serverTimestamp: function () { return 0; },
-          setDoc: function (ref, data) { WRITES.push(data); return { then: function () { return { catch: function () {} }; } }; } } },
-        db: {}, docId: 'p' };
+        backend: { isOpen: function () { return true; }, serverTime: function () { return 0; },
+          writeJoin: function (docId, data) { WRITES.push(data); return { then: function () { return { catch: function () {} }; } }; } },
+        docId: 'p' };
       function isAdmin() { return true; }
       function render() {} function scheduleParentViewRefresh() {} function showToast() {}
       function accountsToast() {} function joinLinkUrl() { return 'https://x/?join=abc'; }
       function dangerBtn(k, l) { return '<button data-act="' + k + '">' + l + '</button>'; }
-      ${['esc', 'JOIN_CODE_RE', 'newJoinCode', 'joinOpen', 'standingsEnabled', 'amountsEnabled',
+      ${['esc', 'JOIN_CODE_RE', 'newJoinCode', 'joinOpen', 'standingsEnabled', 'amountsEnabled', 'backendConfigured', 'cloudReady',
          'cleanContactLine', 'parentContactLine', 'writeJoinConfig', 'renderJoinCard'].map(slice).join('\n')}`, ctx);
     return ctx;
   };

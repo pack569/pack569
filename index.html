@@ -8552,10 +8552,8 @@
     retryTimer: null,
     firstSnap: true,
     session: null,     // token — a passphrase change cancels in-flight work from the old session
-    mods: null,        // loaded firebase modules { app, auth, fs }
-    app: null,
-    db: null,
-    docRef: null,
+    backend: null,     // the loaded backend adapter (firestoreBackend) — see loadBackend
+    pack: null,        // the pack-record handle from backend.open(); null = nothing may push
     unsub: null,
     // ---- Accounts (additive, runtime-only — NEVER persisted in the pack-record JSON) ----
     docId: null,               // sha256(passphrase) — the pack's doc id, also members/packmeta path key
@@ -8693,7 +8691,7 @@
   // link for a DIFFERENT pack is ignored outright (it can't re-point this page, and its code
   // would never match ours anyway).
   function activeJoin() {
-    if (!FIREBASE_CONFIG) return null;
+    if (!backendConfigured()) return null;
     var fixed = fixedPackId();
     if (fixed) {
       var rec = loadJoin();
@@ -8707,7 +8705,7 @@
   // The baked-in id wins over EVERYTHING, so neither a stray '?pack=' link nor a leftover
   // passphrase on some device can aim this page at another pack.
   function syncDocIdSource() {
-    if (!FIREBASE_CONFIG) return { kind: 'none' };
+    if (!backendConfigured()) return { kind: 'none' };
     var fixed = fixedPackId();
     if (fixed) return { kind: 'fixed', docId: fixed };
     if (syncPass()) return { kind: 'pass' };
@@ -8821,14 +8819,14 @@
     return fixedPackMode() && (fixedSyncBlocked() || !sync.myRole);
   }
   // Tear the cloud side down and sit on the local copy. Called when single-pack mode can't
-  // prove the rules are published: drops the doc ref so NOTHING can push, kills any feed,
+  // prove the rules are published: drops the pack handle so NOTHING can push, kills any feed,
   // and leaves the setup gate (gateMode() === 'setup') on screen.
   function haltFixedSync() {
     stopDocFeed();
     stopParentFeed();
     clearTimeout(sync.pushTimer);
     sync.pushTimer = null;
-    sync.docRef = null;
+    sync.pack = null;
     sync.feed = null;
     sync.dirty = false;
     sync.parentView = null;
@@ -8842,7 +8840,7 @@
     if (sync.unsub) { try { sync.unsub(); } catch (e) { /* already gone */ } sync.unsub = null; }
     clearTimeout(sync.pushTimer);
     clearTimeout(sync.retryTimer);
-    sync.docRef = null;
+    sync.pack = null;
     sync.firstSnap = true;
     sync.dirty = false;
     sync.session = null;
@@ -8896,18 +8894,169 @@
       return hex;
     });
   }
-  function loadFirebase() {
-    if (sync.mods && sync.app) return Promise.resolve(sync.mods);
-    return Promise.all([
-      import(SYNC_SDK_BASE + 'firebase-app.js'),
-      import(SYNC_SDK_BASE + 'firebase-auth.js'),
-      import(SYNC_SDK_BASE + 'firebase-firestore.js')
-    ]).then(function (loaded) {
-      sync.mods = { app: loaded[0], auth: loaded[1], fs: loaded[2] };
-      if (!sync.app) sync.app = sync.mods.app.initializeApp(FIREBASE_CONFIG);
-      return sync.mods;
+  // ---- The backend adapter ---------------------------------------------------------------
+  // Every call this page makes to its cloud goes through ONE object, sync.backend. The app
+  // decides what to read and write and what an answer means; the adapter only moves it. Today
+  // the only adapter is Firestore; a second one (the pack's own server) will offer the same
+  // methods, so nothing above or below this block needs to know which is in use.
+  //
+  // The contract, for whoever writes the next one:
+  //   - Records come back as PLAIN DATA (null for "no such record"), never SDK objects.
+  //   - Every subscription callback gets (data, meta), meta = { fromServer, pendingWrites }.
+  //     fromServer is load-bearing: only a server answer may open the parent-view gate
+  //     (applyJoinSubscription) or tell a device it was removed (applyMembersSubscription).
+  //   - subscribe* returns an unsubscribe function; everything else returns a Promise.
+  //   - Errors keep a Firebase-style err.code — the app branches on 'permission-denied'.
+  //   - Nothing here decides who may do what. The app's gates and the server's rules do.
+  //   - open() is the first call that touches pack data, so the app calls it only AFTER the
+  //     unverified-email gate in syncStart. init() and the sign-in calls touch auth only.
+  var firestoreBackend = {
+    mods: null,        // the three SDK modules { app, auth, fs }
+    app: null,
+    db: null,          // the Firestore instance — made by open(), never before
+    init: function (config) {
+      var self = this;
+      if (self.mods && self.app) return Promise.resolve(self);
+      return Promise.all([
+        import(SYNC_SDK_BASE + 'firebase-app.js'),
+        import(SYNC_SDK_BASE + 'firebase-auth.js'),
+        import(SYNC_SDK_BASE + 'firebase-firestore.js')
+      ]).then(function (loaded) {
+        self.mods = { app: loaded[0], auth: loaded[1], fs: loaded[2] };
+        if (!self.app) self.app = self.mods.app.initializeApp(config);
+        return self;
+      });
+    },
+    // ---- Sign-in (auth only — none of these touch pack data) ----
+    auth: function () { return this.mods.auth.getAuth(this.app); },
+    // The plain shape the app reads. emailVerified is copied as-is: undefined stays undefined,
+    // so the `=== false` gate in syncStart still changes nothing on an SDK that omits it.
+    userOf: function (u) {
+      if (!u) return null;
+      return { uid: u.uid, isAnonymous: !!u.isAnonymous, displayName: u.displayName, email: u.email,
+        photoURL: u.photoURL, emailVerified: u.emailVerified };
+    },
+    // A pending Google redirect sign-in (the mobile / popup-blocked fallback), or null.
+    completeRedirect: function () {
+      var self = this;
+      return self.mods.auth.getRedirectResult(self.auth()).then(function (res) {
+        return res && res.user ? self.userOf(res.user) : null;
+      });
+    },
+    currentUser: function () { return this.userOf(this.auth().currentUser); },
+    signInAnonymously: function () {
+      var self = this;
+      return self.mods.auth.signInAnonymously(self.auth()).then(function (cred) { return self.userOf(cred.user); });
+    },
+    signInWithGoogle: function () {
+      return this.mods.auth.signInWithPopup(this.auth(), new this.mods.auth.GoogleAuthProvider());
+    },
+    signInWithGoogleRedirect: function () {
+      return this.mods.auth.signInWithRedirect(this.auth(), new this.mods.auth.GoogleAuthProvider());
+    },
+    signOut: function () { return this.mods.auth.signOut(this.auth()); },
+    // ---- Pack data ----
+    // The handle for one pack's record. Holding it is what lets this device push; the app
+    // drops it (haltFixedSync, syncStop) to make sure nothing can.
+    open: function (docId) {
+      if (!this.db) this.db = this.mods.fs.getFirestore(this.app);
+      return { docId: docId, ref: this.mods.fs.doc(this.db, 'packs', docId) };
+    },
+    isOpen: function () { return !!this.db; },
+    // Stamped by the server when the write lands.
+    serverTime: function () { return this.mods.fs.serverTimestamp(); },
+    metaOf: function (snap) {
+      var md = snap && snap.metadata;
+      return { fromServer: !(md && md.fromCache), pendingWrites: !!(md && md.hasPendingWrites) };
+    },
+    dataOf: function (snap) { return snap.exists() ? (snap.data() || {}) : null; },
+    ref: function (docId, sub, id) { return this.mods.fs.doc(this.db, 'packs', docId, sub, id); },
+    get: function (ref) { var self = this; return self.mods.fs.getDoc(ref).then(function (s) { return self.dataOf(s); }); },
+    watch: function (ref, opts, onNext, onErr) {
+      var self = this;
+      var next = function (snap) { onNext(self.dataOf(snap), self.metaOf(snap)); };
+      return opts ? self.mods.fs.onSnapshot(ref, opts, next, onErr) : self.mods.fs.onSnapshot(ref, next, onErr);
+    },
+    // The pack record: { rev, device, json, updatedAt }, or null before anyone has saved.
+    subscribePack: function (h, onNext, onErr) { return this.watch(h.ref, null, onNext, onErr); },
+    // One idempotent read-modify-write. build(remote) is handed the record as it stands right
+    // now (null if none) and returns { record, result }; it may run more than once if another
+    // device writes in between, so it must not have side effects that a rerun would double.
+    // Resolves with the last run's result.
+    pushPack: function (h, build) {
+      var self = this;
+      return self.mods.fs.runTransaction(self.db, function (tx) {
+        return tx.get(h.ref).then(function (snap) {
+          var out = build(self.dataOf(snap));
+          tx.set(h.ref, out.record);
+          return out.result;
+        });
+      });
+    },
+    // The derived parent view, packs/{docId}/public/view.
+    subscribeView: function (docId, onNext, onErr) { return this.watch(this.ref(docId, 'public', 'view'), null, onNext, onErr); },
+    writeView: function (docId, data) { return this.mods.fs.setDoc(this.ref(docId, 'public', 'view'), data); },
+    // The join config, packs/{docId}/public/join. includeMetadataChanges is what makes a server
+    // answer arrive at all when it only confirms a cached copy — without it meta.fromServer
+    // might never be true and the parent-view gate would stay shut for the whole session.
+    subscribeJoin: function (docId, onNext, onErr) {
+      return this.watch(this.ref(docId, 'public', 'join'), { includeMetadataChanges: true }, onNext, onErr);
+    },
+    writeJoin: function (docId, data) { return this.mods.fs.setDoc(this.ref(docId, 'public', 'join'), data); },
+    // packmeta/{docId} = { owner } — who claimed the pack first.
+    getPackMeta: function (docId) { return this.get(this.mods.fs.doc(this.db, 'packmeta', docId)); },
+    putPackMeta: function (docId, data) { return this.mods.fs.setDoc(this.mods.fs.doc(this.db, 'packmeta', docId), data); },
+    // Members: scope 'all' watches the roster (leaders only); 'self' watches only uid's own
+    // doc, and reports [] when it does not exist. Each member carries its doc id as `uid`.
+    subscribeMembers: function (docId, scope, uid, onNext, onErr) {
+      var self = this, fs = self.mods.fs;
+      var ref = scope === 'all'
+        ? fs.collection(self.db, 'packs', docId, 'members')
+        : fs.doc(self.db, 'packs', docId, 'members', uid);
+      return fs.onSnapshot(ref, function (snap) {
+        var arr = [];
+        if (scope === 'all') {
+          snap.forEach(function (d) { var m = d.data() || {}; m.uid = d.id; arr.push(m); });
+        } else if (snap.exists()) {
+          var me = snap.data() || {}; me.uid = snap.id; arr.push(me);
+        }
+        onNext(arr, self.metaOf(snap));
+      }, onErr);
+    },
+    getMember: function (docId, uid) { return this.get(this.ref(docId, 'members', uid)); },
+    putMember: function (docId, uid, data) { return this.mods.fs.setDoc(this.ref(docId, 'members', uid), data); },
+    updateMemberRole: function (docId, uid, role) { return this.mods.fs.updateDoc(this.ref(docId, 'members', uid), { role: role }); },
+    deleteMember: function (docId, uid) { return this.mods.fs.deleteDoc(this.ref(docId, 'members', uid)); },
+    // Invites, keyed by lowercased email. Each carries its doc id as `key`.
+    subscribeInvites: function (docId, onNext, onErr) {
+      var fs = this.mods.fs;
+      return fs.onSnapshot(fs.collection(this.db, 'packs', docId, 'invites'), function (qs) {
+        var arr = [];
+        qs.forEach(function (d) { var v = d.data() || {}; v.key = d.id; arr.push(v); });
+        onNext(arr);
+      }, onErr);
+    },
+    getInvite: function (docId, key) { return this.get(this.ref(docId, 'invites', key)); },
+    putInvite: function (docId, key, data) { return this.mods.fs.setDoc(this.ref(docId, 'invites', key), data); },
+    deleteInvite: function (docId, key) { return this.mods.fs.deleteDoc(this.ref(docId, 'invites', key)); }
+  };
+  // Is there a cloud to talk to at all? False in device-only mode and in every preview build
+  // (the build rewrites FIREBASE_CONFIG to null), and every cloud path starts by asking.
+  function backendConfigured() { return !!FIREBASE_CONFIG; }
+  function loadBackend() {
+    if (sync.backend) return Promise.resolve(sync.backend);
+    return firestoreBackend.init(FIREBASE_CONFIG).then(function (be) {
+      sync.backend = be;
+      return be;
     });
   }
+  // The two questions the cloud paths ask before they touch anything:
+  //   cloudReady() — the backend is loaded and open, and this session knows its pack. Every
+  //                  accounts-side read or write (members, invites, join, parent view) waits on it.
+  //   packLinked() — this device holds the pack-record handle, so it may subscribe and push
+  //                  the pack record. haltFixedSync and syncStop drop the handle to say no.
+  function cloudReady() { return !!(sync.backend && sync.backend.isOpen() && sync.docId); }
+  function packLinked() { return !!(sync.backend && sync.pack); }
   function syncStart() {
     // Three ways to know which pack this device is on — the baked-in PACK_DOC_ID (which beats
     // everything), a leader's passphrase (unchanged), or a stored parent join link. None →
@@ -8926,15 +9075,14 @@
     renderSyncPill();
     var mine = {};
     sync.session = mine;
-    loadFirebase().then(function (mods) {
+    loadBackend().then(function (be) {
       if (sync.session !== mine) return;
-      var auth = mods.auth.getAuth(sync.app);
       // One-time: complete a pending Google redirect sign-in (the mobile / popup-blocked
       // fallback). Never throws out of here — a failed/absent redirect just leaves us
       // anonymous, exactly as today. currentUser is already set by the SDK on success.
       var redirectP = sync.redirectChecked
         ? Promise.resolve(null)
-        : mods.auth.getRedirectResult(auth).then(function (res) { return res && res.user ? res.user : null; })
+        : be.completeRedirect()
                    .catch(function (err) {
                      var code = err && err.code ? String(err.code) : '';
                      if (code.indexOf('operation-not-allowed') !== -1 || code.indexOf('configuration-not-found') !== -1) {
@@ -8954,7 +9102,7 @@
           // exactly as before (full backward compatibility — accounts are purely additive).
           // A join-link visitor gets NO anonymous account: there is nothing they may read
           // until they sign in with Google, so the landing screen just asks them to.
-          var current = auth.currentUser;
+          var current = be.currentUser();
           // SAFETY: single-pack mode is Google-sign-in-ONLY. An anonymous session has no
           // member doc, so the strict rules deny it anyway — but under the legacy rules it
           // would have full read/write on a now-public doc id, which is precisely the hole
@@ -8963,7 +9111,7 @@
           var authP = current
             ? Promise.resolve(current)
             : (src.kind === 'pass'
-                ? mods.auth.signInAnonymously(auth).then(function (cred) { return cred.user; })
+                ? be.signInAnonymously()
                 : Promise.resolve(null));
           return authP.then(function (u) {
             if (sync.session !== mine) return;
@@ -8981,7 +9129,7 @@
             // member-doc create would be denied — and handleAccountsError reads a denial as "the
             // rules aren't published", which in single-pack mode is the setup screen, shown to
             // a family. Say what is actually wrong instead, and touch nothing in the cloud: no
-            // db, no doc ref, no accounts bootstrap. `=== false`, not falsy, so an SDK that
+            // backend open(), no pack handle, no accounts bootstrap. `=== false`, not falsy, so an SDK that
             // does not report the field changes nothing.
             if (isGoogleUser(u) && u.emailVerified === false) {
               sync.joinRejected = 'unverified';
@@ -8991,8 +9139,7 @@
               render();
               return;
             }
-            sync.db = mods.fs.getFirestore(sync.app);
-            sync.docRef = mods.fs.doc(sync.db, 'packs', docId);
+            sync.pack = be.open(docId);
             if (isGoogleUser(u)) {
               // Under the Part C rules, READING the pack record requires an existing
               // members/{uid} doc, so a real user must register BEFORE we subscribe —
@@ -9002,7 +9149,7 @@
               // so the pack record still subscribes there (where reads only need auth).
               // Parent phase: the resolved role decides WHICH feed goes up — leaders get the
               // pack record exactly as before; parents/pending get the sanitized public view.
-              startAccounts(mods, u, docId, mine, function (role) {
+              startAccounts(be, u, docId, mine, function (role) {
                 // SAFETY (single-pack mode): a permission-denied on the accounts path means
                 // the Part C rules are NOT published — with a public pack id that makes the
                 // pack record world-writable, so this device stays device-only and shows the setup
@@ -9037,12 +9184,12 @@
   // Subscribe (or re-subscribe) the pack record onSnapshot. Split out of syncStart so the
   // accounts layer can defer it until membership exists (H-1).
   function subscribeDoc(mine) {
-    if (sync.session !== mine || !sync.docRef || !sync.mods) return;
+    if (sync.session !== mine || !packLinked()) return;
     if (fixedFeedBlocked()) return;   // SAFETY: single-pack mode, rules unproven — see fixedSyncBlocked
     if (sync.unsub) { try { sync.unsub(); } catch (e) { /* already gone */ } }
     sync.feed = 'doc';
-    sync.unsub = sync.mods.fs.onSnapshot(sync.docRef,
-      function (snap) { if (sync.session === mine) onRemoteSnap(snap); },
+    sync.unsub = sync.backend.subscribePack(sync.pack,
+      function (rec, meta) { if (sync.session === mine) onRemoteSnap(rec, meta); },
       function (err) { if (sync.session === mine) syncFail(err); });
   }
   // ---- Parent phase: the second, sanitized feed ---------------------------------------
@@ -9056,17 +9203,15 @@
     if (sync.parentUnsub) { try { sync.parentUnsub(); } catch (e) { /* already gone */ } sync.parentUnsub = null; }
   }
   function subscribeParentView(mine) {
-    if (sync.session !== mine || !sync.mods || !sync.db || !sync.docId) return;
+    if (sync.session !== mine || !cloudReady()) return;
     if (fixedFeedBlocked()) return;   // SAFETY: single-pack mode, rules unproven
     stopParentFeed();
     sync.feed = 'parent';
-    var fs = sync.mods.fs;
-    var ref = fs.doc(sync.db, 'packs', sync.docId, 'public', 'view');
-    sync.parentUnsub = fs.onSnapshot(ref, function (snap) {
+    sync.parentUnsub = sync.backend.subscribeView(sync.docId, function (view) {
       if (sync.session !== mine) return;
       // A missing doc is a normal state (no leader has saved anything yet) — the parent app
       // shows a friendly empty state rather than an error.
-      sync.parentView = snap.exists() ? (snap.data() || null) : null;
+      sync.parentView = view || null;
       if (sync.mode !== 'online') { sync.mode = 'online'; sync.error = ''; }
       render();
     }, function (err) { if (sync.session === mine) syncFail(err); });
@@ -9118,7 +9263,7 @@
         if (sync.user && sync.ownerUid && sync.ownerUid === sync.user.uid) {
           if (sync.ownerHealing) return;
           sync.ownerHealing = true;
-          ensureMyMemberDoc(sync.mods, sync.user, sync.docId).then(function (healed) {
+          ensureMyMemberDoc(sync.backend, sync.user, sync.docId).then(function (healed) {
             sync.ownerHealing = false;
             if (sync.session !== mine || !healed) return;
             sync.myRole = healed;
@@ -9178,7 +9323,7 @@
   // a denied invites read must never set accountsUnavailable (that would switch role
   // enforcement off). It only hides the invite block.
   function applyInvitesSubscription(mine) {
-    if (sync.session !== mine || !sync.mods || !sync.db || !sync.docId) return;
+    if (sync.session !== mine || !cloudReady()) return;
     var want = isAdmin() && !sync.accountsUnavailable && !sync.invitesUnavailable;
     if (want === !!sync.invitesUnsub) return;
     if (!want) {
@@ -9186,13 +9331,11 @@
       sync.invites = [];
       return;
     }
-    var fs = sync.mods.fs;
-    sync.invitesUnsub = fs.onSnapshot(fs.collection(sync.db, 'packs', sync.docId, 'invites'), function (qs) {
+    sync.invitesUnsub = sync.backend.subscribeInvites(sync.docId, function (list) {
       if (sync.session !== mine) return;
       var arr = [];
-      qs.forEach(function (d) {
-        var v = d.data() || {};
-        arr.push({ email: v.email || d.id, role: v.role || 'parent' });
+      list.forEach(function (v) {
+        arr.push({ email: v.email || v.key, role: v.role || 'parent' });
       });
       arr.sort(function (a, b) { return String(a.email).localeCompare(String(b.email)); });
       sync.invites = arr;
@@ -9220,7 +9363,7 @@
   // window published every scout's name and total to a pack that had switched them off.
   // writeParentView waits for this; both callbacks set it, so a denial never stalls it.
   function applyJoinSubscription(mine) {
-    if (sync.session !== mine || !sync.mods || !sync.db || !sync.docId) return;
+    if (sync.session !== mine || !cloudReady()) return;
     var want = accountsInForce() && LEADER_ROLES.indexOf(sync.myRole) !== -1 && !sync.joinUnavailable;
     if (want === !!sync.joinUnsub) return;
     if (!want) {
@@ -9228,19 +9371,19 @@
       sync.joinLoaded = false;   // a later promotion must wait for a fresh answer
       return;
     }
-    var fs = sync.mods.fs;
     sync.joinLoaded = false;
     // ⚠ FROM THE SERVER, NOT THE CACHE (security review, 2026-09). A snapshot served from the
     // local cache can be stale — or say "no config" for a doc the server has — so it may read
     // showStandings as on for a pack that has switched it off. joinCfg takes whatever arrives (the
     // Pack tab may as well show it), but only a server answer opens the parent-view gate.
-    // includeMetadataChanges is what makes that answer arrive at all: without it, a cached
-    // snapshot whose data the server then confirms unchanged raises no second event, and
-    // joinLoaded would stay false for the life of the session.
-    sync.joinUnsub = fs.onSnapshot(fs.doc(sync.db, 'packs', sync.docId, 'public', 'join'), { includeMetadataChanges: true }, function (snap) {
+    // The adapter's subscribeJoin is what makes that answer arrive at all (Firestore needs
+    // includeMetadataChanges: without it, a cached snapshot whose data the server then confirms
+    // unchanged raises no second event, and joinLoaded would stay false for the life of the
+    // session). A missing meta is never read as a server answer.
+    sync.joinUnsub = sync.backend.subscribeJoin(sync.docId, function (cfg, meta) {
       if (sync.session !== mine) return;
-      sync.joinCfg = snap.exists() ? (snap.data() || null) : null;
-      if (!(snap.metadata && snap.metadata.fromCache)) {
+      sync.joinCfg = cfg || null;
+      if (meta && meta.fromServer === true) {
         sync.joinLoaded = true;
         scheduleParentViewRefresh(); // showStandings may have just flipped
       }
@@ -9390,8 +9533,8 @@
     if (ui.tab === 'pack') render();
   }
   // Claim ownership (first writer wins), self-register a member doc, then live-watch the roster.
-  function startAccounts(mods, user, docId, mine, after) {
-    var fs = mods.fs, db = sync.db, uid = user.uid;
+  function startAccounts(be, user, docId, mine, after) {
+    var uid = user.uid;
     sync.accountsUnavailable = false;
     var afterDone = false;
     // Always fire `after` exactly once — a feed must subscribe whether registration
@@ -9400,25 +9543,24 @@
     // handed over so the caller can pick the RIGHT feed (pack record vs parent view); null
     // means "unknown" and always falls back to the pack record, exactly as before.
     function runAfter(role) { if (!afterDone) { afterDone = true; if (after && sync.session === mine) after(role || null); } }
-    var metaRef = fs.doc(db, 'packmeta', docId);
-    fs.getDoc(metaRef).then(function (snap) {
+    be.getPackMeta(docId).then(function (meta) {
       if (sync.session !== mine) return;
-      if (snap.exists()) { sync.ownerUid = (snap.data() || {}).owner || null; return; }
+      if (meta) { sync.ownerUid = meta.owner || null; return; }
       // Join link phase — someone who arrived on a shared link must NEVER claim ownership of
       // an unclaimed pack. The owner claim stays a passphrase-holder's move.
       if (activeJoin()) return;
       // No owner yet — try to become it. Whoever's create lands first is admin.
-      return fs.setDoc(metaRef, { owner: uid }).then(function () {
+      return be.putPackMeta(docId, { owner: uid }).then(function () {
         sync.ownerUid = uid;
       }).catch(function () {
         // Lost the race (or the create was denied) — re-read to learn the real owner.
-        return fs.getDoc(metaRef).then(function (s2) {
-          if (s2.exists()) sync.ownerUid = (s2.data() || {}).owner || null;
+        return be.getPackMeta(docId).then(function (m2) {
+          if (m2) sync.ownerUid = m2.owner || null;
         });
       });
     }).then(function () {
       if (sync.session !== mine) return;
-      return ensureMyMemberDoc(mods, user, docId);
+      return ensureMyMemberDoc(be, user, docId);
     }).then(function (role) {
       if (sync.session !== mine) return;
       // Provisional role, straight from our own member doc (the members snapshot below
@@ -9448,29 +9590,22 @@
   // rules aren't published", which is what handleAccountsError would conclude.
   var LEADER_ROLES = ['admin', 'editor', 'viewer'];
   function applyMembersSubscription(mine) {
-    if (sync.session !== mine || !sync.mods || !sync.db || !sync.docId || !sync.user) return;
+    if (sync.session !== mine || !cloudReady() || !sync.user) return;
     var leader = LEADER_ROLES.indexOf(sync.myRole) !== -1;
     // Denied as this role once already: don't ask again until the role itself changes.
     var want = (leader && sync.membersDeniedAs !== sync.myRole) ? 'all' : 'self';
     if (sync.membersUnsub && sync.membersScope === want) return;
     if (sync.membersUnsub) { try { sync.membersUnsub(); } catch (e) { /* gone */ } sync.membersUnsub = null; }
     sync.membersScope = want;
-    var fs = sync.mods.fs, uid = sync.user.uid;
-    var ref = want === 'all'
-      ? fs.collection(sync.db, 'packs', sync.docId, 'members')
-      : fs.doc(sync.db, 'packs', sync.docId, 'members', uid);
-    sync.membersUnsub = fs.onSnapshot(ref, function (snap) {
+    var uid = sync.user.uid;
+    // 'all' = the whole roster; 'self' = only our own member doc ([] when it is gone).
+    sync.membersUnsub = sync.backend.subscribeMembers(sync.docId, want, uid, function (list, meta) {
       if (sync.session !== mine) return;
-      var arr = [];
-      if (want === 'all') {
-        snap.forEach(function (d) { var m = d.data() || {}; m.uid = d.id; arr.push(m); });
-      } else if (snap.exists()) {
-        var me = snap.data() || {}; me.uid = snap.id; arr.push(me);
-      }
-      sync.members = arr;
+      sync.members = list;
       // A snapshot served from the local cache can be missing docs the server has; only the
       // server may tell us we were removed (applyRoleSubscription wipes this device on that).
-      sync.membersFromServer = !(snap.metadata && snap.metadata.fromCache);
+      // A missing meta is never read as a server answer.
+      sync.membersFromServer = !!(meta && meta.fromServer === true);
       recomputeMyRole();
       // A role change can arrive at any time (an admin promoting a parent to editor, or
       // demoting an editor to parent) — move this session onto the matching feed.
@@ -9508,18 +9643,17 @@
   // role; a sign-up-link visitor lands as 'pending'; anyone else gets the ask-a-leader gate and
   // no doc at all. NEVER overwrites an existing role (re-signing in as an approved editor must
   // not silently demote you to pending).
-  function ensureMyMemberDoc(mods, user, docId) {
-    var fs = mods.fs, db = sync.db, uid = user.uid;
-    var ref = fs.doc(db, 'packs', docId, 'members', uid);
+  function ensureMyMemberDoc(be, user, docId) {
+    var uid = user.uid;
     // A denied read here must NOT abort the bootstrap. A rule set whose members `read`
     // only allows existing members (the natural way to write it) denies a brand-new
     // signer the read of their OWN record — chicken-and-egg: you can't become a member
     // because you aren't one yet. Treat a denial as "no doc yet" and carry on to the
     // create, which the rules judge on its own merits (owner / invite / join code).
-    return fs.getDoc(ref).catch(function () { return { exists: function () { return false; } }; })
-      .then(function (snap) {
-      if (snap.exists()) {
-        var cur = (snap.data() || {}).role || 'pending';
+    return be.getMember(docId, uid).catch(function () { return null; })
+      .then(function (own) {
+      if (own) {
+        var cur = own.role || 'pending';
         // The pack owner is always an admin — self-heal if a rogue admin ever demoted
         // them (M-1). The rules judge the WHOLE resulting doc (own email, only the member
         // keys), so an update of `role` alone is refused whenever that admin also junked the
@@ -9529,11 +9663,11 @@
         // not published", which in single-pack mode is the setup screen, for good. Carry on
         // as the role the doc says; a lockout is better than a trap.
         if (sync.ownerUid === uid && cur !== 'admin') {
-          return fs.setDoc(ref, {
+          return be.putMember(docId, uid, {
             role: 'admin',
             name: memberName(user),
             email: user.email || '',
-            addedAt: fs.serverTimestamp()
+            addedAt: be.serverTime()
           }).then(function () { return 'admin'; }, function () { return cur; });
         }
         return cur; // already a member — leave the role exactly as it is
@@ -9542,10 +9676,10 @@
       var key = inviteEmailKey(user.email);
       // Invite lookup — the rules let a signed-in user read the invite addressed to their
       // own email. A miss (or a denial on older rules) just means "no invite".
-      var inviteRef = (!isOwner && key) ? fs.doc(db, 'packs', docId, 'invites', key) : null;
-      var invitedP = inviteRef
-        ? fs.getDoc(inviteRef).then(function (is) {
-            var r = is.exists() ? (is.data() || {}).role : null;
+      var lookInvite = !isOwner && !!key;
+      var invitedP = lookInvite
+        ? be.getInvite(docId, key).then(function (inv) {
+            var r = inv ? inv.role : null;
             return INVITE_ROLES.indexOf(r) === -1 ? null : r;
           }).catch(function () { return null; })
         : Promise.resolve(null);
@@ -9554,7 +9688,7 @@
         // on a self-serve link: check the pack's join config and only then create ourselves.
         // A closed pack or a stale code creates NOTHING and lands on the "closed" gate.
         var jr = (!isOwner && !invitedRole) ? activeJoin() : null;
-        if (jr) return joinCreateMemberDoc(mods, user, docId, jr, ref);
+        if (jr) return joinCreateMemberDoc(be, user, docId, jr);
         // Nobody signs themselves up as 'pending' any more. The rules (SETUP.md Part C) only
         // accept a member create from the owner, from an invitee, or through the sign-up link
         // with its current code — otherwise the pack id, which single-pack mode prints in this
@@ -9564,16 +9698,16 @@
         // aren't published" — the setup screen, shown to a family.)
         if (!isOwner && !invitedRole) { sync.joinRejected = 'nolink'; return null; }
         var role = isOwner ? 'admin' : invitedRole;
-        return fs.setDoc(ref, {
+        return be.putMember(docId, uid, {
           role: role,
           name: memberName(user),
           email: user.email || '',
-          addedAt: fs.serverTimestamp()
+          addedAt: be.serverTime()
         }).then(function () {
           // Invites are single-use. Best-effort delete: a failure is harmless because the
           // member doc now exists and wins on every later sign-in.
-          if (inviteRef && invitedRole) {
-            try { fs.deleteDoc(inviteRef).catch(function () { /* left for an admin to revoke */ }); }
+          if (lookInvite && invitedRole) {
+            try { be.deleteInvite(docId, key).catch(function () { /* left for an admin to revoke */ }); }
             catch (e) { /* ignore */ }
           }
           return role;
@@ -9583,7 +9717,7 @@
           // An invite we could read but not honour (it changed underneath us). The sign-up
           // link is still a way in if this device has one; otherwise it's the "ask" gate.
           var jr2 = activeJoin();
-          if (jr2) return joinCreateMemberDoc(mods, user, docId, jr2, ref);
+          if (jr2) return joinCreateMemberDoc(be, user, docId, jr2);
           sync.joinRejected = 'nolink';
           return null;
         });
@@ -9605,18 +9739,17 @@
   // Every refusal (closed, rotated code, network error) creates NOTHING, sets
   // sync.joinRejected and resolves to null — the "ask a leader" gate, never a crash and never
   // a spinner.
-  function joinCreateMemberDoc(mods, user, docId, jr, ref) {
-    var fs = mods.fs;
+  function joinCreateMemberDoc(be, user, docId, jr) {
     try {
       var code = (jr && typeof jr.code === 'string') ? jr.code : '';
       if (!code) { sync.joinRejected = 'badcode'; return Promise.resolve(null); }
       var role = 'pending'; // always — see the note above; never derived from the config
-      return fs.setDoc(ref, {
+      return be.putMember(docId, user.uid, {
         role: role,
         name: memberName(user),
         email: user.email || '',
         joinCode: code,
-        addedAt: fs.serverTimestamp()
+        addedAt: be.serverTime()
       }).then(function () { return role; })
         .catch(function () { sync.joinRejected = 'closed'; return null; });
     } catch (e) {
@@ -9626,14 +9759,12 @@
   }
   // ---- Sign in / out --------------------------------------------------------------------
   function signInWithGoogle() {
-    if (!FIREBASE_CONFIG) return;
+    if (!backendConfigured()) return;
     // A join-link visitor signs in WITHOUT a passphrase — that's the whole point of the link.
     // Single-pack mode: there IS no passphrase, so sign-in is always available.
     if (!fixedPackMode() && !syncPass() && !activeJoin()) { showToast('Enter a shared passphrase first, then sign in.'); return; }
-    loadFirebase().then(function (mods) {
-      var auth = mods.auth.getAuth(sync.app);
-      var provider = new mods.auth.GoogleAuthProvider();
-      return mods.auth.signInWithPopup(auth, provider).then(function () {
+    loadBackend().then(function (be) {
+      return be.signInWithGoogle().then(function () {
         syncStop(); syncStart(); // re-derive + re-subscribe under the new identity
       }).catch(function (err) {
         var code = err && err.code ? String(err.code) : '';
@@ -9645,7 +9776,7 @@
           return;
         }
         // Popup blocked / mobile Safari / etc. — fall back to a full-page redirect.
-        return mods.auth.signInWithRedirect(auth, provider).catch(function (e2) {
+        return be.signInWithGoogleRedirect().catch(function (e2) {
           var c2 = e2 && e2.code ? String(e2.code) : '';
           if (c2.indexOf('operation-not-allowed') !== -1 || c2.indexOf('configuration-not-found') !== -1) {
             showToast('Google sign-in isn’t enabled yet — see the SETUP guide.');
@@ -9659,15 +9790,14 @@
     });
   }
   function signOutGoogle() {
-    if (!sync.mods || !sync.app) return;
-    var auth = sync.mods.auth.getAuth(sync.app);
+    if (!sync.backend) return;
     // Single-pack mode signs nobody back in anonymously — syncStart lands on the welcome
     // gate instead, which is the whole point (see the SAFETY note on fixedSyncBlocked).
     // Drop the Google identity + role immediately so the UI can't briefly show a stale
     // signed-in state if the anonymous re-auth is slow or fails (L-4).
     sync.user = null;
     clearAccountsRuntime();
-    sync.mods.auth.signOut(auth).then(function () {
+    sync.backend.signOut().then(function () {
       syncStop(); syncStart(); // reconnects anonymously (today's default path)
     }).catch(function () { showToast('Couldn’t sign out — try again.'); });
   }
@@ -9685,11 +9815,9 @@
   var MEMBER_ROLES = ['admin', 'editor', 'viewer', 'parent'];
   function setMemberRole(memberUid, role) {
     if (MEMBER_ROLES.indexOf(role) === -1) return;
-    if (!isAdmin() || !sync.mods || !sync.db || !sync.docId) return;
+    if (!isAdmin() || !cloudReady()) return;
     if (isLastAdmin(memberUid) && role !== 'admin') { showToast('Keep at least one admin.'); return; }
-    var fs = sync.mods.fs;
-    var ref = fs.doc(sync.db, 'packs', sync.docId, 'members', memberUid);
-    fs.updateDoc(ref, { role: role }).catch(function (err) { accountsToast(err); });
+    sync.backend.updateMemberRole(sync.docId, memberUid, role).catch(function (err) { accountsToast(err); });
     // onSnapshot refreshes the list + re-renders.
   }
   // One account becomes a parent of this scout AND their brothers and sisters: a parent of one
@@ -9704,22 +9832,21 @@
     if (fam.length > 1) showToast('Linked to ' + familyLabel({ members: fam }) + '.');
   }
   function removeMember(memberUid) {
-    if (!isAdmin() || !sync.mods || !sync.db || !sync.docId) return;
+    if (!isAdmin() || !cloudReady()) return;
     if (isLastAdmin(memberUid)) { showToast('Keep at least one admin.'); return; }
-    var fs = sync.mods.fs;
+    var be = sync.backend;
     var gone = null;
     for (var i = 0; i < sync.members.length; i++) {
       if (sync.members[i].uid === memberUid) { gone = sync.members[i]; break; }
     }
-    var ref = fs.doc(sync.db, 'packs', sync.docId, 'members', memberUid);
-    fs.deleteDoc(ref).catch(function (err) { accountsToast(err); });
+    be.deleteMember(sync.docId, memberUid).catch(function (err) { accountsToast(err); });
     // …and any invite still sitting under their email. An invite is consumed on first sign-in,
     // but only best-effort, so one can outlive the member it made — and a removed person
     // signing back in would walk straight through it into the role it names. Best-effort
     // here too: a miss (no such invite, the usual case) is not worth a toast.
     var key = gone ? inviteEmailKey(gone.email) : '';
     if (key && !/[\/\s]/.test(key)) {
-      try { fs.deleteDoc(fs.doc(sync.db, 'packs', sync.docId, 'invites', key)).catch(function () { /* none, or gone */ }); }
+      try { be.deleteInvite(sync.docId, key).catch(function () { /* none, or gone */ }); }
       catch (e) { /* a malformed key — nothing to delete */ }
     }
     // Their scout links go with them. Left behind, a removed person who later came back on the
@@ -9757,7 +9884,7 @@
   // invitee consumes it on their first sign-in (ensureMyMemberDoc) and lands straight in
   // the invited role instead of 'pending'.
   function createInvite(emailRaw, role) {
-    if (!isAdmin() || !sync.mods || !sync.db || !sync.docId) return;
+    if (!isAdmin() || !cloudReady()) return;
     if (INVITE_ROLES.indexOf(role) === -1) return;
     var email = inviteEmailKey(emailRaw);
     if (!email || email.indexOf('@') < 1 || email.indexOf('.') === -1 || /[\/\s]/.test(email)) {
@@ -9772,23 +9899,22 @@
       showToast((existing.name || email) + ' is already a member (' + (existing.role || 'pending') + ').');
       return;
     }
-    var fs = sync.mods.fs;
-    fs.setDoc(fs.doc(sync.db, 'packs', sync.docId, 'invites', email), {
+    var be = sync.backend;
+    be.putInvite(sync.docId, email, {
       role: role,
       email: email,
       invitedBy: (sync.user && (sync.user.email || sync.user.uid)) || '',
-      invitedAt: fs.serverTimestamp()
+      invitedAt: be.serverTime()
     }).then(function () {
       showToast('Invited ' + email + ' as ' + role + '.');
       render(); // clears the form inputs
     }).catch(function (err) { accountsToast(err); });
   }
   function revokeInvite(emailRaw) {
-    if (!isAdmin() || !sync.mods || !sync.db || !sync.docId) return;
+    if (!isAdmin() || !cloudReady()) return;
     var email = inviteEmailKey(emailRaw);
     if (!email) return;
-    var fs = sync.mods.fs;
-    fs.deleteDoc(fs.doc(sync.db, 'packs', sync.docId, 'invites', email))
+    sync.backend.deleteInvite(sync.docId, email)
       .catch(function (err) { accountsToast(err); });
   }
   // ---- Self-serve join config (admin-only) ---------------------------------------------
@@ -9796,7 +9922,7 @@
   // fields even the first time. A code is minted on the first write so flipping the toggle
   // on immediately shows a usable link.
   function writeJoinConfig(patch, toast) {
-    if (!isAdmin() || !sync.mods || !sync.db || !sync.docId) return;
+    if (!isAdmin() || !cloudReady()) return;
     // ⚠ NOT BEFORE THE SERVER HAS ANSWERED (final review, 2026-09-28). The write is WHOLE — every
     // field not in `patch` is copied from sync.joinCfg — so a tick made while joinCfg is still
     // null, or a stale cached copy, would write the defaults back over the pack's real choices:
@@ -9826,10 +9952,10 @@
     sync.joinCfg = next;
     render();
     scheduleParentViewRefresh();
-    var fs = sync.mods.fs;
+    var be = sync.backend;
     var data = { open: next.open, mode: next.mode, code: next.code, showStandings: next.showStandings,
-      contact: next.contact, showAmounts: next.showAmounts, updatedAt: fs.serverTimestamp() };
-    fs.setDoc(fs.doc(sync.db, 'packs', sync.docId, 'public', 'join'), data).then(function () {
+      contact: next.contact, showAmounts: next.showAmounts, updatedAt: be.serverTime() };
+    be.writeJoin(sync.docId, data).then(function () {
       if (toast) showToast(toast);
     }).catch(function (err) {
       sync.joinCfg = prev;
@@ -10407,7 +10533,7 @@
     parentViewTimer = null;
     if (!accountsInForce() || !canEdit()) return;
     if (fixedSyncBlocked()) return;   // SAFETY: single-pack mode, rules unproven — never write
-    if (!sync.mods || !sync.db || !sync.docId) return;
+    if (!cloudReady()) return;
     // Not before the join config has answered: until then "calendar-only" reads as "standings
     // on" (see applyJoinSubscription). Nothing is lost by waiting — the answer, either way,
     // schedules this again.
@@ -10418,22 +10544,22 @@
       fp = JSON.stringify(payload);
     } catch (e) { return; }
     if (fp === parentViewFingerprint) return;
-    var fs = sync.mods.fs;
+    var be = sync.backend;
     var data = {};
     Object.keys(payload).forEach(function (k) { data[k] = payload[k]; });
-    data.generatedAt = fs.serverTimestamp();   // sentinel — kept out of the fingerprint
+    data.generatedAt = be.serverTime();   // sentinel — kept out of the fingerprint
     // Claim the fingerprint BEFORE the write so a second call can't send the same payload
     // again while this one is in flight; a failure clears it so the next push retries.
     parentViewFingerprint = fp;
     try {
-      fs.setDoc(fs.doc(sync.db, 'packs', sync.docId, 'public', 'view'), data)
+      be.writeView(sync.docId, data)
         .catch(function () { parentViewFingerprint = null; /* denied/offline — retry next push */ });
     } catch (e2) { parentViewFingerprint = null; /* never disturb pack-record sync */ }
   }
 
   // Debounced push — every commit() lands here; the transaction keeps rev monotonic.
   function scheduleSyncPush() {
-    if (!sync.docRef) return;
+    if (!packLinked()) return;
     if (fixedSyncBlocked()) return;   // SAFETY: single-pack mode, rules unproven — never write
     sync.dirty = true;
     clearTimeout(sync.pushTimer);
@@ -10473,27 +10599,30 @@
     return added;
   }
   function syncPush() {
-    if (!sync.docRef || !sync.mods) return;
+    if (!packLinked()) return;
     if (fixedSyncBlocked()) return;   // SAFETY: single-pack mode, rules unproven — never write
     // Parent phase belt-and-braces: a role that can't edit never writes the pack record, even if
     // a stale timer fires. (commit() already refuses; the published rules are the backstop.)
     if (accountsInForce() && !canEdit()) return;
-    var fs = sync.mods.fs, ref = sync.docRef, mine = sync.session;
-    fs.runTransaction(sync.db, function (tx) {
-      return tx.get(ref).then(function (snap) {
-        var remoteRev = snap.exists() && typeof snap.data().rev === 'number' ? snap.data().rev : 0;
-        // Wave 18(5) — about to overwrite a newer remote copy we skipped while dirty:
-        // pull its append-only log items in first (fresh from THIS transaction's read).
-        var mergedN = (sync.clobber && snap.exists()) ? mergeRemoteAppendOnly(snap.data()) : 0;
-        var nextRev = Math.max(state.rev || 0, remoteRev) + 1;
-        tx.set(ref, {
+    var be = sync.backend, h = sync.pack, mine = sync.session;
+    // `remote` is the record as it stands at this attempt (null if none). The backend may run
+    // this more than once when another device writes in between; the merge is id-guarded, so
+    // a rerun appends nothing twice, and the rev is re-derived from each fresh read.
+    be.pushPack(h, function (remote) {
+      var remoteRev = remote && typeof remote.rev === 'number' ? remote.rev : 0;
+      // Wave 18(5) — about to overwrite a newer remote copy we skipped while dirty:
+      // pull its append-only log items in first (fresh from THIS attempt's read).
+      var mergedN = (sync.clobber && remote) ? mergeRemoteAppendOnly(remote) : 0;
+      var nextRev = Math.max(state.rev || 0, remoteRev) + 1;
+      return {
+        record: {
           rev: nextRev,
-          updatedAt: fs.serverTimestamp(),
+          updatedAt: be.serverTime(),
           device: sync.deviceId,
           json: JSON.stringify(state)
-        });
-        return { nextRev: nextRev, mergedN: mergedN };
-      });
+        },
+        result: { nextRev: nextRev, mergedN: mergedN }
+      };
     }).then(function (res) {
       if (sync.session !== mine) return;
       state.rev = res.nextRev;
@@ -10540,7 +10669,10 @@
     if (opts && opts.toast) showToast('Updated from another device');
     return true;
   }
-  function onRemoteSnap(snap) {
+  // `rec` is the pack record as the backend sent it — { rev, device, json, … } — or null when
+  // the pack has none yet; `meta.pendingWrites` marks our own not-yet-confirmed write. The
+  // sync-conflict overlay keeps `rec` exactly as it came, for adoptRemote.
+  function onRemoteSnap(rec, meta) {
     var wasFirst = sync.firstSnap;
     sync.firstSnap = false;
     if (sync.mode !== 'online') { sync.mode = 'online'; sync.error = ''; renderSyncPill(); if (ui.tab === 'pack') render(); }
@@ -10549,14 +10681,14 @@
     // so the rest of this function settles on the winning state before anything is written,
     // and an unchanged payload costs nothing. No-op for viewers/parents/legacy.
     if (wasFirst) scheduleParentViewRefresh();
-    if (!snap.exists()) {
+    if (!rec) {
       // No shared copy yet — seed it from this device (M-3: never for a read-only viewer;
       // canEdit() is true for anonymous/legacy, so today's behavior is unchanged).
       if (wasFirst && canEdit()) { sync.dirty = true; clearTimeout(sync.pushTimer); sync.pushTimer = setTimeout(syncPush, 800); }
       return;
     }
-    if (snap.metadata && snap.metadata.hasPendingWrites) return; // our own optimistic write
-    var d = snap.data() || {};
+    if (meta && meta.pendingWrites) return; // our own optimistic write
+    var d = rec;
     var remoteRev = typeof d.rev === 'number' ? d.rev : 0;
     if (wasFirst) {
       var parsed = null;
@@ -16520,7 +16652,7 @@
   }
   function renderMembersCard() {
     // Only meaningful when signed in with Google. (Anonymous/legacy users never see it.)
-    if (!FIREBASE_CONFIG || !sync.user) return '';
+    if (!backendConfigured() || !sync.user) return '';
     var h = '<div class="card acct-card"><h2 class="section display">Members</h2>';
     if (sync.accountsUnavailable) {
       h += '<p class="small muted" style="margin:0">Accounts aren’t fully set up — publish the security rules from the ' +
@@ -16666,7 +16798,7 @@
   // Admins only, and only once accounts are actually in force. It writes ONE document,
   // packs/{docId}/public/join — never the pack record.
   function renderJoinCard() {
-    if (!FIREBASE_CONFIG || !sync.user || sync.accountsUnavailable || !isAdmin()) return '';
+    if (!backendConfigured() || !sync.user || sync.accountsUnavailable || !isAdmin()) return '';
     var h = '<div class="card"><h2 class="section display">Parent sign-up link</h2>';
     if (sync.joinUnavailable) {
       return h + '<p class="small muted" style="margin:0">The sign-up link needs the newest security rules ' +
@@ -16867,7 +16999,7 @@
     return h + '</div>';
   }
   function syncModeLine() {
-    if (!FIREBASE_CONFIG) return 'Device-only mode — everything is saved in this browser.';
+    if (!backendConfigured()) return 'Device-only mode — everything is saved in this browser.';
     var fixed = fixedPackMode();
     if (sync.mode === 'online') {
       return fixed
@@ -18113,7 +18245,7 @@
     h += '<div class="card"><h2 class="section display">Shared sync</h2>' +
       '<p class="small" style="margin:0 0 8px"><span class="pill navy">' + esc((SYNC_PILL[sync.mode] || SYNC_PILL.local).label) + '</span> ' +
       esc(syncModeLine()) + '</p>';
-    if (FIREBASE_CONFIG) {
+    if (backendConfigured()) {
       // Single-pack mode: the pack id is baked into the page, so there is no passphrase field
       // at all — identity IS the access control. Passphrase mode below is unchanged.
       if (!fixedPackMode()) {
