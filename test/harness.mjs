@@ -10148,7 +10148,7 @@ test('M10: a reconciled entry is read-only until it is deliberately un-reconcile
   ok(un && /arm\(act, function \(\) \{/.test(un[0]) && /urE\.reconciled = false;/.test(un[0]),
     'there is no two-tap un-reconcile');
   const del = /if \(act\.indexOf\('del-ledger:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/var dlWhy = ledgerLockedWhy\(state\.ledger\[dlIx\], state\.book\);\s*if \(dlWhy\) \{ showToast\(dlWhy\); return; \}/.test(del), 'a reconciled entry can be deleted');
+  ok(/var dlWhy = ledgerLockedWhy\(state\.ledger\[dlIx\], state\.book, '', 'delete'\);\s*if \(dlWhy\) \{ showToast\(dlWhy\); return; \}/.test(del), 'a reconciled entry can be deleted');
 });
 
 test('M10: forgiving needs a reason and a name, and undoing it leaves a trace', () => {
@@ -16960,6 +16960,11 @@ const DELETE_L1 = "markGone('ledger', state.ledger.splice(0, 1)); commit()";
 // Phase 3, C2 — each row with its amount and date; a lost one in the treasurer's words (H1, m1).
 const KEPT_L1 = '“Dues” ($25.00, Sep 1) was deleted, but it is reconciled against the bank statement, so it was kept. ' +
   'To remove it, un-reconcile it first, then delete it. (Kept on Money · Ledger.)';
+// Treasurer review of C2 (M-1) — kept, and dated in the reconciled period (through Sep 30): it can't
+// be deleted even un-reconciled, so the way out is an adjusting entry.
+const KEPT_L1_PERIOD = '“Dues” ($25.00, Sep 1) was deleted on another device, but it is reconciled and dated inside the period ' +
+  'already reconciled (through Sep 30), so it was kept. If it shouldn’t be in the book, record an adjusting entry dated today and ' +
+  'say in its description which entry it cancels. (Kept on Money · Ledger.)';
 const LOST_L1 = '“Dues” ($25.00, Sep 1) was reconciled on this device, but another leader deleted it afterwards, so it has been removed. ' +
   'If it is on the bank statement, enter it again and tick it. If not, nothing needs doing. (Kept on Money · Ledger.)';
 const recToasts = (d) => d.get('toasts').filter((t) => /reconciled/.test(t));
@@ -18031,10 +18036,21 @@ atest('C2, api: two devices’ ledger logs are one log after a merge', async () 
    period always beats a delete; what a sync did to reconciled rows waits on Money · Ledger.
    ================================================================ */
 test('C2: what a sync did to a reconciled row is said with its amount and date, and stays on Money · Ledger until dismissed', () => {
-  const ctx = sandbox(['fmt', 'fmtDateShort', 'reconciledFatesText', 'noteReconciledFates']);
-  vm.runInContext("var sync = { fatesNote: '' }, toasts = [], renders = 0; function showToast(m, o) { toasts.push([m, o]); } function render() { renders += 1; }", ctx);
+  const ctx = sandbox(['fmt', 'fmtDateShort', 'entryAfterOpening', 'ledgerDateReconciled', 'reconciledFatesText', 'noteReconciledFates']);
+  vm.runInContext("var sync = { fatesNote: '' }, toasts = [], renders = 0; function showToast(m, o) { toasts.push([m, o]); } function render() { renders += 1; }" +
+    " var state = { book: { openingDate: '2026-07-01', reconciledThrough: '2026-09-30' } };", ctx);
   const lost = { description: 'Pinewood trophies', amountCents: 8400, date: '2026-09-12' };
-  eq(ctx.reconciledFatesText({ kept: [], lost: [lost] }),
+  // Treasurer review of C2 (M-1) — a kept row dated in the reconciled period is told the way out: an
+  // adjusting entry (it can't be deleted, even un-reconciled). One after the period, as before.
+  const book = { openingDate: '2026-07-01', reconciledThrough: '2026-09-30' };
+  eq(ctx.reconciledFatesText({ kept: [lost], lost: [] }, book),
+    '“Pinewood trophies” ($84.00, Sep 12) was deleted on another device, but it is reconciled and dated inside the period already ' +
+    'reconciled (through Sep 30), so it was kept. If it shouldn’t be in the book, record an adjusting entry dated today and say in its ' +
+    'description which entry it cancels.', 'the treasurer’s wording, in the period');
+  eq(ctx.reconciledFatesText({ kept: [Object.assign({}, lost, { date: '2026-10-02' })], lost: [] }, book),
+    '“Pinewood trophies” ($84.00, Oct 2) was deleted, but it is reconciled against the bank statement, so it was kept. ' +
+    'To remove it, un-reconcile it first, then delete it.', 'after the period');
+  eq(ctx.reconciledFatesText({ kept: [], lost: [lost] }, book),
     '“Pinewood trophies” ($84.00, Sep 12) was reconciled on this device, but another leader deleted it afterwards, so it has been removed. ' +
     'If it is on the bank statement, enter it again and tick it. If not, nothing needs doing.', 'the treasurer’s wording');
   ctx.noteReconciledFates({ kept: [], lost: [] });
@@ -18074,8 +18090,8 @@ test('C2, Firestore: a reconciled row dated in the reconciled period is kept ove
   eq(server().ledger.map((l) => [l.id, l.reconciled]), [['l1', true]], 'the reconciled row in the period was dropped');
   eq(server().gone.ledger.l1 < 0, true, 'its mark was not turned into a put-back');
   b.hear();
-  eq([b.get('state.ledger.map(function (l) { return l.id; })'), recToasts(b)], [['l1'], [KEPT_L1]], 'the deleting device');
-  ok(b.get('sync.fatesNote') === KEPT_L1.replace(' (Kept on Money · Ledger.)', ''), 'the deleting device’s note');
+  eq([b.get('state.ledger.map(function (l) { return l.id; })'), recToasts(b)], [['l1'], [KEPT_L1_PERIOD]], 'the deleting device');
+  ok(b.get('sync.fatesNote') === KEPT_L1_PERIOD.replace(' (Kept on Money · Ledger.)', ''), 'the deleting device’s note');
   // The reverse: the deleting device, with a clock an hour AHEAD, saves last against the ticked copy.
   const p = fsGonePair(H1_BOOK);
   p.b.run(B1); p.b.push();
@@ -18083,7 +18099,7 @@ test('C2, Firestore: a reconciled row dated in the reconciled period is kept ove
   p.a.run(DELETE_L1);
   p.a.hear(); p.a.push();
   eq(p.server().ledger.map((l) => [l.id, l.reconciled]), [['l1', true]], 'the deleting device dropped it');
-  eq(recToasts(p.a), [KEPT_L1], 'the deleting device was not told');
+  eq(recToasts(p.a), [KEPT_L1_PERIOD], 'the deleting device was not told');
   // Controls: a row dated after the period keeps the old rule (a tick with no time loses), and an
   // unticked row in the period is not protected.
   const c = fsGonePair(H1_OVER({ reconciledThrough: '2026-08-31' }));
@@ -18104,7 +18120,7 @@ atest('C2, api: a reconciled row dated in the reconciled period is kept over a d
   await settle([a], 800);
   eq(server().ledger.map((l) => [l.id, l.reconciled]), [['l1', true]], 'the reconciled row in the period was dropped');
   await b.poll();
-  eq([b.get('state.ledger.length'), recToasts(b)], [1, [KEPT_L1]], 'the deleting device');
+  eq([b.get('state.ledger.length'), recToasts(b)], [1, [KEPT_L1_PERIOD]], 'the deleting device');
   ({ a, b, server } = await apiGonePair(H1_BOOK));
   await b.edit("state.entries.push({ id: 'b1', scoutId: 's2', kind: 'wagon', date: '', salesCents: 100, donationsCents: 0 })");
   a.run(skew(3600000));
@@ -18250,7 +18266,9 @@ test('C2: a locked entry refuses only its amount, date and direction; its labels
   p.run("change('led-amount', 'r1', '1'); change('led-amount', 'p1', '1')");
   const t = p.get('toasts');
   ok(/^That entry is reconciled against a bank statement, so its amount, date and direction can’t be changed\. Un-reconcile it first/.test(t[0]), t[0]);
-  ok(/^That entry is dated .*, inside the period already reconciled \(through .*\), so its amount, date and direction can’t be changed\.$/.test(t[1]), t[1]);
+  // Treasurer review of C2 (M-2) — in the treasurer's words, with what to do instead.
+  eq(t[1], 'That entry is dated Aug 15, inside the period already reconciled (through Aug 31), so its amount, date and direction can’t be changed. ' +
+    'To fix it, record an adjusting entry dated today for the difference, and say in its description which entry it corrects.', 'the money refusal in the period');
   eq(vm.runInContext('LEDGER_LOCKED_FIELDS', p.ctx).slice(), ['amount', 'dir', 'date'], 'the locked fields');
   // The Entries list: a locked row's amount, date and direction are text; its labels are fields.
   const rows = slice('renderLedgerEntries');
@@ -18282,7 +18300,8 @@ test('C2: ticking and un-ticking are logged; un-ticking keeps who approved it; a
   eq(p.get('row("r1").amountCents'), 2600, 'r1, dated after the period, did not open when un-reconciled');
   p.run("toasts = []; act('ledger-unreconcile:q1'); act('ledger-unreconcile:q1'); change('led-amount', 'q1', '1')");
   eq([p.get('row("q1").reconciled'), p.get('row("q1").amountCents')], [false, 50000], 'q1 opened by un-reconciling it');
-  ok(/^Un-reconciled — but it is dated inside the period already reconciled .* so it still can’t be changed\./.test(p.get('toasts[0]')), p.get('toasts[0]'));
+  eq(p.get('toasts[0]'), 'Un-reconciled — but it is dated inside the period already reconciled (through Aug 31), so its amount, date and direction ' +
+    'still can’t be changed. Tick it again if it is on the statement.', 'the un-reconcile toast (M-2)');
 });
 
 test('C2: Tick all is one logged event; Clear all ticks leaves rows from an earlier statement ticked', () => {
@@ -18306,13 +18325,18 @@ test('C2: an entry dated in the reconciled period is warned about, then saved an
   const p = c2Page();
   p.run("ui.ledgerDraft = ledgerDraftDefault(); ui.ledgerDraft.date = '2026-08-20'; ui.ledgerDraft.amount = '42'; ui.ledgerDraft.description = 'Late receipt'; act('ledger-add')");
   eq([p.get('state.ledger.length'), p.get('ui.ledgerAddWarned'), p.get('log().length')], [6, '2026-08-20', 0], 'the first tap saved it, or did not warn');
-  ok(/^This entry is dated .*, inside the period already reconciled \(through .*\)\. .*If the date is right, tap Save it anyway\.$/.test(
-    p.get("ledgerBackdateWarning('2026-08-20', state.book)")), 'the warning');
+  // Treasurer review of C2 (L-3) — in the treasurer's words.
+  eq(p.get("ledgerBackdateWarning('2026-08-20', state.book)"), 'This entry is dated Aug 20, inside the period already reconciled (through Aug 31). ' +
+    'If it cleared the bank by Aug 31, that statement should have included it, so check before saving. Once saved, its amount, date and ' +
+    'direction can’t be changed here. If the date and amount are right, tap Save it anyway.', 'the warning');
   const le = slice('renderLedgerEntries');
   ok(/\(addWarn \? 'Save it anyway' : 'Add entry'\)/.test(le) && /\(addWarn \? '<p class="small" role="alert"/.test(le), 'the form does not show the warning');
-  p.run("act('ledger-add')");
+  p.run("toasts = []; ui.ledgerDraft.direction = 'in'; act('ledger-add')");
   const added = p.get('state.ledger[6]');
   eq([added.date, added.amountCents, added.enteredBy, p.get('ui.ledgerAddWarned')], ['2026-08-20', 4200, 'Pat Treasurer', ''], 'the second tap');
+  // Treasurer review of C2 (L-2) — the next entry starts from today, not inside the period, and it is said.
+  eq([p.get('ui.ledgerDraft.date'), p.get('ui.ledgerDraft.direction'), p.get('toasts')],
+    ['2026-10-15', 'in', ['Saved, dated Aug 20 inside the reconciled period. The date is back to today for the next entry.']], 'the date after a back-dated save');
   eq([p.get('log()[0].op'), p.get('log()[0].row'), p.get('log()[0].why')],
     ['add', added.id, 'Dated inside the period reconciled through 2026-08-31; saved after the warning.'], 'the warned add was not logged');
   // A changed date asks again; an ordinary add is not logged; nor is one before the opening date.
@@ -18382,8 +18406,9 @@ test('C2: the opening figure and date are read-only once a statement is reconcil
     p.run(`toasts = []; ${js}`);
     eq([p.get('state.book.openingCents'), p.get('state.book.openingDate'), p.get('log().length'), p.get('commits')], [10000, '2026-07-01', 0, 0],
       js + ' changed a reconciled book’s opening');
-    ok(/^The opening balance is locked: the book is reconciled through .*Only an admin reopening the last statement can unlock it, and that isn’t in the app yet\.$/.test(p.get('toasts[0]')),
-      p.get('toasts[0]'));
+    eq(p.get('toasts[0]'), 'The opening balance is locked because the book is reconciled through Aug 31, and every balance checked against the bank ' +
+      'starts from it. If it’s wrong, record the difference as an adjusting entry dated today and say why in its description. Unlocking it by ' +
+      'reopening a reconciled statement will come in a later update.', 'the opening card’s words (M-2)');
   }
   const q = c2Page({ book: { reconciledThrough: '' } });
   q.run("change('book-opening', '', '123.45'); change('book-opening-date', '', '2026-06-01'); act('ledger-use-carryover')");
@@ -18434,8 +18459,8 @@ test('C2 review #1, Firestore: a delete from a fast clock, kept over in the peri
 });
 
 test('C2 review (minor): what a merge did to a row is said once a session, and leaving the pack clears it', () => {
-  const ctx = sandbox(['fmt', 'fmtDateShort', 'reconciledFatesText', 'noteReconciledFates', 'syncStop']);
-  vm.runInContext("var sync = { fatesNote: '', fatesSeen: {} }, toasts = []; function showToast(m) { toasts.push(m); } function render() {}" +
+  const ctx = sandbox(['fmt', 'fmtDateShort', 'entryAfterOpening', 'ledgerDateReconciled', 'reconciledFatesText', 'noteReconciledFates', 'syncStop']);
+  vm.runInContext("var sync = { fatesNote: '', fatesSeen: {} }, toasts = [], state = { book: { openingDate: '', reconciledThrough: '' } }; function showToast(m) { toasts.push(m); } function render() {}" +
     ' function clearTimeout() {} function clearAccountsRuntime() {}', ctx);
   const l1 = { id: 'l1', description: 'Dues', amountCents: 2500, date: '2026-09-01' };
   const l2 = { id: 'l2', description: 'Trophies', amountCents: 8400, date: '2026-09-12' };
@@ -18475,9 +18500,13 @@ test('C2 review #2: a locked entry can’t be deleted, not even unticked in the 
   for (const id of ['p1', 'r1', 'q1']) {
     p.run(`toasts = []; commits = 0; act2('del-ledger:${id}')`);
     eq([p.get(`!!row('${id}')`), p.get('log().length'), p.get('commits'), p.get('marks.length')], [true, 0, 0, 0], id + ' was deleted');
-    eq(p.get('toasts'), [p.get(`ledgerLockedWhy(row('${id}'), state.book)`)], id + ': the reason');
+    eq(p.get('toasts'), [p.get(`ledgerLockedWhy(row('${id}'), state.book, '', 'delete')`)], id + ': the reason');
   }
-  ok(/^That entry is dated .*, inside the period already reconciled \(through .*\), so it can’t be changed\.$/.test(p.get('toasts[0]')), p.get('toasts[0]'));
+  // Treasurer review of C2 (M-2) — what to do instead, in the treasurer's words.
+  p.run("toasts = []; act2('del-ledger:p1'); act2('del-ledger:r1')");
+  eq(p.get('toasts'), ['That entry is dated Aug 15, inside the period already reconciled (through Aug 31), so it can’t be removed. ' +
+    'To cancel it, record an opposite entry dated today and say in its description which entry it cancels.',
+    'That entry is reconciled against a bank statement, so it can’t be removed. Un-reconcile it first (Money · Ledger, two taps), then remove it.'], 'the delete refusals');
   // u1 is open: deleted, marked, and logged with what the money was.
   p.run("act2('del-ledger:u1')");
   eq([p.get("!!row('u1')"), p.get('marks'), p.get('commits')], [false, [['ledger', ['u1'], false]], 1], 'the open row');
@@ -18490,7 +18519,7 @@ test('C2 review #2: a locked entry can’t be deleted, not even unticked in the 
     [true, ['ledger', ['u1'], true], [['delete', 'u1', ''], ['add', 'u1', 'Put back by Undo after it was deleted.']]], 'the Undo');
   // The Entries list offers no ✕ on a locked row.
   ok(/\(eLocked \? '' : tinyDangerBtn\('del-ledger:' \+ e\.id, 'Remove this entry'\)\)/.test(slice('renderLedgerEntries')), 'a locked row shows its ✕');
-  ok(/\?\s*'<span class="pill navy" title="Dated on or before ' \+ esc\(fmtDate\(state\.book\.reconciledThrough\)\) \+\s*', which is already reconciled: it can’t be removed, and its amount, date and direction can’t be changed">reconciled period<\/span>'/
+  ok(/\?\s*'<span class="pill navy" title="' \+ esc\(ledgerLockNote\(e, state\.book\)\) \+ '">reconciled period<\/span>'/
     .test(slice('renderLedgerEntries')), 'the reconciled-period pill does not say why there is no ✕');
 });
 
@@ -18626,6 +18655,26 @@ test('C2 treasurer H-1: Mark reconciled takes a statement date, not after today 
   ok(!/'today'/.test(rr), 'the view still offers "through today"');
   ok(/var rlNo = reconcileLockRefusal\(bk, todayISO\(\)\);/.test(rr) && /\(rlNo\s*\? '<span style="color:var\(--accent-text\)">' \+ esc\(rlNo\)/.test(rr), 'the reason is not shown in place');
   ok(/'Tap again: entries dated on or before ' \+ fmtDateShort\(bk\.statementDate\) \+ ' will be locked'/.test(rr), 'the armed button');
+});
+
+test('C2 treasurer L-4, L-2: a locked entry’s Detail says what it can’t have done to it; a back-dated reimbursement still asks for its receipt', () => {
+  const p = c2tPage({ more: `${['ledgerLockNote'].map(slice).join('\n')}` });
+  eq(['u1', 'r1', 'p1', 'q1'].map((id) => p.get(`ledgerLockNote(row('${id}'), state.book)`)), ['',
+    'Reconciled against a bank statement: it can’t be removed, and its amount, date and direction can’t be changed until it is un-reconciled.',
+    'Dated on or before Aug 31, which is already reconciled: it can’t be removed, and its amount, date and direction can’t be changed.',
+    'Dated on or before Aug 31, which is already reconciled: it can’t be removed, and its amount, date and direction can’t be changed.'], 'the notes');
+  eq(p.get("ledgerLockNote(row('u1'), { closedAt: '2027-07-01T00:00:00.000Z' })"), 'In a year already closed out: it can’t be changed or removed.', 'a closed year');
+  // In the Detail of a locked row (every locked row: the pill is shown only on an unticked one), escaped.
+  ok(/\(eLocked \? '<p class="small muted llock" style="margin:6px 0 0;flex-basis:100%">' \+ esc\(ledgerLockNote\(e, state\.book\)\) \+ '<\/p>' : ''\) \+\s*ledgerTrailLine\(e\) \+/
+    .test(slice('renderLedgerEntries')), 'the Detail does not carry the note');
+  // L-2 with a reimbursement's receipt: one toast, both said, without a second "Saved".
+  p.run("entryNeedsReceipt = function () { return true; }; ui.ledgerDraft = ledgerDraftDefault(); ui.ledgerDraft.date = '2026-08-20'; ui.ledgerDraft.amount = '12';" +
+    " act('ledger-add'); toasts = []; act('ledger-add')");
+  eq(p.get('toasts'), ['Saved, dated Aug 20 inside the reconciled period. The date is back to today for the next entry. ' +
+    'A reimbursement should name its receipt. Add the receipt number under Detail.'], 'the toast');
+  p.run("ui.ledgerDraft.date = '2026-10-01'; ui.ledgerDraft.amount = '12'; toasts = []; act('ledger-add')");
+  eq([p.get('toasts'), p.get('ui.ledgerDraft.date')], [['Saved — but a reimbursement should name its receipt. Add the receipt number under Detail.'], '2026-10-01'],
+    'an ordinary add keeps its date and its words');
 });
 
 /* ---------------- report ---------------- */

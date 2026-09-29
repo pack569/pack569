@@ -7311,22 +7311,28 @@
     return !!(rt && d && d <= rt && entryAfterOpening({ date: d }, book));
   }
   // Phase 3, C2 — why this row can't be changed, in the treasurer's words, or '' when it can.
-  // `what` names it ('That entry' by default); `money` says it is the amount, date or direction
-  // being refused (the owner's rule: only those lock; see LEDGER_LOCKED_FIELDS). A row both
-  // ticked and dated in the period is told about the period: un-reconciling it would not open it.
-  // Correcting a locked row with a reversing entry comes in C4; until then the reconciled one
-  // says to un-reconcile first.
-  function ledgerLockedWhy(e, book, what, money) {
+  // `what` names it ('That entry' by default); `how` says what is being refused: 'money' its
+  // amount, date or direction (the owner's rule: only those lock; see LEDGER_LOCKED_FIELDS),
+  // 'delete' removing it, anything else a change. A row both ticked and dated in the period is
+  // told about the period: un-reconciling it would not open it.
+  // Treasurer review of C2 (M-2) — and each says what to do instead, in the treasurer's words: in
+  // the period, an adjusting (or opposite) entry dated today that names the entry it corrects
+  // (or cancels); a reconciled one, un-reconcile it first. Dates as the review writes them (Sep 12).
+  function ledgerLockedWhy(e, book, what, how) {
     if (!ledgerLocked(e, book)) return '';
     what = what || 'That entry';
-    var it = money ? 'its amount, date and direction' : 'it';
-    if (book.closedAt) return what + ' is in a year already closed out, so it can’t be changed.';
+    var it = how === 'money' ? 'its amount, date and direction' : 'it';
+    var cant = how === 'delete' ? ' can’t be removed.' : ' can’t be changed.';
+    if (book.closedAt) return what + ' is in a year already closed out, so it' + cant;
     if (ledgerDateReconciled(e.date, book)) {
-      return what + ' is dated ' + fmtDate(e.date) + ', inside the period already reconciled (through ' +
-        fmtDate(book.reconciledThrough) + '), so ' + it + ' can’t be changed.';
+      var inPeriod = what + ' is dated ' + fmtDateShort(e.date) + ', inside the period already reconciled (through ' +
+        fmtDateShort(book.reconciledThrough) + '), so ' + it + cant;
+      if (how === 'money') return inPeriod + ' To fix it, record an adjusting entry dated today for the difference, and say in its description which entry it corrects.';
+      if (how === 'delete') return inPeriod + ' To cancel it, record an opposite entry dated today and say in its description which entry it cancels.';
+      return inPeriod;
     }
-    return what + ' is reconciled against a bank statement, so ' + it + ' can’t be changed. ' +
-      'Un-reconcile it first (Money · Ledger, two taps), then change it.';
+    return what + ' is reconciled against a bank statement, so ' + it + cant + ' ' +
+      'Un-reconcile it first (Money · Ledger, two taps), then ' + (how === 'delete' ? 'remove' : 'change') + ' it.';
   }
   function reconcileTotals(ledger, book) {
     var cleared = book.openingCents || 0, ticked = 0, open = 0, after = 0;
@@ -7937,7 +7943,7 @@
     // A closed year takes nothing. Otherwise only the money fields lock (owner, 2026-09-29): the
     // budget line, description, family and the rest are labels, fixed in place and logged.
     if (book && book.closedAt) return ledgerLockedWhy(e, book);
-    var why = LEDGER_LOCKED_FIELDS.indexOf(lk) !== -1 ? ledgerLockedWhy(e, book, '', true) : '';
+    var why = LEDGER_LOCKED_FIELDS.indexOf(lk) !== -1 ? ledgerLockedWhy(e, book, '', 'money') : '';
     if (why) return why;
     if (lk === 'amount') {
       var c = Math.abs(toCents(value));
@@ -7957,11 +7963,14 @@
   }
   // What a leader is told before a NEW entry dated in the reconciled period is saved, or ''.
   // Only a warning (owner's decision): the second tap saves it. Pure.
+  // Treasurer review of C2 (L-3) — in the treasurer's words: the likeliest reason a real entry is
+  // dated there is that it cleared the bank, and then the statement should have shown it.
   function ledgerBackdateWarning(date, book) {
     if (!ledgerDateReconciled(date, book)) return '';
-    return 'This entry is dated ' + fmtDate(date) + ', inside the period already reconciled (through ' +
-      fmtDate(book.reconciledThrough) + '). Adding it changes the book for a month already checked against the bank, ' +
-      'and once saved its amount, date and direction can’t be changed here. If the date is right, tap Save it anyway.';
+    var rt = fmtDateShort(book.reconciledThrough);
+    return 'This entry is dated ' + fmtDateShort(date) + ', inside the period already reconciled (through ' + rt + '). ' +
+      'If it cleared the bank by ' + rt + ', that statement should have included it, so check before saving. ' +
+      'Once saved, its amount, date and direction can’t be changed here. If the date and amount are right, tap Save it anyway.';
   }
   // One led-* change, applied to the row with everything it implies (the handler has already
   // asked ledgerEditRefusal). `value` as for ledgerEditRefusal.
@@ -8022,9 +8031,11 @@
   // the bank. The way back is an admin reopening the reconciliation (C5, not built yet).
   function openingLockedWhy(book) {
     if (!book || !book.reconciledThrough) return '';
-    return 'The opening balance is locked: the book is reconciled through ' + fmtDate(book.reconciledThrough) +
-      ', and changing where it starts would change every balance already checked against the bank. ' +
-      'Only an admin reopening the last statement can unlock it, and that isn’t in the app yet.';
+    // Treasurer review of C2 (M-2) — in the treasurer's words, with what to do instead.
+    return 'The opening balance is locked because the book is reconciled through ' + fmtDateShort(book.reconciledThrough) +
+      ', and every balance checked against the bank starts from it. If it’s wrong, record the difference as an ' +
+      'adjusting entry dated today and say why in its description. Unlocking it by reopening a reconciled statement ' +
+      'will come in a later update.';
   }
   // Treasurer review of C2 (H-1) — why "Mark reconciled" is refused, or '' when it can go ahead.
   // It locks every entry dated on or before the statement date, so the date must be one: a real
@@ -12274,12 +12285,21 @@
   // The words for reconciledFates. Each row named with its amount and date, so the treasurer can
   // find it on the statement. Phase 3, C2 (treasurer review of C1, H1) — a lost row in the
   // treasurer's words: whether anything needs doing depends on the bank statement. Pure.
-  function reconciledFatesText(f) {
+  // Treasurer review of C2 (M-1) — a kept row dated in the reconciled period (`book`) can't be
+  // deleted even un-reconciled (del-ledger), so it is told the way to take it out of the book: an
+  // adjusting entry. Any other kept row is told as before.
+  function reconciledFatesText(f, book) {
     function name(x) {
       return '“' + (x.description || 'An entry') + '” (' + fmt(x.amountCents || 0) + (x.date ? ', ' + fmtDateShort(x.date) : '') + ')';
     }
     var out = [];
     f.kept.forEach(function (x) {
+      if (ledgerDateReconciled(x.date, book)) {
+        out.push(name(x) + ' was deleted on another device, but it is reconciled and dated inside the period already reconciled ' +
+          '(through ' + fmtDateShort(book.reconciledThrough) + '), so it was kept. If it shouldn’t be in the book, record an ' +
+          'adjusting entry dated today and say in its description which entry it cancels.');
+        return;
+      }
       out.push(name(x) + ' was deleted, but it is reconciled against the bank statement, so it was kept. ' +
         'To remove it, un-reconcile it first, then delete it.');
     });
@@ -12308,7 +12328,7 @@
       };
     }
     f = { kept: (f.kept || []).filter(fresh('kept')), lost: (f.lost || []).filter(fresh('lost')) };
-    var text = reconciledFatesText(f);
+    var text = reconciledFatesText(f, state.book);
     if (!text) return;
     sync.fatesNote = (sync.fatesNote ? sync.fatesNote + ' ' : '') + text;
     showToast(text + ' (Kept on Money · Ledger.)', { duration: 10000 });
@@ -18438,6 +18458,19 @@
     h += bookCard();
     return h + (ui.ledgerView === 'reconcile' ? renderReconcile() : renderLedgerEntries());
   }
+  // Treasurer review of C2 (L-4) — what a locked row can't have done to it, in one line: the
+  // "reconciled period" pill's tooltip, and the line in its Detail (a tooltip never shows on a
+  // phone). '' for an open row. Plain text: the callers escape it.
+  function ledgerLockNote(e, book) {
+    if (!ledgerLocked(e, book)) return '';
+    if (book.closedAt) return 'In a year already closed out: it can’t be changed or removed.';
+    if (ledgerDateReconciled(e.date, book)) {
+      return 'Dated on or before ' + fmtDateShort(book.reconciledThrough) + ', which is already reconciled: it can’t be removed, ' +
+        'and its amount, date and direction can’t be changed.';
+    }
+    return 'Reconciled against a bank statement: it can’t be removed, and its amount, date and direction can’t be changed ' +
+      'until it is un-reconciled.';
+  }
   // E2 — "Entered by … · reconciled by …", or '' for an entry from before the trail.
   function ledgerTrailLine(e) {
     var bits = [];
@@ -18543,8 +18576,7 @@
               '" data-act="ledger-unreconcile:' + e.id + '">' +
               (ui.armed === 'ledger-unreconcile:' + e.id ? 'Tap again to un-reconcile' : 'Un-reconcile') + '</button>'
           : (ePeriod
-            ? '<span class="pill navy" title="Dated on or before ' + esc(fmtDate(state.book.reconciledThrough)) +
-                ', which is already reconciled: it can’t be removed, and its amount, date and direction can’t be changed">reconciled period</span>'
+            ? '<span class="pill navy" title="' + esc(ledgerLockNote(e, state.book)) + '">reconciled period</span>'
             : '') +
             '<label class="perscout"><input type="checkbox" data-ch="led-rec" data-id="' + e.id + '"' + (e.reconciled ? ' checked' : '') + '> reconciled</label>') +
         '<button type="button" class="exp-toggle lmore" data-act="ledger-toggle" data-id="' + e.id + '" aria-expanded="' + open + '">' +
@@ -18578,6 +18610,9 @@
               (entryNeedsReceipt(e) && !e.ref
                 ? '<p class="small" style="margin:6px 0 0;flex-basis:100%;color:var(--accent-text)">A reimbursement should name its receipt \u2014 add the receipt number above.</p>'
                 : '') +
+              // Treasurer review of C2 (L-4) — the pill's tooltip never shows on a phone, so the
+              // Detail of a locked row says it in a line.
+              (eLocked ? '<p class="small muted llock" style="margin:6px 0 0;flex-basis:100%">' + esc(ledgerLockNote(e, state.book)) + '</p>' : '') +
               ledgerTrailLine(e) +
             '</div>'
           // E2 — who reconciled it stays in view on a reconciled row, as before C2 gave it a Detail.
@@ -27487,18 +27522,23 @@
       // E2 — a reimbursement names its receipt. A warning, not a block: the money has moved
       // whether or not the receipt is to hand, and an unrecorded payment is the worse outcome.
       if (!drWarn && entryNeedsReceipt(drEntry) && !drEntry.ref) {
-        drWarn = 'Saved \u2014 but a reimbursement should name its receipt. Add the receipt number under Detail.';
+        drWarn = (drBack ? 'A' : 'Saved \u2014 but a') + ' reimbursement should name its receipt. Add the receipt number under Detail.';
       }
       state.ledger.push(drEntry);
       if (drBack) {
         logLedger('add', drEntry.id, { why: 'Dated inside the period reconciled through ' + state.book.reconciledThrough + '; saved after the warning.' });
+        // Treasurer review of C2 (L-2) — said, since the date is not kept for the next one (below).
+        drWarn = 'Saved, dated ' + fmtDateShort(dr.date) + ' inside the reconciled period. The date is back to today for the next entry.' +
+          (drWarn ? ' ' + drWarn : '');
       }
       ui.ledgerAddWarned = '';
       if (drWarn) showToast(drWarn);
       // Keep the date and direction — a treasurer posting a stack of receipts is nearly
       // always entering several from the same day, the same way.
+      // Treasurer review of C2 (L-2) — but not a date in the reconciled period: the next entry
+      // would be warned about again, or worse, saved there on a reflex second tap. Back to today.
       ui.ledgerDraft = ledgerDraftDefault();
-      ui.ledgerDraft.date = dr.date;
+      ui.ledgerDraft.date = drBack ? todayISO() : dr.date;
       ui.ledgerDraft.direction = dr.direction;
       commit(); return;
     }
@@ -27513,9 +27553,10 @@
         stampApproved(urE, false);   // E2 — the tick time goes; who approved it stays (C2, A6)
         logLedger('untick', urE.id);   // Phase 3, C2
         // Still locked if it is dated in the reconciled period: un-reconciling does not open it.
+        // Treasurer review of C2 (M-2) — its labels do change, so the toast says what doesn't.
         showToast(ledgerDateReconciled(urE.date, state.book)
-          ? 'Un-reconciled — but it is dated inside the period already reconciled (through ' + fmtDate(state.book.reconciledThrough) +
-            '), so it still can’t be changed. Tick it again if it is on the statement.'
+          ? 'Un-reconciled — but it is dated inside the period already reconciled (through ' + fmtDateShort(state.book.reconciledThrough) +
+            '), so its amount, date and direction still can’t be changed. Tick it again if it is on the statement.'
           : 'Un-reconciled — tick it again against the statement once it is corrected.');
         commit();
       });
@@ -27531,7 +27572,7 @@
       // (ledgerLocked): deleting it would change a month already checked against the bank, and
       // was the way round the lock on its amount. Its ✕ is not shown; this says why if reached.
       // Removing a locked row becomes a void in C3.
-      var dlWhy = ledgerLockedWhy(state.ledger[dlIx], state.book);
+      var dlWhy = ledgerLockedWhy(state.ledger[dlIx], state.book, '', 'delete');
       if (dlWhy) { showToast(dlWhy); return; }
       var dlGone = state.ledger.splice(dlIx, 1)[0];
       // Logged, with what the money was, so the log still says what left the book.
