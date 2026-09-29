@@ -75,7 +75,7 @@ function sandbox(names) {
 }
 // The reload gate (PACK_FORMAT): what every page context with a pack-record feed or a push needs.
 // By decl (below): PACK_FORMAT is one line, and slice would run on past it.
-const FORMAT_GATE_FNS = ['PACK_FORMAT', 'formatAhead', 'formatHeldHere', 'packFormatAhead', 'packFormatHeld', 'holdNewerFormat'];
+const FORMAT_GATE_FNS = ['PACK_FORMAT', 'formatAhead', 'formatStored', 'storedFormatAhead', 'formatHeldHere', 'packFormatAhead', 'packFormatHeld', 'holdNewerFormat'];
 const FORMAT_GATE_SRC = () => FORMAT_GATE_FNS.map(decl).join('\n');
 // Wave C1 — buildParentView sorts the trips by date and re-checks their ISO dates, so every
 // sandbox that builds it needs these. todayISO only where the sandbox has none of its own.
@@ -20885,25 +20885,28 @@ test('reload gate: nothing is published to parents while held, and no move file 
   eq(vm.runInContext('moveFileProblem() === FORMAT_NOTICE', ctx), true, 'a move file could be made while held');
 });
 
+// The page's real load, save and commit over a fake localStorage holding `stored`, with the real
+// normalizeState. `before` is what storage held once this page had loaded.
+const gateStoreCtx = (stored) => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  vm.runInContext(`var KEY = 'pack-popcorn-ledger-v1', store = {};
+    store[KEY] = ${JSON.stringify(JSON.stringify(stored))};
+    var localStorage = { getItem: function (k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
+      setItem: function (k, v) { store[k] = String(v); } };
+    var toasts = [], renders = 0, pushes = 0;
+    function showToast(m) { toasts.push(m); } function render() { renders += 1; } function canEdit() { return true; }
+    function syncCharges() {} function scheduleSyncPush() { pushes += 1; } function schedulePersist() {}
+    function clearTimeout() {} function freshState() { return { version: 1, scouts: [], fresh: true }; }
+    var liveEdit = false, persistTimer = null, persistPending = false, saveWarned = false;
+    var loadBackupKept = false, loadLedgerSplits = [];
+    var sync = { newerFormat: false };
+    ${['load', 'save', 'commit', 'persistNow', 'refuseHeldEdit', 'FORMAT_REFUSED', ...FORMAT_GATE_FNS].map(decl).join('\n')}
+    var state = load();
+    var before = store[KEY];`, ctx);
+  return ctx;
+};
 test('reload gate: a newer page’s record on this device is never saved over, and an edit to it is refused, not kept in memory', () => {
-  const run = (stored) => {
-    const ctx = sandbox(NORMALIZE_FNS);
-    vm.runInContext(`var KEY = 'pack-popcorn-ledger-v1', store = {};
-      store[KEY] = ${JSON.stringify(JSON.stringify(stored))};
-      var localStorage = { getItem: function (k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
-        setItem: function (k, v) { store[k] = String(v); } };
-      var toasts = [], renders = 0, pushes = 0;
-      function showToast(m) { toasts.push(m); } function render() { renders += 1; } function canEdit() { return true; }
-      function syncCharges() {} function scheduleSyncPush() { pushes += 1; } function schedulePersist() {}
-      function clearTimeout() {} function freshState() { return { version: 1, scouts: [], fresh: true }; }
-      var liveEdit = false, persistTimer = null, persistPending = false, saveWarned = false;
-      var loadBackupKept = false, loadLedgerSplits = [];
-      var sync = { newerFormat: false };
-      ${['load', 'save', 'commit', 'FORMAT_REFUSED', ...FORMAT_GATE_FNS].map(decl).join('\n')}
-      var state = load();
-      var before = store[KEY];`, ctx);
-    return ctx;
-  };
+  const run = gateStoreCtx;
   const tab = { version: 1, fmt: NEWER_FMT, packName: 'Saved by a newer tab', scouts: [{ id: 's1', name: 'Ada' }], someNewField: { x: 1 } };
   const ctx = run(tab);
   eq(vm.runInContext('[state.fmt, packFormatHeld(), state.packName]', ctx), [NEWER_FMT, true, 'Saved by a newer tab'], 'the newer tab’s copy on load');
@@ -20921,6 +20924,42 @@ test('reload gate: a newer page’s record on this device is never saved over, a
     const saved = JSON.parse(vm.runInContext('store[KEY]', c));
     eq([saved.packName, saved.fmt, vm.runInContext('[pushes, toasts.length]', c)], ['Edited', 1, [1, 0]], `control: fmt ${fmt}`);
   }
+});
+
+test('reload gate: a newer tab’s save while this page runs is never saved over, and the edit that finds it is refused', () => {
+  const mine = { version: 1, fmt: 1, packName: 'This tab', scouts: [{ id: 's1', name: 'Ada' }] };
+  const tab = JSON.stringify({ version: 1, fmt: NEWER_FMT, packName: 'Saved by a newer tab', scouts: [{ id: 's1', name: 'Ada' }] });
+  const ctx = gateStoreCtx(mine);
+  const REFUSED = vm.runInContext('FORMAT_REFUSED', ctx);
+  eq(vm.runInContext('packFormatHeld()', ctx), false, 'held before any newer save (the test proves nothing)');
+  // A newer tab saves; this one, loaded before it, then has an edit.
+  vm.runInContext(`store[KEY] = ${JSON.stringify(tab)}; state.packName = 'Edited'; commit();`, ctx);
+  eq(vm.runInContext('[store[KEY], pushes, toasts, state.packName, state.fmt, packFormatHeld()]', ctx),
+    [tab, 0, [REFUSED], 'Saved by a newer tab', NEWER_FMT, true], 'an edit after a newer tab saved');
+  vm.runInContext("state.packName = 'Again'; commit(); save();", ctx);
+  eq(vm.runInContext('[store[KEY], pushes, toasts.length]', ctx), [tab, 0, 2], 'a second edit');
+  // A typed-in edit's debounced save finds it too, and so does a save from anywhere else.
+  const c2 = gateStoreCtx(mine);
+  vm.runInContext(`state.packName = 'Typing'; liveEdit = true; commit(); liveEdit = false;
+    store[KEY] = ${JSON.stringify(tab)}; persistNow(); save();`, c2);
+  eq(vm.runInContext('[store[KEY], pushes, toasts.length, state.packName, packFormatHeld()]', c2), [tab, 0, 1, 'Saved by a newer tab', true],
+    'a typed-in edit');
+  // A newer tab's record in a shape this page can't read at all is not "corrupt": no copy is made
+  // of it, nothing is written over it, and the page holds.
+  const odd = JSON.stringify({ version: 2, fmt: NEWER_FMT, people: [] });
+  const c3 = gateStoreCtx(JSON.parse(odd));
+  vm.runInContext("state.packName = 'Edited'; commit(); save();", c3);
+  eq(vm.runInContext('[store[KEY], Object.keys(store), loadBackupKept, packFormatHeld(), toasts.length, pushes]', c3),
+    [odd, ['pack-popcorn-ledger-v1'], false, true, 1, 0], 'a newer tab’s record in a new shape');
+  // Control: another tab in this page's format saving in between is written over as ever (last save wins).
+  const c4 = gateStoreCtx(mine);
+  vm.runInContext(`store[KEY] = ${JSON.stringify(JSON.stringify(Object.assign({}, mine, { packName: 'Other tab' })))};
+    state.packName = 'Edited'; commit();`, c4);
+  eq([JSON.parse(vm.runInContext('store[KEY]', c4)).packName, vm.runInContext('[pushes, toasts.length, packFormatHeld()]', c4)],
+    ['Edited', [1, 0, false]], 'control: a tab in this page’s format');
+  // Control: a record that is merely unreadable still keeps its copy, as before the gate.
+  const c5 = gateStoreCtx({ version: 2, people: [] });
+  eq(vm.runInContext('[loadBackupKept, !!store[KEY + "-bak"], packFormatHeld()]', c5), [true, true, false], 'control: an unreadable record');
 });
 
 test('reload gate: a backup saved by a newer page is refused before this page reads it; an older one is offered as before', () => {

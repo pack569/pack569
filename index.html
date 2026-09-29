@@ -4910,6 +4910,15 @@
   function formatAhead(p) {
     return !!p && typeof p === 'object' && typeof p.fmt === 'number' && isFinite(p.fmt) && Math.floor(p.fmt) > PACK_FORMAT;
   }
+  // Set, never cleared, when this browser's stored copy (KEY) is a newer page's record: found by
+  // load(), or by save() when a newer tab has saved since this page loaded. Nothing re-reads
+  // storage in a running tab (there is no `storage` listener), so save() asks before it writes.
+  var formatStored = false;
+  function storedFormatAhead() {
+    var raw = null;
+    try { raw = localStorage.getItem(KEY); } catch (e) { return false; }
+    return !!raw && packFormatAhead({ json: raw });
+  }
   // Wave 15 — set when saved data existed but couldn't be read; a copy went to KEY + '-bak'
   // and a toast fires after the first render (toastHost isn't in the DOM yet at load time).
   var loadBackupKept = false;
@@ -4919,14 +4928,19 @@
   function load() {
     var raw = null;
     try { raw = localStorage.getItem(KEY); } catch (e) { /* storage blocked */ }
+    // The reload gate — a newer tab's save is held as that, even in a shape this page can't read.
+    if (raw && packFormatAhead({ json: raw })) formatStored = true;
     if (raw) {
       var d = null;
       try { d = normalizeState(JSON.parse(raw), loadLedgerSplits); } catch (e2) { /* corrupt JSON */ }
       if (d) return d;
       // Saved data exists but is unreadable (bad JSON or not a v1 pack record) — keep a copy
       // before starting fresh. Written only on a failed read, so the bak is always the
-      // NEWEST corrupt copy; healthy loads never touch it.
-      try { localStorage.setItem(KEY + '-bak', raw); loadBackupKept = true; } catch (e3) { /* storage blocked/full */ }
+      // NEWEST corrupt copy; healthy loads never touch it. A newer page's record isn't corrupt:
+      // it stays where it is, and nothing is written over it (formatStored).
+      if (!formatStored) {
+        try { localStorage.setItem(KEY + '-bak', raw); loadBackupKept = true; } catch (e3) { /* storage blocked/full */ }
+      }
     }
     return freshState();
   }
@@ -5022,12 +5036,21 @@
   // later saves, and re-arm the warning after any successful save so a relapse re-warns.
   var saveWarned = false;
   // The reload gate (PACK_FORMAT) — is the copy on this device a newer page's record (this page
-  // loaded it from a newer tab's save)? Then nothing is saved here at all until the page is
-  // reloaded (save, commit), and nothing is sent or taken either (packFormatHeld).
-  function formatHeldHere() { return !!state && formatAhead(state); }
+  // loaded it, or a newer tab has saved it since: formatStored)? Then nothing is saved here at all
+  // until the page is reloaded (save, commit), and nothing is sent or taken either (packFormatHeld).
+  function formatHeldHere() { return formatStored || (!!state && formatAhead(state)); }
+  // A refused edit (commit): said, and the handler's change put back from what is stored.
+  function refuseHeldEdit() {
+    showToast(FORMAT_REFUSED);
+    state = load();
+    render();
+  }
   function save() {
-    // The reload gate — a newer page's record in this browser's storage stays exactly as it is.
+    // The reload gate — a newer page's record in this browser's storage stays exactly as it is,
+    // including one a newer tab saved after this page loaded (read here, before every write: a
+    // getItem and a scan for "fmt", parsed only if it names a higher one).
     if (formatHeldHere()) return;
+    if (storedFormatAhead()) { formatStored = true; return; }
     if (state) state.fmt = PACK_FORMAT;
     try {
       localStorage.setItem(KEY, JSON.stringify(state));
@@ -5050,6 +5073,7 @@
     persistTimer = null;
     persistPending = false;
     save();
+    if (formatHeldHere()) { refuseHeldEdit(); return; }   // a newer tab's save, found by save()
     scheduleSyncPush();
   }
   function schedulePersist() {
@@ -5075,12 +5099,7 @@
     // to vanish at the reload the banner asks for (whose "Your unsaved changes stay on this
     // device" must stay true). A hold met from the pack (sync.newerFormat) is not refused here:
     // those edits save on this device, and the newer page compares them at its first answer.
-    if (formatHeldHere()) {
-      showToast(FORMAT_REFUSED);
-      state = load();
-      render();
-      return;
-    }
+    if (formatHeldHere()) { refuseHeldEdit(); return; }
     // Phase 3b — commit() is the one seam every mutation goes through, so it is where
     // charges are reconciled against attendance, rates and tier progress. Cheap: a pack is
     // tens of scouts, not thousands.
@@ -5090,6 +5109,8 @@
     persistTimer = null;
     persistPending = false;
     save();
+    // …and a newer tab's save that save() has only now found in storage: nothing was written.
+    if (formatHeldHere()) { refuseHeldEdit(); return; }
     render();
     scheduleSyncPush();
   }
