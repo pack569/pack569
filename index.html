@@ -4064,8 +4064,8 @@
       if (typeof ev.why === 'string' && ev.why.length > 500) ev.why = ev.why.slice(0, 500);
     });
     // C2 (M4, m5) — one of each event, in time order, capped (mergeLedgerLog): the sync merge
-    // unions the log by id, and gives the same order and cap.
-    d.ledgerLog = mergeLedgerLog(d.ledgerLog, []);
+    // unions the log by id, and gives the same order and cap. At the end of normalizeState, after
+    // clampLogTimes: that reads the clock, which this part never does.
     if (!Array.isArray(d.statements)) d.statements = [];
     d.statements = d.statements.filter(plainObj);
     d.statements.forEach(function (st) {
@@ -4717,6 +4717,12 @@
     // ahead of this device's clock is read as ticked now, as a deletion mark is: a clock set
     // ahead would otherwise make a tick beat every later delete (keepReconciled).
     clampTickTimes(d.ledger.concat(d.ledgerAside), Date.now());
+    // Quick check of C2 (minor 1) — and a log event's time more than a day ahead is blanked, then
+    // the log is put in order and capped (see the C1 part above). Blanked BEFORE the cap: the cap
+    // keeps the newest events, so a hand-edited backup holding events "from 2099" would otherwise
+    // outlive the real history, and on a restore push it out of the pack's log for good.
+    clampLogTimes(d.ledgerLog, Date.now());
+    d.ledgerLog = mergeLedgerLog(d.ledgerLog, []);
     return d;
   }
   // Phase 3, C1 — why a row is in the book but not counted (state.ledgerAside): voided (with a
@@ -12262,7 +12268,8 @@
   // and each fundraiser's sales (the append-only logs) — appending remote items missing
   // locally — and, since Phase 3 C2, the ledger's log of changes (mergeLedgerLog). Everything
   // else deliberately stays last-write-wins, but for the book's lock (security re-review of C2,
-  // #2: book.reconciledThrough never goes back in a merge). Id-guarded, so a
+  // #2: book.reconciledThrough never goes back in a merge, but from a lock after tomorrow, a
+  // mistake, to the other copy's real date). Id-guarded, so a
   // retried transaction can't duplicate.
   // LIVE STOPGAP (see freshGone) — except what either copy has deleted: the two copies' marks are
   // merged first, then a row deleted on either side is neither taken from there nor kept here.
@@ -12402,11 +12409,16 @@
     // device's clock: no statement ends after today (reconcileLockRefusal), so that one is a
     // mistake, and a correction of it on this device must not be undone by a copy that still has it.
     // Before the ledger's union, so keepReconciled reads the later period too.
+    // Quick check of C2 (minors 2, 3) — "tomorrow" is this device's own calendar (todayISO, local,
+    // as Mark reconciled's "today" is), not UTC's. And the other way too: a lock HERE after
+    // tomorrow is that mistake, so an earlier, real date there (the correction, made on the other
+    // device) is taken over it, or a device still holding the mistake would write it back.
     var bkHere = state.book, bkThere = remote.book;
+    var bkTomorrow = bkHere && bkThere ? isoPlusDays(todayISO(), 1) : '';
+    var bkRtHere = String((bkHere && bkHere.reconciledThrough) || ''), bkRtThere = String((bkThere && bkThere.reconciledThrough) || '');
     if (bkHere && bkThere && !bkHere.closedAt && !bkThere.closedAt && bkHere.year === bkThere.year &&
-        /^\d{4}-\d{2}-\d{2}$/.test(String(bkThere.reconciledThrough || '')) &&
-        bkThere.reconciledThrough > String(bkHere.reconciledThrough || '') &&
-        bkThere.reconciledThrough <= new Date(Date.now() + 86400000).toISOString().slice(0, 10)) {
+        /^\d{4}-\d{2}-\d{2}$/.test(bkRtThere) && bkRtThere !== bkRtHere &&
+        (bkRtThere > bkRtHere ? bkRtThere <= bkTomorrow : bkRtHere > bkTomorrow)) {
       bkHere.reconciledThrough = bkThere.reconciledThrough;
       bkHere.reconciledBy = bkThere.reconciledBy;
       bkHere.reconciledAt = bkThere.reconciledAt;
@@ -12445,6 +12457,15 @@
   function clampTickTimes(rows, now) {
     rows.forEach(function (e) {
       if (e && typeof e.reconciledAt === 'number' && e.reconciledAt > now + 86400000) e.reconciledAt = now;
+    });
+  }
+  // Quick check of C2 (minor 1) — a log event's `at` more than a day ahead of `now` (ms) becomes ''
+  // ("time unknown", as junk is): '' sorts oldest, so the cap takes it first rather than last. Not
+  // made `now`, as a mark is: the event did not happen now, and its time is simply not known. In
+  // place. The day is a literal: normalizeState calls this.
+  function clampLogTimes(log, now) {
+    log.forEach(function (ev) {
+      if (ev && typeof ev.at === 'string' && ev.at && Date.parse(ev.at) > now + 86400000) ev.at = '';
     });
   }
   // When a ledger row was ticked, in ms: reconciledAt (stampApproved); for one ticked before that

@@ -1002,7 +1002,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // Security review — a stored ledger stamp that is an email is neutralised on load.
   'ledgerStampClean',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
-  'parseLegacyTime', 'migrateTierMakeUp', 'freshGone', 'clampGone', 'clampTickTimes', 'mergeLedgerLog', 'ledgerLogClip', 'utf8Bytes', 'campHash', 'stableRowId', 'newStableId', 'dedupeRowIds', 'normalizeState',
+  'parseLegacyTime', 'migrateTierMakeUp', 'freshGone', 'clampGone', 'clampTickTimes', 'clampLogTimes', 'mergeLedgerLog', 'ledgerLogClip', 'utf8Bytes', 'campHash', 'stableRowId', 'newStableId', 'dedupeRowIds', 'normalizeState',
   // Phase 3, C1 — the ledger row normalizer, shared by the rows set aside.
   'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeLedgerRow', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'entrySignedCents',
@@ -1010,7 +1010,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
 // LIVE STOPGAP — what every slice of the sync merge needs besides it (freshGone is in NORMALIZE_FNS).
-const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'ledgerTickedAt', 'reconciledFates', 'reconciledFatesText', 'noteReconciledFates', 'restoreGone', 'entryAfterOpening', 'ledgerDateReconciled', 'fmt', 'fmtDateShort', 'mergeLedgerLog', 'utf8Bytes'];
+const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'ledgerTickedAt', 'reconciledFates', 'reconciledFatesText', 'noteReconciledFates', 'restoreGone', 'entryAfterOpening', 'ledgerDateReconciled', 'fmt', 'fmtDateShort', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
   const ctx = vm.createContext({});
@@ -18158,7 +18158,7 @@ const C2_FNS = ['fmt', 'fmtDate', 'fmtDateShort', 'toCents', 'toCentsSigned', 'e
   'ledgerDateReconciled', 'ledgerLockedWhy', 'LEDGER_MAX_CENTS', 'LEDGER_EDIT_FIELDS', 'LEDGER_LOCKED_FIELDS', 'ledgerRowDiff',
   'ledgerRowFields', 'ledgerEditRefusal', 'ledgerBackdateWarning', 'applyLedgerEdit', 'ledgerWho', 'logLedger', 'logOpening',
   'openingLockedWhy', 'LEDGER_OPS', 'ledgerEvent', 'ledgerLogClip', 'ledgerStampClean', 'stampApproved', 'stampEntered', 'ledgerActorName',
-  'ledgerDraftDefault', 'ledgerDraft', 'arm', 'mergeLedgerLog', 'utf8Bytes'];
+  'ledgerDraftDefault', 'ledgerDraft', 'arm', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays'];
 // The book is reconciled through Aug 31 from a Jul 1 opening. u1 is open; r1 is ticked (after the
 // period); p1 is dated in the period, not ticked; q1 is ticked in the period by a page from before
 // any stamps; pre is before the opening date; m1 is a tier make-up in the period.
@@ -18966,6 +18966,85 @@ atest('C2 re-review #2, api: a device holding the book from before a statement w
 test('C2 re-review (minor): a reconciled-through date that is not YYYY-MM-DD is blanked', () => {
   const rt = (v) => goneSeedNorm({ book: { reconciledThrough: v } }).book.reconciledThrough;
   eq(['2026-09-30', 'zzz', '2026-9-30', '2026-09-30T00:00:00Z', 20260930, null, ''].map(rt), ['2026-09-30', '', '', '', '', '', ''], 'the lock');
+});
+
+/* ================================================================
+   Quick check of C2 (2c50507, SHIP) — minors 1-3.
+   ================================================================ */
+test('C2 quick check 1: a log event’s time more than a day ahead is blanked, so it cannot outlive the real history', () => {
+  const now = Date.now();
+  const iso = (ms) => new Date(ms).toISOString();
+  const ev = (id, at) => ({ id, at, row: 'l1', op: 'tick' });
+  // 998 real events, two in the next day (a clock a little fast is still believed), five "from 2099".
+  const real = Array.from({ length: 998 }, (_, i) => ev('lg-r' + String(1000 + i), iso(now - 86400000 * 3 + i * 60000)));
+  const log = real.concat([ev('lg-soon', iso(now + 12 * 3600000)), ev('lg-day', iso(now + 86400000 - 60000))],
+    ['a', 'b', 'c', 'd', 'e'].map((x) => ev('lg-f' + x, '2099-01-01T00:00:00.000Z')));
+  const st = goneSeedNorm({ ledgerLog: log });
+  const ids = st.ledgerLog.map((e) => e.id);
+  eq(st.ledgerLog.length, 1000, 'the cap');
+  ok(real.every((e) => ids.indexOf(e.id) !== -1), 'a real event was pushed out by one from 2099');
+  eq(st.ledgerLog.slice(-2).map((e) => [e.id, e.at]), [['lg-soon', log[998].at], ['lg-day', log[999].at]], 'within a day is kept as it is, and newest');
+  eq(ids.filter((id) => /^lg-f/.test(id)), [], 'the ones from 2099 are not what the cap took first');
+  // Under the cap they are kept, their time unknown, and oldest.
+  const few = goneSeedNorm({ ledgerLog: real.slice(0, 10).concat(log.slice(998)) }).ledgerLog;
+  eq(few.slice(0, 5).map((e) => [e.id, e.at]), ['a', 'b', 'c', 'd', 'e'].map((x) => ['lg-f' + x, '']), 'kept, time unknown');
+  eq(JSON.stringify(goneSeedNorm(st)), JSON.stringify(st), 'not a fixed point');
+});
+
+test('C2 quick check 1, Firestore: restoring a hand-edited backup with events "from 2099" keeps the pack’s real history', () => {
+  const { a, server } = fsGonePair();
+  a.run(C2S_EXTRA);
+  // The pair's clock reads Sep 21, 2026: 998 real events from Sep 1.
+  a.run("for (var i = 0; i < 998; i++) state.ledgerLog.push({ id: 'lg-r' + (1000 + i), at: new Date(Date.UTC(2026, 8, 1) + i * 60000).toISOString(), row: 'l1', op: 'tick' }); commit()");
+  a.push();
+  const bk = JSON.parse(C2S_BACKUP());
+  bk.ledgerLog = ['a', 'b', 'c', 'd', 'e'].map((x) => ({ id: 'lg-f' + x, at: '2099-01-01T00:00:00.000Z', row: 'l1', op: 'tick' }));
+  a.run(`confirmImport(normalizeState(${JSON.stringify(bk)}))`); a.push();
+  const log = server().ledgerLog;
+  eq([log.length, log.filter((e) => /^lg-r/.test(e.id)).length, log[log.length - 1].op], [1000, 998, 'restore'], 'the history after the restore');
+});
+
+// Both copies hold a lock of Jan 31, 2027 (a mistake: the pair's todayISO is Sep 29, 2026).
+const C2Q_AHEAD = { book: Object.assign({}, C2S_BOOK.book, { reconciledThrough: '2027-01-31' }) };
+test('C2 quick check 2, Firestore: a device still holding a lock set ahead of today does not undo its correction', () => {
+  // A corrects it to Sep 15 and saves; B, dirty, still holding Jan 31, saves last.
+  const { a, b, server } = fsGonePair(C2Q_AHEAD);
+  a.run(LOCK_A); a.push();
+  b.run("state.book.statementDate = '2026-09-10'; state.book.statementCents = 999; " + B1);
+  b.hear(); b.push();
+  eq(bookOf(server()), ['2026-09-15', 'Pat', '2026-09-16T12:00:00.000Z', '', 0], 'the correction');
+  eq(eIds(server()).indexOf('b1') !== -1, true, 'B’s change');
+  // Controls: a lock here of tomorrow or before is not lowered (C2 re-review #2); nor is an ahead
+  // lock lowered to nothing, which is not a date.
+  const c = fsGonePair(C2S_BOOK);
+  c.a.run(LOCK_A); c.a.push();
+  c.b.run("state.book.reconciledThrough = '2026-09-30'; " + B1);
+  c.b.hear(); c.b.push();
+  eq(c.server().book.reconciledThrough, '2026-09-30', 'a lock of tomorrow was lowered');
+  const n = fsGonePair(C2Q_AHEAD);
+  n.a.run("state.book.reconciledThrough = ''; commit()"); n.a.push();
+  n.b.run(B1); n.b.hear(); n.b.push();
+  eq(n.server().book.reconciledThrough, '2027-01-31', 'an ahead lock lowered to no lock');
+});
+
+atest('C2 quick check 2, api: a device still holding a lock set ahead of today does not undo its correction', async () => {
+  const { a, b, server } = await apiGonePair({ book: C2Q_AHEAD.book });
+  await a.edit(LOCK_A);
+  b.run(B1);
+  await settle([b], 800);
+  eq(bookOf(server()).slice(0, 3), ['2026-09-15', 'Pat', '2026-09-16T12:00:00.000Z'], 'the correction');
+  eq(eIds(server()).indexOf('b1') !== -1, true, 'B’s change');
+});
+
+test('C2 quick check 3: the merge’s "tomorrow" is this device’s calendar, not UTC’s', () => {
+  // 9 pm on Sep 29 in California is 4 am on Sep 30 UTC: tomorrow is Sep 30, not Oct 1.
+  const m = sandbox(NORMALIZE_FNS.concat(GONE_FNS, ['mergeRemoteAppendOnly']));
+  const rec = (rt) => JSON.stringify(Object.assign({}, GONE_SEED, { book: { reconciledThrough: rt } }));
+  const merged = (rt) => vm.runInContext(`todayISO = function () { return '2026-09-29'; };
+    Date.now = function () { return Date.parse('2026-09-30T04:00:00.000Z'); };
+    var state = normalizeState(${rec('2026-08-31')});
+    mergeRemoteAppendOnly({ json: ${JSON.stringify(rec(rt))} }); state.book.reconciledThrough`, m);
+  eq([merged('2026-09-30'), merged('2026-10-01')], ['2026-09-30', '2026-08-31'], 'the later lock taken');
 });
 
 test('C2 re-review (minor): Mark reconciled can lower a lock after today, and logs it as a correction in plain words', () => {
