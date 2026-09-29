@@ -1009,7 +1009,8 @@
   }
   .sync-pill:hover { border-color: var(--accent); }
   .sync-dot { width: 8px; height: 8px; border-radius: 50%; background: color-mix(in srgb, var(--navy-ink) 55%, transparent); flex: 0 0 auto; }
-  .sync-pill.connecting .sync-dot, .sync-pill.offline .sync-dot { background: var(--accent); }
+  .sync-pill.connecting .sync-dot, .sync-pill.offline .sync-dot, .sync-pill.conflict .sync-dot { background: var(--accent); }
+  .sync-pill.conflict { border-color: var(--accent); }
   .sync-pill.online .sync-dot { background: color-mix(in srgb, var(--good) 60%, var(--navy-ink)); }
   @media (max-width: 480px) {
     .sync-pill { padding: 4px 7px; }
@@ -9830,6 +9831,12 @@
       render();
       return;
     }
+    // A leader made a viewer while a sync-conflict waited has no copy to keep: this device
+    // takes the shared one now, rather than at the pack's next save (onRemoteSnap).
+    if (want === 'doc' && sync.conflict && !canEdit()) {
+      if (ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay = null;
+      adoptRemote(sync.conflict, {});
+    }
     if (sync.feed === want && (want === 'doc' ? sync.unsub : sync.parentUnsub)) return;
     if (want === 'doc') {
       stopParentFeed();
@@ -11575,6 +11582,13 @@
     }
     if (d.device === sync.deviceId) return; // our own write echoed back
     if (sync.conflict || (ui.overlay && ui.overlay.kind === 'sync-conflict')) {
+      // A device that can no longer edit (a leader made a viewer while the choice waited) has
+      // no copy to keep: it takes the shared one, as a viewer's first answer does (M-3).
+      if (!canEdit()) {
+        if (ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay = null;
+        adoptRemote(d, {});
+        return;
+      }
       sync.conflict = d;
       if (ui.overlay && ui.overlay.kind === 'sync-conflict') { ui.overlay.remote = d; render(); }
       return;
@@ -11674,8 +11688,14 @@
     local: { cls: 'local', label: 'This device' },
     connecting: { cls: 'connecting', label: 'Connecting…' },
     online: { cls: 'online', label: 'Synced' },
-    offline: { cls: 'offline', label: 'Offline' }
+    offline: { cls: 'offline', label: 'Offline' },
+    // Not a sync.mode: a sync-conflict the leader has not answered. It outlasts the chooser
+    // (closed with Escape, nothing is saved until they choose), so the pill says so for as long
+    // as it waits, and pressing it brings the chooser back (security review of 260f467..db851c7,
+    // F4). Only a leader's device ever has one: parents never receive the pack record.
+    conflict: { cls: 'conflict', label: 'Choose which copy to keep' }
   };
+  function syncPillState() { return sync.conflict ? SYNC_PILL.conflict : (SYNC_PILL[sync.mode] || SYNC_PILL.local); }
   // What a family is told instead. Only "Offline" needs more words: to a parent it is the one
   // state that changes what they are looking at — the calendar is the copy this device last saw.
   var SYNC_PILL_PARENT = { offline: 'Offline — showing what was saved last' };
@@ -11683,7 +11703,7 @@
     var el = document.getElementById('syncPill');
     if (!el) return;
     var gm = !!gateMode();
-    var p = SYNC_PILL[sync.mode] || SYNC_PILL.local;
+    var p = syncPillState();
     // PARENTS GET TEXT, NOT A BUTTON (parent-experience audit, 2026-09-28). The pill's action is
     // goto-pack, which is not on PARENT_ACTS — so for a family it was a button that did nothing
     // when pressed. A status they can read, in a <span> that is never in the tab order.
@@ -11702,7 +11722,8 @@
     el.hidden = gm || asText;
     el.className = 'sync-pill no-print ' + p.cls;
     el.innerHTML = '<span class="sync-dot"></span><span class="sync-lbl">' + p.label + '</span>';
-    el.setAttribute('aria-label', 'Sync status: ' + p.label + '. Opens Pack.');
+    el.setAttribute('data-act', sync.conflict ? 'sync-choose' : 'goto-pack');
+    el.setAttribute('aria-label', 'Sync status: ' + p.label + (sync.conflict ? '. Opens the choice.' : '. Opens Pack.'));
   }
 
   /* ---------------- Mutations ---------------- */
@@ -17911,6 +17932,7 @@
   function syncModeLine() {
     if (!backendConfigured()) return 'Device-only mode — everything is saved in this browser.';
     if (sync.notice) return serverNotice();
+    if (sync.conflict) return 'This device and the pack’s shared copy differ. Nothing is saved until you choose which copy to keep.';
     var fixed = fixedPackMode();
     if (sync.mode === 'online') {
       return fixed
@@ -19154,8 +19176,10 @@
 
     // Sync card
     h += '<div class="card"><h2 class="section display">Shared sync</h2>' +
-      '<p class="small" style="margin:0 0 8px"><span class="pill navy">' + esc((SYNC_PILL[sync.mode] || SYNC_PILL.local).label) + '</span> ' +
-      esc(syncModeLine()) + '</p>';
+      '<p class="small" style="margin:0 0 8px"><span class="pill navy">' + esc(syncPillState().label) + '</span> ' +
+      esc(syncModeLine()) + '</p>' +
+      (sync.conflict ? '<div class="row" style="margin:0 0 8px"><button type="button" class="btn small primary" data-act="sync-choose">' +
+        'Choose which copy to keep</button></div>' : '');
     if (backendConfigured()) {
       // Single-pack mode: the pack id is baked into the page, so there is no passphrase field
       // at all — identity IS the access control. Passphrase mode below is unchanged.
@@ -25543,6 +25567,12 @@
     if (act === 'tab') { gotoNav(el.dataset.tab, null, true); return; }
     if (act === 'section' || act === 'goto') { gotoNav(el.dataset.tab, el.dataset.section, false); return; }
     if (act === 'goto-pack') { gotoNav('pack', null, true); return; }
+    // The sync pill (and the sync card) while a sync-conflict waits: bring the chooser back.
+    if (act === 'sync-choose') {
+      if (sync.conflict) { ui.overlay = { kind: 'sync-conflict', remote: sync.conflict }; render(); }
+      else gotoNav('pack', null, true);
+      return;
+    }
     if (act === 'toggle-season-setup') { ui.seasonSetupOpen = !ui.seasonSetupOpen; render(); return; }
     // ----- Camping. Every one of these edits the pack record, so they all sit behind
     // canEdit(): a viewer-role leader never sees the buttons, but the action handler is

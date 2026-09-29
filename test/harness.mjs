@@ -15172,6 +15172,69 @@ atest('api client: a pack copied in at rev 0 goes in at rev 1, so a first save r
   }
 });
 
+atest('a copy choice closed with Escape keeps saying it waits, and a device that can no longer edit takes the shared copy', async () => {
+  // Security review of 260f467..db851c7, F4.
+  const w = await (await apiWorld()).seed();
+  w.state(3, PACK_STATE());
+  const ed = await (await apiClient(w, 'editor', { state: PACK_STATE({ packName: 'Mine', scouts: [{ id: 'x', name: 'Old' }] }) })).start();
+  eq(ed.get('[ui.overlay && ui.overlay.kind, !!sync.conflict]'), ['sync-conflict', true], 'no choice to close (the test proves nothing)');
+  ed.run('ui.overlay = null');   // Escape
+  // The pill, the sync card's line and its button, from the page's own code.
+  const pill = (conflict, mode) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`var attrs = {}, el = { hidden: false, className: '', innerHTML: '', setAttribute: function (k, v) { attrs[k] = v; } };
+      var document = { getElementById: function (id) { return id === 'syncPill' ? el : null; } };
+      function gateMode() { return null; } function parentMode() { return false; } function esc(s) { return String(s); }
+      var sync = { mode: '${mode}', conflict: ${conflict ? '{ rev: 3 }' : 'null'}, notice: '' };
+      function backendConfigured() { return true; } function fixedPackMode() { return true; } function serverNotice() { return ''; }
+      ${['SYNC_PILL', 'SYNC_PILL_PARENT', 'syncPillState', 'renderSyncPill', 'syncModeLine'].map(decl).join('\n')}
+      renderSyncPill();`, ctx);
+    return JSON.parse(JSON.stringify(vm.runInContext('({ cls: el.className, html: el.innerHTML, attrs: attrs, line: syncModeLine() })', ctx)));
+  };
+  const waiting = pill(true, 'online');
+  ok(/ conflict$/.test(waiting.cls) && />Choose which copy to keep</.test(waiting.html), 'the pill does not say a choice waits: ' + waiting.html);
+  eq([waiting.attrs['data-act'], waiting.attrs['aria-label']], ['sync-choose', 'Sync status: Choose which copy to keep. Opens the choice.'],
+    'pressing the pill does not bring the choice back');
+  ok(/Nothing is saved until you choose which copy to keep\./.test(waiting.line), 'the sync card does not say why nothing is saved');
+  const synced = pill(false, 'online');
+  eq([/>Synced</.test(synced.html), synced.attrs['data-act']], [true, 'goto-pack'], 'control: the pill with no choice waiting');
+  ok(/if \(act === 'sync-choose'\) \{\n\s+if \(sync\.conflict\) \{ ui\.overlay = \{ kind: 'sync-conflict', remote: sync\.conflict \}; render\(\); \}/.test(SCRIPT),
+    'pressing the pill does not reopen the chooser');
+  ok(/\(sync\.conflict \? '<div class="row" style="margin:0 0 8px"><button type="button" class="btn small primary" data-act="sync-choose">'/.test(slice('renderPackSharing')),
+    'the sync card has no way back to the choice');
+  // An admin makes the editor a viewer while the choice waits: the device takes the shared copy,
+  // writes nothing, and is no longer waiting.
+  const owner = await (await apiClient(w, 'owner')).start();
+  owner.run("setMemberRole('uid-editor', 'viewer')");
+  await settle([owner]);
+  ed.reset();
+  await ed.poll();
+  await settle([ed], 1200);
+  eq(ed.get('[sync.myRole, sync.conflict, ui.overlay, sync.dirty, state.packName, state.rev]'), ['viewer', null, null, false, 'Test Pack', 3],
+    'a device made a viewer is still waiting on a choice it cannot make');
+  eq(ed.log.filter((l) => /^PUT/.test(l)), [], 'a viewer’s device wrote');
+  // The same, when the choice is still open and the pack's next save is what arrives (onRemoteSnap).
+  const snap = (edit) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`
+      var adopted = [], rendered = 0;
+      function scheduleParentViewRefresh() {} function renderSyncPill() {} function render() { rendered += 1; }
+      function syncPush() {} function clearTimeout() {} function setTimeout() {} function save() {} function showToast() {}
+      function canEdit() { return ${edit}; }
+      function normalizeState(p) { return p && typeof p === 'object' ? p : null; }
+      function adoptRemote(d) { adopted.push(d.rev); sync.conflict = null; return true; }
+      var ui = { tab: 'home', overlay: { kind: 'sync-conflict', remote: { rev: 5 } } };
+      var state = { scouts: [{ id: 'a' }], rev: 5 };
+      var sync = { firstSnap: false, mode: 'online', deviceId: 'dev1', dirty: true, clobber: false, conflict: { rev: 5 },
+        remoteRec: { rev: 5 }, backend: { serverRevs: true } };
+      ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap'].map(decl).join('\n')}
+      onRemoteSnap({ rev: 6, device: 'd2', json: '{}' }, { fromServer: true, pendingWrites: false });`, ctx);
+    return JSON.parse(JSON.stringify(vm.runInContext('[adopted, sync.conflict && sync.conflict.rev, ui.overlay && ui.overlay.kind]', ctx)));
+  };
+  eq(snap(false), [[6], null, null], 'a device that cannot edit kept waiting on a choice when the pack moved on');
+  eq(snap(true), [[], 6, 'sync-conflict'], 'control: an editor’s choice waits, now on the newer copy');
+});
+
 atest('api client: a pack copied in after a leader’s device heard "no pack" is compared, never saved over', async () => {
   // Security review of stage C, item 1. Staging's server (first-signer, no awaiting-import): the
   // editor's device holds an older copy, hears "no pack", and schedules a seed. The owner's
