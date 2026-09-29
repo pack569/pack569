@@ -7790,7 +7790,9 @@
   // The security review of C2 added 'delete' (an open row removed: `f` carries its amount, date
   // and direction, [before, null]; a locked row can't be), and logs as an 'add' a row put back by
   // Undo, or written by another screen (a tier make-up or reimbursement), `why` saying which.
-  var LEDGER_OPS = ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete'];
+  // The treasurer's review of C2 added 'reconcile' (Mark reconciled, row 'book': `f`
+  // reconciledThrough [before, after]).
+  var LEDGER_OPS = ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile'];
   function ledgerEvent(op, rowId, who, more) {
     if (LEDGER_OPS.indexOf(op) === -1 || typeof rowId !== 'string' || !rowId) return null;
     who = who || {};
@@ -8017,6 +8019,23 @@
     return 'The opening balance is locked: the book is reconciled through ' + fmtDate(book.reconciledThrough) +
       ', and changing where it starts would change every balance already checked against the bank. ' +
       'Only an admin reopening the last statement can unlock it, and that isn’t in the app yet.';
+  }
+  // Treasurer review of C2 (H-1) — why "Mark reconciled" is refused, or '' when it can go ahead.
+  // It locks every entry dated on or before the statement date, so the date must be one: a real
+  // statement's ending date, not today by default (a statement is never "through today"), not in
+  // the future (entries still to come would lock as they were entered), and not earlier than the
+  // lock already in force (that would quietly unlock a checked month; reopening a statement is a
+  // later update). The same date again is allowed: it re-signs the same statement. Pure.
+  function reconcileLockRefusal(book, today) {
+    var sd = String((book && book.statementDate) || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(sd)) return 'Enter the statement’s ending date first.';
+    if (sd > today) return 'A statement can’t end after today. Check the statement date.';
+    var rt = String(book.reconciledThrough || '');
+    if (rt && sd < rt) {
+      return 'The book is already reconciled through ' + fmtDateShort(rt) + '. A statement ending earlier can’t be ' +
+        'marked reconciled. Reopening a reconciled statement is coming in a later update.';
+    }
+    return '';
   }
   // E1 — this charge's due date, from its line and the line's event as they stand now.
   function chargeDueNow(c) {
@@ -18586,9 +18605,17 @@
         (bk.reconciledAt ? ' on ' + esc(fmtDate(bk.reconciledAt.slice(0, 10))) : '') + '.</p>';
     }
     if (agrees && rec.ticked) {
+      // Treasurer review of C2 (H-1) — through the statement's own date only, never "today"; the
+      // reason in place of the button when it can't be marked; two taps, the second saying what locks.
+      var rlNo = reconcileLockRefusal(bk, todayISO());
+      var rlArmed = ui.armed === 'ledger-reconcile-lock';
       h += '<p class="small" style="margin:10px 0 0"><span class="pill navy">Agreed</span> The book matches the statement. ' +
-        '<button type="button" class="btn small primary" data-act="ledger-reconcile-lock">Mark reconciled through ' +
-        esc(bk.statementDate ? fmtDate(bk.statementDate) : 'today') + '</button></p>';
+        (rlNo
+          ? '<span style="color:var(--accent-text)">' + esc(rlNo) + '</span></p>'
+          : '<button type="button" class="btn small ' + (rlArmed ? 'danger armed' : 'primary') + '" data-act="ledger-reconcile-lock">' +
+            esc(rlArmed
+              ? 'Tap again: entries dated on or before ' + fmtDateShort(bk.statementDate) + ' will be locked'
+              : 'Mark reconciled through ' + fmtDate(bk.statementDate)) + '</button></p>');
     } else if (rec.difference !== 0 && (rec.statement || rec.ticked)) {
       h += '<p class="small" style="margin:10px 0 0">Off by <strong class="money">' + fmt(Math.abs(rec.difference)) + '</strong> — ' +
         (rec.difference > 0
@@ -27547,16 +27574,29 @@
       }
       commit(); return;
     }
+    // Treasurer review of C2 (H-1) — this sets the lock on every entry dated on or before the
+    // statement date, so: only a statement's own ending date (reconcileLockRefusal: none, one after
+    // today, or one earlier than the lock in force is refused, with why); two taps, the armed
+    // button saying what will lock; and logged (row 'book', reconciledThrough [before, after]).
+    // Asked on each tap, so a statement date a sync changes between the two is asked about again
+    // (and the button disarmed: a date put right afterwards starts from the first tap).
     if (act === 'ledger-reconcile-lock') {
-      state.book.reconciledThrough = state.book.statementDate || todayISO();
-      state.book.reconciledBy = ledgerActor();                 // E2
-      state.book.reconciledAt = new Date().toISOString();
-      // The statement is done with — clear the working figures so the next one starts blank
-      // rather than silently reconciling against a month that's already closed.
-      state.book.statementCents = 0;
-      state.book.statementDate = '';
-      showToast('Reconciled through ' + fmtDate(state.book.reconciledThrough) + '.');
-      commit(); return;
+      var rlNo = reconcileLockRefusal(state.book, todayISO());
+      if (rlNo) { if (ui.armed === act) ui.armed = null; showToast(rlNo); render(); return; }
+      arm(act, function () {
+        var rlWas = state.book.reconciledThrough || '';
+        state.book.reconciledThrough = state.book.statementDate;
+        state.book.reconciledBy = ledgerActor();                 // E2
+        state.book.reconciledAt = new Date().toISOString();
+        logLedger('reconcile', 'book', { f: { reconciledThrough: [rlWas, state.book.reconciledThrough] } });
+        // The statement is done with — clear the working figures so the next one starts blank
+        // rather than silently reconciling against a month that's already closed.
+        state.book.statementCents = 0;
+        state.book.statementDate = '';
+        showToast('Reconciled through ' + fmtDate(state.book.reconciledThrough) + '.');
+        commit();
+      });
+      return;
     }
     if (act === 'add-meeting') {
       var newMtg = freshEvent({

@@ -17935,7 +17935,7 @@ test('C1: ledgerEvent builds one log entry, and nothing else', () => {
   eq(ev('reverse', 'l1', who, { rows: ['rv-l1'] }).rows, ['rv-l1'], 'a reversal names its row');
   eq(ev('tick', 'l1', { id: 'x', by: 'pat@example.com' }), { id: 'lg-x', at: '', by: 'a signed-in leader', byUid: '', dev: '', row: 'l1', op: 'tick' }, 'never an email');
   eq([ctx.ledgerEvent('someday', 'l1', who), ctx.ledgerEvent('edit', '', who), ctx.ledgerEvent('edit', 7, who)], [null, null, null], 'an unknown op, or no row');
-  eq([...ctx.LEDGER_OPS], ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete'], 'the ops');
+  eq([...ctx.LEDGER_OPS], ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile'], 'the ops');
   // The rows it names are copied, not shared.
   const rows = ['a'];
   const e2 = ctx.ledgerEvent('correct', 'l1', who, { rows });
@@ -18543,6 +18543,56 @@ test('C2 review (minor): an event whose time is not an ISO time has its time cle
   const full = Array.from({ length: 1000 }, (_, i) => at('lg-' + i, new Date(Date.UTC(2026, 8, 1) + i * 60000).toISOString()));
   const capped = norm(full.concat([at('junk', 'zzz')]));
   eq([capped.length, capped.some((e) => e.id === 'junk'), capped[0].id], [1000, false, 'lg-0'], 'a junk time outlived the cap');
+});
+
+/* ================================================================
+   Treasurer review of C2 (9bb7a6f) — the fixes. Owner's answers: "not the commission" and
+   undoing a tier make-up are allowed on locked rows, logged (Q1, Q2).
+   ================================================================ */
+const C2T_ACT = [
+  c2Block(/    if \(act === 'ledger-reconcile-lock'\) \{[\s\S]*?\n    \}/, 'ledger-reconcile-lock')].join('\n');
+const C2T_MORE = `
+  ${['reconcileLockRefusal'].map(slice).join('\n')}
+  function act3(act, el) { el = el || { dataset: {} }; (function () {\n${C2T_ACT}\n})(); }`;
+const c2tPage = (o) => c2Page(Object.assign({}, o || {}, { more: C2R_MORE + C2T_MORE + ((o && o.more) || '') }));
+
+test('C2 treasurer H-1: Mark reconciled takes a statement date, not after today nor before the lock, two taps, and is logged', () => {
+  // Reconciled through Aug 31; today is Oct 15.
+  const tries = [['', 'Enter the statement’s ending date first.'],
+    ['2026-10-16', 'A statement can’t end after today. Check the statement date.'],
+    ['2026-08-30', 'The book is already reconciled through Aug 31. A statement ending earlier can’t be marked reconciled. Reopening a reconciled statement is coming in a later update.']];
+  for (const [sd, why] of tries) {
+    const p = c2tPage({ book: { statementDate: sd } });
+    p.run("act3('ledger-reconcile-lock'); act3('ledger-reconcile-lock')");
+    eq([p.get('state.book.reconciledThrough'), p.get('state.book.statementDate'), p.get('ui.armed'), p.get('log().length'), p.get('commits'), p.get('toasts')],
+      ['2026-08-31', sd, null, 0, 0, [why, why]], `statement date "${sd}"`);
+  }
+  // A statement's own date, today at the latest: the first tap arms, the second locks and logs.
+  for (const sd of ['2026-09-30', '2026-10-15', '2026-08-31']) {
+    const p = c2tPage({ book: { statementDate: sd, statementCents: 12300 } });
+    p.run("act3('ledger-reconcile-lock')");
+    eq([p.get('state.book.reconciledThrough'), p.get('ui.armed'), p.get('log().length')], ['2026-08-31', 'ledger-reconcile-lock', 0], sd + ': one tap locked');
+    p.run("act3('ledger-reconcile-lock')");
+    const ev = p.get('log()');
+    eq([p.get('state.book.reconciledThrough'), p.get('state.book.statementDate'), p.get('state.book.statementCents'), p.get('state.book.reconciledBy'),
+      ev.map((e) => [e.op, e.row, e.f, e.by])],
+      [sd, '', 0, 'Pat Treasurer', [['reconcile', 'book', { reconciledThrough: ['2026-08-31', sd] }, 'Pat Treasurer']]], sd + ': the lock');
+  }
+  // A book never reconciled logs '' as before; and a statement date changed (by a sync) between
+  // the taps is asked about again.
+  const q = c2tPage({ book: { reconciledThrough: '', statementDate: '2026-09-30' } });
+  q.run("act3('ledger-reconcile-lock'); state.book.statementDate = '2026-11-01'; toasts = []; act3('ledger-reconcile-lock')");
+  eq([q.get('state.book.reconciledThrough'), q.get('log().length'), q.get('toasts'), q.get('ui.armed')],
+    ['', 0, ['A statement can’t end after today. Check the statement date.'], null], 'the second tap');
+  q.run("state.book.statementDate = '2026-09-30'; act3('ledger-reconcile-lock')");
+  eq(q.get('state.book.reconciledThrough'), '', 'a date put right locked on one tap');
+  q.run("act3('ledger-reconcile-lock')");
+  eq(q.get('log()[0].f'), { reconciledThrough: ['', '2026-09-30'] }, 'the first lock');
+  // The Reconcile view: no "through today", the reason in place of the button, and the armed button says what locks.
+  const rr = slice('renderReconcile');
+  ok(!/'today'/.test(rr), 'the view still offers "through today"');
+  ok(/var rlNo = reconcileLockRefusal\(bk, todayISO\(\)\);/.test(rr) && /\(rlNo\s*\? '<span style="color:var\(--accent-text\)">' \+ esc\(rlNo\)/.test(rr), 'the reason is not shown in place');
+  ok(/'Tap again: entries dated on or before ' \+ fmtDateShort\(bk\.statementDate\) \+ ' will be locked'/.test(rr), 'the armed button');
 });
 
 /* ---------------- report ---------------- */
