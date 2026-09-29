@@ -14132,6 +14132,111 @@ atest('api token: a cold isolate handed a cached key set without the token\'s ki
   }
 });
 
+atest('api token: a fetch of Google\'s keys that never finishes holds nobody for long, and a later request starts a new one', async () => {
+  // Review of c7aac0a..b4c1d7e, item 1. The timers are shortened through setJwksFetcher's
+  // limits; the token clock is the `now` each request passes, as in the tests above.
+  await apiSetup();
+  const V = async (tok, at) => { try { await API.token.verifyIdToken(tok, API_PROJECT, at); return 'ok'; } catch (e) { return e.reason; } };
+  // A request the code under test leaves hanging shows up as 'hung', not as a harness that never ends.
+  const R = (p) => Promise.race([p, new Promise((res) => setTimeout(() => res('hung'), 2000))]);
+  const T = Math.floor(Date.now() / 1000);
+  const tok = await mint({});
+  const g = { fetches: 0, hang: true };
+  const fetcher = () => {
+    g.fetches++;
+    return g.hang ? new Promise(() => {}) : Promise.resolve({ keys: [API.jwk], maxAge: 3600 });
+  };
+  try {
+    API.token.setJwksFetcher(fetcher, { waitMs: 30 });
+    const t0 = Date.now();
+    eq([await R(V(tok, T)), g.fetches], ['jwks-unavailable', 1], 'the request that started a fetch that never finishes');
+    ok(Date.now() - t0 < 1000, 'the request waited far past its timeout');
+    // Inside STALE seconds the stuck fetch is still the shared one: joined, not repeated, and
+    // the joiner is let go at its own timeout.
+    eq([await R(V(tok, T + 5)), g.fetches], ['jwks-unavailable', 1], 'a request five seconds on');
+    eq([await R(V(tok, T + 14)), g.fetches], ['jwks-unavailable', 1], 'a request fourteen seconds on');
+    // Twenty seconds on it is left behind, and Google (now answering) is asked again.
+    g.hang = false;
+    eq([await R(V(tok, T + 20)), g.fetches], ['ok', 2], 'a request twenty seconds after a fetch that never finished');
+    eq([await R(V(tok, T + 21)), g.fetches], ['ok', 2], 'the new key set is kept');
+    // With current keys, a stuck fetch for a made-up kid left behind does not bring on another
+    // before the minute's gap: the gap rule still holds after a stale fetch is dropped.
+    g.hang = true;
+    const unk = (kid) => mint({}, { header: { kid } });
+    eq([await R(V(await unk('stuck-1'), T + 90)), g.fetches], ['jwks-unavailable', 3], 'a made-up kid, the fetch sticks');
+    eq([await R(V(tok, T + 91)), g.fetches], ['ok', 3], 'the real kid meanwhile needs no fetch');
+    eq([await R(V(await unk('stuck-2'), T + 110)), g.fetches], ['unknown-key', 3], 'a made-up kid after the stuck fetch is left behind, inside the gap');
+    eq([await R(V(await unk('stuck-3'), T + 151)), g.fetches], ['jwks-unavailable', 4], 'a made-up kid after the gap');
+  } finally { API.useTestKeys(); }
+  // The real limits: ten seconds of waiting, eight for Google, fifteen before a fetch is left behind.
+  const src = readFileSync(new URL('../functions/_lib/token.js', import.meta.url), 'utf8');
+  ok(/^const STALE = 15;/m.test(src) && /^const WAIT_MS = 10000;/m.test(src) && /^const FETCH_MS = 8000;/m.test(src),
+    'the token timers are not 15 s / 10 s / 8 s');
+});
+
+atest('api token: while Google is down, a cached key set still within its life lets real kids in, made-up kids or not', async () => {
+  // Review of c7aac0a..b4c1d7e, items 1 and 2. The real fetcher, with fetch and the Cache API stubbed.
+  await apiSetup();
+  const google = { keys: [API.jwk], fetches: 0, down: null, signals: 0 };
+  const store = new Map();
+  const cache = { async match(u) { const r = store.get(u); return r ? r.clone() : undefined; },
+    async put(u, r) { store.set(u, r); } };
+  const had = { fetch: globalThis.fetch, caches: Object.getOwnPropertyDescriptor(globalThis, 'caches') };
+  globalThis.fetch = (u, init) => {
+    google.fetches++;
+    const signal = init && init.signal;
+    if (signal instanceof AbortSignal) google.signals++;
+    if (google.down === 'throws') return Promise.reject(new TypeError('network'));
+    if (google.down === '503') return Promise.resolve(new Response('no', { status: 503 }));
+    if (google.down === 'hangs') {
+      return new Promise((res, rej) => { if (signal) signal.addEventListener('abort', () => rej(signal.reason)); });
+    }
+    return Promise.resolve(new Response(JSON.stringify({ keys: google.keys }), { headers: { 'cache-control': 'public, max-age=3600' } }));
+  };
+  Object.defineProperty(globalThis, 'caches', { value: { default: cache }, configurable: true, writable: true });
+  const V = async (tok, at) => { try { await API.token.verifyIdToken(tok, API_PROJECT, at); return 'ok'; } catch (e) { return e.reason; } };
+  const R = (p) => Promise.race([p, new Promise((res) => setTimeout(() => res('hung'), 2000))]);
+  try {
+    const T = Math.floor(Date.now() / 1000);
+    const tok = await mint({});
+    const unk = (kid) => mint({}, { header: { kid } });
+    API.token.setJwksFetcher(null);
+    eq([await V(tok, T), google.fetches], ['ok', 1], 'Google up fills the Cache API');
+    eq(google.signals, 1, 'the fetch of Google\'s keys carried no timeout signal');
+    for (const how of ['throws', '503', 'hangs']) {
+      google.down = how;
+      API.token.setJwksFetcher(null, { fetchMs: 30 });   // a cold isolate
+      const f0 = google.fetches;
+      eq(await R(Promise.all([V(await unk('made-up-' + how), T + 1), V(tok, T + 1)])), ['unknown-key', 'ok'],
+        'Google ' + how + ', a made-up kid and a real kid at once, cold');
+      eq(google.fetches - f0, 1, 'Google ' + how + ': the made-up kid did not ask Google once');
+      // Google was asked, so the stamp stands: another made-up kid inside the gap asks nothing.
+      eq([await R(V(await unk('again-' + how), T + 2)), google.fetches - f0], ['unknown-key', 1], 'Google ' + how + ', another made-up kid');
+      eq([await R(V(tok, T + 3)), google.fetches - f0], ['ok', 1], 'Google ' + how + ', the real kid again');
+    }
+    // No cached copy to fall back on: still "unavailable", never a 401.
+    store.clear();
+    google.down = 'throws';
+    API.token.setJwksFetcher(null);
+    eq(await V(tok, T + 4), 'jwks-unavailable', 'Google down and nothing cached');
+    // A cached copy past its life is not kept.
+    google.down = null;
+    API.token.setJwksFetcher(null);
+    eq(await V(tok, T + 5), 'ok', 'the Cache API is filled again');
+    const r = store.get(API.token.JWKS_URL);
+    const h = new Headers(r.headers);
+    h.set('x-pack569-fetched-at', String(Date.now() - 3601 * 1000));
+    store.set(API.token.JWKS_URL, new Response(await r.clone().arrayBuffer(), { headers: h }));
+    google.down = 'throws';
+    API.token.setJwksFetcher(null);
+    eq(await V(tok, T + 6), 'jwks-unavailable', 'Google down and the cached copy past its life');
+  } finally {
+    globalThis.fetch = had.fetch;
+    if (had.caches) Object.defineProperty(globalThis, 'caches', had.caches); else delete globalThis.caches;
+    API.useTestKeys();
+  }
+});
+
 /* ---- /api/session: the owner claim, invites, the sign-up link ---- */
 
 atest('api session: the first Google sign-in claims an unowned pack, as admin, for good (packmeta.create, packmeta.immutable, members.create.owner)', async () => {
