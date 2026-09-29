@@ -6,16 +6,20 @@
 #
 # Content-Security-Policy, one directive at a time:
 #   script-src   the sha256 of the page's one inline <script>, computed by the build, plus
-#                (production only) the Firebase SDK's exact gstatic path, read from
+#                (production and staging) the Firebase SDK's exact gstatic path, read from
 #                SYNC_SDK_BASE in index.html, and apis.google.com for Google sign-in. No 'unsafe-inline', so inline onclick="…" handlers do not run;
 #                the build refuses a page that has one.
 #   style-src    'unsafe-inline': the page is one <style> block and hundreds of style="…".
 #   img-src      the page's own images, data: and blob: (downloads, QR codes).
-#   connect-src  production: Firestore, Firebase Auth and open-meteo weather. Preview:
-#                open-meteo only, so even a stray config could not reach the live pack.
+#   connect-src  what the page's BACKEND needs. 'firestore' (production today): Firestore,
+#                Firebase Auth and open-meteo weather. 'api' (staging, and production once
+#                the pack moves): 'self' for this site's /api, Firebase Auth and weather —
+#                no Firestore host at all. Preview: open-meteo only, so even a stray config
+#                could not reach the live pack.
 #                The calendar-from-a-link fetch is deliberately not allowed; the dialog
 #                falls back to "paste the calendar text instead". See docs/cloudflare-setup.md.
-#   frame-src    production: the Firebase authDomain and apis.google.com (sign-in). Preview: none.
+#   frame-src    production and staging: the Firebase authDomain and apis.google.com (sign-in).
+#                Preview: none.
 #
 # Referrer-Policy is strict-origin-when-cross-origin, not no-referrer: a Google API key can
 # be restricted by referrer, and no-referrer would break it.
@@ -29,5 +33,5 @@
   Cross-Origin-Opener-Policy: same-origin-allow-popups
   X-Frame-Options: DENY
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
-# Preview builds add X-Robots-Tag: noindex here, so a preview URL is never listed in search.
+# Preview and staging builds add X-Robots-Tag: noindex here, so their URLs are never listed in search.
 {{PREVIEW_ONLY}}

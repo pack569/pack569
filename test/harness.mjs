@@ -12923,6 +12923,7 @@ let siteBuilt = null;
 function siteBuild() {
   if (!siteBuilt) {
     siteBuilt = { preview: site.build({ target: 'preview', out: siteDir('preview') }),
+      staging: site.build({ target: 'staging', out: siteDir('staging') }),
       production: site.build({ target: 'production', out: siteDir('production') }) };
   }
   return siteBuilt;
@@ -12983,6 +12984,73 @@ test('the production build is the committed page, and its CSP hashes the script 
   ok(!/X-Robots-Tag/.test(headers), 'production is noindex');
 });
 
+test('the staging build is the committed page on the pack’s own server: BACKEND api, no Firestore host, noindex', () => {
+  siteBuild();
+  eq(readdirSync(siteDir('staging')).sort(), ['_headers', 'index.html'], 'the staging folder');
+  const html = siteFile('staging', 'index.html');
+  // Byte for byte the committed page, but for one line.
+  const a = HTML.split('\n'), b = html.split('\n');
+  eq(a.length, b.length, 'staging has a different number of lines');
+  const differ = a.map((l, i) => (l === b[i] ? null : [l, b[i]])).filter(Boolean);
+  eq(differ, [["  var BACKEND = 'firestore';", "  var BACKEND = 'api';"]], 'staging changes more than BACKEND');
+  const live = site.liveConfig(html);
+  eq([live.backend, live.docId, live.config.projectId], ['api', LIVE.docId, LIVE.config.projectId], 'staging’s sign-in config and pack');
+  const headers = siteFile('staging', '_headers');
+  const d = site.cspDirectives(site.cspOf(headers));
+  eq(d['connect-src'], ["'self'", 'https://identitytoolkit.googleapis.com', 'https://securetoken.googleapis.com', 'https://www.googleapis.com',
+    'https://api.open-meteo.com', 'https://archive-api.open-meteo.com'], 'staging connect-src');
+  ok(!/firestore/i.test(headers), 'staging can reach Firestore');
+  eq(d['script-src'][0], `'sha256-${scriptHash(html)}'`, 'the staging CSP hash is not its script’s');
+  ok(d['frame-src'].indexOf('https://' + LIVE.config.authDomain) >= 0, 'Google sign-in cannot frame the authDomain on staging');
+  ok(/^  X-Robots-Tag: noindex$/m.test(headers), 'staging can be indexed');
+  // Production is still the committed page, on Firestore, with no 'self' to connect to.
+  const prod = site.cspDirectives(site.cspOf(siteFile('production', '_headers')));
+  ok(prod['connect-src'].indexOf('https://firestore.googleapis.com') >= 0 && prod['connect-src'].indexOf("'self'") < 0,
+    'production’s connect-src changed');
+  // --verify: a staging page on Firestore, or with a Firestore host in its CSP, is refused; so is
+  // each target passed as another.
+  throwsBuild(() => site.verify({ dir: siteDir('staging'), target: 'production' }), 'staging passed as production');
+  throwsBuild(() => site.verify({ dir: siteDir('staging'), target: 'preview' }), 'staging passed as preview');
+  throwsBuild(() => site.verify({ dir: siteDir('production'), target: 'staging' }), 'production passed as staging');
+  const t = join(SITE_TMP, 'staging-tampered');
+  const fresh = () => { rmSync(t, { recursive: true, force: true }); cpSync(siteDir('staging'), t, { recursive: true }); };
+  fresh(); writeFileSync(join(t, '_headers'), headers.replace("connect-src 'self'", "connect-src 'self' https://firestore.googleapis.com"));
+  ok(/connect-src/.test(throwsBuild(() => site.verify({ dir: t, target: 'staging' }), 'a Firestore host in staging')), 'a Firestore host in staging');
+  // A staging page switched back to Firestore is refused by name, before any byte compare.
+  fresh(); writeFileSync(join(t, 'index.html'), html.replace("  var BACKEND = 'api';", "  var BACKEND = 'firestore';"));
+  ok(/BACKEND is not 'api'/.test(throwsBuild(() => site.verify({ dir: t, target: 'staging' }), 'a Firestore staging page')), 'a Firestore staging page');
+  fresh(); writeFileSync(join(t, '_headers'), headers.replace(/\n  X-Robots-Tag: noindex/, ''));
+  throwsBuild(() => site.verify({ dir: t, target: 'staging' }), 'staging without noindex');
+  eq(site.verify({ dir: siteDir('staging'), target: 'staging' }).files.map((f) => f.file), ['_headers', 'index.html'], 'a good staging build');
+  // The CLI builds it.
+  const r = spawnSync(process.execPath, [join(ROOT, 'scripts/build-site.mjs'), '--verify', siteDir('staging'), '--target', 'staging'], { encoding: 'utf8' });
+  eq(r.status, 0, 'the --verify CLI refuses a good staging build: ' + r.stderr);
+});
+
+test('the switch-over is one line: a production page with BACKEND api gets the api CSP, and a staging page cannot be Firestore', () => {
+  // A copy of the repo's two inputs, with index.html switched, built as production.
+  const root = mkdtempSync(join(tmpdir(), 'pack569-switch-'));
+  try {
+    writeFileSync(join(root, 'index.html'), HTML.replace("  var BACKEND = 'firestore';", "  var BACKEND = 'api';"));
+    writeFileSync(join(root, '_headers'), readFileSync(join(ROOT, '_headers'), 'utf8'));
+    const out = join(root, 'out');
+    site.build({ target: 'production', out, root });
+    const headers = readFileSync(join(out, '_headers'), 'utf8');
+    const d = site.cspDirectives(site.cspOf(headers));
+    eq(d['connect-src'][0], "'self'", 'the switched production page cannot reach /api');
+    ok(!/firestore/i.test(headers) && !/X-Robots-Tag/.test(headers), 'the switched production CSP');
+    eq(site.verify({ dir: out, target: 'production', root }).target, 'production', 'the switched production build does not verify');
+    // A BACKEND that is neither, or declared twice, stops the build.
+    writeFileSync(join(root, 'index.html'), HTML.replace("  var BACKEND = 'firestore';", "  var BACKEND = 'both';"));
+    ok(/BACKEND/.test(throwsBuild(() => site.build({ target: 'staging', out, root }), 'an unknown BACKEND')), 'an unknown BACKEND');
+    writeFileSync(join(root, 'index.html'), HTML.replace("  var BACKEND = 'firestore';", "  var BACKEND = 'firestore';\n  var BACKEND = 'api';"));
+    throwsBuild(() => site.build({ target: 'production', out, root }), 'BACKEND declared twice');
+    // Staging needs the pack id: the pack's own server serves exactly that pack.
+    writeFileSync(join(root, 'index.html'), HTML.replace(/^  var PACK_DOC_ID = '[0-9a-f]{64}';$/m, '  var PACK_DOC_ID = null;'));
+    ok(/PACK_DOC_ID/.test(throwsBuild(() => site.build({ target: 'staging', out, root }), 'staging without a pack id')), 'staging without a pack id');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('index.html has no inline event handler, and the print pages wire Print from the opener', () => {
   eq(site.cspHazards(HTML), [], 'index.html has what the CSP would block');
   ok(!/ on[a-z]+="/.test(HTML), 'an inline on…= handler');
@@ -13032,7 +13100,8 @@ test('the workflow deploys only by hand, production only from main, with every a
   uses.forEach((u) => ok(/uses: [\w.-]+\/[\w.-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/.test(u.trim().replace(/^- /, '')), 'not pinned to a SHA: ' + u.trim()));
   ok(/uses: cloudflare\/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4\.0\.0/.test(WF), 'wrangler-action pin');
   ok(/^on:\n  (?:#.*\n  )*push:\n  pull_request:\n  workflow_dispatch:\n    inputs:\n      deploy_target:/m.test(WF), 'the triggers');
-  ok(/options: \[preview, production\]\n\s+default: preview/.test(WF), 'deploy_target is not preview|production, default preview');
+  // Phase 2 stage C: staging is a third choice, and preview is still the default.
+  ok(/options: \[preview, staging, production\]\n\s+default: preview/.test(WF), 'deploy_target is not preview|staging|production, default preview');
   ok(!/pull_request_target|schedule:/.test(WF), 'an unexpected trigger');
   ok(/^permissions:\n  contents: read$/m.test(WF) && !/: write/.test(WF), 'permissions are not read-only');
   // Split into jobs by their two-space headers under jobs:.
@@ -13052,11 +13121,18 @@ test('the workflow deploys only by hand, production only from main, with every a
   for (const j of ['website-gates', 'deploy-preflight']) {
     ok(!/wrangler|pages deploy|secrets\./.test(jobs[j]), `${j} can deploy`);
   }
-  ok(/node test\/harness\.mjs/.test(jobs['website-gates']) && /--target preview/.test(jobs['website-gates']) &&
-    /--target production/.test(jobs['website-gates']), 'the gates do not test and build both targets');
+  ok(/node test\/harness\.mjs/.test(jobs['website-gates']) && /--target preview --out _site-preview/.test(jobs['website-gates']) &&
+    /--target staging --out _site-staging/.test(jobs['website-gates']) &&
+    /--target production --out _site-production/.test(jobs['website-gates']), 'the gates do not test and build every target');
+  ok(/path: _site-\$\{\{ inputs\.deploy_target \}\}/.test(jobs['website-gates']), 'the artifact is not the chosen target’s build');
   ok(/if: github\.event_name == 'workflow_dispatch'\n\s+uses: actions\/upload-artifact/.test(jobs['website-gates']), 'the artifact is uploaded on push');
-  ok(/--branch=\$\{\{ inputs\.deploy_target == 'production' && 'main' \|\| format\('preview-\{0\}', github\.sha\) \}\}/.test(jobs.deploy),
-    'the Pages branch is not main-for-production-only');
+  // Only production is --branch=main (pack569.com, [env.production]); staging is always the one
+  // staging alias, and every other preview its own commit's link. Both bind [env.preview].
+  ok(/--branch=\$\{\{ inputs\.deploy_target == 'production' && 'main' \|\| \(inputs\.deploy_target == 'staging' && 'staging' \|\| format\('preview-\{0\}', github\.sha\)\) \}\}/.test(jobs.deploy),
+    'the Pages branch is not main-for-production-only, staging-for-staging');
+  eq((jobs.deploy.match(/'main'/g) || []).length, 1, 'main is named twice in the deploy job');
+  ok(/name: \$\{\{ inputs\.deploy_target == 'production' && 'website-production' \|\| 'website-preview' \}\}/.test(jobs.deploy),
+    'staging does not deploy through website-preview');
   ok(/website-production/.test(jobs.deploy) && /cancel-in-progress: false/.test(jobs.deploy), 'the deploy environment or concurrency');
   // Review round (2026-09-28): the environment must be limited to chosen branches, too.
   ok(/jq -e '\.deployment_branch_policy != null'[\s\S]*?exit 1/.test(jobs['deploy-preflight']), 'the preflight accepts an environment open to every branch');

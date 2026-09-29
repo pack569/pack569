@@ -8,6 +8,10 @@
 #
 # A preview is device-only: scripts/build-site.mjs writes FIREBASE_CONFIG and PACK_DOC_ID as
 # null and its CSP allows no Google origin, so a preview cannot reach the live pack.
+# Staging (staging.pack569.pages.dev, the one preview host Firebase lets sign in) is the build
+# with BACKEND 'api': its pack is on this site's own server, which Pages binds to
+# pack569-preview for every branch but main, and its CSP allows no Firestore host. Sign-ins
+# there are real Google sign-ins of the live Firebase project (see below).
 # The deploy ships the artifact the gates built and checked; nothing is rebuilt after approval.
 # It also ships functions/, the API, which reads and writes the pack in Cloudflare D1. What
 # keeps a preview's API off the live pack is checked, not assumed: wrangler.toml gives the
@@ -30,9 +34,9 @@ on:
   workflow_dispatch:
     inputs:
       deploy_target:
-        description: "preview = a throwaway pages.dev link, device-only, safe from any branch. production = pack569.com, from main only, needs approval."
+        description: "preview = a throwaway pages.dev link, device-only, safe from any branch. staging = staging.pack569.pages.dev, sign-in and the preview database; only a branch you have read. production = pack569.com, from main only, needs approval."
         type: choice
-        options: [preview, production]
+        options: [preview, staging, production]
         default: preview
 
 permissions:
@@ -66,11 +70,12 @@ jobs:
       - name: Harness
         run: node test/harness.mjs
 
-      # Both targets, every run, so a change that breaks either build is caught on its branch
+      # Every target, every run, so a change that breaks any build is caught on its branch
       # and not at deploy time. Each build re-verifies its own output before it exits.
-      - name: Build preview and production
+      - name: Build preview, staging and production
         run: |
           node scripts/build-site.mjs --target preview --out _site-preview
+          node scripts/build-site.mjs --target staging --out _site-staging
           node scripts/build-site.mjs --target production --out _site-production
 
       - name: Upload the site to deploy
@@ -244,8 +249,10 @@ jobs:
           find "$RUNNER_TEMP/deploy/functions" -type f | sort
 
       # Pages decides production by branch name: --branch=main goes to pack569.com (the
-      # project's production branch), anything else gets its own pages.dev link. Cloudflare
-      # shortens a long branch name in the alias, so read the link from the summary below.
+      # project's production branch) and binds [env.production]; anything else gets its own
+      # pages.dev link and [env.preview]. --branch=staging is always staging.pack569.pages.dev,
+      # the one preview host authorized for Google sign-in. Cloudflare shortens a long branch
+      # name in the alias, so read the link from the summary below.
       # wranglerVersion is exact: npm installs it in this job, which holds the token.
       - name: Deploy
         id: deploy
@@ -258,7 +265,7 @@ jobs:
           command: >-
             pages deploy _site
             --project-name=pack569
-            --branch=${{ inputs.deploy_target == 'production' && 'main' || format('preview-{0}', github.sha) }}
+            --branch=${{ inputs.deploy_target == 'production' && 'main' || (inputs.deploy_target == 'staging' && 'staging' || format('preview-{0}', github.sha)) }}
 
       - name: Write the link to the summary
         env:
@@ -281,6 +288,9 @@ jobs:
             if [ "$TARGET" = "preview" ]; then
               echo "Device-only: nothing it does reaches the live pack. Check DevTools → Network shows no"
               echo "firestore.googleapis.com, and the Console shows no Content-Security-Policy errors."
+            elif [ "$TARGET" = "staging" ]; then
+              echo "https://staging.pack569.pages.dev: sign-in works, and the pack lives in pack569-preview."
+              echo "Made-up data only. Check DevTools → Network shows /api/ calls and no firestore.googleapis.com."
             else
               echo "Check sign-in and sync, and that /SETUP.md and /test/harness.mjs return the app page,"
               echo "not the file (with no 404.html, Pages answers every unknown path with index.html)."
