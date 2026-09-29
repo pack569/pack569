@@ -1002,13 +1002,13 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // Security review — a stored ledger stamp that is an email is neutralised on load.
   'ledgerStampClean',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
-  'parseLegacyTime', 'migrateTierMakeUp', 'freshGone', 'campHash', 'stableRowId', 'dedupeRowIds', 'normalizeState', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
+  'parseLegacyTime', 'migrateTierMakeUp', 'freshGone', 'clampGone', 'campHash', 'stableRowId', 'dedupeRowIds', 'normalizeState', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'entrySignedCents',
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
 // LIVE STOPGAP — what every slice of the sync merge needs besides it (freshGone is in NORMALIZE_FNS).
-const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'keptReconciledText'];
+const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'keptReconciledText'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
   const ctx = vm.createContext({});
@@ -16772,9 +16772,47 @@ test('stopgap, Firestore: two devices that both re-import before either saves co
   const z = fsGonePair();
   z.b.run(B1);
   z.a.run('teMatchScouts = function () { return { matched: [] }; }; reimport()');
-  eq([z.a.get('state.gone.imports'), z.a.get('state.gone.entries')], [{ 'pre-batch': 1790000001000 }, {}], 'one mark for the rows from before batches');
+  eq([Object.keys(z.a.get('state.gone.imports')), z.a.get('state.gone.entries')], [['pre-batch'], {}], 'one mark for the rows from before batches');
   z.a.push(); z.b.hear(); z.b.push();
   eq(eIds(z.server()), ['b1', 'x1', 'x2'], 'rows from before batches came back');
+});
+
+// Security S3: a device clock set a year ahead or behind. `skew` moves one device's clock.
+const YEAR = 365 * 86400000;
+const skew = (ms) => `Date.now = (function (f) { return function () { return f() + (${ms}); }; })(Date.now)`;
+test('stopgap, Firestore: a device clock set a year ahead or behind neither wipes the pack’s deletions nor loses its own', () => {
+  // Ahead: B deletes x2 (a true clock) and saves; A, a year ahead with an unsaved edit, merges it.
+  // To A's clock the mark is a year old, but the other copy's newest mark says A's clock is off.
+  const { a, b, server } = fsGonePair();
+  a.run(skew(YEAR));
+  b.run("markGone('entries', state.entries.splice(1, 1)); commit()");
+  b.push();
+  a.run("state.entries.push({ id: 'a1', scoutId: 's1', kind: 'wagon', date: '', salesCents: 1, donationsCents: 0 }); commit()");
+  a.hear();
+  a.push();
+  eq([eIds(server()), Object.keys(server().gone.entries)], [['a1', 'old1', 'old2', 'x1'], ['x2']], 'a clock set ahead aged out the pack’s deletion');
+  // A deletes on its fast clock; B reads that mark as made now, not a year from now.
+  a.run("markGone('entries', state.entries.splice(0, 1)); commit()");
+  a.push();
+  b.hear();
+  const bNow = b.get('Date.now()');
+  ok(b.get('state.gone.entries.x1') > 0 && b.get('state.gone.entries.x1') < bNow, 'a mark from a clock a year ahead was kept as it came');
+  // Behind: A, a year slow, deletes x1 and saves; B (true clock, an unsaved edit) merges it. To
+  // B's clock the mark is a year old; the copy it came in says it is A's clock that is off.
+  const p = fsGonePair();
+  p.a.run(skew(-YEAR));
+  p.a.run("markGone('entries', state.entries.splice(0, 1)); commit()");
+  p.a.push();
+  p.b.run(B1);
+  p.b.hear();
+  p.b.push();
+  eq(eIds(p.server()), ['b1', 'old1', 'old2', 'x2'], 'a slow clock’s deletion was aged out, and the row came back');
+  // Control, both clocks true: a mark 61 days old is aged out in the merge, a ledger mark never is.
+  const c = fsGonePair();
+  c.b.run(`state.gone.entries.zz = Date.now() - 61 * 86400000; state.gone.ledger.lz = Date.now() - 300 * 86400000; ${B1}`);
+  c.a.run("markGone('entries', state.entries.splice(0, 1)); commit()");
+  c.a.push(); c.b.hear(); c.b.push();
+  eq([Object.keys(c.server().gone.entries), Object.keys(c.server().gone.ledger)], [['x1'], ['lz']], 'control: aging out');
 });
 
 // Treasurer M1 / security S1: one device deletes an unreconciled ledger row, another ticks it
@@ -16916,14 +16954,29 @@ test('stopgap: the deletion marks are normalized, merged by the later mark, and 
   const once = ctx.normalizeState({ version: 1, scouts: [], gone: { entries: { a: 5, b: -7 }, imports: { q: 9 } } });
   eq(JSON.stringify(ctx.normalizeState(JSON.parse(JSON.stringify(once))).gone), JSON.stringify(once.gone), 'not a fixed point');
   ok(/gone: freshGone\(\)/.test(slice('freshState')), 'a new pack has no deletion record');
-  // Kept small: older than 60 days goes; past GONE_MAX, the oldest go.
+  // Kept small: past GONE_MAX, the oldest go, always; older than 60 days goes only when asked
+  // (a merge whose other copy says this clock is plausible), and never from the ledger (L1).
   vm.runInContext(`var state = { gone: freshGone() }; var DAY = 86400000, NOW = 200 * DAY; Date.now = function () { return NOW; };
     state.gone.entries.old = NOW - 61 * DAY; state.gone.entries.back = -(NOW - 61 * DAY); state.gone.entries.recent = NOW - 59 * DAY;
+    state.gone.ledger.lold = NOW - 300 * DAY;
     markGone('ledger', ['l1', { id: 'l2' }, { id: '' }, null, 7]);`, ctx);
+  eq(Object.keys(vm.runInContext('state.gone.entries', ctx)), ['old', 'back', 'recent'], 'markGone aged marks out on its own clock');
+  eq(Object.keys(vm.runInContext('state.gone.ledger', ctx)), ['lold', 'l1', 'l2'], 'markGone took ids and rows');
+  vm.runInContext('pruneGone(state.gone, NOW, true)', ctx);
   eq(JSON.parse(JSON.stringify(vm.runInContext('state.gone.entries', ctx))), { recent: 141 * 86400000 }, 'old marks were kept');
-  eq(Object.keys(vm.runInContext('state.gone.ledger', ctx)), ['l1', 'l2'], 'markGone took ids and rows');
-  vm.runInContext(`for (var i = 0; i < GONE_MAX + 5; i++) state.gone.sales['s' + i] = NOW - (GONE_MAX + 5 - i);
-    pruneGone(state.gone, NOW);`, ctx);
+  eq(Object.keys(vm.runInContext('state.gone.ledger', ctx)), ['lold', 'l1', 'l2'], 'a ledger mark was aged out');
+  vm.runInContext(`for (var i = 0; i < GONE_MAX + 5; i++) { state.gone.sales['s' + i] = NOW - (GONE_MAX + 5 - i); state.gone.ledger['k' + i] = NOW - (GONE_MAX + 5 - i); }
+    pruneGone(state.gone, NOW, false);`, ctx);
+  eq(Object.keys(vm.runInContext('state.gone.ledger', ctx)).length, 1000, 'the ledger’s cap');
+  // The clock checks: a mark over a day ahead reads as now; the other copy's newest mark decides
+  // whether this clock may age marks out.
+  eq(JSON.parse(JSON.stringify(ctx.normalizeState({ version: 1, scouts: [], gone: { entries: { f: 9e15, b: -9e15, ok: 5 } } }).gone.entries)).ok, 5, 'a past mark moved');
+  const cl = ctx.normalizeState({ version: 1, scouts: [], gone: { entries: { f: 9e15, b: -9e15 } } }).gone.entries;
+  ok(cl.f > 0 && cl.f <= Date.now() && cl.b < 0 && -cl.b <= Date.now(), 'a mark from a clock set ahead was not read as now');
+  eq([ctx.goneNewest({ entries: { a: 5, b: -9 }, x: null, y: { c: 'z' } }), ctx.goneNewest(null), ctx.goneNewest('x')], [9, 0, 0], 'goneNewest');
+  const D = 86400000, T = 200 * D;
+  eq([[T - D, T], [T + D, T], [T + D + 1, T], [T - 60 * D, T], [T - 60 * D - 1, T], [0, T]].map(([n, now]) => ctx.goneClockOk(n, now)),
+    [true, true, false, true, false, false], 'goneClockOk');
   const sales = Object.keys(vm.runInContext('state.gone.sales', ctx));
   eq([sales.length, sales[0], sales[sales.length - 1]], [1000, 's5', 's1004'], 'the cap did not keep the newest');
   eq(['te-abc12-0', 'te-dev-owner-3', 'te-x', 'x1', 7].map((i) => ctx.teBatchOf(i)), ['abc12', 'dev-owner', '', '', ''], 'teBatchOf');
@@ -17050,6 +17103,21 @@ atest('stopgap, api: two devices that both re-import before either saves count o
   eq(b.get('totals()'), single, 'counted twice');
   await a.poll();
   eq(a.get('totals()'), single, 'A after B’s save');
+});
+
+atest('stopgap, api: a device clock set a year ahead or behind neither wipes the pack’s deletions nor loses its own', async () => {
+  let { a, b, server } = await apiGonePair();
+  a.run(skew(YEAR));
+  await b.edit("markGone('entries', state.entries.splice(1, 1))");
+  a.run("state.entries.push({ id: 'a1', scoutId: 's1', kind: 'wagon', date: '', salesCents: 1, donationsCents: 0 }); commit()");
+  await settle([a], 800);
+  eq([eIds(server()), Object.keys(server().gone.entries)], [['a1', 'old1', 'old2', 'x1'], ['x2']], 'a clock set ahead aged out the pack’s deletion');
+  ({ a, b, server } = await apiGonePair());
+  a.run(skew(-YEAR));
+  await a.edit("markGone('entries', state.entries.splice(0, 1))");
+  b.run(B1);
+  await settle([b], 800);
+  eq(eIds(server()), ['b1', 'old1', 'old2', 'x2'], 'a slow clock’s deletion was aged out, and the row came back');
 });
 
 atest('stopgap, api: a ledger row reconciled on one device is kept when another deleted it', async () => {

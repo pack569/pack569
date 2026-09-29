@@ -4635,7 +4635,8 @@
     // LIVE STOPGAP (2026-09-29) — the deletion marks (see freshGone). Absent on every record
     // before, which reads as nothing deleted. Only the known logs, and only a real non-zero
     // time for a non-empty id; anything else is dropped. Never pruned here: this has to give
-    // the same answer every time it runs.
+    // the same answer every time it runs. A mark from a clock set ahead is read as made now
+    // (clampGone), which a later run leaves as it is.
     var goneIn = (d.gone && typeof d.gone === 'object' && !Array.isArray(d.gone)) ? d.gone : {};
     d.gone = freshGone();
     Object.keys(d.gone).forEach(function (log) {
@@ -4646,6 +4647,7 @@
         if (id && typeof t === 'number' && isFinite(t) && Math.round(t) !== 0) d.gone[log][id] = Math.round(t);
       });
     });
+    clampGone(d.gone, Date.now());
     return d;
   }
   // Phase 3 step 0 — an id for a money-log row that has none, from what the row says (its id
@@ -11468,15 +11470,24 @@
   // space), plus 'imports': a Trail's End import is remembered once, by the batch in its rows'
   // ids (teBatchOf), not row by row. Two copies' marks merge per id, the later mark winning, so
   // an Undo beats the delete it undoes on every device.
-  // KEPT SMALL: a mark older than GONE_KEEP_MS is dropped, and at most GONE_MAX per log are kept
-  // (newest first) — a device that sits on an unsaved copy for two months can bring a row back,
-  // as any device could before. Close-out clears the lot: syncPush's season check keeps a copy
-  // from the year before out wholesale, so there is nothing left for the marks to catch.
+  // KEPT SMALL: at most GONE_MAX per log are kept (newest first), and a mark older than
+  // GONE_KEEP_MS is dropped when two copies merge — a device that sits on an unsaved copy for two
+  // months can bring a row back, as any device could before. Close-out clears the lot:
+  // syncPush's season check keeps a copy from the year before out wholesale, so there is nothing
+  // left for the marks to catch. Ledger marks are never aged out (treasurer review of the
+  // stopgap, L1): a deleted payment coming back into the book is worse than a mark kept until
+  // close-out, and deletions there are few. The cap still holds.
+  // DEVICE CLOCKS (security review of the stopgap, S3; Phase 3's server will stamp instead): a
+  // mark is this device's Date.now(), so a clock set wrong could make a mark win for a year, or
+  // age out the whole pack's marks at once. So a mark more than a day ahead of this device's
+  // clock is read as made now (clampGone), and marks are aged out only in a merge, and only when
+  // the other copy's newest mark says this clock is plausible (goneClockOk).
   // Literals, not a var: normalizeState runs before this part of the script has.
   function freshGone() { return { entries: {}, ledger: {}, distributions: {}, sales: {}, imports: {} }; }
   var GONE_KEEP_MS = 60 * 24 * 60 * 60 * 1000;
   var GONE_MAX = 1000;
-  // Record rows (or bare ids) as deleted — or, with `back`, as put back by an Undo.
+  // Record rows (or bare ids) as deleted — or, with `back`, as put back by an Undo. Only the cap
+  // is applied here: on its own, a device cannot tell whether its clock is right.
   function markGone(log, rows, back) {
     var m = state.gone && state.gone[log];
     if (!m) return;
@@ -11485,13 +11496,41 @@
       var id = typeof x === 'string' ? x : (x && x.id);
       if (typeof id === 'string' && id) m[id] = back ? -t : t;
     });
-    pruneGone(state.gone, t);
+    pruneGone(state.gone, t, false);
   }
-  // In place, so what is left keeps its order.
-  function pruneGone(g, now) {
+  // A mark more than a day ahead of `now` becomes `now`, keeping its sign. In place. The day is a
+  // literal: normalizeState calls this.
+  function clampGone(g, now) {
     Object.keys(g).forEach(function (log) {
       var m = g[log];
-      Object.keys(m).forEach(function (id) { if (Math.abs(m[id]) < now - GONE_KEEP_MS) delete m[id]; });
+      Object.keys(m).forEach(function (id) { if (Math.abs(m[id]) > now + 86400000) m[id] = m[id] > 0 ? now : -now; });
+    });
+  }
+  // The newest mark in a pack record's `gone` as stored (0 for none or junk), read before
+  // normalizeState clamps it.
+  function goneNewest(g) {
+    var n = 0;
+    if (!g || typeof g !== 'object') return 0;
+    Object.keys(g).forEach(function (log) {
+      var m = g[log];
+      if (!m || typeof m !== 'object') return;
+      Object.keys(m).forEach(function (id) { var t = Math.abs(m[id]); if (typeof m[id] === 'number' && isFinite(t) && t > n) n = t; });
+    });
+    return n;
+  }
+  // Whether this device's clock may age marks out, judged by the newest mark in the other copy:
+  // not a day or more behind it (this clock is slow, or that one fast), and not so far ahead of
+  // it that every mark there would be aged out (this clock is fast, or the pack is quiet — the
+  // cap holds either way). With no marks there, nothing is judged, and nothing aged out.
+  function goneClockOk(newest, now) {
+    return newest > 0 && newest <= now + 86400000 && now <= newest + GONE_KEEP_MS;
+  }
+  // In place, so what is left keeps its order. `byAge`: also drop marks older than
+  // GONE_KEEP_MS, in every log but the ledger's.
+  function pruneGone(g, now, byAge) {
+    Object.keys(g).forEach(function (log) {
+      var m = g[log];
+      if (byAge && log !== 'ledger') Object.keys(m).forEach(function (id) { if (Math.abs(m[id]) < now - GONE_KEEP_MS) delete m[id]; });
       var ids = Object.keys(m);
       if (ids.length <= GONE_MAX) return;
       ids.sort(function (a, b) { return Math.abs(m[a]) - Math.abs(m[b]); });
@@ -11533,11 +11572,13 @@
   function mergeRemoteAppendOnly(d, kept) {
     var parsed = null;
     try { parsed = JSON.parse(typeof d.json === 'string' ? d.json : ''); } catch (e) { return 0; }
+    var remoteNewest = goneNewest(parsed && parsed.gone);
     var remote = normalizeState(parsed);
     if (!remote) return 0;
     var added = 0, removed = 0;
     var gone = state.gone && typeof state.gone === 'object' ? state.gone : null;
     if (gone && remote.gone && typeof remote.gone === 'object') {
+      var now = Date.now();
       Object.keys(gone).forEach(function (log) {
         var m = gone[log], rm = remote.gone[log];
         if (!m || !rm) return;
@@ -11546,7 +11587,8 @@
           if (!Object.prototype.hasOwnProperty.call(m, id) || Math.abs(rm[id]) > Math.abs(m[id]) || (Math.abs(rm[id]) === Math.abs(m[id]) && rm[id] > 0)) m[id] = rm[id];
         });
       });
-      pruneGone(gone, Date.now());
+      clampGone(gone, now);
+      pruneGone(gone, now, goneClockOk(remoteNewest, now));
     }
     function isGone(log, x) {
       if (!gone) return false;
