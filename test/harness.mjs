@@ -1002,7 +1002,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // Security review — a stored ledger stamp that is an email is neutralised on load.
   'ledgerStampClean',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
-  'parseLegacyTime', 'migrateTierMakeUp', 'freshGone', 'clampGone', 'campHash', 'stableRowId', 'dedupeRowIds', 'normalizeState', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
+  'parseLegacyTime', 'migrateTierMakeUp', 'freshGone', 'clampGone', 'campHash', 'stableRowId', 'newStableId', 'dedupeRowIds', 'normalizeState', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'entrySignedCents',
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
@@ -17384,6 +17384,62 @@ test('Phase 3 step 0: normalizeState gives every money-log row one id, the same 
   vm.runInContext(`var state = normalizeState(${JSON.stringify(legacy())});`, m);
   eq(vm.runInContext(`mergeRemoteAppendOnly({ json: ${JSON.stringify(JSON.stringify(legacy()))} })`, m), 0,
     'merging the same old record from another device added rows');
+});
+
+test('Phase 3 step 0: a fundraiser or budget line with no id gets the same one on every device, and so do its rows', () => {
+  // Security S5 of the stopgap review: their ids were uid()s, and each sale's id, and the
+  // 'mig-' ledger row's, is made from them.
+  const old = () => {
+    const r = LEGACY_ROWS();
+    delete r.fundraisers[0].id;
+    r.fundraisers.push(JSON.parse(JSON.stringify(r.fundraisers[0])));   // two identical, neither with an id
+    delete r.budget.expenses[0].id;
+    r.budget.expenses.push(JSON.parse(JSON.stringify(r.budget.expenses[0])));
+    return r;
+  };
+  const seeded = sandbox(NORMALIZE_FNS).normalizeState(old());
+  const withSeeds = () => Object.assign(old(), JSON.parse(JSON.stringify({ camping: seeded.camping, welcome: seeded.welcome })));
+  const once = JSON.stringify(sandbox(NORMALIZE_FNS).normalizeState(withSeeds()));
+  eq(JSON.stringify(sandbox(NORMALIZE_FNS).normalizeState(withSeeds())), once, 'two devices gave an old fundraiser or line different ids');
+  eq(JSON.stringify(sandbox(NORMALIZE_FNS).normalizeState(JSON.parse(once))), once, 'not a fixed point');
+  const st = JSON.parse(once);
+  const fr = st.fundraisers.map((f) => f.id);
+  ok(/^nf[0-9a-z]+$/.test(fr[0]) && fr[2] === fr[0] + '-d2' && fr[1] === 'f2', 'the fundraiser ids');
+  const ex = st.budget.expenses.map((l) => l.id);
+  ok(/^nb[0-9a-z]+$/.test(ex[0]) && ex[2] === ex[0] + '-d2', 'the line ids');
+  eq(st.ledger.filter((e) => /^mig-nb/.test(e.id)).map((e) => e.id), ['mig-' + ex[0], 'mig-' + ex[2]], 'the migrated rows follow their lines');
+  eq(new Set(rowLogs(st).sales).size, rowLogs(st).sales.length, 'a sale id used twice');
+  // What it is for: a device merging another's copy of the same old record adds nothing twice.
+  const m = sandbox(NORMALIZE_FNS.concat(GONE_FNS, ['mergeRemoteAppendOnly']));
+  vm.runInContext(`var state = normalizeState(${JSON.stringify(withSeeds())});`, m);
+  eq(vm.runInContext(`mergeRemoteAppendOnly({ json: ${JSON.stringify(JSON.stringify(withSeeds()))} })`, m), 0, 'the merge added rows');
+});
+
+test('Phase 3 step 0: which of two rows sharing an id keeps it does not depend on their order', () => {
+  // Security S6: the same old record, its fundraisers, entries, ledger and hand-outs in another
+  // order, renames the same rows.
+  const norm = (r) => sandbox(NORMALIZE_FNS).normalizeState(r);
+  const byContent = (st) => {
+    const out = {};
+    // Identical rows are one key, their ids a sorted list: which of two identical rows is which
+    // cannot matter.
+    const put = (log, x, extra) => { const k = log + ':' + (extra || '') + JSON.stringify(Object.assign({}, x, { id: undefined })); (out[k] = out[k] || []).push(x.id); out[k].sort(); };
+    st.entries.forEach((x) => put('e', x)); st.ledger.forEach((x) => put('l', x));
+    st.fundraisers.forEach((f) => f.sales.forEach((x) => put('s', x, f.id)));
+    return Object.entries(out).sort();
+  };
+  // And the same sale, id and all, in two fundraisers: only the fundraiser tells them apart.
+  const legacy = () => { const r = LEGACY_ROWS(); r.fundraisers.forEach((f) => f.sales.push({ id: 'dup', scoutId: 's1', cents: 5 })); return r; };
+  const a = norm(legacy());
+  const r = legacy();
+  r.fundraisers.reverse(); r.entries.reverse(); r.ledger.reverse();
+  const b = norm(r);
+  eq(byContent(b), byContent(a), 'the order of the rows decided which one was renamed');
+  const sale = (st, cents) => st.fundraisers.find((f) => f.id === 'f1').sales.find((x) => x.cents === cents).id;
+  eq([sale(a, 100), sale(b, 100), sale(a, 5), sale(b, 5)], ['fs', 'fs', 'dup', 'dup'], 'the sale in the earlier fundraiser keeps its id');
+  const m = sandbox(NORMALIZE_FNS.concat(GONE_FNS, ['mergeRemoteAppendOnly']));
+  vm.runInContext(`var state = normalizeState(${JSON.stringify(legacy())});`, m);
+  eq(vm.runInContext(`mergeRemoteAppendOnly({ json: ${JSON.stringify(JSON.stringify(r))} })`, m), 0, 'merging the same rows in another order added rows');
 });
 
 /* ---------------- report ---------------- */

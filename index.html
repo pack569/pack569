@@ -3904,8 +3904,14 @@
     // `estCents` flat otherwise, so a migrated per-head line carries the whole estimate as
     // its SCOUT rate with every other rate at zero — the only rate a pre-3a line ever had.
     // -----------------------------------------------------------------------
+    // A line with no id gets one from what it says, as it stands before this reshapes it
+    // (security review of the stopgap, S5): the ledger's 'mig-' rows and lineIds are named after
+    // it, and a uid() here gave them a different id on every device that loaded the same old
+    // record. Two identical lines get '-d2' and on.
+    var migLineIds = {};
+    d.budget.activities.concat(d.budget.expenses).forEach(function (l) { if (l && typeof l.id === 'string' && l.id) migLineIds[l.id] = true; });
     function migrateLineShape(l) {
-      if (typeof l.id !== 'string' || !l.id) l.id = uid();
+      if (typeof l.id !== 'string' || !l.id) l.id = newStableId('nb', l, migLineIds);
       if (LINE_BASES.indexOf(l.basis) === -1) {
         var wasPerScout = l.perScout === true;
         var est = (typeof l.estCents === 'number' && isFinite(l.estCents)) ? Math.round(l.estCents) : 0;
@@ -3980,6 +3986,9 @@
     d.ledger.forEach(function (e) {
       // Phase 3 step 0 — from what the entry says, not uid(): this used to give an id-less entry
       // a new random id on EVERY load, on every device, so no two copies ever agreed on it.
+      // It hashes the row AS STORED, before the lines below normalize it (treasurer review of the
+      // stopgap, L4): every device reads the same stored row, so they agree, and the id is saved
+      // with the row, so nothing derives it again once the shape below has changed what it hashes.
       if (typeof e.id !== 'string' || !e.id) e.id = stableRowId('nl', e);
       e.date = typeof e.date === 'string' ? e.date : '';
       e.description = typeof e.description === 'string' ? e.description : '';
@@ -4053,7 +4062,7 @@
     var migToday = todayISO();
     var migDate = migToday < migEnd ? migToday : migEnd;
     function migrateLineActual(line, fallbackName) {
-      if (typeof line.id !== 'string' || !line.id) line.id = uid();
+      if (typeof line.id !== 'string' || !line.id) line.id = newStableId('nb', line, migLineIds);   // S5, see migrateLineShape
       if (typeof line.actualCents !== 'number' || !isFinite(line.actualCents)) { delete line.actualCents; return; }
       var cents = Math.round(line.actualCents);
       delete line.actualCents;
@@ -4378,9 +4387,13 @@
     // Wave 4: other fundraisers — standalone side tally, separate from popcorn money.
     // [{ id, name, goalCents, sales: [{ id, scoutId, cents, date?, note? }] }]
     if (!Array.isArray(d.fundraisers)) d.fundraisers = [];
+    // S5 of the stopgap review — as a budget line's: a fundraiser's id is part of each of its
+    // sales' ids (stableRowId 'ns' below), so it too comes from what it says, not uid().
+    var frIds = {};
+    d.fundraisers.forEach(function (fr) { if (fr && typeof fr.id === 'string' && fr.id) frIds[fr.id] = true; });
     d.fundraisers = d.fundraisers.filter(function (fr) {
       if (!fr || typeof fr !== 'object' || Array.isArray(fr)) return false;
-      if (typeof fr.id !== 'string' || !fr.id) fr.id = uid();
+      if (typeof fr.id !== 'string' || !fr.id) fr.id = newStableId('nf', fr, frIds);
       fr.name = typeof fr.name === 'string' ? fr.name : '';
       fr.goalCents = (typeof fr.goalCents === 'number' && isFinite(fr.goalCents) && fr.goalCents > 0) ? Math.round(fr.goalCents) : 0;
       fr.countInFunds = fr.countInFunds === true; // Wave 17 — opt-in to Budget funds-in
@@ -4631,7 +4644,10 @@
     dedupeRowIds(d.entries);
     dedupeRowIds(d.ledger);
     if (d.inventory && Array.isArray(d.inventory.distributions)) dedupeRowIds(d.inventory.distributions);
-    dedupeRowIds([].concat.apply([], d.fundraisers.map(function (fr) { return fr.sales; })));
+    // Every fundraiser's sales are one log; each sale's fundraiser decides a tie (dedupeRowIds).
+    var allSales = [], saleFr = [];
+    d.fundraisers.forEach(function (fr) { fr.sales.forEach(function (x) { allSales.push(x); saleFr.push(fr.id); }); });
+    dedupeRowIds(allSales, saleFr);
     // LIVE STOPGAP (2026-09-29) — the deletion marks (see freshGone). Absent on every record
     // before, which reads as nothing deleted. Only the known logs, and only a real non-zero
     // time for a non-empty id; anything else is dropped. Never pruned here: this has to give
@@ -4654,25 +4670,42 @@
   // left out), so every device that normalizes the same old record gives it the same id. Two
   // FNV-1a passes (campHash): 64 bits. Two identical rows get the same one; dedupeRowIds then
   // renames the second.
+  // It hashes the row as it is handed in, which the callers do before normalizing it (L4).
   function stableRowId(prefix, row) {
     var c = {};
     Object.keys(row).forEach(function (k) { if (k !== 'id') c[k] = row[k]; });
     var s = JSON.stringify(c);
     return prefix + campHash(s) + campHash('#' + s);
   }
-  // Rows in order; the first of each id keeps it. Pure apart from the renames.
-  function dedupeRowIds(rows) {
-    var all = Object.create(null), seen = Object.create(null);
-    rows.forEach(function (x) { if (x && typeof x.id === 'string') all[x.id] = true; });
-    rows.forEach(function (x) {
+  // A stableRowId not already in `used` ('-d2', '-d3' … after it if it is), then marked used.
+  function newStableId(prefix, row, used) {
+    var base = stableRowId(prefix, row), id = base, n = 2;
+    while (used[id]) { id = base + '-d' + n; n += 1; }
+    used[id] = true;
+    return id;
+  }
+  // One of each id keeps it; the others are renamed. Pure apart from the renames.
+  function dedupeRowIds(rows, keys) {
+    var all = Object.create(null), groups = Object.create(null);
+    rows.forEach(function (x, i) {
       if (!x || typeof x.id !== 'string') return;
-      if (seen[x.id]) {
+      all[x.id] = true;
+      (groups[x.id] = groups[x.id] || []).push(i);
+    });
+    // Which row keeps a shared id is decided by what the rows say (`keys[i]` first — a sale's
+    // fundraiser — then the row), never by where they sit (security review of the stopgap, S6):
+    // two devices holding the same rows in another order rename the same one.
+    function key(i) { return (keys ? String(keys[i]) : '') + '\u0000' + JSON.stringify(rows[i]); }
+    Object.keys(groups).sort().forEach(function (id) {
+      var g = groups[id];
+      if (g.length < 2) return;
+      g.sort(function (a, b) { var ka = key(a), kb = key(b); return ka < kb ? -1 : ka > kb ? 1 : 0; });
+      g.slice(1).forEach(function (i) {
         var n = 2;
-        while (all[x.id + '-d' + n]) n += 1;
-        x.id = x.id + '-d' + n;
-        all[x.id] = true;
-      }
-      seen[x.id] = true;
+        while (all[id + '-d' + n]) n += 1;
+        rows[i].id = id + '-d' + n;
+        all[rows[i].id] = true;
+      });
     });
   }
   // Wave 15 — set when saved data existed but couldn't be read; a copy went to KEY + '-bak'
