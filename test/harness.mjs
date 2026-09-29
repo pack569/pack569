@@ -16555,7 +16555,8 @@ test('api client: the move file carries what the import takes, for this pack onl
   const ctx = vm.createContext({});
   vm.runInContext(`
     var sync = {};
-    ${['arrOf', 'JOIN_CODE_RE', 'cleanContactLine', 'MOVE_KIND', 'MOVE_UID_RE', 'MOVE_ROLES', 'moveTime', 'buildMoveFile', 'moveImportBody'].map(decl).join('\n')}
+    ${['arrOf', 'JOIN_CODE_RE', 'cleanContactLine', 'MOVE_KIND', 'MOVE_UID_RE', 'MOVE_ROLES', 'moveTime', 'buildMoveFile', 'moveImportBody',
+       'PACK_FORMAT', 'formatAhead', 'FORMAT_FILE'].map(decl).join('\n')}
     normalizeState = function (p) { return p && typeof p === 'object' && Array.isArray(p.scouts) ? p : null; };`, ctx);
   const mf = JSON.parse(JSON.stringify(vm.runInContext(`buildMoveFile({ packId: 'P', record: { rev: 9, device: 'd', json: '{"rev":9,"scouts":[{"id":"s"}]}', updatedAt: 'x' },
     members: [{ uid: 'u1', role: 'admin', name: 'A', email: 'a@example.com', addedAt: 3, extra: 1 }, { uid: 'bad/uid', role: 'admin' },
@@ -16873,7 +16874,8 @@ test('stopgap: the copy chooser says which copy is the newer year, what only thi
   // The download is the Pack tab's Backup (JSON), byte for byte, and does not close the chooser.
   const h = slice('handleAction');
   ok(/if \(act === 'sync-download-local'\) \{\s*var bkS = jsonBackup\(\);\s*download\(bkS\.name, bkS\.mime, bkS\.text\);/.test(h) &&
-    /if \(act === 'export-json'\) \{\s*var bkJ = jsonBackup\(\);/.test(h), 'the download is not the Backup (JSON)');
+    // (After the reload gate's refusal of a newer page's record, which has its own test.)
+    /if \(act === 'export-json'\) \{\s*(?:\/\/[^\n]*\s*)*(?:if \(formatHeldHere\(\)\) \{[^}]*\}\s*)?var bkJ = jsonBackup\(\);/.test(h), 'the download is not the Backup (JSON)');
   const bk = vm.runInContext('jsonBackup()', chooserHtml(mine, closed).ctx);
   eq([bk.name, bk.mime, bk.text], ['popcorn-backup.json', 'application/json', JSON.stringify(mine, null, 2)], 'the backup');
 });
@@ -20919,6 +20921,46 @@ test('reload gate: a newer page’s record on this device is never saved over, a
     const saved = JSON.parse(vm.runInContext('store[KEY]', c));
     eq([saved.packName, saved.fmt, vm.runInContext('[pushes, toasts.length]', c)], ['Edited', 1, [1, 0]], `control: fmt ${fmt}`);
   }
+});
+
+test('reload gate: a backup saved by a newer page is refused before this page reads it; an older one is offered as before', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  vm.runInContext(`var ui = { overlay: null }, toasts = [], renders = 0, fileText = '';
+    function showToast(m) { toasts.push(m); } function render() { renders += 1; }
+    function FileReader() {} FileReader.prototype.readAsText = function () { this.result = fileText; this.onload(); };
+    ${['handleImportFile', 'FORMAT_FILE'].map(decl).join('\n')}
+    function pick(text) { fileText = text; ui.overlay = null; toasts = []; handleImportFile({ files: [{}], value: 'x' });
+      return [ui.overlay && ui.overlay.kind, toasts, ui.overlay && ui.overlay.data.fmt]; }`, ctx);
+  const pick = (obj) => JSON.parse(JSON.stringify(vm.runInContext(`pick(${JSON.stringify(typeof obj === 'string' ? obj : JSON.stringify(obj))})`, ctx)));
+  const FILE = vm.runInContext('FORMAT_FILE', ctx);
+  eq(FILE, 'That file was saved by a newer version of this page. Reload the page, then try again.', 'the words');
+  eq(pick({ version: 1, fmt: NEWER_FMT, scouts: [] }), [null, [FILE], null], 'a newer page’s backup was offered');
+  // One whose shape this page can't read at all is still named for what it is.
+  eq(pick({ version: 2, fmt: NEWER_FMT, people: [] }), [null, [FILE], null], 'a newer page’s backup in a new shape');
+  eq(pick({ version: 1, fmt: 1, scouts: [] }), ['import', [], 1], 'control: a backup in this page’s format');
+  eq(pick({ version: 1, scouts: [] }), ['import', [], 1], 'control: a backup from before the gate');
+  eq(pick('not json')[1], ['That file isn’t a pack-record backup.'], 'control: not a backup');
+});
+
+test('reload gate: a move file or backup saved by a newer page is not copied to the new server', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`var sync = {};
+    ${['arrOf', 'JOIN_CODE_RE', 'cleanContactLine', 'MOVE_KIND', 'MOVE_UID_RE', 'MOVE_ROLES', 'moveTime', 'buildMoveFile', 'moveImportBody',
+       'PACK_FORMAT', 'formatAhead', 'FORMAT_FILE'].map(decl).join('\n')}
+    normalizeState = function (p) { return p && typeof p === 'object' && Array.isArray(p.scouts) ? p : null; };`, ctx);
+  const FILE = vm.runInContext('FORMAT_FILE', ctx);
+  const mf = (fmt) => vm.runInContext(`buildMoveFile({ packId: 'P', record: { rev: 9, device: 'd',
+    json: ${JSON.stringify(JSON.stringify(Object.assign({ rev: 9, scouts: [{ id: 's' }] }, fmt === undefined ? {} : { fmt })))} } })`, ctx);
+  const body = (file) => JSON.parse(JSON.stringify(vm.runInContext(`moveImportBody(${JSON.stringify(file)}, 'P', false)`, ctx)));
+  eq(body(mf(NEWER_FMT)).error, FILE, 'a newer page’s move file');
+  eq(body({ rev: 2, fmt: NEWER_FMT, scouts: [] }).error, FILE, 'a newer page’s backup');
+  for (const fmt of [1, undefined]) {
+    const m = body(mf(fmt)), b = body(Object.assign({ rev: 2, scouts: [] }, fmt === undefined ? {} : { fmt }));
+    eq([m.error, m.backupOnly, b.error, b.backupOnly], [undefined, false, undefined, true], `control: fmt ${fmt}`);
+  }
+  // The backup download of a newer page's record, as this page read it, is refused too.
+  ok(/if \(act === 'export-json'\) \{\s*(?:\/\/[^\n]*\s*)*if \(formatHeldHere\(\)\) \{ showToast\(FORMAT_REFUSED\); return; \}\s*var bkJ = jsonBackup\(\);/.test(SCRIPT),
+    'a backup of a newer page’s record can be downloaded');
 });
 
 // The api fake: a newer page's save goes straight into the server's table.

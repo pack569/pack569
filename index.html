@@ -11890,8 +11890,11 @@
     if (parsed && typeof parsed === 'object' && parsed.kind === MOVE_KIND) {
       if (staging) return { error: 'This is staging, made-up data only. The real move file goes to pack569.com.' };
       if (parsed.packId !== packId) return { error: 'That file is for a different pack.' };
-      var st = null;
-      try { st = normalizeState(JSON.parse(parsed.pack && typeof parsed.pack.json === 'string' ? parsed.pack.json : '')); } catch (e) { st = null; }
+      var raw = null, st = null;
+      try { raw = JSON.parse(parsed.pack && typeof parsed.pack.json === 'string' ? parsed.pack.json : ''); } catch (e) { raw = null; }
+      // The reload gate (PACK_FORMAT): a newer page's record is not sent by this one (as a backup below).
+      if (formatAhead(raw)) return { error: FORMAT_FILE };
+      try { st = normalizeState(raw); } catch (e) { st = null; }
       if (!st) return { error: 'That file has no pack record in it.' };
       var members = arrOf(parsed.members), invites = arrOf(parsed.invites);
       a = about(st);
@@ -11899,6 +11902,8 @@
         members: members, invites: invites, join: parsed.join || null }, packName: a.packName, newestEvent: a.newestEvent,
         scouts: st.scouts.length, members: members.length, invites: invites.length, backupOnly: false };
     }
+    // …and a backup is sent as this page reads it (normalized), which a newer page's would not survive.
+    if (formatAhead(parsed)) return { error: FORMAT_FILE };
     var ns = normalizeState(parsed);
     if (!ns) return { error: 'That file isn’t a pack backup or a move file.' };
     a = about(ns);
@@ -11939,6 +11944,9 @@
   }
   // The copy itself. What arrives afterwards comes through the pack feed as a first answer
   // (subscribeDoc), so this device's own copy is compared with it, never overwritten unasked.
+  // Not held by the reload gate, and safe: the server takes a copy only while it has none, so
+  // nothing is written over, and what goes is the file's record (moveImportBody refuses a newer
+  // page's), never this device's.
   function importMoveFile(body) {
     if (!canImportPack() || !cloudReady()) return;
     var mine = sync.session;
@@ -20207,6 +20215,8 @@
   // …and what an edit is told when nothing can be saved at all (commit: this device's own copy is
   // the newer page's record).
   var FORMAT_REFUSED = 'Not saved: this page is out of date. Reload the page first.';
+  // …and what a backup or move file from a newer page is told (handleImportFile, moveImportBody).
+  var FORMAT_FILE = 'That file was saved by a newer version of this page. Reload the page, then try again.';
   function formatBanner() {
     if (!packFormatHeld()) return '';
     return '<div class="warn no-print" role="alert" style="margin:0 0 14px">' + esc(FORMAT_NOTICE) +
@@ -25166,6 +25176,9 @@
     reader.onload = function () {
       var data = null;
       try { data = JSON.parse(String(reader.result)); } catch (e) { /* not JSON */ }
+      // The reload gate (PACK_FORMAT) — a newer page's backup, restored here, would be read amiss
+      // and saved so. Asked of the file as it is, before this page reads it into its own shape.
+      if (formatAhead(data)) { showToast(FORMAT_FILE); return; }
       data = normalizeState(data);
       if (!data) { showToast('That file isn’t a pack-record backup.'); return; }
       ui.overlay = { kind: 'import', data: data };
@@ -29208,6 +29221,10 @@
     }
     if (act === 'print-summary') { window.print(); return; }
     if (act === 'export-json') {
+      // The reload gate (PACK_FORMAT) — this device's copy is a newer page's record, as this page
+      // read it into its own shape: a backup of that would carry the newer fmt over what this page
+      // may have misread. The copy itself is safe in storage; the reloaded page can back it up.
+      if (formatHeldHere()) { showToast(FORMAT_REFUSED); return; }
       var bkJ = jsonBackup();
       ui.overlay = { kind: 'export', title: 'JSON backup', name: bkJ.name, mime: bkJ.mime, text: bkJ.text };
       render(); return;
