@@ -1821,6 +1821,11 @@
   // switch-over commit changes it here (docs/cloudflare-setup.md, "E. Moving the pack to its own server").
   // ---------------------------------------------------------------------------
   var BACKEND = 'firestore';
+  // true in the staging build only (staging.pack569.pages.dev, made-up data only): the build
+  // writes it, and --verify refuses a staging page without it or any other page with it. The
+  // one thing it does: the copy-in refuses the real move file there (moveImportBody). Always
+  // false here, so production stays this file byte for byte.
+  var STAGING = false;
 
   // ---------------------------------------------------------------------------
   // SINGLE-PACK MODE — the pack id baked in, so NOBODY ever types a passphrase.
@@ -10622,23 +10627,37 @@
       } : null
     };
   }
-  // Pure. What a chosen file would copy in: { body, scouts, members, invites, backupOnly } or
-  // { error }. A move file must be for THIS pack; a plain backup brings the pack record alone.
-  function moveImportBody(parsed, packId) {
+  // Pure. What a chosen file would copy in: { body, packName, newestEvent, scouts, members,
+  // invites, backupOnly } or { error }. A move file must be for THIS pack; a plain backup brings
+  // the pack record alone. `staging` (STAGING): staging is for made-up data only, so it refuses
+  // the real move file outright (YP review of stage C, item 2). A plain backup is still taken
+  // there, for the rehearsal; the confirm screen names the pack and its newest event, so a
+  // real pack shows itself before anything is sent.
+  function moveImportBody(parsed, packId, staging) {
+    function about(st) {
+      var dates = arrOf(st.events).map(function (e) { return e && typeof e.date === 'string' ? e.date : ''; })
+        .filter(function (d) { return /^\d{4}-\d{2}-\d{2}$/.test(d); }).sort();
+      return { packName: typeof st.packName === 'string' ? st.packName : '', newestEvent: dates.length ? dates[dates.length - 1] : '' };
+    }
+    var a;
     if (parsed && typeof parsed === 'object' && parsed.kind === MOVE_KIND) {
+      if (staging) return { error: 'This is staging, made-up data only. The real move file goes to pack569.com.' };
       if (parsed.packId !== packId) return { error: 'That file is for a different pack.' };
       var st = null;
       try { st = normalizeState(JSON.parse(parsed.pack && typeof parsed.pack.json === 'string' ? parsed.pack.json : '')); } catch (e) { st = null; }
       if (!st) return { error: 'That file has no pack record in it.' };
       var members = arrOf(parsed.members), invites = arrOf(parsed.invites);
+      a = about(st);
       return { body: { pack: { rev: parsed.pack.rev, device: parsed.pack.device, json: parsed.pack.json },
-        members: members, invites: invites, join: parsed.join || null },
+        members: members, invites: invites, join: parsed.join || null }, packName: a.packName, newestEvent: a.newestEvent,
         scouts: st.scouts.length, members: members.length, invites: invites.length, backupOnly: false };
     }
     var ns = normalizeState(parsed);
     if (!ns) return { error: 'That file isn’t a pack backup or a move file.' };
+    a = about(ns);
     return { body: { pack: { rev: typeof ns.rev === 'number' ? ns.rev : 0, device: '', json: JSON.stringify(ns) },
-      members: [], invites: [], join: null }, scouts: ns.scouts.length, members: 0, invites: 0, backupOnly: true };
+      members: [], invites: [], join: null }, packName: a.packName, newestEvent: a.newestEvent,
+      scouts: ns.scouts.length, members: 0, invites: 0, backupOnly: true };
   }
   function downloadMoveFile() {
     if (!canDownloadMoveFile()) return;
@@ -10663,7 +10682,7 @@
     reader.onload = function () {
       var parsed = null;
       try { parsed = JSON.parse(String(reader.result)); } catch (e) { /* not JSON */ }
-      var got = moveImportBody(parsed, fixedPackId());
+      var got = moveImportBody(parsed, fixedPackId(), STAGING);
       if (got.error) { showToast(got.error); return; }
       ui.overlay = { kind: 'move-import', got: got };
       render();
@@ -22106,7 +22125,13 @@
       var mg = o.got;
       return '<div class="overlay" role="dialog" aria-modal="true" aria-label="Copy the pack to the new server?"><div class="overlay-inner"><div class="card">' +
         '<h2 class="section display">Copy the pack to the new server?</h2>' +
-        '<p>This file has <strong>' + mg.scouts + ' scouts</strong>, <strong>' + mg.members + ' accounts</strong> and <strong>' +
+        // Which pack, and how recent (YP review of stage C, item 2): a real pack shows itself here.
+        '<p>This file is <strong>' + esc(mg.packName || 'a pack with no name') + '</strong>' +
+        (mg.newestEvent ? ', and its newest event is on <strong>' + esc(fmtDate(mg.newestEvent) + ', ' + mg.newestEvent.slice(0, 4)) + '</strong>'
+          : ', with no events') + '.</p>' +
+        (STAGING ? '<div class="warn" style="margin:0 0 10px"><p class="small" style="margin:0">This is staging, made-up data only. ' +
+          'If this is the real pack, cancel.</p></div>' : '') +
+        '<p>It has <strong>' + mg.scouts + ' scouts</strong>, <strong>' + mg.members + ' accounts</strong> and <strong>' +
         mg.invites + ' open invites</strong>. The server takes one copy, only once, so check these numbers first.</p>' +
         (mg.backupOnly
           ? '<div class="warn" style="margin:0 0 10px"><p class="small" style="margin:0">This is a backup, not a move file: it has the ' +

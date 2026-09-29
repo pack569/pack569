@@ -17,7 +17,9 @@
 //      and rewrites BACKEND to 'api': its pack lives on this site's own server, which Pages
 //      binds to the preview database there. Its CSP allows no Firestore host at all, so the
 //      page could not reach the live Firestore pack even if the rewrite had not happened —
-//      and the build and --verify both refuse a staging page that is not 'api'. What staging
+//      and the build and --verify both refuse a staging page that is not 'api'. It also
+//      writes STAGING = true, which makes the page refuse the real move file (staging is for
+//      made-up data only); every other page must say false. What staging
 //      does NOT separate is sign-in (docs/cloudflare-setup.md, "One Firebase project").
 //   3. NO 'unsafe-inline' FOR SCRIPTS. The page is one inline <script>. Its sha256 goes into
 //      the Content-Security-Policy, so that script runs and no other inline script can.
@@ -56,6 +58,8 @@ const SDK_BASE_RE = /^  var SYNC_SDK_BASE = '(https:\/\/[a-z0-9.-]+\/[A-Za-z0-9.
 // Where the pack lives: 'firestore' (Firestore, the live page today) or 'api' (this site's /api).
 const BACKEND_RE = /^  var BACKEND = '(firestore|api)';$/gm;
 export const BACKENDS = ['firestore', 'api'];
+// Whether this is the staging page. Only the staging build says true; index.html says false.
+const STAGING_RE = /^  var STAGING = (true|false);$/gm;
 
 // What the Content-Security-Policy lets the page talk to, per target.
 // Production: the Firebase SDK is imported from its gstatic path; Google sign-in loads apis.google.com
@@ -129,7 +133,9 @@ export function liveConfig(html) {
   const sdkBase = sdk.length === 1 ? sdk[0][1] : null;
   const be = [...html.matchAll(BACKEND_RE)];
   if (be.length !== 1) fail(`expected exactly one "  var BACKEND = 'firestore'|'api';" declaration; found ${be.length}`);
-  return { config, docId, sdkBase, backend: be[0][1] };
+  const st = [...html.matchAll(STAGING_RE)];
+  if (st.length !== 1) fail(`expected exactly one "  var STAGING = true|false;" declaration; found ${st.length}`);
+  return { config, docId, sdkBase, backend: be[0][1], staging: st[0][1] === 'true' };
 }
 
 // Every value that would let a page reach the live pack. A preview must contain none of them.
@@ -146,10 +152,13 @@ function liveMarkers(live) {
 }
 
 // The page as the target serves it. Production is byte-for-byte the committed file; staging is
-// the committed file with BACKEND 'api'; preview is the committed file with no cloud at all.
+// the committed file with BACKEND 'api' and STAGING true; preview is the committed file with no
+// cloud at all.
 export function transform(html, target) {
   if (TARGETS.indexOf(target) < 0) fail(`unknown target "${target}"; use ${TARGETS.join(', ')}`);
   const live = liveConfig(html);
+  // Only a build makes a staging page; a committed page that says so is a mistake.
+  if (live.staging) fail('index.html says STAGING = true; only the staging build may');
   if (target === 'production' || target === 'staging') {
     const c = live.config;
     if (!c || typeof c !== 'object') fail(`${target} needs FIREBASE_CONFIG set in index.html; it is null`);
@@ -161,8 +170,8 @@ export function transform(html, target) {
     if (!live.docId) fail(`${target} needs PACK_DOC_ID set in index.html; it is null`);
     if (!live.sdkBase) fail(`${target} needs exactly one "  var SYNC_SDK_BASE = 'https://…/';" in index.html`);
     if (target === 'production') return { html, live };
-    const out = html.replace(BACKEND_RE, "  var BACKEND = 'api';");
-    return { html: out, live: Object.assign({}, live, { backend: 'api' }) };
+    const out = html.replace(BACKEND_RE, "  var BACKEND = 'api';").replace(STAGING_RE, '  var STAGING = true;');
+    return { html: out, live: Object.assign({}, live, { backend: 'api', staging: true }) };
   }
   const out = html
     .replace(CONFIG_RE, '  var FIREBASE_CONFIG = null;')
@@ -293,6 +302,9 @@ export function verify({ dir, target, root = ROOT }) {
   // Staging runs on the pack's own server, never on Firestore: a staging link must not be a
   // second way into the live Firestore pack.
   if (target === 'staging' && live.backend !== 'api') fail("this is not a staging build: BACKEND is not 'api'");
+  // Staging refuses the real move file because it says STAGING; nothing else may say it.
+  if (target === 'staging' && !live.staging) fail('this is not a staging build: STAGING is not true');
+  if (target !== 'staging' && live.staging) fail(`this is not a ${target} build: STAGING is true`);
   // Byte-for-byte what this commit's index.html becomes for this target.
   const expected = transform(readFileSync(join(root, 'index.html'), 'utf8'), target);
   if (html !== expected.html) fail(`index.html is not this commit's ${target} build`);

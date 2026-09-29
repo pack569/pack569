@@ -12989,13 +12989,17 @@ test('the staging build is the committed page on the pack’s own server: BACKEN
   siteBuild();
   eq(readdirSync(siteDir('staging')).sort(), ['_headers', 'index.html'], 'the staging folder');
   const html = siteFile('staging', 'index.html');
-  // Byte for byte the committed page, but for one line.
+  // Byte for byte the committed page, but for two lines: BACKEND, and (YP review of stage C,
+  // item 2) the STAGING flag that makes the page refuse the real move file.
   const a = HTML.split('\n'), b = html.split('\n');
   eq(a.length, b.length, 'staging has a different number of lines');
   const differ = a.map((l, i) => (l === b[i] ? null : [l, b[i]])).filter(Boolean);
-  eq(differ, [["  var BACKEND = 'firestore';", "  var BACKEND = 'api';"]], 'staging changes more than BACKEND');
+  eq(differ, [["  var BACKEND = 'firestore';", "  var BACKEND = 'api';"], ['  var STAGING = false;', '  var STAGING = true;']],
+    'staging changes more than BACKEND and STAGING');
   const live = site.liveConfig(html);
-  eq([live.backend, live.docId, live.config.projectId], ['api', LIVE.docId, LIVE.config.projectId], 'staging’s sign-in config and pack');
+  eq([live.backend, live.staging, live.docId, live.config.projectId], ['api', true, LIVE.docId, LIVE.config.projectId], 'staging’s sign-in config and pack');
+  eq([LIVE.staging, site.liveConfig(siteFile('production', 'index.html')).staging, site.liveConfig(siteFile('preview', 'index.html')).staging],
+    [false, false, false], 'a page other than staging says STAGING');
   const headers = siteFile('staging', '_headers');
   const d = site.cspDirectives(site.cspOf(headers));
   eq(d['connect-src'], ["'self'", 'https://identitytoolkit.googleapis.com', 'https://securetoken.googleapis.com', 'https://www.googleapis.com',
@@ -13022,6 +13026,14 @@ test('the staging build is the committed page on the pack’s own server: BACKEN
   ok(/BACKEND is not 'api'/.test(throwsBuild(() => site.verify({ dir: t, target: 'staging' }), 'a Firestore staging page')), 'a Firestore staging page');
   fresh(); writeFileSync(join(t, '_headers'), headers.replace(/\n  X-Robots-Tag: noindex/, ''));
   throwsBuild(() => site.verify({ dir: t, target: 'staging' }), 'staging without noindex');
+  // A staging page that does not say STAGING (it would take the real move file) is refused by name.
+  fresh(); writeFileSync(join(t, 'index.html'), html.replace('  var STAGING = true;', '  var STAGING = false;'));
+  ok(/STAGING is not true/.test(throwsBuild(() => site.verify({ dir: t, target: 'staging' }), 'staging without STAGING')), 'staging without STAGING');
+  // …and so is any other page that does, before any byte compare.
+  const pt = join(SITE_TMP, 'production-tampered');
+  rmSync(pt, { recursive: true, force: true }); cpSync(siteDir('production'), pt, { recursive: true });
+  writeFileSync(join(pt, 'index.html'), siteFile('production', 'index.html').replace('  var STAGING = false;', '  var STAGING = true;'));
+  ok(/STAGING is true/.test(throwsBuild(() => site.verify({ dir: pt, target: 'production' }), 'production with STAGING')), 'production with STAGING');
   eq(site.verify({ dir: siteDir('staging'), target: 'staging' }).files.map((f) => f.file), ['_headers', 'index.html'], 'a good staging build');
   // The CLI builds it.
   const r = spawnSync(process.execPath, [join(ROOT, 'scripts/build-site.mjs'), '--verify', siteDir('staging'), '--target', 'staging'], { encoding: 'utf8' });
@@ -13046,6 +13058,16 @@ test('the switch-over is one line: a production page with BACKEND api gets the a
     ok(/BACKEND/.test(throwsBuild(() => site.build({ target: 'staging', out, root }), 'an unknown BACKEND')), 'an unknown BACKEND');
     writeFileSync(join(root, 'index.html'), HTML.replace("  var BACKEND = 'firestore';", "  var BACKEND = 'firestore';\n  var BACKEND = 'api';"));
     throwsBuild(() => site.build({ target: 'production', out, root }), 'BACKEND declared twice');
+    // Only the staging build writes STAGING = true: a committed page saying it, or saying it
+    // twice, or not at all, builds nothing.
+    for (const [what, page] of [['STAGING true', HTML.replace('  var STAGING = false;', '  var STAGING = true;')],
+      ['STAGING twice', HTML.replace('  var STAGING = false;', '  var STAGING = false;\n  var STAGING = true;')],
+      ['no STAGING', HTML.replace('  var STAGING = false;\n', '')]]) {
+      writeFileSync(join(root, 'index.html'), page);
+      for (const target of ['production', 'staging', 'preview']) {
+        ok(/STAGING/.test(throwsBuild(() => site.build({ target, out, root }), `${what}: ${target} built`)), `${what}: ${target}`);
+      }
+    }
     // Staging needs the pack id: the pack's own server serves exactly that pack.
     writeFileSync(join(root, 'index.html'), HTML.replace(/^  var PACK_DOC_ID = '[0-9a-f]{64}';$/m, '  var PACK_DOC_ID = null;'));
     ok(/PACK_DOC_ID/.test(throwsBuild(() => site.build({ target: 'staging', out, root }), 'staging without a pack id')), 'staging without a pack id');
@@ -14984,6 +15006,22 @@ test('the move file’s screen is Download only, and says what the file holds an
   // downloadMoveFile opens that screen, and the Copy handler copies nothing from it.
   ok(/ui\.overlay = \{ kind: 'move-export', name: 'pack569-move-'/.test(slice('downloadMoveFile')), 'the move file does not open its own screen');
   ok(/if \(act === 'copy-export'\) \{\n\s+if \(ui\.overlay && ui\.overlay\.kind === 'export'\) copyText\(/.test(SCRIPT), 'Copy would copy the move file');
+  // The copy-in's confirm screen names the pack and its newest event, with the year; on staging it
+  // also says staging is for made-up data (YP review of stage C, item 2).
+  const confirm = (staging, got) => {
+    const c2 = vm.createContext({});
+    vm.runInContext(`var ui = { overlay: null }, STAGING = ${staging};
+      ${['esc', 'fmtDate', 'renderOverlay'].map(slice).join('\n')}
+      ui.overlay = { kind: 'move-import', got: ${JSON.stringify(got)} };`, c2);
+    return vm.runInContext('renderOverlay()', c2).replace(/<[^>]+>/g, '');
+  };
+  const g1 = { packName: 'Pack <569>', newestEvent: '2027-01-05', scouts: 40, members: 12, invites: 2, backupOnly: false };
+  const t1 = confirm(false, g1);
+  ok(/This file is Pack &lt;569&gt;, and its newest event is on Tue, Jan 5, 2027\./.test(t1), 'the confirm screen does not name the pack and its newest event: ' + t1);
+  ok(!/staging/i.test(t1), 'the live page says staging');
+  ok(/This is staging, made-up data only\. If this is the real pack, cancel\./.test(confirm(true, g1)), 'staging’s confirm screen does not warn');
+  ok(/This file is a pack with no name, with no events\./.test(confirm(true, { packName: '', newestEvent: '', scouts: 0, members: 0, invites: 0, backupOnly: true })),
+    'a pack with no name and no events');
   // The owner's line on the Firestore page: plain, and says what the file holds.
   const line = slice('renderMoveLine');
   ok(/Only for the day the pack moves to its new server\./.test(line) && !/Firestore|owner’s guide/.test(line), 'the move line still talks about Firestore or the guide');
@@ -15402,6 +15440,19 @@ test('api client: the move file carries what the import takes, for this pack onl
   const plain = JSON.parse(JSON.stringify(vm.runInContext(`moveImportBody({ rev: 2, scouts: [] }, 'P')`, ctx)));
   eq([plain.backupOnly, plain.body.members, plain.body.pack.rev], [true, [], 2], 'a plain backup');
   ok(vm.runInContext('moveImportBody({ hello: 1 }, "P")', ctx).error, 'a file that is neither');
+  // YP review of stage C, item 2: staging refuses the real move file, whatever pack it is for,
+  // and takes a plain (made-up) backup; either way the owner is shown the pack's name and newest event.
+  for (const id of ['P', 'Q']) {
+    eq(vm.runInContext(`moveImportBody(${JSON.stringify(mf)}, '${id}', true)`, ctx).error,
+      'This is staging, made-up data only. The real move file goes to pack569.com.', `staging took the real move file (${id})`);
+  }
+  eq(vm.runInContext(`moveImportBody(${JSON.stringify(mf)}, 'P', false)`, ctx).error, undefined, 'control: the live page refuses the move file');
+  const named = JSON.parse(JSON.stringify(vm.runInContext(`moveImportBody({ rev: 2, packName: 'Made-up Pack 1', scouts: [],
+    events: [{ date: '2026-10-17' }, { date: '2027-01-05' }, { date: '2027-13' }, null, { date: 7 }] }, 'P', true)`, ctx)));
+  eq([named.error, named.backupOnly, named.packName, named.newestEvent], [undefined, true, 'Made-up Pack 1', '2027-01-05'], 'a made-up backup on staging');
+  const real = JSON.parse(JSON.stringify(vm.runInContext(`moveImportBody(${JSON.stringify(mf)}, 'P', false)`, ctx)));
+  eq([real.packName, real.newestEvent], ['', ''], 'a move file’s pack with no name and no events');
+  ok(/moveImportBody\(parsed, fixedPackId\(\), STAGING\)/.test(slice('handleMoveFile')), 'the copy-in does not pass STAGING');
   // Offered to the pack's owner only: on Firestore the download, on the server the copy-in while it is empty.
   const offer = (backend, over) => {
     const c = vm.createContext({});
