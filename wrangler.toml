@@ -22,8 +22,9 @@ compatibility_date = "2026-09-28"
 # functions/ is the API: Pages Functions, deployed with the site by `wrangler pages deploy`
 # from the folder that holds this file. It reads the pack from D1 through the binding DB.
 #
-# TWO DATABASES, AND A PREVIEW CAN NEVER SEE THE LIVE ONE. Pages picks the environment by
-# branch: --branch=main is production and gets [env.production]; every other branch (every
+# TWO DATABASES, AND A PREVIEW'S SERVER IS KEPT OFF THE LIVE ONE. (Sign-in is NOT separated:
+# every environment accepts the same Firebase project's tokens; docs/cloudflare-setup.md,
+# "One Firebase project".) Pages picks the environment by branch: --branch=main is production and gets [env.production]; every other branch (every
 # preview-<sha> link, and staging) is a preview and gets [env.preview]. The top level is the
 # same as [env.preview], and is what `wrangler pages dev` and the d1 commands read by default.
 # Pages does not merge bindings or vars into an environment that sets its own, so each block

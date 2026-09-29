@@ -233,6 +233,20 @@ After DNS moves, check on a real phone: sign-in and sync work, `/SETUP.md` and
 `/test/harness.mjs` return the app page, not the file (the site has no 404 page, so Pages
 answers every unknown address with `index.html`), and securityheaders.com shows the headers.
 
+**HSTS (the "always use HTTPS" header).** The page's `_headers` already sends
+`Strict-Transport-Security: max-age=31536000; includeSubDomains`, but `_headers` does not
+apply to the API under `/api/`: its answers carry their own safety headers
+(`functions/_lib/http.js`) and no HSTS. A browser that has loaded the page has the rule
+already, so this matters little, but set it at Cloudflare for the whole domain so nothing
+depends on that. Once the site works over HTTPS on both `pack569.com` and `www.pack569.com`:
+Cloudflare → `pack569.com` → SSL/TLS → Edge Certificates → **Always Use HTTPS** on, and
+**HTTP Strict Transport Security (HSTS)** → Enable, with the same settings the page already
+sends: max-age **12 months**, **Include subdomains** on, **Preload** off. (A browser that has
+seen HSTS refuses plain HTTP to the domain and its subdomains for the whole max-age; the page
+has been asking for exactly that, so this adds nothing new, it only covers `/api/` too.)
+Then check: `curl -sI https://pack569.com/api/session | grep -i strict-transport` should
+print the header (whatever the status code).
+
 ## The pack's database (Phase 2)
 
 Phase 2 moves the pack out of Firestore and into **Cloudflare D1**, a database that lives
@@ -241,7 +255,10 @@ small server for this, the `functions/` folder ("the API"). It checks who is sig
 applies the same who-may-see-what rules as SETUP.md Part C, plus two the old rules could not
 hold: the pack always keeps at least one admin, and the sign-up link only ever files a request.
 
-There are **two databases**, and a preview can never reach the live one:
+There are **two databases**, and a preview's server is kept off the live one twice over: by
+the ids in `wrangler.toml` (checked by the harness and the deploy job), and by each database's
+own record of which deployment it belongs to (step B). What is *not* separated is sign-in;
+see [One Firebase project](#one-firebase-project-an-accepted-risk) below.
 
 | Database | Used by |
 |---|---|
@@ -346,7 +363,8 @@ rather than widening the token.
 Google sign-in works only on addresses listed in Firebase, exactly, and every
 `preview-<commit>` link is new. So a preview that needs sign-in is deployed to one fixed
 branch name, **`staging`**, which Pages serves at **`https://staging.pack569.pages.dev`**.
-It is a preview: it uses `pack569-preview`, never the live pack.
+Its server uses `pack569-preview`, never the live pack's database. Its sign-in, though, is the
+live pack's sign-in; read the next part before you add it.
 
 - [ ] Firebase console → Authentication → Settings → **Authorized domains** → Add
       `staging.pack569.pages.dev`. (If the Google API key has a website restriction in
@@ -360,6 +378,35 @@ workflow. Until then, nothing deploys to `staging`.
 
 **Only made-up data goes in `pack569-preview`.** Never copy the real pack into it: preview
 links are easier to reach than the live site, and it has none of production's protections.
+
+#### One Firebase project: an accepted risk
+
+Previews, `staging` and production all accept Google sign-ins from the **same** Firebase
+project, `pack-569` (`FIREBASE_PROJECT_ID` in `wrangler.toml`). A sign-in is a token the page
+sends with every request, and the live API cannot tell a token made on `staging` from one
+made on pack569.com. So:
+
+- **The code running on `staging` handles real sign-ins that also work on the live pack.**
+  When a leader signs in on `staging`, the page there holds a token that the live API would
+  accept as that leader, with their live role, for up to an hour. Code on `staging` that
+  sent that token somewhere else, or used it against pack569.com itself, could read or change
+  the live pack as them. The database separation above does not stop this; it only keeps the
+  *preview's own server* off the live database.
+- The same holds the other way: a token from pack569.com is accepted by a preview's server,
+  but that server only has the made-up pack in it.
+
+The review of Phase 2 offered a fix: a second Firebase project just for previews and
+staging, so their tokens would mean nothing to the live API. **Decision (Keith, 2026-09-28):
+accept the risk and keep one Firebase project.** What that asks of you instead:
+
+- **Only you deploy branches, and only branches whose code you have read.** A deploy is a
+  hand-started run of the website workflow, which anyone with write access to the repository
+  can start, so keep that list to yourself. Deploying a branch to `staging` means trusting
+  its code with real sign-ins: the same trust as merging it.
+- Keep the Cloudflare Access lock on preview deployments (above), so only you can open
+  `staging` and sign in there. Sign in there only with your own account.
+- If you ever stop being the only person who can run the workflow, or want other leaders to
+  try `staging`, revisit this: that is when the second Firebase project is worth making.
 
 ### E. Copying the pack in (later)
 

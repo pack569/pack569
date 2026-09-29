@@ -13549,6 +13549,28 @@ test('api deployment: the owner guide seeds each database with its own deploymen
   ok(!/(INSERT INTO|UPDATE|DELETE FROM) deployment\b/.test(code), 'the API writes its own deployment row');
 });
 
+test('api docs: the shared Firebase project is written down as an accepted risk, nothing claims sign-in is separated, and HSTS is set at cutover', () => {
+  // Security review of stage A, finding 2 (DECISION: accept the risk, one Firebase project) and finding 9.
+  const DOC = readFileSync(join(ROOT, 'docs/cloudflare-setup.md'), 'utf8');
+  const WF = readFileSync(join(ROOT, '.github/workflows/website.yml'), 'utf8');
+  const W = readFileSync(join(ROOT, 'wrangler.toml'), 'utf8');
+  const risk = DOC.slice(DOC.indexOf('#### One Firebase project: an accepted risk'));
+  ok(DOC.indexOf('#### One Firebase project: an accepted risk') > DOC.indexOf('### D. A preview you can sign in to'), 'no accepted-risk section under staging');
+  ok(/Decision \(Keith, 2026-09-28\)/.test(risk) && /accept the risk and keep one Firebase project/.test(risk), 'the decision is not recorded');
+  ok(/Only you deploy branches, and only branches whose code you have read/.test(risk), 'the deploy discipline is not stated');
+  ok(DOC.indexOf('(#one-firebase-project-an-accepted-risk)') >= 0, 'the database section does not point at the accepted risk');
+  // No over-strong claims left: nothing says a preview can NEVER reach the live pack in general.
+  for (const [name, text] of [['docs', DOC], ['website.yml', WF], ['wrangler.toml', W]]) {
+    ok(!/preview can never (?:reach|see) the live/i.test(text), name + ' still says a preview can never reach the live pack');
+  }
+  ok(/What\n# this does NOT separate is sign-in/.test(WF), 'the workflow header does not say sign-in is shared');
+  // Finding 9: HSTS for /api/ at the zone, in the cutover.
+  const cut = DOC.slice(DOC.indexOf('## Cutover, in order'), DOC.indexOf('## The pack\'s database'));
+  ok(/\*\*HSTS/.test(cut) && /HTTP Strict Transport Security \(HSTS\)\*\* → Enable/.test(cut) && /grep -i strict-transport/.test(cut), 'the cutover has no HSTS step');
+  ok(/Strict-Transport-Security: max-age=31536000; includeSubDomains/.test(readFileSync(join(ROOT, '_headers'), 'utf8')),
+    'the page\'s own HSTS changed; the cutover\'s HSTS settings say to match it');
+});
+
 atest('api deployment: a database answers only the deployment its own row names (DEPLOY_ENV), and nothing is touched otherwise', async () => {
   // Security review of stage A, finding 1: a preview bound to the live database must answer nothing.
   const cases = [
