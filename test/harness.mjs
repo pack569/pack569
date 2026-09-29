@@ -14754,7 +14754,9 @@ atest('api client: a removed member’s device is wiped only on the server’s w
   // nothing is wiped, the feeds stay, and the pill says offline.
   for (const [what, res] of [['an Access page', () => new Response('<html>Access</html>', { status: 403, headers: { 'content-type': 'text/html' } })],
     ['a JSON 403 with more in it', () => new Response('{"error":"forbidden","code":"permission-denied","x":1}', { status: 403, headers: { 'content-type': 'application/json' } })],
-    ['no answer', () => { throw new TypeError('network'); }]]) {
+    ['no answer', () => { throw new TypeError('network'); }],
+    // Security review of stage C, item 3: a 2xx with nothing in it is not "no members".
+    ['a 200 {}', () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })]]) {
     ed.intercept = async () => res();
     await ed.poll();
     ed.intercept = null;
@@ -14762,6 +14764,11 @@ atest('api client: a removed member’s device is wiped only on the server’s w
     await ed.poll();
     eq(ed.get('sync.mode'), 'online', `${what}: the device did not come back online`);
   }
+  // …nor, for a family, "no member row": that is what a removal is read from.
+  par.intercept = async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+  await par.poll();
+  par.intercept = null;
+  eq(par.get('[sync.joinRejected, sync.myRole, sync.feed]'), [null, 'parent', 'parent'], 'a 200 {} removed the family');
   owner.run("removeMember('uid-editor'); removeMember('uid-parent')");
   await settle([owner]);
   eq(w.sql('SELECT uid FROM members WHERE uid IN (?, ?)', 'uid-editor', 'uid-parent'), [], 'the rows are still there');
@@ -15170,6 +15177,70 @@ atest('api adapter: only the server’s fixed 403 is a refusal, and each answer 
   await vm.runInContext('apiBackend.pollNow()', flaky);
   await vm.runInContext('apiBackend.pollNow()', flaky);
   eq(JSON.parse(JSON.stringify(vm.runInContext('got', flaky))), [[2, { fromServer: true, pendingWrites: false }]], 'the server’s answer, as fromServer');
+});
+
+atest('api adapter: an answer of the wrong shape is "unavailable", never "none", and a redirect is not followed', async () => {
+  // Security review of stage C, item 3. A 2xx {} (something in front of the API) read loosely was
+  // "no pack" (seed), "no member row" (wipe as removed) or "no members".
+  const feeds = {
+    pack: ['subscribePack({ docId: "P" }, ', '/api/pack/P'],
+    view: ['subscribeView("P", ', '/api/pack/P/view'],
+    join: ['subscribeJoin("P", ', '/api/pack/P/join'],
+    roster: ['subscribeMembers("P", "all", "u1", ', '/api/pack/P/members'],
+    self: ['subscribeMembers("P", "self", "u1", ', '/api/pack/P/members/u1'],
+    invites: ['subscribeInvites("P", ', '/api/pack/P/invites']
+  };
+  const good = { pack: { exists: true, rev: 2, json: '{}', device: 'd' }, view: { exists: true, generatedAt: 5, view: { events: [] } },
+    join: { exists: true, open: false, code: 'Code123abc' }, roster: { members: [{ uid: 'u1', role: 'admin' }] },
+    self: { exists: true, uid: 'u1', role: 'parent' }, invites: { invites: [{ email: 'a@example.com', role: 'parent' }] } };
+  const none = { pack: { exists: false, rev: 0 }, view: { exists: false }, join: { exists: false }, roster: { members: [] },
+    self: { exists: false }, invites: { invites: [] } };
+  const bad = { pack: [{}, { exists: true, rev: 2 }, { exists: true, json: '{}' }, { rev: 0 }, { exists: 'false' }],
+    view: [{}, { exists: true }, { exists: true, view: [] }], join: [{}, { exists: 1 }], roster: [{}, { members: {} }, { members: [null] }],
+    self: [{}, { exists: true }, { uid: 'u1' }], invites: [{}, { invites: 'x' }, { invites: [{ role: 'parent' }] }] };
+  const run = async (what, body) => {
+    const ctx = apiAdapterCtx((path) => /\/rev$/.test(path) ? jsonRes(200, { rev: 2, viewAt: 5 })
+      : (path === feeds[what][1] ? jsonRes(200, body) : jsonRes(404, { error: 'x' })));
+    await vm.runInContext(`var got = [], errs = [];
+      apiBackend.${feeds[what][0]}function (d) { got.push(d); }, function (e) { errs.push(e.code); });
+      apiBackend.pollNow()`, ctx);
+    return JSON.parse(JSON.stringify(vm.runInContext('[got, errs, apiBackend.feeds.length]', ctx)));
+  };
+  for (const what of Object.keys(feeds)) {
+    const g = await run(what, good[what]);
+    eq([g[0].length, g[1]], [1, []], `${what}: control, the server's own answer is not delivered`);
+    const n = await run(what, none[what]);
+    eq([n[0].length, n[1]], [1, []], `${what}: control, the server's "none" is not delivered`);
+    ok(n[0][0] === null || (Array.isArray(n[0][0]) && n[0][0].length === 0), `${what}: "none" is not delivered as none`);
+    for (const b of bad[what]) {
+      const r = await run(what, b);
+      eq(r[0], [], `${what}: ${JSON.stringify(b)} was delivered`);
+      // The pack record and the view report it (the pill turns Offline); the rest just stay as they were.
+      if (what === 'pack' || what === 'view') eq(r[1], ['unavailable'], `${what}: ${JSON.stringify(b)} was not "unavailable"`);
+      eq(r[2], 1, `${what}: ${JSON.stringify(b)} ended the subscription`);
+    }
+  }
+  // /rev without the mark a feed goes by is a miss for that feed, not a "nothing changed".
+  const rv = apiAdapterCtx((path) => /\/rev$/.test(path) ? jsonRes(200, { viewAt: 5 }) : jsonRes(200, good.pack));
+  await vm.runInContext('var got = [], errs = []; apiBackend.subscribePack({ docId: "P" }, function (d) { got.push(d); }, function (e) { errs.push(e.code); }); apiBackend.pollNow()', rv);
+  eq(JSON.parse(JSON.stringify(vm.runInContext('[got, errs]', rv))), [[], ['unavailable']], 'a /rev with no rev');
+  // The push's own read, and a 409 whose copy is not a record: no PUT on top of either.
+  const puts = [];
+  const px = apiAdapterCtx((path, init) => {
+    if (init.method === 'PUT') { puts.push(init.headers['if-match']); return jsonRes(409, { error: 'conflict', code: 'aborted', rev: 3 }); }
+    return jsonRes(200, px.firstGet ? {} : { exists: true, rev: 2, json: '{}' });
+  });
+  px.firstGet = true;
+  const push = () => vm.runInContext(`apiBackend.pushPack({ docId: 'P' }, function (r) { return { record: { rev: 1, device: 'd', json: '{}' }, result: r }; })
+    .then(function () { return 'ok'; }, function (e) { return e.code; })`, px);
+  eq([await push(), puts], ['unavailable', []], 'a push over an empty-object read');
+  px.firstGet = false;
+  eq([await push(), puts], ['aborted', ['2']], 'a 409 without the server’s copy was retried');
+  // Every call refuses a redirect rather than following it.
+  const inits = [];
+  const rd = apiAdapterCtx((path, init) => { inits.push(init.redirect); return jsonRes(200, {}); });
+  await vm.runInContext("apiBackend.call('GET', '/api/x').then(null, function () {})", rd);
+  eq(inits, ['error'], 'a redirect would be followed');
 });
 
 atest('api adapter: the poll waits 15 s for a leader, 60 s for a family, doubles on failures, and stops when hidden', async () => {

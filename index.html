@@ -9083,6 +9083,9 @@
   // What an answer means to the app (functions/_lib/http.js is the server's half):
   //   2xx, a JSON object    the answer. Only these ever reach a subscriber, so meta.fromServer
   //                         is true exactly when the server said it. Nothing is cached here.
+  //                         Each read then holds it to the server's own shape (recordOf):
+  //                         any other shape is 'unavailable', and never reads as "none".
+  //   a redirect            'unavailable': the API never sends one, and it is not followed.
   //   403, the fixed body   err.code 'permission-denied', which the app's removal and refusal
   //                         paths already know. ANY OTHER 403 (a Cloudflare Access page, a
   //                         proxy) is 'unavailable': it must never read as "the pack refused you".
@@ -9174,7 +9177,9 @@
         return Promise.resolve(u.getIdToken(fresh)).then(function (token) {
           var h = { authorization: 'Bearer ' + token };
           Object.keys(headers || {}).forEach(function (k) { h[k] = headers[k]; });
-          var init = { method: method, headers: h, cache: 'no-store' };
+          // redirect 'error': the API never redirects, so one (a sign-in page in front of the site,
+          // say) is not the server's answer, and fails as 'unavailable' rather than being followed.
+          var init = { method: method, headers: h, cache: 'no-store', redirect: 'error' };
           if (body !== undefined) {
             h['content-type'] = 'application/json';
             init.body = typeof body === 'string' ? body : JSON.stringify(body);
@@ -9310,6 +9315,11 @@
         self.call('GET', self.packPath(revFeeds[0].docId, '/rev')).then(function (r) {
           return Promise.all(revFeeds.map(function (f) {
             var mark = f.what === 'pack' ? r.rev : r.viewAt;
+            // A /rev answer without the mark this feed goes by is not the server's (item 3 below).
+            if (f.what === 'pack' ? typeof mark !== 'number' : !(mark === null || typeof mark === 'number')) {
+              self.miss(f, self.fail('unavailable', 0, null), tick);
+              return null;
+            }
             if (f.off || (!f.fresh && !f.stale && mark === f.mark)) return null;
             return f.get().then(function (got) { f.mark = got.mark; self.deliver(f, got.data); },
               function (err) { self.miss(f, err, tick); });
@@ -9392,9 +9402,18 @@
     isOpen: function () { return !!this.packId; },
     // The server stamps its own times; a value here is dropped before anything is sent.
     serverTime: function () { return null; },
+    // EVERY READ IS HELD TO THE SHAPE THE SERVER SENDS (security review of stage C, item 3).
+    // "None" is only ever the server saying so — exists: false — and an answer of any other
+    // shape (an empty object, a missing list) throws 'unavailable', like no answer at all. Read
+    // loosely, a 2xx {} from something in front of the API was "no pack" (the seed path), "no
+    // member row" (this device wiped as removed) or "no members".
+    shapeError: function () { return this.fail('unavailable', 0, null); },
     recordOf: function (b) {
-      return b && b.exists === true && typeof b.json === 'string'
-        ? { rev: b.rev, device: b.device, updatedAt: b.updatedAt, json: b.json } : null;
+      if (b && b.exists === false) return null;
+      if (b && b.exists === true && typeof b.rev === 'number' && typeof b.json === 'string') {
+        return { rev: b.rev, device: b.device, updatedAt: b.updatedAt, json: b.json };
+      }
+      throw this.shapeError();
     },
     subscribePack: function (h, onNext, onErr) {
       var self = this;
@@ -9429,7 +9448,9 @@
             self.sawRev(h.docId, ok.rev);
             return out.result;
           }, function (err) {
-            if (err.code === 'aborted' && tries > 1 && self.recordOf(err.remote)) return put(self.recordOf(err.remote), tries - 1);
+            var again = null;
+            if (err.code === 'aborted' && tries > 1) { try { again = self.recordOf(err.remote); } catch (e) { again = null; } }
+            if (again) return put(again, tries - 1);
             throw err;
           });
       }
@@ -9440,8 +9461,9 @@
       return self.watchFeed({ what: 'view', docId: docId, rev: true, report: true, next: onNext, err: onErr,
         get: function () {
           return self.call('GET', self.packPath(docId, '/view')).then(function (b) {
-            var has = b.exists === true && !!b.view && typeof b.view === 'object';
-            return { data: has ? b.view : null, mark: has ? b.generatedAt : null };
+            if (b.exists === false) return { data: null, mark: null };
+            if (b.exists !== true || !b.view || typeof b.view !== 'object' || Array.isArray(b.view)) throw self.shapeError();
+            return { data: b.view, mark: b.generatedAt };
           });
         } });
     },
@@ -9455,7 +9477,8 @@
       return self.watchFeed({ what: 'join', docId: docId, next: onNext, err: onErr,
         get: function () {
           return self.call('GET', self.packPath(docId, '/join')).then(function (b) {
-            if (b.exists !== true) return { data: null };
+            if (b.exists === false) return { data: null };
+            if (b.exists !== true) throw self.shapeError();
             var cfg = {};
             Object.keys(b).forEach(function (k) { if (k !== 'exists') cfg[k] = b[k]; });
             return { data: cfg };
@@ -9475,11 +9498,15 @@
         get: function () {
           if (scope === 'all') {
             return self.call('GET', self.packPath(docId, '/members')).then(function (b) {
-              return { data: Array.isArray(b.members) ? b.members : [] };
+              var ok = Array.isArray(b.members) && b.members.every(function (m) { return m && typeof m === 'object' && typeof m.uid === 'string'; });
+              if (!ok) throw self.shapeError();
+              return { data: b.members };
             });
           }
           return self.call('GET', self.memberPath(docId, uid)).then(function (b) {
-            if (b.exists !== true) return { data: [] };
+            // Only exists: false is "no member row": what removal (a wiped device) is read from.
+            if (b.exists === false) return { data: [] };
+            if (b.exists !== true || typeof b.role !== 'string') throw self.shapeError();
             var me = {};
             Object.keys(b).forEach(function (k) { if (k !== 'exists') me[k] = b[k]; });
             me.uid = uid;
@@ -9495,7 +9522,9 @@
       return self.watchFeed({ what: 'invites', docId: docId, next: onNext, err: onErr,
         get: function () {
           return self.call('GET', self.packPath(docId, '/invites')).then(function (b) {
-            return { data: (Array.isArray(b.invites) ? b.invites : []).map(function (v) {
+            var ok = Array.isArray(b.invites) && b.invites.every(function (v) { return v && typeof v === 'object' && typeof v.email === 'string'; });
+            if (!ok) throw self.shapeError();
+            return { data: b.invites.map(function (v) {
               var o = {};
               Object.keys(v).forEach(function (k) { o[k] = v[k]; });
               o.key = v.email;
