@@ -135,12 +135,14 @@ async function importPack({ request, db, packId, user }) {
     if ((await locked()).n > 0) return forbidden();
     throw e;
   }
-  // The view was held back inside the write: standings went off in the meantime. (The audit
-  // row, written in the same batch, records the view that was sent.)
-  if (viewAt >= 0 && !(results && results[viewAt] && results[viewAt].meta && results[viewAt].meta.changes >= 1) &&
-    !(await standingsShown(db, packId))) {
+  // The view was not stored: held back inside the write because standings went off in the
+  // meantime, or a parent view was already here (it wins, like every row that already
+  // exists). The answer says which, so `view: true` always means this view was stored
+  // (review of 5690c3a..20b4fd6, item 4). The audit row, written in the same batch, records
+  // the view that was sent.
+  if (viewAt >= 0 && !(results && results[viewAt] && results[viewAt].meta && results[viewAt].meta.changes >= 1)) {
     viewText = null;
-    viewSkipped = 'view-standings-off';
+    viewSkipped = (await standingsShown(db, packId)) ? 'view-exists' : 'view-standings-off';
   }
   return json(200, { imported: true, rev, members: mRows.length, invites: iRows.length, invitesSkipped: skipped,
     join: !!j, view: !!viewText, viewSkipped });

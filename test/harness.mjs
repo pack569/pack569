@@ -14583,6 +14583,18 @@ atest('api import: a parent view PUT /view would refuse is left behind and named
   await w.call('owner', 'PUT', 'join', null, { body: { open: false, code: 'Code123abc', showStandings: false, showAmounts: true } });
   const r = await w.call('owner', 'POST', 'import', null, { body: importBody({ view: { packName: 'Test Pack', goals: null } }) });
   eq(r.body.viewSkipped, 'view-standings-off', 'standings off here, on in the import');
+  // Review of 5690c3a..20b4fd6, item 4: a parent view already here wins, and the answer does not
+  // claim the imported one was stored.
+  const w2 = await (await apiWorld()).seed({ editor: 'editor' });
+  const mine = { rev: 1, packName: 'Test Pack', events: [] };
+  eq((await w2.call('editor', 'PUT', 'view', null, { body: mine })).status, 200, 'a parent view before the import');
+  const r2 = await w2.call('owner', 'POST', 'import', null, { body: importBody({ view: { packName: 'Imported Pack', events: [] } }) });
+  eq([r2.status, r2.body.imported, r2.body.view, r2.body.viewSkipped], [200, true, false, 'view-exists'], 'the import\'s answer with a view already here');
+  eq(JSON.parse(w2.one('SELECT payload FROM parent_views').payload), mine, 'the view already here was replaced');
+  // …and with none here, the imported view is stored and the answer says so.
+  const w3 = await (await apiWorld()).seed({});
+  const r3 = await w3.call('owner', 'POST', 'import', null, { body: importBody({ view: { packName: 'Imported Pack', events: [] } }) });
+  eq([r3.body.view, r3.body.viewSkipped, JSON.parse(w3.one('SELECT payload FROM parent_views').payload).packName], [true, null, 'Imported Pack'], 'an imported view');
 });
 
 atest('api import: the owner comes out an admin even if Firestore said otherwise, and existing rows win', async () => {
