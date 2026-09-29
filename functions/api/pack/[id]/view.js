@@ -8,10 +8,11 @@
 // What it will store is held to buildParentView's shape (rules.js parentViewProblem): its
 // top-level keys only, none of the standings keys while the pack has standings switched off,
 // and no noteInternal anywhere. Anything else is a 400 and the stored view is left as it was.
+// The standings part is checked again inside the write itself, so it cannot race PUT /join.
 
 import { route, json, readText, refuse, forbidden, badRequest, MAX_STATE_BYTES } from '../../../_lib/http.js';
 import { withMember, standingsShown } from '../../../_lib/pack.js';
-import { canReadView, canWriteView, parentViewProblem } from '../../../_lib/rules.js';
+import { canReadView, canWriteView, parentViewProblem, PARENT_VIEW_STANDINGS_KEYS } from '../../../_lib/rules.js';
 
 async function get({ db, packId, role }) {
   if (!canReadView(role)) return forbidden();
@@ -30,10 +31,22 @@ async function put({ request, db, packId, role }) {
   delete v.generatedAt;   // the page's Firestore write carries a server-time sentinel; ours is the clock
   const why = parentViewProblem(v, await standingsShown(db, packId));
   if (why) refuse(badRequest(why));
+  // A view nested deeper than the runtime's stack can stringify is a leader's bad request, not
+  // a server error (security re-review of stage A, follow-up 4).
+  let payload;
+  try { payload = JSON.stringify(v); } catch (e) { refuse(badRequest('view-too-deep')); }
   const now = Date.now();
-  await db.prepare('INSERT INTO parent_views (pack_id, payload, generated_at) VALUES (?, ?, ?) ' +
+  // The standings check above is repeated INSIDE the write (security re-review of stage A,
+  // follow-up 2). PUT /join can switch standings off, and strip them from the stored view,
+  // between that read and this write; checked only above, this write would then put them
+  // back while standings are off. So a view carrying any standings key is written only if
+  // the pack has no join config saying show_standings = 0 at the moment it is written.
+  const hasStandings = PARENT_VIEW_STANDINGS_KEYS.some((k) => Object.prototype.hasOwnProperty.call(v, k)) ? 1 : 0;
+  const r = await db.prepare('INSERT INTO parent_views (pack_id, payload, generated_at) SELECT ?, ?, ? ' +
+    'WHERE ? = 0 OR NOT EXISTS (SELECT 1 FROM join_config WHERE pack_id = ? AND show_standings = 0) ' +
     'ON CONFLICT (pack_id) DO UPDATE SET payload = excluded.payload, generated_at = excluded.generated_at')
-    .bind(packId, JSON.stringify(v), now).run();
+    .bind(packId, payload, now, hasStandings, packId).run();
+  if (!(r && r.meta && r.meta.changes >= 1)) refuse(badRequest('view-standings-off'));
   return json(200, { generatedAt: now });
 }
 

@@ -14144,6 +14144,90 @@ atest('api parent view: the server stores only buildParentView\'s shape — its 
   eq(stored().standings, full.standings, 'switching standings on left the view alone');
 });
 
+// Security re-review of stage A, follow-up 2. The DB, but the moment the endpoint has read the
+// standings switch, a PUT /join elsewhere turns standings off: the check-then-write race.
+function standingsRaceDb(w) {
+  const db = w.db;
+  let fired = 0;
+  const racy = Object.assign({}, db, {
+    prepare(sql) {
+      const s = db.prepare(sql);
+      if (!/^SELECT show_standings FROM join_config WHERE pack_id = \?$/.test(sql)) return s;
+      return { bind(...a) {
+        const b = s.bind(...a);
+        return { async first(c) {
+          const r = await b.first(c);
+          fired++;
+          db.raw.prepare('UPDATE join_config SET show_standings = 0 WHERE pack_id = ?').run(API_PACK);
+          return r;
+        } };
+      } };
+    }
+  });
+  return { racy, fired: () => fired };
+}
+
+atest('api parent view: standings switched off between the check and the write are not put back (PUT /view and the import)', async () => {
+  const cfg = { open: false, code: 'Code123abc', showStandings: true, showAmounts: true, contact: '' };
+  const full = { rev: 3, packName: 'Test Pack', programYear: '2026-27', events: [], standings: [{ name: 'Test' }], goals: null };
+  const w = await (await apiWorld()).seed();
+  eq((await w.call('owner', 'PUT', 'join', null, { body: cfg })).status, 200, 'standings on');
+  const race = standingsRaceDb(w);
+  w.env.DB = race.racy;
+  const r = await w.call('editor', 'PUT', 'view', null, { body: full });
+  eq(race.fired(), 1, 'the race was not staged (the endpoint no longer reads the switch this way)');
+  eq([r.status, r.body.reason], [400, 'view-standings-off'], 'a standings view written after standings went off');
+  eq(w.sql('SELECT count(*) AS n FROM parent_views')[0].n, 0, 'the standings view was stored while standings are off');
+  // The same race with a calendar-only view: nothing to hold back, so it is written.
+  eq((await w.call('editor', 'PUT', 'view', null, { body: { rev: 4, packName: 'Test Pack', events: [] } })).status, 200, 'a calendar-only view');
+  eq(JSON.parse(w.one('SELECT payload FROM parent_views').payload), { rev: 4, packName: 'Test Pack', events: [] }, 'the calendar-only view');
+  // And a standings view once the pack's switch is on again, raced by nothing, still stores.
+  w.env.DB = w.db;
+  await w.call('owner', 'PUT', 'join', null, { body: cfg });
+  eq((await w.call('editor', 'PUT', 'view', null, { body: full })).status, 200, 'standings on, no race');
+  eq(JSON.parse(w.one('SELECT payload FROM parent_views').payload).standings, full.standings, 'the standings view');
+
+  // The import: the pack's join config says on when it is read, off when the batch writes.
+  const wi = await (await apiWorld()).seed({});
+  await wi.call('owner', 'PUT', 'join', null, { body: cfg });
+  const ri = standingsRaceDb(wi);
+  wi.env.DB = ri.racy;
+  const imp = await wi.call('owner', 'POST', 'import', null, { body: importBody({ view: { packName: 'Test Pack', standings: [{ name: 'Test' }] } }) });
+  eq(ri.fired() >= 1, true, 'the import race was not staged');
+  eq([imp.status, imp.body.imported, imp.body.view, imp.body.viewSkipped], [200, true, false, 'view-standings-off'], 'the import\'s answer');
+  eq(wi.sql('SELECT count(*) AS n FROM parent_views')[0].n, 0, 'the import stored a standings view while standings are off');
+  eq(wi.sql('SELECT count(*) AS n FROM pack_state')[0].n, 1, 'the rest of the import did not land');
+  // The SQL itself, with no race at all: the write's own condition refuses standings while they are off.
+  const wq = await (await apiWorld()).seed({});
+  await wq.call('owner', 'PUT', 'join', null, { body: Object.assign({}, cfg, { showStandings: false }) });
+  const viewSrc = readFileSync(join(ROOT, 'functions/api/pack/[id]/view.js'), 'utf8');
+  const m = /'(INSERT INTO parent_views[^']*)' \+\s*'([^']*)' \+\s*'([^']*)'\)/.exec(viewSrc);
+  ok(m, 'PUT /view\'s write not found');
+  const sql = m[1] + m[2] + m[3];
+  eq(Number(wq.db.raw.prepare(sql).run(API_PACK, '{"standings":[]}', 1, 1, API_PACK).changes), 0, 'the write\'s own condition, standings off');
+  eq(Number(wq.db.raw.prepare(sql).run(API_PACK, '{}', 1, 0, API_PACK).changes), 1, 'the write\'s own condition, no standings key');
+});
+
+atest('api parent view: a view too deep to store is a 400, not a server error (PUT /view and the import)', async () => {
+  // Security re-review of stage A, follow-up 4. V8 in Workers throws RangeError stringifying a
+  // deep enough object; Node here may not, so JSON.stringify is made to throw as it would there.
+  const real = JSON.stringify;
+  const deep = (v) => v && typeof v === 'object' && v.packName === 'Too Deep';
+  JSON.stringify = function (v, ...rest) {
+    if (deep(v)) throw new RangeError('Maximum call stack size exceeded');
+    return real.call(this, v, ...rest);
+  };
+  try {
+    const w = await (await apiWorld()).seed();
+    const r = await w.call('editor', 'PUT', 'view', null, { body: real({ packName: 'Too Deep', events: [] }) });
+    eq([r.status, r.body.reason], [400, 'view-too-deep'], 'PUT /view');
+    eq(w.sql('SELECT count(*) AS n FROM parent_views')[0].n, 0, 'something was stored');
+    const wi = await (await apiWorld()).seed({});
+    const imp = await wi.call('owner', 'POST', 'import', null, { body: real(importBody({ view: { packName: 'Too Deep' } })) });
+    eq([imp.status, imp.body.view, imp.body.viewSkipped], [200, false, 'view-too-deep'], 'the import');
+  } finally { JSON.stringify = real; }
+});
+
 /* ---- the one-time import ---- */
 
 function importBody(over) {

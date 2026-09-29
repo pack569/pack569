@@ -18,8 +18,9 @@
 // a parent view that PUT /view would refuse (viewSkipped says why).
 
 import { route, json, readObject, refuse, forbidden, badRequest, MAX_STATE_BYTES } from '../../../_lib/http.js';
-import { withMember, auditStmt, MAX_REV } from '../../../_lib/pack.js';
-import { ROLES, INVITE_ROLES, UID_RE, MEMBER_NAME_MAX, JOIN_CODE_RE, cleanContactLine, emailKey, parentViewProblem } from '../../../_lib/rules.js';
+import { withMember, auditStmt, standingsShown, MAX_REV } from '../../../_lib/pack.js';
+import { ROLES, INVITE_ROLES, UID_RE, MEMBER_NAME_MAX, JOIN_CODE_RE, cleanContactLine, emailKey, parentViewProblem,
+  PARENT_VIEW_STANDINGS_KEYS } from '../../../_lib/rules.js';
 
 const MAX_ROWS = 2000;
 const time = (v, dflt) => (typeof v === 'number' && isFinite(v) && v >= 0 ? Math.floor(v) : dflt);
@@ -74,6 +75,7 @@ async function importPack({ request, db, packId, user }) {
   if (view != null && (typeof view !== 'object' || Array.isArray(view))) refuse(badRequest('view'));
   let viewText = null;
   let viewSkipped = null;
+  let hasStandings = 0;
   if (view) {
     const v = Object.assign({}, view);
     delete v.generatedAt;   // a Firestore timestamp; the server stamps its own
@@ -85,7 +87,11 @@ async function importPack({ request, db, packId, user }) {
     const shown = cur ? cur.show_standings === 1 : !(j && j.showStandings === false);
     viewSkipped = parentViewProblem(v, shown);
     if (!viewSkipped) {
-      viewText = JSON.stringify(v);
+      // Too deep for the runtime to stringify: left behind, like any other view it cannot take.
+      try { viewText = JSON.stringify(v); } catch (e) { viewSkipped = 'view-too-deep'; }
+    }
+    if (viewText) {
+      hasStandings = PARENT_VIEW_STANDINGS_KEYS.some((k) => Object.prototype.hasOwnProperty.call(v, k)) ? 1 : 0;
       if (new TextEncoder().encode(viewText).byteLength > MAX_STATE_BYTES) refuse(json(413, { error: 'too-large', code: 'resource-exhausted' }));
     }
   }
@@ -108,18 +114,33 @@ async function importPack({ request, db, packId, user }) {
       .bind(packId, j.open === true ? 1 : 0, j.code, j.showStandings === false ? 0 : 1, j.showAmounts === false ? 0 : 1,
         cleanContactLine(j.contact), now));
   }
+  // The standings check is repeated inside the write, as PUT /view does (security re-review of
+  // stage A, follow-up 2): a PUT /join switching standings off after the read above must not
+  // be undone by this batch. It runs after the join_config insert, so it sees whatever this
+  // pack's switch is by then, the imported one included.
+  let viewAt = -1;
   if (viewText) {
-    stmts.push(db.prepare('INSERT INTO parent_views (pack_id, payload, generated_at) VALUES (?, ?, ?) ON CONFLICT (pack_id) DO NOTHING')
-      .bind(packId, viewText, now));
+    viewAt = stmts.length;
+    stmts.push(db.prepare('INSERT INTO parent_views (pack_id, payload, generated_at) SELECT ?, ?, ? ' +
+      'WHERE ? = 0 OR NOT EXISTS (SELECT 1 FROM join_config WHERE pack_id = ? AND show_standings = 0) ON CONFLICT (pack_id) DO NOTHING')
+      .bind(packId, viewText, now, hasStandings, packId));
   }
   stmts.push(auditStmt(db, packId, user.uid, 'import',
     { rev, members: mRows.length, invites: iRows.length, invitesSkipped: skipped, join: !!j, view: !!viewText, viewSkipped }, now));
+  let results;
   try {
-    await db.batch(stmts);
+    results = await db.batch(stmts);
   } catch (e) {
     // Lost a race with another import or a first save: that is the lock doing its job.
     if ((await locked()).n > 0) return forbidden();
     throw e;
+  }
+  // The view was held back inside the write: standings went off in the meantime. (The audit
+  // row, written in the same batch, records the view that was sent.)
+  if (viewAt >= 0 && !(results && results[viewAt] && results[viewAt].meta && results[viewAt].meta.changes >= 1) &&
+    !(await standingsShown(db, packId))) {
+    viewText = null;
+    viewSkipped = 'view-standings-off';
   }
   return json(200, { imported: true, rev, members: mRows.length, invites: iRows.length, invitesSkipped: skipped,
     join: !!j, view: !!viewText, viewSkipped });
