@@ -17128,6 +17128,23 @@ test('stopgap, Firestore: "Keep this device’s copy" merges another leader’s 
   eq(q.b.get('[sync.seasonKeptRev, sync.clobber]'), [null, false], 'the choice outlived the save it was for');
 });
 
+test('stopgap follow-up 5: taking the cloud copy forgets a copy chosen to write over', () => {
+  // B keeps its copy over A's close-out (rev 4), but A saves again (rev 5) before B's save goes,
+  // so B is asked again, and this time takes the cloud copy. The choice was about rev 4.
+  const q = fsGonePair();
+  q.b.run(B1);
+  q.a.run('state.budget.programYear += 1; commit()');
+  q.a.push(); q.b.hear(); q.b.push();
+  q.b.run('keepLocalCopy()');
+  eq(q.b.get('sync.seasonKeptRev'), 4, 'the copy chosen to write over');
+  q.a.run("state.entries.push({ id: 'a2', scoutId: 's1', kind: 'wagon', date: '', salesCents: 1, donationsCents: 0 }); commit()");
+  q.a.push(); q.b.hear(); q.b.push();
+  eq(q.b.get('ui.overlay && ui.overlay.kind'), 'sync-conflict', 'B was not asked again');
+  q.b.run('adoptRemote(ui.overlay.remote, {}); ui.overlay = null');
+  eq(q.b.get('[state.budget.programYear, sync.seasonKeptRev, sync.dirty, sync.clobber]'), [2027, null, false, false],
+    'the cloud copy was taken, but the earlier choice to write over rev 4 was kept');
+});
+
 test('stopgap: the deletion marks are normalized, merged by the later mark, and kept small', () => {
   const ctx = sandbox(NORMALIZE_FNS.concat(GONE_FNS));
   // Missing and malformed: an empty record of each log; junk dropped; nothing else kept.

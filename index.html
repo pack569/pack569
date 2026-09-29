@@ -11940,6 +11940,9 @@
     // choose, and the family view held back while the choice waited (writeParentView) can go out.
     sync.dirty = false;
     sync.clobber = false;
+    // …and no copy is left chosen to write over (re-review of the stopgap, item 5): a "Keep this
+    // device's copy" made before this copy was taken no longer says anything about the next save.
+    sync.seasonKeptRev = null;
     clearTimeout(sync.pushTimer);
     sync.pushTimer = null;
     if (sync.conflict) { sync.conflict = null; scheduleParentViewRefresh(); }
