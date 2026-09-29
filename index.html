@@ -11483,9 +11483,13 @@
     if (!ns) return false;
     state = ns;
     state.rev = typeof d.rev === 'number' ? d.rev : 0;
+    // This device now holds the server's copy: nothing is left to send or to merge at a save (a
+    // push still scheduled would only send that copy back as a new rev), nothing is left to
+    // choose, and the family view held back while the choice waited (writeParentView) can go out.
     sync.dirty = false;
-    // This device now holds the server's copy: nothing is left to choose, and the family view
-    // held back while the choice waited (writeParentView) can go out.
+    sync.clobber = false;
+    clearTimeout(sync.pushTimer);
+    sync.pushTimer = null;
     if (sync.conflict) { sync.conflict = null; scheduleParentViewRefresh(); }
     save();
     render();
@@ -11536,7 +11540,18 @@
       if (serverRevs) state.rev = remoteRev;
       if (isStateEmpty(state)) { adoptRemote(d, {}); return; } // nothing here yet — adopt silently
       if (stateFingerprint(remoteNorm) === stateFingerprint(state)) {
-        if (remoteRev > (state.rev || 0)) { state.rev = remoteRev; save(); }
+        // The same pack on both sides: nothing on this device is unsaved, whatever it thought
+        // before. Left dirty, it would read every later save from another device as one it was
+        // about to overwrite (sync.clobber), and its next save would put this copy back over
+        // that device's changes, keeping only the append-only logs. The case is the switch
+        // (security review of 260f467..db851c7, F1): the owner's device held its copy while the
+        // server awaited the import (holdPushes), and the move file it copied in is that copy.
+        sync.dirty = false;
+        sync.clobber = false;
+        clearTimeout(sync.pushTimer);
+        sync.pushTimer = null;
+        if (remoteRev > (state.rev || 0)) state.rev = remoteRev;
+        save();
         return;
       }
       if (isStateEmpty(remoteNorm)) {

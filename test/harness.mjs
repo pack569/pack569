@@ -15061,6 +15061,43 @@ atest('api client: before the owner copies the pack in, a leader’s device keep
   eq(again, 'permission-denied', 'a second copy-in');
 });
 
+atest('api client: on switch day the owner’s copy is the one copied in, so it has nothing unsaved, and an editor’s later change is kept', async () => {
+  // Security review of 260f467..db851c7, F1. The owner's device holds exactly the pack the move
+  // file carries. Two ways the copied-in record reaches it as a first answer: the pack feed,
+  // after the device held its edits (awaiting-import); and its own seed, which finds the record
+  // and hands it over (unheard). Either way it is the same pack, so nothing is left to send.
+  const local = PACK_STATE({ rev: 41 });
+  for (const path of ['held, then the feed', 'the seed finds it']) {
+    const w = await apiWorld({ OWNER_MODE: 'fixed', PACK_OWNER_UID: 'uid-owner', DEPLOY_ENV: 'prod', seedEnv: 'prod' });
+    const owner = await (await apiClient(w, 'owner', { state: local })).start(path === 'held, then the feed' ? 800 : 0);
+    eq(owner.get('sync.notice'), path === 'held, then the feed' ? 'awaiting-import' : '', `${path}: the owner’s device before the copy-in`);
+    const mf = owner.get(`buildMoveFile({ packId: '${API_PACK}', record: { rev: 41, device: 'fs-dev', json: ${JSON.stringify(JSON.stringify(local))} },
+      members: [{ uid: 'uid-owner', role: 'admin', name: 'O', email: 'owner@example.com' },
+        { uid: 'uid-editor', role: 'editor', name: 'E', email: 'editor1@example.com' }], invites: [], joinCfg: null, at: 'now' })`);
+    const body = owner.get(`moveImportBody(${JSON.stringify(mf)}, '${API_PACK}')`).body;
+    eq((await w.call('owner', 'POST', 'import', null, { body })).status, 200, `${path}: the copy-in`);
+    owner.reset();
+    if (path === 'held, then the feed') await owner.poll();
+    await settle([owner], 800);
+    eq(owner.log.filter((l) => /^PUT \/P$/.test(l)), [], `${path}: the owner’s device saved its copy over the copied-in one`);
+    eq(owner.get('[sync.dirty, sync.clobber, sync.notice, sync.mode, !!sync.conflict, ui.overlay && ui.overlay.kind, state.rev]'),
+      [false, false, '', 'online', false, null, 41], `${path}: the owner’s device after the copy-in`);
+    eq(owner.get('Object.keys(timers).filter(function (k) { return timers[k].ms === 800 || timers[k].ms === 10000; }).length'), 0,
+      `${path}: a save is still scheduled`);
+    // An editor renames the pack: a change the append-only merge does not carry.
+    const ed = await (await apiClient(w, 'editor')).start();
+    await ed.edit("state.packName = 'Renamed Pack'");
+    eq(serverState(w).rev, 42, `${path}: the editor’s save`);
+    // The owner's device hears it, then saves an edit of its own.
+    await owner.poll();
+    await owner.edit("state.ledger.push({ id: 'own', amountCents: 7 })");
+    const s = serverState(w);
+    eq([s.rev, s.json.packName, s.json.ledger.map((l) => l.id).sort()], [43, 'Renamed Pack', ['l0', 'own']],
+      `${path}: the owner’s save put its old copy back over the editor’s rename`);
+    ok(!owner.get('toasts').some((t) => /Another device saved changes/.test(t)), `${path}: the owner was told of a clobber that never happened`);
+  }
+});
+
 atest('api client: a pack copied in after a leader’s device heard "no pack" is compared, never saved over', async () => {
   // Security review of stage C, item 1. Staging's server (first-signer, no awaiting-import): the
   // editor's device holds an older copy, hears "no pack", and schedules a seed. The owner's
@@ -15094,10 +15131,14 @@ atest('api client: a pack copied in after a leader’s device heard "no pack" is
     eq([ed.log.filter((l) => /^PUT/.test(l)), ed.get('ui.overlay && ui.overlay.kind')], [[], 'sync-conflict'],
       `${path}: an edit after Escape was saved over the copied-in pack`);
     if (path === 'the seed') {
-      // "Use cloud copy": nothing is sent, and the device has the copied-in pack.
+      // "Use cloud copy": nothing is sent, and the device has the copied-in pack. A save still
+      // scheduled when the leader chooses (and a clobber flag) goes with the copy it was for.
+      ed.run("state.ledger.push({ id: 'late', amountCents: 1 }); commit(); sync.clobber = true");
+      ok(ed.get('Object.keys(timers).some(function (k) { return timers[k].ms === 800; })'), 'no save was scheduled (the test proves nothing)');
       ed.run('adoptRemote(ui.overlay.remote, {}); ui.overlay = null');
       await settle([ed], 800);
-      eq([ed.log.filter((l) => /^PUT \/P$/.test(l)), ed.get('[state.packName, sync.conflict, sync.dirty]')], [[], ['Copied Pack', null, false]], 'use the cloud copy');
+      eq([ed.log.filter((l) => /^PUT \/P$/.test(l)), ed.get('[state.packName, sync.conflict, sync.dirty, sync.clobber]')],
+        [[], ['Copied Pack', null, false, false]], 'use the cloud copy');
       await settle([ed], 1200);
       ok(ed.log.indexOf('PUT /P/view') >= 0, 'the family view held back during the choice never went out');
     } else {
