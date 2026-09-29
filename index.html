@@ -809,6 +809,10 @@
   .lrow input.money-in { width: 96px; min-height: 36px; }
   .lrow input[type="date"] { min-height: 36px; }
   .lrow .lbal { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+  /* Phase 3, C3 — a voided entry: its rule dashed and its figures struck through, so "not counted"
+     does not rest on colour; its description is text, not a field. */
+  .lrow.entry.voided { border-left-style: dashed; }
+  .lrow.voided span.lname { display: flex; align-items: center; }
   /* Reconcile rows: a tick you can actually hit, then ONE money axis. Scoped to .rec-row so the
      four other .perscout surfaces (season setup, entries, fundraisers, inventory) are untouched. */
   .rec-row { cursor: pointer; }
@@ -4901,6 +4905,8 @@
     ledgerAddWarned: '',    // Phase 3, C2 — the draft date already warned as in the reconciled period
     ledgerMoveWarned: null, // Treasurer review of C2 (M-5) — { id, date }: an entry's move into it, warned
     unrecWhy: '',           // Treasurer review of C2 (L-5) — the optional why typed for an un-reconcile
+    voidAsk: null,          // Phase 3, C3 — the entry id whose Void form is open
+    voidWhy: '',            // Phase 3, C3 — the reason typed there (required to void)
     lineOpen: {},           // Budget — { lineId: true } rows with their settings showing
     // Rewards — { tierId: true } tiers showing an empty date box because somebody asked for
     // one. A tier that HAS a deadline shows the box regardless; this is only the empty case,
@@ -7323,7 +7329,8 @@
   // Phase 3, C2 — why this row can't be changed, in the treasurer's words, or '' when it can.
   // `what` names it ('That entry' by default); `how` says what is being refused: 'money' its
   // amount, date or direction (the owner's rule: only those lock; see LEDGER_LOCKED_FIELDS),
-  // 'delete' removing it, anything else a change. A row both ticked and dated in the period is
+  // 'void' voiding it (C3: 'delete' before), 'unvoid' counting a voided one again, anything else
+  // a change. A row both ticked and dated in the period is
   // told about the period: un-reconciling it would not open it.
   // Treasurer review of C2 (M-2) — and each says what to do instead, in the treasurer's words: in
   // the period, an adjusting (or opposite) entry dated today that names the entry it corrects
@@ -7332,17 +7339,105 @@
     if (!ledgerLocked(e, book)) return '';
     what = what || 'That entry';
     var it = how === 'money' ? 'its amount, date and direction' : 'it';
-    var cant = how === 'delete' ? ' can’t be removed.' : ' can’t be changed.';
+    var cant = how === 'void' ? ' can’t be voided.' : how === 'unvoid' ? ' can’t be un-voided.' : ' can’t be changed.';
     if (book.closedAt) return what + ' is in a year already closed out, so it' + cant;
     if (ledgerDateReconciled(e.date, book)) {
       var inPeriod = what + ' is dated ' + fmtDateShort(e.date) + ', inside the period already reconciled (through ' +
         fmtDateShort(book.reconciledThrough) + '), so ' + it + cant;
       if (how === 'money') return inPeriod + ' To fix it, record an adjusting entry dated today for the difference, and say in its description which entry it corrects.';
-      if (how === 'delete') return inPeriod + ' To cancel it, record an opposite entry dated today and say in its description which entry it cancels.';
+      if (how === 'void') return inPeriod + ' To cancel it, record an opposite entry dated today and say in its description which entry it cancels.';
+      if (how === 'unvoid') return inPeriod + ' If it should count, enter it again dated today and say in its description which entry it replaces.';
       return inPeriod;
     }
     return what + ' is reconciled against a bank statement, so ' + it + cant + ' ' +
-      'Un-reconcile it first (Money · Ledger, two taps), then ' + (how === 'delete' ? 'remove' : 'change') + ' it.';
+      'Un-reconcile it first (Money · Ledger, two taps), then ' + (how === 'void' ? 'void' : 'change') + ' it.';
+  }
+  // ---------------------------------------------------------------------------
+  // PHASE 3, C3 — VOID REPLACES DELETE (owner, 2026-09-29: "delete becomes a void with a reason;
+  // the row stays but drops out of totals; Undo = un-void"). A voided row moves from state.ledger
+  // to state.ledgerAside (off 'void', with why, who and when), so every reader of state.ledger —
+  // every total, balance, charge, tier and export — sees exactly what a delete left it, and the row
+  // is still in the book to be read (Entries · Voided & reversed) and un-voided while it is open.
+  // It is also marked gone (markGone), so an older page that knows nothing of voids drops it from
+  // its own ledger as it would a delete. Admins and editors only (commit() is the gate); never a
+  // locked row (ledgerLocked, design §1.5): a row on a statement already checked is corrected by an
+  // opposite entry, not voided.
+  var LEDGER_VOID_REASON_MAX = 200;
+  // Why row `e` can't be voided with this reason, or ''. The lock first: no reason makes a locked
+  // row voidable. Pure.
+  function ledgerVoidRefusal(e, book, reason) {
+    var locked = ledgerLockedWhy(e, book, '', 'void');
+    if (locked) return locked;
+    var r = String(reason == null ? '' : reason).trim();
+    if (!r) return 'Say why it is being voided (for example, “entered twice”), then tap Void it.';
+    if (r.length > LEDGER_VOID_REASON_MAX) return 'Keep the reason to ' + LEDGER_VOID_REASON_MAX + ' characters or fewer.';
+    return '';
+  }
+  // Move the row `id` from st.ledger to st.ledgerAside, voided: `reason` (trimmed), `stamp`
+  // { by, byUid, at } (by never an email). Returns { row, ix } (ix: where it was, for Undo), or
+  // null when there is no such row. In place; refuses nothing (the caller asks ledgerVoidRefusal).
+  function ledgerVoidRow(st, id, reason, stamp) {
+    var ix = -1;
+    st.ledger.forEach(function (e, i) { if (e && e.id === id) ix = i; });
+    if (ix === -1) return null;
+    var row = st.ledger.splice(ix, 1)[0];
+    stamp = stamp || {};
+    row.off = 'void';
+    row.voidReason = String(reason == null ? '' : reason).trim().slice(0, LEDGER_VOID_REASON_MAX);
+    row.voidedBy = stamp.by;
+    row.voidedByUid = typeof stamp.byUid === 'string' ? stamp.byUid : '';
+    row.voidedAt = typeof stamp.at === 'string' ? stamp.at : '';
+    normalizeAsideRow(row);   // the fields every aside row has, as a load would give them
+    if (!Array.isArray(st.ledgerAside)) st.ledgerAside = [];
+    st.ledgerAside.push(row);
+    return { row: row, ix: ix };
+  }
+  // The other way: the voided row `id` back into st.ledger (at `ix` when given, else at the end),
+  // without the fields voiding gave it, so it is the row it was. Returns it, or null when no voided
+  // row has that id (a reversed row is not un-voided: C4). In place.
+  function ledgerUnvoidRow(st, id, ix) {
+    var at = -1;
+    (st.ledgerAside || []).forEach(function (e, i) { if (e && e.id === id && e.off === 'void') at = i; });
+    if (at === -1) return null;
+    var row = st.ledgerAside.splice(at, 1)[0];
+    ['off', 'voidReason', 'voidedBy', 'voidedByUid', 'voidedAt'].forEach(function (k) { delete row[k]; });
+    if (!row.reverses) delete row.reverses;
+    if (!row.reversedBy) delete row.reversedBy;
+    if (!row.carriedFrom) delete row.carriedFrom;
+    if (typeof ix === 'number' && ix >= 0) st.ledger.splice(Math.min(ix, st.ledger.length), 0, row);
+    else st.ledger.push(row);
+    return row;
+  }
+  // After a sync merge, a row can be in both lists: voided on one device, still counted (or
+  // un-voided) on the other. It ends up in ONE, the same on every device — never counted twice,
+  // never dropped. The deletion marks decide (`marks`: state.gone.ledger, already merged, the
+  // later mark winning): marked deleted, it stays voided; marked put back (an un-void, an Undo, or
+  // the merge keeping a reconciled row over it, C2 H1), it counts. They are what an older page
+  // reads too, so both kinds of page agree. With no mark (the cap took it), the log's last void or
+  // unvoid event for it; with neither, voided: not counted, but still in the book, where the
+  // treasurer can see it and un-void it. Returns { ledger, aside, moved } (moved: the ids settled
+  // either way). Pure.
+  function ledgerAsideSettle(ledger, aside, marks, log) {
+    var live = {};
+    ledger.forEach(function (e) { if (e && typeof e.id === 'string') live[e.id] = true; });
+    var toAside = {}, toLive = {}, moved = [];
+    function asideWins(id) {
+      var m = marks && Object.prototype.hasOwnProperty.call(marks, id) ? marks[id] : 0;
+      if (typeof m === 'number' && isFinite(m) && m !== 0) return m > 0;
+      var last = '';
+      (log || []).forEach(function (ev) { if (ev && ev.row === id && (ev.op === 'void' || ev.op === 'unvoid')) last = ev.op; });
+      return last !== 'unvoid';
+    }
+    aside.forEach(function (a) {
+      if (!a || !live[a.id] || toAside[a.id] || toLive[a.id]) return;
+      if (asideWins(a.id)) toAside[a.id] = true; else toLive[a.id] = true;
+      moved.push(a.id);
+    });
+    return {
+      ledger: ledger.filter(function (e) { return !(e && toAside[e.id]); }),
+      aside: aside.filter(function (a) { return !(a && toLive[a.id]); }),
+      moved: moved
+    };
   }
   function reconcileTotals(ledger, book) {
     var cleared = book.openingCents || 0, ticked = 0, open = 0, after = 0;
@@ -12201,6 +12296,15 @@
     arrOf(rec.entries).forEach(function (x) {
       if (x && x.source === 'te-import') back('imports', teBatchOf(x.id) || TE_PRE_BATCH);
     });
+    // Phase 3, C3 — and a row the backup holds voided is marked deleted, unless it already is: as
+    // it was when the backup was taken. Restoring it voided is the newer act, so a device still
+    // counting it, or holding an un-void from after the backup, settles it voided
+    // (ledgerAsideSettle), as the restore says. The same clamp: never later than just after now.
+    arrOf(rec.ledgerAside).forEach(function (x) {
+      var id = x && x.id;
+      if (typeof id !== 'string' || !id || g.ledger[id] > 0) return;
+      g.ledger[id] = Math.max(now, Math.min(Math.abs(g.ledger[id] || 0), now) + 1);
+    });
     pruneGone(g, now, false);
     return rec;
   }
@@ -12429,12 +12533,34 @@
     // to lose one another's transactions. A book that silently drops a row is not a book.
     state.ledger = dropGone(state.ledger, 'ledger');
     unionById(state.ledger, remote.ledger, 'ledger');
+    // PHASE 3, C3 — the rows voided (state.ledgerAside), unioned by id as the ledger is. The
+    // deletion marks don't apply here: a voided row IS marked deleted (so older pages drop it),
+    // and here it is kept, voided. A row now in both lists — voided on one device, counted on the
+    // other — is settled into one (ledgerAsideSettle: the merged marks decide, as they did the
+    // ledger's union above, so a reconciled row the merge kept over a void (C2 H1) counts; the two
+    // logs, merged, only for a row neither copy has a mark for). One call, so a page from before
+    // C3 is this merge without it (the harness's old-tab test).
+    function settleVoided() {
+      if (!Array.isArray(state.ledger)) return;
+      if (!Array.isArray(state.ledgerAside)) state.ledgerAside = [];
+      var asHave = {};
+      state.ledgerAside.forEach(function (x) { if (x && typeof x.id === 'string') asHave[x.id] = true; });
+      (Array.isArray(remote.ledgerAside) ? remote.ledgerAside : []).forEach(function (x) {
+        if (x && typeof x.id === 'string' && !asHave[x.id]) { state.ledgerAside.push(x); asHave[x.id] = true; added += 1; }
+      });
+      var asSet = ledgerAsideSettle(state.ledger, state.ledgerAside, gone && gone.ledger, mergeLedgerLog(state.ledgerLog, remote.ledgerLog));
+      state.ledger = asSet.ledger;
+      state.ledgerAside = asSet.aside;
+      removed += asSet.moved.length;
+    }
+    settleVoided();
     // Phase 3, C2 — the ledger's log, both copies' events in one order (mergeLedgerLog). Not
     // counted in what this returns: nobody needs telling that a history line came across.
     // Deletion marks don't apply: the log is append-only, and nothing is ever deleted from it.
     state.ledgerLog = mergeLedgerLog(state.ledgerLog, remote.ledgerLog);
     // A deleted scout's payments stay (that money moved), pointing at nobody, as del-scout leaves them.
     if (Array.isArray(state.ledger)) state.ledger.forEach(function (e) { if (e && parentGone('scouts', e.scoutId)) e.scoutId = ''; });
+    if (Array.isArray(state.ledgerAside)) state.ledgerAside.forEach(function (e) { if (e && parentGone('scouts', e.scoutId)) e.scoutId = ''; });
     if (state.inventory) state.inventory.distributions = dropGone(state.inventory.distributions, 'distributions');
     if (state.inventory && remote.inventory) unionById(state.inventory.distributions, remote.inventory.distributions, 'distributions');
     var frById = {};
@@ -12499,7 +12625,7 @@
   // find it on the statement. Phase 3, C2 (treasurer review of C1, H1) — a lost row in the
   // treasurer's words: whether anything needs doing depends on the bank statement. Pure.
   // Treasurer review of C2 (M-1) — a kept row dated in the reconciled period (`book`) can't be
-  // deleted even un-reconciled (del-ledger), so it is told the way to take it out of the book: an
+  // voided even un-reconciled (ledger-void-go), so it is told the way to take it out of the book: an
   // adjusting entry. Any other kept row is told as before.
   function reconciledFatesText(f, book) {
     function name(x) {
@@ -12514,7 +12640,7 @@
         return;
       }
       out.push(name(x) + ' was deleted, but it is reconciled against the bank statement, so it was kept. ' +
-        'To remove it, un-reconcile it first, then delete it.');
+        'To remove it, un-reconcile it first, then void it.');
     });
     f.lost.forEach(function (x) {
       out.push(name(x) + ' was reconciled on this device, but another leader deleted it afterwards, so it has been removed. ' +
@@ -12701,6 +12827,22 @@
     delete c.rev;
     return JSON.stringify(c);
   }
+  // Phase 3, C3 — a page from before C3 saving over a void (with an unsaved change of its own)
+  // drops the voided row from its ledger, as it should, but writes back its OWN list of rows set
+  // aside, from before the void: the row is then in neither list of the copy saved, and a device
+  // that takes that copy would lose it from the book. So a row this device holds voided that the
+  // copy taken (`ns`, normalized) has in neither list, and still marks deleted, is kept, voided,
+  // in `ns` (same year's book only): the next save from here puts it back in the pack's copy. A
+  // row put back, or not marked at all (a close-out clears the marks), is not. In place on `ns`.
+  function keepLostVoids(cur, ns) {
+    if (!cur || !Array.isArray(cur.ledgerAside) || !ns || !Array.isArray(ns.ledgerAside) || !Array.isArray(ns.ledger)) return;
+    if (!cur.book || !ns.book || cur.book.year !== ns.book.year) return;
+    var marks = ns.gone && ns.gone.ledger, have = {};
+    ns.ledger.concat(ns.ledgerAside).forEach(function (x) { if (x && typeof x.id === 'string') have[x.id] = true; });
+    cur.ledgerAside.forEach(function (x) {
+      if (x && x.off === 'void' && typeof x.id === 'string' && !have[x.id] && marks && marks[x.id] > 0) { ns.ledgerAside.push(x); have[x.id] = true; }
+    });
+  }
   function adoptRemote(d, opts) {
     var parsed = null;
     try { parsed = JSON.parse(typeof d.json === 'string' ? d.json : ''); } catch (e) { /* corrupt remote */ }
@@ -12708,6 +12850,7 @@
     if (!ns) return false;
     // Re-review of the stopgap, item 2 — what the copy taken did to reconciled rows, said below.
     var fates = reconciledFates(state && state.ledger, state && state.gone && state.gone.ledger, ns.ledger, ns.gone && ns.gone.ledger);
+    keepLostVoids(state, ns);   // Phase 3, C3
     state = ns;
     state.rev = typeof d.rev === 'number' ? d.rev : 0;
     // This device now holds the server's copy: nothing is left to send or to merge at a save (a
@@ -12969,15 +13112,18 @@
   // Security re-review of C2 (minor) — a restore that returns words has something to say about
   // what it put back (a ledger entry now in the reconciled period): they are the toast instead,
   // for longer.
-  function deleteWithUndo(label, restore) {
+  // Phase 3, C3 — `words` { done, undone } for an act that isn't a delete (a ledger void:
+  // 'Voided', 'Un-voided'); 'Deleted' and 'Restored' without.
+  function deleteWithUndo(label, restore, words) {
+    words = words || {};
     commit();
-    showToast('Deleted ' + label, {
+    showToast((words.done || 'Deleted') + ' ' + label, {
       actionLabel: 'Undo', duration: 6000,
       onAction: function () {
         var said = restore();
         commit();
         if (typeof said === 'string' && said) showToast(said, { duration: 10000 });
-        else showToast('Restored ' + label);
+        else showToast((words.undone || 'Restored') + ' ' + label);
       }
     });
   }
@@ -18511,9 +18657,10 @@
   }
 
   /* ----- Money · Ledger (Phase 0) ----- */
+  // Phase 3, C3 — 'aside' lists the rows in the book but not counted (state.ledgerAside) instead.
   var LEDGER_FILTERS = [
     ['', 'All'], ['in', 'Money in'], ['out', 'Money out'],
-    ['unreconciled', 'Not reconciled'], ['uncategorised', 'No budget line']
+    ['unreconciled', 'Not reconciled'], ['uncategorised', 'No budget line'], ['aside', 'Voided & reversed']
   ];
   function ledgerDraftDefault() {
     return {
@@ -18691,12 +18838,12 @@
   // phone). '' for an open row. Plain text: the callers escape it.
   function ledgerLockNote(e, book) {
     if (!ledgerLocked(e, book)) return '';
-    if (book.closedAt) return 'In a year already closed out: it can’t be changed or removed.';
+    if (book.closedAt) return 'In a year already closed out: it can’t be changed or voided.';
     if (ledgerDateReconciled(e.date, book)) {
-      return 'Dated on or before ' + fmtDateShort(book.reconciledThrough) + ', which is already reconciled: it can’t be removed, ' +
+      return 'Dated on or before ' + fmtDateShort(book.reconciledThrough) + ', which is already reconciled: it can’t be voided, ' +
         'and its amount, date and direction can’t be changed.';
     }
-    return 'Reconciled against a bank statement: it can’t be removed, and its amount, date and direction can’t be changed ' +
+    return 'Reconciled against a bank statement: it can’t be voided, and its amount, date and direction can’t be changed ' +
       'until it is un-reconciled.';
   }
   // Treasurer review of C2 (M-4) — the names the log's ids stand for, from the pack as it is now
@@ -18710,8 +18857,12 @@
   }
   function ledgerEntryLabel(id) {
     var e = state.ledger.filter(function (x) { return x.id === id; })[0];
+    // Phase 3, C3 — a voided entry is still in the book: named, and said to be voided.
+    var a = e ? null : (state.ledgerAside || []).filter(function (x) { return x.id === id; })[0];
+    if (a) e = a;
     if (!e) return '';
-    return (e.description || 'An entry') + ' · ' + fmtDateShort(e.date) + ' · ' + (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents || 0);
+    return (e.description || 'An entry') + ' · ' + fmtDateShort(e.date) + ' · ' + (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents || 0) +
+      (a ? ' (' + (a.off === 'void' ? 'voided' : a.off) + ')' : '');
   }
   // Treasurer review of C2 (M-4) — one entry's change history, under its Detail: read-only text,
   // every value escaped. A delete (seen only on an entry Undo put back) says so without its fields.
@@ -18722,8 +18873,9 @@
     var names = ledgerLogNames();
     return h + '<ul class="small muted" style="margin:0;padding-left:18px">' + evs.map(function (ev) {
       var when = ledgerLogWhen(ev.at);
-      var what = ev.op === 'delete'
-        ? esc(LEDGER_OP_LABELS['delete'])
+      // Phase 3, C3 — a void too: its fields are what the entry was, not a change (the why says why).
+      var what = ev.op === 'delete' || ev.op === 'void'
+        ? esc(LEDGER_OP_LABELS[ev.op])
         : ledgerEventLines(ev, names).map(function (ln) {
           return esc(ln.what) + (ln.before || ln.after ? ' ' + esc(ln.before) + ' → ' + esc(ln.after) : '');
         }).join('; ');
@@ -18739,6 +18891,61 @@
       (e.approvedAt ? ' on ' + esc(fmtDate(e.approvedAt.slice(0, 10))) : ''));
     if (!bits.length) return '';
     return '<p class="small muted ltrail" style="margin:6px 0 0;flex-basis:100%">' + bits.join(' \u00b7 ') + '</p>';
+  }
+  // Phase 3, C3 — the form the ✕ opens under an entry: why it is being voided (required, up to
+  // LEDGER_VOID_REASON_MAX characters), Void it, Cancel. What a void does, said once, plainly.
+  function ledgerVoidFormHtml(e) {
+    return '<div class="lvoid" style="flex-basis:100%;margin:6px 0 0">' +
+      '<p class="small" style="margin:0 0 6px">Void this entry? It stays in the book, marked void, but no longer counts in any total. ' +
+      'You can un-void it later from <strong>Voided &amp; reversed</strong>.</p>' +
+      '<div class="row" style="gap:6px">' +
+      '<input class="lname" data-ch="ledger-void-why" value="' + esc(ui.voidWhy || '') + '" maxlength="' + LEDGER_VOID_REASON_MAX + '" ' +
+        'placeholder="Why? (required, e.g. entered twice)" aria-label="Why void it (required)">' +
+      '<button type="button" class="btn small danger" data-act="ledger-void-go:' + e.id + '">Void it</button>' +
+      '<button type="button" class="btn small ghost" data-act="ledger-void-cancel">Cancel</button>' +
+      '</div></div>';
+  }
+  // Phase 3, C3 — Entries · Voided & reversed: the rows in the book but not counted, newest first,
+  // read-only, each with why, who and when, and Un-void on a voided one while it is open (a locked
+  // one says why not, in its Detail). Search and the budget-line filter apply here too.
+  function ledgerAsideListHtml(f) {
+    var aside = state.ledgerAside || [];
+    var rows = ledgerSort(aside).filter(function (e) { return ledgerMatches(e, { lineId: f.lineId, text: f.text }); });
+    rows.reverse();
+    if (!aside.length) return '<p class="empty">Nothing voided. A voided entry stays in the book, not counted, and is listed here.</p>';
+    if (!rows.length) return '<p class="empty">No voided entries match that search.</p>';
+    var h = '<p class="small muted" style="margin:0 0 6px">' + rows.length + ' of ' + aside.length + ' voided entr' +
+      (aside.length === 1 ? 'y' : 'ies') + '. None of them counts in any total.</p>';
+    rows.forEach(function (e) {
+      var open = !!ui.ledgerOpen[e.id];
+      var why = ledgerLockedWhy(e, state.book, '', 'unvoid');
+      var line = e.lineId ? getBudgetLine(e.lineId) : null;
+      var armed = ui.armed === 'ledger-unvoid:' + e.id;
+      h += '<div class="lrow entry voided' + (e.direction === 'in' ? ' in' : '') + '">' +
+        '<span class="small muted rec-when">' + esc(fmtDateShort(e.date)) + '</span>' +
+        '<span class="lname"><s>' + esc(e.description || 'An entry') + '</s></span>' +
+        '<span class="money small"><s>' + (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents) + '</s></span>' +
+        '<span class="small muted">' + esc(line ? (line.name || 'Untitled line') : (e.lineId ? 'a removed budget line' : 'no budget line')) + '</span>' +
+        '<span class="pill navy">' + (e.off === 'void' ? 'voided' : esc(e.off)) + '</span>' +
+        (e.off === 'void' && !why
+          ? '<button type="button" class="btn small ghost' + (armed ? ' danger armed' : '') + '" data-act="ledger-unvoid:' + e.id + '">' +
+            (armed ? 'Tap again to un-void' : 'Un-void') + '</button>'
+          : '') +
+        '<button type="button" class="exp-toggle lmore" data-act="ledger-toggle" data-id="' + e.id + '" aria-expanded="' + open + '">' +
+          '<span class="chev">' + (open ? '▾' : '▸') + '</span> Detail</button>' +
+        (e.off === 'void'
+          ? '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">Voided' + (e.voidedBy ? ' by ' + esc(e.voidedBy) : '') +
+            (e.voidedAt ? ' on ' + esc(fmtDate(e.voidedAt.slice(0, 10))) : '') + (e.voidReason ? ': ' + esc(e.voidReason) : '') + '</p>'
+          : '') +
+        (open
+          ? '<div class="ldetail">' +
+              (why && e.off === 'void' ? '<p class="small muted llock" style="margin:6px 0 0;flex-basis:100%">' + esc(why) + '</p>' : '') +
+              ledgerTrailLine(e) + ledgerHistoryHtml(e) +
+            '</div>'
+          : '') +
+        '</div>';
+    });
+    return h;
   }
   function renderLedgerEntries() {
     var dr = ledgerDraft();
@@ -18778,7 +18985,8 @@
     // ---- filters + list ----
     var f = ui.ledgerFilter;
     h += '<div class="card"><h2 class="section display">Entries</h2>';
-    if (!state.ledger.length) {
+    // Phase 3, C3 — a book whose every entry is voided still has its filters: that is how they are found.
+    if (!state.ledger.length && !(state.ledgerAside || []).length) {
       h += '<p class="empty">Nothing recorded yet. Add the first transaction above — or set an opening balance and start from today.</p></div>';
       return h;
     }
@@ -18792,6 +19000,7 @@
       '<label class="fld">Search<input data-ch="ledger-search" value="' + esc(f.text || '') + '" placeholder="Description, check no., donor"></label>' +
       '<label class="fld">Budget line<select data-ch="ledger-line-filter">' + lineSelectOptions(f.lineId, '— any budget line —') + '</select></label>' +
       '</div>';
+    if (f.dir === 'aside') return h + ledgerAsideListHtml(f) + '</div>';
     var run = runningBalances(state.ledger, state.book);
     var rows = ledgerSort(state.ledger).filter(function (e) { return ledgerMatches(e, f); });
     // Newest first: a treasurer is almost always looking at what just happened. The running
@@ -18813,8 +19022,8 @@
       // Phase 3, C2 — so is one dated in the reconciled period (ledgerLocked), ticked or not:
       // un-reconciling does not open it. Its date, direction and amount are shown, not fields;
       // its labels stay fields (owner, 2026-09-29: LEDGER_LOCKED_FIELDS), and every change is
-      // logged. Security review of C2 (#2) — nor is a locked row deleted: no ✕, and the pill says
-      // why (del-ledger refuses it too). C3 makes removing it a void.
+      // logged. Security review of C2 (#2) — nor is a locked row removed: no ✕, and the pill says
+      // why (ledger-void refuses it too). C3 — the ✕ voids: it opens the reason form below.
       var eLocked = ledgerLocked(e, state.book), ePeriod = ledgerDateReconciled(e.date, state.book);
       h += '<div class="lrow entry' + (e.direction === 'in' ? ' in' : '') + '">' +
         (eLocked
@@ -18846,9 +19055,10 @@
             '<label class="perscout"><input type="checkbox" data-ch="led-rec" data-id="' + e.id + '"' + (e.reconciled ? ' checked' : '') + '> reconciled</label>') +
         '<button type="button" class="exp-toggle lmore" data-act="ledger-toggle" data-id="' + e.id + '" aria-expanded="' + open + '">' +
           '<span class="chev">' + (open ? '▾' : '▸') + '</span> Detail</button>' +
-        // M10 — a reconciled entry can't be deleted from under its statement (del-ledger says so);
-        // since the security review of C2 (#2), nor can any locked one.
-        (eLocked ? '' : tinyDangerBtn('del-ledger:' + e.id, 'Remove this entry')) +
+        // M10 — a reconciled entry can't be removed from under its statement (ledger-void says so);
+        // since the security review of C2 (#2), nor can any locked one. Phase 3, C3 — the ✕ voids.
+        (eLocked ? '' : '<button type="button" class="btiny" data-act="ledger-void:' + e.id + '" aria-label="Void this entry" title="Void this entry">✕</button>') +
+        (!eLocked && ui.voidAsk === e.id ? ledgerVoidFormHtml(e) : '') +
         // Treasurer review of C2 (M-5) — the warning before its date is moved into the reconciled
         // period, under the entry it is about, until the date is picked again or changed.
         (function () {
@@ -20960,7 +21170,7 @@
           'capped at the fee the tier would have saved them — so the pack ends up exactly where the ' +
           'selling would have left it. It goes in the ledger as a family payment and the scout counts ' +
           'as having reached the tier from then on — so it <strong>asks twice</strong> before it writes ' +
-          'anything. To undo it, delete that ledger entry on ' +
+          'anything. To undo it, void that ledger entry on ' +
           '<button type="button" class="btn small ghost" data-act="goto" data-tab="money" ' +
           'data-section="ledger">Money · Ledger</button> and the tier goes with it, or use the ✕ on ' +
           'this row to take back the tier and leave the money where it is.</p>'
@@ -21803,7 +22013,7 @@
               'whichever the family chooses. The difference is the commission the pack didn’t get, so paying it leaves the pack ' +
               'exactly where the selling would have. It is capped at the fee, because paying more to reach a tier than the tier ' +
               'saves you is not a rule anybody means. Recording it puts the money in the ledger as a family payment and covers ' +
-              'the fee from then on — so the button asks twice first, and deleting that ledger entry takes the tier back with it.</p>';
+              'the fee from then on — so the button asks twice first, and voiding that ledger entry takes the tier back with it.</p>';
           }
         }
         // Money the pack owes BACK, where the tier covers something a family paid the council
@@ -27028,6 +27238,9 @@
     // pull) while it is being typed doesn't throw the words away.
     var urWhyEl = e.target.closest('input[data-ch="ledger-unrec-why"]');
     if (urWhyEl) ui.unrecWhy = urWhyEl.value;
+    // Phase 3, C3 — and the reason for a void, the same way.
+    var vdWhyEl = e.target.closest('input[data-ch="ledger-void-why"]');
+    if (vdWhyEl) ui.voidWhy = vdWhyEl.value;
     // Wave A — the make-up message box is edited in place; keep the draft so a re-render
     // (a sync pull, say) does not throw the leader's wording away.
     if (e.target.id === 'makeupMsgBox' && ui.overlay && ui.overlay.kind === 'makeup-msg') ui.overlay.text = e.target.value;
@@ -27106,6 +27319,8 @@
     // scout who no longer exists, so they read as ordinary pack income.
     state.charges = state.charges.filter(function (c) { return c.scoutId !== id; });
     state.ledger.forEach(function (e) { if (e.scoutId === id) e.scoutId = ''; });
+    // Phase 3, C3 — and a voided one's too: un-voided later, it would count for nobody on the roster.
+    (state.ledgerAside || []).forEach(function (e) { if (e.scoutId === id) e.scoutId = ''; });
     delete state.advancement[id];
     // Wave B5 — and their new-member checklist.
     delete state.onboarding[id];
@@ -27854,46 +28069,83 @@
       }, ARM_WHY_MS);
       return;
     }
-    if (act.indexOf('del-ledger:') === 0) {
-      var dlId = act.split(':')[1];
-      var dlIx = -1;
-      state.ledger.forEach(function (e, i) { if (e.id === dlId) dlIx = i; });
-      if (dlIx === -1) return;
-      // M10 — nor can a reconciled entry be deleted from under the statement it was ticked on.
-      // Security review of C2 (#2) — nor one dated in the reconciled period, ticked or not
-      // (ledgerLocked): deleting it would change a month already checked against the bank, and
-      // was the way round the lock on its amount. Its ✕ is not shown; this says why if reached.
-      // Removing a locked row becomes a void in C3.
-      var dlWhy = ledgerLockedWhy(state.ledger[dlIx], state.book, '', 'delete');
-      if (dlWhy) { showToast(dlWhy); return; }
-      var dlGone = state.ledger.splice(dlIx, 1)[0];
-      // Logged, with what the money was, so the log still says what left the book.
-      // Treasurer review of C2 (L-1) — and what it was for and how it was paid, so the entry can be
-      // found on a statement or a receipt from the log alone.
-      logLedger('delete', dlGone.id, { f: {
-        amountCents: [dlGone.amountCents, null], date: [dlGone.date, null], direction: [dlGone.direction, null],
-        description: [dlGone.description, null], lineId: [dlGone.lineId, null], scoutId: [dlGone.scoutId, null],
-        method: [dlGone.method, null], ref: [dlGone.ref, null] } });
+    // PHASE 3, C3 — the ✕ on an entry VOIDS it (see ledgerVoidRow): the first tap opens a short
+    // form under the row asking why (ui.voidAsk the row's id, ui.voidWhy the words as typed); Void
+    // it does it. What deleting used to do is gone: a row now leaves the book's totals, never the
+    // book. A locked row can't be voided (M10, security review of C2 #2, design §1.5): its ✕ is not
+    // shown, and this says why if it is reached from a screen drawn before a sync locked it.
+    if (act.indexOf('ledger-void:') === 0) {
+      var vaId = act.split(':')[1];
+      var vaRow = state.ledger.find(function (e) { return e.id === vaId; });
+      if (!vaRow) return;
+      var vaLocked = ledgerLockedWhy(vaRow, state.book, '', 'void');
+      if (vaLocked) { showToast(vaLocked); return; }
+      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (ui.voidAsk !== vaId) ui.voidWhy = '';
+      ui.voidAsk = vaId;
+      render(); return;
+    }
+    if (act === 'ledger-void-cancel') { ui.voidAsk = null; ui.voidWhy = ''; render(); return; }
+    if (act.indexOf('ledger-void-go:') === 0) {
+      var vdId = act.split(':')[1];
+      var vdRow = state.ledger.find(function (e) { return e.id === vdId; });
+      if (!vdRow) { ui.voidAsk = null; render(); return; }
+      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      // Asked on the tap, not when the form opened: a sync can have locked it since.
+      var vdWhy = String(ui.voidWhy || '').trim();
+      var vdNo = ledgerVoidRefusal(vdRow, state.book, vdWhy);
+      if (vdNo) { showToast(vdNo); render(); return; }
+      var vd = ledgerVoidRow(state, vdId, vdWhy, { by: ledgerActor(), byUid: ledgerActorUid(), at: new Date().toISOString() });
+      ui.voidAsk = null;
+      ui.voidWhy = '';
+      // Logged with the reason, and with what the money was (as a delete was: treasurer review of
+      // C2, L-1), so the log alone still says what left the totals, and why.
+      logLedger('void', vd.row.id, { why: vd.row.voidReason, f: {
+        amountCents: [vd.row.amountCents, null], date: [vd.row.date, null], direction: [vd.row.direction, null],
+        description: [vd.row.description, null], lineId: [vd.row.lineId, null], scoutId: [vd.row.scoutId, null],
+        method: [vd.row.method, null], ref: [vd.row.ref, null] } });
       // ⚠ NOTHING SPECIAL FOR A MAKE-UP PAYMENT, and that is the point (owner report, 2026-09-04:
       // "even after clearing the ledger items, the ranking bar and text for that scout does not
-      // reset"). The tier credit such an entry buys is DERIVED from the entry — see
-      // tierMakeupMap() — so deleting it here takes the credit with it and the undo below brings
+      // reset"). The tier credit such an entry buys is DERIVED from the counted entry — see
+      // tierMakeupMap() — so voiding it here takes the credit with it and the undo below brings
       // both back, without this handler knowing tiers exist.
-      markGone('ledger', [dlGone]);   // LIVE STOPGAP — so no stale copy brings it back
-      deleteWithUndo(dlGone.description || 'entry', function () {
-        state.ledger.splice(Math.min(dlIx, state.ledger.length), 0, dlGone);
-        markGone('ledger', [dlGone], true);
-        // Security re-review of C2 (minor) — a sync in the Undo's few seconds can have moved the
-        // lock past it: it goes back all the same (the delete was allowed), said and logged, as a
-        // back-dated add is.
-        var dlIn = ledgerDateReconciled(dlGone.date, state.book);
-        logLedger('add', dlGone.id, { why: 'Put back by Undo after it was deleted' +
-          (dlIn ? '; dated inside the period reconciled through ' + state.book.reconciledThrough + '.' : '.') });
-        if (dlIn) {
-          return '“' + (dlGone.description || 'The entry') + '” is back, but it is dated ' + fmtDateShort(dlGone.date) +
-            ', inside the period reconciled (through ' + fmtDateShort(state.book.reconciledThrough) + ') while it was deleted, so it is ' +
+      // LIVE STOPGAP — marked gone, so no stale copy counts it again, and a page from before C3
+      // (which knows nothing of voids) drops it from its ledger as it would a delete.
+      markGone('ledger', [vd.row]);
+      deleteWithUndo(vd.row.description || 'entry', function () {
+        var vdBack = ledgerUnvoidRow(state, vdId, vd.ix);
+        // A sync in the Undo's few seconds can have settled it elsewhere (ledgerAsideSettle).
+        if (!vdBack) return '“' + (vd.row.description || 'The entry') + '” is no longer voided on this device, so there was nothing to undo.';
+        markGone('ledger', [vdBack], true);
+        // Security re-review of C2 (minor) — and moved the lock past it: it counts again all the
+        // same (the void was allowed), said and logged, as a back-dated add is.
+        var vdIn = ledgerDateReconciled(vdBack.date, state.book);
+        logLedger('unvoid', vdBack.id, { why: 'Undone straight after it was voided' +
+          (vdIn ? '; dated inside the period reconciled through ' + state.book.reconciledThrough + '.' : '.') });
+        if (vdIn) {
+          return '“' + (vdBack.description || 'The entry') + '” is back, but it is dated ' + fmtDateShort(vdBack.date) +
+            ', inside the period reconciled (through ' + fmtDateShort(state.book.reconciledThrough) + ') while it was voided, so it is ' +
             'now locked. If it isn’t on that statement, record an opposite entry dated today and say in its description which entry it cancels.';
         }
+      }, { done: 'Voided', undone: 'Un-voided' });
+      return;
+    }
+    // PHASE 3, C3 — un-void from Entries · Voided & reversed: two taps, as it puts money back into
+    // the totals. Only while the row is open: one dated in the reconciled period stays voided (it
+    // would change a month already checked against the bank), and is entered again instead.
+    if (act.indexOf('ledger-unvoid:') === 0) {
+      var uvId = act.split(':')[1];
+      var uvRow = (state.ledgerAside || []).find(function (e) { return e.id === uvId && e.off === 'void'; });
+      if (!uvRow) return;
+      var uvNo = ledgerLockedWhy(uvRow, state.book, '', 'unvoid');
+      if (uvNo) { if (ui.armed === act) ui.armed = null; showToast(uvNo); render(); return; }
+      arm(act, function () {
+        var uvBack = ledgerUnvoidRow(state, uvId);
+        if (!uvBack) { render(); return; }
+        markGone('ledger', [uvBack], true);
+        logLedger('unvoid', uvBack.id);
+        showToast('Un-voided — “' + (uvBack.description || 'the entry') + '” counts again.');
+        commit();
       });
       return;
     }
@@ -28102,8 +28354,8 @@
       }
       arm(act, function () {
         // ONE write, and it is the money. The tier credit is derived from this entry by
-        // tierMakeupMap(), so there is nothing else to keep in step with it: delete the entry and
-        // the credit goes, undo the delete and it comes back.
+        // tierMakeupMap(), so there is nothing else to keep in step with it: void the entry and
+        // the credit goes, un-void it and it comes back.
         var mkId = uid();
         state.ledger.push({
           id: mkId, date: todayISO(),
@@ -28116,7 +28368,7 @@
         logLedger('add', mkId, { why: 'A reward-tier make-up payment, recorded from the tier board' +
           (mkBack ? '; dated inside the period reconciled through ' + state.book.reconciledThrough + ', saved after the warning.' : '.') });
         showToast(fmt(mkRow.makeup) + ' recorded — ' + (mkS.name || 'they') + ' now counts as reaching ' +
-          (mkT.name || 'the tier') + '. Deleting the ledger entry undoes it.');
+          (mkT.name || 'the tier') + '. Void the ledger entry to undo it.');
         commit();
       }, mkBack ? ARM_WARNED_MS : 0);
       return;
@@ -28532,7 +28784,7 @@
         // Security review of C2 (minor) — dropScout unlinks the scout's ledger entries (the money
         // stays); a label change on each, so logged here, on the deleting device, as ONE
         // 'reassign'. Not in dropScout: a merge runs it too, for another device's delete.
-        var dsRows = state.ledger.filter(function (e) { return e.scoutId === id; }).map(function (e) { return e.id; });
+        var dsRows = state.ledger.concat(state.ledgerAside || []).filter(function (e) { return e.scoutId === id; }).map(function (e) { return e.id; });
         markGone('scouts', [id]);   // LIVE STOPGAP — so no stale copy brings them back
         dropScout(id);
         if (dsRows.length) logLedger('reassign', dsRows[0], { f: { scoutId: [id, ''] }, rows: dsRows.slice(1) });
@@ -28929,6 +29181,7 @@
     // Treasurer review of C2 (L-5) — the optional why for an un-reconcile: held in `ui` (the 'input'
     // listener keeps it as typed), saved only with the untick it explains.
     if (ch === 'ledger-unrec-why') { ui.unrecWhy = el.value; return; }
+    if (ch === 'ledger-void-why') { ui.voidWhy = el.value; return; }   // Phase 3, C3
     if (ch === 'book-statement') { state.book.statementCents = toCentsSigned(el.value); commit(); return; }
     if (ch === 'book-statement-date') { state.book.statementDate = el.value; commit(); return; }
     // Filters live in `ui`, so they re-render but never persist.
