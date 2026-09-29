@@ -1182,7 +1182,7 @@ test('the year rollover clears the ledger and opens next year at the bank balanc
 test('a divergence merge never drops a ledger entry', () => {
   // The append-only merge is the recovery path when two copies of a pack record diverge.
   // Popcorn sales are protected there; transactions must be too.
-  const fn = /function mergeRemoteAppendOnly\(d, kept, lost\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  const fn = /function mergeRemoteAppendOnly\(d, kept, lost, split\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'mergeRemoteAppendOnly() not found');
   ok(/unionById\(state\.ledger, remote\.ledger, 'ledger'\)/.test(fn[0]),
     'ledger entries are not unioned on merge — one device could lose another device\'s transactions');
@@ -18067,11 +18067,11 @@ test('C2: what a sync did to a reconciled row is said with its amount and date, 
   ok(note.indexOf('“Pinewood trophies” ($84.00, Sep 12)') === 0 && / “An entry” \(\$5\.00\) was deleted, but it is reconciled/.test(note), 'the note: ' + note);
   eq(toasts.map((t) => [/\(Kept on Money · Ledger\.\)$/.test(t[0]), t[1].duration]), [[true, 10000], [true, 10000]], 'the toast');
   // On the screen until Got it; said after adoptRemote's toast, which used to replace it (m1).
-  ok(/var h = sync\.fatesNote\s*\? '<div class="card" role="status">[\s\S]*?esc\(sync\.fatesNote\)[\s\S]*?data-act="ledger-fates-dismiss">Got it<\/button>/.test(slice('renderLedger')),
+  ok(/var h = sync\.fatesNote \|\| sync\.splitNote\s*\? '<div class="card" role="status">[\s\S]*?esc\(sync\.fatesNote\)[\s\S]*?data-act="ledger-fates-dismiss">Got it<\/button>/.test(slice('renderLedger')),
     'the Ledger screen does not show the note');
-  ok(/if \(act === 'ledger-fates-dismiss'\) \{ sync\.fatesNote = ''; render\(\); return; \}/.test(SCRIPT), 'Got it does not dismiss it');
+  ok(/if \(act === 'ledger-fates-dismiss'\) \{ sync\.fatesNote = ''; sync\.splitNote = ''; render\(\); return; \}/.test(SCRIPT), 'Got it does not dismiss it');
   const push = slice('syncPush');
-  ok(push.indexOf('noteReconciledFates({ kept: keptRows, lost: lostRows });') > push.indexOf('if (later && !editedSince) adoptRemote(later, { toast: true });'),
+  ok(push.indexOf('noteReconciledFates({ kept: keptRows, lost: lostRows, split: splitRows });') > push.indexOf('if (later && !editedSince) adoptRemote(later, { toast: true });'),
     'the fates are said before adoptRemote’s toast replaces them');
   const ad = slice('adoptRemote');
   ok(ad.indexOf('noteReconciledFates(fates);') > ad.indexOf("showToast('Updated from another device')"), 'adoptRemote says the fates first');
@@ -19550,6 +19550,53 @@ test('C3 re-check (minor): two versions of a row the settle can’t join keep th
   q.a.run(C3M_SPLIT); q.a.push();
   q.b.hear();
   eq([c3Where(q.b.get('state')), c3Counted(q.b.get('state'))], [want, cents], 'a clean device');
+});
+
+// Treasurer sign-off on C3 — the note a split leaves on Money · Ledger, in the treasurer's words.
+const TWO_PIZZA = 'Two versions of “Pizza” were found: one voided, one counted. Check which is right.';
+test('C3 treasurer: an entry found in two versions is said on Money · Ledger, once, by the device that split it', () => {
+  // B merges the old page's save (a clobber) and A's copy splits there; a clean device adopts it and splits it too.
+  const { a, b } = c3FsPair();
+  a.run(C3M_SPLIT); a.push();
+  b.run(B1); b.hear(); b.push();
+  eq([b.get("sync.splitNote || ''"), b.get("sync.fatesNote || ''"), b.get('toasts').filter((t) => /Two versions/.test(t))],
+    [TWO_PIZZA, '', [TWO_PIZZA + ' (Kept on Money · Ledger.)']], 'B, which merged it');
+  a.hear();
+  eq(a.get("sync.splitNote || ''"), '', 'A took a copy already split: nothing to say');
+  const q = c3FsPair();
+  q.a.run(C3M_SPLIT); q.a.push();
+  q.b.hear();
+  eq(q.b.get("sync.splitNote || ''"), TWO_PIZZA, 'a clean device, which adopted it');
+  // A pair that is plainly one row is joined, not split: nothing to say.
+  const r = c3FsPair();
+  r.a.run(C3F1_BOTH(true)); r.a.push();
+  r.b.run(B1); r.b.hear(); r.b.push();
+  eq(r.b.get("sync.splitNote || ''"), '', 'a joined pair');
+  // normalizeState: the counted row of each split, only when asked, and never the pair it joined.
+  const n = sandbox(NORMALIZE_FNS);
+  const rec = (aside) => JSON.parse(JSON.stringify(Object.assign({}, GONE_SEED, {
+    ledger: [{ id: 'R', date: '2026-09-10', description: 'Pizza', amountCents: 4000, direction: 'out' }], ledgerAside: aside })));
+  const found = (aside) => { const s = []; n.normalizeState(rec(aside), s); return JSON.parse(JSON.stringify(s)).map((e) => [e.id, e.amountCents]); };
+  const v = (amt) => ({ id: 'R', date: '2026-09-10', description: 'Pizza', amountCents: amt, direction: 'out', off: 'void', voidReason: 'x' });
+  eq([found([v(4100)]), found([v(4000)]), found([Object.assign(v(4100), { off: 'reversed' })]), found([])], [[['R', 4000]], [], [], []], 'the splits');
+  const books = (d) => JSON.stringify([d.ledger, d.ledgerAside, d.ledgerLog, d.gone]);
+  eq(books(n.normalizeState(rec([v(4100)]), [])), books(n.normalizeState(rec([v(4100)]))), 'asking changed the book');
+  // The words: an entry with no description, and each row said once a session.
+  const ctx = sandbox(['fmt', 'fmtDateShort', 'entryAfterOpening', 'ledgerDateReconciled', 'reconciledFatesText', 'noteReconciledFates']);
+  vm.runInContext("var sync = { fatesNote: '', splitNote: '', fatesSeen: {} }, toasts = []; function showToast(m) { toasts.push(m); } function render() {}" +
+    " var state = { book: { openingDate: '', reconciledThrough: '' }, ledgerAside: [] };", ctx);
+  ctx.noteReconciledFates({ kept: [], lost: [], split: [{ id: 'R', description: 'Pizza' }] });
+  ctx.noteReconciledFates({ kept: [], lost: [], split: [{ id: 'R', description: 'Pizza' }, { id: 'S', description: '' }] });
+  eq(JSON.parse(JSON.stringify(vm.runInContext('[sync.splitNote, sync.fatesNote, toasts.length]', ctx))),
+    [TWO_PIZZA + ' Two versions of an entry were found: one voided, one counted. Check which is right.', '', 2], 'the note');
+  // The card, Got it, leaving the pack, and a split found by this device's own load.
+  const led = slice('renderLedger');
+  ok(/\(sync\.fatesNote \? 'Reconciled entries' : 'Entries'\) \+ ' changed by a sync<\/h2>'/.test(led) && /esc\(sync\.splitNote\)/.test(led), 'the card does not show it');
+  ok(/sync\.fatesNote = '';\s*sync\.splitNote = '';/.test(slice('syncStop')), 'leaving the pack keeps it');
+  ok(/normalizeState\(JSON\.parse\(raw\), loadLedgerSplits\)/.test(slice('load')) &&
+    /\n  if \(loadLedgerSplits\.length\) noteReconciledFates\(\{ kept: \[\], lost: \[\], split: loadLedgerSplits \}\);/.test(SCRIPT), 'a load’s split is not said');
+  ok(/var ns = normalizeState\(parsed, splitRows\);/.test(slice('adoptRemote')) && /fates\.split = splitRows;\s*noteReconciledFates\(fates\);/.test(slice('adoptRemote')), 'adoptRemote does not say it');
+  ok(!/splitNote/.test(codeOnly(BPV())) && !/splitNote/.test(slice('normalizeState')), 'the note reaches the pack record or the parents');
 });
 
 test('C3 review (finding 1) property: after normalizeState no id is in both lists, or twice; only a same-row pair loses a copy; twice gives the same', () => {

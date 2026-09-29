@@ -3681,7 +3681,10 @@
   // Single normalization seam — used by load(), the JSON-import path, and sync
   // adoption. Returns the normalized object, or null if it isn't a v1 pack record.
   // New additive fields get defaulted here (NEVER bump the version gate).
-  function normalizeState(d) {
+  // Treasurer sign-off on C3 — `splits` (optional, an array): each counted ledger row a voided
+  // copy of it was split from (the money differed, so the two could not be joined as one: see
+  // the ledger's dedupe at the end) is pushed onto it, for noteReconciledFates to say.
+  function normalizeState(d, splits) {
     if (!d || typeof d !== 'object' || d.version !== 1 || !Array.isArray(d.scouts)) return null;
     // Entries are deliberately NOT per-item normalized — keep this additive. Wave 16 relies
     // on that: imported entries carry an extra source:'te-import' tag that must survive.
@@ -4754,6 +4757,15 @@
     // counted copy in and counts it twice; this way it unions in a voided copy, which counts in
     // nothing, and the counted row keeps its id and so its change history (the log is by id).
     // Reversed rows and reversals (C4) keep the C1 rule: their partner names them by id.
+    // Treasurer sign-off on C3 — which of the two is right is for the treasurer: `splits` gets
+    // the counted one, and Money · Ledger says so ("Two versions of … were found").
+    if (Array.isArray(splits)) {
+      var liveById = Object.create(null);
+      d.ledger.forEach(function (e) { if (!liveById[e.id]) liveById[e.id] = e; });
+      d.ledgerAside.forEach(function (a) {
+        if (a.off === 'void' && liveById[a.id] && splits.indexOf(liveById[a.id]) === -1) splits.push(liveById[a.id]);
+      });
+    }
     dedupeRowIds(d.ledger.concat(d.ledgerAside), d.ledger.map(function () { return '1'; })
       .concat(d.ledgerAside.map(function (a) { return a.off === 'void' ? '2' : '0'; })));
     return d;
@@ -4868,12 +4880,15 @@
   // Wave 15 — set when saved data existed but couldn't be read; a copy went to KEY + '-bak'
   // and a toast fires after the first render (toastHost isn't in the DOM yet at load time).
   var loadBackupKept = false;
+  // Treasurer sign-off on C3 — ledger rows this load found in two versions (normalizeState's
+  // `splits`), said after the first render as a sync's are.
+  var loadLedgerSplits = [];
   function load() {
     var raw = null;
     try { raw = localStorage.getItem(KEY); } catch (e) { /* storage blocked */ }
     if (raw) {
       var d = null;
-      try { d = normalizeState(JSON.parse(raw)); } catch (e2) { /* corrupt JSON */ }
+      try { d = normalizeState(JSON.parse(raw), loadLedgerSplits); } catch (e2) { /* corrupt JSON */ }
       if (d) return d;
       // Saved data exists but is unreadable (bad JSON or not a v1 pack record) — keep a copy
       // before starting fresh. Written only on a failed read, so the bak is always the
@@ -9428,6 +9443,7 @@
     // Phase 3, C2 (m1) — what a merge did to reconciled ledger rows (noteReconciledFates), shown on
     // Money · Ledger until a leader taps Got it. This session only, like everything here.
     fatesNote: '',
+    splitNote: '',     // Treasurer sign-off on C3 — "Two versions of … were found", the same way
     fatesSeen: {},     // …and the rows it has named this session, so each is said once
     session: null,     // token — a passphrase change cancels in-flight work from the old session
     backend: null,     // the loaded backend adapter (firestoreBackend or apiBackend) — see loadBackend
@@ -9729,6 +9745,7 @@
     sync.seasonKeptRev = null;
     // Security review of C2 (minor) — what a merge did here belongs to the pack just left.
     sync.fatesNote = '';
+    sync.splitNote = '';
     sync.fatesSeen = {};
     sync.dirty = false;
     sync.session = null;
@@ -12420,11 +12437,13 @@
   // `kept` and `lost` (when given) collect the reconciled rows this merge kept over a delete, and
   // the ones this device had reconciled that a later delete took (reconciledFates), for syncPush
   // to name. Returns how many items were appended or removed.
-  function mergeRemoteAppendOnly(d, kept, lost) {
+  // Treasurer sign-off on C3 — `split` (when given) collects the counted rows the other copy held
+  // in two versions (normalizeState's `splits`), for syncPush to name too.
+  function mergeRemoteAppendOnly(d, kept, lost, split) {
     var parsed = null;
     try { parsed = JSON.parse(typeof d.json === 'string' ? d.json : ''); } catch (e) { return 0; }
     var remoteNewest = goneNewest(parsed && parsed.gone);
-    var remote = normalizeState(parsed);
+    var remote = normalizeState(parsed, split);
     if (!remote) return 0;
     var added = 0, removed = 0;
     var gone = state.gone && typeof state.gone === 'object' ? state.gone : null;
@@ -12695,11 +12714,17 @@
         return true;
       };
     }
-    f = { kept: (f.kept || []).filter(fresh('kept')), lost: (f.lost || []).filter(fresh('lost')) };
+    f = { kept: (f.kept || []).filter(fresh('kept')), lost: (f.lost || []).filter(fresh('lost')), split: (f.split || []).filter(fresh('split')) };
     var text = reconciledFatesText(f, state.book);
-    if (!text) return;
-    sync.fatesNote = (sync.fatesNote ? sync.fatesNote + ' ' : '') + text;
-    showToast(text + ' (Kept on Money · Ledger.)', { duration: 10000 });
+    // Treasurer sign-off on C3 — and a row found in two versions (`split`, normalizeState), in the
+    // treasurer's words, on the same card (sync.splitNote) until the same Got it.
+    var two = f.split.map(function (x) {
+      return 'Two versions of ' + (x.description ? '“' + x.description + '”' : 'an entry') + ' were found: one voided, one counted. Check which is right.';
+    }).join(' ');
+    if (!text && !two) return;
+    if (text) sync.fatesNote = (sync.fatesNote ? sync.fatesNote + ' ' : '') + text;
+    if (two) sync.splitNote = (sync.splitNote ? sync.splitNote + ' ' : '') + two;
+    showToast((text && two ? text + ' ' + two : text || two) + ' (Kept on Money · Ledger.)', { duration: 10000 });
     render();
   }
   // LIVE STOPGAP — the two copies are on either side of a close-out (or a leader changed the
@@ -12727,7 +12752,7 @@
     var be = sync.backend, h = sync.pack, mine = sync.session;
     // Reconciled ledger rows the merge kept over a delete, or a delete took (named below).
     // Outside the attempt: a rerun finds them already settled, and adds nothing.
-    var keptRows = [], lostRows = [];
+    var keptRows = [], lostRows = [], splitRows = [];
     // `remote` is the record as it stands at this attempt (null if none). The backend may run
     // this more than once when another device writes in between; the merge is id-guarded, so
     // a rerun appends nothing twice, and the rev is re-derived from each fresh read.
@@ -12763,7 +12788,7 @@
       // they chose to write over (sync.seasonKeptRev) is written over whole, and only that one.
       if (clobbered && remoteRev === sync.seasonKeptRev) clobbered = false;
       if (clobbered && seasonMoved(remote)) return { record: null, result: { season: remote } };
-      var mergedN = clobbered ? mergeRemoteAppendOnly(remote, keptRows, lostRows) : 0;
+      var mergedN = clobbered ? mergeRemoteAppendOnly(remote, keptRows, lostRows, splitRows) : 0;
       var nextRev = be.serverRevs ? remoteRev + 1 : Math.max(state.rev || 0, remoteRev) + 1;
       var record = {
         rev: nextRev,
@@ -12828,7 +12853,7 @@
         save(); // no re-render needed — nothing visible changed
       }
       // After adoptRemote, whose toast would otherwise replace it (C2, m1).
-      noteReconciledFates({ kept: keptRows, lost: lostRows });
+      noteReconciledFates({ kept: keptRows, lost: lostRows, split: splitRows });
       scheduleParentViewRefresh(); // Parent phase — regenerate the sanitized copy (leaders only)
       if (sync.mode !== 'online') { sync.mode = 'online'; sync.error = ''; renderSyncPill(); if (ui.tab === 'pack') render(); }
     }).catch(function (err) {
@@ -12887,7 +12912,8 @@
   function adoptRemote(d, opts) {
     var parsed = null;
     try { parsed = JSON.parse(typeof d.json === 'string' ? d.json : ''); } catch (e) { /* corrupt remote */ }
-    var ns = normalizeState(parsed);
+    var splitRows = [];   // Treasurer sign-off on C3 — rows the copy held in two versions
+    var ns = normalizeState(parsed, splitRows);
     if (!ns) return false;
     // Re-review of the stopgap, item 2 — what the copy taken did to reconciled rows, said below.
     var fates = reconciledFates(state && state.ledger, state && state.gone && state.gone.ledger, ns.ledger, ns.gone && ns.gone.ledger);
@@ -12908,6 +12934,7 @@
     save();
     render();
     if (opts && opts.toast) showToast('Updated from another device');
+    fates.split = splitRows;
     noteReconciledFates(fates);
     return true;
   }
@@ -18833,9 +18860,11 @@
     var tot = ledgerTotals(state.ledger, bk);
     var balColor = tot.balance >= 0 ? 'var(--good)' : 'var(--bad)';
     // Phase 3, C2 (m1) — what a sync did to reconciled rows, until someone has read it.
-    var h = sync.fatesNote
-      ? '<div class="card" role="status"><h2 class="section display">Reconciled entries changed by a sync</h2>' +
-        '<p style="margin:0 0 10px">' + esc(sync.fatesNote) + '</p>' +
+    // Treasurer sign-off on C3 — and a row found in two versions (sync.splitNote), on the same card.
+    var h = sync.fatesNote || sync.splitNote
+      ? '<div class="card" role="status"><h2 class="section display">' + (sync.fatesNote ? 'Reconciled entries' : 'Entries') + ' changed by a sync</h2>' +
+        (sync.fatesNote ? '<p style="margin:0 0 10px">' + esc(sync.fatesNote) + '</p>' : '') +
+        (sync.splitNote ? '<p style="margin:0 0 10px">' + esc(sync.splitNote) + '</p>' : '') +
         '<button type="button" class="btn small" data-act="ledger-fates-dismiss">Got it</button></div>'
       : '';
     h += '<div class="card"><h2 class="section display">Ledger</h2>' +
@@ -28192,7 +28221,7 @@
       });
       return;
     }
-    if (act === 'ledger-fates-dismiss') { sync.fatesNote = ''; render(); return; }
+    if (act === 'ledger-fates-dismiss') { sync.fatesNote = ''; sync.splitNote = ''; render(); return; }
     // Treasurer review of C2 (M-4) — the ledger's change history as a CSV. Leaders only: this is on
     // Money · Ledger, which a parent never has (buildParentView carries no ledger and no log).
     if (act === 'ledger-log-csv') {
@@ -29854,6 +29883,7 @@
   render();
   // Wave 15 — surface a corrupt-load only after toastHost is rendered into a live page.
   if (loadBackupKept) showToast('Couldn’t read saved data — a backup copy was kept.');
+  if (loadLedgerSplits.length) noteReconciledFates({ kept: [], lost: [], split: loadLedgerSplits });
   syncStart();
 })();
 </script>
