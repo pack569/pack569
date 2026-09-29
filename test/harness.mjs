@@ -10141,7 +10141,7 @@ test('M10: a reconciled entry is read-only until it is deliberately un-reconcile
   ok(/var eLocked = ledgerLocked\(e, state\.book\)/.test(rows) &&
      /\(eLocked\s*\? '<span class="small muted rec-when">'[\s\S]*?: '<input type="date" data-ch="led-date"[\s\S]*?data-ch="led-dir"/.test(rows) &&
      /\(eLocked\s*\? '<span class="money small">'[\s\S]*?: '<input class="money-in" inputmode="decimal" data-ch="led-amount"/.test(rows) &&
-     /data-act="ledger-unreconcile:' \+ e\.id \+ '"/.test(rows),
+     /data-act="ledger-unreconcile:' \+ esc\(e\.id\) \+ '"/.test(rows),
     'a reconciled entry is rendered with editable fields');
   const ch = /if \(ch\.indexOf\('led-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/var ledNo = ledgerEditRefusal\(led, lk, lv, state\.book\);\s*if \(ledNo\) \{ showToast\(ledNo\); render\(\); return; \}/.test(ch),
@@ -18534,7 +18534,7 @@ test('C3: a locked entry can’t be voided, not even unticked in the reconciled 
     'To cancel it, record an opposite entry dated today and say in its description which entry it cancels.',
     'That entry is reconciled against a bank statement, so it can’t be voided. Un-reconcile it first (Money · Ledger, two taps), then void it.'], 'the refusals');
   // The Entries list offers no ✕ on a locked row, nor its form.
-  ok(/\(eLocked \? '' : '<button type="button" class="btiny" data-act="ledger-void:' \+ e\.id \+ '" aria-label="Void this entry" title="Void this entry">✕<\/button>'\) \+\s*\(!eLocked && ui\.voidAsk === e\.id \? ledgerVoidFormHtml\(e\) : ''\) \+/
+  ok(/\(eLocked \? '' : '<button type="button" class="btiny" data-act="ledger-void:' \+ esc\(e\.id\) \+ '" aria-label="Void this entry" title="Void this entry">✕<\/button>'\) \+\s*\(!eLocked && ui\.voidAsk === e\.id \? ledgerVoidFormHtml\(e\) : ''\) \+/
     .test(slice('renderLedgerEntries')), 'a locked row shows its ✕, or an open one none');
   ok(/\?\s*'<span class="pill navy" title="' \+ esc\(ledgerLockNote\(e, state\.book\)\) \+ '">reconciled period<\/span>'/
     .test(slice('renderLedgerEntries')), 'the reconciled-period pill does not say why there is no ✕');
@@ -18617,7 +18617,7 @@ test('C3: a voided entry is un-voided from Voided & reversed with two taps while
   eq([q.get("!!aside('u1')"), q.get('commits'), q.get('ui.armed'), q.get('toasts'), q.get('log().length')], [true, 0, null, [no, no], 1], 'a locked one');
   // The list offers Un-void only on an open, voided row, and says why not in the Detail.
   const l = slice('ledgerAsideListHtml');
-  ok(/var why = ledgerLockedWhy\(e, state\.book, '', 'unvoid'\);/.test(l) && /\(e\.off === 'void' && !why\s*\? '<button type="button" class="btn small ghost'[^\n]*\n\s*[^\n]*\n?[^\n]*data-act="ledger-unvoid:' \+ e\.id|\(e\.off === 'void' && !why\s*\? '<button type="button" class="btn small ghost'[^\n]*data-act="ledger-unvoid:' \+ e\.id/.test(l),
+  ok(/var why = ledgerLockedWhy\(e, state\.book, '', 'unvoid'\);/.test(l) && /\(e\.off === 'void' && !why\s*\? '<button type="button" class="btn small ghost'[^\n]*\n\s*[^\n]*\n?[^\n]*data-act="ledger-unvoid:' \+ esc\(e\.id\)|\(e\.off === 'void' && !why\s*\? '<button type="button" class="btn small ghost'[^\n]*data-act="ledger-unvoid:' \+ esc\(e\.id\)/.test(l),
     'Un-void is offered on a locked row');
   ok(/if \(f\.dir === 'aside'\) return h \+ ledgerAsideListHtml\(f\) \+ '<\/div>';/.test(slice('renderLedgerEntries')), 'the filter does not show the voided list');
   ok(/\['aside', 'Voided & reversed'\]/.test(slice('LEDGER_FILTERS')), 'no Voided & reversed filter');
@@ -19553,6 +19553,29 @@ test('C3 review (finding 1) property: after normalizeState no id is in both list
     eq(JSON.stringify(n.normalizeState(JSON.parse(JSON.stringify(d)))), JSON.stringify(d), `case ${k}: a second load changed it`);
   }
   ok(pairs > 100, 'too few same-row pairs: ' + pairs);
+});
+
+test('C3 review (minor): a ledger id is escaped wherever it goes into an attribute, so a stored id can’t add markup or a second action', () => {
+  // Any string is a ledger id once a record is synced (normalizeLedgerRow keeps it as stored).
+  const bad = 'x" data-act="del-scout:s1"><img src=y>\'';
+  const x = sandbox(['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'LEDGER_VOID_REASON_MAX', 'ledgerVoidFormHtml', 'ledgerAsideListHtml']);
+  vm.runInContext(`var ui = { ledgerOpen: {}, armed: null, voidWhy: '' };
+    var state = { book: {}, ledgerAside: [{ id: ${JSON.stringify(bad)}, date: '2026-09-10', description: 'Pizza', amountCents: 4000, direction: 'out', off: 'void', voidReason: 'twice' }] };
+    function ledgerSort(a) { return a.slice(); } function ledgerMatches() { return true; } function ledgerLockedWhy() { return ''; }
+    function getBudgetLine() { return null; } function ledgerTrailLine() { return ''; } function ledgerHistoryHtml() { return ''; }`, x);
+  const decode = (v) => v.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  const attrs = (h) => [...h.matchAll(/\s(data-[a-z-]+)="([^"]*)"/g)].map((m) => [m[1], decode(m[2])]);
+  const form = x.ledgerVoidFormHtml(x.state.ledgerAside[0]);
+  const list = x.ledgerAsideListHtml({ lineId: '', text: '' });
+  for (const h of [form, list]) ok(!/<img/.test(h) && !/del-scout:s1"/.test(h), 'the id added markup: ' + h);
+  eq(attrs(form), [['data-ch', 'ledger-void-why'], ['data-act', 'ledger-void-go:' + bad], ['data-act', 'ledger-void-cancel']], 'the void form');
+  eq(attrs(list), [['data-act', 'ledger-unvoid:' + bad], ['data-act', 'ledger-toggle'], ['data-id', bad]], 'the voided list');
+  // The Entries list and the reconcile screen: every attribute an id goes into is escaped.
+  for (const f of ['ledgerVoidFormHtml', 'ledgerAsideListHtml', 'renderLedgerEntries', 'renderReconcile']) {
+    const src = slice(f);
+    ok(!/="[^"]*' \+ e\.id \+ '/.test(src), f + ' puts an unescaped id into an attribute');
+    ok(/' \+ esc\(e\.id\) \+ '/.test(src), f + ' no longer puts the id in an attribute (update this test)');
+  }
 });
 
 atest('C3, api: a void, an un-void and a locked row settle the same way across two devices', async () => {

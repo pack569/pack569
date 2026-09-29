@@ -18923,7 +18923,7 @@
       '<div class="row" style="gap:6px">' +
       '<input class="lname" data-ch="ledger-void-why" value="' + esc(ui.voidWhy || '') + '" maxlength="' + LEDGER_VOID_REASON_MAX + '" ' +
         'placeholder="Why? (required, e.g. entered twice)" aria-label="Why void it (required)">' +
-      '<button type="button" class="btn small danger" data-act="ledger-void-go:' + e.id + '">Void it</button>' +
+      '<button type="button" class="btn small danger" data-act="ledger-void-go:' + esc(e.id) + '">Void it</button>' +
       '<button type="button" class="btn small ghost" data-act="ledger-void-cancel">Cancel</button>' +
       '</div></div>';
   }
@@ -18950,10 +18950,10 @@
         '<span class="small muted">' + esc(line ? (line.name || 'Untitled line') : (e.lineId ? 'a removed budget line' : 'no budget line')) + '</span>' +
         '<span class="pill navy">' + (e.off === 'void' ? 'voided' : esc(e.off)) + '</span>' +
         (e.off === 'void' && !why
-          ? '<button type="button" class="btn small ghost' + (armed ? ' danger armed' : '') + '" data-act="ledger-unvoid:' + e.id + '">' +
+          ? '<button type="button" class="btn small ghost' + (armed ? ' danger armed' : '') + '" data-act="ledger-unvoid:' + esc(e.id) + '">' +
             (armed ? 'Tap again to un-void' : 'Un-void') + '</button>'
           : '') +
-        '<button type="button" class="exp-toggle lmore" data-act="ledger-toggle" data-id="' + e.id + '" aria-expanded="' + open + '">' +
+        '<button type="button" class="exp-toggle lmore" data-act="ledger-toggle" data-id="' + esc(e.id) + '" aria-expanded="' + open + '">' +
           '<span class="chev">' + (open ? '▾' : '▸') + '</span> Detail</button>' +
         (e.off === 'void'
           ? '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">Voided' + (e.voidedBy ? ' by ' + esc(e.voidedBy) : '') +
@@ -19050,16 +19050,16 @@
       h += '<div class="lrow entry' + (e.direction === 'in' ? ' in' : '') + '">' +
         (eLocked
           ? '<span class="small muted rec-when">' + esc(fmtDateShort(e.date)) + '</span>'
-          : '<input type="date" data-ch="led-date" data-id="' + e.id + '" value="' + esc(e.date) + '" aria-label="Date">' +
-            '<select data-ch="led-dir" data-id="' + e.id + '" aria-label="In or out">' +
+          : '<input type="date" data-ch="led-date" data-id="' + esc(e.id) + '" value="' + esc(e.date) + '" aria-label="Date">' +
+            '<select data-ch="led-dir" data-id="' + esc(e.id) + '" aria-label="In or out">' +
               '<option value="out"' + (e.direction === 'out' ? ' selected' : '') + '>Out</option>' +
               '<option value="in"' + (e.direction === 'in' ? ' selected' : '') + '>In</option>' +
             '</select>') +
-        '<input class="lname" data-ch="led-desc" data-id="' + e.id + '" value="' + esc(e.description) + '" placeholder="Description">' +
+        '<input class="lname" data-ch="led-desc" data-id="' + esc(e.id) + '" value="' + esc(e.description) + '" placeholder="Description">' +
         (eLocked
           ? '<span class="money small">' + (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents) + '</span>'
-          : '<input class="money-in" inputmode="decimal" data-ch="led-amount" data-id="' + e.id + '" value="' + dollars(e.amountCents) + '" placeholder="0.00" aria-label="Amount">') +
-        '<select data-ch="led-line" data-id="' + e.id + '" aria-label="Budget line">' + lineSelectOptions(e.lineId) + '</select>' +
+          : '<input class="money-in" inputmode="decimal" data-ch="led-amount" data-id="' + esc(e.id) + '" value="' + dollars(e.amountCents) + '" placeholder="0.00" aria-label="Amount">') +
+        '<select data-ch="led-line" data-id="' + esc(e.id) + '" aria-label="Budget line">' + lineSelectOptions(e.lineId) + '</select>' +
         '<span class="lbal small muted money">' + (pre ? 'before opening' : fmt(bal)) + '</span>' +
         (e.reconciled
           ? '<span class="pill navy">reconciled</span>' +
@@ -19069,17 +19069,17 @@
                 'placeholder="Why? (optional)" aria-label="Why un-reconcile it (optional)">'
               : '') +
             '<button type="button" class="btn small ghost' + (ui.armed === 'ledger-unreconcile:' + e.id ? ' danger armed' : '') +
-              '" data-act="ledger-unreconcile:' + e.id + '">' +
+              '" data-act="ledger-unreconcile:' + esc(e.id) + '">' +
               (ui.armed === 'ledger-unreconcile:' + e.id ? 'Tap again to un-reconcile' : 'Un-reconcile') + '</button>'
           : (ePeriod
             ? '<span class="pill navy" title="' + esc(ledgerLockNote(e, state.book)) + '">reconciled period</span>'
             : '') +
-            '<label class="perscout"><input type="checkbox" data-ch="led-rec" data-id="' + e.id + '"' + (e.reconciled ? ' checked' : '') + '> reconciled</label>') +
-        '<button type="button" class="exp-toggle lmore" data-act="ledger-toggle" data-id="' + e.id + '" aria-expanded="' + open + '">' +
+            '<label class="perscout"><input type="checkbox" data-ch="led-rec" data-id="' + esc(e.id) + '"' + (e.reconciled ? ' checked' : '') + '> reconciled</label>') +
+        '<button type="button" class="exp-toggle lmore" data-act="ledger-toggle" data-id="' + esc(e.id) + '" aria-expanded="' + open + '">' +
           '<span class="chev">' + (open ? '▾' : '▸') + '</span> Detail</button>' +
         // M10 — a reconciled entry can't be removed from under its statement (ledger-void says so);
         // since the security review of C2 (#2), nor can any locked one. Phase 3, C3 — the ✕ voids.
-        (eLocked ? '' : '<button type="button" class="btiny" data-act="ledger-void:' + e.id + '" aria-label="Void this entry" title="Void this entry">✕</button>') +
+        (eLocked ? '' : '<button type="button" class="btiny" data-act="ledger-void:' + esc(e.id) + '" aria-label="Void this entry" title="Void this entry">✕</button>') +
         (!eLocked && ui.voidAsk === e.id ? ledgerVoidFormHtml(e) : '') +
         // Treasurer review of C2 (M-5) — the warning before its date is moved into the reconciled
         // period, under the entry it is about, until the date is picked again or changed.
@@ -19089,13 +19089,13 @@
         })() +
         (open
           ? '<div class="ldetail">' +
-              '<select data-ch="led-method" data-id="' + e.id + '" aria-label="Method">' + methodSelectOptions(e.method) + '</select>' +
-              '<input class="lref" data-ch="led-ref" data-id="' + e.id + '" value="' + esc(e.ref) + '" placeholder="Check no. / receipt" aria-label="Reference">' +
+              '<select data-ch="led-method" data-id="' + esc(e.id) + '" aria-label="Method">' + methodSelectOptions(e.method) + '</select>' +
+              '<input class="lref" data-ch="led-ref" data-id="' + esc(e.id) + '" value="' + esc(e.ref) + '" placeholder="Check no. / receipt" aria-label="Reference">' +
               (e.direction === 'in'
-                ? '<select data-ch="led-scout" data-id="' + e.id + '" aria-label="Settles whose account">' + scoutSelectOptions(e.scoutId) + '</select>' +
-                  '<select data-ch="led-source" data-id="' + e.id + '" aria-label="Source">' + sourceSelectOptions(e.source) + '</select>' +
+                ? '<select data-ch="led-scout" data-id="' + esc(e.id) + '" aria-label="Settles whose account">' + scoutSelectOptions(e.scoutId) + '</select>' +
+                  '<select data-ch="led-source" data-id="' + esc(e.id) + '" aria-label="Source">' + sourceSelectOptions(e.source) + '</select>' +
                   (e.source === 'donation'
-                    ? '<input class="lname" data-ch="led-donor" data-id="' + e.id + '" value="' + esc(e.donor) + '" placeholder="Who gave it" aria-label="Donor">'
+                    ? '<input class="lname" data-ch="led-donor" data-id="' + esc(e.id) + '" value="' + esc(e.donor) + '" placeholder="Who gave it" aria-label="Donor">'
                     : '')
                 // M6 — a reimbursement says who it went to, since that is what marks it paid.
                 : (e.scoutId && !entryRefundsFamily(e)
@@ -19105,9 +19105,9 @@
                   // T1 — any other money out can be a refund of a family's credit. M1(c) — except
                   // on a line families pay directly, where it can only be a reimbursement.
                   : ((!e.scoutId && ledgerLineIsDirect(e.lineId))
-                    ? '<select data-ch="led-scout" data-id="' + e.id + '" aria-label="Paid back to (reimbursement)">' +
+                    ? '<select data-ch="led-scout" data-id="' + esc(e.id) + '" aria-label="Paid back to (reimbursement)">' +
                       scoutSelectOptions('', 'Paid back to (reimbursement)\u2026') + '</select>'
-                    : '<select data-ch="led-scout" data-id="' + e.id + '" aria-label="Refunded to which family">' +
+                    : '<select data-ch="led-scout" data-id="' + esc(e.id) + '" aria-label="Refunded to which family">' +
                       scoutSelectOptions(e.scoutId, '— not a refund to a family —') + '</select>'))) +
               // E2 — a reimbursement with no receipt, and the trail.
               (entryNeedsReceipt(e) && !e.ref
@@ -19202,7 +19202,7 @@
       var recFixed = e.reconciled && ledgerDateReconciled(e.date, bk);
       h += '<label class="lrow entry rec-row' + (e.direction === 'in' ? ' in' : '') + '"' +
           (recFixed ? ' title="Reconciled on an earlier statement — to un-tick it, use Un-reconcile under Entries"' : '') + '>' +
-        '<input type="checkbox" data-ch="led-rec" data-id="' + e.id + '"' + (e.reconciled ? ' checked' : '') + (recFixed ? ' disabled' : '') +
+        '<input type="checkbox" data-ch="led-rec" data-id="' + esc(e.id) + '"' + (e.reconciled ? ' checked' : '') + (recFixed ? ' disabled' : '') +
           ' aria-label="Ticked against the statement: ' + esc(recWho) + ', ' +
           (e.direction === 'in' ? 'money in ' : 'money out ') + fmt(e.amountCents) + '">' +
         // fmtDateShort, in a fixed well: the weekday tripled the date's width for nothing, and a
