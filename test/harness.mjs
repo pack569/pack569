@@ -19032,7 +19032,7 @@ test('C2 treasurer L-4, L-2: a locked entry’s Detail says what it can’t have
   eq(p.get("ledgerLockNote(row('u1'), { closedAt: '2027-07-01T00:00:00.000Z' })"), 'In a year already closed out: it can’t be changed or voided.', 'a closed year');
   // In the Detail of a locked row (every locked row: the pill is shown only on an unticked one), escaped.
   // (Phase 3, C4 — then the Reverse or correct button, then the trail.)
-  ok(/\(eLocked \? '<p class="small muted llock" style="margin:6px 0 0;flex-basis:100%">' \+ esc\(ledgerLockNote\(e, state\.book\)\) \+ '<\/p>' : ''\) \+[\s\S]{0,600}?\(ui\.fixAsk === e\.id \? '' : [^\n]*\n[^\n]*Reverse or correct<\/button><\/div>'\) \+\s*ledgerTrailLine\(e\) \+/
+  ok(/\(eLocked \? '<p class="small muted llock" style="margin:6px 0 0;flex-basis:100%">' \+ esc\(ledgerLockNote\(e, state\.book\)\) \+ '<\/p>' : ''\) \+[\s\S]{0,600}?ledgerFixButtonHtml\(e, state\.book\) \+[^\n]*\n\s*ledgerTrailLine\(e\) \+/
     .test(slice('renderLedgerEntries')), 'the Detail does not carry the note');
   // L-2 with a reimbursement's receipt: one toast, both said, without a second "Saved".
   p.run("entryNeedsReceipt = function () { return true; }; ui.ledgerDraft = ledgerDraftDefault(); ui.ledgerDraft.date = '2026-08-20'; ui.ledgerDraft.amount = '12';" +
@@ -20395,7 +20395,7 @@ test('C4: the change history says a reverse in one line and a correction field b
 });
 
 test('C4: the Reverse or correct form says what each does and what the corrected entry will be, and every id in it is escaped', () => {
-  const x = sandbox(['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'LEDGER_VOID_REASON_MAX', 'LEDGER_FIX_DESC_ONLY', 'ledgerFixFormHtml', 'ledgerAsideListHtml', 'ledgerReplacementId',
+  const x = sandbox(['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'LEDGER_VOID_REASON_MAX', 'LEDGER_FIX_DESC_ONLY', 'ledgerFixFormHtml', 'ledgerFixButtonHtml', 'ledgerLocked', 'ledgerAsideListHtml', 'ledgerReplacementId',
     'ledgerCorrectPlan', 'applyLedgerEdit', 'toCents', 'ledgerRowFields', 'LEDGER_EDIT_FIELDS', 'ledgerDateReconciled', 'entryAfterOpening']);
   const bad = 'x" data-act="del-scout:s1"><img src=y>\'';
   vm.runInContext(`var ui = { ledgerOpen: {}, armed: null, fixDraft: null, fixWhy: '' };
@@ -20431,7 +20431,18 @@ test('C4: the Reverse or correct form says what each does and what the corrected
   eq(attrs(f), [['data-ch', 'ledger-fix-date'], ['data-ch', 'ledger-fix-dir'], ['data-ch', 'ledger-fix-amount'], ['data-ch', 'ledger-fix-desc'], ['data-ch', 'ledger-fix-why'],
     ['data-act', 'ledger-correct-go:' + bad], ['data-act', 'ledger-reverse-go:' + bad], ['data-act', 'ledger-fix-cancel']], 'the form');
   const le = slice('renderLedgerEntries');
-  ok(/data-act="ledger-fix:' \+ esc\(e\.id\) \+ '">Reverse or correct<\/button>/.test(le) && /\(ui\.fixAsk === e\.id \? ledgerFixFormHtml\(e\) : ''\)/.test(le), 'the Detail button or the form');
+  ok(/ledgerFixButtonHtml\(e, state\.book\) \+/.test(le) && /\(ui\.fixAsk === e\.id \? ledgerFixFormHtml\(e\) : ''\)/.test(le), 'the Detail button or the form');
+  // Treasurer review of C4 (7) — the button is on a locked entry only: an open one is changed in
+  // place, or voided. Ticked, dated in the period, or both: offered; open, or its form already open: not.
+  const btn = (e, book) => x.ledgerFixButtonHtml(Object.assign({ id: 'q9', date: '2026-09-10', reconciled: false }, e), book || { openingDate: '2026-07-01', reconciledThrough: '2026-08-31' });
+  vm.runInContext('ui.fixAsk = null', x);
+  eq([btn({}), btn({ reconciled: true }), btn({ date: '2026-08-10' }), btn({ date: '2026-08-10', reconciled: true }), btn({ date: '2026-06-30' }),
+    btn({}, { openingDate: '2026-07-01', reconciledThrough: '' }), btn({}, { closedAt: '2027-07-01T00:00:00.000Z' })].map((h) => />Reverse or correct</.test(h)),
+    [false, true, true, true, false, false, true], 'offered on which entries');
+  vm.runInContext("ui.fixAsk = 'q9'", x);
+  eq(btn({ reconciled: true }), '', 'offered with its form already open');
+  vm.runInContext('ui.fixAsk = null', x);
+  eq(attrs(btn({ id: bad, reconciled: true })), [['data-act', 'ledger-fix:' + bad]], 'the button’s id');
   // A corrected entry's Detail says it is one.
   ok(/\(e\.replaces \? '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">A correction: the entry it replaces is under ' \+\s*'Voided &amp; reversed\.<\/p>' : ''\)/.test(le), 'a correction does not say so');
   ok(!/="[^"]*' \+ e\.id \+ '/.test(slice('ledgerFixFormHtml')), 'an unescaped id');

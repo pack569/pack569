@@ -7627,7 +7627,8 @@
   // PHASE 3, C4 — REVERSE AND CORRECT (owner, 2026-09-29: "a reconciled row, or one dated in the
   // reconciled period, is fixed only by a reversing entry"; its amount, direction and date change
   // only through Correct, decision 8). For any counted row, locked or not; mostly for locked ones,
-  // which can't be edited in those fields or voided.
+  // which can't be edited in those fields or voided (and its button shows on locked ones only:
+  // ledgerFixButtonHtml).
   //   Reverse   the row moves to state.ledgerAside, off 'reversed', reversedBy 'rv-' + its id,
   //             with why, who and when (the voidReason/voidedBy/voidedByUid/voidedAt fields every
   //             aside row has: why it was set aside). Its reversal, 'rv-' + its id, the same money
@@ -19559,6 +19560,14 @@
       '<button type="button" class="btn small ghost" data-act="ledger-fix-cancel">Cancel</button>' +
       '</div></div>';
   }
+  // Phase 3, C4 — the one way to change a locked entry's money, or take it out, in its Detail.
+  // Treasurer review of C4 (7) — on a locked entry only (ledgerLocked): an open one is changed in
+  // place, or voided if it was entered in error (the ✕). Not while its form is open.
+  function ledgerFixButtonHtml(e, book) {
+    if (!ledgerLocked(e, book) || ui.fixAsk === e.id) return '';
+    return '<div style="flex-basis:100%;margin:6px 0 0"><button type="button" class="btn small ghost" ' +
+      'data-act="ledger-fix:' + esc(e.id) + '">Reverse or correct</button></div>';
+  }
   // Phase 3, C3 — Entries · Voided & reversed: the rows in the book but not counted, newest first,
   // read-only, each with why, who and when, and Un-void on a voided one while it is open (a locked
   // one says why not, in its Detail). Search and the budget-line filter apply here too.
@@ -19784,9 +19793,7 @@
               // Phase 3, C4 — a corrected entry says so, and where the one it replaced is.
               (e.replaces ? '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">A correction: the entry it replaces is under ' +
                 'Voided &amp; reversed.</p>' : '') +
-              // Phase 3, C4 — the one way to change a locked entry's money, or take it out: on any entry.
-              (ui.fixAsk === e.id ? '' : '<div style="flex-basis:100%;margin:6px 0 0"><button type="button" class="btn small ghost" ' +
-                'data-act="ledger-fix:' + esc(e.id) + '">Reverse or correct</button></div>') +
+              ledgerFixButtonHtml(e, state.book) +   // Phase 3, C4
               ledgerTrailLine(e) +
               ledgerHistoryHtml(e) +   // Treasurer review of C2 (M-4)
             '</div>'
