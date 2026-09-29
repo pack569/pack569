@@ -4681,6 +4681,10 @@
       });
     });
     clampGone(d.gone, Date.now());
+    // Phase 3, C2 (treasurer review of C1, L2) — and a tick time (reconciledAt) more than a day
+    // ahead of this device's clock is read as ticked now, as a deletion mark is: a clock set
+    // ahead would otherwise make a tick beat every later delete (keepReconciled).
+    clampTickTimes(d.ledger.concat(d.ledgerAside), Date.now());
     return d;
   }
   // Phase 3, C1 — why a row is in the book but not counted (state.ledgerAside): voided (with a
@@ -4737,7 +4741,8 @@
     // LIVE STOPGAP (see stampApproved) — when it was ticked, in ms. Absent (not 0) when unknown,
     // so a record from before it gains nothing. A row set aside keeps it too; C6's per-row merge,
     // reading the tick and untick events in ledgerLog, will make it redundant.
-    if (typeof e.reconciledAt === 'number' && isFinite(e.reconciledAt) && e.reconciledAt > 0) e.reconciledAt = Math.round(e.reconciledAt);
+    // Phase 3, C2 — and only on a row ticked now: an untick takes it away (stampApproved).
+    if (e.reconciled && typeof e.reconciledAt === 'number' && isFinite(e.reconciledAt) && e.reconciledAt > 0) e.reconciledAt = Math.round(e.reconciledAt);
     else delete e.reconciledAt;
     // E2 — the audit trail. '' on everything recorded before it existed.
     ['enteredBy', 'enteredAt', 'approvedBy', 'approvedAt', 'enteredByUid', 'approvedByUid'].forEach(function (k) {
@@ -7288,7 +7293,8 @@
   // one "who checked it?". The book could answer neither. Now:
   //   entry.enteredBy / enteredAt        who recorded it, stamped once when it is created
   //   entry.enteredByUid                 the signed-in account's uid ('' with no account)
-  //   entry.approvedBy / approvedAt      who ticked it against a statement; cleared if un-ticked
+  //   entry.approvedBy / approvedAt      who last ticked it against a statement; KEPT if un-ticked
+  //                                      (Phase 3, C2, A6: who approved it is history)
   //   entry.approvedByUid                ditto, the account's uid
   //   book.reconciledBy / reconciledAt   who marked the statement reconciled, and when
   //   charge.forgiven.enteredBy          who recorded a forgiveness (`by` was already who AGREED it)
@@ -7708,9 +7714,12 @@
   // copy of a row keeps it over a delete only if it was ticked after the delete (see keepReconciled).
   // Not shown anywhere. An untick removes it. C6's per-row merge, which reads the tick and untick
   // events in state.ledgerLog, will make it redundant.
+  // Phase 3, C2 (treasurer, A6) — an untick no longer erases who approved it: that is history.
+  // The trail line shows an approval only on a ticked row (ledgerTrailLine), and the next tick
+  // writes over it. reconciledAt still goes, so a merge reads an unticked row as unticked (26a2685).
   function stampApproved(e, on) {
     if (on) { e.approvedBy = ledgerActor(); e.approvedByUid = ledgerActorUid(); e.approvedAt = new Date().toISOString(); e.reconciledAt = Date.now(); }
-    else { e.approvedBy = ''; e.approvedByUid = ''; e.approvedAt = ''; delete e.reconciledAt; }
+    else delete e.reconciledAt;
   }
   // Phase 3, C1 (not used until C2) — one entry in state.ledgerLog. What was done (`op`, one of
   // LEDGER_OPS) to which row (`rowId`; a statement's id for 'reopen'), by whom, when, on which
@@ -11896,9 +11905,20 @@
     }
     return added + removed;
   }
+  // Phase 3, C2 (treasurer review of C1, L2) — a tick time (reconciledAt) more than a day ahead of
+  // `now` becomes `now`, as a deletion mark does (clampGone). In place. The day is a literal, as
+  // in clampGone: normalizeState calls this.
+  function clampTickTimes(rows, now) {
+    rows.forEach(function (e) {
+      if (e && typeof e.reconciledAt === 'number' && e.reconciledAt > now + 86400000) e.reconciledAt = now;
+    });
+  }
   // When a ledger row was ticked, in ms: reconciledAt (stampApproved); for one ticked before that
   // existed, or by a page from before it, the approval stamp written at the same moment; else 0.
+  // 0 for a row not ticked now: since C2 an untick keeps the approval stamp (A6), and a stamp
+  // from an earlier tick is not a tick.
   function ledgerTickedAt(e) {
+    if (e.reconciled !== true) return 0;
     if (typeof e.reconciledAt === 'number' && e.reconciledAt > 0) return e.reconciledAt;
     var t = Date.parse(typeof e.approvedAt === 'string' ? e.approvedAt : '');
     return isFinite(t) ? t : 0;

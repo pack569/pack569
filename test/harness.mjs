@@ -1002,7 +1002,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // Security review — a stored ledger stamp that is an email is neutralised on load.
   'ledgerStampClean',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
-  'parseLegacyTime', 'migrateTierMakeUp', 'freshGone', 'clampGone', 'campHash', 'stableRowId', 'newStableId', 'dedupeRowIds', 'normalizeState',
+  'parseLegacyTime', 'migrateTierMakeUp', 'freshGone', 'clampGone', 'clampTickTimes', 'campHash', 'stableRowId', 'newStableId', 'dedupeRowIds', 'normalizeState',
   // Phase 3, C1 — the ledger row normalizer, shared by the rows set aside.
   'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeLedgerRow', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'entrySignedCents',
@@ -13080,8 +13080,9 @@ test('E2: who entered an entry, who reconciled it, and who recorded a forgivenes
   ok(!/user\.email/.test(slice('ledgerActorName')), 'ledgerActorName reads the email');
   // The account uids ride along, on every stamp.
   ok(/e\.enteredByUid = ledgerActorUid\(\);/.test(slice('stampEntered')), 'stampEntered lacks the uid');
-  ok(/e\.approvedByUid = ledgerActorUid\(\);/.test(slice('stampApproved')) && /e\.approvedByUid = '';/.test(slice('stampApproved')),
-    'stampApproved lacks or keeps the uid');
+  // Phase 3, C2 (A6) — an untick no longer erases who approved it: it is logged instead.
+  ok(/e\.approvedByUid = ledgerActorUid\(\);/.test(slice('stampApproved')) && !/e\.approved\w* = '';/.test(slice('stampApproved')),
+    'stampApproved lacks the uid, or an untick erases the approval');
   eq((SCRIPT.match(/enteredBy: ledgerActor\(\)(?: \+ ' \(close-out\)')?, enteredByUid: ledgerActorUid\(\)/g) || []).length, 3,
     'an inline entry is stamped without its uid');
   ok(/A CONVENIENCE RECORD, NOT PROOF\. The client writes these stamps/.test(SCRIPT), 'the E2 banner does not say the stamps are not proof');
@@ -17036,15 +17037,23 @@ test('stopgap follow-up 2: the tick time is stamped, cleared by an untick, and k
   const ctx = sandbox(NORMALIZE_FNS.concat(['ledgerTickedAt', 'reconciledFates']));
   vm.runInContext(`${['ledgerActorName', 'stampApproved'].map(slice).join('\n')} ${['ledgerActor', 'ledgerActorUid'].map(decl).join('\n')}
     var sync = {}, state = { leaders: [] }; Date.now = function () { return 1790000000000; };`, ctx);
-  const e = vm.runInContext('var e = { id: "l1" }; stampApproved(e, true); e', ctx);
+  // Ticked and unticked as the page does it: the stamp, then the flag.
+  const e = vm.runInContext('var e = { id: "l1" }; stampApproved(e, true); e.reconciled = true; e', ctx);
   eq([e.reconciledAt, ctx.ledgerTickedAt(e)], [1790000000000, 1790000000000], 'the tick time');
-  vm.runInContext('stampApproved(e, false)', ctx);
+  vm.runInContext('stampApproved(e, false); e.reconciled = false', ctx);
   eq(['reconciledAt' in e, ctx.ledgerTickedAt(e)], [false, 0], 'an untick kept the time');
-  eq(ctx.ledgerTickedAt({ approvedAt: '2026-09-29T12:00:00.000Z' }), Date.parse('2026-09-29T12:00:00.000Z'), 'the approval stamp');
+  // Phase 3, C2 (A6) — the untick keeps who approved it; that stamp is not read as a tick.
+  eq([!!e.approvedAt, e.approvedBy, 'approvedByUid' in e], [true, 'this device', true], 'the untick erased the approval');
+  eq(ctx.ledgerTickedAt({ reconciled: true, approvedAt: '2026-09-29T12:00:00.000Z' }), Date.parse('2026-09-29T12:00:00.000Z'), 'the approval stamp');
+  eq(ctx.ledgerTickedAt({ reconciled: false, approvedAt: '2026-09-29T12:00:00.000Z', reconciledAt: 5 }), 0, 'an unticked row read as ticked');
   // normalizeState: kept when it is a time, gone when not, and a row without one gains nothing.
   const n = ctx.normalizeState({ version: 1, scouts: [], ledger: [
-    { id: 'a', reconciled: true, reconciledAt: 1790000000000.4 }, { id: 'b', reconciledAt: 'x' }, { id: 'c', reconciledAt: -5 }, { id: 'd' }] });
-  eq(n.ledger.map((x) => 'reconciledAt' in x ? x.reconciledAt : null), [1790000000000, null, null, null], 'normalized');
+    { id: 'a', reconciled: true, reconciledAt: 1790000000000.4 }, { id: 'b', reconciled: true, reconciledAt: 'x' }, { id: 'c', reconciled: true, reconciledAt: -5 }, { id: 'd' },
+    // C2 — only on a row ticked now; and (L2) one more than a day ahead of this clock is read as now.
+    { id: 'e', reconciledAt: 1790000000000 }, { id: 'f', reconciled: true, reconciledAt: 1790000000000 + 86400001 },
+    { id: 'g', reconciled: true, reconciledAt: 1790000000000 + 86400000 }] });
+  eq(n.ledger.map((x) => 'reconciledAt' in x ? x.reconciledAt : null),
+    [1790000000000, null, null, null, null, 1790000000000, 1790000000000 + 86400000], 'normalized');
   // reconciledFates, pure: only a row this device deleted comes back as kept; only a row it had
   // reconciled goes as lost.
   const f = JSON.parse(JSON.stringify(ctx.reconciledFates(
