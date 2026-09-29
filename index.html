@@ -3997,7 +3997,9 @@
     if (typeof d.book.statementDate !== 'string') d.book.statementDate = '';
     if (typeof d.book.statementCents !== 'number' || !isFinite(d.book.statementCents)) d.book.statementCents = 0;
     else d.book.statementCents = Math.round(d.book.statementCents);
-    if (typeof d.book.reconciledThrough !== 'string') d.book.reconciledThrough = '';
+    // Security re-review of C2 (minor) — a date, YYYY-MM-DD, or '' (never reconciled): every
+    // reader compares it as a string, so junk ('zzz') locked every entry there is, for good.
+    if (typeof d.book.reconciledThrough !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(d.book.reconciledThrough)) d.book.reconciledThrough = '';
     // E2 — who marked the last statement reconciled, and when.
     d.book.reconciledBy = ledgerStampClean(d.book.reconciledBy);   // never an email (E2)
     if (typeof d.book.reconciledAt !== 'string') d.book.reconciledAt = '';
@@ -7966,11 +7968,14 @@
   // An event as lines: one per field it changed ({ what, before, after }), or one saying what was
   // done when it changed no field. Pure given `names`.
   function ledgerEventLines(ev, names) {
-    var op = LEDGER_OP_LABELS[ev.op] || String(ev.op || 'Changed');
+    // Security re-review of C2 (minor) — own keys only: an op or field named 'constructor' or
+    // '__proto__' (a newer page's, or junk) is shown as itself, not as what an object inherits.
+    function own(o, k) { return Object.prototype.hasOwnProperty.call(o, k) ? o[k] : ''; }
+    var op = own(LEDGER_OP_LABELS, ev.op) || String(ev.op || 'Changed');
     var ks = ev.f ? Object.keys(ev.f) : [];
     if (!ks.length) return [{ what: op, before: '', after: '' }];
     return ks.map(function (k) {
-      return { what: op + ': ' + (LEDGER_FIELD_LABELS[k] || k), before: ledgerLogValue(k, ev.f[k][0], names), after: ledgerLogValue(k, ev.f[k][1], names) };
+      return { what: op + ': ' + (own(LEDGER_FIELD_LABELS, k) || k), before: ledgerLogValue(k, ev.f[k][0], names), after: ledgerLogValue(k, ev.f[k][1], names) };
     });
   }
   // When an event was written, on this device's clock and time zone: 'YYYY-MM-DD HH:MM', or '' for
@@ -8197,17 +8202,27 @@
   // the future (entries still to come would lock as they were entered), and not earlier than the
   // lock already in force (that would quietly unlock a checked month; reopening a statement is a
   // later update). The same date again is allowed: it re-signs the same statement. Pure.
+  // Security re-review of C2 (minor) — except a lock AFTER today, which no statement can have
+  // given (an older page, or a clock that was wrong): it may be lowered to a real statement's
+  // date, or the book stays locked ahead of time for good. The handler logs that as a correction
+  // (reconcileLockAhead).
   function reconcileLockRefusal(book, today) {
     var sd = String((book && book.statementDate) || '');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(sd)) return 'Enter the statement’s ending date first.';
     if (sd > today) return 'A statement can’t end after today. Check the statement date.';
     var rt = String(book.reconciledThrough || '');
-    if (rt && sd < rt) {
+    if (rt && sd < rt && !reconcileLockAhead(book, today)) {
       return 'The book is already reconciled through ' + fmtDateShort(rt) + '. A statement ending earlier can’t be ' +
         'marked reconciled. Reopening a reconciled statement is coming in a later update.';
     }
     return '';
   }
+  // Security re-review of C2 (minor) — is the book reconciled through a date after today? What
+  // the Reconcile card says then, and the why its correction is logged with. Pure.
+  function reconcileLockAhead(book, today) {
+    return !!(book && book.reconciledThrough && String(book.reconciledThrough) > today);
+  }
+  var RECONCILE_AHEAD_WHY = 'The book was marked reconciled through a date that hasn’t happened yet, so it can be corrected.';
   // E1 — this charge's due date, from its line and the line's event as they stand now.
   function chargeDueNow(c) {
     var line = getBudgetLine(c.lineId);
@@ -12927,11 +12942,19 @@
   // removes the object (and its cascade records) FIRST, capturing everything in the
   // restore closure; Undo puts the exact objects back. One-deep: a newer delete's
   // toast replaces this one, ending its window.
+  // Security re-review of C2 (minor) — a restore that returns words has something to say about
+  // what it put back (a ledger entry now in the reconciled period): they are the toast instead,
+  // for longer.
   function deleteWithUndo(label, restore) {
     commit();
     showToast('Deleted ' + label, {
       actionLabel: 'Undo', duration: 6000,
-      onAction: function () { restore(); commit(); showToast('Restored ' + label); }
+      onAction: function () {
+        var said = restore();
+        commit();
+        if (typeof said === 'string' && said) showToast(said, { duration: 10000 });
+        else showToast('Restored ' + label);
+      }
     });
   }
   // ONE removal for both halves of the budget, so the confirm dialog, the undo and the
@@ -18869,6 +18892,8 @@
       h += '<p class="small muted" style="margin:10px 0 0">Last reconciled through ' + esc(fmtDate(bk.reconciledThrough)) +
         (bk.reconciledBy ? ' by ' + esc(bk.reconciledBy) : '') +
         (bk.reconciledAt ? ' on ' + esc(fmtDate(bk.reconciledAt.slice(0, 10))) : '') + '.</p>';
+      // Security re-review of C2 (minor) — a lock after today can be put right with a real statement.
+      if (reconcileLockAhead(bk, todayISO())) h += '<p class="small" style="margin:6px 0 0;color:var(--accent-text)">' + esc(RECONCILE_AHEAD_WHY) + '</p>';
     }
     if (agrees && rec.ticked) {
       // Treasurer review of C2 (H-1) — through the statement's own date only, never "today"; the
@@ -27834,7 +27859,17 @@
       deleteWithUndo(dlGone.description || 'entry', function () {
         state.ledger.splice(Math.min(dlIx, state.ledger.length), 0, dlGone);
         markGone('ledger', [dlGone], true);
-        logLedger('add', dlGone.id, { why: 'Put back by Undo after it was deleted.' });
+        // Security re-review of C2 (minor) — a sync in the Undo's few seconds can have moved the
+        // lock past it: it goes back all the same (the delete was allowed), said and logged, as a
+        // back-dated add is.
+        var dlIn = ledgerDateReconciled(dlGone.date, state.book);
+        logLedger('add', dlGone.id, { why: 'Put back by Undo after it was deleted' +
+          (dlIn ? '; dated inside the period reconciled through ' + state.book.reconciledThrough + '.' : '.') });
+        if (dlIn) {
+          return '“' + (dlGone.description || 'The entry') + '” is back. It is dated ' + fmtDateShort(dlGone.date) +
+            ', inside the period already reconciled (through ' + fmtDateShort(state.book.reconciledThrough) + '), so check it ' +
+            'is on that statement. If it isn’t, record an opposite entry dated today and say in its description which entry it cancels.';
+        }
       });
       return;
     }
@@ -27888,15 +27923,23 @@
     // button saying what will lock; and logged (row 'book', reconciledThrough [before, after]).
     // Asked on each tap, so a statement date a sync changes between the two is asked about again
     // (and the button disarmed: a date put right afterwards starts from the first tap).
+    // Security re-review of C2 (minor) — and only while the ticked entries agree with the statement,
+    // as the button is only shown then: a tap from a screen drawn before a sync changed them does
+    // not lock a book that no longer matches. A lock after today lowered is logged as a correction.
     if (act === 'ledger-reconcile-lock') {
       var rlNo = reconcileLockRefusal(state.book, todayISO());
+      var rlRec = reconcileTotals(state.ledger, state.book);
+      if (!rlNo && (rlRec.difference !== 0 || !rlRec.ticked)) rlNo = 'The ticked entries don’t add up to the statement’s closing balance, so it can’t be marked reconciled yet.';
       if (rlNo) { if (ui.armed === act) ui.armed = null; showToast(rlNo); render(); return; }
       arm(act, function () {
         var rlWas = state.book.reconciledThrough || '';
+        var rlFix = reconcileLockAhead(state.book, todayISO()) && state.book.statementDate < rlWas;
         state.book.reconciledThrough = state.book.statementDate;
         state.book.reconciledBy = ledgerActor();                 // E2
         state.book.reconciledAt = new Date().toISOString();
-        logLedger('reconcile', 'book', { f: { reconciledThrough: [rlWas, state.book.reconciledThrough] } });
+        logLedger('reconcile', 'book', rlFix
+          ? { f: { reconciledThrough: [rlWas, state.book.reconciledThrough] }, why: RECONCILE_AHEAD_WHY }
+          : { f: { reconciledThrough: [rlWas, state.book.reconciledThrough] } });
         // The statement is done with — clear the working figures so the next one starts blank
         // rather than silently reconciling against a month that's already closed.
         state.book.statementCents = 0;

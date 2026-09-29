@@ -18638,7 +18638,10 @@ const C2T_ACT = [
   c2Block(/    if \(act === 'confirm-import'\) \{[\s\S]*?\n    \}/, 'confirm-import')].join('\n');
 const C2T_CHANGE = c2Block(/    if \(ch === 'ledger-unrec-why'\) \{[^\n]*\}/, 'ledger-unrec-why');
 const C2T_MORE = `
-  ${['reconcileLockRefusal'].map(slice).join('\n')}
+  ${['reconcileLockRefusal', 'reconcileLockAhead', 'reconcileTotals', 'entrySignedCents'].map(slice).join('\n')}
+  ${decl('RECONCILE_AHEAD_WHY')}
+  // The statement's closing balance that agrees with what is ticked through its date.
+  function agree() { state.book.statementCents = reconcileTotals(state.ledger, state.book).cleared; }
   function restoreGone(data) { return data; }
   function act3(act, el) { el = el || { dataset: {} }; (function () {\n${C2T_ACT}\n})(); }
   function change3(ch, value) { var el = { value: value, dataset: {} }; (function () {\n${C2T_CHANGE}\n})(); }`;
@@ -18657,8 +18660,8 @@ test('C2 treasurer H-1: Mark reconciled takes a statement date, not after today 
   }
   // A statement's own date, today at the latest: the first tap arms, the second locks and logs.
   for (const sd of ['2026-09-30', '2026-10-15', '2026-08-31']) {
-    const p = c2tPage({ book: { statementDate: sd, statementCents: 12300 } });
-    p.run("act3('ledger-reconcile-lock')");
+    const p = c2tPage({ book: { statementDate: sd } });
+    p.run("agree(); act3('ledger-reconcile-lock')");
     eq([p.get('state.book.reconciledThrough'), p.get('ui.armed'), p.get('log().length')], ['2026-08-31', 'ledger-reconcile-lock', 0], sd + ': one tap locked');
     p.run("act3('ledger-reconcile-lock')");
     const ev = p.get('log()');
@@ -18669,7 +18672,7 @@ test('C2 treasurer H-1: Mark reconciled takes a statement date, not after today 
   // A book never reconciled logs '' as before; and a statement date changed (by a sync) between
   // the taps is asked about again.
   const q = c2tPage({ book: { reconciledThrough: '', statementDate: '2026-09-30' } });
-  q.run("act3('ledger-reconcile-lock'); state.book.statementDate = '2026-11-01'; toasts = []; act3('ledger-reconcile-lock')");
+  q.run("agree(); act3('ledger-reconcile-lock'); state.book.statementDate = '2026-11-01'; toasts = []; act3('ledger-reconcile-lock')");
   eq([q.get('state.book.reconciledThrough'), q.get('log().length'), q.get('toasts'), q.get('ui.armed')],
     ['', 0, ['A statement can’t end after today. Check the statement date.'], null], 'the second tap');
   q.run("state.book.statementDate = '2026-09-30'; act3('ledger-reconcile-lock')");
@@ -18955,6 +18958,76 @@ atest('C2 re-review #2, api: a device holding the book from before a statement w
   await settle([b], 800);
   eq(bookOf(server()), ['2026-09-15', 'Pat', '2026-09-16T12:00:00.000Z', '', 0], 'the later lock');
   eq(eIds(server()).indexOf('b1') !== -1, true, 'B’s change');
+});
+
+test('C2 re-review (minor): a reconciled-through date that is not YYYY-MM-DD is blanked', () => {
+  const rt = (v) => goneSeedNorm({ book: { reconciledThrough: v } }).book.reconciledThrough;
+  eq(['2026-09-30', 'zzz', '2026-9-30', '2026-09-30T00:00:00Z', 20260930, null, ''].map(rt), ['2026-09-30', '', '', '', '', '', ''], 'the lock');
+});
+
+test('C2 re-review (minor): Mark reconciled can lower a lock after today, and logs it as a correction in plain words', () => {
+  // Today is Oct 15; the book says Jan 31, 2027.
+  const p = c2tPage({ book: { reconciledThrough: '2027-01-31', statementDate: '2026-09-30' } });
+  p.run("agree(); act3('ledger-reconcile-lock'); act3('ledger-reconcile-lock')");
+  const why = 'The book was marked reconciled through a date that hasn’t happened yet, so it can be corrected.';
+  eq([p.get('state.book.reconciledThrough'), p.get('log().map(function (e) { return [e.op, e.row, e.f, e.why]; })')],
+    ['2026-09-30', [['reconcile', 'book', { reconciledThrough: ['2027-01-31', '2026-09-30'] }, why]]], 'the correction');
+  // A lock not after today is not lowered (as the H-1 test), and an ordinary lock carries no why.
+  const q = c2tPage({ book: { reconciledThrough: '2026-10-15', statementDate: '2026-09-30' } });
+  q.run("agree(); act3('ledger-reconcile-lock'); act3('ledger-reconcile-lock')");
+  eq([q.get('state.book.reconciledThrough'), q.get('log().length')], ['2026-10-15', 0], 'a lock of today was lowered');
+  const r = c2tPage({ book: { statementDate: '2026-09-30' } });
+  r.run("agree(); act3('ledger-reconcile-lock'); act3('ledger-reconcile-lock')");
+  eq([r.get('state.book.reconciledThrough'), 'why' in r.get('log()[0]')], ['2026-09-30', false], 'an ordinary lock');
+  // The Reconcile card says so, under the last lock.
+  ok(/if \(reconcileLockAhead\(bk, todayISO\(\)\)\) h \+= '<p class="small" style="margin:6px 0 0;color:var\(--accent-text\)">' \+ esc\(RECONCILE_AHEAD_WHY\) \+ '<\/p>';/
+    .test(slice('renderReconcile')), 'the Reconcile card does not say the lock can be corrected');
+  eq(p.get('RECONCILE_AHEAD_WHY'), why, 'the words');
+});
+
+test('C2 re-review (minor): Mark reconciled re-checks that the ticked entries agree with the statement', () => {
+  const nope = 'The ticked entries don’t add up to the statement’s closing balance, so it can’t be marked reconciled yet.';
+  const p = c2tPage({ book: { statementDate: '2026-09-30', statementCents: 12300 } });
+  p.run("act3('ledger-reconcile-lock'); act3('ledger-reconcile-lock')");
+  eq([p.get('state.book.reconciledThrough'), p.get('log().length'), p.get('ui.armed'), p.get('toasts')], ['2026-08-31', 0, null, [nope, nope]], 'a book that doesn’t agree');
+  // Armed while it agreed, then a sync moved it: the second tap is refused.
+  const q = c2tPage({ book: { statementDate: '2026-09-30' } });
+  q.run("agree(); act3('ledger-reconcile-lock'); state.book.statementCents += 1; act3('ledger-reconcile-lock')");
+  eq([q.get('state.book.reconciledThrough'), q.get('log().length'), q.get('ui.armed')], ['2026-08-31', 0, null], 'a book that stopped agreeing');
+  // Nothing ticked is not agreement either.
+  const n = c2tPage({ ledger: [], book: { reconciledThrough: '', statementDate: '2026-09-30', statementCents: 10000 } });
+  n.run("act3('ledger-reconcile-lock'); act3('ledger-reconcile-lock')");
+  eq([n.get('state.book.reconciledThrough'), n.get('toasts')], ['', [nope, nope]], 'nothing ticked');
+});
+
+test('C2 re-review (minor): an Undo that puts an entry back inside a period reconciled meanwhile says so', () => {
+  const p = c2rPage();
+  p.run("act2('del-ledger:u1'); state.book.reconciledThrough = '2026-09-30'; var said = undo()");
+  eq(p.get('said'), '“Pinewood trophies” is back. It is dated Sep 10, inside the period already reconciled (through Sep 30), so check it is on that ' +
+    'statement. If it isn’t, record an opposite entry dated today and say in its description which entry it cancels.', 'the notice');
+  eq([p.get("!!row('u1')"), p.get('log()[1].op'), p.get('log()[1].why')],
+    [true, 'add', 'Put back by Undo after it was deleted; dated inside the period reconciled through 2026-09-30.'], 'put back and logged');
+  // An Undo outside the period says nothing more than before.
+  const q = c2rPage();
+  q.run("act2('del-ledger:u1'); var said = undo()");
+  eq([q.get('said === undefined'), q.get('log()[1].why')], [true, 'Put back by Undo after it was deleted.'], 'outside the period');
+  // deleteWithUndo shows the restore's words in place of "Restored", for longer.
+  const ctx = sandbox(['deleteWithUndo']);
+  vm.runInContext("var shown = []; function commit() {} function showToast(m, o) { shown.push([m, o && o.duration, o && o.onAction]); }", ctx);
+  ctx.deleteWithUndo('x', () => 'Words');
+  vm.runInContext('shown[0][2]()', ctx);
+  ctx.deleteWithUndo('y', () => undefined);
+  vm.runInContext('shown[2][2]()', ctx);
+  eq(JSON.parse(JSON.stringify(vm.runInContext('shown.map(function (s) { return [s[0], s[1] || null]; })', ctx))),
+    [['Deleted x', 6000], ['Words', 10000], ['Deleted y', 6000], ['Restored y', null]], 'the toasts');
+});
+
+test('C2 re-review (minor): an op or field named like an object’s own property is shown as itself', () => {
+  const ctx = sandbox(['fmt', 'fmtDateShort', 'LEDGER_OP_LABELS', 'LEDGER_FIELD_LABELS', 'ledgerLogValue', 'ledgerEventLines']);
+  const lines = (ev) => JSON.parse(JSON.stringify(ctx.ledgerEventLines(ev, {})));
+  eq(lines({ op: 'constructor' }), [{ what: 'constructor', before: '', after: '' }], 'the op');
+  eq(lines({ op: 'edit', f: { toString: ['a', 'b'] } }), [{ what: 'Changed: toString', before: 'a', after: 'b' }], 'the field');
+  eq(lines({ op: 'tick' })[0].what, 'Ticked against a statement', 'a known op');
 });
 
 /* ---------------- report ---------------- */
