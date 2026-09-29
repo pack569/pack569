@@ -13186,7 +13186,8 @@ test('E3: close-out archives the ledger and the family balances, sized against t
   ok(/families: seasonFamilyBalances\(familyAccountsNow\(\),/.test(b), 'the family balances are not archived');
   ok(/arc\.ledger = seasonLedgerNow\(arc\);\s*return arc;/.test(b), 'the ledger is not archived, or is sized before the rest of the record');
   const now = slice('seasonLedgerNow');
-  ok(/utf8Bytes\(JSON\.stringify\(state\)\) \+ utf8Bytes\(JSON\.stringify\(arcWithout\)\) -/.test(now) && /ARCHIVE_DOC_SOFT_LIMIT/.test(now), 'not sized against the whole record');
+  ok(/state\.archives\.push\(arcWithout\);\s*rolloverYear\(\);/.test(now) && /utf8Bytes\(JSON\.stringify\(after\)\)/.test(now) &&
+    /ARCHIVE_DOC_SOFT_LIMIT/.test(now), 'not sized against the whole record, as close-out will leave it');
   ok(/var ARCHIVE_DOC_SOFT_LIMIT = 700 \* 1024;/.test(SCRIPT), 'the limit is not ~700 KB');
   // The archive is built BEFORE rolloverYear clears the ledger and charges.
   const pc = slice('performCloseout');
@@ -17462,7 +17463,9 @@ test('stopgap: close-out keeps room for a year of deletion marks, and a restore 
   vm.runInContext(`${['utf8Bytes', 'fitSeasonLedger', 'ARCHIVE_DOC_SOFT_LIMIT', 'GONE_ROOM_BYTES', 'seasonLedgerNow'].map(slice).join('\n')}
     function seasonLedgerRows() { return { totals: { entries: 1 }, rows: [{ d: '2026-09-01', c: 1, t: 'x' }] }; }
     function getBudgetLine() { return null; } function chargeFamilyKey() { return ''; } function familyKeyOf() { return ''; }
-    var state = { ledger: [], scouts: [], filler: '', gone: {} };
+    function rolloverYear() { state.gone = {}; }
+    var ui = {};
+    var state = { ledger: [], scouts: [], archives: [], filler: '', gone: {} };
     function fits(fill, gone) { state.filler = new Array(fill + 1).join('x'); state.gone = gone; return !seasonLedgerNow({}).trimmed; }`, s);
   const room = ctx.GONE_ROOM_BYTES, limit = 700 * 1024;
   eq([vm.runInContext(`fits(${limit - room - 400}, {})`, s), vm.runInContext(`fits(${limit - room}, {})`, s)], [true, false],
@@ -17470,11 +17473,65 @@ test('stopgap: close-out keeps room for a year of deletion marks, and a restore 
   eq(vm.runInContext(`fits(${limit - room - 400 - 100000}, { entries: { big: '${'y'.repeat(100000)}' } })`, s), true,
     'this year’s marks, which close-out clears, were counted too');
   const now = slice('seasonLedgerNow');
-  ok(/- utf8Bytes\(JSON\.stringify\(state\.gone \|\| \{\}\)\) \+ GONE_ROOM_BYTES/.test(now.replace(/\s+/g, ' ')), 'seasonLedgerNow');
+  ok(/- utf8Bytes\(JSON\.stringify\(after\.gone \|\| \{\}\)\) \+ GONE_ROOM_BYTES/.test(now.replace(/\s+/g, ' ')), 'seasonLedgerNow');
   // Security S9: the restore screen.
   const o = slice('renderOverlay');
   ok(/If this backup is older than the pack’s latest changes, a sale, payment or hand-out ' \+\s*'deleted since it was made can be deleted again the next time another device saves\./.test(o),
     'the restore screen does not say an older backup’s deleted rows can be deleted again');
+});
+
+/* ================================================================
+   Stopgap follow-ups (re-review of 55afe73..f79ebb0) — close-out sizing, reconcile stamps,
+   the Trail's End note, the season choice, and a restore's put-backs.
+   ================================================================ */
+// What seasonLedgerNow needs to run the page's real rolloverYear on its copy.
+const CLOSEOUT_SIZE_FNS = ['seasonLedgerNow', 'seasonLedgerRows', 'ledgerSort', 'getBudgetLine', 'chargeFamilyKey', 'getScout',
+  'familyKeyOf', 'familyLabel', 'rolloverYear', 'computeBudget', 'activeScouts', 'lineThroughPack', 'linePlanned', 'lineRoster',
+  'eventForLine', 'activeLeaders', 'familiesOf', 'tierExtraPackCostCents', 'coverCostForKeys', 'plannedCoverKeys', 'plannedTiers',
+  'plannedTier', 'coverableLines', 'allBudgetLines', 'lineRaisesCharges', 'lineIsFamilyDirect', 'chargeTotals', 'chargeSetTotals',
+  'familyAccounts', 'chargeIsOpen', 'entryPaysCharges', 'tierCoverageConfigured', 'sortedTiers', 'fundingSummary', 'commissionRates',
+  'cashCreditOn', 'cashScoutRate', 'leaderPlannedCents', 'rewardTierSummary', 'earnedTierFor', 'computePackTotals', 'packGoalCents',
+  'stretchGoalOf', 'ledgerIncomeCents', 'bookBalance', 'ledgerBalance', 'familyAccountsNow', 'closingCarryover', 'advanceDens',
+  'priorDayISO', 'ledgerActorName', 'shiftISOYear', 'utf8Bytes', 'GONE_ROOM_BYTES', 'fitSeasonLedger', 'ARCHIVE_DOC_SOFT_LIMIT'];
+test('stopgap follow-up 1: close-out sizes the archive against the record as close-out leaves it', () => {
+  // The record before close-out holds this year's sales, sign-ups, attendance, charges and
+  // hand-outs, which close-out clears: sized with them, a record that fits was trimmed.
+  const KB = 1024;
+  const record = (over) => Object.assign({
+    version: 1, packName: 'Test Pack',
+    scouts: [{ id: 's1', name: 'Ada', den: 'Wolf' }, { id: 's2', name: 'Bo', den: 'Arrow of Light' }],
+    budget: { programYear: 2026, activities: [], expenses: [{ id: 'x1', name: 'Dues', basis: 'per-head', scoutRateCents: 5000 }] },
+    charges: [{ id: 'c1', scoutId: 's1', lineId: 'x1', who: 'scout', seq: 0, amountCents: 5000 }],
+    ledger: [{ id: 'l1', date: '2026-09-01', description: 'Dues', amountCents: 2500, direction: 'in', scoutId: 's1', lineId: 'x1', reconciled: true },
+      { id: 'l2', date: '2026-09-02', description: 'Paid ahead', amountCents: 9000, direction: 'in', scoutId: 's2' }],
+    entries: [], archives: []
+  }, over);
+  const run = (over, arcNote) => {
+    const ctx = sandbox(NORMALIZE_FNS.concat(CLOSEOUT_SIZE_FNS));
+    vm.runInContext(`var sync = { user: null }; var ui = { storefrontId: 'sf1', rsvpOpen: { a: 1 } }; var uiWas = ui;
+      var state = normalizeState(${JSON.stringify(record(over))}); var stateWas = state, before = JSON.stringify(state);
+      var got = seasonLedgerNow({ id: 'new', kind: 'season', year: 2026, note: ${JSON.stringify(arcNote || '')} });`, ctx);
+    return JSON.parse(JSON.stringify(vm.runInContext(`({ trimmed: got.trimmed, rows: got.rows.length,
+      same: state === stateWas && JSON.stringify(state) === before, ui: ui === uiWas && ui.storefrontId === 'sf1' && ui.rsvpOpen.a === 1 })`, ctx)));
+  };
+  // 500 KB of this year's sales: gone after close-out, so the ledger's rows fit.
+  const big = 'x'.repeat(500 * KB);
+  eq(run({ entries: [{ id: 'e1', scoutId: 's1', kind: 'wagon', date: '', salesCents: 1000, donationsCents: 0, note: big }] }),
+    { trimmed: false, rows: 2, same: true, ui: true }, 'this year’s sales, which close-out clears, were counted');
+  // An earlier close-out of the same year is replaced, not kept beside the new one.
+  eq(run({ archives: [{ id: 'old', kind: 'season', year: 2026, closedAt: '2026-09-01T00:00:00Z', note: big }] }).trimmed, false,
+    'the close-out it replaces was counted');
+  // Controls: what close-out keeps still counts. A past season's archive, the pack's own fields, and the
+  // archive being added.
+  eq(run({ archives: [{ id: 'old', kind: 'season', year: 2025, closedAt: '2025-09-01T00:00:00Z', note: big }] }),
+    { trimmed: true, rows: 0, same: true, ui: true }, 'control: an older season’s archive stays, and counts');
+  eq(run({ packName: big }).trimmed, true, 'control: what close-out keeps');
+  eq(run({}, big).trimmed, true, 'control: the archive being added');
+  // Just under and just over the limit, with the room for next year's deletion marks kept. The
+  // record is measured as it is now, seeds and all (a few KB either side of the rollover).
+  const base = sandbox(NORMALIZE_FNS.concat(['utf8Bytes'])).utf8Bytes(JSON.stringify(sandbox(NORMALIZE_FNS).normalizeState(record({ packName: '' }))));
+  eq(run({ packName: 'x'.repeat(700 * KB - 250 * KB - base - 4 * KB) }).trimmed, false, 'control: just under the limit with the room');
+  eq(run({ packName: 'x'.repeat(700 * KB - 250 * KB - base + 4 * KB) }).trimmed, true, 'control: just over the limit with the room');
 });
 
 /* ---------------- report ---------------- */

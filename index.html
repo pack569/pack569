@@ -25053,10 +25053,13 @@
       return { name: nameOf(a), owedCents: a.owed, paidCents: a.paid, balanceCents: a.balance };
     });
   }
-  // The archive's ledger for this state: the rows, fitted to the pack record as it will be. The
-  // size is measured on the record as it stands (which still holds this year's ledger, so the
-  // estimate errs large) plus the archive being added, with this year's deletion marks swapped
-  // for room for next year's (GONE_ROOM_BYTES).
+  // The archive's ledger for this state: the rows, fitted to the pack record as it will be.
+  // LIVE STOPGAP (re-review of the stopgap, item 1) — "as it will be" is measured, not guessed:
+  // performCloseout's own steps (the archive in, replacing an earlier close-out of the year, then
+  // rolloverYear) run on a deep copy, and the copy is sized. Measured before the rollover, the
+  // record still held this year's ledger, sales, sign-ups, attendance, charges and hand-outs, all
+  // of which close-out clears, and a record that fitted was trimmed. The copy's deletion marks
+  // (none: close-out clears them) are swapped for room for next year's (GONE_ROOM_BYTES).
   function seasonLedgerNow(arcWithout) {
     var led = seasonLedgerRows(state.ledger, function (id) {
       var l = getBudgetLine(id);
@@ -25066,8 +25069,19 @@
       var members = state.scouts.filter(function (sc) { return familyKeyOf(sc) === k; });
       return members.length ? familyLabel({ members: members }) : '';
     });
-    var other = utf8Bytes(JSON.stringify(state)) + utf8Bytes(JSON.stringify(arcWithout)) -
-      utf8Bytes(JSON.stringify(state.gone || {})) + GONE_ROOM_BYTES;
+    var live = state, liveUi = ui, after;
+    try {
+      state = JSON.parse(JSON.stringify(live));
+      ui = Object.assign({}, liveUi);   // rolloverYear resets a few of its fields
+      state.archives = state.archives.filter(function (a) { return !(a.kind === 'season' && a.year === arcWithout.year); });
+      state.archives.push(arcWithout);
+      rolloverYear();
+      after = state;
+    } finally {
+      state = live;
+      ui = liveUi;
+    }
+    var other = utf8Bytes(JSON.stringify(after)) - utf8Bytes(JSON.stringify(after.gone || {})) + GONE_ROOM_BYTES;
     return fitSeasonLedger(led, other, ARCHIVE_DOC_SOFT_LIMIT);
   }
   function buildSeasonArchive() {
