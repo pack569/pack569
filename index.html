@@ -5094,12 +5094,13 @@
       render();
       return;
     }
-    // The reload gate (PACK_FORMAT) — this device's copy is a newer page's record, which save()
-    // never writes over. So an edit is refused, as a viewer's is, rather than kept in memory only
-    // to vanish at the reload the banner asks for (whose "Your unsaved changes stay on this
-    // device" must stay true). A hold met from the pack (sync.newerFormat) is not refused here:
-    // those edits save on this device, and the newer page compares them at its first answer.
-    if (formatHeldHere()) { refuseHeldEdit(); return; }
+    // The reload gate (PACK_FORMAT) — while either hold is on, an edit is refused, as a viewer's is.
+    // The dispatch refuses it first, before any handler runs (handleAction, heldActAllowed); this
+    // is behind it, for a change that arrives some other way (a weather lookup that answers after
+    // the hold). This device's copy may be a newer page's record, which save() never writes over;
+    // and a hold met from the pack (sync.newerFormat) would leave the newer page a change to sort
+    // out (owner, 2026-09-29: refuse every edit while any hold is on).
+    if (packFormatHeld()) { refuseHeldEdit(); return; }
     // Phase 3b — commit() is the one seam every mutation goes through, so it is where
     // charges are reconciled against attendance, rates and tier progress. Cheap: a pack is
     // tens of scouts, not thousands.
@@ -12658,8 +12659,8 @@
     return !!(sync && sync.newerFormat) || formatHeldHere();
   }
   // Hold, as holdPushes does: no push, no retry, nothing taken from the pack or published to the
-  // parents, and this device's copy left exactly as it is (its edits still save here, unless it
-  // is the newer record itself: commit). The banner (formatBanner), the pill and the sync card
+  // parents, and this device's copy left exactly as it is (every edit is refused from now on:
+  // handleAction, commit). The banner (formatBanner), the pill and the sync card
   // ask for a reload. sync.mode is left alone: nothing reads it as the gate, and the feeds would
   // only set it back. A copy choice waiting is dropped, chooser and all: neither answer could do
   // anything now, and the newer page asks again after the reload if the copies still differ.
@@ -20233,9 +20234,54 @@
   // The reload gate (PACK_FORMAT, owner's words) — above every leader page while it holds.
   var FORMAT_NOTICE = 'This page is out of date: another leader’s device saved with a newer version. ' +
     'Reload the page to keep working. Your unsaved changes stay on this device.';
-  // …and what an edit is told when nothing can be saved at all (commit: this device's own copy is
-  // the newer page's record).
-  var FORMAT_REFUSED = 'Not saved: this page is out of date. Reload the page first.';
+  // …and what an edit is told while either hold is on (handleAction, handleChange, handleForm,
+  // handleFilePick, and commit behind them): nothing is changed at all.
+  var FORMAT_REFUSED = 'Not saved: this page is out of date. Reload the page, then enter it again.';
+  // …and close-out's own words (its first tap would download a snapshot of what this page read).
+  var FORMAT_CLOSEOUT = 'The year wasn’t closed, and nothing was downloaded: this page is out of date. ' +
+    'Reload the page, then close the year.';
+  // …and Backup (JSON)'s, when this device's own copy is the newer page's record (it still works
+  // while the hold comes from the pack: this device's copy is this page's own).
+  var FORMAT_BACKUP = 'Backup not downloaded: this page is out of date. Reload the page, then tap Backup (JSON) again. ' +
+    'The pack’s record on this device is untouched.';
+  // Owner, 2026-09-29 (security and treasurer reviews of the gate) — while either hold is on, every
+  // edit is refused at the dispatch, before its handler runs: none can show a success toast over a
+  // refusal ("Deleted", "Welcome to the next program year"), and none leaves a change on this device
+  // for the newer page to sort out. What stays open is below: moving about, closing what is open,
+  // reloading, signing out, and the read-only views, printouts, copies and exports. Nothing here
+  // writes the pack record; anything not listed is refused, so a new action is refused while held
+  // until it is added. The Backup (JSON) downloads stay, and jsonBackup refuses them itself when
+  // this device's own copy is the newer record. Parents' and the join gates' acts are all
+  // read-only too (PARENT_ACTS, GATE_ACTS), except toast-action: its Undo and "New code" are edits.
+  var HELD_ACTS = ['reload-page', 'close-overlay', 'back', 'tab', 'section', 'goto', 'goto-pack', 'sync-choose',
+    'open-storefront', 'sign-out-google',
+    'toggle-season-setup', 'toggle-home-rest', 'den-filter', 'toggle-archived', 'toggle-leaders-archived', 'toggle-completed',
+    'toggle-scout', 'cal-prev', 'cal-next', 'cal-day', 'cal-jump-day', 'nextup-day', 'agenda-toggle', 'agenda-past-toggle',
+    'year-cost-toggle', 'budget-toggle-past', 'line-options', 'ledger-view', 'ledger-filter', 'ledger-toggle', 'adv-toggle',
+    'denplan-past', 'pk-agenda-toggle', 'toggle-archive',
+    'ledger-fix-cancel', 'ledger-void-cancel', 'charge-forgive-cancel', 'plan-adv-cancel',
+    'open-summary', 'copy-summary', 'print-summary', 'open-digest', 'copy-digest', 'copy-digest-leaders', 'open-shop', 'copy-shop',
+    'print-shop', 'pk-agenda-print', 'print-pk-agenda', 'sf-day-sheet', 'copy-day-sheet', 'sf-glance-open', 'copy-glance',
+    'family-statement', 'copy-statement', 'family-sheet', 'parent-preview-on', 'kit-print-flyer', 'kit-print-qr', 'te-print',
+    'copy-archive', 'copy-kickoff', 'makeup-msg', 'copy-makeup-msg', 'join-copy', 'pack-id-copy',
+    'export-csv', 'export-ics', 'ledger-log-csv', 'ledger-voided-csv', 'copy-export', 'download-export',
+    'export-json', 'sync-download-local'];
+  var HELD_ACT_PREFIXES = ['archive-sheet:', 'tier-due-open:'];
+  // …and the two change fields that only filter what is shown.
+  var HELD_CHANGES = ['ledger-search', 'ledger-line-filter'];
+  function heldActAllowed(act) {
+    act = String(act || '');
+    if (act === 'toast-action') return false;
+    if (HELD_ACTS.indexOf(act) !== -1 || PARENT_ACTS.indexOf(act) !== -1 || GATE_ACTS.indexOf(act) !== -1) return true;
+    return HELD_ACT_PREFIXES.some(function (p) { return act.indexOf(p) === 0; });
+  }
+  // An edit refused at the dispatch: said, a two-tap put back, and the screen drawn again from what
+  // is there (so a typed value goes back). Nothing was changed, so nothing is reloaded.
+  function refuseHeldAct(msg) {
+    ui.armed = null;
+    showToast(msg || FORMAT_REFUSED);
+    render();
+  }
   // …and what a backup or move file from a newer page is told (handleImportFile, moveImportBody).
   var FORMAT_FILE = 'That file was saved by a newer version of this page. Reload the page, then try again.';
   function formatBanner() {
@@ -27381,6 +27427,8 @@
   }
 
   function performCloseout() {
+    // The reload gate — refused at the dispatch already (handleAction); here too, before the snapshot.
+    if (packFormatHeld()) { refuseHeldAct(FORMAT_CLOSEOUT); return; }
     var year = state.budget.programYear;
     // 1. Snapshot download FIRST — the complete state exactly as it stands, before ANY mutation.
     download('pack-year-' + year + '-snapshot.json', 'application/json', JSON.stringify(state, null, 2));
@@ -27937,11 +27985,18 @@
   document.addEventListener('change', function (e) {
     var el = e.target.closest('[data-ch]');
     if (el) handleChange(el);
-    if (e.target.id === 'importFile') handleImportFile(e.target);
-    if (e.target.id === 'moveFile') handleMoveFile(e.target);
-    if (e.target.id === 'icsFile') handleIcsImportFile(e.target);
-    if (e.target.id === 'teFile') handleTeFile(e.target);
+    handleFilePick(e.target);
   });
+  // The four file pickers. The reload gate (PACK_FORMAT): while either hold is on, a file chosen
+  // (in a picker opened before the hold) is not read at all.
+  function handleFilePick(input) {
+    if (['importFile', 'moveFile', 'icsFile', 'teFile'].indexOf(input.id) === -1) return;
+    if (packFormatHeld()) { input.value = ''; refuseHeldAct(); return; }
+    if (input.id === 'importFile') handleImportFile(input);
+    if (input.id === 'moveFile') handleMoveFile(input);
+    if (input.id === 'icsFile') handleIcsImportFile(input);
+    if (input.id === 'teFile') handleTeFile(input);
+  }
 
   document.addEventListener('submit', function (e) {
     var f = e.target.closest('form[data-form]');
@@ -28033,6 +28088,12 @@
     var gm = gateMode();
     if (gm) { if (GATE_ACTS.indexOf(act) === -1) return; }
     else if (parentMode() && PARENT_ACTS.indexOf(act) === -1) return;
+    // The reload gate (PACK_FORMAT) — while either hold is on, an edit is refused before its
+    // handler runs (HELD_ACTS). Close-out's first tap is refused before anything is downloaded.
+    if (packFormatHeld() && !heldActAllowed(act)) {
+      refuseHeldAct(act === 'open-closeout' || act === 'closeout-confirm' ? FORMAT_CLOSEOUT : FORMAT_REFUSED);
+      return;
+    }
     // Wave 18(21) — the Undo button inside the current toast.
     if (act === 'toast-action') {
       var tFn = toastAction;
@@ -29245,7 +29306,7 @@
       // The reload gate (PACK_FORMAT) — this device's copy is a newer page's record, as this page
       // read it into its own shape: a backup of that would carry the newer fmt over what this page
       // may have misread. The copy itself is safe in storage; the reloaded page can back it up.
-      if (formatHeldHere()) { showToast(FORMAT_REFUSED); return; }
+      if (formatHeldHere()) { showToast(FORMAT_BACKUP); return; }
       var bkJ = jsonBackup();
       ui.overlay = { kind: 'export', title: 'JSON backup', name: bkJ.name, mime: bkJ.mime, text: bkJ.text };
       render(); return;
@@ -29625,6 +29686,8 @@
     // should ever fire for them.
     if (parentMode() || gateMode()) return;
     var ch = el.dataset.ch;
+    // The reload gate (PACK_FORMAT) — while either hold is on, only a filter changes (HELD_CHANGES).
+    if (packFormatHeld() && HELD_CHANGES.indexOf(ch) === -1) { refuseHeldAct(); return; }
     // Paste-calendar box: keep the text on the overlay, no persist/re-render while typing.
     if (ch === 'ics-paste-text') { if (ui.overlay && ui.overlay.kind === 'ics-paste') ui.overlay.text = el.value; return; }
     // Wave 11 — new-storefront name draft is transient; sync it without persisting/re-rendering.
@@ -30337,6 +30400,7 @@
 
   function handleForm(f) {
     if (parentMode() || gateMode()) return; // Parent phase / join gates — neither renders a form
+    if (packFormatHeld()) { refuseHeldAct(); return; }   // the reload gate: every form adds or changes
     var kind = f.dataset.form;
     var fd = new FormData(f);
     // Phase 3b — forgiving a charge. It is NOT deleted: it stands, marked, with a reason

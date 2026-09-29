@@ -20916,7 +20916,7 @@ test('reload gate: a newer page’s record on this device is never saved over, a
   vm.runInContext("state.packName = 'Edited again'; liveEdit = true; commit(); liveEdit = false; save();", ctx);
   eq(vm.runInContext('[store[KEY] === before, pushes, toasts.length, state.packName]', ctx), [true, 0, 2, 'Saved by a newer tab'],
     'a typed-in edit, or a save from anywhere else, wrote over the newer tab’s copy');
-  eq(vm.runInContext('FORMAT_REFUSED', ctx), 'Not saved: this page is out of date. Reload the page first.', 'the refusal’s words');
+  eq(vm.runInContext('FORMAT_REFUSED', ctx), 'Not saved: this page is out of date. Reload the page, then enter it again.', 'the refusal’s words');
   // Control: a copy in this page's format, or from before the gate, saves as ever, now as this page's format.
   for (const fmt of [1, undefined]) {
     const c = run(Object.assign({}, tab, { fmt }));
@@ -20962,6 +20962,110 @@ test('reload gate: a newer tab’s save while this page runs is never saved over
   eq(vm.runInContext('[loadBackupKept, !!store[KEY + "-bak"], packFormatHeld()]', c5), [true, true, false], 'control: an unreadable record');
 });
 
+// The page's real dispatch (handleAction, handleChange, handleForm, handleFilePick), close-out,
+// deleteWithUndo and two-tap arm, over gateStoreCtx's real load, save and commit. `hold`:
+// 'pack' (a newer record met from the pack: sync.newerFormat), 'device' (this browser's copy is a
+// newer tab's), or '' (nothing held: the control).
+const HELD_DISPATCH_FNS = ['handleAction', 'handleChange', 'handleForm', 'handleFilePick', 'performCloseout', 'deleteWithUndo', 'arm',
+  'heldActAllowed', 'refuseHeldAct', 'HELD_ACTS', 'HELD_ACT_PREFIXES', 'HELD_CHANGES', 'PARENT_ACTS', 'GATE_ACTS',
+  'FORMAT_CLOSEOUT', 'FORMAT_BACKUP', 'jsonBackup', 'toCents'];
+const heldDispatchCtx = (hold) => {
+  const rec = { version: 1, fmt: hold === 'device' ? NEWER_FMT : 1, packName: 'Pack', scouts: [{ id: 's1', name: 'Ada' }],
+    leaders: [{ id: 'l1', name: 'Akela' }], budget: { programYear: 2026 }, archives: [], goalCents: 100 };
+  const ctx = gateStoreCtx(rec);
+  vm.runInContext(`var ui = { overlay: { kind: 'closeout' }, armed: null, ledgerFilter: { text: '', lineId: '', dir: '' } };
+    var navs = [], downloads = [], picked = [], formsRead = 0, toastAction = null, toastTimer = null;
+    function FormData() { formsRead += 1; this.get = function () { return ''; }; }
+    var document = { getElementById: function () { return null; } };
+    function gateMode() { return null; } function parentMode() { return false; }
+    function gotoNav(t) { navs.push(t); } function setTimeout() { return 1; }
+    function download(name) { downloads.push(name); }
+    function buildSeasonArchive() { return { kind: 'season', year: state.budget.programYear }; }
+    function rolloverYear() { state.budget.programYear += 1; }
+    function handleImportFile() { picked.push('import'); } function handleMoveFile() { picked.push('move'); }
+    function handleIcsImportFile() { picked.push('ics'); } function handleTeFile() { picked.push('te'); }
+    ${HELD_DISPATCH_FNS.map(decl).join('\n')}
+    ${hold === 'pack' ? 'sync.newerFormat = true;' : ''}
+    function tap(act, data) { handleAction(act, { dataset: data || {} }); }`, ctx);
+  return ctx;
+};
+test('reload gate: while either hold is on, an edit is refused before it changes anything, and no success toast hides it', () => {
+  for (const hold of ['pack', 'device']) {
+    const ctx = heldDispatchCtx(hold);
+    const got = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, ctx)));
+    const [REFUSED, CLOSEOUT] = got('[FORMAT_REFUSED, FORMAT_CLOSEOUT]');
+    eq(got('packFormatHeld()'), true, `${hold}: not held (the test proves nothing)`);
+    // A single-tap delete: its "Deleted Akela" (with Undo) would say the opposite of what happened.
+    vm.runInContext("tap('del-leader:l1');", ctx);
+    eq(got('[state.leaders.length, toasts, store[KEY] === before, pushes, toastAction]'), [1, [REFUSED], true, 0, null],
+      `${hold}: a delete while held`);
+    // Close-out: refused on the first tap, before the snapshot is downloaded; and a second tap, and
+    // performCloseout itself, still do nothing.
+    vm.runInContext("toasts = []; tap('closeout-confirm'); tap('closeout-confirm'); performCloseout(); tap('open-closeout');", ctx);
+    eq(got('[downloads, toasts, state.budget.programYear, state.archives.length, ui.armed, store[KEY] === before]'),
+      [[], [CLOSEOUT, CLOSEOUT, CLOSEOUT, CLOSEOUT], 2026, 0, null, true], `${hold}: close-out while held`);
+    // A field, a draft (which never reaches commit), a form, a file chosen, and a toast's Undo: all
+    // refused, nothing read or changed.
+    vm.runInContext(`toasts = []; renders = 0;
+      handleChange({ dataset: { ch: 'goal' }, value: '5.00' });
+      handleChange({ dataset: { ch: 'ledger-fix-why' }, value: 'typed while held' });
+      handleForm({ dataset: { form: 'add-scout' } });
+      var fileIn = { id: 'importFile', value: 'C:/backup.json' }; handleFilePick(fileIn);
+      toastAction = function () { state.packName = 'Undone'; }; tap('toast-action');`, ctx);
+    eq(got('[state.goalCents, ui.fixWhy, formsRead, state.packName, picked, fileIn.value, toasts.length, toasts[0], renders >= 5, store[KEY] === before]'),
+      [100, null, 0, 'Pack', [], '', 5, REFUSED, true, true], `${hold}: a field, a draft, a form, a file or an Undo`);
+    // What stays open: moving about, closing, a filter, a read-only view. No refusal is said.
+    vm.runInContext(`toasts = []; tap('tab', { tab: 'money' }); tap('den-filter', { name: 'Wolf' }); tap('family-statement', { id: 's1' });
+      tap('close-overlay'); tap('archive-sheet:a1');
+      handleChange({ dataset: { ch: 'ledger-search' }, value: 'dues' });`, ctx);
+    eq(got('[toasts, navs, ui.denFilter, ui.overlay, ui.ledgerFilter.text]'), [[], ['money'], 'Wolf', { kind: 'te-archive', id: 'a1' }, 'dues'],
+      `${hold}: what stays open while held`);
+  }
+  // Control: nothing held, the same delete and close-out go through, with their own words.
+  const c = heldDispatchCtx('');
+  vm.runInContext("tap('del-leader:l1'); var afterDelete = toasts.slice(); toasts = []; tap('closeout-confirm'); tap('closeout-confirm');", c);
+  eq(JSON.parse(JSON.stringify(vm.runInContext('[state.leaders.length, afterDelete, downloads, toasts, state.budget.programYear]', c))),
+    [0, ['Deleted Akela'], ['pack-year-2026-snapshot.json'], ['Welcome to the 2027 program year'], 2027], 'control: nothing held');
+  vm.runInContext("toasts = []; handleChange({ dataset: { ch: 'goal' }, value: '5.00' }); handleFilePick({ id: 'teFile', value: 'x' });", c);
+  eq(JSON.parse(JSON.stringify(vm.runInContext('[state.goalCents, picked, toasts]', c))), [500, ['te'], []], 'control: a field and a file');
+});
+
+test('reload gate: an edit that reaches commit() some other way is refused while held from the pack too', () => {
+  const ctx = gateStoreCtx({ version: 1, fmt: 1, packName: 'Mine', scouts: [] });
+  vm.runInContext("sync.newerFormat = true; state.packName = 'Weather came back'; commit();", ctx);
+  eq(JSON.parse(JSON.stringify(vm.runInContext('[state.packName, JSON.parse(store[KEY]).packName, pushes, toasts.length]', ctx))),
+    ['Mine', 'Mine', 0, 1], 'a commit while held from the pack');
+});
+
+test('reload gate: every action left open while held is a real one, and none of them saves', () => {
+  const ctx = sandbox(['HELD_ACTS', 'HELD_ACT_PREFIXES', 'HELD_CHANGES']);
+  const h = slice('handleAction'), hc = slice('handleChange');
+  const acts = vm.runInContext('HELD_ACTS', ctx), prefixes = vm.runInContext('HELD_ACT_PREFIXES', ctx);
+  // The handler's text: from its test to the next one (or the next comment) at the same indent.
+  const bodyOf = (src, re) => {
+    const m = re.exec(src);
+    if (!m) return null;
+    const rest = src.slice(m.index);
+    const next = /\n    (?:if \(|\/\/)/.exec(rest.slice(1));
+    return next ? rest.slice(0, next.index + 1) : rest;
+  };
+  const reEsc = (s) => s.replace(/[-:]/g, (c) => '\\' + c);
+  const WRITES = /commit\(|save\(\)|deleteWithUndo|arm\(|state\.[\w.[\]]+\s*=[^=]/;
+  for (const a of acts) {
+    const b = bodyOf(h, new RegExp(`act === '${reEsc(a)}'`));
+    ok(b, `"${a}" is left open while held but handleAction has no such action`);
+    ok(!WRITES.test(b), `"${a}" saves or changes the record: ${b}`);
+  }
+  for (const p of prefixes) {
+    const b = bodyOf(h, new RegExp(`act\\.indexOf\\('${reEsc(p)}'\\) === 0`));
+    ok(b && !WRITES.test(b), `"${p}" is not a read-only action: ${b}`);
+  }
+  for (const ch of vm.runInContext('HELD_CHANGES', ctx)) {
+    const b = bodyOf(hc, new RegExp(`ch === '${reEsc(ch)}'`));
+    ok(b && /ui\./.test(b) && !/commit\(|save\(\)|state\./.test(b), `"${ch}" is not a filter: ${b}`);
+  }
+});
+
 test('reload gate: a backup saved by a newer page is refused before this page reads it; an older one is offered as before', () => {
   const ctx = sandbox(NORMALIZE_FNS);
   vm.runInContext(`var ui = { overlay: null }, toasts = [], renders = 0, fileText = '';
@@ -20998,7 +21102,7 @@ test('reload gate: a move file or backup saved by a newer page is not copied to 
     eq([m.error, m.backupOnly, b.error, b.backupOnly], [undefined, false, undefined, true], `control: fmt ${fmt}`);
   }
   // The backup download of a newer page's record, as this page read it, is refused too.
-  ok(/if \(act === 'export-json'\) \{\s*(?:\/\/[^\n]*\s*)*if \(formatHeldHere\(\)\) \{ showToast\(FORMAT_REFUSED\); return; \}\s*var bkJ = jsonBackup\(\);/.test(SCRIPT),
+  ok(/if \(act === 'export-json'\) \{\s*(?:\/\/[^\n]*\s*)*if \(formatHeldHere\(\)\) \{ showToast\(FORMAT_BACKUP\); return; \}\s*var bkJ = jsonBackup\(\);/.test(SCRIPT),
     'a backup of a newer page’s record can be downloaded');
 });
 
