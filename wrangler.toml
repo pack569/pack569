@@ -36,7 +36,11 @@ compatibility_date = "2026-09-28"
 #
 # THE SAME ID TWICE, AND NEVER THE THIRD. The top-level database_id and [env.preview]'s must be
 # the same (pack569-preview's), and neither may be production's. The harness and the deploy
-# job both refuse a wrangler.toml where that does not hold. And the check does not stop at this
+# job both refuse a wrangler.toml where that does not hold: both run scripts/check-wrangler.mjs,
+# which reads this file strictly. Every line is blank, a comment, one of the six table headers
+# below, or a plain  key = "value"  (no quoted keys, no value over several lines, no comment
+# after a value), so the file cannot say one thing to the check and another to wrangler.
+# DEPLOY_ENV is checked where it sits, block by block. And the check does not stop at this
 # file: each database carries a one-row `deployment` table saying which deployment it belongs
 # to (migrations/0002_deployment.sql), seeded once by the owner, and the API answers 503 to
 # everything when it does not match DEPLOY_ENV below.

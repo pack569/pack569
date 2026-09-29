@@ -22,6 +22,7 @@ import { createHash } from 'node:crypto';
 import vm from 'node:vm';
 import { execSync, spawnSync } from 'node:child_process';
 import * as site from '../scripts/build-site.mjs';
+import { checkWrangler } from '../scripts/check-wrangler.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const HTML = readFileSync(join(ROOT, 'index.html'), 'utf8');
@@ -13093,6 +13094,14 @@ test('--verify refuses a production build passed as preview, the reverse, and a 
   eq(r.status, 1, 'the --verify CLI exit code');
 });
 
+// Two made-up D1 ids, for filling in wrangler.toml's placeholders in a test.
+const WR_PRE = '11111111-1111-4111-8111-111111111111', WR_PROD = '22222222-2222-4222-8222-222222222222';
+// The n-th (0-based) occurrence of `id` in t replaced by `to`.
+const wrNth = (t, id, n, to) => { const p = t.split(id); return p.slice(0, n + 1).join(id) + to + p.slice(n + 1).join(id); };
+// Each block's database_id, by the block it sits under: { top, preview, production } — as the
+// deploy's own check (scripts/check-wrangler.mjs) reads them.
+const wranglerDbIds = (W) => checkWrangler(W).ids;
+
 test('the workflow deploys only by hand, production only from main, with every action pinned', () => {
   const WF = readFileSync(join(ROOT, '.github/workflows/website.yml'), 'utf8');
   const uses = WF.match(/^\s*(?:- )?uses:.*$/gm) || [];
@@ -13142,33 +13151,27 @@ test('the workflow deploys only by hand, production only from main, with every a
   ok(!/if \[ -e functions \]; then/.test(jobs.deploy), 'the deploy still refuses the API it has to ship');
   ok(/find functions -type f ! -name '\*\.js'[\s\S]*?exit 1/.test(jobs.deploy), 'a non-.js file in functions/ is not refused');
   ok(/cp -R functions "\$RUNNER_TEMP\/deploy\/functions"/.test(jobs.deploy), 'the API is not staged beside the site');
-  ok(/grep -n '\^\[\^#\]\*REPLACE_WITH_' wrangler\.toml; then[\s\S]*?exit 1/.test(jobs.deploy), 'a placeholder D1 id is not refused');
-  ok(jobs.deploy.indexOf('REPLACE_WITH_') < jobs.deploy.indexOf('uses: cloudflare/wrangler-action'), 'the placeholder check runs after the deploy');
-  // Finding 1 (security review of stage A): the same step refuses crossed ids. Run the step's own
-  // script against a filled-in wrangler.toml, then against each way of crossing it.
-  const stepM = /- name: Refuse placeholder or crossed database ids\n\s+run: \|\n((?: {10}.*\n| *\n)+)/.exec(jobs.deploy);
-  ok(stepM, 'no step refusing crossed database ids');
-  if (stepM && process.platform !== 'win32') {
-    const script = stepM[1].split('\n').map((l) => l.slice(10)).join('\n');
+  // Security re-review of stage A, follow-up 1: the step is the shared strict checker, and nothing
+  // else, so the deploy and the harness cannot drift apart. Run the step itself, as the runner would.
+  const stepM = /- name: Refuse placeholder or crossed database ids\n\s+run: node scripts\/check-wrangler\.mjs wrangler\.toml\n/.exec(jobs.deploy);
+  ok(stepM, 'the deploy does not refuse wrangler.toml with scripts/check-wrangler.mjs');
+  ok(jobs.deploy.indexOf('check-wrangler') < jobs.deploy.indexOf('uses: cloudflare/wrangler-action'), 'the wrangler.toml check runs after the deploy');
+  ok(jobs.deploy.indexOf('check-wrangler') > jobs.deploy.indexOf('uses: actions/setup-node'), 'the wrangler.toml check runs before Node is set up');
+  if (stepM) {
     const W0 = readFileSync(join(ROOT, 'wrangler.toml'), 'utf8');
-    const PRE = '11111111-1111-4111-8111-111111111111', PROD = '22222222-2222-4222-8222-222222222222';
-    const filled = W0.split('REPLACE_WITH_PACK569_PREVIEW_DATABASE_ID').join(PRE).split('REPLACE_WITH_PACK569_PROD_DATABASE_ID').join(PROD);
+    const filled = W0.split('REPLACE_WITH_PACK569_PREVIEW_DATABASE_ID').join(WR_PRE).split('REPLACE_WITH_PACK569_PROD_DATABASE_ID').join(WR_PROD);
     const dir = mkdtempSync(join(tmpdir(), 'pack569-ids-'));
     const runStep = (toml) => {
       writeFileSync(join(dir, 'wrangler.toml'), toml);
-      return spawnSync('bash', ['-c', script], { cwd: dir, encoding: 'utf8' }).status;
+      return spawnSync(process.execPath, [join(ROOT, 'scripts/check-wrangler.mjs'), 'wrangler.toml'], { cwd: dir, encoding: 'utf8' });
     };
-    // The n-th (0-based) occurrence of `id` replaced by `to`.
-    const nth = (t, id, n, to) => { const p = t.split(id); return p.slice(0, n + 1).join(id) + to + p.slice(n + 1).join(id); };
     try {
-      eq(runStep(filled), 0, 'the step refuses a correct wrangler.toml');
-      eq(runStep(W0), 1, 'the step accepts placeholders');
-      eq(runStep(filled.split(PROD).join(PRE)), 1, 'the step accepts production bound to the preview database');
-      eq(runStep(nth(filled, PRE, 1, PROD)), 1, 'the step accepts [env.preview] bound to the production database');
-      eq(runStep(nth(filled, PRE, 0, PROD)), 1, 'the step accepts the top level bound to the production database');
-      eq(runStep(filled.replace('DEPLOY_ENV = "prod"', 'DEPLOY_ENV = "preview"')), 1, 'the step accepts production saying DEPLOY_ENV preview');
-      eq(runStep(filled.replace('database_id = "' + PROD + '"', 'database_id = "' + PROD + '"\ndatabase_id = "' + PRE + '"')), 1,
-        'the step accepts two ids under one block');
+      const good = runStep(filled);
+      eq(good.status, 0, 'the step refuses a correct wrangler.toml: ' + good.stdout);
+      const bad = runStep(W0);
+      eq(bad.status, 1, 'the step accepts placeholders');
+      ok(/^::error title=wrangler\.toml still has placeholder D1 ids::/m.test(bad.stdout), 'the step does not say which problem, as a GitHub error');
+      eq(runStep(wrNth(filled, WR_PRE, 1, WR_PROD)).status, 1, 'the step accepts [env.preview] bound to the production database');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }
   ok(/cp -R _site "\$RUNNER_TEMP\/deploy\/_site"/.test(jobs.deploy) && /workingDirectory: \$\{\{ runner\.temp \}\}\/deploy/.test(jobs.deploy),
@@ -13179,19 +13182,6 @@ test('the workflow deploys only by hand, production only from main, with every a
   ok(/group: \$\{\{ github\.event_name == 'workflow_dispatch' && format\('website-dispatch-\{0\}', github\.run_id\)/.test(WF),
     'dispatches share a concurrency group');
 });
-
-// Each block's database_id, by the block it sits under: { top, preview, production }.
-function wranglerDbIds(W) {
-  const out = {};
-  let cur = null;
-  W.split('\n').forEach((l) => {
-    const h = /^\[\[?([a-z0-9_.]+)\]\]?$/.exec(l.trim());
-    if (h) { cur = { d1_databases: 'top', 'env.preview.d1_databases': 'preview', 'env.production.d1_databases': 'production' }[h[1]] || null; return; }
-    const m = /^database_id = "([^"]*)"$/.exec(l);
-    if (m && cur) out[cur] = out[cur] === undefined ? m[1] : out[cur] + '|' + m[1];
-  });
-  return out;
-}
 
 test('wrangler.toml publishes _site, and git ignores the build output', () => {
   const W = readFileSync(join(ROOT, 'wrangler.toml'), 'utf8');
@@ -13239,6 +13229,67 @@ test('wrangler.toml publishes _site, and git ignores the build output', () => {
   } catch (e) {
     if (e.status === 1) throw new Error('git does not ignore the build output');
     if (e.status !== 128) throw e;
+  }
+});
+
+test('wrangler.toml check: a file that reads one way line by line and another way to wrangler is refused', () => {
+  // Security re-review of stage A, follow-up 1. scripts/check-wrangler.mjs is what the deploy runs;
+  // every attack below is one the old line-by-line greps let through.
+  const W0 = readFileSync(join(ROOT, 'wrangler.toml'), 'utf8');
+  const filled = W0.split('REPLACE_WITH_PACK569_PREVIEW_DATABASE_ID').join(WR_PRE).split('REPLACE_WITH_PACK569_PROD_DATABASE_ID').join(WR_PROD);
+  const titles = (t) => checkWrangler(t).problems.map((p) => p.title);
+  eq(titles(filled), [], 'the real file, placeholders filled in');
+  eq(checkWrangler(filled).ids, { top: WR_PRE, preview: WR_PRE, production: WR_PROD }, 'the ids, by block');
+  // Unfilled, the real file's only problems are its three placeholders.
+  eq(titles(W0), ['wrangler.toml still has placeholder D1 ids', 'wrangler.toml still has placeholder D1 ids', 'wrangler.toml still has placeholder D1 ids'],
+    'the committed file');
+  // What a reader that skips lines it cannot parse would see (the old greps did no better).
+  const lineView = (t) => t.split('\n').filter((l) => /^$|^#|^\[\[?[a-z0-9_.]+\]\]?$|^[A-Za-z_][A-Za-z0-9_]* = "[^"\\]*"$/.test(l)).join('\n');
+  const UNREADABLE = 'wrangler.toml has a line this check cannot read';
+  const pv = '[env.preview.vars]\n', pd = '[[env.preview.d1_databases]]\n';
+  const pdStart = filled.indexOf(pd), pdEnd = filled.indexOf('[env.production.vars]');
+  const honestD1 = filled.slice(pdStart, pdEnd);
+  const attacks = [
+    // A preview bound to production's database AND saying DEPLOY_ENV = "prod", so the run-time
+    // guard passes too: the real keys are quoted, the honest-looking ones sit inside """ strings.
+    ['quoted keys and multi-line strings', filled
+      .replace(pv + 'DEPLOY_ENV = "preview"\n', pv + 'NOTE = """\nDEPLOY_ENV = "preview"\n"""\n"DEPLOY_ENV" = "prod"\n')
+      .replace(pd + 'binding = "DB"\ndatabase_name = "pack569-preview"\ndatabase_id = "' + WR_PRE + '"\nmigrations_dir = "migrations"\n',
+        pd + 'binding = "DB"\ndatabase_name = "pack569-preview"\nmigrations_dir = """\ndatabase_id = "' + WR_PRE + '"\n"""\n"database_id" = "' + WR_PROD + '"\n'),
+      UNREADABLE, true],
+    // A fake [[env.preview.d1_databases]] inside a string; the real one is spelled so a line reader skips it.
+    ['a multi-line string holding a fake table header', filled.slice(0, pdStart) +
+      'NOTE = """\n' + honestD1 + '"""\n' +
+      '[[ env.preview.d1_databases ]]\n"binding" = "DB"\n"database_name" = "pack569-preview"\n"database_id" = "' + WR_PROD + '"\n"migrations_dir" = "migrations"\n\n' +
+      filled.slice(pdEnd), UNREADABLE, true],
+    // A placeholder after a '#' inside a value slipped the old comment-skipping grep.
+    ['"#REPLACE_WITH_X" inside a value', wrNth(filled, WR_PROD, 0, '#REPLACE_WITH_X'), 'wrangler.toml still has placeholder D1 ids', false],
+    // Swapped: still two "preview" and one "prod", so counting lines passed it.
+    ['DEPLOY_ENV swapped between the top level and production', filled
+      .replace('[vars]\nDEPLOY_ENV = "preview"', '[vars]\nDEPLOY_ENV = "prod"')
+      .replace('[env.production.vars]\nDEPLOY_ENV = "prod"', '[env.production.vars]\nDEPLOY_ENV = "preview"'), 'wrangler.toml DEPLOY_ENV', false],
+    ['production saying DEPLOY_ENV preview', filled.replace('DEPLOY_ENV = "prod"', 'DEPLOY_ENV = "preview"'), 'wrangler.toml DEPLOY_ENV', false],
+    ['production bound to the preview database', filled.split(WR_PROD).join(WR_PRE), 'wrangler.toml database ids are crossed', false],
+    ['[env.preview] bound to the production database', wrNth(filled, WR_PRE, 1, WR_PROD), 'wrangler.toml database ids are crossed', false],
+    ['the top level bound to the production database', wrNth(filled, WR_PRE, 0, WR_PROD), 'wrangler.toml database ids are crossed', false],
+    ['two ids under one block', filled.replace('database_id = "' + WR_PROD + '"', 'database_id = "' + WR_PROD + '"\ndatabase_id = "' + WR_PRE + '"'),
+      'wrangler.toml sets a key twice', false],
+    ['a second preview database entry', filled + '\n' + honestD1.split(WR_PRE).join(WR_PROD), 'wrangler.toml has a table twice', false],
+    ['an [env.production] table', filled + '\n[env.production]\nname = "x"\n', 'wrangler.toml has a table this check does not know', false],
+    ['a vars table opened twice', filled + '\n[env.preview.vars]\n', 'wrangler.toml has a table twice', false],
+    ['a dotted key under the top level', filled.replace('name = "pack569"', 'name = "pack569"\nenv.preview.vars.DEPLOY_ENV = "prod"'), UNREADABLE, false],
+    ['a \'literal\' string', filled.replace('DEPLOY_ENV = "prod"', "DEPLOY_ENV = 'prod'"), UNREADABLE, false],
+    ['a trailing comment', filled.replace('DEPLOY_ENV = "prod"', 'DEPLOY_ENV = "prod" # live'), UNREADABLE, false],
+    ['an indented key', filled.replace('DEPLOY_ENV = "prod"', '  DEPLOY_ENV = "prod"'), UNREADABLE, false],
+    ['Windows line endings', filled.split('\n').join('\r\n'), UNREADABLE, false],
+    ['a database_id that is not a D1 id', wrNth(filled, WR_PROD, 0, 'pack569-prod'), 'wrangler.toml database id', false],
+    ['the owner\'s account id committed', filled.replace('OWNER_MODE = "fixed"', 'OWNER_MODE = "fixed"\nPACK_OWNER_UID = "abc"'), 'wrangler.toml commits PACK_OWNER_UID', false]
+  ];
+  for (const [what, text, title, fooledLines] of attacks) {
+    ok(text !== filled, what + ': the attack did not change the file (the test is stale)');
+    ok(titles(text).indexOf(title) >= 0, what + ': not refused as "' + title + '" (got ' + JSON.stringify(titles(text)) + ')');
+    // The two crafted to fool a line reader really do: the lines it can read make a correct file.
+    if (fooledLines) eq(titles(lineView(text)), [], what + ': a line-by-line reader would not have been fooled (the attack is stale)');
   }
 });
 

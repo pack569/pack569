@@ -202,30 +202,14 @@ jobs:
       # has created the databases and pasted their ids in, the ids are REPLACE_WITH_…
       # placeholders, and a deploy would fail inside wrangler, or bind nothing. Say so here.
       # And the ids must pair up: the top level and [env.preview] carry the same id (the
-      # preview database's), and neither is production's. A name is only a label; the id is
-      # what wrangler binds. (The API checks the same thing again at run time, against the
+      # preview database's), and neither is production's; DEPLOY_ENV is "preview" in both of
+      # those and "prod" in [env.production]. A name is only a label; the id is what wrangler
+      # binds. scripts/check-wrangler.mjs reads the file strictly (plain lines only: no quoted
+      # keys, no multi-line strings that could hide a fake table), and the harness runs the
+      # same script on every push. (The API checks the pairing again at run time, against the
       # database's own `deployment` row: functions/_lib/pack.js database().)
       - name: Refuse placeholder or crossed database ids
-        run: |
-          set -eu
-          if grep -n '^[^#]*REPLACE_WITH_' wrangler.toml; then
-            echo "::error title=wrangler.toml still has placeholder D1 ids::Create pack569-prod and pack569-preview and paste their ids into wrangler.toml (docs/cloudflare-setup.md, The pack's database)."
-            exit 1
-          fi
-          id_in() { awk -v want="$1" '/^\[/ { s = $0; next } s == want && /^database_id = "/ { split($0, a, "\""); print a[2] }' wrangler.toml; }
-          top=$(id_in '[[d1_databases]]')
-          pre=$(id_in '[[env.preview.d1_databases]]')
-          prod=$(id_in '[[env.production.d1_databases]]')
-          if [ "$(grep -c '^database_id = ' wrangler.toml)" != 3 ] || [ -z "$top" ] || [ -z "$prod" ] \
-            || [ "$top" != "$pre" ] || [ "$top" = "$prod" ]; then
-            echo "::error title=wrangler.toml database ids are crossed::The top level and [env.preview] must both carry pack569-preview's id, and [env.production] pack569-prod's, a different one (docs/cloudflare-setup.md, The pack's database)."
-            exit 1
-          fi
-          if [ "$(grep -c '^DEPLOY_ENV = "preview"$' wrangler.toml)" != 2 ] || [ "$(grep -c '^DEPLOY_ENV = "prod"$' wrangler.toml)" != 1 ]; then
-            echo "::error title=wrangler.toml DEPLOY_ENV::The top level and [env.preview] must say DEPLOY_ENV = \"preview\", and [env.production] DEPLOY_ENV = \"prod\"."
-            exit 1
-          fi
-          echo "Database ids: preview $top (top level and [env.preview]), production $prod."
+        run: node scripts/check-wrangler.mjs wrangler.toml
 
       # Deploy from a folder holding only the verified site, the API and wrangler.toml, so
       # wrangler cannot pick up anything else from the checkout. `wrangler pages deploy`

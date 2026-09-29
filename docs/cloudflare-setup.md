@@ -265,7 +265,8 @@ applies the same who-may-see-what rules as SETUP.md Part C, plus two the old rul
 hold: the pack always keeps at least one admin, and the sign-up link only ever files a request.
 
 There are **two databases**, and a preview's server is kept off the live one twice over: by
-the ids in `wrangler.toml` (checked by the harness and the deploy job), and by each database's
+the ids in `wrangler.toml` (checked by `scripts/check-wrangler.mjs`, which the harness and the
+deploy job both run), and by each database's
 own record of which deployment it belongs to (step B). What is *not* separated is sign-in;
 see [One Firebase project](#one-firebase-project-an-accepted-risk) below.
 
@@ -300,7 +301,9 @@ Each prints a `database_id` (a long id with dashes). In `wrangler.toml`, replace
 
 The preview id must be the same in both places, and must not be the prod id. The harness and
 the deploy job both refuse a `wrangler.toml` where that does not hold, and so does the API
-itself once it is running (step B's last line).
+itself once it is running (step B's last line). Edit only the text between the quotes: the
+check reads the file strictly, one plain `key = "value"` per line, and refuses anything else
+(a quoted key, a value over several lines, a comment after a value).
 
 Commit that on a branch. A database id is not a secret: nothing can open the database
 without a Cloudflare login or token for your account.
