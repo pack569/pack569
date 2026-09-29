@@ -9016,7 +9016,10 @@
       return opts ? self.mods.fs.onSnapshot(ref, opts, next, onErr) : self.mods.fs.onSnapshot(ref, next, onErr);
     },
     // The pack record: { rev, device, json, updatedAt }, or null before anyone has saved.
-    subscribePack: function (h, onNext, onErr) { return this.watch(h.ref, null, onNext, onErr); },
+    // includeMetadataChanges, as for the join config: the app waits for a server answer before
+    // it treats anything as the pack record's first answer (onRemoteSnap), and without it the
+    // server confirming an unchanged cached copy raises no event, so that wait never ends.
+    subscribePack: function (h, onNext, onErr) { return this.watch(h.ref, { includeMetadataChanges: true }, onNext, onErr); },
     // One idempotent read-modify-write. build(remote) is handed the record as it stands right
     // now (null if none) and returns { record, result }; it may run more than once if another
     // device writes in between, so it must not have side effects that a rerun would double.
@@ -11518,13 +11521,21 @@
   // sync-conflict overlay keeps `rec` exactly as it came, for adoptRemote.
   function onRemoteSnap(rec, meta) {
     var serverRevs = !!(sync.backend && sync.backend.serverRevs);
+    var fromServer = !(meta && meta.fromServer === false);
+    // A cached answer is never the FIRST answer (security review of 6747945..6fa61c2, item 1).
+    // Firestore hands the listener what its cache holds first when the device is offline, often
+    // "no record" — and taken as the first answer, that seeds this device's copy over the shared
+    // one when the connection comes back, or skips the comparison a leader should have made.
+    // Nothing here acts on it; the server's answer (subscribePack asks for it even when it only
+    // confirms the cache) is the first answer. Only Firestore has a cache: the pack's server's
+    // answers are always fromServer.
+    if (!fromServer && sync.firstSnap) return;
     // BACKEND 'api' (security review of stage C, item 1): a record arriving after the server
     // said it had none (the owner's copy-in, most likely) is a first answer too, however it
     // arrives — here from the pack feed, or from syncPush, which hands such a record over
     // rather than writing on top of it.
     var wasFirst = sync.firstSnap || !!(serverRevs && rec && !sync.remoteRec);
     sync.firstSnap = false;
-    var fromServer = !(meta && meta.fromServer === false);
     if (sync.mode !== 'online') { sync.mode = 'online'; sync.error = ''; renderSyncPill(); if (ui.tab === 'pack') render(); }
     // Parent phase — publish the sanitized copy once per connection too, so parents aren't
     // waiting on the next leader edit for their first schedule. Debounced + fingerprinted,

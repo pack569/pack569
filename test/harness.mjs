@@ -8826,6 +8826,79 @@ test('Firestore: a save before the pack record’s first answer never writes ove
   eq(run({ firstSnap: false, local: mine, remote: other }).sets, [10], 'control: a save after the first answer');
 });
 
+// The page's real subscribeDoc, onRemoteSnap and syncPush on the real firestoreBackend and the
+// fake SDK. `local` is this device's copy; the pack feed has not answered yet. Timers are kept,
+// and run() fires them (the 800 ms push).
+function fsFeedCtx(local, extra) {
+  return fsAdapterCtx(`
+    var toasts = [], timers = [], saves = 0, renders = 0;
+    function fixedSyncBlocked() { return false; } function fixedFeedBlocked() { return false; }
+    function accountsInForce() { return false; } function canEdit() { return true; }
+    function holdPushes() { return false; } function scheduleParentViewRefresh() {} function render() { renders += 1; }
+    function renderSyncPill() {} function save() { saves += 1; } function showToast(m) { toasts.push(m); }
+    function syncFail(e) { throw e; }
+    function clearTimeout(t) { if (t) timers[t - 1] = null; } function setTimeout(fn) { timers.push(fn); return timers.length; }
+    function runTimers() { var fns = timers; timers = []; fns.forEach(function (f) { if (f) f(); }); }
+    function normalizeState(p) { return p && typeof p === 'object' && !Array.isArray(p) ? JSON.parse(JSON.stringify(p)) : null; }
+    var ui = { tab: 'home', overlay: null };
+    var state = ${JSON.stringify(local)};
+    var sync = { backend: firestoreBackend, pack: firestoreBackend.open('P'), session: 1, deviceId: 'dev1', clobber: false,
+      dirty: false, mode: 'connecting', notice: '', firstSnap: true, remoteRec: null, conflict: null, pushTimer: null,
+      unsub: null, feed: null, packMissing: false };
+    ${['packLinked', 'subscribeDoc', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'adoptRemote', 'onRemoteSnap', 'syncPush'].map(decl).join('\n')}
+    ${extra || ''}
+    subscribeDoc(1);`);
+}
+const fsFeedGot = (ctx) => JSON.parse(JSON.stringify(vm.runInContext(`({ sets: txSets.map(function (s) { return s[1].rev; }),
+  overlay: ui.overlay && ui.overlay.kind, conflict: sync.conflict && sync.conflict.rev, firstSnap: sync.firstSnap,
+  dirty: sync.dirty, rev: state.rev, name: state.packName || '', mode: sync.mode })`, ctx)));
+
+test('Firestore: a cached first answer is never the first answer, so it can neither seed nor skip the comparison', () => {
+  // Security review of 6747945..6fa61c2, item 1. Offline, Firestore's listener answers first
+  // from its cache — here "no record". Taken as the first answer, a device with a copy seeds it
+  // over the shared pack when the connection returns (the push's own read comes after the
+  // first answer, so nothing stops it), and a parent just made an editor seeds an empty pack.
+  const shared = { rev: 9, device: 'd2', json: JSON.stringify({ rev: 9, packName: 'Shared', scouts: [{ id: 'b' }] }) };
+  const mine = { rev: 2, packName: 'Old', scouts: [{ id: 'a' }] };
+  const offlineThenOnline = (local) => {
+    const ctx = fsFeedCtx(local);
+    // The listener asks for metadata changes, or the server confirming the cache would never arrive.
+    eq(vm.runInContext('[watches[0].ref.path, watches[0].opts]', ctx), ['packs/P', { includeMetadataChanges: true }],
+      'the pack feed does not ask to hear the server confirm a cached copy');
+    vm.runInContext("watches[0].next(snapOf('packs/P', { fromCache: true }))", ctx);
+    const cached = fsFeedGot(ctx);
+    const pushQueued = vm.runInContext('timers.filter(Boolean).length', ctx);
+    // Back online: whatever was queued runs against the shared pack, then the server answers.
+    vm.runInContext("reads['packs/P'] = " + JSON.stringify(shared) + "; runTimers();", ctx);
+    vm.runInContext("watches[0].next(snapOf('packs/P', {}))", ctx);
+    vm.runInContext('runTimers()', ctx);
+    return { cached, pushQueued, after: fsFeedGot(ctx) };
+  };
+  // A device with its own copy: nothing is queued or written, and the leader is asked.
+  const a = offlineThenOnline(mine);
+  eq([a.cached.firstSnap, a.cached.dirty, a.pushQueued], [true, false, 0], 'a cached "no record" was taken as the first answer');
+  eq(a.after, { sets: [], overlay: 'sync-conflict', conflict: 9, firstSnap: false, dirty: false, rev: 2, name: 'Old', mode: 'online' },
+    'a cached first answer let this device write over the shared pack, or skip the choice');
+  // An empty device (a parent just made an editor): it takes the shared copy; nothing is seeded.
+  const b = offlineThenOnline({ rev: 0, packName: '', scouts: [] });
+  eq([b.pushQueued, b.after.sets, b.after.name, b.after.rev, b.after.overlay], [0, [], 'Shared', 9, null],
+    'an empty device seeded an empty pack over the shared one');
+  // A cached RECORD is not compared either; the server's is.
+  const c = fsFeedCtx(mine);
+  vm.runInContext(`reads['packs/P'] = { rev: 4, device: 'd2', json: JSON.stringify({ rev: 4, packName: 'Old', scouts: [{ id: 'a' }] }) };
+    watches[0].next(snapOf('packs/P', { fromCache: true }));`, c);
+  eq([fsFeedGot(c).firstSnap, fsFeedGot(c).rev], [true, 2], 'a cached record was taken as the first answer');
+  // Controls: the server's "no record" still seeds, and a cached answer AFTER the first is read as before.
+  const d = fsFeedCtx(mine);
+  vm.runInContext("watches[0].next(snapOf('packs/P', {})); runTimers();", d);
+  eq(fsFeedGot(d).sets, [3], 'control: the server saying "no record" no longer seeds the pack');
+  const e = fsFeedCtx(mine, 'sync.dirty = false;');
+  vm.runInContext("reads['packs/P'] = " + JSON.stringify({ rev: 2, device: 'd2', json: JSON.stringify(mine) }) + ";" +
+    "watches[0].next(snapOf('packs/P', {}));" +
+    "reads['packs/P'] = " + JSON.stringify(shared) + "; watches[0].next(snapOf('packs/P', { fromCache: true }));", e);
+  eq([fsFeedGot(e).name, fsFeedGot(e).rev], ['Shared', 9], 'control: a newer record after the first answer is not adopted');
+});
+
 test('the pack record feed ignores its own echoes and keeps the raw record for the conflict screen', () => {
   const ctx = vm.createContext({});
   vm.runInContext(`
