@@ -1008,7 +1008,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
 // LIVE STOPGAP — what every slice of the sync merge needs besides it (freshGone is in NORMALIZE_FNS).
-const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'ledgerTickedAt', 'reconciledFates', 'reconciledFatesText'];
+const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'ledgerTickedAt', 'reconciledFates', 'reconciledFatesText', 'restoreGone'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
   const ctx = vm.createContext({});
@@ -17150,6 +17150,78 @@ test('stopgap follow-up 4: the Trail’s End import says a re-import puts stale 
   eq([teBatches(p.b.get('state')), p.b.get('totals()')], [['te-devAb2'], { s1: 6000, s2: 2500 }], 'B after the re-import');
 });
 
+test('stopgap follow-up 6: a restored backup puts back what the pack had deleted since, on every device', () => {
+  // The handler restores through restoreGone, with this device's marks, now.
+  ok(/if \(act === 'confirm-import'\) \{\s*state = restoreGone\(ui\.overlay\.data, state\.gone, Date\.now\(\)\);/.test(SCRIPT),
+    'confirm-import does not mark what the backup puts back');
+  const seed = JSON.stringify(goneSeedNorm());
+  const RESTORE = `state = restoreGone(normalizeState(${seed}), state.gone, Date.now()); commit()`;
+  // The re-review's probe: A deletes a scout (and a fundraiser and a product) and saves; B takes
+  // it, then has an unsaved edit; A restores a backup from before the delete; B saves last. The
+  // three lists are last-write-wins, so B's merge has to take them back, not only keep their rows.
+  const { a, b, server } = fsGonePair();
+  const parents = (st) => [st.scouts.map((x) => x.id).sort(), st.fundraisers.map((f) => [f.id, f.sales.map((x) => x.id)]),
+    st.inventory.products.map((x) => x.id), st.inventory.distributions.map((x) => x.id)];
+  a.run(`${DEL_SCOUT}; ${DEL_FR}; ${DEL_PROD}`); a.push(); b.hear();
+  eq(parents(b.get('state')), [['s2'], [], [], []], 'B did not take the deletes');
+  b.run(B1);
+  a.run(RESTORE); a.push();
+  const whole = [['s1', 's2'], [['f1', ['fs1']]], ['p1'], ['d1']];
+  eq(parents(server()), whole, 'the restore');
+  b.hear(); b.push();
+  eq([parents(server()), eIds(server()), server().gone.scouts.s1 < 0], [whole, ['b1', 'old1', 'old2', 'x1', 'x2'], true],
+    'B deleted what the restore put back');
+  a.hear();
+  eq(parents(a.get('state')), whole, 'A after B’s save');
+  // Control: a delete made after the restore holds. B deletes the scout again, and A (with an
+  // unsaved edit) does not take it back.
+  a.run("state.entries.push({ id: 'a7', scoutId: 's2', kind: 'wagon', date: '', salesCents: 1, donationsCents: 0 }); commit()");
+  b.run(skew(60000)); b.run(DEL_SCOUT); b.push(); a.hear(); a.push();
+  eq(server().scouts.map((x) => x.id), ['s2'], 'a delete after the restore was undone');
+  // A row added after the backup and deleted since stays deleted: the pack's marks go out with it.
+  const p = fsGonePair();
+  p.a.run("state.entries.push({ id: 'n1', scoutId: 's2', kind: 'wagon', date: '', salesCents: 9, donationsCents: 0 }); commit()");
+  p.a.push(); p.b.hear();
+  p.b.run(B1);
+  p.a.run("markGone('entries', state.entries.filter(function (e) { return e.id === 'n1'; })); state.entries = state.entries.filter(function (e) { return e.id !== 'n1'; }); commit()");
+  p.a.push();
+  p.a.run(RESTORE); p.a.push();
+  p.b.hear(); p.b.push();
+  eq(eIds(p.server()), ['b1', 'old1', 'old2', 'x1', 'x2'], 'a row deleted since the backup came back from a device still holding it');
+  // What the screen says: a delete on a device that has not saved yet wins when it saves.
+  const q = fsGonePair();
+  q.b.run("markGone('entries', state.entries.filter(function (e) { return e.id === 'x2'; })); state.entries = state.entries.filter(function (e) { return e.id !== 'x2'; }); commit()");
+  q.a.run(RESTORE); q.a.push();
+  q.b.hear(); q.b.push();
+  eq(eIds(q.server()), ['old1', 'old2', 'x1'], 'an unsaved delete');
+});
+
+test('stopgap follow-up 6: restoreGone merges the marks, puts back only what the backup holds, and keeps the cap', () => {
+  const ctx = sandbox(NORMALIZE_FNS.concat(GONE_FNS));
+  const T = 1790000000000;
+  const rec = ctx.normalizeState(JSON.parse(JSON.stringify(Object.assign({}, GONE_SEED, {
+    entries: GONE_SEED.entries.concat([{ id: 'te-abc-0', scoutId: 's1', kind: 'online', date: '', salesCents: 1, donationsCents: 0, source: 'te-import' }]),
+    gone: { entries: { x1: T - 5, gone1: T - 5 }, ledger: { l1: -(T - 9) } } }))));
+  const cur = { entries: { x2: T - 1, gone1: -(T - 3), gone2: T - 2 }, ledger: { l1: T - 9 }, scouts: { s1: T - 3, s9: T - 3 },
+    fundraisers: { f1: T - 3 }, products: { p1: T - 3 }, distributions: { d1: T - 3 }, sales: { fs1: T - 3 }, imports: { abc: T - 4, old: T - 4 } };
+  const g = JSON.parse(JSON.stringify(ctx.restoreGone(rec, cur, T).gone));
+  eq(g.entries, { x1: -T, gone1: -(T - 3), x2: -T, gone2: T - 2 }, 'entries: merged, the later mark winning, and the backup’s rows put back');
+  eq(g.ledger, { l1: -T }, 'a tie goes to the deletion, then the backup’s row is put back');
+  eq([g.scouts, g.fundraisers, g.products, g.distributions, g.sales], [{ s1: -T, s9: T - 3 }, { f1: -T }, { p1: -T }, { d1: -T }, { fs1: -T }],
+    'the parent logs and their rows');
+  eq(g.imports, { abc: -T, old: T - 4 }, 'the backup’s import is put back; another stays replaced');
+  // A put-back is later than the delete it answers, even with a slow clock.
+  eq(ctx.restoreGone(ctx.normalizeState(JSON.parse(JSON.stringify(GONE_SEED))), { entries: { x1: T + 50 } }, T).gone.entries.x1, -(T + 51), 'a slow clock');
+  // Only marked ids: a big backup does not fill the log with put-backs and push deletions out.
+  const big = ctx.normalizeState({ version: 1, scouts: [], entries: Array.from({ length: 1500 }, (_, i) => ({ id: 'e' + i, scoutId: 's', kind: 'wagon', salesCents: 1 })) });
+  const kept = ctx.restoreGone(big, { entries: Object.fromEntries(Array.from({ length: 900 }, (_, i) => ['z' + i, T - 1000 - i])) }, T).gone.entries;
+  eq(Object.keys(kept).length, 900, 'put-backs for ids that were never deleted pushed deletions out');
+  // The cap holds after the merge, the newest kept.
+  const full = ctx.restoreGone(ctx.normalizeState({ version: 1, scouts: [] }),
+    { entries: Object.fromEntries(Array.from({ length: 1200 }, (_, i) => ['z' + i, T - i])) }, T).gone.entries;
+  eq([Object.keys(full).length, 'z0' in full, 'z1199' in full], [ctx.GONE_MAX, true, false], 'the cap');
+});
+
 test('stopgap follow-up 5: taking the cloud copy forgets a copy chosen to write over', () => {
   // B keeps its copy over A's close-out (rev 4), but A saves again (rev 5) before B's save goes,
   // so B is asked again, and this time takes the cloud copy. The choice was about rev 4.
@@ -17397,6 +17469,19 @@ atest('stopgap, api: a ledger row reconciled on one device after another deleted
   eq([server().ledger.length, recToasts(b)], [0, [LOST_L1]], 'a stale ticked copy brought the deleted row back');
 });
 
+atest('stopgap follow-up 6, api: a restored backup puts back what the pack had deleted since, on every device', async () => {
+  const { a, b, server } = await apiGonePair();
+  const seed = JSON.stringify(goneSeedNorm());
+  await a.edit(`${DEL_SCOUT}; ${DEL_FR}; ${DEL_PROD}`);
+  await b.poll();
+  b.run(B1);
+  await a.edit(`state = restoreGone(normalizeState(${seed}), state.gone, Date.now())`);
+  await settle([b], 800);
+  const st = server();
+  eq([st.scouts.map((x) => x.id).sort(), st.fundraisers.map((f) => f.id), st.inventory.products.map((x) => x.id), eIds(st)],
+    [['s1', 's2'], ['f1'], ['p1'], ['b1', 'old1', 'old2', 'x1', 'x2']], 'B deleted what the restore put back');
+});
+
 atest('stopgap, api: "Keep this device’s copy" merges another leader’s save it had heard', async () => {
   // Security S2, on the pack's server: B has an unsaved edit and has heard A's save; the feed
   // starts again and its first answer brings the chooser up; B keeps its copy.
@@ -17599,8 +17684,8 @@ test('stopgap: close-out keeps room for a year of deletion marks, and a restore 
   ok(/- utf8Bytes\(JSON\.stringify\(after\.gone \|\| \{\}\)\) \+ GONE_ROOM_BYTES/.test(now.replace(/\s+/g, ' ')), 'seasonLedgerNow');
   // Security S9: the restore screen.
   const o = slice('renderOverlay');
-  ok(/If this backup is older than the pack’s latest changes, a sale, payment or hand-out ' \+\s*'deleted since it was made can be deleted again the next time another device saves\./.test(o),
-    'the restore screen does not say an older backup’s deleted rows can be deleted again');
+  ok(/Anything in this backup that was deleted since it was made comes back on every device, ' \+\s*'except a scout, fundraiser, product, sale, payment or hand-out deleted on a device that has not saved yet: ' \+\s*'that is deleted again when it saves\./.test(o),
+    'the restore screen does not say what comes back, and what can be deleted again');
 });
 
 /* ================================================================

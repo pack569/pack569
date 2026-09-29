@@ -11547,6 +11547,42 @@
     });
     pruneGone(state.gone, t, false);
   }
+  // LIVE STOPGAP (re-review of the stopgap, item 6) — the marks a restored backup (`rec`,
+  // normalized) goes out with. The pack's marks as this device holds them (`cur`) are merged into
+  // the backup's, as a sync merge would (the later mark wins; on a tie, the deletion), so what was
+  // deleted since the backup stays deleted on a device still holding it. Then every row, scout,
+  // fundraiser, product and import the backup holds that is marked deleted is marked put back,
+  // later than the delete: restoring it is the newer act. Only those, not every id in the backup:
+  // put-backs for all of them would push real deletions out past the cap (pruneGone). A delete on
+  // a device that has not saved yet is not here, and wins when it saves. In place; `now` in ms.
+  function restoreGone(rec, cur, now) {
+    var g = rec.gone;
+    if (cur && typeof cur === 'object') Object.keys(g).forEach(function (log) {
+      var m = g[log], cm = cur[log];
+      if (!cm || typeof cm !== 'object') return;
+      Object.keys(cm).forEach(function (id) {
+        var t = cm[id];
+        if (typeof t !== 'number' || !isFinite(t) || !t) return;
+        if (!Object.prototype.hasOwnProperty.call(m, id) || Math.abs(t) > Math.abs(m[id]) || (Math.abs(t) === Math.abs(m[id]) && t > 0)) m[id] = t;
+      });
+    });
+    function back(log, id) {
+      if (typeof id === 'string' && id && g[log][id] > 0) g[log][id] = -Math.max(now, g[log][id] + 1);
+    }
+    function each(log, rows) { arrOf(rows).forEach(function (x) { back(log, x && x.id); }); }
+    each('entries', rec.entries);
+    each('ledger', rec.ledger);
+    each('scouts', rec.scouts);
+    each('fundraisers', rec.fundraisers);
+    arrOf(rec.fundraisers).forEach(function (fr) { each('sales', fr && fr.sales); });
+    each('products', rec.inventory && rec.inventory.products);
+    each('distributions', rec.inventory && rec.inventory.distributions);
+    arrOf(rec.entries).forEach(function (x) {
+      if (x && x.source === 'te-import') back('imports', teBatchOf(x.id) || TE_PRE_BATCH);
+    });
+    pruneGone(g, now, false);
+    return rec;
+  }
   // A mark more than a day ahead of `now` becomes `now`, keeping its sign. In place. The day is a
   // literal: normalizeState calls this.
   function clampGone(g, now) {
@@ -11693,6 +11729,21 @@
       removed += state.inventory.products.length - prLeft.length;
       state.inventory.products = prLeft;
     }
+    // Re-review of the stopgap, item 6 — and one marked put back (only a restored backup does
+    // that: restoreGone) that this copy does not hold is taken from the other copy, as a put-back
+    // row is: whatever delete this copy heard is older than the restore. Without it, a device
+    // still holding the delete wrote its own list over the restore, and kept the rows it had.
+    function takeBack(log, la, ra) {
+      if (!gone || !gone[log] || !Array.isArray(la) || !Array.isArray(ra)) return;
+      var have = {};
+      la.forEach(function (x) { if (x && typeof x.id === 'string') have[x.id] = true; });
+      ra.forEach(function (x) {
+        if (x && typeof x.id === 'string' && !have[x.id] && gone[log][x.id] < 0) { la.push(x); have[x.id] = true; added += 1; }
+      });
+    }
+    takeBack('scouts', state.scouts, remote.scouts);
+    takeBack('fundraisers', state.fundraisers, remote.fundraisers);
+    if (state.inventory && remote.inventory) takeBack('products', state.inventory.products, remote.inventory.products);
     state.entries = dropGone(state.entries, 'entries');
     unionById(state.entries, remote.entries, 'entries');
     // Two devices that each re-imported Trail's End before either saved (popcorn review 1,
@@ -22718,9 +22769,11 @@
         '<p>The imported backup has <strong>' + o.data.scouts.length + ' scouts</strong>, <strong>' + o.data.storefronts.length +
         ' storefronts</strong>, and <strong>' + o.data.entries.length + ' wagon/online entries</strong>. ' +
         'This replaces everything currently in the pack record.</p>' +
-        // LIVE STOPGAP (security review of the stopgap, S9): the pack's deletion marks outlive it.
-        '<p class="small muted">If this backup is older than the pack’s latest changes, a sale, payment or hand-out ' +
-        'deleted since it was made can be deleted again the next time another device saves.</p>' +
+        // LIVE STOPGAP (security review of the stopgap, S9; re-review, item 6): the pack's deletion
+        // marks outlive it, and the restore marks what it brings back put back (restoreGone).
+        '<p class="small muted">Anything in this backup that was deleted since it was made comes back on every device, ' +
+        'except a scout, fundraiser, product, sale, payment or hand-out deleted on a device that has not saved yet: ' +
+        'that is deleted again when it saves.</p>' +
         '<div class="row"><button type="button" class="btn danger" data-act="confirm-import">Replace my data</button>' +
         '<button type="button" class="btn" data-act="close-overlay">Cancel</button></div>' +
         '</div></div></div>';
@@ -27214,7 +27267,7 @@
     }
     if (act === 'import-ics') { document.getElementById('icsFile').click(); return; }
     if (act === 'confirm-import') {
-      state = ui.overlay.data;
+      state = restoreGone(ui.overlay.data, state.gone, Date.now());
       ui.overlay = null; ui.storefrontId = null; ui.expandedScouts = {};
       commit(); return;
     }
