@@ -15,8 +15,8 @@
 // Google's public keys are cached: in the Workers Cache API where there is one (Google's
 // response says how long to keep them, counting the Age it already had), and in memory for
 // the life of the isolate either way. A kid we have never seen refetches from Google itself,
-// skipping the cached copy, at most once a minute. Tests swap the fetcher, or stub fetch and
-// caches under the real one.
+// skipping the cached copy, at most once a minute; a cached copy without the kid is never
+// taken as the answer. Tests swap the fetcher, or stub fetch and caches under the real one.
 //
 // Plain ES module: runs in Cloudflare Workers and in Node (the harness).
 
@@ -63,13 +63,24 @@ function lifetimeOf(res) {
 // Google's key set, as { keys: [jwk…], maxAge: seconds left }. `fresh` skips the Cache API:
 // it is set when a token names a kid we do not have, which is what a key rotation looks like,
 // and a cached copy from before the rotation would not have it either (finding 6).
+// `kid` is the key the token names. A cold isolate has no copy in memory, so it asks without
+// `fresh` and may be handed the Cache API's pre-rotation copy; if that copy lacks the kid, it
+// goes to Google once, now, rather than refusing the token and then refusing to look again
+// for REFETCH_GAP (security re-review of stage A, follow-up 4).
 async function defaultFetchJwks(opts) {
   const fresh = !!(opts && opts.fresh);
+  const kid = opts && opts.kid;
   const cache = globalThis.caches && globalThis.caches.default;
   let res = null;
   if (cache && !fresh) {
     try { res = await cache.match(JWKS_URL); } catch (e) { res = null; }
     if (res && lifetimeOf(res) <= 0) res = null;
+    if (res && kid) {
+      let cached = null;
+      try { cached = await res.clone().json(); } catch (e) { cached = null; }
+      const has = cached && Array.isArray(cached.keys) && cached.keys.some((k) => k && k.kid === kid);
+      if (!has) res = null;
+    }
   }
   if (!res) {
     try { res = await fetch(JWKS_URL); } catch (e) { bad('jwks-unavailable'); }
@@ -103,7 +114,7 @@ async function keyFor(kid, now) {
   let jwk = now < jwks.expires ? jwks.keys.find((k) => k && k.kid === kid) : null;
   if (!jwk && (now >= jwks.expires || now - jwks.fetchedAt >= REFETCH_GAP)) {
     // Still-current keys without this kid: go to Google itself, not to the Cache API's copy.
-    const got = await fetchJwks({ fresh: now < jwks.expires });
+    const got = await fetchJwks({ fresh: now < jwks.expires, kid });
     const age = Math.max(0, Math.min(Number(got.maxAge) || 0, MAX_KEY_AGE));
     jwks = { keys: got.keys || [], expires: now + age, fetchedAt: now };
     imported.clear();

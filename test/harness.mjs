@@ -13609,6 +13609,45 @@ atest('api token: a rotated-in key is fetched from Google itself, not the stale 
   }
 });
 
+atest('api token: a cold isolate handed a cached key set without the token\'s kid asks Google once, at once', async () => {
+  // Security re-review of stage A, follow-up 4. The real fetcher, with fetch and the Cache API stubbed.
+  await apiSetup();
+  const jwk2 = Object.assign(await crypto.subtle.exportKey('jwk', API.rogue.publicKey), { kid: 'test-kid-2', alg: 'RS256', use: 'sig' });
+  const google = { keys: [API.jwk], fetches: 0 };
+  const store = new Map();
+  const cache = { matches: 0,
+    async match(u) { this.matches++; const r = store.get(u); return r ? r.clone() : undefined; },
+    async put(u, r) { store.set(u, r); } };
+  const had = { fetch: globalThis.fetch, caches: Object.getOwnPropertyDescriptor(globalThis, 'caches') };
+  globalThis.fetch = async () => {
+    google.fetches++;
+    return new Response(JSON.stringify({ keys: google.keys }), { headers: { 'cache-control': 'public, max-age=3600' } });
+  };
+  Object.defineProperty(globalThis, 'caches', { value: { default: cache }, configurable: true, writable: true });
+  const V = async (tok, at) => { try { await API.token.verifyIdToken(tok, API_PROJECT, at); return 'ok'; } catch (e) { return e.reason; } };
+  try {
+    const T = Math.floor(Date.now() / 1000);
+    const tok1 = await mint({}), tok2 = await mint({}, { header: { kid: 'test-kid-2' }, key: API.rogue });
+    API.token.setJwksFetcher(null);
+    eq([await V(tok1, T), google.fetches], ['ok', 1], 'the first isolate fills the Cache API');
+    google.keys = [API.jwk, jwk2];   // Google rotates a key in; the Cache API's copy predates it
+    // A cold isolate: its memory is empty, the Cache API's copy is well within its life.
+    API.token.setJwksFetcher(null);
+    eq(await V(tok1, T + 2), 'ok', 'a cold isolate, a kid the cached copy has');
+    eq(google.fetches, 1, 'a cold isolate went to Google for a kid the cached copy has');
+    API.token.setJwksFetcher(null);
+    eq(await V(tok2, T + 3), 'ok', 'a cold isolate, the rotated-in kid');
+    eq(google.fetches, 2, 'the rotated-in kid was not fetched from Google exactly once');
+    // …and the fresh copy it fetched is the one the Cache API now holds.
+    API.token.setJwksFetcher(null);
+    eq([await V(tok2, T + 4), google.fetches], ['ok', 2], 'the next cold isolate did not get the new copy from the Cache API');
+  } finally {
+    globalThis.fetch = had.fetch;
+    if (had.caches) Object.defineProperty(globalThis, 'caches', had.caches); else delete globalThis.caches;
+    API.useTestKeys();
+  }
+});
+
 /* ---- /api/session: the owner claim, invites, the sign-up link ---- */
 
 atest('api session: the first Google sign-in claims an unowned pack, as admin, for good (packmeta.create, packmeta.immutable, members.create.owner)', async () => {
