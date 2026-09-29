@@ -18628,6 +18628,31 @@ test('C3: a voided entry is un-voided from Voided & reversed with two taps while
   ok(/\['aside', 'Voided'\]/.test(slice('LEDGER_FILTERS')) && /C4 \(reversals\) names\s*\n\s*\/\/ it "Voided & reversed" again\./.test(SCRIPT), 'no Voided filter');
 });
 
+test('C3 treasurer: un-voiding takes an optional why, logged with it, as un-reconciling does', () => {
+  const p = c2rPage();
+  // The first tap opens the box, armed for a minute, with nothing left over; what is typed goes with the un-void.
+  p.run("void2('u1', 'Entered twice'); armMs = []; ui.unvoidWhy = 'left over'; act2('ledger-unvoid:u1')");
+  eq([p.get('ui.armed'), p.get('ui.unvoidWhy'), p.get('armMs'), p.get("!!aside('u1')")], ['ledger-unvoid:u1', '', [60000], true], 'the first tap');
+  p.run("ui.unvoidWhy = '  The check cleared after all  '; act2('ledger-unvoid:u1')");
+  eq([p.get("!!row('u1')"), p.get('ui.unvoidWhy'), p.get('log().map(function (e) { return [e.op, e.row, e.why]; })')],
+    [true, '', [['void', 'u1', 'Entered twice'], ['unvoid', 'u1', 'The check cleared after all']]], 'the un-void and its why');
+  // Left blank: no why at all.
+  p.run("void2('u1', 'Entered twice again'); act2('ledger-unvoid:u1'); act2('ledger-unvoid:u1')");
+  eq([p.get('log()[3].op'), 'why' in p.get('log()[3]')], ['unvoid', false], 'an un-void with nothing typed');
+  // The box: only on the armed row, escaped; kept as typed through a re-render.
+  const x = sandbox(['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'ledgerAsideListHtml']);
+  vm.runInContext(`var ui = { ledgerOpen: {}, armed: 'ledger-unvoid:v1', unvoidWhy: '"<b>' };
+    var state = { book: {}, ledgerAside: [{ id: 'v1', date: '2026-09-10', description: 'Pizza', amountCents: 4000, direction: 'out', off: 'void', voidReason: 'twice' },
+      { id: 'v2', date: '2026-09-11', description: 'Tents', amountCents: 3000, direction: 'out', off: 'void', voidReason: 'twice' }] };
+    function ledgerSort(a) { return a.slice(); } function ledgerMatches() { return true; } function ledgerLockedWhy() { return ''; }
+    function getBudgetLine() { return null; } function ledgerTrailLine() { return ''; } function ledgerHistoryHtml() { return ''; }`, x);
+  const h = x.ledgerAsideListHtml({ lineId: '', text: '' });
+  eq(h.match(/<input[^>]*>/g), ['<input class="lname" data-ch="ledger-unvoid-why" value="&quot;&lt;b&gt;" maxlength="500" placeholder="Why? (optional)" aria-label="Why un-void it (optional)">'], 'the why box');
+  ok(h.indexOf('data-ch="ledger-unvoid-why"') < h.indexOf('data-act="ledger-unvoid:v1"'), 'the box is not beside its button');
+  ok(/var uvWhyEl = e\.target\.closest\('input\[data-ch="ledger-unvoid-why"\]'\);\s*if \(uvWhyEl\) ui\.unvoidWhy = uvWhyEl\.value;/.test(SCRIPT) &&
+    /if \(ch === 'ledger-unvoid-why'\) \{ ui\.unvoidWhy = el\.value; return; \}/.test(slice('handleChange')), 'the why is not kept as typed');
+});
+
 test('C3 treasurer: the void form, the refusals, the toasts and the sync notes say it in the treasurer’s words', () => {
   // The void form.
   const x = sandbox(['esc', 'LEDGER_VOID_REASON_MAX', 'ledgerVoidFormHtml']);

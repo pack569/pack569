@@ -4951,6 +4951,7 @@
     unrecWhy: '',           // Treasurer review of C2 (L-5) — the optional why typed for an un-reconcile
     voidAsk: null,          // Phase 3, C3 — the entry id whose Void form is open
     voidWhy: '',            // Phase 3, C3 — the reason typed there (required to void)
+    unvoidWhy: '',          // Treasurer sign-off on C3 — the optional why typed for an un-void
     lineOpen: {},           // Budget — { lineId: true } rows with their settings showing
     // Rewards — { tierId: true } tiers showing an empty date box because somebody asked for
     // one. A tier that HAS a deadline shows the box regardless; this is only the empty case,
@@ -19036,6 +19037,11 @@
         '<span class="money small"><s>' + (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents) + '</s></span>' +
         '<span class="small muted">' + esc(line ? (line.name || 'Untitled line') : (e.lineId ? 'a removed budget line' : 'no budget line')) + '</span>' +
         '<span class="pill navy">' + (e.off === 'void' ? 'voided' : esc(e.off)) + '</span>' +
+        // Treasurer sign-off on C3 — armed, it offers a box for why (optional, logged), as Un-reconcile does.
+        (e.off === 'void' && !why && armed
+          ? '<input class="lname" data-ch="ledger-unvoid-why" value="' + esc(ui.unvoidWhy || '') + '" maxlength="500" ' +
+            'placeholder="Why? (optional)" aria-label="Why un-void it (optional)">'
+          : '') +
         (e.off === 'void' && !why
           ? '<button type="button" class="btn small ghost' + (armed ? ' danger armed' : '') + '" data-act="ledger-unvoid:' + esc(e.id) + '">' +
             (armed ? 'Tap again to un-void' : 'Un-void') + '</button>'
@@ -27352,6 +27358,9 @@
     // Phase 3, C3 — and the reason for a void, the same way.
     var vdWhyEl = e.target.closest('input[data-ch="ledger-void-why"]');
     if (vdWhyEl) ui.voidWhy = vdWhyEl.value;
+    // Treasurer sign-off on C3 — and the why for an un-void.
+    var uvWhyEl = e.target.closest('input[data-ch="ledger-unvoid-why"]');
+    if (uvWhyEl) ui.unvoidWhy = uvWhyEl.value;
     // Wave A — the make-up message box is edited in place; keep the draft so a re-render
     // (a sync pull, say) does not throw the leader's wording away.
     if (e.target.id === 'makeupMsgBox' && ui.overlay && ui.overlay.kind === 'makeup-msg') ui.overlay.text = e.target.value;
@@ -28257,14 +28266,20 @@
       if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
       var uvNo = ledgerLockedWhy(uvRow, state.book, '', 'unvoid');
       if (uvNo) { if (ui.armed === act) ui.armed = null; showToast(uvNo); render(); return; }
+      // Treasurer sign-off on C3 — the first tap also opens an optional "why" box (ui.unvoidWhy,
+      // cleared here so an earlier row's words never carry over), armed long enough to type a line
+      // in it (ARM_WHY_MS); the second tap logs the why with the un-void. As Un-reconcile does.
+      if (ui.armed !== act) ui.unvoidWhy = '';
       arm(act, function () {
+        var uvWhy = String(ui.unvoidWhy || '').trim();
+        ui.unvoidWhy = '';
         var uvBack = ledgerUnvoidRow(state, uvId);
         if (!uvBack) { render(); return; }
         markGone('ledger', [uvBack], true);
-        logLedger('unvoid', uvBack.id);
+        logLedger('unvoid', uvBack.id, uvWhy ? { why: uvWhy } : undefined);
         showToast('Un-voided — “' + (uvBack.description || 'the entry') + '” counts again.');
         commit();
-      });
+      }, ARM_WHY_MS);
       return;
     }
     if (act === 'ledger-fates-dismiss') { sync.fatesNote = ''; sync.splitNote = ''; render(); return; }
@@ -29300,6 +29315,7 @@
     // listener keeps it as typed), saved only with the untick it explains.
     if (ch === 'ledger-unrec-why') { ui.unrecWhy = el.value; return; }
     if (ch === 'ledger-void-why') { ui.voidWhy = el.value; return; }   // Phase 3, C3
+    if (ch === 'ledger-unvoid-why') { ui.unvoidWhy = el.value; return; }   // Treasurer sign-off on C3
     if (ch === 'book-statement') { state.book.statementCents = toCentsSigned(el.value); commit(); return; }
     if (ch === 'book-statement-date') { state.book.statementDate = el.value; commit(); return; }
     // Filters live in `ui`, so they re-render but never persist.
