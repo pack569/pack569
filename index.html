@@ -7883,9 +7883,10 @@
   // cleared date (A4: the row would drop out of the bank balance) or a date moved INTO the
   // reconciled period (it would lock itself, and a new entry there is warned about instead).
   //
-  // Not the commission and undoing a tier make-up change what the money meant, so a locked row
-  // takes neither (A7); on an open row each is logged, as is a change to the opening figure or
-  // date, which is read-only once a statement is reconciled (H2). A NEW entry dated in the
+  // Not the commission and undoing a tier make-up change what the money meant, not the money: a
+  // locked row takes both since the treasurer's review (owner, Q1 and Q2), and each is logged on
+  // any row (A7), as is a change to the opening figure or date, which is read-only once a
+  // statement is reconciled (H2). A NEW entry dated in the
   // reconciled period is only warned about, and saved on the second tap (owner's decision: the
   // money did move); its 'add' event records that the leader was warned.
   //
@@ -7980,7 +7981,12 @@
       led.reconciled = !!value;
     }
     // M4 — "not the commission" was an answer about this entry as it stood.
-    if (lk === 'amount' || lk === 'source' || lk === 'line' || lk === 'dir') led.notCommission = false;
+    // Treasurer review of C2 (H-2) — but about THIS MONEY, not its labels: this reset it on a new
+    // budget line or source too, so relabelling a deposit (allowed on a locked row) threw away
+    // the treasurer's answer and asked the question again about the same money. Now it goes
+    // only when the money itself changes (its amount or direction, which a locked row can't),
+    // or when the source is set to the commission: that answers the question the other way.
+    if (lk === 'amount' || lk === 'dir' || (lk === 'source' && led.source === 'commission')) led.notCommission = false;
     // Money-in fields are meaningless on a payment out, so switching direction drops
     // them rather than leaving a stale donor attached to a cheque to the campground.
     //
@@ -27431,12 +27437,18 @@
       var ncId = act.slice('not-commission:'.length);
       var ncE = state.ledger.find(function (e) { return e.id === ncId; });
       if (!ncE) return;
-      // Phase 3, C2 (A7) — an answer about a locked row is a change to it: refused, and logged.
-      var ncWhy = ledgerLockedWhy(ncE, state.book);
-      if (ncWhy) { showToast(ncWhy); return; }
-      if (ncE.notCommission !== true) logLedger('notcommission', ncE.id, { f: { notCommission: [false, true] } });
+      // Phase 3, C2 (A7) refused this on a locked row. The owner's answer to the treasurer's review
+      // (Q1, 2026-09-29): allowed, and logged. It is a label, like the budget line: it says what
+      // the money was, and changes none of its amount, date or direction. Only a closed year
+      // takes nothing, as with any label (ledgerEditRefusal).
+      if (state.book.closedAt) { showToast(ledgerLockedWhy(ncE, state.book)); return; }
+      if (ncE.notCommission !== true) {
+        logLedger('notcommission', ncE.id, ledgerLocked(ncE, state.book)
+          ? { f: { notCommission: [false, true] }, why: 'On a locked entry: only what it is counted as changed, not its amount, date or direction.' }
+          : { f: { notCommission: [false, true] } });
+      }
       ncE.notCommission = true;
-      showToast('Noted \u2014 it stays counted as other income. Change the entry and the question comes back.');
+      showToast('Noted \u2014 it stays counted as other income. Change its amount or direction and the question comes back.');
       commit(); return;
     }
     if (act === 'ledger-add') {
@@ -27785,13 +27797,11 @@
       var umP = act.split(':');
       var umT = state.rewardTiers.tiers.find(function (t) { return t.id === umP[1]; });
       if (!umT) return;
-      // Phase 3, C2 (A7) — it changes what a payment means, so not on a locked one; said on the
-      // first tap, before anything is armed.
-      var umWhy = '';
-      state.ledger.forEach(function (e) {
-        if (!umWhy && e.tierMakeup === umT.id && e.scoutId === umP[2]) umWhy = ledgerLockedWhy(e, state.book, 'The make-up payment');
-      });
-      if (umWhy) { showToast(umWhy); return; }
+      // Phase 3, C2 (A7) refused this on a locked payment. The owner's answer to the treasurer's
+      // review (Q2, 2026-09-29): allowed, and logged (below). The money stays exactly as it was
+      // checked against the bank; only what it bought changes. A closed year still takes nothing:
+      // said on the first tap, before anything is armed.
+      if (state.book.closedAt) { showToast('That year is already closed out, so its make-up payments can’t be changed.'); return; }
       // ⚠ ARMED ON THE ACT, not a key of its own. It used to arm on 'unmakeup-<tier>-<scout>',
       // which no button carries — so tinyDangerBtn's `ui.armed === key` test never matched and the
       // ✕ never reddened or said "Tap again to confirm". The confirm worked; it just gave no sign
@@ -27802,7 +27812,10 @@
         state.ledger.forEach(function (e) {
           if (e.tierMakeup === umT.id && e.scoutId === umP[2]) {
             e.tierMakeup = ''; n++;
-            logLedger('unmakeup', e.id, { f: { tierMakeup: [umT.id, ''] } });   // Phase 3, C2 (A7)
+            // Phase 3, C2 (A7). On a locked payment (Q2), `why` says the money itself did not move.
+            logLedger('unmakeup', e.id, ledgerLocked(e, state.book)
+              ? { f: { tierMakeup: [umT.id, ''] }, why: 'On a locked entry: only the reward tier it counts toward changed, not its amount, date or direction.' }
+              : { f: { tierMakeup: [umT.id, ''] } });
           }
         });
         showToast(n

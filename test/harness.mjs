@@ -11114,14 +11114,15 @@ test('M2: the Funds in sentence adds up, with refunds as their own term', () => 
     'collected is net of refunds again');
 });
 
-test('M4: "Not the commission" is answered per entry, and any edit to the entry asks again', () => {
+test('M4: "Not the commission" is answered per entry, and a change to its money asks again', () => {
   const card = /function renderBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/data-act="not-commission:' \+ esc\(le\.id\) \+ '"/.test(card) && /the commission<\/button>/.test(card),
     'the Check line offers no per-entry answer');
   const h = /if \(act\.indexOf\('not-commission:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
   ok(h && /ncE\.notCommission = true;/.test(h[0]) && /commit\(\)/.test(h[0]), 'the answer is not saved');
-  ok(/if \(lk === 'amount' \|\| lk === 'source' \|\| lk === 'line' \|\| lk === 'dir'\) led\.notCommission = false;/.test(slice('applyLedgerEdit')),
-    'editing the entry does not clear the answer');
+  // Treasurer review of C2 (H-2): a label edit keeps it (the test 'C2 treasurer H-2: relabelling a deposit ...').
+  ok(/if \(lk === 'amount' \|\| lk === 'dir' \|\| \(lk === 'source' && led\.source === 'commission'\)\) led\.notCommission = false;/.test(slice('applyLedgerEdit')),
+    'a change to the entry’s money does not clear the answer');
   // It survives a reload, as a boolean.
   const ctx = sandbox(NORMALIZE_FNS);
   const d = ctx.normalizeState(Object.assign(preMigrationState(), {
@@ -18325,22 +18326,54 @@ test('C2: an entry dated in the reconciled period is warned about, then saved an
   eq(p.get('state.ledger.length'), 10, 'exactly $25,000 was refused');
 });
 
-test('C2: "not the commission" and undoing a tier make-up are refused on a locked entry, and logged on an open one', () => {
+test('C2 treasurer H-2, Q1, Q2: "not the commission" and undoing a tier make-up are taken on a locked entry, and logged; only a closed year refuses them', () => {
   const p = c2Page();
+  // q1 is ticked and dated in the period: the answer is taken, and the log says the money did not move.
   p.run("toasts = []; act('not-commission:q1')");
-  eq([p.get('row("q1").notCommission'), p.get('log().length'), p.get('toasts.length')], [false, 0, 1], 'not-commission on a locked row');
+  eq([p.get('row("q1").notCommission'), p.get('row("q1").amountCents'), p.get('log().map(function (e) { return [e.op, e.row, e.f, e.why]; })')],
+    [true, 50000, [['notcommission', 'q1', { notCommission: [false, true] }, 'On a locked entry: only what it is counted as changed, not its amount, date or direction.']]],
+    'not-commission on a locked row');
+  ok(/^Noted — it stays counted as other income\. Change its amount or direction and the question comes back\.$/.test(p.get('toasts[0]')), p.get('toasts[0]'));
   p.run("act('not-commission:u1'); act('not-commission:u1')");
   const ev = p.get('log()');
-  eq([p.get('row("u1").notCommission'), ev.length, ev[0].op, ev[0].row, ev[0].f], [true, 1, 'notcommission', 'u1', { notCommission: [false, true] }],
-    'not-commission, answered twice, logged once');
-  // m1 is dated in the period: refused on the first tap, before anything is armed.
-  p.run("toasts = []; act('tier-unmakeup:t1:s1'); act('tier-unmakeup:t1:s1')");
-  eq([p.get('row("m1").tierMakeup'), p.get('ui.armed'), p.get('log().length'), /^The make-up payment is dated/.test(p.get('toasts[0]'))],
-    ['t1', null, 1, true], 'an unmakeup on a locked row');
+  eq([p.get('row("u1").notCommission'), ev.length, ev[1].op, ev[1].row, ev[1].f, 'why' in ev[1]], [true, 2, 'notcommission', 'u1', { notCommission: [false, true] }, false],
+    'not-commission on an open row, answered twice, logged once');
+  // m1 is dated in the period: two taps, the credit comes off, the money stays, and it is logged.
+  p.run("toasts = []; act('tier-unmakeup:t1:s1')");
+  eq([p.get('row("m1").tierMakeup'), p.get('ui.armed')], ['t1', 'tier-unmakeup:t1:s1'], 'the first tap');
+  p.run("act('tier-unmakeup:t1:s1')");
+  eq([p.get('row("m1").tierMakeup'), p.get('row("m1").amountCents'), p.get('row("m1").date'), p.get('log()[2]').op, p.get('log()[2]').row, p.get('log()[2]').f, p.get('log()[2]').why],
+    ['', 1500, '2026-08-20', 'unmakeup', 'm1', { tierMakeup: ['t1', ''] }, 'On a locked entry: only the reward tier it counts toward changed, not its amount, date or direction.'],
+    'an unmakeup on a locked row');
   const q = c2Page({ book: { reconciledThrough: '' } });
   q.run("act('tier-unmakeup:t1:s1'); act('tier-unmakeup:t1:s1')");
-  eq([q.get('row("m1").tierMakeup'), q.get('log()[0].op'), q.get('log()[0].row'), q.get('log()[0].f')], ['', 'unmakeup', 'm1', { tierMakeup: ['t1', ''] }],
+  eq([q.get('row("m1").tierMakeup'), q.get('log()[0].op'), q.get('log()[0].row'), q.get('log()[0].f'), 'why' in q.get('log()[0]')], ['', 'unmakeup', 'm1', { tierMakeup: ['t1', ''] }, false],
     'an unmakeup on an open row');
+  // A closed year takes neither, and says so before anything is armed.
+  const c = c2Page({ book: { closedAt: '2027-07-01T00:00:00.000Z' } });
+  c.run("toasts = []; act('not-commission:u1'); act('tier-unmakeup:t1:s1'); act('tier-unmakeup:t1:s1')");
+  eq([c.get('row("u1").notCommission'), c.get('row("m1").tierMakeup'), c.get('ui.armed'), c.get('log().length'), c.get('commits'), c.get('toasts.length')],
+    [false, 't1', null, 0, 0, 3], 'a closed year');
+  ok(/closed out/.test(c.get('toasts[0]')) && /closed out/.test(c.get('toasts[1]')), c.get('toasts.join(" | ")'));
+});
+
+test('C2 treasurer H-2: relabelling a deposit keeps the "not the commission" answer; a new amount or direction, or the commission as source, clears it', () => {
+  const p = c2Page();
+  // u1 is open; q1 is locked (its labels still change). Both answered "not the commission".
+  p.run("row('u1').direction = 'in'; row('u1').notCommission = true; row('q1').notCommission = true; row('q1').source = 'fundraiser'");
+  for (const id of ['u1', 'q1']) {
+    p.run(`change('led-line', '${id}', 'x7'); change('led-source', '${id}', 'other'); change('led-desc', '${id}', 'Renamed'); change('led-method', '${id}', 'cash')`);
+    eq(p.get(`row('${id}').notCommission`), true, id + ': a label edit threw the answer away');
+  }
+  ok(p.get('log().every(function (e) { return !e.f.notCommission; })'), 'a label edit logged the answer changing');
+  // The source set to the commission answers the question the other way: cleared, and the edit says so.
+  p.run("change('led-source', 'q1', 'commission')");
+  eq([p.get("row('q1').notCommission"), p.get('log()[log().length - 1].f')], [false, { source: ['other', 'commission'], notCommission: [true, false] }], 'the commission as source');
+  // The money itself changing (only on an open row) clears it.
+  p.run("change('led-amount', 'u1', '85')");
+  eq([p.get("row('u1').notCommission"), p.get('log()[log().length - 1].f')], [false, { amountCents: [8400, 8500], notCommission: [true, false] }], 'a new amount');
+  p.run("row('u1').notCommission = true; change('led-dir', 'u1', 'out')");
+  eq(p.get("row('u1').notCommission"), false, 'a new direction');
 });
 
 test('C2: the opening figure and date are read-only once a statement is reconciled, and logged before then', () => {
