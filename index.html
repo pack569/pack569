@@ -7709,6 +7709,12 @@
     if (!c) return 'Enter the right amount.';
     if (c > LEDGER_MAX_CENTS) return 'That’s more than ' + fmt(LEDGER_MAX_CENTS) + ' for one entry — check the amount.';
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(d.date || ''))) return 'Enter the right date.';
+    // Treasurer review of C4 (9) — a locked entry corrected to a date before the opening date would
+    // silently drop out of the balance (entryAfterOpening): the opening figure already holds it.
+    if (book && ledgerLocked(e, book) && !entryAfterOpening({ date: String(d.date) }, book)) {
+      return 'That date is before the book’s opening date (' + fmtDateShort(book.openingDate) + '), so the corrected entry wouldn’t ' +
+        'count in the balance. Pick a date on or after ' + fmtDateShort(book.openingDate) + '.';
+    }
     var plan = ledgerCorrectPlan(e, d, book, '');
     if (!plan.changed) return 'Nothing is different yet. Change what is wrong above, then tap Correct it — or tap Reverse it to take the entry out of the totals.';
     if (plan.same) return LEDGER_FIX_DESC_ONLY;
@@ -19532,7 +19538,9 @@
     else if (plan.same) note = LEDGER_FIX_DESC_ONLY;   // refused (ledgerCorrectRefusal): said before the tap
     else if (plan.today) {
       note = 'The corrected entry will be dated today (' + fmtDateShort(today) + '), because ' + fmtDateShort(d.date || e.date) +
-        ' is inside the period already reconciled (through ' + fmtDateShort(bk.reconciledThrough) + '). It won’t be ticked as reconciled.';
+        ' is inside the period already reconciled (through ' + fmtDateShort(bk.reconciledThrough) + '). It won’t be ticked as reconciled.' +
+        // Treasurer review of C4 (9) — today may be after the next statement's date, where the bank shows it.
+        ' If it cleared the bank on a different day, type that date instead (any date after ' + fmtDateShort(bk.reconciledThrough) + ').';
     } else note = e.reconciled ? 'The corrected entry won’t be ticked as reconciled: tick it against the statement it shows up on.'
       : 'The corrected entry is an ordinary entry, not yet reconciled.';
     var cArm = ui.armed === 'ledger-correct-go:' + e.id, rArm = ui.armed === 'ledger-reverse-go:' + e.id;

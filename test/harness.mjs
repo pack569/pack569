@@ -20093,6 +20093,17 @@ test('C4: Correct reverses the entry and puts the right figures in its place; th
     f.run(`act4('ledger-fix-cancel'); toasts = []; commits = 0; correct2('u1', ${JSON.stringify(draft)}, 'Why not')`);
     eq([f.get("!!row('u1')"), f.get('commits'), f.get('state.ledgerAside.length'), f.get('toasts')], [true, 0, 0, [said, said]], JSON.stringify(draft));
   }
+  // Treasurer review of C4 (9): a locked entry corrected to a date before the opening date (Jul 1)
+  // would drop out of the balance, so it is refused; the opening date itself is fine. (An open entry
+  // is not asked here: its in-place edit has the same gap, left as it is.)
+  const BEFORE = 'That date is before the book’s opening date (Jul 1), so the corrected entry wouldn’t count in the balance. Pick a date on or after Jul 1.';
+  for (const id of ['p1', 'q1', 'r1']) {
+    f.run(`act4('ledger-fix-cancel'); toasts = []; commits = 0; correct2('${id}', { date: '2026-06-30', amount: '21' }, 'Wrong day')`);
+    eq([f.get(`!!row('${id}')`), f.get(`!!row('rc-${id}')`), f.get('commits'), f.get('toasts')], [true, false, 0, [BEFORE, BEFORE]], `before the opening date (${id})`);
+  }
+  const od = c4Page();
+  od.run("correct2('r1', { date: '2026-07-01', amount: '21' }, 'Wrong day'); correct2('u1', { date: '2026-06-30' }, 'Wrong day')");
+  eq([od.get("row('rc-r1').date"), od.get("row('rc-u1').date")], ['2026-10-15', '2026-06-30'], 'control: the opening date (in the period: dated today), and an open entry');
   f.run("act4('ledger-fix-cancel'); correct2('u1', { amount: '25000' }, 'The edge')");
   eq(f.get("row('rc-u1').amountCents"), 2500000, '$25,000 exactly');
 });
@@ -20413,7 +20424,9 @@ test('C4: the Reverse or correct form says what each does and what the corrected
   eq(note(own), 'To correct it, change what is wrong above. To take it out of the totals, reverse it.', 'nothing changed');
   // Treasurer review of C4 (6): a label alone is changed in place, and the form says so before the tap.
   eq(note(Object.assign({}, own, { desc: 'Council check' })), 'Only the description is different. A description can be changed in place (the change is logged): close this and edit it in the entry above.', 'a label');
-  eq(note(Object.assign({}, own, { amount: '450' })), 'The corrected entry will be dated today (Oct 15), because Aug 10 is inside the period already reconciled (through Aug 31). It won’t be ticked as reconciled.', 'money, in the period');
+  // Treasurer review of C4 (9): and that the day it cleared the bank can be typed instead.
+  eq(note(Object.assign({}, own, { amount: '450' })), 'The corrected entry will be dated today (Oct 15), because Aug 10 is inside the period already reconciled (through Aug 31). It won’t be ticked as reconciled.' +
+    ' If it cleared the bank on a different day, type that date instead (any date after Aug 31).', 'money, in the period');
   eq(note(Object.assign({}, own, { amount: '450', date: '2026-09-02' })), 'The corrected entry won’t be ticked as reconciled: tick it against the statement it shows up on.', 'money, a date after the period');
   // The words above the figures, and the buttons, armed and not.
   const h = x.ledgerFixFormHtml(q1);
