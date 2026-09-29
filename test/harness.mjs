@@ -13649,6 +13649,52 @@ atest('api token: the endpoints answer 401 without a believable token, and 503 w
   eq(API.fetches - before, 1, 'an unknown kid refetches the key set (the first fetch was just now)');
 });
 
+atest('api token: requests waiting for Google\'s keys share one fetch, and a failed fetch still counts toward the refetch gap', async () => {
+  // Review of 5690c3a..20b4fd6, item 5.
+  await apiSetup();
+  const V = async (tok, at) => { try { await API.token.verifyIdToken(tok, API_PROJECT, at); return 'ok'; } catch (e) { return e.reason; } };
+  const T = Math.floor(Date.now() / 1000);
+  const tok = await mint({});
+  const g = { fetches: 0, fail: false, syncThrow: false, gate: null };
+  API.token.setJwksFetcher((opts) => {
+    g.fetches++;
+    if (g.syncThrow) throw new API.token.TokenError('jwks-unavailable');   // not even a promise
+    return (async () => {
+      if (g.gate) await g.gate;
+      if (g.fail) throw new API.token.TokenError('jwks-unavailable');
+      return { keys: [API.jwk], maxAge: 3600 };
+    })();
+  });
+  try {
+    // A cold isolate, five requests at once: one fetch, and every one of them is let in.
+    let open;
+    g.gate = new Promise((res) => { open = res; });
+    const all = Promise.all([0, 1, 2, 3, 4].map(() => V(tok, T)));
+    await new Promise((res) => setTimeout(res, 5));
+    open();
+    eq([await all, g.fetches], [['ok', 'ok', 'ok', 'ok', 'ok'], 1], 'five requests on a cold isolate');
+    g.gate = null;
+    // Google down, and tokens naming kids nobody has: one fetch, then none until the gap is up.
+    g.fail = true;
+    const unk = async (kid) => mint({}, { header: { kid } });
+    eq([await V(await unk('u-1'), T + 61), g.fetches], ['jwks-unavailable', 2], 'an unknown kid while Google is down');
+    eq([await V(await unk('u-2'), T + 62), g.fetches], ['unknown-key', 2], 'another inside the gap after a failed fetch');
+    eq([await V(tok, T + 63), g.fetches], ['ok', 2], 'the key already held still works');
+    eq([await V(await unk('u-3'), T + 122), g.fetches], ['jwks-unavailable', 3], 'after the gap, Google is asked again');
+    // A fetcher that throws before it returns a promise does not leave a dead fetch behind.
+    API.token.setJwksFetcher(null);
+    API.token.setJwksFetcher((opts) => {
+      g.fetches++;
+      if (g.syncThrow) throw new API.token.TokenError('jwks-unavailable');
+      return Promise.resolve({ keys: [API.jwk], maxAge: 3600 });
+    });
+    g.syncThrow = true;
+    eq(await V(tok, T), 'jwks-unavailable', 'a fetcher that throws at once');
+    g.syncThrow = false;
+    eq(await V(tok, T + 1), 'ok', 'the next request after a fetcher threw at once');
+  } finally { API.useTestKeys(); }
+});
+
 atest('api token: a rotated-in key is fetched from Google itself, not the stale cached copy, and a key set\'s Age counts against its life', async () => {
   // Security review of stage A, finding 6. The real fetcher, with fetch and the Cache API stubbed.
   await apiSetup();
