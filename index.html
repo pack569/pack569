@@ -4892,6 +4892,7 @@
     ledgerDraft: null,
     ledgerAddWarned: '',    // Phase 3, C2 — the draft date already warned as in the reconciled period
     ledgerMoveWarned: null, // Treasurer review of C2 (M-5) — { id, date }: an entry's move into it, warned
+    unrecWhy: '',           // Treasurer review of C2 (L-5) — the optional why typed for an un-reconcile
     lineOpen: {},           // Budget — { lineId: true } rows with their settings showing
     // Rewards — { tierId: true } tiers showing an empty date box because somebody asked for
     // one. A tier that HAS a deadline shows the box regardless; this is only the empty case,
@@ -7448,6 +7449,9 @@
   // Treasurer review of C2 (M-3) — a first tap that warns stays armed this long, and its warning
   // stays up this long: the same, so the button never goes back while the words are still showing.
   var ARM_WARNED_MS = 10000;
+  // Treasurer review of C2 (L-5) — Un-reconcile's first tap opens an optional "why" box: time to
+  // type a line in it before the button goes back.
+  var ARM_WHY_MS = 60000;
   function dangerBtn(key, label, extra) {
     var armed = ui.armed === key;
     return '<button type="button" class="btn small danger' + (armed ? ' armed' : '') + '" data-act="' + key + '" ' + (extra || '') + '>' +
@@ -7804,8 +7808,10 @@
   // and direction, [before, null]; a locked row can't be), and logs as an 'add' a row put back by
   // Undo, or written by another screen (a tier make-up or reimbursement), `why` saying which.
   // The treasurer's review of C2 added 'reconcile' (Mark reconciled, row 'book': `f`
-  // reconciledThrough [before, after]).
-  var LEDGER_OPS = ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile'];
+  // reconciledThrough [before, after]) and 'restore' (a backup restored, row 'book', `why` what
+  // the book then held); an 'untick' can carry the leader's `why`, and a 'delete' names what the
+  // entry was for (description, line, family, method, reference).
+  var LEDGER_OPS = ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile', 'restore'];
   function ledgerEvent(op, rowId, who, more) {
     if (LEDGER_OPS.indexOf(op) === -1 || typeof rowId !== 'string' || !rowId) return null;
     who = who || {};
@@ -18588,6 +18594,11 @@
         '<span class="lbal small muted money">' + (pre ? 'before opening' : fmt(bal)) + '</span>' +
         (e.reconciled
           ? '<span class="pill navy">reconciled</span>' +
+            // Treasurer review of C2 (L-5) — armed, it offers a box for why (optional, logged).
+            (ui.armed === 'ledger-unreconcile:' + e.id
+              ? '<input class="lname" data-ch="ledger-unrec-why" value="' + esc(ui.unrecWhy || '') + '" maxlength="500" ' +
+                'placeholder="Why? (optional)" aria-label="Why un-reconcile it (optional)">'
+              : '') +
             '<button type="button" class="btn small ghost' + (ui.armed === 'ledger-unreconcile:' + e.id ? ' danger armed' : '') +
               '" data-act="ledger-unreconcile:' + e.id + '">' +
               (ui.armed === 'ledger-unreconcile:' + e.id ? 'Tap again to un-reconcile' : 'Un-reconcile') + '</button>'
@@ -26769,6 +26780,10 @@
     // Wave 11 — keep the new-storefront name draft live so it survives re-renders while queuing dates.
     var sfName = e.target.closest('input[data-ch="sf-new-name"]');
     if (sfName) ui.sfDraft.name = sfName.value;
+    // Treasurer review of C2 (L-5) — the un-reconcile why, kept as typed, so a re-render (a sync
+    // pull) while it is being typed doesn't throw the words away.
+    var urWhyEl = e.target.closest('input[data-ch="ledger-unrec-why"]');
+    if (urWhyEl) ui.unrecWhy = urWhyEl.value;
     // Wave A — the make-up message box is edited in place; keep the draft so a re-render
     // (a sync pull, say) does not throw the leader's wording away.
     if (e.target.id === 'makeupMsgBox' && ui.overlay && ui.overlay.kind === 'makeup-msg') ui.overlay.text = e.target.value;
@@ -27575,10 +27590,16 @@
       var urId = act.split(':')[1];
       var urE = state.ledger.find(function (e) { return e.id === urId; });
       if (!urE) return;
+      // Treasurer review of C2 (L-5) — the first tap also opens an optional "why" box beside the
+      // button (ui.unrecWhy, cleared here so an earlier row's words never carry over), armed long
+      // enough to type a line in it (ARM_WHY_MS); the second tap logs the why with the untick.
+      if (ui.armed !== act) ui.unrecWhy = '';
       arm(act, function () {
+        var urWhy = String(ui.unrecWhy || '').trim();
+        ui.unrecWhy = '';
         urE.reconciled = false;
         stampApproved(urE, false);   // E2 — the tick time goes; who approved it stays (C2, A6)
-        logLedger('untick', urE.id);   // Phase 3, C2
+        logLedger('untick', urE.id, urWhy ? { why: urWhy } : undefined);   // Phase 3, C2
         // Still locked if it is dated in the reconciled period: un-reconciling does not open it.
         // Treasurer review of C2 (M-2) — its labels do change, so the toast says what doesn't.
         showToast(ledgerDateReconciled(urE.date, state.book)
@@ -27586,7 +27607,7 @@
             '), so its amount, date and direction still can’t be changed. Tick it again if it is on the statement.'
           : 'Un-reconciled — tick it again against the statement once it is corrected.');
         commit();
-      });
+      }, ARM_WHY_MS);
       return;
     }
     if (act.indexOf('del-ledger:') === 0) {
@@ -27603,7 +27624,12 @@
       if (dlWhy) { showToast(dlWhy); return; }
       var dlGone = state.ledger.splice(dlIx, 1)[0];
       // Logged, with what the money was, so the log still says what left the book.
-      logLedger('delete', dlGone.id, { f: { amountCents: [dlGone.amountCents, null], date: [dlGone.date, null], direction: [dlGone.direction, null] } });
+      // Treasurer review of C2 (L-1) — and what it was for and how it was paid, so the entry can be
+      // found on a statement or a receipt from the log alone.
+      logLedger('delete', dlGone.id, { f: {
+        amountCents: [dlGone.amountCents, null], date: [dlGone.date, null], direction: [dlGone.direction, null],
+        description: [dlGone.description, null], lineId: [dlGone.lineId, null], scoutId: [dlGone.scoutId, null],
+        method: [dlGone.method, null], ref: [dlGone.ref, null] } });
       // ⚠ NOTHING SPECIAL FOR A MAKE-UP PAYMENT, and that is the point (owner report, 2026-09-04:
       // "even after clearing the ledger items, the ranking bar and text for that scout does not
       // reset"). The tier credit such an entry buys is DERIVED from the entry — see
@@ -27993,6 +28019,11 @@
     if (act === 'import-ics') { document.getElementById('icsFile').click(); return; }
     if (act === 'confirm-import') {
       state = restoreGone(ui.overlay.data, state.gone, Date.now());
+      // Treasurer review of C2 (L-5) — the ledger's log says a backup was restored, and what the
+      // book held afterwards: from here on the book is the backup's, whatever it held before.
+      logLedger('restore', 'book', { why: 'A backup was restored on this device. The book now holds the backup’s ' +
+        state.ledger.length + ' entr' + (state.ledger.length === 1 ? 'y' : 'ies') +
+        (state.book.reconciledThrough ? ', reconciled through ' + state.book.reconciledThrough : ', none of it reconciled') + '.' });
       ui.overlay = null; ui.storefrontId = null; ui.expandedScouts = {};
       commit(); return;
     }
@@ -28621,6 +28652,9 @@
       logOpening(obWas);
       commit(); return;
     }
+    // Treasurer review of C2 (L-5) — the optional why for an un-reconcile: held in `ui` (the 'input'
+    // listener keeps it as typed), saved only with the untick it explains.
+    if (ch === 'ledger-unrec-why') { ui.unrecWhy = el.value; return; }
     if (ch === 'book-statement') { state.book.statementCents = toCentsSigned(el.value); commit(); return; }
     if (ch === 'book-statement-date') { state.book.statementDate = el.value; commit(); return; }
     // Filters live in `ui`, so they re-render but never persist.

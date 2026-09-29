@@ -17941,7 +17941,7 @@ test('C1: ledgerEvent builds one log entry, and nothing else', () => {
   eq(ev('reverse', 'l1', who, { rows: ['rv-l1'] }).rows, ['rv-l1'], 'a reversal names its row');
   eq(ev('tick', 'l1', { id: 'x', by: 'pat@example.com' }), { id: 'lg-x', at: '', by: 'a signed-in leader', byUid: '', dev: '', row: 'l1', op: 'tick' }, 'never an email');
   eq([ctx.ledgerEvent('someday', 'l1', who), ctx.ledgerEvent('edit', '', who), ctx.ledgerEvent('edit', 7, who)], [null, null, null], 'an unknown op, or no row');
-  eq([...ctx.LEDGER_OPS], ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile'], 'the ops');
+  eq([...ctx.LEDGER_OPS], ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile', 'restore'], 'the ops');
   // The rows it names are copied, not shared.
   const rows = ['a'];
   const e2 = ctx.ledgerEvent('correct', 'l1', who, { rows });
@@ -18174,7 +18174,7 @@ function c2Page(o) {
   o = o || {};
   const ctx = vm.createContext({});
   vm.runInContext(`${C2_FNS.map(slice).join('\n')}
-    ${['ledgerActor', 'ledgerActorUid', 'ARM_WARNED_MS'].map(decl).join('\n')}
+    ${['ledgerActor', 'ledgerActorUid', 'ARM_WARNED_MS', 'ARM_WHY_MS'].map(decl).join('\n')}
     var state = { ledger: ${JSON.stringify(o.ledger || C2_LEDGER())}, ledgerLog: [], leaders: [],
       book: ${JSON.stringify(Object.assign({ openingCents: 10000, openingDate: '2026-07-01', reconciledThrough: '2026-08-31', statementDate: '', statementCents: 0 }, o.book || {}))},
       budget: { programYear: 2026, startingBalance: 7700 }, rewardTiers: { tiers: [{ id: 't1' }] } };
@@ -18511,7 +18511,9 @@ test('C2 review #2: a locked entry can’t be deleted, not even unticked in the 
   p.run("act2('del-ledger:u1')");
   eq([p.get("!!row('u1')"), p.get('marks'), p.get('commits')], [false, [['ledger', ['u1'], false]], 1], 'the open row');
   const ev = p.get('log()[0]');
-  eq([ev.op, ev.row, ev.f, ev.by, ev.dev], ['delete', 'u1', { amountCents: [8400, null], date: ['2026-09-10', null], direction: ['out', null] }, 'Pat Treasurer', 'dev1'],
+  // Treasurer review of C2 (L-1) — and what it was for and how it was paid.
+  eq([ev.op, ev.row, ev.f, ev.by, ev.dev], ['delete', 'u1', { amountCents: [8400, null], date: ['2026-09-10', null], direction: ['out', null],
+    description: ['Pinewood trophies', null], lineId: ['x1', null], scoutId: ['', null], method: ['check', null], ref: ['101', null] }, 'Pat Treasurer', 'dev1'],
     'the delete event');
   // Undo puts it back, marked back, and the log says so (nothing is taken out of the log).
   p.run('undo()');
@@ -18627,10 +18629,14 @@ test('C2 review (minor): an event whose time is not an ISO time has its time cle
    undoing a tier make-up are allowed on locked rows, logged (Q1, Q2).
    ================================================================ */
 const C2T_ACT = [
-  c2Block(/    if \(act === 'ledger-reconcile-lock'\) \{[\s\S]*?\n    \}/, 'ledger-reconcile-lock')].join('\n');
+  c2Block(/    if \(act === 'ledger-reconcile-lock'\) \{[\s\S]*?\n    \}/, 'ledger-reconcile-lock'),
+  c2Block(/    if \(act === 'confirm-import'\) \{[\s\S]*?\n    \}/, 'confirm-import')].join('\n');
+const C2T_CHANGE = c2Block(/    if \(ch === 'ledger-unrec-why'\) \{[^\n]*\}/, 'ledger-unrec-why');
 const C2T_MORE = `
   ${['reconcileLockRefusal'].map(slice).join('\n')}
-  function act3(act, el) { el = el || { dataset: {} }; (function () {\n${C2T_ACT}\n})(); }`;
+  function restoreGone(data) { return data; }
+  function act3(act, el) { el = el || { dataset: {} }; (function () {\n${C2T_ACT}\n})(); }
+  function change3(ch, value) { var el = { value: value, dataset: {} }; (function () {\n${C2T_CHANGE}\n})(); }`;
 const c2tPage = (o) => c2Page(Object.assign({}, o || {}, { more: C2R_MORE + C2T_MORE + ((o && o.more) || '') }));
 
 test('C2 treasurer H-1: Mark reconciled takes a statement date, not after today nor before the lock, two taps, and is logged', () => {
@@ -18720,6 +18726,35 @@ test('C2 treasurer M-5: moving an entry’s date into the reconciled period is w
   // Under the entry it is about, escaped, while it stands; not on a locked row.
   ok(/var mw = \(!eLocked && ui\.ledgerMoveWarned && ui\.ledgerMoveWarned\.id === e\.id\) \? ledgerMoveWarning\(ui\.ledgerMoveWarned\.date, state\.book\) : '';\s*return mw \? '<p class="small" role="alert"[^']*>' \+ esc\(mw\) \+ '<\/p>' : '';/
     .test(slice('renderLedgerEntries')), 'the Entries list does not show the warning under the entry');
+});
+
+test('C2 treasurer L-5: un-reconciling takes an optional why, logged with it; restoring a backup is written in the log', () => {
+  const p = c2tPage();
+  // The first tap opens the box, armed for a minute; what is typed goes with the untick.
+  p.run("armMs = []; ui.unrecWhy = 'left over'; act('ledger-unreconcile:r1')");
+  eq([p.get('ui.armed'), p.get('ui.unrecWhy'), p.get('armMs'), p.get('row("r1").reconciled')], ['ledger-unreconcile:r1', '', [60000], true], 'the first tap');
+  p.run("change3('ledger-unrec-why', '  Bank reversed the deposit on Oct 2  '); act('ledger-unreconcile:r1')");
+  eq([p.get('row("r1").reconciled'), p.get('ui.unrecWhy'), p.get('log().map(function (e) { return [e.op, e.row, e.why]; })')],
+    [false, '', [['untick', 'r1', 'Bank reversed the deposit on Oct 2']]], 'the untick and its why');
+  // Left blank: no why at all. And a why typed for one row doesn't carry to the next.
+  p.run("act('ledger-unreconcile:q1'); change3('ledger-unrec-why', 'for q1'); act('ledger-unreconcile:m1')");
+  eq(p.get('ui.unrecWhy'), '', 'q1’s why carried to another row');
+  p.run("row('m1').reconciled = true; ui.armed = null; act('ledger-unreconcile:m1'); act('ledger-unreconcile:m1')");
+  eq([p.get('log()[1].op'), p.get('log()[1].row'), 'why' in p.get('log()[1]')], ['untick', 'm1', false], 'an untick with nothing typed');
+  // The box: shown only while armed, escaped, kept as typed through a re-render.
+  const le = slice('renderLedgerEntries');
+  ok(/\(ui\.armed === 'ledger-unreconcile:' \+ e\.id\s*\? '<input class="lname" data-ch="ledger-unrec-why" value="' \+ esc\(ui\.unrecWhy \|\| ''\) \+ '"/.test(le), 'the why box');
+  ok(/var urWhyEl = e\.target\.closest\('input\[data-ch="ledger-unrec-why"\]'\);\s*if \(urWhyEl\) ui\.unrecWhy = urWhyEl\.value;/.test(SCRIPT), 'the why is not kept as typed');
+  // Restoring a backup: one 'restore' event, row 'book', saying what the book then holds.
+  const q = c2tPage();
+  q.run("state.ledgerLog = [{ id: 'lg-old', op: 'tick', row: 'u1' }]; ui.overlay = { data: { ledger: [{ id: 'a' }, { id: 'b' }], book: { reconciledThrough: '2026-07-31' }, ledgerLog: [{ id: 'lg-b', op: 'tick', row: 'a' }] } };" +
+    " act3('confirm-import')");
+  eq([q.get('state.ledger.length'), q.get('log().map(function (e) { return [e.id, e.op, e.row, e.why || \'\', e.by]; })'), q.get('commits'), q.get('ui.overlay')],
+    [2, [['lg-b', 'tick', 'a', '', undefined], ['lg-id1', 'restore', 'book', 'A backup was restored on this device. The book now holds the backup’s 2 entries, reconciled through 2026-07-31.', 'Pat Treasurer']], 1, null],
+    'the restore event');
+  const r = c2tPage();
+  r.run("ui.overlay = { data: { ledger: [{ id: 'a' }], book: { reconciledThrough: '' }, ledgerLog: [] } }; act3('confirm-import')");
+  eq(r.get('log()[0].why'), 'A backup was restored on this device. The book now holds the backup’s 1 entry, none of it reconciled.', 'a book never reconciled');
 });
 
 /* ---------------- report ---------------- */
