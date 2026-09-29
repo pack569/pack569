@@ -20000,7 +20000,7 @@ test('C4: Reverse sets an entry and its reversal aside together, netting to $0, 
 });
 
 test('C4: Reverse and Correct need a reason, an editor, an open book, and an entry not reversed before', () => {
-  const needR = 'Say why it is being reversed (for example, “the check was never cashed”), then tap Reverse it.';
+  const needR = 'Say why it is being reversed (for example, “check returned by the bank”), then tap Reverse it.';   // treasurer review of C4 (10)
   const needC = 'Say why it is being corrected (for example, “wrong amount”), then tap Correct it.';
   const long = 'Keep the reason to 200 characters or fewer.';
   const still = (p, id) => [p.get(`!!row('${id}')`), p.get('state.ledgerAside.length'), p.get('log().length'), p.get('commits'), p.get('marks.length'), p.get("ui.armed || ''")];
@@ -20026,7 +20026,7 @@ test('C4: Reverse and Correct need a reason, an editor, an open book, and an ent
     'That entry is in a year already closed out, so it can’t be corrected here.']], 'a closed year');
   // Once only: the reversal's id comes from the entry's, so a second is refused — here after a page
   // from before C4 put the entry back counted, and the pair check counted its reversal too (M3).
-  const once = 'That entry has been reversed once already, so it can’t be reversed or corrected again.';
+  const once = 'That entry has already been reversed, so it can’t be reversed or corrected again.';   // treasurer review of C4 (10)
   const o = c4Page();
   o.run(`reverse2('p1', 'Entered in error'); var pp = state.ledgerAside.shift();
     ['off', 'reversedBy', 'voidReason', 'voidedBy', 'voidedByUid', 'voidedAt', 'reverses', 'carriedFrom'].forEach(function (k) { delete pp[k]; });
@@ -20406,7 +20406,7 @@ test('C4: the change history says a reverse in one line and a correction field b
 });
 
 test('C4: the Reverse or correct form says what each does and what the corrected entry will be, and every id in it is escaped', () => {
-  const x = sandbox(['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'LEDGER_VOID_REASON_MAX', 'LEDGER_FIX_DESC_ONLY', 'ledgerFixFormHtml', 'ledgerFixButtonHtml', 'ledgerLocked', 'ledgerAsideListHtml', 'ledgerReplacementId',
+  const x = sandbox(['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'LEDGER_VOID_REASON_MAX', 'LEDGER_FIX_DESC_ONLY', 'ledgerFixFormHtml', 'ledgerFixButtonHtml', 'ledgerCorrectsLine', 'ledgerLocked', 'ledgerAsideListHtml', 'ledgerReplacementId',
     'ledgerCorrectPlan', 'applyLedgerEdit', 'toCents', 'ledgerRowFields', 'LEDGER_EDIT_FIELDS', 'ledgerDateReconciled', 'entryAfterOpening']);
   const bad = 'x" data-act="del-scout:s1"><img src=y>\'';
   vm.runInContext(`var ui = { ledgerOpen: {}, armed: null, fixDraft: null, fixWhy: '' };
@@ -20456,8 +20456,15 @@ test('C4: the Reverse or correct form says what each does and what the corrected
   eq(btn({ reconciled: true }), '', 'offered with its form already open');
   vm.runInContext('ui.fixAsk = null', x);
   eq(attrs(btn({ id: bad, reconciled: true })), [['data-act', 'ledger-fix:' + bad]], 'the button’s id');
-  // A corrected entry's Detail says it is one.
-  ok(/\(e\.replaces \? '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">A correction: the entry it replaces is under ' \+\s*'Voided &amp; reversed\.<\/p>' : ''\)/.test(le), 'a correction does not say so');
+  // A corrected entry's Detail says it is one: which entry, in its own figures, and where it is
+  // (treasurer review of C4, 10). Escaped where it is drawn.
+  ok(/\(e\.replaces \? '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">' \+ esc\(ledgerCorrectsLine\(e, state\.ledgerAside\)\) \+ '<\/p>' : ''\)/.test(le), 'a correction does not say so');
+  const orig = { id: 'p1', off: 'reversed', date: '2026-08-15', description: 'Council fee', amountCents: 1200, direction: 'out' };
+  eq([x.ledgerCorrectsLine({ replaces: 'p1' }, [orig]), x.ledgerCorrectsLine({ replaces: 'p1' }, [Object.assign({}, orig, { description: '', direction: 'in' })]),
+    x.ledgerCorrectsLine({ replaces: 'p1' }, [Object.assign({}, orig, { off: 'void' })]), x.ledgerCorrectsLine({ replaces: 'p1' }, undefined)],
+  ['This entry corrects “Council fee” (Aug 15, −$12.00), which is under Voided & reversed with the reason.',
+    'This entry corrects an entry (Aug 15, +$12.00), which is under Voided & reversed with the reason.',
+    'A correction: the entry it replaces is under Voided & reversed.', 'A correction: the entry it replaces is under Voided & reversed.'], 'the corrected entry’s line');
   ok(!/="[^"]*' \+ e\.id \+ '/.test(slice('ledgerFixFormHtml')), 'an unescaped id');
   // Voided & reversed: a reversed entry with who, when and why, its reversal straight under it; the
   // corrected entry named; a pair listed when either matches the search.
@@ -20474,6 +20481,10 @@ test('C4: the Reverse or correct form says what each does and what the corrected
   eq([...x.ledgerAsideListHtml({ lineId: '', text: 'Reversal' }).matchAll(/<span class="pill navy">([^<]*)<\/span>/g)].map((m) => m[1]), ['reversed', 'reversal'], 'a pair found by its reversal');
   vm.runInContext('state.ledger = []', x);
   ok(x.ledgerAsideListHtml({ lineId: '', text: '' }).indexOf('Reversed by Pat on') !== -1, 'reversed, not corrected');
+  // A reason that already ends a sentence gets no second full stop (treasurer review of C4, 10).
+  const ends = (why) => /Reversed by Pat on [^<]*<\/p>/.exec(vm.runInContext(`state.ledgerAside[1].voidReason = ${JSON.stringify(why)}; ledgerAsideListHtml({ lineId: '', text: '' })`, x))[0];
+  eq(['Wrong amount', 'Returned by the bank.', 'Never cashed!', 'Why twice?', ''].map(ends).map((t) => t.slice(t.indexOf(x.fmtDate('2026-10-15')) + x.fmtDate('2026-10-15').length)),
+    [': Wrong amount.</p>', ': Returned by the bank.</p>', ': Never cashed!</p>', ': Why twice?</p>', '.</p>'], 'the full stop after the reason');
   vm.runInContext('state.ledgerAside = []', x);
   eq(x.ledgerAsideListHtml({ lineId: '', text: '' }), '<p class="empty">Nothing voided or reversed. An entry voided or reversed stays in the book, not counted, and is listed here.</p>', 'none');
   // Nothing of it reaches the parents.
