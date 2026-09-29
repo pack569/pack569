@@ -10708,8 +10708,8 @@
     if (canDownloadMoveFile()) {
       return '<hr class="divider"><p class="eyebrow">Moving to the new server</p>' +
         '<p class="small muted" style="margin:0 0 6px">Only for the day the pack moves to its new server. Saves the ' +
-        'whole pack, every member’s email and the sign-up code as one file, to copy in on the new server. Keep it on ' +
-        'this computer, and delete it once the pack is copied in.</p>' +
+        'whole pack, every member’s and invited person’s email and the sign-up code as one file, to copy in on the new ' +
+        'server. Keep it on this computer, and delete it once the pack is copied in.</p>' +
         '<button type="button" class="btn small" data-act="move-download">Download pack for the new server</button>';
     }
     if (canImportPack()) {
@@ -22040,8 +22040,8 @@
         'and nothing here is published. The app tracks adventures, not requirements, so add the requirement number ' +
         'if you have it.</p></div></div></div>';
     }
-    // The move file (downloadMoveFile): the whole pack, every member's email and the sign-up
-    // code. Download only (YP review of stage C, item 1): no Copy, which puts it on the
+    // The move file (downloadMoveFile): the whole pack, every member's and invited person's
+    // email and the sign-up code. Download only (YP review of stage C, item 1): no Copy, which puts it on the
     // clipboard and, through Universal Clipboard, on the owner's other devices; and no text box
     // to select from or paste into a note. The text stays in ui.overlay and goes to the file.
     if (o.kind === 'move-export') {
@@ -22050,7 +22050,7 @@
         '<button type="button" class="btn" data-act="close-overlay">&larr; Back</button>' +
         '<button type="button" class="btn primary" data-act="download-export">Download ' + esc(o.name) + '</button></div>' +
         '<div class="card"><p class="eyebrow">The pack, for the new server</p>' +
-        '<p style="margin:0 0 8px">This file holds <strong>the whole pack</strong>, <strong>every member’s email</strong> and ' +
+        '<p style="margin:0 0 8px">This file holds <strong>the whole pack</strong>, <strong>every member’s and invited person’s email</strong> and ' +
         '<strong>the sign-up code</strong>.</p>' +
         '<p class="small" style="margin:0">Save it on this computer, not in iCloud, Dropbox, OneDrive or the repo folder. ' +
         'Don’t email or text it. Delete it once the pack is copied in.</p>' +

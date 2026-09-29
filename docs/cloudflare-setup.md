@@ -149,6 +149,9 @@ sit in their browser.
 
 The preview starts empty. You can load the real pack into it. These are rules, not tips:
 
+- **A device-only preview link only.** Real data never goes to `staging`: staging keeps what
+  it is given on the pack's server, so it takes made-up data only
+  ([D](#d-a-preview-you-can-sign-in-to-stagingpack569pagesdev)).
 - **Your own device only**, never a shared or borrowed one.
 - **Only a preview built from a branch you have reviewed.** That branch's build script and
   headers are what run with the pack's data in the page.
@@ -509,8 +512,8 @@ addresses call the API would widen who can reach it. A file works either way. Th
 data in it goes from Firestore to your browser, to your computer, to the server, and never
 through GitHub or CI.
 
-**The move file holds the whole pack, every member's email and the sign-up code.** These are
-rules, not tips:
+**The move file holds the whole pack, every member's and invited person's email and the
+sign-up code.** These are rules, not tips:
 
 - Save it on **this computer only**, in Downloads. Not in iCloud Desktop or Documents, not in
   Dropbox or OneDrive, and not in the repo folder (`.gitignore` ignores `*.json`, but don't

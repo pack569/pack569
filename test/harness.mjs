@@ -15162,7 +15162,7 @@ test('the move file’s screen is Download only, and says what the file holds an
   ok(!/<textarea|copy-export|Copy/.test(mv), 'the move file’s screen has a Copy button or a text box');
   ok(mv.indexOf('a@example.com') < 0 && mv.indexOf('pack569-move"') < 0, 'the move file’s contents are on the screen');
   const say = mv.replace(/<[^>]+>/g, '');
-  ok(/holds the whole pack, every member’s email and the sign-up code\./.test(say), 'the screen does not say what the file holds: ' + say);
+  ok(/holds the whole pack, every member’s and invited person’s email and the sign-up code\./.test(say), 'the screen does not say what the file holds: ' + say);
   ok(/Save it on this computer, not in iCloud, Dropbox, OneDrive or the repo folder\. Don’t email or text it\. Delete it once the pack is copied in\./.test(say),
     'the screen does not say where the file may go');
   ok(!/note/.test(say), 'the screen mentions a note');
@@ -15193,7 +15193,7 @@ test('the move file’s screen is Download only, and says what the file holds an
   // The owner's line on the Firestore page: plain, and says what the file holds.
   const line = slice('renderMoveLine');
   ok(/Only for the day the pack moves to its new server\./.test(line) && !/Firestore|owner’s guide/.test(line), 'the move line still talks about Firestore or the guide');
-  ok(/whole pack, every member’s email and the sign-up code/.test(line.replace(/' \+\s+'/g, '')), 'the move line does not say what the file holds');
+  ok(/whole pack, every member’s and invited person’s email and the sign-up code/.test(line.replace(/' \+\s+'/g, '')), 'the move line does not say what the file holds');
 });
 
 atest('api client: a server that is not set up is said plainly, and the device keeps its copy', async () => {
@@ -15327,6 +15327,10 @@ test('api docs: the owner’s guide covers staging deploys and the move in order
   const DOC = readFileSync(join(ROOT, 'docs/cloudflare-setup.md'), 'utf8');
   const sec = (from, to) => DOC.slice(DOC.indexOf(from), to ? DOC.indexOf(to, DOC.indexOf(from)) : undefined);
   ok(/\*\*deploy_target\*\*: `preview` \(the default\), `staging` or `production`/.test(DOC), 'section 5 does not offer staging');
+  // YP recheck of db851c7: loading the real pack is for a device-only preview link, never staging.
+  const real = sec('## Testing a preview with real data', 'Steps:');
+  ok(/\*\*A device-only preview link only\.\*\* Real data never goes to `staging`/.test(real),
+    'the real-data rules do not say staging never takes real data');
   const d = sec('### D. A preview you can sign in to', '#### One Firebase project');
   ok(/deploy_target`\s\*\*`staging`\*\*/.test(d) && /firestore\.googleapis\.com/.test(d) && !/nothing deploys to `staging`/.test(d),
     'D does not say how to deploy and check staging');
@@ -15336,7 +15340,7 @@ test('api docs: the owner’s guide covers staging deploys and the move in order
   ok(/never\s+through GitHub or CI/.test(e), 'E does not say the file never goes through GitHub or CI');
   // YP review of stage C, items 3 and 4, and security review items 4 and 6: the file's rules
   // are written in E itself, not behind a link, and say what it holds.
-  ok(/\*\*The move file holds the whole pack, every member's email and the sign-up code\.\*\*/.test(e), 'E does not say what the move file holds');
+  ok(/\*\*The move file holds the whole pack, every member's and invited person's email and the\s+sign-up code\.\*\*/.test(e), 'E does not say what the move file holds');
   const rules = e.slice(e.indexOf('**The move file holds'), e.indexOf('Until the copy is made'));
   for (const [what, re] of [['iCloud', /Not in iCloud Desktop or Documents, not in\s+Dropbox or OneDrive, and not in the repo folder/],
     ['Finder', /check in Finder that it is in Downloads/], ['email, AirDrop, text', /\*\*Never email, AirDrop or text it\.\*\*/],
