@@ -19,18 +19,26 @@
 //   - the top level and [env.preview] carry the same database_id, and [env.production] a
 //     different one;
 //   - DEPLOY_ENV is "preview" in the top level's [vars] and [env.preview.vars], and "prod" in
-//     [env.production.vars] — by position, not by counting lines, so swapping them is refused.
+//     [env.production.vars] — by position, not by counting lines, so swapping them is refused;
+//   - every vars table says FIREBASE_PROJECT_ID = "pack-569", so no deployment believes another
+//     project's sign-ins; [env.production.vars] says OWNER_MODE = "fixed"; and PACK_IDS is the
+//     same in all three, and is index.html's PACK_DOC_ID (the pack the page itself asks for).
+//     The security review of 5690c3a..20b4fd6 (item 3) found only DEPLOY_ENV checked here.
+//     (The API also treats DEPLOY_ENV "prod" as fixed owner mode whatever OWNER_MODE says:
+//     functions/_lib/pack.js fixedOwnerMode.)
 // The API checks the same pairing again at run time, against the bound database's own
 // `deployment` row (functions/_lib/pack.js database()): this file is the first of two locks.
 //
 // Usage:  node scripts/check-wrangler.mjs [path/to/wrangler.toml]    (default: ./wrangler.toml)
+// index.html is read from the same folder as wrangler.toml, for its PACK_DOC_ID.
 // Exit 0 and one line naming the ids, or exit 1 with a GitHub ::error line per problem.
 // The deploy job runs this; test/harness.mjs imports checkWrangler() and runs the same code.
 // Plain Node, no npm (the repo rule).
 
 import { readFileSync, realpathSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { liveConfig } from './build-site.mjs';
 
 // Header -> [which environment, which kind of table, the header's bracket form].
 export const WRANGLER_BLOCKS = {
@@ -42,6 +50,7 @@ export const WRANGLER_BLOCKS = {
   'env.production.d1_databases': ['production', 'd1', '[[']
 };
 const DEPLOY_ENV_OF = { top: 'preview', preview: 'preview', production: 'prod' };
+const FIREBASE_PROJECT_ID = 'pack-569';
 const TOP_KEYS = ['name', 'pages_build_output_dir', 'compatibility_date'];
 const D1_KEYS = ['binding', 'database_name', 'database_id', 'migrations_dir'];
 const DB_NAME_OF = { top: 'pack569-preview', preview: 'pack569-preview', production: 'pack569-prod' };
@@ -54,7 +63,8 @@ const LINE_HEADER = /^(\[\[?)([a-z0-9_.]+)(\]\]?)$/;
 const LINE_PAIR = /^([A-Za-z_][A-Za-z0-9_]*) = "([^"\\]*)"$/;
 
 // { problems: [{ title, detail }], ids: { top, preview, production }, blocks: { header: { key: value } } }
-export function checkWrangler(text) {
+// packDocId: index.html's PACK_DOC_ID. Required: with none, the file is refused.
+export function checkWrangler(text, { packDocId } = {}) {
   const problems = [];
   const say = (title, detail) => problems.push({ title, detail });
   const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -95,6 +105,7 @@ export function checkWrangler(text) {
   });
 
   const ids = {};
+  const packIds = [];
   for (const header of Object.keys(WRANGLER_BLOCKS)) {
     const [env, kind] = WRANGLER_BLOCKS[header];
     const b = blocks[header];
@@ -104,6 +115,13 @@ export function checkWrangler(text) {
         say('wrangler.toml DEPLOY_ENV', '[' + header + '] says DEPLOY_ENV = ' + JSON.stringify(b.DEPLOY_ENV === undefined ? null : b.DEPLOY_ENV) +
           '. The top level and [env.preview] must say DEPLOY_ENV = "preview", and [env.production] DEPLOY_ENV = "prod".');
       }
+      if (b.FIREBASE_PROJECT_ID !== FIREBASE_PROJECT_ID) {
+        say('wrangler.toml FIREBASE_PROJECT_ID', '[' + header + '] must say FIREBASE_PROJECT_ID = "' + FIREBASE_PROJECT_ID + '": the API accepts only that project\'s sign-ins.');
+      }
+      if (env === 'production' && b.OWNER_MODE !== 'fixed') {
+        say('wrangler.toml OWNER_MODE', '[' + header + '] must say OWNER_MODE = "fixed": the live pack\'s owner is PACK_OWNER_UID, never whoever signs in first.');
+      }
+      packIds.push(b.PACK_IDS);
       continue;
     }
     if (b.binding !== 'DB') say('wrangler.toml database binding', '[[' + header + ']] must bind "DB".');
@@ -112,6 +130,12 @@ export function checkWrangler(text) {
     ids[env] = id;
     if (id === undefined) say('wrangler.toml database ids are crossed', '[[' + header + ']] has no database_id.');
     else if (id.indexOf('REPLACE_WITH_') === -1 && !D1_ID_RE.test(id)) say('wrangler.toml database id', '[[' + header + ']] database_id is not a D1 database id.');
+  }
+  if (typeof packDocId !== 'string' || !packDocId) {
+    say('wrangler.toml PACK_IDS', "The check was not given index.html's PACK_DOC_ID, so it cannot say which pack PACK_IDS must name.");
+  } else if (packIds.some((v) => v !== packDocId)) {
+    say('wrangler.toml PACK_IDS', 'Every vars table must say PACK_IDS = "' + packDocId + '", the PACK_DOC_ID in index.html (found ' +
+      packIds.map((v) => JSON.stringify(v === undefined ? null : v)).join(', ') + ').');
   }
   if (ids.top !== undefined && ids.production !== undefined && (ids.top !== ids.preview || ids.top === ids.production)) {
     say('wrangler.toml database ids are crossed', "The top level and [env.preview] must both carry pack569-preview's id, and [env.production] pack569-prod's, a different one (" + GUIDE + ').');
@@ -126,7 +150,13 @@ function main() {
     console.log('::error title=No wrangler.toml::' + file + ' could not be read.');
     process.exit(1);
   }
-  const r = checkWrangler(text);
+  let packDocId = null;
+  const page = join(dirname(file), 'index.html');
+  try { packDocId = liveConfig(readFileSync(page, 'utf8')).docId; } catch (e) {
+    console.log('::error title=No index.html::' + page + ' could not be read for its PACK_DOC_ID.');
+    process.exit(1);
+  }
+  const r = checkWrangler(text, { packDocId });
   if (r.problems.length) {
     // A workflow command's message is one line; % and newlines would be read as its syntax.
     const esc = (s) => String(s).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');

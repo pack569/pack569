@@ -54,6 +54,9 @@ compatibility_date = "2026-09-28"
 #   OWNER_MODE           production: "fixed" — the owner is the account in the PACK_OWNER_UID
 #                        secret, never whoever signs in first. Previews: "first-signer", so a
 #                        test pack on the preview database can be claimed and tried out.
+#                        The API treats DEPLOY_ENV "prod" as "fixed" whatever this says.
+# The check pins these too: FIREBASE_PROJECT_ID "pack-569" in every block, OWNER_MODE "fixed"
+# in production, and PACK_IDS the same in every block and equal to index.html's PACK_DOC_ID.
 # PACK_OWNER_UID is a secret, not a var: it is set in the Cloudflare dashboard, never here.
 
 [vars]

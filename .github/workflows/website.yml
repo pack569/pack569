@@ -221,7 +221,9 @@ jobs:
       # binds. scripts/check-wrangler.mjs reads the file strictly (plain lines only: no quoted
       # keys, no multi-line strings that could hide a fake table), and the harness runs the
       # same script on every push. (The API checks the pairing again at run time, against the
-      # database's own `deployment` row: functions/_lib/pack.js database().)
+      # database's own `deployment` row: functions/_lib/pack.js database().) It also pins the
+      # other vars: FIREBASE_PROJECT_ID "pack-569" everywhere, OWNER_MODE "fixed" in
+      # production, and PACK_IDS the same everywhere and equal to index.html's PACK_DOC_ID.
       - name: Refuse placeholder or crossed database ids
         run: node scripts/check-wrangler.mjs wrangler.toml
 

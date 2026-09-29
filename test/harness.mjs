@@ -13122,7 +13122,7 @@ const WR_PRE = '11111111-1111-4111-8111-111111111111', WR_PROD = '22222222-2222-
 const wrNth = (t, id, n, to) => { const p = t.split(id); return p.slice(0, n + 1).join(id) + to + p.slice(n + 1).join(id); };
 // Each block's database_id, by the block it sits under: { top, preview, production } — as the
 // deploy's own check (scripts/check-wrangler.mjs) reads them.
-const wranglerDbIds = (W) => checkWrangler(W).ids;
+const wranglerDbIds = (W) => checkWrangler(W, { packDocId: LIVE.docId }).ids;
 
 test('the workflow deploys only by hand, production only from main, with every action pinned', () => {
   const WF = readFileSync(join(ROOT, '.github/workflows/website.yml'), 'utf8');
@@ -13212,6 +13212,7 @@ test('the workflow deploys only by hand, production only from main, with every a
     const W0 = readFileSync(join(ROOT, 'wrangler.toml'), 'utf8');
     const filled = W0.split('REPLACE_WITH_PACK569_PREVIEW_DATABASE_ID').join(WR_PRE).split('REPLACE_WITH_PACK569_PROD_DATABASE_ID').join(WR_PROD);
     const dir = mkdtempSync(join(tmpdir(), 'pack569-ids-'));
+    writeFileSync(join(dir, 'index.html'), HTML);   // the step reads PACK_DOC_ID from beside wrangler.toml
     const runStep = (toml) => {
       writeFileSync(join(dir, 'wrangler.toml'), toml);
       return spawnSync(process.execPath, [join(ROOT, 'scripts/check-wrangler.mjs'), 'wrangler.toml'], { cwd: dir, encoding: 'utf8' });
@@ -13223,6 +13224,13 @@ test('the workflow deploys only by hand, production only from main, with every a
       eq(bad.status, 1, 'the step accepts placeholders');
       ok(/^::error title=wrangler\.toml still has placeholder D1 ids::/m.test(bad.stdout), 'the step does not say which problem, as a GitHub error');
       eq(runStep(wrNth(filled, WR_PRE, 1, WR_PROD)).status, 1, 'the step accepts [env.preview] bound to the production database');
+      // Item 3: the step compares PACK_IDS with the index.html beside it, and needs one.
+      writeFileSync(join(dir, 'index.html'), HTML.replace(LIVE.docId, 'b'.repeat(64)));
+      const other = runStep(filled);
+      ok(other.status === 1 && /^::error title=wrangler\.toml PACK_IDS::/m.test(other.stdout), 'the step accepts PACK_IDS that are not index.html\'s pack');
+      rmSync(join(dir, 'index.html'));
+      const none = runStep(filled);
+      ok(none.status === 1 && /^::error title=No index\.html::/m.test(none.stdout), 'the step runs with no index.html');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }
   ok(/cp -R _site "\$RUNNER_TEMP\/deploy\/_site"/.test(jobs.deploy) && /workingDirectory: \$\{\{ runner\.temp \}\}\/deploy/.test(jobs.deploy),
@@ -13294,9 +13302,9 @@ test('wrangler.toml check: a file that reads one way line by line and another wa
   // every attack below is one the old line-by-line greps let through.
   const W0 = readFileSync(join(ROOT, 'wrangler.toml'), 'utf8');
   const filled = W0.split('REPLACE_WITH_PACK569_PREVIEW_DATABASE_ID').join(WR_PRE).split('REPLACE_WITH_PACK569_PROD_DATABASE_ID').join(WR_PROD);
-  const titles = (t) => checkWrangler(t).problems.map((p) => p.title);
+  const titles = (t) => checkWrangler(t, { packDocId: LIVE.docId }).problems.map((p) => p.title);
   eq(titles(filled), [], 'the real file, placeholders filled in');
-  eq(checkWrangler(filled).ids, { top: WR_PRE, preview: WR_PRE, production: WR_PROD }, 'the ids, by block');
+  eq(checkWrangler(filled, { packDocId: LIVE.docId }).ids, { top: WR_PRE, preview: WR_PRE, production: WR_PROD }, 'the ids, by block');
   // Unfilled, the real file's only problems are its three placeholders.
   eq(titles(W0), ['wrangler.toml still has placeholder D1 ids', 'wrangler.toml still has placeholder D1 ids', 'wrangler.toml still has placeholder D1 ids'],
     'the committed file');
@@ -13340,8 +13348,24 @@ test('wrangler.toml check: a file that reads one way line by line and another wa
     ['an indented key', filled.replace('DEPLOY_ENV = "prod"', '  DEPLOY_ENV = "prod"'), UNREADABLE, false],
     ['Windows line endings', filled.split('\n').join('\r\n'), UNREADABLE, false],
     ['a database_id that is not a D1 id', wrNth(filled, WR_PROD, 0, 'pack569-prod'), 'wrangler.toml database id', false],
-    ['the owner\'s account id committed', filled.replace('OWNER_MODE = "fixed"', 'OWNER_MODE = "fixed"\nPACK_OWNER_UID = "abc"'), 'wrangler.toml commits PACK_OWNER_UID', false]
+    ['the owner\'s account id committed', filled.replace('OWNER_MODE = "fixed"', 'OWNER_MODE = "fixed"\nPACK_OWNER_UID = "abc"'), 'wrangler.toml commits PACK_OWNER_UID', false],
+    // Security review of 5690c3a..20b4fd6, item 3: the other vars are pinned too, block by block.
+    ['production believing another Firebase project', filled.replace('[env.production.vars]\nDEPLOY_ENV = "prod"\nFIREBASE_PROJECT_ID = "pack-569"',
+      '[env.production.vars]\nDEPLOY_ENV = "prod"\nFIREBASE_PROJECT_ID = "someone-else"'), 'wrangler.toml FIREBASE_PROJECT_ID', false],
+    ['a preview believing another Firebase project', wrNth(filled, 'FIREBASE_PROJECT_ID = "pack-569"', 1, 'FIREBASE_PROJECT_ID = "pack-5690"'), 'wrangler.toml FIREBASE_PROJECT_ID', false],
+    ['no FIREBASE_PROJECT_ID at the top level', filled.replace('FIREBASE_PROJECT_ID = "pack-569"\n', ''), 'wrangler.toml FIREBASE_PROJECT_ID', false],
+    ['production OWNER_MODE first-signer', filled.replace('OWNER_MODE = "fixed"', 'OWNER_MODE = "first-signer"'), 'wrangler.toml OWNER_MODE', false],
+    ['production with no OWNER_MODE', filled.replace('OWNER_MODE = "fixed"\n', ''), 'wrangler.toml OWNER_MODE', false],
+    ['production serving another pack', filled.replace(/(\[env\.production\.vars\][^[]*PACK_IDS = ")[0-9a-f]+/, '$1' + 'f'.repeat(64)), 'wrangler.toml PACK_IDS', false],
+    ['a preview serving a second pack too', wrNth(filled, 'PACK_IDS = "' + LIVE.docId + '"', 1, 'PACK_IDS = "' + LIVE.docId + ',other"'), 'wrangler.toml PACK_IDS', false],
+    ['no PACK_IDS at the top level', filled.replace('PACK_IDS = "' + LIVE.docId + '"\n', ''), 'wrangler.toml PACK_IDS', false]
   ];
+  // The same three PACK_IDS, but not index.html's pack; and no PACK_DOC_ID given at all.
+  ok(checkWrangler(filled, { packDocId: 'a'.repeat(64) }).problems.some((p) => p.title === 'wrangler.toml PACK_IDS'), 'PACK_IDS not compared with index.html');
+  ok(checkWrangler(filled).problems.some((p) => p.title === 'wrangler.toml PACK_IDS' && /was not given index\.html's PACK_DOC_ID/.test(p.detail)),
+    'the check passes, or does not say why, with no PACK_DOC_ID to compare against');
+  // Previews may still be first-signer (a test pack there can be claimed).
+  ok(/\[vars\][^[]*OWNER_MODE = "first-signer"/.test(filled), 'the top level is no longer first-signer (the test is stale)');
   for (const [what, text, title, fooledLines] of attacks) {
     ok(text !== filled, what + ': the attack did not change the file (the test is stale)');
     ok(titles(text).indexOf(title) >= 0, what + ': not refused as "' + title + '" (got ' + JSON.stringify(titles(text)) + ')');
@@ -13450,6 +13474,7 @@ function apiSetup() {
       API.token = await load('_lib/token.js');
       API.rules = await load('_lib/rules.js');
       API.http = await load('_lib/http.js');
+      API.pack = await load('_lib/pack.js');
       API.fetches = 0;
       API.useTestKeys = () => API.token.setJwksFetcher(async () => { API.fetches++; return { keys: [API.jwk], maxAge: 3600 }; });
       API.useTestKeys();
@@ -13744,6 +13769,15 @@ atest('api session: in production (OWNER_MODE fixed) only PACK_OWNER_UID is the 
   const s2 = await w2.session('owner');
   eq([s2.body.role, s2.body.ownerUid], [null, null], 'fixed mode with no PACK_OWNER_UID');
   eq(w2.sql('SELECT count(*) AS n FROM members')[0].n, 0, 'fixed mode with no owner made a member');
+  // Security review of 5690c3a..20b4fd6, item 3: production is fixed whatever OWNER_MODE says,
+  // so a dashboard override of the var cannot hand the live pack to the first person to sign in.
+  eq([API.pack.fixedOwnerMode({ DEPLOY_ENV: 'prod', OWNER_MODE: 'first-signer' }), API.pack.fixedOwnerMode({ DEPLOY_ENV: 'preview', OWNER_MODE: 'first-signer' }),
+    API.pack.fixedOwnerMode({ DEPLOY_ENV: 'preview' })], [true, false, true], 'fixedOwnerMode by DEPLOY_ENV and OWNER_MODE');
+  const w3 = await apiWorld({ DEPLOY_ENV: 'prod', seedEnv: 'prod', OWNER_MODE: 'first-signer', PACK_OWNER_UID: 'uid-owner' });
+  const s3 = await w3.session('stranger');
+  eq([s3.status, s3.body.role, s3.body.ownerUid], [200, null, null], 'production with OWNER_MODE first-signer: a stranger signing in first');
+  eq([w3.one('SELECT owner_uid FROM packs').owner_uid, w3.sql('SELECT count(*) AS n FROM members')[0].n], [null, 0], 'production with OWNER_MODE first-signer wrote an owner');
+  eq((await w3.session('owner')).body.role, 'admin', 'production with OWNER_MODE first-signer: the configured owner');
 });
 
 atest('api session: a sign-up link visitor never claims an unowned pack', async () => {
@@ -13918,7 +13952,7 @@ atest('api deployment: a database answers only the deployment its own row names 
   w0.db.raw.exec('DROP TABLE deployment');
   eq((await w0.session('owner')).body.reason, 'deployment-unset', 'no deployment table');
   // Matching: production on its own database works; seeding a refused database takes effect at once.
-  eq((await (await apiWorld({ DEPLOY_ENV: 'prod', seedEnv: 'prod', OWNER_MODE: 'first-signer' })).session('owner')).body.role, 'admin', 'prod on prod');
+  eq((await (await apiWorld({ DEPLOY_ENV: 'prod', seedEnv: 'prod', OWNER_MODE: 'fixed', PACK_OWNER_UID: 'uid-owner' })).session('owner')).body.role, 'admin', 'prod on prod');
   const w1 = await apiWorld({ seedEnv: null });
   eq((await w1.session('owner')).status, 503, 'before the seed');
   w1.db.raw.prepare("INSERT INTO deployment (id, env) VALUES (1, 'preview')").run();

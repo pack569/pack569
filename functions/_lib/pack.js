@@ -15,7 +15,8 @@
 //   OWNER_MODE           'fixed' (the default, and production): the pack's owner is the
 //                        account in PACK_OWNER_UID and nobody else can claim it. 'first-signer'
 //                        (previews only): the first Google sign-in claims an unowned pack, as
-//                        Firestore's packmeta did.
+//                        Firestore's packmeta did. Ignored when DEPLOY_ENV is 'prod', which
+//                        is always 'fixed'.
 //   PACK_OWNER_UID       (secret) the owner's Firebase account id, copied from Firestore's
 //                        packmeta document. Unset in fixed mode means no owner and no import.
 //                        It is written to packs.owner_uid only when that account signs in,
@@ -66,7 +67,11 @@ export async function database(env) {
 
 // Production's rule for who owns a pack (OWNER_MODE 'fixed', the default). Also what decides
 // that a pack starts empty until the owner copies it in (api/pack/[id]/index.js PUT).
-export const fixedOwnerMode = (env) => !(env && env.OWNER_MODE === 'first-signer');
+// DEPLOY_ENV 'prod' is always fixed, whatever OWNER_MODE says: a dashboard override of
+// OWNER_MODE on production would otherwise let the first person to sign in own the live pack
+// (security review of 5690c3a..20b4fd6, item 3). database() has already checked DEPLOY_ENV
+// against the bound database's own row, so 'prod' here is the live database.
+export const fixedOwnerMode = (env) => !(env && env.OWNER_MODE === 'first-signer' && env.DEPLOY_ENV !== 'prod');
 
 // The owner an unowned pack gets, or null. See OWNER_MODE above. A caller who arrived on a
 // sign-up link never claims a pack (the page: "a join-link visitor must NEVER claim ownership").
