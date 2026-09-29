@@ -18,7 +18,7 @@
 // a parent view that PUT /view would refuse (viewSkipped says why).
 
 import { route, json, readObject, refuse, forbidden, badRequest, MAX_STATE_BYTES } from '../../../_lib/http.js';
-import { withMember, auditStmt } from '../../../_lib/pack.js';
+import { withMember, auditStmt, MAX_REV } from '../../../_lib/pack.js';
 import { ROLES, INVITE_ROLES, UID_RE, MEMBER_NAME_MAX, JOIN_CODE_RE, cleanContactLine, emailKey, parentViewProblem } from '../../../_lib/rules.js';
 
 const MAX_ROWS = 2000;
@@ -40,6 +40,9 @@ async function importPack({ request, db, packId, user }) {
   try { st = JSON.parse(p.json); } catch (e) { refuse(badRequest('pack.json')); }
   if (!st || typeof st !== 'object' || Array.isArray(st)) refuse(badRequest('pack.json'));
   const rev = time(p.rev, 0);
+  // A rev PUT's If-Match could never name again (it takes at most 15 digits) would leave the
+  // pack unwritable for good (security review of stage A, finding 8).
+  if (rev > MAX_REV) refuse(badRequest('pack.rev'));
   const device = typeof p.device === 'string' ? p.device.slice(0, 128) : '';
 
   const members = Array.isArray(b.members) ? b.members : [];

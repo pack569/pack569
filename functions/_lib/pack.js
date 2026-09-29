@@ -26,6 +26,9 @@ import { refuse, unauthenticated, notFound, unavailable } from './http.js';
 import { UID_RE } from './rules.js';
 
 export const PACK_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+// The highest rev the import accepts. PUT's If-Match takes at most 15 digits (< 1e15), so this
+// leaves nine hundred trillion saves of room above it; Firestore's revs count single saves.
+export const MAX_REV = 1e14;
 
 export function packIds(env) {
   return String((env && env.PACK_IDS) || '').split(/[\s,]+/).filter((s) => PACK_ID_RE.test(s));

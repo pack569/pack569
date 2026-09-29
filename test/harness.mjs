@@ -13369,6 +13369,48 @@ atest('api token: the endpoints answer 401 without a believable token, and 503 w
   eq(API.fetches - before, 1, 'an unknown kid refetches the key set (the first fetch was just now)');
 });
 
+atest('api token: a rotated-in key is fetched from Google itself, not the stale cached copy, and a key set\'s Age counts against its life', async () => {
+  // Security review of stage A, finding 6. The real fetcher, with fetch and the Cache API stubbed.
+  await apiSetup();
+  const jwk2 = Object.assign(await crypto.subtle.exportKey('jwk', API.rogue.publicKey), { kid: 'test-kid-2', alg: 'RS256', use: 'sig' });
+  const google = { keys: [API.jwk], age: 0, fetches: 0 };
+  const store = new Map();
+  const cache = { matches: 0,
+    async match(u) { this.matches++; const r = store.get(u); return r ? r.clone() : undefined; },
+    async put(u, r) { store.set(u, r); } };
+  const had = { fetch: globalThis.fetch, caches: Object.getOwnPropertyDescriptor(globalThis, 'caches') };
+  globalThis.fetch = async (u) => {
+    eq(String(u), API.token.JWKS_URL, 'the key set URL');
+    google.fetches++;
+    return new Response(JSON.stringify({ keys: google.keys }), { headers: { 'cache-control': 'public, max-age=3600', age: String(google.age) } });
+  };
+  Object.defineProperty(globalThis, 'caches', { value: { default: cache }, configurable: true, writable: true });
+  const V = async (tok, at) => { try { await API.token.verifyIdToken(tok, API_PROJECT, at); return 'ok'; } catch (e) { return e.reason; } };
+  try {
+    API.token.setJwksFetcher(null);
+    const T = Math.floor(Date.now() / 1000);
+    const tok1 = await mint({}), tok2 = await mint({}, { header: { kid: 'test-kid-2' }, key: API.rogue });
+    eq([await V(tok1, T), google.fetches], ['ok', 1], 'the first token fetches the key set');
+    google.keys = [API.jwk, jwk2];   // Google rotates a key in
+    eq([await V(tok2, T + 1), google.fetches], ['unknown-key', 1], 'a new kid inside the refetch gap');
+    eq([await V(tok2, T + 61), google.fetches], ['ok', 2], 'a new kid after the gap goes to Google, not the cached copy');
+    // Age: a key set Google has already held for 3590 of its 3600 seconds is good for 10 more, not 3600.
+    API.token.setJwksFetcher(null);
+    store.clear();
+    google.age = 3590;
+    const before = google.fetches + cache.matches;
+    eq(await V(tok1, T), 'ok', 'a key set with Age');
+    eq(await V(tok1, T + 5), 'ok', 'within its life');
+    eq(google.fetches + cache.matches - before, 2, 'the first token did not look the key set up exactly once (cache, then Google), or looked again within its life');
+    await V(tok1, T + 11);
+    eq(google.fetches + cache.matches - before, 3, 'the key set was used past max-age minus Age');
+  } finally {
+    globalThis.fetch = had.fetch;
+    if (had.caches) Object.defineProperty(globalThis, 'caches', had.caches); else delete globalThis.caches;
+    API.useTestKeys();
+  }
+});
+
 /* ---- /api/session: the owner claim, invites, the sign-up link ---- */
 
 atest('api session: the first Google sign-in claims an unowned pack, as admin, for good (packmeta.create, packmeta.immutable, members.create.owner)', async () => {
@@ -13678,6 +13720,23 @@ atest('api Part C members.admin / members.update.self / members.update.owner / m
   eq((await patch('owner', 'uid-nobody', { role: 'editor' })).status, 404, 'an admin changing a row that is not there');
 });
 
+atest('api members PATCH: a non-admin touching someone else\'s row gets the one fixed 403, whether or not they are in the pack, whatever the body', async () => {
+  // Security review of stage A, finding 5: 400 (bad role, bad JSON) for a real member vs 403 for
+  // a missing one told a non-admin who was in the pack.
+  const w = await (await apiWorld()).seed();
+  for (const who of ['editor', 'viewer', 'parent', 'pending', 'stranger']) {
+    for (const uid of ['uid-owner', 'uid-admin2', 'uid-nobody']) {
+      for (const body of [{ role: 'no-such-role' }, { name: 5 }, 'not json', '[1]', { role: 'viewer' }]) {
+        denied(await w.call(who, 'PATCH', 'member', { uid }, { body }), `${who} PATCH ${uid} ${JSON.stringify(body)}`);
+      }
+    }
+  }
+  // Their own row, and an admin, still get the real answers.
+  eq((await w.call('viewer', 'PATCH', 'member', { uid: 'uid-viewer' }, { body: 'not json' })).status, 400, 'bad JSON on your own row');
+  eq((await w.call('owner', 'PATCH', 'member', { uid: 'uid-viewer' }, { body: { role: 'no-such-role' } })).status, 400, 'an admin sending a bad role');
+  eq((await w.call('owner', 'PATCH', 'member', { uid: 'uid-nobody' }, { body: { role: 'viewer' } })).status, 404, 'an admin, a row that is not there');
+});
+
 atest('api last admin: no change or removal leaves a pack with no admin', async () => {
   const w = await (await apiWorld()).seed({ editor: 'editor' });
   const r1 = await w.call('owner', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { role: 'editor' } });
@@ -13936,6 +13995,25 @@ atest('api import: in production a save cannot create the pack record before the
   eq((await p.call('editor', 'PUT', 'pack', null, { body: {}, headers: { 'if-match': '0' } })).status, 200, 'a preview\'s first save');
   // The client contract is written down where the next stage will look.
   ok(/409 \{error:'awaiting-import', code:'failed-precondition'\}/.test(readFileSync(join(ROOT, 'functions/_lib/http.js'), 'utf8')), 'http.js does not document awaiting-import');
+});
+
+atest('api import: a rev a later save could never name is refused, and the highest allowed one can still be saved over', async () => {
+  // Security review of stage A, finding 8: If-Match takes at most 15 digits.
+  const MAX = 1e14;
+  for (const rev of [MAX + 1, 1e15, 1e300, Number.MAX_SAFE_INTEGER]) {
+    const w = await (await apiWorld()).seed({});
+    const body = importBody();
+    body.pack = Object.assign({}, body.pack, { rev });
+    const r = await w.call('owner', 'POST', 'import', null, { body });
+    eq([r.status, r.body.reason], [400, 'pack.rev'], 'an imported rev of ' + rev);
+    eq(w.sql('SELECT (SELECT count(*) FROM pack_state) + (SELECT count(*) FROM import_lock) AS n')[0].n, 0, 'a refused rev wrote something');
+  }
+  const w = await (await apiWorld()).seed({});
+  const body = importBody();
+  body.pack = Object.assign({}, body.pack, { rev: MAX });
+  eq((await w.call('owner', 'POST', 'import', null, { body })).body.rev, MAX, 'the highest rev');
+  const r = await w.call('owner', 'PUT', 'pack', null, { body: { a: 1 }, headers: { 'if-match': String(MAX) } });
+  eq([r.status, r.body.rev], [200, MAX + 1], 'a save over the highest imported rev');
 });
 
 atest('api import: a parent view PUT /view would refuse is left behind and named, and the rest imports', async () => {

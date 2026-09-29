@@ -38,6 +38,11 @@ async function get({ db, packId, role, user, params }) {
 
 async function patch({ request, db, packId, role, user, params }) {
   const target = targetUid(params);
+  // Only an admin may touch someone else's row, and that is decided FIRST — before the body is
+  // read or the row looked up — so a non-admin gets the one fixed 403 whether or not the
+  // account is in the pack, and whatever they sent (security review of stage A, finding 5:
+  // a 400 for a bad role on a real member, 403 for a missing one, told them which was which).
+  if (!isAdmin(role) && target !== user.uid) return forbidden();
   const body = await readObject(request, 4096);
   for (const k of Object.keys(body)) if (k !== 'role' && k !== 'name') return forbidden();
   const row = await memberOf(db, packId, target);

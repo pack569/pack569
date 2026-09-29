@@ -13,8 +13,10 @@
 //     here that holds for every request, so an anonymous or password account never gets in.
 //
 // Google's public keys are cached: in the Workers Cache API where there is one (Google's
-// response says how long to keep them), and in memory for the life of the isolate either way.
-// A kid we have never seen refetches, at most once a minute. Tests swap the fetcher.
+// response says how long to keep them, counting the Age it already had), and in memory for
+// the life of the isolate either way. A kid we have never seen refetches from Google itself,
+// skipping the cached copy, at most once a minute. Tests swap the fetcher, or stub fetch and
+// caches under the real one.
 //
 // Plain ES module: runs in Cloudflare Workers and in Node (the harness).
 
@@ -45,25 +47,46 @@ function b64urlJson(s) {
   return v;
 }
 
-function maxAgeOf(res) {
+// When we fetched a copy from Google, stamped on the copy we put in the Cache API.
+const FETCHED_AT = 'x-pack569-fetched-at';
+// Seconds this copy of the key set is still good for: Google's max-age, less the Age it
+// already had when Google sent it, less how long we have held it since (security review of
+// stage A, finding 6: counting from max-age alone could keep a key set past its life).
+function lifetimeOf(res) {
   const m = /max-age=(\d+)/.exec(res.headers.get('cache-control') || '');
-  return m ? Number(m[1]) : 3600;
+  const maxAge = m ? Number(m[1]) : 3600;
+  const age = Number(res.headers.get('age')) || 0;
+  const at = Number(res.headers.get(FETCHED_AT)) || 0;
+  const held = at > 0 ? Math.max(0, (Date.now() - at) / 1000) : 0;
+  return Math.max(0, Math.floor(maxAge - age - held));
 }
-// Google's key set, as { keys: [jwk…], maxAge: seconds }.
-async function defaultFetchJwks() {
+// Google's key set, as { keys: [jwk…], maxAge: seconds left }. `fresh` skips the Cache API:
+// it is set when a token names a kid we do not have, which is what a key rotation looks like,
+// and a cached copy from before the rotation would not have it either (finding 6).
+async function defaultFetchJwks(opts) {
+  const fresh = !!(opts && opts.fresh);
   const cache = globalThis.caches && globalThis.caches.default;
   let res = null;
-  if (cache) { try { res = await cache.match(JWKS_URL); } catch (e) { res = null; } }
+  if (cache && !fresh) {
+    try { res = await cache.match(JWKS_URL); } catch (e) { res = null; }
+    if (res && lifetimeOf(res) <= 0) res = null;
+  }
   if (!res) {
     try { res = await fetch(JWKS_URL); } catch (e) { bad('jwks-unavailable'); }
     if (!res.ok) bad('jwks-unavailable');
-    // The Cache API keeps it for as long as Google's Cache-Control says. (On a *.pages.dev
-    // host the Cache API may do nothing; the in-memory copy below still saves most fetches.)
-    if (cache) { try { await cache.put(JWKS_URL, res.clone()); } catch (e) { /* in memory only */ } }
+    // The Cache API keeps a copy, stamped with when we fetched it. (On a *.pages.dev host the
+    // Cache API may do nothing; the in-memory copy below still saves most fetches.)
+    if (cache) {
+      try {
+        const h = new Headers(res.headers);
+        h.set(FETCHED_AT, String(Date.now()));
+        await cache.put(JWKS_URL, new Response(await res.clone().arrayBuffer(), { status: res.status, headers: h }));
+      } catch (e) { /* in memory only */ }
+    }
   }
   let body;
   try { body = await res.json(); } catch (e) { bad('jwks-unavailable'); }
-  return { keys: body && Array.isArray(body.keys) ? body.keys : [], maxAge: maxAgeOf(res) };
+  return { keys: body && Array.isArray(body.keys) ? body.keys : [], maxAge: lifetimeOf(res) };
 }
 
 let fetchJwks = defaultFetchJwks;
@@ -79,7 +102,8 @@ export function setJwksFetcher(fn) {
 async function keyFor(kid, now) {
   let jwk = now < jwks.expires ? jwks.keys.find((k) => k && k.kid === kid) : null;
   if (!jwk && (now >= jwks.expires || now - jwks.fetchedAt >= REFETCH_GAP)) {
-    const got = await fetchJwks();
+    // Still-current keys without this kid: go to Google itself, not to the Cache API's copy.
+    const got = await fetchJwks({ fresh: now < jwks.expires });
     const age = Math.max(0, Math.min(Number(got.maxAge) || 0, MAX_KEY_AGE));
     jwks = { keys: got.keys || [], expires: now + age, fetchedAt: now };
     imported.clear();
