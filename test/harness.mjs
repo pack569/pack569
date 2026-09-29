@@ -18915,6 +18915,48 @@ test('C2 re-review (minor): the ledger log is capped as each event is written', 
   eq([p.get('log().length'), p.get('log()[0].id'), p.get('log()[999].op')], [1000, 'lg-1001', 'untick'], 'the cap');
 });
 
+// Reconciled through Aug 15 on both. (The pair's clocks read Sep 21, 2026.)
+const C2S_BOOK = { book: { openingCents: 0, openingDate: '2026-07-01', reconciledThrough: '2026-08-15', statementDate: '', statementCents: 0 } };
+const LOCK_A = "state.book.reconciledThrough = '2026-09-15'; state.book.reconciledBy = 'Pat'; state.book.reconciledAt = '2026-09-16T12:00:00.000Z'; commit()";
+const bookOf = (st) => [st.book.reconciledThrough, st.book.reconciledBy, st.book.reconciledAt, st.book.statementDate, st.book.statementCents];
+test('C2 re-review #2, Firestore: a device holding the book from before a statement was marked reconciled does not unlock it', () => {
+  // A marks Sep 15 reconciled and saves; B, with an unsaved change and a statement it was working
+  // on (Sep 10, which the lock covers), saves last.
+  const { a, b, server } = fsGonePair(C2S_BOOK);
+  a.run(LOCK_A); a.push();
+  b.run("state.book.statementDate = '2026-09-10'; state.book.statementCents = 999; " + B1);
+  b.hear(); b.push();
+  eq(bookOf(server()), ['2026-09-15', 'Pat', '2026-09-16T12:00:00.000Z', '', 0], 'the later lock');
+  eq(eIds(server()).indexOf('b1') !== -1, true, 'B’s change');
+  a.hear();
+  eq(bookOf(a.get('state')), ['2026-09-15', 'Pat', '2026-09-16T12:00:00.000Z', '', 0], 'A after B’s save');
+  // A statement after the lock is still being worked on: kept.
+  const k = fsGonePair(C2S_BOOK);
+  k.a.run(LOCK_A); k.a.push();
+  k.b.run("state.book.statementDate = '2026-09-20'; state.book.statementCents = 999; " + B1);
+  k.b.hear(); k.b.push();
+  eq(bookOf(k.server()), ['2026-09-15', 'Pat', '2026-09-16T12:00:00.000Z', '2026-09-20', 999], 'a later statement');
+  // Controls: this device's later lock stays; a lock after tomorrow is not taken (it is a mistake).
+  const c = fsGonePair(C2S_BOOK);
+  c.a.run(LOCK_A); c.a.push();
+  c.b.run("state.book.reconciledThrough = '2026-09-18'; " + B1);
+  c.b.hear(); c.b.push();
+  eq(c.server().book.reconciledThrough, '2026-09-18', 'this device’s later lock');
+  const f = fsGonePair(C2S_BOOK);
+  f.a.run("state.book.reconciledThrough = '2026-12-31'; commit()"); f.a.push();
+  f.b.run(B1); f.b.hear(); f.b.push();
+  eq(f.server().book.reconciledThrough, '2026-08-15', 'a lock after tomorrow was taken');
+});
+
+atest('C2 re-review #2, api: a device holding the book from before a statement was marked reconciled does not unlock it', async () => {
+  const { a, b, server } = await apiGonePair({ book: C2S_BOOK.book });
+  await a.edit(LOCK_A);
+  b.run("state.book.statementDate = '2026-09-10'; state.book.statementCents = 999; " + B1);
+  await settle([b], 800);
+  eq(bookOf(server()), ['2026-09-15', 'Pat', '2026-09-16T12:00:00.000Z', '', 0], 'the later lock');
+  eq(eIds(server()).indexOf('b1') !== -1, true, 'B’s change');
+});
+
 /* ---------------- report ---------------- */
 // The API tests are async; they run here, one at a time, each on its own database.
 for (const [name, fn] of asyncTests) {

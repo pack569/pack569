@@ -12243,7 +12243,8 @@
   // Unions exactly FOUR collections by id — state.entries, the ledger, inventory hand-outs,
   // and each fundraiser's sales (the append-only logs) — appending remote items missing
   // locally — and, since Phase 3 C2, the ledger's log of changes (mergeLedgerLog). Everything
-  // else deliberately stays last-write-wins. Id-guarded, so a
+  // else deliberately stays last-write-wins, but for the book's lock (security re-review of C2,
+  // #2: book.reconciledThrough never goes back in a merge). Id-guarded, so a
   // retried transaction can't duplicate.
   // LIVE STOPGAP (see freshGone) — except what either copy has deleted: the two copies' marks are
   // merged first, then a row deleted on either side is neither taken from there nor kept here.
@@ -12373,6 +12374,25 @@
       removed += state.entries.length - teLeft.length;
       state.entries = teLeft;
       if (gone && gone.imports) Object.keys(teOlder).forEach(function (b) { if (!(gone.imports[b] > 0)) gone.imports[b] = Date.now(); });
+    }
+    // Security re-review of C2 (#2) — the book is this device's (last write wins), but never with
+    // an earlier lock than the other copy's: a device holding the book from before a statement was
+    // marked reconciled (Sep 30) would write Aug 31 back, and unlock September without a word.
+    // The later lock is kept, with who and when; a statement being worked on that it covers is
+    // done with, as Mark reconciled leaves it. Only between two books of the same year, neither
+    // closed out (a new year's book starts unlocked), and not a lock after tomorrow on this
+    // device's clock: no statement ends after today (reconcileLockRefusal), so that one is a
+    // mistake, and a correction of it on this device must not be undone by a copy that still has it.
+    // Before the ledger's union, so keepReconciled reads the later period too.
+    var bkHere = state.book, bkThere = remote.book;
+    if (bkHere && bkThere && !bkHere.closedAt && !bkThere.closedAt && bkHere.year === bkThere.year &&
+        /^\d{4}-\d{2}-\d{2}$/.test(String(bkThere.reconciledThrough || '')) &&
+        bkThere.reconciledThrough > String(bkHere.reconciledThrough || '') &&
+        bkThere.reconciledThrough <= new Date(Date.now() + 86400000).toISOString().slice(0, 10)) {
+      bkHere.reconciledThrough = bkThere.reconciledThrough;
+      bkHere.reconciledBy = bkThere.reconciledBy;
+      bkHere.reconciledAt = bkThere.reconciledAt;
+      if (bkHere.statementDate && bkHere.statementDate <= bkThere.reconciledThrough) { bkHere.statementDate = ''; bkHere.statementCents = 0; }
     }
     // Phase 0 — ledger entries get the same append-only protection as popcorn sales, and
     // for a stronger reason: two leaders posting receipts from two devices must not be able
