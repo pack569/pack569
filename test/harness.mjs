@@ -8573,6 +8573,233 @@ test('the join config loads for every leader, and both of its answers release th
   ok(/sync\.joinLoaded = false;/.test(slice('clearAccountsRuntime')), 'clearAccountsRuntime keeps the last pack’s joinLoaded');
 });
 
+/* ================================================================
+   Phase 2 stage B (2026-09-28) — the backend adapter seam. Every cloud call goes through
+   sync.backend; these pin what the seam has to carry for the security gates to keep working
+   when a second adapter (the pack's own server) arrives.
+   ================================================================ */
+
+test('only the backend adapter touches the Firebase SDK', () => {
+  const outside = codeOnly(SCRIPT.replace(slice('firestoreBackend'), ''));
+  ['getFirestore', 'onSnapshot', 'setDoc', 'getDoc', 'updateDoc', 'deleteDoc', 'runTransaction', 'serverTimestamp',
+    'getAuth', 'getRedirectResult', 'signInWithPopup', 'signInWithRedirect', 'GoogleAuthProvider', 'initializeApp',
+    'sync.mods', 'sync.db', 'sync.docRef', 'sync.app'].forEach((w) =>
+    ok(outside.indexOf(w) === -1, `${w} is used outside firestoreBackend`));
+  // FIREBASE_CONFIG is read in exactly two places: whether there is a cloud, and the adapter's init.
+  eq((outside.match(/FIREBASE_CONFIG/g) || []).length, 3, 'FIREBASE_CONFIG is read outside backendConfigured/loadBackend');
+  ok(/function backendConfigured\(\) \{ return !!FIREBASE_CONFIG; \}/.test(outside) &&
+    /firestoreBackend\.init\(FIREBASE_CONFIG\)/.test(outside), 'the two readers of FIREBASE_CONFIG moved');
+});
+
+test('a device is told it was removed only by the server, end to end through the Firestore adapter', () => {
+  const ctx = fsAdapterCtx(`
+    var KEY = 'pack-popcorn-ledger-v1', removed = [], parentViewTimer = null;
+    var localStorage = { removeItem: function (k) { removed.push(k); } };
+    function freshState() { return { fresh: true }; }
+    function stopDocFeed() {} function stopParentFeed() {} function subscribeDoc() {} function subscribeParentView() {}
+    function applyInvitesSubscription() {} function applyJoinSubscription() {} function handleAccountsError() {}
+    function render() {} function clearTimeout() {} function ensureMyMemberDoc() { return null; }
+    function accountsInForce() { return true; }
+    var state = { money: 'the pack record' };
+    var sync = { session: 1, backend: firestoreBackend, docId: 'P', user: { uid: 'me' }, myRole: 'parent',
+      membersUnsub: null, membersScope: null, membersDeniedAs: null, membersFromServer: false,
+      feed: 'parent', parentUnsub: function () {}, unsub: null, ownerUid: 'someone-else',
+      accountsUnavailable: false, joinRejected: null, members: [] };
+    ${['LEADER_ROLES', 'cloudReady', 'feedForRole', 'recomputeMyRole', 'stopLocalWrites', 'applyRoleSubscription',
+       'applyMembersSubscription'].map(slice).join('\n')}
+    firestoreBackend.open('P');
+    applyMembersSubscription(1);`);
+  const w = vm.runInContext('watches[0]', ctx);
+  eq([w.ref.kind, w.ref.path], ['doc', 'packs/P/members/me'], 'a parent watches more than their own member doc');
+  vm.runInContext("reads['packs/P/members/me'] = { role: 'parent' }; watches[0].next(snapOf('packs/P/members/me', { fromCache: true }))", ctx);
+  eq(vm.runInContext('[sync.members, sync.myRole, sync.membersFromServer]', ctx),
+    [[{ role: 'parent', uid: 'me' }], 'parent', false], 'a cached member doc was misread');
+  // The cache stops showing our doc: not the server's word, so nothing is wiped.
+  vm.runInContext("delete reads['packs/P/members/me']; watches[0].next(snapOf('packs/P/members/me', { fromCache: true }))", ctx);
+  eq(vm.runInContext('[sync.members, removed.length, state.money || null, sync.joinRejected]', ctx),
+    [[], 0, 'the pack record', null], 'a cache-only miss wiped the device');
+  // The server says the doc is gone: that is a removal.
+  vm.runInContext("watches[0].next(snapOf('packs/P/members/me', { fromCache: false }))", ctx);
+  eq(vm.runInContext('[sync.membersFromServer, removed, sync.joinRejected]', ctx),
+    [true, ['pack-popcorn-ledger-v1'], 'removed'], 'the server’s word did not remove the device');
+  // A leader's roster: the collection, each member keyed by its doc id.
+  const all = fsAdapterCtx(`firestoreBackend.open('P'); var got = null;
+    firestoreBackend.subscribeMembers('P', 'all', 'me', function (list, meta) { got = [list, meta]; });
+    watches[0].next(qsOf([{ id: 'u1', data: function () { return { role: 'admin', uid: 'forged' }; } }], { fromCache: false }));`);
+  eq(vm.runInContext('[watches[0].ref.kind, watches[0].ref.path]', all), ['collection', 'packs/P/members'], 'the roster watch');
+  eq(vm.runInContext('got', all), [[{ role: 'admin', uid: 'u1' }], { fromServer: true, pendingWrites: false }],
+    'a roster member is not keyed by its doc id, or the meta is wrong');
+  // …and a fake-adapter answer with no meta is not the server's either.
+  const bare = vm.createContext({});
+  vm.runInContext(FAKE_BE + `
+    function recomputeMyRole() {} function applyRoleSubscription() {} function applyInvitesSubscription() {}
+    function applyJoinSubscription() {} function render() {} function handleAccountsError() {}
+    var LEADER_ROLES = ['admin', 'editor', 'viewer'];
+    var sync = { session: 1, backend: fakeBe, docId: 'P', user: { uid: 'me' }, myRole: 'parent', membersFromServer: true };
+    ${slice('cloudReady')}
+    ${slice('applyMembersSubscription')}
+    applyMembersSubscription(1);
+    subs.members.next([]);`, bare);
+  eq(vm.runInContext('sync.membersFromServer', bare), false, 'an answer with no meta counted as the server’s');
+});
+
+test('the Firestore adapter hands the app plain records, keeps error codes, and writes exactly what it is handed', () => {
+  const ctx = fsAdapterCtx(`firestoreBackend.open('P');`);
+  // Pack record: the raw { rev, device, json } (the conflict overlay keeps it as-is), null when
+  // the pack has none, and pendingWrites for our own unconfirmed write.
+  vm.runInContext(`var got = [];
+    firestoreBackend.subscribePack(firestoreBackend.open('P'), function (rec, meta) { got.push([rec, meta]); });
+    watches[0].next(snapOf('packs/P', {}));
+    reads['packs/P'] = { rev: 4, device: 'd2', json: '{}' };
+    watches[0].next(snapOf('packs/P', { hasPendingWrites: true, fromCache: true }));`, ctx);
+  eq(vm.runInContext('watches[0].ref.path', ctx), 'packs/P', 'the pack watch');
+  eq(vm.runInContext('got', ctx), [
+    [null, { fromServer: true, pendingWrites: false }],
+    [{ rev: 4, device: 'd2', json: '{}' }, { fromServer: false, pendingWrites: true }]], 'the pack record or its meta');
+  // Reads: null for a missing doc; a refusal keeps its code.
+  vm.runInContext(`var r = {};
+    reads['packmeta/P'] = { owner: 'u9' };
+    firestoreBackend.getPackMeta('P').then(function (v) { r.meta = v; });
+    firestoreBackend.getMember('P', 'nobody').then(function (v) { r.member = v; });
+    firestoreBackend.getInvite('P', 'x@y.z').then(function (v) { r.invite = v; });
+    readErr = { code: 'permission-denied' };
+    firestoreBackend.getMember('P', 'me').catch(function (e) { r.err = e.code; });`, ctx);
+  eq(vm.runInContext('r', ctx), { meta: { owner: 'u9' }, member: null, invite: null, err: 'permission-denied' }, 'reads');
+  // Writes land on the Firestore paths the rules guard, carrying exactly the app's literal.
+  vm.runInContext(`fsLog = [];
+    firestoreBackend.putMember('P', 'me', { role: 'pending', joinCode: 'c' });
+    firestoreBackend.updateMemberRole('P', 'u1', 'viewer');
+    firestoreBackend.deleteMember('P', 'u1');
+    firestoreBackend.putInvite('P', 'a@b.c', { role: 'parent' });
+    firestoreBackend.deleteInvite('P', 'a@b.c');
+    firestoreBackend.writeJoin('P', { open: true });
+    firestoreBackend.writeView('P', { events: [] });
+    firestoreBackend.putPackMeta('P', { owner: 'me' });`, ctx);
+  eq(vm.runInContext('fsLog', ctx), [
+    ['set', 'packs/P/members/me', { role: 'pending', joinCode: 'c' }],
+    ['update', 'packs/P/members/u1', { role: 'viewer' }],
+    ['delete', 'packs/P/members/u1'],
+    ['set', 'packs/P/invites/a@b.c', { role: 'parent' }],
+    ['delete', 'packs/P/invites/a@b.c'],
+    ['set', 'packs/P/public/join', { open: true }],
+    ['set', 'packs/P/public/view', { events: [] }],
+    ['set', 'packmeta/P', { owner: 'me' }]], 'the adapter’s writes');
+  // Invites come back keyed by their doc id.
+  vm.runInContext(`var inv = null;
+    firestoreBackend.subscribeInvites('P', function (l) { inv = l; });
+    watches[watches.length - 1].next(qsOf([{ id: 'a@b.c', data: function () { return { role: 'editor' }; } }]));`, ctx);
+  eq(vm.runInContext('inv', ctx), [{ role: 'editor', key: 'a@b.c' }], 'an invite is not keyed by its doc id');
+  // A user is a plain copy, and emailVerified stays undefined when the SDK does not say.
+  eq(vm.runInContext("firestoreBackend.userOf({ uid: 'u', isAnonymous: false, email: 'e', displayName: 'n', photoURL: '' })", ctx),
+    { uid: 'u', isAnonymous: false, displayName: 'n', email: 'e', photoURL: '' }, 'userOf');
+  eq(vm.runInContext("firestoreBackend.userOf({ uid: 'u', emailVerified: false }).emailVerified", ctx), false, 'emailVerified false is lost');
+});
+
+test('a push reads, merges and writes in one retried step, and the rev always climbs past both copies', () => {
+  // The adapter: build() runs against each attempt's fresh read; the last attempt is what lands.
+  const a = fsAdapterCtx(`firestoreBackend.open('P');
+    reads['packs/P'] = { rev: 7, json: 'A' };
+    txRuns = 2; txBetween = function () { reads['packs/P'] = { rev: 9, json: 'B' }; };
+    var seen = [], res = null;
+    firestoreBackend.pushPack(firestoreBackend.open('P'), function (remote) {
+      seen.push(remote);
+      return { record: { rev: remote.rev + 1 }, result: { n: remote.rev + 1 } };
+    }).then(function (r) { res = r; });`);
+  eq(vm.runInContext('[seen, txSets, res]', a), [[{ rev: 7, json: 'A' }, { rev: 9, json: 'B' }],
+    [['packs/P', { rev: 8 }], ['packs/P', { rev: 10 }]], { n: 10 }], 'the transaction does not re-read, re-build and resolve with the last run');
+  // The app: syncPush through a fake adapter that plays that retry.
+  const run = (over) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`
+      function now(v) { return { then: function (ok) { var r = ok ? ok(v) : v; return (r && r.then) ? r : now(r); }, catch: function () { return this; } }; }
+      var REMOTES = ${JSON.stringify(over.remotes)}, records = [], merged = [], saved = 0, toasts = [];
+      var fakeBe = { serverTime: function () { return 'TS'; },
+        pushPack: function (h, build) {
+          var out = null;
+          REMOTES.forEach(function (rm) { out = build(rm); records.push(out.record); });
+          return now(out.result);
+        } };
+      function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
+      function mergeRemoteAppendOnly(d) { merged.push(d.rev); return 1; }
+      function save() { saved += 1; } function scheduleParentViewRefresh() {} function render() {}
+      function showToast(m) { toasts.push(m); } function renderSyncPill() {} function syncFail() {}
+      function clearTimeout() {} function setTimeout() {}
+      var ui = { tab: 'home' };
+      var state = { rev: ${over.localRev}, scouts: [] };
+      var sync = { backend: fakeBe, pack: { docId: 'P' }, session: 1, deviceId: 'dev1', clobber: ${!!over.clobber},
+        dirty: true, mode: 'online' };
+      ${slice('packLinked')}
+      ${slice('syncPush')}
+      syncPush();`, ctx);
+    return ctx;
+  };
+  const plain = run({ remotes: [{ rev: 7, json: '{}' }], localRev: 3 });
+  const rec = vm.runInContext('records[0]', plain);
+  eq(Object.keys(rec), ['rev', 'updatedAt', 'device', 'json'], 'the pack record’s fields');
+  eq([rec.rev, rec.updatedAt, rec.device, JSON.parse(rec.json).scouts], [8, 'TS', 'dev1', []], 'the pushed record');
+  eq(vm.runInContext('[state.rev, sync.dirty, saved, merged.length]', plain), [8, false, 1, 0], 'after a plain push');
+  eq(vm.runInContext('records[0].rev', run({ remotes: [{ rev: 2 }], localRev: 5 })), 6, 'a local rev ahead of the cloud is not kept ahead');
+  eq(vm.runInContext('records[0].rev', run({ remotes: [null], localRev: 5, clobber: true })), 6, 'a first push');
+  eq(vm.runInContext('merged', run({ remotes: [null], localRev: 5, clobber: true })), [], 'a merge from a record that does not exist');
+  // Clobbered, and another device writes during the push: each attempt merges from its own read.
+  const clob = run({ remotes: [{ rev: 7 }, { rev: 9 }], localRev: 3, clobber: true });
+  eq(vm.runInContext('[merged, records.map(function (r) { return r.rev; }), state.rev, sync.clobber, toasts.length]', clob),
+    [[7, 9], [8, 10], 10, false, 1], 'a clobbered push that raced another device');
+});
+
+test('the pack record feed ignores its own echoes and keeps the raw record for the conflict screen', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    var timers = [], adopted = [], rendered = 0;
+    function scheduleParentViewRefresh() {} function renderSyncPill() {} function render() { rendered += 1; }
+    function syncPush() {} function clearTimeout() {} function setTimeout(fn) { timers.push(fn); return 't'; }
+    function canEdit() { return true; } function save() {}
+    function normalizeState(p) { return p && typeof p === 'object' ? p : null; }
+    function adoptRemote(d, o) { adopted.push([d, !!(o && o.toast)]); return true; }
+    var ui = { tab: 'home', overlay: null };
+    var state = { scouts: [{ id: 'a' }], rev: 2 };
+    var sync = { firstSnap: true, mode: 'online', deviceId: 'dev1', dirty: false, clobber: false };
+    ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap'].map(slice).join('\n')}`, ctx);
+  // No shared copy yet: seed it from this device.
+  vm.runInContext('onRemoteSnap(null, { fromServer: true, pendingWrites: false })', ctx);
+  eq(vm.runInContext('[sync.dirty, timers.length === 1 && timers[0] === syncPush]', ctx), [true, true], 'an empty pack was not seeded');
+  vm.runInContext('sync.dirty = false', ctx);
+  // Our own unconfirmed write, and our own write echoed back: neither is adopted.
+  vm.runInContext("onRemoteSnap({ rev: 9, device: 'other', json: '{}' }, { fromServer: false, pendingWrites: true })", ctx);
+  vm.runInContext("onRemoteSnap({ rev: 9, device: 'dev1', json: '{}' }, { fromServer: true, pendingWrites: false })", ctx);
+  eq(vm.runInContext('adopted.length', ctx), 0, 'an echo of this device’s own write was adopted');
+  // Another device's newer rev is.
+  vm.runInContext("var other = { rev: 9, device: 'd2', json: '{}' }; onRemoteSnap(other, { fromServer: true, pendingWrites: false })", ctx);
+  ok(vm.runInContext('adopted.length === 1 && adopted[0][0] === other && adopted[0][1]', ctx), 'a newer remote copy was not adopted');
+  // …unless this device has unsaved edits: then it is flagged for the merge at push.
+  vm.runInContext("sync.dirty = true; onRemoteSnap({ rev: 12, device: 'd2', json: '{}' }, { fromServer: true, pendingWrites: false })", ctx);
+  eq(vm.runInContext('[adopted.length, sync.clobber]', ctx), [1, true], 'a newer copy over unsaved edits was not flagged');
+  // First answer, both copies real and different: the overlay holds the record exactly as sent.
+  vm.runInContext(`sync.firstSnap = true; sync.dirty = false;
+    var cloud = { rev: 5, device: 'd2', json: JSON.stringify({ scouts: [{ id: 'b' }] }) };
+    onRemoteSnap(cloud, { fromServer: true, pendingWrites: false });`, ctx);
+  ok(vm.runInContext("ui.overlay && ui.overlay.kind === 'sync-conflict' && ui.overlay.remote === cloud", ctx),
+    'the conflict screen does not hold the raw cloud record');
+});
+
+test('once single-pack mode halts, nothing can push the pack record, even with the rules check passing', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    var timers = [], pushed = 0, parentViewTimer = null;
+    var fakeBe = { pushPack: function () { pushed += 1; return { then: function () { return { catch: function () {} }; } }; } };
+    function stopDocFeed() {} function stopParentFeed() {} function renderSyncPill() {} function render() {}
+    function clearTimeout() {} function setTimeout(fn) { timers.push(fn); return 't'; }
+    function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
+    var state = { rev: 1 };
+    var sync = { backend: fakeBe, pack: { docId: 'P' }, session: 1, deviceId: 'd', mode: 'online' };
+    ${['packLinked', 'haltFixedSync', 'scheduleSyncPush', 'syncPush'].map(slice).join('\n')}`, ctx);
+  vm.runInContext('scheduleSyncPush()', ctx);
+  eq(vm.runInContext('timers.length', ctx), 1, 'a linked device cannot schedule a push (the test proves nothing)');
+  vm.runInContext('haltFixedSync(); timers = []; scheduleSyncPush(); syncPush();', ctx);
+  eq(vm.runInContext('[sync.pack, timers.length, pushed]', ctx), [null, 0, 0], 'a halted device can still push');
+  ok(/sync\.pack = null;/.test(slice('syncStop')), 'syncStop keeps the pack handle');
+});
+
 test('the rules take only a verified Google account as a member, and a short name', () => {
   ok(/function viaGoogle\(\) \{\s*return request\.auth\.token\.firebase\.sign_in_provider == 'google\.com'\s*&& request\.auth\.token\.email_verified == true;\s*\}/
     .test(RULES), 'viaGoogle() does not require a verified email');
@@ -12668,7 +12895,7 @@ test('the production build is the committed page, and its CSP hashes the script 
   const headers = siteFile('production', '_headers');
   const d = site.cspDirectives(site.cspOf(headers));
   const hash = createHash('sha256').update(SCRIPT, 'utf8').digest('base64');
-  // The SDK is allowed by its exact versioned path, as loadFirebase() imports it — not all of gstatic.
+  // The SDK is allowed by its exact versioned path, as firestoreBackend.init() imports it — not all of gstatic.
   const sdkBase = /^  var SYNC_SDK_BASE = '([^']+)';$/m.exec(SCRIPT)[1];
   ok(/^https:\/\/www\.gstatic\.com\/firebasejs\/\d+\.\d+\.\d+\/$/.test(sdkBase), 'SYNC_SDK_BASE is not a versioned gstatic path');
   eq(d['script-src'], [`'sha256-${hash}'`, sdkBase, 'https://apis.google.com'], 'script-src');

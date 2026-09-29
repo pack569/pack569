@@ -42,16 +42,16 @@ export const ALLOWLIST = ['_headers', 'index.html'];
 // what keeps it out. Each pattern must match exactly once, or the build stops.
 const CONFIG_RE = /^  var FIREBASE_CONFIG = (\{[^{}]*\}|null);$/gm;
 const DOC_ID_RE = /^  var PACK_DOC_ID = ('[0-9a-f]{64}'|null);$/gm;
-// Where loadFirebase() imports the SDK from. Production's script-src allows this exact path,
+// Where firestoreBackend.init() imports the SDK from. Production's script-src allows this exact path,
 // not all of www.gstatic.com, so a version bump in index.html moves the CSP with it.
 const SDK_BASE_RE = /^  var SYNC_SDK_BASE = '(https:\/\/[a-z0-9.-]+\/[A-Za-z0-9._\/-]*\/)';$/gm;
 
 // What the Content-Security-Policy lets the page talk to, per target.
 // Production: the Firebase SDK is imported from its gstatic path; Google sign-in loads apis.google.com
 // and frames the project's authDomain; Firestore and Auth are the googleapis hosts; weather
-// is open-meteo. Preview: device-only, so loadFirebase() is never called (syncStart and
-// signInWithGoogle both return early when FIREBASE_CONFIG is null) and no Google origin is
-// needed at all. If the config ever slipped through, the browser would still block Firestore.
+// is open-meteo. Preview: device-only, so loadBackend() is never called (syncStart and
+// signInWithGoogle both return early, because backendConfigured() is false when
+// FIREBASE_CONFIG is null) and no Google origin is needed at all. If the config ever slipped through, the browser would still block Firestore.
 // The calendar-from-a-link fetch (submitIcsPaste) is deliberately NOT allowed on either: it
 // fails like a CORS refusal and the dialog switches to "paste the calendar text instead".
 const WEATHER = ['https://api.open-meteo.com', 'https://archive-api.open-meteo.com'];

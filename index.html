@@ -8563,20 +8563,20 @@
     ownerUid: null,            // packmeta/{docId}.owner — the first person to sign in / claim the pack
     ownerHealing: false,       // the owner's member doc vanished and ensureMyMemberDoc is recreating it
     accountsUnavailable: false,// true when packmeta/members reads are permission-denied (legacy rules) → roles NOT enforced
-    membersUnsub: null,        // second onSnapshot (the members subcollection, or just our own doc)
+    membersUnsub: null,        // the members subscription (the members subcollection, or just our own doc)
     membersScope: null,        // 'all' (leaders read the roster) | 'self' (parents/pending: own doc only)
     membersDeniedAs: null,     // the role a roster read was last refused under — see applyMembersSubscription
-    redirectChecked: false,    // one-time getRedirectResult() guard (mobile Google fallback)
+    redirectChecked: false,    // one-time completeRedirect() guard (mobile Google fallback)
     // ---- Parent phase (runtime-only, like everything above — never persisted) ----
     feed: null,                // which document this session is subscribed to: 'doc' | 'parent' | null
     parentView: null,          // the sanitized packs/{docId}/public/view payload (parents/pending only)
-    parentUnsub: null,         // onSnapshot for that derived doc
+    parentUnsub: null,         // the subscription to that derived doc
     invites: [],               // outstanding packs/{docId}/invites/* (admins only)
-    invitesUnsub: null,        // onSnapshot for the invites subcollection
+    invitesUnsub: null,        // the subscription to the invites subcollection
     invitesUnavailable: false, // invites read denied (older Part C rules) → hide the invite UI ONLY
     // ---- Self-serve join link (runtime-only, never persisted in the pack record) ----
     joinCfg: null,             // packs/{docId}/public/join = { open, mode, code, showStandings }
-    joinUnsub: null,           // onSnapshot for that config doc (leaders only)
+    joinUnsub: null,           // the subscription to that config doc (leaders only)
     joinUnavailable: false,    // join-config read denied (older Part C rules) → hide the admin card ONLY
     joinLoaded: false,         // the join config has answered (either way) — parent-view writes wait on it
     joinRejected: null,        // null | 'closed' | 'badcode' | 'nolink' | 'removed' — signed in, but the pack won't take them
