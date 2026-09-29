@@ -14187,6 +14187,25 @@ atest('api deployment: a database answers only the deployment its own row names 
   eq((await w0.session('owner')).body.reason, 'deployment-unset', 'no deployment table');
   // Matching: production on its own database works; seeding a refused database takes effect at once.
   eq((await (await apiWorld({ DEPLOY_ENV: 'prod', seedEnv: 'prod', OWNER_MODE: 'fixed', PACK_OWNER_UID: 'uid-owner' })).session('owner')).body.role, 'admin', 'prod on prod');
+  // Review of eb504db..366f6c9 (optional item): production believes pack-569's sign-ins and no
+  // other project's, whatever a dashboard override of FIREBASE_PROJECT_ID says. A token made
+  // for that other project, which it would otherwise accept, gets a 503 and writes nothing.
+  const other = 'someone-else';
+  const otherTok = await mint({ sub: 'uid-owner', email: 'owner@example.com', iss: 'https://securetoken.google.com/' + other, aud: other });
+  const errs = [];
+  const log0 = console.error;
+  console.error = (...a) => { errs.push(a.join(' ')); };
+  try {
+    for (const proj of [other, 'pack-569 ', 'PACK-569', undefined, '']) {
+      const wp = await apiWorld({ DEPLOY_ENV: 'prod', seedEnv: 'prod', OWNER_MODE: 'fixed', PACK_OWNER_UID: 'uid-owner', FIREBASE_PROJECT_ID: proj });
+      const s = await callApi(wp.env, API.mod.session, { method: 'POST', path: '/api/session?pack=' + API_PACK, token: otherTok });
+      eq([s.status, s.body.reason], [503, 'wrong-project'], 'production with FIREBASE_PROJECT_ID ' + JSON.stringify(proj) + ' (session)');
+      eq((await wp.call(null, 'GET', 'pack', null, { token: otherTok })).status, 503, 'production with FIREBASE_PROJECT_ID ' + JSON.stringify(proj) + ' (pack)');
+      eq(wp.sql('SELECT count(*) AS n FROM packs')[0].n, 0, 'production with another project wrote a pack row');
+    }
+  } finally { console.error = log0; }
+  ok(errs.some((l) => /production has FIREBASE_PROJECT_ID "someone-else"/.test(l)), 'the refused project is not logged');
+  eq(API.pack.firebaseProject({ DEPLOY_ENV: 'prod', FIREBASE_PROJECT_ID: 'pack-569' }), 'pack-569', 'production with pack-569');
   const w1 = await apiWorld({ seedEnv: null });
   eq((await w1.session('owner')).status, 503, 'before the seed');
   w1.db.raw.prepare("INSERT INTO deployment (id, env) VALUES (1, 'preview')").run();

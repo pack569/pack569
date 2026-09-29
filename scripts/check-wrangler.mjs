@@ -25,7 +25,8 @@
 //     same in all three, and is index.html's PACK_DOC_ID (the pack the page itself asks for).
 //     The security review of 5690c3a..20b4fd6 (item 3) found only DEPLOY_ENV checked here.
 //     (The API also treats DEPLOY_ENV "prod" as fixed owner mode whatever OWNER_MODE says:
-//     functions/_lib/pack.js fixedOwnerMode.)
+//     functions/_lib/pack.js fixedOwnerMode; and with DEPLOY_ENV "prod" it refuses any
+//     FIREBASE_PROJECT_ID but "pack-569": functions/_lib/pack.js firebaseProject.)
 // The API checks the same pairing again at run time, against the bound database's own
 // `deployment` row (functions/_lib/pack.js database()): this file is the first of two locks.
 //

@@ -8,7 +8,9 @@
 //   DB                   the D1 binding: pack569-prod in production, pack569-preview otherwise.
 //   DEPLOY_ENV           'prod' in production, 'preview' otherwise. Must match the bound
 //                        database's own `deployment` row, or every request is a 503.
-//   FIREBASE_PROJECT_ID  the Firebase project whose sign-ins we accept ('pack-569').
+//   FIREBASE_PROJECT_ID  the Firebase project whose sign-ins we accept ('pack-569'). With
+//                        DEPLOY_ENV 'prod' it must be exactly 'pack-569', or every request
+//                        is a 503 (firebaseProject below).
 //   PACK_IDS             the pack ids this deployment serves, comma-separated. Anything else
 //                        is 404: no one can start a new pack through this API (that is Phase 4,
 //                        with its own limits).
@@ -86,13 +88,31 @@ export function ownerClaim(env, uid, viaJoinLink) {
   return UID_RE.test(fixed) && uid === fixed ? fixed : null;
 }
 
-// The signed-in account, or a 401 (503 if Google's keys cannot be fetched).
+// The Firebase project whose sign-ins this deployment believes. wrangler.toml says
+// 'pack-569' everywhere and scripts/check-wrangler.mjs refuses anything else, but a dashboard
+// override of the var would slip past that file; so production also checks it here, and
+// answers nothing rather than believe another project's sign-ins on the live pack (review of
+// eb504db..366f6c9, optional item). database() has already checked DEPLOY_ENV against the
+// bound database's own row, so 'prod' here is the live database.
+export const PROD_FIREBASE_PROJECT = 'pack-569';
+export function firebaseProject(env) {
+  const p = env && typeof env.FIREBASE_PROJECT_ID === 'string' ? env.FIREBASE_PROJECT_ID : '';
+  if (env && env.DEPLOY_ENV === 'prod' && p !== PROD_FIREBASE_PROJECT) {
+    console.error('api refused: production has FIREBASE_PROJECT_ID', JSON.stringify(p), 'not', PROD_FIREBASE_PROJECT);
+    refuse(unavailable('wrong-project'));
+  }
+  return p;
+}
+
+// The signed-in account, or a 401 (503 if Google's keys cannot be fetched, or production is
+// not set to believe pack-569's sign-ins).
 export async function authenticate(request, env) {
+  const project = firebaseProject(env);
   const h = request.headers.get('authorization') || '';
   const m = /^Bearer ([A-Za-z0-9_.-]+)$/.exec(h);
   if (!m) refuse(unauthenticated('no-token'));
   try {
-    return await verifyIdToken(m[1], env && env.FIREBASE_PROJECT_ID);
+    return await verifyIdToken(m[1], project);
   } catch (e) {
     if (!(e instanceof TokenError)) throw e;
     if (e.reason === 'jwks-unavailable' || e.reason === 'no-project') refuse(unavailable(e.reason));
