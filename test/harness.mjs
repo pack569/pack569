@@ -8513,13 +8513,37 @@ test('nothing is published to parents before the join config has said whether st
     function clearTimeout() {}
     var parentViewTimer = null, parentViewFingerprint = null;
     var state = {};
-    var sync = { backend: fakeBe, docId: 'P', joinLoaded: false };
+    var sync = { backend: fakeBe, docId: 'P', joinLoaded: false, pack: { docId: 'P' }, firstSnap: false };
     ${slice('cloudReady')}
+    ${slice('packLinked')}
     ${slice('writeParentView')}`, ctx);
   vm.runInContext('writeParentView()', ctx);
   eq(vm.runInContext('[built, calls.length]', ctx), [0, 0], 'the parent view was built and written before the join config loaded');
   vm.runInContext('sync.joinLoaded = true; writeParentView()', ctx);
   eq(vm.runInContext('calls', ctx), ['set packs/P/public/view'], 'once loaded, the view is not written');
+});
+
+test('only a device holding the pack record, after its first answer, publishes the parent view', () => {
+  // Security review of stage B, item 2: haltFixedSync drops the pack handle but leaves
+  // cloudReady() true, so a halted device that later saw a leader role published from its
+  // unsynced local copy.
+  const run = (setup) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(FAKE_BE + `
+      function buildParentView() { return { events: [] }; }
+      function accountsInForce() { return true; } function canEdit() { return true; }
+      function fixedSyncBlocked() { return false; } function clearTimeout() {}
+      function stopDocFeed() {} function stopParentFeed() {} function renderSyncPill() {} function render() {}
+      var parentViewTimer = null, parentViewFingerprint = null, state = {};
+      var sync = { backend: fakeBe, docId: 'P', joinLoaded: true, pack: { docId: 'P' }, firstSnap: false };
+      ${['cloudReady', 'packLinked', 'haltFixedSync', 'writeParentView'].map(slice).join('\n')}
+      ${setup}
+      writeParentView();`, ctx);
+    return vm.runInContext('calls', ctx);
+  };
+  eq(run(''), ['set packs/P/public/view'], 'a linked, answered leader does not publish (the test proves nothing)');
+  eq(run('haltFixedSync();'), [], 'a halted device published the parent view');
+  eq(run('sync.firstSnap = true;'), [], 'the view was published before the pack record first answered');
 });
 
 test('the join config loads for every leader, and both of its answers release the parent view', () => {
@@ -8798,6 +8822,37 @@ test('once single-pack mode halts, nothing can push the pack record, even with t
   vm.runInContext('haltFixedSync(); timers = []; scheduleSyncPush(); syncPush();', ctx);
   eq(vm.runInContext('[sync.pack, timers.length, pushed]', ctx), [null, 0, 0], 'a halted device can still push');
   ok(/sync\.pack = null;/.test(slice('syncStop')), 'syncStop keeps the pack handle');
+});
+
+test('every guard in front of the pack feed, the parent feed and a push holds on its own', () => {
+  // Security review of stage B, item 1: each guard below could be deleted with the harness green.
+  // Each is tested with the OTHER guards passing, and each has a control that goes through.
+  const ctx = (over) => {
+    const c = vm.createContext({});
+    vm.runInContext(FAKE_BE + `
+      var pushed = 0;
+      fakeBe.pushPack = function () { pushed += 1; return { then: function () { return { catch: function () {} }; } }; };
+      function stopDocFeed() {} function stopParentFeed() {} function renderSyncPill() {} function render() {}
+      function onRemoteSnap() {} function syncFail() {} function clearTimeout() {} function setTimeout() {}
+      var parentViewTimer = null, state = { rev: 1 };
+      var feedBlocked = ${!!over.feedBlocked}, syncBlocked = ${!!over.syncBlocked}, inForce = ${!!over.inForce}, edit = ${over.edit !== false};
+      function fixedFeedBlocked() { return feedBlocked; } function fixedSyncBlocked() { return syncBlocked; }
+      function accountsInForce() { return inForce; } function canEdit() { return edit; }
+      var sync = { backend: fakeBe, pack: { docId: 'P' }, docId: 'P', session: 1, deviceId: 'd', mode: 'online', parentUnsub: null };
+      ${['cloudReady', 'packLinked', 'haltFixedSync', 'subscribeDoc', 'subscribeParentView', 'syncPush'].map(slice).join('\n')}`, c);
+    return c;
+  };
+  const got = (c, js) => { vm.runInContext(js, c); return vm.runInContext('[!!subs.pack, !!subs.view, pushed]', c); };
+  // subscribeDoc: with the rules check passing, only the pack handle stands in the way.
+  eq(got(ctx({}), 'subscribeDoc(1)'), [true, false, 0], 'control: a linked device cannot subscribe the pack record');
+  eq(got(ctx({}), 'haltFixedSync(); subscribeDoc(1)'), [false, false, 0], 'a halted device subscribed the pack record');
+  // syncPush: the rules check, then the role.
+  eq(got(ctx({}), 'syncPush()'), [false, false, 1], 'control: a linked editor cannot push');
+  eq(got(ctx({ syncBlocked: true }), 'syncPush()'), [false, false, 0], 'a push went out with single-pack mode blocked');
+  eq(got(ctx({ inForce: true, edit: false }), 'syncPush()'), [false, false, 0], 'a read-only role pushed the pack record');
+  // subscribeParentView: the feed gate.
+  eq(got(ctx({}), 'subscribeParentView(1)'), [false, true, 0], 'control: the parent view cannot be subscribed');
+  eq(got(ctx({ feedBlocked: true }), 'subscribeParentView(1)'), [false, false, 0], 'the parent view was subscribed with the feed blocked');
 });
 
 test('the rules take only a verified Google account as a member, and a short name', () => {

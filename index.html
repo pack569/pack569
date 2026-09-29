@@ -8905,6 +8905,9 @@
   //   - Every subscription callback gets (data, meta), meta = { fromServer, pendingWrites }.
   //     fromServer is load-bearing: only a server answer may open the parent-view gate
   //     (applyJoinSubscription) or tell a device it was removed (applyMembersSubscription).
+  //     fromServer means: this answer reflects the server's state (with our own pending write
+  //     on top, if pendingWrites says so). Any answer from a cache, a stored copy or a replay
+  //     is fromServer false, however recent it is.
   //   - subscribe* returns an unsubscribe function; everything else returns a Promise.
   //   - Errors keep a Firebase-style err.code — the app branches on 'permission-denied'.
   //   - Nothing here decides who may do what. The app's gates and the server's rules do.
@@ -9051,10 +9054,13 @@
     });
   }
   // The two questions the cloud paths ask before they touch anything:
-  //   cloudReady() — the backend is loaded and open, and this session knows its pack. Every
-  //                  accounts-side read or write (members, invites, join, parent view) waits on it.
+  //   cloudReady() — the backend is loaded and open, and this session has a pack id. Every
+  //                  accounts-side read or write (members, invites, join) waits on it. It says
+  //                  nothing about whether the pack RECORD may be touched: haltFixedSync leaves
+  //                  it true.
   //   packLinked() — this device holds the pack-record handle, so it may subscribe and push
-  //                  the pack record. haltFixedSync and syncStop drop the handle to say no.
+  //                  the pack record, and publish the parent view built from it.
+  //                  haltFixedSync and syncStop drop the handle to say no.
   function cloudReady() { return !!(sync.backend && sync.backend.isOpen() && sync.docId); }
   function packLinked() { return !!(sync.backend && sync.pack); }
   function syncStart() {
@@ -10533,7 +10539,12 @@
     parentViewTimer = null;
     if (!accountsInForce() || !canEdit()) return;
     if (fixedSyncBlocked()) return;   // SAFETY: single-pack mode, rules unproven — never write
-    if (!cloudReady()) return;
+    // Only a device that holds the pack record's handle, and has had the pack record's first
+    // answer, publishes a view of it (security review of stage B, item 2). cloudReady() alone
+    // is not enough: haltFixedSync drops the pack handle but not the accounts side, so a halted
+    // device that later learned a leader role would otherwise publish from an unsynced local
+    // copy. And before the first answer, what is on this device may be days old.
+    if (!cloudReady() || !packLinked() || sync.firstSnap) return;
     // Not before the join config has answered: until then "calendar-only" reads as "standings
     // on" (see applyJoinSubscription). Nothing is lost by waiting — the answer, either way,
     // schedules this again.
