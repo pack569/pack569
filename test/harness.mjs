@@ -69,6 +69,12 @@ function sandbox(names) {
   vm.runInContext(names.map(slice).join('\n'), ctx);
   return ctx;
 }
+// Wave C1 — buildParentView sorts the trips by date and re-checks their ISO dates, so every
+// sandbox that builds it needs these. todayISO only where the sandbox has none of its own.
+const CAMP_DATE_SRC = ['CAMP_DATE_KEYS', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'sortTripsByDate',
+  'DEN_CAMP_TRIP_ID', 'campHeld', 'campBalooWrong', 'CAMP_TRIP_HELD_FIELDS', 'campPubField', 'campHeldTripFields']
+  .map(slice).join('\n') +
+  "\nvar todayISO = typeof todayISO === 'function' ? todayISO : function () { return '2026-09-28'; };\n";
 
 /* ================================================================
    Wave 21 — the jobs model
@@ -953,6 +959,8 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // DENS: the event coercion rebuilds `dens` in rank order against it.
   'DENS',
   'programYearEndISO', 'EVENT_KINDS', 'freshEvent', 'ADV_RENAMES', 'dateToSlot',
+  // Wave A — the event coercion normalizes a pack meeting's agenda.
+  'PACK_AGENDA', 'normalizeAgenda',
   'ATT_MAX_HEADS', 'attHeads', 'freshAttendance', 'attEmpty', 'attTotals',
   'centsOf', 'freshLine', 'LINE_BASES', 'LINE_FUNDERS', 'freshCamping',
   'LINE_CATEGORIES', 'LINE_CATEGORY_KEYS', 'CHARGE_WHO',
@@ -963,6 +971,21 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'CAMP_SAFETY', 'CAMP_AGES', 'CAMP_WHY_COUNCIL', 'CAMP_FIRST_TIME',
   'freshTripSection', 'freshTrip', 'seedCampingTrips', 'freshCamping',
   'CAMP_SEED_REV', 'CAMP_OLD_SEED', 'campHash', 'refreshCampingSeed',
+  // Wave C1 — and coerces each trip's ISO dates.
+  'CAMP_DATE_KEYS', 'campIsoOrBlank', 'CAMP_READINESS', 'normalizeReadiness', 'CAMP_COUNCIL_TRIP_NAMES',
+  // Wave C4 — refreshCampingSeed reads the den campout template as a current seed too.
+  'CAMP_EMERGENCY', 'DEN_CAMP_TRIP_ID', 'campHeld', 'seedDenCampTrip', 'campTemplates',
+  // Wave B1 — and seeds "New to the pack" the same way.
+  'WELCOME_SEED_REV', 'WELCOME_OLD_SEED', 'WELCOME_FILL_RE', 'freshWelcomeSection', 'seedWelcomeSections',
+  'freshWelcome', 'refreshWelcomeSeed',
+  // Wave B4 — and the School Night checklist.
+  'RECRUIT_KIT_ITEMS', 'freshRecruitKit',
+  // Wave B5 — and the new-member tracker.
+  'ONBOARD_TICKS',
+  // Wave D1 — and the council's popcorn dates and settlement.
+  'POPCORN_COUNCIL_DATES', 'POPCORN_COUNCIL_VERIFY', 'freshPopcornCouncil', 'normalizePopcornCouncil',
+  // Security review — a stored ledger stamp that is an email is neutralised on load.
+  'ledgerStampClean',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
   'parseLegacyTime', 'migrateTierMakeUp', 'normalizeState', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'entrySignedCents',
@@ -4891,7 +4914,7 @@ test('a parent account links to scouts, and that link never leaves the pack reco
     'a second parent replaces the first instead of joining the list');
   const rmm = /function removeMember\(memberUid\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(rmm && /parentUids/.test(rmm[0]), 'removing a member leaves them linked as somebody’s parent');
-  ok((SCRIPT.match(/familyId: '', parentUids: \[\] \}\);/g) || []).length === 2,
+  ok((SCRIPT.match(/familyId: '', parentUids: \[\](, addedYear: state\.budget\.programYear)? \}\);/g) || []).length === 2,
     'a newly added scout is not seeded with the family and parent fields');
 });
 
@@ -5294,7 +5317,8 @@ test('a year’s new seed text reaches a pack that already has its trips — but
   // August keeps last year's dates for ever. The refresh may only replace text an earlier seed
   // wrote: a leader's own edit is theirs, and overwriting it would be the app arguing with them.
   const ctx = sandbox(NORMALIZE_FNS);
-  const seed = ctx.seedCampingTrips();
+  // The templates are "current seed" for refreshCampingSeed too (Wave C4, K1).
+  const seed = ctx.seedCampingTrips().concat(ctx.campTemplates());
   const byName = (name) => seed.find((t) => t.name === name);
   const fall = byName('Fall Family Camping');
 
@@ -5478,7 +5502,7 @@ test('the seeded content states the rules a pack actually has to follow', () => 
 
 test('Camping sections are one per trip, and a trip id is never a route', () => {
   const ctx = vm.createContext({ state: { camping: { trips: [] } } });
-  vm.runInContext(slice('campingTrips') + slice('tripTabLabel') + slice('sectionsOf'), ctx);
+  vm.runInContext(slice('campingTrips') + slice('tripTabLabel') + slice('sectionsOf') + '\n' + CAMP_DATE_SRC, ctx);
   const secs = (trips) => {
     ctx.state.camping.trips = trips;
     return vm.runInContext('sectionsOf({ id: "camping", dynamic: "camping", sections: [] })', ctx);
@@ -5526,13 +5550,18 @@ test('camping edits are behind canEdit, and deletes are two-tap with an undo', (
 test('every trip is published to parents, rebuilt field by field', () => {
   const fn = /function buildParentView\(src, opts\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'buildParentView() not found');
-  ok(/var camping = campingTrips\(\)\.map/.test(fn[0]), 'the trips are not published');
+  ok(/var camping = sortTripsByDate\(campingTrips\(\), todayISO\(\)\)\.filter\(/.test(fn[0]), 'the trips are not published');
   // Never a spread: a field added to a trip in some later wave must not ride along unseen.
   ok(!/\.\.\.t\b/.test(fn[0]), 'the published trip spreads the source object');
-  ['name', 'where', 'address', 'when', 'arrive', 'depart', 'cost', 'url', 'intro'].forEach((k) => {
+  ['name', 'address', 'url'].forEach((k) => {
     ok(new RegExp(`${k}: String\\(t\\.${k} \\|\\| ''\\)`).test(fn[0]), `the published trip drops ${k}`);
   });
-  ok(/return \{ title: String\(s\.title \|\| ''\), body: String\(s\.body \|\| ''\) \};/.test(fn[0]),
+  // Security review — the free-prose trip fields go out through campPubField (blank while marked).
+  ['where', 'when', 'arrive', 'depart', 'cost', 'intro'].forEach((k) => {
+    ok(new RegExp(`${k}: campPubField\\(t\\.${k}\\)`).test(fn[0]), `the published trip drops ${k}, or publishes it unfiltered`);
+  });
+  ok(/return \{ title: String\(s\.title \|\| ''\), body: String\(s\.body \|\| ''\) \};/.test(fn[0]) &&
+    /\.filter\(function \(s\) \{ return \(s\.title \|\| s\.body\) && !campHeld\(s\.title \+ '\\n' \+ s\.body\) && !campBalooWrong\(s\.body\); \}\)/.test(fn[0]),
     'a section is published with more than its title and body');
   ok(/if \(camping\.length\) out\.camping = camping;/.test(fn[0]),
     'an empty camping list still publishes a key, so parents get an empty tab');
@@ -8032,7 +8061,8 @@ test('the parent-view banner names every key the view publishes', () => {
   ok(banner, 'the PUBLISHED list above buildParentView is gone');
   const keys = [...new Set([...src.matchAll(/out\.(\w+) = /g)].map((m) => m[1]))];
   const named = { standings: /standings/, goals: /goal bar/, derby: /derby winners/, tiers: /reward tiers/,
-    tierLadder: /tierLadder/, familyCost: /familyCost/, camping: /camping trips/, contact: /`contact`.*who to ask/ };
+    tierLadder: /tierLadder/, familyCost: /familyCost/, camping: /camping trips/, contact: /`contact`.*who to ask/,
+    welcome: /`welcome`[\s\S]*New to the pack/ };
   keys.forEach((k) => {
     ok(named[k], `buildParentView publishes out.${k}, which this test (and the banner) doesn't know about`);
     ok(named[k].test(banner[1]), `out.${k} is published but not listed in the banner`);
@@ -8040,7 +8070,8 @@ test('the parent-view banner names every key the view publishes', () => {
   ok(/salesCents/.test(banner[1]) && /cost line/.test(banner[1]), 'tier sales targets / camping cost are not declared');
   // SETUP.md tells the pack the same thing.
   ok(/including each\s+trip's cost line/.test(SETUP) && /sales that reach each tier/.test(SETUP) &&
-    /what the year is planned to cost/.test(SETUP) && /"who to ask" line/.test(SETUP),
+    /what the year is planned to cost/.test(SETUP) && /"who to ask" line/.test(SETUP) &&
+    /\*\*New to the pack\*\* page/.test(SETUP),
     'SETUP.md does not list what the parent view really publishes');
   ok(!/activity costs or expenses/.test(SETUP), 'SETUP.md still claims activity costs are never published');
   // S5 (2026-09-28): every per-row field, both ways, named in the banner AND in SETUP.md.
@@ -8063,6 +8094,17 @@ test('the parent-view banner names every key the view publishes', () => {
     ok(offPara[1].indexOf(k) !== -1,
       `the banner does not say amounts-off removes ${k}`));
   ok(/With \*\*Show dollar amounts and rank\*\* off, a row is only/.test(SETUP), 'SETUP.md does not say what amounts-off leaves');
+  // F1 (2026-09-28): the leaders-only things added since, named on BOTH exclusion lists.
+  const excl = SCRIPT.slice(SCRIPT.indexOf('// DELIBERATELY EXCLUDED'), SCRIPT.indexOf('function shortNames('));
+  const never = /It \*\*never\*\* contains:([\s\S]*?)\n- /.exec(SETUP);
+  ok(never, 'SETUP.md lost its "never contains" list');
+  [['`ev.agenda`', /pack meeting's agenda/], ['Recognition list', /Recognition list/],
+    ["printed leaders' copy", /printed leaders' copy/], ['`recruitKit`', /`recruitKit`/],
+    ['`onboarding`', /`onboarding`/], ['`addedYear`', /`addedYear`/], ['`readiness`', /readiness checklist/]
+  ].forEach(([b, sre]) => {
+    ok(excl.indexOf(b) !== -1, `the banner's DELIBERATELY EXCLUDED list does not name ${b}`);
+    ok(sre.test(never[1]), `SETUP.md's "never contains" list does not name ${sre}`);
+  });
 });
 
 test('single-pack mode never signs in anonymously, which is why SETUP says to turn it off', () => {
@@ -8381,13 +8423,15 @@ test('calendar-only publishes the calendar and the cost of a year, and no child�
   vm.runInContext(PRIV_STATE + `
     function standingsEnabled() { return true; }
     function campingTrips() { return []; }
+    ${CAMP_DATE_SRC}
     function familyYearCost() {
       return [{ den: 'Wolf', scout: 18000, adult: 4000, sibling: 0, expected: 22000, covered: 9600,
         steps: [{ name: 'Dues covered', salesCents: 17500, coveredCents: 9600, afterCents: 12400 }],
         lines: [{ name: 'Youth registration', scout: 9600, adult: 0, sibling: 0, direct: true, payee: 'Council',
           perFamily: false, coverScoutStep: 0, coverAdultStep: -1 }] }];
     }
-    ${['shortNames', 'publicNameMap', 'buildParentView', 'blocksInDayOrder', 'fmtTimeRange', 'fmtClock',
+    ${['shortNames', 'publicNameMap', 'buildParentView', 'WELCOME_FILL_RE', 'welcomeHoldReason', 'publishedWelcome',
+       'blocksInDayOrder', 'fmtTimeRange', 'fmtClock',
        'eventIsMeeting', 'eventLabel', 'denListLabel', 'eventDens', 'programYearStartISO',
        'programYearEndISO', 'cleanContactLine', 'parentContactLine', 'amountsEnabled'].map(slice).join('\n')}
     var sync = {};`, ctx);
@@ -8468,7 +8512,7 @@ test('the copied standings name children the way the parent view does, and nobod
 
 test('the storefront day sheet names children by their public names', () => {
   const ctx = vm.createContext({});
-  vm.runInContext(PRIV_STATE + ['shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'daySheetText', 'blocksInDayOrder',
+  vm.runInContext(PRIV_STATE + ['shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'STOREFRONT_SAFETY', 'sheetFirstName', 'daySheetText', 'blocksInDayOrder',
     'blockScoutNames', 'fmtTimeRange', 'fmtClock'].map(slice).join('\n'), ctx);
   const txt = vm.runInContext('daySheetText(state.storefronts[0])', ctx);
   noSurname(txt, 'the day sheet');
@@ -8919,7 +8963,7 @@ test('T9: a shared balance, a carried credit and the parents’ cost card say wh
     { direction: 'in', scoutId: 'ada', amountCents: 5000, source: 'family' }
   ])[0];
   eq([a.paid, a.carried, a.balance], [8000, 3000, 0], 'the family account');
-  const blk = /function duesFamilyBlock\(f\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  const blk = /function duesFamilyBlock\(f, paidOn\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/fmt\(a\.paid - a\.carried\) \+ ' received'/.test(blk) && /' carried forward'/.test(blk),
     'the family block counts a carried credit as received');
   // (c) The parents' card is the fees in the plan, not everything a year costs. No new published fields.
@@ -8930,7 +8974,7 @@ test('T9: a shared balance, a carried credit and the parents’ cost card say wh
 test('T10: undoing a forgiveness takes two taps', () => {
   const u = /if \(act\.indexOf\('charge-unforgive:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/arm\(act, function \(\) \{[\s\S]*uc\.forgiven = null;/.test(u), 'a forgiveness is undone on one tap');
-  const blk = /function duesFamilyBlock\(f\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  const blk = /function duesFamilyBlock\(f, paidOn\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/data-act="charge-unforgive:' \+ c\.id \+ '"/.test(blk) && /Tap again to undo/.test(blk),
     'the Undo button is not keyed per charge, so it cannot show it is armed');
   ok(!/data-act="charge-unforgive" /.test(SCRIPT), 'the old one-tap button is still drawn');
@@ -9007,7 +9051,7 @@ test('M7: every "owes" beside a name, and the Treasurer’s nag, is the family�
   ok(/var owingFams = familyAccountsNow\(\)/.test(SCRIPT), 'the Treasurer’s nag counts a family once per child');
   const dues = /function renderDues\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/duesFamilyBlock/.test(dues) && />Family balances</.test(dues), 'the Dues card still lists scouts one by one');
-  const blk = /function duesFamilyBlock\(f\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  const blk = /function duesFamilyBlock\(f, paidOn\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/Credit ' \+ fmt\(a\.credit\)/.test(blk), 'a family in credit still reads "square"');
 });
 
@@ -9017,7 +9061,7 @@ test('M9: a former scout’s balance has a row to settle it from', () => {
   ok(/Former scouts with a balance/.test(dues), 'archived scouts with a balance have nowhere to be paid or forgiven');
   ok(/var former = fams\.filter\(function \(f\) \{\s*return !f\.active\.length && \(f\.acct\.outstanding \|\| f\.acct\.credit \|\|\s*f\.charges\.some\(function \(c\) \{ return !!c\.forgiven; \}\)\);/.test(dues),
     'the former-scouts list does not pick up families with nobody left on the roster');
-  ok(/former\.forEach\(function \(f\) \{ h \+= duesFamilyBlock\(f\); \}\);/.test(dues),
+  ok(/former\.forEach\(function \(f\) \{ h \+= duesFamilyBlock\(f, paidOn\); \}\);/.test(dues),
     'former families are not given the same pay and forgive controls');
   const df = /function duesFamilies\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/state\.scouts\.filter/.test(df), 'family members are read from the active roster only');
@@ -9514,9 +9558,11 @@ function pvCtx(extra) {
   vm.runInContext(PRIV_STATE + `
     function standingsEnabled() { return true; }
     function campingTrips() { return []; }
+    ${CAMP_DATE_SRC}
     function familyYearCost() { return []; }
     var sync = {};
-    ${['shortNames', 'publicNameMap', 'buildParentView', 'coarseBarPct', 'blocksInDayOrder', 'fmtTimeRange', 'fmtClock',
+    ${['shortNames', 'publicNameMap', 'buildParentView', 'WELCOME_FILL_RE', 'welcomeHoldReason', 'publishedWelcome',
+       'coarseBarPct', 'blocksInDayOrder', 'fmtTimeRange', 'fmtClock',
        'eventIsMeeting', 'eventLabel', 'denListLabel', 'eventDens', 'programYearStartISO',
        'programYearEndISO', 'cleanContactLine', 'parentContactLine', 'amountsEnabled'].map(slice).join('\n')}
     ${extra || ''}`, ctx);
@@ -9685,6 +9731,7 @@ test('J8: What’s coming up is the next 30 days by month, with the rest one tap
     function fmtDate(d) { return String(d); }
     function parentCalendar() { return ''; }
     function parentFamilyCost() { return ''; }
+    function parentNextUp() { return ''; }   // B2 has its own test
     ${['esc', 'pad2', 'PARENT_EMPTY_CAL', 'isoPlusDays', 'parentEventsByMonth', 'parentEventRow',
        'parentShiftLines', 'renderParentSchedule'].map(slice).join('\n')}`, ctx);
   eq(vm.runInContext("isoPlusDays('2026-09-28', 30)", ctx), '2026-10-28', 'thirty days on');
@@ -9710,7 +9757,7 @@ test('J8: What’s coming up is the next 30 days by month, with the rest one tap
 });
 
 test('J9: a campout says when to arrive and when to leave, each on its own labelled row', () => {
-  const ctx = sandbox(['esc', 'campLinkLabel', 'campFacts']);
+  const ctx = sandbox(['esc', 'campLinkLabel', 'campIsoOrBlank', 'campFacts']);
   const both = ctx.campFacts({ arrive: 'Friday 6:00 pm', depart: 'Sunday 11:00 am' });
   ok(/<dt>Arrive<\/dt><dd>Friday 6:00 pm<\/dd><dt>Leave by<\/dt><dd>Sunday 11:00 am<\/dd>/.test(both),
     'arrive and leave are not two labelled rows');
@@ -10025,7 +10072,7 @@ test('M1: a refund past the family’s credit is flagged, shown, and never used 
   ok(/This is more than ' \+/.test(w) && /\\u2019s credit of ' \+ fmt\(credit\) \+ '\. Refunds give back money a family paid; to repay a council ' \+\s*'fee for a reward tier, use Reimburse on the Budget\.'/.test(w),
     'the warning does not say what the reviewer asked it to');
   const add = /if \(act === 'ledger-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/var drWarn = refundOverCreditWarning\(drEntry\);\s*state\.ledger\.push\(drEntry\);/.test(add), 'a new refund is not checked before it is added');
+  ok(/var drWarn = refundOverCreditWarning\(drEntry\);(?:(?!state\.ledger\.push)[^])*state\.ledger\.push\(drEntry\);/.test(add), 'a new refund is not checked before it is added');
   const ed = /if \(ch\.indexOf\('led-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/\(lk === 'amount' \|\| lk === 'scout'\) \? refundOverCreditWarning\(led\)/.test(ed), 'an edited refund is not checked');
   // (a) A family whose refund left them owing is still on the Dues screen.
@@ -10445,6 +10492,1853 @@ test('7c: a sibling’s make-up covers the family fee once, and never shows on t
   // Wiring: the progress rows read the same map for both figures.
   const tpr = slice('tierProgressRows');
   ok(/var famCov = packCoverage\(map\);/.test(tpr), 'the progress rows do not read coverage from their own map');
+});
+
+/* ========================================================================
+   Enhancements wave A — program and advancement tools
+   ===================================================================== */
+
+// A7 — a reimbursement row sits on the billing scout; when a sibling's tier bought it, say whose.
+test('A7: a reimbursement row says which sibling earned it, and only when that is someone else', () => {
+  const ctx = sandbox(['reimbEarnerNote']);
+  const bea = { id: 'bea', name: 'Bea Kent' }, tig = { id: 'tig', name: 'Tig Kent' };
+  eq(ctx.reimbEarnerNote({ scout: bea, earner: tig }, { tig: 'Tig' }), 'earned by Tig', 'sibling earner');
+  eq(ctx.reimbEarnerNote({ scout: bea, earner: bea }, { bea: 'Bea' }), '', 'repeats the row’s own scout');
+  // No map entry: still a first name, never the surname.
+  eq(ctx.reimbEarnerNote({ scout: bea, earner: tig }, {}), 'earned by Tig', 'fell back to the full name');
+  ok(/var byWho = reimbEarnerNote\(r, reimbNames\);/.test(SCRIPT), 'the reimbursement row does not show the earner');
+  ok(!/reimbEarnerNote/.test(BPV()), 'the earner note reached the parent view');
+});
+
+// A5 — the yearly adventure-list check.
+test('A5: the adventure list carries a verified date, and the July check reads it', () => {
+  const ctx = sandbox(['ADVENTURES_VERIFIED', 'adventureCheckDue']);
+  ok(/^\d{4}-\d{2}-\d{2}$/.test(ctx.ADVENTURES_VERIFIED), 'ADVENTURES_VERIFIED is not an ISO date');
+  const due = ctx.adventureCheckDue;
+  eq(due('2026-07-18', '2027-07-01'), true, 'twelve months on, in July');
+  eq(due('2026-07-18', '2027-07-31'), true, 'late July');
+  eq(due('2026-07-18', '2026-07-30'), false, 'checked this July');
+  eq(due('2026-09-01', '2027-07-15'), false, 'ten months is not a year');
+  eq(due('2025-07-01', '2026-08-01'), false, 'only a July task');
+  eq(due('2025-07-01', '2026-06-30'), false, 'June is not July');
+  eq(due('', '2026-07-10'), true, 'a list never checked is due');
+  const fn = /function homeTasks\(\) \{[\s\S]*?\n    return out;\n  \}/.exec(SCRIPT)[0];
+  ok(/adventureCheckDue\(ADVENTURES_VERIFIED, today\)\) \{\s*add\('advancement'/.test(fn),
+    'the Home task is not wired to the advancement job');
+});
+
+// A6 — the seeded slate's gaps.
+test('A6: the seeded slate covers planning, recruiting, pack meetings, summer and both spring campouts', () => {
+  const { SEED_ACTIVITIES, PROGRAM_MONTHS } = sandbox(['PROGRAM_MONTHS', 'PROGRAM_TURN',
+    'PROGRAM_START_MONTH', 'SA_FEES', 'SEED_EXPENSES', 'SEED_ACTIVITIES']);
+  const month = (n) => {
+    const a = SEED_ACTIVITIES.filter((x) => x.name.indexOf(n) === 0)[0];
+    ok(a, `no seeded "${n}"`);
+    return PROGRAM_MONTHS[a.slot];
+  };
+  eq(month('Program planning conference'), 'July', 'planning conference');
+  eq(month('Back-to-school recruiting night'), 'August', 'recruiting night');
+  eq(month('Monthly pack meeting'), 'September', 'pack meeting placeholder');
+  eq(month('Summertime Fun'), 'July', 'Summertime Fun');
+  eq(month('Pack campout — Fort Yargo'), 'March', 'Fort Yargo');
+  eq(month('Spring family campout'), 'April', 'spring family camp');
+  eq(month('Crossover'), 'May', 'crossover stays in May');
+  // Idempotence is by name, so two seeds with one name would silently seed only one.
+  const names = SEED_ACTIVITIES.map((a) => a.name.toLowerCase());
+  eq(names.length, new Set(names).size, 'two seeded activities share a name');
+  ok(/Crossover stays in May\. Many packs hold it at the Blue & Gold/.test(SCRIPT), 'the crossover comment is gone');
+});
+
+test('A6: seeding stays additive — it never edits or removes an event a pack already has', () => {
+  const fn = slice('seedStandardYear');
+  ok(/if \(existing\[t\.name\.toLowerCase\(\)\]\) return;/.test(fn), 'the name-idempotence guard is gone');
+  ok(!/state\.events\s*=|\.splice\(/.test(fn), 'seedStandardYear rewrites or removes events');
+});
+
+// A4 — repeat every other week, optionally as sessions of one adventure.
+test('A4: a meeting repeats weekly or every other week, across a month end and DST', () => {
+  const ctx = sandbox(['pad2', 'repeatDates']);
+  eq(ctx.repeatDates('2026-10-20', 3, 7), ['2026-10-27', '2026-11-03', '2026-11-10'], 'weekly across DST');
+  eq(ctx.repeatDates('2026-10-20', 3, 14), ['2026-11-03', '2026-11-17', '2026-12-01'], 'every other week');
+  eq(ctx.repeatDates('2026-12-22', 1, 14), ['2027-01-05'], 'across the new year');
+  eq(ctx.repeatDates('', 2, 7), [], 'an undated meeting has nothing to repeat');
+});
+
+test('A4: repeated copies take the adventure only when asked, and so become sessions of one run', () => {
+  const h = /if \(kind === 'mtg-repeat'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/var rAdv = \(fd\.get\('sameAdv'\) && rMtg\.kind === 'den'\) \? evAdventure\(rMtg\) : '';/.test(h),
+    'the adventure is copied without the opt-in, or onto a pack meeting');
+  ok(/adventure: rAdv/.test(h), 'the copies do not carry the adventure');
+  ok(!/noteInternal/.test(h), 'the leaders-only note is copied onto every repeat');
+  ok(/'14' \? 14 : 7/.test(h), 'every other week is not read from the form');
+  // End to end: three meetings tagged the same way are one run, "session n of 3".
+  const ctx = runSandbox(RUN_SETUP.replace("m3: {}", "m3: {}").replace(
+    "{ id: 'x1', kind: 'den', den: 'Bear', date: '2026-08-05', adventure: 'Bobcat' }",
+    "{ id: 'x1', kind: 'den', den: 'Bear', date: '2026-09-01', adventure: 'Bear Strong' }," +
+    "{ id: 'x2', kind: 'den', den: 'Bear', date: '2026-09-15', adventure: 'Bear Strong' }," +
+    "{ id: 'x3', kind: 'den', den: 'Bear', date: '2026-09-29', adventure: 'Bear Strong' }"));
+  const r = vm.runInContext("runForMeeting(state.events.filter(function (e) { return e.id === 'x2'; })[0])", ctx);
+  eq([r.position, r.of], [2, 3], 'the repeated meetings are not one run');
+});
+
+// A3 — the make-up-at-home message.
+test('A3: the make-up message names the scout by first name, the adventure, the night, and who signs', () => {
+  const ctx = sandbox(['makeupMessage']);
+  const wolf = ctx.makeupMessage({ first: 'Ben', den: 'Wolf', adventure: 'Council Fire', dates: ['Wed, Aug 12'], packName: 'Pack 569' });
+  ok(/^Hi! Ben missed the Wolf den meeting on Wed, Aug 12, when we worked on the Council Fire adventure\./.test(wolf), wolf);
+  ok(/do the Council Fire requirement we covered that night at home with Ben, sign it in the handbook, and tell your den leader/.test(wolf),
+    'a Wolf family is not told to do it at home, sign it and tell the den leader');
+  ok(/— Pack 569$/.test(wolf), 'no sign-off');
+  // Webelos and Arrow of Light: the den leader signs (DESIGN-adventures.md §3).
+  const web = ctx.makeupMessage({ first: 'Cy', den: 'Webelos', adventure: 'My Safety', dates: ['Sep 1', 'Sep 15'] });
+  ok(/tell your den leader, who will check it and sign it off/.test(web), 'a Webelos family is told to sign it themselves');
+  ok(!/sign it in the handbook/.test(web), 'a Webelos family is told to sign it themselves');
+  ok(/the Webelos den meetings on Sep 1 and Sep 15/.test(web), 'two missed nights are not both named');
+  for (const m of [wolf, web]) ok(!/cannot earn|forfeit|missed out/i.test(m), 'the message says the adventure is lost');
+});
+
+test('A3: the message is copy-only — first names, nothing stored, nothing published', () => {
+  const btn = slice('makeupMsgBtn');
+  ok(/publicNameMap\(state\.scouts\)/.test(btn), 'the button labels the scout by full name');
+  const h = /if \(act === 'makeup-msg'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/var mmFirst = publicNameMap\(state\.scouts\)\[mmRow\.scout\.id\]/.test(h), 'the message uses the full name');
+  ok(!/commit\(\)|save\(\)/.test(h), 'composing the message writes the pack record');
+  ok(!/makeupMessage|makeup-msg/.test(BPV()), 'the make-up message reached the parent view');
+  // Offered on both make-up lists: the meeting's and the Advancement card's.
+  ok(/makeupMsgBtn\(r\.run, row\)/.test(slice('renderMeetingAdvMark')), 'no button on the meeting’s make-up list');
+  ok(/makeupMsgBtn\(run, row\)/.test(slice('renderAdventureRunsCard')), 'no button on the Advancement make-up list');
+});
+
+// Cubmaster review P1 — on an "All dens" run, who signs follows the scout's own den.
+test('P1: an All-dens make-up message signs by the scout\'s den and names no den meeting', () => {
+  const ctx = sandbox(['makeupMessage']);
+  const aol = ctx.makeupMessage({ first: 'Ada', den: '', signDen: 'Arrow of Light', adventure: 'Outdoor Adventurer', dates: ['Sep 1'] });
+  ok(/tell your den leader, who will check it and sign it off/.test(aol), 'an AoL scout on an All-dens run got parent-signs wording');
+  ok(!/sign it in the handbook/.test(aol), 'an AoL scout on an All-dens run was told to sign it');
+  ok(/missed our pack meeting on Sep 1/.test(aol), aol);
+  ok(!/den meeting/.test(aol), 'an All-dens run called "our den meeting"');
+  const tiger = ctx.makeupMessage({ first: 'Tom', den: '', signDen: 'Tiger', adventure: 'Tiger Bites', dates: ['Sep 1'] });
+  ok(/sign it in the handbook/.test(tiger), 'a Tiger on an All-dens run lost parent-signs wording');
+  const h = /if \(act === 'makeup-msg'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/signDen: mmRow\.scout\.den/.test(h), 'the caller does not pass the scout\'s own den');
+});
+
+// A1 — the den year planner.
+function planSandbox(events) {
+  const ctx = runSandbox(RUN_SETUP.replace(/var EVENTS = \[[\s\S]*?\n  \];/, `var EVENTS = ${JSON.stringify(events)};`));
+  vm.runInContext(`${slice('denPlan')}\n${slice('denPlanDefaultDate')}`, ctx);
+  return ctx;
+}
+const PLAN_EVENTS = [
+  { id: 'w1', kind: 'den', den: 'Wolf', date: '2026-09-01', adventure: 'Bobcat' },
+  { id: 'w2', kind: 'den', den: 'Wolf', date: '2026-09-15', adventure: 'Bobcat' },
+  { id: 'w3', kind: 'den', den: 'Wolf', date: '2026-10-06', adventure: 'council fire' },   // typed lower-case
+  { id: 'w4', kind: 'den', den: 'Wolf', date: '2026-10-20', adventure: 'Germs Alive!' },   // elective
+  { id: 'w5', kind: 'den', den: 'Wolf', date: '2026-11-03', adventure: 'Knot night' },     // custom = elective
+  { id: 'a1', kind: 'den', den: '', date: '2026-11-17', adventure: 'Safety in Numbers' },  // all dens, Wolf required
+  { id: 'a2', kind: 'den', den: '', date: '2026-12-01', adventure: 'Bear Strong' },        // all dens, not a Wolf one
+  { id: 'b1', kind: 'den', den: 'Bear', date: '2026-09-02', adventure: 'Footsteps' },      // another den's meeting
+  { id: 'old', kind: 'den', den: 'Wolf', date: '2025-09-01', adventure: 'Footsteps' },     // last program year
+  { id: 'p1', kind: 'pack', den: '', date: '2026-09-22', adventure: '' }
+];
+
+test('A1: the den planner shows which required adventures have a meeting this program year', () => {
+  const ctx = planSandbox(PLAN_EVENTS);
+  const plan = vm.runInContext("denPlan('Wolf', adventureRuns())", ctx);
+  const req = Object.fromEntries(plan.required.map((r) => [r.name, r.sessions.map((s) => s.id)]));
+  eq(req.Bobcat, ['w1', 'w2'], 'Bobcat’s two meetings');
+  eq(req['Council Fire'], ['w3'], 'a lower-case tag is not the official adventure');
+  eq(req['Safety in Numbers'], ['a1'], 'an All-dens meeting does not count for the den');
+  eq(req.Footsteps, [], 'last year’s meeting, or the Bear den’s, counted for this year’s Wolves');
+  eq(plan.unplanned.map((r) => r.name), ['Footsteps', 'Paws on the Path', 'Running with the Pack'], 'the gaps');
+  ok(plan.required.find((r) => r.name === 'Safety in Numbers').allDens, 'the All-dens meeting is not marked as one');
+});
+
+test('A1: electives planned are counted against the two a rank needs', () => {
+  const ctx = planSandbox(PLAN_EVENTS);
+  const plan = vm.runInContext("denPlan('Wolf', adventureRuns())", ctx);
+  eq(plan.electives.map((e) => e.name), ['Germs Alive!', 'Knot night'], 'electives: an official one and a custom one');
+  eq([plan.electivesPlanned, plan.electivesNeeded], [2, 2], 'N of 2');
+  // An All-dens meeting on another rank's adventure is not a Wolf elective.
+  ok(!plan.electives.some((e) => e.name === 'Bear Strong'), 'an All-dens Bear adventure became a Wolf elective');
+  const bear = vm.runInContext("denPlan('Bear', adventureRuns())", ctx);
+  eq(bear.required.find((r) => r.name === 'Bear Strong').sessions.map((s) => s.id), ['a2'], 'the All-dens Bear meeting');
+  eq(bear.electives.map((e) => e.name), ['Footsteps'], 'a Bear meeting on a Wolf adventure is the Bear den’s own custom elective');
+});
+
+test('A1: the planner form starts two weeks after the den’s last meeting, or today', () => {
+  const ctx = planSandbox(PLAN_EVENTS);
+  eq(vm.runInContext("denPlanDefaultDate('Wolf', EVENTS, '2026-09-28')", ctx), '2026-11-17', 'after Nov 3');
+  eq(vm.runInContext("denPlanDefaultDate('Lion', EVENTS, '2026-09-28')", ctx), '2026-09-28', 'a den with nothing ahead');
+  eq(vm.runInContext("denPlanDefaultDate('Wolf', EVENTS, '2026-12-01')", ctx), '2026-12-01', 'only meetings from today on');
+});
+
+test('A1: the planner is a Program section, writes only through a tagged den meeting, and never publishes', () => {
+  const prog = nav.WORKSPACES.find((w) => w.id === 'program');
+  ok(prog.sections.some((s) => s.id === 'denplan'), 'no Den plans section in Program');
+  ok(/sec === 'denplan'\) v\.innerHTML = renderDenPlanner\(\)/.test(SCRIPT), 'the section is not dispatched');
+  const h = /if \(kind === 'plan-adv'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/if \(!canEdit\(\)\)/.test(h), 'a viewer can add a meeting from the planner');
+  ok(/freshEvent\(\{ kind: 'den', den: paDen, date: paDate[\s\S]*adventure: paName \}\)/.test(h), 'the meeting is not pre-tagged');
+  ok(/advCanonicalName\(paDen, fd\.get\('name'\)\)/.test(h), 'the typed elective is not canonicalised');
+  // Buttons that edit are offered only to editors — a job never decides it.
+  const r = slice('renderDenPlanner');
+  ok(/var edit = canEdit\(\);/.test(r) && !/hasJob\(/.test(r), 'the planner gates on something other than the role');
+  ok(!/denPlan|renderDenPlanner/.test(BPV()), 'the den planner reached the parent view');
+});
+
+// A2 — the pack meeting agenda.
+test('A2: the agenda has the eight standard sections, and a stored one keeps only what it should', () => {
+  const ctx = sandbox(['PACK_AGENDA', 'normalizeAgenda']);
+  eq(ctx.PACK_AGENDA.map((s) => s.key), ['gathering', 'opening', 'welcome', 'skits', 'recognition', 'minute', 'announcements', 'closing'], 'sections');
+  eq(ctx.normalizeAgenda(null), null, 'no agenda');
+  eq(ctx.normalizeAgenda([]), null, 'an array is not an agenda');
+  eq(ctx.normalizeAgenda({ opening: { who: '', notes: ' ' } }), null, 'an empty section is kept');
+  eq(JSON.parse(JSON.stringify(ctx.normalizeAgenda({
+    opening: { who: 'Bear den', notes: 7 }, bogus: { who: 'x' }, closing: 'Taps', minute: { notes: 'Kindness' }
+  }))), { opening: { who: 'Bear den', notes: '' }, minute: { who: '', notes: 'Kindness' } }, 'junk survived normalizing');
+});
+
+test('A2: a pack meeting is planned when Opening, Recognition and Closing are', () => {
+  const ctx = sandbox(['PACK_AGENDA_NEEDED', 'packAgendaMissing']);
+  const miss = ctx.packAgendaMissing;
+  eq(miss(undefined, 0), ['opening', 'recognition', 'closing'], 'no agenda');
+  eq(miss({ opening: { who: 'Wolves', notes: '' }, closing: { who: '', notes: 'Living circle' } }, 0), ['recognition'], 'no recognition');
+  // The awards are the plan for Recognition.
+  eq(miss({ opening: { who: 'Wolves', notes: '' }, closing: { who: 'CM', notes: '' } }, 3), [], 'awards to present');
+  eq(miss({ opening: { who: '  ', notes: '' }, recognition: { who: 'ACM', notes: '' }, closing: { who: 'CM', notes: '' } }, 0),
+    ['opening'], 'whitespace counted as planned');
+  // Announcements is optional (Cubmaster review P3): planned without it, and it stands in for nothing.
+  eq(miss({ opening: { who: 'W', notes: '' }, recognition: { who: 'A', notes: '' }, closing: { who: 'C', notes: '' } }, 0), [], 'Announcements required');
+  eq(miss({ announcements: { who: 'CC', notes: 'Popcorn' } }, 0), ['opening', 'recognition', 'closing'], 'Announcements stood in for a needed section');
+  eq(JSON.parse(JSON.stringify(sandbox(['PACK_AGENDA', 'normalizeAgenda']).normalizeAgenda({ announcements: { who: '', notes: 'Popcorn due' } }))),
+    { announcements: { who: '', notes: 'Popcorn due' } }, 'a stored Announcements section is dropped on load');
+  eq(miss({ gathering: { who: 'x', notes: 'y' }, welcome: { who: 'x', notes: '' } }, 0),
+    ['opening', 'recognition', 'closing'], 'other sections stood in for the three');
+});
+
+function recognitionSandbox(att, extraEvents, adv) {
+  const setup = RUN_SETUP
+    .replace("{ id: 'a', name: 'Ada', den: 'Wolf' }", "{ id: 'a', name: 'Ada Kent', den: 'Wolf' }")
+    .replace("{ id: 'b', name: 'Ben', den: 'Wolf' }", "{ id: 'b', name: 'Ben Doe', den: 'Wolf' }")
+    .replace("{ id: 'c', name: 'Cy', den: 'Bear' }", "{ id: 'c', name: 'Cy Roe', den: 'Bear' }")
+    .replace("m3: {}", att)
+    .replace("    { id: 'p1',", extraEvents + "\n    { id: 'p1',");
+  const ctx = runSandbox(setup);
+  vm.runInContext(`${slice('PACK_AGENDA')}\n${slice('shortNames')}\n${slice('publicNameMap')}\n${slice('packRecognition')}
+    var ADV = ${JSON.stringify(adv || {})};
+    function advRec(id) { return ADV[id] || null; }
+    state.scouts = SCOUTS;`, ctx);
+  return ctx;
+}
+
+test('A2: Recognition lists awards ready and adventures finished since the last pack meeting, by first name', () => {
+  const ctx = recognitionSandbox("m3: { a: { scout: true } }", '', { c: { req: { Bobcat: 'done', Fellowship: 'awarded' }, elect: {} } });
+  const rec = vm.runInContext("packRecognition(state.events.filter(function (e) { return e.id === 'p1'; })[0])", ctx);
+  eq(rec.groups.map((g) => g.den), ['Wolf', 'Bear'], 'grouped by den, in rank order');
+  const wolf = rec.groups[0], bear = rec.groups[1];
+  // Ada was at all three Bobcat sessions and has nothing recorded; Ben missed one.
+  eq(JSON.parse(JSON.stringify(wolf.finished)), [{ adventure: 'Bobcat', who: ['Ada'] }], 'finished at den meetings');
+  // Cy's Bobcat is marked done (ready to hand over); the awarded one is not listed again.
+  eq(JSON.parse(JSON.stringify(bear.ready)), [{ adventure: 'Bobcat', who: ['Cy'] }], 'awards ready');
+  eq(rec.total, 2, 'total');
+  eq(rec.readyCount, 1, 'readyCount counts only awards ready to present');
+  ok(!JSON.stringify(rec).includes('Kent') && !JSON.stringify(rec).includes('Roe'), 'a surname is on the recognition list');
+});
+
+// Cubmaster review P2 — "finished but not recorded" is not a Recognition plan.
+test('P2: adventures finished but not recorded do not make Recognition planned', () => {
+  const ctx = recognitionSandbox("m3: { a: { scout: true } }", '', {});
+  const rec = vm.runInContext("packRecognition(state.events.filter(function (e) { return e.id === 'p1'; })[0])", ctx);
+  eq(rec.total, 1, 'Ada\'s finished Bobcat is on the list');
+  eq(rec.readyCount, 0, 'a finished-but-unrecorded adventure counted as ready');
+  // Every "planned" check reads readyCount, none reads total.
+  const calls = SCRIPT.split('\n').filter((l) => /packAgendaMissing\(/.test(l) && !/function packAgendaMissing/.test(l));
+  eq(calls.length, 3, 'planned checks (agenda row, meeting sheet, Home)');
+  for (const u of calls) ok(/readyCount\)/.test(u) && !/\.total\)/.test(u), 'a planned check reads total: ' + u.trim());
+});
+
+test('A2: an adventure finished before the previous pack meeting is not recognised again', () => {
+  // A pack meeting on Aug 20: Bobcat's last session (Aug 19) was before it, so the Aug 26
+  // meeting has nothing new from den meetings.
+  const ctx = recognitionSandbox("m3: { a: { scout: true } }", "{ id: 'p0', kind: 'pack', den: '', date: '2026-08-20', adventure: '' },");
+  const p1 = vm.runInContext("packRecognition(state.events.filter(function (e) { return e.id === 'p1'; })[0])", ctx);
+  eq(p1.total, 0, 'the Aug 20 meeting’s recognition is repeated on Aug 26');
+  eq(p1.since, '2026-08-20', 'the window starts at the previous pack meeting');
+  const p0 = vm.runInContext("packRecognition(state.events.filter(function (e) { return e.id === 'p0'; })[0])", ctx);
+  eq(p0.groups.map((g) => g.finished.map((f) => f.adventure)), [['Bobcat']], 'the Aug 20 meeting does not recognise Bobcat');
+});
+
+test('A2: the agenda is leaders-only — no outbound surface reads it', () => {
+  const agendaRe = /\.agenda\b|packAgenda|packRecognition|PACK_AGENDA/;
+  for (const name of ['buildParentView', 'monthlyDigest']) {
+    const fn = new RegExp('function ' + name + '\\([\\s\\S]*?\\n  \\}').exec(SCRIPT);
+    ok(fn, name + '() not found');
+    ok(!agendaRe.test(codeOnly(fn[0])), name + ' reads the pack meeting agenda');
+  }
+  const ics = /function buildICS\(\)[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(!agendaRe.test(codeOnly(ics)), 'the .ics export reads the agenda');
+  // Its change handler has its own prefix, sits before the mtg-* gate, and never writes a note.
+  const h = /if \(ch === 'pk-agenda-who' \|\| ch === 'pk-agenda-notes'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(h, 'the agenda change handler was not found');
+  ok(!/\.note\b|noteInternal/.test(h[0]), 'the agenda handler writes a meeting note');
+  ok(/pkEv\.kind !== 'pack'/.test(h[0]), 'the agenda can be written onto a den meeting');
+  ok(SCRIPT.indexOf("if (ch === 'pk-agenda-who'") < SCRIPT.indexOf("if (ch === 'mtg-kind' ||"), 'the agenda handler sits after the mtg gate');
+  // The editor only on a pack meeting.
+  ok(/\(m\.kind === 'pack' \? packAgendaBlock\(m\) : ''\)/.test(slice('renderMeetingRow')), 'the editor is not on the pack meeting row');
+});
+
+test('A2: Home calls a pack meeting planned from its agenda, not from any note', () => {
+  const fn = /function homeTasks\(\) \{[\s\S]*?\n    return out;\n  \}/.exec(SCRIPT)[0];
+  ok(/packAgendaMissing\(nextPack\.agenda, packRecognition\(nextPack\)\.readyCount\)/.test(fn), 'Home does not read the agenda');
+  ok(!/!nextPack\.note && !nextPack\.noteInternal/.test(fn), 'any note still counts as a plan');
+  ok(/normalizeAgenda\(e\.agenda\)/.test(slice('normalizeState')), 'a stored agenda is not normalized on load');
+});
+
+/* ========================================================================
+   Wave B — families and joining (2026-09-28)
+   ===================================================================== */
+
+// The welcome page's pure pieces, with a counting uid() so ids are predictable.
+function wCtx() {
+  const ctx = vm.createContext({});
+  vm.runInContext(`var __n = 0; function uid() { __n += 1; return 'w' + __n; }
+    ${['campHash', 'WELCOME_SEED_REV', 'WELCOME_OLD_SEED', 'WELCOME_FILL_RE', 'freshWelcomeSection',
+       'seedWelcomeSections', 'freshWelcome', 'refreshWelcomeSeed', 'welcomeHoldReason', 'publishedWelcome'].map(slice).join('\n')}`, ctx);
+  return ctx;
+}
+
+test('B1: the "New to the pack" seed says what the New Member Coordinator gave, and invents no figure', () => {
+  const ctx = wCtx();
+  const secs = ctx.seedWelcomeSections();
+  const titles = secs.map((s) => s.title);
+  eq(titles, ['Welcome', 'Your first month', 'How to register with Scouting America', 'What it costs',
+    'Uniform and handbook', 'Health form', 'Keeping kids safe', 'Questions families ask'], 'the seeded sections');
+  eq(new Set(secs.map((s) => s.id)).size, secs.length, 'two seeded sections share an id');
+  const by = (t) => secs.find((s) => s.title === t);
+  const reg = by('How to register with Scouting America').body;
+  ok(/beascout\.scouting\.org/.test(reg) && /ZIP/.test(reg) && /Cub Scout Pack 569/.test(reg) && /Apply now/.test(reg),
+    'the registration steps are not the beascout ones');
+  ok(/Lion or a Tiger, a parent or guardian is usually the adult partner/.test(reg), 'the Lion/Tiger adult partner is not explained');
+  ok(/their own adult application/.test(reg), 'another adult partner is not told about the adult application');
+  ok(/Safeguarding Youth Training is free/.test(reg) && /encouraged/.test(reg) && !/must take|required to take/.test(reg),
+    'SYT is not described as free and encouraged');
+  ok(/Annual Health and Medical Record, Parts A and B/.test(by('Health form').body) && /first campout/.test(by('Health form').body),
+    'the health form is not named with its parts, or not tied to the first campout');
+  eq(by('Keeping kids safe').url, 'https://www.scouting.org/training/safeguarding-youth/', 'the parents’ guide link');
+  ok(/How to Protect Your Children from Child Abuse/.test(by('Keeping kids safe').body), 'the parents’ guide is not named');
+  ok(!/\.pdf/i.test(JSON.stringify(secs)), 'the seed invents a PDF address');
+  const cost = by('What it costs').body;
+  ok(/National/.test(cost) && /Council/.test(cost) && /Pack/.test(cost) && /What a year costs a family/.test(cost),
+    'the cost section does not separate the three payees or point at the cost card');
+  ok(!/\$\s?\d/.test(JSON.stringify(secs)), 'the seed invents a dollar figure');
+  const faq = by('Questions families ask').body;
+  ['What’s a den?', 'What’s a pack meeting?', 'Do we have to camp?', 'What if we miss meetings?', 'Do we have to sell popcorn?']
+    .forEach((q) => ok(faq.indexOf(q) > -1, `the FAQ does not ask "${q}"`));
+  ok(/how the pack funds the year/.test(faq) && /encouraged, but it is not required/.test(faq), 'the popcorn answer is not the honest one');
+  ok(ctx.WELCOME_FILL_RE.test(by('Your first month').body) && ctx.WELCOME_FILL_RE.test(by('Uniform and handbook').body),
+    'the pack-specific facts are not left as [pack to fill in]');
+  // Seeded switched OFF, and carrying its revision (a brand-new record is never normalized on load).
+  const fresh = ctx.freshWelcome();
+  eq(fresh.published, false, 'the seed is published before any leader has read it');
+  eq(fresh.seedRev, ctx.WELCOME_SEED_REV, 'freshWelcome does not carry the seed revision');
+});
+
+test('B1: only a switched-on page, and only its finished, visible sections, are published — as title, body and link', () => {
+  const ctx = wCtx();
+  const w = ctx.freshWelcome();
+  eq(ctx.publishedWelcome(w).length, 0, 'a page that is switched off published');
+  w.published = true;
+  const out = ctx.publishedWelcome(w);
+  const titles = out.map((s) => s.title);
+  ok(titles.indexOf('Your first month') === -1 && titles.indexOf('Uniform and handbook') === -1,
+    'a section still saying [pack to fill in] published');
+  eq(out.length, 6, 'the finished seed sections did not all publish');
+  out.forEach((s) => eq(Object.keys(s), ['title', 'body', 'url'], 'a published section carries more than title, body, url'));
+  // Filled in, it goes; hidden, it does not; a non-http link never becomes an href.
+  const month = w.sections.find((s) => s.title === 'Your first month');
+  month.body = 'Tuesdays at 7 pm, the church hall.';
+  month.url = 'javascript:alert(1)';
+  const safety = w.sections.find((s) => s.title === 'Keeping kids safe');
+  safety.hidden = true;
+  const again = ctx.publishedWelcome(w);
+  const m = again.find((s) => s.title === 'Your first month');
+  ok(m && m.url === '', 'a filled-in section did not publish, or a javascript: link published');
+  ok(!again.some((s) => s.title === 'Keeping kids safe'), 'a hidden section published');
+  eq(ctx.welcomeHoldReason({ title: '', body: '  ' }), 'empty', 'an empty section is not held back');
+  eq(ctx.welcomeHoldReason({ title: 'Uniform [Pack to fill in]', body: 'x' }), 'fill', 'a placeholder in the title is not caught');
+});
+
+test('B1: the page is seeded once, never pushed back, and a later seed only replaces untouched text', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(NORMALIZE_FNS.map(slice).join('\n'), ctx);
+  const seeded = ctx.normalizeState(preMigrationState());
+  ok(seeded.welcome && seeded.welcome.sections.length === 8, 'a record without the page was not seeded');
+  eq(seeded.welcome.published, false, 'a live pack gets the seed switched ON');
+  // A pack that deleted sections keeps them deleted.
+  const trimmed = ctx.normalizeState(Object.assign(preMigrationState(), {
+    welcome: { published: true, seedRev: 1, sections: [{ id: 'a', title: 'Welcome', body: 'Hi' }, 'junk', null] }
+  }));
+  eq(trimmed.welcome.sections.length, 1, 'deleted sections came back, or junk survived');
+  eq(trimmed.welcome.sections[0].url, '', 'a missing url was not defaulted');
+  eq(trimmed.welcome.sections[0].hidden, false, 'a missing hidden flag was not defaulted');
+  eq(trimmed.welcome.published, true, 'a published page was switched off by the normalizer');
+  eq(ctx.normalizeState(Object.assign(preMigrationState(), { welcome: { published: 'yes', sections: [] } })).welcome.published,
+    false, 'a non-boolean switch is read as on');
+  // The refresh: text an older seed wrote is replaced; a leader's edit is not.
+  const r = wCtx();
+  vm.runInContext(`WELCOME_OLD_SEED['Welcome'] = { h: [campHash('old seed words')] };`, r);
+  const w = { sections: [
+    { id: 'k1', title: 'Welcome', body: 'old seed words', url: '', hidden: true },
+    { id: 'k2', title: 'Welcome', body: 'a leader wrote this', url: '', hidden: false }
+  ] };
+  r.refreshWelcomeSeed(w);
+  ok(/Welcome to Cub Scout Pack 569/.test(w.sections[0].body), 'untouched old seed text was not refreshed');
+  eq(w.sections[0].id, 'k1', 'the refreshed section lost its id');
+  eq(w.sections[0].hidden, true, 'the refresh un-hid a section');
+  eq(w.sections[1].body, 'a leader wrote this', 'the refresh overwrote a leader’s edit');
+  ok(/if \(!\(d\.welcome\.seedRev >= WELCOME_SEED_REV\)\) \{\s*refreshWelcomeSeed\(d\.welcome\);/.test(slice('normalizeState')),
+    'the refresh is not run once per revision on load');
+});
+
+test('B1: the page publishes in calendar-only mode, and nothing but it rides along', () => {
+  const run = (welcome, show) => {
+    const ctx = pvCtx(`state.welcome = ${JSON.stringify(welcome)};`);
+    return vm.runInContext(`buildParentView(state, { showStandings: ${show} })`, ctx);
+  };
+  const on = { published: true, sections: [{ id: 'x', title: 'Welcome', body: 'Hello', url: 'https://beascout.scouting.org', hidden: false, secret: 'no' }] };
+  const pv = run(on, false);
+  eq(pv.welcome, [{ title: 'Welcome', body: 'Hello', url: 'https://beascout.scouting.org' }], 'the calendar-only view lost the page');
+  ok(!('standings' in pv), 'calendar-only mode published standings');
+  ok(!('welcome' in run(Object.assign({}, on, { published: false }), false)), 'a switched-off page was published');
+  ok(!('welcome' in run(undefined, false)), 'a record with no page published a welcome key');
+  ok(BPV().indexOf('out.welcome = welcome') < BPV().indexOf('if (!withStandings) return out;'),
+    'the page sits behind the standings gate');
+});
+
+test('B1: families see the tab only when it is published, and land on it until they have seen it once', () => {
+  const mk = (pv, store) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`var ui = { parentTab: 'schedule', parentLanded: false }; var PV = ${JSON.stringify(pv)};
+      function parentDoc() { return PV; }
+      var localStorage = ${store === 'throws'
+        ? `{ getItem: function () { throw new Error('denied'); }, setItem: function () { throw new Error('denied'); } }`
+        : `{ d: ${JSON.stringify(store || {})}, getItem: function (k) { return this.d[k] == null ? null : this.d[k]; }, setItem: function (k, v) { this.d[k] = String(v); } }`};
+      ${['PARENT_TABS', 'parentHasStandings', 'parentHasCamping', 'parentHasWelcome', 'parentTabDefs', 'parentTab',
+         'WELCOME_SEEN_KEY', 'welcomeSeen', 'markWelcomeSeen', 'parentWelcomeLanding'].map(slice).join('\n')}`, ctx);
+    return ctx;
+  };
+  const pub = { events: [], welcome: [{ title: 'Welcome', body: 'Hi', url: '' }] };
+  const first = mk(pub, {});
+  ok(first.parentTabDefs().some((t) => t.id === 'welcome' && t.label === 'New to the pack'), 'no tab for a published page');
+  first.parentWelcomeLanding();
+  eq(first.parentTab(), 'welcome', 'a first-time family does not land on the page');
+  eq(first.localStorage.d['pack569-welcome-seen'], '1', 'the visit is not remembered');
+  // Once only per load: tapping Schedule afterwards is not overruled.
+  first.ui.parentTab = 'schedule'; first.parentWelcomeLanding();
+  eq(first.parentTab(), 'schedule', 'the landing overrules a family who chose another tab');
+  const back = mk(pub, { 'pack569-welcome-seen': '1' });
+  back.parentWelcomeLanding();
+  eq(back.parentTab(), 'schedule', 'a family who has seen it is still sent there');
+  const none = mk({ events: [] }, {});
+  none.parentWelcomeLanding();
+  ok(!none.parentTabDefs().some((t) => t.id === 'welcome'), 'an unpublished page still has a tab');
+  eq(none.parentTab(), 'schedule', 'a family lands on a page that does not exist');
+  const denied = mk(pub, 'throws');
+  denied.parentWelcomeLanding();
+  eq(denied.parentTab(), 'welcome', 'refused storage broke the landing');
+  // Before the strip is drawn, and only in parent mode.
+  ok(/if \(parent\) parentWelcomeLanding\(\);\s*[\s\S]{0,400}var tabsEl = document\.getElementById\('tabs'\)/.test(SCRIPT),
+    'the landing is decided after the tab strip is drawn');
+});
+
+test('B1: the family page is escaped prose, links only to http(s), and the cost button goes where the card is', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`${['esc', 'proseText', 'renderParentWelcome'].map(slice).join('\n')}`, ctx);
+  const pv = { welcome: [
+    { title: 'Welcome <b>', body: 'Hi <script>', url: 'https://beascout.scouting.org' },
+    { title: 'What it costs', body: 'See the card', url: 'javascript:alert(1)' }
+  ], familyCost: [{ den: 'Lion' }] };
+  const out = ctx.renderParentWelcome(pv);
+  ok(out.indexOf('<script>') === -1 && out.indexOf('<b>') === -1, 'leader text is not escaped');
+  ok(/href="https:\/\/beascout\.scouting\.org" target="_blank" rel="noopener noreferrer">Open beascout\.scouting\.org/.test(out),
+    'the link is missing or not opened safely');
+  ok(out.indexOf('javascript:') === -1, 'a javascript: link was rendered');
+  ok(/What it costs<\/h2>[\s\S]*data-act="parent-tab" data-tab="schedule">See what a year costs/.test(out),
+    'calendar-only: the cost button does not go to the Schedule tab');
+  pv.standings = [];
+  ok(/data-tab="standings">See what a year costs/.test(ctx.renderParentWelcome(pv)), 'the cost button does not follow the card to Standings');
+  delete pv.familyCost;
+  ok(!/See what a year costs/.test(ctx.renderParentWelcome(pv)), 'a cost button with no cost card to go to');
+});
+
+test('B1: every leader edit to the page is behind canEdit, and the editor says who reads it', () => {
+  ['welcome-add-sec', 'welcome-sec-hide:', 'welcome-del-sec:'].forEach((a) => {
+    const i = SCRIPT.indexOf(`act${a.slice(-1) === ':' ? `.indexOf('${a}') === 0` : ` === '${a}'`}`);
+    ok(i > -1, `no handler for ${a}`);
+    ok(/^\) \{\s*if \(!canEdit\(\)\) return;/.test(SCRIPT.slice(i + (a.slice(-1) === ':' ? `act.indexOf('${a}') === 0`.length : `act === '${a}'`.length))),
+      `${a} is not behind canEdit()`);
+  });
+  const ed = slice('renderWelcomeEditor');
+  ok(/Everything shown here goes to families exactly as/.test(ed), 'the editor does not say the page is published verbatim');
+  ok(/calendar-only link too/.test(ed), 'the editor does not say calendar-only families see it');
+  ok(/no phone numbers, no children(’|\\u2019)s names/.test(ed), 'the editor does not warn against contact details and names');
+  ok(/\{ id: 'joining', label: 'New families' \}/.test(SCRIPT), 'the New families section is gone');
+});
+
+test('B2: Next up heads the family Schedule with everything on the next date, and how long until it', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`var ui = {};
+    function fmtDate(d) { return String(d); }
+    ${['esc', 'parentEventRow', 'parentShiftLines', 'parentNextUp', 'isoPlusDays', 'campIsoOrBlank'].map(slice).join('\n')}`, ctx);
+  const evs = [
+    { kind: 'activity', date: '2026-09-20', title: 'Past hike' },
+    { kind: 'meeting', date: '2026-10-03', title: 'Wolf den meeting', detail: 'Room 4' },
+    { kind: 'storefront', date: '2026-10-03', title: 'Kroger', shifts: [{ when: '9:00 AM–11:00 AM', who: ['Ada'] }] },
+    { kind: 'activity', date: '2026-10-10', title: 'Later' }];
+  const out = ctx.parentNextUp(evs, '2026-09-28');
+  ok(/Next up/.test(out) && /In 5 days/.test(out), 'no heading, or the wrong count of days');
+  ok(/Wolf den meeting/.test(out) && /Kroger/.test(out), 'something on the next date is missing');
+  ok(!/Past hike/.test(out) && !/Later/.test(out), 'Next up shows more than the next date');
+  ok(/Today/.test(ctx.parentNextUp(evs, '2026-10-03')), 'an event today is not "Today"');
+  ok(/Tomorrow/.test(ctx.parentNextUp(evs, '2026-10-02')), 'an event tomorrow is not "Tomorrow"');
+  eq(ctx.parentNextUp(evs, '2026-10-11'), '', 'a card with nothing in it');
+  eq(ctx.parentNextUp(undefined, '2026-10-11'), '', 'no events list throws or draws a card');
+  // First on the page. A campout deadline comes from the structured field (Wave C1), never the prose.
+  ok(/var h = parentNextUp\(evs, today, Array\.isArray\(pv\.camping\) \? pv\.camping : \[\]\) \+ parentCalendar\(pv, today\);/.test(slice('renderParentSchedule')),
+    'Next up is not at the top of the Schedule, or is not handed the published trips');
+  ok(!/\.cost|\.when/.test(codeOnly(slice('parentNextUp'))), 'Next up reads a trip’s free text for a deadline');
+});
+
+test('B3: one event goes into a family calendar with its name, date, time and place — and nothing else', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`${['pad2', 'campHash', 'parseLegacyTime', 'icsEscape', 'icsFold', 'icsDate', 'icsTime', 'icsNextDay',
+    'icsEndPlusHour', 'parentEventICS', 'parentEventFileName'].map(slice).join('\n')}`, ctx);
+  const S = '20260928T120000Z';
+  const act = ctx.parentEventICS({ kind: 'activity', date: '2026-10-03', title: 'Fall Hike, day 1', times: ['9:30 AM–12:00 PM'],
+    where: 'Sweetwater Creek; GA', detail: 'Tigers only' }, S);
+  ok(/^BEGIN:VCALENDAR\r\n/.test(act) && /END:VCALENDAR\r\n$/.test(act), 'not a calendar file');
+  ok(/\r\nDTSTART:20261003T093000\r\nDTEND:20261003T120000\r\n/.test(act), 'the time was not read back from the published range');
+  ok(/\r\nSUMMARY:Fall Hike\\, day 1\r\n/.test(act) && /\r\nLOCATION:Sweetwater Creek\\; GA\r\n/.test(act), 'name or place missing, or not escaped');
+  ok(!/Tigers only/.test(act) && !/DESCRIPTION/.test(act), 'the detail line went into the file');
+  eq((act.match(/BEGIN:VEVENT/g) || []).length, 1, 'more than one event in the file');
+  // A meeting's detail is its free-text note: never in the file (the buildICS ruling).
+  const mtg = ctx.parentEventICS({ kind: 'meeting', date: '2026-10-06', title: 'Wolf den meeting', times: ['7:00 PM'], detail: 'Call Sam 555-0101' }, S);
+  ok(!/555-0101|LOCATION/.test(mtg), 'a meeting note reached the calendar file');
+  ok(/DTSTART:20261006T190000\r\nDTEND:20261006T200000/.test(mtg), 'a start-only meeting is not an hour long');
+  // A storefront spans its shifts, and never carries who is on them.
+  const sf = ctx.parentEventICS({ kind: 'storefront', date: '2026-10-10', title: 'Kroger',
+    shifts: [{ when: '1:00 PM–3:00 PM', who: ['Ada'] }, { when: '9:00 AM–11:00 AM', who: ['Ben'] }] }, S);
+  ok(/DTSTART:20261010T090000\r\nDTEND:20261010T150000/.test(sf), 'the storefront does not span its shifts');
+  ok(/SUMMARY:Popcorn — Kroger/.test(sf) && !/Ada|Ben/.test(sf), 'a child’s name went into the file, or the summary is wrong');
+  // No time → all day.
+  ok(/DTSTART;VALUE=DATE:20261031\r\nDTEND;VALUE=DATE:20261101/.test(ctx.parentEventICS({ kind: 'derby', date: '2026-10-31', title: 'Derby' }, S)),
+    'an untimed event is not all-day');
+  eq(ctx.parentEventFileName({ title: 'Blue & Gold Banquet!', date: '2027-02-20' }), 'blue-gold-banquet-2027-02-20.ics', 'the file name');
+  // Built from the published event only, and the button works in the parent app.
+  ok(!/\bstate\./.test(slice('parentEventICS')), 'the family file reads the pack record');
+  ok(/'parent-ics'/.test(/var PARENT_ACTS = \[([\s\S]*?)\];/.exec(SCRIPT)[1]), 'the calendar button is refused in parent mode');
+  const h = /if \(act === 'parent-ics'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(h && /parentDoc\(\)/.test(h[0]) && !/state\./.test(h[0]), 'the handler does not read the published document');
+  ok(/data-act="parent-ics"/.test(slice('parentEventRow')), 'no button on the event row');
+});
+
+// The QR encoder, run on its own. Its output was decoded by an independent reader (macOS Core
+// Image) for versions 1, 3, 5, 6, 8, 9 and 10, and with 36 modules deliberately flipped; the
+// golden fingerprint below pins that verified output so a later edit cannot quietly break it.
+const QR_GOLDEN = 'wqfkwd';   // 'https://pack569.com/?join=abc123xyz9', as decoded 2026-09-28
+function qrCtx() {
+  const ctx = vm.createContext({});
+  vm.runInContext(['QR_M_ECC', 'QR_M_BLOCKS', 'qrMatrix', 'qrSvg'].map(slice).join('\n'), ctx);
+  return ctx;
+}
+test('B4: the inline QR encoder draws a well-formed code, and the verified one has not changed', () => {
+  const ctx = qrCtx();
+  const url = 'https://pack569.com/?join=abc123xyz9';
+  const m = ctx.qrMatrix(url);
+  eq(m.length, 29, 'a 36-byte link at level M is not version 3 (29 modules)');
+  // Finder patterns in three corners: dark ring, light ring, dark 3x3 core.
+  const finder = (x0, y0) => {
+    for (let y = 0; y < 7; y++) for (let x = 0; x < 7; x++) {
+      const d = Math.max(Math.abs(x - 3), Math.abs(y - 3));
+      if (m[y0 + y][x0 + x] !== (d !== 2)) return false;
+    }
+    return true;
+  };
+  ok(finder(0, 0) && finder(22, 0) && finder(0, 22), 'a finder pattern is malformed');
+  for (let i = 8; i < 21; i++) ok(m[6][i] === (i % 2 === 0) && m[i][6] === (i % 2 === 0), 'the timing pattern is broken');
+  ok(m[21][8] === true, 'the dark module is missing');
+  // The two copies of the format information agree.
+  const a = [], b = [];
+  for (let i = 0; i <= 5; i++) a.push(m[i][8]);
+  a.push(m[7][8], m[8][8], m[8][7]);
+  for (let i = 9; i < 15; i++) a.push(m[8][14 - i]);
+  for (let i = 0; i < 8; i++) b.push(m[8][28 - i]);
+  for (let i = 8; i < 15; i++) b.push(m[29 - 15 + i][8]);
+  eq(a.map(Number).join(''), b.map(Number).join(''), 'the two format-information copies disagree');
+  const fp = m.map((r) => r.map((x) => (x ? 1 : 0)).join('')).join('');
+  let h = 0x811c9dc5;
+  for (let i = 0; i < fp.length; i++) { h ^= fp.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  eq(h.toString(36), QR_GOLDEN, 'the encoder’s output changed from the independently decoded one');
+  eq(ctx.qrMatrix('z'.repeat(300)), null, 'an over-long text did not say it will not fit');
+  ok(ctx.qrMatrix('y'.repeat(205)).length === 57, 'version 10 (16-bit count) is not reached');
+  const svg = ctx.qrSvg(url, 200);
+  ok(/^<svg [^>]*viewBox="0 0 37 37"/.test(svg), 'the SVG has no quiet zone');
+  eq(ctx.qrSvg('z'.repeat(300)), '', 'an over-long text still drew an SVG');
+  ok(!/https?:\/\/(?!www\.w3\.org)/.test(slice('qrMatrix') + slice('qrSvg')), 'the QR code is fetched from somewhere');
+});
+
+test('B4: the flyer carries the sign-up link only when it is handed one, and the kit is leaders-only', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(['esc', 'QR_M_ECC', 'QR_M_BLOCKS', 'qrMatrix', 'qrSvg', 'kitFlyerHtml', 'kitQrSheetHtml',
+    'freshRecruitKit', 'recruitKitDone', 'recruitKitFlyerLink'].map(slice).join('\n'), ctx);
+  const bare = ctx.kitFlyerHtml({ packName: 'Pack 569 <x>' });
+  ok(!/join=|<svg/.test(bare), 'a flyer with no link handed to it has a link or a QR code');
+  ok((bare.match(/contenteditable="true">\[pack to fill in\]/g) || []).length === 2, 'the date and the place are not left to fill in');
+  ok(/Youth Protection:<\/strong> do not add any child’s last name, and no photo of a child/.test(bare), 'no Youth Protection note');
+  ok(/class="note no-print"/.test(bare), 'the note to the leader would print on the flyer');
+  ok(/Pack 569 &lt;x&gt;/.test(bare) && !/<x>/.test(bare), 'the pack name is not escaped');
+  ok(/beascout\.scouting\.org/.test(bare), 'the flyer does not say how to register');
+  const withLink = ctx.kitFlyerHtml({ packName: 'Pack 569', url: 'https://pack569.com/?join=abc123xyz9' });
+  ok(/<svg/.test(withLink) && /join=abc123xyz9/.test(withLink), 'a ticked flyer lost the link');
+  ok(/<svg/.test(ctx.kitQrSheetHtml({ packName: 'P', url: 'https://pack569.com/?join=q' })), 'the QR sheet has no code');
+  // Ticks belong to their year; the link tick too.
+  const rk = { year: 2026, done: { pin: true }, flyerLink: true };
+  ok(ctx.recruitKitDone(rk, 2026, 'pin') && !ctx.recruitKitDone(rk, 2027, 'pin'), 'last year’s tick counts this year');
+  ok(ctx.recruitKitFlyerLink(rk, 2026) && !ctx.recruitKitFlyerLink(rk, 2027), 'last year’s "include the link" carries over');
+  // Printing the flyer asks for the link only through the ticked, admin-checked path.
+  const pf = /if \(act === 'kit-print-flyer'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/recruitKitFlyerLink\(state\.recruitKit, state\.budget\.programYear\) \? kitJoinUrl\(\) : ''/.test(pf),
+    'the flyer can get the link without the tick');
+  ok(/if \(!isAdmin\(\) \|\| !joinOpen\(\)\) return '';/.test(slice('kitJoinUrl')), 'a non-admin can put the link on paper');
+  ok(/if \(ch === 'kit-flyer-link' && !isAdmin\(\)\) \{ render\(\); return; \}/.test(SCRIPT), 'a non-admin can tick the link onto the flyer');
+  ok(!/recruitKit/.test(codeOnly(BPV())), 'the parent view reads the kit');
+  // Normalized: only the four items, only booleans.
+  const n = vm.createContext({});
+  vm.runInContext(NORMALIZE_FNS.map(slice).join('\n'), n);
+  const out = n.normalizeState(Object.assign(preMigrationState(), { recruitKit: { year: '2026', done: { pin: true, qr: 'yes', evil: true }, flyerLink: 1 } }));
+  eq(JSON.stringify(out.recruitKit), JSON.stringify({ year: 0, done: { pin: true }, flyerLink: false }), 'the kit is not normalized');
+  ok(n.normalizeState(preMigrationState()).recruitKit.flyerLink === false, 'a record without the kit is not given one, link off');
+});
+
+test('B5: the new-member list is this year’s new scouts plus hand-added families, with dues read from the books', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(['ONBOARD_TICKS', 'freshOnboard', 'onboardScouts', 'chargeIsOpen', 'onboardDuesFromCharges', 'onboardSteps']
+    .map(slice).join('\n'), ctx);
+  const scouts = [
+    { id: 'a', name: 'Ada', den: 'Lion', addedYear: 2026 },
+    { id: 'b', name: 'Ben', den: '', addedYear: 2025 },
+    { id: 'c', name: 'Cy', den: 'Wolf', addedYear: 0 },
+    { id: 'd', name: 'Di', den: 'Bear', addedYear: 2026, archived: true }];
+  const ob = { c: ctx.freshOnboard(2026), b: ctx.freshOnboard(2025) };
+  eq(ctx.onboardScouts(scouts, ob, 2026).map((s) => s.id), ['a', 'c'],
+    'the list is not "added this year, or added by hand this year, and active"');
+  // Dues: roster (no-event) charges only, settled / waived / paid all count; none → null (hand tick).
+  const lines = { dues: { id: 'dues' }, camp: { id: 'camp', eventId: 'e1' } };
+  const lineOf = (id) => lines[id] || null;
+  const charges = [
+    { id: 'c1', scoutId: 'a', lineId: 'dues', amountCents: 5000 },
+    { id: 'c2', scoutId: 'a', lineId: 'camp', amountCents: 3500 },
+    { id: 'c3', scoutId: 'c', lineId: 'dues', amountCents: 5000, waivedBy: 't1' }];
+  eq(ctx.onboardDuesFromCharges('a', charges, { c1: 4999 }, lineOf), false, 'a part-paid dues charge reads as paid');
+  eq(ctx.onboardDuesFromCharges('a', charges, { c1: 5000 }, lineOf), true, 'paid dues read as unpaid (or the camp fee counted)');
+  eq(ctx.onboardDuesFromCharges('c', charges, {}, lineOf), true, 'a waived dues charge reads as unpaid');
+  eq(ctx.onboardDuesFromCharges('b', charges, {}, lineOf), null, 'no dues charge did not fall back to a hand tick');
+  // Steps: den derived; the partner's SYT counts only when the partner is not a parent.
+  const o = Object.assign(ctx.freshOnboard(2026), { registered: true, handbook: true });
+  eq(ctx.onboardSteps(scouts[0], o, true).filter((x) => x.done).length, 4, 'registered, dues, den and handbook are not all counted');
+  eq(ctx.onboardSteps(scouts[0], o, null).length, 5, 'the partner’s SYT is asked of a parent');
+  o.partnerNotParent = true;
+  const st = ctx.onboardSteps(scouts[0], o, null);
+  ok(st.length === 6 && st[5].id === 'partnerSyt' && !st[5].done, 'a non-parent partner’s SYT is not asked for');
+  ok(st.find((x) => x.id === 'duesPaid').done === false, 'with no charge on the books, dues are not the hand tick');
+});
+
+test('B5: the tracker is normalized, cleared at close-out, removed with its scout, and never published', () => {
+  const n = vm.createContext({});
+  vm.runInContext(NORMALIZE_FNS.map(slice).join('\n'), n);
+  const out = n.normalizeState(Object.assign(preMigrationState(), {
+    onboarding: { s1: { year: 2026, registered: true, uniform: 'yes', secret: 'x' }, s2: 'junk', s3: [] }
+  }));
+  eq(Object.keys(out.onboarding), ['s1'], 'junk entries survived');
+  eq(out.onboarding.s1, { year: 2026, registered: true, duesPaid: false, handbook: false, uniform: false, partnerNotParent: false, partnerSyt: false },
+    'an entry is not coerced to the known ticks');
+  ok(out.scouts.every((s) => typeof s.addedYear === 'number'), 'a scout without addedYear is not defaulted');
+  eq(JSON.stringify(n.normalizeState(preMigrationState()).onboarding), '{}', 'a record without the tracker is not given an empty one');
+  // Both places a scout is added stamp the program year.
+  eq((SCRIPT.match(/parentUids: \[\], addedYear: state\.budget\.programYear \}\);/g) || []).length, 2,
+    'a newly added scout is not stamped with the year');
+  const del = /if \(act\.indexOf\('del-scout:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/delete state\.onboarding\[id\];/.test(del), 'deleting a scout leaves their checklist behind');
+  ok(/state\.onboarding = \{\};/.test(slice('rolloverYear')), 'close-out carries the year’s intake into the next');
+  // Never published, and every write is behind the read-only gate.
+  const bpv = codeOnly(BPV());
+  ok(!/onboarding|addedYear/.test(bpv), 'the parent view reads the tracker');
+  ok(!/onboarding/.test(codeOnly(slice('monthlyDigest'))), 'the family digest reads the tracker');
+  const h = /if \(ch === 'ob-tick' \|\| ch === 'ob-track'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/commit\(\);/.test(h) && /ONBOARD_TICKS\.indexOf\(el\.dataset\.name\) === -1/.test(h), 'the tick handler writes unknown keys or skips commit()');
+  ok(/if \(act\.indexOf\('ob-untrack:'\) === 0\) \{\s*if \(!canEdit\(\)\) return;/.test(SCRIPT), 'untracking is not behind canEdit()');
+  ok(/renderOnboarding\(\) \+ renderWelcomeEditor\(\)/.test(slice('renderJoining')), 'the tracker is not on Scouts → New families');
+});
+
+test('every constant the loader reads is assigned before the pack record is loaded', () => {
+  // `var state = load()` runs while the script is still starting, so any `var` the normalizer or
+  // the fresh record reads has to be ASSIGNED above that line — a function is hoisted, a var's
+  // value is not. The sandbox above defines everything before running anything, so it can never
+  // see this; Wave B shipped RECRUIT_KIT_ITEMS below it once, and every saved record then failed
+  // to load (normalizeState threw, load() fell back to a fresh pack).
+  const loadAt = SCRIPT.indexOf('  var state = load();');
+  ok(loadAt > -1, 'the load line moved');
+  // Everything reachable from load(): normalizeState and freshState, and every function of
+  // theirs the sandbox knows, followed call by call. Then every `var` read anywhere in that.
+  const isVar = (n) => new RegExp(`^  var ${n} =`, 'm').test(SCRIPT);
+  const reached = new Set(['normalizeState', 'freshState']);
+  let text = '', grew = true;
+  while (grew) {
+    grew = false;
+    text = [...reached].map(slice).join('\n');
+    NORMALIZE_FNS.concat(['freshState']).forEach((n) => {
+      if (!reached.has(n) && !isVar(n) && new RegExp(`\\b${n}\\(`).test(text)) { reached.add(n); grew = true; }
+    });
+  }
+  ok(reached.has('normalizeAgenda') && reached.has('refreshWelcomeSeed'), 'the call walk found too little');
+  NORMALIZE_FNS.filter(isVar).filter((n) => new RegExp(`\\b${n}\\b`).test(text)).forEach((name) => {
+    const m = new RegExp(`^  var ${name} =`, 'm').exec(SCRIPT);
+    ok(m.index < loadAt, `var ${name} is read by the loader but assigned after load() runs`);
+  });
+});
+/* ========================================================================
+   Wave C — camping (Outdoor / Camping Chair), 2026-09-28
+   ===================================================================== */
+// C1 — structured trip dates.
+test('C1: a trip carries three optional ISO dates, and the seed fills them from its own words', () => {
+  const ctx = sandbox(NORMALIZE_FNS.concat(['CAMP_PACK_RUN', 'CAMP_EMERGENCY', 'YARGO_TRIP_ID']));
+  const ft = ctx.freshTrip('x');
+  eq([ft.startDate, ft.endDate, ft.registrationDeadline], ['', '', ''], 'a new trip is born with dates');
+  const by = {};
+  ctx.seedCampingTrips().forEach((t) => { by[t.name] = t; });
+  const d = (t) => [t.startDate, t.endDate, t.registrationDeadline];
+  eq(d(by['Fall Family Camping']), ['2026-10-02', '2026-10-04', '2026-10-01'], 'the fall weekend');
+  eq(d(by['Spring Family Camping']), ['2026-04-24', '2026-04-26', '2026-04-20'], 'the spring weekend');
+  eq(d(by['Pack Camping — Fort Yargo']), ['2026-03-27', '2026-03-29', ''], 'Fort Yargo');
+  // Each seeded date is one the seed's own words already state.
+  ok(/Fri 2 Oct – Sun 4 Oct/.test(by['Fall Family Camping'].when) && /Thu 1 Oct/.test(by['Fall Family Camping'].cost), 'fall words');
+  ok(/Fri 24 Apr – Sun 26 Apr/.test(by['Spring Family Camping'].when), 'spring words');
+  ok(/Fri 27 Mar – Sun 29 Mar/.test(by['Pack Camping — Fort Yargo'].when), 'Fort Yargo words');
+  // Normalizing keeps an ISO date and drops anything else.
+  const n = ctx.normalizeState(Object.assign(preMigrationState(), { camping: { yargoAdded: true, seedRev: ctx.CAMP_SEED_REV, trips: [
+    { id: 't', name: 'Ours', startDate: '2026-11-06', endDate: 'next Sunday', registrationDeadline: 20261101 }] } })).camping.trips[0];
+  eq(d(n), ['2026-11-06', '', ''], 'a junk date survived loading');
+});
+
+test('C1: an existing pack gets the seeded dates only where they are empty and `when` is still the seed’s', () => {
+  const ctx = sandbox(NORMALIZE_FNS.concat(['CAMP_PACK_RUN', 'CAMP_EMERGENCY', 'YARGO_TRIP_ID']));
+  ok(ctx.CAMP_SEED_REV >= 4, 'CAMP_SEED_REV was not bumped for the structured dates');
+  const seed = ctx.seedCampingTrips();
+  const start = { yargoAdded: true, seedRev: 3, trips: seed.map((t) => Object.assign({}, t, { startDate: '', endDate: '', registrationDeadline: '' })) };
+  start.trips[1].when = 'A weekend in late April (2027: Fri 23 Apr – Sun 25 Apr)';   // a leader moved spring
+  start.trips[2].startDate = '2027-03-26';                                            // and dated Fort Yargo
+  const after = ctx.normalizeState(Object.assign(preMigrationState(), { camping: start })).camping.trips;
+  eq([after[0].startDate, after[0].endDate, after[0].registrationDeadline], ['2026-10-02', '2026-10-04', '2026-10-01'], 'fall was not filled');
+  eq([after[1].startDate, after[1].registrationDeadline], ['', ''], 'a trip whose words a leader changed was given the seed’s dates');
+  eq([after[2].startDate, after[2].endDate], ['2027-03-26', '2026-03-29'], 'a leader’s date was overwritten (or an empty one not filled)');
+  // Once per revision.
+  const again = ctx.normalizeState(Object.assign(preMigrationState(),
+    { camping: { yargoAdded: true, seedRev: ctx.CAMP_SEED_REV, trips: [Object.assign({}, seed[0], { startDate: '' })] } })).camping.trips;
+  eq(again[0].startDate, '', 'the date fill ran on a record already at this revision');
+});
+
+test('C1: trips sort by date with the next one first; last year’s dates are flagged to leaders only', () => {
+  const ctx = sandbox(['CAMP_DATE_KEYS', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'sortTripsByDate', 'nextTrip',
+    'programYearStartISO', 'tripDatesStale']);
+  const trips = [
+    { name: 'Spring', startDate: '2026-04-24', endDate: '2026-04-26' },
+    { name: 'Undated A' },
+    { name: 'Yargo', startDate: '2027-03-26', endDate: '2027-03-28' },
+    { name: 'Fall', startDate: '2026-10-02', endDate: '2026-10-04' },
+    { name: 'Undated B' },
+    { name: 'Old', startDate: '2025-10-10', endDate: '2025-10-12' }];
+  const names = (a) => a.map((t) => t.name);
+  eq(names(ctx.sortTripsByDate(trips, '2026-09-28')), ['Fall', 'Yargo', 'Undated A', 'Undated B', 'Old', 'Spring'], 'order');
+  eq(names(ctx.sortTripsByDate(trips, '2026-10-03')).slice(0, 1), ['Fall'], 'a weekend under way is not still first');
+  eq(ctx.nextTrip(trips, '2026-09-28').name, 'Fall', 'next trip');
+  eq(ctx.nextTrip(trips, '2026-10-05').name, 'Yargo', 'next trip after the fall weekend');
+  eq(ctx.nextTrip([{ name: 'x' }], '2026-10-05'), null, 'an undated trip is "next"');
+  eq(names(trips).slice(0, 2), ['Spring', 'Undated A'], 'sorting reordered the stored list');
+  // Stale = over AND before this program year began (2026 starts 2026-07-01).
+  ok(ctx.tripDatesStale(trips[0], '2026-09-28', 2026), 'April 2026 is not stale in program year 2026');
+  ok(!ctx.tripDatesStale(trips[3], '2026-10-05', 2026), 'a trip earlier THIS program year is flagged');
+  ok(!ctx.tripDatesStale(trips[1], '2026-09-28', 2026), 'an undated trip is flagged');
+  ok(!ctx.tripDatesStale(trips[0], '2026-05-01', 2025), 'a trip is flagged before the year has moved on');
+  // The banner is on the leader page and nowhere a family reads.
+  ok(/tripDatesStale\(t, today, state\.budget\.programYear\)/.test(slice('renderCamping')), 'the leader page has no banner');
+  ok(/These are last year\\u2019s dates \\u2014 confirm\./.test(slice('renderCamping')), 'the banner wording');
+  for (const f of ['renderParentCamping', 'buildParentView', 'parentNextUp']) {
+    ok(!/tripDatesStale|last year/.test(codeOnly(slice(f))), f + ' shows the leaders’ stale-dates note');
+  }
+  // The leader's tabs and the family's tabs both run in date order.
+  ok(/sortTripsByDate\(trips, todayISO\(\)\)/.test(slice('sectionsOf')), 'the leader tabs are not in date order');
+  ok(/sortTripsByDate\(/.test(slice('parentTrips')) && /sortTripsByDate\(/.test(slice('renderParentCamping')),
+    'the family strip and the family page could disagree on "trip 2"');
+  ok(/nextTrip\(trips, today\)/.test(slice('renderParentCamping')), 'the family page does not point to the next campout');
+});
+
+test('C1: the dates are published, re-checked, and the published trip carries exactly its allowlisted keys', () => {
+  const ctx = pvCtx(`
+    function campingTrips() { return [
+      { id: 'a', name: 'Spring', when: 'April', startDate: '2026-04-24', endDate: '2026-04-26', registrationDeadline: 'soon',
+        readiness: { baloo: true }, noteInternal: 'x', sections: [{ id: 's', title: 'T', body: 'B', secret: 1 }] },
+      { id: 'b', name: 'Fall', when: 'October', startDate: '2026-10-02', endDate: '2026-10-04', registrationDeadline: '2026-10-01', sections: [] }]; }
+    function todayISO() { return '2026-09-28'; }`);
+  const pv = vm.runInContext('buildParentView(state, { showStandings: false })', ctx);
+  eq(pv.camping.map((t) => t.name), ['Fall', 'Spring'], 'published out of date order');
+  eq(Object.keys(pv.camping[0]).sort(), ['address', 'arrive', 'cost', 'depart', 'endDate', 'intro', 'name', 'registrationDeadline',
+    'sections', 'startDate', 'url', 'when', 'where'], 'the published trip keys');
+  eq([pv.camping[0].startDate, pv.camping[0].endDate, pv.camping[0].registrationDeadline], ['2026-10-02', '2026-10-04', '2026-10-01'], 'dates');
+  eq(pv.camping[1].registrationDeadline, '', 'a junk deadline was published');
+  eq(Object.keys(pv.camping[1].sections[0]).sort(), ['body', 'title'], 'section keys');
+  const bpv = BPV();
+  ['startDate', 'endDate', 'registrationDeadline'].forEach((k) =>
+    ok(new RegExp(`${k}: campIsoOrBlank\\(t\\.${k}\\)`).test(bpv), `${k} is not re-checked on the way out`));
+  // Kept in step: the banner comment and SETUP.md say so.
+  const banner = SCRIPT.slice(SCRIPT.indexOf('// PUBLISHED — the whole list'), SCRIPT.indexOf('// DELIBERATELY EXCLUDED'));
+  ok(/ISO startDate, endDate and registrationDeadline/.test(banner), 'the parent-view banner does not list the dates');
+  ok(/`startDate`, `endDate`,\s+`registrationDeadline`/.test(SETUP), 'SETUP.md “What a parent sees” does not list the dates');
+  // The editor stores only an ISO date or a clear.
+  const h = /if \(typeof ch === 'string' && ch\.indexOf\('trip-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/CAMP_DATE_KEYS\.indexOf\(tK\) >= 0/.test(h) && /if \(!setTripDate\(tT, tK, el\.value\)\) return;/.test(h), 'a junk date can be typed into the record');
+});
+
+test('C1: the family’s Next up card says when online sign-up for a campout closes, within 30 days', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`var ui = {};
+    function fmtDate(d) { return 'D' + String(d); }
+    ${['esc', 'parentEventRow', 'parentShiftLines', 'parentNextUp', 'isoPlusDays', 'campIsoOrBlank'].map(slice).join('\n')}`, ctx);
+  const trips = [
+    { name: 'Fall Family Camping', registrationDeadline: '2026-10-01' },
+    { name: 'Spring Family Camping', registrationDeadline: '2027-04-20' },
+    { name: 'Old', registrationDeadline: '2026-09-01' },
+    { name: '', registrationDeadline: '2026-10-02' }];
+  const evs = [{ kind: 'meeting', date: '2026-10-06', title: 'Pack meeting' }];
+  const out = ctx.parentNextUp(evs, '2026-09-28', trips);
+  ok(/Online sign-up for Fall Family Camping closes D2026-10-01/.test(out), out);
+  ok(/in 3 days/.test(out), 'no lead time on the deadline');
+  ok(!/Spring|Old/.test(out), 'a deadline outside the next 30 days is on the card');
+  ok(/Pack meeting/.test(out), 'the deadline pushed the next event off the card');
+  // A deadline alone still makes a card; the day itself says "today".
+  ok(/closes D2026-10-01/.test(ctx.parentNextUp([], '2026-10-01', trips)) && /today/.test(ctx.parentNextUp([], '2026-10-01', trips)),
+    'a deadline with no event on the calendar is dropped');
+  eq(ctx.parentNextUp([], '2026-10-02', trips.slice(0, 3)), '', 'a passed deadline makes a card');
+});
+// C2 — the trip readiness checklist. Leaders only, never published.
+test('C2: readiness is seven known ticks, normalized on load, and clears when the weekend moves year', () => {
+  const ctx = sandbox(['CAMP_DATE_KEYS', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'CAMP_READINESS',
+    'normalizeReadiness', 'tripReadinessItems', 'tripReadiness', 'setTripDate']);
+  eq(ctx.CAMP_READINESS.map((i) => i.key), ['baloo', 'weather', 'twoLeaders', 'female', 'health', 'emergency', 'site'], 'items');
+  const labels = ctx.CAMP_READINESS.map((i) => i.label).join(' | ');
+  ['BALOO', 'Hazardous Weather', 'both 21 or older', 'female adult 21 or older, if girls attend', 'AHMR Parts A and B',
+    'nearest hospital', 'council-approved'].forEach((w) => ok(labels.includes(w), 'no readiness item for ' + w));
+  eq(JSON.parse(JSON.stringify(ctx.normalizeReadiness({ baloo: true, health: 'yes', bogus: true, weather: false }))), { baloo: true }, 'normalize');
+  eq(JSON.parse(JSON.stringify(ctx.normalizeReadiness([true]))), {}, 'an array is not a checklist');
+  const rd = ctx.tripReadiness({ readiness: { baloo: true, health: true } });
+  eq([rd.done, rd.total, rd.open.length], [2, 7, 5], 'count');
+  // Dates: a same-year move keeps the ticks; a new year clears them; a first date keeps them.
+  const t = { startDate: '', endDate: '', registrationDeadline: '', readiness: { baloo: true } };
+  ok(ctx.setTripDate(t, 'startDate', '2026-10-02') && t.readiness.baloo, 'setting a first date cleared the ticks');
+  ok(ctx.setTripDate(t, 'startDate', '2026-10-09') && t.readiness.baloo, 'a same-year move cleared the ticks');
+  ok(!ctx.setTripDate(t, 'startDate', 'Oct 9') && t.startDate === '2026-10-09', 'a junk date was stored');
+  ok(!ctx.setTripDate(t, 'readiness', '2026-10-09'), 'setTripDate writes a key that is not a date');
+  ok(ctx.setTripDate(t, 'startDate', '2027-10-08') && !t.readiness.baloo, 'moving the weekend a year on kept last year’s ticks');
+  t.readiness = { health: true };
+  ok(ctx.setTripDate(t, 'startDate', '') && t.readiness.health, 'clearing the date cleared the ticks');
+  // A fresh trip and a loaded one both carry the key.
+  ok(/readiness: \{\},/.test(slice('freshTrip')), 'a new trip has no readiness');
+  ok(/t\.readiness = normalizeReadiness\(t\.readiness\);/.test(slice('normalizeState')), 'readiness is not normalized on load');
+});
+
+// K2 (Camping Chair review) — the labels say what the Guide to Safe Scouting asks, and the vague
+// "paperwork" item became a new 'site' key; an old 'paperwork' tick does not count as the site.
+test('K2: readiness labels are the Camping Chair’s, and an old paperwork tick is dropped, not carried', () => {
+  const ctx = sandbox(['CAMP_READINESS', 'normalizeReadiness', 'tripReadinessItems', 'tripReadiness']);
+  const L = {}; ctx.CAMP_READINESS.forEach((i) => { L[i.key] = i.label; });
+  eq(L.baloo, 'A BALOO-trained adult is on the trip (any overnight the pack or a Webelos/AoL den runs itself)', 'baloo');
+  eq(L.weather, 'At least one adult on the trip is current in Hazardous Weather training', 'weather');
+  eq(L.twoLeaders, 'Two registered adult leaders, both 21 or older, with current Safeguarding Youth training', 'twoLeaders');
+  eq(L.health, 'Health forms (AHMR Parts A and B) collected for every youth and adult', 'health');
+  eq(L.site, 'Site is council-approved (or council-appraised) and booked', 'site');
+  ok(!('paperwork' in L), 'the paperwork item is still on the list');
+  eq(JSON.parse(JSON.stringify(ctx.normalizeReadiness({ paperwork: true, health: true }))), { health: true }, 'an old paperwork tick survived');
+  const rd = ctx.tripReadiness({ packRun: true, readiness: { paperwork: true } });
+  eq([rd.done, rd.total], [0, 7], 'an old paperwork tick counted toward readiness');
+  // Nothing else in the app still names the old key.
+  ok(!/'paperwork'/.test(codeOnly(SCRIPT)), "something still hard-codes 'paperwork'");
+});
+
+test('C2: the readiness checklist is NEVER published, and says so on the page', () => {
+  // The allowlist names every published trip key; readiness is not one of them.
+  const bpv = codeOnly(BPV());
+  ok(!/readiness|CAMP_READINESS|tripReadiness/.test(bpv), 'buildParentView reads the readiness checklist');
+  for (const f of ['renderParentCamping', 'parentNextUp', 'parentTrips', 'monthlyDigest']) {
+    ok(!/readiness|CAMP_READINESS|tripReadiness/.test(codeOnly(slice(f))), f + ' reads the readiness checklist');
+  }
+  ok(!/readiness/.test(codeOnly(/function buildICS\(\)[\s\S]*?\n  \}/.exec(SCRIPT)[0])), 'the .ics reads the readiness checklist');
+  // A trip holding ticks publishes none of them (a runtime check, not just a scan).
+  const ctx = pvCtx(`
+    function campingTrips() { return [{ id: 'a', name: 'Fall', when: 'Oct', startDate: '2026-10-02',
+      readiness: { baloo: true, health: true }, sections: [] }]; }`);
+  const pv = vm.runInContext('buildParentView(state, { showStandings: false })', ctx);
+  ok(!/readiness|baloo|BALOO/.test(JSON.stringify(pv)), 'the readiness checklist reached the parent view');
+  // The leader page: its own card, labelled leaders-only, and the published notice excludes it.
+  const rc = slice('renderCamping');
+  ok(/campReadinessCard\(t, edit\)/.test(rc), 'the trip page has no readiness card');
+  ok(/not the readiness checklist above/.test(rc), 'the published notice does not exclude the checklist');
+  const card = slice('campReadinessCard');
+  ok(/Trip readiness \\u00b7 leaders only/.test(card) && /Not published to families/.test(card), 'the card does not say it is leaders-only');
+  ok(/ of ' \+ rd\.total \+ ' ready/.test(card), 'the card shows no count');
+  // Kept in step with the banner and SETUP.md.
+  ok(/each campout's readiness checklist \(`readiness`, Wave C2\)/.test(SCRIPT), 'the parent-view banner does not exclude it');
+  ok(/\*\*never\*\* contains:[^]*?any campout's readiness checklist/.test(SETUP), 'SETUP.md does not exclude it');
+  // The tick handler: known items only.
+  const h = /if \(typeof ch === 'string' && ch\.indexOf\('trip-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/if \(tK === 'ready'\)/.test(h) && /CAMP_READINESS\.some\(/.test(h), 'a readiness tick is stored without checking its key');
+});
+
+test('C2: Home asks the Camping Chair in the 14 days before a trip while anything is open', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    var TODAY = '2026-09-28';
+    function todayISO() { return TODAY; }
+    function fmtDate(d) { return String(d); }
+    ${['CAMP_DATE_KEYS', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'CAMP_READINESS', 'tripReadinessItems', 'tripReadiness', 'daysUntil'].map(slice).join('\n')}
+    var TRIPS = [];
+    function campingTrips() { return TRIPS; }
+    function tasks() {
+      var out = [];
+      function add(job, tier, title, detail, tab, section) { out.push({ job: job, tier: tier, title: title, detail: detail, tab: tab, section: section }); }
+      ${/\/\* ----- Outdoor \/ Camping Chair ----- \*\/([\s\S]*?)\/\* ----- Advancement/.exec(slice('homeTasks'))[1]}
+      return out;
+    }`, ctx);
+  const run = (trips) => { ctx.TRIPS = trips; return vm.runInContext('tasks()', ctx); };
+  const all = {}; ['baloo', 'weather', 'twoLeaders', 'female', 'health', 'emergency', 'site'].forEach((k) => { all[k] = true; });
+  const t1 = run([{ id: 'f', name: 'Fall', startDate: '2026-10-02', readiness: { baloo: true } }]);
+  eq(t1.length, 1, 'no task four days out with six items open');
+  eq([t1[0].job, t1[0].tab, t1[0].section], ['outdoors', 'camping', 'f'], 'the task goes to the wrong job or page');
+  ok(/Fall — 6 readiness items still open/.test(t1[0].title), t1[0].title);
+  eq(run([{ id: 'f', name: 'Fall', startDate: '2026-10-02', readiness: all }]).length, 0, 'a task with everything ticked');
+  eq(run([{ id: 'f', name: 'Fall', startDate: '2026-10-13', readiness: {} }]).length, 0, 'a task fifteen days out');
+  eq(run([{ id: 'f', name: 'Fall', startDate: '2026-10-12', readiness: {} }]).length, 1, 'no task fourteen days out');
+  eq(run([{ id: 'f', name: 'Fall', startDate: '2026-09-27', readiness: {} }]).length, 0, 'a task for a trip already begun');
+  eq(run([{ id: 'f', name: 'Fall', readiness: {} }]).length, 0, 'a task for an undated trip');
+  eq(run([{ id: 'f', name: 'Fall', startDate: '2026-09-29', readiness: {} }])[0].tier, 'now', 'the day before is not urgent');
+});
+// F3 (2026-09-28) — BALOO is the training for a PACK overnighter, so it is only on the list
+// (and in the count, and in Home's task) for a trip the pack runs.
+test('F3: the BALOO item counts only on a trip the pack runs', () => {
+  const ctx = sandbox(NORMALIZE_FNS.concat(['tripReadinessItems', 'tripReadiness']));
+  const seeds = ctx.seedCampingTrips();
+  const byName = {}; seeds.forEach((t) => { byName[t.name] = t; });
+  eq(byName['Fall Family Camping'].packRun, false, 'the fall council weekend is pack-run');
+  eq(byName['Spring Family Camping'].packRun, false, 'the spring council weekend is pack-run');
+  eq(seeds.find((t) => t.id === 'trip-fort-yargo').packRun, true, 'Fort Yargo is not pack-run');
+  eq(ctx.seedDenCampTrip().packRun, true, 'the den campout template is not pack-run');
+  eq(ctx.freshTrip('x').packRun, true, 'a trip a leader adds is not pack-run');
+  // The count: 7 on a pack trip, 6 on a council one; a stored BALOO tick is ignored, not lost.
+  eq(ctx.tripReadiness({ packRun: true, readiness: {} }).total, 7, 'a pack trip lost an item');
+  const c = ctx.tripReadiness({ packRun: false, readiness: { baloo: true, health: true } });
+  eq([c.done, c.total], [1, 6], 'a council trip still counts BALOO');
+  ok(!c.open.some((l) => /BALOO/.test(l)), 'a council trip still lists BALOO as open');
+  eq(ctx.tripReadiness({ readiness: {} }).total, 7, 'a trip with no flag dropped BALOO');
+  // A record saved before the flag: the council weekends by name, everything else pack-run.
+  const n = vm.createContext({});
+  vm.runInContext(NORMALIZE_FNS.map(slice).join('\n'), n);
+  const old = seeds.map((t) => { const o = JSON.parse(JSON.stringify(t)); delete o.packRun; return o; });
+  old.push({ id: 'mine', name: 'Our lake weekend', sections: [] });
+  old.push({ id: 'set', name: 'Fall Family Camping', packRun: true, sections: [] });
+  const out = n.normalizeState(Object.assign(preMigrationState(), { camping: { trips: old, yargoAdded: true, seedRev: 99 } }));
+  const got = {}; out.camping.trips.forEach((t) => { got[t.id === 'set' ? 'set' : t.name] = t.packRun; });
+  eq([got['Fall Family Camping'], got['Spring Family Camping'], got['Pack Camping — Fort Yargo'], got['Our lake weekend'], got.set],
+    [false, false, true, true, true], 'packRun was not migrated by name, or a leader’s own setting was overwritten');
+  // The card and the handler.
+  const card = slice('campReadinessCard');
+  ok(/tripReadinessItems\(t\)\.map\(/.test(card), 'the card still lists every item regardless of the flag');
+  ok(/data-ch="trip-packRun"/.test(card), 'the card has no pack-runs-it switch');
+  const h = /if \(typeof ch === 'string' && ch\.indexOf\('trip-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/if \(tK === 'packRun'\) \{[\s\S]*?tT\.packRun = !!el\.checked;/.test(h), 'the switch is not stored as a boolean');
+  // Leaders only, like the checklist.
+  ok(!/packRun/.test(codeOnly(BPV())), 'buildParentView reads packRun');
+  ok(/its `packRun` flag \(F3\)/.test(SCRIPT), 'the banner does not exclude packRun');
+});
+
+test('F3: Home does not chase BALOO on a council weekend', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    var TODAY = '2026-09-28';
+    function todayISO() { return TODAY; }
+    function fmtDate(d) { return String(d); }
+    ${['CAMP_DATE_KEYS', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'CAMP_READINESS', 'tripReadinessItems', 'tripReadiness', 'daysUntil'].map(slice).join('\n')}
+    var TRIPS = [];
+    function campingTrips() { return TRIPS; }
+    function tasks() {
+      var out = [];
+      function add(job, tier, title, detail, tab, section) { out.push({ job: job, tier: tier, title: title, detail: detail, tab: tab, section: section }); }
+      ${/\/\* ----- Outdoor \/ Camping Chair ----- \*\/([\s\S]*?)\/\* ----- Advancement/.exec(slice('homeTasks'))[1]}
+      return out;
+    }`, ctx);
+  const run = (trips) => { ctx.TRIPS = trips; return vm.runInContext('tasks()', ctx); };
+  const six = { weather: true, twoLeaders: true, female: true, health: true, emergency: true, site: true };
+  eq(run([{ id: 'f', name: 'Fall', packRun: false, startDate: '2026-10-02', readiness: six }]).length, 0,
+    'a council weekend with everything else ticked still has a task (for BALOO)');
+  const t = run([{ id: 'y', name: 'Yargo', packRun: true, startDate: '2026-10-02', readiness: six }]);
+  ok(t.length === 1 && /1 readiness item still open/.test(t[0].title) && /BALOO/.test(t[0].detail), 'a pack overnighter lost its BALOO task');
+});
+// C3 — the printable packing list.
+test('C3: "What to bring" becomes a tickable list under its own headings, split only when the text says so', () => {
+  const ctx = sandbox(NORMALIZE_FNS.concat(['packingSection', 'packingList']));
+  const fall = ctx.seedCampingTrips()[0];
+  const sec = ctx.packingSection(fall);
+  ok(sec && sec.title === 'What to bring', 'the fall trip’s packing section was not found');
+  const pl = JSON.parse(JSON.stringify(ctx.packingList(sec.body)));
+  eq(pl.groups.map((g) => g.title), ['Sleeping', 'Wearing', 'Washing — Scoutland has a shower house', 'Camp'], 'headings');
+  eq(pl.split, false, 'a list with no per-person/per-family headings was split');
+  ok(pl.groups[0].items[0].startsWith('Tent — the council suggests'), 'the first item lost its text, or kept its bullet');
+  ok(pl.notes.some((n) => /Six Essentials/.test(n)) && pl.notes.some((n) => /^Leave at home:/.test(n)), 'the prose notes were dropped');
+  ok(!pl.groups.some((g) => g.items.some((i) => /^-/.test(i))), 'an item kept its hyphen');
+  // Split when the text says so; groups without a side stay in a general list.
+  const sp = ctx.packingList('Per person\n- Sleeping bag\n- Headlamp\n\nPer family\n- Tent\n- Cooler\n\nExtras\n- Fishing rod\n\nLabel everything.');
+  eq(sp.split, true, 'headings saying per person / per family did not split the list');
+  eq(sp.groups.map((g) => [g.title, g.who]), [['Per person', 'person'], ['Per family', 'family'], ['Extras', '']], 'sides');
+  eq(ctx.packingList('Each family\n- Tent').split, false, 'one side alone split the list');
+  eq(ctx.packingList('').groups.length, 0, 'an empty section has items');
+  eq(ctx.packingSection({ sections: [{ title: 'Food', body: '- x' }] }), null, 'a section that is not the packing list was used');
+});
+
+test('C3: families get a Print packing list button, built from the published trip only', () => {
+  const rpc = slice('renderParentCamping');
+  ok(/var pk = packingSection\(t\);/.test(rpc), 'the family page does not look for the packing list');
+  ok(/data-act="parent-pack-list"/.test(rpc) && /Print packing list/.test(rpc), 'no Print packing list button');
+  ok(/if \(pk && ui\.parentPackList === ti\) return renderParentPackList\(t, pk\);/.test(rpc), 'the sheet does not replace the page');
+  const sheet = slice('renderParentPackList');
+  ok(!/\bstate\b/.test(codeOnly(sheet)) && !/\bstate\b/.test(codeOnly(slice('packingList'))), 'the packing list reads the pack record');
+  ok(/data-act="parent-print"/.test(sheet), 'the sheet has no Print button');
+  ok(/var PARENT_ACTS = \[[^\]]*'parent-pack-list'/.test(SCRIPT), 'parent-pack-list is not allowed in the parent app, so the button is inert');
+  const h = /if \(act === 'parent-pack-list'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(h && /pkWant >= 0 && pkWant < parentTrips\(\)\.length/.test(h[0]), 'the handler trusts the clicked index');
+  // Rendered: escaped text, one checkbox per item, the side headings when split.
+  const ctx = vm.createContext({});
+  vm.runInContext(['esc', 'packingList', 'renderParentPackList', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'tripDatesLabel'].map(slice).join('\n') +
+    '\nfunction fmtDate(d) { return d; }', ctx);
+  const out = ctx.renderParentPackList({ name: 'Den <campout>', when: 'May' },
+    { body: 'Per person\n- Bag & pad\n\nPer family\n- Tent' });
+  eq((out.match(/type="checkbox"/g) || []).length, 2, 'one box per item');
+  ok(/Per person/.test(out) && /Per family/.test(out), 'the split sheet has no side headings');
+  ok(!/pk-head">Per person/.test(out), 'the split sheet repeats "Per person" as a group heading');
+  ok(/2027-05-07/.test(ctx.renderParentPackList({ name: 'Den', startDate: '2027-05-07' }, { body: '- Tent' })), 'no date on a sheet with no When line');
+  ok(/Bag &amp; pad/.test(out) && /Den &lt;campout&gt;/.test(out) && !/<campout>/.test(out), 'the sheet does not escape the text');
+});
+// C4 — the Webelos / Arrow of Light den campout template.
+test('C4: the den campout is a template added on request, never seeded, and states the experts’ rules', () => {
+  const ctx = sandbox(NORMALIZE_FNS.concat(['CAMP_PACK_RUN', 'YARGO_TRIP_ID', 'packingList', 'packingSection']));
+  ok(!ctx.seedCampingTrips().some((t) => t.id === ctx.DEN_CAMP_TRIP_ID), 'the den campout is seeded');
+  ok(!ctx.freshCamping().trips.some((t) => t.id === ctx.DEN_CAMP_TRIP_ID), 'a fresh pack gets the den campout');
+  // A live pack is never given it on load, at any seed revision.
+  const loaded = ctx.normalizeState(Object.assign(preMigrationState(), { camping: { yargoAdded: true, seedRev: 0, trips: ctx.seedCampingTrips() } })).camping;
+  ok(!loaded.trips.some((t) => t.id === ctx.DEN_CAMP_TRIP_ID), 'loading a record added the den campout');
+  const den = ctx.seedDenCampTrip();
+  eq(den.id, 'trip-den-campout', 'a stable id, so a second tap finds the first copy');
+  eq(den.name, 'Den campout — Webelos & Arrow of Light', 'name');
+  const all = JSON.stringify(den);
+  [['Den-level overnight camping is for Webelos and Arrow of Light dens only', 'Webelos and AoL only'],
+   ['own parent or guardian', 'with a parent or guardian'],
+   ['At least one adult on the campout is BALOO-trained', 'BALOO required (K1)'],
+   ['every overnight a Webelos or Arrow of Light den runs itself', 'why BALOO applies'],
+   ['Any adult staying overnight who is not the parent or guardian', 'non-parent adults registered'],
+   ['A den cannot approve a site itself', 'the site rule']].forEach(([needle, what]) => ok(all.includes(needle), 'the template does not state ' + what));
+  // K1 (SAFETY) — rev 4 said the opposite. Never again, and no rule left unverified.
+  ok(!/not required/i.test(all), 'the template says something is not required');
+  ok(!/verify with council/i.test(all), 'the template still carries a [verify with council] marker');
+  // Its packing list splits per person / per family (C3).
+  const pl = ctx.packingList(ctx.packingSection(den).body);
+  ok(pl.split && pl.groups.some((g) => g.who === 'person') && pl.groups.some((g) => g.who === 'family'), 'the den packing list is not split');
+  // Same refresh mechanism: an added copy is a "current seed" for refreshCampingSeed.
+  ok(/seedCampingTrips\(\)\.concat\(campTemplates\(\)\)/.test(slice('refreshCampingSeed')), 'templates are outside the refresh');
+  // Added only by the leader, once, behind canEdit().
+  const h = /if \(act === 'camp-add-den'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(h && /if \(!canEdit\(\)\) return;/.test(h[0]) && /if \(!getTrip\(DEN_CAMP_TRIP_ID\)\)/.test(h[0]), 'the add is ungated or can duplicate');
+  ok(/data-act="camp-add-den"/.test(slice('renderCamping')), 'no button to add the template');
+});
+
+// K1 (2026-09-28, SAFETY) — rev 4's den campout said BALOO was not required. Rev 5 refreshes an
+// untouched copy and tells leaders about an edited one.
+test('K1: an untouched rev-4 den campout gets the BALOO-required text; an edited one keeps its words', () => {
+  const ctx = sandbox(NORMALIZE_FNS.concat(['campBalooStale']));
+  eq(ctx.CAMP_SEED_REV, 5, 'CAMP_SEED_REV was not bumped for the den campout text');
+  // The rev-4 bodies, exactly as they were written (the hashes in CAMP_OLD_SEED are of these).
+  const REV4 = {
+    'Who this campout is for': 'Den-level overnight camping is for Webelos and Arrow of Light dens only. Lions, Tigers, Wolves and Bears camp with the whole pack, or at the council family weekends, not as a den.\n\nEvery Scout comes with their own parent or guardian, and camps with them.',
+    'Leaders and training': '- BALOO is not required for a den campout; BALOO is the training for a pack overnighter.\n' +
+      '- A trained leader is required, as the Guide to Safe Scouting sets out. [verify with council: which course the den leader in charge needs]\n' +
+      '- Two registered adult leaders, both 21 or older and with current Safeguarding Youth Training, are present at all times. When girls attend, a registered female adult 21 or older is there too.\n' +
+      '- At least one adult holds current Hazardous Weather training. [verify with council]',
+    'Before you go': '- The den leader tells the Cubmaster the dates and the site before anything is booked, so it goes on the pack calendar.\n' +
+      '- The site is a council-designated location, or has passed a site appraisal. [verify with council]\n' +
+      '- Any tour or activity paperwork the council asks for is filed before the trip. [verify with council]\n' +
+      '- Fill in the Annual Health and Medical Record, parts A and B, for every person coming. Under 72 hours it is parts A and B only, no doctor\u2019s signature.\n' +
+      '- Put the tent up in the yard first.'
+  };
+  const cur = ctx.seedDenCampTrip();
+  const rev4 = () => { const t = JSON.parse(JSON.stringify(cur)); t.sections.forEach((x) => { if (REV4[x.title]) x.body = REV4[x.title]; }); return t; };
+  const untouched = rev4();
+  const edited = rev4(); edited.id = 'edited';
+  const lt = edited.sections.find((x) => x.title === 'Leaders and training');
+  lt.body = lt.body.replace('[verify with council]', '(checked)');
+  const secIds = untouched.sections.map((x) => x.id);
+  const camping = { trips: [untouched, edited] };
+  ctx.refreshCampingSeed(camping);
+  const body = (t, title) => t.sections.find((x) => x.title === title).body;
+  ['Who this campout is for', 'Leaders and training', 'Before you go'].forEach((title) =>
+    eq(body(untouched, title), body(cur, title), 'the untouched "' + title + '" was not refreshed'));
+  eq(untouched.sections.map((x) => x.id), secIds, 'a refreshed section lost its id');
+  ok(/BALOO is not required/.test(body(edited, 'Leaders and training')), 'a leader’s edited section was overwritten');
+  eq(body(edited, 'Who this campout is for'), body(cur, 'Who this campout is for'), 'an untouched section beside an edited one was not refreshed');
+  // The edited one is what the notice finds; the refreshed one is not.
+  eq(ctx.campBalooStale(camping.trips).map((t) => t.id), ['edited'], 'campBalooStale');
+  eq(ctx.campBalooStale([{ sections: [{ body: 'BALOO is required.' }] }, null, { sections: 'x' }]).length, 0, 'a false positive');
+  // Through normalizeState at rev 4, as a live pack would load it.
+  const d = ctx.normalizeState(Object.assign(preMigrationState(), { camping: { yargoAdded: true, seedRev: 4, trips: [rev4()] } }));
+  ok(!/BALOO is not required|verify with council/.test(JSON.stringify(d.camping.trips)), 'loading a rev-4 pack kept the wrong rule');
+  eq(d.camping.seedRev, 5, 'seedRev');
+  eq(d.balooNoticeDismissed, false, 'balooNoticeDismissed is not defaulted');
+});
+
+test('K1: leaders are told, on Home once and on the trip page, when a den campout still says BALOO is not required', () => {
+  const home = slice('renderHome');
+  ok(/var balooStale = campBalooStale\(campingTrips\(\)\);/.test(home) && /!state\.balooNoticeDismissed/.test(home), 'no Home card');
+  ok(/data-act="baloo-dismiss"/.test(home), 'the Home card cannot be dismissed');
+  ok(/if \(act === 'baloo-dismiss'\) \{ state\.balooNoticeDismissed = true; commit\(\); return; \}/.test(SCRIPT), 'no dismiss handler');
+  ok(/balooNoticeDismissed: false/.test(slice('freshState')), 'freshState lacks balooNoticeDismissed');
+  ok(/campBalooWrong\(s\.body\)/.test(slice('renderCamping')), 'the trip page does not warn on the section');
+  ok(!/balooNotice|campBalooStale/.test(codeOnly(BPV())), 'buildParentView reads the leaders’ notice');
+  ok(/BALOO required, as for a pack\s+overnighter \(GSS\)/.test(readFileSync(join(ROOT, 'DESIGN-camping.md'), 'utf8')), 'DESIGN-camping.md still says BALOO is not required');
+});
+
+test('C4: an unverified rule, and an undated den campout, do not reach families', () => {
+  const ctx = pvCtx(`
+    var DEN = { id: 'trip-den-campout', name: 'Den campout', when: '', startDate: '', sections: [
+      { id: 'a', title: 'Who', body: 'Webelos and AoL only.' },
+      { id: 'b', title: 'Leaders', body: '- A trained leader. [verify with council: which course]' }] };
+    function campingTrips() { return [DEN, { id: 'x', name: 'Ours', when: 'May', sections: [
+      { id: 'c', title: 'Site', body: 'Booked. [Verify with council]' }, { id: 'd', title: 'Food', body: 'Bring it.' }] }]; }`);
+  const build = () => vm.runInContext('buildParentView(state, { showStandings: false })', ctx);
+  let pv = build();
+  eq(pv.camping.map((t) => t.name), ['Ours'], 'an undated den campout was published');
+  eq(pv.camping[0].sections.map((s) => s.title), ['Food'], 'a section marked [verify with council] was published');
+  vm.runInContext("DEN.startDate = '2027-05-07';", ctx);
+  pv = build();
+  const den = pv.camping.find((t) => t.name === 'Den campout');
+  ok(den, 'a dated den campout is still held back');
+  eq(den.sections.map((s) => s.title), ['Who'], 'the den campout published its unverified section');
+  ok(!/verify with council/i.test(JSON.stringify(pv)), 'a [verify with council] marker reached families');
+  // The editor says so, on the section and on the trip.
+  const rc = slice('renderCamping');
+  ok(/Held back from families: check the rule marked \[verify with council\]/.test(rc), 'the editor does not say a section is held back');
+  ok(/Families will not see this den campout until it has a date/.test(rc), 'the editor does not say the trip is held back');
+  ok(/blanking any trip-level intro, cost, when, where, arrive or depart that still\s+\/\/\s+says "\[verify with council", leaving out any section that still says it or whose text\s+\/\/\s+says "BALOO is not required" \(a wrong safety rule, held back until corrected\), and the den\s+\/\/\s+campout template until it has a date/.test(SCRIPT),
+    'the parent-view banner does not say so');
+  ok(/sending a trip's intro, cost, when, camp, arrive or leave-by line\s+blank while it still says "\[verify with council", leaving out any section still marked\s+"\[verify with council" or\s+still saying "BALOO is not required" \(a wrong safety rule, held back until a leader corrects\s+it\), and\s+the Webelos \/ Arrow of Light den campout template until it has a date/.test(SETUP),
+    'SETUP.md does not say so');
+});
+
+// Security review (2026-09-28) — the marker held back sections only; a trip-level field carrying it
+// was published as typed. Those fields now go out blank, and the editor says which.
+test('C4: a trip-level field marked [verify with council] goes to families blank, and the editor says so', () => {
+  const ctx = pvCtx(`
+    var T = { id: 'x', name: 'Fall camp', address: '1 Camp Rd', url: 'https://example.org',
+      where: 'Scoutland [verify with council]', when: 'Oct 16-18 [Verify with council: dates]', arrive: 'Fri 6pm',
+      depart: 'Sun [verify with council', cost: '$35 per family [verify with council]', intro: 'A weekend. [VERIFY WITH COUNCIL]',
+      sections: [{ id: 's', title: 'Food', body: 'Bring it.' }] };
+    var DEN = { id: 'trip-den-campout', name: 'Den campout', when: 'TBD [verify with council]', startDate: '', sections: [] };
+    function campingTrips() { return [T, DEN]; }`);
+  const pv = vm.runInContext('buildParentView(state, { showStandings: false })', ctx);
+  eq(pv.camping.map((t) => t.name), ['Fall camp'], 'a den campout whose only When line is marked was published as dated');
+  const t = pv.camping[0];
+  eq([t.where, t.when, t.arrive, t.depart, t.cost, t.intro, t.name, t.address, t.url],
+    ['', '', 'Fri 6pm', '', '', '', 'Fall camp', '1 Camp Rd', 'https://example.org'], 'the trip-level fields');
+  ok(!/verify with council/i.test(JSON.stringify(pv)), 'a [verify with council] marker reached families');
+  const cx = sandbox(['campHeld', 'CAMP_TRIP_HELD_FIELDS', 'campPubField', 'campHeldTripFields']);
+  eq(cx.campHeldTripFields({ where: 'x', cost: '[verify with council]', intro: 'a [Verify with council' }), ['Short intro', 'Cost'], 'the held-field list');
+  eq([cx.campPubField(null), cx.campPubField('ok')], ['', 'ok'], 'campPubField');
+  const rc = slice('renderCamping');
+  ok(/var heldF = campHeldTripFields\(t\);/.test(rc) && /Held back from families: ' \+ esc\(heldF\.join\(', '\)\)/.test(rc),
+    'the trip editor does not say which fields are held back');
+});
+
+// Camping review (2026-09-28, SAFETY) — a leader-edited den campout still saying "BALOO is not
+// required" was being published. The section is held back exactly like "[verify with council".
+test('K1: a section saying BALOO is not required is held back from families until corrected', () => {
+  const ctx = pvCtx(`
+    var DEN = { id: 'trip-den-campout', name: 'Den campout', when: 'May', startDate: '2027-05-07', sections: [
+      { id: 'a', title: 'Who', body: 'Webelos and AoL only.' },
+      { id: 'b', title: 'Leaders and training', body: '- baloo IS NOT REQUIRED for a den campout; it is the training for a pack overnighter.' },
+      { id: 'c', title: 'BALOO is not required', body: 'Heading only says it; the body is fine.' }] };
+    function campingTrips() { return [DEN]; }`);
+  const build = () => vm.runInContext('buildParentView(state, { showStandings: false })', ctx);
+  let pv = build();
+  eq(pv.camping[0].sections.map((s) => s.title), ['Who', 'BALOO is not required'], 'a body saying BALOO is not required was published (any case)');
+  ok(!/is not required for a den campout/i.test(JSON.stringify(pv)), 'the wrong rule reached families');
+  vm.runInContext("DEN.sections[1].body = '- At least one adult on the campout is BALOO-trained.';", ctx);
+  pv = build();
+  eq(pv.camping[0].sections.map((s) => s.title), ['Who', 'Leaders and training', 'BALOO is not required'], 'a corrected section is still held back');
+  const cx = sandbox(['campBalooWrong', 'campBalooStale']);
+  ok(cx.campBalooWrong('x\nBaloo is NOT required.') && !cx.campBalooWrong('BALOO is required') && !cx.campBalooWrong(null), 'campBalooWrong');
+  ok(/campBalooWrong\(s\.body\)/.test(slice('campBalooStale')), 'the Home card and the hold-back use different tests');
+  ok(/Held back from families: this says BALOO is not required, which is wrong\./.test(slice('renderCamping')), 'the editor does not say why it is held back');
+});
+// F2 (2026-09-28) — a checkbox wrapped in a label class must undo the global `input` rule's
+// 40px min-height and field padding, or it draws as a tall padded box off its own text
+// (the readiness boxes, then the new-member ticks).
+test('F2: every label class that wraps a checkbox resets the global field height', () => {
+  const classes = [...new Set([...SCRIPT.matchAll(/<label class="([\w-]+)"[^>]*><input type="checkbox"/g)].map((m) => m[1]))];
+  ok(classes.indexOf('ob-tick') !== -1 && classes.length >= 4, 'the checkbox-label scan found too little: ' + classes);
+  classes.forEach((c) => {
+    const rule = new RegExp('\\.' + c + ' input(?:\\[type="checkbox"\\])? \\{([^}]*)\\}').exec(SCRIPT_CSS);
+    ok(rule, `.${c} has no rule for its checkbox`);
+    ok(rule && /min-height: (?:auto|20px)/.test(rule[1]), `.${c}'s checkbox keeps the global 40px min-height`);
+  });
+  ok(/\.camp-ready input\[type="checkbox"\] \{[^}]*min-height: 20px/.test(SCRIPT_CSS), 'the readiness boxes lost their size');
+});
+
+// D1 (2026-09-28) — the council's popcorn dates and the settlement. Leaders only.
+test('D1: the council dates are seeded once from the 2026 schedule, marked to verify, and normalized', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const seed = ctx.freshPopcornCouncil();
+  const KEYS = ['finalTakeOrders', 'rewards', 'pickup', 'payment', 'commissionDrop',
+    'patchOrderOpens', 'patchOrderCloses', 'partyRegistration', 'giftCardPoints'];
+  eq(Object.keys(seed.dates), KEYS, 'the dates');
+  eq(Object.values(seed.dates).map((d) => d.date), ['2026-11-01', '2026-11-04', '2026-11-13', '2026-12-02', '2026-12-03',
+    '2026-11-16', '2026-12-07', '2026-12-02', '2027-03-31'], 'the seeded dates');
+  ok(Object.values(seed.dates).every((d) => d.note === '[verify with council]'), 'a seeded date is not marked to verify');
+  eq([seed.takeOrderCents, seed.cardCollectedCents, seed.commissionCents, seed.statementBalanceCents, seed.paidOn], [0, 0, null, null, ''],
+    'a fresh settlement');
+  ok(!('returnsCents' in seed), 'a fresh settlement has a returns line (NEGA takes no returns)');
+  const labels = ctx.POPCORN_COUNCIL_DATES.map((d) => d.label).join(' | ');
+  ['Final take orders', 'rewards qualify', 'commission calculated', 'post-dated check', 'Payment due', 'drops by 10% if not paid']
+    .forEach((w) => ok(labels.includes(w), 'no council date for ' + w));
+  // Absent → seeded; present → coerced, and a cleared date stays cleared.
+  ok(ctx.normalizeState(preMigrationState()).popcornCouncil.dates.payment.date === '2026-12-02', 'a record without it was not seeded');
+  const out = ctx.normalizeState(Object.assign(preMigrationState(), { popcornCouncil: {
+    dates: { rewards: { date: '2026-11-05', note: 'checked' }, payment: { date: 'Dec 2' }, bogus: { date: '2026-01-01' } },
+    returnsCents: 20000, takeOrderCents: -5, cardCollectedCents: 'x', commissionCents: '12', statementBalanceCents: -1234.4, paidOn: 7, secret: 1 } }));
+  const pc = out.popcornCouncil;
+  eq(Object.keys(pc.dates), KEYS, 'unknown dates survived');
+  eq([pc.dates.rewards.date, pc.dates.rewards.note, pc.dates.payment.date, pc.dates.pickup.date], ['2026-11-05', 'checked', '', ''],
+    'dates were not coerced, or a missing one was re-seeded');
+  eq([pc.returnsCents, pc.takeOrderCents, pc.cardCollectedCents, pc.commissionCents, pc.statementBalanceCents, pc.paidOn, pc.secret],
+    [undefined, 0, 0, null, -1234, '', undefined], 'the settlement was not coerced, or an old returns figure survived');
+  eq(ctx.normalizePopcornCouncil({ commissionCents: 0 }).commissionCents, 0, 'a statement commission of $0 was lost');
+  // Kernel review — the optional extras reach a live record once, only where the key is missing.
+  eq(['patchOrderOpens', 'patchOrderCloses', 'partyRegistration', 'giftCardPoints'].map((k) => [pc.dates[k].date, pc.dates[k].note]),
+    [['2026-11-16', '[verify with council]'], ['2026-12-07', '[verify with council]'], ['2026-12-02', '[verify with council]'],
+     ['2027-03-31', '[verify with council]']], 'an existing record did not get the extra dates, marked to verify');
+  const kept = ctx.normalizePopcornCouncil({ dates: { patchOrderOpens: { date: '', note: '' }, giftCardPoints: { date: '2027-03-30', note: 'checked' } } });
+  eq([kept.dates.patchOrderOpens.date, kept.dates.giftCardPoints.date, kept.dates.giftCardPoints.note], ['', '2027-03-30', 'checked'],
+    'a cleared or checked extra date was re-seeded');
+  ok(ctx.POPCORN_COUNCIL_DATES.filter((d) => d.added).length === 4 && ctx.POPCORN_COUNCIL_DATES.slice(0, 5).every((d) => !d.added),
+    'the added flag is on the wrong dates');
+  const extra = ctx.POPCORN_COUNCIL_DATES.slice(5).map((d) => d.label).join(' | ');
+  ['Patch and pin ordering opens', 'Patch and pin ordering closes', 'Council party registration closes', 'redeemed in the Trail’s End app']
+    .forEach((w) => ok(extra.includes(w), 'no council date for ' + w));
+  ok(/popcornCouncil: freshPopcornCouncil\(\)/.test(slice('freshState')), 'a new pack has no council dates');
+  // Read by normalizeState, so declared above `var state = load()`.
+  const load = /^  var state = load\(\);/m.exec(SCRIPT).index;
+  ok(SCRIPT.indexOf('var POPCORN_COUNCIL_DATES') < load && SCRIPT.indexOf('var POPCORN_COUNCIL_VERIFY') < load,
+    'the council-date constants are declared below `var state = load()`');
+});
+
+test('D1: the countdown, the tier nudge, and last season\'s dates', () => {
+  const ctx = sandbox(['POPCORN_COUNCIL_DATES', 'POPCORN_COUNCIL_VERIFY', 'freshPopcornCouncil', 'campIsoOrBlank',
+    'programYearStartISO', 'councilDateList', 'nextCouncilDate', 'councilDatesStale', 'councilLateTiers']);
+  const pc = ctx.freshPopcornCouncil();
+  eq(ctx.nextCouncilDate(pc, '2026-09-28').key, 'finalTakeOrders', 'the next date');
+  eq(ctx.nextCouncilDate(pc, '2026-11-04').key, 'rewards', 'a date today is not "next"');
+  eq(ctx.nextCouncilDate(pc, '2026-12-04').key, 'patchOrderCloses', 'the next date in December');
+  eq(ctx.nextCouncilDate(pc, '2026-12-08').key, 'giftCardPoints', 'the gift-card deadline is not next after the sale');
+  eq(ctx.nextCouncilDate(pc, '2027-04-01'), null, 'a date after the last one');
+  pc.dates.pickup.date = '';
+  eq(ctx.councilDateList(pc).map((d) => d.key).pop(), 'pickup', 'an undated date is not listed last');
+  const tiers = [{ name: 'Dues', dueBy: '2026-10-31' }, { name: 'Shirt', dueBy: '2026-11-15' }, { name: 'Patch', dueBy: '' }];
+  eq(ctx.councilLateTiers(tiers, pc).map((t) => t.name), ['Shirt'], 'the late tiers');
+  pc.dates.rewards.date = '';
+  eq(ctx.councilLateTiers(tiers, pc).length, 0, 'a nudge with no council rewards date');
+  const f = ctx.freshPopcornCouncil();
+  ok(!ctx.councilDatesStale(f, 2026) && ctx.councilDatesStale(f, 2027), 'last season\'s dates are not flagged');
+  // The nudge text, on Rewards and on the Council page.
+  ok(/Set tier deadlines on or before ' \+ esc\(fmtDate\(rd\)\) \+\s*' so pack and council rewards line up/.test(slice('councilTierNudgeHtml')),
+    'the nudge does not say what the Kernel asked for');
+  ok(/councilTierNudgeHtml\(\)/.test(slice('renderRewardTiers')) && /councilTierNudgeHtml\(\)/.test(slice('renderPopcornCouncil')),
+    'the nudge is missing from Rewards or the Council page');
+});
+
+// Popcorn Kernel review (2026-09-28): NEGA Show & Sell is cases only with no returns; the sum is
+// Show & Sell + take order − card/app sales already collected − commission on (S&S + take order).
+test('D1: what the pack owes the council is Show & Sell + take order, less card sales collected, less commission', () => {
+  const ctx = sandbox(['councilSettlement']);
+  const inv = { orderTotalCents: 438000, computedValueCents: 1, anyPriced: true, pct: 32, pctOk: true };
+  const pc = { takeOrderCents: 100000, cardCollectedCents: 50000, commissionCents: null, statementBalanceCents: null };
+  const st = JSON.parse(JSON.stringify(ctx.councilSettlement(pc, inv)));
+  // 438000 + 100000 = 538000; 32% = 172160; 538000 − 50000 − 172160 = 315840
+  eq([st.takenCents, st.takenFrom, st.productCents, st.commissionCents, st.commissionFrom, st.owedCents, st.payout],
+    [438000, 'order', 538000, 172160, 'rate', 315840, false], 'the worked sum');
+  // A returns figure from an old record is ignored, not subtracted.
+  eq(ctx.councilSettlement(Object.assign({ returnsCents: 20000 }, pc), inv).owedCents, 315840, 'returns still come off');
+  eq(ctx.councilSettlement(Object.assign({}, pc, { commissionCents: 130000 }), inv).owedCents, 358000, 'the statement commission is not used');
+  const priced = ctx.councilSettlement({ commissionCents: null }, { orderTotalCents: 0, computedValueCents: 50000, anyPriced: true, pct: 30, pctOk: true });
+  eq([priced.takenFrom, priced.owedCents], ['priced', 35000], 'no fallback to the priced products');
+  const noRate = ctx.councilSettlement({ commissionCents: null }, { orderTotalCents: 10000, pctOk: false });
+  eq([noRate.commissionCents, noRate.owedCents], [null, null], 'an owed figure with no commission rate');
+  // Card sales bigger than the rest: a payout due to the pack, not an error.
+  const pay = ctx.councilSettlement({ takeOrderCents: 0, cardCollectedCents: 90000, commissionCents: null }, { orderTotalCents: 100000, pct: 30, pctOk: true });
+  eq([pay.owedCents, pay.payout], [-20000, true], 'a payout is not recognised');
+  // The statement balance is a cross-check only.
+  const chk = ctx.councilSettlement(Object.assign({}, pc, { statementBalanceCents: 315840 }), inv);
+  eq([chk.owedCents, chk.statementCents, chk.statementDiffers], [315840, 315840, false], 'a matching statement is flagged');
+  const off = ctx.councilSettlement(Object.assign({}, pc, { statementBalanceCents: 300000 }), inv);
+  eq([off.owedCents, off.statementDiffers], [315840, true], 'a differing statement is not flagged, or it changed the sum');
+  const rp = slice('renderPopcornCouncil');
+  ok(/councilSettlement\(pc, inventoryTotals\(\)\)/.test(rp), 'the settlement does not read Inventory');
+  ok(/Show &amp; Sell product \(all pickups and reorders\)/.test(rp), 'the Show & Sell line is not renamed');
+  ok(!/returned to the council|pc-returns/i.test(rp) && !/pc-returns/.test(SCRIPT), 'a returns line is still on the page');
+  ok(/NEGA Show &amp; Sell is cases only, no returns — unsold stock is the pack’s; use it to fill take orders\./.test(rp), 'no no-returns note');
+  ok(/Take-order product picked up/.test(rp) && /\(post-dated check\)/.test(rp) && /Card and app sales Trail’s End already collected/.test(rp),
+    'the take-order or card lines are missing');
+  ok(/Payout due to the pack/.test(rp) && /Balance on the council statement/.test(rp) && /The statement is the authority/.test(rp),
+    'the payout label or the statement cross-check is missing');
+  ok(/Online direct sales are not part of it/.test(rp), 'the page does not say online direct is excluded');
+  ok(/if \(ch === 'pc-statement'\) \{[^}]*toCentsSigned\(el\.value\)/.test(SCRIPT), 'a payout balance cannot be typed');
+});
+
+// Popcorn Kernel review — the drop is the council's wording, fires on its date, and is never worked out.
+test('D1: the commission-drop warning fires on the drop date and never calculates the drop', () => {
+  const ctx = sandbox(['POPCORN_COUNCIL_DATES', 'POPCORN_COUNCIL_VERIFY', 'freshPopcornCouncil', 'councilPaymentWarning']);
+  const lbl = ctx.POPCORN_COUNCIL_DATES.find((d) => d.key === 'commissionDrop').label;
+  eq(lbl, 'Unit commission drops by 10% if not paid (council’s wording; ask whether that’s 10 points or a tenth) [verify with council]', 'the label');
+  const pc = ctx.freshPopcornCouncil();   // payment 2026-12-02, drop 2026-12-03
+  const d = (iso) => 'D' + iso;
+  eq(ctx.councilPaymentWarning(pc, '2026-12-02', d), '', 'a warning on the payment date itself');
+  eq(ctx.councilPaymentWarning(pc, '2026-12-03', d),
+    'Not marked paid, and the council’s commission drop took effect D2026-12-03. Type the commission from the statement.',
+    'the drop does not fire on its own date, or the words changed');
+  ok(/took effect/.test(ctx.councilPaymentWarning(pc, '2026-12-20', d)), 'the drop warning stopped after its date');
+  pc.dates.commissionDrop.date = '';
+  eq(ctx.councilPaymentWarning(pc, '2026-12-03', d), 'Payment was due D2026-12-02 and is not marked paid.', 'the late-payment warning');
+  pc.paidOn = '2026-12-10';
+  eq(ctx.councilPaymentWarning(pc, '2026-12-20', d), '', 'a warning after it was paid');
+  ok(!/\* ?0?\.9|\* ?\(1 ?- ?0?\.1|pct ?- ?10|0\.1 ?\*/.test(slice('councilPaymentWarning') + slice('councilSettlement')), 'the drop is calculated');
+  ok(/councilPaymentWarning\(pc, today, fmtDate\)/.test(slice('renderPopcornCouncil')), 'the page does not show the warning');
+});
+
+test('D1: the council page is a Popcorn section, rolls over, and is NEVER published', () => {
+  ok(/\{ id: 'inventory', label: 'Inventory' \},[\s\S]{0,160}\{ id: 'council', label: 'Council' \}/.test(SCRIPT), 'no Council section in Popcorn');
+  ok(/else if \(sec === 'council'\) v\.innerHTML = renderPopcornCouncil\(\);/.test(SCRIPT), 'the section does not render');
+  const rp = slice('renderPopcornCouncil');
+  ok((rp.match(/Leaders only/g) || []).length >= 2 && /Not published to families/.test(rp), 'the page does not say it is leaders-only');
+  // Handlers: known dates only; blank commission means "worked out".
+  ok(/var pcD = state\.popcornCouncil\.dates\[el\.dataset\.key\];\s*if \(!pcD\) return;/.test(SCRIPT), 'a council date is stored under any key');
+  ok(/commissionCents = String\(el\.value\)\.trim\(\) === '' \? null : toCents\(el\.value\)/.test(SCRIPT), 'a blank commission is stored as $0');
+  // Rollover: dates on a year and back to verify; the settlement clears.
+  const ro = slice('rolloverYear');
+  ok(/pcd\.date = shiftISOYear\(pcd\.date\); pcd\.note = POPCORN_COUNCIL_VERIFY;/.test(ro), 'rollover leaves last year\'s council dates');
+  ok(/popcornCouncil\.takeOrderCents = 0;/.test(ro) && /popcornCouncil\.cardCollectedCents = 0;/.test(ro) &&
+    /popcornCouncil\.commissionCents = null;/.test(ro) && /popcornCouncil\.statementBalanceCents = null;/.test(ro) && /popcornCouncil\.paidOn = '';/.test(ro),
+    'rollover carries last season\'s settlement');
+  // Never published.
+  const leak = /popcornCouncil|councilSettlement|councilDateList|POPCORN_COUNCIL/;
+  ok(!leak.test(codeOnly(BPV())), 'buildParentView reads the council record');
+  for (const f of ['monthlyDigest', 'parentNextUp']) ok(!leak.test(codeOnly(slice(f))), f + ' reads the council record');
+  ok(!leak.test(codeOnly(/function buildICS\(\)[\s\S]*?\n  \}/.exec(SCRIPT)[0])), 'the .ics reads the council record');
+  ok(/the council's popcorn dates and the settlement \(`popcornCouncil`, Wave D1\)/.test(SCRIPT), 'the banner does not exclude it');
+  ok(/\*\*never\*\* contains:[^]*?the council's popcorn dates and what the pack owes the council\s+\(`popcornCouncil`\)/.test(SETUP), 'SETUP.md does not exclude it');
+});
+
+// D2 (2026-09-28) — two adults count each block's cash; the table's safety rules go on the sheet.
+test('D2: a worked block past its day warns when the cash count lacks two different adults', () => {
+  const ctx = sandbox(['blockCashCheck', 'sheetFirstName']);
+  const w = { assignments: [{ scoutId: 's' }], salesCents: 0, donationsCents: 0 };
+  const chk = (b, today) => ctx.blockCashCheck(Object.assign({}, w, b), '2026-10-10', today || '2026-10-11');
+  eq(chk({}), 'blank', 'no warning with nobody named');
+  eq(chk({ cashCountedBy: 'Keith D' }), 'blank', 'no warning with only one adult');
+  eq(chk({ cashCountedBy: 'Keith  Dougherty', cashVerifiedBy: ' keith dougherty' }), 'same', 'one person as both is not caught');
+  eq(chk({ cashCountedBy: 'Keith', cashVerifiedBy: 'Dana' }), '', 'two adults still warned');
+  eq(chk({}, '2026-10-10'), '', 'a warning on the day itself');
+  eq(ctx.blockCashCheck({ assignments: [], salesCents: 0, donationsCents: 0 }, '2026-10-10', '2026-10-11'), '', 'a warning on an unworked block');
+  eq(ctx.blockCashCheck({ assignments: [], salesCents: 500 }, '2026-10-10', '2026-10-11'), 'blank', 'a block with money but no scouts is not checked');
+  eq([ctx.sheetFirstName(' Keith Dougherty '), ctx.sheetFirstName('')], ['Keith', ''], 'first names');
+  // Stored, normalized, and on every new block.
+  ok(/cashCountedBy: '', cashVerifiedBy: ''/.test(slice('newBlock')), 'a new block has no cash-count fields');
+  ok(/b\.cashCountedBy = typeof b\.cashCountedBy === 'string' \? b\.cashCountedBy : '';/.test(SCRIPT) &&
+    /b\.cashVerifiedBy = typeof b\.cashVerifiedBy === 'string' \? b\.cashVerifiedBy : '';/.test(SCRIPT), 'the cash count is not normalized');
+  const rb = slice('renderBlock');
+  ok(/data-ch="b-cash-counted"/.test(rb) && /data-ch="b-cash-verified"/.test(rb) && /blockCashCheck\(b, sf\.date, todayISO\(\)\)/.test(rb),
+    'the block editor has no cash-count fields or warning');
+  ok(/if \(ch === 'b-cash-counted'\) \{ b\.cashCountedBy = el\.value;/.test(SCRIPT) && /if \(ch === 'b-cash-verified'\) \{ b\.cashVerifiedBy = el\.value;/.test(SCRIPT),
+    'the fields are not stored');
+});
+
+test('D2: the day sheet carries the safety rules and the cash count, first names only, and nothing is published', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(PRIV_STATE + ['shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'STOREFRONT_SAFETY', 'STOREFRONT_CASH_TO_CREDIT', 'sheetFirstName', 'daySheetText',
+    'blocksInDayOrder', 'blockScoutNames', 'fmtTimeRange', 'fmtClock'].map(slice).join('\n'), ctx);
+  vm.runInContext("state.storefronts[0].blocks[0].cashCountedBy = 'Dana Quenneville'; state.storefronts[0].blocks[0].cashVerifiedBy = 'Sam Hartwellington';", ctx);
+  const txt = vm.runInContext('daySheetText(state.storefronts[0])', ctx);
+  // Popcorn Kernel review — the table's rules; the door-to-door ones are wagon guidance only.
+  const rule = 'Buddy system · a parent with every scout, an adult at the table at all times · scouts stay at the table and never approach cars · two adults count the cash before it leaves the table';
+  eq(ctx.STOREFRONT_SAFETY, rule, 'the safety line');
+  const credit = 'Parents can convert cash to credit in the Trail’s End app at the end of the shift.';
+  eq(ctx.STOREFRONT_CASH_TO_CREDIT, credit, 'the cash-to-credit line');
+  const tl = txt.split('\n');
+  const afterCount = tl.map((l, i) => /Cash counted by/.test(l) ? tl[i + 1] : null).filter((l) => l != null);
+  ok(afterCount.length === vm.runInContext('state.storefronts[0].blocks.length', ctx) && afterCount.every((l) => l.trim() === credit),
+    'the cash-to-credit line does not follow each cash count');
+  ok(/Verified by ' \+ \(esc\(sheetFirstName\(b\.cashVerifiedBy\)\) \|\| '________'\) \+ '<\/p>' \+\s*'<p class="small" style="margin:4px 0 0">' \+ esc\(STOREFRONT_CASH_TO_CREDIT\)/.test(slice('renderDaySheet')),
+    'the printed sheet lacks the cash-to-credit line after the cash count');
+  ok(!/door-to-door|inside a customer/.test(txt), 'the door-to-door rules are still on the storefront sheet');
+  ok(/var WAGON_SAFETY = 'Door to door: never go inside a customer\\u2019s home, and no door-to-door alone\.';/.test(SCRIPT) &&
+    /esc\(WAGON_SAFETY\)/.test(SCRIPT), 'the door-to-door rules are not kept for wagon sales');
+  const nBlocks = vm.runInContext('state.storefronts[0].blocks.length', ctx);
+  eq(txt.split('\n').filter((l) => l.trim() === rule).length, nBlocks + 1, 'the safety line is not on the sheet and on every shift');
+  ok(/Cash counted by Dana {3}Verified by Sam/.test(txt), 'the cash count is not on the sheet by first name');
+  ok(!/Quenneville|Hartwellington/.test(txt), 'a last name is on the day sheet');
+  ok(/Cash counted by ______ {3}Verified by ______/.test(txt), 'an unnamed block has no blanks to fill in');
+  const rd = slice('renderDaySheet');
+  ok((rd.match(/esc\(STOREFRONT_SAFETY\)/g) || []).length === 2, 'the printed sheet lacks the safety line at the top or on a shift');
+  ok(/sheetFirstName\(b\.cashCountedBy\)/.test(rd) && /sheetFirstName\(b\.cashVerifiedBy\)/.test(rd), 'the printed sheet does not use first names');
+  // Leaders only.
+  ok(!/cashCountedBy|cashVerifiedBy|blockCashCheck/.test(codeOnly(BPV())), 'buildParentView reads the cash count');
+  for (const f of ['monthlyDigest', 'parentShiftLines']) ok(!/cashCountedBy|cashVerifiedBy/.test(codeOnly(slice(f))), f + ' reads the cash count');
+  ok(/`cashCountedBy`, `cashVerifiedBy`, D2/.test(SCRIPT), 'the banner does not exclude the cash count');
+  ok(/\*\*never\*\* contains:[^]*?who counted and verified a storefront's cash/.test(SETUP), 'SETUP.md does not exclude the cash count');
+});
+
+// D3 (2026-09-28) — the parent kickoff note, from the real tier ladder. Copy only.
+test('D3: the kickoff note gives the real targets, dates and rewards, whatever the amounts setting', () => {
+  const ctx = sandbox(['popcornKickoffNote']);
+  const tiers = [
+    { name: 'Bronze', reward: 'Dues covered', thresholdCents: 5000, dueBy: '2026-10-31' },
+    { name: 'Pack shirt', reward: 'A pack t-shirt', thresholdCents: 10000, dueBy: '' },
+    { name: 'Silver', reward: 'A pocketknife', thresholdCents: 20000, dueBy: '2026-11-04' },
+    { name: 'Early bird', reward: 'A patch', thresholdCents: 1000, dueBy: '2026-09-01' }];
+  const sales = { 'Bronze': 15625, 'Pack shirt': 31250, 'Silver': 62500, 'Early bird': 3125 };
+  const salesOf = (t) => sales[t.name];
+  const d = (iso) => 'D' + iso;
+  // Popcorn Kernel review: date before the reward; the latest open deadline opens it; all channels count.
+  const on = ctx.popcornKickoffNote(tiers, '2026-09-28', salesOf, d);
+  eq(on.split('\n'), [
+    'Get sales in by D2026-11-04.',
+    'Sell $157 by D2026-10-31 and your scout earns: Dues covered (Bronze).',
+    'Sell $313 and your scout earns: A pack t-shirt (Pack shirt).',
+    'Sell $625 by D2026-11-04 and your scout earns: A pocketknife (Silver).',
+    'Storefront, wagon, take-order and online sales all count. Record every sale in the Trail’s End app.',
+    'Always sell with a buddy and a parent, and never go inside a customer’s home.'], 'the note');
+  ok(!/Early bird|A patch|D2026-09-01/.test(on), 'a closed tier is in the note');
+  ok(!/Ask a leader/.test(on), 'asks a leader with a rate set');
+  // The amounts setting no longer reaches the note at all.
+  ok(!/withAmounts|amountsEnabled/.test(slice('popcornKickoffNote') + slice('kickoffNoteNow')), 'the note still reads the amounts setting');
+  ok(!/Dollar targets are left out/.test(SCRIPT), 'the "Dollar targets are left out" caption is still there');
+  // No rate yet: no figure to give, so it asks rather than printing $0; still date before reward.
+  const noRate = ctx.popcornKickoffNote(tiers.slice(0, 2), '2026-09-28', () => null, d);
+  eq(noRate.split('\n').slice(0, 4), ['Get sales in by D2026-10-31.', 'Sell by D2026-10-31 and your scout earns: Dues covered (Bronze).',
+    'Your scout can earn: A pack t-shirt (Pack shirt).', 'Ask a leader for the targets.'], 'the no-rate note');
+  ok(!/\$/.test(noRate), 'a dollar figure with no rate');
+  // No dated open tier: the fallback opening.
+  ok(/^Popcorn season is here\./.test(ctx.popcornKickoffNote(tiers.slice(1, 2), '2026-09-28', salesOf, d)), 'no fallback opening');
+  // Wired to the real inputs, and copy only.
+  const now = slice('kickoffNoteNow');
+  ok(/sortedTiers\(\)/.test(now) && /salesForCommission\(t\.thresholdCents\)/.test(now), 'the note is not built from the tiers');
+  ok(/kickoffNoteNow\(\)/.test(slice('renderRewardTiers')) && /id="kickoffBox" readonly/.test(slice('renderRewardTiers')), 'Rewards has no kickoff note');
+  ok(/if \(act === 'copy-kickoff'\) \{\s*copyText\(kickoffNoteNow\(\)/.test(SCRIPT), 'the copy button does not copy the note');
+  ok(!/kickoff/i.test(codeOnly(BPV())), 'buildParentView reads the kickoff note');
+  ok(!/state\.kickoff|kickoffNote:/.test(SCRIPT), 'the kickoff note is stored');
+});
+
+/* ================================================================
+   E1 (2026-09-28) — charge due dates and family statements. Leaders only.
+   ================================================================ */
+test('E1: a charge is due 14 days before its event, by the dues date for dues, and otherwise not at all', () => {
+  const ctx = sandbox(['campIsoOrBlank', 'isoPlusDays', 'CHARGE_DUE_DAYS_BEFORE_EVENT', 'lineIsDues', 'chargeDefaultDue', 'chargeDueDate']);
+  const ev = { id: 'l1', eventId: 'e1', category: 'camp', name: 'Fall campout' };
+  eq(ctx.chargeDefaultDue(ev, '2026-10-16', '2026-09-30'), '2026-10-02', 'event line');
+  eq(ctx.chargeDefaultDue(ev, '2026-03-10', ''), '2026-02-24', 'across a month end');
+  eq(ctx.chargeDefaultDue(ev, '', '2026-09-30'), '', 'an undated event has a due date');
+  eq(ctx.chargeDefaultDue({ name: 'Youth registration', category: 'registration' }, '', '2026-09-30'), '2026-09-30', 'registration line');
+  eq(ctx.chargeDefaultDue({ name: 'Pack dues', category: 'other' }, '', '2026-09-30'), '2026-09-30', 'a line called dues');
+  eq(ctx.chargeDefaultDue({ name: 'Pack dues', category: 'other' }, '', ''), '', 'no dues date set');
+  eq(ctx.chargeDefaultDue({ name: 'Neckerchiefs', category: 'uniforms' }, '', '2026-09-30'), '', 'an ordinary line has a due date');
+  eq(ctx.chargeDefaultDue(null, '', '2026-09-30'), '', 'a prior-year balance (no line) has a due date');
+  eq(ctx.chargeDueDate({ dueDate: '2026-11-01' }, ev, '2026-10-16', ''), '2026-11-01', 'the leader’s own date lost');
+  eq(ctx.chargeDueDate({ dueDate: 'soon' }, ev, '2026-10-16', ''), '2026-10-02', 'a junk override was used');
+  // Derived, not stored: the event moving moves the due date.
+  eq(ctx.chargeDueDate({ dueDate: '' }, ev, '2026-10-23', ''), '2026-10-09', 'the due date did not follow the event');
+});
+
+test('E1: overdue is what is left unpaid past its due date, never on the day itself', () => {
+  const ctx = sandbox(['chargeIsOpen', 'chargesOverdue']);
+  const cs = [
+    { id: 'a', amountCents: 5000, due: '2026-09-01' },
+    { id: 'b', amountCents: 3000, due: '2026-09-15' },
+    { id: 'c', amountCents: 2000, due: '2026-09-28' },
+    { id: 'd', amountCents: 4000, due: '2026-08-01', waivedBy: 't1' },
+    { id: 'e', amountCents: 4000, due: '2026-08-01', forgiven: { by: 'CC' } },
+    { id: 'f', amountCents: 1000, due: '' },
+    { id: 'g', amountCents: 1000, due: '2026-08-15' }
+  ];
+  const r = ctx.chargesOverdue(cs, { a: 2000, g: 1000 }, (c) => c.due, '2026-09-28');
+  eq([r.cents, r.n, r.oldest], [6000, 2, '2026-09-01'], 'overdue');
+  eq(ctx.chargesOverdue([], {}, () => '', '2026-09-28').cents, 0, 'nothing');
+});
+
+test('E1: due dates are normalized, carried a year at close-out, and editable only as a leader', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const d = ctx.normalizeState(Object.assign(preMigrationState(), {
+    budget: { programYear: 2026, startingBalance: 0, activities: [], expenses: [], duesDueDate: 'Sept' },
+    charges: [{ id: 'c1', scoutId: 's1', lineId: '', amountCents: 100, dueDate: '2026-10-01' }, { id: 'c2', scoutId: 's1', amountCents: 1, dueDate: 7 }]
+  }));
+  eq(d.budget.duesDueDate, '', 'a junk dues date was kept');
+  eq(d.charges.map((c) => c.dueDate), ['2026-10-01', ''], 'charge due dates');
+  ok(/duesDueDate: ''/.test(slice('freshBudget')), 'freshBudget has no dues date');
+  const ro = slice('rolloverYear');
+  ok(/if \(b\.duesDueDate\) b\.duesDueDate = shiftISOYear\(b\.duesDueDate\);/.test(ro), 'close-out does not move the dues date on a year');
+  ok(/dueDate: '', waivedBy/.test(ro) && /dueDate: '', waivedBy/.test(slice('syncCharges')), 'a new charge is born with an override');
+  ok(/data-ch="bud-dues-due"/.test(slice('renderBudget')), 'no dues date on the Budget');
+  ok(/if \(ch === 'bud-dues-due'\) \{ state\.budget\.duesDueDate = campIsoOrBlank\(el\.value\); commit\(\); return; \}/.test(SCRIPT), 'dues date handler');
+  const blk = slice('duesFamilyBlock');
+  ok(/data-ch="charge-due"/.test(blk) && /canEdit\(\) \? '' : ' disabled'/.test(blk), 'the charge date is not editable, or not gated');
+  ok(/chargesOverdue\(f\.charges, paidOn, chargeDueNow, todayISO\(\)\)/.test(blk) && / overdue<\/span>/.test(blk), 'a family block does not say what is overdue');
+  ok(/overdue\.<\/strong>/.test(slice('renderDues')), 'Family balances does not total the overdue');
+});
+
+test('E1: a family statement says what, how much, by when and what came in — and never who forgave it or which donor paid', () => {
+  const ctx = sandbox(['STATEMENT_KEEP', 'statementRowStatus', 'familyStatementText']);
+  const money = (c) => '$' + (c / 100).toFixed(2), dl = (d) => 'D' + d;
+  const d = {
+    pack: 'Pack 569', family: 'Ada and Ben', today: '2026-09-28',
+    rows: [
+      { what: 'Ada · Youth registration', amountCents: 8500, paidCents: 8500, due: '', settled: '' },
+      { what: 'Ben · Fall campout', amountCents: 4000, paidCents: 1000, due: '2026-09-20', settled: '' },
+      { what: 'Ben · Blue & Gold', amountCents: 1500, paidCents: 0, due: '2026-10-20', settled: '' },
+      { what: 'Ada · Day camp', amountCents: 14500, paidCents: 0, due: '', settled: 'tier' },
+      { what: 'Ben · Den dues', amountCents: 2000, paidCents: 0, due: '', settled: 'forgiven' }
+    ],
+    payments: [{ date: '2026-09-02', label: 'Payment · check 1041', cents: 9500, out: false }],
+    owed: 14000, paid: 9500, refunded: 0, balance: 4500, overdueCents: 3000
+  };
+  const t = ctx.familyStatementText(d, money, dl);
+  const L = t.split('\n');
+  eq(L[2], 'Leaders’ copy — send only to this family', 'the statement does not say who it is for');
+  ok(/Youth registration — \$85\.00 — Paid$/m.test(t), 'paid');
+  ok(/Fall campout — \$40\.00 — Part paid, \$30\.00 left, overdue — was due D2026-09-20$/m.test(t), 'part paid and overdue: ' + t);
+  ok(/Blue & Gold — \$15\.00 — Due by D2026-10-20$/m.test(t), 'due by');
+  ok(/Day camp — \$145\.00 — Covered by a reward tier$/m.test(t) && /Den dues — \$20\.00 — Forgiven by the pack$/m.test(t), 'settled');
+  ok(/^Balance due: \$45\.00$/m.test(t) && /^Overdue now: \$30\.00$/m.test(t), 'totals');
+  ok(/In credit: \$5\.00/.test(ctx.familyStatementText(Object.assign({}, d, { balance: -500, overdueCents: 0 }), money, dl)), 'credit');
+  // What the data builder reads: never the forgiveness reason, the donor, or the treasurer's description.
+  const data = codeOnly(slice('familyStatementData'));
+  ok(!/\.reason|\.donor|\.description|\.note\b/.test(data), 'the statement reads a field the family should not get');
+  ok(/split\(' '\)\[0\]/.test(data), 'the statement uses more than first names');
+});
+
+test('E1: due dates and family statements are NEVER published', () => {
+  const bpv = codeOnly(BPV());
+  ok(!/dueDate|duesDueDate|familyStatement|STATEMENT_KEEP|chargesOverdue|chargeDue/.test(bpv), 'buildParentView reads due dates or statements');
+  for (const f of ['renderParentApp', 'renderParentSchedule', 'renderParentStandings', 'renderParentCamping', 'monthlyDigest']) {
+    ok(!/dueDate|duesDueDate|familyStatement|chargesOverdue/.test(codeOnly(slice(f))), f + ' reads due dates or statements');
+  }
+  const pa = /var PARENT_ACTS = \[([^\]]*)\]/.exec(SCRIPT)[1];
+  ok(!/statement/.test(pa), 'a parent can open a statement');
+  ok(!/state\.statements|statement: \{|lastStatement/.test(SCRIPT), 'a statement is stored');
+  ok(/each charge's due date \(`dueDate`\), the pack's dues date \(`budget\.duesDueDate`\) and every\s+\/\/\s+family statement \(E1\)/.test(SCRIPT), 'the banner does not exclude them');
+  ok(/\*\*never\*\* contains:[^]*?when each charge or the\s+pack's dues fall due, any family's statement/.test(SETUP), 'SETUP.md does not exclude them');
+  ok(/data-act="family-statement"/.test(slice('duesFamilyBlock')), 'no Statement button');
+  ok(/STATEMENT_KEEP/.test(slice('renderFamilyStatement')), 'the printed sheet does not say who it is for');
+});
+
+/* ================================================================
+   E2 (2026-09-28) — the ledger's audit trail. Leaders only.
+   ================================================================ */
+test('E2: who entered an entry, who reconciled it, and who recorded a forgiveness are kept', () => {
+  const ctx = sandbox(['ledgerActorName']);
+  eq(ctx.ledgerActorName({ displayName: 'Dana Q', email: 'd@example.com' }), 'Dana Q', 'display name first');
+  // Security review (2026-09-28) — never an email: the linked leader's name, else a neutral phrase.
+  const leaders = [{ uid: 'u1', name: 'Dana Quinn' }, { uid: '', name: 'Nobody' }];
+  ok(!/@/.test(ctx.ledgerActorName({ displayName: '', email: 'x@y' })), 'an email was stored as the actor');
+  eq(ctx.ledgerActorName({ displayName: '', email: 'x@y' }), 'a signed-in leader', 'the neutral fallback');
+  eq(ctx.ledgerActorName({ displayName: '  ', email: 'd@example.com', uid: 'u1' }, leaders), 'Dana Quinn', 'the linked leader record');
+  eq(ctx.ledgerActorName({ displayName: '', email: 'x@y', uid: 'u2' }, leaders), 'a signed-in leader', 'an unlinked uid');
+  eq(ctx.ledgerActorName({ displayName: 'x@y', uid: 'u1' }, leaders), 'Dana Quinn', 'a display name that is an email');
+  eq(ctx.ledgerActorName({ displayName: '', uid: 'u1' }, [{ uid: 'u1', name: 'a@b.c' }]), 'a signed-in leader', 'a leader name that is an email');
+  eq(ctx.ledgerActorName(null), 'this device', 'no account');
+  ok(/ledgerActorName\(sync\.user, state\.leaders\)/.test(SCRIPT), 'ledgerActor does not pass the leaders');
+  ok(!/user\.email/.test(slice('ledgerActorName')), 'ledgerActorName reads the email');
+  // The account uids ride along, on every stamp.
+  ok(/e\.enteredByUid = ledgerActorUid\(\);/.test(slice('stampEntered')), 'stampEntered lacks the uid');
+  ok(/e\.approvedByUid = ledgerActorUid\(\);/.test(slice('stampApproved')) && /e\.approvedByUid = '';/.test(slice('stampApproved')),
+    'stampApproved lacks or keeps the uid');
+  eq((SCRIPT.match(/enteredBy: ledgerActor\(\)(?: \+ ' \(close-out\)')?, enteredByUid: ledgerActorUid\(\)/g) || []).length, 3,
+    'an inline entry is stamped without its uid');
+  ok(/A CONVENIENCE RECORD, NOT PROOF\. The client writes these stamps/.test(SCRIPT), 'the E2 banner does not say the stamps are not proof');
+  // Every place a new entry is made stamps it.
+  const add = /if \(act === 'ledger-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/stampEntered\(drEntry\);/.test(add), 'a typed entry is not stamped');
+  const mk = /if \(act\.indexOf\('tier-makeup:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  ok(mk && /enteredBy: ledgerActor\(\), enteredByUid: ledgerActorUid\(\), enteredAt: new Date\(\)\.toISOString\(\)/.test(mk[0]), 'a tier make-up is not stamped');
+  const rb = /if \(act\.indexOf\('tier-reimburse:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/enteredBy: ledgerActor\(\), enteredByUid: ledgerActorUid\(\), enteredAt: new Date\(\)\.toISOString\(\)/.test(rb), 'a reimbursement is not stamped');
+  ok(/enteredBy: ledgerActor\(\) \+ ' \(close-out\)'/.test(slice('rolloverYear')), 'a carried credit is not stamped');
+  // Reconciling: every way an entry is ticked or un-ticked stamps or clears who did it.
+  ok(/if \(led\.reconciled !== el\.checked\) stampApproved\(led, el\.checked\);/.test(SCRIPT), 'a single tick is not stamped');
+  ok(/if \(e\.reconciled !== tick\) stampApproved\(e, tick\);/.test(SCRIPT), 'Tick all does not stamp');
+  ok(/urE\.reconciled = false;\s*stampApproved\(urE, false\);/.test(SCRIPT), 'un-reconciling keeps the old approver');
+  ok(/state\.book\.reconciledBy = ledgerActor\(\);/.test(SCRIPT), 'the statement lock does not say who');
+  ok(/fc\.forgiven = \{ date: todayISO\(\), by: fgBy, reason: fgReason, enteredBy: ledgerActor\(\) \};/.test(SCRIPT), 'forgiveness does not record who entered it');
+  // Normalized, so old records carry '' and a round-trip keeps the fields.
+  const n = sandbox(NORMALIZE_FNS);
+  const d = n.normalizeState(Object.assign(preMigrationState(), {
+    ledger: [{ id: 'e1', date: '2026-09-01', amountCents: 100, direction: 'in', enteredBy: 'Dana', enteredAt: '2026-09-01T10:00:00Z', approvedBy: 7, enteredByUid: 'u1' },
+      { id: 'e2', date: '2026-09-01', amountCents: 100, direction: 'in', enteredBy: 'dana@example.com', approvedBy: 'x@y', approvedByUid: 5 }],
+    charges: [{ id: 'c1', scoutId: 's1', amountCents: 1, forgiven: { date: '2026-09-01', by: 'CC', reason: 'r', enteredBy: 'Dana' } },
+      { id: 'c2', scoutId: 's1', amountCents: 1, forgiven: { date: '2026-09-01', by: 'CC', reason: 'r', enteredBy: 'd@e.f' } }],
+    book: { reconciledBy: 'd@e.f' }
+  }));
+  eq([d.ledger[0].enteredBy, d.ledger[0].enteredAt, d.ledger[0].approvedBy, d.ledger[0].approvedAt, d.ledger[0].enteredByUid, d.ledger[0].approvedByUid],
+    ['Dana', '2026-09-01T10:00:00Z', '', '', 'u1', ''], 'ledger trail');
+  eq([d.ledger[1].enteredBy, d.ledger[1].approvedBy, d.ledger[1].approvedByUid], ['a signed-in leader', 'a signed-in leader', ''], 'a stored email stamp survived');
+  eq([d.book.reconciledBy, d.book.reconciledAt], ['a signed-in leader', ''], 'book trail');
+  eq(d.charges[0].forgiven.enteredBy, 'Dana', 'forgiveness trail');
+  eq(d.charges[1].forgiven.enteredBy, 'a signed-in leader', 'a stored email on a forgiveness survived');
+  eq(n.normalizeState(preMigrationState()).book.reconciledBy, '', 'an empty book trail');
+  // Shown: in the entry's detail and under a reconciled row; the Reconcile card says who signed off.
+  const le = slice('renderLedgerEntries');
+  ok((le.match(/ledgerTrailLine\(e\)/g) || []).length === 2, 'the trail is not shown on both kinds of row');
+  ok(/Last reconciled through/.test(slice('renderReconcile')) && /bk\.reconciledBy/.test(slice('renderReconcile')), 'Reconcile does not say who signed off');
+  ok(/recorded by ' \+ esc\(c\.forgiven\.enteredBy\)/.test(slice('duesFamilyBlock')), 'the Dues row does not say who recorded a forgiveness');
+  // Leaders only, like the ledger.
+  ok(!/enteredBy|approvedBy|reconciledBy|ledgerActor/.test(codeOnly(BPV())), 'buildParentView reads the audit trail');
+});
+
+test('E2: a reimbursement without a receipt number is saved, with a warning', () => {
+  const ctx = sandbox(['entryRefundsFamily', 'entryNeedsReceipt']);
+  ok(ctx.entryNeedsReceipt({ direction: 'out', reimbursement: true, scoutId: 's1' }), 'a tier reimbursement');
+  ok(ctx.entryNeedsReceipt({ direction: 'out', description: 'Reimburse Dana for craft supplies' }), 'a leader reimbursement by description');
+  ok(!ctx.entryNeedsReceipt({ direction: 'out', description: 'Scoutland deposit' }), 'an ordinary payment');
+  ok(!ctx.entryNeedsReceipt({ direction: 'in', description: 'Reimbursement from council' }), 'money in');
+  ok(!ctx.entryNeedsReceipt({ direction: 'out', scoutId: 's1', source: 'refund', description: 'reimburse' }), 'a refund');
+  const add = /if \(act === 'ledger-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/if \(!drWarn && entryNeedsReceipt\(drEntry\) && !drEntry\.ref\) \{/.test(add), 'no warning on add');
+  ok(!/entryNeedsReceipt\(drEntry\)[^;]*\)\s*return;/.test(add), 'a missing receipt blocks the save');
+  ok(/state\.ledger\.push\(drEntry\);/.test(add.slice(add.indexOf('entryNeedsReceipt'))), 'the entry is not saved after the warning');
+  ok(/entryNeedsReceipt\(e\) && !e\.ref/.test(slice('renderLedgerEntries')), 'the entry detail does not flag a missing receipt');
+});
+
+test('E2: Home asks the Treasurer to reconcile once the last statement is over 35 days old', () => {
+  const ctx = sandbox(['entryAfterOpening', 'RECONCILE_STALE_DAYS', 'reconcileStale']);
+  const led = [{ date: '2026-08-01' }, { date: '2026-09-20' }];
+  eq(ctx.reconcileStale([], { openingDate: '' }, '2026-09-28'), null, 'an empty book');
+  const R = (l, b, t) => JSON.parse(JSON.stringify(ctx.reconcileStale(l, b, t)));
+  eq(R(led, { reconciledThrough: '2026-08-24' }, '2026-09-28'), null, '35 days is not overdue');
+  eq(R(led, { reconciledThrough: '2026-08-23' }, '2026-09-28'), { days: 36, since: '2026-08-23' }, '36 days');
+  eq(R(led, { reconciledThrough: '' }, '2026-09-28'), { days: 58, since: '' }, 'never reconciled, oldest entry 58 days ago');
+  eq(R([{ date: '2026-09-01' }], { reconciledThrough: '' }, '2026-09-28'), null, 'never reconciled, but nothing old yet');
+  eq(R(led, { reconciledThrough: '', openingDate: '2026-09-01' }, '2026-09-28'), null, 'an entry before the opening date counted');
+  const ht = slice('homeTasks');
+  ok(/var recStale = reconcileStale\(state\.ledger, state\.book, today\);/.test(ht) && /add\('treasurer', 'week', recStale\.since/.test(ht),
+    'no Treasurer task for a stale reconciliation');
+});
+
+/* ================================================================
+   E3 (2026-09-28) — the season archive keeps the ledger and each family's closing balance.
+   ================================================================ */
+test('E3: the archived ledger is compact rows with words, not ids, and totals that add up', () => {
+  const ctx = sandbox(['ledgerSort', 'utf8Bytes', 'seasonLedgerRows', 'fitSeasonLedger', 'seasonFamilyBalances']);
+  const ledger = [
+    { id: 'b', date: '2026-10-02', description: 'Scoutland', amountCents: 12000, direction: 'out', lineId: 'L1', ref: '1044', source: '', scoutId: '', reconciled: true, enteredBy: 'Dana' },
+    { id: 'a', date: '2026-09-02', description: 'Dues', amountCents: 8500, direction: 'in', lineId: '', ref: '', source: 'family', scoutId: 's1', reconciled: false, enteredBy: '' }
+  ];
+  const led = JSON.parse(JSON.stringify(ctx.seasonLedgerRows(ledger, (id) => (id === 'L1' ? 'Fall campout' : ''), (sid) => (sid === 's1' ? 'Ada and Ben' : ''))));
+  eq(led.rows, [
+    { d: '2026-09-02', c: 8500, t: 'Dues', s: 'family', f: 'Ada and Ben' },
+    { d: '2026-10-02', c: -12000, t: 'Scoutland', l: 'Fall campout', r: '1044', k: 1 }
+  ], 'rows (date order, empty keys left out, signed cents, no entered-by)');
+  // Security review — who entered an entry is never archived, and an old archive loses it on load.
+  ok(!/Dana/.test(JSON.stringify(led)), 'a leader name reached the archive rows');
+  ok(!/r\.b = /.test(slice('seasonLedgerRows')), 'seasonLedgerRows still writes entered-by');
+  const nz = sandbox(NORMALIZE_FNS);
+  const arch = nz.normalizeState(Object.assign(preMigrationState(), { archives: [{ kind: 'season', year: 2025, id: 'a1',
+    ledger: { totals: {}, rows: [{ d: '2025-09-01', c: 100, t: 'Dues', b: 'Dana', f: 'Ada' }] } }] })).archives[0];
+  eq(JSON.parse(JSON.stringify(arch.ledger.rows)), [{ d: '2025-09-01', c: 100, t: 'Dues', f: 'Ada' }], 'an archived entered-by survived load');
+  eq(led.totals, { inCents: 8500, outCents: 12000, entries: 2, reconciled: 1 }, 'totals');
+  ok(!/"s1"|"L1"|scoutId|lineId/.test(JSON.stringify(led)), 'an id reached the archive');
+  // Fitting: kept under the limit, dropped (totals kept) over it.
+  const size = ctx.utf8Bytes(JSON.stringify(led.rows));
+  eq(ctx.fitSeasonLedger(led, 1000, 1000 + size).trimmed, false, 'rows that fit were dropped');
+  const cut = JSON.parse(JSON.stringify(ctx.fitSeasonLedger(led, 1001, 1000 + size)));
+  eq([cut.trimmed, cut.rows.length, cut.totals.entries], [true, 0, 2], 'rows that do not fit were kept, or the totals went with them');
+  eq([ctx.utf8Bytes('abc'), ctx.utf8Bytes('é'), ctx.utf8Bytes('—'), ctx.utf8Bytes('😀')], [3, 2, 3, 4], 'UTF-8 byte count');
+  // Families: anyone with money moving, credit as a negative balance.
+  const fams = JSON.parse(JSON.stringify(ctx.seasonFamilyBalances([
+    { key: 'f1', owed: 17000, paid: 8500, refunded: 0, balance: 8500 },
+    { key: 'f2', owed: 0, paid: 0, refunded: 0, balance: 0 },
+    { key: 'f3', owed: 4000, paid: 5000, refunded: 0, balance: -1000 }
+  ], (a) => a.key.toUpperCase())));
+  eq(fams, [{ name: 'F1', owedCents: 17000, paidCents: 8500, balanceCents: 8500 }, { name: 'F3', owedCents: 4000, paidCents: 5000, balanceCents: -1000 }], 'families');
+});
+
+test('E3: close-out archives the ledger and the family balances, sized against the pack record', () => {
+  const b = slice('buildSeasonArchive');
+  ok(/families: seasonFamilyBalances\(familyAccountsNow\(\),/.test(b), 'the family balances are not archived');
+  ok(/arc\.ledger = seasonLedgerNow\(arc\);\s*return arc;/.test(b), 'the ledger is not archived, or is sized before the rest of the record');
+  const now = slice('seasonLedgerNow');
+  ok(/utf8Bytes\(JSON\.stringify\(state\)\) \+ utf8Bytes\(JSON\.stringify\(arcWithout\)\)/.test(now) && /ARCHIVE_DOC_SOFT_LIMIT/.test(now), 'not sized against the whole record');
+  ok(/var ARCHIVE_DOC_SOFT_LIMIT = 700 \* 1024;/.test(SCRIPT), 'the limit is not ~700 KB');
+  // The archive is built BEFORE rolloverYear clears the ledger and charges.
+  const pc = slice('performCloseout');
+  ok(pc.indexOf('buildSeasonArchive()') < pc.indexOf('rolloverYear()'), 'the archive is built after the ledger is cleared');
+  ok(/record\.ledger && record\.ledger\.trimmed/.test(pc) && /keep the downloaded JSON/.test(pc), 'no word to the treasurer when the ledger is trimmed');
+  const pre = slice('renderCloseoutOverlay');
+  ok(/arc\.ledger\.trimmed/.test(pre) && /SEASON_LEDGER_TRIMMED/.test(pre), 'the preview does not say the ledger will be trimmed');
+  ok(/keep that file/.test(SCRIPT), 'the trimmed notice does not say to keep the JSON');
+  const tb = slice('seasonArchiveTables');
+  ok(/Family balances at close/.test(tb) && /a\.ledger\.trimmed/.test(tb), 'Past seasons does not show them');
+  ok(/Family balances at close:/.test(slice('seasonArchiveText')), 'the copied text leaves them out');
+  // Leaders only: archives are never published.
+  ok(!/seasonLedger|seasonFamilyBalances|\.archives\b/.test(codeOnly(BPV())), 'buildParentView reads the archive');
+});
+
+// Security review (2026-09-28) — the season sheet holds every family's balance, and says so first.
+test('E3: the season sheet and its copied text open with a do-not-share line', () => {
+  const ctx = sandbox(['SEASON_SHEET_KEEP']);
+  eq(ctx.SEASON_SHEET_KEEP, 'Leaders’ copy — holds every family’s balance; do not share', 'the line');
+  ok(/var lines = \[\];\s*lines\.push\(SEASON_SHEET_KEEP\);/.test(slice('seasonArchiveText')), 'the copied text does not open with it');
+  const sh = slice('renderArchiveSheet');
+  ok(/if \(a\.kind === 'season'\) \{\s*return head \+ '<div class="summary-sheet">' \+\s*'<p class="small" style="margin:0 0 6px"><strong>' \+ esc\(SEASON_SHEET_KEEP\)/.test(sh),
+    'the printed season sheet does not open with it');
+  ok(!/SEASON_SHEET_KEEP/.test(codeOnly(BPV())), 'buildParentView reads the season sheet');
+});
+
+test('E3: an archive closed before keeps its shape; a new one is normalized', () => {
+  const ctx = sandbox(['normalizeSeasonArchive']);
+  const old = { id: 'x', kind: 'season', year: 2025, closedAt: '2026-06-30T00:00:00Z' };
+  ctx.normalizeSeasonArchive(old);
+  ok(!('ledger' in old) && !('families' in old), 'an old archive gained ledger or families keys');
+  const rows = [{ d: '2026-09-02', c: 8500, t: 'Dues', f: 'Ada', k: true, zz: 'x' }, 'junk', { d: 5, c: 'x' }];
+  for (let i = 0; i < 6000; i++) rows.push({ d: '2026-09-03', c: 1, t: 'x' });
+  const a = { id: 'y', kind: 'season', year: 2026, closedAt: '2027-06-30T00:00:00Z',
+    ledger: { totals: { inCents: 8500, outCents: 'x', entries: 2, reconciled: 1 }, rows: rows, trimmed: 'yes' },
+    families: [{ name: 'Ada', owedCents: 8500, paidCents: 8500, balanceCents: -100 }, 'junk'] };
+  ctx.normalizeSeasonArchive(a);
+  eq(JSON.parse(JSON.stringify(a.ledger.rows[0])), { d: '2026-09-02', c: 8500, t: 'Dues', f: 'Ada', k: 1 }, 'a row');
+  eq(JSON.parse(JSON.stringify(a.ledger.rows[1])), { d: '', c: 0, t: '' }, 'a junk row');
+  ok(a.ledger.rows.length <= 5000, 'the rows are not capped');
+  eq([a.ledger.totals.outCents, a.ledger.trimmed], [0, false], 'totals and flag');
+  eq(JSON.parse(JSON.stringify(a.families)), [{ name: 'Ada', owedCents: 8500, paidCents: 8500, balanceCents: -100 }], 'families');
+});
+
+/* ================================================================
+   Y1 (2026-09-28) — the per-event supervision check. Leaders only.
+   ================================================================ */
+test('Y1: a typed name finds the one leader it means, and no other', () => {
+  const ctx = sandbox(['ypNorm', 'leaderByName']);
+  const L = [
+    { id: 'k', name: 'Keith Dougherty' }, { id: 'd', name: 'Dana' }, { id: 'a1', name: 'Alex Smith' },
+    { id: 'a2', name: 'Alex Jones' }, { id: 'x', name: 'Sam Old', archived: true }
+  ];
+  const f = (n) => { const l = ctx.leaderByName(n, L); return l ? l.id : null; };
+  eq([f('Keith Dougherty'), f(' keith  dougherty '), f('Keith D'), f('Keith'), f('Keith Smith')], ['k', 'k', 'k', 'k', null], 'Keith');
+  eq([f('Dana'), f('Dana Q')], ['d', 'd'], 'a first-name-only leader');
+  eq([f('Alex'), f('Alex J'), f('Alex Smith')], [null, 'a2', 'a1'], 'two Alexes');
+  eq([f('Sam Old'), f(''), f('Pat')], [null, null, null], 'archived, blank, unknown');
+});
+
+test('Y1: the check counts registered adults 21+, says "can’t check" when details are missing, and never guesses', () => {
+  const ctx = sandbox(['ypNorm', 'supervisionCheck', 'supervisionMessage']);
+  const yes = (id, name, fem) => ({ id, name, ypRegistered: 'yes', ypOver21: 'yes', ypFemale: fem || '' });
+  const blank = (id, name) => ({ id, name, ypRegistered: '', ypOver21: '', ypFemale: '' });
+  const A = (name, leader) => ({ name, leader });
+  const run = (adults, girls) => JSON.parse(JSON.stringify(ctx.supervisionCheck(adults, girls)));
+  let r = run([A('Keith', yes('k', 'Keith')), A('Dana', yes('d', 'Dana'))], null);
+  eq([r.status, r.female], ['ok', 'not-checked'], 'two qualified');
+  ok(/^Two registered adults 21 or older\.$/.test(ctx.supervisionMessage(r)), ctx.supervisionMessage(r));
+  r = run([A('Keith', yes('k', 'Keith')), A('Dana', blank('d', 'Dana'))], null);
+  eq(r.status, 'unknown', 'one unanswered leader');
+  ok(/^Can’t check — fill in leader details: fill in whether Dana is registered/.test(ctx.supervisionMessage(r)), ctx.supervisionMessage(r));
+  r = run([A('Keith', yes('k', 'Keith')), A('Pat Parent', null)], null);
+  eq(r.status, 'short', 'a name not on the roster counted');
+  ok(/only 1\): Pat Parent is not on the leader roster/.test(ctx.supervisionMessage(r)), ctx.supervisionMessage(r));
+  r = run([A('Keith', yes('k', 'Keith')), A('Dana', Object.assign(yes('d', 'Dana'), { ypOver21: 'no' }))], null);
+  eq(r.status, 'short', 'an under-21 adult counted');
+  ok(/Dana is not recorded as a registered adult 21 or older/.test(ctx.supervisionMessage(r)), 'no reason given');
+  // The same person twice is one adult.
+  eq(run([A('Keith', yes('k', 'Keith')), A('Keith D', yes('k', 'Keith'))], null).qualified, 1, 'one person counted twice');
+  // Girls: only when the app actually knows one is signed up.
+  eq(run([A('K', yes('k', 'K', 'no')), A('D', yes('d', 'D', 'yes'))], true).status, 'ok', 'a female leader present');
+  eq(run([A('K', yes('k', 'K', 'no')), A('D', yes('d', 'D', 'no'))], true).status, 'short', 'no female leader');
+  eq(run([A('K', yes('k', 'K', 'no')), A('D', yes('d', 'D', ''))], true).status, 'unknown', 'female unanswered');
+  eq(run([A('K', yes('k', 'K', 'no')), A('D', yes('d', 'D', 'no'))], false).female, '', 'no girls, still judged');
+});
+
+test('Y1: leaders carry private yes/no/blank answers; the check reads the cash-count names and campout readiness only', () => {
+  const n = sandbox(NORMALIZE_FNS);
+  const d = n.normalizeState(Object.assign(preMigrationState(), {
+    leaders: [{ id: 'l1', name: 'Dana', ypRegistered: 'yes', ypOver21: true, ypFemale: 'maybe' }, { id: 'l2', name: 'Sam' }]
+  }));
+  eq(d.leaders.map((l) => [l.ypRegistered, l.ypOver21, l.ypFemale]), [['yes', '', ''], ['', '', '']], 'leader answers');
+  ok(/var YP_LEADER_KEYS = \['ypRegistered', 'ypOver21', 'ypFemale'\];/.test(SCRIPT), 'no keys');
+  ok(SCRIPT.indexOf('var YP_LEADER_KEYS') < SCRIPT.search(/^  var state = load\(\);/m), 'YP_LEADER_KEYS is declared after load() reads it');
+  const row = slice('renderLeaderRow');
+  ok(/data-ch="ldr-yp" data-key="' \+ q\[0\] \+ '"/.test(row) && /private, never published/.test(row), 'no leader fields, or not marked private');
+  ok(/if \(YP_LEADER_KEYS\.indexOf\(el\.dataset\.key\) !== -1\) ldr\[el\.dataset\.key\] = \(el\.value === 'yes' \|\| el\.value === 'no'\) \? el\.value : '';/.test(SCRIPT), 'the handler stores anything');
+  const bs = slice('blockSupervision');
+  ok(/\[b\.cashCountedBy, b\.cashVerifiedBy\]/.test(bs) && /leaderByName\(n, state\.leaders\)/.test(bs) && /, null\);/.test(bs), 'storefronts are not read from the cash count, or guess at girls');
+  const card = slice('supervisionCard');
+  ok(/rd\.twoLeaders === true/.test(card) && /Meetings don\\u2019t record which leaders came/.test(card), 'campouts or meetings are not handled as specified');
+  ok(/Scouts have no gender on the roster/.test(card), 'the card does not say the female rule is unchecked');
+  ok(/supervisionCard\(\)/.test(slice('renderPackPeople')), 'no card on Pack · People');
+  ok(/blockSupervision\(b\)/.test(slice('renderBlock')), 'no line on the storefront block');
+  // Never published or printed.
+  ok(!/ypRegistered|ypOver21|ypFemale|supervision/i.test(codeOnly(BPV())), 'buildParentView reads the supervision answers');
+  for (const f of ['daySheetText', 'renderDaySheet', 'buildCsv', 'buildSeasonArchive']) {
+    ok(!/ypRegistered|ypOver21|ypFemale|supervision/i.test(codeOnly(slice(f))), f + ' prints the supervision answers');
+  }
+  ok(/each leader's supervision answers \(`ypRegistered`, `ypOver21`,\s+\/\/\s+`ypFemale`\) and the supervision check built from them \(Y1\)/.test(SCRIPT), 'the banner does not exclude them');
+  ok(/\*\*never\*\* contains:[^]*?whether each leader is registered, 21 or\s+older or female/.test(SETUP), 'SETUP.md does not exclude them');
+});
+
+/* ================================================================
+   Y2 (2026-09-28) — photo permission on file. Leaders only.
+   ================================================================ */
+test('Y2: each scout has a private "photo permission on file" flag, off unless ticked, shown on the roster', () => {
+  const n = sandbox(NORMALIZE_FNS);
+  const d = n.normalizeState(Object.assign(preMigrationState(), {
+    scouts: [{ id: 's1', name: 'Ada', photoOk: true }, { id: 's2', name: 'Ben', photoOk: 'yes' }, { id: 's3', name: 'Cal' }]
+  }));
+  eq(d.scouts.map((s) => s.photoOk), [true, false, false], 'photoOk');
+  const row = slice('renderScoutRow');
+  ok(/s\.photoOk \? ' <span class="pill navy">photo OK<\/span>'/.test(row), 'the roster does not show it');
+  ok(/<label class="perscout"><input type="checkbox" data-ch="scout-photo"/.test(row) && /Photo permission on file/.test(row), 'no checkbox to set it');
+  ok(/if \(ch === 'scout-photo'\) \{[\s\S]*?scPh\.photoOk = !!el\.checked;\s*commit\(\); return;/.test(SCRIPT), 'the handler does not store a boolean');
+  // The rule, in Pack settings, in the exact words.
+  ok(/var PHOTO_RULE = 'Before posting photos: only scouts with permission on file; first names only in captions, never last names or locations\.';/.test(SCRIPT), 'the photo rule is not the agreed wording');
+  ok(/esc\(PHOTO_RULE\)/.test(slice('renderPackSharing')), 'Pack settings does not show the rule');
+});
+
+test('Y2: photo permission is NEVER published, printed or exported', () => {
+  ok(!/photoOk|photo permission/i.test(codeOnly(BPV())), 'buildParentView reads photo permission');
+  for (const f of ['buildCsv', 'daySheetText', 'renderDaySheet', 'buildSeasonArchive', 'monthlyDigest', 'renderParentApp', 'renderParentStandings']) {
+    ok(!/photoOk/.test(codeOnly(slice(f))), f + ' reads photo permission');
+  }
+  ok(/each scout's photo\s+\/\/\s+permission \(`photoOk`, Y2\)/.test(SCRIPT), 'the banner does not exclude it');
+  ok(/\*\*never\*\* contains:[^]*?which scouts have\s+photo permission on file/.test(SETUP), 'SETUP.md does not exclude it');
+  // A runtime check: a scout with permission publishes nothing about it.
+  const ctx = pvCtx('');
+  vm.runInContext("state.scouts.forEach(function (s) { s.photoOk = true; });", ctx);
+  ok(!/photoOk/.test(JSON.stringify(vm.runInContext('buildParentView(state, { showStandings: false })', ctx))), 'photoOk reached the parent view');
 });
 
 /* ---------------- report ---------------- */

@@ -25,10 +25,33 @@ of the decisions below.
 state.camping = {
   trips: [{
     id, name, where, address, when, arrive, depart, cost, url, intro,
+    startDate, endDate, registrationDeadline,   // ISO or '' (Wave C1)
     sections: [{ id, title, body }]     // ordered, free-form
   }]
 }
 ```
+
+### Structured dates (Wave C1, 2026-09-28)
+
+`when` stays the words a family reads. Beside it are three optional ISO dates, edited under the
+trip header: `startDate`, `endDate` and `registrationDeadline` (the council's **online** close).
+They:
+
+- **sort the trips** (`sortTripsByDate`): still ahead or under way, soonest first; then undated,
+  in the order added; then the ones that are over. The first tab — leader and family alike — is
+  therefore the next campout, and a family's page says which one that is.
+- **flag last year's dates to leaders** (`tripDatesStale`): once a trip has ended *and* ended
+  before the current program year began, the leader page says "These are last year's dates —
+  confirm". Never shown to families.
+- **put the sign-up deadline on the family's Next up card** in the 30 days before it: "Online
+  sign-up for Fall Family Camping closes Thu, Oct 1". Read from the field, never from the prose.
+
+All three are published. They say nothing a parent cannot already read in `when` and `cost`.
+
+Seeded (rev 4): fall 2 – 4 Oct 2026, online close 1 Oct; spring 24 – 26 Apr 2026, online close
+20 Apr (from the seed's own "Before you go"); Fort Yargo 27 – 29 Mar 2026, no deadline. A live
+pack gets them through `refreshCampingSeed`, **only into empty date fields and only while the
+trip's `when` still holds the seed's words** — a leader who retyped the dates has moved the trip.
 
 A small fixed header (the things a parent checks on the way out of the door) plus an **ordered
 list of free-form sections**. Not fixed "what to bring" / "what to expect" fields: what a pack
@@ -201,6 +224,63 @@ Weather normals used for the sleeping-bag advice: Gainesville GA averages an ear
 in the mid-50s; Clayton GA averages an April low near 44F, and the camp sits above the town — which is why
 the spring page leads with "they pack for Georgia in April and then sleep in the mountains in
 April".
+
+### Trip readiness (Wave C2, 2026-09-28) — leaders only
+
+Each trip carries `readiness`, a map of ticked items (`CAMP_READINESS`): a BALOO-trained adult
+on the trip (any overnight the pack or a Webelos/AoL den runs itself); an adult current in
+Hazardous Weather training; two registered adult leaders, both 21+, with current Safeguarding
+Youth training; a registered female adult 21+ if girls attend; health forms (AHMR Parts A and
+B) for every youth and adult; emergency contacts and the nearest hospital confirmed; the site
+council-approved (or council-appraised) and booked (`site`).
+
+The labels are the Camping Chair's (review K2, 2026-09-28). `site` replaced an older
+`paperwork` item ("tour and site paperwork, as the council requires") as a NEW key, so a tick
+on the vaguer item is dropped by `normalizeReadiness` rather than read as "the site is approved".
+
+- **Never published.** It says which safety boxes are not yet ticked for a named weekend.
+  `buildParentView` rebuilds each trip field by field and does not name it (harness scan), and
+  the editor's "everything on this page is published" notice says the checklist is the exception.
+- **Belongs to the weekend**: when the trip's first day moves to another year, the ticks clear.
+- The trip page shows "n of 7 ready"; Home gives the Outdoor / Camping Chair a task in the 14
+  days before the first day while anything is open.
+
+### Printable packing list (Wave C3, 2026-09-28)
+
+A family's Camping page has a **Print packing list** button whenever the trip has a section
+titled "What to bring" (or "Packing list") with items in it. It opens a tickable sheet built by
+`packingList` from that section's text, by the same rules `proseText` renders it: `- ` lines are
+items, a short unpunctuated line above them is a heading, other prose is printed as notes. It is
+split into **Per person** and **Per family** only when the text has headings that say so;
+otherwise it is one list under the section's own headings (Sleeping, Wearing, Camp …). It reads
+the published trip only — no new published keys.
+
+### Den campout template — Webelos & Arrow of Light (Wave C4, 2026-09-28)
+
+A fourth trip a leader can **add on request** ("+ Den campout template"), never seeded:
+`seedDenCampTrip` (stable id `trip-den-campout`) is offered through `campTemplates`, and a second
+tap goes to the copy already there. It uses the seed machinery: `refreshCampingSeed` reads
+templates as well as seeded trips, so a later revision reaches an added copy through
+`CAMP_OLD_SEED`, only where untouched.
+
+Its rules are the Camping Chair's: den-level overnight camping is for Webelos and Arrow of Light
+dens only; every Scout with their own parent or guardian (or, by prior agreement, under at least
+two registered leaders and never tenting with an unrelated adult); **BALOO required, as for a pack
+overnighter (GSS)**; two registered leaders 21+ with current Safeguarding Youth Training, and a
+registered female adult 21+ when girls attend; an adult with Hazardous Weather training; any
+non-parent adult staying overnight registered; a council-approved or council-appraised site, and
+the GSS activity planning and risk assessment.
+
+**Rev 4 of this text said "BALOO is not required" — that was wrong.** Rev 5 (`CAMP_SEED_REV` 5,
+Camping Chair review K1) replaced the three rule sections wherever they were still untouched
+(`CAMP_OLD_SEED`). A copy a leader had edited keeps its words, so `campBalooStale` finds any
+section still saying "BALOO is not required": Home shows leaders a one-time card
+(`balooNoticeDismissed`), and the trip page warns on that section until it is corrected.
+
+No rule in the template carries a **[verify with council]** marker any more, but the mechanism
+stays: a section holding that marker is **not published** until a leader removes it (the editor
+says so on the section), and the whole trip is held back from families until it has a date. Its "What to bring" has Per person / Per family headings, so its
+printable list (C3) is split.
 
 ## 6. What deliberately does not happen
 

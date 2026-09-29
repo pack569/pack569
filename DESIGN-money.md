@@ -326,6 +326,55 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   "— $Y less than sales work out to; still expected from the council, or check the rate with
   the Kernel": the gap may be a second cheque or a mistyped rate, and the app cannot tell which.
 
+### Treasurer's enhancements, 2026-09-28 (E1–E3)
+
+- **Due dates and family statements (E1).** A charge said how much and for what, never by
+  when, so nothing could be overdue. The due date is **derived**, not stored
+  (`chargeDefaultDue`): an event's charges are due 14 days before the event, dues and
+  registration (the *Registration & fees* category, or a line named "dues") by the pack's
+  `budget.duesDueDate` (set on the Budget beside Starting funds), anything else — a prior-year
+  balance — has none. Derived, so an event that moves takes its due date with it. A leader can
+  override one charge (`charge.dueDate`, typed on the charge in its family block; typing the
+  default back, or clearing it, returns to the default). Overdue is what is left unpaid after
+  `chargePaidAllocation`, past the due date and not on it (`chargesOverdue`); Family balances
+  totals it and each family block says how much and since when. Close-out moves the dues date
+  on a year (as a tier's `dueBy`), and the overrides go with the year's charges.
+  Each family block has a **Statement**: an overlay to print or copy, built on demand
+  (`familyStatementData`, `familyStatementText`) — every charge with its status (paid, part
+  paid, due by, overdue, covered by a reward tier, forgiven), every payment, credit and refund,
+  and the balance. It says **"Leaders' copy — send only to this family"** on it. First names
+  only; the forgiveness reason, donors' names and ledger descriptions stay off it. Nothing is
+  stored and nothing is published (harness guard).
+- **The ledger's audit trail (E2).** Every entry made from now on carries `enteredBy` and
+  `enteredAt` (typed entries, tier make-ups, reimbursements, the close-out's carried credits).
+  Ticking an entry against a statement stamps `approvedBy`/`approvedAt`; un-ticking or
+  un-reconciling clears them, because nobody has checked the entry as it now stands. *Mark
+  reconciled* stamps `book.reconciledBy`/`reconciledAt`, and the Reconcile card says who signed
+  off the last statement. A forgiveness already required who **agreed** it (`forgiven.by`); it
+  now also records who **entered** it (`forgiven.enteredBy`). The name is the signed-in account's
+  display name, else its email, else "this device" (`ledgerActorName`). Entries from before carry
+  `''` and show nothing. The trail shows in an entry's Detail and under a reconciled row.
+  A **reimbursement** (`reimbursement: true`, or money out whose description says "reimburse")
+  with no receipt number is saved with a warning, and its Detail says so until one is added —
+  a warning, not a block, because an unrecorded payment is the worse outcome. Home gives the
+  Treasurer a task when the last statement reconciled is more than **35 days** old, or when a
+  book never reconciled has an entry that old (`reconcileStale`).
+- **The season archive keeps the ledger and the family balances (E3).** Close-out used to
+  archive totals only, so the year's entries and what each family owed at the end lived only in
+  the downloaded snapshot. A season archive now has `families` (each family's charged, paid and
+  signed balance as the year closed, first names) and `ledger`: `totals` (in, out, entries,
+  reconciled) and compact `rows` — `{ d, c (signed cents), t, l (line name), r (ref), s (source),
+  f (family), k: 1 if reconciled }`, empty keys left out, names rather than ids
+  because the year's lines and roster move on. Not who entered each row: it was never shown and
+  kept leaders' names in the record for good (security review), so an older archive's `b` is
+  dropped on load. The archive lives in the pack record, one
+  Firestore document with a 1 MiB limit, so the rows are kept only while the whole record stays
+  under ~700 KB (`ARCHIVE_DOC_SOFT_LIMIT`, measured on the record as it stands plus the new
+  archive — an overestimate, since this year's ledger is about to be cleared). Past that the
+  rows are dropped (`trimmed: true`); the totals and family balances stay, and the close-out
+  preview, the closing toast and Past seasons all say to keep the downloaded JSON. Older
+  archives have neither field and read as they always did.
+
 ---
 
 ## 1. The problem, concretely
