@@ -4891,6 +4891,7 @@
     // does on every commit) can't wipe half-typed input.
     ledgerDraft: null,
     ledgerAddWarned: '',    // Phase 3, C2 — the draft date already warned as in the reconciled period
+    ledgerMoveWarned: null, // Treasurer review of C2 (M-5) — { id, date }: an entry's move into it, warned
     lineOpen: {},           // Budget — { lineId: true } rows with their settings showing
     // Rewards — { tierId: true } tiers showing an empty date box because somebody asked for
     // one. A tier that HAS a deadline shows the box regardless; this is only the empty case,
@@ -7429,7 +7430,10 @@
   }
 
   /* ---------------- Two-tap confirm ---------------- */
-  function arm(key, fn) {
+  // `ms`: how long the first tap stays armed (3.5 s unless given). Treasurer review of C2 (M-3) —
+  // longer where the first tap puts up a warning to read (ARM_WARNED_MS): it must not disarm
+  // while the leader is still reading, or "Tap again" quietly starts the whole thing over.
+  function arm(key, fn, ms) {
     if (ui.armed === key) {
       clearTimeout(ui.armedTimer);
       ui.armed = null;
@@ -7437,10 +7441,13 @@
     } else {
       ui.armed = key;
       clearTimeout(ui.armedTimer);
-      ui.armedTimer = setTimeout(function () { ui.armed = null; render(); }, 3500);
+      ui.armedTimer = setTimeout(function () { ui.armed = null; render(); }, ms || 3500);
       render();
     }
   }
+  // Treasurer review of C2 (M-3) — a first tap that warns stays armed this long, and its warning
+  // stays up this long: the same, so the button never goes back while the words are still showing.
+  var ARM_WARNED_MS = 10000;
   function dangerBtn(key, label, extra) {
     var armed = ui.armed === key;
     return '<button type="button" class="btn small danger' + (armed ? ' armed' : '') + '" data-act="' + key + '" ' + (extra || '') + '>' +
@@ -7886,8 +7893,9 @@
   // every one. A locked row (ledgerLocked: reconciled, or dated in the reconciled period) keeps
   // its amount, date and direction (LEDGER_LOCKED_FIELDS); its labels and its tick still change,
   // logged. An edit is refused for a blank or $0 amount (A3), one over LEDGER_MAX_CENTS, a
-  // cleared date (A4: the row would drop out of the bank balance) or a date moved INTO the
-  // reconciled period (it would lock itself, and a new entry there is warned about instead).
+  // cleared date (A4: the row would drop out of the bank balance). A date moved INTO the
+  // reconciled period (it locks itself) is warned about in place and taken on a second change,
+  // like a back-dated add (treasurer review of C2, M-5: it was refused).
   //
   // Not the commission and undoing a tier make-up change what the money meant, not the money: a
   // locked row takes both since the treasurer's review (owner, Q1 and Q2), and each is logged on
@@ -7953,13 +7961,21 @@
     if (lk === 'date') {
       var was = e.date ? fmtDate(e.date) : 'no date';
       if (!value) return 'An entry needs a date, or it drops out of the bank balance — it was left at ' + was + '.';
-      if (ledgerDateReconciled(value, book)) {
-        return 'That date is inside the period already reconciled (through ' + fmtDate(book.reconciledThrough) +
-          '), and an entry can’t be moved into it. It was left at ' + was + '. If it really belongs there, ' +
-          'remove this entry and add it again with that date — you’ll be asked to confirm.';
-      }
+      // Treasurer review of C2 (M-5) — a date moved INTO the reconciled period is no longer refused
+      // here: it is warned about in place and taken on a second change, like a back-dated add
+      // (ledgerMoveWarning, and the led-* handler).
     }
     return '';
+  }
+  // Treasurer review of C2 (M-5) — what a leader is told, under the entry, before an open entry's
+  // date is moved into the reconciled period, or ''. As for a back-dated add (ledgerBackdateWarning):
+  // the likeliest reason, and that it locks once moved. Picking the same date again moves it. Pure.
+  function ledgerMoveWarning(date, book) {
+    if (!ledgerDateReconciled(date, book)) return '';
+    var rt = fmtDateShort(book.reconciledThrough);
+    return 'Moving this entry to ' + fmtDateShort(date) + ' puts it inside the period already reconciled (through ' + rt + '). ' +
+      'If it cleared the bank by ' + rt + ', that statement should have included it, so check before moving it. ' +
+      'Once moved, its amount, date and direction can’t be changed here. If the date is right, pick it again to move it.';
   }
   // What a leader is told before a NEW entry dated in the reconciled period is saved, or ''.
   // Only a warning (owner's decision): the second tap saves it. Pure.
@@ -18584,6 +18600,12 @@
         // M10 — a reconciled entry can't be deleted from under its statement (del-ledger says so);
         // since the security review of C2 (#2), nor can any locked one.
         (eLocked ? '' : tinyDangerBtn('del-ledger:' + e.id, 'Remove this entry')) +
+        // Treasurer review of C2 (M-5) — the warning before its date is moved into the reconciled
+        // period, under the entry it is about, until the date is picked again or changed.
+        (function () {
+          var mw = (!eLocked && ui.ledgerMoveWarned && ui.ledgerMoveWarned.id === e.id) ? ledgerMoveWarning(ui.ledgerMoveWarned.date, state.book) : '';
+          return mw ? '<p class="small" role="alert" style="margin:6px 0 0;flex-basis:100%;color:var(--accent-text)">' + esc(mw) + '</p>' : '';
+        })() +
         (open
           ? '<div class="ldetail">' +
               '<select data-ch="led-method" data-id="' + e.id + '" aria-label="Method">' + methodSelectOptions(e.method) + '</select>' +
@@ -21547,8 +21569,13 @@
               (byWho ? ' · ' + esc(byWho) : '') + '</span></span>' +
               (r.left > 0
                 ? '<span class="small">owed <strong class="money">' + fmt(r.left) + '</strong></span>' +
-                  '<button type="button" class="btn small" data-act="tier-reimburse:' + esc(r.share.item.id) + ':' +
-                  esc(r.scout.id) + ':' + esc(String(r.left)) + '">Record ' + fmt(r.left) + ' paid back</button>'
+                  // Treasurer review of C2 (M-3) — two taps when today is in the reconciled period:
+                  // the armed state shows here (keyed on the act, as makeupBtn is).
+                  (function (key) {
+                    var rbArmed = ui.armed === key;
+                    return '<button type="button" class="btn small' + (rbArmed ? ' danger armed' : '') + '" data-act="' + esc(key) + '">' +
+                      (rbArmed ? 'Tap again to confirm' : 'Record ' + fmt(r.left) + ' paid back') + '</button>';
+                  })('tier-reimburse:' + r.share.item.id + ':' + r.scout.id + ':' + String(r.left))
                 : '<span class="small"><span class="pill navy">paid ' + fmt(r.paid) + '</span></span>') +
               '</div>';
           });
@@ -27768,13 +27795,15 @@
       // Same arm() the deletions use, keyed on the act itself so both renderers of this button can
       // show the confirm state without inventing a second key.
       // Security review of C2 (minor) — it is dated today, and today can be inside the period
-      // already reconciled (Reconcile's lock takes the statement date, or today): the first tap
+      // already reconciled (a statement can be marked reconciled through today): the first tap
       // then says so, as the add form does, and the second saves it, logged as warned.
+      // Treasurer review of C2 (M-3) — in the treasurer's words, and armed for as long as the
+      // warning shows (it was an 8-second warning on a 3.5-second arm: "Tap again" often
+      // re-armed instead of saving).
       var mkBack = ledgerDateReconciled(todayISO(), state.book);
       if (mkBack && ui.armed !== act) {
-        showToast('Today is inside the period already reconciled (through ' + fmtDate(state.book.reconciledThrough) +
-          '). This payment will be dated today, and once saved its amount, date and direction can’t be changed here. ' +
-          'Tap again to record it anyway.', { duration: 8000 });
+        showToast('Today is inside the period already reconciled (through ' + fmtDateShort(state.book.reconciledThrough) +
+          '). This payment will be dated today and locked once saved. Tap again to record it anyway.', { duration: ARM_WARNED_MS });
       }
       arm(act, function () {
         // ONE write, and it is the money. The tier credit is derived from this entry by
@@ -27794,7 +27823,7 @@
         showToast(fmt(mkRow.makeup) + ' recorded — ' + (mkS.name || 'they') + ' now counts as reaching ' +
           (mkT.name || 'the tier') + '. Deleting the ledger entry undoes it.');
         commit();
-      });
+      }, mkBack ? ARM_WARNED_MS : 0);
       return;
     }
     // Reimbursing a council fee a family already paid. Money OUT, against the line, carrying the
@@ -27808,26 +27837,35 @@
       var rbS = getScout(rbP[2]);
       var rbCents = parseInt(rbP[3], 10);
       if (!rbLine || !rbS || !isFinite(rbCents) || rbCents <= 0) return;
-      var rbId = uid(), rbBack = ledgerDateReconciled(todayISO(), state.book);
-      state.ledger.push({
-        id: rbId, date: todayISO(),
-        description: 'Reimbursed ' + (rbS.name || 'a scout') + ' \u2014 ' + (rbLine.name || 'council fee') +
-          ' (reward tier)',
-        amountCents: rbCents, direction: 'out', lineId: rbLine.id, method: '', ref: '',
-        source: '', donor: '', scoutId: rbS.id, reconciled: false,
-        // T1 — says what it is, so it can never be read as a refund of the family's credit.
-        reimbursement: true,
-        enteredBy: ledgerActor(), enteredByUid: ledgerActorUid(), enteredAt: new Date().toISOString()   // E2
-      });
-      // Security review of C2 (minor) \u2014 written by this screen, not the add form, so logged. One
-      // tap, with no step to warn in: dated inside the period already reconciled (today can be),
-      // it is saved, and the notice says so in the add form's words.
-      logLedger('add', rbId, { why: 'A reward-tier reimbursement, recorded from the tier board' +
-        (rbBack ? '; dated inside the period reconciled through ' + state.book.reconciledThrough + ', saved with a notice.' : '.') });
-      showToast(fmt(rbCents) + ' recorded \u2014 add the council receipt number to the entry in the ledger.' +
-        (rbBack ? ' It is dated today, inside the period already reconciled (through ' + fmtDate(state.book.reconciledThrough) +
-          '), so its amount, date and direction can\u2019t be changed here.' : ''), rbBack ? { duration: 8000 } : undefined);
-      commit(); return;
+      var rbBack = ledgerDateReconciled(todayISO(), state.book);
+      var rbSave = function () {
+        var rbId = uid();
+        state.ledger.push({
+          id: rbId, date: todayISO(),
+          description: 'Reimbursed ' + (rbS.name || 'a scout') + ' \u2014 ' + (rbLine.name || 'council fee') +
+            ' (reward tier)',
+          amountCents: rbCents, direction: 'out', lineId: rbLine.id, method: '', ref: '',
+          source: '', donor: '', scoutId: rbS.id, reconciled: false,
+          // T1 — says what it is, so it can never be read as a refund of the family's credit.
+          reimbursement: true,
+          enteredBy: ledgerActor(), enteredByUid: ledgerActorUid(), enteredAt: new Date().toISOString()   // E2
+        });
+        // Security review of C2 (minor) \u2014 written by this screen, not the add form, so logged.
+        logLedger('add', rbId, { why: 'A reward-tier reimbursement, recorded from the tier board' +
+          (rbBack ? '; dated inside the period reconciled through ' + state.book.reconciledThrough + ', saved after the warning.' : '.') });
+        showToast(fmt(rbCents) + ' recorded \u2014 add the council receipt number to the entry in the ledger.');
+        commit();
+      };
+      // One tap, as it always was, unless today is inside the period already reconciled.
+      // Treasurer review of C2 (M-3) — then the make-up's two taps and warning: it was saved on one
+      // tap with only a notice afterwards.
+      if (!rbBack) { rbSave(); return; }
+      if (ui.armed !== act) {
+        showToast('Today is inside the period already reconciled (through ' + fmtDateShort(state.book.reconciledThrough) +
+          '). This reimbursement will be dated today and locked once saved. Tap again to record it anyway.', { duration: ARM_WARNED_MS });
+      }
+      arm(act, rbSave, ARM_WARNED_MS);
+      return;
     }
     if (act.indexOf('tier-unmakeup:') === 0) {
       // Undoing only removes the tier CREDIT. The payment stays in the ledger, because it
@@ -28619,10 +28657,20 @@
       // M10 — a reconciled entry's money can't be edited from under the statement it was ticked
       // on. Phase 3, C2 — nor can one dated in the reconciled period; but their labels can
       // (owner, 2026-09-29: LEDGER_LOCKED_FIELDS). An edit that would blank the amount or the
-      // date, go over the ceiling, or move the row into the period is refused too, the field
-      // put back, and the leader told why (ledgerEditRefusal).
+      // date, or go over the ceiling is refused too, the field put back, and the leader told why
+      // (ledgerEditRefusal).
       var ledNo = ledgerEditRefusal(led, lk, lv, state.book);
       if (ledNo) { showToast(ledNo); render(); return; }
+      // Treasurer review of C2 (M-5) — a date moved into the reconciled period: the first change is
+      // put back and warned about under the entry (ui.ledgerMoveWarned); the same date picked again
+      // for the same entry moves it, and the edit's log event says it was warned. Any other date
+      // for it takes the warning down.
+      var ledMove = lk === 'date' && ledgerDateReconciled(lv, state.book);
+      if (ledMove && !(ui.ledgerMoveWarned && ui.ledgerMoveWarned.id === led.id && ui.ledgerMoveWarned.date === lv)) {
+        ui.ledgerMoveWarned = { id: led.id, date: lv };
+        render(); return;
+      }
+      if (lk === 'date') ui.ledgerMoveWarned = null;
       var ledWas = ledgerRowFields(led), ledTicked = led.reconciled;
       applyLedgerEdit(led, lk, lv);   // the field, and what it implies (M4, M6, T1, M1(c))
       // C2 — one event for this change: the tick, or every field it changed, before and after.
@@ -28630,7 +28678,11 @@
         if (led.reconciled !== ledTicked) logLedger(led.reconciled ? 'tick' : 'untick', led.id);
       } else {
         var ledF = ledgerRowDiff(ledWas, led);
-        if (Object.keys(ledF).length) logLedger('edit', led.id, { f: ledF });
+        if (Object.keys(ledF).length) {
+          logLedger('edit', led.id, ledMove
+            ? { f: ledF, why: 'Moved into the period reconciled through ' + state.book.reconciledThrough + '; saved after the warning.' }
+            : { f: ledF });
+        }
       }
       // E2 — clearing a reimbursement's receipt number is allowed, and said.
       if (lk === 'ref' && !String(led.ref).trim() && entryNeedsReceipt(led)) {

@@ -18174,15 +18174,15 @@ function c2Page(o) {
   o = o || {};
   const ctx = vm.createContext({});
   vm.runInContext(`${C2_FNS.map(slice).join('\n')}
-    ${['ledgerActor', 'ledgerActorUid'].map(decl).join('\n')}
+    ${['ledgerActor', 'ledgerActorUid', 'ARM_WARNED_MS'].map(decl).join('\n')}
     var state = { ledger: ${JSON.stringify(o.ledger || C2_LEDGER())}, ledgerLog: [], leaders: [],
       book: ${JSON.stringify(Object.assign({ openingCents: 10000, openingDate: '2026-07-01', reconciledThrough: '2026-08-31', statementDate: '', statementCents: 0 }, o.book || {}))},
       budget: { programYear: 2026, startingBalance: 7700 }, rewardTiers: { tiers: [{ id: 't1' }] } };
     var ui = { armed: null }, sync = { deviceId: 'dev1', user: { uid: 'u1', displayName: 'Pat Treasurer' } };
-    var toasts = [], commits = 0, renders = 0, seq = 0;
+    var toasts = [], toastOpts = [], armMs = [], commits = 0, renders = 0, seq = 0;
     function uid() { seq += 1; return 'id' + seq; }
-    function showToast(m) { toasts.push(m); } function render() { renders += 1; } function commit() { commits += 1; }
-    function setTimeout() { return 0; } function clearTimeout() {}
+    function showToast(m, o) { toasts.push(m); toastOpts.push(o === undefined ? null : o); } function render() { renders += 1; } function commit() { commits += 1; }
+    function setTimeout(f, ms) { armMs.push(ms); return 0; } function clearTimeout() {}
     function refundOverCreditWarning() { return ''; } function entryNeedsReceipt() { return false; } function ledgerLineIsDirect() { return false; }
     function todayISO() { return '2026-10-15'; } function programYearStartISO(py) { return py + '-07-01'; }
     function change(ch, id, value, checked) {
@@ -18220,22 +18220,22 @@ test('C2: each change to an entry is one logged edit — every field it changed,
      /if \(el && LEDGER_NOT_LIVE\.indexOf\(el\.getAttribute\('data-ch'\)\) === -1\) \{/.test(SCRIPT), 'the amount is committed as it is typed');
 });
 
-test('C2: an edit is refused for a blank or $0 amount, one over $25,000, a cleared date, or a date moved into the reconciled period', () => {
+test('C2: an edit is refused for a blank or $0 amount, one over $25,000, or a cleared date', () => {
   const p = c2Page();
+  // (A date moved into the reconciled period is warned about instead: 'C2 treasurer M-5'.)
   const tries = [['led-amount', ''], ['led-amount', '0'], ['led-amount', '-5'], ['led-amount', 'abc'], ['led-amount', '25000.01'],
-    ['led-date', ''], ['led-date', '2026-08-31'], ['led-date', '2026-07-01']];
+    ['led-date', '']];
   for (const [ch, v] of tries) {
     p.run(`toasts = []; renders = 0; change('${ch}', 'u1', '${v}')`);
     eq([p.get('row("u1").amountCents'), p.get('row("u1").date'), p.get('log().length'), p.get('commits'), p.get('renders'), p.get('toasts.length')],
       [8400, '2026-09-10', 0, 0, 1, 1], `${ch} = "${v}" was not refused, put back and said`);
   }
   // What the leader is told, plainly.
-  p.run("toasts = []; change('led-amount', 'u1', ''); change('led-amount', 'u1', '30000'); change('led-date', 'u1', ''); change('led-date', 'u1', '2026-08-20')");
+  p.run("toasts = []; change('led-amount', 'u1', ''); change('led-amount', 'u1', '30000'); change('led-date', 'u1', '')");
   const t = p.get('toasts');
   ok(/^An entry needs an amount — it was left at \$84\.00\.$/.test(t[0]), t[0]);
   ok(/^That’s more than \$25,000\.00 for one entry — check the amount\. It was left at \$84\.00\.$/.test(t[1]), t[1]);
   ok(/^An entry needs a date, or it drops out of the bank balance — it was left at /.test(t[2]), t[2]);
-  ok(/^That date is inside the period already reconciled \(through .*\), and an entry can’t be moved into it\. .*remove this entry and add it again with that date — you’ll be asked to confirm\.$/.test(t[3]), t[3]);
   // The edges: exactly $25,000, and a date before the opening (not in the period) are taken.
   p.run("change('led-amount', 'u1', '25000'); change('led-date', 'u1', '2026-06-30')");
   eq([p.get('row("u1").amountCents'), p.get('row("u1").date'), p.get('log().length')], [2500000, '2026-06-30', 2], 'the edges were refused');
@@ -18540,14 +18540,29 @@ test('C2 review (minor): a tier make-up or reimbursement is logged as an add, an
   const q = c2rPage({ book: { reconciledThrough: '2026-10-31' } });
   q.run("toasts = []; act2('tier-makeup:t1:s1')");
   eq([q.get('state.ledger.length'), q.get('ui.armed')], [6, 'tier-makeup:t1:s1'], 'the warned first tap saved it');
-  ok(/^Today is inside the period already reconciled \(through .*\)\. This payment will be dated today, .*Tap again to record it anyway\.$/.test(q.get('toasts[0]')),
-    'the make-up’s warning: ' + q.get('toasts[0]'));
-  q.run("act2('tier-makeup:t1:s1'); toasts = []; act2('tier-reimburse:x1:s1:2500')");
+  // Treasurer review of C2 (M-3) — in the treasurer's words, up for as long as the button stays armed.
+  eq([q.get('toasts[0]'), q.get('toastOpts[0]')], ['Today is inside the period already reconciled (through Oct 31). This payment will be dated today ' +
+    'and locked once saved. Tap again to record it anyway.', { duration: 10000 }], 'the make-up’s warning');
+  eq(q.get('armMs'), [10000], 'the make-up’s arm is shorter than its warning');
+  // The reimbursement: now two taps too, with the same warning.
+  q.run("act2('tier-makeup:t1:s1'); toasts = []; toastOpts = []; armMs = []; act2('tier-reimburse:x1:s1:2500')");
+  eq([q.get('state.ledger.length'), q.get('ui.armed'), q.get('toasts'), q.get('toastOpts'), q.get('armMs')],
+    [7, 'tier-reimburse:x1:s1:2500', ['Today is inside the period already reconciled (through Oct 31). This reimbursement will be dated today ' +
+      'and locked once saved. Tap again to record it anyway.'], [{ duration: 10000 }], [10000]], 'the reimbursement’s first tap');
+  q.run("toasts = []; act2('tier-reimburse:x1:s1:2500')");
   eq(q.get('log().map(function (e) { return e.why; })'), [
     'A reward-tier make-up payment, recorded from the tier board; dated inside the period reconciled through 2026-10-31, saved after the warning.',
-    'A reward-tier reimbursement, recorded from the tier board; dated inside the period reconciled through 2026-10-31, saved with a notice.'], 'the warned adds');
-  ok(/It is dated today, inside the period already reconciled \(through .*\), so its amount, date and direction can’t be changed here\.$/.test(q.get('toasts[0]')),
-    'the reimbursement’s notice: ' + q.get('toasts[0]'));
+    'A reward-tier reimbursement, recorded from the tier board; dated inside the period reconciled through 2026-10-31, saved after the warning.'], 'the warned adds');
+  eq([q.get('state.ledger.length'), q.get('state.ledger[7].reimbursement'), q.get('toasts')],
+    [8, true, ['$25.00 recorded — add the council receipt number to the entry in the ledger.']], 'the reimbursement’s second tap');
+  // The button shows it is armed, in the one place it is drawn.
+  ok(/var rbArmed = ui\.armed === key;[\s\S]*?\(rbArmed \? 'Tap again to confirm' : 'Record ' \+ fmt\(r\.left\) \+ ' paid back'\)[\s\S]*?\}\)\('tier-reimburse:' \+ r\.share\.item\.id/.test(SCRIPT),
+    'the reimburse button does not show its armed state');
+  // arm() itself: armed for the time given, 3.5 s by default.
+  const a = vm.createContext({});
+  vm.runInContext(slice('arm') + "\nvar ui = { armed: null }, waits = []; function setTimeout(f, ms) { waits.push(ms); return 1; } function clearTimeout() {} function render() {}" +
+    " arm('a', function () {}); ui.armed = null; arm('b', function () {}, 10000);", a);
+  eq(JSON.parse(JSON.stringify(vm.runInContext('waits', a))), [3500, 10000], 'arm’s time');
 });
 
 test('C2 review (minor): deleting a scout logs their ledger entries’ unlinking as one reassign, on the deleting device only', () => {
@@ -18675,6 +18690,36 @@ test('C2 treasurer L-4, L-2: a locked entry’s Detail says what it can’t have
   p.run("ui.ledgerDraft.date = '2026-10-01'; ui.ledgerDraft.amount = '12'; toasts = []; act('ledger-add')");
   eq([p.get('toasts'), p.get('ui.ledgerDraft.date')], [['Saved — but a reimbursement should name its receipt. Add the receipt number under Detail.'], '2026-10-01'],
     'an ordinary add keeps its date and its words');
+});
+
+test('C2 treasurer M-5: moving an entry’s date into the reconciled period is warned about in place, taken on a second change, and logged once', () => {
+  const p = c2Page({ more: `${['ledgerMoveWarning'].map(slice).join('\n')}` });
+  // u1 (Sep 10) is open; the book is reconciled through Aug 31.
+  p.run("ui.ledgerMoveWarned = null; toasts = []; renders = 0; change('led-date', 'u1', '2026-08-20')");
+  eq([p.get("row('u1').date"), p.get('ui.ledgerMoveWarned'), p.get('log().length'), p.get('commits'), p.get('renders'), p.get('toasts')],
+    ['2026-09-10', { id: 'u1', date: '2026-08-20' }, 0, 0, 1, []], 'the first change');
+  eq(p.get("ledgerMoveWarning('2026-08-20', state.book)"), 'Moving this entry to Aug 20 puts it inside the period already reconciled (through Aug 31). ' +
+    'If it cleared the bank by Aug 31, that statement should have included it, so check before moving it. Once moved, its amount, date and ' +
+    'direction can’t be changed here. If the date is right, pick it again to move it.', 'the warning');
+  eq(p.get("ledgerMoveWarning('2026-09-20', state.book)"), '', 'a date after the period is warned about');
+  // The warning is for that entry and that date: another entry, or another date, is asked about afresh.
+  p.run("change('led-date', 'pre', '2026-08-20')");
+  eq([p.get("row('pre').date"), p.get('ui.ledgerMoveWarned')], ['2026-06-20', { id: 'pre', date: '2026-08-20' }], 'another entry moved on the first’s warning');
+  p.run("change('led-date', 'pre', '2026-08-21')");
+  eq([p.get("row('pre').date"), p.get('ui.ledgerMoveWarned')], ['2026-06-20', { id: 'pre', date: '2026-08-21' }], 'another date moved on the old warning');
+  p.run("change('led-date', 'pre', '2026-06-25')");
+  eq([p.get("row('pre').date"), p.get('ui.ledgerMoveWarned'), p.get('log()[0].f'), 'why' in p.get('log()[0]')],
+    ['2026-06-25', null, { date: ['2026-06-20', '2026-06-25'] }, false], 'a date outside the period, after a warning');
+  // Picked again: moved, ONE edit event, saying it was warned. It is locked from then on.
+  p.run("change('led-date', 'u1', '2026-08-20'); change('led-date', 'u1', '2026-08-20')");
+  const ev = p.get('log()');
+  eq([p.get("row('u1').date"), p.get('ui.ledgerMoveWarned'), ev.length, ev[1].op, ev[1].row, ev[1].f, ev[1].why],
+    ['2026-08-20', null, 2, 'edit', 'u1', { date: ['2026-09-10', '2026-08-20'] }, 'Moved into the period reconciled through 2026-08-31; saved after the warning.'], 'the move');
+  p.run("toasts = []; change('led-date', 'u1', '2026-09-10')");
+  eq([p.get("row('u1').date"), p.get('toasts.length')], ['2026-08-20', 1], 'the moved entry is not locked');
+  // Under the entry it is about, escaped, while it stands; not on a locked row.
+  ok(/var mw = \(!eLocked && ui\.ledgerMoveWarned && ui\.ledgerMoveWarned\.id === e\.id\) \? ledgerMoveWarning\(ui\.ledgerMoveWarned\.date, state\.book\) : '';\s*return mw \? '<p class="small" role="alert"[^']*>' \+ esc\(mw\) \+ '<\/p>' : '';/
+    .test(slice('renderLedgerEntries')), 'the Entries list does not show the warning under the entry');
 });
 
 /* ---------------- report ---------------- */
