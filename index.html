@@ -4037,18 +4037,29 @@
       // and the op are strings; `f` an object, `rows` strings, `why` a string, or absent. An op
       // this page does not know is kept as it is, as a newer page wrote it.
       ['at', 'row', 'op'].forEach(function (k) { if (typeof ev[k] !== 'string') ev[k] = ''; });
+      // Security review of C2 (minor) — `at` is an ISO time as toISOString writes it, or '' ("time
+      // unknown"). Junk is cleared, not the event dropped: who changed what is still worth keeping
+      // in an audit trail, and '' sorts oldest, so a cap takes it first ("zzz" sorted after every
+      // real time and outlived them all). As an event with no time already was.
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/.test(ev.at)) ev.at = '';
       ['byUid', 'dev'].forEach(function (k) { if (ev[k] !== undefined && typeof ev[k] !== 'string') ev[k] = ''; });
       // Each field in `f` is [before, after]; anything else is dropped. The values are not scrubbed
       // (security review of C1, m5, decided here): they are what the row said, a leader's own
       // words and figures, the log is leaders-only like the ledger (never in buildParentView),
-      // and the page writes no email into a row.
+      // and the page writes no email into a row. They are clipped (security review of C2, #3):
+      // a string to 200 characters, anything but a number, true, false or null to null.
       if (ev.f !== undefined && !plainObj(ev.f)) delete ev.f;
-      if (ev.f) Object.keys(ev.f).forEach(function (k) { if (!Array.isArray(ev.f[k]) || ev.f[k].length !== 2) delete ev.f[k]; });
+      if (ev.f) Object.keys(ev.f).forEach(function (k) {
+        if (!Array.isArray(ev.f[k]) || ev.f[k].length !== 2) delete ev.f[k];
+        else ev.f[k] = ev.f[k].map(ledgerLogClip);
+      });
+      // `rows`: row ids (none is anywhere near 200 characters), at most 1000 of them.
       if (ev.rows !== undefined) {
         if (!Array.isArray(ev.rows)) delete ev.rows;
-        else ev.rows = ev.rows.filter(function (r) { return typeof r === 'string' && r; });
+        else ev.rows = ev.rows.filter(function (r) { return typeof r === 'string' && r && r.length <= 200; }).slice(0, 1000);
       }
       if (ev.why !== undefined && typeof ev.why !== 'string') delete ev.why;
+      if (typeof ev.why === 'string' && ev.why.length > 500) ev.why = ev.why.slice(0, 500);
     });
     // C2 (M4, m5) — one of each event, in time order, capped (mergeLedgerLog): the sync merge
     // unions the log by id, and gives the same order and cap.
@@ -7788,10 +7799,22 @@
       id: 'lg-' + String(who.id || ''), at: typeof who.at === 'string' ? who.at : '', by: ledgerStampClean(who.by),
       byUid: typeof who.byUid === 'string' ? who.byUid : '', dev: typeof who.dev === 'string' ? who.dev : '', row: rowId, op: op
     };
-    if (more.f && typeof more.f === 'object' && Object.keys(more.f).length) ev.f = more.f;
+    if (more.f && typeof more.f === 'object' && Object.keys(more.f).length) {
+      ev.f = {};
+      Object.keys(more.f).forEach(function (k) { if (Array.isArray(more.f[k])) ev.f[k] = more.f[k].slice(0, 2).map(ledgerLogClip); });
+    }
     if (Array.isArray(more.rows) && more.rows.length) ev.rows = more.rows.slice();
-    if (typeof more.why === 'string' && more.why) ev.why = more.why;
+    if (typeof more.why === 'string' && more.why) ev.why = more.why.slice(0, 500);
     return ev;
+  }
+  // Security review of C2 (#3) — one value in an event's `f`, as the log keeps it: a string cut
+  // to 200 characters (a description, a reference: the change is still plain), a number, true or
+  // false, or null; anything else is null. ledgerEvent writes, and normalizeState reads, through
+  // it, so both devices hold the same event. A literal: normalizeState runs before the script's
+  // vars are set. Pure.
+  function ledgerLogClip(v) {
+    if (typeof v === 'string') return v.length > 200 ? v.slice(0, 200) : v;
+    return (typeof v === 'number' && isFinite(v)) || typeof v === 'boolean' ? v : null;
   }
   // Phase 3, C2 — this device, now: the `who` ledgerEvent takes.
   function ledgerWho() {
@@ -7819,6 +7842,12 @@
   // it does. The oldest go first. ⚠ C6's per-row merge will read the log, and must not take a
   // missing old event as proof of anything. A literal, as in freshGone: normalizeState runs
   // before this part of the script has.
+  // AND BYTES (security review of C2, #3): a count alone let one event carry anything (a long
+  // `rows`, big values, fields a newer page adds), so the log is also cut, oldest first, to what
+  // fits in 128 KB of JSON (LEDGER_LOG_ROOM_BYTES, which close-out keeps free for it). About
+  // twice a season's ~65 KB: roughly 500 edits or 650 ticks before it bites.
+  // ⚠ "Newest" is by `at`, the writing device's clock (C6: not real-time order); an `at` that is
+  // not an ISO time is read as '' by normalizeState, so it sorts first and goes first.
   function mergeLedgerLog(mine, theirs) {
     var byId = Object.create(null);
     (mine || []).concat(theirs || []).forEach(function (ev) {
@@ -7830,7 +7859,15 @@
       var x = String(a.at || ''), y = String(b.at || '');
       return x < y ? -1 : x > y ? 1 : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     });
-    return all.length > 1000 ? all.slice(all.length - 1000) : all;
+    if (all.length > 1000) all = all.slice(all.length - 1000);
+    var size = 2, from = all.length;
+    while (from > 0) {
+      var one = utf8Bytes(JSON.stringify(all[from - 1])) + (from < all.length ? 1 : 0);
+      if (size + one > 128 * 1024) break;
+      size += one;
+      from -= 1;
+    }
+    return from ? all.slice(from) : all;
   }
   // ---------------------------------------------------------------------------
   // PHASE 3, C2 — LEDGER EDITS ARE LOGGED, AND THE LOCK RULES APPLY (owner, 2026-09-29).
@@ -25587,10 +25624,10 @@
   // the harness checks against this.
   var GONE_ROOM_BYTES = 250 * 1024;
   // Phase 3, C2 (security review of C1, m5) — and room for next year's ledger log (state.ledgerLog),
-  // which close-out also clears (until C8 keeps it in closedBooks) and the year fills again: the
-  // log of the year being closed, as the best guess at the next one's, and never less than this —
-  // a season of about 330 events is ~65 KB (see mergeLedgerLog).
-  var LEDGER_LOG_ROOM_BYTES = 64 * 1024;
+  // which close-out also clears (until C8 keeps it in closedBooks) and the year fills again.
+  // Security review of C2 (#3) — the most it can hold: mergeLedgerLog cuts it to 128 KB (the
+  // literal there; the harness checks the two agree). A season of about 330 events is ~65 KB.
+  var LEDGER_LOG_ROOM_BYTES = 128 * 1024;
   // UTF-8 length of a string, without TextEncoder so the harness sandbox can run it. Pure.
   function utf8Bytes(str) {
     var n = 0;
@@ -25663,8 +25700,9 @@
       ui = liveUi;
     }
     var other = utf8Bytes(JSON.stringify(after)) - utf8Bytes(JSON.stringify(after.gone || {})) + GONE_ROOM_BYTES;
-    // C2 (m5) — the log close-out cleared, swapped for room for next year's (LEDGER_LOG_ROOM_BYTES).
-    other += Math.max(LEDGER_LOG_ROOM_BYTES, utf8Bytes(JSON.stringify(live.ledgerLog || []))) - utf8Bytes(JSON.stringify(after.ledgerLog || []));
+    // C2 (m5) — the log close-out cleared, swapped for room for next year's (LEDGER_LOG_ROOM_BYTES,
+    // its cap, so this year's is never more).
+    other += LEDGER_LOG_ROOM_BYTES - utf8Bytes(JSON.stringify(after.ledgerLog || []));
     return fitSeasonLedger(led, other, ARCHIVE_DOC_SOFT_LIMIT);
   }
   function buildSeasonArchive() {
