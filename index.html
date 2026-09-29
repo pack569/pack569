@@ -3678,6 +3678,11 @@
     // Entries are deliberately NOT per-item normalized — keep this additive. Wave 16 relies
     // on that: imported entries carry an extra source:'te-import' tag that must survive.
     if (!Array.isArray(d.entries)) d.entries = [];
+    // Phase 3 step 0 — except that every entry has an id: the merge skips one without, and a
+    // row needs one. From what the entry says (stableRowId), so every device agrees on it.
+    d.entries.forEach(function (e) {
+      if (e && typeof e === 'object' && !Array.isArray(e) && (typeof e.id !== 'string' || !e.id)) e.id = stableRowId('ne', e);
+    });
     if (!Array.isArray(d.storefronts)) d.storefronts = [];
     if (!Array.isArray(d.meetings)) d.meetings = [];
     if (!Array.isArray(d.leaders)) d.leaders = [];
@@ -3973,7 +3978,9 @@
     if (!Array.isArray(d.ledger)) d.ledger = [];
     d.ledger = d.ledger.filter(function (e) { return e && typeof e === 'object' && !Array.isArray(e); });
     d.ledger.forEach(function (e) {
-      if (typeof e.id !== 'string' || !e.id) e.id = uid();
+      // Phase 3 step 0 — from what the entry says, not uid(): this used to give an id-less entry
+      // a new random id on EVERY load, on every device, so no two copies ever agreed on it.
+      if (typeof e.id !== 'string' || !e.id) e.id = stableRowId('nl', e);
       e.date = typeof e.date === 'string' ? e.date : '';
       e.description = typeof e.description === 'string' ? e.description : '';
       // Always positive; `direction` carries the sign. A stored negative would make the
@@ -4057,12 +4064,17 @@
       var total = cents * (line.basis === 'per-head' ? migScouts : 1);
       if (!total) return;
       d.ledger.push({
-        id: uid(), date: line.date || migDate,
+        // Phase 3 step 0 — one per line, and the same id on every device that migrates it.
+        id: 'mig-' + line.id, date: line.date || migDate,
         description: line.name || fallbackName,
         amountCents: Math.abs(total), direction: total < 0 ? 'in' : 'out',
         lineId: line.id, method: '', ref: '', source: '', donor: '', scoutId: '', tierMakeup: '',
         // Migrated money has never been held next to a statement, so it starts unticked.
-        reconciled: false
+        reconciled: false,
+        // Phase 3 step 0 — the rest of the shape the ledger's normalizer (above, already run)
+        // gives every row, so the next load finds nothing to change.
+        reimbursement: false, notCommission: false,
+        enteredBy: '', enteredAt: '', approvedBy: '', approvedAt: '', enteredByUid: '', approvedByUid: ''
       });
     }
     d.budget.activities.forEach(function (a) { if (a && typeof a === 'object') migrateLineActual(a, 'Activity'); });
@@ -4313,11 +4325,15 @@
         Object.keys(cm).forEach(function (sid) {
           if (cm[sid] !== true) return;
           d.ledger.push({
-            id: uid(), date: backfillDate,
+            // Phase 3 step 0 — one per line and scout, the same on every device that migrates it.
+            id: 'mig-' + lineId + '-' + sid, date: backfillDate,
             description: (line.name || 'Fee') + ' — collected',
             amountCents: each, direction: 'in', lineId: lineId,
             method: '', ref: '', source: 'family', donor: '', scoutId: sid, tierMakeup: '',
-            reconciled: false
+            reconciled: false,
+            // Phase 3 step 0 — the full normalized shape, as the actualCents migration's rows.
+            reimbursement: false, notCommission: false,
+            enteredBy: '', enteredAt: '', approvedBy: '', approvedAt: '', enteredByUid: '', approvedByUid: ''
           });
         });
         delete d.collected[k];
@@ -4384,7 +4400,7 @@
         if (!sale || typeof sale !== 'object' || Array.isArray(sale)) return false;
         if (typeof sale.scoutId !== 'string' || !sale.scoutId) return false;
         if (typeof sale.cents !== 'number' || !isFinite(sale.cents) || sale.cents < 0) return false;
-        if (typeof sale.id !== 'string' || !sale.id) sale.id = uid();
+        if (typeof sale.id !== 'string' || !sale.id) sale.id = stableRowId('ns', { fr: fr.id, sale: sale });   // Phase 3 step 0
         sale.cents = Math.round(sale.cents);
         if (typeof sale.date !== 'string') delete sale.date;
         if (typeof sale.note !== 'string') delete sale.note;
@@ -4528,7 +4544,7 @@
         if (typeof dist.containers !== 'number' || !isFinite(dist.containers)) return false;
         dist.containers = Math.round(dist.containers); // may be negative (a return)
         if (dist.containers === 0) return false;
-        if (typeof dist.id !== 'string' || !dist.id) dist.id = uid();
+        if (typeof dist.id !== 'string' || !dist.id) dist.id = stableRowId('nd', dist);   // Phase 3 step 0
         if (typeof dist.date !== 'string') delete dist.date;
         if (typeof dist.note !== 'string') delete dist.note;
         return true;
@@ -4608,6 +4624,14 @@
         } else if (sf.weather !== undefined) delete sf.weather;
       });
     }
+    // Phase 3 step 0 — no two rows in a money log share an id (every fundraiser's sales are one
+    // log). A row is its id once the logs are rows, and the merge already keeps only the first of
+    // two. A second one is RENAMED, never dropped — it is money either way, and dropping it would
+    // change a total — to '<id>-d2' (then -d3 …), the same on every device.
+    dedupeRowIds(d.entries);
+    dedupeRowIds(d.ledger);
+    if (d.inventory && Array.isArray(d.inventory.distributions)) dedupeRowIds(d.inventory.distributions);
+    dedupeRowIds([].concat.apply([], d.fundraisers.map(function (fr) { return fr.sales; })));
     // LIVE STOPGAP (2026-09-29) — the deletion marks (see freshGone). Absent on every record
     // before, which reads as nothing deleted. Only the known logs, and only a real non-zero
     // time for a non-empty id; anything else is dropped. Never pruned here: this has to give
@@ -4623,6 +4647,31 @@
       });
     });
     return d;
+  }
+  // Phase 3 step 0 — an id for a money-log row that has none, from what the row says (its id
+  // left out), so every device that normalizes the same old record gives it the same id. Two
+  // FNV-1a passes (campHash): 64 bits. Two identical rows get the same one; dedupeRowIds then
+  // renames the second.
+  function stableRowId(prefix, row) {
+    var c = {};
+    Object.keys(row).forEach(function (k) { if (k !== 'id') c[k] = row[k]; });
+    var s = JSON.stringify(c);
+    return prefix + campHash(s) + campHash('#' + s);
+  }
+  // Rows in order; the first of each id keeps it. Pure apart from the renames.
+  function dedupeRowIds(rows) {
+    var all = Object.create(null), seen = Object.create(null);
+    rows.forEach(function (x) { if (x && typeof x.id === 'string') all[x.id] = true; });
+    rows.forEach(function (x) {
+      if (!x || typeof x.id !== 'string') return;
+      if (seen[x.id]) {
+        var n = 2;
+        while (all[x.id + '-d' + n]) n += 1;
+        x.id = x.id + '-d' + n;
+        all[x.id] = true;
+      }
+      seen[x.id] = true;
+    });
   }
   // Wave 15 — set when saved data existed but couldn't be read; a copy went to KEY + '-bak'
   // and a toast fires after the first render (toastHost isn't in the DOM yet at load time).

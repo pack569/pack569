@@ -214,7 +214,7 @@ test('the parent render block never reads `state`', () => {
 
 test('leaders[].jobs and [].dens are defaulted in the normalizer', () => {
   const start = SCRIPT.indexOf('function normalizeState(');
-  const block = SCRIPT.slice(start, start + 4000);
+  const block = SCRIPT.slice(start, start + 5000);
   ok(/l\.jobs = jobsFromRoleText\(l\.role\)/.test(block), 'jobs are not seeded from the old role text');
   ok(/l\.dens = densFromRoleText\(l\.role\)/.test(block), 'dens are not seeded from the old role text');
   ok(/typeof l\.uid !== 'string'/.test(block), 'leaders[].uid is not defaulted');
@@ -1002,7 +1002,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // Security review — a stored ledger stamp that is an email is neutralised on load.
   'ledgerStampClean',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
-  'parseLegacyTime', 'migrateTierMakeUp', 'freshGone', 'normalizeState', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
+  'parseLegacyTime', 'migrateTierMakeUp', 'freshGone', 'campHash', 'stableRowId', 'dedupeRowIds', 'normalizeState', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'entrySignedCents',
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
@@ -16924,6 +16924,83 @@ atest('stopgap, api: last season does not come back from a device that has not c
   await settle([b], 800);
   eq([b.log.filter((l) => /^PUT/.test(l)), b.get('[state.budget.programYear, state.entries.length, sync.dirty]')], [[], [2027, 0, false]],
     'use the cloud copy');
+});
+
+/* ================================================================
+   Phase 3 step 0 (2026-09-29) — every money-log row has an id, the same on every device, and
+   no two rows in a log share one. Once the logs are rows a row IS its id; today the merge
+   already keeps only the first of two, and skips a row with none.
+   ================================================================ */
+// An old record: rows with no id (two of them identical), ids used twice (one of them with its
+// '-d2' already taken), and the two load-time migrations that write ledger rows — a line's
+// actualCents and the old "collected" ticks.
+const LEGACY_ROWS = () => JSON.parse(JSON.stringify({
+  version: 1, packName: 'Legacy', scouts: [{ id: 's1', name: 'Ada', den: 'Wolf' }, { id: 's2', name: 'Bo', den: 'Bear' }],
+  budget: { programYear: 2025, activities: [], expenses: [
+    { id: 'x1', name: 'Charter', actualCents: 7500, flatCents: 7500 },
+    { id: 'x2', name: 'Patches', basis: 'per-head', scoutRateCents: 300 }] },
+  collected: { x2: { s1: true, s2: true } },
+
+  entries: [
+    { scoutId: 's1', kind: 'wagon', date: '', salesCents: 1000, donationsCents: 0 },
+    { scoutId: 's1', kind: 'wagon', date: '', salesCents: 1000, donationsCents: 0 },
+    { id: '', scoutId: 's2', kind: 'online', date: '2025-10-01', salesCents: 700, donationsCents: 0 },
+    { id: 'e1', scoutId: 's2', kind: 'wagon', date: '', salesCents: 1, donationsCents: 0 },
+    { id: 'e1', scoutId: 's2', kind: 'wagon', date: '', salesCents: 2, donationsCents: 0 }],
+  ledger: [
+    { date: '2025-09-01', description: 'Dues', amountCents: 2500, direction: 'in' },
+    { id: 'l1', date: '2025-09-02', description: 'A', amountCents: 1, direction: 'in' },
+    { id: 'l1', date: '2025-09-03', description: 'B', amountCents: 2, direction: 'out' },
+    { id: 'l1-d2', date: '2025-09-04', description: 'C', amountCents: 3, direction: 'in' }],
+  fundraisers: [
+    { id: 'f1', name: 'Raffle', sales: [{ scoutId: 's1', cents: 500 }, { id: 'fs', scoutId: 's1', cents: 100 }] },
+    { id: 'f2', name: 'Wreaths', sales: [{ scoutId: 's1', cents: 500 }, { id: 'fs', scoutId: 's2', cents: 200 }] }],
+  inventory: { products: [{ id: 'p1', name: 'Caramel', cases: 1, perCase: 8, unitPriceCents: 1500 }],
+    distributions: [{ productId: 'p1', target: { kind: 'den', den: 'Wolf' }, containers: 2 },
+      { productId: 'p1', target: { kind: 'den', den: 'Wolf' }, containers: 2 }] }
+}));
+const rowLogs = (st) => ({
+  entries: st.entries.map((e) => e.id), ledger: st.ledger.map((e) => e.id),
+  distributions: st.inventory.distributions.map((e) => e.id), sales: [].concat(...st.fundraisers.map((f) => f.sales.map((x) => x.id)))
+});
+
+test('Phase 3 step 0: normalizeState gives every money-log row one id, the same on every device, and is a fixed point', () => {
+  // Two devices: two sandboxes, so two unrelated Math.random()s and uid()s. The council camping
+  // trips and the welcome page are seeded with uid()s of their own, and are not money logs: the
+  // record carries them as any record loaded once before does, so the WHOLE record can be compared.
+  const seeded = sandbox(NORMALIZE_FNS).normalizeState(LEGACY_ROWS());
+  const legacy = () => Object.assign(LEGACY_ROWS(), JSON.parse(JSON.stringify({ camping: seeded.camping, welcome: seeded.welcome })));
+  const n1 = sandbox(NORMALIZE_FNS), n2 = sandbox(NORMALIZE_FNS);
+  const once = JSON.stringify(n1.normalizeState(legacy()));
+  eq(JSON.stringify(n2.normalizeState(legacy())), once, 'two devices normalized the same old record differently');
+  eq(JSON.stringify(n2.normalizeState(JSON.parse(once))), once, 'normalizeState is not a fixed point');
+  const st = JSON.parse(once), ids = rowLogs(st);
+  // Every row an id, unique within its log (every fundraiser's sales together), and none dropped.
+  for (const [log, list] of Object.entries(ids)) {
+    ok(list.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 64), `${log}: a row with no usable id`);
+    eq(new Set(list).size, list.length, `${log}: an id used twice`);
+  }
+  eq([ids.entries.length, ids.ledger.length, ids.distributions.length, ids.sales.length], [5, 7, 2, 4], 'a row was dropped');
+  // From what the row says: identical rows share one, and the second is renamed.
+  ok(/^ne[0-9a-z]+$/.test(ids.entries[0]) && /^ne[0-9a-z]+$/.test(ids.entries[2]), 'an entry id is not stable');
+  eq(ids.entries[1], ids.entries[0] + '-d2', 'the second of two identical entries');
+  eq(ids.entries.slice(3), ['e1', 'e1-d2'], 'a repeated entry id');
+  ok(/^nl[0-9a-z]+$/.test(ids.ledger[0]), 'the ledger row with no id');
+  eq(ids.ledger.slice(1), ['l1', 'l1-d3', 'l1-d2', 'mig-x1', 'mig-x2-s1', 'mig-x2-s2'], 'the ledger’s repeated and migrated ids');
+  eq(ids.distributions[1], ids.distributions[0] + '-d2', 'two identical hand-outs');
+  ok(/^nd[0-9a-z]+$/.test(ids.distributions[0]), 'a hand-out id is not stable');
+  // The same sale in two fundraisers is two rows: the parent is part of what the id is made of.
+  ok(/^ns[0-9a-z]+$/.test(ids.sales[0]) && /^ns[0-9a-z]+$/.test(ids.sales[2]) && ids.sales[0] !== ids.sales[2], 'sale ids');
+  eq([ids.sales[1], ids.sales[3]], ['fs', 'fs-d2'], 'a sale id used in two fundraisers');
+  // Money is untouched: the migrated rows carry what they always did, and nothing moved.
+  eq(st.ledger.slice(4).map((e) => [e.amountCents, e.direction, e.lineId, e.scoutId]),
+    [[7500, 'out', 'x1', ''], [300, 'in', 'x2', 's1'], [300, 'in', 'x2', 's2']], 'the migrated ledger rows');
+  eq(st.entries.map((e) => e.salesCents), [1000, 1000, 700, 1, 2], 'an entry changed');
+  // What this is for: a device merging the same old record from another adds nothing twice.
+  const m = sandbox(NORMALIZE_FNS.concat(['GONE_KEEP_MS', 'GONE_MAX', 'pruneGone', 'teBatchOf', 'mergeRemoteAppendOnly']));
+  vm.runInContext(`var state = normalizeState(${JSON.stringify(legacy())});`, m);
+  eq(vm.runInContext(`mergeRemoteAppendOnly({ json: ${JSON.stringify(JSON.stringify(legacy()))} })`, m), 0,
+    'merging the same old record from another device added rows');
 });
 
 /* ---------------- report ---------------- */
