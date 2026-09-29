@@ -11469,10 +11469,18 @@
         } else if (sync.dirty && !sync.conflict) scheduleSyncPush();
         return;
       }
+      // An edit made while the push was out is not in what was sent (security review of
+      // 6747945..6fa61c2, item 4). Such a device is still unsaved: marked clean, it would adopt
+      // the next save from another device over that edit. So it stays dirty and sends again. The
+      // copy is compared, not edits counted, because a typed-in amount changes it 300 ms before
+      // its save asks for a push (schedulePersist). Read before state.rev moves on, as the sent
+      // copy was.
+      var editedSince = JSON.stringify(state) !== res.record.json;
       state.rev = res.nextRev;
       // What the server now holds is exactly what this device sent.
       sync.remoteRec = { rev: res.record.rev, device: res.record.device, json: res.record.json };
-      sync.dirty = false;
+      if (!editedSince) sync.dirty = false;
+      else if (sync.dirty) scheduleSyncPush();
       save(); // no re-render needed — nothing visible changed…
       scheduleParentViewRefresh(); // Parent phase — regenerate the sanitized copy (leaders only)
       if (sync.clobber) {

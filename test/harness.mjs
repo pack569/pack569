@@ -8882,21 +8882,22 @@ test('Firestore: a save before the pack record’s first answer never writes ove
 // and run() fires them (the 800 ms push).
 function fsFeedCtx(local, extra) {
   return fsAdapterCtx(`
-    var toasts = [], timers = [], saves = 0, renders = 0;
+    var toasts = [], timers = {}, timerSeq = 0, saves = 0, renders = 0;
     function fixedSyncBlocked() { return false; } function fixedFeedBlocked() { return false; }
     function accountsInForce() { return false; } function canEdit() { return true; }
     function holdPushes() { return false; } function scheduleParentViewRefresh() {} function render() { renders += 1; }
     function renderSyncPill() {} function save() { saves += 1; } function showToast(m) { toasts.push(m); }
     function syncFail(e) { throw e; }
-    function clearTimeout(t) { if (t) timers[t - 1] = null; } function setTimeout(fn) { timers.push(fn); return timers.length; }
-    function runTimers() { var fns = timers; timers = []; fns.forEach(function (f) { if (f) f(); }); }
+    function clearTimeout(t) { delete timers[t]; } function setTimeout(fn) { timerSeq += 1; timers[timerSeq] = fn; return timerSeq; }
+    function runTimers() { Object.keys(timers).forEach(function (id) { var f = timers[id]; delete timers[id]; if (f) f(); }); }
     function normalizeState(p) { return p && typeof p === 'object' && !Array.isArray(p) ? JSON.parse(JSON.stringify(p)) : null; }
     var ui = { tab: 'home', overlay: null };
     var state = ${JSON.stringify(local)};
     var sync = { backend: firestoreBackend, pack: firestoreBackend.open('P'), session: 1, deviceId: 'dev1', clobber: false,
       dirty: false, mode: 'connecting', notice: '', firstSnap: true, remoteRec: null, conflict: null, pushTimer: null,
       unsub: null, feed: null, packMissing: false };
-    ${['packLinked', 'subscribeDoc', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'adoptRemote', 'onRemoteSnap', 'syncPush'].map(decl).join('\n')}
+    ${['packLinked', 'subscribeDoc', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'adoptRemote', 'onRemoteSnap',
+       'scheduleSyncPush', 'syncPush'].map(decl).join('\n')}
     ${extra || ''}
     subscribeDoc(1);`);
 }
@@ -8918,7 +8919,7 @@ test('Firestore: a cached first answer is never the first answer, so it can neit
       'the pack feed does not ask to hear the server confirm a cached copy');
     vm.runInContext("watches[0].next(snapOf('packs/P', { fromCache: true }))", ctx);
     const cached = fsFeedGot(ctx);
-    const pushQueued = vm.runInContext('timers.filter(Boolean).length', ctx);
+    const pushQueued = vm.runInContext('Object.keys(timers).length', ctx);
     // Back online: whatever was queued runs against the shared pack, then the server answers.
     vm.runInContext("reads['packs/P'] = " + JSON.stringify(shared) + "; runTimers();", ctx);
     vm.runInContext("watches[0].next(snapOf('packs/P', {}))", ctx);
@@ -8983,6 +8984,41 @@ test('Firestore: a save handed over before the first answer is not compared agai
   // Control: with no feed answer yet, the handed-over record is the first answer, as before.
   eq(run(mine, null, false), { sets: [], overlay: 'sync-conflict', conflict: 9, firstSnap: false, dirty: true, rev: 2,
     name: 'Old', mode: 'online', handedOver: 1 }, 'control: a record handed over before the first answer is compared');
+});
+
+test('Firestore: an edit made while a save is out is still sent, and another device’s save does not replace it', () => {
+  // Security review of 6747945..6fa61c2, item 4. The push's result marked the device clean even
+  // though an edit had been made after its copy was taken; the next save from another device
+  // was then adopted over that edit, and adoptRemote cancelled the push that would have sent it.
+  const mine = { rev: 2, packName: 'Pack', scouts: [{ id: 'a' }], ledger: [], fundraisers: [] };
+  const run = (midPush) => {
+    const ctx = fsFeedCtx(mine, `
+      var realTx = fakeFirestore.runTransaction, midPushDone = false;
+      fakeFirestore.runTransaction = function (db, body) {
+        var out = realTx(db, body);
+        if (!midPushDone) { midPushDone = true; ${midPush} }
+        return out;
+      };
+      reads['packs/P'] = ${JSON.stringify({ rev: 2, device: 'd2', json: JSON.stringify(mine) })};`);
+    // The first answer is this same pack; then an edit, and its push.
+    vm.runInContext("watches[0].next(snapOf('packs/P', {})); state.ledger.push({ id: 'l1' }); scheduleSyncPush(); runTimers();", ctx);
+    const afterPush = vm.runInContext('[sync.dirty, Object.keys(timers).length, txSets.length]', ctx);
+    // Another device saves before this device's next push runs.
+    const other = { rev: 5, device: 'd3', json: JSON.stringify({ rev: 5, packName: 'Pack', scouts: [{ id: 'a' }], ledger: [{ id: 'l1' }, { id: 'l2' }], fundraisers: [] }) };
+    vm.runInContext(`reads['packs/P'] = ${JSON.stringify(other)}; watches[0].next(snapOf('packs/P', {})); runTimers();`, ctx);
+    const last = vm.runInContext('txSets.length ? JSON.parse(txSets[txSets.length - 1][1].json) : null', ctx);
+    return JSON.parse(JSON.stringify({ afterPush, name: vm.runInContext('state.packName', ctx), dirty: vm.runInContext('sync.dirty', ctx),
+      sent: last && [last.packName, last.ledger.map((l) => l.id)], sets: vm.runInContext('txSets.length', ctx) }));
+  };
+  // Renamed while the save was out (its own push already asked for, as commit does).
+  eq(run("state.packName = 'Renamed mid-save'; scheduleSyncPush();"), { afterPush: [true, 1, 1], name: 'Renamed mid-save', dirty: false,
+    sent: ['Renamed mid-save', ['l1', 'l2']], sets: 2 }, 'an edit made while a save was out was lost to another device’s save');
+  // Typed while the save was out: a live amount edit changes the pack 300 ms before it asks for a push.
+  eq(run("state.packName = 'Typed mid-save';"), { afterPush: [true, 1, 1], name: 'Typed mid-save', dirty: false,
+    sent: ['Typed mid-save', ['l1', 'l2']], sets: 2 }, 'a live edit made while a save was out was lost');
+  // Control: nothing changed during the save, so the device is clean and takes the other save.
+  eq(run(''), { afterPush: [false, 0, 1], name: 'Pack', dirty: false, sent: ['Pack', ['l1']], sets: 1 },
+    'control: a save with no edit behind it left the device unsaved');
 });
 
 test('the pack record feed ignores its own echoes and keeps the raw record for the conflict screen', () => {
@@ -15565,6 +15601,40 @@ atest('a copy choice closed with Escape keeps saying it waits, and a device that
   // …and the toast came with the adopt above, end to end.
   ok(ed.get('toasts').indexOf('You’re now view-only, so this device took the pack’s shared copy.') !== -1,
     'the leader made view-only was not told why their copy went');
+});
+
+atest('api client: an edit made while a save is out reaches the server, even when another device saves first', async () => {
+  // Security review of 6747945..6fa61c2, item 4, end to end: the editor renames the pack while
+  // its save of a ledger row is on the wire. The owner then saves before the editor's next push.
+  const w = await (await apiWorld()).seed();
+  w.state(3, PACK_STATE());
+  const ed = await (await apiClient(w, 'editor', { state: PACK_STATE() })).start();
+  const owner = await (await apiClient(w, 'owner', { state: PACK_STATE() })).start();
+  eq([ed.get('[sync.dirty, state.rev]'), owner.get('[sync.dirty, state.rev]')], [[false, 3], [false, 3]], 'both devices start clean on rev 3');
+  let renamed = false;
+  ed.intercept = async (method, pathname) => {
+    if (method === 'PUT' && /^\/api\/pack\/[^/]+$/.test(pathname) && !renamed) {
+      renamed = true;
+      ed.run("state.packName = 'Renamed mid-save'; commit();");
+    }
+    return null;
+  };
+  ed.run("state.ledger.push({ id: 'l1', amountCents: 5 }); commit();");
+  ed.runTimers(800);      // the ledger row's push, once; the rename's own push stays waiting
+  await settle([ed]);
+  ed.intercept = null;
+  eq([renamed, serverState(w).rev, serverState(w).json.packName], [true, 4, 'Test Pack'], 'the save that was out (the test proves nothing)');
+  eq(ed.get('sync.dirty'), true, 'the device was marked clean with the rename unsent');
+  // The owner saves a ledger row; the editor's feed brings it before the editor's next push.
+  await owner.edit("state.ledger.push({ id: 'l2', amountCents: 7 })");
+  eq(serverState(w).rev, 5, 'the owner’s save');
+  await ed.poll();
+  eq(ed.get('state.packName'), 'Renamed mid-save', 'the owner’s save was adopted over the editor’s rename');
+  await settle([ed], 800);
+  const s = serverState(w);
+  eq([s.rev, s.json.packName, s.json.ledger.map((l) => l.id).sort()], [6, 'Renamed mid-save', ['l0', 'l1', 'l2']],
+    'the rename, or the owner’s row, did not reach the server');
+  eq(ed.get('[sync.dirty, state.rev]'), [false, 6], 'the editor’s device after its save');
 });
 
 atest('api client: a pack copied in after a leader’s device heard "no pack" is compared, never saved over', async () => {
