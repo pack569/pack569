@@ -64,12 +64,19 @@ Repo → Settings → Environments → New environment:
 - [ ] **`website-production`**
   - Required reviewers: **Keith**.
   - Deployment branches and tags: **Selected branches → `main`** only.
+- [ ] **`website-staging`**
+  - Required reviewers: **Keith**.
+  - Deployment branches and tags: leave at **No restriction**. Staging deploys whichever
+    branch you have read; the approval click is the check.
 - [ ] **`website-preview`**: no reviewer needed.
 
-Create `website-production` **before** the first production run. GitHub creates an
-environment a job names if it doesn't exist, with no protection at all. For production the
-workflow's preflight refuses to go on unless the environment has a required reviewer **and**
-a deployment branch rule (not "all branches"), and it refuses any branch but `main`.
+Create `website-production` and `website-staging` **before** the first production or staging
+run. GitHub creates an environment a job names if it doesn't exist, with no protection at
+all. The workflow's preflight refuses production unless its environment has a required
+reviewer **and** a deployment branch rule (not "all branches"), and it refuses any branch but
+`main`. It refuses staging unless `website-staging` has a required reviewer: staging is where
+real Google sign-ins meet a branch's code, and those sign-ins work on the live pack too
+([D](#d-a-preview-you-can-sign-in-to-stagingpack569pagesdev)).
 
 Approve within 7 days: the built site waits between jobs as an artifact kept for a week.
 If an approval comes later, run the workflow again. Nothing deploys meanwhile.
@@ -77,7 +84,8 @@ If an approval comes later, run the workflow again. Nothing deploys meanwhile.
 ## 4. Secrets, on the environments
 
 Put the two secrets on **each environment**, not on the repo. Settings → Environments →
-`website-production` → Environment secrets → Add secret, then the same on `website-preview`:
+`website-production` → Environment secrets → Add secret, then the same on `website-staging`
+and on `website-preview`:
 
 - [ ] `CLOUDFLARE_API_TOKEN`: the token from step 2.
 - [ ] `CLOUDFLARE_ACCOUNT_ID`: shown in the Cloudflare dashboard (Workers & Pages, right side).
@@ -116,9 +124,10 @@ Actions → **website** → **Run workflow**:
     [D. A preview you can sign in to](#d-a-preview-you-can-sign-in-to-stagingpack569pagesdev).
   - `production`: pack569.com, from `main` only, after your approval.
 
-The run goes: gates (the harness and both builds) → preflight (checks the built files
-again; for production, the branch, the reviewer and the branch rule) → deploy. Production
-then waits for your approval. The link is in the run's summary.
+The run goes: gates (the harness and every build) → preflight (checks the built files
+again; for production, the branch, the reviewer and the branch rule; for staging, the
+reviewer) → deploy. Production and staging then wait for your approval. The link is in the
+run's summary.
 
 Every deploy also sends the API (`functions/`) with the site. The deploy stops with
 "wrangler.toml still has placeholder D1 ids" until you have done step A of
@@ -397,8 +406,10 @@ live pack's sign-in; read the next part before you add it.
       shows the page. Real Google accounts sign in there. No lock, no staging deploy.
 
 To deploy there: Actions → **website** → Run workflow, from the branch, with `deploy_target`
-**`staging`**. The build is the branch's page with `BACKEND = 'api'`; nothing else in it
-changes. Only deploy a branch whose code you have read (see the risk below).
+**`staging`**, and approve it (the `website-staging` environment, step 3). The build is the
+branch's page with `BACKEND = 'api'` and `STAGING = true`, which makes the page refuse the
+real move file; nothing else in it changes. Only deploy a branch whose code you have read
+(see the risk below).
 
 What to check on staging, in a private window:
 

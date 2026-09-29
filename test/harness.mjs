@@ -14,7 +14,7 @@
 // Run:  node test/harness.mjs
 // Exit: 0 all green, 1 on any failure.
 
-import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync, cpSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync, cpSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -13146,7 +13146,9 @@ test('the workflow deploys only by hand, production only from main, with every a
   ok(/needs: \[website-gates, deploy-preflight\]/.test(jobs.deploy), 'deploy does not need the preflight');
   ok(/if: inputs\.deploy_target == 'production' && github\.ref != 'refs\/heads\/main'\n[\s\S]*?exit 1/.test(jobs['deploy-preflight']),
     'the preflight does not refuse production off main');
-  ok(/environments\/website-production[\s\S]*?required_reviewers/.test(jobs['deploy-preflight']), 'the preflight does not check the reviewer');
+  // Security review of stage C, item 5: production AND staging are checked for a reviewer.
+  ok(/if: inputs\.deploy_target == 'production' \|\| inputs\.deploy_target == 'staging'\n[\s\S]*?ENV_NAME: \$\{\{ inputs\.deploy_target == 'production' && 'website-production' \|\| 'website-staging' \}\}\n[\s\S]*?environments\/\$ENV_NAME[\s\S]*?required_reviewers/.test(jobs['deploy-preflight']),
+    'the preflight does not check production’s and staging’s reviewer');
   ok(/--verify _site --target "\$TARGET"/.test(jobs['deploy-preflight']), 'the preflight does not verify the artifact');
   // Nothing that deploys, or holds a secret, outside the deploy job; the gates build and test.
   for (const j of ['website-gates', 'deploy-preflight']) {
@@ -13162,8 +13164,35 @@ test('the workflow deploys only by hand, production only from main, with every a
   ok(/--branch=\$\{\{ inputs\.deploy_target == 'production' && 'main' \|\| \(inputs\.deploy_target == 'staging' && 'staging' \|\| format\('preview-\{0\}', github\.sha\)\) \}\}/.test(jobs.deploy),
     'the Pages branch is not main-for-production-only, staging-for-staging');
   eq((jobs.deploy.match(/'main'/g) || []).length, 1, 'main is named twice in the deploy job');
-  ok(/name: \$\{\{ inputs\.deploy_target == 'production' && 'website-production' \|\| 'website-preview' \}\}/.test(jobs.deploy),
-    'staging does not deploy through website-preview');
+  ok(/name: \$\{\{ inputs\.deploy_target == 'production' && 'website-production' \|\| \(inputs\.deploy_target == 'staging' && 'website-staging' \|\| 'website-preview'\) \}\}/.test(jobs.deploy),
+    'staging does not deploy through website-staging');
+  // The reviewer check, run as the runner would, against a fake `gh` answering for the environment.
+  const stepRe = /- name: Refuse production or staging without a required reviewer\n[\s\S]*?\n        run: \|\n((?:          .*\n|\n)+)/;
+  const stepRun = stepRe.exec(jobs['deploy-preflight']);
+  ok(stepRun, 'the reviewer step’s script was not found');
+  if (stepRun) {
+    const script = stepRun[1].split('\n').map((l) => l.slice(10)).join('\n');
+    const dir = mkdtempSync(join(tmpdir(), 'pack569-env-'));
+    try {
+      writeFileSync(join(dir, 'gh'), '#!/bin/bash\necho "$@" >> "$GH_LOG"\nif [ -z "$ENV_BODY" ]; then echo "HTTP 404: Not Found" >&2; exit 1; fi\nprintf "%s" "$ENV_BODY"\n', { mode: 0o755 });
+      const runEnv = (envName, body) => {
+        const log = join(dir, 'log');
+        rmSync(log, { force: true });
+        const r = spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { PATH: dir + ':/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin',
+          ENV_NAME: envName, REPO: 'pack569/pack569', GH_TOKEN: 'x', GH_LOG: log, ENV_BODY: body === null ? '' : JSON.stringify(body) } });
+        return [r.status, (r.stdout.match(/::error title=([^:]+)::/) || [])[1] || '', existsSync(log) ? readFileSync(log, 'utf8').trim() : ''];
+      };
+      const reviewer = { protection_rules: [{ type: 'required_reviewers', reviewers: [{}] }], deployment_branch_policy: null };
+      const branches = Object.assign({}, reviewer, { deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } });
+      eq(runEnv('website-staging', reviewer), [0, '', 'api repos/pack569/pack569/environments/website-staging'], 'staging with a reviewer');
+      eq(runEnv('website-staging', { protection_rules: [], deployment_branch_policy: null }).slice(0, 2), [1, 'website-staging has no required reviewer'], 'staging with no reviewer');
+      eq(runEnv('website-staging', { protection_rules: [{ type: 'wait_timer' }] }).slice(0, 2), [1, 'website-staging has no required reviewer'], 'staging with only a wait timer');
+      eq(runEnv('website-staging', null).slice(0, 2), [1, 'No website-staging environment'], 'no staging environment');
+      eq(runEnv('website-production', reviewer).slice(0, 2), [1, 'website-production allows every branch'], 'production open to every branch');
+      eq(runEnv('website-production', branches), [0, '', 'api repos/pack569/pack569/environments/website-production'], 'production with a reviewer and a branch rule');
+      eq(runEnv('website-production', { protection_rules: [] }).slice(0, 2), [1, 'website-production has no required reviewer'], 'production with no reviewer');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
   ok(/website-production/.test(jobs.deploy) && /cancel-in-progress: false/.test(jobs.deploy), 'the deploy environment or concurrency');
   // Review round (2026-09-28): the environment must be limited to chosen branches, too.
   ok(/jq -e '\.deployment_branch_policy != null'[\s\S]*?exit 1/.test(jobs['deploy-preflight']), 'the preflight accepts an environment open to every branch');
@@ -13203,6 +13232,12 @@ test('the workflow deploys only by hand, production only from main, with every a
   // A dispatch has a concurrency group of its own, so a pending approval blocks nothing.
   ok(/group: \$\{\{ github\.event_name == 'workflow_dispatch' && format\('website-dispatch-\{0\}', github\.run_id\)/.test(WF),
     'dispatches share a concurrency group');
+  // The owner makes website-staging with a reviewer, and gives it the secrets, before staging runs.
+  const DOC = readFileSync(join(ROOT, 'docs/cloudflare-setup.md'), 'utf8');
+  const envs = DOC.slice(DOC.indexOf('## 3. GitHub environments'), DOC.indexOf('## 5. Running a deploy'));
+  ok(/- \[ \] \*\*`website-staging`\*\*\n  - Required reviewers: \*\*Keith\*\*\./.test(envs), 'the guide does not have the owner make website-staging with a reviewer');
+  ok(/It refuses staging unless `website-staging` has a required\s+reviewer/.test(envs), 'the guide does not say the preflight checks staging');
+  ok(/the same on `website-staging`\s+and on `website-preview`/.test(envs), 'the guide does not put the secrets on website-staging');
 });
 
 test('wrangler.toml publishes _site, and git ignores the build output', () => {
