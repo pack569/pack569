@@ -15200,7 +15200,30 @@ test('api docs: the owner’s guide covers staging deploys and the move in order
   const e = sec('### E. Moving the pack to its own server (the switch)', '### Backups');
   ok(e.length > 1000, 'no section E');
   ok(/\*\*Download pack for the new server\*\*/.test(e) && /\*\*Copy pack to new server…\*\*/.test(e), 'E does not name the two buttons');
-  ok(/holds every member’s email|holds every member's email/.test(e) && /never\s+through GitHub or CI/.test(e), 'E does not say how to handle the file');
+  ok(/never\s+through GitHub or CI/.test(e), 'E does not say the file never goes through GitHub or CI');
+  // YP review of stage C, items 3 and 4, and security review items 4 and 6: the file's rules
+  // are written in E itself, not behind a link, and say what it holds.
+  ok(/\*\*The move file holds the whole pack, every member's email and the sign-up code\.\*\*/.test(e), 'E does not say what the move file holds');
+  const rules = e.slice(e.indexOf('**The move file holds'), e.indexOf('Until the copy is made'));
+  for (const [what, re] of [['iCloud', /Not in iCloud Desktop or Documents, not in\s+Dropbox or OneDrive, and not in the repo folder/],
+    ['Finder', /check in Finder that it is in Downloads/], ['email, AirDrop, text', /\*\*Never email, AirDrop or text it\.\*\*/],
+    ['notes or cloud app', /Don't open it in a notes app or a cloud app/], ['delete', /\*\*delete it and empty the Trash\*\*/],
+    ['the code', /change the sign-up code \(switch\s+step 8\)/]]) {
+    ok(re.test(rules), 'E’s file rules do not cover: ' + what);
+  }
+  ok(!/\(#testing-a-preview-with-real-data\)/.test(e), 'E still sends the owner elsewhere for the file’s rules');
+  ok(/8\. If the file may have gone anywhere other than this computer[\s\S]*?\*\*New code\*\*/.test(e), 'no switch step to change the sign-up code');
+  // The rehearsal: a made-up file with a made-up name, any real backup deleted first, and the
+  // Access sign-in checked before signing in.
+  const rh = sec('#### Rehearse it on staging first', '#### The switch, in order');
+  ok(/`made-up-test-pack\.json`/.test(rh) && !/choose the backup/.test(rh), 'the rehearsal file has no made-up name');
+  ok(/real `popcorn-backup\.json` from earlier[\s\S]*?delete it before you start/.test(rh), 'the rehearsal does not clear out a real backup first');
+  ok(/\*\*Before you sign in, check that Cloudflare Access asks you to sign in first\*\*/.test(rh), 'the rehearsal signs in before checking the lock');
+  ok(/\*\*Before you sign in:\*\* Cloudflare Access asks you to sign in first/.test(d), 'D’s checklist signs in before checking the lock');
+  // Merging deploys to GitHub Pages until it is off, so the guide never says merging never deploys.
+  ok(!/merging never deploys|Pushing or merging never deploys\./.test(DOC), 'the guide still says merging never deploys');
+  ok(/\*\*GitHub Pages is off\*\* \(cutover step 6\)/.test(e), 'the switch does not need GitHub Pages off first');
+  ok(!/PR #1 makes `\.gitignore` ignore/.test(DOC), 'the stale PR #1 .gitignore sentence is back');
   ok(/pack569\.com is already served by Cloudflare/.test(e), 'E does not require the DNS move before the switch');
   // In owner order: rehearse on staging, then the switch commit, download, deploy, copy in, check, delete.
   const order = ['Rehearse it on staging first', 'Make the switch commit', 'Download pack for the new server**. Save',

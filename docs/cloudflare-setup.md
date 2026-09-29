@@ -20,8 +20,10 @@ Pages. Creating the Cloudflare account, the Pages project or the zone changes no
   `test/`. The Cloudflare site serves exactly two files, `index.html` and `_headers`, written
   by `scripts/build-site.mjs`. The repo is still public, so anything committed is still public
   on GitHub; it just isn't on the website.
-- **When it changes.** Pushing or merging never deploys. The site changes only when someone
-  runs the **website** workflow by hand, and production only from `main`, after you approve.
+- **When it changes.** Cloudflare's site changes only when someone runs the **website**
+  workflow by hand, and production only from `main`, after you approve; pushing or merging
+  never deploys there. **GitHub Pages is different:** until you turn it off (cutover step 6),
+  every merge to `main` republishes the repo there, as it does today.
 - **Firebase is unchanged, for now.** Same project, same sign-in, same pack record, same
   rules. Phase 2 adds a small server to the site (`functions/`, "the API") that keeps the pack
   in a Cloudflare database instead; until the page is switched over to it, the API sits
@@ -159,8 +161,7 @@ The preview starts empty. You can load the real pack into it. These are rules, n
 Steps:
 
 1. On live **pack569.com**, Pack tab → **Backup (JSON)**. Save it as above. (The repo is
-   public. PR #1 makes `.gitignore` ignore `*.json`; until PR #1 is merged nothing ignores
-   it, so a backup saved in the repo folder could be committed.)
+   public. `.gitignore` ignores `*.json`, but don't save it in the repo folder anyway.)
 2. In a private window, open the preview, then Pack tab → **Import backup** and choose that
    file.
 3. When done: close the private window, delete the file and empty the Trash.
@@ -413,6 +414,9 @@ real move file; nothing else in it changes. Only deploy a branch whose code you 
 
 What to check on staging, in a private window:
 
+- [ ] **Before you sign in:** Cloudflare Access asks you to sign in first, before the page
+      shows. If the pack page shows straight away, close the window without signing in, and
+      stop: the lock is not covering staging.
 - [ ] DevTools → Network: calls go to `/api/…` on staging itself, and nothing goes to
       `firestore.googleapis.com`. The Console shows no "Content-Security-Policy" errors.
 - [ ] Sign in. The first account to sign in on `pack569-preview` owns its test pack and is its
@@ -474,11 +478,11 @@ The pack is copied from Firestore to `pack569-prod` **once**, by you, through a 
 own computer:
 
 1. On the Firestore page (pack569.com today), signed in as the pack's owner: Pack → Sharing →
-   **Download pack for the new server**. It saves the pack record, the members, the open
+   **Download pack for the new server**. It saves the whole pack, the members, the open
    invites and the sign-up link settings as one file. Only the owner sees this button.
 2. On the new page, signed in as the owner, while the server has no pack yet: Pack → Sharing →
-   **Copy pack to new server…**, and choose that file. The page shows what is in it before
-   anything is sent.
+   **Copy pack to new server…**, and choose that file. The page shows what is in it (the
+   pack's name, its newest event, the counts) before anything is sent.
 
 The server takes the copy only from `PACK_OWNER_UID` (step C), only while it has no pack, and
 only once. After that it refuses every copy.
@@ -487,9 +491,21 @@ Why a file, and not one button that sends straight from the old page: the old pa
 talk to the server from the same address. That depends on the DNS move, and letting other
 addresses call the API would widen who can reach it. A file works either way. The family
 data in it goes from Firestore to your browser, to your computer, to the server, and never
-through GitHub or CI. **The file holds every member's email.** Treat it like the backup file
-([Testing a preview with real data](#testing-a-preview-with-real-data)): your own device, not
-a synced folder, never emailed, and deleted afterwards.
+through GitHub or CI.
+
+**The move file holds the whole pack, every member's email and the sign-up code.** These are
+rules, not tips:
+
+- Save it on **this computer only**, in Downloads. Not in iCloud Desktop or Documents, not in
+  Dropbox or OneDrive, and not in the repo folder (`.gitignore` ignores `*.json`, but don't
+  rely on it).
+- After it downloads, check in Finder that it is in Downloads, and that Downloads is not a
+  synced folder.
+- **Never email, AirDrop or text it.** Don't open it in a notes app or a cloud app, and don't
+  copy and paste it anywhere: the page has no Copy button for it on purpose.
+- When the pack is copied in, **delete it and empty the Trash** (switch step 7).
+- If it may have gone anywhere other than this computer, change the sign-up code (switch
+  step 8).
 
 Until the copy is made, the live pack on the server is empty, and **no one's save can start
 it**. The API refuses the first save to an empty pack in production (it answers
@@ -501,48 +517,65 @@ If the server itself is not set up (a missing database id or `deployment` row), 
 
 #### Rehearse it on staging first (made-up data only)
 
+- [ ] If you still have a real `popcorn-backup.json` from earlier (a Backup (JSON) of the
+      live pack), delete it before you start, and empty the Trash. The only pack file on this
+      computer should be the made-up one below.
 - [ ] On any `preview` link (device-only), make a small made-up pack: Program → Seed the
-      standard year, and a few invented scouts. Pack → Sharing → **Backup (JSON)**. A backup
-      brings the pack record only, not members; the real move file brings both.
-- [ ] Deploy `staging` from the branch (D above), open it in a private window, and sign in.
+      standard year, and a few invented scouts. Pack → Sharing → **Backup (JSON)**, and save
+      it as **`made-up-test-pack.json`** (the page names it `popcorn-backup.json`; rename it as
+      you save). A backup brings the pack record only, not members; the real move file brings
+      both. Staging refuses the real move file outright.
+- [ ] Deploy `staging` from the branch (D above) and approve it. Open it in a private window.
+      **Before you sign in, check that Cloudflare Access asks you to sign in first**; if the
+      pack page shows straight away, close the window without signing in, and stop. Then sign
+      in.
 - [ ] If the preview database already has a pack record from earlier testing, it can't take a
       copy. Clear it first (preview only, never `--env production`):
       `npx wrangler d1 execute pack569-preview --remote --command "DELETE FROM pack_state; DELETE FROM import_lock"`
-- [ ] Reload staging. Pack → Sharing shows **Copy pack to new server…**; choose the backup,
-      read the warning, and copy it in. The pack appears within a few seconds.
-- [ ] Delete the backup file.
+- [ ] Reload staging. Pack → Sharing shows **Copy pack to new server…**; choose
+      `made-up-test-pack.json`. The screen names the pack and its newest event: check they are
+      your made-up ones (if it is the real pack, cancel), read the warning, and copy it in.
+      The pack appears within a few seconds.
+- [ ] Delete `made-up-test-pack.json` and empty the Trash.
 
 #### The switch, in order
 
 Before you start: A–C above are done (both databases, the tables, each `deployment` row,
-`PACK_OWNER_UID`); the rehearsal worked; and **pack569.com is already served by Cloudflare**
-([Cutover, in order](#cutover-in-order), step 4). The new page calls `/api/` on its own
-address. GitHub Pages has no `/api/`, so a switched page served from GitHub Pages would find
-no server.
+`PACK_OWNER_UID`); the rehearsal worked; **pack569.com is already served by Cloudflare**
+([Cutover, in order](#cutover-in-order), step 4); and **GitHub Pages is off** (cutover step 6).
+The new page calls `/api/` on its own address. GitHub Pages has no `/api/`, so a switched page
+served from GitHub Pages would find no server, and while GitHub Pages is on, merging the switch
+commit publishes the switched page there at once.
 
 1. Tell the leaders: no changes on the pack for the next hour. Anything changed on the old
    page after step 3 is not in the file.
 2. Make the switch commit on a branch: in `index.html`, change `var BACKEND = 'firestore';`
    to `var BACKEND = 'api';`, and in `test/harness.mjs` the test that pins it (search for
    "the committed page is not the Firestore build"). Run the harness, review, and merge to
-   `main`. Nothing is deployed yet: merging never deploys.
+   `main`. Nothing is deployed yet: the website workflow deploys only when you run it, and
+   GitHub Pages is off (before you start).
 3. On pack569.com (still the Firestore page), signed in as the owner, wait for the pill to say
-   **Synced**, then Pack → Sharing → **Download pack for the new server**. Save the file as
-   above.
+   **Synced**, then Pack → Sharing → **Download pack for the new server**. Save the file by
+   the rules above: this computer, Downloads, checked in Finder.
 4. Actions → **website** → Run workflow from `main`, `production`, and approve it.
 5. Open pack569.com, sign in as the owner. The page says the server has no copy of the pack
-   yet. Pack → Sharing → **Copy pack to new server…** → the file → check the counts → **Copy
-   it in**. If this device's copy differs from the file, the page asks which to keep. Choose
-   **Use cloud copy**: that is the file you just copied in.
+   yet. Pack → Sharing → **Copy pack to new server…** → the file → check the pack's name, its
+   newest event and the counts → **Copy it in**. If this device's copy differs from the file,
+   the page asks which to keep. Choose **Use cloud copy**: that is the file you just copied in.
 6. Check: the Members card lists everyone; a second leader signs in and sees the pack; a
    parent account sees the calendar. The owner's page republishes the family view as soon as
    the pack arrives.
 7. Delete the file and empty the Trash.
+8. If the file may have gone anywhere other than this computer (a synced folder, an email, a
+   message, another device), change the sign-up link's code: Pack → Sharing → Parent sign-up
+   link → **New code** (tap it twice). The old link stops working; send families the new one.
+   If the link is switched off, press **New code** the next time you turn it on.
 
 **The way back.** Firestore still holds the pack as it was at step 3. Leave the Firestore
 rules exactly as they are for two weeks. To go back: revert the switch commit and deploy
 production again. Anything changed on the new server since the switch is not in Firestore,
-so first download a **Backup (JSON)** on the new page and import it on the old one. After two
+so first download a **Backup (JSON)** on the new page and import it on the old one (the move
+file's rules above apply to that backup too). After two
 weeks with no problems, Firestore can be retired (a later change: SETUP.md Part C then
 becomes a description of what the server enforces).
 
