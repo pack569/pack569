@@ -405,6 +405,8 @@ live pack's sign-in; read the next part before you add it.
       ([above](#lock-previews-to-you-required-before-staging)), and check in a private window
       that `https://staging.pack569.pages.dev` asks you to sign in to Cloudflare before it
       shows the page. Real Google accounts sign in there. No lock, no staging deploy.
+      That rule is yours to keep: the workflow cannot see the lock, and will deploy to
+      `staging` whether it is on or not.
 
 To deploy there: Actions → **website** → Run workflow, from the branch, with `deploy_target`
 **`staging`**, and approve it (the `website-staging` environment, step 3). The build is the
@@ -441,10 +443,11 @@ made on pack569.com. So:
   When a leader signs in on `staging`, the page there holds a token that the live API would
   accept as that leader, with their live role. Each token lasts an hour, but that is not the
   limit: Firebase also keeps a refresh token in that browser's storage for `staging`, and
-  mints a new hour-long token from it whenever asked, until the account signs out there or
-  its sessions are revoked. Code on `staging` that sent those tokens somewhere else, or used
-  them against pack569.com itself, could read or change the live pack as that leader for as
-  long as that lasts. The database separation above does not stop this; it only keeps the
+  mints a new hour-long token from it whenever asked, until its sessions are revoked, the
+  account is disabled, or its password or email changes. Signing out on `staging` only
+  removes this browser's copy; a copy already sent elsewhere keeps working. Code on
+  `staging` that sent those tokens somewhere else, or used them against pack569.com itself,
+  could read or change the live pack as that leader for as long as that lasts. The database separation above does not stop this; it only keeps the
   *preview's own server* off the live database.
 - The same holds the other way: a token from pack569.com is accepted by a preview's server,
   but that server only has the made-up pack in it.
@@ -459,16 +462,29 @@ accept the risk and keep one Firebase project.** What that asks of you instead:
   its code with real sign-ins: the same trust as merging it.
 - The Cloudflare Access lock on preview deployments is **required** (above), so only you can
   open `staging` and sign in there. Sign in there only with your own account, in a private
-  window, and when you are done: sign out on `staging`, then close the private window. Signing
-  out removes the refresh token from that browser; closing the window throws away the rest.
+  window, and when you are done: sign out on `staging`, then close the private window. That
+  is housekeeping, not containment. Signing out removes the refresh token from that browser
+  and closing the window throws away the rest, but neither reaches a copy the page's code
+  already sent somewhere else; that copy keeps working until the next step ends it.
 - **If a sign-in on `staging` may have been misused** (you deployed code you now doubt, or
   someone else got in): Firebase console → **Authentication** → **Users** → find the account →
-  its menu → **Disable account**. A disabled account gets no new tokens, so the refresh token
-  is dead; a token already made still works on the live API until its hour runs out, so
-  treat the next hour as exposed. Then revoke the account's sessions before you enable it
-  again (Firebase's `revokeRefreshTokens`, one Admin SDK call; if the console does not offer
-  it, ask for help rather than re-enabling). Disabling your own account signs you out of the
-  live pack too, so make sure another admin can still get in first.
+  its menu → **Disable account**. This is what ends it. A disabled account gets no new
+  tokens, so every copy of its refresh token is dead, wherever it went; a token already made
+  still works on the live API until its hour runs out, so treat the next hour as exposed.
+  Before you enable the account again, also revoke its sessions, belt and braces, so no old
+  refresh token comes back to life with it. The console has no button for this: it is
+  Firebase's `revokeRefreshTokens`, one Admin SDK call. One way is Google Cloud console
+  (project `pack-569`) → **Activate Cloud Shell**, then, with the account's **User UID** from
+  the Users list in place of `THE_UID`:
+
+  ```
+  mkdir -p revoke && cd revoke && npm install firebase-admin
+  node -e "const a=require('firebase-admin');a.initializeApp({projectId:'pack-569'});a.auth().revokeRefreshTokens('THE_UID').then(()=>console.log('revoked'))"
+  ```
+
+  If that does not print `revoked`, ask for help rather than re-enabling. Disabling your own
+  account signs you out of the live pack too, so make sure another admin can still get in
+  first.
 - If you ever stop being the only person who can run the workflow, or want other leaders to
   try `staging`, revisit this: that is when the second Firebase project is worth making.
 

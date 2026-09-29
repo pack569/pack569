@@ -13905,11 +13905,19 @@ test('api docs: staging\'s Access lock is required, a staging sign-in is not sai
   // A token lasts an hour; the refresh token in staging's storage keeps making new ones.
   ok(!/for up to an hour/.test(DOC), 'the guide still says a staging sign-in works on the live pack for up to an hour');
   const risk = DOC.slice(DOC.indexOf('#### One Firebase project: an accepted risk'), DOC.indexOf('### E. Moving the pack'));
-  ok(/refresh token/.test(risk) && /until the account signs out there or\n  its sessions are revoked/.test(risk), 'the risk does not say the refresh token keeps a sign-in alive');
-  // How to end one: sign out and close the window, and, if it may have been misused, disable and revoke.
-  ok(/sign out on `staging`, then close the private window/.test(risk), 'no routine sign-out on staging');
-  ok(/Authentication\*\* → \*\*Users\*\* → find the account →\n  its menu → \*\*Disable account\*\*/.test(risk), 'no way to disable a misused account');
+  // Security review of 5690c3a..20b4fd6, item 1 (wording updated on purpose): signing out ends
+  // only this browser's copy. What ends the sign-in is revoking, disabling, or a password or
+  // email change; a copy sent elsewhere survives a sign-out.
+  ok(/refresh token/.test(risk) && /until its sessions are revoked, the\n  account is disabled, or its password or email changes\./.test(risk),
+    'the risk does not say what ends a refresh token');
+  ok(!/until the account signs out/.test(DOC), 'the guide still says signing out ends a staging sign-in');
+  ok(/Signing out on `staging` only\n  removes this browser's copy; a copy already sent elsewhere keeps working\./.test(risk), 'the risk does not say a sent copy survives a sign-out');
+  // How to end one: sign out and close the window as housekeeping; if it may have been misused, disable and revoke.
+  ok(/sign out on `staging`, then close the private window\. That\n  is housekeeping, not containment\./.test(risk), 'the routine sign-out is not called housekeeping');
+  ok(/Authentication\*\* → \*\*Users\*\* → find the account →\n  its menu → \*\*Disable account\*\*\. This is what ends it\./.test(risk), 'no way to disable a misused account');
   ok(/revokeRefreshTokens/.test(risk) && /treat the next hour as exposed/.test(risk), 'no revocation, or no word on the token already made');
+  ok(/The console has no button for this/.test(risk) && /Activate Cloud Shell/.test(risk) && /a\.auth\(\)\.revokeRefreshTokens\('THE_UID'\)/.test(risk) &&
+    /belt and braces/.test(risk), 'the guide does not say how to revoke, or that disabling already did the work');
   // The Access lock: required for staging, in the section, the checklist and the risk.
   ok(!/Recommended: lock previews|recommended-lock-previews/.test(DOC), 'the Access lock is still only recommended');
   const lock = DOC.slice(DOC.indexOf('### Lock previews to you (required before staging)'), DOC.indexOf('## What the Content-Security-Policy blocks'));
@@ -13918,6 +13926,9 @@ test('api docs: staging\'s Access lock is required, a staging sign-in is not sai
   const stagingD = DOC.slice(DOC.indexOf('### D. A preview you can sign in to'), DOC.indexOf('What to check on staging'));
   ok(/- \[ \] \*\*Required:\*\* put the Cloudflare Access lock/.test(stagingD) && /No lock, no staging deploy\./.test(stagingD),
     'the staging checklist does not require the lock');
+  // Item 6 of the review of 5690c3a..20b4fd6: the guide does not pretend the workflow enforces the lock.
+  ok(/No lock, no staging deploy\.\n\s+That rule is yours to keep: the workflow cannot see the lock, and will deploy to\n\s+`staging` whether it is on or not\./.test(stagingD),
+    'the guide implies the workflow enforces the staging lock');
   ok(/The Cloudflare Access lock on preview deployments is \*\*required\*\*/.test(risk), 'the accepted risk still only says to keep the lock');
   // Every in-page link in the guide lands on a heading (GitHub's slugs).
   const slug = (h) => h.trim().toLowerCase().replace(/[^\w\- ]/g, '').replace(/ /g, '-');
