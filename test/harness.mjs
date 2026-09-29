@@ -1002,7 +1002,9 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // Security review — a stored ledger stamp that is an email is neutralised on load.
   'ledgerStampClean',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
-  'parseLegacyTime', 'migrateTierMakeUp', 'freshGone', 'clampGone', 'campHash', 'stableRowId', 'newStableId', 'dedupeRowIds', 'normalizeState', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
+  'parseLegacyTime', 'migrateTierMakeUp', 'freshGone', 'clampGone', 'campHash', 'stableRowId', 'newStableId', 'dedupeRowIds', 'normalizeState',
+  // Phase 3, C1 — the ledger row normalizer, shared by the rows set aside.
+  'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeLedgerRow', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'entrySignedCents',
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
@@ -9982,7 +9984,9 @@ test('T10: unpaid duplicate charges are listed for a leader, never removed on th
 });
 
 test('T1: a refund source only survives on money out that names a family', () => {
-  const ns = /function normalizeState\(d\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  // Phase 3, C1 — the row normalizer is its own function now, for counted rows and aside rows.
+  ok(/d\.ledger\.forEach\(function \(e\) \{ normalizeLedgerRow\(e, 'nl'\); \}\);/.test(slice('normalizeState')), 'normalizeState does not normalize the ledger rows');
+  const ns = slice('normalizeLedgerRow');
   ok(/if \(e\.source === 'refund' && \(e\.direction !== 'out' \|\| !e\.scoutId\)\) e\.source = '';/.test(ns),
     'a stray refund source is kept on money in, or with no family');
   ok(/e\.reimbursement = e\.reimbursement === true;/.test(ns), 'the reimbursement mark is not normalized');
@@ -13044,7 +13048,13 @@ test('E1: due dates and family statements are NEVER published', () => {
   }
   const pa = /var PARENT_ACTS = \[([^\]]*)\]/.exec(SCRIPT)[1];
   ok(!/statement/.test(pa), 'a parent can open a statement');
-  ok(!/state\.statements|statement: \{|lastStatement/.test(SCRIPT), 'a statement is stored');
+  ok(!/statement: \{|lastStatement|familyStatements/.test(SCRIPT), 'a statement is stored');
+  // Phase 3, C1 — state.statements is the BANK statements the treasurer reconciled (leaders
+  // only), never a family's: nothing but close-out writes it outside normalizeState, and no
+  // parent path reads it.
+  eq(SCRIPT.split('state.statements').length - 1, 1, 'something new writes or reads state.statements');
+  ok(/state\.statements = \[\];/.test(slice('rolloverYear')), 'close-out does not clear the bank statements');
+  ok(!/statements/.test(bpv), 'buildParentView reads the bank statements');
   ok(/each charge's due date \(`dueDate`\), the pack's dues date \(`budget\.duesDueDate`\) and every\s+\/\/\s+family statement \(E1\)/.test(SCRIPT), 'the banner does not exclude them');
   ok(/\*\*never\*\* contains:[^]*?when each charge or the\s+pack's dues fall due, any family's statement/.test(SETUP), 'SETUP.md does not exclude them');
   ok(/data-act="family-statement"/.test(slice('duesFamilyBlock')), 'no Statement button');
@@ -17740,6 +17750,179 @@ test('stopgap follow-up 1: close-out sizes the archive against the record as clo
   const base = sandbox(NORMALIZE_FNS.concat(['utf8Bytes'])).utf8Bytes(JSON.stringify(sandbox(NORMALIZE_FNS).normalizeState(record({ packName: '' }))));
   eq(run({ packName: 'x'.repeat(700 * KB - 250 * KB - base - 4 * KB) }).trimmed, false, 'control: just under the limit with the room');
   eq(run({ packName: 'x'.repeat(700 * KB - 250 * KB - base + 4 * KB) }).trimmed, true, 'control: just over the limit with the room');
+});
+
+/* ================================================================
+   Phase 3, C1 (2026-09-29) — the ledger's audit model in the pack record, with no screen yet:
+   ledgerAside, ledgerLog, statements, closedBooks, teImport and book.year; normalizeState's
+   defaults and migration; ledgerLocked and ledgerEvent. Nothing reads them until C2.
+   ================================================================ */
+const C1_KEYS = ['ledgerAside', 'ledgerLog', 'statements', 'closedBooks', 'teImport'];
+// An old record with a bit of everything C1 reads: rows set aside (one with an `off` this page
+// does not know, one with no id, one whose id a counted row also has), a log with an id-less
+// event and an email for a name, a statement, a reconciled-through date with no statement, junk.
+const C1_RECORD = () => Object.assign(LEGACY_ROWS(), JSON.parse(JSON.stringify({
+  book: { openingCents: 10000, openingDate: '2025-07-01', reconciledThrough: '2025-09-30', reconciledBy: 'pat@example.com', reconciledAt: '2025-10-02T12:00:00.000Z' },
+  ledgerAside: [
+    { id: 'v1', off: 'void', date: '2025-09-05', description: 'Typo', amountCents: 500, direction: 'in', voidReason: 'entered twice', voidedBy: 'Pat', futureField: [1] },
+    { off: 'reversal', date: '2025-09-06', description: 'Back out', amountCents: 200, direction: 'out', reverses: 'l1' },
+    { id: 'l1', off: 'reversed', date: '2025-09-02', description: 'A (as first entered)', amountCents: 1, direction: 'in', reversedBy: 'rv-l1' },
+    { id: 'z9', off: 'someday', date: '2025-09-07', description: 'From a newer page', amountCents: 700, direction: 'in', note: 'kept' },
+    { id: 'c1', off: 'carried', date: '2025-06-30', amountCents: 40, direction: 'in', carriedFrom: { year: 2024.2, id: 'old' } },
+    'junk', null],
+  ledgerLog: [{ at: '2025-09-06T00:00:00.000Z', by: 'pat@example.com', row: 'l1', op: 'reverse' }, { id: 'lg-x', op: 'tick', row: 'l1', futureField: 1 }, 7],
+  statements: [{ id: 'st-2025-08-31', date: '2025-08-31', statementCents: 12000, by: 'Pat', reviewedBy: 'sam@example.com' }, 'junk'],
+  closedBooks: [{ year: 2024, closingCents: 9000 }, 3],
+  teImport: { batch: 'mfo2kz3a1b2c3d', at: 5 }
+})));
+const withSeeds = (make) => {
+  // The camping trips and welcome page are seeded with uid()s on a record without them; carried
+  // in, as any record loaded once before has them, so the whole record can be compared.
+  const seeded = sandbox(NORMALIZE_FNS).normalizeState(make());
+  return () => Object.assign(make(), JSON.parse(JSON.stringify({ camping: seeded.camping, welcome: seeded.welcome })));
+};
+
+test('C1: two devices normalize the same old record to the same bytes, and a second pass changes nothing', () => {
+  for (const [what, make] of [['the C1 record', withSeeds(C1_RECORD)], ['an old record', withSeeds(LEGACY_ROWS)], ['the stopgap seed', withSeeds(() => JSON.parse(JSON.stringify(GONE_SEED)))]]) {
+    const once = JSON.stringify(sandbox(NORMALIZE_FNS).normalizeState(make()));
+    eq(JSON.stringify(sandbox(NORMALIZE_FNS).normalizeState(make())), once, what + ': two devices gave different bytes');
+    eq(JSON.stringify(sandbox(NORMALIZE_FNS).normalizeState(JSON.parse(once))), once, what + ': not a fixed point');
+  }
+  // A fresh pack starts with the audit model normalizeState would give it.
+  const f = sandbox(NORMALIZE_FNS.concat(['freshState', 'WX_DEFAULT_LOC']));
+  const fresh = JSON.parse(JSON.stringify(f.freshState()));
+  const model = (st) => C1_KEYS.map((k) => st[k]).concat([st.book.year === st.budget.programYear]);
+  eq(model(fresh), [[], [], [], [], null, true], 'a fresh pack’s audit model');
+  eq(model(JSON.parse(JSON.stringify(f.normalizeState(JSON.parse(JSON.stringify(fresh)))))), model(fresh), 'normalizeState changes a fresh pack’s');
+  // Never uid() or the clock: the normalizers and the C1 part of normalizeState.
+  const ns = slice('normalizeState');
+  const c1 = ns.slice(ns.indexOf('PHASE 3, C1'), ns.indexOf('MONEY REDESIGN, Phase 1'));
+  for (const [name, src] of [['normalizeLedgerRow', slice('normalizeLedgerRow')], ['normalizeAsideRow', slice('normalizeAsideRow')], ['normalizeState (C1)', c1]]) {
+    ok(c1.length > 1000 && !/\buid\(|Date\.now|new Date|Math\.random/.test(codeOnly(src)), name + ' calls uid() or reads the clock');
+  }
+});
+
+test('C1: an old record gains only the empty audit model, 93 bytes, and keeps what it does not know', () => {
+  const n = sandbox(NORMALIZE_FNS).normalizeState(withSeeds(LEGACY_ROWS)());
+  const all = JSON.stringify(n);
+  eq([Object.keys(n.book).slice(-1)[0], n.book.year], ['year', 2025], 'the book’s year, last in the book');
+  eq(C1_KEYS.map((k) => n[k]), [[], [], [], [], null], 'not empty');
+  const bare = JSON.parse(all);
+  C1_KEYS.forEach((k) => delete bare[k]);
+  delete bare.book.year;
+  const cost = Buffer.byteLength(all) - Buffer.byteLength(JSON.stringify(bare));
+  eq(cost, 93, 'the bytes an old record gains');
+  // Unknown keys, top-level and in rows, survive as they were.
+  const r = withSeeds(LEGACY_ROWS)();
+  r.fromANewerPage = { rows: [1, 2], note: 'x' };
+  r.ledger[1].fromANewerPage = true;
+  const m = sandbox(NORMALIZE_FNS).normalizeState(r);
+  eq([m.fromANewerPage, m.ledger.find((e) => e.id === 'l1').fromANewerPage], [{ rows: [1, 2], note: 'x' }, true], 'an unknown key was dropped');
+});
+
+test('C1: rows set aside are ledger rows, an unknown one is counted, and the ids are one space', () => {
+  const n = JSON.parse(JSON.stringify(sandbox(NORMALIZE_FNS).normalizeState(C1_RECORD())));
+  // Known offs stay aside, shaped as ledger rows plus their own fields; junk goes.
+  eq(n.ledgerAside.map((e) => [e.off, e.id.replace(/^na[0-9a-z]+$/, 'na…')]), [['void', 'v1'], ['reversal', 'na…'], ['reversed', 'l1'], ['carried', 'c1']], 'the rows set aside');
+  const v1 = n.ledgerAside[0];
+  eq([v1.amountCents, v1.direction, v1.reconciled, v1.enteredBy, v1.voidReason, v1.voidedBy, v1.voidedAt, v1.reverses, v1.carriedFrom, v1.futureField],
+    [500, 'in', false, '', 'entered twice', 'Pat', '', '', null, [1]], 'an aside row’s fields');
+  eq(n.ledgerAside[3].carriedFrom, { year: 2024, id: 'old' }, 'carriedFrom');
+  // An `off` this page does not know: counted, as a page from before C1 would, and kept whole.
+  const z9 = n.ledger.find((e) => e.id === 'z9');
+  eq([!!z9, z9 && z9.off, z9 && z9.note, z9 && z9.amountCents], [true, 'someday', 'kept', 700], 'an unknown aside row was not counted');
+  // The aside row keeps a shared id; the counted one is renamed, never dropped.
+  const l1s = n.ledger.filter((e) => /^l1(-d\d+)?$/.test(e.id)).map((e) => [e.id, e.description]);
+  eq(l1s, [['l1-d3', 'A'], ['l1-d4', 'B'], ['l1-d2', 'C']], 'the counted rows sharing the aside row’s id');
+  const ids = n.ledger.concat(n.ledgerAside).map((e) => e.id);
+  eq(new Set(ids).size, ids.length, 'an id used twice across the ledger and the rows set aside');
+  // The log, the statements, the closed books and the import pointer.
+  eq(n.ledgerLog.map((e) => [/^lg[0-9a-z]+$/.test(e.id) || e.id, e.by]), [[true, 'a signed-in leader'], ['lg-x', undefined]], 'the log');
+  eq(n.ledgerLog[1].futureField, 1, 'an unknown field in the log');
+  eq([n.closedBooks, n.teImport], [[{ year: 2024, closingCents: 9000 }], { batch: 'mfo2kz3a1b2c3d', at: '' }], 'closed books and the import');
+  eq(n.book.year, 2025, 'book.year');
+});
+
+test('C1: the statement book.reconciledThrough records is synthesized once, figures unknown', () => {
+  const n = JSON.parse(JSON.stringify(sandbox(NORMALIZE_FNS).normalizeState(C1_RECORD())));
+  eq(n.statements, [
+    { id: 'st-2025-08-31', date: '2025-08-31', statementCents: 12000, by: 'Pat', reviewedBy: 'a signed-in leader' },
+    { id: 'st-2025-09-30', date: '2025-09-30', statementCents: null, openingCents: 10000, clearedCents: null, bookCents: null, ticked: null,
+      by: 'a signed-in leader', byUid: '', at: '2025-10-02T12:00:00.000Z', legacy: true }], 'the statements');
+  // Once: a second pass, or a record that already has it, adds none.
+  const again = sandbox(NORMALIZE_FNS).normalizeState(JSON.parse(JSON.stringify(n)));
+  eq(again.statements.length, 2, 'synthesized twice');
+  // None without a reconciled-through date; and what it costs a record that has one.
+  const r = withSeeds(LEGACY_ROWS)();
+  eq(sandbox(NORMALIZE_FNS).normalizeState(JSON.parse(JSON.stringify(r))).statements, [], 'a statement with nothing reconciled');
+  r.book = { reconciledThrough: '2025-09-30', reconciledBy: 'Pat', reconciledAt: '2025-10-02T12:00:00.000Z' };
+  const s = sandbox(NORMALIZE_FNS).normalizeState(r);
+  const bytes = Buffer.byteLength(JSON.stringify(s.statements)) - 2;
+  ok(bytes > 150 && bytes < 250, `the legacy statement costs ${bytes} bytes`);
+});
+
+test('C1: ledgerLocked — reconciled, in the reconciled period, or in a closed book', () => {
+  const ctx = sandbox(['entryAfterOpening', 'ledgerLocked']);
+  const book = { openingDate: '2025-07-01', reconciledThrough: '2025-09-30' };
+  const L = (e, b) => ctx.ledgerLocked(e, b === undefined ? book : b);
+  const table = [
+    [{ date: '2025-09-15' }, undefined, true, 'inside the period'],
+    [{ date: '2025-09-30' }, undefined, true, 'on the reconciled-through date'],
+    [{ date: '2025-07-01' }, undefined, true, 'on the opening date'],
+    [{ date: '2025-10-01' }, undefined, false, 'after the period'],
+    [{ date: '2025-10-01', reconciled: true }, undefined, true, 'reconciled, after the period'],
+    [{ date: '2025-06-30' }, undefined, false, 'before the opening date'],
+    [{ date: '2025-06-30', reconciled: true }, undefined, true, 'reconciled, before the opening date'],
+    [{ date: '' }, undefined, false, 'no date'],
+    [{ date: '' }, { openingDate: '', reconciledThrough: '2025-09-30' }, false, 'no date, no opening date'],
+    [{ date: '2025-09-15', reconciled: 'yes' }, { openingDate: '', reconciledThrough: '' }, false, 'a truthy non-true tick, nothing reconciled'],
+    [{ date: '2025-01-01' }, { openingDate: '', reconciledThrough: '2025-09-30' }, true, 'no opening date: all through the date'],
+    [{ date: '2025-09-15' }, { openingDate: '2025-07-01', reconciledThrough: '' }, false, 'nothing reconciled yet'],
+    [{ date: '2026-01-01' }, { openingDate: '2025-07-01', reconciledThrough: '2025-09-30', closedAt: '2026-07-01T00:00:00Z' }, true, 'a closed book'],
+    [{ date: '' }, { closedAt: '2026-07-01T00:00:00Z' }, true, 'a closed book, no date'],
+    [null, undefined, false, 'no row'],
+    [{ date: '2025-09-15' }, null, false, 'no book']
+  ];
+  for (const [e, b, want, what] of table) eq(L(e, b), want, what);
+  ok(!/\buid\(|Date|state\b/.test(codeOnly(slice('ledgerLocked'))), 'ledgerLocked is not pure');
+});
+
+test('C1: ledgerEvent builds one log entry, and nothing else', () => {
+  const ctx = sandbox(['ledgerStampClean', 'LEDGER_OPS', 'ledgerEvent']);
+  const who = { id: 'mfo2kz3a1b2c3d', at: '2026-09-29T12:00:00.000Z', by: 'Pat', byUid: 'u1', dev: 'd1' };
+  const ev = (...a) => JSON.parse(JSON.stringify(ctx.ledgerEvent(...a)));
+  eq(ev('edit', 'l1', who, { f: { amountCents: [2500, 2600] } }),
+    { id: 'lg-mfo2kz3a1b2c3d', at: '2026-09-29T12:00:00.000Z', by: 'Pat', byUid: 'u1', dev: 'd1', row: 'l1', op: 'edit', f: { amountCents: [2500, 2600] } }, 'an edit');
+  eq(ev('void', 'l1', who, { why: 'entered twice', f: {}, rows: [] }),
+    { id: 'lg-mfo2kz3a1b2c3d', at: '2026-09-29T12:00:00.000Z', by: 'Pat', byUid: 'u1', dev: 'd1', row: 'l1', op: 'void', why: 'entered twice' }, 'a void, empty parts left out');
+  eq(ev('reverse', 'l1', who, { rows: ['rv-l1'] }).rows, ['rv-l1'], 'a reversal names its row');
+  eq(ev('tick', 'l1', { id: 'x', by: 'pat@example.com' }), { id: 'lg-x', at: '', by: 'a signed-in leader', byUid: '', dev: '', row: 'l1', op: 'tick' }, 'never an email');
+  eq([ctx.ledgerEvent('delete', 'l1', who), ctx.ledgerEvent('edit', '', who), ctx.ledgerEvent('edit', 7, who)], [null, null, null], 'an unknown op, or no row');
+  eq([...ctx.LEDGER_OPS], ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen'], 'the ops');
+  // The rows it names are copied, not shared.
+  const rows = ['a'];
+  const e2 = ctx.ledgerEvent('correct', 'l1', who, { rows });
+  rows.push('b');
+  eq([...e2.rows], ['a'], 'the rows are shared with the caller');
+  ok(!/\buid\(|Date|state\b/.test(codeOnly(slice('ledgerEvent'))), 'ledgerEvent is not pure');
+});
+
+test('C1: close-out opens a new book for the new year, without last year’s aside rows, log or statements', () => {
+  const ctx = sandbox(NORMALIZE_FNS.concat(CLOSEOUT_SIZE_FNS));
+  vm.runInContext(`var sync = { user: null }; var ui = {};
+    var state = normalizeState(${JSON.stringify(C1_RECORD())}); rolloverYear();`, ctx);
+  const st = JSON.parse(JSON.stringify(vm.runInContext('state', ctx)));
+  eq([st.book.year, st.budget.programYear, st.ledgerAside, st.ledgerLog, st.statements, st.teImport, st.closedBooks.length],
+    [2026, 2026, [], [], [], null, 1], 'the new book');
+  // Nothing here is published, or read by any parent screen.
+  const bpv = codeOnly(BPV());
+  ok(!/ledgerAside|ledgerLog|statements|closedBooks|teImport|ledgerLocked|ledgerEvent/.test(bpv), 'buildParentView reads the audit model');
+  // And nothing else reads or writes them yet (C2 is the first): only the normalizers, freshState
+  // and close-out. No behaviour changes in C1.
+  let rest = SCRIPT;
+  for (const fn of ['freshState', 'normalizeState', 'rolloverYear', 'ledgerLocked', 'LEDGER_OPS', 'ledgerEvent', 'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeLedgerRow']) rest = rest.replace(decl(fn), '');
+  const used = codeOnly(rest).split('\n').filter((l) => /\b(ledgerAside|ledgerLog|closedBooks|teImport|statements|ledgerLocked|ledgerEvent|LEDGER_OPS|LEDGER_ASIDE_OFF|normalizeAsideRow)\b/.test(l.replace(/\/\/.*$/, '')));
+  eq(used, [], 'something outside the model reads it — a C1 behaviour change');
 });
 
 /* ---------------- report ---------------- */

@@ -3474,7 +3474,7 @@
   ];
 
   function freshState() {
-    return {
+    var s = {
       version: 1, packName: 'Pack 569', commissionPct: '', commissionPctOnline: '',
       goalCents: 0, goalIsDerived: true,
       stretchGoalCents: 0, cashGoalCents: 0,
@@ -3505,8 +3505,12 @@
       startHereDismissed: false, // Wave 19(19) — first-run "Start here" card dismissed
       movedNoticeDismissed: false, // Wave 21 — one-time "where things moved" card on Home
       balooNoticeDismissed: false, // K1 — one-time "den campout says BALOO is not required" card on Home
-      rev: 0
+      rev: 0,
+      // Phase 3, C1 — the ledger's audit model (see normalizeState). Leaders only, never published.
+      ledgerAside: [], ledgerLog: [], statements: [], closedBooks: [], teImport: null
     };
+    s.book.year = s.budget.programYear;
+    return s;
   }
   // Wave 7: validate/coerce one kind:'season' archive in place. Numbers coerced,
   // strings defaulted, arrays capped at 500, nullable sections (derby/inventory)
@@ -3983,52 +3987,7 @@
     // a ledger you can silently lose rows from is not a book.
     if (!Array.isArray(d.ledger)) d.ledger = [];
     d.ledger = d.ledger.filter(function (e) { return e && typeof e === 'object' && !Array.isArray(e); });
-    d.ledger.forEach(function (e) {
-      // Phase 3 step 0 — from what the entry says, not uid(): this used to give an id-less entry
-      // a new random id on EVERY load, on every device, so no two copies ever agreed on it.
-      // It hashes the row AS STORED, before the lines below normalize it (treasurer review of the
-      // stopgap, L4): every device reads the same stored row, so they agree, and the id is saved
-      // with the row, so nothing derives it again once the shape below has changed what it hashes.
-      if (typeof e.id !== 'string' || !e.id) e.id = stableRowId('nl', e);
-      e.date = typeof e.date === 'string' ? e.date : '';
-      e.description = typeof e.description === 'string' ? e.description : '';
-      // Always positive; `direction` carries the sign. A stored negative would make the
-      // same movement expressible two ways, and then no total can be trusted.
-      e.amountCents = (typeof e.amountCents === 'number' && isFinite(e.amountCents)) ? Math.abs(Math.round(e.amountCents)) : 0;
-      e.direction = e.direction === 'in' ? 'in' : 'out';
-      e.lineId = typeof e.lineId === 'string' ? e.lineId : '';
-      e.method = LEDGER_METHODS.indexOf(e.method) === -1 ? '' : e.method;
-      e.ref = typeof e.ref === 'string' ? e.ref : '';
-      e.source = LEDGER_SOURCES.indexOf(e.source) === -1 ? '' : e.source;
-      e.donor = typeof e.donor === 'string' ? e.donor : '';
-      // Reserved for Phase 3 (charges + family accounts): normalized so it survives every
-      // round-trip now, which is what lets that phase be purely additive later.
-      e.scoutId = typeof e.scoutId === 'string' ? e.scoutId : '';
-      // The make-up payment that bought a reward tier carries the tier's id, so the money and the
-      // credit are ONE record rather than two kept in step by memory: tierMakeupMap() reads the
-      // credit back off these entries, so deleting one takes the tier with it. Every other ledger
-      // entry carries '' and behaves exactly as it always has.
-      e.tierMakeup = typeof e.tierMakeup === 'string' ? e.tierMakeup : '';
-      // T1 — a refund is money out to a family, nothing else; a reimbursement says it is one.
-      if (e.source === 'refund' && (e.direction !== 'out' || !e.scoutId)) e.source = '';
-      e.reimbursement = e.reimbursement === true;
-      // M4 (final review) — the treasurer has said this income is NOT the council's commission
-      // cheque, so the Budget card stops asking. Cleared by any edit to its amount, source, line
-      // or direction: the answer was about the entry as it stood.
-      e.notCommission = e.notCommission === true;
-      e.reconciled = e.reconciled === true;
-      // LIVE STOPGAP (see stampApproved) — when it was ticked, in ms. Absent (not 0) when unknown,
-      // so a record from before it gains nothing.
-      if (typeof e.reconciledAt === 'number' && isFinite(e.reconciledAt) && e.reconciledAt > 0) e.reconciledAt = Math.round(e.reconciledAt);
-      else delete e.reconciledAt;
-      // E2 — the audit trail. '' on everything recorded before it existed.
-      ['enteredBy', 'enteredAt', 'approvedBy', 'approvedAt', 'enteredByUid', 'approvedByUid'].forEach(function (k) {
-        if (typeof e[k] !== 'string') e[k] = '';
-      });
-      // Never an email (see the E2 banner): a stamp written before that rule is neutralised.
-      e.enteredBy = ledgerStampClean(e.enteredBy);
-      e.approvedBy = ledgerStampClean(e.approvedBy);
-    });
+    d.ledger.forEach(function (e) { normalizeLedgerRow(e, 'nl'); });
     if (!d.book || typeof d.book !== 'object' || Array.isArray(d.book)) d.book = freshBook();
     // The opening figure is the one money field that may legitimately be negative — a pack
     // can start a season overdrawn, and the ledger has to be able to say so.
@@ -4042,6 +4001,58 @@
     // E2 — who marked the last statement reconciled, and when.
     d.book.reconciledBy = ledgerStampClean(d.book.reconciledBy);   // never an email (E2)
     if (typeof d.book.reconciledAt !== 'string') d.book.reconciledAt = '';
+    // -----------------------------------------------------------------------
+    // PHASE 3, C1 — the audit model, in the record and nothing else yet (no screen reads or
+    // writes it until C2). Absent on every record before → the empty forms below, about 93 bytes.
+    // From what is stored, never uid() or the clock, so every device gives the same answer, and
+    // running this twice gives the same bytes.
+    //   book.year          the program year this book belongs to (budget.programYear when unset)
+    //   ledgerAside[]      rows in the book but NOT counted: every reader of state.ledger keeps
+    //                      reading only counted rows, so a reader that misses this key fails safe.
+    //                      `off` says why (LEDGER_ASIDE_OFF). One with an `off` this page does not
+    //                      know goes back to state.ledger, counted, as a page from before C1
+    //                      would count it — never dropped (a book that loses rows is not a book).
+    //   ledgerLog[]        what was done to the book (ledgerEvent), append-only
+    //   statements[]       each statement reconciled; the one book.reconciledThrough records is
+    //                      synthesized here, 'st-' + its date, figures unknown (null), legacy
+    //   closedBooks[]      years closed out (C8); objects only here
+    //   teImport           the Trail's End import in force, { batch, at }, or null (C9)
+    // LEADERS ONLY: nothing here is published (buildParentView is an allowlist).
+    if (typeof d.book.year !== 'number' || !isFinite(d.book.year) || Math.round(d.book.year) !== d.book.year) d.book.year = d.budget.programYear;
+    function plainObj(x) { return !!x && typeof x === 'object' && !Array.isArray(x); }
+    if (!Array.isArray(d.ledgerAside)) d.ledgerAside = [];
+    var aside = [];
+    d.ledgerAside.filter(plainObj).forEach(function (e) {
+      normalizeLedgerRow(e, 'na');
+      if (LEDGER_ASIDE_OFF.indexOf(e.off) === -1) d.ledger.push(e);
+      else aside.push(normalizeAsideRow(e));
+    });
+    d.ledgerAside = aside;
+    if (!Array.isArray(d.ledgerLog)) d.ledgerLog = [];
+    d.ledgerLog = d.ledgerLog.filter(plainObj);
+    d.ledgerLog.forEach(function (ev) {
+      if (typeof ev.id !== 'string' || !ev.id) ev.id = stableRowId('lg', ev);
+      if (ev.by !== undefined) ev.by = ledgerStampClean(ev.by);   // never an email (E2)
+    });
+    if (!Array.isArray(d.statements)) d.statements = [];
+    d.statements = d.statements.filter(plainObj);
+    d.statements.forEach(function (st) {
+      if (typeof st.date !== 'string') st.date = '';
+      if (typeof st.id !== 'string' || !st.id) st.id = 'st-' + st.date;
+      if (st.by !== undefined) st.by = ledgerStampClean(st.by);
+      if (st.reviewedBy !== undefined) st.reviewedBy = ledgerStampClean(st.reviewedBy);
+    });
+    var rt = d.book.reconciledThrough;
+    if (rt && !d.statements.some(function (st) { return st.id === 'st-' + rt; })) {
+      d.statements.push({
+        id: 'st-' + rt, date: rt, statementCents: null, openingCents: d.book.openingCents, clearedCents: null, bookCents: null,
+        ticked: null, by: d.book.reconciledBy, byUid: '', at: d.book.reconciledAt, legacy: true
+      });
+    }
+    if (!Array.isArray(d.closedBooks)) d.closedBooks = [];
+    d.closedBooks = d.closedBooks.filter(plainObj);
+    d.teImport = (plainObj(d.teImport) && typeof d.teImport.batch === 'string' && d.teImport.batch)
+      ? { batch: d.teImport.batch, at: typeof d.teImport.at === 'string' ? d.teImport.at : '' } : null;
     // -----------------------------------------------------------------------
     // MONEY REDESIGN, Phase 1 — actual cost is now Σ ledger (DESIGN-money.md §5).
     //
@@ -4646,7 +4657,9 @@
     // two. A second one is RENAMED, never dropped — it is money either way, and dropping it would
     // change a total — to '<id>-d2' (then -d3 …), the same on every device.
     dedupeRowIds(d.entries);
-    dedupeRowIds(d.ledger);
+    // Phase 3, C1 — the counted rows and the ones set aside are one id space: a row is either.
+    // On a clash the aside row keeps the id ('a' sorts first), and the counted one is renamed.
+    dedupeRowIds(d.ledgerAside.concat(d.ledger), d.ledgerAside.map(function () { return 'a'; }).concat(d.ledger.map(function () { return 'l'; })));
     if (d.inventory && Array.isArray(d.inventory.distributions)) dedupeRowIds(d.inventory.distributions);
     // Every fundraiser's sales are one log; each sale's fundraiser decides a tie (dedupeRowIds).
     var allSales = [], saleFr = [];
@@ -4669,6 +4682,70 @@
     });
     clampGone(d.gone, Date.now());
     return d;
+  }
+  // Phase 3, C1 — why a row is in the book but not counted (state.ledgerAside): voided (with a
+  // reason), reversed (by a reversal), the reversal itself, or carried into the next year's book.
+  var LEDGER_ASIDE_OFF = ['void', 'reversed', 'reversal', 'carried'];
+  // An aside row's own fields, after normalizeLedgerRow. In place; returns the row.
+  function normalizeAsideRow(e) {
+    ['voidReason', 'voidedByUid', 'voidedAt', 'reverses', 'reversedBy'].forEach(function (k) {
+      if (typeof e[k] !== 'string') e[k] = '';
+    });
+    e.voidedBy = ledgerStampClean(e.voidedBy);   // never an email (E2)
+    var cf = e.carriedFrom;
+    e.carriedFrom = (cf && typeof cf === 'object' && typeof cf.year === 'number' && isFinite(cf.year) && typeof cf.id === 'string')
+      ? { year: Math.round(cf.year), id: cf.id } : null;
+    return e;
+  }
+  // One ledger row, coerced in place (normalizeState). Shared by the counted rows (state.ledger,
+  // `prefix` 'nl') and the rows set aside (state.ledgerAside, 'na'), so a row reads the same
+  // wherever it sits and moving it between the two changes nothing about it. Never uid().
+  function normalizeLedgerRow(e, prefix) {
+    // Phase 3 step 0 — from what the entry says, not uid(): this used to give an id-less entry
+    // a new random id on EVERY load, on every device, so no two copies ever agreed on it.
+    // It hashes the row AS STORED, before the lines below normalize it (treasurer review of the
+    // stopgap, L4): every device reads the same stored row, so they agree, and the id is saved
+    // with the row, so nothing derives it again once the shape below has changed what it hashes.
+    if (typeof e.id !== 'string' || !e.id) e.id = stableRowId(prefix, e);
+    e.date = typeof e.date === 'string' ? e.date : '';
+    e.description = typeof e.description === 'string' ? e.description : '';
+    // Always positive; `direction` carries the sign. A stored negative would make the
+    // same movement expressible two ways, and then no total can be trusted.
+    e.amountCents = (typeof e.amountCents === 'number' && isFinite(e.amountCents)) ? Math.abs(Math.round(e.amountCents)) : 0;
+    e.direction = e.direction === 'in' ? 'in' : 'out';
+    e.lineId = typeof e.lineId === 'string' ? e.lineId : '';
+    e.method = LEDGER_METHODS.indexOf(e.method) === -1 ? '' : e.method;
+    e.ref = typeof e.ref === 'string' ? e.ref : '';
+    e.source = LEDGER_SOURCES.indexOf(e.source) === -1 ? '' : e.source;
+    e.donor = typeof e.donor === 'string' ? e.donor : '';
+    // Reserved for Phase 3 (charges + family accounts): normalized so it survives every
+    // round-trip now, which is what lets that phase be purely additive later.
+    e.scoutId = typeof e.scoutId === 'string' ? e.scoutId : '';
+    // The make-up payment that bought a reward tier carries the tier's id, so the money and the
+    // credit are ONE record rather than two kept in step by memory: tierMakeupMap() reads the
+    // credit back off these entries, so deleting one takes the tier with it. Every other ledger
+    // entry carries '' and behaves exactly as it always has.
+    e.tierMakeup = typeof e.tierMakeup === 'string' ? e.tierMakeup : '';
+    // T1 — a refund is money out to a family, nothing else; a reimbursement says it is one.
+    if (e.source === 'refund' && (e.direction !== 'out' || !e.scoutId)) e.source = '';
+    e.reimbursement = e.reimbursement === true;
+    // M4 (final review) — the treasurer has said this income is NOT the council's commission
+    // cheque, so the Budget card stops asking. Cleared by any edit to its amount, source, line
+    // or direction: the answer was about the entry as it stood.
+    e.notCommission = e.notCommission === true;
+    e.reconciled = e.reconciled === true;
+    // LIVE STOPGAP (see stampApproved) — when it was ticked, in ms. Absent (not 0) when unknown,
+    // so a record from before it gains nothing. A row set aside keeps it too; C6's per-row merge,
+    // reading the tick and untick events in ledgerLog, will make it redundant.
+    if (typeof e.reconciledAt === 'number' && isFinite(e.reconciledAt) && e.reconciledAt > 0) e.reconciledAt = Math.round(e.reconciledAt);
+    else delete e.reconciledAt;
+    // E2 — the audit trail. '' on everything recorded before it existed.
+    ['enteredBy', 'enteredAt', 'approvedBy', 'approvedAt', 'enteredByUid', 'approvedByUid'].forEach(function (k) {
+      if (typeof e[k] !== 'string') e[k] = '';
+    });
+    // Never an email (see the E2 banner): a stamp written before that rule is neutralised.
+    e.enteredBy = ledgerStampClean(e.enteredBy);
+    e.approvedBy = ledgerStampClean(e.approvedBy);
   }
   // Phase 3 step 0 — an id for a money-log row that has none, from what the row says (its id
   // left out), so every device that normalizes the same old record gives it the same id. Two
@@ -7178,6 +7255,19 @@
   function entryOnStatement(e, book) {
     return !book.statementDate || String(e.date || '') <= book.statementDate;
   }
+  // Phase 3, C1 (not used until C2) — a row that can no longer be edited or voided, only
+  // corrected by a reversing entry (the owner's rule, 2026-09-29): it is reconciled, or dated in
+  // the reconciled period (from the opening date through book.reconciledThrough), or its book is
+  // closed. A row before the opening date is history the opening figure holds, not on any
+  // statement, so it stays open. A back-dated ADD in the period is only warned about (C2), not
+  // refused — this answers for rows that exist. Pure.
+  function ledgerLocked(e, book) {
+    if (!e || !book) return false;
+    if (book.closedAt) return true;
+    if (e.reconciled === true) return true;
+    var d = String(e.date || ''), rt = String(book.reconciledThrough || '');
+    return !!(rt && d && d <= rt && entryAfterOpening(e, book));
+  }
   function reconcileTotals(ledger, book) {
     var cleared = book.openingCents || 0, ticked = 0, open = 0, after = 0;
     ledger.forEach(function (e) {
@@ -7621,6 +7711,27 @@
   function stampApproved(e, on) {
     if (on) { e.approvedBy = ledgerActor(); e.approvedByUid = ledgerActorUid(); e.approvedAt = new Date().toISOString(); e.reconciledAt = Date.now(); }
     else { e.approvedBy = ''; e.approvedByUid = ''; e.approvedAt = ''; delete e.reconciledAt; }
+  }
+  // Phase 3, C1 (not used until C2) — one entry in state.ledgerLog. What was done (`op`, one of
+  // LEDGER_OPS) to which row (`rowId`; a statement's id for 'reopen'), by whom, when, on which
+  // device (`who`: { id, at, by, byUid, dev } — the caller's uid() and clock, so this stays pure).
+  // `more`: `f` { field: [before, after] } for an edit, `rows` the other rows a reverse, correct or
+  // reassign touched, `why` a void's reason. Absent parts are left out, not written empty.
+  // ⚠ A CONVENIENCE RECORD, NOT PROOF, like the E2 stamps: on Firestore the client writes it.
+  // `by` is never an email. Null for an op this page does not know, or no row.
+  var LEDGER_OPS = ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen'];
+  function ledgerEvent(op, rowId, who, more) {
+    if (LEDGER_OPS.indexOf(op) === -1 || typeof rowId !== 'string' || !rowId) return null;
+    who = who || {};
+    more = more || {};
+    var ev = {
+      id: 'lg-' + String(who.id || ''), at: typeof who.at === 'string' ? who.at : '', by: ledgerStampClean(who.by),
+      byUid: typeof who.byUid === 'string' ? who.byUid : '', dev: typeof who.dev === 'string' ? who.dev : '', row: rowId, op: op
+    };
+    if (more.f && typeof more.f === 'object' && Object.keys(more.f).length) ev.f = more.f;
+    if (Array.isArray(more.rows) && more.rows.length) ev.rows = more.rows.slice();
+    if (typeof more.why === 'string' && more.why) ev.why = more.why;
+    return ev;
   }
   // E1 — this charge's due date, from its line and the line's event as they stand now.
   function chargeDueNow(c) {
@@ -25538,6 +25649,14 @@
     // them as uncategorised.
     state.ledger = [];
     state.book = freshBook();
+    // Phase 3, C1 — the book says its year; the rows set aside, the log and the statements were
+    // this year's book, as the ledger was (the snapshot download keeps them; C8 keeps them in
+    // closedBooks). The Trail's End import in force goes with the sales it wrote (entries, below).
+    state.book.year = b.programYear;
+    state.ledgerAside = [];
+    state.ledgerLog = [];
+    state.statements = [];
+    state.teImport = null;
     // Only a real balance opens the new book. Net movement with no opening figure is not one,
     // and the "Start from the carryover figure" button is there for that pack instead.
     if (closingBankKnown) {
