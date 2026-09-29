@@ -9840,11 +9840,11 @@
       return;
     }
     // A leader made a viewer while a sync-conflict waited has no copy to keep: this device
-    // takes the shared one now, rather than at the pack's next save (onRemoteSnap).
-    if (want === 'doc' && sync.conflict && !canEdit()) {
-      if (ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay = null;
-      adoptRemote(sync.conflict, {});
-    }
+    // takes the shared one now, rather than at the pack's next save (onRemoteSnap). Only on the
+    // server's word (security review of 6747945..6fa61c2, item 3): a cached members snapshot can
+    // be an old one, and "viewer" from it would throw away an editor's copy. Until the server
+    // says so, the choice keeps waiting — nothing is written while it does.
+    if (want === 'doc' && sync.conflict && !canEdit() && sync.membersFromServer) takeSharedAsViewer(sync.conflict);
     if (sync.feed === want && (want === 'doc' ? sync.unsub : sync.parentUnsub)) return;
     if (want === 'doc') {
       stopParentFeed();
@@ -11606,12 +11606,9 @@
     if (d.device === sync.deviceId) return; // our own write echoed back
     if (sync.conflict || (ui.overlay && ui.overlay.kind === 'sync-conflict')) {
       // A device that can no longer edit (a leader made a viewer while the choice waited) has
-      // no copy to keep: it takes the shared one, as a viewer's first answer does (M-3).
-      if (!canEdit()) {
-        if (ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay = null;
-        adoptRemote(d, {});
-        return;
-      }
+      // no copy to keep: it takes the shared one, as a viewer's first answer does (M-3) — once
+      // the server has said so (applyRoleSubscription). Until then the choice waits, on this copy.
+      if (!canEdit() && sync.membersFromServer) { takeSharedAsViewer(d); return; }
       sync.conflict = d;
       if (ui.overlay && ui.overlay.kind === 'sync-conflict') { ui.overlay.remote = d; render(); }
       return;
@@ -11623,6 +11620,12 @@
       // syncPush merges the append-only logs before writing and warns after.
       else sync.clobber = true;
     }
+  }
+  // A leader made view-only while a sync-conflict waited: this device takes the shared copy
+  // (there is no other it may keep), and says why its own changes are gone.
+  function takeSharedAsViewer(d) {
+    if (ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay = null;
+    if (adoptRemote(d, {})) showToast('You’re now view-only, so this device took the pack’s shared copy.');
   }
   // "Keep this device's copy" on the sync-conflict overlay (armed, two taps, in the click handler).
   function keepLocalCopy() {

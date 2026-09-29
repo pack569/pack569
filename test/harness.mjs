@@ -8684,6 +8684,57 @@ test('a device is told it was removed only by the server, end to end through the
   eq(vm.runInContext('sync.membersFromServer', bare), false, 'an answer with no meta counted as the server’s');
 });
 
+test('Firestore: an editor’s copy waiting on a choice is dropped for "view-only" only on the server’s word', () => {
+  // Security review of 6747945..6fa61c2, item 3. The page's real members watch, role handling,
+  // pack feed and first-answer comparison, on the real Firestore adapter over the fake SDK.
+  const shared = { rev: 9, device: 'd2', json: JSON.stringify({ rev: 9, packName: 'Shared', scouts: [{ id: 'b' }] }) };
+  const newer = { rev: 10, device: 'd3', json: JSON.stringify({ rev: 10, packName: 'Newer', scouts: [{ id: 'c' }] }) };
+  const TOAST = 'You’re now view-only, so this device took the pack’s shared copy.';
+  const ctx = fsAdapterCtx(`
+    var KEY = 'pack-popcorn-ledger-v1', removed = [], parentViewTimer = null, toasts = [], saves = 0;
+    var localStorage = { removeItem: function (k) { removed.push(k); } };
+    function freshState() { return { fresh: true }; }
+    function stopParentFeed() {} function subscribeParentView() {} function applyInvitesSubscription() {}
+    function applyJoinSubscription() {} function handleAccountsError() {} function ensureMyMemberDoc() { return null; }
+    function fixedSyncBlocked() { return false; } function fixedFeedBlocked() { return false; }
+    function holdPushes() { return false; } function scheduleParentViewRefresh() {} function render() {} function renderSyncPill() {}
+    function save() { saves += 1; } function showToast(m) { toasts.push(m); } function syncFail(e) { throw e; }
+    function clearTimeout() {} function setTimeout() { return 't'; }
+    function normalizeState(p) { return p && typeof p === 'object' && !Array.isArray(p) ? JSON.parse(JSON.stringify(p)) : null; }
+    var ui = { tab: 'home', overlay: null };
+    var state = { rev: 2, packName: 'Mine', scouts: [{ id: 'a' }] };
+    var sync = { session: 1, backend: firestoreBackend, docId: 'P', pack: firestoreBackend.open('P'), deviceId: 'dev1',
+      user: { uid: 'me' }, myRole: 'editor', accountsUnavailable: false, ownerUid: 'someone-else', joinRejected: null,
+      membersUnsub: null, membersScope: null, membersDeniedAs: null, membersFromServer: false, members: [],
+      feed: 'doc', unsub: null, parentUnsub: null, mode: 'connecting', notice: '', firstSnap: true, remoteRec: null,
+      conflict: null, dirty: false, clobber: false, pushTimer: null, packMissing: false };
+    ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'feedForRole', 'recomputeMyRole',
+       'stopLocalWrites', 'stopDocFeed', 'subscribeDoc', 'applyRoleSubscription', 'applyMembersSubscription', 'isStateEmpty',
+       'stateFingerprint', 'mergeRemoteAppendOnly', 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush'].map(decl).join('\n')}
+    subscribeDoc(1);
+    applyMembersSubscription(1);
+    function roster(role, md) {
+      watches[1].next(qsOf([{ id: 'me', data: function () { return { role: role }; } }], md));
+    }`);
+  const got = () => JSON.parse(JSON.stringify(vm.runInContext(`[sync.myRole, sync.membersFromServer, canEdit(),
+    sync.conflict && sync.conflict.rev, ui.overlay && ui.overlay.kind, state.packName, toasts]`, ctx)));
+  eq(vm.runInContext('[watches[0].ref.path, watches[1].ref.path]', ctx), ['packs/P', 'packs/P/members'], 'the two watches');
+  // The server: this device is an editor, and the pack differs from its copy, so it is asked.
+  vm.runInContext(`roster('editor', { fromCache: false });
+    reads['packs/P'] = ${JSON.stringify(shared)}; watches[0].next(snapOf('packs/P', {}));`, ctx);
+  eq(got(), ['editor', true, true, 9, 'sync-conflict', 'Mine', []], 'no choice waiting (the test proves nothing)');
+  // A CACHED roster says viewer: the choice waits, and this device's copy stays.
+  vm.runInContext("roster('viewer', { fromCache: true })", ctx);
+  eq(got(), ['viewer', false, false, 9, 'sync-conflict', 'Mine', []], 'a cached "viewer" threw away an editor’s copy');
+  // The pack moves on meanwhile: the choice waits, on the newer copy.
+  vm.runInContext(`reads['packs/P'] = ${JSON.stringify(newer)}; watches[0].next(snapOf('packs/P', {}));`, ctx);
+  eq(got(), ['viewer', false, false, 10, 'sync-conflict', 'Mine', []], 'a cached "viewer" took the pack’s next save');
+  // The server says viewer: this device takes the shared copy, says so, and writes nothing.
+  vm.runInContext("roster('viewer', { fromCache: false })", ctx);
+  eq(got(), ['viewer', true, false, null, null, 'Newer', [TOAST]], 'the server’s "viewer" left the device waiting');
+  eq(vm.runInContext('[txSets.length, sync.dirty]', ctx), [0, false], 'a viewer’s device wrote, or kept its copy to write');
+});
+
 test('the Firestore adapter hands the app plain records, keeps error codes, and writes exactly what it is handed', () => {
   const ctx = fsAdapterCtx(`firestoreBackend.open('P');`);
   // Pack record: the raw { rev, device, json } (the conflict overlay keeps it as-is), null when
@@ -15008,7 +15059,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'createInvite', 'revokeInvite', 'joinOpen', 'standingsEnabled', 'cleanContactLine', 'MOVE_KIND', 'MOVE_UID_RE', 'MOVE_ROLES',
   'isPackOwner', 'canDownloadMoveFile', 'canImportPack', 'moveFileReady', 'moveFileProblem', 'moveTime', 'buildMoveFile', 'downloadMoveFile', 'moveImportBody', 'importMoveFile',
   'scheduleParentViewRefresh', 'writeParentView', 'scheduleSyncPush', 'holdPushes', 'mergeRemoteAppendOnly', 'syncPush',
-  'isStateEmpty', 'stateFingerprint', 'adoptRemote', 'onRemoteSnap', 'keepLocalCopy', 'SERVER_NOTICES', 'serverNotice'];
+  'isStateEmpty', 'stateFingerprint', 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'keepLocalCopy', 'SERVER_NOTICES', 'serverNotice'];
 const CLIENT_SRC = CLIENT_FNS.map(decl).join('\n');
 
 // Every fetch in flight, across every client, so settle() knows when the server has answered.
@@ -15488,25 +15539,32 @@ atest('a copy choice closed with Escape keeps saying it waits, and a device that
     'a device made a viewer is still waiting on a choice it cannot make');
   eq(ed.log.filter((l) => /^PUT/.test(l)), [], 'a viewer’s device wrote');
   // The same, when the choice is still open and the pack's next save is what arrives (onRemoteSnap).
-  const snap = (edit) => {
+  const snap = (edit, fromServer) => {
     const ctx = vm.createContext({});
     vm.runInContext(`
-      var adopted = [], rendered = 0;
+      var adopted = [], rendered = 0, toasts = [];
       function scheduleParentViewRefresh() {} function renderSyncPill() {} function render() { rendered += 1; }
-      function syncPush() {} function clearTimeout() {} function setTimeout() {} function save() {} function showToast() {}
+      function syncPush() {} function clearTimeout() {} function setTimeout() {} function save() {} function showToast(m) { toasts.push(m); }
       function canEdit() { return ${edit}; }
       function normalizeState(p) { return p && typeof p === 'object' ? p : null; }
       function adoptRemote(d) { adopted.push(d.rev); sync.conflict = null; return true; }
       var ui = { tab: 'home', overlay: { kind: 'sync-conflict', remote: { rev: 5 } } };
       var state = { scouts: [{ id: 'a' }], rev: 5 };
       var sync = { firstSnap: false, mode: 'online', deviceId: 'dev1', dirty: true, clobber: false, conflict: { rev: 5 },
-        remoteRec: { rev: 5 }, backend: { serverRevs: true } };
-      ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap'].map(decl).join('\n')}
+        remoteRec: { rev: 5 }, backend: { serverRevs: true }, membersFromServer: ${fromServer !== false} };
+      ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap', 'takeSharedAsViewer'].map(decl).join('\n')}
       onRemoteSnap({ rev: 6, device: 'd2', json: '{}' }, { fromServer: true, pendingWrites: false });`, ctx);
-    return JSON.parse(JSON.stringify(vm.runInContext('[adopted, sync.conflict && sync.conflict.rev, ui.overlay && ui.overlay.kind]', ctx)));
+    return JSON.parse(JSON.stringify(vm.runInContext('[adopted, sync.conflict && sync.conflict.rev, ui.overlay && ui.overlay.kind, toasts]', ctx)));
   };
-  eq(snap(false), [[6], null, null], 'a device that cannot edit kept waiting on a choice when the pack moved on');
-  eq(snap(true), [[], 6, 'sync-conflict'], 'control: an editor’s choice waits, now on the newer copy');
+  eq(snap(false), [[6], null, null, ['You’re now view-only, so this device took the pack’s shared copy.']],
+    'a device that cannot edit kept waiting on a choice when the pack moved on');
+  eq(snap(true), [[], 6, 'sync-conflict', []], 'control: an editor’s choice waits, now on the newer copy');
+  // Security review of 6747945..6fa61c2, item 3: "view-only" from a cached members snapshot is
+  // not the server's word, so the choice waits (on the newer copy) rather than dropping this one.
+  eq(snap(false, false), [[], 6, 'sync-conflict', []], 'a cached "viewer" threw away an editor’s copy');
+  // …and the toast came with the adopt above, end to end.
+  ok(ed.get('toasts').indexOf('You’re now view-only, so this device took the pack’s shared copy.') !== -1,
+    'the leader made view-only was not told why their copy went');
 });
 
 atest('api client: a pack copied in after a leader’s device heard "no pack" is compared, never saved over', async () => {
