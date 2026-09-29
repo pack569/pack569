@@ -7891,6 +7891,135 @@
     return from ? all.slice(from) : all;
   }
   // ---------------------------------------------------------------------------
+  // TREASURER REVIEW OF C2 (M-4) — READING THE LOG. The log was written and never shown. Now:
+  //   ledgerLogRoom     how full it is, of what mergeLedgerLog keeps (1000 events, 128 KB); Money ·
+  //                     Ledger gives a notice at about three-quarters, and another once it is full
+  //                     and the oldest changes are going (a backup keeps them)
+  //   ledgerRowHistory  one entry's events, read-only under its Detail (ledgerHistoryHtml)
+  //   ledgerLogCsv      the whole log as a CSV: date, who, entry, what changed, before, after, why
+  // LEADERS ONLY, like the ledger and the log: nothing here is published (buildParentView is an
+  // allowlist and never reads the log). Every value shown is escaped where it is drawn (esc), and
+  // a CSV cell that would start a spreadsheet formula is quoted with a leading apostrophe.
+  // ---------------------------------------------------------------------------
+  // How full the log is: `share` the larger of its bytes of 128 KB and its events of 1000; `full`
+  // once it is within a few events of either (4 KB, 20 events: mergeLedgerLog is cutting, or about
+  // to on the next few changes); `since` the day of the oldest event kept ('' if none has a time).
+  // ⚠ "Full" is judged from the size, not seen: the cut leaves no mark (mergeLedgerLog is pure and
+  // the log is all it returns). Within 4 KB of the cap the oldest go with every few changes, so
+  // saying so then is at worst a few changes early. Pure.
+  function ledgerLogRoom(log) {
+    log = log || [];
+    var bytes = utf8Bytes(JSON.stringify(log)), count = log.length, since = '';
+    for (var i = 0; i < log.length && !since; i++) {
+      if (log[i] && typeof log[i].at === 'string' && log[i].at) since = log[i].at.slice(0, 10);
+    }
+    var cap = 128 * 1024;
+    return {
+      bytes: bytes, count: count, since: since,
+      share: Math.max(bytes / cap, count / 1000),
+      full: bytes > cap - 4096 || count > 1000 - 20
+    };
+  }
+  // The notice for ledgerLogRoom, or '' below three-quarters. The backup is Pack · Sharing's
+  // "Backup (JSON)": it holds the whole record, the log with it.
+  function ledgerLogRoomNotice(room) {
+    if (room.full) {
+      return 'The ledger’s change history is full, and changes before ' + (room.since ? fmtDateShort(room.since) : 'the oldest shown') +
+        ' are no longer kept in the app. Download a backup (Pack · Sharing, Backup) to keep them.';
+    }
+    if (room.share >= 0.75) {
+      return 'The ledger’s change history is three-quarters full. Once it fills, the oldest changes stop being kept in the app, ' +
+        'so download a backup (Pack · Sharing, Backup) now and then to keep them.';
+    }
+    return '';
+  }
+  // What each op, and each field in an event's `f`, is called where the log is read.
+  var LEDGER_OP_LABELS = {
+    edit: 'Changed', add: 'Added', 'delete': 'Deleted', tick: 'Ticked against a statement', untick: 'Un-ticked',
+    unmakeup: 'Tier make-up taken back', notcommission: 'Marked not the commission', reassign: 'Family unlinked',
+    opening: 'Opening balance changed', reconcile: 'Marked reconciled', restore: 'Backup restored',
+    'void': 'Voided', unvoid: 'Un-voided', reverse: 'Reversed', correct: 'Corrected', resolve: 'Resolved', reopen: 'Statement reopened'
+  };
+  var LEDGER_FIELD_LABELS = {
+    date: 'date', description: 'description', amountCents: 'amount', direction: 'in or out', lineId: 'budget line',
+    method: 'method', ref: 'reference', source: 'source', scoutId: 'family', donor: 'donor', reimbursement: 'reimbursement',
+    notCommission: 'not the commission', tierMakeup: 'tier make-up', openingCents: 'opening balance', openingDate: 'opening date',
+    reconciledThrough: 'reconciled through'
+  };
+  // One value from an event's `f`, as a leader reads it. `names` turns an id into a name
+  // ({ line, scout, tier }: each id → name or ''). Pure given `names`.
+  function ledgerLogValue(k, v, names) {
+    if (v === null || v === undefined || v === '') return '(none)';
+    if (k === 'amountCents' || k === 'openingCents') return typeof v === 'number' ? fmt(v) : String(v);
+    if (k === 'date' || k === 'openingDate' || k === 'reconciledThrough') return fmtDateShort(String(v));
+    if (k === 'direction') return v === 'in' ? 'money in' : v === 'out' ? 'money out' : String(v);
+    if (typeof v === 'boolean') return v ? 'yes' : 'no';
+    var n = names || {};
+    if (k === 'lineId' && n.line) return n.line(v) || 'a removed budget line';
+    if (k === 'scoutId' && n.scout) return n.scout(v) || 'a removed family';
+    if (k === 'tierMakeup' && n.tier) return n.tier(v) || 'a removed tier';
+    return String(v);
+  }
+  // An event as lines: one per field it changed ({ what, before, after }), or one saying what was
+  // done when it changed no field. Pure given `names`.
+  function ledgerEventLines(ev, names) {
+    var op = LEDGER_OP_LABELS[ev.op] || String(ev.op || 'Changed');
+    var ks = ev.f ? Object.keys(ev.f) : [];
+    if (!ks.length) return [{ what: op, before: '', after: '' }];
+    return ks.map(function (k) {
+      return { what: op + ': ' + (LEDGER_FIELD_LABELS[k] || k), before: ledgerLogValue(k, ev.f[k][0], names), after: ledgerLogValue(k, ev.f[k][1], names) };
+    });
+  }
+  // When an event was written, on this device's clock and time zone: 'YYYY-MM-DD HH:MM', or '' for
+  // an event with no time.
+  function ledgerLogWhen(at) {
+    var t = Date.parse(String(at || ''));
+    if (!at || !isFinite(t)) return '';
+    var d = new Date(t);
+    function p2(n) { return (n < 10 ? '0' : '') + n; }
+    return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes());
+  }
+  // The events about one entry, oldest first: its own, and a Tick all or Clear all that named it
+  // in `rows`. Pure.
+  function ledgerRowHistory(log, id) {
+    return (log || []).filter(function (ev) {
+      return ev && (ev.row === id || (Array.isArray(ev.rows) && ev.rows.indexOf(id) !== -1));
+    });
+  }
+  // One CSV cell: quoted when it must be, and never read by a spreadsheet as a formula (a leader's
+  // description starting "=" or "+" would otherwise run as one when the file is opened).
+  function ledgerCsvCell(v) {
+    v = String(v == null ? '' : v);
+    if (/^[=+\-@\t\r]/.test(v)) v = '\'' + v;
+    return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+  }
+  // The whole log as a CSV, oldest first: one line per field an event changed (per entry, for one
+  // that named several). `entry(id)` says which entry an id is ('' when it is gone); `names` as for
+  // ledgerLogValue. An entry that is gone is named from its delete event, if the log has it. Pure
+  // given `entry` and `names`.
+  function ledgerLogCsv(log, entry, names) {
+    var gone = {};
+    (log || []).forEach(function (ev) {
+      if (ev && ev.op === 'delete' && ev.f && ev.f.description) gone[ev.row] = 'Deleted: ' + (ev.f.description[0] || 'an entry');
+    });
+    function label(id) {
+      if (id === 'book') return 'The book';
+      return entry(id) || gone[id] || 'A removed entry';
+    }
+    var out = [['Date', 'Who', 'Entry', 'What changed', 'Before', 'After', 'Why'].join(',')];
+    (log || []).forEach(function (ev) {
+      if (!ev) return;
+      var ids = [ev.row].concat(Array.isArray(ev.rows) ? ev.rows : []);
+      var lines = ledgerEventLines(ev, names);
+      ids.forEach(function (id) {
+        lines.forEach(function (ln) {
+          out.push([ledgerLogWhen(ev.at), ev.by || '', label(id), ln.what, ln.before, ln.after, ev.why || ''].map(ledgerCsvCell).join(','));
+        });
+      });
+    });
+    return out.join('\n');
+  }
+  // ---------------------------------------------------------------------------
   // PHASE 3, C2 — LEDGER EDITS ARE LOGGED, AND THE LOCK RULES APPLY (owner, 2026-09-29).
   //
   // Every change to a row after it is entered appends one event to state.ledgerLog (logLedger):
@@ -18473,9 +18602,16 @@
         ' entr' + (tot.uncategorised === 1 ? 'y has' : 'ies have') + ' no budget line, so ' +
         (tot.uncategorised === 1 ? 'it isn’t' : 'they aren’t') + ' counted in any line’s actual cost.</p>';
     }
+    // Treasurer review of C2 (M-4) — how full the change history is, once it is worth saying.
+    var lgNote = ledgerLogRoomNotice(ledgerLogRoom(state.ledgerLog));
+    if (lgNote) {
+      h += '<p class="small" role="status" style="margin:8px 0 0"><span class="pill navy">Change history</span> ' + esc(lgNote) + '</p>';
+    }
     h += '<div class="row no-print" style="margin-top:10px">' +
       '<button type="button" class="btn small' + (ui.ledgerView === 'entries' ? ' primary' : '') + '" data-act="ledger-view" data-view="entries">Entries</button>' +
       '<button type="button" class="btn small' + (ui.ledgerView === 'reconcile' ? ' primary' : '') + '" data-act="ledger-view" data-view="reconcile">Reconcile</button>' +
+      // Treasurer review of C2 (M-4) — the whole log, as a CSV (the export overlay: copy or download).
+      (state.ledgerLog.length ? '<button type="button" class="btn small ghost" data-act="ledger-log-csv">Change history (CSV)</button>' : '') +
       '</div></div>';
     h += bookCard();
     return h + (ui.ledgerView === 'reconcile' ? renderReconcile() : renderLedgerEntries());
@@ -18492,6 +18628,38 @@
     }
     return 'Reconciled against a bank statement: it can’t be removed, and its amount, date and direction can’t be changed ' +
       'until it is un-reconciled.';
+  }
+  // Treasurer review of C2 (M-4) — the names the log's ids stand for, from the pack as it is now
+  // (ledgerLogValue), and which entry an id is (ledgerLogCsv).
+  function ledgerLogNames() {
+    return {
+      line: function (id) { var l = getBudgetLine(id); return l ? (l.name || 'Untitled line') : ''; },
+      scout: function (id) { var s = getScout(id); return s ? (s.name || '') : ''; },
+      tier: function (id) { var t = state.rewardTiers.tiers.filter(function (x) { return x.id === id; })[0]; return t ? (t.name || 'a reward tier') : ''; }
+    };
+  }
+  function ledgerEntryLabel(id) {
+    var e = state.ledger.filter(function (x) { return x.id === id; })[0];
+    if (!e) return '';
+    return (e.description || 'An entry') + ' · ' + fmtDateShort(e.date) + ' · ' + (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents || 0);
+  }
+  // Treasurer review of C2 (M-4) — one entry's change history, under its Detail: read-only text,
+  // every value escaped. A delete (seen only on an entry Undo put back) says so without its fields.
+  function ledgerHistoryHtml(e) {
+    var evs = ledgerRowHistory(state.ledgerLog, e.id);
+    var h = '<div class="lhist" style="flex-basis:100%;margin:6px 0 0"><p class="small muted" style="margin:0 0 2px"><strong>Change history</strong></p>';
+    if (!evs.length) return h + '<p class="small muted" style="margin:0">No changes recorded since it was entered.</p></div>';
+    var names = ledgerLogNames();
+    return h + '<ul class="small muted" style="margin:0;padding-left:18px">' + evs.map(function (ev) {
+      var when = ledgerLogWhen(ev.at);
+      var what = ev.op === 'delete'
+        ? esc(LEDGER_OP_LABELS['delete'])
+        : ledgerEventLines(ev, names).map(function (ln) {
+          return esc(ln.what) + (ln.before || ln.after ? ' ' + esc(ln.before) + ' → ' + esc(ln.after) : '');
+        }).join('; ');
+      return '<li>' + (when ? esc(fmtDateShort(when.slice(0, 10)) + ', ' + when.slice(11)) + ' · ' : '') +
+        esc(ev.by || 'someone') + ' · ' + what + (ev.why ? ' — ' + esc(ev.why) : '') + '</li>';
+    }).join('') + '</ul></div>';
   }
   // E2 — "Entered by … · reconciled by …", or '' for an entry from before the trail.
   function ledgerTrailLine(e) {
@@ -18647,6 +18815,7 @@
               // Detail of a locked row says it in a line.
               (eLocked ? '<p class="small muted llock" style="margin:6px 0 0;flex-basis:100%">' + esc(ledgerLockNote(e, state.book)) + '</p>' : '') +
               ledgerTrailLine(e) +
+              ledgerHistoryHtml(e) +   // Treasurer review of C2 (M-4)
             '</div>'
           // E2 — who reconciled it stays in view on a reconciled row, as before C2 gave it a Detail.
           : (e.reconciled ? ledgerTrailLine(e) : '')) +
@@ -26599,7 +26768,10 @@
       '<li><strong>Ledger:</strong> ' + (arc.ledger.trimmed
         ? '<strong>too large to keep in full.</strong> ' + esc(SEASON_LEDGER_TRIMMED)
         : 'Past seasons keeps all ' + arc.ledger.totals.entries + ' entr' + (arc.ledger.totals.entries === 1 ? 'y' : 'ies') +
-          ' and each family\u2019s closing balance (' + arc.families.length + ' famil' + (arc.families.length === 1 ? 'y' : 'ies') + ').') + '</li>' +
+          ' and each family’s closing balance (' + arc.families.length + ' famil' + (arc.families.length === 1 ? 'y' : 'ies') + ').') + '</li>' +
+      // Treasurer review of C2 (M-4) — close-out clears the ledger's change history, and until C8
+      // keeps it in closedBooks the snapshot download is the only copy.
+      '<li><strong>Change history:</strong> Download the snapshot — the ledger’s change history is only kept there.</li>' +
       // Wave 19(38b)
       (state.densAdvancedYear === year ? '' :
         '<li>Arrow of Light scouts who crossed over in the spring should already be archived — anyone still active is archived now.</li>') +
@@ -27644,6 +27816,13 @@
       return;
     }
     if (act === 'ledger-fates-dismiss') { sync.fatesNote = ''; render(); return; }
+    // Treasurer review of C2 (M-4) — the ledger's change history as a CSV. Leaders only: this is on
+    // Money · Ledger, which a parent never has (buildParentView carries no ledger and no log).
+    if (act === 'ledger-log-csv') {
+      ui.overlay = { kind: 'export', title: 'Ledger change history (CSV)', name: 'ledger-change-history.csv', mime: 'text/csv',
+        text: ledgerLogCsv(state.ledgerLog, ledgerEntryLabel, ledgerLogNames()) };
+      render(); return;
+    }
     if (act === 'ledger-use-carryover') {
       // Phase 3, C2 (H2) — not once a statement is reconciled; and logged.
       if (openingLockedWhy(state.book)) { showToast(openingLockedWhy(state.book)); render(); return; }

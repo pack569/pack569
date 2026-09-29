@@ -18757,6 +18757,100 @@ test('C2 treasurer L-5: un-reconciling takes an optional why, logged with it; re
   eq(r.get('log()[0].why'), 'A backup was restored on this device. The book now holds the backup’s 1 entry, none of it reconciled.', 'a book never reconciled');
 });
 
+test('C2 treasurer M-4: the change history says when it is three-quarters full and when it is full', () => {
+  const ctx = sandbox(['utf8Bytes', 'fmtDateShort', 'ledgerLogRoom', 'ledgerLogRoomNotice']);
+  const room = (log) => JSON.parse(JSON.stringify(ctx.ledgerLogRoom(log)));
+  const ev = (i, extra) => Object.assign({ id: 'lg-' + i, at: new Date(Date.UTC(2026, 9, 3) + i * 60000).toISOString(), row: 'l1', op: 'tick' }, extra || {});
+  eq([room([]).share < 0.001, room([]).full, ctx.ledgerLogRoomNotice(room([]))], [true, false, ''], 'an empty log');
+  // By count: 740 small events is under three-quarters; 760 is over; 981 is full.
+  const small = (n) => Array.from({ length: n }, (_, i) => ev(i));
+  eq([ctx.ledgerLogRoomNotice(room(small(740))), room(small(760)).full, room(small(980)).full, room(small(981)).full], ['', false, false, true], 'by count');
+  eq(ctx.ledgerLogRoomNotice(room(small(760))), 'The ledger’s change history is three-quarters full. Once it fills, the oldest changes stop being ' +
+    'kept in the app, so download a backup (Pack · Sharing, Backup) now and then to keep them.', 'the gentle notice');
+  // By bytes: 270 events of ~480 bytes (~126 KB) is full; the oldest kept is from Oct 3.
+  const big = Array.from({ length: 270 }, (_, i) => ev(i, { op: 'edit', f: { description: ['x'.repeat(190), 'y'.repeat(190)] } }));
+  const r = room(big);
+  ok(r.bytes > 124 * 1024 && r.bytes <= 128 * 1024 && r.full && r.count === 270, JSON.stringify(r));
+  eq(ctx.ledgerLogRoomNotice(r), 'The ledger’s change history is full, and changes before Oct 3 are no longer kept in the app. ' +
+    'Download a backup (Pack · Sharing, Backup) to keep them.', 'the full notice');
+  eq(room([ev(0, { at: '' }), ev(1)]).since, '2026-10-03', 'an event with no time is not the oldest date');
+  // Three-quarters by bytes, with few events: 210 of those (~98 KB) is 77%.
+  const most = room(big.slice(0, 210));
+  ok(most.share > 0.75 && most.share < 0.8 && !most.full, JSON.stringify(most));
+  ok(/three-quarters full/.test(ctx.ledgerLogRoomNotice(most)), 'three-quarters by bytes');
+  // Shown on Money · Ledger, escaped, only when there is something to say.
+  const rl = slice('renderLedger');
+  ok(/var lgNote = ledgerLogRoomNotice\(ledgerLogRoom\(state\.ledgerLog\)\);\s*if \(lgNote\) \{\s*h \+= '<p class="small" role="status"[^\n]*esc\(lgNote\)/.test(rl), 'the notice is not on Money · Ledger');
+});
+
+test('C2 treasurer M-4: an entry’s Detail shows its change history, read-only and escaped', () => {
+  const p = c2tPage({ more: `${['esc', 'LEDGER_OP_LABELS', 'LEDGER_FIELD_LABELS', 'ledgerLogValue', 'ledgerEventLines', 'ledgerLogWhen', 'ledgerRowHistory',
+    'ledgerLogNames', 'ledgerHistoryHtml'].map(slice).join('\n')}` });
+  eq(p.get("ledgerHistoryHtml(row('u1'))"), '<div class="lhist" style="flex-basis:100%;margin:6px 0 0"><p class="small muted" style="margin:0 0 2px">' +
+    '<strong>Change history</strong></p><p class="small muted" style="margin:0">No changes recorded since it was entered.</p></div>', 'no history');
+  p.run("change('led-desc', 'u1', '<img src=x onerror=alert(1)>'); change('led-amount', 'u1', '90'); ui.armed = null; act('ledger-tick-all'); change('led-line', 'u1', 'x2')");
+  const h = p.get("ledgerHistoryHtml(row('u1'))");
+  ok(!/<img/.test(h) && /&lt;img src=x onerror=alert\(1\)&gt;/.test(h), 'a description is not escaped: ' + h);
+  ok(!/<input|<select|<button|data-act|data-ch/.test(h), 'the history is not read-only');
+  const items = h.split('<li>').slice(1).map((x) => x.replace(/<\/li>.*$/, ''));
+  eq(items.length, 4, 'one item per event: ' + h);
+  ok(/^[A-Z][a-z]{2} \d{1,2}, \d\d:\d\d · Pat Treasurer · Changed: description Pinewood trophies → &lt;img/.test(items[0]), items[0]);
+  ok(/· Changed: amount \$84\.00 → \$90\.00$/.test(items[1]), items[1]);
+  ok(/· Ticked against a statement$/.test(items[2]), 'a Tick all that named it (as its first row): ' + items[2]);
+  ok(/· Changed: budget line Council fee → Council fee$/.test(items[3]), items[3]);
+  // A row a Tick all named in `rows` sees it too; a why is shown after a dash.
+  p.run("state.ledgerLog.push({ id: 'lg-x', at: '', by: 'Sam', row: 'zz', rows: ['p1'], op: 'untick', why: 'Wrong statement <b>' })");
+  eq(p.get("ledgerHistoryHtml(row('p1'))").split('<li>').slice(1).pop(), 'Sam · Un-ticked — Wrong statement &lt;b&gt;</li></ul></div>', 'a named row, and a why');
+  // Under the Detail of every entry, after the trail line.
+  ok(/ledgerTrailLine\(e\) \+\s*ledgerHistoryHtml\(e\) \+/.test(slice('renderLedgerEntries')), 'the Detail does not show the history');
+});
+
+test('C2 treasurer M-4: the change history downloads as a CSV — date, who, entry, what changed, before, after, why — and no formula runs', () => {
+  const ctx = sandbox(['fmt', 'fmtDateShort', 'LEDGER_OP_LABELS', 'LEDGER_FIELD_LABELS', 'ledgerLogValue', 'ledgerEventLines', 'ledgerLogWhen', 'ledgerCsvCell', 'ledgerLogCsv']);
+  const log = [
+    { id: 'a', at: '2026-10-03T15:04:00.000Z', by: 'Pat', row: 'l1', op: 'edit', f: { amountCents: [8400, 9000], description: ['Trophies', '=HYPERLINK("x")'] } },
+    { id: 'b', at: '2026-10-04T00:00:00.000Z', by: 'Sam', row: 'l1', rows: ['l2'], op: 'tick' },
+    { id: 'c', at: '', by: 'Pat', row: 'l3', op: 'delete', f: { amountCents: [500, null], description: ['Pizza, large', null] } },
+    { id: 'd', at: '2026-10-05T00:00:00.000Z', by: 'Pat', row: 'book', op: 'reconcile', f: { reconciledThrough: ['2026-08-31', '2026-09-30'] }, why: 'Sept "statement"' },
+    { id: 'e', at: '2026-10-06T00:00:00.000Z', by: '+Mallory', row: 'l9', op: 'untick' }];
+  const entry = (id) => ({ l1: 'Trophies · Oct 1 · −$90.00', l2: 'Dues · Oct 2 · +$25.00' })[id] || '';
+  const names = { line: () => '', scout: () => '', tier: () => '' };
+  const when = (at) => ctx.ledgerLogWhen(at);
+  const csv = ctx.ledgerLogCsv(log, entry, names).split('\n');
+  eq(csv, [
+    'Date,Who,Entry,What changed,Before,After,Why',
+    `${when(log[0].at)},Pat,Trophies · Oct 1 · −$90.00,Changed: amount,$84.00,$90.00,`,
+    `${when(log[0].at)},Pat,Trophies · Oct 1 · −$90.00,Changed: description,Trophies,"'=HYPERLINK(""x"")",`,
+    `${when(log[1].at)},Sam,Trophies · Oct 1 · −$90.00,Ticked against a statement,,,`,
+    `${when(log[1].at)},Sam,Dues · Oct 2 · +$25.00,Ticked against a statement,,,`,
+    ',Pat,"Deleted: Pizza, large",Deleted: amount,$5.00,(none),',
+    ',Pat,"Deleted: Pizza, large",Deleted: description,"Pizza, large",(none),',
+    `${when(log[3].at)},Pat,The book,Marked reconciled: reconciled through,Aug 31,Sep 30,"Sept ""statement"""`,
+    `${when(log[4].at)},'+Mallory,A removed entry,Un-ticked,,,`], 'the CSV');
+  ok(/^2026-10-0[34] \d\d:\d\d$/.test(when(log[0].at)) && when('') === '' && when('junk') === '', 'the time: ' + when(log[0].at));
+  for (const c of ['=1', '+1', '-1', '@x', '\tx']) ok(ctx.ledgerCsvCell(c).startsWith("'") || ctx.ledgerCsvCell(c).startsWith("\"'"), c + ' can run as a formula');
+  // The button and its handler: the export overlay, from the pack's own log.
+  const p = c2Page({ more: `${['LEDGER_OP_LABELS', 'LEDGER_FIELD_LABELS', 'ledgerLogValue', 'ledgerEventLines', 'ledgerLogWhen', 'ledgerCsvCell', 'ledgerLogCsv',
+    'ledgerLogNames', 'ledgerEntryLabel'].map(slice).join('\n')}
+    function getBudgetLine() { return null; } function getScout() { return null; }
+    function act4(act, el) { (function () {\n${c2Block(/    if \(act === 'ledger-log-csv'\) \{[\s\S]*?\n    \}/, 'ledger-log-csv')}\n})(); }` });
+  p.run("change('led-desc', 'u1', 'Trophies'); act4('ledger-log-csv')");
+  const o = p.get('ui.overlay');
+  eq([o.kind, o.name, o.mime, o.text.split('\n').length, /,Pat Treasurer,Trophies · Sep 10 · −\$84\.00,Changed: description,Pinewood trophies,Trophies,$/.test(o.text)],
+    ['export', 'ledger-change-history.csv', 'text/csv', 2, true], 'the export: ' + o.text);
+  ok(/\(state\.ledgerLog\.length \? '<button type="button" class="btn small ghost" data-act="ledger-log-csv">Change history \(CSV\)<\/button>' : ''\)/.test(slice('renderLedger')),
+    'Money · Ledger offers no CSV of the log');
+});
+
+test('C2 treasurer M-4: the log’s screens are leaders-only, and close-out says the snapshot is the only copy of the change history', () => {
+  const bpv = codeOnly(BPV()), parent = codeOnly(slice('renderParentApp'));
+  for (const name of ['ledgerLog', 'ledgerHistoryHtml', 'ledgerLogCsv', 'ledgerRowHistory', 'ledgerLogRoom', 'ledger-log-csv']) {
+    ok(bpv.indexOf(name) === -1 && parent.indexOf(name) === -1, name + ' reaches the parents');
+  }
+  ok(/'<li><strong>Change history:<\/strong> Download the snapshot — the ledger’s change history is only kept there\.<\/li>'/.test(slice('renderCloseoutOverlay')),
+    'the close-out screen does not say where the change history is kept');
+});
+
 /* ---------------- report ---------------- */
 // The API tests are async; they run here, one at a time, each on its own database.
 for (const [name, fn] of asyncTests) {
