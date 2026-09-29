@@ -16777,6 +16777,70 @@ test('stopgap, Firestore: two devices that both re-import before either saves co
   eq(eIds(z.server()), ['b1', 'x1', 'x2'], 'rows from before batches came back');
 });
 
+// Treasurer M3 / popcorn 3: the copy chooser, drawn by the page's own renderOverlay.
+const CHOOSER_FNS = ['esc', 'fmt', 'fmtDateShort', 'fmtArchiveDate', 'arrOf', 'teBatchOf', 'dangerBtn', 'packSalesCents', 'teLastImportMs',
+  'rowsOnlyIn', 'syncCopyLine', 'syncYearsHtml', 'syncOnlyHereHtml', 'jsonBackup', 'renderOverlay'];
+function chooserHtml(mine, cloud, over) {
+  const ctx = vm.createContext({});
+  vm.runInContext(`${CHOOSER_FNS.map(slice).join('\n')}
+    function fixedPackMode() { return true; }
+    var sync = { dirty: ${!(over && over.clean)} };
+    var state = ${JSON.stringify(mine)};
+    var ui = { armed: null, overlay: Object.assign({ kind: 'sync-conflict', remote: { rev: 4, json: ${JSON.stringify(JSON.stringify(cloud))} } }, ${JSON.stringify(over || {})}) };`, ctx);
+  return { html: vm.runInContext('renderOverlay()', ctx), ctx };
+}
+test('stopgap: the copy chooser says which copy is the newer year, what only this device has, and offers the download first', () => {
+  const seed = goneSeedNorm();
+  // This device: last season, with a late receipt and a wagon sale not saved. The cloud: closed out.
+  const mine = JSON.parse(JSON.stringify(seed));
+  mine.ledger.push({ id: 'lb', date: '2026-09-28', description: 'Late receipt <b>', amountCents: 1234, direction: 'in' });
+  mine.entries.push({ id: 'b1', scoutId: 's2', kind: 'wagon', date: '', salesCents: 100, donationsCents: 0 });
+  const closed = Object.assign(JSON.parse(JSON.stringify(seed)), { entries: [], ledger: [], inventory: { products: [], distributions: [] },
+    fundraisers: [{ id: 'f1', name: 'Raffle', sales: [] }] });
+  closed.budget = Object.assign({}, closed.budget, { programYear: 2027 });
+  const { html } = chooserHtml(mine, closed);
+  const text = html.replace(/<[^>]+>/g, '');
+  ok(text.includes('The cloud copy has been closed out to 2027. This device still has 2026, with changes that were not saved.'), 'the newer year is not said plainly');
+  ok(text.includes('Use the cloud copy. Give the treasurer what you had not saved; late receipts go in the new book as today’s entries, noted as late.'),
+    'the treasurer’s guidance for a newer cloud copy');
+  ok(text.includes('Cloud copy (2027): 2 scouts · 0 storefronts · 0 popcorn entries · 0 ledger rows · popcorn sales $0.00 · last Trail’s End import: none.'), 'the cloud copy’s line');
+  ok(text.includes('This device (2026): 2 scouts · 0 storefronts · 5 popcorn entries · 2 ledger rows · popcorn sales $86.00 · last Trail’s End import: date not recorded.'),
+    'this device’s line');
+  ok(text.includes('Only on this device: 2 ledger rows, 5 popcorn entries, 1 fundraiser sale, 1 popcorn hand-out. The cloud copy does not have them.'), 'what only this device has');
+  ok(html.includes('<li>Sep 28 · Late receipt &lt;b&gt; · +$12.34</li>') && html.includes('<li>Sep 1 · Dues · +$25.00</li>'), 'the ledger rows only this device has');
+  const dl = html.indexOf('data-act="sync-download-local"');
+  ok(dl > 0 && dl < html.indexOf('data-act="sync-use-cloud"') && dl < html.indexOf('data-act="sync-keep-local"'), 'the download is not before the two choices');
+  ok(/>Download this device’s copy first</.test(html) && !/Downloaded as/.test(html), 'the download button');
+  ok(/Downloaded as popcorn-backup\.json\./.test(chooserHtml(mine, closed, { downloaded: true }).html), 'no word that the download happened');
+  // A device with nothing unsaved (its copy is only old) is not told it has unsaved changes.
+  const clean = chooserHtml(mine, closed, { clean: true }).html.replace(/<[^>]+>/g, '');
+  ok(clean.includes('This device still has 2026.Use the cloud copy.Whichever'), 'a device with nothing unsaved');
+  // The other way round: this device closed out, the cloud copy is still last season.
+  const mine27 = Object.assign(JSON.parse(JSON.stringify(closed)), {});
+  const older = chooserHtml(mine27, seed).html.replace(/<[^>]+>/g, '');
+  ok(older.includes('This device has been closed out to 2027, but the cloud copy is still in 2026. Someone saved 2026 changes after this device closed out.') &&
+    older.includes('Use the cloud copy, then close out the year again.'), 'the older cloud copy');
+  ok(older.includes('Every sale, payment and hand-out on this device is also in the cloud copy.'), 'nothing only here');
+  // Same year: no year talk; one row only here.
+  const same = JSON.parse(JSON.stringify(seed));
+  same.entries.push({ id: 'b1', scoutId: 's2', kind: 'wagon', date: '', salesCents: 100, donationsCents: 0 });
+  const sameText = chooserHtml(same, seed).html.replace(/<[^>]+>/g, '');
+  ok(!/closed out/.test(sameText) && sameText.includes('Only on this device: 1 popcorn entry. The cloud copy does not have it.'), 'the same year');
+  // The last import's date, from its batch (a uid(): the time in base 36).
+  const t = Date.UTC(2026, 8, 29, 15);
+  const withTe = Object.assign(JSON.parse(JSON.stringify(seed)), { entries: [{ id: 'te-' + t.toString(36) + 'abc123-0', scoutId: 's1', kind: 'online', salesCents: 5, source: 'te-import' }] });
+  ok(chooserHtml(withTe, seed).html.includes('last Trail’s End import: September 29, 2026.'), 'the last import’s date');
+  const ctx = sandbox(['arrOf', 'teBatchOf', 'teLastImportMs', 'packSalesCents']);
+  eq([ctx.teLastImportMs(null), ctx.teLastImportMs({ entries: 'x' }), ctx.packSalesCents({ storefronts: [{ blocks: [{ salesCents: 7 }, null] }, {}], entries: [null, { salesCents: 3 }] })],
+    [0, 0, 10], 'guarded against a malformed copy');
+  // The download is the Pack tab's Backup (JSON), byte for byte, and does not close the chooser.
+  const h = slice('handleAction');
+  ok(/if \(act === 'sync-download-local'\) \{\s*var bkS = jsonBackup\(\);\s*download\(bkS\.name, bkS\.mime, bkS\.text\);/.test(h) &&
+    /if \(act === 'export-json'\) \{\s*var bkJ = jsonBackup\(\);/.test(h), 'the download is not the Backup (JSON)');
+  const bk = vm.runInContext('jsonBackup()', chooserHtml(mine, closed).ctx);
+  eq([bk.name, bk.mime, bk.text], ['popcorn-backup.json', 'application/json', JSON.stringify(mine, null, 2)], 'the backup');
+});
+
 // Treasurer M2 / security S4: a deleted scout, fundraiser or product, as the three delete
 // handlers do it, against a device still holding it that has since added to it.
 const DEL_FR = "markGone('fundraisers', ['f1']); state.fundraisers = state.fundraisers.filter(function (f) { return f.id !== 'f1'; }); commit()";
@@ -17076,7 +17140,7 @@ test('stopgap: every path that deletes a money-log row marks it, an Undo marks i
     'close-out does not clear the marks and move the year (the season check depends on both)');
   ok(/if \(clobbered && seasonMoved\(remote\)\) return \{ record: null/.test(slice('syncPush')), 'syncPush does not check the season');
   const chooser = slice('renderOverlay');
-  ok(/rc\.budget\.programYear !== state\.budget\.programYear\s*\? '<p><strong>The cloud copy is in the '/.test(chooser),
+  ok(/syncYearsHtml\(rc\.budget && typeof rc\.budget\.programYear === 'number' \? rc\.budget\.programYear : null, state\.budget\.programYear, sync\.dirty\)/.test(chooser),
     'the chooser does not say the two copies are in different program years');
   // No other removal from a money log slipped in without a mark: this count moves only with a
   // new one, and whoever moves it has to look. (The ten: the nine above, and normalizeState

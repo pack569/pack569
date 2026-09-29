@@ -11976,6 +11976,87 @@
     if (adoptRemote(d, {})) showToast('You’re now view-only, so this device took the pack’s shared copy.');
     else render();
   }
+  // LIVE STOPGAP — the copy chooser's plain-words parts (treasurer M3, popcorn 3 of the stopgap
+  // reviews). Leaders only: the chooser is never shown to a parent. Pure, given the two copies
+  // (the cloud one as stored, not normalized, so every read is guarded).
+  // The popcorn sales recorded in a copy: storefront blocks and wagon/online entries, as the pack
+  // totals count them (computePackTotals).
+  function packSalesCents(s) {
+    var n = 0;
+    arrOf(s && s.storefronts).forEach(function (sf) { arrOf(sf && sf.blocks).forEach(function (b) { n += (b && b.salesCents) || 0; }); });
+    arrOf(s && s.entries).forEach(function (e) { n += (e && e.salesCents) || 0; });
+    return n;
+  }
+  // When the newest Trail's End import in a copy ran (its batch starts with the time, teBatchOf):
+  // ms; -1 for rows imported before batches, whose time was not kept; 0 for none.
+  function teLastImportMs(s) {
+    var newest = '', any = false;
+    arrOf(s && s.entries).forEach(function (e) {
+      if (!e || e.source !== 'te-import') return;
+      any = true;
+      if (teBatchOf(e.id) > newest) newest = teBatchOf(e.id);
+    });
+    var t = newest ? parseInt(newest.slice(0, 8), 36) : NaN;
+    // 2020 to 2100: anything else is not a time.
+    if (isFinite(t) && t > 1577836800000 && t < 4102444800000) return t;
+    return any ? -1 : 0;
+  }
+  // The rows (by id) this device's copy has that the other does not, in each money log.
+  function rowsOnlyIn(mine, other) {
+    function ids(list) { var h = {}; arrOf(list).forEach(function (x) { if (x && typeof x.id === 'string') h[x.id] = true; }); return h; }
+    function sales(s) { var out = []; arrOf(s && s.fundraisers).forEach(function (fr) { out = out.concat(arrOf(fr && fr.sales)); }); return out; }
+    function only(a, b) { var h = ids(b); return arrOf(a).filter(function (x) { return x && typeof x.id === 'string' && !h[x.id]; }); }
+    return {
+      entries: only(mine && mine.entries, other && other.entries),
+      ledger: only(mine && mine.ledger, other && other.ledger),
+      distributions: only(mine && mine.inventory && mine.inventory.distributions, other && other.inventory && other.inventory.distributions),
+      sales: only(sales(mine), sales(other))
+    };
+  }
+  function syncCopyLine(label, s) {
+    var n = function (arr) { return Array.isArray(arr) ? arr.length : 0; };
+    var y = s && s.budget && typeof s.budget.programYear === 'number' ? s.budget.programYear : null;
+    var te = teLastImportMs(s);
+    return esc(label) + (y ? ' (' + y + ')' : '') + ': <strong>' + n(s && s.scouts) + ' scouts</strong> · ' + n(s && s.storefronts) + ' storefronts · ' +
+      n(s && s.entries) + ' popcorn entries · ' + n(s && s.ledger) + ' ledger rows · popcorn sales ' + fmt(packSalesCents(s)) +
+      ' · last Trail’s End import: ' + (te > 0 ? esc(fmtArchiveDate(new Date(te).toISOString())) : te < 0 ? 'date not recorded' : 'none') + '.';
+  }
+  // Which copy is the newer year, and what to do. '' when both are in the same year. `unsaved`:
+  // this device has changes it has not saved (sync.dirty).
+  function syncYearsHtml(cloudYear, myYear, unsaved) {
+    if (cloudYear === null || cloudYear === myYear) return '';
+    var what = cloudYear > myYear
+      ? '<p><strong>The cloud copy has been closed out to ' + cloudYear + '. This device still has ' + myYear +
+        (unsaved ? ', with changes that were not saved' : '') + '.</strong></p>' +
+        '<p>Use the cloud copy.' + (unsaved ? ' Give the treasurer what you had not saved; late receipts go in the new book as today’s entries, noted as late.' : '') + '</p>'
+      : '<p><strong>This device has been closed out to ' + myYear + ', but the cloud copy is still in ' + cloudYear +
+        '.</strong> Someone saved ' + cloudYear + ' changes after this device closed out.</p>' +
+        '<p>Use the cloud copy, then close out the year again.</p>';
+    return what + '<p class="small">Whichever you keep, the other year’s copy is gone for everyone. Download this device’s copy first.</p>';
+  }
+  // What only this device has, so nobody picks a copy without knowing what the other loses.
+  function syncOnlyHereHtml(only) {
+    var parts = [], n = function (k, one, many) { var c = only[k].length; if (c) parts.push(c + ' ' + (c === 1 ? one : many)); };
+    n('ledger', 'ledger row', 'ledger rows');
+    n('entries', 'popcorn entry', 'popcorn entries');
+    n('sales', 'fundraiser sale', 'fundraiser sales');
+    n('distributions', 'popcorn hand-out', 'popcorn hand-outs');
+    if (!parts.length) return '<p class="small muted">Every sale, payment and hand-out on this device is also in the cloud copy. ' +
+      '(A change to one that both copies have is not counted here.)</p>';
+    var shown = only.ledger.slice(0, 8).map(function (e) {
+      return '<li>' + esc(e.date ? fmtDateShort(e.date) : 'No date') + ' · ' + esc(e.description || 'No description') + ' · ' +
+        (e.direction === 'in' ? '+' : '−') + fmt(Math.abs(e.amountCents || 0)) + '</li>';
+    });
+    if (only.ledger.length > 8) shown.push('<li>and ' + (only.ledger.length - 8) + ' more</li>');
+    return '<p class="small"><strong>Only on this device:</strong> ' + parts.join(', ') + '. The cloud copy does not have ' +
+      (parts.length === 1 && parts[0].indexOf('1 ') === 0 ? 'it' : 'them') + '.</p>' +
+      (shown.length ? '<ul class="small" style="margin:0 0 10px">' + shown.join('') + '</ul>' : '');
+  }
+  // Backup (JSON): the whole pack record as it stands on this device. The Pack tab's button and
+  // the copy chooser's download are this one file.
+  function jsonBackup() {
+    return { name: 'popcorn-backup.json', mime: 'application/json', text: JSON.stringify(state, null, 2) };
+  }
   // "Keep this device's copy" on the sync-conflict overlay (armed, two taps, in the click handler).
   function keepLocalCopy() {
     var kept = ui.overlay;
@@ -22572,20 +22653,19 @@
       var rc = null;
       try { rc = JSON.parse(typeof o.remote.json === 'string' ? o.remote.json : ''); } catch (e) { /* shown as 0s */ }
       rc = rc || {};
-      var cnt = function (arr) { return Array.isArray(arr) ? arr.length : 0; };
       return '<div class="overlay" role="dialog" aria-modal="true" aria-label="Two copies of this pack record"><div class="overlay-inner"><div class="card">' +
         '<h2 class="section display">Two copies of this pack record</h2>' +
         '<p>This device and the shared cloud copy for ' + (fixedPackMode() ? 'this pack' : 'this passphrase') +
         ' both have real data, and they don’t match. ' +
         'Pick which one everyone should use — the other copy is overwritten.</p>' +
-        // LIVE STOPGAP — the two copies are on either side of a close-out (syncPush, seasonMoved).
-        (rc.budget && typeof rc.budget.programYear === 'number' && rc.budget.programYear !== state.budget.programYear
-          ? '<p><strong>The cloud copy is in the ' + rc.budget.programYear + ' program year, and this device’s is in ' +
-            state.budget.programYear + '.</strong> The season was closed out (or the year changed) on one copy while the other ' +
-            'had changes not yet saved. Whichever you keep, the other year’s copy is gone for everyone.</p>'
-          : '') +
-        '<p class="small muted">Cloud copy: <strong>' + cnt(rc.scouts) + ' scouts</strong> · ' + cnt(rc.storefronts) + ' storefronts · ' + cnt(rc.entries) + ' entries.<br>' +
-        'This device: <strong>' + state.scouts.length + ' scouts</strong> · ' + state.storefronts.length + ' storefronts · ' + state.entries.length + ' entries.</p>' +
+        // LIVE STOPGAP — the two copies are on either side of a close-out (syncPush, seasonMoved):
+        // which is the newer year, in plain words, and what to do (treasurer review of the
+        // stopgap, M3). Both buttons can lose money here, so the download comes first.
+        syncYearsHtml(rc.budget && typeof rc.budget.programYear === 'number' ? rc.budget.programYear : null, state.budget.programYear, sync.dirty) +
+        '<p class="small muted">' + syncCopyLine('Cloud copy', rc) + '<br>' + syncCopyLine('This device', state) + '</p>' +
+        syncOnlyHereHtml(rowsOnlyIn(state, rc)) +
+        '<div class="row"><button type="button" class="btn" data-act="sync-download-local">Download this device’s copy first</button></div>' +
+        (o.downloaded ? '<p class="small muted" style="margin-top:0">Downloaded as ' + esc(jsonBackup().name) + '. Keep it until the treasurer has what was in it.</p>' : '') +
         '<div class="row">' +
         dangerBtn('sync-use-cloud', 'Use cloud copy (replaces this device)') +
         dangerBtn('sync-keep-local', 'Keep this device’s copy (overwrites cloud)') +
@@ -26962,7 +27042,8 @@
     }
     if (act === 'print-summary') { window.print(); return; }
     if (act === 'export-json') {
-      ui.overlay = { kind: 'export', title: 'JSON backup', name: 'popcorn-backup.json', mime: 'application/json', text: JSON.stringify(state, null, 2) };
+      var bkJ = jsonBackup();
+      ui.overlay = { kind: 'export', title: 'JSON backup', name: bkJ.name, mime: bkJ.mime, text: bkJ.text };
       render(); return;
     }
     if (act === 'export-csv') {
@@ -27170,6 +27251,13 @@
       return;
     }
 
+    // The copy chooser's download (LIVE STOPGAP, M3): this device's copy, before either choice.
+    if (act === 'sync-download-local') {
+      var bkS = jsonBackup();
+      download(bkS.name, bkS.mime, bkS.text);
+      if (ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay.downloaded = true;
+      render(); return;
+    }
     // Armed (two-tap) destructive actions
     if (act === 'sync-use-cloud') {
       arm(act, function () {
