@@ -7379,8 +7379,12 @@
   // Treasurer review of C2 (M-2) — and each says what to do instead, in the treasurer's words: in
   // the period, an adjusting (or opposite) entry dated today that names the entry it corrects
   // (or cancels); a reconciled one, un-reconcile it first. Dates as the review writes them (Sep 12).
+  // Treasurer sign-off on C3 — a reconciled row: voiding says what to do if the money moved and if
+  // the tick was a mistake; a voided row still ticked is entered again (it is not on the reconcile
+  // screen to un-tick).
   function ledgerLockedWhy(e, book, what, how) {
     if (!ledgerLocked(e, book)) return '';
+    var subject = what;
     what = what || 'That entry';
     var it = how === 'money' ? 'its amount, date and direction' : 'it';
     var cant = how === 'void' ? ' can’t be voided.' : how === 'unvoid' ? ' can’t be un-voided.' : ' can’t be changed.';
@@ -7393,8 +7397,17 @@
       if (how === 'unvoid') return inPeriod + ' If it should count, enter it again dated today and say in its description which entry it replaces.';
       return inPeriod;
     }
+    if (how === 'unvoid') {
+      return (subject || 'It') + ' is still marked reconciled, so it can’t be un-voided here. ' +
+        'Enter it again dated today and say in its description which entry it replaces.';
+    }
+    if (how === 'void') {
+      return what + ' is reconciled against a bank statement, so it can’t be voided. If it is on the bank statement, the money ' +
+        'moved: record an opposite entry dated today instead. If it was ticked by mistake, un-reconcile it first (Money · Ledger, ' +
+        'two taps), then void it.';
+    }
     return what + ' is reconciled against a bank statement, so ' + it + cant + ' ' +
-      'Un-reconcile it first (Money · Ledger, two taps), then ' + (how === 'void' ? 'void' : 'change') + ' it.';
+      'Un-reconcile it first (Money · Ledger, two taps), then change it.';
   }
   // ---------------------------------------------------------------------------
   // PHASE 3, C3 — VOID REPLACES DELETE (owner, 2026-09-29: "delete becomes a void with a reason;
@@ -12677,22 +12690,33 @@
   // Treasurer review of C2 (M-1) — a kept row dated in the reconciled period (`book`) can't be
   // voided even un-reconciled (ledger-void-go), so it is told the way to take it out of the book: an
   // adjusting entry. Any other kept row is told as before.
-  function reconciledFatesText(f, book) {
+  // Treasurer sign-off on C3 — since C3 a row leaves the book's totals by a void, so a kept row says
+  // "voided or deleted", and a lost row now in `aside` (state.ledgerAside) says it was voided and
+  // where it is; one not there (a delete from a page before C3) is told as before.
+  function reconciledFatesText(f, book, aside) {
+    var voided = {};
+    (aside || []).forEach(function (a) { if (a && typeof a.id === 'string') voided[a.id] = true; });
     function name(x) {
       return '“' + (x.description || 'An entry') + '” (' + fmt(x.amountCents || 0) + (x.date ? ', ' + fmtDateShort(x.date) : '') + ')';
     }
     var out = [];
     f.kept.forEach(function (x) {
       if (ledgerDateReconciled(x.date, book)) {
-        out.push(name(x) + ' was deleted on another device, but it is reconciled and dated inside the period already reconciled ' +
-          '(through ' + fmtDateShort(book.reconciledThrough) + '), so it was kept. If it shouldn’t be in the book, record an ' +
+        out.push(name(x) + ' was voided or deleted on another device, but it is reconciled and dated inside the period already reconciled ' +
+          '(through ' + fmtDateShort(book.reconciledThrough) + '), so it still counts. If it shouldn’t be in the book, record an ' +
           'adjusting entry dated today and say in its description which entry it cancels.');
         return;
       }
-      out.push(name(x) + ' was deleted, but it is reconciled against the bank statement, so it was kept. ' +
-        'To remove it, un-reconcile it first, then void it.');
+      out.push(name(x) + ' was voided or deleted on another device, but it is reconciled against the bank statement, so it still counts. ' +
+        'If it isn’t on the statement, un-reconcile it, then void it.');
     });
     f.lost.forEach(function (x) {
+      if (voided[x.id]) {
+        out.push(name(x) + ' was reconciled on this device, but another leader voided it afterwards, so it no longer counts. ' +
+          'It is under Entries · Voided & reversed, with their reason. If it is on the bank statement, un-void it and tick it again ' +
+          '(or, if its date is already reconciled, enter it again dated today). If not, nothing needs doing.');
+        return;
+      }
       out.push(name(x) + ' was reconciled on this device, but another leader deleted it afterwards, so it has been removed. ' +
         'If it is on the bank statement, enter it again and tick it. If not, nothing needs doing.');
     });
@@ -12717,7 +12741,7 @@
       };
     }
     f = { kept: (f.kept || []).filter(fresh('kept')), lost: (f.lost || []).filter(fresh('lost')), split: (f.split || []).filter(fresh('split')) };
-    var text = reconciledFatesText(f, state.book);
+    var text = reconciledFatesText(f, state.book, state.ledgerAside);
     // Treasurer sign-off on C3 — and a row found in two versions (`split`, normalizeState), in the
     // treasurer's words, on the same card (sync.splitNote) until the same Got it.
     var two = f.split.map(function (x) {
@@ -13183,11 +13207,12 @@
   // what it put back (a ledger entry now in the reconciled period): they are the toast instead,
   // for longer.
   // Phase 3, C3 — `words` { done, undone } for an act that isn't a delete (a ledger void:
-  // 'Voided', 'Un-voided'); 'Deleted' and 'Restored' without.
+  // 'Voided', 'Un-voided'); 'Deleted' and 'Restored' without. Treasurer sign-off on C3 —
+  // `words.said`, when given, is the whole first toast instead.
   function deleteWithUndo(label, restore, words) {
     words = words || {};
     commit();
-    showToast((words.done || 'Deleted') + ' ' + label, {
+    showToast(words.said || ((words.done || 'Deleted') + ' ' + label), {
       actionLabel: 'Undo', duration: 6000,
       onAction: function () {
         var said = restore();
@@ -18728,9 +18753,11 @@
 
   /* ----- Money · Ledger (Phase 0) ----- */
   // Phase 3, C3 — 'aside' lists the rows in the book but not counted (state.ledgerAside) instead.
+  // Treasurer sign-off on C3 — called "Voided" while voids are all it holds; C4 (reversals) names
+  // it "Voided & reversed" again.
   var LEDGER_FILTERS = [
     ['', 'All'], ['in', 'Money in'], ['out', 'Money out'],
-    ['unreconciled', 'Not reconciled'], ['uncategorised', 'No budget line'], ['aside', 'Voided & reversed']
+    ['unreconciled', 'Not reconciled'], ['uncategorised', 'No budget line'], ['aside', 'Voided']
   ];
   function ledgerDraftDefault() {
     return {
@@ -18968,8 +18995,10 @@
   // LEDGER_VOID_REASON_MAX characters), Void it, Cancel. What a void does, said once, plainly.
   function ledgerVoidFormHtml(e) {
     return '<div class="lvoid" style="flex-basis:100%;margin:6px 0 0">' +
-      '<p class="small" style="margin:0 0 6px">Void this entry? It stays in the book, marked void, but no longer counts in any total. ' +
-      'You can un-void it later from <strong>Voided &amp; reversed</strong>.</p>' +
+      // Treasurer sign-off on C3 — in the treasurer's words: when to void, and when not to.
+      '<p class="small" style="margin:0 0 6px">Void this entry? Use this only for an entry made in error (entered twice, wrong account, ' +
+      'a check never cashed). If the money really moved, record an opposite entry instead. A voided entry stays in the book, marked ' +
+      'void, but no longer counts in any total. You can un-void it later from <strong>Voided &amp; reversed</strong>.</p>' +
       '<div class="row" style="gap:6px">' +
       '<input class="lname" data-ch="ledger-void-why" value="' + esc(ui.voidWhy || '') + '" maxlength="' + LEDGER_VOID_REASON_MAX + '" ' +
         'placeholder="Why? (required, e.g. entered twice)" aria-label="Why void it (required)">' +
@@ -28184,10 +28213,15 @@
       // LIVE STOPGAP — marked gone, so no stale copy counts it again, and a page from before C3
       // (which knows nothing of voids) drops it from its ledger as it would a delete.
       markGone('ledger', [vd.row]);
-      deleteWithUndo(vd.row.description || 'entry', function () {
+      // Treasurer sign-off on C3 — the toasts in the treasurer's words.
+      var vdLabel = vd.row.description ? '“' + vd.row.description + '”' : 'an entry';
+      deleteWithUndo(vdLabel, function () {
         var vdBack = ledgerUnvoidRow(state, vdId, vd.ix);
         // A sync in the Undo's few seconds can have settled it elsewhere (ledgerAsideSettle).
-        if (!vdBack) return '“' + (vd.row.description || 'The entry') + '” is no longer voided on this device, so there was nothing to undo.';
+        if (!vdBack) {
+          return '“' + (vd.row.description || 'The entry') + '” was already put back on another device, so there was nothing to undo. ' +
+            'It counts in the totals again.';
+        }
         markGone('ledger', [vdBack], true);
         // Security re-review of C2 (minor) — and moved the lock past it: it counts again all the
         // same (the void was allowed), said and logged, as a back-dated add is.
@@ -28199,7 +28233,7 @@
             ', inside the period reconciled (through ' + fmtDateShort(state.book.reconciledThrough) + ') while it was voided, so it is ' +
             'now locked. If it isn’t on that statement, record an opposite entry dated today and say in its description which entry it cancels.';
         }
-      }, { done: 'Voided', undone: 'Un-voided' });
+      }, { done: 'Voided', undone: 'Un-voided', said: 'Voided ' + vdLabel + '. It no longer counts in any total.' });
       return;
     }
     // PHASE 3, C3 — un-void from Entries · Voided & reversed: two taps, as it puts money back into

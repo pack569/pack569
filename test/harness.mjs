@@ -16961,12 +16961,13 @@ const RECONCILE_L1 = "stampApproved(state.ledger[0], true); state.ledger[0].reco
 const UNRECONCILE_L1 = "stampApproved(state.ledger[0], false); state.ledger[0].reconciled = false; commit()";
 const DELETE_L1 = "markGone('ledger', state.ledger.splice(0, 1)); commit()";
 // Phase 3, C2 — each row with its amount and date; a lost one in the treasurer's words (H1, m1).
-const KEPT_L1 = '“Dues” ($25.00, Sep 1) was deleted, but it is reconciled against the bank statement, so it was kept. ' +
-  'To remove it, un-reconcile it first, then void it. (Kept on Money · Ledger.)';
+// Treasurer sign-off on C3 — "voided or deleted", and it "still counts".
+const KEPT_L1 = '“Dues” ($25.00, Sep 1) was voided or deleted on another device, but it is reconciled against the bank statement, so it still counts. ' +
+  'If it isn’t on the statement, un-reconcile it, then void it. (Kept on Money · Ledger.)';
 // Treasurer review of C2 (M-1) — kept, and dated in the reconciled period (through Sep 30): it can't
 // be deleted even un-reconciled, so the way out is an adjusting entry.
-const KEPT_L1_PERIOD = '“Dues” ($25.00, Sep 1) was deleted on another device, but it is reconciled and dated inside the period ' +
-  'already reconciled (through Sep 30), so it was kept. If it shouldn’t be in the book, record an adjusting entry dated today and ' +
+const KEPT_L1_PERIOD = '“Dues” ($25.00, Sep 1) was voided or deleted on another device, but it is reconciled and dated inside the period ' +
+  'already reconciled (through Sep 30), so it still counts. If it shouldn’t be in the book, record an adjusting entry dated today and ' +
   'say in its description which entry it cancels. (Kept on Money · Ledger.)';
 const LOST_L1 = '“Dues” ($25.00, Sep 1) was reconciled on this device, but another leader deleted it afterwards, so it has been removed. ' +
   'If it is on the bank statement, enter it again and tick it. If not, nothing needs doing. (Kept on Money · Ledger.)';
@@ -18050,12 +18051,12 @@ test('C2: what a sync did to a reconciled row is said with its amount and date, 
   // adjusting entry (it can't be deleted, even un-reconciled). One after the period, as before.
   const book = { openingDate: '2026-07-01', reconciledThrough: '2026-09-30' };
   eq(ctx.reconciledFatesText({ kept: [lost], lost: [] }, book),
-    '“Pinewood trophies” ($84.00, Sep 12) was deleted on another device, but it is reconciled and dated inside the period already ' +
-    'reconciled (through Sep 30), so it was kept. If it shouldn’t be in the book, record an adjusting entry dated today and say in its ' +
+    '“Pinewood trophies” ($84.00, Sep 12) was voided or deleted on another device, but it is reconciled and dated inside the period already ' +
+    'reconciled (through Sep 30), so it still counts. If it shouldn’t be in the book, record an adjusting entry dated today and say in its ' +
     'description which entry it cancels.', 'the treasurer’s wording, in the period');
   eq(ctx.reconciledFatesText({ kept: [Object.assign({}, lost, { date: '2026-10-02' })], lost: [] }, book),
-    '“Pinewood trophies” ($84.00, Oct 2) was deleted, but it is reconciled against the bank statement, so it was kept. ' +
-    'To remove it, un-reconcile it first, then void it.', 'after the period');
+    '“Pinewood trophies” ($84.00, Oct 2) was voided or deleted on another device, but it is reconciled against the bank statement, so it still counts. ' +
+    'If it isn’t on the statement, un-reconcile it, then void it.', 'after the period');
   eq(ctx.reconciledFatesText({ kept: [], lost: [lost] }, book),
     '“Pinewood trophies” ($84.00, Sep 12) was reconciled on this device, but another leader deleted it afterwards, so it has been removed. ' +
     'If it is on the bank statement, enter it again and tick it. If not, nothing needs doing.', 'the treasurer’s wording');
@@ -18064,7 +18065,7 @@ test('C2: what a sync did to a reconciled row is said with its amount and date, 
   ctx.noteReconciledFates({ kept: [], lost: [lost] });
   ctx.noteReconciledFates({ kept: [{ description: '', amountCents: 500, date: '' }], lost: [] });
   const [note, toasts] = JSON.parse(JSON.stringify(vm.runInContext('[sync.fatesNote, toasts]', ctx)));
-  ok(note.indexOf('“Pinewood trophies” ($84.00, Sep 12)') === 0 && / “An entry” \(\$5\.00\) was deleted, but it is reconciled/.test(note), 'the note: ' + note);
+  ok(note.indexOf('“Pinewood trophies” ($84.00, Sep 12)') === 0 && / “An entry” \(\$5\.00\) was voided or deleted on another device, but it is reconciled/.test(note), 'the note: ' + note);
   eq(toasts.map((t) => [/\(Kept on Money · Ledger\.\)$/.test(t[0]), t[1].duration]), [[true, 10000], [true, 10000]], 'the toast');
   // On the screen until Got it; said after adoptRemote's toast, which used to replace it (m1).
   ok(/var h = sync\.fatesNote \|\| sync\.splitNote\s*\? '<div class="card" role="status">[\s\S]*?esc\(sync\.fatesNote\)[\s\S]*?data-act="ledger-fates-dismiss">Got it<\/button>/.test(slice('renderLedger')),
@@ -18532,7 +18533,9 @@ test('C3: a locked entry can’t be voided, not even unticked in the reconciled 
   p.run("toasts = []; act2('ledger-void:p1'); act2('ledger-void:r1')");
   eq(p.get('toasts'), ['That entry is dated Aug 15, inside the period already reconciled (through Aug 31), so it can’t be voided. ' +
     'To cancel it, record an opposite entry dated today and say in its description which entry it cancels.',
-    'That entry is reconciled against a bank statement, so it can’t be voided. Un-reconcile it first (Money · Ledger, two taps), then void it.'], 'the refusals');
+    // Treasurer sign-off on C3 — a reconciled one: if the money moved, and if the tick was a mistake.
+    'That entry is reconciled against a bank statement, so it can’t be voided. If it is on the bank statement, the money moved: record an ' +
+    'opposite entry dated today instead. If it was ticked by mistake, un-reconcile it first (Money · Ledger, two taps), then void it.'], 'the refusals');
   // The Entries list offers no ✕ on a locked row, nor its form.
   ok(/\(eLocked \? '' : '<button type="button" class="btiny" data-act="ledger-void:' \+ esc\(e\.id\) \+ '" aria-label="Void this entry" title="Void this entry">✕<\/button>'\) \+\s*\(!eLocked && ui\.voidAsk === e\.id \? ledgerVoidFormHtml\(e\) : ''\) \+/
     .test(slice('renderLedgerEntries')), 'a locked row shows its ✕, or an open one none');
@@ -18576,7 +18579,8 @@ test('C3: a void sets the entry aside with why, who and when, marks it gone, and
   eq([p.get("!!row('u1')"), a.off, a.voidReason, a.voidedBy, a.voidedByUid, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(a.voidedAt), a.reverses, a.reversedBy, a.carriedFrom],
     [false, 'void', 'Entered twice', 'Pat Treasurer', 'u1', true, '', '', null], 'the voided row');
   eq([p.get('marks'), p.get('commits'), p.get('ui.voidAsk'), p.get('undoWords')],
-    [[['ledger', ['u1'], false]], 1, null, ['Pinewood trophies', { done: 'Voided', undone: 'Un-voided' }]], 'marked, saved, the form closed, "Voided"');
+    [[['ledger', ['u1'], false]], 1, null, ['“Pinewood trophies”', { done: 'Voided', undone: 'Un-voided', said: 'Voided “Pinewood trophies”. It no longer counts in any total.' }]],
+    'marked, saved, the form closed, "Voided"');
   const ev = p.get('log()[0]');
   eq([ev.op, ev.row, ev.why, ev.f, ev.by, ev.dev], ['void', 'u1', 'Entered twice', { amountCents: [8400, null], date: ['2026-09-10', null], direction: ['out', null],
     description: ['Pinewood trophies', null], lineId: ['x1', null], scoutId: ['', null], method: ['check', null], ref: ['101', null] }, 'Pat Treasurer', 'dev1'],
@@ -18597,7 +18601,7 @@ test('C3: a void sets the entry aside with why, who and when, marks it gone, and
   const r = c2rPage();
   r.run("void2('u1', 'Entered twice'); state.ledger.push(state.ledgerAside.pop()); var said = undo()");
   eq([r.get("state.ledger.filter(function (e) { return e.id === 'u1'; }).length"), r.get('log().length'), r.get('said')],
-    [1, 1, '“Pinewood trophies” is no longer voided on this device, so there was nothing to undo.'], 'twice');
+    [1, 1, '“Pinewood trophies” was already put back on another device, so there was nothing to undo. It counts in the totals again.'], 'twice');
 });
 
 test('C3: a voided entry is un-voided from Voided & reversed with two taps while it is open, and logged', () => {
@@ -18620,8 +18624,49 @@ test('C3: a voided entry is un-voided from Voided & reversed with two taps while
   ok(/var why = ledgerLockedWhy\(e, state\.book, '', 'unvoid'\);/.test(l) && /\(e\.off === 'void' && !why\s*\? '<button type="button" class="btn small ghost'[^\n]*\n\s*[^\n]*\n?[^\n]*data-act="ledger-unvoid:' \+ esc\(e\.id\)|\(e\.off === 'void' && !why\s*\? '<button type="button" class="btn small ghost'[^\n]*data-act="ledger-unvoid:' \+ esc\(e\.id\)/.test(l),
     'Un-void is offered on a locked row');
   ok(/if \(f\.dir === 'aside'\) return h \+ ledgerAsideListHtml\(f\) \+ '<\/div>';/.test(slice('renderLedgerEntries')), 'the filter does not show the voided list');
-  ok(/\['aside', 'Voided & reversed'\]/.test(slice('LEDGER_FILTERS')), 'no Voided & reversed filter');
+  // Treasurer sign-off on C3 — "Voided" until C4, which names it "Voided & reversed" again.
+  ok(/\['aside', 'Voided'\]/.test(slice('LEDGER_FILTERS')) && /C4 \(reversals\) names\s*\n\s*\/\/ it "Voided & reversed" again\./.test(SCRIPT), 'no Voided filter');
 });
+
+test('C3 treasurer: the void form, the refusals, the toasts and the sync notes say it in the treasurer’s words', () => {
+  // The void form.
+  const x = sandbox(['esc', 'LEDGER_VOID_REASON_MAX', 'ledgerVoidFormHtml']);
+  vm.runInContext("var ui = { voidWhy: '' };", x);
+  eq(/<p class="small" style="margin:0 0 6px">([\s\S]*?)<\/p>/.exec(x.ledgerVoidFormHtml({ id: 'u1' }))[1],
+    'Void this entry? Use this only for an entry made in error (entered twice, wrong account, a check never cashed). If the money really moved, ' +
+    'record an opposite entry instead. A voided entry stays in the book, marked void, but no longer counts in any total. You can un-void it ' +
+    'later from <strong>Voided &amp; reversed</strong>.', 'the void form');
+  // Un-void of a row still ticked (after the period): refused, and told to enter it again.
+  const p = c2rPage();
+  p.run("void2('u1', 'Entered twice'); aside('u1').reconciled = true; toasts = []; commits = 0; act2('ledger-unvoid:u1'); act2('ledger-unvoid:u1')");
+  const still = 'It is still marked reconciled, so it can’t be un-voided here. Enter it again dated today and say in its description which entry it replaces.';
+  eq([p.get("!!aside('u1')"), p.get('commits'), p.get('toasts')], [true, 0, [still, still]], 'a voided row still ticked');
+  eq(p.get("ledgerLockedWhy(aside('u1'), state.book, 'Pizza', 'unvoid')"), still.replace(/^It/, 'Pizza'), 'a named row');
+  // The void's toast, and one for an entry with no description.
+  const d = sandbox(['deleteWithUndo']);
+  vm.runInContext('var toasts = []; function commit() {} function showToast(m, o) { toasts.push([m, o && o.actionLabel]); }', d);
+  d.deleteWithUndo('“Pizza”', () => undefined, { done: 'Voided', undone: 'Un-voided', said: 'Voided “Pizza”. It no longer counts in any total.' });
+  d.deleteWithUndo('“Pizza”', () => undefined, { done: 'Voided', undone: 'Un-voided' });
+  eq(JSON.parse(JSON.stringify(vm.runInContext('toasts', d))), [['Voided “Pizza”. It no longer counts in any total.', 'Undo'], ['Voided “Pizza”', 'Undo']], 'the toast');
+  const q = c2rPage();
+  q.run("row('u1').description = ''; void2('u1', 'Entered twice')");
+  eq(q.get('undoWords'), ['an entry', { done: 'Voided', undone: 'Un-voided', said: 'Voided an entry. It no longer counts in any total.' }], 'no description');
+  // A sync note: a row reconciled here that another leader voided says where it is; one deleted (a
+  // page from before C3) is told as before.
+  const f = sandbox(['fmt', 'fmtDateShort', 'entryAfterOpening', 'ledgerDateReconciled', 'reconciledFatesText']);
+  const lost = { id: 'l7', description: 'Pinewood trophies', amountCents: 8400, date: '2026-09-12' };
+  const book = { openingDate: '2026-07-01', reconciledThrough: '2026-08-31' };
+  eq(f.reconciledFatesText({ kept: [], lost: [lost] }, book, [{ id: 'l7', off: 'void' }]),
+    '“Pinewood trophies” ($84.00, Sep 12) was reconciled on this device, but another leader voided it afterwards, so it no longer counts. ' +
+    'It is under Entries · Voided & reversed, with their reason. If it is on the bank statement, un-void it and tick it again (or, if its date ' +
+    'is already reconciled, enter it again dated today). If not, nothing needs doing.', 'voided');
+  const deleted = '“Pinewood trophies” ($84.00, Sep 12) was reconciled on this device, but another leader deleted it afterwards, so it has been removed. ' +
+    'If it is on the bank statement, enter it again and tick it. If not, nothing needs doing.';
+  eq([f.reconciledFatesText({ kept: [], lost: [lost] }, book, [{ id: 'l8', off: 'void' }]), f.reconciledFatesText({ kept: [], lost: [lost] }, book)],
+    [deleted, deleted], 'deleted');
+  ok(/var text = reconciledFatesText\(f, state\.book, state\.ledgerAside\);/.test(slice('noteReconciledFates')), 'the note does not look in the voided rows');
+});
+
 
 
 // Phase 3, C3 — the reader-equivalence property (design §1.1): for generated ledgers, every reader
@@ -18715,7 +18760,7 @@ test('C3: nothing outside the book’s own plumbing reads the voided rows, so no
     if (!/^\s*\/\//.test(line) && /ledgerAside/.test(line.replace(/\/\/.*$/, ''))) users.add(fn);
   });
   eq([...users].sort(), ['dropScout', 'freshState', 'handleAction', 'isStateEmpty', 'keepLostVoids', 'ledgerAsideListHtml', 'ledgerAsideSettle', 'ledgerEntryLabel', 'ledgerUnvoidRow',
-    'ledgerVoidRow', 'mergeRemoteAppendOnly', 'normalizeState', 'renderLedgerEntries', 'restoreGone', 'rolloverYear'], 'who reads the voided rows');
+    'ledgerVoidRow', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderLedgerEntries', 'restoreGone', 'rolloverYear'], 'who reads the voided rows');
   // In handleAction: the void handlers and del-scout's log line only.
   const h = slice('handleAction').split('\n').filter((l) => /ledgerAside/.test(l) && !/^\s*\/\//.test(l));
   eq(h.length, 2, 'handleAction reads the voided rows somewhere new: ' + h.join(' | '));
@@ -19554,6 +19599,19 @@ test('C3 re-check (minor): two versions of a row the settle can’t join keep th
 
 // Treasurer sign-off on C3 — the note a split leaves on Money · Ledger, in the treasurer's words.
 const TWO_PIZZA = 'Two versions of “Pizza” were found: one voided, one counted. Check which is right.';
+test('C3 treasurer, Firestore: a device that had ticked an entry another leader voided is told where it is', () => {
+  // B ticks l2 (unsaved); A voids it a minute later and saves; B merges that as it saves.
+  const { a, b } = c3FsPair();
+  b.run("stampApproved(state.ledger[1], true); state.ledger[1].reconciled = true; commit()");
+  a.run(skew(60000));
+  a.run("voidRow('l2', 'Entered twice')"); a.push();
+  b.hear(); b.push();
+  eq([c3Where(b.get('state')), b.get("sync.fatesNote || ''")], [[['l1', 'l3'], ['l2']],
+    '“Pizza” ($40.00, Sep 10) was reconciled on this device, but another leader voided it afterwards, so it no longer counts. It is under ' +
+    'Entries · Voided & reversed, with their reason. If it is on the bank statement, un-void it and tick it again (or, if its date is already ' +
+    'reconciled, enter it again dated today). If not, nothing needs doing.'], 'B, which had ticked it');
+});
+
 test('C3 treasurer: an entry found in two versions is said on Money · Ledger, once, by the device that split it', () => {
   // B merges the old page's save (a clobber) and A's copy splits there; a clean device adopts it and splits it too.
   const { a, b } = c3FsPair();
