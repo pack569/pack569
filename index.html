@@ -4031,9 +4031,28 @@
     if (!Array.isArray(d.ledgerLog)) d.ledgerLog = [];
     d.ledgerLog = d.ledgerLog.filter(plainObj);
     d.ledgerLog.forEach(function (ev) {
-      if (typeof ev.id !== 'string' || !ev.id) ev.id = stableRowId('lg', ev);
+      if (typeof ev.id !== 'string' || !ev.id) ev.id = stableRowId('lg', ev);   // as stored (L4)
       if (ev.by !== undefined) ev.by = ledgerStampClean(ev.by);   // never an email (E2)
+      // C2 (treasurer review of C1, M4) — the shape every reader relies on: the row, the time
+      // and the op are strings; `f` an object, `rows` strings, `why` a string, or absent. An op
+      // this page does not know is kept as it is, as a newer page wrote it.
+      ['at', 'row', 'op'].forEach(function (k) { if (typeof ev[k] !== 'string') ev[k] = ''; });
+      ['byUid', 'dev'].forEach(function (k) { if (ev[k] !== undefined && typeof ev[k] !== 'string') ev[k] = ''; });
+      // Each field in `f` is [before, after]; anything else is dropped. The values are not scrubbed
+      // (security review of C1, m5, decided here): they are what the row said, a leader's own
+      // words and figures, the log is leaders-only like the ledger (never in buildParentView),
+      // and the page writes no email into a row.
+      if (ev.f !== undefined && !plainObj(ev.f)) delete ev.f;
+      if (ev.f) Object.keys(ev.f).forEach(function (k) { if (!Array.isArray(ev.f[k]) || ev.f[k].length !== 2) delete ev.f[k]; });
+      if (ev.rows !== undefined) {
+        if (!Array.isArray(ev.rows)) delete ev.rows;
+        else ev.rows = ev.rows.filter(function (r) { return typeof r === 'string' && r; });
+      }
+      if (ev.why !== undefined && typeof ev.why !== 'string') delete ev.why;
     });
+    // C2 (M4, m5) — one of each event, in time order, capped (mergeLedgerLog): the sync merge
+    // unions the log by id, and gives the same order and cap.
+    d.ledgerLog = mergeLedgerLog(d.ledgerLog, []);
     if (!Array.isArray(d.statements)) d.statements = [];
     d.statements = d.statements.filter(plainObj);
     d.statements.forEach(function (st) {
@@ -7721,7 +7740,7 @@
     if (on) { e.approvedBy = ledgerActor(); e.approvedByUid = ledgerActorUid(); e.approvedAt = new Date().toISOString(); e.reconciledAt = Date.now(); }
     else delete e.reconciledAt;
   }
-  // Phase 3, C1 (not used until C2) — one entry in state.ledgerLog. What was done (`op`, one of
+  // Phase 3, C1 — one entry in state.ledgerLog (written by logLedger). What was done (`op`, one of
   // LEDGER_OPS) to which row (`rowId`; a statement's id for 'reopen'), by whom, when, on which
   // device (`who`: { id, at, by, byUid, dev } — the caller's uid() and clock, so this stays pure).
   // `more`: `f` { field: [before, after] } for an edit, `rows` the other rows a reverse, correct or
@@ -7741,6 +7760,45 @@
     if (Array.isArray(more.rows) && more.rows.length) ev.rows = more.rows.slice();
     if (typeof more.why === 'string' && more.why) ev.why = more.why;
     return ev;
+  }
+  // Phase 3, C2 — this device, now: the `who` ledgerEvent takes.
+  function ledgerWho() {
+    return { id: uid(), at: new Date(Date.now()).toISOString(), by: ledgerActor(), byUid: ledgerActorUid(), dev: String(sync.deviceId || '') };
+  }
+  // Append one event to the pack's ledger log; returns it (null if ledgerEvent refused it). The
+  // one way anything is added to state.ledgerLog.
+  function logLedger(op, rowId, more) {
+    var ev = ledgerEvent(op, rowId, ledgerWho(), more);
+    if (!ev) return null;
+    if (!Array.isArray(state.ledgerLog)) state.ledgerLog = [];
+    state.ledgerLog.push(ev);
+    return ev;
+  }
+  // The two devices' logs as one: every event from either, by id, in time order (then id), so
+  // both devices hold the same log in the same order. Events are never edited, so the same id is
+  // the same event; if two ever differ, the one whose JSON sorts first is kept, on both.
+  // normalizeState runs a record's own log through it too (with no `theirs`), so a log is always
+  // deduped, in order and capped. Pure.
+  //
+  // THE CAP (security review of C1, m5): the newest 1000 events. An edit event is about 250
+  // bytes and a tick about 190, and a season is about 330 events, ~65 KB (the test 'C2: a season
+  // of ledger events' pins these). So this only bites a pack whose log has run away — an import
+  // gone wrong, a page looping — and keeps the record under Firestore's one-document limit when
+  // it does. The oldest go first. ⚠ C6's per-row merge will read the log, and must not take a
+  // missing old event as proof of anything. A literal, as in freshGone: normalizeState runs
+  // before this part of the script has.
+  function mergeLedgerLog(mine, theirs) {
+    var byId = Object.create(null);
+    (mine || []).concat(theirs || []).forEach(function (ev) {
+      if (!ev || typeof ev.id !== 'string') return;
+      var had = byId[ev.id];
+      if (!had || JSON.stringify(ev) < JSON.stringify(had)) byId[ev.id] = ev;
+    });
+    var all = Object.keys(byId).map(function (k) { return byId[k]; }).sort(function (a, b) {
+      var x = String(a.at || ''), y = String(b.at || '');
+      return x < y ? -1 : x > y ? 1 : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    });
+    return all.length > 1000 ? all.slice(all.length - 1000) : all;
   }
   // E1 — this charge's due date, from its line and the line's event as they stand now.
   function chargeDueNow(c) {
@@ -11765,7 +11823,8 @@
   // Wave 18(5) — append-only id-union merge, used only when sync.clobber is set.
   // Unions exactly FOUR collections by id — state.entries, the ledger, inventory hand-outs,
   // and each fundraiser's sales (the append-only logs) — appending remote items missing
-  // locally. Everything else deliberately stays last-write-wins. Id-guarded, so a
+  // locally — and, since Phase 3 C2, the ledger's log of changes (mergeLedgerLog). Everything
+  // else deliberately stays last-write-wins. Id-guarded, so a
   // retried transaction can't duplicate.
   // LIVE STOPGAP (see freshGone) — except what either copy has deleted: the two copies' marks are
   // merged first, then a row deleted on either side is neither taken from there nor kept here.
@@ -11887,6 +11946,10 @@
     // to lose one another's transactions. A book that silently drops a row is not a book.
     state.ledger = dropGone(state.ledger, 'ledger');
     unionById(state.ledger, remote.ledger, 'ledger');
+    // Phase 3, C2 — the ledger's log, both copies' events in one order (mergeLedgerLog). Not
+    // counted in what this returns: nobody needs telling that a history line came across.
+    // Deletion marks don't apply: the log is append-only, and nothing is ever deleted from it.
+    state.ledgerLog = mergeLedgerLog(state.ledgerLog, remote.ledgerLog);
     // A deleted scout's payments stay (that money moved), pointing at nobody, as del-scout leaves them.
     if (Array.isArray(state.ledger)) state.ledger.forEach(function (e) { if (e && parentGone('scouts', e.scoutId)) e.scoutId = ''; });
     if (state.inventory) state.inventory.distributions = dropGone(state.inventory.distributions, 'distributions');
@@ -12100,6 +12163,9 @@
       // Phase 0 — a treasurer may well open the ledger before anyone has typed a roster.
       // Without this, that work reads as "empty" and can be adopted away by a remote copy.
       !(s.ledger && s.ledger.length) &&
+      // Phase 3, C2 (security review of C1, m5) — nor is a book whose rows are all set aside, or
+      // that has only its history of changes: that is a treasurer's work too.
+      !(s.ledgerAside && s.ledgerAside.length) && !(s.ledgerLog && s.ledgerLog.length) &&
       !(s.leaders && s.leaders.length);
   }
   // Compare pack records ignoring the sync counter itself.
@@ -25258,6 +25324,11 @@
   // (GONE_MAX, GONE_MAX_PARENT) with the longest ids the page makes comes to about 226 KB, which
   // the harness checks against this.
   var GONE_ROOM_BYTES = 250 * 1024;
+  // Phase 3, C2 (security review of C1, m5) — and room for next year's ledger log (state.ledgerLog),
+  // which close-out also clears (until C8 keeps it in closedBooks) and the year fills again: the
+  // log of the year being closed, as the best guess at the next one's, and never less than this —
+  // a season of about 330 events is ~65 KB (see mergeLedgerLog).
+  var LEDGER_LOG_ROOM_BYTES = 64 * 1024;
   // UTF-8 length of a string, without TextEncoder so the harness sandbox can run it. Pure.
   function utf8Bytes(str) {
     var n = 0;
@@ -25330,6 +25401,8 @@
       ui = liveUi;
     }
     var other = utf8Bytes(JSON.stringify(after)) - utf8Bytes(JSON.stringify(after.gone || {})) + GONE_ROOM_BYTES;
+    // C2 (m5) — the log close-out cleared, swapped for room for next year's (LEDGER_LOG_ROOM_BYTES).
+    other += Math.max(LEDGER_LOG_ROOM_BYTES, utf8Bytes(JSON.stringify(live.ledgerLog || []))) - utf8Bytes(JSON.stringify(after.ledgerLog || []));
     return fitSeasonLedger(led, other, ARCHIVE_DOC_SOFT_LIMIT);
   }
   function buildSeasonArchive() {

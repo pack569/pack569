@@ -1002,7 +1002,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // Security review — a stored ledger stamp that is an email is neutralised on load.
   'ledgerStampClean',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
-  'parseLegacyTime', 'migrateTierMakeUp', 'freshGone', 'clampGone', 'clampTickTimes', 'campHash', 'stableRowId', 'newStableId', 'dedupeRowIds', 'normalizeState',
+  'parseLegacyTime', 'migrateTierMakeUp', 'freshGone', 'clampGone', 'clampTickTimes', 'mergeLedgerLog', 'campHash', 'stableRowId', 'newStableId', 'dedupeRowIds', 'normalizeState',
   // Phase 3, C1 — the ledger row normalizer, shared by the rows set aside.
   'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeLedgerRow', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'entrySignedCents',
@@ -1010,7 +1010,7 @@ const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
 // LIVE STOPGAP — what every slice of the sync merge needs besides it (freshGone is in NORMALIZE_FNS).
-const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'ledgerTickedAt', 'reconciledFates', 'reconciledFatesText', 'restoreGone'];
+const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'ledgerTickedAt', 'reconciledFates', 'reconciledFatesText', 'restoreGone', 'mergeLedgerLog'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
   const ctx = vm.createContext({});
@@ -17687,18 +17687,29 @@ test('stopgap: close-out keeps room for a year of deletion marks, and a restore 
   ok(bytes <= ctx.GONE_ROOM_BYTES && bytes > ctx.GONE_ROOM_BYTES * 0.8, `the room kept for deletion marks is not their worst case (${bytes} bytes)`);
   // Close-out sizes the archive against the record with this year's marks swapped for that room.
   const s = vm.createContext({});
-  vm.runInContext(`${['utf8Bytes', 'fitSeasonLedger', 'ARCHIVE_DOC_SOFT_LIMIT', 'GONE_ROOM_BYTES', 'seasonLedgerNow'].map(slice).join('\n')}
+  vm.runInContext(`${['utf8Bytes', 'fitSeasonLedger', 'ARCHIVE_DOC_SOFT_LIMIT', 'GONE_ROOM_BYTES', 'LEDGER_LOG_ROOM_BYTES', 'seasonLedgerNow'].map(slice).join('\n')}
     function seasonLedgerRows() { return { totals: { entries: 1 }, rows: [{ d: '2026-09-01', c: 1, t: 'x' }] }; }
     function getBudgetLine() { return null; } function chargeFamilyKey() { return ''; } function familyKeyOf() { return ''; }
-    function rolloverYear() { state.gone = {}; }
+    function rolloverYear() { state.gone = {}; state.ledgerLog = []; }
     var ui = {};
-    var state = { ledger: [], scouts: [], archives: [], filler: '', gone: {} };
-    function fits(fill, gone) { state.filler = new Array(fill + 1).join('x'); state.gone = gone; return !seasonLedgerNow({}).trimmed; }`, s);
-  const room = ctx.GONE_ROOM_BYTES, limit = 700 * 1024;
+    var state = { ledger: [], scouts: [], archives: [], filler: '', gone: {}, ledgerLog: [] };
+    function fits(fill, gone, log) { state.filler = new Array(fill + 1).join('x'); state.gone = gone; state.ledgerLog = log || []; return !seasonLedgerNow({}).trimmed; }`, s);
+  // Phase 3, C2 (m5) — and room for next year's ledger log, which close-out clears too: this
+  // year's, or LEDGER_LOG_ROOM_BYTES if that is more. (fits() measures with an empty log, whose
+  // '[]' the room replaces.)
+  const logRoom = vm.runInContext('LEDGER_LOG_ROOM_BYTES', s);
+  eq(logRoom, 64 * 1024, 'the log room');
+  const room = ctx.GONE_ROOM_BYTES + logRoom - 2, limit = 700 * 1024;
   eq([vm.runInContext(`fits(${limit - room - 400}, {})`, s), vm.runInContext(`fits(${limit - room}, {})`, s)], [true, false],
     'the archive is not sized with room for next year’s marks');
   eq(vm.runInContext(`fits(${limit - room - 400 - 100000}, { entries: { big: '${'y'.repeat(100000)}' } })`, s), true,
     'this year’s marks, which close-out clears, were counted too');
+  // A log bigger than the room is this year's measure of next year's: 100 KB of it takes 100 KB
+  // less filler, less the 64 KB room it replaces.
+  const bigLog = JSON.stringify([{ id: 'lg-1', why: 'z'.repeat(100000) }]);
+  const extra = Buffer.byteLength(bigLog) - logRoom;
+  eq([vm.runInContext(`fits(${limit - room - 400 - extra}, {}, ${bigLog})`, s), vm.runInContext(`fits(${limit - room - extra + 400}, {}, ${bigLog})`, s)],
+    [true, false], 'this year’s log is not counted as room for next year’s');
   const now = slice('seasonLedgerNow');
   ok(/- utf8Bytes\(JSON\.stringify\(after\.gone \|\| \{\}\)\) \+ GONE_ROOM_BYTES/.test(now.replace(/\s+/g, ' ')), 'seasonLedgerNow');
   // Security S9: the restore screen.
@@ -17719,7 +17730,7 @@ const CLOSEOUT_SIZE_FNS = ['seasonLedgerNow', 'seasonLedgerRows', 'ledgerSort', 
   'familyAccounts', 'chargeIsOpen', 'entryPaysCharges', 'tierCoverageConfigured', 'sortedTiers', 'fundingSummary', 'commissionRates',
   'cashCreditOn', 'cashScoutRate', 'leaderPlannedCents', 'rewardTierSummary', 'earnedTierFor', 'computePackTotals', 'packGoalCents',
   'stretchGoalOf', 'ledgerIncomeCents', 'bookBalance', 'ledgerBalance', 'familyAccountsNow', 'closingCarryover', 'advanceDens',
-  'priorDayISO', 'ledgerActorName', 'shiftISOYear', 'utf8Bytes', 'GONE_ROOM_BYTES', 'fitSeasonLedger', 'ARCHIVE_DOC_SOFT_LIMIT'];
+  'priorDayISO', 'ledgerActorName', 'shiftISOYear', 'utf8Bytes', 'GONE_ROOM_BYTES', 'LEDGER_LOG_ROOM_BYTES', 'fitSeasonLedger', 'ARCHIVE_DOC_SOFT_LIMIT'];
 test('stopgap follow-up 1: close-out sizes the archive against the record as close-out leaves it', () => {
   // The record before close-out holds this year's sales, sign-ups, attendance, charges and
   // hand-outs, which close-out clears: sized with them, a record that fits was trimmed.
@@ -17757,8 +17768,10 @@ test('stopgap follow-up 1: close-out sizes the archive against the record as clo
   // Just under and just over the limit, with the room for next year's deletion marks kept. The
   // record is measured as it is now, seeds and all (a few KB either side of the rollover).
   const base = sandbox(NORMALIZE_FNS.concat(['utf8Bytes'])).utf8Bytes(JSON.stringify(sandbox(NORMALIZE_FNS).normalizeState(record({ packName: '' }))));
-  eq(run({ packName: 'x'.repeat(700 * KB - 250 * KB - base - 4 * KB) }).trimmed, false, 'control: just under the limit with the room');
-  eq(run({ packName: 'x'.repeat(700 * KB - 250 * KB - base + 4 * KB) }).trimmed, true, 'control: just over the limit with the room');
+  // Phase 3, C2 (m5) — the room for next year's ledger log too (64 KB, in place of the empty '[]').
+  const logRoom = 64 * KB - 2;
+  eq(run({ packName: 'x'.repeat(700 * KB - 250 * KB - logRoom - base - 4 * KB) }).trimmed, false, 'control: just under the limit with the room');
+  eq(run({ packName: 'x'.repeat(700 * KB - 250 * KB - logRoom - base + 4 * KB) }).trimmed, true, 'control: just over the limit with the room');
 });
 
 /* ================================================================
@@ -17846,8 +17859,9 @@ test('C1: rows set aside are ledger rows, an unknown one is counted, and the ids
   const ids = n.ledger.concat(n.ledgerAside).map((e) => e.id);
   eq(new Set(ids).size, ids.length, 'an id used twice across the ledger and the rows set aside');
   // The log, the statements, the closed books and the import pointer.
-  eq(n.ledgerLog.map((e) => [/^lg[0-9a-z]+$/.test(e.id) || e.id, e.by]), [[true, 'a signed-in leader'], ['lg-x', undefined]], 'the log');
-  eq(n.ledgerLog[1].futureField, 1, 'an unknown field in the log');
+  // C2 — in time order (mergeLedgerLog): an event with no time first.
+  eq(n.ledgerLog.map((e) => [/^lg[0-9a-z]+$/.test(e.id) || e.id, e.by]), [['lg-x', undefined], [true, 'a signed-in leader']], 'the log');
+  eq(n.ledgerLog[0].futureField, 1, 'an unknown field in the log');
   eq([n.closedBooks, n.teImport], [[{ year: 2024, closingCents: 9000 }], { batch: 'mfo2kz3a1b2c3d', at: '' }], 'closed books and the import');
   eq(n.book.year, 2025, 'book.year');
 });
@@ -17926,12 +17940,75 @@ test('C1: close-out opens a new book for the new year, without last year’s asi
   // Nothing here is published, or read by any parent screen.
   const bpv = codeOnly(BPV());
   ok(!/ledgerAside|ledgerLog|statements|closedBooks|teImport|ledgerLocked|ledgerEvent/.test(bpv), 'buildParentView reads the audit model');
-  // And nothing else reads or writes them yet (C2 is the first): only the normalizers, freshState
-  // and close-out. No behaviour changes in C1.
-  let rest = SCRIPT;
-  for (const fn of ['freshState', 'normalizeState', 'rolloverYear', 'ledgerLocked', 'LEDGER_OPS', 'ledgerEvent', 'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeLedgerRow']) rest = rest.replace(decl(fn), '');
-  const used = codeOnly(rest).split('\n').filter((l) => /\b(ledgerAside|ledgerLog|closedBooks|teImport|statements|ledgerLocked|ledgerEvent|LEDGER_OPS|LEDGER_ASIDE_OFF|normalizeAsideRow)\b/.test(l.replace(/\/\/.*$/, '')));
-  eq(used, [], 'something outside the model reads it — a C1 behaviour change');
+  // C2 made the page read them. The log is append-only: only logLedger adds to it, and only the
+  // normalizer, the sync merge (a union), freshState and close-out set it.
+  const writes = codeOnly(SCRIPT).split('\n').filter((l) => /ledgerLog\s*(=[^=]|\.(push|splice|pop|shift|unshift|length\s*=))/.test(l.replace(/\/\/.*$/, '')));
+  eq(writes.map((l) => l.trim()), ['if (!Array.isArray(d.ledgerLog)) d.ledgerLog = [];', 'd.ledgerLog = d.ledgerLog.filter(plainObj);',
+    'd.ledgerLog = mergeLedgerLog(d.ledgerLog, []);', 'if (!Array.isArray(state.ledgerLog)) state.ledgerLog = [];', 'state.ledgerLog.push(ev);',
+    'state.ledgerLog = mergeLedgerLog(state.ledgerLog, remote.ledgerLog);', 'state.ledgerLog = [];'], 'something else writes the ledger log');
+});
+
+/* ================================================================
+   Phase 3, C2 (2026-09-29) — the ledger's log of changes: shape, order, cap and the sync merge.
+   ================================================================ */
+test('C2: normalizeState checks the log’s shape, drops a repeated event, keeps time order, and caps it at the newest 1000', () => {
+  const n = sandbox(NORMALIZE_FNS);
+  const junk = () => ({ id: 'lg-0001', at: null, by: 'Pat', byUid: 3, dev: 'd', row: 9, op: 'edit',
+    f: { amountCents: [1, 2], junk: 'x', three: [1, 2, 3] }, rows: ['a', 7, ''], why: 5 });
+  const log = [junk(), junk(), { op: 'untick', row: 'l2', at: '2026-09-02T00:00:00.000Z' }, { op: 'untick', row: 'l2', at: '2026-09-02T00:00:00.000Z' },
+    'junk', null, { id: 'lg-0002', at: '2026-09-03T00:00:00.000Z', row: 'l1', op: 'someday', f: 'x' }];
+  const d = JSON.parse(JSON.stringify(n.normalizeState(Object.assign(preMigrationState(), { ledgerLog: log }))));
+  eq(d.ledgerLog.length, 3, 'the same event twice, or junk, was kept');
+  const first = d.ledgerLog[0];
+  eq([first.id, first.at, first.row, first.byUid, first.f, first.rows, 'why' in first], ['lg-0001', '', '', '', { amountCents: [1, 2] }, ['a'], false], 'the shape');
+  ok(/^lg[0-9a-z]+$/.test(d.ledgerLog[1].id) && d.ledgerLog[1].op === 'untick', 'an id-less event, twice, is one event with one stable id');
+  eq([d.ledgerLog[2].op, 'f' in d.ledgerLog[2]], ['someday', false], 'an op from a newer page is kept, a junk f is not');
+  // The cap: 1005 events, newest first → the newest 1000, oldest first.
+  const many = Array.from({ length: 1005 }, (_, i) => ({ id: 'lg-' + i, at: new Date(Date.UTC(2026, 8, 1) + i * 60000).toISOString(), row: 'l1', op: 'tick' })).reverse();
+  const c = JSON.parse(JSON.stringify(n.normalizeState(Object.assign(preMigrationState(), { ledgerLog: many })).ledgerLog));
+  eq([c.length, c[0].id, c[999].id], [1000, 'lg-5', 'lg-1004'], 'the cap');
+  const again = JSON.parse(JSON.stringify(n.normalizeState(Object.assign(preMigrationState(), { ledgerLog: c })).ledgerLog));
+  eq(again, c, 'a capped log is not a fixed point');
+  // The sync merge gives the same cap and order.
+  eq(JSON.parse(JSON.stringify(n.mergeLedgerLog(c.slice(0, 600), many.slice(0, 700)))).map((e) => e.id), c.map((e) => e.id), 'the merge’s cap and order');
+});
+
+test('C2: a record whose only ledger work is set aside, or is its history, is not empty', () => {
+  const { isStateEmpty } = sandbox(['isStateEmpty']);
+  eq([isStateEmpty({}), isStateEmpty({ ledgerAside: [], ledgerLog: [] }), isStateEmpty({ ledgerAside: [{ id: 'v1' }] }), isStateEmpty({ ledgerLog: [{ id: 'lg-1' }] })],
+    [true, true, false, false], 'isStateEmpty');
+});
+
+// Each device logs through the page's own logLedger.
+const C2_LOG_EXTRA = ['LEDGER_OPS', 'ledgerEvent', 'ledgerWho', 'logLedger', 'ledgerStampClean'].map(slice).join('\n');
+test('C2, Firestore: two devices’ ledger logs are one log after a merge, each event once, in time order', () => {
+  const { a, b, server } = fsGonePair();
+  a.run(C2_LOG_EXTRA); b.run(C2_LOG_EXTRA);
+  a.run("logLedger('edit', 'l1', { f: { description: ['Dues', 'Dues (Ada)'] } }); state.ledger[0].description = 'Dues (Ada)'; commit()");
+  a.push();
+  b.run(skew(5000));
+  b.run("logLedger('tick', 'l1'); logLedger('untick', 'l1'); commit()");
+  b.hear(); b.push();
+  const log = server().ledgerLog;
+  eq(log.map((e) => [e.op, e.dev]), [['edit', 'devA'], ['tick', 'devB'], ['untick', 'devB']], 'the merged log');
+  eq(new Set(log.map((e) => e.id)).size, 3, 'an event twice');
+  a.hear();
+  eq(a.get('state.ledgerLog.map(function (e) { return e.id; })'), log.map((e) => e.id), 'A after B’s save');
+  // Both dirty again, and merged the other way: nothing doubles, nothing is lost.
+  b.run("logLedger('tick', 'l1'); commit()"); b.push();
+  a.run(skew(60000));   // the log is in time order, whichever device saves first
+  a.run("logLedger('edit', 'l1', { f: { ref: ['', '7'] } }); commit()"); a.hear(); a.push();
+  eq(server().ledgerLog.map((e) => e.op), ['edit', 'tick', 'untick', 'tick', 'edit'], 'a second merge doubled or lost an event');
+});
+
+atest('C2, api: two devices’ ledger logs are one log after a merge', async () => {
+  const { a, b, server } = await apiGonePair();
+  a.run(C2_LOG_EXTRA); b.run(C2_LOG_EXTRA);
+  await a.edit("logLedger('edit', 'l1', { f: { description: ['Dues', 'Dues (Ada)'] } })");
+  b.run(skew(5000));
+  b.run("logLedger('tick', 'l1'); commit()");
+  await settle([b], 800);
+  eq(server().ledgerLog.map((e) => [e.op, e.dev]), [['edit', 'dev-owner'], ['tick', 'dev-editor']], 'the merged log');
 });
 
 /* ---------------- report ---------------- */
