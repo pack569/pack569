@@ -75,7 +75,8 @@ function sandbox(names) {
 }
 // The reload gate (PACK_FORMAT): what every page context with a pack-record feed or a push needs.
 // By decl (below): PACK_FORMAT is one line, and slice would run on past it.
-const FORMAT_GATE_FNS = ['PACK_FORMAT', 'formatAhead', 'formatStored', 'storedFormatAhead', 'formatHeldHere', 'packFormatAhead', 'packFormatHeld', 'holdNewerFormat'];
+const FORMAT_GATE_FNS = ['PACK_FORMAT', 'formatAhead', 'formatStored', 'storedFormatAhead', 'formatHeldHere', 'packFormatAhead', 'packFormatHeld', 'holdNewerFormat',
+  'dropCopyChoice'];
 const FORMAT_GATE_SRC = () => FORMAT_GATE_FNS.map(decl).join('\n');
 // Wave C1 — buildParentView sorts the trips by date and re-checks their ISO dates, so every
 // sandbox that builds it needs these. todayISO only where the sandbox has none of its own.
@@ -16821,6 +16822,8 @@ const CHOOSER_FNS = ['esc', 'fmt', 'fmtDateShort', 'fmtArchiveDate', 'arrOf', 't
 function chooserHtml(mine, cloud, over) {
   const ctx = vm.createContext({});
   vm.runInContext(`${CHOOSER_FNS.map(slice).join('\n')}
+    ${decl('JSON_BACKUP_NAME')}
+    ${FORMAT_GATE_SRC()}
     function fixedPackMode() { return true; }
     var sync = { dirty: ${!(over && over.clean)} };
     var state = ${JSON.stringify(mine)};
@@ -16873,9 +16876,9 @@ test('stopgap: the copy chooser says which copy is the newer year, what only thi
     [0, 0, 10], 'guarded against a malformed copy');
   // The download is the Pack tab's Backup (JSON), byte for byte, and does not close the chooser.
   const h = slice('handleAction');
-  ok(/if \(act === 'sync-download-local'\) \{\s*var bkS = jsonBackup\(\);\s*download\(bkS\.name, bkS\.mime, bkS\.text\);/.test(h) &&
-    // (After the reload gate's refusal of a newer page's record, which has its own test.)
-    /if \(act === 'export-json'\) \{\s*(?:\/\/[^\n]*\s*)*(?:if \(formatHeldHere\(\)\) \{[^}]*\}\s*)?var bkJ = jsonBackup\(\);/.test(h), 'the download is not the Backup (JSON)');
+  // (Each with the reload gate's refusal of a newer page's record, which has its own test.)
+  ok(/if \(act === 'sync-download-local'\) \{\s*var bkS = jsonBackup\(\);\s*if \(!bkS\) \{[^}]*\}[^\n]*\s*download\(bkS\.name, bkS\.mime, bkS\.text\);/.test(h) &&
+    /if \(act === 'export-json'\) \{\s*var bkJ = jsonBackup\(\);/.test(h), 'the download is not the Backup (JSON)');
   const bk = vm.runInContext('jsonBackup()', chooserHtml(mine, closed).ctx);
   eq([bk.name, bk.mime, bk.text], ['popcorn-backup.json', 'application/json', JSON.stringify(mine, null, 2)], 'the backup');
 });
@@ -20899,7 +20902,7 @@ const gateStoreCtx = (stored) => {
     function clearTimeout() {} function freshState() { return { version: 1, scouts: [], fresh: true }; }
     var liveEdit = false, persistTimer = null, persistPending = false, saveWarned = false;
     var loadBackupKept = false, loadLedgerSplits = [];
-    var sync = { newerFormat: false };
+    var sync = { newerFormat: false, conflict: null }, ui = { overlay: null };
     ${['load', 'save', 'commit', 'persistNow', 'refuseHeldEdit', 'FORMAT_REFUSED', ...FORMAT_GATE_FNS].map(decl).join('\n')}
     var state = load();
     var before = store[KEY];`, ctx);
@@ -20968,7 +20971,7 @@ test('reload gate: a newer tab’s save while this page runs is never saved over
 // newer tab's), or '' (nothing held: the control).
 const HELD_DISPATCH_FNS = ['handleAction', 'handleChange', 'handleForm', 'handleFilePick', 'performCloseout', 'deleteWithUndo', 'arm',
   'heldActAllowed', 'refuseHeldAct', 'HELD_ACTS', 'HELD_ACT_PREFIXES', 'HELD_CHANGES', 'PARENT_ACTS', 'GATE_ACTS',
-  'FORMAT_CLOSEOUT', 'FORMAT_BACKUP', 'jsonBackup', 'toCents'];
+  'FORMAT_CLOSEOUT', 'FORMAT_BACKUP', 'JSON_BACKUP_NAME', 'jsonBackup', 'toCents'];
 const heldDispatchCtx = (hold) => {
   const rec = { version: 1, fmt: hold === 'device' ? NEWER_FMT : 1, packName: 'Pack', scouts: [{ id: 's1', name: 'Ada' }],
     leaders: [{ id: 'l1', name: 'Akela' }], budget: { programYear: 2026 }, archives: [], goalCents: 100 };
@@ -21101,9 +21104,34 @@ test('reload gate: a move file or backup saved by a newer page is not copied to 
     const m = body(mf(fmt)), b = body(Object.assign({ rev: 2, scouts: [] }, fmt === undefined ? {} : { fmt }));
     eq([m.error, m.backupOnly, b.error, b.backupOnly], [undefined, false, undefined, true], `control: fmt ${fmt}`);
   }
-  // The backup download of a newer page's record, as this page read it, is refused too.
-  ok(/if \(act === 'export-json'\) \{\s*(?:\/\/[^\n]*\s*)*if \(formatHeldHere\(\)\) \{ showToast\(FORMAT_BACKUP\); return; \}\s*var bkJ = jsonBackup\(\);/.test(SCRIPT),
-    'a backup of a newer page’s record can be downloaded');
+});
+
+test('reload gate: Backup (JSON) of a newer page’s record, as this page read it, is refused by both its buttons; held from the pack it still works', () => {
+  const run = (hold) => {
+    const ctx = heldDispatchCtx(hold);
+    vm.runInContext(`ui.overlay = null; tap('export-json'); var exported = ui.overlay && ui.overlay.kind;
+      ui.overlay = { kind: 'sync-conflict' }; tap('sync-download-local');`, ctx);
+    return JSON.parse(JSON.stringify(vm.runInContext('[jsonBackup() === null, exported, downloads, toasts]', ctx)));
+  };
+  const BACKUP = vm.runInContext('FORMAT_BACKUP', heldDispatchCtx(''));
+  eq(BACKUP, 'Backup not downloaded: this page is out of date. Reload the page, then tap Backup (JSON) again. ' +
+    'The pack’s record on this device is untouched.', 'the words');
+  eq(run('device'), [true, null, [], [BACKUP, BACKUP]], 'a backup of a newer page’s record');
+  eq(run('pack'), [false, 'export', ['popcorn-backup.json'], []], 'held from the pack: this device’s own copy, which recovery needs');
+  eq(run(''), [false, 'export', ['popcorn-backup.json'], []], 'control: nothing held');
+});
+
+test('reload gate: a copy choice waiting when save() finds a newer tab’s copy goes, chooser and all', () => {
+  const mine = { version: 1, fmt: 1, packName: 'This tab', scouts: [] };
+  const run = (tabFmt) => {
+    const ctx = gateStoreCtx(mine);
+    vm.runInContext(`sync.conflict = { rev: 9 }; ui.overlay = { kind: 'sync-conflict', remote: sync.conflict };
+      store[KEY] = ${JSON.stringify(JSON.stringify(Object.assign({}, mine, { fmt: tabFmt, packName: 'Other tab' })))};
+      state.packName = 'Edited'; commit();`, ctx);
+    return JSON.parse(JSON.stringify(vm.runInContext('[packFormatHeld(), sync.conflict, ui.overlay && ui.overlay.kind]', ctx)));
+  };
+  eq(run(NEWER_FMT), [true, null, null], 'the choice outlived the hold');
+  eq(run(1), [false, { rev: 9 }, 'sync-conflict'], 'control: a tab in this page’s format leaves the choice alone');
 });
 
 // The api fake: a newer page's save goes straight into the server's table.

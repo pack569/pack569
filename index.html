@@ -5050,7 +5050,7 @@
     // including one a newer tab saved after this page loaded (read here, before every write: a
     // getItem and a scan for "fmt", parsed only if it names a higher one).
     if (formatHeldHere()) return;
-    if (storedFormatAhead()) { formatStored = true; return; }
+    if (storedFormatAhead()) { formatStored = true; dropCopyChoice(); return; }
     if (state) state.fmt = PACK_FORMAT;
     try {
       localStorage.setItem(KEY, JSON.stringify(state));
@@ -12673,10 +12673,16 @@
     clearTimeout(sync.retryTimer);
     sync.retryTimer = null;
     if (!first) return;
-    sync.conflict = null;
-    if (ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay = null;
+    dropCopyChoice();
     renderSyncPill();
     render();
+  }
+  // …and when save() finds a newer tab's copy in this browser (formatStored), the same: a copy choice
+  // waiting goes, chooser and all, so neither the sync card nor the move file can bring it back
+  // (security review of the gate, finding 2). The caller draws. Safe before `sync` is set up.
+  function dropCopyChoice() {
+    if (sync) sync.conflict = null;
+    if (ui && ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay = null;
   }
   // LIVE STOPGAP (2026-09-29, until Phase 3 moves the money logs into rows) — what was deleted.
   // mergeRemoteAppendOnly unions the four money logs by id, and on its own it had no record of
@@ -13621,8 +13627,15 @@
   }
   // Backup (JSON): the whole pack record as it stands on this device. The Pack tab's button and
   // the copy chooser's download are this one file.
+  // The reload gate (PACK_FORMAT) — never while this device's copy is a newer page's record
+  // (formatHeldHere): this page has read it into its own shape, and a backup of that would carry
+  // the newer fmt over what this page may have misread. The copy itself is safe in storage, and the
+  // reloaded page can back it up. null then: each caller says FORMAT_BACKUP. (A hold met from the
+  // pack is not refused: this device's copy is this page's own, and it is what recovery needs.)
+  var JSON_BACKUP_NAME = 'popcorn-backup.json';
   function jsonBackup() {
-    return { name: 'popcorn-backup.json', mime: 'application/json', text: JSON.stringify(state, null, 2) };
+    if (formatHeldHere()) return null;
+    return { name: JSON_BACKUP_NAME, mime: 'application/json', text: JSON.stringify(state, null, 2) };
   }
   // "Keep this device's copy" on the sync-conflict overlay (armed, two taps, in the click handler).
   function keepLocalCopy() {
@@ -24579,7 +24592,7 @@
         '<p class="small muted">' + syncCopyLine('Cloud copy', rc) + '<br>' + syncCopyLine('This device', state) + '</p>' +
         syncOnlyHereHtml(rowsOnlyIn(state, rc)) +
         '<div class="row"><button type="button" class="btn" data-act="sync-download-local">Download this device’s copy first</button></div>' +
-        (o.downloaded ? '<p class="small muted" style="margin-top:0">Downloaded as ' + esc(jsonBackup().name) + '. Keep it until the treasurer has what was in it.</p>' : '') +
+        (o.downloaded ? '<p class="small muted" style="margin-top:0">Downloaded as ' + esc(JSON_BACKUP_NAME) + '. Keep it until the treasurer has what was in it.</p>' : '') +
         '<div class="row">' +
         dangerBtn('sync-use-cloud', 'Use cloud copy (replaces this device)') +
         dangerBtn('sync-keep-local', 'Keep this device’s copy (overwrites cloud)') +
@@ -29303,11 +29316,8 @@
     }
     if (act === 'print-summary') { window.print(); return; }
     if (act === 'export-json') {
-      // The reload gate (PACK_FORMAT) — this device's copy is a newer page's record, as this page
-      // read it into its own shape: a backup of that would carry the newer fmt over what this page
-      // may have misread. The copy itself is safe in storage; the reloaded page can back it up.
-      if (formatHeldHere()) { showToast(FORMAT_BACKUP); return; }
       var bkJ = jsonBackup();
+      if (!bkJ) { showToast(FORMAT_BACKUP); return; }   // the reload gate (jsonBackup)
       ui.overlay = { kind: 'export', title: 'JSON backup', name: bkJ.name, mime: bkJ.mime, text: bkJ.text };
       render(); return;
     }
@@ -29530,6 +29540,7 @@
     // The copy chooser's download (LIVE STOPGAP, M3): this device's copy, before either choice.
     if (act === 'sync-download-local') {
       var bkS = jsonBackup();
+      if (!bkS) { showToast(FORMAT_BACKUP); return; }   // the reload gate (jsonBackup)
       download(bkS.name, bkS.mime, bkS.text);
       if (ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay.downloaded = true;
       render(); return;
