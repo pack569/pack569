@@ -3686,6 +3686,14 @@
   // the ledger's dedupe at the end) is pushed onto it, for noteReconciledFates to say.
   function normalizeState(d, splits) {
     if (!d || typeof d !== 'object' || d.version !== 1 || !Array.isArray(d.scouts)) return null;
+    // The reload gate (PACK_FORMAT) — a record from a newer page keeps its fmt, so this page knows
+    // not to save over it; never lowered here. Anything else was written in, or before, this
+    // page's format, and this page reads it: it is this page's format now.
+    // ⚠ The rest of this function still "fixes" a newer record to THIS page's shape, in memory.
+    // That is safe only because nothing holding one is ever written anywhere: save, commit,
+    // syncPush, adoptRemote, writeParentView and the backup and move files all refuse it
+    // (packFormatHeld, formatAhead). A new way to write the record out must refuse it too.
+    d.fmt = formatAhead(d) ? Math.floor(d.fmt) : PACK_FORMAT;
     // Entries are deliberately NOT per-item normalized — keep this additive. Wave 16 relies
     // on that: imported entries carry an extra source:'te-import' tag that must survive.
     if (!Array.isArray(d.entries)) d.entries = [];
@@ -4888,6 +4896,20 @@
       });
     });
   }
+  // THE PACK RECORD'S DATA FORMAT (owner, 2026-09-29: the reload gate). A whole number, saved as
+  // state.fmt on every save and push. Raise it by one in the commit that changes the record in a
+  // way an older page would get wrong (reads it amiss, or writes back what it does not know). A
+  // page that meets a record with a HIGHER fmt than its own (from another leader's device, a
+  // backup, or this browser's storage written by a newer tab) never saves over it: it holds its
+  // pushes, leaves every copy as it is, and asks for a reload (packFormatHeld). 1 is this build's
+  // record, the Phase 3 ledger (C1 to C4) included; a record with no fmt, from before the gate,
+  // reads as 1. ⚠ Pages from before the gate don't have it: it protects from this version on.
+  // Declared up here, above `var state = load()`, because normalizeState reads it.
+  var PACK_FORMAT = 1;
+  // Is the pack record `p` (parsed, not normalized) from a page newer than this one? Pure.
+  function formatAhead(p) {
+    return !!p && typeof p === 'object' && typeof p.fmt === 'number' && isFinite(p.fmt) && Math.floor(p.fmt) > PACK_FORMAT;
+  }
   // Wave 15 — set when saved data existed but couldn't be read; a copy went to KEY + '-bak'
   // and a toast fires after the first render (toastHost isn't in the DOM yet at load time).
   var loadBackupKept = false;
@@ -4999,7 +5021,14 @@
   // Wave 15 — warn loudly on the FIRST failed save (not every keystroke); keep trying on
   // later saves, and re-arm the warning after any successful save so a relapse re-warns.
   var saveWarned = false;
+  // The reload gate (PACK_FORMAT) — is the copy on this device a newer page's record (this page
+  // loaded it from a newer tab's save)? Then nothing is saved here at all until the page is
+  // reloaded (save, commit), and nothing is sent or taken either (packFormatHeld).
+  function formatHeldHere() { return !!state && formatAhead(state); }
   function save() {
+    // The reload gate — a newer page's record in this browser's storage stays exactly as it is.
+    if (formatHeldHere()) return;
+    if (state) state.fmt = PACK_FORMAT;
     try {
       localStorage.setItem(KEY, JSON.stringify(state));
       saveWarned = false;
@@ -5037,6 +5066,17 @@
       // The change handler already mutated the in-memory state; reload the last persisted
       // copy and re-render so nothing stray lingers to ride a later legitimate commit if
       // this user is promoted mid-session (L-2). Nothing was ever saved or pushed.
+      state = load();
+      render();
+      return;
+    }
+    // The reload gate (PACK_FORMAT) — this device's copy is a newer page's record, which save()
+    // never writes over. So an edit is refused, as a viewer's is, rather than kept in memory only
+    // to vanish at the reload the banner asks for (whose "Your unsaved changes stay on this
+    // device" must stay true). A hold met from the pack (sync.newerFormat) is not refused here:
+    // those edits save on this device, and the newer page compares them at its first answer.
+    if (formatHeldHere()) {
+      showToast(FORMAT_REFUSED);
       state = load();
       render();
       return;
@@ -9727,6 +9767,9 @@
     clobber: false,    // Wave 18(5) — a newer remote rev was skipped while dirty; merge + warn at push
     pushTimer: null,
     retryTimer: null,
+    // The reload gate (PACK_FORMAT) — a record from a newer page has been met: nothing is sent,
+    // taken or published until the page is reloaded. Never cleared (syncStop leaves it).
+    newerFormat: false,
     firstSnap: true,
     // The pack record as the server last had it, as far as this device knows: { rev, device,
     // json } from the pack feed (a server answer, not a cached or pending one) or from this
@@ -11784,6 +11827,9 @@
   // was closed with Escape reads "Synced" over a copy the server does not have. Both sides go
   // through the same JSON round trip and normalizeState before they are compared.
   function moveFileProblem() {
+    // The reload gate: the server's copy has moved on to a newer page's record, and what this device
+    // last heard of it (sync.remoteRec) is no longer the pack's.
+    if (packFormatHeld()) return FORMAT_NOTICE;
     if (!moveFileReady()) return 'Wait for this device to finish syncing with the pack, then try again.';
     if (sync.conflict) return 'This device and the pack’s shared copy differ. Choose which copy to keep first.';
     var rec = sync.remoteRec, remote = null, here = null;
@@ -12493,6 +12539,7 @@
     parentViewTimer = null;
     if (!accountsInForce() || !canEdit()) return;
     if (fixedSyncBlocked()) return;   // SAFETY: single-pack mode, rules unproven — never write
+    if (packFormatHeld()) return;     // the reload gate: not a view of an out-of-date copy
     // Only a device that holds the pack record's handle, and has had the pack record's first
     // answer, publishes a view of it (security review of stage B, item 2). cloudReady() alone
     // is not enough: haltFixedSync drops the pack handle but not the accounts side, so a halted
@@ -12535,6 +12582,7 @@
     if (fixedSyncBlocked()) return;   // SAFETY: single-pack mode, rules unproven — never write
     sync.dirty = true;
     if (sync.notice) return;          // holding edits on this device (holdPushes): send nothing
+    if (packFormatHeld()) return;     // the reload gate: nothing is sent over a newer page's record
     clearTimeout(sync.pushTimer);
     sync.pushTimer = setTimeout(syncPush, 800);
   }
@@ -12561,6 +12609,44 @@
     renderSyncPill();
     render();
     return true;
+  }
+  // THE RELOAD GATE (owner, 2026-09-29; see PACK_FORMAT). Is the pack record `d` ({ rev, device,
+  // json, … }, as a backend sends it) from a page newer than this one: a whole-number fmt above
+  // PACK_FORMAT? Pure. Every record carries "fmt":1 now, and this reads every answer from the
+  // pack, so only one that names a higher fmt somewhere is parsed to see whether its own does.
+  function packFormatAhead(d) {
+    if (!d || typeof d.json !== 'string') return false;
+    var re = /"fmt"\s*:\s*([0-9.eE+-]+)/g, m, higher = false;
+    while (!higher && (m = re.exec(d.json))) higher = parseFloat(m[1]) >= PACK_FORMAT + 1;
+    if (!higher) return false;
+    var p = null;
+    try { p = JSON.parse(d.json); } catch (e) { return false; }
+    return formatAhead(p);
+  }
+  // Is this page holding everything for a newer page's record: one met from the pack (onRemoteSnap,
+  // syncPush, adoptRemote), or the copy on this device itself (loaded from a newer tab's save)?
+  function packFormatHeld() {
+    return !!(sync && sync.newerFormat) || formatHeldHere();
+  }
+  // Hold, as holdPushes does: no push, no retry, nothing taken from the pack or published to the
+  // parents, and this device's copy left exactly as it is (its edits still save here, unless it
+  // is the newer record itself: commit). The banner (formatBanner), the pill and the sync card
+  // ask for a reload. sync.mode is left alone: nothing reads it as the gate, and the feeds would
+  // only set it back. A copy choice waiting is dropped, chooser and all: neither answer could do
+  // anything now, and the newer page asks again after the reload if the copies still differ.
+  // Idempotent.
+  function holdNewerFormat() {
+    var first = !sync.newerFormat;
+    sync.newerFormat = true;
+    clearTimeout(sync.pushTimer);
+    sync.pushTimer = null;
+    clearTimeout(sync.retryTimer);
+    sync.retryTimer = null;
+    if (!first) return;
+    sync.conflict = null;
+    if (ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay = null;
+    renderSyncPill();
+    render();
   }
   // LIVE STOPGAP (2026-09-29, until Phase 3 moves the money logs into rows) — what was deleted.
   // mergeRemoteAppendOnly unions the four money logs by id, and on its own it had no record of
@@ -13088,6 +13174,7 @@
     // a stale timer fires. (commit() already refuses; the published rules are the backstop.)
     if (accountsInForce() && !canEdit()) return;
     if (sync.notice) return;          // holding edits on this device (holdPushes)
+    if (packFormatHeld()) return;     // the reload gate (PACK_FORMAT)
     // A sync-conflict the leader has not answered (the chooser closed with Escape): nothing is
     // written over either copy until they choose, and the chooser comes back to ask.
     if (sync.conflict) {
@@ -13102,6 +13189,9 @@
     // this more than once when another device writes in between; the merge is id-guarded, so
     // a rerun appends nothing twice, and the rev is re-derived from each fresh read.
     be.pushPack(h, function (remote) {
+      // The reload gate (PACK_FORMAT) — a record saved by a newer page is never written over,
+      // merged into or taken. Nothing is sent, and the page holds until it is reloaded.
+      if (remote && packFormatAhead(remote)) return { record: null, result: { newer: true } };
       // A record this device has never heard of is not written over, merged into or
       // rev-checked. Nothing is sent; the record goes to onRemoteSnap as a first answer,
       // compared with this device's copy, and a leader chooses if the two differ.
@@ -13135,6 +13225,7 @@
       if (clobbered && seasonMoved(remote)) return { record: null, result: { season: remote } };
       var mergedN = clobbered ? mergeRemoteAppendOnly(remote, keptRows, lostRows, splitRows) : 0;
       var nextRev = be.serverRevs ? remoteRev + 1 : Math.max(state.rev || 0, remoteRev) + 1;
+      state.fmt = PACK_FORMAT;   // the reload gate: the format this page writes
       var record = {
         rev: nextRev,
         updatedAt: be.serverTime(),
@@ -13144,6 +13235,7 @@
       return { record: record, result: { nextRev: nextRev, mergedN: mergedN, clobbered: clobbered, heard: sync.remoteRec, record: record } };
     }).then(function (res) {
       if (sync.session !== mine) return;
+      if (res.newer) { holdNewerFormat(); return; }
       if (res.unheard) {
         // Compared as the first answer only if it still is one. The pack feed may have answered
         // while this push was out. That answer has been compared already, the feed brings anything
@@ -13224,6 +13316,7 @@
   function stateFingerprint(s) {
     var c = JSON.parse(JSON.stringify(s));
     delete c.rev;
+    delete c.fmt;   // the reload gate: a copy from before it has none, and is the same pack
     return JSON.stringify(c);
   }
   // Phase 3, C3 — a page from before C3 saving over a void (with an unsaved change of its own)
@@ -13266,6 +13359,9 @@
     });
   }
   function adoptRemote(d, opts) {
+    // The reload gate (PACK_FORMAT) — a newer page's record is not taken (this page would read it
+    // amiss, and save it back so), and nothing is taken over one on this device.
+    if (packFormatHeld() || packFormatAhead(d)) { holdNewerFormat(); return false; }
     var parsed = null;
     try { parsed = JSON.parse(typeof d.json === 'string' ? d.json : ''); } catch (e) { /* corrupt remote */ }
     var splitRows = [];   // Treasurer sign-off on C3 — rows the copy held in two versions
@@ -13298,6 +13394,11 @@
   // the pack has none yet; `meta.pendingWrites` marks our own not-yet-confirmed write. The
   // sync-conflict overlay keeps `rec` exactly as it came, for adoptRemote.
   function onRemoteSnap(rec, meta) {
+    // The reload gate (PACK_FORMAT) — once held, nothing more is heard until a reload; a newer
+    // page's record, first answer or not, is never compared, taken or merged. Nor is anything taken
+    // over a newer record this device holds.
+    if (packFormatHeld()) return;
+    if (rec && packFormatAhead(rec)) { holdNewerFormat(); return; }
     var serverRevs = !!(sync.backend && sync.backend.serverRevs);
     var fromServer = !(meta && meta.fromServer === false);
     // A cached answer is never the FIRST answer (security review of 6747945..6fa61c2, item 1).
@@ -13603,9 +13704,15 @@
     // (closed with Escape, nothing is saved until they choose), so the pill says so for as long
     // as it waits, and pressing it brings the chooser back (security review of 260f467..db851c7,
     // F4). Only a leader's device ever has one: parents never receive the pack record.
-    conflict: { cls: 'conflict', label: 'Choose which copy to keep' }
+    conflict: { cls: 'conflict', label: 'Choose which copy to keep' },
+    // Not a sync.mode either: the reload gate (packFormatHeld). It outranks everything, as nothing
+    // is sent or taken until the page is reloaded, and pressing it reloads.
+    newer: { cls: 'conflict', label: 'Reload the page' }
   };
-  function syncPillState() { return sync.conflict ? SYNC_PILL.conflict : (SYNC_PILL[sync.mode] || SYNC_PILL.local); }
+  function syncPillState() {
+    if (packFormatHeld()) return SYNC_PILL.newer;
+    return sync.conflict ? SYNC_PILL.conflict : (SYNC_PILL[sync.mode] || SYNC_PILL.local);
+  }
   // What a family is told instead. Only "Offline" needs more words: to a parent it is the one
   // state that changes what they are looking at — the calendar is the copy this device last saw.
   var SYNC_PILL_PARENT = { offline: 'Offline — showing what was saved last' };
@@ -13632,8 +13739,9 @@
     el.hidden = gm || asText;
     el.className = 'sync-pill no-print ' + p.cls;
     el.innerHTML = '<span class="sync-dot"></span><span class="sync-lbl">' + p.label + '</span>';
-    el.setAttribute('data-act', sync.conflict ? 'sync-choose' : 'goto-pack');
-    el.setAttribute('aria-label', 'Sync status: ' + p.label + (sync.conflict ? '. Opens the choice.' : '. Opens Pack.'));
+    var held = packFormatHeld();
+    el.setAttribute('data-act', held ? 'reload-page' : sync.conflict ? 'sync-choose' : 'goto-pack');
+    el.setAttribute('aria-label', 'Sync status: ' + p.label + (held ? '.' : sync.conflict ? '. Opens the choice.' : '. Opens Pack.'));
   }
 
   /* ---------------- Mutations ---------------- */
@@ -14034,7 +14142,7 @@
     // Persistent read-only banner for a signed-in viewer (roles in force). Parents/pending
     // users are on the parent app instead, which carries its own notices.
     if (!parent && !gate && sync.user && !canEdit()) v.innerHTML = readOnlyBanner() + v.innerHTML;
-    if (!parent && !gate) v.innerHTML = serverNoticeBanner() + v.innerHTML;
+    if (!parent && !gate) v.innerHTML = formatBanner() + serverNoticeBanner() + v.innerHTML;
     renderSyncPill();
     document.getElementById('overlayHost').innerHTML = (parent || gate) ? '' : renderOverlay();
 
@@ -20093,11 +20201,23 @@
     }
     return '';
   }
+  // The reload gate (PACK_FORMAT, owner's words) — above every leader page while it holds.
+  var FORMAT_NOTICE = 'This page is out of date: another leader’s device saved with a newer version. ' +
+    'Reload the page to keep working. Your unsaved changes stay on this device.';
+  // …and what an edit is told when nothing can be saved at all (commit: this device's own copy is
+  // the newer page's record).
+  var FORMAT_REFUSED = 'Not saved: this page is out of date. Reload the page first.';
+  function formatBanner() {
+    if (!packFormatHeld()) return '';
+    return '<div class="warn no-print" role="alert" style="margin:0 0 14px">' + esc(FORMAT_NOTICE) +
+      ' <button type="button" class="btn small" data-act="reload-page">Reload</button></div>';
+  }
   function serverNoticeBanner() {
     var t = serverNotice();
     return t ? '<div class="warn no-print" style="margin:0 0 14px">' + esc(t) + '</div>' : '';
   }
   function syncModeLine() {
+    if (packFormatHeld()) return FORMAT_NOTICE;   // device-only too: a newer tab's copy is held
     if (!backendConfigured()) return 'Device-only mode — everything is saved in this browser.';
     if (sync.notice) return serverNotice();
     if (sync.conflict) return 'This device and the pack’s shared copy differ. Nothing is saved until you choose which copy to keep.';
@@ -29133,6 +29253,7 @@
       if (mvO && mvO.kind === 'move-import') importMoveFile(mvO.got.body);
       return;
     }
+    if (act === 'reload-page') { location.reload(); return; }   // the reload gate (formatBanner)
     if (act === 'export-ics') {
       ui.overlay = { kind: 'export', title: 'Calendar (.ics)', name: 'ideal-year-of-scouting.ics', mime: 'text/calendar', text: buildICS() };
       render(); return;

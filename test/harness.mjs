@@ -73,6 +73,10 @@ function sandbox(names) {
   vm.runInContext(names.map(slice).join('\n'), ctx);
   return ctx;
 }
+// The reload gate (PACK_FORMAT): what every page context with a pack-record feed or a push needs.
+// By decl (below): PACK_FORMAT is one line, and slice would run on past it.
+const FORMAT_GATE_FNS = ['PACK_FORMAT', 'formatAhead', 'formatHeldHere', 'packFormatAhead', 'packFormatHeld', 'holdNewerFormat'];
+const FORMAT_GATE_SRC = () => FORMAT_GATE_FNS.map(decl).join('\n');
 // Wave C1 — buildParentView sorts the trips by date and re-checks their ISO dates, so every
 // sandbox that builds it needs these. todayISO only where the sandbox has none of its own.
 const CAMP_DATE_SRC = ['CAMP_DATE_KEYS', 'campIsoOrBlank', 'tripStartDate', 'tripEndDate', 'sortTripsByDate',
@@ -969,7 +973,7 @@ test('reconciling compares the TICKED entries to the statement', () => {
 
 // normalizeState is the single migration seam, so the migration is tested through it
 // rather than through a reimplementation of it.
-const NORMALIZE_FNS = ['PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
+const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'defaultProgramYear', 'freshBudget', 'programYearStartISO',
   // DENS: the event coercion rebuilds `dens` in rank order against it.
   'DENS',
@@ -8525,7 +8529,8 @@ test('nothing is published to parents before the join config has said whether st
     var sync = { backend: fakeBe, docId: 'P', joinLoaded: false, pack: { docId: 'P' }, firstSnap: false };
     ${slice('cloudReady')}
     ${slice('packLinked')}
-    ${slice('writeParentView')}`, ctx);
+    ${slice('writeParentView')}
+    ${FORMAT_GATE_SRC()}`, ctx);
   vm.runInContext('writeParentView()', ctx);
   eq(vm.runInContext('[built, calls.length]', ctx), [0, 0], 'the parent view was built and written before the join config loaded');
   vm.runInContext('sync.joinLoaded = true; writeParentView()', ctx);
@@ -8546,6 +8551,7 @@ test('only a device holding the pack record, after its first answer, publishes t
       var parentViewTimer = null, parentViewFingerprint = null, state = {};
       var sync = { backend: fakeBe, docId: 'P', joinLoaded: true, pack: { docId: 'P' }, firstSnap: false };
       ${['cloudReady', 'packLinked', 'haltFixedSync', 'writeParentView'].map(slice).join('\n')}
+      ${FORMAT_GATE_SRC()}
       ${setup}
       writeParentView();`, ctx);
     return vm.runInContext('calls', ctx);
@@ -8718,7 +8724,7 @@ test('Firestore: an editor’s copy waiting on a choice is dropped for "view-onl
       conflict: null, dirty: false, clobber: false, pushTimer: null, packMissing: false };
     ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'feedForRole', 'recomputeMyRole',
        'stopLocalWrites', 'stopDocFeed', 'subscribeDoc', 'applyRoleSubscription', 'applyMembersSubscription', 'isStateEmpty',
-       'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush'].map(decl).join('\n')}
+       'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush', ...FORMAT_GATE_FNS].map(decl).join('\n')}
     subscribeDoc(1);
     applyMembersSubscription(1);
     function roster(role, md) {
@@ -8769,7 +8775,7 @@ test('Firestore: the server confirming a cached roster is heard, and a viewer’
       conflict: null, dirty: false, clobber: false, pushTimer: null, packMissing: false };
     ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'feedForRole', 'recomputeMyRole',
        'stopLocalWrites', 'stopDocFeed', 'subscribeDoc', 'applyRoleSubscription', 'applyMembersSubscription', 'isStateEmpty',
-       'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush'].map(decl).join('\n')}
+       'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush', ...FORMAT_GATE_FNS].map(decl).join('\n')}
     subscribeDoc(1);
     applyMembersSubscription(1);
     function roster(role, md) {
@@ -8924,6 +8930,7 @@ test('a push reads, merges and writes in one retried step, and the rev always cl
         dirty: true, mode: 'online', remoteRec: ${JSON.stringify(over.remotes[0])} };
       ${slice('packLinked')}
       ${slice('syncPush')}
+      ${FORMAT_GATE_SRC()}
       ${['seasonMoved', 'reconciledFatesText', 'noteReconciledFates'].map(decl).join('\n')}
       syncPush();`, ctx);
     return ctx;
@@ -8961,7 +8968,7 @@ test('Firestore: a save before the pack record’s first answer never writes ove
         dirty: true, mode: 'online', notice: '', firstSnap: ${o.firstSnap}, conflict: null, pushTimer: null,
         remoteRec: ${o.firstSnap ? 'null' : JSON.stringify(o.remote || null)} };   // once answered, the feed brought it
       ${o.remote ? `reads['packs/P'] = ${JSON.stringify(o.remote)};` : ''}
-      ${['packLinked', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap', 'syncPush'].map(decl).join('\n')}
+      ${['packLinked', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap', 'syncPush', ...FORMAT_GATE_FNS].map(decl).join('\n')}
       syncPush();`);
     return JSON.parse(JSON.stringify(vm.runInContext(`({ sets: txSets.map(function (s) { return s[1].rev; }),
       overlay: ui.overlay && ui.overlay.kind, conflict: sync.conflict && sync.conflict.rev, firstSnap: sync.firstSnap,
@@ -9001,7 +9008,7 @@ function fsFeedCtx(local, extra) {
       dirty: false, mode: 'connecting', notice: '', firstSnap: true, remoteRec: null, conflict: null, pushTimer: null,
       unsub: null, feed: null, packMissing: false };
     ${['packLinked', 'subscribeDoc', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap',
-       'scheduleSyncPush', 'syncPush'].map(decl).join('\n')}
+       'scheduleSyncPush', 'syncPush', ...FORMAT_GATE_FNS].map(decl).join('\n')}
     ${extra || ''}
     subscribeDoc(1);`);
 }
@@ -9161,7 +9168,8 @@ test('the sync card offline does not promise every change will simply sync', () 
   const ctx = vm.createContext({});
   vm.runInContext(`var sync = { mode: 'offline', error: 'unavailable', conflict: null, notice: '' };
     function backendConfigured() { return true; } function fixedPackMode() { return true; } function serverNotice() { return ''; }
-    ${decl('syncModeLine')}`, ctx);
+    var state = {};
+    ${decl('syncModeLine')} ${FORMAT_GATE_SRC()} ${decl('FORMAT_NOTICE')}`, ctx);
   eq(vm.runInContext('syncModeLine()', ctx), 'Offline — changes are saved on this device. When the connection returns they are sent, or, ' +
     'if the shared copy has changed, you may be asked which copy to keep. (unavailable)', 'the offline line');
 });
@@ -9228,7 +9236,8 @@ test('the pack record feed ignores its own echoes and keeps the raw record for t
     var ui = { tab: 'home', overlay: null };
     var state = { scouts: [{ id: 'a' }], rev: 2 };
     var sync = { firstSnap: true, mode: 'online', deviceId: 'dev1', dirty: false, clobber: false };
-    ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap'].map(slice).join('\n')}`, ctx);
+    ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap'].map(slice).join('\n')}
+    ${FORMAT_GATE_SRC()}`, ctx);
   // No shared copy yet: seed it from this device.
   vm.runInContext('onRemoteSnap(null, { fromServer: true, pendingWrites: false })', ctx);
   eq(vm.runInContext('[sync.dirty, timers.length === 1 && timers[0] === syncPush]', ctx), [true, true], 'an empty pack was not seeded');
@@ -9261,7 +9270,8 @@ test('once single-pack mode halts, nothing can push the pack record, even with t
     function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
     var state = { rev: 1 };
     var sync = { backend: fakeBe, pack: { docId: 'P' }, session: 1, deviceId: 'd', mode: 'online' };
-    ${['packLinked', 'haltFixedSync', 'scheduleSyncPush', 'syncPush', 'seasonMoved'].map(slice).join('\n')}`, ctx);
+    ${['packLinked', 'haltFixedSync', 'scheduleSyncPush', 'syncPush', 'seasonMoved'].map(slice).join('\n')}
+    ${FORMAT_GATE_SRC()}`, ctx);
   vm.runInContext('scheduleSyncPush()', ctx);
   eq(vm.runInContext('timers.length', ctx), 1, 'a linked device cannot schedule a push (the test proves nothing)');
   vm.runInContext('haltFixedSync(); timers = []; scheduleSyncPush(); syncPush();', ctx);
@@ -9284,7 +9294,8 @@ test('every guard in front of the pack feed, the parent feed and a push holds on
       function fixedFeedBlocked() { return feedBlocked; } function fixedSyncBlocked() { return syncBlocked; }
       function accountsInForce() { return inForce; } function canEdit() { return edit; }
       var sync = { backend: fakeBe, pack: { docId: 'P' }, docId: 'P', session: 1, deviceId: 'd', mode: 'online', parentUnsub: null };
-      ${['cloudReady', 'packLinked', 'haltFixedSync', 'subscribeDoc', 'subscribeParentView', 'syncPush', 'seasonMoved'].map(slice).join('\n')}`, c);
+      ${['cloudReady', 'packLinked', 'haltFixedSync', 'subscribeDoc', 'subscribeParentView', 'syncPush', 'seasonMoved'].map(slice).join('\n')}
+      ${FORMAT_GATE_SRC()}`, c);
     return c;
   };
   const got = (c, js) => { vm.runInContext(js, c); return vm.runInContext('[!!subs.pack, !!subs.view, pushed]', c); };
@@ -15412,7 +15423,8 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'createInvite', 'revokeInvite', 'joinOpen', 'standingsEnabled', 'cleanContactLine', 'MOVE_KIND', 'MOVE_UID_RE', 'MOVE_ROLES',
   'isPackOwner', 'canDownloadMoveFile', 'canImportPack', 'moveFileReady', 'moveFileProblem', 'moveTime', 'buildMoveFile', 'downloadMoveFile', 'moveImportBody', 'importMoveFile',
   'scheduleParentViewRefresh', 'writeParentView', 'scheduleSyncPush', 'holdPushes', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', ...GONE_FNS, 'syncPush',
-  'isStateEmpty', 'stateFingerprint', 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'keepLocalCopy', 'SERVER_NOTICES', 'serverNotice'];
+  'isStateEmpty', 'stateFingerprint', 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'keepLocalCopy', 'SERVER_NOTICES', 'serverNotice',
+  ...FORMAT_GATE_FNS];
 const CLIENT_SRC = CLIENT_FNS.map(decl).join('\n');
 
 // Every fetch in flight, across every client, so settle() knows when the server has answered.
@@ -15863,9 +15875,9 @@ atest('a copy choice closed with Escape keeps saying it waits, and a device that
     vm.runInContext(`var attrs = {}, el = { hidden: false, className: '', innerHTML: '', setAttribute: function (k, v) { attrs[k] = v; } };
       var document = { getElementById: function (id) { return id === 'syncPill' ? el : null; } };
       function gateMode() { return null; } function parentMode() { return false; } function esc(s) { return String(s); }
-      var sync = { mode: '${mode}', conflict: ${conflict ? '{ rev: 3 }' : 'null'}, notice: '' };
+      var sync = { mode: '${mode}', conflict: ${conflict ? '{ rev: 3 }' : 'null'}, notice: '' }, state = {};
       function backendConfigured() { return true; } function fixedPackMode() { return true; } function serverNotice() { return ''; }
-      ${['SYNC_PILL', 'SYNC_PILL_PARENT', 'syncPillState', 'renderSyncPill', 'syncModeLine'].map(decl).join('\n')}
+      ${['SYNC_PILL', 'SYNC_PILL_PARENT', 'syncPillState', 'renderSyncPill', 'syncModeLine', 'FORMAT_NOTICE', ...FORMAT_GATE_FNS].map(decl).join('\n')}
       renderSyncPill();`, ctx);
     return JSON.parse(JSON.stringify(vm.runInContext('({ cls: el.className, html: el.innerHTML, attrs: attrs, line: syncModeLine() })', ctx)));
   };
@@ -15905,7 +15917,7 @@ atest('a copy choice closed with Escape keeps saying it waits, and a device that
       var state = { scouts: [{ id: 'a' }], rev: 5 };
       var sync = { firstSnap: false, mode: 'online', deviceId: 'dev1', dirty: true, clobber: false, conflict: { rev: 5 },
         remoteRec: { rev: 5 }, backend: { serverRevs: true }, membersFromServer: ${fromServer !== false} };
-      ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap', 'takeSharedAsViewer'].map(decl).join('\n')}
+      ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap', 'takeSharedAsViewer', ...FORMAT_GATE_FNS].map(decl).join('\n')}
       onRemoteSnap({ rev: 6, device: 'd2', json: '{}' }, { fromServer: true, pendingWrites: false });`, ctx);
     return JSON.parse(JSON.stringify(vm.runInContext('[adopted, sync.conflict && sync.conflict.rev, ui.overlay && ui.overlay.kind, toasts]', ctx)));
   };
@@ -16156,7 +16168,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
       var sync = { backend: fakeBe, pack: { docId: 'P' }, session: 1, deviceId: 'd', clobber: false, dirty: true, mode: 'online',
         notice: '${over.notice || ''}', firstSnap: false,
         remoteRec: ${JSON.stringify(over.heard === undefined ? { rev: over.localRev, device: 'x', json: '{}' } : over.heard)} };
-      ${['packLinked', 'syncPush', 'seasonMoved', 'reconciledFatesText', 'noteReconciledFates'].map(decl).join('\n')}
+      ${['packLinked', 'syncPush', 'seasonMoved', 'reconciledFatesText', 'noteReconciledFates', ...FORMAT_GATE_FNS].map(decl).join('\n')}
       syncPush();`, ctx);
     const out = vm.runInContext('[records.length ? records[0].rev : null, merged, state.rev]', ctx);
     if (over.answers) out.push(JSON.parse(JSON.stringify(vm.runInContext('[firstAnswers, sync.dirty, sync.remoteRec && sync.remoteRec.rev]', ctx))));
@@ -16194,7 +16206,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
       var state = ${JSON.stringify(over.local)};
       var sync = { firstSnap: true, mode: 'online', deviceId: 'dev1', dirty: false, clobber: false,
         backend: { serverRevs: ${!!over.serverRevs} } };
-      ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap', 'keepLocalCopy'].map(decl).join('\n')}
+      ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap', 'keepLocalCopy', ...FORMAT_GATE_FNS].map(decl).join('\n')}
       onRemoteSnap(${JSON.stringify(over.rec)}, { fromServer: true, pendingWrites: false });`, ctx);
     return vm.runInContext('[timers.length, state.rev, ui.overlay ? ui.overlay.kind : null]', ctx);
   };
@@ -20672,6 +20684,303 @@ atest('C4, api: a reverse and a correction settle the same way across two device
   eq(server().ledgerLog.map((e) => e.op), ['reverse', 'correct'], 'the log');
   await a.poll();
   eq(c4Where(a.get('state')), c4Where(server()), 'A');
+});
+
+/* ---------------- the reload gate (PACK_FORMAT, owner 2026-09-29) ----------------
+   A page that meets a pack record saved by a newer page (a higher state.fmt) holds: it sends
+   nothing, takes nothing, publishes nothing to parents, never writes over that record, and asks
+   for a reload. A record with no fmt, or this page's, syncs exactly as before. */
+
+// A pack record as a newer page would save it: fmt one above this page's.
+const NEWER_FMT = 2;
+const newerRec = (rev, extra) => ({ rev, device: 'newer-dev',
+  json: JSON.stringify(Object.assign({ rev, fmt: NEWER_FMT, packName: 'Saved by a newer page', scouts: [{ id: 'z' }] }, extra || {})) });
+
+test('reload gate: the banner says exactly what the owner decided, with a Reload button, above every leader page', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`var state = {}, sync = { newerFormat: false }; function esc(s) { return String(s); }
+    ${['FORMAT_NOTICE', 'formatBanner', ...FORMAT_GATE_FNS].map(decl).join('\n')}`, ctx);
+  eq(vm.runInContext('FORMAT_NOTICE', ctx), 'This page is out of date: another leader’s device saved with a newer version. ' +
+    'Reload the page to keep working. Your unsaved changes stay on this device.', 'the banner’s words');
+  eq(vm.runInContext('formatBanner()', ctx), '', 'a banner with nothing held');
+  const held = vm.runInContext('sync.newerFormat = true; formatBanner()', ctx);
+  ok(held.indexOf(vm.runInContext('FORMAT_NOTICE', ctx)) >= 0 && /data-act="reload-page">Reload<\/button>/.test(held) && /role="alert"/.test(held),
+    'the held banner: ' + held);
+  // …and a stored copy from a newer page holds as well (state.fmt), with no feed at all.
+  eq(vm.runInContext('sync.newerFormat = false; state = { fmt: 2 }; formatBanner() !== ""', ctx), true, 'a newer copy on this device shows no banner');
+  ok(/if \(!parent && !gate\) v\.innerHTML = formatBanner\(\) \+ serverNoticeBanner\(\) \+ v\.innerHTML;/.test(slice('render')),
+    'the banner is not above every leader page');
+  ok(/if \(act === 'reload-page'\) \{ location\.reload\(\); return; \}/.test(SCRIPT), 'the Reload button does nothing');
+});
+
+test('reload gate: normalizeState keeps a newer fmt, never lowers one, and reads a missing or odd one as this page’s', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const fmtOf = (v) => {
+    const d = { version: 1, scouts: [] };
+    if (v !== undefined) d.fmt = v;
+    return ctx.normalizeState(JSON.parse(JSON.stringify(d))).fmt;
+  };
+  eq(vm.runInContext('PACK_FORMAT', ctx), 1, 'this build’s format');
+  eq([undefined, 1, 0, -3, '2', null, true].map(fmtOf), [1, 1, 1, 1, 1, 1, 1], 'a missing, this page’s or odd fmt');
+  eq([2, 7, 2.5].map(fmtOf), [2, 7, 2], 'a newer fmt was lowered');
+  // …and twice is the same.
+  const twice = ctx.normalizeState(ctx.normalizeState({ version: 1, scouts: [], fmt: 3 }));
+  eq(twice.fmt, 3, 'a second normalize lowered it');
+});
+
+test('reload gate: packFormatAhead reads the record’s own fmt, and parses only a record that names a higher one', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`var parses = 0;
+    ${FORMAT_GATE_SRC()}`, ctx);
+  const ahead = (json) => vm.runInContext(`packFormatAhead(${JSON.stringify({ json })})`, ctx);
+  eq([ahead('{"fmt":2}'), ahead('{"a":1,"fmt":3}'), ahead('{"fmt":2.5}'), ahead('{"fmt":1e3}'), ahead('{ "fmt" : 2 }')],
+    [true, true, true, true, true], 'a newer record');
+  eq([ahead('{"fmt":1}'), ahead('{}'), ahead('{"fmt":0}'), ahead('{"fmt":"2"}'), ahead('{"fmt":2'), ahead('not json')],
+    [false, false, false, false, false, false], 'this page’s, none, odd or unreadable');
+  // Only the top level counts: a nested key, or the words in a note, are not the record's format.
+  eq([ahead('{"fmt":1,"x":{"fmt":9}}'), ahead(JSON.stringify({ fmt: 1, note: 'typed "fmt":9 here' }))], [false, false], 'not the record’s own fmt');
+  eq(vm.runInContext('[packFormatAhead(null), packFormatAhead({}), packFormatAhead({ json: 5 })]', ctx), [false, false, false], 'no record');
+  // Every record carries "fmt":1 from now on, and this reads every answer: it is not parsed.
+  vm.runInContext('var realParse = JSON.parse; JSON.parse = function (s) { parses += 1; return realParse(s); };', ctx);
+  ahead(JSON.stringify({ fmt: 1, scouts: [{ id: 'a' }] }));
+  eq(vm.runInContext('parses', ctx), 0, 'a record in this page’s format was parsed to find that out');
+});
+
+test('reload gate, Firestore: a newer page’s record from the pack feed holds this page — nothing sent, taken or compared', () => {
+  const mine = { rev: 2, packName: 'Old', scouts: [{ id: 'a' }] };
+  const held = (ctx) => vm.runInContext('[sync.newerFormat, packFormatHeld(), txSets.length, state.packName, state.rev, !!sync.conflict, ui.overlay && ui.overlay.kind]', ctx);
+  // As the first answer, on a device with its own copy and on an empty one (which would take any
+  // other record silently).
+  for (const local of [mine, { rev: 0, packName: '', scouts: [] }]) {
+    const ctx = fsFeedCtx(local);
+    vm.runInContext(`reads['packs/P'] = ${JSON.stringify(newerRec(12))}; watches[0].next(snapOf('packs/P', {})); runTimers();`, ctx);
+    eq(held(ctx), [true, true, 0, local.packName, local.rev, false, null], `first answer (${local.packName || 'empty'}): not held`);
+    ok(vm.runInContext('renders', ctx) > 0, 'the hold was not drawn');
+    // An edit then is kept here and sends nothing: no push is even scheduled, and one run by hand sends nothing.
+    vm.runInContext("state.packName = 'Edited while held'; scheduleSyncPush();", ctx);
+    eq(vm.runInContext('Object.keys(timers).length', ctx), 0, 'a push was scheduled while held');
+    vm.runInContext('syncPush(); runTimers();', ctx);
+    eq(vm.runInContext('[txSets.length, state.packName, sync.dirty]', ctx), [0, 'Edited while held', true], 'an edit while held');
+    // Nothing more is heard until a reload, not even a record in this page's format.
+    vm.runInContext(`reads['packs/P'] = ${JSON.stringify({ rev: 13, device: 'd2', json: JSON.stringify({ rev: 13, packName: 'Later', scouts: [] }) })};
+      watches[0].next(snapOf('packs/P', {})); runTimers();`, ctx);
+    eq(vm.runInContext('[state.packName, txSets.length, ui.overlay && ui.overlay.kind, !!sync.conflict, sync.firstSnap, sync.remoteRec]', ctx),
+      ['Edited while held', 0, null, false, true, null], 'something was taken, compared or heard after the hold');
+  }
+  // As a later answer: this device heard the pack in its own format first, and is not dirty,
+  // so any newer rev would be taken.
+  const later = (rec) => {
+    const ctx = fsFeedCtx(mine);
+    vm.runInContext(`reads['packs/P'] = ${JSON.stringify({ rev: 2, device: 'd2', json: JSON.stringify(mine) })};
+      watches[0].next(snapOf('packs/P', {}));
+      reads['packs/P'] = ${JSON.stringify(rec)}; watches[0].next(snapOf('packs/P', {})); runTimers();`, ctx);
+    return vm.runInContext('[!!sync.newerFormat, state.packName, state.rev, txSets.length]', ctx);
+  };
+  eq(later(newerRec(12)), [true, 'Old', 2, 0], 'a newer page’s later save was taken');
+  eq(later({ rev: 12, device: 'd2', json: JSON.stringify({ rev: 12, packName: 'No fmt', scouts: [] }) }), [false, 'No fmt', 12, 0],
+    'control: a later save from a page before the gate is no longer taken');
+  eq(later({ rev: 12, device: 'd2', json: JSON.stringify({ rev: 12, fmt: 1, packName: 'This format', scouts: [] }) }), [false, 'This format', 12, 0],
+    'control: a later save in this page’s format is no longer taken');
+  // A copy choice waiting when a newer record arrives: the chooser goes (neither answer could do
+  // anything now), and the pill and card say reload instead.
+  const ch = fsFeedCtx(mine);
+  vm.runInContext(`reads['packs/P'] = ${JSON.stringify({ rev: 9, device: 'd2', json: JSON.stringify({ rev: 9, packName: 'Other', scouts: [{ id: 'b' }] }) })};
+    watches[0].next(snapOf('packs/P', {}));`, ch);
+  eq(vm.runInContext('[ui.overlay && ui.overlay.kind, !!sync.conflict]', ch), ['sync-conflict', true], 'no choice waiting (the test proves nothing)');
+  vm.runInContext(`reads['packs/P'] = ${JSON.stringify(newerRec(12))}; watches[0].next(snapOf('packs/P', {}));`, ch);
+  eq(held(ch), [true, true, 0, 'Old', 2, false, null], 'the choice outlived the hold');
+});
+
+test('reload gate, Firestore: a save that reads a newer page’s record writes nothing, takes nothing, and holds', () => {
+  const LOGS = { storefronts: [], entries: [], events: [], ledger: [], leaders: [], fundraisers: [], inventory: { distributions: [] } };
+  const mine = Object.assign({ rev: 2, packName: 'Old', scouts: [{ id: 'a' }] }, LOGS);
+  const run = (remote) => {
+    const ctx = fsFeedCtx(mine);
+    vm.runInContext(`reads['packs/P'] = ${JSON.stringify({ rev: 2, device: 'd2', json: JSON.stringify(mine) })};
+      watches[0].next(snapOf('packs/P', {}));
+      // Another device saves; the feed has not told this one yet, and it saves too.
+      reads['packs/P'] = ${JSON.stringify(remote)};
+      state.packName = 'Edited'; scheduleSyncPush(); runTimers();`, ctx);
+    return JSON.parse(JSON.stringify(vm.runInContext(`({ sets: txSets.map(function (s) { return [s[1].rev, JSON.parse(s[1].json).fmt]; }),
+      held: !!sync.newerFormat, name: state.packName, dirty: sync.dirty, rev: state.rev, timers: Object.keys(timers).length })`, ctx)));
+  };
+  eq(run(newerRec(5)), { sets: [], held: true, name: 'Edited', dirty: true, rev: 2, timers: 0 }, 'a push over a newer page’s record');
+  // Control: the same save over a page from before the gate merges and writes, in this page's format.
+  eq(run({ rev: 5, device: 'd2', json: JSON.stringify(Object.assign({ rev: 5, packName: 'Other', scouts: [{ id: 'a' }] }, LOGS)) }),
+    { sets: [[6, 1]], held: false, name: 'Edited', dirty: false, rev: 6, timers: 0 }, 'control: a push over an older page’s record');
+  // A page holding a newer page's record itself (loaded from a newer tab's save) never pushes it,
+  // even over a record in this page's format, and never takes one over it.
+  const own = fsFeedCtx(Object.assign({}, mine, { fmt: NEWER_FMT }));
+  vm.runInContext(`reads['packs/P'] = ${JSON.stringify({ rev: 2, device: 'd2', json: JSON.stringify(mine) })};
+    sync.firstSnap = false; sync.dirty = true; syncPush(); runTimers();
+    watches[0].next(snapOf('packs/P', {}));
+    var took = adoptRemote(${JSON.stringify({ rev: 3, device: 'd2', json: JSON.stringify({ rev: 3, packName: 'This format', scouts: [] }) })}, {});`, own);
+  eq(vm.runInContext('[txSets.length, took, state.packName, state.fmt]', own), [0, false, 'Old', NEWER_FMT],
+    'a newer page’s record on this device was pushed, or had a record taken over it');
+  // adoptRemote itself refuses a newer page's record (the chooser's "use the cloud copy" calls it).
+  const ad = fsFeedCtx(mine);
+  eq(vm.runInContext(`[adoptRemote(${JSON.stringify(newerRec(12))}, {}), state.packName, !!sync.newerFormat]`, ad), [false, 'Old', true],
+    'a newer page’s record was taken');
+});
+
+test('reload gate: holding stops every timer, drops a waiting choice, and draws the pill and sync card once', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`var cleared = [], renders = 0, pills = 0, state = {};
+    function clearTimeout(t) { cleared.push(t); } function render() { renders += 1; } function renderSyncPill() { pills += 1; }
+    var ui = { overlay: { kind: 'sync-conflict' } };
+    var sync = { newerFormat: false, pushTimer: 7, retryTimer: 8, conflict: { rev: 3 }, mode: 'online' };
+    ${FORMAT_GATE_SRC()}
+    holdNewerFormat(); holdNewerFormat();`, ctx);
+  eq(vm.runInContext('[sync.newerFormat, sync.pushTimer, sync.retryTimer, cleared.slice(0, 2), sync.conflict, ui.overlay, renders, pills, sync.mode]', ctx),
+    [true, null, null, [7, 8], null, null, 1, 1, 'online'], 'the hold');
+  // The pill and the sync card's line, from the page's own code.
+  const pill = (setup) => {
+    const c = vm.createContext({});
+    vm.runInContext(`var attrs = {}, el = { hidden: false, className: '', innerHTML: '', setAttribute: function (k, v) { attrs[k] = v; } };
+      var document = { getElementById: function (id) { return id === 'syncPill' ? el : null; } };
+      function gateMode() { return null; } function parentMode() { return false; } function esc(s) { return String(s); }
+      var sync = { mode: 'online', conflict: null, notice: '' }, state = {};
+      function backendConfigured() { return true; } function fixedPackMode() { return true; } function serverNotice() { return ''; }
+      ${['SYNC_PILL', 'SYNC_PILL_PARENT', 'syncPillState', 'renderSyncPill', 'syncModeLine', 'FORMAT_NOTICE', ...FORMAT_GATE_FNS].map(decl).join('\n')}
+      ${setup}
+      renderSyncPill();`, c);
+    return JSON.parse(JSON.stringify(vm.runInContext('({ cls: el.className, html: el.innerHTML, attrs: attrs, line: syncModeLine(), notice: FORMAT_NOTICE })', c)));
+  };
+  for (const [what, setup] of [['met from the pack', 'sync.newerFormat = true;'], ['on this device', 'state = { fmt: 2 };'],
+    ['with a choice waiting', 'sync.newerFormat = true; sync.conflict = { rev: 3 };'],
+    ['on a device-only page', 'state = { fmt: 2 }; backendConfigured = function () { return false; };']]) {
+    const p = pill(setup);
+    ok(/ conflict$/.test(p.cls) && />Reload the page</.test(p.html), `${what}: the pill does not say reload: ${p.html}`);
+    eq([p.attrs['data-act'], p.attrs['aria-label'], p.line], ['reload-page', 'Sync status: Reload the page.', p.notice], `${what}: the pill or the card`);
+  }
+  const synced = pill('');
+  eq([/>Synced</.test(synced.html), synced.attrs['data-act'], /^Synced/.test(synced.line)], [true, 'goto-pack', true], 'control: the pill with nothing held');
+});
+
+test('reload gate: nothing is published to parents while held, and no move file is made', () => {
+  const run = (setup) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(FAKE_BE + `
+      function buildParentView() { return { events: [] }; }
+      function accountsInForce() { return true; } function canEdit() { return true; }
+      function fixedSyncBlocked() { return false; } function clearTimeout() {} function render() {} function renderSyncPill() {}
+      var parentViewTimer = null, parentViewFingerprint = null, state = {}, ui = { overlay: null };
+      var sync = { backend: fakeBe, docId: 'P', joinLoaded: true, pack: { docId: 'P' }, firstSnap: false };
+      ${['cloudReady', 'packLinked', 'writeParentView'].map(slice).join('\n')}
+      ${FORMAT_GATE_SRC()}
+      ${setup}
+      writeParentView();`, ctx);
+    return vm.runInContext('calls', ctx);
+  };
+  eq(run(''), ['set packs/P/public/view'], 'control: a leader with nothing held does not publish (the test proves nothing)');
+  eq(run('holdNewerFormat();'), [], 'the parent view was published while held');
+  eq(run('state = { fmt: 2 };'), [], 'the parent view was published from a newer page’s record');
+  // The move file carries the pack as the server last had it: while held, that is no longer the pack's.
+  const ctx = vm.createContext({});
+  vm.runInContext(`var sync = { newerFormat: true }, state = {};
+    function moveFileReady() { throw new Error('asked whether ready'); }
+    ${['moveFileProblem', 'FORMAT_NOTICE', ...FORMAT_GATE_FNS].map(decl).join('\n')}`, ctx);
+  eq(vm.runInContext('moveFileProblem() === FORMAT_NOTICE', ctx), true, 'a move file could be made while held');
+});
+
+test('reload gate: a newer page’s record on this device is never saved over, and an edit to it is refused, not kept in memory', () => {
+  const run = (stored) => {
+    const ctx = sandbox(NORMALIZE_FNS);
+    vm.runInContext(`var KEY = 'pack-popcorn-ledger-v1', store = {};
+      store[KEY] = ${JSON.stringify(JSON.stringify(stored))};
+      var localStorage = { getItem: function (k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
+        setItem: function (k, v) { store[k] = String(v); } };
+      var toasts = [], renders = 0, pushes = 0;
+      function showToast(m) { toasts.push(m); } function render() { renders += 1; } function canEdit() { return true; }
+      function syncCharges() {} function scheduleSyncPush() { pushes += 1; } function schedulePersist() {}
+      function clearTimeout() {} function freshState() { return { version: 1, scouts: [], fresh: true }; }
+      var liveEdit = false, persistTimer = null, persistPending = false, saveWarned = false;
+      var loadBackupKept = false, loadLedgerSplits = [];
+      var sync = { newerFormat: false };
+      ${['load', 'save', 'commit', 'FORMAT_REFUSED', ...FORMAT_GATE_FNS].map(decl).join('\n')}
+      var state = load();
+      var before = store[KEY];`, ctx);
+    return ctx;
+  };
+  const tab = { version: 1, fmt: NEWER_FMT, packName: 'Saved by a newer tab', scouts: [{ id: 's1', name: 'Ada' }], someNewField: { x: 1 } };
+  const ctx = run(tab);
+  eq(vm.runInContext('[state.fmt, packFormatHeld(), state.packName]', ctx), [NEWER_FMT, true, 'Saved by a newer tab'], 'the newer tab’s copy on load');
+  vm.runInContext("state.packName = 'Edited'; commit();", ctx);
+  eq(vm.runInContext('[store[KEY] === before, pushes, toasts, state.packName]', ctx),
+    [true, 0, [vm.runInContext('FORMAT_REFUSED', ctx)], 'Saved by a newer tab'], 'an edit to a newer tab’s copy');
+  vm.runInContext("state.packName = 'Edited again'; liveEdit = true; commit(); liveEdit = false; save();", ctx);
+  eq(vm.runInContext('[store[KEY] === before, pushes, toasts.length, state.packName]', ctx), [true, 0, 2, 'Saved by a newer tab'],
+    'a typed-in edit, or a save from anywhere else, wrote over the newer tab’s copy');
+  eq(vm.runInContext('FORMAT_REFUSED', ctx), 'Not saved: this page is out of date. Reload the page first.', 'the refusal’s words');
+  // Control: a copy in this page's format, or from before the gate, saves as ever, now as this page's format.
+  for (const fmt of [1, undefined]) {
+    const c = run(Object.assign({}, tab, { fmt }));
+    vm.runInContext("state.packName = 'Edited'; commit();", c);
+    const saved = JSON.parse(vm.runInContext('store[KEY]', c));
+    eq([saved.packName, saved.fmt, vm.runInContext('[pushes, toasts.length]', c)], ['Edited', 1, [1, 0]], `control: fmt ${fmt}`);
+  }
+});
+
+// The api fake: a newer page's save goes straight into the server's table.
+const apiSetPack = (w, rev, obj) => w.db.raw.prepare('UPDATE pack_state SET rev = ?, json = ?, device = ? WHERE pack_id = ?')
+  .run(rev, JSON.stringify(obj), 'newer-dev', API_PACK);
+const GATE_LINE = ['FORMAT_NOTICE', 'syncModeLine'];
+
+atest('reload gate, api: a newer page’s record on the server holds a leader’s page — nothing saved over it, taken or published', async () => {
+  const NEWER = PACK_STATE({ rev: 4, fmt: NEWER_FMT, packName: 'Saved by a newer page' });
+  for (const local of ['empty', 'own copy']) {
+    const w = await (await apiWorld()).seed();
+    w.state(4, NEWER);
+    const ed = await (await apiClient(w, 'editor', local === 'empty' ? {} : { state: PACK_STATE({ packName: 'Mine' }) })).start(1200);
+    ed.run(GATE_LINE.map(decl).join('\n'));
+    eq(ed.get('[sync.newerFormat, state.packName, !!sync.conflict, ui.overlay && ui.overlay.kind, syncModeLine() === FORMAT_NOTICE]'),
+      [true, local === 'empty' ? '' : 'Mine', false, null, true], `${local}: the first answer`);
+    ed.reset();
+    await ed.edit("state.packName = 'Edited while held'");
+    ed.run('scheduleParentViewRefresh()');
+    await settle([ed], 1200);
+    await ed.poll();
+    await settle([ed], 10000);
+    eq(ed.log.filter((l) => /^(PUT|POST|DELETE) \/P\b/.test(l)), [], `${local}: something was sent while held`);
+    eq([JSON.parse(ed.get('store[KEY]')).packName, ed.get('state.packName')], ['Edited while held', 'Edited while held'],
+      `${local}: the edit was not kept on this device, or the pack’s copy was taken over it`);
+    const s = serverState(w);
+    eq([s.rev, s.json.fmt, s.json.packName], [4, NEWER_FMT, 'Saved by a newer page'], `${local}: the newer page’s record was written over`);
+  }
+  // Heard in this page's format first (and published), then a newer page saves and the poll brings it.
+  const w = await (await apiWorld()).seed();
+  w.state(3, PACK_STATE());
+  const ed = await (await apiClient(w, 'editor')).start(1200);
+  eq([ed.get('[state.packName, sync.newerFormat]'), ed.log.indexOf('PUT /P/view') >= 0], [['Test Pack', false], true],
+    'control: the pack in this page’s format is taken and published');
+  apiSetPack(w, 4, NEWER);
+  await ed.poll();
+  eq(ed.get('[sync.newerFormat, state.packName, state.rev]'), [true, 'Test Pack', 3], 'a newer page’s later save was taken');
+  ed.reset();
+  ed.run("state.packName = 'Edited while held'; commit(); scheduleParentViewRefresh()");
+  await settle([ed], 1200);
+  eq(ed.log.filter((l) => /^PUT/.test(l)), [], 'a save or a family view went out while held');
+});
+
+atest('reload gate, api: a save that reads a newer page’s record sends nothing and holds; an older one is merged as before', async () => {
+  const run = async (theirs) => {
+    const w = await (await apiWorld()).seed();
+    w.state(3, PACK_STATE());
+    const ed = await (await apiClient(w, 'editor')).start();
+    apiSetPack(w, 4, theirs);   // another device's save, which this one has not polled yet
+    ed.reset();
+    await ed.edit("state.packName = 'Edited'");
+    await settle([ed], 10000);
+    const s = serverState(w);
+    return { puts: ed.log.filter((l) => /^PUT \/P$/.test(l)).length, read: ed.log.indexOf('GET /P') >= 0,
+      held: ed.get('!!sync.newerFormat'), here: ed.get('[state.packName, sync.dirty]'), server: [s.rev, s.json.fmt, s.json.packName] };
+  };
+  eq(await run(PACK_STATE({ rev: 4, fmt: NEWER_FMT, packName: 'Newer' })),
+    { puts: 0, read: true, held: true, here: ['Edited', true], server: [4, NEWER_FMT, 'Newer'] }, 'a save over a newer page’s record');
+  eq(await run(PACK_STATE({ rev: 4, packName: 'Before the gate' })),
+    { puts: 1, read: true, held: false, here: ['Edited', false], server: [5, 1, 'Edited'] }, 'control: a save over a page from before the gate');
+  eq(await run(PACK_STATE({ rev: 4, fmt: 1, packName: 'This format' })),
+    { puts: 1, read: true, held: false, here: ['Edited', false], server: [5, 1, 'Edited'] }, 'control: a save over this page’s format');
 });
 
 /* ---------------- report ---------------- */
