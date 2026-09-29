@@ -14768,6 +14768,14 @@ atest('api import: a parent view PUT /view would refuse is left behind and named
   const r2 = await w2.call('owner', 'POST', 'import', null, { body: importBody({ view: { packName: 'Imported Pack', events: [] } }) });
   eq([r2.status, r2.body.imported, r2.body.view, r2.body.viewSkipped], [200, true, false, 'view-exists'], 'the import\'s answer with a view already here');
   eq(JSON.parse(w2.one('SELECT payload FROM parent_views').payload), mine, 'the view already here was replaced');
+  // Review of eb504db..366f6c9, item 3: with standings off here too, a view already here that
+  // held back an imported view with no standings in it is still what the answer names.
+  const w4 = await (await apiWorld()).seed({ editor: 'editor' });
+  await w4.call('owner', 'PUT', 'join', null, { body: { open: false, code: 'Code123abc', showStandings: false, showAmounts: true } });
+  eq((await w4.call('editor', 'PUT', 'view', null, { body: mine })).status, 200, 'a parent view without standings, standings off');
+  const r4 = await w4.call('owner', 'POST', 'import', null, { body: importBody({ view: { packName: 'Imported Pack', events: [] } }) });
+  eq([r4.status, r4.body.view, r4.body.viewSkipped], [200, false, 'view-exists'], 'no standings in the view, standings off, a view already here');
+  eq(JSON.parse(w4.one('SELECT payload FROM parent_views').payload), mine, 'the view already here was replaced (standings off)');
   // …and with none here, the imported view is stored and the answer says so.
   const w3 = await (await apiWorld()).seed({});
   const r3 = await w3.call('owner', 'POST', 'import', null, { body: importBody({ view: { packName: 'Imported Pack', events: [] } }) });

@@ -141,11 +141,13 @@ async function importPack({ request, db, packId, user }) {
   // The view was not stored: held back inside the write because standings went off in the
   // meantime, or a parent view was already here (it wins, like every row that already
   // exists). The answer says which, so `view: true` always means this view was stored
-  // (review of 5690c3a..20b4fd6, item 4). The audit row, written in the same batch, records
-  // the view that was sent.
+  // (review of 5690c3a..20b4fd6, item 4). Standings being off only held it back if it had
+  // standings in it; a view without them was held back by the one already here, whatever the
+  // switch says (review of eb504db..366f6c9, item 3). The audit row, written in the same
+  // batch, records the view that was sent.
   if (viewAt >= 0 && !(results && results[viewAt] && results[viewAt].meta && results[viewAt].meta.changes >= 1)) {
     viewText = null;
-    viewSkipped = (await standingsShown(db, packId)) ? 'view-exists' : 'view-standings-off';
+    viewSkipped = (hasStandings && !(await standingsShown(db, packId))) ? 'view-standings-off' : 'view-exists';
   }
   return json(200, { imported: true, rev, members: mRows.length, invites: iRows.length, invitesSkipped: skipped,
     join: !!j, view: !!viewText, viewSkipped });
