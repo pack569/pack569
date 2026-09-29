@@ -18646,6 +18646,14 @@ test('C3 treasurer: un-voiding takes an optional why, logged with it, as un-reco
   // Left blank: no why at all.
   p.run("void2('u1', 'Entered twice again'); act2('ledger-unvoid:u1'); act2('ledger-unvoid:u1')");
   eq([p.get('log()[3].op'), 'why' in p.get('log()[3]')], ['unvoid', false], 'an un-void with nothing typed');
+  // Security review of C4 (minor) — the box holds 500 characters and the void's reason 200; the
+  // log keeps at most 500 of an un-void's why, however it was typed (a pasted page, a hand-built
+  // event), as it is written and as it is loaded.
+  p.run("void2('u1', 'Entered twice a third time'); act2('ledger-unvoid:u1'); ui.unvoidWhy = 'w'.repeat(700); act2('ledger-unvoid:u1')");
+  eq([p.get('log()[5].op'), p.get('log()[5].why.length')], ['unvoid', 500], 'a 700-character why');
+  const lv = sandbox(['ledgerStampClean', 'ledgerLogClip', 'LEDGER_OPS', 'ledgerEvent']);
+  eq([lv.ledgerEvent('unvoid', 'u1', {}, { why: 'x'.repeat(501) }).why.length, lv.ledgerEvent('unvoid', 'u1', {}, { why: 'x'.repeat(500) }).why.length], [500, 500], 'ledgerEvent');
+  ok(/if \(typeof ev\.why === 'string' && ev\.why\.length > 500\) ev\.why = ev\.why\.slice\(0, 500\);/.test(SCRIPT), 'a loaded why is not capped');
   // The box: only on the armed row, escaped; kept as typed through a re-render.
   const x = sandbox(['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'ledgerAsideListHtml']);
   vm.runInContext(`var ui = { ledgerOpen: {}, armed: 'ledger-unvoid:v1', unvoidWhy: '"<b>' };
@@ -20216,10 +20224,18 @@ test('C4 (M3): a reversed entry and its reversal are set aside together, or both
     const d = load(ledger, aside, more, what);
     eq([where(d), net(d)], [want, cents], what);
     // A row moved back is a plain counted row again, except that a reversal still says what it
-    // reverses (security review of C4, finding 1: ledgerUnpaired reads it).
-    d.ledger.forEach((e) => ok(!Object.keys(e).some((k) => /^(off|reversedBy|void|carried)/.test(k)), what + ': ' + e.id + ' kept what setting aside gave it'));
-    d.ledger.forEach((e) => eq(e.reverses, e.id === 'rv-X' ? aside.concat(ledger).find((a) => a.id === 'rv-X').reverses : undefined, what + ': ' + e.id + '’s reverses'));
+    // reverses (security review of C4, finding 1: ledgerUnpaired reads it), and a row voided or
+    // reversed keeps why, who and when (the review's minor): the one record of it once it counts.
+    d.ledger.forEach((e) => ok(!Object.keys(e).some((k) => /^(off|reversedBy|carried)/.test(k)), what + ': ' + e.id + ' kept what setting aside gave it'));
+    d.ledger.forEach((e) => {
+      const was = aside.find((a) => a.id === e.id && !ledger.some((l) => l.id === e.id)) || {};
+      const keep = ['reverses', 'voidReason', 'voidedBy', 'voidedByUid', 'voidedAt'];
+      eq(keep.map((k) => e[k]), keep.map((k) => was[k] || undefined), what + ': what ' + e.id + ' was set aside with');
+    });
   }
+  // The review's minor, named: an entry reversed and moved back still says why, who and when.
+  const m = load([L1], [X({ voidedByUid: 'u9', voidedAt: '2026-09-29T00:00:00.000Z' })], null, 'its reversal missing, stamped');
+  eq(['voidReason', 'voidedBy', 'voidedByUid', 'voidedAt'].map((k) => m.ledger.find((e) => e.id === 'X')[k]), ['Wrong', 'Pat', 'u9', '2026-09-29T00:00:00.000Z'], 'the reverse’s why, who and when');
   // A chain (a reversal reversed): settles in one load.
   load([L1], [X(), V({ off: 'reversed', reversedBy: 'rv-rv-X' }), row('rv-rv-X', 4000, 'out', { off: 'reversal', reverses: 'rv-X' })], null, 'a chain');
   // A correction names the row it replaces, and a closed year's reversal the row it reverses: kept on a

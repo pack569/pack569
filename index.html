@@ -7700,7 +7700,9 @@
   // backup. Moved rows lose what setting them aside gave them, except a reversal's `reverses`
   // (security review of C4, finding 1): it is what tells the readers that sort rows by family,
   // tier or line that the two are a pair, and must net to $0 there too (ledgerUnpaired), not only
-  // in the pack's totals. Repeated until nothing moves (a reversal of a reversal can free another
+  // in the pack's totals. And a row that was voided or reversed keeps why, who and when
+  // (voidReason, voidedBy, voidedByUid, voidedAt; security review of C4, minor): they are the one
+  // record of it once it counts again, and a counted row's totals never read them. Repeated until nothing moves (a reversal of a reversal can free another
   // pair), so running it twice gives the same. Literals only: normalizeState runs it before the
   // script's vars are set. Returns { ledger, aside, moved }.
   // Pure apart from the fields taken off the rows it moves.
@@ -7726,8 +7728,8 @@
       if (!back.length) break;
       aside = aside.filter(function (a) { return back.indexOf(a) === -1; });
       back.forEach(function (a) {
-        ['off', 'reversedBy', 'voidReason', 'voidedBy', 'voidedByUid', 'voidedAt', 'carriedFrom'].forEach(function (k) { delete a[k]; });
-        if (!a.reverses) delete a.reverses;
+        ['off', 'reversedBy', 'carriedFrom'].forEach(function (k) { delete a[k]; });
+        ['reverses', 'voidReason', 'voidedBy', 'voidedByUid', 'voidedAt'].forEach(function (k) { if (!a[k]) delete a[k]; });
         ledger.push(a);
         moved.push(a.id);
       });
