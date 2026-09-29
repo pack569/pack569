@@ -28159,6 +28159,8 @@
       var uvId = act.split(':')[1];
       var uvRow = (state.ledgerAside || []).find(function (e) { return e.id === uvId && e.off === 'void'; });
       if (!uvRow) return;
+      // Security review of C3 (minor) — said here, as Void it says it, not left to commit().
+      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
       var uvNo = ledgerLockedWhy(uvRow, state.book, '', 'unvoid');
       if (uvNo) { if (ui.armed === act) ui.armed = null; showToast(uvNo); render(); return; }
       arm(act, function () {

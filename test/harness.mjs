@@ -19578,6 +19578,16 @@ test('C3 review (minor): a ledger id is escaped wherever it goes into an attribu
   }
 });
 
+test('C3 review (minor): a viewer’s Un-void is refused on the tap, before anything moves', () => {
+  const p = c2rPage();
+  p.run("void2('u1', 'Entered twice'); editor = false; toasts = []; commits = 0; marks = []; act2('ledger-unvoid:u1'); act2('ledger-unvoid:u1')");
+  eq([p.get("!!aside('u1')"), p.get("!!row('u1')"), p.get('ui.armed'), p.get('commits'), p.get('marks'), p.get('log().length'), p.get('toasts')],
+    [true, false, null, 0, [], 1, ['Read-only access — ask a pack admin to make you an editor.', 'Read-only access — ask a pack admin to make you an editor.']], 'a viewer un-voided it');
+  // Control: an editor's two taps still un-void it.
+  p.run("editor = true; act2('ledger-unvoid:u1'); act2('ledger-unvoid:u1')");
+  eq([p.get("!!row('u1')"), p.get('commits')], [true, 1], 'an editor');
+});
+
 atest('C3, api: a void, an un-void and a locked row settle the same way across two devices', async () => {
   const over = { ledger: C3_ROWS, ledgerAside: [], book: C3_SEED.book, ledgerLog: [] };
   let { a, b, server } = await apiGonePair(over);
