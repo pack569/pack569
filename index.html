@@ -4768,6 +4768,12 @@
     }
     dedupeRowIds(d.ledger.concat(d.ledgerAside), d.ledger.map(function () { return '1'; })
       .concat(d.ledgerAside.map(function (a) { return a.off === 'void' ? '2' : '0'; })));
+    // Phase 3, C4 (M3) — a reversed row and its reversal are set aside together or not at all
+    // (ledgerPairCheck). After the dedupe, which keeps the pair's ids (above), so each names the
+    // other still; a pair it leaves broken goes back to the ledger, both counted.
+    var pairs = ledgerPairCheck(d.ledger, d.ledgerAside);
+    d.ledger = pairs.ledger;
+    d.ledgerAside = pairs.aside;
     return d;
   }
   // Phase 3, C1 — why a row is in the book but not counted (state.ledgerAside): voided (with a
@@ -4820,6 +4826,11 @@
     // cheque, so the Budget card stops asking. Cleared by any edit to its amount, source, line
     // or direction: the answer was about the entry as it stood.
     e.notCommission = e.notCommission === true;
+    // Phase 3, C4 — a correction names the row it replaces (`replaces`), and a closed year's
+    // reversal the row it reverses ('Y:id', `reverses`; ledgerClosedYearReversal). Strings, kept
+    // as stored; absent on every other counted row, and left absent. Junk is dropped.
+    if (e.replaces !== undefined && typeof e.replaces !== 'string') delete e.replaces;
+    if (e.reverses !== undefined && typeof e.reverses !== 'string') delete e.reverses;
     e.reconciled = e.reconciled === true;
     // LIVE STOPGAP (see stampApproved) — when it was ticked, in ms. Absent (not 0) when unknown,
     // so a record from before it gains nothing. A row set aside keeps it too; C6's per-row merge,
@@ -4952,6 +4963,9 @@
     voidAsk: null,          // Phase 3, C3 — the entry id whose Void form is open
     voidWhy: '',            // Phase 3, C3 — the reason typed there (required to void)
     unvoidWhy: '',          // Treasurer sign-off on C3 — the optional why typed for an un-void
+    fixAsk: null,           // Phase 3, C4 — the entry id whose Reverse or correct form is open
+    fixDraft: null,         // Phase 3, C4 — its right figures as typed { date, dir, amount, desc }
+    fixWhy: '',             // Phase 3, C4 — the reason typed there (required either way)
     lineOpen: {},           // Budget — { lineId: true } rows with their settings showing
     // Rewards — { tierId: true } tiers showing an empty date box because somebody asked for
     // one. A tier that HAS a deadline shows the box regardless; this is only the empty case,
@@ -7383,6 +7397,8 @@
   // Treasurer sign-off on C3 — a reconciled row: voiding says what to do if the money moved and if
   // the tick was a mistake; a voided row still ticked is entered again (it is not on the reconcile
   // screen to un-tick).
+  // Phase 3, C4 — in the period, the adjusting or opposite entry typed by hand is now one step:
+  // Reverse or correct, under the entry's Detail. The rest is the treasurer's wording as it was.
   function ledgerLockedWhy(e, book, what, how) {
     if (!ledgerLocked(e, book)) return '';
     var subject = what;
@@ -7393,8 +7409,8 @@
     if (ledgerDateReconciled(e.date, book)) {
       var inPeriod = what + ' is dated ' + fmtDateShort(e.date) + ', inside the period already reconciled (through ' +
         fmtDateShort(book.reconciledThrough) + '), so ' + it + cant;
-      if (how === 'money') return inPeriod + ' To fix it, record an adjusting entry dated today for the difference, and say in its description which entry it corrects.';
-      if (how === 'void') return inPeriod + ' To cancel it, record an opposite entry dated today and say in its description which entry it cancels.';
+      if (how === 'money') return inPeriod + ' To fix it, open its Detail and tap Reverse or correct: type the right figures and why, and the corrected entry takes its place.';
+      if (how === 'void') return inPeriod + ' To take it out of the totals, open its Detail and tap Reverse or correct. It stays in the book, marked reversed, with your reason.';
       if (how === 'unvoid') return inPeriod + ' If it should count, enter it again dated today and say in its description which entry it replaces.';
       return inPeriod;
     }
@@ -7475,6 +7491,10 @@
   // unvoid event for it; with neither, voided: not counted, but still in the book, where the
   // treasurer can see it and un-void it. Returns { ledger, aside, moved } (moved: the ids settled
   // either way). Pure.
+  // Phase 3, C4 — a reversed row too (off 'reversed': a Reverse or a Correct marks it deleted, as a
+  // void does), and in the log a 'reverse' or 'correct' sets it aside as a 'void' does. There is no
+  // un-reverse. Its reversal goes wherever it goes: ledgerPairCheck, run after this, moves the two
+  // together.
   function ledgerAsideSettle(ledger, aside, marks, log) {
     var live = {};
     ledger.forEach(function (e) { if (e && typeof e.id === 'string') live[e.id] = true; });
@@ -7483,7 +7503,9 @@
       var m = marks && Object.prototype.hasOwnProperty.call(marks, id) ? marks[id] : 0;
       if (typeof m === 'number' && isFinite(m) && m !== 0) return m > 0;
       var last = '';
-      (log || []).forEach(function (ev) { if (ev && ev.row === id && (ev.op === 'void' || ev.op === 'unvoid')) last = ev.op; });
+      (log || []).forEach(function (ev) {
+        if (ev && ev.row === id && (ev.op === 'void' || ev.op === 'unvoid' || ev.op === 'reverse' || ev.op === 'correct')) last = ev.op;
+      });
       return last !== 'unvoid';
     }
     aside.forEach(function (a) {
@@ -7495,6 +7517,198 @@
       ledger: ledger.filter(function (e) { return !(e && toAside[e.id]); }),
       aside: aside.filter(function (a) { return !(a && toLive[a.id]); }),
       moved: moved
+    };
+  }
+  // ---------------------------------------------------------------------------
+  // PHASE 3, C4 — REVERSE AND CORRECT (owner, 2026-09-29: "a reconciled row, or one dated in the
+  // reconciled period, is fixed only by a reversing entry"; its amount, direction and date change
+  // only through Correct, decision 8). For any counted row, locked or not; mostly for locked ones,
+  // which can't be edited in those fields or voided.
+  //   Reverse   the row moves to state.ledgerAside, off 'reversed', reversedBy 'rv-' + its id,
+  //             with why, who and when (the voidReason/voidedBy/voidedByUid/voidedAt fields every
+  //             aside row has: why it was set aside). Its reversal, 'rv-' + its id, the same money
+  //             the other way, dated the day it was reversed, goes there too, off 'reversal',
+  //             reverses its id. The two net to $0 and neither is counted, so every reader of
+  //             state.ledger sees what a delete would leave (the property test), and the book still
+  //             holds the entry, marked reversed, with the reason. Marked deleted (markGone), so an
+  //             older page drops it from its ledger as it would a delete.
+  //   Correct   Reverse, plus the right figures as a new counted row, 'rc-' + its id, replaces its
+  //             id, in the place the original had in the list. The replacement keeps the original's
+  //             date and its reconciled tick and approval stamps ONLY when its amount, direction and
+  //             date are unchanged (treasurer, M1): then no total, and no reconciled balance, moves.
+  //             Otherwise it is not ticked, and one that would be dated inside the reconciled
+  //             period is dated today instead (it would lock as it was made).
+  // Both ids come from the original's, so a row is reversed (and corrected) once: a second try
+  // finds its reversal and is refused, and two devices that each reverse it write the same ids,
+  // which the merge unions into one. Two taps and a reason (1–200 characters), editors and
+  // admins only; each is ONE log event ('reverse', 'correct') naming the rows it made.
+  // A year closed out is reversed in the NEW book (ledgerClosedYearReversal, for C8).
+  // LEADERS ONLY, like the whole ledger: nothing here reaches buildParentView.
+  // ---------------------------------------------------------------------------
+  function ledgerReversalId(id) { return 'rv-' + id; }
+  function ledgerReplacementId(id) { return 'rc-' + id; }
+  // Why row `e` can't be reversed (`how` 'reverse') or corrected ('correct') with this reason, or
+  // ''. `st` is the pack record (its two lists hold any reversal already made). Pure.
+  function ledgerReverseRefusal(e, st, book, reason, how) {
+    if (!e) return '';
+    if (book && book.closedAt) return 'That entry is in a year already closed out, so it can’t be ' + (how === 'correct' ? 'corrected' : 'reversed') + ' here.';
+    var taken = {};
+    (st.ledger || []).concat(st.ledgerAside || []).forEach(function (x) { if (x && typeof x.id === 'string') taken[x.id] = true; });
+    if (taken[ledgerReversalId(e.id)] || taken[ledgerReplacementId(e.id)]) {
+      return 'That entry has been reversed once already, so it can’t be reversed or corrected again.';
+    }
+    var r = String(reason == null ? '' : reason).trim();
+    if (!r) return how === 'correct' ? 'Say why it is being corrected (for example, “wrong amount”), then tap Correct it.'
+      : 'Say why it is being reversed (for example, “the check was never cashed”), then tap Reverse it.';
+    if (r.length > LEDGER_VOID_REASON_MAX) return 'Keep the reason to ' + LEDGER_VOID_REASON_MAX + ' characters or fewer.';
+    return '';
+  }
+  // What Correct would put in the book for row `e` and the form's `draft` ({ date, dir, amount,
+  // desc }, as typed): { row (the replacement, no id yet), same (its amount, direction and date are
+  // the original's), today (it was dated today because its date is in the reconciled period),
+  // changed (anything at all differs) }. Each field changed is applied as an edit in place would
+  // apply it (applyLedgerEdit: a flipped direction drops the family, a new amount the "not the
+  // commission" answer). Pure apart from applyLedgerEdit's own reads for a family, which these
+  // fields never make.
+  function ledgerCorrectPlan(e, draft, book, today) {
+    var r = JSON.parse(JSON.stringify(e)), d = draft || {};
+    if (d.date !== undefined && String(d.date) !== r.date) applyLedgerEdit(r, 'date', String(d.date));
+    if (d.dir !== undefined && (d.dir === 'in' ? 'in' : 'out') !== r.direction) applyLedgerEdit(r, 'dir', d.dir);
+    if (d.amount !== undefined && Math.abs(toCents(d.amount)) !== r.amountCents) applyLedgerEdit(r, 'amount', String(d.amount));
+    if (d.desc !== undefined && String(d.desc).trim() !== r.description) applyLedgerEdit(r, 'desc', String(d.desc).trim());
+    var same = r.amountCents === e.amountCents && r.direction === e.direction && r.date === e.date;
+    var changed = JSON.stringify(ledgerRowFields(r)) !== JSON.stringify(ledgerRowFields(e));
+    var dated = false;
+    if (!same) {
+      r.reconciled = false;
+      delete r.reconciledAt;
+      r.approvedBy = ''; r.approvedAt = ''; r.approvedByUid = '';
+      if (today && ledgerDateReconciled(r.date, book)) { r.date = today; dated = true; }
+    }
+    return { row: r, same: same, today: dated, changed: changed };
+  }
+  // Why Correct can't go ahead with this draft and reason, or ''. The reverse's refusals first,
+  // then the figures the replacement would have. Pure.
+  function ledgerCorrectRefusal(e, st, book, draft, reason) {
+    var no = ledgerReverseRefusal(e, st, book, 'x', 'correct');
+    if (no) return no;
+    var d = draft || {};
+    var c = Math.abs(toCents(d.amount));
+    if (!c) return 'Enter the right amount.';
+    if (c > LEDGER_MAX_CENTS) return 'That’s more than ' + fmt(LEDGER_MAX_CENTS) + ' for one entry — check the amount.';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(d.date || ''))) return 'Enter the right date.';
+    if (!ledgerCorrectPlan(e, d, book, '').changed) return 'Nothing is different yet. Change what is wrong above, then tap Correct it — or tap Reverse it to take the entry out of the totals.';
+    return ledgerReverseRefusal(e, st, book, reason, 'correct');
+  }
+  // Reverse the counted row `id` in place (see above): `reason` (trimmed), `stamp` { by, byUid, at }
+  // (by never an email), `today` the reversal's date. Returns { row, reversal, ix } (ix: where the
+  // row was), or null when there is no such counted row. Refuses nothing: the caller asks
+  // ledgerReverseRefusal.
+  function ledgerReverseRow(st, id, reason, stamp, today) {
+    var ix = -1;
+    st.ledger.forEach(function (e, i) { if (e && e.id === id) ix = i; });
+    if (ix === -1) return null;
+    var row = st.ledger.splice(ix, 1)[0];
+    stamp = stamp || {};
+    var by = ledgerStampClean(stamp.by), byUid = typeof stamp.byUid === 'string' ? stamp.byUid : '', at = typeof stamp.at === 'string' ? stamp.at : '';
+    var rv = {
+      id: ledgerReversalId(row.id), date: String(today || ''),
+      description: 'Reversal of ' + (row.description ? '“' + row.description + '”' : 'an entry'),
+      amountCents: row.amountCents, direction: row.direction === 'in' ? 'out' : 'in',
+      lineId: row.lineId || '', method: '', ref: '', source: '', donor: '', scoutId: row.scoutId || '', tierMakeup: '',
+      reimbursement: false, notCommission: false, reconciled: false,
+      enteredBy: by, enteredAt: at, approvedBy: '', approvedAt: '', enteredByUid: byUid, approvedByUid: '',
+      off: 'reversal', reverses: row.id
+    };
+    row.off = 'reversed';
+    row.reversedBy = rv.id;
+    row.voidReason = String(reason == null ? '' : reason).trim().slice(0, LEDGER_VOID_REASON_MAX);
+    row.voidedBy = by;
+    row.voidedByUid = byUid;
+    row.voidedAt = at;
+    normalizeAsideRow(row);   // the fields every aside row has, as a load would give them
+    normalizeAsideRow(rv);
+    if (!Array.isArray(st.ledgerAside)) st.ledgerAside = [];
+    st.ledgerAside.push(row, rv);
+    return { row: row, reversal: rv, ix: ix };
+  }
+  // Correct the counted row `id` in place: reverse it, and put ledgerCorrectPlan's replacement,
+  // 'rc-' + its id, where it was. `stamp` as for ledgerReverseRow (the replacement is entered by
+  // whoever corrected it). Returns { row, reversal, replacement, same, today }, or null.
+  function ledgerCorrectRow(st, id, draft, reason, stamp, today, book) {
+    var orig = null;
+    st.ledger.forEach(function (e) { if (e && e.id === id) orig = e; });
+    if (!orig) return null;
+    var plan = ledgerCorrectPlan(orig, draft, book, today);
+    var rep = plan.row;
+    rep.id = ledgerReplacementId(orig.id);
+    rep.replaces = orig.id;
+    stamp = stamp || {};
+    rep.enteredBy = ledgerStampClean(stamp.by);
+    rep.enteredByUid = typeof stamp.byUid === 'string' ? stamp.byUid : '';
+    rep.enteredAt = typeof stamp.at === 'string' ? stamp.at : '';
+    var rv = ledgerReverseRow(st, id, reason, stamp, today);
+    st.ledger.splice(rv.ix, 0, rep);
+    return { row: rv.row, reversal: rv.reversal, replacement: rep, same: plan.same, today: plan.today };
+  }
+  // M3 (treasurer review of C1) — a reversed row and its reversal are only ever set aside
+  // TOGETHER. A 'reversed' row whose reversal is missing, or a 'reversal' whose original is not
+  // set aside as 'reversed', goes back to st.ledger, counted, and so does the original that
+  // reversal names, if it is set aside as anything else: both counted, the pair still nets to $0
+  // (a reversal counted on its own would take the money out twice). A reversal counted is an
+  // ordinary entry "Reversal of …" dated the day it was made, the opposite entry the treasurer
+  // would have written by hand, and can be voided like one. How a pair comes apart: a page from
+  // before C4 keeps a ticked row over the deletion mark its reverse left (C2 H1), or a hand-edited
+  // backup. Moved rows lose what setting them aside gave them. Repeated until nothing moves (a
+  // reversal of a reversal can free another pair), so running it twice gives the same. Literals
+  // only: normalizeState runs it before the script's vars are set. Returns { ledger, aside, moved }.
+  // Pure apart from the fields taken off the rows it moves.
+  function ledgerPairCheck(ledger, aside) {
+    var moved = [];
+    for (;;) {
+      var byId = Object.create(null);
+      aside.forEach(function (a) { if (a && typeof a.id === 'string' && !byId[a.id]) byId[a.id] = a; });
+      var back = [];
+      aside.forEach(function (a) {
+        if (!a || back.indexOf(a) !== -1) return;
+        if (a.off === 'reversed') {
+          var v = byId[a.reversedBy];
+          if (!(v && v.off === 'reversal' && v.reverses === a.id)) back.push(a);
+        } else if (a.off === 'reversal') {
+          var o = byId[a.reverses];
+          if (!(o && o.off === 'reversed')) {
+            back.push(a);
+            if (o && o !== a && back.indexOf(o) === -1) back.push(o);
+          }
+        }
+      });
+      if (!back.length) break;
+      aside = aside.filter(function (a) { return back.indexOf(a) === -1; });
+      back.forEach(function (a) {
+        ['off', 'reverses', 'reversedBy', 'voidReason', 'voidedBy', 'voidedByUid', 'voidedAt', 'carriedFrom'].forEach(function (k) { delete a[k]; });
+        ledger.push(a);
+        moved.push(a.id);
+      });
+    }
+    return { ledger: ledger, aside: aside, moved: moved };
+  }
+  // PHASE 3, C4 — the hook for C8: a row in a year already closed out is reversed by an ordinary
+  // COUNTED row in the open book, dated today, the same money the other way, reverses 'Y:id' (the
+  // closed year and the row's id there), id 'rv-Y-id'. The closed book is never touched; the reason
+  // goes in its 'reverse' log event, as a same-book reverse's does. NOT CALLED yet: there are no
+  // closed books to reverse from until C8 keeps them. Pure.
+  function ledgerClosedYearReversal(year, orig, stamp, today) {
+    stamp = stamp || {};
+    var y = Math.round(year);
+    return {
+      id: 'rv-' + y + '-' + orig.id, date: String(today || ''),
+      description: 'Reversal of ' + (orig.description ? '“' + orig.description + '”' : 'an entry') + ' (' + y + ')',
+      amountCents: orig.amountCents, direction: orig.direction === 'in' ? 'out' : 'in',
+      lineId: '', method: '', ref: '', source: '', donor: '', scoutId: '', tierMakeup: '',
+      reimbursement: false, notCommission: false, reconciled: false,
+      enteredBy: ledgerStampClean(stamp.by), enteredAt: typeof stamp.at === 'string' ? stamp.at : '', approvedBy: '', approvedAt: '',
+      enteredByUid: typeof stamp.byUid === 'string' ? stamp.byUid : '', approvedByUid: '',
+      reverses: y + ':' + orig.id
     };
   }
   function reconcileTotals(ledger, book) {
@@ -8169,6 +8383,7 @@
   // given `entry` and `names`.
   // Treasurer sign-off on C3 — a void is ONE line: "Voided", Before the amount, date and direction it
   // had, After "not counted" (its event carries every field, which would otherwise be eight lines).
+  // Phase 3, C4 — and so is a reverse, "Reversed"; a correct is a line per field it changed.
   function ledgerLogCsv(log, entry, names) {
     var gone = {};
     (log || []).forEach(function (ev) {
@@ -8181,13 +8396,15 @@
     var out = [['When (this device’s time)', 'Who', 'Entry', 'What changed', 'Before', 'After', 'Why'].join(',')];
     (log || []).forEach(function (ev) {
       if (!ev) return;
-      var ids = [ev.row].concat(Array.isArray(ev.rows) ? ev.rows : []);
+      // Phase 3, C4 — a reverse or correct is said once, under the entry it fixed: the rows it made
+      // (its reversal, the corrected entry) are in `rows`, not changes of their own.
+      var ids = [ev.row].concat(Array.isArray(ev.rows) && ev.op !== 'reverse' && ev.op !== 'correct' ? ev.rows : []);
       var lines = ledgerEventLines(ev, names);
-      if (ev.op === 'void') {
+      if (ev.op === 'void' || ev.op === 'reverse') {
         var was = ['amountCents', 'date', 'direction'].filter(function (k) {
           return ev.f && Object.prototype.hasOwnProperty.call(ev.f, k) && Array.isArray(ev.f[k]);
         }).map(function (k) { return ledgerLogValue(k, ev.f[k][0], names); });
-        lines = [{ what: LEDGER_OP_LABELS['void'], before: was.join(' · '), after: 'not counted' }];
+        lines = [{ what: LEDGER_OP_LABELS[ev.op], before: was.join(' · '), after: 'not counted' }];
       }
       ids.forEach(function (id) {
         lines.forEach(function (ln) {
@@ -12387,9 +12604,11 @@
     // it was when the backup was taken. Restoring it voided is the newer act, so a device still
     // counting it, or holding an un-void from after the backup, settles it voided
     // (ledgerAsideSettle), as the restore says. The same clamp: never later than just after now.
+    // Phase 3, C4 — a reversed row the same way; not its reversal, which was never counted, and
+    // which a mark would only drop from a ledger its pair had been put back into (ledgerPairCheck).
     arrOf(rec.ledgerAside).forEach(function (x) {
       var id = x && x.id;
-      if (typeof id !== 'string' || !id || g.ledger[id] > 0) return;
+      if (typeof id !== 'string' || !id || g.ledger[id] > 0 || x.off === 'reversal') return;
       g.ledger[id] = Math.max(now, Math.min(Math.abs(g.ledger[id] || 0), now) + 1);
     });
     pruneGone(g, now, false);
@@ -12522,8 +12741,16 @@
     // a statement already signed off. A tick from before the tick times existed has no time at
     // all (ledgerTickedAt 0), and lost to every delete. This device's book decides: it is the one
     // this merge writes.
+    // Phase 3, C4 — except a row reversed in either copy: a reverse (or a Correct) marks the row
+    // deleted as a void does, but it is how a locked row is MEANT to be taken out, and its reversal
+    // is set aside with it. Kept counted here, the reversal would be left without its original.
+    var reversedIds = {};
+    [state.ledgerAside, remote.ledgerAside].forEach(function (list) {
+      (Array.isArray(list) ? list : []).forEach(function (x) { if (x && x.off === 'reversed' && typeof x.id === 'string') reversedIds[x.id] = true; });
+    });
     function keepReconciled(log, x) {
       if (log !== 'ledger' || x.reconciled !== true) return false;
+      if (reversedIds[x.id] === true) return false;
       if (!(ledgerTickedAt(x) > gone.ledger[x.id]) && !ledgerDateReconciled(x.date, state.book)) return false;
       // Security review of C2, #1 — clamped as restoreGone's put-back is: never later than just
       // after now. H1 keeps a row in the period whatever the delete's time, so a delete stamped
@@ -12635,12 +12862,24 @@
       var asHave = {};
       state.ledgerAside.forEach(function (x) { if (x && typeof x.id === 'string') asHave[x.id] = true; });
       (Array.isArray(remote.ledgerAside) ? remote.ledgerAside : []).forEach(function (x) {
-        if (x && typeof x.id === 'string' && !asHave[x.id]) { state.ledgerAside.push(x); asHave[x.id] = true; added += 1; }
+        if (x && typeof x.id === 'string' && !asHave[x.id]) { state.ledgerAside.push(x); asHave[x.id] = true; added += 1; return; }
+        // Phase 3, C4 — a row voided here and reversed there is the reversed one on both devices:
+        // its reversal is set aside beside it, and the pair has to stay whole (ledgerPairCheck).
+        // Either way it counts in nothing; the void is still in the log.
+        if (x && x.off === 'reversed') {
+          state.ledgerAside.forEach(function (y, i) { if (y && y.id === x.id && y.off === 'void') { state.ledgerAside[i] = x; added += 1; } });
+        }
       });
       var asSet = ledgerAsideSettle(state.ledger, state.ledgerAside, gone && gone.ledger, mergeLedgerLog(state.ledgerLog, remote.ledgerLog));
       state.ledger = asSet.ledger;
       state.ledgerAside = asSet.aside;
       removed += asSet.moved.length;
+      // Phase 3, C4 (M3) — and a reversed row and its reversal end up in the same list: the settle
+      // above decides for the original (the marks, then the log), and its reversal goes with it.
+      var prSet = ledgerPairCheck(state.ledger, state.ledgerAside);
+      state.ledger = prSet.ledger;
+      state.ledgerAside = prSet.aside;
+      removed += prSet.moved.length;
     }
     settleVoided();
     // Phase 3, C2 — the ledger's log, both copies' events in one order (mergeLedgerLog). Not
@@ -12719,9 +12958,13 @@
   // Treasurer sign-off on C3 — since C3 a row leaves the book's totals by a void, so a kept row says
   // "voided or deleted", and a lost row now in `aside` (state.ledgerAside) says it was voided and
   // where it is; one not there (a delete from a page before C3) is told as before.
+  // Phase 3, C4 — the way out of the book for a kept row in the period is now Reverse, one step
+  // (not an adjusting entry typed by hand); and a lost row set aside as reversed says so.
   function reconciledFatesText(f, book, aside) {
-    var voided = {};
-    (aside || []).forEach(function (a) { if (a && typeof a.id === 'string') voided[a.id] = true; });
+    var voided = {}, reversed = {};
+    (aside || []).forEach(function (a) {
+      if (a && typeof a.id === 'string') { if (a.off === 'reversed') reversed[a.id] = true; else voided[a.id] = true; }
+    });
     function name(x) {
       return '“' + (x.description || 'An entry') + '” (' + fmt(x.amountCents || 0) + (x.date ? ', ' + fmtDateShort(x.date) : '') + ')';
     }
@@ -12729,14 +12972,20 @@
     f.kept.forEach(function (x) {
       if (ledgerDateReconciled(x.date, book)) {
         out.push(name(x) + ' was voided or deleted on another device, but it is reconciled and dated inside the period already reconciled ' +
-          '(through ' + fmtDateShort(book.reconciledThrough) + '), so it still counts. If it shouldn’t be in the book, record an ' +
-          'adjusting entry dated today and say in its description which entry it cancels.');
+          '(through ' + fmtDateShort(book.reconciledThrough) + '), so it still counts. If it shouldn’t be in the book, reverse it: ' +
+          'open its Detail and tap Reverse or correct.');
         return;
       }
       out.push(name(x) + ' was voided or deleted on another device, but it is reconciled against the bank statement, so it still counts. ' +
         'If it isn’t on the statement, un-reconcile it, then void it.');
     });
     f.lost.forEach(function (x) {
+      // Phase 3, C4 — reversed (or corrected) there: the way a reconciled entry is meant to be fixed.
+      if (reversed[x.id] === true) {
+        out.push(name(x) + ' was reconciled on this device, but another leader reversed it afterwards, so it no longer counts. ' +
+          'It is under Entries · Voided & reversed, with their reason. If they corrected it, the corrected entry is in the ledger in its place.');
+        return;
+      }
       if (voided[x.id]) {
         out.push(name(x) + ' was reconciled on this device, but another leader voided it afterwards, so it no longer counts. ' +
           'It is under Entries · Voided & reversed, with their reason. If it is on the bank statement, un-void it and tick it again ' +
@@ -12953,8 +13202,19 @@
     var scoutsGone = (ns.gone && ns.gone.scouts) || {};
     ns.ledger.concat(ns.ledgerAside).forEach(function (x) { if (x && typeof x.id === 'string') have[x.id] = true; });
     (ns.scouts || []).forEach(function (s) { if (s && typeof s.id === 'string') scouts[s.id] = true; });
+    // Phase 3, C4 — and a reversed row with its reversal, the two together (ledgerPairCheck): the
+    // reversed one is marked deleted as a voided one is; its reversal never counted, so it has no
+    // mark, and is kept when the row it reverses is.
+    var mine = {}, pairKept = {};
+    cur.ledgerAside.forEach(function (x) { if (x && typeof x.id === 'string') mine[x.id] = x; });
     cur.ledgerAside.forEach(function (x) {
-      if (!(x && x.off === 'void' && typeof x.id === 'string' && !have[x.id] && marks && marks[x.id] > 0)) return;
+      if (!(x && x.off === 'reversed' && typeof x.id === 'string' && !have[x.id] && marks && marks[x.id] > 0)) return;
+      var v = mine[x.reversedBy];
+      if (v && v.off === 'reversal' && v.reverses === x.id && !have[v.id]) { pairKept[x.id] = true; pairKept[v.id] = true; }
+    });
+    cur.ledgerAside.forEach(function (x) {
+      if (!(x && typeof x.id === 'string' && !have[x.id] &&
+        ((x.off === 'void' && marks && marks[x.id] > 0) || pairKept[x.id] === true))) return;
       var y = JSON.parse(JSON.stringify(x));
       if (y.scoutId && (scoutsGone[y.scoutId] > 0 || scouts[y.scoutId] !== true)) y.scoutId = '';
       ns.ledgerAside.push(y);
@@ -18779,11 +19039,11 @@
 
   /* ----- Money · Ledger (Phase 0) ----- */
   // Phase 3, C3 — 'aside' lists the rows in the book but not counted (state.ledgerAside) instead.
-  // Treasurer sign-off on C3 — called "Voided" while voids are all it holds; C4 (reversals) names
-  // it "Voided & reversed" again.
+  // Treasurer sign-off on C3 — called "Voided" while voids were all it held; Phase 3, C4 (reversals)
+  // names it "Voided & reversed" again, the name the C3 wording already uses.
   var LEDGER_FILTERS = [
     ['', 'All'], ['in', 'Money in'], ['out', 'Money out'],
-    ['unreconciled', 'Not reconciled'], ['uncategorised', 'No budget line'], ['aside', 'Voided']
+    ['unreconciled', 'Not reconciled'], ['uncategorised', 'No budget line'], ['aside', 'Voided & reversed']
   ];
   function ledgerDraftDefault() {
     return {
@@ -18964,12 +19224,13 @@
   // Treasurer review of C2 (L-4) — what a locked row can't have done to it, in one line: the
   // "reconciled period" pill's tooltip, and the line in its Detail (a tooltip never shows on a
   // phone). '' for an open row. Plain text: the callers escape it.
+  // Phase 3, C4 — and, in the period, the one way to fix it (the Reverse or correct button below it).
   function ledgerLockNote(e, book) {
     if (!ledgerLocked(e, book)) return '';
     if (book.closedAt) return 'In a year already closed out: it can’t be changed or voided.';
     if (ledgerDateReconciled(e.date, book)) {
       return 'Dated on or before ' + fmtDateShort(book.reconciledThrough) + ', which is already reconciled: it can’t be voided, ' +
-        'and its amount, date and direction can’t be changed.';
+        'and its amount, date and direction can’t be changed. To fix it, use Reverse or correct.';
     }
     return 'Reconciled against a bank statement: it can’t be voided, and its amount, date and direction can’t be changed ' +
       'until it is un-reconciled.';
@@ -19002,7 +19263,7 @@
     return h + '<ul class="small muted" style="margin:0;padding-left:18px">' + evs.map(function (ev) {
       var when = ledgerLogWhen(ev.at);
       // Phase 3, C3 — a void too: its fields are what the entry was, not a change (the why says why).
-      var what = ev.op === 'delete' || ev.op === 'void'
+      var what = ev.op === 'delete' || ev.op === 'void' || ev.op === 'reverse'   // Phase 3, C4: a reverse too
         ? esc(LEDGER_OP_LABELS[ev.op])
         : ledgerEventLines(ev, names).map(function (ln) {
           return esc(ln.what) + (ln.before || ln.after ? ' ' + esc(ln.before) + ' → ' + esc(ln.after) : '');
@@ -19035,17 +19296,70 @@
       '<button type="button" class="btn small ghost" data-act="ledger-void-cancel">Cancel</button>' +
       '</div></div>';
   }
+  // Phase 3, C4 — the form "Reverse or correct" opens under an entry: its right figures (its own to
+  // start with: ui.fixDraft), why (required either way, ui.fixWhy), Correct it, Reverse it, Cancel.
+  // What each does is said once, plainly, and what the corrected entry will be (ledgerCorrectPlan)
+  // before the first tap: whether it keeps its date and tick, or is dated today.
+  function ledgerFixFormHtml(e) {
+    var d = ui.fixDraft || {}, bk = state.book, today = todayISO();
+    var plan = ledgerCorrectPlan(e, d, bk, today);
+    var note;
+    if (!plan.changed) note = 'To correct it, change what is wrong above. To take it out of the totals, reverse it.';
+    else if (plan.same) note = 'The corrected entry keeps its date' + (e.reconciled ? ' and its reconciled tick' : '') + ', so no balance changes.';
+    else if (plan.today) {
+      note = 'The corrected entry will be dated today (' + fmtDateShort(today) + '), because ' + fmtDateShort(d.date || e.date) +
+        ' is inside the period already reconciled (through ' + fmtDateShort(bk.reconciledThrough) + '). It won’t be ticked as reconciled.';
+    } else note = e.reconciled ? 'The corrected entry won’t be ticked as reconciled: tick it against the statement it shows up on.'
+      : 'The corrected entry is an ordinary entry, not yet reconciled.';
+    var cArm = ui.armed === 'ledger-correct-go:' + e.id, rArm = ui.armed === 'ledger-reverse-go:' + e.id;
+    return '<div class="lfix" style="flex-basis:100%;margin:6px 0 0">' +
+      '<p class="small" style="margin:0 0 6px"><strong>Reverse</strong> takes this entry out of every total. <strong>Correct</strong> ' +
+      'does the same and puts the right figures in its place, as a new entry. Either way the entry stays in the book, marked reversed, ' +
+      'with your reason, under <strong>Voided &amp; reversed</strong>.</p>' +
+      '<div class="row" style="gap:6px">' +
+      '<input type="date" data-ch="ledger-fix-date" value="' + esc(d.date || '') + '" aria-label="Right date">' +
+      '<select data-ch="ledger-fix-dir" aria-label="In or out">' +
+        '<option value="out"' + (d.dir !== 'in' ? ' selected' : '') + '>Out</option>' +
+        '<option value="in"' + (d.dir === 'in' ? ' selected' : '') + '>In</option>' +
+      '</select>' +
+      '<input class="money-in" inputmode="decimal" data-ch="ledger-fix-amount" value="' + esc(d.amount || '') + '" placeholder="0.00" aria-label="Right amount">' +
+      '<input class="lname" data-ch="ledger-fix-desc" value="' + esc(d.desc || '') + '" placeholder="Description" aria-label="Description">' +
+      '</div>' +
+      '<p class="small muted" style="margin:6px 0">' + esc(note) + '</p>' +
+      '<div class="row" style="gap:6px">' +
+      '<input class="lname" data-ch="ledger-fix-why" value="' + esc(ui.fixWhy || '') + '" maxlength="' + LEDGER_VOID_REASON_MAX + '" ' +
+        'placeholder="Why? (required, e.g. wrong amount)" aria-label="Why reverse or correct it (required)">' +
+      '<button type="button" class="btn small' + (cArm ? ' danger armed' : ' primary') + '" data-act="ledger-correct-go:' + esc(e.id) + '">' +
+        (cArm ? 'Tap again to correct' : 'Correct it') + '</button>' +
+      '<button type="button" class="btn small danger' + (rArm ? ' armed' : '') + '" data-act="ledger-reverse-go:' + esc(e.id) + '">' +
+        (rArm ? 'Tap again to reverse' : 'Reverse it') + '</button>' +
+      '<button type="button" class="btn small ghost" data-act="ledger-fix-cancel">Cancel</button>' +
+      '</div></div>';
+  }
   // Phase 3, C3 — Entries · Voided & reversed: the rows in the book but not counted, newest first,
   // read-only, each with why, who and when, and Un-void on a voided one while it is open (a locked
   // one says why not, in its Detail). Search and the budget-line filter apply here too.
+  // Phase 3, C4 — and the rows reversed: each with who reversed it, when and why (and, if it was
+  // corrected, that the corrected entry is in the ledger), and its reversal straight under it. A
+  // pair is listed when either of the two matches the search.
   function ledgerAsideListHtml(f) {
-    var aside = state.ledgerAside || [];
-    var rows = ledgerSort(aside).filter(function (e) { return ledgerMatches(e, { lineId: f.lineId, text: f.text }); });
-    rows.reverse();
-    if (!aside.length) return '<p class="empty">Nothing voided. A voided entry stays in the book, not counted, and is listed here.</p>';
-    if (!rows.length) return '<p class="empty">No voided entries match that search.</p>';
-    var h = '<p class="small muted" style="margin:0 0 6px">' + rows.length + ' of ' + aside.length + ' voided entr' +
-      (aside.length === 1 ? 'y' : 'ies') + '. None of them counts in any total.</p>';
+    var aside = state.ledgerAside || [], byId = Object.create(null), flt = { lineId: f.lineId, text: f.text };
+    aside.forEach(function (e) { if (!byId[e.id]) byId[e.id] = e; });
+    function partner(e) {
+      var p = e.off === 'reversed' ? byId[e.reversedBy] : e.off === 'reversal' ? byId[e.reverses] : null;
+      return p && p !== e && (p.off === 'reversed' || p.off === 'reversal') ? p : null;
+    }
+    var heads = ledgerSort(aside.filter(function (e) {
+      var p = partner(e);
+      return !(e.off === 'reversal' && p) && (ledgerMatches(e, flt) || (!!p && ledgerMatches(p, flt)));
+    }));
+    heads.reverse();
+    var rows = [];
+    heads.forEach(function (e) { rows.push(e); if (e.off === 'reversed' && partner(e)) rows.push(partner(e)); });
+    if (!aside.length) return '<p class="empty">Nothing voided or reversed. An entry voided or reversed stays in the book, not counted, and is listed here.</p>';
+    if (!rows.length) return '<p class="empty">No voided or reversed entries match that search.</p>';
+    var h = '<p class="small muted" style="margin:0 0 6px">' + rows.length + ' of ' + aside.length + ' entr' +
+      (aside.length === 1 ? 'y' : 'ies') + ' voided or reversed. None of them counts in any total.</p>';
     rows.forEach(function (e) {
       var open = !!ui.ledgerOpen[e.id];
       var why = ledgerLockedWhy(e, state.book, '', 'unvoid');
@@ -19071,6 +19385,20 @@
         (e.off === 'void'
           ? '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">Voided' + (e.voidedBy ? ' by ' + esc(e.voidedBy) : '') +
             (e.voidedAt ? ' on ' + esc(fmtDate(e.voidedAt.slice(0, 10))) : '') + (e.voidReason ? ': ' + esc(e.voidReason) : '') + '</p>'
+          : '') +
+        // Phase 3, C4 — who reversed it (or corrected it), when and why; and what a reversal cancels.
+        (e.off === 'reversed'
+          ? (function () {
+            var rc = state.ledger.filter(function (x) { return x.id === ledgerReplacementId(e.id) && x.replaces === e.id; })[0];
+            return '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">' + (rc ? 'Corrected' : 'Reversed') +
+              (e.voidedBy ? ' by ' + esc(e.voidedBy) : '') + (e.voidedAt ? ' on ' + esc(fmtDate(e.voidedAt.slice(0, 10))) : '') +
+              (e.voidReason ? ': ' + esc(e.voidReason) : '') + '.' +
+              (rc ? ' The corrected entry, ' + esc(fmtDateShort(rc.date)) + ' ' + (rc.direction === 'in' ? '+' : '−') + fmt(rc.amountCents) +
+                ', counts in its place.' : '') + '</p>';
+          })()
+          : '') +
+        (e.off === 'reversal'
+          ? '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">Cancels the entry above: together they come to ' + fmt(0) + '.</p>'
           : '') +
         (open
           ? '<div class="ldetail">' +
@@ -19194,6 +19522,7 @@
         // since the security review of C2 (#2), nor can any locked one. Phase 3, C3 — the ✕ voids.
         (eLocked ? '' : '<button type="button" class="btiny" data-act="ledger-void:' + esc(e.id) + '" aria-label="Void this entry" title="Void this entry">✕</button>') +
         (!eLocked && ui.voidAsk === e.id ? ledgerVoidFormHtml(e) : '') +
+        (ui.fixAsk === e.id ? ledgerFixFormHtml(e) : '') +   // Phase 3, C4
         // Treasurer review of C2 (M-5) — the warning before its date is moved into the reconciled
         // period, under the entry it is about, until the date is picked again or changed.
         (function () {
@@ -19229,6 +19558,12 @@
               // Treasurer review of C2 (L-4) — the pill's tooltip never shows on a phone, so the
               // Detail of a locked row says it in a line.
               (eLocked ? '<p class="small muted llock" style="margin:6px 0 0;flex-basis:100%">' + esc(ledgerLockNote(e, state.book)) + '</p>' : '') +
+              // Phase 3, C4 — a corrected entry says so, and where the one it replaced is.
+              (e.replaces ? '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">A correction: the entry it replaces is under ' +
+                'Voided &amp; reversed.</p>' : '') +
+              // Phase 3, C4 — the one way to change a locked entry's money, or take it out: on any entry.
+              (ui.fixAsk === e.id ? '' : '<div style="flex-basis:100%;margin:6px 0 0"><button type="button" class="btn small ghost" ' +
+                'data-act="ledger-fix:' + esc(e.id) + '">Reverse or correct</button></div>') +
               ledgerTrailLine(e) +
               ledgerHistoryHtml(e) +   // Treasurer review of C2 (M-4)
             '</div>'
@@ -27381,6 +27716,16 @@
     // Treasurer sign-off on C3 — and the why for an un-void.
     var uvWhyEl = e.target.closest('input[data-ch="ledger-unvoid-why"]');
     if (uvWhyEl) ui.unvoidWhy = uvWhyEl.value;
+    // Phase 3, C4 — and the Reverse or correct form's why and figures (a figure typed disarms it).
+    var fxEl = e.target.closest('input[data-ch^="ledger-fix-"]');
+    if (fxEl) {
+      var fxK = fxEl.getAttribute('data-ch').slice('ledger-fix-'.length);
+      if (fxK === 'why') ui.fixWhy = fxEl.value;
+      else if (ui.fixDraft) {
+        ui.fixDraft[fxK] = fxEl.value;
+        if (/^ledger-(correct|reverse)-go:/.test(String(ui.armed || ''))) ui.armed = null;
+      }
+    }
     // Wave A — the make-up message box is edited in place; keep the draft so a re-render
     // (a sync pull, say) does not throw the leader's wording away.
     if (e.target.id === 'makeupMsgBox' && ui.overlay && ui.overlay.kind === 'makeup-msg') ui.overlay.text = e.target.value;
@@ -28270,7 +28615,7 @@
         if (vdIn) {
           return '“' + (vdBack.description || 'The entry') + '” is back, but it is dated ' + fmtDateShort(vdBack.date) +
             ', inside the period reconciled (through ' + fmtDateShort(state.book.reconciledThrough) + ') while it was voided, so it is ' +
-            'now locked. If it isn’t on that statement, record an opposite entry dated today and say in its description which entry it cancels.';
+            'now locked. If it isn’t on that statement, reverse it: open its Detail and tap Reverse or correct.';
         }
       }, { done: 'Voided', undone: 'Un-voided', said: 'Voided ' + vdLabel + '. It no longer counts in any total.' });
       return;
@@ -28300,6 +28645,58 @@
         showToast('Un-voided — “' + (uvBack.description || 'the entry') + '” counts again.');
         commit();
       }, ARM_WHY_MS);
+      return;
+    }
+    // PHASE 3, C4 — Reverse or correct (see ledgerReverseRow): the button under an entry's Detail
+    // opens a form under the row with its figures as they stand (ui.fixDraft) and a box for why
+    // (ui.fixWhy). Correct it and Reverse it each take two taps, the first checking everything
+    // (ledgerCorrectRefusal, ledgerReverseRefusal) and arming for ARM_WARNED_MS, since it opens a
+    // line to read; asked again on the second, as a sync can have changed the row since.
+    if (act.indexOf('ledger-fix:') === 0) {
+      var fxId = act.slice('ledger-fix:'.length);
+      var fxRow = state.ledger.find(function (e) { return e.id === fxId; });
+      if (!fxRow) return;
+      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (ui.fixAsk !== fxId) {
+        ui.fixWhy = '';
+        ui.fixDraft = { date: fxRow.date, dir: fxRow.direction, amount: dollars(fxRow.amountCents), desc: fxRow.description };
+      }
+      ui.fixAsk = fxId;
+      render(); return;
+    }
+    if (act === 'ledger-fix-cancel') { ui.fixAsk = null; ui.fixDraft = null; ui.fixWhy = ''; render(); return; }
+    if (act.indexOf('ledger-reverse-go:') === 0 || act.indexOf('ledger-correct-go:') === 0) {
+      var fgFix = act.indexOf('ledger-correct-go:') === 0;
+      var fgId = act.slice(act.indexOf(':') + 1);
+      var fgRow = state.ledger.find(function (e) { return e.id === fgId; });
+      if (!fgRow) { ui.fixAsk = null; render(); return; }
+      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      var fgWhy = String(ui.fixWhy || '').trim();
+      var fgNo = fgFix ? ledgerCorrectRefusal(fgRow, state, state.book, ui.fixDraft, fgWhy) : ledgerReverseRefusal(fgRow, state, state.book, fgWhy, 'reverse');
+      if (fgNo) { if (ui.armed === act) ui.armed = null; showToast(fgNo); render(); return; }
+      arm(act, function () {
+        var fgStamp = { by: ledgerActor(), byUid: ledgerActorUid(), at: new Date().toISOString() };
+        var fgWas = ledgerRowFields(fgRow);
+        var fg = fgFix ? ledgerCorrectRow(state, fgId, ui.fixDraft, fgWhy, fgStamp, todayISO(), state.book)
+          : ledgerReverseRow(state, fgId, fgWhy, fgStamp, todayISO());
+        if (!fg) { render(); return; }
+        ui.fixAsk = null; ui.fixDraft = null; ui.fixWhy = '';
+        // Marked deleted, as a void is, so a page from before C4 drops it from its ledger.
+        markGone('ledger', [fg.row]);
+        var fgLabel = fg.row.description ? '“' + fg.row.description + '”' : 'the entry';
+        if (fgFix) {
+          // One event: what changed from the original to the corrected entry, and the rows it made.
+          logLedger('correct', fg.row.id, { why: fg.row.voidReason, rows: [fg.reversal.id, fg.replacement.id], f: ledgerRowDiff(fgWas, fg.replacement) });
+          showToast('Corrected ' + fgLabel + '. The corrected entry is in its place' +
+            (fg.same ? (fg.replacement.reconciled ? ', with the same date and tick.' : ', with the same date.')
+              : fg.today ? ', dated today.' : '.') + ' The original is under Voided & reversed.');
+        } else {
+          logLedger('reverse', fg.row.id, { why: fg.row.voidReason, rows: [fg.reversal.id], f: {
+            amountCents: [fg.row.amountCents, null], date: [fg.row.date, null], direction: [fg.row.direction, null] } });
+          showToast('Reversed ' + fgLabel + '. It no longer counts in any total, and is under Voided & reversed with your reason.');
+        }
+        commit();
+      }, ARM_WARNED_MS);
       return;
     }
     if (act === 'ledger-fates-dismiss') { sync.fatesNote = ''; sync.splitNote = ''; render(); return; }
@@ -29342,6 +29739,15 @@
     if (ch === 'ledger-unrec-why') { ui.unrecWhy = el.value; return; }
     if (ch === 'ledger-void-why') { ui.voidWhy = el.value; return; }   // Phase 3, C3
     if (ch === 'ledger-unvoid-why') { ui.unvoidWhy = el.value; return; }   // Treasurer sign-off on C3
+    // Phase 3, C4 — the Reverse or correct form: kept in ui, never the record, until a tap uses it.
+    // A figure changed after the first tap disarms it, so the second never does what isn't shown.
+    if (ch === 'ledger-fix-why') { ui.fixWhy = el.value; return; }
+    if (ch.indexOf('ledger-fix-') === 0) {
+      if (!ui.fixDraft) ui.fixDraft = {};
+      ui.fixDraft[ch.slice('ledger-fix-'.length)] = el.value;
+      if (/^ledger-(correct|reverse)-go:/.test(String(ui.armed || ''))) ui.armed = null;
+      render(); return;
+    }
     if (ch === 'book-statement') { state.book.statementCents = toCentsSigned(el.value); commit(); return; }
     if (ch === 'book-statement-date') { state.book.statementDate = el.value; commit(); return; }
     // Filters live in `ui`, so they re-render but never persist.
