@@ -9020,7 +9020,7 @@
     // now (null if none) and returns { record, result }; it may run more than once if another
     // device writes in between, so it must not have side effects that a rerun would double.
     // Resolves with the last run's result. A build() with no record writes nothing (syncPush
-    // returns one only on the pack's server, but no backend writes an empty record).
+    // returns one for a record it has not heard of yet, and no backend writes an empty record).
     pushPack: function (h, build) {
       var self = this;
       return self.mods.fs.runTransaction(self.db, function (tx) {
@@ -11412,12 +11412,16 @@
     // this more than once when another device writes in between; the merge is id-guarded, so
     // a rerun appends nothing twice, and the rev is re-derived from each fresh read.
     be.pushPack(h, function (remote) {
-      // BACKEND 'api' (security review of stage C, item 1): a record this device has never
-      // heard of is not written over, merged into or rev-checked. The case: its first answer
-      // was "no pack", so it scheduled a seed (or a 10 s retry), and the owner copied the pack
-      // in before that push ran. Nothing is sent; the record goes to onRemoteSnap as a first
-      // answer, compared with this device's copy, and a leader chooses if the two differ.
-      if (be.serverRevs && remote && !sync.remoteRec) return { record: null, result: { unheard: remote } };
+      // A record this device has never heard of is not written over, merged into or
+      // rev-checked. Nothing is sent; the record goes to onRemoteSnap as a first answer,
+      // compared with this device's copy, and a leader chooses if the two differ.
+      //   - Either backend, before the pack record's first answer (sync.firstSnap): an edit made
+      //     while the feed was still connecting would otherwise put this device's copy, however
+      //     old, over the shared one (security review of 260f467..db851c7, F3).
+      //   - BACKEND 'api' (security review of stage C, item 1): its first answer was "no pack",
+      //     so it scheduled a seed (or a 10 s retry), and the owner copied the pack in before
+      //     that push ran.
+      if (remote && (sync.firstSnap || (be.serverRevs && !sync.remoteRec))) return { record: null, result: { unheard: remote } };
       var remoteRev = remote && typeof remote.rev === 'number' ? remote.rev : 0;
       // BACKEND 'api' (be.serverRevs): the server stores exactly remoteRev + 1, and from the
       // pack record's first answer on, state.rev is a rev the server gave this device. Any other

@@ -8788,6 +8788,44 @@ test('a push reads, merges and writes in one retried step, and the rev always cl
     [[7, 9], [8, 10], 10, false, 1], 'a clobbered push that raced another device');
 });
 
+test('Firestore: a save before the pack record’s first answer never writes over what is there, and goes to the first-answer comparison', () => {
+  // Security review of 260f467..db851c7, F3. The real firestoreBackend on the fake SDK, and the
+  // page's real syncPush and onRemoteSnap: an edit made while the pack feed is still connecting
+  // pushes, and the transaction reads the shared copy before the listener has delivered it.
+  const other = { rev: 9, device: 'd2', json: JSON.stringify({ rev: 9, packName: 'Shared', scouts: [{ id: 'b' }] }) };
+  const run = (o) => {
+    const ctx = fsAdapterCtx(`
+      var toasts = [], timers = [], saves = 0;
+      function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
+      function holdPushes() { return false; } function scheduleParentViewRefresh() {} function render() {} function renderSyncPill() {}
+      function save() { saves += 1; } function showToast(m) { toasts.push(m); } function syncFail(e) { throw e; }
+      function clearTimeout() {} function setTimeout(fn, ms) { timers.push(ms); return 't'; }
+      function normalizeState(p) { return p && typeof p === 'object' && !Array.isArray(p) ? JSON.parse(JSON.stringify(p)) : null; }
+      var ui = { tab: 'home', overlay: null };
+      var state = ${JSON.stringify(o.local)};
+      var sync = { backend: firestoreBackend, pack: firestoreBackend.open('P'), session: 1, deviceId: 'dev1', clobber: false,
+        dirty: true, mode: 'online', notice: '', firstSnap: ${o.firstSnap}, remoteRec: null, conflict: null, pushTimer: null };
+      ${o.remote ? `reads['packs/P'] = ${JSON.stringify(o.remote)};` : ''}
+      ${['packLinked', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'adoptRemote', 'onRemoteSnap', 'syncPush'].map(decl).join('\n')}
+      syncPush();`);
+    return JSON.parse(JSON.stringify(vm.runInContext(`({ sets: txSets.map(function (s) { return s[1].rev; }),
+      overlay: ui.overlay && ui.overlay.kind, conflict: sync.conflict && sync.conflict.rev, firstSnap: sync.firstSnap,
+      dirty: sync.dirty, rev: state.rev, name: state.packName || '' })`, ctx)));
+  };
+  const mine = { rev: 2, packName: 'Old', scouts: [{ id: 'a' }] };
+  // A different shared copy: nothing is written, and the leader is asked which to keep.
+  eq(run({ firstSnap: true, local: mine, remote: other }),
+    { sets: [], overlay: 'sync-conflict', conflict: 9, firstSnap: false, dirty: true, rev: 2, name: 'Old' },
+    'a save before the first answer wrote over the shared copy');
+  // The same pack: nothing is written, and nothing is left unsaved.
+  eq(run({ firstSnap: true, local: JSON.parse(other.json), remote: other }),
+    { sets: [], overlay: null, conflict: null, firstSnap: false, dirty: false, rev: 9, name: 'Shared' },
+    'a save before the first answer, of the same pack');
+  // Controls: no shared copy yet is still seeded, and once the feed has answered a save lands as before.
+  eq(run({ firstSnap: true, local: mine, remote: null }).sets, [3], 'control: a first save onto no record');
+  eq(run({ firstSnap: false, local: mine, remote: other }).sets, [10], 'control: a save after the first answer');
+});
+
 test('the pack record feed ignores its own echoes and keeps the raw record for the conflict screen', () => {
   const ctx = vm.createContext({});
   vm.runInContext(`
