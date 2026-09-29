@@ -14780,6 +14780,38 @@ test('api client: on the pack’s server the rev is the server’s, a save it ha
   ok(/arm\(act, keepLocalCopy\);/.test(SCRIPT), 'the overlay’s button does not run keepLocalCopy');
 });
 
+test('api docs: the owner’s guide covers staging deploys and the move in order, and SETUP says Part C becomes the server’s', () => {
+  const DOC = readFileSync(join(ROOT, 'docs/cloudflare-setup.md'), 'utf8');
+  const sec = (from, to) => DOC.slice(DOC.indexOf(from), to ? DOC.indexOf(to, DOC.indexOf(from)) : undefined);
+  ok(/\*\*deploy_target\*\*: `preview` \(the default\), `staging` or `production`/.test(DOC), 'section 5 does not offer staging');
+  const d = sec('### D. A preview you can sign in to', '#### One Firebase project');
+  ok(/deploy_target`\s\*\*`staging`\*\*/.test(d) && /firestore\.googleapis\.com/.test(d) && !/nothing deploys to `staging`/.test(d),
+    'D does not say how to deploy and check staging');
+  const e = sec('### E. Moving the pack to its own server (the switch)', '### Backups');
+  ok(e.length > 1000, 'no section E');
+  ok(/\*\*Download pack for the new server\*\*/.test(e) && /\*\*Copy pack to new server…\*\*/.test(e), 'E does not name the two buttons');
+  ok(/holds every member’s email|holds every member's email/.test(e) && /never\s+through GitHub or CI/.test(e), 'E does not say how to handle the file');
+  ok(/pack569\.com is already served by Cloudflare/.test(e), 'E does not require the DNS move before the switch');
+  // In owner order: rehearse on staging, then the switch commit, download, deploy, copy in, check, delete.
+  const order = ['Rehearse it on staging first', 'Make the switch commit', 'Download pack for the new server**. Save',
+    'Run workflow from `main`, `production`', 'Copy pack to new server…** → the file', 'Members card lists everyone',
+    'Delete the file', 'The way back'];
+  const at = order.map((o) => e.indexOf(o));
+  at.forEach((i, n) => ok(i >= 0, 'E is missing: ' + order[n]));
+  eq(at.slice().sort((x, y) => x - y), at, 'E is not in the owner’s order');
+  // The rehearsal never touches the production database.
+  const reh = sec('#### Rehearse it on staging first', '#### The switch, in order');
+  const cmds = reh.match(/`npx wrangler[^`]*`/g) || [];
+  ok(cmds.length >= 1 && cmds.every((c) => /pack569-preview/.test(c) && !/--env production|pack569-prod/.test(c)),
+    'a rehearsal command can reach the production database: ' + cmds.join(' '));
+  // The switch commit changes the harness's own pin, which must exist for the guide to be right.
+  ok(/the committed page is not the Firestore build/.test(readFileSync(join(ROOT, 'test/harness.mjs'), 'utf8')), 'the pin the guide names is gone');
+  // SETUP.md: a short note in Part C, and Part C itself left as it is until Firestore is retired.
+  const partC = SETUP.slice(SETUP.indexOf('## Part C'), SETUP.indexOf('### The four roles'));
+  ok(/The pack is moving to its own server/.test(partC) && /\*what the server enforces\*/.test(partC) &&
+    /keep these rules published exactly as they are/.test(partC), 'SETUP Part C has no note about the server');
+});
+
 /* ---- the adapter on its own: answers, the poller's timing ---- */
 
 function apiAdapterCtx(responder) {

@@ -109,7 +109,12 @@ Actions → **website** → **Run workflow**:
 
 - **Use workflow from**: the branch to deploy. Any branch can be previewed without merging;
   that branch's own copy of the site and the workflow is what runs.
-- **deploy_target**: `preview` (the default) or `production`.
+- **deploy_target**: `preview` (the default), `staging` or `production`.
+  - `preview`: a new throwaway link for this commit, device-only (below).
+  - `staging`: always `https://staging.pack569.pages.dev`, the page on the pack's own server
+    with the preview database, where Google sign-in works. See
+    [D. A preview you can sign in to](#d-a-preview-you-can-sign-in-to-stagingpack569pagesdev).
+  - `production`: pack569.com, from `main` only, after your approval.
 
 The run goes: gates (the harness and both builds) → preflight (checks the built files
 again; for production, the branch, the reviewer and the branch rule) → deploy. Production
@@ -184,9 +189,13 @@ Firestore, Firebase Auth and the open-meteo weather service. Preview: weather on
   with `data-act` and a listener, as the rest of the app does.
 - **A new Firebase SDK version.** The SDK path comes from `SYNC_SDK_BASE` in `index.html`, so
   bumping the version there moves the CSP with it.
+- **Staging, and production after the switch.** A page on the pack's own server
+  (`BACKEND = 'api'`) may talk to its own site (`'self'`, where `/api/` is), Firebase Auth and
+  the weather, and to no Firestore address at all. The build picks this from the page's own
+  `BACKEND` line, so switching the page switches its policy with it.
 - To change the policy, edit `_headers` or `cspSources()` and run
-  `node scripts/build-site.mjs --target preview` (and `production`) before committing. After
-  a deploy, check the browser Console for "Content-Security-Policy" errors.
+  `node scripts/build-site.mjs --target preview` (and `staging`, and `production`) before
+  committing. After a deploy, check the browser Console for "Content-Security-Policy" errors.
 
 ## Cutover, in order
 
@@ -265,8 +274,11 @@ see [One Firebase project](#one-firebase-project-an-accepted-risk) below.
 | `pack569-prod` | production only (`--branch=main`, pack569.com) |
 | `pack569-preview` | every preview link, and the `staging` link below |
 
-`wrangler.toml` says which is which. Until the page itself is switched over to the API (a
-later change), the page keeps using Firestore and the API sits unused.
+`wrangler.toml` says which is which. Which one the *page* uses is one line in `index.html`,
+`var BACKEND = …`. The committed page says `'firestore'`, so pack569.com keeps using Firestore
+and the live API sits unused until the switch
+([E. Moving the pack](#e-moving-the-pack-to-its-own-server-the-switch)). The `staging` build
+says `'api'`.
 
 **Do A before the next deploy of any branch that has `functions/`.** Until the database ids
 are in `wrangler.toml`, the deploy job stops on purpose.
@@ -372,9 +384,21 @@ live pack's sign-in; read the next part before you add it.
 - [ ] Put the Cloudflare Access lock on preview deployments ([above](#recommended-lock-previews-to-you))
       and check it covers the staging link, since real Google accounts can sign in there.
 
-Today's preview build is device-only, with sign-in switched off, so staging is of no use
-yet. The change that switches the page over to the API also adds a `staging` choice to the
-workflow. Until then, nothing deploys to `staging`.
+To deploy there: Actions → **website** → Run workflow, from the branch, with `deploy_target`
+**`staging`**. The build is the branch's page with `BACKEND = 'api'`; nothing else in it
+changes. Only deploy a branch whose code you have read (see the risk below).
+
+What to check on staging, in a private window:
+
+- [ ] DevTools → Network: calls go to `/api/…` on staging itself, and nothing goes to
+      `firestore.googleapis.com`. The Console shows no "Content-Security-Policy" errors.
+- [ ] Sign in. The first account to sign in on `pack569-preview` owns its test pack and is its
+      admin (previews use `OWNER_MODE = "first-signer"`); that should be you.
+- [ ] Make a change on one device and watch it arrive on a second within about 15 seconds
+      (the page asks the server every 15 s for a leader, every 60 s for a family, and at once
+      when you switch back to the tab).
+- [ ] With a second made-up Google account: open the sign-up link, approve it as a parent,
+      and check the family view arrives.
 
 **Only made-up data goes in `pack569-preview`.** Never copy the real pack into it: preview
 links are easier to reach than the live site, and it has none of production's protections.
@@ -408,18 +432,83 @@ accept the risk and keep one Firebase project.** What that asks of you instead:
 - If you ever stop being the only person who can run the workflow, or want other leaders to
   try `staging`, revisit this: that is when the second Firebase project is worth making.
 
-### E. Copying the pack in (later)
+### E. Moving the pack to its own server (the switch)
 
-When the page is ready to switch, you, signed in as the owner on the last Firestore version
-of the page, copy the pack across once. The API takes it only from `PACK_OWNER_UID`, only
-while the pack is empty here, and only once; after that it refuses every copy. Try the whole
-thing first on `staging` with a made-up pack.
+The pack is copied from Firestore to `pack569-prod` **once**, by you, through a file on your
+own computer:
 
-Until that copy is made, the live pack here is empty, and **no one's save can start it**: the
-API refuses the first save to an empty pack in production (it answers `awaiting-import`), so
-a leader who opens the new page before you have copied the pack across cannot create a blank
-pack that would then block the real one. Their page should say it is waiting for you to copy
-the pack over. Previews are different: the first save there starts the test pack.
+1. On the Firestore page (pack569.com today), signed in as the pack's owner: Pack → Sharing →
+   **Download pack for the new server**. It saves the pack record, the members, the open
+   invites and the sign-up link settings as one file. Only the owner sees this button.
+2. On the new page, signed in as the owner, while the server has no pack yet: Pack → Sharing →
+   **Copy pack to new server…**, and choose that file. The page shows what is in it before
+   anything is sent.
+
+The server takes the copy only from `PACK_OWNER_UID` (step C), only while it has no pack, and
+only once. After that it refuses every copy.
+
+Why a file, and not one button that sends straight from the old page: the old page can only
+talk to the server from the same address. That depends on the DNS move, and letting other
+addresses call the API would widen who can reach it. A file works either way. The family
+data in it goes from Firestore to your browser, to your computer, to the server, and never
+through GitHub or CI. **The file holds every member's email.** Treat it like the backup file
+([Testing a preview with real data](#testing-a-preview-with-real-data)): your own device, not
+a synced folder, never emailed, and deleted afterwards.
+
+Until the copy is made, the live pack on the server is empty, and **no one's save can start
+it**. The API refuses the first save to an empty pack in production (it answers
+`awaiting-import`). A leader who opens the new page before you have copied the pack in sees
+"Waiting for the pack's owner to copy the pack over". Their changes stay on their own device.
+When the pack arrives, the page compares, and asks them which copy to keep if the two differ.
+If the server itself is not set up (a missing database id or `deployment` row), the page says
+"The pack's server isn't set up yet" and keeps its own copy.
+
+#### Rehearse it on staging first (made-up data only)
+
+- [ ] On any `preview` link (device-only), make a small made-up pack: Program → Seed the
+      standard year, and a few invented scouts. Pack → Sharing → **Backup (JSON)**. A backup
+      brings the pack record only, not members; the real move file brings both.
+- [ ] Deploy `staging` from the branch (D above), open it in a private window, and sign in.
+- [ ] If the preview database already has a pack record from earlier testing, it can't take a
+      copy. Clear it first (preview only, never `--env production`):
+      `npx wrangler d1 execute pack569-preview --remote --command "DELETE FROM pack_state; DELETE FROM import_lock"`
+- [ ] Reload staging. Pack → Sharing shows **Copy pack to new server…**; choose the backup,
+      read the warning, and copy it in. The pack appears within a few seconds.
+- [ ] Delete the backup file.
+
+#### The switch, in order
+
+Before you start: A–C above are done (both databases, the tables, each `deployment` row,
+`PACK_OWNER_UID`); the rehearsal worked; and **pack569.com is already served by Cloudflare**
+([Cutover, in order](#cutover-in-order), step 4). The new page calls `/api/` on its own
+address. GitHub Pages has no `/api/`, so a switched page served from GitHub Pages would find
+no server.
+
+1. Tell the leaders: no changes on the pack for the next hour. Anything changed on the old
+   page after step 3 is not in the file.
+2. Make the switch commit on a branch: in `index.html`, change `var BACKEND = 'firestore';`
+   to `var BACKEND = 'api';`, and in `test/harness.mjs` the test that pins it (search for
+   "the committed page is not the Firestore build"). Run the harness, review, and merge to
+   `main`. Nothing is deployed yet: merging never deploys.
+3. On pack569.com (still the Firestore page), signed in as the owner, wait for the pill to say
+   **Synced**, then Pack → Sharing → **Download pack for the new server**. Save the file as
+   above.
+4. Actions → **website** → Run workflow from `main`, `production`, and approve it.
+5. Open pack569.com, sign in as the owner. The page says the server has no copy of the pack
+   yet. Pack → Sharing → **Copy pack to new server…** → the file → check the counts → **Copy
+   it in**. If this device's copy differs from the file, the page asks which to keep. Choose
+   **Use cloud copy**: that is the file you just copied in.
+6. Check: the Members card lists everyone; a second leader signs in and sees the pack; a
+   parent account sees the calendar. The owner's page republishes the family view as soon as
+   the pack arrives.
+7. Delete the file and empty the Trash.
+
+**The way back.** Firestore still holds the pack as it was at step 3. Leave the Firestore
+rules exactly as they are for two weeks. To go back: revert the switch commit and deploy
+production again. Anything changed on the new server since the switch is not in Firestore,
+so first download a **Backup (JSON)** on the new page and import it on the old one. After two
+weeks with no problems, Firestore can be retired (a later change: SETUP.md Part C then
+becomes a description of what the server enforces).
 
 ### Backups
 

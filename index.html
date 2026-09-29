@@ -1818,7 +1818,7 @@
   //                 which enforces the same rules itself. Firebase is kept for Google sign-in
   //                 only. Needs PACK_DOC_ID set; without one the page is device-only.
   // Chosen at build time: scripts/build-site.mjs writes 'api' into the staging build, and the
-  // switch-over commit changes it here (docs/cloudflare-setup.md, "Copying the pack in").
+  // switch-over commit changes it here (docs/cloudflare-setup.md, "E. Moving the pack to its own server").
   // ---------------------------------------------------------------------------
   var BACKEND = 'firestore';
 
@@ -10615,7 +10615,7 @@
     if (canDownloadMoveFile()) {
       return '<hr class="divider"><p class="eyebrow">Moving to the new server</p>' +
         '<p class="small muted" style="margin:0 0 6px">Only for the day the pack moves off Firestore ' +
-        '(the owner’s guide: “Copying the pack in”). Saves the pack record, the members, the open invites ' +
+        '(the owner’s guide: “Moving the pack to its own server”). Saves the pack record, the members, the open invites ' +
         'and the sign-up link settings as one file, to copy in on the new server. It holds every member’s ' +
         'email: keep it on this device, and delete it once the pack is copied in.</p>' +
         '<button type="button" class="btn small" data-act="move-download">Download pack for the new server</button>';
@@ -17745,7 +17745,7 @@
     // An empty pack on the pack's server, to a leader: say so, and to its owner, what to do.
     if (sync.packMissing && sync.backend && sync.backend.serverRevs && LEADER_ROLES.indexOf(sync.myRole) !== -1) {
       return canImportPack()
-        ? 'The pack’s server has no copy of the pack yet. Copy it in from Pack → Sharing → Copy the pack in.'
+        ? 'The pack’s server has no copy of the pack yet. Copy it in: Pack → Sharing → Copy pack to new server.'
         : 'The pack’s server has no copy of the pack yet. If the pack is moving from the old server, its owner copies it in.';
     }
     return '';
@@ -21975,7 +21975,7 @@
       return '<div class="overlay" role="dialog" aria-modal="true" aria-label="Copy the pack to the new server?"><div class="overlay-inner"><div class="card">' +
         '<h2 class="section display">Copy the pack to the new server?</h2>' +
         '<p>This file has <strong>' + mg.scouts + ' scouts</strong>, <strong>' + mg.members + ' accounts</strong> and <strong>' +
-        mg.invites + ' open invites</strong>. The server takes one copy, once: after this, it only changes the way it does every day.</p>' +
+        mg.invites + ' open invites</strong>. The server takes one copy, only once, so check these numbers first.</p>' +
         (mg.backupOnly
           ? '<div class="warn" style="margin:0 0 10px"><p class="small" style="margin:0">This is a backup, not a move file: it has the ' +
             'pack record only. Every leader and family would need an invite or approval again.</p></div>'
