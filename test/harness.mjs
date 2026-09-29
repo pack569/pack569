@@ -14123,8 +14123,24 @@ test('api docs: staging\'s Access lock is required, a staging sign-in is not sai
   ok(/sign out on `staging`, then close the private window\. That\n  is housekeeping, not containment\./.test(risk), 'the routine sign-out is not called housekeeping');
   ok(/Authentication\*\* → \*\*Users\*\* → find the account →\n  its menu → \*\*Disable account\*\*\. This is what ends it\./.test(risk), 'no way to disable a misused account');
   ok(/revokeRefreshTokens/.test(risk) && /treat the next hour as exposed/.test(risk), 'no revocation, or no word on the token already made');
-  ok(/The console has no button for this/.test(risk) && /Activate Cloud Shell/.test(risk) && /a\.auth\(\)\.revokeRefreshTokens\('THE_UID'\)/.test(risk) &&
+  // Review of eb504db..366f6c9, item 2 (wording updated on purpose): the Admin SDK in Cloud
+  // Shell with the owner's own credentials is likely refused for want of a quota project, so
+  // the route is Identity Toolkit's accounts:update with validSince, by curl with gcloud's
+  // token. Never tried on pack-569, so it says so and asks for a dry run on a throwaway account.
+  ok(/The console has no button for this/.test(risk) && /Activate Cloud Shell/.test(risk) &&
     /belt and braces/.test(risk), 'the guide does not say how to revoke, or that disabling already did the work');
+  const revoke = 'curl -s -X POST -H "Authorization: Bearer $(gcloud auth print-access-token)" -H "x-goog-user-project: pack-569" ' +
+    '-H "Content-Type: application/json" https://identitytoolkit.googleapis.com/v1/projects/pack-569/accounts:update ' +
+    '-d "{\\"localId\\":\\"THE_UID\\",\\"validSince\\":\\"$(date +%s)\\"}"';
+  ok(risk.indexOf('\n  ```\n  ' + revoke + '\n  ```\n') >= 0, 'the revoke command is not the curl + gcloud accounts:update call, whole, in its own block');
+  ok(!/a\.auth\(\)\.revokeRefreshTokens\('THE_UID'\)|npm install firebase-admin/.test(DOC), 'the guide still gives the Admin SDK route as the way to revoke');
+  ok(/\*\*Unverified:\*\* this has not yet been run against `pack-569`/.test(risk), 'the revoke route is not marked unverified');
+  ok(/try it once now on a throwaway account/.test(risk) && /not for the first time during an incident/.test(risk),
+    'the guide does not say to try the revoke route once now, on a throwaway account');
+  ok(/"localId": "THE_UID"/.test(risk) && /If the answer has an `"error"` in it, ask for help rather than re-enabling\./.test(risk),
+    'the guide does not say how to read the revoke answer');
+  ok(/- \[ \] \*\*Try the revoke command once now, on that made-up account\*\*/.test(DOC.slice(DOC.indexOf('What to check on staging'), DOC.indexOf('#### One Firebase project: an accepted risk'))),
+    'the staging checks do not include trying the revoke command once');
   // The Access lock: required for staging, in the section, the checklist and the risk.
   ok(!/Recommended: lock previews|recommended-lock-previews/.test(DOC), 'the Access lock is still only recommended');
   const lock = DOC.slice(DOC.indexOf('### Lock previews to you (required before staging)'), DOC.indexOf('## What the Content-Security-Policy blocks'));

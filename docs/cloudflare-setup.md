@@ -431,6 +431,9 @@ What to check on staging, in a private window:
       when you switch back to the tab).
 - [ ] With a second made-up Google account: open the sign-up link, approve it as a parent,
       and check the family view arrives.
+- [ ] **Try the revoke command once now, on that made-up account**, not for the first time
+      during an incident: see "If a sign-in on `staging` may have been misused" below. It has
+      not been tried on this project yet, so this is where you find out whether it works.
 
 **Only made-up data goes in `pack569-preview`.** Never copy the real pack into it: preview
 links are easier to reach than the live site, and it has none of production's protections.
@@ -475,17 +478,24 @@ accept the risk and keep one Firebase project.** What that asks of you instead:
   tokens, so every copy of its refresh token is dead, wherever it went; a token already made
   still works on the live API until its hour runs out, so treat the next hour as exposed.
   Before you enable the account again, also revoke its sessions, belt and braces, so no old
-  refresh token comes back to life with it. The console has no button for this: it is
-  Firebase's `revokeRefreshTokens`, one Admin SDK call. One way is Google Cloud console
-  (project `pack-569`) → **Activate Cloud Shell**, then, with the account's **User UID** from
-  the Users list in place of `THE_UID`:
+  refresh token comes back to life with it. The console has no button for this. The call is
+  Identity Toolkit's `accounts:update` with `validSince` set to now, which is what Firebase's
+  `revokeRefreshTokens` does. **Unverified:** this has not yet been run against `pack-569`, so
+  try it once now on a throwaway account (the made-up account from the staging checks above),
+  not for the first time during an incident. Google Cloud console (project `pack-569`) →
+  **Activate Cloud Shell**, then, with the account's **User UID** from the Users list in
+  place of `THE_UID`:
 
   ```
-  mkdir -p revoke && cd revoke && npm install firebase-admin
-  node -e "const a=require('firebase-admin');a.initializeApp({projectId:'pack-569'});a.auth().revokeRefreshTokens('THE_UID').then(()=>console.log('revoked'))"
+  curl -s -X POST -H "Authorization: Bearer $(gcloud auth print-access-token)" -H "x-goog-user-project: pack-569" -H "Content-Type: application/json" https://identitytoolkit.googleapis.com/v1/projects/pack-569/accounts:update -d "{\"localId\":\"THE_UID\",\"validSince\":\"$(date +%s)\"}"
   ```
 
-  If that does not print `revoked`, ask for help rather than re-enabling. Disabling your own
+  It worked if the answer names the account (`"localId": "THE_UID"`) and has no `"error"`.
+  If the answer has an `"error"` in it, ask for help rather than re-enabling. On the
+  throwaway account, also check the effect: a page it was signed in to on `staging` is asked
+  to sign in again within the hour. (The Admin SDK's `revokeRefreshTokens`, run in Cloud
+  Shell with `firebase-admin`, is not the route here: run as you rather than as a service
+  account, it is likely refused for want of a quota project.) Disabling your own
   account signs you out of the live pack too, so make sure another admin can still get in
   first.
 - If you ever stop being the only person who can run the workflow, or want other leaders to
