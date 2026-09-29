@@ -14864,6 +14864,54 @@ atest('api client: before the owner copies the pack in, a leader’s device keep
   eq(again, 'permission-denied', 'a second copy-in');
 });
 
+atest('api client: a pack copied in after a leader’s device heard "no pack" is compared, never saved over', async () => {
+  // Security review of stage C, item 1. Staging's server (first-signer, no awaiting-import): the
+  // editor's device holds an older copy, hears "no pack", and schedules a seed. The owner's
+  // copy-in lands before that seed (or its 10 s retry) runs, or the feed brings it first.
+  const copied = PACK_STATE({ rev: 10, packName: 'Copied Pack', scouts: [{ id: 's9', name: 'Zed' }], ledger: [{ id: 'l9', amountCents: 900 }] });
+  const body = { pack: { rev: 10, device: 'fs-dev', json: JSON.stringify(copied) }, members: [], invites: [], join: null };
+  for (const path of ['the seed', 'the 10 s retry', 'the feed, then the seed']) {
+    const w = await (await apiWorld()).seed();
+    const ed = await (await apiClient(w, 'editor', { state: PACK_STATE() })).start();
+    eq(ed.get('[sync.feed, sync.packMissing, sync.remoteRec, sync.dirty]'), ['doc', true, null, true], `${path}: the editor heard "no pack"`);
+    ok(ed.get('Object.keys(timers).some(function (k) { return timers[k].ms === 800; })'), `${path}: no seed was scheduled (the test proves nothing)`);
+    if (path === 'the 10 s retry') {
+      ed.intercept = async (method) => { if (method === 'PUT') throw new TypeError('offline'); return null; };
+      await settle([ed], 800);
+      ed.intercept = null;
+      ok(ed.get('Object.keys(timers).some(function (k) { return timers[k].ms === 10000; })'), 'no retry was scheduled');
+    }
+    eq((await w.call('owner', 'POST', 'import', null, { body })).status, 200, `${path}: the copy-in`);
+    ed.reset();
+    if (path === 'the feed, then the seed') await ed.poll();
+    await settle([ed], path === 'the 10 s retry' ? 10000 : 800);
+    // Nothing at all: not the pack record, and not a family view built from the old copy.
+    eq(ed.log.filter((l) => /^PUT/.test(l)), [], `${path}: the editor’s old copy was sent`);
+    const s = serverState(w);
+    eq([s.rev, s.json.packName, s.device], [10, 'Copied Pack', 'fs-dev'], `${path}: the copied-in pack was overwritten`);
+    eq(ed.get('[ui.overlay && ui.overlay.kind, !!sync.conflict, state.rev, sync.dirty, state.scouts[0].name]'),
+      ['sync-conflict', true, 10, true, 'Ada'], `${path}: the editor was not asked which copy to keep`);
+    // The chooser closed with Escape: an edit still sends nothing, and the chooser comes back.
+    ed.run('ui.overlay = null');
+    await ed.edit("state.ledger.push({ id: 'after', amountCents: 1 })");
+    eq([ed.log.filter((l) => /^PUT/.test(l)), ed.get('ui.overlay && ui.overlay.kind')], [[], 'sync-conflict'],
+      `${path}: an edit after Escape was saved over the copied-in pack`);
+    if (path === 'the seed') {
+      // "Use cloud copy": nothing is sent, and the device has the copied-in pack.
+      ed.run('adoptRemote(ui.overlay.remote, {}); ui.overlay = null');
+      await settle([ed], 800);
+      eq([ed.log.filter((l) => /^PUT \/P$/.test(l)), ed.get('[state.packName, sync.conflict, sync.dirty]')], [[], ['Copied Pack', null, false]], 'use the cloud copy');
+      await settle([ed], 1200);
+      ok(ed.log.indexOf('PUT /P/view') >= 0, 'the family view held back during the choice never went out');
+    } else {
+      // "Keep this device's copy": the leader chose, so it is saved, on top of rev 10.
+      ed.run('keepLocalCopy()');
+      await settle([ed], 800);
+      eq([serverState(w).rev, serverState(w).json.packName], [11, 'Test Pack'], `${path}: keeping this device’s copy`);
+    }
+  }
+});
+
 atest('api client: a server that is not set up is said plainly, and the device keeps its copy', async () => {
   const logged = [];
   const log = console.error;
@@ -14914,21 +14962,32 @@ test('api client: on the pack’s server the rev is the server’s, a save it ha
     const ctx = vm.createContext({});
     vm.runInContext(`
       function now(v) { return { then: function (ok) { var r = ok ? ok(v) : v; return (r && r.then) ? r : now(r); }, catch: function () { return this; } }; }
-      var records = [], merged = [], toasts = [];
+      var records = [], merged = [], toasts = [], firstAnswers = [];
       var fakeBe = { serverRevs: ${!!over.serverRevs}, serverTime: function () { return null; },
-        pushPack: function (h, build) { var out = build(${JSON.stringify(over.remote)}); records.push(out.record); return now(out.result); } };
+        pushPack: function (h, build) { var out = build(${JSON.stringify(over.remote)}); if (out.record) records.push(out.record); return now(out.result); } };
       function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
       function mergeRemoteAppendOnly(d) { merged.push(d.rev); return 0; } function holdPushes() { return false; }
       function save() {} function scheduleParentViewRefresh() {} function render() {}
       function showToast(m) { toasts.push(m); } function renderSyncPill() {} function syncFail() {}
       function clearTimeout() {} function setTimeout() {}
+      function onRemoteSnap(r, m) { firstAnswers.push([r.rev, sync.firstSnap, m.fromServer]); }
       var ui = { tab: 'home' }, state = { rev: ${over.localRev} };
       var sync = { backend: fakeBe, pack: { docId: 'P' }, session: 1, deviceId: 'd', clobber: false, dirty: true, mode: 'online',
-        notice: '${over.notice || ''}' };
+        notice: '${over.notice || ''}', firstSnap: false,
+        remoteRec: ${JSON.stringify(over.heard === undefined ? { rev: over.localRev, device: 'x', json: '{}' } : over.heard)} };
       ${['packLinked', 'syncPush'].map(decl).join('\n')}
       syncPush();`, ctx);
-    return vm.runInContext('[records.length ? records[0].rev : null, merged, state.rev]', ctx);
+    const out = vm.runInContext('[records.length ? records[0].rev : null, merged, state.rev]', ctx);
+    if (over.answers) out.push(JSON.parse(JSON.stringify(vm.runInContext('[firstAnswers, sync.dirty, sync.remoteRec && sync.remoteRec.rev]', ctx))));
+    return out;
   };
+  // Security review of stage C, item 1: a record this device has never heard of (its answer was
+  // "no pack") is not written: it goes to the first-answer comparison, and the edits stay unsent.
+  eq(push({ serverRevs: true, remote: { rev: 7 }, localRev: 7, heard: null, answers: true }), [null, [], 7, [[[7, true, true]], true, null]],
+    'a record this device never heard of was written over');
+  eq(push({ serverRevs: true, remote: { rev: 7 }, localRev: 7, answers: true }), [8, [], 8, [[], false, 8]],
+    'control: a record this device has heard of is not saved over (or the save is not remembered as the server’s)');
+  eq(push({ remote: { rev: 7 }, localRev: 7, heard: null }), [8, [], 8], 'Firestore: a push waits on what the device has heard');
   // Holding edits (holdPushes): a push that fires anyway — a timer set before the hold — sends nothing.
   eq(push({ serverRevs: true, remote: { rev: 7 }, localRev: 7, notice: 'awaiting-import' }), [null, [], 7], 'a held device pushed');
   eq(push({ serverRevs: true, remote: { rev: 7 }, localRev: 7 }), [8, [], 8], 'the server’s rev + 1, nothing to merge');

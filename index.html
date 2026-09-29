@@ -8563,6 +8563,16 @@
     pushTimer: null,
     retryTimer: null,
     firstSnap: true,
+    // The pack record as the server last had it, as far as this device knows: { rev, device,
+    // json } from the pack feed (a server answer, not a cached or pending one) or from this
+    // device's own save, and null before any, or when the server said it has none. Reset with
+    // firstSnap. On the pack's server a record arriving while this is null is a first answer
+    // (onRemoteSnap, syncPush); on either backend the move file is built from it.
+    remoteRec: null,
+    // The record a sync-conflict is waiting on, until the leader chooses a copy (adoptRemote,
+    // keepLocalCopy). Closing the chooser with Escape leaves it set: nothing is written, and no
+    // move file is made, until they choose.
+    conflict: null,
     session: null,     // token — a passphrase change cancels in-flight work from the old session
     backend: null,     // the loaded backend adapter (firestoreBackend or apiBackend) — see loadBackend
     pack: null,        // the pack-record handle from backend.open(); null = nothing may push
@@ -8857,6 +8867,8 @@
     clearTimeout(sync.retryTimer);
     sync.pack = null;
     sync.firstSnap = true;
+    sync.remoteRec = null;
+    sync.conflict = null;
     sync.dirty = false;
     sync.session = null;
     sync.mode = 'local';
@@ -9002,13 +9014,14 @@
     // One idempotent read-modify-write. build(remote) is handed the record as it stands right
     // now (null if none) and returns { record, result }; it may run more than once if another
     // device writes in between, so it must not have side effects that a rerun would double.
-    // Resolves with the last run's result.
+    // Resolves with the last run's result. A build() with no record writes nothing (syncPush
+    // returns one only on the pack's server, but no backend writes an empty record).
     pushPack: function (h, build) {
       var self = this;
       return self.mods.fs.runTransaction(self.db, function (tx) {
         return tx.get(h.ref).then(function (snap) {
           var out = build(self.dataOf(snap));
-          tx.set(h.ref, out.record);
+          if (out.record) tx.set(h.ref, out.record);
           return out.result;
         });
       });
@@ -9401,11 +9414,14 @@
     },
     // GET the record, build(remote), PUT it If-Match the rev read. A 409 carries the server's
     // copy, and build() runs again on it (it is idempotent — see syncPush), PUSH_TRIES in all.
+    // A build() with no record sends nothing, and resolves with its result (syncPush: a record
+    // this device has never heard of, handed to the first-answer comparison instead).
     pushPack: function (h, build) {
       var self = this;
       var path = self.packPath(h.docId);
       function put(remote, tries) {
         var out = build(remote);
+        if (!out.record) return Promise.resolve(out.result);
         var base = remote && typeof remote.rev === 'number' ? remote.rev : 0;
         return self.call('PUT', path, out.record.json,
           { 'if-match': String(base), 'x-pack-device': String(out.record.device || '').slice(0, 128) })
@@ -9662,7 +9678,9 @@
         // BACKEND 'api': a device holding its edits (holdPushes) hears from the pack record
         // again — the owner has copied the pack in, or the server is set up now. It resumes, and
         // this counts as the FIRST answer, so what it holds is compared, never overwritten.
-        if (sync.notice && (rec || sync.notice !== 'awaiting-import')) { sync.notice = ''; sync.firstSnap = true; }
+        if (sync.notice && (rec || sync.notice !== 'awaiting-import')) {
+          sync.notice = ''; sync.firstSnap = true; sync.remoteRec = null; sync.conflict = null;
+        }
         // Still waiting for the copy-in: nothing arrived to compare, and nothing may be sent —
         // onRemoteSnap would read the empty pack as a first answer and seed it again.
         if (sync.notice) return;
@@ -9783,6 +9801,8 @@
       stopParentFeed();
       sync.parentView = null;
       sync.firstSnap = true;
+      sync.remoteRec = null;
+      sync.conflict = null;
       subscribeDoc(mine);
     } else {
       // Demotion to parent: drop the pack-record listener BEFORE the parent one goes up.
@@ -11205,6 +11225,13 @@
     // device that later learned a leader role would otherwise publish from an unsynced local
     // copy. And before the first answer, what is on this device may be days old.
     if (!cloudReady() || !packLinked() || sync.firstSnap) return;
+    // Nor while a sync-conflict waits on a leader: this device's copy may be the one they throw
+    // away. Choosing either copy schedules this again (adoptRemote, or keepLocalCopy's save).
+    if (sync.conflict) return;
+    // BACKEND 'api': only a copy the server holds (sync.remoteRec: one it sent, or took from this
+    // device). A device that heard "no pack" publishes after its first save lands, not before —
+    // the owner's copy-in may have arrived in between (security review of stage C, item 1).
+    if (sync.backend && sync.backend.serverRevs && !sync.remoteRec) return;
     // Not before the join config has answered: until then "calendar-only" reads as "standings
     // on" (see applyJoinSubscription). Nothing is lost by waiting — the answer, either way,
     // schedules this again.
@@ -11253,6 +11280,8 @@
     clearTimeout(sync.retryTimer);
     sync.notice = why;
     sync.firstSnap = true;
+    sync.remoteRec = null;
+    sync.conflict = null;
     sync.mode = 'offline';
     sync.error = err.message ? String(err.message) : '';
     renderSyncPill();
@@ -11299,11 +11328,23 @@
     // a stale timer fires. (commit() already refuses; the published rules are the backstop.)
     if (accountsInForce() && !canEdit()) return;
     if (sync.notice) return;          // holding edits on this device (holdPushes)
+    // A sync-conflict the leader has not answered (the chooser closed with Escape): nothing is
+    // written over either copy until they choose, and the chooser comes back to ask.
+    if (sync.conflict) {
+      if (!ui.overlay) { ui.overlay = { kind: 'sync-conflict', remote: sync.conflict }; render(); }
+      return;
+    }
     var be = sync.backend, h = sync.pack, mine = sync.session;
     // `remote` is the record as it stands at this attempt (null if none). The backend may run
     // this more than once when another device writes in between; the merge is id-guarded, so
     // a rerun appends nothing twice, and the rev is re-derived from each fresh read.
     be.pushPack(h, function (remote) {
+      // BACKEND 'api' (security review of stage C, item 1): a record this device has never
+      // heard of is not written over, merged into or rev-checked. The case: its first answer
+      // was "no pack", so it scheduled a seed (or a 10 s retry), and the owner copied the pack
+      // in before that push ran. Nothing is sent; the record goes to onRemoteSnap as a first
+      // answer, compared with this device's copy, and a leader chooses if the two differ.
+      if (be.serverRevs && remote && !sync.remoteRec) return { record: null, result: { unheard: remote } };
       var remoteRev = remote && typeof remote.rev === 'number' ? remote.rev : 0;
       // BACKEND 'api' (be.serverRevs): the server stores exactly remoteRev + 1, and from the
       // pack record's first answer on, state.rev is a rev the server gave this device. Any other
@@ -11315,18 +11356,23 @@
       // pull its append-only log items in first (fresh from THIS attempt's read).
       var mergedN = (sync.clobber && remote) ? mergeRemoteAppendOnly(remote) : 0;
       var nextRev = be.serverRevs ? remoteRev + 1 : Math.max(state.rev || 0, remoteRev) + 1;
-      return {
-        record: {
-          rev: nextRev,
-          updatedAt: be.serverTime(),
-          device: sync.deviceId,
-          json: JSON.stringify(state)
-        },
-        result: { nextRev: nextRev, mergedN: mergedN }
+      var record = {
+        rev: nextRev,
+        updatedAt: be.serverTime(),
+        device: sync.deviceId,
+        json: JSON.stringify(state)
       };
+      return { record: record, result: { nextRev: nextRev, mergedN: mergedN, record: record } };
     }).then(function (res) {
       if (sync.session !== mine) return;
+      if (res.unheard) {
+        sync.firstSnap = true;
+        onRemoteSnap(res.unheard, { fromServer: true, pendingWrites: false });
+        return;
+      }
       state.rev = res.nextRev;
+      // What the server now holds is exactly what this device sent.
+      sync.remoteRec = { rev: res.record.rev, device: res.record.device, json: res.record.json };
       sync.dirty = false;
       save(); // no re-render needed — nothing visible changed…
       scheduleParentViewRefresh(); // Parent phase — regenerate the sanitized copy (leaders only)
@@ -11366,6 +11412,9 @@
     state = ns;
     state.rev = typeof d.rev === 'number' ? d.rev : 0;
     sync.dirty = false;
+    // This device now holds the server's copy: nothing is left to choose, and the family view
+    // held back while the choice waited (writeParentView) can go out.
+    if (sync.conflict) { sync.conflict = null; scheduleParentViewRefresh(); }
     save();
     render();
     if (opts && opts.toast) showToast('Updated from another device');
@@ -11375,16 +11424,22 @@
   // the pack has none yet; `meta.pendingWrites` marks our own not-yet-confirmed write. The
   // sync-conflict overlay keeps `rec` exactly as it came, for adoptRemote.
   function onRemoteSnap(rec, meta) {
-    var wasFirst = sync.firstSnap;
+    var serverRevs = !!(sync.backend && sync.backend.serverRevs);
+    // BACKEND 'api' (security review of stage C, item 1): a record arriving after the server
+    // said it had none (the owner's copy-in, most likely) is a first answer too, however it
+    // arrives — here from the pack feed, or from syncPush, which hands such a record over
+    // rather than writing on top of it.
+    var wasFirst = sync.firstSnap || !!(serverRevs && rec && !sync.remoteRec);
     sync.firstSnap = false;
+    var fromServer = !(meta && meta.fromServer === false);
     if (sync.mode !== 'online') { sync.mode = 'online'; sync.error = ''; renderSyncPill(); if (ui.tab === 'pack') render(); }
     // Parent phase — publish the sanitized copy once per connection too, so parents aren't
     // waiting on the next leader edit for their first schedule. Debounced + fingerprinted,
     // so the rest of this function settles on the winning state before anything is written,
     // and an unchanged payload costs nothing. No-op for viewers/parents/legacy.
     if (wasFirst) scheduleParentViewRefresh();
-    var serverRevs = !!(sync.backend && sync.backend.serverRevs);
     if (!rec) {
+      if (fromServer) sync.remoteRec = null;
       // No shared copy yet — seed it from this device (M-3: never for a read-only viewer;
       // canEdit() is true for anonymous/legacy, so today's behavior is unchanged).
       // BACKEND 'api': not from an EMPTY device. On the pack's server an empty pack is how the
@@ -11396,6 +11451,7 @@
       return;
     }
     if (meta && meta.pendingWrites) return; // our own optimistic write
+    if (fromServer) sync.remoteRec = { rev: rec.rev, device: rec.device, json: rec.json };
     var d = rec;
     var remoteRev = typeof d.rev === 'number' ? d.rev : 0;
     if (wasFirst) {
@@ -11421,11 +11477,16 @@
       if (!canEdit()) { adoptRemote(d, {}); return; }
       // Editors/admins pick which copy wins (two-tap each way).
       ui.overlay = { kind: 'sync-conflict', remote: d };
+      sync.conflict = d;
       render();
       return;
     }
     if (d.device === sync.deviceId) return; // our own write echoed back
-    if (ui.overlay && ui.overlay.kind === 'sync-conflict') { ui.overlay.remote = d; render(); return; }
+    if (sync.conflict || (ui.overlay && ui.overlay.kind === 'sync-conflict')) {
+      sync.conflict = d;
+      if (ui.overlay && ui.overlay.kind === 'sync-conflict') { ui.overlay.remote = d; render(); }
+      return;
+    }
     if (remoteRev > (state.rev || 0)) {
       if (!sync.dirty) adoptRemote(d, { toast: true });
       // Wave 18(5) — a newer remote rev arrived while this device has unsaved edits.
@@ -11439,6 +11500,7 @@
     var kept = ui.overlay;
     ui.overlay = null;
     if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); render(); return; } // M-3
+    sync.conflict = null;
     // BACKEND 'api': the copy being overwritten is the one this leader was just shown, so it
     // counts as seen; only a save made after it is merged in at the push (syncPush).
     if (sync.backend && sync.backend.serverRevs && kept && kept.remote && typeof kept.remote.rev === 'number') state.rev = kept.remote.rev;
