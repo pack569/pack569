@@ -14945,7 +14945,7 @@ atest('the move file is the pack as the server last had it, and is refused while
   d = download();
   eq([d.kind, /isn’t the pack’s latest/.test(d.toast)], [null, true], 'a move file was made from a copy that differs from the server’s');
   o.run('state.scouts.pop()');
-  eq(download().kind, 'export', 'control: the same device, back in step, cannot download');
+  eq(download().kind, 'move-export', 'control: the same device, back in step, cannot download');
   // A sync-conflict closed with Escape: refused, and the chooser comes back — even with this
   // device's copy made to match, since nobody has chosen.
   const w2 = await (await apiWorld()).seed();
@@ -14957,7 +14957,37 @@ atest('the move file is the pack as the server last had it, and is refused while
   eq([c.get('ui.overlay && ui.overlay.kind'), /Choose which copy to keep first/.test(c.get('toasts')[0] || '')], ['sync-conflict', true],
     'a move file was made with a sync-conflict unanswered');
   c.run('adoptRemote(ui.overlay.remote, {}); ui.overlay = null; downloadMoveFile()');
-  eq(c.get('ui.overlay && ui.overlay.kind'), 'export', 'control: once the cloud copy is chosen, the file cannot be made');
+  eq(c.get('ui.overlay && ui.overlay.kind'), 'move-export', 'control: once the cloud copy is chosen, the file cannot be made');
+});
+
+test('the move file’s screen is Download only, and says what the file holds and where it may go', () => {
+  // YP review of stage C, item 1, and security review item 4. The real renderOverlay, rendered.
+  const ctx = vm.createContext({});
+  vm.runInContext(`var ui = { overlay: null };
+    ${['esc', 'renderOverlay'].map(slice).join('\n')}`, ctx);
+  const html = (o) => { vm.runInContext(`ui.overlay = ${JSON.stringify(o)}`, ctx); return vm.runInContext('renderOverlay()', ctx); };
+  const secret = '{"kind":"pack569-move","members":[{"email":"a@example.com"}]}';
+  const mv = html({ kind: 'move-export', name: 'pack569-move-2026-09-28.json', mime: 'application/json', text: secret });
+  ok(/data-act="download-export">Download pack569-move-2026-09-28\.json</.test(mv), 'the move file’s screen has no Download');
+  ok(!/<textarea|copy-export|Copy/.test(mv), 'the move file’s screen has a Copy button or a text box');
+  ok(mv.indexOf('a@example.com') < 0 && mv.indexOf('pack569-move"') < 0, 'the move file’s contents are on the screen');
+  const say = mv.replace(/<[^>]+>/g, '');
+  ok(/holds the whole pack, every member’s email and the sign-up code\./.test(say), 'the screen does not say what the file holds: ' + say);
+  ok(/Save it on this computer, not in iCloud, Dropbox, OneDrive or the repo folder\. Don’t email or text it\. Delete it once the pack is copied in\./.test(say),
+    'the screen does not say where the file may go');
+  ok(!/note/.test(say), 'the screen mentions a note');
+  // The plain exports keep Copy, and say where a paste goes.
+  const bk = html({ kind: 'export', title: 'JSON backup', name: 'popcorn-backup.json', mime: 'application/json', text: '{}' });
+  ok(/copy-export/.test(bk) && /<textarea/.test(bk), 'the plain export lost Copy');
+  ok(/paste it into a new text file on this computer, not a note app\./.test(bk.replace(/<[^>]+>/g, '').replace(/' \+\s+'/g, '')), 'the Backup hint still says a note');
+  ok(!/paste into a file or note/.test(SCRIPT), 'the old "file or note" hint is still in the page');
+  // downloadMoveFile opens that screen, and the Copy handler copies nothing from it.
+  ok(/ui\.overlay = \{ kind: 'move-export', name: 'pack569-move-'/.test(slice('downloadMoveFile')), 'the move file does not open its own screen');
+  ok(/if \(act === 'copy-export'\) \{\n\s+if \(ui\.overlay && ui\.overlay\.kind === 'export'\) copyText\(/.test(SCRIPT), 'Copy would copy the move file');
+  // The owner's line on the Firestore page: plain, and says what the file holds.
+  const line = slice('renderMoveLine');
+  ok(/Only for the day the pack moves to its new server\./.test(line) && !/Firestore|owner’s guide/.test(line), 'the move line still talks about Firestore or the guide');
+  ok(/whole pack, every member’s email and the sign-up code/.test(line.replace(/' \+\s+'/g, '')), 'the move line does not say what the file holds');
 });
 
 atest('api client: a server that is not set up is said plainly, and the device keeps its copy', async () => {

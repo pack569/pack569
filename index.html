@@ -10651,7 +10651,7 @@
     }
     var mf = buildMoveFile({ packId: sync.docId, record: sync.remoteRec, members: sync.members,
       invites: sync.invites, joinCfg: sync.joinCfg, at: new Date().toISOString() });
-    ui.overlay = { kind: 'export', title: 'The pack, for the new server', name: 'pack569-move-' + todayISO() + '.json',
+    ui.overlay = { kind: 'move-export', name: 'pack569-move-' + todayISO() + '.json',
       mime: 'application/json', text: JSON.stringify(mf, null, 2) };
     render();
   }
@@ -10688,10 +10688,9 @@
   function renderMoveLine() {
     if (canDownloadMoveFile()) {
       return '<hr class="divider"><p class="eyebrow">Moving to the new server</p>' +
-        '<p class="small muted" style="margin:0 0 6px">Only for the day the pack moves off Firestore ' +
-        '(the owner’s guide: “Moving the pack to its own server”). Saves the pack record, the members, the open invites ' +
-        'and the sign-up link settings as one file, to copy in on the new server. It holds every member’s ' +
-        'email: keep it on this device, and delete it once the pack is copied in.</p>' +
+        '<p class="small muted" style="margin:0 0 6px">Only for the day the pack moves to its new server. Saves the ' +
+        'whole pack, every member’s email and the sign-up code as one file, to copy in on the new server. Keep it on ' +
+        'this computer, and delete it once the pack is copied in.</p>' +
         '<button type="button" class="btn small" data-act="move-download">Download pack for the new server</button>';
     }
     if (canImportPack()) {
@@ -22022,6 +22021,22 @@
         'and nothing here is published. The app tracks adventures, not requirements, so add the requirement number ' +
         'if you have it.</p></div></div></div>';
     }
+    // The move file (downloadMoveFile): the whole pack, every member's email and the sign-up
+    // code. Download only (YP review of stage C, item 1): no Copy, which puts it on the
+    // clipboard and, through Universal Clipboard, on the owner's other devices; and no text box
+    // to select from or paste into a note. The text stays in ui.overlay and goes to the file.
+    if (o.kind === 'move-export') {
+      return '<div class="overlay" role="dialog" aria-modal="true" aria-label="The pack, for the new server"><div class="overlay-inner">' +
+        '<div class="row no-print" style="margin-bottom:12px">' +
+        '<button type="button" class="btn" data-act="close-overlay">&larr; Back</button>' +
+        '<button type="button" class="btn primary" data-act="download-export">Download ' + esc(o.name) + '</button></div>' +
+        '<div class="card"><p class="eyebrow">The pack, for the new server</p>' +
+        '<p style="margin:0 0 8px">This file holds <strong>the whole pack</strong>, <strong>every member’s email</strong> and ' +
+        '<strong>the sign-up code</strong>.</p>' +
+        '<p class="small" style="margin:0">Save it on this computer, not in iCloud, Dropbox, OneDrive or the repo folder. ' +
+        'Don’t email or text it. Delete it once the pack is copied in.</p>' +
+        '</div></div></div>';
+    }
     if (o.kind === 'export') {
       return '<div class="overlay" role="dialog" aria-modal="true" aria-label="' + esc(o.title) + '"><div class="overlay-inner">' +
         '<div class="row no-print" style="margin-bottom:12px">' +
@@ -22030,7 +22045,8 @@
         '<button type="button" class="btn primary" data-act="download-export">Download ' + esc(o.name) + '</button></div>' +
         '<div class="card"><p class="eyebrow">' + esc(o.title) + '</p>' +
         '<textarea class="export-box" id="exportBox" readonly>' + esc(o.text) + '</textarea>' +
-        '<p class="small muted" style="margin:8px 0 0">If Download doesn’t work in this browser, use Copy and paste into a file or note.</p>' +
+        '<p class="small muted" style="margin:8px 0 0">If Download doesn’t work in this browser, use Copy and paste it into ' +
+        'a new text file on this computer, not a note app.</p>' +
         '</div></div></div>';
     }
     // Removing a budget line asks first, and says what goes with it. A pack lost planned
@@ -26431,11 +26447,15 @@
       copyText(ui.overlay.text, function () { ui.overlay.copied = true; render(); }, 'makeupMsgBox');
       return;
     }
+    // Copy is for the plain exports only: the move file is never put on the clipboard.
     if (act === 'copy-export') {
-      copyText(ui.overlay.text, function () { ui.overlay.copied = true; render(); });
+      if (ui.overlay && ui.overlay.kind === 'export') copyText(ui.overlay.text, function () { ui.overlay.copied = true; render(); });
       return;
     }
-    if (act === 'download-export') { download(ui.overlay.name, ui.overlay.mime, ui.overlay.text); return; }
+    if (act === 'download-export') {
+      if (ui.overlay && (ui.overlay.kind === 'export' || ui.overlay.kind === 'move-export')) download(ui.overlay.name, ui.overlay.mime, ui.overlay.text);
+      return;
+    }
     if (act === 'import-json') { document.getElementById('importFile').click(); return; }
     if (act === 'move-download') { downloadMoveFile(); return; }
     if (act === 'move-import') { var mvIn = document.getElementById('moveFile'); if (mvIn) mvIn.click(); return; }
