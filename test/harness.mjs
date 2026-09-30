@@ -13095,7 +13095,7 @@ test('E1: due dates and family statements are NEVER published', () => {
     if (m) stFn = m[1] || m[2];
     if (/state\.statements/.test(line.replace(/\/\/.*$/, ''))) stUsers.add(stFn);
   });
-  eq([...stUsers].sort(), ['handleAction', 'ledgerEntryLabel', 'mergeRemoteAppendOnly', 'renderBankStatementSheet', 'renderReconcile', 'rolloverYear', 'statementsCardHtml'], 'something new writes or reads state.statements');
+  eq([...stUsers].sort(), ['handleAction', 'ledgerEntryLabel', 'mergeRemoteAppendOnly', 'renderBankStatementSheet', 'renderReconcile', 'rolloverYear', 'statementButtonsHtml', 'statementsCardHtml'], 'something new writes or reads state.statements');
   ok(/state\.statements = \[\];/.test(slice('rolloverYear')), 'close-out does not clear the bank statements');
   ok(!/statements/.test(bpv), 'buildParentView reads the bank statements');
   ok(/each charge's due date \(`dueDate`\), the pack's dues date \(`budget\.duesDueDate`\) and every\s+\/\/\s+family statement \(E1\)/.test(SCRIPT), 'the banner does not exclude them');
@@ -18479,8 +18479,8 @@ test('C2: the opening figure and date are read-only once a statement is reconcil
     eq([p.get('state.book.openingCents'), p.get('state.book.openingDate'), p.get('log().length'), p.get('commits')], [10000, '2026-07-01', 0, 0],
       js + ' changed a reconciled book’s opening');
     eq(p.get('toasts[0]'), 'The opening balance is locked because the book is reconciled through Aug 31, and every balance checked against the bank ' +
-      'starts from it. If it’s wrong, record the difference as an adjusting entry dated today and say why in its description. Unlocking it by ' +
-      'reopening a reconciled statement will come in a later update.', 'the opening card’s words (M-2)');
+      'starts from it. If it’s wrong, record the difference as an adjusting entry dated today and say why in its description. It unlocks only ' +
+      'once no statement is left reconciled: an admin can reopen them under Statements reconciled, newest first.', 'the opening card’s words (M-2; C5)');
   }
   const q = c2Page({ book: { reconciledThrough: '' } });
   q.run("change('book-opening', '', '123.45'); change('book-opening-date', '', '2026-06-01'); act('ledger-use-carryover')");
@@ -19062,7 +19062,7 @@ test('C2 treasurer H-1: Mark reconciled takes a statement date, not after today 
   // Reconciled through Aug 31; today is Oct 15.
   const tries = [['', 'Enter the statement’s ending date first.'],
     ['2026-10-16', 'A statement can’t end after today. Check the statement date.'],
-    ['2026-08-30', 'The book is already reconciled through Aug 31. A statement ending earlier can’t be marked reconciled. Reopening a reconciled statement is coming in a later update.']];
+    ['2026-08-30', 'The book is already reconciled through Aug 31. A statement ending earlier can’t be marked reconciled. If a statement was marked reconciled by mistake, an admin can reopen it under Statements reconciled.']];
   for (const [sd, why] of tries) {
     const p = c2tPage({ book: { statementDate: sd } });
     p.run("act3('ledger-reconcile-lock'); act3('ledger-reconcile-lock')");
@@ -22665,7 +22665,8 @@ test('C5: Mark reconciled writes the statement as signed, and each entry cleared
   // The same date again is refused while its statement stands.
   p.run("toasts = []; state.book.statementDate = '2026-09-30'; agree(); act3('ledger-reconcile-lock')");
   eq([p.get('toasts'), p.get('state.statements.length'), p.get('ui.armed')],
-    [['The book is already reconciled through Sep 30, and that statement is kept as it was signed.'], 2, null], 'the same date again');
+    [['The book is already reconciled through Sep 30, and that statement is kept as it was signed. If it needs doing again, an admin can reopen it under Statements reconciled.'],
+      2, null], 'the same date again');
   // Once it is reopened (C5's reopen writes these), the date can be reconciled again: a new
   // statement, with its own id, naming the one it replaces. Rows already on a standing statement
   // are not listed again; r1 and p1 name the reopened one, so they are.
@@ -22768,7 +22769,7 @@ atest('C5, api: a statement signed on one device survives another’s save, and 
 // Phase 3, C5 — the statements card and the printout, on a sandbox of the page's own renderers.
 const C5_VIEW_FNS = ['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'fmtDateYear', 'statementDay', 'statementByOn', 'statementLegacyLine', 'statementSheetData',
   'statementReopened', 'statementReviewed', 'statementAdded', 'entrySignedCents', 'statementsCardHtml', 'statementBlockHtml', 'renderBankStatementSheet',
-  'statementButtonsHtml', 'statementReviewRefusal', 'ledgerActorName'];
+  'statementButtonsHtml', 'statementReviewRefusal', 'ledgerActorName', 'statementReopenRefusal', 'statementReopenNote', 'statementBefore', 'LEDGER_VOID_REASON_MAX'];
 // Sep 30: r1 +$25 cleared on it, u1 −$84 outstanding; the opening $100 and q1 +$500 cleared before.
 const C5_SEP = () => ({ id: 'st-2026-09-30-a', date: '2026-09-30', statementCents: 62500, openingCents: 10000, clearedCents: 62500, bookCents: 54100,
   ticked: ['r1'], outstanding: ['u1'], by: 'Pat Treasurer', byUid: 'u1', at: '2026-10-02T15:00:00.000Z' });
@@ -22779,6 +22780,7 @@ function c5View(statements, more) {
     // Pat Treasurer (u1), an editor, who signed Sep 30.
     var ui = { armed: null }, sync = { user: { uid: 'u1', displayName: 'Pat Treasurer' } }, editor = true;
     function canEdit() { return editor; }
+    function canReopenStatement() { return false; }
     var state = { packName: 'Pack 569', leaders: [], ledger: ${JSON.stringify(C2_LEDGER())}, ledgerAside: [],
       book: { reconciledThrough: '2026-09-30' }, statements: ${JSON.stringify(statements)} };
     ${more || ''}`, ctx);
@@ -22860,10 +22862,14 @@ test('C5: parents never see a statement; the printout is the only statement acti
 // Phase 3, C5 — the statement handlers on a c2 page: the book reconciled through Sep 30 on a
 // statement Pat Treasurer (u1) signed, after the legacy Aug 31 one. `who` signs in as someone else.
 const C5_ACT = [
-  c2Block(/    if \(act\.indexOf\('st-review:'\) === 0\) \{[\s\S]*?\n    \}/, 'st-review')].join('\n');
+  c2Block(/    if \(act\.indexOf\('st-review:'\) === 0\) \{[\s\S]*?\n    \}/, 'st-review'),
+  c2Block(/    if \(act\.indexOf\('st-reopen:'\) === 0\) \{[\s\S]*?\n    \}/, 'st-reopen'),
+  c2Block(/    if \(act === 'st-reopen-cancel'\) \{[^\n]*\}/, 'st-reopen-cancel'),
+  c2Block(/    if \(act\.indexOf\('st-reopen-go:'\) === 0\) \{[\s\S]*?\n    \}/, 'st-reopen-go')].join('\n');
 const c5Page = (o) => c2tPage({ book: { reconciledThrough: '2026-09-30' }, more: `
   ${['statementReviewRefusal'].map(slice).join('\n')}
   var editor = true;
+  ui.stReopenAsk = null; ui.stReopenWhy = '';
   function canEdit() { return editor; }
   function commit() { commits += 1; return true; }   // as the page's says it took the change
   state.statements = [${JSON.stringify(C5_LEGACY())}, ${JSON.stringify(C5_SEP())}];
@@ -22927,6 +22933,71 @@ test('C5, Firestore: a statement reviewed on two devices at once keeps the earli
     const who = (st) => [st.statements[1].reviewedBy, st.statements[1].reviewedAt];
     eq([who(server()), who(a.get('state')), who(b.get('state'))], Array(3).fill(['Lee', '2026-10-02T00:00:01.000Z']), (aFirst ? 'A' : 'B') + ' first');
   }
+});
+
+test('C5: only an admin can reopen, only the newest statement in force, with a reason; it un-ticks nothing and the lock steps back', () => {
+  const r = sandbox(['statementReopenRefusal', 'statementReopened', 'fmtDateShort', 'LEDGER_VOID_REASON_MAX']);
+  const book = { reconciledThrough: '2026-09-30' };
+  const table = [
+    [C5_SEP(), book, false, 'Wrong', 'Only a pack admin can reopen a reconciled statement.'],
+    [Object.assign(C5_SEP(), { reopenedAt: 'T', reopenedBy: 'Alex' }), book, true, 'Wrong', 'This statement is already reopened.'],
+    [C5_LEGACY(), book, true, 'Wrong', 'Only the newest statement the book is reconciled through (Sep 30) can be reopened. Reopen that one first.'],
+    [C5_SEP(), { reconciledThrough: '' }, true, 'Wrong', 'The book isn’t reconciled through this statement, so there is nothing to reopen.'],
+    [C5_SEP(), book, true, '  ', 'Say why it is being reopened (for example, “a deposit was ticked that isn’t on the statement”), then tap Reopen it.'],
+    [C5_SEP(), book, true, 'x'.repeat(201), 'Keep the reason to 200 characters or fewer.'],
+    [C5_SEP(), book, true, undefined, ''],   // opening the form: everything but the reason
+    [C5_SEP(), book, true, 'Wrong', '']];
+  table.forEach(([st, b, admin, why, want], i) => eq(r.statementReopenRefusal(st, b, admin, why), want, 'case ' + i));
+  // Who is an admin here: the role, or a pack with no accounts (everyone edits it all).
+  const who = (o) => { const c = sandbox(['canReopenStatement', 'isAdmin', 'canEdit', 'accountsInForce']); c.sync = o; return c.canReopenStatement(); };
+  eq([who({ user: { uid: 'a' }, myRole: 'admin' }), who({ user: { uid: 'a' }, myRole: 'editor' }), who({ user: { uid: 'a' }, myRole: 'viewer' }), who({ user: null })],
+    [true, false, false, true], 'canReopenStatement');
+
+  // On the page. Option B: X was ticked on Sep 30 and reversed, its reversal dated Oct 1.
+  const p = c5Page({ more: `${['statementReopenRefusal', 'statementReopen', 'statementReopenNote'].map(slice).join('\n')}
+    var admin = false; function canReopenStatement() { return admin; }
+    row('r1').statementId = 'st-2026-09-30-a';
+    state.ledger.push({ id: 'x1', date: '2026-09-20', description: 'Pizza', amountCents: 3000, direction: 'out', reconciled: true, statementId: 'st-2026-09-30-a',
+      reversedBy: 'rv-x1', voidReason: 'Refunded' },
+      { id: 'rv-x1', date: '2026-10-01', description: 'Reversal of “Pizza”', amountCents: 3000, direction: 'in', reconciled: false, reverses: 'x1' });` });
+  const ledgerWas = p.get('state.ledger');
+  p.run("toasts = []; act5('st-reopen:st-2026-09-30-a')");
+  eq([p.get('ui.stReopenAsk'), p.get('toasts')], [null, ['Only a pack admin can reopen a reconciled statement.']], 'an editor');
+  p.run("admin = true; toasts = []; act5('st-reopen:st-2026-08-31')");
+  eq([p.get('ui.stReopenAsk'), p.get('toasts')], [null, ['Only the newest statement the book is reconciled through (Sep 30) can be reopened. Reopen that one first.']], 'not the newest');
+  p.run("toasts = []; act5('st-reopen:st-2026-09-30-a')");
+  eq([p.get('ui.stReopenAsk'), p.get('toasts')], ['st-2026-09-30-a', []], 'the form opens');
+  p.run("act5('st-reopen-go:st-2026-09-30-a'); act5('st-reopen-go:st-2026-09-30-a')");
+  eq([p.get("'reopenedAt' in st('st-2026-09-30-a')"), p.get('log().length'), p.get('toasts').length], [false, 0, 2], 'no reason');
+  p.run("toasts = []; ui.stReopenWhy = ' A deposit was ticked twice '; act5('st-reopen-go:st-2026-09-30-a')");
+  eq([p.get("'reopenedAt' in st('st-2026-09-30-a')"), p.get('ui.armed'), p.get('armMs').slice(-1)[0] === p.get('ARM_WARNED_MS')],
+    [false, 'st-reopen-go:st-2026-09-30-a', true], 'one tap reopened it');
+  p.run("act5('st-reopen-go:st-2026-09-30-a')");
+  const s = p.get("st('st-2026-09-30-a')");
+  eq([s.reopenedBy, s.reopenedByUid, /^2\d{3}-/.test(s.reopenedAt), s.reopenWhy, p.get('state.statements.length')],
+    ['Pat Treasurer', 'u1', true, 'A deposit was ticked twice', 2], 'reopened, and kept');
+  eq([p.get('state.book.reconciledThrough'), p.get('state.book.reconciledBy'), p.get('state.book.reconciledAt'), p.get('state.book.statementDate'), p.get('state.book.statementCents')],
+    ['2026-08-31', 'Sam', '2026-09-01T12:00:00.000Z', '2026-09-30', 62500], 'the lock back to Aug 31, and the statement to work on');
+  eq(p.get('log().map(function (e) { return [e.op, e.row, e.why, e.f]; })'),
+    [['reopen', 'st-2026-09-30-a', 'A deposit was ticked twice', { reconciledThrough: ['2026-09-30', '2026-08-31'] }]], 'the log');
+  eq(p.get('toasts'), ['Reopened the statement through Sep 30. The book is now reconciled through Aug 31.'], 'said');
+  // Nothing un-ticked, no entry touched: the reversed pair as it was; the ticked ones still locked by
+  // their tick; only an unticked entry after Aug 31 opens up.
+  eq(p.get('state.ledger'), ledgerWas, 'an entry changed');
+  eq(['r1', 'x1', 'u1', 'p1'].map((id) => p.get(`ledgerLocked(row('${id}'), state.book)`)), [true, true, false, true], 'what is locked now');
+  // Then the legacy Aug 31: nothing is left reconciled, and the opening unlocks.
+  // (Opening another statement's form starts its reason blank.)
+  p.run("ui.stReopenWhy = 'left over'; act5('st-reopen:st-2026-08-31'); var blank = ui.stReopenWhy; toasts = []; ui.stReopenWhy = 'Opening was wrong'; " +
+    "act5('st-reopen-go:st-2026-08-31'); act5('st-reopen-go:st-2026-08-31')");
+  eq(p.get('blank'), '', 'the reason carried to another statement');
+  eq([p.get('state.book.reconciledThrough'), p.get('openingLockedWhy(state.book)'), p.get('toasts').slice(-1)[0]],
+    ['', '', 'Reopened the statement through Aug 31. The book is no longer marked reconciled.'], 'the last one');
+  // What the form says it will do.
+  const n = sandbox(['statementReopenNote', 'statementBefore', 'statementReopened', 'fmtDateShort']);
+  eq(n.statementReopenNote(C5_SEP(), [C5_LEGACY(), C5_SEP()]), 'The book will then be reconciled through Aug 31. Entries stay ticked: un-reconcile any ticked ' +
+    'by mistake, fix what is wrong, then mark the statement reconciled again. This statement stays in the list, marked reopened.', 'the note');
+  ok(/^The book will then not be reconciled at all, and its opening balance unlocks\. /.test(n.statementReopenNote(C5_LEGACY(), [C5_LEGACY()])), 'the note, last one');
+  ok(!/\.reconciled = |stampApproved\(|statementId/.test(codeOnly(c2Block(/    if \(act\.indexOf\('st-reopen-go:'\) === 0\) \{[\s\S]*?\n    \}/, 'st-reopen-go'))), 'reopen un-ticks an entry');
 });
 
 /* ---------------- report ---------------- */

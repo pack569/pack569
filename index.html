@@ -5022,6 +5022,8 @@
     fixAsk: null,           // Phase 3, C4 — the entry id whose Reverse or correct form is open
     fixDraft: null,         // Phase 3, C4 — its right figures as typed { date, dir, amount, desc }
     fixWhy: '',             // Phase 3, C4 — the reason typed there (required either way)
+    stReopenAsk: null,      // Phase 3, C5 — the statement id whose Reopen form is open
+    stReopenWhy: '',        // Phase 3, C5 — the reason typed there (required)
     lineOpen: {},           // Budget — { lineId: true } rows with their settings showing
     // Rewards — { tierId: true } tiers showing an empty date box because somebody asked for
     // one. A tier that HAS a deadline shows the box regardless; this is only the empty case,
@@ -9132,14 +9134,15 @@
   }
   // H2 (treasurer review of C1) — the opening figure and date are read-only once a statement is
   // reconciled: changing where the book starts would change every balance already checked against
-  // the bank. The way back is an admin reopening the reconciliation (C5, not built yet).
+  // the bank. The way back is an admin reopening the statements (C5: st-reopen-go).
   function openingLockedWhy(book) {
     if (!book || !book.reconciledThrough) return '';
     // Treasurer review of C2 (M-2) — in the treasurer's words, with what to do instead.
+    // Phase 3, C5 — the last sentence: the way back is there now (an admin reopens the statements).
     return 'The opening balance is locked because the book is reconciled through ' + fmtDateShort(book.reconciledThrough) +
       ', and every balance checked against the bank starts from it. If it’s wrong, record the difference as an ' +
-      'adjusting entry dated today and say why in its description. Unlocking it by reopening a reconciled statement ' +
-      'will come in a later update.';
+      'adjusting entry dated today and say why in its description. It unlocks only once no statement is left reconciled: ' +
+      'an admin can reopen them under Statements reconciled, newest first.';
   }
   // Treasurer review of C2 (H-1) — why "Mark reconciled" is refused, or '' when it can go ahead.
   // It locks every entry dated on or before the statement date, so the date must be one: a real
@@ -9161,10 +9164,11 @@
     var rt = String(book.reconciledThrough || '');
     if (rt && sd < rt && !reconcileLockAhead(book, today)) {
       return 'The book is already reconciled through ' + fmtDateShort(rt) + '. A statement ending earlier can’t be ' +
-        'marked reconciled. Reopening a reconciled statement is coming in a later update.';
+        'marked reconciled. If a statement was marked reconciled by mistake, an admin can reopen it under Statements reconciled.';
     }
     if (rt && sd === rt && statementInForce(statements, book)) {
-      return 'The book is already reconciled through ' + fmtDateShort(rt) + ', and that statement is kept as it was signed.';
+      return 'The book is already reconciled through ' + fmtDateShort(rt) + ', and that statement is kept as it was signed. ' +
+        'If it needs doing again, an admin can reopen it under Statements reconciled.';
     }
     return '';
   }
@@ -9380,6 +9384,51 @@
       return 'A statement is reviewed by a different leader from the one who reconciled it' + (named ? ' (' + st.by + ')' : '') + '.';
     }
     return '';
+  }
+  // Why statement `st` can't be reopened by this leader (`admin`: isAdmin(), or a pack with no
+  // accounts) with this reason, or ''. Only the newest one the book is reconciled through: to go
+  // further back, reopen them one at a time, newest first. A reason is required (`why` undefined:
+  // everything but the reason, for opening the form). Pure.
+  function statementReopenRefusal(st, book, admin, why) {
+    if (!admin) return 'Only a pack admin can reopen a reconciled statement.';
+    if (statementReopened(st)) return 'This statement is already reopened.';
+    var rt = String((book && book.reconciledThrough) || '');
+    if (st.date !== rt) {
+      return rt ? 'Only the newest statement the book is reconciled through (' + fmtDateShort(rt) + ') can be reopened. Reopen that one first.'
+        : 'The book isn’t reconciled through this statement, so there is nothing to reopen.';
+    }
+    if (why === undefined) return '';
+    var r = String(why == null ? '' : why).trim();
+    if (!r) return 'Say why it is being reopened (for example, “a deposit was ticked that isn’t on the statement”), then tap Reopen it.';
+    if (r.length > LEDGER_VOID_REASON_MAX) return 'Keep the reason to ' + LEDGER_VOID_REASON_MAX + ' characters or fewer.';
+    return '';
+  }
+  // Reopen the statement(s) the book is reconciled through (two devices may each have signed that
+  // date): each is marked reopened, by `stamp` { by, byUid, at }, `why` (trimmed), and the lock
+  // steps back (statementLockBack). Nothing is un-ticked, and no entry is touched: see the handler.
+  // Returns { ids, was, now } (the statements reopened, the lock before and after). In place.
+  function statementReopen(statements, book, stamp, why) {
+    var rt = String(book.reconciledThrough || ''), ids = [];
+    stamp = stamp || {};
+    (statements || []).forEach(function (st) {
+      if (!st || st.date !== rt || statementReopened(st)) return;
+      st.reopenedAt = typeof stamp.at === 'string' ? stamp.at : '';
+      st.reopenedBy = ledgerStampClean(stamp.by);
+      st.reopenedByUid = typeof stamp.byUid === 'string' ? stamp.byUid : '';
+      st.reopenWhy = String(why == null ? '' : why).trim().slice(0, LEDGER_VOID_REASON_MAX);
+      ids.push(st.id);
+    });
+    if (ids.length) statementLockBack(book, statements);
+    return { ids: ids, was: rt, now: book.reconciledThrough };
+  }
+  // What reopening statement `st` will do, said under its Reopen form: where the lock goes back to
+  // (statementBefore), and what it leaves as it is. Pure.
+  function statementReopenNote(st, statements) {
+    var back = statementBefore(statements, st.date);
+    return (back ? 'The book will then be reconciled through ' + fmtDateShort(back.date) + '.'
+      : 'The book will then not be reconciled at all, and its opening balance unlocks.') +
+      ' Entries stay ticked: un-reconcile any ticked by mistake, fix what is wrong, then mark the statement reconciled again. ' +
+      'This statement stays in the list, marked reopened.';
   }
   // A statement's date, as a record says it: "September 30, 2026". `iso` YYYY-MM-DD. Pure.
   function fmtDateYear(iso) {
@@ -11955,6 +12004,9 @@
     return null;
   }
   function isAdmin() { return accountsInForce() && sync.myRole === 'admin'; }
+  // Phase 3, C5 — who can reopen a reconciled statement: an admin; or, in a pack with no accounts,
+  // whoever edits (it has no admin to be, as canPreviewParent says, and everyone there edits it all).
+  function canReopenStatement() { return canEdit() && (isAdmin() || !accountsInForce()); }
   function adminCount() {
     var n = 0;
     for (var i = 0; i < sync.members.length; i++) { if (sync.members[i].role === 'admin') n += 1; }
@@ -20750,6 +20802,21 @@
       h += '<button type="button" class="btn small' + (rvArmed ? ' danger armed' : '') + '" data-act="st-review:' + esc(st.id) + '">' +
         (rvArmed ? 'Tap again: reviewed by you, for good' : 'Mark reviewed') + '</button>';
     }
+    // Reopen: an admin's, on the newest statement the book is reconciled through (statementReopenRefusal).
+    // It opens a form for why; the form's Reopen it takes two taps.
+    if (!statementReopenRefusal(st, state.book, canReopenStatement())) {
+      h += '<button type="button" class="btn small ghost" data-act="st-reopen:' + esc(st.id) + '">Reopen…</button>';
+      if (ui.stReopenAsk === st.id) {
+        var roArmed = ui.armed === 'st-reopen-go:' + st.id;
+        h += '<div class="row" style="margin-top:6px;flex-basis:100%">' +
+          '<input class="lname" data-ch="st-reopen-why" value="' + esc(ui.stReopenWhy || '') + '" maxlength="' + LEDGER_VOID_REASON_MAX + '" ' +
+            'placeholder="Why reopen it? (required)" aria-label="Why reopen this statement (required)">' +
+          '<button type="button" class="btn small ' + (roArmed ? 'danger armed' : 'primary') + '" data-act="st-reopen-go:' + esc(st.id) + '">' +
+            (roArmed ? 'Tap again to reopen it' : 'Reopen it') + '</button>' +
+          '<button type="button" class="btn small ghost" data-act="st-reopen-cancel">Cancel</button></div>' +
+          '<p class="small muted" style="margin:4px 0 0;flex-basis:100%">' + esc(statementReopenNote(st, state.statements)) + '</p>';
+      }
+    }
     return h;
   }
   // The one-page printout of a statement reconciled (ui.overlay kind 'bank-statement'), in the
@@ -29046,6 +29113,9 @@
     // Treasurer sign-off on C3 — and the why for an un-void.
     var uvWhyEl = e.target.closest('input[data-ch="ledger-unvoid-why"]');
     if (uvWhyEl) ui.unvoidWhy = uvWhyEl.value;
+    // Phase 3, C5 — and a statement's Reopen reason.
+    var stWhyEl = e.target.closest('input[data-ch="st-reopen-why"]');
+    if (stWhyEl) ui.stReopenWhy = stWhyEl.value;
     // Phase 3, C4 — and the Reverse or correct form's why and figures (a figure typed disarms it).
     var fxEl = e.target.closest('input[data-ch^="ledger-fix-"]');
     if (fxEl) {
@@ -30177,6 +30247,46 @@
       });
       return;
     }
+    // Reopen (admin only): the statement(s) the book is reconciled through are marked reopened, with
+    // who, when and why, and never deleted; the lock steps back to the statement before (or none).
+    // NOTHING IS UN-TICKED and no entry is touched: an entry ticked on it stays ticked, and so stays
+    // locked by its tick (ledgerLocked) until someone un-reconciles it (two taps, logged); only the
+    // unticked entries dated after the new lock open up. So a reversed pair (option B) stays exactly
+    // as it was, and nothing an earlier statement cleared moves. The statement being worked on starts
+    // as the one reopened, when none is. The form first (st-reopen), then two taps (st-reopen-go),
+    // asked each time. Logged ('reopen': the statement, why, reconciledThrough [before, after]).
+    if (act.indexOf('st-reopen:') === 0) {
+      var soSt = (state.statements || []).filter(function (x) { return x.id === act.slice('st-reopen:'.length); })[0];
+      if (!soSt) return;
+      var soNo = statementReopenRefusal(soSt, state.book, canReopenStatement());
+      if (soNo) { showToast(soNo); render(); return; }
+      if (ui.stReopenAsk !== soSt.id) ui.stReopenWhy = '';
+      ui.stReopenAsk = soSt.id;
+      render(); return;
+    }
+    if (act === 'st-reopen-cancel') { ui.stReopenAsk = null; ui.stReopenWhy = ''; render(); return; }
+    if (act.indexOf('st-reopen-go:') === 0) {
+      var sgSt = (state.statements || []).filter(function (x) { return x.id === act.slice('st-reopen-go:'.length); })[0];
+      if (!sgSt) { ui.stReopenAsk = null; render(); return; }
+      var sgNo = statementReopenRefusal(sgSt, state.book, canReopenStatement(), ui.stReopenWhy);
+      if (sgNo) { if (ui.armed === act) ui.armed = null; showToast(sgNo); render(); return; }
+      arm(act, function () {
+        var sgWhy = String(ui.stReopenWhy || '').trim();
+        var sg = statementReopen(state.statements, state.book, { by: ledgerActor(), byUid: ledgerActorUid(), at: new Date().toISOString() }, sgWhy);
+        ui.stReopenAsk = null; ui.stReopenWhy = '';
+        if (!sg.ids.length) { render(); return; }
+        logLedger('reopen', sg.ids[0], { rows: sg.ids.slice(1), why: sgWhy, f: { reconciledThrough: [sg.was, sg.now] } });
+        if (!state.book.statementDate) {
+          state.book.statementDate = sgSt.date;
+          state.book.statementCents = typeof sgSt.statementCents === 'number' ? sgSt.statementCents : (typeof sgSt.addedCents === 'number' ? sgSt.addedCents : 0);
+        }
+        if (commit()) {
+          showToast('Reopened the statement through ' + fmtDateShort(sg.was) + '. ' +
+            (sg.now ? 'The book is now reconciled through ' + fmtDateShort(sg.now) + '.' : 'The book is no longer marked reconciled.'));
+        }
+      }, ARM_WARNED_MS);
+      return;
+    }
     if (act === 'add-meeting') {
       var newMtg = freshEvent({
         kind: el.dataset.kind === 'pack' ? 'pack' : 'den',
@@ -31139,6 +31249,8 @@
     if (ch === 'ledger-unvoid-why') { ui.unvoidWhy = el.value; return; }   // Treasurer sign-off on C3
     // Phase 3, C4 — the Reverse or correct form: kept in ui, never the record, until a tap uses it.
     // A figure changed after the first tap disarms it, so the second never does what isn't shown.
+    // Phase 3, C5 — a statement's Reopen reason: in ui until the tap that uses it.
+    if (ch === 'st-reopen-why') { ui.stReopenWhy = el.value; return; }
     if (ch === 'ledger-fix-why') { ui.fixWhy = el.value; return; }
     if (ch.indexOf('ledger-fix-') === 0) {
       if (!ui.fixDraft) ui.fixDraft = {};
