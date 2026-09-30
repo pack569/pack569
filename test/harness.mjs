@@ -25896,6 +25896,29 @@ test('C7, Firestore: a scout held over an older page’s delete keeps their paid
   eq([chargeIds(q.server()), c7Owes(q.server())], [['ch1', 'ch2'], 0], 'the delete saved last');
 });
 
+// Security review of C7 (F2): whatever the marks say, a scout a payment names is on every device's roster.
+test('C7, Firestore: a device that lacks a scout a payment names takes them from the other copy, archived, with no mark, an aged-out mark, or a put-back', () => {
+  const kept = (st) => [st.scouts.map((x) => [x.id, !!x.archived]).sort(), st.ledger.filter((e) => e.id === 'l3').map((e) => e.scoutId)];
+  // A lacks Ada with nothing marked (a backup from before she was added, restored, or a mark 60 days old).
+  // (A put-back mark restores them as they were, takeBack's; with no mark, or a delete, they come back archived.)
+  for (const mark of ['', "state.gone.scouts.s1 = -5;", "state.gone.scouts.s1 = 5;"]) {
+    const want = [[['s1', mark.indexOf('-5') === -1], ['s2', false]], ['s1']];
+    const { a, b, server } = c3FsPair();
+    a.run("state.scouts = state.scouts.filter(function (s) { return s.id !== 's1'; }); " + mark + " commit()");
+    b.run(B1); b.push();
+    a.hear(); a.push();
+    eq(kept(server()), want, 'Ada, after A merged (' + (mark || 'no mark') + ')');
+    b.hear();
+    eq(kept(b.get('state')), want, 'B, after');
+  }
+  // A scout no payment names is not brought back, marked or not.
+  const q = c3FsPair();
+  q.a.run("state.scouts = state.scouts.filter(function (s) { return s.id !== 's2'; }); commit()");
+  q.b.run(B1); q.b.push();
+  q.a.hear(); q.a.push();
+  eq(q.server().scouts.map((x) => x.id), ['s1'], 'no payment names Bo');
+});
+
 atest('C7, api: an older page’s delete of a scout with payments keeps the scout, archived, and the payments’ family, on both devices', async () => {
   const over = { ledger: C3_ROWS, ledgerAside: [], book: C3_SEED.book, ledgerLog: [] };
   let { a, b, server } = await apiGonePair(over);

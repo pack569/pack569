@@ -14561,6 +14561,30 @@
       if (!sc.archived) { sc.archived = true; added += 1; }
       if (Array.isArray(look)) look.push({ kind: 'scoutkept', scout: sc });
     });
+    // Security review of C7 (F2) — and whatever the marks say (an adopted older page's save, a delete mark that
+    // aged out after 60 days, a backup from before the scout restored, then merged), a scout any entry names
+    // on either copy, whom this copy lacks and the other holds, is taken from the other, archived: the rows
+    // never point at nobody. A delete mark still standing against them becomes a put-back, as a held scout's
+    // does; no mark, or an old one, is left as it is.
+    if (Array.isArray(state.scouts) && Array.isArray(remote.scouts)) {
+      var rowNamed = Object.create(null), scoutHere = Object.create(null);
+      [state, remote].forEach(function (c) {
+        arrOf(c.ledger).concat(arrOf(c.ledgerAside)).forEach(function (e) { if (e && typeof e.scoutId === 'string' && e.scoutId) rowNamed[e.scoutId] = true; });
+      });
+      state.scouts.forEach(function (x) { if (x && typeof x.id === 'string') scoutHere[x.id] = true; });
+      remote.scouts.forEach(function (x) {
+        if (!x || typeof x.id !== 'string' || !rowNamed[x.id] || scoutHere[x.id]) return;
+        var back = JSON.parse(JSON.stringify(x));
+        back.archived = true;
+        state.scouts.push(back);
+        scoutHere[x.id] = true;
+        if (gone && gone.scouts && gone.scouts[x.id] > 0) {
+          var nowPut = Date.now();
+          gone.scouts[x.id] = -Math.max(nowPut, Math.min(gone.scouts[x.id], nowPut) + 1);
+        }
+        added += 1;
+      });
+    }
     takeBack('fundraisers', state.fundraisers, remote.fundraisers);
     if (state.inventory && remote.inventory) takeBack('products', state.inventory.products, remote.inventory.products);
     state.entries = dropGone(state.entries, 'entries');
