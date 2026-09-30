@@ -7961,36 +7961,71 @@
   // (rv2-X), then rv-X un-voided: X, rv-X and rv2-X all counted, the money out twice, and the family
   // and tier readers disagreeing with the balance. So a reversal comes back only while no other
   // counted reversal cancels the same entry. Pure.
+  // Treasurer sign-off on option B (3) — in the treasurer's words, with the newer reversal's date,
+  // and the way to take it out that its row has: a locked one has no ✕, so it is reversed from its
+  // Detail. The newest, if there are more.
   function ledgerReversedAgainWhy(st, e) {
     if (!e || typeof e.reverses !== 'string' || !e.reverses) return '';
     var rows = st.ledger || [];
     var others = (ledgerLiveReversals(rows)[e.reverses] || []).filter(function (x) { return x.id !== e.id; });
     if (!others.length) return '';
+    var nw = others.slice().sort(function (a, b) { return String(a.date || '') < String(b.date || '') ? -1 : String(a.date || '') > String(b.date || '') ? 1 : 0; }).pop();
     var o = rows.filter(function (x) { return x && x.id === e.reverses; })[0];
-    return (o && o.description ? '“' + o.description + '”' : 'That entry') + ' has been reversed again since; void that reversal first.';
+    return ledgerCap(o ? ledgerEntryNamed(o) : 'that entry') + ' has been reversed again since (dated ' + fmtDateShort(nw.date) + '), so un-voiding ' +
+      'this reversal would cancel it twice. Leave this one voided. If this is the one that should count, ' +
+      (ledgerLocked(nw, st.book) ? 'reverse the newer reversal first (open its Detail and tap Reverse or correct).' : 'void the newer reversal first.');
   }
+  // Treasurer sign-off on option B (3) — how the ledger's notes name an entry: “its description”, or,
+  // with none, "the Sep 10 entry of −$40.00". Pure.
+  function ledgerEntryNamed(e) {
+    if (e && e.description) return '“' + e.description + '”';
+    var amt = (e && e.direction === 'in' ? '+' : '−') + fmt((e && e.amountCents) || 0);
+    return e && e.date ? 'the ' + fmtDateShort(e.date) + ' entry of ' + amt : 'an entry of ' + amt;
+  }
+  function ledgerCap(t) { return t.charAt(0).toUpperCase() + t.slice(1); }
+  // Treasurer sign-off on option B (3) — how to take the counted row `row` out, said of `what` (it,
+  // the reversal, …): an open row is voided (its ✕); a locked one has no ✕, so it is reversed from
+  // its Detail. When which of the two isn't known, LEDGER_TAKE_OUT_ANY says both. Pure.
+  function ledgerTakeOut(row, book, what) {
+    return ledgerLocked(row, book) ? 'reverse ' + what + ' (open its Detail and tap Reverse or correct)' : 'void ' + what;
+  }
+  var LEDGER_TAKE_OUT_ANY = 'void it, or reverse it if it is reconciled or in the reconciled period';
   // Security re-check of option B (findings A and D) — what on Money · Ledger says the book needs a
   // look, from the counted `rows` as they stand: an entry two counted reversals cancel (two devices,
   // each unaware of the other's, a reversal un-voided and another kept ticked over its void), and a
   // pair that no longer cancels (its amounts differ, or both go the same way: a page from before
   // option B edits a pair's figures in place, a hand-edited or restored record). Only said, never
   // put right here: which reversal is the mistake is the treasurer's call. Plain text. Pure.
-  function ledgerLookNotes(rows) {
+  // Treasurer sign-off on option B (3) — in the treasurer's words: when each reversal is dated, what
+  // the balance is off by, which to keep, and how to take a row out that its row allows (`book`, for
+  // ledgerLocked: a locked row has no ✕). An entry with no description is named by its date and
+  // amount (ledgerEntryNamed).
+  function ledgerLookNotes(rows, book) {
     var pairOf = ledgerPairOf(rows), live = ledgerLiveReversals(rows, pairOf), byId = Object.create(null), out = [];
     rows.forEach(function (e) { if (e && typeof e.id === 'string' && !byId[e.id]) byId[e.id] = e; });
-    function named(e) { return e && e.description ? '“' + e.description + '”' : ''; }
     function signed(e) { return (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents); }
+    function cents(e) { return (e.direction === 'in' ? 1 : -1) * (e.amountCents || 0); }
+    function dates(list) {
+      var d = list.map(function (r) { return fmtDateShort(r.date); });
+      return d.length < 2 ? d.join('') : d.slice(0, -1).join(', ') + ' and ' + d[d.length - 1];
+    }
     Object.keys(live).forEach(function (id) {
-      var n = live[id].length;
+      var list = live[id].slice().sort(function (a, b) { return String(a.date || '') < String(b.date || '') ? -1 : String(a.date || '') > String(b.date || '') ? 1 : 0; });
+      var n = list.length, e = byId[id];
       if (n < 2) return;
-      out.push((n === 2 ? 'Two' : String(n)) + ' reversals of ' + (named(byId[id]) || 'an entry') + ' count. ' +
-        (n === 2 ? 'Void one of them.' : 'Void all but one of them.'));
+      // The entry not counted (a hand-edited record): what it is off by isn't the entry's to say.
+      out.push((n === 2 ? 'Two' : String(n)) + ' reversals of ' + (e ? ledgerEntryNamed(e) : 'an entry') + ' count (' + dates(list) + ')' +
+        (e ? ', so the entry is cancelled ' + (n === 2 ? 'twice' : n + ' times') + ' and the balance is off by ' + fmt(e.amountCents * (n - 1)) : '') + '. ' +
+        (n === 2 ? 'Keep one (the one the bank shows, if either is on a statement) and take the other out: '
+          : 'Keep one (the one the bank shows, if any is on a statement) and take each of the others out: ') + LEDGER_TAKE_OUT_ANY + '.');
     });
     rows.forEach(function (r) {
       var e = r && byId[r.id] === r && r.reverses && pairOf[r.id] === r.reverses ? byId[r.reverses] : null;
       if (!e || (r.amountCents === e.amountCents && r.direction !== e.direction)) return;
-      out.push((named(e) || 'An entry') + ' and its reversal no longer cancel (' + signed(e) + ' and ' + signed(r) + '). ' +
-        'Void the reversal, then reverse the entry again.');
+      var nm = ledgerEntryNamed(e);
+      out.push(ledgerCap(nm) + ' and its reversal no longer cancel (' + signed(e) + ' and ' + signed(r) + '), so the balance is off by ' +
+        fmt(Math.abs(cents(e) + cents(r))) + '. ' + ledgerCap(ledgerTakeOut(r, book, 'the reversal')) + ', then reverse ' + nm +
+        ' again (if it isn’t reconciled or in the reconciled period, void it instead).');
     });
     return out;
   }
@@ -8876,7 +8911,28 @@
   // made $215 or flipped to In, and the family still owes $200 while the book is $15 or $400 out.
   // A reversal mirrors its entry (the treasurer's rule). The date and the labels change as on any
   // row, and are logged.
-  var LEDGER_PAIR_FIXED = 'This entry is one of a reversed pair, so its amount and direction can’t be changed: the two must cancel. If the reversal was a mistake, void the reversal, then reverse the entry again with the right figures.';
+  // Treasurer sign-off on option B (3) — by the row's role, and how its reversal can be taken out
+  // (ledgerPairFixedWhy); this when neither is known. The entry then counts again, and is its own.
+  var LEDGER_PAIR_FIXED = 'This entry is one of a reversed pair, so its amount and direction can’t be changed: the two must cancel. ' +
+    'If the reversal was a mistake, take it out (' + LEDGER_TAKE_OUT_ANY + '). The entry then counts again, and can be changed or corrected.';
+  // Why row `e` of a reversed pair keeps its amount and direction, in the treasurer's words, by its
+  // role: the entry reversed, or the reversal. The way out is the reversal's: voided while it is
+  // open, reversed from its Detail once it is locked (it has no ✕ then). `rows` the counted rows
+  // (`pairOf` their ledgerPairOf, when it is already worked out); LEDGER_PAIR_FIXED when the pair
+  // can't be found in them. Pure.
+  function ledgerPairFixedWhy(e, rows, book, pairOf) {
+    rows = rows || [];
+    pairOf = pairOf || ledgerPairOf(rows);
+    var role = e && !e.off ? ledgerPairRole(e, pairOf) : '';
+    var p = role ? rows.filter(function (x) { return x && x.id === pairOf[e.id]; })[0] : null;
+    if (!p) return LEDGER_PAIR_FIXED;
+    if (role === 'reversed') {
+      return 'This entry has been reversed, so its amount and direction can’t be changed: it and its reversal must cancel. ' +
+        'If the reversal was a mistake, ' + ledgerTakeOut(p, book, 'the reversal') + '. This entry then counts again, and can be changed or corrected.';
+    }
+    return 'This is a reversal, so its amount and direction can’t be changed: it must mirror the entry it cancels. If it was a mistake, ' +
+      (ledgerLocked(e, book) ? 'reverse it (Reverse or correct, below)' : 'void it') + '. The entry then counts again, and can be changed or corrected.';
+  }
   // Why the led-* change `lk` to `value` is refused, or ''. `value` is the field's text, or for
   // 'rec' (the tick) whether it is now ticked. `rows` is the counted rows (state.ledger), for the
   // pair (LEDGER_PAIR_FIXED). Pure.
@@ -8892,7 +8948,7 @@
     // budget line, description, family and the rest are labels, fixed in place and logged.
     if (book && book.closedAt) return ledgerLockedWhy(e, book);
     // Before the lock: un-reconciling a locked row of a pair would not open these two.
-    if ((lk === 'amount' || lk === 'dir') && e && Array.isArray(rows) && ledgerPairOf(rows)[e.id]) return LEDGER_PAIR_FIXED;
+    if ((lk === 'amount' || lk === 'dir') && e && Array.isArray(rows) && ledgerPairOf(rows)[e.id]) return ledgerPairFixedWhy(e, rows, book);
     var why = LEDGER_LOCKED_FIELDS.indexOf(lk) !== -1 ? ledgerLockedWhy(e, book, '', 'money') : '';
     if (why) return why;
     if (lk === 'amount') {
@@ -19718,8 +19774,8 @@
   // Security re-check of option B (findings A and D) — "The ledger needs a look" (ledgerLookNotes),
   // on Money · Ledger beside what a sync changed. Worked out from the counted rows each time, so it
   // stays until the book is put right (no Got it), and goes then. Every word escaped.
-  function ledgerLookCardHtml(rows) {
-    var notes = ledgerLookNotes(rows || []);
+  function ledgerLookCardHtml(rows, book) {
+    var notes = ledgerLookNotes(rows || [], book);
     if (!notes.length) return '';
     return '<div class="card" role="status"><h2 class="section display">The ledger needs a look</h2>' +
       notes.map(function (t) { return '<p style="margin:0 0 10px">' + esc(t) + '</p>'; }).join('') + '</div>';
@@ -19736,7 +19792,7 @@
         (sync.splitNote ? '<p style="margin:0 0 10px">' + esc(sync.splitNote) + '</p>' : '') +
         '<button type="button" class="btn small" data-act="ledger-fates-dismiss">Got it</button></div>'
       : '';
-    h += ledgerLookCardHtml(state.ledger);   // security re-check of option B (A, D)
+    h += ledgerLookCardHtml(state.ledger, state.book);   // security re-check of option B (A, D)
     h += '<div class="card"><h2 class="section display">Ledger</h2>' +
       '<p class="small muted" style="margin:0 0 10px">Every dollar that actually moved. Unlike the budget — which is a plan — this is a record, ' +
       'so the balance below can be held next to a bank statement and checked.</p>' +
@@ -20016,7 +20072,9 @@
         (t.r ? ' Each reversed entry has its reversal listed under it.' : '') + tails(t)) + '</p>';
     rows.forEach(function (e) {
       var open = !!ui.ledgerOpen[e.id];
-      var why = ledgerLockedWhy(e, state.book, '', 'unvoid');
+      // Treasurer sign-off on option B (extra) — nor Un-void on a reversal whose entry has been
+      // reversed again since (ledgerReversedAgainWhy): the tap would only be refused. Why, in its Detail.
+      var why = ledgerLockedWhy(e, state.book, '', 'unvoid') || ledgerReversedAgainWhy(state, e);
       var line = e.lineId ? getBudgetLine(e.lineId) : null;
       var armed = ui.armed === 'ledger-unvoid:' + e.id;
       h += '<div class="lrow entry voided' + (e.direction === 'in' ? ' in' : '') + '">' +
@@ -20210,7 +20268,7 @@
               // Treasurer review of C2 (L-4) — the pill's tooltip never shows on a phone, so the
               // Detail of a locked row says it in a line.
               (eLocked ? '<p class="small muted llock" style="margin:6px 0 0;flex-basis:100%">' + esc(ledgerLockNote(e, state.book)) + '</p>' : '') +
-              (ePair ? '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">' + esc(LEDGER_PAIR_FIXED) + '</p>' : '') +   // option B review (1)
+              (ePair ? '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">' + esc(ledgerPairFixedWhy(e, state.ledger, state.book, pairOf)) + '</p>' : '') +   // option B review (1); sign-off (3)
               // Phase 3, C4 — a corrected entry says so, and where the one it replaced is.
               (e.replaces ? '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">' + esc(ledgerCorrectsLine(e, state.ledger.concat(state.ledgerAside || []))) + '</p>' : '') +
               ledgerFixButtonHtml(e, state.book) +   // Phase 3, C4

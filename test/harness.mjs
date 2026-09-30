@@ -18187,10 +18187,13 @@ const C2_ACT = [
   c2Block(/    if \(act === 'ledger-tick-all' \|\| act === 'ledger-untick-all'\) \{[\s\S]*?\n    \}/, 'tick-all'),
   c2Block(/    if \(act\.indexOf\('tier-unmakeup:'\) === 0\) \{[\s\S]*?\n    \}/, 'tier-unmakeup')].join('\n');
 // Option B — what Voided & reversed (ledgerAsideListHtml) needs besides itself: the counted pairs.
-const ASIDE_LIST_FNS = ['ledgerPairOf', 'ledgerPairRole', 'ledgerReversedLineHtml', 'ledgerReplacementId', 'ledgerReversalOf', 'ledgerReplacementFor'];
+const ASIDE_LIST_FNS = ['ledgerPairOf', 'ledgerPairRole', 'ledgerReversedLineHtml', 'ledgerReplacementId', 'ledgerReversalOf', 'ledgerReplacementFor',
+  'ledgerLiveReversals', 'ledgerReversedAgainWhy', 'ledgerEntryNamed', 'ledgerCap'];
+// Treasurer sign-off on option B (3) — how the ledger's notes name an entry, and how to take a row out.
+const LOOK_WORD_FNS = ['fmtDateShort', 'ledgerEntryNamed', 'ledgerCap', 'ledgerTakeOut', 'LEDGER_TAKE_OUT_ANY', 'ledgerLocked', 'ledgerDateReconciled', 'entryAfterOpening'];
 const C2_FNS = ['fmt', 'fmtDate', 'fmtDateShort', 'toCents', 'toCentsSigned', 'entryAfterOpening', 'entryOnStatement', 'ledgerLocked',
   'ledgerDateReconciled', 'ledgerLockedWhy', 'LEDGER_MAX_CENTS', 'LEDGER_EDIT_FIELDS', 'LEDGER_LOCKED_FIELDS', 'ledgerRowDiff',
-  'ledgerRowFields', 'LEDGER_PAIR_FIXED', 'ledgerPairOf', 'ledgerEditRefusal', 'ledgerBackdateWarning', 'applyLedgerEdit', 'ledgerWho', 'logLedger', 'logOpening',
+  'ledgerRowFields', 'LEDGER_TAKE_OUT_ANY', 'LEDGER_PAIR_FIXED', 'ledgerPairFixedWhy', 'ledgerPairRole', 'ledgerTakeOut', 'ledgerEntryNamed', 'ledgerCap', 'ledgerPairOf', 'ledgerEditRefusal', 'ledgerBackdateWarning', 'applyLedgerEdit', 'ledgerWho', 'logLedger', 'logOpening',
   'openingLockedWhy', 'LEDGER_OPS', 'ledgerEvent', 'ledgerLogClip', 'ledgerStampClean', 'stampApproved', 'stampEntered', 'ledgerActorName',
   'ledgerDraftDefault', 'ledgerDraft', 'arm', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays', 'ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept', 'keepLostVoids', 'ledgerPairCheck'];
 // The book is reconciled through Aug 31 from a Jul 1 opening. u1 is open; r1 is ticked (after the
@@ -18654,7 +18657,7 @@ test('C3: a voided entry is un-voided from Voided & reversed with two taps while
   eq([q.get("!!aside('u1')"), q.get('commits'), q.get('ui.armed'), q.get('toasts'), q.get('log().length')], [true, 0, null, [no, no], 1], 'a locked one');
   // The list offers Un-void only on an open, voided row, and says why not in the Detail.
   const l = slice('ledgerAsideListHtml');
-  ok(/var why = ledgerLockedWhy\(e, state\.book, '', 'unvoid'\);/.test(l) && /\(e\.off === 'void' && !why\s*\? '<button type="button" class="btn small ghost'[^\n]*\n\s*[^\n]*\n?[^\n]*data-act="ledger-unvoid:' \+ esc\(e\.id\)|\(e\.off === 'void' && !why\s*\? '<button type="button" class="btn small ghost'[^\n]*data-act="ledger-unvoid:' \+ esc\(e\.id\)/.test(l),
+  ok(/var why = ledgerLockedWhy\(e, state\.book, '', 'unvoid'\) \|\| ledgerReversedAgainWhy\(state, e\);/.test(l) && /\(e\.off === 'void' && !why\s*\? '<button type="button" class="btn small ghost'[^\n]*\n\s*[^\n]*\n?[^\n]*data-act="ledger-unvoid:' \+ esc\(e\.id\)|\(e\.off === 'void' && !why\s*\? '<button type="button" class="btn small ghost'[^\n]*data-act="ledger-unvoid:' \+ esc\(e\.id\)/.test(l),
     'Un-void is offered on a locked row');
   ok(/if \(f\.dir === 'aside'\) return h \+ ledgerAsideListHtml\(f\) \+ '<\/div>';/.test(slice('renderLedgerEntries')), 'the filter does not show the voided list');
   // Treasurer sign-off on C3 — "Voided" until C4, which names it "Voided & reversed" again (the name
@@ -20178,8 +20181,17 @@ test('C4 (option B): a reversed entry can’t be voided, even un-reconciled; its
 // their figures, so an amount or direction changed on either (an open reversal, or the entry
 // un-reconciled) left every reader that sorts rows by family, tier or line reading the pair as gone
 // while the balance moved. Both are refused, locked or not; the date and the labels are not.
+// Treasurer sign-off on option B (3) — by the row's role, and by how its reversal can be taken out.
 const PAIR_FIXED = 'This entry is one of a reversed pair, so its amount and direction can’t be changed: the two must cancel. ' +
-  'If the reversal was a mistake, void the reversal, then reverse the entry again with the right figures.';
+  'If the reversal was a mistake, take it out (void it, or reverse it if it is reconciled or in the reconciled period). The entry then counts again, and can be changed or corrected.';
+const PAIR_REVERSED = 'This entry has been reversed, so its amount and direction can’t be changed: it and its reversal must cancel. ' +
+  'If the reversal was a mistake, void the reversal. This entry then counts again, and can be changed or corrected.';
+const PAIR_REVERSED_LOCKED = 'This entry has been reversed, so its amount and direction can’t be changed: it and its reversal must cancel. ' +
+  'If the reversal was a mistake, reverse the reversal (open its Detail and tap Reverse or correct). This entry then counts again, and can be changed or corrected.';
+const PAIR_REVERSAL = 'This is a reversal, so its amount and direction can’t be changed: it must mirror the entry it cancels. ' +
+  'If it was a mistake, void it. The entry then counts again, and can be changed or corrected.';
+const PAIR_REVERSAL_LOCKED = 'This is a reversal, so its amount and direction can’t be changed: it must mirror the entry it cancels. ' +
+  'If it was a mistake, reverse it (Reverse or correct, below). The entry then counts again, and can be changed or corrected.';
 test('Option B review (1): neither row of a reversed pair takes a new amount or direction, even un-reconciled, so the readers still agree with the balance', () => {
   const p = c4Page();
   // r1: Ada's $25 dues, ticked after the period; m1: a tier make-up in the period. Each reversed today (Oct 15).
@@ -20195,7 +20207,8 @@ test('Option B review (1): neither row of a reversed pair takes a new amount or 
       for (const [ch, v] of [['led-amount', '215'], ['led-amount', '1'], ['led-dir', flip(id)]]) {
         const was = p.get(`row('${id}')`), logWas = p.get('log().length');
         p.run(`toasts = []; commits = 0; change('${ch}', '${id}', '${v}')`);
-        eq([p.get(`row('${id}')`), p.get('log().length'), p.get('commits'), p.get('toasts')], [was, logWas, 0, [PAIR_FIXED]], `${what}: ${ch} = ${v} on ${id}`);
+        eq([p.get(`row('${id}')`), p.get('log().length'), p.get('commits'), p.get('toasts')], [was, logWas, 0, [/^rv-/.test(id) ? PAIR_REVERSAL : PAIR_REVERSED]],
+          `${what}: ${ch} = ${v} on ${id}`);
         eq(agree(), [0, []], `${what}: the readers and the balance after ${ch} = ${v} on ${id}`);
       }
     }
@@ -20219,14 +20232,21 @@ test('Option B review (1): neither row of a reversed pair takes a new amount or 
   p.run("change('led-amount', 'u1', '90'); change('led-dir', 'u1', 'in')");
   eq([p.get("row('u1').amountCents"), p.get("row('u1').direction")], [9000, 'in'], 'an open row');
   // A chain (a reversal reversed) pairs from its newest end: the entry counts again, and is its own.
-  eq(p.get("[['X', 'rv-X', 'rv-rv-X'].map(function (id) { return ledgerEditRefusal({ id: id, date: '2026-10-01' }, 'amount', '5', state.book, " +
-    "[{ id: 'X', date: '2026-10-01' }, { id: 'rv-X', reverses: 'X', date: '2026-10-01' }, { id: 'rv-rv-X', reverses: 'rv-X', date: '2026-10-01' }]); }), " +
-    "ledgerEditRefusal({ id: 'rv-X' }, 'desc', 'x', state.book, [{ id: 'X' }, { id: 'rv-X', reverses: 'X' }])]"), [['', PAIR_FIXED, PAIR_FIXED], ''], 'a chain; a label');
+  eq(p.get("[(function (ch) { return ch.map(function (e) { return ledgerEditRefusal(e, 'amount', '5', state.book, ch); }); })(" +
+    "[{ id: 'X', date: '2026-10-01' }, { id: 'rv-X', reverses: 'X', date: '2026-10-01' }, { id: 'rv-rv-X', reverses: 'rv-X', date: '2026-10-01' }]), " +
+    "ledgerEditRefusal({ id: 'rv-X' }, 'desc', 'x', state.book, [{ id: 'X' }, { id: 'rv-X', reverses: 'X' }])]"), [['', PAIR_REVERSED, PAIR_REVERSAL], ''], 'a chain; a label');
   eq(vm.runInContext('LEDGER_PAIR_FIXED', p.ctx), PAIR_FIXED, 'the words');
+  // Treasurer sign-off on option B (3) — a locked reversal has no ✕: it is reversed from its Detail, and the
+  // entry it cancels says so. Ticked, or dated in the period (Aug 31); a pair not among the rows is the generic.
+  eq(p.get("(function () { var X = { id: 'X', date: '2026-08-01' }, rv = { id: 'rv-X', reverses: 'X', date: '2026-09-10', reconciled: true }, " +
+    "rp = { id: 'rv-X', reverses: 'X', date: '2026-08-20' }, rows = [X, rv], per = [X, rp]; " +
+    "return [ledgerPairFixedWhy(X, rows, state.book), ledgerPairFixedWhy(rv, rows, state.book), ledgerPairFixedWhy(X, per, state.book), " +
+    "ledgerPairFixedWhy(rp, per, state.book), ledgerPairFixedWhy({ id: 'Y' }, rows, state.book), ledgerPairFixedWhy(Object.assign({ off: 'reversed' }, X), rows, state.book)]; })()"),
+  [PAIR_REVERSED_LOCKED, PAIR_REVERSAL_LOCKED, PAIR_REVERSED_LOCKED, PAIR_REVERSAL_LOCKED, PAIR_FIXED, PAIR_FIXED], 'locked, and the generic');
   // The Entries list: a row of a pair shows its amount and direction, not fields, and says why in its Detail.
   const rows = slice('renderLedgerEntries');
   ok(/\(ePair \? '' : '<select data-ch="led-dir"/.test(rows) && /\(eLocked \|\| ePair\s*\? '<span class="money small">'/.test(rows) &&
-    /\(ePair \? '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">' \+ esc\(LEDGER_PAIR_FIXED\) \+ '<\/p>' : ''\)/.test(rows), 'the Entries row');
+    /\(ePair \? '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">' \+ esc\(ledgerPairFixedWhy\(e, state\.ledger, state\.book, pairOf\)\) \+ '<\/p>' : ''\)/.test(rows), 'the Entries row');
 });
 
 test('C4 (option B): Correct keeps the entry, reverses it, and adds the right figures as a new entry, never ticked, dated with its reversal', () => {
@@ -21201,22 +21221,37 @@ test('Option B review (3): a mark left by a reversal since voided says nothing u
 });
 
 /* Security re-check of option B (2026-09-29) — findings A to D. */
-const RECHECK_AGAIN = (d) => `${d} has been reversed again since; void that reversal first.`;
+// Treasurer sign-off on option B (3) — the un-void refusal and the card, in the treasurer's words.
+const RECHECK_AGAIN = (d, on) => `${d} has been reversed again since (dated ${on}), so un-voiding this reversal would cancel it twice. ` +
+  'Leave this one voided. If this is the one that should count, void the newer reversal first.';
+const RECHECK_AGAIN_LOCKED = (d, on) => `${d} has been reversed again since (dated ${on}), so un-voiding this reversal would cancel it twice. ` +
+  'Leave this one voided. If this is the one that should count, reverse the newer reversal first (open its Detail and tap Reverse or correct).';
 const RECHECK_MIRROR = 'A reversal mirrors its entry. To change it, reverse the reversal (the entry counts again), then reverse or correct the entry.';
-const RECHECK_TWO = (d) => `Two reversals of ${d} count. Void one of them.`;
+const RECHECK_TWO = (d, on, off) => `Two reversals of ${d} count (${on}), so the entry is cancelled twice and the balance is off by ${off}. ` +
+  'Keep one (the one the bank shows, if either is on a statement) and take the other out: void it, or reverse it if it is reconciled or in the reconciled period.';
 
 // Finding A — X reversed (rv-X), rv-X voided, X reversed again (rv2-X), then rv-X un-voided: X, rv-X and
 // rv2-X all counted, the money out twice, and X could not be voided. Un-void and the void's Undo now refuse.
 test('Security re-check A: a reversal is not un-voided, nor its void undone, while another reversal of its entry counts', () => {
-  const x = sandbox(['ledgerPairOf', 'ledgerLiveReversals', 'ledgerReversedAgainWhy']);
-  const R = (id, rev, d) => Object.assign({ id }, rev ? { reverses: rev } : {}, d ? { description: d } : {});
-  const why = (ledger, e) => x.ledgerReversedAgainWhy({ ledger }, e);
-  eq([why([R('X', '', 'Pizza'), R('rv2-X', 'X')], R('rv-X', 'X')), why([R('X', '', 'Pizza')], R('rv-X', 'X')), why([R('X', '', 'Pizza'), R('rv2-X', 'X')], R('Y')),
+  const x = sandbox(['fmt', 'ledgerPairOf', 'ledgerLiveReversals', 'ledgerReversedAgainWhy', ...LOOK_WORD_FNS]);
+  const R = (id, rev, d, o) => Object.assign({ id, date: '2026-10-01', amountCents: 4000, direction: rev ? 'in' : 'out' }, rev ? { reverses: rev } : {}, d ? { description: d } : {}, o || {});
+  const why = (ledger, e, book) => x.ledgerReversedAgainWhy({ ledger, book }, e);
+  eq([why([R('X', '', 'Pizza'), R('rv2-X', 'X', '', { date: '2026-10-05' })], R('rv-X', 'X')), why([R('X', '', 'Pizza')], R('rv-X', 'X')), why([R('X', '', 'Pizza'), R('rv2-X', 'X')], R('Y')),
     why([R('X', '', 'Pizza'), R('rv2-X', 'X'), R('rv-rv2-X', 'rv2-X')], R('rv-X', 'X')), why([R('rv2-X', 'X')], R('rv-X', 'X')),
     why([R('X', '', 'Pizza'), R('rv-X', 'X')], R('rv-X', 'X'))],
-  [RECHECK_AGAIN('“Pizza”'), '', '', '', RECHECK_AGAIN('That entry'), ''], 'ledgerReversedAgainWhy');
+  [RECHECK_AGAIN('“Pizza”', 'Oct 5'), '', '', '', RECHECK_AGAIN('That entry', 'Oct 1'), ''], 'ledgerReversedAgainWhy');
+  // Treasurer sign-off on option B (3) — no description: its date and amount; the newest of two; the
+  // newer reversal locked (ticked, or dated in the reconciled period), reversed from its Detail.
+  const BOOK = { openingDate: '2026-07-01', reconciledThrough: '2026-09-30' };
+  eq([why([R('X', '', '', { date: '2026-09-10' }), R('rv2-X', 'X')], R('rv-X', 'X')),
+    why([R('X', '', 'Pizza'), R('rv2-X', 'X', '', { date: '2026-10-05' }), R('rv3-X', 'X', '', { date: '2026-10-09' }), R('rv4-X', 'X', '', { date: '2026-10-07' })], R('rv-X', 'X')),
+    why([R('X', '', 'Pizza'), R('rv2-X', 'X', '', { reconciled: true })], R('rv-X', 'X'), BOOK),
+    why([R('X', '', 'Pizza', { date: '2026-09-01' }), R('rv2-X', 'X', '', { date: '2026-09-20' })], R('rv-X', 'X'), BOOK),
+    why([R('X', '', 'Pizza'), R('rv2-X', 'X')], R('rv-X', 'X'), BOOK)],
+  [RECHECK_AGAIN('The Sep 10 entry of −$40.00', 'Oct 1'), RECHECK_AGAIN('“Pizza”', 'Oct 9'), RECHECK_AGAIN_LOCKED('“Pizza”', 'Oct 1'),
+    RECHECK_AGAIN_LOCKED('“Pizza”', 'Sep 20'), RECHECK_AGAIN('“Pizza”', 'Oct 1')], 'no description, the newest, locked, open');
   // The page's handlers. u1 (open, Sep 10) reversed, its reversal voided, u1 reversed again.
-  const no = RECHECK_AGAIN('“Pinewood trophies”');
+  const no = RECHECK_AGAIN('“Pinewood trophies”', 'Oct 15');
   const p = c4Page();
   p.run("reverse2('u1', 'Wrong'); void2('rv-u1', 'Reversed by mistake'); reverse2('u1', 'Returned by the bank')");
   eq([p.get('ids()').slice(-1), p.get("aside('rv-u1').off")], [['rv2-u1'], 'void'], 'reversed again');
@@ -21236,38 +21271,75 @@ test('Security re-check A: a reversal is not un-voided, nor its void undone, whi
   eq([c.get('said === undefined'), c.get("!!row('rv-u1')"), c.get('state.ledgerAside.length')], [true, true, 0], 'control: the Undo');
 });
 
+// Treasurer sign-off on option B (extra) — the Un-void button is not offered where the tap would only be
+// refused (ledgerReversedAgainWhy); the reason is in the row's Detail, as a locked row's is.
+test('Treasurer sign-off (extra): Voided & reversed offers no Un-void on a reversal whose entry has been reversed again, and says why', () => {
+  const x = sandbox(['esc', 'fmt', 'fmtDate', 'ledgerAsideListHtml', ...ASIDE_LIST_FNS, ...LOOK_WORD_FNS]);
+  vm.runInContext(`var ui = { ledgerOpen: { 'rv-X': true }, armed: null };
+    var X = { id: 'X', date: '2026-09-10', description: 'Pizza', amountCents: 4000, direction: 'out', lineId: '', reversedBy: 'rv2-X' };
+    var rv2 = { id: 'rv2-X', reverses: 'X', date: '2026-10-05', description: 'Reversal of “Pizza”', amountCents: 4000, direction: 'in', lineId: '' };
+    var rv = { id: 'rv-X', off: 'void', reverses: 'X', date: '2026-10-01', description: 'Reversal of “Pizza”', amountCents: 4000, direction: 'in', lineId: '', voidReason: 'Wrong one' };
+    var state = { book: { openingDate: '2026-07-01' }, ledger: [X, rv2], ledgerAside: [rv] };
+    function ledgerSort(a) { return a.slice().sort(function (p, q) { return p.date < q.date ? -1 : p.date > q.date ? 1 : 0; }); }
+    function ledgerMatches() { return true; }
+    function ledgerLockedWhy() { return ''; } function getBudgetLine() { return null; } function ledgerTrailLine() { return ''; } function ledgerHistoryHtml() { return ''; }`, x);
+  const h = x.ledgerAsideListHtml({ lineId: '', text: '' });
+  eq([/data-act="ledger-unvoid:rv-X"/.test(h), (/<p class="small muted llock"[^>]*>([^<]*)<\/p>/.exec(h) || [])[1]],
+    [false, x.esc(RECHECK_AGAIN('“Pizza”', 'Oct 5'))], 'refused: no button, and why in the Detail');
+  // Control: with nothing else reversing X, it is offered, and nothing is said.
+  vm.runInContext('state.ledger = [Object.assign({}, X, { reversedBy: "rv-X" })]', x);
+  const c = x.ledgerAsideListHtml({ lineId: '', text: '' });
+  eq([/data-act="ledger-unvoid:rv-X"/.test(c), /llock/.test(c)], [true, false], 'control: offered');
+});
+
 // Finding A (b) and finding D — "The ledger needs a look" on Money · Ledger: two counted reversals of one
 // entry, or a pair that no longer cancels. Said, never resolved automatically.
 test('Security re-check A and D: the ledger says when two reversals of an entry count, or a pair no longer cancels', () => {
-  const x = sandbox(['esc', 'fmt', 'ledgerPairOf', 'ledgerLiveReversals', 'ledgerLookNotes', 'ledgerLookCardHtml']);
-  const X = { id: 'X', description: 'Pizza', amountCents: 4000, direction: 'out' };
-  const rv = (id, o) => Object.assign({ id, reverses: 'X', description: 'Reversal of “Pizza”', amountCents: 4000, direction: 'in' }, o || {});
-  const notes = (rows) => JSON.parse(JSON.stringify(x.ledgerLookNotes(rows)));
+  const x = sandbox(['esc', 'fmt', 'ledgerPairOf', 'ledgerLiveReversals', 'ledgerLookNotes', 'ledgerLookCardHtml', ...LOOK_WORD_FNS]);
+  const X = { id: 'X', date: '2026-09-10', description: 'Pizza', amountCents: 4000, direction: 'out' };
+  const rv = (id, o) => Object.assign({ id, date: '2026-10-01', reverses: 'X', description: 'Reversal of “Pizza”', amountCents: 4000, direction: 'in' }, o || {});
+  const notes = (rows, book) => JSON.parse(JSON.stringify(x.ledgerLookNotes(rows, book)));
   eq(notes([X, rv('rv-X')]), [], 'a pair');
-  eq(notes([X, rv('rv-X'), rv('rv2-X')]), [RECHECK_TWO('“Pizza”')], 'two reversals');
-  eq(notes([X, rv('rv-X'), rv('rv2-X'), rv('rv3-X')]), ['3 reversals of “Pizza” count. Void all but one of them.'], 'three');
+  // Treasurer sign-off on option B (3) — when each is dated (oldest first), what the balance is off by, which to keep.
+  eq(notes([X, rv('rv-X', { date: '2026-10-05' }), rv('rv2-X')]), [RECHECK_TWO('“Pizza”', 'Oct 1 and Oct 5', '$40.00')], 'two reversals');
+  eq(notes([X, rv('rv3-X', { date: '2026-10-09' }), rv('rv-X'), rv('rv2-X', { date: '2026-10-05' })]),
+    ['3 reversals of “Pizza” count (Oct 1, Oct 5 and Oct 9), so the entry is cancelled 3 times and the balance is off by $80.00. Keep one ' +
+     '(the one the bank shows, if any is on a statement) and take each of the others out: void it, or reverse it if it is reconciled or in the reconciled period.'], 'three');
   eq(notes([X, rv('rv-X'), rv('rv2-X'), rv('rv-rv2-X', { reverses: 'rv2-X', direction: 'out' })]), [], 'the second reversed in turn');
-  eq(notes([rv('rv-X'), rv('rv2-X')]), [RECHECK_TWO('an entry')], 'the entry not counted');
-  eq(notes([X, rv('rv-X', { amountCents: 5000 })]),
-    ['“Pizza” and its reversal no longer cancel (−$40.00 and +$50.00). Void the reversal, then reverse the entry again.'], 'amounts differ');
-  eq(notes([X, rv('rv-X', { direction: 'out' })]),
-    ['“Pizza” and its reversal no longer cancel (−$40.00 and −$40.00). Void the reversal, then reverse the entry again.'], 'the same direction');
+  eq(notes([rv('rv-X'), rv('rv2-X', { date: '2026-10-05' })]),
+    ['Two reversals of an entry count (Oct 1 and Oct 5). Keep one (the one the bank shows, if either is on a statement) and take the other out: ' +
+     'void it, or reverse it if it is reconciled or in the reconciled period.'], 'the entry not counted');
+  eq(notes([Object.assign({}, X, { description: '' }), rv('rv-X'), rv('rv2-X', { date: '2026-10-05' })]),
+    [RECHECK_TWO('the Sep 10 entry of −$40.00', 'Oct 1 and Oct 5', '$40.00')], 'two, no description');
+  const DRIFT_OPEN = (d, e, r, off, again) => `${d} and its reversal no longer cancel (${e} and ${r}), so the balance is off by ${off}. ` +
+    `Void the reversal, then reverse ${again || d} again (if it isn’t reconciled or in the reconciled period, void it instead).`;
+  const DRIFT_LOCKED = (d, e, r, off) => `${d} and its reversal no longer cancel (${e} and ${r}), so the balance is off by ${off}. ` +
+    `Reverse the reversal (open its Detail and tap Reverse or correct), then reverse ${d} again (if it isn’t reconciled or in the reconciled period, void it instead).`;
+  eq(notes([X, rv('rv-X', { amountCents: 5000 })]), [DRIFT_OPEN('“Pizza”', '−$40.00', '+$50.00', '$10.00')], 'amounts differ');
+  eq(notes([X, rv('rv-X', { direction: 'out' })]), [DRIFT_OPEN('“Pizza”', '−$40.00', '−$40.00', '$80.00')], 'the same direction');
   eq(notes([Object.assign({}, X, { description: '' }), rv('rv-X', { amountCents: 3900 })]),
-    ['An entry and its reversal no longer cancel (−$40.00 and +$39.00). Void the reversal, then reverse the entry again.'], 'no description');
+    [DRIFT_OPEN('The Sep 10 entry of −$40.00', '−$40.00', '+$39.00', '$1.00', 'the Sep 10 entry of −$40.00')], 'no description');
   eq(notes([X, rv('rv-X'), rv('rv-rv-X', { reverses: 'rv-X', direction: 'out', amountCents: 100 })]),
-    ['“Reversal of “Pizza”” and its reversal no longer cancel (+$40.00 and −$1.00). Void the reversal, then reverse the entry again.'], 'a chain');
+    [DRIFT_OPEN('“Reversal of “Pizza””', '+$40.00', '−$1.00', '$39.00')], 'a chain');
+  // A locked reversal has no ✕: it is reversed from its Detail. Ticked, or dated in the reconciled period; not after it.
+  const BOOK = { openingDate: '2026-07-01', reconciledThrough: '2026-09-30' };
+  eq([notes([X, rv('rv-X', { amountCents: 5000, reconciled: true })], BOOK), notes([X, rv('rv-X', { amountCents: 5000, date: '2026-09-20' })], BOOK),
+    notes([X, rv('rv-X', { amountCents: 5000 })], BOOK)],
+  [[DRIFT_LOCKED('“Pizza”', '−$40.00', '+$50.00', '$10.00')], [DRIFT_LOCKED('“Pizza”', '−$40.00', '+$50.00', '$10.00')],
+    [DRIFT_OPEN('“Pizza”', '−$40.00', '+$50.00', '$10.00')]], 'the reversal locked, and open');
   // The card: every word escaped, no Got it (it goes when the book is put right), and in renderLedger.
   eq(x.ledgerLookCardHtml([X, rv('rv-X')]), '', 'nothing to say');
   const bad = Object.assign({}, X, { description: '<img src=x onerror=alert(1)>' });
-  const card = x.ledgerLookCardHtml([bad, rv('rv-X'), rv('rv2-X')]);
+  const card = x.ledgerLookCardHtml([bad, rv('rv-X'), rv('rv2-X', { date: '2026-10-05' })]);
   eq(card, '<div class="card" role="status"><h2 class="section display">The ledger needs a look</h2>' +
-    '<p style="margin:0 0 10px">Two reversals of “&lt;img src=x onerror=alert(1)&gt;” count. Void one of them.</p></div>', 'the card');
-  ok(/\n    h \+= ledgerLookCardHtml\(state\.ledger\);[^\n]*\n    h \+= '<div class="card"><h2 class="section display">Ledger<\/h2>'/.test(slice('renderLedger')), 'renderLedger does not show it');
+    '<p style="margin:0 0 10px">' + RECHECK_TWO('“&lt;img src=x onerror=alert(1)&gt;”', 'Oct 1 and Oct 5', '$40.00') + '</p></div>', 'the card');
+  eq(x.ledgerLookCardHtml([X, rv('rv-X', { amountCents: 5000, reconciled: true })], BOOK).indexOf('Reverse the reversal (open its Detail') !== -1, true, 'the card passes the book on');
+  ok(/\n    h \+= ledgerLookCardHtml\(state\.ledger, state\.book\);[^\n]*\n    h \+= '<div class="card"><h2 class="section display">Ledger<\/h2>'/.test(slice('renderLedger')), 'renderLedger does not show it, with the book');
   ok(!/ledgerLook/.test(codeOnly(BPV())) && !/ledgerLook/.test(codeOnly(slice('renderParentApp'))), 'it reaches the parents');
 });
 
 test('Security re-check A, Firestore: a reversal put back on a device that never heard of the second reversal is flagged, not silently counted twice', () => {
-  const look = sandbox(['fmt', 'ledgerPairOf', 'ledgerLiveReversals', 'ledgerLookNotes']);
+  const look = sandbox(['fmt', 'ledgerPairOf', 'ledgerLiveReversals', 'ledgerLookNotes', ...LOOK_WORD_FNS]);
   const notes = (st) => JSON.parse(JSON.stringify(look.ledgerLookNotes(st.ledger)));
   for (const aFirst of [true, false]) {
     const { a, b, server } = c4FsPair();
@@ -21277,13 +21349,13 @@ test('Security re-check A, Firestore: a reversal put back on a device that never
     b.run("unvoidRow('rv-l2')");
     if (aFirst) { a.push(); b.hear(); b.push(); a.hear(); } else { b.push(); a.hear(); a.push(); b.hear(); }
     for (const [who, st] of [['the pack record', server()], ['A', a.get('state')], ['B', b.get('state')]]) {
-      eq([c4Where(st), c3Counted(st), notes(st)], [[['l1', 'l2', 'l3', 'rv-l2', 'rv2-l2'], []], C4_L2_MONEY + 4000, [RECHECK_TWO('“Pizza”')]], `${aFirst ? 'A' : 'B'} first: ${who}`);
+      eq([c4Where(st), c3Counted(st), notes(st)], [[['l1', 'l2', 'l3', 'rv-l2', 'rv2-l2'], []], C4_L2_MONEY + 4000, [RECHECK_TWO('“Pizza”', 'Oct 1 and Oct 1', '$40.00')]], `${aFirst ? 'A' : 'B'} first: ${who}`);
     }
   }
 });
 
 test('Security re-check A, Firestore: a reversal reused and ticked on one device, kept over the other’s void, is flagged beside that device’s next reversal', () => {
-  const look = sandbox(['fmt', 'ledgerPairOf', 'ledgerLiveReversals', 'ledgerLookNotes']);
+  const look = sandbox(['fmt', 'ledgerPairOf', 'ledgerLiveReversals', 'ledgerLookNotes', ...LOOK_WORD_FNS]);
   const notes = (st) => JSON.parse(JSON.stringify(look.ledgerLookNotes(st.ledger)));
   const { a, b, server } = c4FsPair();
   a.run("reverseRow('l2', 'Never cashed')"); a.push(); b.hear();
@@ -21294,18 +21366,19 @@ test('Security re-check A, Firestore: a reversal reused and ticked on one device
   a.run("reverseRow('l2', 'A: returned'); var t = state.ledger.find(function (e) { return e.id === 'rv2-l2'; }); t.reconciled = true; t.reconciledAt = Date.now() + 60000; commit()");
   a.push(); b.hear();
   for (const [who, st] of [['the pack record', server()], ['A', a.get('state')], ['B', b.get('state')]]) {
-    eq([c4Where(st), c3Counted(st), notes(st)], [[['l1', 'l2', 'l3', 'rv2-l2', 'rv3-l2'], ['rv-l2:void']], C4_L2_MONEY + 4000, [RECHECK_TWO('“Pizza”')]], who);
+    eq([c4Where(st), c3Counted(st), notes(st)], [[['l1', 'l2', 'l3', 'rv2-l2', 'rv3-l2'], ['rv-l2:void']], C4_L2_MONEY + 4000, [RECHECK_TWO('“Pizza”', 'Oct 1 and Oct 1', '$40.00')]], who);
   }
 });
 
 test('Security re-check D, Firestore: a pair whose figures a page from before option B changed in place is flagged', () => {
-  const look = sandbox(['fmt', 'ledgerPairOf', 'ledgerLiveReversals', 'ledgerLookNotes']);
+  const look = sandbox(['fmt', 'ledgerPairOf', 'ledgerLiveReversals', 'ledgerLookNotes', ...LOOK_WORD_FNS]);
   const { a, b } = c4FsPair();
   a.run("reverseRow('l2', 'Never cashed')"); a.push(); b.hear();
   // What an older page's edit in place does (this page refuses it: Option B review 1).
   b.run("state.ledger.find(function (e) { return e.id === 'rv-l2'; }).amountCents = 4500; commit()"); b.push(); a.hear();
   eq(JSON.parse(JSON.stringify(look.ledgerLookNotes(a.get('state').ledger))),
-    ['“Pizza” and its reversal no longer cancel (−$40.00 and +$45.00). Void the reversal, then reverse the entry again.'], 'A');
+    ['“Pizza” and its reversal no longer cancel (−$40.00 and +$45.00), so the balance is off by $5.00. Void the reversal, ' +
+     'then reverse “Pizza” again (if it isn’t reconciled or in the reconciled period, void it instead).'], 'A');
 });
 
 // Finding B — Correct on a reversal gave it other figures: rv-X corrected to $215 paired with its own
