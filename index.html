@@ -30805,11 +30805,21 @@
     if (act === 'import-ics') { document.getElementById('icsFile').click(); return; }
     if (act === 'confirm-import') {
       var ciLog = state.ledgerLog;
+      var ciSt = state.statements, ciYear = state.book ? state.book.year : undefined;
       state = restoreGone(ui.overlay.data, state.gone, Date.now());
       // Security re-review of C2 (#1) — the book is the backup's, but its history is not: this
       // device's log and the backup's, as one (mergeLedgerLog). The backup's alone lost every
       // change made since it was taken, for good, and so let anyone restore away their own trail.
       state.ledgerLog = mergeLedgerLog(ciLog, state.ledgerLog);
+      // Security review of C5 (F6) — and the statements, as the sync merge does: this device's and
+      // the backup's as one (mergeStatements: by id, never one lost, a review or reopen from either),
+      // for a backup of the same year's book only (close-out starts a book with none); then a lock
+      // through a statement since reopened steps back. A statement signed after the backup was taken
+      // stays in the list, "not in force" beside the backup's lock, rather than lost.
+      if (state.book && state.book.year === ciYear) {
+        state.statements = mergeStatements(ciSt, state.statements, state.ledger);
+        statementLockBack(state.book, state.statements);
+      }
       // Treasurer review of C2 (L-5) — the ledger's log says a backup was restored, and what the
       // book held afterwards: from here on the book is the backup's, whatever it held before.
       logLedger('restore', 'book', { why: 'A backup was restored on this device. The book now holds the backup’s ' +

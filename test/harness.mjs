@@ -17240,7 +17240,7 @@ test('stopgap follow-up 4: the Trail’s End import says a re-import puts stale 
 
 test('stopgap follow-up 6: a restored backup puts back what the pack had deleted since, on every device', () => {
   // The handler restores through restoreGone, with this device's marks, now.
-  ok(/if \(act === 'confirm-import'\) \{\s*var ciLog = state\.ledgerLog;\s*state = restoreGone\(ui\.overlay\.data, state\.gone, Date\.now\(\)\);/.test(SCRIPT),
+  ok(/if \(act === 'confirm-import'\) \{\s*var ciLog = state\.ledgerLog;\s*var ciSt = state\.statements, ciYear = [^;]*;\s*state = restoreGone\(ui\.overlay\.data, state\.gone, Date\.now\(\)\);/.test(SCRIPT),
     'confirm-import does not mark what the backup puts back');
   const seed = JSON.stringify(goneSeedNorm());
   const RESTORE = `state = restoreGone(normalizeState(${seed}), state.gone, Date.now()); commit()`;
@@ -23293,6 +23293,29 @@ test('C5 review (F3): the cap never takes a statement standing or named by an en
   eq([q.get('toasts'), q.get('state.statements.length'), q.get('state.book.reconciledThrough')], [['Reconciled through Wed, Sep 30.'], 200, '2026-09-30'], 'under it');
   ok(/if \(\(statements \|\| \[\]\)\.length >= 200\) \{/.test(slice('reconcileLockRefusal')) && /if \(all\.length <= 200\) return all;/.test(slice('mergeStatements')),
     'the refusal and the merge disagree on the cap');
+});
+
+test('C5 review (F6): restoring a backup of the same year keeps the statements signed since, and steps the lock back past a reopen', () => {
+  // This device: Aug 31 (legacy) and Sep 30 (Pat's, reviewed here). The backup: taken before Sep 30
+  // was signed, with Aug 31 only, but reopened there (an admin reopened it on the device the backup came from).
+  const here = [C5_LEGACY(), Object.assign(C5_SEP(), { reviewedAt: '2026-10-03T00:00:00.000Z', reviewedBy: 'Sam', reviewedByUid: 'u2' })];
+  const back = (o) => JSON.stringify(Object.assign({ ledger: [{ id: 'a' }], ledgerLog: [], book: { year: 2026, reconciledThrough: '2026-08-31' },
+    statements: [C5_LEGACY()] }, o || {}));
+  const run = (data) => {
+    const p = c2tPage({ book: { year: 2026, reconciledThrough: '2026-09-30' }, more: `state.statements = ${JSON.stringify(here)};` });
+    p.run(`ui.overlay = { data: ${data} }; act3('confirm-import')`);
+    return p;
+  };
+  const p = run(back());
+  eq([p.get('state.statements').map((s) => [s.id, !!s.reviewedBy]), p.get('state.book.reconciledThrough')],
+    [[['st-2026-08-31', false], ['st-2026-09-30-a', true]], '2026-08-31'], 'the statement signed since was lost');
+  // The backup's own set-once part comes across too, and a lock through a reopened statement steps back.
+  const q = run(back({ statements: [Object.assign(C5_LEGACY(), { reopenedAt: '2026-09-05T00:00:00.000Z', reopenedBy: 'Alex', reopenedByUid: 'u3', reopenWhy: 'x' })] }));
+  eq([q.get('state.statements').map((s) => [s.id, !!s.reopenedBy]), q.get('state.book.reconciledThrough')],
+    [[['st-2026-08-31', true], ['st-2026-09-30-a', false]], ''], 'the lock through a reopened statement');
+  // A backup of another year's book: its statements alone, as the sync merge would have it.
+  const r = run(back({ book: { year: 2025, reconciledThrough: '2026-06-30' }, statements: [] }));
+  eq([r.get('state.statements'), r.get('state.book.reconciledThrough')], [[], '2026-06-30'], 'another year');
 });
 
 /* ---------------- report ---------------- */
