@@ -1044,7 +1044,9 @@ const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'm
   'statementOnceGroups', 'statementReopened', 'statementPairMerge', 'mergeStatements', 'statementLockBack', 'statementBefore', 'ledgerStampClean',
   // Phase 3, C6 — the per-row merge, the entry chooser the push opens, and two close-outs of one year.
   ...C6_MERGE_FNS, 'seasonClosedTwice', 'seasonCloseoutOf', 'ledgerRowConflicts', 'rowChoice', 'refreshRowChoice', 'ledgerConflictSig', 'pickRowVersion', 'saveRowChoices', 'ROW_PICK_NEEDED',
-  'ROW_PICKS_CHANGED', 'ROW_PICKS_SAVED'];
+  'ROW_PICKS_CHANGED', 'ROW_PICKS_SAVED',
+  // Security review of C6 (F1a, F1b, F2) — the side a pick can't keep, and the save that refuses it.
+  'rowItemLock', 'ROW_PICK_LOCKED', 'ROW_PICK_LOCKED_PAIR'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
   const ctx = vm.createContext({});
@@ -23787,7 +23789,9 @@ const c6Ev = (id, op, row, day, more) => Object.assign({ id: 'lg-' + id, at: '20
 // A copy: its counted rows, its log, and (more) set-aside rows and statements.
 const c6Rec = (ledger, log, more) => JSON.parse(JSON.stringify(Object.assign({ ledger, ledgerAside: [], ledgerLog: log || [], statements: [] }, more || {})));
 const C6_BASE = () => c6Ev('0', 'edit', 'x', 1, { f: { ref: ['', '7'] } });   // an event both copies have
-const c6Swap = (c) => ({ ids: c.ids, rows: c.rows.map((r) => ({ id: r.id, parts: r.parts, mine: r.theirs, theirs: r.mine, mineBy: r.theirsBy, theirsBy: r.mineBy })) });
+// (Security review of C6, F1a/F2: the side a pick can't keep is the other side, the other way round.)
+const c6Swap = (c) => ({ ids: c.ids, rows: c.rows.map((r) => ({ id: r.id, parts: r.parts, mine: r.theirs, theirs: r.mine, mineBy: r.theirsBy, theirsBy: r.mineBy,
+  money: r.money, lock: r.lock && Object.assign({}, r.lock, { side: r.lock.side === 'mine' ? 'theirs' : 'mine' }) })) });
 // JSON with its keys sorted, and undefined (the merge's "remove this field") kept visible.
 const c6Canon = (v) => JSON.stringify(v, (k, x) => (x === undefined ? '(removed)' : x && typeof x === 'object' && !Array.isArray(x)
   ? Object.fromEntries(Object.keys(x).sort().map((q) => [q, x[q]])) : x));
@@ -24096,6 +24100,66 @@ test('C6 review: a leader’s pick counts only for what it chose, an op this pag
   eq(c6Both(x, c6Rec(A3.ledger, A3.ledgerLog.slice(900)), B4).conflicts.length, 1, 'control: a log not full');
 });
 
+test('C6 review: a pick never keeps money another device reconciled, put on a statement, or reversed; a tick alone leaves the choice free', () => {
+  const x = sandbox(C6_MERGE_FNS);
+  const base = [C6_BASE()];
+  const book = (rt) => ({ book: { reconciledThrough: rt } });
+  const S = { id: 'st-1', date: '2026-09-30', ticked: ['x'], by: 'Pat', byUid: 'u1', at: '2026-10-02T11:00:00.000Z' };
+  const amt = c6Ev('b1', 'edit', 'x', 3, { f: { amountCents: [4000, 4500] }, by: 'Sam' });
+  // P1: B (an editor, its book through Aug 31) changed x from $40 to $45. A (an admin) ticked x,
+  // reconciled through Sep 30, and statement S lists x. B is asked, and can keep only A's version.
+  const A = c6Rec([C6_ROW({ ref: '7', reconciled: true, approvedBy: 'Pat', reconciledAt: 1790000000000, statementId: 'st-1' })],
+    base.concat([c6Ev('a1', 'tick', 'x', 2), c6Ev('a2', 'reconcile', 'book', 2)]), Object.assign(book('2026-09-30'), { statements: [S] }));
+  const B = c6Rec([C6_ROW({ ref: '7', amountCents: 4500 })], base.concat([amt]), book('2026-08-31'));
+  let r = c6Both(x, B, A);
+  eq(r.conflicts.map((c) => [c.rows[0].parts, c.rows[0].money, c.rows[0].lock]), [[['content', 'tick'], true, { side: 'mine', kind: 'statement', date: '2026-09-30' }]],
+    'B asked, its own version locked out');
+  // B picks its own anyway: the merge keeps A's (amount, tick and statement), on both copies.
+  r = c6Both(x, B, A, { picks: { x: 'mine' } });
+  let [b, a] = c6Apply(x, B, A, r.raw.set);
+  eq([b.x.amountCents, b.x.reconciled, b.x.statementId, c6Same(a.x, b.x)], [4000, true, 'st-1', true], 'B’s pick of its own');
+  // Reconciled through Sep 30 on A, x not ticked there: locked by the period.
+  const A2 = c6Rec([C6_ROW({ ref: '7' })], base.concat([c6Ev('a2', 'reconcile', 'book', 2)]), book('2026-09-30'));
+  r = c6Both(x, B, A2, { picks: { x: 'mine' } });
+  eq([r.conflicts[0].rows[0].lock, r.set.x.amountCents], [{ side: 'mine', kind: 'period', date: '2026-09-30' }, 4000], 'the period');
+  // A tick alone, both books through Aug 31 and no statement: either can be kept. B keeps its own.
+  const A3 = c6Rec([C6_ROW({ ref: '7', reconciled: true, approvedBy: 'Pat', reconciledAt: 1790000000000 })], base.concat([c6Ev('a1', 'tick', 'x', 2)]), book('2026-08-31'));
+  r = c6Both(x, B, A3, { picks: { x: 'mine' } });
+  eq([r.conflicts[0].rows[0].money, r.conflicts[0].rows[0].lock, r.set.x.amountCents, r.set.x.reconciled], [true, null, 4500, false], 'a tick alone');
+  // B changed the words; A changed the amount, then ticked it and reconciled through Sep 30 (S lists it).
+  // Picking B's words would put the old amount back on a reconciled entry: only A's can be kept.
+  const A4 = c6Rec([C6_ROW({ ref: '7', amountCents: 4500, reconciled: true, approvedBy: 'Pat', reconciledAt: 1790000000000, statementId: 'st-1' })],
+    base.concat([c6Ev('a0', 'edit', 'x', 2, { f: { amountCents: [4000, 4500] } }), c6Ev('a1', 'tick', 'x', 2), c6Ev('a2', 'reconcile', 'book', 2)]),
+    Object.assign(book('2026-09-30'), { statements: [S] }));
+  const B4 = c6Rec([C6_ROW({ ref: '7', description: 'Pizza night' })], base.concat([c6Ev('b1', 'edit', 'x', 3, { f: { description: ['Pizza', 'Pizza night'] } })]), book('2026-08-31'));
+  r = c6Both(x, B4, A4, { picks: { x: 'mine' } });
+  eq([r.conflicts[0].rows[0].money, r.conflicts[0].rows[0].lock, r.set.x.amountCents, r.set.x.reconciled],
+    [false, { side: 'mine', kind: 'statement', date: '2026-09-30' }, 4500, true], 'the words picked against a reconciled amount');
+  // Each device reconciled Sep 30 separately, each statement listing x; A had changed x to $45 first.
+  // Locked on both, each where the other isn't: the side whose change moved the money can't be kept.
+  const SA = Object.assign({}, S, { id: 'st-A' }), SB = Object.assign({}, S, { id: 'st-B', by: 'Sam' });
+  const A5 = c6Rec([C6_ROW({ ref: '7', amountCents: 4500, reconciled: true, approvedBy: 'Pat', reconciledAt: 1790000000000, statementId: 'st-A' })],
+    base.concat([c6Ev('a0', 'edit', 'x', 2, { f: { amountCents: [4000, 4500] } }), c6Ev('a1', 'tick', 'x', 2)]), Object.assign(book('2026-09-30'), { statements: [SA] }));
+  const B5 = c6Rec([C6_ROW({ ref: '7', reconciled: true, approvedBy: 'Sam', reconciledAt: 1790000000000, statementId: 'st-B' })],
+    base.concat([c6Ev('b1', 'tick', 'x', 3)]), Object.assign(book('2026-09-30'), { statements: [SB] }));
+  r = c6Both(x, A5, B5, { picks: { x: 'mine' } });
+  eq([r.conflicts[0].rows[0].lock, r.set.x.amountCents], [{ side: 'mine', kind: 'statement', date: '2026-09-30' }, 4000], 'two statements signed separately');
+  // P3 (F2): M reversed x ($40, its reversal counted); T changed x to $45. T's can't be kept: the
+  // reversal would no longer cancel it.
+  const rv = { id: 'rv-x', date: '2026-10-02', description: 'Reversal of “Pizza”', amountCents: 4000, direction: 'in', reverses: 'x', reconciled: false };
+  const M = c6Rec([C6_ROW({ ref: '7', reversedBy: 'rv-x', voidReason: 'Never cashed', voidedBy: 'Pat', voidedAt: '2026-10-02T10:00:00.000Z' }), rv],
+    base.concat([c6Ev('m1', 'reverse', 'x', 2, { rows: ['rv-x'] })]));
+  const T = c6Rec([C6_ROW({ ref: '7', amountCents: 4500 })], base.concat([amt]));
+  r = c6Both(x, M, T, { picks: { x: 'theirs' } });
+  eq([r.conflicts.map((c) => [c.ids, c.rows[0].lock]), r.set.x.amountCents, r.set.x.reversedBy], [[[['x'], { side: 'theirs', kind: 'pair', date: '' }]], 4000, 'rv-x'],
+    'a reversed entry’s amount picked away');
+  // Control: the reversal not counted (voided on both), T's amount can be kept.
+  const M2 = c6Rec([M.ledger[0]], M.ledgerLog, { ledgerAside: [Object.assign({}, rv, { off: 'void' })] });
+  const T2 = c6Rec(T.ledger, T.ledgerLog, { ledgerAside: [Object.assign({}, rv, { off: 'void' })] });
+  r = c6Both(x, M2, T2, { picks: { x: 'theirs' } });
+  eq([r.conflicts[0].rows[0].lock, r.set.x.amountCents], [null, 4500], 'control: a reversal that doesn’t count');
+});
+
 // Phase 3, C6 — a world for two-device histories: the page's own normalizeState, sync merge and ledger
 // operations on one sandbox. Each device is a record; `dev(rec, who, ops)` runs a device's operations
 // on its record as the page's handlers do them (refused ones skipped, as the page refuses them), then
@@ -24314,6 +24378,32 @@ test('C6 property: two devices’ histories merge the same either way round, to 
     AB.ledger.forEach((e) => { if (e.statementId) ok(e.reconciled, `${what}: ${e.id} is on a statement, not ticked`); });
     // 6. A reversal that counts has its entry counting beside it.
     AB.ledger.forEach((e) => { if (e.reverses) eq(c6Where(AB, e.reverses), 'counted', `${what}: ${e.id} counts without the entry it reverses`); });
+    // 6b. Security review of C6 (F1a, F2) — no pick, whichever side, ever moves money on an entry one copy
+    // holds locked where the other doesn't (ticked and on a standing statement the other hasn't, or
+    // dated in the period only its book is reconciled through): the merged entry has that copy's money.
+    // Nor leaves a counted reversal that no longer cancels its entry.
+    const AB2 = get(`merge(A, B, pb, ${at})`);
+    const money = (e) => [e.amountCents, e.direction, e.date];
+    const rowIn = (rec, id) => rec.ledger.concat(rec.ledgerAside).find((e) => e.id === id);
+    const holds = (c, d, id) => {
+      const e = rowIn(c, id), f = rowIn(d, id);
+      if (e.reconciled && c.statements.some((st) => !st.reopenedAt && (st.ticked || []).includes(id) && !d.statements.some((y) => y.id === st.id))) return true;
+      const ct = c.book.reconciledThrough || '', dt = d.book.reconciledThrough || '';
+      return [e.date, f.date].some((dd) => dd && ct && dd <= ct && !(dt && dd <= dt));
+    };
+    A.ledger.concat(A.ledgerAside).forEach((e) => {
+      const f = rowIn(B, e.id);
+      if (!f || JSON.stringify(money(e)) === JSON.stringify(money(f))) return;
+      const la = holds(A, B, e.id), lb = holds(B, A, e.id);
+      if (la === lb) return;
+      [[AB, 'A’s picked'], [AB2, 'B’s picked']].forEach(([m, how]) => {
+        eq(money(rowIn(m, e.id)), money(la ? e : f), `${what}: ${e.id}, locked on ${la ? 'A' : 'B'}, took the other’s money (${how})`);
+      });
+    });
+    [AB, AB2].forEach((m) => m.ledger.forEach((e) => {
+      const rv = e.reversedBy && m.ledger.find((y) => y.id === e.reversedBy && y.reverses === e.id);
+      if (rv) eq([rv.amountCents, rv.direction !== e.direction], [e.amountCents, true], `${what}: ${e.id} no longer mirrored by its reversal`);
+    }));
     // 7. The money: with no conflict, what the merged book counts is what one device's changes then
     // the other's would have counted, on one copy (each refused there if the page would refuse it).
     if (!conf.length) {
@@ -24326,6 +24416,20 @@ test('C6 property: two devices’ histories merge the same either way round, to 
     cases += 1;
   }
   ok(replayed > 60 && withConflict > 10, `too few of each: ${replayed} replayed, ${withConflict} with a conflict`);
+});
+
+test('C6 review: a pick of the version that can’t be kept, reaching the merge anyway, keeps the other, and its history says so', () => {
+  const w = c6World();
+  const get = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, w)));
+  w.base = Object.assign(JSON.parse(JSON.stringify(GONE_SEED)), { ledger: [{ id: 'x', date: '2026-09-10', description: 'Pizza', amountCents: 4000, direction: 'out' }],
+    ledgerAside: [], ledgerLog: [], statements: [], book: { openingCents: 0, openingDate: '2026-07-01', reconciledThrough: '2026-08-31', statementDate: '', statementCents: 0, year: 2026 } });
+  // B changed x to $46; A changed it to $45, then marked September reconciled.
+  w.B = get("dev(base, 'B', [[1790000060000, 'amount', 'x', 4600]]).rec");
+  w.A = get("dev(base, 'A', [[1790000060000, 'amount', 'x', 4500], [1790000120000, 'reconcile']]).rec");
+  eq(get('conflicts(B, A)').map((c) => c.rows[0].lock), [{ side: 'mine', kind: 'period', date: '2026-09-30' }], 'B’s version locked out');
+  const m = get("merge(B, A, { x: 'mine' }, 1790000180000)");
+  eq([m.ledger.find((e) => e.id === 'x').amountCents, m.ledgerLog.filter((e) => e.op === 'resolve').map((e) => e.f)], [4500, [{ amountCents: [4600, 4500] }]],
+    'the merge kept B’s, or its history says it did');
 });
 
 // Phase 3, C6 — the page's own edit, tick and Mark reconciled, reduced to what they write and log.
@@ -24463,6 +24567,30 @@ test('C6, Firestore: a newer save while the chooser waits is asked about instead
   eq([c6Asked(b), b.get('!!sync.conflict'), b.get('ui.overlay'), eIds(server()).indexOf('b1') !== -1, rev()], [null, false, null, true, 9], 'B’s save after the conflict went');
 });
 
+test('C6 review, Firestore: an entry reconciled on another device while the chooser waits can’t be saved with the other version; only the reconciled one is kept', () => {
+  const { a, b, server, rev } = c6FsPair();
+  a.run("editRow('l2', 'amountCents', 4500)"); a.push();
+  b.run("editRow('l2', 'amountCents', 4600)"); b.hear(); b.push();
+  eq([c6Asked(b), b.get('rowChoice().items[0].rows[0].lock')], [[['l2']], null], 'asked, both versions offered');
+  b.run("pickRowVersion(rowChoice(), 'l2', 'mine')");
+  // A marks September reconciled (l2 is dated Sep 10) and saves; B hears it while the choice waits.
+  // The versions haven't changed, so B's pick stands; but now B's version can't be kept.
+  a.run("reconcileThrough('2026-09-30')"); a.push();
+  b.hear();
+  eq([b.get('rowChoice().picks'), b.get('rowChoice().items[0].rows[0].lock')], [{ l2: 'mine' }, { side: 'mine', kind: 'period', date: '2026-09-30' }], 'after A reconciled');
+  // F1b: saved, it is refused, the pick goes, and nothing is sent.
+  b.run('saveRowChoices()');
+  eq([b.get('toasts[toasts.length - 1]'), b.get('rowChoice().picks'), rev()], [b.get('ROW_PICK_LOCKED'), {}, 5], 'saved a pick of the version locked out');
+  // Its button is gone, and the pick refused if asked for anyway.
+  b.run("pickRowVersion(rowChoice(), 'l2', 'mine')");
+  eq(b.get('rowChoice().picks'), {}, 'picked the version locked out');
+  // B keeps A's: A's amount, the resolve naming B's as the version not kept.
+  c6PickAll(b, 'theirs'); b.push();
+  const s = server();
+  eq([rev(), s.ledger.find((e) => e.id === 'l2').amountCents, s.book.reconciledThrough, s.ledgerLog.filter((e) => e.op === 'resolve').map((e) => e.f)],
+    [6, 4500, '2026-09-30', [{ amountCents: [4600, 4500] }]], 'B kept A’s version');
+});
+
 test('C6, Firestore: while the chooser waits the reload gate drops it, and a leader made view-only takes the shared copy', () => {
   // A newer page's save arrives: held, the choice dropped, nothing sent.
   let { a, b, rev } = c6FsPair();
@@ -24518,8 +24646,8 @@ atest('C6, api: an entry both devices changed opens the chooser; the pick is log
 
 // The chooser as the page draws it.
 const C6_CHOOSER_FNS = ['esc', 'fmt', 'fmtDateShort', 'ledgerCap', 'ledgerLogValue', 'ledgerLogWhen', 'LEDGER_FIELD_LABELS', 'LEDGER_EDIT_FIELDS', 'LEDGER_RESOLVE_FIELDS',
-  'ledgerEmpty', 'ROW_CHOOSER_TITLE', 'ROW_CHOOSER_KEPT', 'ROW_MONEY_NOTE', 'ROW_SAME_BUT_STAMPS', 'rowChooserIntro', 'ledgerConflictName', 'ledgerConflictLines',
-  'ledgerConflictWho', 'renderRowChooser', 'ROW_PICK_NEEDED', 'JSON_BACKUP_NAME', 'rowChoice'];
+  'ledgerEmpty', 'ROW_CHOOSER_TITLE', 'ROW_CHOOSER_KEPT', 'ROW_LOCKED_NOTE', 'ROW_TICKED_NOTE', 'ROW_PAIR_NOTE', 'rowCantKeep', 'rowItemLock', 'ROW_SAME_BUT_STAMPS',
+  'rowChooserIntro', 'ledgerConflictName', 'ledgerConflictLines', 'ledgerConflictWho', 'renderRowChooser', 'ROW_PICK_NEEDED', 'JSON_BACKUP_NAME', 'rowChoice'];
 function c6Chooser(items, picks, more) {
   const ctx = vm.createContext({});
   vm.runInContext(`${C6_CHOOSER_FNS.map(decl).join('\n')}
@@ -24555,14 +24683,15 @@ test('C6: the chooser names each entry, shows both versions with what differs an
   ok(/data-act="sync-rows-save">Save my choices</.test(html) && !/Pick a version of each entry/.test(html), 'no save');
   ({ html } = c6Chooser(items, { l2: 'theirs' }, "ui.armed = 'sync-rows-save';"));
   ok(/class="btn danger armed" data-act="sync-rows-save">Tap again to save</.test(html), 'the second tap');
-  // Several entries; a money-under-a-lock conflict says why; a version differing only in who recorded it says so.
+  // Several entries; money changed on one while the other ticked it says why; a version differing only in who recorded it says so.
   const two = items.concat([{ ids: ['l3'], rows: [{ id: 'l3', parts: ['content', 'tick'], mine: row({ id: 'l3', amountCents: 4500 }),
-    theirs: row({ id: 'l3', reconciled: true }), mineBy: null, theirsBy: null }] }, { ids: ['rv-l4'], rows: [{ id: 'rv-l4', parts: ['content'],
+    theirs: row({ id: 'l3', reconciled: true }), mineBy: null, theirsBy: null, money: true, lock: null }] }, { ids: ['rv-l4'], rows: [{ id: 'rv-l4', parts: ['content'],
     mine: row({ id: 'rv-l4', enteredBy: 'Pat' }), theirs: row({ id: 'rv-l4', enteredBy: 'Sam' }), mineBy: null, theirsBy: null }] }]);
   const t = c6Text(c6Chooser(two).html);
   ok(t.includes('Another device changed 3 ledger entries that this device changed too, and the versions don’t match. Pick the version to keep for each. Nothing is shared until you do.'), 'three: ' + t);
-  ok(t.includes('Pizza · Sep 10 · −$45.00 One device changed its amount, direction or date while the other ticked it or reconciled its month. On this device Who changed it wasn’t recorded. ' +
-    'Amount: $45.00 Ticked: no Keep this version In the pack’s shared copy Who changed it wasn’t recorded. Amount: $40.00 Ticked: yes Keep this version'), 'money under a lock: ' + t);
+  ok(t.includes('Pizza · Sep 10 · −$45.00 One device ticked this entry against the bank statement while the other changed its amount, date or in/out. Keep the version that ' +
+    'matches the bank statement. If you keep the changed one, tick it again once it matches. On this device Who changed it wasn’t recorded. ' +
+    'Amount: $45.00 Ticked: no Keep this version In the pack’s shared copy Who changed it wasn’t recorded. Amount: $40.00 Ticked: yes Keep this version'), 'money under a tick: ' + t);
   ok(t.includes('On this device Who changed it wasn’t recorded. The same, apart from who recorded it and when. Keep this version'), 'stamps only');
   // One choice of two entries (a reverse made on both): each named, and the latest change behind each side.
   const pair = [{ ids: ['l2', 'rv-l2'], rows: [{ id: 'l2', parts: ['off'], mine: row({ voidReason: 'Bounced' }), theirs: row({ voidReason: 'Never cashed' }),
@@ -24580,6 +24709,28 @@ test('C6: the chooser names each entry, shows both versions with what differs an
   ok(/if \(o\.kind === 'sync-conflict'\) \{\n\s+if \(rowChoice\(\)\) return renderRowChooser\(o, rowChoice\(\)\);/.test(SCRIPT), 'the overlay');
   ok(/if \(act\.indexOf\('sync-row-pick:'\) === 0\) \{/.test(slice('handleAction')) && /if \(act === 'sync-rows-save'\) \{ arm\(act, saveRowChoices\); return; \}/.test(slice('handleAction')),
     'the buttons');
+});
+
+test('C6 review: the chooser offers only the version that can be kept, and says why in the treasurer’s words', () => {
+  const row = (o) => C6_ROW(Object.assign({ id: 'l2', date: '2026-09-10' }, o));
+  const locked = (kind, date) => [{ ids: ['l2'], rows: [{ id: 'l2', parts: ['content', 'tick'], mine: row({ amountCents: 4500 }), theirs: row({ reconciled: true }),
+    mineBy: null, theirsBy: null, money: true, lock: { side: 'mine', kind, date } }] }];
+  let t = c6Text(c6Chooser(locked('period', '2026-09-30')).html);
+  ok(t.includes('This entry was reconciled on one device while the other changed its amount, date or in/out. A reconciled entry’s money can’t be changed in place, ' +
+    'so only the reconciled version can be kept. If the other figures are right, keep the reconciled version, then open the entry’s Detail and tap Reverse or correct. ' +
+    'The fix is dated after the reconciled period, and that period stays as reconciled.'), 'the locked note: ' + t);
+  ok(t.includes('Ticked: no Can’t be kept: it changes the money of an entry reconciled through Sep 30. In the pack’s shared copy'), 'the period: ' + t);
+  ok(!/sync-row-pick:mine:l2/.test(c6Chooser(locked('period', '2026-09-30')).html) && /sync-row-pick:theirs:l2/.test(c6Chooser(locked('period', '2026-09-30')).html), 'the buttons');
+  ok(c6Text(c6Chooser(locked('statement', '2026-09-30')).html).includes('Can’t be kept: it changes the money of an entry on the Sep 30 statement.'), 'the statement');
+  t = c6Text(c6Chooser(locked('pair', '')).html);
+  ok(t.includes('This entry was reversed on one device while the other changed its amount or in/out. A reversed entry’s amount can’t change, or its reversal would no ' +
+    'longer cancel it, so only the reversed version can be kept. If the other amount is right, enter it as a new entry.') &&
+    t.includes('Can’t be kept: it changes the amount of an entry that has been reversed.'), 'the reversed pair: ' + t);
+  // Treasurer review of C6 (3): content and tick both asked, but no money moved (a label on one, an
+  // untick on the other): no money note.
+  const noMoney = [{ ids: ['l2'], rows: [{ id: 'l2', parts: ['content', 'tick'], mine: row({ description: 'Pizza night' }), theirs: row({ reconciled: true }),
+    mineBy: null, theirsBy: null, money: false, lock: null }] }];
+  ok(!/amount, date or in\/out/.test(c6Text(c6Chooser(noMoney).html)), 'a money note with no money moved');
 });
 
 test('C6: parents never see the chooser or a resolve, and the reload gate refuses its buttons', () => {
