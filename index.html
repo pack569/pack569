@@ -19837,16 +19837,20 @@
   // "reconciled period" pill's tooltip, and the line in its Detail (a tooltip never shows on a
   // phone). '' for an open row. Plain text: the callers escape it.
   // Phase 3, C4 — and, in the period, the one way to fix it (the Reverse or correct button below it).
-  function ledgerLockNote(e, book) {
+  // Treasurer sign-off on option B (4) — but not on an entry already reversed (`role`, its
+  // ledgerPairRole, 'reversed'): it has no Reverse or correct button, and the pair's own line says
+  // what to do (ledgerPairFixedWhy). The note ends after what can't be done.
+  function ledgerLockNote(e, book, role) {
     if (!ledgerLocked(e, book)) return '';
     if (book.closedAt) return 'In a year already closed out: it can’t be changed or voided.';
+    var done = role === 'reversed';
     if (ledgerDateReconciled(e.date, book)) {
       return 'Dated on or before ' + fmtDateShort(book.reconciledThrough) + ', which is already reconciled: it can’t be voided, ' +
-        'and its amount, date and direction can’t be changed. To fix it, use Reverse or correct.';
+        'and its amount, date and direction can’t be changed.' + (done ? '' : ' To fix it, use Reverse or correct.');
     }
     // Treasurer review of C4 (4), option B.
-    return 'Reconciled against a bank statement: it can’t be voided, and its amount, date and direction can’t be changed. ' +
-      'Un-reconcile it if it was ticked by mistake; otherwise use Reverse or correct.';
+    return 'Reconciled against a bank statement: it can’t be voided, and its amount, date and direction can’t be changed.' +
+      (done ? '' : ' Un-reconcile it if it was ticked by mistake; otherwise use Reverse or correct.');
   }
   // Treasurer review of C2 (M-4) — the names the log's ids stand for, from the pack as it is now
   // (ledgerLogValue), and which entry an id is (ledgerLogCsv).
@@ -19977,7 +19981,10 @@
     var what = 'This entry corrects ' + (o.description ? '“' + o.description + '”' : 'an entry') + ' (' + fmtDateShort(o.date) + ', ' +
       (o.direction === 'in' ? '+' : '−') + fmt(o.amountCents) + ')';
     if (o.off || ledgerReversalOf(rows.filter(function (x) { return x && !x.off; }), o)) return what + ', which is under Voided & reversed with the reason.';
-    return what + ', which counts again: its reversal was voided or reversed.';
+    // Treasurer sign-off on option B (2) — the two both count, which is a double count, not the
+    // normal state of a correction: said so, with what to do either way.
+    return what + ', but that entry counts again: its reversal was voided or reversed. Both now count. If this correction is right, reverse ' +
+      (o.description ? '“' + o.description + '”' : 'that entry') + ' again. If it isn’t, take this entry out: ' + LEDGER_TAKE_OUT_ANY + '.';
   }
   // Phase 3, C4 — the one way to change a locked entry's money, or take it out, in its Detail.
   // Treasurer review of C4 (7) — on a locked entry only (ledgerLocked): an open one is changed in
@@ -20222,7 +20229,7 @@
               '" data-act="ledger-unreconcile:' + esc(e.id) + '">' +
               (ui.armed === 'ledger-unreconcile:' + e.id ? 'Tap again to un-reconcile' : 'Un-reconcile') + '</button>'
           : (ePeriod
-            ? '<span class="pill navy" title="' + esc(ledgerLockNote(e, state.book)) + '">reconciled period</span>'
+            ? '<span class="pill navy" title="' + esc(ledgerLockNote(e, state.book, ePair)) + '">reconciled period</span>'
             : '') +
             '<label class="perscout"><input type="checkbox" data-ch="led-rec" data-id="' + esc(e.id) + '"' + (e.reconciled ? ' checked' : '') + '> reconciled</label>') +
         '<button type="button" class="exp-toggle lmore" data-act="ledger-toggle" data-id="' + esc(e.id) + '" aria-expanded="' + open + '">' +
@@ -20267,7 +20274,7 @@
                 : '') +
               // Treasurer review of C2 (L-4) — the pill's tooltip never shows on a phone, so the
               // Detail of a locked row says it in a line.
-              (eLocked ? '<p class="small muted llock" style="margin:6px 0 0;flex-basis:100%">' + esc(ledgerLockNote(e, state.book)) + '</p>' : '') +
+              (eLocked ? '<p class="small muted llock" style="margin:6px 0 0;flex-basis:100%">' + esc(ledgerLockNote(e, state.book, ePair)) + '</p>' : '') +
               (ePair ? '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">' + esc(ledgerPairFixedWhy(e, state.ledger, state.book, pairOf)) + '</p>' : '') +   // option B review (1); sign-off (3)
               // Phase 3, C4 — a corrected entry says so, and where the one it replaced is.
               (e.replaces ? '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">' + esc(ledgerCorrectsLine(e, state.ledger.concat(state.ledgerAside || []))) + '</p>' : '') +

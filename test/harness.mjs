@@ -18575,7 +18575,7 @@ test('C3: a locked entry can’t be voided, not even unticked in the reconciled 
   // (Option B: a reversed entry's line sits between the two.)
   ok(/\(eLocked \? '' : '<button type="button" class="btiny" data-act="ledger-void:' \+ esc\(e\.id\) \+ '" aria-label="Void this entry" title="Void this entry">✕<\/button>'\) \+\s*\(ePair === 'reversed' \? ledgerReversedLineHtml\(e\) : ''\) \+[^\n]*\n\s*\(!eLocked && ui\.voidAsk === e\.id \? ledgerVoidFormHtml\(e\) : ''\) \+/
     .test(slice('renderLedgerEntries')), 'a locked row shows its ✕, or an open one none');
-  ok(/\?\s*'<span class="pill navy" title="' \+ esc\(ledgerLockNote\(e, state\.book\)\) \+ '">reconciled period<\/span>'/
+  ok(/\?\s*'<span class="pill navy" title="' \+ esc\(ledgerLockNote\(e, state\.book, ePair\)\) \+ '">reconciled period<\/span>'/
     .test(slice('renderLedgerEntries')), 'the reconciled-period pill does not say why there is no ✕');
 });
 
@@ -19071,9 +19071,20 @@ test('C2 treasurer L-4, L-2: a locked entry’s Detail says what it can’t have
     'Dated on or before Aug 31, which is already reconciled: it can’t be voided, and its amount, date and direction can’t be changed. To fix it, use Reverse or correct.',
     'Dated on or before Aug 31, which is already reconciled: it can’t be voided, and its amount, date and direction can’t be changed. To fix it, use Reverse or correct.'], 'the notes');
   eq(p.get("ledgerLockNote(row('u1'), { closedAt: '2027-07-01T00:00:00.000Z' })"), 'In a year already closed out: it can’t be changed or voided.', 'a closed year');
+  // Treasurer sign-off on option B (4) — an entry already reversed has no Reverse or correct button: the note
+  // ends after what can't be done. Its reversal ('reversal') still has one, and is told of it.
+  eq(['r1', 'p1'].map((id) => p.get(`[ledgerLockNote(row('${id}'), state.book, 'reversed'), ledgerLockNote(row('${id}'), state.book, 'reversal')]`)), [
+    ['Reconciled against a bank statement: it can’t be voided, and its amount, date and direction can’t be changed.',
+      'Reconciled against a bank statement: it can’t be voided, and its amount, date and direction can’t be changed. ' +
+      'Un-reconcile it if it was ticked by mistake; otherwise use Reverse or correct.'],
+    ['Dated on or before Aug 31, which is already reconciled: it can’t be voided, and its amount, date and direction can’t be changed.',
+      'Dated on or before Aug 31, which is already reconciled: it can’t be voided, and its amount, date and direction can’t be changed. To fix it, use Reverse or correct.']],
+  'a reversed entry, and a reversal');
+  const le = slice('renderLedgerEntries');
+  ok(/title="' \+ esc\(ledgerLockNote\(e, state\.book, ePair\)\)/.test(le), 'the pill is not told the row’s role');
   // In the Detail of a locked row (every locked row: the pill is shown only on an unticked one), escaped.
   // (Phase 3, C4 — then the Reverse or correct button, then the trail.)
-  ok(/\(eLocked \? '<p class="small muted llock" style="margin:6px 0 0;flex-basis:100%">' \+ esc\(ledgerLockNote\(e, state\.book\)\) \+ '<\/p>' : ''\) \+[\s\S]{0,600}?ledgerFixButtonHtml\(e, state\.book\) \+[^\n]*\n\s*ledgerTrailLine\(e\) \+/
+  ok(/\(eLocked \? '<p class="small muted llock" style="margin:6px 0 0;flex-basis:100%">' \+ esc\(ledgerLockNote\(e, state\.book, ePair\)\) \+ '<\/p>' : ''\) \+[\s\S]{0,600}?ledgerFixButtonHtml\(e, state\.book\) \+[^\n]*\n\s*ledgerTrailLine\(e\) \+/
     .test(slice('renderLedgerEntries')), 'the Detail does not carry the note');
   // L-2 with a reimbursement's receipt: one toast, both said, without a second "Saved".
   p.run("entryNeedsReceipt = function () { return true; }; ui.ledgerDraft = ledgerDraftDefault(); ui.ledgerDraft.date = '2026-08-20'; ui.ledgerDraft.amount = '12';" +
@@ -20706,7 +20717,8 @@ test('C4: the change history says a reverse in one line and a correction field b
 
 test('C4: the Reverse or correct form says what each does and what the corrected entry will be, and every id in it is escaped', () => {
   const x = sandbox(['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'LEDGER_VOID_REASON_MAX', 'LEDGER_FIX_DESC_ONLY', 'ledgerFixFormHtml', 'ledgerFixButtonHtml', 'ledgerCorrectsLine', 'ledgerLocked', 'ledgerAsideListHtml', 'ledgerCorrectReversalWhy',
-    'ledgerCorrectPlan', 'applyLedgerEdit', 'toCents', 'ledgerRowFields', 'LEDGER_EDIT_FIELDS', 'ledgerDateReconciled', 'entryAfterOpening', 'ledgerReverseDateRefusal', ...ASIDE_LIST_FNS]);
+    'ledgerCorrectPlan', 'applyLedgerEdit', 'toCents', 'ledgerRowFields', 'LEDGER_EDIT_FIELDS', 'ledgerDateReconciled', 'entryAfterOpening', 'ledgerReverseDateRefusal', ...ASIDE_LIST_FNS,
+    'LEDGER_TAKE_OUT_ANY']);
   const bad = 'x" data-act="del-scout:s1"><img src=y>\'';
   vm.runInContext(`var ui = { ledgerOpen: {}, armed: null, fixDraft: null, fixWhy: '' };
     var state = { book: { openingDate: '2026-07-01', reconciledThrough: '2026-08-31' }, ledger: [], ledgerAside: [] };
@@ -20790,7 +20802,10 @@ test('C4: the Reverse or correct form says what each does and what the corrected
   const rvP1 = { id: 'rv-p1', reverses: 'p1', date: '2026-10-15', amountCents: 1200, direction: 'in' };
   // Security review of option B (finding 3) — reversed is the pairing's: its reversal counted beside it.
   // Its reversal voided (set aside) or reversed again, the entry counts again, and the line says so.
-  const AGAIN = 'This entry corrects “Council fee” (Aug 15, −$12.00), which counts again: its reversal was voided or reversed.';
+  // Treasurer sign-off on option B (2) — which is a double count, and says what to do either way.
+  const AGAIN = 'This entry corrects “Council fee” (Aug 15, −$12.00), but that entry counts again: its reversal was voided or reversed. ' +
+    'Both now count. If this correction is right, reverse “Council fee” again. If it isn’t, take this entry out: void it, or reverse it if it is ' +
+    'reconciled or in the reconciled period.';
   eq([x.ledgerCorrectsLine({ replaces: 'p1' }, [orig, rvP1]), x.ledgerCorrectsLine({ replaces: 'p1' }, [Object.assign({}, orig, { description: '', direction: 'in' }), rvP1]),
     x.ledgerCorrectsLine({ replaces: 'p1' }, [Object.assign({}, orig, { off: 'reversed' })]),
     x.ledgerCorrectsLine({ replaces: 'p1' }, [Object.assign({}, orig, { off: 'void' })]), x.ledgerCorrectsLine({ replaces: 'p1' }, [Object.assign({}, orig, { reversedBy: '' }), rvP1]),
@@ -20802,6 +20817,10 @@ test('C4: the Reverse or correct form says what each does and what the corrected
     'This entry corrects “Council fee” (Aug 15, −$12.00), which is under Voided & reversed with the reason.',
     'A correction: the entry it replaces is under Voided & reversed.', 'This entry corrects “Council fee” (Aug 15, −$12.00), which is under Voided & reversed with the reason.',
     'A correction: the entry it replaces is under Voided & reversed.', AGAIN, AGAIN], 'the corrected entry’s line');
+  eq(x.ledgerCorrectsLine({ replaces: 'p1' }, [Object.assign({}, orig, { description: '' })]),
+    'This entry corrects an entry (Aug 15, −$12.00), but that entry counts again: its reversal was voided or reversed. Both now count. ' +
+    'If this correction is right, reverse that entry again. If it isn’t, take this entry out: void it, or reverse it if it is reconciled or in the reconciled period.',
+    'no description');
   ok(!/="[^"]*' \+ e\.id \+ '/.test(slice('ledgerFixFormHtml')), 'an unescaped id');
   // Voided & reversed: a void; a pair reversed under option B (two counted rows); a pair set aside by
   // C4's first build. Each reversed entry with who, when and why, its reversal straight under it; the
