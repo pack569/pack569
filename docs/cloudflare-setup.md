@@ -7,12 +7,11 @@
 Until the nameservers change (step 4 of the cutover), pack569.com keeps serving from GitHub
 Pages. Creating the Cloudflare account, the Pages project or the zone changes nothing live.
 
-> **Owner note: do this first, whatever happens with Cloudflare.** GitHub Pages serves every
-> file in the repo, and the live site serves `/test/harness.mjs` today. On `main` that file
-> still has real families' names and email addresses in its test fixtures. PR #1 replaces
-> them with made-up ones, so merging PR #1 soon takes them off the live site, whether or not
-> the Cloudflare move has happened. They stay in the repo's history until it is purged, and
-> that purge is still on the owner's list.
+> **Owner note: the repo's history still holds real families' details.** Older versions of
+> `test/harness.mjs` had real families' names and email addresses in their test fixtures.
+> PR #1 (merged) replaced them with made-up ones, so the live site no longer serves them.
+> They stay in the repo's history until it is purged, and that purge is still on the
+> owner's list.
 
 ## What changes, and what doesn't
 
@@ -37,7 +36,9 @@ the project to GitHub later "to save a step"; it would undo both.
 
 ## 1. Cloudflare account and the Pages project
 
-- [ ] Sign up for a free Cloudflare account.
+- [ ] Use the pack's own Cloudflare account, **pack569**, not a personal one. (If it does not
+      exist yet, sign up for a free account for the pack.) Every step below, the API token
+      and the account id included, is in that account.
 - [ ] Create the project **`pack569`** as Direct Upload. Either:
   - Workers & Pages → Create → Pages → **Upload assets** (not "Connect to Git"), name it
     `pack569`, and upload any placeholder folder; or
@@ -219,8 +220,9 @@ Firestore, Firebase Auth and the open-meteo weather service. Preview: weather on
 
 ## Cutover, in order
 
-1. Merge PR #1, PR #2, then PR #3b. This also redeploys GitHub Pages with the new page, which
-   is the "deploy this version first" step SETUP.md asks for before the rules.
+1. Merge PR #5 (PRs #1 to #4 are already in `main`). This also redeploys GitHub Pages with
+   the new page, which is the "deploy this version first" step SETUP.md asks for before the
+   rules.
 2. Actions → website → Run workflow from `main`: first `preview` as a smoke test, then
    `production`, which you approve. Check it at `pack569.pages.dev`.
 3. Firebase console → Authentication → Settings → Authorized domains: add
