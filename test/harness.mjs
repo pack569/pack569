@@ -20747,7 +20747,7 @@ test('reload gate: the banner says exactly what the owner decided, with a Reload
   vm.runInContext(`var state = {}, sync = { newerFormat: false }; function esc(s) { return String(s); }
     ${['FORMAT_NOTICE', 'formatBanner', ...FORMAT_GATE_FNS].map(decl).join('\n')}`, ctx);
   eq(vm.runInContext('FORMAT_NOTICE', ctx), 'This page is out of date: another leader’s device saved with a newer version. ' +
-    'Reload the page to keep working. Your unsaved changes stay on this device.', 'the banner’s words');
+    'Reload the page to keep working. Reload the page before you change anything else. Anything not yet shared stays on this device.', 'the banner’s words');
   eq(vm.runInContext('formatBanner()', ctx), '', 'a banner with nothing held');
   const held = vm.runInContext('sync.newerFormat = true; formatBanner()', ctx);
   ok(held.indexOf(vm.runInContext('FORMAT_NOTICE', ctx)) >= 0 && /data-act="reload-page">Reload<\/button>/.test(held) && /role="alert"/.test(held),
@@ -21250,17 +21250,26 @@ atest('reload gate, api: a newer page’s record on the server holds a leader’
     w.state(4, NEWER);
     const ed = await (await apiClient(w, 'editor', local === 'empty' ? {} : { state: PACK_STATE({ packName: 'Mine' }) })).start(1200);
     ed.run(GATE_LINE.map(decl).join('\n'));
-    eq(ed.get('[sync.newerFormat, state.packName, !!sync.conflict, ui.overlay && ui.overlay.kind, syncModeLine() === FORMAT_NOTICE]'),
-      [true, local === 'empty' ? '' : 'Mine', false, null, true], `${local}: the first answer`);
+    // The client's commit is a stub without the hold; the page's own commit refuses every edit
+    // while either hold is on (cae8e9f), so this one does too: the page's line, as it is written.
+    const HOLD = '    if (packFormatHeld()) { refuseHeldEdit(); return; }';
+    ok(slice('commit').indexOf(HOLD + '\n') !== -1, 'the page’s commit no longer refuses an edit while held');
+    ed.run(`${['FORMAT_REFUSED', 'refuseHeldEdit', 'loadLedgerSplits', 'load'].map(decl).join('\n')}
+      commit = function () { if (!canEdit()) return;\n${HOLD}\n save(); scheduleSyncPush(); };`);
+    const mine = local === 'empty' ? '' : 'Mine';
+    eq([ed.get('[sync.newerFormat, state.packName, !!sync.conflict, ui.overlay && ui.overlay.kind, syncModeLine() === FORMAT_NOTICE]'),
+      JSON.parse(ed.get('store[KEY]')).packName], [[true, mine, false, null, true], mine], `${local}: the first answer`);
     ed.reset();
+    ed.run('toasts = []');
     await ed.edit("state.packName = 'Edited while held'");
     ed.run('scheduleParentViewRefresh()');
     await settle([ed], 1200);
     await ed.poll();
     await settle([ed], 10000);
     eq(ed.log.filter((l) => /^(PUT|POST|DELETE) \/P\b/.test(l)), [], `${local}: something was sent while held`);
-    eq([JSON.parse(ed.get('store[KEY]')).packName, ed.get('state.packName')], ['Edited while held', 'Edited while held'],
-      `${local}: the edit was not kept on this device, or the pack’s copy was taken over it`);
+    // Refused and said: the copy stored on this device is untouched, and the page reads it back.
+    eq([JSON.parse(ed.get('store[KEY]')).packName, ed.get('state.packName'), ed.get('toasts')], [mine, mine, [ed.get('FORMAT_REFUSED')]],
+      `${local}: the edit was kept while held, or the pack’s copy was taken over this device’s`);
     const s = serverState(w);
     eq([s.rev, s.json.fmt, s.json.packName], [4, NEWER_FMT, 'Saved by a newer page'], `${local}: the newer page’s record was written over`);
   }

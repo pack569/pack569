@@ -20296,8 +20296,10 @@
     return '';
   }
   // The reload gate (PACK_FORMAT, owner's words) — above every leader page while it holds.
+  // Its last sentence in the treasurer's words since every edit is refused while held (owner,
+  // 2026-09-29: this exact text, the two "Reload the page" sentences kept as they are).
   var FORMAT_NOTICE = 'This page is out of date: another leader’s device saved with a newer version. ' +
-    'Reload the page to keep working. Your unsaved changes stay on this device.';
+    'Reload the page to keep working. Reload the page before you change anything else. Anything not yet shared stays on this device.';
   // …and what an edit is told while either hold is on (handleAction, handleChange, handleForm,
   // handleFilePick, and commit behind them): nothing is changed at all.
   var FORMAT_REFUSED = 'Not saved: this page is out of date. Reload the page, then enter it again.';
