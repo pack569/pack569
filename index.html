@@ -15264,7 +15264,22 @@
   // now. A pick stands only for an entry whose two versions are what the leader saw. With none left
   // (the other leader put it right, or this device's copy changed), the choice is done with, and a
   // save waiting goes out.
+  // Security review of C6 (F6) — first, the checks a push makes of a record before merging it: saving
+  // the picks merges `d` itself (saveRowChoices), and a later answer from the feed has had only the
+  // text scan. A newer page's record holds this page (holdNewerFormat drops the choice); one from the
+  // other side of a close-out, or closed out separately (seasonMoved, seasonClosedTwice), is never
+  // merged into: the choice becomes the whole-copy one, of `d`, as syncPush would have asked.
   function refreshRowChoice(rc, d) {
+    var parsed = null;
+    try { parsed = JSON.parse(typeof d.json === 'string' ? d.json : ''); } catch (e) { /* unreadable: no entries found in it, below */ }
+    if (formatAhead(parsed)) { holdNewerFormat(); return false; }
+    if (seasonMoved(d) || seasonClosedTwice(d)) {
+      sync.rowChoice = null;
+      sync.conflict = d;
+      if (ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay.remote = d;
+      render();
+      return false;
+    }
     rc.remote = d;
     rc.items = ledgerRowConflicts(d);
     var changed = false, now = {};
@@ -15301,8 +15316,10 @@
     if (!rc) return;
     if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); render(); return; }
     // (The reload gate has dropped the choice already, dropCopyChoice; and commit refuses.)
+    // (Security review of C6, F6 — which also asks of it what a push would: a newer page's record, or
+    // another close-out, and nothing is merged.)
     var changed = refreshRowChoice(rc, rc.remote);
-    if (!rowChoice()) return;   // nothing left to ask: the save is on its way
+    if (!rowChoice()) return;   // nothing left to ask (the save is on its way), or a whole-copy choice, or held
     // Security review of C6 (F1b) — asked again, an entry may be locked now against the version picked
     // (reconciled, or reversed, since the pick): that pick goes, and nothing is saved.
     var barred = null;

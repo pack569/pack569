@@ -25122,6 +25122,36 @@ test('C6 review (F4): a restored backup from before a statement leaves the entri
   }
 });
 
+test('C6 review (F6), Firestore: a close-out, or a newer page’s save, arriving while the chooser waits is never merged into by saving the picks', () => {
+  // A relabels l2 and saves; B relabels it too and is asked; B picks its own.
+  const asked = () => {
+    const p = c6FsPair();
+    p.a.run("editRow('l2', 'description', 'Pizza night')"); p.a.push();
+    p.b.run("editRow('l2', 'description', 'Pizza party')"); p.b.hear(); p.b.push();
+    p.b.run("pickRowVersion(rowChoice(), 'l2', 'mine')");
+    eq([c6Asked(p.b), p.b.get('rowChoice().picks')], [[['l2']], { l2: 'mine' }], 'B was not asked');
+    return p;
+  };
+  // A closes the year out (its l2 as it was, so the pick still stands against it) and saves; B hears it.
+  let { a, b, server, rev } = asked();
+  a.run(`state.archives = (state.archives || []).concat([{ id: 'arc-A', kind: 'season', year: 2026, closedAt: '2026-07-01T12:00:00.000Z' }]);
+    state.budget.programYear += 1; commit()`);
+  a.push();
+  b.hear();
+  // The choice is now the whole-copy one, of the close-out: no entries, the overlay kept, nothing sent.
+  eq([c6Asked(b), b.get('sync.conflict && sync.conflict.rev'), b.get('ui.overlay && ui.overlay.kind')], [null, rev(), 'sync-conflict'], 'after the close-out');
+  b.run('saveRowChoices()'); b.push();
+  eq([rev(), server().budget.programYear, server().archives.map((x) => x.id)], [5, 2027, ['arc-A']], 'B wrote over the close-out');
+  // A newer page's save, its fmt where the text scan doesn't look: held, the choice dropped, nothing sent.
+  ({ a, b, server, rev } = asked());
+  const hidden = { rev: 9, device: 'newer', updatedAt: 'TS', json: '{"rev":9,"\\u0066mt":2,"scouts":[]}' };
+  ok(!/"fmt"/.test(hidden.json) && JSON.parse(hidden.json).fmt === 2, 'the test’s record');
+  b.run(`reads['packs/P'] = ${JSON.stringify(hidden)}; watches[0].next(snapOf('packs/P', {}));`);
+  eq([b.get('!!sync.newerFormat'), c6Asked(b), b.get('!!sync.conflict')], [true, null, false], 'a newer page’s save while the choice waited');
+  b.run('saveRowChoices(); scheduleSyncPush()'); b.push();
+  eq(rev(), 4, 'B wrote while held');
+});
+
 /* ---------------- report ---------------- */
 // The API tests are async; they run here, one at a time, each on its own database.
 for (const [name, fn] of asyncTests) {
