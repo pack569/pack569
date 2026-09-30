@@ -21452,6 +21452,22 @@ test('Security pass (1a): an entry can’t be dated after the reversal that canc
     ['', ''], 'the entry counting again; the chain’s newest end');
 });
 
+// Security pass on the option B sign-off (2) — finding 11's check asked only of the reversal the pairing pairs:
+// a second counted reversal (two devices, each unaware of the other's) could be moved before its entry.
+test('Security pass (2): a second counted reversal the pairing leaves unpaired still can’t be dated before its entry', () => {
+  const p = c4Page();
+  p.run(`state.ledger.push({ id: 'rv-u1', reverses: 'u1', date: '2026-10-01', description: 'Reversal of “Pinewood trophies”', amountCents: 8400, direction: 'in', lineId: '', reconciled: false },
+    { id: 'rv2-u1', reverses: 'u1', date: '2026-10-05', description: 'Reversal of “Pinewood trophies”', amountCents: 8400, direction: 'in', lineId: '', reconciled: false })`);
+  eq(p.get("[ledgerPairOf(state.ledger)['rv-u1'] || '', ledgerPairOf(state.ledger)['rv2-u1'] || '']"), ['u1', ''], 'rv2-u1 is unpaired (the test proves nothing)');
+  const OWN = 'That date is before the entry’s own date (Sep 10). Pick a date on or after Sep 10.';
+  p.run("toasts = []; commits = 0; change('led-date', 'rv2-u1', '2026-09-01')");
+  eq([p.get("row('rv2-u1').date"), p.get('commits'), p.get('toasts')], ['2026-10-05', 0, [OWN]], 'the unpaired one');
+  p.run("toasts = []; change('led-date', 'rv-u1', '2026-09-01')");
+  eq([p.get("row('rv-u1').date"), p.get('toasts')], ['2026-10-01', [OWN]], 'the paired one, as before');
+  // The entry it names not counted (voided, or not in the rows): nothing to date it after.
+  eq(p.get("ledgerEditRefusal(row('rv2-u1'), 'date', '2026-09-01', state.book, state.ledger.filter(function (x) { return x.id !== 'u1'; }))"), '', 'its entry not counted');
+});
+
 // Treasurer sign-off on option B (extra) — the Un-void button is not offered where the tap would only be
 // refused (ledgerReversedAgainWhy); the reason is in the row's Detail, as a locked row's is.
 test('Treasurer sign-off (extra): Voided & reversed offers no Un-void on a reversal whose entry has been reversed again, and says why', () => {

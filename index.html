@@ -9008,8 +9008,11 @@
       // takes the dates a reversal is refused when it is made (after the period, never before its
       // entry: ledgerReverseDateRefusal), or it would change a statement already checked, or cancel
       // an entry before it happened.
-      var rvOf = Array.isArray(rows) && e && typeof e.reverses === 'string' && e.reverses && ledgerPairOf(rows)[e.id] === e.reverses
-        ? rows.filter(function (x) { return x && x.id === e.reverses; })[0] : null;
+      // Security pass on option B sign-off (2) — any counted reversal of a counted entry, whether
+      // or not the pairing pairs them: a second reversal the pairing leaves unpaired (two devices,
+      // each unaware of the other's) is still one, and pairs as soon as the first is taken out.
+      var rvOf = Array.isArray(rows) && e && typeof e.reverses === 'string' && e.reverses && rows.indexOf(e) !== -1
+        ? rows.filter(function (x) { return x && x !== e && x.id === e.reverses; })[0] : null;
       if (rvOf) {
         var rvNo = ledgerReverseDateRefusal(rvOf, book, value);
         if (rvNo) return rvNo;
