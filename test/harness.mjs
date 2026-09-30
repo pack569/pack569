@@ -22700,6 +22700,10 @@ test('C5: the statements merge by id, never lose one, and a statement changed on
   eq(m(m([revA], [reo]), [revB]), m([revB], m([reo], [revA])), 'three copies');
   eq(m([revA, reo, revB], []), m([revB, revA, reo], []), 'three copies in one list');
   eq(m(both, both), both, 'merged with itself');
+  // Two copies whose signed part differs (which only a fault makes): the same one kept, whichever merges.
+  const odd = Object.assign({}, base, { statementCents: 101 });
+  eq(m([base], [odd]), m([odd], [base]), 'a signed part that differs');
+  eq(m([odd], [base])[0].statementCents, 100, 'the signed part that sorts first');
   // The sync merge unions them, same year only, and steps the lock back past a reopen.
   const ms = slice('mergeRemoteAppendOnly');
   ok(/if \(bkHere && bkThere && bkHere\.year === bkThere\.year\) \{\s*state\.statements = mergeStatements\(state\.statements, remote\.statements\);\s*statementLockBack\(bkHere, state\.statements\);/.test(ms),
