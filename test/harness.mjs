@@ -9577,6 +9577,8 @@ test('no tracked file carries a real email address or phone number', () => {
     '(770) 867-3489',      // Fort Yargo park office, printed on the camping page
     '(770) 867-3400',      // Northeast Georgia Medical Center Barrow, the hospital nearest it
     '1-800-222-1222',      // Poison Control
+    '855-422-4453',        // Georgia DFCS child abuse line (1-855-GACHILD), in the lesson plans' disclosure steps
+    '844-726-8871',        // Scouts First Helpline (1-844-SCOUTS1), same place
   ];
   const ALLOWED_EMAIL = /@(example\.com|pack569\.com)$/i;
   // Machine addresses, by exact value: Google's signing-key service, which the API's token check
