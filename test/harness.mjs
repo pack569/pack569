@@ -1051,6 +1051,8 @@ const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'm
   'LEDGER_VOID_TICK_WHY', 'noteLedgerLookFromMerge', 'stampApproved',
   // Security re-check of C6 (N1c) — an entry on two statements signed separately, said once saved.
   'ledgerTwoStatementsLook',
+  // Security re-check of C6 (N4) — a voided entry a standing statement lists, said.
+  'ledgerVoidListedLook',
   // Owner decision 23 — a charge forgiven on the other copy and not on this one.
   'chargesForgivenThere',
   // Security re-check of C6 (N3) — and the change history says so.
@@ -24505,7 +24507,7 @@ test('C6 review: a pick of the version that can’t be kept, reaching the merge 
     'the merge kept B’s, or its history says it did');
 });
 
-test('C6 review: a tick merged onto an entry voided on the other device comes off, is logged with why, and is said once; not one a statement lists', () => {
+test('C6 review: a tick merged onto an entry voided on the other device comes off, is logged with why, and is said once; not one a statement lists, which is said', () => {
   const w = c6World();
   const get = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, w)));
   w.base = Object.assign(JSON.parse(JSON.stringify(GONE_SEED)), { ledger: [{ id: 'x', date: '2026-09-10', description: 'Pizza', amountCents: 4000, direction: 'out' }],
@@ -24539,8 +24541,18 @@ test('C6 review: a tick merged onto an entry voided on the other device comes of
     "return norm(r); })()");
   w.L = listed;
   const lr = get("(function () { clock = 1790000180000; state = norm(L); var look = []; mergeRemoteAppendOnly({ json: JSON.stringify(L) }, [], [], [], {}, look); " +
-    "return [state.ledgerAside[0].reconciled, look.length]; })()");
-  eq(lr, [true, 0], 'a voided entry a standing statement lists');
+    "return [state.ledgerAside[0].reconciled, look.map(function (l) { return [l.kind, l.row.id, l.date]; })]; })()");
+  // Security re-check of C6 (N4) — …and said: voided, it counts in nothing, yet the statement says it cleared.
+  eq(lr, [true, [['voidlisted', 'x', '2026-09-30']]], 'a voided entry a standing statement lists');
+  vm.runInContext("sync.lookNotes = []; sync.lookSeen = {};" +
+    "noteLedgerLookFromMerge([{ kind: 'voidlisted', row: { id: 'x', description: 'Pizza' }, date: '2026-09-30' }]);" +
+    "noteLedgerLookFromMerge([{ kind: 'voidlisted', row: { id: 'x', description: 'Pizza' }, date: '2026-09-30' }]);", w);
+  eq(get('sync.lookNotes'), ['“Pizza” is voided, but the Sep 30 statement lists it as cleared, so it is still ticked. If the bank statement shows it cleared, un-void it. ' +
+    'If not, reopen that statement and reconcile it again.'], 'said once');
+  // Control: the statement reopened, it lists nothing: the tick comes off, as any other (F3), and that is said instead.
+  w.L2 = get("(function () { var r = norm(L); r.statements.forEach(function (st) { if (st.id === 'st-1') { st.reopenedAt = '2026-10-03T00:00:00.000Z'; st.reopenedBy = 'Alex'; } }); return norm(r); })()");
+  eq(get("(function () { clock = 1790000180000; state = norm(L2); var look = []; mergeRemoteAppendOnly({ json: JSON.stringify(L2) }, [], [], [], {}, look); " +
+    "return [state.ledgerAside[0].reconciled, look.map(function (l) { return l.kind; })]; })()"), [false, ['voidtick']], 'control: a reopened statement');
 });
 
 test('C6 re-check (N1): saved, an entry on two statements signed separately is named on “The ledger needs a look”, with both statements, either way round', () => {

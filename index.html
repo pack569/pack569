@@ -14582,12 +14582,20 @@
       // the reconcile screen and can't be un-ticked there, so it is un-ticked here, logged with why, and
       // said on "The ledger needs a look". Not one a standing statement lists: that statement says it
       // cleared, and the tick stays with it.
+      // Security re-check of C6 (N4) — one a standing statement lists keeps its tick, and is said: voided,
+      // it counts in nothing, yet the statement says it cleared (the latest such statement is named).
       var onStatement = Object.create(null);
       arrOf(state.statements).forEach(function (st) {
-        if (st && !statementReopened(st) && Array.isArray(st.ticked)) st.ticked.forEach(function (r) { onStatement[r] = true; });
+        if (st && !statementReopened(st) && Array.isArray(st.ticked)) st.ticked.forEach(function (r) {
+          if (!onStatement[r] || String(st.date || '') > String(onStatement[r].date || '')) onStatement[r] = st;
+        });
       });
       state.ledgerAside.forEach(function (x) {
-        if (!x || typeof x.id !== 'string' || x.off !== 'void' || x.reconciled !== true || onStatement[x.id]) return;
+        if (!x || typeof x.id !== 'string' || x.off !== 'void' || x.reconciled !== true) return;
+        if (onStatement[x.id]) {
+          if (Array.isArray(look)) look.push({ kind: 'voidlisted', row: x, date: String(onStatement[x.id].date || '') });
+          return;
+        }
         x.reconciled = false;
         stampApproved(x, false);
         logLedger('untick', x.id, { why: LEDGER_VOID_TICK_WHY });
@@ -14780,18 +14788,25 @@
   function noteLedgerLookFromMerge(look) {
     var seen = sync.lookSeen || (sync.lookSeen = {}), notes = sync.lookNotes || (sync.lookNotes = []), n = 0;
     arrOf(look).forEach(function (it) {
-      var key = it && (it.kind === 'voidtick' || it.kind === 'twostatements') && it.row ? it.kind + ':' + it.row.id
+      var key = it && (it.kind === 'voidtick' || it.kind === 'twostatements' || it.kind === 'voidlisted') && it.row ? it.kind + ':' + it.row.id
         : it && it.kind === 'forgiven' && it.charge ? 'forgiven:' + it.charge.id : '';
       if (!key || seen[key]) return;
       seen[key] = true;
       notes.push(it.kind === 'forgiven'
         ? chargeLookName(it.charge) + ' was forgiven on another device but not on this one. Check it and forgive it again if it should be.'
         : it.kind === 'twostatements' ? ledgerTwoStatementsLook(it)
+        : it.kind === 'voidlisted' ? ledgerVoidListedLook(it)
         : ledgerCap(ledgerEntryNamed(it.row)) + ' was ticked on one device while voided on another. The void was kept, so it is no longer ticked. ' +
           'If the bank statement shows it cleared, un-void it and tick it again.');
       n += 1;
     });
     if (n) render();
+  }
+  // Security re-check of C6 (N4) — a voided entry a standing statement lists as cleared (`it`: { row, date:
+  // the statement's }): its tick stays with the statement, and one of the two has to change. Pure.
+  function ledgerVoidListedLook(it) {
+    return ledgerCap(ledgerEntryNamed(it.row)) + ' is voided, but ' + (it.date ? 'the ' + fmtDateShort(it.date) + ' statement' : 'a statement') +
+      ' lists it as cleared, so it is still ticked. If the bank statement shows it cleared, un-void it. If not, reopen that statement and reconcile it again.';
   }
   // Security re-check of C6 (N1c) — an entry on two statements signed separately, with different money
   // (`it`: { row, the version kept; kept, other: the two statements' dates, the kept version's first}). Pure.
