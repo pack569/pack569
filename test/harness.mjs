@@ -18666,6 +18666,7 @@ const C2R_ACT = [
 const C2R_MORE = `
   ${['LEDGER_VOID_REASON_MAX', 'ledgerVoidRefusal', 'ledgerVoidRow', 'ledgerUnvoidRow', 'normalizeAsideRow', 'ledgerPairOf', 'ledgerReversalOf', 'ledgerCancelledWhy',
     'ledgerLiveReversals', 'ledgerReversedAgainWhy', 'ledgerUnvoidDateWhy'].map(slice).join('\n')}
+  ${['arrOf', 'SCOUT_LEDGER_KEEPS', 'scoutHasLedger'].map(decl).join('\n')}
   var undo = null, undoWords = null, marks = [], editor = true;
   state.ledgerAside = [];
   ui.voidAsk = null; ui.voidWhy = '';
@@ -18678,7 +18679,8 @@ const C2R_MORE = `
   function getBudgetLine(id) { return { id: id, name: 'Council fee' }; }
   function getScout(id) { return { id: id, name: 'Ada' }; }
   function tierShortfallRows() { return [{ scout: { id: 's1' }, makeup: 1500 }]; }
-  function dropScout(id) { state.ledger.concat(state.ledgerAside).forEach(function (e) { if (e.scoutId === id) e.scoutId = ''; }); }
+  var dropped = [];
+  function dropScout(id) { dropped.push(id); state.ledger.concat(state.ledgerAside).forEach(function (e) { if (e.scoutId === id) e.scoutId = ''; }); }
   function act2(act, el) { el = el || { dataset: {} }; (function () {\n${C2R_ACT}\n})(); }`;
 const c2rPage = (o) => c2Page(Object.assign({ more: C2R_MORE }, o || {}));
 
@@ -19031,17 +19033,19 @@ test('C3: nothing outside the book’s own plumbing reads the voided rows, so no
   // Phase 3, C6 — and the per-row merge (mergeLedgerRows, applyLedgerMerge), which settles a row both copies hold.
   // Treasurer review of C6 (5) — ledgerLogNames and renderRowChooser name a reversal (voided or not) in a
   // change history or the entry chooser; they total nothing.
+  // Phase 3, C7 — scoutHasLedger asks whether any entry, voided or not, names a scout; it totals nothing.
   eq([...users].sort(), ['applyLedgerMerge', 'dropScout', 'freshState', 'handleAction', 'isStateEmpty', 'keepLostVoids', 'ledgerAsideListHtml', 'ledgerAsideSettle', 'ledgerEntryLabel',
     'ledgerLogNames', 'ledgerReverseSlot', 'ledgerUnvoidRow',
     // Phase 3, C5 — renderBankStatementSheet names an entry on a statement voided since; it totals nothing from it.
     'ledgerVoidRow', 'mergeLedgerRows', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderBankStatementSheet', 'renderLedger', 'renderLedgerEntries', 'renderRowChooser', 'restoreGone',
-    'rolloverYear'], 'who reads the voided rows');
-  // In handleAction: the void handlers, del-scout's log line, and (treasurer sign-off on C3) the voided CSV only.
+    'rolloverYear', 'scoutHasLedger'], 'who reads the voided rows');
+  // In handleAction: the void handlers and (treasurer sign-off on C3) the voided CSV only. (C7: del-scout's
+  // log line is gone, with the unlinking it logged.)
   // Security re-check of option B (A) — and the void's Undo, asking whether the row it would put back is still voided.
   const h = slice('handleAction').split('\n').filter((l) => /ledgerAside/.test(l) && !/^\s*\/\//.test(l));
-  eq(h.length, 4, 'handleAction reads the voided rows somewhere new: ' + h.join(' | '));
+  eq(h.length, 3, 'handleAction reads the voided rows somewhere new: ' + h.join(' | '));
   ok(/var vdOff = \(state\.ledgerAside \|\| \[\]\)\.filter\(function \(e\) \{ return e && e\.id === vdId && e\.off === 'void'; \}\)\[0\];/.test(h.join('\n')), h.join('\n'));
-  ok(/var uvRow = \(state\.ledgerAside \|\| \[\]\)\.find/.test(h.join('\n')) && /var dsRows = state\.ledger\.concat\(state\.ledgerAside \|\| \[\]\)/.test(h.join('\n')) &&
+  ok(/var uvRow = \(state\.ledgerAside \|\| \[\]\)\.find/.test(h.join('\n')) &&
     /text: ledgerVoidedCsv\(state\.ledgerAside, state\.ledger\) \};/.test(h.join('\n')), h.join('\n'));
   // renderLedger only asks whether there is a voided row, for the CSV button.
   eq(slice('renderLedger').split('\n').filter((l) => /ledgerAside/.test(l) && !/^\s*\/\//.test(l)).map((l) => l.trim()),
@@ -19091,17 +19095,67 @@ test('C2 review (minor): a tier make-up or reimbursement is logged as an add, an
   eq(JSON.parse(JSON.stringify(vm.runInContext('waits', a))), [3500, 10000], 'arm’s time');
 });
 
-test('C2 review (minor): deleting a scout logs their ledger entries’ unlinking as one reassign, on the deleting device only', () => {
+test('C7: a scout any ledger entry names, counted, voided or reversed, is refused a delete, and nothing changes', () => {
+  // (Until C7 the delete unlinked the scout's entries, logged as one 'reassign'. Owner, 2026-09-30:
+  // archived, never deleted.) r1 and m1 name s1, both counted.
   const p = c2rPage();
-  p.run("row('u1').scoutId = 's1'; act2('del-scout:s1'); act2('del-scout:s1')");
-  eq(p.get('state.ledger.filter(function (e) { return e.scoutId === "s1"; }).length'), 0, 'the rows were not unlinked');
-  const ev = p.get('log()');
-  eq(ev.map((e) => [e.op, e.row, e.f, e.rows]), [['reassign', 'u1', { scoutId: ['s1', ''] }, ['r1', 'm1']]], 'the reassign');
-  // A scout with no ledger entries: nothing logged.
-  p.run("act2('del-scout:s9'); act2('del-scout:s9')");
-  eq(p.get('log().length'), 1, 'a scout with no entries was logged');
-  // The merge's dropScout (another device's delete) logs nothing: the event is the deleting device's.
-  ok(!/logLedger/.test(slice('dropScout')) && !/logLedger\('reassign'/.test(slice('mergeRemoteAppendOnly')), 'the merge logs the unlinking too');
+  const words = 'Payments are recorded for this scout, so they can be archived but not deleted.';
+  eq(p.get('SCOUT_LEDGER_KEEPS'), words, 'the words');
+  const before = p.get('JSON.stringify(state)');
+  p.run("toasts = []; commits = 0; renders = 0; act2('del-scout:s1'); act2('del-scout:s1')");
+  eq([p.get('JSON.stringify(state)') === before, p.get('dropped'), p.get('marks'), p.get('commits'), p.get('ui.armed'), p.get('toasts'), p.get('renders')],
+    [true, [], [], 0, null, [words, words], 2], 'counted entries');
+  // Only voided, only reversed, or only a reversal: set aside, it still names the family.
+  for (const off of ['void', 'reversed', 'reversal']) {
+    p.run(`state.ledger.forEach(function (e) { if (e.scoutId === 's1') e.scoutId = ''; }); state.ledgerAside = [{ id: 'v1', scoutId: 's1', off: '${off}' }];`);
+    const was = p.get('JSON.stringify(state)');
+    p.run("toasts = []; commits = 0; act2('del-scout:s1'); act2('del-scout:s1')");
+    eq([p.get('JSON.stringify(state)') === was, p.get('dropped'), p.get('marks'), p.get('commits'), p.get('ui.armed'), p.get('toasts').length], [true, [], [], 0, null, 2], off + ' only');
+  }
+  // Armed before a sync brought a payment in (a screen drawn before it): the second tap is refused too.
+  p.run("state.ledgerAside = []; toasts = []; act2('del-scout:s1'); state.ledger[0].scoutId = 's1'; act2('del-scout:s1')");
+  eq([p.get('dropped'), p.get('marks'), p.get('commits'), p.get('toasts')], [[], [], 0, [words]], 'armed, then a payment came in');
+  // A scout with no ledger entries is deleted as before: two taps, marked, dropped, saved, nothing logged.
+  p.run("ui.armed = null; toasts = []; commits = 0; act2('del-scout:s9'); act2('del-scout:s9')");
+  eq([p.get('dropped'), p.get('marks'), p.get('commits'), p.get('toasts'), p.get('log().length')], [['s9'], [['scouts', ['s9'], false]], 1, [], 0], 'a scout with no entries');
+  // Nothing in the delete, nor in the merge's dropScout, logs a change to the ledger now.
+  ok(!/logLedger/.test(c2Block(/    if \(act\.indexOf\('del-scout:'\) === 0\) \{[\s\S]*?\n    \}/, 'del-scout')) && !/logLedger/.test(slice('dropScout')) && !/logLedger\('reassign'/.test(slice('mergeRemoteAppendOnly')), 'a delete logs an unlinking');
+  // scoutHasLedger itself: both lists, never a blank id, and a record with no ledger at all.
+  const x = vm.createContext({});
+  vm.runInContext(['arrOf', 'scoutHasLedger'].map(decl).join('\n') + "\nvar state = { ledger: [null, { scoutId: '' }, { scoutId: 'a' }], ledgerAside: [{ scoutId: 'b', off: 'void' }] };", x);
+  eq(['a', 'b', 'c', '', undefined].map((id) => x.scoutHasLedger(id)), [true, true, false, false, false], 'scoutHasLedger');
+  vm.runInContext('state.ledgerAside = undefined; state.ledger = undefined;', x);
+  eq(x.scoutHasLedger('a'), false, 'a record with no ledger');
+});
+
+test('C7: the scout’s page shows no Delete for a scout any ledger entry names, and says why beside Archive', () => {
+  // The page's own renderScoutRow and everything it reaches, on a normalized record: s1 has a counted
+  // payment, s2 only a voided one, s3 nothing in the ledger. Each opened, active and then archived.
+  const ctx = vm.createContext({});
+  vm.runInContext(`${[...new Set([...NORMALIZE_FNS, ...declClosure(['renderScoutRow'], ['state', 'ui', 'sync', 'render', 'save', 'showToast', 'uid', 'todayISO', 'commit', 'scheduleSyncPush'])])].map(decl).join('\n')}
+    var ui = { expandedScouts: { s1: true, s2: true, s3: true }, armed: null }, sync = {};
+    function todayISO() { return '2026-10-01'; } function uid() { return 'u'; }
+    var state = normalizeState(${JSON.stringify(Object.assign(preMigrationState(), {
+      scouts: [{ id: 's1', name: 'Ada Lovelace', den: 'Wolf' }, { id: 's2', name: 'Bo Diddley', den: 'Bear' }, { id: 's3', name: 'Cal Ripken', den: 'Lion' }],
+      ledger: [{ id: 'l1', date: '2026-09-01', description: 'Dues', amountCents: 2500, direction: 'in', scoutId: 's1' }],
+      ledgerAside: [{ id: 'v1', date: '2026-09-02', description: 'Dues', amountCents: 2500, direction: 'in', scoutId: 's2', off: 'void', voidReason: 'Twice' }]
+    }))});
+    function row(id) { return renderScoutRow(getScout(id), { blocks: 0, sales: 0 }, {}); }`, ctx);
+  const text = (h) => h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  const words = 'Payments are recorded for this scout, so they can be archived but not deleted.';
+  const archivedWords = 'Payments are recorded for this scout, so they can’t be deleted.';
+  for (const archived of [false, true]) {
+    vm.runInContext(`state.scouts.forEach(function (s) { s.archived = ${archived}; })`, ctx);
+    const [h1, h2, h3] = ['s1', 's2', 's3'].map((id) => vm.runInContext(`row('${id}')`, ctx));
+    for (const [h, who] of [[h1, 'a counted payment'], [h2, 'only a voided one']]) {
+      ok(!/data-act="del-scout:/.test(h), `${who}${archived ? ', archived' : ''}: a Delete is drawn`);
+      ok(text(h).includes(archived ? archivedWords : words) && !text(h).includes(archived ? words : archivedWords), `${who}${archived ? ', archived' : ''}: the line`);
+      ok(archived ? /data-act="restore-scout" data-id="s/.test(h) : /data-act="archive-scout" data-id="s/.test(h), `${who}: no ${archived ? 'Restore' : 'Archive'}`);
+    }
+    // Nothing in the ledger: Delete as before, and no line.
+    ok(h3.includes(`data-act="del-scout:s3"`) && text(h3).includes(archived ? 'Delete permanently' : 'Delete') && !/Payments are recorded/.test(h3), 'a scout with no entries' + (archived ? ', archived' : ''));
+  }
+  eq(vm.runInContext('[SCOUT_LEDGER_KEEPS, SCOUT_LEDGER_KEEPS_ARCHIVED]', ctx), [words, archivedWords], 'the words');
 });
 
 test('C2 review #3: the log is capped in bytes too, and one event can’t carry anything it likes', () => {

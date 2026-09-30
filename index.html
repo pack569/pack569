@@ -19056,15 +19056,20 @@
       h += '</tbody></table></div>';
     }
 
+    // Phase 3, C7 (owner, 2026-09-30) — a scout the ledger names is archived, never deleted
+    // (scoutHasLedger): no Delete, and a line saying why in its place.
+    var keepsLedger = scoutHasLedger(s.id);
     h += '<div class="row" style="margin-top:12px">';
     if (s.archived) {
       h += '<button type="button" class="btn small" data-act="restore-scout" data-id="' + s.id + '">Restore to roster</button>';
-      if (t.blocks === 0 && !entries.length) h += dangerBtn('del-scout:' + s.id, 'Delete permanently');
+      if (t.blocks === 0 && !entries.length && !keepsLedger) h += dangerBtn('del-scout:' + s.id, 'Delete permanently');
     } else {
       h += '<button type="button" class="btn small" data-act="archive-scout" data-id="' + s.id + '">Archive (keeps history)</button>';
-      if (t.blocks === 0 && !entries.length) h += dangerBtn('del-scout:' + s.id, 'Delete');
+      if (t.blocks === 0 && !entries.length && !keepsLedger) h += dangerBtn('del-scout:' + s.id, 'Delete');
     }
-    h += '</div></div>';
+    h += '</div>';
+    if (keepsLedger) h += '<p class="small muted" style="margin:6px 0 0">' + esc(s.archived ? SCOUT_LEDGER_KEEPS_ARCHIVED : SCOUT_LEDGER_KEEPS) + '</p>';
+    h += '</div>';
     return h;
   }
 
@@ -30686,8 +30691,18 @@
   // reaches the handler while a gate is up is ignored, so no code path can read or mutate
   // the pack record on a link visitor's / not-yet-approved user's device.
   var GATE_ACTS = ['sign-in-google', 'sign-out-google', 'join-forget', 'toast-action'];
+  // Phase 3, C7 (owner, 2026-09-30) — does the ledger hold anything for this scout: an entry,
+  // counted or set aside (voided, reversed, a reversal), that names them? Such a scout can be
+  // archived, never deleted: a payment is money that moved, and its family link stays.
+  var SCOUT_LEDGER_KEEPS = 'Payments are recorded for this scout, so they can be archived but not deleted.';
+  var SCOUT_LEDGER_KEEPS_ARCHIVED = 'Payments are recorded for this scout, so they can’t be deleted.';
+  function scoutHasLedger(id) {
+    return arrOf(state.ledger).concat(arrOf(state.ledgerAside)).some(function (e) { return !!e && typeof id === 'string' && !!id && e.scoutId === id; });
+  }
   // Remove a scout and everything that is theirs alone (del-scout; and the sync merge, for a
   // scout another device deleted — LIVE STOPGAP, see freshGone). Does not save.
+  // Phase 3, C7 — del-scout never drops one the ledger names (scoutHasLedger), so the ledger
+  // unlinking below is only ever the merge's, for a delete made on a page from before C7.
   function dropScout(id) {
     var goneScout = getScout(id); // capture before removal so we can preserve derby names
     state.scouts = state.scouts.filter(function (x) { return x.id !== id; });
@@ -32471,15 +32486,15 @@
       return;
     }
     if (act.indexOf('del-scout:') === 0) {
+      // Phase 3, C7 (owner, 2026-09-30) — never a scout the ledger names (scoutHasLedger): archived,
+      // never deleted. The button isn't drawn for one; a screen drawn before a sync brought a payment
+      // in is refused here, on either tap, and nothing changes. So the ledger is never touched here
+      // (until C7 the scout's entries were unlinked, and logged as one 'reassign').
+      if (scoutHasLedger(act.split(':')[1])) { showToast(SCOUT_LEDGER_KEEPS); render(); return; }
       arm(act, function () {
         var id = act.split(':')[1];
-        // Security review of C2 (minor) — dropScout unlinks the scout's ledger entries (the money
-        // stays); a label change on each, so logged here, on the deleting device, as ONE
-        // 'reassign'. Not in dropScout: a merge runs it too, for another device's delete.
-        var dsRows = state.ledger.concat(state.ledgerAside || []).filter(function (e) { return e.scoutId === id; }).map(function (e) { return e.id; });
         markGone('scouts', [id]);   // LIVE STOPGAP — so no stale copy brings them back
         dropScout(id);
-        if (dsRows.length) logLedger('reassign', dsRows[0], { f: { scoutId: [id, ''] }, rows: dsRows.slice(1) });
         commit();
       });
       return;
