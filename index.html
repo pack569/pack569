@@ -4093,8 +4093,11 @@
     d.statements = mergeStatements(d.statements, []);
     statementLockBack(d.book, d.statements);
     d.statements = statementsCap(d.statements, d.ledger);
+    // Phase 3, C8 (C8-2) — each closed book coerced (normalizeClosedBook: one that is not a book is
+    // dropped, as junk), and one per year, oldest first (mergeClosedBooks with nothing to merge: the
+    // same pick the sync merge makes, so every device holds the same list).
     if (!Array.isArray(d.closedBooks)) d.closedBooks = [];
-    d.closedBooks = d.closedBooks.filter(plainObj);
+    d.closedBooks = mergeClosedBooks(d.closedBooks.filter(plainObj).map(normalizeClosedBook).filter(function (b) { return !!b; }), []);
     d.teImport = (plainObj(d.teImport) && typeof d.teImport.batch === 'string' && d.teImport.batch)
       ? { batch: d.teImport.batch, at: typeof d.teImport.at === 'string' ? d.teImport.at : '' } : null;
     // -----------------------------------------------------------------------
@@ -4794,6 +4797,78 @@
     e.carriedFrom = (cf && typeof cf === 'object' && typeof cf.year === 'number' && isFinite(cf.year) && typeof cf.id === 'string')
       ? { year: Math.round(cf.year), id: cf.id } : null;
     return e;
+  }
+  // PHASE 3, C8 (C8-2) — one closed book (state.closedBooks[i], closedBookBuild's shape), coerced in
+  // place; null when it is not a book (no whole-number year). Only what is there is coerced, and a key
+  // this page does not know is kept, as a newer page wrote it. The rows, rows set aside, statements and
+  // history go through the same normalizers as the live book's (normalizeLedgerRow, normalizeAsideRow,
+  // normalizeLedgerEvent, normalizeStatement), each cut at a most (CLOSED_BOOK_MAX_ROWS and its like:
+  // a record a crafted or broken copy has swollen is cut, and says so in `ledgerTrimmed` and its
+  // kin, where the closed year's own size budget would have). A compact book's rows are
+  // closedCompactRow's shape. Stamps are never an email; dates are YYYY-MM-DD or ''; cents whole.
+  // Nothing here reads the clock or makes an id. Literals only: normalizeState runs it before the
+  // script's vars are set. Pure apart from the coercion.
+  function normalizeClosedBook(b) {
+    if (!b || typeof b !== 'object' || Array.isArray(b) || typeof b.year !== 'number' || !isFinite(b.year) || Math.round(b.year) !== b.year) return null;
+    function plain(x) { return !!x && typeof x === 'object' && !Array.isArray(x); }
+    function str(k) { if (typeof b[k] !== 'string') b[k] = ''; }
+    function cents(k) { b[k] = typeof b[k] === 'number' && isFinite(b[k]) ? Math.round(b[k]) : 0; }
+    function iso(k) { if (typeof b[k] !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(b[k])) b[k] = ''; }
+    ['closedAt', 'closedByUid', 'archiveId'].forEach(str);
+    b.closedBy = ledgerStampClean(b.closedBy);
+    if (typeof b.closedBy !== 'string') b.closedBy = '';
+    ['openingDate', 'reconciledThrough'].forEach(iso);
+    iso('cutoff');
+    if (!b.cutoff) b.cutoff = (b.year + 1) + '-06-30';
+    ['openingCents', 'closingCents'].forEach(cents);
+    var cf = plain(b.carried) ? b.carried : {};
+    b.carried = { n: 0, inCents: 0, outCents: 0 };
+    Object.keys(b.carried).forEach(function (k) {
+      b.carried[k] = typeof cf[k] === 'number' && isFinite(cf[k]) && cf[k] > 0 ? Math.round(cf[k]) : 0;
+    });
+    b.form = b.form === 'compact' ? 'compact' : 'full';
+    var MAX_ROWS = 5000, MAX_LOG = 5000, MAX_STATEMENTS = 200;
+    function list(k, max, flag) {
+      if (!Array.isArray(b[k])) b[k] = [];
+      b[k] = b[k].filter(plain);
+      if (b[k].length > max) { b[k] = b[k].slice(0, max); b[flag] = true; }
+    }
+    list('ledger', MAX_ROWS, 'ledgerTrimmed');
+    list('aside', MAX_ROWS, 'asideTrimmed');
+    list('log', MAX_LOG, 'logTrimmed');
+    list('statements', MAX_STATEMENTS, 'statementsTrimmed');
+    if (b.form === 'compact') {
+      b.ledger.forEach(function (r) {
+        ['i', 'd', 't'].forEach(function (k) { if (typeof r[k] !== 'string') r[k] = ''; });
+        r.c = typeof r.c === 'number' && isFinite(r.c) ? Math.round(r.c) : 0;
+        ['l', 'r', 's', 'f'].forEach(function (k) { if (r[k] !== undefined && typeof r[k] !== 'string') delete r[k]; });
+        if (r.k !== undefined && r.k !== 1) delete r.k;
+      });
+    } else {
+      b.ledger.forEach(function (e) { normalizeLedgerRow(e, 'nk'); });
+    }
+    b.aside.forEach(function (e) { normalizeLedgerRow(e, 'nx'); normalizeAsideRow(e); });
+    b.log.forEach(normalizeLedgerEvent);
+    b.statements.forEach(normalizeStatement);
+    var nm = plain(b.names) ? b.names : {};
+    b.names = { line: {}, family: {} };
+    ['line', 'family'].forEach(function (k) {
+      if (plain(nm[k])) Object.keys(nm[k]).forEach(function (id) { if (typeof nm[k][id] === 'string') b.names[k][id] = nm[k][id]; });
+    });
+    if (b.form === 'compact') delete b.names;
+    ['ledgerTrimmed', 'asideTrimmed', 'logTrimmed', 'statementsTrimmed'].forEach(function (k) { if (b[k] !== undefined && b[k] !== true) delete b[k]; });
+    return b;
+  }
+  // The ids of the scouts any closed book's rows name (full form: a compact row names a family in
+  // words, not a scout), set true in `into`. C7 (owner decision 24): a scout the ledger names is
+  // archived, never deleted, and a year closed out is still the ledger. Pure apart from `into`.
+  function closedBookScouts(books, into) {
+    arrOf(books).forEach(function (b) {
+      arrOf(b && b.ledger).concat(arrOf(b && b.aside)).forEach(function (e) {
+        if (e && typeof e.scoutId === 'string' && e.scoutId) into[e.scoutId] = true;
+      });
+    });
+    return into;
   }
   // One ledger row, coerced in place (normalizeState). Shared by the counted rows (state.ledger,
   // `prefix` 'nl') and the rows set aside (state.ledgerAside, 'na'), so a row reads the same
@@ -8879,8 +8954,12 @@
   // Phase 3, C5 added 'review' (a statement marked reviewed; row: the statement's id) and 'balance' (a
   // legacy statement's ending balance added; row: its id, `f` statementCents [null, cents]); and writes
   // 'reopen' (row: the statement's id, `rows` another for that date, `why`, `f` reconciledThrough).
+  // Phase 3, C8 added 'close' (row 'book': the years closed out changed, `f` closedYears [before, after],
+  // each the years as '2025, 2026'; `why` says what happened: a year closed out, or a close-out undone by
+  // a restore or by keeping this device's copy, decision 27). A change to the BOOK, not to any entry: the
+  // merge reads it as a change to none (ledgerEventParts).
   var LEDGER_OPS = ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile', 'restore',
-    'review', 'balance'];
+    'review', 'balance', 'close'];
   function ledgerEvent(op, rowId, who, more) {
     if (LEDGER_OPS.indexOf(op) === -1 || typeof rowId !== 'string' || !rowId) return null;
     who = who || {};
@@ -9052,7 +9131,8 @@
     unmakeup: 'Tier make-up taken back', notcommission: 'Marked not the commission', reassign: 'Family unlinked',
     opening: 'Opening balance changed', reconcile: 'Marked reconciled', restore: 'Backup restored',
     'void': 'Voided', unvoid: 'Un-voided', reverse: 'Reversed', correct: 'Corrected', resolve: 'Kept one of two versions', reopen: 'Statement reopened',
-    review: 'Statement reviewed', balance: 'Ending balance added'   // Phase 3, C5 (C5 review: "ending balance", the treasurer's words)
+    review: 'Statement reviewed', balance: 'Ending balance added',   // Phase 3, C5 (C5 review: "ending balance", the treasurer's words)
+    close: 'Year closed out'   // Phase 3, C8 (C8-2; new wording for the treasurer's sign-off)
   };
   var LEDGER_FIELD_LABELS = {
     date: 'date', description: 'description', amountCents: 'amount', direction: 'in or out', lineId: 'budget line',
@@ -9061,7 +9141,8 @@
     reconciledThrough: 'reconciled through', statementCents: 'statement ending balance',
     reconciled: 'ticked', voidReason: 'void reason',   // Phase 3, C6: what a 'resolve' kept (treasurer review of C6, 4)
     statementId: 'statement', reversedBy: 'reversed by',   // treasurer review of C6 (5)
-    forgiven: 'forgiveness'   // security re-check of C6 (N3): a charge's forgiveness lost to a merge
+    forgiven: 'forgiveness',   // security re-check of C6 (N3): a charge's forgiveness lost to a merge
+    closedYears: 'years closed out'   // Phase 3, C8 (C8-2): what a 'close' event changed (before, after)
   };
   // One value from an event's `f`, as a leader reads it. `names` turns an id into a name
   // ({ line, scout, tier, statement, entry }: each id → name or ''). Pure given `names`.
@@ -9171,7 +9252,7 @@
   // "Replaced by": a corrected entry's date and amount. By and When are who did it and when: for a
   // reversal, who entered it.
   function ledgerVoidedCsv(aside, ledger) {
-    aside = aside || []; ledger = ledger || [];
+    aside = aside || []; ledger = ledger || [];   // (Phase 3, C8 — a row carried from last year is off 'carried': it lists as neither voided nor reversed)
     var pairOf = ledgerPairOf(ledger), byId = Object.create(null);
     var pool = aside.concat(ledger.filter(function (e) { return e && pairOf[e.id]; }));
     pool.forEach(function (e) { if (e && typeof e.id === 'string' && !byId[e.id]) byId[e.id] = e; });
@@ -14288,6 +14369,7 @@
     if (!g || !g.scouts) return held;
     [mine, theirs].forEach(function (c) {
       arrOf(c && c.ledger).concat(arrOf(c && c.ledgerAside)).forEach(function (e) { if (e && typeof e.scoutId === 'string' && e.scoutId) named[e.scoutId] = true; });
+      closedBookScouts(c && c.closedBooks, named);   // Phase 3, C8 — and a year closed out is still the ledger
     });
     Object.keys(named).sort().forEach(function (id) {
       if (!(g.scouts[id] > 0)) return;
@@ -14816,6 +14898,7 @@
       var rowNamed = Object.create(null), scoutHere = Object.create(null);
       [state, remote].forEach(function (c) {
         arrOf(c.ledger).concat(arrOf(c.ledgerAside)).forEach(function (e) { if (e && typeof e.scoutId === 'string' && e.scoutId) rowNamed[e.scoutId] = true; });
+        closedBookScouts(c.closedBooks, rowNamed);   // Phase 3, C8 — and a year closed out is still the ledger
       });
       state.scouts.forEach(function (x) { if (x && typeof x.id === 'string') scoutHere[x.id] = true; });
       remote.scouts.forEach(function (x) {
@@ -15499,6 +15582,7 @@
       // that has only its history of changes: that is a treasurer's work too.
       !(s.ledgerAside && s.ledgerAside.length) && !(s.ledgerLog && s.ledgerLog.length) &&
       !(s.statements && s.statements.length) &&   // Phase 3, C5 — nor one with a statement signed
+      !(s.closedBooks && s.closedBooks.length) &&   // Phase 3, C8 — nor one with a year already closed out
       !(s.leaders && s.leaders.length);
   }
   // Compare pack records ignoring the sync counter itself.
@@ -22063,7 +22147,8 @@
   // Option B (owner, 2026-09-29) — a reversed pair is two COUNTED rows now (ledgerPairOf), listed
   // here as the pairs set aside by C4's first build still are.
   function ledgerAsideListHtml(f) {
-    var aside = state.ledgerAside || [], byId = Object.create(null), flt = { lineId: f.lineId, text: f.text };
+    // Phase 3, C8 — a row carried from last year is not voided or reversed: it has its own block, under Entries.
+    var aside = (state.ledgerAside || []).filter(function (e) { return e && e.off !== 'carried'; }), byId = Object.create(null), flt = { lineId: f.lineId, text: f.text };
     var pairOf = ledgerPairOf(state.ledger);
     var pool = aside.concat(state.ledger.filter(function (e) { return e && pairOf[e.id]; }));
     pool.forEach(function (e) { if (!byId[e.id]) byId[e.id] = e; });
@@ -31120,7 +31205,10 @@
   var SCOUT_LEDGER_REFUSED = 'This scout is named on ledger entries, so they can’t be deleted. Use Archive instead. Their payments stay with their family.';
   var SCOUT_LEDGER_KEEPS_ARCHIVED = 'This scout is named on ledger entries, including voided ones, so they can’t be deleted. Their payments stay with their family.';
   function scoutHasLedger(id) {
-    return arrOf(state.ledger).concat(arrOf(state.ledgerAside)).some(function (e) { return !!e && typeof id === 'string' && !!id && e.scoutId === id; });
+    if (typeof id !== 'string' || !id) return false;
+    // Phase 3, C8 — and a year closed out is still the ledger: its rows name the scout too.
+    if (closedBookScouts(state.closedBooks, {})[id] === true) return true;
+    return arrOf(state.ledger).concat(arrOf(state.ledgerAside)).some(function (e) { return !!e && e.scoutId === id; });
   }
   // Remove a scout and everything that is theirs alone (del-scout; and the sync merge, for a
   // scout another device deleted — LIVE STOPGAP, see freshGone). Does not save.

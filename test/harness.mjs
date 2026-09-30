@@ -1022,7 +1022,7 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   // Security re-check of C5 (R4) — one log event, live and archived alike.
   'normalizeLedgerEvent',
   // Phase 3, C1 — the ledger row normalizer, shared by the rows set aside.
-  'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeLedgerRow', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
+  'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeClosedBook', 'mergeClosedBooks', 'normalizeLedgerRow', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'ledgerUnpaired', 'entrySignedCents',
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
@@ -1032,7 +1032,9 @@ const C6_MERGE_FNS = ['LEDGER_TICK_FIELDS', 'LEDGER_OFF_FIELDS', 'LEDGER_ENTERED
   'applyLedgerRowSet', 'mergeLedgerRows', 'applyLedgerMerge', 'LEDGER_EDIT_FIELDS', 'LEDGER_RESOLVE_FIELDS', 'LEDGER_RESOLVE_WHY', 'LEDGER_RESOLVE_WHY_SAME', 'ledgerResolveMore', 'ledgerLogRoom', 'utf8Bytes', 'arrOf', 'ledgerTickedAt', 'mergeStatements', 'statementPairMerge',
   'statementOnceGroups', 'statementReopened',
   // Phase 3, C7 — a family one copy's scout delete unlinked is put back, and the scout kept.
-  'ledgerRelink', 'ledgerScoutsHeld'];
+  'ledgerRelink', 'ledgerScoutsHeld',
+  // Phase 3, C8 — a scout a closed year's rows name is named too.
+  'closedBookScouts'];
 // A page from before C6 (as the live page is): its merge keeps this device's copy of every row both
 // copies hold, whole. For the tests that make an older page from the merge as it is now.
 const C6_MERGE_CALL = 'added += applyLedgerMerge(state, rowMerge.set, remote);';
@@ -18046,7 +18048,8 @@ test('C1: rows set aside are ledger rows, an unknown one is counted, and the ids
   // C2 — in time order (mergeLedgerLog): an event with no time first.
   eq(n.ledgerLog.map((e) => [/^lg[0-9a-z]+$/.test(e.id) || e.id, e.by]), [['lg-x', undefined], [true, 'a signed-in leader']], 'the log');
   eq(n.ledgerLog[0].futureField, 1, 'an unknown field in the log');
-  eq([n.closedBooks, n.teImport], [[{ year: 2024, closingCents: 9000 }], { batch: 'mfo2kz3a1b2c3d', at: '' }], 'closed books and the import');
+  // C8-2 — a closed book is coerced to the book's shape (normalizeClosedBook), the junk beside it dropped.
+  eq([n.closedBooks.map((b) => [b.year, b.closingCents, b.form, b.cutoff]), n.teImport], [[[2024, 9000, 'full', '2025-06-30']], { batch: 'mfo2kz3a1b2c3d', at: '' }], 'closed books and the import');
   eq(n.book.year, 2025, 'book.year');
 });
 
@@ -18106,7 +18109,7 @@ test('C1: ledgerEvent builds one log entry, and nothing else', () => {
   eq(ev('reverse', 'l1', who, { rows: ['rv-l1'] }).rows, ['rv-l1'], 'a reversal names its row');
   eq(ev('tick', 'l1', { id: 'x', by: 'pat@example.com' }), { id: 'lg-x', at: '', by: 'a signed-in leader', byUid: '', dev: '', row: 'l1', op: 'tick' }, 'never an email');
   eq([ctx.ledgerEvent('someday', 'l1', who), ctx.ledgerEvent('edit', '', who), ctx.ledgerEvent('edit', 7, who)], [null, null, null], 'an unknown op, or no row');
-  eq([...ctx.LEDGER_OPS], ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile', 'restore', 'review', 'balance'], 'the ops');
+  eq([...ctx.LEDGER_OPS], ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile', 'restore', 'review', 'balance', 'close'], 'the ops');
   // The rows it names are copied, not shared.
   const rows = ['a'];
   const e2 = ctx.ledgerEvent('correct', 'l1', who, { rows });
@@ -18682,7 +18685,7 @@ const C2R_ACT = [
 const C2R_MORE = `
   ${['LEDGER_VOID_REASON_MAX', 'ledgerVoidRefusal', 'ledgerVoidRow', 'ledgerUnvoidRow', 'normalizeAsideRow', 'ledgerPairOf', 'ledgerReversalOf', 'ledgerCancelledWhy',
     'ledgerLiveReversals', 'ledgerReversedAgainWhy', 'ledgerUnvoidDateWhy'].map(slice).join('\n')}
-  ${['arrOf', 'SCOUT_LEDGER_KEEPS', 'SCOUT_LEDGER_REFUSED', 'scoutHasLedger'].map(decl).join('\n')}
+  ${['arrOf', 'SCOUT_LEDGER_KEEPS', 'SCOUT_LEDGER_REFUSED', 'closedBookScouts', 'scoutHasLedger'].map(decl).join('\n')}
   var undo = null, undoWords = null, marks = [], editor = true;
   state.ledgerAside = [];
   ui.voidAsk = null; ui.voidWhy = '';
@@ -19144,7 +19147,7 @@ test('C7: a scout any ledger entry names, counted, voided or reversed, is refuse
   ok(!/logLedger/.test(c2Block(/    if \(act\.indexOf\('del-scout:'\) === 0\) \{[\s\S]*?\n    \}/, 'del-scout')) && !/logLedger/.test(slice('dropScout')) && !/logLedger\('reassign'/.test(slice('mergeRemoteAppendOnly')), 'a delete logs an unlinking');
   // scoutHasLedger itself: both lists, never a blank id, and a record with no ledger at all.
   const x = vm.createContext({});
-  vm.runInContext(['arrOf', 'scoutHasLedger'].map(decl).join('\n') + "\nvar state = { ledger: [null, { scoutId: '' }, { scoutId: 'a' }], ledgerAside: [{ scoutId: 'b', off: 'void' }] };", x);
+  vm.runInContext(['arrOf', 'closedBookScouts', 'scoutHasLedger'].map(decl).join('\n') + "\nvar state = { ledger: [null, { scoutId: '' }, { scoutId: 'a' }], ledgerAside: [{ scoutId: 'b', off: 'void' }] };", x);
   eq(['a', 'b', 'c', '', undefined].map((id) => x.scoutHasLedger(id)), [true, true, false, false, false], 'scoutHasLedger');
   vm.runInContext('state.ledgerAside = undefined; state.ledger = undefined;', x);
   eq(x.scoutHasLedger('a'), false, 'a record with no ledger');
@@ -25719,7 +25722,7 @@ test('C7: the scouts a merge keeps over a delete are those an entry on either co
 });
 
 test('C7 property: with scouts deleted on older pages and on this one, and families changed, two devices’ merges agree either way round, are a fixed point, and every family named is on the roster', () => {
-  const w = c6World(['scoutHasLedger']);
+  const w = c6World(['closedBookScouts', 'scoutHasLedger']);
   vm.runInContext(`
     function hasScout(sid) { return state.scouts.some(function (s) { return s.id === sid; }); }
     // The merge's drop of a scout deleted elsewhere, as the page's dropScout does it for the roster and
@@ -26258,6 +26261,112 @@ test('C8-1: two copies’ closed books are one, the same either way round: a boo
   eq(J(c.mergeClosedBooks([later], [full])).map((x) => x.archiveId), ['arc-2'], 'either way round');
   eq(J(c.mergeClosedBooks(null, [{ nope: 1 }, null, 'x'])), [], 'junk is not a book');
   eq(J(c.mergeClosedBooks([full], [full])).length, 1, 'the same book twice is one');
+});
+
+/* ================================================================
+   C8-2: a closed book is read and kept (normalizeClosedBook), the page knows the 'close' event, and the
+   readers that ask "is there any ledger?" and "does the ledger name this scout?" look in closed books.
+   Nothing writes a closed book yet.
+   ================================================================ */
+const C8N_FNS = [...new Set([...NORMALIZE_FNS, ...C8_FNS])];
+// A record with a year's book in it (the C8-1 book), normalized the way a page holds it.
+const c8State = () => {
+  const n = sandbox(C8N_FNS), src = C8_SRC();
+  const rec = Object.assign(preMigrationState(), { budget: Object.assign(preMigrationState().budget, { programYear: 2026 }), ledger: src.ledger, ledgerAside: src.ledgerAside,
+    ledgerLog: src.ledgerLog, statements: src.statements, book: src.book });
+  return { n, st: J(n.normalizeState(rec)) };
+};
+const c8Close = (n, st) => J(n.closedBookBuild({ book: st.book, ledger: st.ledger, ledgerAside: st.ledgerAside, ledgerLog: st.ledgerLog, statements: st.statements }, C8_OPTS));
+
+test('C8-2: a closed book is coerced to its shape; what is not a book is dropped; an unknown key stays', () => {
+  const n = sandbox(C8N_FNS);
+  for (const junk of ['x', null, 3, [], {}, { year: '2026' }, { year: 2026.5 }, { year: NaN }]) eq(n.normalizeClosedBook(junk), null, 'not a book: ' + JSON.stringify(junk));
+  const b = J(n.normalizeClosedBook({ year: 2026, closedBy: 'pat@example.com', closedAt: 5, openingCents: '9', closingCents: 93000.4, cutoff: 'soon', reconciledThrough: '2027-13',
+    carried: { n: 2, inCents: -4, outCents: 'x' }, form: 'huge', ledger: [{ id: 'a', date: '2027-01-01', amountCents: -500, direction: 'sideways' }, 'junk', null],
+    aside: [{ id: 'v', off: 'void', voidedBy: 'sam@example.com' }], log: [{ op: 'tick', row: 'a', at: 'never' }, 7], statements: [{ id: 'st-1', date: '2027-01-31' }, 3],
+    names: { line: { L1: 'Dues', L2: 4 }, family: 'x' }, ledgerTrimmed: 'yes', fromANewerPage: { keep: 1 } }));
+  eq([b.year, b.closedBy, b.closedAt, b.openingCents, b.closingCents, b.cutoff, b.reconciledThrough, b.form],
+    [2026, 'a signed-in leader', '', 0, 93000, '2027-06-30', '', 'full'], 'scalars');
+  eq(b.carried, { n: 2, inCents: 0, outCents: 0 }, 'carried totals');
+  eq([b.ledger.length, b.ledger[0].amountCents, b.ledger[0].direction, b.aside[0].voidedBy, b.aside[0].carriedFrom, b.log[0].at, b.log.length, b.statements.length],
+    [1, 500, 'out', 'a signed-in leader', null, '', 1, 1], 'the rows are the live book’s shape');
+  eq([b.names, 'ledgerTrimmed' in b, b.fromANewerPage], [{ line: { L1: 'Dues' }, family: {} }, false, { keep: 1 }], 'names, a flag that is not true, an unknown key');
+  // A compact book: rows of its own shape, no names.
+  const c = J(n.normalizeClosedBook({ year: 2025, form: 'compact', ledger: [{ i: 'a', d: '2026-01-01', c: 12.6, t: 3, l: 4, k: 2 }], names: { line: {} } }));
+  eq([c.ledger, 'names' in c], [[{ i: 'a', d: '2026-01-01', c: 13, t: '' }], false], 'compact rows');
+});
+
+test('C8-2: a closed book built by closedBookBuild is a fixed point of normalizeState, full and compact, on every device; two books of a year are one, in year order', () => {
+  const { n, st } = c8State();
+  const out = c8Close(n, st);
+  for (const [what, book] of [['full', out.book], ['compact', J(n.compactClosedBook(out.book))]]) {
+    const rec = J(st); rec.closedBooks = [J(book)];
+    const once = J(n.normalizeState(rec));
+    eq(once.closedBooks, [book], what + ': normalizeState changed the book');
+    eq(J(sandbox(C8N_FNS).normalizeState(J(rec))), once, what + ': two devices');
+    eq(J(n.normalizeState(J(once))), once, what + ': a second pass');
+  }
+  const twice = J(st); twice.closedBooks = [Object.assign(J(out.book), { year: 2026 }), Object.assign(J(out.book), { year: 2025, archiveId: 'arc-0' }), Object.assign(J(out.book), { closedAt: '2028-01-01T00:00:00.000Z', archiveId: 'arc-9' })];
+  eq(J(n.normalizeState(twice)).closedBooks.map((b) => [b.year, b.archiveId]), [[2025, 'arc-0'], [2026, 'arc-9']], 'one per year, the later close-out’s, oldest first');
+});
+
+test('C8-2: a book swollen past its caps is cut and says so', () => {
+  const n = sandbox(C8N_FNS);
+  const big = J(n.normalizeClosedBook({ year: 2026, form: 'compact', ledger: Array.from({ length: 5003 }, (_, i) => ({ i: 'r' + i, d: '2026-09-01', c: 1, t: '' })),
+    log: Array.from({ length: 5001 }, (_, i) => ({ id: 'lg' + i, op: 'tick', row: 'r', at: '' })), statements: Array.from({ length: 201 }, (_, i) => ({ id: 'st-' + i, date: '2026-09-01' })) }));
+  eq([big.ledger.length, big.ledgerTrimmed, big.log.length, big.logTrimmed, big.statements.length, big.statementsTrimmed], [5000, true, 5000, true, 200, true], 'caps');
+});
+
+test('C8-2: the ledger’s log knows a close-out, and says “Year closed out”', () => {
+  const x = sandbox(['LEDGER_OPS', 'ledgerEvent', 'ledgerStampClean', 'ledgerLogClip', 'LEDGER_OP_LABELS', 'LEDGER_FIELD_LABELS', 'ledgerEventLines', 'ledgerLogValue', 'fmt', 'fmtDateShort']);
+  const ev = J(x.ledgerEvent('close', 'book', { id: 'u1', at: '2027-09-10T12:00:00.000Z', by: 'Sam', byUid: 'u-sam', dev: 'd' }, { f: { closedYears: ['2025', '2025, 2026'] }, why: 'The 2026 year was closed out.' }));
+  eq([ev.op, ev.row, ev.f, ev.why], ['close', 'book', { closedYears: ['2025', '2025, 2026'] }, 'The 2026 year was closed out.'], 'the event');
+  eq(J(x.ledgerEventLines(ev, {})), [{ what: 'Year closed out: years closed out', before: '2025', after: '2025, 2026' }], 'how it reads');
+  eq(J(x.ledgerEventLines({ op: 'close' }, {})), [{ what: 'Year closed out', before: '', after: '' }], 'and with no figure');
+  // A close event is a change to the book, to no entry: the merge reads it as changing none.
+  const p = sandbox(['LEDGER_OPS', 'ledgerEventParts', 'ledgerFieldPart', 'LEDGER_TICK_FIELDS', 'LEDGER_OFF_FIELDS', 'LEDGER_ENTERED_FIELDS']);
+  eq([J(p.ledgerEventParts({ op: 'close', row: 'book' }, 'l1')), J(p.ledgerEventParts({ op: 'close', row: 'book' }, 'book'))], [{}, {}], 'the merge');
+});
+
+test('C8-2: a pack with only a closed year is not empty, so no remote copy can be adopted over it', () => {
+  const x = sandbox(['isStateEmpty']);
+  eq([x.isStateEmpty({}), x.isStateEmpty({ closedBooks: [] }), x.isStateEmpty({ closedBooks: [{ year: 2026 }] })], [true, true, false], 'isStateEmpty');
+});
+
+test('C8-2: a scout a closed year’s rows name is a scout the ledger names: never deleted, and kept by a merge', () => {
+  const x = sandbox(['arrOf', 'closedBookScouts', 'scoutHasLedger', 'ledgerScoutsHeld']);
+  vm.runInContext("var state = { ledger: [], ledgerAside: [], closedBooks: [{ year: 2025, form: 'full', ledger: [null, { scoutId: 'a' }], aside: [{ scoutId: 'b', off: 'void' }] }, { year: 2024, form: 'compact', ledger: [{ i: 'x', f: 'Cy' }] }] };", x);
+  eq(['a', 'b', 'c', 'Cy', '', undefined].map((id) => x.scoutHasLedger(id)), [true, true, false, false, false, false], 'scoutHasLedger');
+  const g = { scouts: { a: 5, b: 5, c: 5 } };
+  const held = x.ledgerScoutsHeld(g, { ledger: [], closedBooks: state0() }, { ledger: [{ scoutId: 'c' }] }, 1000);
+  function state0() { return [{ year: 2025, form: 'full', ledger: [{ scoutId: 'a' }], aside: [{ scoutId: 'b' }] }]; }
+  eq([J(held), Object.keys(g.scouts).map((k) => g.scouts[k] < 0)], [['a', 'b', 'c'], [true, true, true]], 'the held scouts, a and b named only by a closed book, their delete marks put back');
+});
+
+test('C8-2, Firestore: a device that lacks a scout only a closed year’s rows name takes them from the other copy, archived', () => {
+  const kept = (st) => st.scouts.map((x) => [x.id, !!x.archived]).sort();
+  const closed = "state.closedBooks = [{ year: 2025, form: 'full', archiveId: 'arc-1', closedAt: '2026-09-10T00:00:00.000Z', ledger: [{ id: 'old1', date: '2026-01-01', description: 'Dues', amountCents: 500, direction: 'in', scoutId: 's2', source: 'family' }], aside: [], log: [], statements: [] }]; commit()";
+  const { a, b, server } = c3FsPair();
+  a.run("state.scouts = state.scouts.filter(function (s) { return s.id !== 's2'; }); commit()");
+  b.run(closed); b.push();
+  a.hear(); a.push();
+  eq(kept(server()), [['s1', false], ['s2', true]], 'Bo, named by the closed year, is back, archived');
+  // Control: the same without the closed year, as C7's own test has it: nobody names Bo, he stays deleted.
+  const q = c3FsPair();
+  q.a.run("state.scouts = state.scouts.filter(function (s) { return s.id !== 's2'; }); commit()");
+  q.b.run(B1); q.b.push();
+  q.a.hear(); q.a.push();
+  eq(kept(q.server()), [['s1', false]], 'control');
+});
+
+test('C8-2: a row carried from last year is not a voided or reversed entry: it is left out of the Voided list and the Voided CSV', () => {
+  const x = sandbox(declClosure(['ledgerVoidedCsv'], []));
+  const carried = Object.assign(c8row('co-c', '2027-06-28', 15000, 'out'), { off: 'carried', carriedFrom: { year: 2026, id: 'c' }, voidReason: '', voidedBy: '', voidedByUid: '', voidedAt: '', reverses: '', reversedBy: '' });
+  const voided = Object.assign(c8row('v1', '2026-09-01', 500, 'out'), { off: 'void', voidReason: 'typo', voidedBy: 'Pat', voidedAt: '2026-09-02T10:00:00.000Z' });
+  const lines = (aside) => x.ledgerVoidedCsv(aside, []).split('\n');
+  eq(lines([carried]).length, 1, 'only the header');
+  eq(lines([carried, voided]).length, 2, 'the voided one, not the carried');
+  ok(/const aside = \(state\.ledgerAside \|\| \[\]\)\.filter|var aside = \(state\.ledgerAside \|\| \[\]\)\.filter\(function \(e\) \{ return e && e\.off !== 'carried'; \}\)/.test(slice('ledgerAsideListHtml')), 'the Voided & reversed list reads only rows set aside for a reason');
 });
 
 /* ---------------- report ---------------- */
