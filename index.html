@@ -7667,17 +7667,48 @@
   //             id. It is a new entry: not ticked, no approval stamps. It takes the right date as
   //             typed when that is after book.reconciledThrough, else the reversal's date; the
   //             reversal takes its date, so the net change lands on one statement.
-  // Both ids come from the original's, so a row is reversed (and corrected) once: a second try
-  // finds its reversal and is refused, and two devices that each reverse it write the same ids,
-  // which the merge unions into one. Two taps and a reason (1–200 characters), editors and
+  // Both ids come from the original's, so a row is reversed (and corrected) once while its reversal
+  // counts: a second try finds it and is refused, and two devices that each reverse it write the
+  // same ids, which the merge unions into one. (Security review of option B, finding 3: once that
+  // reversal is voided the entry counts again, and can be reversed again, under the next ids:
+  // ledgerReverseSlot.) Two taps and a reason (1–200 characters), editors and
   // admins only; each is ONE log event ('reverse', 'correct') naming the rows it made.
   // A pack record the first build (C4) wrote holds its pairs set aside (off 'reversed' and
   // 'reversal' in state.ledgerAside): they are read as they were, not moved (ledgerPairCheck).
   // A year closed out is reversed in the NEW book (ledgerClosedYearReversal, for C8).
   // LEADERS ONLY, like the whole ledger: nothing here reaches buildParentView.
   // ---------------------------------------------------------------------------
-  function ledgerReversalId(id) { return 'rv-' + id; }
-  function ledgerReplacementId(id) { return 'rc-' + id; }
+  // Security review of option B (finding 3) — a reversal can be voided (the entry then counts
+  // again), and the entry reversed again, so the ids take which reversal it is, `n`: the first is
+  // 'rv-' + its id and 'rc-' + its id as before (so a record, an older page and this one agree on
+  // it), the next 'rv2-', 'rc2-', and so on. They never meet another row's: the page's own ids are
+  // uid()'s letters and digits or a two-letter prefix and a hash (a dedupe adds '-d2' at the END),
+  // 'rv-' + an id reverses that id (a reversal reversed), 'rv-2025-' + an id is a closed year's
+  // reversal (ledgerClosedYearReversal), and 'rv2-' is none of those.
+  function ledgerReversalId(id, n) { return (n > 1 ? 'rv' + n : 'rv') + '-' + id; }
+  function ledgerReplacementId(id, n) { return (n > 1 ? 'rc' + n : 'rc') + '-' + id; }
+  // The replacement that goes with the reversal `rvId` ('rv-X' → 'rc-X', 'rv2-X' → 'rc2-X'). Pure.
+  function ledgerReplacementFor(rvId) { return 'rc' + String(rvId || '').slice(2); }
+  // Which reversal of row `id` the next one is (`n` above): the first `n` whose two ids are in
+  // neither of `st`'s lists. It reads only the ids the book holds, so two devices that reverse the
+  // same entry again after the same void write the same ids, and the merge unions them into one
+  // pair, as it does for a first reversal. (A device that had not yet heard of a second reversal
+  // and its void would write that same id again: the two are one row, and the later mark decides,
+  // as for any row two devices change at once.) Pure.
+  function ledgerReverseSlot(st, id) {
+    var taken = Object.create(null), n = 1;
+    (st.ledger || []).concat(st.ledgerAside || []).forEach(function (x) { if (x && typeof x.id === 'string') taken[x.id] = true; });
+    while (taken[ledgerReversalId(id, n)] || taken[ledgerReplacementId(id, n)]) n += 1;
+    return n;
+  }
+  // The counted row that cancels row `e` (a reversal of it, paired with it by ledgerPairOf over the
+  // counted `rows`; `pairOf` when it is already worked out), or null. What says an entry is
+  // reversed: its own mark (reversedBy) outlives a reversal voided, and then says nothing. Pure.
+  function ledgerReversalOf(rows, e, pairOf) {
+    var p = e ? (pairOf || ledgerPairOf(rows))[e.id] : '';
+    var rv = p ? rows.filter(function (x) { return x && x.id === p; })[0] : null;
+    return rv && rv.reverses === e.id ? rv : null;
+  }
   // The date a reversal of row `e` gets unless the treasurer picks another: `today`, or the day
   // after the period already reconciled if today is still in it, or the entry's own date if that
   // is later still (a reversal never comes before what it cancels). Pure.
@@ -7699,13 +7730,15 @@
     return early;
   }
   // Why row `e` can't be reversed (`how` 'reverse') or corrected ('correct') with this reason, or
-  // ''. `st` is the pack record (its two lists hold any reversal already made). Pure.
+  // ''. `st` is the pack record.
+  // Security review of option B (finding 3) — "already reversed" is the pairing's (a counted
+  // reversal cancels it: ledgerReversalOf), not whether a reversal's id is taken, nor its mark: a
+  // reversal voided left both, and an entry counting again could then be neither voided (locked),
+  // reversed nor corrected. Reversed again, it takes the next ids (ledgerReverseSlot). Pure.
   function ledgerReverseRefusal(e, st, book, reason, how) {
     if (!e) return '';
     if (book && book.closedAt) return 'That entry is in a year already closed out, so it can’t be ' + (how === 'correct' ? 'corrected' : 'reversed') + ' here.';
-    var taken = {};
-    (st.ledger || []).concat(st.ledgerAside || []).forEach(function (x) { if (x && typeof x.id === 'string') taken[x.id] = true; });
-    if (taken[ledgerReversalId(e.id)] || taken[ledgerReplacementId(e.id)]) {
+    if (ledgerReversalOf(st.ledger || [], e)) {
       return 'That entry has already been reversed, so it can’t be reversed or corrected again.';
     }
     var r = String(reason == null ? '' : reason).trim();
@@ -7787,7 +7820,7 @@
     stamp = stamp || {};
     var by = ledgerStampClean(stamp.by), byUid = typeof stamp.byUid === 'string' ? stamp.byUid : '', at = typeof stamp.at === 'string' ? stamp.at : '';
     var rv = {
-      id: ledgerReversalId(row.id), date: String(date || ''),
+      id: ledgerReversalId(row.id, ledgerReverseSlot(st, row.id)), date: String(date || ''),   // option B review (3)
       description: 'Reversal of ' + (row.description ? '“' + row.description + '”' : 'an entry'),
       amountCents: row.amountCents, direction: row.direction === 'in' ? 'out' : 'in',
       lineId: row.lineId || '', method: '', ref: '', source: '', donor: '', scoutId: row.scoutId || '', tierMakeup: '',
@@ -7814,13 +7847,13 @@
     if (!orig) return null;
     var plan = ledgerCorrectPlan(orig, draft, book, rvDate);
     var rep = plan.row;
-    rep.id = ledgerReplacementId(orig.id);
     rep.replaces = orig.id;
     stamp = stamp || {};
     rep.enteredBy = ledgerStampClean(stamp.by);
     rep.enteredByUid = typeof stamp.byUid === 'string' ? stamp.byUid : '';
     rep.enteredAt = typeof stamp.at === 'string' ? stamp.at : '';
     var rv = ledgerReverseRow(st, id, reason, stamp, rep.date);
+    rep.id = ledgerReplacementFor(rv.reversal.id);   // 'rc-' + its id, or 'rc2-' after a reversal voided (option B review, 3)
     st.ledger.push(rep);
     return { row: rv.row, reversal: rv.reversal, replacement: rep, same: plan.same, moved: plan.moved };
   }
@@ -7879,9 +7912,7 @@
   // twice. (The reversal itself can be voided, as any opposite entry entered in error can: the
   // entry then counts again.) Pure.
   function ledgerCancelledWhy(st, e) {
-    var p = e ? ledgerPairOf(st.ledger || [])[e.id] : '';
-    var rv = p ? (st.ledger || []).filter(function (x) { return x && x.id === p; })[0] : null;
-    if (!rv || rv.reverses !== e.id) return '';
+    if (!ledgerReversalOf(st.ledger || [], e)) return '';
     return 'That entry has been reversed, so it can’t be voided: its reversal already cancels it. If the reversal was a mistake, void or reverse the reversal instead.';
   }
   // M3 (treasurer review of C1) — a reversed row and its reversal are only ever set aside
@@ -8694,10 +8725,12 @@
         out.push(money(e).concat(['Voided', e.voidedBy || '', ledgerLogWhen(e.voidedAt), e.voidReason || '', '']).map(ledgerCsvCell).join(','));
         return;
       }
-      var rc = ledger.filter(function (x) { return x && x.id === ledgerReplacementId(e.id) && x.replaces === e.id; })[0];
-      out.push(money(e).concat([rc ? 'Corrected' : 'Reversed', e.voidedBy || '', ledgerLogWhen(e.voidedAt), e.voidReason || '',
+      // Security review of option B (finding 3) — the corrected entry that goes with this reversal,
+      // and the mark only when it names it (one left by a reversal since voided is not this one's).
+      var p = partner(e), mk = e.off || e.reversedBy === p.id ? e : {};
+      var rc = ledger.filter(function (x) { return x && x.id === ledgerReplacementFor(p.id) && x.replaces === e.id; })[0];
+      out.push(money(e).concat([rc ? 'Corrected' : 'Reversed', mk.voidedBy || '', ledgerLogWhen(mk.voidedAt), mk.voidReason || '',
         rc ? (rc.date || '') + ', ' + (rc.direction === 'in' ? '+' : '−') + fmt(rc.amountCents || 0) : '']).map(ledgerCsvCell).join(','));
-      var p = partner(e);
       out.push(money(p).concat(['Reversal of ' + (e.description ? '“' + e.description + '”' : 'an entry'), p.enteredBy || '', ledgerLogWhen(p.enteredAt), '', ''])
         .map(ledgerCsvCell).join(','));
     });
@@ -13213,14 +13246,23 @@
     // Option B (owner, 2026-09-29) — a row reversed on the other device, held here as it was (this
     // copy of a row is kept over the other's): what the reverse wrote on it comes across, its
     // reversal's id and why, who and when, so the reason is not lost to whichever device saves
-    // last. A reverse is never undone, so this only adds; the rest of the row is this device's.
+    // last. The rest of the row is this device's.
+    // Security review of option B (finding 3) — but only a mark whose reversal counts: in the ledger
+    // this merge has made, not marked deleted, and reversing that row (rvCounts). One whose reversal
+    // was voided says nothing now, so it is not copied; and one HERE like that gives way to the
+    // other copy's, when the row was reversed again there (a reversal voided, then another).
+    var rvRows = {};
+    state.ledger.forEach(function (v) { if (v && typeof v.id === 'string' && typeof v.reverses === 'string' && !rvRows[v.id]) rvRows[v.id] = v; });
+    function rvCounts(id, rvId) {
+      return typeof rvId === 'string' && !!rvRows[rvId] && rvRows[rvId].reverses === id && !(gone && gone.ledger && gone.ledger[rvId] > 0);
+    }
     var rvMarked = {};
     (Array.isArray(remote.ledger) ? remote.ledger : []).forEach(function (x) {
-      if (x && typeof x.id === 'string' && typeof x.reversedBy === 'string' && x.reversedBy && !rvMarked[x.id]) rvMarked[x.id] = x;
+      if (x && typeof x.id === 'string' && !rvMarked[x.id] && rvCounts(x.id, x.reversedBy)) rvMarked[x.id] = x;
     });
     state.ledger.forEach(function (x) {
-      var r = x && typeof x.id === 'string' && !x.reversedBy ? rvMarked[x.id] : null;
-      if (!r) return;
+      var r = x && typeof x.id === 'string' && !rvCounts(x.id, x.reversedBy) ? rvMarked[x.id] : null;
+      if (!r || r.reversedBy === x.reversedBy) return;
       ['reversedBy', 'voidReason', 'voidedBy', 'voidedByUid', 'voidedAt'].forEach(function (k) { if (typeof r[k] === 'string') x[k] = r[k]; });
       added += 1;
     });
@@ -19773,23 +19815,28 @@
   // Phase 3, C4 — what a corrected entry's Detail says about the one it replaced (`rows`: the
   // counted rows, then state.ledgerAside). Treasurer review of C4 (10) — which entry, in its own
   // figures; where it is (when it is marked reversed; if not, only that it is a correction).
-  // Option B — counted and marked reversed (reversedBy), or set aside as reversed (C4's first
-  // build). Plain text. Pure.
+  // Option B — counted and reversed, or set aside as reversed (C4's first build). Plain text. Pure.
+  // Security review of option B (finding 3) — "reversed" is the pairing's, over the counted rows
+  // among `rows` (ledgerReversalOf), not the entry's mark, which outlives a reversal voided: the
+  // entry then counts again beside its correction, and that is what is said.
   function ledgerCorrectsLine(e, rows) {
-    var o = (rows || []).filter(function (x) {
-      return x && x.id === e.replaces && (x.off === 'reversed' || (!x.off && typeof x.reversedBy === 'string' && !!x.reversedBy));
-    })[0];
+    rows = rows || [];
+    var o = rows.filter(function (x) { return x && x.id === e.replaces && (x.off === 'reversed' || !x.off); })[0];
     if (!o) return 'A correction: the entry it replaces is under Voided & reversed.';
-    return 'This entry corrects ' + (o.description ? '“' + o.description + '”' : 'an entry') + ' (' + fmtDateShort(o.date) + ', ' +
-      (o.direction === 'in' ? '+' : '−') + fmt(o.amountCents) + '), which is under Voided & reversed with the reason.';
+    var what = 'This entry corrects ' + (o.description ? '“' + o.description + '”' : 'an entry') + ' (' + fmtDateShort(o.date) + ', ' +
+      (o.direction === 'in' ? '+' : '−') + fmt(o.amountCents) + ')';
+    if (o.off || ledgerReversalOf(rows.filter(function (x) { return x && !x.off; }), o)) return what + ', which is under Voided & reversed with the reason.';
+    return what + ', which counts again: its reversal was voided or reversed.';
   }
   // Phase 3, C4 — the one way to change a locked entry's money, or take it out, in its Detail.
   // Treasurer review of C4 (7) — on a locked entry only (ledgerLocked): an open one is changed in
   // place, or voided if it was entered in error (the ✕). Not while its form is open.
   // Option B — nor on an entry already reversed (it stays in the list now, marked so): a second
-  // reverse is refused (ledgerReverseRefusal), so the button would only lead to that.
+  // reverse is refused (ledgerReverseRefusal), so the button would only lead to that. Security
+  // review of option B (finding 3) — "already reversed" as the refusal reads it, the pairing's
+  // (ledgerReversalOf): a reversal voided leaves the entry's mark, and the entry counting again.
   function ledgerFixButtonHtml(e, book) {
-    if (!ledgerLocked(e, book) || ui.fixAsk === e.id || (typeof e.reversedBy === 'string' && e.reversedBy)) return '';
+    if (!ledgerLocked(e, book) || ui.fixAsk === e.id || ledgerReversalOf(state.ledger, e)) return '';
     return '<div style="flex-basis:100%;margin:6px 0 0"><button type="button" class="btn small ghost" ' +
       'data-act="ledger-fix:' + esc(e.id) + '">Reverse or correct</button></div>';
   }
@@ -19806,11 +19853,17 @@
   // Phase 3, C4 — the line under a reversed entry: who reversed it (or corrected it), when and why,
   // and the corrected entry, if there is one. Under Entries (option B: it is still there, counted)
   // and under Voided & reversed. Every value escaped.
+  // Security review of option B (finding 3) — a counted entry's reversal is the pairing's
+  // (ledgerReversalOf), and its mark (why, who and when) is read only when it names that one: a mark
+  // left by a reversal since voided would give the wrong reason, so the line says only "Reversed."
+  // (the change history has the rest). The corrected entry is the one that goes with it.
   function ledgerReversedLineHtml(e) {
-    var rc = state.ledger.filter(function (x) { return x.id === ledgerReplacementId(e.id) && x.replaces === e.id; })[0];
+    var rvId = e.off ? e.reversedBy : (ledgerReversalOf(state.ledger, e) || {}).id;
+    var m = e.off || e.reversedBy === rvId ? e : {};
+    var rc = state.ledger.filter(function (x) { return x.id === ledgerReplacementFor(rvId) && x.replaces === e.id; })[0];
     return '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">' + (rc ? 'Corrected' : 'Reversed') +
-      (e.voidedBy ? ' by ' + esc(e.voidedBy) : '') + (e.voidedAt ? ' on ' + esc(fmtDate(e.voidedAt.slice(0, 10))) : '') +
-      (e.voidReason ? ': ' + esc(e.voidReason) : '') + (/[.!?]$/.test(e.voidReason || '') ? '' : '.') +   // treasurer review of C4 (10)
+      (m.voidedBy ? ' by ' + esc(m.voidedBy) : '') + (m.voidedAt ? ' on ' + esc(fmtDate(m.voidedAt.slice(0, 10))) : '') +
+      (m.voidReason ? ': ' + esc(m.voidReason) : '') + (/[.!?]$/.test(m.voidReason || '') ? '' : '.') +   // treasurer review of C4 (10)
       (rc ? ' The corrected entry, ' + esc(fmtDateShort(rc.date)) + ' ' + (rc.direction === 'in' ? '+' : '−') + fmt(rc.amountCents) +
         ', counts in its place.' : '') + '</p>';
   }
