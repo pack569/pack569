@@ -13252,7 +13252,8 @@ test('E3: close-out archives the ledger and the family balances, sized against t
   // The archive is built BEFORE rolloverYear clears the ledger and charges.
   const pc = slice('performCloseout');
   ok(pc.indexOf('buildSeasonArchive()') < pc.indexOf('rolloverYear()'), 'the archive is built after the ledger is cleared');
-  ok(/record\.ledger && record\.ledger\.trimmed/.test(pc) && /keep the downloaded JSON/.test(pc), 'no word to the treasurer when the ledger is trimmed');
+  // (Security re-check of C5, R5: in closeoutTrimToast's words.)
+  ok(/var coTrim = closeoutTrimToast\(record\);/.test(pc) && /arc\.ledger && arc\.ledger\.trimmed/.test(slice('closeoutTrimToast')), 'no word to the treasurer when the ledger is trimmed');
   const pre = slice('renderCloseoutOverlay');
   ok(/arc\.ledger\.trimmed/.test(pre) && /SEASON_LEDGER_TRIMMED/.test(pre), 'the preview does not say the ledger will be trimmed');
   ok(/keep that file/.test(SCRIPT), 'the trimmed notice does not say to keep the JSON');
@@ -22308,7 +22309,7 @@ test('reload gate: a newer tab’s save while this page runs is never saved over
 // newer tab's), or '' (nothing held: the control).
 const HELD_DISPATCH_FNS = ['handleAction', 'handleChange', 'handleForm', 'handleFilePick', 'performCloseout', 'deleteWithUndo', 'arm',
   'heldActAllowed', 'refuseHeldAct', 'HELD_ACTS', 'HELD_ACT_PREFIXES', 'HELD_CHANGES', 'PARENT_ACTS', 'GATE_ACTS',
-  'FORMAT_CLOSEOUT', 'FORMAT_BACKUP', 'JSON_BACKUP_NAME', 'jsonBackup', 'toCents'];
+  'FORMAT_CLOSEOUT', 'FORMAT_BACKUP', 'JSON_BACKUP_NAME', 'jsonBackup', 'toCents', 'closeoutTrimToast'];
 const heldDispatchCtx = (hold) => {
   const rec = { version: 1, fmt: hold === 'device' ? NEWER_FMT : 1, packName: 'Pack', scouts: [{ id: 's1', name: 'Ada' }],
     leaders: [{ id: 'l1', name: 'Akela' }], budget: { programYear: 2026 }, archives: [], goalCents: 100 };
@@ -23266,7 +23267,7 @@ test('C5 review (treasurer 3): close-out keeps the statements and the change log
     'Past seasons keeps the 1 statement reconciled. The ledger’s change history is too large to keep there: download the snapshot, the only place it is kept.',
     'The statements reconciled and the ledger’s change history are too large to keep in Past seasons. Download the snapshot: it is the only place they are kept.'],
     'the preview');
-  ok(/\(record\.ledger && record\.ledger\.trimmed\) \|\| record\.ledgerLogTrimmed \|\| record\.statementsTrimmed/.test(slice('performCloseout')), 'the toast');
+  ok(/var coTrim = closeoutTrimToast\(record\);/.test(slice('performCloseout')), 'the toast');
 });
 
 test('C5 re-check (R4): a season archive’s change log and statements are held to the live caps, and say when one took something', () => {
@@ -23302,6 +23303,33 @@ test('C5 re-check (R4): a season archive’s change log and statements are held 
   // A load of a load is the same.
   const again = (arc) => JSON.parse(JSON.stringify(nz.normalizeState(Object.assign(preMigrationState(), { archives: [arc] })).archives[0]));
   eq([JSON.stringify(again(a)) === JSON.stringify(a), JSON.stringify(again(b)) === JSON.stringify(b), JSON.stringify(again(big)) === JSON.stringify(big)], [true, true, true], 'not a fixed point');
+});
+
+test('C5 re-check (R5): the close-out toast says which part didn’t fit, and Past seasons notes a trimmed statement list or change history', () => {
+  const x = sandbox(['closeoutTrimToast']);
+  const t = (arc) => x.closeoutTrimToast(arc);
+  eq([t({ ledger: { trimmed: false } }), t({ ledger: { trimmed: false }, ledgerLogTrimmed: true }), t({ ledger: { trimmed: true }, ledgerLogTrimmed: true }),
+    t({ ledger: { trimmed: true }, statementsTrimmed: true, ledgerLogTrimmed: true }), t({ statementsTrimmed: true })], ['',
+    'The ledger’s change history was too large to keep in Past seasons. Keep the snapshot just downloaded: it is the only place it is kept.',
+    'The ledger’s entries and the ledger’s change history were too large to keep in Past seasons. Keep the snapshot just downloaded: it is the only place they are kept.',
+    'The ledger’s entries, the statements reconciled and the ledger’s change history were too large to keep in Past seasons. Keep the snapshot just downloaded: it is the only place they are kept.',
+    'The statements reconciled were too large to keep in Past seasons. Keep the snapshot just downloaded: it is the only place they are kept.'], 'the toast’s words');
+  eq(t({ ledger: { trimmed: true } }), 'The ledger’s entries were too large to keep in Past seasons. Keep the snapshot just downloaded: it is the only place they are kept.', 'the entries alone');
+  // Close-out itself: the welcome, then those words, shown for ten seconds; the welcome alone, as before.
+  const pc = slice('performCloseout');
+  ok(/showToast\(coTrim \? 'Welcome to the ' \+ \(year \+ 1\) \+ ' program year\. ' \+ coTrim : 'Welcome to the ' \+ \(year \+ 1\) \+ ' program year',\s*coTrim \? \{ duration: 10000 \} : undefined\);/.test(pc), 'the toast');
+  ok(!/The ledger was too large for Past seasons/.test(SCRIPT), 'the old words');
+  // Past seasons: one line under the summary when either was trimmed; none otherwise.
+  const r = sandbox(['seasonArchiveRow', 'SEASON_BOOK_TRIMMED', 'esc', 'fmt', 'fmtArchiveDate', 'seasonBalanceLabel', 'seasonCarriedLine', 'tinyDangerBtn']);
+  vm.runInContext('var ui = { archiveOpen: {} };', r);
+  const arc = (o) => Object.assign({ id: 'a1', year: 2025, closedAt: '2026-07-02T00:00:00.000Z', fundraising: { combinedCents: 100 },
+    budget: { actualCents: 50, balanceCents: 50 } }, o || {});
+  const note = 'Some of this year’s statements or change history didn’t fit here; they are in the snapshot downloaded at close-out.';
+  const row = (o) => r.seasonArchiveRow(arc(o));
+  eq([row({ statementsTrimmed: true }).includes(note), row({ ledgerLogTrimmed: true }).includes(note), row().includes(note), row({ statements: [], ledgerLog: [] }).includes(note)],
+    [true, true, false, false], 'the note');
+  // The E3 banner says who the archive does keep, until C8.
+  ok(/UNTIL C8 the archive does keep who, in\s*another place \(security re-check of C5, R5\): its statements \(by, byUid,[\s\S]{0,120}its change log \(by, byUid, dev\)/.test(SCRIPT), 'the E3 banner');
 });
 
 test('C5 review (owner 4): no parent surface reads an archive’s statements or change log, and a built parent view carries none of them', () => {

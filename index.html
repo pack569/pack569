@@ -28297,7 +28297,10 @@
          r: ref, s: source, f: family (first names), k: 1 if reconciled }, with empty keys left
          out. NOT who entered it (security review, 2026-09-28): it was never shown, and it kept
          leaders' names in the pack record for good. The live ledger's E2 stamps are enough;
-         the downloaded JSON snapshot still has them;
+         the downloaded JSON snapshot still has them. ⚠ UNTIL C8 the archive does keep who, in
+         another place (security re-check of C5, R5): its statements (by, byUid, and the
+         review's, reopen's and balance's stamps) and its change log (by, byUid, dev) are kept
+         as the live book has them, never an email (normalizeSeasonArchive), leaders only;
        * if the record would pass ~700 KB with them (ARCHIVE_DOC_SOFT_LIMIT — room for next year
          to grow), the rows are dropped and only the ledger's totals and the family balances are
          kept (`trimmed: true`), and the close-out preview and Past seasons tell the treasurer to
@@ -28896,10 +28899,11 @@
     rolloverYear();
     ui.overlay = null;
     if (!commit()) return;
-    // E3 — the one case where the archive is not the whole story.
-    showToast((record.ledger && record.ledger.trimmed) || record.ledgerLogTrimmed || record.statementsTrimmed
-      ? 'Welcome to the ' + (year + 1) + ' program year. The ledger was too large for Past seasons \u2014 keep the downloaded JSON.'
-      : 'Welcome to the ' + (year + 1) + ' program year');
+    // E3 — the one case where the archive is not the whole story: said, and for long enough to read
+    // (security re-check of C5, R5: which part didn't fit, closeoutTrimToast).
+    var coTrim = closeoutTrimToast(record);
+    showToast(coTrim ? 'Welcome to the ' + (year + 1) + ' program year. ' + coTrim : 'Welcome to the ' + (year + 1) + ' program year',
+      coTrim ? { duration: 10000 } : undefined);
   }
 
   /* ----- Wave 7: season-archive rendering (browse rows, sheet, copy text) ----- */
@@ -29138,13 +29142,32 @@
       tinyDangerBtn('del-archive:' + a.id, 'Delete ' + a.year + ' close-out') + '</div>' +
       '<p class="small muted" style="margin:6px 0 0">Closed ' + esc(fmtArchiveDate(a.closedAt)) + ' · raised ' + fmt(a.fundraising.combinedCents) +
       ' · spent ' + fmt(a.budget.actualCents) + ' · ' + seasonBalanceLabel(a.budget).toLowerCase() + ' ' + fmt(a.budget.balanceCents) +
-      (seasonCarriedLine(a.budget) ? ' · ' + esc(seasonCarriedLine(a.budget).replace(/^C/, 'c')) : '') + '</p>';
+      (seasonCarriedLine(a.budget) ? ' · ' + esc(seasonCarriedLine(a.budget).replace(/^C/, 'c')) : '') + '</p>' +
+      // Security re-check of C5 (R5) — Past seasons shows neither the statements nor the change log
+      // yet (C8), but says when some of either wasn't kept, so nobody takes the archive as whole.
+      (a.statementsTrimmed || a.ledgerLogTrimmed ? '<p class="small muted" style="margin:4px 0 0">' + esc(SEASON_BOOK_TRIMMED) + '</p>' : '');
     if (open) {
       h += '<div style="margin-top:10px">' + seasonArchiveTables(a) + '</div>' +
         '<div class="row no-print" style="margin-top:10px">' +
         '<button type="button" class="btn small" data-act="archive-sheet:' + esc(a.id) + '">Print / Copy</button></div>';
     }
     return h + '</div>';
+  }
+  var SEASON_BOOK_TRIMMED = 'Some of this year’s statements or change history didn’t fit here; they are in the snapshot downloaded at close-out.';
+  // Security re-check of C5 (R5) — the close-out toast's second sentence: what Past seasons couldn't
+  // keep of the season archive `arc`, in closeoutBookLine's words, now the snapshot is downloaded;
+  // '' when it kept everything. The toast said "The ledger was too large" when only the change log
+  // had been dropped (the log goes first, then the rows, then the statements: fitSeasonBook). Pure.
+  function closeoutTrimToast(arc) {
+    var what = [];
+    if (arc.ledger && arc.ledger.trimmed) what.push('the ledger’s entries');
+    if (arc.statementsTrimmed) what.push('the statements reconciled');
+    if (arc.ledgerLogTrimmed) what.push('the ledger’s change history');
+    if (!what.length) return '';
+    var list = what.length === 1 ? what[0] : what.slice(0, -1).join(', ') + ' and ' + what[what.length - 1];
+    var one = !(arc.ledger && arc.ledger.trimmed) && !arc.statementsTrimmed;   // the change history alone is one thing
+    return list.charAt(0).toUpperCase() + list.slice(1) + (one ? ' was' : ' were') + ' too large to keep in Past seasons. ' +
+      'Keep the snapshot just downloaded: it is the only place ' + (one ? 'it is' : 'they are') + ' kept.';
   }
   // Close-out preview overlay — computed live from state, nothing committed until confirm.
   // Phase 3, C5 review — what the season archive `arc` keeps of the book's statements and change
