@@ -20814,7 +20814,8 @@ test('C4: the Reverse or correct form says what each does and what the corrected
   vm.runInContext("state.ledger = state.ledger.filter(function (e) { return e.id !== 'rv-r1'; })", x);
   ok(!/>Dues \(Ada\)</.test(x.ledgerAsideListHtml({ lineId: '', text: '' })), 'an entry whose reversal is gone is listed as reversed');
   vm.runInContext('state.ledgerAside = []; state.ledger = []', x);
-  eq(x.ledgerAsideListHtml({ lineId: '', text: '' }), '<p class="empty">Nothing voided or reversed. An entry voided or reversed stays in the book, not counted, and is listed here.</p>', 'none');
+  eq(x.ledgerAsideListHtml({ lineId: '', text: '' }), '<p class="empty">Nothing voided or reversed. A voided entry stays in the book but counts in no total. ' +
+    'A reversed entry stays in Entries beside its reversal, and the two cancel. Both kinds are listed here.</p>', 'none');   // treasurer sign-off on option B (1)
   // Nothing of it reaches the parents.
   const bpv = codeOnly(BPV()), parent = codeOnly(slice('renderParentApp'));
   for (const name of ['ledgerFixFormHtml', 'ledger-fix', 'reversedBy', 'ledgerReverseRow', 'ledgerCorrectRow', 'fixWhy', 'ledgerPairOf', 'ledgerReversedLineHtml', 'rvdate'])
@@ -20881,18 +20882,21 @@ test('C4 review (8): Voided & reversed counts entries voided and entries reverse
     vm.runInContext(st, x);
     return /<p class="small muted" style="margin:0 0 6px">([^<]*)<\/p>/.exec(x.ledgerAsideListHtml(Object.assign({ lineId: '', text: '' }, f || {})))[1];
   };
-  const NONE = ' None of them counts in any total.', UNDER = ' Each reversed entry has its reversal listed under it.';
-  eq(head('state.ledgerAside = []; state.ledger = R("a", "2026-09-01")'), '1 reversed.' + UNDER + NONE, 'one reversal: 1 reversed, not 2');
-  eq(head('state.ledgerAside = [V("v1", "2026-09-02"), V("v2", "2026-09-03")]; state.ledger = []'), '2 voided.' + NONE, 'voids only');
-  eq(head('state.ledgerAside = [V("v1", "2026-09-02")]; state.ledger = R("a", "2026-09-01").concat(R("b", "2026-09-05"))'), '1 voided and 2 reversed.' + UNDER + NONE, 'both');
+  // Treasurer sign-off on option B (1) — what each kind counts for, said only of a kind there is: a
+  // reversed pair stays in the bank balance (it was "None of them counts in any total").
+  const TV = ' A voided entry counts in no total.', UNDER = ' Each reversed entry has its reversal listed under it.';
+  const TR = ' A reversed entry and its reversal stay in the bank balance, where they cancel, and count for no family, budget line or tier.';
+  eq(head('state.ledgerAside = []; state.ledger = R("a", "2026-09-01")'), '1 reversed.' + UNDER + TR, 'one reversal: 1 reversed, not 2');
+  eq(head('state.ledgerAside = [V("v1", "2026-09-02"), V("v2", "2026-09-03")]; state.ledger = []'), '2 voided.' + TV, 'voids only');
+  eq(head('state.ledgerAside = [V("v1", "2026-09-02")]; state.ledger = R("a", "2026-09-01").concat(R("b", "2026-09-05"))'), '1 voided and 2 reversed.' + UNDER + TV + TR, 'both');
   // A pair C4's first build set aside counts the same way.
   eq(head('state.ledgerAside = [{ id: "c", off: "reversed", reversedBy: "rv-c", date: "2026-08-01", description: "Entry c", amountCents: 1, direction: "in", lineId: "" },' +
     ' { id: "rv-c", off: "reversal", reverses: "c", date: "2026-09-29", description: "Reversal of c", amountCents: 1, direction: "out", lineId: "" }]; state.ledger = []'),
-  '1 reversed.' + UNDER + NONE, 'a first-build pair');
+  '1 reversed.' + UNDER + TR, 'a first-build pair');
   // Filtered by search or budget line: how many of them match, and of which kind.
   const st = 'state.ledgerAside = [V("v1", "2026-09-02", "L1"), V("v2", "2026-09-03")]; state.ledger = R("a", "2026-09-01", "L1").concat(R("b", "2026-09-05"))';
   eq([head(st, { text: 'Void' }), head(st, { lineId: 'L1' }), head(st, { text: 'Reversal of b' }), head(st, { text: 'Entry' })],
-    ['2 of 4 match: 2 voided.' + NONE, '2 of 4 match: 1 voided, 1 reversed.' + NONE, '1 of 4 match: 1 reversed.' + NONE, '2 of 4 match: 2 reversed.' + NONE], 'filtered');
+    ['2 of 4 match: 2 voided.' + TV, '2 of 4 match: 1 voided, 1 reversed.' + TV + TR, '1 of 4 match: 1 reversed.' + TR, '2 of 4 match: 2 reversed.' + TR], 'filtered');
 });
 
 test('C4: the lock messages point at Reverse or correct, where it fits; the treasurer’s other wording stays', () => {

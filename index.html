@@ -19989,7 +19989,10 @@
     heads.reverse();
     var rows = [];
     heads.forEach(function (e) { rows.push(e); if (role(e) === 'reversed' && partner(e)) rows.push(partner(e)); });
-    if (!pool.length) return '<p class="empty">Nothing voided or reversed. An entry voided or reversed stays in the book, not counted, and is listed here.</p>';
+    // Treasurer sign-off on option B (1) — a reversed entry and its reversal both count in the bank
+    // balance, where they cancel: "not counted" was true only of a voided one.
+    if (!pool.length) return '<p class="empty">Nothing voided or reversed. A voided entry stays in the book but counts in no total. ' +
+      'A reversed entry stays in Entries beside its reversal, and the two cancel. Both kinds are listed here.</p>';
     if (!rows.length) return '<p class="empty">No voided or reversed entries match that search.</p>';
     // Treasurer review of C4 (8) — counted as the treasurer counts them: entries voided, and entries
     // reversed (a reversal is not an entry reversed), a zero left unsaid.
@@ -19999,12 +20002,18 @@
         r: list.filter(function (e) { return role(e) === 'reversed' && !!partner(e); }).length
       };
     }
+    // Treasurer sign-off on option B (1) — what each kind listed counts for, said only of a kind
+    // there is: a voided entry counts in no total, a reversed pair stays in the bank balance.
+    function tails(c) {
+      return (c.v ? ' A voided entry counts in no total.' : '') +
+        (c.r ? ' A reversed entry and its reversal stay in the bank balance, where they cancel, and count for no family, budget line or tier.' : '');
+    }
     var t = tally(all), m = tally(heads);
     var h = '<p class="small muted" style="margin:0 0 6px">' + esc(f.text || f.lineId
       ? (m.v + m.r) + ' of ' + (t.v + t.r) + ' match: ' + [m.v ? m.v + ' voided' : '', m.r ? m.r + ' reversed' : ''].filter(Boolean).join(', ') +
-        '. None of them counts in any total.'
+        '.' + tails(m)
       : [t.v ? t.v + ' voided' : '', t.r ? t.r + ' reversed' : ''].filter(Boolean).join(' and ') + '.' +
-        (t.r ? ' Each reversed entry has its reversal listed under it.' : '') + ' None of them counts in any total.') + '</p>';
+        (t.r ? ' Each reversed entry has its reversal listed under it.' : '') + tails(t)) + '</p>';
     rows.forEach(function (e) {
       var open = !!ui.ledgerOpen[e.id];
       var why = ledgerLockedWhy(e, state.book, '', 'unvoid');
