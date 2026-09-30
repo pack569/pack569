@@ -19053,6 +19053,8 @@ const C2T_MORE = `
   ${decl('RECONCILE_AHEAD_LOGGED')}
   // The statement's closing balance that agrees with what is ticked through its date.
   function agree() { state.book.statementCents = reconcileTotals(state.ledger, state.book).cleared; }
+  // Pat Treasurer is an editor, not an admin (C5 review, F1: a lock after today is an admin's to put right).
+  var admin = false; function canReopenStatement() { return admin; }
   function restoreGone(data) { return data; }
   function act3(act, el) { el = el || { dataset: {} }; (function () {\n${C2T_ACT}\n})(); }
   function change3(ch, value) { var el = { value: value, dataset: {} }; (function () {\n${C2T_CHANGE}\n})(); }`;
@@ -19093,7 +19095,7 @@ test('C2 treasurer H-1: Mark reconciled takes a statement date, not after today 
   // The Reconcile view: no "through today", the reason in place of the button, and the armed button says what locks.
   const rr = slice('renderReconcile');
   ok(!/'today'/.test(rr), 'the view still offers "through today"');
-  ok(/var rlNo = reconcileLockRefusal\(bk, todayISO\(\), state\.statements\);/.test(rr) && /\(rlNo\s*\? '<span style="color:var\(--accent-text\)">' \+ esc\(rlNo\)/.test(rr), 'the reason is not shown in place');
+  ok(/var rlNo = reconcileLockRefusal\(bk, todayISO\(\), state\.statements, canReopenStatement\(\)\);/.test(rr) && /\(rlNo\s*\? '<span style="color:var\(--accent-text\)">' \+ esc\(rlNo\)/.test(rr), 'the reason is not shown in place');
   ok(/'Tap again: entries dated on or before ' \+ fmtDateShort\(bk\.statementDate\) \+ ' will be locked'/.test(rr), 'the armed button');
 });
 
@@ -19489,8 +19491,10 @@ test('C2 re-review (minor): Mark reconciled can lower a lock after today, and lo
   // The Reconcile card says so, under the last lock.
   ok(/if \(reconcileLockAhead\(bk, todayISO\(\)\)\) h \+= '<p class="small" style="margin:6px 0 0;color:var\(--accent-text\)">' \+ esc\(RECONCILE_AHEAD_WHY\) \+ '<\/p>';/
     .test(slice('renderReconcile')), 'the Reconcile card does not say the lock can be corrected');
-  eq(p.get('RECONCILE_AHEAD_WHY'), 'The book is marked reconciled through a date that hasn’t happened yet. To correct it, enter your ' +
-    'latest bank statement’s ending date and closing balance, tick its entries, and mark it reconciled; the lock moves back to that date.', 'the card’s words');
+  // Treasurer review of C5 (1): an admin's, and the statement dated ahead stays, reopened.
+  eq(p.get('RECONCILE_AHEAD_WHY'), 'The book is marked reconciled through a date that hasn’t happened yet. To correct it, a pack admin enters the ' +
+    'latest bank statement’s ending date and ending balance, ticks its entries, and marks it reconciled. The lock moves back to that date, and ' +
+    'the statement dated ahead stays in the list, marked reopened.', 'the card’s words');
   eq(p.get('RECONCILE_AHEAD_LOGGED'), why, 'the logged words');
 });
 
@@ -20948,6 +20952,7 @@ test('C4 (option B): Entries shows both rows with their pills and the reason; th
     function getScout() { return null; } function entryNeedsReceipt() { return false; } function ledgerTrailLine() { return ''; } function ledgerHistoryHtml() { return ''; }
     function ledgerAsideListHtml() { return ''; } function getBudgetLine() { return null; }
     function reconcileLockRefusal() { return ''; } function reconcileLockAhead() { return false; } var RECONCILE_AHEAD_WHY = '';
+    function canReopenStatement() { return false; }
     function todayISO() { return '2026-10-15'; }`, x);
   // Entries: each row's pill, and the reason under the reversed entry only.
   const h = x.renderLedgerEntries();
@@ -23055,6 +23060,45 @@ test('C5: a statement from before statements were kept can have its ending balan
   const a2 = Object.assign(C5_LEGACY(), { addedAt: '2026-10-02T00:00:01.000Z', addedCents: 200, addedBy: 'B', addedByUid: 'ub' });
   eq(JSON.parse(JSON.stringify(m.mergeStatements([a1], [a2]))), JSON.parse(JSON.stringify(m.mergeStatements([a2], [a1]))), 'two balances');
   eq(m.mergeStatements([a1], [a2])[0].addedCents, 200, 'the earlier balance');
+});
+
+/* ================================================================
+   Phase 3, C5 review fixes (security review F1–F7, treasurer review 1–9, owner's decisions of
+   2026-09-30).
+   ================================================================ */
+test('C5 review (F1, F2): putting a lock after today right is an admin’s, and each statement it reopens is logged as a reopen', () => {
+  // Today is Oct 15 on this device (its clock is behind, or a page set a bogus lock): the book is
+  // reconciled through Jan 31, 2027, with a real Oct 31 statement before it and Aug 31's before that.
+  const oct = Object.assign(C5_SEP(), { id: 'st-2026-10-31-a', date: '2026-10-31', at: '2026-11-02T15:00:00.000Z' });
+  const jan = Object.assign(C5_SEP(), { id: 'st-2027-01-31-a', date: '2027-01-31', at: '2027-02-02T15:00:00.000Z' });
+  const mk = () => c2tPage({ book: { reconciledThrough: '2027-01-31', statementDate: '2026-09-30' },
+    more: `state.statements = [${JSON.stringify(C5_LEGACY())}, ${JSON.stringify(oct)}, ${JSON.stringify(jan)}];` });
+  const no = 'The book is marked reconciled through Jan 31, a date that hasn’t happened yet. Putting that right reopens the statement through Jan 31, ' +
+    'so only a pack admin can mark this statement reconciled. Ask an admin, or check this device’s date and time.';
+  // An editor: refused, on each tap, and nothing changes.
+  const p = mk();
+  const was = p.get('state.statements');
+  p.run("agree(); act3('ledger-reconcile-lock'); act3('ledger-reconcile-lock')");
+  eq([p.get('state.book.reconciledThrough'), p.get('state.statements'), p.get('log().length'), p.get('commits'), p.get('toasts'), p.get('ui.armed')],
+    ['2027-01-31', was, 0, 0, [no, no], null], 'an editor');
+  // An admin: both statements after Sep 30 reopened, each logged as a reopen, then the reconcile.
+  const q = mk();
+  q.run("admin = true; agree(); act3('ledger-reconcile-lock'); act3('ledger-reconcile-lock')");
+  const why = 'Corrected: it had been marked reconciled through a date that hadn’t happened yet.';
+  const st = q.get('state.statements');
+  eq([q.get('state.book.reconciledThrough'), st.map((s) => [s.id, s.reopenWhy || null])],
+    ['2026-09-30', [['st-2026-08-31', null], [st[1].id, null], ['st-2026-10-31-a', why], ['st-2027-01-31-a', why]]], 'an admin');
+  eq(q.get('log().map(function (e) { return [e.op, e.row, e.why, e.f]; })'), [
+    ['reopen', 'st-2026-10-31-a', why, { reconciledThrough: ['2027-01-31', '2026-09-30'] }],
+    ['reopen', 'st-2027-01-31-a', why, { reconciledThrough: ['2027-01-31', '2026-09-30'] }],
+    ['reconcile', 'book', why, { reconciledThrough: ['2027-01-31', '2026-09-30'] }]], 'the log');
+  // A lock after today with no statement standing past the new date is not a reopen: an editor may.
+  const r = c2tPage({ book: { reconciledThrough: '2027-01-31', statementDate: '2026-09-30' },
+    more: `state.statements = [${JSON.stringify(C5_LEGACY())}, ${JSON.stringify(Object.assign({}, jan, { reopenedAt: 'T', reopenedBy: 'Alex' }))}];` });
+  r.run("agree(); act3('ledger-reconcile-lock'); act3('ledger-reconcile-lock')");
+  eq(r.get('state.book.reconciledThrough'), '2026-09-30', 'nothing to reopen');
+  // Both places ask as an admin or not.
+  ok(/var rlNo = reconcileLockRefusal\(state\.book, todayISO\(\), state\.statements, canReopenStatement\(\)\);/.test(SCRIPT), 'the handler');
 });
 
 /* ---------------- report ---------------- */

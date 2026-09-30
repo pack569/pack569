@@ -9161,7 +9161,11 @@
   // Phase 3, C5 — the same date again is refused while its statement stands (statements, when
   // given: state.statements): that statement is kept as it was signed, and a second one for the
   // same month would say it twice.
-  function reconcileLockRefusal(book, today, statements) {
+  // Security review of C5 (F1), owner's decision (a) — putting a lock after today right reopens
+  // every statement standing after the new date, so it is an admin's (`admin`:
+  // canReopenStatement()), as any reopen is: "today" is the device's clock, which whoever holds
+  // it can set, so an editor's phone set back could otherwise reopen a real, signed statement.
+  function reconcileLockRefusal(book, today, statements, admin) {
     var sd = String((book && book.statementDate) || '');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(sd)) return 'Enter the statement’s ending date first.';
     if (sd > today) return 'A statement can’t end after today. Check the statement date.';
@@ -9169,6 +9173,11 @@
     if (rt && sd < rt && !reconcileLockAhead(book, today)) {
       return 'The book is already reconciled through ' + fmtDateShort(rt) + '. A statement ending earlier can’t be ' +
         'marked reconciled. If a statement was marked reconciled by mistake, an admin can reopen it under Statements reconciled.';
+    }
+    if (rt && sd < rt && !admin && (statements || []).some(function (st) { return st && !statementReopened(st) && String(st.date) > sd; })) {
+      return 'The book is marked reconciled through ' + fmtDateShort(rt) + ', a date that hasn’t happened yet. Putting that right reopens ' +
+        'the statement through ' + fmtDateShort(rt) + ', so only a pack admin can mark this statement reconciled. Ask an admin, or check ' +
+        'this device’s date and time.';
     }
     if (rt && sd === rt && statementInForce(statements, book)) {
       return 'The book is already reconciled through ' + fmtDateShort(rt) + ', and that statement is kept as it was signed. ' +
@@ -9182,7 +9191,8 @@
     return !!(book && book.reconciledThrough && String(book.reconciledThrough) > today);
   }
   // Treasurer sign-off: the card says how to put it right; the log says what was put right.
-  var RECONCILE_AHEAD_WHY = 'The book is marked reconciled through a date that hasn’t happened yet. To correct it, enter your latest bank statement’s ending date and closing balance, tick its entries, and mark it reconciled; the lock moves back to that date.';
+  // Treasurer review of C5 (1) — an admin's to put right (F1), and what becomes of the statement.
+  var RECONCILE_AHEAD_WHY = 'The book is marked reconciled through a date that hasn’t happened yet. To correct it, a pack admin enters the latest bank statement’s ending date and ending balance, ticks its entries, and marks it reconciled. The lock moves back to that date, and the statement dated ahead stays in the list, marked reopened.';
   var RECONCILE_AHEAD_LOGGED = 'Corrected: it had been marked reconciled through a date that hadn’t happened yet.';
   // ---------------------------------------------------------------------------
   // PHASE 3, C5 — STATEMENTS (design: "Reconcile-lock writes a statement; optional second
@@ -20933,7 +20943,7 @@
     if (agrees && rec.ticked) {
       // Treasurer review of C2 (H-1) — through the statement's own date only, never "today"; the
       // reason in place of the button when it can't be marked; two taps, the second saying what locks.
-      var rlNo = reconcileLockRefusal(bk, todayISO(), state.statements);
+      var rlNo = reconcileLockRefusal(bk, todayISO(), state.statements, canReopenStatement());
       var rlArmed = ui.armed === 'ledger-reconcile-lock';
       h += '<p class="small" style="margin:10px 0 0"><span class="pill navy">Agreed</span> The book matches the statement. ' +
         (rlNo
@@ -30223,9 +30233,10 @@
     // Phase 3, C5 — and it writes the statement, as signed (statementNew), into state.statements,
     // and gives each entry cleared on it the statement's id. A lock after today put right leaves the
     // statements after the new date reopened, in the correction's words (no statement ends after
-    // today, so they were never real ones).
+    // today, so they were never real ones). Security review of C5 (F1, F2) — only an admin's
+    // (reconcileLockRefusal), and each statement it reopens is logged as a reopen of its own.
     if (act === 'ledger-reconcile-lock') {
-      var rlNo = reconcileLockRefusal(state.book, todayISO(), state.statements);
+      var rlNo = reconcileLockRefusal(state.book, todayISO(), state.statements, canReopenStatement());
       var rlRec = reconcileTotals(state.ledger, state.book);
       if (!rlNo && (rlRec.difference !== 0 || !rlRec.ticked)) rlNo = 'The ticked entries no longer match the statement’s closing balance (the book may have changed on another device), so it wasn’t marked reconciled. Check the difference and try again.';
       if (rlNo) { if (ui.armed === act) ui.armed = null; showToast(rlNo); render(); return; }
@@ -30235,10 +30246,12 @@
         var rlAt = new Date().toISOString();
         var rlNew = statementNew(state.ledger, state.book, state.statements, { by: ledgerActor(), byUid: ledgerActorUid(), at: rlAt },
           'st-' + state.book.statementDate + '-' + uid());
+        var rlReop = [];
         if (rlFix) {
           (state.statements || []).forEach(function (st) {
             if (st.date <= state.book.statementDate || statementReopened(st)) return;
             st.reopenedAt = rlAt; st.reopenedBy = rlNew.statement.by; st.reopenedByUid = rlNew.statement.byUid; st.reopenWhy = RECONCILE_AHEAD_LOGGED;
+            rlReop.push(st.id);
           });
         }
         state.statements = mergeStatements(state.statements, [rlNew.statement]);
@@ -30246,6 +30259,7 @@
         state.book.reconciledThrough = state.book.statementDate;
         state.book.reconciledBy = ledgerActor();                 // E2
         state.book.reconciledAt = rlAt;
+        rlReop.forEach(function (id) { logLedger('reopen', id, { why: RECONCILE_AHEAD_LOGGED, f: { reconciledThrough: [rlWas, state.book.reconciledThrough] } }); });
         logLedger('reconcile', 'book', rlFix
           ? { f: { reconciledThrough: [rlWas, state.book.reconciledThrough] }, why: RECONCILE_AHEAD_LOGGED }
           : { f: { reconciledThrough: [rlWas, state.book.reconciledThrough] } });
