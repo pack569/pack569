@@ -21871,6 +21871,22 @@ atest('Option B review (4): a weather lookup that answers after a hold does not 
   eq(await run(true), [['Weather filled in.'], 1], 'saved');
 });
 
+// Security review of option B (finding 6) — renderCalendarTab retires the Start-here card and saves,
+// during a render. Under a hold from the pack's copy that still wrote this device's copy (a flag only,
+// never pushed). Now not while either hold is on.
+test('Option B review (6): the Start-here card is not retired (and nothing saved) during a render while the page is held', () => {
+  const m = /\n    if \(!state\.startHereDismissed[^\n]*\{\n\s*state\.startHereDismissed = true;\n\s*save\(\);\n    \}/.exec(slice('renderCalendarTab'));
+  ok(m, 'the auto-retire is not where it was');
+  const run = (held) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`var saves = 0, state = { startHereDismissed: false, scouts: [{ id: 's1' }], storefronts: [], events: [{ id: 'e1' }] };
+      function save() { saves += 1; } function packFormatHeld() { return ${held}; }
+      ${m[0]}`, ctx);
+    return JSON.parse(JSON.stringify(vm.runInContext('[state.startHereDismissed, saves]', ctx)));
+  };
+  eq([run(true), run(false)], [[false, 0], [true, 1]], 'held; not held');
+});
+
 // The api fake: a newer page's save goes straight into the server's table.
 const apiSetPack = (w, rev, obj) => w.db.raw.prepare('UPDATE pack_state SET rev = ?, json = ?, device = ? WHERE pack_id = ?')
   .run(rev, JSON.stringify(obj), 'newer-dev', API_PACK);

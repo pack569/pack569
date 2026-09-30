@@ -16152,7 +16152,9 @@
 
     var h = '';
     // Wave 19(19) — auto-retire the Start-here card permanently once real data exists.
-    if (!state.startHereDismissed && state.scouts.length && (state.storefronts.length || state.events.length)) {
+    // Security review of option B (finding 6) — not while either reload-gate hold is on: this saves
+    // during a render, and a held page writes nothing to this device's copy, not even this flag.
+    if (!state.startHereDismissed && !packFormatHeld() && state.scouts.length && (state.storefronts.length || state.events.length)) {
       state.startHereDismissed = true;
       save();
     }
