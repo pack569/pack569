@@ -5095,6 +5095,10 @@
     clearTimeout(persistTimer);
     persistTimer = setTimeout(persistNow, 300);
   }
+  // Security review of option B (finding 4) — returns false when it refuses the edit (a viewer, or
+  // either reload-gate hold), true when it took it, so a caller that says "done" afterwards (a
+  // weather lookup or a calendar fetch that answers after a hold, and every handler that toasts
+  // after it) says so only when it was.
   function commit() {
     // Read-only enforcement: viewers/pending users (roles in force) can never persist or
     // push. Every mutation path routes through commit(), so this one guard makes the whole
@@ -5106,7 +5110,7 @@
       // this user is promoted mid-session (L-2). Nothing was ever saved or pushed.
       state = load();
       render();
-      return;
+      return false;
     }
     // The reload gate (PACK_FORMAT) — while either hold is on, an edit is refused, as a viewer's is.
     // The dispatch refuses it first, before any handler runs (handleAction, heldActAllowed); this
@@ -5114,20 +5118,21 @@
     // the hold). This device's copy may be a newer page's record, which save() never writes over;
     // and a hold met from the pack (sync.newerFormat) would leave the newer page a change to sort
     // out (owner, 2026-09-29: refuse every edit while any hold is on).
-    if (packFormatHeld()) { refuseHeldEdit(); return; }
+    if (packFormatHeld()) { refuseHeldEdit(); return false; }
     // Phase 3b — commit() is the one seam every mutation goes through, so it is where
     // charges are reconciled against attendance, rates and tier progress. Cheap: a pack is
     // tens of scouts, not thousands.
     syncCharges();
-    if (liveEdit) { render(); schedulePersist(); return; }
+    if (liveEdit) { render(); schedulePersist(); return true; }
     clearTimeout(persistTimer);
     persistTimer = null;
     persistPending = false;
     save();
     // …and a newer tab's save that save() has only now found in storage: nothing was written.
-    if (formatHeldHere()) { refuseHeldEdit(); return; }
+    if (formatHeldHere()) { refuseHeldEdit(); return false; }
     render();
     scheduleSyncPush();
+    return true;
   }
 
   /* ---------------- Helpers ---------------- */
@@ -5895,9 +5900,11 @@
     })).then(function () {
       ui.wxBusy = Math.max(0, (ui.wxBusy || 0) - todo.length);
       // Only a lookup that changed something is worth persisting and syncing.
-      if (got) commit(); else render();
-      if (!got) showToast('Couldn’t reach the weather service — check the connection and try again.');
-      else if (failed) showToast('Filled in ' + got + ', couldn’t get ' + failed + '.');
+      if (!got) { render(); showToast('Couldn’t reach the weather service — check the connection and try again.'); return; }
+      // Security review of option B (finding 4) — an answer after a hold is refused by commit(),
+      // which says why: nothing was filled in, so that is not said.
+      if (!commit()) return;
+      if (failed) showToast('Filled in ' + got + ', couldn’t get ' + failed + '.');
       else showToast(doneMsg || 'Weather filled in.');
     });
   }
@@ -9849,8 +9856,7 @@
       });
     });
     if (n) {
-      commit();
-      showToast('Marked ' + n + ' adventure' + (n === 1 ? '' : 's') + ' as awarded');
+      if (commit()) showToast('Marked ' + n + ' adventure' + (n === 1 ? '' : 's') + ' as awarded');
     } else {
       render();
       showToast('Nothing on the list');
@@ -9967,7 +9973,7 @@
       addedExp += 1;
     });
     if (added || addedExp) {
-      commit();
+      if (!commit()) return;
       var bits = [];
       if (added) bits.push(added + ' activit' + (added === 1 ? 'y' : 'ies'));
       if (addedExp) bits.push(addedExp + ' registration line' + (addedExp === 1 ? '' : 's'));
@@ -13955,12 +13961,12 @@
   // `words.said`, when given, is the whole first toast instead.
   function deleteWithUndo(label, restore, words) {
     words = words || {};
-    commit();
+    if (!commit()) return;   // refused (a viewer, or the reload gate): nothing was deleted
     showToast(words.said || ((words.done || 'Deleted') + ' ' + label), {
       actionLabel: 'Undo', duration: 6000,
       onAction: function () {
         var said = restore();
-        commit();
+        if (!commit()) return;
         if (typeof said === 'string' && said) showToast(said, { duration: 10000 });
         else showToast((words.undone || 'Restored') + ' ' + label);
       }
@@ -26101,8 +26107,9 @@
     if (added) bits.push('imported ' + added);
     if (updated) bits.push('updated ' + updated);
     if (added || updated) {
-      commit();
-      showToast('Calendar: ' + bits.join(' · ') + ' event' + ((added + updated) === 1 ? '' : 's'));
+      // Security review of option B (finding 4) — a calendar file or link read after a hold: refused
+      // (commit() says why), so no "imported".
+      if (commit()) showToast('Calendar: ' + bits.join(' · ') + ' event' + ((added + updated) === 1 ? '' : 's'));
     } else showToast('Imported 0 events');
     return added + updated;
   }
@@ -26876,7 +26883,7 @@
     if (!o || o.report !== 'roster') return;
     var added = teAddMissingScouts(o.items.filter(function (it) { return it.isNew; }));
     ui.overlay = null;
-    commit();
+    if (!commit()) return;
     showToast(added
       ? ('Added ' + added + ' scout' + (added === 1 ? '' : 's') + ' to the roster — set their dens on Scouts')
       : 'Everybody on that list is already on your roster');
@@ -26986,8 +26993,7 @@
       if (rows.length) updated += 1;
     });
     ui.overlay = null;
-    commit();
-    showToast('Updated online/wagon sales for ' + updated + ' scout' + (updated === 1 ? '' : 's') + ' from Trail’s End');
+    if (commit()) showToast('Updated online/wagon sales for ' + updated + ' scout' + (updated === 1 ? '' : 's') + ' from Trail’s End');
   }
   function teCommitShiftImport() {
     var o = ui.overlay;
@@ -27057,7 +27063,7 @@
     });
     sortStorefronts();
     ui.overlay = null;
-    commit();
+    if (!commit()) return;
     var say = [];
     if (added) say.push('added ' + added + ' storefront' + (added === 1 ? '' : 's'));
     if (filled) say.push('filled in ' + filled + ' shift' + (filled === 1 ? '' : 's') +
@@ -27084,8 +27090,7 @@
     // figures live in the archive record above).
     var addedScouts = o.addRoster ? teAddMissingScouts(arc.scouts) : 0;
     ui.overlay = null;
-    commit();
-    showToast((replaced ? 'Replaced ' : 'Saved ') + record.year + ' season in Past seasons' +
+    if (commit()) showToast((replaced ? 'Replaced ' : 'Saved ') + record.year + ' season in Past seasons' +
       (addedScouts ? ' · added ' + addedScouts + ' scout' + (addedScouts === 1 ? '' : 's') + ' to the roster' : ''));
   }
   /* ----- Wave 20: Inventory Transaction Report glue ----- */
@@ -27163,7 +27168,7 @@
       updated += 1;
     });
     ui.overlay = null;
-    commit();
+    if (!commit()) return;
     var bits = [];
     if (updated) bits.push('updated ' + updated + ' product' + (updated === 1 ? '' : 's'));
     if (added) bits.push('added ' + added);
@@ -27819,7 +27824,7 @@
     // 3. Roll the working state into next year.
     rolloverYear();
     ui.overlay = null;
-    commit();
+    if (!commit()) return;
     // E3 — the one case where the archive is not the whole story.
     showToast(record.ledger && record.ledger.trimmed
       ? 'Welcome to the ' + (year + 1) + ' program year. The ledger was too large for Past seasons \u2014 keep the downloaded JSON.'
@@ -29041,8 +29046,7 @@
     if (act === 'clear-activity-dates') {
       arm('clear-act-dates', function () {
         state.events.forEach(function (ev) { if (ev.kind === 'activity') ev.date = ''; });
-        commit();
-        showToast('Cleared dates from all activities');
+        if (commit()) showToast('Cleared dates from all activities');
       });
       return;
     }
@@ -29491,8 +29495,7 @@
       TE_LINEUP.forEach(function (t) {
         state.inventory.products.push({ id: uid(), name: t[0], perCase: t[1], cases: 0, loose: 0, unitPriceCents: 0 });
       });
-      commit();
-      showToast('Added the standard Trail’s End lineup — set cases and prices');
+      if (commit()) showToast('Added the standard Trail’s End lineup — set cases and prices');
       return;
     }
     // (del-expense: is handled with del-activity: above — both ask first.)
@@ -29767,8 +29770,7 @@
         }
         var advRes = advanceDens();
         state.densAdvancedYear = state.budget.programYear;
-        commit();
-        showToast('Advanced ' + advRes.advanced + ' scout' + (advRes.advanced === 1 ? '' : 's') +
+        if (commit()) showToast('Advanced ' + advRes.advanced + ' scout' + (advRes.advanced === 1 ? '' : 's') +
           ' · ' + advRes.crossed + ' Arrow of Light archived as crossed over');
       });
       return;
@@ -29830,8 +29832,7 @@
         else mamHad += 1;
       });
       if (!mamDid && !mamHad) return;
-      commit();
-      showToast('Marked ' + mamAdv + ' done for ' + mamDid + ' scout' + (mamDid === 1 ? '' : 's') +
+      if (commit()) showToast('Marked ' + mamAdv + ' done for ' + mamDid + ' scout' + (mamDid === 1 ? '' : 's') +
         (mamHad ? ' · ' + mamHad + ' already had it' : '') +
         (mamRun.of > 1 ? ' · all ' + mamRun.of + ' sessions' : ''));
       return;
@@ -30837,8 +30838,7 @@
         added++;
       });
       ui.sfDraft = { name: '', dates: [] };
-      commit();
-      showToast('Added ' + added + ' storefront' + (added === 1 ? '' : 's') + (skipped ? ', skipped ' + skipped + ' already there' : ''));
+      if (commit()) showToast('Added ' + added + ' storefront' + (added === 1 ? '' : 's') + (skipped ? ', skipped ' + skipped + ' already there' : ''));
       return;
     }
     if (kind === 'add-entry') {
@@ -30946,8 +30946,7 @@
       state.events.push(paMtg);
       ui.planAdv = null;
       ui.repeatOffer = paMtg.id;
-      commit();
-      showToast(paDen + ' den meeting added for ' + paName + ' — ' + fmtDate(paDate));
+      if (commit()) showToast(paDen + ' den meeting added for ' + paName + ' — ' + fmtDate(paDate));
       ui.calMonth = monthKey(paDate);
       ui.calSelectedDate = paDate;
       ui.scrollToId = 'dayDetail';
@@ -30972,8 +30971,7 @@
         state.events.push(freshEvent({ kind: rMtg.kind, den: rMtg.den || '', date: rIso, slot: dateToSlot(rIso),
           time: rMtg.time || '', note: rMtg.note || '', adventure: rAdv }));
       });
-      commit();
-      showToast('Added ' + rN + ' more ' + (rStep === 14 ? 'every-other-week ' : 'weekly ') +
+      if (commit()) showToast('Added ' + rN + ' more ' + (rStep === 14 ? 'every-other-week ' : 'weekly ') +
         (rMtg.kind === 'pack' ? 'pack' : 'den') + ' meeting' + (rN === 1 ? '' : 's') +
         (rAdv ? ' — ' + rAdv + ', ' + (rN + 1) + ' sessions' : ''));
       return;

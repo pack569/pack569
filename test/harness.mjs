@@ -18754,7 +18754,7 @@ test('C3 treasurer: the void form, the refusals, the toasts and the sync notes s
   eq(p.get("ledgerLockedWhy(aside('u1'), state.book, 'Pizza', 'unvoid')"), still.replace(/^It/, 'Pizza'), 'a named row');
   // The void's toast, and one for an entry with no description.
   const d = sandbox(['deleteWithUndo']);
-  vm.runInContext('var toasts = []; function commit() {} function showToast(m, o) { toasts.push([m, o && o.actionLabel]); }', d);
+  vm.runInContext('var toasts = []; function commit() { return true; } function showToast(m, o) { toasts.push([m, o && o.actionLabel]); }', d);
   d.deleteWithUndo('“Pizza”', () => undefined, { done: 'Voided', undone: 'Un-voided', said: 'Voided “Pizza”. It no longer counts in any total.' });
   d.deleteWithUndo('“Pizza”', () => undefined, { done: 'Voided', undone: 'Un-voided' });
   eq(JSON.parse(JSON.stringify(vm.runInContext('toasts', d))), [['Voided “Pizza”. It no longer counts in any total.', 'Undo'], ['Voided “Pizza”', 'Undo']], 'the toast');
@@ -19461,7 +19461,7 @@ test('C2 re-review (minor): deleteWithUndo shows what a restore says in place of
   // (The ledger's Undo is a void's now: 'C3: a void sets the entry aside …'.)
   // deleteWithUndo shows the restore's words in place of "Restored", for longer.
   const ctx = sandbox(['deleteWithUndo']);
-  vm.runInContext("var shown = []; function commit() {} function showToast(m, o) { shown.push([m, o && o.duration, o && o.onAction]); }", ctx);
+  vm.runInContext("var shown = []; function commit() { return true; } function showToast(m, o) { shown.push([m, o && o.duration, o && o.onAction]); }", ctx);
   ctx.deleteWithUndo('x', () => 'Words');
   vm.runInContext('shown[0][2]()', ctx);
   ctx.deleteWithUndo('y', () => undefined);
@@ -21822,6 +21822,55 @@ test('reload gate: a copy choice waiting when save() finds a newer tab’s copy 
   eq(run(1), [false, { rev: 9 }, 'sync-conflict'], 'control: a tab in this page’s format leaves the choice alone');
 });
 
+// Security review of option B (finding 4) — an answer that arrives after a hold (a weather lookup, a
+// calendar link) was refused by commit(), which said so, and then "Weather filled in." was shown over
+// it. commit() now says whether it took the edit, and every caller that says "done" after it asks.
+test('Option B review (4): commit() says whether it saved — refused while held or for a viewer, taken otherwise', () => {
+  const held = gateStoreCtx({ version: 1, fmt: NEWER_FMT, packName: 'Newer', scouts: [] });
+  eq(vm.runInContext("state.packName = 'Edited'; commit()", held), false, 'held');
+  const c = gateStoreCtx({ version: 1, fmt: 1, packName: 'Mine', scouts: [] });
+  eq(vm.runInContext("[commit(), (liveEdit = true, commit()), (liveEdit = false, canEdit = function () { return false; }, commit())]", c), [true, true, false],
+    'saved, typed-in, a viewer');
+  // A newer tab's save that save() finds only then: refused, false.
+  const t = gateStoreCtx({ version: 1, fmt: 1, packName: 'Mine', scouts: [] });
+  eq(vm.runInContext(`store[KEY] = ${JSON.stringify(JSON.stringify({ version: 1, fmt: NEWER_FMT, scouts: [] }))}; commit()`, t), false, 'a newer tab’s save found by save()');
+});
+test('Option B review (4): no success is said after a commit() that may have refused', () => {
+  // Every bare commit(); whose block goes on to a showToast before it returns or closes. (A toast
+  // BEFORE the commit is the handler's own; commit()'s refusal toast follows it.)
+  const lines = SCRIPT.split('\n'), ind = (l) => /^\s*/.exec(l)[0].length, bad = [];
+  lines.forEach((l, i) => {
+    if (!/^\s*commit\(\);/.test(l) || /^\s*commit\(\);\s*return;/.test(l)) return;
+    if (/showToast\(/.test(l)) { bad.push(l.trim()); return; }
+    for (let j = i + 1; j < lines.length; j++) {
+      const m = lines[j];
+      if (!m.trim() || /^\s*\/\//.test(m)) continue;
+      if (ind(m) < ind(l) || (/^\s*return\b/.test(m) && ind(m) === ind(l))) break;
+      if (/showToast\(/.test(m)) { bad.push(l.trim() + ' … ' + m.trim()); break; }
+    }
+  });
+  eq(bad, [], 'a success said after a bare commit()');
+  // The two answers that arrive late: the weather, and a calendar file or link.
+  ok(/if \(!commit\(\)\) return;\s*if \(failed\) showToast/.test(slice('fetchWeather')), 'the weather lookup');
+  ok(/if \(commit\(\)\) showToast\('Calendar: '/.test(slice('applyIcsText')), 'the calendar import');
+});
+atest('Option B review (4): a weather lookup that answers after a hold does not say the weather was filled in', async () => {
+  const run = async (saved) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`var ui = {}, toasts = [], commits = 0;
+      function packLoc() { return { lat: 1, lon: 2 }; } function weatherLookupable(sfs) { return sfs; } function render() {}
+      function weatherUrl() { return 'u'; } function readWeatherPayload() { return { tag: 'Sun' }; } function daysFromToday() { return -1; }
+      function fetch() { return Promise.resolve({ json: function () { return {}; } }); }
+      function showToast(m) { toasts.push(m); } function commit() { commits += 1; return ${saved}; }
+      ${slice('fetchWeather')}
+      fetchWeather([{ id: 'f1', date: '2026-09-01' }], 'Weather filled in.');`, ctx);
+    await new Promise((r) => setTimeout(r, 20));
+    return JSON.parse(JSON.stringify(vm.runInContext('[toasts, commits]', ctx)));
+  };
+  eq(await run(false), [[], 1], 'refused');
+  eq(await run(true), [['Weather filled in.'], 1], 'saved');
+});
+
 // The api fake: a newer page's save goes straight into the server's table.
 const apiSetPack = (w, rev, obj) => w.db.raw.prepare('UPDATE pack_state SET rev = ?, json = ?, device = ? WHERE pack_id = ?')
   .run(rev, JSON.stringify(obj), 'newer-dev', API_PACK);
@@ -21836,7 +21885,7 @@ atest('reload gate, api: a newer page’s record on the server holds a leader’
     ed.run(GATE_LINE.map(decl).join('\n'));
     // The client's commit is a stub without the hold; the page's own commit refuses every edit
     // while either hold is on (cae8e9f), so this one does too: the page's line, as it is written.
-    const HOLD = '    if (packFormatHeld()) { refuseHeldEdit(); return; }';
+    const HOLD = '    if (packFormatHeld()) { refuseHeldEdit(); return false; }';
     ok(slice('commit').indexOf(HOLD + '\n') !== -1, 'the page’s commit no longer refuses an edit while held');
     ed.run(`${['FORMAT_REFUSED', 'refuseHeldEdit', 'loadLedgerSplits', 'load'].map(decl).join('\n')}
       commit = function () { if (!canEdit()) return;\n${HOLD}\n save(); scheduleSyncPush(); };`);
