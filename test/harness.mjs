@@ -22789,7 +22789,8 @@ atest('C5, api: a statement signed on one device survives another’s save, and 
 // Phase 3, C5 — the statements card and the printout, on a sandbox of the page's own renderers.
 const C5_VIEW_FNS = ['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'fmtDateYear', 'statementDay', 'statementByOn', 'statementLegacyLine', 'statementSheetData',
   'statementReopened', 'statementReviewed', 'statementAdded', 'entrySignedCents', 'statementsCardHtml', 'statementBlockHtml', 'renderBankStatementSheet',
-  'statementButtonsHtml', 'statementReviewRefusal', 'ledgerActorName', 'statementReopenRefusal', 'statementReopenNote', 'statementBefore', 'LEDGER_VOID_REASON_MAX'];
+  'statementButtonsHtml', 'statementReviewRefusal', 'ledgerActorName', 'statementReopenRefusal', 'statementReopenNote', 'statementBefore', 'LEDGER_VOID_REASON_MAX',
+  'statementReviewer', 'statementAwaitsReview'];
 // Sep 30: r1 +$25 cleared on it, u1 −$84 outstanding; the opening $100 and q1 +$500 cleared before.
 const C5_SEP = () => ({ id: 'st-2026-09-30-a', date: '2026-09-30', statementCents: 62500, openingCents: 10000, clearedCents: 62500, bookCents: 54100,
   ticked: ['r1'], outstanding: ['u1'], by: 'Pat Treasurer', byUid: 'u1', at: '2026-10-02T15:00:00.000Z' });
@@ -22798,8 +22799,9 @@ function c5View(statements, more) {
   vm.runInContext(`${C5_VIEW_FNS.map(slice).join('\n')}
     ${['FLEUR', 'ledgerActor', 'ledgerActorUid'].map(decl).join('\n')}
     // Pat Treasurer (u1), an editor, who signed Sep 30.
-    var ui = { armed: null }, sync = { user: { uid: 'u1', displayName: 'Pat Treasurer' } }, editor = true;
+    var ui = { armed: null }, sync = { user: { uid: 'u1', displayName: 'Pat Treasurer' } }, editor = true, admin = false;
     function canEdit() { return editor; }
+    function isAdmin() { return admin; } function accountsInForce() { return !!sync.user; }
     function canReopenStatement() { return false; }
     var state = { packName: 'Pack 569', leaders: [], ledger: ${JSON.stringify(C2_LEDGER())}, ledgerAside: [],
       book: { reconciledThrough: '2026-09-30' }, statements: ${JSON.stringify(statements)} };
@@ -22826,13 +22828,16 @@ test('C5: Money · Ledger lists the statements newest first, each with its print
   const sep = Object.assign(C5_SEP(), { supersedes: 'st-2026-09-30-z', reviewedAt: '2026-10-03T00:00:00.000Z', reviewedBy: 'Sam', reviewedByUid: 'u2' });
   const x = c5View([C5_LEGACY(), reopened, sep]);
   const card = c5Text(vm.runInContext('statementsCardHtml()', x));
-  eq(card, 'Statements reconciled Each statement is kept as it was when it was marked reconciled, newest first. ' +
+  // Treasurer review of C5 (7): how many wait for a review, and what reviewing means under each.
+  eq(card, 'Statements reconciled Each statement is kept as it was when it was marked reconciled, newest first. 1 not yet reviewed. ' +
     'Statement through Wed, Sep 30 reviewed Statement balance $625.00 · ticked balance $625.00 · difference $0.00 ' +
     '1 entry cleared on it, 1 outstanding. Reconciled by Pat Treasurer on Oct 2. Reviewed by Sam on Oct 3. Printout ' +
     'Statement through Wed, Sep 30 reopened Statement balance $625.00 · ticked balance $625.00 · difference $0.00 ' +
     '1 entry cleared on it, 1 outstanding. Reconciled by Pat Treasurer on Oct 1. Reopened by Alex on Oct 2: “A deposit was ticked twice”. Reconciled again by Pat Treasurer on Oct 2. Printout ' +
-    // Pat may review the legacy one, which Sam signed.
-    'Statement through Mon, Aug 31 Reconciled through Aug 31 by Sam on Sep 1. Recorded before statements were kept, so the statement balance wasn’t saved. Printout Mark reviewed Add the statement’s ending balance',
+    // Pat, an editor, can't review the legacy one (only an admin reviews, and not before its balance is added).
+    'Statement through Mon, Aug 31 Reconciled through Aug 31 by Sam on Sep 1. Recorded before statements were kept, so the statement balance wasn’t saved. ' +
+    'Not yet reviewed. A pack admin other than the one who reconciled it compares it with the bank’s own statement and marks it reviewed, or another ' +
+    'leader signs the printout. Printout Add the statement’s ending balance',
     'the card');
   ok(/data-act="st-print:st-2026-09-30-a"/.test(vm.runInContext('statementsCardHtml()', x)), 'no printout button');
   eq(c5Text(vm.runInContext('statementsCardHtml()', c5View([]))),
@@ -22890,8 +22895,10 @@ const C5_ACT = [
   c2Block(/    if \(act === 'st-balance-cancel'\) \{[^\n]*\}/, 'st-balance-cancel'),
   c2Block(/    if \(act\.indexOf\('st-balance-go:'\) === 0\) \{[\s\S]*?\n    \}/, 'st-balance-go')].join('\n');
 const c5Page = (o) => c2tPage({ book: { reconciledThrough: '2026-09-30' }, more: `
-  ${['statementReviewRefusal'].map(slice).join('\n')}
+  ${['statementReviewRefusal', 'statementReviewer'].map(slice).join('\n')}
   var editor = true;
+  // Who is an admin (admin, as C2T_MORE's canReopenStatement reads it) and whether accounts are in force.
+  function isAdmin() { return admin; } function accountsInForce() { return !!sync.user; }
   ui.stReopenAsk = null; ui.stReopenWhy = '';
   function canEdit() { return editor; }
   function commit() { commits += 1; return true; }   // as the page's says it took the change
@@ -22901,29 +22908,53 @@ const c5Page = (o) => c2tPage({ book: { reconciledThrough: '2026-09-30' }, more:
   ${(o && o.more) || ''}` });
 const C5_SAM = "sync.user = { uid: 'u2', displayName: 'Sam Reviewer' }";
 
-test('C5: a second leader, signed in, can mark a statement reviewed once; never the one who reconciled it', () => {
-  const r = sandbox(['statementReviewRefusal', 'statementReopened', 'statementReviewed']);
-  const S = C5_SEP();
+// The review's refusals, in the treasurer's words (C5 review, finding 7) and the owner's (admins only).
+const C5_RV = {
+  signer: (who) => 'A statement has to be reviewed by a different leader from the one who reconciled it (' + who + '). Ask another pack admin to review it.',
+  signIn: 'Sign in with your own account to mark a statement reviewed, so the review says who did it. If the pack doesn’t use accounts, sign the printout instead.',
+  admin: 'Only a pack admin can mark a statement reviewed. Another leader can sign the printout instead.',
+  off: 'This statement isn’t what the book is reconciled through right now, so it can’t be marked reviewed.',
+  noBalance: 'Add the statement’s ending balance first, so there’s something to check against the bank.',
+  unknown: 'Who reconciled this statement wasn’t recorded, so the app can’t tell whether you’re a different leader. Sign the printout instead.' };
+test('C5: a pack admin, signed in, can mark a statement reviewed once; never the one who reconciled it', () => {
+  const r = sandbox(['statementReviewRefusal', 'statementReopened', 'statementReviewed', 'statementAdded']);
+  const S = C5_SEP(), book = { reconciledThrough: '2026-09-30' };
+  const sam = { by: 'Sam', byUid: 'u2', admin: true, accounts: true }, as = (o) => Object.assign({}, sam, o);
+  const added = () => Object.assign(C5_LEGACY(), { addedAt: 'T', addedCents: 100, addedBy: 'Kim' });
   const table = [
-    [S, { by: 'Sam', byUid: 'u2' }, ''],
-    [S, { by: 'Pat Treasurer', byUid: 'u1' }, 'A statement is reviewed by a different leader from the one who reconciled it (Pat Treasurer).'],
-    [S, { by: 'Pat Treasurer', byUid: 'u9' }, ''],   // the same name, another account: the uid decides
-    [S, { by: 'Sam', byUid: '' }, 'Sign in with your own account to mark a statement reviewed, so the review says who did it.'],
-    [Object.assign(C5_SEP(), { reviewedAt: 'T', reviewedBy: 'Lee', reviewedByUid: 'u4' }), { by: 'Sam', byUid: 'u2' },
+    [S, sam, book, ''],
+    [S, as({ by: 'Pat Treasurer', byUid: 'u1' }), book, C5_RV.signer('Pat Treasurer')],
+    [S, as({ by: 'Pat Treasurer', byUid: 'u9' }), book, ''],   // the same name, another account: the uid decides
+    [S, as({ byUid: '' }), book, C5_RV.signIn],
+    // A pack without accounts: nobody reviews in the app, signed in or not (the printout is signed).
+    [S, as({ admin: false, accounts: false }), book, C5_RV.signIn],
+    // Owner's decision: an editor who isn't an admin can't.
+    [S, as({ admin: false }), book, C5_RV.admin],
+    [Object.assign(C5_SEP(), { reviewedAt: 'T', reviewedBy: 'Lee', reviewedByUid: 'u4' }), sam, book,
       'This statement was already reviewed by Lee, and a review can’t be changed.'],
-    [Object.assign(C5_SEP(), { reopenedAt: 'T', reopenedBy: 'Alex', reopenedByUid: 'u3' }), { by: 'Sam', byUid: 'u2' },
+    [Object.assign(C5_SEP(), { reopenedAt: 'T', reopenedBy: 'Alex', reopenedByUid: 'u3' }), sam, book,
       'This statement was reopened, so it can’t be marked reviewed.'],
-    // Signed with no account: no uid to compare, so the name, unless it only says "a signed-in leader".
-    [C5_LEGACY(), { by: 'Sam', byUid: 'u2' }, 'A statement is reviewed by a different leader from the one who reconciled it (Sam).'],
-    [C5_LEGACY(), { by: 'Pat', byUid: 'u2' }, ''],
-    [Object.assign(C5_LEGACY(), { by: 'a signed-in leader' }), { by: 'a signed-in leader', byUid: 'u2' }, '']];
-  table.forEach(([st, who, want], i) => eq(r.statementReviewRefusal(st, who), want, 'case ' + i));
-  // On the page: Pat, who signed it, is refused; Sam marks it reviewed in two taps, once, logged.
+    // F7: not what the book is reconciled through (a backup from before it restored), or nothing is.
+    [S, sam, { reconciledThrough: '2026-08-31' }, C5_RV.off],
+    [S, sam, { reconciledThrough: '' }, C5_RV.off],
+    // A legacy statement: not before its ending balance is added; then its signer by name.
+    [C5_LEGACY(), sam, book, C5_RV.noBalance],
+    [added(), sam, book, C5_RV.signer('Sam')],
+    [added(), as({ by: 'Pat' }), book, ''],
+    // F5: who signed it wasn't recorded, so nobody can be told apart from them.
+    [Object.assign(added(), { by: 'a signed-in leader' }), as({ by: 'a signed-in leader' }), book, C5_RV.unknown],
+    [Object.assign(added(), { by: 'this device' }), sam, book, C5_RV.unknown],
+    [Object.assign(added(), { by: '' }), sam, book, C5_RV.unknown]];
+  table.forEach(([st, who, b, want], i) => eq(r.statementReviewRefusal(st, who, b), want, 'case ' + i));
+  // On the page. Pat, who signed it, is refused even as an admin; Sam, an editor, is refused; Sam as
+  // an admin marks it reviewed in two taps, once, logged.
   const p = c5Page();
-  p.run("toasts = []; act5('st-review:st-2026-09-30-a'); act5('st-review:st-2026-09-30-a')");
+  p.run("admin = true; toasts = []; act5('st-review:st-2026-09-30-a'); act5('st-review:st-2026-09-30-a')");
   eq([p.get("'reviewedAt' in st('st-2026-09-30-a')"), p.get('log().length'), p.get('commits'), p.get('toasts'), p.get('ui.armed')],
-    [false, 0, 0, Array(2).fill('A statement is reviewed by a different leader from the one who reconciled it (Pat Treasurer).'), null], 'the signer');
-  p.run(`${C5_SAM}; toasts = []; act5('st-review:st-2026-09-30-a')`);
+    [false, 0, 0, Array(2).fill(C5_RV.signer('Pat Treasurer')), null], 'the signer');
+  p.run(`${C5_SAM}; admin = false; toasts = []; act5('st-review:st-2026-09-30-a'); act5('st-review:st-2026-09-30-a')`);
+  eq([p.get("'reviewedAt' in st('st-2026-09-30-a')"), p.get('toasts'), p.get('ui.armed')], [false, Array(2).fill(C5_RV.admin), null], 'an editor');
+  p.run("admin = true; toasts = []; act5('st-review:st-2026-09-30-a')");
   eq([p.get("'reviewedAt' in st('st-2026-09-30-a')"), p.get('ui.armed')], [false, 'st-review:st-2026-09-30-a'], 'one tap reviewed it');
   p.run("act5('st-review:st-2026-09-30-a')");
   const s = p.get("st('st-2026-09-30-a')");
@@ -22933,12 +22964,24 @@ test('C5: a second leader, signed in, can mark a statement reviewed once; never 
   // Once: the next leader is refused, and nothing in the statement changes.
   p.run("sync.user = { uid: 'u4', displayName: 'Lee' }; toasts = []; act5('st-review:st-2026-09-30-a'); act5('st-review:st-2026-09-30-a')");
   eq([p.get("st('st-2026-09-30-a')"), p.get('log().length'), p.get('toasts')[0]], [s, 1, 'This statement was already reviewed by Sam Reviewer, and a review can’t be changed.'], 'a second review');
-  // A viewer can't; nor can a leader not signed in.
+  // A viewer can't; nor can a leader not signed in (no accounts in force).
   const v = c5Page();
-  v.run(`${C5_SAM}; editor = false; toasts = []; act5('st-review:st-2026-09-30-a'); act5('st-review:st-2026-09-30-a')`);
+  v.run(`${C5_SAM}; admin = true; editor = false; toasts = []; act5('st-review:st-2026-09-30-a'); act5('st-review:st-2026-09-30-a')`);
   eq([v.get("'reviewedAt' in st('st-2026-09-30-a')"), v.get('toasts')[0]], [false, 'Read-only access — ask a pack admin to make you an editor.'], 'a viewer');
   v.run("editor = true; sync.user = null; toasts = []; act5('st-review:st-2026-09-30-a'); act5('st-review:st-2026-09-30-a')");
-  eq([v.get("'reviewedAt' in st('st-2026-09-30-a')"), v.get('toasts')[0]], [false, 'Sign in with your own account to mark a statement reviewed, so the review says who did it.'], 'no account');
+  eq([v.get("'reviewedAt' in st('st-2026-09-30-a')"), v.get('toasts')[0]], [false, C5_RV.signIn], 'no account');
+  // The button is hidden from anyone who can't review, as Reopen is: an editor, the signer, a pack
+  // without accounts. Shown to an admin who didn't sign it, with the treasurer's armed words.
+  const card = (js) => vm.runInContext(js + '; statementsCardHtml()', c5View([C5_SEP()]));
+  const btn = /data-act="st-review:st-2026-09-30-a"/;
+  eq([btn.test(card("sync.user = { uid: 'u2', displayName: 'Sam' }")), btn.test(card('admin = true')), btn.test(card('admin = true; sync.user = null')),
+    btn.test(card("admin = true; sync.user = { uid: 'u2', displayName: 'Sam' }"))], [false, false, false, true], 'who sees Mark reviewed');
+  ok(/>Tap again: I checked this against the bank’s statement<\/button>/.test(card("admin = true; sync.user = { uid: 'u2', displayName: 'Sam' }; ui.armed = 'st-review:st-2026-09-30-a'")),
+    'the armed button');
+  // One not in force (the book reconciled only through Aug 31) can't be reviewed, so it isn't counted or labelled as waiting.
+  const off = c5Text(card("admin = true; sync.user = { uid: 'u2', displayName: 'Sam' }; state.book.reconciledThrough = '2026-08-31'"));
+  ok(!/not yet reviewed|Not yet reviewed|Mark reviewed/.test(off), 'a statement not in force waits for a review: ' + off);
+  ok(/newest first\. 1 not yet reviewed\. .*Not yet reviewed\. A pack admin/.test(c5Text(card(''))), 'one in force waits for a review');
   // The change history names the statement.
   const lbl = sandbox(['ledgerEntryLabel', 'fmt', 'fmtDateShort']);
   lbl.state = { statements: [C5_SEP()], ledger: [], ledgerAside: [] };

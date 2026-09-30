@@ -9392,21 +9392,41 @@
     if (was) st.supersedes = was.id;
     return { statement: st, rows: rows };
   }
-  // Why this device's leader (`who`: { by, byUid }) can't mark statement `st` reviewed, or ''. The
-  // review is a second leader's, once: never the one who signed it (their account uids compared; a
-  // statement signed with no account has no uid, so the names are, unless the name is only "a
-  // signed-in leader" or "this device"), never a reopened statement, and only by a leader signed in
-  // with their own account, so the review says who did it. Pure.
-  function statementReviewRefusal(st, who) {
+  // Why this device's leader (`who`: statementReviewer()) can't mark statement `st` reviewed, or ''.
+  // The review is a second leader's, once: never the one who signed it (their account uids compared;
+  // a statement signed with no account has no uid, so the names are), never a reopened statement,
+  // and only by a leader signed in with their own account, so the review says who did it.
+  // Owner's decision (2026-09-30) — and only by a pack admin (`who.admin`: isAdmin(), so accounts
+  // are in force). In a pack without accounts (`who.accounts` false) nobody reviews in the app:
+  // the printout's blank line is signed instead.
+  // C5 review — never a statement not in force (`book`: F7), never a legacy one before its ending
+  // balance is added (there is nothing to check), and never one whose signer wasn't recorded (no
+  // uid, and only "a signed-in leader" or "this device" for a name: F5), in the treasurer's words.
+  // Pure.
+  function statementReviewRefusal(st, who, book) {
     who = who || {};
     if (statementReopened(st)) return 'This statement was reopened, so it can’t be marked reviewed.';
     if (statementReviewed(st)) return 'This statement was already reviewed' + (st.reviewedBy ? ' by ' + st.reviewedBy : '') + ', and a review can’t be changed.';
-    if (!who.byUid) return 'Sign in with your own account to mark a statement reviewed, so the review says who did it.';
+    var rt = String((book && book.reconciledThrough) || '');
+    if (!rt || String(st.date) > rt) return 'This statement isn’t what the book is reconciled through right now, so it can’t be marked reviewed.';
+    if (st.legacy === true && !statementAdded(st)) return 'Add the statement’s ending balance first, so there’s something to check against the bank.';
+    if (!who.byUid || !who.accounts) {
+      return 'Sign in with your own account to mark a statement reviewed, so the review says who did it. If the pack doesn’t use accounts, sign the printout instead.';
+    }
+    if (!who.admin) return 'Only a pack admin can mark a statement reviewed. Another leader can sign the printout instead.';
     var named = !!st.by && st.by !== 'a signed-in leader' && st.by !== 'this device';
-    if (st.byUid ? st.byUid === who.byUid : (named && st.by === who.by)) {
-      return 'A statement is reviewed by a different leader from the one who reconciled it' + (named ? ' (' + st.by + ')' : '') + '.';
+    if (!st.byUid && !named) {
+      return 'Who reconciled this statement wasn’t recorded, so the app can’t tell whether you’re a different leader. Sign the printout instead.';
+    }
+    if (st.byUid ? st.byUid === who.byUid : st.by === who.by) {
+      return 'A statement has to be reviewed by a different leader from the one who reconciled it' + (named ? ' (' + st.by + ')' : '') +
+        '. Ask another pack admin to review it.';
     }
     return '';
+  }
+  // This device's leader, as statementReviewRefusal asks about them.
+  function statementReviewer() {
+    return { by: ledgerActor(), byUid: ledgerActorUid(), admin: isAdmin(), accounts: accountsInForce() };
   }
   // Why statement `st` can't be reopened by this leader (`admin`: isAdmin(), or a pack with no
   // accounts) with this reason, or ''. Only the newest one the book is reconciled through: to go
@@ -20797,9 +20817,18 @@
     if (!list.length) {
       return h + '<p class="empty">None yet. When the ticked entries match a statement, mark it reconciled above and it is kept here.</p></div>';
     }
-    h += '<p class="small muted" style="margin:0 0 4px">Each statement is kept as it was when it was marked reconciled, newest first.</p>';
-    list.forEach(function (st) { h += statementBlockHtml(st, list, String(state.book.reconciledThrough || '')); });
+    var rt = String(state.book.reconciledThrough || '');
+    // Treasurer review of C5 (7) — how many are waiting for a review.
+    var unrev = list.filter(function (st) { return statementAwaitsReview(st, rt); }).length;
+    h += '<p class="small muted" style="margin:0 0 4px">Each statement is kept as it was when it was marked reconciled, newest first.' +
+      (unrev ? ' ' + unrev + ' not yet reviewed.' : '') + '</p>';
+    list.forEach(function (st) { h += statementBlockHtml(st, list, rt); });
     return h + '</div>';
+  }
+  // A statement standing, in force (dated on or before `rt`, the lock) and not yet reviewed: the card
+  // counts these and says what reviewing one means. Pure.
+  function statementAwaitsReview(st, rt) {
+    return !!st && !statementReopened(st) && !statementReviewed(st) && !!rt && String(st.date) <= rt;
   }
   // One statement on that card. `list` all of them (a reopened one names the one that replaced it),
   // `rt` the date the book is reconciled through: a statement standing but dated after it (a backup
@@ -20821,6 +20850,11 @@
         esc(statementByOn(st.by, st.at)) + '.</p>';
     }
     if (rev) h += '<p class="small muted" style="margin:2px 0 0">Reviewed' + esc(statementByOn(st.reviewedBy, st.reviewedAt)) + '.</p>';
+    // Treasurer review of C5 (7), owner's decision — what reviewing it means, and who does it.
+    else if (statementAwaitsReview(st, rt)) {
+      h += '<p class="small muted" style="margin:2px 0 0">Not yet reviewed. A pack admin other than the one who reconciled it compares it with ' +
+        'the bank’s own statement and marks it reviewed, or another leader signs the printout.</p>';
+    }
     if (reop) {
       h += '<p class="small" style="margin:2px 0 0">Reopened' + esc(statementByOn(st.reopenedBy, st.reopenedAt)) +
         (st.reopenWhy ? ': “' + esc(st.reopenWhy) + '”' : '') + '.' + (later ? ' Reconciled again' + esc(statementByOn(later.by, later.at)) + '.' : '') + '</p>';
@@ -20830,15 +20864,15 @@
       statementButtonsHtml(st, rt) + '</div>';
     return h + '</div>';
   }
-  // What can be done to a statement from this device, beside its printout. Mark reviewed: offered to
-  // a leader who can edit and may review it (statementReviewRefusal: a second leader, signed in, once,
-  // not reopened); two taps, since it can't be undone.
+  // What can be done to a statement from this device, beside its printout. Mark reviewed: offered only
+  // to a leader who may review it (statementReviewRefusal: a pack admin, signed in, not the signer,
+  // once, in force), and hidden from everyone else, as Reopen is; two taps, since it can't be undone.
   function statementButtonsHtml(st, rt) {
     var h = '';
-    if (canEdit() && !statementReviewRefusal(st, { by: ledgerActor(), byUid: ledgerActorUid() })) {
+    if (canEdit() && !statementReviewRefusal(st, statementReviewer(), state.book)) {
       var rvArmed = ui.armed === 'st-review:' + st.id;
       h += '<button type="button" class="btn small' + (rvArmed ? ' danger armed' : '') + '" data-act="st-review:' + esc(st.id) + '">' +
-        (rvArmed ? 'Tap again: reviewed by you, for good' : 'Mark reviewed') + '</button>';
+        (rvArmed ? 'Tap again: I checked this against the bank’s statement' : 'Mark reviewed') + '</button>';
     }
     // Reopen: an admin's, on the newest statement the book is reconciled through (statementReopenRefusal).
     // It opens a form for why; the form's Reopen it takes two taps.
@@ -30288,14 +30322,15 @@
     // PHASE 3, C5 — a statement's printout (renderBankStatementSheet). Read-only: left open while the
     // reload gate holds (HELD_ACT_PREFIXES).
     if (act.indexOf('st-print:') === 0) { ui.overlay = { kind: 'bank-statement', id: act.slice('st-print:'.length) }; render(); return; }
-    // Mark reviewed (the optional second reviewer): a different leader from the one who signed it,
-    // signed in, once, and not on a reopened statement (statementReviewRefusal, asked on each tap, as a
-    // sync can have reviewed or reopened it between the two). Two taps; logged ('review').
+    // Mark reviewed (the optional second reviewer): a pack admin other than the one who signed it,
+    // signed in, once, and not on a reopened statement or one not in force (statementReviewRefusal,
+    // asked on each tap, as a sync can have reviewed or reopened it between the two). Two taps; logged
+    // ('review').
     if (act.indexOf('st-review:') === 0) {
       var svSt = (state.statements || []).filter(function (x) { return x.id === act.slice('st-review:'.length); })[0];
       if (!svSt) return;
       if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
-      var svNo = statementReviewRefusal(svSt, { by: ledgerActor(), byUid: ledgerActorUid() });
+      var svNo = statementReviewRefusal(svSt, statementReviewer(), state.book);
       if (svNo) { if (ui.armed === act) ui.armed = null; showToast(svNo); render(); return; }
       arm(act, function () {
         svSt.reviewedAt = new Date().toISOString();
