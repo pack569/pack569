@@ -9906,8 +9906,10 @@
   // { format, guide, plans: { 'Wolf :: Bobcat': { meetings: [{ steps: […] }], … } } }, keyed like
   // the runs (den + ' :: ' + adventure, as ADVENTURES spells it). The text is markdown —
   // **bold**, [date] placeholders — and whatever shows it escapes it first (esc()).
-  // ⚠ LEADERS ONLY. normalizeState and the state loader never read it, and nothing from a plan
-  // goes into buildParentView, the digest or the .ics export (the harness checks all three).
+  // ⚠ LEADERS ONLY means the screens: normalizeState and the state loader never read it, and
+  // nothing from a plan goes into buildParentView, the digest or the .ics export (the harness
+  // checks all three). plans.json itself is PUBLIC — a static file anyone can fetch, signed in or
+  // not — so the build refuses emails, phone numbers (but the public hotlines) and names in it.
   var ADVENTURE_PLANS_URL = 'plans.json';
   var ADVENTURE_PLANS_FORMAT = 1;
   // A failed load is kept for a minute: a leader tapping again, or a screen asking for several

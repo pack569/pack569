@@ -1,17 +1,22 @@
 #!/usr/bin/env node
 // Pack 569 — the den lesson plans, from their markdown to the site's plans.json.
 //
-// docs/lesson-plans/*.md is the source of truth: Keith edits the plans there, as prose a den
+// docs/lesson-plans/*.md is the source of truth: the plans are edited there, as prose a den
 // leader could read on paper. The app does not carry them inside index.html (they are about
 // 1.1 MB of text, and the page is already 2.2 MB). Instead scripts/build-site.mjs runs this
 // parser and writes plans.json next to index.html, and the page fetches it only when a leader
 // opens a plan (loadAdventurePlans), so a parent's phone never downloads it.
+// ⚠ plans.json itself is PUBLIC: it is a static file anyone can fetch from the site, signed in
+// or not. "Leaders only" is about which screens show it, not who can read it. So nothing may go
+// into a plan that the whole world should not read: no email address, no phone number but the
+// public hotlines (PUBLIC_HOTLINES), no leader's name (PERSONAL_DATA; the build stops on one).
 //
 // What is parsed, and what is refused:
 //   * Only the plan files (PLAN_FILES). open-questions.md, the safety reviews, CONTINUE.md and
 //     BUILD-PLAN.md are notes about the plans, not plans.
 //   * In each file, everything before the first "## " is the file's introduction and is not
-//     published; everything from "## Open questions" on is Keith's to-do list and is not either.
+//     published; everything from "## Open questions" on is the to-do list and is not either.
+//     (The personal-data and invisible-character checks still read every line of the file.)
 //   * Every other "## Name (Rank)" is one adventure for one den, keyed like the app's runs:
 //     den + ' :: ' + adventure, spelled as ADVENTURES spells it (NAME_FIXES, DEN_FIXES).
 //   * The text is kept as the markdown wrote it — **bold**, *italics*, `code`, [date]
@@ -462,10 +467,62 @@ function adventureOf(file, head, body, meetings, adventures) {
   return plan;
 }
 
+/* ---------------- what may never be in a plan ---------------- */
+// The public hotlines the plans print on purpose (the youth-protection disclosure steps, and the
+// first-aid meetings), each with the ways the plans write it. A number is matched by its digits,
+// letters read as a phone keypad reads them and a leading 1 dropped, so "1-855-GACHILD",
+// "(855) 422-4453" and "855.422.4453" are all the one DFCS line. The harness's check on every
+// tracked file allows these through isPublicHotline too, so the list lives only here.
+export const PUBLIC_HOTLINES = [
+  { name: 'Georgia DFCS child abuse line', number: '1-855-422-4453', letters: '1-855-GACHILD' },
+  { name: 'Scouts First Helpline', number: '1-844-726-8871', letters: '1-844-SCOUTS1' },
+  { name: 'Poison Control', number: '1-800-222-1222' },
+];
+const KEYPAD = { A: 2, B: 2, C: 2, D: 3, E: 3, F: 3, G: 4, H: 4, I: 4, J: 5, K: 5, L: 5, M: 6, N: 6, O: 6,
+  P: 7, Q: 7, R: 7, S: 7, T: 8, U: 8, V: 8, W: 9, X: 9, Y: 9, Z: 9 };
+// "1-855-GACHILD" → "8554224453": the ten digits a phone would dial, without the country code.
+export function phoneDigits(s) {
+  const d = String(s).toUpperCase().replace(/[A-Z]/g, (c) => KEYPAD[c]).replace(/\D/g, '');
+  return d.length === 11 && d[0] === '1' ? d.slice(1) : d;
+}
+export function isPublicHotline(s) {
+  const d = phoneDigits(s);
+  return PUBLIC_HOTLINES.some((h) => phoneDigits(h.number) === d);
+}
+// What stops the build, one line at a time: { what, re (global), allow? }. `what` is all a
+// failure reports; the text itself is never echoed (build logs get pasted into chats). To add a
+// check, add an entry. A phone is a North American number, digits or keypad letters: an area
+// code (in brackets or not), then 3 and 4 characters, or ten digits run together, or a local
+// 3-4 number with a dash.
+export const PERSONAL_DATA = [
+  { what: 'an email address', re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g },
+  { what: 'a phone number that is not one of PUBLIC_HOTLINES', allow: isPublicHotline,
+    re: /(?:\b1[-. ])?(?:\(\d{3}\)\s?|\b\d{3}[-. ])[0-9A-Z]{3}[-. ]?[0-9A-Z]{4}\b|\b1?\d{10}\b|(?<![\d-])\b\d{3}-\d{4}\b(?!-\d)/g },
+  { what: 'a leader\u2019s name ("Keith"); plans state pack rules, not who made them', re: /\bKeith\b/g },
+];
+// Characters a reader cannot see: line and paragraph separators, bidi controls that reorder
+// what is shown, zero-width characters and the byte-order mark. Plus ordinary control
+// characters (a tab, a Windows line ending).
+const INVISIBLE_RE = /[\u0000-\u001f\u007f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/;
+function checkLine(file, n, line) {
+  const c = INVISIBLE_RE.exec(line);
+  if (c) {
+    const code = 'U+' + c[0].charCodeAt(0).toString(16).toUpperCase().padStart(4, '0');
+    fail(file, n, c[0] < ' ' || c[0] === '\u007f'
+      ? `a control character, ${code} (a tab, or a Windows line ending?)`
+      : `an invisible character, ${code} (a separator, bidi control, zero-width character or BOM)`);
+  }
+  for (const g of PERSONAL_DATA) {
+    g.re.lastIndex = 0;
+    let m;
+    while ((m = g.re.exec(line))) if (!g.allow || !g.allow(m[0])) fail(file, n, g.what);
+  }
+}
+
 // One plan file → [plan]. `adventures` is ADVENTURES from index.html (optional, for the key check).
 export function parsePlanFile(file, text, adventures) {
   const lines = text.split('\n');
-  lines.forEach((l, i) => { if (/[\u0000-\u001f\u007f]/.test(l)) fail(file, i + 1, 'a control character (a tab, or a Windows line ending?)'); });
+  lines.forEach((l, i) => checkLine(file, i + 1, l));
   let guide = null;
   const sections = [];
   let cur = null, mtg = null, stop = false;
@@ -474,6 +531,10 @@ export function parsePlanFile(file, text, adventures) {
     if (stop) return;
     if (/^> \*\*A guide, not the rulebook\.\*\*/.test(t)) { guide = t.replace(/^> /, ''); return; }
     if (/^## Open questions/.test(t)) { stop = true; return; }
+    // A markdown link would be text on paper and a link nowhere: sources are written as bare
+    // https://. Checked on the published lines only (from the first "## "); the open questions
+    // below the plans keep theirs (arrow-of-light.md's source list), as they never reach plans.json.
+    if ((cur || /^## /.test(t)) && t.indexOf('](') >= 0) fail(file, n, 'a markdown link "](…)"; write the https:// address itself');
     if (/^## /.test(t)) { cur = { head: { text: t, n }, body: [], meetings: [] }; sections.push(cur); mtg = null; return; }
     if (!cur) return; // the file's introduction
     if (/^#{1,2} /.test(t) || /^#{4,} /.test(t)) fail(file, n, `a heading where an adventure or meeting was expected: "${t.slice(0, 60)}"`);
@@ -523,6 +584,9 @@ export function plansJson({ root = ROOT } = {}) {
   // JSON.stringify writes a control character (or a lone surrogate) as \n, \t, \u00xx…; the
   // only escapes allowed are \" and \\.
   if (/\\[^"\\]/.test(json.replace(/\\\\/g, ''))) throw new PlanError('plans.json would hold a control character');
+  // JSON.stringify leaves U+2028/2029 and the other invisible characters as they are; the
+  // parser refused them line by line, and this is the same rule on the bytes that ship.
+  if (INVISIBLE_RE.test(json)) throw new PlanError('plans.json would hold an invisible character');
   if (Buffer.byteLength(json, 'utf8') > PLANS_MAX_BYTES) {
     throw new PlanError(`plans.json is ${Buffer.byteLength(json, 'utf8')} bytes, over the ${PLANS_MAX_BYTES}-byte cap (PLANS_MAX_BYTES)`);
   }

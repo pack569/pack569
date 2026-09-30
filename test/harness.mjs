@@ -9661,10 +9661,9 @@ test('no tracked file carries a real email address or phone number', () => {
   const PUBLIC_NUMBERS = [
     '(770) 867-3489',      // Fort Yargo park office, printed on the camping page
     '(770) 867-3400',      // Northeast Georgia Medical Center Barrow, the hospital nearest it
-    '1-800-222-1222',      // Poison Control
-    '855-422-4453',        // Georgia DFCS child abuse line (1-855-GACHILD), in the lesson plans' disclosure steps
-    '844-726-8871',        // Scouts First Helpline (1-844-SCOUTS1), same place
   ];
+  // Poison Control, the DFCS line and Scouts First, which the lesson plans print: one list,
+  // lessons.PUBLIC_HOTLINES, which the plan build checks against too.
   const ALLOWED_EMAIL = /@(example\.com|pack569\.com)$/i;
   // Machine addresses, by exact value: Google's signing-key service, which the API's token check
   // fetches keys from (it is part of a URL, not a person).
@@ -9680,7 +9679,7 @@ test('no tracked file carries a real email address or phone number', () => {
     // This test's own allowlist is the one place a real public number may be written twice.
     (text.match(EMAIL) || []).forEach((m) => { if (!ALLOWED_EMAIL.test(m) && PUBLIC_EMAILS.indexOf(m) < 0) found.push(f + ': an email'); });
     (text.match(PHONE) || []).forEach((m) => {
-      if (!isFake(m) && PUBLIC_NUMBERS.indexOf(m) < 0) found.push(f + ': a phone number');
+      if (!isFake(m) && PUBLIC_NUMBERS.indexOf(m) < 0 && !lessons.isPublicHotline(m)) found.push(f + ': a phone number');
     });
   }
   // Report WHERE, never WHAT: a failing run's output is pasted into chats and issues too.
@@ -26104,8 +26103,9 @@ atest('C7, api: an older page’s delete of a scout with payments keeps the scou
 /* ================================================================
    Den lesson plans (2026-09-30). docs/lesson-plans/*.md is the source; scripts/lesson-plans.mjs
    parses it and build-site writes plans.json beside index.html; the page fetches it only when a
-   leader opens a plan (loadAdventurePlans). Leaders only: never in the parent view, the
-   digest, the .ics export or the pack record.
+   leader opens a plan (loadAdventurePlans). The screens are leaders only: never in the parent
+   view, the digest, the .ics export or the pack record. plans.json itself is public (anyone can
+   fetch it), so the build refuses personal data and invisible characters in the plan files.
    ================================================================ */
 
 let plansCache = null;
@@ -26149,7 +26149,7 @@ test('lesson plans: a line the parser cannot read stops it with the file and lin
     '- Summary: s\n- Requirements (own words):\n  1. Do it. (meeting)\n- Safety notes:\n  - Two adults.\n\n' +
     '### Meeting 1 of 1 · T · 40 min\n- Prep: p\n- Supplies: s\n- Tell parents before they leave: t\n';
   const step = '1. **A** · den · 10 min · Reqs: 1\n   - Say: "Hi."\n   - How: 1) One. 2) Two.\n   - Tip: **T:** t\n';
-  const tail = '\n## Open questions for Keith\n';
+  const tail = '\n## Open questions\n';
   const good = lessons.parsePlanFile('t.md', head + step + tail, ADV_DATA);
   eq(good.plans[0].meetings[0].steps[0].how.map((h) => h.n), [1, 2], 'the good file');
   const bad = (text, re, what) => {
@@ -26167,8 +26167,60 @@ test('lesson plans: a line the parser cannot read stops it with the file and lin
   bad(head.replace('Meeting 1 of 1', 'Meeting 2 of 1') + step + tail, /^t\.md:13: /, 'a meeting out of order');
   bad(head.replace('## Bobcat (Wolf)', '## Bobcats (Wolf)') + step + tail, /is not a Wolf adventure in ADVENTURES/, 'a name ADVENTURES does not have');
   bad(head.replace(' · Checked: 2026-09-30', '') + step + tail, /Checked/, 'no Checked date');
-  bad(head + step + tail.replace('## Open questions for Keith\n', ''), /Open questions/, 'no end marker');
+  bad(head + step + tail.replace('## Open questions\n', ''), /Open questions/, 'no end marker');
   bad(head + step.replace('Hi.', 'Hi.\t') + tail, /control character/, 'a tab');
+});
+
+test('lesson plans: plans.json is public, so an email, a phone, a name, an invisible character or a link stops the build', () => {
+  const head = '# X\n\n> **A guide, not the rulebook.** x\n\n## Bobcat (Wolf)\n' +
+    '- Character & Leadership · Meetings: 1 · Official page: https://www.scouting.org/x/ · Checked: 2026-09-30\n' +
+    '- Summary: s\n- Requirements (own words):\n  1. Do it. (meeting)\n- Safety notes:\n  - Two adults.\n\n' +
+    '### Meeting 1 of 1 · T · 40 min\n- Prep: p\n- Supplies: s\n- Tell parents before they leave: t\n';
+  const step = (say) => '1. **A** · den · 10 min · Reqs: 1\n   - Say: "' + say + '"\n   - How: 1) One. 2) Two.\n   - Tip: **T:** t\n';
+  const tail = '\n## Open questions\n';
+  const parse = (say, rest) => lessons.parsePlanFile('t.md', head + step(say) + tail + (rest || ''), ADV_DATA);
+  const bad = (say, re, what, rest) => {
+    try { parse(say, rest); } catch (e) {
+      ok(e instanceof lessons.PlanError, what + ': not a PlanError');
+      ok(re.test(e.message), `${what}: "${e.message}"`);
+      return;
+    }
+    throw new Error(what + ' was accepted');
+  };
+  // Personal data, found on the line it is on, and reported without being repeated.
+  bad('Write to den.leader@example.com.', /^t\.md:18: an email address$/, 'an email');
+  bad('Call me at 770-555-0123.', /^t\.md:18: a phone number that is not/, 'a phone number');
+  bad('Call (404) 555-0142.', /^t\.md:18: a phone number/, 'a bracketed area code');
+  bad('Text 4045550199.', /^t\.md:18: a phone number/, 'ten digits run together');
+  bad('Call 555-0123.', /^t\.md:18: a phone number/, 'a local number');
+  bad('Call 1-800-FLOWERS.', /^t\.md:18: a phone number/, 'a keypad-letter number not on the list');
+  bad('Call 1-855-422-' + '4454.', /^t\.md:18: a phone number/, 'one digit off a hotline');
+  bad('Ask Keith.', /^t\.md:18: a leader.s name/, 'a leader\u2019s name');
+  bad('Hi.', /^t\.md:23: a leader.s name/, 'a name below the plans, in the open questions', 'Ask Keith.\n');
+  ok(!/555|example|Keith/.test((() => { try { parse('Ask Keith at 770-555-0123.'); } catch (e) { return e.message; } })()),
+    'the failure repeats the text it found');
+  // The hotlines, however the plans write them, pass.
+  const hot = 'Call **1-855-GACHILD** (1-855-422-4453), 1-844-SCOUTS1 (1-844-726-8871), Poison Control 1-800-222-1222, (800) 222-1222 or 855.422.4453.';
+  eq(parse(hot).plans[0].meetings[0].steps[0].say, '"' + hot + '"', 'the public hotlines');
+  lessons.PUBLIC_HOTLINES.forEach((h) => {
+    ok(lessons.isPublicHotline(h.number), h.name + ' number');
+    if (h.letters) eq(lessons.phoneDigits(h.letters), lessons.phoneDigits(h.number), h.name + ': letters and digits differ');
+  });
+  // Every invisible character, anywhere in the file (even the unpublished introduction).
+  ['\u2028', '\u2029', '\u202a', '\u202b', '\u202c', '\u202d', '\u202e', '\u2066', '\u2067', '\u2068', '\u2069',
+    '\u200b', '\u200c', '\u200d', '\u200e', '\u200f', '\ufeff'].forEach((c) => {
+    const code = 'U\\+' + c.charCodeAt(0).toString(16).toUpperCase();
+    bad('Hi' + c + '.', new RegExp('^t\\.md:18: an invisible character, ' + code), 'U+' + c.charCodeAt(0).toString(16));
+    try { lessons.parsePlanFile('t.md', '# X' + c + '\n' + head.slice(4) + step('Hi.') + tail, ADV_DATA); throw new Error('accepted'); } catch (e) {
+      ok(e instanceof lessons.PlanError && /^t\.md:1: an invisible/.test(e.message), 'U+' + c.charCodeAt(0).toString(16) + ' in the introduction: ' + e.message);
+    }
+  });
+  // A markdown link in a plan; the open questions below the plans may keep theirs.
+  bad('See [the page](https://www.scouting.org/x/).', /^t\.md:18: a markdown link/, 'a markdown link');
+  ok(parse('Hi.', 'Sources: [a](https://www.scouting.org/x/)\n').plans.length === 1, 'a link in the open questions stops the build');
+  // And the real files pass all of it.
+  ok(plansOut().data.plans['Lion :: Bobcat'], 'the real plan files');
+  ok(/1-855-GACHILD/.test(plansOut().json) && /1-800-222-1222/.test(plansOut().json), 'the hotlines left the real plans');
 });
 
 test('lesson plans: every den meeting fits in 40 minutes, and its steps fit its header', () => {

@@ -7,7 +7,8 @@
 //   1. WHAT IS SERVED. The repo is public, but the SITE serves only an allowlist: index.html,
 //      the generated _headers, and plans.json, the den lesson plans that
 //      scripts/lesson-plans.mjs generates from docs/lesson-plans/*.md (the page fetches it only
-//      when a leader opens a plan). Not SETUP.md, not the design docs or the plan markdown,
+//      when a leader opens a plan; "leaders only" is the screens — plans.json itself is public
+//      and world-readable, so lesson-plans.mjs refuses personal data in it). Not SETUP.md, not the design docs or the plan markdown,
 //      not test/, not .claude/, not CNAME, and never the untracked .index.pre-*.html backups
 //      sitting in a working copy. Anything that is not on ALLOWLIST cannot reach the output,
 //      because nothing is copied by pattern — each file is written by name.
