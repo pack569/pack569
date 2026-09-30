@@ -7702,10 +7702,18 @@
   // pair, as it does for a first reversal. (A device that had not yet heard of a second reversal
   // and its void would write that same id again: the two are one row, and the later mark decides,
   // as for any row two devices change at once.) Pure.
+  // Security re-check of option B (finding C) — and an id with a deletion mark either way is taken
+  // too (st.gone.ledger): rv-X voided, then a backup from before the reverse restored, leaves rv-X
+  // in neither list but still marked deleted (restoreGone keeps the mark), and a reversal written
+  // under it again was dropped by the next merge without a word. The new id gets no mark of its own.
   function ledgerReverseSlot(st, id) {
-    var taken = Object.create(null), n = 1;
+    var taken = Object.create(null), n = 1, marks = st.gone && st.gone.ledger;
     (st.ledger || []).concat(st.ledgerAside || []).forEach(function (x) { if (x && typeof x.id === 'string') taken[x.id] = true; });
-    while (taken[ledgerReversalId(id, n)] || taken[ledgerReplacementId(id, n)]) n += 1;
+    function used(x) {
+      var m = marks && Object.prototype.hasOwnProperty.call(marks, x) ? marks[x] : 0;
+      return taken[x] === true || (typeof m === 'number' && isFinite(m) && m !== 0);
+    }
+    while (used(ledgerReversalId(id, n)) || used(ledgerReplacementId(id, n))) n += 1;
     return n;
   }
   // The counted row that cancels row `e` (a reversal of it, paired with it by ledgerPairOf over the

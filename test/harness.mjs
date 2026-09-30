@@ -21227,6 +21227,25 @@ test('Security re-check B: a reversal can be reversed but not corrected, and its
   ok(/data-act="ledger-correct-go:q1"/.test(f.ledgerFixFormHtml(Object.assign({}, rvq, { id: 'q1', reverses: '' }))), 'control: Correct it on an entry');
 });
 
+// Finding C — rv-X voided, then a backup from before the reverse restored: rv-X is in neither list but
+// still marked deleted, and a reversal written under it again was dropped by the next merge.
+test('Security re-check C: a reversal id with a deletion mark either way is not reused, and the new one survives the merge', () => {
+  const x = sandbox(['ledgerReversalId', 'ledgerReplacementId', 'ledgerReverseSlot']);
+  const slot = (marks) => x.ledgerReverseSlot({ ledger: [{ id: 'X' }], ledgerAside: [], gone: { ledger: marks } }, 'X');
+  eq([slot({ 'rv-X': 5 }), slot({ 'rv-X': -5 }), slot({ 'rc-X': 5 }), slot({ 'rv-X': 0 }), slot({ 'rv-Y': 5 }), slot({ 'rv-X': 5, 'rv2-X': -9 }),
+    x.ledgerReverseSlot({ ledger: [{ id: 'X' }] }, 'X')], [2, 2, 2, 1, 1, 3, 1], 'which reversal it is');
+  const { a, b, server } = c4FsPair();
+  a.run("reverseRow('l2', 'Never cashed'); voidRow('rv-l2', 'Reversed the wrong entry')"); a.push(); b.hear();
+  // The backup from before the reverse, restored: the rows as they were, the marks kept (restoreGone).
+  a.run(`state.ledger = ${JSON.stringify(C3_ROWS)}; state.ledgerAside = []; var markWas = state.gone.ledger['rv-l2']; reverseRow('l2', 'Returned by the bank')`);
+  eq([a.get('state.ledger.map(function (e) { return e.id; })').slice(-1), a.get("state.gone.ledger['rv2-l2'] === undefined"), a.get("state.gone.ledger['rv-l2'] === markWas")],
+    [['rv2-l2'], true, true], 'the next id, no mark written');
+  b.run(B1); b.push(); a.push(); b.hear();   // A merges over B's save, the deletion marks and all
+  for (const [who, st] of [['the pack record', server()], ['A', a.get('state')], ['B', b.get('state')]]) {
+    eq([c4Where(st), c3Counted(st)], [[['l1', 'l2', 'l3', 'rv2-l2'], ['rv-l2:void']], C4_L2_MONEY], who);
+  }
+});
+
 test('C4 (option B), Firestore: a pair set aside by C4’s first build stays set aside and reads as a delete through a sync; a device holding the entry ticked is told', () => {
   let { a, b, server } = c4FsPair();
   a.run("legacyReverseRow('l2', 'Entered in error')"); a.push();
