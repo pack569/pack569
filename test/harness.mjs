@@ -13095,7 +13095,7 @@ test('E1: due dates and family statements are NEVER published', () => {
     if (m) stFn = m[1] || m[2];
     if (/state\.statements/.test(line.replace(/\/\/.*$/, ''))) stUsers.add(stFn);
   });
-  eq([...stUsers].sort(), ['handleAction', 'mergeRemoteAppendOnly', 'renderBankStatementSheet', 'renderReconcile', 'rolloverYear', 'statementsCardHtml'], 'something new writes or reads state.statements');
+  eq([...stUsers].sort(), ['handleAction', 'ledgerEntryLabel', 'mergeRemoteAppendOnly', 'renderBankStatementSheet', 'renderReconcile', 'rolloverYear', 'statementsCardHtml'], 'something new writes or reads state.statements');
   ok(/state\.statements = \[\];/.test(slice('rolloverYear')), 'close-out does not clear the bank statements');
   ok(!/statements/.test(bpv), 'buildParentView reads the bank statements');
   ok(/each charge's due date \(`dueDate`\), the pack's dues date \(`budget\.duesDueDate`\) and every\s+\/\/\s+family statement \(E1\)/.test(SCRIPT), 'the banner does not exclude them');
@@ -17999,7 +17999,7 @@ test('C1: ledgerEvent builds one log entry, and nothing else', () => {
   eq(ev('reverse', 'l1', who, { rows: ['rv-l1'] }).rows, ['rv-l1'], 'a reversal names its row');
   eq(ev('tick', 'l1', { id: 'x', by: 'pat@example.com' }), { id: 'lg-x', at: '', by: 'a signed-in leader', byUid: '', dev: '', row: 'l1', op: 'tick' }, 'never an email');
   eq([ctx.ledgerEvent('someday', 'l1', who), ctx.ledgerEvent('edit', '', who), ctx.ledgerEvent('edit', 7, who)], [null, null, null], 'an unknown op, or no row');
-  eq([...ctx.LEDGER_OPS], ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile', 'restore'], 'the ops');
+  eq([...ctx.LEDGER_OPS], ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile', 'restore', 'review'], 'the ops');
   // The rows it names are copied, not shared.
   const rows = ['a'];
   const e2 = ctx.ledgerEvent('correct', 'l1', who, { rows });
@@ -22767,15 +22767,19 @@ atest('C5, api: a statement signed on one device survives another’s save, and 
 
 // Phase 3, C5 — the statements card and the printout, on a sandbox of the page's own renderers.
 const C5_VIEW_FNS = ['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'fmtDateYear', 'statementDay', 'statementByOn', 'statementLegacyLine', 'statementSheetData',
-  'statementReopened', 'statementReviewed', 'statementAdded', 'entrySignedCents', 'statementsCardHtml', 'statementBlockHtml', 'renderBankStatementSheet'];
+  'statementReopened', 'statementReviewed', 'statementAdded', 'entrySignedCents', 'statementsCardHtml', 'statementBlockHtml', 'renderBankStatementSheet',
+  'statementButtonsHtml', 'statementReviewRefusal', 'ledgerActorName'];
 // Sep 30: r1 +$25 cleared on it, u1 −$84 outstanding; the opening $100 and q1 +$500 cleared before.
 const C5_SEP = () => ({ id: 'st-2026-09-30-a', date: '2026-09-30', statementCents: 62500, openingCents: 10000, clearedCents: 62500, bookCents: 54100,
   ticked: ['r1'], outstanding: ['u1'], by: 'Pat Treasurer', byUid: 'u1', at: '2026-10-02T15:00:00.000Z' });
 function c5View(statements, more) {
   const ctx = vm.createContext({});
   vm.runInContext(`${C5_VIEW_FNS.map(slice).join('\n')}
-    ${decl('FLEUR')}
-    var state = { packName: 'Pack 569', ledger: ${JSON.stringify(C2_LEDGER())}, ledgerAside: [],
+    ${['FLEUR', 'ledgerActor', 'ledgerActorUid'].map(decl).join('\n')}
+    // Pat Treasurer (u1), an editor, who signed Sep 30.
+    var ui = { armed: null }, sync = { user: { uid: 'u1', displayName: 'Pat Treasurer' } }, editor = true;
+    function canEdit() { return editor; }
+    var state = { packName: 'Pack 569', leaders: [], ledger: ${JSON.stringify(C2_LEDGER())}, ledgerAside: [],
       book: { reconciledThrough: '2026-09-30' }, statements: ${JSON.stringify(statements)} };
     ${more || ''}`, ctx);
   return ctx;
@@ -22805,7 +22809,8 @@ test('C5: Money · Ledger lists the statements newest first, each with its print
     '1 entry cleared on it, 1 outstanding. Reconciled by Pat Treasurer on Oct 2. Reviewed by Sam on Oct 3. Printout ' +
     'Statement through Wed, Sep 30 reopened Statement balance $625.00 · ticked balance $625.00 · difference $0.00 ' +
     '1 entry cleared on it, 1 outstanding. Reconciled by Pat Treasurer on Oct 1. Reopened by Alex on Oct 2: “A deposit was ticked twice”. Reconciled again by Pat Treasurer on Oct 2. Printout ' +
-    'Statement through Mon, Aug 31 Reconciled through Aug 31 by Sam on Sep 1. Recorded before statements were kept, so the statement balance wasn’t saved. Printout',
+    // Pat may review the legacy one, which Sam signed.
+    'Statement through Mon, Aug 31 Reconciled through Aug 31 by Sam on Sep 1. Recorded before statements were kept, so the statement balance wasn’t saved. Printout Mark reviewed',
     'the card');
   ok(/data-act="st-print:st-2026-09-30-a"/.test(vm.runInContext('statementsCardHtml()', x)), 'no printout button');
   eq(c5Text(vm.runInContext('statementsCardHtml()', c5View([]))),
@@ -22850,6 +22855,78 @@ test('C5: parents never see a statement; the printout is the only statement acti
   eq(['st-print:st-1', 'st-review:st-1', 'st-reopen:st-1', 'st-reopen-go:st-1', 'st-reopen-cancel', 'st-balance:st-1', 'st-balance-go:st-1',
     'st-balance-cancel', 'ledger-reconcile-lock'].map(allowed), [true, false, false, false, false, false, false, false, false], 'what is left open while held');
   eq(['st-reopen-why', 'st-balance'].map((c) => vm.runInContext('HELD_CHANGES', sandbox(['HELD_CHANGES'])).indexOf(c)), [-1, -1], 'a statement’s box is left open while held');
+});
+
+// Phase 3, C5 — the statement handlers on a c2 page: the book reconciled through Sep 30 on a
+// statement Pat Treasurer (u1) signed, after the legacy Aug 31 one. `who` signs in as someone else.
+const C5_ACT = [
+  c2Block(/    if \(act\.indexOf\('st-review:'\) === 0\) \{[\s\S]*?\n    \}/, 'st-review')].join('\n');
+const c5Page = (o) => c2tPage({ book: { reconciledThrough: '2026-09-30' }, more: `
+  ${['statementReviewRefusal'].map(slice).join('\n')}
+  var editor = true;
+  function canEdit() { return editor; }
+  function commit() { commits += 1; return true; }   // as the page's says it took the change
+  state.statements = [${JSON.stringify(C5_LEGACY())}, ${JSON.stringify(C5_SEP())}];
+  function st(id) { return state.statements.find(function (x) { return x.id === id; }); }
+  function act5(act, el) { el = el || { dataset: {} }; (function () {\n${C5_ACT}\n})(); }
+  ${(o && o.more) || ''}` });
+const C5_SAM = "sync.user = { uid: 'u2', displayName: 'Sam Reviewer' }";
+
+test('C5: a second leader, signed in, can mark a statement reviewed once; never the one who reconciled it', () => {
+  const r = sandbox(['statementReviewRefusal', 'statementReopened', 'statementReviewed']);
+  const S = C5_SEP();
+  const table = [
+    [S, { by: 'Sam', byUid: 'u2' }, ''],
+    [S, { by: 'Pat Treasurer', byUid: 'u1' }, 'A statement is reviewed by a different leader from the one who reconciled it (Pat Treasurer).'],
+    [S, { by: 'Pat Treasurer', byUid: 'u9' }, ''],   // the same name, another account: the uid decides
+    [S, { by: 'Sam', byUid: '' }, 'Sign in with your own account to mark a statement reviewed, so the review says who did it.'],
+    [Object.assign(C5_SEP(), { reviewedAt: 'T', reviewedBy: 'Lee', reviewedByUid: 'u4' }), { by: 'Sam', byUid: 'u2' },
+      'This statement was already reviewed by Lee, and a review can’t be changed.'],
+    [Object.assign(C5_SEP(), { reopenedAt: 'T', reopenedBy: 'Alex', reopenedByUid: 'u3' }), { by: 'Sam', byUid: 'u2' },
+      'This statement was reopened, so it can’t be marked reviewed.'],
+    // Signed with no account: no uid to compare, so the name, unless it only says "a signed-in leader".
+    [C5_LEGACY(), { by: 'Sam', byUid: 'u2' }, 'A statement is reviewed by a different leader from the one who reconciled it (Sam).'],
+    [C5_LEGACY(), { by: 'Pat', byUid: 'u2' }, ''],
+    [Object.assign(C5_LEGACY(), { by: 'a signed-in leader' }), { by: 'a signed-in leader', byUid: 'u2' }, '']];
+  table.forEach(([st, who, want], i) => eq(r.statementReviewRefusal(st, who), want, 'case ' + i));
+  // On the page: Pat, who signed it, is refused; Sam marks it reviewed in two taps, once, logged.
+  const p = c5Page();
+  p.run("toasts = []; act5('st-review:st-2026-09-30-a'); act5('st-review:st-2026-09-30-a')");
+  eq([p.get("'reviewedAt' in st('st-2026-09-30-a')"), p.get('log().length'), p.get('commits'), p.get('toasts'), p.get('ui.armed')],
+    [false, 0, 0, Array(2).fill('A statement is reviewed by a different leader from the one who reconciled it (Pat Treasurer).'), null], 'the signer');
+  p.run(`${C5_SAM}; toasts = []; act5('st-review:st-2026-09-30-a')`);
+  eq([p.get("'reviewedAt' in st('st-2026-09-30-a')"), p.get('ui.armed')], [false, 'st-review:st-2026-09-30-a'], 'one tap reviewed it');
+  p.run("act5('st-review:st-2026-09-30-a')");
+  const s = p.get("st('st-2026-09-30-a')");
+  eq([s.reviewedBy, s.reviewedByUid, /^2\d{3}-\d\d-\d\dT/.test(s.reviewedAt), Object.keys(s).slice(-3)], ['Sam Reviewer', 'u2', true, ['reviewedAt', 'reviewedBy', 'reviewedByUid']], 'the review');
+  eq(p.get('log().map(function (e) { return [e.op, e.row, e.by, e.byUid]; })'), [['review', 'st-2026-09-30-a', 'Sam Reviewer', 'u2']], 'the log');
+  eq([p.get('commits'), p.get('toasts')], [1, ['Marked the statement through Sep 30 reviewed.']], 'saved and said');
+  // Once: the next leader is refused, and nothing in the statement changes.
+  p.run("sync.user = { uid: 'u4', displayName: 'Lee' }; toasts = []; act5('st-review:st-2026-09-30-a'); act5('st-review:st-2026-09-30-a')");
+  eq([p.get("st('st-2026-09-30-a')"), p.get('log().length'), p.get('toasts')[0]], [s, 1, 'This statement was already reviewed by Sam Reviewer, and a review can’t be changed.'], 'a second review');
+  // A viewer can't; nor can a leader not signed in.
+  const v = c5Page();
+  v.run(`${C5_SAM}; editor = false; toasts = []; act5('st-review:st-2026-09-30-a'); act5('st-review:st-2026-09-30-a')`);
+  eq([v.get("'reviewedAt' in st('st-2026-09-30-a')"), v.get('toasts')[0]], [false, 'Read-only access — ask a pack admin to make you an editor.'], 'a viewer');
+  v.run("editor = true; sync.user = null; toasts = []; act5('st-review:st-2026-09-30-a'); act5('st-review:st-2026-09-30-a')");
+  eq([v.get("'reviewedAt' in st('st-2026-09-30-a')"), v.get('toasts')[0]], [false, 'Sign in with your own account to mark a statement reviewed, so the review says who did it.'], 'no account');
+  // The change history names the statement.
+  const lbl = sandbox(['ledgerEntryLabel', 'fmt', 'fmtDateShort']);
+  lbl.state = { statements: [C5_SEP()], ledger: [], ledgerAside: [] };
+  eq(lbl.ledgerEntryLabel('st-2026-09-30-a'), 'Statement through Sep 30', 'the change history’s name for it');
+});
+
+test('C5, Firestore: a statement reviewed on two devices at once keeps the earlier review on both', () => {
+  for (const aFirst of [true, false]) {
+    const { a, b, server } = fsGonePair(C5_SEED);
+    a.run(C5_SIGN('A') + '; commit()'); a.push(); b.hear();
+    a.run("Object.assign(state.statements[1], { reviewedAt: '2026-10-02T00:00:05.000Z', reviewedBy: 'Sam', reviewedByUid: 'u-Sam' }); commit()");
+    b.run("Object.assign(state.statements[1], { reviewedAt: '2026-10-02T00:00:01.000Z', reviewedBy: 'Lee', reviewedByUid: 'u-Lee' }); commit()");
+    const [first, last] = aFirst ? [a, b] : [b, a];
+    first.push(); last.hear(); last.push(); first.hear();
+    const who = (st) => [st.statements[1].reviewedBy, st.statements[1].reviewedAt];
+    eq([who(server()), who(a.get('state')), who(b.get('state'))], Array(3).fill(['Lee', '2026-10-02T00:00:01.000Z']), (aFirst ? 'A' : 'B') + ' first');
+  }
 });
 
 /* ---------------- report ---------------- */

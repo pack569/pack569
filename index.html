@@ -8641,7 +8641,9 @@
   // reconciledThrough [before, after]) and 'restore' (a backup restored, row 'book', `why` what
   // the book then held); an 'untick' can carry the leader's `why`, and a 'delete' names what the
   // entry was for (description, line, family, method, reference).
-  var LEDGER_OPS = ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile', 'restore'];
+  // Phase 3, C5 added 'review' (a statement marked reviewed; row: the statement's id).
+  var LEDGER_OPS = ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile', 'restore',
+    'review'];
   function ledgerEvent(op, rowId, who, more) {
     if (LEDGER_OPS.indexOf(op) === -1 || typeof rowId !== 'string' || !rowId) return null;
     who = who || {};
@@ -8772,7 +8774,8 @@
     edit: 'Changed', add: 'Added', 'delete': 'Deleted', tick: 'Ticked against a statement', untick: 'Un-ticked',
     unmakeup: 'Tier make-up taken back', notcommission: 'Marked not the commission', reassign: 'Family unlinked',
     opening: 'Opening balance changed', reconcile: 'Marked reconciled', restore: 'Backup restored',
-    'void': 'Voided', unvoid: 'Un-voided', reverse: 'Reversed', correct: 'Corrected', resolve: 'Resolved', reopen: 'Statement reopened'
+    'void': 'Voided', unvoid: 'Un-voided', reverse: 'Reversed', correct: 'Corrected', resolve: 'Resolved', reopen: 'Statement reopened',
+    review: 'Statement reviewed'   // Phase 3, C5
   };
   var LEDGER_FIELD_LABELS = {
     date: 'date', description: 'description', amountCents: 'amount', direction: 'in or out', lineId: 'budget line',
@@ -9361,6 +9364,22 @@
     });
     if (was) st.supersedes = was.id;
     return { statement: st, rows: rows };
+  }
+  // Why this device's leader (`who`: { by, byUid }) can't mark statement `st` reviewed, or ''. The
+  // review is a second leader's, once: never the one who signed it (their account uids compared; a
+  // statement signed with no account has no uid, so the names are, unless the name is only "a
+  // signed-in leader" or "this device"), never a reopened statement, and only by a leader signed in
+  // with their own account, so the review says who did it. Pure.
+  function statementReviewRefusal(st, who) {
+    who = who || {};
+    if (statementReopened(st)) return 'This statement was reopened, so it can’t be marked reviewed.';
+    if (statementReviewed(st)) return 'This statement was already reviewed' + (st.reviewedBy ? ' by ' + st.reviewedBy : '') + ', and a review can’t be changed.';
+    if (!who.byUid) return 'Sign in with your own account to mark a statement reviewed, so the review says who did it.';
+    var named = !!st.by && st.by !== 'a signed-in leader' && st.by !== 'this device';
+    if (st.byUid ? st.byUid === who.byUid : (named && st.by === who.by)) {
+      return 'A statement is reviewed by a different leader from the one who reconciled it' + (named ? ' (' + st.by + ')' : '') + '.';
+    }
+    return '';
   }
   // A statement's date, as a record says it: "September 30, 2026". `iso` YYYY-MM-DD. Pure.
   function fmtDateYear(iso) {
@@ -20236,6 +20255,9 @@
     };
   }
   function ledgerEntryLabel(id) {
+    // Phase 3, C5 — a statement's own events (reviewed, reopened) name the statement.
+    var st = (state.statements || []).filter(function (x) { return x.id === id; })[0];
+    if (st) return 'Statement through ' + fmtDateShort(st.date);
     var e = state.ledger.filter(function (x) { return x.id === id; })[0];
     // Phase 3, C3 — a voided entry is still in the book: named, and said to be voided.
     var a = e ? null : (state.ledgerAside || []).filter(function (x) { return x.id === id; })[0];
@@ -20715,8 +20737,20 @@
     }
     h += '<div class="row no-print" style="margin-top:6px">' +
       '<button type="button" class="btn small ghost" data-act="st-print:' + esc(st.id) + '">Printout</button>' +
-      '</div>';
+      statementButtonsHtml(st, rt) + '</div>';
     return h + '</div>';
+  }
+  // What can be done to a statement from this device, beside its printout. Mark reviewed: offered to
+  // a leader who can edit and may review it (statementReviewRefusal: a second leader, signed in, once,
+  // not reopened); two taps, since it can't be undone.
+  function statementButtonsHtml(st, rt) {
+    var h = '';
+    if (canEdit() && !statementReviewRefusal(st, { by: ledgerActor(), byUid: ledgerActorUid() })) {
+      var rvArmed = ui.armed === 'st-review:' + st.id;
+      h += '<button type="button" class="btn small' + (rvArmed ? ' danger armed' : '') + '" data-act="st-review:' + esc(st.id) + '">' +
+        (rvArmed ? 'Tap again: reviewed by you, for good' : 'Mark reviewed') + '</button>';
+    }
+    return h;
   }
   // The one-page printout of a statement reconciled (ui.overlay kind 'bank-statement'), in the
   // pattern of the family statement: Back, Print / Save PDF (te-print), and a sheet. What it was
@@ -30125,6 +30159,24 @@
     // PHASE 3, C5 — a statement's printout (renderBankStatementSheet). Read-only: left open while the
     // reload gate holds (HELD_ACT_PREFIXES).
     if (act.indexOf('st-print:') === 0) { ui.overlay = { kind: 'bank-statement', id: act.slice('st-print:'.length) }; render(); return; }
+    // Mark reviewed (the optional second reviewer): a different leader from the one who signed it,
+    // signed in, once, and not on a reopened statement (statementReviewRefusal, asked on each tap, as a
+    // sync can have reviewed or reopened it between the two). Two taps; logged ('review').
+    if (act.indexOf('st-review:') === 0) {
+      var svSt = (state.statements || []).filter(function (x) { return x.id === act.slice('st-review:'.length); })[0];
+      if (!svSt) return;
+      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      var svNo = statementReviewRefusal(svSt, { by: ledgerActor(), byUid: ledgerActorUid() });
+      if (svNo) { if (ui.armed === act) ui.armed = null; showToast(svNo); render(); return; }
+      arm(act, function () {
+        svSt.reviewedAt = new Date().toISOString();
+        svSt.reviewedBy = ledgerActor();
+        svSt.reviewedByUid = ledgerActorUid();
+        logLedger('review', svSt.id);
+        if (commit()) showToast('Marked the statement through ' + fmtDateShort(svSt.date) + ' reviewed.');
+      });
+      return;
+    }
     if (act === 'add-meeting') {
       var newMtg = freshEvent({
         kind: el.dataset.kind === 'pack' ? 'pack' : 'den',
