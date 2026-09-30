@@ -18694,27 +18694,45 @@ test('C3 treasurer: un-voiding takes an optional why, logged with it, as un-reco
 });
 
 test('C3 treasurer: the voided entries download as a CSV for the annual review — leaders only, and no formula runs', () => {
-  const ctx = sandbox(['fmt', 'ledgerLogWhen', 'ledgerCsvCell', 'ledgerVoidedCsv']);
+  // Treasurer review of C4 (5) — "Voided & reversed (CSV)": the voids, and each entry reversed or
+  // corrected with its reversal on the line under it; what happened, by whom, when, why, and what replaced it.
+  const ctx = sandbox(['fmt', 'ledgerLogWhen', 'ledgerCsvCell', 'ledgerVoidedCsv', ...ASIDE_LIST_FNS]);
+  const HEAD = 'Date,Amount,In or out,Description,What happened,By,When (this device’s time),Reason,Replaced by';
   const aside = [
     { id: 'v2', off: 'void', date: '2026-09-12', amountCents: 2500, direction: 'in', description: 'Dues, Ada', voidedBy: 'Pat', voidedAt: '2026-10-03T15:04:00.000Z', voidReason: 'Entered twice' },
     { id: 'v1', off: 'void', date: '2026-09-10', amountCents: 8400, direction: 'out', description: '=HYPERLINK("x")', voidedBy: '@Sam', voidedAt: '', voidReason: '-1 "typo"' },
-    { id: 'r1', off: 'reversed', date: '2026-09-01', amountCents: 100, direction: 'out', description: 'Not a void' }];
+    // A pair C4's first build set aside.
+    { id: 'r1', off: 'reversed', reversedBy: 'rv-r1', date: '2026-09-01', amountCents: 100, direction: 'out', description: 'Stamps', voidedBy: 'Pat', voidedAt: '', voidReason: 'Wrong account' },
+    { id: 'rv-r1', off: 'reversal', reverses: 'r1', date: '2026-09-29', amountCents: 100, direction: 'in', description: 'Reversal of “Stamps”', enteredBy: 'Pat', enteredAt: '' }];
+  // Option B: counted pairs, one reversed, one corrected; and an entry nothing reverses, not listed.
+  const ledger = [
+    { id: 'u1', date: '2026-09-02', amountCents: 900, direction: 'out', description: 'Tents' },
+    { id: 'd1', date: '2026-08-15', amountCents: 20000, direction: 'in', description: 'Dues (Ben)', reconciled: true, reversedBy: 'rv-d1', voidedBy: 'Pat', voidedAt: '', voidReason: 'Check returned by the bank' },
+    { id: 'p1', date: '2026-08-20', amountCents: 1200, direction: 'out', description: 'Council fee', reversedBy: 'rv-p1', voidedBy: 'Sam', voidedAt: '', voidReason: 'Wrong amount' },
+    { id: 'rv-d1', reverses: 'd1', date: '2026-09-10', amountCents: 20000, direction: 'out', description: 'Reversal of “Dues (Ben)”', enteredBy: 'Pat', enteredAt: '' },
+    { id: 'rv-p1', reverses: 'p1', date: '2026-10-15', amountCents: 1200, direction: 'in', description: 'Reversal of “Council fee”', enteredBy: 'Sam', enteredAt: '' },
+    { id: 'rc-p1', replaces: 'p1', date: '2026-10-15', amountCents: 2100, direction: 'out', description: 'Council fee' }];
   const when = ctx.ledgerLogWhen(aside[0].voidedAt);
-  eq(ctx.ledgerVoidedCsv(aside).split('\n'), [
-    'Date,Amount,In or out,Description,Voided by,Voided (this device’s time),Reason',
-    `2026-09-10,$84.00,Money out,"'=HYPERLINK(""x"")",'@Sam,,"'-1 ""typo"""`,
-    `2026-09-12,$25.00,Money in,"Dues, Ada",Pat,${when},Entered twice`], 'the CSV');
-  eq(ctx.ledgerVoidedCsv([]), 'Date,Amount,In or out,Description,Voided by,Voided (this device’s time),Reason', 'none voided');
-  // The button (only with a voided row) and its handler: the export overlay, from the pack's voided rows.
+  eq(ctx.ledgerVoidedCsv(aside, ledger).split('\n'), [HEAD,
+    '2026-08-15,$200.00,Money in,Dues (Ben),Reversed,Pat,,Check returned by the bank,',
+    '2026-09-10,$200.00,Money out,Reversal of “Dues (Ben)”,Reversal of “Dues (Ben)”,Pat,,,',
+    '2026-08-20,$12.00,Money out,Council fee,Corrected,Sam,,Wrong amount,"2026-10-15, −$21.00"',
+    '2026-10-15,$12.00,Money in,Reversal of “Council fee”,Reversal of “Council fee”,Sam,,,',
+    '2026-09-01,$1.00,Money out,Stamps,Reversed,Pat,,Wrong account,',
+    '2026-09-29,$1.00,Money in,Reversal of “Stamps”,Reversal of “Stamps”,Pat,,,',
+    `2026-09-10,$84.00,Money out,"'=HYPERLINK(""x"")",Voided,'@Sam,,"'-1 ""typo""",`,
+    `2026-09-12,$25.00,Money in,"Dues, Ada",Voided,Pat,${when},Entered twice,`], 'the CSV');
+  eq([ctx.ledgerVoidedCsv([], []), ctx.ledgerVoidedCsv([], [ledger[0]])], [HEAD, HEAD], 'none voided or reversed');
+  // The button (only with a void or a reversed pair) and its handler: the export overlay, from the pack's rows.
   const p = c2rPage({ more: C2R_MORE + `
-    ${['ledgerLogWhen', 'ledgerCsvCell', 'ledgerVoidedCsv'].map(slice).join('\n')}
+    ${['ledgerLogWhen', 'ledgerCsvCell', 'ledgerVoidedCsv', 'ledgerPairRole', 'ledgerReplacementId'].map(slice).join('\n')}
     function act5(act) { (function () {\n${c2Block(/    if \(act === 'ledger-voided-csv'\) \{[\s\S]*?\n    \}/, 'ledger-voided-csv')}\n})(); }` });
   p.run("void2('u1', 'Entered twice'); act5('ledger-voided-csv')");
   const o = p.get('ui.overlay');
-  eq([o.kind, o.name, o.mime, o.title, o.text.split('\n').length, /^2026-09-10,\$84\.00,Money out,Pinewood trophies,Pat Treasurer,[^,]+,Entered twice$/.test(o.text.split('\n')[1])],
-    ['export', 'ledger-voided-entries.csv', 'text/csv', 'Voided entries (CSV)', 2, true], 'the export: ' + o.text);
-  ok(/\(\(state\.ledgerAside \|\| \[\]\)\.some\(function \(e\) \{ return e\.off === 'void'; \}\)\s*\? '<button type="button" class="btn small ghost" data-act="ledger-voided-csv">Voided entries \(CSV\)<\/button>' : ''\)/.test(slice('renderLedger')),
-    'Money · Ledger offers no CSV of the voided entries');
+  eq([o.kind, o.name, o.mime, o.title, o.text.split('\n').length, /^2026-09-10,\$84\.00,Money out,Pinewood trophies,Voided,Pat Treasurer,[^,]+,Entered twice,$/.test(o.text.split('\n')[1])],
+    ['export', 'ledger-voided-reversed.csv', 'text/csv', 'Voided & reversed (CSV)', 2, true], 'the export: ' + o.text);
+  ok(/\(\(state\.ledgerAside \|\| \[\]\)\.some\(function \(e\) \{ return e\.off === 'void' \|\| e\.off === 'reversed'; \}\) \|\| Object\.keys\(ledgerPairOf\(state\.ledger\)\)\.length\s*\? '<button type="button" class="btn small ghost" data-act="ledger-voided-csv">Voided &amp; reversed \(CSV\)<\/button>' : ''\)/.test(slice('renderLedger')),
+    'Money · Ledger offers no CSV of the voided and reversed entries');
   const bpv = codeOnly(BPV()), parent = codeOnly(slice('renderParentApp'));
   for (const name of ['ledgerVoidedCsv', 'ledger-voided-csv', 'ledgerAside']) ok(bpv.indexOf(name) === -1 && parent.indexOf(name) === -1, name + ' reaches the parents');
 });
@@ -18783,15 +18801,18 @@ const C3_READERS = {
   runningBalances: (L, x, c) => x.runningBalances(L, c.book),
   seasonLedgerRows: (L, x) => x.seasonLedgerRows(L, (id) => 'line ' + id, (id) => 'family ' + id),
   ledgerUnpaired: (L, x) => x.ledgerUnpaired(L).map((e) => e.id),
-  ledgerPairOf: (L, x) => x.ledgerPairOf(L)   // Option B: which counted rows cancel which
+  ledgerPairOf: (L, x) => x.ledgerPairOf(L),   // Option B: which counted rows cancel which
+  ledgerVoidedCsv: (L, x) => x.ledgerVoidedCsv([], L)   // treasurer review of C4 (5): the reversed pairs it lists
 };
+// What those readers need besides themselves.
+const READER_DEPS = ['fmt', 'ledgerLogWhen', 'ledgerCsvCell', 'ledgerPairRole', 'ledgerReplacementId'];
 // Security review of C4 (finding 1) — the readers that LIST or COUNT the rows, or tick them. A pair
 // that came apart and was sent back to the ledger is two counted rows that net to $0: these show
 // both (the treasurer ticks the reversal against the statement it is on), and only the balance is
 // the entry deleted (when the entry is after the opening date: its reversal, dated the day it was
 // made, always is). Every other reader is the entry deleted outright.
 const C4_LISTING_READERS = ['ledgerBalance', 'ledgerSort', 'ledgerTotals', 'reconcileTotals', 'reconcileStale', 'runningBalances', 'seasonLedgerRows', 'ledgerUnpaired',
-  'ledgerPairOf'];
+  'ledgerPairOf', 'ledgerVoidedCsv'];
 const C3_STATE_READERS = {
   tierMakeupMap: (x) => x.tierMakeupMap(),
   tierMakeupPaidCents: (x) => [['t1', 's1'], ['t1', 's2'], ['t2', 's3']].map(([t, s]) => x.tierMakeupPaidCents(t, s))
@@ -18806,7 +18827,7 @@ test('C3 property: every ledger reader gives the same answer with an entry voide
   eq(found, Object.keys(C3_READERS).sort(), 'a ledger reader the property does not check (add it to C3_READERS)');
   const x = sandbox(['entryPaysCharges', 'entryRefundsFamily', 'entryIsRefund', 'chargeIsOpen', 'entrySignedCents', 'entryAfterOpening',
     'entryOnStatement', 'entryWantsLine', 'ledgerLocked', 'ledgerDateReconciled', 'LEDGER_VOID_REASON_MAX', 'ledgerVoidRow', 'ledgerUnvoidRow',
-    'normalizeAsideRow', 'ledgerStampClean', 'tierMakeupMap', 'tierMakeupPaidCents', 'chargeSetTotals', 'RECONCILE_STALE_DAYS', 'LEDGER_INCOME_SOURCES', 'COMMISSION_LOOKALIKE_SOURCES'].concat(found));
+    'normalizeAsideRow', 'ledgerStampClean', 'tierMakeupMap', 'tierMakeupPaidCents', 'chargeSetTotals', 'RECONCILE_STALE_DAYS', 'LEDGER_INCOME_SOURCES', 'COMMISSION_LOOKALIKE_SOURCES'].concat(READER_DEPS, found));
   const r = c3Rand(569);
   const pick = (a) => a[Math.floor(r() * a.length)];
   let checked = 0;
@@ -18869,10 +18890,10 @@ test('C3: nothing outside the book’s own plumbing reads the voided rows, so no
   const h = slice('handleAction').split('\n').filter((l) => /ledgerAside/.test(l) && !/^\s*\/\//.test(l));
   eq(h.length, 3, 'handleAction reads the voided rows somewhere new: ' + h.join(' | '));
   ok(/var uvRow = \(state\.ledgerAside \|\| \[\]\)\.find/.test(h.join('\n')) && /var dsRows = state\.ledger\.concat\(state\.ledgerAside \|\| \[\]\)/.test(h.join('\n')) &&
-    /text: ledgerVoidedCsv\(state\.ledgerAside\) \};/.test(h.join('\n')), h.join('\n'));
+    /text: ledgerVoidedCsv\(state\.ledgerAside, state\.ledger\) \};/.test(h.join('\n')), h.join('\n'));
   // renderLedger only asks whether there is a voided row, for the CSV button.
   eq(slice('renderLedger').split('\n').filter((l) => /ledgerAside/.test(l) && !/^\s*\/\//.test(l)).map((l) => l.trim()),
-    ["((state.ledgerAside || []).some(function (e) { return e.off === 'void'; })"], 'renderLedger reads the voided rows');
+    ["((state.ledgerAside || []).some(function (e) { return e.off === 'void' || e.off === 'reversed'; }) || Object.keys(ledgerPairOf(state.ledger)).length"], 'renderLedger reads the voided rows');
   // And none of it reaches the parents.
   ok(!/ledgerAside|voidReason|voidedBy/.test(codeOnly(BPV())), 'buildParentView publishes a voided row');
 });
@@ -19728,7 +19749,8 @@ test('C3 treasurer: a void is one line of the change-history CSV, and close-out 
     ',Sam,Pinewood trophies · Sep 10 · −$84.00 (voided),Un-voided,,,Cashed after all',
     ",'=Mallory,A removed entry,Voided,,not counted,'+1"], 'one line per void');
   const co = slice('renderCloseoutOverlay');
-  ok(co.indexOf("'<li><strong>Voided entries:</strong> Download the snapshot. Voided entries, with who voided them and why, are only kept there.</li>'") >
+  // Treasurer review of C4 (5): and the reversed ones.
+  ok(co.indexOf("'<li><strong>Voided &amp; reversed entries:</strong> Download the snapshot. Entries voided or reversed, with who did it and why, are only kept there.</li>'") >
     co.indexOf('<li><strong>Change history:</strong>'), 'the close-out screen does not say where the voided entries are kept');
 });
 
@@ -20268,7 +20290,7 @@ test('C4 property (option B): after a Reverse the family, tier and line readers 
   const x = sandbox(['entryPaysCharges', 'entryRefundsFamily', 'entryIsRefund', 'chargeIsOpen', 'entrySignedCents', 'entryAfterOpening',
     'entryOnStatement', 'entryWantsLine', 'ledgerLocked', 'ledgerDateReconciled', 'LEDGER_VOID_REASON_MAX', 'normalizeAsideRow', 'ledgerStampClean',
     'tierMakeupMap', 'tierMakeupPaidCents', 'chargeSetTotals', 'RECONCILE_STALE_DAYS', 'LEDGER_INCOME_SOURCES', 'COMMISSION_LOOKALIKE_SOURCES',
-    'applyLedgerEdit', 'toCents', 'ledgerRowFields', 'LEDGER_EDIT_FIELDS', 'LEDGER_MAX_CENTS', 'fmt', 'fmtDateShort', 'isoPlusDays'].concat(C4_FNS, found));
+    'applyLedgerEdit', 'toCents', 'ledgerRowFields', 'LEDGER_EDIT_FIELDS', 'LEDGER_MAX_CENTS', 'fmtDateShort', 'isoPlusDays'].concat(READER_DEPS, C4_FNS, found));
   vm.runInContext('function ledgerLineIsDirect() { return false; }', x);
   const r = c3Rand(4569);
   const pick = (a) => a[Math.floor(r() * a.length)];

@@ -8638,15 +8638,40 @@
   // through ledgerCsvCell, so a description or reason starting "=" never runs as a formula. LEADERS
   // ONLY, as the change history is: it is on Money · Ledger, and buildParentView carries neither
   // the ledger nor the voided rows. Pure.
-  function ledgerVoidedCsv(aside) {
-    var rows = (aside || []).filter(function (e) { return e && e.off === 'void'; }).slice().sort(function (a, b) {
+  // Treasurer review of C4 (5) — and the entries reversed or corrected, each with its reversal on the
+  // line under it: the annual review needs both. `aside` is state.ledgerAside, `ledger` the counted
+  // rows (option B: a reversed pair is two of them, ledgerPairOf; a pair set aside by C4's first
+  // build is read from `aside`). "What happened": Voided, Reversed, Corrected, or Reversal of “…”;
+  // "Replaced by": a corrected entry's date and amount. By and When are who did it and when: for a
+  // reversal, who entered it.
+  function ledgerVoidedCsv(aside, ledger) {
+    aside = aside || []; ledger = ledger || [];
+    var pairOf = ledgerPairOf(ledger), byId = Object.create(null);
+    var pool = aside.concat(ledger.filter(function (e) { return e && pairOf[e.id]; }));
+    pool.forEach(function (e) { if (e && typeof e.id === 'string' && !byId[e.id]) byId[e.id] = e; });
+    function role(e) { return ledgerPairRole(e, pairOf); }
+    function partner(e) {
+      var r = role(e);
+      var p = !r ? null : !e.off ? byId[pairOf[e.id]] : r === 'reversed' ? byId[e.reversedBy] : byId[e.reverses];
+      return p && p !== e && role(p) && role(p) !== r ? p : null;
+    }
+    var rows = pool.filter(function (e) { return e && (e.off === 'void' || (role(e) === 'reversed' && !!partner(e))); }).sort(function (a, b) {
       var da = String(a.date || ''), db = String(b.date || ''), va = String(a.voidedAt || ''), vb = String(b.voidedAt || '');
       return da < db ? -1 : da > db ? 1 : va < vb ? -1 : va > vb ? 1 : 0;
     });
-    var out = [['Date', 'Amount', 'In or out', 'Description', 'Voided by', 'Voided (this device’s time)', 'Reason'].join(',')];
+    function money(e) { return [e.date || '', fmt(e.amountCents || 0), e.direction === 'in' ? 'Money in' : 'Money out', e.description || '']; }
+    var out = [['Date', 'Amount', 'In or out', 'Description', 'What happened', 'By', 'When (this device’s time)', 'Reason', 'Replaced by'].join(',')];
     rows.forEach(function (e) {
-      out.push([e.date || '', fmt(e.amountCents || 0), e.direction === 'in' ? 'Money in' : 'Money out', e.description || '',
-        e.voidedBy || '', ledgerLogWhen(e.voidedAt), e.voidReason || ''].map(ledgerCsvCell).join(','));
+      if (e.off === 'void') {
+        out.push(money(e).concat(['Voided', e.voidedBy || '', ledgerLogWhen(e.voidedAt), e.voidReason || '', '']).map(ledgerCsvCell).join(','));
+        return;
+      }
+      var rc = ledger.filter(function (x) { return x && x.id === ledgerReplacementId(e.id) && x.replaces === e.id; })[0];
+      out.push(money(e).concat([rc ? 'Corrected' : 'Reversed', e.voidedBy || '', ledgerLogWhen(e.voidedAt), e.voidReason || '',
+        rc ? (rc.date || '') + ', ' + (rc.direction === 'in' ? '+' : '−') + fmt(rc.amountCents || 0) : '']).map(ledgerCsvCell).join(','));
+      var p = partner(e);
+      out.push(money(p).concat(['Reversal of ' + (e.description ? '“' + e.description + '”' : 'an entry'), p.enteredBy || '', ledgerLogWhen(p.enteredAt), '', ''])
+        .map(ledgerCsvCell).join(','));
     });
     return out.join('\n');
   }
@@ -19572,9 +19597,10 @@
       '<button type="button" class="btn small' + (ui.ledgerView === 'reconcile' ? ' primary' : '') + '" data-act="ledger-view" data-view="reconcile">Reconcile</button>' +
       // Treasurer review of C2 (M-4) — the whole log, as a CSV (the export overlay: copy or download).
       (state.ledgerLog.length ? '<button type="button" class="btn small ghost" data-act="ledger-log-csv">Change history (CSV)</button>' : '') +
-      // Treasurer sign-off on C3 — and the voided entries, for the annual review.
-      ((state.ledgerAside || []).some(function (e) { return e.off === 'void'; })
-        ? '<button type="button" class="btn small ghost" data-act="ledger-voided-csv">Voided entries (CSV)</button>' : '') +
+      // Treasurer sign-off on C3 — and the voided entries, for the annual review. Treasurer review of
+      // C4 (5) — and the reversed ones: offered when there is a void or a reversed pair.
+      ((state.ledgerAside || []).some(function (e) { return e.off === 'void' || e.off === 'reversed'; }) || Object.keys(ledgerPairOf(state.ledger)).length
+        ? '<button type="button" class="btn small ghost" data-act="ledger-voided-csv">Voided &amp; reversed (CSV)</button>' : '') +
       '</div></div>';
     h += bookCard();
     return h + (ui.ledgerView === 'reconcile' ? renderReconcile() : renderLedgerEntries());
@@ -28024,7 +28050,9 @@
       // keeps it in closedBooks the snapshot download is the only copy.
       '<li><strong>Change history:</strong> Download the snapshot — the ledger’s change history is only kept there.</li>' +
       // Treasurer sign-off on C3 — and so, until C8, are the voided entries (state.ledgerAside).
-      '<li><strong>Voided entries:</strong> Download the snapshot. Voided entries, with who voided them and why, are only kept there.</li>' +
+      // Treasurer review of C4 (5) — and why an entry was reversed: under option B a reversed pair is
+      // two counted rows, which Past seasons keeps, but not the reason, who or when.
+      '<li><strong>Voided &amp; reversed entries:</strong> Download the snapshot. Entries voided or reversed, with who did it and why, are only kept there.</li>' +
       // Wave 19(38b)
       (state.densAdvancedYear === year ? '' :
         '<li>Arrow of Light scouts who crossed over in the spring should already be archived — anyone still active is archived now.</li>') +
@@ -29226,10 +29254,11 @@
         text: ledgerLogCsv(state.ledgerLog, ledgerEntryLabel, ledgerLogNames()) };
       render(); return;
     }
-    // Treasurer sign-off on C3 — the voided entries as a CSV, leaders only, as above.
+    // Treasurer sign-off on C3 — the voided entries as a CSV, leaders only, as above. Treasurer review
+    // of C4 (5) — and the reversed and corrected ones.
     if (act === 'ledger-voided-csv') {
-      ui.overlay = { kind: 'export', title: 'Voided entries (CSV)', name: 'ledger-voided-entries.csv', mime: 'text/csv',
-        text: ledgerVoidedCsv(state.ledgerAside) };
+      ui.overlay = { kind: 'export', title: 'Voided & reversed (CSV)', name: 'ledger-voided-reversed.csv', mime: 'text/csv',
+        text: ledgerVoidedCsv(state.ledgerAside, state.ledger) };
       render(); return;
     }
     if (act === 'ledger-use-carryover') {
