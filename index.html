@@ -3621,6 +3621,16 @@
         return { name: str(x.name), owedCents: cents(x.owedCents), paidCents: cents(x.paidCents), balanceCents: cents(x.balanceCents) };
       });
     } else delete a.families;
+    // Phase 3, C5 review — until C8, the book's statements (each shaped as a live one is:
+    // normalizeStatement) and its change log (plain events, never an email for who), and whether
+    // either was too large to keep (fitSeasonBook). Absent on every archive closed before.
+    if (Array.isArray(a.statements)) a.statements = list(a.statements).map(normalizeStatement);
+    else delete a.statements;
+    if (Array.isArray(a.ledgerLog)) {
+      a.ledgerLog = a.ledgerLog.slice(0, 1000).filter(function (x) { return x && typeof x === 'object' && !Array.isArray(x); });
+      a.ledgerLog.forEach(function (ev) { if (ev.by !== undefined) ev.by = ledgerStampClean(ev.by); });
+    } else delete a.ledgerLog;
+    ['statementsTrimmed', 'ledgerLogTrimmed'].forEach(function (k) { if (a[k] !== true) delete a[k]; });
     return true;
   }
   // -----------------------------------------------------------------------
@@ -28158,6 +28168,25 @@
     if (otherBytes + utf8Bytes(JSON.stringify(led.rows)) <= limit) return { totals: led.totals, rows: led.rows, trimmed: false };
     return { totals: led.totals, rows: [], trimmed: true };
   }
+  // Phase 3, C5 review (treasurer review of C5, 3; owner's decision 4) — until C8 keeps closed books,
+  // the season archive also carries the book's statements and its change log, so the annual review
+  // still has them after close-out. They are fitted with the rows (fitSeasonLedger) in a fixed
+  // order, most needed first: the STATEMENTS (small, a dozen a year, and what the review checks
+  // against the bank), then the ROWS (the book itself, trimmed as E3 always did), then the CHANGE
+  // LOG (the largest, up to LEDGER_LOG_ROOM_BYTES, and the least read). Each is kept only if it and
+  // everything before it fit, so when the record is full the log goes first, then the rows, and the
+  // statements last; adding the log never costs the rows. Whatever goes is flagged
+  // (`statementsTrimmed`, `ledgerLogTrimmed`, the ledger's `trimmed`); the downloaded JSON keeps it.
+  // Returns { ledger: fitSeasonLedger's, statements, ledgerLog, statementsTrimmed, ledgerLogTrimmed }.
+  // Pure.
+  function fitSeasonBook(led, statements, log, otherBytes, limit) {
+    var sb = utf8Bytes(JSON.stringify(statements || [])), lb = utf8Bytes(JSON.stringify(log || []));
+    var keepSt = otherBytes + sb <= limit;
+    var ledger = keepSt ? fitSeasonLedger(led, otherBytes + sb, limit) : { totals: led.totals, rows: [], trimmed: true };
+    var keepLog = !ledger.trimmed && otherBytes + sb + utf8Bytes(JSON.stringify(ledger.rows)) + lb <= limit;
+    return { ledger: ledger, statements: keepSt ? statements || [] : [], ledgerLog: keepLog ? log || [] : [],
+      statementsTrimmed: !keepSt, ledgerLogTrimmed: !keepLog };
+  }
   // Each family's closing balance: any family with a charge, a payment or a refund this year.
   function seasonFamilyBalances(accounts, nameOf) {
     return accounts.filter(function (a) { return a.owed || a.paid || a.refunded || a.balance; }).map(function (a) {
@@ -28171,7 +28200,8 @@
   // record still held this year's ledger, sales, sign-ups, attendance, charges and hand-outs, all
   // of which close-out clears, and a record that fitted was trimmed. The copy's deletion marks
   // (none: close-out clears them) are swapped for room for next year's (GONE_ROOM_BYTES).
-  function seasonLedgerNow(arcWithout) {
+  // Phase 3, C5 review — with the book's `statements` and change `log` fitted too (fitSeasonBook).
+  function seasonLedgerNow(arcWithout, statements, log) {
     var led = seasonLedgerRows(state.ledger, function (id) {
       var l = getBudgetLine(id);
       return l ? (l.name || 'Untitled line') : '';
@@ -28196,7 +28226,7 @@
     // C2 (m5) — the log close-out cleared, swapped for room for next year's (LEDGER_LOG_ROOM_BYTES,
     // its cap, so this year's is never more).
     other += LEDGER_LOG_ROOM_BYTES - utf8Bytes(JSON.stringify(after.ledgerLog || []));
-    return fitSeasonLedger(led, other, ARCHIVE_DOC_SOFT_LIMIT);
+    return fitSeasonBook(led, statements, log, other, ARCHIVE_DOC_SOFT_LIMIT);
   }
   function buildSeasonArchive() {
     var pack = computePackTotals();
@@ -28292,7 +28322,15 @@
         return members.length ? familyLabel({ members: members }) : 'A scout no longer on the roster';
       })
     };
-    arc.ledger = seasonLedgerNow(arc);
+    // Phase 3, C5 review — and, until C8, the statements reconciled and the ledger's change log,
+    // copies, as the book held them (fitSeasonBook: the log goes first if the record is full, the
+    // statements last). Leaders only, as the whole archive is: buildParentView never reads one.
+    var fit = seasonLedgerNow(arc, JSON.parse(JSON.stringify(state.statements || [])), JSON.parse(JSON.stringify(state.ledgerLog || [])));
+    arc.ledger = fit.ledger;
+    arc.statements = fit.statements;
+    arc.ledgerLog = fit.ledgerLog;
+    if (fit.statementsTrimmed) arc.statementsTrimmed = true;
+    if (fit.ledgerLogTrimmed) arc.ledgerLogTrimmed = true;
     return arc;
   }
 
@@ -28676,7 +28714,7 @@
     ui.overlay = null;
     if (!commit()) return;
     // E3 — the one case where the archive is not the whole story.
-    showToast(record.ledger && record.ledger.trimmed
+    showToast((record.ledger && record.ledger.trimmed) || record.ledgerLogTrimmed || record.statementsTrimmed
       ? 'Welcome to the ' + (year + 1) + ' program year. The ledger was too large for Past seasons \u2014 keep the downloaded JSON.'
       : 'Welcome to the ' + (year + 1) + ' program year');
   }
@@ -28926,6 +28964,19 @@
     return h + '</div>';
   }
   // Close-out preview overlay — computed live from state, nothing committed until confirm.
+  // Phase 3, C5 review — what the season archive `arc` keeps of the book's statements and change
+  // log (fitSeasonBook), for the close-out preview. Pure.
+  function closeoutBookLine(arc) {
+    var n = (arc.statements || []).length, m = (arc.ledgerLog || []).length;
+    var st = n + ' statement' + (n === 1 ? '' : 's') + ' reconciled', lg = 'the ledger’s change history (' + m + ' change' + (m === 1 ? '' : 's') + ')';
+    if (arc.statementsTrimmed) {
+      return 'The statements reconciled and the ledger’s change history are too large to keep in Past seasons. Download the snapshot: it is the only place they are kept.';
+    }
+    if (arc.ledgerLogTrimmed) {
+      return 'Past seasons keeps the ' + st + '. The ledger’s change history is too large to keep there: download the snapshot, the only place it is kept.';
+    }
+    return 'Past seasons keeps the ' + st + ' and ' + lg + ', for the annual review. The snapshot has them too.';
+  }
   function renderCloseoutOverlay() {
     var arc = buildSeasonArchive();
     var year = arc.year;
@@ -29000,9 +29051,9 @@
         ? '<strong>too large to keep in full.</strong> ' + esc(SEASON_LEDGER_TRIMMED)
         : 'Past seasons keeps all ' + arc.ledger.totals.entries + ' entr' + (arc.ledger.totals.entries === 1 ? 'y' : 'ies') +
           ' and each family’s closing balance (' + arc.families.length + ' famil' + (arc.families.length === 1 ? 'y' : 'ies') + ').') + '</li>' +
-      // Treasurer review of C2 (M-4) — close-out clears the ledger's change history, and until C8
-      // keeps it in closedBooks the snapshot download is the only copy.
-      '<li><strong>Change history:</strong> Download the snapshot — the ledger’s change history is only kept there.</li>' +
+      // Treasurer review of C2 (M-4) — close-out clears the ledger's change history. Phase 3, C5
+      // review — until C8, Past seasons keeps it and the statements, unless they don't fit.
+      '<li><strong>Change history and statements:</strong> ' + esc(closeoutBookLine(arc)) + '</li>' +
       // Treasurer sign-off on C3 — and so, until C8, are the voided entries (state.ledgerAside).
       // Treasurer review of C4 (5) — and why an entry was reversed: under option B a reversed pair is
       // two counted rows, which Past seasons keeps, but not the reason, who or when.

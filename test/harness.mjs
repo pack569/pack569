@@ -13095,7 +13095,9 @@ test('E1: due dates and family statements are NEVER published', () => {
     if (m) stFn = m[1] || m[2];
     if (/state\.statements/.test(line.replace(/\/\/.*$/, ''))) stUsers.add(stFn);
   });
-  eq([...stUsers].sort(), ['handleAction', 'ledgerEntryLabel', 'mergeRemoteAppendOnly', 'renderBankStatementSheet', 'renderReconcile', 'rolloverYear', 'statementButtonsHtml', 'statementsCardHtml'], 'something new writes or reads state.statements');
+  // C5 review: buildSeasonArchive copies them into the season archive, leaders only, until C8.
+  eq([...stUsers].sort(), ['buildSeasonArchive', 'handleAction', 'ledgerEntryLabel', 'mergeRemoteAppendOnly', 'renderBankStatementSheet', 'renderReconcile', 'rolloverYear',
+    'statementButtonsHtml', 'statementsCardHtml'], 'something new writes or reads state.statements');
   ok(/state\.statements = \[\];/.test(slice('rolloverYear')), 'close-out does not clear the bank statements');
   ok(!/statements/.test(bpv), 'buildParentView reads the bank statements');
   ok(/each charge's due date \(`dueDate`\), the pack's dues date \(`budget\.duesDueDate`\) and every\s+\/\/\s+family statement \(E1\)/.test(SCRIPT), 'the banner does not exclude them');
@@ -13238,7 +13240,8 @@ test('E3: the archived ledger is compact rows with words, not ids, and totals th
 test('E3: close-out archives the ledger and the family balances, sized against the pack record', () => {
   const b = slice('buildSeasonArchive');
   ok(/families: seasonFamilyBalances\(familyAccountsNow\(\),/.test(b), 'the family balances are not archived');
-  ok(/arc\.ledger = seasonLedgerNow\(arc\);\s*return arc;/.test(b), 'the ledger is not archived, or is sized before the rest of the record');
+  ok(/var fit = seasonLedgerNow\(arc, JSON\.parse\(JSON\.stringify\(state\.statements \|\| \[\]\)\), JSON\.parse\(JSON\.stringify\(state\.ledgerLog \|\| \[\]\)\)\);\s*arc\.ledger = fit\.ledger;[\s\S]*?return arc;\s*\}$/.test(b),
+    'the ledger is not archived, or is sized before the rest of the record');
   const now = slice('seasonLedgerNow');
   ok(/state\.archives\.push\(arcWithout\);\s*rolloverYear\(\);/.test(now) && /utf8Bytes\(JSON\.stringify\(after\)\)/.test(now) &&
     /ARCHIVE_DOC_SOFT_LIMIT/.test(now), 'not sized against the whole record, as close-out will leave it');
@@ -17760,13 +17763,13 @@ test('stopgap: close-out keeps room for a year of deletion marks, and a restore 
   ok(bytes <= ctx.GONE_ROOM_BYTES && bytes > ctx.GONE_ROOM_BYTES * 0.8, `the room kept for deletion marks is not their worst case (${bytes} bytes)`);
   // Close-out sizes the archive against the record with this year's marks swapped for that room.
   const s = vm.createContext({});
-  vm.runInContext(`${['utf8Bytes', 'fitSeasonLedger', 'ARCHIVE_DOC_SOFT_LIMIT', 'GONE_ROOM_BYTES', 'LEDGER_LOG_ROOM_BYTES', 'seasonLedgerNow'].map(slice).join('\n')}
+  vm.runInContext(`${['utf8Bytes', 'fitSeasonLedger', 'fitSeasonBook', 'ARCHIVE_DOC_SOFT_LIMIT', 'GONE_ROOM_BYTES', 'LEDGER_LOG_ROOM_BYTES', 'seasonLedgerNow'].map(slice).join('\n')}
     function seasonLedgerRows() { return { totals: { entries: 1 }, rows: [{ d: '2026-09-01', c: 1, t: 'x' }] }; }
     function getBudgetLine() { return null; } function chargeFamilyKey() { return ''; } function familyKeyOf() { return ''; }
     function rolloverYear() { state.gone = {}; state.ledgerLog = []; }
     var ui = {};
     var state = { ledger: [], scouts: [], archives: [], filler: '', gone: {}, ledgerLog: [] };
-    function fits(fill, gone, log) { state.filler = new Array(fill + 1).join('x'); state.gone = gone; state.ledgerLog = log || []; return !seasonLedgerNow({}).trimmed; }`, s);
+    function fits(fill, gone, log) { state.filler = new Array(fill + 1).join('x'); state.gone = gone; state.ledgerLog = log || []; return !seasonLedgerNow({}).ledger.trimmed; }`, s);
   // Phase 3, C2 (m5) — and room for next year's ledger log, which close-out clears too. Since the
   // security review of C2 (#3), the most the log can hold: mergeLedgerLog's byte cap. (fits()
   // measures with an empty log, whose '[]' the room replaces.)
@@ -17804,7 +17807,7 @@ const CLOSEOUT_SIZE_FNS = ['seasonLedgerNow', 'seasonLedgerRows', 'ledgerSort', 
   'familyAccounts', 'chargeIsOpen', 'entryPaysCharges', 'ledgerUnpaired', 'tierCoverageConfigured', 'sortedTiers', 'fundingSummary', 'commissionRates',
   'cashCreditOn', 'cashScoutRate', 'leaderPlannedCents', 'rewardTierSummary', 'earnedTierFor', 'computePackTotals', 'packGoalCents',
   'stretchGoalOf', 'ledgerIncomeCents', 'bookBalance', 'ledgerBalance', 'familyAccountsNow', 'closingCarryover', 'advanceDens',
-  'priorDayISO', 'ledgerActorName', 'shiftISOYear', 'utf8Bytes', 'GONE_ROOM_BYTES', 'LEDGER_LOG_ROOM_BYTES', 'fitSeasonLedger', 'ARCHIVE_DOC_SOFT_LIMIT'];
+  'priorDayISO', 'ledgerActorName', 'shiftISOYear', 'utf8Bytes', 'GONE_ROOM_BYTES', 'LEDGER_LOG_ROOM_BYTES', 'fitSeasonLedger', 'fitSeasonBook', 'ARCHIVE_DOC_SOFT_LIMIT'];
 test('stopgap follow-up 1: close-out sizes the archive against the record as close-out leaves it', () => {
   // The record before close-out holds this year's sales, sign-ups, attendance, charges and
   // hand-outs, which close-out clears: sized with them, a record that fits was trimmed.
@@ -17823,7 +17826,7 @@ test('stopgap follow-up 1: close-out sizes the archive against the record as clo
     vm.runInContext(`var sync = { user: null }; var ui = { storefrontId: 'sf1', rsvpOpen: { a: 1 } }; var uiWas = ui;
       var state = normalizeState(${JSON.stringify(record(over))}); var stateWas = state, before = JSON.stringify(state);
       var got = seasonLedgerNow({ id: 'new', kind: 'season', year: 2026, note: ${JSON.stringify(arcNote || '')} });`, ctx);
-    return JSON.parse(JSON.stringify(vm.runInContext(`({ trimmed: got.trimmed, rows: got.rows.length,
+    return JSON.parse(JSON.stringify(vm.runInContext(`({ trimmed: got.ledger.trimmed, rows: got.ledger.rows.length,
       same: state === stateWas && JSON.stringify(state) === before, ui: ui === uiWas && ui.storefrontId === 'sf1' && ui.rsvpOpen.a === 1 })`, ctx)));
   };
   // 500 KB of this year's sales: gone after close-out, so the ledger's rows fit.
@@ -18022,10 +18025,13 @@ test('C1: close-out opens a new book for the new year, without last year’s asi
   // normalizer, the sync merge (a union), freshState, close-out and a restore (a union, security
   // re-review of C2 #1) set it.
   const writes = codeOnly(SCRIPT).split('\n').filter((l) => /ledgerLog\s*(=[^=]|\.(push|splice|pop|shift|unshift|length\s*=))/.test(l.replace(/\/\/.*$/, '')));
-  eq(writes.map((l) => l.trim()), ['if (!Array.isArray(d.ledgerLog)) d.ledgerLog = [];', 'd.ledgerLog = d.ledgerLog.filter(plainObj);',
+  eq(writes.map((l) => l.trim()).sort(), ['if (!Array.isArray(d.ledgerLog)) d.ledgerLog = [];', 'd.ledgerLog = d.ledgerLog.filter(plainObj);',
     'd.ledgerLog = mergeLedgerLog(d.ledgerLog, []);', 'if (!Array.isArray(state.ledgerLog)) state.ledgerLog = [];', 'state.ledgerLog.push(ev);',
     'state.ledgerLog = mergeLedgerLog(state.ledgerLog, []);', 'state.ledgerLog = mergeLedgerLog(state.ledgerLog, remote.ledgerLog);', 'state.ledgerLog = [];',
-    'state.ledgerLog = mergeLedgerLog(ciLog, state.ledgerLog);'], 'something else writes the ledger log');
+    'state.ledgerLog = mergeLedgerLog(ciLog, state.ledgerLog);'].concat(
+    // C5 review — a season archive's copy (not the live log): shaped on load, and written at close-out.
+    ["a.ledgerLog = a.ledgerLog.slice(0, 1000).filter(function (x) { return x && typeof x === 'object' && !Array.isArray(x); });", 'arc.ledgerLog = fit.ledgerLog;']).sort(),
+    'something else writes the ledger log');
 });
 
 /* ================================================================
@@ -19292,12 +19298,13 @@ test('C2 treasurer M-4: the change history downloads as a CSV — date, who, ent
     'Money · Ledger offers no CSV of the log');
 });
 
-test('C2 treasurer M-4: the log’s screens are leaders-only, and close-out says the snapshot is the only copy of the change history', () => {
+test('C2 treasurer M-4: the log’s screens are leaders-only, and close-out says where the change history is kept', () => {
   const bpv = codeOnly(BPV()), parent = codeOnly(slice('renderParentApp'));
   for (const name of ['ledgerLog', 'ledgerHistoryHtml', 'ledgerLogCsv', 'ledgerRowHistory', 'ledgerLogRoom', 'ledger-log-csv']) {
     ok(bpv.indexOf(name) === -1 && parent.indexOf(name) === -1, name + ' reaches the parents');
   }
-  ok(/'<li><strong>Change history:<\/strong> Download the snapshot — the ledger’s change history is only kept there\.<\/li>'/.test(slice('renderCloseoutOverlay')),
+  // C5 review: Past seasons keeps it now, until C8 (closeoutBookLine).
+  ok(/'<li><strong>Change history and statements:<\/strong> ' \+ esc\(closeoutBookLine\(arc\)\) \+ '<\/li>'/.test(slice('renderCloseoutOverlay')),
     'the close-out screen does not say where the change history is kept');
 });
 
@@ -19822,7 +19829,7 @@ test('C3 treasurer: a void is one line of the change-history CSV, and close-out 
   // Treasurer sign-off on option B (12) — which of it Past seasons keeps, and which only the snapshot.
   ok(co.indexOf("'<li><strong>Voided &amp; reversed entries:</strong> Download the snapshot. It is the only place that keeps voided entries, and who voided or ' +\n" +
     "        'reversed an entry and why. (Past seasons keeps each reversed entry and its reversal, without the reason.)</li>'") >
-    co.indexOf('<li><strong>Change history:</strong>'), 'the close-out screen does not say where the voided entries are kept');
+    co.indexOf('<li><strong>Change history and statements:</strong>'), 'the close-out screen does not say where the voided entries are kept');
 });
 
 // Owner's decision B (2026-09-29) — close-out warns, never refuses, while "The ledger needs a look" has notes.
@@ -23169,6 +23176,83 @@ test('C5 review (F1, F2): putting a lock after today right is an admin’s, and 
   eq(r.get('state.book.reconciledThrough'), '2026-09-30', 'nothing to reopen');
   // Both places ask as an admin or not.
   ok(/var rlNo = reconcileLockRefusal\(state\.book, todayISO\(\), state\.statements, canReopenStatement\(\)\);/.test(SCRIPT), 'the handler');
+});
+
+test('C5 review (treasurer 3): close-out keeps the statements and the change log in the season archive, the statements last to go if it is full', () => {
+  const x = sandbox(['utf8Bytes', 'fitSeasonLedger', 'fitSeasonBook']);
+  const led = { totals: { entries: 1 }, rows: [{ d: '2026-09-01', c: 100, t: 'Dues '.repeat(100) }] };   // the rows larger than the rest
+  const st = [C5_SEP()], log = [{ id: 'lg-1', at: '2026-10-02T15:00:00.000Z', op: 'reconcile', row: 'book', by: 'Pat' }];
+  const [sb, rb, lb] = [st, led.rows, log].map((v) => x.utf8Bytes(JSON.stringify(v)));
+  const fit = (room) => { const f = JSON.parse(JSON.stringify(x.fitSeasonBook(led, st, log, 1000, 1000 + room)));
+    return [f.statements.length, f.ledger.rows.length, f.ledgerLog.length, f.statementsTrimmed, f.ledger.trimmed, f.ledgerLogTrimmed]; };
+  // Everything fits; then the log goes first, then the rows, and the statements last.
+  eq(fit(sb + rb + lb), [1, 1, 1, false, false, false], 'all of it');
+  eq(fit(sb + rb + lb - 1), [1, 1, 0, false, false, true], 'the log first');
+  eq(fit(sb + rb - 1), [1, 0, 0, false, true, true], 'then the rows');
+  eq(fit(sb + lb), [1, 0, 0, false, true, true], 'the rows gone, the log goes too, though it would fit in their room');
+  eq(fit(sb - 1), [0, 0, 0, true, true, true], 'the statements last, and nothing after them is kept');
+  ok(rb > sb && sb > lb, 'the sizes this relies on');
+  eq(JSON.parse(JSON.stringify(x.fitSeasonBook(led, st, log, 1000, 1000 + sb + rb + lb))).totals, undefined, 'the ledger’s totals are kept in its own part');
+  // The archive: built before the rollover clears them, copies, flagged when they go.
+  const b = slice('buildSeasonArchive');
+  ok(/arc\.statements = fit\.statements;\s*arc\.ledgerLog = fit\.ledgerLog;\s*if \(fit\.statementsTrimmed\) arc\.statementsTrimmed = true;\s*if \(fit\.ledgerLogTrimmed\) arc\.ledgerLogTrimmed = true;/.test(b),
+    'the statements or the log are not archived');
+  ok(/return fitSeasonBook\(led, statements, log, other, ARCHIVE_DOC_SOFT_LIMIT\);/.test(slice('seasonLedgerNow')), 'not fitted against the record');
+  ok(/state\.statements = \[\];/.test(slice('rolloverYear')) && /state\.ledgerLog = \[\];/.test(slice('rolloverYear')), 'the live ones are not cleared');
+  // Close-out, on the page's own functions: the archive holds them, the new year starts with none.
+  const ctx = sandbox(NORMALIZE_FNS.concat(CLOSEOUT_SIZE_FNS));
+  vm.runInContext(`var sync = { user: null }; var ui = {};
+    var state = normalizeState(${JSON.stringify({ version: 1, packName: 'P', scouts: [], entries: [], archives: [], budget: { programYear: 2026, activities: [], expenses: [] },
+      ledger: [{ id: 'r1', date: '2026-09-05', description: 'Dues', amountCents: 2500, direction: 'in', reconciled: true, statementId: 'st-2026-09-30-a' }],
+      book: { openingCents: 0, openingDate: '2026-07-01', reconciledThrough: '2026-09-30' }, statements: [C5_SEP()], ledgerLog: log })});
+    var got = seasonLedgerNow({ id: 'new', kind: 'season', year: 2026 }, JSON.parse(JSON.stringify(state.statements)), JSON.parse(JSON.stringify(state.ledgerLog)));`, ctx);
+  const got = JSON.parse(JSON.stringify(vm.runInContext('got', ctx)));
+  eq([got.statements.map((q) => q.id), got.ledgerLog.map((e) => e.id), got.statementsTrimmed, got.ledgerLogTrimmed], [['st-2026-09-30-a'], ['lg-1'], false, false], 'close-out');
+  // Loaded again: shaped as live ones are, never an email for who; absent on an archive closed before.
+  const nz = sandbox(NORMALIZE_FNS);
+  const arc = nz.normalizeState(Object.assign(preMigrationState(), { archives: [{ kind: 'season', year: 2025, id: 'a1',
+    statements: [Object.assign(C5_SEP(), { by: 'pat@example.com', statementCents: '1' }), 'junk'], ledgerLog: [{ id: 'lg-1', by: 'sam@example.com' }, 7],
+    statementsTrimmed: 'yes', ledgerLogTrimmed: true }, { kind: 'season', year: 2024, id: 'a0' }] })).archives;
+  const a25 = JSON.parse(JSON.stringify(arc.find((a) => a.year === 2025))), a24 = JSON.parse(JSON.stringify(arc.find((a) => a.year === 2024)));
+  eq([a25.statements.length, a25.statements[0].statementCents, /@/.test(JSON.stringify(a25)), a25.ledgerLog.length, 'statementsTrimmed' in a25, a25.ledgerLogTrimmed],
+    [1, null, false, 1, false, true], 'loaded');
+  ok(!('statements' in a24) && !('ledgerLog' in a24) && !('ledgerLogTrimmed' in a24), 'an archive closed before gained them');
+  // The preview says where they are kept.
+  const cl = sandbox(['closeoutBookLine']);
+  eq([cl.closeoutBookLine({ statements: [1, 2], ledgerLog: [1] }), cl.closeoutBookLine({ statements: [1], ledgerLog: [], ledgerLogTrimmed: true }),
+    cl.closeoutBookLine({ statements: [], ledgerLog: [], statementsTrimmed: true, ledgerLogTrimmed: true })], [
+    'Past seasons keeps the 2 statements reconciled and the ledger’s change history (1 change), for the annual review. The snapshot has them too.',
+    'Past seasons keeps the 1 statement reconciled. The ledger’s change history is too large to keep there: download the snapshot, the only place it is kept.',
+    'The statements reconciled and the ledger’s change history are too large to keep in Past seasons. Download the snapshot: it is the only place they are kept.'],
+    'the preview');
+  ok(/\(record\.ledger && record\.ledger\.trimmed\) \|\| record\.ledgerLogTrimmed \|\| record\.statementsTrimmed/.test(slice('performCloseout')), 'the toast');
+});
+
+test('C5 review (owner 4): no parent surface reads an archive’s statements or change log, and a built parent view carries none of them', () => {
+  // Every parent surface, found in the page (a new one is checked too): none reads an archive,
+  // a statement or the change log.
+  const fns = [...SCRIPT.matchAll(/^  function ((?:renderParent|parent)\w*|buildParentView|monthlyDigest)\(/gm)].map((m) => m[1]);
+  ok(fns.length >= 40 && fns.includes('buildParentView') && fns.includes('renderParentApp') && fns.includes('monthlyDigest'), 'the parent surfaces: ' + fns.length);
+  for (const f of fns) {
+    ok(!/archives|\bstatements\b|ledgerLog|statementsTrimmed|ledgerLogTrimmed/.test(codeOnly(f === 'buildParentView' ? BPV() : slice(f))), f + ' reads an archive’s statements or log');
+  }
+  // Built (pvCtx, standings on as J12 builds it, and off): a pack whose season archive carries
+  // statements and a change log, and whose live book has them too, each marked.
+  const ctx = pvCtx(`
+    state.archives = [{ id: 'a1', kind: 'season', year: 2025, statements: [{ id: 'st-MARK1', by: 'MARK2' }], ledgerLog: [{ id: 'lg-MARK3', by: 'MARK4', why: 'MARK5' }] }];
+    state.statements = [{ id: 'st-MARK6' }]; state.ledgerLog = [{ id: 'lg-MARK7' }];
+    state.derby = { name: '', date: '', awards: [] };
+    function computePackTotals() { return { combined: 99000, teGoal: 200000, cashGoal: 0 }; }
+    function computeScoutTotals() { return {}; }
+    function visibleScoutRows() { return []; }
+    function rankBy(rows) { return rows; }
+    function tierProgressRows() { return []; }
+    function plannedTier() { return null; } function derbyWinners() { return []; } function sortedTiers() { return []; }
+    function salesForCommission(c) { return c; }`);
+  for (const opts of ['{ showStandings: true, showAmounts: true }', '{ showStandings: false }']) {
+    const text = JSON.stringify(vm.runInContext(`buildParentView(state, ${opts})`, ctx));
+    ok(text.length > 100 && !/MARK\d/.test(text), 'a parent view carries a statement or a log event: ' + opts);
+  }
 });
 
 /* ---------------- report ---------------- */
