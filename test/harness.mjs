@@ -1053,6 +1053,8 @@ const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'm
   'ledgerTwoStatementsLook',
   // Security re-check of C6 (N4) — a voided entry a standing statement lists, said.
   'ledgerVoidListedLook',
+  // Security re-check of C6 (N5) — a restore whose money no longer matches a statement it re-ticked from.
+  'ledgerRestoreDiffLook', 'ledgerSignedCents',
   // Owner decision 23 — a charge forgiven on the other copy and not on this one.
   'chargesForgivenThere',
   // Security re-check of C6 (N3) — and the change history says so.
@@ -19154,6 +19156,7 @@ const C2T_ACT = [
 const C2T_CHANGE = c2Block(/    if \(ch === 'ledger-unrec-why'\) \{[^\n]*\}/, 'ledger-unrec-why');
 const C2T_MORE = `
   ${['reconcileLockRefusal', 'reconcileLockAhead', 'reconcileTotals', 'entrySignedCents', 'arrOf', 'statementRetick'].map(slice).join('\n')}
+  ${['noteLedgerLookFromMerge', 'ledgerRestoreDiffLook', 'ledgerSignedCents'].map(slice).join('\n')}   // security re-check of C6 (N5)
   ${decl('RECONCILE_AHEAD_WHY')}
   ${decl('RECONCILE_AHEAD_LOGGED')}
   ${decl('RESTORE_REFUSED')}
@@ -25293,6 +25296,49 @@ test('C6 review (F4): a restored backup from before a statement leaves the entri
       'book is locked through that date. 1 entry listed on a standing statement was ticked again to match it. Ticks made after the backup that aren’t on a statement need ' +
       'ticking again.', 'the restore’s why');
   }
+  // Security re-check of C6 (N5) — S was signed with l2 at $45; the backup holds it at $40. Ticked again,
+  // and said: in the restore's why, and on "The ledger needs a look".
+  const S45 = Object.assign({}, S, { tickedCents: -4500 });
+  const now45 = Object.assign({}, now, { statements: [S45] });
+  for (const [st, said] of [[now45, true], [Object.assign({}, now, { statements: [Object.assign({}, S, { tickedCents: -4000 })] }), false]]) {
+    const { a, b, server } = fsGonePair(st);
+    a.run(C2S_EXTRA); b.run(C2S_EXTRA);
+    a.run(`confirmImport(normalizeState(${backup}))`); a.push();
+    b.hear();
+    eq(tickedOf(server()), [['l1', false, ''], ['l2', true, 'st-sep'], ['l3', false, '']], 'ticked again');
+    // (The advice about ticks made since comes last, and only whole: the log keeps 500 characters of a why.)
+    const why = a.get("state.ledgerLog.filter(function (e) { return e.op === 'restore'; })[0].why");
+    const head = 'A backup was restored on this device. The book now holds the backup’s 3 entries, reconciled through 2026-09-30. Restored as it was, the book ' +
+      'would be reconciled only through 2026-08-31, but the statement through 2026-09-30 still stands, so the book is locked through that date. 1 entry listed on a ' +
+      'standing statement was ticked again to match it.';
+    eq([why, a.get('sync.lookNotes || []')],
+      said ? [head + ' The entries listed on the 2026-09-30 statement now come to −$40.00, not the −$45.00 it was signed with.', ['After the backup was restored, the entries the Sep 30 statement lists come to −$40.00, not the −$45.00 it was signed with, so the book no longer ' +
+        'matches that statement. Check those entries against the bank statement.']]
+        : [head + ' Ticks made after the backup that aren’t on a statement need ticking again.', []], said ? 'the money differs' : 'control: the money matches');
+    eq(b.get('sync.lookNotes || []'), [], 'said on the other device');
+  }
+});
+
+test('C6 re-check (N5): statementRetick says which statements it ticked again from no longer come to what they were signed with', () => {
+  const x = sandbox(['statementRetick', 'statementReopened', 'ledgerStampClean', 'entrySignedCents']);
+  const st = (id, date, ticked, o) => Object.assign({ id, date, ticked, by: 'Pat', byUid: 'u1', at: date + 'T20:00:00.000Z' }, o || {});
+  const rows = () => [{ id: 'a', amountCents: 4000, direction: 'out' }, { id: 'b', amountCents: 1000, direction: 'in', reconciled: true, statementId: 'st-sep' },
+    { id: 'c', amountCents: 500, direction: 'out' }, { id: 'd', amountCents: 700, direction: 'in' }];
+  const run = (sts) => { const off = []; const n = x.statementRetick(rows(), sts, { reconciledThrough: '2026-09-30' }, off); return [n, JSON.parse(JSON.stringify(off))]; };
+  // st-sep lists a (−$40) and b (+$10), ticked again from it: a. Signed with −$30 it matches; with −$35 it doesn't.
+  eq(run([st('st-sep', '2026-09-30', ['a', 'b'], { tickedCents: -3000 })]), [1, []], 'the money matches');
+  eq(run([st('st-sep', '2026-09-30', ['a', 'b'], { tickedCents: -3500 })]), [1, [{ id: 'st-sep', date: '2026-09-30', nowCents: -3000, signedCents: -3500 }]], 'the money differs');
+  // An entry it lists that the book no longer has counts as nothing.
+  eq(run([st('st-sep', '2026-09-30', ['a', 'b', 'gone'], { tickedCents: -3000 })]), [1, []], 'an entry since removed');
+  // Not one it ticked nothing again from; not one signed before its figure was kept; not one whose list was cut.
+  eq(run([st('st-aug', '2026-08-31', ['b'], { tickedCents: 999 })]), [0, []], 'nothing ticked again');
+  eq(run([st('st-sep', '2026-09-30', ['a'])]), [1, []], 'no figure');
+  eq(run([st('st-sep', '2026-09-30', ['a'], { tickedCents: 1, truncated: true })]), [1, []], 'a list cut');
+  // Two statements: each on its own figure.
+  eq(run([st('st-aug', '2026-08-31', ['c'], { tickedCents: -500 }), st('st-sep', '2026-09-30', ['a', 'd'], { tickedCents: -3000 })]),
+    [3, [{ id: 'st-sep', date: '2026-09-30', nowCents: -3300, signedCents: -3000 }]], 'two statements');
+  // Without `off`, as before.
+  eq(x.statementRetick(rows(), [st('st-sep', '2026-09-30', ['a'], { tickedCents: 1 })], { reconciledThrough: '2026-09-30' }), 1, 'no off');
 });
 
 test('C6 review (F6), Firestore: a close-out, or a newer page’s save, arriving while the chooser waits is never merged into by saving the picks', () => {

@@ -9467,8 +9467,13 @@
   // and when. A backup from before the statement holds those entries unticked, and a restore is read by
   // the merge as a change to every entry, so every device would take the untick. An entry already
   // ticked on a statement is left as it is. In place; returns how many were ticked again. Pure.
-  function statementRetick(rows, statements, book) {
-    var rt = String((book && book.reconciledThrough) || ''), on = Object.create(null), n = 0;
+  // Security re-check of C6 (N5) — the restored money may not be the money the statement signed: `off`
+  // (when given) collects each statement that ticked any again whose listed entries, as `rows` has them
+  // now, come to other than the figure signed with it (tickedCents: what ITS entries came to; not
+  // clearedCents, which adds the opening and every earlier statement's), as { id, date, nowCents,
+  // signedCents }. Not one signed before tickedCents was kept, nor one whose list was cut (truncated).
+  function statementRetick(rows, statements, book, off) {
+    var rt = String((book && book.reconciledThrough) || ''), on = Object.create(null), n = 0, used = [];
     (statements || []).forEach(function (st) {
       if (!st || statementReopened(st) || st.badDate || !/^\d{4}-\d{2}-\d{2}$/.test(st.date) || !rt || st.date > rt || !Array.isArray(st.ticked)) return;
       st.ticked.forEach(function (id) {
@@ -9486,8 +9491,18 @@
       e.approvedByUid = typeof st.byUid === 'string' ? st.byUid : '';
       e.approvedAt = at;
       if (isFinite(ms)) e.reconciledAt = ms; else delete e.reconciledAt;
+      if (used.indexOf(st) === -1) used.push(st);
       n += 1;
     });
+    if (Array.isArray(off)) {
+      var byId = Object.create(null);
+      (rows || []).forEach(function (e) { if (e && typeof e.id === 'string' && !byId[e.id]) byId[e.id] = e; });
+      used.forEach(function (st) {
+        if (typeof st.tickedCents !== 'number' || !isFinite(st.tickedCents) || st.truncated) return;
+        var now = st.ticked.reduce(function (t, id) { return t + (byId[id] ? entrySignedCents(byId[id]) : 0); }, 0);
+        if (now !== st.tickedCents) off.push({ id: st.id, date: st.date, nowCents: now, signedCents: st.tickedCents });
+      });
+    }
     return n;
   }
   // The statement Mark reconciled writes, from the book as it stands (its statementDate and
@@ -14785,23 +14800,35 @@
   // words, onto "The ledger needs a look" (sync.lookNotes), each said once this session. Called before
   // noteLedgerLookAfterSync, so the sync's toast counts them. Leaders only, as the card is: a parent's
   // page never merges the pack record, and nothing here is published.
+  // Security re-check of C6 (N1c, N4, N5) — and 'twostatements' and 'voidlisted' from a merge, and
+  // 'restorediff' from a backup restored (an admin's: confirm-import).
   function noteLedgerLookFromMerge(look) {
     var seen = sync.lookSeen || (sync.lookSeen = {}), notes = sync.lookNotes || (sync.lookNotes = []), n = 0;
     arrOf(look).forEach(function (it) {
       var key = it && (it.kind === 'voidtick' || it.kind === 'twostatements' || it.kind === 'voidlisted') && it.row ? it.kind + ':' + it.row.id
-        : it && it.kind === 'forgiven' && it.charge ? 'forgiven:' + it.charge.id : '';
+        : it && it.kind === 'forgiven' && it.charge ? 'forgiven:' + it.charge.id
+        : it && it.kind === 'restorediff' && it.statement ? 'restorediff:' + it.statement.id + ':' + it.statement.nowCents : '';
       if (!key || seen[key]) return;
       seen[key] = true;
       notes.push(it.kind === 'forgiven'
         ? chargeLookName(it.charge) + ' was forgiven on another device but not on this one. Check it and forgive it again if it should be.'
         : it.kind === 'twostatements' ? ledgerTwoStatementsLook(it)
         : it.kind === 'voidlisted' ? ledgerVoidListedLook(it)
+        : it.kind === 'restorediff' ? ledgerRestoreDiffLook(it.statement)
         : ledgerCap(ledgerEntryNamed(it.row)) + ' was ticked on one device while voided on another. The void was kept, so it is no longer ticked. ' +
           'If the bank statement shows it cleared, un-void it and tick it again.');
       n += 1;
     });
     if (n) render();
   }
+  // Security re-check of C6 (N5) — after a restore, a statement's entries (statementRetick's `off`: { date,
+  // nowCents, signedCents }) no longer come to what it was signed with. Pure.
+  function ledgerRestoreDiffLook(o) {
+    return 'After the backup was restored, the entries the ' + fmtDateShort(o.date) + ' statement lists come to ' + ledgerSignedCents(o.nowCents) +
+      ', not the ' + ledgerSignedCents(o.signedCents) + ' it was signed with, so the book no longer matches that statement. Check those entries against the bank statement.';
+  }
+  // Signed money, as the ledger's notes write it: "+$40.00", "−$40.00". Pure.
+  function ledgerSignedCents(c) { return (c < 0 ? '−' : '+') + fmt(Math.abs(c)); }
   // Security re-check of C6 (N4) — a voided entry a standing statement lists as cleared (`it`: { row, date:
   // the statement's }): its tick stays with the statement, and one of the two has to change. Pure.
   function ledgerVoidListedLook(it) {
@@ -32102,21 +32129,31 @@
       var ciWas = state.book.reconciledThrough, ciFwd = statementLockForward(state.book, state.statements, isoPlusDays(todayISO(), 1));
       // Security review of C6 (F4), treasurer review (10) — and the entries those statements list are
       // ticked again (statementRetick), or every device would take the backup's untick of them.
-      var ciRetick = statementRetick(state.ledger, state.statements, state.book);
+      // Security re-check of C6 (N5) — and whether the entries each lists, as restored, still come to what it
+      // was signed with (ciOff): said in the restore's why and on "The ledger needs a look".
+      var ciOff = [], ciRetick = statementRetick(state.ledger, state.statements, state.book, ciOff);
       // …and whether an entry ticked here before (ciRows) is unticked now: its tick has to be made again.
       var ciTicked = Object.create(null);
       arrOf(ciRows).forEach(function (e) { if (e && e.reconciled === true && typeof e.id === 'string') ciTicked[e.id] = true; });
       var ciUnticked = state.ledger.filter(function (e) { return e && ciTicked[e.id] && e.reconciled !== true; }).length;
       // Treasurer review of C2 (L-5) — the ledger's log says a backup was restored, and what the
       // book held afterwards: from here on the book is the backup's, whatever it held before.
-      logLedger('restore', 'book', { why: 'A backup was restored on this device. The book now holds the backup’s ' +
+      var ciWhy = 'A backup was restored on this device. The book now holds the backup’s ' +
         state.ledger.length + ' entr' + (state.ledger.length === 1 ? 'y' : 'ies') +
         (state.book.reconciledThrough ? ', reconciled through ' + state.book.reconciledThrough : ', none of it reconciled') + '.' +
         (ciFwd ? ' Restored as it was, the book would be ' + (ciWas ? 'reconciled only through ' + ciWas : 'not reconciled at all') +
           ', but the statement through ' + ciFwd.date + ' still stands, so the book is locked through that date.' : '') +
         (ciRetick ? ' ' + ciRetick + (ciRetick === 1 ? ' entry listed on a standing statement was' : ' entries listed on standing statements were') +
           ' ticked again to match ' + (ciRetick === 1 ? 'it.' : 'them.') : '') +
-        (ciUnticked ? ' Ticks made after the backup that aren’t on a statement need ticking again.' : '') });
+        ciOff.map(function (o) {
+          return ' The entries listed on the ' + o.date + ' statement now come to ' + ledgerSignedCents(o.nowCents) + ', not the ' +
+            ledgerSignedCents(o.signedCents) + ' it was signed with.';
+        }).join('');
+      // (N5) — the log keeps 500 characters of a why (ledgerEvent): what the restore did comes first, and
+      // this advice last, only when it fits whole, never cut off mid-sentence.
+      var ciRedo = ciUnticked ? ' Ticks made after the backup that aren’t on a statement need ticking again.' : '';
+      logLedger('restore', 'book', { why: ciWhy + (ciWhy.length + ciRedo.length <= 500 ? ciRedo : '') });
+      noteLedgerLookFromMerge(ciOff.map(function (o) { return { kind: 'restorediff', statement: o }; }));
       ui.overlay = null; ui.storefrontId = null; ui.expandedScouts = {};
       commit(); return;
     }
