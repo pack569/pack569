@@ -1052,7 +1052,9 @@ const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'm
   // Security re-check of C6 (N1c) — an entry on two statements signed separately, said once saved.
   'ledgerTwoStatementsLook',
   // Owner decision 23 — a charge forgiven on the other copy and not on this one.
-  'chargesForgivenThere'];
+  'chargesForgivenThere',
+  // Security re-check of C6 (N3) — and the change history says so.
+  'chargeForgivenSummary', 'LEDGER_FORGIVEN_LOST_WHY', 'fmtDateShortYear'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
   const ctx = vm.createContext({});
@@ -25085,8 +25087,30 @@ test('Decision 23: a charge forgiven on another device but not on this one is na
   a.run(B1); a.push();
   b.run("state.entries.push({ id: 'b5', scoutId: 's2', kind: 'wagon', date: '', salesCents: 5, donationsCents: 0 }); commit()"); b.hear(); b.push();
   eq(b.get('sync.lookNotes'), [note], 'said twice');
+  // Security re-check of C6 (N3) — and the change history keeps it, once, against the charge: what the
+  // forgiveness was (no email), and why it went.
+  const lost = (st) => st.ledgerLog.filter((e) => e.row === st.charges[0].id).map((e) => [e.op, e.f, e.why]);
+  const why = 'Forgiven on another device. That forgiveness was not kept when this device saved.';
+  const was = 'Forgiven on Oct 1, 2026, agreed by Committee, recorded by Pat: Hardship';
+  eq([lost(b.get('state')), lost(server())], [[['edit', { forgiven: [was, null] }, why]], [['edit', { forgiven: [was, null] }, why]]], 'the history');
+  // After a reload (the record as saved, read fresh: the session's note is gone), the change history
+  // still names the family and the charge.
+  const rl = vm.createContext({});
+  vm.runInContext(`${[...new Set([...NORMALIZE_FNS, ...declClosure(['ledgerLogCsv', 'ledgerEntryLabel', 'ledgerLogNames', 'chargeLookName'],
+    ['state', 'ui', 'sync', 'render', 'save', 'showToast', 'uid', 'todayISO', 'commit', 'scheduleSyncPush'])])].map(decl).join('\n')}
+    var state = normalizeState(${JSON.stringify(server())});`, rl);
+  const csv = vm.runInContext('ledgerLogCsv(state.ledgerLog, ledgerEntryLabel, ledgerLogNames())', rl).split('\n');
+  eq(csv.filter((l) => l.indexOf('forgiven') !== -1).map((l) => l.split(',').slice(2).join(',')),
+    ['Ada and Bo’s “Dues” charge,Changed: forgiven,"' + was + '",(none),' + why], 'the change history after a reload');
   // Named for a leader only: the parent view never carries it (the card is Money · Ledger's).
-  ok(!/chargesForgivenThere|chargeLookName|lookNotes/.test(codeOnly(BPV())), 'buildParentView reads it');
+  ok(!/chargesForgivenThere|chargeLookName|lookNotes|chargeForgivenSummary|ledgerLog/.test(codeOnly(BPV())), 'buildParentView reads it');
+});
+
+test('C6 re-check (N3): a forgiveness lost to a merge is kept in the history with who agreed and recorded it, never an email', () => {
+  const x = sandbox(['chargeForgivenSummary', 'ledgerStampClean', 'fmtDateShortYear', 'fmtDateShort']);
+  eq(x.chargeForgivenSummary({ date: '2026-10-01', by: 'pat@example.com', reason: 'Hardship', enteredBy: 'sam@example.com' }),
+    'Forgiven on Oct 1, 2026, agreed by a signed-in leader, recorded by a signed-in leader: Hardship', 'an email');
+  eq([x.chargeForgivenSummary({ date: '', by: '', reason: '', enteredBy: '' }), x.chargeForgivenSummary(null)], ['Forgiven', 'Forgiven'], 'nothing recorded');
 });
 
 test('C6 property: with the charges on the page’s own syncCharges, two devices’ merges agree either way round and are a fixed point', () => {

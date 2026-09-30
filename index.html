@@ -8823,7 +8823,8 @@
     notCommission: 'counted as other income', tierMakeup: 'tier make-up', openingCents: 'opening balance', openingDate: 'opening date',
     reconciledThrough: 'reconciled through', statementCents: 'statement ending balance',
     reconciled: 'ticked', voidReason: 'void reason',   // Phase 3, C6: what a 'resolve' kept (treasurer review of C6, 4)
-    statementId: 'statement', reversedBy: 'reversed by'   // treasurer review of C6 (5)
+    statementId: 'statement', reversedBy: 'reversed by',   // treasurer review of C6 (5)
+    forgiven: 'forgiven'   // security re-check of C6 (N3): a charge's forgiveness lost to a merge
   };
   // One value from an event's `f`, as a leader reads it. `names` turns an id into a name
   // ({ line, scout, tier, statement, entry }: each id → name or ''). Pure given `names`.
@@ -14614,7 +14615,18 @@
     // server keeps them: S-28), so a charge forgiven on the other copy and not on this one loses its
     // forgiveness when this copy is sent. Each is said on "The ledger needs a look", naming the family,
     // for a leader to check, and forgive again if it should be.
-    if (Array.isArray(look)) chargesForgivenThere(state.charges, remote.charges).forEach(function (c) { look.push({ kind: 'forgiven', charge: c }); });
+    // Security re-check of C6 (N3) — and the change history says so, for good: the note is this session's
+    // only, and nothing else records a forgiveness. Logged against the charge's id (never a ledger row's),
+    // the forgiveness lost as its `f`; once per forgiveness (a push's transaction can run this again).
+    var fgThere = Object.create(null);
+    arrOf(remote.charges).forEach(function (c) { if (c && typeof c.id === 'string' && c.forgiven && typeof c.forgiven === 'object') fgThere[c.id] = c.forgiven; });
+    chargesForgivenThere(state.charges, remote.charges).forEach(function (c) {
+      var was = chargeForgivenSummary(fgThere[c.id]);
+      if (!arrOf(state.ledgerLog).some(function (ev) { return ev && ev.row === c.id && ev.why === LEDGER_FORGIVEN_LOST_WHY && ev.f && ev.f.forgiven && ev.f.forgiven[0] === was; })) {
+        logLedger('edit', c.id, { f: { forgiven: [was, null] }, why: LEDGER_FORGIVEN_LOST_WHY });
+      }
+      if (Array.isArray(look)) look.push({ kind: 'forgiven', charge: c });
+    });
     if (gone && gone.ledger) {
       var fates = reconciledFates(ledgerWas, marksWas, state.ledger, gone.ledger);
       // What this device deleted and a copy here kept (fates), and what it kept of another's delete.
@@ -14629,6 +14641,16 @@
     var there = Object.create(null);
     arrOf(theirs).forEach(function (c) { if (c && typeof c.id === 'string' && c.forgiven && typeof c.forgiven === 'object') there[c.id] = true; });
     return arrOf(mine).filter(function (c) { return c && typeof c.id === 'string' && there[c.id] && !c.forgiven; });
+  }
+  // Security re-check of C6 (N3) — a forgiveness lost to a merge, as the change history keeps it: when,
+  // who agreed and recorded it (never an email: ledgerStampClean), and why. The family is not in it:
+  // ledgerEntryLabel names the charge (chargeLookName) where the history is read. Pure.
+  var LEDGER_FORGIVEN_LOST_WHY = 'Forgiven on another device. That forgiveness was not kept when this device saved.';
+  function chargeForgivenSummary(fg) {
+    fg = fg || {};
+    var d = typeof fg.date === 'string' ? (fmtDateShortYear(fg.date) || fg.date) : '', by = ledgerStampClean(fg.by), rec = ledgerStampClean(fg.enteredBy);
+    return 'Forgiven' + (d ? ' on ' + d : '') + (by ? ', agreed by ' + by : '') + (rec ? ', recorded by ' + rec : '') +
+      (typeof fg.reason === 'string' && fg.reason ? ': ' + fg.reason : '');
   }
   // How the note names a charge: its family (first names, as the Dues screen shows them) and what it is
   // for: "Ada and Ben’s “Dues” charge".
@@ -21363,6 +21385,10 @@
     // Phase 3, C3 — a voided entry is still in the book: named, and said to be voided.
     var a = e ? null : (state.ledgerAside || []).filter(function (x) { return x.id === id; })[0];
     if (a) e = a;
+    // Security re-check of C6 (N3) — a charge's own event (its forgiveness lost to a merge) names the
+    // family, by first names, and the charge.
+    var ch = e ? null : arrOf(state.charges).filter(function (x) { return x && x.id === id; })[0];
+    if (ch) return ledgerCap(chargeLookName(ch));
     if (!e) return '';
     return (e.description || 'An entry') + ' · ' + fmtDateShort(e.date) + ' · ' + (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents || 0) +
       (a ? ' (' + (a.off === 'void' ? 'voided' : a.off) + ')' : '');
