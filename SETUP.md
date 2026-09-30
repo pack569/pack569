@@ -680,7 +680,7 @@ Every pack record carries a format number, `fmt`. The page knows its own
 (`var PACK_FORMAT` in `index.html`). A page that meets a record with a **higher** `fmt` (in the
 pack's shared copy, or in its own browser's storage, written by a newer page in another tab)
 stops: it saves nothing, sends nothing, publishes nothing to parents, refuses every edit, and
-shows "This page is out of date … Reload the page to keep working." Normally a reload loads the
+shows "This page is out of date … Reload the page before you change anything else." Normally a reload loads the
 newer page and that is the end of it.
 
 If a reload does **not** clear it, the record's `fmt` is higher than any page you serve. That

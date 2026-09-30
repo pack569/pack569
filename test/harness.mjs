@@ -21681,8 +21681,12 @@ test('reload gate: the banner says exactly what the owner decided, with a Reload
   const ctx = vm.createContext({});
   vm.runInContext(`var state = {}, sync = { newerFormat: false }; function esc(s) { return String(s); }
     ${['FORMAT_NOTICE', 'formatBanner', ...FORMAT_GATE_FNS].map(decl).join('\n')}`, ctx);
+  // Owner's decision A (2026-09-29) — "Reload the page to keep working." dropped; exactly this text.
   eq(vm.runInContext('FORMAT_NOTICE', ctx), 'This page is out of date: another leader’s device saved with a newer version. ' +
-    'Reload the page to keep working. Reload the page before you change anything else. Anything not yet shared stays on this device.', 'the banner’s words');
+    'Reload the page before you change anything else. Anything not yet shared stays on this device.', 'the banner’s words');
+  // SETUP.md quotes the banner to the owner: each piece of its quote is in the banner.
+  const quote = /shows "(This page is out of date[^"]*)"/.exec(readFileSync(join(ROOT, 'SETUP.md'), 'utf8'));
+  ok(quote && quote[1].split(' … ').every((part) => vm.runInContext('FORMAT_NOTICE', ctx).indexOf(part) !== -1), 'SETUP.md quotes a banner the page does not show: ' + (quote && quote[1]));
   eq(vm.runInContext('formatBanner()', ctx), '', 'a banner with nothing held');
   const held = vm.runInContext('sync.newerFormat = true; formatBanner()', ctx);
   ok(held.indexOf(vm.runInContext('FORMAT_NOTICE', ctx)) >= 0 && /data-act="reload-page">Reload<\/button>/.test(held) && /role="alert"/.test(held),
