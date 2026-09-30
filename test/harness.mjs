@@ -1066,7 +1066,7 @@ const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'm
   // Security review of C6 (F1a, F1b, F2) — the side a pick can't keep, and the save that refuses it.
   'rowItemLock', 'ROW_PICK_LOCKED', 'ROW_PICK_LOCKED_PAIR',
   // Security review of C6 (F3) — a tick merged onto a voided entry comes off, said on "The ledger needs a look".
-  'LEDGER_VOID_TICK_WHY', 'noteLedgerLookFromMerge', 'stampApproved',
+  'LEDGER_VOID_TICK_WHY', 'noteLedgerLookFromMerge', 'ledgerClosedBookLook', 'stampApproved',
   // Security re-check of C6 (N1c) — an entry on two statements signed separately, said once saved.
   'ledgerTwoStatementsLook',
   // Security re-check of C6 (N4) — a voided entry a standing statement lists, said.
@@ -19246,7 +19246,7 @@ const C2T_CHANGE = c2Block(/    if \(ch === 'ledger-unrec-why'\) \{[^\n]*\}/, 'l
 const C2T_MORE = `
   ${C8_SYNC_FNS.map(slice).join('\n')}
   ${['reconcileLockRefusal', 'reconcileLockAhead', 'reconcileTotals', 'carriedRowsOf', 'carriedRowFixed', 'statementReopened', 'entrySignedCents', 'arrOf', 'statementRetick'].map(slice).join('\n')}
-  ${['noteLedgerLookFromMerge', 'ledgerRestoreDiffLook', 'ledgerSignedCents', 'ledgerRestoreWhy'].map(slice).join('\n')}   // security re-check of C6 (N5)
+  ${['noteLedgerLookFromMerge', 'ledgerClosedBookLook', 'closedYearText', 'ledgerRestoreDiffLook', 'ledgerSignedCents', 'ledgerRestoreWhy'].map(slice).join('\n')}   // security re-check of C6 (N5)
   ${decl('RECONCILE_AHEAD_WHY')}
   ${decl('RECONCILE_AHEAD_LOGGED')}
   ${decl('RESTORE_REFUSED')}
@@ -26231,7 +26231,7 @@ test('C8-1: compacting keeps the money and the words, drops who, the rows set as
   const c = c8(), full = J(c.closedBookBuild(C8_SRC(), C8_OPTS).book);
   const cp = J(c.compactClosedBook(full));
   eq(cp.form, 'compact', 'form');
-  eq(cp.ledger.find((r) => r.i === 'b'), { i: 'b', d: '2026-10-01', c: 5000, t: 'Row b', l: 'Pack dues', f: 'Ada', k: 1 }, 'a compact row');
+  eq(cp.ledger.find((r) => r.i === 'b'), { i: 'b', d: '2026-10-01', c: 5000, t: 'Row b', l: 'Pack dues', f: 'Ada', sc: 's1', k: 1 }, 'a compact row');
   eq(cp.ledger.find((r) => r.i === 'c'), { i: 'c', d: '2027-06-28', c: -15000, t: 'Row c', r: '1041' }, 'money out is negative, the check number stays');
   ok(!JSON.stringify(cp.ledger).includes('Pat Example'), 'nobody who entered a row is kept');
   eq([cp.aside, cp.log, cp.asideTrimmed, cp.logTrimmed, 'names' in cp], [[], [], true, true, false], 'set aside rows and history dropped, and it says so');
@@ -26290,7 +26290,7 @@ const c8State = () => {
 };
 const c8Close = (n, st) => J(n.closedBookBuild({ book: st.book, ledger: st.ledger, ledgerAside: st.ledgerAside, ledgerLog: st.ledgerLog, statements: st.statements }, C8_OPTS));
 
-test('C8-2: a closed book is coerced to its shape; what is not a book is dropped; an unknown key stays', () => {
+test('C8-2: a closed book is coerced to its shape; what is not a book is dropped; an unknown key is dropped', () => {
   const n = sandbox(C8N_FNS);
   for (const junk of ['x', null, 3, [], {}, { year: '2026' }, { year: 2026.5 }, { year: NaN }]) eq(n.normalizeClosedBook(junk), null, 'not a book: ' + JSON.stringify(junk));
   const b = J(n.normalizeClosedBook({ year: 2026, closedBy: 'pat@example.com', closedAt: 5, openingCents: '9', closingCents: 93000.4, cutoff: 'soon', reconciledThrough: '2027-13',
@@ -26302,7 +26302,7 @@ test('C8-2: a closed book is coerced to its shape; what is not a book is dropped
   eq(b.carried, { n: 2, inCents: 0, outCents: 0 }, 'carried totals');
   eq([b.ledger.length, b.ledger[0].amountCents, b.ledger[0].direction, b.aside[0].voidedBy, b.aside[0].carriedFrom, b.log[0].at, b.log.length, b.statements.length],
     [1, 500, 'out', 'a signed-in leader', null, '', 1, 1], 'the rows are the live book’s shape');
-  eq([b.names, 'ledgerTrimmed' in b, b.fromANewerPage], [{ line: { L1: 'Dues' }, family: {} }, false, { keep: 1 }], 'names, a flag that is not true, an unknown key');
+  eq([b.names, 'ledgerTrimmed' in b, 'fromANewerPage' in b], [{ line: { L1: 'Dues' }, family: {} }, false, false], 'names, a flag that is not true, an unknown key dropped');
   // A compact book: rows of its own shape, no names.
   const c = J(n.normalizeClosedBook({ year: 2025, form: 'compact', ledger: [{ i: 'a', d: '2026-01-01', c: 12.6, t: 3, l: 4, k: 2 }], names: { line: {} } }));
   eq([c.ledger, 'names' in c], [[{ i: 'a', d: '2026-01-01', c: 13, t: '' }], false], 'compact rows');
@@ -26688,6 +26688,116 @@ test('C8-4: restoring a backup keeps this device’s closed books; from before a
     'and statements. The closed 2025–26 book on this device is kept, and closing the year out again replaces it. Download a backup of this device first.', 'the warning');
   eq([x.importClosedBooksHtml([C8_BOOK_OF(2025, 'a')], { book: { year: 2026 } }), x.importClosedBooksHtml([], { book: { year: 2025 } })], ['', ''], 'none when nothing is undone');
   ok(/importBookYearHtml\(state\.book, state\.statements, o\.data\) \+\s*importClosedBooksHtml\(state\.closedBooks, o\.data\) \+/.test(SCRIPT), 'the question shows it');
+});
+
+/* ================================================================
+   Security review of C8-1..4 — H2 (one total order), L2/L3 (a book with no close-out record), M2 (a compact row keeps the scout),
+   M3 (a book is cut to shape). Made-up data.
+   ================================================================ */
+// A small pool of books for years 2025 and 2026: every mix of closedAt, archiveId (incl. none), form and content.
+const C8R_POOL = (() => {
+  const out = [];
+  for (const year of [2025, 2026]) for (const closedAt of ['2026-09-10T12:00:00.000Z', '2026-10-01T00:00:00.000Z']) for (const archiveId of ['arc-a', 'arc-b', '']) {
+    const full = C8_BOOK_OF(year, archiveId, { closedAt });
+    const cp = Object.assign(J(full), { form: 'compact', ledger: [{ i: 'old1', d: '2027-01-10', c: 500, t: 'Dues' }], asideTrimmed: true, logTrimmed: true }); delete cp.names;
+    const tr = Object.assign(J(cp), { ledger: [], ledgerTrimmed: true });
+    const edit = Object.assign(J(full), { closingCents: 1 });
+    out.push(full, cp, tr, edit);
+  }
+  return out;
+})();
+test('C8 security H2: merging closed books is commutative, associative and idempotent over random triples, and never drops a year', () => {
+  const c = c8();
+  const m = (a, b) => J(c.mergeClosedBooks(J(a), J(b)));
+  let seed = 7;
+  const rnd = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+  for (let i = 0; i < 4000; i++) {
+    const pick = () => { const k = rnd(3), l = []; for (let j = 0; j < k; j++) l.push(C8R_POOL[rnd(C8R_POOL.length)]); return l; };
+    const a = pick(), b = pick(), d = pick();
+    eq(m(a, b), m(b, a), 'commutative');
+    eq(m(m(a, b), d), m(a, m(b, d)), 'associative');
+    eq(m(a, a), m(a, []), 'idempotent');
+    eq(m(m(a, b), m(a, b)), m(a, b), 'merged twice');
+    eq(m(a, b).map((x) => x.year), [...new Set([...a, ...b].map((x) => x.year))].sort(), 'every year stays, once, oldest first');
+  }
+});
+
+test('C8 security H2: a year keeps the book with a close-out record, then the later closedAt, then the larger archiveId, then the less complete form', () => {
+  const c = c8();
+  const ids = (l) => J(c.mergeClosedBooks(l, [])).map((x) => x.archiveId + ':' + x.form + ':' + (x.ledgerTrimmed ? 't' : '') + ':' + x.closedAt.slice(5, 7));
+  const B = (id, o) => C8_BOOK_OF(2026, id, o);
+  eq(ids([B('', { closedAt: '2030-01-01T00:00:00.000Z' }), B('arc-a')]), ['arc-a:full::09'], 'a book with no close-out record loses, whatever it says it was closed');
+  eq(ids([B('arc-a'), B('arc-b', { closedAt: '2026-10-01T00:00:00.000Z' })]), ['arc-b:full::10'], 'the later closedAt');
+  eq(ids([B('arc-a'), B('arc-b')]), ['arc-b:full::09'], 'the same closedAt: the larger archiveId');
+  const cp = Object.assign(J(B('arc-a')), { form: 'compact' }); delete cp.names;
+  eq(ids([B('arc-a'), cp]), ['arc-a:compact::09'], 'the same close-out: the less complete form');
+  // A forged later closedAt still wins (the rules, not the page, are what stop that: S38-S42), but it is said, below.
+  const forged = Object.assign(J(B('arc-a')), { closedAt: '2099-01-01T00:00:00.000Z', ledger: [] });
+  eq(ids([B('arc-a'), forged]), ['arc-a:full::01'], 'the later closedAt wins (and is said on “The ledger needs a look”, below)');
+});
+
+test('C8 security H2: replacing a book with another close-out’s, or taking a shorter form of it, or setting a nameless one aside, is said and never silent', () => {
+  const c = c8(), B = (id, o) => C8_BOOK_OF(2026, id, o), look = (mine, theirs) => { const l = []; c.mergeClosedBooks(J(mine), J(theirs), l); return J(l); };
+  eq(look([B('arc-a')], [B('arc-b', { closedAt: '2026-10-01T00:00:00.000Z' })]), [{ kind: 'bookreplaced', year: 2026, id: 'arc-b' }], 'another close-out took its place');
+  const cp = Object.assign(J(B('arc-a')), { form: 'compact' }); delete cp.names;
+  eq(look([B('arc-a')], [cp]), [{ kind: 'bookshorter', year: 2026, id: 'arc-a' }], 'the shorter form came across');
+  eq(look([B('arc-a')], [B('', { closedAt: '2030-01-01T00:00:00.000Z' })]), [{ kind: 'booknameless', year: 2026, id: 'arc-a' }], 'a nameless one set aside');
+  eq(look([B('arc-a')], [B('arc-a')]), [], 'the same book: nothing');
+  eq(look([B('arc-b', { closedAt: '2026-10-01T00:00:00.000Z' })], [B('arc-a')]), [], 'this copy’s book stands: nothing is changed here');
+  eq(look([], [B('arc-a')]), [], 'a year this copy lacks is added, which is what the merge is for');
+  const w = sandbox(['noteLedgerLookFromMerge', 'ledgerClosedBookLook', 'closedYearText', 'arrOf']);
+  vm.runInContext("var sync = {}; function render() {}", w);
+  vm.runInContext("noteLedgerLookFromMerge([{ kind: 'bookreplaced', year: 2026, id: 'arc-b' }, { kind: 'bookshorter', year: 2026, id: 'arc-a' }, { kind: 'booknameless', year: 2026, id: 'arc-a' }]); " +
+    "noteLedgerLookFromMerge([{ kind: 'bookreplaced', year: 2026, id: 'arc-b' }]);", w);
+  eq(J(w.sync.lookNotes), [
+    'Another device’s close-out of 2026–27 took the place of the closed 2026–27 book this device held, because it was closed out later. A year keeps one closed book. If that is not the close-out you expected, check the year’s figures on Money · Ledger.',
+    'The closed 2026–27 book is now held in a shorter form, because another device’s copy of it was already shortened. Its money and its statements are kept, but not every entry, or its change history, may be listed.',
+    'A closed 2026–27 book with no record of which close-out wrote it was set aside in favour of one that has one.'], 'the notes, each said once');
+});
+
+test('C8 security L3: a book with no close-out record is lost only when this copy holds no book of that year, and a real book is lost as before', () => {
+  const c = sandbox(['closedBooksLost', 'arrOf']);
+  const L = (mine, theirs) => J(c.closedBooksLost(mine, theirs)).map((b) => b.year + ':' + b.archiveId);
+  eq(L([C8_BOOK_OF(2026, 'a')], [C8_BOOK_OF(2026, '')]), [], 'a nameless copy of a year this copy has is not a loss');
+  eq(L([C8_BOOK_OF(2025, 'a')], [C8_BOOK_OF(2026, '')]), ['2026:'], 'a year this copy lacks is');
+  eq(L([C8_BOOK_OF(2026, 'a')], [C8_BOOK_OF(2026, 'b'), C8_BOOK_OF(2027, 'c')]), ['2026:b', '2027:c'], 'a real book this copy lacks, by year and id');
+  eq(L([C8_BOOK_OF(2026, '')], [C8_BOOK_OF(2026, 'a')]), ['2026:a'], 'this copy’s nameless book is no stand-in for a real one');
+});
+
+test('C8 security M3: a closed book is cut to shape: year range, its own cutoff, only the keys this page writes, strings cut, names without a prototype, 20 books', () => {
+  const n = sandbox(C8N_FNS), N = (b) => n.normalizeClosedBook(b);
+  for (const year of [1999, 2101, -5, 20260]) eq(N(C8_BOOK_OF(year, 'a')), null, 'not a program year: ' + year);
+  eq([2000, 2100].map((y) => N(C8_BOOK_OF(y, 'a')) !== null), [true, true], 'the ends of the range');
+  const b = J(N(Object.assign(C8_BOOK_OF(2026, 'a'), { cutoff: '1999-01-01', evil: { big: 1 }, closedBy: 'x'.repeat(500), archiveId: 'y'.repeat(500) })));
+  eq([b.cutoff, 'evil' in b, b.closedBy.length, b.archiveId.length], ['2027-06-30', false, 120, 120], 'cutoff recomputed from the year, unknown key dropped, strings cut');
+  const nm = N(Object.assign(C8_BOOK_OF(2026, 'a'), { names: JSON.parse('{"line":{"__proto__":"x","L1":"' + 'w'.repeat(500) + '"},"family":{}}') })).names;
+  eq([Object.getPrototypeOf(nm.line), Object.keys(nm.line).sort(), nm.line.L1.length], [null, ['L1', '__proto__'], 200], 'names with no prototype, a word cut');
+  const cp = J(N({ year: 2026, form: 'compact', ledger: [{ i: 'a', d: '2027-01-01', c: 5, t: 'z'.repeat(900), zz: 1, sc: 's1' }] }));
+  eq([Object.keys(cp.ledger[0]).sort(), cp.ledger[0].t.length], [['c', 'd', 'i', 'sc', 't'], 300], 'a compact row: its keys only, a word cut');
+  const many = Array.from({ length: 25 }, (_, i) => C8_BOOK_OF(2000 + i, 'arc-' + i));
+  const c = c8();
+  eq(J(c.mergeClosedBooks(many, [])).map((x) => x.year), many.slice(5).map((x) => x.year), 'twenty books, the newest years');
+  const st = J(n.normalizeState(Object.assign(preMigrationState(), { closedBooks: many.concat([C8_BOOK_OF(1990, 'old')]) })));
+  eq([st.closedBooks.length, st.closedBooks[0].year], [20, 2005], 'and a record is cut there on load');
+});
+
+test('C8 security M3/H2: the other copy’s closed books are cut to shape before they are merged in, and a book of no program year is not kept', () => {
+  const { a, b, server } = c3FsPair();
+  const crafted = [C8_BOOK_OF(2025, 'arc-25', { cutoff: '1999-01-01', evil: 'x'.repeat(50) }), C8_BOOK_OF(1850, 'arc-old')];
+  b.run('state.closedBooks = ' + JSON.stringify(crafted) + '; commit()'); b.push();
+  a.run(B1);
+  a.hear(); a.push();
+  eq(server().closedBooks.map((x) => [x.year, x.cutoff, 'evil' in x]), [[2025, '2026-06-30', false]], 'the record');
+  eq(a.get('state.closedBooks.map(function (x) { return [x.year, x.cutoff, "evil" in x]; })'), [[2025, '2026-06-30', false]], 'A');
+});
+
+test('C8 security M2: a compact row keeps the scout’s id, so a scout only a compacted year names still cannot be deleted', () => {
+  const c = c8(), full = C8_BOOK_OF(2025, 'a', { names: { line: {}, family: { s2: 'Ada' } } });
+  const cp = J(c.compactClosedBook(full));
+  eq(cp.ledger[0], { i: 'old1', d: '2026-01-10', c: 500, t: 'Dues', s: 'family', f: 'Ada', sc: 's2' }, 'the compact row');
+  const x = sandbox(['arrOf', 'closedBookScouts']);
+  eq(J(x.closedBookScouts([cp], {})), { s2: true }, 'read back');
+  eq(J(x.closedBookScouts([full], {})), { s2: true }, 'a full book, as before');
 });
 
 /* ---------------- report ---------------- */

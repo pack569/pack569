@@ -4799,8 +4799,8 @@
     return e;
   }
   // PHASE 3, C8 (C8-2) — one closed book (state.closedBooks[i], closedBookBuild's shape), coerced in
-  // place; null when it is not a book (no whole-number year). Only what is there is coerced, and a key
-  // this page does not know is kept, as a newer page wrote it. The rows, rows set aside, statements and
+  // place; null when it is not a book (no whole-number year in 2000-2100). Only what is there is coerced, and a key
+  // this page does not write is dropped (M3 below). The rows, rows set aside, statements and
   // history go through the same normalizers as the live book's (normalizeLedgerRow, normalizeAsideRow,
   // normalizeLedgerEvent, normalizeStatement), each cut at a most (CLOSED_BOOK_MAX_ROWS and its like:
   // a record a crafted or broken copy has swollen is cut, and says so in `ledgerTrimmed` and its
@@ -4810,16 +4810,24 @@
   // script's vars are set. Pure apart from the coercion.
   function normalizeClosedBook(b) {
     if (!b || typeof b !== 'object' || Array.isArray(b) || typeof b.year !== 'number' || !isFinite(b.year) || Math.round(b.year) !== b.year) return null;
+    // Security review of C8-1..4 (M3) — a year outside 2000-2100 is not a program year: not a book. Its cutoff is
+    // the year's, always (closeoutCutoff: a stored one is never trusted), only the keys this page writes are
+    // kept (a newer page's are behind the reload gate), and every string is cut at a length, so a crafted copy
+    // cannot swell the record with one long word.
+    if (b.year < 2000 || b.year > 2100) return null;
+    var KNOWN = ['year', 'closedAt', 'closedBy', 'closedByUid', 'archiveId', 'cutoff', 'openingDate', 'openingCents', 'closingCents', 'reconciledThrough', 'carried', 'form',
+      'ledger', 'aside', 'log', 'statements', 'names', 'ledgerTrimmed', 'asideTrimmed', 'logTrimmed', 'statementsTrimmed'];
+    Object.keys(b).forEach(function (k) { if (KNOWN.indexOf(k) === -1) delete b[k]; });
     function plain(x) { return !!x && typeof x === 'object' && !Array.isArray(x); }
-    function str(k) { if (typeof b[k] !== 'string') b[k] = ''; }
+    function str(k) { if (typeof b[k] !== 'string') b[k] = ''; else if (b[k].length > 120) b[k] = b[k].slice(0, 120); }
     function cents(k) { b[k] = typeof b[k] === 'number' && isFinite(b[k]) ? Math.round(b[k]) : 0; }
     function iso(k) { if (typeof b[k] !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(b[k])) b[k] = ''; }
     ['closedAt', 'closedByUid', 'archiveId'].forEach(str);
     b.closedBy = ledgerStampClean(b.closedBy);
     if (typeof b.closedBy !== 'string') b.closedBy = '';
+    if (b.closedBy.length > 120) b.closedBy = b.closedBy.slice(0, 120);
     ['openingDate', 'reconciledThrough'].forEach(iso);
-    iso('cutoff');
-    if (!b.cutoff) b.cutoff = (b.year + 1) + '-06-30';
+    b.cutoff = (b.year + 1) + '-06-30';
     ['openingCents', 'closingCents'].forEach(cents);
     var cf = plain(b.carried) ? b.carried : {};
     b.carried = { n: 0, inCents: 0, outCents: 0 };
@@ -4838,10 +4846,15 @@
     list('log', MAX_LOG, 'logTrimmed');
     list('statements', MAX_STATEMENTS, 'statementsTrimmed');
     if (b.form === 'compact') {
+      // A compact row's keys are closedCompactRow's and no others; each word is cut (300 characters).
+      var ROW_KEYS = ['i', 'd', 't', 'c', 'l', 'r', 's', 'f', 'k', 'sc', 'eb', 'ab'];
       b.ledger.forEach(function (r) {
+        Object.keys(r).forEach(function (k) { if (ROW_KEYS.indexOf(k) === -1) delete r[k]; });
         ['i', 'd', 't'].forEach(function (k) { if (typeof r[k] !== 'string') r[k] = ''; });
         r.c = typeof r.c === 'number' && isFinite(r.c) ? Math.round(r.c) : 0;
-        ['l', 'r', 's', 'f'].forEach(function (k) { if (r[k] !== undefined && typeof r[k] !== 'string') delete r[k]; });
+        ['l', 'r', 's', 'f', 'sc', 'eb', 'ab'].forEach(function (k) { if (r[k] !== undefined && typeof r[k] !== 'string') delete r[k]; });
+        ['i', 'd', 't', 'l', 'r', 's', 'f', 'sc', 'eb', 'ab'].forEach(function (k) { if (typeof r[k] === 'string' && r[k].length > 300) r[k] = r[k].slice(0, 300); });
+        ['eb', 'ab'].forEach(function (k) { if (typeof r[k] === 'string') r[k] = ledgerStampClean(r[k]); });
         if (r.k !== undefined && r.k !== 1) delete r.k;
       });
     } else {
@@ -4850,22 +4863,24 @@
     b.aside.forEach(function (e) { normalizeLedgerRow(e, 'nx'); normalizeAsideRow(e); });
     b.log.forEach(normalizeLedgerEvent);
     b.statements.forEach(normalizeStatement);
+    // The words for the ids (a full book only): made with no prototype, so an id like "__proto__" is a word
+    // like any other, and at most 2000 of each.
     var nm = plain(b.names) ? b.names : {};
-    b.names = { line: {}, family: {} };
+    b.names = { line: Object.create(null), family: Object.create(null) };
     ['line', 'family'].forEach(function (k) {
-      if (plain(nm[k])) Object.keys(nm[k]).forEach(function (id) { if (typeof nm[k][id] === 'string') b.names[k][id] = nm[k][id]; });
+      if (plain(nm[k])) Object.keys(nm[k]).slice(0, 2000).forEach(function (id) { if (typeof nm[k][id] === 'string') b.names[k][id.slice(0, 120)] = nm[k][id].slice(0, 200); });
     });
     if (b.form === 'compact') delete b.names;
     ['ledgerTrimmed', 'asideTrimmed', 'logTrimmed', 'statementsTrimmed'].forEach(function (k) { if (b[k] !== undefined && b[k] !== true) delete b[k]; });
     return b;
   }
-  // The ids of the scouts any closed book's rows name (full form: a compact row names a family in
-  // words, not a scout), set true in `into`. C7 (owner decision 24): a scout the ledger names is
+  // The ids of the scouts any closed book's rows name (a full row's scoutId, a compact row's `sc`), set true in `into`. C7 (owner decision 24): a scout the ledger names is
   // archived, never deleted, and a year closed out is still the ledger. Pure apart from `into`.
   function closedBookScouts(books, into) {
     arrOf(books).forEach(function (b) {
       arrOf(b && b.ledger).concat(arrOf(b && b.aside)).forEach(function (e) {
         if (e && typeof e.scoutId === 'string' && e.scoutId) into[e.scoutId] = true;
+        if (e && typeof e.sc === 'string' && e.sc) into[e.sc] = true;   // a compact row keeps the scout's id too (closedCompactRow), so a scout a compacted year names is still never deleted
       });
     });
     return into;
@@ -8338,8 +8353,8 @@
     return c;
   }
   // The row as a closed book's compact form keeps it: { i: id, d: date, c: signed cents (in +, out −),
-  // t: description, l: budget line name, r: reference, s: source, f: family (first names), k: 1 when
-  // reconciled }, empty keys left out. seasonLedgerRows' form, plus the id (so a closed year's entry can
+  // t: description, l: budget line name, r: reference, s: source, f: family (first names), sc: the scout's
+  // id, k: 1 when reconciled }, empty keys left out. seasonLedgerRows' form, plus the id (so a closed year's entry can
   // still be named by a reversal, 'Y:id', and a statement's list still finds it). NOT who entered it.
   function closedCompactRow(e, line, fam) {
     var amt = e.amountCents || 0;
@@ -8348,6 +8363,9 @@
     if (e.ref) r.r = e.ref;
     if (e.source) r.s = e.source;
     if (fam) r.f = fam;
+    // Security review of C8-1..4 (M2) — and the scout's id (`sc`), not only the family's words: a scout a compacted
+    // year's entry names is still archived, never deleted (owner decision 24; closedBookScouts reads it).
+    if (e.scoutId) r.sc = String(e.scoutId);
     if (e.reconciled) r.k = 1;
     return r;
   }
@@ -8481,26 +8499,50 @@
     }
     return { books: list, compacted: compacted, trimmed: trimmed, fits: size(list) <= limit };
   }
-  // Two copies' closed books as one, by year, the same on every device whichever is `mine`: a year both
-  // hold from the same close-out (archiveId) is one book, the less complete form of the two (a book
-  // compacted on one device stays compact on all: compaction is one way, or the record would swell
-  // back the next time the full copy came across; then the one that sorts first); a year two
-  // close-outs wrote is the later close-out's (performCloseout replaces an earlier one of the same
-  // year; syncPush asks first when two devices each did it, so this is the safety net). A book is
-  // never dropped otherwise. Oldest year first. Pure.
-  function mergeClosedBooks(mine, theirs) {
-    var byYear = Object.create(null);
+  // Two copies' closed books as one, by year, the same on every device whichever is `mine` and however three
+  // copies are taken two at a time. Security review of C8-1..4 (H2): ONE total order picks the book a year
+  // keeps, and the merge is the largest of it, so it is commutative, associative and idempotent (the harness
+  // holds it to that over random triples). A book with a close-out record (an archiveId) beats one without
+  // (quarantined: nothing writes one, so it is a crafted or broken copy), then the later closedAt, then the
+  // larger archiveId, then the LESS complete form (compaction is one way: a book compacted on one device stays
+  // compact on all, or the record would swell back the next time the full copy came across), then the smaller
+  // JSON. Nothing else is dropped, but the oldest years beyond 20 (the cap is here, so it holds wherever books are merged).
+  // What the merge changes on THIS copy (`mine`) is never silent: `look`, when an array, gets one item for each
+  // year where a different close-out took the place of this copy's ({ kind: 'bookreplaced' }: closedAt is
+  // written by the client, so a later one wins only because the rules are not here), where the book came
+  // across in a shorter form ('bookshorter'), and where a book with no close-out record was set aside
+  // ('booknameless'). No tombstone: the merge has no way to know a book was taken out on purpose, so a
+  // book an admin's keep-local dropped comes back from a copy that still has it unless the 'unclose' event
+  // in the log (keepLocalCopy writes it) says it was undone; that is what the server's S42 rule is for.
+  // Oldest year first. Pure apart from `look`.
+  function mergeClosedBooks(mine, theirs, look) {
     function rank(b) { return b.form === 'compact' ? (b.ledgerTrimmed ? 0 : 1) : 2; }
-    (mine || []).concat(theirs || []).forEach(function (b) {
-      if (!b || typeof b !== 'object' || typeof b.year !== 'number') return;
-      var a = byYear[b.year];
-      if (!a) { byYear[b.year] = b; return; }
-      var ka = String(a.closedAt || '') + '\u0000' + String(a.archiveId || ''), kb = String(b.closedAt || '') + '\u0000' + String(b.archiveId || '');
-      if (String(a.archiveId || '') !== String(b.archiveId || '')) { byYear[b.year] = kb > ka ? b : a; return; }
-      if (rank(a) !== rank(b)) { byYear[b.year] = rank(b) < rank(a) ? b : a; return; }
-      byYear[b.year] = JSON.stringify(b) < JSON.stringify(a) ? b : a;
-    });
-    return Object.keys(byYear).map(function (y) { return byYear[y]; }).sort(function (a, b) { return a.year - b.year; });
+    function named(b) { return typeof b.archiveId === 'string' && b.archiveId ? 1 : 0; }
+    function better(a, b) {
+      if (named(a) !== named(b)) return named(a) > named(b);
+      var ca = String(a.closedAt || ''), cb = String(b.closedAt || '');
+      if (ca !== cb) return ca > cb;
+      var xa = String(a.archiveId || ''), xb = String(b.archiveId || '');
+      if (xa !== xb) return xa > xb;
+      if (rank(a) !== rank(b)) return rank(a) < rank(b);
+      return JSON.stringify(a) < JSON.stringify(b);
+    }
+    function valid(b) { return !!b && typeof b === 'object' && typeof b.year === 'number' && isFinite(b.year); }
+    function best(into, b) { if (!into[b.year] || better(b, into[b.year])) into[b.year] = b; }
+    var won = Object.create(null), held = Object.create(null), nameless = Object.create(null);
+    (mine || []).forEach(function (b) { if (valid(b)) { best(won, b); best(held, b); if (!named(b)) nameless[b.year] = true; } });
+    (theirs || []).forEach(function (b) { if (valid(b)) { best(won, b); if (!named(b)) nameless[b.year] = true; } });
+    var years = Object.keys(won).map(Number).sort(function (a, b) { return a - b; });
+    if (years.length > 20) years = years.slice(years.length - 20);
+    if (Array.isArray(look)) {
+      years.forEach(function (y) {
+        var w = won[y], m = held[y];
+        if (m && w !== m && named(w) && named(m) && w.archiveId !== m.archiveId) look.push({ kind: 'bookreplaced', year: y, id: w.archiveId });
+        else if (m && w !== m && rank(w) < rank(m)) look.push({ kind: 'bookshorter', year: y, id: w.archiveId || '' });
+        if (nameless[y] && named(w)) look.push({ kind: 'booknameless', year: y, id: w.archiveId });
+      });
+    }
+    return years.map(function (y) { return won[y]; });
   }
   // PHASE 3, C8 (C8-3) — THE ROWS CARRIED FROM LAST YEAR, AND WHAT THEY DO TO RECONCILING. A check the
   // bank had not cashed by June 30 is in the closing balance (closingBalanceAt) and so in the new book's
@@ -15060,7 +15102,8 @@
     // merged here at all (seasonClosedTwice; syncPush asks first), so what reaches this is one close-out
     // seen from both sides. What this adds is counted, as a row is.
     var booksWere = arrOf(state.closedBooks).length;
-    state.closedBooks = mergeClosedBooks(state.closedBooks, remote.closedBooks);
+    // (`remote` is normalizeState's, so the other copy's books are cut to shape already: normalizeClosedBook.)
+    state.closedBooks = mergeClosedBooks(state.closedBooks, remote.closedBooks, look);
     added += Math.max(0, arrOf(state.closedBooks).length - booksWere);
     // Phase 0 — ledger entries get the same append-only protection as popcorn sales, and
     // for a stronger reason: two leaders posting receipts from two devices must not be able
@@ -15357,7 +15400,8 @@
       var key = it && (it.kind === 'voidtick' || it.kind === 'twostatements' || it.kind === 'voidlisted') && it.row ? it.kind + ':' + it.row.id
         : it && it.kind === 'forgiven' && it.charge ? 'forgiven:' + it.charge.id
         : it && it.kind === 'scoutkept' && it.scout ? 'scoutkept:' + it.scout.id
-        : it && it.kind === 'restorediff' && it.statement ? 'restorediff:' + it.statement.id + ':' + it.statement.nowCents : '';
+        : it && it.kind === 'restorediff' && it.statement ? 'restorediff:' + it.statement.id + ':' + it.statement.nowCents
+        : it && (it.kind === 'bookreplaced' || it.kind === 'bookshorter' || it.kind === 'booknameless') && typeof it.year === 'number' ? it.kind + ':' + it.year + ':' + (it.id || '') : '';
       if (!key || seen[key]) return;
       seen[key] = true;
       notes.push(it.kind === 'forgiven'
@@ -15366,6 +15410,7 @@
         : it.kind === 'voidlisted' ? ledgerVoidListedLook(it)
         : it.kind === 'restorediff' ? ledgerRestoreDiffLook(it.statement)
         : it.kind === 'scoutkept' ? ledgerScoutKeptLook(it.scout)
+        : it.kind === 'bookreplaced' || it.kind === 'bookshorter' || it.kind === 'booknameless' ? ledgerClosedBookLook(it)
         : ledgerCap(ledgerEntryNamed(it.row)) + ' was ticked on one device while voided on another. The void was kept, so it is no longer ticked. ' +
           'If the bank statement shows it cleared, un-void it and tick it again.');
       n += 1;
@@ -15377,6 +15422,19 @@
   function ledgerRestoreDiffLook(o) {
     return 'After the backup was restored, the entries the ' + fmtDateShort(o.date) + ' statement lists come to ' + ledgerSignedCents(o.nowCents) +
       ', not the ' + ledgerSignedCents(o.signedCents) + ' it was signed with, so the book no longer matches that statement. Check those entries against the bank statement.';
+  }
+  // Security review of C8-1..4 (H2) — what a merge did to a closed book on this copy (mergeClosedBooks' `look`), said so
+  // it is never silent: another device's close-out of the year took the place of this copy's, the book came across
+  // in a shorter form, or a book with no close-out record was set aside. Plain text. Pure.
+  function ledgerClosedBookLook(it) {
+    var yr = closedYearText(it.year);
+    return it.kind === 'bookreplaced'
+      ? 'Another device’s close-out of ' + yr + ' took the place of the closed ' + yr + ' book this device held, because it was closed out later. A year keeps one closed book. ' +
+        'If that is not the close-out you expected, check the year’s figures on Money · Ledger.'
+      : it.kind === 'bookshorter'
+      ? 'The closed ' + yr + ' book is now held in a shorter form, because another device’s copy of it was already shortened. Its money and its statements are kept, ' +
+        'but not every entry, or its change history, may be listed.'
+      : 'A closed ' + yr + ' book with no record of which close-out wrote it was set aside in favour of one that has one.';
   }
   // Phase 3, C7 — a scout the merge kept, archived, over another device's delete (scoutsHeld), named by
   // first name only (the first word of the name, as shortNames takes it). Pure.
@@ -15525,8 +15583,15 @@
   // so the books in `mine` that `theirs` lacks are the other way round. Pure.
   function closedBooksLost(mine, theirs) {
     var here = Object.create(null);
+    // A book with no close-out record (archiveId '', which nothing writes: the merge sets such a book aside) can only
+    // be told by its year: lost when this copy holds no book of that year at all.
     arrOf(mine).forEach(function (b) { if (b && typeof b.archiveId === 'string' && b.archiveId) here[b.year + ':' + b.archiveId] = true; });
-    return arrOf(theirs).filter(function (b) { return !!b && typeof b.year === 'number' && typeof b.archiveId === 'string' && !here[b.year + ':' + b.archiveId]; });
+    var years = Object.create(null);
+    arrOf(mine).forEach(function (b) { if (b) years[b.year] = true; });
+    return arrOf(theirs).filter(function (b) {
+      if (!b || typeof b.year !== 'number' || typeof b.archiveId !== 'string') return false;
+      return b.archiveId ? !here[b.year + ':' + b.archiveId] : !years[b.year];
+    });
   }
   // The season archive a copy's close-out of `year` wrote, or null. (A close-out of the same year
   // again replaces it: performCloseout.)
