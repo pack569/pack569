@@ -3600,7 +3600,7 @@
     // balance. Both absent on every archive closed before, which then reads as it always did.
     // The row cap is far above a pack's year and far below what the pack record can hold.
     if (a.ledger && typeof a.ledger === 'object' && !Array.isArray(a.ledger)) {
-      var lt = (a.ledger.totals && typeof a.ledger.totals === 'object') ? a.ledger.totals : {};
+      var lt = (a.ledger.totals && typeof a.ledger.totals === 'object') ? a.ledger.totals : {}, inBook = a.ledger.inBook === true;
       a.ledger = {
         totals: { inCents: cents(lt.inCents), outCents: cents(lt.outCents), entries: int(lt.entries), reconciled: int(lt.reconciled) },
         rows: (Array.isArray(a.ledger.rows) ? a.ledger.rows.slice(0, 5000) : [])
@@ -3615,6 +3615,8 @@
           }),
         trimmed: a.ledger.trimmed === true
       };
+      // Phase 3, C8-5 — the rows are in the closed book (closedBooks), not here: only a close-out from C8 on says so.
+      if (inBook) a.ledger.inBook = true;
     } else delete a.ledger;
     if (Array.isArray(a.families)) {
       a.families = list(a.families).map(function (x) {
@@ -5020,10 +5022,13 @@
   // way an older page would get wrong (reads it amiss, or writes back what it does not know). A
   // page that meets a record with a HIGHER fmt than its own (from another leader's device, a
   // backup, or this browser's storage written by a newer tab) never saves over it: it holds its
-  // pushes, leaves every copy as it is, and asks for a reload (packFormatHeld). 2 is this build's
-  // record: the Phase 3 ledger (C1 to C7) included, where a scout any ledger entry names is archived,
-  // never deleted (owner decision 26, C7: a page at 1 deleted one, and unlinked its entries, so it must
-  // not write over a record at 2). 1 was the gate's first build (C1 to C6). A record with no fmt, from
+  // pushes, leaves every copy as it is, and asks for a reload (packFormatHeld). 3 is this build's
+  // record: a close-out keeps the year's book in state.closedBooks, closed at June 30, with the entries it
+  // carries over (C8, owner decision 30). A page at 2 reads a carried entry as an ordinary one and so
+  // reconciles wrongly against it, closes a year out with no regard to the cutoff, and its merge drops
+  // closedBooks, so it must not write over a record at 3. 2 was C7's (a scout any ledger entry names is
+  // archived, never deleted: a page at 1 deleted one, and unlinked its entries). 1 was the gate's first
+  // build (C1 to C6). A record with no fmt, from
   // before the gate, is read as this page's. ⚠ Pages from before the gate don't have it: it protects
   // from this version on.
   // ⚠ ROLLING BACK past a commit that raised this: every record the newer page saved (the pack's,
@@ -5031,7 +5036,7 @@
   // Fix forward instead. If you must roll back, SETUP.md ("If a page stays out of date after a
   // reload") lowers fmt by hand, so the raising commit must say what an older page gets wrong.
   // Declared up here, above `var state = load()`, because normalizeState reads it.
-  var PACK_FORMAT = 2;
+  var PACK_FORMAT = 3;
   // Is the pack record `p` (parsed, not normalized) from a page newer than this one? Pure.
   function formatAhead(p) {
     return !!p && typeof p === 'object' && typeof p.fmt === 'number' && isFinite(p.fmt) && Math.floor(p.fmt) > PACK_FORMAT;
@@ -8288,9 +8293,9 @@
     };
   }
   // ---------------------------------------------------------------------------
-  // PHASE 3, C8 — CLOSE-OUT KEEPS THE BOOK, BY YEAR (owner decisions 2, 14, 19, 24, 27-30). The pure
-  // pieces, which nothing calls yet: a close-out that writes state.closedBooks is C8-5, and the
-  // readers are C8-2 to C8-4. What they will do, in order:
+  // PHASE 3, C8 — CLOSE-OUT KEEPS THE BOOK, BY YEAR (owner decisions 2, 14, 19, 24, 27-33). The pure
+  // pieces of it, written in C8-1, read from C8-2 to C8-4 and used by rolloverYear from C8-5 (which writes
+  // state.closedBooks). What they do, in order:
   //   * The year's books end on its last day (closeoutCutoff: June 30 of the program year's end), NOT
   //     on the day the leader taps Close out. A close-out in September takes the July and August
   //     entries into the new year's book, where they belong: closeoutSplit.
@@ -8448,6 +8453,34 @@
       open: { ledger: split.open, ledgerAside: openAside.concat(carried), ledgerLog: logOpen, statements: statementsOpen },
       carried: carried, closingCents: closingCents
     };
+  }
+  // Each family's account AS THE YEAR CLOSED (C8-5; treasurer review of C8-1..4, 3c): the year's charges against the
+  // payments and refunds in the CLOSED rows only (closeoutSplit: dated on or before the cutoff). A payment dated after
+  // the cutoff stays in the new book and pays the balance carried there, so it must not also reduce it here (it would
+  // count twice). A reversal or correction dated after the cutoff of an entry on or before it is read with the closed
+  // rows, so the entry and its reversal cancel as they do in one book: a cheque that bounced in July was never a
+  // payment. `keyOf` is chargeFamilyKey (the family's own id, never the roster's first scout). Each account is
+  // familyAccounts' ({ key, owed, paid, balance, scoutIds, ... }); a charge forgiven or waived is not owed
+  // (chargeIsOpen). Pure.
+  function closeoutFamilyAccounts(charges, ledger, cutoff, keyOf) {
+    var split = closeoutSplit(ledger, cutoff), closedIds = Object.create(null);
+    split.closed.forEach(function (e) { if (typeof e.id === 'string') closedIds[e.id] = true; });
+    var straddling = split.open.filter(function (e) { return typeof e.reverses === 'string' && closedIds[e.reverses] === true; });
+    return familyAccounts(charges || [], split.closed.concat(straddling), keyOf);
+  }
+  // The rows that stay open, as the new year's book holds them (C8-5): a copy of each, its budget line re-pointed
+  // through `lineIdMap` (old line id to new; a line that is gone is no line), and a reversal or correction of an
+  // entry that went into the closed year (`closedIds`: the ids of the closed book's rows and rows set aside) named
+  // 'Y:id', the closed year and the entry's id there, as ledgerClosedYearReversal names one. Pure.
+  function closeoutRemapOpen(rows, closedIds, year, lineIdMap) {
+    return (rows || []).map(function (e) {
+      var c = JSON.parse(JSON.stringify(e));
+      if (typeof c.lineId === 'string' && c.lineId) c.lineId = Object.prototype.hasOwnProperty.call(lineIdMap, c.lineId) ? lineIdMap[c.lineId] : '';
+      ['reverses', 'replaces'].forEach(function (k) {
+        if (typeof c[k] === 'string' && c[k] && closedIds[c[k]] === true) c[k] = Math.round(year) + ':' + c[k];
+      });
+      return c;
+    });
   }
   // A closed book in compact form: its rows as closedCompactRow (the words from `names`), the rows set
   // aside and the change history dropped (asideTrimmed, logTrimmed: the snapshot download, and the
@@ -14132,7 +14165,7 @@
   }
   // THE RELOAD GATE (owner, 2026-09-29; see PACK_FORMAT). Is the pack record `d` ({ rev, device,
   // json, … }, as a backend sends it) from a page newer than this one: a whole-number fmt above
-  // PACK_FORMAT? Pure. Every record carries "fmt":2 now, and this reads every answer from the
+  // PACK_FORMAT? Pure. Every record carries "fmt":N (PACK_FORMAT) now, and this reads every answer from the
   // pack, so only one that names a higher fmt somewhere is parsed to see whether its own does.
   function packFormatAhead(d) {
     if (!d || typeof d.json !== 'string') return false;
@@ -14894,6 +14927,8 @@
         }
       });
     });
+    // Phase 3, C8-5 — a balance or credit carried at close-out that both copies hold at different figures (closeoutCarryDiffs): said.
+    if (Array.isArray(look)) closeoutCarryDiffs(state.charges, remote.charges, state.ledger, remote.ledger).forEach(function (it) { look.push(it); });
     var gone = state.gone && typeof state.gone === 'object' ? state.gone : null;
     var ledgerWas = Array.isArray(state.ledger) ? state.ledger.slice() : [];
     var marksWas = gone && gone.ledger ? Object.assign({}, gone.ledger) : {};
@@ -15447,6 +15482,7 @@
       var key = it && (it.kind === 'voidtick' || it.kind === 'twostatements' || it.kind === 'voidlisted') && it.row ? it.kind + ':' + it.row.id
         : it && it.kind === 'forgiven' && it.charge ? 'forgiven:' + it.charge.id
         : it && it.kind === 'scoutkept' && it.scout ? 'scoutkept:' + it.scout.id
+        : it && it.kind === 'carrydiffers' && typeof it.id === 'string' ? 'carrydiffers:' + it.id + ':' + it.mine + ':' + it.theirs
         : it && it.kind === 'restorediff' && it.statement ? 'restorediff:' + it.statement.id + ':' + it.statement.nowCents
         : it && (it.kind === 'bookreplaced' || it.kind === 'bookshorter' || it.kind === 'booknameless') && typeof it.year === 'number' ? it.kind + ':' + it.year + ':' + (it.id || '') : '';
       if (!key || seen[key]) return;
@@ -15457,6 +15493,7 @@
         : it.kind === 'voidlisted' ? ledgerVoidListedLook(it)
         : it.kind === 'restorediff' ? ledgerRestoreDiffLook(it.statement)
         : it.kind === 'scoutkept' ? ledgerScoutKeptLook(it.scout)
+        : it.kind === 'carrydiffers' ? ledgerCarryDiffLook(it, it.scoutId ? closeoutFamilyWords(it.scoutId) : '')
         : it.kind === 'bookreplaced' || it.kind === 'bookshorter' || it.kind === 'booknameless' ? ledgerClosedBookLook(it)
         : ledgerCap(ledgerEntryNamed(it.row)) + ' was ticked on one device while voided on another. The void was kept, so it is no longer ticked. ' +
           'If the bank statement shows it cleared, un-void it and tick it again.');
@@ -15482,6 +15519,33 @@
       ? 'The closed ' + yr + ' book is now held in a shorter form, because another device’s copy of it was already shortened. Its money and its statements are kept, ' +
         'but not every entry, or its change history, may be listed.'
       : 'A closed ' + yr + ' book with no record of which close-out wrote it was set aside in favour of one that has one.';
+  }
+  // Phase 3, C8-5 (treasurer review of C8-1..4, 3c) — what a close-out carries for a family has the same id on every device that
+  // closes the year out ('co-charge-' or 'co-credit-', the year, the family's key), so two devices that each closed it
+  // out write one charge and one credit. When their figures differ (each worked them out from its own copy of the year),
+  // one is kept and the other lost: never silently. The pairs in the two copies' charges (`charges`) and entries (`ledger`)
+  // with the same carried id and different amounts: [{ kind: 'carrydiffers', id, what: 'balance' | 'credit', scoutId, mine,
+  // theirs }], cents. Pure.
+  function closeoutCarryDiffs(mineCharges, theirCharges, mineLedger, theirLedger) {
+    var out = [];
+    function scan(a, b, prefix, what) {
+      var have = Object.create(null);
+      arrOf(a).forEach(function (x) { if (x && typeof x.id === 'string' && x.id.indexOf(prefix) === 0 && !have[x.id]) have[x.id] = x; });
+      arrOf(b).forEach(function (y) {
+        var x = y && typeof y.id === 'string' && y.id.indexOf(prefix) === 0 ? have[y.id] : null;
+        if (!x || (x.amountCents || 0) === (y.amountCents || 0)) return;
+        out.push({ kind: 'carrydiffers', id: y.id, what: what, scoutId: typeof x.scoutId === 'string' ? x.scoutId : '', mine: x.amountCents || 0, theirs: y.amountCents || 0 });
+      });
+    }
+    scan(mineCharges, theirCharges, 'co-charge-', 'balance');
+    scan(mineLedger, theirLedger, 'co-credit-', 'credit');
+    return out;
+  }
+  // The look note for one of them (`fam`: the family's first names, or '' when the roster has none). Plain text. Pure.
+  function ledgerCarryDiffLook(it, fam) {
+    var who = fam ? fam + '’s family' : 'a family';
+    return 'The ' + it.what + ' carried forward for ' + who + ' is ' + fmt(it.mine) + ' on this device and ' + fmt(it.theirs) + ' on another device, because both closed out the same year. ' +
+      'This device’s figure was kept. Check ' + (fam ? fam + '’s' : 'the family’s') + ' account on Money · Dues & fees, and correct it if it should be different.';
   }
   // Phase 3, C7 — a scout the merge kept, archived, over another device's delete (scoutsHeld), named by
   // first name only (the first word of the name, as shortNames takes it). Pure.
@@ -30358,73 +30422,35 @@
     });
     return { totals: totals, rows: rows };
   }
-  // Keep the rows only if the pack record stays under the limit with them. `otherBytes` is the
-  // record's size without them. Pure.
-  function fitSeasonLedger(led, otherBytes, limit) {
-    if (otherBytes + utf8Bytes(JSON.stringify(led.rows)) <= limit) return { totals: led.totals, rows: led.rows, trimmed: false };
-    return { totals: led.totals, rows: [], trimmed: true };
-  }
-  // Phase 3, C5 review (treasurer review of C5, 3; owner's decision 4) — until C8 keeps closed books,
-  // the season archive also carries the book's statements and its change log, so the annual review
-  // still has them after close-out. They are fitted with the rows (fitSeasonLedger) in a fixed
-  // order, most needed first: the STATEMENTS (small, a dozen a year, and what the review checks
-  // against the bank), then the ROWS (the book itself, trimmed as E3 always did), then the CHANGE
-  // LOG (the largest, up to LEDGER_LOG_ROOM_BYTES, and the least read). Each is kept only if it and
-  // everything before it fit, so when the record is full the log goes first, then the rows, and the
-  // statements last; adding the log never costs the rows. Whatever goes is flagged
-  // (`statementsTrimmed`, `ledgerLogTrimmed`, the ledger's `trimmed`); the downloaded JSON keeps it.
-  // Returns { ledger: fitSeasonLedger's, statements, ledgerLog, statementsTrimmed, ledgerLogTrimmed }.
-  // Pure.
-  function fitSeasonBook(led, statements, log, otherBytes, limit) {
-    var sb = utf8Bytes(JSON.stringify(statements || [])), lb = utf8Bytes(JSON.stringify(log || []));
-    var keepSt = otherBytes + sb <= limit;
-    var ledger = keepSt ? fitSeasonLedger(led, otherBytes + sb, limit) : { totals: led.totals, rows: [], trimmed: true };
-    var keepLog = !ledger.trimmed && otherBytes + sb + utf8Bytes(JSON.stringify(ledger.rows)) + lb <= limit;
-    return { ledger: ledger, statements: keepSt ? statements || [] : [], ledgerLog: keepLog ? log || [] : [],
-      statementsTrimmed: !keepSt, ledgerLogTrimmed: !keepLog };
+  // Phase 3, C8-5 — the ledger a season archive shows: its own (`a.ledger`, as it always read) for a close-out from
+  // before C8, or, for one that says its rows are in the closed book (`inBook`), the closed book's, in the same
+  // { totals, rows, trimmed } shape (a full book's rows by seasonLedgerRows with the words it kept, a compact book's as
+  // they are). The book is this year's own close-out (the year and the archive's id). A book no longer held reads
+  // as trimmed, with nothing to list. Pure apart from reading the closed books.
+  function seasonLedgerShown(a) {
+    var led = a && a.ledger;
+    if (!led || led.inBook !== true) return led;
+    var b = closedBookOf(state, a.year);
+    if (!b || b.archiveId !== a.id) return { totals: led.totals, rows: [], trimmed: true, held: false };
+    var rows;
+    if (b.form === 'compact') {
+      rows = ledgerSort(arrOf(b.ledger).map(function (r) { return { date: r.d || '', r: r }; })).map(function (x) {
+        var r = x.r, o = { d: r.d || '', c: r.c || 0, t: r.t || '' };
+        ['l', 'r', 's', 'f'].forEach(function (k) { if (r[k]) o[k] = r[k]; });
+        if (r.k === 1) o.k = 1;
+        return o;
+      });
+    } else {
+      var nm = b.names || { line: {}, family: {} };
+      rows = seasonLedgerRows(arrOf(b.ledger), function (id) { return nm.line[id] || ''; }, function (id) { return nm.family[id] || ''; }).rows;
+    }
+    return { totals: led.totals, rows: rows, trimmed: b.ledgerTrimmed === true, held: true };
   }
   // Each family's closing balance: any family with a charge, a payment or a refund this year.
   function seasonFamilyBalances(accounts, nameOf) {
     return accounts.filter(function (a) { return a.owed || a.paid || a.refunded || a.balance; }).map(function (a) {
       return { name: nameOf(a), owedCents: a.owed, paidCents: a.paid, balanceCents: a.balance };
     });
-  }
-  // The archive's ledger for this state: the rows, fitted to the pack record as it will be.
-  // LIVE STOPGAP (re-review of the stopgap, item 1) — "as it will be" is measured, not guessed:
-  // performCloseout's own steps (the archive in, replacing an earlier close-out of the year, then
-  // rolloverYear) run on a deep copy, and the copy is sized. Measured before the rollover, the
-  // record still held this year's ledger, sales, sign-ups, attendance, charges and hand-outs, all
-  // of which close-out clears, and a record that fitted was trimmed. The copy's deletion marks
-  // (none: close-out clears them) are swapped for room for next year's (GONE_ROOM_BYTES).
-  // Phase 3, C5 review — with the book's `statements` and change `log` fitted too (fitSeasonBook).
-  function seasonLedgerNow(arcWithout, statements, log) {
-    var led = seasonLedgerRows(state.ledger, function (id) {
-      var l = getBudgetLine(id);
-      return l ? (l.name || 'Untitled line') : '';
-    }, function (sid) {
-      var k = chargeFamilyKey(sid);
-      var members = state.scouts.filter(function (sc) { return familyKeyOf(sc) === k; });
-      return members.length ? familyLabel({ members: members }) : '';
-    });
-    var live = state, liveUi = ui, after;
-    try {
-      state = JSON.parse(JSON.stringify(live));
-      ui = Object.assign({}, liveUi);   // rolloverYear resets a few of its fields
-      state.archives = state.archives.filter(function (a) { return !(a.kind === 'season' && a.year === arcWithout.year); });
-      state.archives.push(arcWithout);
-      rolloverYear();
-      after = state;
-    } finally {
-      state = live;
-      ui = liveUi;
-    }
-    var other = utf8Bytes(JSON.stringify(after)) - utf8Bytes(JSON.stringify(after.gone || {})) + GONE_ROOM_BYTES;
-    // C2 (m5) — the log close-out cleared, swapped for room for next year's (LEDGER_LOG_ROOM_BYTES,
-    // its cap, so this year's is never more).
-    other += LEDGER_LOG_ROOM_BYTES - utf8Bytes(JSON.stringify(after.ledgerLog || []));
-    // R7 — and the statements, the same way (STATEMENTS_ROOM_BYTES).
-    other += STATEMENTS_ROOM_BYTES - utf8Bytes(JSON.stringify(after.statements || []));
-    return fitSeasonBook(led, statements, log, other, ARCHIVE_DOC_SOFT_LIMIT);
   }
   function buildSeasonArchive() {
     var pack = computePackTotals();
@@ -30514,21 +30540,18 @@
       // so archives gain no new fields and every already-stored archive still renders.
       leaders: state.leaders.map(function (l) { return { name: l.name || '', role: leaderJobLabels(l) }; }),
       // E3 — each family's balance as the year closed (first names), read before rolloverYear
-      // clears the charges. The ledger is added below, once the rest of the record is sized.
-      families: seasonFamilyBalances(familyAccountsNow(), function (a) {
+      // clears the charges. C8-5 — from the closed rows only (closeoutFamilyAccounts), the balance that comes forward.
+      families: seasonFamilyBalances(closeoutFamilyAccounts(state.charges, state.ledger, closeoutCutoff(year), chargeFamilyKey), function (a) {
         var members = state.scouts.filter(function (sc) { return familyKeyOf(sc) === a.key; });
         return members.length ? familyLabel({ members: members }) : 'A scout no longer on the roster';
       })
     };
-    // Phase 3, C5 review — and, until C8, the statements reconciled and the ledger's change log,
-    // copies, as the book held them (fitSeasonBook: the log goes first if the record is full, the
-    // statements last). Leaders only, as the whole archive is: buildParentView never reads one.
-    var fit = seasonLedgerNow(arc, JSON.parse(JSON.stringify(state.statements || [])), JSON.parse(JSON.stringify(state.ledgerLog || [])));
-    arc.ledger = fit.ledger;
-    arc.statements = fit.statements;
-    arc.ledgerLog = fit.ledgerLog;
-    if (fit.statementsTrimmed) arc.statementsTrimmed = true;
-    if (fit.ledgerLogTrimmed) arc.ledgerLogTrimmed = true;
+    // Phase 3, C8-5 (owner decisions 29, 33) — the year's entries, statements and change history are in the CLOSED BOOK
+    // (state.closedBooks, written by rolloverYear), not copied here too: the archive keeps the totals, and `inBook`
+    // says where its rows are (seasonLedgerShown reads them). Leaders only, as the whole archive is: buildParentView
+    // never reads one.
+    arc.ledger = { totals: seasonLedgerRows(closeoutSplit(state.ledger, closeoutCutoff(year)).closed, function () { return ''; }, function () { return ''; }).totals,
+      rows: [], trimmed: false, inBook: true };
     return arc;
   }
 
@@ -30646,9 +30669,12 @@
     return bankKnown ? bankCents : projectionCents;
   }
   // What closing today would carry, and from where — rolloverYear's own inputs, read the same way.
+  // C8-5 — the bank balance is the book's AT THE CUTOFF (closingBalanceAt), not as it stands today: a close-out in
+  // September does not carry the July and August entries into the old year's closing figure.
   function closingCarryNow(bud) {
     var bankKnown = state.ledger.length > 0 && !!state.book.openingDate;
-    return { cents: closingCarryover(bud.balance, bookBalance(), bankKnown), from: bankKnown ? 'bank' : 'projection' };
+    var bank = closingBalanceAt(state.ledger, state.book, closeoutCutoff(state.budget.programYear));
+    return { cents: closingCarryover(bud.balance, bank, bankKnown), from: bankKnown ? 'bank' : 'projection' };
   }
   // M6 — how an archived (or about-to-be-archived) season names its balance. When the BANK
   // balance carried, balanceCents is only the projection, and saying "Ending balance" beside it
@@ -30694,6 +30720,32 @@
     d.setUTCDate(d.getUTCDate() - 1);
     return d.toISOString().slice(0, 10);
   }
+  // The size of the pack record `st` (a state as close-out leaves it, with no closed book in it) for fitting a closed
+  // book beside it: its bytes, with this year's deletion marks swapped for room for next year's (GONE_ROOM_BYTES, which
+  // close-out clears and the year fills again), and the change log and the statements, which close-out clears too, swapped
+  // for the room next year's need (LEDGER_LOG_ROOM_BYTES, its cap; STATEMENTS_ROOM_BYTES). Moved here from
+  // seasonLedgerNow (stopgap re-review item 1; C2 m5; C5 R7). Pure.
+  function closeoutOtherBytes(st) {
+    var n = utf8Bytes(JSON.stringify(st)) - utf8Bytes(JSON.stringify(st.gone || {})) + GONE_ROOM_BYTES;
+    n += LEDGER_LOG_ROOM_BYTES - utf8Bytes(JSON.stringify(st.ledgerLog || []));
+    n += STATEMENTS_ROOM_BYTES - utf8Bytes(JSON.stringify(st.statements || []));
+    return n;
+  }
+  // The words a closed book keeps for a family: its members' first names (familyLabel), or '' for a scout the roster
+  // no longer has. C8-5. Reads the roster.
+  function closeoutFamilyWords(scoutId) {
+    var k = chargeFamilyKey(scoutId);
+    var members = state.scouts.filter(function (sc) { return familyKeyOf(sc) === k; });
+    return members.length ? familyLabel({ members: members }) : '';
+  }
+  // What the log says of a close-out, in the 500 characters it keeps of a why: the year, that its book is kept and
+  // read only, and what was carried over (`book`: closedBookBuild's). Plain text. Pure.
+  function closeoutLogWhy(book) {
+    var c = book.carried || { n: 0, inCents: 0, outCents: 0 };
+    return 'The ' + closedYearText(book.year) + ' year was closed out. Its book is kept and can no longer be changed. ' +
+      (c.n ? c.n + (c.n === 1 ? ' entry' : ' entries') + ' not yet on a bank statement ' + (c.n === 1 ? 'was' : 'were') + ' carried into the new year (' +
+        fmt(c.inCents) + ' in, ' + fmt(c.outCents) + ' out).' : 'Nothing was left to carry into the new year.');
+  }
   // Roll the working state into next year. KEPT: packName, leaders, archives,
   // reward-tier config, commission rate + cash routing, product catalog, sync/rev.
   function rolloverYear() {
@@ -30701,15 +30753,27 @@
     // Phase 0/1 — the closing BANK balance, captured before the ledger is cleared. This is
     // the reconciled cash position, not a projection, and it becomes next year's opening
     // figure so the new book starts from a number that was checked against a statement.
-    var closingBank = bookBalance();
+    var b = state.budget;
+    var closingYear = b.programYear; // Wave 19(3) — compared against densAdvancedYear below
+    var closingCutoff = closeoutCutoff(closingYear);
+    // PHASE 3, C8-5 (owner decisions 2, 27-33) — the year's book is CLOSED AT THE CUTOFF (June 30), not at the day this
+    // runs: what is dated on or before it goes into the closed book (state.closedBooks), what is dated after it stays
+    // open in the new year's (closedBookBuild says which is which), and the balance carried is the book's at the cutoff
+    // (closingBalanceAt), not as it stands today. The year's books are read before anything below is changed: the line
+    // names and family words the closed book keeps are this year's.
+    var closedNow = closedBookBuild({ book: state.book, ledger: state.ledger, ledgerAside: state.ledgerAside, ledgerLog: state.ledgerLog, statements: state.statements }, {
+      year: closingYear, stamp: { at: new Date().toISOString(), by: ledgerActor(), byUid: ledgerActorUid() },
+      archiveId: (seasonCloseoutOf(state, closingYear) || { id: uid() }).id,
+      lineNameOf: function (id) { var l = getBudgetLine(id); return l ? (l.name || 'Untitled line') : ''; },
+      familyOf: closeoutFamilyWords
+    });
+    var closingBank = closedNow.closingCents;
     var closingHadLedger = state.ledger.length > 0;
     // M2 — the bank balance is only a balance once the book has an opening figure.
     var closingBankKnown = closingHadLedger && !!state.book.openingDate;
     // M4 — what each family still owes (or has paid ahead), read before the ledger and the
-    // charges that produce it are cleared below.
-    var closingAccounts = familyAccountsNow().filter(function (a) { return a.balance !== 0; });
-    var b = state.budget;
-    var closingYear = b.programYear; // Wave 19(3) — compared against densAdvancedYear below
+    // charges that produce it are cleared below. C8-5 — from the CLOSED rows only (closeoutFamilyAccounts).
+    var closingAccounts = closeoutFamilyAccounts(state.charges, state.ledger, closingCutoff, chargeFamilyKey).filter(function (a) { return a.balance !== 0; });
     // Phase 1/3a — next year's plan seeds from what things ACTUALLY cost, which is what this
     // rollover always tried to do; it just finally has true numbers to do it with.
     //
@@ -30801,15 +30865,25 @@
     // on the first day of the new program year. Note the new line ids above mean nothing
     // could post against them anyway; leaving the old entries would strand every one of
     // them as uncategorised.
-    state.ledger = [];
+    // C8-5 — the new book holds what was dated after the cutoff (lines re-pointed; a reversal of an entry that went into
+    // the closed year named 'Y:id'), and the entries carried over (closedBookBuild: aside, off 'carried'), with the
+    // statements dated after the cutoff and the history about what stayed. The closed year's rows, rows set aside,
+    // statements and history are in the closed book, written below.
+    var closedIds = Object.create(null);
+    closedNow.book.ledger.concat(closedNow.book.aside).forEach(function (e) { if (e && typeof e.id === 'string') closedIds[e.id] = true; });
+    state.ledger = closeoutRemapOpen(closedNow.open.ledger, closedIds, closingYear, lineIdMap);
+    var reconciledKept = String(state.book.reconciledThrough || '') > closingCutoff ? state.book : null;
     state.book = freshBook();
-    // Phase 3, C1 — the book says its year; the rows set aside, the log and the statements were
-    // this year's book, as the ledger was (the snapshot download keeps them; C8 keeps them in
-    // closedBooks). The Trail's End import in force goes with the sales it wrote (entries, below).
+    // Phase 3, C1 — the book says its year. The Trail's End import in force goes with the sales it wrote (entries, below).
     state.book.year = b.programYear;
-    state.ledgerAside = [];
-    state.ledgerLog = [];
-    state.statements = [];
+    // A lock after the cutoff (June reconciled in July, say) is still the new book's: its entries are still locked.
+    if (reconciledKept) {
+      state.book.reconciledThrough = reconciledKept.reconciledThrough;
+      ['reconciledBy', 'reconciledAt'].forEach(function (k) { if (reconciledKept[k] !== undefined) state.book[k] = reconciledKept[k]; });
+    }
+    state.ledgerAside = closeoutRemapOpen(closedNow.open.ledgerAside, closedIds, closingYear, lineIdMap);
+    state.ledgerLog = closedNow.open.ledgerLog;
+    state.statements = closedNow.open.statements;
     state.teImport = null;
     // Only a real balance opens the new book. Net movement with no opening figure is not one,
     // and the "Start from the carryover figure" button is there for that pack instead.
@@ -30868,15 +30942,17 @@
       var members = state.scouts.filter(function (sc) { return familyKeyOf(sc) === a.key; });
       var here = members.filter(function (sc) { return !sc.archived; });
       var to = (here[0] || members[0] || { id: a.scoutIds[0] }).id;
+      // C8-5 — a stable id from the year and the FAMILY's own key (chargeFamilyKey: never the roster's first scout, who
+      // can change), so two devices that close out write the same one and a merge sees one charge, not two.
       if (a.balance > 0) {
         state.charges.push({
-          id: uid(), scoutId: to, lineId: '', who: 'scout', seq: 0,
+          id: 'co-charge-' + closingYear + '-' + a.key, scoutId: to, lineId: '', who: 'scout', seq: 0,
           amountCents: a.balance, date: programYearStartISO(b.programYear),
           label: carryLabel, dueDate: '', waivedBy: '', forgiven: null
         });
       } else if (a.balance < 0) {
         state.ledger.push({
-          id: uid(), date: priorDayISO(programYearStartISO(b.programYear)),
+          id: 'co-credit-' + closingYear + '-' + a.key, date: priorDayISO(programYearStartISO(b.programYear)),
           description: 'Prior-year credit carried forward', amountCents: -a.balance, direction: 'in',
           lineId: '', method: '', ref: '', source: 'carryover', donor: '', scoutId: to,
           tierMakeup: '', reconciled: false,
@@ -30914,6 +30990,19 @@
     ui.advOpen = {};
     ui.archiveOpen = {};
     ui.calSelectedDate = null;
+    // C8-5 — the closed book goes into the pack record, the new year's log starts with the close-out (who, when, and
+    // which years are closed now), and the record is measured: the two newest closed years stay in full, older ones
+    // are compacted, and one that would not fit is shortened (fitClosedBook, owner decision 33). The size counts
+    // the record as it now stands: the archive, the new book, and room for what next year fills (as seasonLedgerNow's
+    // trial run did).
+    var yearsBefore = arrOf(state.closedBooks).map(function (x) { return x.year; }).sort(function (x, y) { return x - y; });
+    var yearsAfter = yearsBefore.filter(function (y) { return y !== closingYear; }).concat([closingYear]).sort(function (x, y) { return x - y; });
+    logLedger('close', 'book', { f: { closedYears: [yearsBefore.join(', '), yearsAfter.join(', ')] }, why: closeoutLogWhy(closedNow.book) });
+    var keptBooks = arrOf(state.closedBooks);
+    state.closedBooks = [];
+    var fitted = fitClosedBook(closedNow.book, keptBooks, closeoutOtherBytes(state), ARCHIVE_DOC_SOFT_LIMIT);
+    state.closedBooks = fitted.books;
+    return { year: closingYear, compacted: fitted.compacted, trimmed: fitted.trimmed, fits: fitted.fits, carried: closedNow.book.carried, closingCents: closedNow.closingCents };
   }
 
   function performCloseout() {
@@ -30932,13 +31021,13 @@
       return a;
     });
     if (!replaced) state.archives.push(record);
-    // 3. Roll the working state into next year.
-    rolloverYear();
+    // 3. Roll the working state into next year (the year's book goes into closedBooks, closed at the cutoff).
+    var coDone = rolloverYear();
     ui.overlay = null;
     if (!commit()) return;
-    // E3 — the one case where the archive is not the whole story: said, and for long enough to read
+    // E3 — the one case where the closed book is not the whole story: said, and for long enough to read
     // (security re-check of C5, R5: which part didn't fit, closeoutTrimToast).
-    var coTrim = closeoutTrimToast(record);
+    var coTrim = closeoutTrimToast(coDone);
     showToast(coTrim ? 'Welcome to the ' + (year + 1) + ' program year. ' + coTrim : 'Welcome to the ' + (year + 1) + ' program year',
       coTrim ? { duration: 10000 } : undefined);
   }
@@ -31077,17 +31166,18 @@
       });
       h += '</tbody></table></div>';
     }
-    if (a.ledger) {
-      var lt = a.ledger.totals;
+    var shown = seasonLedgerShown(a);
+    if (shown) {
+      var lt = shown.totals;
       h += '<p class="eyebrow" style="margin-top:14px">Ledger</p>' +
         '<p class="small" style="margin:0 0 8px">' + lt.entries + ' entr' + (lt.entries === 1 ? 'y' : 'ies') + ' · ' +
         fmt(lt.inCents) + ' in · ' + fmt(lt.outCents) + ' out · ' + lt.reconciled + ' reconciled</p>';
-      if (a.ledger.trimmed) {
+      if (shown.trimmed) {
         h += '<p class="small" style="margin:0 0 8px">' + esc(SEASON_LEDGER_TRIMMED) + '</p>';
-      } else if (a.ledger.rows.length) {
+      } else if (shown.rows.length) {
         h += '<div class="tbl-wrap"><table><caption class="visually-hidden">' + a.year + ' program year — ledger</caption>' +
           '<thead><tr><th scope="col">Date</th><th scope="col">What</th><th scope="col">Line</th><th scope="col" class="num">Amount</th></tr></thead><tbody>';
-        a.ledger.rows.forEach(function (r) {
+        shown.rows.forEach(function (r) {
           h += '<tr><td>' + esc(r.d) + '</td><td>' + esc(r.t || '—') + (r.f ? ' <span class="muted">· ' + esc(r.f) + '</span>' : '') +
             (r.r ? ' <span class="muted">#' + esc(r.r) + '</span>' : '') + '</td><td>' + esc(r.l || '') + '</td>' +
             '<td class="num">' + (r.c < 0 ? '\u2212' : '+') + fmt(Math.abs(r.c)) + '</td></tr>';
@@ -31157,12 +31247,13 @@
           (x.balanceCents < 0 ? 'credit ' + fmt(-x.balanceCents) : 'balance ' + fmt(x.balanceCents)));
       });
     }
-    if (a.ledger) {
-      var lt = a.ledger.totals;
+    var shown = seasonLedgerShown(a);
+    if (shown) {
+      var lt = shown.totals;
       lines.push('');
       lines.push('Ledger: ' + lt.entries + ' entries · ' + fmt(lt.inCents) + ' in · ' + fmt(lt.outCents) + ' out · ' + lt.reconciled + ' reconciled');
-      if (a.ledger.trimmed) lines.push(SEASON_LEDGER_TRIMMED);
-      a.ledger.rows.forEach(function (r) {
+      if (shown.trimmed) lines.push(SEASON_LEDGER_TRIMMED);
+      shown.rows.forEach(function (r) {
         lines.push('  ' + r.d + '  ' + (r.c < 0 ? '-' : '+') + fmt(Math.abs(r.c)) + '  ' + (r.t || '—') +
           (r.l ? ' [' + r.l + ']' : '') + (r.f ? ' · ' + r.f : '') + (r.r ? ' #' + r.r : ''));
       });
@@ -31202,39 +31293,64 @@
     if (a.ledgerLogTrimmed) return 'This year’s change history didn’t fit here; it is in the snapshot downloaded at close-out.';
     return '';
   }
-  // Security re-check of C5 (R5) — the close-out toast's second sentence: what Past seasons couldn't
-  // keep of the season archive `arc`, in closeoutBookLine's words, now the snapshot is downloaded;
-  // '' when it kept everything. The toast said "The ledger was too large" when only the change log
-  // had been dropped (the log goes first, then the rows, then the statements: fitSeasonBook). Pure.
-  function closeoutTrimToast(arc) {
-    var what = [];
-    if (arc.ledger && arc.ledger.trimmed) what.push('the ledger’s entries');
-    if (arc.statementsTrimmed) what.push('the statements reconciled');
-    if (arc.ledgerLogTrimmed) what.push('the ledger’s change history');
-    if (!what.length) return '';
-    var list = what.length === 1 ? what[0] : what.slice(0, -1).join(', ') + ' and ' + what[what.length - 1];
-    var one = !(arc.ledger && arc.ledger.trimmed) && !arc.statementsTrimmed;   // the change history alone is one thing
-    return list.charAt(0).toUpperCase() + list.slice(1) + (one ? ' was' : ' were') + ' too large to keep in Past seasons. ' +
-      'Keep the snapshot just downloaded: it is the only place ' + (one ? 'it is' : 'they are') + ' kept.';
+  // Security re-check of C5 (R5) — the close-out toast's second sentence: what the closed book couldn't keep of the year
+  // just closed (`done`: rolloverYear's result), now the snapshot is downloaded; '' when it kept everything. C8-5: the
+  // year's entries (the book's rows) are dropped only when even the compact form wouldn't fit (fitClosedBook); a year
+  // made compact to make room loses its rows set aside and its change history, which the snapshot keeps. Pure.
+  function closeoutTrimToast(done) {
+    if (!done) return '';
+    var yr = closedYearText(done.year);
+    if ((done.trimmed || []).indexOf(done.year) !== -1) {
+      return 'The ' + yr + ' entries were too large to keep in the pack record, so only its totals and statements are kept. ' +
+        'Keep the snapshot just downloaded: it is the only place the entries are kept.';
+    }
+    var cp = done.compacted || [];
+    if (!cp.length) return '';
+    return 'The ' + cp.map(closedYearText).join(' and ') + ' closed ' + (cp.length === 1 ? 'book was' : 'books were') +
+      ' shortened to keep the pack record small: ' + (cp.length === 1 ? 'its entries and statements are' : 'their entries and statements are') + ' kept, but not ' +
+      (cp.length === 1 ? 'its voided entries or its change history. ' : 'their voided entries or their change history. ') +
+      'The snapshot downloaded when ' + (cp.length === 1 ? 'that year was' : 'those years were') + ' closed out has them.';
   }
   // Close-out preview overlay — computed live from state, nothing committed until confirm.
-  // Phase 3, C5 review — what the season archive `arc` keeps of the book's statements and change
-  // log (fitSeasonBook), for the close-out preview; "no statements reconciled" in a year with none
-  // (sign-off of the C5 follow-ups, 8). Pure.
-  function closeoutBookLine(arc) {
-    var n = (arc.statements || []).length, m = (arc.ledgerLog || []).length;
-    var st = n ? 'the ' + n + ' statement' + (n === 1 ? '' : 's') + ' reconciled' : 'no statements reconciled', lg = 'the ledger’s change history (' + m + ' change' + (m === 1 ? '' : 's') + ')';
-    if (arc.statementsTrimmed) {
-      return 'The statements reconciled and the ledger’s change history are too large to keep in Past seasons. Download the snapshot: it is the only place they are kept.';
+  // The close-out as it would leave the record: performCloseout's own steps (the archive in, replacing an earlier
+  // close-out of the year, then rolloverYear) run on a deep copy of the state, and the copy is sized and read.
+  // LIVE STOPGAP (re-review of the stopgap, item 1) — "as it will be" is measured, not guessed: the copy is what
+  // the record would hold. C8-5: it is what the closed book and its fit (fitClosedBook) are read from too.
+  // The swap of `state` and `ui` is undone in a finally, so a close-out that throws in the copy leaves the page's own
+  // state in place. Returns { result: rolloverYear's, after: the state the copy ended as }. Reads and swaps the page's.
+  function closeoutTrial(arc) {
+    var live = state, liveUi = ui, result = null, after = null;
+    try {
+      state = JSON.parse(JSON.stringify(live));
+      ui = Object.assign({}, liveUi);   // rolloverYear resets a few of its fields
+      state.archives = state.archives.filter(function (a) { return !(a.kind === 'season' && a.year === arc.year); });
+      state.archives.push(arc);
+      result = rolloverYear();
+      after = state;
+    } finally {
+      state = live;
+      ui = liveUi;
     }
-    if (arc.ledgerLogTrimmed) {
-      return 'Past seasons keeps ' + st + '. The ledger’s change history is too large to keep there: download the snapshot, the only place it is kept.';
+    return { result: result, after: after };
+  }
+  // What the closed book of the year keeps, for the close-out preview (`book`: the closed book the close-out would
+  // write): its statements and change history, or what of them will not be kept. Plain text. Pure.
+  function closeoutBookLine(book) {
+    if (!book) return '';
+    var n = (book.statements || []).length, m = (book.log || []).length;
+    var st = n ? 'the ' + n + ' statement' + (n === 1 ? '' : 's') + ' reconciled' : 'no statements reconciled';
+    if (book.ledgerTrimmed) {
+      return 'The year’s entries are too large to keep in the pack record, so only its totals and ' + st + ' are kept. Download the snapshot: it is the only place the entries are kept.';
     }
-    return 'Past seasons keeps ' + st + ' and ' + lg + ', for the annual review. The snapshot has them too.';
+    if (book.form === 'compact') {
+      return 'The year’s book will be kept shortened, to keep the pack record small: its entries and ' + st + ' are kept, but not its change history. Download the snapshot: it has the change history.';
+    }
+    return 'Past seasons keeps ' + st + ' and the ledger’s change history (' + m + ' change' + (m === 1 ? '' : 's') + '), for the annual review, in the closed book.';
   }
   function renderCloseoutOverlay() {
     var arc = buildSeasonArchive();
     var year = arc.year;
+    var coTrial = closeoutTrial(arc), coBook = closedBookOf(coTrial.after, year);
     var f = arc.fundraising, b = arc.budget;
     var armed = ui.armed === 'closeout-confirm';
     var hasPrevSeason = state.archives.some(function (x) { return x.kind === 'season' && x.year === year; });
@@ -31244,7 +31360,7 @@
     // Same inputs as rolloverYear's closingBankKnown / closingCarryover, read the same way.
     var coBud = computeBudget();
     var coBankKnown = state.ledger.length > 0 && !!state.book.openingDate;
-    var coCarry = closingCarryover(coBud.balance, bookBalance(), coBankKnown);
+    var coCarry = closingCarryNow(coBud).cents;
     var coCarryLine = coBankKnown
       ? 'starting funds become the ledger’s <strong>bank balance</strong> (' + fmt(coCarry) + '), and the new ledger opens at it — ' +
         'not the Budget’s projected ending balance (' + fmt(coBud.balance) + ')'
@@ -31300,21 +31416,20 @@
       (state.densAdvancedYear === year
         ? ' Advancement marks are <strong>kept</strong>: they were cleared when the dens advanced, and everything since belongs to the rank each scout is in now.'
         : '') + '</li>' +
-      '<li><strong>Family accounts:</strong> ' + esc(closeoutFamilyLine(familyAccountsNow())) + '</li>' +
+      '<li><strong>Family accounts:</strong> ' + esc(closeoutFamilyLine(closeoutFamilyAccounts(state.charges, state.ledger, closeoutCutoff(year), chargeFamilyKey))) + '</li>' +
       // E3 — what the archive keeps of the ledger, or why it cannot keep all of it.
-      '<li><strong>Ledger:</strong> ' + (arc.ledger.trimmed
+      '<li><strong>Ledger:</strong> ' + (coBook && coBook.ledgerTrimmed
         ? '<strong>too large to keep in full.</strong> ' + esc(SEASON_LEDGER_TRIMMED)
         : 'Past seasons keeps all ' + arc.ledger.totals.entries + ' entr' + (arc.ledger.totals.entries === 1 ? 'y' : 'ies') +
           ' and each family’s closing balance (' + arc.families.length + ' famil' + (arc.families.length === 1 ? 'y' : 'ies') + ').') + '</li>' +
-      // Treasurer review of C2 (M-4) — close-out clears the ledger's change history. Phase 3, C5
-      // review — until C8, Past seasons keeps it and the statements, unless they don't fit.
-      '<li><strong>Change history and statements:</strong> ' + esc(closeoutBookLine(arc)) + '</li>' +
-      // Treasurer sign-off on C3 — and so, until C8, are the voided entries (state.ledgerAside).
-      // Treasurer review of C4 (5) — and why an entry was reversed: under option B a reversed pair is
-      // two counted rows, which Past seasons keeps, but not the reason, who or when.
-      // Treasurer sign-off on option B (12) — which of it Past seasons keeps, and which only the snapshot.
-      '<li><strong>Voided &amp; reversed entries:</strong> Download the snapshot. It is the only place that keeps voided entries, and who voided or ' +
-        'reversed an entry and why. (Past seasons keeps each reversed entry and its reversal, without the reason.)</li>' +
+      // Treasurer review of C2 (M-4) — close-out clears the ledger's change history. C8-5 — it goes into the closed book,
+      // with the statements, unless the record has no room (fitClosedBook).
+      '<li><strong>Change history and statements:</strong> ' + esc(closeoutBookLine(coBook)) + '</li>' +
+      // Treasurer sign-off on C3 — and the voided entries (state.ledgerAside) are in the closed book too, in full, with
+      // who voided or reversed an entry and why; a book shortened to fit keeps neither (closeoutBookLine says so).
+      '<li><strong>Voided &amp; reversed entries:</strong> ' + (coBook && coBook.form === 'full'
+        ? 'Past seasons keeps them, with who voided or reversed each and why, in the closed book.'
+        : 'Download the snapshot. The shortened closed book does not keep voided entries, or who voided or reversed an entry and why.') + '</li>' +
       // Wave 19(38b)
       (state.densAdvancedYear === year ? '' :
         '<li>Arrow of Light scouts who crossed over in the spring should already be archived — anyone still active is archived now.</li>') +
