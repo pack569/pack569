@@ -14921,7 +14921,7 @@
   // first name only (the first word of the name, as shortNames takes it). Pure.
   function ledgerScoutKeptLook(sc) {
     var first = String((sc && sc.name) || '').trim().split(/\s+/)[0];
-    return (first || 'A scout') + ' was deleted on another device, but payments are recorded for this scout, so they were archived instead. ' +
+    return (first || 'A scout') + ' was deleted on another device, but the ledger has entries for this scout, so ' + (first ? first + ' was' : 'they were') + ' archived instead. ' +
       'Their payments still count for their family. Archived scouts are listed on Scouts · Roster.';
   }
   // Signed money, as the ledger's notes write it: "+$40.00", "−$40.00". Pure.
@@ -30772,8 +30772,9 @@
   // Phase 3, C7 (owner, 2026-09-30) — does the ledger hold anything for this scout: an entry,
   // counted or set aside (voided, reversed, a reversal), that names them? Such a scout can be
   // archived, never deleted: a payment is money that moved, and its family link stays.
-  var SCOUT_LEDGER_KEEPS = 'Payments are recorded for this scout, so they can be archived but not deleted.';
-  var SCOUT_LEDGER_KEEPS_ARCHIVED = 'Payments are recorded for this scout, so they can’t be deleted.';
+  var SCOUT_LEDGER_KEEPS = 'This scout is named on ledger entries, including voided ones, so they can be archived but not deleted. Archiving keeps their payments with their family.';
+  var SCOUT_LEDGER_REFUSED = 'This scout is named on ledger entries, so they can’t be deleted. Use Archive instead. Their payments stay with their family.';
+  var SCOUT_LEDGER_KEEPS_ARCHIVED = 'This scout is named on ledger entries, including voided ones, so they can’t be deleted. Their payments stay with their family.';
   function scoutHasLedger(id) {
     return arrOf(state.ledger).concat(arrOf(state.ledgerAside)).some(function (e) { return !!e && typeof id === 'string' && !!id && e.scoutId === id; });
   }
@@ -32568,7 +32569,7 @@
       // never deleted. The button isn't drawn for one; a screen drawn before a sync brought a payment
       // in is refused here, on either tap, and nothing changes. So the ledger is never touched here
       // (until C7 the scout's entries were unlinked, and logged as one 'reassign').
-      if (scoutHasLedger(act.split(':')[1])) { showToast(SCOUT_LEDGER_KEEPS); render(); return; }
+      if (scoutHasLedger(act.split(':')[1])) { showToast(SCOUT_LEDGER_REFUSED); render(); return; }
       arm(act, function () {
         var id = act.split(':')[1];
         markGone('scouts', [id]);   // LIVE STOPGAP — so no stale copy brings them back

@@ -33,7 +33,10 @@ const SCRIPT_CSS = HTML.slice(HTML.indexOf('<style>'), HTML.indexOf('</style>'))
 /* ---------------- tiny assert kit ---------------- */
 let pass = 0;
 const fails = [];
+// HARNESS_ONLY=<regex> runs just the tests whose names match (a quick targeted run; the full run is the gate).
+const ONLY = process.env.HARNESS_ONLY ? new RegExp(process.env.HARNESS_ONLY) : null;
 function test(name, fn) {
+  if (ONLY && !ONLY.test(name)) return;
   try { fn(); pass++; }
   catch (e) { fails.push(`${name}\n      ${e.message}`); }
 }
@@ -18679,7 +18682,7 @@ const C2R_ACT = [
 const C2R_MORE = `
   ${['LEDGER_VOID_REASON_MAX', 'ledgerVoidRefusal', 'ledgerVoidRow', 'ledgerUnvoidRow', 'normalizeAsideRow', 'ledgerPairOf', 'ledgerReversalOf', 'ledgerCancelledWhy',
     'ledgerLiveReversals', 'ledgerReversedAgainWhy', 'ledgerUnvoidDateWhy'].map(slice).join('\n')}
-  ${['arrOf', 'SCOUT_LEDGER_KEEPS', 'scoutHasLedger'].map(decl).join('\n')}
+  ${['arrOf', 'SCOUT_LEDGER_KEEPS', 'SCOUT_LEDGER_REFUSED', 'scoutHasLedger'].map(decl).join('\n')}
   var undo = null, undoWords = null, marks = [], editor = true;
   state.ledgerAside = [];
   ui.voidAsk = null; ui.voidWhy = '';
@@ -19113,8 +19116,9 @@ test('C7: a scout any ledger entry names, counted, voided or reversed, is refuse
   // (Until C7 the delete unlinked the scout's entries, logged as one 'reassign'. Owner, 2026-09-30:
   // archived, never deleted.) r1 and m1 name s1, both counted.
   const p = c2rPage();
-  const words = 'Payments are recorded for this scout, so they can be archived but not deleted.';
-  eq(p.get('SCOUT_LEDGER_KEEPS'), words, 'the words');
+  const words = 'This scout is named on ledger entries, so they can’t be deleted. Use Archive instead. Their payments stay with their family.';
+  eq(p.get('SCOUT_LEDGER_REFUSED'), words, 'the words');
+  eq(p.get('SCOUT_LEDGER_KEEPS'), 'This scout is named on ledger entries, including voided ones, so they can be archived but not deleted. Archiving keeps their payments with their family.', 'the page line');
   const before = p.get('JSON.stringify(state)');
   p.run("toasts = []; commits = 0; renders = 0; act2('del-scout:s1'); act2('del-scout:s1')");
   eq([p.get('JSON.stringify(state)') === before, p.get('dropped'), p.get('marks'), p.get('commits'), p.get('ui.armed'), p.get('toasts'), p.get('renders')],
@@ -19156,8 +19160,8 @@ test('C7: the scout’s page shows no Delete for a scout any ledger entry names,
     }))});
     function row(id) { return renderScoutRow(getScout(id), { blocks: 0, sales: 0 }, {}); }`, ctx);
   const text = (h) => h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
-  const words = 'Payments are recorded for this scout, so they can be archived but not deleted.';
-  const archivedWords = 'Payments are recorded for this scout, so they can’t be deleted.';
+  const words = 'This scout is named on ledger entries, including voided ones, so they can be archived but not deleted. Archiving keeps their payments with their family.';
+  const archivedWords = 'This scout is named on ledger entries, including voided ones, so they can’t be deleted. Their payments stay with their family.';
   for (const archived of [false, true]) {
     vm.runInContext(`state.scouts.forEach(function (s) { s.archived = ${archived}; })`, ctx);
     const [h1, h2, h3] = ['s1', 's2', 's3'].map((id) => vm.runInContext(`row('${id}')`, ctx));
@@ -19167,7 +19171,7 @@ test('C7: the scout’s page shows no Delete for a scout any ledger entry names,
       ok(archived ? /data-act="restore-scout" data-id="s/.test(h) : /data-act="archive-scout" data-id="s/.test(h), `${who}: no ${archived ? 'Restore' : 'Archive'}`);
     }
     // Nothing in the ledger: Delete as before, and no line.
-    ok(h3.includes(`data-act="del-scout:s3"`) && text(h3).includes(archived ? 'Delete permanently' : 'Delete') && !/Payments are recorded/.test(h3), 'a scout with no entries' + (archived ? ', archived' : ''));
+    ok(h3.includes(`data-act="del-scout:s3"`) && text(h3).includes(archived ? 'Delete permanently' : 'Delete') && !/named on ledger entries/.test(h3), 'a scout with no entries' + (archived ? ', archived' : ''));
   }
   eq(vm.runInContext('[SCOUT_LEDGER_KEEPS, SCOUT_LEDGER_KEEPS_ARCHIVED]', ctx), [words, archivedWords], 'the words');
 });
@@ -25694,9 +25698,9 @@ test('C7: the scouts a merge keeps over a delete are those an entry on either co
   // The note: first name only, and never blank.
   const n = sandbox(['ledgerScoutKeptLook']);
   eq([n.ledgerScoutKeptLook({ name: '  Ada   Lovelace ' }), n.ledgerScoutKeptLook({ name: '' }), n.ledgerScoutKeptLook(null)], [
-    'Ada was deleted on another device, but payments are recorded for this scout, so they were archived instead. Their payments still count for their family. Archived scouts are listed on Scouts · Roster.',
-    'A scout was deleted on another device, but payments are recorded for this scout, so they were archived instead. Their payments still count for their family. Archived scouts are listed on Scouts · Roster.',
-    'A scout was deleted on another device, but payments are recorded for this scout, so they were archived instead. Their payments still count for their family. Archived scouts are listed on Scouts · Roster.'], 'the note');
+    'Ada was deleted on another device, but the ledger has entries for this scout, so Ada was archived instead. Their payments still count for their family. Archived scouts are listed on Scouts · Roster.',
+    'A scout was deleted on another device, but the ledger has entries for this scout, so they were archived instead. Their payments still count for their family. Archived scouts are listed on Scouts · Roster.',
+    'A scout was deleted on another device, but the ledger has entries for this scout, so they were archived instead. Their payments still count for their family. Archived scouts are listed on Scouts · Roster.'], 'the note');
   // Leaders only, as every note on the card is: nothing of it is published.
   ok(!/scoutsHeld|ledgerScoutsHeld|ledgerScoutKeptLook|scoutkept/.test(codeOnly(BPV())), 'buildParentView reads it');
 });
@@ -25798,7 +25802,7 @@ test('C7 property: with scouts deleted on older pages and on this one, and famil
 // logged as one 'reassign'.
 const OLD_DEL_S1 = "var dsRows = state.ledger.concat(state.ledgerAside || []).filter(function (e) { return e.scoutId === 's1'; }).map(function (e) { return e.id; }); " +
   "markGone('scouts', ['s1']); dropScout('s1'); if (dsRows.length) logLedger('reassign', dsRows[0], { f: { scoutId: ['s1', ''] }, rows: dsRows.slice(1) }); commit()";
-const C7_NOTE = 'Ada was deleted on another device, but payments are recorded for this scout, so they were archived instead. Their payments still count for their family. Archived scouts are listed on Scouts · Roster.';
+const C7_NOTE = 'Ada was deleted on another device, but the ledger has entries for this scout, so Ada was archived instead. Their payments still count for their family. Archived scouts are listed on Scouts · Roster.';
 // The scouts (sorted, archived or not), the family of payment `id`, and whether Ada's mark is a put-back.
 const c7Kept = (st, id) => [st.scouts.map((x) => [x.id, !!x.archived]).sort(), st.ledger.concat(st.ledgerAside || []).filter((e) => e.id === (id || 'l3')).map((e) => e.scoutId),
   st.gone.scouts.s1 < 0];
