@@ -1025,7 +1025,7 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
 // Phase 3, C6 — the per-row ledger merge and what it reads.
-const C6_MERGE_FNS = ['LEDGER_TICK_FIELDS', 'LEDGER_OFF_FIELDS', 'ledgerFieldPart', 'LEDGER_OPS', 'ledgerEventParts', 'ledgerMarksGone', 'ledgerEmpty', 'ledgerPartKey', 'LEDGER_MONEY_FIELDS', 'ledgerLockedMeanwhile',
+const C6_MERGE_FNS = ['LEDGER_TICK_FIELDS', 'LEDGER_OFF_FIELDS', 'LEDGER_ENTERED_FIELDS', 'ledgerFieldPart', 'LEDGER_OPS', 'ledgerEventParts', 'ledgerMarksGone', 'ledgerMergeOpts', 'ledgerEmpty', 'ledgerPartKey', 'LEDGER_MONEY_FIELDS', 'ledgerLockedMeanwhile',
   'applyLedgerRowSet', 'mergeLedgerRows', 'applyLedgerMerge', 'LEDGER_EDIT_FIELDS', 'LEDGER_RESOLVE_FIELDS', 'LEDGER_RESOLVE_WHY', 'ledgerResolveMore', 'ledgerLogRoom', 'utf8Bytes', 'arrOf', 'ledgerTickedAt', 'mergeStatements', 'statementPairMerge',
   'statementOnceGroups', 'statementReopened'];
 // A page from before C6 (as the live page is): its merge keeps this device's copy of every row both
@@ -1042,8 +1042,9 @@ const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'm
   'ledgerTakeOut', 'LEDGER_TAKE_OUT_ANY', 'ledgerLocked', 'ledgerReversalOf',
   // Phase 3, C5 — the statements, unioned by id, and the lock stepped back past a reopened one.
   'statementOnceGroups', 'statementReopened', 'statementPairMerge', 'mergeStatements', 'statementLockBack', 'statementBefore', 'ledgerStampClean',
-  // Phase 3, C6 — the per-row merge.
-  ...C6_MERGE_FNS];
+  // Phase 3, C6 — the per-row merge, and the entry chooser the push opens.
+  ...C6_MERGE_FNS, 'ledgerRowConflicts', 'rowChoice', 'refreshRowChoice', 'ledgerConflictSig', 'pickRowVersion', 'saveRowChoices', 'ROW_PICK_NEEDED',
+  'ROW_PICKS_CHANGED', 'ROW_PICKS_SAVED'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
   const ctx = vm.createContext({});
@@ -8945,6 +8946,7 @@ test('a push reads, merges and writes in one retried step, and the rev always cl
         } };
       function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
       function mergeRemoteAppendOnly(d) { merged.push(d.rev); return 1; }
+      function ledgerRowConflicts() { return []; }   // Phase 3, C6: the merge is stubbed, and so is its pre-check
       function ledgerLookCount() { return 0; } function noteLedgerLookAfterSync() {}   // the merge is stubbed; so is what it brings on
       function save() { saved += 1; } function scheduleParentViewRefresh() {} function render() {}
       function showToast(m) { toasts.push(m); } function renderSyncPill() {} function syncFail() {}
@@ -15561,7 +15563,7 @@ async function apiClient(w, who, o) {
       return o;
     };
     save = function () { saves += 1; store[KEY] = JSON.stringify(state); };
-    commit = function () { if (!canEdit()) return; save(); scheduleSyncPush(); };
+    commit = function () { if (!canEdit()) return false; save(); scheduleSyncPush(); return true; };   // true when taken, as the page's
     todayISO = function () { return '2026-09-28'; };
     // A made-up family view, with the keys the real one uses (the shape itself is tested against
     // the real buildParentView below).
@@ -15965,7 +15967,7 @@ atest('a copy choice closed with Escape keeps saying it waits, and a device that
       var state = { scouts: [{ id: 'a' }], rev: 5 };
       var sync = { firstSnap: false, mode: 'online', deviceId: 'dev1', dirty: true, clobber: false, conflict: { rev: 5 },
         remoteRec: { rev: 5 }, backend: { serverRevs: true }, membersFromServer: ${fromServer !== false} };
-      ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap', 'takeSharedAsViewer', ...FORMAT_GATE_FNS].map(decl).join('\n')}
+      ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap', 'takeSharedAsViewer', 'rowChoice', ...FORMAT_GATE_FNS].map(decl).join('\n')}
       onRemoteSnap({ rev: 6, device: 'd2', json: '{}' }, { fromServer: true, pendingWrites: false });`, ctx);
     return JSON.parse(JSON.stringify(vm.runInContext('[adopted, sync.conflict && sync.conflict.rev, ui.overlay && ui.overlay.kind, toasts]', ctx)));
   };
@@ -16208,6 +16210,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
         pushPack: function (h, build) { var out = build(${JSON.stringify(over.remote)}); if (out.record) records.push(out.record); return now(out.result); } };
       function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
       function mergeRemoteAppendOnly(d) { merged.push(d.rev); return 0; } function holdPushes() { return false; }
+      function ledgerRowConflicts() { return []; }   // Phase 3, C6: the merge is stubbed, and so is its pre-check
       function ledgerLookCount() { return 0; } function noteLedgerLookAfterSync() {}   // the merge is stubbed; so is what it brings on
       function save() {} function scheduleParentViewRefresh() {} function render() {}
       function showToast(m) { toasts.push(m); } function renderSyncPill() {} function syncFail() {}
@@ -16695,7 +16698,7 @@ const GONE_EXTRA = (dev) => `
   todayISO = function () { return '2026-09-29'; };
   function teMatchScouts() { return { matched: ${JSON.stringify(GONE_TE_ROWS)} }; }
   function teAddMissingScouts() {}
-  function commit() { save(); scheduleSyncPush(); }
+  function commit() { save(); scheduleSyncPush(); return true; }   // true when taken, as the page's
   function reimport() { ui.overlay = { report: 'sales', archive: { scouts: [] } }; teCommitSalesLive(); }
   function totals() { var t = computeScoutTotals(), o = {}; Object.keys(t).forEach(function (k) { o[k] = t[k].sales; }); return o; }
   function ids(a) { return a.map(function (x) { return x.id; }); }`;
@@ -16866,7 +16869,7 @@ test('stopgap, Firestore: two devices that both re-import before either saves co
 
 // Treasurer M3 / popcorn 3: the copy chooser, drawn by the page's own renderOverlay.
 const CHOOSER_FNS = ['esc', 'fmt', 'fmtDateShort', 'fmtArchiveDate', 'arrOf', 'teBatchOf', 'dangerBtn', 'packSalesCents', 'teLastImportMs',
-  'rowsOnlyIn', 'syncCopyLine', 'syncYearsHtml', 'syncOnlyHereHtml', 'jsonBackup', 'renderOverlay'];
+  'rowsOnlyIn', 'syncCopyLine', 'syncYearsHtml', 'syncOnlyHereHtml', 'jsonBackup', 'renderOverlay', 'rowChoice'];
 function chooserHtml(mine, cloud, over) {
   const ctx = vm.createContext({});
   vm.runInContext(`${CHOOSER_FNS.map(slice).join('\n')}
@@ -19680,7 +19683,7 @@ test('C3, Firestore: a row ticked and locked on one device is kept counted over 
   // B ticks l2 and marks the book reconciled through Sep 30 (unsaved). A, later by its clock and
   // still on Aug 31, voids l2 and saves. B saves last: l2 is on a statement already checked.
   const { a, b, server } = c3FsPair();
-  b.run("stampApproved(state.ledger[1], true); state.ledger[1].reconciled = true; state.book.reconciledThrough = '2026-09-30'; commit()");
+  b.run("stampApproved(state.ledger[1], true); state.ledger[1].reconciled = true; logLedger('tick', state.ledger[1].id); state.book.reconciledThrough = '2026-09-30'; commit()");
   a.run(skew(60000));
   a.run("voidRow('l2', 'Entered twice')"); a.push();
   b.hear(); b.push();
@@ -19899,7 +19902,7 @@ test('Decision B: close-out says how many problems the ledger has, first, and st
 test('C3 treasurer, Firestore: a device that had ticked an entry another leader voided is told where it is', () => {
   // B ticks l2 (unsaved); A voids it a minute later and saves; B merges that as it saves.
   const { a, b } = c3FsPair();
-  b.run("stampApproved(state.ledger[1], true); state.ledger[1].reconciled = true; commit()");
+  b.run("stampApproved(state.ledger[1], true); state.ledger[1].reconciled = true; logLedger('tick', state.ledger[1].id); commit()");
   a.run(skew(60000));
   a.run("voidRow('l2', 'Entered twice')"); a.push();
   b.hear(); b.push();
@@ -20110,7 +20113,7 @@ atest('C3, api: a void, an un-void and a locked row settle the same way across t
   // H1: B ticks l2 into a period it marks reconciled; A voids it later and saves first.
   ({ a, b, server } = await apiGonePair(over));
   for (const c of [a, b]) c.run(C3_EXTRA);
-  b.run("stampApproved(state.ledger[1], true); state.ledger[1].reconciled = true; state.book.reconciledThrough = '2026-09-30'; commit()");
+  b.run("stampApproved(state.ledger[1], true); state.ledger[1].reconciled = true; logLedger('tick', state.ledger[1].id); state.book.reconciledThrough = '2026-09-30'; commit()");
   a.run(skew(60000));
   await a.edit("voidRow('l2', 'Entered twice')");
   await settle([b], 800);
@@ -21131,6 +21134,12 @@ const C4_EXTRA = `${C3_EXTRA}
     state.ledgerAside.push(row, rv);
     logLedger('reverse', id, { why: why, rows: [rv.id] }); markGone('ledger', [row]); commit();
   }`;
+// Phase 3, C6 — the entries the push asked about ([ids] per item), and the leader keeping `side`'s
+// version of each ('mine': this device's), then saving, as the chooser's buttons do.
+const LEDGER_RESOLVE_WHY_TEXT = /var LEDGER_RESOLVE_WHY = '([^']*)';/.exec(SCRIPT)[1];
+const c6Asked = (d) => d.get('rowChoice() ? rowChoice().items.map(function (it) { return it.ids; }) : null');
+const c6PickAll = (d, side) => d.run(`(function () { var rc = rowChoice(); rc.items.forEach(function (it) { pickRowVersion(rc, it.ids[0], '${side}'); });
+  saveRowChoices(); })()`);
 function c4FsPair(over) {
   const p = fsGonePair(Object.assign({}, C3_SEED, over || {}));
   p.a.run(C4_EXTRA); p.b.run(C4_EXTRA);
@@ -21199,7 +21208,7 @@ test('C4 (option B), Firestore: a tick on one device and a reverse on another co
   // last save's, as for any row two devices change at once: the per-row merge is C6's.)
   for (const aFirst of [true, false]) {
     ({ a, b, server } = c4FsPair());
-    b.run("stampApproved(state.ledger[1], true); state.ledger[1].reconciled = true; commit()");
+    b.run("stampApproved(state.ledger[1], true); state.ledger[1].reconciled = true; logLedger('tick', state.ledger[1].id); commit()");
     a.run("reverseRow('l2', 'The deposit bounced')");
     const [first, second] = aFirst ? [a, b] : [b, a];
     first.push(); second.hear(); second.push(); first.hear();
@@ -21215,11 +21224,17 @@ test('C4 (option B), Firestore: two devices that both correct an entry, or one v
   a.run("correctRow('l2', { amount: '45' }, 'A: wrong amount')");
   b.run("correctRow('l2', { amount: '46' }, 'B: wrong amount')");
   a.push(); b.hear(); b.push();
+  // Phase 3, C6 — the two corrections differ, so the device saving second is asked (the entry and its
+  // corrected entry, one choice; their reversal is the same on both but for who made it) and sends
+  // nothing until it answers. It keeps its own.
+  eq([c6Asked(b), c3Counted(server())], [[['l2', 'rc-l2']], C4_L2_MONEY - 4500], 'B was not asked, or saved without asking');
+  c6PickAll(b, 'mine'); b.push();
   const want = [['l1', 'l2', 'l3', 'rc-l2', 'rv-l2'], []];
-  eq([c4Where(server()), c3Counted(server())], [want, C4_L2_MONEY - 4600], 'the pack record: the last save’s correction');
+  eq([c4Where(server()), c3Counted(server())], [want, C4_L2_MONEY - 4600], 'the pack record: the correction B kept');
   a.hear();
   eq([c4Where(a.get('state')), c3Counted(a.get('state'))], [want, C4_L2_MONEY - 4600], 'A');
-  eq(server().ledgerLog.map((e) => [e.op, e.why]), [['correct', 'A: wrong amount'], ['correct', 'B: wrong amount']], 'both corrections logged');
+  eq(server().ledgerLog.map((e) => [e.op, e.row, e.why]), [['correct', 'l2', 'A: wrong amount'], ['correct', 'l2', 'B: wrong amount'], ['resolve', 'l2', LEDGER_RESOLVE_WHY_TEXT],
+    ['resolve', 'rc-l2', LEDGER_RESOLVE_WHY_TEXT]], 'both corrections logged, and the choice');
   // A voids l2 while B reverses it: whichever saves first, l2 stays counted with its reversal (voided,
   // the reversal would take the money out twice), its mark turned into a put-back, the void in the log.
   for (const aFirst of [true, false]) {
@@ -21326,13 +21341,18 @@ test('Option B review (3), Firestore: two devices that reverse an entry again af
   a.run("voidRow('rv-l2', 'Reversed the wrong entry')"); a.push(); b.hear();
   a.run("reverseRow('l2', 'A: returned by the bank')");
   b.run("reverseRow('l2', 'B: returned by the bank')");
-  a.push(); b.hear(); b.push(); a.hear();
+  a.push(); b.hear(); b.push();
+  // Phase 3, C6 — the two reverses give different reasons: B is asked (the reversal itself is the same
+  // on both, but for who made it), and keeps A's.
+  eq(c6Asked(b), [['l2']], 'B was not asked about l2');
+  c6PickAll(b, 'theirs'); b.push(); a.hear();
+  eq(server().ledger.find((e) => e.id === 'l2').voidReason, 'A: returned by the bank', 'the reason B picked');
   const want = [['l1', 'l2', 'l3', 'rv2-l2'], ['rv-l2:void']];
   for (const [who, st] of [['the pack record', server()], ['A', a.get('state')], ['B', b.get('state')]]) {
     eq([c4Where(st), c3Counted(st), st.ledger.find((e) => e.id === 'l2').reversedBy], [want, C4_L2_MONEY, 'rv2-l2'], who);
   }
-  eq(server().ledgerLog.map((e) => [e.op, e.row, (e.rows || []).join()]), [['reverse', 'l2', 'rv-l2'], ['void', 'rv-l2', ''], ['reverse', 'l2', 'rv2-l2'], ['reverse', 'l2', 'rv2-l2']],
-    'the log: both reverses, one pair');
+  eq(server().ledgerLog.map((e) => [e.op, e.row, (e.rows || []).join()]), [['reverse', 'l2', 'rv-l2'], ['void', 'rv-l2', ''], ['reverse', 'l2', 'rv2-l2'], ['reverse', 'l2', 'rv2-l2'],
+    ['resolve', 'l2', '']], 'the log: both reverses, one pair, and the choice');
 });
 
 test('Option B review (3), Firestore: a reverse mark crosses to the other copy only while its reversal counts, and a stale one gives way', () => {
@@ -21771,7 +21791,9 @@ test('Security re-check A, Firestore: a reversal reused and ticked on one device
   // B reverses l2 again, voids that, and reverses it a third time; A, not having heard, reverses it again
   // under the same id as B's second, and ticks it on the October statement.
   b.run("reverseRow('l2', 'B: returned'); voidRow('rv2-l2', 'B: wrong one'); reverseRow('l2', 'B: returned again')"); b.push();
-  a.run("reverseRow('l2', 'A: returned'); var t = state.ledger.find(function (e) { return e.id === 'rv2-l2'; }); t.reconciled = true; t.reconciledAt = Date.now() + 60000; commit()");
+  // (The tick logged, as the page logs one: C6 reads which device ticked it from the log.)
+  a.run("reverseRow('l2', 'A: returned'); var t = state.ledger.find(function (e) { return e.id === 'rv2-l2'; }); t.reconciled = true; t.reconciledAt = Date.now() + 60000; " +
+    "logLedger('tick', 'rv2-l2'); commit()");
   a.push(); b.hear();
   for (const [who, st] of [['the pack record', server()], ['A', a.get('state')], ['B', b.get('state')]]) {
     eq([c4Where(st), c3Counted(st), notes(st)], [[['l1', 'l2', 'l3', 'rv2-l2', 'rv3-l2'], ['rv-l2:void']], C4_L2_MONEY + 4000, [RECHECK_TWO('“Pizza”', 'Oct 1 and Oct 1', '$40.00')]], who);
@@ -23917,6 +23939,49 @@ test('C6: money changed on one device while the other locked the entry is asked 
   eq([r.set.x.approvedBy, r.set.x.statementId], ['Sam', 'st-1'], 'the earlier tick, and the statement');
 });
 
+test('C6: a backup restored changed every entry; who entered an entry is never asked about; the reverse marks follow the reversal that counts', () => {
+  const x = sandbox(C6_MERGE_FNS);
+  const base = [C6_BASE()];
+  // A restored a backup (its log keeps the history, the entry is as the backup had it); B holds it as
+  // it was before the restore, unchanged since: the restore's.
+  const edit = c6Ev('e1', 'edit', 'x', 2, { f: { description: ['Pizza', 'Pizza night'] } });
+  const A = c6Rec([C6_ROW({ ref: '7' })], base.concat([edit, c6Ev('a9', 'restore', 'book', 3)]));
+  const B = c6Rec([C6_ROW({ ref: '7', description: 'Pizza night' })], base.concat([edit]));
+  let r = c6Both(x, A, B);
+  eq([r.conflicts, r.set.x.description], [[], 'Pizza'], 'the restore');
+  // B changed it after the restore's base: asked.
+  const B2 = c6Rec([C6_ROW({ ref: '7', description: 'Pizza party' })], base.concat([edit, c6Ev('b1', 'edit', 'x', 4, { f: { description: ['Pizza night', 'Pizza party'] } })]));
+  eq(c6Both(x, A, B2).conflicts.map((c) => [c.ids, c.rows[0].theirsBy.id, c.rows[0].mineBy.op]), [[['x'], 'lg-b1', 'restore']], 'changed since the restore');
+  // The one entry made on both devices, the same but for who entered it: the earlier entry's, not asked.
+  const early = { enteredBy: 'Pat', enteredByUid: 'u1', enteredAt: '2026-10-01T09:00:00.000Z' }, late = { enteredBy: 'Sam', enteredByUid: 'u2', enteredAt: '2026-10-01T10:00:00.000Z' };
+  r = c6Both(x, c6Rec([C6_ROW(Object.assign({ ref: '7' }, late))], base.concat([c6Ev('a1', 'reverse', 'w', 2, { rows: ['x'] })])),
+    c6Rec([C6_ROW(Object.assign({ ref: '7' }, early))], base.concat([c6Ev('b1', 'reverse', 'w', 2, { rows: ['x'] })])));
+  eq([r.conflicts, r.set.x.enteredBy, r.set.x.enteredAt], [[], 'Pat', '2026-10-01T09:00:00.000Z'], 'who entered it');
+  // …and with the content taken from one copy, who entered it comes with it.
+  r = c6Both(x, c6Rec([C6_ROW(Object.assign({ ref: '7', description: 'Pizza night' }, late))], base.concat([edit])), c6Rec([C6_ROW(Object.assign({ ref: '7' }, early))], base));
+  eq([r.set.x.description, r.set.x.enteredBy], ['Pizza night', 'Sam'], 'who entered it goes with the content');
+  // Counted on both: the marks of the copy whose reversal counts, whatever the logs say (A restored,
+  // B holds the entry reversed, its reversal counted).
+  const rv = { id: 'rv-x', date: '2026-10-03', description: 'Reversal of “Pizza”', amountCents: 4000, direction: 'in', reverses: 'x', reconciled: false };
+  const marks = { reversedBy: 'rv-x', voidReason: 'Never cashed', voidedBy: 'Sam', voidedAt: '2026-10-03T10:00:00.000Z' };
+  const Bm = c6Rec([C6_ROW(Object.assign({ ref: '7' }, marks)), rv], base.concat([c6Ev('b1', 'reverse', 'x', 2, { rows: ['rv-x'] })]));
+  const Am = c6Rec([C6_ROW({ ref: '7' })], base.concat([c6Ev('b1', 'reverse', 'x', 2, { rows: ['rv-x'] }), c6Ev('a9', 'restore', 'book', 3)]));
+  r = c6Both(x, Am, Bm);
+  eq([r.conflicts, r.set.x.reversedBy, r.set.x.voidReason], [[], 'rv-x', 'Never cashed'], 'the marks of the reversal that counts');
+  // The reversal deleted in the merged marks counts for nothing: then the restore's (no marks).
+  r = c6Both(x, Am, Bm, { deleted: (id) => id === 'rv-x' });
+  eq([r.conflicts, r.set.x.reversedBy], [[], undefined], 'a reversal deleted');
+  // Held set aside (voided) by a copy: it doesn't count either.
+  r = c6Both(x, Am, c6Rec([Bm.ledger[0]], Bm.ledgerLog, { ledgerAside: [Object.assign({}, rv, { off: 'void' })] }));
+  eq(r.set.x.reversedBy, undefined, 'a reversal set aside');
+  // A reversal that names another entry is not this one's.
+  r = c6Both(x, Am, c6Rec([Bm.ledger[0], Object.assign({}, rv, { reverses: 'y' })], Bm.ledgerLog));
+  eq(r.set.x.reversedBy, undefined, 'a reversal of another entry');
+  // The deletion marks decide what is deleted: the later mark, a tie to the deletion.
+  const gone = x.ledgerMergeOpts({ gone: { ledger: { p: 5, q: -8, t: 7 }, scouts: { s: 3 } } }, { gone: { ledger: { p: -6, q: 9, t: -7 } } });
+  eq([gone.deleted('p'), gone.deleted('q'), gone.deleted('t'), gone.deleted('z'), gone.scoutGone('s'), gone.scoutGone('')], [false, true, true, false, true, false], 'the merged marks');
+});
+
 test('C6: what the merge takes care of elsewhere, or can’t know, is not a change: a scout deleted, a delete and its Undo, an event past a full log', () => {
   const x = sandbox(C6_MERGE_FNS);
   const base = [C6_BASE()];
@@ -24061,7 +24126,7 @@ function c6World() {
     }
     function conflicts(mine, theirs) {
       var m = norm(mine), t = norm(theirs);
-      return mergeLedgerRows(m, t, { scoutGone: ledgerMarksGone(m.gone.scouts, t.gone.scouts) }).conflicts;
+      return mergeLedgerRows(m, t, ledgerMergeOpts(m, t)).conflicts;
     }
     function counted(rec) { return rec.ledger.reduce(function (n, e) { return n + entrySignedCents(e); }, 0); }`, ctx);
   return ctx;
@@ -24267,6 +24332,221 @@ atest('C6, api: an entry changed on one device keeps the change when another dev
   b.run(B1);
   await settle([b], 800);
   eq(server().ledger.find((e) => e.id === 'l3').lineId, 'L9', 'the line A set');
+});
+
+const B2 = "state.entries.push({ id: 'b2', scoutId: 's2', kind: 'wagon', date: '', salesCents: 200, donationsCents: 0 }); commit()";
+test('C6, Firestore: an entry both devices changed opens the chooser on the device saving second; nothing is sent until it picks, and the pick is logged and stands', () => {
+  let { a, b, server, rev } = c6FsPair();
+  a.run("editRow('l2', 'description', 'Pizza night')"); a.push();
+  b.run("editRow('l2', 'description', 'Pizza party')"); b.run(B1);
+  b.hear(); b.push();
+  eq([rev(), c6Asked(b), b.get('ui.overlay && ui.overlay.kind'), b.get('!!sync.conflict')], [4, [['l2']], 'sync-conflict', true], 'B was not asked');
+  // Nothing more goes while it waits, not even another change; closed (Escape), the next push brings it back.
+  b.run('ui.overlay = null'); b.run(B2); b.push();
+  eq([rev(), b.get('ui.overlay && ui.overlay.kind'), c6Asked(b)], [4, 'sync-conflict', [['l2']]], 'B saved while the choice waited');
+  // Saving before every entry is picked saves nothing.
+  b.run('saveRowChoices()');
+  eq([b.get('toasts[toasts.length - 1]'), c6Asked(b), rev()], [b.get('ROW_PICK_NEEDED'), [['l2']], 4], 'saved with nothing picked');
+  // B keeps A's version: B's other changes go too, the pick is logged, and nothing is asked again.
+  c6PickAll(b, 'theirs'); b.push();
+  const s = server(), ev = s.ledgerLog.filter((e) => e.op === 'resolve');
+  eq([rev(), c6L2(s)[0], eIds(s).filter((x) => /^b/.test(x)), b.get('toasts[toasts.length - 1]'), c6Asked(b)], [5, 'Pizza night', ['b1', 'b2'], b.get('ROW_PICKS_SAVED'), null],
+    'the pack record after B picked');
+  eq(ev.map((e) => [e.row, e.f, e.why, e.dev]), [['l2', { description: ['Pizza party', 'Pizza night'] }, LEDGER_RESOLVE_WHY_TEXT, 'devB']], 'the resolve event');
+  a.hear();
+  eq(c6L2(a.get('state'))[0], 'Pizza night', 'A after B’s save');
+  // A changes it again and saves; B, with its own change, saves over it: A's change, and no question.
+  a.run("editRow('l2', 'description', 'Pizza night (October)')"); a.push();
+  b.run("state.entries.push({ id: 'b3', scoutId: 's2', kind: 'wagon', date: '', salesCents: 3, donationsCents: 0 }); commit()"); b.hear(); b.push();
+  eq([c6Asked(b), c6L2(server())[0], rev()], [null, 'Pizza night (October)', 7], 'asked again, or A’s change lost');
+  // The other way: B keeps its own version.
+  ({ a, b, server, rev } = c6FsPair());
+  a.run("editRow('l2', 'amountCents', 4500)"); a.push();
+  b.run("editRow('l2', 'amountCents', 4600)");
+  b.hear(); b.push();
+  c6PickAll(b, 'mine'); b.push();
+  eq([server().ledger.find((e) => e.id === 'l2').amountCents, server().ledgerLog.filter((e) => e.op === 'resolve').map((e) => e.f)], [4600, [{ amountCents: [4500, 4600] }]], 'B kept its own');
+  a.hear();
+  eq(a.get("state.ledger.find(function (e) { return e.id === 'l2'; }).amountCents"), 4600, 'A');
+});
+
+test('C6, Firestore: a newer save while the chooser waits is asked about instead; if it settles the entry, the save goes out without asking', () => {
+  const { a, b, server, rev } = c6FsPair();
+  a.run("editRow('l2', 'description', 'Pizza night')"); a.push();
+  b.run("editRow('l2', 'description', 'Pizza party'); editRow('l3', 'description', 'Dues (B)')"); b.run(B1);
+  a.run("editRow('l3', 'description', 'Dues (A)')"); a.push();   // A's second save, heard by B only now
+  b.hear(); b.push();
+  eq(c6Asked(b), [['l2'], ['l3']], 'both entries');
+  b.run("pickRowVersion(rowChoice(), 'l2', 'mine'); pickRowVersion(rowChoice(), 'l3', 'mine')");
+  // A puts l3 as B had it and saves: B hears it while the choice waits. l3 is settled (both the same);
+  // l2 is still asked, and its pick, made against the same two versions, stands.
+  a.run("editRow('l3', 'description', 'Dues (B)')"); a.push();
+  b.hear();
+  eq([c6Asked(b), b.get("rowChoice().picks")], [[['l2']], { l2: 'mine' }], 'after A’s newer save');
+  // A changes l2 again: the pick was made against A's older version, so it goes, and B is asked again.
+  a.run("editRow('l2', 'description', 'Pizza night!')"); a.push();
+  b.hear();
+  eq([c6Asked(b), b.get('rowChoice().picks'), b.get("rowChoice().items[0].rows[0].theirs.description")], [[['l2']], {}, 'Pizza night!'], 'a pick against an older version');
+  // A puts l2 as B has it: nothing left to ask, and B's save goes out.
+  a.run("editRow('l2', 'description', 'Pizza party')"); a.push();
+  b.hear(); b.push();
+  eq([c6Asked(b), b.get('!!sync.conflict'), b.get('ui.overlay'), eIds(server()).indexOf('b1') !== -1, rev()], [null, false, null, true, 9], 'B’s save after the conflict went');
+});
+
+test('C6, Firestore: while the chooser waits the reload gate drops it, and a leader made view-only takes the shared copy', () => {
+  // A newer page's save arrives: held, the choice dropped, nothing sent.
+  let { a, b, rev } = c6FsPair();
+  a.run("editRow('l2', 'description', 'Pizza night')"); a.push();
+  b.run("editRow('l2', 'description', 'Pizza party')"); b.hear(); b.push();
+  eq(c6Asked(b), [['l2']], 'B was not asked');
+  b.run("reads['packs/P'] = { rev: 9, device: 'newer', updatedAt: 'TS', json: JSON.stringify({ rev: 9, fmt: 2, scouts: [] }) }; watches[0].next(snapOf('packs/P', {}));");
+  eq([b.get('!!sync.newerFormat'), c6Asked(b), b.get('ui.overlay'), b.get('!!sync.conflict')], [true, null, null, false], 'the chooser outlived the hold');
+  b.run('saveRowChoices(); scheduleSyncPush()'); b.push();
+  eq(rev(), 4, 'B wrote while held');
+  // A leader made view-only while it waits: the shared copy, as for the whole-copy choice.
+  ({ a, b, rev } = c6FsPair());
+  b.run(decl('takeSharedAsViewer'));
+  a.run("editRow('l2', 'description', 'Pizza night')"); a.push();
+  b.run("editRow('l2', 'description', 'Pizza party')"); b.hear(); b.push();
+  a.run(B2); a.push();
+  b.run('canEdit = function () { return false; }; sync.membersFromServer = true;');
+  b.hear();
+  eq([c6Asked(b), b.get('ui.overlay'), c6L2(b.get('state'))[0], b.get('toasts[toasts.length - 1]')],
+    [null, null, 'Pizza night', 'You’re now view-only, so this device took the pack’s shared copy.'], 'a viewer still waiting on a choice');
+  // A viewer's device never pushes, so never asks: syncPush returns first.
+  ok(/if \(accountsInForce\(\) && !canEdit\(\)\) return;[\s\S]*var rowItems = ledgerRowConflicts\(remote\);/.test(slice('syncPush')), 'a viewer reaches the pre-check');
+});
+
+atest('C6, api: an entry both devices changed opens the chooser; the pick is logged, pushed, and reaches the other device', async () => {
+  const over = { ledger: C3_ROWS, ledgerAside: [], book: C3_SEED.book, ledgerLog: [], statements: [] };
+  const { a, b, server } = await apiGonePair(over);
+  for (const c of [a, b]) c.run(C6_EXTRA);
+  b.run("editRow('l2', 'description', 'Pizza (B)')");
+  await a.edit("editRow('l2', 'description', 'Pizza (A)')");
+  b.reset();
+  await settle([b], 800);
+  eq([c6Asked(b), b.log.filter((l) => /^PUT/.test(l)), c6L2(server())[0]], [[['l2']], [], 'Pizza (A)'], 'B saved without asking');
+  c6PickAll(b, 'mine');
+  await settle([b], 800);
+  eq([c6L2(server())[0], server().ledgerLog.filter((e) => e.op === 'resolve').map((e) => [e.row, e.f])], ['Pizza (B)', [['l2', { description: ['Pizza (A)', 'Pizza (B)'] }]]], 'the pack record');
+  eq(b.get('toasts[toasts.length - 1]'), b.get('ROW_PICKS_SAVED'), 'the save said something else last (a merge’s toast)');
+  await a.poll();
+  eq(c6L2(a.get('state'))[0], 'Pizza (B)', 'A');
+  // A leader made view-only while it waits takes the shared copy.
+  b.run("editRow('l3', 'description', 'Dues (B)')");
+  await a.edit("editRow('l3', 'description', 'Dues (A)')");
+  await settle([b], 800);
+  eq(c6Asked(b), [['l3']], 'B was not asked about l3');
+  a.run("setMemberRole('uid-editor', 'viewer')");
+  await settle([a]);
+  b.reset();
+  await b.poll();
+  await settle([b], 1200);
+  eq([b.get('[sync.myRole, !!sync.conflict, ui.overlay]'), c6Asked(b), b.log.filter((l) => /^PUT/.test(l))], [['viewer', false, null], null, []], 'a viewer kept waiting, or wrote');
+  eq(b.get("state.ledger.find(function (e) { return e.id === 'l3'; }).description"), 'Dues (A)', 'the viewer took the shared copy');
+});
+
+// The chooser as the page draws it.
+const C6_CHOOSER_FNS = ['esc', 'fmt', 'fmtDateShort', 'ledgerCap', 'ledgerLogValue', 'ledgerLogWhen', 'LEDGER_FIELD_LABELS', 'LEDGER_EDIT_FIELDS', 'LEDGER_RESOLVE_FIELDS',
+  'ledgerEmpty', 'ROW_CHOOSER_TITLE', 'ROW_CHOOSER_KEPT', 'ROW_MONEY_NOTE', 'ROW_SAME_BUT_STAMPS', 'rowChooserIntro', 'ledgerConflictName', 'ledgerConflictLines',
+  'ledgerConflictWho', 'renderRowChooser', 'ROW_PICK_NEEDED', 'JSON_BACKUP_NAME', 'rowChoice'];
+function c6Chooser(items, picks, more) {
+  const ctx = vm.createContext({});
+  vm.runInContext(`${C6_CHOOSER_FNS.map(decl).join('\n')}
+    function ledgerLogNames() { return { line: function (id) { return id === 'L1' ? 'Pack night' : ''; }, scout: function () { return ''; }, tier: function () { return ''; } }; }
+    var ui = { armed: null, overlay: { kind: 'sync-conflict', remote: { rev: 4 } } };
+    var sync = { conflict: ui.overlay.remote };
+    sync.rowChoice = { remote: sync.conflict, items: ${JSON.stringify(items)}, picks: ${JSON.stringify(picks || {})}, seen: {} };
+    ${more || ''}`, ctx);
+  return { html: vm.runInContext('renderRowChooser(ui.overlay, rowChoice())', ctx), ctx };
+}
+const c6Text = (h) => h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+
+test('C6: the chooser names each entry, shows both versions with what differs and who changed it when, and saves only once every entry is picked', () => {
+  const row = (o) => C6_ROW(Object.assign({ id: 'l2', date: '2026-09-10' }, o));
+  const at = '2026-10-02T15:04:00.000Z';
+  const items = [{ ids: ['l2'], rows: [{ id: 'l2', parts: ['content'], mine: row({ description: 'Pizza party' }), theirs: row({ description: 'Pizza night', lineId: 'L1' }),
+    mineBy: null, theirsBy: c6Ev('b1', 'edit', 'l2', 2, { by: 'Sam', at }) }] }];
+  let { html, ctx } = c6Chooser(items);
+  const when = vm.runInContext(`ledgerLogWhen('${at}')`, ctx);
+  const whenText = vm.runInContext(`fmtDateShort('${when.slice(0, 10)}')`, ctx) + ' at ' + when.slice(11);
+  eq(c6Text(html), 'Two versions of the same ledger entries ' +
+    'Another device changed a ledger entry that this device changed too, and the two versions don’t match. Pick the version to keep. Nothing is shared until you do. ' +
+    'Everything else both devices changed is kept. The version you don’t keep is written in the entry’s change history. ' +
+    'Pizza party · Sep 10 · −$40.00 ' +
+    'On this device Who changed it wasn’t recorded. Description: Pizza party Budget line: (none) Keep this version ' +
+    `In the pack’s shared copy Changed by Sam on ${whenText}. Description: Pizza night Budget line: Pack night Keep this version ` +
+    'Download this device’s copy first Pick a version of each entry to save.', 'the chooser');
+  ok(/role="dialog" aria-modal="true" aria-label="Two versions of the same ledger entries"/.test(html), 'not a dialog');
+  ok(/data-act="sync-row-pick:mine:l2"[^>]*>Keep this version/.test(html) && /aria-pressed="false" data-act="sync-row-pick:theirs:l2"/.test(html), 'the buttons');
+  // Picked: said on the button, and the save offered (two taps).
+  ({ html } = c6Chooser(items, { l2: 'theirs' }));
+  ok(/class="btn small primary" aria-pressed="true" data-act="sync-row-pick:theirs:l2">✓ Keeping this version</.test(html), 'the pick is not shown');
+  ok(/data-act="sync-rows-save">Save my choices</.test(html) && !/Pick a version of each entry/.test(html), 'no save');
+  ({ html } = c6Chooser(items, { l2: 'theirs' }, "ui.armed = 'sync-rows-save';"));
+  ok(/class="btn danger armed" data-act="sync-rows-save">Tap again to save</.test(html), 'the second tap');
+  // Several entries; a money-under-a-lock conflict says why; a version differing only in who recorded it says so.
+  const two = items.concat([{ ids: ['l3'], rows: [{ id: 'l3', parts: ['content', 'tick'], mine: row({ id: 'l3', amountCents: 4500 }),
+    theirs: row({ id: 'l3', reconciled: true }), mineBy: null, theirsBy: null }] }, { ids: ['rv-l4'], rows: [{ id: 'rv-l4', parts: ['content'],
+    mine: row({ id: 'rv-l4', enteredBy: 'Pat' }), theirs: row({ id: 'rv-l4', enteredBy: 'Sam' }), mineBy: null, theirsBy: null }] }]);
+  const t = c6Text(c6Chooser(two).html);
+  ok(t.includes('Another device changed 3 ledger entries that this device changed too, and the versions don’t match. Pick the version to keep for each. Nothing is shared until you do.'), 'three: ' + t);
+  ok(t.includes('Pizza · Sep 10 · −$45.00 One device changed its amount, direction or date while the other ticked it or reconciled its month. On this device Who changed it wasn’t recorded. ' +
+    'Amount: $45.00 Ticked: no Keep this version In the pack’s shared copy Who changed it wasn’t recorded. Amount: $40.00 Ticked: yes Keep this version'), 'money under a lock: ' + t);
+  ok(t.includes('On this device Who changed it wasn’t recorded. The same, apart from who recorded it and when. Keep this version'), 'stamps only');
+  // One choice of two entries (a reverse made on both): each named, and the latest change behind each side.
+  const pair = [{ ids: ['l2', 'rv-l2'], rows: [{ id: 'l2', parts: ['off'], mine: row({ voidReason: 'Bounced' }), theirs: row({ voidReason: 'Never cashed' }),
+    mineBy: c6Ev('a1', 'reverse', 'l2', 2, { by: 'Pat' }), theirsBy: c6Ev('b1', 'reverse', 'l2', 2, { by: 'Sam' }) },
+    { id: 'rv-l2', parts: ['content'], mine: row({ id: 'rv-l2', date: '2026-10-02' }), theirs: row({ id: 'rv-l2', date: '2026-10-03' }),
+      mineBy: c6Ev('a0', 'reverse', 'l2', 1, { by: 'Pat' }), theirsBy: c6Ev('b2', 'reverse', 'l2', 3, { by: 'Alex' }) }] }];
+  const pt = c6Text(c6Chooser(pair).html);
+  ok(/Pizza · Sep 10 · −\$40\.00 Pizza · Oct 2 · −\$40\.00 On this device Changed by Pat on [^.]*\. Reason: Bounced Date: Oct 2 Keep this version In the pack’s shared copy Changed by Alex on [^.]*\. Reason: Never cashed Date: Oct 3 Keep this version/.test(pt),
+    'one choice, two entries: ' + pt);
+  // Every value is escaped.
+  const evil = [{ ids: ['x<'], rows: [{ id: 'x<', parts: ['content'], mine: row({ id: 'x<', description: '<img src=x>' }), theirs: row({ id: 'x<', description: '<b>' }),
+    mineBy: c6Ev('e', 'edit', 'x<', 2, { by: '<i>' }), theirsBy: null }] }];
+  ok(!/<img|<b>|<i>|"x<"/.test(c6Chooser(evil).html), 'a value is not escaped');
+  // Drawn for the sync-conflict overlay only while rows wait; the buttons wired; the save armed.
+  ok(/if \(o\.kind === 'sync-conflict'\) \{\n\s+if \(rowChoice\(\)\) return renderRowChooser\(o, rowChoice\(\)\);/.test(SCRIPT), 'the overlay');
+  ok(/if \(act\.indexOf\('sync-row-pick:'\) === 0\) \{/.test(slice('handleAction')) && /if \(act === 'sync-rows-save'\) \{ arm\(act, saveRowChoices\); return; \}/.test(slice('handleAction')),
+    'the buttons');
+});
+
+test('C6: parents never see the chooser or a resolve, and the reload gate refuses its buttons', () => {
+  const bpv = codeOnly(BPV());
+  ok(!/rowChoice|conflict|resolve|ledgerLog/.test(bpv), 'buildParentView reads the chooser or the log');
+  const pa = /var PARENT_ACTS = \[([^\]]*)\]/.exec(SCRIPT)[1];
+  ok(!/sync-row|sync-rows/.test(pa), 'a parent can pick');
+  for (const f of ['renderParentApp', 'renderParentSchedule', 'renderParentStandings', 'renderParentCamping']) {
+    ok(!/rowChoice|renderRowChooser|sync-row/.test(codeOnly(slice(f))), f + ' draws the chooser');
+  }
+  const g = sandbox(['heldActAllowed', 'HELD_ACTS', 'HELD_ACT_PREFIXES', 'PARENT_ACTS', 'GATE_ACTS']);
+  eq(['sync-row-pick:mine:l2', 'sync-rows-save', 'sync-download-local', 'sync-choose', 'close-overlay'].map((x) => g.heldActAllowed(x)), [false, false, true, true, true], 'what is left open while held');
+  // A hold drops the choice (dropCopyChoice clears sync.conflict, which rowChoice() needs).
+  ok(/function rowChoice\(\) \{\n\s+var c = sync\.rowChoice;\n\s+return c && sync\.conflict && c\.remote === sync\.conflict \? c : null;/.test(SCRIPT), 'rowChoice');
+});
+
+test('C6, Firestore: a save finds what changed on this device while the chooser waited, and asks again; a viewer’s save does nothing', () => {
+  const { a, b, rev } = c6FsPair();
+  a.run("editRow('l2', 'description', 'Pizza night')"); a.push();
+  b.run("editRow('l2', 'description', 'Pizza party')"); b.hear(); b.push();
+  b.run("pickRowVersion(rowChoice(), 'l2', 'mine')");
+  // Closed (Escape), B changes l2 again, then saves: the version it picked is not the one it holds now.
+  b.run("ui.overlay = null; editRow('l2', 'description', 'Pizza party!')");
+  b.run('saveRowChoices()');
+  eq([b.get('toasts[toasts.length - 1]'), b.get('rowChoice().picks'), b.get('rowChoice().items[0].rows[0].mine.description'), rev()],
+    [b.get('ROW_PICKS_CHANGED'), {}, 'Pizza party!', 4], 'saved a pick made against an older version');
+  // A viewer (a role changed, the chooser still up): nothing merged, nothing sent, told why.
+  b.run("pickRowVersion(rowChoice(), 'l2', 'mine'); canEdit = function () { return false; }; saveRowChoices()");
+  eq([b.get('toasts[toasts.length - 1]'), c6Asked(b), rev()], ['Read-only access — ask a pack admin to make you an editor.', [['l2']], 4], 'a viewer saved');
+  b.run('canEdit = function () { return true; }; saveRowChoices()'); b.push();
+  eq([rev(), b.get('toasts[toasts.length - 1]')], [5, b.get('ROW_PICKS_SAVED')], 'the save');
+  // The choice is read only while the record it was found against is the one waiting: another
+  // (a whole-copy choice, a first answer) is not drawn as entries.
+  b.run("sync.rowChoice = { remote: { rev: 9 }, items: [], picks: {}, seen: {} }; sync.conflict = { rev: 9 }");
+  eq(b.get('rowChoice()'), null, 'a choice read against another record');
+  // After the save, the ledger-look toast, and the fates, as a sync's.
+  ok(/showToast\(ROW_PICKS_SAVED\);\n\s+noteLedgerLookAfterSync\(lookWas, false\);\n\s+noteReconciledFates\(\{ kept: kept, lost: lost, split: split \}\);/.test(slice('saveRowChoices')), 'what the save says');
 });
 
 /* ---------------- report ---------------- */

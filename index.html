@@ -10750,6 +10750,10 @@
     // keepLocalCopy). Closing the chooser with Escape leaves it set: nothing is written, and no
     // move file is made, until they choose.
     conflict: null,
+    // Phase 3, C6 — the ledger entries in conflict with that record, waiting on the leader's pick of
+    // each (syncPush's pre-check): { remote, items, picks, seen }. Read only through rowChoice(), and
+    // only while `conflict` is still the record it was found against.
+    rowChoice: null,
     // LIVE STOPGAP — the rev of the copy from the other side of a close-out that the leader chose
     // to write over ("Keep this device's copy", keepLocalCopy). syncPush writes over exactly that
     // copy whole; any other is merged or asked about as usual. Cleared by a save, and by syncStop.
@@ -13809,13 +13813,16 @@
   //              (both counted, or set aside the same way): which list is the deletion marks'
   //              decision, as before (settleVoided, ledgerAsideSettle, ledgerPairCheck);
   //     content  everything else: what the entry says (date, amount, direction, description,
-  //              line, family, method, reference, …) and who entered it.
+  //              line, family, method, reference, …). Who entered it (enteredBy, enteredByUid,
+  //              enteredAt) goes with the content, or, the content the same (the one entry made on
+  //              two devices), is the earlier entry's: never a question on its own.
   //   A copy CHANGED a part since the two last agreed when its log has an event about the row,
   //   touching that part (ledgerEventParts), that the other copy's log doesn't have. Then:
   //     the part reads the same in both            → nothing to settle ('' and absent alike);
   //     only one copy changed it                    → that copy's;
   //     both changed it, or neither did (a change   → a CONFLICT: the leader picks a copy for
-  //       that left no event: a page from before C2)  the row (picks[id]), logged as a 'resolve'.
+  //       that left no event: a page from before C2)  the row (picks[id]) in syncPush's chooser
+  //                                                   (ledgerRowConflicts), logged as a 'resolve'.
   //   The tick has rules of its own, before that:
   //     - both ticked, or both not, is never a conflict: the stamps are the copy that changed
   //       the tick, else the earlier tick's (the same from either side);
@@ -13830,6 +13837,10 @@
   //     - a reverse or correct changes the content too (its reversal mirrors the entry's money);
   //     - money changed on one copy while the other locked the row since (ticked it, or reconciled
   //       through its date) is a conflict of the whole row (ledgerLockedMeanwhile).
+  //   A backup restored (a 'restore' event) changed every entry: the backup's version is that
+  //   copy's change, and only an entry the other copy changed since is asked about.
+  //   Counted on both copies, the reverse marks are those of the copy whose reversal counts (the
+  //   merge's rvMarked rule, kept), whatever the logs say; by the logs only when both count or neither.
   //   A 'reassign' (a scout deleted) settles nothing here: the scout's deletion mark unlinks the
   //   rows on every device (mergeRemoteAppendOnly), so a family the merged marks have deleted
   //   (`scoutGone`) reads as none. Nor does an 'add' or 'delete': the marks settle those.
@@ -13841,21 +13852,25 @@
   // are pack records (their ledger, ledgerAside, ledgerLog and statements); neither is changed.
   // Returns { set: { id: fields }, conflicts: [item] }. `set` is what both copies of a row take
   // (applyLedgerRowSet; a field undefined is removed). An unpicked conflict is left out of `set`:
-  // each copy keeps its own, and the merge's union keeps this device's (what a sync always did).
-  // An item is one choice:
+  // each copy keeps its own, and the merge's union keeps this device's (what a sync always did);
+  // syncPush asks the leader before it gets that far. An item is one choice:
   // the rows two events tie together (an entry reversed on both devices and its reversal), each
   // { id, parts, mine, theirs, mineBy, theirsBy }: the parts in conflict, both rows, and the latest
   // event behind each copy's change (null when nothing logged it).
   var LEDGER_TICK_FIELDS = ['reconciled', 'reconciledAt', 'approvedBy', 'approvedByUid', 'approvedAt', 'statementId'];
   var LEDGER_OFF_FIELDS = ['off', 'reversedBy', 'voidReason', 'voidedBy', 'voidedByUid', 'voidedAt'];
+  var LEDGER_ENTERED_FIELDS = ['enteredBy', 'enteredByUid', 'enteredAt'];
   function ledgerFieldPart(k) {
-    return LEDGER_TICK_FIELDS.indexOf(k) !== -1 ? 'tick' : LEDGER_OFF_FIELDS.indexOf(k) !== -1 ? 'off' : 'content';
+    return LEDGER_TICK_FIELDS.indexOf(k) !== -1 ? 'tick' : LEDGER_OFF_FIELDS.indexOf(k) !== -1 ? 'off' :
+      LEDGER_ENTERED_FIELDS.indexOf(k) !== -1 ? 'entered' : 'content';
   }
   // The parts of row `id` that event `ev` changed: { tick, off, content }, each true or absent. An op
   // this page doesn't know (a newer page's) changed all three: a conflict, never a silent pick.
   function ledgerEventParts(ev, id) {
     var all = { tick: true, off: true, content: true }, op = ev.op;
     if (LEDGER_OPS.indexOf(op) === -1) return all;
+    // A backup restored (row 'book') put every entry back as the backup had it: a change to all of them.
+    if (op === 'restore') return all;
     if (ev.row !== id) {
       // Named in `rows`: a Tick all's rows were ticked. Nothing else: a reassign's rows (the marks
       // unlink them), a reopen's statements, and the rows a reverse or correct made (a copy holding
@@ -13889,7 +13904,15 @@
       return m > 0;
     };
   }
-  function ledgerEmpty(v) { return v === '' || v === null || v === undefined; }
+  // A field with nothing in it: '', null, false or absent read alike (a row set aside carries '' and
+  // null where a counted one has nothing; a flag not set is false or absent).
+  // What mergeLedgerRows needs from the two copies' deletion marks: whether a scout, and a ledger row,
+  // is deleted once they are merged. Pure.
+  function ledgerMergeOpts(a, b, picks) {
+    function marks(s, log) { return s && s.gone && s.gone[log]; }
+    return { picks: picks, scoutGone: ledgerMarksGone(marks(a, 'scouts'), marks(b, 'scouts')), deleted: ledgerMarksGone(marks(a, 'ledger'), marks(b, 'ledger')) };
+  }
+  function ledgerEmpty(v) { return v === '' || v === null || v === undefined || v === false; }
   // The fields that are the money itself: a locked row's change only by Correct (LEDGER_LOCKED_FIELDS).
   var LEDGER_MONEY_FIELDS = ['amountCents', 'direction', 'date'];
   // Did copy `oth` (its row, the parts it changed since, its record) lock the row while the other
@@ -13927,12 +13950,13 @@
     opts = opts || {};
     var picks = opts.picks || {}, scoutGone = opts.scoutGone || null;
     function side(s) {
-      var o = { rows: Object.create(null), evs: Object.create(null), ids: Object.create(null), sts: Object.create(null), full: false, first: '' };
+      var o = { rows: Object.create(null), evs: Object.create(null), ids: Object.create(null), sts: Object.create(null), full: false, first: '', restores: [] };
       arrOf(s && s.ledger).forEach(function (e) { if (e && typeof e.id === 'string' && !o.rows[e.id]) o.rows[e.id] = { row: e, list: 'counted' }; });
       arrOf(s && s.ledgerAside).forEach(function (e) { if (e && typeof e.id === 'string' && !o.rows[e.id]) o.rows[e.id] = { row: e, list: 'aside:' + String(e.off) }; });
       var log = arrOf(s && s.ledgerLog).filter(function (ev) { return ev && typeof ev.id === 'string'; });
       log.forEach(function (ev) {
         o.ids[ev.id] = true;
+        if (ev.op === 'restore') o.restores.push(ev);
         var named = {};
         [ev.row].concat(Array.isArray(ev.rows) ? ev.rows : []).forEach(function (r) {
           if (typeof r !== 'string' || named[r]) return;
@@ -13945,10 +13969,17 @@
       o.first = log.length ? String(log[0].at || '') + '\u0000' + log[0].id : '';
       return o;
     }
-    var M = side(mine), T = side(theirs);
+    var M = side(mine), T = side(theirs), deleted = opts.deleted || function () { return false; };
+    // Does the reversal row `e` names (reversedBy) count: held counted by either copy, reversing `e`,
+    // and not deleted in the merged marks?
+    function reversalCounts(e) {
+      var rv = typeof e.reversedBy === 'string' && e.reversedBy ? e.reversedBy : '';
+      if (!rv || deleted(rv)) return false;
+      return [M, T].some(function (c) { var x = c.rows[rv]; return !!x && x.list === 'counted' && x.row.reverses === e.id; });
+    }
     // Events about `id` on copy `a` that copy `b` hasn't, past b's cap, and the parts they changed.
     function fresh(a, b, id) {
-      return (a.evs[id] || []).filter(function (ev) {
+      return (a.evs[id] || []).concat(a.restores).filter(function (ev) {
         return !b.ids[ev.id] && !(b.full && String(ev.at || '') + '\u0000' + ev.id < b.first);
       });
     }
@@ -13989,6 +14020,12 @@
         content: decide('content', ledgerPartKey(mr, 'content', scoutGone) === ledgerPartKey(tr, 'content', scoutGone)),
         off: m.list === t.list ? decide('off', ledgerPartKey(mr, 'off') === ledgerPartKey(tr, 'off')) : 'same'
       };
+      // Counted on both: the reverse marks of the copy whose reversal counts (as the merge's rvMarked
+      // always had them), whatever the logs say; only when both count, or neither, by the logs.
+      if (m.list === 'counted' && t.list === 'counted' && how.off !== 'same') {
+        var rcm = reversalCounts(mr), rct = reversalCounts(tr);
+        if (rcm !== rct) how.off = rcm ? 'mine' : 'theirs';
+      }
       // Money changed on one copy (amount, direction, date) while the other locked the row, by a tick
       // or a lock through its date made there since: a locked row's money changes only by Correct
       // (owner decision 1), and the copy that changed it didn't know. Asked, the whole row either way.
@@ -14016,12 +14053,21 @@
       var parts = ['content', 'off', 'tick'].filter(function (p) { return how[p] === 'conflict'; });
       var pick = picks[id] === 'mine' || picks[id] === 'theirs' ? picks[id] : '';
       if (parts.length) {
-        found.push({ id: id, parts: parts, mine: mr, theirs: tr, newM: newM, newT: newT });
+        // Copies: the caller writes the settled rows over these very objects (applyLedgerMerge).
+        found.push({ id: id, parts: parts, mine: JSON.parse(JSON.stringify(mr)), theirs: JSON.parse(JSON.stringify(tr)), newM: newM, newT: newT });
         if (!pick) return;
         parts.forEach(function (p) { how[p] = pick; });
       }
+      // Who entered it (never changed once entered: two copies differ only when two devices made the
+      // same row, a reverse made on both): the copy whose content is taken; with the content the same
+      // on both, the earlier entry's.
+      how.entered = how.content;
+      if (how.entered === 'same' && ledgerPartKey(mr, 'entered') !== ledgerPartKey(tr, 'entered')) {
+        var em = String(mr.enteredAt || '\uffff') + ledgerPartKey(mr, 'entered'), et = String(tr.enteredAt || '\uffff') + ledgerPartKey(tr, 'entered');
+        how.entered = em <= et ? 'mine' : 'theirs';
+      }
       var out = {};
-      ['content', 'off'].forEach(function (p) {
+      ['content', 'entered', 'off'].forEach(function (p) {
         if (how[p] === 'mine') take(out, p, mr, tr);
         else if (how[p] === 'theirs') take(out, p, tr, mr);
       });
@@ -14130,9 +14176,7 @@
     // rows kept over a delete (keepReconciled), the void and reverse rules and the pair check all
     // read the settled rows, and read them the same on every device. A conflict nobody has picked
     // for is left as each copy has it (this device's is kept, as always); syncPush asks first.
-    var rowMerge = mergeLedgerRows(state, remote, {
-      picks: picks, scoutGone: ledgerMarksGone(state.gone && state.gone.scouts, remote.gone && remote.gone.scouts)
-    });
+    var rowMerge = mergeLedgerRows(state, remote, ledgerMergeOpts(state, remote, picks));
     added += applyLedgerMerge(state, rowMerge.set, remote);
     // Each row the leader picked a copy of is logged, a 'resolve' (ledgerResolveMore): the next merge
     // reads it as this device's change, so the choice stands, and the history says what was kept.
@@ -14616,6 +14660,13 @@
       // they chose to write over (sync.seasonKeptRev) is written over whole, and only that one.
       if (clobbered && remoteRev === sync.seasonKeptRev) clobbered = false;
       if (clobbered && seasonMoved(remote)) return { record: null, result: { season: remote } };
+      // PHASE 3, C6 — a ledger entry both copies changed, differently (mergeLedgerRows): nothing is
+      // sent, and the leader picks the version of each to keep (the chooser: saveRowChoices). Never
+      // picked here, silently. Viewers never get this far: they don't push.
+      if (clobbered) {
+        var rowItems = ledgerRowConflicts(remote);
+        if (rowItems.length) return { record: null, result: { rows: rowItems, rowsRemote: remote } };
+      }
       var mergedN = clobbered ? mergeRemoteAppendOnly(remote, keptRows, lostRows, splitRows) : 0;
       var nextRev = be.serverRevs ? remoteRev + 1 : Math.max(state.rev || 0, remoteRev) + 1;
       state.fmt = PACK_FORMAT;   // the reload gate: the format this page writes
@@ -14639,6 +14690,17 @@
           sync.firstSnap = true;
           onRemoteSnap(res.unheard, { fromServer: true, pendingWrites: false });
         } else if (sync.dirty && !sync.conflict) scheduleSyncPush();
+        return;
+      }
+      if (res.rows) {
+        // As for a close-out below: the server's copy as read, and the chooser, one entry at a time.
+        sync.remoteRec = { rev: res.rowsRemote.rev, device: res.rowsRemote.device, json: res.rowsRemote.json };
+        if (!sync.conflict) {
+          sync.conflict = res.rowsRemote;
+          sync.rowChoice = { remote: res.rowsRemote, items: res.rows, picks: {}, seen: {} };
+          ui.overlay = { kind: 'sync-conflict', remote: res.rowsRemote };
+          render();
+        }
         return;
       }
       if (res.season) {
@@ -14903,7 +14965,9 @@
       // no copy to keep: it takes the shared one, as a viewer's first answer does (M-3) — once
       // the server has said so (applyRoleSubscription). Until then the choice waits, on this copy.
       if (!canEdit() && sync.membersFromServer) { takeSharedAsViewer(d); return; }
+      var rcWas = rowChoice();   // Phase 3, C6 — entries waiting are asked of the newer copy instead
       sync.conflict = d;
+      if (rcWas) { refreshRowChoice(rcWas, d); return; }
       if (ui.overlay && ui.overlay.kind === 'sync-conflict') { ui.overlay.remote = d; render(); }
       return;
     }
@@ -14924,6 +14988,99 @@
     if (ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay = null;
     if (adoptRemote(d, {})) showToast('You’re now view-only, so this device took the pack’s shared copy.');
     else render();
+  }
+  // ---------------------------------------------------------------------------
+  // PHASE 3, C6 — THE ENTRY CHOOSER (owner decision 4). syncPush's pre-check found ledger entries
+  // both copies changed differently (mergeLedgerRows): nothing was sent, and the leader picks the
+  // version of each to keep, this device's or the pack's shared copy's. Saved, the merge runs with
+  // those picks (each logged as a 'resolve', with what was not kept) and the push goes out. It is a
+  // sync-conflict like the whole-copy one, so everything that holds for that holds here: nothing is
+  // pushed, and no family view published, while it waits; closed with Escape it waits, and the pill
+  // brings it back; a device made view-only takes the shared copy (takeSharedAsViewer); the reload
+  // gate drops it (dropCopyChoice) and refuses its buttons (HELD_ACTS). Leaders only: a parent's
+  // page never holds the pack record, and a viewer never pushes.
+  // ---------------------------------------------------------------------------
+  // The entries in conflict between this device's copy and the pack record `d` (as the backend sent
+  // it), as the merge would find them; [] when none, or when `d` can't be read.
+  function ledgerRowConflicts(d) {
+    var parsed = null;
+    try { parsed = JSON.parse(typeof d.json === 'string' ? d.json : ''); } catch (e) { return []; }
+    var remote = normalizeState(parsed);
+    if (!remote) return [];
+    return mergeLedgerRows(state, remote, ledgerMergeOpts(state, remote)).conflicts;
+  }
+  // The entries waiting on the leader, or null: only while the sync-conflict waiting is the record
+  // they were found against (a whole-copy choice set since, or any choice made, is not one).
+  function rowChoice() {
+    var c = sync.rowChoice;
+    return c && sync.conflict && c.remote === sync.conflict ? c : null;
+  }
+  // What a pick was made against: both versions of the entry. A pick holds only while they are the same.
+  function ledgerConflictSig(r) { return JSON.stringify([r.mine, r.theirs]); }
+  // Keep every version of an entry that `rc` (the entries waiting) asks about from `side` ('mine',
+  // 'theirs'): every entry of its item, the one choice.
+  function pickRowVersion(rc, id, side) {
+    if (side !== 'mine' && side !== 'theirs') return;
+    rc.items.forEach(function (it) {
+      if (it.ids.indexOf(id) === -1) return;
+      it.rows.forEach(function (r) { rc.picks[r.id] = side; rc.seen[r.id] = ledgerConflictSig(r); });
+    });
+  }
+  // Asked of `d` (a newer pack record, or the same one again): the entries in conflict as they are
+  // now. A pick stands only for an entry whose two versions are what the leader saw. With none left
+  // (the other leader put it right, or this device's copy changed), the choice is done with, and a
+  // save waiting goes out.
+  function refreshRowChoice(rc, d) {
+    rc.remote = d;
+    rc.items = ledgerRowConflicts(d);
+    var changed = false, now = {};
+    rc.items.forEach(function (it) { it.rows.forEach(function (r) { now[r.id] = ledgerConflictSig(r); }); });
+    Object.keys(rc.picks).forEach(function (id) {
+      if (rc.seen[id] === now[id]) return;
+      changed = true;
+      delete rc.picks[id]; delete rc.seen[id];
+    });
+    if (!rc.items.length) {
+      sync.conflict = null;
+      sync.rowChoice = null;
+      if (ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay = null;
+      render();
+      if (sync.dirty) scheduleSyncPush();
+      return false;
+    }
+    if (ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay.remote = d;
+    render();
+    return changed;
+  }
+  var ROW_PICK_NEEDED = 'Pick a version of each entry to save.';
+  var ROW_PICKS_CHANGED = 'Something changed since you picked. Check each entry again, then save.';
+  var ROW_PICKS_SAVED = 'Saved. Each entry you picked a version of says so in its change history.';
+  // "Save my choices" (armed, two taps): asked again first, of the same record (this device's copy
+  // may have changed while the chooser was closed); then the merge with the picks, and the push.
+  function saveRowChoices() {
+    var rc = rowChoice();
+    if (!rc) return;
+    if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); render(); return; }
+    // (The reload gate has dropped the choice already, dropCopyChoice; and commit refuses.)
+    var changed = refreshRowChoice(rc, rc.remote);
+    if (!rowChoice()) return;   // nothing left to ask: the save is on its way
+    var missing = rc.items.some(function (it) { return it.rows.some(function (r) { return !rc.picks[r.id]; }); });
+    if (missing) { showToast(changed ? ROW_PICKS_CHANGED : ROW_PICK_NEEDED); return; }
+    var picks = {}, kept = [], lost = [], split = [], lookWas = ledgerLookCount();
+    rc.items.forEach(function (it) { it.rows.forEach(function (r) { picks[r.id] = rc.picks[r.id]; }); });
+    mergeRemoteAppendOnly(rc.remote, kept, lost, split, picks);
+    sync.conflict = null;
+    sync.rowChoice = null;
+    if (ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay = null;
+    // Merged with the newest copy this device has heard (refreshRowChoice keeps rc.remote so): the save
+    // writes over exactly that one, as "Keep this device's copy" does. A save landing since is still
+    // read at the push, and merged or asked about.
+    sync.clobber = false;
+    if (sync.backend && sync.backend.serverRevs && typeof rc.remote.rev === 'number') state.rev = rc.remote.rev;
+    if (!commit()) return;   // commit re-syncs the charges, saves and pushes
+    showToast(ROW_PICKS_SAVED);
+    noteLedgerLookAfterSync(lookWas, false);
+    noteReconciledFates({ kept: kept, lost: lost, split: split });
   }
   // LIVE STOPGAP — the copy chooser's plain-words parts (treasurer M3, popcorn 3 of the stopgap
   // reviews). Leaders only: the chooser is never shown to a parent. Pure, given the two copies
@@ -25983,6 +26140,70 @@
       lines.join('\n')).replace(/\n+$/, '');
   }
 
+  // Phase 3, C6 — the entry chooser (see saveRowChoices), in the words of the ledger's own notes:
+  // each entry named as the change history names it, both versions side by side (one above the
+  // other on a phone) with what differs, who changed it and when, and a button to keep each.
+  var ROW_CHOOSER_TITLE = 'Two versions of the same ledger entries';
+  var ROW_CHOOSER_KEPT = 'Everything else both devices changed is kept. The version you don’t keep is written in the entry’s change history.';
+  var ROW_MONEY_NOTE = 'One device changed its amount, direction or date while the other ticked it or reconciled its month.';
+  var ROW_SAME_BUT_STAMPS = 'The same, apart from who recorded it and when.';
+  function rowChooserIntro(n) {
+    return n === 1
+      ? 'Another device changed a ledger entry that this device changed too, and the two versions don’t match. Pick the version to keep. Nothing is shared until you do.'
+      : 'Another device changed ' + n + ' ledger entries that this device changed too, and the versions don’t match. Pick the version to keep for each. Nothing is shared until you do.';
+  }
+  function ledgerConflictName(e) {
+    return (e.description || 'An entry') + ' · ' + fmtDateShort(e.date) + ' · ' + (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents || 0);
+  }
+  // What `side`'s version of conflict row `r` says where the two differ, one line a field (the
+  // fields a 'resolve' records). Pure given `names` (ledgerLogValue's).
+  function ledgerConflictLines(r, side, names) {
+    var e = side === 'mine' ? r.mine : r.theirs, o = side === 'mine' ? r.theirs : r.mine;
+    return LEDGER_RESOLVE_FIELDS.filter(function (k) { return !(ledgerEmpty(e[k]) && ledgerEmpty(o[k])) && e[k] !== o[k]; }).map(function (k) {
+      return ledgerCap(LEDGER_FIELD_LABELS[k] || k) + ': ' + ledgerLogValue(k, e[k], names);
+    });
+  }
+  function ledgerConflictWho(ev) {
+    if (!ev) return 'Who changed it wasn’t recorded.';
+    var when = ledgerLogWhen(ev.at);
+    return 'Changed by ' + (ev.by || 'someone') + (when ? ' on ' + fmtDateShort(when.slice(0, 10)) + ' at ' + when.slice(11) : '') + '.';
+  }
+  function renderRowChooser(o, rc) {
+    var names = ledgerLogNames(), n = 0, all = true;
+    rc.items.forEach(function (it) { n += it.ids.length; if (it.rows.some(function (r) { return !rc.picks[r.id]; })) all = false; });
+    var h = '<div class="overlay" role="dialog" aria-modal="true" aria-label="' + esc(ROW_CHOOSER_TITLE) + '"><div class="overlay-inner"><div class="card">' +
+      '<h2 class="section display">' + esc(ROW_CHOOSER_TITLE) + '</h2>' +
+      '<p>' + esc(rowChooserIntro(n)) + '</p><p class="small muted">' + esc(ROW_CHOOSER_KEPT) + '</p>';
+    rc.items.forEach(function (it) {
+      h += '<div style="border-top:1px solid var(--line);margin-top:12px;padding-top:10px">' +
+        it.rows.map(function (r) { return '<p style="margin:0"><strong>' + esc(ledgerConflictName(r.mine)) + '</strong></p>'; }).join('');
+      if (it.rows.some(function (r) { return r.parts.indexOf('content') !== -1 && r.parts.indexOf('tick') !== -1; })) {
+        h += '<p class="small" style="margin:4px 0 0">' + esc(ROW_MONEY_NOTE) + '</p>';
+      }
+      h += '<div class="row" style="align-items:flex-start;gap:12px;margin-top:6px">' + ['mine', 'theirs'].map(function (side) {
+        var picked = rc.picks[it.ids[0]] === side, by = null, lines = [];
+        it.rows.forEach(function (r) {
+          var ev = r[side + 'By'];
+          if (ev && (!by || String(ev.at || '') + ev.id > String(by.at || '') + by.id)) by = ev;
+          lines = lines.concat(ledgerConflictLines(r, side, names));
+        });
+        if (!lines.length) lines = [ROW_SAME_BUT_STAMPS];
+        return '<div style="flex:1 1 220px;min-width:0">' +
+          '<p class="eyebrow" style="margin:0">' + (side === 'mine' ? 'On this device' : 'In the pack’s shared copy') + '</p>' +
+          '<p class="small muted" style="margin:2px 0 4px">' + esc(ledgerConflictWho(by)) + '</p>' +
+          '<ul class="small" style="margin:0 0 8px;padding-left:18px">' + lines.map(function (l) { return '<li>' + esc(l) + '</li>'; }).join('') + '</ul>' +
+          '<button type="button" class="btn small' + (picked ? ' primary' : '') + '" aria-pressed="' + (picked ? 'true' : 'false') + '" data-act="sync-row-pick:' +
+            side + ':' + esc(it.ids[0]) + '">' + (picked ? '✓ Keeping this version' : 'Keep this version') + '</button></div>';
+      }).join('') + '</div></div>';
+    });
+    var armed = ui.armed === 'sync-rows-save';
+    return h + '<div class="row" style="margin-top:14px"><button type="button" class="btn" data-act="sync-download-local">Download this device’s copy first</button></div>' +
+      (o.downloaded ? '<p class="small muted" style="margin-top:0">Downloaded as ' + esc(JSON_BACKUP_NAME) + '. Keep it until the treasurer has what was in it.</p>' : '') +
+      '<div class="row">' + (all
+        ? '<button type="button" class="btn ' + (armed ? 'danger armed' : 'primary') + '" data-act="sync-rows-save">' + (armed ? 'Tap again to save' : 'Save my choices') + '</button>'
+        : '<p class="small muted" style="margin:0">' + esc(ROW_PICK_NEEDED) + '</p>') +
+      '</div></div></div></div>';
+  }
   function renderOverlay() {
     if (!ui.overlay) return '';
     var o = ui.overlay;
@@ -26313,6 +26534,7 @@
         '</div></div></div>';
     }
     if (o.kind === 'sync-conflict') {
+      if (rowChoice()) return renderRowChooser(o, rowChoice());   // Phase 3, C6
       var rc = null;
       try { rc = JSON.parse(typeof o.remote.json === 'string' ? o.remote.json : ''); } catch (e) { /* shown as 0s */ }
       rc = rc || {};
@@ -31566,6 +31788,15 @@
       render(); return;
     }
     // Armed (two-tap) destructive actions
+    // Phase 3, C6 — the entry chooser: keep one version of an entry (every entry of its item), and save.
+    if (act.indexOf('sync-row-pick:') === 0) {
+      var rpc = rowChoice();
+      if (!rpc) return;
+      var rpSide = act.split(':')[1];
+      pickRowVersion(rpc, act.slice(('sync-row-pick:' + rpSide + ':').length), rpSide);
+      render(); return;
+    }
+    if (act === 'sync-rows-save') { arm(act, saveRowChoices); return; }
     if (act === 'sync-use-cloud') {
       arm(act, function () {
         var o = ui.overlay;
