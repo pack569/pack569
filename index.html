@@ -15388,7 +15388,8 @@
   // entries can be kept from, and why (mergeLedgerRows' `lock`), or null when either side can be.
   // Entries locked on opposite sides (two statements signed separately, each on one of a pair) bar
   // neither side here (null); the merge still never keeps the side each can't (mergeLedgerRows), and
-  // the chooser offers them one button (rowItemSplit, N2).
+  // the chooser offers them one button (rowItemSplit, N2), or, with other entries locked to neither, both
+  // and a line saying so (rowItemMixed).
   // Security re-check of C6 (N1a) — a lock with no side ('both': either can be kept) bars nothing: the
   // item's lock is its entries' sided one, or, with none, the 'both' (for the chooser's note).
   function rowItemLock(it) {
@@ -15400,10 +15401,28 @@
   // Security re-check of C6 (N2) — are an item's entries locked on opposite sides (one keeps only this
   // device's version, another only the shared copy's)? Then no one side is the pick: the chooser offers
   // one button, and each entry keeps the version it can (mergeLedgerRows). Pure.
+  // Quick check of N1–N5 (3) — only when EVERY entry of the item is locked to one side: an entry locked to
+  // neither is still the leader's to pick, and one button would pick it for them, silently.
   function rowItemSplit(it) {
-    var sides = {};
-    it.rows.forEach(function (r) { if (r.lock && (r.lock.side === 'mine' || r.lock.side === 'theirs')) sides[r.lock.side] = true; });
-    return !!(sides.mine && sides.theirs);
+    var sides = rowItemSides(it);
+    return !!(sides.mine && sides.theirs && sides.all);
+  }
+  // Quick check of N1–N5 (3) — an item with entries locked on opposite sides and others locked to neither:
+  // both buttons (for those others), and a line that the locked ones keep their version whichever is kept.
+  // Pure.
+  function rowItemMixed(it) {
+    var sides = rowItemSides(it);
+    return !!(sides.mine && sides.theirs && !sides.all);
+  }
+  // The sides an item's entries are locked to: { mine, theirs } (each true or absent), and `all`: whether
+  // every entry is locked to one. Pure.
+  function rowItemSides(it) {
+    var sides = { all: true };
+    it.rows.forEach(function (r) {
+      if (r.lock && (r.lock.side === 'mine' || r.lock.side === 'theirs')) sides[r.lock.side] = true;
+      else sides.all = false;
+    });
+    return sides;
   }
   // Keep every version of an entry that `rc` (the entries waiting) asks about from `side` ('mine',
   // 'theirs'): every entry of its item, the one choice. Never the side that can't be kept (the
@@ -26643,12 +26662,17 @@
       : 'This entry is on two statements signed separately, the ' + m + ' statement on this device and the ' + t + ' statement in the pack’s shared copy') +
       ', and the two versions differ in amount, date or in/out. Whichever you keep, the other statement no longer matches it.';
   }
-  // Security re-check of C6 (N2) — an item whose entries are locked on opposite sides (rowItemSplit): one
+  // Security re-check of C6 (N2) — an item whose entries are all locked, on opposite sides (rowItemSplit): one
   // button, sending 'mine' (the merge keeps each entry's reconciled version, whichever side), and why.
   var ROW_SPLIT_NOTE = 'These entries were reconciled on different devices, so each keeps its own reconciled version. The entry and its reversal may then no longer ' +
     'cancel each other: after you save, see “The ledger needs a look” on Money · Ledger.';
   var ROW_SPLIT_KEEP = 'Keep each entry’s reconciled version';
   var ROW_SPLIT_KEEPING = '✓ Keeping each entry’s reconciled version';
+  // Quick check of N1–N5 (3) — some of its entries locked on opposite sides, and others to neither
+  // (rowItemMixed): both buttons, and this.
+  var ROW_MIXED_NOTE = 'Some of these entries were reconciled on one device and some on the other. Whichever version you keep, each reconciled entry keeps ' +
+    'its reconciled version, and your pick decides the rest. The entry and its reversal may then no longer cancel each other: after you save, ' +
+    'see “The ledger needs a look” on Money · Ledger.';
   // In place of the button of the side that can't be kept (`lock`, rowItemLock).
   function rowCantKeep(lock) {
     if (lock.kind === 'pair') return 'Can’t be kept: it changes the amount of an entry that has been reversed.';
@@ -26717,7 +26741,7 @@
         it.rows.map(function (r) { return '<p style="margin:0"><strong>' + esc(ledgerConflictName(r.mine, r.theirs)) + '</strong></p>'; }).join('') +
         (many ? '<p class="small muted" style="margin:2px 0 0">' + esc(rowChooserTogether(it.rows.length)) + '</p>' : '');
       var lock = rowItemLock(it), split = rowItemSplit(it);
-      var note = split ? ROW_SPLIT_NOTE : lock ? (lock.kind === 'both' ? rowTwoStatementsNote(lock) : lock.kind === 'pair' ? ROW_PAIR_NOTE : ROW_LOCKED_NOTE)
+      var note = split ? ROW_SPLIT_NOTE : rowItemMixed(it) ? ROW_MIXED_NOTE : lock ? (lock.kind === 'both' ? rowTwoStatementsNote(lock) : lock.kind === 'pair' ? ROW_PAIR_NOTE : ROW_LOCKED_NOTE)
         : it.rows.some(function (r) { return r.money; }) ? ROW_TICKED_NOTE : '';
       if (note) h += '<p class="small" style="margin:4px 0 0">' + esc(note) + '</p>';
       h += '<div class="row" style="align-items:flex-start;gap:12px;margin-top:6px">' + ['mine', 'theirs'].map(function (side) {
