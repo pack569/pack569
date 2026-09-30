@@ -1058,7 +1058,9 @@ const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'm
   // Owner decision 23 — a charge forgiven on the other copy and not on this one.
   'chargesForgivenThere',
   // Security re-check of C6 (N3) — and the change history says so.
-  'chargeForgivenSummary', 'LEDGER_FORGIVEN_LOST_WHY', 'fmtDateShortYear'];
+  'chargeForgivenSummary', 'LEDGER_FORGIVEN_LOST_WHY', 'fmtDateShortYear',
+  // Quick check of N1–N5 (5) — its reason, with emails and phone numbers taken out.
+  'ledgerContactScrub'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
   const ctx = vm.createContext({});
@@ -25146,10 +25148,30 @@ test('Quick check of N1–N5 (1): a forgiveness with a long reason, lost to two 
 });
 
 test('C6 re-check (N3): a forgiveness lost to a merge is kept in the history with who agreed and recorded it, never an email', () => {
-  const x = sandbox(['chargeForgivenSummary', 'ledgerStampClean', 'fmtDateShortYear', 'fmtDateShort']);
+  const x = sandbox(['chargeForgivenSummary', 'ledgerStampClean', 'fmtDateShortYear', 'fmtDateShort', 'ledgerContactScrub']);
   eq(x.chargeForgivenSummary({ date: '2026-10-01', by: 'pat@example.com', reason: 'Hardship', enteredBy: 'sam@example.com' }),
     'Forgiven on Oct 1, 2026, agreed by a signed-in leader, recorded by a signed-in leader: Hardship', 'an email');
   eq([x.chargeForgivenSummary({ date: '', by: '', reason: '', enteredBy: '' }), x.chargeForgivenSummary(null)], ['Forgiven', 'Forgiven'], 'nothing recorded');
+  // Quick check of N1–N5 (5) — the reason, typed freely, with any email or phone number taken out.
+  eq(x.chargeForgivenSummary({ date: '2026-10-01', by: 'Committee', enteredBy: 'Pat', reason: 'Hardship, per Jo (jo.q+pack@example.com, 555-555-0142).' }),
+    'Forgiven on Oct 1, 2026, agreed by Committee, recorded by Pat: Hardship, per Jo ((email removed), (phone removed)).', 'a contact in the reason');
+});
+
+test('Quick check of N1–N5 (5): ledgerContactScrub takes emails and phone numbers out of free text, and leaves dates and money alone', () => {
+  const x = sandbox(['ledgerContactScrub']);
+  const cases = [
+    // (Made-up contacts only: 555-01xx and @example.com, as the tracked-file scan requires.)
+    ['Call 555-555-0142 first', 'Call (phone removed) first'],
+    ['(555) 555-0143', '(phone removed)'],
+    ['cell 555.555.0144; home 5555550145', 'cell (phone removed); home (phone removed)'],
+    ['+1 555 555 0146 or 1-555-555-0147', '(phone removed) or (phone removed)'],
+    ['Write to pat@example.com.', 'Write to (email removed).'],
+    ['a@example.com and first.last+tag@example.com', '(email removed) and (email removed)'],
+    // Left as it is: dates, money, short numbers, an @ that is not an address.
+    ['Paid $1,234.56 on 2026-10-01, check 4471, den 3 @ pack night', 'Paid $1,234.56 on 2026-10-01, check 4471, den 3 @ pack night'],
+    ['12345678901234', '12345678901234'],
+    ['', ''], [null, '']];
+  for (const [s, want] of cases) eq(x.ledgerContactScrub(s), want, JSON.stringify(s));
 });
 
 test('C6 property: with the charges on the page’s own syncCharges, two devices’ merges agree either way round and are a fixed point', () => {

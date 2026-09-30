@@ -8693,8 +8693,12 @@
     // Each field in `f` is [before, after]; anything else is dropped. The values are not scrubbed
     // (security review of C1, m5, decided here): they are what the row said, a leader's own
     // words and figures, the log is leaders-only like the ledger (never in buildParentView),
-    // and the page writes no email into a row. They are clipped (security review of C2, #3):
-    // a string to 200 characters, anything but a number, true, false or null to null.
+    // and the page writes no email into a row. One `f` is not a row's: a charge's forgiveness
+    // lost to a merge (row 'charge:' and its id), whose reason, typed freely on the Dues screen,
+    // has emails and phone numbers taken out when it is logged (ledgerContactScrub, quick check
+    // of N1–N5, 5); an event already in the log is kept as it is. They are clipped (security
+    // review of C2, #3): a string to 200 characters, anything but a number, true, false or null
+    // to null.
     if (ev.f !== undefined && !(ev.f && typeof ev.f === 'object' && !Array.isArray(ev.f))) delete ev.f;
     if (ev.f) Object.keys(ev.f).forEach(function (k) {
       if (!Array.isArray(ev.f[k]) || ev.f[k].length !== 2) delete ev.f[k];
@@ -14673,12 +14677,22 @@
   // Security re-check of C6 (N3) — a forgiveness lost to a merge, as the change history keeps it: when,
   // who agreed and recorded it (never an email: ledgerStampClean), and why. The family is not in it:
   // ledgerEntryLabel names the charge (chargeLookName) where the history is read. Pure.
+  // Quick check of N1–N5 (5) — and the reason, typed freely on the Dues screen, has any email address or
+  // phone number in it taken out first (ledgerContactScrub): the log is kept for good, and downloaded.
   var LEDGER_FORGIVEN_LOST_WHY = 'Forgiven on another device. That forgiveness was not kept when this device saved.';
   function chargeForgivenSummary(fg) {
     fg = fg || {};
     var d = typeof fg.date === 'string' ? (fmtDateShortYear(fg.date) || fg.date) : '', by = ledgerStampClean(fg.by), rec = ledgerStampClean(fg.enteredBy);
     return 'Forgiven' + (d ? ' on ' + d : '') + (by ? ', agreed by ' + by : '') + (rec ? ', recorded by ' + rec : '') +
-      (typeof fg.reason === 'string' && fg.reason ? ': ' + fg.reason : '');
+      (typeof fg.reason === 'string' && fg.reason ? ': ' + ledgerContactScrub(fg.reason) : '');
+  }
+  // A light scrub of free text for the log: an email address becomes "(email removed)", and a phone
+  // number (ten digits, as 555-555-0142, (555) 555-0142, 555.555.0142 or 5555550142, with or without
+  // +1) "(phone removed)". Light: it catches what a leader would paste, not every way to write one. Pure.
+  function ledgerContactScrub(s) {
+    return String(s == null ? '' : s)
+      .replace(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g, '(email removed)')
+      .replace(/(^|[^\d+])(\+?1[\s.-]?)?(\(\d{3}\)\s?|\d{3}[\s.-]?)\d{3}[\s.-]?\d{4}(?!\d)/g, '$1(phone removed)');
   }
   // How the note names a charge: its family (first names, as the Dues screen shows them) and what it is
   // for: "Ada and Ben’s “Dues” charge".
