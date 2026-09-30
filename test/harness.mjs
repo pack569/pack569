@@ -24553,7 +24553,7 @@ test('C6 review: a tick merged onto an entry voided on the other device comes of
     "noteLedgerLookFromMerge([{ kind: 'voidlisted', row: { id: 'x', description: 'Pizza' }, date: '2026-09-30' }]);" +
     "noteLedgerLookFromMerge([{ kind: 'voidlisted', row: { id: 'x', description: 'Pizza' }, date: '2026-09-30' }]);", w);
   eq(get('sync.lookNotes'), ['“Pizza” is voided, but the Sep 30 statement lists it as cleared, so it is still ticked. If the bank statement shows it cleared, un-void it. ' +
-    'If not, reopen that statement and reconcile it again.'], 'said once');
+    'If not, ask an admin to reopen that statement and reconcile it again.'], 'said once');
   // Control: the statement reopened, it lists nothing: the tick comes off, as any other (F3), and that is said instead.
   w.L2 = get("(function () { var r = norm(L); r.statements.forEach(function (st) { if (st.id === 'st-1') { st.reopenedAt = '2026-10-03T00:00:00.000Z'; st.reopenedBy = 'Alex'; } }); return norm(r); })()");
   eq(get("(function () { clock = 1790000180000; state = norm(L2); var look = []; mergeRemoteAppendOnly({ json: JSON.stringify(L2) }, [], [], [], {}, look); " +
@@ -24588,7 +24588,7 @@ test('C6 re-check (N1): saved, an entry on two statements signed separately is n
   eq(get('sync.lookNotes'), [
     '“Pizza” is on two statements signed separately on two devices, Sep 30 and Oct 5, and the two versions differ in amount, date or in/out. ' +
       'The version kept is the one on the Sep 30 statement, so the Oct 5 statement no longer matches it. Check both against the bank statements.',
-    'The Sep 12 entry of +$9.00 is on two Sep 30 statements, signed separately on two devices, and the two versions differ in amount, date or in/out. ' +
+    'The Sep 12 entry of +$9.00 is on two Sep 30 statements signed separately on two devices, and the two versions differ in amount, date or in/out. ' +
       'The version kept matches only one of them. Check both against the bank statement.'], 'the notes');
 });
 
@@ -25124,7 +25124,7 @@ test('Decision 23: a charge forgiven on another device but not on this one is na
   b.run(fns);
   a.run(`state.charges[0].forgiven = ${JSON.stringify(fg)}; commit()`); a.push();
   b.run(B2); b.hear(); b.push();
-  const note = 'Ada and Bo’s “Dues” charge was forgiven on another device but not on this one. Check it and forgive it again if it should be.';
+  const note = 'Ada and Bo’s “Dues” charge was forgiven on another device, but that was lost when this device saved, so the family owes it again. Check it on Money · Dues & fees and forgive it again if it should be.';
   eq([server().charges.map((c) => !!c.forgiven), b.get('sync.lookNotes'), b.get('toasts').indexOf(b.get('LEDGER_LOOK_CLOBBERED')) !== -1],
     [[false, false], [note], true], 'B after its save');
   // Said once: a later merge with a copy that still has it forgiven says nothing more.
@@ -25146,7 +25146,7 @@ test('Decision 23: a charge forgiven on another device but not on this one is na
     var state = normalizeState(${JSON.stringify(server())});`, rl);
   const csv = vm.runInContext('ledgerLogCsv(state.ledgerLog, ledgerEntryLabel, ledgerLogNames())', rl).split('\n');
   eq(csv.filter((l) => l.indexOf('forgiven') !== -1).map((l) => l.split(',').slice(2).join(',')),
-    ['Ada and Bo’s “Dues” charge,Changed: forgiven,"' + was + '",(none),' + why], 'the change history after a reload');
+    ['Ada and Bo’s “Dues” charge,Changed: forgiveness,"' + was + '",(none),' + why], 'the change history after a reload');
   // Quick check of N1–N5 (4) — a ledger entry with the charge's id: the event is not its history, nor a
   // change to its content for the merge, and the entry is named as itself.
   vm.runInContext("state.ledger.push({ id: state.charges[0].id, date: '2026-09-10', description: 'Pizza', amountCents: 4000, direction: 'out' });", rl);

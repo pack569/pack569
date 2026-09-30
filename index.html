@@ -8828,7 +8828,7 @@
     reconciledThrough: 'reconciled through', statementCents: 'statement ending balance',
     reconciled: 'ticked', voidReason: 'void reason',   // Phase 3, C6: what a 'resolve' kept (treasurer review of C6, 4)
     statementId: 'statement', reversedBy: 'reversed by',   // treasurer review of C6 (5)
-    forgiven: 'forgiven'   // security re-check of C6 (N3): a charge's forgiveness lost to a merge
+    forgiven: 'forgiveness'   // security re-check of C6 (N3): a charge's forgiveness lost to a merge
   };
   // One value from an event's `f`, as a leader reads it. `names` turns an id into a name
   // ({ line, scout, tier, statement, entry }: each id → name or ''). Pure given `names`.
@@ -14830,7 +14830,7 @@
       if (!key || seen[key]) return;
       seen[key] = true;
       notes.push(it.kind === 'forgiven'
-        ? chargeLookName(it.charge) + ' was forgiven on another device but not on this one. Check it and forgive it again if it should be.'
+        ? chargeLookName(it.charge) + ' was forgiven on another device, but that was lost when this device saved, so the family owes it again. Check it on Money · Dues & fees and forgive it again if it should be.'
         : it.kind === 'twostatements' ? ledgerTwoStatementsLook(it)
         : it.kind === 'voidlisted' ? ledgerVoidListedLook(it)
         : it.kind === 'restorediff' ? ledgerRestoreDiffLook(it.statement)
@@ -14874,14 +14874,14 @@
   // the statement's }): its tick stays with the statement, and one of the two has to change. Pure.
   function ledgerVoidListedLook(it) {
     return ledgerCap(ledgerEntryNamed(it.row)) + ' is voided, but ' + (it.date ? 'the ' + fmtDateShort(it.date) + ' statement' : 'a statement') +
-      ' lists it as cleared, so it is still ticked. If the bank statement shows it cleared, un-void it. If not, reopen that statement and reconcile it again.';
+      ' lists it as cleared, so it is still ticked. If the bank statement shows it cleared, un-void it. If not, ask an admin to reopen that statement and reconcile it again.';
   }
   // Security re-check of C6 (N1c) — an entry on two statements signed separately, with different money
   // (`it`: { row, the version kept; kept, other: the two statements' dates, the kept version's first}). Pure.
   function ledgerTwoStatementsLook(it) {
     var nm = ledgerCap(ledgerEntryNamed(it.row)), k = fmtDateShort(it.kept), o = fmtDateShort(it.other);
     return k === o
-      ? nm + ' is on two ' + k + ' statements, signed separately on two devices, and the two versions differ in amount, date or in/out. ' +
+      ? nm + ' is on two ' + k + ' statements signed separately on two devices, and the two versions differ in amount, date or in/out. ' +
         'The version kept matches only one of them. Check both against the bank statement.'
       : nm + ' is on two statements signed separately on two devices, ' + k + ' and ' + o + ', and the two versions differ in amount, date or in/out. ' +
         'The version kept is the one on the ' + k + ' statement, so the ' + o + ' statement no longer matches it. Check both against the bank statements.';
