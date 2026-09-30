@@ -25862,6 +25862,36 @@ test('C7, Firestore: a scout deleted on one device while another records a payme
   eq(eIds(server()), ['old2', 'x2'], 'the popcorn entries');
 });
 
+// Treasurer review of C7 (item 2): a held scout keeps their charges (settled, forgiven, paid against), whichever
+// copy lost them. Ada (s1) paid $85 (l3) against an $85 dues charge; a $20 charge was forgiven.
+const C7_CHARGES = [
+  { id: 'ch1', scoutId: 's1', lineId: '', who: 'scout', amountCents: 8500, date: '2026-09-01', dueDate: '', waivedBy: '', forgiven: null, label: 'Dues' },
+  { id: 'ch2', scoutId: 's1', lineId: '', who: 'scout', amountCents: 2000, date: '2026-09-02', dueDate: '', waivedBy: '',
+    forgiven: { date: '2026-09-03', by: 'Pat', reason: 'Hardship' }, label: 'Campout' }];
+const c7Owes = (st) => {
+  const x = sandbox(['familyOutstanding', 'chargeIsOpen', 'ledgerUnpaired', 'entryPaysCharges', 'entryRefundsFamily']);
+  return x.familyOutstanding(st.charges, st.ledger, 's1');
+};
+test('C7, Firestore: a scout held over an older page’s delete keeps their paid and forgiven charges, and the family’s balance is unchanged', () => {
+  const chargeIds = (st) => st.charges.map((c) => c.id).sort();
+  // The delete saved first (the older page removed the charges with the scout); the other device, which holds them, merges.
+  const { a, b, server } = c3FsPair({ charges: C7_CHARGES });
+  const owedBefore = c7Owes(b.get('state'));
+  a.run(OLD_DEL_S1); a.push();
+  eq(chargeIds(server()), [], 'what the older page saved');
+  b.run(B1); b.hear(); b.push();
+  eq([chargeIds(server()), chargeIds(b.get('state'))], [['ch1', 'ch2'], ['ch1', 'ch2']], 'the charges, after B’s save');
+  eq(server().charges.find((c) => c.id === 'ch2').forgiven.reason, 'Hardship', 'the forgiveness');
+  eq([c7Owes(server()), owedBefore], [0, 0], 'the family’s balance');
+  a.hear();
+  eq(chargeIds(a.get('state')), ['ch1', 'ch2'], 'the deleting device, after');
+  // The other way round: the holding device saved first, and the deleting device (no charges here) merges.
+  const q = c3FsPair({ charges: C7_CHARGES });
+  q.b.run(B1); q.b.push();
+  q.a.run(OLD_DEL_S1); q.a.hear(); q.a.push();
+  eq([chargeIds(q.server()), c7Owes(q.server())], [['ch1', 'ch2'], 0], 'the delete saved last');
+});
+
 atest('C7, api: an older page’s delete of a scout with payments keeps the scout, archived, and the payments’ family, on both devices', async () => {
   const over = { ledger: C3_ROWS, ledgerAside: [], book: C3_SEED.book, ledgerLog: [] };
   let { a, b, server } = await apiGonePair(over);

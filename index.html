@@ -14430,7 +14430,7 @@
     var gone = state.gone && typeof state.gone === 'object' ? state.gone : null;
     var ledgerWas = Array.isArray(state.ledger) ? state.ledger.slice() : [];
     var marksWas = gone && gone.ledger ? Object.assign({}, gone.ledger) : {};
-    var keptHere = [];
+    var keptHere = [], chargesWas = arrOf(state.charges).slice();
     if (gone && remote.gone && typeof remote.gone === 'object') {
       var now = Date.now();
       Object.keys(gone).forEach(function (log) {
@@ -14542,9 +14542,22 @@
     }
     takeBack('scouts', state.scouts, remote.scouts);
     // Phase 3, C7 — each scout kept over a delete (scoutsHeld), archived, and said.
+    // Treasurer review of C7 (item 2) — and their charges with them: a page from before C7 that deleted the
+    // scout removed every charge for them (settled, forgiven and paid-against too), and the charges are this
+    // device's whole, so they would stay removed. A held scout's charges are unioned by id from the other
+    // copy and from this one as it was before the merge; the re-sync that follows a merge (syncCharges)
+    // drops the open unpaid ones an archived scout no longer raises and keeps the rest.
     scoutsHeld.forEach(function (id) {
       var sc = arrOf(state.scouts).filter(function (x) { return x && x.id === id; })[0];
       if (!sc) return;
+      var haveCharge = Object.create(null);
+      arrOf(state.charges).forEach(function (c) { if (c && typeof c.id === 'string') haveCharge[c.id] = true; });
+      arrOf(remote.charges).concat(chargesWas).forEach(function (c) {
+        if (!c || c.scoutId !== id || typeof c.id !== 'string' || haveCharge[c.id]) return;
+        if (!Array.isArray(state.charges)) state.charges = [];
+        state.charges.push(JSON.parse(JSON.stringify(c)));
+        haveCharge[c.id] = true; added += 1;
+      });
       if (!sc.archived) { sc.archived = true; added += 1; }
       if (Array.isArray(look)) look.push({ kind: 'scoutkept', scout: sc });
     });
