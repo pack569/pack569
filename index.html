@@ -8152,7 +8152,11 @@
   // the balance is off by, which to keep, and how to take a row out that its row allows (`book`, for
   // ledgerLocked: a locked row has no ✕). An entry with no description is named by its date and
   // amount (ledgerEntryNamed).
-  function ledgerLookNotes(rows, book) {
+  // Phase 3, C8 (C8-4) — and `closedBooks` (state.closedBooks), when given: a book closed out for a year this
+  // book is also for (its year is the closed year's or an earlier one). It happens when a backup from before a
+  // close-out is restored (decision 27: the undo of a close-out): the closed book is kept, and the close-out
+  // that follows replaces it.
+  function ledgerLookNotes(rows, book, closedBooks) {
     var pairOf = ledgerPairOf(rows), live = ledgerLiveReversals(rows, pairOf), byId = Object.create(null), out = [];
     rows.forEach(function (e) { if (e && typeof e.id === 'string' && !byId[e.id]) byId[e.id] = e; });
     function signed(e) { return (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents); }
@@ -8189,8 +8193,16 @@
       out.push('The correction of ' + nm + ' (' + fmtDateShort(rc.date) + ', ' + signed(rc) + ') and ' + nm + ' itself (' + fmtDateShort(x.date) + ', ' +
         signed(x) + ') both count, because the reversal of ' + nm + ' was voided or reversed. Reverse ' + nm + ' again, or take the correction out.');
     });
+    arrOf(closedBooks).forEach(function (b) {
+      if (!b || typeof b.year !== 'number' || !book || typeof book.year !== 'number' || b.year < book.year) return;
+      out.push('The ' + closedYearText(b.year) + ' year was closed out, but this book is for ' + closedYearText(book.year) + ' too. That happens when a backup from before the ' +
+        'close-out is restored. The closed ' + closedYearText(b.year) + ' book is kept, and closing out ' + closedYearText(book.year) + ' again replaces it. ' +
+        'Anything entered since that close-out needs entering again.');
+    });
     return out;
   }
+  // A program year as a leader reads it: 2026 is "2026–27". Pure.
+  function closedYearText(y) { return y + '–' + String(y + 1).slice(2); }
   // M3 (treasurer review of C1) — a reversed row and its reversal are only ever set aside
   // TOGETHER. A 'reversed' row whose reversal is missing, or a 'reversal' whose original is not
   // set aside as 'reversed', goes back to st.ledger, counted, and so does the original that
@@ -9003,9 +9015,11 @@
   // Phase 3, C8 added 'close' (row 'book': the years closed out changed, `f` closedYears [before, after],
   // each the years as '2025, 2026'; `why` says what happened: a year closed out, or a close-out undone by
   // a restore or by keeping this device's copy, decision 27). A change to the BOOK, not to any entry: the
-  // merge reads it as a change to none (ledgerEventParts).
+  // merge reads it as a change to none (ledgerEventParts). C8-4 added 'unclose' (row 'book', `why`): a close-out
+  // undone, by a backup from before it restored over this book, or by keeping this device's copy over a
+  // cloud copy that had closed the year out. 'close' is the close-out itself (written from C8-5).
   var LEDGER_OPS = ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile', 'restore',
-    'review', 'balance', 'close'];
+    'review', 'balance', 'close', 'unclose'];
   function ledgerEvent(op, rowId, who, more) {
     if (LEDGER_OPS.indexOf(op) === -1 || typeof rowId !== 'string' || !rowId) return null;
     who = who || {};
@@ -9178,7 +9192,8 @@
     opening: 'Opening balance changed', reconcile: 'Marked reconciled', restore: 'Backup restored',
     'void': 'Voided', unvoid: 'Un-voided', reverse: 'Reversed', correct: 'Corrected', resolve: 'Kept one of two versions', reopen: 'Statement reopened',
     review: 'Statement reviewed', balance: 'Ending balance added',   // Phase 3, C5 (C5 review: "ending balance", the treasurer's words)
-    close: 'Year closed out'   // Phase 3, C8 (C8-2; new wording for the treasurer's sign-off)
+    close: 'Year closed out',   // Phase 3, C8 (C8-2; new wording for the treasurer's sign-off)
+    unclose: 'Close-out undone'   // Phase 3, C8 (C8-4; ditto)
   };
   var LEDGER_FIELD_LABELS = {
     date: 'date', description: 'description', amountCents: 'amount', direction: 'in or out', lineId: 'budget line',
@@ -15038,6 +15053,15 @@
       state.statements = mergeStatements(state.statements, remote.statements);
       statementLockBack(bkHere, state.statements);
     }
+    // PHASE 3, C8 (C8-4) — the closed books, both copies' as one (mergeClosedBooks: by year, a book closed
+    // out once is one book whichever copy holds it, the less complete form of two kept, a later close-out of
+    // the same year over an earlier). A closed year is history: nothing deletes one, and the deletion marks
+    // don't apply. Between copies of ANY book year: two copies that closed the same year separately are not
+    // merged here at all (seasonClosedTwice; syncPush asks first), so what reaches this is one close-out
+    // seen from both sides. What this adds is counted, as a row is.
+    var booksWere = arrOf(state.closedBooks).length;
+    state.closedBooks = mergeClosedBooks(state.closedBooks, remote.closedBooks);
+    added += Math.max(0, arrOf(state.closedBooks).length - booksWere);
     // Phase 0 — ledger entries get the same append-only protection as popcorn sales, and
     // for a stronger reason: two leaders posting receipts from two devices must not be able
     // to lose one another's transactions. A book that silently drops a row is not a book.
@@ -15318,7 +15342,7 @@
   // Phase 3, C6 reviews — and what a merge said needs a look this session (sync.lookNotes).
   function ledgerLookCount() {
     if (accountsInForce() && LEADER_ROLES.indexOf(sync.myRole) === -1) return 0;
-    return ledgerLookNotes(state.ledger || [], state.book).length + arrOf(sync.lookNotes).length;
+    return ledgerLookNotes(state.ledger || [], state.book, state.closedBooks).length + arrOf(sync.lookNotes).length;
   }
   // Phase 3, C6 reviews — what a merge collected (mergeRemoteAppendOnly's `look`), in the treasurer's
   // words, onto "The ledger needs a look" (sync.lookNotes), each said once this session. Called before
@@ -15457,7 +15481,52 @@
     var ly = state.budget && state.budget.programYear, ry = p && p.budget && p.budget.programYear;
     if (typeof ly !== 'number' || ly !== ry) return false;
     var a = seasonCloseoutOf(state, ly - 1), b = seasonCloseoutOf(p, ry - 1);
-    return !!a && !!b && a.id !== b.id;
+    if (!!a && !!b && a.id !== b.id) return true;
+    // Phase 3, C8 (C8-4) — and the closed books say which close-out each came from too (archiveId), for a
+    // copy whose season archive is not the one to ask (or is not there).
+    var ca = closedBookOf(state, ly - 1), cb = closedBookOf(p, ry - 1);
+    return !!ca && !!cb && !!ca.archiveId && !!cb.archiveId && ca.archiveId !== cb.archiveId;
+  }
+  // The closed book of program year `year` in a copy (state, or a record parsed), or null. (One per year:
+  // normalizeState and mergeClosedBooks keep it so.)
+  function closedBookOf(s, year) {
+    var got = null;
+    arrOf(s && s.closedBooks).forEach(function (b) { if (b && b.year === year && typeof b.archiveId === 'string') got = b; });
+    return got;
+  }
+  // When and which close-out a copy's `year` came from, for the chooser to say: its season archive's, else
+  // its closed book's. { id, closedAt } or null.
+  function closeoutRecordOf(s, year) {
+    var a = seasonCloseoutOf(s, year), b = closedBookOf(s, year);
+    if (a) return { id: a.id, closedAt: a.closedAt };
+    return b && b.archiveId ? { id: b.archiveId, closedAt: b.closedAt } : null;
+  }
+  // The closed books (`books`: state.closedBooks) whose year the open `book` is also for, or an earlier one: a close-out
+  // undone (decision 27), as ledgerLookNotes says of them. Their years, oldest first. Pure.
+  function closedBooksUndone(books, book) {
+    return arrOf(books).filter(function (b) { return !!b && typeof b.year === 'number' && !!book && typeof book.year === 'number' && b.year >= book.year; })
+      .map(function (b) { return b.year; }).sort();
+  }
+  // What the log says of a restore that undid the close-out of `years` (closedBooksUndone's), in the 500 characters a
+  // log keeps. Pure.
+  function closedBooksUndoneWhy(years) {
+    var names = years.map(closedYearText).join(' and ');
+    return 'A backup made before the ' + names + ' close-out was restored on this device, so that close-out is undone: the year’s book is open again, as it was then. ' +
+      'Its closed book is kept, and closing the year out again replaces it.';
+  }
+  // The same, for keeping this device's copy over a cloud copy that had closed out `books` (closedBooksLost's): the closed books
+  // are not kept, but are gone from the pack record (the downloaded snapshots and the season archives' copies are what hold them). Pure.
+  function closedBooksKeptOverWhy(books) {
+    var names = books.map(function (b) { return closedYearText(b.year); }).join(' and ');
+    return 'This device’s copy was kept over a cloud copy that had closed out ' + names + ', so that close-out is undone and its closed book is gone from the pack record.';
+  }
+  // The closed books of `theirs` (a copy's, as stored) that `mine` does not hold: another close-out of the same
+  // year (a different archiveId) or a year this copy has not closed. A copy of this page holds one per year,
+  // so the books in `mine` that `theirs` lacks are the other way round. Pure.
+  function closedBooksLost(mine, theirs) {
+    var here = Object.create(null);
+    arrOf(mine).forEach(function (b) { if (b && typeof b.archiveId === 'string' && b.archiveId) here[b.year + ':' + b.archiveId] = true; });
+    return arrOf(theirs).filter(function (b) { return !!b && typeof b.year === 'number' && typeof b.archiveId === 'string' && !here[b.year + ':' + b.archiveId]; });
   }
   // The season archive a copy's close-out of `year` wrote, or null. (A close-out of the same year
   // again replaces it: performCloseout.)
@@ -16122,13 +16191,25 @@
   function syncClosedTwiceHtml(cloud, mine) {
     var y = mine && mine.budget && mine.budget.programYear;
     if (typeof y !== 'number' || !cloud || !cloud.budget || cloud.budget.programYear !== y) return '';
-    var c = seasonCloseoutOf(cloud, y - 1), m = seasonCloseoutOf(mine, y - 1);
+    var c = closeoutRecordOf(cloud, y - 1), m = closeoutRecordOf(mine, y - 1);
     if (!c || !m || c.id === m.id) return '';
     // Treasurer review of C6 (11).
     return '<p><strong>Both copies closed out the year separately, to ' + y + ':</strong> the cloud copy on ' + esc(fmtArchiveDate(String(c.closedAt || ''))) +
       ', this device on ' + esc(fmtArchiveDate(String(m.closedAt || ''))) + '. Each started ' + y + ' with its own book and its own year-end record, so the two can’t be combined.</p>' +
       '<p>Keep one, usually the one more has been entered in since. Anything entered on the other since its close-out has to be entered again.</p>' +
       '<p class="small">Whichever you keep, the other copy, including its year-end record, is gone for everyone. Download this device’s copy first.</p>';
+  }
+  // Phase 3, C8 (C8-4; owner decision 27; new wording for the treasurer's sign-off) — the cloud copy holds a year closed out that this
+  // device's copy does not: keeping this device's copy undoes that close-out for everyone, and its closed book goes from the pack record.
+  // '' when there is none. `cloud` as stored, not normalized. The same stronger line is on the chooser for a copy that is on the other side of a
+  // close-out (syncYearsHtml); this says what is lost. Pure.
+  function syncClosedBooksHtml(cloud, mine) {
+    var lost = closedBooksLost(mine && mine.closedBooks, cloud && cloud.closedBooks);
+    if (!lost.length) return '';
+    var names = lost.map(function (b) { return closedYearText(b.year); }).join(' and ');
+    return '<div class="warn" style="margin:0 0 10px"><p class="small" style="margin:0"><strong>The cloud copy has the ' + esc(names) + ' close-out, and this device does not.</strong> ' +
+      'Keeping this device’s copy undoes that close-out for everyone: the year’s closed book (its entries, statements and change history) is removed from the pack record, ' +
+      'and the year is open again. Only an admin can do it. Download the cloud copy first, and keep the snapshot the close-out downloaded.</p></div>';
   }
   // What only this device has, so nobody picks a copy without knowing what the other loses.
   function syncOnlyHereHtml(only) {
@@ -16171,7 +16252,8 @@
     try { p = JSON.parse(typeof d.json === 'string' ? d.json : ''); } catch (e) { return false; }
     var here = Object.create(null);
     arrOf(state.archives).forEach(function (a) { if (a && typeof a.id === 'string') here[a.id] = true; });
-    return arrOf(p && p.archives).some(function (a) { return a && a.kind === 'season' && typeof a.id === 'string' && a.id && !here[a.id]; });
+    return arrOf(p && p.archives).some(function (a) { return a && a.kind === 'season' && typeof a.id === 'string' && a.id && !here[a.id]; }) ||
+      closedBooksLost(state.closedBooks, p && p.closedBooks).length > 0;   // Phase 3, C8 (C8-4) — and a closed year's book
   }
   // "Keep this device's copy" on the sync-conflict overlay (armed, two taps, in the click handler).
   function keepLocalCopy() {
@@ -16191,6 +16273,12 @@
     // chooser up, and its sales are merged in as they always were.
     // Phase 3, C6 — and one that closed the same year out separately (seasonClosedTwice).
     if (kept && kept.remote && (seasonMoved(kept.remote) || seasonClosedTwice(kept.remote))) sync.seasonKeptRev = kept.remote.rev;
+    // Phase 3, C8 (C8-4; owner decision 27) — keeping this device's copy over a close-out another device made is
+    // the other way to undo one (admin only, keepLocalNeedsAdmin; warned about on the chooser, syncClosedBooksHtml):
+    // said in the log, the last thing before the copy goes out.
+    var keptLost = [];
+    try { keptLost = closedBooksLost(state.closedBooks, (JSON.parse(typeof kept.remote.json === 'string' ? kept.remote.json : '') || {}).closedBooks); } catch (e) { keptLost = []; }
+    if (keptLost.length && (seasonMoved(kept.remote) || seasonClosedTwice(kept.remote))) { logLedger('unclose', 'book', { why: closedBooksKeptOverWhy(keptLost) }); save(); }
     render();
     scheduleSyncPush(); // rev bumps past the cloud copy's in the push transaction
   }
@@ -21920,8 +22008,8 @@
   // stays until the book is put right (no Got it), and goes then. Every word escaped.
   // Phase 3, C6 reviews — and, after them, `said` (sync.lookNotes): what a merge did this session that
   // the book no longer shows, with a Got it for those alone (the book's own stay until it is put right).
-  function ledgerLookCardHtml(rows, book, said) {
-    var notes = ledgerLookNotes(rows || [], book), extra = Array.isArray(said) ? said : [];
+  function ledgerLookCardHtml(rows, book, said, closedBooks) {
+    var notes = ledgerLookNotes(rows || [], book, closedBooks), extra = Array.isArray(said) ? said : [];
     if (!notes.length && !extra.length) return '';
     return '<div class="card" role="status"><h2 class="section display">The ledger needs a look</h2>' +
       notes.concat(extra).map(function (t) { return '<p style="margin:0 0 10px">' + esc(t) + '</p>'; }).join('') +
@@ -21939,7 +22027,7 @@
         (sync.splitNote ? '<p style="margin:0 0 10px">' + esc(sync.splitNote) + '</p>' : '') +
         '<button type="button" class="btn small" data-act="ledger-fates-dismiss">Got it</button></div>'
       : '';
-    h += ledgerLookCardHtml(state.ledger, state.book, sync.lookNotes);   // security re-check of option B (A, D); C6 reviews
+    h += ledgerLookCardHtml(state.ledger, state.book, sync.lookNotes, state.closedBooks);   // security re-check of option B (A, D); C6 reviews
     h += '<div class="card"><h2 class="section display">Ledger</h2>' +
       '<p class="small muted" style="margin:0 0 10px">Every dollar that actually moved. Unlike the budget — which is a plan — this is a record, ' +
       'so the balance below can be held next to a bank statement and checked.</p>' +
@@ -27685,6 +27773,7 @@
         // Security re-check of C5 (R2) — a backup of another year's book brings that book, and none
         // of this one's statements (confirm-import merges them for the same year only).
         importBookYearHtml(state.book, state.statements, o.data) +
+        importClosedBooksHtml(state.closedBooks, o.data) +   // Phase 3, C8 (C8-4)
         // LIVE STOPGAP (security review of the stopgap, S9; re-review, item 6): the pack's deletion
         // marks outlive it, and the restore marks what it brings back put back (restoreGone).
         // Phase 3, C2 (security review of C1, m4) — as it is: this device can only put back the
@@ -27732,6 +27821,7 @@
         // stopgap, M3). Both buttons can lose money here, so the download comes first.
         syncYearsHtml(rc.budget && typeof rc.budget.programYear === 'number' ? rc.budget.programYear : null, state.budget.programYear, sync.dirty) +
         syncClosedTwiceHtml(rc, state) +   // Phase 3, C6
+        syncClosedBooksHtml(rc, state) +   // Phase 3, C8 (C8-4)
         '<p class="small muted">' + syncCopyLine('Cloud copy', rc) + '<br>' + syncCopyLine('This device', state) + '</p>' +
         syncOnlyHereHtml(rowsOnlyIn(state, rc)) +
         '<div class="row"><button type="button" class="btn" data-act="sync-download-local">Download this device’s copy first</button>' +
@@ -28401,6 +28491,16 @@
   // that book comes in whole, and this one's statements go with this one (confirm-import merges the
   // statements of the same year's book only). '' for the same year. Sign-off of the C5 follow-ups
   // (11) — with statements to lose, it says how to keep them. Pure.
+  // Phase 3, C8 (C8-4; owner decision 27; new wording for the treasurer's sign-off) — a backup from before a close-out this device made: restoring it opens
+  // that year's book again, as the backup had it, and whatever was entered since is lost. The closed book is kept. '' otherwise. Pure.
+  function importClosedBooksHtml(books, rec) {
+    var years = closedBooksUndone(books, rec && rec.book);
+    if (!years.length) return '';
+    var names = years.map(closedYearText).join(' and ');
+    return '<div class="warn" style="margin:0 0 10px"><p class="small" style="margin:0"><strong>This backup is from before the ' + esc(names) + ' close-out.</strong> ' +
+      'Restoring it opens the ' + esc(names) + ' book again, as it was when the backup was made. Everything entered since is lost, including the new year’s entries and statements. ' +
+      'The closed ' + esc(names) + ' book on this device is kept, and closing the year out again replaces it. Download a backup of this device first.</p></div>';
+  }
   function importBookYearHtml(book, statements, rec) {
     var there = rec && rec.book;
     if (!book || !there || book.year === there.year) return '';
@@ -32844,7 +32944,7 @@
       // the question is open.
       if (!canReopenStatement()) { ui.overlay = null; render(); showToast(RESTORE_REFUSED); return; }
       var ciLog = state.ledgerLog;
-      var ciSt = state.statements, ciYear = state.book ? state.book.year : undefined, ciArc = state.archives, ciRows = state.ledger;
+      var ciSt = state.statements, ciYear = state.book ? state.book.year : undefined, ciArc = state.archives, ciRows = state.ledger, ciBooks = state.closedBooks;
       state = restoreGone(ui.overlay.data, state.gone, Date.now());
       // Security re-check of C5 (R2) — and this device's past seasons, as they are here: a season's
       // close-out (its summary, statements and change history) is written once, on the device that
@@ -32857,6 +32957,17 @@
       var ciMine = arrOf(ciArc).filter(function (a) { return a && a.kind === 'season'; }), ciIds = Object.create(null), ciYears = Object.create(null);
       ciMine.forEach(function (a) { ciIds[a.id] = true; ciYears[a.year] = true; });
       state.archives = arrOf(state.archives).filter(function (a) { return !ciIds[a && a.id] && !(a && a.kind === 'season' && ciYears[a.year]); }).concat(ciMine);
+      // Phase 3, C8 (C8-4; owner decision 27) — and this device's closed books, by year: the backup's book
+      // for a year this device has closed is this device's (as a season archive is), and a year the
+      // backup lacks stays. A restore never drops a closed year, then. Restoring a backup from before a
+      // close-out DOES open that year's book again (the undo, an admin's, warned about on the question,
+      // importClosedBooksHtml), with the closed book still there until that year is closed out again, and
+      // "The ledger needs a look" saying so (ledgerLookNotes); the log says so too ('unclose').
+      var ciBookYears = Object.create(null);
+      arrOf(ciBooks).forEach(function (b) { if (b && typeof b.year === 'number') ciBookYears[b.year] = true; });
+      state.closedBooks = mergeClosedBooks(arrOf(state.closedBooks).filter(function (b) { return !(b && ciBookYears[b.year]); }).concat(arrOf(ciBooks)), []);
+      var ciUndone = closedBooksUndone(state.closedBooks, state.book);
+      if (ciUndone.length) logLedger('unclose', 'book', { why: closedBooksUndoneWhy(ciUndone) });
       // Security re-review of C2 (#1) — the book is the backup's, but its history is not: this
       // device's log and the backup's, as one (mergeLedgerLog). The backup's alone lost every
       // change made since it was taken, for good, and so let anyone restore away their own trail.

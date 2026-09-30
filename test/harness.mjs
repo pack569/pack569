@@ -1027,6 +1027,9 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
+// Phase 3, C8 (C8-4) — what the merge and the copy chooser read of closed books.
+const C8_SYNC_FNS = ['closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mergeClosedBooks', 'closedBookScouts', 'closedYearText', 'closedBooksKeptOverWhy',
+  'closedBooksUndone', 'closedBooksUndoneWhy'];
 // Phase 3, C6 — the per-row ledger merge and what it reads.
 const C6_MERGE_FNS = ['LEDGER_TICK_FIELDS', 'LEDGER_OFF_FIELDS', 'LEDGER_ENTERED_FIELDS', 'ledgerFieldPart', 'LEDGER_OPS', 'ledgerEventParts', 'ledgerMarksGone', 'ledgerMergeOpts', 'ledgerEmpty', 'ledgerPartKey', 'LEDGER_MONEY_FIELDS', 'ledgerLockedMeanwhile',
   'applyLedgerRowSet', 'mergeLedgerRows', 'applyLedgerMerge', 'LEDGER_EDIT_FIELDS', 'LEDGER_RESOLVE_FIELDS', 'LEDGER_RESOLVE_WHY', 'LEDGER_RESOLVE_WHY_SAME', 'ledgerResolveMore', 'ledgerLogRoom', 'utf8Bytes', 'arrOf', 'ledgerTickedAt', 'mergeStatements', 'statementPairMerge',
@@ -1058,7 +1061,7 @@ const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'm
   // Phase 3, C5 — the statements, unioned by id, and the lock stepped back past a reopened one.
   'statementOnceGroups', 'statementReopened', 'statementPairMerge', 'mergeStatements', 'statementLockBack', 'statementBefore', 'ledgerStampClean',
   // Phase 3, C6 — the per-row merge, the entry chooser the push opens, and two close-outs of one year.
-  ...C6_MERGE_FNS, 'seasonClosedTwice', 'seasonCloseoutOf', 'ledgerRowConflicts', 'rowChoice', 'refreshRowChoice', 'ledgerConflictSig', 'pickRowVersion', 'saveRowChoices', 'ROW_PICK_NEEDED',
+  ...C6_MERGE_FNS, 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'ledgerRowConflicts', 'rowChoice', 'refreshRowChoice', 'ledgerConflictSig', 'pickRowVersion', 'saveRowChoices', 'ROW_PICK_NEEDED',
   'ROW_PICKS_CHANGED', 'ROW_PICKS_SAVED',
   // Security review of C6 (F1a, F1b, F2) — the side a pick can't keep, and the save that refuses it.
   'rowItemLock', 'ROW_PICK_LOCKED', 'ROW_PICK_LOCKED_PAIR',
@@ -8783,7 +8786,7 @@ test('Firestore: an editor’s copy waiting on a choice is dropped for "view-onl
       conflict: null, dirty: false, clobber: false, pushTimer: null, packMissing: false };
     ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'feedForRole', 'recomputeMyRole',
        'stopLocalWrites', 'stopDocFeed', 'subscribeDoc', 'applyRoleSubscription', 'applyMembersSubscription', 'isStateEmpty',
-       'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush', ...FORMAT_GATE_FNS].map(decl).join('\n')}
+       'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', ...C8_SYNC_FNS, 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush', ...FORMAT_GATE_FNS].map(decl).join('\n')}
     subscribeDoc(1);
     applyMembersSubscription(1);
     function roster(role, md) {
@@ -8834,7 +8837,7 @@ test('Firestore: the server confirming a cached roster is heard, and a viewer’
       conflict: null, dirty: false, clobber: false, pushTimer: null, packMissing: false };
     ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'feedForRole', 'recomputeMyRole',
        'stopLocalWrites', 'stopDocFeed', 'subscribeDoc', 'applyRoleSubscription', 'applyMembersSubscription', 'isStateEmpty',
-       'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush', ...FORMAT_GATE_FNS].map(decl).join('\n')}
+       'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', ...C8_SYNC_FNS, 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush', ...FORMAT_GATE_FNS].map(decl).join('\n')}
     subscribeDoc(1);
     applyMembersSubscription(1);
     function roster(role, md) {
@@ -8993,7 +8996,7 @@ test('a push reads, merges and writes in one retried step, and the rev always cl
       ${slice('packLinked')}
       ${slice('syncPush')}
       ${FORMAT_GATE_SRC()}
-      ${['seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', 'arrOf', 'reconciledFatesText', 'noteReconciledFates'].map(decl).join('\n')}
+      ${['seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf', 'reconciledFatesText', 'noteReconciledFates'].map(decl).join('\n')}
       syncPush();`, ctx);
     return ctx;
   };
@@ -9032,7 +9035,7 @@ test('Firestore: a save before the pack record’s first answer never writes ove
         dirty: true, mode: 'online', notice: '', firstSnap: ${o.firstSnap}, conflict: null, pushTimer: null,
         remoteRec: ${o.firstSnap ? 'null' : JSON.stringify(o.remote || null)} };   // once answered, the feed brought it
       ${o.remote ? `reads['packs/P'] = ${JSON.stringify(o.remote)};` : ''}
-      ${['packLinked', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap', 'syncPush', ...FORMAT_GATE_FNS].map(decl).join('\n')}
+      ${['packLinked', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', ...C8_SYNC_FNS, 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap', 'syncPush', ...FORMAT_GATE_FNS].map(decl).join('\n')}
       syncPush();`);
     return JSON.parse(JSON.stringify(vm.runInContext(`({ sets: txSets.map(function (s) { return s[1].rev; }),
       overlay: ui.overlay && ui.overlay.kind, conflict: sync.conflict && sync.conflict.rev, firstSnap: sync.firstSnap,
@@ -9072,7 +9075,7 @@ function fsFeedCtx(local, extra) {
     var sync = { backend: firestoreBackend, pack: firestoreBackend.open('P'), session: 1, deviceId: 'dev1', clobber: false,
       dirty: false, mode: 'connecting', notice: '', firstSnap: true, remoteRec: null, conflict: null, pushTimer: null,
       unsub: null, feed: null, packMissing: false };
-    ${['packLinked', 'subscribeDoc', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap',
+    ${['packLinked', 'subscribeDoc', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', ...C8_SYNC_FNS, 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap',
        'scheduleSyncPush', 'syncPush', ...FORMAT_GATE_FNS].map(decl).join('\n')}
     ${extra || ''}
     subscribeDoc(1);`);
@@ -9335,7 +9338,7 @@ test('once single-pack mode halts, nothing can push the pack record, even with t
     function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
     var state = { rev: 1 };
     var sync = { backend: fakeBe, pack: { docId: 'P' }, session: 1, deviceId: 'd', mode: 'online' };
-    ${['packLinked', 'haltFixedSync', 'scheduleSyncPush', 'syncPush', 'seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', 'arrOf'].map(slice).join('\n')}
+    ${['packLinked', 'haltFixedSync', 'scheduleSyncPush', 'syncPush', 'seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf'].map(slice).join('\n')}
     ${FORMAT_GATE_SRC()}`, ctx);
   vm.runInContext('scheduleSyncPush()', ctx);
   eq(vm.runInContext('timers.length', ctx), 1, 'a linked device cannot schedule a push (the test proves nothing)');
@@ -9360,7 +9363,7 @@ test('every guard in front of the pack feed, the parent feed and a push holds on
       function fixedFeedBlocked() { return feedBlocked; } function fixedSyncBlocked() { return syncBlocked; }
       function accountsInForce() { return inForce; } function canEdit() { return edit; }
       var sync = { backend: fakeBe, pack: { docId: 'P' }, docId: 'P', session: 1, deviceId: 'd', mode: 'online', parentUnsub: null };
-      ${['cloudReady', 'packLinked', 'haltFixedSync', 'subscribeDoc', 'subscribeParentView', 'syncPush', 'seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', 'arrOf'].map(slice).join('\n')}
+      ${['cloudReady', 'packLinked', 'haltFixedSync', 'subscribeDoc', 'subscribeParentView', 'syncPush', 'seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf'].map(slice).join('\n')}
       ${FORMAT_GATE_SRC()}`, c);
     return c;
   };
@@ -15525,7 +15528,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'ensureMyMemberDoc', 'joinCreateMemberDoc', 'signOutGoogle', 'accountsToast', 'MEMBER_ROLES', 'setMemberRole', 'removeMember',
   'createInvite', 'revokeInvite', 'joinOpen', 'standingsEnabled', 'cleanContactLine', 'MOVE_KIND', 'MOVE_UID_RE', 'MOVE_ROLES',
   'isPackOwner', 'canDownloadMoveFile', 'canImportPack', 'moveFileReady', 'moveFileProblem', 'moveTime', 'buildMoveFile', 'downloadMoveFile', 'moveImportBody', 'importMoveFile',
-  'scheduleParentViewRefresh', 'writeParentView', 'scheduleSyncPush', 'holdPushes', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', ...GONE_FNS, 'syncPush',
+  'scheduleParentViewRefresh', 'writeParentView', 'scheduleSyncPush', 'holdPushes', 'mergeRemoteAppendOnly', 'seasonMoved', ...C8_SYNC_FNS, 'freshGone', ...GONE_FNS, 'syncPush',
   'isStateEmpty', 'stateFingerprint', 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'keepLocalCopy', 'SERVER_NOTICES', 'serverNotice',
   // Owner decision 22 — keeping this device's copy over another device's close-out is an admin's.
   'keepLocalNeedsAdmin', 'KEEP_LOCAL_REFUSED', 'canReopenStatement',
@@ -16276,7 +16279,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
       var sync = { backend: fakeBe, pack: { docId: 'P' }, session: 1, deviceId: 'd', clobber: false, dirty: true, mode: 'online',
         notice: '${over.notice || ''}', firstSnap: false,
         remoteRec: ${JSON.stringify(over.heard === undefined ? { rev: over.localRev, device: 'x', json: '{}' } : over.heard)} };
-      ${['packLinked', 'syncPush', 'seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', 'arrOf', 'reconciledFatesText', 'noteReconciledFates', ...FORMAT_GATE_FNS].map(decl).join('\n')}
+      ${['packLinked', 'syncPush', 'seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf', 'reconciledFatesText', 'noteReconciledFates', ...FORMAT_GATE_FNS].map(decl).join('\n')}
       syncPush();`, ctx);
     const out = vm.runInContext('[records.length ? records[0].rev : null, merged, state.rev]', ctx);
     if (over.answers) out.push(JSON.parse(JSON.stringify(vm.runInContext('[firstAnswers, sync.dirty, sync.remoteRec && sync.remoteRec.rev]', ctx))));
@@ -16333,7 +16336,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
       function canEdit() { return true; } function render() {} function showToast() {} function scheduleSyncPush() { pushed += 1; }
       var ui = { overlay: { kind: 'sync-conflict', remote: { rev: 9 } } }, state = { rev: 2 };
       var sync = { backend: { serverRevs: ${serverRevs} } };
-      ${['seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', 'arrOf', 'keepLocalCopy', 'keepLocalNeedsAdmin'].map(decl).join('\n')}
+      ${['seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf', 'keepLocalCopy', 'keepLocalNeedsAdmin'].map(decl).join('\n')}
       keepLocalCopy();`, ctx);
     return vm.runInContext('[state.rev, pushed, ui.overlay]', ctx);
   };
@@ -16926,7 +16929,7 @@ test('stopgap, Firestore: two devices that both re-import before either saves co
 
 // Treasurer M3 / popcorn 3: the copy chooser, drawn by the page's own renderOverlay.
 const CHOOSER_FNS = ['esc', 'fmt', 'fmtDateShort', 'fmtArchiveDate', 'arrOf', 'teBatchOf', 'dangerBtn', 'packSalesCents', 'teLastImportMs',
-  'rowsOnlyIn', 'syncCopyLine', 'syncYearsHtml', 'syncOnlyHereHtml', 'jsonBackup', 'renderOverlay', 'rowChoice', 'syncClosedTwiceHtml', 'seasonCloseoutOf',
+  'rowsOnlyIn', 'syncCopyLine', 'syncYearsHtml', 'syncOnlyHereHtml', 'jsonBackup', 'renderOverlay', 'rowChoice', 'syncClosedTwiceHtml', 'syncClosedBooksHtml', 'seasonCloseoutOf', ...C8_SYNC_FNS,
   // Owner decision 22 — across a close-out: the cloud copy's download, and keep-local an admin's.
   'seasonMoved', 'seasonClosedTwice', 'keepLocalNeedsAdmin', 'KEEP_LOCAL_REFUSED', 'CLOUD_COPY_NAME', 'canReopenStatement', 'isAdmin'];
 function chooserHtml(mine, cloud, over) {
@@ -18109,7 +18112,7 @@ test('C1: ledgerEvent builds one log entry, and nothing else', () => {
   eq(ev('reverse', 'l1', who, { rows: ['rv-l1'] }).rows, ['rv-l1'], 'a reversal names its row');
   eq(ev('tick', 'l1', { id: 'x', by: 'pat@example.com' }), { id: 'lg-x', at: '', by: 'a signed-in leader', byUid: '', dev: '', row: 'l1', op: 'tick' }, 'never an email');
   eq([ctx.ledgerEvent('someday', 'l1', who), ctx.ledgerEvent('edit', '', who), ctx.ledgerEvent('edit', 7, who)], [null, null, null], 'an unknown op, or no row');
-  eq([...ctx.LEDGER_OPS], ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile', 'restore', 'review', 'balance', 'close'], 'the ops');
+  eq([...ctx.LEDGER_OPS], ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile', 'restore', 'review', 'balance', 'close', 'unclose'], 'the ops');
   // The rows it names are copied, not shared.
   const rows = ['a'];
   const e2 = ctx.ledgerEvent('correct', 'l1', who, { rows });
@@ -18330,7 +18333,7 @@ const C2_ACT = [
 const ASIDE_LIST_FNS = ['ledgerPairOf', 'ledgerPairRole', 'ledgerReversedLineHtml', 'ledgerReplacementId', 'ledgerReversalOf', 'ledgerReplacementFor',
   'ledgerLiveReversals', 'ledgerReversedAgainWhy', 'ledgerUnvoidDateWhy', 'ledgerEntryNamed', 'ledgerCap', 'ledgerReversalName'];
 // Treasurer sign-off on option B (3) — how the ledger's notes name an entry, and how to take a row out.
-const LOOK_WORD_FNS = ['fmtDateShort', 'ledgerEntryNamed', 'ledgerCap', 'ledgerTakeOut', 'LEDGER_TAKE_OUT_ANY', 'ledgerLocked', 'ledgerDateReconciled', 'entryAfterOpening',
+const LOOK_WORD_FNS = ['arrOf', 'closedYearText', 'fmtDateShort', 'ledgerEntryNamed', 'ledgerCap', 'ledgerTakeOut', 'LEDGER_TAKE_OUT_ANY', 'ledgerLocked', 'ledgerDateReconciled', 'entryAfterOpening',
   'ledgerReversalOf'];
 const C2_FNS = ['fmt', 'fmtDate', 'fmtDateShort', 'toCents', 'toCentsSigned', 'entryAfterOpening', 'entryOnStatement', 'ledgerLocked',
   'ledgerDateReconciled', 'ledgerLockedWhy', 'LEDGER_MAX_CENTS', 'LEDGER_EDIT_FIELDS', 'LEDGER_LOCKED_FIELDS', 'ledgerRowDiff',
@@ -19241,6 +19244,7 @@ const C2T_ACT = [
   c2Block(/    if \(act === 'confirm-import'\) \{[\s\S]*?\n    \}/, 'confirm-import')].join('\n');
 const C2T_CHANGE = c2Block(/    if \(ch === 'ledger-unrec-why'\) \{[^\n]*\}/, 'ledger-unrec-why');
 const C2T_MORE = `
+  ${C8_SYNC_FNS.map(slice).join('\n')}
   ${['reconcileLockRefusal', 'reconcileLockAhead', 'reconcileTotals', 'carriedRowsOf', 'carriedRowFixed', 'statementReopened', 'entrySignedCents', 'arrOf', 'statementRetick'].map(slice).join('\n')}
   ${['noteLedgerLookFromMerge', 'ledgerRestoreDiffLook', 'ledgerSignedCents', 'ledgerRestoreWhy'].map(slice).join('\n')}   // security re-check of C6 (N5)
   ${decl('RECONCILE_AHEAD_WHY')}
@@ -19494,6 +19498,7 @@ const C2S_EXTRA = `${C2_LOG_EXTRA}
   ${slice('statementLockForward')}
   ${slice('statementRetick')}   // C6 reviews (F4): a restore re-ticks what a standing statement lists
   ${slice('carriedRowsOf')}
+  ${C8_SYNC_FNS.map(slice).join('\n')}
   ${decl('RESTORE_REFUSED')}
   function canReopenStatement() { return true; }   // an admin restores (security re-check of C5, R1)
   function confirmImport(data) { ui.overlay = { kind: 'import', data: data }; var act = 'confirm-import';
@@ -21909,7 +21914,7 @@ test('Security re-check A and D: the ledger says when two reversals of an entry 
     '<p style="margin:0 0 10px">' + RECHECK_TWO('“&lt;img src=x onerror=alert(1)&gt;”', 'Oct 1 and Oct 5', '$40.00') + '</p></div>', 'the card');
   eq(x.ledgerLookCardHtml([X, rv('rv-X', { amountCents: 5000, reconciled: true })], BOOK).indexOf('Reverse the reversal (open its Detail') !== -1, true, 'the card passes the book on');
   // (C6 reviews: with what a merge said needs a look this session, after the book's own.)
-  ok(/\n    h \+= ledgerLookCardHtml\(state\.ledger, state\.book, sync\.lookNotes\);[^\n]*\n    h \+= '<div class="card"><h2 class="section display">Ledger<\/h2>'/.test(slice('renderLedger')), 'renderLedger does not show it, with the book');
+  ok(/\n    h \+= ledgerLookCardHtml\(state\.ledger, state\.book, sync\.lookNotes, state\.closedBooks\);[^\n]*\n    h \+= '<div class="card"><h2 class="section display">Ledger<\/h2>'/.test(slice('renderLedger')), 'renderLedger does not show it, with the book');
   ok(!/ledgerLook/.test(codeOnly(BPV())) && !/ledgerLook/.test(codeOnly(slice('renderParentApp'))), 'it reaches the parents');
 });
 
@@ -24870,7 +24875,7 @@ test('C6 review, Firestore: an entry ticked on one device and voided later on an
   a.hear();
   eq(a.get("state.ledgerAside.filter(function (e) { return e.id === 'l2'; }).map(function (e) { return e.reconciled; })"), [false], 'A after B’s save');
   // The card shows it, with a Got it that clears it; the ledger shows the card; a sync stop clears it.
-  ok(/h \+= ledgerLookCardHtml\(state\.ledger, state\.book, sync\.lookNotes\);/.test(slice('renderLedger')), 'renderLedger does not pass the notes');
+  ok(/h \+= ledgerLookCardHtml\(state\.ledger, state\.book, sync\.lookNotes, state\.closedBooks\);/.test(slice('renderLedger')), 'renderLedger does not pass the notes');
   ok(/if \(act === 'ledger-look-dismiss'\) \{ sync\.lookNotes = \[\]; render\(\); return; \}/.test(SCRIPT), 'Got it does not clear them');
   ok(/sync\.lookNotes = \[\];[^\n]*\n\s+sync\.lookSeen = \{\};/.test(slice('syncStop')), 'a sync stop keeps them');
   const card = sandbox(['esc', 'fmt', 'ledgerPairOf', 'ledgerLiveReversals', 'ledgerLookNotes', 'ledgerLookCardHtml', 'ledgerReversalOf', ...LOOK_WORD_FNS]);
@@ -25354,7 +25359,7 @@ const C6_CLOSE = (dev, day) => `state.archives = (state.archives || []).concat([
   state.ledgerAside = []; state.ledgerLog = []; state.statements = []; state.gone = freshGone(); commit()`;
 
 test('C6: two close-outs of the same year are told apart by the archive each wrote', () => {
-  const x = sandbox(['seasonClosedTwice', 'seasonCloseoutOf', 'arrOf']);
+  const x = sandbox(['seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf']);
   const rec = (py, arcs) => ({ json: JSON.stringify({ budget: { programYear: py }, archives: arcs }) });
   const arc = (id, year) => ({ id, kind: 'season', year, closedAt: '2026-07-01T00:00:00.000Z' });
   x.state = { budget: { programYear: 2027 }, archives: [arc('old', 2025), arc('mine', 2026)] };
@@ -25593,7 +25598,7 @@ test('C6 review (F6), Firestore: a close-out, or a newer page’s save, arriving
 
 test('Decision 22: closing out the year, and keeping this device’s copy over another device’s close-out, are an admin’s; the chooser offers the cloud copy’s download', () => {
   // keepLocalNeedsAdmin: a copy across a close-out, or closed out separately, holding a season archive this device hasn't.
-  const x = sandbox(['keepLocalNeedsAdmin', 'seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', 'arrOf']);
+  const x = sandbox(['keepLocalNeedsAdmin', 'seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf']);
   const arc = (id, year) => ({ id, kind: 'season', year, closedAt: '2026-07-01T00:00:00.000Z' });
   const rec = (py, arcs) => ({ json: JSON.stringify({ budget: { programYear: py }, archives: arcs }) });
   x.state = { budget: { programYear: 2026 }, archives: [arc('old', 2025)] };
@@ -26541,6 +26546,148 @@ test('C8-3: Mark reconciled and the restore read the carried rows; the printout 
   ok(/renderLedgerEntries\(\) \+ carriedBlockHtml\(\)/.test(slice('renderLedger')), 'the Entries view shows the carried block');
   // The page still parses as a whole.
   new vm.Script(SCRIPT);
+});
+
+/* ================================================================
+   C8-4: the sync merge, the copy chooser and a restore know closed books. Nothing writes one yet: the tests put them in.
+   ================================================================ */
+// A closed book as a device holds it, written by hand (normalizeClosedBook's shape).
+const C8_BOOK_OF = (year, archiveId, o) => Object.assign({ year, closedAt: '2026-09-10T12:00:00.000Z', closedBy: 'Sam Example', closedByUid: 'u-sam', archiveId, cutoff: (year + 1) + '-06-30',
+  openingDate: year + '-07-01', openingCents: 100000, closingCents: 93000, reconciledThrough: '', carried: { n: 0, inCents: 0, outCents: 0 }, form: 'full',
+  ledger: [{ id: 'old1', date: (year + 1) + '-01-10', description: 'Dues', amountCents: 500, direction: 'in', scoutId: 's2', source: 'family' }], aside: [], log: [], statements: [],
+  names: { line: {}, family: {} } }, o || {});
+
+test('C8-4: the merge keeps every closed book from either copy, once, the less complete form of one close-out, and a later close-out of a year', () => {
+  const nc = "state.closedBooks = "; const put = (books) => nc + JSON.stringify(books) + '; commit()';
+  // B holds the 2025 and 2024 books; A holds 2025 too, and has an unsaved change.
+  let { a, b, server } = c3FsPair();
+  b.run(put([C8_BOOK_OF(2024, 'arc-24'), C8_BOOK_OF(2025, 'arc-25')])); b.push();
+  a.run(put([C8_BOOK_OF(2025, 'arc-25')])); a.run(B1);
+  a.hear(); a.push();
+  eq(server().closedBooks.map((x) => [x.year, x.archiveId]), [[2024, 'arc-24'], [2025, 'arc-25']], 'the record');
+  eq(a.get('state.closedBooks.map(function (x) { return x.year; })'), [2024, 2025], 'A');
+  b.hear();
+  eq(b.get('state.closedBooks.map(function (x) { return x.year; })'), [2024, 2025], 'B after');
+  // A book compacted on one device stays compact on both (the record would swell back otherwise).
+  ({ a, b, server } = c3FsPair());
+  const compact = { year: 2025, closedAt: '2026-09-10T12:00:00.000Z', archiveId: 'arc-25', form: 'compact', ledger: [{ i: 'old1', d: '2026-01-10', c: 500, t: 'Dues' }],
+    statements: [], asideTrimmed: true, logTrimmed: true };
+  b.run(put([compact])); b.push();
+  a.run(put([C8_BOOK_OF(2025, 'arc-25')])); a.run(B1);
+  a.hear(); a.push();
+  eq(server().closedBooks.map((x) => [x.year, x.form]), [[2025, 'compact']], 'compact wins');
+  // A later close-out of the same year replaces the earlier.
+  ({ a, b, server } = c3FsPair());
+  b.run(put([C8_BOOK_OF(2025, 'arc-25b', { closedAt: '2026-10-01T00:00:00.000Z' })])); b.push();
+  a.run(put([C8_BOOK_OF(2025, 'arc-25')])); a.run(B1);
+  a.hear(); a.push();
+  eq(server().closedBooks.map((x) => x.archiveId), ['arc-25b'], 'the later one');
+});
+
+// A carried row ticked on one device and not on the other: the merge keeps the tick, and two devices that each ticked a different one keep both.
+test('C8-4: a tick on a carried row reaches the other device, and two devices’ ticks on different carried rows are both kept', () => {
+  const nw = c8New(), carried = nw.aside.filter((e) => e.off === 'carried');
+  const tick = (id) => `var e = state.ledgerAside.filter(function (x) { return x.id === '${id}'; })[0]; e.reconciled = true; e.approvedBy = 'Pat'; e.approvedAt = new Date(Date.now()).toISOString(); e.reconciledAt = Date.now(); logLedger('tick', '${id}'); commit()`;
+  const { a, b, server } = c3FsPair({ ledger: nw.ledger, ledgerAside: carried, book: nw.book });
+  const ticked = (st) => st.ledgerAside.map((e) => [e.id, !!e.reconciled]).sort();
+  b.run(tick('co-c')); b.push();
+  a.run(tick('co-d'));
+  a.hear(); a.push();
+  eq(ticked(server()), [['co-c', true], ['co-d', true]], 'the record');
+  b.hear();
+  eq(ticked(b.get('state')), [['co-c', true], ['co-d', true]], 'B');
+  eq(server().ledgerAside.length, 2, 'each carried row once');
+});
+
+test('C8-4: two close-outs of a year are told apart by the closed book each wrote, as by the season archive', () => {
+  const x = sandbox(['seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf']);
+  const rec = (py, books, arcs) => ({ json: JSON.stringify({ budget: { programYear: py }, archives: arcs || [], closedBooks: books }) });
+  x.state = { budget: { programYear: 2027 }, archives: [], closedBooks: [C8_BOOK_OF(2025, 'old'), C8_BOOK_OF(2026, 'mine')] };
+  eq([x.seasonClosedTwice(rec(2027, [C8_BOOK_OF(2025, 'old'), C8_BOOK_OF(2026, 'theirs')])), x.seasonClosedTwice(rec(2027, [C8_BOOK_OF(2025, 'old'), C8_BOOK_OF(2026, 'mine')])),
+    x.seasonClosedTwice(rec(2027, [C8_BOOK_OF(2025, 'old')])), x.seasonClosedTwice(rec(2026, [C8_BOOK_OF(2025, 'theirs')])), x.seasonClosedTwice(rec(2027, []))],
+    [true, false, false, false, false], 'two close-outs; the same one; one not closed out; another year (seasonMoved); a copy with no books');
+  // Books and archives together (the record C8-5 writes): either says it.
+  x.state = { budget: { programYear: 2027 }, archives: [{ id: 'mine', kind: 'season', year: 2026 }], closedBooks: [C8_BOOK_OF(2026, 'mine')] };
+  eq([x.seasonClosedTwice(rec(2027, [C8_BOOK_OF(2026, 'theirs')], [{ id: 'theirs', kind: 'season', year: 2026 }])),
+    x.seasonClosedTwice(rec(2027, [C8_BOOK_OF(2026, 'mine')], [{ id: 'mine', kind: 'season', year: 2026 }]))], [true, false], 'books and archives');
+  // The chooser names when each was made, from the book where there is no archive.
+  eq(J(x.closeoutRecordOf({ archives: [], closedBooks: [C8_BOOK_OF(2026, 'mine')] }, 2026)), { id: 'mine', closedAt: '2026-09-10T12:00:00.000Z' }, 'from the closed book');
+  eq(J(x.closeoutRecordOf({ archives: [{ id: 'a', kind: 'season', year: 2026, closedAt: 'X' }], closedBooks: [C8_BOOK_OF(2026, 'mine')] }, 2026)), { id: 'a', closedAt: 'X' }, 'the archive first');
+  eq(x.closeoutRecordOf({}, 2026), null, 'neither');
+});
+
+test('C8-4: keeping this device’s copy over a close-out is an admin’s when the cloud copy holds a closed book this device lacks, and the chooser says what is lost', () => {
+  const x = sandbox(['keepLocalNeedsAdmin', 'seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf']);
+  const rec = (py, books) => ({ json: JSON.stringify({ budget: { programYear: py }, archives: [], closedBooks: books }) });
+  x.state = { budget: { programYear: 2026 }, archives: [], closedBooks: [C8_BOOK_OF(2025, 'old')] };
+  eq([x.keepLocalNeedsAdmin(rec(2027, [C8_BOOK_OF(2025, 'old'), C8_BOOK_OF(2026, 'theirs')])), x.keepLocalNeedsAdmin(rec(2027, [C8_BOOK_OF(2025, 'old')])), x.keepLocalNeedsAdmin(rec(2026, []))],
+    [true, false, false], 'a closed year only the cloud has; nothing this device lacks; the same year');
+  // The chooser's words, escaped, only when something would be lost.
+  const seed = goneSeedNorm();
+  const mine = Object.assign(J(seed), { closedBooks: [] }), cloud = Object.assign(J(seed), { budget: Object.assign({}, seed.budget, { programYear: 2027 }), closedBooks: [C8_BOOK_OF(2026, 'arc-x')] });
+  const t = chooserHtml(mine, cloud).html.replace(/<[^>]+>/g, '');
+  ok(t.includes('The cloud copy has the 2026–27 close-out, and this device does not. Keeping this device’s copy undoes that close-out for everyone: the year’s closed book (its entries, statements and change history) ' +
+    'is removed from the pack record, and the year is open again. Only an admin can do it. Download the cloud copy first, and keep the snapshot the close-out downloaded.'), 'the words: ' + t);
+  ok(!/undoes that close-out/.test(chooserHtml(cloud, cloud).html), 'nothing lost');
+  ok(!/undoes that close-out/.test(chooserHtml(cloud, mine).html), 'the cloud holds no closed book this device lacks');
+});
+
+// Two devices close 2026 out separately, each with a closed book and an archive; B keeps its own.
+const C8_CLOSE = (dev, day) => `${C6_CLOSE(dev, day).replace(/ commit\(\)$/, '')}; state.closedBooks = [${JSON.stringify(C8_BOOK_OF(2026, 'arc-' + dev, { closedAt: '2026-07-0' + day + 'T12:00:00.000Z' }))}]; commit()`;
+test('C8-4, Firestore: keeping this device’s copy over another device’s close-out writes an “undone” event in the log, and the other copy’s closed book goes', () => {
+  const { a, b, server } = c3FsPair();
+  a.run(C8_CLOSE('A', 1)); a.push();
+  b.run(C8_CLOSE('B', 2)); b.hear(); b.push();
+  eq([b.get('ui.overlay && ui.overlay.kind'), server().closedBooks.map((x) => x.archiveId)], ['sync-conflict', ['arc-A']], 'B was asked, nothing merged');
+  b.run('keepLocalCopy()'); b.push();
+  eq(server().closedBooks.map((x) => x.archiveId), ['arc-B'], 'B’s closed book, whole');
+  const ev = server().ledgerLog.filter((e) => e.op === 'unclose');
+  eq([ev.length, ev[0] && ev[0].row, ev[0] && ev[0].why], [1, 'book', 'This device’s copy was kept over a cloud copy that had closed out 2026–27, so that close-out is undone and its closed book is gone from the pack record.'], 'the event');
+  a.hear();
+  eq(a.get('state.closedBooks.map(function (x) { return x.archiveId; })'), ['arc-B'], 'A after');
+  // Using the cloud copy undoes B's close-out instead, and writes nothing.
+  const q = c3FsPair();
+  q.a.run(C8_CLOSE('A', 1)); q.a.push();
+  q.b.run(C8_CLOSE('B', 2)); q.b.hear(); q.b.push();
+  q.b.run('adoptRemote(ui.overlay.remote, {}); ui.overlay = null');
+  eq(q.b.get('state.closedBooks.map(function (x) { return x.archiveId; })'), ['arc-A'], 'the cloud copy taken');
+  // A keep with no closed book to lose writes nothing.
+  const r = c3FsPair();
+  r.a.run(C6_CLOSE('A', 1)); r.a.push();
+  r.b.run(C6_CLOSE('B', 2)); r.b.hear(); r.b.push();
+  r.b.run('keepLocalCopy()'); r.b.push();
+  eq(r.server().ledgerLog.filter((e) => e.op === 'unclose').length, 0, 'no closed book lost, no event');
+});
+
+test('C8-4: restoring a backup keeps this device’s closed books; from before a close-out it opens that year again, says so in the log and on “The ledger needs a look”', () => {
+  const back = (year, o) => JSON.stringify(Object.assign({ ledger: [], ledgerLog: [], book: { year, reconciledThrough: '' } }, o || {}));
+  const run = (books, data) => {
+    const p = c2tPage({ book: { year: 2026 }, more: `state.closedBooks = ${JSON.stringify(books)};` });
+    p.run(`admin = true; ui.overlay = { data: ${data} }; act3('confirm-import')`);
+    return p;
+  };
+  // A backup of the same year: this device's closed books stay, and a year both have is this device's.
+  let p = run([C8_BOOK_OF(2025, 'here-25'), C8_BOOK_OF(2024, 'here-24')], back(2026, { closedBooks: [C8_BOOK_OF(2025, 'back-25'), C8_BOOK_OF(2023, 'back-23')] }));
+  eq(p.get('state.closedBooks.map(function (x) { return [x.year, x.archiveId]; })'), [[2023, 'back-23'], [2024, 'here-24'], [2025, 'here-25']], 'kept: this device’s, and the backup’s other years');
+  eq(p.get('log().map(function (e) { return e.op; })'), ['restore'], 'nothing undone');
+  // A backup from before the 2025 close-out (its book is 2025): the book is open again, the closed one kept.
+  p = run([C8_BOOK_OF(2025, 'here-25')], back(2025));
+  eq(p.get('state.closedBooks.map(function (x) { return [x.year, x.archiveId]; })'), [[2025, 'here-25']], 'the closed book is kept');
+  eq(p.get('log().map(function (e) { return [e.op, e.row]; })'), [['unclose', 'book'], ['restore', 'book']], 'undone, then the restore, last');
+  eq(p.get('log()[0].why'), 'A backup made before the 2025–26 close-out was restored on this device, so that close-out is undone: the year’s book is open again, as it was then. Its closed book is kept, and closing the year out again replaces it.', 'what the log says');
+  // …and "The ledger needs a look" says so, for as long as it is true.
+  const look = sandbox(['fmt', 'ledgerPairOf', 'ledgerLiveReversals', 'ledgerLookNotes', ...LOOK_WORD_FNS]);
+  eq(J(look.ledgerLookNotes([], { year: 2025 }, [C8_BOOK_OF(2025, 'here-25')])),
+    ['The 2025–26 year was closed out, but this book is for 2025–26 too. That happens when a backup from before the close-out is restored. The closed 2025–26 book is kept, and closing out 2025–26 again ' +
+     'replaces it. Anything entered since that close-out needs entering again.'], 'the note');
+  eq([look.ledgerLookNotes([], { year: 2026 }, [C8_BOOK_OF(2025, 'here-25')]).length, look.ledgerLookNotes([], { year: 2025 }).length], [0, 0], 'a book a year on, and no books given');
+  // The question says it first, for an admin about to restore.
+  const x = sandbox(['importClosedBooksHtml', 'closedBooksUndone', 'closedYearText', 'arrOf', 'esc']);
+  const w = x.importClosedBooksHtml([C8_BOOK_OF(2025, 'a')], { book: { year: 2025 } }).replace(/<[^>]+>/g, '');
+  eq(w, 'This backup is from before the 2025–26 close-out. Restoring it opens the 2025–26 book again, as it was when the backup was made. Everything entered since is lost, including the new year’s entries ' +
+    'and statements. The closed 2025–26 book on this device is kept, and closing the year out again replaces it. Download a backup of this device first.', 'the warning');
+  eq([x.importClosedBooksHtml([C8_BOOK_OF(2025, 'a')], { book: { year: 2026 } }), x.importClosedBooksHtml([], { book: { year: 2025 } })], ['', ''], 'none when nothing is undone');
+  ok(/importBookYearHtml\(state\.book, state\.statements, o\.data\) \+\s*importClosedBooksHtml\(state\.closedBooks, o\.data\) \+/.test(SCRIPT), 'the question shows it');
 });
 
 /* ---------------- report ---------------- */
