@@ -5125,6 +5125,7 @@
     // does on every commit) can't wipe half-typed input.
     ledgerDraft: null,
     ledgerAddWarned: '',    // Phase 3, C2 — the draft date already warned as in the reconciled period
+    delSeasonWhy: '',       // Phase 3, C8-8 — the reason typed for deleting a season's close-out (owner decision 28)
     closeoutJuneOk: false,  // Phase 3, C8-6 — an admin chose "June was not reconciled" on the close-out screen (owner decision 32)
     ledgerMoveWarned: null, // Treasurer review of C2 (M-5) — { id, date }: an entry's move into it, warned
     unrecWhy: '',           // Treasurer review of C2 (L-5) — the optional why typed for an un-reconcile
@@ -22913,8 +22914,16 @@
   // and when it was printed. Security review of C5 (F4) — and when a list was cut at 2,000.
   function renderBankStatementSheet(o) {
     var st = (state.statements || []).filter(function (x) { return x.id === o.id; })[0];
+    // Phase 3, C8-8 — or one a closed year's book holds (Past seasons prints it), listing the entries from that book, voided ones too.
+    var stBookAside = [];
+    if (!st) {
+      arrOf(state.closedBooks).forEach(function (b) {
+        var f = b ? arrOf(b.statements).filter(function (x) { return x && x.id === o.id; })[0] : null;
+        if (f && !st) { st = f; stBookAside = arrOf(b.aside); }
+      });
+    }
     if (!st) return '';
-    var d = statementSheetData(st, state.ledger.concat(state.ledgerAside || [], closedBookRows(state.closedBooks)));
+    var d = statementSheetData(st, state.ledger.concat(state.ledgerAside || [], stBookAside, closedBookRows(state.closedBooks)));
     var BLANK = '______________________';
     function money(cents, plus) { return cents === null ? '—' : (cents < 0 ? '−' : (plus && cents > 0 ? '+' : '')) + fmt(Math.abs(cents)); }
     // The summary's labels are sentences: they wrap (the global `td { white-space: nowrap }` pushed
@@ -23587,7 +23596,7 @@
     'copy-archive', 'copy-kickoff', 'makeup-msg', 'copy-makeup-msg', 'join-copy', 'pack-id-copy',
     'export-csv', 'export-ics', 'ledger-log-csv', 'ledger-voided-csv', 'copy-export', 'download-export',
     'export-json', 'sync-download-local'];
-  var HELD_ACT_PREFIXES = ['archive-sheet:', 'tier-due-open:', 'st-print:'];   // Phase 3, C5: a statement's printout
+  var HELD_ACT_PREFIXES = ['archive-sheet:', 'tier-due-open:', 'st-print:', 'closed-csv:'];   // Phase 3, C5: a statement's printout
   // …and the two change fields that only filter what is shown.
   var HELD_CHANGES = ['ledger-search', 'ledger-line-filter'];
   function heldActAllowed(act) {
@@ -28067,6 +28076,8 @@
     if (o.kind === 'te-archive') return renderArchiveSheet(o);
     // Wave 7 — year-end close-out preview + confirm.
     if (o.kind === 'closeout') return renderCloseoutOverlay();
+    // Phase 3, C8-8 (owner decision 28) — deleting a season's close-out: an admin's, with a reason.
+    if (o.kind === 'del-season') return renderDelSeasonOverlay(o);
     // Wave 19(15) — printable storefront day sheet.
     if (o.kind === 'day-sheet') return renderDaySheet(o);
     // E1 — one family's statement. Leaders' copy; never published.
@@ -31272,6 +31283,104 @@
   }
   var SEASON_LEDGER_TRIMMED = 'The ledger was too large to keep in the shared pack record, so only its totals and the family ' +
     'balances are here. Every entry is in the JSON snapshot downloaded at close-out \u2014 keep that file.';
+  // PHASE 3, C8-8 — a season archive's closed book (state.closedBooks): the one this close-out wrote (the year and the archive's id), or
+  // null (an archive from before C8, or a book no longer held). Pure apart from reading the closed books.
+  function seasonBookOf(a) {
+    var b = a ? closedBookOf(state, a.year) : null;
+    return b && b.archiveId === a.id ? b : null;
+  }
+  // The closed book's entries as CSV (for the annual review), oldest first: Date, Entry, Family, Budget line, Reference, Money in, Money out,
+  // Reconciled, Entered by, Ticked by. A full book's rows carry the words in `names`; a compact book's carry them as they are (and who entered
+  // and ticked). Amounts in dollars, no symbol; no cell is read as a formula (ledgerCsvCell). Pure.
+  function closedBookEntriesCsv(book) {
+    var nm = book.names || { line: {}, family: {} };
+    var rows = arrOf(book.ledger).map(function (e) {
+      if (book.form === 'compact') return { d: e.d || '', t: e.t || '', f: e.f || '', l: e.l || '', r: e.r || '', c: e.c || 0, k: e.k === 1, eb: e.eb || '', ab: e.ab || '' };
+      return { d: e.date || '', t: e.description || '', f: e.scoutId ? (nm.family[e.scoutId] || '') : '', l: e.lineId ? (nm.line[e.lineId] || '') : '', r: e.ref || '',
+        c: entrySignedCents(e), k: e.reconciled === true, eb: e.enteredBy || '', ab: e.approvedBy || '' };
+    });
+    rows = rows.map(function (r, i) { return { r: r, i: i }; }).sort(function (a, b) { return a.r.d < b.r.d ? -1 : a.r.d > b.r.d ? 1 : a.i - b.i; }).map(function (x) { return x.r; });
+    function dollars(c) { return (Math.abs(c) / 100).toFixed(2); }
+    return ['Date,Entry,Family,Budget line,Reference,Money in,Money out,Reconciled,Entered by,Ticked by'].concat(rows.map(function (r) {
+      return [r.d, r.t, r.f, r.l, r.r, r.c > 0 ? dollars(r.c) : '', r.c < 0 ? dollars(r.c) : '', r.k ? 'yes' : 'no', r.eb, r.ab].map(ledgerCsvCell).join(',');
+    })).join('\n');
+  }
+  // The closed book's change history as CSV (a full book only has one): ledgerLogCsv, naming the entries and statements from the book's own rows and
+  // the lines and families from its `names`. Pure.
+  function closedBookLogCsv(book) {
+    var nm = book.names || { line: {}, family: {} }, rows = arrOf(book.ledger).concat(arrOf(book.aside));
+    return ledgerLogCsv(arrOf(book.log), function (id) {
+      var st = arrOf(book.statements).filter(function (x) { return x && x.id === id; })[0];
+      if (st) return 'Statement through ' + fmtDateShort(st.date);
+      var e = rows.filter(function (x) { return x && x.id === id; })[0];
+      return e ? (e.description || ledgerEntryNamed(e)) : '';
+    }, {
+      line: function (id) { return nm.line[id] || ''; }, scout: function (id) { return nm.family[id] || ''; }, tier: function () { return ''; },
+      statement: function (id) { return ledgerStatementName(book.statements, id); }, entry: function (id) { return ledgerRowName(rows, id); }
+    });
+  }
+  // What a closed book says of itself in words, for Past seasons (`a` its archive, `book` the closed book or null): what it kept and what it
+  // lacks. Plain text lines; none for an archive from before C8. Pure.
+  function closedBookLines(a, book) {
+    if (!book) return a && a.ledger && a.ledger.inBook === true
+      ? ['This year’s closed book is no longer in the pack record (it is removed when a copy without it is kept, or a backup from before the close-out is restored). The snapshot downloaded at close-out has it.'] : [];
+    var out = [(book.openingDate ? 'Entries from ' + fmtDateShortYear(book.openingDate) + ' to ' : 'Entries through ') + fmtDateShortYear(book.cutoff) + '. Opened at ' + fmt(book.openingCents) +
+      ' and closed at ' + fmt(book.closingCents) + '.'];
+    var c = book.carried || { n: 0 };
+    if (c.n) out.push(c.n + (c.n === 1 ? ' entry' : ' entries') + ' not yet on a bank statement ' + (c.n === 1 ? 'was' : 'were') + ' carried into the next year (' + fmt(c.inCents) + ' money in, ' + fmt(c.outCents) + ' money out).');
+    if (book.ledgerTrimmed) out.push('This year’s entries were too large to keep in the pack record, so only its totals and statements are kept. The snapshot downloaded at close-out has the entries.');
+    else if (book.form === 'compact') out.push('This year’s book was shortened to keep the pack record small: its entries and statements are kept, but not its voided entries or its change history. The snapshot downloaded at close-out has them.');
+    return out;
+  }
+  // The closed book's statements, as a table of what each was signed as (from the book: never changed now), newest first, each with its printout. Escaped.
+  function closedBookStatementsHtml(book) {
+    var list = arrOf(book.statements).filter(function (st) { return st && typeof st.id === 'string'; }).slice().sort(function (x, y) { return String(y.date || '') < String(x.date || '') ? -1 : 1; });
+    if (!list.length) return '<p class="small muted" style="margin:0 0 8px">No statements were reconciled this year.</p>';
+    return '<div class="tbl-wrap"><table><caption class="visually-hidden">' + esc(closedYearText(book.year)) + ' — statements reconciled</caption>' +
+      '<thead><tr><th scope="col">Statement</th><th scope="col" class="num">Ending balance</th><th scope="col">Reconciled</th><th scope="col"></th></tr></thead><tbody>' +
+      list.map(function (st) {
+        var bal = typeof st.statementCents === 'number' ? fmt(st.statementCents) : (typeof st.addedCents === 'number' ? fmt(st.addedCents) : '—');
+        return '<tr><td>' + esc(st.date ? fmtDateShortYear(st.date) : 'a date that can’t be read') + (statementReopened(st) ? ' <span class="pill">reopened</span>' : '') + '</td><td class="num">' + bal + '</td>' +
+          '<td style="white-space:normal">' + esc(statementByOn(st.by, st.at).replace(/^ /, '')) + (statementReviewed(st) ? esc('; reviewed' + statementByOn(st.reviewedBy, st.reviewedAt)) : '') + '</td>' +
+          '<td><button type="button" class="btn small ghost no-print" data-act="st-print:' + esc(st.id) + '">Print</button></td></tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+  // The closed book's block in an expanded Past seasons row: read-only, what it kept, its statements and its downloads. '' for an archive that has
+  // no closed book and never had one (a close-out from before C8). Leaders only, as Past seasons is. Escaped.
+  function closedBookBlockHtml(a) {
+    var book = seasonBookOf(a), lines = closedBookLines(a, book);
+    if (!lines.length) return '';
+    var h = '<p class="eyebrow" style="margin-top:14px">Closed book <span class="pill navy">Closed · read only</span></p>' +
+      lines.map(function (t) { return '<p class="small" style="margin:0 0 6px">' + esc(t) + '</p>'; }).join('');
+    if (!book) return h;
+    h += '<p class="eyebrow" style="margin-top:10px">Statements reconciled</p>' + closedBookStatementsHtml(book) +
+      '<div class="row no-print" style="margin-top:8px">' +
+      (arrOf(book.ledger).length ? '<button type="button" class="btn small ghost" data-act="closed-csv:entries:' + book.year + '">Entries (CSV)</button>' : '') +
+      (arrOf(book.log).length ? '<button type="button" class="btn small ghost" data-act="closed-csv:log:' + book.year + '">Change history (CSV)</button>' : '') +
+      (arrOf(book.aside).some(function (e) { return e && (e.off === 'void' || e.off === 'reversed'); }) ? '<button type="button" class="btn small ghost" data-act="closed-csv:voided:' + book.year + '">Voided &amp; reversed (CSV)</button>' : '') +
+      '</div>';
+    return h;
+  }
+  var DEL_SEASON_REFUSED = 'Only a pack admin can delete a closed year.';
+  var DEL_SEASON_WHY_FIRST = 'Say why first, in a few words. It goes in the change history.';
+  // What deleting a season's close-out removes, for its confirmation (`a` the archive, `book` its closed book or null). Plain text. Pure.
+  function delSeasonText(a, book) {
+    return 'This removes the ' + closedYearText(a.year) + ' season summary' + (book ? ' and its closed book: its entries, voided entries, statements and change history are gone from the pack record' : '') +
+      '. Only the snapshot downloaded at close-out still has ' + (book ? 'them' : 'the season’s entries') + '. The balances and entries carried into the new year stay. This can’t be undone here.';
+  }
+  // The confirmation for deleting a season's close-out (ui.overlay kind 'del-season'): what goes, a box for why, two taps. Escaped.
+  function renderDelSeasonOverlay(o) {
+    var a = state.archives.filter(function (x) { return x.id === o.id && x.kind === 'season'; })[0];
+    if (!a) return '';
+    var armed = ui.armed === 'del-season-confirm';
+    return '<div class="overlay" role="dialog" aria-modal="true" aria-label="Delete a close-out"><div class="overlay-inner">' +
+      '<div class="summary-sheet"><h1 style="margin:0 0 8px">Delete the ' + esc(closedYearText(a.year)) + ' close-out</h1>' +
+      '<p class="small" style="margin:0 0 10px">' + esc(delSeasonText(a, seasonBookOf(a))) + '</p>' +
+      '<label class="small" for="delSeasonWhy" style="display:block;margin:0 0 4px">Why is it being deleted?</label>' +
+      '<input class="lname" id="delSeasonWhy" data-ch="del-season-why" value="' + esc(ui.delSeasonWhy || '') + '" maxlength="200" style="width:100%">' +
+      '<div class="row no-print" style="margin-top:14px"><button type="button" class="btn ' + (armed ? 'danger armed' : 'primary') + '" data-act="del-season-confirm">' +
+      (armed ? 'Tap again to delete' : 'Delete this close-out') + '</button><button type="button" class="btn" data-act="close-overlay">Cancel</button></div></div></div></div>';
+  }
   // Plain-text mirror of the season sheet for the Copy button (same role as archiveText).
   function seasonArchiveText(a) {
     var f = a.fundraising, b = a.budget;
@@ -31350,7 +31459,8 @@
       '<div class="spread"><button type="button" class="exp-toggle" data-act="toggle-archive" data-id="' + esc(a.id) + '" aria-expanded="' + open + '">' +
       '<span class="chev">' + (open ? '▾' : '▸') + '</span><strong>' + a.year + ' program year</strong> · ' + fmt(a.fundraising.combinedCents) +
       ' <span class="pill navy">Season close-out</span></button>' +
-      tinyDangerBtn('del-archive:' + a.id, 'Delete ' + a.year + ' close-out') + '</div>' +
+      // C8-8 (owner decision 28) — deleting a closed year is an admin's, with a reason: not offered to anyone else.
+      (canReopenStatement() ? '<button type="button" class="btiny" data-act="del-archive:' + esc(a.id) + '" aria-label="Delete ' + a.year + ' close-out" title="Delete ' + a.year + ' close-out">✕</button>' : '') + '</div>' +
       '<p class="small muted" style="margin:6px 0 0">Closed ' + esc(fmtArchiveDate(a.closedAt)) + ' · raised ' + fmt(a.fundraising.combinedCents) +
       ' · spent ' + fmt(a.budget.actualCents) + ' · ' + seasonBalanceLabel(a.budget).toLowerCase() + ' ' + fmt(a.budget.balanceCents) +
       (seasonCarriedLine(a.budget) ? ' · ' + esc(seasonCarriedLine(a.budget).replace(/^C/, 'c')) : '') + '</p>' +
@@ -31358,7 +31468,7 @@
       // yet (C8), but says when some of either wasn't kept, so nobody takes the archive as whole.
       (seasonBookTrimmedLine(a) ? '<p class="small muted" style="margin:4px 0 0">' + esc(seasonBookTrimmedLine(a)) + '</p>' : '');
     if (open) {
-      h += '<div style="margin-top:10px">' + seasonArchiveTables(a) + '</div>' +
+      h += '<div style="margin-top:10px">' + seasonArchiveTables(a) + closedBookBlockHtml(a) + '</div>' +
         '<div class="row no-print" style="margin-top:10px">' +
         '<button type="button" class="btn small" data-act="archive-sheet:' + esc(a.id) + '">Print / Copy</button></div>';
     }
@@ -33533,6 +33643,34 @@
       if (ui.archiveOpen[aid]) delete ui.archiveOpen[aid]; else ui.archiveOpen[aid] = true;
       render(); return;
     }
+    if (act === 'del-season-confirm') {
+      var dsO = ui.overlay && ui.overlay.kind === 'del-season' ? ui.overlay : null;
+      if (!dsO) return;
+      if (!canReopenStatement()) { ui.overlay = null; ui.armed = null; render(); showToast(DEL_SEASON_REFUSED); return; }
+      if (String(ui.delSeasonWhy || '').trim().length < 3) { showToast(DEL_SEASON_WHY_FIRST); return; }
+      arm('del-season-confirm', function () {
+        var dsArc = state.archives.filter(function (a) { return a.id === dsO.id && a.kind === 'season'; })[0];
+        if (!dsArc) { ui.overlay = null; render(); return; }
+        var dsBook = seasonBookOf(dsArc), dsWhy = ledgerContactScrub(String(ui.delSeasonWhy || '').trim()).slice(0, 200);
+        state.archives = state.archives.filter(function (a) { return a.id !== dsO.id; });
+        if (dsBook) state.closedBooks = arrOf(state.closedBooks).filter(function (b) { return b !== dsBook; });
+        delete ui.archiveOpen[dsO.id];
+        logLedger('unclose', 'book', { why: 'The ' + closedYearText(dsArc.year) + ' close-out was deleted from Past seasons' + (dsBook ? ', with its closed book' : '') + '. Reason: ' + dsWhy });
+        ui.overlay = null; ui.delSeasonWhy = '';
+        if (commit()) showToast('Deleted the ' + closedYearText(dsArc.year) + ' close-out');
+      });
+      return;
+    }
+    if (act.indexOf('closed-csv:') === 0) {
+      var ccP = act.split(':'), ccBook = closedBookOf(state, +ccP[2]);
+      if (!ccBook) return;
+      var ccName = 'closed-' + ccBook.year + '-' + ccP[1] + '.csv', ccTitle = closedYearText(ccBook.year);
+      if (ccP[1] === 'entries') ui.overlay = { kind: 'export', title: ccTitle + ' entries (CSV)', name: ccName, mime: 'text/csv', text: closedBookEntriesCsv(ccBook) };
+      else if (ccP[1] === 'log') ui.overlay = { kind: 'export', title: ccTitle + ' change history (CSV)', name: ccName, mime: 'text/csv', text: closedBookLogCsv(ccBook) };
+      else if (ccP[1] === 'voided') ui.overlay = { kind: 'export', title: ccTitle + ' voided & reversed (CSV)', name: ccName, mime: 'text/csv', text: ledgerVoidedCsv(arrOf(ccBook.aside), arrOf(ccBook.ledger)) };
+      else return;
+      render(); return;
+    }
     if (act.indexOf('archive-sheet:') === 0) {
       ui.overlay = { kind: 'te-archive', id: act.split(':')[1] }; render(); return;
     }
@@ -33542,6 +33680,12 @@
       return;
     }
     if (act.indexOf('del-archive:') === 0) {
+      // C8-8 (owner decision 28) — a season's close-out (with its closed book) is deleted only by an admin, with a reason, and the log says so.
+      var daId = act.split(':')[1], daArc = state.archives.filter(function (a) { return a.id === daId; })[0];
+      if (daArc && daArc.kind === 'season') {
+        if (!canReopenStatement()) { showToast(DEL_SEASON_REFUSED); return; }
+        ui.delSeasonWhy = ''; ui.armed = null; ui.overlay = { kind: 'del-season', id: daId }; render(); return;
+      }
       arm(act, function () {
         var did = act.split(':')[1];
         state.archives = state.archives.filter(function (a) { return a.id !== did; });
@@ -34054,6 +34198,7 @@
     // the tap that uses them (a balance changed after the first tap disarms it).
     if (ch === 'st-reopen-why') { ui.stReopenWhy = el.value; return; }
     if (ch === 'st-balance') { ui.stBalance = el.value; if (/^st-balance-go:/.test(String(ui.armed || ''))) ui.armed = null; render(); return; }
+    if (ch === 'del-season-why') { ui.delSeasonWhy = el.value; return; }
     if (ch === 'ledger-fix-why') { ui.fixWhy = el.value; return; }
     if (ch.indexOf('ledger-fix-') === 0) {
       if (!ui.fixDraft) ui.fixDraft = {};

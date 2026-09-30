@@ -20175,7 +20175,8 @@ test('C3 re-check (minor): a past season’s id is escaped in every attribute of
       { id: ${JSON.stringify(bad)}, kind: 'season', year: 2025, closedAt: '', fundraising: { combinedCents: 0 }, budget: { actualCents: 0, balanceCents: 0 } },
       { id: ${JSON.stringify(bad)}, kind: 'trails-end', year: 2024, grandCents: 0, importedAt: '', scouts: [], channel: { onlineCents: 0, wagonCents: 0, storefrontCents: 0 } }] };
     function fmt() { return '$0.00'; } function fmtArchiveDate() { return ''; } function seasonBalanceLabel() { return 'Balance'; }
-    function seasonCarriedLine() { return ''; } function seasonArchiveTables() { return ''; } function archiveTables() { return ''; }`, x);
+    function seasonCarriedLine() { return ''; } function seasonArchiveTables() { return ''; } function archiveTables() { return ''; }
+    function canReopenStatement() { return true; } function closedBookBlockHtml() { return ''; }`, x);
   const decode = (v) => v.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
   const attrs = (h) => [...h.matchAll(/\s(data-[a-z-]+)="([^"]*)"/g)].map((m) => [m[1], decode(m[2])]);
   const h = x.renderPastSeasons();
@@ -20184,7 +20185,8 @@ test('C3 re-check (minor): a past season’s id is escaped in every attribute of
   eq(attrs(h), row.concat(row), 'a close-out row, then a Trail’s End row');
   // Armed, the ✕ still knows it is the one armed: ui.armed holds the id as the handler read it.
   vm.runInContext(`ui.armed = 'del-archive:' + ${JSON.stringify(bad)}`, x);
-  eq((x.renderPastSeasons().match(/class="btiny armed"/g) || []).length, 2, 'the armed ✕');
+  // (C8-8: a season’s ✕ opens the delete screen, which asks for a reason, so only the Trail’s End row arms.)
+  eq((x.renderPastSeasons().match(/class="btiny armed"/g) || []).length, 1, 'the armed ✕');
 });
 
 test('C3 review (minor): a viewer’s Un-void is refused on the tap, before anything moves', () => {
@@ -23545,7 +23547,7 @@ test('C5 re-check (R5): the close-out toast says which part didn’t fit, and Pa
   ok(!/The ledger was too large for Past seasons/.test(SCRIPT), 'the old words');
   // Past seasons: one line under the summary when either was trimmed; none otherwise.
   const r = sandbox(['seasonArchiveRow', 'seasonBookTrimmedLine', 'esc', 'fmt', 'fmtArchiveDate', 'seasonBalanceLabel', 'seasonCarriedLine', 'tinyDangerBtn']);
-  vm.runInContext('var ui = { archiveOpen: {} };', r);
+  vm.runInContext('var ui = { archiveOpen: {} }; function canReopenStatement() { return true; } function closedBookBlockHtml() { return ""; }', r);
   const arc = (o) => Object.assign({ id: 'a1', year: 2025, closedAt: '2026-07-02T00:00:00.000Z', fundraising: { combinedCents: 100 },
     budget: { actualCents: 50, balanceCents: 50 } }, o || {});
   // Sign-off of the C5 follow-ups (12): built from the flags.
@@ -26566,7 +26568,7 @@ test('C8-3: Mark reconciled and the restore read the carried rows; the printout 
   const out = J(x.closedBookRows([{ year: 2026, form: 'full', ledger: [{ id: 'a', date: '2027-06-28', amountCents: 5, direction: 'out' }, null] },
     { year: 2025, form: 'compact', ledger: [{ i: 'b', d: '2026-01-01', c: -300, t: 'Fee', r: '12' }, { i: 'c', d: '2026-01-02', c: 200, t: 'Dues' }] }]));
   eq(out.map((e) => [e.id, e.direction, e.amountCents]), [['a', 'out', 5], ['b', 'out', 300], ['c', 'in', 200]], 'rows of both forms');
-  ok(/statementSheetData\(st, state\.ledger\.concat\(state\.ledgerAside \|\| \[\], closedBookRows\(state\.closedBooks\)\)\)/.test(slice('renderBankStatementSheet')), 'the printout names entries in closed books');
+  ok(/statementSheetData\(st, state\.ledger\.concat\(state\.ledgerAside \|\| \[\], stBookAside, closedBookRows\(state\.closedBooks\)\)\)/.test(slice('renderBankStatementSheet')), 'the printout names entries in closed books');
   ok(/'± Carried from last year, not yet on the statement, net \(' \+ carriedN \+ '\)'/.test(slice('renderBankStatementSheet')), 'the carried line on the printout, the net line');
   ok(/esc\(l\.what \+ \(l\.carried \? ' \(carried from ' \+ l\.carried \+ '\)' : ''\)/.test(slice('renderBankStatementSheet')) && /filter\(function \(l\) \{ return !!l\.carried; \}\)/.test(slice('renderBankStatementSheet')),
     'the row suffix and the count come from the flag, not from reading the description');
@@ -27275,6 +27277,110 @@ test('C8-7: a realistic pack at the 700 KB limit keeps only the year just closed
   const none = J(c.fitClosedBook(books[3], [], 1000 * KB - 30 * KB, 1000 * KB));
   eq([none.fits, none.trimmed.indexOf(2025) !== -1, none.books.find((b) => b.year === 2025).ledgerTrimmed], [true, true, true], 'when even a compact year does not fit, its entries go and it says so');
   ok(none.books.find((b) => b.year === 2025).statements.length === 12 && none.books.find((b) => b.year === 2025).closingCents === books[3].closingCents, 'its statements and figures stay');
+});
+
+/* ================================================================
+   PHASE 3, C8-8 — Past seasons reads the closed book: entries (full and compact), statements with their printouts, CSV downloads,
+   read-only markers; and deleting a closed year is an admin's, with a reason and a log event (owner decision 28).
+   ================================================================ */
+const C8R_FNS = ['seasonBookOf', 'closedBookOf', 'closedBookLines', 'closedBookStatementsHtml', 'closedBookBlockHtml', 'closedBookEntriesCsv', 'closedBookLogCsv', 'closedYearText', 'arrOf',
+  'esc', 'fmt', 'fmtDateShort', 'fmtDateShortYear', 'statementByOn', 'statementDay', 'statementReopened', 'statementReviewed', 'entrySignedCents', 'ledgerCsvCell', 'ledgerLogCsv',
+  'ledgerStatementName', 'ledgerRowName', 'ledgerEntryNamed', 'fmtDateYear', 'LEDGER_OP_LABELS', 'LEDGER_FIELD_LABELS', 'ledgerLogValue', 'ledgerEventLines', 'ledgerLogWhen', 'ledgerCap'];
+const c8r = (books, extra) => {
+  const x = sandbox(C8R_FNS);
+  vm.runInContext(`var state = { closedBooks: ${JSON.stringify(books)} }; ${extra || ''}`, x);
+  return x;
+};
+const C8R_FULL = () => C8_BOOK_OF(2026, 'arc-1', {
+  openingDate: '2026-07-01', openingCents: 100000, closingCents: 93000, carried: { n: 2, inCents: 5000, outCents: 15000 },
+  ledger: [c8row('b', '2026-10-02', 5000, 'in', { lineId: 'L1', scoutId: 's1', enteredBy: 'Pat Example', approvedBy: 'Sam Example', reconciled: true }), c8row('=x', '2026-09-01', 300, 'out', { description: '=HYPERLINK("x")', id: 'a' })],
+  aside: [Object.assign(c8row('v1', '2026-11-01', 111, 'out'), { off: 'void', voidReason: 'typo', voidedBy: 'Pat Example', reverses: '', reversedBy: '' })],
+  log: [{ id: 'lg-1', at: '2026-11-02T10:00:00.000Z', by: 'Pat Example', byUid: '', dev: 'd', row: 'v1', op: 'void', why: 'typo' }],
+  statements: [{ id: 'st-1', date: '2027-05-31', statementCents: 105000, openingCents: 100000, clearedCents: 105000, bookCents: 105000, ticked: ['b'], by: 'Pat Example', at: '2027-06-01T10:00:00.000Z', reviewedAt: '2027-06-02T10:00:00.000Z', reviewedBy: 'Sam Example' }],
+  names: { line: { L1: 'Pack dues' }, family: { s1: 'Ada' } } });
+const C8R_ARC = { id: 'arc-1', year: 2026, ledger: { totals: {}, rows: [], trimmed: false, inBook: true } };
+
+test('C8-8: Past seasons shows a closed year as read-only, with what it kept, its statements and printouts, and what it lacks when it was shortened', () => {
+  const full = C8R_FULL(), compact = J(c8().compactClosedBook(full));
+  const t = (books, arc) => c5Text(c8r(books).closedBookBlockHtml(arc || C8R_ARC));
+  const h = t([full]);
+  ok(/Closed book Closed · read only Entries from Jul 1, 2026 to Jun 30, 2027\. Opened at \$1,000\.00 and closed at \$930\.00\. 2 entries not yet on a bank statement were carried into the next year \(\$50\.00 money in, \$150\.00 money out\)\. Statements reconciled 2026–27 — statements reconciled Statement Ending balance Reconciled/.test(h), h);
+  ok(/May 31, 2027 \$1,050\.00 by Pat Example on Jun 1; reviewed by Sam Example on Jun 2 Print/.test(h) && /Entries \(CSV\) Change history \(CSV\) Voided &amp; reversed \(CSV\)/.test(h), h);
+  ok(!/shortened|too large/.test(h), 'a full book says nothing is missing');
+  const hc = t([compact]);
+  ok(/This year’s book was shortened to keep the pack record small: its entries and statements are kept, but not its voided entries or its change history\. The snapshot downloaded at close-out has them\./.test(hc) &&
+    /Entries \(CSV\)/.test(hc) && !/Change history \(CSV\)|Voided/.test(hc), 'a compact book: its entries and statements, no log or voided entries to download: ' + hc);
+  ok(/too large to keep in the pack record, so only its totals and statements are kept/.test(t([Object.assign(J(compact), { ledger: [], ledgerTrimmed: true })])), 'a book without its entries says so');
+  // No book for an archive that says its rows are in one: said; an archive from before C8: nothing added; another close-out's book: not this archive's.
+  ok(/no longer in the pack record/.test(t([])), 'the closed book is gone');
+  eq(t([], { id: 'old', year: 2025, ledger: { totals: {}, rows: [] } }), '', 'before C8');
+  ok(/no longer in the pack record/.test(t([Object.assign(J(full), { archiveId: 'arc-9' })])), 'another close-out’s book');
+  // Escaped: a stored statement id or date cannot add markup.
+  const evil = Object.assign(J(full), { statements: [Object.assign(J(full.statements[0]), { id: 'x"><img src=y>', by: '<b>Pat</b>' })] });
+  const raw = c8r([evil]).closedBookBlockHtml(C8R_ARC);
+  ok(!/<img|<b>Pat/.test(raw), 'the statement’s id or name added markup');
+  // The page: the block is inside an expanded row only, and the read-only marker is a pill.
+  ok(/seasonArchiveTables\(a\) \+ closedBookBlockHtml\(a\)/.test(slice('seasonArchiveRow')) && /Closed · read only/.test(slice('closedBookBlockHtml')), 'not on the row');
+});
+
+test('C8-8: a closed year’s entries and change history download as CSV, full or compact, and no cell runs as a formula', () => {
+  const full = C8R_FULL(), compact = J(c8().compactClosedBook(full));
+  const x = c8r([full]);
+  eq(x.closedBookEntriesCsv(full).split('\n'), [
+    'Date,Entry,Family,Budget line,Reference,Money in,Money out,Reconciled,Entered by,Ticked by',
+    "2026-09-01,'=HYPERLINK(\"x\"),,,,,3.00,no,Pat Example,".replace("'=HYPERLINK(\"x\"),", "\"'=HYPERLINK(\"\"x\"\")\","),
+    '2026-10-02,Row b,Ada,Pack dues,,50.00,,yes,Pat Example,Sam Example'], 'a full book’s entries, oldest first, with the words its names kept');
+  eq(x.closedBookEntriesCsv(compact).split('\n').slice(2), ['2026-10-02,Row b,Ada,Pack dues,,50.00,,yes,Pat Example,Sam Example'], 'a compact book’s, the same words');
+  const log = x.closedBookLogCsv(full).split('\n');
+  eq([log.length, /Voided/.test(log[1]), /Row v1|v1/.test(log[1])], [2, true, true], 'the change history: ' + log[1]);
+  eq(x.closedBookLogCsv(compact), ledgerCsvHeader(), 'a compact book has none');
+  function ledgerCsvHeader() { return c8r([compact]).closedBookLogCsv(compact); }
+  ok(/act\.indexOf\('closed-csv:'\) === 0/.test(SCRIPT) && /'closed-csv:'\]/.test(SCRIPT), 'the downloads are not a read-only act while held');
+});
+
+test('C8-8: a closed year’s statement prints from its book, listing entries from that book, voided ones too', () => {
+  const book = C8R_FULL();
+  const x = c5View([], '');
+  vm.runInContext(`state.closedBooks = ${JSON.stringify([Object.assign(book, { ledger: [c8row('r1', '2026-09-05', 2500, 'in', { description: 'Dues' })], statements: [Object.assign(C5_SEP(), { id: 'st-closed', ticked: ['r1'], outstanding: ['v1'] })],
+    aside: [Object.assign(c8row('v1', '2026-09-10', 8400, 'out', { description: 'Pinewood trophies' }), { off: 'void' })] })])}; state.ledger = []; state.statements = [];`, x);
+  const sheet = c5Text(vm.runInContext("renderBankStatementSheet({ kind: 'bank-statement', id: 'st-closed' })", x));
+  ok(/Statement ending September 30, 2026/.test(sheet) && /Sep 5 Dues \+\$25\.00/.test(sheet) && /Pinewood trophies \(voided since\)/.test(sheet), sheet);
+  eq(vm.runInContext("renderBankStatementSheet({ kind: 'bank-statement', id: 'nope' })", x), '', 'an unknown statement');
+});
+
+test('C8-8: deleting a closed year is an admin’s, with a reason that is logged, and takes its closed book with it; a Trail’s End import is deleted as before', () => {
+  const W = heldDispatchCtx('');
+  const run = (js) => vm.runInContext(js, W), got = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, W)));
+  run(`${['seasonBookOf', 'closedBookOf', 'closedBookLines', 'ledgerContactScrub', 'closedYearText', 'arrOf', 'delSeasonText', 'DEL_SEASON_REFUSED', 'DEL_SEASON_WHY_FIRST'].map(decl).join('\n')}
+    var logs = []; function logLedger(op, row, more) { logs.push([op, row, more.why]); }
+    state.archives = [{ id: 'arc-1', kind: 'season', year: 2026 }, { id: 'te1', kind: 'trails-end', year: 2025 }];
+    state.closedBooks = [${JSON.stringify(C8_BOOK_OF(2026, 'arc-1'))}, ${JSON.stringify(C8_BOOK_OF(2025, 'arc-0'))}]; ui.armed = null; ui.overlay = null; ui.archiveOpen = {};`);
+  // An editor (not an admin): told, nothing opens.
+  run("canReopenStatement = function () { return false; }; toasts = []; tap('del-archive:arc-1');");
+  eq(got('[ui.overlay, toasts, state.archives.length]'), [null, ['Only a pack admin can delete a closed year.'], 2], 'an editor');
+  run("canReopenStatement = function () { return true; }; toasts = []; tap('del-archive:arc-1');");
+  eq(got('[ui.overlay, ui.delSeasonWhy]'), [{ kind: 'del-season', id: 'arc-1' }, ''], 'an admin gets the screen');
+  // No reason: told, nothing deleted. A reason: two taps; the archive and its book go, the other year stays, the log says why (no contact details).
+  run("toasts = []; tap('del-season-confirm'); tap('del-season-confirm');");
+  eq(got('[toasts, state.archives.length, state.closedBooks.length, ui.armed]'), [['Say why first, in a few words. It goes in the change history.', 'Say why first, in a few words. It goes in the change history.'], 2, 2, null], 'no reason');
+  run("toasts = []; ui.delSeasonWhy = 'Closed a year early by mistake, call 555-555-0142 or pat@example.com'; tap('del-season-confirm');");
+  eq(got('[state.archives.length, state.closedBooks.length, ui.armed]'), [2, 2, 'del-season-confirm'], 'the first tap only arms');
+  run("tap('del-season-confirm');");
+  eq(got('[state.archives.map(function (a) { return a.id; }), state.closedBooks.map(function (b) { return b.year; }), ui.overlay, toasts]'), [['te1'], [2025], null, ['Deleted the 2026–27 close-out']], 'deleted');
+  const lg = got('logs');
+  eq([lg.length, lg[0][0], lg[0][1]], [1, 'unclose', 'book'], 'logged');
+  ok(/^The 2026–27 close-out was deleted from Past seasons, with its closed book\. Reason: Closed a year early by mistake/.test(lg[0][2]) && !/@|555-0142/.test(lg[0][2]) && /\(phone removed\)/.test(lg[0][2]), lg[0][2]);
+  // Non-admin at the confirm (the role changed while the screen was open): refused, nothing deleted.
+  run("state.archives.push({ id: 'arc-2', kind: 'season', year: 2027 }); ui.overlay = { kind: 'del-season', id: 'arc-2' }; ui.delSeasonWhy = 'because'; canReopenStatement = function () { return false; }; toasts = []; tap('del-season-confirm');");
+  eq(got('[state.archives.length, ui.overlay, toasts]'), [2, null, ['Only a pack admin can delete a closed year.']], 'the role changed');
+  // A Trail’s End import is an editor’s, two taps, as before.
+  run("toasts = []; tap('del-archive:te1'); tap('del-archive:te1');");
+  eq(got('state.archives.map(function (a) { return a.id; })'), ['arc-2'], 'a Trail’s End import');
+  // Not offered to anyone but an admin, and never while held.
+  ok(/\(canReopenStatement\(\) \? '<button type="button" class="btiny" data-act="del-archive:'/.test(slice('seasonArchiveRow')), 'the ✕ is offered to everyone');
+  const H = heldDispatchCtx('pack');
+  vm.runInContext("ui.overlay = { kind: 'del-season', id: 'x' }; toasts = []; tap('del-season-confirm'); tap('del-archive:x');", H);
+  eq(JSON.parse(JSON.stringify(vm.runInContext('toasts.length', H))) > 0 && !vm.runInContext("store[KEY] !== before", H), true, 'refused while held');
 });
 
 /* ---------------- report ---------------- */
