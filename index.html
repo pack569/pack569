@@ -21103,7 +21103,8 @@
         '<thead><tr><th scope="col">Date</th><th scope="col">Entry</th><th scope="col">Ref</th><th scope="col" class="num">Amount</th></tr></thead><tbody>' +
         (lines.length ? lines.map(function (l) {
           return '<tr><td>' + esc(l.date ? fmtDateShort(l.date) : '') + '</td><td style="white-space:normal">' + esc(l.what + (l.old ? ' (over 90 days: follow up)' : '')) + '</td><td>' + esc(l.ref) + '</td>' +
-            '<td class="num">' + (l.cents === null ? 'amount not known' : money(l.cents, true)) + '</td></tr>';
+            // "amount not known" wraps, like the words beside it: at 390 px, unwrapped, it pushed the table off the screen.
+            (l.cents === null ? '<td class="num" style="white-space:normal">amount not known' : '<td class="num">' + money(l.cents, true)) + '</td></tr>';
         }).join('') : '<tr><td colspan="4" class="muted">None</td></tr>') +
         '</tbody><tfoot><tr><td colspan="3"><strong>Total</strong></td><td class="num"><strong>' + money(now, true) + '</strong></td></tr></tfoot></table></div>';
       if (d.signed && saved !== now) {

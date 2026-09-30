@@ -23641,6 +23641,10 @@ test('C5 review (treasurer 4, 5; F4): the printout says where a list differs fro
   // At phone width the summary's labels wrap, so its amounts stay on screen (checked at 390 px: the table was 423 px in a 309 px frame).
   ok(/return '<tr><td style="white-space:normal">' \+ \(strong/.test(slice('renderBankStatementSheet')), 'the summary’s labels can’t wrap');
   ok(/'<\/td><td style="white-space:normal">' \+ esc\(l\.what \+/.test(slice('renderBankStatementSheet')), 'an entry’s words can’t wrap');
+  // "amount not known" wraps too (at 390 px it pushed the table past the screen); an amount doesn't.
+  const html = vm.runInContext(`renderBankStatementSheet({ id: '${st.id}' })`, c5View([st], more));
+  eq([(html.match(/<td class="num" style="white-space:normal">amount not known<\/td>/g) || []).length, /<td class="num">amount not known/.test(html),
+    /<td class="num" style="white-space:normal">[−+]/.test(html), /<td class="num">\+\$25\.00<\/td>/.test(html)], [1, false, false, true], 'the amount cells at phone width');
   // The account line is a blank to fill in: nothing is typed or stored.
   ok(!/<input|data-ch/.test(slice('renderBankStatementSheet')), 'the printout stores something');
 });
