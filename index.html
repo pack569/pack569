@@ -8033,15 +8033,18 @@
   // date after it while it was voided (it was no pair then, so nothing stopped it), and back it
   // would cancel the entry before it happened. The way out is by the entry's row: an open one can
   // be moved back; a locked one's date can't be changed, so it is reversed again. Pure.
+  // Treasurer review of C5 (9) — reworded: which reversal un-voiding means, and the date a new
+  // reversal takes (on or after the entry's, so it can't cancel it early too).
   function ledgerUnvoidDateWhy(st, e) {
     if (!e || typeof e.reverses !== 'string' || !e.reverses || !e.date) return '';
     var o = (st.ledger || []).filter(function (x) { return x && x.id === e.reverses; })[0];
     if (!o || !o.date || !(e.date < o.date)) return '';
-    return ledgerCap(ledgerEntryNamed(o)) + ' is now dated after this reversal (' + fmtDateShort(o.date) + '), so un-voiding it would cancel the entry ' +
+    var after = fmtDateShort(o.date);
+    return ledgerCap(ledgerEntryNamed(o)) + ' is now dated after this reversal (' + after + '), so un-voiding the reversal would cancel the entry ' +
       'before it happened. Leave this one voided. ' + (ledgerLocked(o, st.book)
-        ? 'Reverse the entry again instead, on the right date (open its Detail and tap Reverse or correct).'
-        : 'If the entry’s date is wrong, move it back to ' + fmtDateShort(e.date) + ' or earlier first. If it is right, reverse the entry again instead, ' +
-          'on the right date (open its Detail and tap Reverse or correct).');
+        ? 'To cancel the entry, reverse it again, dated on or after ' + after + ' (open its Detail and tap Reverse or correct).'
+        : 'If the entry’s date is wrong, change it back to ' + fmtDateShort(e.date) + ' or earlier, then un-void this reversal. If the date is right, ' +
+          'reverse the entry again instead, dated on or after ' + after + ' (open its Detail and tap Reverse or correct).');
   }
   // Treasurer sign-off on option B (3) — how the ledger's notes name an entry: “its description”, or,
   // with none, "the Sep 10 entry of −$40.00". Pure.

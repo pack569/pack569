@@ -21582,9 +21582,11 @@ test('Security pass (2): a second counted reversal the pairing leaves unpaired s
 // Security pass on the option B sign-off (1b) — a reversal voided leaves its entry no pair, so the entry's date
 // could be moved past the reversal's; un-voided (or its void undone), the reversal then cancelled the entry
 // before it happened. Un-void is now hidden and refused, and the Undo refuses, while the entry is dated after it.
-const UNVOID_LATE = (d, on, back) => `${d} is now dated after this reversal (${on}), so un-voiding it would cancel the entry before it happened. ` +
-  'Leave this one voided. ' + (back ? `If the entry’s date is wrong, move it back to ${back} or earlier first. If it is right, reverse the entry again instead, ` +
-    'on the right date (open its Detail and tap Reverse or correct).' : 'Reverse the entry again instead, on the right date (open its Detail and tap Reverse or correct).');
+// Treasurer review of C5 (9): reworded.
+const UNVOID_LATE = (d, on, back) => `${d} is now dated after this reversal (${on}), so un-voiding the reversal would cancel the entry before it happened. ` +
+  'Leave this one voided. ' + (back ? `If the entry’s date is wrong, change it back to ${back} or earlier, then un-void this reversal. If the date is right, ` +
+    `reverse the entry again instead, dated on or after ${on} (open its Detail and tap Reverse or correct).`
+    : `To cancel the entry, reverse it again, dated on or after ${on} (open its Detail and tap Reverse or correct).`);
 test('Security pass (1b): a reversal isn’t un-voided, nor its void undone, once its entry is dated after it; nor is Un-void offered', () => {
   const x = sandbox(['fmt', 'ledgerUnvoidDateWhy', ...LOOK_WORD_FNS]);
   const X = (o) => Object.assign({ id: 'X', date: '2026-10-20', description: 'Pizza', amountCents: 4000, direction: 'out' }, o || {});
