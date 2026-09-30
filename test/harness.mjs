@@ -23448,6 +23448,11 @@ test('C5 re-check (R3): no merge evicts a statement, and a load trims junk first
   // Junk whose date can't be read goes first, even before a reopened statement.
   got = cap(junk({ date: 'soon', badDate: true }).concat([real]));
   eq([got.length, got.some((q) => q.id === 'st-real')], [200, true], 'junk with a bad date');
+  // R1–R7 verification (INFO): one with a bad date that an entry names is kept (its entries were
+  // cleared on it); one no entry names still goes.
+  const bad = (id) => ({ id, date: '', badDate: true, at: '2026-12-30T00:00:00.000Z', statementCents: 1, by: 'X', byUid: 'ux' });
+  got = cap(junk().concat([bad('st-bn'), bad('st-bu')]), [{ id: 'l1', statementId: 'st-bn' }]);
+  eq([got.length, got.some((q) => q.id === 'st-bn'), got.some((q) => q.id === 'st-bu')], [201, true, false], 'a bad date an entry names');
   // Standing junk is kept, all of it (and blocks Mark reconciled: the refusal at 200, F3); so is a
   // real standing one.
   const std = { id: 'st-aug', date: '2026-08-31', at: '2026-09-04T00:00:00.000Z', statementCents: 500, by: 'Pat', byUid: 'u1' };

@@ -9375,11 +9375,13 @@
   // standing, or named by an entry, is never dropped: with nothing else to take, it keeps them all
   // rather than lose a real statement (its entries would be listed again, and a reopen would step
   // the lock back past it). Pure.
+  // Verification of R1–R7 (INFO) — nor one with a bad date that an entry names: those entries
+  // were cleared on it, and would be listed again.
   function statementsCap(list, rows) {
     if (list.length <= 200) return list;
     var named = Object.create(null), drop = Object.create(null), over = list.length - 200;
     (rows || []).forEach(function (e) { if (e && typeof e.statementId === 'string') named[e.statementId] = true; });
-    [function (st) { return st.badDate === true; }, function (st) { return statementReopened(st) && !named[st.id]; }].forEach(function (junk) {
+    [function (st) { return st.badDate === true && !named[st.id]; }, function (st) { return statementReopened(st) && !named[st.id]; }].forEach(function (junk) {
       for (var i = list.length - 1; i >= 0 && over > 0; i--) {
         if (!drop[list[i].id] && junk(list[i])) { drop[list[i].id] = true; over -= 1; }
       }
