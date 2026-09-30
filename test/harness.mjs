@@ -26229,13 +26229,15 @@ test('C8-1: a row carried last year and still unticked is carried again, ticked 
   eq(out.book.aside.map((e) => e.id).sort(), ['co-old1', 'co-old2', 'v1'], 'both earlier copies stay in the closed book as they were');
 });
 
-test('C8-1: compacting keeps the money and the words, drops who, the rows set aside and the history, and does it once', () => {
+test('C8-1: compacting keeps the money and the words, who entered and who ticked each row, and drops the rows set aside and the history, and does it once', () => {
   const c = c8(), full = J(c.closedBookBuild(C8_SRC(), C8_OPTS).book);
   const cp = J(c.compactClosedBook(full));
   eq(cp.form, 'compact', 'form');
-  eq(cp.ledger.find((r) => r.i === 'b'), { i: 'b', d: '2026-10-01', c: 5000, t: 'Row b', l: 'Pack dues', f: 'Ada', sc: 's1', k: 1 }, 'a compact row');
-  eq(cp.ledger.find((r) => r.i === 'c'), { i: 'c', d: '2027-06-28', c: -15000, t: 'Row c', r: '1041' }, 'money out is negative, the check number stays');
-  ok(!JSON.stringify(cp.ledger).includes('Pat Example'), 'nobody who entered a row is kept');
+  // Owner decision 33 (groundwork): who entered a row (eb) and who last ticked it (ab) are kept in the compact form, a few bytes a row.
+  eq(cp.ledger.find((r) => r.i === 'b'), { i: 'b', d: '2026-10-01', c: 5000, t: 'Row b', l: 'Pack dues', f: 'Ada', sc: 's1', eb: 'Pat Example', k: 1 }, 'a compact row');
+  eq(cp.ledger.find((r) => r.i === 'c'), { i: 'c', d: '2027-06-28', c: -15000, t: 'Row c', r: '1041', eb: 'Pat Example' }, 'money out is negative, the check number stays');
+  const ticked = J(c.compactClosedBook(Object.assign(J(full), { ledger: [c8row('t', '2027-01-05', 100, 'in', { approvedBy: 'Sam Example', reconciled: true, enteredBy: 'kim@example.com' })] })));
+  eq([ticked.ledger[0].ab, ticked.ledger[0].eb], ['Sam Example', 'a signed-in leader'], 'who ticked it; an email is never kept');
   eq([cp.aside, cp.log, cp.asideTrimmed, cp.logTrimmed, 'names' in cp], [[], [], true, true, false], 'set aside rows and history dropped, and it says so');
   eq(cp.statements.map((s) => s.id), ['st-1'], 'statements kept');
   eq([cp.closingCents, cp.openingCents, cp.carried], [93000, 100000, full.carried], 'figures kept');
@@ -26244,7 +26246,7 @@ test('C8-1: compacting keeps the money and the words, drops who, the rows set as
   eq([J(c.trimClosedBookRows(full)).ledger, J(c.trimClosedBookRows(full)).closingCents], [[], 93000], 'and keeps the figures');
 });
 
-test('C8-1: fitting keeps the newest year in full and older years compact while the record has room, then compacts, then drops rows', () => {
+test('C8-1: fitting keeps the newest two years in full and older years compact while the record has room, then compacts the earlier of the two, then the newest, then drops rows', () => {
   const c = c8();
   const big = (y) => {
     const s = C8_SRC(); s.ledger = [];
@@ -26254,14 +26256,24 @@ test('C8-1: fitting keeps the newest year in full and older years compact while 
   };
   const older = [big(2024), big(2025)], fresh = big(2026);
   const bytes = (l) => Buffer.byteLength(JSON.stringify(l));
+  const forms = (r) => r.books.map((b) => [b.year, b.form]);
   const roomy = J(c.fitClosedBook(fresh, older, 1000, 1e9));
-  eq(roomy.books.map((b) => [b.year, b.form]), [[2024, 'compact'], [2025, 'compact'], [2026, 'full']], 'older years compact, the newest full');
-  eq([roomy.fits, roomy.compacted, roomy.trimmed], [true, [2024, 2025], []], 'reported');
-  const tight = J(c.fitClosedBook(fresh, older, 1000, bytes(roomy.books) - 100));
-  eq(tight.books.map((b) => [b.year, b.form]), [[2024, 'compact'], [2025, 'compact'], [2026, 'compact']], 'too big with the newest in full: compacted');
+  eq(forms(roomy), [[2024, 'compact'], [2025, 'full'], [2026, 'full']], 'the newest two full, the older compact (owner decision 33)');
+  eq([roomy.fits, roomy.compacted, roomy.trimmed], [true, [2024], []], 'reported');
+  // Room for one year in full but not two: the earlier of the two is compacted first.
+  const one = J(c.fitClosedBook(fresh, older, 1000, bytes(roomy.books) - 100));
+  eq(forms(one), [[2024, 'compact'], [2025, 'compact'], [2026, 'full']], 'too big with both in full: the earlier of the two compacted');
+  eq([one.fits, one.compacted], [true, [2024, 2025]], 'reported');
+  // Not even that: the newest goes compact too.
+  const none = J(c.fitClosedBook(fresh, older, 1000, bytes(one.books) - 100));
+  eq(forms(none), [[2024, 'compact'], [2025, 'compact'], [2026, 'compact']], 'and then the newest');
   const tiny = J(c.fitClosedBook(fresh, older, 1000, 4000));
   eq([tiny.fits, tiny.trimmed, tiny.books.every((b) => b.ledger.length === 0 && b.ledgerTrimmed)], [true, [2026, 2024, 2025], true], 'too big even compact: newest’s rows go first, then the oldest’s');
   eq(J(c.fitClosedBook(fresh, [{ ...older[0], year: 2026 }], 1000, 1e9)).books.map((b) => [b.year, b.form]), [[2026, 'full']], 'a book for the same year is replaced');
+  // A compact book stays compact even when it is one of the newest two; with one earlier year only, both stay full.
+  const cp25 = J(c.compactClosedBook(older[1]));
+  eq(forms(J(c.fitClosedBook(fresh, [older[0], cp25], 1000, 1e9))), [[2024, 'compact'], [2025, 'compact'], [2026, 'full']], 'compaction is one way');
+  eq(forms(J(c.fitClosedBook(fresh, [older[1]], 1000, 1e9))), [[2025, 'full'], [2026, 'full']], 'the year before, and this year: both full');
 });
 
 test('C8-1: two copies’ closed books are one, the same either way round: a book compacted on one device stays compact, a later close-out of a year replaces an earlier', () => {

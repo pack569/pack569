@@ -8299,7 +8299,7 @@
   //     The bank will not show an outstanding check yet; the new book says so (carriedRowFor, and
   //     reconcileTotals' offset), so the first statement still comes to a difference of zero.
   //   * The year's rows, rows set aside, statements and change history go into ONE closed book
-  //     (closedBookBuild), read-only from then on; newer years in full, older years compacted
+  //     (closedBookBuild), read-only from then on; the newest two years in full (owner decision 33), older years compacted
   //     (compactClosedBook) and fitted to the record (fitClosedBook); two copies' closed books as one
   //     (mergeClosedBooks).
   // Dates are compared as YYYY-MM-DD strings, as everywhere in the ledger: a row with no date sorts
@@ -8354,8 +8354,8 @@
   }
   // The row as a closed book's compact form keeps it: { i: id, d: date, c: signed cents (in +, out −),
   // t: description, l: budget line name, r: reference, s: source, f: family (first names), sc: the scout's
-  // id, k: 1 when reconciled }, empty keys left out. seasonLedgerRows' form, plus the id (so a closed year's entry can
-  // still be named by a reversal, 'Y:id', and a statement's list still finds it). NOT who entered it.
+  // id, eb: who entered it, ab: who ticked it, k: 1 when reconciled }, empty keys left out. seasonLedgerRows' form, plus the id (so a closed year's entry can
+  // still be named by a reversal, 'Y:id', and a statement's list still finds it).
   function closedCompactRow(e, line, fam) {
     var amt = e.amountCents || 0;
     var r = { i: String(e.id || ''), d: e.date || '', c: e.direction === 'in' ? amt : -amt, t: e.description || '' };
@@ -8366,6 +8366,10 @@
     // Security review of C8-1..4 (M2) — and the scout's id (`sc`), not only the family's words: a scout a compacted
     // year's entry names is still archived, never deleted (owner decision 24; closedBookScouts reads it).
     if (e.scoutId) r.sc = String(e.scoutId);
+    // Owner decision 33 (groundwork) — and who entered it (`eb`) and who ticked it last (`ab`), as the words they are (never an
+    // email): a few bytes a row, and the answer to an auditor's first question once the year is compact.
+    if (e.enteredBy) r.eb = ledgerStampClean(e.enteredBy);
+    if (e.approvedBy) r.ab = ledgerStampClean(e.approvedBy);
     if (e.reconciled) r.k = 1;
     return r;
   }
@@ -8474,28 +8478,38 @@
   }
   // The closed books to keep after closing `fresh` (a full book, closedBookBuild's) over `older`
   // (state.closedBooks), for a record whose size without any closed book is `otherBytes` and that must
-  // stay under `limit`: older years are always compact; the newest year full if the record holds it,
-  // else compact, else its rows dropped; then older years' rows dropped, oldest first, until it fits.
-  // Returns { books (by year), compacted: [years], trimmed: [years whose rows were dropped], fits }.
-  // The year a book for the same year is replaced. Pure.
+  // stay under `limit`. Owner decision 33: the newest TWO closed years are kept in full (the year just closed
+  // and the one before it, an auditor's usual two), older years compact. When the record cannot hold that: the
+  // earlier of the two is compacted, then the newest, then the newest's rows are dropped, then older years' rows,
+  // oldest first, until it fits. A book already compact stays compact (compaction is one way). Returns
+  // { books (by year), compacted: [years], trimmed: [years whose rows were dropped], fits }. A book for the same
+  // year as `fresh` is replaced. Pure.
   function fitClosedBook(fresh, older, otherBytes, limit) {
     var compacted = [], trimmed = [];
-    var rest = (older || []).filter(function (b) { return b.year !== fresh.year; }).map(function (b) {
-      if (b.form !== 'compact') compacted.push(b.year);
+    var all = (older || []).filter(function (b) { return b.year !== fresh.year; }).concat([fresh]).sort(function (a, b) { return a.year - b.year; });
+    var full = Object.create(null);
+    all.slice(-2).forEach(function (b) { full[b.year] = true; });
+    var list = all.map(function (b) {
+      if (full[b.year] || b.form === 'compact') return b;
+      compacted.push(b.year);
       return compactClosedBook(b);
-    }).sort(function (a, b) { return a.year - b.year; });
-    function size(list) { return otherBytes + utf8Bytes(JSON.stringify(list)); }
-    var list = rest.concat([fresh]);
+    });
+    function size(l) { return otherBytes + utf8Bytes(JSON.stringify(l)); }
+    function at(year) { for (var i = 0; i < list.length; i++) if (list[i].year === year) return i; return -1; }
+    // The kept years, earlier first: the earlier of the two goes compact before the newest does.
+    var kept = all.slice(-2).map(function (b) { return b.year; });
+    kept.forEach(function (y) {
+      if (size(list) <= limit) return;
+      var i = at(y);
+      if (list[i].form !== 'compact') { list[i] = compactClosedBook(list[i]); compacted.push(y); }
+    });
     if (size(list) > limit) {
-      compacted.push(fresh.year);
-      list = rest.concat([compactClosedBook(fresh)]);
-    }
-    if (size(list) > limit) {
-      list[list.length - 1] = trimClosedBookRows(list[list.length - 1]);
+      var f = at(fresh.year);
+      list[f] = trimClosedBookRows(list[f]);
       trimmed.push(fresh.year);
     }
-    for (var i = 0; i < list.length - 1 && size(list) > limit; i++) {
-      if (list[i].ledger.length) { list[i] = trimClosedBookRows(list[i]); trimmed.push(list[i].year); }
+    for (var i = 0; i < list.length && size(list) > limit; i++) {
+      if (list[i].year !== fresh.year && list[i].ledger.length) { list[i] = trimClosedBookRows(list[i]); trimmed.push(list[i].year); }
     }
     return { books: list, compacted: compacted, trimmed: trimmed, fits: size(list) <= limit };
   }
