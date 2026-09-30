@@ -27482,6 +27482,22 @@ test('C8-9: a reversal of a closed year’s entry keeps its amount and direction
   eq([x.closedRvTwin(a, Object.assign({}, b, { amountCents: 1 })), x.closedRvTwin(a, Object.assign({}, b, { reverses: '2026:c' })), x.closedRvTwin(Object.assign({}, a, { id: 'x', reverses: 'y' }), Object.assign({}, b, { id: 'x', reverses: 'y' }))], ['', '', ''], 'not twins');
 });
 
+// Treasurer's follow-up to C7: before the 2027 crossover, an Arrow of Light family (every scout archived at close-out) still has its open balance, or its credit, carried by the
+// new close-out (closed rows only), and stays in the family-accounts views.
+test('C8-10: a crossed-over Arrow of Light family’s open balance and credit are carried at close-out, from the closed year’s rows, and the family stays in the accounts', () => {
+  const aol = [{ id: 'a1', name: 'Ada Example', den: 'Arrow of Light', familyId: 'a1' }, { id: 'b1', name: 'Bo Example', den: 'Arrow of Light', familyId: 'b1' },
+    { id: 'c1', name: 'Cal Example', den: 'Wolf', familyId: 'c1' }];
+  const ctx = c8wRun(c8wRec({ scouts: aol,
+    charges: [c8wCharge('k1', 'b1', 4500), c8wCharge('k2', 'a1', 1000)],
+    ledger: [c8wPay('p1', '2027-05-02', 3000, 'a1'), c8wPay('p2', '2027-07-09', 1500, 'b1')] }),
+    '; var acc = familyAccounts(state.charges, state.ledger, chargeFamilyKey); var famsTotals = chargeTotals(state.charges, state.ledger, chargeFamilyKey);');
+  eq(c8wGet(ctx, 'state.scouts.map(function (s) { return [s.id, !!s.archived]; })'), [['a1', true], ['b1', true], ['c1', false]], 'Arrow of Light crossed over');
+  eq(c8wGet(ctx, 'state.charges.map(function (c) { return [c.id, c.scoutId, c.amountCents]; })'), [['co-charge-2026-b1', 'b1', 4500]], 'Bo’s family’s $45.00 came forward on Bo, who is archived');
+  eq(c8wGet(ctx, 'state.ledger.map(function (e) { return [e.id, e.scoutId, e.amountCents, e.source]; })'), [['p2', 'b1', 1500, 'family'], ['co-credit-2026-a1', 'a1', 2000, 'carryover']], 'Ada’s family’s $20.00 credit, and Bo’s July payment, which pays the carried balance and is not taken off it twice');
+  eq(c8wGet(ctx, 'acc.map(function (a) { return [a.key, a.outstanding, a.credit]; }).sort()'), [['a1', 0, 2000], ['b1', 3000, 0]], 'both archived families are in the accounts: Bo owes $30.00 now, Ada has $20.00 credit');
+  eq(c8wGet(ctx, 'famsTotals.outstanding'), 3000, 'and in the totals (a credit with no charge in the set is not a charge set’s, as chargeTotals has always read it)');
+});
+
 /* ---------------- report ---------------- */
 // The API tests are async; they run here, one at a time, each on its own database.
 for (const [name, fn] of asyncTests) {

@@ -375,6 +375,91 @@ The treasurer re-read the fixes above against the books (verdict: OK with change
   preview, the closing toast and Past seasons all say to keep the downloaded JSON. Older
   archives have neither field and read as they always did.
 
+### Close-out keeps the year's book, by year (Phase 3, C8)
+
+*Supersedes the E3 paragraph above for any close-out from `PACK_FORMAT` 3 on: the archive now keeps
+totals and family balances, and the year's entries live in `state.closedBooks`.* Owner decisions 2, 14, 19, 24, 27–33.
+
+- **The year's books end on its last day, not on the day the leader taps the button.** The cutoff is
+  June 30 of the program year's end (`closeoutCutoff`). Close-out is **refused until that day has
+  passed** (decision 31) and **unless the book is reconciled through it** (decision 32); an admin
+  who cannot reconcile June can choose "June was not reconciled", and the change history says so. A
+  pack with no opening figure, or no entries, has nothing to reconcile. Both are asked again at the
+  button, before the snapshot is downloaded.
+- **The balance carried is the book's at the cutoff** (`closingBalanceAt`: the opening figure plus
+  every counted row dated from the opening date through June 30, ticked or not). Rows dated after
+  the cutoff stay open in the new book on the new year's lines; so do rows voided after it, the
+  statements dated after it, the history about what stays, and a lock (`reconciledThrough`) that is
+  after the cutoff. A reversal or correction of a closed entry made after the cutoff names it
+  `Y:id`.
+- **Entries the bank has not shown are carried, not lost.** A counted row on or before the cutoff
+  that no statement cleared becomes an *aside copy* in the new book (`off: 'carried'`, id
+  `co-<original id>`, `carriedFrom: { year, id }`). It is not counted (the closing balance holds it);
+  Reconcile allows for every unticked one (`reconcileTotals` offsets it, whatever the statement's
+  date) until it is ticked, and "Carried from 2026–27" lists them. No opening date, nothing carried.
+- **What a family owes or has paid ahead comes forward from the CLOSED rows only**
+  (`closeoutFamilyAccounts`). A payment dated after the cutoff pays the carried balance in the new
+  year and is not also taken off it; a June payment for next year's dues comes forward as a credit
+  and is not counted again as dues received (it is `carryover`, never Funds in); a forgiven or
+  waived charge is not a debt; a payment reversed after the cutoff was never a payment. The carried
+  charge and credit have **deterministic ids** — `co-charge-<year>-<family key>` and
+  `co-credit-<year>-<family key>`, the family's own id (`chargeFamilyKey`), never the roster's first
+  scout — so two devices that close out write the same ones; when their figures differ the merge says
+  so ("The ledger needs a look"), naming the family. An archived (crossed-over) family's balance and
+  credit come forward the same way, on the archived scout, and the family stays in the accounts.
+- **`state.closedBooks[]`** — `{ year, closedAt, closedBy, closedByUid, archiveId, cutoff, openingDate,
+  openingCents, closingCents, reconciledThrough, carried { n, inCents, outCents }, form: 'full' |
+  'compact', ledger, aside, log, statements, names, ledgerTrimmed, asideTrimmed, logTrimmed,
+  statementsTrimmed }`. One per year, read-only from the moment it is written. **Full** keeps the
+  rows as the book held them, the rows set aside (voids, reversed pairs), the change history and the
+  statements, and the words for line and family ids (`names`). **Compact** keeps each row as
+  `{ i, d, c, t, l, r, s, f, sc, eb, ab, k }` (who entered and who ticked it stay) and the statements, and
+  drops the voided rows and the history (`asideTrimmed`, `logTrimmed`). Compaction is one way.
+  `ledgerTrimmed` (no rows, totals and statements only) is the last resort. The season archive keeps
+  the totals and family balances and says its rows are in the book (`ledger.inBook`).
+- **Size (decision 33, measured in C8-7).** The newest two years are kept full and older years
+  compact *while the record has room* (`fitClosedBook`, `ARCHIVE_DOC_SOFT_LIMIT` 700 KB, with
+  `GONE_ROOM_BYTES` + the log's and statements' room kept free). A realistic pack (about 40 scouts,
+  350 entries, 12 statements, a season's history a year) is about **290 KB a year full and 87 KB
+  compact**, and the room kept free is 410 KB, so at 700 KB two full years **do not fit**: every year
+  is compact and only the year just closed keeps its entries (older years lose theirs first). Two full
+  years need about 800 KB for closed books. The limit and the reserve are the owner's to set
+  (Firestore's document is 1 MiB); the preview and the closing toast say which years are shortened, and
+  that the snapshot downloaded at close-out has them in full.
+- **Corrections to a closed year** are a counted reversal in the open book (`ledgerClosedYearReversal`:
+  id `rv-Y-id`, `reverses: 'Y:id'`, dated after the cutoff), two taps and a reason, by an editor or an
+  admin (Past seasons · Closed book · Reverse an entry), logged as `reverse`. One closed entry has one
+  reversal; two devices that write the same one end with one (`closedRvTwin`: the earlier's). The entry
+  form warns on a date inside a closed year and asks for a correction dated after it.
+- **Undoing a close-out has no button** (decision 27): only the admin-only whole-copy paths (restore a
+  backup from before it; keep this device's copy over the cloud's), with a stronger warning and an
+  `unclose` event. **Deleting a closed year** from Past seasons (decision 28) is admin-only, with a
+  reason, removes the season archive and its closed book, and logs `unclose`. **Decision 29:** only
+  the ledger book is kept in `closedBooks`; sales, entries and distributions stay archive totals plus
+  the snapshot until they are server rows.
+- **A family's credit is a private-benefit question the council has not answered;** record retention
+  (units commonly keep three to seven years) is unverified and is a question for the council.
+- **Server rules for the later D1 work, S38–S44** (from the security review of C8-1..4; nothing
+  enforces them on the Firestore page):
+  S38 `closedBooks` is append-only for editors (a book for a new year, or compacting one: same year,
+  archive id, closedAt, openingCents, closingCents, carried); replacing one (a new archive id) or
+  removing one is admin-only and needs S42.
+  S39 validate each book: year an integer in [2000, 2100] and at most the book's year + 1; at most 20
+  books, 5000 rows and events, 200 statements; a non-empty archive id that equals a season archive's
+  id; `cutoff` equal to `closeoutCutoff(year)`; `closedBy` with no `@`; `closedByUid` the authed uid;
+  `closedAt` the server's time; compact never back to full; `ledgerTrimmed` never cleared.
+  S40 the new book's opening figure equals the newest closed book's closing figure; its carried rows
+  match the closed book's `carried` totals; a carried row's id, date, amount, direction and
+  `carriedFrom` never change, only its tick, statement and approval stamps.
+  S41 a statement's `carriedTicked` ids are carried rows, `carriedOutCents` is the signed sum of the
+  unticked ones, and `clearedCents` recomputes.
+  S42 any change to the set of (year, archive id) closed books needs a `close` or `unclose` event in
+  the same save by an authed admin; `fmt` below 3 is refused once any closed book exists.
+  S43 closed books and `co-` rows are never in a parent-readable document or a non-leader endpoint,
+  including any future per-row table (`buildParentView` reads none of them: the harness checks).
+  S44 a scout a closed book's row names (a full row by `scoutId`, a compact row by `sc`) cannot be
+  deleted (decision 24 extended), and a charge or ledger row a closed book references cannot be removed.
+
 ---
 
 ## 1. The problem, concretely

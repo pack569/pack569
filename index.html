@@ -30397,6 +30397,10 @@
   // Snapshot the whole season into one kind:'season' archive record. Pure read —
   // never mutates state — so it doubles as the close-out preview's data source.
   /* ----- E3: the season archive keeps the ledger and each family's closing balance ----------
+     ⚠ SUPERSEDED BY C8-5 (owner decisions 27-33; DESIGN-money.md, "Close-out keeps the year's book, by year"): a close-out
+     now keeps the year's entries, statements and history in state.closedBooks, and the archive keeps the totals and family
+     balances (`ledger.inBook`). What follows is how an archive from before C8 reads.
+
      The close-out cleared the ledger and the charges and kept only totals, so "what did we pay
      Scoutland in March?" or "what did the Smiths owe when the year closed?" needed the downloaded
      snapshot, if anybody still had it. The archive now keeps both — but it lives INSIDE the pack
