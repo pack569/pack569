@@ -19985,7 +19985,7 @@ atest('C3, api: a void, an un-void and a locked row settle the same way across t
    statement already reconciled exactly as it was — the entry stays counted, with its tick, marked
    reversed, and its reversal is an ordinary counted entry dated after the period.
    ================================================================ */
-const C4_FNS = ['ledgerReversalId', 'ledgerReplacementId', 'ledgerReplacementFor', 'ledgerReverseSlot', 'ledgerReversalOf', 'ledgerPairOf', 'ledgerReverseRefusal', 'ledgerCorrectPlan', 'LEDGER_FIX_DESC_ONLY', 'ledgerCorrectRefusal',
+const C4_FNS = ['ledgerReversalId', 'ledgerReplacementId', 'ledgerReplacementFor', 'ledgerReverseSlot', 'ledgerReversalOf', 'ledgerPairOf', 'ledgerReverseRefusal', 'ledgerCorrectPlan', 'LEDGER_FIX_DESC_ONLY', 'ledgerCorrectRefusal', 'ledgerCorrectReversalWhy',
   'ledgerReverseRow', 'ledgerCorrectRow', 'ledgerPairCheck', 'ledgerReverseDateDefault', 'ledgerReverseDateRefusal'];
 const C4_ACT = [
   c2Block(/    if \(act\.indexOf\('ledger-fix:'\) === 0\) \{[\s\S]*?\n    \}/, 'ledger-fix'),
@@ -20682,7 +20682,7 @@ test('C4: the change history says a reverse in one line and a correction field b
 });
 
 test('C4: the Reverse or correct form says what each does and what the corrected entry will be, and every id in it is escaped', () => {
-  const x = sandbox(['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'LEDGER_VOID_REASON_MAX', 'LEDGER_FIX_DESC_ONLY', 'ledgerFixFormHtml', 'ledgerFixButtonHtml', 'ledgerCorrectsLine', 'ledgerLocked', 'ledgerAsideListHtml',
+  const x = sandbox(['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'LEDGER_VOID_REASON_MAX', 'LEDGER_FIX_DESC_ONLY', 'ledgerFixFormHtml', 'ledgerFixButtonHtml', 'ledgerCorrectsLine', 'ledgerLocked', 'ledgerAsideListHtml', 'ledgerCorrectReversalWhy',
     'ledgerCorrectPlan', 'applyLedgerEdit', 'toCents', 'ledgerRowFields', 'LEDGER_EDIT_FIELDS', 'ledgerDateReconciled', 'entryAfterOpening', 'ledgerReverseDateRefusal', ...ASIDE_LIST_FNS]);
   const bad = 'x" data-act="del-scout:s1"><img src=y>\'';
   vm.runInContext(`var ui = { ledgerOpen: {}, armed: null, fixDraft: null, fixWhy: '' };
@@ -21191,6 +21191,40 @@ test('Option B review (3): a mark left by a reversal since voided says nothing u
     x.ledgerReversedLineHtml(x.state.ledger[0]));
   const cl = x.ledgerVoidedCsv([], x.state.ledger).split('\n')[1];
   eq([cl.split(',').filter((c, i) => [4, 5, 7].indexOf(i) !== -1), cl.endsWith(',"2026-10-05, −$21.00"')], [['Corrected', 'Sam', 'Wrong amount'], true], 'the export, corrected: ' + cl);
+});
+
+/* Security re-check of option B (2026-09-29) — findings A to D. */
+const RECHECK_MIRROR = 'A reversal mirrors its entry. To change it, reverse the reversal (the entry counts again), then reverse or correct the entry.';
+
+// Finding B — Correct on a reversal gave it other figures: rv-X corrected to $215 paired with its own
+// reversal, X counted again for the family, and the book netted −$15. A reversal is reversed, never corrected.
+test('Security re-check B: a reversal can be reversed but not corrected, and its form offers no Correct it', () => {
+  const p = c4Page();
+  p.run("reverse2('q1', 'Deposit never made'); state.book.reconciledThrough = '2026-10-31'; row('rv-q1').reconciled = true");
+  const before = p.get('ids()');
+  p.run("toasts = []; commits = 0; correct2('rv-q1', { amount: '215', rvdate: '2026-11-02' }, 'Wrong amount')");
+  eq([p.get('ids()'), p.get('commits'), p.get('toasts'), p.get('ui.armed')], [before, 0, [RECHECK_MIRROR, RECHECK_MIRROR], null], 'Correct on a reversal');
+  p.run("toasts = []; reverse2('rv-q1', 'It was cashed after all', { rvdate: '2026-11-02' })");
+  eq([p.get('ids()').slice(-1), p.get("row('rv-rv-q1').reverses"), p.get("ledgerUnpaired(state.ledger).some(function (e) { return e.id === 'q1'; })")],
+    [['rv-rv-q1'], 'rv-q1', true], 'Reverse on a reversal: the entry counts again');
+  // Any non-empty reverses, a closed year's too; an ordinary entry is not refused for it.
+  const x = sandbox(['ledgerCorrectReversalWhy']);
+  eq([x.ledgerCorrectReversalWhy({ id: 'rv-X', reverses: 'X' }), x.ledgerCorrectReversalWhy({ id: 'rv-2025-e7', reverses: '2025:e7' }),
+    x.ledgerCorrectReversalWhy({ id: 'X', reverses: '' }), x.ledgerCorrectReversalWhy({ id: 'X' })], [RECHECK_MIRROR, RECHECK_MIRROR, '', ''], 'ledgerCorrectReversalWhy');
+  // The form under a reversal: no right figures, no Correct it; why, in their place.
+  const f = sandbox(['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'LEDGER_VOID_REASON_MAX', 'LEDGER_FIX_DESC_ONLY', 'ledgerFixFormHtml', 'ledgerCorrectReversalWhy',
+    'ledgerCorrectPlan', 'applyLedgerEdit', 'toCents', 'ledgerRowFields', 'LEDGER_EDIT_FIELDS', 'ledgerDateReconciled', 'entryAfterOpening', 'ledgerReverseDateRefusal']);
+  vm.runInContext(`var ui = { armed: null, fixWhy: '', fixDraft: { date: '2026-10-15', dir: 'out', amount: '500.00', desc: 'Reversal', rvdate: '2026-11-02' } };
+    var state = { book: { openingDate: '2026-07-01', reconciledThrough: '2026-10-31' }, ledger: [] }; function ledgerLineIsDirect() { return false; }`, f);
+  const rvq = { id: 'rv-q1', date: '2026-10-15', description: 'Reversal of “Popcorn commission”', amountCents: 50000, direction: 'out', reconciled: true, reverses: 'q1' };
+  const h = f.ledgerFixFormHtml(rvq);
+  eq([...h.matchAll(/\s(data-[a-z-]+)="([^"]*)"/g)].map((m) => m[2]), ['ledger-fix-rvdate', 'ledger-fix-why', 'ledger-reverse-go:rv-q1', 'ledger-fix-cancel'], 'the form under a reversal');
+  eq([/<p class="small muted" style="margin:6px 0">([^<]*)<\/p>/.exec(h)[1], /Correct/.test(h)], [RECHECK_MIRROR, false], 'what it says');
+  vm.runInContext("ui.fixDraft.rvdate = '2026-10-20'", f);
+  eq(/<p class="small muted" style="margin:6px 0">([^<]*)<\/p>/.exec(f.ledgerFixFormHtml(rvq))[1],
+    'That date is inside the period already reconciled (through Oct 31). Pick a date after Oct 31.', 'a date refused is said first');
+  // Control: an ordinary entry keeps Correct it.
+  ok(/data-act="ledger-correct-go:q1"/.test(f.ledgerFixFormHtml(Object.assign({}, rvq, { id: 'q1', reverses: '' }))), 'control: Correct it on an entry');
 });
 
 test('C4 (option B), Firestore: a pair set aside by C4’s first build stays set aside and reads as a delete through a sync; a device holding the entry ticked is told', () => {

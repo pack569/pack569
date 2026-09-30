@@ -7787,10 +7787,19 @@
   // so before the tap. (ledgerCorrectPlan still copies the tick and stamps when the money is the
   // same, for safety.)
   var LEDGER_FIX_DESC_ONLY = 'Only the description is different. A description can be changed in place (the change is logged): close this and edit it in the entry above.';
+  // Security re-check of option B (finding B) — why row `e` can't be corrected because it is a
+  // reversal (any row that reverses another), or ''. rv-X corrected to $215 made rv-rv-X and
+  // rc-rv-X; rv-X then paired with rv-rv-X, X counted again as Ben's payment, and the book netted
+  // −$15 while his family showed $200 paid. A reversal is only ever the mirror of its entry: it can
+  // be reversed (the entry counts again), never given other figures. Pure.
+  function ledgerCorrectReversalWhy(e) {
+    if (!e || typeof e.reverses !== 'string' || !e.reverses) return '';
+    return 'A reversal mirrors its entry. To change it, reverse the reversal (the entry counts again), then reverse or correct the entry.';
+  }
   // Why Correct can't go ahead with this draft and reason, or ''. The reverse's refusals first,
-  // then the figures the replacement would have. Pure.
+  // then that a reversal is never corrected, then the figures the replacement would have. Pure.
   function ledgerCorrectRefusal(e, st, book, draft, reason) {
-    var no = ledgerReverseRefusal(e, st, book, 'x', 'correct');
+    var no = ledgerReverseRefusal(e, st, book, 'x', 'correct') || ledgerCorrectReversalWhy(e);
     if (no) return no;
     var d = draft || {};
     var c = Math.abs(toCents(d.amount));
@@ -19778,12 +19787,16 @@
   // Option B (owner, 2026-09-29) — and the reversal's date (ui.fixDraft.rvdate, today to start with:
   // ledgerReverseDateDefault), and each note in the treasurer's words: the period already reconciled
   // stays as it is. A date that would be refused is said before the tap.
+  // Security re-check of option B (finding B) — a reversal is reversed, never corrected
+  // (ledgerCorrectReversalWhy): its form has no right figures and no Correct it, and says why.
   function ledgerFixFormHtml(e) {
     var d = ui.fixDraft || {}, bk = state.book, on = String(d.rvdate || '');
     var plan = ledgerCorrectPlan(e, d, bk, on);
     var late = ledgerReverseDateRefusal(e, bk, ledgerDateReconciled(plan.row.date, bk) ? on : plan.row.date);
+    var mirror = ledgerCorrectReversalWhy(e);
     var note;
-    if (!plan.changed) note = ledgerReverseDateRefusal(e, bk, on) || 'To correct it, change what is wrong above. To take it out of the totals, reverse it.';
+    if (mirror) note = ledgerReverseDateRefusal(e, bk, on) || mirror;
+    else if (!plan.changed) note = ledgerReverseDateRefusal(e, bk, on) || 'To correct it, change what is wrong above. To take it out of the totals, reverse it.';
     else if (plan.same) note = LEDGER_FIX_DESC_ONLY;   // refused (ledgerCorrectRefusal): said before the tap
     else if (late) note = late;
     else {
@@ -19797,9 +19810,10 @@
     return '<div class="lfix" style="flex-basis:100%;margin:6px 0 0">' +
       '<p class="small" style="margin:0 0 6px"><strong>Reverse</strong> records the opposite entry (the same amount the other way), ' +
       'dated today unless you pick another date. The two cancel, so this entry no longer counts for its family, budget line or tier, ' +
-      'and every statement already reconciled stays exactly as it was. <strong>Correct</strong> does the same and adds the right figures ' +
-      'as a new entry. The entry itself stays where it is, marked reversed, with your reason.</p>' +
-      '<div class="row" style="gap:6px">' +
+      'and every statement already reconciled stays exactly as it was. ' +
+      (mirror ? '' : '<strong>Correct</strong> does the same and adds the right figures as a new entry. ') +
+      'The entry itself stays where it is, marked reversed, with your reason.</p>' +
+      (mirror ? '' : '<div class="row" style="gap:6px">' +
       '<input type="date" data-ch="ledger-fix-date" value="' + esc(d.date || '') + '" aria-label="Right date">' +
       '<select data-ch="ledger-fix-dir" aria-label="In or out">' +
         '<option value="out"' + (d.dir !== 'in' ? ' selected' : '') + '>Out</option>' +
@@ -19807,14 +19821,14 @@
       '</select>' +
       '<input class="money-in" inputmode="decimal" data-ch="ledger-fix-amount" value="' + esc(d.amount || '') + '" placeholder="0.00" aria-label="Right amount">' +
       '<input class="lname" data-ch="ledger-fix-desc" value="' + esc(d.desc || '') + '" placeholder="Description" aria-label="Description">' +
-      '</div>' +
+      '</div>') +
       '<p class="small muted" style="margin:6px 0">' + esc(note) + '</p>' +
       '<div class="row" style="gap:6px">' +
       '<label class="fld">Date of the reversal<input type="date" data-ch="ledger-fix-rvdate" value="' + esc(on) + '"></label>' +
       '<input class="lname" data-ch="ledger-fix-why" value="' + esc(ui.fixWhy || '') + '" maxlength="' + LEDGER_VOID_REASON_MAX + '" ' +
         'placeholder="Why? (required, e.g. wrong amount)" aria-label="Why reverse or correct it (required)">' +
-      '<button type="button" class="btn small' + (cArm ? ' danger armed' : ' primary') + '" data-act="ledger-correct-go:' + esc(e.id) + '">' +
-        (cArm ? 'Tap again to correct' : 'Correct it') + '</button>' +
+      (mirror ? '' : '<button type="button" class="btn small' + (cArm ? ' danger armed' : ' primary') + '" data-act="ledger-correct-go:' + esc(e.id) + '">' +
+        (cArm ? 'Tap again to correct' : 'Correct it') + '</button>') +
       '<button type="button" class="btn small danger' + (rArm ? ' armed' : '') + '" data-act="ledger-reverse-go:' + esc(e.id) + '">' +
         (rArm ? 'Tap again to reverse' : 'Reverse it') + '</button>' +
       '<button type="button" class="btn small ghost" data-act="ledger-fix-cancel">Cancel</button>' +
