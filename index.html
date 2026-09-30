@@ -8007,6 +8007,21 @@
       'this reversal would cancel it twice. Leave this one voided. If this is the one that should count, ' +
       (ledgerLocked(nw, st.book) ? 'reverse the newer reversal first (open its Detail and tap Reverse or correct).' : 'void the newer reversal first.');
   }
+  // Security pass on option B sign-off (1b) — why the voided reversal `e` of the pack record `st`
+  // can't be un-voided (or its void undone), or '': the counted entry it names has been moved to a
+  // date after it while it was voided (it was no pair then, so nothing stopped it), and back it
+  // would cancel the entry before it happened. The way out is by the entry's row: an open one can
+  // be moved back; a locked one's date can't be changed, so it is reversed again. Pure.
+  function ledgerUnvoidDateWhy(st, e) {
+    if (!e || typeof e.reverses !== 'string' || !e.reverses || !e.date) return '';
+    var o = (st.ledger || []).filter(function (x) { return x && x.id === e.reverses; })[0];
+    if (!o || !o.date || !(e.date < o.date)) return '';
+    return ledgerCap(ledgerEntryNamed(o)) + ' is now dated after this reversal (' + fmtDateShort(o.date) + '), so un-voiding it would cancel the entry ' +
+      'before it happened. Leave this one voided. ' + (ledgerLocked(o, st.book)
+        ? 'Reverse the entry again instead, on the right date (open its Detail and tap Reverse or correct).'
+        : 'If the entry’s date is wrong, move it back to ' + fmtDateShort(e.date) + ' or earlier first. If it is right, reverse the entry again instead, ' +
+          'on the right date (open its Detail and tap Reverse or correct).');
+  }
   // Treasurer sign-off on option B (3) — how the ledger's notes name an entry: “its description”, or,
   // with none, "the Sep 10 entry of −$40.00". Pure.
   function ledgerEntryNamed(e) {
@@ -20179,7 +20194,8 @@
       var open = !!ui.ledgerOpen[e.id];
       // Treasurer sign-off on option B (extra) — nor Un-void on a reversal whose entry has been
       // reversed again since (ledgerReversedAgainWhy): the tap would only be refused. Why, in its Detail.
-      var why = ledgerLockedWhy(e, state.book, '', 'unvoid') || ledgerReversedAgainWhy(state, e);
+      // Security pass on option B sign-off (1b) — nor on one whose entry is now dated after it.
+      var why = ledgerLockedWhy(e, state.book, '', 'unvoid') || ledgerReversedAgainWhy(state, e) || ledgerUnvoidDateWhy(state, e);
       var line = e.lineId ? getBudgetLine(e.lineId) : null;
       var armed = ui.armed === 'ledger-unvoid:' + e.id;
       h += '<div class="lrow entry voided' + (e.direction === 'in' ? ' in' : '') + '">' +
@@ -29521,7 +29537,9 @@
       deleteWithUndo(vdLabel, function () {
         // Security re-check of option B (finding A) — a reversal voided, its entry reversed again in
         // the Undo's few seconds (here, or by a sync): back, it would be a second reversal counting.
-        var vdAgain = ledgerReversedAgainWhy(state, (state.ledgerAside || []).filter(function (e) { return e && e.id === vdId && e.off === 'void'; })[0]);
+        // Security pass on option B sign-off (1b) — nor one whose entry was moved after it meanwhile.
+        var vdOff = (state.ledgerAside || []).filter(function (e) { return e && e.id === vdId && e.off === 'void'; })[0];
+        var vdAgain = ledgerReversedAgainWhy(state, vdOff) || ledgerUnvoidDateWhy(state, vdOff);
         if (vdAgain) return vdAgain;
         var vdBack = ledgerUnvoidRow(state, vdId, vd.ix);
         // A sync in the Undo's few seconds can have settled it elsewhere (ledgerAsideSettle).
@@ -29554,7 +29572,9 @@
       if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
       // Security re-check of option B (finding A) — nor a reversal whose entry has been reversed
       // again since (ledgerReversedAgainWhy): both would count. Asked on each tap, as the lock is.
-      var uvNo = ledgerLockedWhy(uvRow, state.book, '', 'unvoid') || ledgerReversedAgainWhy(state, uvRow);
+      // Security pass on option B sign-off (1b) — nor one whose entry is now dated after it
+      // (ledgerUnvoidDateWhy): it would cancel the entry before it happened.
+      var uvNo = ledgerLockedWhy(uvRow, state.book, '', 'unvoid') || ledgerReversedAgainWhy(state, uvRow) || ledgerUnvoidDateWhy(state, uvRow);
       if (uvNo) { if (ui.armed === act) ui.armed = null; showToast(uvNo); render(); return; }
       // Treasurer sign-off on C3 — the first tap also opens an optional "why" box (ui.unvoidWhy,
       // cleared here so an earlier row's words never carry over), armed long enough to type a line

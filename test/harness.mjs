@@ -18193,7 +18193,7 @@ const C2_ACT = [
   c2Block(/    if \(act\.indexOf\('tier-unmakeup:'\) === 0\) \{[\s\S]*?\n    \}/, 'tier-unmakeup')].join('\n');
 // Option B — what Voided & reversed (ledgerAsideListHtml) needs besides itself: the counted pairs.
 const ASIDE_LIST_FNS = ['ledgerPairOf', 'ledgerPairRole', 'ledgerReversedLineHtml', 'ledgerReplacementId', 'ledgerReversalOf', 'ledgerReplacementFor',
-  'ledgerLiveReversals', 'ledgerReversedAgainWhy', 'ledgerEntryNamed', 'ledgerCap', 'ledgerReversalName'];
+  'ledgerLiveReversals', 'ledgerReversedAgainWhy', 'ledgerUnvoidDateWhy', 'ledgerEntryNamed', 'ledgerCap', 'ledgerReversalName'];
 // Treasurer sign-off on option B (3) — how the ledger's notes name an entry, and how to take a row out.
 const LOOK_WORD_FNS = ['fmtDateShort', 'ledgerEntryNamed', 'ledgerCap', 'ledgerTakeOut', 'LEDGER_TAKE_OUT_ANY', 'ledgerLocked', 'ledgerDateReconciled', 'entryAfterOpening',
   'ledgerReversalOf'];
@@ -18537,7 +18537,7 @@ const C2R_ACT = [
   c2Block(/    if \(act\.indexOf\('del-scout:'\) === 0\) \{[\s\S]*?\n    \}/, 'del-scout')].join('\n');
 const C2R_MORE = `
   ${['LEDGER_VOID_REASON_MAX', 'ledgerVoidRefusal', 'ledgerVoidRow', 'ledgerUnvoidRow', 'normalizeAsideRow', 'ledgerPairOf', 'ledgerReversalOf', 'ledgerCancelledWhy',
-    'ledgerLiveReversals', 'ledgerReversedAgainWhy'].map(slice).join('\n')}
+    'ledgerLiveReversals', 'ledgerReversedAgainWhy', 'ledgerUnvoidDateWhy'].map(slice).join('\n')}
   var undo = null, undoWords = null, marks = [], editor = true;
   state.ledgerAside = [];
   ui.voidAsk = null; ui.voidWhy = '';
@@ -18663,7 +18663,7 @@ test('C3: a voided entry is un-voided from Voided & reversed with two taps while
   eq([q.get("!!aside('u1')"), q.get('commits'), q.get('ui.armed'), q.get('toasts'), q.get('log().length')], [true, 0, null, [no, no], 1], 'a locked one');
   // The list offers Un-void only on an open, voided row, and says why not in the Detail.
   const l = slice('ledgerAsideListHtml');
-  ok(/var why = ledgerLockedWhy\(e, state\.book, '', 'unvoid'\) \|\| ledgerReversedAgainWhy\(state, e\);/.test(l) && /\(e\.off === 'void' && !why\s*\? '<button type="button" class="btn small ghost'[^\n]*\n\s*[^\n]*\n?[^\n]*data-act="ledger-unvoid:' \+ esc\(e\.id\)|\(e\.off === 'void' && !why\s*\? '<button type="button" class="btn small ghost'[^\n]*data-act="ledger-unvoid:' \+ esc\(e\.id\)/.test(l),
+  ok(/var why = ledgerLockedWhy\(e, state\.book, '', 'unvoid'\) \|\| ledgerReversedAgainWhy\(state, e\) \|\| ledgerUnvoidDateWhy\(state, e\);/.test(l) && /\(e\.off === 'void' && !why\s*\? '<button type="button" class="btn small ghost'[^\n]*\n\s*[^\n]*\n?[^\n]*data-act="ledger-unvoid:' \+ esc\(e\.id\)|\(e\.off === 'void' && !why\s*\? '<button type="button" class="btn small ghost'[^\n]*data-act="ledger-unvoid:' \+ esc\(e\.id\)/.test(l),
     'Un-void is offered on a locked row');
   ok(/if \(f\.dir === 'aside'\) return h \+ ledgerAsideListHtml\(f\) \+ '<\/div>';/.test(slice('renderLedgerEntries')), 'the filter does not show the voided list');
   // Treasurer sign-off on C3 — "Voided" until C4, which names it "Voided & reversed" again (the name
@@ -18901,7 +18901,7 @@ test('C3: nothing outside the book’s own plumbing reads the voided rows, so no
   // Security re-check of option B (A) — and the void's Undo, asking whether the row it would put back is still voided.
   const h = slice('handleAction').split('\n').filter((l) => /ledgerAside/.test(l) && !/^\s*\/\//.test(l));
   eq(h.length, 4, 'handleAction reads the voided rows somewhere new: ' + h.join(' | '));
-  ok(/var vdAgain = ledgerReversedAgainWhy\(state, \(state\.ledgerAside \|\| \[\]\)\.filter\(function \(e\) \{ return e && e\.id === vdId && e\.off === 'void'; \}\)\[0\]\);/.test(h.join('\n')), h.join('\n'));
+  ok(/var vdOff = \(state\.ledgerAside \|\| \[\]\)\.filter\(function \(e\) \{ return e && e\.id === vdId && e\.off === 'void'; \}\)\[0\];/.test(h.join('\n')), h.join('\n'));
   ok(/var uvRow = \(state\.ledgerAside \|\| \[\]\)\.find/.test(h.join('\n')) && /var dsRows = state\.ledger\.concat\(state\.ledgerAside \|\| \[\]\)/.test(h.join('\n')) &&
     /text: ledgerVoidedCsv\(state\.ledgerAside, state\.ledger\) \};/.test(h.join('\n')), h.join('\n'));
   // renderLedger only asks whether there is a voided row, for the CSV button.
@@ -21466,6 +21466,52 @@ test('Security pass (2): a second counted reversal the pairing leaves unpaired s
   eq([p.get("row('rv-u1').date"), p.get('toasts')], ['2026-10-01', [OWN]], 'the paired one, as before');
   // The entry it names not counted (voided, or not in the rows): nothing to date it after.
   eq(p.get("ledgerEditRefusal(row('rv2-u1'), 'date', '2026-09-01', state.book, state.ledger.filter(function (x) { return x.id !== 'u1'; }))"), '', 'its entry not counted');
+});
+
+// Security pass on the option B sign-off (1b) — a reversal voided leaves its entry no pair, so the entry's date
+// could be moved past the reversal's; un-voided (or its void undone), the reversal then cancelled the entry
+// before it happened. Un-void is now hidden and refused, and the Undo refuses, while the entry is dated after it.
+const UNVOID_LATE = (d, on, back) => `${d} is now dated after this reversal (${on}), so un-voiding it would cancel the entry before it happened. ` +
+  'Leave this one voided. ' + (back ? `If the entry’s date is wrong, move it back to ${back} or earlier first. If it is right, reverse the entry again instead, ` +
+    'on the right date (open its Detail and tap Reverse or correct).' : 'Reverse the entry again instead, on the right date (open its Detail and tap Reverse or correct).');
+test('Security pass (1b): a reversal isn’t un-voided, nor its void undone, once its entry is dated after it; nor is Un-void offered', () => {
+  const x = sandbox(['fmt', 'ledgerUnvoidDateWhy', ...LOOK_WORD_FNS]);
+  const X = (o) => Object.assign({ id: 'X', date: '2026-10-20', description: 'Pizza', amountCents: 4000, direction: 'out' }, o || {});
+  const rv = (o) => Object.assign({ id: 'rv-X', off: 'void', reverses: 'X', date: '2026-10-15', amountCents: 4000, direction: 'in' }, o || {});
+  const BOOK = { openingDate: '2026-07-01', reconciledThrough: '2026-09-30' };   // X ticked on a later statement: its date is locked
+  const why = (ledger, e, book) => x.ledgerUnvoidDateWhy({ ledger, book: book || { openingDate: '2026-07-01' } }, e);
+  eq([why([X()], rv()), why([X({ description: '' })], rv()), why([X({ reconciled: true })], rv(), BOOK), why([X({ date: '2026-10-15' })], rv()), why([X({ date: '2026-10-01' })], rv()),
+    why([], rv()), why([X()], rv({ reverses: '' })), why([X({ id: 'rv-X' }), X({ id: 'rv-rv-X' })], rv({ id: 'rv-rv-X', reverses: 'rv-X' }))],
+  [UNVOID_LATE('“Pizza”', 'Oct 20', 'Oct 15'), UNVOID_LATE('The Oct 20 entry of −$40.00', 'Oct 20', 'Oct 15'), UNVOID_LATE('“Pizza”', 'Oct 20', ''), '', '', '', '',
+    UNVOID_LATE('“Pizza”', 'Oct 20', 'Oct 15')], 'open; no description; locked; the same day; earlier; not counted; no entry; a chain');
+  // The page's handler. u1 (open, Sep 10) reversed (Oct 15), its reversal voided, u1 moved to Oct 20.
+  const no = UNVOID_LATE('“Pinewood trophies”', 'Oct 20', 'Oct 15');
+  const p = c4Page();
+  p.run("reverse2('u1', 'Wrong'); void2('rv-u1', 'Reversed by mistake'); toasts = []; change('led-date', 'u1', '2026-10-20')");
+  eq([p.get("row('u1').date"), p.get('toasts')], ['2026-10-20', []], 'u1 moved (the test proves nothing)');
+  p.run("toasts = []; commits = 0; marks = []; act2('ledger-unvoid:rv-u1'); act2('ledger-unvoid:rv-u1')");
+  eq([p.get("!!aside('rv-u1')"), p.get("!!row('rv-u1')"), p.get('commits'), p.get('marks'), p.get('ui.armed'), p.get('toasts'), p.get("log().filter(function (e) { return e.op === 'unvoid'; }).length")],
+    [true, false, 0, [], null, [no, no], 0], 'un-void refused');
+  // Moved back on or before the reversal, it comes back.
+  p.run("change('led-date', 'u1', '2026-10-15'); toasts = []; act2('ledger-unvoid:rv-u1'); act2('ledger-unvoid:rv-u1')");
+  eq([p.get("!!row('rv-u1')"), p.get('toasts').length], [true, 1], 'un-voided once u1 is moved back');
+  // The void's Undo: u1 moved in its few seconds.
+  const q = c4Page();
+  q.run("reverse2('u1', 'Wrong'); void2('rv-u1', 'Reversed by mistake'); var undoRv = undo; change('led-date', 'u1', '2026-10-20'); marks = []; var said = undoRv()");
+  eq([q.get("said || ''"), q.get("(aside('rv-u1') || { off: 'counted again' }).off"), q.get('marks'), q.get("log().filter(function (e) { return e.op === 'unvoid'; }).length")], [no, 'void', [], 0], 'the Undo refused');
+  // The list: no Un-void, and why in its Detail.
+  const l = sandbox(['esc', 'fmt', 'fmtDate', 'ledgerAsideListHtml', ...ASIDE_LIST_FNS, ...LOOK_WORD_FNS]);
+  vm.runInContext(`var ui = { ledgerOpen: { 'rv-X': true }, armed: null };
+    var state = { book: { openingDate: '2026-07-01' }, ledger: [${JSON.stringify(X({ lineId: '' }))}],
+      ledgerAside: [${JSON.stringify(rv({ description: 'Reversal of “Pizza”', lineId: '', voidReason: 'Wrong one' }))}] };
+    function ledgerSort(a) { return a.slice().sort(function (p, q) { return p.date < q.date ? -1 : p.date > q.date ? 1 : 0; }); }
+    function ledgerMatches() { return true; }
+    function ledgerLockedWhy() { return ''; } function getBudgetLine() { return null; } function ledgerTrailLine() { return ''; } function ledgerHistoryHtml() { return ''; }`, l);
+  const h = l.ledgerAsideListHtml({ lineId: '', text: '' });
+  eq([/data-act="ledger-unvoid:rv-X"/.test(h), (/<p class="small muted llock"[^>]*>([^<]*)<\/p>/.exec(h) || [])[1]],
+    [false, l.esc(UNVOID_LATE('“Pizza”', 'Oct 20', 'Oct 15'))], 'the list: no button, and why in the Detail');
+  vm.runInContext("state.ledger[0].date = '2026-10-15'", l);
+  eq(/data-act="ledger-unvoid:rv-X"/.test(l.ledgerAsideListHtml({ lineId: '', text: '' })), true, 'control: offered once it is not');
 });
 
 // Treasurer sign-off on option B (extra) — the Un-void button is not offered where the tap would only be
