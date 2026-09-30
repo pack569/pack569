@@ -18188,7 +18188,7 @@ const C2_ACT = [
   c2Block(/    if \(act\.indexOf\('tier-unmakeup:'\) === 0\) \{[\s\S]*?\n    \}/, 'tier-unmakeup')].join('\n');
 // Option B — what Voided & reversed (ledgerAsideListHtml) needs besides itself: the counted pairs.
 const ASIDE_LIST_FNS = ['ledgerPairOf', 'ledgerPairRole', 'ledgerReversedLineHtml', 'ledgerReplacementId', 'ledgerReversalOf', 'ledgerReplacementFor',
-  'ledgerLiveReversals', 'ledgerReversedAgainWhy', 'ledgerEntryNamed', 'ledgerCap'];
+  'ledgerLiveReversals', 'ledgerReversedAgainWhy', 'ledgerEntryNamed', 'ledgerCap', 'ledgerReversalName'];
 // Treasurer sign-off on option B (3) — how the ledger's notes name an entry, and how to take a row out.
 const LOOK_WORD_FNS = ['fmtDateShort', 'ledgerEntryNamed', 'ledgerCap', 'ledgerTakeOut', 'LEDGER_TAKE_OUT_ANY', 'ledgerLocked', 'ledgerDateReconciled', 'entryAfterOpening'];
 const C2_FNS = ['fmt', 'fmtDate', 'fmtDateShort', 'toCents', 'toCentsSigned', 'entryAfterOpening', 'entryOnStatement', 'ledgerLocked',
@@ -18730,7 +18730,7 @@ test('C3 treasurer: the voided entries download as a CSV for the annual review �
   eq([ctx.ledgerVoidedCsv([], []), ctx.ledgerVoidedCsv([], [ledger[0]])], [HEAD, HEAD], 'none voided or reversed');
   // The button (only with a void or a reversed pair) and its handler: the export overlay, from the pack's rows.
   const p = c2rPage({ more: C2R_MORE + `
-    ${['ledgerLogWhen', 'ledgerCsvCell', 'ledgerVoidedCsv', 'ledgerPairRole', 'ledgerReplacementId', 'ledgerReplacementFor'].map(slice).join('\n')}
+    ${['ledgerLogWhen', 'ledgerCsvCell', 'ledgerVoidedCsv', 'ledgerReversalName', 'ledgerPairRole', 'ledgerReplacementId', 'ledgerReplacementFor'].map(slice).join('\n')}
     function act5(act) { (function () {\n${c2Block(/    if \(act === 'ledger-voided-csv'\) \{[\s\S]*?\n    \}/, 'ledger-voided-csv')}\n})(); }` });
   p.run("void2('u1', 'Entered twice'); act5('ledger-voided-csv')");
   const o = p.get('ui.overlay');
@@ -18817,7 +18817,7 @@ const READER_DEPS = ['fmt', 'ledgerLogWhen', 'ledgerCsvCell', 'ledgerPairRole', 
 // the entry deleted (when the entry is after the opening date: its reversal, dated the day it was
 // made, always is). Every other reader is the entry deleted outright.
 const C4_LISTING_READERS = ['ledgerBalance', 'ledgerSort', 'ledgerTotals', 'reconcileTotals', 'reconcileStale', 'runningBalances', 'seasonLedgerRows', 'ledgerUnpaired',
-  'ledgerPairOf', 'ledgerVoidedCsv'];
+  'ledgerPairOf', 'ledgerVoidedCsv', 'ledgerReversalName'];
 const C3_STATE_READERS = {
   tierMakeupMap: (x) => x.tierMakeupMap(),
   tierMakeupPaidCents: (x) => [['t1', 's1'], ['t1', 's2'], ['t2', 's3']].map(([t, s]) => x.tierMakeupPaidCents(t, s))
@@ -20003,7 +20003,7 @@ atest('C3, api: a void, an un-void and a locked row settle the same way across t
    reversed, and its reversal is an ordinary counted entry dated after the period.
    ================================================================ */
 const C4_FNS = ['ledgerReversalId', 'ledgerReplacementId', 'ledgerReplacementFor', 'ledgerReverseSlot', 'ledgerReversalOf', 'ledgerPairOf', 'ledgerReverseRefusal', 'ledgerCorrectPlan', 'LEDGER_FIX_DESC_ONLY', 'ledgerCorrectRefusal', 'ledgerCorrectReversalWhy',
-  'ledgerReverseRow', 'ledgerCorrectRow', 'ledgerPairCheck', 'ledgerReverseDateDefault', 'ledgerReverseDateRefusal', 'ledgerCorrectDateRefusal'];
+  'ledgerReverseRow', 'ledgerReversalName', 'ledgerCorrectRow', 'ledgerPairCheck', 'ledgerReverseDateDefault', 'ledgerReverseDateRefusal', 'ledgerCorrectDateRefusal'];
 const C4_ACT = [
   c2Block(/    if \(act\.indexOf\('ledger-fix:'\) === 0\) \{[\s\S]*?\n    \}/, 'ledger-fix'),
   c2Block(/    if \(act === 'ledger-fix-cancel'\) \{[^\n]*\}/, 'ledger-fix-cancel'),
@@ -20865,7 +20865,7 @@ test('C4: the Reverse or correct form says what each does and what the corrected
     'A reversed entry stays in Entries beside its reversal, and the two cancel. Both kinds are listed here.</p>', 'none');   // treasurer sign-off on option B (1)
   // Nothing of it reaches the parents.
   const bpv = codeOnly(BPV()), parent = codeOnly(slice('renderParentApp'));
-  for (const name of ['ledgerFixFormHtml', 'ledger-fix', 'reversedBy', 'ledgerReverseRow', 'ledgerCorrectRow', 'fixWhy', 'ledgerPairOf', 'ledgerReversedLineHtml', 'rvdate'])
+  for (const name of ['ledgerFixFormHtml', 'ledger-fix', 'reversedBy', 'ledgerReverseRow', 'ledgerReversalName', 'ledgerCorrectRow', 'fixWhy', 'ledgerPairOf', 'ledgerReversedLineHtml', 'rvdate'])
     ok(bpv.indexOf(name) === -1 && parent.indexOf(name) === -1, name + ' reaches the parents');
 });
 
@@ -20909,7 +20909,9 @@ test('C4 (option B): Entries shows both rows with their pills and the reason; th
   // whose entry was ticked on an earlier statement (the returned dues, Aug) is just itself.
   const rc = x.renderReconcile();
   const names = [...rc.matchAll(/<span class="lname small">([^<]*)<\/span>/g)].map((m) => m[1]);
-  eq(names, ['Reversal of “Check 104”. If neither appears on the bank statement (a check never cashed), tick both: together they come to $0.00.',
+  // Treasurer sign-off on option B (9) — tick it if the bank shows it; tick both if neither is on a statement.
+  eq(names, ['Reversal of “Check 104”. Tick it if the bank shows it (a returned check, a refund). If neither it nor the entry is on any statement ' +
+    '(a check never cashed), tick both: together they come to $0.00.',
     'Reversal of “Dues (Ben)”', 'Trophies', 'Check 104', 'Dues (Ben)'], 'the Reconcile list');
 });
 
@@ -20980,7 +20982,7 @@ test('C4: a closed year’s reversal is an ordinary counted row in the new book 
    every period reconciled here. legacyReverseRow writes a pair as C4's first build did (set aside,
    the entry marked gone), for the records that build already wrote. */
 const C4_EXTRA = `${C3_EXTRA}
-  ${['ledgerReversalId', 'ledgerReplacementId', 'ledgerReplacementFor', 'ledgerReverseSlot', 'ledgerReverseRow', 'ledgerCorrectPlan', 'ledgerCorrectRow', 'applyLedgerEdit', 'ledgerRowFields',
+  ${['ledgerReversalId', 'ledgerReplacementId', 'ledgerReplacementFor', 'ledgerReverseSlot', 'ledgerReverseRow', 'ledgerReversalName', 'ledgerCorrectPlan', 'ledgerCorrectRow', 'applyLedgerEdit', 'ledgerRowFields',
     'LEDGER_EDIT_FIELDS', 'toCents', 'ledgerUnpaired'].map(slice).join('\n')}
   function ledgerLineIsDirect() { return false; }
   function stamp4() { return { by: 'Pat', byUid: 'u9', at: new Date(Date.now()).toISOString() }; }
@@ -21298,6 +21300,50 @@ test('Security re-check A: a reversal is not un-voided, nor its void undone, whi
   const c = c4Page();
   c.run("reverse2('u1', 'Wrong'); void2('rv-u1', 'Reversed by mistake'); var said = undo()");
   eq([c.get('said === undefined'), c.get("!!row('rv-u1')"), c.get('state.ledgerAside.length')], [true, true, 0], 'control: the Undo');
+});
+
+// Treasurer sign-off on option B (10) — a reversal of a reversal read “Reversal of “Reversal of “Pizza”””.
+test('Treasurer sign-off (10): a reversal of a reversal is named from the entry at the root of its chain, in the ledger and in the export', () => {
+  const p = c4Page();
+  p.run("reverse2('q1', 'Deposit never made'); reverse2('rv-q1', 'It was cashed after all'); reverse2('rv-rv-q1', 'It was not')");
+  eq(['rv-q1', 'rv-rv-q1', 'rv-rv-rv-q1'].map((id) => p.get(`row('${id}').description`)),
+    ['Reversal of “Popcorn commission”', 'Reversal of the reversal of “Popcorn commission”', 'Reversal of the reversal of the reversal of “Popcorn commission”'], 'the rows');
+  const x = sandbox(['fmt', 'ledgerLogWhen', 'ledgerCsvCell', 'ledgerVoidedCsv', ...ASIDE_LIST_FNS]);
+  const X = { id: 'X', date: '2026-09-10', description: 'Pizza', amountCents: 4000, direction: 'out' };
+  const rv = { id: 'rv-X', reverses: 'X', date: '2026-10-01', description: 'Reversal of “Pizza”', amountCents: 4000, direction: 'in', reversedBy: 'rv-rv-X' };
+  const rvrv = { id: 'rv-rv-X', reverses: 'rv-X', date: '2026-10-05', description: 'Reversal of the reversal of “Pizza”', amountCents: 4000, direction: 'out' };
+  const csv = x.ledgerVoidedCsv([], [X, rv, rvrv]).split('\n');
+  eq(csv.slice(1).map((l) => l.split(',')[4]), ['Reversed', 'Reversal of the reversal of “Pizza”'], 'the export');
+  eq([x.ledgerReversalName([X], X), x.ledgerReversalName([], rv), x.ledgerReversalName([X, rv], rv), x.ledgerReversalName([Object.assign({}, X, { description: '' }), rv], rv),
+    x.ledgerReversalName([{ id: 'a', reverses: 'b', description: 'A' }, { id: 'b', reverses: 'a', description: 'B' }], { id: 'a', reverses: 'b', description: 'A' })],
+  ['Reversal of “Pizza”', 'Reversal of “Reversal of “Pizza””', 'Reversal of the reversal of “Pizza”', 'Reversal of the reversal of an entry',
+    'Reversal of the reversal of the reversal of “A”'], 'ledgerReversalName: an entry, the root not found, a chain, no description, a loop');
+});
+
+// Treasurer sign-off on option B (11) — an open reversal's date could be moved in place into the reconciled
+// period (only warned about), or before the entry it cancels. It now takes a reversal's date rules.
+test('Treasurer sign-off (11): an open reversal’s date can’t be moved into the reconciled period, nor before its entry', () => {
+  const p = c4Page();
+  // r1: Sep 5, ticked, after the period (Aug 31); m1: Aug 20, in the period. Each reversed today (Oct 15).
+  p.run("reverse2('r1', 'Check returned by the bank'); reverse2('m1', 'Paid twice')");
+  const OWN5 = 'That date is before the entry’s own date (Sep 5). Pick a date on or after Sep 5.';
+  const IN = 'That date is inside the period already reconciled (through Aug 31). Pick a date after Aug 31.';
+  for (const [id, d, said] of [['rv-r1', '2026-09-01', OWN5], ['rv-r1', '2026-08-20', OWN5], ['rv-m1', '2026-08-30', IN], ['rv-m1', '2026-08-31', IN]]) {
+    const was = p.get(`row('${id}')`), logWas = p.get('log().length');
+    p.run(`toasts = []; commits = 0; ui.ledgerMoveWarned = null; change('led-date', '${id}', '${d}'); change('led-date', '${id}', '${d}')`);
+    eq([p.get(`row('${id}')`), p.get('log().length'), p.get('commits'), p.get('toasts'), p.get('ui.ledgerMoveWarned')], [was, logWas, 0, [said, said], null], `${id} to ${d}`);
+  }
+  // A date a reversal can have is taken, and logged; and an ordinary open row is still only warned about.
+  p.run("toasts = []; change('led-date', 'rv-r1', '2026-09-05'); change('led-date', 'rv-m1', '2026-09-01')");
+  eq([p.get("row('rv-r1').date"), p.get("row('rv-m1').date"), p.get('toasts')], ['2026-09-05', '2026-09-01', []], 'dates a reversal can have');
+  p.run("toasts = []; change('led-date', 'u1', '2026-08-20')");
+  eq([p.get("row('u1').date"), p.get('toasts'), p.get('ui.ledgerMoveWarned')], ['2026-09-10', [], { id: 'u1', date: '2026-08-20' }], 'an ordinary row is warned');
+  // Its reversal voided, r1 is no pair; the reversed entry's own date is not a reversal's.
+  eq(p.get("[ledgerEditRefusal(row('r1'), 'date', '2026-09-01', { openingDate: '2026-07-01', reconciledThrough: '2026-08-31' }, [])," +
+    " (function (rv) { return [ledgerEditRefusal(rv, 'date', '2026-08-01', state.book, [{ id: 'z', date: '2026-09-01' }, rv])," +
+    " ledgerEditRefusal(rv, 'date', '2026-08-01', state.book, [{ id: 'z', date: '2026-09-01' }])]; })({ id: 'rv-z', reverses: 'z', date: '2026-10-01' })]"),
+  ['That entry is reconciled against a bank statement, so its amount, date and direction can’t be changed. Un-reconcile it first (Money · Ledger, two taps), then change it.',
+    ['That date is before the entry’s own date (Sep 1). Pick a date on or after Sep 1.', '']], 'a locked entry; a pair given as rows, and not a pair');
 });
 
 // Treasurer sign-off on option B (extra) — the Un-void button is not offered where the tap would only be

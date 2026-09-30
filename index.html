@@ -7854,6 +7854,20 @@
   // reversed; its reversal goes on the end of the ledger, counted, as a new entry does. Returns
   // { row, reversal, ix } (ix: where the row is), or null when there is no such counted row.
   // Refuses nothing: the caller asks ledgerReverseRefusal and ledgerReverseDateRefusal.
+  // Treasurer sign-off on option B (10) — what a reversal of row `e` is called: "Reversal of “Pizza”",
+  // or, when `e` is itself a reversal, named from the entry at the root of its chain: "Reversal of
+  // the reversal of “Pizza”" (it read "Reversal of “Reversal of “Pizza””"). `rows` is where what `e`
+  // reverses is looked for; a row not found there ends the walk. Pure.
+  function ledgerReversalName(rows, e) {
+    var byId = Object.create(null), seen = Object.create(null), pre = '', cur = e;
+    (rows || []).forEach(function (x) { if (x && typeof x.id === 'string' && !byId[x.id]) byId[x.id] = x; });
+    while (cur && typeof cur.reverses === 'string' && cur.reverses && byId[cur.reverses] && !seen[cur.id]) {
+      seen[cur.id] = true;
+      pre += 'the reversal of ';
+      cur = byId[cur.reverses];
+    }
+    return 'Reversal of ' + pre + (cur && cur.description ? '“' + cur.description + '”' : 'an entry');
+  }
   function ledgerReverseRow(st, id, reason, stamp, date) {
     var ix = -1;
     st.ledger.forEach(function (e, i) { if (e && e.id === id) ix = i; });
@@ -7863,7 +7877,7 @@
     var by = ledgerStampClean(stamp.by), byUid = typeof stamp.byUid === 'string' ? stamp.byUid : '', at = typeof stamp.at === 'string' ? stamp.at : '';
     var rv = {
       id: ledgerReversalId(row.id, ledgerReverseSlot(st, row.id)), date: String(date || ''),   // option B review (3)
-      description: 'Reversal of ' + (row.description ? '“' + row.description + '”' : 'an entry'),
+      description: ledgerReversalName(st.ledger, row),   // sign-off (10): a counted chain's rows all count
       amountCents: row.amountCents, direction: row.direction === 'in' ? 'out' : 'in',
       lineId: row.lineId || '', method: '', ref: '', source: '', donor: '', scoutId: row.scoutId || '', tierMakeup: '',
       reimbursement: false, notCommission: false, reconciled: false,
@@ -8863,7 +8877,7 @@
       var rc = ledger.filter(function (x) { return x && x.id === ledgerReplacementFor(p.id) && x.replaces === e.id; })[0];
       out.push(money(e).concat([rc ? 'Corrected' : 'Reversed', mk.voidedBy || '', ledgerLogWhen(mk.voidedAt), mk.voidReason || '',
         rc ? (rc.date || '') + ', ' + (rc.direction === 'in' ? '+' : '−') + fmt(rc.amountCents || 0) : '']).map(ledgerCsvCell).join(','));
-      out.push(money(p).concat(['Reversal of ' + (e.description ? '“' + e.description + '”' : 'an entry'), p.enteredBy || '', ledgerLogWhen(p.enteredAt), '', ''])
+      out.push(money(p).concat([ledgerReversalName(aside.concat(ledger), e), p.enteredBy || '', ledgerLogWhen(p.enteredAt), '', ''])   // sign-off (10)
         .map(ledgerCsvCell).join(','));
     });
     return out.join('\n');
@@ -8980,6 +8994,16 @@
       // Treasurer review of C2 (M-5) — a date moved INTO the reconciled period is no longer refused
       // here: it is warned about in place and taken on a second change, like a back-dated add
       // (ledgerMoveWarning, and the led-* handler).
+      // Treasurer sign-off on option B (11) — except the reversal of a counted pair: moved in place it
+      // takes the dates a reversal is refused when it is made (after the period, never before its
+      // entry: ledgerReverseDateRefusal), or it would change a statement already checked, or cancel
+      // an entry before it happened.
+      var rvOf = Array.isArray(rows) && e && typeof e.reverses === 'string' && e.reverses && ledgerPairOf(rows)[e.id] === e.reverses
+        ? rows.filter(function (x) { return x && x.id === e.reverses; })[0] : null;
+      if (rvOf) {
+        var rvNo = ledgerReverseDateRefusal(rvOf, book, value);
+        if (rvNo) return rvNo;
+      }
     }
     return '';
   }
@@ -20399,9 +20423,11 @@
       // unless the entry it cancels was ticked on an earlier statement (then only this one can be
       // ticked, and "tick both" would say otherwise).
       var recOrig = ledgerPairRole(e, recPair) === 'reversal' ? state.ledger.filter(function (x) { return x.id === recPair[e.id]; })[0] : null;
+      // Treasurer sign-off on option B (9) — tick it if the bank shows it; tick both if neither is on
+      // any statement. Named as a new reversal is (ledgerReversalName, sign-off 10).
       var recLine = recOrig && !(recOrig.reconciled && ledgerDateReconciled(recOrig.date, bk))
-        ? 'Reversal of ' + (recOrig.description ? '“' + recOrig.description + '”' : 'an entry') +
-          '. If neither appears on the bank statement (a check never cashed), tick both: together they come to ' + fmt(0) + '.'
+        ? ledgerReversalName(state.ledger, recOrig) + '. Tick it if the bank shows it (a returned check, a refund). ' +
+          'If neither it nor the entry is on any statement (a check never cashed), tick both: together they come to ' + fmt(0) + '.'
         : '';
       h += '<label class="lrow entry rec-row' + (e.direction === 'in' ? ' in' : '') + '"' +
           (recFixed ? ' title="Reconciled on an earlier statement — to un-tick it, use Un-reconcile under Entries"' : '') + '>' +
