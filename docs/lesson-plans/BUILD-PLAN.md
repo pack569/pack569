@@ -8,7 +8,7 @@ Den leaders plan their meetings in **Program → Den plans**, but the app only k
 **Keith's decisions (2026-09-29)**
 - **Depth:** meeting by meeting. Each adventure gets 2–4 meetings. Each meeting has a gathering activity, an opening, 2–3 activities tied to the requirements, a closing, a supply list and prep notes, plus links to the official scouting.org pages.
 - **Scope:** the 36 required adventures (6 per rank) first. Electives follow in a second pass, starting with the ones every rank shares: Race Time, Champions for Nature, Let's Camp!, Archery, BB Gun, Slingshot and Summertime Fun. That is about 148 adventures in all.
-- **Editing:** the researched plans ship fixed in the app. Each den leader can add their own notes per adventure; the notes save with the pack record and carry over from year to year.
+- **Editing (changed 2026-09-30):** the researched plans are the starting version, **not written in stone. Admins can edit any plan in the app** (see §3a). Each den leader can still add their own notes per adventure; the notes save with the pack record and carry over from year to year.
 - **Visibility:** leaders only. The parent view stays unchanged.
 
 **Update 2026-09-29: the plans become runnable meeting guides.** Keith pointed to his "Bobcat Night: Wolves & Bears" page (https://claude.ai/artifact/TnfxEbQRSRM4LzUcZLQp2E) as the model.
@@ -97,7 +97,28 @@ Den leaders plan their meetings in **Program → Den plans**, but the app only k
 - **Shape:** `{ 'Wolf :: Council Fire': { text, by, at } }`. It is normalized in `normalizeState` (near the event normalisation at ~4149–4177) and stays in the pack record.
   - Follow whatever the Phase 3 reload gate and version rules require for a new field at that point.
 - **Who can edit:** editors and admins. Viewers can read.
-- **Not published to parents:** `buildParentView` (~9969) is an allowlist, so the notes stay out automatically. A harness assertion is added anyway, next to the existing one at test/harness.mjs:5784.
+- **Not published to parents:** `buildParentView` is an allowlist, so the notes stay out automatically. The security review (2026-09-30, Med) asks for more, **in the same commit that adds `advNotes`**:
+  - Add `'advNotes'` (and `'advPlanEdits'`, §3a) to `PARENT_VIEW_NEVER_KEYS` in `functions/_lib/rules.js` (~132), the server-side filter.
+  - Extend the existing `noteInternal` tests to cover them.
+  - Add a runtime canary: put a unique string in `state.advNotes[...]`, in `state.advPlanEdits[...]` and in a meeting, then assert it's absent from `buildParentView(...)`, `monthlyDigest(...)`, `buildICS()` and `parentEventICS(...)`.
+
+### 3a. Admin edits to the plans: `state.advPlanEdits` (Keith, 2026-09-30)
+- **Plans aren't written in stone.** Admins can change anything in a plan: text, minutes, requirements, supplies, prep, parent notes, and adding, removing or reordering steps and meetings.
+- **Only changed plans are stored.** The pack record has a 1.5 MB cap (`MAX_STATE_BYTES`) and all the plans are about 1.07 MB, so the record never holds the full set.
+  - When an admin first edits an adventure's plan, the app copies that one plan from `plans.json` into `state.advPlanEdits['Wolf :: Bobcat'] = { plan, base, by, at }`. Here `base` is the `verified` date (or a hash) of the original it was copied from.
+  - Every screen uses the pack's copy when there is one, and `plans.json` otherwise.
+  - It syncs like any other pack field. Follow the Phase 3 reload gate and version rules for a new field.
+- **Who:** admins only can edit plans. Editors keep their den notes (§3). Viewers read.
+- **Reset and drift:**
+  - A "Reset to original" button (with a confirm) deletes the pack's copy.
+  - If the original in `plans.json` changes after the pack's edit (`base` differs), show "The original plan was updated since your pack edited it", with a way to view the original.
+- **Guards:**
+  - `normalizeState` validates the shape with the same limits the parser enforces: kinds den|closing, no control characters, and `**` as the only markup.
+  - It caps each edited plan (about 40 KB) and the total (about 250 KB), dropping junk.
+  - If saving would pass the cap, refuse with a plain message instead of breaking the record.
+  - Going over 40 minutes on a den night **warns** in the editor but doesn't block.
+- **The editor:** a leaders-only edit mode on the plan panel, with a step list that can add, delete and move steps. The 40-minute check shows as a running total. Phone-first.
+- **The markdown in `docs/lesson-plans/` stays the researched original.** A pack edit never changes it, and the build never reads pack edits.
 
 ### 4. Where plans show
 - **Den plans** (`renderDenPlanner`, ~8129; `denMeetingsBlock`, ~8192): each adventure gets a "Lesson plan" button. It opens a plan panel with all its meetings, the supplies rolled up, the safety notes, the source links and the den's leader notes (editable).
@@ -111,9 +132,16 @@ A visual mockup of all three was shown to Keith on 2026-09-29, in the app's own 
 2. The plan panel: collapsible meetings, a safety box, "Our den's notes" and the official links.
 3. The meeting editor's "Plan for tonight · meeting 2 of 3" box.
 
+### 4a. Rendering rules for every plan screen (security review, 2026-09-30)
+- Treat every plan field (original or pack-edited) as untrusted. Build text with `String(...)`, then `esc(...)`, and only after escaping replace `\*\*([^*]+)\*\*` with `<strong>$1</strong>`. Convert no other markup unless it's added the same way.
+- Leave `[date]` as literal text until the calendar fill is built.
+- Link `sources`/`official` only after checking `^https://`, with `rel="noopener noreferrer"`.
+- Never write plan text into `event.note`, a parent-facing field, `showToast` or copy-to-parents text. The only exception is `tellParents`, and only when a leader chooses to send it.
+- `plans.json` is **public** (anyone can fetch `pack569.com/plans.json`). "Leaders only" describes the screens, not the file, so never put anything private in the markdown.
+
 ### 5. Build order
 1. Required pass, one rank per commit: research → safety review → Keith skims → data.
-2. UI: plan panel, meeting-editor line, agenda printout, leader notes.
+2. UI: plan panel, meeting-editor line, agenda printout, leader notes, then admin plan editing (§3a).
 3. Reviews, one at a time: `cubmaster-program` for content, `parent-experience-editor` for wording and the printout, `security-access-reviewer` for notes and the parent view.
 4. Elective pass, shared themes first, the same way. Re-check the size budget first.
 5. Docs: add a "Lesson plans" section to `DESIGN-adventures.md`. It covers the sources, the copyright rule, the data shape and the "not for parents" rule.
