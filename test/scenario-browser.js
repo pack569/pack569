@@ -421,6 +421,8 @@
     set('[data-ch="book-statement-date"]', '2026-06-30');
     var rs = stats();
     check('Y1 reconciles to the statement', rs.Difference, '$0.00');
+    // Two taps since the treasurer's review of C2 (H-1): the first arms, the second locks.
+    click('[data-act="ledger-reconcile-lock"]');
     click('[data-act="ledger-reconcile-lock"]');
     check('Y1 reconciled-through stamped', S().book.reconciledThrough, '2026-06-30');
   }

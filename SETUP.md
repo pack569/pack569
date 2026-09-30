@@ -17,6 +17,8 @@ parents can get a schedule-only dashboard).
 - **Part D** — *(recommended, once C is live)* **single-pack mode**: bake the pack id into the
   page so **nobody ever types a passphrase again**. Leaders open the sign-up link, sign in
   with Google, and the admin approves them.
+- **If a page stays "out of date" after a reload** — how the owner recovers a pack record
+  whose format number is higher than any page served (at the end of this guide).
 
 ---
 
@@ -666,3 +668,110 @@ a bad id and lands you on the wrong pack.
 To go back to passphrase mode, set `PACK_DOC_ID = null`, redeploy, and type the passphrase on
 each leader's device again. Nothing in the cloud has to change — it's the same pack, the same
 document, the same members.
+
+---
+
+## If a page stays "out of date" after a reload (the reload gate)
+
+**Download or copy each device's stored record before changing `fmt`** (step 1 below). Then fix
+the pack's copy, then each device, then reload.
+
+Every pack record carries a format number, `fmt`. The page knows its own
+(`var PACK_FORMAT` in `index.html`). A page that meets a record with a **higher** `fmt` (in the
+pack's shared copy, or in its own browser's storage, written by a newer page in another tab)
+stops: it saves nothing, sends nothing, publishes nothing to parents, refuses every edit, and
+shows "This page is out of date … Reload the page before you change anything else." Normally a reload loads the
+newer page and that is the end of it.
+
+If a reload does **not** clear it, the record's `fmt` is higher than any page you serve. That
+happens in two ways:
+
+- **The page was rolled back** past the change that raised `PACK_FORMAT`. The pack's copy, and
+  every browser that opened the newer page, now hold the newer format. The better fix is almost
+  always to deploy the newer page again (or a fix on top of it). Only lower `fmt` by hand if you
+  know the older page reads that record correctly: the change that raised `PACK_FORMAT` says what
+  an older page gets wrong.
+- **Someone saved a bad `fmt`** (a hand-edited record, or an editor's device writing
+  `"fmt":999`). Nothing in the app can undo it, because every push, copy and import is refused
+  over it. Lowering it by hand is the fix.
+
+Nothing is lost while the page holds: each device keeps its own copy. The steps below are the
+only way out, and they are done by the owner.
+
+Steps 1 and 4 use the browser's developer console, so they need a **desktop browser** (Chrome,
+Edge, Firefox or Safari on a computer). An **iPhone or iPad** has no console of its own: it needs
+a Mac, with Safari's Web Inspector connected to the device by cable, and on the iPhone or iPad
+**Settings → Safari → Advanced → Web Inspector** turned on. **Don't clear the site's data**
+(or "website data", or the browser's history and site data) to get past the hold: that throws
+away that device's copy for good, and with it anything that was only on that device.
+
+### 1. First, download or copy each device's stored record before changing `fmt`
+
+On **every** leader device that has used the page, before you touch the pack's copy:
+
+- Open the page. If **Pack → Backup (JSON)** downloads a file, keep it. (It works while the hold
+  comes from the pack's copy.)
+- If it says "Backup not downloaded", this device's own stored copy is the newer record. Open the
+  browser's developer console on the page (a desktop browser, or a Mac for an iPhone or iPad: see
+  above) and run
+  `copy(localStorage.getItem('pack-popcorn-ledger-v1'))`, then paste into a text file and keep it.
+
+These files hold children's names and the pack's money. Keep them private: never in the repo,
+an issue, or a chat.
+
+### 2. See what `fmt` the pack's copy has
+
+The number to compare with is `PACK_FORMAT` in the `index.html` you serve.
+
+- **Firestore** (`BACKEND = 'firestore'`): Firebase console → **Firestore Database** → **Data** →
+  `packs` → the Pack ID document → the `json` field. It is one long line of text. The record's
+  own `fmt` is the top-level `"fmt":N` (usually near the end). A `"fmt"` inside a note or a
+  nested object is not it.
+- **D1** (`BACKEND = 'api'`):
+  `npx wrangler d1 execute pack569-prod --remote --env production --command "SELECT rev, json_extract(json, '$.fmt') AS fmt FROM pack_state WHERE pack_id = '<Pack ID>'"`
+  (for staging and preview: `pack569-preview`, without `--env production`). `<Pack ID>` is the
+  pack's id: `var PACK_DOC_ID` in the `index.html` you serve (before single-pack mode, the Pack tab
+  → **Shared sync** → **Pack ID**). Always keep the `WHERE`: the table can hold more than one pack.
+
+### 3. Set `fmt` back to the page's `PACK_FORMAT`
+
+Change only `fmt`. Leave `rev` and everything else as it is.
+
+- **Firestore:** in the console, edit the `json` field. Copy its value into a text editor, change
+  the top-level `"fmt":N` to the served page's `PACK_FORMAT` (e.g. `"fmt":2`), check the rest of
+  the text is untouched, paste it back, and **Update**.
+- **D1:**
+  `npx wrangler d1 execute pack569-prod --remote --env production --command "UPDATE pack_state SET json = json_set(json, '$.fmt', 2) WHERE pack_id = '<Pack ID>'"`
+  (with `2` being the served page's `PACK_FORMAT`, and `<Pack ID>` as in step 2). Without the
+  `WHERE` it would rewrite every pack in the database. Run the `SELECT` from step 2 again to check.
+  If the change goes wrong, D1's Time Travel can put the database back to before it
+  ([docs/cloudflare-setup.md](docs/cloudflare-setup.md), *Backups*).
+
+### 4. Fix each device whose own copy is the newer record
+
+This is needed only after a rollback, and only on the devices where Backup (JSON) said "Backup
+not downloaded" in step 1. Such a device holds on its own stored copy, whatever the pack's copy
+says.
+
+Do this **in the same browser app on that device** that holds the copy: each browser keeps its
+own stored copy, so a console opened on the page in another browser, or on another device,
+changes a different copy and leaves the held one as it was. (On an iPhone or iPad, point the
+Mac's Web Inspector at the page as it is open in that browser app on that iPhone or iPad.)
+
+**First close every other tab or window of the page on that device**, so only one is open. A
+newer page still open in another tab saves its `fmt` back over the fix. Then, in the browser's
+developer console on the page (a desktop browser, or a Mac for an iPhone or iPad), run:
+
+```js
+var k = 'pack-popcorn-ledger-v1', r = JSON.parse(localStorage.getItem(k)); r.fmt = 2; localStorage.setItem(k, JSON.stringify(r)); location.reload();
+```
+
+(with `2` being the served page's `PACK_FORMAT`). The key is fixed and must never change: it is
+where every device's copy lives.
+
+### 5. Reload every device
+
+Each device then compares its copy with the pack's. Where they differ, the leader is asked
+which copy to keep, and the chooser lists what is only on that device. If anything is missing
+afterwards, it is in the files from step 1: **Pack → Import backup** one of them on a device, check
+it, and let it sync.
