@@ -22985,14 +22985,18 @@ test('C5: a pack admin, signed in, can mark a statement reviewed once; never the
     // F7: not what the book is reconciled through (a backup from before it restored), or nothing is.
     [S, sam, { reconciledThrough: '2026-08-31' }, C5_RV.off],
     [S, sam, { reconciledThrough: '' }, C5_RV.off],
-    // A legacy statement: not before its ending balance is added; then its signer by name.
+    // A legacy statement: not before its ending balance is added; then never, having no uid (R6).
     [C5_LEGACY(), sam, book, C5_RV.noBalance],
-    [added(), sam, book, C5_RV.signer('Sam')],
-    [added(), as({ by: 'Pat' }), book, ''],
     // F5: who signed it wasn't recorded, so nobody can be told apart from them.
     [Object.assign(added(), { by: 'a signed-in leader' }), as({ by: 'a signed-in leader' }), book, C5_RV.unknown],
     [Object.assign(added(), { by: 'this device' }), sam, book, C5_RV.unknown],
-    [Object.assign(added(), { by: '' }), sam, book, C5_RV.unknown]];
+    [Object.assign(added(), { by: '' }), sam, book, C5_RV.unknown],
+    // Security re-check of C5 (R6): nor with a name and no uid (a legacy statement, or one reconciled
+    // with no account): a name can't tell two leaders apart. It was compared by name before.
+    [added(), sam, book, C5_RV.unknown],
+    [added(), as({ by: 'Pat' }), book, C5_RV.unknown],
+    [Object.assign(C5_SEP(), { byUid: '' }), sam, book, C5_RV.unknown],
+    [Object.assign(C5_SEP(), { byUid: undefined }), as({ by: 'Pat Treasurer' }), book, C5_RV.unknown]];
   table.forEach(([st, who, b, want], i) => eq(r.statementReviewRefusal(st, who, b), want, 'case ' + i));
   // On the page. Pat, who signed it, is refused even as an admin; Sam, an editor, is refused; Sam as
   // an admin marks it reviewed in two taps, once, logged.

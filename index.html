@@ -9504,14 +9504,14 @@
   }
   // Why this device's leader (`who`: statementReviewer()) can't mark statement `st` reviewed, or ''.
   // The review is a second leader's, once: never the one who signed it (their account uids compared;
-  // a statement signed with no account has no uid, so the names are), never a reopened statement,
+  // a statement signed with no account has no uid, and can't be reviewed here: R6), never a reopened statement,
   // and only by a leader signed in with their own account, so the review says who did it.
   // Owner's decision (2026-09-30) — and only by a pack admin (`who.admin`: isAdmin(), so accounts
   // are in force). In a pack without accounts (`who.accounts` false) nobody reviews in the app:
   // the printout's blank line is signed instead.
   // C5 review — never a statement not in force (`book`: F7), never a legacy one before its ending
   // balance is added (there is nothing to check), and never one whose signer wasn't recorded (no
-  // uid, and only "a signed-in leader" or "this device" for a name: F5), in the treasurer's words.
+  // uid: F5, and R6 below), in the treasurer's words.
   // Pure.
   function statementReviewRefusal(st, who, book) {
     who = who || {};
@@ -9525,10 +9525,13 @@
     }
     if (!who.admin) return 'Only a pack admin can mark a statement reviewed. Another leader can sign the printout instead.';
     var named = !!st.by && st.by !== 'a signed-in leader' && st.by !== 'this device';
-    if (!st.byUid && !named) {
+    // Security re-check of C5 (R6) — nor any with no uid, named or not: a name is only what a device
+    // called its leader, so it can't tell two leaders apart (two called Pat, or one renamed). That is
+    // every legacy statement and every one reconciled without an account; their printout is signed.
+    if (!st.byUid) {
       return 'Who reconciled this statement wasn’t recorded, so the app can’t tell whether you’re a different leader. Sign the printout instead.';
     }
-    if (st.byUid ? st.byUid === who.byUid : st.by === who.by) {
+    if (st.byUid === who.byUid) {
       return 'A statement has to be reviewed by a different leader from the one who reconciled it' + (named ? ' (' + st.by + ')' : '') +
         '. Ask another pack admin to review it.';
     }
