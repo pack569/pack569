@@ -12262,6 +12262,12 @@
   // an edited one could reopen a statement, and say anyone did it. The Import backup button shows
   // only for them; the file chooser and Replace my data refuse anyone else, in these words.
   var RESTORE_REFUSED = 'Only a pack admin can restore a backup: it can reopen statements.';
+  // Owner decision 22 (security review of C6, F7) — so is closing out the year, and keeping this device's
+  // copy over a year another device closed out (keepLocalNeedsAdmin): each writes a year's book and
+  // archive (its signed statements and change history, since decision 19) over everyone's. The same
+  // gate: canReopenStatement (an admin; with no accounts, whoever edits). The treasurer's words.
+  var CLOSEOUT_REFUSED = 'Only a pack admin can close out the year.';
+  var KEEP_LOCAL_REFUSED = 'Only a pack admin can keep this device’s copy: it would replace a year another device closed out. Ask an admin, or use the cloud copy.';
   function adminCount() {
     var n = 0;
     for (var i = 0; i < sync.members.length; i++) { if (sync.members[i].role === 'admin') n += 1; }
@@ -15446,13 +15452,28 @@
   // reloaded page can back it up. null then: each caller says FORMAT_BACKUP. (A hold met from the
   // pack is not refused: this device's copy is this page's own, and it is what recovery needs.)
   var JSON_BACKUP_NAME = 'popcorn-backup.json';
+  var CLOUD_COPY_NAME = 'popcorn-cloud-copy.json';   // owner decision 22: the chooser's "Download the cloud copy"
   function jsonBackup() {
     if (formatHeldHere()) return null;
     return { name: JSON_BACKUP_NAME, mime: 'application/json', text: JSON.stringify(state, null, 2) };
   }
+  // Owner decision 22 (security review of C6, F7) — does keeping this device's copy over the pack record
+  // `d` replace a year another device closed out: `d` is from the other side of a close-out, or closed
+  // the same year out separately (seasonMoved, seasonClosedTwice), and holds a season archive this device
+  // hasn't? Its signed statements and change history would be gone for everyone. An admin's, then.
+  function keepLocalNeedsAdmin(d) {
+    if (!d || !(seasonMoved(d) || seasonClosedTwice(d))) return false;
+    var p = null;
+    try { p = JSON.parse(typeof d.json === 'string' ? d.json : ''); } catch (e) { return false; }
+    var here = Object.create(null);
+    arrOf(state.archives).forEach(function (a) { if (a && typeof a.id === 'string') here[a.id] = true; });
+    return arrOf(p && p.archives).some(function (a) { return a && a.kind === 'season' && typeof a.id === 'string' && a.id && !here[a.id]; });
+  }
   // "Keep this device's copy" on the sync-conflict overlay (armed, two taps, in the click handler).
   function keepLocalCopy() {
     var kept = ui.overlay;
+    // Owner decision 22 — refused, the choice stays open (the cloud copy is still theirs to take).
+    if (kept && kept.remote && keepLocalNeedsAdmin(kept.remote) && !canReopenStatement()) { showToast(KEEP_LOCAL_REFUSED); render(); return; }
     ui.overlay = null;
     if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); render(); return; } // M-3
     sync.conflict = null;
@@ -23935,7 +23956,9 @@
       'Closing out saves a full season summary to Past seasons, downloads a complete JSON backup, and starts ' + (cy + 1) +
       ' from this year’s real numbers — activity estimates seeded from actual costs, the ending balance carried over, ' +
       'and the roster moved up a den. You’ll see a preview first; nothing changes until you confirm there.</p>' +
-      '<button type="button" class="btn primary" data-act="open-closeout">Close out the ' + cy + ' program year…</button></div>';
+      // Owner decision 22 — the button only for those who can use it; anyone else is told whose it is.
+      (canReopenStatement() ? '<button type="button" class="btn primary" data-act="open-closeout">Close out the ' + cy + ' program year…</button>'
+        : '<p class="small muted" style="margin:0">' + esc(CLOSEOUT_REFUSED) + '</p>') + '</div>';
     } // end canEdit — advance dens + close-out
     return h;
   }
@@ -26882,6 +26905,7 @@
       var rc = null;
       try { rc = JSON.parse(typeof o.remote.json === 'string' ? o.remote.json : ''); } catch (e) { /* shown as 0s */ }
       rc = rc || {};
+      var yearsApart = seasonMoved(o.remote) || seasonClosedTwice(o.remote), keepBarred = keepLocalNeedsAdmin(o.remote) && !canReopenStatement();
       return '<div class="overlay" role="dialog" aria-modal="true" aria-label="Two copies of this pack record"><div class="overlay-inner"><div class="card">' +
         '<h2 class="section display">Two copies of this pack record</h2>' +
         '<p>This device and the shared cloud copy for ' + (fixedPackMode() ? 'this pack' : 'this passphrase') +
@@ -26894,12 +26918,15 @@
         syncClosedTwiceHtml(rc, state) +   // Phase 3, C6
         '<p class="small muted">' + syncCopyLine('Cloud copy', rc) + '<br>' + syncCopyLine('This device', state) + '</p>' +
         syncOnlyHereHtml(rowsOnlyIn(state, rc)) +
-        '<div class="row"><button type="button" class="btn" data-act="sync-download-local">Download this device’s copy first</button></div>' +
+        '<div class="row"><button type="button" class="btn" data-act="sync-download-local">Download this device’s copy first</button>' +
+        // Owner decision 22 — across a close-out, the cloud copy can be kept on paper too.
+        (yearsApart ? '<button type="button" class="btn" data-act="sync-download-cloud">Download the cloud copy</button>' : '') + '</div>' +
         (o.downloaded ? '<p class="small muted" style="margin-top:0">Downloaded as ' + esc(JSON_BACKUP_NAME) + '. Keep it until the treasurer has what was in it.</p>' : '') +
+        (o.downloadedCloud ? '<p class="small muted" style="margin-top:0">The cloud copy downloaded as ' + esc(CLOUD_COPY_NAME) + '.</p>' : '') +
         '<div class="row">' +
         dangerBtn('sync-use-cloud', 'Use cloud copy (replaces this device)') +
-        dangerBtn('sync-keep-local', 'Keep this device’s copy (overwrites cloud)') +
-        '</div></div></div></div>';
+        (keepBarred ? '' : dangerBtn('sync-keep-local', 'Keep this device’s copy (overwrites cloud)')) +
+        '</div>' + (keepBarred ? '<p class="small muted" style="margin:0">' + esc(KEEP_LOCAL_REFUSED) + '</p>' : '') + '</div></div></div>';
     }
     // Wave 13 — Trail's End import preview (no commit until confirmed).
     if (o.kind === 'te-preview') return renderTePreview(o);
@@ -29808,6 +29835,7 @@
   function performCloseout() {
     // The reload gate — refused at the dispatch already (handleAction); here too, before the snapshot.
     if (packFormatHeld()) { refuseHeldAct(FORMAT_CLOSEOUT); return; }
+    if (!canReopenStatement()) { ui.overlay = null; render(); showToast(CLOSEOUT_REFUSED); return; }   // owner decision 22
     var year = state.budget.programYear;
     // 1. Snapshot download FIRST — the complete state exactly as it stands, before ANY mutation.
     download('pack-year-' + year + '-snapshot.json', 'application/json', JSON.stringify(state, null, 2));
@@ -32001,6 +32029,11 @@
       return;
     }
     // Wave 7 — year-end close-out
+    // Owner decision 22 — an admin's (asked again at each step: the role can change while it is open).
+    if ((act === 'open-closeout' || act === 'closeout-confirm') && !canReopenStatement()) {
+      if (ui.overlay && ui.overlay.kind === 'closeout') ui.overlay = null;
+      ui.armed = null; render(); showToast(CLOSEOUT_REFUSED); return;
+    }
     if (act === 'open-closeout') { ui.overlay = { kind: 'closeout' }; ui.armed = null; render(); return; }
     if (act === 'closeout-confirm') { arm('closeout-confirm', performCloseout); return; }
     // Wave 13 — Trail's End import
@@ -32141,6 +32174,15 @@
       if (!bkS) { showToast(FORMAT_BACKUP); return; }   // the reload gate (jsonBackup)
       download(bkS.name, bkS.mime, bkS.text);
       if (ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay.downloaded = true;
+      render(); return;
+    }
+    // Owner decision 22 — the cloud copy, as the backend sent it (tidied when it reads), before either choice.
+    if (act === 'sync-download-cloud') {
+      var dcO = ui.overlay && ui.overlay.kind === 'sync-conflict' ? ui.overlay : null, dcText = dcO && dcO.remote && typeof dcO.remote.json === 'string' ? dcO.remote.json : '';
+      if (!dcText) return;
+      try { dcText = JSON.stringify(JSON.parse(dcText), null, 2); } catch (e) { /* as it came */ }
+      download(CLOUD_COPY_NAME, 'application/json', dcText);
+      dcO.downloadedCloud = true;
       render(); return;
     }
     // Armed (two-tap) destructive actions

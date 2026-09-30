@@ -15500,6 +15500,8 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'isPackOwner', 'canDownloadMoveFile', 'canImportPack', 'moveFileReady', 'moveFileProblem', 'moveTime', 'buildMoveFile', 'downloadMoveFile', 'moveImportBody', 'importMoveFile',
   'scheduleParentViewRefresh', 'writeParentView', 'scheduleSyncPush', 'holdPushes', 'mergeRemoteAppendOnly', 'seasonMoved', 'freshGone', ...GONE_FNS, 'syncPush',
   'isStateEmpty', 'stateFingerprint', 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'keepLocalCopy', 'SERVER_NOTICES', 'serverNotice',
+  // Owner decision 22 — keeping this device's copy over another device's close-out is an admin's.
+  'keepLocalNeedsAdmin', 'KEEP_LOCAL_REFUSED', 'canReopenStatement',
   ...FORMAT_GATE_FNS];
 const CLIENT_SRC = CLIENT_FNS.map(decl).join('\n');
 
@@ -16285,7 +16287,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
       var state = ${JSON.stringify(over.local)};
       var sync = { firstSnap: true, mode: 'online', deviceId: 'dev1', dirty: false, clobber: false,
         backend: { serverRevs: ${!!over.serverRevs} } };
-      ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap', 'keepLocalCopy', ...FORMAT_GATE_FNS].map(decl).join('\n')}
+      ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap', 'keepLocalCopy', 'keepLocalNeedsAdmin', ...FORMAT_GATE_FNS].map(decl).join('\n')}
       onRemoteSnap(${JSON.stringify(over.rec)}, { fromServer: true, pendingWrites: false });`, ctx);
     return vm.runInContext('[timers.length, state.rev, ui.overlay ? ui.overlay.kind : null]', ctx);
   };
@@ -16304,7 +16306,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
       function canEdit() { return true; } function render() {} function showToast() {} function scheduleSyncPush() { pushed += 1; }
       var ui = { overlay: { kind: 'sync-conflict', remote: { rev: 9 } } }, state = { rev: 2 };
       var sync = { backend: { serverRevs: ${serverRevs} } };
-      ${['seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', 'arrOf', 'keepLocalCopy'].map(decl).join('\n')}
+      ${['seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', 'arrOf', 'keepLocalCopy', 'keepLocalNeedsAdmin'].map(decl).join('\n')}
       keepLocalCopy();`, ctx);
     return vm.runInContext('[state.rev, pushed, ui.overlay]', ctx);
   };
@@ -16740,7 +16742,8 @@ function fsGonePair(over) {
   const seed = goneSeedNorm(over);
   let server = { rev: 3, device: 'd0', updatedAt: 'TS', json: JSON.stringify(Object.assign({}, seed, { rev: 3 })) };
   const dev = (name) => {
-    const ctx = fsFeedCtx(Object.assign({}, seed, { rev: 3 }), NORMALIZE_FNS.map(slice).join('\n') + decl('keepLocalCopy') + GONE_EXTRA(name) + `
+    const ctx = fsFeedCtx(Object.assign({}, seed, { rev: 3 }), NORMALIZE_FNS.map(slice).join('\n') +
+      ['keepLocalCopy', 'keepLocalNeedsAdmin', 'KEEP_LOCAL_REFUSED', 'canReopenStatement', 'isAdmin'].map(decl).join('\n') + GONE_EXTRA(name) + `
       sync.deviceId = '${name}';
       fakeFirestore.runTransaction = function (db, body) {
         return body({ get: function (ref) { return now(snapOf(ref.path)); },
@@ -16896,14 +16899,18 @@ test('stopgap, Firestore: two devices that both re-import before either saves co
 
 // Treasurer M3 / popcorn 3: the copy chooser, drawn by the page's own renderOverlay.
 const CHOOSER_FNS = ['esc', 'fmt', 'fmtDateShort', 'fmtArchiveDate', 'arrOf', 'teBatchOf', 'dangerBtn', 'packSalesCents', 'teLastImportMs',
-  'rowsOnlyIn', 'syncCopyLine', 'syncYearsHtml', 'syncOnlyHereHtml', 'jsonBackup', 'renderOverlay', 'rowChoice', 'syncClosedTwiceHtml', 'seasonCloseoutOf'];
+  'rowsOnlyIn', 'syncCopyLine', 'syncYearsHtml', 'syncOnlyHereHtml', 'jsonBackup', 'renderOverlay', 'rowChoice', 'syncClosedTwiceHtml', 'seasonCloseoutOf',
+  // Owner decision 22 — across a close-out: the cloud copy's download, and keep-local an admin's.
+  'seasonMoved', 'seasonClosedTwice', 'keepLocalNeedsAdmin', 'KEEP_LOCAL_REFUSED', 'CLOUD_COPY_NAME', 'canReopenStatement', 'isAdmin'];
 function chooserHtml(mine, cloud, over) {
   const ctx = vm.createContext({});
   vm.runInContext(`${CHOOSER_FNS.map(slice).join('\n')}
     ${decl('JSON_BACKUP_NAME')}
     ${FORMAT_GATE_SRC()}
     function fixedPackMode() { return true; }
-    var sync = { dirty: ${!(over && over.clean)} };
+    // (Owner decision 22: signed in as \`over.role\`, or, with none, a pack with no accounts, where everyone edits.)
+    function canEdit() { return true; } function accountsInForce() { return ${!!(over && over.role)}; }
+    var sync = { dirty: ${!(over && over.clean)}, myRole: ${JSON.stringify((over && over.role) || '')} };
     var state = ${JSON.stringify(mine)};
     var ui = { armed: null, overlay: Object.assign({ kind: 'sync-conflict', remote: { rev: 4, json: ${JSON.stringify(JSON.stringify(cloud))} } }, ${JSON.stringify(over || {})}) };`, ctx);
   return { html: vm.runInContext('renderOverlay()', ctx), ctx };
@@ -22406,7 +22413,7 @@ test('reload gate: a newer tab’s save while this page runs is never saved over
 // newer tab's), or '' (nothing held: the control).
 const HELD_DISPATCH_FNS = ['handleAction', 'handleChange', 'handleForm', 'handleFilePick', 'performCloseout', 'deleteWithUndo', 'arm',
   'heldActAllowed', 'refuseHeldAct', 'HELD_ACTS', 'HELD_ACT_PREFIXES', 'HELD_CHANGES', 'PARENT_ACTS', 'GATE_ACTS',
-  'FORMAT_CLOSEOUT', 'FORMAT_BACKUP', 'JSON_BACKUP_NAME', 'jsonBackup', 'toCents', 'closeoutTrimToast'];
+  'FORMAT_CLOSEOUT', 'FORMAT_BACKUP', 'JSON_BACKUP_NAME', 'jsonBackup', 'toCents', 'closeoutTrimToast', 'CLOSEOUT_REFUSED', 'CLOUD_COPY_NAME'];
 const heldDispatchCtx = (hold) => {
   const rec = { version: 1, fmt: hold === 'device' ? NEWER_FMT : 1, packName: 'Pack', scouts: [{ id: 's1', name: 'Ada' }],
     leaders: [{ id: 'l1', name: 'Akela' }], budget: { programYear: 2026 }, archives: [], goalCents: 100 };
@@ -22422,6 +22429,7 @@ const heldDispatchCtx = (hold) => {
     function rolloverYear() { state.budget.programYear += 1; }
     function handleImportFile() { picked.push('import'); } function handleMoveFile() { picked.push('move'); }
     function handleIcsImportFile() { picked.push('ics'); } function handleTeFile() { picked.push('te'); }
+    function canReopenStatement() { return true; }   // an admin (owner decision 22: close-out is theirs)
     ${HELD_DISPATCH_FNS.map(decl).join('\n')}
     ${hold === 'pack' ? 'sync.newerFormat = true;' : ''}
     function tap(act, data) { handleAction(act, { dataset: data || {} }); }`, ctx);
@@ -25055,6 +25063,18 @@ atest('C6, api: a year closed out separately on two devices is not merged; the l
   b.run('commit()');
   await settle([b], 800);
   eq([b.log.filter((l) => /^PUT/.test(l)), server().ledger.map((e) => e.id), b.get('ui.overlay && ui.overlay.kind')], [[], ['co-A'], 'sync-conflict'], 'B merged, or wasn’t asked');
+  // Owner decision 22 — B is an editor: keeping its copy over A's close-out is an admin's. Refused, the
+  // choice still open, nothing sent.
+  b.run('keepLocalCopy()');
+  await settle([b], 800);
+  eq([b.get('toasts[toasts.length - 1]'), b.get('ui.overlay && ui.overlay.kind'), b.log.filter((l) => /^PUT/.test(l)), server().archives.map((x) => x.id)],
+    [b.get('KEEP_LOCAL_REFUSED'), 'sync-conflict', [], ['arc-A']], 'an editor kept its copy over another close-out');
+  // Made an admin, B keeps its own.
+  a.run("setMemberRole('uid-editor', 'admin')");
+  await settle([a]);
+  await b.poll();
+  await settle([b], 800);
+  eq(b.get('sync.myRole'), 'admin', 'B was not made an admin');
   b.run('keepLocalCopy()');
   await settle([b], 800);
   eq([server().ledger.map((e) => e.id), server().archives.map((x) => x.id)], [['co-B'], ['arc-B']], 'keeping B’s');
@@ -25150,6 +25170,53 @@ test('C6 review (F6), Firestore: a close-out, or a newer page’s save, arriving
   eq([b.get('!!sync.newerFormat'), c6Asked(b), b.get('!!sync.conflict')], [true, null, false], 'a newer page’s save while the choice waited');
   b.run('saveRowChoices(); scheduleSyncPush()'); b.push();
   eq(rev(), 4, 'B wrote while held');
+});
+
+test('Decision 22: closing out the year, and keeping this device’s copy over another device’s close-out, are an admin’s; the chooser offers the cloud copy’s download', () => {
+  // keepLocalNeedsAdmin: a copy across a close-out, or closed out separately, holding a season archive this device hasn't.
+  const x = sandbox(['keepLocalNeedsAdmin', 'seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', 'arrOf']);
+  const arc = (id, year) => ({ id, kind: 'season', year, closedAt: '2026-07-01T00:00:00.000Z' });
+  const rec = (py, arcs) => ({ json: JSON.stringify({ budget: { programYear: py }, archives: arcs }) });
+  x.state = { budget: { programYear: 2026 }, archives: [arc('old', 2025)] };
+  eq([x.keepLocalNeedsAdmin(rec(2027, [arc('old', 2025), arc('theirs', 2026)])), x.keepLocalNeedsAdmin(rec(2026, [arc('old', 2025), arc('x', 2026)])),
+    x.keepLocalNeedsAdmin(rec(2025, [])), x.keepLocalNeedsAdmin({ json: 'nope' })], [true, false, false, false],
+    'the cloud closed out; the same year; the cloud a year behind (this device closed out); unreadable');
+  x.state = { budget: { programYear: 2027 }, archives: [arc('old', 2025), arc('mine', 2026)] };
+  eq(x.keepLocalNeedsAdmin(rec(2027, [arc('old', 2025), arc('theirs', 2026)])), true, 'closed out separately');
+  // This device closed out; the cloud copy, a year behind, holds only seasons this device has: keeping this one replaces no close-out.
+  eq(x.keepLocalNeedsAdmin(rec(2026, [arc('old', 2025)])), false, 'this device closed out, the cloud behind');
+  // The chooser: an editor with the cloud closed out is not offered keep-local, and is told whose it is;
+  // an admin, or a pack with no accounts, is. Across a close-out, the cloud copy's download is offered.
+  const seed = goneSeedNorm();
+  const closed = Object.assign(JSON.parse(JSON.stringify(seed)), { budget: Object.assign({}, seed.budget, { programYear: 2027 }),
+    archives: [{ id: 'arc-A', kind: 'season', year: 2026, closedAt: '2026-07-01T12:00:00.000Z' }] });
+  const keepBtn = /data-act="sync-keep-local"/, cloudBtn = /data-act="sync-download-cloud">Download the cloud copy</;
+  const refused = 'Only a pack admin can keep this device’s copy: it would replace a year another device closed out. Ask an admin, or use the cloud copy.';
+  let h = chooserHtml(seed, closed, { role: 'editor' }).html;
+  ok(!keepBtn.test(h) && h.includes(refused) && cloudBtn.test(h) && /data-act="sync-use-cloud"/.test(h), 'an editor: ' + h.replace(/<[^>]+>/g, ' '));
+  for (const over of [{ role: 'admin' }, {}]) {
+    h = chooserHtml(seed, closed, over).html;
+    ok(keepBtn.test(h) && !h.includes(refused) && cloudBtn.test(h), 'an admin, or no accounts: ' + JSON.stringify(over));
+  }
+  // The same year: keep-local for an editor as ever, and no cloud download.
+  h = chooserHtml(seed, Object.assign({}, seed, { packName: 'Other' }), { role: 'editor' }).html;
+  ok(keepBtn.test(h) && !cloudBtn.test(h), 'the same year');
+  // Close-out: an editor's taps are refused, in the treasurer's words, before the snapshot, and so is the step itself.
+  const c = heldDispatchCtx('');
+  vm.runInContext("canReopenStatement = function () { return false; }; toasts = []; tap('open-closeout'); tap('closeout-confirm'); tap('closeout-confirm'); performCloseout();", c);
+  eq(JSON.parse(JSON.stringify(vm.runInContext('[toasts, downloads, state.budget.programYear, ui.overlay, ui.armed]', c))),
+    [['Only a pack admin can close out the year.', 'Only a pack admin can close out the year.', 'Only a pack admin can close out the year.', 'Only a pack admin can close out the year.'],
+      [], 2026, null, null], 'an editor’s close-out');
+  // The card shows the button only to those who can use it.
+  ok(/\(canReopenStatement\(\) \? '<button type="button" class="btn primary" data-act="open-closeout">Close out the ' \+ cy \+ ' program year…<\/button>'\s*: '<p class="small muted" style="margin:0">' \+ esc\(CLOSEOUT_REFUSED\) \+ '<\/p>'\)/.test(SCRIPT),
+    'the close-out button is shown to everyone');
+  // "Download the cloud copy": the cloud copy as sent, tidied, and said.
+  vm.runInContext(`var got = []; download = function (name, mime, text) { got.push([name, mime, text]); };
+    ui.overlay = { kind: 'sync-conflict', remote: { rev: 4, json: '{"a":1}' } }; tap('sync-download-cloud');`, c);
+  eq(JSON.parse(JSON.stringify(vm.runInContext('[got, ui.overlay.downloadedCloud]', c))), [[['popcorn-cloud-copy.json', 'application/json', '{\n  "a": 1\n}']], true], 'the cloud copy');
+  // Neither is a parent's: no parent act reaches them.
+  const pa = /var PARENT_ACTS = \[([^\]]*)\]/.exec(SCRIPT)[1];
+  ok(!/closeout|sync-download-cloud|sync-keep-local/.test(pa), 'a parent can close out or keep a copy');
 });
 
 /* ---------------- report ---------------- */
