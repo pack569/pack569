@@ -14152,6 +14152,13 @@
         else if (how[p] === 'theirs') take(out, p, tr, mr);
       });
       var tw = how.tick === 'mine' ? mr : tr, to = how.tick === 'mine' ? tr : mr;
+      // Security review of C6 (F9) — ticked on both, on different statements (or on one only): who
+      // ticked it, and when, come with the statement kept (below), from the same copy, so the entry
+      // never says one leader ticked it on another leader's statement.
+      if (mr.reconciled === true && tr.reconciled === true) {
+        var s1 = typeof tw.statementId === 'string' ? tw.statementId : '', s2 = typeof to.statementId === 'string' ? to.statementId : '';
+        if (s2 && s1 !== s2 && (!s1 || (stRank[s2] || 0) > (stRank[s1] || 0))) { var sw = tw; tw = to; to = sw; }
+      }
       take(out, 'tick', tw, to);
       // The statement it was cleared on: kept from either copy, while it is ticked. (Unticked, the
       // copy above has left it with none: an untick takes it off.)

@@ -23916,6 +23916,13 @@ test('C6: a row keeps the statement it was cleared on, and a tick a statement li
   const B6 = c6Rec([C6_ROW(Object.assign({}, ticked, { statementId: 'st-2', description: 'Pizza night' }))], B.ledgerLog, { statements: sts });
   eq(c6Both(x, A6, B6).set.x.statementId, 'st-2', 'the standing statement');
   eq(c6Both(x, B6, A6).set.x.statementId, 'st-2', 'the standing statement, the other way');
+  // Security review of C6 (F9) — and who ticked it, and when, from the copy on that statement.
+  const A8 = c6Rec([C6_ROW(Object.assign({}, ticked, { statementId: 'st-1', approvedBy: 'Alex', approvedAt: '2026-09-29T10:00:00.000Z', reconciledAt: 1780000000000 }))],
+    base.concat([c6Ev('a1', 'tick', 'x', 2)]), { statements: sts });
+  const B8 = c6Rec([C6_ROW(Object.assign({}, ticked, { statementId: 'st-2', approvedBy: 'Sam', approvedAt: '2026-10-04T10:00:00.000Z', reconciledAt: 1790000000000 }))],
+    base, { statements: sts });
+  const r8 = c6Both(x, A8, B8).set.x;
+  eq([r8.statementId, r8.approvedBy, r8.approvedAt, r8.reconciledAt], ['st-2', 'Sam', '2026-10-04T10:00:00.000Z', 1790000000000], 'the stamps of the statement kept');
 });
 
 test('C6: money changed on one device while the other locked the entry is asked about, the whole entry either way; a label under a lock is not', () => {
@@ -23954,12 +23961,13 @@ test('C6: money changed on one device while the other locked the entry is asked 
   const A6 = c6Rec([C6_ROW({ ref: '7', reconciled: true })], base.concat([c6Ev('a1', 'edit', 'x', 2, { f: { reconciled: [false, true] } })]), book('2026-08-31'));
   r = c6Both(x, A6, B5);
   eq([r.conflicts, r.set.x.description, r.set.x.reconciled], [[], 'Pizza night', true], 'an edit of the tick');
-  // Both ticked it; the earlier tick is on the copy without the statement: the statement is kept.
+  // Both ticked it; the earlier tick is on the copy without the statement: the statement is kept, and
+  // (security review of C6, F9) who ticked it with it, from the same copy: never Sam's tick on Pat's statement.
   const sts = [{ id: 'st-1', date: '2026-09-30', ticked: ['x'], by: 'Pat', at: '2026-10-02T10:00:00.000Z' }];
   const A7 = c6Rec([C6_ROW({ ref: '7', reconciled: true, approvedBy: 'Pat', reconciledAt: 1790000000000, statementId: 'st-1' })], base.concat([c6Ev('a1', 'tick', 'x', 2)]), { statements: sts });
   const B7 = c6Rec([C6_ROW({ ref: '7', reconciled: true, approvedBy: 'Sam', reconciledAt: 1780000000000 })], base.concat([c6Ev('b1', 'tick', 'x', 2)]));
   r = c6Both(x, A7, B7);
-  eq([r.set.x.approvedBy, r.set.x.statementId], ['Sam', 'st-1'], 'the earlier tick, and the statement');
+  eq([r.set.x.approvedBy, r.set.x.reconciledAt, r.set.x.statementId], ['Pat', 1790000000000, 'st-1'], 'the statement’s tick, and the statement');
 });
 
 test('C6: a backup restored changed every entry; who entered an entry is never asked about; the reverse marks follow the reversal that counts', () => {
