@@ -25104,19 +25104,28 @@ test('Decision 23: a charge forgiven on another device but not on this one is na
   eq(b.get('sync.lookNotes'), [note], 'said twice');
   // Security re-check of C6 (N3) — and the change history keeps it, once, against the charge: what the
   // forgiveness was (no email), and why it went.
-  const lost = (st) => st.ledgerLog.filter((e) => e.row === st.charges[0].id).map((e) => [e.op, e.f, e.why]);
+  // (Quick check of N1–N5, 4: against 'charge:' and its id, never the bare id a ledger row could have too.)
+  const lost = (st) => st.ledgerLog.filter((e) => e.row === 'charge:' + st.charges[0].id).map((e) => [e.op, e.f, e.why]);
   const why = 'Forgiven on another device. That forgiveness was not kept when this device saved.';
   const was = 'Forgiven on Oct 1, 2026, agreed by Committee, recorded by Pat: Hardship';
   eq([lost(b.get('state')), lost(server())], [[['edit', { forgiven: [was, null] }, why]], [['edit', { forgiven: [was, null] }, why]]], 'the history');
   // After a reload (the record as saved, read fresh: the session's note is gone), the change history
   // still names the family and the charge.
   const rl = vm.createContext({});
-  vm.runInContext(`${[...new Set([...NORMALIZE_FNS, ...declClosure(['ledgerLogCsv', 'ledgerEntryLabel', 'ledgerLogNames', 'chargeLookName'],
+  vm.runInContext(`${[...new Set([...NORMALIZE_FNS, ...declClosure(['ledgerLogCsv', 'ledgerEntryLabel', 'ledgerLogNames', 'chargeLookName', 'ledgerRowHistory'],
     ['state', 'ui', 'sync', 'render', 'save', 'showToast', 'uid', 'todayISO', 'commit', 'scheduleSyncPush'])])].map(decl).join('\n')}
     var state = normalizeState(${JSON.stringify(server())});`, rl);
   const csv = vm.runInContext('ledgerLogCsv(state.ledgerLog, ledgerEntryLabel, ledgerLogNames())', rl).split('\n');
   eq(csv.filter((l) => l.indexOf('forgiven') !== -1).map((l) => l.split(',').slice(2).join(',')),
     ['Ada and Bo’s “Dues” charge,Changed: forgiven,"' + was + '",(none),' + why], 'the change history after a reload');
+  // Quick check of N1–N5 (4) — a ledger entry with the charge's id: the event is not its history, nor a
+  // change to its content for the merge, and the entry is named as itself.
+  vm.runInContext("state.ledger.push({ id: state.charges[0].id, date: '2026-09-10', description: 'Pizza', amountCents: 4000, direction: 'out' });", rl);
+  eq(vm.runInContext("[ledgerRowHistory(state.ledgerLog, state.charges[0].id).length, ledgerEntryLabel(state.charges[0].id), ledgerEntryLabel('charge:' + state.charges[0].id)]", rl),
+    [0, 'Pizza · Sep 10 · −$40.00', 'Ada and Bo’s “Dues” charge'], 'an entry with the charge’s id');
+  const px = sandbox(['LEDGER_TICK_FIELDS', 'LEDGER_OFF_FIELDS', 'LEDGER_ENTERED_FIELDS', 'ledgerFieldPart', 'LEDGER_OPS', 'ledgerEventParts']);
+  const fgEv = server().ledgerLog.filter((e) => e.why === why)[0];
+  eq(JSON.parse(JSON.stringify(px.ledgerEventParts(fgEv, server().charges[0].id))), {}, 'the merge reads it as a change to the entry');
   // Named for a leader only: the parent view never carries it (the card is Money · Ledger's).
   ok(!/chargesForgivenThere|chargeLookName|lookNotes|chargeForgivenSummary|ledgerLog/.test(codeOnly(BPV())), 'buildParentView reads it');
 });
