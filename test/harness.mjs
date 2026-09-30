@@ -18344,7 +18344,7 @@ const C2_FNS = ['fmt', 'fmtDate', 'fmtDateShort', 'toCents', 'toCentsSigned', 'e
   'ledgerDraftDefault', 'ledgerDraft', 'arm', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays', 'ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept', 'keepLostVoids', 'ledgerPairCheck',
   // Phase 3, C5 — Mark reconciled writes the statement.
   'statementNew', 'statementInForce', 'statementReopened', 'statementReviewed', 'statementAdded', 'statementOnceGroups', 'statementPairMerge', 'mergeStatements',
-  'statementLockBack', 'statementBefore', 'statementLockForward', 'entrySignedCents', 'carriedRowsOf', 'carriedRowFixed'];
+  'statementLockBack', 'statementBefore', 'statementLockForward', 'entrySignedCents', 'carriedRowsOf', 'carriedRowFixed', 'CARRIED_TICK_FIXED'];
 // The book is reconciled through Aug 31 from a Jul 1 opening. u1 is open; r1 is ticked (after the
 // period); p1 is dated in the period, not ticked; q1 is ticked in the period by a page from before
 // any stamps; pre is before the opening date; m1 is a tier make-up in the period.
@@ -23037,7 +23037,7 @@ atest('C5, api: a statement signed on one device survives another’s save, and 
 });
 
 // Phase 3, C5 — the statements card and the printout, on a sandbox of the page's own renderers.
-const C5_VIEW_FNS = ['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'fmtDateYear', 'statementDay', 'statementByOn', 'statementLegacyLine', 'statementSheetData',
+const C5_VIEW_FNS = ['carriedYearsText', 'esc', 'fmt', 'fmtDate', 'fmtDateShort', 'fmtDateYear', 'statementDay', 'statementByOn', 'statementLegacyLine', 'statementSheetData',
   'statementReopened', 'statementReviewed', 'statementAdded', 'entrySignedCents', 'statementsCardHtml', 'statementBlockHtml', 'renderBankStatementSheet',
   'statementButtonsHtml', 'statementReviewRefusal', 'ledgerActorName', 'statementReopenRefusal', 'statementReopenNote', 'statementBefore', 'LEDGER_VOID_REASON_MAX',
   'statementReviewer', 'statementAwaitsReview', 'fmtDateShortYear', 'isoPlusDays', 'closedBookRows', 'arrOf'];
@@ -23064,7 +23064,7 @@ const c5Text = (html) => html.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').r
 // Sep 30 as signed since the C5 review (treasurer 4): r1 +$25 on it; u1 $84 out outstanding; nothing in.
 const C5_SEP_SIGNED = () => Object.assign(C5_SEP(), { tickedCents: 2500, outInCents: 0, outOutCents: 8400, openingDate: '2026-07-01' });
 test('C5: the printout adds up — from the figures signed with it, the outstanding split in and out, and each list as it reads now', () => {
-  const x = sandbox(['statementSheetData', 'entrySignedCents', 'isoPlusDays']);
+  const x = sandbox(['statementSheetData', 'entrySignedCents', 'isoPlusDays', 'carriedYearsText']);
   const rows = C2_LEDGER().concat([{ id: 'v9', off: 'void', date: '2026-09-02', description: 'Typo', amountCents: 100, direction: 'in' },
     { id: 'old1', date: '2026-06-25', description: 'Check 99', amountCents: 700, direction: 'out' }, { id: 'dep', date: '2026-09-29', description: 'Deposit', amountCents: 900, direction: 'in' }]);
   const d = JSON.parse(JSON.stringify(x.statementSheetData(Object.assign(C5_SEP_SIGNED(), { ticked: ['r1', 'v9', 'gone'], outstanding: ['u1', 'old1', 'dep', 'gone2'] }), rows)));
@@ -26435,7 +26435,7 @@ test('C8-3: the ticked balance allows for the carried rows the bank has not show
 });
 
 test('C8-3: Mark reconciled writes the statement with the carried rows in it: signed offset, outstanding and cleared, and the printout adds up', () => {
-  const x = sandbox(['statementNew', 'statementSheetData', 'carriedRowsOf', 'statementReopened', 'entryAfterOpening', 'entryOnStatement', 'entrySignedCents', 'ledgerStampClean', 'isoPlusDays']);
+  const x = sandbox(['statementNew', 'statementSheetData', 'carriedRowsOf', 'statementReopened', 'entryAfterOpening', 'entryOnStatement', 'entrySignedCents', 'ledgerStampClean', 'isoPlusDays', 'carriedYearsText']);
   const nw = c8New(), b = c8rec(x, nw, ['co-c', 'f'], 87300);
   const n = J(x.statementNew(b.ledger, b.book, [], { by: 'Pat', byUid: 'u1', at: '2027-08-01T10:00:00.000Z' }, 'st-1', b.aside));
   const st = n.statement;
@@ -26445,8 +26445,10 @@ test('C8-3: Mark reconciled writes the statement with the carried rows in it: si
   eq(st.statementCents + st.outInCents - st.outOutCents, st.bookCents, 'statement + deposits not yet in − payments not yet out = the book');
   // The printout: what was cleared before is nothing, the carried row is named, and the lines add up to the ticked balance.
   const all = b.ledger.concat(b.aside), d = J(x.statementSheetData(st, all));
-  eq([d.earlierCents, d.tickedCents, d.differenceCents, d.carried.map((l) => [l.id, l.what, l.cents])], [0, -700, 0, [['co-c', 'Row c (carried from 2026)', -15000]]], 'the printout’s figures');
-  eq(d.deposits.map((l) => l.what), ['Row d (carried from 2026)'], 'the carried deposit still out is listed with the deposits');
+  eq([d.earlierCents, d.tickedCents, d.differenceCents, d.carried.map((l) => [l.id, l.what, l.carried, l.cents])], [0, -700, 0, [['co-c', 'Row c', '2026–27', -15000]]], 'the printout’s figures');
+  // The carried row says so in a flag of its own, not in the description the printout would have to read back (treasurer review of C8-1..4).
+  eq(d.deposits.map((l) => [l.what, l.carried]), [['Row d', '2026–27']], 'the carried deposit still out is listed with the deposits, flagged');
+  eq(d.ticked.map((l) => l.carried), [''], 'a row of this year is not');
   eq(st.openingCents + d.earlierCents + d.tickedCents - st.carriedOutCents, st.clearedCents, 'opening + earlier + ticked − carried offset = the ticked balance');
   // The next statement (Aug 31): co-c is on the standing July one and is left alone; co-d is outstanding again.
   const rows = b.aside.map((e) => (e.id === 'co-c' ? Object.assign({}, e, { statementId: 'st-1' }) : e));
@@ -26484,6 +26486,7 @@ test('C8-3: a carried row is ticked and un-ticked on the Reconcile screen, logge
   // Cleared on a statement still standing: its tick stays, and the leader is told. Reopened, it can come off.
   p.run("change('led-rec', 'co-c', '', true); state.ledgerAside.forEach(function (e) { if (e.id === 'co-c') e.statementId = 'st-1'; }); state.statements = [{ id: 'st-1', date: '2027-07-31' }]; toasts = []; commits = 0; log().length = 0; change('led-rec', 'co-c', '', false)");
   eq([co().reconciled, p.get('commits'), p.get('log().length'), p.get('toasts.length')], [true, 0, 0, 1], 'fixed on a standing statement');
+  eq(p.get('toasts[0]'), 'That entry is already on a reconciled statement, so its tick can’t be taken off. To change it, reopen that statement first.', 'the treasurer’s words');
   p.run("state.statements = [{ id: 'st-1', date: '2027-07-31', reopenedAt: '2027-08-09T00:00:00.000Z' }]; change('led-rec', 'co-c', '', false)");
   eq([co().reconciled, p.get('commits')], [false, 1], 'the statement reopened: it can come off');
   // A row that is not there is no change.
@@ -26515,11 +26518,15 @@ test('C8-3: the Reconcile screen lists the carried rows under their own heading,
     function todayISO() { return '2027-09-15'; }`, x);
   const text = (h) => h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   const rc = x.renderReconcile(), t = text(rc);
-  ok(t.includes('2 entries from 2026–27 are still waiting to show on the bank statement, and are already in the opening balance. The ticked balance allows for them until you tick them below.'), 'the sentence: ' + t);
+  ok(t.includes('2 entries from 2026–27 had not shown on the bank statement when the year was closed out. They are already in the opening balance. The ticked balance allows for them until you tick them below.'), 'the sentence: ' + t);
+  // One left: the singular says "It" and "it".
+  vm.runInContext("state.ledgerAside.forEach(function (e) { if (e.id === 'co-c') e.reconciled = true; });", x);
+  ok(text(x.renderReconcile()).includes('1 entry from 2026–27 had not shown on the bank statement when the year was closed out. It is already in the opening balance. The ticked balance allows for it until you tick it below.'), 'the singular');
+  vm.runInContext("state.ledgerAside.forEach(function (e) { if (e.id === 'co-c') e.reconciled = false; });", x);
   ok(/<p class="eyebrow"[^>]*>Carried from 2026–27<\/p>/.test(rc), 'the heading');
   const ids = [...rc.matchAll(/data-ch="led-rec" data-id="([^"]*)"/g)].map((m) => m[1]);
   eq(ids, ['f', 'co-d', 'co-c'], 'the counted rows on the statement (g, Aug 15, waits), then the carried ones, newest first');
-  ok(/aria-label="Carried from 2026–27, ticked against the statement: Row c, money out \$150\.00"/.test(rc), 'the carried row’s accessible name');
+  ok(/aria-label="Carried from 2026–27: Row c, money out \$150\.00\. Tick when it is on the bank statement\."/.test(rc), 'the carried row’s accessible name');
   eq([/Ticked balance/.test(rc), />\$1,030\.00<\/span><span class="l">Ticked balance/.test(rc), />\$0\.00<\/span><span class="l">Difference/.test(rc)], [true, true, true], 'the figures: $1,030.00 ticked balance, difference $0.00');
   // Only carried rows to tick: the list is not "Nothing to reconcile yet".
   vm.runInContext("state.ledger = [];", x);
@@ -26527,6 +26534,7 @@ test('C8-3: the Reconcile screen lists the carried rows under their own heading,
   // Entries: its own block, after the list, read-only, and each row says whether the bank has shown it.
   const blk = x.carriedBlockHtml(), bt = text(blk);
   ok(bt.includes('Carried from 2026–27') && bt.includes('Row c') && bt.includes('not yet cleared') && !/<input/.test(blk), 'the Entries block: ' + bt);
+  ok(bt.includes('Entered in an earlier year, and not on a bank statement when that year was closed out. They are already in this year’s opening balance, so they are not counted again. Tick them on the Reconcile screen when they clear.'), 'the Entries intro: ' + bt);
   vm.runInContext("state.ledgerAside.forEach(function (e) { if (e.id === 'co-c') e.reconciled = true; });", x);
   ok(/cleared<\/span>/.test(x.carriedBlockHtml()), 'and cleared once ticked');
   vm.runInContext("state.ledgerAside = [];", x);
@@ -26547,7 +26555,9 @@ test('C8-3: Mark reconciled and the restore read the carried rows; the printout 
     { year: 2025, form: 'compact', ledger: [{ i: 'b', d: '2026-01-01', c: -300, t: 'Fee', r: '12' }, { i: 'c', d: '2026-01-02', c: 200, t: 'Dues' }] }]));
   eq(out.map((e) => [e.id, e.direction, e.amountCents]), [['a', 'out', 5], ['b', 'out', 300], ['c', 'in', 200]], 'rows of both forms');
   ok(/statementSheetData\(st, state\.ledger\.concat\(state\.ledgerAside \|\| \[\], closedBookRows\(state\.closedBooks\)\)\)/.test(slice('renderBankStatementSheet')), 'the printout names entries in closed books');
-  ok(/'± Carried from last year, not yet on the statement/.test(slice('renderBankStatementSheet')), 'the carried line on the printout');
+  ok(/'± Carried from last year, not yet on the statement, net \(' \+ carriedN \+ '\)'/.test(slice('renderBankStatementSheet')), 'the carried line on the printout, the net line');
+  ok(/esc\(l\.what \+ \(l\.carried \? ' \(carried from ' \+ l\.carried \+ '\)' : ''\)/.test(slice('renderBankStatementSheet')) && /filter\(function \(l\) \{ return !!l\.carried; \}\)/.test(slice('renderBankStatementSheet')),
+    'the row suffix and the count come from the flag, not from reading the description');
   ok(/renderLedgerEntries\(\) \+ carriedBlockHtml\(\)/.test(slice('renderLedger')), 'the Entries view shows the carried block');
   // The page still parses as a whole.
   new vm.Script(SCRIPT);
@@ -26632,7 +26642,7 @@ test('C8-4: keeping this device’s copy over a close-out is an admin’s when t
   const mine = Object.assign(J(seed), { closedBooks: [] }), cloud = Object.assign(J(seed), { budget: Object.assign({}, seed.budget, { programYear: 2027 }), closedBooks: [C8_BOOK_OF(2026, 'arc-x')] });
   const t = chooserHtml(mine, cloud).html.replace(/<[^>]+>/g, '');
   ok(t.includes('The cloud copy has the 2026–27 close-out, and this device does not. Keeping this device’s copy undoes that close-out for everyone: the year’s closed book (its entries, statements and change history) ' +
-    'is removed from the pack record, and the year is open again. Only an admin can do it. Download the cloud copy first, and keep the snapshot the close-out downloaded.'), 'the words: ' + t);
+    'is removed from the pack record, and the year is open again. Only a pack admin can do this. Download the cloud copy first.'), 'the words: ' + t);
   ok(!/undoes that close-out/.test(chooserHtml(cloud, cloud).html), 'nothing lost');
   ok(!/undoes that close-out/.test(chooserHtml(cloud, mine).html), 'the cloud holds no closed book this device lacks');
 });
@@ -26683,14 +26693,14 @@ test('C8-4: restoring a backup keeps this device’s closed books; from before a
   // …and "The ledger needs a look" says so, for as long as it is true.
   const look = sandbox(['fmt', 'ledgerPairOf', 'ledgerLiveReversals', 'ledgerLookNotes', ...LOOK_WORD_FNS]);
   eq(J(look.ledgerLookNotes([], { year: 2025 }, [C8_BOOK_OF(2025, 'here-25')])),
-    ['The 2025–26 year was closed out, but this book is for 2025–26 too. That happens when a backup from before the close-out is restored. The closed 2025–26 book is kept, and closing out 2025–26 again ' +
-     'replaces it. Anything entered since that close-out needs entering again.'], 'the note');
+    ['The 2025–26 year was closed out, but this book is open for 2025–26 again. This happens when a backup from before the close-out is restored, or when an out-of-date copy is kept. The closed 2025–26 book ' +
+     'is still held, and closing out 2025–26 again replaces it. Anything entered since the first close-out needs entering again.'], 'the note');
   eq([look.ledgerLookNotes([], { year: 2026 }, [C8_BOOK_OF(2025, 'here-25')]).length, look.ledgerLookNotes([], { year: 2025 }).length], [0, 0], 'a book a year on, and no books given');
   // The question says it first, for an admin about to restore.
   const x = sandbox(['importClosedBooksHtml', 'closedBooksUndone', 'closedYearText', 'arrOf', 'esc']);
   const w = x.importClosedBooksHtml([C8_BOOK_OF(2025, 'a')], { book: { year: 2025 } }).replace(/<[^>]+>/g, '');
   eq(w, 'This backup is from before the 2025–26 close-out. Restoring it opens the 2025–26 book again, as it was when the backup was made. Everything entered since is lost, including the new year’s entries ' +
-    'and statements. The closed 2025–26 book on this device is kept, and closing the year out again replaces it. Download a backup of this device first.', 'the warning');
+    'and statements. This device’s closed 2025–26 book is kept until you close the year out again, which replaces it. Download a backup of this device first.', 'the warning');
   eq([x.importClosedBooksHtml([C8_BOOK_OF(2025, 'a')], { book: { year: 2026 } }), x.importClosedBooksHtml([], { book: { year: 2025 } })], ['', ''], 'none when nothing is undone');
   ok(/importBookYearHtml\(state\.book, state\.statements, o\.data\) \+\s*importClosedBooksHtml\(state\.closedBooks, o\.data\) \+/.test(SCRIPT), 'the question shows it');
 });

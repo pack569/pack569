@@ -8210,9 +8210,9 @@
     });
     arrOf(closedBooks).forEach(function (b) {
       if (!b || typeof b.year !== 'number' || !book || typeof book.year !== 'number' || b.year < book.year) return;
-      out.push('The ' + closedYearText(b.year) + ' year was closed out, but this book is for ' + closedYearText(book.year) + ' too. That happens when a backup from before the ' +
-        'close-out is restored. The closed ' + closedYearText(b.year) + ' book is kept, and closing out ' + closedYearText(book.year) + ' again replaces it. ' +
-        'Anything entered since that close-out needs entering again.');
+      out.push('The ' + closedYearText(b.year) + ' year was closed out, but this book is open for ' + closedYearText(book.year) + ' again. This happens when a backup from before the ' +
+        'close-out is restored, or when an out-of-date copy is kept. The closed ' + closedYearText(b.year) + ' book is still held, and closing out ' + closedYearText(book.year) + ' again replaces it. ' +
+        'Anything entered since the first close-out needs entering again.');
     });
     return out;
   }
@@ -10150,8 +10150,10 @@
     function line(id, out) {
       var e = byId[id];
       if (!e) return { id: id, date: '', what: 'An entry since removed from the book' + (out ? ' (not known whether a deposit or a payment)' : ''), ref: '', cents: null, dir: '' };
-      return { id: id, date: String(e.date || ''), what: (e.description || '(no description)') + (e.off === 'void' ? ' (voided since)' : '') +
-          (e.off === 'carried' ? ' (carried from ' + (e.carriedFrom ? e.carriedFrom.year : 'last year') + ')' : ''),
+      // A row carried from last year says so in `carried` (the program years it came from, as carriedYearsText says them), not in
+      // `what`: the printout adds "(carried from 2026–27)" from it, and counts the rows, without reading the description.
+      return { id: id, date: String(e.date || ''), what: (e.description || '(no description)') + (e.off === 'void' ? ' (voided since)' : ''),
+        carried: e.off === 'carried' ? carriedYearsText([e]) : '',
         ref: String(e.ref || ''), cents: entrySignedCents(e), dir: e.direction === 'in' ? 'in' : 'out' };
     }
     function lines(ids, out) {
@@ -16318,7 +16320,7 @@
     var names = lost.map(function (b) { return closedYearText(b.year); }).join(' and ');
     return '<div class="warn" style="margin:0 0 10px"><p class="small" style="margin:0"><strong>The cloud copy has the ' + esc(names) + ' close-out, and this device does not.</strong> ' +
       'Keeping this device’s copy undoes that close-out for everyone: the year’s closed book (its entries, statements and change history) is removed from the pack record, ' +
-      'and the year is open again. Only an admin can do it. Download the cloud copy first, and keep the snapshot the close-out downloaded.</p></div>';
+      'and the year is open again. Only a pack admin can do this. Download the cloud copy first.</p></div>';
   }
   // Security review of C8-1..4 (M4) — the other way round: this device holds a closed book the cloud copy does not, and
   // using the cloud copy removes it from this device. '' when there is none. Two taps are asked for anyway. Pure.
@@ -22830,7 +22832,7 @@
       var h = '<p class="eyebrow" style="margin-top:16px">' + esc(cap) + '</p><div class="tbl-wrap"><table><caption class="visually-hidden">' + esc(cap) + '</caption>' +
         '<thead><tr><th scope="col">Date</th><th scope="col">Entry</th><th scope="col">Ref</th><th scope="col" class="num">Amount</th></tr></thead><tbody>' +
         (lines.length ? lines.map(function (l) {
-          return '<tr><td>' + esc(l.date ? fmtDateShort(l.date) : '') + '</td><td style="white-space:normal">' + esc(l.what + (l.old ? ' (over 90 days: follow up)' : '')) + '</td><td>' + esc(l.ref) + '</td>' +
+          return '<tr><td>' + esc(l.date ? fmtDateShort(l.date) : '') + '</td><td style="white-space:normal">' + esc(l.what + (l.carried ? ' (carried from ' + l.carried + ')' : '') + (l.old ? ' (over 90 days: follow up)' : '')) + '</td><td>' + esc(l.ref) + '</td>' +
             // "amount not known" wraps, like the words beside it: at 390 px, unwrapped, it pushed the table off the screen.
             (l.cents === null ? '<td class="num" style="white-space:normal">amount not known' : '<td class="num">' + money(l.cents, true)) + '</td></tr>';
         }).join('') : '<tr><td colspan="4" class="muted">None</td></tr>') +
@@ -22858,13 +22860,13 @@
       h += '<p>' + esc(statementLegacyLine(st)) + '</p><p class="small muted">Which entries were ticked on it wasn’t recorded either.</p>';
     } else {
       var n = d.ticked ? d.ticked.length : 0, nIn = d.deposits ? d.deposits.length : 0, nOut = d.payments ? d.payments.length : 0;
-      var carriedN = (d.deposits || []).concat(d.payments || []).filter(function (l) { return /\(carried from /.test(l.what); }).length;
+      var carriedN = (d.deposits || []).concat(d.payments || []).filter(function (l) { return !!l.carried; }).length;
       h += '<div class="tbl-wrap"><table><caption class="visually-hidden">Reconciliation</caption><tbody>' +
         tr('Book opening balance' + (st.openingDate ? ' (' + fmtDateShortYear(st.openingDate) + ')' : ''), typeof st.openingCents === 'number' ? st.openingCents : null) +
         tr('+ Cleared on earlier statements', d.earlierCents) +
         tr('+ Cleared on this statement (' + n + ')', d.tickedCents) +
         // Phase 3, C8 (C8-3) — what was carried from last year and the bank had not shown yet.
-        (typeof st.carriedOutCents === 'number' ? tr('± Carried from last year, not yet on the statement (' + carriedN + ')', -st.carriedOutCents) : '') +
+        (typeof st.carriedOutCents === 'number' ? tr('± Carried from last year, not yet on the statement, net (' + carriedN + ')', -st.carriedOutCents) : '') +
         tr('= Ticked balance', typeof st.clearedCents === 'number' ? st.clearedCents : null, true) +
         tr('Bank statement ending balance', typeof st.statementCents === 'number' ? st.statementCents : null, true) +
         tr('Difference: bank less ticked (must be ' + fmt(0) + ')', d.differenceCents, true) +
@@ -23021,8 +23023,8 @@
         var cWho = e.description || '(no description)';
         h += '<label class="lrow entry rec-row' + (e.direction === 'in' ? ' in' : '') + '">' +
           '<input type="checkbox" data-ch="led-rec" data-id="' + esc(e.id) + '"' + (e.reconciled ? ' checked' : '') +
-            ' aria-label="Carried from ' + esc(carriedYearsText([e])) + ', ticked against the statement: ' + esc(cWho) + ', ' +
-            (e.direction === 'in' ? 'money in ' : 'money out ') + fmt(e.amountCents) + '">' +
+            ' aria-label="Carried from ' + esc(carriedYearsText([e])) + ': ' + esc(cWho) + ', ' +
+            (e.direction === 'in' ? 'money in ' : 'money out ') + fmt(e.amountCents) + '. Tick when it is on the bank statement.">' +
           '<span class="small muted rec-when">' + esc(fmtDateShort(e.date)) + '</span>' +
           '<span class="lname small">' + esc(cWho) + '</span>' +
           (e.ref ? '<span class="small muted rec-ref">#' + esc(e.ref) + '</span>' : '') +
@@ -23044,20 +23046,22 @@
     if (!ys.length) return 'last year';
     return ys.map(function (y) { return y + '–' + String(y + 1).slice(2); }).join(' and ');
   }
+  var CARRIED_TICK_FIXED = 'That entry is already on a reconciled statement, so its tick can’t be taken off. To change it, reopen that statement first.';
   var RECONCILE_CARRIED_HELP = 'Checks and deposits the bank had not shown when the year closed. They are already in the opening balance, so they are not counted again. Tick each one when it appears on a statement.';
-  // One sentence for the Reconcile screen: how many are waiting, and what that does to the ticked balance.
+  // One sentence for the Reconcile screen: how many are waiting, and what that does to the ticked balance. The treasurer's words
+  // (review of C8-1..4), singular and plural.
   function reconcileCarriedLine(rec, aside) {
-    var n = rec.carriedOpen, these = n === 1 ? 'it' : 'them';
-    return n + (n === 1 ? ' entry' : ' entries') + ' from ' + carriedYearsText(carriedRowsOf(aside).filter(function (e) { return e.reconciled !== true; })) +
-      (n === 1 ? ' is' : ' are') + ' still waiting to show on the bank statement, and ' + (n === 1 ? 'is' : 'are') + ' already in the opening balance. The ticked balance allows for ' + these +
-      ' until you tick ' + these + ' below.';
+    var n = rec.carriedOpen, from = carriedYearsText(carriedRowsOf(aside).filter(function (e) { return e.reconciled !== true; }));
+    return n === 1
+      ? '1 entry from ' + from + ' had not shown on the bank statement when the year was closed out. It is already in the opening balance. The ticked balance allows for it until you tick it below.'
+      : n + ' entries from ' + from + ' had not shown on the bank statement when the year was closed out. They are already in the opening balance. The ticked balance allows for them until you tick them below.';
   }
   // Phase 3, C8 (C8-3) — the Entries view's block for them: what they are, and whether the bank has shown each. Read-only.
   function carriedBlockHtml() {
     var rows = ledgerSort(carriedRowsOf(state.ledgerAside));
     if (!rows.length) return '';
     var h = '<div class="card"><h2 class="section display">Carried from ' + esc(carriedYearsText(rows)) + '</h2>' +
-      '<p class="small muted" style="margin:0 0 8px">Entered in an earlier year, and not on a bank statement when it closed. They are already in this year’s opening balance, so they are not counted again. ' +
+      '<p class="small muted" style="margin:0 0 8px">Entered in an earlier year, and not on a bank statement when that year was closed out. They are already in this year’s opening balance, so they are not counted again. ' +
       'Tick them on the Reconcile screen when they clear.</p>';
     rows.reverse().forEach(function (e) {
       h += '<div class="lrow entry' + (e.direction === 'in' ? ' in' : '') + '">' +
@@ -28625,7 +28629,7 @@
     var names = years.map(closedYearText).join(' and ');
     return '<div class="warn" style="margin:0 0 10px"><p class="small" style="margin:0"><strong>This backup is from before the ' + esc(names) + ' close-out.</strong> ' +
       'Restoring it opens the ' + esc(names) + ' book again, as it was when the backup was made. Everything entered since is lost, including the new year’s entries and statements. ' +
-      'The closed ' + esc(names) + ' book on this device is kept, and closing the year out again replaces it. Download a backup of this device first.</p></div>';
+      'This device’s closed ' + esc(names) + ' book is kept until you close the year out again, which replaces it. Download a backup of this device first.</p></div>';
   }
   function importBookYearHtml(book, statements, rec) {
     var there = rec && rec.book;
@@ -33851,7 +33855,7 @@
       if (!led && ch === 'led-rec') {
         var cr = carriedRowsOf(state.ledgerAside).filter(function (e) { return e.id === el.dataset.id; })[0];
         if (!cr) return;
-        if (carriedRowFixed(cr, state.statements)) { showToast('That entry is already on a reconciled statement, so its tick can’t be taken off.'); render(); return; }
+        if (carriedRowFixed(cr, state.statements)) { showToast(CARRIED_TICK_FIXED); render(); return; }
         if (cr.reconciled === el.checked) return;
         stampApproved(cr, el.checked);
         cr.reconciled = el.checked;
