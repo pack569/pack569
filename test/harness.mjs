@@ -18964,7 +18964,10 @@ const C3_READERS = {
   statementNew: (L, x, c) => x.statementNew(L, c.book, c.book.reconciledThrough
     ? [{ id: 'st-prev', date: c.book.reconciledThrough, ticked: ['e1'], at: '2026-09-02T00:00:00.000Z' }] : [], { by: 'Pat', byUid: 'u1', at: 'T' }, 'st-x'),
   // Treasurer review of C5 (2) — the opening balance, locked while any counted entry is ticked.
-  openingLockedWhy: (L, x, c) => x.openingLockedWhy(c.book, L)
+  openingLockedWhy: (L, x, c) => x.openingLockedWhy(c.book, L),
+  // Phase 3, C8 — the close-out's split at the cutoff and the balance it carries (closeoutCutoff's year end).
+  closeoutSplit: (L, x) => { const s = x.closeoutSplit(L, '2026-10-31'); return [s.closed.map((e) => e.id), s.open.map((e) => e.id)]; },
+  closingBalanceAt: (L, x, c) => x.closingBalanceAt(L, c.book, '2026-10-31')
 };
 // What those readers need besides themselves.
 const READER_DEPS = ['fmt', 'ledgerLogWhen', 'ledgerCsvCell', 'ledgerPairRole', 'ledgerReplacementId', 'ledgerReplacementFor',
@@ -18975,7 +18978,7 @@ const READER_DEPS = ['fmt', 'ledgerLogWhen', 'ledgerCsvCell', 'ledgerPairRole', 
 // the entry deleted (when the entry is after the opening date: its reversal, dated the day it was
 // made, always is). Every other reader is the entry deleted outright.
 const C4_LISTING_READERS = ['ledgerBalance', 'ledgerSort', 'ledgerTotals', 'reconcileTotals', 'reconcileStale', 'runningBalances', 'seasonLedgerRows', 'ledgerUnpaired',
-  'ledgerPairOf', 'ledgerVoidedCsv', 'ledgerReversalName', 'statementNew', 'openingLockedWhy'];
+  'ledgerPairOf', 'ledgerVoidedCsv', 'ledgerReversalName', 'statementNew', 'openingLockedWhy', 'closeoutSplit', 'closingBalanceAt'];
 const C3_STATE_READERS = {
   tierMakeupMap: (x) => x.tierMakeupMap(),
   tierMakeupPaidCents: (x) => [['t1', 's1'], ['t1', 's2'], ['t2', 's3']].map(([t, s]) => x.tierMakeupPaidCents(t, s))
@@ -19051,7 +19054,8 @@ test('C3: nothing outside the book’s own plumbing reads the voided rows, so no
   // change history or the entry chooser; they total nothing.
   // Phase 3, C7 — scoutHasLedger and ledgerScoutsHeld ask whether any entry, voided or not, names a
   // scout; they total nothing.
-  eq([...users].sort(), ['applyLedgerMerge', 'dropScout', 'freshState', 'handleAction', 'isStateEmpty', 'keepLostVoids', 'ledgerAsideListHtml', 'ledgerAsideSettle', 'ledgerEntryLabel',
+  // Phase 3, C8 — closedBookBuild moves the voided rows to the year they were voided in (closed book or new book); it totals nothing from them.
+  eq([...users].sort(), ['applyLedgerMerge', 'closedBookBuild', 'dropScout', 'freshState', 'handleAction', 'isStateEmpty', 'keepLostVoids', 'ledgerAsideListHtml', 'ledgerAsideSettle', 'ledgerEntryLabel',
     'ledgerLogNames', 'ledgerReverseSlot', 'ledgerScoutsHeld', 'ledgerUnvoidRow',
     // Phase 3, C5 — renderBankStatementSheet names an entry on a statement voided since; it totals nothing from it.
     'ledgerVoidRow', 'mergeLedgerRows', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderBankStatementSheet', 'renderLedger', 'renderLedgerEntries', 'renderRowChooser', 'restoreGone',
