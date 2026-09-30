@@ -13905,7 +13905,8 @@
   // { id, parts, mine, theirs, mineBy, theirsBy, money, lock }: the parts in conflict, both rows, the
   // latest event behind each copy's change (null when nothing logged it), whether it is asked because
   // one copy changed its money while the other ticked or locked it (`money`), and the side a pick
-  // can't keep (`lock`: { side, kind, date }, pickLock; null when either can be kept).
+  // can't keep (`lock`: { side, kind, date }, pickLock; null when either can be kept, or side '' and
+  // kind 'both' when either can, but each is on a statement the other copy's version doesn't match).
   var LEDGER_TICK_FIELDS = ['reconciled', 'reconciledAt', 'approvedBy', 'approvedByUid', 'approvedAt', 'statementId'];
   var LEDGER_OFF_FIELDS = ['off', 'reversedBy', 'voidReason', 'voidedBy', 'voidedByUid', 'voidedAt'];
   var LEDGER_ENTERED_FIELDS = ['enteredBy', 'enteredByUid', 'enteredAt'];
@@ -14096,7 +14097,13 @@
     //   'pair' (F2): the side whose amount or direction its counted reversal (as the pick would leave
     //   the reverse marks) no longer mirrors, when only one is.
     // A tick alone, outside the period and on no statement, is not a lock: either can be kept.
+    // Security re-check of C6 (N1a) — locked on both, and both sides' events moved the money (or
+    // neither's did): either can be kept, and neither matches the other copy's statement. 'both', with
+    // no side ({ side: '', kind: 'both', date: the later, both: { mine, theirs }: each copy's lock date), so the
+    // chooser says so and the merge says it again once saved. A 'pair' lock, when there is one, comes
+    // first (it bars a side), carrying `both` too.
     function pickLock(id, mr, tr, how, parts, newM, newT) {
+      var both = null;
       if (LEDGER_MONEY_FIELDS.some(function (k) { return mr[k] !== tr[k]; })) {
         var lm = lockOver(M, mine, mr, T, theirs, tr, id), lt = lockOver(T, theirs, tr, M, mine, mr, id);
         if (lm && !lt) return { side: 'theirs', kind: lm.kind, date: lm.date };
@@ -14104,6 +14111,7 @@
         if (lm && lt) {
           var mvm = movedMoney(newM), mvt = movedMoney(newT);
           if (mvm !== mvt) return mvm ? { side: 'mine', kind: lt.kind, date: lt.date } : { side: 'theirs', kind: lm.kind, date: lm.date };
+          both = { mine: lm.date, theirs: lt.date };
         }
       }
       function broken(own) {
@@ -14115,8 +14123,8 @@
         });
       }
       var bm = broken(mr), bt = broken(tr);
-      if (bm !== bt) return { side: bm ? 'mine' : 'theirs', kind: 'pair', date: '' };
-      return null;
+      if (bm !== bt) return both ? { side: bm ? 'mine' : 'theirs', kind: 'pair', date: '', both: both } : { side: bm ? 'mine' : 'theirs', kind: 'pair', date: '' };
+      return both ? { side: '', kind: 'both', date: both.mine > both.theirs ? both.mine : both.theirs, both: both } : null;
     }
     var set = {}, found = [];
     Object.keys(M.rows).sort().forEach(function (id) {
@@ -14173,7 +14181,7 @@
       var money = how.content === 'money';
       if (money) { how.content = 'conflict'; how.tick = 'conflict'; }
       var parts = ['content', 'off', 'tick'].filter(function (p) { return how[p] === 'conflict'; });
-      var pick = picks[id] === 'mine' || picks[id] === 'theirs' ? picks[id] : '';
+      var pick = picks[id] === 'mine' || picks[id] === 'theirs' ? picks[id] : '', cpick = '';
       if (parts.length) {
         var lock = parts.indexOf('content') !== -1 ? pickLock(id, mr, tr, how, parts, newM, newT) : null;
         // Copies: the caller writes the settled rows over these very objects (applyLedgerMerge).
@@ -14184,6 +14192,7 @@
         // chooser doesn't offer it and saveRowChoices refuses it, and this is the last word.
         if (lock && pick === lock.side) pick = pick === 'mine' ? 'theirs' : 'mine';
         parts.forEach(function (p) { how[p] = pick; });
+        if (parts.indexOf('content') !== -1) cpick = pick;
       }
       // Who entered it (never changed once entered: two copies differ only when two devices made the
       // same row, a reverse made on both): the copy whose content is taken; with the content the same
@@ -14202,14 +14211,20 @@
       // Security review of C6 (F9) — ticked on both, on different statements (or on one only): who
       // ticked it, and when, come with the statement kept (below), from the same copy, so the entry
       // never says one leader ticked it on another leader's statement.
-      if (mr.reconciled === true && tr.reconciled === true) {
+      // Security re-check of C6 (N1b) — ticked on both, their money different, and the leader picked
+      // whose: who ticked it, when, and the statement come from that copy too, never the other copy's
+      // statement over this copy's money (that statement signed a different amount).
+      var cboth = !!cpick && mr.reconciled === true && tr.reconciled === true && LEDGER_MONEY_FIELDS.some(function (k) { return mr[k] !== tr[k]; });
+      if (cboth) { tw = cpick === 'mine' ? mr : tr; to = cpick === 'mine' ? tr : mr; }
+      else if (mr.reconciled === true && tr.reconciled === true) {
         var s1 = typeof tw.statementId === 'string' ? tw.statementId : '', s2 = typeof to.statementId === 'string' ? to.statementId : '';
         if (s2 && s1 !== s2 && (!s1 || (stRank[s2] || 0) > (stRank[s1] || 0))) { var sw = tw; tw = to; to = sw; }
       }
       take(out, 'tick', tw, to);
       // The statement it was cleared on: kept from either copy, while it is ticked. (Unticked, the
-      // copy above has left it with none: an untick takes it off.)
-      if (tw.reconciled === true) {
+      // copy above has left it with none: an untick takes it off.) N1b: the picked copy's, when it was.
+      if (cboth) out.statementId = typeof tw.statementId === 'string' && tw.statementId ? tw.statementId : undefined;
+      else if (tw.reconciled === true) {
         var sa = typeof tw.statementId === 'string' && tw.statementId ? tw.statementId : '', sb = typeof to.statementId === 'string' && to.statementId ? to.statementId : '';
         var sid = !sa ? sb : !sb || sa === sb ? sa : ((stRank[sa] || 0) >= (stRank[sb] || 0) ? sa : sb);
         out.statementId = sid || undefined;
@@ -14325,7 +14340,13 @@
         var pk = picks && (picks[r.id] === 'mine' || picks[r.id] === 'theirs') ? picks[r.id] : '';
         // (Security review of C6, F1a/F2 — the side kept, which is never the one a pick can't keep.)
         if (pk && r.lock && r.lock.side === pk) pk = pk === 'mine' ? 'theirs' : 'mine';
-        if (pk) logLedger('resolve', r.id, ledgerResolveMore(r, pk));
+        if (!pk) return;
+        logLedger('resolve', r.id, ledgerResolveMore(r, pk));
+        // Security re-check of C6 (N1c) — on two statements signed separately, with different money:
+        // whichever was kept, the other statement no longer matches it. Said on "The ledger needs a look".
+        if (Array.isArray(look) && r.lock && r.lock.both) {
+          look.push({ kind: 'twostatements', row: pk === 'mine' ? r.mine : r.theirs, kept: r.lock.both[pk], other: r.lock.both[pk === 'mine' ? 'theirs' : 'mine'] });
+        }
       });
     });
     var gone = state.gone && typeof state.gone === 'object' ? state.gone : null;
@@ -14737,16 +14758,28 @@
   function noteLedgerLookFromMerge(look) {
     var seen = sync.lookSeen || (sync.lookSeen = {}), notes = sync.lookNotes || (sync.lookNotes = []), n = 0;
     arrOf(look).forEach(function (it) {
-      var key = it && it.kind === 'voidtick' && it.row ? 'voidtick:' + it.row.id : it && it.kind === 'forgiven' && it.charge ? 'forgiven:' + it.charge.id : '';
+      var key = it && (it.kind === 'voidtick' || it.kind === 'twostatements') && it.row ? it.kind + ':' + it.row.id
+        : it && it.kind === 'forgiven' && it.charge ? 'forgiven:' + it.charge.id : '';
       if (!key || seen[key]) return;
       seen[key] = true;
       notes.push(it.kind === 'forgiven'
         ? chargeLookName(it.charge) + ' was forgiven on another device but not on this one. Check it and forgive it again if it should be.'
+        : it.kind === 'twostatements' ? ledgerTwoStatementsLook(it)
         : ledgerCap(ledgerEntryNamed(it.row)) + ' was ticked on one device while voided on another. The void was kept, so it is no longer ticked. ' +
           'If the bank statement shows it cleared, un-void it and tick it again.');
       n += 1;
     });
     if (n) render();
+  }
+  // Security re-check of C6 (N1c) — an entry on two statements signed separately, with different money
+  // (`it`: { row, the version kept; kept, other: the two statements' dates, the kept version's first}). Pure.
+  function ledgerTwoStatementsLook(it) {
+    var nm = ledgerCap(ledgerEntryNamed(it.row)), k = fmtDateShort(it.kept), o = fmtDateShort(it.other);
+    return k === o
+      ? nm + ' is on two ' + k + ' statements, signed separately on two devices, and the two versions differ in amount, date or in/out. ' +
+        'The version kept matches only one of them. Check both against the bank statement.'
+      : nm + ' is on two statements signed separately on two devices, ' + k + ' and ' + o + ', and the two versions differ in amount, date or in/out. ' +
+        'The version kept is the one on the ' + k + ' statement, so the ' + o + ' statement no longer matches it. Check both against the bank statements.';
   }
   var LEDGER_LOOK_SYNC = 'After a sync, the ledger needs a look: see Money · Ledger.';
   // Security pass on option B sign-off (3) — a save that merged another device's changes has just
@@ -26476,6 +26509,15 @@
     'If you keep the changed one, tick it again once it matches.';
   var ROW_PAIR_NOTE = 'This entry was reversed on one device while the other changed its amount or in/out. A reversed entry’s amount can’t change, or its reversal would no longer ' +
     'cancel it, so only the reversed version can be kept. If the other amount is right, enter it as a new entry.';
+  // Security re-check of C6 (N1a) — on two statements signed separately (`lock` kind 'both': either can
+  // be kept), with the money different: whichever is kept, the other statement no longer matches it.
+  function rowTwoStatementsNote(lock) {
+    var m = fmtDateShort(lock.both.mine), t = fmtDateShort(lock.both.theirs);
+    return (m === t
+      ? 'This entry is on two ' + m + ' statements signed separately, one on this device and one in the pack’s shared copy'
+      : 'This entry is on two statements signed separately, the ' + m + ' statement on this device and the ' + t + ' statement in the pack’s shared copy') +
+      ', and the two versions differ in amount, date or in/out. Whichever you keep, the other statement no longer matches it.';
+  }
   // In place of the button of the side that can't be kept (`lock`, rowItemLock).
   function rowCantKeep(lock) {
     if (lock.kind === 'pair') return 'Can’t be kept: it changes the amount of an entry that has been reversed.';
@@ -26544,7 +26586,8 @@
         it.rows.map(function (r) { return '<p style="margin:0"><strong>' + esc(ledgerConflictName(r.mine, r.theirs)) + '</strong></p>'; }).join('') +
         (many ? '<p class="small muted" style="margin:2px 0 0">' + esc(rowChooserTogether(it.rows.length)) + '</p>' : '');
       var lock = rowItemLock(it);
-      var note = lock ? (lock.kind === 'pair' ? ROW_PAIR_NOTE : ROW_LOCKED_NOTE) : it.rows.some(function (r) { return r.money; }) ? ROW_TICKED_NOTE : '';
+      var note = lock ? (lock.kind === 'both' ? rowTwoStatementsNote(lock) : lock.kind === 'pair' ? ROW_PAIR_NOTE : ROW_LOCKED_NOTE)
+        : it.rows.some(function (r) { return r.money; }) ? ROW_TICKED_NOTE : '';
       if (note) h += '<p class="small" style="margin:4px 0 0">' + esc(note) + '</p>';
       h += '<div class="row" style="align-items:flex-start;gap:12px;margin-top:6px">' + ['mine', 'theirs'].map(function (side) {
         var picked = rc.picks[it.ids[0]] === side, by = null, lines = [];

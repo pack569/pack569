@@ -1049,6 +1049,8 @@ const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'm
   'rowItemLock', 'ROW_PICK_LOCKED', 'ROW_PICK_LOCKED_PAIR',
   // Security review of C6 (F3) — a tick merged onto a voided entry comes off, said on "The ledger needs a look".
   'LEDGER_VOID_TICK_WHY', 'noteLedgerLookFromMerge', 'stampApproved',
+  // Security re-check of C6 (N1c) — an entry on two statements signed separately, said once saved.
+  'ledgerTwoStatementsLook',
   // Owner decision 23 — a charge forgiven on the other copy and not on this one.
   'chargesForgivenThere'];
 
@@ -23810,7 +23812,8 @@ const c6Rec = (ledger, log, more) => JSON.parse(JSON.stringify(Object.assign({ l
 const C6_BASE = () => c6Ev('0', 'edit', 'x', 1, { f: { ref: ['', '7'] } });   // an event both copies have
 // (Security review of C6, F1a/F2: the side a pick can't keep is the other side, the other way round.)
 const c6Swap = (c) => ({ ids: c.ids, rows: c.rows.map((r) => ({ id: r.id, parts: r.parts, mine: r.theirs, theirs: r.mine, mineBy: r.theirsBy, theirsBy: r.mineBy,
-  money: r.money, lock: r.lock && Object.assign({}, r.lock, { side: r.lock.side === 'mine' ? 'theirs' : 'mine' }) })) });
+  money: r.money, lock: r.lock && Object.assign({}, r.lock, { side: r.lock.side === 'mine' ? 'theirs' : r.lock.side === 'theirs' ? 'mine' : r.lock.side },
+    r.lock.both ? { both: { mine: r.lock.both.theirs, theirs: r.lock.both.mine } } : {}) })) });
 // JSON with its keys sorted, and undefined (the merge's "remove this field") kept visible.
 const c6Canon = (v) => JSON.stringify(v, (k, x) => (x === undefined ? '(removed)' : x && typeof x === 'object' && !Array.isArray(x)
   ? Object.fromEntries(Object.keys(x).sort().map((q) => [q, x[q]])) : x));
@@ -24187,6 +24190,41 @@ test('C6 review: a pick never keeps money another device reconciled, put on a st
   eq([r.conflicts[0].rows[0].lock, r.set.x.amountCents], [null, 4500], 'control: a reversal that doesn’t count');
 });
 
+// Security re-check of C6 (N1) — the probe: M changed x to $45 and ticked it on its Sep 30 statement; T
+// changed it to $50 and ticked it on its Oct 5 statement. Each copy holds x locked where the other
+// doesn't, and both moved its money, so either can be kept.
+const N1_SM = { id: 'st-M', date: '2026-09-30', ticked: ['x'], by: 'Pat', byUid: 'u1', at: '2026-10-02T10:00:00.000Z' };
+const N1_ST = { id: 'st-T', date: '2026-10-05', ticked: ['x'], by: 'Sam', byUid: 'u2', at: '2026-10-05T10:00:00.000Z' };
+const N1_M_ROW = { amountCents: 4500, reconciled: true, approvedBy: 'Pat', approvedByUid: 'u1', approvedAt: '2026-10-02T10:00:00.000Z', reconciledAt: 1790000000000, statementId: 'st-M' };
+const N1_T_ROW = { amountCents: 5000, reconciled: true, approvedBy: 'Sam', approvedByUid: 'u2', approvedAt: '2026-10-05T10:00:00.000Z', reconciledAt: 1790500000000, statementId: 'st-T' };
+const N1_M_LOG = () => [c6Ev('m0', 'edit', 'x', 2, { f: { amountCents: [4000, 4500] } }), c6Ev('m1', 'tick', 'x', 2)];
+const N1_T_LOG = () => [c6Ev('t0', 'edit', 'x', 3, { f: { amountCents: [4000, 5000] }, by: 'Sam', byUid: 'u2' }), c6Ev('t1', 'tick', 'x', 5, { by: 'Sam', byUid: 'u2' })];
+
+test('C6 re-check (N1): an entry on two statements signed separately, its money different, keeps the tick and statement of the version picked, either way round', () => {
+  const x = sandbox(C6_MERGE_FNS);
+  const base = [C6_BASE()];
+  const M = c6Rec([C6_ROW(Object.assign({ ref: '7' }, N1_M_ROW))], base.concat(N1_M_LOG()), { statements: [N1_SM] });
+  const T = c6Rec([C6_ROW(Object.assign({ ref: '7' }, N1_T_ROW))], base.concat(N1_T_LOG()), { statements: [N1_ST] });
+  // (a) Either can be kept, and the chooser is told why neither is the whole story.
+  eq(c6Both(x, M, T).conflicts.map((c) => c.rows[0].lock), [{ side: '', kind: 'both', date: '2026-10-05', both: { mine: '2026-09-30', theirs: '2026-10-05' } }], 'M and T');
+  eq(c6Both(x, T, M).conflicts.map((c) => c.rows[0].lock), [{ side: '', kind: 'both', date: '2026-10-05', both: { mine: '2026-10-05', theirs: '2026-09-30' } }], 'T and M');
+  // (b) The money picked comes with its own statement, and who ticked it and when: never $45 on Sam's Oct 5.
+  const got = (a, b, pick) => {
+    const r = c6Both(x, a, b, { picks: { x: pick } }), [p, q] = c6Apply(x, a, b, r.raw.set);
+    eq(c6Same(p.x, q.x), true, 'the two copies differ');
+    return [p.x.amountCents, p.x.statementId, p.x.approvedBy, p.x.approvedByUid, p.x.approvedAt, p.x.reconciledAt];
+  };
+  const mv = [4500, 'st-M', 'Pat', 'u1', '2026-10-02T10:00:00.000Z', 1790000000000], tv = [5000, 'st-T', 'Sam', 'u2', '2026-10-05T10:00:00.000Z', 1790500000000];
+  eq([got(M, T, 'mine'), got(M, T, 'theirs'), got(T, M, 'mine'), got(T, M, 'theirs')], [mv, tv, tv, mv], 'the version picked, with its statement');
+  // Control: the same money on both (only the words differ), the statement is the standing later one's, as before.
+  const M2 = c6Rec([C6_ROW(Object.assign({ ref: '7' }, N1_M_ROW, { amountCents: 5000, description: 'Pizza night' }))],
+    base.concat([c6Ev('m0', 'edit', 'x', 2, { f: { amountCents: [4000, 5000], description: ['Pizza', 'Pizza night'] } }), c6Ev('m1', 'tick', 'x', 2)]), { statements: [N1_SM] });
+  const r2 = c6Both(x, M2, T, { picks: { x: 'mine' } });
+  eq([r2.conflicts[0].rows[0].lock, r2.set.x.description, r2.set.x.statementId, r2.set.x.approvedBy], [null, 'Pizza night', 'st-T', 'Sam'], 'control: the same money');
+});
+
+
+
 // Phase 3, C6 — a world for two-device histories: the page's own normalizeState, sync merge and ledger
 // operations on one sandbox. Each device is a record; `dev(rec, who, ops)` runs a device's operations
 // on its record as the page's handlers do them (refused ones skipped, as the page refuses them), then
@@ -24503,6 +24541,38 @@ test('C6 review: a tick merged onto an entry voided on the other device comes of
   eq(lr, [true, 0], 'a voided entry a standing statement lists');
 });
 
+test('C6 re-check (N1): saved, an entry on two statements signed separately is named on “The ledger needs a look”, with both statements, either way round', () => {
+  const w = c6World();
+  const get = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, w)));
+  const rec = (row, log, st, rt) => Object.assign(JSON.parse(JSON.stringify(GONE_SEED)), {
+    ledger: [Object.assign({ id: 'x', date: '2026-09-10', description: 'Pizza', amountCents: 4000, direction: 'out', ref: '7' }, row)],
+    ledgerAside: [], ledgerLog: [C6_BASE()].concat(log), statements: [st],
+    book: { openingCents: 0, openingDate: '2026-07-01', reconciledThrough: rt, statementDate: '', statementCents: 0, year: 2026 } });
+  w.M = rec(N1_M_ROW, N1_M_LOG(), N1_SM, '2026-09-30');
+  w.T = rec(N1_T_ROW, N1_T_LOG(), N1_ST, '2026-10-05');
+  const run = (mine, theirs, pick) => get(`(function () {
+    clock = 1790600000000; state = norm(${mine}); who = 'M'; var look = [];
+    mergeRemoteAppendOnly({ json: JSON.stringify(${theirs}) }, [], [], [], { x: '${pick}' }, look);
+    var x = state.ledger.filter(function (e) { return e.id === 'x'; })[0];
+    return [x.amountCents, x.statementId, x.approvedBy, look.map(function (l) { return [l.kind, l.row.id, l.row.amountCents, l.kept, l.other]; })];
+  })()`);
+  const mv = [4500, 'st-M', 'Pat', [['twostatements', 'x', 4500, '2026-09-30', '2026-10-05']]];
+  const tv = [5000, 'st-T', 'Sam', [['twostatements', 'x', 5000, '2026-10-05', '2026-09-30']]];
+  eq([run('M', 'T', 'mine'), run('M', 'T', 'theirs'), run('T', 'M', 'mine'), run('T', 'M', 'theirs')], [mv, tv, tv, mv], 'the merge and what it said');
+  // Nothing picked (a sync that isn't a save of the chooser): nothing said.
+  eq(get("(function () { state = norm(M); var look = []; mergeRemoteAppendOnly({ json: JSON.stringify(T) }, [], [], [], undefined, look); return look; })()"), [], 'said unpicked');
+  // In the treasurer's words, once.
+  vm.runInContext("sync.lookNotes = []; sync.lookSeen = {}; render = function () {};" +
+    "noteLedgerLookFromMerge([{ kind: 'twostatements', row: { id: 'x', description: 'Pizza' }, kept: '2026-09-30', other: '2026-10-05' }]);" +
+    "noteLedgerLookFromMerge([{ kind: 'twostatements', row: { id: 'x', description: 'Pizza' }, kept: '2026-09-30', other: '2026-10-05' }]);" +
+    "noteLedgerLookFromMerge([{ kind: 'twostatements', row: { id: 'y', date: '2026-09-12', amountCents: 900, direction: 'in' }, kept: '2026-09-30', other: '2026-09-30' }]);", w);
+  eq(get('sync.lookNotes'), [
+    '“Pizza” is on two statements signed separately on two devices, Sep 30 and Oct 5, and the two versions differ in amount, date or in/out. ' +
+      'The version kept is the one on the Sep 30 statement, so the Oct 5 statement no longer matches it. Check both against the bank statements.',
+    'The Sep 12 entry of +$9.00 is on two Sep 30 statements, signed separately on two devices, and the two versions differ in amount, date or in/out. ' +
+      'The version kept matches only one of them. Check both against the bank statement.'], 'the notes');
+});
+
 // Phase 3, C6 — the page's own edit, tick and Mark reconciled, reduced to what they write and log.
 const C6_EXTRA = `${C4_EXTRA}
   ${['ledgerRowDiff'].map(slice).join('\n')}
@@ -24743,7 +24813,9 @@ const C6_CHOOSER_FNS = ['esc', 'fmt', 'fmtDateShort', 'ledgerCap', 'ledgerLogVal
   'ledgerEmpty', 'ROW_CHOOSER_TITLE', 'ROW_CHOOSER_KEPT', 'ROW_LOCKED_NOTE', 'ROW_TICKED_NOTE', 'ROW_PAIR_NOTE', 'rowCantKeep', 'rowItemLock', 'ROW_SAME_BUT_STAMPS',
   'rowChooserIntro', 'ledgerConflictName', 'ledgerConflictLines', 'ledgerConflictWho', 'renderRowChooser', 'ROW_PICK_NEEDED', 'JSON_BACKUP_NAME', 'rowChoice',
   // Treasurer review of C6 (5, 6) — a statement and a reversal by name, from either copy; an item of several entries.
-  'rowChooserTogether', 'ledgerStatementName', 'ledgerRowName', 'ledgerEntryNamed', 'arrOf'];
+  'rowChooserTogether', 'ledgerStatementName', 'ledgerRowName', 'ledgerEntryNamed', 'arrOf',
+  // Security re-check of C6 (N1a) — an entry on two statements signed separately.
+  'rowTwoStatementsNote'];
 function c6Chooser(items, picks, more) {
   const ctx = vm.createContext({});
   vm.runInContext(`${C6_CHOOSER_FNS.map(decl).join('\n')}
@@ -24829,6 +24901,18 @@ test('C6 review: the chooser offers only the version that can be kept, and says 
   const noMoney = [{ ids: ['l2'], rows: [{ id: 'l2', parts: ['content', 'tick'], mine: row({ description: 'Pizza night' }), theirs: row({ reconciled: true }),
     mineBy: null, theirsBy: null, money: false, lock: null }] }];
   ok(!/amount, date or in\/out/.test(c6Text(c6Chooser(noMoney).html)), 'a money note with no money moved');
+});
+
+test('C6 re-check (N1a): the chooser says an entry is on two statements signed separately, and offers both versions', () => {
+  const row = (o) => C6_ROW(Object.assign({ id: 'l2', date: '2026-09-10', reconciled: true }, o));
+  const item = (both) => [{ ids: ['l2'], rows: [{ id: 'l2', parts: ['content'], mine: row({ amountCents: 4500 }), theirs: row({ amountCents: 5000 }),
+    mineBy: null, theirsBy: null, money: false, lock: { side: '', kind: 'both', date: '2026-10-05', both } }] }];
+  const { html } = c6Chooser(item({ mine: '2026-09-30', theirs: '2026-10-05' }));
+  ok(c6Text(html).includes('This entry is on two statements signed separately, the Sep 30 statement on this device and the Oct 5 statement in the pack’s shared copy, ' +
+    'and the two versions differ in amount, date or in/out. Whichever you keep, the other statement no longer matches it.'), 'the note: ' + c6Text(html));
+  ok(/data-act="sync-row-pick:mine:l2"/.test(html) && /data-act="sync-row-pick:theirs:l2"/.test(html) && !/Can’t be kept/.test(html), 'both offered');
+  ok(c6Text(c6Chooser(item({ mine: '2026-09-30', theirs: '2026-09-30' })).html).includes('This entry is on two Sep 30 statements signed separately, one on this device and ' +
+    'one in the pack’s shared copy, and the two versions differ in amount, date or in/out. Whichever you keep, the other statement no longer matches it.'), 'the same date');
 });
 
 test('C6 review: a pick’s history line, the statement and reversal it chose between, and the chooser’s headers and who-lines in the treasurer’s words', () => {
