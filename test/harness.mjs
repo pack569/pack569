@@ -17767,7 +17767,7 @@ test('stopgap: close-out keeps room for a year of deletion marks, and a restore 
   ok(bytes <= ctx.GONE_ROOM_BYTES && bytes > ctx.GONE_ROOM_BYTES * 0.8, `the room kept for deletion marks is not their worst case (${bytes} bytes)`);
   // Close-out sizes the archive against the record with this year's marks swapped for that room.
   const s = vm.createContext({});
-  vm.runInContext(`${['utf8Bytes', 'fitSeasonLedger', 'fitSeasonBook', 'ARCHIVE_DOC_SOFT_LIMIT', 'GONE_ROOM_BYTES', 'LEDGER_LOG_ROOM_BYTES', 'seasonLedgerNow'].map(slice).join('\n')}
+  vm.runInContext(`${['utf8Bytes', 'fitSeasonLedger', 'fitSeasonBook', 'ARCHIVE_DOC_SOFT_LIMIT', 'GONE_ROOM_BYTES', 'LEDGER_LOG_ROOM_BYTES', 'STATEMENTS_ROOM_BYTES', 'seasonLedgerNow'].map(slice).join('\n')}
     function seasonLedgerRows() { return { totals: { entries: 1 }, rows: [{ d: '2026-09-01', c: 1, t: 'x' }] }; }
     function getBudgetLine() { return null; } function chargeFamilyKey() { return ''; } function familyKeyOf() { return ''; }
     function rolloverYear() { state.gone = {}; state.ledgerLog = []; }
@@ -17780,7 +17780,10 @@ test('stopgap: close-out keeps room for a year of deletion marks, and a restore 
   const logRoom = vm.runInContext('LEDGER_LOG_ROOM_BYTES', s);
   const capM = /if \(size \+ one > (\d+) \* 1024\) break;/.exec(slice('mergeLedgerLog'));
   eq([logRoom, capM && Number(capM[1]) * 1024], [128 * 1024, 128 * 1024], 'the log room is not the log’s cap');
-  const room = ctx.GONE_ROOM_BYTES + logRoom - 2, limit = 700 * 1024;
+  // Security re-check of C5 (R7) — and room for next year's statements, in place of none ('[]' of an
+  // absent list here).
+  const stRoom = vm.runInContext('STATEMENTS_ROOM_BYTES', s);
+  const room = ctx.GONE_ROOM_BYTES + logRoom - 2 + stRoom - 2, limit = 700 * 1024;
   eq([vm.runInContext(`fits(${limit - room - 400}, {})`, s), vm.runInContext(`fits(${limit - room}, {})`, s)], [true, false],
     'the archive is not sized with room for next year’s marks');
   eq(vm.runInContext(`fits(${limit - room - 400 - 100000}, { entries: { big: '${'y'.repeat(100000)}' } })`, s), true,
@@ -17792,6 +17795,26 @@ test('stopgap: close-out keeps room for a year of deletion marks, and a restore 
     [true, false], 'this year’s log was counted as well as the room for next year’s');
   const now = slice('seasonLedgerNow');
   ok(/- utf8Bytes\(JSON\.stringify\(after\.gone \|\| \{\}\)\) \+ GONE_ROOM_BYTES/.test(now.replace(/\s+/g, ' ')), 'seasonLedgerNow');
+  ok(/other \+= STATEMENTS_ROOM_BYTES - utf8Bytes\(JSON\.stringify\(after\.statements \|\| \[\]\)\);/.test(now), 'seasonLedgerNow: the statements’ room');
+  // This year's statements, which close-out clears, change nothing (as the log's).
+  vm.runInContext(`function rolloverYear() { state.gone = {}; state.ledgerLog = []; state.statements = []; }
+    function fitsSt(fill, sts) { state.filler = new Array(fill + 1).join('x'); state.gone = {}; state.ledgerLog = []; state.statements = sts; return !seasonLedgerNow({}).ledger.trimmed; }`, s);
+  const bigSt = JSON.stringify([{ id: 'st-1', note: 'z'.repeat(200000) }]);
+  eq([vm.runInContext(`fitsSt(${limit - room - 400}, ${bigSt})`, s), vm.runInContext(`fitsSt(${limit - room}, ${bigSt})`, s)],
+    [true, false], 'this year’s statements were counted as well as the room for next year’s');
+  // The room holds a pack's year: twelve statements, each of 40 entries ticked and 30 outstanding
+  // (ids as uid() makes them), reviewed, and two of them reopened and reconciled again.
+  const id = (i) => 'mfo2kz3a' + String(i).padStart(6, '0');
+  const stOf = (m, extra) => Object.assign({ id: 'st-2026-' + String(m).padStart(2, '0') + '-28-' + id(m), date: '2026-' + String(m).padStart(2, '0') + '-28',
+    statementCents: 1234567, openingCents: 1000000, clearedCents: 1234567, bookCents: 1200000,
+    ticked: Array.from({ length: 40 }, (_, i) => id(m * 100 + i)), outstanding: Array.from({ length: 30 }, (_, i) => id(m * 100 + 50 + i)),
+    tickedCents: 234567, outInCents: 12345, outOutCents: 45678, openingDate: '2026-07-01', by: 'Pat Treasurer', byUid: 'Xy12Ab34Cd56Ef78Gh90Ij12Kl34',
+    at: '2026-09-02T15:04:05.678Z', reviewedAt: '2026-09-05T10:00:00.000Z', reviewedBy: 'Sam Reviewer', reviewedByUid: 'Mn56Op78Qr90St12Uv34Wx56Yz78' }, extra || {});
+  const year = Array.from({ length: 12 }, (_, m) => stOf(m + 1)).concat([
+    stOf(3, { id: 'st-2026-03-28-again', reopenedAt: '2026-04-01T00:00:00.000Z', reopenedBy: 'Alex Admin', reopenedByUid: 'Ab12', reopenWhy: 'The bank corrected the statement: a deposit was posted twice.' }),
+    stOf(8, { id: 'st-2026-08-28-again', reopenedAt: '2026-09-01T00:00:00.000Z', reopenedBy: 'Alex Admin', reopenedByUid: 'Ab12', reopenWhy: 'Ticked the wrong check.' })]);
+  const yb = ctx.utf8Bytes(JSON.stringify(year));
+  ok(yb <= stRoom && yb > stRoom * 0.6, `the room kept for next year’s statements is not a pack’s year (${yb} bytes)`);
   // Security S9: the restore screen.
   const o = slice('renderOverlay');
   // Phase 3, C2 (security review of C1, m4) — worded as it works: only deletions this device has heard of are put back.
@@ -17811,7 +17834,7 @@ const CLOSEOUT_SIZE_FNS = ['seasonLedgerNow', 'seasonLedgerRows', 'ledgerSort', 
   'familyAccounts', 'chargeIsOpen', 'entryPaysCharges', 'ledgerUnpaired', 'tierCoverageConfigured', 'sortedTiers', 'fundingSummary', 'commissionRates',
   'cashCreditOn', 'cashScoutRate', 'leaderPlannedCents', 'rewardTierSummary', 'earnedTierFor', 'computePackTotals', 'packGoalCents',
   'stretchGoalOf', 'ledgerIncomeCents', 'bookBalance', 'ledgerBalance', 'familyAccountsNow', 'closingCarryover', 'advanceDens',
-  'priorDayISO', 'ledgerActorName', 'shiftISOYear', 'utf8Bytes', 'GONE_ROOM_BYTES', 'LEDGER_LOG_ROOM_BYTES', 'fitSeasonLedger', 'fitSeasonBook', 'ARCHIVE_DOC_SOFT_LIMIT'];
+  'priorDayISO', 'ledgerActorName', 'shiftISOYear', 'utf8Bytes', 'GONE_ROOM_BYTES', 'LEDGER_LOG_ROOM_BYTES', 'STATEMENTS_ROOM_BYTES', 'fitSeasonLedger', 'fitSeasonBook', 'ARCHIVE_DOC_SOFT_LIMIT'];
 test('stopgap follow-up 1: close-out sizes the archive against the record as close-out leaves it', () => {
   // The record before close-out holds this year's sales, sign-ups, attendance, charges and
   // hand-outs, which close-out clears: sized with them, a record that fits was trimmed.
@@ -17851,9 +17874,10 @@ test('stopgap follow-up 1: close-out sizes the archive against the record as clo
   const base = sandbox(NORMALIZE_FNS.concat(['utf8Bytes'])).utf8Bytes(JSON.stringify(sandbox(NORMALIZE_FNS).normalizeState(record({ packName: '' }))));
   // Phase 3, C2 (m5) — the room for next year's ledger log too (its 128 KB cap, security review of
   // C2 #3, in place of the empty '[]').
-  const logRoom = 128 * KB - 2;
-  eq(run({ packName: 'x'.repeat(700 * KB - 250 * KB - logRoom - base - 4 * KB) }).trimmed, false, 'control: just under the limit with the room');
-  eq(run({ packName: 'x'.repeat(700 * KB - 250 * KB - logRoom - base + 4 * KB) }).trimmed, true, 'control: just over the limit with the room');
+  // Security re-check of C5 (R7) — and for next year's statements (32 KB, in place of '[]').
+  const logRoom = 128 * KB - 2, stRoom = 32 * KB - 2;
+  eq(run({ packName: 'x'.repeat(700 * KB - 250 * KB - logRoom - stRoom - base - 4 * KB) }).trimmed, false, 'control: just under the limit with the room');
+  eq(run({ packName: 'x'.repeat(700 * KB - 250 * KB - logRoom - stRoom - base + 4 * KB) }).trimmed, true, 'control: just over the limit with the room');
 });
 
 /* ================================================================

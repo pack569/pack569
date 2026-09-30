@@ -28320,6 +28320,12 @@
   // Security review of C2 (#3) — the most it can hold: mergeLedgerLog cuts it to 128 KB (the
   // literal there; the harness checks the two agree). A season of about 330 events is ~65 KB.
   var LEDGER_LOG_ROOM_BYTES = 128 * 1024;
+  // Security re-check of C5 (R7) — and room for next year's statements (state.statements), which
+  // close-out clears too and the year fills again: twelve, each with the ids of the entries ticked
+  // on it and those outstanding, about 24 KB for a pack's year (the harness pins a year of them
+  // under this). Not their most, as the log's room is: 200 statements of 2000 ids each would be
+  // megabytes, and a book that size is refused long before (reconcileLockRefusal, statementsCap).
+  var STATEMENTS_ROOM_BYTES = 32 * 1024;
   // UTF-8 length of a string, without TextEncoder so the harness sandbox can run it. Pure.
   function utf8Bytes(str) {
     var n = 0;
@@ -28415,6 +28421,8 @@
     // C2 (m5) — the log close-out cleared, swapped for room for next year's (LEDGER_LOG_ROOM_BYTES,
     // its cap, so this year's is never more).
     other += LEDGER_LOG_ROOM_BYTES - utf8Bytes(JSON.stringify(after.ledgerLog || []));
+    // R7 — and the statements, the same way (STATEMENTS_ROOM_BYTES).
+    other += STATEMENTS_ROOM_BYTES - utf8Bytes(JSON.stringify(after.statements || []));
     return fitSeasonBook(led, statements, log, other, ARCHIVE_DOC_SOFT_LIMIT);
   }
   function buildSeasonArchive() {
