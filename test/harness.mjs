@@ -1015,7 +1015,7 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   'ledgerPairCheck',
   // Phase 3, C5 — the statements: each one's shape, one of each, and a lock through a reopened one.
   'normalizeStatement', 'statementOnceGroups', 'statementReviewed', 'statementReopened', 'statementAdded', 'statementPairMerge',
-  'mergeStatements', 'statementLockBack', 'statementBefore',
+  'mergeStatements', 'statementsCap', 'statementLockBack', 'statementBefore',
   // Phase 3, C1 — the ledger row normalizer, shared by the rows set aside.
   'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeLedgerRow', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'ledgerUnpaired', 'entrySignedCents',
@@ -22743,7 +22743,7 @@ test('C5: the statements merge by id, never lose one, and a statement changed on
   eq(m([odd], [base])[0].statementCents, 100, 'the signed part that sorts first');
   // The sync merge unions them, same year only, and steps the lock back past a reopen.
   const ms = slice('mergeRemoteAppendOnly');
-  ok(/if \(bkHere && bkThere && bkHere\.year === bkThere\.year\) \{\s*state\.statements = mergeStatements\(state\.statements, remote\.statements, [^;]*\);\s*statementLockBack\(bkHere, state\.statements\);/.test(ms),
+  ok(/if \(bkHere && bkThere && bkHere\.year === bkThere\.year\) \{\s*state\.statements = mergeStatements\(state\.statements, remote\.statements\);\s*statementLockBack\(bkHere, state\.statements\);/.test(ms),
     'the merge does not union the statements, or step the lock back');
   ok(ms.indexOf('statementLockBack(bkHere') < ms.indexOf("state.ledger = dropGone(state.ledger, 'ledger')"), 'the lock steps back after the ledger’s merge reads it');
   const { isStateEmpty } = sandbox(['isStateEmpty']);
@@ -23295,10 +23295,11 @@ test('C5 review (owner 4): no parent surface reads an archive’s statements or 
 
 test('C5 review (F3): the cap never takes a statement standing or named by an entry, Mark reconciled refuses at it, and a bad date sorts first', () => {
   const ctx = sandbox(NORMALIZE_FNS);
+  // Security re-check of C5 (R3): the cap is normalizeState's alone (statementsCap), after the merge.
   const mk = (i, o) => Object.assign({ id: 'st-' + i, date: '2026-01-01', at: '2026-01-02T00:00:' + String(i % 60).padStart(2, '0') + '.' + String(i).padStart(3, '0') + 'Z',
     statementCents: 1, by: 'Pat', byUid: 'u1' }, o || {});
   const R = { reopenedAt: '2026-02-01T00:00:00.000Z', reopenedBy: 'Alex', reopenedByUid: 'u3', reopenWhy: 'x' };
-  const m = (list, rows) => JSON.parse(JSON.stringify(ctx.mergeStatements(JSON.parse(JSON.stringify(list)), [], rows)));
+  const m = (list, rows) => JSON.parse(JSON.stringify(ctx.statementsCap(ctx.mergeStatements(JSON.parse(JSON.stringify(list)), []), rows)));
   // 205: the five oldest standing, then three reopened (the oldest named by an entry), then the rest standing.
   const list = [];
   for (let i = 0; i < 205; i++) list.push(mk(i, i >= 5 && i < 8 ? R : null));
@@ -23309,10 +23310,12 @@ test('C5 review (F3): the cap never takes a statement standing or named by an en
   eq(m(list.map((q) => mk(Number(q.id.slice(3))))).length, 205, 'a standing statement was evicted');
   // Under the cap nothing goes, reopened or not.
   eq(m(list.slice(0, 200)).length, 200, 'under the cap');
-  // Every caller says which statements the entries name.
-  ok(/d\.statements = mergeStatements\(d\.statements, \[\], d\.ledger\);/.test(SCRIPT), 'normalizeState');
-  ok(/state\.statements = mergeStatements\(state\.statements, remote\.statements, state\.ledger\.concat\(Array\.isArray\(remote\.ledger\) \? remote\.ledger : \[\]\)\);/.test(slice('mergeRemoteAppendOnly')), 'the sync merge');
-  ok(/state\.statements = mergeStatements\(state\.statements, \[rlNew\.statement\], state\.ledger\);/.test(SCRIPT), 'Mark reconciled');
+  // normalizeState caps, saying which statements the entries name; no merge does (R3).
+  ok(/d\.statements = statementsCap\(mergeStatements\(d\.statements, \[\]\), d\.ledger\);/.test(SCRIPT), 'normalizeState');
+  ok(/state\.statements = mergeStatements\(state\.statements, remote\.statements\);/.test(slice('mergeRemoteAppendOnly')), 'the sync merge');
+  ok(/state\.statements = mergeStatements\(state\.statements, \[rlNew\.statement\]\);/.test(SCRIPT), 'Mark reconciled');
+  ok(/state\.statements = mergeStatements\(ciSt, state\.statements\);/.test(SCRIPT), 'a restore');
+  eq(SCRIPT.split('statementsCap(').length, 3, 'statementsCap is called somewhere new');
   // A bad date: kept, marked, never in force, first in order; a good one keeps no mark; a fixed point.
   const n = c5Norm(Object.assign(withSeeds(LEGACY_ROWS)(), { book: { openingCents: 0, openingDate: '2026-07-01', reconciledThrough: '2026-08-31' },
     statements: [Object.assign(C5_SEP(), { id: 'st-z', date: '9999-99-99x' }), Object.assign(C5_SEP(), { id: 'st-n', date: 7 }), Object.assign(C5_LEGACY(), { badDate: true })] }));
@@ -23329,8 +23332,39 @@ test('C5 review (F3): the cap never takes a statement standing or named by an en
   const q = c2tPage({ book: { statementDate: '2026-09-30' }, more: `state.statements = ${many(198)};` });
   q.run("agree(); act3('ledger-reconcile-lock'); act3('ledger-reconcile-lock')");
   eq([q.get('toasts'), q.get('state.statements.length'), q.get('state.book.reconciledThrough')], [['Reconciled through Wed, Sep 30.'], 200, '2026-09-30'], 'under it');
-  ok(/if \(\(statements \|\| \[\]\)\.length >= 200\) \{/.test(slice('reconcileLockRefusal')) && /if \(all\.length <= 200\) return all;/.test(slice('mergeStatements')),
+  ok(/if \(\(statements \|\| \[\]\)\.length >= 200\) \{/.test(slice('reconcileLockRefusal')) && /if \(list\.length <= 200\) return list;/.test(slice('statementsCap')),
     'the refusal and the merge disagree on the cap');
+});
+
+test('C5 re-check (R3): no merge evicts a statement, and a load trims junk first, newest first, never a standing one', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const R = { reopenedAt: '2026-11-01T00:00:00.000Z', reopenedBy: 'X', reopenedByUid: 'ux', reopenWhy: 'x' };
+  // 200 junk statements dated after the real one (Dec), and the real one: Aug 31, reopened by an
+  // admin with a reason, which no entry names now (its entries were unticked when it was reopened).
+  const junk = (o) => Array.from({ length: 200 }, (_, i) => Object.assign({ id: 'st-j' + i, date: '2026-12-15',
+    at: '2026-12-29T00:00:00.' + String(i).padStart(3, '0') + 'Z', statementCents: 1, by: 'X', byUid: 'ux' }, o || {}));
+  const real = { id: 'st-real', date: '2026-08-31', at: '2026-09-01T00:00:00.000Z', statementCents: 500, by: 'Pat', byUid: 'u1',
+    reopenedAt: '2026-09-03T00:00:00.000Z', reopenedBy: 'Alex', reopenedByUid: 'u3', reopenWhy: 'The bank corrected the statement' };
+  const cap = (list, rows) => JSON.parse(JSON.stringify(ctx.statementsCap(ctx.mergeStatements(JSON.parse(JSON.stringify(list)), []), rows || [])));
+  const merged = (a, b) => ctx.mergeStatements(JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b)));
+  // Reopened junk: the newest junk goes, and the real reopen record survives.
+  let got = cap(junk(R).concat([real]));
+  eq([got.length, got.some((q) => q.id === 'st-real'), got.some((q) => q.id === 'st-j199')], [200, true, false], 'reopened junk dated later');
+  // Junk whose date can't be read goes first, even before a reopened statement.
+  got = cap(junk({ date: 'soon', badDate: true }).concat([real]));
+  eq([got.length, got.some((q) => q.id === 'st-real')], [200, true], 'junk with a bad date');
+  // Standing junk is kept, all of it (and blocks Mark reconciled: the refusal at 200, F3); so is a
+  // real standing one.
+  const std = { id: 'st-aug', date: '2026-08-31', at: '2026-09-04T00:00:00.000Z', statementCents: 500, by: 'Pat', byUid: 'u1' };
+  got = cap(junk().concat([std]));
+  eq([got.length, got.some((q) => q.id === 'st-aug')], [201, true], 'standing junk');
+  // The same through a whole load (normalizeState), with the book locked through Aug 31 by a
+  // standing statement, and junk reopened: the lock stays, and the real statements are all there.
+  const n = c5Norm(Object.assign(withSeeds(LEGACY_ROWS)(), { book: { openingCents: 0, openingDate: '2026-07-01', reconciledThrough: '2026-08-31' },
+    statements: junk(R).concat([real, std]) }));
+  eq([n.statements.length, ['st-real', 'st-aug'].every((id) => n.statements.some((q) => q.id === id)), n.book.reconciledThrough], [200, true, '2026-08-31'], 'a load');
+  // No merge evicts: the sync merge, a restore and Mark reconciled keep all 201, whichever side has them.
+  eq([merged(junk(R), [real]).length, merged([real], junk(R)).length, merged(junk(R).concat([real]), []).length], [201, 201, 201], 'a merge evicted');
 });
 
 test('C5 review (F6): restoring a backup of the same year keeps the statements signed since, and steps the lock back past a reopen', () => {
