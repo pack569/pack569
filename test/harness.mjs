@@ -16744,7 +16744,7 @@ const GONE_TE_ROWS = [{ scoutId: 's1', name: 'Ada', onlineCents: 5000, wagonCent
 // The real importer and scout totals, on stubs for the preview's matching. Each device's clock
 // only moves forward, a second per reading, so a delete and its Undo are never the same ms.
 const GONE_EXTRA = (dev) => `
-  ${['blockShares', 'computeScoutTotals', 'teLiveEntriesFor', 'teCommitSalesLive', 'getScout', 'dropScout', 'ledgerActorName', 'stampApproved'].map(slice).join('\n')}
+  ${['blockShares', 'computeScoutTotals', 'teLiveEntriesFor', 'teCommitSalesLive', 'getScout', 'dropScout', 'ledgerActorName', 'stampApproved', 'chargeMatchKey', 'chargeKey', 'linePerFamily', 'getBudgetLine', 'chargeFamilyKey'].map(slice).join('\n')}
   ${['ledgerActor', 'ledgerActorUid'].map(decl).join('\n')}
   var batchSeq = 0;
   uid = function () { batchSeq += 1; return '${dev}b' + batchSeq; };
@@ -17184,7 +17184,7 @@ test('stopgap follow-up 2: a ledger row un-reconciled and deleted on purpose sta
 
 test('stopgap follow-up 2: the tick time is stamped, cleared by an untick, and kept small', () => {
   const ctx = sandbox(NORMALIZE_FNS.concat(['ledgerTickedAt', 'reconciledFates']));
-  vm.runInContext(`${['ledgerActorName', 'stampApproved'].map(slice).join('\n')} ${['ledgerActor', 'ledgerActorUid'].map(decl).join('\n')}
+  vm.runInContext(`${['ledgerActorName', 'stampApproved', 'chargeMatchKey', 'chargeKey', 'linePerFamily', 'getBudgetLine', 'chargeFamilyKey'].map(slice).join('\n')} ${['ledgerActor', 'ledgerActorUid'].map(decl).join('\n')}
     var sync = {}, state = { leaders: [] }; Date.now = function () { return 1790000000000; };`, ctx);
   // Ticked and unticked as the page does it: the stamp, then the flag.
   const e = vm.runInContext('var e = { id: "l1" }; stampApproved(e, true); e.reconciled = true; e', ctx);
@@ -25899,6 +25899,31 @@ test('C7, Firestore: a scout held over an older page’s delete keeps their paid
   q.b.run(B1); q.b.push();
   q.a.run(OLD_DEL_S1); q.a.hear(); q.a.push();
   eq([chargeIds(q.server()), c7Owes(q.server())], [['ch1', 'ch2'], 0], 'the delete saved last');
+});
+
+// Security re-check of C7 (item 2): the same charge raised on each device, under two ids, is one charge after a held scout's
+// charges are unioned, so restoring the scout leaves one open charge, not two that syncCharges keeps for good.
+test('C7, Firestore: a held scout’s charge that the other copy holds under another id is not put in twice, and restoring them leaves one open charge', () => {
+  const LINE = { id: 'ln1', name: 'Dues', basis: 'per-head', fundedBy: 'families', scoutRateCents: 5000, category: 'program' };
+  const mkCharge = (id) => `state.charges.push({ id: '${id}', scoutId: 's1', lineId: 'ln1', who: 'scout', seq: 0, amountCents: 5000, date: '2026-09-01', dueDate: '', waivedBy: '', forgiven: null, label: 'Dues' });`;
+  const { a, b, server } = c3FsPair({ budget: { programYear: 2026, activities: [], expenses: [LINE] } });
+  // A raised its copy and holds Ada, with an older page's delete mark standing against her (a payment names her: held).
+  a.run(mkCharge('chA') + " markGone('scouts', ['s1']); commit()");
+  b.run(mkCharge('chB') + " commit()"); b.push();
+  a.hear(); a.push();
+  const st = a.get('state'); 
+  eq([st.charges.map((c) => c.id), st.scouts.filter((x) => x.id === 's1').map((x) => !!x.archived)], [['chA'], [true]], 'one charge after the merge, Ada kept archived');
+  // Restore Ada: one open charge for her.
+  const ctx = vm.createContext({});
+  vm.runInContext(`${[...new Set([...NORMALIZE_FNS, ...declClosure(['syncCharges', 'familyOutstanding'], ['state', 'ui', 'sync', 'render', 'save', 'uid', 'todayISO'])])].map(decl).join('\n')}
+    var state = normalizeState(${JSON.stringify(st)}); function uid() { return 'new'; } function todayISO() { return '2026-09-29'; }
+    getScout('s1').archived = false; syncCharges();`, ctx);
+  eq(JSON.parse(JSON.stringify(vm.runInContext("state.charges.filter(function (c) { return c.scoutId === 's1' && !c.forgiven; }).map(function (c) { return c.id; })", ctx))), ['chA'], 'one open charge after restore');
+  // Two distinct manual charges (no line) are still both kept: only a line's charge has a key but its id.
+  const q = c3FsPair({ charges: C7_CHARGES });
+  q.a.run(OLD_DEL_S1); q.a.push();
+  q.b.run(B1); q.b.hear(); q.b.push();
+  eq(q.server().charges.map((c) => c.id).sort(), ['ch1', 'ch2'], 'manual charges kept');
 });
 
 // Security review of C7 (F2): whatever the marks say, a scout a payment names is on every device's roster.

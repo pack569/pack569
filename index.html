@@ -14553,13 +14553,25 @@
     scoutsHeld.forEach(function (id) {
       var sc = arrOf(state.scouts).filter(function (x) { return x && x.id === id; })[0];
       if (!sc) return;
+      // Security re-check of C7 (item 2) — and by the charge's match key too, for one a line raised: the same
+      // charge can stand under another id on the other copy (raised on each device), and unioning by id alone
+      // would put it in twice, which syncCharges (same chargeMatchKey) keeps for good. A charge on no line
+      // (a prior-year balance) has no key but its id.
       var haveCharge = Object.create(null);
-      arrOf(state.charges).forEach(function (c) { if (c && typeof c.id === 'string') haveCharge[c.id] = true; });
+      function chargeHeldKey(c) { return c.lineId ? 'k:' + chargeMatchKey(c, getBudgetLine(c.lineId), chargeFamilyKey) : ''; }
+      arrOf(state.charges).forEach(function (c) {
+        if (!c) return;
+        if (typeof c.id === 'string') haveCharge[c.id] = true;
+        if (chargeHeldKey(c)) haveCharge[chargeHeldKey(c)] = true;
+      });
       arrOf(remote.charges).concat(chargesWas).forEach(function (c) {
         if (!c || c.scoutId !== id || typeof c.id !== 'string' || haveCharge[c.id]) return;
+        if (chargeHeldKey(c) && haveCharge[chargeHeldKey(c)]) return;
         if (!Array.isArray(state.charges)) state.charges = [];
         state.charges.push(JSON.parse(JSON.stringify(c)));
-        haveCharge[c.id] = true; added += 1;
+        haveCharge[c.id] = true;
+        if (chargeHeldKey(c)) haveCharge[chargeHeldKey(c)] = true;
+        added += 1;
       });
       if (!sc.archived) { sc.archived = true; added += 1; }
       if (Array.isArray(look)) look.push({ kind: 'scoutkept', scout: sc });
