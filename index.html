@@ -8729,9 +8729,18 @@
     LEDGER_EDIT_FIELDS.forEach(function (k) { c[k] = e[k]; });
     return c;
   }
+  // Security review of option B (finding 1) — the amount and direction of EITHER row of a reversed
+  // pair, locked or not: an open reversal, or the entry un-reconciled. The two are paired by id,
+  // not by their figures (ledgerPairOf), so every reader that sorts rows by family, tier or line
+  // still reads them as gone while the balance moves: Ben's $200 payment reversed, its reversal
+  // made $215 or flipped to In, and the family still owes $200 while the book is $15 or $400 out.
+  // A reversal mirrors its entry (the treasurer's rule). The date and the labels change as on any
+  // row, and are logged.
+  var LEDGER_PAIR_FIXED = 'This entry is one of a reversed pair, so its amount and direction can’t be changed: the two must cancel. If the reversal was a mistake, void the reversal, then reverse the entry again with the right figures.';
   // Why the led-* change `lk` to `value` is refused, or ''. `value` is the field's text, or for
-  // 'rec' (the tick) whether it is now ticked. Pure.
-  function ledgerEditRefusal(e, lk, value, book) {
+  // 'rec' (the tick) whether it is now ticked. `rows` is the counted rows (state.ledger), for the
+  // pair (LEDGER_PAIR_FIXED). Pure.
+  function ledgerEditRefusal(e, lk, value, book, rows) {
     if (lk === 'rec') {
       // The tick is the one change a locked row takes. But a row ticked on an earlier statement
       // (dated in the reconciled period) is un-ticked only by the two-tap Un-reconcile (M1).
@@ -8742,6 +8751,8 @@
     // A closed year takes nothing. Otherwise only the money fields lock (owner, 2026-09-29): the
     // budget line, description, family and the rest are labels, fixed in place and logged.
     if (book && book.closedAt) return ledgerLockedWhy(e, book);
+    // Before the lock: un-reconciling a locked row of a pair would not open these two.
+    if ((lk === 'amount' || lk === 'dir') && e && Array.isArray(rows) && ledgerPairOf(rows)[e.id]) return LEDGER_PAIR_FIXED;
     var why = LEDGER_LOCKED_FIELDS.indexOf(lk) !== -1 ? ledgerLockedWhy(e, book, '', 'money') : '';
     if (why) return why;
     if (lk === 'amount') {
@@ -19942,12 +19953,14 @@
         (eLocked
           ? '<span class="small muted rec-when">' + esc(fmtDateShort(e.date)) + '</span>'
           : '<input type="date" data-ch="led-date" data-id="' + esc(e.id) + '" value="' + esc(e.date) + '" aria-label="Date">' +
-            '<select data-ch="led-dir" data-id="' + esc(e.id) + '" aria-label="In or out">' +
+            // Security review of option B (finding 1) — a row of a reversed pair keeps its amount
+            // and direction (LEDGER_PAIR_FIXED): shown, not fields, as on a locked row.
+            (ePair ? '' : '<select data-ch="led-dir" data-id="' + esc(e.id) + '" aria-label="In or out">' +
               '<option value="out"' + (e.direction === 'out' ? ' selected' : '') + '>Out</option>' +
               '<option value="in"' + (e.direction === 'in' ? ' selected' : '') + '>In</option>' +
-            '</select>') +
+            '</select>')) +
         '<input class="lname" data-ch="led-desc" data-id="' + esc(e.id) + '" value="' + esc(e.description) + '" placeholder="Description">' +
-        (eLocked
+        (eLocked || ePair
           ? '<span class="money small">' + (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents) + '</span>'
           : '<input class="money-in" inputmode="decimal" data-ch="led-amount" data-id="' + esc(e.id) + '" value="' + dollars(e.amountCents) + '" placeholder="0.00" aria-label="Amount">') +
         '<select data-ch="led-line" data-id="' + esc(e.id) + '" aria-label="Budget line">' + lineSelectOptions(e.lineId) + '</select>' +
@@ -20011,6 +20024,7 @@
               // Treasurer review of C2 (L-4) — the pill's tooltip never shows on a phone, so the
               // Detail of a locked row says it in a line.
               (eLocked ? '<p class="small muted llock" style="margin:6px 0 0;flex-basis:100%">' + esc(ledgerLockNote(e, state.book)) + '</p>' : '') +
+              (ePair ? '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">' + esc(LEDGER_PAIR_FIXED) + '</p>' : '') +   // option B review (1)
               // Phase 3, C4 — a corrected entry says so, and where the one it replaced is.
               (e.replaces ? '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">' + esc(ledgerCorrectsLine(e, state.ledger.concat(state.ledgerAside || []))) + '</p>' : '') +
               ledgerFixButtonHtml(e, state.book) +   // Phase 3, C4
@@ -30338,8 +30352,9 @@
       // on. Phase 3, C2 — nor can one dated in the reconciled period; but their labels can
       // (owner, 2026-09-29: LEDGER_LOCKED_FIELDS). An edit that would blank the amount or the
       // date, or go over the ceiling is refused too, the field put back, and the leader told why
-      // (ledgerEditRefusal).
-      var ledNo = ledgerEditRefusal(led, lk, lv, state.book);
+      // (ledgerEditRefusal). Security review of option B (finding 1) — nor, on either row of a
+      // reversed pair, its amount or direction (LEDGER_PAIR_FIXED).
+      var ledNo = ledgerEditRefusal(led, lk, lv, state.book, state.ledger);
       if (ledNo) { showToast(ledNo); render(); return; }
       // Treasurer review of C2 (M-5) — a date moved into the reconciled period: the first change is
       // put back and warned about under the entry (ui.ledgerMoveWarned); the same date picked again

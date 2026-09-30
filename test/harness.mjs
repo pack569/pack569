@@ -10154,11 +10154,11 @@ test('M10: a reconciled entry is read-only until it is deliberately un-reconcile
   const rows = /function renderLedgerEntries\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/var eLocked = ledgerLocked\(e, state\.book\)/.test(rows) &&
      /\(eLocked\s*\? '<span class="small muted rec-when">'[\s\S]*?: '<input type="date" data-ch="led-date"[\s\S]*?data-ch="led-dir"/.test(rows) &&
-     /\(eLocked\s*\? '<span class="money small">'[\s\S]*?: '<input class="money-in" inputmode="decimal" data-ch="led-amount"/.test(rows) &&
+     /\(eLocked \|\| ePair\s*\? '<span class="money small">'[\s\S]*?: '<input class="money-in" inputmode="decimal" data-ch="led-amount"/.test(rows) &&
      /data-act="ledger-unreconcile:' \+ esc\(e\.id\) \+ '"/.test(rows),
     'a reconciled entry is rendered with editable fields');
   const ch = /if \(ch\.indexOf\('led-'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/var ledNo = ledgerEditRefusal\(led, lk, lv, state\.book\);\s*if \(ledNo\) \{ showToast\(ledNo\); render\(\); return; \}/.test(ch),
+  ok(/var ledNo = ledgerEditRefusal\(led, lk, lv, state\.book, state\.ledger\);\s*if \(ledNo\) \{ showToast\(ledNo\); render\(\); return; \}/.test(ch),
     'the change handler still edits a reconciled entry');
   const un = /if \(act\.indexOf\('ledger-unreconcile:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
   ok(un && /arm\(act, function \(\) \{/.test(un[0]) && /urE\.reconciled = false;/.test(un[0]),
@@ -18189,7 +18189,7 @@ const C2_ACT = [
 const ASIDE_LIST_FNS = ['ledgerPairOf', 'ledgerPairRole', 'ledgerReversedLineHtml', 'ledgerReplacementId'];
 const C2_FNS = ['fmt', 'fmtDate', 'fmtDateShort', 'toCents', 'toCentsSigned', 'entryAfterOpening', 'entryOnStatement', 'ledgerLocked',
   'ledgerDateReconciled', 'ledgerLockedWhy', 'LEDGER_MAX_CENTS', 'LEDGER_EDIT_FIELDS', 'LEDGER_LOCKED_FIELDS', 'ledgerRowDiff',
-  'ledgerRowFields', 'ledgerEditRefusal', 'ledgerBackdateWarning', 'applyLedgerEdit', 'ledgerWho', 'logLedger', 'logOpening',
+  'ledgerRowFields', 'LEDGER_PAIR_FIXED', 'ledgerPairOf', 'ledgerEditRefusal', 'ledgerBackdateWarning', 'applyLedgerEdit', 'ledgerWho', 'logLedger', 'logOpening',
   'openingLockedWhy', 'LEDGER_OPS', 'ledgerEvent', 'ledgerLogClip', 'ledgerStampClean', 'stampApproved', 'stampEntered', 'ledgerActorName',
   'ledgerDraftDefault', 'ledgerDraft', 'arm', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays', 'ledgerAsideSettle', 'keepLostVoids', 'ledgerPairCheck'];
 // The book is reconciled through Aug 31 from a Jul 1 opening. u1 is open; r1 is ticked (after the
@@ -18311,7 +18311,7 @@ test('C2: a locked entry refuses only its amount, date and direction; its labels
   // The Entries list: a locked row's amount, date and direction are text; its labels are fields.
   const rows = slice('renderLedgerEntries');
   ok(/'<input class="lname" data-ch="led-desc"/.test(rows) && /'<select data-ch="led-line"/.test(rows) &&
-     /\(eLocked\s*\? '<span class="money small">'/.test(rows), 'a locked row’s labels are not fields, or its amount is');
+     /\(eLocked \|\| ePair\s*\? '<span class="money small">'/.test(rows), 'a locked row’s labels are not fields, or its amount is');
 });
 
 test('C2: ticking and un-ticking are logged; un-ticking keeps who approved it; a row ticked on an earlier statement takes the two-tap Un-reconcile', () => {
@@ -20162,6 +20162,61 @@ test('C4 (option B): a reversed entry can’t be voided, even un-reconciled; its
   eq([x.ledgerCancelledWhy(st, st.ledger[0]), x.ledgerCancelledWhy(st, st.ledger[1]), x.ledgerCancelledWhy(st, st.ledger[2]),
     x.ledgerCancelledWhy({ ledger: [{ id: 'X' }] }, { id: 'X' })], [CANCELLED, '', '', ''], 'ledgerCancelledWhy');
   ok(/var vaLocked = ledgerLockedWhy\(vaRow, state\.book, '', 'void'\) \|\| ledgerCancelledWhy\(state, vaRow\);/.test(SCRIPT), 'the ✕ does not ask');
+});
+
+// Security review of option B (finding 1) — the two rows of a reversed pair are paired by id, not by
+// their figures, so an amount or direction changed on either (an open reversal, or the entry
+// un-reconciled) left every reader that sorts rows by family, tier or line reading the pair as gone
+// while the balance moved. Both are refused, locked or not; the date and the labels are not.
+const PAIR_FIXED = 'This entry is one of a reversed pair, so its amount and direction can’t be changed: the two must cancel. ' +
+  'If the reversal was a mistake, void the reversal, then reverse the entry again with the right figures.';
+test('Option B review (1): neither row of a reversed pair takes a new amount or direction, even un-reconciled, so the readers still agree with the balance', () => {
+  const p = c4Page();
+  // r1: Ada's $25 dues, ticked after the period; m1: a tier make-up in the period. Each reversed today (Oct 15).
+  p.run("reverse2('r1', 'Check returned by the bank'); reverse2('m1', 'Paid twice')");
+  // The balance counts every row; the family, tier and line readers read ledgerUnpaired. They agree
+  // while each pair nets to $0, and neither row of a pair is read by them.
+  const agree = () => p.get("[ledgerBalance(state.ledger, state.book) - ledgerBalance(ledgerUnpaired(state.ledger), state.book), " +
+    "ledgerUnpaired(state.ledger).map(function (e) { return e.id; }).filter(function (id) { return /r1|m1/.test(id); })]");
+  eq(agree(), [0, []], 'after the reverses');
+  const flip = (id) => (p.get(`row('${id}').direction`) === 'in' ? 'out' : 'in');
+  const tryEach = (ids, what) => {
+    for (const id of ids) {
+      for (const [ch, v] of [['led-amount', '215'], ['led-amount', '1'], ['led-dir', flip(id)]]) {
+        const was = p.get(`row('${id}')`), logWas = p.get('log().length');
+        p.run(`toasts = []; commits = 0; change('${ch}', '${id}', '${v}')`);
+        eq([p.get(`row('${id}')`), p.get('log().length'), p.get('commits'), p.get('toasts')], [was, logWas, 0, [PAIR_FIXED]], `${what}: ${ch} = ${v} on ${id}`);
+        eq(agree(), [0, []], `${what}: the readers and the balance after ${ch} = ${v} on ${id}`);
+      }
+    }
+  };
+  tryEach(['r1', 'rv-r1', 'm1', 'rv-m1'], 'as reversed');
+  // Un-reconcile r1 (two taps): open again, and still one of a pair.
+  p.run("act('ledger-unreconcile:r1'); act('ledger-unreconcile:r1')");
+  eq([p.get("row('r1').reconciled"), p.get("ledgerLocked(row('r1'), state.book)")], [false, false], 'r1 un-reconciled, open');
+  tryEach(['r1', 'rv-r1'], 'un-reconciled');
+  // The date and the labels change as on any row, and are logged.
+  const n0 = p.get('log().length');
+  p.run("change('led-date', 'rv-r1', '2026-10-20'); change('led-desc', 'rv-r1', 'Returned check (Ada)'); change('led-line', 'r1', 'x2'); change('led-method', 'r1', 'check')");
+  eq([p.get("row('rv-r1').date"), p.get("row('rv-r1').description"), p.get("row('r1').lineId"), p.get("row('r1').method"),
+    p.get('log().slice(' + n0 + ').map(function (e) { return e.op + ":" + e.row + ":" + Object.keys(e.f).join("+"); })')],
+  ['2026-10-20', 'Returned check (Ada)', 'x2', 'check', ['edit:rv-r1:date', 'edit:rv-r1:description', 'edit:r1:lineId', 'edit:r1:method']], 'the date and labels');
+  eq(agree(), [0, []], 'after the label edits');
+  // What the message says to do works: the reversal voided, r1 is no pair, and its amount is its own again.
+  p.run("void2('rv-r1', 'Reversed by mistake'); toasts = []; change('led-amount', 'r1', '30')");
+  eq([p.get("row('r1').amountCents"), p.get('toasts')], [3000, []], 'r1 once its reversal is voided');
+  // Control: an open row nobody reversed.
+  p.run("change('led-amount', 'u1', '90'); change('led-dir', 'u1', 'in')");
+  eq([p.get("row('u1').amountCents"), p.get("row('u1').direction")], [9000, 'in'], 'an open row');
+  // A chain (a reversal reversed) pairs from its newest end: the entry counts again, and is its own.
+  eq(p.get("[['X', 'rv-X', 'rv-rv-X'].map(function (id) { return ledgerEditRefusal({ id: id, date: '2026-10-01' }, 'amount', '5', state.book, " +
+    "[{ id: 'X', date: '2026-10-01' }, { id: 'rv-X', reverses: 'X', date: '2026-10-01' }, { id: 'rv-rv-X', reverses: 'rv-X', date: '2026-10-01' }]); }), " +
+    "ledgerEditRefusal({ id: 'rv-X' }, 'desc', 'x', state.book, [{ id: 'X' }, { id: 'rv-X', reverses: 'X' }])]"), [['', PAIR_FIXED, PAIR_FIXED], ''], 'a chain; a label');
+  eq(vm.runInContext('LEDGER_PAIR_FIXED', p.ctx), PAIR_FIXED, 'the words');
+  // The Entries list: a row of a pair shows its amount and direction, not fields, and says why in its Detail.
+  const rows = slice('renderLedgerEntries');
+  ok(/\(ePair \? '' : '<select data-ch="led-dir"/.test(rows) && /\(eLocked \|\| ePair\s*\? '<span class="money small">'/.test(rows) &&
+    /\(ePair \? '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">' \+ esc\(LEDGER_PAIR_FIXED\) \+ '<\/p>' : ''\)/.test(rows), 'the Entries row');
 });
 
 test('C4 (option B): Correct keeps the entry, reverses it, and adds the right figures as a new entry, never ticked, dated with its reversal', () => {
