@@ -8791,13 +8791,13 @@
     unmakeup: 'Tier make-up taken back', notcommission: 'Marked not the commission', reassign: 'Family unlinked',
     opening: 'Opening balance changed', reconcile: 'Marked reconciled', restore: 'Backup restored',
     'void': 'Voided', unvoid: 'Un-voided', reverse: 'Reversed', correct: 'Corrected', resolve: 'Resolved', reopen: 'Statement reopened',
-    review: 'Statement reviewed', balance: 'Statement balance added'   // Phase 3, C5
+    review: 'Statement reviewed', balance: 'Ending balance added'   // Phase 3, C5 (C5 review: "ending balance", the treasurer's words)
   };
   var LEDGER_FIELD_LABELS = {
     date: 'date', description: 'description', amountCents: 'amount', direction: 'in or out', lineId: 'budget line',
     method: 'method', ref: 'reference', source: 'source', scoutId: 'scout (family)', donor: 'donor', reimbursement: 'reimbursement',
     notCommission: 'counted as other income', tierMakeup: 'tier make-up', openingCents: 'opening balance', openingDate: 'opening date',
-    reconciledThrough: 'reconciled through', statementCents: 'statement balance'
+    reconciledThrough: 'reconciled through', statementCents: 'statement ending balance'
   };
   // One value from an event's `f`, as a leader reads it. `names` turns an id into a name
   // ({ line, scout, tier }: each id → name or ''). Pure given `names`.
@@ -9466,7 +9466,7 @@
     if (statementReopened(st)) return 'This statement was reopened, so it can’t be marked reviewed.';
     if (statementReviewed(st)) return 'This statement was already reviewed' + (st.reviewedBy ? ' by ' + st.reviewedBy : '') + ', and a review can’t be changed.';
     var rt = String((book && book.reconciledThrough) || '');
-    if (!rt || String(st.date) > rt) return 'This statement isn’t what the book is reconciled through right now, so it can’t be marked reviewed.';
+    if (!rt || st.badDate || String(st.date) > rt) return 'This statement isn’t what the book is reconciled through right now, so it can’t be marked reviewed.';
     if (st.legacy === true && !statementAdded(st)) return 'Add the statement’s ending balance first, so there’s something to check against the bank.';
     if (!who.byUid || !who.accounts) {
       return 'Sign in with your own account to mark a statement reviewed, so the review says who did it. If the pack doesn’t use accounts, sign the printout instead.';
@@ -9607,11 +9607,13 @@
       differenceCents: num(st.statementCents) && num(st.clearedCents) ? st.statementCents - st.clearedCents : null
     };
   }
-  // The treasurer's line for a legacy statement (treasurer review of C1, L1), and the balance added. Pure.
+  // The treasurer's line for a legacy statement (treasurer review of C1, L1), and the balance added.
+  // Treasurer review of C5 (8) — in "ending balance" terms, and saying the one added was typed, not checked. Pure.
   function statementLegacyLine(st) {
     return 'Reconciled through ' + fmtDateShort(st.date) + statementByOn(st.by, st.at) +
-      '. Recorded before statements were kept, so the statement balance wasn’t saved.' +
-      (typeof st.addedCents === 'number' ? ' Its ending balance, ' + fmt(st.addedCents) + ', was added afterwards' + statementByOn(st.addedBy, st.addedAt) + '.' : '');
+      '. Recorded before statements were kept, so its ending balance wasn’t saved at the time.' +
+      (typeof st.addedCents === 'number' ? ' Ending balance ' + fmt(st.addedCents) + ' added afterwards' + statementByOn(st.addedBy, st.addedAt) +
+        ', typed from the bank statement (the app couldn’t check it).' : '');
   }
   // E1 — this charge's due date, from its line and the line's event as they stand now.
   function chargeDueNow(c) {
@@ -20905,23 +20907,33 @@
   // A statement standing, in force (dated on or before `rt`, the lock) and not yet reviewed: the card
   // counts these and says what reviewing one means. Pure.
   function statementAwaitsReview(st, rt) {
-    return !!st && !statementReopened(st) && !statementReviewed(st) && !!rt && String(st.date) <= rt;
+    return !!st && !statementReopened(st) && !statementReviewed(st) && !st.badDate && !!rt && String(st.date) <= rt;
   }
   // One statement on that card. `list` all of them (a reopened one names the one that replaced it),
   // `rt` the date the book is reconciled through: a statement standing but dated after it (a backup
-  // restored to before it, say) is not what the book is locked by, and says so.
+  // restored to before it, say), or with a date that can't be read, is not what the book is locked
+  // by, and says so. Treasurer review of C5 (8, 9) — in the treasurer's words, as is a date two
+  // devices each marked reconciled (both stand; statementInForce takes the later).
   function statementBlockHtml(st, list, rt) {
     var reop = statementReopened(st), rev = statementReviewed(st);
     var later = reop ? list.filter(function (x) { return x.supersedes === st.id; })[0] : null;
-    var off = !reop && (!rt || st.date > rt);
+    var off = !reop && (!!st.badDate || !rt || st.date > rt);
+    var twice = !reop && !st.badDate && list.some(function (x) { return x !== st && x.date === st.date && !statementReopened(x); });
     var n = Array.isArray(st.ticked) ? st.ticked.length : 0, m = Array.isArray(st.outstanding) ? st.outstanding.length : 0;
     var h = '<div class="block-card" style="margin-top:8px">' +
       '<div class="spread"><span class="assign-name">Statement through ' + (st.badDate ? 'a date that can’t be read' : esc(fmtDate(st.date))) + '</span><span>' +
       (reop ? '<span class="pill">reopened</span>' : '') + (off ? '<span class="pill">not in force</span>' : '') +
       (rev ? '<span class="pill navy">reviewed</span>' : '') + '</span></div>';
+    if (off) {
+      h += '<p class="small" style="margin:4px 0 0">' + (rt
+        ? 'The book is reconciled only through ' + esc(fmtDateShort(rt)) + ', so this statement isn’t locking anything.'
+        : 'The book isn’t reconciled through any date, so this statement isn’t locking anything.') +
+        ' This usually means a backup from before it was restored.</p>';
+    }
+    if (twice) h += '<p class="small" style="margin:4px 0 0">Marked reconciled twice for this date, on two devices; the later one is in force.</p>';
     if (st.legacy) h += '<p class="small" style="margin:4px 0 0">' + esc(statementLegacyLine(st)) + '</p>';
     else {
-      h += '<p class="small" style="margin:4px 0 0">Statement balance <span class="money">' + fmt(st.statementCents || 0) + '</span> · ticked balance <span class="money">' +
+      h += '<p class="small" style="margin:4px 0 0">Bank ending balance <span class="money">' + fmt(st.statementCents || 0) + '</span> · ticked balance <span class="money">' +
         fmt(st.clearedCents || 0) + '</span> · difference <span class="money">' + fmt((st.statementCents || 0) - (st.clearedCents || 0)) + '</span></p>' +
         '<p class="small muted" style="margin:2px 0 0">' + n + ' entr' + (n === 1 ? 'y' : 'ies') + ' cleared on it, ' + m + ' outstanding. Reconciled' +
         esc(statementByOn(st.by, st.at)) + '.</p>';
@@ -21071,10 +21083,10 @@
     var rec = reconcileTotals(state.ledger, bk);
     var agrees = rec.difference === 0;
     var h = '<div class="card"><h2 class="section display">Reconcile to the bank</h2>' +
-      '<p class="small muted" style="margin:0 0 10px">Tick every entry that appears on the statement, then type the statement’s closing balance. ' +
+      '<p class="small muted" style="margin:0 0 10px">Tick every entry that appears on the statement, then type the statement’s ending balance. ' +
       'The difference should be zero. If it isn’t, something is missing — and that is exactly what you need to know.</p>' +
       '<div class="row">' +
-      '<label class="fld">Statement closing balance ($)<input class="money-in" inputmode="decimal" data-ch="book-statement" value="' +
+      '<label class="fld">Statement ending balance ($)<input class="money-in" inputmode="decimal" data-ch="book-statement" value="' +
         dollars(bk.statementCents) + '" placeholder="0.00"></label>' +
       '<label class="fld">Statement date<input type="date" data-ch="book-statement-date" value="' + esc(bk.statementDate) + '"></label>' +
       '</div>' +
@@ -30431,7 +30443,7 @@
     if (act === 'ledger-reconcile-lock') {
       var rlNo = reconcileLockRefusal(state.book, todayISO(), state.statements, canReopenStatement());
       var rlRec = reconcileTotals(state.ledger, state.book);
-      if (!rlNo && (rlRec.difference !== 0 || !rlRec.ticked)) rlNo = 'The ticked entries no longer match the statement’s closing balance (the book may have changed on another device), so it wasn’t marked reconciled. Check the difference and try again.';
+      if (!rlNo && (rlRec.difference !== 0 || !rlRec.ticked)) rlNo = 'The ticked entries no longer match the statement’s ending balance (the book may have changed on another device), so it wasn’t marked reconciled. Check the difference and try again.';
       if (rlNo) { if (ui.armed === act) ui.armed = null; showToast(rlNo); render(); return; }
       arm(act, function () {
         var rlWas = state.book.reconciledThrough || '';

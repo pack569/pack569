@@ -19517,7 +19517,7 @@ test('C2 re-review (minor): Mark reconciled can lower a lock after today, and lo
 });
 
 test('C2 re-review (minor): Mark reconciled re-checks that the ticked entries agree with the statement', () => {
-  const nope = 'The ticked entries no longer match the statement’s closing balance (the book may have changed on another device), ' +
+  const nope = 'The ticked entries no longer match the statement’s ending balance (the book may have changed on another device), ' +
     'so it wasn’t marked reconciled. Check the difference and try again.';
   const p = c2tPage({ book: { statementDate: '2026-09-30', statementCents: 12300 } });
   p.run("act3('ledger-reconcile-lock'); act3('ledger-reconcile-lock')");
@@ -22851,12 +22851,12 @@ test('C5: Money · Ledger lists the statements newest first, each with its print
   const card = c5Text(vm.runInContext('statementsCardHtml()', x));
   // Treasurer review of C5 (7): how many wait for a review, and what reviewing means under each.
   eq(card, 'Statements reconciled Each statement is kept as it was when it was marked reconciled, newest first. 1 not yet reviewed. ' +
-    'Statement through Wed, Sep 30 reviewed Statement balance $625.00 · ticked balance $625.00 · difference $0.00 ' +
+    'Statement through Wed, Sep 30 reviewed Bank ending balance $625.00 · ticked balance $625.00 · difference $0.00 ' +
     '1 entry cleared on it, 1 outstanding. Reconciled by Pat Treasurer on Oct 2. Reviewed by Sam on Oct 3. Printout ' +
-    'Statement through Wed, Sep 30 reopened Statement balance $625.00 · ticked balance $625.00 · difference $0.00 ' +
+    'Statement through Wed, Sep 30 reopened Bank ending balance $625.00 · ticked balance $625.00 · difference $0.00 ' +
     '1 entry cleared on it, 1 outstanding. Reconciled by Pat Treasurer on Oct 1. Reopened by Alex on Oct 2: “A deposit was ticked twice”. Reconciled again by Pat Treasurer on Oct 2. Printout ' +
     // Pat, an editor, can't review the legacy one (only an admin reviews, and not before its balance is added).
-    'Statement through Mon, Aug 31 Reconciled through Aug 31 by Sam on Sep 1. Recorded before statements were kept, so the statement balance wasn’t saved. ' +
+    'Statement through Mon, Aug 31 Reconciled through Aug 31 by Sam on Sep 1. Recorded before statements were kept, so its ending balance wasn’t saved at the time. ' +
     'Not yet reviewed. A pack admin other than the one who reconciled it compares it with the bank’s own statement and marks it reviewed, or another ' +
     'leader signs the printout. Printout Add the statement’s ending balance',
     'the card');
@@ -22887,7 +22887,7 @@ test('C5: Money · Ledger lists the statements newest first, each with its print
   ok(/ Reviewed by: _+ Role: _+ Date: _+ I compared this page with the bank’s own statement for this period\. Printed Oct 3, 2026\. This statement was marked reconciled before its summary figures were kept, so the lines for its own entries and those not yet on the statement are worked out from the entries as they read on the print date\.$/
     .test(sheet('st-2026-09-30-z')), 'the reviewer’s line to sign: ' + sheet('st-2026-09-30-z'));
   eq(sheet('st-2026-08-31').replace(/^.*?August 31, 2026 Bank and account \(last 4 digits\): _+ /, ''), 'Reconciled through Aug 31 by Sam on Sep 1. Recorded before statements were kept, ' +
-    'so the statement balance wasn’t saved. Which entries were ticked on it wasn’t recorded either. ' +
+    'so its ending balance wasn’t saved at the time. Which entries were ticked on it wasn’t recorded either. ' +
     'Reconciled by Sam on September 1, 2026 (recorded in the app). Signature: ______________________ ' +
     'Reviewed by: ______________________ Role: ______________ Date: ____________ I compared this page with the bank’s own statement for this period. Printed Oct 3, 2026.',
     'a legacy one');
@@ -23150,11 +23150,12 @@ test('C5: a statement from before statements were kept can have its ending balan
   eq([v.get("'addedAt' in st('st-2026-08-31')"), v.get('toasts')[0]], [false, 'Read-only access — ask a pack admin to make you an editor.'], 'a viewer');
   // How it reads: the card's line, the change history.
   const t = sandbox(['statementLegacyLine', 'statementByOn', 'statementDay', 'fmtDateYear', 'fmt', 'fmtDateShort']);
-  eq(t.statementLegacyLine(s).replace(/on \w+ \d+\.$/, 'on (today).'), 'Reconciled through Aug 31 by Sam on Sep 1. Recorded before statements were kept, so the statement balance ' +
-    'wasn’t saved. Its ending balance, $1,234.56, was added afterwards by Pat Treasurer on (today).', 'the line');
+  // Treasurer review of C5 (8): in "ending balance" terms, typed and not checked.
+  eq(t.statementLegacyLine(s).replace(/on \w+ \d+, typed/, 'on (today), typed'), 'Reconciled through Aug 31 by Sam on Sep 1. Recorded before statements were kept, so its ' +
+    'ending balance wasn’t saved at the time. Ending balance $1,234.56 added afterwards by Pat Treasurer on (today), typed from the bank statement (the app couldn’t check it).', 'the line');
   const lg = sandbox(['fmt', 'fmtDateShort', 'LEDGER_OP_LABELS', 'LEDGER_FIELD_LABELS', 'ledgerLogValue', 'ledgerEventLines']);
   eq(JSON.parse(JSON.stringify(lg.ledgerEventLines({ op: 'balance', f: { statementCents: [null, 123456] } }))),
-    [{ what: 'Statement balance added: statement balance', before: '(none)', after: '$1,234.56' }], 'the change history');
+    [{ what: 'Ending balance added: statement ending balance', before: '(none)', after: '$1,234.56' }], 'the change history');
   eq(JSON.parse(JSON.stringify(lg.ledgerEventLines({ op: 'reopen', f: { reconciledThrough: ['2026-09-30', ''] } }))),
     [{ what: 'Statement reopened: reconciled through', before: 'Sep 30', after: '(none)' }], 'a reopen in the change history');
   // Two devices adding it at once keep the earlier on both.
@@ -23393,6 +23394,31 @@ test('C5 review (treasurer 4, 5; F4): the printout says where a list differs fro
   ok(!/2,000/.test(t), 'a statement not cut says it was');
   // The account line is a blank to fill in: nothing is typed or stored.
   ok(!/<input|data-ch/.test(slice('renderBankStatementSheet')), 'the printout stores something');
+});
+
+test('C5 review (treasurer 8, 9): the card says why a statement isn’t in force, and a date signed twice; "ending balance" throughout', () => {
+  // Not in force: the book reconciled only through Aug 31 (a backup restored), or not at all, or a date that can't be read.
+  const card = (sts, more) => c5Text(vm.runInContext((more || '') + '; statementsCardHtml()', c5View(sts)));
+  ok(card([C5_SEP()], "state.book.reconciledThrough = '2026-08-31'").includes('not in force The book is reconciled only through Aug 31, so this statement isn’t ' +
+    'locking anything. This usually means a backup from before it was restored. Bank ending balance'), 'not in force');
+  ok(card([C5_SEP()], "state.book.reconciledThrough = ''").includes('not in force The book isn’t reconciled through any date, so this statement isn’t locking ' +
+    'anything. This usually means a backup from before it was restored.'), 'not reconciled at all');
+  const bad = Object.assign(C5_SEP(), { date: '', badDate: true });
+  ok(card([bad]).includes('not in force The book is reconciled only through Sep 30'), 'a date that can’t be read');
+  ok(!/not in force|isn’t locking/.test(card([C5_SEP()])), 'one in force says it isn’t');
+  // A date that can't be read is never waiting for a review, nor reviewable.
+  const rv = sandbox(['statementReviewRefusal', 'statementReopened', 'statementReviewed', 'statementAdded', 'statementAwaitsReview']);
+  eq([rv.statementReviewRefusal(bad, { by: 'Sam', byUid: 'u2', admin: true, accounts: true }, { reconciledThrough: '2026-09-30' }), rv.statementAwaitsReview(bad, '2026-09-30')],
+    [C5_RV.off, false], 'a date that can’t be read');
+  // The same date signed on two devices: said on each; not once one is reopened.
+  const two = [C5_SEP(), Object.assign(C5_SEP(), { id: 'st-2026-09-30-b', at: '2026-10-02T16:00:00.000Z', by: 'Sam' })];
+  eq(card(two).split('Marked reconciled twice for this date, on two devices; the later one is in force.').length, 3, 'on each');
+  ok(!/twice/.test(card([two[0], Object.assign({}, two[1], { reopenedAt: 'T', reopenedBy: 'Alex' })])), 'one reopened');
+  // "Ending balance" throughout the Reconcile view (the council's statement on Popcorn is another matter).
+  const rr = slice('renderReconcile');
+  ok(/then type the statement’s ending balance\. /.test(rr) && /'<label class="fld">Statement ending balance \(\$\)<input/.test(rr), 'the Reconcile view');
+  ok(!/closing balance/.test(rr + slice('statementBlockHtml') + slice('renderBankStatementSheet') + slice('statementLegacyLine')), 'a statement still says closing balance');
+  ok(!/Statement balance/.test(slice('statementBlockHtml')), 'the card still says Statement balance');
 });
 
 /* ---------------- report ---------------- */
