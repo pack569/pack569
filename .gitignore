@@ -6,6 +6,16 @@ _site-*/
 # Local pre-change backups made before each build wave — kept on disk, not in git.
 .index.pre-*.html
 
+# Cloudflare D1 (Phase 2). wrangler keeps local copies of databases under .wrangler/, and
+# `wrangler d1 export` writes a whole database — the whole pack — as one .sql file. Neither is
+# ever committed. The schema's migrations are the only .sql files the repo tracks.
+.wrangler/
+*.[Ss][Qq][Ll]
+!/migrations/*.sql
+*.[Ss][Qq][Ll][Ii][Tt][Ee]
+*.[Ss][Qq][Ll][Ii][Tt][Ee]3
+*.[Dd][Bb]
+
 # The repo is public. Printouts, exports and photos from the pack almost always carry children's
 # names (Trail's End reports, the Ideal Year PDF, rosters, event photos), so none of them are
 # tracked. Nothing the site serves is one of these types today; if an image is ever needed, add

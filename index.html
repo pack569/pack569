@@ -1009,7 +1009,8 @@
   }
   .sync-pill:hover { border-color: var(--accent); }
   .sync-dot { width: 8px; height: 8px; border-radius: 50%; background: color-mix(in srgb, var(--navy-ink) 55%, transparent); flex: 0 0 auto; }
-  .sync-pill.connecting .sync-dot, .sync-pill.offline .sync-dot { background: var(--accent); }
+  .sync-pill.connecting .sync-dot, .sync-pill.offline .sync-dot, .sync-pill.conflict .sync-dot { background: var(--accent); }
+  .sync-pill.conflict { border-color: var(--accent); }
   .sync-pill.online .sync-dot { background: color-mix(in srgb, var(--good) 60%, var(--navy-ink)); }
   @media (max-width: 480px) {
     .sync-pill { padding: 4px 7px; }
@@ -1809,6 +1810,23 @@
     messagingSenderId: "852781428950",
     appId: "1:852781428950:web:4a85f90d0518d783f95977"
   };
+
+  // ---------------------------------------------------------------------------
+  // WHICH CLOUD the pack lives in:
+  //   'firestore' — the pack record, members, invites and the parent view are Firestore
+  //                 documents, guarded by the SETUP.md Part C rules. What pack569.com runs.
+  //   'api'       — this site's own server (functions/ in the repo, Cloudflare D1 behind it),
+  //                 which enforces the same rules itself. Firebase is kept for Google sign-in
+  //                 only. Needs PACK_DOC_ID set; without one the page is device-only.
+  // Chosen at build time: scripts/build-site.mjs writes 'api' into the staging build, and the
+  // switch-over commit changes it here (docs/cloudflare-setup.md, "E. Moving the pack to its own server").
+  // ---------------------------------------------------------------------------
+  var BACKEND = 'firestore';
+  // true in the staging build only (staging.pack569.pages.dev, made-up data only): the build
+  // writes it, and --verify refuses a staging page without it or any other page with it. The
+  // one thing it does: the copy-in refuses the real move file there (moveImportBody). Always
+  // false here, so production stays this file byte for byte.
+  var STAGING = false;
 
   // ---------------------------------------------------------------------------
   // SINGLE-PACK MODE — the pack id baked in, so NOBODY ever types a passphrase.
@@ -8551,12 +8569,23 @@
     pushTimer: null,
     retryTimer: null,
     firstSnap: true,
+    // The pack record as the server last had it, as far as this device knows: { rev, device,
+    // json } from the pack feed (a server answer, not a cached or pending one) or from this
+    // device's own save, and null before any, or when the server said it has none. Reset with
+    // firstSnap. On the pack's server a record arriving while this is null is a first answer
+    // (onRemoteSnap, syncPush); on either backend the move file is built from it.
+    remoteRec: null,
+    // The record a sync-conflict is waiting on, until the leader chooses a copy (adoptRemote,
+    // keepLocalCopy). Closing the chooser with Escape leaves it set: nothing is written, and no
+    // move file is made, until they choose.
+    conflict: null,
     session: null,     // token — a passphrase change cancels in-flight work from the old session
-    mods: null,        // loaded firebase modules { app, auth, fs }
-    app: null,
-    db: null,
-    docRef: null,
+    backend: null,     // the loaded backend adapter (firestoreBackend or apiBackend) — see loadBackend
+    pack: null,        // the pack-record handle from backend.open(); null = nothing may push
     unsub: null,
+    // ---- BACKEND 'api' only (always '' / false on Firestore) ----
+    notice: '',        // why this device is holding its edits: 'awaiting-import' | 'not-set-up' | 'no-session' — see holdPushes
+    packMissing: false,// the pack record's last answer was "the server has none yet"
     // ---- Accounts (additive, runtime-only — NEVER persisted in the pack-record JSON) ----
     docId: null,               // sha256(passphrase) — the pack's doc id, also members/packmeta path key
     user: null,                // Google identity {uid, displayName, email, photoURL} or null (null = anonymous/legacy)
@@ -8565,24 +8594,25 @@
     ownerUid: null,            // packmeta/{docId}.owner — the first person to sign in / claim the pack
     ownerHealing: false,       // the owner's member doc vanished and ensureMyMemberDoc is recreating it
     accountsUnavailable: false,// true when packmeta/members reads are permission-denied (legacy rules) → roles NOT enforced
-    membersUnsub: null,        // second onSnapshot (the members subcollection, or just our own doc)
+    membersUnsub: null,        // the members subscription (the members subcollection, or just our own doc)
     membersScope: null,        // 'all' (leaders read the roster) | 'self' (parents/pending: own doc only)
     membersDeniedAs: null,     // the role a roster read was last refused under — see applyMembersSubscription
-    redirectChecked: false,    // one-time getRedirectResult() guard (mobile Google fallback)
+    redirectChecked: false,    // one-time completeRedirect() guard (mobile Google fallback)
     // ---- Parent phase (runtime-only, like everything above — never persisted) ----
     feed: null,                // which document this session is subscribed to: 'doc' | 'parent' | null
     parentView: null,          // the sanitized packs/{docId}/public/view payload (parents/pending only)
-    parentUnsub: null,         // onSnapshot for that derived doc
+    parentUnsub: null,         // the subscription to that derived doc
     invites: [],               // outstanding packs/{docId}/invites/* (admins only)
-    invitesUnsub: null,        // onSnapshot for the invites subcollection
+    invitesUnsub: null,        // the subscription to the invites subcollection
     invitesUnavailable: false, // invites read denied (older Part C rules) → hide the invite UI ONLY
     // ---- Self-serve join link (runtime-only, never persisted in the pack record) ----
     joinCfg: null,             // packs/{docId}/public/join = { open, mode, code, showStandings }
-    joinUnsub: null,           // onSnapshot for that config doc (leaders only)
+    joinUnsub: null,           // the subscription to that config doc (leaders only)
     joinUnavailable: false,    // join-config read denied (older Part C rules) → hide the admin card ONLY
     joinLoaded: false,         // the join config has answered (either way) — parent-view writes wait on it
     joinRejected: null,        // null | 'closed' | 'badcode' | 'nolink' | 'removed' — signed in, but the pack won't take them
     membersFromServer: false,  // the last members snapshot came from the server, not the cache
+    membersHeard: false,       // a members snapshot has come at all (before one, myRole is the session start's)
     deviceId: (function () {
       try {
         var id = localStorage.getItem(SYNC_DEVICE_KEY);
@@ -8693,7 +8723,7 @@
   // link for a DIFFERENT pack is ignored outright (it can't re-point this page, and its code
   // would never match ours anyway).
   function activeJoin() {
-    if (!FIREBASE_CONFIG) return null;
+    if (!backendConfigured()) return null;
     var fixed = fixedPackId();
     if (fixed) {
       var rec = loadJoin();
@@ -8707,7 +8737,7 @@
   // The baked-in id wins over EVERYTHING, so neither a stray '?pack=' link nor a leftover
   // passphrase on some device can aim this page at another pack.
   function syncDocIdSource() {
-    if (!FIREBASE_CONFIG) return { kind: 'none' };
+    if (!backendConfigured()) return { kind: 'none' };
     var fixed = fixedPackId();
     if (fixed) return { kind: 'fixed', docId: fixed };
     if (syncPass()) return { kind: 'pass' };
@@ -8821,14 +8851,14 @@
     return fixedPackMode() && (fixedSyncBlocked() || !sync.myRole);
   }
   // Tear the cloud side down and sit on the local copy. Called when single-pack mode can't
-  // prove the rules are published: drops the doc ref so NOTHING can push, kills any feed,
+  // prove the rules are published: drops the pack handle so NOTHING can push, kills any feed,
   // and leaves the setup gate (gateMode() === 'setup') on screen.
   function haltFixedSync() {
     stopDocFeed();
     stopParentFeed();
     clearTimeout(sync.pushTimer);
     sync.pushTimer = null;
-    sync.docRef = null;
+    sync.pack = null;
     sync.feed = null;
     sync.dirty = false;
     sync.parentView = null;
@@ -8842,12 +8872,16 @@
     if (sync.unsub) { try { sync.unsub(); } catch (e) { /* already gone */ } sync.unsub = null; }
     clearTimeout(sync.pushTimer);
     clearTimeout(sync.retryTimer);
-    sync.docRef = null;
+    sync.pack = null;
     sync.firstSnap = true;
+    sync.remoteRec = null;
+    sync.conflict = null;
     sync.dirty = false;
     sync.session = null;
     sync.mode = 'local';
     sync.error = '';
+    sync.notice = '';
+    sync.packMissing = false;
     clearAccountsRuntime(); // tear down the members listener + role state (auth persistence is untouched)
   }
   // Clears the runtime accounts layer without signing anyone out of Firebase Auth.
@@ -8878,6 +8912,7 @@
     sync.joinRejected = null;
     sync.joinLoaded = false;
     sync.membersFromServer = false;
+    sync.membersHeard = false;
     parentViewFingerprint = null;
     clearTimeout(parentViewTimer);
     parentViewTimer = null;
@@ -8896,18 +8931,670 @@
       return hex;
     });
   }
-  function loadFirebase() {
-    if (sync.mods && sync.app) return Promise.resolve(sync.mods);
-    return Promise.all([
-      import(SYNC_SDK_BASE + 'firebase-app.js'),
-      import(SYNC_SDK_BASE + 'firebase-auth.js'),
-      import(SYNC_SDK_BASE + 'firebase-firestore.js')
-    ]).then(function (loaded) {
-      sync.mods = { app: loaded[0], auth: loaded[1], fs: loaded[2] };
-      if (!sync.app) sync.app = sync.mods.app.initializeApp(FIREBASE_CONFIG);
-      return sync.mods;
+  // ---- The backend adapter ---------------------------------------------------------------
+  // Every call this page makes to its cloud goes through ONE object, sync.backend. The app
+  // decides what to read and write and what an answer means; the adapter only moves it. Today
+  // the only adapter is Firestore; a second one (the pack's own server) will offer the same
+  // methods, so nothing above or below this block needs to know which is in use.
+  //
+  // The contract, for whoever writes the next one:
+  //   - Records come back as PLAIN DATA (null for "no such record"), never SDK objects.
+  //   - Every subscription callback gets (data, meta), meta = { fromServer, pendingWrites }.
+  //     fromServer is load-bearing: only a server answer may open the parent-view gate
+  //     (applyJoinSubscription) or tell a device it was removed (applyMembersSubscription).
+  //     fromServer means: this answer reflects the server's state (with our own pending write
+  //     on top, if pendingWrites says so). Any answer from a cache, a stored copy or a replay
+  //     is fromServer false, however recent it is.
+  //   - subscribe* returns an unsubscribe function; everything else returns a Promise.
+  //   - Errors keep a Firebase-style err.code — the app branches on 'permission-denied'.
+  //   - Nothing here decides who may do what. The app's gates and the server's rules do.
+  //   - open() is the first call that touches pack data, so the app calls it only AFTER the
+  //     unverified-email gate in syncStart. init() and the sign-in calls touch auth only.
+  var firestoreBackend = {
+    mods: null,        // the three SDK modules { app, auth, fs }
+    app: null,
+    db: null,          // the Firestore instance — made by open(), never before
+    init: function (config) {
+      var self = this;
+      if (self.mods && self.app) return Promise.resolve(self);
+      return Promise.all([
+        import(SYNC_SDK_BASE + 'firebase-app.js'),
+        import(SYNC_SDK_BASE + 'firebase-auth.js'),
+        import(SYNC_SDK_BASE + 'firebase-firestore.js')
+      ]).then(function (loaded) {
+        self.mods = { app: loaded[0], auth: loaded[1], fs: loaded[2] };
+        if (!self.app) self.app = self.mods.app.initializeApp(config);
+        return self;
+      });
+    },
+    // ---- Sign-in (auth only — none of these touch pack data) ----
+    auth: function () { return this.mods.auth.getAuth(this.app); },
+    // The plain shape the app reads. emailVerified is copied as-is: undefined stays undefined,
+    // so the `=== false` gate in syncStart still changes nothing on an SDK that omits it.
+    userOf: function (u) {
+      if (!u) return null;
+      return { uid: u.uid, isAnonymous: !!u.isAnonymous, displayName: u.displayName, email: u.email,
+        photoURL: u.photoURL, emailVerified: u.emailVerified };
+    },
+    // A pending Google redirect sign-in (the mobile / popup-blocked fallback), or null.
+    completeRedirect: function () {
+      var self = this;
+      return self.mods.auth.getRedirectResult(self.auth()).then(function (res) {
+        return res && res.user ? self.userOf(res.user) : null;
+      });
+    },
+    currentUser: function () { return this.userOf(this.auth().currentUser); },
+    signInAnonymously: function () {
+      var self = this;
+      return self.mods.auth.signInAnonymously(self.auth()).then(function (cred) { return self.userOf(cred.user); });
+    },
+    signInWithGoogle: function () {
+      return this.mods.auth.signInWithPopup(this.auth(), new this.mods.auth.GoogleAuthProvider());
+    },
+    signInWithGoogleRedirect: function () {
+      return this.mods.auth.signInWithRedirect(this.auth(), new this.mods.auth.GoogleAuthProvider());
+    },
+    signOut: function () { return this.mods.auth.signOut(this.auth()); },
+    // ---- Pack data ----
+    // The handle for one pack's record. Holding it is what lets this device push; the app
+    // drops it (haltFixedSync, syncStop) to make sure nothing can.
+    open: function (docId) {
+      if (!this.db) this.db = this.mods.fs.getFirestore(this.app);
+      return { docId: docId, ref: this.mods.fs.doc(this.db, 'packs', docId) };
+    },
+    isOpen: function () { return !!this.db; },
+    // Stamped by the server when the write lands.
+    serverTime: function () { return this.mods.fs.serverTimestamp(); },
+    metaOf: function (snap) {
+      var md = snap && snap.metadata;
+      return { fromServer: !(md && md.fromCache), pendingWrites: !!(md && md.hasPendingWrites) };
+    },
+    dataOf: function (snap) { return snap.exists() ? (snap.data() || {}) : null; },
+    ref: function (docId, sub, id) { return this.mods.fs.doc(this.db, 'packs', docId, sub, id); },
+    get: function (ref) { var self = this; return self.mods.fs.getDoc(ref).then(function (s) { return self.dataOf(s); }); },
+    watch: function (ref, opts, onNext, onErr) {
+      var self = this;
+      var next = function (snap) { onNext(self.dataOf(snap), self.metaOf(snap)); };
+      return opts ? self.mods.fs.onSnapshot(ref, opts, next, onErr) : self.mods.fs.onSnapshot(ref, next, onErr);
+    },
+    // The pack record: { rev, device, json, updatedAt }, or null before anyone has saved.
+    // includeMetadataChanges, as for the join config: the app waits for a server answer before
+    // it treats anything as the pack record's first answer (onRemoteSnap), and without it the
+    // server confirming an unchanged cached copy raises no event, so that wait never ends.
+    subscribePack: function (h, onNext, onErr) { return this.watch(h.ref, { includeMetadataChanges: true }, onNext, onErr); },
+    // One idempotent read-modify-write. build(remote) is handed the record as it stands right
+    // now (null if none) and returns { record, result }; it may run more than once if another
+    // device writes in between, so it must not have side effects that a rerun would double.
+    // Resolves with the last run's result. A build() with no record writes nothing (syncPush
+    // returns one for a record it has not heard of yet, and no backend writes an empty record).
+    pushPack: function (h, build) {
+      var self = this;
+      return self.mods.fs.runTransaction(self.db, function (tx) {
+        return tx.get(h.ref).then(function (snap) {
+          var out = build(self.dataOf(snap));
+          if (out.record) tx.set(h.ref, out.record);
+          return out.result;
+        });
+      });
+    },
+    // The derived parent view, packs/{docId}/public/view.
+    subscribeView: function (docId, onNext, onErr) { return this.watch(this.ref(docId, 'public', 'view'), null, onNext, onErr); },
+    writeView: function (docId, data) { return this.mods.fs.setDoc(this.ref(docId, 'public', 'view'), data); },
+    // The join config, packs/{docId}/public/join. includeMetadataChanges is what makes a server
+    // answer arrive at all when it only confirms a cached copy — without it meta.fromServer
+    // might never be true and the parent-view gate would stay shut for the whole session.
+    subscribeJoin: function (docId, onNext, onErr) {
+      return this.watch(this.ref(docId, 'public', 'join'), { includeMetadataChanges: true }, onNext, onErr);
+    },
+    writeJoin: function (docId, data) { return this.mods.fs.setDoc(this.ref(docId, 'public', 'join'), data); },
+    // packmeta/{docId} = { owner } — who claimed the pack first.
+    getPackMeta: function (docId) { return this.get(this.mods.fs.doc(this.db, 'packmeta', docId)); },
+    putPackMeta: function (docId, data) { return this.mods.fs.setDoc(this.mods.fs.doc(this.db, 'packmeta', docId), data); },
+    // Members: scope 'all' watches the roster (leaders only); 'self' watches only uid's own
+    // doc, and reports [] when it does not exist. Each member carries its doc id as `uid`.
+    // includeMetadataChanges, as for the pack record: the server confirming an unchanged
+    // cached roster is what sets sync.membersFromServer, and without it no event comes, so a
+    // choice waiting on the server's word never ends (review of cd7078e..4347cc6, open item A).
+    // Only that answer is wanted: an event whose members and fromServer are both as before
+    // (our own write confirmed, say) is not passed on, so the app hears what it heard before.
+    subscribeMembers: function (docId, scope, uid, onNext, onErr) {
+      var self = this, fs = self.mods.fs;
+      var ref = scope === 'all'
+        ? fs.collection(self.db, 'packs', docId, 'members')
+        : fs.doc(self.db, 'packs', docId, 'members', uid);
+      var last = null;
+      return fs.onSnapshot(ref, { includeMetadataChanges: true }, function (snap) {
+        var arr = [];
+        if (scope === 'all') {
+          snap.forEach(function (d) { var m = d.data() || {}; m.uid = d.id; arr.push(m); });
+        } else if (snap.exists()) {
+          var me = snap.data() || {}; me.uid = snap.id; arr.push(me);
+        }
+        var meta = self.metaOf(snap), seen = null;
+        try { seen = meta.fromServer + '|' + JSON.stringify(arr); } catch (e) { seen = null; }
+        if (seen !== null && seen === last) return;
+        last = seen;
+        onNext(arr, meta);
+      }, onErr);
+    },
+    getMember: function (docId, uid) { return this.get(this.ref(docId, 'members', uid)); },
+    putMember: function (docId, uid, data) { return this.mods.fs.setDoc(this.ref(docId, 'members', uid), data); },
+    updateMemberRole: function (docId, uid, role) { return this.mods.fs.updateDoc(this.ref(docId, 'members', uid), { role: role }); },
+    deleteMember: function (docId, uid) { return this.mods.fs.deleteDoc(this.ref(docId, 'members', uid)); },
+    // Invites, keyed by lowercased email. Each carries its doc id as `key`.
+    subscribeInvites: function (docId, onNext, onErr) {
+      var fs = this.mods.fs;
+      return fs.onSnapshot(fs.collection(this.db, 'packs', docId, 'invites'), function (qs) {
+        var arr = [];
+        qs.forEach(function (d) { var v = d.data() || {}; v.key = d.id; arr.push(v); });
+        onNext(arr);
+      }, onErr);
+    },
+    getInvite: function (docId, key) { return this.get(this.ref(docId, 'invites', key)); },
+    putInvite: function (docId, key, data) { return this.mods.fs.setDoc(this.ref(docId, 'invites', key), data); },
+    deleteInvite: function (docId, key) { return this.mods.fs.deleteDoc(this.ref(docId, 'invites', key)); }
+  };
+  // ---- The pack's own server (BACKEND 'api') ----------------------------------------------
+  // The same methods as firestoreBackend, over HTTP to this site's /api: functions/ in the repo,
+  // Cloudflare D1 behind it, and SETUP.md Part C enforced there (functions/_lib/rules.js).
+  // Firebase stays for ONE thing, Google sign-in: its app and auth modules are loaded, never
+  // Firestore. Every call carries the account's Firebase ID token (Authorization: Bearer); a 401
+  // gets one fresh token and one more try.
+  //
+  // What an answer means to the app (functions/_lib/http.js is the server's half):
+  //   2xx, a JSON object    the answer. Only these ever reach a subscriber, so meta.fromServer
+  //                         is true exactly when the server said it. Nothing is cached here.
+  //                         Each read then holds it to the server's own shape (recordOf):
+  //                         any other shape is 'unavailable', and never reads as "none".
+  //   a redirect            'unavailable': the API never sends one, and it is not followed.
+  //   403, the fixed body   err.code 'permission-denied', which the app's removal and refusal
+  //                         paths already know. ANY OTHER 403 (a Cloudflare Access page, a
+  //                         proxy) is 'unavailable': it must never read as "the pack refused you".
+  //   409 conflict          'aborted', err.remote = the record as the server has it
+  //   409 last-admin, awaiting-import   'failed-precondition', err.reason says which
+  //   429                   'resource-exhausted', err.retryAfter in seconds
+  //   400 / 404 / 413       'invalid-argument' / 'not-found' / 'resource-exhausted'
+  //   503, 5xx, no answer   'unavailable'; err.notSetUp when the server says it is not set up
+  //
+  // REALTIME IS POLLING (poll below). Firestore pushed every change; this server is asked, by one
+  // poller for every subscription on the page:
+  //   - the pack record and the parent view are fetched only when GET /rev says they moved;
+  //   - members, invites and the join config at most once a minute, and at once after a write,
+  //     after a refusal, and when the tab comes back;
+  //   - every 15 s while the pack record is subscribed (a leader), every 60 s otherwise (a
+  //     family), only while the tab is visible, and again whenever the window gets focus;
+  //     failures back off, doubling, to 5 minutes;
+  //   - nothing is polled once nothing is subscribed: sign-out, haltFixedSync and syncStop all
+  //     unsubscribe.
+  // pendingWrites is always false, because nothing is shown before the server has taken it. This
+  // device's own save is known by its rev (sawRev), and by its device id as before (onRemoteSnap).
+  //
+  // THE SERVER ASSIGNS THE REV (serverRevs). A save is compare-and-swap: If-Match the rev this
+  // device read, and the server stores that rev + 1 or answers 409 with its own copy, which
+  // pushPack hands back to build() — at most PUSH_TRIES times. syncPush reads serverRevs to
+  // derive the rev exactly as the server will, and to merge in a save it has not seen yet.
+  var apiBackend = {
+    mods: null,        // Firebase's { app, auth } modules — never firestore
+    app: null,
+    packId: null,      // set by open(); isOpen() is what cloudReady() asks
+    serverRevs: true,
+    feeds: [],         // the live subscriptions — see watchFeed and poll
+    timer: null,       // the next scheduled poll
+    kickTimer: null,   // a poll asked for "now" (a new subscription, a write, focus)
+    kickForce: false,
+    busy: null,        // the poll in flight, or null
+    again: false,
+    fails: 0,          // polls in a row that failed: the back-off
+    hooked: false,
+    LEADER_MS: 15000,
+    FAMILY_MS: 60000,
+    SLOW_MS: 60000,
+    MAX_MS: 300000,
+    PUSH_TRIES: 4,
+    NOT_SET_UP: ['no-database', 'no-deploy-env', 'deployment-unset', 'wrong-database', 'wrong-project'],
+    JOIN_KEYS: ['open', 'mode', 'code', 'showStandings', 'showAmounts', 'contact'],
+    init: function (config) {
+      var self = this;
+      if (self.mods && self.app) return Promise.resolve(self);
+      return Promise.all([
+        import(SYNC_SDK_BASE + 'firebase-app.js'),
+        import(SYNC_SDK_BASE + 'firebase-auth.js')
+      ]).then(function (loaded) {
+        self.mods = { app: loaded[0], auth: loaded[1] };
+        if (!self.app) self.app = self.mods.app.initializeApp(config);
+        self.watchVisibility();
+        return self;
+      });
+    },
+    // ---- Sign-in: the same Firebase Auth calls as firestoreBackend ----
+    auth: function () { return this.mods.auth.getAuth(this.app); },
+    userOf: function (u) {
+      if (!u) return null;
+      return { uid: u.uid, isAnonymous: !!u.isAnonymous, displayName: u.displayName, email: u.email,
+        photoURL: u.photoURL, emailVerified: u.emailVerified };
+    },
+    completeRedirect: function () {
+      var self = this;
+      return self.mods.auth.getRedirectResult(self.auth()).then(function (res) {
+        return res && res.user ? self.userOf(res.user) : null;
+      });
+    },
+    currentUser: function () { return this.userOf(this.auth().currentUser); },
+    signInWithGoogle: function () {
+      return this.mods.auth.signInWithPopup(this.auth(), new this.mods.auth.GoogleAuthProvider());
+    },
+    signInWithGoogleRedirect: function () {
+      return this.mods.auth.signInWithRedirect(this.auth(), new this.mods.auth.GoogleAuthProvider());
+    },
+    signOut: function () { this.stopAll(); return this.mods.auth.signOut(this.auth()); },
+    // ---- HTTP ----
+    // One call. Resolves with the JSON object of a 2xx answer; rejects with an Error carrying a
+    // Firebase-style code (the table above). On a 401, one fresh token and one more try.
+    call: function (method, path, body, headers) {
+      var self = this;
+      function attempt(fresh) {
+        var u = self.mods && self.app ? self.auth().currentUser : null;
+        if (!u) return Promise.reject(self.fail('unauthenticated', 0, null));
+        return Promise.resolve(u.getIdToken(fresh)).then(function (token) {
+          var h = { authorization: 'Bearer ' + token };
+          Object.keys(headers || {}).forEach(function (k) { h[k] = headers[k]; });
+          // redirect 'error': the API never redirects, so one (a sign-in page in front of the site,
+          // say) is not the server's answer, and fails as 'unavailable' rather than being followed.
+          var init = { method: method, headers: h, cache: 'no-store', redirect: 'error' };
+          if (body !== undefined) {
+            h['content-type'] = 'application/json';
+            init.body = typeof body === 'string' ? body : JSON.stringify(body);
+          }
+          return fetch(path, init);
+        }).then(function (res) {
+          if (res.status === 401 && !fresh) return attempt(true);
+          return res.text().then(function (text) { return self.answer(res, text); });
+        }, function () {
+          // No answer at all: offline, or no token to send.
+          throw self.fail('unavailable', 0, null);
+        });
+      }
+      return attempt(false);
+    },
+    answer: function (res, text) {
+      var body = null;
+      if (/^application\/json\b/i.test(String(res.headers.get('content-type') || ''))) {
+        try { body = JSON.parse(text); } catch (e) { body = null; }
+        if (!body || typeof body !== 'object' || Array.isArray(body)) body = null;
+      }
+      var s = res.status;
+      if (s >= 200 && s < 300 && body) return body;
+      var code = 'unavailable';
+      if (body) {
+        if (s === 403) {
+          // The server's refusal is ALWAYS exactly this body; anything else is not the server.
+          if (Object.keys(body).length === 2 && body.error === 'forbidden' && body.code === 'permission-denied') code = 'permission-denied';
+        } else if (s === 401) code = 'unauthenticated';
+        else if (s === 409 && body.code === 'aborted') code = 'aborted';
+        else if (s === 409 && body.code === 'failed-precondition') code = 'failed-precondition';
+        else if (s === 429 || s === 413) code = 'resource-exhausted';
+        else if (s === 400) code = 'invalid-argument';
+        else if (s === 404) code = 'not-found';
+      }
+      var err = this.fail(code, s, body);
+      if (code === 'aborted') err.remote = body;
+      if (s === 429) {
+        var wait = Number(res.headers.get('retry-after'));
+        if (isFinite(wait) && wait > 0) err.retryAfter = wait;
+      }
+      throw err;
+    },
+    fail: function (code, status, body) {
+      var reason = body && typeof body.reason === 'string' && body.reason ? body.reason
+        : (body && typeof body.error === 'string' ? body.error : '');
+      var e = new Error(this.say(code, reason));
+      e.code = code;
+      e.status = status || 0;
+      e.reason = reason;
+      e.notSetUp = code === 'unavailable' && this.NOT_SET_UP.indexOf(reason) !== -1;
+      return e;
+    },
+    say: function (code, reason) {
+      if (reason === 'awaiting-import') return 'Waiting for the pack’s owner to copy the pack over.';
+      if (reason === 'last-admin') return 'Keep at least one admin.';
+      if (code === 'unavailable') {
+        return this.NOT_SET_UP.indexOf(reason) !== -1 ? 'The pack’s server isn’t set up yet.' : 'Couldn’t reach the pack’s server.';
+      }
+      if (code === 'unauthenticated') return 'Couldn’t confirm your Google sign-in — sign out and in again.';
+      if (code === 'permission-denied') return 'The pack’s server refused that.';
+      if (code === 'resource-exhausted') {
+        return reason === 'too-large' ? 'The pack record is too big to save.' : 'Too many tries — wait a while and try again.';
+      }
+      return 'The pack’s server couldn’t do that (' + (reason || code) + ').';
+    },
+    packPath: function (docId, tail) { return '/api/pack/' + encodeURIComponent(docId) + (tail || ''); },
+    // A write, then an early poll, so the change shows here before the next scheduled one.
+    write: function (method, path, body) {
+      var self = this;
+      return self.call(method, path, body).then(function (r) { self.kick(true); return r; });
+    },
+    // ---- Polling ----
+    // A subscription is a feed: { what, docId, next, err, get }, where get() resolves to
+    // { data, mark }. `rev` feeds (the pack record, the parent view) are fetched only when GET /rev
+    // shows a mark (the pack's rev, the view's generatedAt) other than the one they last had;
+    // the rest are fetched when due and delivered only when the answer changed. A new feed, and
+    // one that failed, is always delivered on its next answer.
+    watchFeed: function (feed) {
+      var self = this;
+      feed.off = false;
+      feed.fresh = true;
+      feed.stale = false;
+      feed.mark = undefined;
+      feed.text = null;
+      feed.at = 0;
+      self.feeds.push(feed);
+      self.kick(false);
+      return function () {
+        feed.off = true;
+        self.feeds = self.feeds.filter(function (f) { return f !== feed; });
+        if (!self.feeds.length) self.stopTimers();
+      };
+    },
+    deliver: function (feed, data) {
+      if (feed.off) return;
+      feed.fresh = false;
+      feed.stale = false;
+      feed.next(data, { fromServer: true, pendingWrites: false });
+    },
+    // A read that failed. A refusal ends the subscription and tells it, as a Firestore listener's
+    // error does. Anything else (offline, 5xx, not set up) keeps it, marks it to be delivered
+    // again once the server answers, and backs the poller off; the pack record and the parent
+    // view (`report`) also say so, which is what turns the sync pill to Offline.
+    miss: function (feed, err, tick) {
+      if (feed.off) return;
+      var code = err && err.code;
+      if (code === 'permission-denied' || code === 'unauthenticated' || code === 'not-found') {
+        feed.off = true;
+        this.feeds = this.feeds.filter(function (f) { return f !== feed; });
+        if (code === 'permission-denied') tick.denied = true;
+        feed.err(err);
+        return;
+      }
+      tick.failed = true;
+      feed.stale = true;
+      if (feed.report) feed.err(err);
+    },
+    // One round. `force` re-reads the members, invites and join config even if not due; the pack
+    // record and the parent view still go by /rev. A refusal anywhere re-reads the members at
+    // once, so a removed leader's device hears it in the same round (applyMembersSubscription).
+    poll: function (force) {
+      var self = this;
+      if (self.busy) { self.again = true; self.kickForce = self.kickForce || !!force; return self.busy; }
+      clearTimeout(self.timer);
+      self.timer = null;
+      var live = self.feeds.slice();
+      if (!live.length) return Promise.resolve();
+      var tick = { failed: false, denied: false };
+      var started = Date.now();
+      var revFeeds = live.filter(function (f) { return f.rev; });
+      var revP = !revFeeds.length ? Promise.resolve() :
+        self.call('GET', self.packPath(revFeeds[0].docId, '/rev')).then(function (r) {
+          return Promise.all(revFeeds.map(function (f) {
+            var mark = f.what === 'pack' ? r.rev : r.viewAt;
+            // A /rev answer without the mark this feed goes by is not the server's (item 3 below).
+            if (f.what === 'pack' ? typeof mark !== 'number' : !(mark === null || typeof mark === 'number')) {
+              // No rev for the pack feed is also what the server answers someone who is no
+              // longer a leader: the members are re-read in this same round, as after a refusal,
+              // so a device whose leader role was taken away hears it now, not at the next slow
+              // read (security review of 260f467..db851c7, F5).
+              if (f.what === 'pack') tick.denied = true;
+              self.miss(f, self.fail('unavailable', 0, null), tick);
+              return null;
+            }
+            if (f.off || (!f.fresh && !f.stale && mark === f.mark)) return null;
+            return f.get().then(function (got) { f.mark = got.mark; self.deliver(f, got.data); },
+              function (err) { self.miss(f, err, tick); });
+          }));
+        }, function (err) { revFeeds.forEach(function (f) { self.miss(f, err, tick); }); });
+      self.busy = revP.then(function () {
+        return Promise.all(live.filter(function (f) {
+          return !f.rev && !f.off && (force || tick.denied || f.fresh || f.stale || started - f.at >= self.SLOW_MS);
+        }).map(function (f) {
+          return f.get().then(function (got) {
+            f.at = started;
+            var text = JSON.stringify(got.data);
+            if (!f.fresh && !f.stale && text === f.text) return;
+            f.text = text;
+            self.deliver(f, got.data);
+          }, function (err) { self.miss(f, err, tick); });
+        }));
+      }).then(null, function (e) {
+        tick.failed = true;
+        try { console.error('pack server poll', e); } catch (x) { /* no console */ }
+      }).then(function () {
+        self.busy = null;
+        self.fails = tick.failed ? Math.min(self.fails + 1, 8) : 0;
+        if (self.again) {
+          self.again = false;
+          var f2 = self.kickForce;
+          self.kickForce = false;
+          return self.poll(f2);
+        }
+        self.schedule();
+      });
+      return self.busy;
+    },
+    pollNow: function () { return this.poll(true); },
+    schedule: function () {
+      var self = this;
+      clearTimeout(self.timer);
+      self.timer = null;
+      if (!self.feeds.length || self.hidden()) return;
+      var leader = self.feeds.some(function (f) { return f.what === 'pack'; });
+      var wait = Math.min((leader ? self.LEADER_MS : self.FAMILY_MS) * Math.pow(2, self.fails), self.MAX_MS);
+      self.timer = setTimeout(function () { self.timer = null; self.poll(false); }, wait);
+    },
+    kick: function (force) {
+      var self = this;
+      self.kickForce = self.kickForce || !!force;
+      if (self.kickTimer) return;
+      self.kickTimer = setTimeout(function () {
+        self.kickTimer = null;
+        var f = self.kickForce;
+        self.kickForce = false;
+        self.poll(f);
+      }, 0);
+    },
+    stopTimers: function () {
+      clearTimeout(this.timer);
+      this.timer = null;
+      clearTimeout(this.kickTimer);
+      this.kickTimer = null;
+    },
+    stopAll: function () {
+      this.feeds.forEach(function (f) { f.off = true; });
+      this.feeds = [];
+      this.stopTimers();
+    },
+    hidden: function () { return typeof document !== 'undefined' && document.visibilityState === 'hidden'; },
+    // Hidden tab: no timer. Back, or focused: a round now.
+    watchVisibility: function () {
+      var self = this;
+      if (self.hooked || typeof document === 'undefined' || typeof window === 'undefined') return;
+      self.hooked = true;
+      document.addEventListener('visibilitychange', function () {
+        if (self.hidden()) self.stopTimers();
+        else self.kick(true);
+      });
+      window.addEventListener('focus', function () { self.kick(true); });
+    },
+    // ---- Pack data ----
+    open: function (docId) { this.packId = docId; return { docId: docId }; },
+    isOpen: function () { return !!this.packId; },
+    // The server stamps its own times; a value here is dropped before anything is sent.
+    serverTime: function () { return null; },
+    // EVERY READ IS HELD TO THE SHAPE THE SERVER SENDS (security review of stage C, item 3).
+    // "None" is only ever the server saying so — exists: false — and an answer of any other
+    // shape (an empty object, a missing list) throws 'unavailable', like no answer at all. Read
+    // loosely, a 2xx {} from something in front of the API was "no pack" (the seed path), "no
+    // member row" (this device wiped as removed) or "no members".
+    shapeError: function () { return this.fail('unavailable', 0, null); },
+    recordOf: function (b) {
+      if (b && b.exists === false) return null;
+      if (b && b.exists === true && typeof b.rev === 'number' && typeof b.json === 'string') {
+        return { rev: b.rev, device: b.device, updatedAt: b.updatedAt, json: b.json };
+      }
+      throw this.shapeError();
+    },
+    subscribePack: function (h, onNext, onErr) {
+      var self = this;
+      return self.watchFeed({ what: 'pack', docId: h.docId, rev: true, report: true, next: onNext, err: onErr,
+        get: function () {
+          return self.call('GET', self.packPath(h.docId)).then(function (b) {
+            var rec = self.recordOf(b);
+            return { data: rec, mark: rec ? rec.rev : 0 };
+          });
+        } });
+    },
+    // Our own save landed as `rev`: the pack feed need not fetch it back.
+    sawRev: function (docId, rev) {
+      this.feeds.forEach(function (f) {
+        if (f.what === 'pack' && f.docId === docId && !f.fresh && !f.stale && typeof rev === 'number' && rev > f.mark) f.mark = rev;
+      });
+    },
+    // GET the record, build(remote), PUT it If-Match the rev read. A 409 carries the server's
+    // copy, and build() runs again on it (it is idempotent — see syncPush), PUSH_TRIES in all.
+    // A build() with no record sends nothing, and resolves with its result (syncPush: a record
+    // this device has never heard of, handed to the first-answer comparison instead).
+    pushPack: function (h, build) {
+      var self = this;
+      var path = self.packPath(h.docId);
+      function put(remote, tries) {
+        var out = build(remote);
+        if (!out.record) return Promise.resolve(out.result);
+        var base = remote && typeof remote.rev === 'number' ? remote.rev : 0;
+        return self.call('PUT', path, out.record.json,
+          { 'if-match': String(base), 'x-pack-device': String(out.record.device || '').slice(0, 128) })
+          .then(function (ok) {
+            self.sawRev(h.docId, ok.rev);
+            return out.result;
+          }, function (err) {
+            var again = null;
+            if (err.code === 'aborted' && tries > 1) { try { again = self.recordOf(err.remote); } catch (e) { again = null; } }
+            if (again) return put(again, tries - 1);
+            throw err;
+          });
+      }
+      return self.call('GET', path).then(function (b) { return put(self.recordOf(b), self.PUSH_TRIES); });
+    },
+    subscribeView: function (docId, onNext, onErr) {
+      var self = this;
+      return self.watchFeed({ what: 'view', docId: docId, rev: true, report: true, next: onNext, err: onErr,
+        get: function () {
+          return self.call('GET', self.packPath(docId, '/view')).then(function (b) {
+            if (b.exists === false) return { data: null, mark: null };
+            if (b.exists !== true || !b.view || typeof b.view !== 'object' || Array.isArray(b.view)) throw self.shapeError();
+            return { data: b.view, mark: b.generatedAt };
+          });
+        } });
+    },
+    writeView: function (docId, data) {
+      var v = {};
+      Object.keys(data || {}).forEach(function (k) { if (k !== 'generatedAt') v[k] = data[k]; });
+      return this.write('PUT', this.packPath(docId, '/view'), v);
+    },
+    subscribeJoin: function (docId, onNext, onErr) {
+      var self = this;
+      return self.watchFeed({ what: 'join', docId: docId, next: onNext, err: onErr,
+        get: function () {
+          return self.call('GET', self.packPath(docId, '/join')).then(function (b) {
+            if (b.exists === false) return { data: null };
+            if (b.exists !== true) throw self.shapeError();
+            var cfg = {};
+            Object.keys(b).forEach(function (k) { if (k !== 'exists') cfg[k] = b[k]; });
+            return { data: cfg };
+          });
+        } });
+    },
+    // The server takes exactly the switches, the code and the contact line; the rest is its own.
+    writeJoin: function (docId, data) {
+      var out = {};
+      this.JOIN_KEYS.forEach(function (k) { if (data && data[k] !== undefined) out[k] = data[k]; });
+      return this.write('PUT', this.packPath(docId, '/join'), out);
+    },
+    memberPath: function (docId, uid) { return this.packPath(docId, '/members/' + encodeURIComponent(uid)); },
+    subscribeMembers: function (docId, scope, uid, onNext, onErr) {
+      var self = this;
+      return self.watchFeed({ what: 'members', docId: docId, next: onNext, err: onErr,
+        get: function () {
+          if (scope === 'all') {
+            return self.call('GET', self.packPath(docId, '/members')).then(function (b) {
+              var ok = Array.isArray(b.members) && b.members.every(function (m) { return m && typeof m === 'object' && typeof m.uid === 'string'; });
+              if (!ok) throw self.shapeError();
+              return { data: b.members };
+            });
+          }
+          return self.call('GET', self.memberPath(docId, uid)).then(function (b) {
+            // Only exists: false is "no member row": what removal (a wiped device) is read from.
+            if (b.exists === false) return { data: [] };
+            if (b.exists !== true || typeof b.role !== 'string') throw self.shapeError();
+            var me = {};
+            Object.keys(b).forEach(function (k) { if (k !== 'exists') me[k] = b[k]; });
+            me.uid = uid;
+            return { data: [me] };
+          });
+        } });
+    },
+    updateMemberRole: function (docId, uid, role) { return this.write('PATCH', this.memberPath(docId, uid), { role: role }); },
+    deleteMember: function (docId, uid) { return this.write('DELETE', this.memberPath(docId, uid)); },
+    invitePath: function (docId, key) { return this.packPath(docId, '/invites/' + encodeURIComponent(key)); },
+    subscribeInvites: function (docId, onNext, onErr) {
+      var self = this;
+      return self.watchFeed({ what: 'invites', docId: docId, next: onNext, err: onErr,
+        get: function () {
+          return self.call('GET', self.packPath(docId, '/invites')).then(function (b) {
+            var ok = Array.isArray(b.invites) && b.invites.every(function (v) { return v && typeof v === 'object' && typeof v.email === 'string'; });
+            if (!ok) throw self.shapeError();
+            return { data: b.invites.map(function (v) {
+              var o = {};
+              Object.keys(v).forEach(function (k) { o[k] = v[k]; });
+              o.key = v.email;
+              return o;
+            }) };
+          });
+        } });
+    },
+    // The server records who invited from the token; only the role and the address are sent.
+    putInvite: function (docId, key, data) {
+      return this.write('PUT', this.invitePath(docId, key), { role: data && data.role, email: key });
+    },
+    deleteInvite: function (docId, key) { return this.write('DELETE', this.invitePath(docId, key)); },
+    // ---- The server's own calls ----
+    // Sign-in's one call: the owner claim, the owner's heal, an invite, a sign-up request, all on
+    // the server. Resolves { uid, role, member, ownerUid, rejected } (functions/api/session.js).
+    startSession: function (docId, joinCode) {
+      return this.call('POST', '/api/session?pack=' + encodeURIComponent(docId), joinCode ? { join: joinCode } : undefined);
+    },
+    // The one-time copy of the pack in (functions/api/pack/[id]/import.js). The owner only.
+    importPack: function (docId, body) { return this.write('POST', this.packPath(docId, '/import'), body); }
+  };
+  // Is there a cloud to talk to at all? False in device-only mode and in every preview build
+  // (the build rewrites FIREBASE_CONFIG to null), and every cloud path starts by asking.
+  // BACKEND 'api' serves exactly one pack, the one baked in as PACK_DOC_ID: with none, there is
+  // nothing to ask it for, so the page is device-only.
+  function backendConfigured() { return !!FIREBASE_CONFIG && (BACKEND !== 'api' || fixedPackMode()); }
+  function loadBackend() {
+    if (sync.backend) return Promise.resolve(sync.backend);
+    return (BACKEND === 'api' ? apiBackend : firestoreBackend).init(FIREBASE_CONFIG).then(function (be) {
+      sync.backend = be;
+      return be;
     });
   }
+  // The two questions the cloud paths ask before they touch anything:
+  //   cloudReady() — the backend is loaded and open, and this session has a pack id. Every
+  //                  accounts-side read or write (members, invites, join) waits on it. It says
+  //                  nothing about whether the pack RECORD may be touched: haltFixedSync leaves
+  //                  it true.
+  //   packLinked() — this device holds the pack-record handle, so it may subscribe and push
+  //                  the pack record, and publish the parent view built from it.
+  //                  haltFixedSync and syncStop drop the handle to say no.
+  function cloudReady() { return !!(sync.backend && sync.backend.isOpen() && sync.docId); }
+  function packLinked() { return !!(sync.backend && sync.pack); }
   function syncStart() {
     // Three ways to know which pack this device is on — the baked-in PACK_DOC_ID (which beats
     // everything), a leader's passphrase (unchanged), or a stored parent join link. None →
@@ -8926,15 +9613,14 @@
     renderSyncPill();
     var mine = {};
     sync.session = mine;
-    loadFirebase().then(function (mods) {
+    loadBackend().then(function (be) {
       if (sync.session !== mine) return;
-      var auth = mods.auth.getAuth(sync.app);
       // One-time: complete a pending Google redirect sign-in (the mobile / popup-blocked
       // fallback). Never throws out of here — a failed/absent redirect just leaves us
       // anonymous, exactly as today. currentUser is already set by the SDK on success.
       var redirectP = sync.redirectChecked
         ? Promise.resolve(null)
-        : mods.auth.getRedirectResult(auth).then(function (res) { return res && res.user ? res.user : null; })
+        : be.completeRedirect()
                    .catch(function (err) {
                      var code = err && err.code ? String(err.code) : '';
                      if (code.indexOf('operation-not-allowed') !== -1 || code.indexOf('configuration-not-found') !== -1) {
@@ -8954,7 +9640,7 @@
           // exactly as before (full backward compatibility — accounts are purely additive).
           // A join-link visitor gets NO anonymous account: there is nothing they may read
           // until they sign in with Google, so the landing screen just asks them to.
-          var current = auth.currentUser;
+          var current = be.currentUser();
           // SAFETY: single-pack mode is Google-sign-in-ONLY. An anonymous session has no
           // member doc, so the strict rules deny it anyway — but under the legacy rules it
           // would have full read/write on a now-public doc id, which is precisely the hole
@@ -8963,7 +9649,7 @@
           var authP = current
             ? Promise.resolve(current)
             : (src.kind === 'pass'
-                ? mods.auth.signInAnonymously(auth).then(function (cred) { return cred.user; })
+                ? be.signInAnonymously()
                 : Promise.resolve(null));
           return authP.then(function (u) {
             if (sync.session !== mine) return;
@@ -8981,7 +9667,7 @@
             // member-doc create would be denied — and handleAccountsError reads a denial as "the
             // rules aren't published", which in single-pack mode is the setup screen, shown to
             // a family. Say what is actually wrong instead, and touch nothing in the cloud: no
-            // db, no doc ref, no accounts bootstrap. `=== false`, not falsy, so an SDK that
+            // backend open(), no pack handle, no accounts bootstrap. `=== false`, not falsy, so an SDK that
             // does not report the field changes nothing.
             if (isGoogleUser(u) && u.emailVerified === false) {
               sync.joinRejected = 'unverified';
@@ -8991,8 +9677,7 @@
               render();
               return;
             }
-            sync.db = mods.fs.getFirestore(sync.app);
-            sync.docRef = mods.fs.doc(sync.db, 'packs', docId);
+            sync.pack = be.open(docId);
             if (isGoogleUser(u)) {
               // Under the Part C rules, READING the pack record requires an existing
               // members/{uid} doc, so a real user must register BEFORE we subscribe —
@@ -9002,7 +9687,7 @@
               // so the pack record still subscribes there (where reads only need auth).
               // Parent phase: the resolved role decides WHICH feed goes up — leaders get the
               // pack record exactly as before; parents/pending get the sanitized public view.
-              startAccounts(mods, u, docId, mine, function (role) {
+              startAccounts(be, u, docId, mine, function (role) {
                 // SAFETY (single-pack mode): a permission-denied on the accounts path means
                 // the Part C rules are NOT published — with a public pack id that makes the
                 // pack record world-writable, so this device stays device-only and shows the setup
@@ -9037,12 +9722,25 @@
   // Subscribe (or re-subscribe) the pack record onSnapshot. Split out of syncStart so the
   // accounts layer can defer it until membership exists (H-1).
   function subscribeDoc(mine) {
-    if (sync.session !== mine || !sync.docRef || !sync.mods) return;
+    if (sync.session !== mine || !packLinked()) return;
     if (fixedFeedBlocked()) return;   // SAFETY: single-pack mode, rules unproven — see fixedSyncBlocked
     if (sync.unsub) { try { sync.unsub(); } catch (e) { /* already gone */ } }
     sync.feed = 'doc';
-    sync.unsub = sync.mods.fs.onSnapshot(sync.docRef,
-      function (snap) { if (sync.session === mine) onRemoteSnap(snap); },
+    sync.unsub = sync.backend.subscribePack(sync.pack,
+      function (rec, meta) {
+        if (sync.session !== mine) return;
+        sync.packMissing = !rec;
+        // BACKEND 'api': a device holding its edits (holdPushes) hears from the pack record
+        // again — the owner has copied the pack in, or the server is set up now. It resumes, and
+        // this counts as the FIRST answer, so what it holds is compared, never overwritten.
+        if (sync.notice && (rec || sync.notice !== 'awaiting-import')) {
+          sync.notice = ''; sync.firstSnap = true; sync.remoteRec = null; sync.conflict = null;
+        }
+        // Still waiting for the copy-in: nothing arrived to compare, and nothing may be sent —
+        // onRemoteSnap would read the empty pack as a first answer and seed it again.
+        if (sync.notice) return;
+        onRemoteSnap(rec, meta);
+      },
       function (err) { if (sync.session === mine) syncFail(err); });
   }
   // ---- Parent phase: the second, sanitized feed ---------------------------------------
@@ -9056,17 +9754,15 @@
     if (sync.parentUnsub) { try { sync.parentUnsub(); } catch (e) { /* already gone */ } sync.parentUnsub = null; }
   }
   function subscribeParentView(mine) {
-    if (sync.session !== mine || !sync.mods || !sync.db || !sync.docId) return;
+    if (sync.session !== mine || !cloudReady()) return;
     if (fixedFeedBlocked()) return;   // SAFETY: single-pack mode, rules unproven
     stopParentFeed();
     sync.feed = 'parent';
-    var fs = sync.mods.fs;
-    var ref = fs.doc(sync.db, 'packs', sync.docId, 'public', 'view');
-    sync.parentUnsub = fs.onSnapshot(ref, function (snap) {
+    sync.parentUnsub = sync.backend.subscribeView(sync.docId, function (view) {
       if (sync.session !== mine) return;
       // A missing doc is a normal state (no leader has saved anything yet) — the parent app
       // shows a friendly empty state rather than an error.
-      sync.parentView = snap.exists() ? (snap.data() || null) : null;
+      sync.parentView = view || null;
       if (sync.mode !== 'online') { sync.mode = 'online'; sync.error = ''; }
       render();
     }, function (err) { if (sync.session === mine) syncFail(err); });
@@ -9118,7 +9814,7 @@
         if (sync.user && sync.ownerUid && sync.ownerUid === sync.user.uid) {
           if (sync.ownerHealing) return;
           sync.ownerHealing = true;
-          ensureMyMemberDoc(sync.mods, sync.user, sync.docId).then(function (healed) {
+          ensureMyMemberDoc(sync.backend, sync.user, sync.docId).then(function (healed) {
             sync.ownerHealing = false;
             if (sync.session !== mine || !healed) return;
             sync.myRole = healed;
@@ -9155,11 +9851,19 @@
       render();
       return;
     }
+    // A leader made a viewer while a sync-conflict waited has no copy to keep: this device
+    // takes the shared one now, rather than at the pack's next save (onRemoteSnap). Only on the
+    // server's word (security review of 6747945..6fa61c2, item 3): a cached members snapshot can
+    // be an old one, and "viewer" from it would throw away an editor's copy. Until the server
+    // says so, the choice keeps waiting — nothing is written while it does.
+    if (want === 'doc' && sync.conflict && !canEdit() && sync.membersFromServer) takeSharedAsViewer(sync.conflict);
     if (sync.feed === want && (want === 'doc' ? sync.unsub : sync.parentUnsub)) return;
     if (want === 'doc') {
       stopParentFeed();
       sync.parentView = null;
       sync.firstSnap = true;
+      sync.remoteRec = null;
+      sync.conflict = null;
       subscribeDoc(mine);
     } else {
       // Demotion to parent: drop the pack-record listener BEFORE the parent one goes up.
@@ -9178,7 +9882,7 @@
   // a denied invites read must never set accountsUnavailable (that would switch role
   // enforcement off). It only hides the invite block.
   function applyInvitesSubscription(mine) {
-    if (sync.session !== mine || !sync.mods || !sync.db || !sync.docId) return;
+    if (sync.session !== mine || !cloudReady()) return;
     var want = isAdmin() && !sync.accountsUnavailable && !sync.invitesUnavailable;
     if (want === !!sync.invitesUnsub) return;
     if (!want) {
@@ -9186,13 +9890,11 @@
       sync.invites = [];
       return;
     }
-    var fs = sync.mods.fs;
-    sync.invitesUnsub = fs.onSnapshot(fs.collection(sync.db, 'packs', sync.docId, 'invites'), function (qs) {
+    sync.invitesUnsub = sync.backend.subscribeInvites(sync.docId, function (list) {
       if (sync.session !== mine) return;
       var arr = [];
-      qs.forEach(function (d) {
-        var v = d.data() || {};
-        arr.push({ email: v.email || d.id, role: v.role || 'parent' });
+      list.forEach(function (v) {
+        arr.push({ email: v.email || v.key, role: v.role || 'parent' });
       });
       arr.sort(function (a, b) { return String(a.email).localeCompare(String(b.email)); });
       sync.invites = arr;
@@ -9220,7 +9922,7 @@
   // window published every scout's name and total to a pack that had switched them off.
   // writeParentView waits for this; both callbacks set it, so a denial never stalls it.
   function applyJoinSubscription(mine) {
-    if (sync.session !== mine || !sync.mods || !sync.db || !sync.docId) return;
+    if (sync.session !== mine || !cloudReady()) return;
     var want = accountsInForce() && LEADER_ROLES.indexOf(sync.myRole) !== -1 && !sync.joinUnavailable;
     if (want === !!sync.joinUnsub) return;
     if (!want) {
@@ -9228,19 +9930,19 @@
       sync.joinLoaded = false;   // a later promotion must wait for a fresh answer
       return;
     }
-    var fs = sync.mods.fs;
     sync.joinLoaded = false;
     // ⚠ FROM THE SERVER, NOT THE CACHE (security review, 2026-09). A snapshot served from the
     // local cache can be stale — or say "no config" for a doc the server has — so it may read
     // showStandings as on for a pack that has switched it off. joinCfg takes whatever arrives (the
     // Pack tab may as well show it), but only a server answer opens the parent-view gate.
-    // includeMetadataChanges is what makes that answer arrive at all: without it, a cached
-    // snapshot whose data the server then confirms unchanged raises no second event, and
-    // joinLoaded would stay false for the life of the session.
-    sync.joinUnsub = fs.onSnapshot(fs.doc(sync.db, 'packs', sync.docId, 'public', 'join'), { includeMetadataChanges: true }, function (snap) {
+    // The adapter's subscribeJoin is what makes that answer arrive at all (Firestore needs
+    // includeMetadataChanges: without it, a cached snapshot whose data the server then confirms
+    // unchanged raises no second event, and joinLoaded would stay false for the life of the
+    // session). A missing meta is never read as a server answer.
+    sync.joinUnsub = sync.backend.subscribeJoin(sync.docId, function (cfg, meta) {
       if (sync.session !== mine) return;
-      sync.joinCfg = snap.exists() ? (snap.data() || null) : null;
-      if (!(snap.metadata && snap.metadata.fromCache)) {
+      sync.joinCfg = cfg || null;
+      if (meta && meta.fromServer === true) {
         sync.joinLoaded = true;
         scheduleParentViewRefresh(); // showStandings may have just flipped
       }
@@ -9390,8 +10092,9 @@
     if (ui.tab === 'pack') render();
   }
   // Claim ownership (first writer wins), self-register a member doc, then live-watch the roster.
-  function startAccounts(mods, user, docId, mine, after) {
-    var fs = mods.fs, db = sync.db, uid = user.uid;
+  function startAccounts(be, user, docId, mine, after) {
+    if (be.startSession) { startSessionAccounts(be, user, docId, mine, after); return; }
+    var uid = user.uid;
     sync.accountsUnavailable = false;
     var afterDone = false;
     // Always fire `after` exactly once — a feed must subscribe whether registration
@@ -9400,25 +10103,24 @@
     // handed over so the caller can pick the RIGHT feed (pack record vs parent view); null
     // means "unknown" and always falls back to the pack record, exactly as before.
     function runAfter(role) { if (!afterDone) { afterDone = true; if (after && sync.session === mine) after(role || null); } }
-    var metaRef = fs.doc(db, 'packmeta', docId);
-    fs.getDoc(metaRef).then(function (snap) {
+    be.getPackMeta(docId).then(function (meta) {
       if (sync.session !== mine) return;
-      if (snap.exists()) { sync.ownerUid = (snap.data() || {}).owner || null; return; }
+      if (meta) { sync.ownerUid = meta.owner || null; return; }
       // Join link phase — someone who arrived on a shared link must NEVER claim ownership of
       // an unclaimed pack. The owner claim stays a passphrase-holder's move.
       if (activeJoin()) return;
       // No owner yet — try to become it. Whoever's create lands first is admin.
-      return fs.setDoc(metaRef, { owner: uid }).then(function () {
+      return be.putPackMeta(docId, { owner: uid }).then(function () {
         sync.ownerUid = uid;
       }).catch(function () {
         // Lost the race (or the create was denied) — re-read to learn the real owner.
-        return fs.getDoc(metaRef).then(function (s2) {
-          if (s2.exists()) sync.ownerUid = (s2.data() || {}).owner || null;
+        return be.getPackMeta(docId).then(function (m2) {
+          if (m2) sync.ownerUid = m2.owner || null;
         });
       });
     }).then(function () {
       if (sync.session !== mine) return;
-      return ensureMyMemberDoc(mods, user, docId);
+      return ensureMyMemberDoc(be, user, docId);
     }).then(function (role) {
       if (sync.session !== mine) return;
       // Provisional role, straight from our own member doc (the members snapshot below
@@ -9439,6 +10141,54 @@
       runAfter(null); // legacy-rules permission-denied still needs the pack record subscribed
     });
   }
+  // BACKEND 'api': ONE call, POST /api/session, does on the server what startAccounts and
+  // ensureMyMemberDoc do against Firestore, in the same order: the owner claim, the owner's heal
+  // back to admin, an invite used up, a sign-up-link request filed as 'pending'. It answers with
+  // this account's role, and from there everything is as above — the provisional role, the feed,
+  // then the invites, join and members watches, and every gate after them.
+  // The server's refusals come back in the page's own words ('nolink', 'badcode', 'closed').
+  // A failure is NEVER read as "the rules aren't published" (accountsUnavailable), which is the
+  // Firestore setup screen and would switch roles off: the device halts on its local copy
+  // (haltFixedSync, via `after`) and says why in sync.notice. Too many sign-up tries is its own
+  // gate ('busy').
+  var SESSION_REJECTS = ['nolink', 'badcode', 'closed'];
+  function startSessionAccounts(be, user, docId, mine, after) {
+    sync.accountsUnavailable = false;
+    var afterDone = false;
+    function runAfter(role) { if (!afterDone) { afterDone = true; if (after && sync.session === mine) after(role || null); } }
+    var jr = activeJoin();
+    be.startSession(docId, jr && jr.code ? jr.code : '').then(function (s) {
+      if (sync.session !== mine) return;
+      sync.ownerUid = s.ownerUid || null;
+      sync.myRole = s.role || null;
+      if (!sync.myRole) sync.joinRejected = SESSION_REJECTS.indexOf(s.rejected) !== -1 ? s.rejected : 'nolink';
+      render();
+      runAfter(sync.myRole);
+      if (sync.joinRejected) return;
+      applyInvitesSubscription(mine);
+      applyJoinSubscription(mine);
+      applyMembersSubscription(mine);
+    }).catch(function (err) {
+      if (sync.session !== mine) return;
+      if (err && err.code === 'resource-exhausted') sync.joinRejected = 'busy';
+      else sync.notice = err && err.notSetUp ? 'not-set-up' : 'no-session';
+      runAfter(null);
+      if (sync.session !== mine || sync.joinRejected) return;
+      sync.mode = 'offline';
+      sync.error = err && err.message ? String(err.message) : '';
+      renderSyncPill();
+      render();
+    });
+  }
+  // BACKEND 'api': the owner's heal (applyRoleSubscription, through ensureMyMemberDoc) is the same
+  // one call. The server makes the owner an admin again, or recreates their row. Resolves to the
+  // role, or null.
+  function sessionRole(be, docId) {
+    return be.startSession(docId, '').then(function (s) {
+      if (s.ownerUid) sync.ownerUid = s.ownerUid;
+      return s.role || null;
+    });
+  }
   // Who this session watches in the members subcollection. The rules let only leaders
   // (admin/editor/viewer) read the whole roster of accounts — it holds every parent's email —
   // so a parent or a pending user watches their OWN member doc and nothing else. That one doc
@@ -9448,29 +10198,23 @@
   // rules aren't published", which is what handleAccountsError would conclude.
   var LEADER_ROLES = ['admin', 'editor', 'viewer'];
   function applyMembersSubscription(mine) {
-    if (sync.session !== mine || !sync.mods || !sync.db || !sync.docId || !sync.user) return;
+    if (sync.session !== mine || !cloudReady() || !sync.user) return;
     var leader = LEADER_ROLES.indexOf(sync.myRole) !== -1;
     // Denied as this role once already: don't ask again until the role itself changes.
     var want = (leader && sync.membersDeniedAs !== sync.myRole) ? 'all' : 'self';
     if (sync.membersUnsub && sync.membersScope === want) return;
     if (sync.membersUnsub) { try { sync.membersUnsub(); } catch (e) { /* gone */ } sync.membersUnsub = null; }
     sync.membersScope = want;
-    var fs = sync.mods.fs, uid = sync.user.uid;
-    var ref = want === 'all'
-      ? fs.collection(sync.db, 'packs', sync.docId, 'members')
-      : fs.doc(sync.db, 'packs', sync.docId, 'members', uid);
-    sync.membersUnsub = fs.onSnapshot(ref, function (snap) {
+    var uid = sync.user.uid;
+    // 'all' = the whole roster; 'self' = only our own member doc ([] when it is gone).
+    sync.membersUnsub = sync.backend.subscribeMembers(sync.docId, want, uid, function (list, meta) {
       if (sync.session !== mine) return;
-      var arr = [];
-      if (want === 'all') {
-        snap.forEach(function (d) { var m = d.data() || {}; m.uid = d.id; arr.push(m); });
-      } else if (snap.exists()) {
-        var me = snap.data() || {}; me.uid = snap.id; arr.push(me);
-      }
-      sync.members = arr;
+      sync.members = list;
       // A snapshot served from the local cache can be missing docs the server has; only the
       // server may tell us we were removed (applyRoleSubscription wipes this device on that).
-      sync.membersFromServer = !(snap.metadata && snap.metadata.fromCache);
+      // A missing meta is never read as a server answer.
+      sync.membersFromServer = !!(meta && meta.fromServer === true);
+      sync.membersHeard = true;
       recomputeMyRole();
       // A role change can arrive at any time (an admin promoting a parent to editor, or
       // demoting an editor to parent) — move this session onto the matching feed.
@@ -9508,18 +10252,18 @@
   // role; a sign-up-link visitor lands as 'pending'; anyone else gets the ask-a-leader gate and
   // no doc at all. NEVER overwrites an existing role (re-signing in as an approved editor must
   // not silently demote you to pending).
-  function ensureMyMemberDoc(mods, user, docId) {
-    var fs = mods.fs, db = sync.db, uid = user.uid;
-    var ref = fs.doc(db, 'packs', docId, 'members', uid);
+  function ensureMyMemberDoc(be, user, docId) {
+    if (be.startSession) return sessionRole(be, docId);   // the pack's own server does all of this
+    var uid = user.uid;
     // A denied read here must NOT abort the bootstrap. A rule set whose members `read`
     // only allows existing members (the natural way to write it) denies a brand-new
     // signer the read of their OWN record — chicken-and-egg: you can't become a member
     // because you aren't one yet. Treat a denial as "no doc yet" and carry on to the
     // create, which the rules judge on its own merits (owner / invite / join code).
-    return fs.getDoc(ref).catch(function () { return { exists: function () { return false; } }; })
-      .then(function (snap) {
-      if (snap.exists()) {
-        var cur = (snap.data() || {}).role || 'pending';
+    return be.getMember(docId, uid).catch(function () { return null; })
+      .then(function (own) {
+      if (own) {
+        var cur = own.role || 'pending';
         // The pack owner is always an admin — self-heal if a rogue admin ever demoted
         // them (M-1). The rules judge the WHOLE resulting doc (own email, only the member
         // keys), so an update of `role` alone is refused whenever that admin also junked the
@@ -9529,11 +10273,11 @@
         // not published", which in single-pack mode is the setup screen, for good. Carry on
         // as the role the doc says; a lockout is better than a trap.
         if (sync.ownerUid === uid && cur !== 'admin') {
-          return fs.setDoc(ref, {
+          return be.putMember(docId, uid, {
             role: 'admin',
             name: memberName(user),
             email: user.email || '',
-            addedAt: fs.serverTimestamp()
+            addedAt: be.serverTime()
           }).then(function () { return 'admin'; }, function () { return cur; });
         }
         return cur; // already a member — leave the role exactly as it is
@@ -9542,10 +10286,10 @@
       var key = inviteEmailKey(user.email);
       // Invite lookup — the rules let a signed-in user read the invite addressed to their
       // own email. A miss (or a denial on older rules) just means "no invite".
-      var inviteRef = (!isOwner && key) ? fs.doc(db, 'packs', docId, 'invites', key) : null;
-      var invitedP = inviteRef
-        ? fs.getDoc(inviteRef).then(function (is) {
-            var r = is.exists() ? (is.data() || {}).role : null;
+      var lookInvite = !isOwner && !!key;
+      var invitedP = lookInvite
+        ? be.getInvite(docId, key).then(function (inv) {
+            var r = inv ? inv.role : null;
             return INVITE_ROLES.indexOf(r) === -1 ? null : r;
           }).catch(function () { return null; })
         : Promise.resolve(null);
@@ -9554,7 +10298,7 @@
         // on a self-serve link: check the pack's join config and only then create ourselves.
         // A closed pack or a stale code creates NOTHING and lands on the "closed" gate.
         var jr = (!isOwner && !invitedRole) ? activeJoin() : null;
-        if (jr) return joinCreateMemberDoc(mods, user, docId, jr, ref);
+        if (jr) return joinCreateMemberDoc(be, user, docId, jr);
         // Nobody signs themselves up as 'pending' any more. The rules (SETUP.md Part C) only
         // accept a member create from the owner, from an invitee, or through the sign-up link
         // with its current code — otherwise the pack id, which single-pack mode prints in this
@@ -9564,16 +10308,16 @@
         // aren't published" — the setup screen, shown to a family.)
         if (!isOwner && !invitedRole) { sync.joinRejected = 'nolink'; return null; }
         var role = isOwner ? 'admin' : invitedRole;
-        return fs.setDoc(ref, {
+        return be.putMember(docId, uid, {
           role: role,
           name: memberName(user),
           email: user.email || '',
-          addedAt: fs.serverTimestamp()
+          addedAt: be.serverTime()
         }).then(function () {
           // Invites are single-use. Best-effort delete: a failure is harmless because the
           // member doc now exists and wins on every later sign-in.
-          if (inviteRef && invitedRole) {
-            try { fs.deleteDoc(inviteRef).catch(function () { /* left for an admin to revoke */ }); }
+          if (lookInvite && invitedRole) {
+            try { be.deleteInvite(docId, key).catch(function () { /* left for an admin to revoke */ }); }
             catch (e) { /* ignore */ }
           }
           return role;
@@ -9583,7 +10327,7 @@
           // An invite we could read but not honour (it changed underneath us). The sign-up
           // link is still a way in if this device has one; otherwise it's the "ask" gate.
           var jr2 = activeJoin();
-          if (jr2) return joinCreateMemberDoc(mods, user, docId, jr2, ref);
+          if (jr2) return joinCreateMemberDoc(be, user, docId, jr2);
           sync.joinRejected = 'nolink';
           return null;
         });
@@ -9605,18 +10349,17 @@
   // Every refusal (closed, rotated code, network error) creates NOTHING, sets
   // sync.joinRejected and resolves to null — the "ask a leader" gate, never a crash and never
   // a spinner.
-  function joinCreateMemberDoc(mods, user, docId, jr, ref) {
-    var fs = mods.fs;
+  function joinCreateMemberDoc(be, user, docId, jr) {
     try {
       var code = (jr && typeof jr.code === 'string') ? jr.code : '';
       if (!code) { sync.joinRejected = 'badcode'; return Promise.resolve(null); }
       var role = 'pending'; // always — see the note above; never derived from the config
-      return fs.setDoc(ref, {
+      return be.putMember(docId, user.uid, {
         role: role,
         name: memberName(user),
         email: user.email || '',
         joinCode: code,
-        addedAt: fs.serverTimestamp()
+        addedAt: be.serverTime()
       }).then(function () { return role; })
         .catch(function () { sync.joinRejected = 'closed'; return null; });
     } catch (e) {
@@ -9626,14 +10369,12 @@
   }
   // ---- Sign in / out --------------------------------------------------------------------
   function signInWithGoogle() {
-    if (!FIREBASE_CONFIG) return;
+    if (!backendConfigured()) return;
     // A join-link visitor signs in WITHOUT a passphrase — that's the whole point of the link.
     // Single-pack mode: there IS no passphrase, so sign-in is always available.
     if (!fixedPackMode() && !syncPass() && !activeJoin()) { showToast('Enter a shared passphrase first, then sign in.'); return; }
-    loadFirebase().then(function (mods) {
-      var auth = mods.auth.getAuth(sync.app);
-      var provider = new mods.auth.GoogleAuthProvider();
-      return mods.auth.signInWithPopup(auth, provider).then(function () {
+    loadBackend().then(function (be) {
+      return be.signInWithGoogle().then(function () {
         syncStop(); syncStart(); // re-derive + re-subscribe under the new identity
       }).catch(function (err) {
         var code = err && err.code ? String(err.code) : '';
@@ -9645,7 +10386,7 @@
           return;
         }
         // Popup blocked / mobile Safari / etc. — fall back to a full-page redirect.
-        return mods.auth.signInWithRedirect(auth, provider).catch(function (e2) {
+        return be.signInWithGoogleRedirect().catch(function (e2) {
           var c2 = e2 && e2.code ? String(e2.code) : '';
           if (c2.indexOf('operation-not-allowed') !== -1 || c2.indexOf('configuration-not-found') !== -1) {
             showToast('Google sign-in isn’t enabled yet — see the SETUP guide.');
@@ -9659,15 +10400,14 @@
     });
   }
   function signOutGoogle() {
-    if (!sync.mods || !sync.app) return;
-    var auth = sync.mods.auth.getAuth(sync.app);
+    if (!sync.backend) return;
     // Single-pack mode signs nobody back in anonymously — syncStart lands on the welcome
     // gate instead, which is the whole point (see the SAFETY note on fixedSyncBlocked).
     // Drop the Google identity + role immediately so the UI can't briefly show a stale
     // signed-in state if the anonymous re-auth is slow or fails (L-4).
     sync.user = null;
     clearAccountsRuntime();
-    sync.mods.auth.signOut(auth).then(function () {
+    sync.backend.signOut().then(function () {
       syncStop(); syncStart(); // reconnects anonymously (today's default path)
     }).catch(function () { showToast('Couldn’t sign out — try again.'); });
   }
@@ -9678,6 +10418,8 @@
       showToast(sync.accountsUnavailable
         ? 'Accounts aren’t set up yet — publish the security rules from the SETUP guide.'
         : 'Only admins can change members.');
+    } else if (code.indexOf('failed-precondition') !== -1 && err.reason === 'last-admin') {
+      showToast('Keep at least one admin.');   // the pack's own server enforces the last admin
     } else {
       showToast('Couldn’t update members — try again.');
     }
@@ -9685,11 +10427,9 @@
   var MEMBER_ROLES = ['admin', 'editor', 'viewer', 'parent'];
   function setMemberRole(memberUid, role) {
     if (MEMBER_ROLES.indexOf(role) === -1) return;
-    if (!isAdmin() || !sync.mods || !sync.db || !sync.docId) return;
+    if (!isAdmin() || !cloudReady()) return;
     if (isLastAdmin(memberUid) && role !== 'admin') { showToast('Keep at least one admin.'); return; }
-    var fs = sync.mods.fs;
-    var ref = fs.doc(sync.db, 'packs', sync.docId, 'members', memberUid);
-    fs.updateDoc(ref, { role: role }).catch(function (err) { accountsToast(err); });
+    sync.backend.updateMemberRole(sync.docId, memberUid, role).catch(function (err) { accountsToast(err); });
     // onSnapshot refreshes the list + re-renders.
   }
   // One account becomes a parent of this scout AND their brothers and sisters: a parent of one
@@ -9704,22 +10444,21 @@
     if (fam.length > 1) showToast('Linked to ' + familyLabel({ members: fam }) + '.');
   }
   function removeMember(memberUid) {
-    if (!isAdmin() || !sync.mods || !sync.db || !sync.docId) return;
+    if (!isAdmin() || !cloudReady()) return;
     if (isLastAdmin(memberUid)) { showToast('Keep at least one admin.'); return; }
-    var fs = sync.mods.fs;
+    var be = sync.backend;
     var gone = null;
     for (var i = 0; i < sync.members.length; i++) {
       if (sync.members[i].uid === memberUid) { gone = sync.members[i]; break; }
     }
-    var ref = fs.doc(sync.db, 'packs', sync.docId, 'members', memberUid);
-    fs.deleteDoc(ref).catch(function (err) { accountsToast(err); });
+    be.deleteMember(sync.docId, memberUid).catch(function (err) { accountsToast(err); });
     // …and any invite still sitting under their email. An invite is consumed on first sign-in,
     // but only best-effort, so one can outlive the member it made — and a removed person
     // signing back in would walk straight through it into the role it names. Best-effort
     // here too: a miss (no such invite, the usual case) is not worth a toast.
     var key = gone ? inviteEmailKey(gone.email) : '';
     if (key && !/[\/\s]/.test(key)) {
-      try { fs.deleteDoc(fs.doc(sync.db, 'packs', sync.docId, 'invites', key)).catch(function () { /* none, or gone */ }); }
+      try { be.deleteInvite(sync.docId, key).catch(function () { /* none, or gone */ }); }
       catch (e) { /* a malformed key — nothing to delete */ }
     }
     // Their scout links go with them. Left behind, a removed person who later came back on the
@@ -9757,7 +10496,7 @@
   // invitee consumes it on their first sign-in (ensureMyMemberDoc) and lands straight in
   // the invited role instead of 'pending'.
   function createInvite(emailRaw, role) {
-    if (!isAdmin() || !sync.mods || !sync.db || !sync.docId) return;
+    if (!isAdmin() || !cloudReady()) return;
     if (INVITE_ROLES.indexOf(role) === -1) return;
     var email = inviteEmailKey(emailRaw);
     if (!email || email.indexOf('@') < 1 || email.indexOf('.') === -1 || /[\/\s]/.test(email)) {
@@ -9772,23 +10511,22 @@
       showToast((existing.name || email) + ' is already a member (' + (existing.role || 'pending') + ').');
       return;
     }
-    var fs = sync.mods.fs;
-    fs.setDoc(fs.doc(sync.db, 'packs', sync.docId, 'invites', email), {
+    var be = sync.backend;
+    be.putInvite(sync.docId, email, {
       role: role,
       email: email,
       invitedBy: (sync.user && (sync.user.email || sync.user.uid)) || '',
-      invitedAt: fs.serverTimestamp()
+      invitedAt: be.serverTime()
     }).then(function () {
       showToast('Invited ' + email + ' as ' + role + '.');
       render(); // clears the form inputs
     }).catch(function (err) { accountsToast(err); });
   }
   function revokeInvite(emailRaw) {
-    if (!isAdmin() || !sync.mods || !sync.db || !sync.docId) return;
+    if (!isAdmin() || !cloudReady()) return;
     var email = inviteEmailKey(emailRaw);
     if (!email) return;
-    var fs = sync.mods.fs;
-    fs.deleteDoc(fs.doc(sync.db, 'packs', sync.docId, 'invites', email))
+    sync.backend.deleteInvite(sync.docId, email)
       .catch(function (err) { accountsToast(err); });
   }
   // ---- Self-serve join config (admin-only) ---------------------------------------------
@@ -9796,7 +10534,7 @@
   // fields even the first time. A code is minted on the first write so flipping the toggle
   // on immediately shows a usable link.
   function writeJoinConfig(patch, toast) {
-    if (!isAdmin() || !sync.mods || !sync.db || !sync.docId) return;
+    if (!isAdmin() || !cloudReady()) return;
     // ⚠ NOT BEFORE THE SERVER HAS ANSWERED (final review, 2026-09-28). The write is WHOLE — every
     // field not in `patch` is copied from sync.joinCfg — so a tick made while joinCfg is still
     // null, or a stale cached copy, would write the defaults back over the pack's real choices:
@@ -9826,10 +10564,10 @@
     sync.joinCfg = next;
     render();
     scheduleParentViewRefresh();
-    var fs = sync.mods.fs;
+    var be = sync.backend;
     var data = { open: next.open, mode: next.mode, code: next.code, showStandings: next.showStandings,
-      contact: next.contact, showAmounts: next.showAmounts, updatedAt: fs.serverTimestamp() };
-    fs.setDoc(fs.doc(sync.db, 'packs', sync.docId, 'public', 'join'), data).then(function () {
+      contact: next.contact, showAmounts: next.showAmounts, updatedAt: be.serverTime() };
+    be.writeJoin(sync.docId, data).then(function () {
       if (toast) showToast(toast);
     }).catch(function (err) {
       sync.joinCfg = prev;
@@ -9837,6 +10575,181 @@
       scheduleParentViewRefresh();
       accountsToast(err);
     });
+  }
+  // ---- Moving the pack to its own server: the one-time copy ------------------------------
+  // Two owner-only steps, one on each page, joined by a file the owner keeps on their own device:
+  //   1. The Firestore page (BACKEND 'firestore'): "Download pack for the new server" writes the
+  //      pack record, the members, the open invites and the sign-up link settings — what
+  //      POST /api/pack/:id/import takes — into one file (buildMoveFile). Nothing is sent anywhere.
+  //   2. The server's page (BACKEND 'api'), while the server has no pack record: "Copy pack to
+  //      new server" reads that file and sends it (importPack). The server takes it once, from
+  //      the pack's owner only, and only while the pack there is empty.
+  // Why not one button that posts from the Firestore page: that page could reach the server only
+  // if it were served from the same site as the API — its CSP allows no other, and the API sends
+  // no CORS headers, which would widen who can call it — and whether pack569.com is on Cloudflare
+  // yet depends on the Phase 1 cutover. A file works either way, and keeps the Firestore page
+  // exactly as it is. The family data in it never touches git or CI: it goes from Firestore to the
+  // owner's browser, to their disk, to the server. The parent view is left out: the first leader
+  // save on the new server publishes it again. A plain Backup (JSON) is accepted too, for the pack
+  // record alone (a rehearsal on staging with a made-up pack).
+  var MOVE_KIND = 'pack569-move';
+  var MOVE_UID_RE = /^[A-Za-z0-9:_-]{1,128}$/;          // the server's UID_RE
+  var MOVE_ROLES = ['admin', 'editor', 'viewer', 'parent', 'pending'];
+  function isPackOwner() { return !!(sync.user && sync.ownerUid && sync.ownerUid === sync.user.uid); }
+  function canDownloadMoveFile() { return BACKEND === 'firestore' && fixedPackMode() && isAdmin() && isPackOwner(); }
+  function canImportPack() {
+    return !!(sync.backend && sync.backend.importPack) && isAdmin() && isPackOwner() && sync.packMissing;
+  }
+  // Only from a device that has everything, as the server has it: synced with nothing unsaved,
+  // the roster read from the server, the sign-up settings loaded.
+  function moveFileReady() {
+    return sync.mode === 'online' && !sync.dirty && sync.membersScope === 'all' && sync.membersFromServer && sync.joinLoaded;
+  }
+  // Why the move file can't be made from this device now, or '' (security review of stage C,
+  // item 2). The file carries the pack record as the SERVER last had it (sync.remoteRec), never
+  // this device's copy, and only while the two are the same pack: a device whose sync-conflict
+  // was closed with Escape reads "Synced" over a copy the server does not have. Both sides go
+  // through the same JSON round trip and normalizeState before they are compared.
+  function moveFileProblem() {
+    if (!moveFileReady()) return 'Wait for this device to finish syncing with the pack, then try again.';
+    if (sync.conflict) return 'This device and the pack’s shared copy differ. Choose which copy to keep first.';
+    var rec = sync.remoteRec, remote = null, here = null;
+    try {
+      remote = rec && typeof rec.json === 'string' ? normalizeState(JSON.parse(rec.json)) : null;
+      here = normalizeState(JSON.parse(JSON.stringify(state)));
+    } catch (e) { remote = null; }
+    if (!remote || !here || stateFingerprint(remote) !== stateFingerprint(here)) {
+      return 'This device’s copy isn’t the pack’s latest. Reload the page, wait for Synced, and try again.';
+    }
+    return '';
+  }
+  function moveTime(v) {
+    if (typeof v === 'number' && isFinite(v) && v >= 0) return Math.floor(v);
+    if (v && typeof v.toMillis === 'function') { try { return v.toMillis(); } catch (e) { return null; } }
+    return null;
+  }
+  // Pure. o = { packId, record, members, invites, joinCfg, at }, record = the pack record
+  // { rev, device, json } exactly as the server holds it. A member the server would
+  // refuse (no role it knows, an odd account id) would fail the whole import, so it is left out
+  // and counted in `skipped` — the owner sees the number before copying in.
+  function buildMoveFile(o) {
+    var skipped = 0;
+    var members = [];
+    arrOf(o.members).forEach(function (m) {
+      if (!m || !MOVE_UID_RE.test(String(m.uid || '')) || MOVE_ROLES.indexOf(m.role) === -1) { skipped += 1; return; }
+      var out = { uid: m.uid, role: m.role, name: String(m.name || ''), email: String(m.email || '') };
+      var at = moveTime(m.addedAt);
+      if (at !== null) out.addedAt = at;
+      if (typeof m.joinCode === 'string' && JOIN_CODE_RE.test(m.joinCode)) out.joinCode = m.joinCode;
+      members.push(out);
+    });
+    var j = o.joinCfg, rec = o.record || {};
+    return {
+      kind: MOVE_KIND, v: 1, packId: o.packId, madeAt: o.at || '', skipped: skipped,
+      pack: { rev: typeof rec.rev === 'number' ? rec.rev : 0, device: String(rec.device || ''), json: String(rec.json || '') },
+      members: members,
+      invites: arrOf(o.invites).map(function (v) { return { email: String((v && v.email) || ''), role: v && v.role }; }),
+      join: (j && typeof j.code === 'string' && JOIN_CODE_RE.test(j.code)) ? {
+        open: j.open === true, code: j.code, showStandings: j.showStandings !== false,
+        showAmounts: j.showAmounts !== false, contact: cleanContactLine(j.contact)
+      } : null
+    };
+  }
+  // Pure. What a chosen file would copy in: { body, packName, newestEvent, scouts, members,
+  // invites, backupOnly } or { error }. A move file must be for THIS pack; a plain backup brings
+  // the pack record alone. `staging` (STAGING): staging is for made-up data only, so it refuses
+  // the real move file outright (YP review of stage C, item 2). A plain backup is still taken
+  // there, for the rehearsal; the confirm screen names the pack and its newest event, so a
+  // real pack shows itself before anything is sent.
+  function moveImportBody(parsed, packId, staging) {
+    function about(st) {
+      var dates = arrOf(st.events).map(function (e) { return e && typeof e.date === 'string' ? e.date : ''; })
+        .filter(function (d) { return /^\d{4}-\d{2}-\d{2}$/.test(d); }).sort();
+      return { packName: typeof st.packName === 'string' ? st.packName : '', newestEvent: dates.length ? dates[dates.length - 1] : '' };
+    }
+    var a;
+    if (parsed && typeof parsed === 'object' && parsed.kind === MOVE_KIND) {
+      if (staging) return { error: 'This is staging, made-up data only. The real move file goes to pack569.com.' };
+      if (parsed.packId !== packId) return { error: 'That file is for a different pack.' };
+      var st = null;
+      try { st = normalizeState(JSON.parse(parsed.pack && typeof parsed.pack.json === 'string' ? parsed.pack.json : '')); } catch (e) { st = null; }
+      if (!st) return { error: 'That file has no pack record in it.' };
+      var members = arrOf(parsed.members), invites = arrOf(parsed.invites);
+      a = about(st);
+      return { body: { pack: { rev: parsed.pack.rev, device: parsed.pack.device, json: parsed.pack.json },
+        members: members, invites: invites, join: parsed.join || null }, packName: a.packName, newestEvent: a.newestEvent,
+        scouts: st.scouts.length, members: members.length, invites: invites.length, backupOnly: false };
+    }
+    var ns = normalizeState(parsed);
+    if (!ns) return { error: 'That file isn’t a pack backup or a move file.' };
+    a = about(ns);
+    // A rev of at least 1, as the server stores it (import.js): never the 0 a first save names.
+    return { body: { pack: { rev: Math.max(typeof ns.rev === 'number' ? ns.rev : 0, 1), device: '', json: JSON.stringify(ns) },
+      members: [], invites: [], join: null }, packName: a.packName, newestEvent: a.newestEvent,
+      scouts: ns.scouts.length, members: 0, invites: 0, backupOnly: true };
+  }
+  function downloadMoveFile() {
+    if (!canDownloadMoveFile()) return;
+    var why = moveFileProblem();
+    if (why) {
+      // An unanswered sync-conflict: bring the chooser back, so there is a way on.
+      if (sync.conflict && !ui.overlay) { ui.overlay = { kind: 'sync-conflict', remote: sync.conflict }; render(); }
+      showToast(why);
+      return;
+    }
+    var mf = buildMoveFile({ packId: sync.docId, record: sync.remoteRec, members: sync.members,
+      invites: sync.invites, joinCfg: sync.joinCfg, at: new Date().toISOString() });
+    ui.overlay = { kind: 'move-export', name: 'pack569-move-' + todayISO() + '.json',
+      mime: 'application/json', text: JSON.stringify(mf, null, 2) };
+    render();
+  }
+  function handleMoveFile(input) {
+    var file = input.files && input.files[0];
+    input.value = '';
+    if (!file || !canImportPack()) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      var parsed = null;
+      try { parsed = JSON.parse(String(reader.result)); } catch (e) { /* not JSON */ }
+      var got = moveImportBody(parsed, fixedPackId(), STAGING);
+      if (got.error) { showToast(got.error); return; }
+      ui.overlay = { kind: 'move-import', got: got };
+      render();
+    };
+    reader.readAsText(file);
+  }
+  // The copy itself. What arrives afterwards comes through the pack feed as a first answer
+  // (subscribeDoc), so this device's own copy is compared with it, never overwritten unasked.
+  function importMoveFile(body) {
+    if (!canImportPack() || !cloudReady()) return;
+    var mine = sync.session;
+    sync.backend.importPack(sync.docId, body).then(function (r) {
+      if (sync.session !== mine) return;
+      showToast('Copied in: the pack record, ' + (r.members || 0) + ' accounts and ' + (r.invites || 0) + ' invites.');
+    }).catch(function (err) {
+      if (sync.session !== mine) return;
+      showToast(err && err.code === 'permission-denied'
+        ? 'The server didn’t take it: it takes one copy, once, from the pack’s owner, while it has no pack.'
+        : 'Couldn’t copy the pack in. ' + (err && err.message ? err.message : 'Try again.'));
+    });
+  }
+  function renderMoveLine() {
+    if (canDownloadMoveFile()) {
+      return '<hr class="divider"><p class="eyebrow">Moving to the new server</p>' +
+        '<p class="small muted" style="margin:0 0 6px">Only for the day the pack moves to its new server. Saves the ' +
+        'whole pack, every member’s and invited person’s email and the sign-up code as one file, to copy in on the new ' +
+        'server. Keep it on this computer, and delete it once the pack is copied in.</p>' +
+        '<button type="button" class="btn small" data-act="move-download">Download pack for the new server</button>';
+    }
+    if (canImportPack()) {
+      return '<hr class="divider"><p class="eyebrow">Copy the pack in</p>' +
+        '<p class="small muted" style="margin:0 0 6px">The pack’s server has no copy of the pack yet. Choose the file ' +
+        '“Download pack for the new server” saved on the old page. A Backup (JSON) works too, but brings the pack ' +
+        'record alone: every member would need an invite or approval again. The server takes one copy, once.</p>' +
+        '<button type="button" class="btn small primary" data-act="move-import">Copy pack to new server…</button>' +
+        '<input type="file" id="moveFile" accept=".json,application/json" hidden>';
+    }
+    return '';
   }
   // THE AMOUNTS-OFF BAR, BANDED INSIDE ITS OWN SEGMENT (security review, 2026-09-28, wave 7b).
   // `lo` is the notch of the tier the scout holds (0 if none) and `hi` the next rung's notch (100
@@ -10407,7 +11320,19 @@
     parentViewTimer = null;
     if (!accountsInForce() || !canEdit()) return;
     if (fixedSyncBlocked()) return;   // SAFETY: single-pack mode, rules unproven — never write
-    if (!sync.mods || !sync.db || !sync.docId) return;
+    // Only a device that holds the pack record's handle, and has had the pack record's first
+    // answer, publishes a view of it (security review of stage B, item 2). cloudReady() alone
+    // is not enough: haltFixedSync drops the pack handle but not the accounts side, so a halted
+    // device that later learned a leader role would otherwise publish from an unsynced local
+    // copy. And before the first answer, what is on this device may be days old.
+    if (!cloudReady() || !packLinked() || sync.firstSnap) return;
+    // Nor while a sync-conflict waits on a leader: this device's copy may be the one they throw
+    // away. Choosing either copy schedules this again (adoptRemote, or keepLocalCopy's save).
+    if (sync.conflict) return;
+    // BACKEND 'api': only a copy the server holds (sync.remoteRec: one it sent, or took from this
+    // device). A device that heard "no pack" publishes after its first save lands, not before —
+    // the owner's copy-in may have arrived in between (security review of stage C, item 1).
+    if (sync.backend && sync.backend.serverRevs && !sync.remoteRec) return;
     // Not before the join config has answered: until then "calendar-only" reads as "standings
     // on" (see applyJoinSubscription). Nothing is lost by waiting — the answer, either way,
     // schedules this again.
@@ -10418,26 +11343,51 @@
       fp = JSON.stringify(payload);
     } catch (e) { return; }
     if (fp === parentViewFingerprint) return;
-    var fs = sync.mods.fs;
+    var be = sync.backend;
     var data = {};
     Object.keys(payload).forEach(function (k) { data[k] = payload[k]; });
-    data.generatedAt = fs.serverTimestamp();   // sentinel — kept out of the fingerprint
+    data.generatedAt = be.serverTime();   // sentinel — kept out of the fingerprint
     // Claim the fingerprint BEFORE the write so a second call can't send the same payload
     // again while this one is in flight; a failure clears it so the next push retries.
     parentViewFingerprint = fp;
     try {
-      fs.setDoc(fs.doc(sync.db, 'packs', sync.docId, 'public', 'view'), data)
+      be.writeView(sync.docId, data)
         .catch(function () { parentViewFingerprint = null; /* denied/offline — retry next push */ });
     } catch (e2) { parentViewFingerprint = null; /* never disturb pack-record sync */ }
   }
 
   // Debounced push — every commit() lands here; the transaction keeps rev monotonic.
   function scheduleSyncPush() {
-    if (!sync.docRef) return;
+    if (!packLinked()) return;
     if (fixedSyncBlocked()) return;   // SAFETY: single-pack mode, rules unproven — never write
     sync.dirty = true;
+    if (sync.notice) return;          // holding edits on this device (holdPushes): send nothing
     clearTimeout(sync.pushTimer);
     sync.pushTimer = setTimeout(syncPush, 800);
+  }
+  // BACKEND 'api': two answers to a save that no retry can change. 'awaiting-import': the pack's
+  // server is empty until its owner copies the pack in (production only). 'not-set-up': the
+  // server says it is not configured. Either way this device keeps every edit (sync.dirty stays
+  // true), stops pushing — no retry timer, and scheduleSyncPush sends nothing — and says why.
+  // The pack feed resumes it (subscribeDoc), and what arrives then is treated as a first answer:
+  // compared with what is here, and a leader chooses if the two differ. Firestore never gives
+  // either answer, so there this is always false.
+  function holdPushes(err) {
+    var why = (err && err.code === 'failed-precondition' && err.reason === 'awaiting-import') ? 'awaiting-import'
+      : (err && err.notSetUp ? 'not-set-up' : '');
+    if (!why) return false;
+    clearTimeout(sync.pushTimer);
+    sync.pushTimer = null;
+    clearTimeout(sync.retryTimer);
+    sync.notice = why;
+    sync.firstSnap = true;
+    sync.remoteRec = null;
+    sync.conflict = null;
+    sync.mode = 'offline';
+    sync.error = err.message ? String(err.message) : '';
+    renderSyncPill();
+    render();
+    return true;
   }
   // Wave 18(5) — append-only id-union merge, used only when sync.clobber is set.
   // Unions exactly THREE collections by id — state.entries, inventory hand-outs, and
@@ -10473,41 +11423,107 @@
     return added;
   }
   function syncPush() {
-    if (!sync.docRef || !sync.mods) return;
+    if (!packLinked()) return;
     if (fixedSyncBlocked()) return;   // SAFETY: single-pack mode, rules unproven — never write
     // Parent phase belt-and-braces: a role that can't edit never writes the pack record, even if
     // a stale timer fires. (commit() already refuses; the published rules are the backstop.)
     if (accountsInForce() && !canEdit()) return;
-    var fs = sync.mods.fs, ref = sync.docRef, mine = sync.session;
-    fs.runTransaction(sync.db, function (tx) {
-      return tx.get(ref).then(function (snap) {
-        var remoteRev = snap.exists() && typeof snap.data().rev === 'number' ? snap.data().rev : 0;
-        // Wave 18(5) — about to overwrite a newer remote copy we skipped while dirty:
-        // pull its append-only log items in first (fresh from THIS transaction's read).
-        var mergedN = (sync.clobber && snap.exists()) ? mergeRemoteAppendOnly(snap.data()) : 0;
-        var nextRev = Math.max(state.rev || 0, remoteRev) + 1;
-        tx.set(ref, {
-          rev: nextRev,
-          updatedAt: fs.serverTimestamp(),
-          device: sync.deviceId,
-          json: JSON.stringify(state)
-        });
-        return { nextRev: nextRev, mergedN: mergedN };
-      });
+    if (sync.notice) return;          // holding edits on this device (holdPushes)
+    // A sync-conflict the leader has not answered (the chooser closed with Escape): nothing is
+    // written over either copy until they choose, and the chooser comes back to ask.
+    if (sync.conflict) {
+      if (!ui.overlay) { ui.overlay = { kind: 'sync-conflict', remote: sync.conflict }; render(); }
+      return;
+    }
+    var be = sync.backend, h = sync.pack, mine = sync.session;
+    // `remote` is the record as it stands at this attempt (null if none). The backend may run
+    // this more than once when another device writes in between; the merge is id-guarded, so
+    // a rerun appends nothing twice, and the rev is re-derived from each fresh read.
+    be.pushPack(h, function (remote) {
+      // A record this device has never heard of is not written over, merged into or
+      // rev-checked. Nothing is sent; the record goes to onRemoteSnap as a first answer,
+      // compared with this device's copy, and a leader chooses if the two differ.
+      //   - Either backend, before the pack record's first answer (sync.firstSnap): an edit made
+      //     while the feed was still connecting would otherwise put this device's copy, however
+      //     old, over the shared one (security review of 260f467..db851c7, F3).
+      //   - BACKEND 'api' (security review of stage C, item 1): its first answer was "no pack",
+      //     so it scheduled a seed (or a 10 s retry), and the owner copied the pack in before
+      //     that push ran.
+      if (remote && (sync.firstSnap || (be.serverRevs && !sync.remoteRec))) return { record: null, result: { unheard: remote } };
+      var remoteRev = remote && typeof remote.rev === 'number' ? remote.rev : 0;
+      // BACKEND 'api' (be.serverRevs): the server stores exactly remoteRev + 1, and from the
+      // pack record's first answer on, state.rev is a rev the server gave this device. Any other
+      // rev here is a save from another device that polling has not brought in yet (it can be
+      // 15 s behind, where Firestore's listener would already have flagged it), so it is merged
+      // exactly as a clobber is. Setting the flag again on a rerun changes nothing.
+      if (be.serverRevs && remote && remoteRev !== (state.rev || 0)) sync.clobber = true;
+      // Firestore (review of 86dfe38..4347cc6, item 1): the listener does not always flag it
+      // first. This read and the feed race, so another device's save can be read here before
+      // its snapshot arrives. A rev newer than any this device has had (its own, or the last
+      // the server sent) is such a save, and is merged the same way.
+      var heardRev = Math.max(state.rev || 0, sync.remoteRec && typeof sync.remoteRec.rev === 'number' ? sync.remoteRec.rev : 0);
+      if (!be.serverRevs && remote && remoteRev > heardRev) sync.clobber = true;
+      // Wave 18(5) — about to overwrite a newer remote copy we skipped while dirty:
+      // pull its append-only log items in first (fresh from THIS attempt's read).
+      var clobbered = !!(sync.clobber && remote);
+      var mergedN = clobbered ? mergeRemoteAppendOnly(remote) : 0;
+      var nextRev = be.serverRevs ? remoteRev + 1 : Math.max(state.rev || 0, remoteRev) + 1;
+      var record = {
+        rev: nextRev,
+        updatedAt: be.serverTime(),
+        device: sync.deviceId,
+        json: JSON.stringify(state)
+      };
+      return { record: record, result: { nextRev: nextRev, mergedN: mergedN, clobbered: clobbered, heard: sync.remoteRec, record: record } };
     }).then(function (res) {
       if (sync.session !== mine) return;
+      if (res.unheard) {
+        // Compared as the first answer only if it still is one. The pack feed may have answered
+        // while this push was out. That answer has been compared already, the feed brings anything
+        // newer the usual way, and comparing this record again could open the chooser on an older
+        // copy, or adopt one (security review of 6747945..6fa61c2, item 2). The held edit goes
+        // out now, as any save does.
+        if (sync.firstSnap || (be.serverRevs && !sync.remoteRec)) {
+          sync.firstSnap = true;
+          onRemoteSnap(res.unheard, { fromServer: true, pendingWrites: false });
+        } else if (sync.dirty && !sync.conflict) scheduleSyncPush();
+        return;
+      }
+      // An edit made while the push was out is not in what was sent (security review of
+      // 6747945..6fa61c2, item 4). Such a device is still unsaved: marked clean, it would adopt
+      // the next save from another device over that edit. So it stays dirty and sends again. The
+      // copy is compared, not edits counted, because a typed-in amount changes it 300 ms before
+      // its save asks for a push (schedulePersist). Read before state.rev moves on, as the sent
+      // copy was.
+      var editedSince = JSON.stringify(state) !== res.record.json;
+      // Another device's save that landed on top of this one while it was out (review of
+      // 86dfe38..4347cc6, item 1): the feed's server answer (sync.remoteRec) came after the copy
+      // was built and is newer than what was written. It is not in what was sent, and its
+      // snapshot has come and gone, so it is kept here: with no edit since, this device takes
+      // it; with one, it stays dirty and flagged (onRemoteSnap set sync.clobber), and the next
+      // push merges it.
+      var rr = sync.remoteRec;
+      var later = rr && rr !== res.heard && typeof rr.rev === 'number' && rr.rev > res.nextRev ? rr : null;
       state.rev = res.nextRev;
-      sync.dirty = false;
-      save(); // no re-render needed — nothing visible changed…
-      scheduleParentViewRefresh(); // Parent phase — regenerate the sanitized copy (leaders only)
-      if (sync.clobber) {
-        sync.clobber = false;
-        if (res.mergedN > 0) render(); // …unless the merge appended remote items
+      // What the server now holds is exactly what this device sent, unless a later save is.
+      if (!later) sync.remoteRec = { rev: res.record.rev, device: res.record.device, json: res.record.json };
+      if (res.clobbered) {
+        if (res.mergedN > 0) render(); // the merge appended remote items
         showToast('Another device saved changes while you were editing — check recent entries.');
       }
+      // Everything heard so far was in what was merged and sent, unless a later save came.
+      if (!later) sync.clobber = false;
+      if (later && !editedSince) adoptRemote(later, { toast: true });
+      else {
+        if (!editedSince) sync.dirty = false;
+        else if (sync.dirty) scheduleSyncPush();
+        save(); // no re-render needed — nothing visible changed
+      }
+      scheduleParentViewRefresh(); // Parent phase — regenerate the sanitized copy (leaders only)
       if (sync.mode !== 'online') { sync.mode = 'online'; sync.error = ''; renderSyncPill(); if (ui.tab === 'pack') render(); }
     }).catch(function (err) {
       if (sync.session !== mine) return;
+      if (holdPushes(err)) return;
       syncFail(err);
       clearTimeout(sync.retryTimer);
       sync.retryTimer = setTimeout(function () { if (sync.dirty && sync.session === mine) syncPush(); }, 10000);
@@ -10534,55 +11550,119 @@
     if (!ns) return false;
     state = ns;
     state.rev = typeof d.rev === 'number' ? d.rev : 0;
+    // This device now holds the server's copy: nothing is left to send or to merge at a save (a
+    // push still scheduled would only send that copy back as a new rev), nothing is left to
+    // choose, and the family view held back while the choice waited (writeParentView) can go out.
     sync.dirty = false;
+    sync.clobber = false;
+    clearTimeout(sync.pushTimer);
+    sync.pushTimer = null;
+    if (sync.conflict) { sync.conflict = null; scheduleParentViewRefresh(); }
     save();
     render();
     if (opts && opts.toast) showToast('Updated from another device');
     return true;
   }
-  function onRemoteSnap(snap) {
-    var wasFirst = sync.firstSnap;
+  // `rec` is the pack record as the backend sent it — { rev, device, json, … } — or null when
+  // the pack has none yet; `meta.pendingWrites` marks our own not-yet-confirmed write. The
+  // sync-conflict overlay keeps `rec` exactly as it came, for adoptRemote.
+  function onRemoteSnap(rec, meta) {
+    var serverRevs = !!(sync.backend && sync.backend.serverRevs);
+    var fromServer = !(meta && meta.fromServer === false);
+    // A cached answer is never the FIRST answer (security review of 6747945..6fa61c2, item 1).
+    // Firestore hands the listener what its cache holds first when the device is offline, often
+    // "no record" — and taken as the first answer, that seeds this device's copy over the shared
+    // one when the connection comes back, or skips the comparison a leader should have made.
+    // Nothing here acts on it; the server's answer (subscribePack asks for it even when it only
+    // confirms the cache) is the first answer. Only Firestore has a cache: the pack's server's
+    // answers are always fromServer.
+    if (!fromServer && sync.firstSnap) return;
+    // BACKEND 'api' (security review of stage C, item 1): a record arriving after the server
+    // said it had none (the owner's copy-in, most likely) is a first answer too, however it
+    // arrives — here from the pack feed, or from syncPush, which hands such a record over
+    // rather than writing on top of it.
+    var wasFirst = sync.firstSnap || !!(serverRevs && rec && !sync.remoteRec);
     sync.firstSnap = false;
-    if (sync.mode !== 'online') { sync.mode = 'online'; sync.error = ''; renderSyncPill(); if (ui.tab === 'pack') render(); }
+    // Only the server's answer says this device is back online (review of 86dfe38..4347cc6,
+    // item 2): the feed asks for metadata changes, so offline, after a failed save, the cache
+    // answers too, and the pill would read "Synced" over edits that are not.
+    if (fromServer && sync.mode !== 'online') { sync.mode = 'online'; sync.error = ''; renderSyncPill(); if (ui.tab === 'pack') render(); }
     // Parent phase — publish the sanitized copy once per connection too, so parents aren't
     // waiting on the next leader edit for their first schedule. Debounced + fingerprinted,
     // so the rest of this function settles on the winning state before anything is written,
     // and an unchanged payload costs nothing. No-op for viewers/parents/legacy.
     if (wasFirst) scheduleParentViewRefresh();
-    if (!snap.exists()) {
+    if (!rec) {
+      if (fromServer) sync.remoteRec = null;
       // No shared copy yet — seed it from this device (M-3: never for a read-only viewer;
       // canEdit() is true for anonymous/legacy, so today's behavior is unchanged).
-      if (wasFirst && canEdit()) { sync.dirty = true; clearTimeout(sync.pushTimer); sync.pushTimer = setTimeout(syncPush, 800); }
+      // BACKEND 'api': not from an EMPTY device. On the pack's server an empty pack is how the
+      // owner's one-time copy-in finds it (import refuses a pack that has a record), and seeding
+      // nothing would only take that away; the first real edit creates the record instead.
+      if (wasFirst && canEdit() && !(serverRevs && isStateEmpty(state))) {
+        sync.dirty = true; clearTimeout(sync.pushTimer); sync.pushTimer = setTimeout(syncPush, 800);
+      }
       return;
     }
-    if (snap.metadata && snap.metadata.hasPendingWrites) return; // our own optimistic write
-    var d = snap.data() || {};
+    if (meta && meta.pendingWrites) return; // our own optimistic write
+    if (fromServer) sync.remoteRec = { rev: rec.rev, device: rec.device, json: rec.json };
+    var d = rec;
     var remoteRev = typeof d.rev === 'number' ? d.rev : 0;
     if (wasFirst) {
       var parsed = null;
       try { parsed = JSON.parse(typeof d.json === 'string' ? d.json : ''); } catch (e) { /* corrupt remote */ }
       var remoteNorm = normalizeState(parsed);
       if (!remoteNorm) return; // unreadable cloud copy — leave local data alone
+      // BACKEND 'api': from the first answer on, state.rev is the server's rev — whichever copy
+      // wins below — so syncPush can tell this device's base from a save it has not seen.
+      if (serverRevs) state.rev = remoteRev;
       if (isStateEmpty(state)) { adoptRemote(d, {}); return; } // nothing here yet — adopt silently
       if (stateFingerprint(remoteNorm) === stateFingerprint(state)) {
-        if (remoteRev > (state.rev || 0)) { state.rev = remoteRev; save(); }
+        // The same pack on both sides: nothing on this device is unsaved, whatever it thought
+        // before. Left dirty, it would read every later save from another device as one it was
+        // about to overwrite (sync.clobber), and its next save would put this copy back over
+        // that device's changes, keeping only the append-only logs. The case is the switch
+        // (security review of 260f467..db851c7, F1): the owner's device held its copy while the
+        // server awaited the import (holdPushes), and the move file it copied in is that copy.
+        sync.dirty = false;
+        sync.clobber = false;
+        clearTimeout(sync.pushTimer);
+        sync.pushTimer = null;
+        if (remoteRev > (state.rev || 0)) state.rev = remoteRev;
+        save();
         return;
       }
-      if (isStateEmpty(remoteNorm)) {
-        if (canEdit()) { sync.dirty = true; clearTimeout(sync.pushTimer); sync.pushTimer = setTimeout(syncPush, 800); } // M-3: read-only viewers never seed
-        else adoptRemote(d, {}); // a viewer just takes the (empty) cloud copy
+      if (isStateEmpty(remoteNorm) && canEdit()) { // M-3: read-only viewers never seed
+        sync.dirty = true; clearTimeout(sync.pushTimer); sync.pushTimer = setTimeout(syncPush, 800);
         return;
       }
-      // Both sides have real data and they differ. A read-only viewer can't "keep local",
-      // so don't offer the choice — just show them the cloud copy (M-3).
-      if (!canEdit()) { adoptRemote(d, {}); return; }
+      // Both sides differ (or the cloud copy is empty). A read-only viewer can't "keep local",
+      // so don't offer the choice — just show them the cloud copy (M-3). Only on the server's
+      // word, as applyRoleSubscription (review of cd7078e..4347cc6, open item B): "viewer" from a
+      // cached roster can be an old one, and would throw away an editor's copy. Before the
+      // members watch has answered at all, the role is the session start's own read of this
+      // account's member doc, a server read (the pack feed is subscribed first, so a viewer's
+      // first answer usually comes then, and is taken silently, as it always was). After a
+      // cached answer, this device is asked like an editor until the server's; nothing is
+      // written while the choice waits ("keep mine" refuses a viewer), and the server's
+      // "viewer" takes the shared copy then (applyRoleSubscription, with a toast).
+      if (!canEdit() && (sync.membersFromServer || !sync.membersHeard)) { adoptRemote(d, {}); return; }
       // Editors/admins pick which copy wins (two-tap each way).
       ui.overlay = { kind: 'sync-conflict', remote: d };
+      sync.conflict = d;
       render();
       return;
     }
     if (d.device === sync.deviceId) return; // our own write echoed back
-    if (ui.overlay && ui.overlay.kind === 'sync-conflict') { ui.overlay.remote = d; render(); return; }
+    if (sync.conflict || (ui.overlay && ui.overlay.kind === 'sync-conflict')) {
+      // A device that can no longer edit (a leader made a viewer while the choice waited) has
+      // no copy to keep: it takes the shared one, as a viewer's first answer does (M-3) — once
+      // the server has said so (applyRoleSubscription). Until then the choice waits, on this copy.
+      if (!canEdit() && sync.membersFromServer) { takeSharedAsViewer(d); return; }
+      sync.conflict = d;
+      if (ui.overlay && ui.overlay.kind === 'sync-conflict') { ui.overlay.remote = d; render(); }
+      return;
+    }
     if (remoteRev > (state.rev || 0)) {
       if (!sync.dirty) adoptRemote(d, { toast: true });
       // Wave 18(5) — a newer remote rev arrived while this device has unsaved edits.
@@ -10590,6 +11670,28 @@
       // syncPush merges the append-only logs before writing and warns after.
       else sync.clobber = true;
     }
+  }
+  // A leader made view-only while a sync-conflict waited: this device takes the shared copy
+  // (there is no other it may keep), and says why its own changes are gone.
+  // An unreadable shared copy is not taken (adoptRemote refuses it, and draws nothing): the
+  // closed chooser is drawn closed, and sync.conflict stays, so the pill brings it back (review
+  // of 86dfe38..4347cc6, item 3).
+  function takeSharedAsViewer(d) {
+    if (ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay = null;
+    if (adoptRemote(d, {})) showToast('You’re now view-only, so this device took the pack’s shared copy.');
+    else render();
+  }
+  // "Keep this device's copy" on the sync-conflict overlay (armed, two taps, in the click handler).
+  function keepLocalCopy() {
+    var kept = ui.overlay;
+    ui.overlay = null;
+    if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); render(); return; } // M-3
+    sync.conflict = null;
+    // BACKEND 'api': the copy being overwritten is the one this leader was just shown, so it
+    // counts as seen; only a save made after it is merged in at the push (syncPush).
+    if (sync.backend && sync.backend.serverRevs && kept && kept.remote && typeof kept.remote.rev === 'number') state.rev = kept.remote.rev;
+    render();
+    scheduleSyncPush(); // rev bumps past the cloud copy's in the push transaction
   }
   var toastTimer = null;
   // Wave 18(21) — a toast can carry ONE action button (Undo). toastAction holds the
@@ -10666,8 +11768,14 @@
     local: { cls: 'local', label: 'This device' },
     connecting: { cls: 'connecting', label: 'Connecting…' },
     online: { cls: 'online', label: 'Synced' },
-    offline: { cls: 'offline', label: 'Offline' }
+    offline: { cls: 'offline', label: 'Offline' },
+    // Not a sync.mode: a sync-conflict the leader has not answered. It outlasts the chooser
+    // (closed with Escape, nothing is saved until they choose), so the pill says so for as long
+    // as it waits, and pressing it brings the chooser back (security review of 260f467..db851c7,
+    // F4). Only a leader's device ever has one: parents never receive the pack record.
+    conflict: { cls: 'conflict', label: 'Choose which copy to keep' }
   };
+  function syncPillState() { return sync.conflict ? SYNC_PILL.conflict : (SYNC_PILL[sync.mode] || SYNC_PILL.local); }
   // What a family is told instead. Only "Offline" needs more words: to a parent it is the one
   // state that changes what they are looking at — the calendar is the copy this device last saw.
   var SYNC_PILL_PARENT = { offline: 'Offline — showing what was saved last' };
@@ -10675,7 +11783,7 @@
     var el = document.getElementById('syncPill');
     if (!el) return;
     var gm = !!gateMode();
-    var p = SYNC_PILL[sync.mode] || SYNC_PILL.local;
+    var p = syncPillState();
     // PARENTS GET TEXT, NOT A BUTTON (parent-experience audit, 2026-09-28). The pill's action is
     // goto-pack, which is not on PARENT_ACTS — so for a family it was a button that did nothing
     // when pressed. A status they can read, in a <span> that is never in the tab order.
@@ -10694,7 +11802,8 @@
     el.hidden = gm || asText;
     el.className = 'sync-pill no-print ' + p.cls;
     el.innerHTML = '<span class="sync-dot"></span><span class="sync-lbl">' + p.label + '</span>';
-    el.setAttribute('aria-label', 'Sync status: ' + p.label + '. Opens Pack.');
+    el.setAttribute('data-act', sync.conflict ? 'sync-choose' : 'goto-pack');
+    el.setAttribute('aria-label', 'Sync status: ' + p.label + (sync.conflict ? '. Opens the choice.' : '. Opens Pack.'));
   }
 
   /* ---------------- Mutations ---------------- */
@@ -11095,6 +12204,7 @@
     // Persistent read-only banner for a signed-in viewer (roles in force). Parents/pending
     // users are on the parent app instead, which carries its own notices.
     if (!parent && !gate && sync.user && !canEdit()) v.innerHTML = readOnlyBanner() + v.innerHTML;
+    if (!parent && !gate) v.innerHTML = serverNoticeBanner() + v.innerHTML;
     renderSyncPill();
     document.getElementById('overlayHost').innerHTML = (parent || gate) ? '' : renderOverlay();
 
@@ -11293,6 +12403,17 @@
         '<div class="join-actions">' +
         (sync.user && sync.user.email ? '<span class="small muted">Signed in as ' + esc(sync.user.email) + '</span>' : '') +
         '<button type="button" class="btn small" data-act="sign-out-google">Sign out</button></div>');
+    }
+    // BACKEND 'api': the pack's server limits how often one account may try a sign-up link.
+    if (sync.joinRejected === 'busy') {
+      return joinGateShell('Too many tries for now',
+        '<p class="small">This account has tried the pack’s sign-up link too many times in the last hour. ' +
+        'Wait a while, then open the link again.</p>' +
+        '<div class="join-actions">' +
+        (sync.user
+          ? '<button type="button" class="btn small" data-act="sign-out-google">Sign out</button>'
+          : '') +
+        '</div>');
     }
     // Signed in with no link and no invite: nothing was refused, there was just no way in.
     if (sync.joinRejected === 'nolink') {
@@ -16520,7 +17641,7 @@
   }
   function renderMembersCard() {
     // Only meaningful when signed in with Google. (Anonymous/legacy users never see it.)
-    if (!FIREBASE_CONFIG || !sync.user) return '';
+    if (!backendConfigured() || !sync.user) return '';
     var h = '<div class="card acct-card"><h2 class="section display">Members</h2>';
     if (sync.accountsUnavailable) {
       h += '<p class="small muted" style="margin:0">Accounts aren’t fully set up — publish the security rules from the ' +
@@ -16666,7 +17787,7 @@
   // Admins only, and only once accounts are actually in force. It writes ONE document,
   // packs/{docId}/public/join — never the pack record.
   function renderJoinCard() {
-    if (!FIREBASE_CONFIG || !sync.user || sync.accountsUnavailable || !isAdmin()) return '';
+    if (!backendConfigured() || !sync.user || sync.accountsUnavailable || !isAdmin()) return '';
     var h = '<div class="card"><h2 class="section display">Parent sign-up link</h2>';
     if (sync.joinUnavailable) {
       return h + '<p class="small muted" style="margin:0">The sign-up link needs the newest security rules ' +
@@ -16866,8 +17987,32 @@
       (canPreviewParent() ? '<button type="button" class="btn small" data-act="parent-preview-on">Open the family view</button>' : ''));
     return h + '</div>';
   }
+  // BACKEND 'api': why this device is holding its edits (sync.notice), in words for a leader.
+  // Firestore never sets a notice, so there nothing here ever shows.
+  var SERVER_NOTICES = {
+    'awaiting-import': 'Waiting for the pack’s owner to copy the pack over to the new server. ' +
+      'Your changes are kept on this device until then.',
+    'not-set-up': 'The pack’s server isn’t set up yet. This device is keeping its own copy.',
+    'no-session': 'Couldn’t reach the pack’s server to sign you in. This device is keeping its own copy — reload to try again.'
+  };
+  function serverNotice() {
+    if (sync.notice) return SERVER_NOTICES[sync.notice] || '';
+    // An empty pack on the pack's server, to a leader: say so, and to its owner, what to do.
+    if (sync.packMissing && sync.backend && sync.backend.serverRevs && LEADER_ROLES.indexOf(sync.myRole) !== -1) {
+      return canImportPack()
+        ? 'The pack’s server has no copy of the pack yet. Copy it in: Pack → Sharing → Copy pack to new server.'
+        : 'The pack’s server has no copy of the pack yet. If the pack is moving from the old server, its owner copies it in.';
+    }
+    return '';
+  }
+  function serverNoticeBanner() {
+    var t = serverNotice();
+    return t ? '<div class="warn no-print" style="margin:0 0 14px">' + esc(t) + '</div>' : '';
+  }
   function syncModeLine() {
-    if (!FIREBASE_CONFIG) return 'Device-only mode — everything is saved in this browser.';
+    if (!backendConfigured()) return 'Device-only mode — everything is saved in this browser.';
+    if (sync.notice) return serverNotice();
+    if (sync.conflict) return 'This device and the pack’s shared copy differ. Nothing is saved until you choose which copy to keep.';
     var fixed = fixedPackMode();
     if (sync.mode === 'online') {
       return fixed
@@ -16876,7 +18021,9 @@
     }
     if (sync.mode === 'connecting') return 'Connecting to the shared pack record…';
     if (sync.mode === 'offline') {
-      return 'Offline — changes are saved on this device and will sync when the connection returns.' +
+      // Not "will sync": if the shared copy changed meanwhile, a leader may be asked which copy
+      // to keep (review of 86dfe38..4347cc6, item 4).
+      return 'Offline — changes are saved on this device. When the connection returns they are sent, or, if the shared copy has changed, you may be asked which copy to keep.' +
         (sync.error ? ' (' + sync.error + ')' : '');
     }
     if (fixed) return 'Device-only for now — sign in with Google to open your pack’s shared record.';
@@ -18111,9 +19258,11 @@
 
     // Sync card
     h += '<div class="card"><h2 class="section display">Shared sync</h2>' +
-      '<p class="small" style="margin:0 0 8px"><span class="pill navy">' + esc((SYNC_PILL[sync.mode] || SYNC_PILL.local).label) + '</span> ' +
-      esc(syncModeLine()) + '</p>';
-    if (FIREBASE_CONFIG) {
+      '<p class="small" style="margin:0 0 8px"><span class="pill navy">' + esc(syncPillState().label) + '</span> ' +
+      esc(syncModeLine()) + '</p>' +
+      (sync.conflict ? '<div class="row" style="margin:0 0 8px"><button type="button" class="btn small primary" data-act="sync-choose">' +
+        'Choose which copy to keep</button></div>' : '');
+    if (backendConfigured()) {
       // Single-pack mode: the pack id is baked into the page, so there is no passphrase field
       // at all — identity IS the access control. Passphrase mode below is unchanged.
       if (!fixedPackMode()) {
@@ -18140,6 +19289,7 @@
           'The first person to sign in becomes the pack admin; everyone else waits for approval. Without signing in, anyone with the passphrase can edit (as today).</p>';
       }
       h += renderPackIdLine();
+      h += renderMoveLine();
     } else {
       h += '<p class="small muted" style="margin:8px 0 0">Sharing isn’t set up yet — a leader pastes the pack’s Firebase config into this file (see the SETUP guide) to turn it on. ' +
         'Until then the pack record lives on this device only; use Share &amp; backup below to move data.</p>';
@@ -21016,6 +22166,22 @@
         'and nothing here is published. The app tracks adventures, not requirements, so add the requirement number ' +
         'if you have it.</p></div></div></div>';
     }
+    // The move file (downloadMoveFile): the whole pack, every member's and invited person's
+    // email and the sign-up code. Download only (YP review of stage C, item 1): no Copy, which puts it on the
+    // clipboard and, through Universal Clipboard, on the owner's other devices; and no text box
+    // to select from or paste into a note. The text stays in ui.overlay and goes to the file.
+    if (o.kind === 'move-export') {
+      return '<div class="overlay" role="dialog" aria-modal="true" aria-label="The pack, for the new server"><div class="overlay-inner">' +
+        '<div class="row no-print" style="margin-bottom:12px">' +
+        '<button type="button" class="btn" data-act="close-overlay">&larr; Back</button>' +
+        '<button type="button" class="btn primary" data-act="download-export">Download ' + esc(o.name) + '</button></div>' +
+        '<div class="card"><p class="eyebrow">The pack, for the new server</p>' +
+        '<p style="margin:0 0 8px">This file holds <strong>the whole pack</strong>, <strong>every member’s and invited person’s email</strong> and ' +
+        '<strong>the sign-up code</strong>.</p>' +
+        '<p class="small" style="margin:0">Save it on this computer, not in iCloud, Dropbox, OneDrive or the repo folder. ' +
+        'Don’t email or text it. Delete it once the pack is copied in.</p>' +
+        '</div></div></div>';
+    }
     if (o.kind === 'export') {
       return '<div class="overlay" role="dialog" aria-modal="true" aria-label="' + esc(o.title) + '"><div class="overlay-inner">' +
         '<div class="row no-print" style="margin-bottom:12px">' +
@@ -21024,7 +22190,8 @@
         '<button type="button" class="btn primary" data-act="download-export">Download ' + esc(o.name) + '</button></div>' +
         '<div class="card"><p class="eyebrow">' + esc(o.title) + '</p>' +
         '<textarea class="export-box" id="exportBox" readonly>' + esc(o.text) + '</textarea>' +
-        '<p class="small muted" style="margin:8px 0 0">If Download doesn’t work in this browser, use Copy and paste into a file or note.</p>' +
+        '<p class="small muted" style="margin:8px 0 0">If Download doesn’t work in this browser, use Copy and paste it into ' +
+        'a new text file on this computer, not a note app.</p>' +
         '</div></div></div>';
     }
     // Removing a budget line asks first, and says what goes with it. A pack lost planned
@@ -21076,6 +22243,27 @@
         ' storefronts</strong>, and <strong>' + o.data.entries.length + ' wagon/online entries</strong>. ' +
         'This replaces everything currently in the pack record.</p>' +
         '<div class="row"><button type="button" class="btn danger" data-act="confirm-import">Replace my data</button>' +
+        '<button type="button" class="btn" data-act="close-overlay">Cancel</button></div>' +
+        '</div></div></div>';
+    }
+    // The owner's one-time copy-in (importMoveFile): what the file holds, before it is sent.
+    if (o.kind === 'move-import') {
+      var mg = o.got;
+      return '<div class="overlay" role="dialog" aria-modal="true" aria-label="Copy the pack to the new server?"><div class="overlay-inner"><div class="card">' +
+        '<h2 class="section display">Copy the pack to the new server?</h2>' +
+        // Which pack, and how recent (YP review of stage C, item 2): a real pack shows itself here.
+        '<p>This file is <strong>' + esc(mg.packName || 'a pack with no name') + '</strong>' +
+        (mg.newestEvent ? ', and its newest event is on <strong>' + esc(fmtDate(mg.newestEvent) + ', ' + mg.newestEvent.slice(0, 4)) + '</strong>'
+          : ', with no events') + '.</p>' +
+        (STAGING ? '<div class="warn" style="margin:0 0 10px"><p class="small" style="margin:0">This is staging, made-up data only. ' +
+          'If this is the real pack, cancel.</p></div>' : '') +
+        '<p>It has <strong>' + mg.scouts + ' scouts</strong>, <strong>' + mg.members + ' accounts</strong> and <strong>' +
+        mg.invites + ' open invites</strong>. The server takes one copy, only once, so check these numbers first.</p>' +
+        (mg.backupOnly
+          ? '<div class="warn" style="margin:0 0 10px"><p class="small" style="margin:0">This is a backup, not a move file: it has the ' +
+            'pack record only. Every leader and family would need an invite or approval again.</p></div>'
+          : '') +
+        '<div class="row"><button type="button" class="btn primary" data-act="confirm-move-import">Copy it in</button>' +
         '<button type="button" class="btn" data-act="close-overlay">Cancel</button></div>' +
         '</div></div></div>';
     }
@@ -24416,6 +25604,7 @@
     var el = e.target.closest('[data-ch]');
     if (el) handleChange(el);
     if (e.target.id === 'importFile') handleImportFile(e.target);
+    if (e.target.id === 'moveFile') handleMoveFile(e.target);
     if (e.target.id === 'icsFile') handleIcsImportFile(e.target);
     if (e.target.id === 'teFile') handleTeFile(e.target);
   });
@@ -24460,6 +25649,12 @@
     if (act === 'tab') { gotoNav(el.dataset.tab, null, true); return; }
     if (act === 'section' || act === 'goto') { gotoNav(el.dataset.tab, el.dataset.section, false); return; }
     if (act === 'goto-pack') { gotoNav('pack', null, true); return; }
+    // The sync pill (and the sync card) while a sync-conflict waits: bring the chooser back.
+    if (act === 'sync-choose') {
+      if (sync.conflict) { ui.overlay = { kind: 'sync-conflict', remote: sync.conflict }; render(); }
+      else gotoNav('pack', null, true);
+      return;
+    }
     if (act === 'toggle-season-setup') { ui.seasonSetupOpen = !ui.seasonSetupOpen; render(); return; }
     // ----- Camping. Every one of these edits the pack record, so they all sit behind
     // canEdit(): a viewer-role leader never sees the buttons, but the action handler is
@@ -25409,12 +26604,25 @@
       copyText(ui.overlay.text, function () { ui.overlay.copied = true; render(); }, 'makeupMsgBox');
       return;
     }
+    // Copy is for the plain exports only: the move file is never put on the clipboard.
     if (act === 'copy-export') {
-      copyText(ui.overlay.text, function () { ui.overlay.copied = true; render(); });
+      if (ui.overlay && ui.overlay.kind === 'export') copyText(ui.overlay.text, function () { ui.overlay.copied = true; render(); });
       return;
     }
-    if (act === 'download-export') { download(ui.overlay.name, ui.overlay.mime, ui.overlay.text); return; }
+    if (act === 'download-export') {
+      if (ui.overlay && (ui.overlay.kind === 'export' || ui.overlay.kind === 'move-export')) download(ui.overlay.name, ui.overlay.mime, ui.overlay.text);
+      return;
+    }
     if (act === 'import-json') { document.getElementById('importFile').click(); return; }
+    if (act === 'move-download') { downloadMoveFile(); return; }
+    if (act === 'move-import') { var mvIn = document.getElementById('moveFile'); if (mvIn) mvIn.click(); return; }
+    if (act === 'confirm-move-import') {
+      var mvO = ui.overlay;
+      ui.overlay = null;
+      render();
+      if (mvO && mvO.kind === 'move-import') importMoveFile(mvO.got.body);
+      return;
+    }
     if (act === 'export-ics') {
       ui.overlay = { kind: 'export', title: 'Calendar (.ics)', name: 'ideal-year-of-scouting.ics', mime: 'text/calendar', text: buildICS() };
       render(); return;
@@ -25589,12 +26797,7 @@
       return;
     }
     if (act === 'sync-keep-local') {
-      arm(act, function () {
-        ui.overlay = null;
-        if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); render(); return; } // M-3
-        render();
-        scheduleSyncPush(); // rev bumps past the cloud copy's in the push transaction
-      });
+      arm(act, keepLocalCopy);
       return;
     }
     if (act.indexOf('del-leader:') === 0) {

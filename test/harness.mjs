@@ -14,7 +14,7 @@
 // Run:  node test/harness.mjs
 // Exit: 0 all green, 1 on any failure.
 
-import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync, cpSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, mkdtempSync, rmSync, cpSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -22,6 +22,7 @@ import { createHash } from 'node:crypto';
 import vm from 'node:vm';
 import { execSync, spawnSync } from 'node:child_process';
 import * as site from '../scripts/build-site.mjs';
+import { checkWrangler } from '../scripts/check-wrangler.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const HTML = readFileSync(join(ROOT, 'index.html'), 'utf8');
@@ -8092,13 +8093,111 @@ const RULES = (() => {
   const m = /```\n(rules_version[\s\S]*?)```/.exec(SETUP.slice(at));
   return m ? m[1] : '';
 })();
-// The object literal a function hands to setDoc(<ref>, { … }), as a list of its keys.
-function setDocKeys(src, refPattern) {
+// The object literal a function hands to a backend write — be.putMember(docId, uid, { … }) —
+// as a list of its keys. `callPattern` is a regex source for everything up to the literal.
+// (The adapter writes that literal as-is: see 'the Firestore adapter writes exactly what it is
+// handed' below, which is what makes a scan of the app's literal a scan of the stored doc.)
+function writeKeys(src, callPattern) {
   const out = [];
-  const re = new RegExp('setDoc\\(' + refPattern + '[^{]*\\{([^}]*)\\}', 'g');
+  const re = new RegExp(callPattern + '[^{]*\\{([^}]*)\\}', 'g');
   let m;
   while ((m = re.exec(src))) out.push(m[1].split('\n').map((l) => (/^\s*(\w+):/.exec(l) || [])[1]).filter(Boolean));
   return out;
+}
+
+// A fake backend adapter (the sync.backend seam, see firestoreBackend in index.html). Writes are
+// logged as '<verb> <path>' in the Firestore layout, so a test reads the same either side of the
+// seam. Every subscription is captured in subs[<what>] = { next, err, … }, so a test can play the
+// server: subs.join.next(cfg, { fromServer: false }) is a cached answer, fromServer: true the
+// server's, and subs.join.err({ code: 'permission-denied' }) a refusal.
+const FAKE_BE = `
+  var calls = [], subs = {};
+  function beLog(verb, parts) { calls.push(verb + ' packs/' + parts.join('/')); return Promise.resolve(); }
+  function beSub(what, rec) { subs[what] = rec; return function () { rec.off = true; }; }
+  var fakeBe = {
+    isOpen: function () { return true; },
+    serverTime: function () { return 'TS'; },
+    putMember: function (p, u) { return beLog('set', [p, 'members', u]); },
+    updateMemberRole: function (p, u) { return beLog('update', [p, 'members', u]); },
+    deleteMember: function (p, u) { return beLog('delete', [p, 'members', u]); },
+    putInvite: function (p, k) { return beLog('set', [p, 'invites', k]); },
+    deleteInvite: function (p, k) { return beLog('delete', [p, 'invites', k]); },
+    writeJoin: function (p) { return beLog('set', [p, 'public', 'join']); },
+    writeView: function (p) { return beLog('set', [p, 'public', 'view']); },
+    subscribePack: function (h, next, err) { return beSub('pack', { h: h, next: next, err: err }); },
+    subscribeView: function (p, next, err) { return beSub('view', { p: p, next: next, err: err }); },
+    subscribeJoin: function (p, next, err) { return beSub('join', { p: p, next: next, err: err }); },
+    subscribeInvites: function (p, next, err) { return beSub('invites', { p: p, next: next, err: err }); },
+    subscribeMembers: function (p, scope, uid, next, err) {
+      return beSub('members', { p: p, scope: scope, uid: uid, next: next, err: err });
+    }
+  };`;
+
+// The REAL firestoreBackend, sliced out of index.html and run against a fake of the Firestore
+// modular SDK — for proving what the adapter asks Firestore for, and what it hands the app.
+// Promises here are synchronous thenables (now/failed), because a test in this file is synchronous.
+//   reads[path] = data     what getDoc / a transaction's read sees (absent = no such doc)
+//   readErr = { code }     every getDoc rejects with it
+//   watches[]              every onSnapshot: { ref, opts, next, err }
+//   txRuns / txBetween     run a transaction body that many times, calling txBetween(i) before
+//                          each rerun (another device writing in between); txSets logs its writes
+//   fsLog                  getFirestore, getAuth, gets, and every write as [verb, path, data]
+function fsAdapterCtx(extra) {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    var SYNC_SDK_BASE = 'https://unused.invalid/';
+    var fsLog = [], watches = [], reads = {}, readErr = null, txRuns = 1, txBetween = null, txSets = [];
+    function now(v) {
+      return { then: function (ok) { var r = ok ? ok(v) : v; return (r && typeof r.then === 'function') ? r : now(r); },
+        catch: function () { return this; } };
+    }
+    function failed(e) {
+      return { then: function (ok, bad) { return bad ? now(bad(e)) : failed(e); },
+        catch: function (bad) { return now(bad(e)); } };
+    }
+    function pathOf(args) { return Array.prototype.slice.call(args, 1).join('/'); }
+    function snapOf(path, md) {
+      var data = reads[path];
+      return { id: path.split('/').pop(), exists: function () { return data !== undefined; },
+        data: function () { return data === undefined ? undefined : JSON.parse(JSON.stringify(data)); }, metadata: md || {} };
+    }
+    function qsOf(docs, md) { return { forEach: function (fn) { docs.forEach(fn); }, metadata: md || {} }; }
+    var fakeFirestore = {
+      getFirestore: function () { fsLog.push('getFirestore'); return 'DB'; },
+      doc: function () { return { kind: 'doc', path: pathOf(arguments) }; },
+      collection: function () { return { kind: 'collection', path: pathOf(arguments) }; },
+      onSnapshot: function (ref, a, b, c) {
+        var w = typeof a === 'function' ? { ref: ref, opts: null, next: a, err: b } : { ref: ref, opts: a, next: b, err: c };
+        watches.push(w);
+        return function () { w.off = true; };
+      },
+      getDoc: function (ref) { fsLog.push('get ' + ref.path); return readErr ? failed(readErr) : now(snapOf(ref.path)); },
+      setDoc: function (ref, data) { fsLog.push(['set', ref.path, data]); return now(); },
+      updateDoc: function (ref, data) { fsLog.push(['update', ref.path, data]); return now(); },
+      deleteDoc: function (ref) { fsLog.push(['delete', ref.path]); return now(); },
+      serverTimestamp: function () { return 'TS'; },
+      runTransaction: function (db, body) {
+        var out;
+        for (var i = 0; i < txRuns; i++) {
+          if (i && txBetween) txBetween(i);
+          out = body({ get: function (ref) { return now(snapOf(ref.path)); },
+            set: function (ref, d) { txSets.push([ref.path, d]); } });
+        }
+        return out;
+      }
+    };
+    var authObj = { currentUser: null };
+    var fakeAuth = {
+      getAuth: function () { fsLog.push('getAuth'); return authObj; },
+      getRedirectResult: function () { return now(null); },
+      signInAnonymously: function () { return now({ user: { uid: 'anon', isAnonymous: true } }); },
+      signOut: function () { return now(); }
+    };
+    ${slice('firestoreBackend')}
+    firestoreBackend.mods = { app: {}, auth: fakeAuth, fs: fakeFirestore };
+    firestoreBackend.app = 'APP';
+    ${extra || ''}`, ctx);
+  return ctx;
 }
 
 test('the Part C rules carry the 2026-09-27 update, dated, at the top of Part C', () => {
@@ -8128,16 +8227,21 @@ test('the member doc the client writes is exactly what the rules accept', () => 
   const allowed = /function memberKeysOk\(\) \{\s*return request\.resource\.data\.keys\(\)\.hasOnly\(\[([^\]]*)\]\)/.exec(RULES);
   ok(allowed, 'memberKeysOk() not found in the rules');
   const keys = allowed[1].match(/'(\w+)'/g).map((k) => k.slice(1, -1));
-  const writes = setDocKeys(slice('ensureMyMemberDoc') + slice('joinCreateMemberDoc'), 'ref');
+  const memberSrc = codeOnly(slice('ensureMyMemberDoc') + slice('joinCreateMemberDoc'));
+  const writes = writeKeys(memberSrc, 'be\\.putMember\\(');
   // The owner/invitee create, the owner's self-heal, and the sign-up-link create.
   eq(writes.length, 3, 'expected the member create, the owner heal and the join create');
+  // …and those three are every member write the two functions make: nothing writes a member
+  // doc by any other call the scan above would not see.
+  eq((memberSrc.match(/\bbe\.(\w+)\(/g) || []).filter((c) => !/getMember|getInvite|deleteInvite|serverTime/.test(c)),
+    ['be.putMember(', 'be.putMember(', 'be.putMember('], 'a member write that is not a putMember literal');
   writes.forEach((w) => w.forEach((k) => ok(keys.indexOf(k) !== -1, `the client writes "${k}", which the rules refuse`)));
   // The join path has to SEND the code, or the rule has nothing to check.
   ok(writes.some((w) => w.indexOf('joinCode') !== -1), 'the join path no longer writes joinCode');
   // Invites the same way.
   const inv = /request\.resource\.data\.keys\(\)\.hasOnly\(\['role', 'email', 'invitedBy', 'invitedAt'\]\)/.test(RULES);
   ok(inv, 'the invite field list changed in the rules');
-  const invWrite = setDocKeys(slice('createInvite'), "fs\\.doc\\(sync\\.db, 'packs', sync\\.docId, 'invites', email\\)");
+  const invWrite = writeKeys(slice('createInvite'), 'be\\.putInvite\\(sync\\.docId, email, ');
   eq(invWrite, [['role', 'email', 'invitedBy', 'invitedAt']], 'createInvite writes different fields from the rules');
 });
 
@@ -8148,7 +8252,12 @@ test('the client never writes a bare pending member, and never reads the join co
     'ensureMyMemberDoc writes (or falls back to) pending outside the sign-up link');
   ok(/joinRejected = 'nolink'/.test(ens), 'a signer with no link and no invite is not sent to the ask-a-leader gate');
   const join = codeOnly(slice('joinCreateMemberDoc'));
-  ok(!/getDoc/.test(join) && !/'public'/.test(join), 'the join path reads public/join, which only leaders may read');
+  // The join path makes ONE backend call, the member write (and the timestamp inside it) —
+  // no read of any kind, so nothing that could fetch public/join.
+  eq([...new Set((join.match(/\bbe\.(\w+)\(/g) || []))].sort(), ['be.putMember(', 'be.serverTime('],
+    'the join path calls the backend for something other than its own member write');
+  ok(!/Join|'public'|getDoc/.test(join), 'the join path reads public/join, which only leaders may read');
+  ok(!/getJoin|subscribeJoin/.test(ens), 'ensureMyMemberDoc reads the join config, which only leaders may read');
 });
 
 test('invites are admin-made and consumed only by their own invitee', () => {
@@ -8174,11 +8283,24 @@ test('who may read what: roster, join code and parent view', () => {
   // Overlapping matches OR together: a /public/{d} wildcard would hand pending users the join code.
   ok(!/match \/public\/\{/.test(RULES), 'a /public/{…} wildcard is back, and it ORs over public/join');
   // …and the client has to live with a roster it can't read: non-leaders watch their own doc.
-  const sub = codeOnly(slice('applyMembersSubscription'));
-  ok(/LEADER_ROLES\.indexOf\(sync\.myRole\)/.test(sub) && /fs\.doc\(sync\.db, 'packs', sync\.docId, 'members', uid\)/.test(sub),
-    'parents and pending users still subscribe to the whole members collection');
+  // Run it: a parent or pending user asks the backend for scope 'self' (their own doc), a
+  // leader for 'all'. The adapter test further down proves 'self' is one doc, not the collection.
+  const scopeFor = (role) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(FAKE_BE + `
+      var sync = { session: 1, backend: fakeBe, docId: 'P', user: { uid: 'me' }, myRole: '${role}',
+        membersUnsub: null, membersScope: null, membersDeniedAs: null };
+      ${slice('LEADER_ROLES')}
+      ${slice('cloudReady')}
+      ${slice('applyMembersSubscription')}
+      applyMembersSubscription(1);`, ctx);
+    return vm.runInContext('subs.members ? [subs.members.scope, subs.members.uid] : null', ctx);
+  };
+  eq(scopeFor('parent'), ['self', 'me'], 'a parent subscribes to the whole members collection');
+  eq(scopeFor('pending'), ['self', 'me'], 'a pending user subscribes to the whole members collection');
+  eq(scopeFor('editor'), ['all', 'me'], 'a leader does not watch the roster');
   eq(/var LEADER_ROLES = (\[[^\]]*\])/.exec(SCRIPT)[1], "['admin', 'editor', 'viewer']", 'LEADER_ROLES drifted from isLeader()');
-  ok(!/fs\.collection\(db, 'packs', docId, 'members'\)/.test(slice('startAccounts')),
+  ok(!/subscribeMembers/.test(slice('startAccounts')) && /applyMembersSubscription\(mine\)/.test(slice('startAccounts')),
     'startAccounts subscribes the whole roster for every role again');
 });
 
@@ -8235,7 +8357,10 @@ test('the parent-view banner names every key the view publishes', () => {
 });
 
 test('single-pack mode never signs in anonymously, which is why SETUP says to turn it off', () => {
-  ok(/src\.kind === 'pass'\s*\?\s*mods\.auth\.signInAnonymously/.test(SCRIPT), 'anonymous sign-in is no longer passphrase-only');
+  ok(/src\.kind === 'pass'\s*\?\s*be\.signInAnonymously\(\)/.test(SCRIPT), 'anonymous sign-in is no longer passphrase-only');
+  // …and that is the only anonymous sign-in the app makes (the adapter's own method aside).
+  const outsideAdapter = SCRIPT.replace(slice('firestoreBackend'), '');
+  eq((outsideAdapter.match(/signInAnonymously\(/g) || []).length, 1, 'a second anonymous sign-in path');
   ok(/if \(src\.kind === 'fixed' && current && current\.isAnonymous\) current = null;/.test(SCRIPT),
     'a stale anonymous session is reused in single-pack mode');
   ok(/turn it \*\*off\*\*/.test(SETUP), 'SETUP.md does not tell a single-pack admin to turn Anonymous off');
@@ -8247,10 +8372,10 @@ test('single-pack mode never signs in anonymously, which is why SETUP says to tu
 
 test('the owner restores their admin role by rewriting their doc whole, and a refusal is not a trap', () => {
   const ens = codeOnly(slice('ensureMyMemberDoc'));
-  ok(!/updateDoc/.test(ens), 'the owner heal is an updateDoc again — a junked doc makes the rules refuse it');
+  ok(!/updateDoc|updateMemberRole/.test(ens), 'the owner heal is a role-only update again — a junked doc makes the rules refuse it');
   const heal = /if \(sync\.ownerUid === uid && cur !== 'admin'\) \{([\s\S]*?)\n        \}/.exec(ens);
   ok(heal, 'the owner heal branch was not found');
-  const keys = setDocKeys(heal[1], 'ref');
+  const keys = writeKeys(heal[1], 'be\\.putMember\\(docId, uid, ');
   eq(keys, [['role', 'name', 'email', 'addedAt']], 'the heal writes other keys than the rules accept');
   ok(/role: 'admin'/.test(heal[1]), 'the heal does not write admin');
   // Refused → carry on as the doc's role; never throw into handleAccountsError (setup screen).
@@ -8258,29 +8383,17 @@ test('the owner restores their admin role by rewriting their doc whole, and a re
     'a refused heal is thrown, which handleAccountsError reads as "rules not published"');
 });
 
-// A fake Firestore that records what it was asked to do. Enough of the modular API for the
-// member-management functions, which only ever build refs and write them.
-const FAKE_FS = `
-  var calls = [];
-  var fakeFs = {
-    doc: function () { return { path: Array.prototype.slice.call(arguments, 1).join('/') }; },
-    collection: function () { return { path: Array.prototype.slice.call(arguments, 1).join('/') }; },
-    deleteDoc: function (r) { calls.push('delete ' + r.path); return Promise.resolve(); },
-    setDoc: function (r) { calls.push('set ' + r.path); return Promise.resolve(); },
-    updateDoc: function (r) { calls.push('update ' + r.path); return Promise.resolve(); },
-    serverTimestamp: function () { return 'TS'; }
-  };`;
-
 function removeMemberCtx() {
   const ctx = vm.createContext({});
-  vm.runInContext(FAKE_FS + `
+  vm.runInContext(FAKE_BE + `
     var committed = 0;
     function commit() { committed += 1; }
     function isAdmin() { return true; }
     function isLastAdmin() { return false; }
     function accountsToast() {}
     function showToast() {}
-    var sync = { mods: { fs: fakeFs }, db: 'db', docId: 'P',
+    ${slice('cloudReady')}
+    var sync = { backend: fakeBe, docId: 'P',
       members: [{ uid: 'u1', email: ' Pat@Example.com ', role: 'editor' }, { uid: 'u2', email: 'x@example.com', role: 'admin' }] };
     var state = {
       scouts: [{ id: 's1', parentUids: ['u1', 'u9'] }, { id: 's2', parentUids: [] }],
@@ -8392,7 +8505,7 @@ test('a member removed mid-session loses the pack from this device, not just the
 
 test('nothing is published to parents before the join config has said whether standings are on', () => {
   const ctx = vm.createContext({});
-  vm.runInContext(FAKE_FS + `
+  vm.runInContext(FAKE_BE + `
     var built = 0;
     function buildParentView() { built += 1; return { events: [] }; }
     function accountsInForce() { return true; }
@@ -8401,7 +8514,9 @@ test('nothing is published to parents before the join config has said whether st
     function clearTimeout() {}
     var parentViewTimer = null, parentViewFingerprint = null;
     var state = {};
-    var sync = { mods: { fs: fakeFs }, db: 'db', docId: 'P', joinLoaded: false };
+    var sync = { backend: fakeBe, docId: 'P', joinLoaded: false, pack: { docId: 'P' }, firstSnap: false };
+    ${slice('cloudReady')}
+    ${slice('packLinked')}
     ${slice('writeParentView')}`, ctx);
   vm.runInContext('writeParentView()', ctx);
   eq(vm.runInContext('[built, calls.length]', ctx), [0, 0], 'the parent view was built and written before the join config loaded');
@@ -8409,45 +8524,771 @@ test('nothing is published to parents before the join config has said whether st
   eq(vm.runInContext('calls', ctx), ['set packs/P/public/view'], 'once loaded, the view is not written');
 });
 
-test('the join config loads for every leader, and both of its answers release the parent view', () => {
-  function joinCtx(role) {
+test('only a device holding the pack record, after its first answer, publishes the parent view', () => {
+  // Security review of stage B, item 2: haltFixedSync drops the pack handle but leaves
+  // cloudReady() true, so a halted device that later saw a leader role published from its
+  // unsynced local copy.
+  const run = (setup) => {
     const ctx = vm.createContext({});
-    vm.runInContext(FAKE_FS + `
-      var onNext = null, onErr = null, scheduled = 0, opts = null;
-      // (ref, onNext, onErr) or (ref, options, onNext, onErr), as the SDK takes either.
-      fakeFs.onSnapshot = function (r, a, b, c) {
-        if (typeof a === 'function') { onNext = a; onErr = b; } else { opts = a; onNext = b; onErr = c; }
-        return function () {};
-      };
+    vm.runInContext(FAKE_BE + `
+      function buildParentView() { return { events: [] }; }
+      function accountsInForce() { return true; } function canEdit() { return true; }
+      function fixedSyncBlocked() { return false; } function clearTimeout() {}
+      function stopDocFeed() {} function stopParentFeed() {} function renderSyncPill() {} function render() {}
+      var parentViewTimer = null, parentViewFingerprint = null, state = {};
+      var sync = { backend: fakeBe, docId: 'P', joinLoaded: true, pack: { docId: 'P' }, firstSnap: false };
+      ${['cloudReady', 'packLinked', 'haltFixedSync', 'writeParentView'].map(slice).join('\n')}
+      ${setup}
+      writeParentView();`, ctx);
+    return vm.runInContext('calls', ctx);
+  };
+  eq(run(''), ['set packs/P/public/view'], 'a linked, answered leader does not publish (the test proves nothing)');
+  eq(run('haltFixedSync();'), [], 'a halted device published the parent view');
+  eq(run('sync.firstSnap = true;'), [], 'the view was published before the pack record first answered');
+});
+
+test('the join config loads for every leader, and both of its answers release the parent view', () => {
+  const JOIN_APP = (role) => `
+      var scheduled = 0;
       function accountsInForce() { return true; }
       function scheduleParentViewRefresh() { scheduled += 1; }
       function render() {}
       var LEADER_ROLES = ['admin', 'editor', 'viewer'];
-      var sync = { session: 1, mods: { fs: fakeFs }, db: 'db', docId: 'P', myRole: '${role}',
+      var sync = { session: 1, backend: BE, docId: 'P', myRole: '${role}',
         joinUnsub: null, joinUnavailable: false, joinLoaded: false, joinCfg: null };
+      ${slice('cloudReady')}
       ${slice('applyJoinSubscription')}
-      applyJoinSubscription(1);`, ctx);
+      applyJoinSubscription(1);`;
+  function joinCtx(role) {
+    const ctx = vm.createContext({});
+    vm.runInContext(FAKE_BE + 'var BE = fakeBe;' + JOIN_APP(role), ctx);
     return ctx;
   }
   for (const role of ['admin', 'editor', 'viewer']) {
-    ok(vm.runInContext('!!onNext', joinCtx(role)), `a ${role} does not load the join config`);
+    ok(vm.runInContext('!!subs.join', joinCtx(role)), `a ${role} does not load the join config`);
   }
   // Parents and pending users are refused it by the rules, and never need it.
   for (const role of ['parent', 'pending']) {
-    ok(vm.runInContext('!onNext', joinCtx(role)), `a ${role} asks for the join config the rules refuse them`);
+    ok(vm.runInContext('!subs.join', joinCtx(role)), `a ${role} asks for the join config the rules refuse them`);
   }
   const a = joinCtx('editor');
   // B2 (2026-09): a CACHED answer fills joinCfg but does not open the gate; the server's does.
-  ok(vm.runInContext('!!(opts && opts.includeMetadataChanges)', a), 'without includeMetadataChanges the server answer may never arrive');
-  vm.runInContext("onNext({ metadata: { fromCache: true }, exists: function () { return true; }, data: function () { return { showStandings: true }; } })", a);
+  vm.runInContext('subs.join.next({ showStandings: true }, { fromServer: false, pendingWrites: false })', a);
   eq(vm.runInContext('[sync.joinLoaded, scheduled, sync.joinCfg.showStandings]', a), [false, 0, true], 'a cached join config released the parent view');
-  vm.runInContext("onNext({ metadata: { fromCache: false }, exists: function () { return true; }, data: function () { return { showStandings: false }; } })", a);
+  // An answer that does not say where it came from is not the server's.
+  vm.runInContext('subs.join.next({ showStandings: true })', a);
+  eq(vm.runInContext('[sync.joinLoaded, scheduled]', a), [false, 0], 'an answer with no meta released the parent view');
+  vm.runInContext('subs.join.next({ showStandings: false }, { fromServer: true, pendingWrites: false })', a);
   eq(vm.runInContext('[sync.joinLoaded, scheduled]', a), [true, 1], 'the snapshot does not release the deferred write');
   const b = joinCtx('editor');
-  vm.runInContext('onErr({ code: "permission-denied" })', b);
+  vm.runInContext('subs.join.err({ code: "permission-denied" })', b);
   eq(vm.runInContext('[sync.joinLoaded, scheduled]', b), [true, 1], 'a denied read stalls the parent view for good');
+  // The same thing end to end through the real Firestore adapter: it must ask for metadata
+  // changes (without them, the server confirming an unchanged cached doc raises no event and
+  // the gate never opens), watch public/join, and turn fromCache into fromServer.
+  const c = fsAdapterCtx('firestoreBackend.open("P"); var BE = firestoreBackend;' + JOIN_APP('editor'));
+  const w = vm.runInContext('watches[0]', c);
+  ok(w && w.opts && w.opts.includeMetadataChanges === true, 'without includeMetadataChanges the server answer may never arrive');
+  eq(w.ref.path, 'packs/P/public/join', 'the join watch is not on public/join');
+  vm.runInContext("reads['packs/P/public/join'] = { showStandings: false }; watches[0].next(snapOf('packs/P/public/join', { fromCache: true }))", c);
+  eq(vm.runInContext('[sync.joinLoaded, scheduled, sync.joinCfg.showStandings]', c), [false, 0, false], 'Firestore: a cached join config released the parent view');
+  vm.runInContext("watches[0].next(snapOf('packs/P/public/join', { fromCache: false }))", c);
+  eq(vm.runInContext('[sync.joinLoaded, scheduled]', c), [true, 1], 'Firestore: the server’s answer does not release the parent view');
   // And a new session starts over.
   ok(/sync\.joinLoaded = false;/.test(slice('clearAccountsRuntime')), 'clearAccountsRuntime keeps the last pack’s joinLoaded');
+});
+
+/* ================================================================
+   Phase 2 stage B (2026-09-28) — the backend adapter seam. Every cloud call goes through
+   sync.backend; these pin what the seam has to carry for the security gates to keep working
+   when a second adapter (the pack's own server) arrives.
+   ================================================================ */
+
+test('only the backend adapters touch the Firebase SDK, and the server’s adapter never loads Firestore', () => {
+  const outside = codeOnly(SCRIPT.replace(slice('firestoreBackend'), '').replace(slice('apiBackend'), ''));
+  ['getFirestore', 'onSnapshot', 'setDoc', 'getDoc', 'updateDoc', 'deleteDoc', 'runTransaction', 'serverTimestamp',
+    'getAuth', 'getRedirectResult', 'signInWithPopup', 'signInWithRedirect', 'GoogleAuthProvider', 'initializeApp',
+    'getIdToken', "'/api/", 'sync.mods', 'sync.db', 'sync.docRef', 'sync.app'].forEach((w) =>
+    ok(outside.indexOf(w) === -1, `${w} is used outside the adapters`));
+  // FIREBASE_CONFIG is read in exactly two places: whether there is a cloud, and the adapter's init.
+  eq((outside.match(/FIREBASE_CONFIG/g) || []).length, 3, 'FIREBASE_CONFIG is read outside backendConfigured/loadBackend');
+  ok(/function backendConfigured\(\) \{ return !!FIREBASE_CONFIG && \(BACKEND !== 'api' \|\| fixedPackMode\(\)\); \}/.test(outside) &&
+    /\(BACKEND === 'api' \? apiBackend : firestoreBackend\)\.init\(FIREBASE_CONFIG\)/.test(outside), 'the two readers of FIREBASE_CONFIG moved');
+  // BACKEND is chosen in one place, and nothing else branches on it but the move-file offer.
+  eq((outside.match(/\bBACKEND\b/g) || []).length, 4, 'BACKEND is read somewhere new');
+  ok(/^  var BACKEND = 'firestore';$/m.test(SCRIPT), 'the committed page is not the Firestore build');
+  // apiBackend: Google sign-in only. It imports Firebase's app and auth modules and nothing else.
+  const api = codeOnly(slice('apiBackend'));
+  eq((api.match(/import\(SYNC_SDK_BASE \+ '([^']+)'\)/g) || []).map((m) => /'([^']+)'/.exec(m)[1]),
+    ['firebase-app.js', 'firebase-auth.js'], 'apiBackend imports something other than app and auth');
+  const apiCode = api.split('\n').map((l) => l.replace(/\s\/\/ .*$/, '')).join('\n');   // trailing comments too
+  ok(!/firestore|onSnapshot|runTransaction/i.test(apiCode), 'apiBackend touches Firestore');
+  // …and offers every method the app calls on a backend, except the Firestore-only ones the api
+  // path never reaches (packmeta, member/invite reads and creates: POST /api/session does those).
+  const fsMethods = [...slice('firestoreBackend').matchAll(/^    (\w+): function/gm)].map((m) => m[1]);
+  const apiMethods = new Set([...slice('apiBackend').matchAll(/^    (\w+): function/gm)].map((m) => m[1]));
+  eq(fsMethods.filter((m) => !apiMethods.has(m)).sort(),
+    ['dataOf', 'get', 'getInvite', 'getMember', 'getPackMeta', 'metaOf', 'putMember', 'putPackMeta', 'ref', 'signInAnonymously', 'watch'],
+    'apiBackend is missing a method the app calls');
+});
+
+test('a device is told it was removed only by the server, end to end through the Firestore adapter', () => {
+  const ctx = fsAdapterCtx(`
+    var KEY = 'pack-popcorn-ledger-v1', removed = [], parentViewTimer = null;
+    var localStorage = { removeItem: function (k) { removed.push(k); } };
+    function freshState() { return { fresh: true }; }
+    function stopDocFeed() {} function stopParentFeed() {} function subscribeDoc() {} function subscribeParentView() {}
+    function applyInvitesSubscription() {} function applyJoinSubscription() {} function handleAccountsError() {}
+    function render() {} function clearTimeout() {} function ensureMyMemberDoc() { return null; }
+    function accountsInForce() { return true; }
+    var state = { money: 'the pack record' };
+    var sync = { session: 1, backend: firestoreBackend, docId: 'P', user: { uid: 'me' }, myRole: 'parent',
+      membersUnsub: null, membersScope: null, membersDeniedAs: null, membersFromServer: false,
+      feed: 'parent', parentUnsub: function () {}, unsub: null, ownerUid: 'someone-else',
+      accountsUnavailable: false, joinRejected: null, members: [] };
+    ${['LEADER_ROLES', 'cloudReady', 'feedForRole', 'recomputeMyRole', 'stopLocalWrites', 'applyRoleSubscription',
+       'applyMembersSubscription'].map(slice).join('\n')}
+    firestoreBackend.open('P');
+    applyMembersSubscription(1);`);
+  const w = vm.runInContext('watches[0]', ctx);
+  eq([w.ref.kind, w.ref.path], ['doc', 'packs/P/members/me'], 'a parent watches more than their own member doc');
+  vm.runInContext("reads['packs/P/members/me'] = { role: 'parent' }; watches[0].next(snapOf('packs/P/members/me', { fromCache: true }))", ctx);
+  eq(vm.runInContext('[sync.members, sync.myRole, sync.membersFromServer]', ctx),
+    [[{ role: 'parent', uid: 'me' }], 'parent', false], 'a cached member doc was misread');
+  // The cache stops showing our doc: not the server's word, so nothing is wiped.
+  vm.runInContext("delete reads['packs/P/members/me']; watches[0].next(snapOf('packs/P/members/me', { fromCache: true }))", ctx);
+  eq(vm.runInContext('[sync.members, removed.length, state.money || null, sync.joinRejected]', ctx),
+    [[], 0, 'the pack record', null], 'a cache-only miss wiped the device');
+  // The server says the doc is gone: that is a removal.
+  vm.runInContext("watches[0].next(snapOf('packs/P/members/me', { fromCache: false }))", ctx);
+  eq(vm.runInContext('[sync.membersFromServer, removed, sync.joinRejected]', ctx),
+    [true, ['pack-popcorn-ledger-v1'], 'removed'], 'the server’s word did not remove the device');
+  // A leader's roster: the collection, each member keyed by its doc id.
+  const all = fsAdapterCtx(`firestoreBackend.open('P'); var got = null;
+    firestoreBackend.subscribeMembers('P', 'all', 'me', function (list, meta) { got = [list, meta]; });
+    watches[0].next(qsOf([{ id: 'u1', data: function () { return { role: 'admin', uid: 'forged' }; } }], { fromCache: false }));`);
+  eq(vm.runInContext('[watches[0].ref.kind, watches[0].ref.path]', all), ['collection', 'packs/P/members'], 'the roster watch');
+  eq(vm.runInContext('got', all), [[{ role: 'admin', uid: 'u1' }], { fromServer: true, pendingWrites: false }],
+    'a roster member is not keyed by its doc id, or the meta is wrong');
+  // …and a fake-adapter answer with no meta is not the server's either.
+  const bare = vm.createContext({});
+  vm.runInContext(FAKE_BE + `
+    function recomputeMyRole() {} function applyRoleSubscription() {} function applyInvitesSubscription() {}
+    function applyJoinSubscription() {} function render() {} function handleAccountsError() {}
+    var LEADER_ROLES = ['admin', 'editor', 'viewer'];
+    var sync = { session: 1, backend: fakeBe, docId: 'P', user: { uid: 'me' }, myRole: 'parent', membersFromServer: true };
+    ${slice('cloudReady')}
+    ${slice('applyMembersSubscription')}
+    applyMembersSubscription(1);
+    subs.members.next([]);`, bare);
+  eq(vm.runInContext('sync.membersFromServer', bare), false, 'an answer with no meta counted as the server’s');
+});
+
+test('Firestore: an editor’s copy waiting on a choice is dropped for "view-only" only on the server’s word', () => {
+  // Security review of 6747945..6fa61c2, item 3. The page's real members watch, role handling,
+  // pack feed and first-answer comparison, on the real Firestore adapter over the fake SDK.
+  const shared = { rev: 9, device: 'd2', json: JSON.stringify({ rev: 9, packName: 'Shared', scouts: [{ id: 'b' }] }) };
+  const newer = { rev: 10, device: 'd3', json: JSON.stringify({ rev: 10, packName: 'Newer', scouts: [{ id: 'c' }] }) };
+  const TOAST = 'You’re now view-only, so this device took the pack’s shared copy.';
+  const ctx = fsAdapterCtx(`
+    var KEY = 'pack-popcorn-ledger-v1', removed = [], parentViewTimer = null, toasts = [], saves = 0;
+    var localStorage = { removeItem: function (k) { removed.push(k); } };
+    function freshState() { return { fresh: true }; }
+    function stopParentFeed() {} function subscribeParentView() {} function applyInvitesSubscription() {}
+    function applyJoinSubscription() {} function handleAccountsError() {} function ensureMyMemberDoc() { return null; }
+    function fixedSyncBlocked() { return false; } function fixedFeedBlocked() { return false; }
+    function holdPushes() { return false; } function scheduleParentViewRefresh() {} function render() {} function renderSyncPill() {}
+    function save() { saves += 1; } function showToast(m) { toasts.push(m); } function syncFail(e) { throw e; }
+    function clearTimeout() {} function setTimeout() { return 't'; }
+    function normalizeState(p) { return p && typeof p === 'object' && !Array.isArray(p) ? JSON.parse(JSON.stringify(p)) : null; }
+    var ui = { tab: 'home', overlay: null };
+    var state = { rev: 2, packName: 'Mine', scouts: [{ id: 'a' }] };
+    var sync = { session: 1, backend: firestoreBackend, docId: 'P', pack: firestoreBackend.open('P'), deviceId: 'dev1',
+      user: { uid: 'me' }, myRole: 'editor', accountsUnavailable: false, ownerUid: 'someone-else', joinRejected: null,
+      membersUnsub: null, membersScope: null, membersDeniedAs: null, membersFromServer: false, membersHeard: false, members: [],
+      feed: 'doc', unsub: null, parentUnsub: null, mode: 'connecting', notice: '', firstSnap: true, remoteRec: null,
+      conflict: null, dirty: false, clobber: false, pushTimer: null, packMissing: false };
+    ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'feedForRole', 'recomputeMyRole',
+       'stopLocalWrites', 'stopDocFeed', 'subscribeDoc', 'applyRoleSubscription', 'applyMembersSubscription', 'isStateEmpty',
+       'stateFingerprint', 'mergeRemoteAppendOnly', 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush'].map(decl).join('\n')}
+    subscribeDoc(1);
+    applyMembersSubscription(1);
+    function roster(role, md) {
+      watches[1].next(qsOf([{ id: 'me', data: function () { return { role: role }; } }], md));
+    }`);
+  const got = () => JSON.parse(JSON.stringify(vm.runInContext(`[sync.myRole, sync.membersFromServer, canEdit(),
+    sync.conflict && sync.conflict.rev, ui.overlay && ui.overlay.kind, state.packName, toasts]`, ctx)));
+  eq(vm.runInContext('[watches[0].ref.path, watches[1].ref.path]', ctx), ['packs/P', 'packs/P/members'], 'the two watches');
+  // The server: this device is an editor, and the pack differs from its copy, so it is asked.
+  vm.runInContext(`roster('editor', { fromCache: false });
+    reads['packs/P'] = ${JSON.stringify(shared)}; watches[0].next(snapOf('packs/P', {}));`, ctx);
+  eq(got(), ['editor', true, true, 9, 'sync-conflict', 'Mine', []], 'no choice waiting (the test proves nothing)');
+  // A CACHED roster says viewer: the choice waits, and this device's copy stays.
+  vm.runInContext("roster('viewer', { fromCache: true })", ctx);
+  eq(got(), ['viewer', false, false, 9, 'sync-conflict', 'Mine', []], 'a cached "viewer" threw away an editor’s copy');
+  // The pack moves on meanwhile: the choice waits, on the newer copy.
+  vm.runInContext(`reads['packs/P'] = ${JSON.stringify(newer)}; watches[0].next(snapOf('packs/P', {}));`, ctx);
+  eq(got(), ['viewer', false, false, 10, 'sync-conflict', 'Mine', []], 'a cached "viewer" took the pack’s next save');
+  // The server says viewer: this device takes the shared copy, says so, and writes nothing.
+  vm.runInContext("roster('viewer', { fromCache: false })", ctx);
+  eq(got(), ['viewer', true, false, null, null, 'Newer', [TOAST]], 'the server’s "viewer" left the device waiting');
+  eq(vm.runInContext('[txSets.length, sync.dirty]', ctx), [0, false], 'a viewer’s device wrote, or kept its copy to write');
+});
+
+test('Firestore: the server confirming a cached roster is heard, and a viewer’s first answer waits for the server’s word', () => {
+  // Review of cd7078e..4347cc6, open items A and B. The page's real members watch, role
+  // handling, pack feed and first-answer comparison, on the real Firestore adapter over the fake SDK.
+  const shared = { rev: 9, device: 'd2', json: JSON.stringify({ rev: 9, packName: 'Shared', scouts: [{ id: 'b' }] }) };
+  const empty = { rev: 9, device: 'd2', json: JSON.stringify({ rev: 9, packName: '' }) };
+  const TOAST = 'You’re now view-only, so this device took the pack’s shared copy.';
+  const world = () => fsAdapterCtx(`
+    var KEY = 'pack-popcorn-ledger-v1', removed = [], parentViewTimer = null, toasts = [], saves = 0, renders = 0;
+    var localStorage = { removeItem: function (k) { removed.push(k); } };
+    function freshState() { return { fresh: true }; }
+    function stopParentFeed() {} function subscribeParentView() {} function applyInvitesSubscription() {}
+    function applyJoinSubscription() {} function handleAccountsError() {} function ensureMyMemberDoc() { return null; }
+    function fixedSyncBlocked() { return false; } function fixedFeedBlocked() { return false; }
+    function holdPushes() { return false; } function scheduleParentViewRefresh() {} function render() { renders += 1; } function renderSyncPill() {}
+    function save() { saves += 1; } function showToast(m) { toasts.push(m); } function syncFail(e) { throw e; }
+    function clearTimeout() {} var timers = 0; function setTimeout() { timers += 1; return 't'; }
+    function normalizeState(p) { return p && typeof p === 'object' && !Array.isArray(p) ? JSON.parse(JSON.stringify(p)) : null; }
+    var ui = { tab: 'home', overlay: null };
+    var state = { rev: 2, packName: 'Mine', scouts: [{ id: 'a' }] };
+    var sync = { session: 1, backend: firestoreBackend, docId: 'P', pack: firestoreBackend.open('P'), deviceId: 'dev1',
+      user: { uid: 'me' }, myRole: 'editor', accountsUnavailable: false, ownerUid: 'someone-else', joinRejected: null,
+      membersUnsub: null, membersScope: null, membersDeniedAs: null, membersFromServer: false, membersHeard: false, members: [],
+      feed: 'doc', unsub: null, parentUnsub: null, mode: 'connecting', notice: '', firstSnap: true, remoteRec: null,
+      conflict: null, dirty: false, clobber: false, pushTimer: null, packMissing: false };
+    ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'feedForRole', 'recomputeMyRole',
+       'stopLocalWrites', 'stopDocFeed', 'subscribeDoc', 'applyRoleSubscription', 'applyMembersSubscription', 'isStateEmpty',
+       'stateFingerprint', 'mergeRemoteAppendOnly', 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush'].map(decl).join('\n')}
+    subscribeDoc(1);
+    applyMembersSubscription(1);
+    function roster(role, md) {
+      watches[1].next(qsOf([{ id: 'me', data: function () { return { role: role }; } }], md));
+    }
+    function pack(rec) { reads['packs/P'] = rec; watches[0].next(snapOf('packs/P', {})); }`);
+  const got = (ctx) => JSON.parse(JSON.stringify(vm.runInContext(`[sync.myRole, sync.membersFromServer, canEdit(),
+    sync.conflict && sync.conflict.rev, ui.overlay && ui.overlay.kind, state.packName, toasts]`, ctx)));
+  const wrote = (ctx) => vm.runInContext('[txSets.length, sync.dirty, timers]', ctx);
+
+  // A: the roster watch asks Firestore for metadata changes, as the pack and join watches do.
+  const a = world();
+  eq(vm.runInContext('[watches[1].ref.path, watches[1].opts]', a), ['packs/P/members', { includeMetadataChanges: true }],
+    'the members watch does not ask for metadata changes');
+  // B: a CACHED roster says viewer, then the pack's first answer differs from this device's
+  // copy. The device keeps its copy and is asked, as an editor would be; nothing is written.
+  vm.runInContext("roster('viewer', { fromCache: true })", a);
+  vm.runInContext(`pack(${JSON.stringify(shared)})`, a);
+  eq(got(a), ['viewer', false, false, 9, 'sync-conflict', 'Mine', []], 'a cached "viewer" took the shared copy at the first answer');
+  eq(wrote(a), [0, false, 0], 'a device waiting on the server’s word wrote, or set out to');
+  // A: the server confirms the cached roster unchanged (metadata only). That answer reaches the
+  // app, and the server's "viewer" takes the shared copy, says so, and writes nothing.
+  vm.runInContext("roster('viewer', { fromCache: false })", a);
+  eq(got(a), ['viewer', true, false, null, null, 'Shared', [TOAST]], 'the server confirming "viewer" left the choice open');
+  eq(wrote(a), [0, false, 0], 'a viewer’s device wrote');
+  // …and an event that changes neither the roster nor where it came from (our own write
+  // confirmed) is not passed on: no role handling, no redraw.
+  const before = vm.runInContext('[renders, sync.members]', a);
+  vm.runInContext("roster('viewer', { fromCache: false, hasPendingWrites: true }); roster('viewer', { fromCache: false })", a);
+  const after = vm.runInContext('[renders, sync.members]', a);
+  ok(after[0] === before[0] && after[1] === before[1], 'a metadata-only event that changed nothing reached the app');
+  // A real change still does, and so does going back to the cache.
+  vm.runInContext("roster('parent', { fromCache: false })", a);
+  eq(vm.runInContext('sync.myRole', a), 'parent', 'a changed roster did not reach the app');
+  vm.runInContext("roster('parent', { fromCache: true })", a);
+  eq(vm.runInContext('sync.membersFromServer', a), false, 'a roster back to the cache still counts as the server’s');
+
+  // B: the server said viewer before the pack's first answer: the shared copy, silently, as before.
+  const b = world();
+  vm.runInContext(`roster('viewer', { fromCache: false }); pack(${JSON.stringify(shared)})`, b);
+  eq(got(b), ['viewer', true, false, null, null, 'Shared', []], 'a viewer on the server’s word is not shown the shared copy');
+  eq(wrote(b), [0, false, 0], 'a viewer’s device wrote');
+  // B: the members watch has not answered yet (the pack feed is subscribed first): the role is
+  // the session start's server read, so a viewer takes the shared copy silently, as before.
+  const s = world();
+  vm.runInContext(`sync.myRole = 'viewer'; pack(${JSON.stringify(shared)})`, s);
+  eq(got(s), ['viewer', false, false, null, null, 'Shared', []], 'a viewer’s first answer before the members watch answered');
+  eq(wrote(s), [0, false, 0], 'a viewer’s device wrote');
+  // …and a new session has not heard the members yet either.
+  ok(/sync\.membersFromServer = false;\n\s*sync\.membersHeard = false;/.test(slice('clearAccountsRuntime')), 'clearAccountsRuntime keeps the last session’s membersHeard');
+  // B: an EMPTY shared copy — a viewer never seeds it, and takes it only on the server's word.
+  const c = world();
+  vm.runInContext(`roster('viewer', { fromCache: true }); pack(${JSON.stringify(empty)})`, c);
+  eq(got(c), ['viewer', false, false, 9, 'sync-conflict', 'Mine', []], 'a cached "viewer" took the empty shared copy');
+  eq(wrote(c), [0, false, 0], 'a cached "viewer" seeded the shared copy');
+  vm.runInContext("roster('viewer', { fromCache: false })", c);
+  eq(got(c), ['viewer', true, false, null, null, '', [TOAST]], 'the server’s "viewer" did not take the empty shared copy');
+  const d = world();
+  vm.runInContext(`roster('viewer', { fromCache: false }); pack(${JSON.stringify(empty)})`, d);
+  eq([got(d), wrote(d)], [['viewer', true, false, null, null, '', []], [0, false, 0]], 'a viewer on the server’s word and an empty shared copy');
+  // An editor, cached or not, still seeds an empty shared copy as before.
+  const e = world();
+  vm.runInContext(`roster('editor', { fromCache: true }); pack(${JSON.stringify(empty)})`, e);
+  eq([got(e)[4], wrote(e)], [null, [0, true, 1]], 'an editor no longer seeds an empty shared copy');
+});
+
+test('the Firestore adapter hands the app plain records, keeps error codes, and writes exactly what it is handed', () => {
+  const ctx = fsAdapterCtx(`firestoreBackend.open('P');`);
+  // Pack record: the raw { rev, device, json } (the conflict overlay keeps it as-is), null when
+  // the pack has none, and pendingWrites for our own unconfirmed write.
+  vm.runInContext(`var got = [];
+    firestoreBackend.subscribePack(firestoreBackend.open('P'), function (rec, meta) { got.push([rec, meta]); });
+    watches[0].next(snapOf('packs/P', {}));
+    reads['packs/P'] = { rev: 4, device: 'd2', json: '{}' };
+    watches[0].next(snapOf('packs/P', { hasPendingWrites: true, fromCache: true }));`, ctx);
+  eq(vm.runInContext('watches[0].ref.path', ctx), 'packs/P', 'the pack watch');
+  eq(vm.runInContext('got', ctx), [
+    [null, { fromServer: true, pendingWrites: false }],
+    [{ rev: 4, device: 'd2', json: '{}' }, { fromServer: false, pendingWrites: true }]], 'the pack record or its meta');
+  // Reads: null for a missing doc; a refusal keeps its code.
+  vm.runInContext(`var r = {};
+    reads['packmeta/P'] = { owner: 'u9' };
+    firestoreBackend.getPackMeta('P').then(function (v) { r.meta = v; });
+    firestoreBackend.getMember('P', 'nobody').then(function (v) { r.member = v; });
+    firestoreBackend.getInvite('P', 'x@y.z').then(function (v) { r.invite = v; });
+    readErr = { code: 'permission-denied' };
+    firestoreBackend.getMember('P', 'me').catch(function (e) { r.err = e.code; });`, ctx);
+  eq(vm.runInContext('r', ctx), { meta: { owner: 'u9' }, member: null, invite: null, err: 'permission-denied' }, 'reads');
+  // Writes land on the Firestore paths the rules guard, carrying exactly the app's literal.
+  vm.runInContext(`fsLog = [];
+    firestoreBackend.putMember('P', 'me', { role: 'pending', joinCode: 'c' });
+    firestoreBackend.updateMemberRole('P', 'u1', 'viewer');
+    firestoreBackend.deleteMember('P', 'u1');
+    firestoreBackend.putInvite('P', 'a@b.c', { role: 'parent' });
+    firestoreBackend.deleteInvite('P', 'a@b.c');
+    firestoreBackend.writeJoin('P', { open: true });
+    firestoreBackend.writeView('P', { events: [] });
+    firestoreBackend.putPackMeta('P', { owner: 'me' });`, ctx);
+  eq(vm.runInContext('fsLog', ctx), [
+    ['set', 'packs/P/members/me', { role: 'pending', joinCode: 'c' }],
+    ['update', 'packs/P/members/u1', { role: 'viewer' }],
+    ['delete', 'packs/P/members/u1'],
+    ['set', 'packs/P/invites/a@b.c', { role: 'parent' }],
+    ['delete', 'packs/P/invites/a@b.c'],
+    ['set', 'packs/P/public/join', { open: true }],
+    ['set', 'packs/P/public/view', { events: [] }],
+    ['set', 'packmeta/P', { owner: 'me' }]], 'the adapter’s writes');
+  // Invites come back keyed by their doc id.
+  vm.runInContext(`var inv = null;
+    firestoreBackend.subscribeInvites('P', function (l) { inv = l; });
+    watches[watches.length - 1].next(qsOf([{ id: 'a@b.c', data: function () { return { role: 'editor' }; } }]));`, ctx);
+  eq(vm.runInContext('inv', ctx), [{ role: 'editor', key: 'a@b.c' }], 'an invite is not keyed by its doc id');
+  // A user is a plain copy, and emailVerified stays undefined when the SDK does not say.
+  eq(vm.runInContext("firestoreBackend.userOf({ uid: 'u', isAnonymous: false, email: 'e', displayName: 'n', photoURL: '' })", ctx),
+    { uid: 'u', isAnonymous: false, displayName: 'n', email: 'e', photoURL: '' }, 'userOf');
+  eq(vm.runInContext("firestoreBackend.userOf({ uid: 'u', emailVerified: false }).emailVerified", ctx), false, 'emailVerified false is lost');
+});
+
+test('a push reads, merges and writes in one retried step, and the rev always climbs past both copies', () => {
+  // The adapter: build() runs against each attempt's fresh read; the last attempt is what lands.
+  const a = fsAdapterCtx(`firestoreBackend.open('P');
+    reads['packs/P'] = { rev: 7, json: 'A' };
+    txRuns = 2; txBetween = function () { reads['packs/P'] = { rev: 9, json: 'B' }; };
+    var seen = [], res = null;
+    firestoreBackend.pushPack(firestoreBackend.open('P'), function (remote) {
+      seen.push(remote);
+      return { record: { rev: remote.rev + 1 }, result: { n: remote.rev + 1 } };
+    }).then(function (r) { res = r; });`);
+  eq(vm.runInContext('[seen, txSets, res]', a), [[{ rev: 7, json: 'A' }, { rev: 9, json: 'B' }],
+    [['packs/P', { rev: 8 }], ['packs/P', { rev: 10 }]], { n: 10 }], 'the transaction does not re-read, re-build and resolve with the last run');
+  // The app: syncPush through a fake adapter that plays that retry.
+  const run = (over) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`
+      function now(v) { return { then: function (ok) { var r = ok ? ok(v) : v; return (r && r.then) ? r : now(r); }, catch: function () { return this; } }; }
+      var REMOTES = ${JSON.stringify(over.remotes)}, records = [], merged = [], saved = 0, toasts = [];
+      var fakeBe = { serverTime: function () { return 'TS'; },
+        pushPack: function (h, build) {
+          var out = null;
+          REMOTES.forEach(function (rm) { out = build(rm); records.push(out.record); });
+          return now(out.result);
+        } };
+      function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
+      function mergeRemoteAppendOnly(d) { merged.push(d.rev); return 1; }
+      function save() { saved += 1; } function scheduleParentViewRefresh() {} function render() {}
+      function showToast(m) { toasts.push(m); } function renderSyncPill() {} function syncFail() {}
+      function clearTimeout() {} function setTimeout() {}
+      var ui = { tab: 'home' };
+      var state = { rev: ${over.localRev}, scouts: [] };
+      // The device has heard the first attempt's record (the feed brought it): only a later one is new to it.
+      var sync = { backend: fakeBe, pack: { docId: 'P' }, session: 1, deviceId: 'dev1', clobber: ${!!over.clobber},
+        dirty: true, mode: 'online', remoteRec: ${JSON.stringify(over.remotes[0])} };
+      ${slice('packLinked')}
+      ${slice('syncPush')}
+      syncPush();`, ctx);
+    return ctx;
+  };
+  const plain = run({ remotes: [{ rev: 7, json: '{}' }], localRev: 3 });
+  const rec = vm.runInContext('records[0]', plain);
+  eq(Object.keys(rec), ['rev', 'updatedAt', 'device', 'json'], 'the pack record’s fields');
+  eq([rec.rev, rec.updatedAt, rec.device, JSON.parse(rec.json).scouts], [8, 'TS', 'dev1', []], 'the pushed record');
+  eq(vm.runInContext('[state.rev, sync.dirty, saved, merged.length]', plain), [8, false, 1, 0], 'after a plain push');
+  eq(vm.runInContext('records[0].rev', run({ remotes: [{ rev: 2 }], localRev: 5 })), 6, 'a local rev ahead of the cloud is not kept ahead');
+  eq(vm.runInContext('records[0].rev', run({ remotes: [null], localRev: 5, clobber: true })), 6, 'a first push');
+  eq(vm.runInContext('merged', run({ remotes: [null], localRev: 5, clobber: true })), [], 'a merge from a record that does not exist');
+  // Clobbered, and another device writes during the push: each attempt merges from its own read.
+  const clob = run({ remotes: [{ rev: 7 }, { rev: 9 }], localRev: 3, clobber: true });
+  eq(vm.runInContext('[merged, records.map(function (r) { return r.rev; }), state.rev, sync.clobber, toasts.length]', clob),
+    [[7, 9], [8, 10], 10, false, 1], 'a clobbered push that raced another device');
+});
+
+test('Firestore: a save before the pack record’s first answer never writes over what is there, and goes to the first-answer comparison', () => {
+  // Security review of 260f467..db851c7, F3. The real firestoreBackend on the fake SDK, and the
+  // page's real syncPush and onRemoteSnap: an edit made while the pack feed is still connecting
+  // pushes, and the transaction reads the shared copy before the listener has delivered it.
+  const other = { rev: 9, device: 'd2', json: JSON.stringify({ rev: 9, packName: 'Shared', scouts: [{ id: 'b' }] }) };
+  const run = (o) => {
+    const ctx = fsAdapterCtx(`
+      var toasts = [], timers = [], saves = 0;
+      function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
+      function holdPushes() { return false; } function scheduleParentViewRefresh() {} function render() {} function renderSyncPill() {}
+      function save() { saves += 1; } function showToast(m) { toasts.push(m); } function syncFail(e) { throw e; }
+      function clearTimeout() {} function setTimeout(fn, ms) { timers.push(ms); return 't'; }
+      function normalizeState(p) { return p && typeof p === 'object' && !Array.isArray(p) ? JSON.parse(JSON.stringify(p)) : null; }
+      var ui = { tab: 'home', overlay: null };
+      var state = ${JSON.stringify(o.local)};
+      var sync = { backend: firestoreBackend, pack: firestoreBackend.open('P'), session: 1, deviceId: 'dev1', clobber: false,
+        dirty: true, mode: 'online', notice: '', firstSnap: ${o.firstSnap}, conflict: null, pushTimer: null,
+        remoteRec: ${o.firstSnap ? 'null' : JSON.stringify(o.remote || null)} };   // once answered, the feed brought it
+      ${o.remote ? `reads['packs/P'] = ${JSON.stringify(o.remote)};` : ''}
+      ${['packLinked', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'adoptRemote', 'onRemoteSnap', 'syncPush'].map(decl).join('\n')}
+      syncPush();`);
+    return JSON.parse(JSON.stringify(vm.runInContext(`({ sets: txSets.map(function (s) { return s[1].rev; }),
+      overlay: ui.overlay && ui.overlay.kind, conflict: sync.conflict && sync.conflict.rev, firstSnap: sync.firstSnap,
+      dirty: sync.dirty, rev: state.rev, name: state.packName || '' })`, ctx)));
+  };
+  const mine = { rev: 2, packName: 'Old', scouts: [{ id: 'a' }] };
+  // A different shared copy: nothing is written, and the leader is asked which to keep.
+  eq(run({ firstSnap: true, local: mine, remote: other }),
+    { sets: [], overlay: 'sync-conflict', conflict: 9, firstSnap: false, dirty: true, rev: 2, name: 'Old' },
+    'a save before the first answer wrote over the shared copy');
+  // The same pack: nothing is written, and nothing is left unsaved.
+  eq(run({ firstSnap: true, local: JSON.parse(other.json), remote: other }),
+    { sets: [], overlay: null, conflict: null, firstSnap: false, dirty: false, rev: 9, name: 'Shared' },
+    'a save before the first answer, of the same pack');
+  // Controls: no shared copy yet is still seeded, and once the feed has answered a save lands as before.
+  eq(run({ firstSnap: true, local: mine, remote: null }).sets, [3], 'control: a first save onto no record');
+  eq(run({ firstSnap: false, local: mine, remote: other }).sets, [10], 'control: a save after the first answer');
+});
+
+// The page's real subscribeDoc, onRemoteSnap and syncPush on the real firestoreBackend and the
+// fake SDK. `local` is this device's copy; the pack feed has not answered yet. Timers are kept,
+// and run() fires them (the 800 ms push).
+function fsFeedCtx(local, extra) {
+  return fsAdapterCtx(`
+    var toasts = [], timers = {}, timerSeq = 0, saves = 0, renders = 0;
+    function fixedSyncBlocked() { return false; } function fixedFeedBlocked() { return false; }
+    function accountsInForce() { return false; } function canEdit() { return true; }
+    function holdPushes() { return false; } function scheduleParentViewRefresh() {} function render() { renders += 1; }
+    function renderSyncPill() {} function save() { saves += 1; } function showToast(m) { toasts.push(m); }
+    function syncFail(e) { throw e; }
+    function clearTimeout(t) { delete timers[t]; } function setTimeout(fn) { timerSeq += 1; timers[timerSeq] = fn; return timerSeq; }
+    function runTimers() { Object.keys(timers).forEach(function (id) { var f = timers[id]; delete timers[id]; if (f) f(); }); }
+    function normalizeState(p) { return p && typeof p === 'object' && !Array.isArray(p) ? JSON.parse(JSON.stringify(p)) : null; }
+    var ui = { tab: 'home', overlay: null };
+    var state = ${JSON.stringify(local)};
+    var sync = { backend: firestoreBackend, pack: firestoreBackend.open('P'), session: 1, deviceId: 'dev1', clobber: false,
+      dirty: false, mode: 'connecting', notice: '', firstSnap: true, remoteRec: null, conflict: null, pushTimer: null,
+      unsub: null, feed: null, packMissing: false };
+    ${['packLinked', 'subscribeDoc', 'isStateEmpty', 'stateFingerprint', 'mergeRemoteAppendOnly', 'adoptRemote', 'onRemoteSnap',
+       'scheduleSyncPush', 'syncPush'].map(decl).join('\n')}
+    ${extra || ''}
+    subscribeDoc(1);`);
+}
+const fsFeedGot = (ctx) => JSON.parse(JSON.stringify(vm.runInContext(`({ sets: txSets.map(function (s) { return s[1].rev; }),
+  overlay: ui.overlay && ui.overlay.kind, conflict: sync.conflict && sync.conflict.rev, firstSnap: sync.firstSnap,
+  dirty: sync.dirty, rev: state.rev, name: state.packName || '', mode: sync.mode })`, ctx)));
+
+test('Firestore: a cached first answer is never the first answer, so it can neither seed nor skip the comparison', () => {
+  // Security review of 6747945..6fa61c2, item 1. Offline, Firestore's listener answers first
+  // from its cache — here "no record". Taken as the first answer, a device with a copy seeds it
+  // over the shared pack when the connection returns (the push's own read comes after the
+  // first answer, so nothing stops it), and a parent just made an editor seeds an empty pack.
+  const shared = { rev: 9, device: 'd2', json: JSON.stringify({ rev: 9, packName: 'Shared', scouts: [{ id: 'b' }] }) };
+  const mine = { rev: 2, packName: 'Old', scouts: [{ id: 'a' }] };
+  const offlineThenOnline = (local) => {
+    const ctx = fsFeedCtx(local);
+    // The listener asks for metadata changes, or the server confirming the cache would never arrive.
+    eq(vm.runInContext('[watches[0].ref.path, watches[0].opts]', ctx), ['packs/P', { includeMetadataChanges: true }],
+      'the pack feed does not ask to hear the server confirm a cached copy');
+    vm.runInContext("watches[0].next(snapOf('packs/P', { fromCache: true }))", ctx);
+    const cached = fsFeedGot(ctx);
+    const pushQueued = vm.runInContext('Object.keys(timers).length', ctx);
+    // Back online: whatever was queued runs against the shared pack, then the server answers.
+    vm.runInContext("reads['packs/P'] = " + JSON.stringify(shared) + "; runTimers();", ctx);
+    vm.runInContext("watches[0].next(snapOf('packs/P', {}))", ctx);
+    vm.runInContext('runTimers()', ctx);
+    return { cached, pushQueued, after: fsFeedGot(ctx) };
+  };
+  // A device with its own copy: nothing is queued or written, and the leader is asked.
+  const a = offlineThenOnline(mine);
+  eq([a.cached.firstSnap, a.cached.dirty, a.pushQueued], [true, false, 0], 'a cached "no record" was taken as the first answer');
+  eq(a.after, { sets: [], overlay: 'sync-conflict', conflict: 9, firstSnap: false, dirty: false, rev: 2, name: 'Old', mode: 'online' },
+    'a cached first answer let this device write over the shared pack, or skip the choice');
+  // An empty device (a parent just made an editor): it takes the shared copy; nothing is seeded.
+  const b = offlineThenOnline({ rev: 0, packName: '', scouts: [] });
+  eq([b.pushQueued, b.after.sets, b.after.name, b.after.rev, b.after.overlay], [0, [], 'Shared', 9, null],
+    'an empty device seeded an empty pack over the shared one');
+  // A cached RECORD is not compared either; the server's is.
+  const c = fsFeedCtx(mine);
+  vm.runInContext(`reads['packs/P'] = { rev: 4, device: 'd2', json: JSON.stringify({ rev: 4, packName: 'Old', scouts: [{ id: 'a' }] }) };
+    watches[0].next(snapOf('packs/P', { fromCache: true }));`, c);
+  eq([fsFeedGot(c).firstSnap, fsFeedGot(c).rev], [true, 2], 'a cached record was taken as the first answer');
+  // Controls: the server's "no record" still seeds, and a cached answer AFTER the first is read as before.
+  const d = fsFeedCtx(mine);
+  vm.runInContext("watches[0].next(snapOf('packs/P', {})); runTimers();", d);
+  eq(fsFeedGot(d).sets, [3], 'control: the server saying "no record" no longer seeds the pack');
+  const e = fsFeedCtx(mine, 'sync.dirty = false;');
+  vm.runInContext("reads['packs/P'] = " + JSON.stringify({ rev: 2, device: 'd2', json: JSON.stringify(mine) }) + ";" +
+    "watches[0].next(snapOf('packs/P', {}));" +
+    "reads['packs/P'] = " + JSON.stringify(shared) + "; watches[0].next(snapOf('packs/P', { fromCache: true }));", e);
+  eq([fsFeedGot(e).name, fsFeedGot(e).rev], ['Shared', 9], 'control: a newer record after the first answer is not adopted');
+});
+
+test('Firestore: a save handed over before the first answer is not compared again once the feed has answered', () => {
+  // Security review of 6747945..6fa61c2, item 2. An edit made while the pack feed connects is
+  // pushed; the transaction reads the shared pack and hands it over unwritten (unheard). The
+  // feed answers while that push is still out. Its answer is the first answer; the handed-over
+  // record, compared again, would reopen the chooser on an older copy.
+  const older = { rev: 9, device: 'd2', json: JSON.stringify({ rev: 9, packName: 'Shared', scouts: [{ id: 'b' }] }) };
+  const newer = { rev: 10, device: 'd3', json: JSON.stringify({ rev: 10, packName: 'Newer', scouts: [{ id: 'b' }, { id: 'c' }] }) };
+  const mine = { rev: 2, packName: 'Old', scouts: [{ id: 'a' }] };
+  const run = (local, feedSays, feedFirst) => {
+    const ctx = fsFeedCtx(local, `
+      var feedAnswer = ${JSON.stringify(feedSays)}, handedOver = 0;
+      var realTx = fakeFirestore.runTransaction;
+      fakeFirestore.runTransaction = function (db, body) {
+        var out = realTx(db, body);
+        // The push is out: the feed answers before its result comes back.
+        if (${feedFirst}) { reads['packs/P'] = feedAnswer; watches[0].next(snapOf('packs/P', {})); }
+        return out.then(function (r) { if (r && r.unheard) handedOver += 1; return r; });
+      };
+      sync.dirty = true;
+      reads['packs/P'] = ${JSON.stringify(older)};`);
+    vm.runInContext('syncPush(); runTimers();', ctx);
+    return Object.assign(fsFeedGot(ctx), { handedOver: vm.runInContext('handedOver', ctx) });
+  };
+  // The feed brought a newer copy: the chooser stays on it, and nothing is written.
+  eq(run(mine, newer, true), { sets: [], overlay: 'sync-conflict', conflict: 10, firstSnap: false, dirty: true, rev: 2,
+    name: 'Old', mode: 'online', handedOver: 1 }, 'the chooser went back to the older copy the push handed over');
+  // The feed brought this device's own pack: nothing to choose, and nothing reopens the chooser.
+  const same = { rev: 9, device: 'd2', json: JSON.stringify(mine) };
+  eq(run(mine, same, true), { sets: [], overlay: null, conflict: null, firstSnap: false, dirty: false, rev: 9,
+    name: 'Old', mode: 'online', handedOver: 1 }, 'a record handed over after the first answer was compared as a first answer');
+  // Control: with no feed answer yet, the handed-over record is the first answer, as before.
+  eq(run(mine, null, false), { sets: [], overlay: 'sync-conflict', conflict: 9, firstSnap: false, dirty: true, rev: 2,
+    name: 'Old', mode: 'online', handedOver: 1 }, 'control: a record handed over before the first answer is compared');
+});
+
+test('Firestore: an edit made while a save is out is still sent, and another device’s save does not replace it', () => {
+  // Security review of 6747945..6fa61c2, item 4. The push's result marked the device clean even
+  // though an edit had been made after its copy was taken; the next save from another device
+  // was then adopted over that edit, and adoptRemote cancelled the push that would have sent it.
+  const mine = { rev: 2, packName: 'Pack', scouts: [{ id: 'a' }], ledger: [], fundraisers: [] };
+  const run = (midPush) => {
+    const ctx = fsFeedCtx(mine, `
+      var realTx = fakeFirestore.runTransaction, midPushDone = false;
+      fakeFirestore.runTransaction = function (db, body) {
+        var out = realTx(db, body);
+        if (!midPushDone) { midPushDone = true; ${midPush} }
+        return out;
+      };
+      reads['packs/P'] = ${JSON.stringify({ rev: 2, device: 'd2', json: JSON.stringify(mine) })};`);
+    // The first answer is this same pack; then an edit, and its push.
+    vm.runInContext("watches[0].next(snapOf('packs/P', {})); state.ledger.push({ id: 'l1' }); scheduleSyncPush(); runTimers();", ctx);
+    const afterPush = vm.runInContext('[sync.dirty, Object.keys(timers).length, txSets.length]', ctx);
+    // Another device saves before this device's next push runs.
+    const other = { rev: 5, device: 'd3', json: JSON.stringify({ rev: 5, packName: 'Pack', scouts: [{ id: 'a' }], ledger: [{ id: 'l1' }, { id: 'l2' }], fundraisers: [] }) };
+    vm.runInContext(`reads['packs/P'] = ${JSON.stringify(other)}; watches[0].next(snapOf('packs/P', {})); runTimers();`, ctx);
+    const last = vm.runInContext('txSets.length ? JSON.parse(txSets[txSets.length - 1][1].json) : null', ctx);
+    return JSON.parse(JSON.stringify({ afterPush, name: vm.runInContext('state.packName', ctx), dirty: vm.runInContext('sync.dirty', ctx),
+      sent: last && [last.packName, last.ledger.map((l) => l.id)], sets: vm.runInContext('txSets.length', ctx) }));
+  };
+  // Renamed while the save was out (its own push already asked for, as commit does).
+  eq(run("state.packName = 'Renamed mid-save'; scheduleSyncPush();"), { afterPush: [true, 1, 1], name: 'Renamed mid-save', dirty: false,
+    sent: ['Renamed mid-save', ['l1', 'l2']], sets: 2 }, 'an edit made while a save was out was lost to another device’s save');
+  // Typed while the save was out: a live amount edit changes the pack 300 ms before it asks for a push.
+  eq(run("state.packName = 'Typed mid-save';"), { afterPush: [true, 1, 1], name: 'Typed mid-save', dirty: false,
+    sent: ['Typed mid-save', ['l1', 'l2']], sets: 2 }, 'a live edit made while a save was out was lost');
+  // Control: nothing changed during the save, so the device is clean and takes the other save.
+  eq(run(''), { afterPush: [false, 0, 1], name: 'Pack', dirty: false, sent: ['Pack', ['l1']], sets: 1 },
+    'control: a save with no edit behind it left the device unsaved');
+});
+
+test('Firestore: only the server’s answer, not the cache’s, puts the pill back to "Synced"', () => {
+  // Review of 86dfe38..4347cc6, item 2. Offline, a save fails (syncFail: 'offline'); the feed,
+  // which asks for metadata changes, then answers from the cache. That is not the server.
+  const mine = { rev: 2, packName: 'Pack', scouts: [{ id: 'a' }], ledger: [], fundraisers: [] };
+  const ctx = fsFeedCtx(mine, `reads['packs/P'] = ${JSON.stringify({ rev: 2, device: 'd2', json: JSON.stringify(mine) })};`);
+  vm.runInContext("watches[0].next(snapOf('packs/P', {})); sync.mode = 'offline'; sync.error = 'unavailable';", ctx);
+  vm.runInContext("watches[0].next(snapOf('packs/P', { fromCache: true }))", ctx);
+  eq(vm.runInContext('[sync.mode, sync.error]', ctx), ['offline', 'unavailable'], 'a cached answer after a failed save read as back online');
+  vm.runInContext("watches[0].next(snapOf('packs/P', {}))", ctx);
+  eq(vm.runInContext('[sync.mode, sync.error]', ctx), ['online', ''], 'control: the server’s answer did not read as back online');
+});
+
+test('a device made view-only that cannot read the shared copy is not left showing a closed chooser', () => {
+  // Review of 86dfe38..4347cc6, item 3. takeSharedAsViewer closes the chooser before taking the
+  // shared copy; adoptRemote draws the page only when it takes it.
+  const take = (adopts) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`var renders = [], toasts = [];
+      function render() { renders.push(ui.overlay && ui.overlay.kind); } function showToast(m) { toasts.push(m); }
+      function adoptRemote() { if (!${adopts}) return false; sync.conflict = null; render(); return true; }
+      var ui = { overlay: { kind: 'sync-conflict', remote: { rev: 9 } } }, sync = { conflict: { rev: 9 } };
+      ${decl('takeSharedAsViewer')}
+      takeSharedAsViewer({ rev: 9, json: 'not json' });`, ctx);
+    return JSON.parse(JSON.stringify(vm.runInContext('({ overlay: ui.overlay, renders: renders, toasts: toasts.length, conflict: !!sync.conflict })', ctx)));
+  };
+  // Unreadable: the page is drawn without the chooser, and the choice still waits (the pill brings it back).
+  eq(take(false), { overlay: null, renders: [null], toasts: 0, conflict: true }, 'the closed chooser was left on the page');
+  // Control: taken, drawn once (by adoptRemote), with the toast.
+  eq(take(true), { overlay: null, renders: [null], toasts: 1, conflict: false }, 'control: taking the shared copy changed');
+});
+
+test('the sync card offline does not promise every change will simply sync', () => {
+  // Review of 86dfe38..4347cc6, item 4: back online, a leader may be asked which copy to keep.
+  const ctx = vm.createContext({});
+  vm.runInContext(`var sync = { mode: 'offline', error: 'unavailable', conflict: null, notice: '' };
+    function backendConfigured() { return true; } function fixedPackMode() { return true; } function serverNotice() { return ''; }
+    ${decl('syncModeLine')}`, ctx);
+  eq(vm.runInContext('syncModeLine()', ctx), 'Offline — changes are saved on this device. When the connection returns they are sent, or, ' +
+    'if the shared copy has changed, you may be asked which copy to keep. (unavailable)', 'the offline line');
+});
+
+test('Firestore: another device’s save that lands while this device’s save is out is never lost', () => {
+  // Review of 86dfe38..4347cc6, item 1 (its reproduction is the first half). While this
+  // device's push is out, another device saves ledger row l9. Two orders, both real: its save
+  // lands on top of this one (rev 4 over this device's 3), or the transaction reads it before
+  // its snapshot arrives (this device writes 5 over it). Either way l9 must not be lost, with
+  // or without an edit made while the push was out.
+  const mine = { rev: 2, packName: 'Pack', scouts: [{ id: 'a' }], ledger: [], fundraisers: [] };
+  const otherAt = (rev) => ({ rev, device: 'd3', json: JSON.stringify({ rev, packName: 'Pack', scouts: [{ id: 'a' }], ledger: [{ id: 'l9' }], fundraisers: [] }) });
+  // `before`: runs before the push. `during`: once the push's copy is built, before its
+  // result comes back. `after`: once the push is done.
+  const run = (before, during, after) => {
+    const ctx = fsFeedCtx(mine, `
+      var realTx = fakeFirestore.runTransaction, done = false;
+      fakeFirestore.runTransaction = function (db, body) {
+        var out = realTx(db, body);
+        if (!done) { done = true; ${during} }
+        return out;
+      };
+      reads['packs/P'] = ${JSON.stringify({ rev: 2, device: 'd2', json: JSON.stringify(mine) })};`);
+    vm.runInContext("watches[0].next(snapOf('packs/P', {})); state.ledger.push({ id: 'l1' }); scheduleSyncPush(); " + before + ' runTimers();', ctx);
+    vm.runInContext(after + ' runTimers();', ctx);
+    return JSON.parse(JSON.stringify(vm.runInContext(`({ sets: txSets.map(function (s) { var j = JSON.parse(s[1].json); return [s[1].rev, j.ledger.map(function (l) { return l.id; }), j.packName]; }),
+      ledger: state.ledger.map(function (l) { return l.id; }), name: state.packName, dirty: sync.dirty, clobber: sync.clobber, rev: state.rev,
+      heard: sync.remoteRec && sync.remoteRec.rev, toasts: toasts })`, ctx)));
+  };
+  const lands = `reads['packs/P'] = ${JSON.stringify(otherAt(4))}; watches[0].next(snapOf('packs/P', {}));`;
+  const merged = 'Another device saved changes while you were editing — check recent entries.';
+  // It lands on top, no edit since: this device takes it (the server's copy is the later one).
+  eq(run('', lands, ''), { sets: [[3, ['l1'], 'Pack']], ledger: ['l9'], name: 'Pack', dirty: false, clobber: false, rev: 4, heard: 4,
+    toasts: ['Updated from another device'] }, 'a save that landed on this one while it was out was lost (no edit since)');
+  // It lands on top, with an edit since: this device stays unsaved and its next save merges l9.
+  eq(run('', lands + " state.packName = 'X';", ''), { sets: [[3, ['l1'], 'Pack'], [5, ['l1', 'l9'], 'X']], ledger: ['l1', 'l9'], name: 'X',
+    dirty: false, clobber: false, rev: 5, heard: 5, toasts: [merged] }, 'a save that landed on this one while it was out was lost (edit since)');
+  // The push reads it before its snapshot arrives, which comes during the push or after it.
+  const read = `reads['packs/P'] = ${JSON.stringify(otherAt(4))};`;
+  const snap = "watches[0].next(snapOf('packs/P', {}));";
+  for (const [during, after, how] of [[snap, '', 'during'], ['', snap, 'after'], [snap + " state.packName = 'X';", '', 'during, edit since']]) {
+    const edited = /'X'/.test(during);
+    // A snapshot after the push is the server's answer as it came (rev 4); the echo of this
+    // device's own save, not played here, moves it on. Its rev is below this device's, so
+    // nothing is adopted or merged from it.
+    eq(run(read, during, after), { sets: [[5, ['l1', 'l9'], 'Pack']].concat(edited ? [[6, ['l1', 'l9'], 'X']] : []), ledger: ['l1', 'l9'],
+      name: edited ? 'X' : 'Pack', dirty: false, clobber: false, rev: edited ? 6 : 5, heard: after ? 4 : edited ? 6 : 5, toasts: [merged] },
+      'a save the push read before its snapshot came (' + how + ') was written over');
+  }
+  // Control: no other save; the push is as before, with no toast.
+  eq(run('', '', ''), { sets: [[3, ['l1'], 'Pack']], ledger: ['l1'], name: 'Pack', dirty: false, clobber: false, rev: 3, heard: 3, toasts: [] },
+    'control: a plain save changed');
+});
+
+test('the pack record feed ignores its own echoes and keeps the raw record for the conflict screen', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    var timers = [], adopted = [], rendered = 0;
+    function scheduleParentViewRefresh() {} function renderSyncPill() {} function render() { rendered += 1; }
+    function syncPush() {} function clearTimeout() {} function setTimeout(fn) { timers.push(fn); return 't'; }
+    function canEdit() { return true; } function save() {}
+    function normalizeState(p) { return p && typeof p === 'object' ? p : null; }
+    function adoptRemote(d, o) { adopted.push([d, !!(o && o.toast)]); return true; }
+    var ui = { tab: 'home', overlay: null };
+    var state = { scouts: [{ id: 'a' }], rev: 2 };
+    var sync = { firstSnap: true, mode: 'online', deviceId: 'dev1', dirty: false, clobber: false };
+    ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap'].map(slice).join('\n')}`, ctx);
+  // No shared copy yet: seed it from this device.
+  vm.runInContext('onRemoteSnap(null, { fromServer: true, pendingWrites: false })', ctx);
+  eq(vm.runInContext('[sync.dirty, timers.length === 1 && timers[0] === syncPush]', ctx), [true, true], 'an empty pack was not seeded');
+  vm.runInContext('sync.dirty = false', ctx);
+  // Our own unconfirmed write, and our own write echoed back: neither is adopted.
+  vm.runInContext("onRemoteSnap({ rev: 9, device: 'other', json: '{}' }, { fromServer: false, pendingWrites: true })", ctx);
+  vm.runInContext("onRemoteSnap({ rev: 9, device: 'dev1', json: '{}' }, { fromServer: true, pendingWrites: false })", ctx);
+  eq(vm.runInContext('adopted.length', ctx), 0, 'an echo of this device’s own write was adopted');
+  // Another device's newer rev is.
+  vm.runInContext("var other = { rev: 9, device: 'd2', json: '{}' }; onRemoteSnap(other, { fromServer: true, pendingWrites: false })", ctx);
+  ok(vm.runInContext('adopted.length === 1 && adopted[0][0] === other && adopted[0][1]', ctx), 'a newer remote copy was not adopted');
+  // …unless this device has unsaved edits: then it is flagged for the merge at push.
+  vm.runInContext("sync.dirty = true; onRemoteSnap({ rev: 12, device: 'd2', json: '{}' }, { fromServer: true, pendingWrites: false })", ctx);
+  eq(vm.runInContext('[adopted.length, sync.clobber]', ctx), [1, true], 'a newer copy over unsaved edits was not flagged');
+  // First answer, both copies real and different: the overlay holds the record exactly as sent.
+  vm.runInContext(`sync.firstSnap = true; sync.dirty = false;
+    var cloud = { rev: 5, device: 'd2', json: JSON.stringify({ scouts: [{ id: 'b' }] }) };
+    onRemoteSnap(cloud, { fromServer: true, pendingWrites: false });`, ctx);
+  ok(vm.runInContext("ui.overlay && ui.overlay.kind === 'sync-conflict' && ui.overlay.remote === cloud", ctx),
+    'the conflict screen does not hold the raw cloud record');
+});
+
+test('once single-pack mode halts, nothing can push the pack record, even with the rules check passing', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    var timers = [], pushed = 0, parentViewTimer = null;
+    var fakeBe = { pushPack: function () { pushed += 1; return { then: function () { return { catch: function () {} }; } }; } };
+    function stopDocFeed() {} function stopParentFeed() {} function renderSyncPill() {} function render() {}
+    function clearTimeout() {} function setTimeout(fn) { timers.push(fn); return 't'; }
+    function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
+    var state = { rev: 1 };
+    var sync = { backend: fakeBe, pack: { docId: 'P' }, session: 1, deviceId: 'd', mode: 'online' };
+    ${['packLinked', 'haltFixedSync', 'scheduleSyncPush', 'syncPush'].map(slice).join('\n')}`, ctx);
+  vm.runInContext('scheduleSyncPush()', ctx);
+  eq(vm.runInContext('timers.length', ctx), 1, 'a linked device cannot schedule a push (the test proves nothing)');
+  vm.runInContext('haltFixedSync(); timers = []; scheduleSyncPush(); syncPush();', ctx);
+  eq(vm.runInContext('[sync.pack, timers.length, pushed]', ctx), [null, 0, 0], 'a halted device can still push');
+  ok(/sync\.pack = null;/.test(slice('syncStop')), 'syncStop keeps the pack handle');
+});
+
+test('every guard in front of the pack feed, the parent feed and a push holds on its own', () => {
+  // Security review of stage B, item 1: each guard below could be deleted with the harness green.
+  // Each is tested with the OTHER guards passing, and each has a control that goes through.
+  const ctx = (over) => {
+    const c = vm.createContext({});
+    vm.runInContext(FAKE_BE + `
+      var pushed = 0;
+      fakeBe.pushPack = function () { pushed += 1; return { then: function () { return { catch: function () {} }; } }; };
+      function stopDocFeed() {} function stopParentFeed() {} function renderSyncPill() {} function render() {}
+      function onRemoteSnap() {} function syncFail() {} function clearTimeout() {} function setTimeout() {}
+      var parentViewTimer = null, state = { rev: 1 };
+      var feedBlocked = ${!!over.feedBlocked}, syncBlocked = ${!!over.syncBlocked}, inForce = ${!!over.inForce}, edit = ${over.edit !== false};
+      function fixedFeedBlocked() { return feedBlocked; } function fixedSyncBlocked() { return syncBlocked; }
+      function accountsInForce() { return inForce; } function canEdit() { return edit; }
+      var sync = { backend: fakeBe, pack: { docId: 'P' }, docId: 'P', session: 1, deviceId: 'd', mode: 'online', parentUnsub: null };
+      ${['cloudReady', 'packLinked', 'haltFixedSync', 'subscribeDoc', 'subscribeParentView', 'syncPush'].map(slice).join('\n')}`, c);
+    return c;
+  };
+  const got = (c, js) => { vm.runInContext(js, c); return vm.runInContext('[!!subs.pack, !!subs.view, pushed]', c); };
+  // subscribeDoc: with the rules check passing, only the pack handle stands in the way.
+  eq(got(ctx({}), 'subscribeDoc(1)'), [true, false, 0], 'control: a linked device cannot subscribe the pack record');
+  eq(got(ctx({}), 'haltFixedSync(); subscribeDoc(1)'), [false, false, 0], 'a halted device subscribed the pack record');
+  // syncPush: the rules check, then the role.
+  eq(got(ctx({}), 'syncPush()'), [false, false, 1], 'control: a linked editor cannot push');
+  eq(got(ctx({ syncBlocked: true }), 'syncPush()'), [false, false, 0], 'a push went out with single-pack mode blocked');
+  eq(got(ctx({ inForce: true, edit: false }), 'syncPush()'), [false, false, 0], 'a read-only role pushed the pack record');
+  // subscribeParentView: the feed gate.
+  eq(got(ctx({}), 'subscribeParentView(1)'), [false, true, 0], 'control: the parent view cannot be subscribed');
+  eq(got(ctx({ feedBlocked: true }), 'subscribeParentView(1)'), [false, false, 0], 'the parent view was subscribed with the feed blocked');
 });
 
 test('the rules take only a verified Google account as a member, and a short name', () => {
@@ -8738,6 +9579,9 @@ test('no tracked file carries a real email address or phone number', () => {
     '1-800-222-1222',      // Poison Control
   ];
   const ALLOWED_EMAIL = /@(example\.com|pack569\.com)$/i;
+  // Machine addresses, by exact value: Google's signing-key service, which the API's token check
+  // fetches keys from (it is part of a URL, not a person).
+  const PUBLIC_EMAILS = ['securetoken@system.gserviceaccount.com'];
   const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
   const PHONE = /(?:1-800-\d{3}-\d{4})|\(?\b[2-9]\d{2}\)?[-. ]?\d{3}[-. ]\d{4}\b|\b[2-9]\d{9}\b/g;
   const isFake = (p) => /555[-. ]?01\d\d$/.test(p.replace(/\s+$/, ''));
@@ -8747,7 +9591,7 @@ test('no tracked file carries a real email address or phone number', () => {
     let text;
     try { text = readFileSync(join(ROOT, f), 'utf8'); } catch (e) { continue; }
     // This test's own allowlist is the one place a real public number may be written twice.
-    (text.match(EMAIL) || []).forEach((m) => { if (!ALLOWED_EMAIL.test(m)) found.push(f + ': an email'); });
+    (text.match(EMAIL) || []).forEach((m) => { if (!ALLOWED_EMAIL.test(m) && PUBLIC_EMAILS.indexOf(m) < 0) found.push(f + ': an email'); });
     (text.match(PHONE) || []).forEach((m) => {
       if (!isFake(m) && PUBLIC_NUMBERS.indexOf(m) < 0) found.push(f + ': a phone number');
     });
@@ -9633,10 +10477,27 @@ test('B5: an unverified Google email gets its own gate before anything touches t
   const fn = slice('syncStart');
   const gate = fn.indexOf("if (isGoogleUser(u) && u.emailVerified === false) {");
   ok(gate !== -1, 'syncStart does not check emailVerified');
-  ok(gate < fn.indexOf('sync.db = mods.fs.getFirestore') && gate < fn.indexOf('startAccounts('),
+  const open = fn.indexOf('sync.pack = be.open(docId);');
+  ok(open !== -1, 'syncStart no longer opens the pack through the backend');
+  ok(gate < open && gate < fn.indexOf('startAccounts('),
     'the verified check comes after the cloud is touched');
-  const blk = fn.slice(gate, fn.indexOf('sync.db = mods.fs.getFirestore'));
+  const blk = fn.slice(gate, open);
   ok(/sync\.joinRejected = 'unverified';/.test(blk) && /return;/.test(blk), 'the unverified branch does not stop at a gate');
+  // Before the gate, syncStart asks the backend only about sign-in…
+  const before = [...codeOnly(fn.slice(0, gate)).matchAll(/\bbe\.(\w+)\(/g)].map((m) => m[1]);
+  ok(before.length >= 2, 'the scan for backend calls before the gate found nothing');
+  before.forEach((n) => ok(['completeRedirect', 'currentUser', 'signInAnonymously'].indexOf(n) !== -1,
+    `syncStart calls be.${n}() before the unverified-email gate`));
+  // …and none of those, nor init(), opens the data store: only open() makes the Firestore instance.
+  const fb = codeOnly(slice('firestoreBackend'));
+  eq((fb.match(/getFirestore/g) || []).length, 1, 'the adapter makes its Firestore instance in more than one place');
+  ok(/\n    open: function \(docId\) \{\n      if \(!this\.db\) this\.db = this\.mods\.fs\.getFirestore\(this\.app\);/.test(fb),
+    'the Firestore instance is made somewhere other than open()');
+  const c = fsAdapterCtx();
+  vm.runInContext('firestoreBackend.completeRedirect(); firestoreBackend.currentUser(); firestoreBackend.signInAnonymously()', c);
+  ok(vm.runInContext('fsLog.indexOf("getFirestore") === -1 && !firestoreBackend.isOpen()', c), 'a sign-in call opened the data store');
+  vm.runInContext('firestoreBackend.open("P")', c);
+  ok(vm.runInContext('fsLog.indexOf("getFirestore") !== -1 && firestoreBackend.isOpen()', c), 'open() did not open the data store');
   const closed = slice('renderJoinClosed');
   ok(/if \(sync\.joinRejected === 'unverified'\)/.test(closed) &&
     /Google hasn’t verified this email address yet — verify it with Google, then sign in again\./.test(closed),
@@ -10151,16 +11012,16 @@ test('S4: the sharing settings cannot be written before the pack’s own copy ha
   const run = (loaded) => {
     const ctx = vm.createContext({});
     vm.runInContext(`
-      var FIREBASE_CONFIG = {}, WRITES = [];
+      var FIREBASE_CONFIG = {}, BACKEND = 'firestore', WRITES = [];
       var sync = { user: {}, joinLoaded: ${loaded}, joinCfg: ${loaded ? "{ open: true, code: 'abc', showStandings: false, showAmounts: false, contact: 'Chair' }" : 'null'},
-        mods: { fs: { doc: function () { return {}; }, serverTimestamp: function () { return 0; },
-          setDoc: function (ref, data) { WRITES.push(data); return { then: function () { return { catch: function () {} }; } }; } } },
-        db: {}, docId: 'p' };
+        backend: { isOpen: function () { return true; }, serverTime: function () { return 0; },
+          writeJoin: function (docId, data) { WRITES.push(data); return { then: function () { return { catch: function () {} }; } }; } },
+        docId: 'p' };
       function isAdmin() { return true; }
       function render() {} function scheduleParentViewRefresh() {} function showToast() {}
       function accountsToast() {} function joinLinkUrl() { return 'https://x/?join=abc'; }
       function dangerBtn(k, l) { return '<button data-act="' + k + '">' + l + '</button>'; }
-      ${['esc', 'JOIN_CODE_RE', 'newJoinCode', 'joinOpen', 'standingsEnabled', 'amountsEnabled',
+      ${['esc', 'JOIN_CODE_RE', 'newJoinCode', 'joinOpen', 'standingsEnabled', 'amountsEnabled', 'backendConfigured', 'cloudReady',
          'cleanContactLine', 'parentContactLine', 'writeJoinConfig', 'renderJoinCard'].map(slice).join('\n')}`, ctx);
     return ctx;
   };
@@ -12482,6 +13343,7 @@ let siteBuilt = null;
 function siteBuild() {
   if (!siteBuilt) {
     siteBuilt = { preview: site.build({ target: 'preview', out: siteDir('preview') }),
+      staging: site.build({ target: 'staging', out: siteDir('staging') }),
       production: site.build({ target: 'production', out: siteDir('production') }) };
   }
   return siteBuilt;
@@ -12525,7 +13387,7 @@ test('the production build is the committed page, and its CSP hashes the script 
   const headers = siteFile('production', '_headers');
   const d = site.cspDirectives(site.cspOf(headers));
   const hash = createHash('sha256').update(SCRIPT, 'utf8').digest('base64');
-  // The SDK is allowed by its exact versioned path, as loadFirebase() imports it — not all of gstatic.
+  // The SDK is allowed by its exact versioned path, as firestoreBackend.init() imports it — not all of gstatic.
   const sdkBase = /^  var SYNC_SDK_BASE = '([^']+)';$/m.exec(SCRIPT)[1];
   ok(/^https:\/\/www\.gstatic\.com\/firebasejs\/\d+\.\d+\.\d+\/$/.test(sdkBase), 'SYNC_SDK_BASE is not a versioned gstatic path');
   eq(d['script-src'], [`'sha256-${hash}'`, sdkBase, 'https://apis.google.com'], 'script-src');
@@ -12540,6 +13402,95 @@ test('the production build is the committed page, and its CSP hashes the script 
   ok(/^  Referrer-Policy: strict-origin-when-cross-origin$/m.test(headers), 'referrer policy');
   ok(/^  Strict-Transport-Security: max-age=31536000; includeSubDomains$/m.test(headers), 'HSTS');
   ok(!/X-Robots-Tag/.test(headers), 'production is noindex');
+});
+
+test('the staging build is the committed page on the pack’s own server: BACKEND api, no Firestore host, noindex', () => {
+  siteBuild();
+  eq(readdirSync(siteDir('staging')).sort(), ['_headers', 'index.html'], 'the staging folder');
+  const html = siteFile('staging', 'index.html');
+  // Byte for byte the committed page, but for two lines: BACKEND, and (YP review of stage C,
+  // item 2) the STAGING flag that makes the page refuse the real move file.
+  const a = HTML.split('\n'), b = html.split('\n');
+  eq(a.length, b.length, 'staging has a different number of lines');
+  const differ = a.map((l, i) => (l === b[i] ? null : [l, b[i]])).filter(Boolean);
+  eq(differ, [["  var BACKEND = 'firestore';", "  var BACKEND = 'api';"], ['  var STAGING = false;', '  var STAGING = true;']],
+    'staging changes more than BACKEND and STAGING');
+  const live = site.liveConfig(html);
+  eq([live.backend, live.staging, live.docId, live.config.projectId], ['api', true, LIVE.docId, LIVE.config.projectId], 'staging’s sign-in config and pack');
+  eq([LIVE.staging, site.liveConfig(siteFile('production', 'index.html')).staging, site.liveConfig(siteFile('preview', 'index.html')).staging],
+    [false, false, false], 'a page other than staging says STAGING');
+  const headers = siteFile('staging', '_headers');
+  const d = site.cspDirectives(site.cspOf(headers));
+  eq(d['connect-src'], ["'self'", 'https://identitytoolkit.googleapis.com', 'https://securetoken.googleapis.com', 'https://www.googleapis.com',
+    'https://api.open-meteo.com', 'https://archive-api.open-meteo.com'], 'staging connect-src');
+  ok(!/firestore/i.test(headers), 'staging can reach Firestore');
+  eq(d['script-src'][0], `'sha256-${scriptHash(html)}'`, 'the staging CSP hash is not its script’s');
+  ok(d['frame-src'].indexOf('https://' + LIVE.config.authDomain) >= 0, 'Google sign-in cannot frame the authDomain on staging');
+  ok(/^  X-Robots-Tag: noindex$/m.test(headers), 'staging can be indexed');
+  // Production is still the committed page, on Firestore, with no 'self' to connect to.
+  const prod = site.cspDirectives(site.cspOf(siteFile('production', '_headers')));
+  ok(prod['connect-src'].indexOf('https://firestore.googleapis.com') >= 0 && prod['connect-src'].indexOf("'self'") < 0,
+    'production’s connect-src changed');
+  // --verify: a staging page on Firestore, or with a Firestore host in its CSP, is refused; so is
+  // each target passed as another.
+  throwsBuild(() => site.verify({ dir: siteDir('staging'), target: 'production' }), 'staging passed as production');
+  throwsBuild(() => site.verify({ dir: siteDir('staging'), target: 'preview' }), 'staging passed as preview');
+  throwsBuild(() => site.verify({ dir: siteDir('production'), target: 'staging' }), 'production passed as staging');
+  const t = join(SITE_TMP, 'staging-tampered');
+  const fresh = () => { rmSync(t, { recursive: true, force: true }); cpSync(siteDir('staging'), t, { recursive: true }); };
+  fresh(); writeFileSync(join(t, '_headers'), headers.replace("connect-src 'self'", "connect-src 'self' https://firestore.googleapis.com"));
+  ok(/connect-src/.test(throwsBuild(() => site.verify({ dir: t, target: 'staging' }), 'a Firestore host in staging')), 'a Firestore host in staging');
+  // A staging page switched back to Firestore is refused by name, before any byte compare.
+  fresh(); writeFileSync(join(t, 'index.html'), html.replace("  var BACKEND = 'api';", "  var BACKEND = 'firestore';"));
+  ok(/BACKEND is not 'api'/.test(throwsBuild(() => site.verify({ dir: t, target: 'staging' }), 'a Firestore staging page')), 'a Firestore staging page');
+  fresh(); writeFileSync(join(t, '_headers'), headers.replace(/\n  X-Robots-Tag: noindex/, ''));
+  throwsBuild(() => site.verify({ dir: t, target: 'staging' }), 'staging without noindex');
+  // A staging page that does not say STAGING (it would take the real move file) is refused by name.
+  fresh(); writeFileSync(join(t, 'index.html'), html.replace('  var STAGING = true;', '  var STAGING = false;'));
+  ok(/STAGING is not true/.test(throwsBuild(() => site.verify({ dir: t, target: 'staging' }), 'staging without STAGING')), 'staging without STAGING');
+  // …and so is any other page that does, before any byte compare.
+  const pt = join(SITE_TMP, 'production-tampered');
+  rmSync(pt, { recursive: true, force: true }); cpSync(siteDir('production'), pt, { recursive: true });
+  writeFileSync(join(pt, 'index.html'), siteFile('production', 'index.html').replace('  var STAGING = false;', '  var STAGING = true;'));
+  ok(/STAGING is true/.test(throwsBuild(() => site.verify({ dir: pt, target: 'production' }), 'production with STAGING')), 'production with STAGING');
+  eq(site.verify({ dir: siteDir('staging'), target: 'staging' }).files.map((f) => f.file), ['_headers', 'index.html'], 'a good staging build');
+  // The CLI builds it.
+  const r = spawnSync(process.execPath, [join(ROOT, 'scripts/build-site.mjs'), '--verify', siteDir('staging'), '--target', 'staging'], { encoding: 'utf8' });
+  eq(r.status, 0, 'the --verify CLI refuses a good staging build: ' + r.stderr);
+});
+
+test('the switch-over is one line: a production page with BACKEND api gets the api CSP, and a staging page cannot be Firestore', () => {
+  // A copy of the repo's two inputs, with index.html switched, built as production.
+  const root = mkdtempSync(join(tmpdir(), 'pack569-switch-'));
+  try {
+    writeFileSync(join(root, 'index.html'), HTML.replace("  var BACKEND = 'firestore';", "  var BACKEND = 'api';"));
+    writeFileSync(join(root, '_headers'), readFileSync(join(ROOT, '_headers'), 'utf8'));
+    const out = join(root, 'out');
+    site.build({ target: 'production', out, root });
+    const headers = readFileSync(join(out, '_headers'), 'utf8');
+    const d = site.cspDirectives(site.cspOf(headers));
+    eq(d['connect-src'][0], "'self'", 'the switched production page cannot reach /api');
+    ok(!/firestore/i.test(headers) && !/X-Robots-Tag/.test(headers), 'the switched production CSP');
+    eq(site.verify({ dir: out, target: 'production', root }).target, 'production', 'the switched production build does not verify');
+    // A BACKEND that is neither, or declared twice, stops the build.
+    writeFileSync(join(root, 'index.html'), HTML.replace("  var BACKEND = 'firestore';", "  var BACKEND = 'both';"));
+    ok(/BACKEND/.test(throwsBuild(() => site.build({ target: 'staging', out, root }), 'an unknown BACKEND')), 'an unknown BACKEND');
+    writeFileSync(join(root, 'index.html'), HTML.replace("  var BACKEND = 'firestore';", "  var BACKEND = 'firestore';\n  var BACKEND = 'api';"));
+    throwsBuild(() => site.build({ target: 'production', out, root }), 'BACKEND declared twice');
+    // Only the staging build writes STAGING = true: a committed page saying it, or saying it
+    // twice, or not at all, builds nothing.
+    for (const [what, page] of [['STAGING true', HTML.replace('  var STAGING = false;', '  var STAGING = true;')],
+      ['STAGING twice', HTML.replace('  var STAGING = false;', '  var STAGING = false;\n  var STAGING = true;')],
+      ['no STAGING', HTML.replace('  var STAGING = false;\n', '')]]) {
+      writeFileSync(join(root, 'index.html'), page);
+      for (const target of ['production', 'staging', 'preview']) {
+        ok(/STAGING/.test(throwsBuild(() => site.build({ target, out, root }), `${what}: ${target} built`)), `${what}: ${target}`);
+      }
+    }
+    // Staging needs the pack id: the pack's own server serves exactly that pack.
+    writeFileSync(join(root, 'index.html'), HTML.replace(/^  var PACK_DOC_ID = '[0-9a-f]{64}';$/m, '  var PACK_DOC_ID = null;'));
+    ok(/PACK_DOC_ID/.test(throwsBuild(() => site.build({ target: 'staging', out, root }), 'staging without a pack id')), 'staging without a pack id');
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('index.html has no inline event handler, and the print pages wire Print from the opener', () => {
@@ -12584,6 +13535,18 @@ test('--verify refuses a production build passed as preview, the reverse, and a 
   eq(r.status, 1, 'the --verify CLI exit code');
 });
 
+// Two made-up D1 ids, for filling in wrangler.toml's placeholders in a test.
+const WR_PRE = '11111111-1111-4111-8111-111111111111', WR_PROD = '22222222-2222-4222-8222-222222222222';
+// The n-th (0-based) occurrence of `id` in t replaced by `to`.
+const wrNth = (t, id, n, to) => { const p = t.split(id); return p.slice(0, n + 1).join(id) + to + p.slice(n + 1).join(id); };
+// Each block's database_id, by the block it sits under: { top, preview, production } — as the
+// deploy's own check (scripts/check-wrangler.mjs) reads them.
+const wranglerDbIds = (W) => checkWrangler(W, { packDocId: LIVE.docId }).ids;
+// The committed wrangler.toml with each block's database_id put back to its placeholder, so the
+// tests below work the same before and after the owner pastes the real ids in.
+const wranglerTemplate = (W) => W.replace(/^(\[\[(?:env\.(preview|production)\.)?d1_databases\]\]\n(?:[^\n[]*\n)*?database_id = ")[^"]*"/gm,
+  (m, head, env) => head + (env === 'production' ? 'REPLACE_WITH_PACK569_PROD_DATABASE_ID' : 'REPLACE_WITH_PACK569_PREVIEW_DATABASE_ID') + '"');
+
 test('the workflow deploys only by hand, production only from main, with every action pinned', () => {
   const WF = readFileSync(join(ROOT, '.github/workflows/website.yml'), 'utf8');
   const uses = WF.match(/^\s*(?:- )?uses:.*$/gm) || [];
@@ -12591,7 +13554,8 @@ test('the workflow deploys only by hand, production only from main, with every a
   uses.forEach((u) => ok(/uses: [\w.-]+\/[\w.-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/.test(u.trim().replace(/^- /, '')), 'not pinned to a SHA: ' + u.trim()));
   ok(/uses: cloudflare\/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4\.0\.0/.test(WF), 'wrangler-action pin');
   ok(/^on:\n  (?:#.*\n  )*push:\n  pull_request:\n  workflow_dispatch:\n    inputs:\n      deploy_target:/m.test(WF), 'the triggers');
-  ok(/options: \[preview, production\]\n\s+default: preview/.test(WF), 'deploy_target is not preview|production, default preview');
+  // Phase 2 stage C: staging is a third choice, and preview is still the default.
+  ok(/options: \[preview, staging, production\]\n\s+default: preview/.test(WF), 'deploy_target is not preview|staging|production, default preview');
   ok(!/pull_request_target|schedule:/.test(WF), 'an unexpected trigger');
   ok(/^permissions:\n  contents: read$/m.test(WF) && !/: write/.test(WF), 'permissions are not read-only');
   // Split into jobs by their two-space headers under jobs:.
@@ -12605,41 +13569,234 @@ test('the workflow deploys only by hand, production only from main, with every a
   ok(/needs: \[website-gates, deploy-preflight\]/.test(jobs.deploy), 'deploy does not need the preflight');
   ok(/if: inputs\.deploy_target == 'production' && github\.ref != 'refs\/heads\/main'\n[\s\S]*?exit 1/.test(jobs['deploy-preflight']),
     'the preflight does not refuse production off main');
-  ok(/environments\/website-production[\s\S]*?required_reviewers/.test(jobs['deploy-preflight']), 'the preflight does not check the reviewer');
+  // Security review of stage C, item 5: production AND staging are checked for a reviewer.
+  ok(/if: inputs\.deploy_target == 'production' \|\| inputs\.deploy_target == 'staging'\n[\s\S]*?ENV_NAME: \$\{\{ inputs\.deploy_target == 'production' && 'website-production' \|\| 'website-staging' \}\}\n[\s\S]*?environments\/\$ENV_NAME[\s\S]*?required_reviewers/.test(jobs['deploy-preflight']),
+    'the preflight does not check production’s and staging’s reviewer');
   ok(/--verify _site --target "\$TARGET"/.test(jobs['deploy-preflight']), 'the preflight does not verify the artifact');
   // Nothing that deploys, or holds a secret, outside the deploy job; the gates build and test.
   for (const j of ['website-gates', 'deploy-preflight']) {
     ok(!/wrangler|pages deploy|secrets\./.test(jobs[j]), `${j} can deploy`);
   }
-  ok(/node test\/harness\.mjs/.test(jobs['website-gates']) && /--target preview/.test(jobs['website-gates']) &&
-    /--target production/.test(jobs['website-gates']), 'the gates do not test and build both targets');
+  ok(/node test\/harness\.mjs/.test(jobs['website-gates']) && /--target preview --out _site-preview/.test(jobs['website-gates']) &&
+    /--target staging --out _site-staging/.test(jobs['website-gates']) &&
+    /--target production --out _site-production/.test(jobs['website-gates']), 'the gates do not test and build every target');
+  ok(/path: _site-\$\{\{ inputs\.deploy_target \}\}/.test(jobs['website-gates']), 'the artifact is not the chosen target’s build');
   ok(/if: github\.event_name == 'workflow_dispatch'\n\s+uses: actions\/upload-artifact/.test(jobs['website-gates']), 'the artifact is uploaded on push');
-  ok(/--branch=\$\{\{ inputs\.deploy_target == 'production' && 'main' \|\| format\('preview-\{0\}', github\.sha\) \}\}/.test(jobs.deploy),
-    'the Pages branch is not main-for-production-only');
+  // Only production is --branch=main (pack569.com, [env.production]); staging is always the one
+  // staging alias, and every other preview its own commit's link. Both bind [env.preview].
+  ok(/--branch=\$\{\{ inputs\.deploy_target == 'production' && 'main' \|\| \(inputs\.deploy_target == 'staging' && 'staging' \|\| format\('preview-\{0\}', github\.sha\)\) \}\}/.test(jobs.deploy),
+    'the Pages branch is not main-for-production-only, staging-for-staging');
+  eq((jobs.deploy.match(/'main'/g) || []).length, 1, 'main is named twice in the deploy job');
+  ok(/name: \$\{\{ inputs\.deploy_target == 'production' && 'website-production' \|\| \(inputs\.deploy_target == 'staging' && 'website-staging' \|\| 'website-preview'\) \}\}/.test(jobs.deploy),
+    'staging does not deploy through website-staging');
+  // The reviewer check, run as the runner would, against a fake `gh` answering for the environment.
+  const stepRe = /- name: Refuse production or staging without a required reviewer\n[\s\S]*?\n        run: \|\n((?:          .*\n|\n)+)/;
+  const stepRun = stepRe.exec(jobs['deploy-preflight']);
+  ok(stepRun, 'the reviewer step’s script was not found');
+  if (stepRun) {
+    const script = stepRun[1].split('\n').map((l) => l.slice(10)).join('\n');
+    const dir = mkdtempSync(join(tmpdir(), 'pack569-env-'));
+    try {
+      writeFileSync(join(dir, 'gh'), '#!/bin/bash\necho "$@" >> "$GH_LOG"\nif [ -z "$ENV_BODY" ]; then echo "HTTP 404: Not Found" >&2; exit 1; fi\nprintf "%s" "$ENV_BODY"\n', { mode: 0o755 });
+      const runEnv = (envName, body) => {
+        const log = join(dir, 'log');
+        rmSync(log, { force: true });
+        const r = spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { PATH: dir + ':/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin',
+          ENV_NAME: envName, REPO: 'pack569/pack569', GH_TOKEN: 'x', GH_LOG: log, ENV_BODY: body === null ? '' : JSON.stringify(body) } });
+        return [r.status, (r.stdout.match(/::error title=([^:]+)::/) || [])[1] || '', existsSync(log) ? readFileSync(log, 'utf8').trim() : ''];
+      };
+      const reviewer = { protection_rules: [{ type: 'required_reviewers', reviewers: [{}] }], deployment_branch_policy: null };
+      const branches = Object.assign({}, reviewer, { deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } });
+      eq(runEnv('website-staging', reviewer), [0, '', 'api repos/pack569/pack569/environments/website-staging'], 'staging with a reviewer');
+      eq(runEnv('website-staging', { protection_rules: [], deployment_branch_policy: null }).slice(0, 2), [1, 'website-staging has no required reviewer'], 'staging with no reviewer');
+      eq(runEnv('website-staging', { protection_rules: [{ type: 'wait_timer' }] }).slice(0, 2), [1, 'website-staging has no required reviewer'], 'staging with only a wait timer');
+      eq(runEnv('website-staging', null).slice(0, 2), [1, 'No website-staging environment'], 'no staging environment');
+      eq(runEnv('website-production', reviewer).slice(0, 2), [1, 'website-production allows every branch'], 'production open to every branch');
+      eq(runEnv('website-production', branches), [0, '', 'api repos/pack569/pack569/environments/website-production'], 'production with a reviewer and a branch rule');
+      eq(runEnv('website-production', { protection_rules: [] }).slice(0, 2), [1, 'website-production has no required reviewer'], 'production with no reviewer');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
   ok(/website-production/.test(jobs.deploy) && /cancel-in-progress: false/.test(jobs.deploy), 'the deploy environment or concurrency');
   // Review round (2026-09-28): the environment must be limited to chosen branches, too.
   ok(/jq -e '\.deployment_branch_policy != null'[\s\S]*?exit 1/.test(jobs['deploy-preflight']), 'the preflight accepts an environment open to every branch');
-  // wrangler runs from a folder holding only the verified site, with an exact version, and never beside a functions/.
-  ok(/if \[ -e functions \]; then[\s\S]*?exit 1/.test(jobs.deploy), 'a functions/ folder in the checkout is not refused');
+  // wrangler runs from a folder holding only the verified site, the API and wrangler.toml, with an exact version.
+  // Phase 2 (2026-09-28): functions/ is the D1 API and ships on purpose, so the step that refused it
+  // became one that stages it — only .js modules — and one that refuses unfilled database ids.
+  ok(!/if \[ -e functions \]; then/.test(jobs.deploy), 'the deploy still refuses the API it has to ship');
+  ok(/find functions -type f ! -name '\*\.js'[\s\S]*?exit 1/.test(jobs.deploy), 'a non-.js file in functions/ is not refused');
+  ok(/cp -R functions "\$RUNNER_TEMP\/deploy\/functions"/.test(jobs.deploy), 'the API is not staged beside the site');
+  // Security re-review of stage A, follow-up 1: the step is the shared strict checker, and nothing
+  // else, so the deploy and the harness cannot drift apart. Run the step itself, as the runner would.
+  const stepM = /- name: Refuse placeholder or crossed database ids\n\s+run: node scripts\/check-wrangler\.mjs wrangler\.toml\n/.exec(jobs.deploy);
+  ok(stepM, 'the deploy does not refuse wrangler.toml with scripts/check-wrangler.mjs');
+  ok(jobs.deploy.indexOf('check-wrangler') < jobs.deploy.indexOf('uses: cloudflare/wrangler-action'), 'the wrangler.toml check runs after the deploy');
+  ok(jobs.deploy.indexOf('check-wrangler') > jobs.deploy.indexOf('uses: actions/setup-node'), 'the wrangler.toml check runs before Node is set up');
+  if (stepM) {
+    const W0 = wranglerTemplate(readFileSync(join(ROOT, 'wrangler.toml'), 'utf8'));
+    const filled = W0.split('REPLACE_WITH_PACK569_PREVIEW_DATABASE_ID').join(WR_PRE).split('REPLACE_WITH_PACK569_PROD_DATABASE_ID').join(WR_PROD);
+    const dir = mkdtempSync(join(tmpdir(), 'pack569-ids-'));
+    writeFileSync(join(dir, 'index.html'), HTML);   // the step reads PACK_DOC_ID from beside wrangler.toml
+    const runStep = (toml) => {
+      writeFileSync(join(dir, 'wrangler.toml'), toml);
+      return spawnSync(process.execPath, [join(ROOT, 'scripts/check-wrangler.mjs'), 'wrangler.toml'], { cwd: dir, encoding: 'utf8' });
+    };
+    try {
+      const good = runStep(filled);
+      eq(good.status, 0, 'the step refuses a correct wrangler.toml: ' + good.stdout);
+      const bad = runStep(W0);
+      eq(bad.status, 1, 'the step accepts placeholders');
+      ok(/^::error title=wrangler\.toml still has placeholder D1 ids::/m.test(bad.stdout), 'the step does not say which problem, as a GitHub error');
+      eq(runStep(wrNth(filled, WR_PRE, 1, WR_PROD)).status, 1, 'the step accepts [env.preview] bound to the production database');
+      // Item 3: the step compares PACK_IDS with the index.html beside it, and needs one.
+      writeFileSync(join(dir, 'index.html'), HTML.replace(LIVE.docId, 'b'.repeat(64)));
+      const other = runStep(filled);
+      ok(other.status === 1 && /^::error title=wrangler\.toml PACK_IDS::/m.test(other.stdout), 'the step accepts PACK_IDS that are not index.html\'s pack');
+      rmSync(join(dir, 'index.html'));
+      const none = runStep(filled);
+      ok(none.status === 1 && /^::error title=No index\.html::/m.test(none.stdout), 'the step runs with no index.html');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
   ok(/cp -R _site "\$RUNNER_TEMP\/deploy\/_site"/.test(jobs.deploy) && /workingDirectory: \$\{\{ runner\.temp \}\}\/deploy/.test(jobs.deploy),
     'wrangler does not run from the clean folder');
+  eq((jobs.deploy.match(/^\s+cp /gm) || []).length, 3, 'the clean folder holds more than _site, functions and wrangler.toml');
   ok(/wranglerVersion: "\d+\.\d+\.\d+"/.test(jobs.deploy), 'wrangler is not pinned to an exact version');
   // A dispatch has a concurrency group of its own, so a pending approval blocks nothing.
   ok(/group: \$\{\{ github\.event_name == 'workflow_dispatch' && format\('website-dispatch-\{0\}', github\.run_id\)/.test(WF),
     'dispatches share a concurrency group');
+  // The owner makes website-staging with a reviewer, and gives it the secrets, before staging runs.
+  const DOC = readFileSync(join(ROOT, 'docs/cloudflare-setup.md'), 'utf8');
+  const envs = DOC.slice(DOC.indexOf('## 3. GitHub environments'), DOC.indexOf('## 5. Running a deploy'));
+  ok(/- \[ \] \*\*`website-staging`\*\*\n  - Required reviewers: \*\*Keith\*\*\./.test(envs), 'the guide does not have the owner make website-staging with a reviewer');
+  ok(/It refuses staging unless `website-staging` has a required\s+reviewer/.test(envs), 'the guide does not say the preflight checks staging');
+  ok(/the same on `website-staging`\s+and on `website-preview`/.test(envs), 'the guide does not put the secrets on website-staging');
 });
 
 test('wrangler.toml publishes _site, and git ignores the build output', () => {
   const W = readFileSync(join(ROOT, 'wrangler.toml'), 'utf8');
   ok(/^name = "pack569"$/m.test(W) && /^pages_build_output_dir = "_site"$/m.test(W), 'wrangler.toml');
+  // Phase 2: the D1 bindings. A preview (the top level and [env.preview]) binds pack569-preview and only that;
+  // production binds pack569-prod, and only production owns its pack by PACK_OWNER_UID.
+  const blocks = {};
+  let cur = 'top';
+  W.split('\n').forEach((l) => {
+    const h = /^\[\[?([a-z0-9_.]+)\]\]?$/.exec(l.trim());
+    if (h) { cur = /^env\.(preview|production)\./.test(h[1]) ? h[1].split('.')[1] : (h[1].indexOf('env.') === 0 ? h[1] : 'top'); return; }
+    if (!/^\s*#/.test(l)) blocks[cur] = (blocks[cur] || '') + l + '\n';
+  });
+  eq(Object.keys(blocks).sort(), ['preview', 'production', 'top'], 'wrangler.toml environments');
+  for (const [env, dbName, mode] of [['top', 'pack569-preview', 'first-signer'], ['preview', 'pack569-preview', 'first-signer'],
+    ['production', 'pack569-prod', 'fixed']]) {
+    const b = blocks[env];
+    ok(/^binding = "DB"$/m.test(b) && /^migrations_dir = "migrations"$/m.test(b), `${env}: no DB binding with the migrations`);
+    eq((b.match(/^database_name = "([^"]+)"$/gm) || []), [`database_name = "${dbName}"`], `${env}: the database`);
+    ok(new RegExp(`^OWNER_MODE = "${mode}"$`, 'm').test(b), `${env}: OWNER_MODE is not ${mode}`);
+    ok(/^FIREBASE_PROJECT_ID = "pack-569"$/m.test(b), `${env}: FIREBASE_PROJECT_ID`);
+    eq(/^PACK_IDS = "([^"]*)"$/m.exec(b)[1], LIVE.docId, `${env}: PACK_IDS is not the pack in index.html`);
+    ok(!/PACK_OWNER_UID/.test(b), `${env}: the owner's account id is committed (it is a dashboard secret)`);
+    // Security review of stage A, finding 1: the API checks DEPLOY_ENV against the database's own row.
+    eq((b.match(/^DEPLOY_ENV = "([^"]*)"$/gm) || []), [`DEPLOY_ENV = "${env === 'production' ? 'prod' : 'preview'}"`], `${env}: DEPLOY_ENV`);
+  }
+  ok(W.indexOf('pack569-prod') === W.lastIndexOf('pack569-prod'), 'pack569-prod is named outside [env.production]');
+  // Finding 1: a name is a label; the id is what wrangler binds. The preview's id twice, production's never.
+  const ids = wranglerDbIds(W);
+  ok(ids.top && ids.production, 'a database_id is missing');
+  eq(ids.top, ids.preview, 'the top level and [env.preview] bind different databases');
+  ok(ids.top !== ids.production && ids.preview !== ids.production, 'a preview binds the production database id');
+  eq((W.match(/^database_id = /gm) || []).length, 3, 'database_id lines');
   const gi = readFileSync(join(ROOT, '.gitignore'), 'utf8').split('\n').map((l) => l.trim());
   ok(gi.indexOf('_site/') >= 0 && gi.indexOf('_site-*/') >= 0, '.gitignore does not cover _site/');
   try {
-    const out = execSync('git check-ignore --no-index _site/index.html _site-preview/_headers', { cwd: ROOT, encoding: 'utf8' });
-    eq(out.split('\n').filter(Boolean).length, 2, 'git check-ignore');
+    const out = execSync('git check-ignore --no-index _site/index.html _site-preview/_headers .wrangler/state/d1/x.sqlite pack569-prod.sql backup.SQL',
+      { cwd: ROOT, encoding: 'utf8' });
+    eq(out.split('\n').filter(Boolean).length, 5, 'git check-ignore (the build output, wrangler\'s local state, a database export)');
+    // …but the schema is tracked.
+    for (const f of readdirSync(join(ROOT, 'migrations'))) {
+      const tracked = spawnSync('git', ['check-ignore', '--no-index', 'migrations/' + f], { cwd: ROOT, encoding: 'utf8' });
+      if (tracked.status !== 128) eq(tracked.status, 1, 'git ignores migrations/' + f);
+    }
   } catch (e) {
     if (e.status === 1) throw new Error('git does not ignore the build output');
     if (e.status !== 128) throw e;
+  }
+});
+
+test('wrangler.toml check: a file that reads one way line by line and another way to wrangler is refused', () => {
+  // Security re-review of stage A, follow-up 1. scripts/check-wrangler.mjs is what the deploy runs;
+  // every attack below is one the old line-by-line greps let through.
+  const committed = readFileSync(join(ROOT, 'wrangler.toml'), 'utf8');
+  const W0 = wranglerTemplate(committed);
+  const filled = W0.split('REPLACE_WITH_PACK569_PREVIEW_DATABASE_ID').join(WR_PRE).split('REPLACE_WITH_PACK569_PROD_DATABASE_ID').join(WR_PROD);
+  const titles = (t) => checkWrangler(t, { packDocId: LIVE.docId }).problems.map((p) => p.title);
+  eq(titles(filled), [], 'the real file, placeholders filled in');
+  eq(checkWrangler(filled, { packDocId: LIVE.docId }).ids, { top: WR_PRE, preview: WR_PRE, production: WR_PROD }, 'the ids, by block');
+  // With its ids taken out, the real file's only problems are its three placeholders.
+  eq(titles(W0), ['wrangler.toml still has placeholder D1 ids', 'wrangler.toml still has placeholder D1 ids', 'wrangler.toml still has placeholder D1 ids'],
+    'the committed file, ids taken out');
+  // Once the owner's ids are in, the committed file itself must pass the deploy's check.
+  if (!committed.includes('REPLACE_WITH_')) eq(titles(committed), [], 'the committed file, with the owner\'s database ids');
+  // What a reader that skips lines it cannot parse would see (the old greps did no better).
+  const lineView = (t) => t.split('\n').filter((l) => /^$|^#|^\[\[?[a-z0-9_.]+\]\]?$|^[A-Za-z_][A-Za-z0-9_]* = "[^"\\]*"$/.test(l)).join('\n');
+  const UNREADABLE = 'wrangler.toml has a line this check cannot read';
+  const pv = '[env.preview.vars]\n', pd = '[[env.preview.d1_databases]]\n';
+  const pdStart = filled.indexOf(pd), pdEnd = filled.indexOf('[env.production.vars]');
+  const honestD1 = filled.slice(pdStart, pdEnd);
+  const attacks = [
+    // A preview bound to production's database AND saying DEPLOY_ENV = "prod", so the run-time
+    // guard passes too: the real keys are quoted, the honest-looking ones sit inside """ strings.
+    ['quoted keys and multi-line strings', filled
+      .replace(pv + 'DEPLOY_ENV = "preview"\n', pv + 'NOTE = """\nDEPLOY_ENV = "preview"\n"""\n"DEPLOY_ENV" = "prod"\n')
+      .replace(pd + 'binding = "DB"\ndatabase_name = "pack569-preview"\ndatabase_id = "' + WR_PRE + '"\nmigrations_dir = "migrations"\n',
+        pd + 'binding = "DB"\ndatabase_name = "pack569-preview"\nmigrations_dir = """\ndatabase_id = "' + WR_PRE + '"\n"""\n"database_id" = "' + WR_PROD + '"\n'),
+      UNREADABLE, true],
+    // A fake [[env.preview.d1_databases]] inside a string; the real one is spelled so a line reader skips it.
+    ['a multi-line string holding a fake table header', filled.slice(0, pdStart) +
+      'NOTE = """\n' + honestD1 + '"""\n' +
+      '[[ env.preview.d1_databases ]]\n"binding" = "DB"\n"database_name" = "pack569-preview"\n"database_id" = "' + WR_PROD + '"\n"migrations_dir" = "migrations"\n\n' +
+      filled.slice(pdEnd), UNREADABLE, true],
+    // A placeholder after a '#' inside a value slipped the old comment-skipping grep.
+    ['"#REPLACE_WITH_X" inside a value', wrNth(filled, WR_PROD, 0, '#REPLACE_WITH_X'), 'wrangler.toml still has placeholder D1 ids', false],
+    // Swapped: still two "preview" and one "prod", so counting lines passed it.
+    ['DEPLOY_ENV swapped between the top level and production', filled
+      .replace('[vars]\nDEPLOY_ENV = "preview"', '[vars]\nDEPLOY_ENV = "prod"')
+      .replace('[env.production.vars]\nDEPLOY_ENV = "prod"', '[env.production.vars]\nDEPLOY_ENV = "preview"'), 'wrangler.toml DEPLOY_ENV', false],
+    ['production saying DEPLOY_ENV preview', filled.replace('DEPLOY_ENV = "prod"', 'DEPLOY_ENV = "preview"'), 'wrangler.toml DEPLOY_ENV', false],
+    ['production bound to the preview database', filled.split(WR_PROD).join(WR_PRE), 'wrangler.toml database ids are crossed', false],
+    ['[env.preview] bound to the production database', wrNth(filled, WR_PRE, 1, WR_PROD), 'wrangler.toml database ids are crossed', false],
+    ['the top level bound to the production database', wrNth(filled, WR_PRE, 0, WR_PROD), 'wrangler.toml database ids are crossed', false],
+    ['two ids under one block', filled.replace('database_id = "' + WR_PROD + '"', 'database_id = "' + WR_PROD + '"\ndatabase_id = "' + WR_PRE + '"'),
+      'wrangler.toml sets a key twice', false],
+    ['a second preview database entry', filled + '\n' + honestD1.split(WR_PRE).join(WR_PROD), 'wrangler.toml has a table twice', false],
+    ['an [env.production] table', filled + '\n[env.production]\nname = "x"\n', 'wrangler.toml has a table this check does not know', false],
+    ['a vars table opened twice', filled + '\n[env.preview.vars]\n', 'wrangler.toml has a table twice', false],
+    ['a dotted key under the top level', filled.replace('name = "pack569"', 'name = "pack569"\nenv.preview.vars.DEPLOY_ENV = "prod"'), UNREADABLE, false],
+    ['a \'literal\' string', filled.replace('DEPLOY_ENV = "prod"', "DEPLOY_ENV = 'prod'"), UNREADABLE, false],
+    ['a trailing comment', filled.replace('DEPLOY_ENV = "prod"', 'DEPLOY_ENV = "prod" # live'), UNREADABLE, false],
+    ['an indented key', filled.replace('DEPLOY_ENV = "prod"', '  DEPLOY_ENV = "prod"'), UNREADABLE, false],
+    ['Windows line endings', filled.split('\n').join('\r\n'), UNREADABLE, false],
+    ['a database_id that is not a D1 id', wrNth(filled, WR_PROD, 0, 'pack569-prod'), 'wrangler.toml database id', false],
+    ['the owner\'s account id committed', filled.replace('OWNER_MODE = "fixed"', 'OWNER_MODE = "fixed"\nPACK_OWNER_UID = "abc"'), 'wrangler.toml commits PACK_OWNER_UID', false],
+    // Security review of 5690c3a..20b4fd6, item 3: the other vars are pinned too, block by block.
+    ['production believing another Firebase project', filled.replace('[env.production.vars]\nDEPLOY_ENV = "prod"\nFIREBASE_PROJECT_ID = "pack-569"',
+      '[env.production.vars]\nDEPLOY_ENV = "prod"\nFIREBASE_PROJECT_ID = "someone-else"'), 'wrangler.toml FIREBASE_PROJECT_ID', false],
+    ['a preview believing another Firebase project', wrNth(filled, 'FIREBASE_PROJECT_ID = "pack-569"', 1, 'FIREBASE_PROJECT_ID = "pack-5690"'), 'wrangler.toml FIREBASE_PROJECT_ID', false],
+    ['no FIREBASE_PROJECT_ID at the top level', filled.replace('FIREBASE_PROJECT_ID = "pack-569"\n', ''), 'wrangler.toml FIREBASE_PROJECT_ID', false],
+    ['production OWNER_MODE first-signer', filled.replace('OWNER_MODE = "fixed"', 'OWNER_MODE = "first-signer"'), 'wrangler.toml OWNER_MODE', false],
+    ['production with no OWNER_MODE', filled.replace('OWNER_MODE = "fixed"\n', ''), 'wrangler.toml OWNER_MODE', false],
+    ['production serving another pack', filled.replace(/(\[env\.production\.vars\][^[]*PACK_IDS = ")[0-9a-f]+/, '$1' + 'f'.repeat(64)), 'wrangler.toml PACK_IDS', false],
+    ['a preview serving a second pack too', wrNth(filled, 'PACK_IDS = "' + LIVE.docId + '"', 1, 'PACK_IDS = "' + LIVE.docId + ',other"'), 'wrangler.toml PACK_IDS', false],
+    ['no PACK_IDS at the top level', filled.replace('PACK_IDS = "' + LIVE.docId + '"\n', ''), 'wrangler.toml PACK_IDS', false]
+  ];
+  // The same three PACK_IDS, but not index.html's pack; and no PACK_DOC_ID given at all.
+  ok(checkWrangler(filled, { packDocId: 'a'.repeat(64) }).problems.some((p) => p.title === 'wrangler.toml PACK_IDS'), 'PACK_IDS not compared with index.html');
+  ok(checkWrangler(filled).problems.some((p) => p.title === 'wrangler.toml PACK_IDS' && /was not given index\.html's PACK_DOC_ID/.test(p.detail)),
+    'the check passes, or does not say why, with no PACK_DOC_ID to compare against');
+  // Previews may still be first-signer (a test pack there can be claimed).
+  ok(/\[vars\][^[]*OWNER_MODE = "first-signer"/.test(filled), 'the top level is no longer first-signer (the test is stale)');
+  for (const [what, text, title, fooledLines] of attacks) {
+    ok(text !== filled, what + ': the attack did not change the file (the test is stale)');
+    ok(titles(text).indexOf(title) >= 0, what + ': not refused as "' + title + '" (got ' + JSON.stringify(titles(text)) + ')');
+    // The two crafted to fool a line reader really do: the lines it can read make a correct file.
+    if (fooledLines) eq(titles(lineView(text)), [], what + ': a line-by-line reader would not have been fooled (the attack is stale)');
   }
 });
 
@@ -12655,7 +13812,2779 @@ test('a backup from an older page imports through normalizeState', () => {
   // The migrations on that path are pinned by the Phase 1–3 tests above ("Phase 1 migration: …").
 });
 
+/* ================================================================
+   The D1 API (Phase 2, stage A, 2026-09-28). functions/ re-implements SETUP.md Part C on the
+   server. These tests run the real handlers in Node: node:sqlite stands in for D1 (an
+   in-memory database with every migrations/*.sql applied, behind a thin adapter with D1's
+   prepare().bind().first()/all()/run() and batch()), and tokens are signed with an RSA key
+   made here, served to the verifier in place of Google's. Each Part C rule gets an allow AND
+   a deny; every 403 must be the one fixed body. Names and emails are made up (example.com).
+   The handlers are async, so these tests queue up (atest) and run just before the report.
+   ================================================================ */
+
+const asyncTests = [];
+function atest(name, fn) { asyncTests.push([name, fn]); }
+
+// node:sqlite is still marked experimental in some Node versions; its one-time warning is
+// noise here. Only that warning is dropped.
+async function loadSqlite() {
+  const emit = process.emitWarning;
+  process.emitWarning = function (w, ...rest) {
+    const type = typeof rest[0] === 'string' ? rest[0] : (rest[0] && rest[0].type) || (w && w.name);
+    if (type === 'ExperimentalWarning' && /sqlite/i.test(String(w && w.message || w))) return;
+    return emit.call(process, w, ...rest);
+  };
+  try { return await import('node:sqlite'); } finally { process.emitWarning = emit; }
+}
+// Every migration, in order, as wrangler applies them.
+const MIGRATION_FILES = readdirSync(join(ROOT, 'migrations')).filter((f) => /^\d{4}_[a-z0-9_]+\.sql$/.test(f)).sort();
+const MIGRATION = MIGRATION_FILES.map((f) => readFileSync(join(ROOT, 'migrations', f), 'utf8')).join('\n');
+let sqliteMod = null;
+// D1's API over node:sqlite: prepare(sql).bind(...).first()/all()/run(), and batch(), which is
+// one transaction — any statement failing rolls the whole batch back, as D1's does.
+async function apiD1() {
+  sqliteMod = sqliteMod || await loadSqlite();
+  const raw = new sqliteMod.DatabaseSync(':memory:');
+  raw.exec('PRAGMA foreign_keys = ON;');
+  raw.exec(MIGRATION);
+  const stmt = (sql, args) => ({
+    bind(...a) {
+      a.forEach((v) => { if (v === undefined) throw new Error('D1 refuses undefined, bound in: ' + sql); });
+      return stmt(sql, a);
+    },
+    exec() {
+      const s = raw.prepare(sql);
+      if (s.columns().length) {
+        const rows = s.all(...args).map((r) => Object.assign({}, r));
+        return { results: rows, success: true, meta: { changes: raw.prepare('SELECT changes() AS c').get().c } };
+      }
+      const r = s.run(...args);
+      return { results: [], success: true, meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } };
+    },
+    async first(col) { const r = this.exec().results[0]; return r === undefined ? null : (col ? r[col] : r); },
+    async all() { return this.exec(); },
+    async run() { return this.exec(); }
+  });
+  return {
+    raw,
+    prepare: (sql) => stmt(sql, []),
+    async batch(list) {
+      raw.exec('BEGIN');
+      try { const out = list.map((s) => s.exec()); raw.exec('COMMIT'); return out; }
+      catch (e) { raw.exec('ROLLBACK'); throw e; }
+    }
+  };
+}
+
+const API_PROJECT = 'pack-569';
+const API_PACK = 'a'.repeat(64);          // two made-up packs, both served
+const API_PACK_B = 'b'.repeat(64);
+const PEOPLE = {
+  owner: ['uid-owner', 'owner@example.com'], admin2: ['uid-admin2', 'admin2@example.com'],
+  editor: ['uid-editor', 'editor1@example.com'], viewer: ['uid-viewer', 'viewer1@example.com'],
+  parent: ['uid-parent', 'parent1@example.com'], pending: ['uid-pending', 'pending1@example.com'],
+  stranger: ['uid-stranger', 'stranger@example.com'], newbie: ['uid-newbie', 'newbie@example.com']
+};
+const FORBIDDEN_TEXT = '{"error":"forbidden","code":"permission-denied"}';
+let apiReady = null;
+const API = {};
+function apiSetup() {
+  if (!apiReady) {
+    apiReady = (async () => {
+      const gen = () => crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048,
+        publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify']);
+      API.key = await gen();
+      API.rogue = await gen();
+      API.jwk = Object.assign(await crypto.subtle.exportKey('jwk', API.key.publicKey), { kid: 'test-kid-1', alg: 'RS256', use: 'sig' });
+      const load = (p) => import(new URL('../functions/' + p, import.meta.url).href);
+      API.token = await load('_lib/token.js');
+      API.rules = await load('_lib/rules.js');
+      API.http = await load('_lib/http.js');
+      API.pack = await load('_lib/pack.js');
+      API.fetches = 0;
+      API.useTestKeys = () => API.token.setJwksFetcher(async () => { API.fetches++; return { keys: [API.jwk], maxAge: 3600 }; });
+      API.useTestKeys();
+      const mods = { session: 'api/session.js', pack: 'api/pack/[id]/index.js', rev: 'api/pack/[id]/rev.js',
+        members: 'api/pack/[id]/members/index.js', member: 'api/pack/[id]/members/[uid].js',
+        invites: 'api/pack/[id]/invites/index.js', invite: 'api/pack/[id]/invites/[email].js',
+        join: 'api/pack/[id]/join.js', view: 'api/pack/[id]/view.js', import: 'api/pack/[id]/import.js' };
+      API.mod = {};
+      for (const k of Object.keys(mods)) API.mod[k] = await load(mods[k]);
+    })();
+  }
+  return apiReady;
+}
+const b64u = (x) => Buffer.from(typeof x === 'string' ? x : JSON.stringify(x)).toString('base64url');
+// A Firebase-shaped ID token. `over` replaces claims (undefined deletes one); opts.header, opts.key.
+async function mint(over, opts) {
+  opts = opts || {};
+  const now = Math.floor(Date.now() / 1000);
+  const c = Object.assign({ iss: 'https://securetoken.google.com/' + API_PROJECT, aud: API_PROJECT, auth_time: now - 60,
+    iat: now - 30, exp: now + 3000, sub: 'uid-x', email: 'x@example.com', email_verified: true, name: 'Test Person',
+    firebase: { sign_in_provider: 'google.com', identities: {} } }, over || {});
+  Object.keys(c).forEach((k) => { if (c[k] === undefined) delete c[k]; });
+  const h = Object.assign({ alg: 'RS256', kid: 'test-kid-1', typ: 'JWT' }, opts.header || {});
+  const signing = b64u(h) + '.' + b64u(c);
+  const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', (opts.key || API.key).privateKey, new TextEncoder().encode(signing));
+  return signing + '.' + Buffer.from(sig).toString('base64url');
+}
+const tokenFor = (who, over) => mint(Object.assign({ sub: PEOPLE[who][0], email: PEOPLE[who][1], name: 'Test ' + who }, over || {}));
+
+async function callApi(env, mod, o) {
+  const h = Object.assign({}, o.headers || {});
+  if (o.token) h.authorization = 'Bearer ' + o.token;
+  let body;
+  if (o.body !== undefined) { body = typeof o.body === 'string' ? o.body : JSON.stringify(o.body); h['content-type'] = 'application/json'; }
+  const request = new Request('https://staging.pack569.pages.dev' + o.path, { method: o.method || 'GET', headers: h, body });
+  const res = await mod.onRequest({ request, env, params: o.params || {}, data: {}, waitUntil() {}, next() { throw new Error('next()'); } });
+  const text = await res.text();
+  let parsed = null;
+  try { parsed = JSON.parse(text); } catch (e) { /* not JSON */ }
+  return { status: res.status, body: parsed, text, headers: res.headers };
+}
+
+// A fresh database with the two packs, and helpers that call each endpoint as a named person.
+async function apiWorld(envOver) {
+  await apiSetup();
+  const db = await apiD1();
+  const env = Object.assign({ DB: db, FIREBASE_PROJECT_ID: API_PROJECT, PACK_IDS: API_PACK + ',' + API_PACK_B,
+    OWNER_MODE: 'first-signer', DEPLOY_ENV: 'preview' }, envOver || {});
+  // The owner's one-time seed of the database's `deployment` row (migrations/0002_deployment.sql).
+  if (env.seedEnv !== null) db.raw.prepare('INSERT INTO deployment (id, env) VALUES (1, ?)').run(env.seedEnv || 'preview');
+  const w = { db, env };
+  w.session = async (who, join, pack, over) => callApi(env, API.mod.session, { method: 'POST',
+    path: '/api/session?pack=' + (pack || API_PACK), token: await tokenFor(who, over), body: join === undefined ? undefined : { join } });
+  // w.call(who, 'PUT', 'invite', { email: 'x@example.com' }, { body, headers, pack })
+  w.call = async (who, method, what, params, o) => {
+    o = o || {};
+    const id = o.pack || API_PACK;
+    const p = Object.assign({ id }, params || {});
+    const tail = { pack: '', rev: '/rev', members: '/members', member: '/members/' + p.uid, invites: '/invites',
+      invite: '/invites/' + p.email, join: '/join', view: '/view', import: '/import' }[what];
+    return callApi(env, API.mod[what], { method, path: '/api/pack/' + id + tail, params: p,
+      token: who ? await tokenFor(who, o.claims) : o.token, body: o.body, headers: o.headers });
+  };
+  w.sql = (q, ...a) => db.raw.prepare(q).all(...a).map((r) => Object.assign({}, r));
+  w.one = (q, ...a) => w.sql(q, ...a)[0];
+  w.audit = (action) => w.sql('SELECT uid, action, detail FROM audit WHERE action = ? ORDER BY id', action);
+  // The owner claims through the API; everyone else is put in the members table directly.
+  w.seed = async (roles) => {
+    const s = await w.session('owner');
+    eq(s.body.role, 'admin', 'the seeding owner');
+    const r = roles || { admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent', pending: 'pending' };
+    for (const who of Object.keys(r)) {
+      db.raw.prepare('INSERT INTO members (pack_id, uid, role, name, email, join_code, added_at) VALUES (?, ?, ?, ?, ?, NULL, ?)')
+        .run(API_PACK, PEOPLE[who][0], r[who], 'Test ' + who, PEOPLE[who][1], Date.now());
+    }
+    return w;
+  };
+  w.state = (rev, obj) => db.raw.prepare('INSERT INTO pack_state (pack_id, rev, json, device, updated_at) VALUES (?, ?, ?, ?, ?)')
+    .run(API_PACK, rev, JSON.stringify(obj || { scouts: [] }), 'seed', 1);
+  w.joinCfg = (open, code) => db.raw.prepare("INSERT INTO join_config (pack_id, open, mode, code, updated_at) VALUES (?, ?, 'request', ?, ?) " +
+    'ON CONFLICT (pack_id) DO UPDATE SET open = excluded.open, code = excluded.code').run(API_PACK, open ? 1 : 0, code, 1);
+  return w;
+}
+// Every 403 is the same body, whatever was refused.
+function denied(r, what) {
+  eq(r.status, 403, what + ' status');
+  ok(r.text === FORBIDDEN_TEXT, `${what}: the 403 body is ${r.text}`);
+}
+// Expected status per person, for one call.
+async function matrix(w, method, what, expect, o) {
+  for (const who of Object.keys(expect)) {
+    const r = await w.call(who, method, what, o && o.params, o && (typeof o.opts === 'function' ? o.opts(who) : o.opts));
+    if (expect[who] === 403) denied(r, `${who} ${method} ${what}`);
+    else eq(r.status, expect[who], `${who} ${method} ${what} (${r.text.slice(0, 120)})`);
+  }
+}
+const ALL = ['owner', 'admin2', 'editor', 'viewer', 'parent', 'pending', 'stranger'];
+const expectFor = (allowed, okStatus) => Object.fromEntries(ALL.map((w) => [w, allowed.indexOf(w) >= 0 ? (okStatus || 200) : 403]));
+
+/* ---- tokens ---- */
+
+atest('api token: a verified Google token is believed, and every other kind is refused with a reason', async () => {
+  await apiSetup();
+  const V = (t) => API.token.verifyIdToken(t, API_PROJECT);
+  const reason = async (t) => { try { await V(t); return 'accepted'; } catch (e) { ok(e instanceof API.token.TokenError, 'not a TokenError: ' + e); return e.reason; } };
+  const good = await V(await mint({ sub: 'uid-a', email: 'Parent1@Example.COM' }));
+  eq([good.uid, good.email, good.emailKey], ['uid-a', 'Parent1@Example.COM', 'parent1@example.com'], 'the verified identity');
+  const now = Math.floor(Date.now() / 1000);
+  const cases = [
+    ['malformed', 'a.b'], ['malformed', 'not a token at all'], ['malformed', '!!.??.**'],
+    ['bad-header', await mint({}, { header: { alg: 'none' } })],
+    ['bad-header', await mint({}, { header: { alg: 'HS256' } })],
+    ['bad-header', await mint({}, { header: { kid: '' } })],
+    ['unknown-key', await mint({}, { header: { kid: 'some-other-kid' } })],
+    ['bad-signature', await mint({}, { key: API.rogue })],
+    ['wrong-audience', await mint({ aud: 'some-other-project' })],
+    ['wrong-issuer', await mint({ iss: 'https://securetoken.google.com/some-other-project' })],
+    ['wrong-issuer', await mint({ iss: 'https://accounts.google.com' })],
+    ['expired', await mint({ exp: now - 120 })],
+    ['expired', await mint({ exp: undefined })],
+    ['issued-in-future', await mint({ iat: now + 600 })],
+    ['auth-in-future', await mint({ auth_time: now + 600 })],
+    ['auth-in-future', await mint({ auth_time: undefined })],
+    ['no-subject', await mint({ sub: '' })],
+    ['no-subject', await mint({ sub: undefined })],
+    ['email-not-verified', await mint({ email_verified: false })],
+    ['email-not-verified', await mint({ email_verified: 'true' })],
+    ['not-google', await mint({ firebase: { sign_in_provider: 'anonymous' } })],
+    ['not-google', await mint({ firebase: { sign_in_provider: 'password' } })],
+    ['not-google', await mint({ firebase: undefined })],
+    ['no-email', await mint({ email: undefined })],
+    ['no-email', await mint({ email: '  ' })]
+  ];
+  for (const [want, t] of cases) eq(await reason(t), want, 'token refusal');
+  // A signature is over the exact header and claims: a payload lifted onto another token's signature fails.
+  const a = (await mint({ sub: 'uid-a' })).split('.'), b = (await mint({ sub: 'uid-admin' })).split('.');
+  eq(await reason([a[0], b[1], a[2]].join('.')), 'bad-signature', 'a swapped payload');
+  // Inside the clock slack is fine; the slack is small.
+  eq(await reason(await mint({ exp: now - 30 })), 'accepted', 'an exp 30 s ago (skew)');
+  eq(await reason(await mint({ iat: now + 30, auth_time: now + 30 })), 'accepted', 'an iat 30 s ahead (skew)');
+  let noProject = null;
+  try { await API.token.verifyIdToken(await mint(), ''); } catch (e) { noProject = e.reason; }
+  eq(noProject, 'no-project', 'a verifier with no project');
+});
+
+atest('api token: the endpoints answer 401 without a believable token, and 503 when Google\'s keys cannot be fetched', async () => {
+  const w = await apiWorld();
+  await w.seed();
+  for (const headers of [{}, { authorization: 'Basic abc' }, { authorization: 'Bearer' }, { authorization: 'Bearer a.b.c' }]) {
+    const r = await callApi(w.env, API.mod.pack, { path: '/api/pack/' + API_PACK, params: { id: API_PACK }, headers });
+    eq([r.status, r.body.code], [401, 'unauthenticated'], 'no believable token: ' + JSON.stringify(headers));
+    eq(r.headers.get('www-authenticate'), 'Bearer', 'the 401 challenge');
+  }
+  const r = await w.call(null, 'GET', 'pack', null, { token: await tokenFor('owner', { firebase: { sign_in_provider: 'anonymous' } }) });
+  eq([r.status, r.body.reason], [401, 'not-google'], 'an anonymous session of the owner');
+  const s = await callApi(w.env, API.mod.session, { method: 'POST', path: '/api/session?pack=' + API_PACK,
+    token: await tokenFor('owner', { email_verified: false }) });
+  eq(s.status, 401, 'an unverified email at /api/session');
+  // Google unreachable: 503, never a 401 that would sign the page out.
+  API.token.setJwksFetcher(async () => { throw new API.token.TokenError('jwks-unavailable'); });
+  try {
+    const u = await w.call('owner', 'GET', 'pack');
+    eq([u.status, u.body.code], [503, 'unavailable'], 'Google\'s keys unreachable');
+  } finally { API.useTestKeys(); }
+  // Keys are cached: many calls, one fetch; an unknown kid refetches at most once a minute.
+  API.useTestKeys();
+  const before = API.fetches;
+  for (let i = 0; i < 5; i++) await w.call('owner', 'GET', 'rev');
+  eq(API.fetches - before, 1, 'the key set is fetched once and cached');
+  await w.call(null, 'GET', 'rev', null, { token: await mint({}, { header: { kid: 'unknown-1' } }) });
+  await w.call(null, 'GET', 'rev', null, { token: await mint({}, { header: { kid: 'unknown-2' } }) });
+  eq(API.fetches - before, 1, 'an unknown kid refetches the key set (the first fetch was just now)');
+});
+
+atest('api token: requests waiting for Google\'s keys share one fetch, and a failed fetch still counts toward the refetch gap', async () => {
+  // Review of 5690c3a..20b4fd6, item 5.
+  await apiSetup();
+  const V = async (tok, at) => { try { await API.token.verifyIdToken(tok, API_PROJECT, at); return 'ok'; } catch (e) { return e.reason; } };
+  const T = Math.floor(Date.now() / 1000);
+  const tok = await mint({});
+  const g = { fetches: 0, fail: false, syncThrow: false, gate: null };
+  API.token.setJwksFetcher((opts) => {
+    g.fetches++;
+    if (g.syncThrow) throw new API.token.TokenError('jwks-unavailable');   // not even a promise
+    return (async () => {
+      if (g.gate) await g.gate;
+      if (g.fail) throw new API.token.TokenError('jwks-unavailable');
+      return { keys: [API.jwk], maxAge: 3600 };
+    })();
+  });
+  try {
+    // A cold isolate, five requests at once: one fetch, and every one of them is let in.
+    let open;
+    g.gate = new Promise((res) => { open = res; });
+    const all = Promise.all([0, 1, 2, 3, 4].map(() => V(tok, T)));
+    await new Promise((res) => setTimeout(res, 5));
+    open();
+    eq([await all, g.fetches], [['ok', 'ok', 'ok', 'ok', 'ok'], 1], 'five requests on a cold isolate');
+    g.gate = null;
+    // Google down, and tokens naming kids nobody has: one fetch, then none until the gap is up.
+    g.fail = true;
+    const unk = async (kid) => mint({}, { header: { kid } });
+    eq([await V(await unk('u-1'), T + 61), g.fetches], ['jwks-unavailable', 2], 'an unknown kid while Google is down');
+    eq([await V(await unk('u-2'), T + 62), g.fetches], ['unknown-key', 2], 'another inside the gap after a failed fetch');
+    eq([await V(tok, T + 63), g.fetches], ['ok', 2], 'the key already held still works');
+    eq([await V(await unk('u-3'), T + 122), g.fetches], ['jwks-unavailable', 3], 'after the gap, Google is asked again');
+    // A fetcher that throws before it returns a promise does not leave a dead fetch behind.
+    API.token.setJwksFetcher(null);
+    API.token.setJwksFetcher((opts) => {
+      g.fetches++;
+      if (g.syncThrow) throw new API.token.TokenError('jwks-unavailable');
+      return Promise.resolve({ keys: [API.jwk], maxAge: 3600 });
+    });
+    g.syncThrow = true;
+    eq(await V(tok, T), 'jwks-unavailable', 'a fetcher that throws at once');
+    g.syncThrow = false;
+    // With no keys at all, the next fetch waits ten seconds after the last one started
+    // (review of eb504db..366f6c9, item 1): inside them the answer is "unavailable", not a hang.
+    eq(await V(tok, T + 1), 'jwks-unavailable', 'a cold isolate one second after a failed fetch');
+    eq(await V(tok, T + 10), 'ok', 'the next request after a fetcher threw at once, ten seconds on');
+  } finally { API.useTestKeys(); }
+});
+
+atest('api token: made-up kids get one fetch of Google\'s keys between them, cold or expired, up or down, and an older fetch never replaces a newer key set', async () => {
+  // Review of eb504db..366f6c9, item 1.
+  await apiSetup();
+  const V = async (tok, at) => { try { await API.token.verifyIdToken(tok, API_PROJECT, at); return 'ok'; } catch (e) { return e.reason; } };
+  const T = Math.floor(Date.now() / 1000);
+  const tok = await mint({});
+  const unk = (i) => mint({}, { header: { kid: 'made-up-' + i } });
+  const N = 40;
+  const kids = await Promise.all(Array.from({ length: N }, (_, i) => unk(i)));
+  const g = { fetches: 0, fail: false, gate: null, keys: [API.jwk], maxAge: 3600 };
+  const fetcher = (opts) => {
+    g.fetches++;
+    const keys = g.keys, gate = g.gate;      // what Google said when this fetch reached it
+    return (async () => {
+      if (gate) await gate;
+      if (g.fail) throw new API.token.TokenError('jwks-unavailable');
+      return { keys, maxAge: g.maxAge };
+    })();
+  };
+  const tick = () => new Promise((res) => setTimeout(res, 5));
+  try {
+    // Cold, Google up, N distinct made-up kids at once: one fetch, and a real token among them gets in.
+    API.token.setJwksFetcher(fetcher);
+    let open;
+    g.gate = new Promise((res) => { open = res; });
+    const all = Promise.all(kids.map((k) => V(k, T)).concat([V(tok, T)]));
+    await tick(); open();
+    const got = await all;
+    eq([g.fetches, got[N], got.slice(0, N).every((r) => r === 'unknown-key')], [1, 'ok', true], 'cold, up, N kids at once');
+    // Cold, Google down, N distinct kids at once: one fetch.
+    API.token.setJwksFetcher(fetcher);
+    g.fetches = 0; g.fail = true;
+    g.gate = new Promise((res) => { open = res; });
+    const down = Promise.all(kids.map((k) => V(k, T)));
+    await tick(); open();
+    eq([g.fetches, (await down).every((r) => r === 'jwks-unavailable')], [1, true], 'cold, down, N kids at once');
+    // …and N more, one after another in the same second: none. A real token too: 503, not 401.
+    g.gate = null;
+    for (const k of kids) eq(await V(k, T), 'jwks-unavailable', 'cold, down, one after another');
+    eq([await V(tok, T + 9), g.fetches], ['jwks-unavailable', 1], 'cold, down, a real token inside the ten seconds');
+    // Expired keys, Google down, N sequential in the same second (the real kid, then made-up ones): one fetch.
+    API.token.setJwksFetcher(fetcher);
+    g.fetches = 0; g.fail = false; g.maxAge = 60;
+    eq(await V(tok, T), 'ok', 'keys for a minute');
+    g.fail = true;
+    eq(await V(tok, T + 61), 'jwks-unavailable', 'expired, down, the real kid');
+    for (const k of kids) eq(await V(k, T + 61), 'jwks-unavailable', 'expired, down, made-up kids');
+    for (let i = 0; i < 5; i++) eq(await V(tok, T + 61), 'jwks-unavailable', 'expired, down, the real kid again');
+    eq(g.fetches, 2, 'expired + down + N sequential in the same second');
+    g.fail = false; g.maxAge = 3600;
+    eq([await V(tok, T + 71), g.fetches], ['ok', 3], 'ten seconds on, Google back: asked once, and let in');
+    // Current keys, the gap passed, Google up, N distinct kids at once: one fetch.
+    g.gate = new Promise((res) => { open = res; });
+    const later = Promise.all(kids.map((k) => V(k, T + 131)));
+    await tick(); open();
+    eq([g.fetches, (await later).every((r) => r === 'unknown-key')], [4, true], 'current keys, gap passed, N kids at once');
+    g.gate = null;
+    // Out of order: a fetch that started first and finishes last does not replace the newer key set.
+    API.token.setJwksFetcher(fetcher);
+    g.fetches = 0; g.maxAge = 3600;
+    let openOld;
+    g.gate = new Promise((res) => { openOld = res; });
+    g.keys = [];                             // the older fetch answers with a key set lacking our kid
+    const old = V(tok, T);
+    await tick();
+    g.keys = [API.jwk];
+    g.gate = null;
+    API.token.setJwksFetcher(fetcher);       // a newer fetch starts (a reset isolate) and finishes first
+    eq(await V(tok, T + 1), 'ok', 'the newer fetch');
+    openOld();
+    eq(await old, 'ok', 'the request that waited on the older fetch is checked against the newer key set');
+    eq([await V(tok, T + 2), g.fetches], ['ok', 2], 'the older fetch finished last and replaced the newer key set');
+    // …nor did it clear the newer one's place: a made-up kid now, inside the gap, fetches nothing.
+    eq([await V(await unk('late'), T + 3), g.fetches], ['unknown-key', 2], 'the older fetch cleared the newer one\'s stamp');
+    // The older fetch finishing while the newer one is still under way leaves the newer one
+    // shared: a request arriving then waits on it, rather than being turned away or starting another.
+    API.token.setJwksFetcher(fetcher);
+    g.fetches = 0;
+    g.gate = new Promise((res) => { openOld = res; });
+    g.keys = [];
+    const older = V(tok, T);
+    await tick();
+    let openNew;
+    g.keys = [API.jwk];
+    g.gate = new Promise((res) => { openNew = res; });
+    API.token.setJwksFetcher(fetcher);
+    const newer = V(tok, T + 1);
+    await tick();
+    openOld();
+    eq(await older, 'unknown-key', 'the older fetch, finishing first, did not put its key set over the newer isolate\'s');
+    const joined = V(tok, T + 1);
+    await tick();
+    openNew();
+    eq([await newer, await joined, g.fetches], ['ok', 'ok', 2], 'the older fetch cleared the newer one while it was under way');
+  } finally { API.useTestKeys(); }
+});
+
+atest('api token: a rotated-in key is fetched from Google itself, not the stale cached copy, and a key set\'s Age counts against its life', async () => {
+  // Security review of stage A, finding 6. The real fetcher, with fetch and the Cache API stubbed.
+  await apiSetup();
+  const jwk2 = Object.assign(await crypto.subtle.exportKey('jwk', API.rogue.publicKey), { kid: 'test-kid-2', alg: 'RS256', use: 'sig' });
+  const google = { keys: [API.jwk], age: 0, fetches: 0 };
+  const store = new Map();
+  const cache = { matches: 0,
+    async match(u) { this.matches++; const r = store.get(u); return r ? r.clone() : undefined; },
+    async put(u, r) { store.set(u, r); } };
+  const had = { fetch: globalThis.fetch, caches: Object.getOwnPropertyDescriptor(globalThis, 'caches') };
+  globalThis.fetch = async (u) => {
+    eq(String(u), API.token.JWKS_URL, 'the key set URL');
+    google.fetches++;
+    return new Response(JSON.stringify({ keys: google.keys }), { headers: { 'cache-control': 'public, max-age=3600', age: String(google.age) } });
+  };
+  Object.defineProperty(globalThis, 'caches', { value: { default: cache }, configurable: true, writable: true });
+  const V = async (tok, at) => { try { await API.token.verifyIdToken(tok, API_PROJECT, at); return 'ok'; } catch (e) { return e.reason; } };
+  try {
+    API.token.setJwksFetcher(null);
+    const T = Math.floor(Date.now() / 1000);
+    const tok1 = await mint({}), tok2 = await mint({}, { header: { kid: 'test-kid-2' }, key: API.rogue });
+    eq([await V(tok1, T), google.fetches], ['ok', 1], 'the first token fetches the key set');
+    google.keys = [API.jwk, jwk2];   // Google rotates a key in
+    eq([await V(tok2, T + 1), google.fetches], ['unknown-key', 1], 'a new kid inside the refetch gap');
+    eq([await V(tok2, T + 61), google.fetches], ['ok', 2], 'a new kid after the gap goes to Google, not the cached copy');
+    // Age: a key set Google has already held for 3590 of its 3600 seconds is good for 10 more, not 3600.
+    API.token.setJwksFetcher(null);
+    store.clear();
+    google.age = 3590;
+    const before = google.fetches + cache.matches;
+    eq(await V(tok1, T), 'ok', 'a key set with Age');
+    eq(await V(tok1, T + 5), 'ok', 'within its life');
+    eq(google.fetches + cache.matches - before, 2, 'the first token did not look the key set up exactly once (cache, then Google), or looked again within its life');
+    await V(tok1, T + 11);
+    eq(google.fetches + cache.matches - before, 3, 'the key set was used past max-age minus Age');
+  } finally {
+    globalThis.fetch = had.fetch;
+    if (had.caches) Object.defineProperty(globalThis, 'caches', had.caches); else delete globalThis.caches;
+    API.useTestKeys();
+  }
+});
+
+atest('api token: a cold isolate handed a cached key set without the token\'s kid asks Google once, at once', async () => {
+  // Security re-review of stage A, follow-up 4. The real fetcher, with fetch and the Cache API stubbed.
+  await apiSetup();
+  const jwk2 = Object.assign(await crypto.subtle.exportKey('jwk', API.rogue.publicKey), { kid: 'test-kid-2', alg: 'RS256', use: 'sig' });
+  const google = { keys: [API.jwk], fetches: 0 };
+  const store = new Map();
+  const cache = { matches: 0,
+    async match(u) { this.matches++; const r = store.get(u); return r ? r.clone() : undefined; },
+    async put(u, r) { store.set(u, r); } };
+  const had = { fetch: globalThis.fetch, caches: Object.getOwnPropertyDescriptor(globalThis, 'caches') };
+  globalThis.fetch = async () => {
+    google.fetches++;
+    return new Response(JSON.stringify({ keys: google.keys }), { headers: { 'cache-control': 'public, max-age=3600' } });
+  };
+  Object.defineProperty(globalThis, 'caches', { value: { default: cache }, configurable: true, writable: true });
+  const V = async (tok, at) => { try { await API.token.verifyIdToken(tok, API_PROJECT, at); return 'ok'; } catch (e) { return e.reason; } };
+  try {
+    const T = Math.floor(Date.now() / 1000);
+    const tok1 = await mint({}), tok2 = await mint({}, { header: { kid: 'test-kid-2' }, key: API.rogue });
+    API.token.setJwksFetcher(null);
+    eq([await V(tok1, T), google.fetches], ['ok', 1], 'the first isolate fills the Cache API');
+    google.keys = [API.jwk, jwk2];   // Google rotates a key in; the Cache API's copy predates it
+    // A cold isolate: its memory is empty, the Cache API's copy is well within its life.
+    API.token.setJwksFetcher(null);
+    eq(await V(tok1, T + 2), 'ok', 'a cold isolate, a kid the cached copy has');
+    eq(google.fetches, 1, 'a cold isolate went to Google for a kid the cached copy has');
+    API.token.setJwksFetcher(null);
+    eq(await V(tok2, T + 3), 'ok', 'a cold isolate, the rotated-in kid');
+    eq(google.fetches, 2, 'the rotated-in kid was not fetched from Google exactly once');
+    // …and the fresh copy it fetched is the one the Cache API now holds.
+    API.token.setJwksFetcher(null);
+    eq([await V(tok2, T + 4), google.fetches], ['ok', 2], 'the next cold isolate did not get the new copy from the Cache API');
+    // One fetch for every kid waiting on it (review of eb504db..366f6c9, item 1): a cold
+    // isolate whose old and rotated-in kids arrive together, the Cache API holding only the
+    // old one, goes to Google once, and both are let in.
+    store.clear();
+    google.keys = [API.jwk];
+    API.token.setJwksFetcher(null);
+    eq(await V(tok1, T + 5), 'ok', 'the Cache API holds the pre-rotation copy');
+    google.keys = [API.jwk, jwk2];
+    API.token.setJwksFetcher(null);
+    let f0 = google.fetches;
+    eq(await Promise.all([V(tok1, T + 6), V(tok2, T + 6)]), ['ok', 'ok'], 'old and new kid together, cold');
+    eq(google.fetches - f0, 1, 'the shared fetch did not go to Google once for the kid that joined it');
+    // A cold isolate the Cache API answered has not asked Google, so the rotated-in kid a
+    // second later is not held back a minute.
+    store.clear();
+    google.keys = [API.jwk];
+    API.token.setJwksFetcher(null);
+    eq(await V(tok1, T + 7), 'ok', 'the Cache API holds the pre-rotation copy again');
+    google.keys = [API.jwk, jwk2];
+    API.token.setJwksFetcher(null);
+    f0 = google.fetches;
+    eq([await V(tok1, T + 8), google.fetches - f0], ['ok', 0], 'a cold isolate answered by the Cache API');
+    eq([await V(tok2, T + 9), google.fetches - f0], ['ok', 1], 'the rotated-in kid a second later was held back by a fetch that never reached Google');
+  } finally {
+    globalThis.fetch = had.fetch;
+    if (had.caches) Object.defineProperty(globalThis, 'caches', had.caches); else delete globalThis.caches;
+    API.useTestKeys();
+  }
+});
+
+atest('api token: a fetch of Google\'s keys that never finishes holds nobody for long, and a later request starts a new one', async () => {
+  // Review of c7aac0a..b4c1d7e, item 1. The timers are shortened through setJwksFetcher's
+  // limits; the token clock is the `now` each request passes, as in the tests above.
+  await apiSetup();
+  const V = async (tok, at) => { try { await API.token.verifyIdToken(tok, API_PROJECT, at); return 'ok'; } catch (e) { return e.reason; } };
+  // A request the code under test leaves hanging shows up as 'hung', not as a harness that never ends.
+  const R = (p) => Promise.race([p, new Promise((res) => setTimeout(() => res('hung'), 2000))]);
+  const T = Math.floor(Date.now() / 1000);
+  const tok = await mint({});
+  const g = { fetches: 0, hang: true };
+  const fetcher = () => {
+    g.fetches++;
+    return g.hang ? new Promise(() => {}) : Promise.resolve({ keys: [API.jwk], maxAge: 3600 });
+  };
+  try {
+    API.token.setJwksFetcher(fetcher, { waitMs: 30 });
+    const t0 = Date.now();
+    eq([await R(V(tok, T)), g.fetches], ['jwks-unavailable', 1], 'the request that started a fetch that never finishes');
+    ok(Date.now() - t0 < 1000, 'the request waited far past its timeout');
+    // Inside STALE seconds the stuck fetch is still the shared one: joined, not repeated, and
+    // the joiner is let go at its own timeout.
+    eq([await R(V(tok, T + 5)), g.fetches], ['jwks-unavailable', 1], 'a request five seconds on');
+    eq([await R(V(tok, T + 14)), g.fetches], ['jwks-unavailable', 1], 'a request fourteen seconds on');
+    // Twenty seconds on it is left behind, and Google (now answering) is asked again.
+    g.hang = false;
+    eq([await R(V(tok, T + 20)), g.fetches], ['ok', 2], 'a request twenty seconds after a fetch that never finished');
+    eq([await R(V(tok, T + 21)), g.fetches], ['ok', 2], 'the new key set is kept');
+    // With current keys, a stuck fetch for a made-up kid left behind does not bring on another
+    // before the minute's gap: the gap rule still holds after a stale fetch is dropped.
+    g.hang = true;
+    const unk = (kid) => mint({}, { header: { kid } });
+    eq([await R(V(await unk('stuck-1'), T + 90)), g.fetches], ['jwks-unavailable', 3], 'a made-up kid, the fetch sticks');
+    eq([await R(V(tok, T + 91)), g.fetches], ['ok', 3], 'the real kid meanwhile needs no fetch');
+    eq([await R(V(await unk('stuck-2'), T + 110)), g.fetches], ['unknown-key', 3], 'a made-up kid after the stuck fetch is left behind, inside the gap');
+    eq([await R(V(await unk('stuck-3'), T + 151)), g.fetches], ['jwks-unavailable', 4], 'a made-up kid after the gap');
+  } finally { API.useTestKeys(); }
+  // The real limits: ten seconds of waiting, eight for Google, fifteen before a fetch is left behind.
+  const src = readFileSync(new URL('../functions/_lib/token.js', import.meta.url), 'utf8');
+  ok(/^const STALE = 15;/m.test(src) && /^const WAIT_MS = 10000;/m.test(src) && /^const FETCH_MS = 8000;/m.test(src),
+    'the token timers are not 15 s / 10 s / 8 s');
+});
+
+atest('api token: while Google is down, a cached key set still within its life lets real kids in, made-up kids or not', async () => {
+  // Review of c7aac0a..b4c1d7e, items 1 and 2. The real fetcher, with fetch and the Cache API stubbed.
+  await apiSetup();
+  const google = { keys: [API.jwk], fetches: 0, down: null, signals: 0 };
+  const store = new Map();
+  const cache = { async match(u) { const r = store.get(u); return r ? r.clone() : undefined; },
+    async put(u, r) { store.set(u, r); } };
+  const had = { fetch: globalThis.fetch, caches: Object.getOwnPropertyDescriptor(globalThis, 'caches') };
+  globalThis.fetch = (u, init) => {
+    google.fetches++;
+    const signal = init && init.signal;
+    if (signal instanceof AbortSignal) google.signals++;
+    if (google.down === 'throws') return Promise.reject(new TypeError('network'));
+    if (google.down === '503') return Promise.resolve(new Response('no', { status: 503 }));
+    if (google.down === 'hangs') {
+      return new Promise((res, rej) => { if (signal) signal.addEventListener('abort', () => rej(signal.reason)); });
+    }
+    return Promise.resolve(new Response(JSON.stringify({ keys: google.keys }), { headers: { 'cache-control': 'public, max-age=3600' } }));
+  };
+  Object.defineProperty(globalThis, 'caches', { value: { default: cache }, configurable: true, writable: true });
+  const V = async (tok, at) => { try { await API.token.verifyIdToken(tok, API_PROJECT, at); return 'ok'; } catch (e) { return e.reason; } };
+  const R = (p) => Promise.race([p, new Promise((res) => setTimeout(() => res('hung'), 2000))]);
+  try {
+    const T = Math.floor(Date.now() / 1000);
+    const tok = await mint({});
+    const unk = (kid) => mint({}, { header: { kid } });
+    API.token.setJwksFetcher(null);
+    eq([await V(tok, T), google.fetches], ['ok', 1], 'Google up fills the Cache API');
+    eq(google.signals, 1, 'the fetch of Google\'s keys carried no timeout signal');
+    for (const how of ['throws', '503', 'hangs']) {
+      google.down = how;
+      API.token.setJwksFetcher(null, { fetchMs: 30 });   // a cold isolate
+      const f0 = google.fetches;
+      eq(await R(Promise.all([V(await unk('made-up-' + how), T + 1), V(tok, T + 1)])), ['unknown-key', 'ok'],
+        'Google ' + how + ', a made-up kid and a real kid at once, cold');
+      eq(google.fetches - f0, 1, 'Google ' + how + ': the made-up kid did not ask Google once');
+      // Google was asked, so the stamp stands: another made-up kid inside the gap asks nothing.
+      eq([await R(V(await unk('again-' + how), T + 2)), google.fetches - f0], ['unknown-key', 1], 'Google ' + how + ', another made-up kid');
+      eq([await R(V(tok, T + 3)), google.fetches - f0], ['ok', 1], 'Google ' + how + ', the real kid again');
+    }
+    // No cached copy to fall back on: still "unavailable", never a 401.
+    store.clear();
+    google.down = 'throws';
+    API.token.setJwksFetcher(null);
+    eq(await V(tok, T + 4), 'jwks-unavailable', 'Google down and nothing cached');
+    // A cached copy past its life is not kept.
+    google.down = null;
+    API.token.setJwksFetcher(null);
+    eq(await V(tok, T + 5), 'ok', 'the Cache API is filled again');
+    const r = store.get(API.token.JWKS_URL);
+    const h = new Headers(r.headers);
+    h.set('x-pack569-fetched-at', String(Date.now() - 3601 * 1000));
+    store.set(API.token.JWKS_URL, new Response(await r.clone().arrayBuffer(), { headers: h }));
+    google.down = 'throws';
+    API.token.setJwksFetcher(null);
+    eq(await V(tok, T + 6), 'jwks-unavailable', 'Google down and the cached copy past its life');
+  } finally {
+    globalThis.fetch = had.fetch;
+    if (had.caches) Object.defineProperty(globalThis, 'caches', had.caches); else delete globalThis.caches;
+    API.useTestKeys();
+  }
+});
+
+/* ---- /api/session: the owner claim, invites, the sign-up link ---- */
+
+atest('api session: the first Google sign-in claims an unowned pack, as admin, for good (packmeta.create, packmeta.immutable, members.create.owner)', async () => {
+  const w = await apiWorld();
+  const s = await w.session('owner');
+  eq([s.status, s.body.role, s.body.ownerUid, s.body.rejected], [200, 'admin', 'uid-owner', null], 'the first signer');
+  eq(s.body.member.email, 'owner@example.com', 'the member row carries the token email');
+  const t = await w.session('stranger');
+  eq([t.status, t.body.role, t.body.ownerUid, t.body.rejected, t.body.member], [200, null, 'uid-owner', 'nolink', null], 'the second signer');
+  eq(w.sql('SELECT uid FROM members'), [{ uid: 'uid-owner' }], 'the second signer got a member row');
+  eq(w.audit('owner.claim').length + w.audit('member.create').length, 2, 'the claim and the admin row are audited');
+  // The owner never changes: not by a later sign-in, not by SQL.
+  let threw = false;
+  try { w.db.raw.prepare('UPDATE packs SET owner_uid = ? WHERE id = ?').run('uid-stranger', API_PACK); } catch (e) { threw = /permanent/.test(e.message); }
+  ok(threw, 'the owner can be changed');
+  // A second sign-in by the owner is the same admin, and writes nothing new.
+  const again = await w.session('owner');
+  eq([again.body.role, w.sql('SELECT count(*) AS n FROM audit')[0].n], ['admin', 2], 'the owner signing in again');
+});
+
+atest('api session: in production (OWNER_MODE fixed) only PACK_OWNER_UID is the owner, and with none set there is no owner', async () => {
+  const w = await apiWorld({ OWNER_MODE: undefined, PACK_OWNER_UID: 'uid-owner' });   // unset means fixed
+  const s = await w.session('stranger');
+  eq([s.body.role, s.body.ownerUid, s.body.rejected], [null, null, 'nolink'], 'a stranger signing in first claims nothing');
+  // Finding 3 (security review of stage A): nobody else's sign-in writes the owner — not a
+  // stranger's, not a join-link visitor's — so a mistyped PACK_OWNER_UID is never made permanent.
+  await w.session('newbie', 'Code123abc');
+  eq([w.one('SELECT owner_uid FROM packs').owner_uid, w.audit('owner.claim').length], [null, 0], 'the owner written on another account\'s sign-in');
+  eq((await w.session('owner')).body.role, 'admin', 'the configured owner');
+  eq([w.one('SELECT owner_uid FROM packs').owner_uid, w.audit('owner.claim').map((a) => a.uid)], ['uid-owner', ['uid-owner']], 'the owner, on their own sign-in');
+  // A typo in the secret: nobody owns the pack, and correcting the secret still works.
+  const typo = await apiWorld({ OWNER_MODE: 'fixed', PACK_OWNER_UID: 'uid-owner-typo' });
+  for (const who of ['stranger', 'owner']) eq((await typo.session(who)).body.ownerUid, null, who + ' signing in under a mistyped PACK_OWNER_UID');
+  typo.env.PACK_OWNER_UID = 'uid-owner';
+  eq((await typo.session('owner')).body.role, 'admin', 'the owner after the secret is corrected');
+  const w2 = await apiWorld({ OWNER_MODE: 'fixed' });
+  const s2 = await w2.session('owner');
+  eq([s2.body.role, s2.body.ownerUid], [null, null], 'fixed mode with no PACK_OWNER_UID');
+  eq(w2.sql('SELECT count(*) AS n FROM members')[0].n, 0, 'fixed mode with no owner made a member');
+  // Security review of 5690c3a..20b4fd6, item 3: production is fixed whatever OWNER_MODE says,
+  // so a dashboard override of the var cannot hand the live pack to the first person to sign in.
+  eq([API.pack.fixedOwnerMode({ DEPLOY_ENV: 'prod', OWNER_MODE: 'first-signer' }), API.pack.fixedOwnerMode({ DEPLOY_ENV: 'preview', OWNER_MODE: 'first-signer' }),
+    API.pack.fixedOwnerMode({ DEPLOY_ENV: 'preview' })], [true, false, true], 'fixedOwnerMode by DEPLOY_ENV and OWNER_MODE');
+  const w3 = await apiWorld({ DEPLOY_ENV: 'prod', seedEnv: 'prod', OWNER_MODE: 'first-signer', PACK_OWNER_UID: 'uid-owner' });
+  const s3 = await w3.session('stranger');
+  eq([s3.status, s3.body.role, s3.body.ownerUid], [200, null, null], 'production with OWNER_MODE first-signer: a stranger signing in first');
+  eq([w3.one('SELECT owner_uid FROM packs').owner_uid, w3.sql('SELECT count(*) AS n FROM members')[0].n], [null, 0], 'production with OWNER_MODE first-signer wrote an owner');
+  eq((await w3.session('owner')).body.role, 'admin', 'production with OWNER_MODE first-signer: the configured owner');
+});
+
+atest('api session: a sign-up link visitor never claims an unowned pack', async () => {
+  const w = await apiWorld();
+  const s = await w.session('stranger', 'abc123');
+  eq([s.body.role, s.body.ownerUid, s.body.rejected], [null, null, 'closed'], 'a join visitor on an unowned pack');
+  eq(w.one('SELECT owner_uid FROM packs').owner_uid, null, 'the pack got an owner');
+});
+
+atest('api session: the owner is healed back to admin, whoever demoted them (members.update.owner)', async () => {
+  const w = await (await apiWorld()).seed();
+  eq((await w.call('admin2', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { role: 'viewer' } })).status, 200, 'a co-admin demotes the owner');
+  w.db.raw.prepare("UPDATE members SET join_code = 'abc', email = 'someone-else@example.com' WHERE uid = 'uid-owner'").run();
+  const s = await w.session('owner');
+  eq([s.body.role, s.body.member.email, s.body.member.joinCode], ['admin', 'owner@example.com', undefined], 'the healed owner, written whole');
+  eq(w.audit('member.heal').map((a) => JSON.parse(a.detail)), [{ from: 'viewer', to: 'admin' }], 'the heal is audited');
+  // Never anyone else: a demoted co-admin signing in stays demoted.
+  await w.call('owner', 'PATCH', 'member', { uid: 'uid-admin2' }, { body: { role: 'viewer' } });
+  eq((await w.session('admin2')).body.role, 'viewer', 'a demoted non-owner');
+});
+
+atest('api session: an invite admits exactly its role, matched on the lowercased email, and is used up (members.create.invite)', async () => {
+  const w = await (await apiWorld()).seed({});
+  eq((await w.call('owner', 'PUT', 'invite', { email: 'newbie@example.com' }, { body: { role: 'editor' } })).status, 200, 'the invite');
+  const s = await w.session('newbie', undefined, undefined, { email: 'NewBie@Example.com' });
+  eq([s.body.role, s.body.member.email], ['editor', 'NewBie@Example.com'], 'the invitee, with capitals in their Google email');
+  eq(w.sql('SELECT count(*) AS n FROM invites')[0].n, 0, 'the invite was not used up');
+  eq(w.audit('invite.consume').map((a) => [a.uid, JSON.parse(a.detail).role]), [['uid-newbie', 'editor']], 'the audit row');
+  // Someone already in the pack keeps their role; a waiting invite does not change it.
+  await w.call('owner', 'PUT', 'invite', { email: 'parent1@example.com' }, { body: { role: 'viewer' } });
+  w.db.raw.prepare("INSERT INTO members (pack_id, uid, role, name, email, added_at) VALUES (?, 'uid-parent', 'parent', 'P', 'parent1@example.com', 1)").run(API_PACK);
+  eq((await w.session('parent')).body.role, 'parent', 'an existing parent with an editor invite waiting');
+  // An invite row the rules would refuse (an old 'admin' invite, forced in by SQL around the CHECK) admits nothing.
+  w.db.raw.exec('PRAGMA ignore_check_constraints = ON');
+  w.db.raw.prepare("INSERT INTO invites (pack_id, email, role, invited_by_uid, invited_at) VALUES (?, 'stranger@example.com', 'admin', 'uid-owner', 1)").run(API_PACK);
+  w.db.raw.exec('PRAGMA ignore_check_constraints = OFF');
+  const t = await w.session('stranger');
+  eq([t.body.role, t.body.rejected], [null, 'nolink'], 'an admin invite');
+});
+
+atest('api session: the sign-up link files a pending request only while open and only with the current code (members.create.join, request mode)', async () => {
+  const w = await (await apiWorld()).seed({ editor: 'editor' });
+  w.joinCfg(true, 'Code123abc');
+  const s = await callApi(w.env, API.mod.session, { method: 'POST', path: '/api/session?pack=' + API_PACK,
+    token: await tokenFor('newbie'), body: { join: 'Code123abc', role: 'admin' } });   // a role in the body is ignored
+  eq([s.body.role, s.body.member.joinCode], ['pending', 'Code123abc'], 'a link visitor with the current code');
+  eq(w.audit('join.request').length, 1, 'the request is audited');
+  eq(JSON.stringify(w.audit('join.request')).indexOf('Code123abc'), -1, 'the audit row holds the code');
+  eq([(await w.session('stranger', 'WrongCode1')).body.rejected, (await w.session('stranger', 'bad code!')).body.rejected],
+    ['closed', 'badcode'], 'a stale code, a malformed one');
+  w.joinCfg(false, 'Code123abc');
+  eq((await w.session('stranger', 'Code123abc')).body.rejected, 'closed', 'the right code with the link switched off');
+  w.joinCfg(true, 'NewCode456');
+  eq((await w.session('stranger', 'Code123abc')).body.rejected, 'closed', 'a code from before New code');
+  eq(w.sql("SELECT count(*) AS n FROM members WHERE uid = 'uid-stranger'")[0].n, 0, 'a refused visitor got a row');
+  eq((await w.session('editor', 'NewCode456')).body.role, 'editor', 'an editor following the link is still an editor');
+  eq((await w.session('stranger', 'NewCode456')).body.role, 'pending', 'the current code');
+});
+
+atest('api session: sign-up link tries are rate-limited per account, and the limit resets after its window', async () => {
+  const w = await (await apiWorld()).seed({});
+  w.joinCfg(true, 'Code123abc');
+  const max = API.mod.session.JOIN_MAX_TRIES;
+  for (let i = 0; i < max; i++) eq((await w.session('stranger', 'Guess' + i)).body.rejected, 'closed', 'guess ' + i);
+  const r = await w.session('stranger', 'Code123abc');
+  eq([r.status, r.body.code], [429, 'resource-exhausted'], 'the try after the limit, even with the right code');
+  ok(Number(r.headers.get('retry-after')) > 0, 'no Retry-After');
+  eq(w.sql("SELECT count(*) AS n FROM members WHERE uid = 'uid-stranger'")[0].n, 0, 'a rate-limited try made a row');
+  eq((await w.session('newbie', 'Code123abc')).body.role, 'pending', 'another account is not limited');
+  w.db.raw.prepare('UPDATE join_attempts SET window_start = ? WHERE uid = ?').run(Date.now() - API.mod.session.JOIN_WINDOW_MS - 1, 'uid-stranger');
+  eq((await w.session('stranger', 'Code123abc')).body.role, 'pending', 'after the window');
+});
+
+atest('api session: only the packs this deployment serves, and the pack id comes from the URL', async () => {
+  const w = await apiWorld();
+  for (const path of ['/api/session', '/api/session?pack=' + 'c'.repeat(64), '/api/session?pack=../x']) {
+    const r = await callApi(w.env, API.mod.session, { method: 'POST', path, token: await tokenFor('owner') });
+    eq(r.status, 404, 'an unserved pack: ' + path);
+  }
+  eq((await callApi(w.env, API.mod.session, { method: 'GET', path: '/api/session?pack=' + API_PACK, token: await tokenFor('owner') })).status,
+    405, 'GET /api/session');
+  eq((await w.call('owner', 'GET', 'pack', null, { pack: 'c'.repeat(64) })).status, 404, 'an unserved pack id in the path');
+  const noDb = await callApi(Object.assign({}, w.env, { DB: undefined }), API.mod.session,
+    { method: 'POST', path: '/api/session?pack=' + API_PACK, token: await tokenFor('owner') });
+  eq(noDb.status, 503, 'no database bound');
+});
+
+test('api deployment: the owner guide seeds each database with its own deployment row, and only the owner writes it', () => {
+  const DOC = readFileSync(join(ROOT, 'docs/cloudflare-setup.md'), 'utf8');
+  ok(DOC.indexOf(`npx wrangler d1 execute pack569-preview --remote --command "INSERT INTO deployment (id, env) VALUES (1, 'preview')"`) >= 0,
+    'the guide does not seed pack569-preview');
+  ok(DOC.indexOf(`npx wrangler d1 execute pack569-prod --remote --env production --command "INSERT INTO deployment (id, env) VALUES (1, 'prod')"`) >= 0,
+    'the guide does not seed pack569-prod');
+  ok(MIGRATION_FILES.indexOf('0002_deployment.sql') >= 0, 'no deployment migration');
+  const code = readdirSync(join(ROOT, 'functions'), { recursive: true }).filter((f) => /\.js$/.test(f))
+    .map((f) => readFileSync(join(ROOT, 'functions', f), 'utf8')).join('\n');
+  ok(!/(INSERT INTO|UPDATE|DELETE FROM) deployment\b/.test(code), 'the API writes its own deployment row');
+});
+
+test('api docs: the shared Firebase project is written down as an accepted risk, nothing claims sign-in is separated, and HSTS is set at cutover', () => {
+  // Security review of stage A, finding 2 (DECISION: accept the risk, one Firebase project) and finding 9.
+  const DOC = readFileSync(join(ROOT, 'docs/cloudflare-setup.md'), 'utf8');
+  const WF = readFileSync(join(ROOT, '.github/workflows/website.yml'), 'utf8');
+  const W = readFileSync(join(ROOT, 'wrangler.toml'), 'utf8');
+  const risk = DOC.slice(DOC.indexOf('#### One Firebase project: an accepted risk'));
+  ok(DOC.indexOf('#### One Firebase project: an accepted risk') > DOC.indexOf('### D. A preview you can sign in to'), 'no accepted-risk section under staging');
+  ok(/Decision \(Keith, 2026-09-28\)/.test(risk) && /accept the risk and keep one Firebase project/.test(risk), 'the decision is not recorded');
+  ok(/Only you deploy branches, and only branches whose code you have read/.test(risk), 'the deploy discipline is not stated');
+  ok(DOC.indexOf('(#one-firebase-project-an-accepted-risk)') >= 0, 'the database section does not point at the accepted risk');
+  // No over-strong claims left: nothing says a preview can NEVER reach the live pack in general.
+  for (const [name, text] of [['docs', DOC], ['website.yml', WF], ['wrangler.toml', W]]) {
+    ok(!/preview can never (?:reach|see) the live/i.test(text), name + ' still says a preview can never reach the live pack');
+  }
+  ok(/What\n# this does NOT separate is sign-in/.test(WF), 'the workflow header does not say sign-in is shared');
+  // Finding 9: HSTS for /api/ at the zone, in the cutover.
+  const cut = DOC.slice(DOC.indexOf('## Cutover, in order'), DOC.indexOf('## The pack\'s database'));
+  ok(/\*\*HSTS/.test(cut) && /HTTP Strict Transport Security \(HSTS\)\*\* → Enable/.test(cut) && /grep -i strict-transport/.test(cut), 'the cutover has no HSTS step');
+  ok(/Strict-Transport-Security: max-age=31536000; includeSubDomains/.test(readFileSync(join(ROOT, '_headers'), 'utf8')),
+    'the page\'s own HSTS changed; the cutover\'s HSTS settings say to match it');
+});
+
+test('api docs: staging\'s Access lock is required, a staging sign-in is not said to end in an hour, and the guide says how to end it', () => {
+  // Security re-review of stage A, follow-up 3.
+  const DOC = readFileSync(join(ROOT, 'docs/cloudflare-setup.md'), 'utf8');
+  // A token lasts an hour; the refresh token in staging's storage keeps making new ones.
+  ok(!/for up to an hour/.test(DOC), 'the guide still says a staging sign-in works on the live pack for up to an hour');
+  const risk = DOC.slice(DOC.indexOf('#### One Firebase project: an accepted risk'), DOC.indexOf('### E. Moving the pack'));
+  // Security review of 5690c3a..20b4fd6, item 1 (wording updated on purpose): signing out ends
+  // only this browser's copy. What ends the sign-in is revoking, disabling, or a password or
+  // email change; a copy sent elsewhere survives a sign-out.
+  ok(/refresh token/.test(risk) && /until its sessions are revoked, the\n  account is disabled, or its password or email changes\./.test(risk),
+    'the risk does not say what ends a refresh token');
+  ok(!/until the account signs out/.test(DOC), 'the guide still says signing out ends a staging sign-in');
+  ok(/Signing out on `staging` only\n  removes this browser's copy; a copy already sent elsewhere keeps working\./.test(risk), 'the risk does not say a sent copy survives a sign-out');
+  // How to end one: sign out and close the window as housekeeping; if it may have been misused, disable and revoke.
+  ok(/sign out on `staging`, then close the private window\. That\n  is housekeeping, not containment\./.test(risk), 'the routine sign-out is not called housekeeping');
+  ok(/Authentication\*\* → \*\*Users\*\* → find the account →\n  its menu → \*\*Disable account\*\*\. This is what ends it\./.test(risk), 'no way to disable a misused account');
+  ok(/revokeRefreshTokens/.test(risk) && /treat the next hour as exposed/.test(risk), 'no revocation, or no word on the token already made');
+  // Review of eb504db..366f6c9, item 2 (wording updated on purpose): the Admin SDK in Cloud
+  // Shell with the owner's own credentials is likely refused for want of a quota project, so
+  // the route is Identity Toolkit's accounts:update with validSince, by curl with gcloud's
+  // token. Never tried on pack-569, so it says so and asks for a dry run on a throwaway account.
+  ok(/The console has no button for this/.test(risk) && /Activate Cloud Shell/.test(risk) &&
+    /belt and braces/.test(risk), 'the guide does not say how to revoke, or that disabling already did the work');
+  const revoke = 'curl -s -X POST -H "Authorization: Bearer $(gcloud auth print-access-token)" -H "x-goog-user-project: pack-569" ' +
+    '-H "Content-Type: application/json" https://identitytoolkit.googleapis.com/v1/projects/pack-569/accounts:update ' +
+    '-d "{\\"localId\\":\\"THE_UID\\",\\"validSince\\":\\"$(date +%s)\\"}"';
+  ok(risk.indexOf('\n  ```\n  ' + revoke + '\n  ```\n') >= 0, 'the revoke command is not the curl + gcloud accounts:update call, whole, in its own block');
+  ok(!/a\.auth\(\)\.revokeRefreshTokens\('THE_UID'\)|npm install firebase-admin/.test(DOC), 'the guide still gives the Admin SDK route as the way to revoke');
+  ok(/\*\*Unverified:\*\* this has not yet been run against `pack-569`/.test(risk), 'the revoke route is not marked unverified');
+  ok(/try it once now on a throwaway account/.test(risk) && /not for the first time during an incident/.test(risk),
+    'the guide does not say to try the revoke route once now, on a throwaway account');
+  ok(/"localId": "THE_UID"/.test(risk) && /If the answer has an `"error"` in it, ask for help rather than re-enabling\./.test(risk),
+    'the guide does not say how to read the revoke answer');
+  ok(/- \[ \] \*\*Try the revoke command once now, on that made-up account\*\*/.test(DOC.slice(DOC.indexOf('What to check on staging'), DOC.indexOf('#### One Firebase project: an accepted risk'))),
+    'the staging checks do not include trying the revoke command once');
+  // The Access lock: required for staging, in the section, the checklist and the risk.
+  ok(!/Recommended: lock previews|recommended-lock-previews/.test(DOC), 'the Access lock is still only recommended');
+  const lock = DOC.slice(DOC.indexOf('### Lock previews to you (required before staging)'), DOC.indexOf('## What the Content-Security-Policy blocks'));
+  ok(lock.length > 100 && /For \*\*`staging` it is required\*\*/.test(lock) && /Do not deploy to `staging` until the lock is on/.test(lock),
+    'the lock section does not make the lock required for staging');
+  const stagingD = DOC.slice(DOC.indexOf('### D. A preview you can sign in to'), DOC.indexOf('What to check on staging'));
+  ok(/- \[ \] \*\*Required:\*\* put the Cloudflare Access lock/.test(stagingD) && /No lock, no staging deploy\./.test(stagingD),
+    'the staging checklist does not require the lock');
+  // Item 6 of the review of 5690c3a..20b4fd6: the guide does not pretend the workflow enforces the lock.
+  ok(/No lock, no staging deploy\.\n\s+That rule is yours to keep: the workflow cannot see the lock, and will deploy to\n\s+`staging` whether it is on or not\./.test(stagingD),
+    'the guide implies the workflow enforces the staging lock');
+  ok(/The Cloudflare Access lock on preview deployments is \*\*required\*\*/.test(risk), 'the accepted risk still only says to keep the lock');
+  // Every in-page link in the guide lands on a heading (GitHub's slugs).
+  const slug = (h) => h.trim().toLowerCase().replace(/[^\w\- ]/g, '').replace(/ /g, '-');
+  const heads = (DOC.match(/^#{1,6} .*$/gm) || []).map((h) => slug(h.replace(/^#+ /, '')));
+  for (const [, a] of DOC.matchAll(/\]\(#([^)]+)\)/g)) ok(heads.indexOf(a) >= 0, 'a link to #' + a + ' lands on no heading');
+});
+
+atest('api deployment: a database answers only the deployment its own row names (DEPLOY_ENV), and nothing is touched otherwise', async () => {
+  // Security review of stage A, finding 1: a preview bound to the live database must answer nothing.
+  const cases = [
+    [{ DEPLOY_ENV: 'preview', seedEnv: 'prod' }, 'wrong-database', 'a preview bound to the production database'],
+    [{ DEPLOY_ENV: 'prod', seedEnv: 'preview' }, 'wrong-database', 'production bound to the preview database'],
+    [{ DEPLOY_ENV: 'preview', seedEnv: null }, 'deployment-unset', 'a database nobody has seeded'],
+    [{ DEPLOY_ENV: undefined }, 'no-deploy-env', 'no DEPLOY_ENV'],
+    [{ DEPLOY_ENV: 'production' }, 'no-deploy-env', 'a DEPLOY_ENV that is not prod or preview']
+  ];
+  const logged = [];
+  const log = console.error;
+  console.error = (...a) => { logged.push(a.join(' ')); };   // the refusal is logged for the owner; not noise here
+  try {
+    for (const [over, reason, what] of cases) {
+      const w = await apiWorld(over);
+      const s = await w.session('owner');
+      eq([s.status, s.body.code, s.body.reason], [503, 'unavailable', reason], what + ' (session)');
+      eq((await w.call('owner', 'GET', 'pack')).status, 503, what + ' (pack)');
+      eq(w.sql('SELECT count(*) AS n FROM packs')[0].n, 0, what + ': a pack row was written');
+    }
+  } finally { console.error = log; }
+  ok(logged.some((l) => /bound database says prod/.test(l)), 'a crossed database is not logged');
+  // No table at all (migration 0002 never applied) is the same 503.
+  const w0 = await apiWorld({ seedEnv: null });
+  w0.db.raw.exec('DROP TABLE deployment');
+  eq((await w0.session('owner')).body.reason, 'deployment-unset', 'no deployment table');
+  // Matching: production on its own database works; seeding a refused database takes effect at once.
+  eq((await (await apiWorld({ DEPLOY_ENV: 'prod', seedEnv: 'prod', OWNER_MODE: 'fixed', PACK_OWNER_UID: 'uid-owner' })).session('owner')).body.role, 'admin', 'prod on prod');
+  // Review of eb504db..366f6c9 (optional item): production believes pack-569's sign-ins and no
+  // other project's, whatever a dashboard override of FIREBASE_PROJECT_ID says. A token made
+  // for that other project, which it would otherwise accept, gets a 503 and writes nothing.
+  const other = 'someone-else';
+  const otherTok = await mint({ sub: 'uid-owner', email: 'owner@example.com', iss: 'https://securetoken.google.com/' + other, aud: other });
+  const errs = [];
+  const log0 = console.error;
+  console.error = (...a) => { errs.push(a.join(' ')); };
+  try {
+    for (const proj of [other, 'pack-569 ', 'PACK-569', undefined, '']) {
+      const wp = await apiWorld({ DEPLOY_ENV: 'prod', seedEnv: 'prod', OWNER_MODE: 'fixed', PACK_OWNER_UID: 'uid-owner', FIREBASE_PROJECT_ID: proj });
+      const s = await callApi(wp.env, API.mod.session, { method: 'POST', path: '/api/session?pack=' + API_PACK, token: otherTok });
+      eq([s.status, s.body.reason], [503, 'wrong-project'], 'production with FIREBASE_PROJECT_ID ' + JSON.stringify(proj) + ' (session)');
+      eq((await wp.call(null, 'GET', 'pack', null, { token: otherTok })).status, 503, 'production with FIREBASE_PROJECT_ID ' + JSON.stringify(proj) + ' (pack)');
+      eq(wp.sql('SELECT count(*) AS n FROM packs')[0].n, 0, 'production with another project wrote a pack row');
+    }
+  } finally { console.error = log0; }
+  ok(errs.some((l) => /production has FIREBASE_PROJECT_ID "someone-else"/.test(l)), 'the refused project is not logged');
+  eq(API.pack.firebaseProject({ DEPLOY_ENV: 'prod', FIREBASE_PROJECT_ID: 'pack-569' }), 'pack-569', 'production with pack-569');
+  const w1 = await apiWorld({ seedEnv: null });
+  eq((await w1.session('owner')).status, 503, 'before the seed');
+  w1.db.raw.prepare("INSERT INTO deployment (id, env) VALUES (1, 'preview')").run();
+  eq((await w1.session('owner')).body.role, 'admin', 'after the seed');
+  // One row, and only 'prod' or 'preview'.
+  let refused = 0;
+  for (const sql of ["INSERT INTO deployment (id, env) VALUES (2, 'prod')", "UPDATE deployment SET env = 'staging'"]) {
+    try { w1.db.raw.prepare(sql).run(); } catch (e) { refused++; }
+  }
+  eq(refused, 2, 'a second deployment row, or an env that is neither');
+});
+
+atest('api tenancy: a role in one pack is nothing in another', async () => {
+  const w = await (await apiWorld()).seed();
+  await w.session('stranger', undefined, API_PACK_B);   // the stranger owns pack B
+  for (const what of ['pack', 'members', 'invites', 'join', 'view']) {
+    denied(await w.call('owner', 'GET', what, null, { pack: API_PACK_B }), `pack A's owner reading pack B's ${what}`);
+  }
+  denied(await w.call('owner', 'PUT', 'pack', null, { pack: API_PACK_B, body: {}, headers: { 'if-match': '0' } }), "A's owner writing B");
+  denied(await w.call('stranger', 'GET', 'pack'), "B's owner reading A");
+  // An invite to pack A admits nobody to pack B.
+  await w.call('owner', 'PUT', 'invite', { email: 'newbie@example.com' }, { body: { role: 'editor' } });
+  eq((await w.session('newbie', undefined, API_PACK_B)).body.role, null, "A's invite used on B");
+});
+
+/* ---- the pack record ---- */
+
+atest('api Part C pack.read / pack.write: leaders read the pack record, admins and editors write it, nobody else either', async () => {
+  const w = await (await apiWorld()).seed();
+  w.state(5, { scouts: [{ id: 's1', name: 'Test Scout' }] });
+  await matrix(w, 'GET', 'pack', expectFor(['owner', 'admin2', 'editor', 'viewer']));
+  const got = await w.call('viewer', 'GET', 'pack');
+  eq([got.body.exists, got.body.rev, JSON.parse(got.body.json).scouts[0].id], [true, 5, 's1'], 'the record a viewer reads');
+  let rev = 5;
+  const writeAs = (who) => ({ body: { rev: 'x', by: who }, headers: { 'if-match': String(rev), 'x-pack-device': 'dev-' + who } });
+  for (const who of ALL) {
+    const r = await w.call(who, 'PUT', 'pack', null, writeAs(who));
+    if (['owner', 'admin2', 'editor'].indexOf(who) >= 0) { eq([r.status, r.body.rev], [200, rev + 1], who + ' writes'); rev += 1; }
+    else denied(r, who + ' PUT pack');
+  }
+  eq(w.one('SELECT rev, device FROM pack_state'), { rev: 8, device: 'dev-editor' }, 'the stored record');
+});
+
+atest('api pack PUT is compare-and-swap: a stale rev gets 409 with the stored copy, and a retry on it lands', async () => {
+  const w = await (await apiWorld()).seed();
+  const put = (who, rev, body) => w.call(who, 'PUT', 'pack', null, { body, headers: { 'if-match': String(rev), 'x-pack-device': who } });
+  // The first write to an empty pack is from rev 0; a second "first write" loses.
+  eq((await put('editor', 0, { ledger: ['e1'] })).body.rev, 1, 'the first write');
+  const lost = await put('owner', 0, { ledger: ['o1'] });
+  eq([lost.status, lost.body.code, lost.body.rev, lost.body.device], [409, 'aborted', 1, 'editor'], 'a second first write');
+  eq(JSON.parse(lost.body.json), { ledger: ['e1'] }, 'the 409 carries the stored copy');
+  // Two devices both at rev 1: one lands, the other gets the remote copy, merges, retries on its rev.
+  eq((await put('editor', 1, { ledger: ['e1', 'e2'] })).body.rev, 2, 'editor from rev 1');
+  const stale = await put('owner', 1, { ledger: ['e1', 'o1'] });
+  eq([stale.status, stale.body.rev], [409, 2], 'owner from rev 1');
+  eq((await put('owner', stale.body.rev, { ledger: ['e1', 'e2', 'o1'] })).body.rev, 3, 'the retry on the remote rev');
+  eq(JSON.parse(w.one('SELECT json FROM pack_state').json).ledger, ['e1', 'e2', 'o1'], 'the merged record');
+  // A write from the future is a conflict too, never a jump.
+  eq((await put('owner', 99, { a: 1 })).status, 409, 'a rev ahead of the stored one');
+  eq((await w.call('owner', 'PUT', 'pack', null, { body: { a: 1 } })).status, 400, 'no If-Match');
+  eq(w.one('SELECT rev FROM pack_state').rev, 3, 'a refused write moved the rev');
+});
+
+atest('api pack PUT refuses a record over 1.5 MB (413), and anything that is not a JSON object (400)', async () => {
+  const w = await (await apiWorld()).seed();
+  const put = (body, headers) => w.call('owner', 'PUT', 'pack', null, { body, headers: Object.assign({ 'if-match': '0' }, headers || {}) });
+  const MAX = API.http.MAX_STATE_BYTES;
+  eq(MAX, 1.5 * 1024 * 1024, 'the limit');
+  const big = '{"x":"' + 'a'.repeat(MAX) + '"}';
+  eq([(await put(big)).status, (await put(big)).body.code], [413, 'resource-exhausted'], 'a record over 1.5 MB');
+  // Without a Content-Length the stream is counted as it arrives.
+  const streamed = await callApi(w.env, API.mod.pack, { method: 'PUT', path: '/api/pack/' + API_PACK, params: { id: API_PACK },
+    token: await tokenFor('owner'), headers: { 'if-match': '0' }, body: undefined });
+  eq(streamed.status, 400, 'an empty body');
+  const chunked = new Request('https://staging.pack569.pages.dev/api/pack/' + API_PACK, { method: 'PUT', duplex: 'half',
+    headers: { authorization: 'Bearer ' + await tokenFor('owner'), 'if-match': '0' },
+    body: new ReadableStream({ start(c) { for (let i = 0; i < 4; i++) c.enqueue(new TextEncoder().encode('a'.repeat(MAX / 2))); c.close(); } }) });
+  eq((await API.mod.pack.onRequest({ request: chunked, env: w.env, params: { id: API_PACK } })).status, 413, 'a streamed body over the limit');
+  const just = '{"x":"' + 'a'.repeat(MAX - 10) + '"}';
+  eq((await put(just)).status, 200, 'a record just under the limit');
+  for (const bad of ['not json', '[1,2]', 'null', '"a string"']) eq((await put(bad, { 'if-match': '1' })).status, 400, 'body ' + bad);
+});
+
+atest('api rev poll: leaders get the rev, parents only when the view changed, pending users nothing', async () => {
+  const w = await (await apiWorld()).seed();
+  w.state(7);
+  await matrix(w, 'GET', 'rev', expectFor(['owner', 'admin2', 'editor', 'viewer', 'parent']));
+  eq((await w.call('viewer', 'GET', 'rev')).body, { viewAt: null, rev: 7 }, 'a viewer');
+  eq((await w.call('parent', 'GET', 'rev')).body, { viewAt: null }, 'a parent (no rev: that is part of the pack record)');
+  await w.call('editor', 'PUT', 'view', null, { body: { packName: 'Test Pack' } });
+  ok((await w.call('parent', 'GET', 'rev')).body.viewAt > 0, 'the parent does not see the view change');
+});
+
+/* ---- members ---- */
+
+atest('api Part C members.read: the roster to leaders; anyone else only their own record', async () => {
+  const w = await (await apiWorld()).seed();
+  await matrix(w, 'GET', 'members', expectFor(['owner', 'admin2', 'editor', 'viewer']));
+  const roster = (await w.call('viewer', 'GET', 'members')).body.members;
+  eq(roster.map((m) => m.uid).sort(), ['uid-admin2', 'uid-editor', 'uid-owner', 'uid-parent', 'uid-pending', 'uid-viewer'], 'the roster');
+  ok(roster.every((m) => /@example\.com$/.test(m.email)), 'the roster has no emails');
+  // Your own record, whoever you are — including the answer "you have none".
+  for (const who of ['pending', 'parent']) {
+    const r = await w.call(who, 'GET', 'member', { uid: PEOPLE[who][0] });
+    eq([r.status, r.body.exists, r.body.role], [200, true, who], who + ' reading their own record');
+  }
+  eq((await w.call('stranger', 'GET', 'member', { uid: 'uid-stranger' })).body, { exists: false }, 'a stranger reading their own (none)');
+  denied(await w.call('pending', 'GET', 'member', { uid: 'uid-owner' }), 'pending reading the owner');
+  denied(await w.call('parent', 'GET', 'member', { uid: 'uid-editor' }), 'a parent reading an editor');
+  eq((await w.call('editor', 'GET', 'member', { uid: 'uid-parent' })).body.email, 'parent1@example.com', 'a leader reading a parent');
+});
+
+atest('api Part C members.admin / members.update.self / members.update.owner / members.keys: who may change a member', async () => {
+  const w = await (await apiWorld()).seed();
+  const patch = (who, uid, body) => w.call(who, 'PATCH', 'member', { uid }, { body });
+  // members.admin: an admin changes anyone's role.
+  eq((await patch('admin2', 'uid-parent', { role: 'editor' })).body.role, 'editor', 'an admin promoting a parent');
+  eq(w.audit('member.role').map((a) => JSON.parse(a.detail)), [{ target: 'uid-parent', from: 'parent', to: 'editor' }], 'the role change audit');
+  denied(await patch('editor', 'uid-viewer', { role: 'editor' }), 'an editor promoting a viewer');
+  denied(await patch('viewer', 'uid-pending', { role: 'parent' }), 'a viewer approving a request');
+  // members.update.self: your own row, same role. Promoting yourself is the attack.
+  denied(await patch('pending', 'uid-pending', { role: 'admin' }), 'pending making themselves admin');
+  denied(await patch('pending', 'uid-pending', { role: 'parent' }), 'pending approving themselves');
+  denied(await patch('viewer', 'uid-viewer', { role: 'editor' }), 'a viewer promoting themselves');
+  const renamed = await patch('pending', 'uid-pending', { name: 'Test Renamed', role: 'pending' });
+  eq([renamed.status, renamed.body.name, renamed.body.role], [200, 'Test Renamed', 'pending'], 'pending renaming themselves');
+  // Your own row carries your own email (ownEmail()), whatever was there.
+  w.db.raw.prepare("UPDATE members SET email = 'wrong@example.com' WHERE uid = 'uid-viewer'").run();
+  eq((await patch('viewer', 'uid-viewer', { name: 'V' })).body.email, 'viewer1@example.com', 'the email after a self-update');
+  // members.keys: a name is a string of at most 120 characters; nothing but role and name.
+  denied(await patch('viewer', 'uid-viewer', { name: 'x'.repeat(121) }), 'a 121-character name');
+  eq((await patch('viewer', 'uid-viewer', { name: 'x'.repeat(120) })).status, 200, 'a 120-character name');
+  denied(await patch('viewer', 'uid-viewer', { name: 42 }), 'a name that is not a string');
+  denied(await patch('viewer', 'uid-viewer', { email: 'viewer1@example.com' }), 'a field other than role and name');
+  denied(await patch('owner', 'uid-viewer', { joinCode: 'abc' }), 'an admin sending another field');
+  eq((await patch('owner', 'uid-viewer', { role: 'owner' })).status, 400, 'a role that does not exist');
+  // members.update.owner: the owner restores their own admin role; nobody else can.
+  await patch('admin2', 'uid-owner', { role: 'viewer' });
+  eq((await patch('owner', 'uid-owner', { role: 'admin' })).body.role, 'admin', 'the owner restoring their admin role');
+  denied(await patch('stranger', 'uid-stranger', { role: 'admin' }), 'a stranger with no row');
+  eq((await patch('owner', 'uid-nobody', { role: 'editor' })).status, 404, 'an admin changing a row that is not there');
+});
+
+atest('api members PATCH: a non-admin touching someone else\'s row gets the one fixed 403, whether or not they are in the pack, whatever the body', async () => {
+  // Security review of stage A, finding 5: 400 (bad role, bad JSON) for a real member vs 403 for
+  // a missing one told a non-admin who was in the pack.
+  const w = await (await apiWorld()).seed();
+  for (const who of ['editor', 'viewer', 'parent', 'pending', 'stranger']) {
+    for (const uid of ['uid-owner', 'uid-admin2', 'uid-nobody']) {
+      for (const body of [{ role: 'no-such-role' }, { name: 5 }, 'not json', '[1]', { role: 'viewer' }]) {
+        denied(await w.call(who, 'PATCH', 'member', { uid }, { body }), `${who} PATCH ${uid} ${JSON.stringify(body)}`);
+      }
+    }
+  }
+  // Their own row, and an admin, still get the real answers.
+  eq((await w.call('viewer', 'PATCH', 'member', { uid: 'uid-viewer' }, { body: 'not json' })).status, 400, 'bad JSON on your own row');
+  eq((await w.call('owner', 'PATCH', 'member', { uid: 'uid-viewer' }, { body: { role: 'no-such-role' } })).status, 400, 'an admin sending a bad role');
+  eq((await w.call('owner', 'PATCH', 'member', { uid: 'uid-nobody' }, { body: { role: 'viewer' } })).status, 404, 'an admin, a row that is not there');
+});
+
+atest('api last admin: no change or removal leaves a pack with no admin', async () => {
+  const w = await (await apiWorld()).seed({ editor: 'editor' });
+  const r1 = await w.call('owner', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { role: 'editor' } });
+  eq([r1.status, r1.body.code], [409, 'failed-precondition'], 'the only admin demoting themselves');
+  eq((await w.call('owner', 'DELETE', 'member', { uid: 'uid-owner' })).status, 409, 'the only admin removing themselves');
+  eq(w.one("SELECT role FROM members WHERE uid = 'uid-owner'").role, 'admin', 'the only admin was changed');
+  eq(w.audit('member.role').length + w.audit('member.remove').length, 0, 'a refused change was audited');
+  // With two admins, either may step down — but then the other is the last.
+  await w.call('owner', 'PATCH', 'member', { uid: 'uid-editor' }, { body: { role: 'admin' } });
+  eq((await w.call('editor', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { role: 'viewer' } })).status, 200, 'one of two admins demoted');
+  eq((await w.call('editor', 'DELETE', 'member', { uid: 'uid-editor' })).status, 409, 'the remaining admin removing themselves');
+  // Renaming the last admin is not a demotion.
+  eq((await w.call('editor', 'PATCH', 'member', { uid: 'uid-editor' }, { body: { name: 'Test Admin' } })).status, 200, 'renaming the last admin');
+  // The owner, demoted, heals on their next sign-in — and a removed owner comes back as admin.
+  eq((await w.session('owner')).body.role, 'admin', 'the demoted owner signing in');
+  eq((await w.call('editor', 'DELETE', 'member', { uid: 'uid-owner' })).status, 200, 'a co-admin removing the owner (Part C allows it)');
+  eq((await w.session('owner')).body.role, 'admin', 'the removed owner signing back in');
+});
+
+atest('api Part C members.admin (delete): only admins remove members, and the removed member\'s invite goes with them', async () => {
+  const w = await (await apiWorld()).seed();
+  for (const who of ['editor', 'viewer', 'parent', 'pending', 'stranger']) denied(await w.call(who, 'DELETE', 'member', { uid: 'uid-parent' }), who + ' removing a parent');
+  denied(await w.call('parent', 'DELETE', 'member', { uid: 'uid-parent' }), 'a parent removing themselves');
+  w.db.raw.prepare("INSERT INTO invites (pack_id, email, role, invited_by_uid, invited_at) VALUES (?, 'parent1@example.com', 'editor', 'uid-owner', 1)").run(API_PACK);
+  eq((await w.call('admin2', 'DELETE', 'member', { uid: 'uid-parent' })).status, 200, 'an admin removing a parent');
+  eq(w.sql("SELECT count(*) AS n FROM invites WHERE email = 'parent1@example.com'")[0].n, 0, 'their invite outlived them');
+  eq(w.audit('member.remove').map((a) => [a.uid, JSON.parse(a.detail).target]), [['uid-admin2', 'uid-parent']], 'the removal audit');
+  eq((await w.session('parent')).body.role, null, 'the removed parent signing back in');
+  eq((await w.call('owner', 'DELETE', 'member', { uid: 'uid-parent' })).status, 404, 'removing them twice');
+});
+
+/* ---- invites ---- */
+
+atest('api Part C invites.write: only admins invite, never as admin, and the inviter is recorded by account id', async () => {
+  const w = await (await apiWorld()).seed();
+  const inv = (who, email, body) => w.call(who, 'PUT', 'invite', { email }, { body });
+  for (const role of ['editor', 'viewer', 'parent']) {
+    const r = await inv('admin2', role + '9@example.com', { role });
+    eq([r.status, r.body.role, r.body.invitedByUid], [200, role, 'uid-admin2'], 'an admin inviting a ' + role);
+    ok(r.text.indexOf('admin2@example.com') === -1, 'the invite carries the inviter\'s email');
+  }
+  denied(await inv('owner', 'x9@example.com', { role: 'admin' }), 'an admin invite');
+  denied(await inv('owner', 'x9@example.com', { role: 'pending' }), 'a pending invite');
+  denied(await inv('owner', 'x9@example.com', {}), 'an invite with no role');
+  for (const who of ['editor', 'viewer', 'parent', 'pending']) denied(await inv(who, 'x9@example.com', { role: 'parent' }), who + ' inviting');
+  // THE SELF-INVITE (audit attack case): a stranger, or a pending user, inviting their own email as admin — or as anything.
+  for (const who of ['stranger', 'pending']) {
+    denied(await inv(who, PEOPLE[who][1], { role: 'admin' }), who + ' inviting themselves as admin');
+    denied(await inv(who, PEOPLE[who][1], { role: 'editor' }), who + ' inviting themselves as editor');
+  }
+  eq((await w.session('stranger')).body.role, null, 'the stranger after trying to invite themselves');
+  // The body cannot name another address, carry other fields, or set the inviter.
+  denied(await inv('owner', 'x9@example.com', { role: 'parent', email: 'y9@example.com' }), 'a body email that is not the path\'s');
+  denied(await inv('owner', 'x9@example.com', { role: 'parent', invitedBy: 'uid-stranger' }), 'a body naming the inviter');
+  eq((await inv('owner', 'x9@example.com', { role: 'parent', email: 'x9@example.com' })).status, 200, 'the same email in the body');
+  eq((await inv('owner', 'X9@example.com', { role: 'parent' })).status, 404, 'an address that is not lowercased');
+  eq((await inv('owner', 'not-an-email', { role: 'parent' })).status, 404, 'not an address');
+  eq((await inv('owner', encodeURIComponent('x9@example.com'), { role: 'viewer' })).body.role, 'viewer', 'a percent-encoded path');
+  eq(w.audit('invite.write').length, 5, 'each invite written is audited, and no refused one');
+});
+
+atest('api Part C invites.read / invites.delete: admins list and revoke; an invitee reads and declines only their own', async () => {
+  const w = await (await apiWorld()).seed();
+  await w.call('owner', 'PUT', 'invite', { email: 'stranger@example.com' }, { body: { role: 'parent' } });
+  await w.call('owner', 'PUT', 'invite', { email: 'newbie@example.com' }, { body: { role: 'editor' } });
+  await matrix(w, 'GET', 'invites', expectFor(['owner', 'admin2']));
+  eq((await w.call('owner', 'GET', 'invites')).body.invites.map((i) => i.email).sort(), ['newbie@example.com', 'stranger@example.com'], 'the list');
+  // Your own, matched on your Google email lowercased.
+  const mine = await w.call('stranger', 'GET', 'invite', { email: 'stranger@example.com' }, { claims: { email: 'Stranger@Example.com' } });
+  eq([mine.status, mine.body.role], [200, 'parent'], 'the invitee reading their own');
+  for (const who of ['stranger', 'editor', 'pending']) denied(await w.call(who, 'GET', 'invite', { email: 'newbie@example.com' }), who + ' reading someone else\'s invite');
+  denied(await w.call('editor', 'DELETE', 'invite', { email: 'newbie@example.com' }), 'an editor revoking');
+  denied(await w.call('stranger', 'DELETE', 'invite', { email: 'newbie@example.com' }), 'a stranger revoking someone else\'s');
+  eq((await w.call('stranger', 'DELETE', 'invite', { email: 'stranger@example.com' })).body.removed, true, 'the invitee declining their own');
+  eq((await w.call('admin2', 'DELETE', 'invite', { email: 'newbie@example.com' })).body.removed, true, 'an admin revoking');
+  eq((await w.call('admin2', 'DELETE', 'invite', { email: 'newbie@example.com' })).body.removed, false, 'revoking twice');
+  eq([w.audit('invite.decline').length, w.audit('invite.revoke').length], [1, 1], 'the audit (nothing for the no-op)');
+  eq((await w.session('newbie')).body.role, null, 'the revoked invitee signing in');
+});
+
+/* ---- the sign-up link switch ---- */
+
+atest('api Part C join.read / join.write: leaders read the live code, admins write it, and it only ever means request', async () => {
+  const w = await (await apiWorld()).seed();
+  const cfg = { open: true, code: 'Code123abc', showStandings: false, showAmounts: true, contact: '  Ask   the\ncubmaster  ' };
+  denied(await w.call('editor', 'PUT', 'join', null, { body: cfg }), 'an editor writing the join config');
+  await matrix(w, 'PUT', 'join', Object.assign(expectFor(['owner', 'admin2']), {}), { opts: () => ({ body: cfg }) });
+  await matrix(w, 'GET', 'join', expectFor(['owner', 'admin2', 'editor', 'viewer']));
+  eq((await w.call('viewer', 'GET', 'join')).body, { exists: true, open: true, mode: 'request', code: 'Code123abc',
+    showStandings: false, showAmounts: true, contact: 'Ask the cubmaster', updatedAt: w.one('SELECT updated_at FROM join_config').updated_at }, 'what a leader reads');
+  // Request mode: nothing else can be written, by anyone.
+  denied(await w.call('owner', 'PUT', 'join', null, { body: Object.assign({}, cfg, { mode: 'auto' }) }), 'mode auto');
+  eq((await w.call('owner', 'PUT', 'join', null, { body: Object.assign({}, cfg, { mode: 'request' }) })).status, 200, 'mode request');
+  let threw = false;
+  try { w.db.raw.prepare("UPDATE join_config SET mode = 'auto'").run(); } catch (e) { threw = /CHECK/.test(e.message); }
+  ok(threw, 'the table accepts mode auto');
+  // Whole writes only: a missing switch is refused, not defaulted back on.
+  const partial = Object.assign({}, cfg); delete partial.showAmounts;
+  eq((await w.call('owner', 'PUT', 'join', null, { body: partial })).status, 400, 'a write missing a switch');
+  eq((await w.call('owner', 'PUT', 'join', null, { body: Object.assign({}, cfg, { code: 'has space' }) })).status, 400, 'a bad code');
+  eq((await w.call('owner', 'PUT', 'join', null, { body: Object.assign({}, cfg, { extra: 1 }) })).status, 400, 'an unknown field');
+  // The audit says whether the code changed, never what it is.
+  await w.call('owner', 'PUT', 'join', null, { body: Object.assign({}, cfg, { code: 'Rotated999' }) });
+  const rows = w.audit('join.write');
+  eq(rows.map((a) => JSON.parse(a.detail).codeChanged), [true, false, false, true], 'codeChanged');
+  ok(!/Code123abc|Rotated999/.test(JSON.stringify(rows)), 'the audit holds the join code');
+});
+
+/* ---- the parent view ---- */
+
+atest('api Part C view.read / view.write: approved members read the parent view (never pending); admins and editors write it', async () => {
+  const w = await (await apiWorld()).seed();
+  eq((await w.call('parent', 'GET', 'view')).body, { exists: false }, 'no view yet');
+  await matrix(w, 'PUT', 'view', expectFor(['owner', 'admin2', 'editor']), { opts: (who) => ({ body: { packName: 'Test Pack', contact: 'by ' + who } }) });
+  await matrix(w, 'GET', 'view', expectFor(['owner', 'admin2', 'editor', 'viewer', 'parent']));
+  const r = await w.call('parent', 'GET', 'view');
+  eq([r.body.exists, r.body.view], [true, { packName: 'Test Pack', contact: 'by editor' }], 'what a parent reads');
+  ok(typeof r.body.generatedAt === 'number', 'generatedAt');
+  for (const bad of ['[1]', 'nope', 'null']) eq((await w.call('editor', 'PUT', 'view', null, { body: bad })).status, 400, 'a view of ' + bad);
+});
+
+test('api parent view: the server\'s allowlist is buildParentView\'s own top-level keys, and its standings keys are exactly those behind the standings gate', () => {
+  // Security review of stage A, finding 7. The two lists live in functions/_lib/rules.js; the
+  // truth is index.html. A key added to buildParentView and not to the server would be refused
+  // (a family stops seeing it); a key the server allows that the page never writes is room for
+  // a device to publish something no one reviewed. Either way this fails until they agree.
+  const fn = codeOnly(BPV());
+  const gate = fn.indexOf('if (!withStandings) return out;');
+  ok(gate > 0, 'buildParentView has no standings gate (if (!withStandings) return out;)');
+  ok(!/\bout\[/.test(fn), 'buildParentView writes out[…]: a key this test cannot read');
+  eq((fn.match(/\breturn out;/g) || []).length, 2, 'buildParentView returns out in more than two places');
+  const lit = /var out = \{([\s\S]*?)\n\s*\};/.exec(fn);
+  ok(lit, 'buildParentView has no var out = { … }');
+  const litKeys = [...lit[1].matchAll(/^\s*([A-Za-z]\w*):/gm)].map((m) => m[1]);
+  ok(litKeys.length >= 3, 'too few keys read from var out: ' + litKeys);
+  const assigned = [...fn.matchAll(/\bout\.([A-Za-z]\w*) = /g)];
+  ok(assigned.every((m) => m.index > lit.index), 'buildParentView writes out.… before var out');
+  const pageAll = [...new Set(litKeys.concat(assigned.map((m) => m[1])))].sort();
+  const pageGated = [...new Set(assigned.filter((m) => m.index > gate).map((m) => m[1]))].sort();
+  ok(pageGated.every((k) => assigned.filter((m) => m[1] === k).every((m) => m.index > gate)) && litKeys.every((k) => pageGated.indexOf(k) === -1),
+    'a standings key is also written above the gate');
+  const RULES = readFileSync(join(ROOT, 'functions/_lib/rules.js'), 'utf8');
+  const list = (name) => {
+    const m = new RegExp(`export const ${name} = \\[([^\\]]*)\\];`).exec(RULES);
+    ok(m, 'rules.js has no ' + name);
+    return [...m[1].matchAll(/'([^']*)'/g)].map((x) => x[1]).sort();
+  };
+  eq(list('PARENT_VIEW_KEYS'), pageAll, 'rules.js PARENT_VIEW_KEYS vs buildParentView\'s keys');
+  eq(list('PARENT_VIEW_STANDINGS_KEYS'), pageGated, 'rules.js PARENT_VIEW_STANDINGS_KEYS vs the keys behind the standings gate');
+  ok(list('PARENT_VIEW_NEVER_KEYS').indexOf('noteInternal') >= 0, 'noteInternal is not refused');
+});
+
+atest('api parent view: the server stores only buildParentView\'s shape — its keys, no standings while they are off, no noteInternal', async () => {
+  // Security review of stage A, finding 7.
+  const w = await (await apiWorld()).seed();
+  const put = (body) => w.call('editor', 'PUT', 'view', null, { body });
+  const stored = () => { const r = w.one('SELECT payload FROM parent_views'); return r && JSON.parse(r.payload); };
+  const full = { rev: 3, packName: 'Test Pack', programYear: '2026-27', events: [], contact: 'Ask the cubmaster',
+    standings: [{ name: 'Test' }], goals: null, derby: null, tiers: [{ name: 'Gold' }], tierLadder: { anchorName: 'Gold' } };
+  eq((await put(Object.assign({ generatedAt: { '.sv': 'timestamp' } }, full))).status, 200, 'a whole view, standings on (no join config yet)');
+  eq(stored(), full, 'the stored view (generatedAt dropped: the server stamps its own)');
+  for (const [body, reason, what] of [
+    [Object.assign({}, full, { ledger: [] }), 'view-key', 'a key buildParentView never writes'],
+    [Object.assign({}, full, { budget: { total: 1 } }), 'view-key', 'the budget'],
+    [Object.assign({}, full, { events: [{ title: 'Den meeting', noteInternal: 'leaders only' }] }), 'view-note-internal', 'a nested noteInternal'],
+    [Object.assign({}, full, { camping: [{ sections: [[{ noteInternal: '' }]] }] }), 'view-note-internal', 'a deeply nested noteInternal (even empty)']
+  ]) {
+    const r = await put(body);
+    eq([r.status, r.body.reason], [400, reason], what);
+  }
+  eq(stored(), full, 'a refused view replaced the stored one');
+  // A noteInternal as a VALUE (a leader typing the word) is not a key and is fine.
+  eq((await put(Object.assign({}, full, { packName: 'noteInternal' }))).status, 200, 'the word as a value');
+  // Standings off: each gated key is refused, and switching them off takes them out of the stored view at once.
+  const cfg = { open: false, code: 'Code123abc', showStandings: false, showAmounts: true, contact: '' };
+  eq((await w.call('owner', 'PUT', 'join', null, { body: cfg })).status, 200, 'standings switched off');
+  eq(Object.keys(stored()).sort(), ['contact', 'events', 'packName', 'programYear', 'rev'], 'the stored view after standings went off');
+  for (const k of API.rules.PARENT_VIEW_STANDINGS_KEYS) {
+    const r = await put({ rev: 4, packName: 'Test Pack', programYear: '2026-27', events: [], [k]: null });
+    eq([r.status, r.body.reason], [400, 'view-standings-off'], k + ' while standings are off (even null)');
+  }
+  eq((await put({ rev: 4, packName: 'Test Pack', programYear: '2026-27', events: [] })).status, 200, 'a calendar-only view');
+  await w.call('owner', 'PUT', 'join', null, { body: Object.assign({}, cfg, { showStandings: true }) });
+  eq((await put(full)).status, 200, 'standings back on');
+  eq(stored().standings, full.standings, 'switching standings on left the view alone');
+  // Security review of 5690c3a..20b4fd6, item 2: SQLite's JSON functions stop at 1000 levels, so
+  // a view nested past that would store, then fail PUT /join's json_remove and roll back the
+  // switch — standings left showing, and a 500. It is refused on the way in instead.
+  const nest = (n) => { let v = 'x'; for (let i = 0; i < n; i++) v = [v]; return v; };
+  const deep = Object.assign({}, full, { events: nest(1000) });   // the view is level 1: 1,001 deep
+  eq(viewDepth(deep), 1001, 'the deep view is not 1,001 levels (the test is stale)');
+  const rd = await put(deep);
+  eq([rd.status, rd.body.reason], [400, 'view-too-deep'], 'a 1,001-deep view');
+  eq(stored(), full, 'a too-deep view replaced the stored one');
+  const off = await w.call('owner', 'PUT', 'join', null, { body: cfg });
+  eq(off.status, 200, 'standings switched off after a too-deep view was sent (' + off.text.slice(0, 80) + ')');
+  eq(Object.keys(stored()).sort(), ['contact', 'events', 'packName', 'programYear', 'rev'], 'the stored view after standings went off');
+  // The cap, exactly: the view itself is level 1.
+  const calm = { rev: 5, packName: 'Test Pack', events: nest(API.rules.PARENT_VIEW_MAX_DEPTH - 1) };
+  eq(viewDepth(calm), API.rules.PARENT_VIEW_MAX_DEPTH, 'the view at the cap (the test is stale)');
+  eq([API.rules.parentViewProblem(calm, false), API.rules.parentViewProblem(Object.assign({}, calm, { events: [calm.events] }), false)],
+    [null, 'view-too-deep'], 'a view at the cap, and one level past it');
+});
+// How many objects and arrays deep a value nests (a plain value is 0), as parentViewProblem counts.
+function viewDepth(v) {
+  let max = 0;
+  const stack = [[v, 1]];
+  while (stack.length) {
+    const [x, d] = stack.pop();
+    if (!x || typeof x !== 'object') continue;
+    if (d > max) max = d;
+    for (const k of Object.keys(x)) stack.push([x[k], d + 1]);
+  }
+  return max;
+}
+
+// Security re-review of stage A, follow-up 2. The DB, but the moment the endpoint has read the
+// standings switch, a PUT /join elsewhere turns standings off: the check-then-write race.
+function standingsRaceDb(w) {
+  const db = w.db;
+  let fired = 0;
+  const racy = Object.assign({}, db, {
+    prepare(sql) {
+      const s = db.prepare(sql);
+      if (!/^SELECT show_standings FROM join_config WHERE pack_id = \?$/.test(sql)) return s;
+      return { bind(...a) {
+        const b = s.bind(...a);
+        return { async first(c) {
+          const r = await b.first(c);
+          fired++;
+          db.raw.prepare('UPDATE join_config SET show_standings = 0 WHERE pack_id = ?').run(API_PACK);
+          return r;
+        } };
+      } };
+    }
+  });
+  return { racy, fired: () => fired };
+}
+
+atest('api parent view: standings switched off between the check and the write are not put back (PUT /view and the import)', async () => {
+  const cfg = { open: false, code: 'Code123abc', showStandings: true, showAmounts: true, contact: '' };
+  const full = { rev: 3, packName: 'Test Pack', programYear: '2026-27', events: [], standings: [{ name: 'Test' }], goals: null };
+  const w = await (await apiWorld()).seed();
+  eq((await w.call('owner', 'PUT', 'join', null, { body: cfg })).status, 200, 'standings on');
+  const race = standingsRaceDb(w);
+  w.env.DB = race.racy;
+  const r = await w.call('editor', 'PUT', 'view', null, { body: full });
+  eq(race.fired(), 1, 'the race was not staged (the endpoint no longer reads the switch this way)');
+  eq([r.status, r.body.reason], [400, 'view-standings-off'], 'a standings view written after standings went off');
+  eq(w.sql('SELECT count(*) AS n FROM parent_views')[0].n, 0, 'the standings view was stored while standings are off');
+  // The same race with a calendar-only view: nothing to hold back, so it is written.
+  eq((await w.call('editor', 'PUT', 'view', null, { body: { rev: 4, packName: 'Test Pack', events: [] } })).status, 200, 'a calendar-only view');
+  eq(JSON.parse(w.one('SELECT payload FROM parent_views').payload), { rev: 4, packName: 'Test Pack', events: [] }, 'the calendar-only view');
+  // And a standings view once the pack's switch is on again, raced by nothing, still stores.
+  w.env.DB = w.db;
+  await w.call('owner', 'PUT', 'join', null, { body: cfg });
+  eq((await w.call('editor', 'PUT', 'view', null, { body: full })).status, 200, 'standings on, no race');
+  eq(JSON.parse(w.one('SELECT payload FROM parent_views').payload).standings, full.standings, 'the standings view');
+
+  // The import: the pack's join config says on when it is read, off when the batch writes.
+  const wi = await (await apiWorld()).seed({});
+  await wi.call('owner', 'PUT', 'join', null, { body: cfg });
+  const ri = standingsRaceDb(wi);
+  wi.env.DB = ri.racy;
+  const imp = await wi.call('owner', 'POST', 'import', null, { body: importBody({ view: { packName: 'Test Pack', standings: [{ name: 'Test' }] } }) });
+  eq(ri.fired() >= 1, true, 'the import race was not staged');
+  eq([imp.status, imp.body.imported, imp.body.view, imp.body.viewSkipped], [200, true, false, 'view-standings-off'], 'the import\'s answer');
+  eq(wi.sql('SELECT count(*) AS n FROM parent_views')[0].n, 0, 'the import stored a standings view while standings are off');
+  eq(wi.sql('SELECT count(*) AS n FROM pack_state')[0].n, 1, 'the rest of the import did not land');
+  // The SQL itself, with no race at all: the write's own condition refuses standings while they are off.
+  const wq = await (await apiWorld()).seed({});
+  await wq.call('owner', 'PUT', 'join', null, { body: Object.assign({}, cfg, { showStandings: false }) });
+  const viewSrc = readFileSync(join(ROOT, 'functions/api/pack/[id]/view.js'), 'utf8');
+  const m = /'(INSERT INTO parent_views[^']*)' \+\s*'([^']*)' \+\s*'([^']*)'\)/.exec(viewSrc);
+  ok(m, 'PUT /view\'s write not found');
+  const sql = m[1] + m[2] + m[3];
+  eq(Number(wq.db.raw.prepare(sql).run(API_PACK, '{"standings":[]}', 1, 1, API_PACK).changes), 0, 'the write\'s own condition, standings off');
+  eq(Number(wq.db.raw.prepare(sql).run(API_PACK, '{}', 1, 0, API_PACK).changes), 1, 'the write\'s own condition, no standings key');
+});
+
+atest('api parent view: a view too deep to store is a 400, not a server error (PUT /view and the import)', async () => {
+  // Security re-review of stage A, follow-up 4. V8 in Workers throws RangeError stringifying a
+  // deep enough object; Node here may not, so JSON.stringify is made to throw as it would there.
+  const real = JSON.stringify;
+  const deep = (v) => v && typeof v === 'object' && v.packName === 'Too Deep';
+  JSON.stringify = function (v, ...rest) {
+    if (deep(v)) throw new RangeError('Maximum call stack size exceeded');
+    return real.call(this, v, ...rest);
+  };
+  try {
+    const w = await (await apiWorld()).seed();
+    const r = await w.call('editor', 'PUT', 'view', null, { body: real({ packName: 'Too Deep', events: [] }) });
+    eq([r.status, r.body.reason], [400, 'view-too-deep'], 'PUT /view');
+    eq(w.sql('SELECT count(*) AS n FROM parent_views')[0].n, 0, 'something was stored');
+    const wi = await (await apiWorld()).seed({});
+    const imp = await wi.call('owner', 'POST', 'import', null, { body: real(importBody({ view: { packName: 'Too Deep' } })) });
+    eq([imp.status, imp.body.view, imp.body.viewSkipped], [200, false, 'view-too-deep'], 'the import');
+  } finally { JSON.stringify = real; }
+});
+
+/* ---- the one-time import ---- */
+
+function importBody(over) {
+  return Object.assign({
+    pack: { rev: 41, device: 'dev-old', json: JSON.stringify({ scouts: [{ id: 's1', name: 'Test Scout' }], ledger: [] }) },
+    members: [
+      { uid: 'uid-owner', role: 'admin', name: 'Test Owner', email: 'owner@example.com', addedAt: 1000 },
+      { uid: 'uid-editor', role: 'editor', name: 'Test Editor', email: 'editor1@example.com', addedAt: 2000 },
+      { uid: 'uid-pending', role: 'pending', name: 'Test Pending', email: 'pending1@example.com', joinCode: 'Code123abc', addedAt: 3000 }
+    ],
+    invites: [{ email: 'Parent1@Example.com', role: 'parent', invitedBy: 'owner@example.com', invitedAt: 4000 },
+      { email: 'sneaky@example.com', role: 'admin', invitedAt: 5000 }],
+    join: { open: true, mode: 'auto', code: 'Code123abc', showStandings: true, showAmounts: false, contact: 'Ask a leader' },
+    view: { packName: 'Test Pack', generatedAt: { seconds: 1 } }
+  }, over || {});
+}
+
+atest('api import: only the pack owner, only into an empty pack, only once — and all or nothing', async () => {
+  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor' });
+  // Not the owner: a co-admin, an editor, a stranger.
+  for (const who of ['admin2', 'editor', 'stranger']) denied(await w.call(who, 'POST', 'import', null, { body: importBody() }), who + ' importing');
+  // All or nothing: one bad member refuses the whole import, and leaves the lock open.
+  const bad = importBody({ members: importBody().members.concat([{ uid: 'uid-x', role: 'superuser' }]) });
+  eq((await w.call('owner', 'POST', 'import', null, { body: bad })).status, 400, 'an import with a bad role');
+  eq(w.sql('SELECT (SELECT count(*) FROM pack_state) + (SELECT count(*) FROM import_lock) AS n')[0].n, 0, 'a refused import wrote something');
+  const r = await w.call('owner', 'POST', 'import', null, { body: importBody() });
+  eq([r.status, r.body.rev, r.body.members, r.body.invites, r.body.invitesSkipped], [200, 41, 3, 1, 1], 'the owner\'s import');
+  eq((await w.call('editor', 'GET', 'pack')).body.rev, 41, 'the imported rev');
+  eq(JSON.parse((await w.call('editor', 'GET', 'pack')).body.json).scouts[0].id, 's1', 'the imported record');
+  eq(w.one("SELECT role, join_code FROM members WHERE uid = 'uid-pending'"), { role: 'pending', join_code: 'Code123abc' }, 'an imported request');
+  eq(w.one('SELECT email, role, invited_by_uid FROM invites'), { email: 'parent1@example.com', role: 'parent', invited_by_uid: 'uid-owner' },
+    'the imported invite (lowercased, the importer as inviter, the admin invite left behind)');
+  eq(w.one('SELECT mode, open, show_amounts FROM join_config'), { mode: 'request', open: 1, show_amounts: 0 }, 'the imported join config (mode forced to request)');
+  eq(JSON.parse(w.one('SELECT payload FROM parent_views').payload), { packName: 'Test Pack' }, 'the imported view');
+  eq(w.one("SELECT role FROM members WHERE uid = 'uid-owner'").role, 'admin', 'the owner after the import');
+  eq(w.audit('import').length, 1, 'the import is audited');
+  // Once only: the second import is refused, and so is one into a pack that has a record.
+  denied(await w.call('owner', 'POST', 'import', null, { body: importBody() }), 'a second import');
+  // The lock outlives the record: with the pack record gone (a wipe, a restore), it still refuses.
+  w.db.raw.prepare('DELETE FROM pack_state').run();
+  denied(await w.call('owner', 'POST', 'import', null, { body: importBody() }), 'an import after the record was deleted');
+  const w2 = await (await apiWorld()).seed({});
+  await w2.call('owner', 'PUT', 'pack', null, { body: { scouts: [] }, headers: { 'if-match': '0' } });
+  denied(await w2.call('owner', 'POST', 'import', null, { body: importBody() }), 'an import over a saved record');
+  eq(w2.sql('SELECT count(*) AS n FROM import_lock')[0].n, 0, 'a refused import took the lock');
+});
+
+atest('api import: in production a save cannot create the pack record before the import (409 awaiting-import), so the import is never blocked', async () => {
+  // Security review of stage A, finding 4.
+  const w = await (await apiWorld({ OWNER_MODE: 'fixed', PACK_OWNER_UID: 'uid-owner' })).seed({ editor: 'editor' });
+  const put = (who, rev, body) => w.call(who, 'PUT', 'pack', null, { body, headers: { 'if-match': String(rev), 'x-pack-device': who } });
+  for (const who of ['editor', 'owner']) {
+    const r = await put(who, 0, { scouts: [] });
+    eq([r.status, r.body.error, r.body.code, r.body.reason], [409, 'awaiting-import', 'failed-precondition', 'awaiting-import'], who + ' saving before the import');
+    ok(r.body.json === undefined && r.body.rev === undefined, 'the awaiting-import answer carries a record to merge');
+  }
+  eq((await w.call('editor', 'GET', 'pack')).body, { exists: false, rev: 0 }, 'GET before the import');
+  eq(w.sql('SELECT count(*) AS n FROM pack_state')[0].n, 0, 'a save before the import created the record');
+  eq((await w.call('owner', 'POST', 'import', null, { body: importBody() })).status, 200, 'the import after refused saves');
+  // After it: an ordinary compare-and-swap. A stale "first write" is a conflict carrying the record.
+  const late = await put('editor', 0, { scouts: [] });
+  eq([late.status, late.body.code, late.body.rev], [409, 'aborted', 41], 'a rev-0 save after the import');
+  eq((await put('editor', 41, { scouts: [1] })).body.rev, 42, 'a save on the imported rev');
+  // A record lost after the import (a wipe, a restore) can be written again from rev 0: the lock is there.
+  w.db.raw.prepare('DELETE FROM pack_state').run();
+  eq((await put('editor', 0, { scouts: [2] })).status, 200, 'a rev-0 save after the import and a wipe');
+  // Previews (first-signer) are unchanged: the first save creates the record.
+  const p = await (await apiWorld()).seed({ editor: 'editor' });
+  eq((await p.call('editor', 'PUT', 'pack', null, { body: {}, headers: { 'if-match': '0' } })).status, 200, 'a preview\'s first save');
+  // The client contract is written down where the next stage will look.
+  ok(/409 \{error:'awaiting-import', code:'failed-precondition'\}/.test(readFileSync(join(ROOT, 'functions/_lib/http.js'), 'utf8')), 'http.js does not document awaiting-import');
+});
+
+atest('api import: a rev a later save could never name is refused, and the highest allowed one can still be saved over', async () => {
+  // Security review of stage A, finding 8: If-Match takes at most 15 digits.
+  const MAX = 1e14;
+  for (const rev of [MAX + 1, 1e15, 1e300, Number.MAX_SAFE_INTEGER]) {
+    const w = await (await apiWorld()).seed({});
+    const body = importBody();
+    body.pack = Object.assign({}, body.pack, { rev });
+    const r = await w.call('owner', 'POST', 'import', null, { body });
+    eq([r.status, r.body.reason], [400, 'pack.rev'], 'an imported rev of ' + rev);
+    eq(w.sql('SELECT (SELECT count(*) FROM pack_state) + (SELECT count(*) FROM import_lock) AS n')[0].n, 0, 'a refused rev wrote something');
+  }
+  const w = await (await apiWorld()).seed({});
+  const body = importBody();
+  body.pack = Object.assign({}, body.pack, { rev: MAX });
+  eq((await w.call('owner', 'POST', 'import', null, { body })).body.rev, MAX, 'the highest rev');
+  const r = await w.call('owner', 'PUT', 'pack', null, { body: { a: 1 }, headers: { 'if-match': String(MAX) } });
+  eq([r.status, r.body.rev], [200, MAX + 1], 'a save over the highest imported rev');
+});
+
+atest('api import: a parent view PUT /view would refuse is left behind and named, and the rest imports', async () => {
+  // Security review of stage A, finding 7: the import is not a way around the view allowlist.
+  const off = Object.assign({}, importBody().join, { showStandings: false });
+  const cases = [
+    [{ join: off, view: { packName: 'Test Pack', standings: [{ name: 'Test' }] } }, 'view-standings-off', 'standings, with the imported join config saying off'],
+    [{ view: { packName: 'Test Pack', events: [{ noteInternal: 'x' }] } }, 'view-note-internal', 'a noteInternal'],
+    [{ view: { packName: 'Test Pack', budget: {} } }, 'view-key', 'a key buildParentView never writes'],
+    [{ view: { packName: 'Test Pack', events: JSON.parse('['.repeat(1000) + ']'.repeat(1000)) } }, 'view-too-deep', 'a view 1,001 deep']
+  ];
+  for (const [over, reason, what] of cases) {
+    const w = await (await apiWorld()).seed({});
+    const r = await w.call('owner', 'POST', 'import', null, { body: importBody(over) });
+    eq([r.status, r.body.view, r.body.viewSkipped], [200, false, reason], what);
+    eq(w.sql('SELECT count(*) AS n FROM parent_views')[0].n, 0, what + ': the view was stored');
+    eq(JSON.parse(w.audit('import')[0].detail).viewSkipped, reason, what + ': the audit');
+  }
+  // A join config already here wins over the imported one, for the check as for the row.
+  const w = await (await apiWorld()).seed({});
+  await w.call('owner', 'PUT', 'join', null, { body: { open: false, code: 'Code123abc', showStandings: false, showAmounts: true } });
+  const r = await w.call('owner', 'POST', 'import', null, { body: importBody({ view: { packName: 'Test Pack', goals: null } }) });
+  eq(r.body.viewSkipped, 'view-standings-off', 'standings off here, on in the import');
+  // Review of 5690c3a..20b4fd6, item 4: a parent view already here wins, and the answer does not
+  // claim the imported one was stored.
+  const w2 = await (await apiWorld()).seed({ editor: 'editor' });
+  const mine = { rev: 1, packName: 'Test Pack', events: [] };
+  eq((await w2.call('editor', 'PUT', 'view', null, { body: mine })).status, 200, 'a parent view before the import');
+  const r2 = await w2.call('owner', 'POST', 'import', null, { body: importBody({ view: { packName: 'Imported Pack', events: [] } }) });
+  eq([r2.status, r2.body.imported, r2.body.view, r2.body.viewSkipped], [200, true, false, 'view-exists'], 'the import\'s answer with a view already here');
+  eq(JSON.parse(w2.one('SELECT payload FROM parent_views').payload), mine, 'the view already here was replaced');
+  // Review of eb504db..366f6c9, item 3: with standings off here too, a view already here that
+  // held back an imported view with no standings in it is still what the answer names.
+  const w4 = await (await apiWorld()).seed({ editor: 'editor' });
+  await w4.call('owner', 'PUT', 'join', null, { body: { open: false, code: 'Code123abc', showStandings: false, showAmounts: true } });
+  eq((await w4.call('editor', 'PUT', 'view', null, { body: mine })).status, 200, 'a parent view without standings, standings off');
+  const r4 = await w4.call('owner', 'POST', 'import', null, { body: importBody({ view: { packName: 'Imported Pack', events: [] } }) });
+  eq([r4.status, r4.body.view, r4.body.viewSkipped], [200, false, 'view-exists'], 'no standings in the view, standings off, a view already here');
+  eq(JSON.parse(w4.one('SELECT payload FROM parent_views').payload), mine, 'the view already here was replaced (standings off)');
+  // …and with none here, the imported view is stored and the answer says so.
+  const w3 = await (await apiWorld()).seed({});
+  const r3 = await w3.call('owner', 'POST', 'import', null, { body: importBody({ view: { packName: 'Imported Pack', events: [] } }) });
+  eq([r3.body.view, r3.body.viewSkipped, JSON.parse(w3.one('SELECT payload FROM parent_views').payload).packName], [true, null, 'Imported Pack'], 'an imported view');
+});
+
+atest('api import: the owner comes out an admin even if Firestore said otherwise, and existing rows win', async () => {
+  const w = await (await apiWorld()).seed({ editor: 'viewer' });
+  const body = importBody({ members: [{ uid: 'uid-owner', role: 'viewer', name: 'O', email: 'owner@example.com' },
+    { uid: 'uid-editor', role: 'admin', name: 'E', email: 'editor1@example.com' }] });
+  eq((await w.call('owner', 'POST', 'import', null, { body })).status, 200, 'the import');
+  eq(w.sql('SELECT uid, role FROM members ORDER BY uid'), [{ uid: 'uid-editor', role: 'viewer' }, { uid: 'uid-owner', role: 'admin' }],
+    'the roles after the import');
+});
+
+/* ---- the schema, and the code's shape ---- */
+
+atest('api schema: the tables themselves refuse what Part C refuses', async () => {
+  const w = await (await apiWorld()).seed({});
+  const refused = (sql, ...a) => { try { w.db.raw.prepare(sql).run(...a); return false; } catch (e) { return true; } };
+  const P = API_PACK;
+  ok(refused("INSERT INTO members (pack_id, uid, role, added_at) VALUES (?, 'u1', 'owner', 1)", P), 'a role that is not one of the five');
+  ok(refused("INSERT INTO members (pack_id, uid, role, name, added_at) VALUES (?, 'u1', 'parent', ?, 1)", P, 'x'.repeat(121)), 'a 121-character name');
+  ok(!refused("INSERT INTO members (pack_id, uid, role, name, added_at) VALUES (?, 'u1', 'parent', ?, 1)", P, 'x'.repeat(120)), 'a 120-character name');
+  ok(refused("INSERT INTO members (pack_id, uid, role, added_at) VALUES (?, 'u2', 'parent', 1)", 'no-such-pack'), 'a member of no pack');
+  ok(refused("INSERT INTO invites VALUES (?, 'x@example.com', 'admin', 'uid-owner', 1)", P), 'an admin invite');
+  ok(refused("INSERT INTO invites VALUES (?, 'X@example.com', 'parent', 'uid-owner', 1)", P), 'an invite key that is not lowercased');
+  ok(refused("INSERT INTO join_config (pack_id, open, mode, code, updated_at) VALUES (?, 1, 'auto', 'abc', 1)", P), 'join mode auto');
+  ok(refused("INSERT INTO join_config (pack_id, open, code, updated_at) VALUES (?, 1, 'a b', 1)", P), 'a join code with a space');
+  ok(refused("INSERT INTO join_config (pack_id, open, code, contact, updated_at) VALUES (?, 1, 'abc', ?, 1)", P, 'x'.repeat(161)), 'a 161-character contact');
+  ok(refused('INSERT INTO pack_state (pack_id, rev, json, updated_at) VALUES (?, -1, ?, 1)', P, '{}'), 'a negative rev');
+  ok(refused('UPDATE packs SET owner_uid = NULL'), 'an owner cleared');
+  ok(refused('DELETE FROM packs'), 'a pack deleted');
+  ok(refused('INSERT INTO import_lock VALUES (?, ?, 1)', P, 'u') === false && refused('INSERT INTO import_lock VALUES (?, ?, 2)', P, 'u'), 'a second import lock');
+});
+
+test('api rules.js quotes SETUP.md Part C word for word, and every endpoint keeps pack_id and roles off the body', () => {
+  // The quotes are loaded by the async setup; read the file here so this stays a plain source scan.
+  const RULES = readFileSync(join(ROOT, 'functions/_lib/rules.js'), 'utf8');
+  const block = /```\nrules_version = '2';[\s\S]*?```/.exec(SETUP.slice(SETUP.indexOf('## Part C')));
+  ok(block && /match \/invites\/\{email\}/.test(block[0]), 'the Part C rules block is not in SETUP.md');
+  const partC = RULES.slice(RULES.indexOf('export const PART_C = {'), RULES.indexOf('\n};', RULES.indexOf('export const PART_C = {')));
+  const quotes = [...partC.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => JSON.parse('"' + m[1] + '"'));
+  ok(quotes.length >= 20, 'too few Part C quotes found: ' + quotes.length);
+  quotes.forEach((q) => ok(block[0].indexOf(q) >= 0, 'Part C no longer says: ' + q));
+  // Every rule id is used by a function comment (so the table maps somewhere).
+  const ids = [...partC.matchAll(/'([a-zA-Z.]+)': \[/g)].map((m) => m[1]);
+  const code = RULES + readdirSync(join(ROOT, 'functions/api'), { recursive: true }).filter((f) => /\.js$/.test(f))
+    .map((f) => readFileSync(join(ROOT, 'functions/api', f), 'utf8')).join('\n');
+  ids.forEach((id) => ok(code.split("'" + id + "'").length > 2 || id === 'viaGoogle' || /^packmeta\./.test(id), 'no endpoint names rule ' + id));
+});
+
+test('api functions/ is plain modules: relative imports only, routes only under api/, nothing in _lib that Pages would route', () => {
+  const files = readdirSync(join(ROOT, 'functions'), { recursive: true }).filter((f) => !/\/$/.test(f) && /\./.test(f)).map((f) => f.split('\\').join('/'));
+  ok(files.every((f) => /\.js$/.test(f)), 'a file in functions/ that is not .js: ' + files.filter((f) => !/\.js$/.test(f)));
+  for (const f of files) {
+    const src = readFileSync(join(ROOT, 'functions', f), 'utf8');
+    const imports = [...src.matchAll(/^import [^;]*? from '([^']+)';$/gm)].map((m) => m[1]);
+    imports.forEach((s) => ok(/^\.\.?\//.test(s), `${f} imports ${s} — no packages, no node: modules`));
+    ok(!/\brequire\(|import\(/.test(src), `${f} loads code dynamically`);
+    const routes = /export (?:const|async function|function) onRequest\w*/.test(src);
+    if (f.indexOf('_lib/') === 0) ok(!routes, `${f} exports a route handler; Pages would serve it`);
+    else ok(/^api\//.test(f) && routes, `${f} is not an api/ route`);
+    // Nothing takes identity or a role from what the caller sent.
+    ok(!/body\.(uid|owner|ownerUid|invitedBy|invitedByUid)\b/.test(src), `${f} reads an identity from the body`);
+  }
+  eq(files.filter((f) => /^api\//.test(f)).sort(), ['api/pack/[id]/import.js', 'api/pack/[id]/index.js', 'api/pack/[id]/invites/[email].js',
+    'api/pack/[id]/invites/index.js', 'api/pack/[id]/join.js', 'api/pack/[id]/members/[uid].js', 'api/pack/[id]/members/index.js',
+    'api/pack/[id]/rev.js', 'api/pack/[id]/view.js', 'api/session.js'], 'the routes');
+});
+
+/* ================================================================
+   Phase 2 stage C (2026-09-28) — the page's apiBackend against the real server, end to end.
+   Each "client" is a sandbox running the page's REAL sync layer (syncStart, the session, the
+   feeds, syncPush, onRemoteSnap, removeMember, …) and the REAL apiBackend, sliced from
+   index.html; only the DOM, rendering and the money screens are stubbed. Its fetch goes to the
+   real functions/ handlers over node:sqlite (apiWorld above), so a client and the server are
+   tested together: a sign-in per role, two devices saving at once, a removal, a family's
+   polling, the empty pack before the owner's copy-in, a server not set up, a stale token.
+   Timers are fake: a test runs the page's 800 ms push and 1200 ms publish itself, and polls
+   with apiBackend.pollNow() rather than waiting 15 seconds.
+   ================================================================ */
+
+// One declaration, exactly. slice() runs to the next closing brace at two-space indent, which for
+// a one-line declaration is the END OF THE NEXT FUNCTION: it would drag real code over a stub.
+function decl(name) {
+  const re = new RegExp(`^  (?:function ${name}\\(|var ${name} =)[^\\n]*$`, 'm');
+  const m = re.exec(SCRIPT);
+  if (!m) throw new Error(`harness: could not find declaration "${name}"`);
+  const line = m[0];
+  const opens = (line.match(/[{[(]/g) || []).length, closes = (line.match(/[}\])]/g) || []).length;
+  return opens === closes && /[;}]\s*(\/\/.*)?$/.test(line) ? line : slice(name);
+}
+const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_DOC_RE', 'JOIN_CODE_RE', 'loadJoin', 'activeJoin',
+  'syncDocIdSource', 'sync', 'fixedSyncBlocked', 'fixedFeedBlocked', 'haltFixedSync', 'syncStop', 'clearAccountsRuntime',
+  'syncFail', 'apiBackend', 'backendConfigured', 'loadBackend', 'cloudReady', 'packLinked', 'syncStart', 'subscribeDoc',
+  'stopDocFeed', 'stopParentFeed', 'subscribeParentView', 'feedForRole', 'stopLocalWrites', 'applyRoleSubscription',
+  'applyInvitesSubscription', 'applyJoinSubscription', 'isGoogleUser', 'setSyncUser', 'accountsInForce', 'canEdit',
+  'parentMode', 'canPreviewParent', 'previewingParent', 'pendingMode', 'gateMode', 'isAdmin', 'adminCount', 'isLastAdmin',
+  'recomputeMyRole', 'handleAccountsError', 'startAccounts', 'SESSION_REJECTS', 'startSessionAccounts', 'sessionRole',
+  'LEADER_ROLES', 'applyMembersSubscription', 'INVITE_ROLES', 'inviteEmailKey', 'MEMBER_NAME_MAX', 'memberName',
+  'ensureMyMemberDoc', 'joinCreateMemberDoc', 'signOutGoogle', 'accountsToast', 'MEMBER_ROLES', 'setMemberRole', 'removeMember',
+  'createInvite', 'revokeInvite', 'joinOpen', 'standingsEnabled', 'cleanContactLine', 'MOVE_KIND', 'MOVE_UID_RE', 'MOVE_ROLES',
+  'isPackOwner', 'canDownloadMoveFile', 'canImportPack', 'moveFileReady', 'moveFileProblem', 'moveTime', 'buildMoveFile', 'downloadMoveFile', 'moveImportBody', 'importMoveFile',
+  'scheduleParentViewRefresh', 'writeParentView', 'scheduleSyncPush', 'holdPushes', 'mergeRemoteAppendOnly', 'syncPush',
+  'isStateEmpty', 'stateFingerprint', 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'keepLocalCopy', 'SERVER_NOTICES', 'serverNotice'];
+const CLIENT_SRC = CLIENT_FNS.map(decl).join('\n');
+
+// Every fetch in flight, across every client, so settle() knows when the server has answered.
+const inflight = new Set();
+// The routes as Pages would map them: functions/api/… by path.
+function apiRoute(pathname) {
+  if (pathname === '/api/session') return { mod: API.mod.session, params: {} };
+  const m = /^\/api\/pack\/([^/]+)(?:\/(rev|members|invites|join|view|import)(?:\/([^/]+))?)?$/.exec(pathname);
+  if (!m) return null;
+  const params = { id: m[1] };
+  let what = m[2] || 'pack';
+  if (m[3] !== undefined) {
+    if (what === 'members') { what = 'member'; params.uid = decodeURIComponent(m[3]); }
+    else if (what === 'invites') { what = 'invite'; params.email = m[3]; }   // left encoded: the handler decodes
+    else return null;
+  }
+  return { mod: API.mod[what], params };
+}
+function clientFetch(w, client) {
+  return (path, init) => {
+    const p = (async () => {
+      if (client.before) { const b = client.before; client.before = null; await b(init.method, path); }
+      const u = new URL(path, 'https://staging.pack569.pages.dev');
+      client.log.push(init.method + ' ' + u.pathname.replace('/api/pack/' + API_PACK, '/P'));
+      if (client.intercept) { const r = await client.intercept(init.method, u.pathname, init); if (r) return r; }
+      const route = apiRoute(u.pathname);
+      if (!route) return new Response('not found', { status: 404, headers: { 'content-type': 'text/html' } });
+      const request = new Request(u.href, { method: init.method, headers: init.headers, body: init.body });
+      return route.mod.onRequest({ request, env: w.env, params: route.params, data: {}, waitUntil() {}, next() { throw new Error('next()'); } });
+    })();
+    inflight.add(p);
+    p.then(() => inflight.delete(p), () => inflight.delete(p));
+    return p;
+  };
+}
+
+// A client: `who` signs in (PEOPLE), with `o.state` on the device, `o.join` a stored sign-up code,
+// `o.firstToken` the token Firebase hands out before any refresh.
+async function apiClient(w, who, o) {
+  o = o || {};
+  const client = { who, log: [], tokens: [], before: null, intercept: null, errors: [] };
+  let cached = o.firstToken ? await o.firstToken() : await tokenFor(who);
+  const ctx = vm.createContext({
+    console: { error: (...a) => client.errors.push(a.map(String).join(' ')), warn() {}, log() {} },
+    fetch: clientFetch(w, client), Response, URL,
+    hostToken: (fresh) => {
+      client.tokens.push(!!fresh);
+      const p = (async () => {
+        if (fresh) cached = o.freshToken ? await o.freshToken() : await tokenFor(who);
+        return cached;
+      })();
+      inflight.add(p);   // minting is async too: settle() must wait for it
+      p.then(() => inflight.delete(p), () => inflight.delete(p));
+      return p;
+    }
+  });
+  const initialState = Object.assign({ rev: 0, packName: '', scouts: [], storefronts: [], entries: [], events: [], ledger: [],
+    leaders: [], fundraisers: [], inventory: { distributions: [] } }, o.state || {});
+  vm.runInContext(`
+    var PACK_DOC_ID = '${API_PACK}', PACK_DOC_ID_RE = /^[0-9a-f]{64}$/, packDocIdWarned = false;
+    var FIREBASE_CONFIG = { apiKey: 'test', authDomain: 'test.invalid', projectId: '${API_PROJECT}' }, BACKEND = 'api';
+    var SYNC_SDK_BASE = 'https://unused.invalid/';
+    var KEY = 'pack-popcorn-ledger-v1', JOIN_KEY = 'pack-planner-join', SYNC_PASS_KEY = 'pack-planner-sync-pass',
+      SYNC_DEVICE_KEY = 'pack-planner-sync-device';
+    var store = {};
+    var localStorage = { getItem: function (k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
+      setItem: function (k, v) { store[k] = String(v); }, removeItem: function (k) { delete store[k]; } };
+    function uid() { return 'dev-${who}'; }
+    var ui = { tab: 'home', overlay: null, previewParent: false };
+    var parentViewFingerprint = null, parentViewTimer = null;
+    var toasts = [], renders = 0, saves = 0, timers = {}, timerSeq = 0;
+    ${CLIENT_SRC}
+    // ---- stubs, AFTER the slices so no sliced declaration can replace one ----
+    setTimeout = function (fn, ms) { timerSeq += 1; timers[timerSeq] = { fn: fn, ms: ms || 0 }; return timerSeq; };
+    clearTimeout = function (id) { delete timers[id]; };
+    render = function () { renders += 1; };
+    renderSyncPill = function () {};
+    showToast = function (m) { toasts.push(m); };
+    freshState = function () { return { rev: 0, packName: '', scouts: [], storefronts: [], entries: [], events: [], ledger: [],
+      leaders: [], fundraisers: [], inventory: { distributions: [] }, fresh: true }; };
+    normalizeState = function (p) {
+      if (!p || typeof p !== 'object' || Array.isArray(p)) return null;
+      var o = JSON.parse(JSON.stringify(p));
+      ['scouts', 'storefronts', 'entries', 'events', 'ledger', 'leaders', 'fundraisers'].forEach(function (k) { if (!Array.isArray(o[k])) o[k] = []; });
+      if (!o.inventory) o.inventory = { distributions: [] };
+      return o;
+    };
+    save = function () { saves += 1; store[KEY] = JSON.stringify(state); };
+    commit = function () { if (!canEdit()) return; save(); scheduleSyncPush(); };
+    todayISO = function () { return '2026-09-28'; };
+    // A made-up family view, with the keys the real one uses (the shape itself is tested against
+    // the real buildParentView below).
+    buildParentView = function (st) {
+      var v = { rev: st.rev || 0, packName: st.packName || '', events: (st.events || []).map(function (e) { return { title: e.name || '', date: e.date || '' }; }) };
+      if (standingsEnabled()) v.standings = [];
+      return v;
+    };
+    var state = ${JSON.stringify(initialState)};
+    store[KEY] = JSON.stringify(state);
+    ${o.join ? `store[JOIN_KEY] = JSON.stringify({ docId: '${API_PACK}', code: ${JSON.stringify(o.join)} });` : ''}
+    // Firebase Auth, as the page sees it: a signed-in Google account whose getIdToken the host answers.
+    var AUTH = { currentUser: { uid: '${PEOPLE[who][0]}', email: '${PEOPLE[who][1]}', displayName: 'Test ${who}',
+      emailVerified: true, isAnonymous: false, getIdToken: function (fresh) { return hostToken(!!fresh); } } };
+    apiBackend.mods = { app: {}, auth: {
+      getAuth: function () { return AUTH; },
+      getRedirectResult: function () { return Promise.resolve(null); },
+      signOut: function () { AUTH.currentUser = null; return Promise.resolve(); } } };
+    apiBackend.app = 'APP';`, ctx);
+  client.ctx = ctx;
+  client.run = (js) => vm.runInContext(js, ctx);
+  client.get = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, ctx)));
+  // Fire the page's own timers up to `maxMs` (0: the adapter's "poll now"; 800: a push; 1200: a publish).
+  client.runTimers = (maxMs) => vm.runInContext(`(function (max) {
+      var ran = false;
+      Object.keys(timers).forEach(function (id) {
+        var t = timers[id];
+        if (t && t.ms <= max) { delete timers[id]; t.fn(); ran = true; }
+      });
+      return ran;
+    })(${maxMs || 0})`, ctx);
+  client.start = async (maxMs) => { client.run('syncStart()'); await settle([client], maxMs); return client; };
+  client.poll = async (others) => { client.run('apiBackend.pollNow()'); await settle([client].concat(others || [])); };
+  client.edit = async (js, others) => { client.run(js + '; commit();'); await settle([client].concat(others || []), 800); };
+  client.reset = () => { client.log.length = 0; };
+  return client;
+}
+// Let every client's promises, zero-delay timers (and, with maxMs, the page's short timers) run
+// until nothing is in flight on the server and nothing more is scheduled.
+async function settle(clients, maxMs) {
+  for (let quiet = 0, n = 0; quiet < 3; n++) {
+    if (n > 2000) throw new Error('settle: the clients never went quiet');
+    await new Promise((r) => setImmediate(r));
+    let ran = false;
+    for (const c of clients) ran = c.runTimers(maxMs || 0) || ran;
+    if (!ran && inflight.size === 0) quiet++; else quiet = 0;
+  }
+}
+const PACK_STATE = (extra) => Object.assign({ rev: 3, packName: 'Test Pack', scouts: [{ id: 's1', name: 'Ada' }], storefronts: [],
+  entries: [], events: [{ id: 'e1', name: 'Pack meeting', date: '2026-10-06' }], ledger: [{ id: 'l0', amountCents: 100 }],
+  leaders: [], fundraisers: [], inventory: { distributions: [] } }, extra || {});
+const serverState = (w) => {
+  const row = w.one('SELECT rev, json, device FROM pack_state WHERE pack_id = ?', API_PACK);
+  return row ? Object.assign({}, row, { json: JSON.parse(row.json) }) : null;
+};
+
+atest('api client: each role signs in with one session call and lands on the feed its role allows', async () => {
+  const w = await (await apiWorld()).seed();
+  w.state(3, PACK_STATE());
+  for (const [who, role, feed, gate] of [['owner', 'admin', 'doc', null], ['admin2', 'admin', 'doc', null],
+    ['editor', 'editor', 'doc', null], ['viewer', 'viewer', 'doc', null], ['parent', 'parent', 'parent', null],
+    ['pending', 'pending', 'none', 'waiting']]) {
+    const c = await (await apiClient(w, who)).start();
+    eq(c.get('[sync.myRole, sync.feed, gateMode(), sync.accountsUnavailable, sync.mode]'), [role, feed, gate, false, 'online'],
+      `${who}: role, feed, gate`);
+    // Firestore's packmeta / member / invite reads are gone: the first call is the session.
+    eq(c.log[0], 'POST /api/session', `${who}: the first call is not the session`);
+    ok(!c.log.some((l) => /packmeta|\/invites\//.test(l)), `${who}: a Firestore-style read`);
+    const leader = ['admin', 'editor', 'viewer'].indexOf(role) >= 0;
+    eq(c.get('sync.membersScope'), leader ? 'all' : 'self', `${who}: the members watch`);
+    ok(c.log.indexOf('GET /P') >= 0 === leader, `${who}: the pack record was ${leader ? 'not ' : ''}read`);
+    if (leader) eq(c.get('[state.rev, state.scouts.length]'), [3, 1], `${who}: the pack record was not adopted`);
+    if (role === 'parent') ok(c.log.indexOf('GET /P/rev') >= 0, 'the parent does not poll /rev');
+    if (role === 'pending') eq(c.get('[state.fresh === true, store[KEY] === undefined]'), [true, true], 'a pending device kept the pack');
+    ok(c.errors.length === 0, `${who}: ${c.errors.join('; ')}`);
+  }
+  // The sign-up link: a stranger with the current code files a pending request; the server writes
+  // the code with it. A stale code and no link at all are the two "ask a leader" gates.
+  w.joinCfg(true, 'Code123abc');
+  const n = await (await apiClient(w, 'newbie', { join: 'Code123abc' })).start();
+  eq(n.get('[sync.myRole, gateMode(), sync.feed]'), ['pending', 'waiting', 'none'], 'a sign-up link visitor');
+  eq(w.one('SELECT role, join_code FROM members WHERE uid = ?', 'uid-newbie'), { role: 'pending', join_code: 'Code123abc' }, 'the pending row');
+  const stale = await (await apiClient(w, 'stranger', { join: 'OldCode999' })).start();
+  eq(stale.get('[sync.myRole, sync.joinRejected, gateMode(), sync.pack]'), [null, 'closed', 'closed', null], 'a stale code');
+  w.db.raw.prepare('DELETE FROM join_attempts').run();
+  const none = await (await apiClient(w, 'stranger')).start();
+  eq(none.get('[sync.joinRejected, gateMode()]'), ['nolink', 'closed'], 'no link and no invite');
+  eq(none.log, ['POST /api/session'], 'a refused visitor read something after the session');
+  // An admin approves the request; the waiting device moves onto the family feed at its next poll.
+  const owner = await (await apiClient(w, 'owner')).start();
+  owner.run("setMemberRole('uid-newbie', 'parent')");
+  await settle([owner]);
+  await n.poll();
+  eq(n.get('[sync.myRole, sync.feed, gateMode()]'), ['parent', 'parent', null], 'the approved request is not a parent now');
+});
+
+atest('api client: the rate-limited sign-up link is its own gate, not "the rules aren’t published"', async () => {
+  const w = await (await apiWorld()).seed();
+  w.joinCfg(true, 'Code123abc');
+  w.db.raw.prepare('INSERT INTO join_attempts (pack_id, uid, window_start, attempts) VALUES (?, ?, ?, 10)').run(API_PACK, 'uid-newbie', Date.now());
+  const c = await (await apiClient(w, 'newbie', { join: 'Code123abc' })).start();
+  eq(c.get('[sync.joinRejected, gateMode(), sync.accountsUnavailable, sync.pack]'), ['busy', 'closed', false, null], 'a 429');
+  ok(/if \(sync\.joinRejected === 'busy'\)/.test(slice('renderJoinClosed')), 'no screen for too many tries');
+});
+
+atest('api client: two leaders save at once — the second is refused (409), merges, and both money entries are kept', async () => {
+  const w = await (await apiWorld()).seed();
+  w.state(3, PACK_STATE());
+  const a = await (await apiClient(w, 'owner')).start();
+  const b = await (await apiClient(w, 'editor')).start();
+  eq([a.get('state.rev'), b.get('state.rev')], [3, 3], 'both start on rev 3');
+  // b has read rev 3 and is about to write it; a's save lands in between.
+  a.run("state.ledger.push({ id: 'la', amountCents: 500 }); commit()");
+  b.run("state.ledger.push({ id: 'lb', amountCents: 700 }); commit()");
+  let heldOnce = false;
+  b.before = async function hold(method) {
+    if (method !== 'PUT' || heldOnce) { if (!heldOnce) b.before = hold; return; }
+    heldOnce = true;
+    a.runTimers(800);   // a pushes, completely, while b's PUT waits
+    for (let i = 0; i < 5000 && !(serverState(w) && serverState(w).rev === 4); i++) await new Promise((r) => setImmediate(r));
+  };
+  b.reset();
+  await settle([b], 800);
+  eq(b.log.filter((l) => /^PUT \/P$/.test(l)).length, 2, 'b did not retry after the conflict');
+  const s = serverState(w);
+  eq([s.rev, s.json.ledger.map((l) => l.id).sort()], [5, ['l0', 'la', 'lb']], 'the server lost an entry');
+  eq(s.device, 'dev-editor', 'the last writer');
+  eq(b.get('[state.rev, sync.dirty, sync.clobber, state.ledger.length]'), [5, false, false, 3], 'b after the retry');
+  ok(b.get('toasts').some((t) => /Another device saved changes/.test(t)), 'b was not told another device saved');
+  // a hears of it at its next poll, and adopts it.
+  await a.poll();
+  eq(a.get('[state.rev, state.ledger.map(function (l) { return l.id; }).sort()]'), [5, ['l0', 'la', 'lb']], 'a did not adopt the merged record');
+  // No 409 at all: b's poll is behind (a saved, b has not polled), and b saves. Its GET shows a rev
+  // it never saw, so the append-only logs merge before the PUT.
+  await a.edit("state.ledger.push({ id: 'la2', amountCents: 1 })");
+  eq(serverState(w).rev, 6, 'a’s second save');
+  b.reset();
+  await b.edit("state.ledger.push({ id: 'lb2', amountCents: 2 })");
+  eq(b.log.filter((l) => /^PUT/.test(l)).length, 1, 'a save one poll behind needed a retry');
+  eq(serverState(w).json.ledger.map((l) => l.id).sort(), ['l0', 'la', 'la2', 'lb', 'lb2'], 'a save one poll behind lost an entry');
+  // Our own save is not fetched back: a's next poll reads /rev, adopts b's rev 7, and b's poll after
+  // its own save reads nothing but /rev.
+  b.reset();
+  await b.poll();
+  eq(b.log.filter((l) => /^GET \/P$/.test(l)).length, 0, 'b fetched its own save back');
+});
+
+atest('api client: a removed member’s device is wiped only on the server’s word, and nothing else wipes it', async () => {
+  const w = await (await apiWorld()).seed();
+  w.state(3, PACK_STATE());
+  const owner = await (await apiClient(w, 'owner')).start();
+  const ed = await (await apiClient(w, 'editor')).start();
+  const par = await (await apiClient(w, 'parent')).start();
+  eq(ed.get('[sync.feed, state.ledger.length]'), ['doc', 1], 'the editor has the pack');
+  // A 403 that is not the server's fixed body (Cloudflare Access, a proxy) and a network failure:
+  // nothing is wiped, the feeds stay, and the pill says offline.
+  for (const [what, res] of [['an Access page', () => new Response('<html>Access</html>', { status: 403, headers: { 'content-type': 'text/html' } })],
+    ['a JSON 403 with more in it', () => new Response('{"error":"forbidden","code":"permission-denied","x":1}', { status: 403, headers: { 'content-type': 'application/json' } })],
+    ['no answer', () => { throw new TypeError('network'); }],
+    // Security review of stage C, item 3: a 2xx with nothing in it is not "no members".
+    ['a 200 {}', () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })]]) {
+    ed.intercept = async () => res();
+    await ed.poll();
+    ed.intercept = null;
+    eq(ed.get('[sync.joinRejected, sync.feed, state.ledger.length, !!store[KEY], sync.mode]'), [null, 'doc', 1, true, 'offline'], what);
+    await ed.poll();
+    eq(ed.get('sync.mode'), 'online', `${what}: the device did not come back online`);
+  }
+  // …nor, for a family, "no member row": that is what a removal is read from.
+  par.intercept = async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+  await par.poll();
+  par.intercept = null;
+  eq(par.get('[sync.joinRejected, sync.myRole, sync.feed]'), [null, 'parent', 'parent'], 'a 200 {} removed the family');
+  owner.run("removeMember('uid-editor'); removeMember('uid-parent')");
+  await settle([owner]);
+  eq(w.sql('SELECT uid FROM members WHERE uid IN (?, ?)', 'uid-editor', 'uid-parent'), [], 'the rows are still there');
+  await ed.poll();
+  eq(ed.get('[sync.joinRejected, gateMode(), sync.feed, state.fresh === true, store[KEY] === undefined, sync.members]'),
+    ['removed', 'closed', 'none', true, true, []], 'the removed editor’s device kept the pack');
+  eq(ed.get('[sync.unsub, sync.pushTimer, sync.dirty]'), [null, null, false], 'a removed device can still push');
+  await par.poll();
+  eq(par.get('[sync.joinRejected, sync.parentView, store[KEY] === undefined]'), ['removed', null, true], 'the removed parent kept the view');
+  // The admin's own roster shows them gone.
+  await owner.poll();
+  ok(owner.get('sync.members').every((m) => m.uid !== 'uid-editor'), 'the owner’s roster still lists the editor');
+});
+
+atest('api client: a family’s page polls /rev and fetches the view only when it changed', async () => {
+  const w = await (await apiWorld()).seed();
+  w.state(3, PACK_STATE());
+  const par = await (await apiClient(w, 'parent')).start();
+  eq(par.get('[sync.feed, sync.parentView]'), ['parent', null], 'no view yet');
+  const owner = await (await apiClient(w, 'owner')).start();
+  await settle([owner], 1200);   // the first answer schedules the publish
+  ok(w.one('SELECT payload FROM parent_views WHERE pack_id = ?', API_PACK), 'the owner did not publish a view');
+  par.reset();
+  await par.poll();
+  eq(par.get('sync.parentView.events.map(function (e) { return e.title; })'), ['Pack meeting'], 'the family did not get the view');
+  ok(par.log.indexOf('GET /P/view') >= 0 && par.log.indexOf('GET /P') < 0, 'the family read the pack record');
+  // Nothing changed: /rev only (and the family's own member row), never the view.
+  par.reset();
+  await par.poll();
+  ok(par.log.indexOf('GET /P/view') < 0 && par.log.indexOf('GET /P/rev') >= 0, 'an unchanged view was fetched again: ' + par.log.join(', '));
+  // A leader's edit republishes, and the family sees it at the next poll.
+  await owner.edit("state.events.push({ id: 'e2', name: 'Campout', date: '2026-10-17' })");
+  await settle([owner], 1200);
+  await par.poll();
+  eq(par.get('sync.parentView.events.length'), 2, 'the new view did not reach the family');
+  // A family polls every 60 s, a leader every 15 s; a hidden tab not at all.
+  const period = (c) => c.get('(function () { var t = timers[apiBackend.timer]; return t ? t.ms : null; })()');
+  eq([period(par), period(owner)], [60000, 15000], 'the poll periods');
+});
+
+atest('api client: before the owner copies the pack in, a leader’s device keeps its edits and stops pushing', async () => {
+  const w = await apiWorld({ OWNER_MODE: 'fixed', PACK_OWNER_UID: 'uid-owner', DEPLOY_ENV: 'prod', seedEnv: 'prod' });
+  const local = PACK_STATE({ rev: 41 });
+  const owner = await (await apiClient(w, 'owner', { state: local })).start(800);   // 800: its first save
+  eq(owner.get('sync.myRole'), 'admin', 'the fixed owner');
+  eq(owner.get('[sync.notice, sync.mode, sync.firstSnap, sync.dirty, state.ledger.length]'), ['awaiting-import', 'offline', true, true, 1],
+    'the owner’s device after the refused first save');
+  ok(/Waiting for the pack’s owner to copy the pack over/.test(owner.get('serverNotice()')), 'no plain message');
+  eq(owner.get('Object.keys(timers).map(function (k) { return timers[k].ms; }).filter(function (ms) { return ms === 10000 || ms === 800; })'), [],
+    'a retry is scheduled');
+  // More edits: kept on the device, nothing sent.
+  owner.reset();
+  owner.run("state.ledger.push({ id: 'held', amountCents: 9 }); commit()");
+  eq(owner.get('Object.keys(timers).filter(function (k) { return timers[k].ms === 800; }).length'), 0, 'a push was scheduled while waiting');
+  await settle([owner], 800);
+  eq(owner.log.filter((l) => /^PUT/.test(l)), [], 'an edit was pushed while waiting');
+  ok(JSON.parse(owner.get('store[KEY]')).ledger.some((l) => l.id === 'held'), 'the edit was not kept on the device');
+  eq(w.sql('SELECT count(*) AS n FROM pack_state')[0].n, 0, 'something was written');
+  // A network blip, then the server again: the empty pack is delivered again, and the device is
+  // still waiting — it does not try another save.
+  owner.intercept = async () => { throw new TypeError('offline'); };
+  await owner.poll();
+  owner.intercept = null;
+  owner.reset();
+  await owner.poll();
+  await settle([owner], 800);
+  eq([owner.get('sync.notice'), owner.get('sync.mode'), owner.log.filter((l) => /^PUT/.test(l))], ['awaiting-import', 'offline', []],
+    'the device stopped waiting after a blip (or its pill says Synced)');
+  // The copy-in, from the move file the old page made.
+  ok(owner.get('canImportPack()'), 'the owner is not offered the copy-in');
+  const mf = owner.get(`buildMoveFile({ packId: '${API_PACK}', record: { rev: 41, device: 'fs-dev', json: ${JSON.stringify(JSON.stringify(local))} },
+    members: [{ uid: 'uid-owner', role: 'admin', name: 'O', email: 'owner@example.com', addedAt: 5 },
+      { uid: 'uid-editor', role: 'editor', name: 'E', email: 'editor1@example.com', addedAt: { toMillis: function () { return 7; } } }],
+    invites: [{ email: 'viewer1@example.com', role: 'viewer' }], joinCfg: { open: true, code: 'Code123abc', showStandings: false }, at: 'now' })`);
+  const got = owner.get(`moveImportBody(${JSON.stringify(mf)}, '${API_PACK}')`);
+  eq([got.scouts, got.members, got.invites, got.backupOnly], [1, 2, 1, false], 'what the file would copy in');
+  owner.run(`importMoveFile(${JSON.stringify(got.body)})`);
+  await settle([owner], 800);
+  eq(serverState(w).rev, 41, 'the copy-in');
+  // What arrives is a FIRST answer: this device holds an edit the file does not, so the owner is
+  // asked which copy wins, rather than either being overwritten.
+  eq(owner.get('[ui.overlay && ui.overlay.kind, sync.notice, state.rev]'), ['sync-conflict', '', 41], 'the held edit was not put to the owner');
+  owner.run('keepLocalCopy()');
+  await settle([owner], 800);
+  eq(serverState(w).rev, 42, 'keeping this device’s copy did not save it (41 imported, then one save)');
+  eq(serverState(w).json.ledger.map((l) => l.id).sort(), ['held', 'l0'], 'the held edit');
+  eq(owner.get('[sync.notice, sync.mode, state.rev]'), ['', 'online', 42], 'the owner’s device after the copy-in');
+  eq(w.sql('SELECT uid, role FROM members ORDER BY uid'), [{ uid: 'uid-editor', role: 'editor' }, { uid: 'uid-owner', role: 'admin' }], 'the members');
+  eq(w.one('SELECT added_at FROM members WHERE uid = ?', 'uid-editor').added_at, 7, 'a Firestore timestamp');
+  eq(w.one('SELECT open, code, show_standings FROM join_config'), { open: 1, code: 'Code123abc', show_standings: 0 }, 'the join settings');
+  // An editor who signs in now is let in by the copied roster, and reads the pack.
+  const ed = await (await apiClient(w, 'editor')).start();
+  eq(ed.get('[sync.myRole, state.rev]'), ['editor', 42], 'the editor after the copy-in');
+  // The copy-in happens once: the page stops offering it, and the server refuses it anyway.
+  owner.reset();
+  owner.run(`importMoveFile(${JSON.stringify(got.body)})`);
+  await settle([owner]);
+  eq([owner.get('canImportPack()'), owner.log.filter((l) => /import/.test(l))], [false, []], 'the copy-in is still offered');
+  const again = await vm.runInContext(`sync.backend.importPack('${API_PACK}', ${JSON.stringify(got.body)}).then(function () { return 'ok'; }, function (e) { return e.code; })`, owner.ctx);
+  eq(again, 'permission-denied', 'a second copy-in');
+});
+
+atest('api client: on switch day the owner’s copy is the one copied in, so it has nothing unsaved, and an editor’s later change is kept', async () => {
+  // Security review of 260f467..db851c7, F1. The owner's device holds exactly the pack the move
+  // file carries. Two ways the copied-in record reaches it as a first answer: the pack feed,
+  // after the device held its edits (awaiting-import); and its own seed, which finds the record
+  // and hands it over (unheard). Either way it is the same pack, so nothing is left to send.
+  const local = PACK_STATE({ rev: 41 });
+  for (const path of ['held, then the feed', 'the seed finds it']) {
+    const w = await apiWorld({ OWNER_MODE: 'fixed', PACK_OWNER_UID: 'uid-owner', DEPLOY_ENV: 'prod', seedEnv: 'prod' });
+    const owner = await (await apiClient(w, 'owner', { state: local })).start(path === 'held, then the feed' ? 800 : 0);
+    eq(owner.get('sync.notice'), path === 'held, then the feed' ? 'awaiting-import' : '', `${path}: the owner’s device before the copy-in`);
+    const mf = owner.get(`buildMoveFile({ packId: '${API_PACK}', record: { rev: 41, device: 'fs-dev', json: ${JSON.stringify(JSON.stringify(local))} },
+      members: [{ uid: 'uid-owner', role: 'admin', name: 'O', email: 'owner@example.com' },
+        { uid: 'uid-editor', role: 'editor', name: 'E', email: 'editor1@example.com' }], invites: [], joinCfg: null, at: 'now' })`);
+    const body = owner.get(`moveImportBody(${JSON.stringify(mf)}, '${API_PACK}')`).body;
+    eq((await w.call('owner', 'POST', 'import', null, { body })).status, 200, `${path}: the copy-in`);
+    owner.reset();
+    if (path === 'held, then the feed') await owner.poll();
+    await settle([owner], 800);
+    eq(owner.log.filter((l) => /^PUT \/P$/.test(l)), [], `${path}: the owner’s device saved its copy over the copied-in one`);
+    eq(owner.get('[sync.dirty, sync.clobber, sync.notice, sync.mode, !!sync.conflict, ui.overlay && ui.overlay.kind, state.rev]'),
+      [false, false, '', 'online', false, null, 41], `${path}: the owner’s device after the copy-in`);
+    eq(owner.get('Object.keys(timers).filter(function (k) { return timers[k].ms === 800 || timers[k].ms === 10000; }).length'), 0,
+      `${path}: a save is still scheduled`);
+    // An editor renames the pack: a change the append-only merge does not carry.
+    const ed = await (await apiClient(w, 'editor')).start();
+    await ed.edit("state.packName = 'Renamed Pack'");
+    eq(serverState(w).rev, 42, `${path}: the editor’s save`);
+    // The owner's device hears it, then saves an edit of its own.
+    await owner.poll();
+    await owner.edit("state.ledger.push({ id: 'own', amountCents: 7 })");
+    const s = serverState(w);
+    eq([s.rev, s.json.packName, s.json.ledger.map((l) => l.id).sort()], [43, 'Renamed Pack', ['l0', 'own']],
+      `${path}: the owner’s save put its old copy back over the editor’s rename`);
+    ok(!owner.get('toasts').some((t) => /Another device saved changes/.test(t)), `${path}: the owner was told of a clobber that never happened`);
+  }
+});
+
+atest('api client: a pack copied in at rev 0 goes in at rev 1, so a first save racing it is a conflict, not an overwrite', async () => {
+  // Security review of 260f467..db851c7, F2. The editor's device heard "no pack" and seeds: its
+  // save reads the pack (none), and the owner's copy-in, from a backup with no rev, lands before
+  // the save's PUT If-Match 0. Stored at rev 0, the PUT would match it and write straight over it.
+  const copied = PACK_STATE({ packName: 'Copied Pack', scouts: [{ id: 's9', name: 'Zed' }] });
+  delete copied.rev;
+  for (const env of [{}, { OWNER_MODE: 'fixed', PACK_OWNER_UID: 'uid-owner', DEPLOY_ENV: 'prod', seedEnv: 'prod' }]) {
+    const where = env.DEPLOY_ENV ? 'production' : 'staging';
+    const w = env.DEPLOY_ENV ? await apiWorld(env) : await (await apiWorld()).seed();
+    if (env.DEPLOY_ENV) {
+      // In production the editor gets in through the copied roster: bring it in first, then take
+      // the record away again, as if the copy-in were still to come.
+      await w.session('owner');
+      eq((await w.call('owner', 'POST', 'import', null, { body: importBody() })).status, 200, 'the roster');
+      w.db.raw.prepare('DELETE FROM pack_state').run();
+      w.db.raw.prepare('DELETE FROM import_lock').run();
+    }
+    const ed = await (await apiClient(w, 'editor', { state: PACK_STATE() })).start();
+    eq(ed.get('[sync.packMissing, sync.dirty]'), [true, true], `${where}: the editor did not hear "no pack" (the test proves nothing)`);
+    let imported = null;
+    ed.intercept = async (method) => {
+      if (method !== 'PUT' || imported) return null;
+      imported = await w.call('owner', 'POST', 'import', null,
+        { body: { pack: { rev: 0, device: 'fs-dev', json: JSON.stringify(copied) }, members: [], invites: [], join: null } });
+      return null;
+    };
+    await settle([ed], 800);
+    ed.intercept = null;
+    eq([imported && imported.status, imported && imported.body.rev], [200, 1], `${where}: the copy-in did not land between the read and the save`);
+    const s = serverState(w);
+    eq([s.rev, s.json.packName, s.device], [1, 'Copied Pack', 'fs-dev'], `${where}: the racing first save wrote over the copied-in pack`);
+    eq(ed.get('[ui.overlay && ui.overlay.kind, state.rev, state.packName]'), ['sync-conflict', 1, 'Test Pack'],
+      `${where}: the editor was not asked which copy to keep`);
+  }
+});
+
+atest('a copy choice closed with Escape keeps saying it waits, and a device that can no longer edit takes the shared copy', async () => {
+  // Security review of 260f467..db851c7, F4.
+  const w = await (await apiWorld()).seed();
+  w.state(3, PACK_STATE());
+  const ed = await (await apiClient(w, 'editor', { state: PACK_STATE({ packName: 'Mine', scouts: [{ id: 'x', name: 'Old' }] }) })).start();
+  eq(ed.get('[ui.overlay && ui.overlay.kind, !!sync.conflict]'), ['sync-conflict', true], 'no choice to close (the test proves nothing)');
+  ed.run('ui.overlay = null');   // Escape
+  // The pill, the sync card's line and its button, from the page's own code.
+  const pill = (conflict, mode) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`var attrs = {}, el = { hidden: false, className: '', innerHTML: '', setAttribute: function (k, v) { attrs[k] = v; } };
+      var document = { getElementById: function (id) { return id === 'syncPill' ? el : null; } };
+      function gateMode() { return null; } function parentMode() { return false; } function esc(s) { return String(s); }
+      var sync = { mode: '${mode}', conflict: ${conflict ? '{ rev: 3 }' : 'null'}, notice: '' };
+      function backendConfigured() { return true; } function fixedPackMode() { return true; } function serverNotice() { return ''; }
+      ${['SYNC_PILL', 'SYNC_PILL_PARENT', 'syncPillState', 'renderSyncPill', 'syncModeLine'].map(decl).join('\n')}
+      renderSyncPill();`, ctx);
+    return JSON.parse(JSON.stringify(vm.runInContext('({ cls: el.className, html: el.innerHTML, attrs: attrs, line: syncModeLine() })', ctx)));
+  };
+  const waiting = pill(true, 'online');
+  ok(/ conflict$/.test(waiting.cls) && />Choose which copy to keep</.test(waiting.html), 'the pill does not say a choice waits: ' + waiting.html);
+  eq([waiting.attrs['data-act'], waiting.attrs['aria-label']], ['sync-choose', 'Sync status: Choose which copy to keep. Opens the choice.'],
+    'pressing the pill does not bring the choice back');
+  ok(/Nothing is saved until you choose which copy to keep\./.test(waiting.line), 'the sync card does not say why nothing is saved');
+  const synced = pill(false, 'online');
+  eq([/>Synced</.test(synced.html), synced.attrs['data-act']], [true, 'goto-pack'], 'control: the pill with no choice waiting');
+  ok(/if \(act === 'sync-choose'\) \{\n\s+if \(sync\.conflict\) \{ ui\.overlay = \{ kind: 'sync-conflict', remote: sync\.conflict \}; render\(\); \}/.test(SCRIPT),
+    'pressing the pill does not reopen the chooser');
+  ok(/\(sync\.conflict \? '<div class="row" style="margin:0 0 8px"><button type="button" class="btn small primary" data-act="sync-choose">'/.test(slice('renderPackSharing')),
+    'the sync card has no way back to the choice');
+  // An admin makes the editor a viewer while the choice waits: the device takes the shared copy,
+  // writes nothing, and is no longer waiting.
+  const owner = await (await apiClient(w, 'owner')).start();
+  owner.run("setMemberRole('uid-editor', 'viewer')");
+  await settle([owner]);
+  ed.reset();
+  await ed.poll();
+  await settle([ed], 1200);
+  eq(ed.get('[sync.myRole, sync.conflict, ui.overlay, sync.dirty, state.packName, state.rev]'), ['viewer', null, null, false, 'Test Pack', 3],
+    'a device made a viewer is still waiting on a choice it cannot make');
+  eq(ed.log.filter((l) => /^PUT/.test(l)), [], 'a viewer’s device wrote');
+  // The same, when the choice is still open and the pack's next save is what arrives (onRemoteSnap).
+  const snap = (edit, fromServer) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`
+      var adopted = [], rendered = 0, toasts = [];
+      function scheduleParentViewRefresh() {} function renderSyncPill() {} function render() { rendered += 1; }
+      function syncPush() {} function clearTimeout() {} function setTimeout() {} function save() {} function showToast(m) { toasts.push(m); }
+      function canEdit() { return ${edit}; }
+      function normalizeState(p) { return p && typeof p === 'object' ? p : null; }
+      function adoptRemote(d) { adopted.push(d.rev); sync.conflict = null; return true; }
+      var ui = { tab: 'home', overlay: { kind: 'sync-conflict', remote: { rev: 5 } } };
+      var state = { scouts: [{ id: 'a' }], rev: 5 };
+      var sync = { firstSnap: false, mode: 'online', deviceId: 'dev1', dirty: true, clobber: false, conflict: { rev: 5 },
+        remoteRec: { rev: 5 }, backend: { serverRevs: true }, membersFromServer: ${fromServer !== false} };
+      ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap', 'takeSharedAsViewer'].map(decl).join('\n')}
+      onRemoteSnap({ rev: 6, device: 'd2', json: '{}' }, { fromServer: true, pendingWrites: false });`, ctx);
+    return JSON.parse(JSON.stringify(vm.runInContext('[adopted, sync.conflict && sync.conflict.rev, ui.overlay && ui.overlay.kind, toasts]', ctx)));
+  };
+  eq(snap(false), [[6], null, null, ['You’re now view-only, so this device took the pack’s shared copy.']],
+    'a device that cannot edit kept waiting on a choice when the pack moved on');
+  eq(snap(true), [[], 6, 'sync-conflict', []], 'control: an editor’s choice waits, now on the newer copy');
+  // Security review of 6747945..6fa61c2, item 3: "view-only" from a cached members snapshot is
+  // not the server's word, so the choice waits (on the newer copy) rather than dropping this one.
+  eq(snap(false, false), [[], 6, 'sync-conflict', []], 'a cached "viewer" threw away an editor’s copy');
+  // …and the toast came with the adopt above, end to end.
+  ok(ed.get('toasts').indexOf('You’re now view-only, so this device took the pack’s shared copy.') !== -1,
+    'the leader made view-only was not told why their copy went');
+});
+
+atest('api client: an edit made while a save is out reaches the server, even when another device saves first', async () => {
+  // Security review of 6747945..6fa61c2, item 4, end to end: the editor renames the pack while
+  // its save of a ledger row is on the wire. The owner then saves before the editor's next push.
+  const w = await (await apiWorld()).seed();
+  w.state(3, PACK_STATE());
+  const ed = await (await apiClient(w, 'editor', { state: PACK_STATE() })).start();
+  const owner = await (await apiClient(w, 'owner', { state: PACK_STATE() })).start();
+  eq([ed.get('[sync.dirty, state.rev]'), owner.get('[sync.dirty, state.rev]')], [[false, 3], [false, 3]], 'both devices start clean on rev 3');
+  let renamed = false;
+  ed.intercept = async (method, pathname) => {
+    if (method === 'PUT' && /^\/api\/pack\/[^/]+$/.test(pathname) && !renamed) {
+      renamed = true;
+      ed.run("state.packName = 'Renamed mid-save'; commit();");
+    }
+    return null;
+  };
+  ed.run("state.ledger.push({ id: 'l1', amountCents: 5 }); commit();");
+  ed.runTimers(800);      // the ledger row's push, once; the rename's own push stays waiting
+  await settle([ed]);
+  ed.intercept = null;
+  eq([renamed, serverState(w).rev, serverState(w).json.packName], [true, 4, 'Test Pack'], 'the save that was out (the test proves nothing)');
+  eq(ed.get('sync.dirty'), true, 'the device was marked clean with the rename unsent');
+  // The owner saves a ledger row; the editor's feed brings it before the editor's next push.
+  await owner.edit("state.ledger.push({ id: 'l2', amountCents: 7 })");
+  eq(serverState(w).rev, 5, 'the owner’s save');
+  await ed.poll();
+  eq(ed.get('state.packName'), 'Renamed mid-save', 'the owner’s save was adopted over the editor’s rename');
+  await settle([ed], 800);
+  const s = serverState(w);
+  eq([s.rev, s.json.packName, s.json.ledger.map((l) => l.id).sort()], [6, 'Renamed mid-save', ['l0', 'l1', 'l2']],
+    'the rename, or the owner’s row, did not reach the server');
+  eq(ed.get('[sync.dirty, state.rev]'), [false, 6], 'the editor’s device after its save');
+});
+
+atest('api client: a pack copied in after a leader’s device heard "no pack" is compared, never saved over', async () => {
+  // Security review of stage C, item 1. Staging's server (first-signer, no awaiting-import): the
+  // editor's device holds an older copy, hears "no pack", and schedules a seed. The owner's
+  // copy-in lands before that seed (or its 10 s retry) runs, or the feed brings it first.
+  const copied = PACK_STATE({ rev: 10, packName: 'Copied Pack', scouts: [{ id: 's9', name: 'Zed' }], ledger: [{ id: 'l9', amountCents: 900 }] });
+  const body = { pack: { rev: 10, device: 'fs-dev', json: JSON.stringify(copied) }, members: [], invites: [], join: null };
+  for (const path of ['the seed', 'the 10 s retry', 'the feed, then the seed']) {
+    const w = await (await apiWorld()).seed();
+    const ed = await (await apiClient(w, 'editor', { state: PACK_STATE() })).start();
+    eq(ed.get('[sync.feed, sync.packMissing, sync.remoteRec, sync.dirty]'), ['doc', true, null, true], `${path}: the editor heard "no pack"`);
+    ok(ed.get('Object.keys(timers).some(function (k) { return timers[k].ms === 800; })'), `${path}: no seed was scheduled (the test proves nothing)`);
+    if (path === 'the 10 s retry') {
+      ed.intercept = async (method) => { if (method === 'PUT') throw new TypeError('offline'); return null; };
+      await settle([ed], 800);
+      ed.intercept = null;
+      ok(ed.get('Object.keys(timers).some(function (k) { return timers[k].ms === 10000; })'), 'no retry was scheduled');
+    }
+    eq((await w.call('owner', 'POST', 'import', null, { body })).status, 200, `${path}: the copy-in`);
+    ed.reset();
+    if (path === 'the feed, then the seed') await ed.poll();
+    await settle([ed], path === 'the 10 s retry' ? 10000 : 800);
+    // Nothing at all: not the pack record, and not a family view built from the old copy.
+    eq(ed.log.filter((l) => /^PUT/.test(l)), [], `${path}: the editor’s old copy was sent`);
+    const s = serverState(w);
+    eq([s.rev, s.json.packName, s.device], [10, 'Copied Pack', 'fs-dev'], `${path}: the copied-in pack was overwritten`);
+    eq(ed.get('[ui.overlay && ui.overlay.kind, !!sync.conflict, state.rev, sync.dirty, state.scouts[0].name]'),
+      ['sync-conflict', true, 10, true, 'Ada'], `${path}: the editor was not asked which copy to keep`);
+    // The chooser closed with Escape: an edit still sends nothing, and the chooser comes back.
+    ed.run('ui.overlay = null');
+    await ed.edit("state.ledger.push({ id: 'after', amountCents: 1 })");
+    eq([ed.log.filter((l) => /^PUT/.test(l)), ed.get('ui.overlay && ui.overlay.kind')], [[], 'sync-conflict'],
+      `${path}: an edit after Escape was saved over the copied-in pack`);
+    if (path === 'the seed') {
+      // "Use cloud copy": nothing is sent, and the device has the copied-in pack. A save still
+      // scheduled when the leader chooses (and a clobber flag) goes with the copy it was for.
+      ed.run("state.ledger.push({ id: 'late', amountCents: 1 }); commit(); sync.clobber = true");
+      ok(ed.get('Object.keys(timers).some(function (k) { return timers[k].ms === 800; })'), 'no save was scheduled (the test proves nothing)');
+      ed.run('adoptRemote(ui.overlay.remote, {}); ui.overlay = null');
+      await settle([ed], 800);
+      eq([ed.log.filter((l) => /^PUT \/P$/.test(l)), ed.get('[state.packName, sync.conflict, sync.dirty, sync.clobber]')],
+        [[], ['Copied Pack', null, false, false]], 'use the cloud copy');
+      await settle([ed], 1200);
+      ok(ed.log.indexOf('PUT /P/view') >= 0, 'the family view held back during the choice never went out');
+    } else {
+      // "Keep this device's copy": the leader chose, so it is saved, on top of rev 10.
+      ed.run('keepLocalCopy()');
+      await settle([ed], 800);
+      eq([serverState(w).rev, serverState(w).json.packName], [11, 'Test Pack'], `${path}: keeping this device’s copy`);
+    }
+  }
+});
+
+atest('the move file is the pack as the server last had it, and is refused while this device’s copy differs or a choice waits', async () => {
+  // Security review of stage C, item 2. The download lives on the Firestore page; here the page's
+  // real sync layer runs against the real server, with BACKEND read as 'firestore' for the button.
+  const w = await (await apiWorld()).seed();
+  w.state(3, PACK_STATE());
+  const serverJson = () => w.one('SELECT json FROM pack_state WHERE pack_id = ?', API_PACK).json;
+  const o = await (await apiClient(w, 'owner')).start();
+  o.run("BACKEND = 'firestore'");
+  const download = () => {
+    o.run("ui.overlay = null; toasts.length = 0; downloadMoveFile()");
+    const ov = o.get('ui.overlay');
+    return { kind: ov && ov.kind, file: ov && ov.text ? JSON.parse(ov.text) : null, toast: o.get('toasts')[0] || '' };
+  };
+  eq(o.get('[canDownloadMoveFile(), moveFileProblem()]'), [true, ''], 'the owner, synced, cannot download (the test proves nothing)');
+  let d = download();
+  eq([d.file && d.file.pack.rev, d.file && d.file.pack.device, d.file && d.file.pack.json === serverJson()], [3, 'seed', true],
+    'the move file is not the record the server sent');
+  // After this device's own save, the record is the one it wrote.
+  await o.edit("state.ledger.push({ id: 'l1', amountCents: 5 })");
+  d = download();
+  eq([d.file.pack.rev, d.file.pack.device, d.file.pack.json === serverJson()], [4, 'dev-owner', true], 'the move file is not the record this device saved');
+  // A copy here the server does not have (with nothing flagged unsaved): refused.
+  o.run("state.scouts.push({ id: 'ghost', name: 'Nobody' })");
+  d = download();
+  eq([d.kind, /isn’t the pack’s latest/.test(d.toast)], [null, true], 'a move file was made from a copy that differs from the server’s');
+  o.run('state.scouts.pop()');
+  eq(download().kind, 'move-export', 'control: the same device, back in step, cannot download');
+  // A sync-conflict closed with Escape: refused, and the chooser comes back — even with this
+  // device's copy made to match, since nobody has chosen.
+  const w2 = await (await apiWorld()).seed();
+  w2.state(3, PACK_STATE());
+  const c = await (await apiClient(w2, 'owner', { state: PACK_STATE({ scouts: [{ id: 's2', name: 'Bo' }] }) })).start();
+  c.run("BACKEND = 'firestore'");
+  eq(c.get('ui.overlay && ui.overlay.kind'), 'sync-conflict', 'no conflict (the test proves nothing)');
+  c.run('ui.overlay = null; state.scouts = JSON.parse(sync.conflict.json).scouts; toasts.length = 0; downloadMoveFile()');
+  eq([c.get('ui.overlay && ui.overlay.kind'), /Choose which copy to keep first/.test(c.get('toasts')[0] || '')], ['sync-conflict', true],
+    'a move file was made with a sync-conflict unanswered');
+  c.run('adoptRemote(ui.overlay.remote, {}); ui.overlay = null; downloadMoveFile()');
+  eq(c.get('ui.overlay && ui.overlay.kind'), 'move-export', 'control: once the cloud copy is chosen, the file cannot be made');
+});
+
+test('the move file’s screen is Download only, and says what the file holds and where it may go', () => {
+  // YP review of stage C, item 1, and security review item 4. The real renderOverlay, rendered.
+  const ctx = vm.createContext({});
+  vm.runInContext(`var ui = { overlay: null };
+    ${['esc', 'renderOverlay'].map(slice).join('\n')}`, ctx);
+  const html = (o) => { vm.runInContext(`ui.overlay = ${JSON.stringify(o)}`, ctx); return vm.runInContext('renderOverlay()', ctx); };
+  const secret = '{"kind":"pack569-move","members":[{"email":"a@example.com"}]}';
+  const mv = html({ kind: 'move-export', name: 'pack569-move-2026-09-28.json', mime: 'application/json', text: secret });
+  ok(/data-act="download-export">Download pack569-move-2026-09-28\.json</.test(mv), 'the move file’s screen has no Download');
+  ok(!/<textarea|copy-export|Copy/.test(mv), 'the move file’s screen has a Copy button or a text box');
+  ok(mv.indexOf('a@example.com') < 0 && mv.indexOf('pack569-move"') < 0, 'the move file’s contents are on the screen');
+  const say = mv.replace(/<[^>]+>/g, '');
+  ok(/holds the whole pack, every member’s and invited person’s email and the sign-up code\./.test(say), 'the screen does not say what the file holds: ' + say);
+  ok(/Save it on this computer, not in iCloud, Dropbox, OneDrive or the repo folder\. Don’t email or text it\. Delete it once the pack is copied in\./.test(say),
+    'the screen does not say where the file may go');
+  ok(!/note/.test(say), 'the screen mentions a note');
+  // The plain exports keep Copy, and say where a paste goes.
+  const bk = html({ kind: 'export', title: 'JSON backup', name: 'popcorn-backup.json', mime: 'application/json', text: '{}' });
+  ok(/copy-export/.test(bk) && /<textarea/.test(bk), 'the plain export lost Copy');
+  ok(/paste it into a new text file on this computer, not a note app\./.test(bk.replace(/<[^>]+>/g, '').replace(/' \+\s+'/g, '')), 'the Backup hint still says a note');
+  ok(!/paste into a file or note/.test(SCRIPT), 'the old "file or note" hint is still in the page');
+  // downloadMoveFile opens that screen, and the Copy handler copies nothing from it.
+  ok(/ui\.overlay = \{ kind: 'move-export', name: 'pack569-move-'/.test(slice('downloadMoveFile')), 'the move file does not open its own screen');
+  ok(/if \(act === 'copy-export'\) \{\n\s+if \(ui\.overlay && ui\.overlay\.kind === 'export'\) copyText\(/.test(SCRIPT), 'Copy would copy the move file');
+  // The copy-in's confirm screen names the pack and its newest event, with the year; on staging it
+  // also says staging is for made-up data (YP review of stage C, item 2).
+  const confirm = (staging, got) => {
+    const c2 = vm.createContext({});
+    vm.runInContext(`var ui = { overlay: null }, STAGING = ${staging};
+      ${['esc', 'fmtDate', 'renderOverlay'].map(slice).join('\n')}
+      ui.overlay = { kind: 'move-import', got: ${JSON.stringify(got)} };`, c2);
+    return vm.runInContext('renderOverlay()', c2).replace(/<[^>]+>/g, '');
+  };
+  const g1 = { packName: 'Pack <569>', newestEvent: '2027-01-05', scouts: 40, members: 12, invites: 2, backupOnly: false };
+  const t1 = confirm(false, g1);
+  ok(/This file is Pack &lt;569&gt;, and its newest event is on Tue, Jan 5, 2027\./.test(t1), 'the confirm screen does not name the pack and its newest event: ' + t1);
+  ok(!/staging/i.test(t1), 'the live page says staging');
+  ok(/This is staging, made-up data only\. If this is the real pack, cancel\./.test(confirm(true, g1)), 'staging’s confirm screen does not warn');
+  ok(/This file is a pack with no name, with no events\./.test(confirm(true, { packName: '', newestEvent: '', scouts: 0, members: 0, invites: 0, backupOnly: true })),
+    'a pack with no name and no events');
+  // The owner's line on the Firestore page: plain, and says what the file holds.
+  const line = slice('renderMoveLine');
+  ok(/Only for the day the pack moves to its new server\./.test(line) && !/Firestore|owner’s guide/.test(line), 'the move line still talks about Firestore or the guide');
+  ok(/whole pack, every member’s and invited person’s email and the sign-up code/.test(line.replace(/' \+\s+'/g, '')), 'the move line does not say what the file holds');
+});
+
+atest('api client: a server that is not set up is said plainly, and the device keeps its copy', async () => {
+  const logged = [];
+  const log = console.error;
+  console.error = (...a) => { logged.push(a.join(' ')); };
+  try {
+    for (const [over, reason] of [[{ seedEnv: null }, 'deployment-unset'], [{ DEPLOY_ENV: 'preview', seedEnv: 'prod' }, 'wrong-database']]) {
+      const w = await apiWorld(over);
+      const c = await (await apiClient(w, 'owner', { state: PACK_STATE() })).start();
+      eq(c.get('[sync.notice, sync.mode, sync.pack, sync.accountsUnavailable, gateMode(), state.ledger.length, !!store[KEY]]'),
+        ['not-set-up', 'offline', null, false, null, 1, true], reason);
+      ok(/isn’t set up yet/.test(c.get('serverNotice()')) && /isn’t set up yet/.test(c.get('sync.error')), reason + ': no plain message');
+      eq(c.log, ['POST /api/session'], reason + ': it kept asking');
+      eq(c.get('apiBackend.feeds.length'), 0, reason + ': something is still polled');
+    }
+  } finally { console.error = log; }
+});
+
+atest('api client: a stale token is refreshed once and the call retried once, never more', async () => {
+  await apiSetup();
+  const w = await (await apiWorld()).seed();
+  w.state(3, PACK_STATE());
+  const expired = () => mint({ sub: PEOPLE.editor[0], email: PEOPLE.editor[1], exp: Math.floor(Date.now() / 1000) - 120 });
+  const c = await (await apiClient(w, 'editor', { firstToken: expired })).start();
+  eq(c.log.slice(0, 2), ['POST /api/session', 'POST /api/session'], 'the 401 was not retried');
+  eq(c.tokens.slice(0, 2), [false, true], 'the retry did not ask Firebase for a fresh token');
+  eq(c.tokens.filter((t) => t).length, 1, 'more than one refresh');
+  eq(c.get('[sync.myRole, state.rev]'), ['editor', 3], 'the refreshed session');
+  // A token Firebase keeps handing back bad: one retry, then a plain failure — no loop.
+  const bad = await (await apiClient(w, 'viewer', { firstToken: expired, freshToken: expired })).start();
+  eq(bad.log, ['POST /api/session', 'POST /api/session'], 'a bad token was retried more than once');
+  eq(bad.get('[sync.notice, sync.pack]'), ['no-session', null], 'a failed sign-in');
+});
+
+atest('api client: sign-out and a halt stop every poll', async () => {
+  const w = await (await apiWorld()).seed();
+  w.state(3, PACK_STATE());
+  const c = await (await apiClient(w, 'owner')).start();
+  ok(c.get('apiBackend.feeds.length') >= 3 && c.get('!!apiBackend.timer'), 'nothing is polled (the test proves nothing)');
+  c.run('haltFixedSync()');
+  eq(c.get('apiBackend.feeds.map(function (f) { return f.what; }).sort()'), ['invites', 'join', 'members'], 'the halt left the pack feed');
+  c.run('signOutGoogle()');
+  await settle([c]);
+  eq(c.get('[apiBackend.feeds.length, apiBackend.timer, sync.user]'), [0, null, null], 'polling after sign-out');
+});
+
+test('api client: on the pack’s server the rev is the server’s, and a save it has not seen is merged', () => {
+  const push = (over) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`
+      function now(v) { return { then: function (ok) { var r = ok ? ok(v) : v; return (r && r.then) ? r : now(r); }, catch: function () { return this; } }; }
+      var records = [], merged = [], toasts = [], firstAnswers = [];
+      var fakeBe = { serverRevs: ${!!over.serverRevs}, serverTime: function () { return null; },
+        pushPack: function (h, build) { var out = build(${JSON.stringify(over.remote)}); if (out.record) records.push(out.record); return now(out.result); } };
+      function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
+      function mergeRemoteAppendOnly(d) { merged.push(d.rev); return 0; } function holdPushes() { return false; }
+      function save() {} function scheduleParentViewRefresh() {} function render() {}
+      function showToast(m) { toasts.push(m); } function renderSyncPill() {} function syncFail() {}
+      function clearTimeout() {} function setTimeout() {}
+      function onRemoteSnap(r, m) { firstAnswers.push([r.rev, sync.firstSnap, m.fromServer]); }
+      var ui = { tab: 'home' }, state = { rev: ${over.localRev} };
+      var sync = { backend: fakeBe, pack: { docId: 'P' }, session: 1, deviceId: 'd', clobber: false, dirty: true, mode: 'online',
+        notice: '${over.notice || ''}', firstSnap: false,
+        remoteRec: ${JSON.stringify(over.heard === undefined ? { rev: over.localRev, device: 'x', json: '{}' } : over.heard)} };
+      ${['packLinked', 'syncPush'].map(decl).join('\n')}
+      syncPush();`, ctx);
+    const out = vm.runInContext('[records.length ? records[0].rev : null, merged, state.rev]', ctx);
+    if (over.answers) out.push(JSON.parse(JSON.stringify(vm.runInContext('[firstAnswers, sync.dirty, sync.remoteRec && sync.remoteRec.rev]', ctx))));
+    return out;
+  };
+  // Security review of stage C, item 1: a record this device has never heard of (its answer was
+  // "no pack") is not written: it goes to the first-answer comparison, and the edits stay unsent.
+  eq(push({ serverRevs: true, remote: { rev: 7 }, localRev: 7, heard: null, answers: true }), [null, [], 7, [[[7, true, true]], true, null]],
+    'a record this device never heard of was written over');
+  eq(push({ serverRevs: true, remote: { rev: 7 }, localRev: 7, answers: true }), [8, [], 8, [[], false, 8]],
+    'control: a record this device has heard of is not saved over (or the save is not remembered as the server’s)');
+  eq(push({ remote: { rev: 7 }, localRev: 7, heard: null }), [8, [], 8], 'Firestore: a push waits on what the device has heard');
+  // Holding edits (holdPushes): a push that fires anyway — a timer set before the hold — sends nothing.
+  eq(push({ serverRevs: true, remote: { rev: 7 }, localRev: 7, notice: 'awaiting-import' }), [null, [], 7], 'a held device pushed');
+  eq(push({ serverRevs: true, remote: { rev: 7 }, localRev: 7 }), [8, [], 8], 'the server’s rev + 1, nothing to merge');
+  eq(push({ serverRevs: true, remote: { rev: 9 }, localRev: 7 }), [10, [9], 10], 'a save this device had not seen was not merged');
+  eq(push({ serverRevs: true, remote: { rev: 2 }, localRev: 5 }), [3, [2], 3], 'a local rev ahead of the server’s was kept (the server stores 3)');
+  eq(push({ serverRevs: true, remote: null, localRev: 5 }), [1, [], 1], 'a first save');
+  // Firestore: a save this device has heard of is not merged without a clobber; one it has not
+  // heard of (the push read it before the feed brought it) is (review of 86dfe38..4347cc6, item 1).
+  eq(push({ remote: { rev: 9 }, localRev: 9 }), [10, [], 10], 'Firestore merged without a clobber');
+  eq(push({ remote: { rev: 9 }, localRev: 7 }), [10, [9], 10], 'Firestore: a save this device had not heard of was not merged');
+  eq(push({ remote: { rev: 2 }, localRev: 5 }), [6, [], 6], 'Firestore no longer keeps a local rev ahead');
+  // The first answer sets the server's rev whichever copy wins; an empty device seeds nothing.
+  const snap = (over) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`
+      var timers = [], adopted = 0;
+      function scheduleParentViewRefresh() {} function renderSyncPill() {} function render() {} function syncPush() {}
+      function clearTimeout() {} function setTimeout(fn) { timers.push(fn); return 't'; }
+      function canEdit() { return true; } function save() {} function showToast() {}
+      function normalizeState(p) { return p && typeof p === 'object' ? p : null; }
+      function adoptRemote(d) { adopted += 1; state.rev = d.rev; return true; }
+      var ui = { tab: 'home', overlay: null };
+      var state = ${JSON.stringify(over.local)};
+      var sync = { firstSnap: true, mode: 'online', deviceId: 'dev1', dirty: false, clobber: false,
+        backend: { serverRevs: ${!!over.serverRevs} } };
+      ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap', 'keepLocalCopy'].map(decl).join('\n')}
+      onRemoteSnap(${JSON.stringify(over.rec)}, { fromServer: true, pendingWrites: false });`, ctx);
+    return vm.runInContext('[timers.length, state.rev, ui.overlay ? ui.overlay.kind : null]', ctx);
+  };
+  const empty = { rev: 4, scouts: [] }, full = { rev: 4, scouts: [{ id: 'a' }] };
+  eq(snap({ serverRevs: true, local: empty, rec: null }), [0, 4, null], 'an empty device seeded an empty pack on the server');
+  eq(snap({ serverRevs: true, local: full, rec: null }), [1, 4, null], 'a device with a pack did not seed it');
+  eq(snap({ local: empty, rec: null }), [1, 4, null], 'Firestore: an empty device no longer seeds');
+  const rec = { rev: 2, device: 'd2', json: JSON.stringify({ scouts: [{ id: 'b' }] }) };
+  eq(snap({ serverRevs: true, local: full, rec }), [0, 2, 'sync-conflict'], 'the server’s rev was not taken at the first answer');
+  eq(snap({ local: full, rec }), [0, 4, 'sync-conflict'], 'Firestore: the first answer changed the local rev');
+  // Keep this device's copy: the copy it overwrites counts as seen (a newer one arrived meanwhile).
+  const keep = (serverRevs) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`
+      var pushed = 0;
+      function canEdit() { return true; } function render() {} function showToast() {} function scheduleSyncPush() { pushed += 1; }
+      var ui = { overlay: { kind: 'sync-conflict', remote: { rev: 9 } } }, state = { rev: 2 };
+      var sync = { backend: { serverRevs: ${serverRevs} } };
+      ${decl('keepLocalCopy')}
+      keepLocalCopy();`, ctx);
+    return vm.runInContext('[state.rev, pushed, ui.overlay]', ctx);
+  };
+  eq(keep(true), [9, 1, null], 'keeping this device’s copy on the server');
+  eq(keep(false), [2, 1, null], 'Firestore: keeping this device’s copy changed its rev');
+  ok(/arm\(act, keepLocalCopy\);/.test(SCRIPT), 'the overlay’s button does not run keepLocalCopy');
+});
+
+test('api docs: the owner’s guide covers staging deploys and the move in order, and SETUP says Part C becomes the server’s', () => {
+  const DOC = readFileSync(join(ROOT, 'docs/cloudflare-setup.md'), 'utf8');
+  const sec = (from, to) => DOC.slice(DOC.indexOf(from), to ? DOC.indexOf(to, DOC.indexOf(from)) : undefined);
+  ok(/\*\*deploy_target\*\*: `preview` \(the default\), `staging` or `production`/.test(DOC), 'section 5 does not offer staging');
+  // YP recheck of db851c7: loading the real pack is for a device-only preview link, never staging.
+  const real = sec('## Testing a preview with real data', 'Steps:');
+  ok(/\*\*A device-only preview link only\.\*\* Real data never goes to `staging`/.test(real),
+    'the real-data rules do not say staging never takes real data');
+  const d = sec('### D. A preview you can sign in to', '#### One Firebase project');
+  ok(/deploy_target`\s\*\*`staging`\*\*/.test(d) && /firestore\.googleapis\.com/.test(d) && !/nothing deploys to `staging`/.test(d),
+    'D does not say how to deploy and check staging');
+  const e = sec('### E. Moving the pack to its own server (the switch)', '### Backups');
+  ok(e.length > 1000, 'no section E');
+  ok(/\*\*Download pack for the new server\*\*/.test(e) && /\*\*Copy pack to new server…\*\*/.test(e), 'E does not name the two buttons');
+  ok(/never\s+through GitHub or CI/.test(e), 'E does not say the file never goes through GitHub or CI');
+  // YP review of stage C, items 3 and 4, and security review items 4 and 6: the file's rules
+  // are written in E itself, not behind a link, and say what it holds.
+  ok(/\*\*The move file holds the whole pack, every member's and invited person's email and the\s+sign-up code\.\*\*/.test(e), 'E does not say what the move file holds');
+  const rules = e.slice(e.indexOf('**The move file holds'), e.indexOf('Until the copy is made'));
+  for (const [what, re] of [['iCloud', /Not in iCloud Desktop or Documents, not in\s+Dropbox or OneDrive, and not in the repo folder/],
+    ['Finder', /check in Finder that it is in Downloads/], ['email, AirDrop, text', /\*\*Never email, AirDrop or text it\.\*\*/],
+    ['notes or cloud app', /Don't open it in a notes app or a cloud app/], ['delete', /\*\*delete it and empty the Trash\*\*/],
+    ['the code', /change the sign-up code \(switch\s+step 8\)/]]) {
+    ok(re.test(rules), 'E’s file rules do not cover: ' + what);
+  }
+  ok(!/\(#testing-a-preview-with-real-data\)/.test(e), 'E still sends the owner elsewhere for the file’s rules');
+  ok(/8\. If the file may have gone anywhere other than this computer[\s\S]*?\*\*New code\*\*/.test(e), 'no switch step to change the sign-up code');
+  // The rehearsal: a made-up file with a made-up name, any real backup deleted first, and the
+  // Access sign-in checked before signing in.
+  const rh = sec('#### Rehearse it on staging first', '#### The switch, in order');
+  ok(/`made-up-test-pack\.json`/.test(rh) && !/choose the backup/.test(rh), 'the rehearsal file has no made-up name');
+  ok(/real `popcorn-backup\.json` from earlier[\s\S]*?delete it before you start/.test(rh), 'the rehearsal does not clear out a real backup first');
+  ok(/\*\*Before you sign in, check that Cloudflare Access asks you to sign in first\*\*/.test(rh), 'the rehearsal signs in before checking the lock');
+  ok(/\*\*Before you sign in:\*\* Cloudflare Access asks you to sign in first/.test(d), 'D’s checklist signs in before checking the lock');
+  // Merging deploys to GitHub Pages until it is off, so the guide never says merging never deploys.
+  ok(!/merging never deploys|Pushing or merging never deploys\./.test(DOC), 'the guide still says merging never deploys');
+  ok(/\*\*GitHub Pages is off\*\* \(cutover step 6\)/.test(e), 'the switch does not need GitHub Pages off first');
+  ok(!/PR #1 makes `\.gitignore` ignore/.test(DOC), 'the stale PR #1 .gitignore sentence is back');
+  ok(/pack569\.com is already served by Cloudflare/.test(e), 'E does not require the DNS move before the switch');
+  // In owner order: rehearse on staging, then the switch commit, download, deploy, copy in, check, delete.
+  const order = ['Rehearse it on staging first', 'Make the switch commit', 'Download pack for the new server**. Save',
+    'Run workflow from `main`, `production`', 'Copy pack to new server…** → the file', 'Members card lists everyone',
+    'Delete the file', 'The way back'];
+  const at = order.map((o) => e.indexOf(o));
+  at.forEach((i, n) => ok(i >= 0, 'E is missing: ' + order[n]));
+  eq(at.slice().sort((x, y) => x - y), at, 'E is not in the owner’s order');
+  // The rehearsal never touches the production database.
+  const reh = sec('#### Rehearse it on staging first', '#### The switch, in order');
+  const cmds = reh.match(/`npx wrangler[^`]*`/g) || [];
+  ok(cmds.length >= 1 && cmds.every((c) => /pack569-preview/.test(c) && !/--env production|pack569-prod/.test(c)),
+    'a rehearsal command can reach the production database: ' + cmds.join(' '));
+  // The switch commit changes the harness's own pin, which must exist for the guide to be right.
+  ok(/the committed page is not the Firestore build/.test(readFileSync(join(ROOT, 'test/harness.mjs'), 'utf8')), 'the pin the guide names is gone');
+  // SETUP.md: a short note in Part C, and Part C itself left as it is until Firestore is retired.
+  const partC = SETUP.slice(SETUP.indexOf('## Part C'), SETUP.indexOf('### The four roles'));
+  ok(/The pack is moving to its own server/.test(partC) && /\*what the server enforces\*/.test(partC) &&
+    /keep these rules published exactly as they are/.test(partC), 'SETUP Part C has no note about the server');
+});
+
+/* ---- the adapter on its own: answers, the poller's timing ---- */
+
+function apiAdapterCtx(responder) {
+  const ctx = vm.createContext({ console: { error() {} }, Response });
+  ctx.fetch = async (path, init) => responder(path, init);
+  vm.runInContext(`
+    var SYNC_SDK_BASE = 'x', timers = {}, timerSeq = 0, visible = 'visible';
+    ${slice('apiBackend')}
+    setTimeout = function (fn, ms) { timerSeq += 1; timers[timerSeq] = { fn: fn, ms: ms }; return timerSeq; };
+    clearTimeout = function (id) { delete timers[id]; };
+    var document = { get visibilityState() { return visible; } };
+    apiBackend.mods = { auth: { getAuth: function () { return { currentUser: { getIdToken: function () { return Promise.resolve('t'); } } }; } } };
+    apiBackend.app = 'APP';`, ctx);
+  return ctx;
+}
+const jsonRes = (status, body, headers) => new Response(typeof body === 'string' ? body : JSON.stringify(body),
+  { status, headers: Object.assign({ 'content-type': 'application/json; charset=utf-8' }, headers || {}) });
+
+atest('api adapter: only the server’s fixed 403 is a refusal, and each answer keeps its code', async () => {
+  const cases = [
+    [jsonRes(403, { error: 'forbidden', code: 'permission-denied' }), 'permission-denied'],
+    [jsonRes(403, { error: 'forbidden', code: 'permission-denied', why: 'x' }), 'unavailable'],
+    [new Response('<h1>Forbidden</h1>', { status: 403, headers: { 'content-type': 'text/html' } }), 'unavailable'],
+    [new Response('{"error":"forbidden","code":"permission-denied"}', { status: 403, headers: { 'content-type': 'text/plain' } }), 'unavailable'],
+    [jsonRes(409, { error: 'awaiting-import', code: 'failed-precondition', reason: 'awaiting-import' }), 'failed-precondition/awaiting-import'],
+    [jsonRes(409, { error: 'last-admin', code: 'failed-precondition' }), 'failed-precondition/last-admin'],
+    [jsonRes(409, { error: 'conflict', code: 'aborted', exists: true, rev: 4, json: '{}' }), 'aborted'],
+    [jsonRes(429, { error: 'rate-limited', code: 'resource-exhausted' }, { 'retry-after': '120' }), 'resource-exhausted'],
+    [jsonRes(503, { error: 'unavailable', code: 'unavailable', reason: 'deployment-unset' }), 'unavailable/deployment-unset'],
+    [jsonRes(503, { error: 'unavailable', code: 'unavailable', reason: 'wrong-project' }), 'unavailable/wrong-project'],
+    [jsonRes(503, { error: 'unavailable', code: 'unavailable', reason: 'jwks-unavailable' }), 'unavailable/jwks-unavailable'],
+    [jsonRes(500, { error: 'internal', code: 'internal' }), 'unavailable'],
+    [new Response('<html>ok</html>', { status: 200, headers: { 'content-type': 'text/html' } }), 'unavailable'],
+    [jsonRes(200, '[1]'), 'unavailable']
+  ];
+  for (const [res, want] of cases) {
+    const ctx = apiAdapterCtx(() => res);
+    const err = await vm.runInContext("apiBackend.call('GET', '/api/x').then(function () { return null; }, function (e) { return e; })", ctx);
+    ok(err, `${want}: an error answer resolved`);
+    eq(err.code + (err.reason && want.indexOf('/') > 0 ? '/' + err.reason : ''), want, `answer ${res.status}`);
+    if (want === 'aborted') eq(err.remote.rev, 4, 'a conflict does not carry the server’s copy');
+    if (want === 'resource-exhausted') eq(err.retryAfter, 120, 'Retry-After');
+    eq(err.notSetUp, want === 'unavailable/deployment-unset' || want === 'unavailable/wrong-project', `${want}: notSetUp`);
+  }
+  // Every way the server says it is set up wrong reads as "isn't set up", not "couldn't reach"
+  // (review of c7aac0a..b4c1d7e, item 3): each literal reason database() and firebaseProject()
+  // refuse with is on the page's NOT_SET_UP list.
+  const packSrc = readFileSync(new URL('../functions/_lib/pack.js', import.meta.url), 'utf8');
+  const setupReasons = [...packSrc.matchAll(/refuse\(unavailable\('([a-z-]+)'\)\)/g)].map((m) => m[1]);
+  ok(setupReasons.indexOf('wrong-project') !== -1 && setupReasons.length >= 5, 'the scan of pack.js found the set-up refusals');
+  const notSetUp = JSON.parse(vm.runInContext('JSON.stringify(apiBackend.NOT_SET_UP)', apiAdapterCtx(() => jsonRes(200, {}))));
+  for (const r of setupReasons) ok(notSetUp.indexOf(r) !== -1, 'the page does not call "' + r + '" not set up');
+  const net = apiAdapterCtx(() => { throw new TypeError('offline'); });
+  eq(await vm.runInContext("apiBackend.call('GET', '/x').then(null, function (e) { return e.code; })", net), 'unavailable', 'no answer');
+  // A failed answer never reaches a subscriber: only a 2xx JSON object is delivered, as fromServer.
+  let n = 0;
+  const flaky = apiAdapterCtx((path) => {
+    n += 1;
+    if (/\/rev$/.test(path)) return jsonRes(200, { rev: 2, viewAt: null });
+    return n < 4 ? new Response('<html>', { status: 200, headers: { 'content-type': 'text/html' } }) : jsonRes(200, { exists: true, rev: 2, json: '{}', device: 'd' });
+  });
+  await vm.runInContext(`var got = [], errs = [];
+    apiBackend.subscribePack({ docId: 'P' }, function (r, m) { got.push([r && r.rev, m]); }, function (e) { errs.push(e.code); });
+    apiBackend.pollNow()`, flaky);
+  eq(vm.runInContext('[got, errs]', flaky), [[], ['unavailable']], 'a non-JSON 200 was delivered');
+  await vm.runInContext('apiBackend.pollNow()', flaky);
+  await vm.runInContext('apiBackend.pollNow()', flaky);
+  eq(JSON.parse(JSON.stringify(vm.runInContext('got', flaky))), [[2, { fromServer: true, pendingWrites: false }]], 'the server’s answer, as fromServer');
+});
+
+atest('api adapter: an answer of the wrong shape is "unavailable", never "none", and a redirect is not followed', async () => {
+  // Security review of stage C, item 3. A 2xx {} (something in front of the API) read loosely was
+  // "no pack" (seed), "no member row" (wipe as removed) or "no members".
+  const feeds = {
+    pack: ['subscribePack({ docId: "P" }, ', '/api/pack/P'],
+    view: ['subscribeView("P", ', '/api/pack/P/view'],
+    join: ['subscribeJoin("P", ', '/api/pack/P/join'],
+    roster: ['subscribeMembers("P", "all", "u1", ', '/api/pack/P/members'],
+    self: ['subscribeMembers("P", "self", "u1", ', '/api/pack/P/members/u1'],
+    invites: ['subscribeInvites("P", ', '/api/pack/P/invites']
+  };
+  const good = { pack: { exists: true, rev: 2, json: '{}', device: 'd' }, view: { exists: true, generatedAt: 5, view: { events: [] } },
+    join: { exists: true, open: false, code: 'Code123abc' }, roster: { members: [{ uid: 'u1', role: 'admin' }] },
+    self: { exists: true, uid: 'u1', role: 'parent' }, invites: { invites: [{ email: 'a@example.com', role: 'parent' }] } };
+  const none = { pack: { exists: false, rev: 0 }, view: { exists: false }, join: { exists: false }, roster: { members: [] },
+    self: { exists: false }, invites: { invites: [] } };
+  const bad = { pack: [{}, { exists: true, rev: 2 }, { exists: true, json: '{}' }, { rev: 0 }, { exists: 'false' }],
+    view: [{}, { exists: true }, { exists: true, view: [] }], join: [{}, { exists: 1 }], roster: [{}, { members: {} }, { members: [null] }],
+    self: [{}, { exists: true }, { uid: 'u1' }], invites: [{}, { invites: 'x' }, { invites: [{ role: 'parent' }] }] };
+  const run = async (what, body) => {
+    const ctx = apiAdapterCtx((path) => /\/rev$/.test(path) ? jsonRes(200, { rev: 2, viewAt: 5 })
+      : (path === feeds[what][1] ? jsonRes(200, body) : jsonRes(404, { error: 'x' })));
+    await vm.runInContext(`var got = [], errs = [];
+      apiBackend.${feeds[what][0]}function (d) { got.push(d); }, function (e) { errs.push(e.code); });
+      apiBackend.pollNow()`, ctx);
+    return JSON.parse(JSON.stringify(vm.runInContext('[got, errs, apiBackend.feeds.length]', ctx)));
+  };
+  for (const what of Object.keys(feeds)) {
+    const g = await run(what, good[what]);
+    eq([g[0].length, g[1]], [1, []], `${what}: control, the server's own answer is not delivered`);
+    const n = await run(what, none[what]);
+    eq([n[0].length, n[1]], [1, []], `${what}: control, the server's "none" is not delivered`);
+    ok(n[0][0] === null || (Array.isArray(n[0][0]) && n[0][0].length === 0), `${what}: "none" is not delivered as none`);
+    for (const b of bad[what]) {
+      const r = await run(what, b);
+      eq(r[0], [], `${what}: ${JSON.stringify(b)} was delivered`);
+      // The pack record and the view report it (the pill turns Offline); the rest just stay as they were.
+      if (what === 'pack' || what === 'view') eq(r[1], ['unavailable'], `${what}: ${JSON.stringify(b)} was not "unavailable"`);
+      eq(r[2], 1, `${what}: ${JSON.stringify(b)} ended the subscription`);
+    }
+  }
+  // /rev without the mark a feed goes by is a miss for that feed, not a "nothing changed".
+  const rv = apiAdapterCtx((path) => /\/rev$/.test(path) ? jsonRes(200, { viewAt: 5 }) : jsonRes(200, good.pack));
+  await vm.runInContext('var got = [], errs = []; apiBackend.subscribePack({ docId: "P" }, function (d) { got.push(d); }, function (e) { errs.push(e.code); }); apiBackend.pollNow()', rv);
+  eq(JSON.parse(JSON.stringify(vm.runInContext('[got, errs]', rv))), [[], ['unavailable']], 'a /rev with no rev');
+  // …and, since no rev is what the server tells someone who is no longer a leader, the members are
+  // re-read in the same round, as after a refusal (security review of 260f467..db851c7, F5).
+  for (const [revBody, want] of [[{ viewAt: 5 }, 1], [{ rev: 2, viewAt: 5 }, 0]]) {
+    let noRev = false, reads = 0;
+    const mc = apiAdapterCtx((path) => {
+      if (/\/rev$/.test(path)) return jsonRes(200, noRev ? revBody : { rev: 2, viewAt: 5 });
+      if (/\/members$/.test(path)) { reads += 1; return jsonRes(200, good.roster); }
+      return jsonRes(200, good.pack);
+    });
+    await vm.runInContext(`apiBackend.subscribePack({ docId: "P" }, function () {}, function () {});
+      apiBackend.subscribeMembers("P", "all", "u1", function () {}, function () {}); apiBackend.pollNow()`, mc);
+    reads = 0;
+    noRev = true;
+    await vm.runInContext('apiBackend.poll(false)', mc);
+    eq(reads, want, `a /rev of ${JSON.stringify(revBody)}: the members were ${want ? 'not ' : ''}re-read in the same round`);
+  }
+  // The push's own read, and a 409 whose copy is not a record: no PUT on top of either.
+  const puts = [];
+  const px = apiAdapterCtx((path, init) => {
+    if (init.method === 'PUT') { puts.push(init.headers['if-match']); return jsonRes(409, { error: 'conflict', code: 'aborted', rev: 3 }); }
+    return jsonRes(200, px.firstGet ? {} : { exists: true, rev: 2, json: '{}' });
+  });
+  px.firstGet = true;
+  const push = () => vm.runInContext(`apiBackend.pushPack({ docId: 'P' }, function (r) { return { record: { rev: 1, device: 'd', json: '{}' }, result: r }; })
+    .then(function () { return 'ok'; }, function (e) { return e.code; })`, px);
+  eq([await push(), puts], ['unavailable', []], 'a push over an empty-object read');
+  px.firstGet = false;
+  eq([await push(), puts], ['aborted', ['2']], 'a 409 without the server’s copy was retried');
+  // Every call refuses a redirect rather than following it.
+  const inits = [];
+  const rd = apiAdapterCtx((path, init) => { inits.push(init.redirect); return jsonRes(200, {}); });
+  await vm.runInContext("apiBackend.call('GET', '/api/x').then(null, function () {})", rd);
+  eq(inits, ['error'], 'a redirect would be followed');
+});
+
+atest('api adapter: the poll waits 15 s for a leader, 60 s for a family, doubles on failures, and stops when hidden', async () => {
+  let fail = false;
+  const ctx = apiAdapterCtx((path) => fail ? jsonRes(503, { error: 'unavailable', code: 'unavailable', reason: '' })
+    : (/\/rev$/.test(path) ? jsonRes(200, { rev: 1, viewAt: null }) : jsonRes(200, { exists: false, rev: 0 })));
+  const next = () => vm.runInContext('(function () { var t = timers[apiBackend.timer]; return t ? t.ms : null; })()', ctx);
+  await vm.runInContext('var un = apiBackend.subscribeView("P", function () {}, function () {}); apiBackend.pollNow()', ctx);
+  eq(next(), 60000, 'a family');
+  await vm.runInContext('var unp = apiBackend.subscribePack({ docId: "P" }, function () {}, function () {}); apiBackend.pollNow()', ctx);
+  eq(next(), 15000, 'a leader');
+  fail = true;
+  await vm.runInContext('apiBackend.pollNow()', ctx);
+  eq(next(), 30000, 'one failure');
+  await vm.runInContext('apiBackend.pollNow()', ctx);
+  eq(next(), 60000, 'two failures');
+  for (let i = 0; i < 6; i++) await vm.runInContext('apiBackend.pollNow()', ctx);
+  eq(next(), 300000, 'the back-off is not capped at 5 minutes');
+  fail = false;
+  await vm.runInContext('apiBackend.pollNow()', ctx);
+  eq(next(), 15000, 'a success does not reset the back-off');
+  vm.runInContext('visible = "hidden"', ctx);
+  await vm.runInContext('apiBackend.pollNow()', ctx);
+  eq(next(), null, 'a hidden tab is still polled');
+  vm.runInContext('visible = "visible"; un(); unp();', ctx);
+  eq(vm.runInContext('[apiBackend.feeds.length, apiBackend.timer, apiBackend.kickTimer]', ctx), [0, null, null], 'polling with nothing subscribed');
+});
+
+atest('api adapter: writes send only what the server takes', async () => {
+  const sent = [];
+  const ctx = apiAdapterCtx((path, init) => { sent.push([init.method, path, init.body ? JSON.parse(init.body) : null, init.headers]); return jsonRes(200, {}); });
+  await vm.runInContext(`Promise.all([
+    apiBackend.writeJoin('P', { open: true, mode: 'request', code: 'abc', showStandings: false, contact: 'x', showAmounts: true, updatedAt: null }),
+    apiBackend.writeView('P', { events: [], generatedAt: null }),
+    apiBackend.putInvite('P', 'a+b@example.com', { role: 'parent', email: 'a+b@example.com', invitedBy: 'me@example.com', invitedAt: null }),
+    apiBackend.updateMemberRole('P', 'u1', 'viewer'),
+    apiBackend.deleteMember('P', 'u1'),
+    apiBackend.startSession('P', 'code1'),
+    apiBackend.startSession('P', '')])`, ctx);
+  eq(sent.map((s) => [s[0], s[1], s[2]]), [
+    ['PUT', '/api/pack/P/join', { open: true, mode: 'request', code: 'abc', showStandings: false, showAmounts: true, contact: 'x' }],
+    ['PUT', '/api/pack/P/view', { events: [] }],
+    ['PUT', '/api/pack/P/invites/a%2Bb%40example.com', { role: 'parent', email: 'a+b@example.com' }],
+    ['PATCH', '/api/pack/P/members/u1', { role: 'viewer' }],
+    ['DELETE', '/api/pack/P/members/u1', null],
+    ['POST', '/api/session?pack=P', { join: 'code1' }],
+    ['POST', '/api/session?pack=P', null]], 'what was sent');
+  ok(sent.every((s) => s[3].authorization === 'Bearer t'), 'a call without the token');
+  // pushPack: If-Match the rev read, the device id, and the record's json as the body; a conflict
+  // runs build() again on the server's copy, at most PUSH_TRIES times in all.
+  const calls = [];
+  const cx = apiAdapterCtx((path, init) => {
+    calls.push([init.method, init.headers['if-match'] || null]);
+    if (init.method === 'GET') return jsonRes(200, { exists: true, rev: 1, json: '{}', device: 'x' });
+    return jsonRes(409, { error: 'conflict', code: 'aborted', exists: true, rev: calls.length, json: '{}', device: 'y' });
+  });
+  const res = await vm.runInContext(`var built = [];
+    apiBackend.pushPack({ docId: 'P' }, function (remote) {
+      built.push(remote.rev);
+      return { record: { rev: remote.rev + 1, device: 'dev1', json: '{"a":1}' }, result: 'ok' };
+    }).then(null, function (e) { return e.code; })`, cx);
+  eq([res, calls.length, vm.runInContext('built', cx).length], ['aborted', 5, 4], 'the conflict retries are not bounded');
+  eq(calls.slice(0, 3), [['GET', null], ['PUT', '1'], ['PUT', '2']], 'If-Match does not follow the server’s copy');
+});
+
+atest('api client: buildParentView’s real output passes the server’s view check, standings on and off', async () => {
+  await apiSetup();
+  for (const [shown, amounts] of [[true, true], [true, false], [false, true]]) {
+    // The standings pieces stubbed as J12 stubs them; what is tested is the view's SHAPE.
+    const ctx = pvCtx(`
+      state.derby = { name: 'Derby', date: '2026-11-01', awards: [{ award: 'Fastest', racerName: 'Ada Quenneville' }] };
+      amountsEnabled = function () { return ${amounts}; };
+      function computePackTotals() { return { combined: 99000, teGoal: 200000, cashGoal: 0 }; }
+      function computeScoutTotals() { return { s1: 30000, s2: 60000, s3: 9000 }; }
+      function visibleScoutRows(t) { return state.scouts.map(function (s) { return { id: s.id, den: s.den, t: { combined: t[s.id] } }; }); }
+      function rankBy(rows, key) { return rows.slice().sort(function (a, b) { return key(b) - key(a); }); }
+      function tierProgressRows() {
+        return state.scouts.map(function (s) {
+          return { scout: s, earned: { name: 'Bronze' }, next: { name: 'Gold', reward: 'Camp' }, shortSales: 12345,
+            unlocks: 4000, sellRoutes: [{ label: 'online', pct: 30, cents: 12345 }], anchorPct: 40, pct: 55,
+            nextMarkPct: 100, pastPlan: false, ladder: { plan: { name: 'Gold' }, marksPlan: [] } };
+        });
+      }
+      function plannedTier() { return { name: 'Gold' }; }
+      function derbyWinners() { return [{ place: 1, scoutName: 'Ada Quenneville' }]; }
+      function sortedTiers() { return [{ name: 'Gold', reward: 'Camp', thresholdCents: 4000 }]; }
+      function salesForCommission(c) { return c; }`);
+    const pv = JSON.parse(JSON.stringify(vm.runInContext(`buildParentView(state, { showStandings: ${shown} })`, ctx)));
+    eq(API.rules.parentViewProblem(pv, shown), null, `standings ${shown ? 'on' : 'off'}, amounts ${amounts ? 'on' : 'off'}`);
+    // Item 2 of the review of 5690c3a..20b4fd6: the page's view sits far below the depth cap.
+    const depth = viewDepth(pv);
+    ok(depth >= 3 && depth <= API.rules.PARENT_VIEW_MAX_DEPTH / 4, `buildParentView nests ${depth} deep; the server's cap is ${API.rules.PARENT_VIEW_MAX_DEPTH}`);
+    if (shown) ok('standings' in pv, 'standings on, and none were built (the test proves nothing)');
+    else eq(API.rules.PARENT_VIEW_STANDINGS_KEYS.filter((k) => k in pv), [], 'standings off, and a standings key was built');
+    // …and through the adapter to the real endpoint, with the pack's switch set to match.
+    const w = await (await apiWorld()).seed({});
+    if (!shown) eq((await w.call('owner', 'PUT', 'join', null, { body: { open: false, code: 'Code123abc', showStandings: false, showAmounts: true } })).status, 200, 'standings off');
+    const c = await apiClient(w, 'owner');
+    const r = await vm.runInContext(`apiBackend.writeView('${API_PACK}', ${JSON.stringify(Object.assign({ generatedAt: null }, pv))})
+      .then(function () { return 'ok'; }, function (e) { return e.code + ' ' + e.reason; })`, c.ctx);
+    eq(r, 'ok', `the server refused the page’s own view (standings ${shown ? 'on' : 'off'})`);
+    // The check is live: the standings-on view is refused by a pack with standings off.
+    if (!shown) {
+      const on = JSON.parse(JSON.stringify(vm.runInContext('buildParentView(state, { showStandings: true })', ctx)));
+      const r2 = await vm.runInContext(`apiBackend.writeView('${API_PACK}', ${JSON.stringify(on)}).then(function () { return 'ok'; }, function (e) { return e.reason; })`, c.ctx);
+      eq(r2, 'view-standings-off', 'a standings view was stored while standings are off');
+    }
+  }
+});
+
+test('api client: the move file carries what the import takes, for this pack only, and never the parent view', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    var sync = {};
+    ${['arrOf', 'JOIN_CODE_RE', 'cleanContactLine', 'MOVE_KIND', 'MOVE_UID_RE', 'MOVE_ROLES', 'moveTime', 'buildMoveFile', 'moveImportBody'].map(decl).join('\n')}
+    normalizeState = function (p) { return p && typeof p === 'object' && Array.isArray(p.scouts) ? p : null; };`, ctx);
+  const mf = JSON.parse(JSON.stringify(vm.runInContext(`buildMoveFile({ packId: 'P', record: { rev: 9, device: 'd', json: '{"rev":9,"scouts":[{"id":"s"}]}', updatedAt: 'x' },
+    members: [{ uid: 'u1', role: 'admin', name: 'A', email: 'a@example.com', addedAt: 3, extra: 1 }, { uid: 'bad/uid', role: 'admin' },
+      { uid: 'u2', role: 'owner' }, { uid: 'u3', role: 'pending', joinCode: 'abc', addedAt: { toMillis: function () { return 4; } } }],
+    invites: [{ email: 'i@example.com', role: 'parent', invitedBy: 'someone' }],
+    joinCfg: { open: true, code: 'abc', showStandings: false, showAmounts: false, contact: ' Ask  me ', updatedAt: 1 }, at: 't' })`, ctx)));
+  eq(Object.keys(mf).sort(), ['invites', 'join', 'kind', 'madeAt', 'members', 'pack', 'packId', 'skipped', 'v'], 'the move file’s keys');
+  eq(mf.members, [{ uid: 'u1', role: 'admin', name: 'A', email: 'a@example.com', addedAt: 3 },
+    { uid: 'u3', role: 'pending', name: '', email: '', addedAt: 4, joinCode: 'abc' }], 'the members');
+  eq(mf.skipped, 2, 'the members the server would refuse');
+  eq(mf.invites, [{ email: 'i@example.com', role: 'parent' }], 'the invites');
+  eq(mf.join, { open: true, code: 'abc', showStandings: false, showAmounts: false, contact: 'Ask me' }, 'the join settings');
+  eq([mf.pack.rev, mf.pack.device, JSON.parse(mf.pack.json).scouts.length], [9, 'd', 1], 'the pack record');
+  eq(mf.pack, { rev: 9, device: 'd', json: '{"rev":9,"scouts":[{"id":"s"}]}' }, 'the pack record is not the server’s, exactly');
+  ok(!('view' in mf), 'the move file carries the parent view');
+  eq(vm.runInContext(`moveImportBody(${JSON.stringify(mf)}, 'Q')`, ctx).error, 'That file is for a different pack.', 'another pack’s file');
+  const plain = JSON.parse(JSON.stringify(vm.runInContext(`moveImportBody({ rev: 2, scouts: [] }, 'P')`, ctx)));
+  eq([plain.backupOnly, plain.body.members, plain.body.pack.rev], [true, [], 2], 'a plain backup');
+  // Security review of 260f467..db851c7, F2: a backup with no rev, or rev 0, goes in at rev 1.
+  for (const bk of ['{ scouts: [] }', '{ rev: 0, scouts: [] }', '{ rev: -3, scouts: [] }']) {
+    eq(vm.runInContext(`moveImportBody(${bk}, 'P').body.pack.rev`, ctx), 1, 'a plain backup’s rev floor: ' + bk);
+  }
+  ok(vm.runInContext('moveImportBody({ hello: 1 }, "P")', ctx).error, 'a file that is neither');
+  // YP review of stage C, item 2: staging refuses the real move file, whatever pack it is for,
+  // and takes a plain (made-up) backup; either way the owner is shown the pack's name and newest event.
+  for (const id of ['P', 'Q']) {
+    eq(vm.runInContext(`moveImportBody(${JSON.stringify(mf)}, '${id}', true)`, ctx).error,
+      'This is staging, made-up data only. The real move file goes to pack569.com.', `staging took the real move file (${id})`);
+  }
+  eq(vm.runInContext(`moveImportBody(${JSON.stringify(mf)}, 'P', false)`, ctx).error, undefined, 'control: the live page refuses the move file');
+  const named = JSON.parse(JSON.stringify(vm.runInContext(`moveImportBody({ rev: 2, packName: 'Made-up Pack 1', scouts: [],
+    events: [{ date: '2026-10-17' }, { date: '2027-01-05' }, { date: '2027-13' }, null, { date: 7 }] }, 'P', true)`, ctx)));
+  eq([named.error, named.backupOnly, named.packName, named.newestEvent], [undefined, true, 'Made-up Pack 1', '2027-01-05'], 'a made-up backup on staging');
+  const real = JSON.parse(JSON.stringify(vm.runInContext(`moveImportBody(${JSON.stringify(mf)}, 'P', false)`, ctx)));
+  eq([real.packName, real.newestEvent], ['', ''], 'a move file’s pack with no name and no events');
+  ok(/moveImportBody\(parsed, fixedPackId\(\), STAGING\)/.test(slice('handleMoveFile')), 'the copy-in does not pass STAGING');
+  // Offered to the pack's owner only: on Firestore the download, on the server the copy-in while it is empty.
+  const offer = (backend, over) => {
+    const c = vm.createContext({});
+    vm.runInContext(`var BACKEND = '${backend}';
+      var sync = Object.assign({ user: { uid: 'own' }, ownerUid: 'own', myRole: 'admin', packMissing: true,
+        backend: ${backend === 'api' ? '{ importPack: function () {} }' : '{}'} }, ${JSON.stringify(over || {})});
+      function fixedPackMode() { return true; } function accountsInForce() { return true; }
+      ${['isAdmin', 'isPackOwner', 'canDownloadMoveFile', 'canImportPack'].map(decl).join('\n')}`, c);
+    return vm.runInContext('[canDownloadMoveFile(), canImportPack()]', c);
+  };
+  eq(offer('firestore'), [true, false], 'the owner on Firestore');
+  eq(offer('api'), [false, true], 'the owner on the server, pack empty');
+  eq(offer('api', { packMissing: false }), [false, false], 'the owner on the server, pack there');
+  eq(offer('firestore', { user: { uid: 'other' } }), [false, false], 'another admin on Firestore');
+  eq(offer('api', { user: { uid: 'other' } }), [false, false], 'another admin on the server');
+  eq(offer('firestore', { myRole: 'editor', ownerUid: 'own' }), [false, false], 'a demoted owner');
+});
+
 /* ---------------- report ---------------- */
+// The API tests are async; they run here, one at a time, each on its own database.
+for (const [name, fn] of asyncTests) {
+  try { await fn(); pass++; }
+  catch (e) { fails.push(`${name}\n      ${e && e.message}`); }
+}
 if (fails.length) {
   console.error(`\n  ${fails.length} failing, ${pass} passing\n`);
   for (const f of fails) console.error(`  ✗ ${f}\n`);

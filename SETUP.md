@@ -115,6 +115,15 @@ and *nothing else*. It's purely additive: the ledger, the passphrase, and device
 all keep working exactly as before. It is also the prerequisite for Part D — publish these
 rules **before** you bake the pack id into the page.
 
+> **The pack is moving to its own server** (`docs/cloudflare-setup.md`, "The pack's database").
+> Once the page runs with `BACKEND = 'api'`, this Part C stops being rules you paste into
+> Firebase and becomes *what the server enforces*. The server's `functions/_lib/rules.js`
+> quotes each rule below word for word, and the test harness checks that it still does. The
+> server also holds two rules the Firestore ones could not: the pack always keeps an admin, and
+> the sign-up link only ever files a request. Until that switch, and for two weeks after it as
+> the way back, keep these rules published exactly as they are. This part is rewritten when
+> Firestore is retired.
+
 How it works:
 
 - A leader taps **Sign in with Google** on the Pack tab. In passphrase mode a passphrase must

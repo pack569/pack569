@@ -13,14 +13,24 @@
 //      PACK_DOC_ID to null, so a preview is device-only and cannot read or write the live
 //      pack record, whoever opens it. The live values are then searched for in the output
 //      and the build fails if any survived.
+//      A STAGING build (staging.pack569.pages.dev) keeps the sign-in config and the pack id,
+//      and rewrites BACKEND to 'api': its pack lives on this site's own server, which Pages
+//      binds to the preview database there. Its CSP allows no Firestore host at all, so the
+//      page could not reach the live Firestore pack even if the rewrite had not happened —
+//      and the build and --verify both refuse a staging page that is not 'api'. It also
+//      writes STAGING = true, which makes the page refuse the real move file (staging is for
+//      made-up data only); every other page must say false. What staging
+//      does NOT separate is sign-in (docs/cloudflare-setup.md, "One Firebase project").
 //   3. NO 'unsafe-inline' FOR SCRIPTS. The page is one inline <script>. Its sha256 goes into
 //      the Content-Security-Policy, so that script runs and no other inline script can.
 //      Inline event-handler attributes (onclick="…") cannot be allowed by a hash, so the
 //      build refuses a page that has any.
 //
 // Usage:
-//   node scripts/build-site.mjs --target production|preview [--out DIR]   (default: _site)
-//   node scripts/build-site.mjs --verify DIR --target production|preview
+//   node scripts/build-site.mjs --target production|staging|preview [--out DIR]   (default: _site)
+//   node scripts/build-site.mjs --verify DIR --target production|staging|preview
+// Production is the committed index.html byte for byte, with whatever BACKEND it says: the
+// switch to the pack's own server is a commit to that line, and the CSP follows it.
 // --verify re-checks a built directory against index.html at this commit; the deploy
 // preflight runs it on the downloaded artifact, so what ships is what was checked.
 //
@@ -33,7 +43,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-export const TARGETS = ['production', 'preview'];
+export const TARGETS = ['production', 'staging', 'preview'];
 // Every file the site serves. Adding one here is a decision about what the public can fetch.
 export const ALLOWLIST = ['_headers', 'index.html'];
 
@@ -42,23 +52,30 @@ export const ALLOWLIST = ['_headers', 'index.html'];
 // what keeps it out. Each pattern must match exactly once, or the build stops.
 const CONFIG_RE = /^  var FIREBASE_CONFIG = (\{[^{}]*\}|null);$/gm;
 const DOC_ID_RE = /^  var PACK_DOC_ID = ('[0-9a-f]{64}'|null);$/gm;
-// Where loadFirebase() imports the SDK from. Production's script-src allows this exact path,
+// Where firestoreBackend.init() imports the SDK from. Production's script-src allows this exact path,
 // not all of www.gstatic.com, so a version bump in index.html moves the CSP with it.
 const SDK_BASE_RE = /^  var SYNC_SDK_BASE = '(https:\/\/[a-z0-9.-]+\/[A-Za-z0-9._\/-]*\/)';$/gm;
+// Where the pack lives: 'firestore' (Firestore, the live page today) or 'api' (this site's /api).
+const BACKEND_RE = /^  var BACKEND = '(firestore|api)';$/gm;
+export const BACKENDS = ['firestore', 'api'];
+// Whether this is the staging page. Only the staging build says true; index.html says false.
+const STAGING_RE = /^  var STAGING = (true|false);$/gm;
 
 // What the Content-Security-Policy lets the page talk to, per target.
 // Production: the Firebase SDK is imported from its gstatic path; Google sign-in loads apis.google.com
 // and frames the project's authDomain; Firestore and Auth are the googleapis hosts; weather
-// is open-meteo. Preview: device-only, so loadFirebase() is never called (syncStart and
-// signInWithGoogle both return early when FIREBASE_CONFIG is null) and no Google origin is
-// needed at all. If the config ever slipped through, the browser would still block Firestore.
+// is open-meteo. Preview: device-only, so loadBackend() is never called (syncStart and
+// signInWithGoogle both return early, because backendConfigured() is false when
+// FIREBASE_CONFIG is null) and no Google origin is needed at all. If the config ever slipped through, the browser would still block Firestore.
 // The calendar-from-a-link fetch (submitIcsPaste) is deliberately NOT allowed on either: it
 // fails like a CORS refusal and the dialog switches to "paste the calendar text instead".
 const WEATHER = ['https://api.open-meteo.com', 'https://archive-api.open-meteo.com'];
 // www.googleapis.com is a guess at what sign-in may call; drop it after the first real
 // sign-in test on pack569.pages.dev if the Network tab shows nothing going there.
-const GOOGLE_CONNECT = ['https://firestore.googleapis.com', 'https://identitytoolkit.googleapis.com',
-  'https://securetoken.googleapis.com', 'https://www.googleapis.com'];
+// BACKEND 'api': Google sign-in and this site's own /api ('self'), and no Firestore host at all.
+const AUTH_CONNECT = ['https://identitytoolkit.googleapis.com', 'https://securetoken.googleapis.com', 'https://www.googleapis.com'];
+const FIRESTORE_CONNECT = ['https://firestore.googleapis.com'];
+const GOOGLE_CONNECT = FIRESTORE_CONNECT.concat(AUTH_CONNECT);
 const SIGN_IN_SCRIPT = 'https://apis.google.com';
 
 export class BuildError extends Error {}
@@ -114,7 +131,11 @@ export function liveConfig(html) {
   const docId = doc[0][1] === 'null' ? null : doc[0][1].slice(1, -1);
   const sdk = [...html.matchAll(SDK_BASE_RE)];
   const sdkBase = sdk.length === 1 ? sdk[0][1] : null;
-  return { config, docId, sdkBase };
+  const be = [...html.matchAll(BACKEND_RE)];
+  if (be.length !== 1) fail(`expected exactly one "  var BACKEND = 'firestore'|'api';" declaration; found ${be.length}`);
+  const st = [...html.matchAll(STAGING_RE)];
+  if (st.length !== 1) fail(`expected exactly one "  var STAGING = true|false;" declaration; found ${st.length}`);
+  return { config, docId, sdkBase, backend: be[0][1], staging: st[0][1] === 'true' };
 }
 
 // Every value that would let a page reach the live pack. A preview must contain none of them.
@@ -130,20 +151,27 @@ function liveMarkers(live) {
   return out;
 }
 
-// The page as the target serves it. Production is byte-for-byte the committed file.
+// The page as the target serves it. Production is byte-for-byte the committed file; staging is
+// the committed file with BACKEND 'api' and STAGING true; preview is the committed file with no
+// cloud at all.
 export function transform(html, target) {
-  if (TARGETS.indexOf(target) < 0) fail(`unknown target "${target}"; use production or preview`);
+  if (TARGETS.indexOf(target) < 0) fail(`unknown target "${target}"; use ${TARGETS.join(', ')}`);
   const live = liveConfig(html);
-  if (target === 'production') {
+  // Only a build makes a staging page; a committed page that says so is a mistake.
+  if (live.staging) fail('index.html says STAGING = true; only the staging build may');
+  if (target === 'production' || target === 'staging') {
     const c = live.config;
-    if (!c || typeof c !== 'object') fail('production needs FIREBASE_CONFIG set in index.html; it is null');
+    if (!c || typeof c !== 'object') fail(`${target} needs FIREBASE_CONFIG set in index.html; it is null`);
     for (const k of ['apiKey', 'authDomain', 'projectId']) {
-      if (typeof c[k] !== 'string' || !c[k]) fail(`production needs FIREBASE_CONFIG.${k}`);
+      if (typeof c[k] !== 'string' || !c[k]) fail(`${target} needs FIREBASE_CONFIG.${k}`);
     }
     if (!/^[a-z0-9.-]+$/.test(c.authDomain)) fail('FIREBASE_CONFIG.authDomain is not a plain host name');
-    if (!live.docId) fail('production needs PACK_DOC_ID set in index.html; it is null');
-    if (!live.sdkBase) fail("production needs exactly one \"  var SYNC_SDK_BASE = 'https://…/';\" in index.html");
-    return { html, live };
+    // BACKEND 'api' serves exactly the pack baked in as PACK_DOC_ID; without it the page is device-only.
+    if (!live.docId) fail(`${target} needs PACK_DOC_ID set in index.html; it is null`);
+    if (!live.sdkBase) fail(`${target} needs exactly one "  var SYNC_SDK_BASE = 'https://…/';" in index.html`);
+    if (target === 'production') return { html, live };
+    const out = html.replace(BACKEND_RE, "  var BACKEND = 'api';").replace(STAGING_RE, '  var STAGING = true;');
+    return { html: out, live: Object.assign({}, live, { backend: 'api', staging: true }) };
   }
   const out = html
     .replace(CONFIG_RE, '  var FIREBASE_CONFIG = null;')
@@ -154,12 +182,16 @@ export function transform(html, target) {
   return { html: out, live };
 }
 
+// What the page may connect to, for a signed-in build with this BACKEND.
+export function connectFor(backend) {
+  return backend === 'api' ? ["'self'"].concat(AUTH_CONNECT, WEATHER) : GOOGLE_CONNECT.concat(WEATHER);
+}
 // The CSP origins for a target. authDomain comes from the config, not from this file.
 export function cspSources(target, live) {
-  if (target === 'production') {
+  if (target === 'production' || target === 'staging') {
     return {
       SCRIPT_ORIGINS: [live.sdkBase, SIGN_IN_SCRIPT].join(' '),
-      CONNECT: GOOGLE_CONNECT.concat(WEATHER).join(' '),
+      CONNECT: connectFor(live.backend).join(' '),
       FRAME: ['https://' + live.config.authDomain, 'https://apis.google.com'].join(' ')
     };
   }
@@ -169,7 +201,7 @@ export function cspSources(target, live) {
 // Fill the _headers template. Comment lines are dropped from the output; they are for the
 // people reading the template, and Pages does not need them.
 export function renderHeaders(template, target, hash, live) {
-  const vals = Object.assign({ HASH: hash, PREVIEW_ONLY: target === 'preview' ? '  X-Robots-Tag: noindex' : '' },
+  const vals = Object.assign({ HASH: hash, PREVIEW_ONLY: target !== 'production' ? '  X-Robots-Tag: noindex' : '' },
     cspSources(target, live));
   let out = template.replace(/\{\{([A-Z_]+)\}\}/g, (m, k) => {
     if (!(k in vals)) fail(`_headers has an unknown placeholder ${m}`);
@@ -250,7 +282,7 @@ export function build({ target, out = join(ROOT, '_site'), root = ROOT } = {}) {
 // Re-check a built directory. Independent of how it was built: it recomputes the expected
 // page from index.html at this commit and compares bytes, then checks the headers.
 export function verify({ dir, target, root = ROOT }) {
-  if (TARGETS.indexOf(target) < 0) fail(`unknown target "${target}"; use production or preview`);
+  if (TARGETS.indexOf(target) < 0) fail(`unknown target "${target}"; use ${TARGETS.join(', ')}`);
   if (!existsSync(dir)) fail(`no built site at ${dir}`);
   const files = listFiles(dir);
   if (files.join(',') !== ALLOWLIST.join(',')) {
@@ -265,8 +297,14 @@ export function verify({ dir, target, root = ROOT }) {
       fail('this is not a preview build: FIREBASE_CONFIG / PACK_DOC_ID are not null');
     }
   } else if (!live.config || !live.docId) {
-    fail('this is not a production build: FIREBASE_CONFIG / PACK_DOC_ID are null');
+    fail(`this is not a ${target} build: FIREBASE_CONFIG / PACK_DOC_ID are null`);
   }
+  // Staging runs on the pack's own server, never on Firestore: a staging link must not be a
+  // second way into the live Firestore pack.
+  if (target === 'staging' && live.backend !== 'api') fail("this is not a staging build: BACKEND is not 'api'");
+  // Staging refuses the real move file because it says STAGING; nothing else may say it.
+  if (target === 'staging' && !live.staging) fail('this is not a staging build: STAGING is not true');
+  if (target !== 'staging' && live.staging) fail(`this is not a ${target} build: STAGING is true`);
   // Byte-for-byte what this commit's index.html becomes for this target.
   const expected = transform(readFileSync(join(root, 'index.html'), 'utf8'), target);
   if (html !== expected.html) fail(`index.html is not this commit's ${target} build`);
@@ -296,9 +334,15 @@ export function verify({ dir, target, root = ROOT }) {
     if (!/frame-src 'none'/.test(csp)) fail("the preview CSP must have frame-src 'none'");
     if (!noindex) fail('the preview must send X-Robots-Tag: noindex');
   } else {
-    const want = [live.sdkBase, SIGN_IN_SCRIPT].concat(GOOGLE_CONNECT, ['https://' + live.config.authDomain]);
-    for (const o of want) if (csp.indexOf(o) < 0) fail(`the production CSP is missing ${o}`);
-    if (noindex) fail('production must not send X-Robots-Tag: noindex');
+    const want = [live.sdkBase, SIGN_IN_SCRIPT, 'https://' + live.config.authDomain];
+    for (const o of want) if (csp.indexOf(o) < 0) fail(`the ${target} CSP is missing ${o}`);
+    // connect-src is exactly what this page's BACKEND needs: Firestore only for 'firestore',
+    // this site's own /api only for 'api'.
+    if ((directives['connect-src'] || []).join(' ') !== connectFor(live.backend).join(' ')) {
+      fail(`the ${target} CSP's connect-src is not what BACKEND '${live.backend}' needs`);
+    }
+    if (target === 'production' && noindex) fail('production must not send X-Robots-Tag: noindex');
+    if (target === 'staging' && !noindex) fail('staging must send X-Robots-Tag: noindex');
   }
   const sizes = files.map((f) => ({ file: f, bytes: statSync(join(dir, f)).size }));
   return { target, dir, files: sizes, hash };
@@ -313,7 +357,7 @@ function parseArgs(argv) {
       a[k.slice(2)] = argv[++i];
     } else fail(`unknown argument "${k}"`);
   }
-  if (!a.target) fail('--target production|preview is required');
+  if (!a.target) fail(`--target ${TARGETS.join('|')} is required`);
   if (a.verify && a.out) fail('--verify and --out do not go together');
   return a;
 }
