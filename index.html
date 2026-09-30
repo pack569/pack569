@@ -7531,8 +7531,9 @@
       var inPeriod = what + ' is dated ' + fmtDateShort(e.date) + ', inside the period already reconciled (through ' +
         fmtDateShort(book.reconciledThrough) + '), so ' + it + cant;
       // Option B (owner, 2026-09-29) — in the treasurer's words: the period stays as reconciled.
-      if (how === 'money') return inPeriod + ' To fix it, open its Detail and tap Reverse or correct: the correction is dated today and that period stays as reconciled.';
-      if (how === 'void') return inPeriod + ' To cancel it, open its Detail and tap Reverse or correct: an opposite entry dated today cancels it, and that period stays as reconciled.';
+      // Treasurer sign-off on option B (8) — "after that period": the reversal's date can be picked.
+      if (how === 'money') return inPeriod + ' To fix it, open its Detail and tap Reverse or correct: the correction is dated after that period and that period stays as reconciled.';
+      if (how === 'void') return inPeriod + ' To cancel it, open its Detail and tap Reverse or correct: an opposite entry dated after that period cancels it, and that period stays as reconciled.';
       if (how === 'unvoid') return inPeriod + ' If it should count, enter it again dated today and say in its description which entry it replaces.';
       return inPeriod;
     }
@@ -7757,8 +7758,10 @@
       return 'That entry has already been reversed, so it can’t be reversed or corrected again.';
     }
     var r = String(reason == null ? '' : reason).trim();
+    // Treasurer sign-off on option B (6) — a reversal is reversed because it was a mistake.
     if (!r) return how === 'correct' ? 'Say why it is being corrected (for example, “wrong amount”), then tap Correct it.'
-      : 'Say why it is being reversed (for example, “check returned by the bank”), then tap Reverse it.';
+      : 'Say why it is being reversed (for example, ' + (typeof e.reverses === 'string' && e.reverses ? '“reversed by mistake”' : '“check returned by the bank”') +
+        '), then tap Reverse it.';
     if (r.length > LEDGER_VOID_REASON_MAX) return 'Keep the reason to ' + LEDGER_VOID_REASON_MAX + ' characters or fewer.';
     return '';
   }
@@ -7800,9 +7803,25 @@
   // rc-rv-X; rv-X then paired with rv-rv-X, X counted again as Ben's payment, and the book netted
   // −$15 while his family showed $200 paid. A reversal is only ever the mirror of its entry: it can
   // be reversed (the entry counts again), never given other figures. Pure.
+  // Treasurer sign-off on option B (6) — in the treasurer's words.
   function ledgerCorrectReversalWhy(e) {
     if (!e || typeof e.reverses !== 'string' || !e.reverses) return '';
-    return 'A reversal mirrors its entry. To change it, reverse the reversal (the entry counts again), then reverse or correct the entry.';
+    return 'A reversal mirrors its entry, so it can’t be corrected. To change it, reverse this reversal (the entry then counts again), ' +
+      'then reverse the entry again on the right date, or correct it.';
+  }
+  // Treasurer sign-off on option B (5) — why Correct can't date the reversal of `e` for this plan
+  // (ledgerCorrectPlan's), or ''. The reversal takes the right date, or `rvDate` when that is in the
+  // reconciled period (as ledgerReverseDateRefusal asks it). A right date before a TICKED entry's own
+  // date can't be the reversal's, and it is after the period, so the entry is un-reconciled and
+  // changed in place: said so. Otherwise the date refusals as they are. Pure.
+  function ledgerCorrectDateRefusal(e, book, plan, rvDate) {
+    var moved = ledgerDateReconciled(plan.row.date, book), on = moved ? String(rvDate || '') : String(plan.row.date || '');
+    var no = ledgerReverseDateRefusal(e, book, on);
+    if (no && !moved && e && e.reconciled === true && /^\d{4}-\d{2}-\d{2}$/.test(on) && on < String(e.date || '')) {
+      return 'The right date (' + fmtDateShort(on) + ') is before the entry’s own date (' + fmtDateShort(e.date) + '), and its reversal can’t be ' +
+        'dated before the entry. It isn’t in the reconciled period, so un-reconcile it (Money · Ledger, two taps) and change it in place instead.';
+    }
+    return no;
   }
   // Why Correct can't go ahead with this draft and reason, or ''. The reverse's refusals first,
   // then that a reversal is never corrected, then the figures the replacement would have. Pure.
@@ -7821,13 +7840,12 @@
         'count in the balance. Pick a date on or after ' + fmtDateShort(book.openingDate) + '.';
     }
     var plan = ledgerCorrectPlan(e, d, book, '');
-    if (!plan.changed) return 'Nothing is different yet. Change what is wrong above, then tap Correct it — or tap Reverse it to take the entry out of the totals.';
+    if (!plan.changed) return 'Nothing is different yet. Change what is wrong above, then tap Correct it — or tap Reverse it to cancel the entry.';   // sign-off (8)
     if (plan.same) return LEDGER_FIX_DESC_ONLY;
     // Option B — the reversal and the corrected entry share one date: the right date as typed, or,
     // when that is in the reconciled period, the reversal's (the form's `rvdate`). It is the
     // reversal's date, so it is asked as one (ledgerReverseDateRefusal).
-    var on = ledgerDateReconciled(plan.row.date, book) ? String(d.rvdate || '') : plan.row.date;
-    var late = ledgerReverseDateRefusal(e, book, on);
+    var late = ledgerCorrectDateRefusal(e, book, plan, d.rvdate);   // treasurer sign-off on option B (5)
     if (late) return late;
     return ledgerReverseRefusal(e, st, book, reason, 'correct');
   }
@@ -19925,27 +19943,39 @@
   function ledgerFixFormHtml(e) {
     var d = ui.fixDraft || {}, bk = state.book, on = String(d.rvdate || '');
     var plan = ledgerCorrectPlan(e, d, bk, on);
-    var late = ledgerReverseDateRefusal(e, bk, ledgerDateReconciled(plan.row.date, bk) ? on : plan.row.date);
+    var late = ledgerCorrectDateRefusal(e, bk, plan, on);   // treasurer sign-off on option B (5)
     var mirror = ledgerCorrectReversalWhy(e);
     var note;
     if (mirror) note = ledgerReverseDateRefusal(e, bk, on) || mirror;
-    else if (!plan.changed) note = ledgerReverseDateRefusal(e, bk, on) || 'To correct it, change what is wrong above. To take it out of the totals, reverse it.';
+    else if (!plan.changed) note = ledgerReverseDateRefusal(e, bk, on) || 'To correct it, change what is wrong above. To cancel it, reverse it.';   // sign-off (8)
     else if (plan.same) note = LEDGER_FIX_DESC_ONLY;   // refused (ledgerCorrectRefusal): said before the tap
     else if (late) note = late;
     else {
-      note = 'The reversal and the corrected entry will be dated ' + fmtDateShort(plan.row.date) + '.' +
+      // Treasurer sign-off on option B (7) — the right date is the one Correct uses, not the Date of
+      // the reversal box (which is Reverse it's), unless the right date is in the period (moved).
+      note = (plan.moved ? 'The reversal and the corrected entry will be dated ' + fmtDateShort(plan.row.date) + '.'
+        : 'If you tap Correct it, the reversal and the corrected entry will both be dated ' + fmtDateShort(plan.row.date) +
+          ', the right date above (the Date of the reversal box is for Reverse it).') +
         (bk.reconciledThrough ? ' The period already reconciled (through ' + fmtDateShort(bk.reconciledThrough) + ') stays as it is.' : '') +
         ' Tick both on the statement they appear on.' +
         // Treasurer review of C4 (9) — the reversal's date may be after the next statement's date, where the bank shows it.
         (plan.moved ? ' If it cleared the bank on a different day, type that date instead (any date after ' + fmtDateShort(bk.reconciledThrough) + ').' : '');
     }
     var cArm = ui.armed === 'ledger-correct-go:' + e.id, rArm = ui.armed === 'ledger-reverse-go:' + e.id;
+    // Treasurer sign-off on option B (6) — on a reversal, what reversing it does: the entry it
+    // cancels counts again. Named as the ledger's notes name it (ledgerEntryNamed).
+    var mo = mirror ? state.ledger.filter(function (x) { return x && x.id === e.reverses; })[0] : null;
     return '<div class="lfix" style="flex-basis:100%;margin:6px 0 0">' +
-      '<p class="small" style="margin:0 0 6px"><strong>Reverse</strong> records the opposite entry (the same amount the other way), ' +
-      'dated today unless you pick another date. The two cancel, so this entry no longer counts for its family, budget line or tier, ' +
-      'and every statement already reconciled stays exactly as it was. ' +
-      (mirror ? '' : '<strong>Correct</strong> does the same and adds the right figures as a new entry. ') +
-      'The entry itself stays where it is, marked reversed, with your reason.</p>' +
+      (mirror
+        ? '<p class="small" style="margin:0 0 6px"><strong>Reverse</strong> records the opposite of this reversal, dated today unless you ' +
+          'pick another date. The two cancel, so ' + esc(mo ? ledgerEntryNamed(mo) : 'the entry it cancels') + ' counts again for its family, ' +
+          'budget line and tier. Every statement already reconciled stays exactly as it was. Use this only if the reversal was a mistake. ' +
+          'This reversal stays where it is, marked reversed, with your reason.</p>'
+        : '<p class="small" style="margin:0 0 6px"><strong>Reverse</strong> records the opposite entry (the same amount the other way), ' +
+          'dated today unless you pick another date. The two cancel, so this entry no longer counts for its family, budget line or tier, ' +
+          'and every statement already reconciled stays exactly as it was. ' +
+          '<strong>Correct</strong> does the same and adds the right figures as a new entry. ' +
+          'The entry itself stays where it is, marked reversed, with your reason.</p>') +
       (mirror ? '' : '<div class="row" style="gap:6px">' +
       '<input type="date" data-ch="ledger-fix-date" value="' + esc(d.date || '') + '" aria-label="Right date">' +
       '<select data-ch="ledger-fix-dir" aria-label="In or out">' +
@@ -19959,7 +19989,8 @@
       '<div class="row" style="gap:6px">' +
       '<label class="fld">Date of the reversal<input type="date" data-ch="ledger-fix-rvdate" value="' + esc(on) + '"></label>' +
       '<input class="lname" data-ch="ledger-fix-why" value="' + esc(ui.fixWhy || '') + '" maxlength="' + LEDGER_VOID_REASON_MAX + '" ' +
-        'placeholder="Why? (required, e.g. wrong amount)" aria-label="Why reverse or correct it (required)">' +
+        'placeholder="' + (mirror ? 'Why? (required, for example, “reversed by mistake”)' : 'Why? (required, e.g. wrong amount)') + '" ' +
+        'aria-label="' + (mirror ? 'Why reverse it (required)' : 'Why reverse or correct it (required)') + '">' +
       (mirror ? '' : '<button type="button" class="btn small' + (cArm ? ' danger armed' : ' primary') + '" data-act="ledger-correct-go:' + esc(e.id) + '">' +
         (cArm ? 'Tap again to correct' : 'Correct it') + '</button>') +
       '<button type="button" class="btn small danger' + (rArm ? ' armed' : '') + '" data-act="ledger-reverse-go:' + esc(e.id) + '">' +

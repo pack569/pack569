@@ -18310,7 +18310,7 @@ test('C2: a locked entry refuses only its amount, date and direction; its labels
   ok(/^That entry is reconciled against a bank statement, so its amount, date and direction can’t be changed\. Un-reconcile it first/.test(t[0]), t[0]);
   // Treasurer review of C2 (M-2) — in the treasurer's words, with what to do instead.
   eq(t[1], 'That entry is dated Aug 15, inside the period already reconciled (through Aug 31), so its amount, date and direction can’t be changed. ' +
-    'To fix it, open its Detail and tap Reverse or correct: the correction is dated today and that period stays as reconciled.', 'the money refusal in the period');
+    'To fix it, open its Detail and tap Reverse or correct: the correction is dated after that period and that period stays as reconciled.', 'the money refusal in the period');
   eq(vm.runInContext('LEDGER_LOCKED_FIELDS', p.ctx).slice(), ['amount', 'dir', 'date'], 'the locked fields');
   // The Entries list: a locked row's amount, date and direction are text; its labels are fields.
   const rows = slice('renderLedgerEntries');
@@ -18565,7 +18565,7 @@ test('C3: a locked entry can’t be voided, not even unticked in the reconciled 
   // Treasurer review of C2 (M-2) — what to do instead, in the treasurer's words.
   p.run("toasts = []; act2('ledger-void:p1'); act2('ledger-void:r1')");
   eq(p.get('toasts'), ['That entry is dated Aug 15, inside the period already reconciled (through Aug 31), so it can’t be voided. ' +
-    'To cancel it, open its Detail and tap Reverse or correct: an opposite entry dated today cancels it, and that period stays as reconciled.',
+    'To cancel it, open its Detail and tap Reverse or correct: an opposite entry dated after that period cancels it, and that period stays as reconciled.',
     // Treasurer sign-off on C3 — a reconciled one: if the money moved, and if the tick was a mistake.
     // Treasurer review of C4 (4), option B — the opposite entry is what Reverse records.
     'That entry is reconciled against a bank statement, so it can’t be voided. If it is on the bank statement, the money moved: open its ' +
@@ -20003,7 +20003,7 @@ atest('C3, api: a void, an un-void and a locked row settle the same way across t
    reversed, and its reversal is an ordinary counted entry dated after the period.
    ================================================================ */
 const C4_FNS = ['ledgerReversalId', 'ledgerReplacementId', 'ledgerReplacementFor', 'ledgerReverseSlot', 'ledgerReversalOf', 'ledgerPairOf', 'ledgerReverseRefusal', 'ledgerCorrectPlan', 'LEDGER_FIX_DESC_ONLY', 'ledgerCorrectRefusal', 'ledgerCorrectReversalWhy',
-  'ledgerReverseRow', 'ledgerCorrectRow', 'ledgerPairCheck', 'ledgerReverseDateDefault', 'ledgerReverseDateRefusal'];
+  'ledgerReverseRow', 'ledgerCorrectRow', 'ledgerPairCheck', 'ledgerReverseDateDefault', 'ledgerReverseDateRefusal', 'ledgerCorrectDateRefusal'];
 const C4_ACT = [
   c2Block(/    if \(act\.indexOf\('ledger-fix:'\) === 0\) \{[\s\S]*?\n    \}/, 'ledger-fix'),
   c2Block(/    if \(act === 'ledger-fix-cancel'\) \{[^\n]*\}/, 'ledger-fix-cancel'),
@@ -20321,7 +20321,7 @@ test('C4 (option B): Correct keeps the entry, reverses it, and adds the right fi
     ['t1', 's1', ['rc-m1']], 'the make-up');
   // Refused: nothing different, or figures an entry can't have. Nothing moves.
   const f = c4Page();
-  for (const [draft, said] of [[{}, 'Nothing is different yet. Change what is wrong above, then tap Correct it — or tap Reverse it to take the entry out of the totals.'],
+  for (const [draft, said] of [[{}, 'Nothing is different yet. Change what is wrong above, then tap Correct it — or tap Reverse it to cancel the entry.'],
     [{ amount: '' }, 'Enter the right amount.'], [{ amount: '0' }, 'Enter the right amount.'], [{ amount: '25000.01' }, 'That’s more than $25,000.00 for one entry — check the amount.'],
     [{ date: '' }, 'Enter the right date.'], [{ date: 'soon' }, 'Enter the right date.']]) {
     f.run(`act4('ledger-fix-cancel'); toasts = []; commits = 0; correct2('u1', ${JSON.stringify(draft)}, 'Why not')`);
@@ -20330,7 +20330,10 @@ test('C4 (option B): Correct keeps the entry, reverses it, and adds the right fi
   // Option B — the reversal and the corrected entry share one date, so it is asked as the reversal's:
   // a right date after the period but before the entry's own (r1, Sep 5), or, when the right date is in
   // the period, a reversal's date that is in it too, or none.
-  const OWN = 'That date is before the entry’s own date (Sep 5). Pick a date on or after Sep 5.';
+  // Treasurer sign-off on option B (5) — a right date before a ticked entry's own date, after the period:
+  // un-reconcile it and change it in place. An open one (u1) keeps the date refusal as it was.
+  const OWN = 'The right date (Sep 2) is before the entry’s own date (Sep 5), and its reversal can’t be dated before the entry. ' +
+    'It isn’t in the reconciled period, so un-reconcile it (Money · Ledger, two taps) and change it in place instead.';
   for (const [id, draft, said] of [['r1', { amount: '21', date: '2026-09-02' }, OWN],
     ['p1', { amount: '21', rvdate: '2026-08-31' }, 'That date is inside the period already reconciled (through Aug 31). Pick a date after Aug 31.'],
     ['p1', { amount: '21', rvdate: '' }, 'Enter the date for the reversal.'],
@@ -20717,7 +20720,7 @@ test('C4: the change history says a reverse in one line and a correction field b
 
 test('C4: the Reverse or correct form says what each does and what the corrected entry will be, and every id in it is escaped', () => {
   const x = sandbox(['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'LEDGER_VOID_REASON_MAX', 'LEDGER_FIX_DESC_ONLY', 'ledgerFixFormHtml', 'ledgerFixButtonHtml', 'ledgerCorrectsLine', 'ledgerLocked', 'ledgerAsideListHtml', 'ledgerCorrectReversalWhy',
-    'ledgerCorrectPlan', 'applyLedgerEdit', 'toCents', 'ledgerRowFields', 'LEDGER_EDIT_FIELDS', 'ledgerDateReconciled', 'entryAfterOpening', 'ledgerReverseDateRefusal', ...ASIDE_LIST_FNS,
+    'ledgerCorrectPlan', 'applyLedgerEdit', 'toCents', 'ledgerRowFields', 'LEDGER_EDIT_FIELDS', 'ledgerDateReconciled', 'entryAfterOpening', 'ledgerReverseDateRefusal', 'ledgerCorrectDateRefusal', ...ASIDE_LIST_FNS,
     'LEDGER_TAKE_OUT_ANY']);
   const bad = 'x" data-act="del-scout:s1"><img src=y>\'';
   vm.runInContext(`var ui = { ledgerOpen: {}, armed: null, fixDraft: null, fixWhy: '' };
@@ -20732,7 +20735,7 @@ test('C4: the Reverse or correct form says what each does and what the corrected
     return /<p class="small muted" style="margin:6px 0">([^<]*)<\/p>/.exec(x.ledgerFixFormHtml(e || q1))[1];
   };
   const own = { date: '2026-08-10', dir: 'in', amount: '500.00', desc: 'Popcorn commission', rvdate: '2026-10-15' };
-  eq(note(own), 'To correct it, change what is wrong above. To take it out of the totals, reverse it.', 'nothing changed');
+  eq(note(own), 'To correct it, change what is wrong above. To cancel it, reverse it.', 'nothing changed');   // treasurer sign-off on option B (8)
   // Option B — a reversal's date that would be refused is said before the tap.
   eq([note(Object.assign({}, own, { rvdate: '' })), note(Object.assign({}, own, { rvdate: '2026-08-31' }))],
     ['Enter the date for the reversal.', 'That date is inside the period already reconciled (through Aug 31). Pick a date after Aug 31.'], 'the reversal’s date refused');
@@ -20740,18 +20743,23 @@ test('C4: the Reverse or correct form says what each does and what the corrected
   eq(note(Object.assign({}, own, { desc: 'Council check' })), 'Only the description is different. A description can be changed in place (the change is logged): close this and edit it in the entry above.', 'a label');
   // Option B, in the treasurer's words: one date for the two, the period stays as it is, tick both. And
   // (treasurer review of C4, 9) when the right date was in the period, that the day it cleared can be typed.
+  // Treasurer sign-off on option B (7) — the right date is Correct's, not the Date of the reversal box; when the
+  // right date is in the period the two take the reversal's date, and that is said as before.
   const B = (d) => `The reversal and the corrected entry will be dated ${d}. The period already reconciled (through Aug 31) stays as it is. Tick both on the statement they appear on.`;
+  const B7 = (d, rest) => `If you tap Correct it, the reversal and the corrected entry will both be dated ${d}, the right date above (the Date of the reversal box is for Reverse it).${rest}`;
   eq([note(Object.assign({}, own, { amount: '450' })), note(Object.assign({}, own, { amount: '450', rvdate: '2026-09-03' })),
     note(Object.assign({}, own, { amount: '450', date: '2026-09-02' }))],
   [B('Oct 15') + ' If it cleared the bank on a different day, type that date instead (any date after Aug 31).',
-    B('Sep 3') + ' If it cleared the bank on a different day, type that date instead (any date after Aug 31).', B('Sep 2')], 'money changed');
+    B('Sep 3') + ' If it cleared the bank on a different day, type that date instead (any date after Aug 31).',
+    B7('Sep 2', ' The period already reconciled (through Aug 31) stays as it is. Tick both on the statement they appear on.')], 'money changed');
   // Ticked, with no period reconciled yet: nothing to say about one.
   vm.runInContext("state.book.reconciledThrough = ''", x);
   const r9 = { id: 'r9', date: '2026-09-05', description: 'Dues', amountCents: 2500, direction: 'in', reconciled: true, lineId: '', scoutId: '', source: '' };
   eq(note({ date: '2026-09-05', dir: 'in', amount: '30', desc: 'Dues', rvdate: '2026-10-15' }, r9),
-    'The reversal and the corrected entry will be dated Sep 5. Tick both on the statement they appear on.', 'no period reconciled');
+    B7('Sep 5', ' Tick both on the statement they appear on.'), 'no period reconciled');
   eq(note({ date: '2026-09-02', dir: 'in', amount: '30', desc: 'Dues', rvdate: '2026-10-15' }, r9),
-    'That date is before the entry’s own date (Sep 5). Pick a date on or after Sep 5.', 'a right date before the entry’s own');
+    'The right date (Sep 2) is before the entry’s own date (Sep 5), and its reversal can’t be dated before the entry. ' +
+    'It isn’t in the reconciled period, so un-reconcile it (Money · Ledger, two taps) and change it in place instead.', 'a right date before the entry’s own');   // sign-off (5)
   vm.runInContext("state.book.reconciledThrough = '2026-08-31'", x);
   // The words above the figures (option B, the treasurer's), and the buttons, armed and not.
   vm.runInContext(`ui.fixDraft = ${JSON.stringify(own)}`, x);
@@ -20942,9 +20950,9 @@ test('C4: the lock messages point at Reverse or correct, where it fits; the trea
   const p = c4Page({ more: C4_MORE + slice('ledgerLockNote') });
   eq(p.get("[ledgerLockedWhy(row('p1'), state.book, '', 'money'), ledgerLockedWhy(row('p1'), state.book, '', 'void'), ledgerLockNote(row('p1'), state.book)]"), [
     'That entry is dated Aug 15, inside the period already reconciled (through Aug 31), so its amount, date and direction can’t be changed. ' +
-      'To fix it, open its Detail and tap Reverse or correct: the correction is dated today and that period stays as reconciled.',
+      'To fix it, open its Detail and tap Reverse or correct: the correction is dated after that period and that period stays as reconciled.',
     'That entry is dated Aug 15, inside the period already reconciled (through Aug 31), so it can’t be voided. ' +
-      'To cancel it, open its Detail and tap Reverse or correct: an opposite entry dated today cancels it, and that period stays as reconciled.',
+      'To cancel it, open its Detail and tap Reverse or correct: an opposite entry dated after that period cancels it, and that period stays as reconciled.',
     'Dated on or before Aug 31, which is already reconciled: it can’t be voided, and its amount, date and direction can’t be changed. To fix it, use Reverse or correct.'],
     'in the period');
   // A reconciled entry after the period keeps the treasurer's un-reconcile wording (and the opening
@@ -21245,7 +21253,9 @@ const RECHECK_AGAIN = (d, on) => `${d} has been reversed again since (dated ${on
   'Leave this one voided. If this is the one that should count, void the newer reversal first.';
 const RECHECK_AGAIN_LOCKED = (d, on) => `${d} has been reversed again since (dated ${on}), so un-voiding this reversal would cancel it twice. ` +
   'Leave this one voided. If this is the one that should count, reverse the newer reversal first (open its Detail and tap Reverse or correct).';
-const RECHECK_MIRROR = 'A reversal mirrors its entry. To change it, reverse the reversal (the entry counts again), then reverse or correct the entry.';
+// Treasurer sign-off on option B (6) — string 5, in the treasurer's words.
+const RECHECK_MIRROR = 'A reversal mirrors its entry, so it can’t be corrected. To change it, reverse this reversal (the entry then counts again), ' +
+  'then reverse the entry again on the right date, or correct it.';
 const RECHECK_TWO = (d, on, off) => `Two reversals of ${d} count (${on}), so the entry is cancelled twice and the balance is off by ${off}. ` +
   'Keep one (the one the bank shows, if either is on a statement) and take the other out: void it, or reverse it if it is reconciled or in the reconciled period.';
 
@@ -21417,13 +21427,32 @@ test('Security re-check B: a reversal can be reversed but not corrected, and its
     x.ledgerCorrectReversalWhy({ id: 'X', reverses: '' }), x.ledgerCorrectReversalWhy({ id: 'X' })], [RECHECK_MIRROR, RECHECK_MIRROR, '', ''], 'ledgerCorrectReversalWhy');
   // The form under a reversal: no right figures, no Correct it; why, in their place.
   const f = sandbox(['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'LEDGER_VOID_REASON_MAX', 'LEDGER_FIX_DESC_ONLY', 'ledgerFixFormHtml', 'ledgerCorrectReversalWhy',
-    'ledgerCorrectPlan', 'applyLedgerEdit', 'toCents', 'ledgerRowFields', 'LEDGER_EDIT_FIELDS', 'ledgerDateReconciled', 'entryAfterOpening', 'ledgerReverseDateRefusal']);
+    'ledgerCorrectPlan', 'applyLedgerEdit', 'toCents', 'ledgerRowFields', 'LEDGER_EDIT_FIELDS', 'ledgerDateReconciled', 'entryAfterOpening', 'ledgerReverseDateRefusal', 'ledgerCorrectDateRefusal']);
   vm.runInContext(`var ui = { armed: null, fixWhy: '', fixDraft: { date: '2026-10-15', dir: 'out', amount: '500.00', desc: 'Reversal', rvdate: '2026-11-02' } };
     var state = { book: { openingDate: '2026-07-01', reconciledThrough: '2026-10-31' }, ledger: [] }; function ledgerLineIsDirect() { return false; }`, f);
   const rvq = { id: 'rv-q1', date: '2026-10-15', description: 'Reversal of “Popcorn commission”', amountCents: 50000, direction: 'out', reconciled: true, reverses: 'q1' };
   const h = f.ledgerFixFormHtml(rvq);
   eq([...h.matchAll(/\s(data-[a-z-]+)="([^"]*)"/g)].map((m) => m[2]), ['ledger-fix-rvdate', 'ledger-fix-why', 'ledger-reverse-go:rv-q1', 'ledger-fix-cancel'], 'the form under a reversal');
   eq([/<p class="small muted" style="margin:6px 0">([^<]*)<\/p>/.exec(h)[1], /Correct/.test(h)], [RECHECK_MIRROR, false], 'what it says');
+  // Treasurer sign-off on option B (6) — on a reversal, what reversing it does, the entry named; and the
+  // reason's example is a reversal's.
+  const INTRO = (d) => `<strong>Reverse</strong> records the opposite of this reversal, dated today unless you pick another date. The two cancel, so ${d} ` +
+    'counts again for its family, budget line and tier. Every statement already reconciled stays exactly as it was. Use this only if the reversal was a ' +
+    'mistake. This reversal stays where it is, marked reversed, with your reason.';
+  const intro = (html) => /<p class="small" style="margin:0 0 6px">([\s\S]*?)<\/p>/.exec(html)[1];
+  vm.runInContext(slice('ledgerEntryNamed'), f);
+  const named = f.ledgerFixFormHtml(rvq);
+  vm.runInContext("state.ledger = [{ id: 'q1', date: '2026-08-10', description: 'Popcorn <b>commission</b>', amountCents: 50000, direction: 'in' }]", f);
+  const withOrig = f.ledgerFixFormHtml(rvq);
+  vm.runInContext("state.ledger[0].description = ''", f);
+  eq([intro(named), intro(withOrig), intro(f.ledgerFixFormHtml(rvq)), (/placeholder="([^"]*)"/.exec(withOrig) || [])[1], (/aria-label="(Why[^"]*)"/.exec(withOrig) || [])[1]],
+    [INTRO('the entry it cancels'), INTRO('“Popcorn &lt;b&gt;commission&lt;/b&gt;”'), INTRO('the Aug 10 entry of +$500.00'),
+      'Why? (required, for example, “reversed by mistake”)', 'Why reverse it (required)'], 'the intro and the why box on a reversal');
+  vm.runInContext("state.ledger = []", f);
+  const rr = sandbox(['ledgerReverseRefusal', 'ledgerReversalOf', 'ledgerPairOf', 'LEDGER_VOID_REASON_MAX']);
+  eq([rr.ledgerReverseRefusal(rvq, { ledger: [] }, {}, ' ', 'reverse'), rr.ledgerReverseRefusal({ id: 'q1' }, { ledger: [] }, {}, '', 'reverse')],
+    ['Say why it is being reversed (for example, “reversed by mistake”), then tap Reverse it.',
+      'Say why it is being reversed (for example, “check returned by the bank”), then tap Reverse it.'], 'the reason’s example');
   vm.runInContext("ui.fixDraft.rvdate = '2026-10-20'", f);
   eq(/<p class="small muted" style="margin:6px 0">([^<]*)<\/p>/.exec(f.ledgerFixFormHtml(rvq))[1],
     'That date is inside the period already reconciled (through Oct 31). Pick a date after Oct 31.', 'a date refused is said first');
