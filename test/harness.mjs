@@ -24815,7 +24815,9 @@ const C6_CHOOSER_FNS = ['esc', 'fmt', 'fmtDateShort', 'ledgerCap', 'ledgerLogVal
   // Treasurer review of C6 (5, 6) — a statement and a reversal by name, from either copy; an item of several entries.
   'rowChooserTogether', 'ledgerStatementName', 'ledgerRowName', 'ledgerEntryNamed', 'arrOf',
   // Security re-check of C6 (N1a) — an entry on two statements signed separately.
-  'rowTwoStatementsNote'];
+  'rowTwoStatementsNote',
+  // Security re-check of C6 (N2) — entries locked on opposite sides: one button.
+  'rowItemSplit', 'ROW_SPLIT_NOTE', 'ROW_SPLIT_KEEP', 'ROW_SPLIT_KEEPING'];
 function c6Chooser(items, picks, more) {
   const ctx = vm.createContext({});
   vm.runInContext(`${C6_CHOOSER_FNS.map(decl).join('\n')}
@@ -24913,6 +24915,37 @@ test('C6 re-check (N1a): the chooser says an entry is on two statements signed s
   ok(/data-act="sync-row-pick:mine:l2"/.test(html) && /data-act="sync-row-pick:theirs:l2"/.test(html) && !/Can’t be kept/.test(html), 'both offered');
   ok(c6Text(c6Chooser(item({ mine: '2026-09-30', theirs: '2026-09-30' })).html).includes('This entry is on two Sep 30 statements signed separately, one on this device and ' +
     'one in the pack’s shared copy, and the two versions differ in amount, date or in/out. Whichever you keep, the other statement no longer matches it.'), 'the same date');
+});
+
+test('C6 re-check (N2): entries locked on opposite sides get one button, keeping each entry’s reconciled version, and say why', () => {
+  const row = (o) => C6_ROW(Object.assign({ id: 'l2', date: '2026-09-10' }, o));
+  // l2 is on a statement only this device has (the shared copy's can't be kept); its reversal on one only the shared copy has.
+  const split = [{ ids: ['l2', 'rv-l2'], rows: [
+    { id: 'l2', parts: ['content'], mine: row({ amountCents: 4000 }), theirs: row({ amountCents: 4500 }), mineBy: null, theirsBy: null, money: false,
+      lock: { side: 'theirs', kind: 'statement', date: '2026-09-30' } },
+    { id: 'rv-l2', parts: ['content'], mine: row({ id: 'rv-l2', direction: 'in', amountCents: 4000 }), theirs: row({ id: 'rv-l2', direction: 'in', amountCents: 4500 }),
+      mineBy: null, theirsBy: null, money: false, lock: { side: 'mine', kind: 'statement', date: '2026-10-05' } }] }];
+  let { html, ctx } = c6Chooser(split);
+  eq(html.match(/data-act="sync-row-pick:[^"]*"/g), ['data-act="sync-row-pick:mine:l2"'], 'the buttons');
+  ok(/aria-pressed="false" data-act="sync-row-pick:mine:l2">Keep each entry’s reconciled version</.test(html), 'the one button');
+  ok(!/Keep this version|Keeping this version|Can’t be kept/.test(html), 'a two-button pick');
+  ok(c6Text(html).includes('These entries were reconciled on different devices, so each keeps its own reconciled version. The entry and its reversal may then no longer ' +
+    'cancel each other: after you save, see “The ledger needs a look” on Money · Ledger.'), 'the note: ' + c6Text(html));
+  eq([vm.runInContext('rowItemLock(sync.rowChoice.items[0])', ctx), vm.runInContext('rowItemSplit(sync.rowChoice.items[0])', ctx)], [null, true], 'the item');
+  // Tapped: every entry of the item picked, said on the button, and the save offered.
+  const x = sandbox(['rowItemLock', 'pickRowVersion', 'ledgerConflictSig']);
+  const rc = { items: JSON.parse(JSON.stringify(split)), picks: {}, seen: {} };
+  x.pickRowVersion(rc, 'l2', 'mine');
+  eq(JSON.parse(JSON.stringify(rc.picks)), { l2: 'mine', 'rv-l2': 'mine' }, 'the picks');
+  ({ html } = c6Chooser(split, rc.picks));
+  ok(/class="btn small primary" aria-pressed="true" data-act="sync-row-pick:mine:l2">✓ Keeping each entry’s reconciled version</.test(html) &&
+    /data-act="sync-rows-save">Save my choices</.test(html), 'picked');
+  // Locked on one side only, as before: that side's button is gone, the other's stays; a 'both' lock beside it bars nothing more.
+  const one = [{ ids: ['l2', 'rv-l2'], rows: [split[0].rows[0], Object.assign({}, split[0].rows[1], { lock: { side: '', kind: 'both', date: '2026-10-05', both: { mine: '2026-09-30', theirs: '2026-10-05' } } })] }];
+  ({ html, ctx } = c6Chooser(one));
+  eq(html.match(/data-act="sync-row-pick:[^"]*"/g), ['data-act="sync-row-pick:mine:l2"'], 'one side locked');
+  ok(/>Keep this version</.test(html) && /Can’t be kept: it changes the money of an entry on the Sep 30 statement\./.test(html), 'one side locked: ' + c6Text(html));
+  eq(vm.runInContext('[rowItemLock(sync.rowChoice.items[0]).side, rowItemSplit(sync.rowChoice.items[0])]', ctx), ['theirs', false], 'one side locked: the item');
 });
 
 test('C6 review: a pick’s history line, the statement and reversal it chose between, and the chooser’s headers and who-lines in the treasurer’s words', () => {

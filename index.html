@@ -15281,11 +15281,24 @@
   function ledgerConflictSig(r) { return JSON.stringify([r.mine, r.theirs]); }
   // Security review of C6 (F1a, F2) — the lock that decides an item (one choice): the side none of its
   // entries can be kept from, and why (mergeLedgerRows' `lock`), or null when either side can be.
-  // Entries locked on opposite sides (two statements signed separately, each on one of a pair) leave
-  // both offered; the merge still never keeps the side each can't (mergeLedgerRows).
+  // Entries locked on opposite sides (two statements signed separately, each on one of a pair) bar
+  // neither side here (null); the merge still never keeps the side each can't (mergeLedgerRows), and
+  // the chooser offers them one button (rowItemSplit, N2).
+  // Security re-check of C6 (N1a) — a lock with no side ('both': either can be kept) bars nothing: the
+  // item's lock is its entries' sided one, or, with none, the 'both' (for the chooser's note).
   function rowItemLock(it) {
     var locks = it.rows.map(function (r) { return r.lock; }).filter(Boolean);
-    return locks.length && locks.every(function (l) { return l.side === locks[0].side; }) ? locks[0] : null;
+    var sided = locks.filter(function (l) { return l.side === 'mine' || l.side === 'theirs'; });
+    if (!sided.length) return locks[0] || null;
+    return sided.every(function (l) { return l.side === sided[0].side; }) ? sided[0] : null;
+  }
+  // Security re-check of C6 (N2) — are an item's entries locked on opposite sides (one keeps only this
+  // device's version, another only the shared copy's)? Then no one side is the pick: the chooser offers
+  // one button, and each entry keeps the version it can (mergeLedgerRows). Pure.
+  function rowItemSplit(it) {
+    var sides = {};
+    it.rows.forEach(function (r) { if (r.lock && (r.lock.side === 'mine' || r.lock.side === 'theirs')) sides[r.lock.side] = true; });
+    return !!(sides.mine && sides.theirs);
   }
   // Keep every version of an entry that `rc` (the entries waiting) asks about from `side` ('mine',
   // 'theirs'): every entry of its item, the one choice. Never the side that can't be kept (the
@@ -26518,6 +26531,12 @@
       : 'This entry is on two statements signed separately, the ' + m + ' statement on this device and the ' + t + ' statement in the pack’s shared copy') +
       ', and the two versions differ in amount, date or in/out. Whichever you keep, the other statement no longer matches it.';
   }
+  // Security re-check of C6 (N2) — an item whose entries are locked on opposite sides (rowItemSplit): one
+  // button, sending 'mine' (the merge keeps each entry's reconciled version, whichever side), and why.
+  var ROW_SPLIT_NOTE = 'These entries were reconciled on different devices, so each keeps its own reconciled version. The entry and its reversal may then no longer ' +
+    'cancel each other: after you save, see “The ledger needs a look” on Money · Ledger.';
+  var ROW_SPLIT_KEEP = 'Keep each entry’s reconciled version';
+  var ROW_SPLIT_KEEPING = '✓ Keeping each entry’s reconciled version';
   // In place of the button of the side that can't be kept (`lock`, rowItemLock).
   function rowCantKeep(lock) {
     if (lock.kind === 'pair') return 'Can’t be kept: it changes the amount of an entry that has been reversed.';
@@ -26585,8 +26604,8 @@
       h += '<div style="border-top:1px solid var(--line);margin-top:12px;padding-top:10px">' +
         it.rows.map(function (r) { return '<p style="margin:0"><strong>' + esc(ledgerConflictName(r.mine, r.theirs)) + '</strong></p>'; }).join('') +
         (many ? '<p class="small muted" style="margin:2px 0 0">' + esc(rowChooserTogether(it.rows.length)) + '</p>' : '');
-      var lock = rowItemLock(it);
-      var note = lock ? (lock.kind === 'both' ? rowTwoStatementsNote(lock) : lock.kind === 'pair' ? ROW_PAIR_NOTE : ROW_LOCKED_NOTE)
+      var lock = rowItemLock(it), split = rowItemSplit(it);
+      var note = split ? ROW_SPLIT_NOTE : lock ? (lock.kind === 'both' ? rowTwoStatementsNote(lock) : lock.kind === 'pair' ? ROW_PAIR_NOTE : ROW_LOCKED_NOTE)
         : it.rows.some(function (r) { return r.money; }) ? ROW_TICKED_NOTE : '';
       if (note) h += '<p class="small" style="margin:4px 0 0">' + esc(note) + '</p>';
       h += '<div class="row" style="align-items:flex-start;gap:12px;margin-top:6px">' + ['mine', 'theirs'].map(function (side) {
@@ -26601,10 +26620,16 @@
           '<p class="eyebrow" style="margin:0">' + (side === 'mine' ? 'On this device' : 'In the pack’s shared copy') + '</p>' +
           '<p class="small muted" style="margin:2px 0 4px">' + esc(ledgerConflictWho(by, side, lock)) + '</p>' +
           '<ul class="small" style="margin:0 0 8px;padding-left:18px">' + lines.map(function (l) { return '<li>' + esc(l) + '</li>'; }).join('') + '</ul>' +
-          (lock && lock.side === side ? '<p class="small" style="margin:0"><strong>' + esc(rowCantKeep(lock)) + '</strong></p>'
+          (split ? '' : lock && lock.side === side ? '<p class="small" style="margin:0"><strong>' + esc(rowCantKeep(lock)) + '</strong></p>'
             : '<button type="button" class="btn small' + (picked ? ' primary' : '') + '" aria-pressed="' + (picked ? 'true' : 'false') + '" data-act="sync-row-pick:' +
             side + ':' + esc(it.ids[0]) + '">' + (picked ? '✓ Keeping this version' : 'Keep this version') + '</button>') + '</div>';
-      }).join('') + '</div></div>';
+      }).join('') + '</div>';
+      if (split) {
+        var kept = !!rc.picks[it.ids[0]];
+        h += '<button type="button" class="btn small' + (kept ? ' primary' : '') + '" aria-pressed="' + (kept ? 'true' : 'false') + '" data-act="sync-row-pick:mine:' +
+          esc(it.ids[0]) + '">' + esc(kept ? ROW_SPLIT_KEEPING : ROW_SPLIT_KEEP) + '</button>';
+      }
+      h += '</div>';
     });
     var armed = ui.armed === 'sync-rows-save';
     return h + '<div class="row" style="margin-top:14px"><button type="button" class="btn" data-act="sync-download-local">Download this device’s copy first</button></div>' +
