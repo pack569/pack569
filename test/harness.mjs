@@ -1029,7 +1029,9 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
 // Phase 3, C8 (C8-4) — what the merge and the copy chooser read of closed books.
 const C8_SYNC_FNS = ['closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mergeClosedBooks', 'closedBookScouts', 'closedYearText', 'closedBooksKeptOverWhy',
-  'closedBooksUndone', 'closedBooksUndoneWhy', 'closedBooksDroppedWhy'];
+  'closedBooksUndone', 'closedBooksUndoneWhy', 'closedBooksDroppedWhy',
+  // The merge ticks a carried row the other copy ticked (M1) and ticks again what a standing statement lists.
+  'carriedRowsOf', 'statementRetick', 'entrySignedCents', 'entryAfterOpening', 'ledgerStampClean', 'statementReopened', 'normalizeStatement', 'statementAdded', 'LEDGER_TICK_FIELDS'];
 // Phase 3, C6 — the per-row ledger merge and what it reads.
 const C6_MERGE_FNS = ['LEDGER_TICK_FIELDS', 'LEDGER_OFF_FIELDS', 'LEDGER_ENTERED_FIELDS', 'ledgerFieldPart', 'LEDGER_OPS', 'ledgerEventParts', 'ledgerMarksGone', 'ledgerMergeOpts', 'ledgerEmpty', 'ledgerPartKey', 'LEDGER_MONEY_FIELDS', 'ledgerLockedMeanwhile',
   'applyLedgerRowSet', 'mergeLedgerRows', 'applyLedgerMerge', 'LEDGER_EDIT_FIELDS', 'LEDGER_RESOLVE_FIELDS', 'LEDGER_RESOLVE_WHY', 'LEDGER_RESOLVE_WHY_SAME', 'ledgerResolveMore', 'ledgerLogRoom', 'utf8Bytes', 'arrOf', 'ledgerTickedAt', 'mergeStatements', 'statementPairMerge',
@@ -26849,6 +26851,97 @@ test('C8 security M4: using the cloud copy over a closed book only this device h
   r.b.run(C6_CLOSE('B', 2)); r.b.hear(); r.b.push();
   r.b.run('adoptRemote(ui.overlay.remote, {}); ui.overlay = null');
   eq(r.b.get('state.ledgerLog.filter(function (e) { return e.op === "unclose"; }).length'), 0, 'no closed book lost, no event');
+});
+
+// M1: a carried row ticked and signed on a statement on one device is ticked, with the statement, on the other after it saves. With no event in either log
+// to speak of the row (as when the log's cap has cut it), only the merge's own rule can bring the tick across, in whichever direction it is.
+const C8_M1_ST = { id: 'st-z', date: '2026-08-31', statementCents: 1, openingCents: 93000, clearedCents: 1, bookCents: 1, ticked: [], carriedTicked: ['co-c'], by: 'Pat', byUid: '', at: '2026-09-01T10:00:00.000Z' };
+const C8_M1_TICK = (id, event) => `var e = state.ledgerAside.filter(function (x) { return x.id === '${id}'; })[0]; e.reconciled = true; e.approvedBy = 'Pat'; e.approvedAt = '2026-09-01T10:00:00.000Z'; e.statementId = 'st-z'; e.reconciledAt = 1788343200000; ` +
+  (event ? `logLedger('tick', '${id}'); ` : '') + `state.statements = [${JSON.stringify(C8_M1_ST)}]; state.book.reconciledThrough = '2026-08-31'; commit()`;
+const C8_M1_STATE = (st) => st.ledgerAside.filter((e) => e.off === 'carried').map((e) => [e.id, !!e.reconciled, e.statementId || '', e.approvedBy || '']);
+test('C8 security M1: a carried row ticked on a statement on one device, with no event in the log, is ticked with the statement on the other after it saves, whichever saves first', () => {
+  const nw = c8New(), carried = nw.aside.filter((e) => e.off === 'carried');
+  const want = [['co-c', true, 'st-z', 'Pat'], ['co-d', false, '', '']];
+  for (const event of [false, true]) {
+    // A signs; B, holding the row unticked with an unsaved change, merges.
+    let { a, b, server } = c3FsPair({ ledger: nw.ledger, ledgerAside: carried, book: nw.book });
+    a.run(C8_M1_TICK('co-c', event)); a.push();
+    b.run(B1); b.hear(); b.push();
+    eq(C8_M1_STATE(server()), want, 'the record, event ' + event);
+    eq(server().statements.map((s) => s.id), ['st-z'], 'the statement is kept');
+    a.hear();
+    eq(C8_M1_STATE(a.get('state')), want, 'A after B’s save, event ' + event);
+    // The other way round: B saves first, A (with the tick) saves over it.
+    ({ a, b, server } = c3FsPair({ ledger: nw.ledger, ledgerAside: carried, book: nw.book }));
+    a.run(C8_M1_TICK('co-c', event));
+    b.run(B1); b.push();
+    a.hear(); a.push();
+    if (event) {
+      eq(C8_M1_STATE(server()), want, 'A saved last, event ' + event);
+      b.hear();
+      eq(C8_M1_STATE(b.get('state')), want, 'B after, event ' + event);
+    } else {
+      // Nothing in either log to say which copy of the row is right: the row chooser asks, and nothing is written over B's copy (the tick is not lost silently).
+      eq([a.get('ui.overlay && ui.overlay.kind'), C8_M1_STATE(server())], ['sync-conflict', [['co-c', false, '', ''], ['co-d', false, '', '']]], 'A is asked, and nothing is sent');
+      eq(C8_M1_STATE(a.get('state')), want, 'A still holds its tick');
+    }
+  }
+});
+
+// The merge's own rule for a carried row nothing in either log speaks of, in the case the per-row merge cannot settle it: here it "takes the other copy's
+// row" (a log cut at its cap, which the row merge reads as no change), as a stand-in that unticks this copy's carried rows and says nothing.
+test('C8 security M1: where the per-row merge has nothing to go on, a carried row ticked on either copy stays ticked, with its statement', () => {
+  const nw = c8New(), carried = nw.aside.filter((e) => e.off === 'carried');
+  const want = [['co-c', true, 'st-z', 'Pat'], ['co-d', false, '', '']];
+  // (Its first call in a save is the chooser's look for conflicts, which changes nothing; the second is the merge's.)
+  const blind = "var blindCalls = 0; mergeLedgerRows = function (m) { blindCalls += 1; if (blindCalls > 1) m.ledgerAside.forEach(function (e) { if (e.off === 'carried') { e.reconciled = false; delete e.statementId; delete e.reconciledAt; } }); return { set: {}, conflicts: [] }; }";
+  // The other copy's tick comes across.
+  let { a, b, server } = c3FsPair({ ledger: nw.ledger, ledgerAside: carried, book: nw.book });
+  a.run(C8_M1_TICK('co-c', false)); a.push();
+  b.run(blind); b.run(B1); b.hear(); b.push();
+  eq(C8_M1_STATE(server()), want, 'B merged A’s tick in');
+  // This copy's own tick is not taken off by the merge.
+  ({ a, b, server } = c3FsPair({ ledger: nw.ledger, ledgerAside: carried, book: nw.book }));
+  a.run(C8_M1_TICK('co-c', false));
+  b.run(B1); b.push();
+  a.run(blind); a.hear(); a.push();
+  eq(C8_M1_STATE(server()), want, 'A kept its own');
+  // With no statement to tick it again (statementRetick), only the rule itself brings a tick back, from either copy.
+  const plain = "var e = state.ledgerAside.filter(function (x) { return x.id === 'co-c'; })[0]; e.reconciled = true; e.approvedBy = 'Pat'; e.approvedAt = '2026-09-01T10:00:00.000Z'; e.reconciledAt = 1788343200000; commit()";
+  const bare = [['co-c', true, '', 'Pat'], ['co-d', false, '', '']];
+  ({ a, b, server } = c3FsPair({ ledger: nw.ledger, ledgerAside: carried, book: nw.book }));
+  a.run(plain); a.push();
+  b.run(blind); b.run(B1); b.hear(); b.push();
+  eq(C8_M1_STATE(server()), bare, 'no statement: B merged A’s tick in');
+  ({ a, b, server } = c3FsPair({ ledger: nw.ledger, ledgerAside: carried, book: nw.book }));
+  a.run(plain);
+  b.run(B1); b.push();
+  a.run(blind); a.hear(); a.push();
+  eq(C8_M1_STATE(server()), bare, 'no statement: A kept its own');
+  // A standing statement that lists a carried row ticks it again where neither copy holds it ticked (statementRetick).
+  ({ a, b, server } = c3FsPair({ ledger: nw.ledger, ledgerAside: carried, book: nw.book }));
+  a.run(`state.statements = [${JSON.stringify(C8_M1_ST)}]; state.book.reconciledThrough = '2026-08-31'; commit()`); a.push();
+  b.run(B1); b.hear(); b.push();
+  eq(C8_M1_STATE(server()).filter((r) => r[0] === 'co-c').map((r) => [r[0], r[1], r[2]]), [['co-c', true, 'st-z']], 'a statement lists it: ticked on the statement');
+  // …and one the log speaks of (a tick on A, an untick on B, no statement) is the row merge's to settle, not undone here.
+  ({ a, b, server } = c3FsPair({ ledger: nw.ledger, ledgerAside: carried, book: nw.book }));
+  a.run("var e = state.ledgerAside.filter(function (x) { return x.id === 'co-c'; })[0]; e.reconciled = true; e.approvedBy = 'Pat'; e.approvedAt = '2026-09-01T10:00:00.000Z'; e.reconciledAt = 1788343200000; logLedger('tick', 'co-c'); commit()"); a.push();
+  b.run(blind); b.run("logLedger('untick', 'co-c')"); b.run(B1); b.hear(); b.push();
+  eq(C8_M1_STATE(server()).filter((r) => r[0] === 'co-c'), [['co-c', false, '', '']], 'the log speaks of the row: not ticked again');
+});
+
+test('C8 security M1: two devices, a tick on one carried row and an untick of another, settle the same way on both; an untick the log speaks of is not undone', () => {
+  const nw = c8New(), ticked = { reconciled: true, approvedBy: 'Pat', approvedAt: '2026-08-01T10:00:00.000Z', statementId: 'st-z', reconciledAt: 1788343200000 };
+  const carried = nw.aside.filter((e) => e.off === 'carried').map((e) => (e.id === 'co-d' ? Object.assign({}, e, ticked) : e));
+  const untick = (id) => `var e = state.ledgerAside.filter(function (x) { return x.id === '${id}'; })[0]; e.reconciled = false; delete e.statementId; delete e.reconciledAt; logLedger('untick', '${id}'); commit()`;
+  const tickOnly = (id) => `var e = state.ledgerAside.filter(function (x) { return x.id === '${id}'; })[0]; e.reconciled = true; e.approvedBy = 'Pat'; e.approvedAt = '2026-09-01T10:00:00.000Z'; e.reconciledAt = 1788343200000; logLedger('tick', '${id}'); commit()`;
+  const { a, b, server } = c3FsPair({ ledger: nw.ledger, ledgerAside: carried, book: Object.assign({}, nw.book, { reconciledThrough: '' }) });
+  a.run(tickOnly('co-c')); a.push();
+  b.run(untick('co-d')); b.hear(); b.push();
+  const ticks = (st) => st.ledgerAside.filter((e) => e.off === 'carried').map((e) => [e.id, !!e.reconciled]);
+  eq(ticks(server()), [['co-c', true], ['co-d', false]], 'the record: A’s tick, B’s untick');
+  a.hear();
+  eq([ticks(b.get('state')), ticks(a.get('state'))], [ticks(server()), ticks(server())], 'both devices hold what the record holds');
 });
 
 test('C8 security M2: the scouts the closed books name are worked out once a render, not once a scout', () => {

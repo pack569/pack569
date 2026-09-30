@@ -14852,6 +14852,8 @@
     // rows kept over a delete (keepReconciled), the void and reverse rules and the pair check all
     // read the settled rows, and read them the same on every device. A conflict nobody has picked
     // for is left as each copy has it (this device's is kept, as always); syncPush asks first.
+    var carriedTicked = Object.create(null);   // this copy's ticked carried rows, as they are before the row merge (M1, below)
+    carriedRowsOf(state.ledgerAside).forEach(function (x) { if (x.reconciled === true && typeof x.id === 'string') carriedTicked[x.id] = JSON.parse(JSON.stringify(x)); });
     var rowMerge = mergeLedgerRows(state, remote, ledgerMergeOpts(state, remote, picks));
     added += applyLedgerMerge(state, rowMerge.set, remote);
     // Each row the leader picked a copy of is logged, a 'resolve' (ledgerResolveMore): the next merge
@@ -15194,6 +15196,29 @@
       });
     }
     settleVoided();
+    // Security review of C8-1..4 (M1) — the rows carried from last year (off 'carried') are in both copies, by id
+    // ('co-' + the original's), and mergeLedgerRows settles them with the rest, from the log: a tick and an untick
+    // the log speaks of are decided there, as a counted row's are. Where NEITHER copy's log says a word about the
+    // row (an event the log's cap cut, a tick a page from before the log made), the per-row merge has nothing to
+    // go on and takes the other copy's row, so a tick on either copy would be lost, and the statement it was signed
+    // on with it: the ticked copy wins there (LEDGER_TICK_FIELDS: who, when, which statement), whichever copy
+    // it is (`carriedTicked`, read before the row merge, is this copy's). Then statementRetick ticks again what a
+    // standing statement lists, of the carried rows (not the counted ones: the row merge decides those).
+    if (Array.isArray(state.ledgerAside) && Array.isArray(remote.ledgerAside)) {
+      var carriedThere = Object.create(null), spoken = Object.create(null);
+      carriedRowsOf(remote.ledgerAside).forEach(function (x) { if (typeof x.id === 'string' && !carriedThere[x.id]) carriedThere[x.id] = x; });
+      [state.ledgerLog, remote.ledgerLog].forEach(function (lg) {
+        arrOf(lg).forEach(function (ev) { if (ev) [ev.row].concat(Array.isArray(ev.rows) ? ev.rows : []).forEach(function (r) { if (typeof r === 'string') spoken[r] = true; }); });
+      });
+      carriedRowsOf(state.ledgerAside).forEach(function (x) {
+        if (typeof x.id !== 'string' || x.reconciled === true || spoken[x.id]) return;
+        var r = carriedThere[x.id] && carriedThere[x.id].reconciled === true ? carriedThere[x.id] : carriedTicked[x.id];
+        if (!r) return;
+        LEDGER_TICK_FIELDS.forEach(function (k) { if (r[k] === undefined) delete x[k]; else x[k] = r[k]; });
+        added += 1;
+      });
+      if (state.book) statementRetick(carriedRowsOf(state.ledgerAside), state.statements, state.book);
+    }
     // Phase 3, C2 — the ledger's log, both copies' events in one order (mergeLedgerLog). Not
     // counted in what this returns: nobody needs telling that a history line came across.
     // Deletion marks don't apply: the log is append-only, and nothing is ever deleted from it.
