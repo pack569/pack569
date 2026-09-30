@@ -9872,7 +9872,7 @@ test('T2: the close-out preview names the starting funds rolloverYear will actua
     /closingCarryover\(bud\.balance, closingBank, closingBankKnown\)/.test(roll) && /var closingBank = closedNow\.closingCents;/.test(roll) &&
     /closingBalanceAt\(state\.ledger, state\.book, closeoutCutoff\(state\.budget\.programYear\)\)/.test(slice('closingCarryNow')),
     'rolloverYear no longer matches what the preview promises');
-  ok(/bank balance<\/strong> \(' \+ fmt\(coCarry\)/.test(ov) && /projected ending balance<\/strong> \(' \+ fmt\(coCarry\)/.test(ov),
+  ok(/bank balance<\/strong> on ' \+ esc\(fmtDateShortYear\(closeoutCutoff\(year\)\)\) \+ ' \(' \+ fmt\(coCarry\)/.test(ov) && /projected ending balance<\/strong> \(' \+ fmt\(coCarry\)/.test(ov),
     'the preview does not say which figure it is carrying');
   ok(/' \+ coCarryLine \+ '/.test(ov), 'the carry line is not in the list');
 });
@@ -13162,7 +13162,7 @@ test('E1: due dates and family statements are NEVER published', () => {
   // Treasurer review of C6 (5): ledgerLogNames names the statement an entry was cleared on, in its change
   // history and the entry chooser (both leaders only), by its date.
   eq([...stUsers].sort(), ['handleAction', 'ledgerEntryLabel', 'ledgerLogNames', 'mergeRemoteAppendOnly', 'renderBankStatementSheet', 'renderOverlay',
-    'renderReconcile', 'rolloverYear', 'statementButtonsHtml', 'statementsCardHtml'].concat(['handleChange']).sort(), 'something new writes or reads state.statements');
+    'renderReconcile', 'rolloverYear', 'statementButtonsHtml', 'statementsCardHtml', 'renderCloseoutOverlay'].concat(['handleChange']).sort(), 'something new writes or reads state.statements');
   ok(/state\.statements = closedNow\.open\.statements;/.test(slice('rolloverYear')), 'close-out keeps the closed year’s bank statements in the new book');
   ok(!/statements/.test(bpv), 'buildParentView reads the bank statements');
   ok(/each charge's due date \(`dueDate`\), the pack's dues date \(`budget\.duesDueDate`\) and every\s+\/\/\s+family statement \(E1\)/.test(SCRIPT), 'the banner does not exclude them');
@@ -18342,7 +18342,7 @@ const LOOK_WORD_FNS = ['arrOf', 'closedYearText', 'fmtDateShort', 'ledgerEntryNa
   'ledgerReversalOf'];
 const C2_FNS = ['fmt', 'fmtDate', 'fmtDateShort', 'toCents', 'toCentsSigned', 'entryAfterOpening', 'entryOnStatement', 'ledgerLocked',
   'ledgerDateReconciled', 'ledgerLockedWhy', 'LEDGER_MAX_CENTS', 'LEDGER_EDIT_FIELDS', 'LEDGER_LOCKED_FIELDS', 'ledgerRowDiff',
-  'ledgerRowFields', 'LEDGER_TAKE_OUT_ANY', 'LEDGER_PAIR_FIXED', 'ledgerPairFixedWhy', 'ledgerPairRole', 'ledgerTakeOut', 'ledgerEntryNamed', 'ledgerCap', 'ledgerPairOf', 'ledgerReversalOf', 'ledgerEditRefusal', 'ledgerBackdateWarning', 'applyLedgerEdit', 'ledgerWho', 'logLedger', 'logOpening',
+  'ledgerRowFields', 'LEDGER_TAKE_OUT_ANY', 'LEDGER_PAIR_FIXED', 'ledgerPairFixedWhy', 'ledgerPairRole', 'ledgerTakeOut', 'ledgerEntryNamed', 'ledgerCap', 'ledgerPairOf', 'ledgerReversalOf', 'ledgerEditRefusal', 'ledgerBackdateWarning', 'ledgerClosedYearWarning', 'ledgerProgramYearOf', 'closedYearText', 'arrOf', 'isoPlusDays', 'applyLedgerEdit', 'ledgerWho', 'logLedger', 'logOpening',
   'openingLockedWhy', 'LEDGER_OPS', 'ledgerEvent', 'ledgerLogClip', 'ledgerStampClean', 'stampApproved', 'stampEntered', 'ledgerActorName',
   'ledgerDraftDefault', 'ledgerDraft', 'arm', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays', 'ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept', 'keepLostVoids', 'ledgerPairCheck',
   // Phase 3, C5 — Mark reconciled writes the statement.
@@ -19073,7 +19073,7 @@ test('C3: nothing outside the book’s own plumbing reads the voided rows, so no
   eq([...users].sort(), ['applyLedgerMerge', 'carriedBlockHtml', 'closedBookBuild', 'dropScout', 'freshState', 'handleAction', 'handleChange', 'isStateEmpty', 'keepLostVoids', 'ledgerAsideListHtml', 'ledgerAsideSettle', 'ledgerEntryLabel',
     'ledgerLogNames', 'ledgerReverseSlot', 'ledgerScoutsHeld', 'ledgerUnvoidRow',
     // Phase 3, C5 — renderBankStatementSheet names an entry on a statement voided since; it totals nothing from it.
-    'ledgerVoidRow', 'mergeLedgerRows', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderBankStatementSheet', 'renderLedger', 'renderLedgerEntries', 'renderReconcile', 'renderRowChooser', 'restoreGone',
+    'ledgerVoidRow', 'mergeLedgerRows', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderBankStatementSheet', 'renderCloseoutOverlay', 'renderLedger', 'renderLedgerEntries', 'renderReconcile', 'renderRowChooser', 'restoreGone',
     'rolloverYear', 'scoutHasLedger'], 'who reads the voided rows');
   // In handleAction: the void handlers and (treasurer sign-off on C3) the voided CSV only. (C7: del-scout's
   // log line is gone, with the unlinking it logged.)
@@ -20044,7 +20044,7 @@ test('Decision B: close-out says how many problems the ledger has, first, and st
     '3 problems on Money · Ledger. Put them right first: the balance carried into next year includes them.'], 'the line');
   const co = slice('renderCloseoutOverlay');
   ok(/var coLook = closeoutLookLine\(ledgerLookNotes\(state\.ledger, state\.book\)\.length\);/.test(co), 'not worked out from the ledger’s notes');
-  ok(/<ul class="closeout-list">' \+\n\s*\(coLook \? '<li style="color:var\(--accent-text\)"><strong>The ledger needs a look:<\/strong> ' \+ esc\(coLook\) \+ '<\/li>' : ''\) \+\n\s*'<li>Saves this summary/.test(co),
+  ok(/<ul class="closeout-list">' \+\n\s*\(coLook \? '<li style="color:var\(--accent-text\)"><strong>The ledger needs a look:<\/strong> ' \+ esc\(coLook\) \+ '<\/li>' : ''\) \+\n\s*coLines\.map\(function \(t\) \{ return '<li>' \+ esc\(t\) \+ '<\/li>'; \}\)\.join\(''\) \+\n\s*'<li>Saves this summary/.test(co),
     'not the first item, only when there are notes, escaped');
   // A warning, not a gate: neither the button nor the close reads the notes.
   ok(!/ledgerLook|coLook/.test(slice('performCloseout')) && /if \(act === 'closeout-confirm'\) \{ arm\('closeout-confirm', performCloseout\); return; \}/.test(SCRIPT) &&
@@ -22540,7 +22540,9 @@ test('reload gate: a newer tab’s save while this page runs is never saved over
 // newer tab's), or '' (nothing held: the control).
 const HELD_DISPATCH_FNS = ['handleAction', 'handleChange', 'handleForm', 'handleFilePick', 'performCloseout', 'deleteWithUndo', 'arm',
   'heldActAllowed', 'refuseHeldAct', 'HELD_ACTS', 'HELD_ACT_PREFIXES', 'HELD_CHANGES', 'PARENT_ACTS', 'GATE_ACTS',
-  'FORMAT_CLOSEOUT', 'FORMAT_BACKUP', 'JSON_BACKUP_NAME', 'jsonBackup', 'toCents', 'closeoutTrimToast', 'CLOSEOUT_REFUSED', 'CLOUD_COPY_NAME'];
+  'FORMAT_CLOSEOUT', 'FORMAT_BACKUP', 'JSON_BACKUP_NAME', 'jsonBackup', 'toCents', 'closeoutTrimToast', 'CLOSEOUT_REFUSED', 'CLOUD_COPY_NAME',
+  // C8-6 — close-out is refused before the year's last day, and with its last statement unreconciled unless an admin said so.
+  'closeoutEarlyWhy', 'closeoutJuneWhy', 'CLOSEOUT_JUNE_ASKED', 'closeoutCutoff', 'programYearEndISO', 'closedYearText', 'fmtDateShortYear', 'fmtDateShort', 'isoPlusDays'];
 const heldDispatchCtx = (hold) => {
   const rec = { version: 1, fmt: hold === 'device' ? NEWER_FMT : 1, packName: 'Pack', scouts: [{ id: 's1', name: 'Ada' }],
     leaders: [{ id: 'l1', name: 'Akela' }], budget: { programYear: 2026 }, archives: [], goalCents: 100 };
@@ -22554,6 +22556,7 @@ const heldDispatchCtx = (hold) => {
     function download(name) { downloads.push(name); }
     function buildSeasonArchive() { return { kind: 'season', year: state.budget.programYear }; }
     function rolloverYear() { state.budget.programYear += 1; }
+    function todayISO() { return '2027-07-05'; }   // after the 2026 year's last day, so the close-out is allowed
     function handleImportFile() { picked.push('import'); } function handleMoveFile() { picked.push('move'); }
     function handleIcsImportFile() { picked.push('ics'); } function handleTeFile() { picked.push('te'); }
     function canReopenStatement() { return true; }   // an admin (owner decision 22: close-out is theirs)
@@ -23533,8 +23536,8 @@ test('C5 re-check (R5): the close-out toast says which part didn’t fit, and Pa
   // C8-5: the toast reads what rolloverYear did to the closed books (fitClosedBook's compacted and trimmed years).
   eq([t(null), t({ year: 2026, compacted: [], trimmed: [] }), t({ year: 2026, compacted: [2025], trimmed: [] }), t({ year: 2026, compacted: [2024, 2025], trimmed: [] }),
     t({ year: 2026, compacted: [2026], trimmed: [2026] })], ['', '',
-    'The 2025–26 closed book was shortened to keep the pack record small: its entries and statements are kept, but not its voided entries or its change history. The snapshot downloaded when that year was closed out has them.',
-    'The 2024–25 and 2025–26 closed books were shortened to keep the pack record small: their entries and statements are kept, but not their voided entries or their change history. The snapshot downloaded when those years were closed out has them.',
+    'The 2025–26 closed book was shortened to keep the pack record small: its entries and statements are kept, but not its voided entries or its change history. The snapshot just downloaded has them: keep it.',
+    'The 2024–25 and 2025–26 closed books were shortened to keep the pack record small: their entries and statements are kept, but not their voided entries or their change history. The snapshot just downloaded has them: keep it.',
     'The 2026–27 entries were too large to keep in the pack record, so only its totals and statements are kept. Keep the snapshot just downloaded: it is the only place the entries are kept.'], 'the toast’s words');
   // Close-out itself: the welcome, then those words, shown for ten seconds; the welcome alone, as before.
   const pc = slice('performCloseout');
@@ -27131,6 +27134,100 @@ test('C8-5: the season archive says where its rows are, Past seasons reads them 
   const old = { id: 'old', year: 2025, ledger: { totals: { entries: 1 }, rows: [{ d: '2025-09-01', c: 100, t: 'Dues' }], trimmed: false } };
   eq(show([full], old), old.ledger, 'an archive from before C8 reads as it always did');
   eq(show([full], { id: 'x', year: 2026 }), undefined, 'and one with no ledger');
+});
+
+/* ================================================================
+   PHASE 3, C8-6 — close-out is refused before the year's last day (decision 31) and with its last statement unreconciled unless an admin
+   says so (decision 32); the preview says what the closed book will hold; the entry form warns on a date inside a closed year.
+   ================================================================ */
+const c8x = () => sandbox(['closeoutEarlyWhy', 'closeoutJuneWhy', 'closeoutCutoff', 'programYearEndISO', 'closedYearText', 'fmtDateShortYear', 'fmtDateShort', 'isoPlusDays', 'closeoutPreviewLines', 'fmt', 'CLOSEOUT_JUNE_ASKED']);
+
+test('C8-6: a year can be closed out only after its last day (Jun 30), and the words say from when', () => {
+  const x = c8x();
+  const EARLY = 'The 2026–27 year runs to Jun 30, 2027. Closing it out before then would leave out entries still to come. You can close it out from Jul 1, 2027.';
+  eq([x.closeoutEarlyWhy(2026, '2026-09-30'), x.closeoutEarlyWhy(2026, '2027-06-29'), x.closeoutEarlyWhy(2026, '2027-06-30')], [EARLY, EARLY, EARLY], 'before, and on, the last day');
+  eq([x.closeoutEarlyWhy(2026, '2027-07-01'), x.closeoutEarlyWhy(2026, '2027-09-10'), x.closeoutEarlyWhy(2025, '2026-09-30')], ['', '', ''], 'from Jul 1; a year long past');
+  // The close itself asks again (performCloseout), before the snapshot is downloaded, and the preview does not offer the button.
+  const pc = slice('performCloseout');
+  ok(pc.indexOf('closeoutEarlyWhy(year, todayISO())') !== -1 && pc.indexOf('closeoutEarlyWhy(year, todayISO())') < pc.indexOf('download('), 'performCloseout does not refuse an early close-out before the snapshot');
+  const co = slice('renderCloseoutOverlay');
+  ok(/\(coEarlyWhy \? ''\s*: coJuneBlocked \?/.test(co), 'the button is offered before the year’s last day');
+});
+
+test('C8-6: the year’s last statement must be reconciled first; an admin can close out anyway, and the change history says so', () => {
+  const x = c8x();
+  const book = (o) => Object.assign({ openingDate: '2026-07-01', reconciledThrough: '2027-06-30' }, o);
+  eq([x.closeoutJuneWhy(book(), true, 2026), x.closeoutJuneWhy(book({ reconciledThrough: '2027-07-31' }), true, 2026)], ['', ''], 'reconciled through the cutoff');
+  eq(x.closeoutJuneWhy(book({ reconciledThrough: '2027-05-31' }), true, 2026),
+    'The year’s last bank statement (Jun 30, 2027) isn’t reconciled: this book is reconciled only through May 31, 2027. Reconcile it first (Money · Ledger · Reconcile), because once the year is closed out its entries and statements can’t be ticked. If it can’t be reconciled, an admin can close out anyway.', 'through May 31');
+  ok(/reconciled through no date yet\./.test(x.closeoutJuneWhy(book({ reconciledThrough: '' }), true, 2026)), 'never reconciled');
+  eq([x.closeoutJuneWhy(book({ openingDate: '' }), true, 2026), x.closeoutJuneWhy(book({ reconciledThrough: '' }), false, 2026)], ['', ''], 'no bank balance, or nothing entered: nothing to reconcile');
+  // Through the page's own dispatch (admin or not): asked, then allowed once, and a stale screen is still refused.
+  const ctx = heldDispatchCtx('');
+  const run = (js) => vm.runInContext(js, ctx), got = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, ctx)));
+  run("state.book.openingDate = '2026-07-01'; state.book.reconciledThrough = '2027-05-31'; state.ledger = [{ id: 'l1', date: '2026-09-01', amountCents: 100, direction: 'in' }];");
+  run("toasts = []; ui.closeoutJuneOk = false; tap('closeout-confirm'); tap('closeout-confirm');");
+  eq(got('[downloads, toasts.length, toasts[0] === CLOSEOUT_JUNE_ASKED, state.budget.programYear]'), [[], 1, true, 2026], 'June unreconciled: nothing is downloaded or closed');
+  run("toasts = []; tap('closeout-june-ok'); tap('closeout-confirm'); tap('closeout-confirm');");
+  eq(got('[downloads.length, state.budget.programYear, ui.closeoutJuneOk]'), [1, 2027, true], 'after “June was not reconciled”, it closes');
+  // Early: refused whatever else is chosen.
+  const e = heldDispatchCtx('');
+  vm.runInContext("function todayISO() { return '2027-03-01'; } ui.closeoutJuneOk = true; toasts = []; tap('closeout-confirm'); tap('closeout-confirm');", e);
+  eq(JSON.parse(JSON.stringify(vm.runInContext('[downloads, toasts.length, state.budget.programYear]', e))), [[], 1, 2026], 'before the last day: refused');
+  // A non-admin cannot choose it (decision 22), and a held page cannot.
+  vm.runInContext("canReopenStatement = function () { return false; }; ui.closeoutJuneOk = false; tap('closeout-june-ok');", e);
+  eq(vm.runInContext('ui.closeoutJuneOk', e), false, 'an editor chose the override');
+  ok(/act === 'open-closeout' \|\| act === 'closeout-confirm' \|\| act === 'closeout-june-ok'\) && !canReopenStatement\(\)/.test(SCRIPT), 'the override is not an admin’s');
+  // The close-out's own history says June was not reconciled, only when it was not.
+  const rec = (june) => c8wRec({ ledger: [c8wPay('p1', '2027-03-01', 100)], book: { openingCents: 0, openingDate: '2026-07-01', reconciledThrough: '2027-05-31', statementDate: '', statementCents: 0, year: 2026 } });
+  const why = (ok2) => { const c = sandbox(NORMALIZE_FNS.concat(CLOSEOUT_SIZE_FNS));
+    vm.runInContext(`var sync = { user: null }; var ui = { closeoutJuneOk: ${ok2} }; var state = normalizeState(${JSON.stringify(rec())}); rolloverYear();`, c);
+    return [vm.runInContext('state.ledgerLog.filter(function (e) { return e.op === "close"; })[0].why', c), vm.runInContext('ui.closeoutJuneOk', c)]; };
+  ok(/ June was not reconciled when the year was closed out\.$/.test(why(true)[0]) && why(true)[1] === false, 'the close event does not say so, or the choice outlives the close-out: ' + why(true));
+  ok(!/June was not reconciled/.test(why(false)[0]), 'the close event says June was not reconciled when the flag was off');
+});
+
+test('C8-6: the preview says what is carried, what stays open, which older year will be shortened, and what nobody has reviewed', () => {
+  const x = c8x();
+  const base = { cutoff: '2027-06-30', bankKnown: true, carried: { n: 2, inCents: 5000, outCents: 15000 }, openEntries: 0, openVoided: 0, openStatements: 0, compacted: [], trimmed: [], unreviewed: 0 };
+  const L = (o) => x.closeoutPreviewLines(Object.assign({}, base, o));
+  eq(L({}), ['2 entries that the bank had not shown by Jun 30, 2027 are carried into the new year ($50.00 money in, $150.00 money out). They are already in the opening balance; tick each one on the Reconcile screen when it clears.'], 'carried');
+  eq(L({ carried: { n: 1, inCents: 0, outCents: 700 } })[0], '1 entry that the bank had not shown by Jun 30, 2027 is carried into the new year ($0.00 money in, $7.00 money out). They are already in the opening balance; tick each one on the Reconcile screen when it clears.', 'one (the sentence is the same: they/it)');
+  eq(L({ carried: { n: 0, inCents: 0, outCents: 0 } }), ['Every entry through Jun 30, 2027 is on a bank statement, so nothing is carried.'], 'nothing to carry');
+  eq(L({ bankKnown: false }), [], 'no bank balance: no carried line');
+  eq(L({ openEntries: 2, openVoided: 1, openStatements: 1 })[1], 'Dated after Jun 30, 2027, and staying open in the new year: 2 entries, 1 voided entry, 1 statement.', 'what stays open');
+  eq(L({ compacted: [2024, 2025] }).slice(1), [
+    'The 2024–25 closed book will be shortened to keep the pack record small: its entries and statements stay, but not its voided entries or its change history. The snapshot this downloads has them in full: keep it.',
+    'The 2025–26 closed book will be shortened to keep the pack record small: its entries and statements stay, but not its voided entries or its change history. The snapshot this downloads has them in full: keep it.'], 'older years shortened');
+  eq(L({ compacted: [2024], trimmed: [2024] }).slice(1), ['The 2024–25 closed book is too large to keep every entry: only its totals and statements will stay. The snapshot this downloads has the entries: keep it.'], 'one that does not fit');
+  eq(L({ unreviewed: 1 })[1], '1 statement has not been reviewed yet. Once the year is closed out a statement can’t be reviewed, so have an admin who did not sign it review it on the Reconcile screen first.', 'unreviewed, one');
+  ok(/^2 statements have not been reviewed yet\..*sign them\) review them/.test(L({ unreviewed: 2 })[1].replace('did not sign them review them', 'did not sign them) review them')), 'unreviewed, two');
+  // Wired into the screen, worked out from the trial copy (what will really be kept), escaped.
+  const co = slice('renderCloseoutOverlay');
+  ok(/coLines\.map\(function \(t\) \{ return '<li>' \+ esc\(t\) \+ '<\/li>'; \}\)/.test(co) && /compacted: coTrial\.result\.compacted\.filter/.test(co) && /carried: coBook \? coBook\.carried : null/.test(co), 'the preview lines');
+  ok(!/Download the snapshot\. It is the only place that keeps voided entries, and who voided or/.test(SCRIPT), 'the old “only the snapshot keeps voided entries” line is still there');
+});
+
+test('C8-6: the entry form warns on a date inside a closed year, in the treasurer’s words, and the second tap saves it and logs it', () => {
+  const x = sandbox(['ledgerClosedYearWarning', 'ledgerProgramYearOf', 'closedYearText', 'arrOf', 'isoPlusDays', 'fmtDateShort']);
+  const books = [{ year: 2025, cutoff: '2026-06-30' }, { year: 2026, cutoff: '2027-06-30' }];
+  const W = 'That date is in 2026–27, which is closed out. Record it as a correction dated Jul 1 or later, noting the original date.';
+  eq(x.ledgerClosedYearWarning('2027-03-15', books), W, 'the treasurer’s words');
+  eq([x.ledgerClosedYearWarning('2027-06-30', books), x.ledgerClosedYearWarning('2027-07-01', books), x.ledgerClosedYearWarning('2026-07-01', [{ year: 2025, cutoff: '2026-06-30' }]), x.ledgerClosedYearWarning('2026-06-30', [])],
+    [W, '', '', ''], 'the last day is inside it, the next is not; no closed book: no warning');
+  ok(/^That date is in 2025–26, which is closed out\./.test(x.ledgerClosedYearWarning('2026-02-01', books)), 'an earlier closed year is named by the date’s own year');
+  eq([x.ledgerClosedYearWarning('', books), x.ledgerClosedYearWarning('zzz', books)], ['', ''], 'no date');
+  // The page: the first tap warns (nothing saved), the second saves, logs why, says so, and the draft goes back to today.
+  const p = c2Page();
+  p.run("state.closedBooks = [{ year: 2025, cutoff: '2026-06-30' }]; ui.ledgerDraft = ledgerDraftDefault(); ui.ledgerDraft.date = '2026-06-15'; ui.ledgerDraft.amount = '42'; ui.ledgerDraft.description = 'Late receipt'; act('ledger-add')");
+  eq([p.get('state.ledger.length'), p.get('ui.ledgerAddWarned'), p.get('log().length')], [6, '2026-06-15', 0], 'the first tap saved it, or did not warn');
+  p.run("toasts = []; act('ledger-add')");
+  const added = p.get('state.ledger[6]');
+  eq([added.date, added.amountCents, p.get('ui.ledgerAddWarned'), p.get('ui.ledgerDraft.date')], ['2026-06-15', 4200, '', '2026-10-15'], 'the second tap');
+  eq(p.get('toasts'), ['Saved, dated Jun 15 in 2025–26, which is closed out. The date is back to today for the next entry.'], 'said');
+  eq(p.get('log().map(function (e) { return [e.op, e.row, e.why]; })'), [['add', added.id, 'Dated Jun 15, in 2025–26, which is closed out; saved after the warning.']], 'logged');
+  const le = slice('renderLedgerEntries');
+  ok(/ledgerClosedYearWarning\(dr\.date, state\.closedBooks\) \|\| ledgerBackdateWarning\(dr\.date, state\.book\)/.test(le), 'the form does not show it');
 });
 
 /* ---------------- report ---------------- */
