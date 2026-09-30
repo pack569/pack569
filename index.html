@@ -4912,15 +4912,18 @@
   // way an older page would get wrong (reads it amiss, or writes back what it does not know). A
   // page that meets a record with a HIGHER fmt than its own (from another leader's device, a
   // backup, or this browser's storage written by a newer tab) never saves over it: it holds its
-  // pushes, leaves every copy as it is, and asks for a reload (packFormatHeld). 1 is this build's
-  // record, the Phase 3 ledger (C1 to C4) included; a record with no fmt, from before the gate,
-  // reads as 1. ⚠ Pages from before the gate don't have it: it protects from this version on.
+  // pushes, leaves every copy as it is, and asks for a reload (packFormatHeld). 2 is this build's
+  // record: the Phase 3 ledger (C1 to C7) included, where a scout any ledger entry names is archived,
+  // never deleted (owner decision 26, C7: a page at 1 deleted one, and unlinked its entries, so it must
+  // not write over a record at 2). 1 was the gate's first build (C1 to C6). A record with no fmt, from
+  // before the gate, is read as this page's. ⚠ Pages from before the gate don't have it: it protects
+  // from this version on.
   // ⚠ ROLLING BACK past a commit that raised this: every record the newer page saved (the pack's,
   // and each browser's that opened it) then holds the older page, and nothing in the app lifts it.
   // Fix forward instead. If you must roll back, SETUP.md ("If a page stays out of date after a
   // reload") lowers fmt by hand, so the raising commit must say what an older page gets wrong.
   // Declared up here, above `var state = load()`, because normalizeState reads it.
-  var PACK_FORMAT = 1;
+  var PACK_FORMAT = 2;
   // Is the pack record `p` (parsed, not normalized) from a page newer than this one? Pure.
   function formatAhead(p) {
     return !!p && typeof p === 'object' && typeof p.fmt === 'number' && isFinite(p.fmt) && Math.floor(p.fmt) > PACK_FORMAT;
@@ -13668,7 +13671,7 @@
   }
   // THE RELOAD GATE (owner, 2026-09-29; see PACK_FORMAT). Is the pack record `d` ({ rev, device,
   // json, … }, as a backend sends it) from a page newer than this one: a whole-number fmt above
-  // PACK_FORMAT? Pure. Every record carries "fmt":1 now, and this reads every answer from the
+  // PACK_FORMAT? Pure. Every record carries "fmt":2 now, and this reads every answer from the
   // pack, so only one that names a higher fmt somewhere is parsed to see whether its own does.
   function packFormatAhead(d) {
     if (!d || typeof d.json !== 'string') return false;

@@ -22142,7 +22142,7 @@ atest('C4 (option B), api: a reverse and a correction settle the same way across
    for a reload. A record with no fmt, or this page's, syncs exactly as before. */
 
 // A pack record as a newer page would save it: fmt one above this page's.
-const NEWER_FMT = 2;
+const NEWER_FMT = 3;
 const newerRec = (rev, extra) => ({ rev, device: 'newer-dev',
   json: JSON.stringify(Object.assign({ rev, fmt: NEWER_FMT, packName: 'Saved by a newer page', scouts: [{ id: 'z' }] }, extra || {})) });
 
@@ -22161,7 +22161,7 @@ test('reload gate: the banner says exactly what the owner decided, with a Reload
   ok(held.indexOf(vm.runInContext('FORMAT_NOTICE', ctx)) >= 0 && /data-act="reload-page">Reload<\/button>/.test(held) && /role="alert"/.test(held),
     'the held banner: ' + held);
   // …and a stored copy from a newer page holds as well (state.fmt), with no feed at all.
-  eq(vm.runInContext('sync.newerFormat = false; state = { fmt: 2 }; formatBanner() !== ""', ctx), true, 'a newer copy on this device shows no banner');
+  eq(vm.runInContext('sync.newerFormat = false; state = { fmt: 3 }; formatBanner() !== ""', ctx), true, 'a newer copy on this device shows no banner');
   ok(/if \(!parent && !gate\) v\.innerHTML = formatBanner\(\) \+ serverNoticeBanner\(\) \+ v\.innerHTML;/.test(slice('render')),
     'the banner is not above every leader page');
   ok(/if \(act === 'reload-page'\) \{ location\.reload\(\); return; \}/.test(SCRIPT), 'the Reload button does nothing');
@@ -22174,9 +22174,9 @@ test('reload gate: normalizeState keeps a newer fmt, never lowers one, and reads
     if (v !== undefined) d.fmt = v;
     return ctx.normalizeState(JSON.parse(JSON.stringify(d))).fmt;
   };
-  eq(vm.runInContext('PACK_FORMAT', ctx), 1, 'this build’s format');
-  eq([undefined, 1, 0, -3, '2', null, true].map(fmtOf), [1, 1, 1, 1, 1, 1, 1], 'a missing, this page’s or odd fmt');
-  eq([2, 7, 2.5].map(fmtOf), [2, 7, 2], 'a newer fmt was lowered');
+  eq(vm.runInContext('PACK_FORMAT', ctx), 2, 'this build’s format');
+  eq([undefined, 2, 0, -3, '2', null, true].map(fmtOf), [2, 2, 2, 2, 2, 2, 2], 'a missing, this page’s or odd fmt');
+  eq([3, 7, 3.5].map(fmtOf), [3, 7, 3], 'a newer fmt was lowered');
   // …and twice is the same.
   const twice = ctx.normalizeState(ctx.normalizeState({ version: 1, scouts: [], fmt: 3 }));
   eq(twice.fmt, 3, 'a second normalize lowered it');
@@ -22187,16 +22187,16 @@ test('reload gate: packFormatAhead reads the record’s own fmt, and parses only
   vm.runInContext(`var parses = 0;
     ${FORMAT_GATE_SRC()}`, ctx);
   const ahead = (json) => vm.runInContext(`packFormatAhead(${JSON.stringify({ json })})`, ctx);
-  eq([ahead('{"fmt":2}'), ahead('{"a":1,"fmt":3}'), ahead('{"fmt":2.5}'), ahead('{"fmt":1e3}'), ahead('{ "fmt" : 2 }')],
+  eq([ahead('{"fmt":3}'), ahead('{"a":1,"fmt":4}'), ahead('{"fmt":3.5}'), ahead('{"fmt":1e3}'), ahead('{ "fmt" : 3 }')],
     [true, true, true, true, true], 'a newer record');
-  eq([ahead('{"fmt":1}'), ahead('{}'), ahead('{"fmt":0}'), ahead('{"fmt":"2"}'), ahead('{"fmt":2'), ahead('not json')],
+  eq([ahead('{"fmt":2}'), ahead('{}'), ahead('{"fmt":0}'), ahead('{"fmt":"3"}'), ahead('{"fmt":3'), ahead('not json')],
     [false, false, false, false, false, false], 'this page’s, none, odd or unreadable');
   // Only the top level counts: a nested key, or the words in a note, are not the record's format.
-  eq([ahead('{"fmt":1,"x":{"fmt":9}}'), ahead(JSON.stringify({ fmt: 1, note: 'typed "fmt":9 here' }))], [false, false], 'not the record’s own fmt');
+  eq([ahead('{"fmt":2,"x":{"fmt":9}}'), ahead(JSON.stringify({ fmt: 2, note: 'typed "fmt":9 here' }))], [false, false], 'not the record’s own fmt');
   eq(vm.runInContext('[packFormatAhead(null), packFormatAhead({}), packFormatAhead({ json: 5 })]', ctx), [false, false, false], 'no record');
-  // Every record carries "fmt":1 from now on, and this reads every answer: it is not parsed.
+  // Every record carries "fmt":2 from now on, and this reads every answer: it is not parsed.
   vm.runInContext('var realParse = JSON.parse; JSON.parse = function (s) { parses += 1; return realParse(s); };', ctx);
-  ahead(JSON.stringify({ fmt: 1, scouts: [{ id: 'a' }] }));
+  ahead(JSON.stringify({ fmt: 2, scouts: [{ id: 'a' }] }));
   eq(vm.runInContext('parses', ctx), 0, 'a record in this page’s format was parsed to find that out');
 });
 
@@ -22233,7 +22233,7 @@ test('reload gate, Firestore: a newer page’s record from the pack feed holds t
   eq(later(newerRec(12)), [true, 'Old', 2, 0], 'a newer page’s later save was taken');
   eq(later({ rev: 12, device: 'd2', json: JSON.stringify({ rev: 12, packName: 'No fmt', scouts: [] }) }), [false, 'No fmt', 12, 0],
     'control: a later save from a page before the gate is no longer taken');
-  eq(later({ rev: 12, device: 'd2', json: JSON.stringify({ rev: 12, fmt: 1, packName: 'This format', scouts: [] }) }), [false, 'This format', 12, 0],
+  eq(later({ rev: 12, device: 'd2', json: JSON.stringify({ rev: 12, fmt: 2, packName: 'This format', scouts: [] }) }), [false, 'This format', 12, 0],
     'control: a later save in this page’s format is no longer taken');
   // A copy choice waiting when a newer record arrives: the chooser goes (neither answer could do
   // anything now), and the pill and card say reload instead.
@@ -22261,7 +22261,7 @@ test('reload gate, Firestore: a save that reads a newer page’s record writes n
   eq(run(newerRec(5)), { sets: [], held: true, name: 'Edited', dirty: true, rev: 2, timers: 0 }, 'a push over a newer page’s record');
   // Control: the same save over a page from before the gate merges and writes, in this page's format.
   eq(run({ rev: 5, device: 'd2', json: JSON.stringify(Object.assign({ rev: 5, packName: 'Other', scouts: [{ id: 'a' }] }, LOGS)) }),
-    { sets: [[6, 1]], held: false, name: 'Edited', dirty: false, rev: 6, timers: 0 }, 'control: a push over an older page’s record');
+    { sets: [[6, 2]], held: false, name: 'Edited', dirty: false, rev: 6, timers: 0 }, 'control: a push over an older page’s record');
   // A page holding a newer page's record itself (loaded from a newer tab's save) never pushes it,
   // even over a record in this page's format, and never takes one over it.
   const own = fsFeedCtx(Object.assign({}, mine, { fmt: NEWER_FMT }));
@@ -22316,7 +22316,7 @@ test('reload gate: a newer page’s record whose "fmt" key is spelled with an es
   eq(push(Object.assign(escRec(5), { json: escRec(5).json.replace('"scouts"', '"storefronts":[],"entries":[],"events":[],"ledger":[],"leaders":[],"fundraisers":[],"scouts"') })),
     [0, true, 'Edited', true], 'a push over it');
   // Control: the same record in this page's format is merged and written over as ever.
-  const own = { rev: 5, device: 'd2', json: JSON.stringify(Object.assign({ rev: 5, packName: 'Other', scouts: [{ id: 'a' }] }, LOGS)).replace('"rev":5,', '"rev":5,"\\u0066mt":1,') };
+  const own = { rev: 5, device: 'd2', json: JSON.stringify(Object.assign({ rev: 5, packName: 'Other', scouts: [{ id: 'a' }] }, LOGS)).replace('"rev":5,', '"rev":5,"\\u0066mt":2,') };
   eq(push(own), [1, false, 'Edited', false], 'control: an escaped key in this page’s format');
 });
 
@@ -22357,9 +22357,14 @@ test('reload gate: SETUP.md says how the owner recovers a record whose fmt is to
   const KEY = /var KEY = '([^']+)'/.exec(SCRIPT)[1];
   ok(sec.split(`localStorage.getItem('${KEY}')`).length === 2 && sec.includes(`var k = '${KEY}'`), 'the storage key in SETUP.md is not the page’s');
   ok(/CREATE TABLE pack_state \(/.test(readFileSync(join(ROOT, 'migrations/0001_init.sql'), 'utf8')) &&
-    /FROM pack_state/.test(sec) && /UPDATE pack_state SET json = json_set\(json, '\$\.fmt', 1\)/.test(sec), 'the D1 steps');
+    /FROM pack_state/.test(sec) && /UPDATE pack_state SET json = json_set\(json, '\$\.fmt', 2\)/.test(sec), 'the D1 steps');
   ok(/Firestore Database\*\* → \*\*Data\*\* →\s+`packs` → the Pack ID document → the `json` field/.test(sec), 'the Firestore steps');
   // …and the page's own note on rolling back points at it.
+  // Owner decision 26 (C7): the examples in it are this page's PACK_FORMAT, so raising it means updating them.
+  const PF = /var PACK_FORMAT = (\d+);/.exec(SCRIPT)[1];
+  ok(PF === '2', 'PACK_FORMAT is ' + PF + ': C7 raised it to 2 (a page at 1 deleted a scout the ledger names)');
+  ok(sec.includes('(e.g. `"fmt":' + PF + '`)') && sec.includes("json_set(json, '$.fmt', " + PF + ")") && sec.includes('r.fmt = ' + PF + ';') && sec.includes('(with `' + PF + '` being the served'),
+    'SETUP.md’s examples are not PACK_FORMAT ' + PF);
   ok(/ROLLING BACK[\s\S]{0,400}SETUP\.md \("If a page stays out of date after a\s*\/\/ reload"\)/.test(SCRIPT.slice(0, SCRIPT.indexOf('var PACK_FORMAT = '))),
     'PACK_FORMAT has no note on rolling back');
 });
@@ -22387,9 +22392,9 @@ test('reload gate: holding stops every timer, drops a waiting choice, and draws 
       renderSyncPill();`, c);
     return JSON.parse(JSON.stringify(vm.runInContext('({ cls: el.className, html: el.innerHTML, attrs: attrs, line: syncModeLine(), notice: FORMAT_NOTICE })', c)));
   };
-  for (const [what, setup] of [['met from the pack', 'sync.newerFormat = true;'], ['on this device', 'state = { fmt: 2 };'],
+  for (const [what, setup] of [['met from the pack', 'sync.newerFormat = true;'], ['on this device', 'state = { fmt: 3 };'],
     ['with a choice waiting', 'sync.newerFormat = true; sync.conflict = { rev: 3 };'],
-    ['on a device-only page', 'state = { fmt: 2 }; backendConfigured = function () { return false; };']]) {
+    ['on a device-only page', 'state = { fmt: 3 }; backendConfigured = function () { return false; };']]) {
     const p = pill(setup);
     ok(/ conflict$/.test(p.cls) && />Reload the page</.test(p.html), `${what}: the pill does not say reload: ${p.html}`);
     eq([p.attrs['data-act'], p.attrs['aria-label'], p.line], ['reload-page', 'Sync status: Reload the page.', p.notice], `${what}: the pill or the card`);
@@ -22415,7 +22420,7 @@ test('reload gate: nothing is published to parents while held, and no move file 
   };
   eq(run(''), ['set packs/P/public/view'], 'control: a leader with nothing held does not publish (the test proves nothing)');
   eq(run('holdNewerFormat();'), [], 'the parent view was published while held');
-  eq(run('state = { fmt: 2 };'), [], 'the parent view was published from a newer page’s record');
+  eq(run('state = { fmt: 3 };'), [], 'the parent view was published from a newer page’s record');
   // The move file carries the pack as the server last had it: while held, that is no longer the pack's.
   const ctx = vm.createContext({});
   vm.runInContext(`var sync = { newerFormat: true }, state = {};
@@ -22457,16 +22462,16 @@ test('reload gate: a newer page’s record on this device is never saved over, a
     'a typed-in edit, or a save from anywhere else, wrote over the newer tab’s copy');
   eq(vm.runInContext('FORMAT_REFUSED', ctx), 'Not saved: this page is out of date. Reload the page, then enter it again.', 'the refusal’s words');
   // Control: a copy in this page's format, or from before the gate, saves as ever, now as this page's format.
-  for (const fmt of [1, undefined]) {
+  for (const fmt of [2, undefined]) {
     const c = run(Object.assign({}, tab, { fmt }));
     vm.runInContext("state.packName = 'Edited'; commit();", c);
     const saved = JSON.parse(vm.runInContext('store[KEY]', c));
-    eq([saved.packName, saved.fmt, vm.runInContext('[pushes, toasts.length]', c)], ['Edited', 1, [1, 0]], `control: fmt ${fmt}`);
+    eq([saved.packName, saved.fmt, vm.runInContext('[pushes, toasts.length]', c)], ['Edited', 2, [1, 0]], `control: fmt ${fmt}`);
   }
 });
 
 test('reload gate: a newer tab’s save while this page runs is never saved over, and the edit that finds it is refused', () => {
-  const mine = { version: 1, fmt: 1, packName: 'This tab', scouts: [{ id: 's1', name: 'Ada' }] };
+  const mine = { version: 1, fmt: 2, packName: 'This tab', scouts: [{ id: 's1', name: 'Ada' }] };
   const tab = JSON.stringify({ version: 1, fmt: NEWER_FMT, packName: 'Saved by a newer tab', scouts: [{ id: 's1', name: 'Ada' }] });
   const ctx = gateStoreCtx(mine);
   const REFUSED = vm.runInContext('FORMAT_REFUSED', ctx);
@@ -22571,7 +22576,7 @@ test('reload gate: while either hold is on, an edit is refused before it changes
 });
 
 test('reload gate: an edit that reaches commit() some other way is refused while held from the pack too', () => {
-  const ctx = gateStoreCtx({ version: 1, fmt: 1, packName: 'Mine', scouts: [] });
+  const ctx = gateStoreCtx({ version: 1, fmt: 2, packName: 'Mine', scouts: [] });
   vm.runInContext("sync.newerFormat = true; state.packName = 'Weather came back'; commit();", ctx);
   eq(JSON.parse(JSON.stringify(vm.runInContext('[state.packName, JSON.parse(store[KEY]).packName, pushes, toasts.length]', ctx))),
     ['Mine', 'Mine', 0, 1], 'a commit while held from the pack');
@@ -22621,12 +22626,12 @@ test('reload gate: a backup saved by a newer page is refused before this page re
   eq(pick({ version: 1, fmt: NEWER_FMT, scouts: [] }), [null, [FILE], null], 'a newer page’s backup was offered');
   // One whose shape this page can't read at all is still named for what it is.
   eq(pick({ version: 2, fmt: NEWER_FMT, people: [] }), [null, [FILE], null], 'a newer page’s backup in a new shape');
-  eq(pick({ version: 1, fmt: 1, scouts: [] }), ['import', [], 1], 'control: a backup in this page’s format');
-  eq(pick({ version: 1, scouts: [] }), ['import', [], 1], 'control: a backup from before the gate');
+  eq(pick({ version: 1, fmt: 2, scouts: [] }), ['import', [], 2], 'control: a backup in this page’s format');
+  eq(pick({ version: 1, scouts: [] }), ['import', [], 2], 'control: a backup from before the gate');
   eq(pick('not json')[1], ['That file isn’t a pack-record backup.'], 'control: not a backup');
   // Security re-check of C5 (R1) — anyone but an admin is refused before the file is read.
   vm.runInContext('admin = false', ctx);
-  eq(pick({ version: 1, fmt: 1, scouts: [] }), [null, ['Only a pack admin can restore a backup: it can reopen statements.'], null], 'an editor chose a backup');
+  eq(pick({ version: 1, fmt: 2, scouts: [] }), [null, ['Only a pack admin can restore a backup: it can reopen statements.'], null], 'an editor chose a backup');
 });
 
 test('reload gate: a move file or backup saved by a newer page is not copied to the new server', () => {
@@ -22641,7 +22646,7 @@ test('reload gate: a move file or backup saved by a newer page is not copied to 
   const body = (file) => JSON.parse(JSON.stringify(vm.runInContext(`moveImportBody(${JSON.stringify(file)}, 'P', false)`, ctx)));
   eq(body(mf(NEWER_FMT)).error, FILE, 'a newer page’s move file');
   eq(body({ rev: 2, fmt: NEWER_FMT, scouts: [] }).error, FILE, 'a newer page’s backup');
-  for (const fmt of [1, undefined]) {
+  for (const fmt of [2, undefined]) {
     const m = body(mf(fmt)), b = body(Object.assign({ rev: 2, scouts: [] }, fmt === undefined ? {} : { fmt }));
     eq([m.error, m.backupOnly, b.error, b.backupOnly], [undefined, false, undefined, true], `control: fmt ${fmt}`);
   }
@@ -22663,7 +22668,7 @@ test('reload gate: Backup (JSON) of a newer page’s record, as this page read i
 });
 
 test('reload gate: a copy choice waiting when save() finds a newer tab’s copy goes, chooser and all', () => {
-  const mine = { version: 1, fmt: 1, packName: 'This tab', scouts: [] };
+  const mine = { version: 1, fmt: 2, packName: 'This tab', scouts: [] };
   const run = (tabFmt) => {
     const ctx = gateStoreCtx(mine);
     vm.runInContext(`sync.conflict = { rev: 9 }; ui.overlay = { kind: 'sync-conflict', remote: sync.conflict };
@@ -22681,11 +22686,11 @@ test('reload gate: a copy choice waiting when save() finds a newer tab’s copy 
 test('Option B review (4): commit() says whether it saved — refused while held or for a viewer, taken otherwise', () => {
   const held = gateStoreCtx({ version: 1, fmt: NEWER_FMT, packName: 'Newer', scouts: [] });
   eq(vm.runInContext("state.packName = 'Edited'; commit()", held), false, 'held');
-  const c = gateStoreCtx({ version: 1, fmt: 1, packName: 'Mine', scouts: [] });
+  const c = gateStoreCtx({ version: 1, fmt: 2, packName: 'Mine', scouts: [] });
   eq(vm.runInContext("[commit(), (liveEdit = true, commit()), (liveEdit = false, canEdit = function () { return false; }, commit())]", c), [true, true, false],
     'saved, typed-in, a viewer');
   // A newer tab's save that save() finds only then: refused, false.
-  const t = gateStoreCtx({ version: 1, fmt: 1, packName: 'Mine', scouts: [] });
+  const t = gateStoreCtx({ version: 1, fmt: 2, packName: 'Mine', scouts: [] });
   eq(vm.runInContext(`store[KEY] = ${JSON.stringify(JSON.stringify({ version: 1, fmt: NEWER_FMT, scouts: [] }))}; commit()`, t), false, 'a newer tab’s save found by save()');
 });
 test('Option B review (4): no success is said after a commit() that may have refused', () => {
@@ -22806,9 +22811,9 @@ atest('reload gate, api: a save that reads a newer page’s record sends nothing
   eq(await run(PACK_STATE({ rev: 4, fmt: NEWER_FMT, packName: 'Newer' })),
     { puts: 0, read: true, held: true, here: ['Edited', true], server: [4, NEWER_FMT, 'Newer'] }, 'a save over a newer page’s record');
   eq(await run(PACK_STATE({ rev: 4, packName: 'Before the gate' })),
-    { puts: 1, read: true, held: false, here: ['Edited', false], server: [5, 1, 'Edited'] }, 'control: a save over a page from before the gate');
-  eq(await run(PACK_STATE({ rev: 4, fmt: 1, packName: 'This format' })),
-    { puts: 1, read: true, held: false, here: ['Edited', false], server: [5, 1, 'Edited'] }, 'control: a save over this page’s format');
+    { puts: 1, read: true, held: false, here: ['Edited', false], server: [5, 2, 'Edited'] }, 'control: a save over a page from before the gate');
+  eq(await run(PACK_STATE({ rev: 4, fmt: 2, packName: 'This format' })),
+    { puts: 1, read: true, held: false, here: ['Edited', false], server: [5, 2, 'Edited'] }, 'control: a save over this page’s format');
 });
 
 /* ================================================================
@@ -24867,7 +24872,7 @@ test('C6, Firestore: while the chooser waits the reload gate drops it, and a lea
   a.run("editRow('l2', 'description', 'Pizza night')"); a.push();
   b.run("editRow('l2', 'description', 'Pizza party')"); b.hear(); b.push();
   eq(c6Asked(b), [['l2']], 'B was not asked');
-  b.run("reads['packs/P'] = { rev: 9, device: 'newer', updatedAt: 'TS', json: JSON.stringify({ rev: 9, fmt: 2, scouts: [] }) }; watches[0].next(snapOf('packs/P', {}));");
+  b.run("reads['packs/P'] = { rev: 9, device: 'newer', updatedAt: 'TS', json: JSON.stringify({ rev: 9, fmt: 3, scouts: [] }) }; watches[0].next(snapOf('packs/P', {}));");
   eq([b.get('!!sync.newerFormat'), c6Asked(b), b.get('ui.overlay'), b.get('!!sync.conflict')], [true, null, null, false], 'the chooser outlived the hold');
   b.run('saveRowChoices(); scheduleSyncPush()'); b.push();
   eq(rev(), 4, 'B wrote while held');
@@ -25564,8 +25569,8 @@ test('C6 review (F6), Firestore: a close-out, or a newer page’s save, arriving
   eq([rev(), server().budget.programYear, server().archives.map((x) => x.id)], [5, 2027, ['arc-A']], 'B wrote over the close-out');
   // A newer page's save, its fmt where the text scan doesn't look: held, the choice dropped, nothing sent.
   ({ a, b, server, rev } = asked());
-  const hidden = { rev: 9, device: 'newer', updatedAt: 'TS', json: '{"rev":9,"\\u0066mt":2,"scouts":[]}' };
-  ok(!/"fmt"/.test(hidden.json) && JSON.parse(hidden.json).fmt === 2, 'the test’s record');
+  const hidden = { rev: 9, device: 'newer', updatedAt: 'TS', json: '{"rev":9,"\\u0066mt":3,"scouts":[]}' };
+  ok(!/"fmt"/.test(hidden.json) && JSON.parse(hidden.json).fmt === 3, 'the test’s record');
   b.run(`reads['packs/P'] = ${JSON.stringify(hidden)}; watches[0].next(snapOf('packs/P', {}));`);
   eq([b.get('!!sync.newerFormat'), c6Asked(b), b.get('!!sync.conflict')], [true, null, false], 'a newer page’s save while the choice waited');
   b.run('saveRowChoices(); scheduleSyncPush()'); b.push();
