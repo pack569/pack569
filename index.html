@@ -5024,6 +5024,8 @@
     fixWhy: '',             // Phase 3, C4 — the reason typed there (required either way)
     stReopenAsk: null,      // Phase 3, C5 — the statement id whose Reopen form is open
     stReopenWhy: '',        // Phase 3, C5 — the reason typed there (required)
+    stBalanceAsk: null,     // Phase 3, C5 — the legacy statement id whose ending-balance box is open
+    stBalance: '',          // Phase 3, C5 — the balance typed there
     lineOpen: {},           // Budget — { lineId: true } rows with their settings showing
     // Rewards — { tierId: true } tiers showing an empty date box because somebody asked for
     // one. A tier that HAS a deadline shows the box regardless; this is only the empty case,
@@ -8643,9 +8645,11 @@
   // reconciledThrough [before, after]) and 'restore' (a backup restored, row 'book', `why` what
   // the book then held); an 'untick' can carry the leader's `why`, and a 'delete' names what the
   // entry was for (description, line, family, method, reference).
-  // Phase 3, C5 added 'review' (a statement marked reviewed; row: the statement's id).
+  // Phase 3, C5 added 'review' (a statement marked reviewed; row: the statement's id) and 'balance' (a
+  // legacy statement's ending balance added; row: its id, `f` statementCents [null, cents]); and writes
+  // 'reopen' (row: the statement's id, `rows` another for that date, `why`, `f` reconciledThrough).
   var LEDGER_OPS = ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile', 'restore',
-    'review'];
+    'review', 'balance'];
   function ledgerEvent(op, rowId, who, more) {
     if (LEDGER_OPS.indexOf(op) === -1 || typeof rowId !== 'string' || !rowId) return null;
     who = who || {};
@@ -8777,19 +8781,19 @@
     unmakeup: 'Tier make-up taken back', notcommission: 'Marked not the commission', reassign: 'Family unlinked',
     opening: 'Opening balance changed', reconcile: 'Marked reconciled', restore: 'Backup restored',
     'void': 'Voided', unvoid: 'Un-voided', reverse: 'Reversed', correct: 'Corrected', resolve: 'Resolved', reopen: 'Statement reopened',
-    review: 'Statement reviewed'   // Phase 3, C5
+    review: 'Statement reviewed', balance: 'Statement balance added'   // Phase 3, C5
   };
   var LEDGER_FIELD_LABELS = {
     date: 'date', description: 'description', amountCents: 'amount', direction: 'in or out', lineId: 'budget line',
     method: 'method', ref: 'reference', source: 'source', scoutId: 'scout (family)', donor: 'donor', reimbursement: 'reimbursement',
     notCommission: 'counted as other income', tierMakeup: 'tier make-up', openingCents: 'opening balance', openingDate: 'opening date',
-    reconciledThrough: 'reconciled through'
+    reconciledThrough: 'reconciled through', statementCents: 'statement balance'
   };
   // One value from an event's `f`, as a leader reads it. `names` turns an id into a name
   // ({ line, scout, tier }: each id → name or ''). Pure given `names`.
   function ledgerLogValue(k, v, names) {
     if (v === null || v === undefined || v === '') return '(none)';
-    if (k === 'amountCents' || k === 'openingCents') return typeof v === 'number' ? fmt(v) : String(v);
+    if (k === 'amountCents' || k === 'openingCents' || k === 'statementCents') return typeof v === 'number' ? fmt(v) : String(v);
     if (k === 'date' || k === 'openingDate' || k === 'reconciledThrough') return fmtDateShort(String(v));
     if (k === 'direction') return v === 'in' ? 'money in' : v === 'out' ? 'money out' : String(v);
     if (typeof v === 'boolean') return v ? 'yes' : 'no';
@@ -9420,6 +9424,17 @@
     });
     if (ids.length) statementLockBack(book, statements);
     return { ids: ids, was: rt, now: book.reconciledThrough };
+  }
+  // Why the ending balance `typed` can't be added to statement `st`, or ''. Only a legacy statement
+  // (L1: its balance was never saved), once, and not once reopened. A balance can be negative (an
+  // overdrawn account). Pure.
+  function statementBalanceRefusal(st, typed) {
+    if (!st || st.legacy !== true) return 'Only a statement recorded before statements were kept can have its ending balance added.';
+    if (statementAdded(st)) return 'Its ending balance was already added' + (st.addedBy ? ' by ' + st.addedBy : '') + ', and can’t be changed.';
+    if (statementReopened(st)) return 'This statement was reopened, so its ending balance can’t be added.';
+    var v = String(typed == null ? '' : typed).replace(/[$,\s]/g, '');
+    if (!v || !isFinite(Number(v))) return 'Type the ending balance shown on that bank statement, then tap Add it.';
+    return '';
   }
   // What reopening statement `st` will do, said under its Reopen form: where the lock goes back to
   // (statementBefore), and what it leaves as it is. Pure.
@@ -20817,6 +20832,20 @@
           '<p class="small muted" style="margin:4px 0 0;flex-basis:100%">' + esc(statementReopenNote(st, state.statements)) + '</p>';
       }
     }
+    // A legacy statement's ending balance (treasurer review of C1, L1): once, by a leader who edits.
+    // A box, then Add it, two taps (it can't be changed afterwards).
+    if (canEdit() && st.legacy === true && !statementAdded(st) && !statementReopened(st)) {
+      h += '<button type="button" class="btn small ghost" data-act="st-balance:' + esc(st.id) + '">Add the statement’s ending balance</button>';
+      if (ui.stBalanceAsk === st.id) {
+        var baArmed = ui.armed === 'st-balance-go:' + st.id;
+        h += '<div class="row" style="margin-top:6px;flex-basis:100%">' +
+          '<label class="fld">Ending balance on the ' + esc(fmtDateShort(st.date)) + ' statement ($)<input class="lref" inputmode="decimal" data-ch="st-balance" value="' +
+            esc(ui.stBalance || '') + '" placeholder="0.00"></label>' +
+          '<button type="button" class="btn small ' + (baArmed ? 'danger armed' : 'primary') + '" data-act="st-balance-go:' + esc(st.id) + '">' +
+            (baArmed ? 'Tap again: it can’t be changed afterwards' : 'Add it') + '</button>' +
+          '<button type="button" class="btn small ghost" data-act="st-balance-cancel">Cancel</button></div>';
+      }
+    }
     return h;
   }
   // The one-page printout of a statement reconciled (ui.overlay kind 'bank-statement'), in the
@@ -20828,7 +20857,7 @@
     if (!st) return '';
     var d = statementSheetData(st, state.ledger.concat(state.ledgerAside || []));
     function tr(label, cents, strong) {
-      var l = esc(label), v = cents === null ? '—' : fmt(cents);
+      var l = esc(label), v = cents === null ? '—' : (cents < 0 ? '−' : '') + fmt(Math.abs(cents));
       return '<tr><td>' + (strong ? '<strong>' + l + '</strong>' : l) + '</td><td class="num">' + (strong ? '<strong>' + v + '</strong>' : v) + '</td></tr>';
     }
     function table(cap, lines, none) {
@@ -29113,9 +29142,12 @@
     // Treasurer sign-off on C3 — and the why for an un-void.
     var uvWhyEl = e.target.closest('input[data-ch="ledger-unvoid-why"]');
     if (uvWhyEl) ui.unvoidWhy = uvWhyEl.value;
-    // Phase 3, C5 — and a statement's Reopen reason.
+    // Phase 3, C5 — and a statement's Reopen reason, and a legacy statement's ending balance (typed
+    // after the first tap, it disarms Add it).
     var stWhyEl = e.target.closest('input[data-ch="st-reopen-why"]');
     if (stWhyEl) ui.stReopenWhy = stWhyEl.value;
+    var stBalEl = e.target.closest('input[data-ch="st-balance"]');
+    if (stBalEl) { ui.stBalance = stBalEl.value; if (/^st-balance-go:/.test(String(ui.armed || ''))) ui.armed = null; }
     // Phase 3, C4 — and the Reverse or correct form's why and figures (a figure typed disarms it).
     var fxEl = e.target.closest('input[data-ch^="ledger-fix-"]');
     if (fxEl) {
@@ -30265,6 +30297,38 @@
       render(); return;
     }
     if (act === 'st-reopen-cancel') { ui.stReopenAsk = null; ui.stReopenWhy = ''; render(); return; }
+    // A legacy statement's ending balance (treasurer review of C1, L1): kept beside what was signed
+    // (addedCents, with who and when), never in place of it, once (statementBalanceRefusal, asked on
+    // each tap). The box first (st-balance), then two taps (st-balance-go). Logged ('balance').
+    if (act.indexOf('st-balance:') === 0) {
+      var sbSt = (state.statements || []).filter(function (x) { return x.id === act.slice('st-balance:'.length); })[0];
+      if (!sbSt) return;
+      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      var sbNo = statementBalanceRefusal(sbSt, '0');
+      if (sbNo) { showToast(sbNo); render(); return; }
+      if (ui.stBalanceAsk !== sbSt.id) ui.stBalance = '';
+      ui.stBalanceAsk = sbSt.id;
+      render(); return;
+    }
+    if (act === 'st-balance-cancel') { ui.stBalanceAsk = null; ui.stBalance = ''; render(); return; }
+    if (act.indexOf('st-balance-go:') === 0) {
+      var sdSt = (state.statements || []).filter(function (x) { return x.id === act.slice('st-balance-go:'.length); })[0];
+      if (!sdSt) { ui.stBalanceAsk = null; render(); return; }
+      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      var sdNo = statementBalanceRefusal(sdSt, ui.stBalance);
+      if (sdNo) { if (ui.armed === act) ui.armed = null; showToast(sdNo); render(); return; }
+      arm(act, function () {
+        var sdCents = toCentsSigned(ui.stBalance);
+        sdSt.addedAt = new Date().toISOString();
+        sdSt.addedCents = sdCents;
+        sdSt.addedBy = ledgerActor();
+        sdSt.addedByUid = ledgerActorUid();
+        ui.stBalanceAsk = null; ui.stBalance = '';
+        logLedger('balance', sdSt.id, { f: { statementCents: [null, sdCents] } });
+        if (commit()) showToast('Added the ending balance, ' + fmt(sdCents) + ', to the statement through ' + fmtDateShort(sdSt.date) + '.');
+      });
+      return;
+    }
     if (act.indexOf('st-reopen-go:') === 0) {
       var sgSt = (state.statements || []).filter(function (x) { return x.id === act.slice('st-reopen-go:'.length); })[0];
       if (!sgSt) { ui.stReopenAsk = null; render(); return; }
@@ -31249,8 +31313,10 @@
     if (ch === 'ledger-unvoid-why') { ui.unvoidWhy = el.value; return; }   // Treasurer sign-off on C3
     // Phase 3, C4 — the Reverse or correct form: kept in ui, never the record, until a tap uses it.
     // A figure changed after the first tap disarms it, so the second never does what isn't shown.
-    // Phase 3, C5 — a statement's Reopen reason: in ui until the tap that uses it.
+    // Phase 3, C5 — a statement's Reopen reason and a legacy statement's ending balance: in ui until
+    // the tap that uses them (a balance changed after the first tap disarms it).
     if (ch === 'st-reopen-why') { ui.stReopenWhy = el.value; return; }
+    if (ch === 'st-balance') { ui.stBalance = el.value; if (/^st-balance-go:/.test(String(ui.armed || ''))) ui.armed = null; render(); return; }
     if (ch === 'ledger-fix-why') { ui.fixWhy = el.value; return; }
     if (ch.indexOf('ledger-fix-') === 0) {
       if (!ui.fixDraft) ui.fixDraft = {};

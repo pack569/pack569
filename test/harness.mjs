@@ -17999,7 +17999,7 @@ test('C1: ledgerEvent builds one log entry, and nothing else', () => {
   eq(ev('reverse', 'l1', who, { rows: ['rv-l1'] }).rows, ['rv-l1'], 'a reversal names its row');
   eq(ev('tick', 'l1', { id: 'x', by: 'pat@example.com' }), { id: 'lg-x', at: '', by: 'a signed-in leader', byUid: '', dev: '', row: 'l1', op: 'tick' }, 'never an email');
   eq([ctx.ledgerEvent('someday', 'l1', who), ctx.ledgerEvent('edit', '', who), ctx.ledgerEvent('edit', 7, who)], [null, null, null], 'an unknown op, or no row');
-  eq([...ctx.LEDGER_OPS], ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile', 'restore', 'review'], 'the ops');
+  eq([...ctx.LEDGER_OPS], ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile', 'restore', 'review', 'balance'], 'the ops');
   // The rows it names are copied, not shared.
   const rows = ['a'];
   const e2 = ctx.ledgerEvent('correct', 'l1', who, { rows });
@@ -22812,7 +22812,7 @@ test('C5: Money · Ledger lists the statements newest first, each with its print
     'Statement through Wed, Sep 30 reopened Statement balance $625.00 · ticked balance $625.00 · difference $0.00 ' +
     '1 entry cleared on it, 1 outstanding. Reconciled by Pat Treasurer on Oct 1. Reopened by Alex on Oct 2: “A deposit was ticked twice”. Reconciled again by Pat Treasurer on Oct 2. Printout ' +
     // Pat may review the legacy one, which Sam signed.
-    'Statement through Mon, Aug 31 Reconciled through Aug 31 by Sam on Sep 1. Recorded before statements were kept, so the statement balance wasn’t saved. Printout Mark reviewed',
+    'Statement through Mon, Aug 31 Reconciled through Aug 31 by Sam on Sep 1. Recorded before statements were kept, so the statement balance wasn’t saved. Printout Mark reviewed Add the statement’s ending balance',
     'the card');
   ok(/data-act="st-print:st-2026-09-30-a"/.test(vm.runInContext('statementsCardHtml()', x)), 'no printout button');
   eq(c5Text(vm.runInContext('statementsCardHtml()', c5View([]))),
@@ -22824,7 +22824,7 @@ test('C5: Money · Ledger lists the statements newest first, each with its print
   const s = sheet('st-2026-09-30-a');
   eq(s.replace(/^.*?Pack 569/, 'Pack 569'), 'Pack 569 — Bank statement reconciliation Statement ending September 30, 2026 ' +
     'Reconciliation Book opening balance $100.00 Cleared on earlier statements $500.00 Cleared on this statement (1) $25.00 Ticked balance $625.00 ' +
-    'Statement ending balance $625.00 Difference (should be $0.00) $0.00 Outstanding, net (1) -$84.00 Book balance through Sep 30 $541.00 ' +
+    'Statement ending balance $625.00 Difference (should be $0.00) $0.00 Outstanding, net (1) −$84.00 Book balance through Sep 30 $541.00 ' +
     'Cleared on this statement Cleared on this statement Date Entry Ref Amount Sep 5 Dues +$25.00 ' +
     'Outstanding on Sep 30 Outstanding on Sep 30 Date Entry Ref Amount Sep 10 Pinewood trophies 101 −$84.00 ' +
     'Reconciled by Pat Treasurer on October 2, 2026. Reviewed by Sam on October 3, 2026.', 'the printout');
@@ -22865,7 +22865,10 @@ const C5_ACT = [
   c2Block(/    if \(act\.indexOf\('st-review:'\) === 0\) \{[\s\S]*?\n    \}/, 'st-review'),
   c2Block(/    if \(act\.indexOf\('st-reopen:'\) === 0\) \{[\s\S]*?\n    \}/, 'st-reopen'),
   c2Block(/    if \(act === 'st-reopen-cancel'\) \{[^\n]*\}/, 'st-reopen-cancel'),
-  c2Block(/    if \(act\.indexOf\('st-reopen-go:'\) === 0\) \{[\s\S]*?\n    \}/, 'st-reopen-go')].join('\n');
+  c2Block(/    if \(act\.indexOf\('st-reopen-go:'\) === 0\) \{[\s\S]*?\n    \}/, 'st-reopen-go'),
+  c2Block(/    if \(act\.indexOf\('st-balance:'\) === 0\) \{[\s\S]*?\n    \}/, 'st-balance'),
+  c2Block(/    if \(act === 'st-balance-cancel'\) \{[^\n]*\}/, 'st-balance-cancel'),
+  c2Block(/    if \(act\.indexOf\('st-balance-go:'\) === 0\) \{[\s\S]*?\n    \}/, 'st-balance-go')].join('\n');
 const c5Page = (o) => c2tPage({ book: { reconciledThrough: '2026-09-30' }, more: `
   ${['statementReviewRefusal'].map(slice).join('\n')}
   var editor = true;
@@ -22998,6 +23001,56 @@ test('C5: only an admin can reopen, only the newest statement in force, with a r
     'by mistake, fix what is wrong, then mark the statement reconciled again. This statement stays in the list, marked reopened.', 'the note');
   ok(/^The book will then not be reconciled at all, and its opening balance unlocks\. /.test(n.statementReopenNote(C5_LEGACY(), [C5_LEGACY()])), 'the note, last one');
   ok(!/\.reconciled = |stampApproved\(|statementId/.test(codeOnly(c2Block(/    if \(act\.indexOf\('st-reopen-go:'\) === 0\) \{[\s\S]*?\n    \}/, 'st-reopen-go'))), 'reopen un-ticks an entry');
+});
+
+test('C5: a statement from before statements were kept can have its ending balance added, once, beside what was signed', () => {
+  const r = sandbox(['statementBalanceRefusal', 'statementAdded', 'statementReopened']);
+  const L = C5_LEGACY();
+  const table = [
+    [L, '1,234.56', ''], [L, '-12.50', ''], [L, '$0', ''],
+    [L, '', 'Type the ending balance shown on that bank statement, then tap Add it.'],
+    [L, '12abc', 'Type the ending balance shown on that bank statement, then tap Add it.'],
+    [C5_SEP(), '10', 'Only a statement recorded before statements were kept can have its ending balance added.'],
+    [Object.assign(C5_LEGACY(), { addedAt: 'T', addedCents: 100, addedBy: 'Sam' }), '10', 'Its ending balance was already added by Sam, and can’t be changed.'],
+    [Object.assign(C5_LEGACY(), { reopenedAt: 'T', reopenedBy: 'Alex' }), '10', 'This statement was reopened, so its ending balance can’t be added.']];
+  table.forEach(([st, v, want], i) => eq(r.statementBalanceRefusal(st, v), want, 'case ' + i));
+  // On the page.
+  const p = c5Page({ more: `${['statementBalanceRefusal'].map(slice).join('\n')} ui.stBalanceAsk = null; ui.stBalance = '';` });
+  const was = p.get("st('st-2026-08-31')");
+  p.run("toasts = []; act5('st-balance:st-2026-09-30-a')");
+  eq([p.get('ui.stBalanceAsk'), p.get('toasts')], [null, ['Only a statement recorded before statements were kept can have its ending balance added.']], 'not a legacy one');
+  p.run("toasts = []; act5('st-balance:st-2026-08-31'); act5('st-balance-go:st-2026-08-31')");
+  eq([p.get('ui.stBalanceAsk'), p.get('toasts'), p.get('log().length')], ['st-2026-08-31', ['Type the ending balance shown on that bank statement, then tap Add it.'], 0], 'nothing typed');
+  p.run("toasts = []; ui.stBalance = '1,234.56'; act5('st-balance-go:st-2026-08-31')");
+  eq([p.get("'addedAt' in st('st-2026-08-31')"), p.get('ui.armed')], [false, 'st-balance-go:st-2026-08-31'], 'one tap added it');
+  p.run("act5('st-balance-go:st-2026-08-31')");
+  const s = p.get("st('st-2026-08-31')");
+  // What was signed is as it was; the balance is beside it, with who and when.
+  eq(Object.fromEntries(Object.entries(s).filter(([k]) => Object.prototype.hasOwnProperty.call(was, k))), was, 'the signed part changed');
+  eq([s.addedCents, s.addedBy, s.addedByUid, /^2\d{3}-/.test(s.addedAt), s.statementCents], [123456, 'Pat Treasurer', 'u1', true, null], 'the balance added');
+  eq(p.get('log().map(function (e) { return [e.op, e.row, e.f]; })'), [['balance', 'st-2026-08-31', { statementCents: [null, 123456] }]], 'the log');
+  eq([p.get('toasts'), p.get('ui.stBalanceAsk')], [['Added the ending balance, $1,234.56, to the statement through Aug 31.'], null], 'said');
+  p.run("toasts = []; act5('st-balance:st-2026-08-31')");
+  eq(p.get('toasts'), ['Its ending balance was already added by Pat Treasurer, and can’t be changed.'], 'once');
+  // A viewer can't.
+  const v = c5Page({ more: `${['statementBalanceRefusal'].map(slice).join('\n')} ui.stBalanceAsk = null; ui.stBalance = '5';` });
+  v.run("editor = false; ui.stBalanceAsk = 'st-2026-08-31'; toasts = []; act5('st-balance-go:st-2026-08-31'); act5('st-balance-go:st-2026-08-31')");
+  eq([v.get("'addedAt' in st('st-2026-08-31')"), v.get('toasts')[0]], [false, 'Read-only access — ask a pack admin to make you an editor.'], 'a viewer');
+  // How it reads: the card's line, the change history.
+  const t = sandbox(['statementLegacyLine', 'statementByOn', 'statementDay', 'fmtDateYear', 'fmt', 'fmtDateShort']);
+  eq(t.statementLegacyLine(s).replace(/on \w+ \d+\.$/, 'on (today).'), 'Reconciled through Aug 31 by Sam on Sep 1. Recorded before statements were kept, so the statement balance ' +
+    'wasn’t saved. Its ending balance, $1,234.56, was added afterwards by Pat Treasurer on (today).', 'the line');
+  const lg = sandbox(['fmt', 'fmtDateShort', 'LEDGER_OP_LABELS', 'LEDGER_FIELD_LABELS', 'ledgerLogValue', 'ledgerEventLines']);
+  eq(JSON.parse(JSON.stringify(lg.ledgerEventLines({ op: 'balance', f: { statementCents: [null, 123456] } }))),
+    [{ what: 'Statement balance added: statement balance', before: '(none)', after: '$1,234.56' }], 'the change history');
+  eq(JSON.parse(JSON.stringify(lg.ledgerEventLines({ op: 'reopen', f: { reconciledThrough: ['2026-09-30', ''] } }))),
+    [{ what: 'Statement reopened: reconciled through', before: 'Sep 30', after: '(none)' }], 'a reopen in the change history');
+  // Two devices adding it at once keep the earlier on both.
+  const m = sandbox(NORMALIZE_FNS);
+  const a1 = Object.assign(C5_LEGACY(), { addedAt: '2026-10-02T00:00:02.000Z', addedCents: 100, addedBy: 'A', addedByUid: 'ua' });
+  const a2 = Object.assign(C5_LEGACY(), { addedAt: '2026-10-02T00:00:01.000Z', addedCents: 200, addedBy: 'B', addedByUid: 'ub' });
+  eq(JSON.parse(JSON.stringify(m.mergeStatements([a1], [a2]))), JSON.parse(JSON.stringify(m.mergeStatements([a2], [a1]))), 'two balances');
+  eq(m.mergeStatements([a1], [a2])[0].addedCents, 200, 'the earlier balance');
 });
 
 /* ---------------- report ---------------- */
