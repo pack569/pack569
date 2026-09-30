@@ -10768,6 +10768,11 @@
     fatesNote: '',
     splitNote: '',     // Treasurer sign-off on C3 — "Two versions of … were found", the same way
     fatesSeen: {},     // …and the rows it has named this session, so each is said once
+    // Phase 3, C6 reviews (security F3; treasurer 9; owner decision 23) — what a merge did that the ledger
+    // needs a look for, and nothing in the book shows afterwards (noteLedgerLookFromMerge): notes on
+    // "The ledger needs a look" until a leader taps Got it, each said once this session (lookSeen).
+    lookNotes: [],
+    lookSeen: {},
     session: null,     // token — a passphrase change cancels in-flight work from the old session
     backend: null,     // the loaded backend adapter (firestoreBackend or apiBackend) — see loadBackend
     pack: null,        // the pack-record handle from backend.open(); null = nothing may push
@@ -11070,6 +11075,8 @@
     sync.fatesNote = '';
     sync.splitNote = '';
     sync.fatesSeen = {};
+    sync.lookNotes = [];   // Phase 3, C6 reviews — and what it said needs a look
+    sync.lookSeen = {};
     sync.dirty = false;
     sync.session = null;
     sync.mode = 'local';
@@ -14259,7 +14266,9 @@
   // in two versions (normalizeState's `splits`), for syncPush to name too.
   // Phase 3, C6 — `picks` (when given): the leader's answer to each row in conflict ({ id: 'mine' |
   // 'theirs' }, this device's copy or the other's), from the chooser (ledgerRowConflicts).
-  function mergeRemoteAppendOnly(d, kept, lost, split, picks) {
+  // Phase 3, C6 reviews — `look` (when given) collects what the merge did that the ledger needs a look
+  // for ({ kind, … }: noteLedgerLookFromMerge says it).
+  function mergeRemoteAppendOnly(d, kept, lost, split, picks, look) {
     var parsed = null;
     try { parsed = JSON.parse(typeof d.json === 'string' ? d.json : ''); } catch (e) { return 0; }
     var remoteNewest = goneNewest(parsed && parsed.gone);
@@ -14511,6 +14520,23 @@
       state.ledger = prSet.ledger;
       state.ledgerAside = prSet.aside;
       removed += prSet.moved.length;
+      // Security review of C6 (F3), treasurer review (9) — a tick merged onto an entry voided on the other
+      // device (ticked on one, voided later on the other, so the void was kept): a voided entry isn't on
+      // the reconcile screen and can't be un-ticked there, so it is un-ticked here, logged with why, and
+      // said on "The ledger needs a look". Not one a standing statement lists: that statement says it
+      // cleared, and the tick stays with it.
+      var onStatement = Object.create(null);
+      arrOf(state.statements).forEach(function (st) {
+        if (st && !statementReopened(st) && Array.isArray(st.ticked)) st.ticked.forEach(function (r) { onStatement[r] = true; });
+      });
+      state.ledgerAside.forEach(function (x) {
+        if (!x || typeof x.id !== 'string' || x.off !== 'void' || x.reconciled !== true || onStatement[x.id]) return;
+        x.reconciled = false;
+        stampApproved(x, false);
+        logLedger('untick', x.id, { why: LEDGER_VOID_TICK_WHY });
+        if (Array.isArray(look)) look.push({ kind: 'voidtick', row: x });
+        added += 1;
+      });
     }
     settleVoided();
     // Phase 3, C2 — the ledger's log, both copies' events in one order (mergeLedgerLog). Not
@@ -14536,6 +14562,7 @@
     }
     return added + removed;
   }
+  var LEDGER_VOID_TICK_WHY = 'Ticked on one device while voided on another. The void was kept. If the bank statement shows it cleared, un-void it and tick it again.';
   // Phase 3, C2 (treasurer review of C1, L2) — a tick time (reconciledAt) more than a day ahead of
   // `now` becomes `now`, as a deletion mark does (clampGone). In place. The day is a literal, as
   // in clampGone: normalizeState calls this.
@@ -14643,9 +14670,26 @@
   // render, but a leader not on Money · Ledger never sees it come on when another device's save does
   // it. So a sync that takes it from nothing to say to something says so, once: how many notes the
   // book has, for a leader (0 for anyone else: the ledger is theirs; with no accounts, everyone).
+  // Phase 3, C6 reviews — and what a merge said needs a look this session (sync.lookNotes).
   function ledgerLookCount() {
     if (accountsInForce() && LEADER_ROLES.indexOf(sync.myRole) === -1) return 0;
-    return ledgerLookNotes(state.ledger || [], state.book).length;
+    return ledgerLookNotes(state.ledger || [], state.book).length + arrOf(sync.lookNotes).length;
+  }
+  // Phase 3, C6 reviews — what a merge collected (mergeRemoteAppendOnly's `look`), in the treasurer's
+  // words, onto "The ledger needs a look" (sync.lookNotes), each said once this session. Called before
+  // noteLedgerLookAfterSync, so the sync's toast counts them. Leaders only, as the card is: a parent's
+  // page never merges the pack record, and nothing here is published.
+  function noteLedgerLookFromMerge(look) {
+    var seen = sync.lookSeen || (sync.lookSeen = {}), notes = sync.lookNotes || (sync.lookNotes = []), n = 0;
+    arrOf(look).forEach(function (it) {
+      var key = it && it.kind === 'voidtick' && it.row ? 'voidtick:' + it.row.id : '';
+      if (!key || seen[key]) return;
+      seen[key] = true;
+      notes.push(ledgerCap(ledgerEntryNamed(it.row)) + ' was ticked on one device while voided on another. The void was kept, so it is no longer ticked. ' +
+        'If the bank statement shows it cleared, un-void it and tick it again.');
+      n += 1;
+    });
+    if (n) render();
   }
   var LEDGER_LOOK_SYNC = 'After a sync, the ledger needs a look: see Money · Ledger.';
   // Security pass on option B sign-off (3) — a save that merged another device's changes has just
@@ -14731,7 +14775,7 @@
     var be = sync.backend, h = sync.pack, mine = sync.session;
     // Reconciled ledger rows the merge kept over a delete, or a delete took (named below).
     // Outside the attempt: a rerun finds them already settled, and adds nothing.
-    var keptRows = [], lostRows = [], splitRows = [];
+    var keptRows = [], lostRows = [], splitRows = [], lookItems = [];
     // Treasurer sign-off on option B (extra) — what "The ledger needs a look" said before this save.
     // Security pass on option B sign-off (3) — outside the attempt too: a rerun would read the book
     // its first run had already merged into, and the toast was never said.
@@ -14787,7 +14831,7 @@
         var rowItems = ledgerRowConflicts(remote);
         if (rowItems.length) return { record: null, result: { rows: rowItems, rowsRemote: remote } };
       }
-      var mergedN = clobbered ? mergeRemoteAppendOnly(remote, keptRows, lostRows, splitRows) : 0;
+      var mergedN = clobbered ? mergeRemoteAppendOnly(remote, keptRows, lostRows, splitRows, undefined, lookItems) : 0;
       // PHASE 3, C6 — the charges follow the merged book. They are this device's (the merge keeps
       // them whole), but what settles and waives them came in with the merge too: a payment against
       // one, a tier make-up (or a sale) that earns a tier. So a merge that changed anything re-syncs
@@ -14864,6 +14908,8 @@
       // Everything heard so far was in what was merged and sent, unless a later save came.
       if (!later) sync.clobber = false;
       sync.seasonKeptRev = null;
+      // Phase 3, C6 reviews — what the merge said needs a look, on the card before the toast counts it.
+      noteLedgerLookFromMerge(lookItems);
       // Security pass on option B sign-off (3) — with what the book said before this save: adoptRemote
       // would read it after the merge, and never say the merge brought "The ledger needs a look" on.
       if (later && !editedSince) adoptRemote(later, { toast: true, lookWas: res.lookWas, clobbered: res.clobbered });
@@ -15218,9 +15264,9 @@
     if (barred) { render(); showToast(barred.kind === 'pair' ? ROW_PICK_LOCKED_PAIR : ROW_PICK_LOCKED); return; }
     var missing = rc.items.some(function (it) { return it.rows.some(function (r) { return !rc.picks[r.id]; }); });
     if (missing) { showToast(changed ? ROW_PICKS_CHANGED : ROW_PICK_NEEDED); return; }
-    var picks = {}, kept = [], lost = [], split = [], lookWas = ledgerLookCount();
+    var picks = {}, kept = [], lost = [], split = [], look = [], lookWas = ledgerLookCount();
     rc.items.forEach(function (it) { it.rows.forEach(function (r) { picks[r.id] = rc.picks[r.id]; }); });
-    mergeRemoteAppendOnly(rc.remote, kept, lost, split, picks);
+    mergeRemoteAppendOnly(rc.remote, kept, lost, split, picks, look);
     sync.conflict = null;
     sync.rowChoice = null;
     if (ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay = null;
@@ -15231,6 +15277,7 @@
     if (sync.backend && sync.backend.serverRevs && typeof rc.remote.rev === 'number') state.rev = rc.remote.rev;
     if (!commit()) return;   // commit re-syncs the charges, saves and pushes
     showToast(ROW_PICKS_SAVED);
+    noteLedgerLookFromMerge(look);   // Phase 3, C6 reviews
     noteLedgerLookAfterSync(lookWas, false);
     noteReconciledFates({ kept: kept, lost: lost, split: split });
   }
@@ -21069,11 +21116,14 @@
   // Security re-check of option B (findings A and D) — "The ledger needs a look" (ledgerLookNotes),
   // on Money · Ledger beside what a sync changed. Worked out from the counted rows each time, so it
   // stays until the book is put right (no Got it), and goes then. Every word escaped.
-  function ledgerLookCardHtml(rows, book) {
-    var notes = ledgerLookNotes(rows || [], book);
-    if (!notes.length) return '';
+  // Phase 3, C6 reviews — and, after them, `said` (sync.lookNotes): what a merge did this session that
+  // the book no longer shows, with a Got it for those alone (the book's own stay until it is put right).
+  function ledgerLookCardHtml(rows, book, said) {
+    var notes = ledgerLookNotes(rows || [], book), extra = Array.isArray(said) ? said : [];
+    if (!notes.length && !extra.length) return '';
     return '<div class="card" role="status"><h2 class="section display">The ledger needs a look</h2>' +
-      notes.map(function (t) { return '<p style="margin:0 0 10px">' + esc(t) + '</p>'; }).join('') + '</div>';
+      notes.concat(extra).map(function (t) { return '<p style="margin:0 0 10px">' + esc(t) + '</p>'; }).join('') +
+      (extra.length ? '<button type="button" class="btn small" data-act="ledger-look-dismiss">Got it</button>' : '') + '</div>';
   }
   function renderLedger() {
     var bk = state.book;
@@ -21087,7 +21137,7 @@
         (sync.splitNote ? '<p style="margin:0 0 10px">' + esc(sync.splitNote) + '</p>' : '') +
         '<button type="button" class="btn small" data-act="ledger-fates-dismiss">Got it</button></div>'
       : '';
-    h += ledgerLookCardHtml(state.ledger, state.book);   // security re-check of option B (A, D)
+    h += ledgerLookCardHtml(state.ledger, state.book, sync.lookNotes);   // security re-check of option B (A, D); C6 reviews
     h += '<div class="card"><h2 class="section display">Ledger</h2>' +
       '<p class="small muted" style="margin:0 0 10px">Every dollar that actually moved. Unlike the budget — which is a plan — this is a record, ' +
       'so the balance below can be held next to a bank statement and checked.</p>' +
@@ -31294,6 +31344,7 @@
       return;
     }
     if (act === 'ledger-fates-dismiss') { sync.fatesNote = ''; sync.splitNote = ''; render(); return; }
+    if (act === 'ledger-look-dismiss') { sync.lookNotes = []; render(); return; }   // Phase 3, C6 reviews
     // Treasurer review of C2 (M-4) — the ledger's change history as a CSV. Leaders only: this is on
     // Money · Ledger, which a parent never has (buildParentView carries no ledger and no log).
     if (act === 'ledger-log-csv') {

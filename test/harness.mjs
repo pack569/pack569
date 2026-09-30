@@ -1046,7 +1046,9 @@ const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'm
   ...C6_MERGE_FNS, 'seasonClosedTwice', 'seasonCloseoutOf', 'ledgerRowConflicts', 'rowChoice', 'refreshRowChoice', 'ledgerConflictSig', 'pickRowVersion', 'saveRowChoices', 'ROW_PICK_NEEDED',
   'ROW_PICKS_CHANGED', 'ROW_PICKS_SAVED',
   // Security review of C6 (F1a, F1b, F2) — the side a pick can't keep, and the save that refuses it.
-  'rowItemLock', 'ROW_PICK_LOCKED', 'ROW_PICK_LOCKED_PAIR'];
+  'rowItemLock', 'ROW_PICK_LOCKED', 'ROW_PICK_LOCKED_PAIR',
+  // Security review of C6 (F3) — a tick merged onto a voided entry comes off, said on "The ledger needs a look".
+  'LEDGER_VOID_TICK_WHY', 'noteLedgerLookFromMerge', 'stampApproved'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
   const ctx = vm.createContext({});
@@ -1216,7 +1218,7 @@ test('the year rollover clears the ledger and opens next year at the bank balanc
 test('a divergence merge never drops a ledger entry', () => {
   // The append-only merge is the recovery path when two copies of a pack record diverge.
   // Popcorn sales are protected there; transactions must be too.
-  const fn = /function mergeRemoteAppendOnly\(d, kept, lost, split, picks\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  const fn = /function mergeRemoteAppendOnly\(d, kept, lost, split, picks, look\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'mergeRemoteAppendOnly() not found');
   ok(/unionById\(state\.ledger, remote\.ledger, 'ledger'\)/.test(fn[0]),
     'ledger entries are not unioned on merge — one device could lose another device\'s transactions');
@@ -8950,7 +8952,7 @@ test('a push reads, merges and writes in one retried step, and the rev always cl
       function mergeRemoteAppendOnly(d) { merged.push(d.rev); return 1; }
       var chargeSyncs = 0; function syncCharges() { chargeSyncs += 1; }
       function ledgerRowConflicts() { return []; }   // Phase 3, C6: the merge is stubbed, and so is its pre-check
-      function ledgerLookCount() { return 0; } function noteLedgerLookAfterSync() {}   // the merge is stubbed; so is what it brings on
+      function ledgerLookCount() { return 0; } function noteLedgerLookAfterSync() {} function noteLedgerLookFromMerge() {}   // the merge is stubbed; so is what it brings on
       function save() { saved += 1; } function scheduleParentViewRefresh() {} function render() {}
       function showToast(m) { toasts.push(m); } function renderSyncPill() {} function syncFail() {}
       function clearTimeout() {} function setTimeout() {}
@@ -16234,7 +16236,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
       function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
       function mergeRemoteAppendOnly(d) { merged.push(d.rev); return 0; } function holdPushes() { return false; }
       function ledgerRowConflicts() { return []; }   // Phase 3, C6: the merge is stubbed, and so is its pre-check
-      function ledgerLookCount() { return 0; } function noteLedgerLookAfterSync() {}   // the merge is stubbed; so is what it brings on
+      function ledgerLookCount() { return 0; } function noteLedgerLookAfterSync() {} function noteLedgerLookFromMerge() {}   // the merge is stubbed; so is what it brings on
       function save() {} function scheduleParentViewRefresh() {} function render() {}
       function showToast(m) { toasts.push(m); } function renderSyncPill() {} function syncFail() {}
       function clearTimeout() {} function setTimeout() {}
@@ -21162,6 +21164,7 @@ const C4_EXTRA = `${C3_EXTRA}
 // Phase 3, C6 — the entries the push asked about ([ids] per item), and the leader keeping `side`'s
 // version of each ('mine': this device's), then saving, as the chooser's buttons do.
 const LEDGER_RESOLVE_WHY_TEXT = /var LEDGER_RESOLVE_WHY = '([^']*)';/.exec(SCRIPT)[1];
+const LEDGER_VOID_TICK_WHY_TEXT = /var LEDGER_VOID_TICK_WHY = '([^']*)';/.exec(SCRIPT)[1];
 const c6Asked = (d) => d.get('rowChoice() ? rowChoice().items.map(function (it) { return it.ids; }) : null');
 const c6PickAll = (d, side) => d.run(`(function () { var rc = rowChoice(); rc.items.forEach(function (it) { pickRowVersion(rc, it.ids[0], '${side}'); });
   saveRowChoices(); })()`);
@@ -21787,7 +21790,8 @@ test('Security re-check A and D: the ledger says when two reversals of an entry 
   eq(card, '<div class="card" role="status"><h2 class="section display">The ledger needs a look</h2>' +
     '<p style="margin:0 0 10px">' + RECHECK_TWO('“&lt;img src=x onerror=alert(1)&gt;”', 'Oct 1 and Oct 5', '$40.00') + '</p></div>', 'the card');
   eq(x.ledgerLookCardHtml([X, rv('rv-X', { amountCents: 5000, reconciled: true })], BOOK).indexOf('Reverse the reversal (open its Detail') !== -1, true, 'the card passes the book on');
-  ok(/\n    h \+= ledgerLookCardHtml\(state\.ledger, state\.book\);[^\n]*\n    h \+= '<div class="card"><h2 class="section display">Ledger<\/h2>'/.test(slice('renderLedger')), 'renderLedger does not show it, with the book');
+  // (C6 reviews: with what a merge said needs a look this session, after the book's own.)
+  ok(/\n    h \+= ledgerLookCardHtml\(state\.ledger, state\.book, sync\.lookNotes\);[^\n]*\n    h \+= '<div class="card"><h2 class="section display">Ledger<\/h2>'/.test(slice('renderLedger')), 'renderLedger does not show it, with the book');
   ok(!/ledgerLook/.test(codeOnly(BPV())) && !/ledgerLook/.test(codeOnly(slice('renderParentApp'))), 'it reaches the parents');
 });
 
@@ -24312,8 +24316,10 @@ function c6Ops(r, pick, base, name, times) {
 // A record's book, by id: counted rows, rows set aside ('id:off'), all canonical, and the rest compared.
 const c6Book = (rec) => ({
   ledger: rec.ledger.map((e) => c6Canon(e)).sort(), aside: rec.ledgerAside.map((e) => c6Canon(e)).sort(),
-  // A 'resolve' is written by whichever device merges, under its own id: read by what it says.
-  marks: c6Canon(rec.gone.ledger), log: rec.ledgerLog.map((e) => (e.op === 'resolve' ? 'resolve ' + e.row + ' ' + c6Canon(e.f) : e.id)).sort(),
+  // A 'resolve' is written by whichever device merges, under its own id: read by what it says. So is the
+  // untick of a tick merged onto a voided entry (security review of C6, F3).
+  marks: c6Canon(rec.gone.ledger), log: rec.ledgerLog.map((e) => (e.op === 'resolve' ? 'resolve ' + e.row + ' ' + c6Canon(e.f)
+    : e.op === 'untick' && e.why === LEDGER_VOID_TICK_WHY_TEXT ? 'untick-void ' + e.row : e.id)).sort(),
   statements: c6Canon(rec.statements), lock: rec.book.reconciledThrough
 });
 // What two c6Books disagree on: [part, only in the first, only in the second].
@@ -24390,6 +24396,10 @@ test('C6 property: two devices’ histories merge the same either way round, to 
     AB.ledger.forEach((e) => { if (e.statementId) ok(e.reconciled, `${what}: ${e.id} is on a statement, not ticked`); });
     // 6. A reversal that counts has its entry counting beside it.
     AB.ledger.forEach((e) => { if (e.reverses) eq(c6Where(AB, e.reverses), 'counted', `${what}: ${e.id} counts without the entry it reverses`); });
+    // 6a. Security review of C6 (F3) — nothing voided is ticked, unless a standing statement lists it.
+    [AB, BA].forEach((m) => m.ledgerAside.forEach((e) => {
+      if (e.off === 'void' && !m.statements.some((st) => !st.reopenedAt && (st.ticked || []).includes(e.id))) ok(!e.reconciled, `${what}: ${e.id} is voided and ticked`);
+    }));
     // 6b. Security review of C6 (F1a, F2) — no pick, whichever side, ever moves money on an entry one copy
     // holds locked where the other doesn't (ticked and on a standing statement the other hasn't, or
     // dated in the period only its book is reconciled through): the merged entry has that copy's money.
@@ -24442,6 +24452,44 @@ test('C6 review: a pick of the version that can’t be kept, reaching the merge 
   const m = get("merge(B, A, { x: 'mine' }, 1790000180000)");
   eq([m.ledger.find((e) => e.id === 'x').amountCents, m.ledgerLog.filter((e) => e.op === 'resolve').map((e) => e.f)], [4500, [{ amountCents: [4600, 4500] }]],
     'the merge kept B’s, or its history says it did');
+});
+
+test('C6 review: a tick merged onto an entry voided on the other device comes off, is logged with why, and is said once; not one a statement lists', () => {
+  const w = c6World();
+  const get = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, w)));
+  w.base = Object.assign(JSON.parse(JSON.stringify(GONE_SEED)), { ledger: [{ id: 'x', date: '2026-09-10', description: 'Pizza', amountCents: 4000, direction: 'out' }],
+    ledgerAside: [], ledgerLog: [], statements: [], book: { openingCents: 0, openingDate: '2026-07-01', reconciledThrough: '2026-08-31', statementDate: '', statementCents: 0, year: 2026 } });
+  // P4: M ticks x; T voids it later, not knowing.
+  w.M = get("dev(base, 'A', [[1790000060000, 'tick', 'x']]).rec");
+  w.T = get("dev(base, 'B', [[1790000120000, 'void', 'x']]).rec");
+  const run = (mine, theirs) => get(`(function () {
+    clock = 1790000180000; state = norm(${mine}); who = 'M'; var look = [];
+    mergeRemoteAppendOnly({ json: JSON.stringify(${theirs}) }, [], [], [], {}, look);
+    return { rec: norm(state), look: look.map(function (l) { return [l.kind, l.row.id]; }) };
+  })()`);
+  for (const [mine, theirs] of [['M', 'T'], ['T', 'M']]) {
+    const { rec, look } = run(mine, theirs);
+    const x = rec.ledgerAside.find((e) => e.id === 'x');
+    eq([c6Where(rec, 'x'), x.off, x.reconciled, 'reconciledAt' in x, look], ['aside', 'void', false, false, [['voidtick', 'x']]], mine + ' merging ' + theirs);
+    eq(rec.ledgerLog.filter((e) => e.op === 'untick').map((e) => [e.row, e.why]), [['x', LEDGER_VOID_TICK_WHY_TEXT]], mine + ' merging ' + theirs + ': the history');
+    // A fixed point: merged again with either, nothing changes and nothing more is logged.
+    w.R = rec;
+    for (const o of ['M', 'T']) eq(c6Diff(c6Book(get(`merge(R, ${o}, {}, 1790000240000)`)), c6Book(rec)), [], 'merged again with ' + o);
+  }
+  // Said once, in the treasurer's words, on "The ledger needs a look".
+  vm.runInContext("sync.lookNotes = []; sync.lookSeen = {}; var renders = 0; render = function () { renders += 1; };", w);
+  vm.runInContext("noteLedgerLookFromMerge([{ kind: 'voidtick', row: { id: 'x', description: 'Pizza', date: '2026-09-10', amountCents: 4000, direction: 'out' } }]); " +
+    "noteLedgerLookFromMerge([{ kind: 'voidtick', row: { id: 'x', description: 'Pizza' } }]);", w);
+  eq([get('sync.lookNotes'), get('renders')], [['“Pizza” was ticked on one device while voided on another. The void was kept, so it is no longer ticked. ' +
+    'If the bank statement shows it cleared, un-void it and tick it again.'], 1], 'the note');
+  // A standing statement lists it: the statement says it cleared, and the tick stays.
+  const listed = get("(function () { var r = norm(base); r.ledger = []; r.ledgerAside = [{ id: 'x', date: '2026-09-10', description: 'Pizza', amountCents: 4000, direction: 'out', " +
+    "off: 'void', voidReason: 'Twice', reconciled: true, statementId: 'st-1' }]; r.statements = [{ id: 'st-1', date: '2026-09-30', ticked: ['x'], by: 'Pat', at: '2026-10-02T10:00:00.000Z' }]; " +
+    "return norm(r); })()");
+  w.L = listed;
+  const lr = get("(function () { clock = 1790000180000; state = norm(L); var look = []; mergeRemoteAppendOnly({ json: JSON.stringify(L) }, [], [], [], {}, look); " +
+    "return [state.ledgerAside[0].reconciled, look.length]; })()");
+  eq(lr, [true, 0], 'a voided entry a standing statement lists');
 });
 
 // Phase 3, C6 — the page's own edit, tick and Mark reconciled, reduced to what they write and log.
@@ -24601,6 +24649,29 @@ test('C6 review, Firestore: an entry reconciled on another device while the choo
   const s = server();
   eq([rev(), s.ledger.find((e) => e.id === 'l2').amountCents, s.book.reconciledThrough, s.ledgerLog.filter((e) => e.op === 'resolve').map((e) => e.f)],
     [6, 4500, '2026-09-30', [{ amountCents: [4600, 4500] }]], 'B kept A’s version');
+});
+
+test('C6 review, Firestore: an entry ticked on one device and voided later on another stays voided, un-ticked, and the device that merged says so', () => {
+  let { a, b, server } = c6FsPair();
+  a.run("tickRow('l2')"); a.push();
+  // B, not knowing, voids l2 later (its clock ahead of A's), then saves over A's tick.
+  b.run('Date.now = (function () { var t = 1790000500000; return function () { t += 1000; return t; }; })()');
+  b.run("voidRow('l2', 'Entered twice')"); b.hear(); b.push();
+  const s = server(), l2 = s.ledgerAside.find((e) => e.id === 'l2');
+  eq([c3Where(s), l2.reconciled, s.ledgerLog.filter((e) => e.op === 'untick').map((e) => [e.row, e.dev, e.why])],
+    [[['l1', 'l3'], ['l2']], false, [['l2', 'devB', LEDGER_VOID_TICK_WHY_TEXT]]], 'the pack record');
+  eq([b.get('sync.lookNotes').length, b.get('toasts').indexOf(b.get('LEDGER_LOOK_CLOBBERED')) !== -1], [1, true], 'B said nothing');
+  a.hear();
+  eq(a.get("state.ledgerAside.filter(function (e) { return e.id === 'l2'; }).map(function (e) { return e.reconciled; })"), [false], 'A after B’s save');
+  // The card shows it, with a Got it that clears it; the ledger shows the card; a sync stop clears it.
+  ok(/h \+= ledgerLookCardHtml\(state\.ledger, state\.book, sync\.lookNotes\);/.test(slice('renderLedger')), 'renderLedger does not pass the notes');
+  ok(/if \(act === 'ledger-look-dismiss'\) \{ sync\.lookNotes = \[\]; render\(\); return; \}/.test(SCRIPT), 'Got it does not clear them');
+  ok(/sync\.lookNotes = \[\];[^\n]*\n\s+sync\.lookSeen = \{\};/.test(slice('syncStop')), 'a sync stop keeps them');
+  const card = sandbox(['esc', 'fmt', 'ledgerPairOf', 'ledgerLiveReversals', 'ledgerLookNotes', 'ledgerLookCardHtml', 'ledgerReversalOf', ...LOOK_WORD_FNS]);
+  eq(card.ledgerLookCardHtml([], {}, []), '', 'a card with nothing to say');
+  const h = card.ledgerLookCardHtml([], {}, ['<b>Pizza</b> was ticked']);
+  ok(/The ledger needs a look<\/h2><p style="margin:0 0 10px">&lt;b&gt;Pizza&lt;\/b&gt; was ticked<\/p><button type="button" class="btn small" data-act="ledger-look-dismiss">Got it<\/button>/.test(h), 'the card: ' + h);
+  ok(!/lookNotes|lookSeen/.test(codeOnly(BPV())), 'buildParentView reads the notes');
 });
 
 test('C6, Firestore: while the chooser waits the reload gate drops it, and a leader made view-only takes the shared copy', () => {
@@ -24823,7 +24894,8 @@ test('C6, Firestore: a save finds what changed on this device while the chooser 
   b.run("sync.rowChoice = { remote: { rev: 9 }, items: [], picks: {}, seen: {} }; sync.conflict = { rev: 9 }");
   eq(b.get('rowChoice()'), null, 'a choice read against another record');
   // After the save, the ledger-look toast, and the fates, as a sync's.
-  ok(/showToast\(ROW_PICKS_SAVED\);\n\s+noteLedgerLookAfterSync\(lookWas, false\);\n\s+noteReconciledFates\(\{ kept: kept, lost: lost, split: split \}\);/.test(slice('saveRowChoices')), 'what the save says');
+  // (C6 reviews: and what the merge said needs a look, before the toast counts it.)
+  ok(/showToast\(ROW_PICKS_SAVED\);\n\s+noteLedgerLookFromMerge\(look\);[^\n]*\n\s+noteLedgerLookAfterSync\(lookWas, false\);\n\s+noteReconciledFates\(\{ kept: kept, lost: lost, split: split \}\);/.test(slice('saveRowChoices')), 'what the save says');
 });
 
 // Phase 3, C6 — the charges, on the page's own syncCharges and everything it reads.
