@@ -19768,8 +19768,27 @@ test('C3 treasurer: a void is one line of the change-history CSV, and close-out 
     ",'=Mallory,A removed entry,Voided,,not counted,'+1"], 'one line per void');
   const co = slice('renderCloseoutOverlay');
   // Treasurer review of C4 (5): and the reversed ones.
-  ok(co.indexOf("'<li><strong>Voided &amp; reversed entries:</strong> Download the snapshot. Entries voided or reversed, with who did it and why, are only kept there.</li>'") >
+  // Treasurer sign-off on option B (12) — which of it Past seasons keeps, and which only the snapshot.
+  ok(co.indexOf("'<li><strong>Voided &amp; reversed entries:</strong> Download the snapshot. It is the only place that keeps voided entries, and who voided or ' +\n" +
+    "        'reversed an entry and why. (Past seasons keeps each reversed entry and its reversal, without the reason.)</li>'") >
     co.indexOf('<li><strong>Change history:</strong>'), 'the close-out screen does not say where the voided entries are kept');
+});
+
+// Owner's decision B (2026-09-29) — close-out warns, never refuses, while "The ledger needs a look" has notes.
+test('Decision B: close-out says how many problems the ledger has, first, and still closes', () => {
+  const x = sandbox(['closeoutLookLine']);
+  eq([0, 1, 2, 3].map((n) => x.closeoutLookLine(n)), ['',
+    '1 problem on Money · Ledger. Put it right first: the balance carried into next year includes it.',
+    '2 problems on Money · Ledger. Put them right first: the balance carried into next year includes them.',
+    '3 problems on Money · Ledger. Put them right first: the balance carried into next year includes them.'], 'the line');
+  const co = slice('renderCloseoutOverlay');
+  ok(/var coLook = closeoutLookLine\(ledgerLookNotes\(state\.ledger, state\.book\)\.length\);/.test(co), 'not worked out from the ledger’s notes');
+  ok(/<ul class="closeout-list">' \+\n\s*\(coLook \? '<li style="color:var\(--accent-text\)"><strong>The ledger needs a look:<\/strong> ' \+ esc\(coLook\) \+ '<\/li>' : ''\) \+\n\s*'<li>Saves this summary/.test(co),
+    'not the first item, only when there are notes, escaped');
+  // A warning, not a gate: neither the button nor the close reads the notes.
+  ok(!/ledgerLook|coLook/.test(slice('performCloseout')) && /if \(act === 'closeout-confirm'\) \{ arm\('closeout-confirm', performCloseout\); return; \}/.test(SCRIPT) &&
+    !/coLook[^\n]*closeout-confirm|disabled/.test(co.slice(co.indexOf('data-act="closeout-confirm"') - 200, co.indexOf('data-act="closeout-confirm"'))), 'the close is refused');
+  ok(!/closeoutLookLine|ledgerLook/.test(codeOnly(BPV())), 'it reaches the parents');
 });
 
 test('C3 treasurer, Firestore: a device that had ticked an entry another leader voided is told where it is', () => {

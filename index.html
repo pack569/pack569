@@ -27723,6 +27723,14 @@
     return { advanced: advanced, crossed: crossed };
   }
 
+  // Owner's decision B on the treasurer's sign-off of option B (2026-09-29) — close-out WARNS, never
+  // refuses, while "The ledger needs a look" has notes (`n`, ledgerLookNotes' count): the balance
+  // carried into next year includes them. '' when there are none. Plain text. Pure.
+  function closeoutLookLine(n) {
+    if (!n) return '';
+    return n + (n === 1 ? ' problem on Money · Ledger. Put it right first: the balance carried into next year includes it.'
+      : ' problems on Money · Ledger. Put them right first: the balance carried into next year includes them.');
+  }
   // What the close-out does to family accounts, in one sentence for the preview (T3). The
   // treasurer's review found credits dropped with nothing on screen to say so; whatever
   // rolloverYear carries, this says, from the same accounts (familyAccountsNow, balance ≠ 0). Pure.
@@ -28343,7 +28351,10 @@
     if (advLine) h += '<p class="small" style="margin:0 0 4px"><strong>Advancement:</strong> ' + esc(advLine) + '</p>';
     var derbyLine = seasonDerbyLine(arc);
     if (derbyLine) h += '<p class="small" style="margin:0 0 4px"><strong>Derby:</strong> ' + esc(derbyLine) + '</p>';
+    // Owner's decision B — said first, and only while the ledger needs a look; the close still goes ahead.
+    var coLook = closeoutLookLine(ledgerLookNotes(state.ledger, state.book).length);
     h += '<hr class="divider"><p class="eyebrow">What happens when you close</p><ul class="closeout-list">' +
+      (coLook ? '<li style="color:var(--accent-text)"><strong>The ledger needs a look:</strong> ' + esc(coLook) + '</li>' : '') +
       '<li>Saves this summary to <strong>Past seasons</strong>' +
       (hasPrevSeason ? ' — <strong>replacing the earlier ' + year + ' close-out</strong>.' : ' (closing ' + year + ' again later would replace it).') + '</li>' +
       '<li>Downloads a full JSON snapshot — your complete backup of the year. Keep it somewhere safe.</li>' +
@@ -28373,7 +28384,9 @@
       // Treasurer sign-off on C3 — and so, until C8, are the voided entries (state.ledgerAside).
       // Treasurer review of C4 (5) — and why an entry was reversed: under option B a reversed pair is
       // two counted rows, which Past seasons keeps, but not the reason, who or when.
-      '<li><strong>Voided &amp; reversed entries:</strong> Download the snapshot. Entries voided or reversed, with who did it and why, are only kept there.</li>' +
+      // Treasurer sign-off on option B (12) — which of it Past seasons keeps, and which only the snapshot.
+      '<li><strong>Voided &amp; reversed entries:</strong> Download the snapshot. It is the only place that keeps voided entries, and who voided or ' +
+        'reversed an entry and why. (Past seasons keeps each reversed entry and its reversal, without the reason.)</li>' +
       // Wave 19(38b)
       (state.densAdvancedYear === year ? '' :
         '<li>Arrow of Light scouts who crossed over in the spring should already be archived — anyone still active is archived now.</li>') +
