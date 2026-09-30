@@ -23405,7 +23405,7 @@ test('C5 review (F3): the cap never takes a statement standing or named by an en
   // Under the cap nothing goes, reopened or not.
   eq(m(list.slice(0, 200)).length, 200, 'under the cap');
   // normalizeState caps, saying which statements the entries name; no merge does (R3).
-  ok(/d\.statements = statementsCap\(mergeStatements\(d\.statements, \[\]\), d\.ledger\);/.test(SCRIPT), 'normalizeState');
+  ok(/d\.statements = mergeStatements\(d\.statements, \[\]\);\s*statementLockBack\(d\.book, d\.statements\);\s*d\.statements = statementsCap\(d\.statements, d\.ledger\);/.test(SCRIPT), 'normalizeState');
   ok(/state\.statements = mergeStatements\(state\.statements, remote\.statements\);/.test(slice('mergeRemoteAppendOnly')), 'the sync merge');
   ok(/state\.statements = mergeStatements\(state\.statements, \[rlNew\.statement\]\);/.test(SCRIPT), 'Mark reconciled');
   ok(/state\.statements = mergeStatements\(ciSt, state\.statements\);/.test(SCRIPT), 'a restore');
@@ -23560,6 +23560,28 @@ test('R1–R7 verification (F1): a restore never locks the book past tomorrow, n
     " act3('confirm-import')");
   eq([p.get('state.book.reconciledThrough'), p.get('state.statements.length'), /2026-12-31/.test(p.get('log()[0].why'))], ['2026-08-31', 2, false], 'the restore');
   ok(/statementLockForward\(state\.book, state\.statements, isoPlusDays\(todayISO\(\), 1\)\)/.test(SCRIPT), 'the restore’s bound');
+});
+
+test('R1–R7 verification (INFO): a load steps a lock back past a reopened statement before trimming it, so the month is not locked again', () => {
+  // 200 standing statements from January, Aug 31 standing, and Sep 30 reopened (no entry names it:
+  // its entries were unticked); the book still locked through Sep 30 (a copy from before the
+  // reopen). 202, so the load trims the one it may: Sep 30.
+  const jan = Array.from({ length: 200 }, (_, i) => ({ id: 'st-j' + i, date: '2026-01-15', at: '2026-01-16T00:00:00.' + String(i).padStart(3, '0') + 'Z',
+    statementCents: 1, by: 'X', byUid: 'ux' }));
+  const aug = { id: 'st-aug', date: '2026-08-31', at: '2026-09-01T00:00:00.000Z', statementCents: 500, by: 'Pat', byUid: 'u1' };
+  const sep = { id: 'st-sep', date: '2026-09-30', at: '2026-10-01T00:00:00.000Z', statementCents: 600, by: 'Pat', byUid: 'u1',
+    reopenedAt: '2026-10-03T00:00:00.000Z', reopenedBy: 'Alex', reopenedByUid: 'u3', reopenWhy: 'The bank corrected it' };
+  const rec = Object.assign(withSeeds(LEGACY_ROWS)(), { book: { openingCents: 0, openingDate: '2026-07-01', reconciledThrough: '2026-09-30',
+    reconciledBy: 'Pat', reconciledAt: '2026-10-01T00:00:00.000Z' }, statements: jan.concat([aug, sep]) });
+  const n = c5Norm(rec);
+  // The lock steps back to Aug 31 (with who and when from it), and Sep 30 is the one trimmed.
+  eq([n.book.reconciledThrough, n.book.reconciledBy, n.book.reconciledAt, n.statements.length, n.statements.some((q) => q.id === 'st-sep')],
+    ['2026-08-31', 'Pat', '2026-09-01T00:00:00.000Z', 201, false], 'the lock through the trimmed statement');
+  // Loaded again, no legacy Sep 30 appears to lock September again: a fixed point; and two devices
+  // give the same bytes.
+  eq(JSON.stringify(c5Norm(n)), JSON.stringify(n), 'not a fixed point');
+  eq(JSON.stringify(c5Norm(rec)), JSON.stringify(n), 'two devices');
+  ok(/statementLockBack\(d\.book, d\.statements\);\s*d\.statements = statementsCap\(d\.statements, d\.ledger\);/.test(slice('normalizeState')), 'the order in normalizeState');
 });
 
 test('C5 review (treasurer 6, F4): an entry a standing statement lists is not cleared again, and a list is cut at 2000 with the totals whole', () => {

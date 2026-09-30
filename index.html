@@ -4087,8 +4087,12 @@
     // C5 — one of each statement, in date order (mergeStatements: a statement twice is one, as the
     // sync merge makes it), a crafted list trimmed of its junk (statementsCap: R3); and a book still
     // locked through a statement since reopened steps back.
-    d.statements = statementsCap(mergeStatements(d.statements, []), d.ledger);
+    // Verification of R1–R7 (INFO) — the lock steps back before the list is trimmed: the trim may
+    // take the reopened statement it is locked through, and a lock through a date with no statement
+    // left would get a legacy one on the next load (above), standing, and lock that month again.
+    d.statements = mergeStatements(d.statements, []);
     statementLockBack(d.book, d.statements);
+    d.statements = statementsCap(d.statements, d.ledger);
     if (!Array.isArray(d.closedBooks)) d.closedBooks = [];
     d.closedBooks = d.closedBooks.filter(plainObj);
     d.teImport = (plainObj(d.teImport) && typeof d.teImport.batch === 'string' && d.teImport.batch)
