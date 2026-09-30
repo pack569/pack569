@@ -5125,6 +5125,7 @@
     // does on every commit) can't wipe half-typed input.
     ledgerDraft: null,
     ledgerAddWarned: '',    // Phase 3, C2 — the draft date already warned as in the reconciled period
+    closedRvId: '', closedRvWhy: '',   // Phase 3, C8-9 — the closed-year entry picked to reverse, and why
     delSeasonWhy: '',       // Phase 3, C8-8 — the reason typed for deleting a season's close-out (owner decision 28)
     closeoutJuneOk: false,  // Phase 3, C8-6 — an admin chose "June was not reconciled" on the close-out screen (owner decision 32)
     ledgerMoveWarned: null, // Treasurer review of C2 (M-5) — { id, date }: an entry's move into it, warned
@@ -8278,8 +8279,8 @@
   // PHASE 3, C4 — the hook for C8: a row in a year already closed out is reversed by an ordinary
   // COUNTED row in the open book, dated today, the same money the other way, reverses 'Y:id' (the
   // closed year and the row's id there), id 'rv-Y-id'. The closed book is never touched; the reason
-  // goes in its 'reverse' log event, as a same-book reverse's does. NOT CALLED yet: there are no
-  // closed books to reverse from until C8 keeps them. Pure.
+  // goes in its 'reverse' log event, as a same-book reverse's does. Called from C8-9 (Past seasons,
+  // closedRvFormHtml). Pure.
   function ledgerClosedYearReversal(year, orig, stamp, today) {
     stamp = stamp || {};
     var y = Math.round(year);
@@ -9538,6 +9539,11 @@
     if (book && book.closedAt) return ledgerLockedWhy(e, book);
     // Before the lock: un-reconciling a locked row of a pair would not open these two.
     if ((lk === 'amount' || lk === 'dir') && e && Array.isArray(rows) && ledgerPairOf(rows)[e.id]) return ledgerPairFixedWhy(e, rows, book);
+    // Phase 3, C8-9 — a reversal of an entry in a closed year mirrors it too: the closed entry can't be edited to match, so this can't move.
+    if ((lk === 'amount' || lk === 'dir') && e && typeof e.reverses === 'string' && /^\d{4}:./.test(e.reverses)) {
+      return 'This reversal mirrors an entry in a closed year, so its amount and direction can’t be changed. If it was a mistake, ' +
+        (ledgerLocked(e, book) ? 'reverse it (Reverse or correct, below)' : 'void it') + '.';
+    }
     var why = LEDGER_LOCKED_FIELDS.indexOf(lk) !== -1 ? ledgerLockedWhy(e, book, '', 'money') : '';
     if (why) return why;
     if (lk === 'amount') {
@@ -14757,6 +14763,10 @@
         if (LEDGER_MONEY_FIELDS.some(function (k) { return src[k] !== oth[k]; }) &&
             ledgerLockedMeanwhile(oth, src, mc ? ct : cm, (mc ? theirs : mine) || {}, (mc ? mine : theirs) || {})) how.content = 'money';
       }
+      // Phase 3, C8-9 — two devices that each reversed the same closed-year entry wrote the same row (closedRvTwin): one reversal, the earlier
+      // one's on both, and nobody is asked which.
+      var twin = closedRvTwin(mr, tr);
+      if (twin) { how.content = twin; how.off = 'same'; }
       var km = mr.reconciled === true, kt = tr.reconciled === true;
       how.tick = decide('tick', km === kt);
       if (how.tick === 'same') {
@@ -31359,7 +31369,55 @@
       (arrOf(book.log).length ? '<button type="button" class="btn small ghost" data-act="closed-csv:log:' + book.year + '">Change history (CSV)</button>' : '') +
       (arrOf(book.aside).some(function (e) { return e && (e.off === 'void' || e.off === 'reversed'); }) ? '<button type="button" class="btn small ghost" data-act="closed-csv:voided:' + book.year + '">Voided &amp; reversed (CSV)</button>' : '') +
       '</div>';
+    // C8-9 — and, for anyone who can edit, how to correct it.
+    if (canEdit()) h += closedRvFormHtml(book);
     return h;
+  }
+  // PHASE 3, C8-9 — reversing an entry in a closed year. The closed book is never changed: a correction is a COUNTED reversal in the open book
+  // (ledgerClosedYearReversal: id 'rv-Y-id', `reverses` 'Y:id', dated today), so the id says which closed entry it reverses and a second
+  // reversal of the same entry, from this device or another, is the same row. `id` is the entry's id in the closed book `book`.
+  // The entry as a reversal needs it { id, date, description, amountCents, direction }, or null. Pure.
+  function closedBookEntryFor(book, id) {
+    var compact = !!book && book.form === 'compact';
+    var row = arrOf(book && book.ledger).filter(function (e) { return e && (compact ? e.i === id : e.id === id); })[0];
+    if (!row) return null;
+    return compact ? { id: row.i, date: row.d || '', description: row.t || '', amountCents: Math.abs(row.c || 0), direction: row.c < 0 ? 'out' : 'in' }
+      : { id: row.id, date: row.date || '', description: row.description || '', amountCents: row.amountCents || 0, direction: row.direction === 'in' ? 'in' : 'out' };
+  }
+  // Why this reversal can't be recorded, or '': the year's book is held, the entry is in it, it has no reversal yet (`open`: the open book's
+  // counted rows and rows set aside), and a reason was given (the change history keeps it). Pure.
+  function closedRvRefusal(book, id, why, open) {
+    if (!book) return 'That closed year is no longer in the pack record.';
+    if (!id) return 'Pick the entry to reverse.';
+    if (!closedBookEntryFor(book, id)) return 'That entry is not in the closed year.';
+    var rvId = 'rv-' + book.year + '-' + id;
+    if (arrOf(open).some(function (x) { return x && x.id === rvId; })) return 'That entry is already reversed: its reversal is in the current book.';
+    if (String(why || '').trim().length < 3) return 'Say why first, in a few words. It goes in the change history.';
+    return '';
+  }
+  // Are these two versions of a row the SAME closed-year reversal, made on two devices (same id 'rv-Y-id', both naming 'Y:id', the same money the
+  // other way)? Then 'mine' or 'theirs', whichever was made first (its date, then when, then by whom: the same answer on both devices), so the merge
+  // keeps one and never asks; '' when they are not twins. Pure.
+  function closedRvTwin(a, b) {
+    function ok(r) { return !!r && typeof r.id === 'string' && /^rv-\d{4}-./.test(r.id) && typeof r.reverses === 'string' && /^\d{4}:./.test(r.reverses); }
+    if (!ok(a) || !ok(b) || a.id !== b.id || a.reverses !== b.reverses || a.amountCents !== b.amountCents || a.direction !== b.direction) return '';
+    function key(r) { return String(r.date || '') + '\u0000' + String(r.enteredAt || '') + '\u0000' + String(r.enteredBy || ''); }
+    return key(a) <= key(b) ? 'mine' : 'theirs';
+  }
+  // The form under a closed book for reversing one of its entries (editors and admins): the entry, why, and two taps. Escaped.
+  function closedRvFormHtml(book) {
+    var rows = arrOf(book.ledger).map(function (r) { return closedBookEntryFor(book, book.form === 'compact' ? r.i : r.id); }).filter(function (e) { return !!e; });
+    if (!rows.length) return '';
+    rows.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+    var key = 'closed-rv:' + book.year, armed = ui.armed === key;
+    return '<p class="eyebrow" style="margin-top:14px">Reverse an entry</p>' +
+      '<p class="small" style="margin:0 0 8px">A closed year can’t be changed. To correct it, record a reversal in the current book, dated today: it puts the same money back the other way and names the original entry. Pick the entry, say why, and tap twice.</p>' +
+      '<div class="lrow no-print"><select data-ch="closed-rv-id" aria-label="Entry to reverse"><option value="">Pick an entry…</option>' +
+      rows.map(function (e) {
+        return '<option value="' + esc(e.id) + '"' + (ui.closedRvId === e.id ? ' selected' : '') + '>' + esc(fmtDateShort(e.date) + ' · ' + (e.description || 'no description') + ' · ' + (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents)) + '</option>';
+      }).join('') + '</select>' +
+      '<input class="lname" data-ch="closed-rv-why" value="' + esc(ui.closedRvWhy || '') + '" maxlength="200" placeholder="Why is it being reversed?" aria-label="Why it is reversed">' +
+      '<button type="button" class="btn small ' + (armed ? 'danger armed' : '') + '" data-act="' + esc(key) + '">' + (armed ? 'Tap again to record it' : 'Record the reversal') + '</button></div>';
   }
   var DEL_SEASON_REFUSED = 'Only a pack admin can delete a closed year.';
   var DEL_SEASON_WHY_FIRST = 'Say why first, in a few words. It goes in the change history.';
@@ -33661,6 +33719,26 @@
       });
       return;
     }
+    if (act.indexOf('closed-rv:') === 0) {
+      var crYear = +act.split(':')[1], crBook = closedBookOf(state, crYear);
+      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      var crNo = closedRvRefusal(crBook, ui.closedRvId, ui.closedRvWhy, arrOf(state.ledger).concat(arrOf(state.ledgerAside)));
+      if (crNo) { showToast(crNo); return; }
+      arm(act, function () {
+        // Asked again on the second tap: a sync can have brought the reversal, or taken the book, since.
+        var crBook2 = closedBookOf(state, crYear), crWhy = String(ui.closedRvWhy || '').trim();
+        var crNo2 = closedRvRefusal(crBook2, ui.closedRvId, crWhy, arrOf(state.ledger).concat(arrOf(state.ledgerAside)));
+        if (crNo2) { showToast(crNo2); render(); return; }
+        var crEntry = closedBookEntryFor(crBook2, ui.closedRvId);
+        var crToday = todayISO(), crDate = crToday > crBook2.cutoff ? crToday : isoPlusDays(crBook2.cutoff, 1);
+        var crRv = ledgerClosedYearReversal(crYear, crEntry, { by: ledgerActor(), byUid: ledgerActorUid(), at: new Date().toISOString() }, crDate);
+        state.ledger.push(crRv);
+        logLedger('reverse', crRv.id, { rows: [crYear + ':' + crEntry.id], why: ledgerContactScrub(crWhy).slice(0, 300) });
+        ui.closedRvId = ''; ui.closedRvWhy = '';
+        if (commit()) showToast('Reversal recorded in the current book, dated ' + fmtDateShort(crDate) + '. Tick it on the Reconcile screen when the bank shows it.');
+      });
+      return;
+    }
     if (act.indexOf('closed-csv:') === 0) {
       var ccP = act.split(':'), ccBook = closedBookOf(state, +ccP[2]);
       if (!ccBook) return;
@@ -34199,6 +34277,8 @@
     if (ch === 'st-reopen-why') { ui.stReopenWhy = el.value; return; }
     if (ch === 'st-balance') { ui.stBalance = el.value; if (/^st-balance-go:/.test(String(ui.armed || ''))) ui.armed = null; render(); return; }
     if (ch === 'del-season-why') { ui.delSeasonWhy = el.value; return; }
+    if (ch === 'closed-rv-id') { ui.closedRvId = el.value; return; }
+    if (ch === 'closed-rv-why') { ui.closedRvWhy = el.value; return; }
     if (ch === 'ledger-fix-why') { ui.fixWhy = el.value; return; }
     if (ch.indexOf('ledger-fix-') === 0) {
       if (!ui.fixDraft) ui.fixDraft = {};

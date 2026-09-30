@@ -1033,7 +1033,7 @@ const C8_SYNC_FNS = ['closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mer
   // The merge ticks a carried row the other copy ticked (M1) and ticks again what a standing statement lists.
   'carriedRowsOf', 'statementRetick', 'entrySignedCents', 'entryAfterOpening', 'ledgerStampClean', 'statementReopened', 'normalizeStatement', 'statementAdded', 'LEDGER_TICK_FIELDS'];
 // Phase 3, C6 — the per-row ledger merge and what it reads.
-const C6_MERGE_FNS = ['LEDGER_TICK_FIELDS', 'LEDGER_OFF_FIELDS', 'LEDGER_ENTERED_FIELDS', 'ledgerFieldPart', 'LEDGER_OPS', 'ledgerEventParts', 'ledgerMarksGone', 'ledgerMergeOpts', 'ledgerEmpty', 'ledgerPartKey', 'LEDGER_MONEY_FIELDS', 'ledgerLockedMeanwhile',
+const C6_MERGE_FNS = ['closedRvTwin', 'LEDGER_TICK_FIELDS', 'LEDGER_OFF_FIELDS', 'LEDGER_ENTERED_FIELDS', 'ledgerFieldPart', 'LEDGER_OPS', 'ledgerEventParts', 'ledgerMarksGone', 'ledgerMergeOpts', 'ledgerEmpty', 'ledgerPartKey', 'LEDGER_MONEY_FIELDS', 'ledgerLockedMeanwhile',
   'applyLedgerRowSet', 'mergeLedgerRows', 'applyLedgerMerge', 'LEDGER_EDIT_FIELDS', 'LEDGER_RESOLVE_FIELDS', 'LEDGER_RESOLVE_WHY', 'LEDGER_RESOLVE_WHY_SAME', 'ledgerResolveMore', 'ledgerLogRoom', 'utf8Bytes', 'arrOf', 'ledgerTickedAt', 'mergeStatements', 'statementPairMerge',
   'statementOnceGroups', 'statementReopened',
   // Phase 3, C7 — a family one copy's scout delete unlinked is put back, and the scout kept.
@@ -19081,7 +19081,7 @@ test('C3: nothing outside the book’s own plumbing reads the voided rows, so no
   // Phase 3, C8 (C8-3) — and the carried rows, which take part in reconciling only: Tick all, Mark reconciled's two calls
   // (reconcileTotals, statementNew) and the restore's re-tick read them by carriedRowsOf, which keeps only rows off 'carried'.
   const h = slice('handleAction').split('\n').filter((l) => /ledgerAside/.test(l) && !/^\s*\/\//.test(l) &&
-    !/carriedRowsOf\(state\.ledgerAside\)|reconcileTotals\(state\.ledger, state\.book, state\.ledgerAside\)|uid\(\), state\.ledgerAside\);/.test(l));
+    !/carriedRowsOf\(state\.ledgerAside\)|reconcileTotals\(state\.ledger, state\.book, state\.ledgerAside\)|uid\(\), state\.ledgerAside\);|closedRvRefusal\(crBook[^\n]*arrOf\(state\.ledgerAside\)/.test(l));
   eq(h.length, 3, 'handleAction reads the voided rows somewhere new: ' + h.join(' | '));
   ok(/var vdOff = \(state\.ledgerAside \|\| \[\]\)\.filter\(function \(e\) \{ return e && e\.id === vdId && e\.off === 'void'; \}\)\[0\];/.test(h.join('\n')), h.join('\n'));
   ok(/var uvRow = \(state\.ledgerAside \|\| \[\]\)\.find/.test(h.join('\n')) &&
@@ -21262,7 +21262,7 @@ test('C4: a closed year’s reversal is an ordinary counted row in the new book 
   const n = sandbox(NORMALIZE_FNS);
   const d = n.normalizeState(JSON.parse(JSON.stringify(Object.assign({}, GONE_SEED, { ledger: GONE_SEED.ledger.concat([r]) }))));
   eq(JSON.parse(JSON.stringify(d.ledger.map((e) => [e.id, e.reverses || '']))), [['l1', ''], ['rv-2025-e7', '2025:e7']], 'counted');
-  eq((SCRIPT.match(/ledgerClosedYearReversal\(/g) || []).length, 1, 'it is called somewhere (C8 has not landed)');
+  eq((SCRIPT.match(/ledgerClosedYearReversal\(/g) || []).length, 2, 'its definition, and its one caller: Past seasons’ reversal form (C8-9)');
 });
 
 /* Two devices. Each reverses and corrects as the page's handler does (tested above), and logs
@@ -27285,10 +27285,10 @@ test('C8-7: a realistic pack at the 700 KB limit keeps only the year just closed
    ================================================================ */
 const C8R_FNS = ['seasonBookOf', 'closedBookOf', 'closedBookLines', 'closedBookStatementsHtml', 'closedBookBlockHtml', 'closedBookEntriesCsv', 'closedBookLogCsv', 'closedYearText', 'arrOf',
   'esc', 'fmt', 'fmtDateShort', 'fmtDateShortYear', 'statementByOn', 'statementDay', 'statementReopened', 'statementReviewed', 'entrySignedCents', 'ledgerCsvCell', 'ledgerLogCsv',
-  'ledgerStatementName', 'ledgerRowName', 'ledgerEntryNamed', 'fmtDateYear', 'LEDGER_OP_LABELS', 'LEDGER_FIELD_LABELS', 'ledgerLogValue', 'ledgerEventLines', 'ledgerLogWhen', 'ledgerCap'];
+  'ledgerStatementName', 'ledgerRowName', 'ledgerEntryNamed', 'fmtDateYear', 'closedRvFormHtml', 'closedBookEntryFor', 'LEDGER_OP_LABELS', 'LEDGER_FIELD_LABELS', 'ledgerLogValue', 'ledgerEventLines', 'ledgerLogWhen', 'ledgerCap'];
 const c8r = (books, extra) => {
   const x = sandbox(C8R_FNS);
-  vm.runInContext(`var state = { closedBooks: ${JSON.stringify(books)} }; ${extra || ''}`, x);
+  vm.runInContext(`var state = { closedBooks: ${JSON.stringify(books)} }; function canEdit() { return true; } var ui = { armed: null }; ${extra || ''}`, x);
   return x;
 };
 const C8R_FULL = () => C8_BOOK_OF(2026, 'arc-1', {
@@ -27381,6 +27381,105 @@ test('C8-8: deleting a closed year is an admin’s, with a reason that is logged
   const H = heldDispatchCtx('pack');
   vm.runInContext("ui.overlay = { kind: 'del-season', id: 'x' }; toasts = []; tap('del-season-confirm'); tap('del-archive:x');", H);
   eq(JSON.parse(JSON.stringify(vm.runInContext('toasts.length', H))) > 0 && !vm.runInContext("store[KEY] !== before", H), true, 'refused while held');
+});
+
+/* ================================================================
+   PHASE 3, C8-9 — reversing an entry in a closed year: a counted reversal in the open book, never a change to the closed book.
+   ================================================================ */
+test('C8-9: a closed year’s entry is reversed by a counted reversal in the current book, with a reason, in two taps, by an editor or an admin', () => {
+  const W = heldDispatchCtx('');
+  const run = (js) => vm.runInContext(js, W), got = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, W)));
+  const book = C8R_FULL();
+  run(`${['closedBookOf', 'closedBookEntryFor', 'closedRvRefusal', 'ledgerClosedYearReversal', 'ledgerStampClean', 'ledgerContactScrub', 'arrOf', 'closedYearText'].map(decl).join('\n')}
+    var logs = []; function logLedger(op, row, more) { logs.push([op, row, more]); }
+    function ledgerActor() { return 'Pat Example'; } function ledgerActorUid() { return 'u-pat'; }
+    function canEdit() { return editor; } var editor = true;
+    state.closedBooks = [${JSON.stringify(book)}]; state.ledger = []; state.ledgerAside = []; ui.armed = null; ui.closedRvId = ''; ui.closedRvWhy = '';`);
+  const T = 'tap("closed-rv:2026")';
+  // Nothing picked, no reason: refused with words, nothing recorded.
+  run(`toasts = []; ${T};`);
+  run(`ui.closedRvId = 'b'; toasts = []; ${T};`);
+  eq(got('[toasts, state.ledger.length, ui.armed]'), [['Say why first, in a few words. It goes in the change history.'], 0, null], 'no reason');
+  // A viewer is told.
+  run(`editor = false; ui.closedRvWhy = 'Wrong family'; toasts = []; ${T};`);
+  eq(got('[toasts, state.ledger.length]'), [['Read-only access — ask a pack admin to make you an editor.'], 0], 'a viewer');
+  // An editor: the first tap arms, the second records; the closed book is untouched.
+  const was = JSON.stringify(got('state.closedBooks'));
+  run(`editor = true; toasts = []; ${T};`);
+  eq(got('[state.ledger.length, ui.armed]'), [0, 'closed-rv:2026'], 'the first tap only arms');
+  run(`${T};`);
+  const st = got('[state.ledger, logs, toasts, ui.closedRvId, ui.closedRvWhy]');
+  const rv = st[0][0];
+  eq([rv.id, rv.reverses, rv.amountCents, rv.direction, rv.reconciled, rv.enteredBy, rv.description], ['rv-2026-b', '2026:b', 5000, 'out', false, 'Pat Example', 'Reversal of “Row b” (2026)'], 'the reversal: the same money the other way, naming the closed entry');
+  ok(/^\d{4}-\d{2}-\d{2}$/.test(rv.date) && rv.date > '2027-06-30', 'dated after the closed year: ' + rv.date);
+  eq([st[1].length, st[1][0][0], st[1][0][1], st[1][0][2].rows, st[1][0][2].why], [1, 'reverse', 'rv-2026-b', ['2026:b'], 'Wrong family'], 'logged, with its reason');
+  ok(/^Reversal recorded in the current book, dated .*\. Tick it on the Reconcile screen when the bank shows it\.$/.test(st[2][0]), st[2][0]);
+  eq([st[3], st[4]], ['', ''], 'the form is cleared');
+  eq(JSON.stringify(got('state.closedBooks')), was, 'the closed book was not touched');
+  // Once is enough: the same entry again is refused, and so is an entry that is not in the book.
+  run(`ui.closedRvId = 'b'; ui.closedRvWhy = 'again'; toasts = []; ${T};`);
+  eq(got('[toasts, state.ledger.length]'), [['That entry is already reversed: its reversal is in the current book.'], 1], 'twice');
+  run(`ui.closedRvId = 'zz'; toasts = []; ${T};`);
+  eq(got('toasts'), ['That entry is not in the closed year.'], 'an entry not in the book');
+  // The reason is scrubbed of contact details, and the whole thing is refused while a newer page holds the record.
+  run(`state.ledger = []; logs = []; ui.closedRvId = 'b'; ui.closedRvWhy = 'Call 555-555-0142 or pat@example.com'; ${T}; ${T};`);
+  ok(!/@|0142/.test(got('logs')[0][2].why) && /phone removed/.test(got('logs')[0][2].why), 'the reason kept a phone number or an email');
+  // A reversal is never dated inside the closed year, whatever this device's clock says: the day after its last day at the earliest.
+  run(`state.ledger = []; function todayISO() { return '2027-03-01'; } ui.closedRvId = 'b'; ui.closedRvWhy = 'early clock'; ${T}; ${T};`);
+  eq(got('state.ledger[0].date'), '2027-07-01', 'dated inside the closed year');
+  const H = heldDispatchCtx('pack');
+  vm.runInContext(`toasts = []; ui.closedRvId = 'b'; ${T}; ${T};`, H);
+  ok(JSON.parse(JSON.stringify(vm.runInContext('toasts.length', H))) > 0 && vm.runInContext('store[KEY] === before', H), 'refused while held');
+  ok(/if \(canEdit\(\)\) h \+= closedRvFormHtml\(book\);/.test(slice('closedBookBlockHtml')), 'the form is offered to a viewer');
+});
+
+test('C8-9: the form lists the closed year’s entries (full or compact) and is escaped', () => {
+  const x = sandbox(['closedRvFormHtml', 'closedBookEntryFor', 'arrOf', 'esc', 'fmt', 'fmtDateShort']);
+  vm.runInContext("var ui = { armed: null, closedRvId: 'b', closedRvWhy: '\"><i>' };", x);
+  const full = C8R_FULL(), compact = J(c8().compactClosedBook(full));
+  const f = x.closedRvFormHtml(full), c = x.closedRvFormHtml(compact);
+  for (const h of [f, c]) {
+    ok(/<option value="b" selected>Oct 2 · Row b · \+\$50\.00<\/option>/.test(h) && /<option value="a">Sep 1 · =HYPERLINK\(&quot;x&quot;\) · −\$3\.00<\/option>/.test(h), h);
+    ok(!/<i>/.test(h) && /data-act="closed-rv:2026"/.test(h) && />Record the reversal</.test(h), 'escaped, and the button');
+  }
+  eq(x.closedRvFormHtml(Object.assign(J(full), { ledger: [] })), '', 'no entries: no form');
+  vm.runInContext("ui.armed = 'closed-rv:2026';", x);
+  ok(/Tap again to record it/.test(x.closedRvFormHtml(full)), 'armed');
+});
+
+// Two devices each reverse the same closed entry before either has heard of the other's: one reversal, not two.
+test('C8-9, Firestore: two devices that reverse the same closed entry end with one reversal, and no question asked', () => {
+  const book = C8_BOOK_OF(2026, 'arc-1', { ledger: [c8row('b', '2026-10-02', 5000, 'in', { description: 'Dues' })], statements: [], aside: [], log: [], names: { line: {}, family: {} } });
+  const { a, b, server } = c3FsPair({ closedBooks: [book] });
+  const EXTRA = `${slice('ledgerClosedYearReversal')}`;
+  const rvOn = (dev, by) => `${EXTRA}
+    state.ledger.push(ledgerClosedYearReversal(2026, { id: 'b', description: 'Dues', amountCents: 5000, direction: 'in' }, { by: '${by}', byUid: 'u-${dev}', at: new Date(Date.now()).toISOString() }, '2027-07-0${dev === 'a' ? 5 : 6}'));
+    logLedger('reverse', 'rv-2026-b', { rows: ['2026:b'], why: 'Wrong family (${dev})' }); commit();`;
+  a.run(rvOn('a', 'Pat'));
+  b.run(skew(5000));
+  b.run(rvOn('b', 'Sam'));
+  a.push();
+  b.hear(); b.push();
+  a.hear();
+  const ids = (st) => st.ledger.filter((e) => /^rv-/.test(e.id)).map((e) => [e.id, e.reverses]);
+  eq(ids(server()), [['rv-2026-b', '2026:b']], 'the record holds one reversal');
+  eq([ids(a.get('state')), ids(b.get('state'))], [[['rv-2026-b', '2026:b']], [['rv-2026-b', '2026:b']]], 'both devices hold one');
+  eq([c6Asked(a), c6Asked(b)], [null, null], 'nobody is asked which');
+  eq(server().closedBooks.map((x) => [x.year, x.archiveId, x.ledger.length]), [[2026, 'arc-1', 1]], 'the closed book is as it was');
+  ok(server().ledgerLog.filter((e) => e.op === 'reverse').length === 2, 'both leaders’ reasons are in the change history');
+});
+
+test('C8-9: a reversal of a closed year’s entry keeps its amount and direction (it mirrors an entry that can’t change), and its labels stay editable', () => {
+  const x = sandbox(declClosure(['ledgerEditRefusal', 'closedRvTwin'], []));
+  const rv = c8row('rv-2026-b', '2027-07-05', 5000, 'out', { reverses: '2026:b' }), book = { openingDate: '2027-07-01', reconciledThrough: '' };
+  const W = 'This reversal mirrors an entry in a closed year, so its amount and direction can’t be changed. If it was a mistake, void it.';
+  eq([x.ledgerEditRefusal(rv, 'amount', '60', book, [rv]), x.ledgerEditRefusal(rv, 'dir', 'in', book, [rv])], [W, W], 'amount and direction');
+  eq([x.ledgerEditRefusal(rv, 'desc', 'Renamed', book, [rv]), x.ledgerEditRefusal(rv, 'date', '2027-07-06', book, [rv]), x.ledgerEditRefusal(rv, 'ref', 'R1', book, [rv])], ['', '', ''], 'the date and labels, as on any row');
+  eq(x.ledgerEditRefusal(Object.assign({}, rv, { reverses: 'x1' }), 'amount', '60', book, [rv]).indexOf('closed year'), -1, 'a reversal in the same year is as before');
+  // Twins: the same reversal made on two devices; the earlier is kept, the same answer either way round; different money or entries are not twins.
+  const a = Object.assign({}, rv, { date: '2027-07-05', enteredAt: '2027-07-05T10:00:00.000Z', enteredBy: 'Pat' }), b = Object.assign({}, rv, { date: '2027-07-06', enteredAt: '2027-07-06T10:00:00.000Z', enteredBy: 'Sam' });
+  eq([x.closedRvTwin(a, b), x.closedRvTwin(b, a), x.closedRvTwin(a, a)], ['mine', 'theirs', 'mine'], 'the earlier one, from either side');
+  eq([x.closedRvTwin(a, Object.assign({}, b, { amountCents: 1 })), x.closedRvTwin(a, Object.assign({}, b, { reverses: '2026:c' })), x.closedRvTwin(Object.assign({}, a, { id: 'x', reverses: 'y' }), Object.assign({}, b, { id: 'x', reverses: 'y' }))], ['', '', ''], 'not twins');
 });
 
 /* ---------------- report ---------------- */
