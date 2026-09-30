@@ -26095,6 +26095,167 @@ atest('C7, api: an older page’s delete of a scout with payments keeps the scou
   eq(c7Kept(b.get('state'), 'ls1'), [[['s1', true], ['s2', false]], ['s1'], true], 'the paying device, after');
 });
 
+/* ================================================================
+   PHASE 3, C8 — close-out keeps the book, by year. C8-1: the pure helpers (nothing calls them yet).
+   Made-up data throughout.
+   ================================================================ */
+const C8_FNS = declClosure(['closeoutCutoff', 'closeoutSplit', 'closingBalanceAt', 'carriedRowFor', 'closedBookBuild', 'compactClosedBook',
+  'trimClosedBookRows', 'fitClosedBook', 'mergeClosedBooks'], []);
+const c8 = () => sandbox(C8_FNS);
+const c8row = (id, date, cents, dir, more) => Object.assign({ id, date, description: 'Row ' + id, amountCents: cents, direction: dir, lineId: '', method: '', ref: '',
+  source: '', donor: '', scoutId: '', tierMakeup: '', reimbursement: false, notCommission: false, reconciled: false,
+  enteredBy: 'Pat Example', enteredAt: '', approvedBy: '', approvedAt: '', enteredByUid: '', approvedByUid: '' }, more || {});
+const J = (x) => JSON.parse(JSON.stringify(x));
+// A year: opens Jul 1 2026 with $1,000.00; closes (by date) Jun 30 2027, with rows either side of it.
+const C8_BOOK = { openingCents: 100000, openingDate: '2026-07-01', reconciledThrough: '2027-06-15', statementDate: '', statementCents: 0, year: 2026 };
+const C8_SRC = () => J({
+  book: C8_BOOK,
+  ledger: [
+    c8row('a', '2026-06-20', 999, 'out'),                                        // before the opening date: history the opening figure holds
+    c8row('b', '2026-10-01', 5000, 'in', { reconciled: true, statementId: 'st-1', lineId: 'L1', scoutId: 's1' }),
+    c8row('c', '2027-06-28', 15000, 'out', { ref: '1041' }),                     // a check not yet cashed
+    c8row('d', '2027-06-29', 5000, 'in'),                                        // a deposit not yet on a statement
+    c8row('e', '2027-06-30', 2000, 'out', { reconciled: true, statementId: 'st-2' }),   // the cutoff day itself: in the closed year
+    c8row('f', '2027-07-01', 700, 'out'),                                        // the first day of the next year
+    c8row('g', '2027-08-15', 300, 'in', { lineId: 'L1' })
+  ],
+  ledgerAside: [
+    { ...c8row('v1', '2027-03-01', 111, 'out'), off: 'void', voidReason: 'typo', voidedBy: 'Pat Example', voidedByUid: '', voidedAt: '2027-03-02T10:00:00.000Z', reverses: '', reversedBy: '', carriedFrom: null },
+    { ...c8row('v2', '2027-08-01', 222, 'out'), off: 'void', voidReason: 'dup', voidedBy: 'Pat Example', voidedByUid: '', voidedAt: '2027-08-02T10:00:00.000Z', reverses: '', reversedBy: '', carriedFrom: null }
+  ],
+  ledgerLog: [
+    { id: 'lg-1', at: '2027-03-02T10:00:00.000Z', by: 'Pat Example', byUid: '', dev: 'd1', row: 'v1', op: 'void' },
+    { id: 'lg-2', at: '2027-08-02T10:00:00.000Z', by: 'Pat Example', byUid: '', dev: 'd1', row: 'v2', op: 'void' },
+    { id: 'lg-3', at: '2027-06-15T10:00:00.000Z', by: 'Pat Example', byUid: '', dev: 'd1', row: 'book', op: 'reconcile' },
+    { id: 'lg-4', at: '2027-08-16T10:00:00.000Z', by: 'Pat Example', byUid: '', dev: 'd1', row: 'g', op: 'edit', f: { description: ['a', 'b'] } }
+  ],
+  statements: [
+    { id: 'st-1', date: '2027-06-15', statementCents: 1, openingCents: 100000, clearedCents: 105000, bookCents: 1, ticked: ['b'], by: 'Pat Example', byUid: '', at: '2027-06-16T10:00:00.000Z' },
+    { id: 'st-3', date: '2027-07-31', statementCents: 1, openingCents: 100000, clearedCents: 1, bookCents: 1, ticked: ['e'], by: 'Pat Example', byUid: '', at: '2027-08-01T10:00:00.000Z' }
+  ]
+});
+const C8_OPTS = { year: 2026, stamp: { at: '2027-09-10T12:00:00.000Z', by: 'Sam Example', byUid: 'u-sam' }, archiveId: 'arc-1',
+  lineNameOf: (id) => (id === 'L1' ? 'Pack dues' : ''), familyOf: (sid) => (sid === 's1' ? 'Ada' : '') };
+
+test('C8-1: the cutoff is the last day of the program year, and a row dated on it is in the closed year', () => {
+  const c = c8();
+  eq(c.closeoutCutoff(2026), '2027-06-30', 'cutoff');
+  const sp = J(c.closeoutSplit(C8_SRC().ledger, '2027-06-30'));
+  eq(sp.closed.map((e) => e.id), ['a', 'b', 'c', 'd', 'e'], 'closed');
+  eq(sp.open.map((e) => e.id), ['f', 'g'], 'open');
+  eq(J(c.closeoutSplit([{ id: 'u', date: '' }], '2027-06-30').closed.length), 1, 'an undated row is in the closed year, as it counts in the bank balance');
+});
+
+// Hand-worked: $1,000.00 opening. Counted on or after Jul 1 2026 through Jun 30 2027: +50.00 (b), -150.00 (c), +50.00 (d), -20.00 (e)
+// = -70.00, so 1,000.00 - 70.00 = $930.00. 'a' is before the opening date and 'f', 'g' after the cutoff: none of them count.
+test('C8-1: the closing balance is the opening figure and the counted rows from the opening date through the cutoff', () => {
+  const c = c8(), s = C8_SRC();
+  eq(c.closingBalanceAt(s.ledger, s.book, '2027-06-30'), 93000, 'closing balance');
+  eq(c.closingBalanceAt(s.ledger, s.book, '2027-07-01'), 93000 - 700, 'a later cutoff takes the next day in');
+  eq(c.closingBalanceAt(s.ledger, { openingCents: 0, openingDate: '' }, '2027-06-30'), -999 + 5000 - 15000 + 5000 - 2000, 'no opening date: net movement, every row in the year');
+});
+
+test('C8-1: a carried row is an uncounted copy with a stable id, off every statement and every budget line, and carrying it again keeps its id and year', () => {
+  const c = c8(), src = C8_SRC(), row = src.ledger[2];
+  const was = JSON.stringify(row);
+  const co = J(c.carriedRowFor(row, 2026));
+  ok(JSON.stringify(row) === was, 'the original is not touched');
+  eq([co.id, co.off, co.reconciled, co.lineId, co.carriedFrom], ['co-c', 'carried', false, '', { year: 2026, id: 'c' }], 'the carried copy');
+  eq([co.amountCents, co.direction, co.date, co.ref, co.description], [15000, 'out', '2027-06-28', '1041', 'Row c'], 'what the treasurer looks for on a statement stays');
+  const tk = c8row('x', '2027-06-01', 10, 'in', { reconciled: true, statementId: 'st-9', reconciledAt: 5, lineId: 'L9', reverses: 'zz', replaces: 'yy' });
+  const ct = J(c.carriedRowFor(tk, 2026));
+  eq([ct.reconciled, 'statementId' in ct, 'reconciledAt' in ct, ct.lineId, ct.reverses, 'replaces' in ct], [false, false, false, '', '', false], 'a tick, a statement, a line and a pairing do not come with it');
+  const again = J(c.carriedRowFor(co, 2027));
+  eq([again.id, again.carriedFrom], ['co-c', { year: 2026, id: 'c' }], 'carried a second time: the same id and the first year');
+});
+
+test('C8-1: closing a book splits it at the cutoff: rows, rows voided, statements and history each go to the year they belong to, and nothing is changed in place', () => {
+  const c = c8(), src = C8_SRC(), was = JSON.stringify(src);
+  const out = J(c.closedBookBuild(src, C8_OPTS));
+  ok(JSON.stringify(src) === was, 'the input is not mutated');
+  const b = out.book;
+  eq([b.year, b.cutoff, b.openingCents, b.openingDate, b.closingCents, b.form, b.archiveId], [2026, '2027-06-30', 100000, '2026-07-01', 93000, 'full', 'arc-1'], 'the book');
+  eq([b.closedBy, b.closedByUid, b.closedAt, b.reconciledThrough], ['Sam Example', 'u-sam', '2027-09-10T12:00:00.000Z', '2027-06-15'], 'who, when');
+  eq(b.ledger.map((e) => e.id), ['a', 'b', 'c', 'd', 'e'], 'the closed rows');
+  eq(out.open.ledger.map((e) => e.id), ['f', 'g'], 'the rows that stay open');
+  eq(b.aside.map((e) => e.id), ['v1'], 'the row voided in the year');
+  eq(out.open.ledgerAside.map((e) => e.id), ['v2', 'co-c', 'co-d'], 'the row voided after it stays, and the carried rows join it');
+  eq(out.open.statements.map((s) => s.id), ['st-3'], 'the statement after the cutoff stays');
+  eq(b.statements.map((s) => s.id), ['st-1'], 'the one before it is the closed year’s');
+  eq(out.open.ledgerLog.map((e) => e.id), ['lg-2', 'lg-4'], 'history about what stays stays');
+  eq(b.log.map((e) => e.id), ['lg-1', 'lg-3'], 'the rest is the closed year’s');
+  eq(b.names, { line: { L1: 'Pack dues' }, family: { s1: 'Ada' } }, 'the words for the ids its rows use');
+  eq(out.closingCents, 93000, 'closingCents');
+});
+
+// 'a' (before the opening date) and the reconciled 'b' and 'e' are not carried: only 'c' and 'd', unticked and in the bank's year, are.
+test('C8-1: what is carried is the unticked entries the bank will show later, and their totals are said', () => {
+  const c = c8(), out = J(c.closedBookBuild(C8_SRC(), C8_OPTS));
+  eq(out.carried.map((e) => [e.id, e.amountCents, e.direction]), [['co-c', 15000, 'out'], ['co-d', 5000, 'in']], 'carried');
+  eq(out.book.carried, { n: 2, inCents: 5000, outCents: 15000 }, 'carried totals');
+  const none = C8_SRC(); none.book.openingDate = '';
+  const nb = J(c.closedBookBuild(none, C8_OPTS));
+  eq([nb.carried.length, nb.book.carried.n], [0, 0], 'no opening date: no bank balance, nothing carried');
+});
+
+test('C8-1: a row carried last year and still unticked is carried again, ticked it is history in the closed book, and ids never clash', () => {
+  const c = c8(), s = C8_SRC();
+  s.ledgerAside.push(J(c.carriedRowFor(c8row('old1', '2026-06-29', 400, 'out'), 2025)));
+  s.ledgerAside.push(Object.assign(J(c.carriedRowFor(c8row('old2', '2026-06-28', 600, 'in'), 2025)), { reconciled: true, statementId: 'st-1' }));
+  const out = J(c.closedBookBuild(s, C8_OPTS));
+  eq(out.carried.map((e) => e.id).sort(), ['co-c', 'co-d', 'co-old1'], 'carried again: the unticked one');
+  eq(out.carried.filter((e) => e.id === 'co-old1')[0].carriedFrom, { year: 2025, id: 'old1' }, 'still from 2025');
+  eq(out.book.aside.map((e) => e.id).sort(), ['co-old1', 'co-old2', 'v1'], 'both earlier copies stay in the closed book as they were');
+});
+
+test('C8-1: compacting keeps the money and the words, drops who, the rows set aside and the history, and does it once', () => {
+  const c = c8(), full = J(c.closedBookBuild(C8_SRC(), C8_OPTS).book);
+  const cp = J(c.compactClosedBook(full));
+  eq(cp.form, 'compact', 'form');
+  eq(cp.ledger.find((r) => r.i === 'b'), { i: 'b', d: '2026-10-01', c: 5000, t: 'Row b', l: 'Pack dues', f: 'Ada', k: 1 }, 'a compact row');
+  eq(cp.ledger.find((r) => r.i === 'c'), { i: 'c', d: '2027-06-28', c: -15000, t: 'Row c', r: '1041' }, 'money out is negative, the check number stays');
+  ok(!JSON.stringify(cp.ledger).includes('Pat Example'), 'nobody who entered a row is kept');
+  eq([cp.aside, cp.log, cp.asideTrimmed, cp.logTrimmed, 'names' in cp], [[], [], true, true, false], 'set aside rows and history dropped, and it says so');
+  eq(cp.statements.map((s) => s.id), ['st-1'], 'statements kept');
+  eq([cp.closingCents, cp.openingCents, cp.carried], [93000, 100000, full.carried], 'figures kept');
+  eq(J(c.compactClosedBook(cp)), cp, 'compacting a compact book changes nothing');
+  eq(c.trimClosedBookRows(full).ledgerTrimmed, true, 'rows dropped says so');
+  eq([J(c.trimClosedBookRows(full)).ledger, J(c.trimClosedBookRows(full)).closingCents], [[], 93000], 'and keeps the figures');
+});
+
+test('C8-1: fitting keeps the newest year in full and older years compact while the record has room, then compacts, then drops rows', () => {
+  const c = c8();
+  const big = (y) => {
+    const s = C8_SRC(); s.ledger = [];
+    for (let i = 0; i < 300; i++) s.ledger.push(c8row('r' + y + '-' + i, (y + 1) + '-01-15', 100 + i, i % 2 ? 'in' : 'out'));
+    s.book.openingDate = y + '-07-01';
+    return J(c.closedBookBuild(s, Object.assign({}, C8_OPTS, { year: y, archiveId: 'arc-' + y })).book);
+  };
+  const older = [big(2024), big(2025)], fresh = big(2026);
+  const bytes = (l) => Buffer.byteLength(JSON.stringify(l));
+  const roomy = J(c.fitClosedBook(fresh, older, 1000, 1e9));
+  eq(roomy.books.map((b) => [b.year, b.form]), [[2024, 'compact'], [2025, 'compact'], [2026, 'full']], 'older years compact, the newest full');
+  eq([roomy.fits, roomy.compacted, roomy.trimmed], [true, [2024, 2025], []], 'reported');
+  const tight = J(c.fitClosedBook(fresh, older, 1000, bytes(roomy.books) - 100));
+  eq(tight.books.map((b) => [b.year, b.form]), [[2024, 'compact'], [2025, 'compact'], [2026, 'compact']], 'too big with the newest in full: compacted');
+  const tiny = J(c.fitClosedBook(fresh, older, 1000, 4000));
+  eq([tiny.fits, tiny.trimmed, tiny.books.every((b) => b.ledger.length === 0 && b.ledgerTrimmed)], [true, [2026, 2024, 2025], true], 'too big even compact: newest’s rows go first, then the oldest’s');
+  eq(J(c.fitClosedBook(fresh, [{ ...older[0], year: 2026 }], 1000, 1e9)).books.map((b) => [b.year, b.form]), [[2026, 'full']], 'a book for the same year is replaced');
+});
+
+test('C8-1: two copies’ closed books are one, the same either way round: a book compacted on one device stays compact, a later close-out of a year replaces an earlier', () => {
+  const c = c8(), full = J(c.closedBookBuild(C8_SRC(), C8_OPTS).book), cp = J(c.compactClosedBook(full));
+  const y25 = Object.assign(J(full), { year: 2025, archiveId: 'arc-0' });
+  const a = J(c.mergeClosedBooks([full], [cp, y25])), b = J(c.mergeClosedBooks([cp, y25], [full]));
+  eq(a, b, 'symmetric');
+  eq(a.map((x) => [x.year, x.form]), [[2025, 'full'], [2026, 'compact']], 'oldest first, the compact one wins');
+  const later = Object.assign(J(full), { closedAt: '2027-10-01T00:00:00.000Z', archiveId: 'arc-2' });
+  eq(J(c.mergeClosedBooks([full], [later])).map((x) => x.archiveId), ['arc-2'], 'the later close-out of the same year');
+  eq(J(c.mergeClosedBooks([later], [full])).map((x) => x.archiveId), ['arc-2'], 'either way round');
+  eq(J(c.mergeClosedBooks(null, [{ nope: 1 }, null, 'x'])), [], 'junk is not a book');
+  eq(J(c.mergeClosedBooks([full], [full])).length, 1, 'the same book twice is one');
+});
+
 /* ---------------- report ---------------- */
 // The API tests are async; they run here, one at a time, each on its own database.
 for (const [name, fn] of asyncTests) {

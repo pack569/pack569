@@ -8167,6 +8167,236 @@
       reverses: y + ':' + orig.id
     };
   }
+  // ---------------------------------------------------------------------------
+  // PHASE 3, C8 — CLOSE-OUT KEEPS THE BOOK, BY YEAR (owner decisions 2, 14, 19, 24, 27-30). The pure
+  // pieces, which nothing calls yet: a close-out that writes state.closedBooks is C8-5, and the
+  // readers are C8-2 to C8-4. What they will do, in order:
+  //   * The year's books end on its last day (closeoutCutoff: June 30 of the program year's end), NOT
+  //     on the day the leader taps Close out. A close-out in September takes the July and August
+  //     entries into the new year's book, where they belong: closeoutSplit.
+  //   * The balance carried is the book's balance at that cutoff (closingBalanceAt), opening figure
+  //     plus every counted row from the opening date through the cutoff, unreconciled ones included.
+  //     The bank will not show an outstanding check yet; the new book says so (carriedRowFor, and
+  //     reconcileTotals' offset), so the first statement still comes to a difference of zero.
+  //   * The year's rows, rows set aside, statements and change history go into ONE closed book
+  //     (closedBookBuild), read-only from then on; newer years in full, older years compacted
+  //     (compactClosedBook) and fitted to the record (fitClosedBook); two copies' closed books as one
+  //     (mergeClosedBooks).
+  // Dates are compared as YYYY-MM-DD strings, as everywhere in the ledger: a row with no date sorts
+  // first, so it is in the closed year (as it counts in the bank balance: entryAfterOpening).
+  // LEADERS ONLY: nothing here reaches buildParentView.
+  // ---------------------------------------------------------------------------
+  // The last day a program year's book takes entries for, as YYYY-MM-DD. `programYear` is the year
+  // the book belongs to (budget.programYear): 2026 closes on 2027-06-30. Pure.
+  function closeoutCutoff(programYear) {
+    return programYearEndISO(Math.round(Number(programYear)));
+  }
+  // The counted rows split at the cutoff: { closed: dated on or before it (or undated), open: dated
+  // after it }, each in the order given. Pure; the rows themselves, not copies.
+  function closeoutSplit(ledger, cutoff) {
+    var closed = [], open = [];
+    (ledger || []).forEach(function (e) {
+      if (!e) return;
+      if (String(e.date || '') <= cutoff) closed.push(e); else open.push(e);
+    });
+    return { closed: closed, open: open };
+  }
+  // The book's balance at the cutoff: the opening figure plus every counted row dated from the opening
+  // date (entryAfterOpening) through the cutoff, ticked or not. This is what the new book opens at,
+  // and what bookBalance() was before close-out took the cutoff into account. Pure.
+  function closingBalanceAt(ledger, book, cutoff) {
+    return closeoutSplit(ledger, cutoff).closed.reduce(function (n, e) {
+      return entryAfterOpening(e, book) ? n + entrySignedCents(e) : n;
+    }, book.openingCents || 0);
+  }
+  // A row as the next book carries it: an entry on or before the cutoff that no statement has cleared
+  // (or one carried before, still not cleared). An aside copy, not counted (off 'carried': the
+  // closing balance already includes the money), its id 'co-' + the id of the ORIGINAL entry (so two
+  // devices that close out write the same one, and a row carried twice keeps its id), carriedFrom the
+  // year it was first carried from and its original id. Unticked, off any statement, and pointing at
+  // no budget line (the lines are this year's, and are rebuilt); its family, description, date,
+  // amount and check number stay, for the treasurer to tick it when it clears. `row` is a counted row
+  // or an earlier carried one; `year` the program year being closed. A new object. Pure.
+  function carriedRowFor(row, year) {
+    var c = JSON.parse(JSON.stringify(row));
+    var from = row.carriedFrom && typeof row.carriedFrom === 'object' && typeof row.carriedFrom.id === 'string' && row.carriedFrom.id
+      ? { year: Math.round(row.carriedFrom.year), id: row.carriedFrom.id } : { year: Math.round(year), id: String(row.id) };
+    ['statementId', 'reconciledAt', 'replaces', 'reversedBy'].forEach(function (k) { delete c[k]; });
+    c.id = 'co-' + from.id;
+    c.off = 'carried';
+    c.carriedFrom = from;
+    c.reconciled = false;
+    c.lineId = '';
+    c.reverses = '';
+    c.reversedBy = '';
+    c.voidReason = ''; c.voidedBy = ''; c.voidedByUid = ''; c.voidedAt = '';
+    return c;
+  }
+  // The row as a closed book's compact form keeps it: { i: id, d: date, c: signed cents (in +, out −),
+  // t: description, l: budget line name, r: reference, s: source, f: family (first names), k: 1 when
+  // reconciled }, empty keys left out. seasonLedgerRows' form, plus the id (so a closed year's entry can
+  // still be named by a reversal, 'Y:id', and a statement's list still finds it). NOT who entered it.
+  function closedCompactRow(e, line, fam) {
+    var amt = e.amountCents || 0;
+    var r = { i: String(e.id || ''), d: e.date || '', c: e.direction === 'in' ? amt : -amt, t: e.description || '' };
+    if (line) r.l = line;
+    if (e.ref) r.r = e.ref;
+    if (e.source) r.s = e.source;
+    if (fam) r.f = fam;
+    if (e.reconciled) r.k = 1;
+    return r;
+  }
+  // Close the year out of one book, as data: `src` { book, ledger, ledgerAside, ledgerLog, statements }
+  // (nothing is changed: copies are taken), `opts`: { year (the program year closing), stamp { at, by,
+  // byUid }, archiveId (the season archive's id, which a copy's two records share), lineNameOf(id),
+  // familyOf(scoutId) (the words a later reader needs; the ids mean nothing once the year's lines and
+  // roster have moved on) }. Returns { book: the closed book (full form), open: { ledger, ledgerAside,
+  // ledgerLog, statements }, carried: [the carried rows], closingCents }:
+  //   * counted rows dated after the cutoff stay open (their line ids are the caller's to remap), and so
+  //     do the rows voided after it, the statements dated after it and the log events about anything
+  //     that stays; the book's reconciledThrough is the caller's, kept as it is when after the cutoff
+  //     (the closed book records it as of the cutoff);
+  //   * a counted row on or before the cutoff that is unticked (entryAfterOpening: on the bank's side
+  //     of the opening figure) is carried (carriedRowFor), and so is one carried before and still
+  //     unticked; one carried before and ticked stays in the closed book's aside, as history. With no
+  //     opening date nothing is carried: the ledger's "balance" is net movement there, not a bank
+  //     balance, and there is no statement to tick against (closingBankKnown's rule);
+  //   * a pair set aside by C4's first build (off 'reversed'/'reversal') goes by its entry's date.
+  // The full book holds `names` (line and family words for the ids its rows use), so it can be compacted
+  // later without the year's lines. Pure.
+  function closedBookBuild(src, opts) {
+    opts = opts || {};
+    var year = Math.round(Number(opts.year)), cutoff = closeoutCutoff(year), stamp = opts.stamp || {};
+    var book = src.book || {};
+    var ledger = JSON.parse(JSON.stringify(src.ledger || []));
+    var aside = JSON.parse(JSON.stringify(src.ledgerAside || []));
+    var log = JSON.parse(JSON.stringify(src.ledgerLog || []));
+    var statements = JSON.parse(JSON.stringify(src.statements || []));
+    var split = closeoutSplit(ledger, cutoff);
+    var closingCents = closingBalanceAt(ledger, book, cutoff);
+    var byAsideId = Object.create(null);
+    aside.forEach(function (a) { if (a && typeof a.id === 'string' && !byAsideId[a.id]) byAsideId[a.id] = a; });
+    function asideClosed(a) {
+      if (a.off === 'carried') return true;
+      var p = a.off === 'reversal' && typeof a.reverses === 'string' ? byAsideId[a.reverses] : null;
+      return String((p && p.off === 'reversed' ? p : a).date || '') <= cutoff;
+    }
+    var closedAside = aside.filter(asideClosed), openAside = aside.filter(function (a) { return !asideClosed(a); });
+    var carried = [], carriedIds = Object.create(null);
+    if (book.openingDate) {
+      split.closed.concat(closedAside.filter(function (a) { return a.off === 'carried'; })).forEach(function (e) {
+        if (e.reconciled === true || (e.off !== 'carried' && !entryAfterOpening(e, book))) return;
+        var c = carriedRowFor(e, year);
+        if (carriedIds[c.id]) return;
+        carriedIds[c.id] = true;
+        carried.push(c);
+      });
+    }
+    carried = ledgerSort(carried);
+    var totals = { n: carried.length, inCents: 0, outCents: 0 };
+    carried.forEach(function (c) { if (c.direction === 'in') totals.inCents += c.amountCents || 0; else totals.outCents += c.amountCents || 0; });
+    var statementsClosed = statements.filter(function (st) { return String(st.date || '') <= cutoff; });
+    var statementsOpen = statements.filter(function (st) { return String(st.date || '') > cutoff; });
+    var stays = Object.create(null);
+    split.open.concat(openAside, statementsOpen).forEach(function (x) { if (x && typeof x.id === 'string') stays[x.id] = true; });
+    var logOpen = [], logClosed = [];
+    log.forEach(function (ev) {
+      var about = [ev.row].concat(Array.isArray(ev.rows) ? ev.rows : []);
+      (about.some(function (r) { return stays[r] === true; }) ? logOpen : logClosed).push(ev);
+    });
+    var names = { line: {}, family: {} };
+    split.closed.concat(closedAside).forEach(function (e) {
+      if (e.lineId && typeof opts.lineNameOf === 'function') { var ln = opts.lineNameOf(e.lineId); if (ln) names.line[e.lineId] = ln; }
+      if (e.scoutId && typeof opts.familyOf === 'function') { var fm = opts.familyOf(e.scoutId); if (fm) names.family[e.scoutId] = fm; }
+    });
+    var rt = String(book.reconciledThrough || '');
+    return {
+      book: {
+        year: year, closedAt: typeof stamp.at === 'string' ? stamp.at : '', closedBy: ledgerStampClean(stamp.by),
+        closedByUid: typeof stamp.byUid === 'string' ? stamp.byUid : '', archiveId: typeof opts.archiveId === 'string' ? opts.archiveId : '',
+        cutoff: cutoff, openingDate: String(book.openingDate || ''), openingCents: book.openingCents || 0, closingCents: closingCents,
+        reconciledThrough: rt && rt > cutoff ? cutoff : rt, carried: totals, form: 'full',
+        ledger: split.closed, aside: closedAside, log: logClosed, statements: statementsClosed, names: names
+      },
+      open: { ledger: split.open, ledgerAside: openAside.concat(carried), ledgerLog: logOpen, statements: statementsOpen },
+      carried: carried, closingCents: closingCents
+    };
+  }
+  // A closed book in compact form: its rows as closedCompactRow (the words from `names`), the rows set
+  // aside and the change history dropped (asideTrimmed, logTrimmed: the snapshot download, and the
+  // season archive's copies, are what keeps them), its statements kept whole, `names` gone. Already
+  // compact: as it is. A new object. Pure.
+  function compactClosedBook(b) {
+    var c = JSON.parse(JSON.stringify(b));
+    if (c.form === 'compact') return c;
+    var names = c.names || { line: {}, family: {} };
+    c.ledger = (c.ledger || []).map(function (e) {
+      return closedCompactRow(e, e.lineId ? names.line[e.lineId] : '', e.scoutId ? names.family[e.scoutId] : '');
+    });
+    if ((c.aside || []).length) c.asideTrimmed = true;
+    if ((c.log || []).length) c.logTrimmed = true;
+    c.aside = [];
+    c.log = [];
+    delete c.names;
+    c.form = 'compact';
+    return c;
+  }
+  // A compact closed book with its rows dropped too (ledgerTrimmed): the figures, the statements and the
+  // carried totals stay. When even the compact form does not fit. A new object. Pure.
+  function trimClosedBookRows(b) {
+    var c = compactClosedBook(b);
+    if (c.ledger.length) c.ledgerTrimmed = true;
+    c.ledger = [];
+    return c;
+  }
+  // The closed books to keep after closing `fresh` (a full book, closedBookBuild's) over `older`
+  // (state.closedBooks), for a record whose size without any closed book is `otherBytes` and that must
+  // stay under `limit`: older years are always compact; the newest year full if the record holds it,
+  // else compact, else its rows dropped; then older years' rows dropped, oldest first, until it fits.
+  // Returns { books (by year), compacted: [years], trimmed: [years whose rows were dropped], fits }.
+  // The year a book for the same year is replaced. Pure.
+  function fitClosedBook(fresh, older, otherBytes, limit) {
+    var compacted = [], trimmed = [];
+    var rest = (older || []).filter(function (b) { return b.year !== fresh.year; }).map(function (b) {
+      if (b.form !== 'compact') compacted.push(b.year);
+      return compactClosedBook(b);
+    }).sort(function (a, b) { return a.year - b.year; });
+    function size(list) { return otherBytes + utf8Bytes(JSON.stringify(list)); }
+    var list = rest.concat([fresh]);
+    if (size(list) > limit) {
+      compacted.push(fresh.year);
+      list = rest.concat([compactClosedBook(fresh)]);
+    }
+    if (size(list) > limit) {
+      list[list.length - 1] = trimClosedBookRows(list[list.length - 1]);
+      trimmed.push(fresh.year);
+    }
+    for (var i = 0; i < list.length - 1 && size(list) > limit; i++) {
+      if (list[i].ledger.length) { list[i] = trimClosedBookRows(list[i]); trimmed.push(list[i].year); }
+    }
+    return { books: list, compacted: compacted, trimmed: trimmed, fits: size(list) <= limit };
+  }
+  // Two copies' closed books as one, by year, the same on every device whichever is `mine`: a year both
+  // hold from the same close-out (archiveId) is one book, the less complete form of the two (a book
+  // compacted on one device stays compact on all: compaction is one way, or the record would swell
+  // back the next time the full copy came across; then the one that sorts first); a year two
+  // close-outs wrote is the later close-out's (performCloseout replaces an earlier one of the same
+  // year; syncPush asks first when two devices each did it, so this is the safety net). A book is
+  // never dropped otherwise. Oldest year first. Pure.
+  function mergeClosedBooks(mine, theirs) {
+    var byYear = Object.create(null);
+    function rank(b) { return b.form === 'compact' ? (b.ledgerTrimmed ? 0 : 1) : 2; }
+    (mine || []).concat(theirs || []).forEach(function (b) {
+      if (!b || typeof b !== 'object' || typeof b.year !== 'number') return;
+      var a = byYear[b.year];
+      if (!a) { byYear[b.year] = b; return; }
+      var ka = String(a.closedAt || '') + '\u0000' + String(a.archiveId || ''), kb = String(b.closedAt || '') + '\u0000' + String(b.archiveId || '');
+      if (String(a.archiveId || '') !== String(b.archiveId || '')) { byYear[b.year] = kb > ka ? b : a; return; }
+      if (rank(a) !== rank(b)) { byYear[b.year] = rank(b) < rank(a) ? b : a; return; }
+      byYear[b.year] = JSON.stringify(b) < JSON.stringify(a) ? b : a;
+    });
+    return Object.keys(byYear).map(function (y) { return byYear[y]; }).sort(function (a, b) { return a.year - b.year; });
+  }
   function reconcileTotals(ledger, book) {
     var cleared = book.openingCents || 0, ticked = 0, open = 0, after = 0;
     ledger.forEach(function (e) {
