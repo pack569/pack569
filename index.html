@@ -4106,7 +4106,7 @@
     }
     // C5 — one of each statement, in date order (mergeStatements: a statement twice is one, as the
     // sync merge makes it); and a book still locked through a statement since reopened steps back.
-    d.statements = mergeStatements(d.statements, []);
+    d.statements = mergeStatements(d.statements, [], d.ledger);
     statementLockBack(d.book, d.statements);
     if (!Array.isArray(d.closedBooks)) d.closedBooks = [];
     d.closedBooks = d.closedBooks.filter(plainObj);
@@ -9198,6 +9198,12 @@
         'the statement through ' + fmtDateShort(rt) + ', so only a pack admin can mark this statement reconciled. Ask an admin, or check ' +
         'this device’s date and time.';
     }
+    // Security review of C5 (F3) — at the cap (mergeStatements' 200) a new statement is refused
+    // rather than one evicted; a real pack keeps about twelve a year.
+    if ((statements || []).length >= 200) {
+      return 'This book already keeps 200 statements, the most it can hold. Close out the year (Pack · Season) to start a new book, ' +
+        'then mark this statement reconciled.';
+    }
     if (rt && sd === rt && statementInForce(statements, book)) {
       return 'The book is already reconciled through ' + fmtDateShort(rt) + ', and that statement is kept as it was signed. ' +
         'If it needs doing again, an admin can reopen it under Statements reconciled.';
@@ -9257,8 +9263,12 @@
   // absent stays absent, so a record gains nothing it did not have. Money is whole cents or null;
   // row ids are strings (at most 2000 of them); stamps are never an email. A legacy statement has
   // no figures at all (L1): the book never recorded them. Unknown fields are kept. Pure.
+  // Security review of C5 (F3) — a date that isn't YYYY-MM-DD is read as '' and the statement
+  // marked (badDate: true), kept but never in force, and sorted before every real date, so junk
+  // can't sort after (and seem newer than) the real statements.
   function normalizeStatement(st) {
-    if (typeof st.date !== 'string') st.date = '';
+    if (typeof st.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(st.date)) { st.date = ''; st.badDate = true; }
+    else if (st.badDate !== undefined) delete st.badDate;
     if (typeof st.id !== 'string' || !st.id) st.id = 'st-' + st.date;
     ['statementCents', 'openingCents', 'clearedCents', 'bookCents', 'addedCents'].forEach(function (k) {
       if (st[k] !== undefined) st[k] = typeof st[k] === 'number' && isFinite(st[k]) ? Math.round(st[k]) : null;
@@ -9311,9 +9321,15 @@
   }
   // Two copies' statements as one (the sync merge; normalizeState runs a record's own through it,
   // with no `theirs`): every statement from either, one per id (statementPairMerge), by date, then
-  // when it was signed, then id. Never a deletion: statements are append-only. Capped at the newest
-  // 200 (a season is about twelve; close-out starts the next book with none). Pure.
-  function mergeStatements(mine, theirs) {
+  // when it was signed, then id. Never a deletion: statements are append-only. Capped at 200 (a
+  // season is about twelve; close-out starts the next book with none, and Mark reconciled refuses
+  // at 200: reconcileLockRefusal).
+  // Security review of C5 (F3) — the cap takes only the oldest statements reopened that no entry
+  // names (`rows`: the ledger rows, whose statementId says which statement cleared them), never
+  // one standing or named: past the cap with nothing else to take, it keeps them all rather than
+  // lose a real statement (its entries would be listed again, and a reopen would step the lock
+  // back past it). Pure.
+  function mergeStatements(mine, theirs, rows) {
     var byId = Object.create(null);
     (mine || []).concat(theirs || []).forEach(function (st) {
       if (!st || typeof st !== 'object' || Array.isArray(st) || typeof st.id !== 'string' || !st.id) return;
@@ -9323,7 +9339,13 @@
       var a = String(x.date) + '\u0000' + String(x.at || '') + '\u0000' + x.id, b = String(y.date) + '\u0000' + String(y.at || '') + '\u0000' + y.id;
       return a < b ? -1 : a > b ? 1 : 0;
     });
-    return all.length > 200 ? all.slice(all.length - 200) : all;
+    if (all.length <= 200) return all;
+    var named = Object.create(null), over = all.length - 200;
+    (rows || []).forEach(function (e) { if (e && typeof e.statementId === 'string') named[e.statementId] = true; });
+    return all.filter(function (st) {
+      if (over > 0 && statementReopened(st) && !named[st.id]) { over -= 1; return false; }
+      return true;
+    });
   }
   // The statement the book is reconciled through: not reopened, dated book.reconciledThrough (the
   // latest signed, if two devices both signed that date). Null when there is none. Pure.
@@ -13847,7 +13869,7 @@
     // of the same year (close-out starts a book with none). Then a lock through a statement since
     // reopened steps back (statementLockBack): the later lock just taken may be the one reopened.
     if (bkHere && bkThere && bkHere.year === bkThere.year) {
-      state.statements = mergeStatements(state.statements, remote.statements);
+      state.statements = mergeStatements(state.statements, remote.statements, state.ledger.concat(Array.isArray(remote.ledger) ? remote.ledger : []));
       statementLockBack(bkHere, state.statements);
     }
     // Phase 0 — ledger entries get the same append-only protection as popcorn sales, and
@@ -20849,7 +20871,7 @@
     var off = !reop && (!rt || st.date > rt);
     var n = Array.isArray(st.ticked) ? st.ticked.length : 0, m = Array.isArray(st.outstanding) ? st.outstanding.length : 0;
     var h = '<div class="block-card" style="margin-top:8px">' +
-      '<div class="spread"><span class="assign-name">Statement through ' + esc(fmtDate(st.date)) + '</span><span>' +
+      '<div class="spread"><span class="assign-name">Statement through ' + (st.badDate ? 'a date that can’t be read' : esc(fmtDate(st.date))) + '</span><span>' +
       (reop ? '<span class="pill">reopened</span>' : '') + (off ? '<span class="pill">not in force</span>' : '') +
       (rev ? '<span class="pill navy">reviewed</span>' : '') + '</span></div>';
     if (st.legacy) h += '<p class="small" style="margin:4px 0 0">' + esc(statementLegacyLine(st)) + '</p>';
@@ -30352,7 +30374,7 @@
             rlReop.push(st.id);
           });
         }
-        state.statements = mergeStatements(state.statements, [rlNew.statement]);
+        state.statements = mergeStatements(state.statements, [rlNew.statement], state.ledger);
         rlNew.rows.forEach(function (e) { e.statementId = rlNew.statement.id; });
         state.book.reconciledThrough = state.book.statementDate;
         state.book.reconciledBy = ledgerActor();                 // E2

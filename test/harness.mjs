@@ -22729,7 +22729,7 @@ test('C5: the statements merge by id, never lose one, and a statement changed on
   eq(m([odd], [base])[0].statementCents, 100, 'the signed part that sorts first');
   // The sync merge unions them, same year only, and steps the lock back past a reopen.
   const ms = slice('mergeRemoteAppendOnly');
-  ok(/if \(bkHere && bkThere && bkHere\.year === bkThere\.year\) \{\s*state\.statements = mergeStatements\(state\.statements, remote\.statements\);\s*statementLockBack\(bkHere, state\.statements\);/.test(ms),
+  ok(/if \(bkHere && bkThere && bkHere\.year === bkThere\.year\) \{\s*state\.statements = mergeStatements\(state\.statements, remote\.statements, [^;]*\);\s*statementLockBack\(bkHere, state\.statements\);/.test(ms),
     'the merge does not union the statements, or step the lock back');
   ok(ms.indexOf('statementLockBack(bkHere') < ms.indexOf("state.ledger = dropGone(state.ledger, 'ledger')"), 'the lock steps back after the ledger’s merge reads it');
   const { isStateEmpty } = sandbox(['isStateEmpty']);
@@ -23253,6 +23253,46 @@ test('C5 review (owner 4): no parent surface reads an archive’s statements or 
     const text = JSON.stringify(vm.runInContext(`buildParentView(state, ${opts})`, ctx));
     ok(text.length > 100 && !/MARK\d/.test(text), 'a parent view carries a statement or a log event: ' + opts);
   }
+});
+
+test('C5 review (F3): the cap never takes a statement standing or named by an entry, Mark reconciled refuses at it, and a bad date sorts first', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const mk = (i, o) => Object.assign({ id: 'st-' + i, date: '2026-01-01', at: '2026-01-02T00:00:' + String(i % 60).padStart(2, '0') + '.' + String(i).padStart(3, '0') + 'Z',
+    statementCents: 1, by: 'Pat', byUid: 'u1' }, o || {});
+  const R = { reopenedAt: '2026-02-01T00:00:00.000Z', reopenedBy: 'Alex', reopenedByUid: 'u3', reopenWhy: 'x' };
+  const m = (list, rows) => JSON.parse(JSON.stringify(ctx.mergeStatements(JSON.parse(JSON.stringify(list)), [], rows)));
+  // 205: the five oldest standing, then three reopened (the oldest named by an entry), then the rest standing.
+  const list = [];
+  for (let i = 0; i < 205; i++) list.push(mk(i, i >= 5 && i < 8 ? R : null));
+  const kept = m(list, [{ id: 'l1', statementId: 'st-5' }]).map((q) => q.id);
+  eq([kept.length, ['st-0', 'st-5'].every((id) => kept.includes(id)), ['st-6', 'st-7'].some((id) => kept.includes(id))], [203, true, false],
+    'the cap took a standing or named one, or not the reopened ones');
+  // Nothing to take: all kept.
+  eq(m(list.map((q) => mk(Number(q.id.slice(3))))).length, 205, 'a standing statement was evicted');
+  // Under the cap nothing goes, reopened or not.
+  eq(m(list.slice(0, 200)).length, 200, 'under the cap');
+  // Every caller says which statements the entries name.
+  ok(/d\.statements = mergeStatements\(d\.statements, \[\], d\.ledger\);/.test(SCRIPT), 'normalizeState');
+  ok(/state\.statements = mergeStatements\(state\.statements, remote\.statements, state\.ledger\.concat\(Array\.isArray\(remote\.ledger\) \? remote\.ledger : \[\]\)\);/.test(slice('mergeRemoteAppendOnly')), 'the sync merge');
+  ok(/state\.statements = mergeStatements\(state\.statements, \[rlNew\.statement\], state\.ledger\);/.test(SCRIPT), 'Mark reconciled');
+  // A bad date: kept, marked, never in force, first in order; a good one keeps no mark; a fixed point.
+  const n = c5Norm(Object.assign(withSeeds(LEGACY_ROWS)(), { book: { openingCents: 0, openingDate: '2026-07-01', reconciledThrough: '2026-08-31' },
+    statements: [Object.assign(C5_SEP(), { id: 'st-z', date: '9999-99-99x' }), Object.assign(C5_SEP(), { id: 'st-n', date: 7 }), Object.assign(C5_LEGACY(), { badDate: true })] }));
+  eq(n.statements.map((q) => [q.id, q.date, q.badDate || false]), [['st-n', '', true], ['st-z', '', true], ['st-2026-08-31', '2026-08-31', false]], 'a bad date');
+  eq(n.book.reconciledThrough, '2026-08-31', 'the lock');
+  eq(JSON.stringify(c5Norm(n)), JSON.stringify(n), 'not a fixed point');
+  ok(/Statement through a date that can’t be read/.test(c5Text(vm.runInContext('statementsCardHtml()', c5View([Object.assign(C5_SEP(), { date: '', badDate: true })])))), 'the card');
+  // Mark reconciled at the cap: refused, in words that say what to do; one under it goes ahead.
+  const cap = 'This book already keeps 200 statements, the most it can hold. Close out the year (Pack · Season) to start a new book, then mark this statement reconciled.';
+  const many = (k) => JSON.stringify(Array.from({ length: k }, (_, i) => mk(i, Object.assign({ date: '2026-08-0' + (1 + (i % 9)) }, R))).concat([C5_LEGACY()]));
+  const p = c2tPage({ book: { statementDate: '2026-09-30' }, more: `state.statements = ${many(199)};` });
+  p.run("agree(); act3('ledger-reconcile-lock'); act3('ledger-reconcile-lock')");
+  eq([p.get('toasts'), p.get('state.statements.length'), p.get('state.book.reconciledThrough')], [[cap, cap], 200, '2026-08-31'], 'at the cap');
+  const q = c2tPage({ book: { statementDate: '2026-09-30' }, more: `state.statements = ${many(198)};` });
+  q.run("agree(); act3('ledger-reconcile-lock'); act3('ledger-reconcile-lock')");
+  eq([q.get('toasts'), q.get('state.statements.length'), q.get('state.book.reconciledThrough')], [['Reconciled through Wed, Sep 30.'], 200, '2026-09-30'], 'under it');
+  ok(/if \(\(statements \|\| \[\]\)\.length >= 200\) \{/.test(slice('reconcileLockRefusal')) && /if \(all\.length <= 200\) return all;/.test(slice('mergeStatements')),
+    'the refusal and the merge disagree on the cap');
 });
 
 /* ---------------- report ---------------- */
