@@ -17240,7 +17240,7 @@ test('stopgap follow-up 4: the Trail’s End import says a re-import puts stale 
 
 test('stopgap follow-up 6: a restored backup puts back what the pack had deleted since, on every device', () => {
   // The handler restores through restoreGone, with this device's marks, now.
-  ok(/if \(act === 'confirm-import'\) \{\s*var ciLog = state\.ledgerLog;\s*var ciSt = state\.statements, ciYear = [^;]*;\s*state = restoreGone\(ui\.overlay\.data, state\.gone, Date\.now\(\)\);/.test(SCRIPT),
+  ok(/if \(act === 'confirm-import'\) \{\s*(\/\/[^\n]*\s*)*if \(!canReopenStatement\(\)\) \{[^\n]*\}\s*var ciLog = state\.ledgerLog;\s*var ciSt = state\.statements, ciYear = [^;]*;\s*state = restoreGone\(ui\.overlay\.data, state\.gone, Date\.now\(\)\);/.test(SCRIPT),
     'confirm-import does not mark what the backup puts back');
   const seed = JSON.stringify(goneSeedNorm());
   const RESTORE = `state = restoreGone(normalizeState(${seed}), state.gone, Date.now()); commit()`;
@@ -18231,7 +18231,7 @@ const C2_FNS = ['fmt', 'fmtDate', 'fmtDateShort', 'toCents', 'toCentsSigned', 'e
   'ledgerDraftDefault', 'ledgerDraft', 'arm', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays', 'ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept', 'keepLostVoids', 'ledgerPairCheck',
   // Phase 3, C5 — Mark reconciled writes the statement.
   'statementNew', 'statementInForce', 'statementReopened', 'statementReviewed', 'statementAdded', 'statementOnceGroups', 'statementPairMerge', 'mergeStatements',
-  'statementLockBack', 'statementBefore', 'entrySignedCents'];
+  'statementLockBack', 'statementBefore', 'statementLockForward', 'entrySignedCents'];
 // The book is reconciled through Aug 31 from a Jul 1 opening. u1 is open; r1 is ticked (after the
 // period); p1 is dated in the period, not ticked; q1 is ticked in the period by a page from before
 // any stamps; pre is before the opening date; m1 is a tier make-up in the period.
@@ -19068,6 +19068,7 @@ const C2T_MORE = `
   ${['reconcileLockRefusal', 'reconcileLockAhead', 'reconcileTotals', 'entrySignedCents'].map(slice).join('\n')}
   ${decl('RECONCILE_AHEAD_WHY')}
   ${decl('RECONCILE_AHEAD_LOGGED')}
+  ${decl('RESTORE_REFUSED')}
   // The statement's closing balance that agrees with what is ticked through its date.
   function agree() { state.book.statementCents = reconcileTotals(state.ledger, state.book).cleared; }
   // Pat Treasurer is an editor, not an admin (C5 review, F1: a lock after today is an admin's to put right).
@@ -19201,13 +19202,13 @@ test('C2 treasurer L-5: un-reconciling takes an optional why, logged with it; re
   // Restoring a backup: one 'restore' event, row 'book', saying what the book then holds, after
   // this device's log and the backup's as one (security re-review of C2, #1: lg-old is kept).
   const q = c2tPage();
-  q.run("state.ledgerLog = [{ id: 'lg-old', op: 'tick', row: 'u1' }]; ui.overlay = { data: { ledger: [{ id: 'a' }, { id: 'b' }], book: { reconciledThrough: '2026-07-31' }, ledgerLog: [{ id: 'lg-b', op: 'tick', row: 'a' }] } };" +
+  q.run("admin = true; state.ledgerLog = [{ id: 'lg-old', op: 'tick', row: 'u1' }]; ui.overlay = { data: { ledger: [{ id: 'a' }, { id: 'b' }], book: { reconciledThrough: '2026-07-31' }, ledgerLog: [{ id: 'lg-b', op: 'tick', row: 'a' }] } };" +
     " act3('confirm-import')");
   eq([q.get('state.ledger.length'), q.get('log().map(function (e) { return [e.id, e.op, e.row, e.why || \'\', e.by]; })'), q.get('commits'), q.get('ui.overlay')],
     [2, [['lg-b', 'tick', 'a', '', undefined], ['lg-old', 'tick', 'u1', '', undefined], ['lg-id1', 'restore', 'book', 'A backup was restored on this device. The book now holds the backup’s 2 entries, reconciled through 2026-07-31.', 'Pat Treasurer']], 1, null],
     'the restore event');
   const r = c2tPage();
-  r.run("ui.overlay = { data: { ledger: [{ id: 'a' }], book: { reconciledThrough: '' }, ledgerLog: [] } }; act3('confirm-import')");
+  r.run("admin = true; ui.overlay = { data: { ledger: [{ id: 'a' }], book: { reconciledThrough: '' }, ledgerLog: [] } }; act3('confirm-import')");
   eq(r.get('log()[0].why'), 'A backup was restored on this device. The book now holds the backup’s 1 entry, none of it reconciled.', 'a book never reconciled');
 });
 
@@ -19313,6 +19314,9 @@ test('C2 treasurer M-4: the log’s screens are leaders-only, and close-out says
    ================================================================ */
 // The page's own confirm-import block, on a device of a pair, logging through the page's logLedger.
 const C2S_EXTRA = `${C2_LOG_EXTRA}
+  ${slice('statementLockForward')}
+  ${decl('RESTORE_REFUSED')}
+  function canReopenStatement() { return true; }   // an admin restores (security re-check of C5, R1)
   function confirmImport(data) { ui.overlay = { kind: 'import', data: data }; var act = 'confirm-import';
     (function () {\n${c2Block(/    if \(act === 'confirm-import'\) \{[\s\S]*?\n    \}/, 'confirm-import')}\n})(); }`;
 // A backup from before A's edit: the seed, its log one tick from Sep 1.
@@ -22403,7 +22407,8 @@ test('reload gate: a backup saved by a newer page is refused before this page re
   vm.runInContext(`var ui = { overlay: null }, toasts = [], renders = 0, fileText = '';
     function showToast(m) { toasts.push(m); } function render() { renders += 1; }
     function FileReader() {} FileReader.prototype.readAsText = function () { this.result = fileText; this.onload(); };
-    ${['handleImportFile', 'FORMAT_FILE'].map(decl).join('\n')}
+    var admin = true; function canReopenStatement() { return admin; }
+    ${['handleImportFile', 'FORMAT_FILE', 'RESTORE_REFUSED'].map(decl).join('\n')}
     function pick(text) { fileText = text; ui.overlay = null; toasts = []; handleImportFile({ files: [{}], value: 'x' });
       return [ui.overlay && ui.overlay.kind, toasts, ui.overlay && ui.overlay.data.fmt]; }`, ctx);
   const pick = (obj) => JSON.parse(JSON.stringify(vm.runInContext(`pick(${JSON.stringify(typeof obj === 'string' ? obj : JSON.stringify(obj))})`, ctx)));
@@ -22415,6 +22420,9 @@ test('reload gate: a backup saved by a newer page is refused before this page re
   eq(pick({ version: 1, fmt: 1, scouts: [] }), ['import', [], 1], 'control: a backup in this page’s format');
   eq(pick({ version: 1, scouts: [] }), ['import', [], 1], 'control: a backup from before the gate');
   eq(pick('not json')[1], ['That file isn’t a pack-record backup.'], 'control: not a backup');
+  // Security re-check of C5 (R1) — anyone but an admin is refused before the file is read.
+  vm.runInContext('admin = false', ctx);
+  eq(pick({ version: 1, fmt: 1, scouts: [] }), [null, ['Only a pack admin can restore a backup: it can reopen statements.'], null], 'an editor chose a backup');
 });
 
 test('reload gate: a move file or backup saved by a newer page is not copied to the new server', () => {
@@ -23330,18 +23338,44 @@ test('C5 review (F6): restoring a backup of the same year keeps the statements s
   const here = [C5_LEGACY(), Object.assign(C5_SEP(), { reviewedAt: '2026-10-03T00:00:00.000Z', reviewedBy: 'Sam', reviewedByUid: 'u2' })];
   const back = (o) => JSON.stringify(Object.assign({ ledger: [{ id: 'a' }], ledgerLog: [], book: { year: 2026, reconciledThrough: '2026-08-31' },
     statements: [C5_LEGACY()] }, o || {}));
+  // An admin restores (security re-check of C5, R1: an editor is refused, below).
   const run = (data) => {
     const p = c2tPage({ book: { year: 2026, reconciledThrough: '2026-09-30' }, more: `state.statements = ${JSON.stringify(here)};` });
-    p.run(`ui.overlay = { data: ${data} }; act3('confirm-import')`);
+    p.run(`admin = true; ui.overlay = { data: ${data} }; act3('confirm-import')`);
     return p;
   };
+  // R1 — and the lock moves forward to the statement signed since, which still stands: locked through
+  // Sep 30 again, with who and when from it, and the restore's log says so.
   const p = run(back());
-  eq([p.get('state.statements').map((s) => [s.id, !!s.reviewedBy]), p.get('state.book.reconciledThrough')],
-    [[['st-2026-08-31', false], ['st-2026-09-30-a', true]], '2026-08-31'], 'the statement signed since was lost');
-  // The backup's own set-once part comes across too, and a lock through a reopened statement steps back.
+  eq([p.get('state.statements').map((s) => [s.id, !!s.reviewedBy]), p.get("[state.book.reconciledThrough, state.book.reconciledBy || '', state.book.reconciledAt || '']")],
+    [[['st-2026-08-31', false], ['st-2026-09-30-a', true]], ['2026-09-30', C5_SEP().by, C5_SEP().at]], 'the statement signed since was lost, or not locked through');
+  eq(p.get('log()[0].why'), 'A backup was restored on this device. The book now holds the backup’s 1 entry, reconciled through 2026-09-30. ' +
+    'Restored as it was, the book would be reconciled only through 2026-08-31, but the statement through 2026-09-30 still stands, so the book is locked through that date.',
+    'the restore’s why');
+  // The backup's own set-once part comes across too (an admin's backup: R1), and a lock through a
+  // reopened statement steps back, then forward to the one still standing.
   const q = run(back({ statements: [Object.assign(C5_LEGACY(), { reopenedAt: '2026-09-05T00:00:00.000Z', reopenedBy: 'Alex', reopenedByUid: 'u3', reopenWhy: 'x' })] }));
   eq([q.get('state.statements').map((s) => [s.id, !!s.reopenedBy]), q.get('state.book.reconciledThrough')],
-    [[['st-2026-08-31', true], ['st-2026-09-30-a', false]], ''], 'the lock through a reopened statement');
+    [[['st-2026-08-31', true], ['st-2026-09-30-a', false]], '2026-09-30'], 'the lock through a reopened statement');
+  ok(/reconciled through no date, but the statement through 2026-09-30 still stands/.test(q.get('log()[0].why')), 'a lock stepped back to none');
+  // An editor who is not an admin is refused, and nothing changes: not the book, not the log.
+  const e = c2tPage({ book: { year: 2026, reconciledThrough: '2026-09-30' }, more: `state.statements = ${JSON.stringify(here)};` });
+  e.run(`ui.overlay = { kind: 'import', data: ${back({ statements: [Object.assign(C5_LEGACY(), { reopenedAt: 'T', reopenedBy: 'Alex', reopenedByUid: 'u3', reopenWhy: 'x' })] })} };` +
+    " act3('confirm-import')");
+  eq([e.get('toasts'), e.get('ui.overlay'), e.get('state.ledger.length'), e.get('state.statements.map(function (s) { return !!s.reopenedBy; })'),
+    e.get('state.book.reconciledThrough'), e.get('log().length'), e.get('commits')],
+    [['Only a pack admin can restore a backup: it can reopen statements.'], null, 6, [false, false], '2026-09-30', 0, 0], 'an editor’s restore');
+  // The button shows only for them, and the file chooser asks too (the reload gate test above).
+  ok(/\(canReopenStatement\(\) \? '<button type="button" class="btn" data-act="import-json">Import backup<\/button>' : ''\)/.test(SCRIPT), 'the Import backup button');
+  ok(/if \(act === 'import-json'\) \{\s*if \(!canReopenStatement\(\)\) \{ showToast\(RESTORE_REFUSED\); return; \}/.test(SCRIPT), 'the button’s act');
+  ok(SCRIPT.split('data-act="import-json"').length === 2, 'another Import backup button');
+  // A standing statement with a bad date, or reopened, doesn't move a lock; nor one on or before it.
+  const f = sandbox(['statementLockForward', 'statementReopened', 'ledgerStampClean']);
+  const fwd = (rt, sts) => { const bk = { reconciledThrough: rt, statementDate: '2026-09-15', statementCents: 5 }; const to = f.statementLockForward(bk, JSON.parse(JSON.stringify(sts)));
+    return [bk.reconciledThrough, to && to.id, bk.statementDate]; };
+  const S = (id, date, o) => Object.assign({ id, date, by: 'Pat', at: '2026-10-01T00:00:00.000Z' }, o || {});
+  eq(fwd('2026-08-31', [S('bad', '', { badDate: true }), S('ro', '2026-10-31', { reopenedAt: 'T' }), S('aug', '2026-08-31')]), ['2026-08-31', null, '2026-09-15'], 'nothing to move to');
+  eq(fwd('2026-08-31', [S('a', '2026-09-30'), S('b', '2026-09-30', { at: '2026-10-02T00:00:00.000Z' }), S('c', '2026-09-10')]), ['2026-09-30', 'b', ''], 'the newest, the latest signed');
   // A backup of another year's book: its statements alone, as the sync merge would have it.
   const r = run(back({ book: { year: 2025, reconciledThrough: '2026-06-30' }, statements: [] }));
   eq([r.get('state.statements'), r.get('state.book.reconciledThrough')], [[], '2026-06-30'], 'another year');

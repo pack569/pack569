@@ -9394,6 +9394,26 @@
     });
     return back;
   }
+  // Security re-check of C5 (R1) — the other way, for a restored backup: a book locked through an
+  // earlier date than a statement still standing (not reopened, its date readable) is locked through
+  // the newest such statement instead (the latest signed, on a tie), with who and when from it. A
+  // backup taken before Sep 30 was reconciled would otherwise leave Sep 30 standing but not in force,
+  // and its entries open to change. A statement being worked on that the lock now covers is done
+  // with, as the sync merge leaves it. In place on `book`; returns the statement it moved to, or
+  // null. Pure.
+  function statementLockForward(book, statements) {
+    var rt = String((book && book.reconciledThrough) || ''), to = null;
+    (statements || []).forEach(function (st) {
+      if (!st || statementReopened(st) || st.badDate || !/^\d{4}-\d{2}-\d{2}$/.test(st.date) || st.date <= rt) return;
+      if (!to || st.date + String(st.at || '') + st.id > to.date + String(to.at || '') + to.id) to = st;
+    });
+    if (!to) return null;
+    book.reconciledThrough = to.date;
+    book.reconciledBy = ledgerStampClean(to.by);
+    book.reconciledAt = typeof to.at === 'string' ? to.at : '';
+    if (book.statementDate && book.statementDate <= to.date) { book.statementDate = ''; book.statementCents = 0; }
+    return to;
+  }
   // The statement Mark reconciled writes, from the book as it stands (its statementDate and
   // statementCents, the figures reconcileTotals checked) and the rows: `stamp` { by, byUid, at },
   // `id` its id. The entries cleared on it are the ones ticked through its date that are not
@@ -12147,6 +12167,11 @@
   // Phase 3, C5 — who can reopen a reconciled statement: an admin; or, in a pack with no accounts,
   // whoever edits (it has no admin to be, as canPreviewParent says, and everyone there edits it all).
   function canReopenStatement() { return canEdit() && (isAdmin() || !accountsInForce()); }
+  // Owner's decision (2026-09-30, security re-check of C5, R1) — restoring a backup is the same
+  // person's: a backup carries the statements whole, a reopen with them, so an editor restoring
+  // an edited one could reopen a statement, and say anyone did it. The Import backup button shows
+  // only for them; the file chooser and Replace my data refuse anyone else, in these words.
+  var RESTORE_REFUSED = 'Only a pack admin can restore a backup: it can reopen statements.';
   function adminCount() {
     var n = 0;
     for (var i = 0; i < sync.members.length; i++) { if (sync.members[i].role === 'admin') n += 1; }
@@ -22942,7 +22967,8 @@
       '<button type="button" class="btn primary" data-act="open-summary">Share summary</button>' +
       '<button type="button" class="btn" data-act="export-json">Backup (JSON)</button>' +
       '<button type="button" class="btn" data-act="export-csv">Export CSV</button>' +
-      (canEdit() ? '<button type="button" class="btn" data-act="import-json">Import backup</button>' : '') +
+      // Security re-check of C5 (R1) — an admin's only (RESTORE_REFUSED).
+      (canReopenStatement() ? '<button type="button" class="btn" data-act="import-json">Import backup</button>' : '') +
       '<input type="file" id="importFile" accept=".json,application/json" hidden>' +
       '</div><p class="small muted" style="margin:8px 0 0">Data lives on this device. Back up to JSON now and then, and use Import to move to another device.</p></div>';
 
@@ -26584,6 +26610,7 @@
     var file = input.files && input.files[0];
     input.value = '';
     if (!file) return;
+    if (!canReopenStatement()) { showToast(RESTORE_REFUSED); return; }   // R1: an admin's only
     var reader = new FileReader();
     reader.onload = function () {
       var data = null;
@@ -30877,7 +30904,10 @@
       if (ui.overlay && (ui.overlay.kind === 'export' || ui.overlay.kind === 'move-export')) download(ui.overlay.name, ui.overlay.mime, ui.overlay.text);
       return;
     }
-    if (act === 'import-json') { document.getElementById('importFile').click(); return; }
+    if (act === 'import-json') {
+      if (!canReopenStatement()) { showToast(RESTORE_REFUSED); return; }   // R1: an admin's only
+      document.getElementById('importFile').click(); return;
+    }
     if (act === 'move-download') { downloadMoveFile(); return; }
     if (act === 'move-import') { var mvIn = document.getElementById('moveFile'); if (mvIn) mvIn.click(); return; }
     if (act === 'confirm-move-import') {
@@ -30894,6 +30924,9 @@
     }
     if (act === 'import-ics') { document.getElementById('icsFile').click(); return; }
     if (act === 'confirm-import') {
+      // Security re-check of C5 (R1) — an admin's only, asked again here: the role can change while
+      // the question is open.
+      if (!canReopenStatement()) { ui.overlay = null; render(); showToast(RESTORE_REFUSED); return; }
       var ciLog = state.ledgerLog;
       var ciSt = state.statements, ciYear = state.book ? state.book.year : undefined;
       state = restoreGone(ui.overlay.data, state.gone, Date.now());
@@ -30910,11 +30943,17 @@
         state.statements = mergeStatements(ciSt, state.statements, state.ledger);
         statementLockBack(state.book, state.statements);
       }
+      // Security re-check of C5 (R1) — and a lock behind a statement still standing moves forward to
+      // it (statementLockForward): a backup taken before Sep 30 was reconciled leaves Sep 30 standing,
+      // and its entries are locked again, as they were before the restore.
+      var ciWas = state.book.reconciledThrough, ciFwd = statementLockForward(state.book, state.statements);
       // Treasurer review of C2 (L-5) — the ledger's log says a backup was restored, and what the
       // book held afterwards: from here on the book is the backup's, whatever it held before.
       logLedger('restore', 'book', { why: 'A backup was restored on this device. The book now holds the backup’s ' +
         state.ledger.length + ' entr' + (state.ledger.length === 1 ? 'y' : 'ies') +
-        (state.book.reconciledThrough ? ', reconciled through ' + state.book.reconciledThrough : ', none of it reconciled') + '.' });
+        (state.book.reconciledThrough ? ', reconciled through ' + state.book.reconciledThrough : ', none of it reconciled') + '.' +
+        (ciFwd ? ' Restored as it was, the book would be ' + (ciWas ? 'reconciled only through ' + ciWas : 'reconciled through no date') +
+          ', but the statement through ' + ciFwd.date + ' still stands, so the book is locked through that date.' : '') });
       ui.overlay = null; ui.storefrontId = null; ui.expandedScouts = {};
       commit(); return;
     }
