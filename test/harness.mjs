@@ -18199,7 +18199,7 @@ const LOOK_WORD_FNS = ['fmtDateShort', 'ledgerEntryNamed', 'ledgerCap', 'ledgerT
   'ledgerReversalOf'];
 const C2_FNS = ['fmt', 'fmtDate', 'fmtDateShort', 'toCents', 'toCentsSigned', 'entryAfterOpening', 'entryOnStatement', 'ledgerLocked',
   'ledgerDateReconciled', 'ledgerLockedWhy', 'LEDGER_MAX_CENTS', 'LEDGER_EDIT_FIELDS', 'LEDGER_LOCKED_FIELDS', 'ledgerRowDiff',
-  'ledgerRowFields', 'LEDGER_TAKE_OUT_ANY', 'LEDGER_PAIR_FIXED', 'ledgerPairFixedWhy', 'ledgerPairRole', 'ledgerTakeOut', 'ledgerEntryNamed', 'ledgerCap', 'ledgerPairOf', 'ledgerEditRefusal', 'ledgerBackdateWarning', 'applyLedgerEdit', 'ledgerWho', 'logLedger', 'logOpening',
+  'ledgerRowFields', 'LEDGER_TAKE_OUT_ANY', 'LEDGER_PAIR_FIXED', 'ledgerPairFixedWhy', 'ledgerPairRole', 'ledgerTakeOut', 'ledgerEntryNamed', 'ledgerCap', 'ledgerPairOf', 'ledgerReversalOf', 'ledgerEditRefusal', 'ledgerBackdateWarning', 'applyLedgerEdit', 'ledgerWho', 'logLedger', 'logOpening',
   'openingLockedWhy', 'LEDGER_OPS', 'ledgerEvent', 'ledgerLogClip', 'ledgerStampClean', 'stampApproved', 'stampEntered', 'ledgerActorName',
   'ledgerDraftDefault', 'ledgerDraft', 'arm', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays', 'ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept', 'keepLostVoids', 'ledgerPairCheck'];
 // The book is reconciled through Aug 31 from a Jul 1 opening. u1 is open; r1 is ticked (after the
@@ -21429,6 +21429,27 @@ test('Treasurer sign-off (11): an open reversal’s date can’t be moved into t
     " ledgerEditRefusal(rv, 'date', '2026-08-01', state.book, [{ id: 'z', date: '2026-09-01' }])]; })({ id: 'rv-z', reverses: 'z', date: '2026-10-01' })]"),
   ['That entry is reconciled against a bank statement, so its amount, date and direction can’t be changed. Un-reconcile it first (Money · Ledger, two taps), then change it.',
     ['That date is before the entry’s own date (Sep 1). Pick a date on or after Sep 1.', '']], 'a locked entry; a pair given as rows, and not a pair');
+});
+
+// Security pass on the option B sign-off (1a) — the entry a counted reversal cancels could be moved past
+// that reversal's date (only the reversal's own date was checked), and so could a chain's middle row.
+test('Security pass (1a): an entry can’t be dated after the reversal that cancels it, in a chain too', () => {
+  const p = c4Page();
+  const AFTER = (d) => `Its reversal is dated ${d}; an entry can’t be dated after the reversal that cancels it. Pick a date on or before ${d}.`;
+  // u1: Sep 10, open. Reversed today (Oct 15).
+  p.run("reverse2('u1', 'Entered twice')");
+  const was = p.get("row('u1')"), logWas = p.get('log().length');
+  p.run("toasts = []; commits = 0; change('led-date', 'u1', '2026-10-16')");
+  eq([p.get("row('u1')"), p.get('log().length'), p.get('commits'), p.get('toasts')], [was, logWas, 0, [AFTER('Oct 15')]], 'u1 past its reversal');
+  // On its reversal's date, or before, it moves as ever.
+  p.run("toasts = []; change('led-date', 'u1', '2026-10-15')");
+  eq([p.get("row('u1').date"), p.get('toasts')], ['2026-10-15', []], 'on its reversal’s date');
+  p.run("change('led-date', 'u1', '2026-09-10')");
+  // A chain: rv-u1 reversed in turn (Oct 15). rv-u1 can't pass rv-rv-u1; u1, counting again, is no pair.
+  p.run("reverse2('rv-u1', 'Reversed the wrong one'); toasts = []; change('led-date', 'rv-u1', '2026-10-20')");
+  eq([p.get("row('rv-u1').date"), p.get('toasts')], ['2026-10-15', [AFTER('Oct 15')]], 'a chain’s middle row');
+  eq(p.get("[ledgerEditRefusal(row('u1'), 'date', '2026-10-20', state.book, state.ledger), ledgerEditRefusal(row('rv-rv-u1'), 'date', '2026-10-20', state.book, state.ledger)]"),
+    ['', ''], 'the entry counting again; the chain’s newest end');
 });
 
 // Treasurer sign-off on option B (extra) — the Un-void button is not offered where the tap would only be

@@ -9014,6 +9014,14 @@
         var rvNo = ledgerReverseDateRefusal(rvOf, book, value);
         if (rvNo) return rvNo;
       }
+      // Security pass on option B sign-off (1a) — nor the entry a counted reversal cancels, moved past
+      // that reversal's date (a chain's too: rv-X moved past the rv-rv-X that cancels it), or the
+      // reversal would cancel it before it happened.
+      var rvBy = Array.isArray(rows) ? ledgerReversalOf(rows, e) : null;
+      if (rvBy && rvBy.date && value > rvBy.date) {
+        return 'Its reversal is dated ' + fmtDateShort(rvBy.date) + '; an entry can’t be dated after the reversal that cancels it. ' +
+          'Pick a date on or before ' + fmtDateShort(rvBy.date) + '.';
+      }
     }
     return '';
   }
