@@ -25919,6 +25919,53 @@ test('C7, Firestore: a device that lacks a scout a payment names takes them from
   eq(q.server().scouts.map((x) => x.id), ['s1'], 'no payment names Bo');
 });
 
+// Owner decision 25: Archive asks first where the family still owes and no sibling stays active.
+test('C7: archiving a scout whose family still owes is a two-tap confirm that says what goes, and archives as before on the second tap', () => {
+  const block = c2Block(/    if \(act === 'archive-scout'\) \{[\s\S]*?\n    \}/, 'archive-scout');
+  const ctx = vm.createContext({});
+  vm.runInContext(`${[...new Set([...NORMALIZE_FNS, ...declClosure(['renderScoutRow', 'scoutArchiveWarning', 'arm'], ['state', 'ui', 'sync', 'render', 'save', 'showToast', 'uid', 'todayISO', 'commit', 'scheduleSyncPush', 'setTimeout', 'clearTimeout'])])].map(decl).join('\n')}
+    ${decl('ARM_WARNED_MS')}
+    var ui = { expandedScouts: { s1: true, s2: true, s3: true }, armed: null }, sync = {}, commits = 0, renders = 0;
+    function todayISO() { return '2026-10-01'; } function uid() { return 'u'; }
+    function setTimeout() { return 1; } function clearTimeout() {} function render() { renders += 1; } function commit() { commits += 1; return true; }
+    var state;
+    function load(scouts, charges, ledger) {
+      state = normalizeState(Object.assign(${JSON.stringify(preMigrationState())}, { scouts: scouts, charges: charges || [], ledger: ledger || [] }));
+      ui.armed = null; commits = 0; renders = 0;
+    }
+    function row(id) { return renderScoutRow(getScout(id), { blocks: 0, sales: 0 }, {}); }
+    function tap(id) { (function (act, el) {\n${block}\n})('archive-scout', { dataset: { id: id } }); }`, ctx);
+  const run = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, ctx)));
+  const text = (h) => h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  const owe = "[{ id: 'c1', scoutId: 's1', lineId: '', amountCents: 2500, date: '2026-09-01', waivedBy: '', forgiven: null }]";
+  const words = 'Ada’s family still owes $25.00. Archiving removes charges nobody has paid yet. Forgive or collect them first, or archive anyway.';
+  // Owing, no sibling: the first tap only arms, and the words show; the second archives.
+  vm.runInContext(`load([{ id: 's1', name: 'Ada Lovelace', den: 'Wolf' }], ${owe})`, ctx);
+  let h = vm.runInContext("row('s1')", ctx);
+  ok(/class="btn small danger" data-act="archive-scout"/.test(h) && !text(h).includes('Archiving removes'), 'the resting button');
+  vm.runInContext("tap('s1')", ctx);
+  eq(run('[state.scouts[0].archived === true, commits, ui.armed]'), [false, 0, 'archive-scout:s1'], 'the first tap');
+  h = vm.runInContext("row('s1')", ctx);
+  ok(text(h).includes(words) && text(h).includes('Tap again to archive anyway') && /danger armed/.test(h), 'the warning and the armed button: ' + text(h));
+  vm.runInContext("tap('s1')", ctx);
+  eq(run('[state.scouts[0].archived === true, commits, ui.armed]'), [true, 1, null], 'the second tap archives');
+  // A sibling (same family) stays active: one tap, no warning. Archiving the last of the two asks.
+  vm.runInContext(`load([{ id: 's1', name: 'Ada', den: 'Wolf', familyId: 's1' }, { id: 's2', name: 'Bo', den: 'Bear', familyId: 's1' }], ${owe})`, ctx);
+  ok(/class="btn small" data-act="archive-scout"/.test(vm.runInContext("row('s1')", ctx)), 'a sibling stays: the button is plain');
+  vm.runInContext("tap('s1')", ctx);
+  eq(run('[state.scouts.map(function (s) { return !!s.archived; }), commits]'), [[true, false], 1], 'one tap with a sibling active');
+  vm.runInContext("tap('s2')", ctx);
+  eq(run('[state.scouts.map(function (s) { return !!s.archived; }), ui.armed]'), [[true, false], 'archive-scout:s2'], 'now the last of the family: asked');
+  // Nothing owed (paid, or forgiven): one tap.
+  vm.runInContext(`load([{ id: 's1', name: 'Ada', den: 'Wolf' }], ${owe}, [{ id: 'l1', date: '2026-09-02', description: 'Dues', amountCents: 2500, direction: 'in', scoutId: 's1', source: 'family' }])`, ctx);
+  vm.runInContext("tap('s1')", ctx);
+  eq(run('[state.scouts[0].archived === true, commits]'), [true, 1], 'paid');
+  // The name is escaped where it is drawn.
+  vm.runInContext(`load([{ id: 's1', name: '<img src=x onerror=1> Ada', den: 'Wolf' }], ${owe}); ui.armed = 'archive-scout:s1';`, ctx);
+  h = vm.runInContext("row('s1')", ctx);
+  ok(!h.includes('<img src=x') && h.includes('&lt;img'), 'the name was not escaped');
+});
+
 atest('C7, api: an older page’s delete of a scout with payments keeps the scout, archived, and the payments’ family, on both devices', async () => {
   const over = { ledger: C3_ROWS, ledgerAside: [], book: C3_SEED.book, ledgerLog: [] };
   let { a, b, server } = await apiGonePair(over);

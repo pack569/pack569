@@ -19191,16 +19191,20 @@
 
     // Phase 3, C7 (owner, 2026-09-30) — a scout the ledger names is archived, never deleted
     // (scoutHasLedger): no Delete, and a line saying why in its place.
-    var keepsLedger = scoutHasLedger(s.id);
+    var keepsLedger = scoutHasLedger(s.id), archWarn = '', archArmed = false;
     h += '<div class="row" style="margin-top:12px">';
     if (s.archived) {
       h += '<button type="button" class="btn small" data-act="restore-scout" data-id="' + s.id + '">Restore to roster</button>';
       if (t.blocks === 0 && !entries.length && !keepsLedger) h += dangerBtn('del-scout:' + s.id, 'Delete permanently');
     } else {
-      h += '<button type="button" class="btn small" data-act="archive-scout" data-id="' + s.id + '">Archive (keeps history)</button>';
+      // Owner decision 25 — where the family still owes, Archive is a two-tap confirm, the warning showing once armed.
+      archWarn = scoutArchiveWarning(s); archArmed = !!archWarn && ui.armed === 'archive-scout:' + s.id;
+      h += '<button type="button" class="btn small' + (archWarn ? ' danger' : '') + (archArmed ? ' armed' : '') + '" data-act="archive-scout" data-id="' + s.id + '">' +
+        (archArmed ? 'Tap again to archive anyway' : 'Archive (keeps history)') + '</button>';
       if (t.blocks === 0 && !entries.length && !keepsLedger) h += dangerBtn('del-scout:' + s.id, 'Delete');
     }
     h += '</div>';
+    if (archArmed) h += '<p class="small" role="alert" style="margin:6px 0 0">' + esc(archWarn) + '</p>';
     if (keepsLedger) h += '<p class="small muted" style="margin:6px 0 0">' + esc(s.archived ? SCOUT_LEDGER_KEEPS_ARCHIVED : SCOUT_LEDGER_KEEPS) + '</p>';
     h += '</div>';
     return h;
@@ -30828,6 +30832,19 @@
   // counted or set aside (voided, reversed, a reversal), that names them? Such a scout can be
   // archived, never deleted: a payment is money that moved, and its family link stays.
   var SCOUT_LEDGER_KEEPS = 'This scout is named on ledger entries, including voided ones, so they can be archived but not deleted. Archiving keeps their payments with their family.';
+  // Owner decision 25 (C7 treasurer review) — archiving drops the open charges nobody has paid (syncCharges:
+  // an archived scout raises none), which is not a forgiveness, and leaves no trace. So where the family
+  // still owes, and no sibling stays active to carry the family on, Archive asks first, in these words.
+  // '' when nothing is owed, or a sibling stays. First name only, as the pack's notes give one. Not escaped:
+  // the caller does. Pure apart from reading the record.
+  function scoutArchiveWarning(sc) {
+    if (!sc || sc.archived || !(scoutOwesCents(sc.id) > 0)) return '';
+    var sibling = familyMembers(sc).some(function (o) { return o.id !== sc.id; });
+    if (sibling) return '';
+    var first = String(sc.name || '').trim().split(/\s+/)[0] || 'This scout';
+    return first + '’s family still owes ' + fmt(scoutOwesCents(sc.id)) + '. Archiving removes charges nobody has paid yet. ' +
+      'Forgive or collect them first, or archive anyway.';
+  }
   var SCOUT_LEDGER_REFUSED = 'This scout is named on ledger entries, so they can’t be deleted. Use Archive instead. Their payments stay with their family.';
   var SCOUT_LEDGER_KEEPS_ARCHIVED = 'This scout is named on ledger entries, including voided ones, so they can’t be deleted. Their payments stay with their family.';
   function scoutHasLedger(id) {
@@ -32225,7 +32242,15 @@
       b.assignments = b.assignments.filter(function (a) { return a.scoutId !== el.dataset.scout; });
       commit(); return;
     }
-    if (act === 'archive-scout') { var s = getScout(el.dataset.id); if (s) { s.archived = true; commit(); } return; }
+    if (act === 'archive-scout') {
+      var arSc = getScout(el.dataset.id);
+      if (!arSc) return;
+      // Owner decision 25 — a family that still owes is asked about first (scoutArchiveWarning): two taps,
+      // the words showing while the button is armed. Checked here, not only where the button is drawn, so
+      // a screen drawn before a charge was raised is asked too.
+      if (scoutArchiveWarning(arSc)) { arm('archive-scout:' + arSc.id, function () { arSc.archived = true; commit(); }, ARM_WARNED_MS); return; }
+      arSc.archived = true; commit(); return;
+    }
     if (act === 'restore-scout') { var s2 = getScout(el.dataset.id); if (s2) { s2.archived = false; commit(); } return; }
     if (act === 'open-summary') { ui.overlay = { kind: 'summary' }; render(); return; }
     if (act === 'open-digest') { ui.overlay = { kind: 'digest' }; render(); return; }
