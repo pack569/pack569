@@ -20765,6 +20765,36 @@ test('C4 (option B): Entries shows both rows with their pills and the reason; th
     'Reversal of “Dues (Ben)”', 'Trophies', 'Check 104', 'Dues (Ben)'], 'the Reconcile list');
 });
 
+// Treasurer review of C4 (8) — "2 of 2 entries voided or reversed" for one reversal counted the
+// reversal as an entry reversed. The heads count voided entries and reversed entries, as she counts them.
+test('C4 review (8): Voided & reversed counts entries voided and entries reversed, never a reversal, and leaves a zero unsaid', () => {
+  const x = sandbox(['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'ledgerAsideListHtml', ...ASIDE_LIST_FNS]);
+  vm.runInContext(`var ui = { ledgerOpen: {}, armed: null };
+    var state = { book: {}, ledger: [], ledgerAside: [] };
+    function ledgerSort(a) { return a.slice().sort(function (p, q) { return p.date < q.date ? -1 : p.date > q.date ? 1 : 0; }); }
+    function ledgerMatches(e, f) { return (!f.text || e.description.indexOf(f.text) !== -1) && (!f.lineId || e.lineId === f.lineId); }
+    function ledgerLockedWhy() { return ''; } function getBudgetLine() { return null; } function ledgerTrailLine() { return ''; } function ledgerHistoryHtml() { return ''; }
+    var V = function (id, d, line) { return { id: id, off: 'void', date: d, description: 'Void ' + id, amountCents: 100, direction: 'out', lineId: line || '', voidReason: 'x' }; };
+    var R = function (id, d, line) { return [{ id: id, date: d, description: 'Entry ' + id, amountCents: 100, direction: 'in', lineId: line || '', reversedBy: 'rv-' + id },
+      { id: 'rv-' + id, reverses: id, date: '2026-10-01', description: 'Reversal of ' + id, amountCents: 100, direction: 'out', lineId: line || '' }]; };`, x);
+  const head = (st, f) => {
+    vm.runInContext(st, x);
+    return /<p class="small muted" style="margin:0 0 6px">([^<]*)<\/p>/.exec(x.ledgerAsideListHtml(Object.assign({ lineId: '', text: '' }, f || {})))[1];
+  };
+  const NONE = ' None of them counts in any total.', UNDER = ' Each reversed entry has its reversal listed under it.';
+  eq(head('state.ledgerAside = []; state.ledger = R("a", "2026-09-01")'), '1 reversed.' + UNDER + NONE, 'one reversal: 1 reversed, not 2');
+  eq(head('state.ledgerAside = [V("v1", "2026-09-02"), V("v2", "2026-09-03")]; state.ledger = []'), '2 voided.' + NONE, 'voids only');
+  eq(head('state.ledgerAside = [V("v1", "2026-09-02")]; state.ledger = R("a", "2026-09-01").concat(R("b", "2026-09-05"))'), '1 voided and 2 reversed.' + UNDER + NONE, 'both');
+  // A pair C4's first build set aside counts the same way.
+  eq(head('state.ledgerAside = [{ id: "c", off: "reversed", reversedBy: "rv-c", date: "2026-08-01", description: "Entry c", amountCents: 1, direction: "in", lineId: "" },' +
+    ' { id: "rv-c", off: "reversal", reverses: "c", date: "2026-09-29", description: "Reversal of c", amountCents: 1, direction: "out", lineId: "" }]; state.ledger = []'),
+  '1 reversed.' + UNDER + NONE, 'a first-build pair');
+  // Filtered by search or budget line: how many of them match, and of which kind.
+  const st = 'state.ledgerAside = [V("v1", "2026-09-02", "L1"), V("v2", "2026-09-03")]; state.ledger = R("a", "2026-09-01", "L1").concat(R("b", "2026-09-05"))';
+  eq([head(st, { text: 'Void' }), head(st, { lineId: 'L1' }), head(st, { text: 'Reversal of b' }), head(st, { text: 'Entry' })],
+    ['2 of 4 match: 2 voided.' + NONE, '2 of 4 match: 1 voided, 1 reversed.' + NONE, '1 of 4 match: 1 reversed.' + NONE, '2 of 4 match: 2 reversed.' + NONE], 'filtered');
+});
+
 test('C4: the lock messages point at Reverse or correct, where it fits; the treasurer’s other wording stays', () => {
   const p = c4Page({ more: C4_MORE + slice('ledgerLockNote') });
   eq(p.get("[ledgerLockedWhy(row('p1'), state.book, '', 'money'), ledgerLockedWhy(row('p1'), state.book, '', 'void'), ledgerLockNote(row('p1'), state.book)]"), [
