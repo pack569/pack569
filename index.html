@@ -13865,7 +13865,8 @@
       LEDGER_ENTERED_FIELDS.indexOf(k) !== -1 ? 'entered' : 'content';
   }
   // The parts of row `id` that event `ev` changed: { tick, off, content }, each true or absent. An op
-  // this page doesn't know (a newer page's) changed all three: a conflict, never a silent pick.
+  // this page doesn't know (a newer page's) changed all three: a conflict, never a silent pick
+  // (mergeLedgerRows counts it as changed on BOTH copies, so whichever holds it, it is asked).
   function ledgerEventParts(ev, id) {
     var all = { tick: true, off: true, content: true }, op = ev.op;
     if (LEDGER_OPS.indexOf(op) === -1) return all;
@@ -13880,12 +13881,20 @@
     }
     if (op === 'tick' || op === 'untick') return { tick: true };
     if (op === 'void' || op === 'unvoid') return { off: true };
+    // Security review of C6 (F1c) — a leader's pick (a 'resolve') changed only the parts of the fields
+    // it chose between (its `f`), not the whole entry: counted as all of them, a pick of the words
+    // beat another device's tick made meanwhile, silently. An `f` with nothing in it (the two versions
+    // differed only in record-keeping details) changed nothing a merge needs to know.
+    if (op === 'resolve') {
+      var rp = {};
+      (ev.f && typeof ev.f === 'object' ? Object.keys(ev.f) : []).forEach(function (k) { rp[ledgerFieldPart(k)] = true; });
+      return rp;
+    }
     // A reverse (or correct) copies the entry's money into its reversal, so it counts as a change to
     // what the entry says too: another device changing it at the same time is asked about, and the
     // pair can't be left mirroring an amount the entry no longer has.
     if (op === 'reverse' || op === 'correct') return { off: true, content: true };
     if (op === 'notcommission' || op === 'unmakeup') return { content: true };
-    if (op === 'resolve') return all;
     if (op === 'edit') {
       var ks = ev.f && typeof ev.f === 'object' ? Object.keys(ev.f) : [], p = {};
       if (!ks.length) return { content: true };
@@ -13966,7 +13975,10 @@
       });
       arrOf(s && s.statements).forEach(function (st) { if (st && typeof st.id === 'string') o.sts[st.id] = true; });
       o.full = log.length > 0 && ledgerLogRoom(log).full;
-      o.first = log.length ? String(log[0].at || '') + '\u0000' + log[0].id : '';
+      // Security review of C6 (F8) — the horizon is the oldest kept event with a time: one with none
+      // ('' sorts first) would put it before everything, and a full log's cut events would count.
+      var dated = log.filter(function (ev) { return typeof ev.at === 'string' && ev.at; })[0];
+      o.first = dated ? dated.at + '\u0000' + dated.id : '';
       return o;
     }
     var M = side(mine), T = side(theirs), deleted = opts.deleted || function () { return false; };
@@ -13978,9 +13990,10 @@
       return [M, T].some(function (c) { var x = c.rows[rv]; return !!x && x.list === 'counted' && x.row.reverses === e.id; });
     }
     // Events about `id` on copy `a` that copy `b` hasn't, past b's cap, and the parts they changed.
+    // (F8: when b's log is full, an event with no time can't be placed after its horizon, so it doesn't count.)
     function fresh(a, b, id) {
       return (a.evs[id] || []).concat(a.restores).filter(function (ev) {
-        return !b.ids[ev.id] && !(b.full && String(ev.at || '') + '\u0000' + ev.id < b.first);
+        return !b.ids[ev.id] && !(b.full && (!ev.at || String(ev.at) + '\u0000' + ev.id < b.first));
       });
     }
     function partsOf(evs, id) {
@@ -14010,6 +14023,11 @@
       var mr = m.row, tr = t.row;
       if (JSON.stringify(mr) === JSON.stringify(tr)) return;
       var newM = fresh(M, T, id), newT = fresh(T, M, id), cm = partsOf(newM, id), ct = partsOf(newT, id);
+      // Security review of C6 (F5) — an op this page doesn't know, on either copy, is a change to every
+      // part on BOTH: whatever differs is asked about, never taken silently from the copy holding it.
+      if (newM.concat(newT).some(function (ev) { return LEDGER_OPS.indexOf(ev.op) === -1; })) {
+        cm = { tick: true, off: true, content: true }; ct = { tick: true, off: true, content: true };
+      }
       function decide(part, same) {
         if (same) return 'same';
         if (cm[part] && !ct[part]) return 'mine';

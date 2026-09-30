@@ -24054,6 +24054,48 @@ test('C6: voids and reverses on both devices at once — the same list is settle
   eq([a2.x.voidReason, a2['rv-x'].date, c6Same(a2, b2)], ['Bounced', '2026-10-03', true], 'picked');
 });
 
+test('C6 review: a leader’s pick counts only for what it chose, an op this page doesn’t know is asked about, and a full log’s horizon is its oldest dated event', () => {
+  const x = sandbox(C6_MERGE_FNS);
+  const base = [C6_BASE()];
+  const ticked = { reconciled: true, approvedBy: 'Pat', approvedAt: '2026-10-02T10:00:00.000Z', reconciledAt: 1790000000000 };
+  // F1c (P5): B picked its own words over another device's (a 'resolve' of the description); A ticked
+  // x meanwhile. The pick is a change to the words only: A's tick and B's words both stand, unasked.
+  const A = c6Rec([C6_ROW(Object.assign({ ref: '7' }, ticked))], base.concat([c6Ev('a1', 'tick', 'x', 2)]));
+  const B = c6Rec([C6_ROW({ ref: '7', description: 'Pizza night' })], base.concat([c6Ev('b1', 'resolve', 'x', 3, { f: { description: ['Pizza party', 'Pizza night'] } })]));
+  let r = c6Both(x, A, B);
+  eq([r.conflicts, r.set.x.description, r.set.x.reconciled], [[], 'Pizza night', true], 'a pick of the words and a tick');
+  // A pick that differed only in record-keeping details changed nothing: A's words, unasked.
+  const A2 = c6Rec([C6_ROW({ ref: '7', description: 'Pizza party' })], base.concat([c6Ev('a1', 'edit', 'x', 2, { f: { description: ['Pizza', 'Pizza party'] } })]));
+  r = c6Both(x, A2, c6Rec([C6_ROW({ ref: '7' })], base.concat([c6Ev('b1', 'resolve', 'x', 3, { f: {} })])));
+  eq([r.conflicts, r.set.x.description], [[], 'Pizza party'], 'a pick of nothing a leader reads');
+  // …and one that chose the tick is a change to the tick: A changed the words, B the tick. Both stand.
+  r = c6Both(x, A2, c6Rec([C6_ROW(Object.assign({ ref: '7' }, ticked))], base.concat([c6Ev('b1', 'resolve', 'x', 3, { f: { reconciled: [false, true] } })])));
+  eq([r.conflicts, r.set.x.description, r.set.x.reconciled], [[], 'Pizza party', true], 'a pick of the tick');
+  // F5 (P6): an op this page doesn't know, on either copy, is asked about, never taken silently.
+  const Z = c6Rec([C6_ROW({ ref: '7', description: 'Pizza (newer page)' })], base.concat([c6Ev('z1', 'zzz', 'x', 3)]));
+  const plain = c6Rec([C6_ROW({ ref: '7' })], base);
+  eq(c6Both(x, plain, Z).conflicts.map((c) => c.rows[0].parts), [['content']], 'a newer page’s op on the other copy');
+  eq(c6Both(x, Z, plain).conflicts.map((c) => c.rows[0].parts), [['content']], 'a newer page’s op on this copy');
+  // …and only for what differs: the same row on both, nothing to ask.
+  eq(c6Both(x, c6Rec(Z.ledger, base), Z).conflicts, [], 'an unknown op, the rows alike');
+  // F8: A's log is full and its oldest kept event has no time. The horizon is its oldest DATED event
+  // (day 5): B's old event (day 2) may be one A cut, so it is not B's change; nor is one with no time.
+  const fill = Array.from({ length: 999 }, (_, i) => c6Ev('f' + String(i).padStart(4, '0'), 'tick', 'other' + i, 5));
+  fill[0].at = '';
+  const A3 = c6Rec([C6_ROW({ ref: '7', description: 'Pizza night' })], fill.concat([c6Ev('a1', 'edit', 'x', 6, { f: { description: ['Pizza', 'Pizza night'] } })]));
+  const B3 = c6Rec([C6_ROW({ ref: '7', description: 'Old' })], base.concat([c6Ev('old', 'edit', 'x', 2, { f: { description: ['Pizza', 'Old'] } })]));
+  r = c6Both(x, A3, B3);
+  eq([r.conflicts, r.set.x.description], [[], 'Pizza night'], 'an old event past a horizon with an undated event first');
+  const B4 = c6Rec(B3.ledger, base.concat([Object.assign(c6Ev('old', 'edit', 'x', 2, { f: { description: ['Pizza', 'Old'] } }), { at: '' })]));
+  r = c6Both(x, A3, B4);
+  eq([r.conflicts, r.set.x.description], [[], 'Pizza night'], 'an undated event against a full log');
+  // …even one whose every kept event is undated (it has no horizon to place anything after).
+  const A5 = c6Rec(A3.ledger, A3.ledgerLog.map((ev) => Object.assign({}, ev, { at: '' })));
+  eq(c6Both(x, A5, c6Rec(B4.ledger, B4.ledgerLog.slice(1))).conflicts, [], 'an undated event against a full, undated log');
+  // Control: A's log not full, the same old event is B's change, and asked about.
+  eq(c6Both(x, c6Rec(A3.ledger, A3.ledgerLog.slice(900)), B4).conflicts.length, 1, 'control: a log not full');
+});
+
 // Phase 3, C6 — a world for two-device histories: the page's own normalizeState, sync merge and ledger
 // operations on one sandbox. Each device is a record; `dev(rec, who, ops)` runs a device's operations
 // on its record as the page's handlers do them (refused ones skipped, as the page refuses them), then
