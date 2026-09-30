@@ -23394,6 +23394,9 @@ test('C5 review (treasurer 4, 5; F4): the printout says where a list differs fro
   // A list cut at 2,000 (F4).
   ok(sheet(Object.assign({}, st, { truncated: true })).includes('$541.00 This statement lists only the first 2,000 entries; the totals include all of them. Cleared on this statement'), 'truncated');
   ok(!/2,000/.test(t), 'a statement not cut says it was');
+  // At phone width the summary's labels wrap, so its amounts stay on screen (checked at 390 px: the table was 423 px in a 309 px frame).
+  ok(/return '<tr><td style="white-space:normal">' \+ \(strong/.test(slice('renderBankStatementSheet')), 'the summary’s labels can’t wrap');
+  ok(/'<\/td><td style="white-space:normal">' \+ esc\(l\.what \+/.test(slice('renderBankStatementSheet')), 'an entry’s words can’t wrap');
   // The account line is a blank to fill in: nothing is typed or stored.
   ok(!/<input|data-ch/.test(slice('renderBankStatementSheet')), 'the printout stores something');
 });

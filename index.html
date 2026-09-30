@@ -21012,9 +21012,11 @@
     var d = statementSheetData(st, state.ledger.concat(state.ledgerAside || []));
     var BLANK = '______________________';
     function money(cents, plus) { return cents === null ? '—' : (cents < 0 ? '−' : (plus && cents > 0 ? '+' : '')) + fmt(Math.abs(cents)); }
+    // The summary's labels are sentences: they wrap (the global `td { white-space: nowrap }` pushed
+    // the amounts off a phone's screen, as .fund-tbl's comment tells), and the amounts don't.
     function tr(label, cents, strong) {
       var l = esc(label), v = money(cents);
-      return '<tr><td>' + (strong ? '<strong>' + l + '</strong>' : l) + '</td><td class="num">' + (strong ? '<strong>' + v + '</strong>' : v) + '</td></tr>';
+      return '<tr><td style="white-space:normal">' + (strong ? '<strong>' + l + '</strong>' : l) + '</td><td class="num">' + (strong ? '<strong>' + v + '</strong>' : v) + '</td></tr>';
     }
     // One list, with its total as it reads now, and, when that isn't what was signed (`saved`,
     // signed cents), what the difference is.
@@ -21022,7 +21024,7 @@
       var h = '<p class="eyebrow" style="margin-top:16px">' + esc(cap) + '</p><div class="tbl-wrap"><table><caption class="visually-hidden">' + esc(cap) + '</caption>' +
         '<thead><tr><th scope="col">Date</th><th scope="col">Entry</th><th scope="col">Ref</th><th scope="col" class="num">Amount</th></tr></thead><tbody>' +
         (lines.length ? lines.map(function (l) {
-          return '<tr><td>' + esc(l.date ? fmtDateShort(l.date) : '') + '</td><td>' + esc(l.what + (l.old ? ' (over 90 days: follow up)' : '')) + '</td><td>' + esc(l.ref) + '</td>' +
+          return '<tr><td>' + esc(l.date ? fmtDateShort(l.date) : '') + '</td><td style="white-space:normal">' + esc(l.what + (l.old ? ' (over 90 days: follow up)' : '')) + '</td><td>' + esc(l.ref) + '</td>' +
             '<td class="num">' + (l.cents === null ? 'amount not known' : money(l.cents, true)) + '</td></tr>';
         }).join('') : '<tr><td colspan="4" class="muted">None</td></tr>') +
         '</tbody><tfoot><tr><td colspan="3"><strong>Total</strong></td><td class="num"><strong>' + money(now, true) + '</strong></td></tr></tfoot></table></div>';
