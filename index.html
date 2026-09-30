@@ -13611,6 +13611,22 @@
   // Security review of C2 (minor) — each row said once a session: a merge can report a row an
   // earlier one (or adoptRemote) already did, and the note grew by the same paragraph each time.
   // sync.fatesSeen ('kept:<id>', 'lost:<id>') is cleared with the note by syncStop.
+  // Treasurer sign-off on option B (extra) — "The ledger needs a look" is worked out on every
+  // render, but a leader not on Money · Ledger never sees it come on when another device's save does
+  // it. So a sync that takes it from nothing to say to something says so, once: how many notes the
+  // book has, for a leader (0 for anyone else: the ledger is theirs; with no accounts, everyone).
+  function ledgerLookCount() {
+    if (accountsInForce() && LEADER_ROLES.indexOf(sync.myRole) === -1) return 0;
+    return ledgerLookNotes(state.ledger || [], state.book).length;
+  }
+  var LEDGER_LOOK_SYNC = 'After a sync, the ledger needs a look: see Money · Ledger.';
+  // `was` is ledgerLookCount() before the sync's merge or copy. Once: while the notes stay, the next
+  // sync starts from more than none. Called before noteReconciledFates, whose toast (it points at
+  // Money · Ledger too) comes after it.
+  function noteLedgerLookAfterSync(was) {
+    if (was || !ledgerLookCount()) return;
+    showToast(LEDGER_LOOK_SYNC, { duration: 10000 });
+  }
   function noteReconciledFates(f) {
     var seen = sync.fatesSeen || (sync.fatesSeen = {});
     function fresh(kind) {
@@ -13705,6 +13721,7 @@
       // they chose to write over (sync.seasonKeptRev) is written over whole, and only that one.
       if (clobbered && remoteRev === sync.seasonKeptRev) clobbered = false;
       if (clobbered && seasonMoved(remote)) return { record: null, result: { season: remote } };
+      var lookWas = clobbered ? ledgerLookCount() : 0;   // treasurer sign-off on option B (extra)
       var mergedN = clobbered ? mergeRemoteAppendOnly(remote, keptRows, lostRows, splitRows) : 0;
       var nextRev = be.serverRevs ? remoteRev + 1 : Math.max(state.rev || 0, remoteRev) + 1;
       state.fmt = PACK_FORMAT;   // the reload gate: the format this page writes
@@ -13714,7 +13731,7 @@
         device: sync.deviceId,
         json: JSON.stringify(state)
       };
-      return { record: record, result: { nextRev: nextRev, mergedN: mergedN, clobbered: clobbered, heard: sync.remoteRec, record: record } };
+      return { record: record, result: { nextRev: nextRev, mergedN: mergedN, clobbered: clobbered, heard: sync.remoteRec, record: record, lookWas: lookWas } };
     }).then(function (res) {
       if (sync.session !== mine) return;
       if (res.newer) { holdNewerFormat(); return; }
@@ -13771,6 +13788,9 @@
         else if (sync.dirty) scheduleSyncPush();
         save(); // no re-render needed — nothing visible changed
       }
+      // Treasurer sign-off on option B (extra) — the merge brought "The ledger needs a look" on. Not
+      // when a later copy was taken instead: adoptRemote asked it of that.
+      if (res.clobbered && !(later && !editedSince)) noteLedgerLookAfterSync(res.lookWas);
       // After adoptRemote, whose toast would otherwise replace it (C2, m1).
       noteReconciledFates({ kept: keptRows, lost: lostRows, split: splitRows });
       scheduleParentViewRefresh(); // Parent phase — regenerate the sanitized copy (leaders only)
@@ -13854,6 +13874,7 @@
     if (!ns) return false;
     // Re-review of the stopgap, item 2 — what the copy taken did to reconciled rows, said below.
     var fates = reconciledFates(state && state.ledger, state && state.gone && state.gone.ledger, ns.ledger, ns.gone && ns.gone.ledger);
+    var lookWas = state ? ledgerLookCount() : 0;   // treasurer sign-off on option B (extra)
     keepLostVoids(state, ns);   // Phase 3, C3
     state = ns;
     state.rev = typeof d.rev === 'number' ? d.rev : 0;
@@ -13871,6 +13892,7 @@
     save();
     render();
     if (opts && opts.toast) showToast('Updated from another device');
+    noteLedgerLookAfterSync(lookWas);   // treasurer sign-off on option B (extra): after that toast, before the fates'
     fates.split = splitRows;
     noteReconciledFates(fates);
     return true;

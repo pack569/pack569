@@ -1020,7 +1020,10 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
 // LIVE STOPGAP — what every slice of the sync merge needs besides it (freshGone is in NORMALIZE_FNS).
-const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'ledgerTickedAt', 'reconciledFates', 'reconciledFatesText', 'noteReconciledFates', 'restoreGone', 'entryAfterOpening', 'ledgerDateReconciled', 'fmt', 'fmtDateShort', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays', 'ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept', 'keepLostVoids', 'ledgerPairCheck'];
+const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'ledgerTickedAt', 'reconciledFates', 'reconciledFatesText', 'noteReconciledFates', 'restoreGone', 'entryAfterOpening', 'ledgerDateReconciled', 'fmt', 'fmtDateShort', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays', 'ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept', 'keepLostVoids', 'ledgerPairCheck',
+  // Treasurer sign-off on option B (extra) — the sync's toast, and what it counts.
+  'LEADER_ROLES', 'LEDGER_LOOK_SYNC', 'ledgerLookCount', 'noteLedgerLookAfterSync', 'ledgerLookNotes', 'ledgerLiveReversals', 'ledgerEntryNamed', 'ledgerCap',
+  'ledgerTakeOut', 'LEDGER_TAKE_OUT_ANY', 'ledgerLocked', 'ledgerReversalOf'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
   const ctx = vm.createContext({});
@@ -8922,6 +8925,7 @@ test('a push reads, merges and writes in one retried step, and the rev always cl
         } };
       function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
       function mergeRemoteAppendOnly(d) { merged.push(d.rev); return 1; }
+      function ledgerLookCount() { return 0; } function noteLedgerLookAfterSync() {}   // the merge is stubbed; so is what it brings on
       function save() { saved += 1; } function scheduleParentViewRefresh() {} function render() {}
       function showToast(m) { toasts.push(m); } function renderSyncPill() {} function syncFail() {}
       function clearTimeout() {} function setTimeout() {}
@@ -16164,6 +16168,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
         pushPack: function (h, build) { var out = build(${JSON.stringify(over.remote)}); if (out.record) records.push(out.record); return now(out.result); } };
       function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
       function mergeRemoteAppendOnly(d) { merged.push(d.rev); return 0; } function holdPushes() { return false; }
+      function ledgerLookCount() { return 0; } function noteLedgerLookAfterSync() {}   // the merge is stubbed; so is what it brings on
       function save() {} function scheduleParentViewRefresh() {} function render() {}
       function showToast(m) { toasts.push(m); } function renderSyncPill() {} function syncFail() {}
       function clearTimeout() {} function setTimeout() {}
@@ -21347,6 +21352,39 @@ test('Decision C: the ledger says when a correction and the entry it corrects bo
   eq(JSON.parse(JSON.stringify(x.ledgerLookNotes(p.get('state').ledger))),
     ['The correction of “Popcorn commission” (Oct 15, +$450.00) and “Popcorn commission” itself (Aug 10, +$500.00) both count, because the reversal of ' +
       '“Popcorn commission” was voided or reversed. Reverse “Popcorn commission” again, or take the correction out.'], 'on the page');
+});
+
+// Treasurer sign-off on option B (extra) — a sync that brings "The ledger needs a look" on says so, once, to a leader.
+test('Treasurer sign-off (extra), Firestore: a sync that brings "The ledger needs a look" on says so once, to a leader', () => {
+  const LOOK = 'After a sync, the ledger needs a look: see Money · Ledger.';
+  const { a, b } = c4FsPair();
+  a.run("reverseRow('l2', 'Never cashed')"); a.push(); b.hear();
+  a.run("voidRow('rv-l2', 'Reversed the wrong entry')"); a.push(); b.hear();
+  a.run("reverseRow('l2', 'Returned by the bank')"); a.push();   // rv2-l2, which B has not heard of
+  b.run("unvoidRow('rv-l2'); toasts = []");
+  eq([a.get('ledgerLookCount()'), b.get('ledgerLookCount()')], [0, 0], 'nothing to say on either before the sync');
+  // B hears A's save while dirty, and merges it at its push: two counted reversals.
+  b.hear(); b.push();
+  const bt = b.get('toasts');
+  eq([b.get('ledgerLookCount()'), bt.filter((t) => t === LOOK).length], [1, 1], 'B, by the merge: ' + JSON.stringify(bt));
+  // A takes B's copy: after its "Updated" toast, before anything the fates say.
+  a.run('toasts = []'); a.hear();
+  const at = a.get('toasts');
+  eq([a.get('ledgerLookCount()'), at.filter((t) => t === LOOK).length, at.indexOf('Updated from another device') !== -1 && at.indexOf(LOOK) > at.indexOf('Updated from another device')], [1, 1, true],
+    'A, by the copy taken: ' + JSON.stringify(at));
+  // Once: another save while the notes stay says nothing more.
+  a.run("toasts = []; state.entries.push({ id: 'a9', scoutId: 's1', kind: 'wagon', date: '', salesCents: 100, donationsCents: 0 }); commit()"); a.push();
+  b.run('toasts = []'); b.hear();
+  eq(b.get('toasts').filter((t) => t === LOOK).length, 0, 'said again while the notes stay');
+  // Leaders only: with accounts in force, a parent (or anyone not a leader) is never told; a viewer is.
+  b.run("accountsInForce = function () { return true; }; sync.myRole = 'parent'");
+  eq(b.get('ledgerLookCount()'), 0, 'a parent');
+  b.run("sync.myRole = 'viewer'");
+  eq(b.get('ledgerLookCount()'), 1, 'a viewer');
+  b.run("sync.myRole = 'parent'; toasts = []; noteLedgerLookAfterSync(0)");
+  eq(b.get('toasts'), [], 'a parent is told');
+  b.run("sync.myRole = 'editor'; toasts = []; noteLedgerLookAfterSync(0); noteLedgerLookAfterSync(1)");
+  eq(b.get('toasts'), [LOOK], 'an editor, from none; and not from some');
 });
 
 // Treasurer sign-off on option B (10) — a reversal of a reversal read “Reversal of “Reversal of “Pizza”””.
