@@ -18478,17 +18478,26 @@ test('C2: the opening figure and date are read-only once a statement is reconcil
     p.run(`toasts = []; ${js}`);
     eq([p.get('state.book.openingCents'), p.get('state.book.openingDate'), p.get('log().length'), p.get('commits')], [10000, '2026-07-01', 0, 0],
       js + ' changed a reconciled book’s opening');
+    // Treasurer review of C5 (2): the treasurer's words, with no promise that a reopen unlocks it.
     eq(p.get('toasts[0]'), 'The opening balance is locked because the book is reconciled through Aug 31, and every balance checked against the bank ' +
-      'starts from it. If it’s wrong, record the difference as an adjusting entry dated today and say why in its description. It unlocks only ' +
-      'once no statement is left reconciled: an admin can reopen them under Statements reconciled, newest first.', 'the opening card’s words (M-2; C5)');
+      'starts from it. If it’s wrong, record the difference as an adjusting entry dated today and say why in its description.', 'the opening card’s words (M-2; C5)');
+  }
+  // Treasurer review of C5 (2): not reconciled at all, but entries still ticked (r1 and q1): locked too.
+  const t = c2Page({ book: { reconciledThrough: '' } });
+  for (const js of ["change('book-opening', '', '999')", "change('book-opening-date', '', '2026-06-01')", "act('ledger-use-carryover')"]) {
+    t.run(`toasts = []; ${js}`);
+    eq([t.get('state.book.openingCents'), t.get('state.book.openingDate'), t.get('log().length'), t.get('toasts')],
+      [10000, '2026-07-01', 0, ['The opening balance is locked while entries are still ticked against a bank statement (2 are), because the ticked balance ' +
+        'starts from it. If it’s wrong, record the difference as an adjusting entry dated today and say why in its description. To change the ' +
+        'opening balance instead, un-reconcile the ticked entries first.']], js + ' changed the opening with entries ticked');
   }
   const q = c2Page({ book: { reconciledThrough: '' } });
-  q.run("change('book-opening', '', '123.45'); change('book-opening-date', '', '2026-06-01'); act('ledger-use-carryover')");
+  q.run("state.ledger.forEach(function (e) { e.reconciled = false; }); change('book-opening', '', '123.45'); change('book-opening-date', '', '2026-06-01'); act('ledger-use-carryover')");
   eq(q.get('log().map(function (e) { return [e.op, e.row, e.f]; })'), [['opening', 'book', { openingCents: [10000, 12345] }],
     ['opening', 'book', { openingDate: ['2026-07-01', '2026-06-01'] }],
     ['opening', 'book', { openingCents: [12345, 7700], openingDate: ['2026-06-01', '2026-07-01'] }]], 'the opening changes');
   // The card: the figure as text, and why, with no fields.
-  ok(/var obLocked = openingLockedWhy\(bk\);\s*if \(obLocked\) \{[\s\S]*?return h \+ '<\/div>';\s*\}/.test(slice('bookCard')), 'the opening card still offers its fields when locked');
+  ok(/var obLocked = openingLockedWhy\(bk, state\.ledger\);\s*if \(obLocked\) \{[\s\S]*?return h \+ '<\/div>';\s*\}/.test(slice('bookCard')), 'the opening card still offers its fields when locked');
 });
 
 test('C2: a season of ledger events costs what the banner says', () => {
@@ -18840,18 +18849,20 @@ const C3_READERS = {
   ledgerVoidedCsv: (L, x) => x.ledgerVoidedCsv([], L),   // treasurer review of C4 (5): the reversed pairs it lists
   // Phase 3, C5 — the statement Mark reconciled would write now, after one signed on the book's date.
   statementNew: (L, x, c) => x.statementNew(L, c.book, c.book.reconciledThrough
-    ? [{ id: 'st-prev', date: c.book.reconciledThrough, ticked: ['e1'], at: '2026-09-02T00:00:00.000Z' }] : [], { by: 'Pat', byUid: 'u1', at: 'T' }, 'st-x')
+    ? [{ id: 'st-prev', date: c.book.reconciledThrough, ticked: ['e1'], at: '2026-09-02T00:00:00.000Z' }] : [], { by: 'Pat', byUid: 'u1', at: 'T' }, 'st-x'),
+  // Treasurer review of C5 (2) — the opening balance, locked while any counted entry is ticked.
+  openingLockedWhy: (L, x, c) => x.openingLockedWhy(c.book, L)
 };
 // What those readers need besides themselves.
 const READER_DEPS = ['fmt', 'ledgerLogWhen', 'ledgerCsvCell', 'ledgerPairRole', 'ledgerReplacementId', 'ledgerReplacementFor',
-  'statementInForce', 'statementReopened'];
+  'statementInForce', 'statementReopened', 'fmtDateShort'];
 // Security review of C4 (finding 1) — the readers that LIST or COUNT the rows, or tick them. A pair
 // that came apart and was sent back to the ledger is two counted rows that net to $0: these show
 // both (the treasurer ticks the reversal against the statement it is on), and only the balance is
 // the entry deleted (when the entry is after the opening date: its reversal, dated the day it was
 // made, always is). Every other reader is the entry deleted outright.
 const C4_LISTING_READERS = ['ledgerBalance', 'ledgerSort', 'ledgerTotals', 'reconcileTotals', 'reconcileStale', 'runningBalances', 'seasonLedgerRows', 'ledgerUnpaired',
-  'ledgerPairOf', 'ledgerVoidedCsv', 'ledgerReversalName', 'statementNew'];
+  'ledgerPairOf', 'ledgerVoidedCsv', 'ledgerReversalName', 'statementNew', 'openingLockedWhy'];
 const C3_STATE_READERS = {
   tierMakeupMap: (x) => x.tierMakeupMap(),
   tierMakeupPaidCents: (x) => [['t1', 's1'], ['t1', 's2'], ['t2', 's3']].map(([t, s]) => x.tierMakeupPaidCents(t, s))
@@ -21020,7 +21031,7 @@ test('C4: the lock messages point at Reverse or correct, where it fits; the trea
   // A reconciled entry after the period keeps the treasurer's un-reconcile wording (and the opening
   // balance its adjusting entry: Correct fixes an entry, not the opening figure).
   ok(/Un-reconcile it first \(Money · Ledger, two taps\), then change it\./.test(p.get("ledgerLockedWhy(row('r1'), state.book, '', 'money')")), 'the reconciled one');
-  ok(/record the difference as an adjusting entry dated today/.test(p.get('openingLockedWhy(state.book)')), 'the opening balance');
+  ok(/record the difference as an adjusting entry dated today/.test(p.get('openingLockedWhy(state.book, state.ledger)')), 'the opening balance');
   ok(!/record an adjusting entry dated today for the difference|To cancel it, record an opposite entry dated today/.test(SCRIPT), 'an old adjusting-entry line is still said');
 });
 
@@ -22992,23 +23003,39 @@ test('C5: only an admin can reopen, only the newest statement in force, with a r
     ['2026-08-31', 'Sam', '2026-09-01T12:00:00.000Z', '2026-09-30', 62500], 'the lock back to Aug 31, and the statement to work on');
   eq(p.get('log().map(function (e) { return [e.op, e.row, e.why, e.f]; })'),
     [['reopen', 'st-2026-09-30-a', 'A deposit was ticked twice', { reconciledThrough: ['2026-09-30', '2026-08-31'] }]], 'the log');
-  eq(p.get('toasts'), ['Reopened the statement through Sep 30. The book is now reconciled through Aug 31.'], 'said');
+  // Treasurer review of C5 (8): and the statement to work on filled in, said.
+  eq(p.get('toasts'), ['Reopened the statement through Sep 30. The book is now reconciled through Aug 31. Its date and ending balance are filled in above.'], 'said');
   // Nothing un-ticked, no entry touched: the reversed pair as it was; the ticked ones still locked by
   // their tick; only an unticked entry after Aug 31 opens up.
   eq(p.get('state.ledger'), ledgerWas, 'an entry changed');
   eq(['r1', 'x1', 'u1', 'p1'].map((id) => p.get(`ledgerLocked(row('${id}'), state.book)`)), [true, true, false, true], 'what is locked now');
-  // Then the legacy Aug 31: nothing is left reconciled, and the opening unlocks.
+  // Then the legacy Aug 31: nothing is left reconciled. Treasurer review of C5 (2): the opening stays
+  // locked while entries are ticked (r1, q1 and x1 are); nothing was filled in, so the toast says nothing of it.
   // (Opening another statement's form starts its reason blank.)
   p.run("ui.stReopenWhy = 'left over'; act5('st-reopen:st-2026-08-31'); var blank = ui.stReopenWhy; toasts = []; ui.stReopenWhy = 'Opening was wrong'; " +
     "act5('st-reopen-go:st-2026-08-31'); act5('st-reopen-go:st-2026-08-31')");
   eq(p.get('blank'), '', 'the reason carried to another statement');
-  eq([p.get('state.book.reconciledThrough'), p.get('openingLockedWhy(state.book)'), p.get('toasts').slice(-1)[0]],
-    ['', '', 'Reopened the statement through Aug 31. The book is no longer marked reconciled.'], 'the last one');
+  eq([p.get('state.book.reconciledThrough'), p.get('openingLockedWhy(state.book, state.ledger)'), p.get('toasts').slice(-1)[0]],
+    ['', 'The opening balance is locked while entries are still ticked against a bank statement (3 are), because the ticked balance starts ' +
+      'from it. If it’s wrong, record the difference as an adjusting entry dated today and say why in its description. To change the opening ' +
+      'balance instead, un-reconcile the ticked entries first.', 'Reopened the statement through Aug 31. The book is no longer marked reconciled.'], 'the last one');
+  // Only once none is ticked (one before the opening date doesn't count; nor does a voided one) does it unlock.
+  p.run("state.ledger.forEach(function (e) { e.reconciled = false; }); state.ledger.push({ id: 'old', date: '2026-06-01', amountCents: 5, direction: 'in', reconciled: true }); " +
+    "state.ledgerAside = [{ id: 'gone', date: '2026-09-01', amountCents: 5, direction: 'in', reconciled: true }]");
+  eq(p.get('openingLockedWhy(state.book, state.ledger)'), '', 'nothing ticked');
+  p.run("row('r1').reconciled = true");
+  ok(/\(1 is\), because/.test(p.get('openingLockedWhy(state.book, state.ledger)')), 'one ticked');
   // What the form says it will do.
-  const n = sandbox(['statementReopenNote', 'statementBefore', 'statementReopened', 'fmtDateShort']);
-  eq(n.statementReopenNote(C5_SEP(), [C5_LEGACY(), C5_SEP()]), 'The book will then be reconciled through Aug 31. Entries stay ticked: un-reconcile any ticked ' +
-    'by mistake, fix what is wrong, then mark the statement reconciled again. This statement stays in the list, marked reopened.', 'the note');
-  ok(/^The book will then not be reconciled at all, and its opening balance unlocks\. /.test(n.statementReopenNote(C5_LEGACY(), [C5_LEGACY()])), 'the note, last one');
+  // Treasurer review of C5 (2, 8): in the treasurer's words.
+  const n = sandbox(['statementReopenNote', 'statementBefore', 'statementReopened', 'statementReviewed', 'fmtDateShort']);
+  eq(n.statementReopenNote(C5_SEP(), [C5_LEGACY(), C5_SEP()]), 'The book will then be reconciled through Aug 31. Entries stay ticked. Un-reconcile any ticked ' +
+    'by mistake, fix what’s wrong, then mark the statement reconciled again. Entries after Aug 31 that aren’t ticked can be changed again. ' +
+    'This statement stays in the list, marked reopened.', 'the note');
+  eq(n.statementReopenNote(C5_LEGACY(), [C5_LEGACY()]), 'The book will then not be reconciled at all. The opening balance stays locked until no entry is ticked. ' +
+    'Entries stay ticked. Un-reconcile any ticked by mistake, fix what’s wrong, then mark the statement reconciled again. Entries that aren’t ticked can be ' +
+    'changed again. This statement stays in the list, marked reopened.', 'the note, last one');
+  ok(/marked reopened\. It was reviewed by Kim; the statement reconciled again will need its own review\.$/.test(
+    n.statementReopenNote(Object.assign(C5_SEP(), { reviewedAt: 'T', reviewedBy: 'Kim', reviewedByUid: 'u5' }), [C5_LEGACY(), C5_SEP()])), 'the note, reviewed');
   ok(!/\.reconciled = |stampApproved\(|statementId/.test(codeOnly(c2Block(/    if \(act\.indexOf\('st-reopen-go:'\) === 0\) \{[\s\S]*?\n    \}/, 'st-reopen-go'))), 'reopen un-ticks an entry');
 });
 

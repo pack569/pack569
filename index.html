@@ -9139,14 +9139,23 @@
   // H2 (treasurer review of C1) — the opening figure and date are read-only once a statement is
   // reconciled: changing where the book starts would change every balance already checked against
   // the bank. The way back is an admin reopening the statements (C5: st-reopen-go).
-  function openingLockedWhy(book) {
-    if (!book || !book.reconciledThrough) return '';
+  // Treasurer review of C5 (2), owner's decision — and while any counted entry after the opening
+  // date is still ticked (`ledger`: state.ledger), even with every statement reopened: the ticked
+  // balance starts from it too, and one reopen of a legacy statement at rollout would otherwise
+  // unlock the whole year's opening.
+  function openingLockedWhy(book, ledger) {
+    if (!book) return '';
     // Treasurer review of C2 (M-2) — in the treasurer's words, with what to do instead.
-    // Phase 3, C5 — the last sentence: the way back is there now (an admin reopens the statements).
-    return 'The opening balance is locked because the book is reconciled through ' + fmtDateShort(book.reconciledThrough) +
-      ', and every balance checked against the bank starts from it. If it’s wrong, record the difference as an ' +
-      'adjusting entry dated today and say why in its description. It unlocks only once no statement is left reconciled: ' +
-      'an admin can reopen them under Statements reconciled, newest first.';
+    if (book.reconciledThrough) {
+      return 'The opening balance is locked because the book is reconciled through ' + fmtDateShort(book.reconciledThrough) +
+        ', and every balance checked against the bank starts from it. If it’s wrong, record the difference as an ' +
+        'adjusting entry dated today and say why in its description.';
+    }
+    var n = (ledger || []).filter(function (e) { return e && e.reconciled === true && entryAfterOpening(e, book); }).length;
+    if (!n) return '';
+    return 'The opening balance is locked while entries are still ticked against a bank statement (' + n + (n === 1 ? ' is' : ' are') +
+      '), because the ticked balance starts from it. If it’s wrong, record the difference as an adjusting entry dated today and ' +
+      'say why in its description. To change the opening balance instead, un-reconcile the ticked entries first.';
   }
   // Treasurer review of C2 (H-1) — why "Mark reconciled" is refused, or '' when it can go ahead.
   // It locks every entry dated on or before the statement date, so the date must be one: a real
@@ -9448,12 +9457,16 @@
   }
   // What reopening statement `st` will do, said under its Reopen form: where the lock goes back to
   // (statementBefore), and what it leaves as it is. Pure.
+  // Treasurer review of C5 (2, 8) — in the treasurer's words: the opening balance stays locked while
+  // anything is ticked (openingLockedWhy), which entries open up, and a review does not carry over.
   function statementReopenNote(st, statements) {
     var back = statementBefore(statements, st.date);
     return (back ? 'The book will then be reconciled through ' + fmtDateShort(back.date) + '.'
-      : 'The book will then not be reconciled at all, and its opening balance unlocks.') +
-      ' Entries stay ticked: un-reconcile any ticked by mistake, fix what is wrong, then mark the statement reconciled again. ' +
-      'This statement stays in the list, marked reopened.';
+      : 'The book will then not be reconciled at all. The opening balance stays locked until no entry is ticked.') +
+      ' Entries stay ticked. Un-reconcile any ticked by mistake, fix what’s wrong, then mark the statement reconciled again. ' +
+      (back ? 'Entries after ' + fmtDateShort(back.date) + ' that aren’t ticked' : 'Entries that aren’t ticked') + ' can be changed again. ' +
+      'This statement stays in the list, marked reopened.' +
+      (statementReviewed(st) ? ' It was reviewed' + (st.reviewedBy ? ' by ' + st.reviewedBy : '') + '; the statement reconciled again will need its own review.' : '');
   }
   // A statement's date, as a record says it: "September 30, 2026". `iso` YYYY-MM-DD. Pure.
   function fmtDateYear(iso) {
@@ -20199,7 +20212,7 @@
     var tot = ledgerTotals(state.ledger, bk);
     var h = '<div class="card"><h2 class="section display">Opening balance</h2>';
     // Phase 3, C2 (H2) — read-only once a statement is reconciled (openingLockedWhy).
-    var obLocked = openingLockedWhy(bk);
+    var obLocked = openingLockedWhy(bk, state.ledger);
     if (obLocked) {
       h += '<p style="margin:0 0 8px"><strong class="money">' + fmt(bk.openingCents || 0) + '</strong>' +
         (bk.openingDate ? ' as it stood on ' + esc(fmtDate(bk.openingDate)) : ', no opening date') + '</p>' +
@@ -30187,7 +30200,7 @@
     }
     if (act === 'ledger-use-carryover') {
       // Phase 3, C2 (H2) — not once a statement is reconciled; and logged.
-      if (openingLockedWhy(state.book)) { showToast(openingLockedWhy(state.book)); render(); return; }
+      if (openingLockedWhy(state.book, state.ledger)) { showToast(openingLockedWhy(state.book, state.ledger)); render(); return; }
       var ucWas = { openingCents: state.book.openingCents, openingDate: state.book.openingDate };
       state.book.openingCents = state.budget.startingBalance || 0;
       state.book.openingDate = programYearStartISO(state.budget.programYear);
@@ -30354,13 +30367,16 @@
         ui.stReopenAsk = null; ui.stReopenWhy = '';
         if (!sg.ids.length) { render(); return; }
         logLedger('reopen', sg.ids[0], { rows: sg.ids.slice(1), why: sgWhy, f: { reconciledThrough: [sg.was, sg.now] } });
-        if (!state.book.statementDate) {
+        var sgFill = !state.book.statementDate;
+        if (sgFill) {
           state.book.statementDate = sgSt.date;
           state.book.statementCents = typeof sgSt.statementCents === 'number' ? sgSt.statementCents : (typeof sgSt.addedCents === 'number' ? sgSt.addedCents : 0);
         }
+        // Treasurer review of C5 (8) — and says so when the statement to work on was filled in.
         if (commit()) {
           showToast('Reopened the statement through ' + fmtDateShort(sg.was) + '. ' +
-            (sg.now ? 'The book is now reconciled through ' + fmtDateShort(sg.now) + '.' : 'The book is no longer marked reconciled.'));
+            (sg.now ? 'The book is now reconciled through ' + fmtDateShort(sg.now) + '.' : 'The book is no longer marked reconciled.') +
+            (sgFill ? ' Its date and ending balance are filled in above.' : ''));
         }
       }, ARM_WARNED_MS);
       return;
@@ -31313,7 +31329,7 @@
     // Phase 3, C2 (H2) — the opening is read-only once a statement is reconciled, and a change
     // before then is logged. (The figure commits on change, not as it is typed: see 'input'.)
     if (ch === 'book-opening' || ch === 'book-opening-date') {
-      if (openingLockedWhy(state.book)) { showToast(openingLockedWhy(state.book)); render(); return; }
+      if (openingLockedWhy(state.book, state.ledger)) { showToast(openingLockedWhy(state.book, state.ledger)); render(); return; }
       var obWas = { openingCents: state.book.openingCents, openingDate: state.book.openingDate };
       if (ch === 'book-opening') state.book.openingCents = toCentsSigned(el.value);
       else state.book.openingDate = el.value;
