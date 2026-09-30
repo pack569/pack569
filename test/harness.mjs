@@ -1024,13 +1024,26 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
+// Phase 3, C6 — the per-row ledger merge and what it reads.
+const C6_MERGE_FNS = ['LEDGER_TICK_FIELDS', 'LEDGER_OFF_FIELDS', 'ledgerFieldPart', 'LEDGER_OPS', 'ledgerEventParts', 'ledgerMarksGone', 'ledgerEmpty', 'ledgerPartKey', 'LEDGER_MONEY_FIELDS', 'ledgerLockedMeanwhile',
+  'applyLedgerRowSet', 'mergeLedgerRows', 'applyLedgerMerge', 'LEDGER_EDIT_FIELDS', 'LEDGER_RESOLVE_FIELDS', 'LEDGER_RESOLVE_WHY', 'ledgerResolveMore', 'ledgerLogRoom', 'utf8Bytes', 'arrOf', 'ledgerTickedAt', 'mergeStatements', 'statementPairMerge',
+  'statementOnceGroups', 'statementReopened'];
+// A page from before C6 (as the live page is): its merge keeps this device's copy of every row both
+// copies hold, whole. For the tests that make an older page from the merge as it is now.
+const C6_MERGE_CALL = 'added += applyLedgerMerge(state, rowMerge.set, remote);';
+const preC6Merge = (merge) => {
+  ok(merge.indexOf(C6_MERGE_CALL) !== -1, 'the pre-C6 page could not be made');
+  return merge.split(C6_MERGE_CALL).join('');
+};
 // LIVE STOPGAP — what every slice of the sync merge needs besides it (freshGone is in NORMALIZE_FNS).
 const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'ledgerTickedAt', 'reconciledFates', 'reconciledFatesText', 'noteReconciledFates', 'restoreGone', 'entryAfterOpening', 'ledgerDateReconciled', 'fmt', 'fmtDateShort', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays', 'ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept', 'keepLostVoids', 'ledgerPairCheck',
   // Treasurer sign-off on option B (extra) — the sync's toast, and what it counts.
   'LEADER_ROLES', 'LEDGER_LOOK_SYNC', 'LEDGER_LOOK_CLOBBERED', 'ledgerLookCount', 'noteLedgerLookAfterSync', 'ledgerLookNotes', 'ledgerLiveReversals', 'ledgerEntryNamed', 'ledgerCap',
   'ledgerTakeOut', 'LEDGER_TAKE_OUT_ANY', 'ledgerLocked', 'ledgerReversalOf',
   // Phase 3, C5 — the statements, unioned by id, and the lock stepped back past a reopened one.
-  'statementOnceGroups', 'statementReopened', 'statementPairMerge', 'mergeStatements', 'statementLockBack', 'statementBefore', 'ledgerStampClean'];
+  'statementOnceGroups', 'statementReopened', 'statementPairMerge', 'mergeStatements', 'statementLockBack', 'statementBefore', 'ledgerStampClean',
+  // Phase 3, C6 — the per-row merge.
+  ...C6_MERGE_FNS];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
   const ctx = vm.createContext({});
@@ -1200,7 +1213,7 @@ test('the year rollover clears the ledger and opens next year at the bank balanc
 test('a divergence merge never drops a ledger entry', () => {
   // The append-only merge is the recovery path when two copies of a pack record diverge.
   // Popcorn sales are protected there; transactions must be too.
-  const fn = /function mergeRemoteAppendOnly\(d, kept, lost, split\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
+  const fn = /function mergeRemoteAppendOnly\(d, kept, lost, split, picks\) \{[\s\S]*?\n  \}/.exec(SCRIPT);
   ok(fn, 'mergeRemoteAppendOnly() not found');
   ok(/unionById\(state\.ledger, remote\.ledger, 'ledger'\)/.test(fn[0]),
     'ledger entries are not unioned on merge — one device could lose another device\'s transactions');
@@ -18968,10 +18981,11 @@ test('C3: nothing outside the book’s own plumbing reads the voided rows, so no
   });
   // Phase 3, C4 — and Reverse: its refusal (is there a reversal already?). (Option B: the reverse
   // itself no longer sets anything aside.)
-  eq([...users].sort(), ['dropScout', 'freshState', 'handleAction', 'isStateEmpty', 'keepLostVoids', 'ledgerAsideListHtml', 'ledgerAsideSettle', 'ledgerEntryLabel',
+  // Phase 3, C6 — and the per-row merge (mergeLedgerRows, applyLedgerMerge), which settles a row both copies hold.
+  eq([...users].sort(), ['applyLedgerMerge', 'dropScout', 'freshState', 'handleAction', 'isStateEmpty', 'keepLostVoids', 'ledgerAsideListHtml', 'ledgerAsideSettle', 'ledgerEntryLabel',
     'ledgerReverseSlot', 'ledgerUnvoidRow',
     // Phase 3, C5 — renderBankStatementSheet names an entry on a statement voided since; it totals nothing from it.
-    'ledgerVoidRow', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderBankStatementSheet', 'renderLedger', 'renderLedgerEntries', 'restoreGone',
+    'ledgerVoidRow', 'mergeLedgerRows', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderBankStatementSheet', 'renderLedger', 'renderLedgerEntries', 'restoreGone',
     'rolloverYear'], 'who reads the voided rows');
   // In handleAction: the void handlers, del-scout's log line, and (treasurer sign-off on C3) the voided CSV only.
   // Security re-check of option B (A) — and the void's Undo, asking whether the row it would put back is still voided.
@@ -19700,7 +19714,7 @@ test('C3: which list a row settles in — the merged mark, then the log, then vo
 test('C3: a page from before C3 drops a voided entry from its ledger, through the deletion mark', () => {
   // Device B runs this merge without settleVoided (the whole of C3's part of it), as the page before
   // C3 did: it knows nothing of voids, only of the mark.
-  const merge = slice('mergeRemoteAppendOnly');
+  const merge = preC6Merge(slice('mergeRemoteAppendOnly'));
   const old = merge.replace('    settleVoided();\n', '').replace(/\n    if \(Array\.isArray\(state\.ledgerAside\)\) state\.ledgerAside\.forEach[^\n]*/, '');
   ok(old !== merge && !/\n    settleVoided\(\);/.test(old) && !/\n    if \(Array\.isArray\(state\.ledgerAside\)\)/.test(old), 'the pre-C3 merge could not be made');
   const { a, b, server } = c3FsPair();
@@ -20039,7 +20053,7 @@ test('C3 review (minor): a voided row kept from a copy that lost it is unlinked 
   eq(cur.ledgerAside.map((e) => e.scoutId), ['s1', 's9', 's2', ''], 'this device’s copy was changed');
   // Two devices: B voids Ada's payment (l3) and saves; A, a page from before C3 that also deleted
   // Ada, saves over it with l3 in neither list. B keeps l3 voided, pointing at nobody.
-  const merge = slice('mergeRemoteAppendOnly');
+  const merge = preC6Merge(slice('mergeRemoteAppendOnly'));
   const old = merge.replace('    settleVoided();\n', '').replace(/\n    if \(Array\.isArray\(state\.ledgerAside\)\) state\.ledgerAside\.forEach[^\n]*/, '');
   const { a, b, server } = c3FsPair();
   a.run(old);
@@ -21331,13 +21345,18 @@ test('Option B review (3), Firestore: a reverse mark crosses to the other copy o
   b.run(B1); b.hear(); b.push();
   eq([c4Marks(server()), c4Marks(b.get('state')), c3Counted(server())], [['rv2-l2', 'Returned by the bank', 'Pat'], ['rv2-l2', 'Returned by the bank', 'Pat'], C4_L2_MONEY],
     'the mark of the reversal that counts');
-  // B never heard of the reverse; A's copy of l2 carries the mark of a reversal it has voided. It stays on A.
+  // B never heard of the reverse; A's copy of l2 carries the mark of a reversal it has voided.
+  // Phase 3, C6 — only A changed l2 (its reverse is in A's log, not B's), so A's copy of it is the
+  // one both keep, stale mark and all, whichever saves last: it says nothing (the test below), and
+  // the money is l2 counted, as before.
   ({ a, b, server } = c4FsPair());
   b.run(B1);
   a.run("reverseRow('l2', 'Never cashed'); voidRow('rv-l2', 'Reversed the wrong entry')"); a.push();
   b.hear(); b.push();
-  eq([c4Marks(server()), c4Where(server()), c3Counted(server())], [[undefined, undefined, undefined], [['l1', 'l2', 'l3'], ['rv-l2:void']], C4_L2_MONEY - 4000],
+  eq([c4Marks(server()), c4Where(server()), c3Counted(server())], [['rv-l2', 'Never cashed', 'Pat'], [['l1', 'l2', 'l3'], ['rv-l2:void']], C4_L2_MONEY - 4000],
     'a mark whose reversal was voided');
+  a.hear();
+  eq(c4Marks(a.get('state')), ['rv-l2', 'Never cashed', 'Pat'], 'A after B’s save');
 });
 
 test('Option B review (3): a mark left by a reversal since voided says nothing under the entry or in the export', () => {
@@ -21858,7 +21877,7 @@ test('C4 (option B), Firestore: a pair set aside by C4’s first build stays set
 // what option B's merge adds.
 function c4OldPage() {
   const swap = (src, from, to) => { ok(src.indexOf(from) !== -1, 'the pre-C4 page could not be made: ' + from); return src.split(from).join(to); };
-  let merge = slice('mergeRemoteAppendOnly');
+  let merge = preC6Merge(slice('mergeRemoteAppendOnly'));
   merge = swap(merge, 'if (reversedIds[x.id] === true) return false;', '');
   merge = swap(merge, "if (log === 'ledger' && cancelledIds[x.id] === true && reversedIds[x.id] !== true) {", 'if (false) {');
   merge = swap(merge, "var r = x && typeof x.id === 'string' && !rvCounts(x.id, x.reversedBy) ? rvMarked[x.id] : null;", 'var r = null;');
@@ -21890,7 +21909,7 @@ test('C4 (option B): a page from before C4 saving over a reverse keeps both rows
 
 test('C4 (option B): a page from before C3 saving over a reverse keeps both rows counted; a pair set aside by C4’s first build it loses is put back, whole, by the device that holds it', () => {
   // The C2 page's merge: no settle, and its own list of rows set aside (keepLostVoids, C3).
-  const merge = slice('mergeRemoteAppendOnly');
+  const merge = preC6Merge(slice('mergeRemoteAppendOnly'));
   const old = merge.replace('    settleVoided();\n', '').replace(/\n    if \(Array\.isArray\(state\.ledgerAside\)\) state\.ledgerAside\.forEach[^\n]*/, '');
   ok(old !== merge, 'the pre-C3 merge could not be made');
   let { a, b, server } = c4FsPair();
@@ -23713,6 +23732,541 @@ test('C5 follow-ups (treasurer sign-off): who reviews where, a name that names n
     'Past seasons keeps no statements reconciled and the ledger’s change history (2 changes), for the annual review. The snapshot has them too.',
     'Past seasons keeps no statements reconciled. The ledger’s change history is too large to keep there: download the snapshot, the only place it is kept.'],
     'a year with no statements');
+});
+
+/* ================================================================
+   Phase 3, C6 — the per-row ledger merge (mergeLedgerRows): each row both copies hold is settled
+   part by part (content, tick, off) from the change log, the same from either side.
+   ================================================================ */
+const C6_ROW = (o) => Object.assign({ id: 'x', date: '2026-09-10', description: 'Pizza', amountCents: 4000, direction: 'out', lineId: '', method: '', ref: '',
+  source: '', donor: '', scoutId: '', tierMakeup: '', reimbursement: false, notCommission: false, reconciled: false, enteredBy: 'Pat',
+  enteredAt: '2026-09-10T10:00:00.000Z', approvedBy: '', approvedAt: '', enteredByUid: 'u1', approvedByUid: '' }, o || {});
+const c6Ev = (id, op, row, day, more) => Object.assign({ id: 'lg-' + id, at: '2026-10-' + String(day).padStart(2, '0') + 'T10:00:00.000Z', by: 'Pat', byUid: 'u1',
+  dev: 'd', row, op }, more || {});
+// A copy: its counted rows, its log, and (more) set-aside rows and statements.
+const c6Rec = (ledger, log, more) => JSON.parse(JSON.stringify(Object.assign({ ledger, ledgerAside: [], ledgerLog: log || [], statements: [] }, more || {})));
+const C6_BASE = () => c6Ev('0', 'edit', 'x', 1, { f: { ref: ['', '7'] } });   // an event both copies have
+const c6Swap = (c) => ({ ids: c.ids, rows: c.rows.map((r) => ({ id: r.id, parts: r.parts, mine: r.theirs, theirs: r.mine, mineBy: r.theirsBy, theirsBy: r.mineBy })) });
+// JSON with its keys sorted, and undefined (the merge's "remove this field") kept visible.
+const c6Canon = (v) => JSON.stringify(v, (k, x) => (x === undefined ? '(removed)' : x && typeof x === 'object' && !Array.isArray(x)
+  ? Object.fromEntries(Object.keys(x).sort().map((q) => [q, x[q]])) : x));
+// Settled both ways round: the same rows set, and the same conflicts with mine and theirs swapped.
+// Returns the result as plain data, and `raw` (its `set` still holding undefined) to apply.
+function c6Both(x, a, b, opts) {
+  const flip = { mine: 'theirs', theirs: 'mine' };
+  const picks = (opts && opts.picks) || {};
+  const back = Object.assign({}, opts || {}, { picks: Object.fromEntries(Object.entries(picks).map(([k, v]) => [k, flip[v]])) });
+  const raw = x.mergeLedgerRows(a, b, opts), other = x.mergeLedgerRows(b, a, back);
+  eq(c6Canon(other.set), c6Canon(raw.set), 'the other way round, a row settles differently');
+  eq(c6Canon(other.conflicts.map(c6Swap)), c6Canon(raw.conflicts), 'the other way round, the conflicts differ');
+  return Object.assign(JSON.parse(JSON.stringify(raw)), { raw });
+}
+// Both copies with a result's `set` written on, each copy's rows by id.
+function c6Apply(x, a, b, set) {
+  const A = JSON.parse(JSON.stringify(a)), B = JSON.parse(JSON.stringify(b));
+  x.applyLedgerMerge(A, set, B);
+  const rows = (s) => Object.fromEntries(s.ledger.concat(s.ledgerAside).map((e) => [e.id, e]));
+  return [rows(A), rows(B)];
+}
+const c6Same = (p, q) => c6Canon(p) === c6Canon(q);
+
+test('C6: an entry changed on one device only is that device’s on both; changed on both, alike, is settled; differently, is a conflict', () => {
+  const x = sandbox(C6_MERGE_FNS);
+  const base = [C6_BASE()];
+  const A = c6Rec([C6_ROW({ ref: '7', description: 'Pizza night' })], base.concat([c6Ev('a1', 'edit', 'x', 2, { f: { description: ['Pizza', 'Pizza night'] } })]));
+  const B = c6Rec([C6_ROW({ ref: '7' })], base);
+  let r = c6Both(x, A, B);
+  eq(r.conflicts, [], 'a conflict');
+  let [a, b] = c6Apply(x, A, B, r.raw.set);
+  eq([a.x.description, b.x.description, c6Same(a.x, b.x)], ['Pizza night', 'Pizza night', true], 'the edit, on both');
+  // Both changed it, to the same: settled, nothing to ask.
+  const B2 = c6Rec([C6_ROW({ ref: '7', description: 'Pizza night' })], base.concat([c6Ev('b1', 'edit', 'x', 3, { f: { description: ['Pizza', 'Pizza night'] } })]));
+  eq(c6Both(x, A, B2).conflicts, [], 'the same change on both');
+  // Both, differently: one item, the part, both rows, and the latest change behind each.
+  const B3 = c6Rec([C6_ROW({ ref: '7', amountCents: 4500 })], base.concat([c6Ev('b1', 'edit', 'x', 3, { f: { amountCents: [4000, 4500] }, by: 'Sam' })]));
+  r = c6Both(x, A, B3);
+  eq([r.conflicts.length, r.conflicts[0].ids, r.conflicts[0].rows[0].parts, r.conflicts[0].rows[0].mine.description, r.conflicts[0].rows[0].theirs.amountCents,
+    r.conflicts[0].rows[0].mineBy.id, r.conflicts[0].rows[0].theirsBy.by, 'x' in r.set], [1, ['x'], ['content'], 'Pizza night', 4500, 'lg-a1', 'Sam', false], 'the conflict');
+  // The leader's pick settles it, whole content, the same both ways round.
+  r = c6Both(x, A, B3, { picks: { x: 'theirs' } });
+  [a, b] = c6Apply(x, A, B3, r.raw.set);
+  eq([a.x.description, a.x.amountCents, c6Same(a.x, b.x)], ['Pizza', 4500, true], 'picked the other copy');
+  // Different, and neither copy's log says why (a page from before C2): asked, not picked.
+  r = c6Both(x, c6Rec([C6_ROW({ description: 'Pizza night' })], base), c6Rec([C6_ROW()], base));
+  eq([r.conflicts.length, r.conflicts[0].rows[0].mineBy, r.conflicts[0].rows[0].theirsBy], [1, null, null], 'an unlogged difference');
+  // An op this page doesn't know (a newer page's) is a change to every part: asked.
+  r = c6Both(x, c6Rec([C6_ROW({ description: 'Pizza night' })], base.concat([c6Ev('a1', 'split', 'x', 2)])), c6Rec([C6_ROW({ description: 'Pizza!' })],
+    base.concat([c6Ev('b1', 'edit', 'x', 2, { f: { description: ['Pizza', 'Pizza!'] } })])));
+  eq(r.conflicts.map((c) => c.rows[0].parts), [['content']], 'an unknown op');
+  // Rows identical, or held by one copy only: nothing.
+  r = c6Both(x, c6Rec([C6_ROW(), C6_ROW({ id: 'y' })], base), c6Rec([C6_ROW()], base));
+  eq([r.set, r.conflicts], [{}, []], 'nothing to settle');
+});
+
+test('C6: a tick on one device and a change of what the entry says, or a reverse, on the other both stand', () => {
+  const x = sandbox(C6_MERGE_FNS);
+  const base = [C6_BASE()];
+  const ticked = { reconciled: true, approvedBy: 'Sam', approvedByUid: 'u2', approvedAt: '2026-10-02T10:00:00.000Z', reconciledAt: 1790000000000 };
+  const A = c6Rec([C6_ROW(Object.assign({ ref: '7' }, ticked))], base.concat([c6Ev('a1', 'tick', 'x', 2, { by: 'Sam' })]));
+  const B = c6Rec([C6_ROW({ ref: '7', description: 'Pizza night', lineId: 'L1' })], base.concat([c6Ev('b1', 'edit', 'x', 3, { f: { description: ['Pizza', 'Pizza night'], lineId: ['', 'L1'] } })]));
+  let r = c6Both(x, A, B);
+  let [a, b] = c6Apply(x, A, B, r.raw.set);
+  eq([r.conflicts, a.x.reconciled, a.x.approvedBy, a.x.description, a.x.lineId, c6Same(a.x, b.x)], [[], true, 'Sam', 'Pizza night', 'L1', true],
+    'the tick and the edit');
+  // A Tick all names the row in `rows`: the same.
+  const A2 = c6Rec([C6_ROW(Object.assign({ ref: '7' }, ticked)), C6_ROW(Object.assign({ id: 'w', ref: '7' }, ticked))],
+    base.concat([c6Ev('a1', 'tick', 'w', 2, { rows: ['x'] })]));
+  r = c6Both(x, A2, c6Rec([C6_ROW({ ref: '7', description: 'Pizza night' }), C6_ROW({ id: 'w', ref: '7' })], B.ledgerLog));
+  [a] = c6Apply(x, A2, B, r.raw.set);
+  eq([r.conflicts, a.x.reconciled, a.x.description, a.w.reconciled], [[], true, 'Pizza night', true], 'a Tick all');
+  // Ticked on one, reversed on the other (a gap left for C6): ticked, reversed, and its reversal the other's.
+  const rv = { id: 'rv-x', date: '2026-10-03', description: 'Reversal of “Pizza”', amountCents: 4000, direction: 'in', reverses: 'x', reconciled: false };
+  const B4 = c6Rec([C6_ROW({ ref: '7', reversedBy: 'rv-x', voidReason: 'Never cashed', voidedBy: 'Sam', voidedByUid: 'u2', voidedAt: '2026-10-03T10:00:00.000Z' }), rv],
+    base.concat([c6Ev('b1', 'reverse', 'x', 3, { rows: ['rv-x'], why: 'Never cashed' })]));
+  r = c6Both(x, A, B4);
+  [a, b] = c6Apply(x, A, B4, r.raw.set);
+  eq([r.conflicts, a.x.reconciled, a.x.reversedBy, a.x.voidReason, c6Same(a.x, b.x)], [[], true, 'rv-x', 'Never cashed', true], 'ticked and reversed');
+  // Both ticked it: never asked; the earlier tick's stamps, whichever way round.
+  const B5 = c6Rec([C6_ROW(Object.assign({ ref: '7' }, ticked, { approvedBy: 'Pat', approvedAt: '2026-10-01T10:00:00.000Z', reconciledAt: 1780000000000 }))],
+    base.concat([c6Ev('b1', 'tick', 'x', 2)]));
+  r = c6Both(x, A, B5);
+  eq([r.conflicts, r.set.x.approvedBy, r.set.x.reconciledAt], [[], 'Pat', 1780000000000], 'both ticked');
+  // Ticked on one, un-ticked on the other, since they last agreed: asked.
+  const B6 = c6Rec([C6_ROW({ ref: '7', approvedBy: 'Sam' })], base.concat([c6Ev('b1', 'untick', 'x', 3)]));
+  eq(c6Both(x, A, B6).conflicts.map((c) => c.rows[0].parts), [['tick']], 'a tick and an untick');
+});
+
+test('C6: a row keeps the statement it was cleared on, and a tick a statement lists is kept over an untick that didn’t know of it', () => {
+  const x = sandbox(C6_MERGE_FNS);
+  const base = [C6_BASE()];
+  const st = (id, more) => Object.assign({ id, date: '2026-09-30', statementCents: 0, openingCents: 0, clearedCents: 0, bookCents: 0, ticked: ['x'], outstanding: [],
+    by: 'Pat', byUid: 'u1', at: '2026-10-02T10:00:00.000Z' }, more || {});
+  const ticked = { ref: '7', reconciled: true, approvedBy: 'Sam', approvedAt: '2026-09-29T10:00:00.000Z', reconciledAt: 1789000000000 };
+  // A marked Sep 30 reconciled (statementId, with no event on the row); B changed the description.
+  const A = c6Rec([C6_ROW(Object.assign({ statementId: 'st-1' }, ticked))], base, { statements: [st('st-1')] });
+  const B = c6Rec([C6_ROW(Object.assign({ description: 'Pizza night' }, ticked))], base.concat([c6Ev('b1', 'edit', 'x', 3, { f: { description: ['Pizza', 'Pizza night'] } })]));
+  let r = c6Both(x, A, B);
+  let [a, b] = c6Apply(x, A, B, r.raw.set);
+  eq([r.conflicts, a.x.description, a.x.statementId, b.x.statementId], [[], 'Pizza night', 'st-1', 'st-1'], 'the statementId was lost to the other copy');
+  // B un-ticked it without having the statement: the statement lists it, so it stays ticked, on it.
+  const B2 = c6Rec([C6_ROW({ ref: '7', approvedBy: 'Sam', approvedAt: '2026-09-29T10:00:00.000Z' })], base.concat([c6Ev('b1', 'untick', 'x', 3)]));
+  r = c6Both(x, A, B2);
+  [a, b] = c6Apply(x, A, B2, r.raw.set);
+  eq([r.conflicts, a.x.reconciled, b.x.reconciled, b.x.statementId, b.x.reconciledAt], [[], true, true, 'st-1', 1789000000000], 'the tick a statement lists');
+  // …even when both changed the tick (A un-ticked and ticked again).
+  const A3 = c6Rec(A.ledger, base.concat([c6Ev('a1', 'untick', 'x', 2), c6Ev('a2', 'tick', 'x', 2)]), { statements: [st('st-1')] });
+  eq([c6Both(x, A3, B2).conflicts, c6Both(x, A3, B2).set.x.reconciled], [[], true], 'both changed the tick');
+  // An untick made knowing the statement (B has it) stands, as any untick does.
+  const B4 = c6Rec(B2.ledger, B2.ledgerLog, { statements: [st('st-1')] });
+  r = c6Both(x, A, B4);
+  [a, b] = c6Apply(x, A, B4, r.raw.set);
+  eq([r.conflicts, a.x.reconciled, 'statementId' in a.x], [[], false, false], 'an untick knowing the statement');
+  // A statement reopened lists nothing any more.
+  const A5 = c6Rec(A.ledger, base, { statements: [st('st-1', { reopenedAt: '2026-10-03T00:00:00.000Z', reopenedBy: 'Alex' })] });
+  eq(c6Both(x, A5, B2).conflicts.map((c) => c.rows[0].parts), [], 'a reopened statement kept the tick');
+  eq(c6Both(x, A5, B2).set.x.reconciled, false, 'the untick, over a reopened statement');
+  // Two statements: the standing one's id, whichever copy holds it.
+  const sts = [st('st-1', { reopenedAt: '2026-10-03T00:00:00.000Z', reopenedBy: 'Alex' }), st('st-2', { at: '2026-10-04T00:00:00.000Z' })];
+  const A6 = c6Rec([C6_ROW(Object.assign({}, ticked, { statementId: 'st-1' }))], base, { statements: sts });
+  const B6 = c6Rec([C6_ROW(Object.assign({}, ticked, { statementId: 'st-2', description: 'Pizza night' }))], B.ledgerLog, { statements: sts });
+  eq(c6Both(x, A6, B6).set.x.statementId, 'st-2', 'the standing statement');
+  eq(c6Both(x, B6, A6).set.x.statementId, 'st-2', 'the standing statement, the other way');
+});
+
+test('C6: money changed on one device while the other locked the entry is asked about, the whole entry either way; a label under a lock is not', () => {
+  const x = sandbox(C6_MERGE_FNS);
+  const base = [C6_BASE()];
+  const book = (rt) => ({ book: { reconciledThrough: rt } });
+  const amt = c6Ev('b1', 'edit', 'x', 3, { f: { amountCents: [4000, 4500] } });
+  // A ticked x since; B changed its amount.
+  const A = c6Rec([C6_ROW({ ref: '7', reconciled: true, approvedBy: 'Pat', reconciledAt: 1790000000000 })], base.concat([c6Ev('a1', 'tick', 'x', 2)]), book('2026-08-31'));
+  const B = c6Rec([C6_ROW({ ref: '7', amountCents: 4500 })], base.concat([amt]), book('2026-08-31'));
+  let r = c6Both(x, A, B);
+  eq(r.conflicts.map((c) => c.rows[0].parts), [['content', 'tick']], 'ticked on one, the amount changed on the other');
+  // Picked: that copy's money and tick together.
+  r = c6Both(x, A, B, { picks: { x: 'theirs' } });
+  const [a] = c6Apply(x, A, B, r.raw.set);
+  eq([a.x.amountCents, a.x.reconciled], [4500, false], 'the other copy, whole');
+  // A reconciled through its date since (B's book didn't reach it): the same.
+  const A2 = c6Rec([C6_ROW({ ref: '7' })], base, book('2026-09-30'));
+  eq(c6Both(x, A2, B).conflicts.map((c) => c.rows[0].parts), [['content', 'tick']], 'reconciled through it on one');
+  // …or through the date it was moved to.
+  const B3 = c6Rec([C6_ROW({ ref: '7', date: '2026-09-25' })], base.concat([c6Ev('b1', 'edit', 'x', 3, { f: { date: ['2026-09-10', '2026-09-25'] } })]), book('2026-08-31'));
+  eq(c6Both(x, c6Rec([C6_ROW({ ref: '7' })], base, book('2026-09-20')), B3).conflicts.length, 1, 'moved into the other’s period');
+  // Both books reconciled through it already, or neither: B's own change, not asked.
+  eq(c6Both(x, c6Rec(A2.ledger, base, book('2026-09-30')), c6Rec(B.ledger, B.ledgerLog, book('2026-09-30'))).conflicts, [], 'the same lock on both');
+  eq(c6Both(x, c6Rec(A2.ledger, base, book('2026-08-31')), B).conflicts, [], 'no lock on either');
+  // A ticked it long ago (no tick since): B un-ticked it and changed the amount itself. B's.
+  const A4 = c6Rec([C6_ROW({ ref: '7', reconciled: true, approvedBy: 'Pat' })], base, book('2026-08-31'));
+  const B4 = c6Rec([C6_ROW({ ref: '7', amountCents: 4500 })], base.concat([c6Ev('b0', 'untick', 'x', 2), amt]), book('2026-08-31'));
+  r = c6Both(x, A4, B4);
+  eq([r.conflicts, r.set.x.amountCents, r.set.x.reconciled], [[], 4500, false], 'un-ticked and changed on one copy');
+  // A label changed under the other's lock: owner decision 8, not asked.
+  const B5 = c6Rec([C6_ROW({ ref: '7', description: 'Pizza night' })], base.concat([c6Ev('b1', 'edit', 'x', 3, { f: { description: ['Pizza', 'Pizza night'] } })]), book('2026-08-31'));
+  r = c6Both(x, A, B5);
+  eq([r.conflicts, r.set.x.description, r.set.x.reconciled], [[], 'Pizza night', true], 'a label under a lock');
+  // An edit event carrying the tick itself (the log's shape allows it) is a change to the tick, not to the words.
+  const A6 = c6Rec([C6_ROW({ ref: '7', reconciled: true })], base.concat([c6Ev('a1', 'edit', 'x', 2, { f: { reconciled: [false, true] } })]), book('2026-08-31'));
+  r = c6Both(x, A6, B5);
+  eq([r.conflicts, r.set.x.description, r.set.x.reconciled], [[], 'Pizza night', true], 'an edit of the tick');
+  // Both ticked it; the earlier tick is on the copy without the statement: the statement is kept.
+  const sts = [{ id: 'st-1', date: '2026-09-30', ticked: ['x'], by: 'Pat', at: '2026-10-02T10:00:00.000Z' }];
+  const A7 = c6Rec([C6_ROW({ ref: '7', reconciled: true, approvedBy: 'Pat', reconciledAt: 1790000000000, statementId: 'st-1' })], base.concat([c6Ev('a1', 'tick', 'x', 2)]), { statements: sts });
+  const B7 = c6Rec([C6_ROW({ ref: '7', reconciled: true, approvedBy: 'Sam', reconciledAt: 1780000000000 })], base.concat([c6Ev('b1', 'tick', 'x', 2)]));
+  r = c6Both(x, A7, B7);
+  eq([r.set.x.approvedBy, r.set.x.statementId], ['Sam', 'st-1'], 'the earlier tick, and the statement');
+});
+
+test('C6: what the merge takes care of elsewhere, or can’t know, is not a change: a scout deleted, a delete and its Undo, an event past a full log', () => {
+  const x = sandbox(C6_MERGE_FNS);
+  const base = [C6_BASE()];
+  // A deleted Ada (her payment unlinked: one 'reassign'); B relabelled it. B's, unlinked by the merge.
+  const A = c6Rec([C6_ROW({ ref: '7' })], base.concat([c6Ev('a1', 'reassign', 'x', 2, { f: { scoutId: ['s1', ''] } })]));
+  const B = c6Rec([C6_ROW({ ref: '7', scoutId: 's1', description: 'Dues (Ada)' })], base.concat([c6Ev('b1', 'edit', 'x', 3, { f: { description: ['Pizza', 'Dues (Ada)'] } })]));
+  let r = c6Both(x, A, B, { scoutGone: (id) => id === 's1' });
+  eq([r.conflicts, r.set.x.description], [[], 'Dues (Ada)'], 'a scout deleted');
+  // And the family id alone differing, the scout deleted: nothing to ask.
+  eq(c6Both(x, c6Rec([C6_ROW()], base), c6Rec([C6_ROW({ scoutId: 's1' })], base), { scoutGone: (id) => id === 's1' }).conflicts, [], 'an unlinked family');
+  // A deleted the row and put it back (Undo); B changed it: B's.
+  const A2 = c6Rec([C6_ROW({ ref: '7' })], base.concat([c6Ev('a1', 'delete', 'x', 2), c6Ev('a2', 'add', 'x', 2, { why: 'Undo' })]));
+  r = c6Both(x, A2, B);
+  eq([r.conflicts, r.set.x.description], [[], 'Dues (Ada)'], 'a delete and its Undo');
+  // A's log is full (1000 events): an old event of B's that A doesn't have may be one A cut, so it is
+  // not taken as B's change; A's newer edit is the only one.
+  const fill = Array.from({ length: 999 }, (_, i) => c6Ev('f' + String(i).padStart(4, '0'), 'tick', 'other' + i, 5));
+  const A3 = c6Rec([C6_ROW({ ref: '7', description: 'Pizza night' })], fill.concat([c6Ev('a1', 'edit', 'x', 6, { f: { description: ['Pizza', 'Pizza night'] } })]));
+  const B3 = c6Rec([C6_ROW({ ref: '7', description: 'Old' })], base.concat([c6Ev('old', 'edit', 'x', 2, { f: { description: ['Pizza', 'Old'] } })]));
+  r = c6Both(x, A3, B3);
+  eq([r.conflicts, r.set.x.description], [[], 'Pizza night'], 'an event a full log may have cut');
+  // Not full: that event is B's change, and it is a conflict.
+  eq(c6Both(x, c6Rec(A3.ledger, A3.ledgerLog.slice(900)), B3).conflicts.length, 1, 'a log not full');
+});
+
+test('C6: voids and reverses on both devices at once — the same list is settled or asked; two lists are the marks’ to decide, the entry’s words still merged', () => {
+  const x = sandbox(C6_MERGE_FNS);
+  const base = [C6_BASE()];
+  const voided = (why, by) => C6_ROW({ ref: '7', off: 'void', voidReason: why, voidedBy: by, voidedByUid: '', voidedAt: '2026-10-02T10:00:00.000Z', reverses: '', reversedBy: '', carriedFrom: null });
+  // Voided on both, for different reasons: asked.
+  let r = c6Both(x, c6Rec([], base.concat([c6Ev('a1', 'void', 'x', 2)]), { ledgerAside: [voided('Twice', 'Pat')] }),
+    c6Rec([], base.concat([c6Ev('b1', 'void', 'x', 2)]), { ledgerAside: [voided('Wrong book', 'Sam')] }));
+  eq(r.conflicts.map((c) => c.rows[0].parts), [['off']], 'voided on both');
+  // Voided on one, relabelled on the other (still counted there): no question; the words are the
+  // other's on both copies, and the marks will say which list (ledgerAsideSettle).
+  const A = c6Rec([], base.concat([c6Ev('a1', 'void', 'x', 2)]), { ledgerAside: [voided('Twice', 'Pat')] });
+  const B = c6Rec([C6_ROW({ ref: '7', description: 'Pizza night' })], base.concat([c6Ev('b1', 'edit', 'x', 3, { f: { description: ['Pizza', 'Pizza night'] } })]));
+  r = c6Both(x, A, B);
+  const [a, b] = c6Apply(x, A, B, r.raw.set);
+  eq([r.conflicts, a.x.description, a.x.off, a.x.voidReason, a.x.reverses, a.x.carriedFrom, b.x.description, 'off' in b.x], [[], 'Pizza night', 'void', 'Twice', '', null, 'Pizza night', false],
+    'voided and relabelled');
+  // Reversed on both devices at once: the entry and its reversal are ONE choice, both rows in it.
+  const rv = (date, by) => ({ id: 'rv-x', date, description: 'Reversal of “Pizza”', amountCents: 4000, direction: 'in', reverses: 'x', reconciled: false, enteredBy: by });
+  const marks = (why, by) => ({ reversedBy: 'rv-x', voidReason: why, voidedBy: by, voidedAt: '2026-10-02T10:00:00.000Z' });
+  const A2 = c6Rec([C6_ROW(Object.assign({ ref: '7' }, marks('Never cashed', 'Pat'))), rv('2026-10-02', 'Pat')], base.concat([c6Ev('a1', 'reverse', 'x', 2, { rows: ['rv-x'] })]));
+  const B2 = c6Rec([C6_ROW(Object.assign({ ref: '7' }, marks('Bounced', 'Sam'))), rv('2026-10-03', 'Sam')], base.concat([c6Ev('b1', 'reverse', 'x', 3, { rows: ['rv-x'], by: 'Sam' })]));
+  r = c6Both(x, A2, B2);
+  eq([r.conflicts.length, r.conflicts[0].ids, r.conflicts[0].rows.map((w) => [w.id, w.parts])], [1, ['rv-x', 'x'], [['rv-x', ['content']], ['x', ['off']]]], 'a reverse on both');
+  r = c6Both(x, A2, B2, { picks: { x: 'theirs', 'rv-x': 'theirs' } });
+  const [a2, b2] = c6Apply(x, A2, B2, r.raw.set);
+  eq([a2.x.voidReason, a2['rv-x'].date, c6Same(a2, b2)], ['Bounced', '2026-10-03', true], 'picked');
+});
+
+// Phase 3, C6 — a world for two-device histories: the page's own normalizeState, sync merge and ledger
+// operations on one sandbox. Each device is a record; `dev(rec, who, ops)` runs a device's operations
+// on its record as the page's handlers do them (refused ones skipped, as the page refuses them), then
+// saves and loads it (normalizeState), as a push and the other device's read would.
+const C6_OP_FNS = ['LEDGER_VOID_REASON_MAX', 'ledgerVoidRow', 'ledgerUnvoidRow', 'ledgerReversalId', 'ledgerReplacementId', 'ledgerReplacementFor', 'ledgerReverseSlot',
+  'ledgerReverseRow', 'ledgerReversalName', 'ledgerReverseDateDefault', 'LEDGER_OPS', 'ledgerEvent', 'ledgerLogClip', 'ledgerWho', 'logLedger', 'ledgerRowDiff', 'ledgerRowFields',
+  'LEDGER_EDIT_FIELDS', 'stampApproved', 'ledgerCancelledWhy', 'entrySignedCents', 'entryAfterOpening', 'mergeRemoteAppendOnly', 'statementInForce'];
+function c6World() {
+  const ctx = vm.createContext({});
+  const names = [...new Set([...NORMALIZE_FNS, ...GONE_FNS, ...C6_OP_FNS])];
+  vm.runInContext(`${names.map(decl).join('\n')}
+    var clock = 1790000000000, who = 'A', seq = 0;
+    Date.now = function () { return clock; };
+    var sync = { deviceId: 'dev' }, ui = {};
+    function uid() { seq += 1; return who.toLowerCase() + seq; }
+    function ledgerActor() { return who === 'A' ? 'Pat' : 'Sam'; }
+    function ledgerActorUid() { return 'u-' + who; }
+    function todayISO() { return '2026-10-15'; }
+    function dropScout() {} function showToast() {} function render() {} function commit() {}
+    function iso() { return new Date(clock).toISOString(); }
+    var state = null;
+    function rowOf(id) { return state.ledger.filter(function (e) { return e.id === id; })[0]; }
+    function asideOf(id) { return state.ledgerAside.filter(function (e) { return e.id === id; })[0]; }
+    function pairFixed(e) { return !!(e.reverses || ledgerReversalOf(state.ledger, e)); }
+    // Each returns whether it was done; a refused one changes nothing, as on the page.
+    var OPS = {
+      desc: function (id, v) {
+        var e = rowOf(id); if (!e || e.description === v) return false;
+        var was = ledgerRowFields(e); e.description = v; logLedger('edit', id, { f: ledgerRowDiff(was, e) }); return true;
+      },
+      line: function (id, v) {
+        var e = rowOf(id); if (!e || e.lineId === v) return false;
+        var was = ledgerRowFields(e); e.lineId = v; logLedger('edit', id, { f: ledgerRowDiff(was, e) }); return true;
+      },
+      amount: function (id, v) {
+        var e = rowOf(id); if (!e || e.amountCents === v || ledgerLocked(e, state.book) || pairFixed(e)) return false;
+        var was = ledgerRowFields(e); e.amountCents = v; e.notCommission = false; logLedger('edit', id, { f: ledgerRowDiff(was, e) }); return true;
+      },
+      tick: function (id) { var e = rowOf(id); if (!e || e.reconciled) return false; stampApproved(e, true); e.reconciled = true; logLedger('tick', id); return true; },
+      untick: function (id) { var e = rowOf(id); if (!e || !e.reconciled) return false; stampApproved(e, false); e.reconciled = false; logLedger('untick', id); return true; },
+      void: function (id) {
+        var e = rowOf(id); if (!e || ledgerLocked(e, state.book) || ledgerCancelledWhy(state, e)) return false;
+        var v = ledgerVoidRow(state, id, 'Entered twice', { by: ledgerActor(), byUid: ledgerActorUid(), at: iso() });
+        logLedger('void', id, { why: 'Entered twice' }); markGone('ledger', [v.row]); return true;
+      },
+      unvoid: function (id) {
+        var a = asideOf(id); if (!a || a.off !== 'void' || a.reverses) return false;
+        var b = ledgerUnvoidRow(state, id); markGone('ledger', [b], true); logLedger('unvoid', id); return true;
+      },
+      reverse: function (id) {
+        var e = rowOf(id); if (!e || e.reverses || ledgerReversalOf(state.ledger, e)) return false;
+        var r = ledgerReverseRow(state, id, 'Returned by ' + who, { by: ledgerActor(), byUid: ledgerActorUid(), at: iso() }, ledgerReverseDateDefault(e, state.book, todayISO()));
+        logLedger('reverse', id, { why: 'Returned by ' + who, rows: [r.reversal.id] }); return true;
+      },
+      add: function (n) {
+        state.ledger.push({ id: who.toLowerCase() + '-new' + n, date: '2026-10-0' + (1 + n % 9), description: who + ' new ' + n, amountCents: 100 * (1 + n),
+          direction: n % 2 ? 'in' : 'out', lineId: '', method: '', ref: '', source: '', donor: '', scoutId: '', tierMakeup: '', reimbursement: false, notCommission: false,
+          reconciled: false, enteredBy: ledgerActor(), enteredAt: iso(), approvedBy: '', approvedAt: '', enteredByUid: ledgerActorUid(), approvedByUid: '' });
+        return true;
+      },
+      // Mark reconciled through Sep 30 (as the page's, reduced): a statement listing the ticked rows
+      // through it not already on a standing one, each given its id; the lock; the log.
+      reconcile: function () {
+        var D = '2026-09-30', was = state.book.reconciledThrough || '';
+        if (was >= D) return false;
+        var on = {}; (state.statements || []).forEach(function (s) { if (!statementReopened(s)) (s.ticked || []).forEach(function (r) { on[r] = true; }); });
+        var rows = state.ledger.filter(function (e) { return e.reconciled && e.date <= D && !on[e.id] && !e.statementId; });
+        var st = { id: 'st-' + D + '-' + who, date: D, statementCents: 0, openingCents: 0, clearedCents: 0, bookCents: 0, ticked: rows.map(function (e) { return e.id; }),
+          outstanding: [], by: ledgerActor(), byUid: ledgerActorUid(), at: iso() };
+        state.statements = mergeStatements(state.statements, [st]);
+        rows.forEach(function (e) { e.statementId = st.id; });
+        state.book.reconciledThrough = D; state.book.reconciledBy = ledgerActor(); state.book.reconciledAt = iso();
+        logLedger('reconcile', 'book', { f: { reconciledThrough: [was, D] } }); return true;
+      }
+    };
+    function norm(rec) { return normalizeState(JSON.parse(JSON.stringify(rec))); }
+    // A device's ops, each at its own time ([t, op, args…]), on its copy of the record; then saved and read.
+    function dev(rec, name, ops) {
+      state = norm(rec); who = name;
+      var done = [];
+      ops.forEach(function (o) { clock = o[0]; if (OPS[o[1]].apply(null, o.slice(2))) done.push(o); });
+      return { rec: norm(state), done: done };
+    }
+    // This device (\`mine\`) merging the other's save, with the leader's picks; the record it would push.
+    function merge(mine, theirs, picks, at) {
+      clock = at; state = norm(mine); who = 'M';
+      mergeRemoteAppendOnly({ json: JSON.stringify(theirs) }, [], [], [], picks);
+      return norm(state);
+    }
+    function conflicts(mine, theirs) {
+      var m = norm(mine), t = norm(theirs);
+      return mergeLedgerRows(m, t, { scoutGone: ledgerMarksGone(m.gone.scouts, t.gone.scouts) }).conflicts;
+    }
+    function counted(rec) { return rec.ledger.reduce(function (n, e) { return n + entrySignedCents(e); }, 0); }`, ctx);
+  return ctx;
+}
+// The base: a book reconciled through Aug 31 on a statement listing the rows ticked then.
+function c6Base(r, pick) {
+  const rows = [];
+  const n = 4 + Math.floor(r() * 5);
+  for (let i = 0; i < n; i++) {
+    const date = '2026-' + pick(['08', '08', '09', '09', '10']) + '-' + pick(['05', '12', '20']);
+    const ticked = date < '2026-09-01' ? r() < 0.8 : r() < 0.4;
+    rows.push({ id: 'e' + i, date, description: 'Row ' + i, amountCents: 100 * (1 + Math.floor(r() * 90)), direction: pick(['in', 'out']), lineId: pick(['', 'L1']),
+      reconciled: ticked, approvedBy: ticked ? 'Pat' : '', approvedAt: ticked ? '2026-09-0' + (1 + (i % 9)) + 'T10:00:00.000Z' : '',
+      statementId: ticked && date < '2026-09-01' ? 'st-2026-08-31-z' : undefined });
+  }
+  const aug = rows.filter((e) => e.statementId).map((e) => e.id);
+  return Object.assign(JSON.parse(JSON.stringify(GONE_SEED)), { ledger: rows, ledgerAside: [], ledgerLog: [],
+    statements: [{ id: 'st-2026-08-31-z', date: '2026-08-31', statementCents: 0, openingCents: 0, clearedCents: 0, bookCents: 0, ticked: aug, outstanding: [],
+      by: 'Pat', byUid: 'u-A', at: '2026-09-02T10:00:00.000Z' }],
+    book: { openingCents: 10000, openingDate: '2026-07-01', reconciledThrough: '2026-08-31', reconciledBy: 'Pat', reconciledAt: '2026-09-02T10:00:00.000Z',
+      statementDate: '', statementCents: 0, year: 2026 } });
+}
+// Random ops for one device, on the base's rows (and its own new ones), at the times given.
+function c6Ops(r, pick, base, name, times) {
+  const ids = base.ledger.map((e) => e.id);
+  const kinds = ['desc', 'desc', 'line', 'amount', 'tick', 'tick', 'untick', 'void', 'void', 'unvoid', 'reverse', 'reverse', 'add', 'reconcile'];
+  return times.map((t, i) => {
+    const k = pick(kinds), id = pick(ids);
+    if (k === 'desc') return [t, k, id, name + ' says ' + i];
+    if (k === 'line') return [t, k, id, pick(['', 'L1', 'L2'])];
+    if (k === 'amount') return [t, k, id, 100 * (1 + Math.floor(r() * 90))];
+    if (k === 'add') return [t, k, i];
+    if (k === 'reconcile') return [t, k];
+    return [t, k, id];
+  });
+}
+// A record's book, by id: counted rows, rows set aside ('id:off'), all canonical, and the rest compared.
+const c6Book = (rec) => ({
+  ledger: rec.ledger.map((e) => c6Canon(e)).sort(), aside: rec.ledgerAside.map((e) => c6Canon(e)).sort(),
+  // A 'resolve' is written by whichever device merges, under its own id: read by what it says.
+  marks: c6Canon(rec.gone.ledger), log: rec.ledgerLog.map((e) => (e.op === 'resolve' ? 'resolve ' + e.row + ' ' + c6Canon(e.f) : e.id)).sort(),
+  statements: c6Canon(rec.statements), lock: rec.book.reconciledThrough
+});
+// What two c6Books disagree on: [part, only in the first, only in the second].
+const c6Diff = (p, q) => Object.keys(p).filter((k) => JSON.stringify(p[k]) !== JSON.stringify(q[k])).map((k) => Array.isArray(p[k])
+  ? [k, p[k].filter((x) => q[k].indexOf(x) === -1), q[k].filter((x) => p[k].indexOf(x) === -1)] : [k, p[k], q[k]]);
+const c6Where = (rec, id) => rec.ledger.some((e) => e.id === id) ? 'counted' : rec.ledgerAside.some((e) => e.id === id) ? 'aside' : 'gone';
+
+test('C6 property: two devices’ histories merge the same either way round, to a fixed point, with nothing lost or brought back, and the money as a replay', () => {
+  const w = c6World();
+  const r = c3Rand(6006);
+  const pick = (a) => a[Math.floor(r() * a.length)];
+  const get = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, w)));
+  let cases = 0, withConflict = 0, replayed = 0;
+  for (let n = 0; n < 160; n++) {
+    const base = c6Base(r, pick);
+    // Interleaved times: A's and B's operations in one order of the clock.
+    const tA = [], tB = [];
+    for (let t = 1, k = 2 + Math.floor(r() * 7); k > 0; k--, t++) (r() < 0.5 ? tA : tB).push(1790000000000 + t * 60000);
+    const opsA = c6Ops(r, pick, base, 'A', tA), opsB = c6Ops(r, pick, base, 'B', tB);
+    w.base = base; w.opsA = opsA; w.opsB = opsB;
+    const A = get("dev(base, 'A', opsA).rec"), B = get("dev(base, 'B', opsB).rec");
+    w.A = A; w.B = B;
+    const conf = get('conflicts(A, B)');
+    const at = 1790000000000 + 3600000;
+    // Every conflict picked the same way both round: this device's in one, the other's in the other.
+    const mineAll = {}, theirsAll = {};
+    conf.forEach((c) => c.ids.forEach((id) => { mineAll[id] = 'mine'; theirsAll[id] = 'theirs'; }));
+    w.pa = mineAll; w.pb = theirsAll;
+    const AB = get(`merge(A, B, pa, ${at})`), BA = get(`merge(B, A, pb, ${at})`);
+    const what = `case ${n}: A ${JSON.stringify(opsA.map((o) => o.slice(1)))} B ${JSON.stringify(opsB.map((o) => o.slice(1)))}`;
+    // 1. Order independence: the same book whichever device merges the other's save.
+    eq(c6Diff(c6Book(BA), c6Book(AB)), [], what + ': merged the other way round');
+    eq(get('conflicts(B, A)').map(c6Swap), conf, what + ': the conflicts the other way round');
+    // 2. A fixed point: merging either save again changes nothing, and asks nothing.
+    w.AB = AB;
+    eq([c6Diff(c6Book(get(`merge(AB, A, {}, ${at})`)), c6Book(AB)), c6Diff(c6Book(get(`merge(AB, B, {}, ${at})`)), c6Book(AB))], [[], []], what + ': not a fixed point');
+    eq([get('conflicts(AB, A)'), get('conflicts(AB, B)')], [[], []], what + ': asked again');
+    // 3. Nothing lost or brought back: every row either copy held is in the merged book once, or gone
+    // only with a deletion mark; nothing counted is marked deleted.
+    const ids = new Set(A.ledger.concat(A.ledgerAside, B.ledger, B.ledgerAside).map((e) => e.id));
+    ids.forEach((id) => {
+      const where = c6Where(AB, id);
+      ok(where !== 'gone', `${what}: ${id} was lost`);
+      if (where === 'counted') ok(!(AB.gone.ledger[id] > 0), `${what}: ${id} counts, marked deleted`);
+    });
+    const all = AB.ledger.concat(AB.ledgerAside).map((e) => e.id);
+    ok(new Set(all).size === all.length, what + ': a row is in the book twice');
+    // A row voided on one device and not un-voided, and not ticked on the other, stays voided.
+    ['A', 'B'].forEach((d) => {
+      const mine = d === 'A' ? A : B, other = d === 'A' ? B : A;
+      mine.ledgerAside.forEach((x) => {
+        const there = other.ledger.find((e) => e.id === x.id);
+        const otherVoidedOrSame = !there || (!there.reconciled && !(other.gone.ledger[x.id] < 0));
+        if (x.off === 'void' && otherVoidedOrSame && !AB.ledger.some((e) => e.reverses === x.id)) eq(c6Where(AB, x.id), 'aside', `${what}: ${x.id}, voided on ${d}, came back`);
+      });
+    });
+    // 4. Owner decision 7: a row ticked on either copy (and not un-ticked on the other since), dated
+    // in the period the merged book is reconciled through, counts, whatever the other did to it.
+    const untickedBy = (d, c, id) => d.ledgerLog.some((ev) => ev.op === 'untick' && (ev.row === id || (ev.rows || []).includes(id)) && !c.ledgerLog.some((x) => x.id === ev.id));
+    [[A, B], [B, A]].forEach(([c, d]) => c.ledger.forEach((e) => {
+      if (e.reconciled && e.date <= AB.book.reconciledThrough && !untickedBy(d, c, e.id)) {
+        eq(c6Where(AB, e.id), 'counted', `${what}: ${e.id}, ticked in the reconciled period, is not counted`);
+      }
+    }));
+    // 5. Ticks and statements: a row a standing statement lists, ticked on every copy that holds that
+    // statement, is ticked in the merged book, and on a statement.
+    AB.statements.filter((s) => !s.reopenedAt).forEach((s) => (s.ticked || []).forEach((id) => {
+      const holders = [A, B].filter((c) => c.statements.some((x) => x.id === s.id));
+      const tickedThere = holders.every((c) => { const e = c.ledger.find((x) => x.id === id); return !e || e.reconciled; });
+      const e = AB.ledger.find((x) => x.id === id);
+      const hadId = [A, B].some((c) => c.ledger.some((x) => x.id === id && x.statementId));
+      if (e && tickedThere) eq([e.reconciled, hadId ? !!e.statementId : true], [true, true], `${what}: ${id} lost its tick or statement`);
+    }));
+    AB.ledger.forEach((e) => { if (e.statementId) ok(e.reconciled, `${what}: ${e.id} is on a statement, not ticked`); });
+    // 6. A reversal that counts has its entry counting beside it.
+    AB.ledger.forEach((e) => { if (e.reverses) eq(c6Where(AB, e.reverses), 'counted', `${what}: ${e.id} counts without the entry it reverses`); });
+    // 7. The money: with no conflict, what the merged book counts is what one device's changes then
+    // the other's would have counted, on one copy (each refused there if the page would refuse it).
+    if (!conf.length) {
+      const AthenB = get("(function () { var x = dev(base, 'A', opsA).rec; return counted(dev(x, 'B', opsB).rec); })()");
+      const BthenA = get("(function () { var x = dev(base, 'B', opsB).rec; return counted(dev(x, 'A', opsA).rec); })()");
+      const got = get('counted(AB)');
+      ok(got === AthenB || got === BthenA, `${what}: the merged book counts ${got}; one after the other, ${AthenB} or ${BthenA}`);
+      replayed += 1;
+    } else withConflict += 1;
+    cases += 1;
+  }
+  ok(replayed > 60 && withConflict > 10, `too few of each: ${replayed} replayed, ${withConflict} with a conflict`);
+});
+
+// Phase 3, C6 — the page's own edit, tick and Mark reconciled, reduced to what they write and log.
+const C6_EXTRA = `${C4_EXTRA}
+  ${['ledgerRowDiff'].map(slice).join('\n')}
+  function c6Row(id) { return state.ledger.filter(function (x) { return x.id === id; })[0]; }
+  function editRow(id, k, v) { var e = c6Row(id), was = ledgerRowFields(e); e[k] = v; logLedger('edit', id, { f: ledgerRowDiff(was, e) }); commit(); }
+  function tickRow(id) { var e = c6Row(id); stampApproved(e, true); e.reconciled = true; logLedger('tick', id); commit(); }
+  function reconcileThrough(D) {
+    var was = state.book.reconciledThrough || '', at = new Date(Date.now()).toISOString();
+    var rows = state.ledger.filter(function (e) { return e.reconciled && e.date <= D && !e.statementId; });
+    var st = { id: 'st-' + D + '-' + sync.deviceId, date: D, statementCents: 0, openingCents: 0, clearedCents: 0, bookCents: 0,
+      ticked: rows.map(function (e) { return e.id; }), outstanding: [], by: 'Pat', byUid: 'u9', at: at };
+    state.statements = mergeStatements(state.statements || [], [st]);
+    rows.forEach(function (e) { e.statementId = st.id; });
+    state.book.reconciledThrough = D; state.book.reconciledBy = 'Pat'; state.book.reconciledAt = at;
+    logLedger('reconcile', 'book', { f: { reconciledThrough: [was, D] } }); commit();
+  }`;
+function c6FsPair(over) {
+  const p = fsGonePair(Object.assign({}, C3_SEED, over || {}));
+  p.a.run(C6_EXTRA); p.b.run(C6_EXTRA);
+  return p;
+}
+const c6L2 = (st) => { const e = st.ledger.find((x) => x.id === 'l2') || {}; return [e.description, e.reconciled === true, e.statementId || '']; };
+
+test('C6, Firestore: an entry changed on one device keeps the change when another device saves over it, and a tick and a statement made meanwhile stay with it', () => {
+  // A relabels l2 and saves; B, with an unsaved change of its own and l2 as it was, saves last.
+  let { a, b, server } = c6FsPair();
+  a.run("editRow('l2', 'description', 'Pizza night')"); a.push();
+  b.run(B1); b.hear(); b.push();
+  eq([c6L2(server()), eIds(server()).indexOf('b1') !== -1], [['Pizza night', false, ''], true], 'the edit, or B’s change, was lost');
+  a.hear();
+  eq(c6L2(a.get('state')), ['Pizza night', false, ''], 'A after B’s save');
+  // Before C6 the saving device's copy of the row won, whole: the edit was lost.
+  ({ a, b, server } = c6FsPair());
+  b.run(preC6Merge(slice('mergeRemoteAppendOnly')));
+  a.run("editRow('l2', 'description', 'Pizza night')"); a.push();
+  b.run(B1); b.hear(); b.push();
+  eq(c6L2(server())[0], 'Pizza', 'control: the page before C6');
+  // B relabels l2 (unsaved); A ticks it and marks September reconciled, and saves first. The label,
+  // the tick and the statement it was cleared on all stand, on both (the C5 gap: statementId lost).
+  ({ a, b, server } = c6FsPair());
+  b.run("editRow('l2', 'description', 'Pizza (pack night)')");
+  a.run("tickRow('l2'); reconcileThrough('2026-09-30')"); a.push();
+  b.hear(); b.push();
+  const want = ['Pizza (pack night)', true, 'st-2026-09-30-devA'];
+  // (Aug 31's is the legacy statement the load gives a book reconciled before statements were kept.)
+  eq([c6L2(server()), server().book.reconciledThrough, server().statements.map((s) => s.ticked)], [want, '2026-09-30', [null, ['l2']]], 'the pack record');
+  eq(c6L2(b.get('state')), want, 'B after its save');
+  a.hear();
+  eq(c6L2(a.get('state')), want, 'A after B’s save');
+  // The other way round: A ticks and reconciles last, over B's relabel.
+  ({ a, b, server } = c6FsPair());
+  b.run("editRow('l2', 'description', 'Pizza (pack night)')"); b.push();
+  a.run("tickRow('l2'); reconcileThrough('2026-09-30')");
+  a.hear(); a.push();
+  eq(c6L2(server()), want, 'A saved last');
+});
+
+atest('C6, api: an entry changed on one device keeps the change when another device saves over it, with a tick and a statement made meanwhile', async () => {
+  const over = { ledger: C3_ROWS, ledgerAside: [], book: C3_SEED.book, ledgerLog: [], statements: [] };
+  const { a, b, server } = await apiGonePair(over);
+  for (const c of [a, b]) c.run(C6_EXTRA);
+  // B relabels l2 (unsaved); A ticks it, marks September reconciled and saves; B saves last.
+  b.run("editRow('l2', 'description', 'Pizza (pack night)')");
+  await a.edit("tickRow('l2'); reconcileThrough('2026-09-30')");
+  await settle([b], 800);
+  const want = ['Pizza (pack night)', true, 'st-2026-09-30-dev-owner'];
+  eq([c6L2(server()), server().book.reconciledThrough], [want, '2026-09-30'], 'the pack record');
+  await a.poll();
+  eq(c6L2(a.get('state')), want, 'A');
+  // A relabels l3 and saves; B, with its own unsaved change and l3 as it was, saves last.
+  await a.edit("editRow('l3', 'lineId', 'L9')");
+  b.run(B1);
+  await settle([b], 800);
+  eq(server().ledger.find((e) => e.id === 'l3').lineId, 'L9', 'the line A set');
 });
 
 /* ---------------- report ---------------- */

@@ -8821,7 +8821,8 @@
     date: 'date', description: 'description', amountCents: 'amount', direction: 'in or out', lineId: 'budget line',
     method: 'method', ref: 'reference', source: 'source', scoutId: 'scout (family)', donor: 'donor', reimbursement: 'reimbursement',
     notCommission: 'counted as other income', tierMakeup: 'tier make-up', openingCents: 'opening balance', openingDate: 'opening date',
-    reconciledThrough: 'reconciled through', statementCents: 'statement ending balance'
+    reconciledThrough: 'reconciled through', statementCents: 'statement ending balance',
+    reconciled: 'ticked', voidReason: 'reason'   // Phase 3, C6: what a 'resolve' kept
   };
   // One value from an event's `f`, as a leader reads it. `names` turns an id into a name
   // ({ line, scout, tier }: each id → name or ''). Pure given `names`.
@@ -13793,6 +13794,301 @@
     if (b) return imports[b] > 0;
     return Object.keys(imports).some(function (k) { return imports[k] > 0; });
   }
+  // ---------------------------------------------------------------------------
+  // PHASE 3, C6 — THE PER-ROW LEDGER MERGE (owner, 2026-09-29, decision 4: an entry two devices
+  // change at once is a choice for the leader, not whichever device saves last). Until now a
+  // sync kept this device's copy of every row both copies hold, whole: another leader's change to
+  // it was lost without a word (only the reverse marks, rvMarked, were patched across). Now each
+  // row both copies hold, differing, is settled from the change log (state.ledgerLog):
+  //
+  //   A row has three PARTS (ledgerFieldPart), each settled on its own:
+  //     tick     reconciled, with its stamps (approvedBy, approvedByUid, approvedAt, reconciledAt)
+  //              and the statement it was cleared on (statementId);
+  //     off      how it is set aside or reversed (off, reversedBy, voidReason, voidedBy,
+  //              voidedByUid, voidedAt). Only when both copies hold the row in the same list
+  //              (both counted, or set aside the same way): which list is the deletion marks'
+  //              decision, as before (settleVoided, ledgerAsideSettle, ledgerPairCheck);
+  //     content  everything else: what the entry says (date, amount, direction, description,
+  //              line, family, method, reference, …) and who entered it.
+  //   A copy CHANGED a part since the two last agreed when its log has an event about the row,
+  //   touching that part (ledgerEventParts), that the other copy's log doesn't have. Then:
+  //     the part reads the same in both            → nothing to settle ('' and absent alike);
+  //     only one copy changed it                    → that copy's;
+  //     both changed it, or neither did (a change   → a CONFLICT: the leader picks a copy for
+  //       that left no event: a page from before C2)  the row (picks[id]), logged as a 'resolve'.
+  //   The tick has rules of its own, before that:
+  //     - both ticked, or both not, is never a conflict: the stamps are the copy that changed
+  //       the tick, else the earlier tick's (the same from either side);
+  //     - a tick a standing statement lists (C5's ticked[]) is kept over an untick made on a copy
+  //       that doesn't have that statement: that untick didn't know the entry was signed off
+  //       (owner decision 7, for a tick). An untick made knowing the statement stands, as any does;
+  //     - a ticked row keeps the statement it was cleared on (statementId) from either copy: Mark
+  //       reconciled writes it with no event of its own (C5 build report, 5). Two different ones:
+  //       a standing statement's, then the later statement.
+  //   Two rules against money moving under a lock (owner decision 1: a locked row's amount,
+  //   direction and date change only by Correct):
+  //     - a reverse or correct changes the content too (its reversal mirrors the entry's money);
+  //     - money changed on one copy while the other locked the row since (ticked it, or reconciled
+  //       through its date) is a conflict of the whole row (ledgerLockedMeanwhile).
+  //   A 'reassign' (a scout deleted) settles nothing here: the scout's deletion mark unlinks the
+  //   rows on every device (mergeRemoteAppendOnly), so a family the merged marks have deleted
+  //   (`scoutGone`) reads as none. Nor does an 'add' or 'delete': the marks settle those.
+  // THE LOG CAP (mergeLedgerLog): a copy whose log is full may have cut an old event the other
+  // still holds, so one that sorts before everything a full log kept is not a change (its "last
+  // agreed" is not known, and a missing old event proves nothing).
+  // PURE and ORDER-INDEPENDENT: mergeLedgerRows(b, a) settles every row as mergeLedgerRows(a, b)
+  // does, with 'mine' and 'theirs' swapped in the conflicts and in `picks`. `mine` and `theirs`
+  // are pack records (their ledger, ledgerAside, ledgerLog and statements); neither is changed.
+  // Returns { set: { id: fields }, conflicts: [item] }. `set` is what both copies of a row take
+  // (applyLedgerRowSet; a field undefined is removed). An unpicked conflict is left out of `set`:
+  // each copy keeps its own, and the merge's union keeps this device's (what a sync always did).
+  // An item is one choice:
+  // the rows two events tie together (an entry reversed on both devices and its reversal), each
+  // { id, parts, mine, theirs, mineBy, theirsBy }: the parts in conflict, both rows, and the latest
+  // event behind each copy's change (null when nothing logged it).
+  var LEDGER_TICK_FIELDS = ['reconciled', 'reconciledAt', 'approvedBy', 'approvedByUid', 'approvedAt', 'statementId'];
+  var LEDGER_OFF_FIELDS = ['off', 'reversedBy', 'voidReason', 'voidedBy', 'voidedByUid', 'voidedAt'];
+  function ledgerFieldPart(k) {
+    return LEDGER_TICK_FIELDS.indexOf(k) !== -1 ? 'tick' : LEDGER_OFF_FIELDS.indexOf(k) !== -1 ? 'off' : 'content';
+  }
+  // The parts of row `id` that event `ev` changed: { tick, off, content }, each true or absent. An op
+  // this page doesn't know (a newer page's) changed all three: a conflict, never a silent pick.
+  function ledgerEventParts(ev, id) {
+    var all = { tick: true, off: true, content: true }, op = ev.op;
+    if (LEDGER_OPS.indexOf(op) === -1) return all;
+    if (ev.row !== id) {
+      // Named in `rows`: a Tick all's rows were ticked. Nothing else: a reassign's rows (the marks
+      // unlink them), a reopen's statements, and the rows a reverse or correct made (a copy holding
+      // one holds the event that made it; two devices that each made it differ with neither log
+      // saying why, so they are asked).
+      return op === 'tick' || op === 'untick' ? { tick: true } : {};
+    }
+    if (op === 'tick' || op === 'untick') return { tick: true };
+    if (op === 'void' || op === 'unvoid') return { off: true };
+    // A reverse (or correct) copies the entry's money into its reversal, so it counts as a change to
+    // what the entry says too: another device changing it at the same time is asked about, and the
+    // pair can't be left mirroring an amount the entry no longer has.
+    if (op === 'reverse' || op === 'correct') return { off: true, content: true };
+    if (op === 'notcommission' || op === 'unmakeup') return { content: true };
+    if (op === 'resolve') return all;
+    if (op === 'edit') {
+      var ks = ev.f && typeof ev.f === 'object' ? Object.keys(ev.f) : [], p = {};
+      if (!ks.length) return { content: true };
+      ks.forEach(function (k) { p[ledgerFieldPart(k)] = true; });
+      return p;
+    }
+    return {};
+  }
+  // The deletion marks of two copies, for one log (a scout's): is `id` deleted once they are merged
+  // (the later mark; on a tie, the deletion: as mergeRemoteAppendOnly merges them)? Pure.
+  function ledgerMarksGone(ma, mb) {
+    return function (id) {
+      if (typeof id !== 'string' || !id) return false;
+      var a = ma && typeof ma[id] === 'number' ? ma[id] : 0, b = mb && typeof mb[id] === 'number' ? mb[id] : 0;
+      var m = Math.abs(b) > Math.abs(a) || (Math.abs(b) === Math.abs(a) && b > 0) ? b : a;
+      return m > 0;
+    };
+  }
+  function ledgerEmpty(v) { return v === '' || v === null || v === undefined; }
+  // The fields that are the money itself: a locked row's change only by Correct (LEDGER_LOCKED_FIELDS).
+  var LEDGER_MONEY_FIELDS = ['amountCents', 'direction', 'date'];
+  // Did copy `oth` (its row, the parts it changed since, its record) lock the row while the other
+  // (`src`, its record `srcRec`) changed its money: ticked it there since, or reconciled through its
+  // date (either date: before or after the change) when the other copy's book wasn't? Pure.
+  function ledgerLockedMeanwhile(oth, src, othChanged, othRec, srcRec) {
+    if (othChanged.tick && oth.reconciled === true) return true;
+    var ort = String((othRec.book && othRec.book.reconciledThrough) || ''), srt = String((srcRec.book && srcRec.book.reconciledThrough) || '');
+    return [oth.date, src.date].some(function (d) { return !!d && !!ort && d <= ort && !(srt && d <= srt); });
+  }
+  // One part of a row, as compared: its fields, sorted, the empty ones left out. Pure.
+  function ledgerPartKey(e, part, scoutGone) {
+    var c = {};
+    Object.keys(e).sort().forEach(function (k) {
+      if (k === 'id' || ledgerFieldPart(k) !== part) return;
+      var v = e[k];
+      if (k === 'scoutId' && scoutGone && scoutGone(v)) v = '';
+      if (!ledgerEmpty(v)) c[k] = v;
+    });
+    return JSON.stringify(c);
+  }
+  // Write `fields` (mergeLedgerRows' `set` for the row) onto `row`, in place: undefined removes a
+  // field. An empty value over an empty one is left as it is ('' and absent read alike), so a row set
+  // aside keeps the '' fields its list gives it.
+  function applyLedgerRowSet(row, fields) {
+    Object.keys(fields).forEach(function (k) {
+      var v = fields[k];
+      if (ledgerEmpty(v) && ledgerEmpty(row[k])) return;
+      if (v === undefined) delete row[k];
+      else row[k] = v && typeof v === 'object' ? JSON.parse(JSON.stringify(v)) : v;
+    });
+    return row;
+  }
+  function mergeLedgerRows(mine, theirs, opts) {
+    opts = opts || {};
+    var picks = opts.picks || {}, scoutGone = opts.scoutGone || null;
+    function side(s) {
+      var o = { rows: Object.create(null), evs: Object.create(null), ids: Object.create(null), sts: Object.create(null), full: false, first: '' };
+      arrOf(s && s.ledger).forEach(function (e) { if (e && typeof e.id === 'string' && !o.rows[e.id]) o.rows[e.id] = { row: e, list: 'counted' }; });
+      arrOf(s && s.ledgerAside).forEach(function (e) { if (e && typeof e.id === 'string' && !o.rows[e.id]) o.rows[e.id] = { row: e, list: 'aside:' + String(e.off) }; });
+      var log = arrOf(s && s.ledgerLog).filter(function (ev) { return ev && typeof ev.id === 'string'; });
+      log.forEach(function (ev) {
+        o.ids[ev.id] = true;
+        var named = {};
+        [ev.row].concat(Array.isArray(ev.rows) ? ev.rows : []).forEach(function (r) {
+          if (typeof r !== 'string' || named[r]) return;
+          named[r] = true;
+          (o.evs[r] = o.evs[r] || []).push(ev);
+        });
+      });
+      arrOf(s && s.statements).forEach(function (st) { if (st && typeof st.id === 'string') o.sts[st.id] = true; });
+      o.full = log.length > 0 && ledgerLogRoom(log).full;
+      o.first = log.length ? String(log[0].at || '') + '\u0000' + log[0].id : '';
+      return o;
+    }
+    var M = side(mine), T = side(theirs);
+    // Events about `id` on copy `a` that copy `b` hasn't, past b's cap, and the parts they changed.
+    function fresh(a, b, id) {
+      return (a.evs[id] || []).filter(function (ev) {
+        return !b.ids[ev.id] && !(b.full && String(ev.at || '') + '\u0000' + ev.id < b.first);
+      });
+    }
+    function partsOf(evs, id) {
+      var p = {};
+      evs.forEach(function (ev) { var q = ledgerEventParts(ev, id); Object.keys(q).forEach(function (k) { p[k] = true; }); });
+      return p;
+    }
+    // The standing statements (not reopened), both copies' as one: which lists each row, and their order.
+    var sts = mergeStatements(mine && mine.statements, theirs && theirs.statements), stRank = Object.create(null), listedBy = Object.create(null);
+    sts.forEach(function (st, i) {
+      stRank[st.id] = (statementReopened(st) ? 0 : sts.length) + i + 1;
+      if (!statementReopened(st) && Array.isArray(st.ticked)) st.ticked.forEach(function (r) { (listedBy[r] = listedBy[r] || []).push(st.id); });
+    });
+    function fieldsOf(e, part) {
+      var f = {};
+      Object.keys(e).forEach(function (k) { if (k !== 'id' && ledgerFieldPart(k) === part) f[k] = e[k]; });
+      return f;
+    }
+    // The fields of `part` from `from`, over every one of that part either row has.
+    function take(out, part, from, other) {
+      Object.keys(fieldsOf(other, part)).concat(Object.keys(fieldsOf(from, part))).forEach(function (k) { out[k] = from[k]; });
+    }
+    var set = {}, found = [];
+    Object.keys(M.rows).sort().forEach(function (id) {
+      var m = M.rows[id], t = T.rows[id];
+      if (!t) return;
+      var mr = m.row, tr = t.row;
+      if (JSON.stringify(mr) === JSON.stringify(tr)) return;
+      var newM = fresh(M, T, id), newT = fresh(T, M, id), cm = partsOf(newM, id), ct = partsOf(newT, id);
+      function decide(part, same) {
+        if (same) return 'same';
+        if (cm[part] && !ct[part]) return 'mine';
+        if (ct[part] && !cm[part]) return 'theirs';
+        return 'conflict';
+      }
+      var how = {
+        content: decide('content', ledgerPartKey(mr, 'content', scoutGone) === ledgerPartKey(tr, 'content', scoutGone)),
+        off: m.list === t.list ? decide('off', ledgerPartKey(mr, 'off') === ledgerPartKey(tr, 'off')) : 'same'
+      };
+      // Money changed on one copy (amount, direction, date) while the other locked the row, by a tick
+      // or a lock through its date made there since: a locked row's money changes only by Correct
+      // (owner decision 1), and the copy that changed it didn't know. Asked, the whole row either way.
+      if (how.content === 'mine' || how.content === 'theirs') {
+        var mc = how.content === 'mine', src = mc ? mr : tr, oth = mc ? tr : mr;
+        if (LEDGER_MONEY_FIELDS.some(function (k) { return src[k] !== oth[k]; }) &&
+            ledgerLockedMeanwhile(oth, src, mc ? ct : cm, (mc ? theirs : mine) || {}, (mc ? mine : theirs) || {})) how.content = 'money';
+      }
+      var km = mr.reconciled === true, kt = tr.reconciled === true;
+      how.tick = decide('tick', km === kt);
+      if (how.tick === 'same') {
+        // Both ticked (or both not): whose stamps. The copy that changed the tick; else the earlier tick.
+        if (cm.tick && !ct.tick) how.tick = 'mine';
+        else if (ct.tick && !cm.tick) how.tick = 'theirs';
+        else {
+          var am = ledgerTickedAt(mr), at = ledgerTickedAt(tr), jm = ledgerPartKey(mr, 'tick'), jt = ledgerPartKey(tr, 'tick');
+          how.tick = am !== at && km ? (am < at ? 'mine' : 'theirs') : (jm <= jt ? 'mine' : 'theirs');
+        }
+      } else {
+        // A tick a standing statement lists, over an untick from a copy that hasn't that statement.
+        var un = km ? T : M;
+        if ((listedBy[id] || []).some(function (sid) { return !un.sts[sid]; })) how.tick = km ? 'mine' : 'theirs';
+      }
+      if (how.content === 'money') { how.content = 'conflict'; how.tick = 'conflict'; }
+      var parts = ['content', 'off', 'tick'].filter(function (p) { return how[p] === 'conflict'; });
+      var pick = picks[id] === 'mine' || picks[id] === 'theirs' ? picks[id] : '';
+      if (parts.length) {
+        found.push({ id: id, parts: parts, mine: mr, theirs: tr, newM: newM, newT: newT });
+        if (!pick) return;
+        parts.forEach(function (p) { how[p] = pick; });
+      }
+      var out = {};
+      ['content', 'off'].forEach(function (p) {
+        if (how[p] === 'mine') take(out, p, mr, tr);
+        else if (how[p] === 'theirs') take(out, p, tr, mr);
+      });
+      var tw = how.tick === 'mine' ? mr : tr, to = how.tick === 'mine' ? tr : mr;
+      take(out, 'tick', tw, to);
+      // The statement it was cleared on: kept from either copy, while it is ticked. (Unticked, the
+      // copy above has left it with none: an untick takes it off.)
+      if (tw.reconciled === true) {
+        var sa = typeof tw.statementId === 'string' && tw.statementId ? tw.statementId : '', sb = typeof to.statementId === 'string' && to.statementId ? to.statementId : '';
+        var sid = !sa ? sb : !sb || sa === sb ? sa : ((stRank[sa] || 0) >= (stRank[sb] || 0) ? sa : sb);
+        out.statementId = sid || undefined;
+      }
+      set[id] = out;
+    });
+    // The items: conflicting rows an event on either copy names together are one choice.
+    var inConflict = Object.create(null), root = Object.create(null);
+    found.forEach(function (c) { inConflict[c.id] = c; root[c.id] = c.id; });
+    function top(id) { while (root[id] !== id) id = root[id]; return id; }
+    found.forEach(function (c) {
+      c.newM.concat(c.newT).forEach(function (ev) {
+        [ev.row].concat(Array.isArray(ev.rows) ? ev.rows : []).forEach(function (r) {
+          if (typeof r === 'string' && inConflict[r]) { var a = top(c.id), b = top(r); if (a !== b) root[a < b ? b : a] = a < b ? a : b; }
+        });
+      });
+    });
+    function lastOf(evs) {
+      var got = null;
+      evs.forEach(function (ev) { if (!got || String(ev.at || '') + ev.id > String(got.at || '') + got.id) got = ev; });
+      return got;
+    }
+    var items = Object.create(null), order = [];
+    found.forEach(function (c) {
+      var r = top(c.id);
+      if (!items[r]) { items[r] = { ids: [], rows: [] }; order.push(r); }
+      items[r].ids.push(c.id);
+      items[r].rows.push({ id: c.id, parts: c.parts, mine: c.mine, theirs: c.theirs, mineBy: lastOf(c.newM), theirsBy: lastOf(c.newT) });
+    });
+    return { set: set, conflicts: order.sort().map(function (r) { return items[r]; }) };
+  }
+  // What a 'resolve' event says (logLedger's `more`), for conflict row `r` and the copy picked (`pick`,
+  // 'mine' or 'theirs'): each field a leader reads that the two versions differ in, [the version not
+  // kept, the one kept], and that it was changed on two devices at once. Pure.
+  var LEDGER_RESOLVE_FIELDS = LEDGER_EDIT_FIELDS.concat(['reconciled', 'voidReason']);
+  var LEDGER_RESOLVE_WHY = 'Changed on two devices at once. The version after the arrow was kept.';
+  function ledgerResolveMore(r, pick) {
+    var kept = pick === 'mine' ? r.mine : r.theirs, not = pick === 'mine' ? r.theirs : r.mine, f = {};
+    LEDGER_RESOLVE_FIELDS.forEach(function (k) {
+      var a = not[k] === undefined ? null : not[k], b = kept[k] === undefined ? null : kept[k];
+      if (!(ledgerEmpty(a) && ledgerEmpty(b)) && a !== b) f[k] = [a, b];
+    });
+    return { f: f, why: LEDGER_RESOLVE_WHY };
+  }
+  // mergeLedgerRows' `set` written onto every row of `s` it names, in both lists, and onto `other`'s
+  // (the other copy, when given) too. In place; returns how many of `s`'s rows it changed.
+  function applyLedgerMerge(s, set, other) {
+    var n = 0;
+    [s, other].forEach(function (c, i) {
+      if (!c) return;
+      arrOf(c.ledger).concat(arrOf(c.ledgerAside)).forEach(function (e) {
+        if (!e || typeof e.id !== 'string' || !Object.prototype.hasOwnProperty.call(set, e.id)) return;
+        var was = JSON.stringify(e);
+        applyLedgerRowSet(e, set[e.id]);
+        if (!i && JSON.stringify(e) !== was) n += 1;
+      });
+    });
+    return n;
+  }
   // Wave 18(5) — append-only id-union merge, used only when sync.clobber is set.
   // Unions exactly FOUR collections by id — state.entries, the ledger, inventory hand-outs,
   // and each fundraiser's sales (the append-only logs) — appending remote items missing
@@ -13819,13 +14115,33 @@
   // to name. Returns how many items were appended or removed.
   // Treasurer sign-off on C3 — `split` (when given) collects the counted rows the other copy held
   // in two versions (normalizeState's `splits`), for syncPush to name too.
-  function mergeRemoteAppendOnly(d, kept, lost, split) {
+  // Phase 3, C6 — `picks` (when given): the leader's answer to each row in conflict ({ id: 'mine' |
+  // 'theirs' }, this device's copy or the other's), from the chooser (ledgerRowConflicts).
+  function mergeRemoteAppendOnly(d, kept, lost, split, picks) {
     var parsed = null;
     try { parsed = JSON.parse(typeof d.json === 'string' ? d.json : ''); } catch (e) { return 0; }
     var remoteNewest = goneNewest(parsed && parsed.gone);
     var remote = normalizeState(parsed, split);
     if (!remote) return 0;
     var added = 0, removed = 0;
+    // PHASE 3, C6 — every row both copies hold is settled part by part (mergeLedgerRows) on BOTH
+    // copies, before anything below reads a row: the union keeps this device's copy of a row both
+    // have, and that copy now says what the two, merged, say. So the deletion marks, the reconciled
+    // rows kept over a delete (keepReconciled), the void and reverse rules and the pair check all
+    // read the settled rows, and read them the same on every device. A conflict nobody has picked
+    // for is left as each copy has it (this device's is kept, as always); syncPush asks first.
+    var rowMerge = mergeLedgerRows(state, remote, {
+      picks: picks, scoutGone: ledgerMarksGone(state.gone && state.gone.scouts, remote.gone && remote.gone.scouts)
+    });
+    added += applyLedgerMerge(state, rowMerge.set, remote);
+    // Each row the leader picked a copy of is logged, a 'resolve' (ledgerResolveMore): the next merge
+    // reads it as this device's change, so the choice stands, and the history says what was kept.
+    rowMerge.conflicts.forEach(function (c) {
+      c.rows.forEach(function (r) {
+        var pk = picks && (picks[r.id] === 'mine' || picks[r.id] === 'theirs') ? picks[r.id] : '';
+        if (pk) logLedger('resolve', r.id, ledgerResolveMore(r, pk));
+      });
+    });
     var gone = state.gone && typeof state.gone === 'object' ? state.gone : null;
     var ledgerWas = Array.isArray(state.ledger) ? state.ledger.slice() : [];
     var marksWas = gone && gone.ledger ? Object.assign({}, gone.ledger) : {};
@@ -14004,6 +14320,9 @@
     // this merge has made, not marked deleted, and reversing that row (rvCounts). One whose reversal
     // was voided says nothing now, so it is not copied; and one HERE like that gives way to the
     // other copy's, when the row was reversed again there (a reversal voided, then another).
+    // Phase 3, C6 — now a safety net: mergeLedgerRows settled the reverse marks of every row both
+    // copies count before the union, so the two copies agree and this copies nothing, unless the
+    // row was a conflict left unpicked.
     var rvRows = {};
     state.ledger.forEach(function (v) { if (v && typeof v.id === 'string' && typeof v.reverses === 'string' && !rvRows[v.id]) rvRows[v.id] = v; });
     function rvCounts(id, rvId) {
