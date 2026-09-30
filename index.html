@@ -14554,6 +14554,11 @@
       var lfr = frById[rfr.id];
       if (lfr) unionById(lfr.sales, rfr.sales, 'sales');
     });
+    // Owner decision 23 (C6 reviews) — the charges stay this device's, whole (last write wins, until the
+    // server keeps them: S-28), so a charge forgiven on the other copy and not on this one loses its
+    // forgiveness when this copy is sent. Each is said on "The ledger needs a look", naming the family,
+    // for a leader to check, and forgive again if it should be.
+    if (Array.isArray(look)) chargesForgivenThere(state.charges, remote.charges).forEach(function (c) { look.push({ kind: 'forgiven', charge: c }); });
     if (gone && gone.ledger) {
       var fates = reconciledFates(ledgerWas, marksWas, state.ledger, gone.ledger);
       // What this device deleted and a copy here kept (fates), and what it kept of another's delete.
@@ -14561,6 +14566,21 @@
       if (Array.isArray(lost)) Array.prototype.push.apply(lost, fates.lost);
     }
     return added + removed;
+  }
+  // Owner decision 23 — this copy's charges (`mine`) that the other copy (`theirs`) holds forgiven and this
+  // one doesn't. Pure.
+  function chargesForgivenThere(mine, theirs) {
+    var there = Object.create(null);
+    arrOf(theirs).forEach(function (c) { if (c && typeof c.id === 'string' && c.forgiven && typeof c.forgiven === 'object') there[c.id] = true; });
+    return arrOf(mine).filter(function (c) { return c && typeof c.id === 'string' && there[c.id] && !c.forgiven; });
+  }
+  // How the note names a charge: its family (first names, as the Dues screen shows them) and what it is
+  // for: "Ada and Ben’s “Dues” charge".
+  function chargeLookName(c) {
+    var sc = getScout(c.scoutId), fam = sc ? familyMembers(sc) : [];
+    if (sc && !fam.length) fam = [sc];
+    var line = getBudgetLine(c.lineId), what = line ? (line.name || 'Pack fee') : (c.label || 'Earlier charge');
+    return (fam.length ? familyLabel({ members: fam }) : 'A former scout') + '’s “' + what + (c.who && c.who !== 'scout' ? ' (' + chargeWhoLabel(c) + ')' : '') + '” charge';
   }
   var LEDGER_VOID_TICK_WHY = 'Ticked on one device while voided on another. The void was kept. If the bank statement shows it cleared, un-void it and tick it again.';
   // Phase 3, C2 (treasurer review of C1, L2) — a tick time (reconciledAt) more than a day ahead of
@@ -14682,11 +14702,13 @@
   function noteLedgerLookFromMerge(look) {
     var seen = sync.lookSeen || (sync.lookSeen = {}), notes = sync.lookNotes || (sync.lookNotes = []), n = 0;
     arrOf(look).forEach(function (it) {
-      var key = it && it.kind === 'voidtick' && it.row ? 'voidtick:' + it.row.id : '';
+      var key = it && it.kind === 'voidtick' && it.row ? 'voidtick:' + it.row.id : it && it.kind === 'forgiven' && it.charge ? 'forgiven:' + it.charge.id : '';
       if (!key || seen[key]) return;
       seen[key] = true;
-      notes.push(ledgerCap(ledgerEntryNamed(it.row)) + ' was ticked on one device while voided on another. The void was kept, so it is no longer ticked. ' +
-        'If the bank statement shows it cleared, un-void it and tick it again.');
+      notes.push(it.kind === 'forgiven'
+        ? chargeLookName(it.charge) + ' was forgiven on another device but not on this one. Check it and forgive it again if it should be.'
+        : ledgerCap(ledgerEntryNamed(it.row)) + ' was ticked on one device while voided on another. The void was kept, so it is no longer ticked. ' +
+          'If the bank statement shows it cleared, un-void it and tick it again.');
       n += 1;
     });
     if (n) render();

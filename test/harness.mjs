@@ -1048,7 +1048,9 @@ const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'm
   // Security review of C6 (F1a, F1b, F2) — the side a pick can't keep, and the save that refuses it.
   'rowItemLock', 'ROW_PICK_LOCKED', 'ROW_PICK_LOCKED_PAIR',
   // Security review of C6 (F3) — a tick merged onto a voided entry comes off, said on "The ledger needs a look".
-  'LEDGER_VOID_TICK_WHY', 'noteLedgerLookFromMerge', 'stampApproved'];
+  'LEDGER_VOID_TICK_WHY', 'noteLedgerLookFromMerge', 'stampApproved',
+  // Owner decision 23 — a charge forgiven on the other copy and not on this one.
+  'chargesForgivenThere'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
   const ctx = vm.createContext({});
@@ -24934,6 +24936,31 @@ test('C6, Firestore: a tier make-up recorded on one device waives the charge in 
   b.run(`${C6_MAKEUP('mk1', 's1')}; syncCharges(); commit()`); b.push();
   a.run(B2); a.hear(); a.push();
   eq(c6Waived(server()), [['c1', ''], ['c2', '']], 'control: without the re-sync');
+});
+
+test('Decision 23: a charge forgiven on another device but not on this one is named, with its family, on “The ledger needs a look” of the device that merged', () => {
+  const x = sandbox(['chargesForgivenThere', 'arrOf']);
+  const fg = { date: '2026-10-01', by: 'Committee', reason: 'Hardship', enteredBy: 'Pat' };
+  eq(JSON.parse(JSON.stringify(x.chargesForgivenThere([C6_CHARGE('c1', 's1'), C6_CHARGE('c2', 's2'), Object.assign(C6_CHARGE('c3', 's1'), { forgiven: fg })],
+    [Object.assign(C6_CHARGE('c1', 's1'), { forgiven: fg }), C6_CHARGE('c2', 's2'), Object.assign(C6_CHARGE('c3', 's1'), { forgiven: fg }), Object.assign(C6_CHARGE('c9', 's1'), { forgiven: fg })])
+    .map((c) => c.id))), ['c1'], 'forgiven there, not here');
+  // Ada and Bo are one family. A forgives Ada's dues and saves; B, with a change of its own, saves
+  // over it. The charges are B's (last write wins, decision 23), and B says so.
+  const fams = { scouts: [{ id: 's1', name: 'Ada Quenneville', den: 'Wolf' }, { id: 's2', name: 'Bo Quenneville', den: 'Bear', familyId: 's1' }] };
+  const { a, b, server } = c6FsPair(Object.assign(C6_DUES(), fams));
+  const fns = declClosure(['chargeLookName'], ['state', 'ui', 'sync', 'render', 'save', 'showToast', 'uid', 'todayISO', 'commit', 'scheduleSyncPush']).map(decl).join('\n');
+  b.run(fns);
+  a.run(`state.charges[0].forgiven = ${JSON.stringify(fg)}; commit()`); a.push();
+  b.run(B2); b.hear(); b.push();
+  const note = 'Ada and Bo’s “Dues” charge was forgiven on another device but not on this one. Check it and forgive it again if it should be.';
+  eq([server().charges.map((c) => !!c.forgiven), b.get('sync.lookNotes'), b.get('toasts').indexOf(b.get('LEDGER_LOOK_CLOBBERED')) !== -1],
+    [[false, false], [note], true], 'B after its save');
+  // Said once: a later merge with a copy that still has it forgiven says nothing more.
+  a.run(B1); a.push();
+  b.run("state.entries.push({ id: 'b5', scoutId: 's2', kind: 'wagon', date: '', salesCents: 5, donationsCents: 0 }); commit()"); b.hear(); b.push();
+  eq(b.get('sync.lookNotes'), [note], 'said twice');
+  // Named for a leader only: the parent view never carries it (the card is Money · Ledger's).
+  ok(!/chargesForgivenThere|chargeLookName|lookNotes/.test(codeOnly(BPV())), 'buildParentView reads it');
 });
 
 test('C6 property: with the charges on the page’s own syncCharges, two devices’ merges agree either way round and are a fixed point', () => {
