@@ -24256,20 +24256,22 @@
     // Wave 19(3) — standalone den advancement: crossover happens in spring, months
     // before the fiscal close-out. Once run, the close-out skips den advancement.
     h += '<div class="card"><h2 class="section display">Advance dens</h2>';
+    var advWarn = densAdvanceWarning();
+    var advWarnHtml = advWarn ? '<p class="small" style="margin:8px 0 0">' + esc(advWarn) + '</p>' : '';
     if (state.densAdvancedYear === cy) {
       var advAgainArmed = ui.armed === 'adv-dens-again';
       h += '<p class="small muted" style="margin:0 0 8px">Dens already advanced for ' + cy + '–' + (cy + 1) +
         '. Closing out the year will skip den advancement.</p>' +
         '<button type="button" class="btn small ghost' + (advAgainArmed ? ' danger armed' : '') + '" data-act="adv-dens-again">' +
-        (advAgainArmed ? 'Tap again to advance again' : 'Advance again anyway') + '</button>';
+        (advAgainArmed ? 'Tap again to advance again' : 'Advance again anyway') + '</button>' + (advAgainArmed ? advWarnHtml : '');
     } else {
       var advDensArmed = ui.armed === 'adv-dens';
       h += '<p class="small muted" style="margin:0 0 8px">Crossover time? Move every active scout up one rank now — ' +
-        'Arrow of Light scouts are archived as crossed over. Each scout’s adventure marks stay with the rank they were earned in, ' +
+        'Arrow of Light scouts are archived as crossed over (you’ll be asked first if their family still owes). Each scout’s adventure marks stay with the rank they were earned in, ' +
         'so the Advancement grid starts fresh for the new rank (this year’s totals are kept for the close-out). ' +
         'The year-end close-out below will skip den advancement once this has run.</p>' +
         '<button type="button" class="btn' + (advDensArmed ? ' danger armed' : '') + '" data-act="adv-dens">' +
-        (advDensArmed ? 'Tap again to advance every den' : 'Advance dens to next ranks') + '</button>';
+        (advDensArmed ? 'Tap again to advance every den' : 'Advance dens to next ranks') + '</button>' + (advDensArmed ? advWarnHtml : '');
     }
     h += '</div>';
 
@@ -29869,6 +29871,30 @@
     });
     return { advanced: advanced, crossed: crossed };
   }
+  // Security review of C7 (re-check) — the same hole decision 25 closed for one scout's Archive: advanceDens
+  // archives every Arrow of Light scout, and a family with none left active raises no charges (syncCharges),
+  // so what it owed would vanish with no trace. This counts those families and what they owe, from the
+  // same accounts scoutArchiveWarning reads (scoutOwesCents), and says so in words. '' when none owes, or
+  // when a sibling in another den stays active. Counts and a total only, no names. Not escaped: the caller
+  // does. Pure apart from reading the record.
+  function densAdvanceWarning() {
+    var fams = {}, keys = [];
+    activeScouts().forEach(function (s) {
+      var k = familyKeyOf(s);
+      if (!fams[k]) { fams[k] = { rep: s, all: true }; keys.push(k); }
+      if (!(s.den === 'Arrow of Light')) fams[k].all = false;
+    });
+    var n = 0, cents = 0;
+    keys.forEach(function (k) {
+      if (!fams[k].all) return;
+      var owes = scoutOwesCents(fams[k].rep.id);
+      if (owes > 0) { n += 1; cents += owes; }
+    });
+    if (!n) return '';
+    return n + ' Arrow of Light ' + (n === 1 ? 'family still owes ' : 'families still owe ') + fmt(cents) + '. ' +
+      'Moving them up archives their scouts and removes charges nobody has paid yet. ' +
+      'Forgive or collect them first, or move them up anyway.';
+  }
 
   // Owner's decision B on the treasurer's sign-off of option B (2026-09-29) — close-out WARNS, never
   // refuses, while "The ledger needs a look" has notes (`n`, ledgerLookNotes' count): the balance
@@ -32402,6 +32428,9 @@
     }
     // Wave 19(3) — standalone den advancement (two-tap armed on both paths).
     if (act === 'adv-dens' || act === 'adv-dens-again') {
+      // Security review of C7 (re-check) — a family that still owes is asked about first (densAdvanceWarning):
+      // the words show while the button is armed, for ARM_WARNED_MS. Checked here, not only where the button
+      // is drawn, so a screen drawn before a charge was raised is asked too.
       arm(act, function () {
         // The season's advancement summary, taken before the move clears the marks, so the
         // year's close-out can still archive it. Only the FIRST advance of a year: "Advance
@@ -32414,7 +32443,7 @@
         state.densAdvancedYear = state.budget.programYear;
         if (commit()) showToast('Advanced ' + advRes.advanced + ' scout' + (advRes.advanced === 1 ? '' : 's') +
           ' · ' + advRes.crossed + ' Arrow of Light archived as crossed over');
-      });
+      }, densAdvanceWarning() ? ARM_WARNED_MS : 0);
       return;
     }
     // Wave 7 — year-end close-out

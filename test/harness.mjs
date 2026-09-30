@@ -25971,6 +25971,56 @@ test('C7: archiving a scout whose family still owes is a two-tap confirm that sa
   ok(!h.includes('<img src=x') && h.includes('&lt;img'), 'the name was not escaped');
 });
 
+// Security review of C7 (re-check, item 1): the standalone Advance dens asks first where an Arrow of Light family owes.
+test('C7: Advance dens asks first when Arrow of Light families with no active sibling still owe, and advances as before on the second tap', () => {
+  const block = c2Block(/    if \(act === 'adv-dens' \|\| act === 'adv-dens-again'\) \{[\s\S]*?\n    \}/, 'adv-dens');
+  const ctx = vm.createContext({});
+  vm.runInContext(`${[...new Set([...NORMALIZE_FNS, ...declClosure(['advanceDens', 'densAdvanceWarning', 'arm'], ['state', 'ui', 'sync', 'render', 'save', 'showToast', 'uid', 'todayISO', 'commit', 'scheduleSyncPush', 'setTimeout', 'clearTimeout', 'advPerDenSummary'])])].map(decl).join('\n')}
+    ${decl('ARM_WARNED_MS')} ${decl('DENS')}
+    var ui = { armed: null }, sync = {}, commits = 0, timers = [];
+    function todayISO() { return '2026-05-01'; } function uid() { return 'u'; }
+    function setTimeout(f, ms) { timers.push(ms || 0); return 1; } function clearTimeout() {} function render() {} function showToast() {}
+    function commit() { commits += 1; return true; } function advPerDenSummary() { return []; }
+    var state;
+    function load(scouts, charges) {
+      state = normalizeState(Object.assign(${JSON.stringify(preMigrationState())}, { scouts: scouts, charges: charges || [], ledger: [] }));
+      ui.armed = null; commits = 0; timers = [];
+    }
+    function tap(a) { (function (act) {\n${block}\n})(a || 'adv-dens'); }`, ctx);
+  const run = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, ctx)));
+  const ch = (id, sc, c) => `{ id: '${id}', scoutId: '${sc}', lineId: '', amountCents: ${c}, date: '2026-04-01', waivedBy: '', forgiven: null }`;
+  const aol = "[{ id: 'a1', name: 'Ada Lovelace', den: 'Arrow of Light' }, { id: 'b1', name: 'Bo Diddley', den: 'Arrow of Light' }, { id: 'w1', name: 'Wes Wolf', den: 'Wolf' }]";
+  const dens = 'state.scouts.map(function (s) { return [s.den, !!s.archived]; })';
+  // Two AoL families owe $25 and $10: the first tap arms and warns (10 s), nothing moves; the second moves them.
+  vm.runInContext(`load(${aol}, [${ch('c1', 'a1', 2500)}, ${ch('c2', 'b1', 1000)}])`, ctx);
+  eq(vm.runInContext('densAdvanceWarning()', ctx),
+    '2 Arrow of Light families still owe $35.00. Moving them up archives their scouts and removes charges nobody has paid yet. Forgive or collect them first, or move them up anyway.', 'the words');
+  vm.runInContext('tap()', ctx);
+  eq(run(`[${dens}, commits, ui.armed, timers]`), [[['Arrow of Light', false], ['Arrow of Light', false], ['Wolf', false]], 0, 'adv-dens', [10000]], 'the first tap only arms');
+  vm.runInContext('tap()', ctx);
+  eq(run(`[${dens}, commits, ui.armed]`), [[['Arrow of Light', true], ['Arrow of Light', true], ['Bear', false]], 1, null], 'the second tap advances');
+  // Same on the "again" path.
+  vm.runInContext(`load(${aol}, [${ch('c1', 'a1', 2500)}])`, ctx);
+  vm.runInContext("tap('adv-dens-again')", ctx);
+  eq(run('[commits, ui.armed, timers]'), [0, 'adv-dens-again', [10000]], 'again: the first tap arms');
+  ok(vm.runInContext('densAdvanceWarning()', ctx).startsWith('1 Arrow of Light family still owes $25.00.'), 'singular');
+  // Nothing owed: the old short arm. A sibling who stays active: no warning. Two AoL siblings are one family.
+  vm.runInContext(`load(${aol}, [])`, ctx);
+  vm.runInContext('tap()', ctx);
+  eq(run('[commits, timers]'), [0, [3500]], 'nothing owed: the short arm');
+  vm.runInContext(`load([{ id: 'a1', name: 'Ada', den: 'Arrow of Light', familyId: 'a1' }, { id: 'w1', name: 'Wes', den: 'Wolf', familyId: 'a1' }], [${ch('c1', 'a1', 2500)}])`, ctx);
+  eq(vm.runInContext('densAdvanceWarning()', ctx), '', 'a sibling stays active: no warning');
+  vm.runInContext(`load([{ id: 'a1', name: 'Ada', den: 'Arrow of Light', familyId: 'a1' }, { id: 'a2', name: 'Al', den: 'Arrow of Light', familyId: 'a1' }], [${ch('c1', 'a1', 2500)}])`, ctx);
+  ok(vm.runInContext('densAdvanceWarning()', ctx).startsWith('1 Arrow of Light family still owes $25.00.'), 'two AoL siblings are one family');
+  // A screen drawn before the charge was raised: the handler still asks (it checks at tap time).
+  vm.runInContext(`load(${aol}, [])`, ctx);
+  vm.runInContext(`state.charges = [${ch('c1', 'a1', 2500)}]; tap()`, ctx);
+  eq(run('[commits, timers]'), [0, [10000]], 'stale screen: asked');
+  // Counts only in the words; the card escapes them and shows them only while armed.
+  ok(!/Ada|Bo/.test(vm.runInContext('densAdvanceWarning()', ctx)), 'counts only');
+  ok(/var advWarnHtml = advWarn \? '<p class="small" style="margin:8px 0 0">' \+ esc\(advWarn\)/.test(SCRIPT) && /advDensArmed \? advWarnHtml : ''/.test(SCRIPT) && /advAgainArmed \? advWarnHtml : ''/.test(SCRIPT), 'the card shows it escaped, only armed');
+});
+
 // Treasurer review of C7: the year-end close-out archives a crossed-over (Arrow of Light) scout, and the
 // family's open balance, or credit, still comes forward, attached to the archived scout, and is listed.
 test('C7: the close-out carries an all-archived family’s balance and credit forward, on the archived scout, and the family stays in the accounts', () => {
