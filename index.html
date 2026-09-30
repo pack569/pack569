@@ -14641,10 +14641,12 @@
     // Security re-check of C6 (N3) — and the change history says so, for good: the note is this session's
     // only, and nothing else records a forgiveness. Logged against the charge's id (never a ledger row's),
     // the forgiveness lost as its `f`; once per forgiveness (a push's transaction can run this again).
+    // Quick check of N1–N5 (1) — compared as the log keeps it (ledgerLogClip: 200 characters), or a
+    // longer reason never matched, and each run logged it again.
     var fgThere = Object.create(null);
     arrOf(remote.charges).forEach(function (c) { if (c && typeof c.id === 'string' && c.forgiven && typeof c.forgiven === 'object') fgThere[c.id] = c.forgiven; });
     chargesForgivenThere(state.charges, remote.charges).forEach(function (c) {
-      var was = chargeForgivenSummary(fgThere[c.id]);
+      var was = ledgerLogClip(chargeForgivenSummary(fgThere[c.id]));
       if (!arrOf(state.ledgerLog).some(function (ev) { return ev && ev.row === c.id && ev.why === LEDGER_FORGIVEN_LOST_WHY && ev.f && ev.f.forgiven && ev.f.forgiven[0] === was; })) {
         logLedger('edit', c.id, { f: { forgiven: [was, null] }, why: LEDGER_FORGIVEN_LOST_WHY });
       }

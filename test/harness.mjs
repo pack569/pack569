@@ -25121,6 +25121,21 @@ test('Decision 23: a charge forgiven on another device but not on this one is na
   ok(!/chargesForgivenThere|chargeLookName|lookNotes|chargeForgivenSummary|ledgerLog/.test(codeOnly(BPV())), 'buildParentView reads it');
 });
 
+test('Quick check of N1–N5 (1): a forgiveness with a long reason, lost to two merges, is in the change history once', () => {
+  const fg = { date: '2026-10-01', by: 'Committee', reason: 'Hardship. '.repeat(30), enteredBy: 'Pat' };
+  const fams = { scouts: [{ id: 's1', name: 'Ada Quenneville', den: 'Wolf' }, { id: 's2', name: 'Bo Quenneville', den: 'Bear', familyId: 's1' }] };
+  const { a, b, server } = c6FsPair(Object.assign(C6_DUES(), fams));
+  b.run(declClosure(['chargeLookName'], ['state', 'ui', 'sync', 'render', 'save', 'showToast', 'uid', 'todayISO', 'commit', 'scheduleSyncPush']).map(decl).join('\n'));
+  const lost = (st) => st.ledgerLog.filter((e) => e.why === 'Forgiven on another device. That forgiveness was not kept when this device saved.');
+  // A forgives Ada's dues and saves; B saves over it (merge 1). A saves its forgiven copy again; B saves over it again (merge 2).
+  a.run(`state.charges[0].forgiven = ${JSON.stringify(fg)}; commit()`); a.push();
+  b.run(B2); b.hear(); b.push();
+  eq(lost(b.get('state')).map((e) => e.f.forgiven[0].length), [200], 'the first merge');
+  a.run(B1); a.push();
+  b.run("state.entries.push({ id: 'b5', scoutId: 's2', kind: 'wagon', date: '', salesCents: 5, donationsCents: 0 }); commit()"); b.hear(); b.push();
+  eq([lost(b.get('state')).length, lost(server()).length], [1, 1], 'logged again on the second merge');
+});
+
 test('C6 re-check (N3): a forgiveness lost to a merge is kept in the history with who agreed and recorded it, never an email', () => {
   const x = sandbox(['chargeForgivenSummary', 'ledgerStampClean', 'fmtDateShortYear', 'fmtDateShort']);
   eq(x.chargeForgivenSummary({ date: '2026-10-01', by: 'pat@example.com', reason: 'Hardship', enteredBy: 'sam@example.com' }),
