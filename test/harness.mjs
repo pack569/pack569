@@ -13542,6 +13542,10 @@ const wrNth = (t, id, n, to) => { const p = t.split(id); return p.slice(0, n + 1
 // Each block's database_id, by the block it sits under: { top, preview, production } — as the
 // deploy's own check (scripts/check-wrangler.mjs) reads them.
 const wranglerDbIds = (W) => checkWrangler(W, { packDocId: LIVE.docId }).ids;
+// The committed wrangler.toml with each block's database_id put back to its placeholder, so the
+// tests below work the same before and after the owner pastes the real ids in.
+const wranglerTemplate = (W) => W.replace(/^(\[\[(?:env\.(preview|production)\.)?d1_databases\]\]\n(?:[^\n[]*\n)*?database_id = ")[^"]*"/gm,
+  (m, head, env) => head + (env === 'production' ? 'REPLACE_WITH_PACK569_PROD_DATABASE_ID' : 'REPLACE_WITH_PACK569_PREVIEW_DATABASE_ID') + '"');
 
 test('the workflow deploys only by hand, production only from main, with every action pinned', () => {
   const WF = readFileSync(join(ROOT, '.github/workflows/website.yml'), 'utf8');
@@ -13628,7 +13632,7 @@ test('the workflow deploys only by hand, production only from main, with every a
   ok(jobs.deploy.indexOf('check-wrangler') < jobs.deploy.indexOf('uses: cloudflare/wrangler-action'), 'the wrangler.toml check runs after the deploy');
   ok(jobs.deploy.indexOf('check-wrangler') > jobs.deploy.indexOf('uses: actions/setup-node'), 'the wrangler.toml check runs before Node is set up');
   if (stepM) {
-    const W0 = readFileSync(join(ROOT, 'wrangler.toml'), 'utf8');
+    const W0 = wranglerTemplate(readFileSync(join(ROOT, 'wrangler.toml'), 'utf8'));
     const filled = W0.split('REPLACE_WITH_PACK569_PREVIEW_DATABASE_ID').join(WR_PRE).split('REPLACE_WITH_PACK569_PROD_DATABASE_ID').join(WR_PROD);
     const dir = mkdtempSync(join(tmpdir(), 'pack569-ids-'));
     writeFileSync(join(dir, 'index.html'), HTML);   // the step reads PACK_DOC_ID from beside wrangler.toml
@@ -13719,14 +13723,17 @@ test('wrangler.toml publishes _site, and git ignores the build output', () => {
 test('wrangler.toml check: a file that reads one way line by line and another way to wrangler is refused', () => {
   // Security re-review of stage A, follow-up 1. scripts/check-wrangler.mjs is what the deploy runs;
   // every attack below is one the old line-by-line greps let through.
-  const W0 = readFileSync(join(ROOT, 'wrangler.toml'), 'utf8');
+  const committed = readFileSync(join(ROOT, 'wrangler.toml'), 'utf8');
+  const W0 = wranglerTemplate(committed);
   const filled = W0.split('REPLACE_WITH_PACK569_PREVIEW_DATABASE_ID').join(WR_PRE).split('REPLACE_WITH_PACK569_PROD_DATABASE_ID').join(WR_PROD);
   const titles = (t) => checkWrangler(t, { packDocId: LIVE.docId }).problems.map((p) => p.title);
   eq(titles(filled), [], 'the real file, placeholders filled in');
   eq(checkWrangler(filled, { packDocId: LIVE.docId }).ids, { top: WR_PRE, preview: WR_PRE, production: WR_PROD }, 'the ids, by block');
-  // Unfilled, the real file's only problems are its three placeholders.
+  // With its ids taken out, the real file's only problems are its three placeholders.
   eq(titles(W0), ['wrangler.toml still has placeholder D1 ids', 'wrangler.toml still has placeholder D1 ids', 'wrangler.toml still has placeholder D1 ids'],
-    'the committed file');
+    'the committed file, ids taken out');
+  // Once the owner's ids are in, the committed file itself must pass the deploy's check.
+  if (!committed.includes('REPLACE_WITH_')) eq(titles(committed), [], 'the committed file, with the owner\'s database ids');
   // What a reader that skips lines it cannot parse would see (the old greps did no better).
   const lineView = (t) => t.split('\n').filter((l) => /^$|^#|^\[\[?[a-z0-9_.]+\]\]?$|^[A-Za-z_][A-Za-z0-9_]* = "[^"\\]*"$/.test(l)).join('\n');
   const UNREADABLE = 'wrangler.toml has a line this check cannot read';
