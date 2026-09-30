@@ -1026,7 +1026,7 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
 // Phase 3, C6 — the per-row ledger merge and what it reads.
 const C6_MERGE_FNS = ['LEDGER_TICK_FIELDS', 'LEDGER_OFF_FIELDS', 'LEDGER_ENTERED_FIELDS', 'ledgerFieldPart', 'LEDGER_OPS', 'ledgerEventParts', 'ledgerMarksGone', 'ledgerMergeOpts', 'ledgerEmpty', 'ledgerPartKey', 'LEDGER_MONEY_FIELDS', 'ledgerLockedMeanwhile',
-  'applyLedgerRowSet', 'mergeLedgerRows', 'applyLedgerMerge', 'LEDGER_EDIT_FIELDS', 'LEDGER_RESOLVE_FIELDS', 'LEDGER_RESOLVE_WHY', 'ledgerResolveMore', 'ledgerLogRoom', 'utf8Bytes', 'arrOf', 'ledgerTickedAt', 'mergeStatements', 'statementPairMerge',
+  'applyLedgerRowSet', 'mergeLedgerRows', 'applyLedgerMerge', 'LEDGER_EDIT_FIELDS', 'LEDGER_RESOLVE_FIELDS', 'LEDGER_RESOLVE_WHY', 'LEDGER_RESOLVE_WHY_SAME', 'ledgerResolveMore', 'ledgerLogRoom', 'utf8Bytes', 'arrOf', 'ledgerTickedAt', 'mergeStatements', 'statementPairMerge',
   'statementOnceGroups', 'statementReopened'];
 // A page from before C6 (as the live page is): its merge keeps this device's copy of every row both
 // copies hold, whole. For the tests that make an older page from the merge as it is now.
@@ -13120,8 +13120,10 @@ test('E1: due dates and family statements are NEVER published', () => {
   });
   // C5 review: buildSeasonArchive copies them into the season archive, leaders only, until C8.
   // Security re-check of C5 (R2): renderOverlay counts them on Replace all data? (an admin's: R1).
-  eq([...stUsers].sort(), ['buildSeasonArchive', 'handleAction', 'ledgerEntryLabel', 'mergeRemoteAppendOnly', 'renderBankStatementSheet', 'renderOverlay', 'renderReconcile', 'rolloverYear',
-    'statementButtonsHtml', 'statementsCardHtml'], 'something new writes or reads state.statements');
+  // Treasurer review of C6 (5): ledgerLogNames names the statement an entry was cleared on, in its change
+  // history and the entry chooser (both leaders only), by its date.
+  eq([...stUsers].sort(), ['buildSeasonArchive', 'handleAction', 'ledgerEntryLabel', 'ledgerLogNames', 'mergeRemoteAppendOnly', 'renderBankStatementSheet', 'renderOverlay',
+    'renderReconcile', 'rolloverYear', 'statementButtonsHtml', 'statementsCardHtml'], 'something new writes or reads state.statements');
   ok(/state\.statements = \[\];/.test(slice('rolloverYear')), 'close-out does not clear the bank statements');
   ok(!/statements/.test(bpv), 'buildParentView reads the bank statements');
   ok(/each charge's due date \(`dueDate`\), the pack's dues date \(`budget\.duesDueDate`\) and every\s+\/\/\s+family statement \(E1\)/.test(SCRIPT), 'the banner does not exclude them');
@@ -19006,10 +19008,12 @@ test('C3: nothing outside the book’s own plumbing reads the voided rows, so no
   // Phase 3, C4 — and Reverse: its refusal (is there a reversal already?). (Option B: the reverse
   // itself no longer sets anything aside.)
   // Phase 3, C6 — and the per-row merge (mergeLedgerRows, applyLedgerMerge), which settles a row both copies hold.
+  // Treasurer review of C6 (5) — ledgerLogNames and renderRowChooser name a reversal (voided or not) in a
+  // change history or the entry chooser; they total nothing.
   eq([...users].sort(), ['applyLedgerMerge', 'dropScout', 'freshState', 'handleAction', 'isStateEmpty', 'keepLostVoids', 'ledgerAsideListHtml', 'ledgerAsideSettle', 'ledgerEntryLabel',
-    'ledgerReverseSlot', 'ledgerUnvoidRow',
+    'ledgerLogNames', 'ledgerReverseSlot', 'ledgerUnvoidRow',
     // Phase 3, C5 — renderBankStatementSheet names an entry on a statement voided since; it totals nothing from it.
-    'ledgerVoidRow', 'mergeLedgerRows', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderBankStatementSheet', 'renderLedger', 'renderLedgerEntries', 'restoreGone',
+    'ledgerVoidRow', 'mergeLedgerRows', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderBankStatementSheet', 'renderLedger', 'renderLedgerEntries', 'renderRowChooser', 'restoreGone',
     'rolloverYear'], 'who reads the voided rows');
   // In handleAction: the void handlers, del-scout's log line, and (treasurer sign-off on C3) the voided CSV only.
   // Security re-check of option B (A) — and the void's Undo, asking whether the row it would put back is still voided.
@@ -24655,7 +24659,9 @@ atest('C6, api: an entry both devices changed opens the chooser; the pick is log
 // The chooser as the page draws it.
 const C6_CHOOSER_FNS = ['esc', 'fmt', 'fmtDateShort', 'ledgerCap', 'ledgerLogValue', 'ledgerLogWhen', 'LEDGER_FIELD_LABELS', 'LEDGER_EDIT_FIELDS', 'LEDGER_RESOLVE_FIELDS',
   'ledgerEmpty', 'ROW_CHOOSER_TITLE', 'ROW_CHOOSER_KEPT', 'ROW_LOCKED_NOTE', 'ROW_TICKED_NOTE', 'ROW_PAIR_NOTE', 'rowCantKeep', 'rowItemLock', 'ROW_SAME_BUT_STAMPS',
-  'rowChooserIntro', 'ledgerConflictName', 'ledgerConflictLines', 'ledgerConflictWho', 'renderRowChooser', 'ROW_PICK_NEEDED', 'JSON_BACKUP_NAME', 'rowChoice'];
+  'rowChooserIntro', 'ledgerConflictName', 'ledgerConflictLines', 'ledgerConflictWho', 'renderRowChooser', 'ROW_PICK_NEEDED', 'JSON_BACKUP_NAME', 'rowChoice',
+  // Treasurer review of C6 (5, 6) — a statement and a reversal by name, from either copy; an item of several entries.
+  'rowChooserTogether', 'ledgerStatementName', 'ledgerRowName', 'ledgerEntryNamed', 'arrOf'];
 function c6Chooser(items, picks, more) {
   const ctx = vm.createContext({});
   vm.runInContext(`${C6_CHOOSER_FNS.map(decl).join('\n')}
@@ -24677,12 +24683,12 @@ test('C6: the chooser names each entry, shows both versions with what differs an
   const when = vm.runInContext(`ledgerLogWhen('${at}')`, ctx);
   const whenText = vm.runInContext(`fmtDateShort('${when.slice(0, 10)}')`, ctx) + ' at ' + when.slice(11);
   eq(c6Text(html), 'Two versions of the same ledger entries ' +
-    'Another device changed a ledger entry that this device changed too, and the two versions don’t match. Pick the version to keep. Nothing is shared until you do. ' +
-    'Everything else both devices changed is kept. The version you don’t keep is written in the entry’s change history. ' +
+    'A ledger entry was changed on this device and on another one, and the two versions don’t match. Pick the version to keep. Nothing from this device is shared until you do. ' +
+    'Every other change from both devices is kept. The version you don’t keep is noted in the entry’s change history. ' +
     'Pizza party · Sep 10 · −$40.00 ' +
-    'On this device Who changed it wasn’t recorded. Description: Pizza party Budget line: (none) Keep this version ' +
+    'On this device No change to this entry was recorded on this copy. Description: Pizza party Budget line: (none) Keep this version ' +
     `In the pack’s shared copy Changed by Sam on ${whenText}. Description: Pizza night Budget line: Pack night Keep this version ` +
-    'Download this device’s copy first Pick a version of each entry to save.', 'the chooser');
+    'Download this device’s copy first Pick a version of each entry, then save.', 'the chooser');
   ok(/role="dialog" aria-modal="true" aria-label="Two versions of the same ledger entries"/.test(html), 'not a dialog');
   ok(/data-act="sync-row-pick:mine:l2"[^>]*>Keep this version/.test(html) && /aria-pressed="false" data-act="sync-row-pick:theirs:l2"/.test(html), 'the buttons');
   // Picked: said on the button, and the save offered (two taps).
@@ -24696,18 +24702,20 @@ test('C6: the chooser names each entry, shows both versions with what differs an
     theirs: row({ id: 'l3', reconciled: true }), mineBy: null, theirsBy: null, money: true, lock: null }] }, { ids: ['rv-l4'], rows: [{ id: 'rv-l4', parts: ['content'],
     mine: row({ id: 'rv-l4', enteredBy: 'Pat' }), theirs: row({ id: 'rv-l4', enteredBy: 'Sam' }), mineBy: null, theirsBy: null }] }]);
   const t = c6Text(c6Chooser(two).html);
-  ok(t.includes('Another device changed 3 ledger entries that this device changed too, and the versions don’t match. Pick the version to keep for each. Nothing is shared until you do.'), 'three: ' + t);
-  ok(t.includes('Pizza · Sep 10 · −$45.00 One device ticked this entry against the bank statement while the other changed its amount, date or in/out. Keep the version that ' +
-    'matches the bank statement. If you keep the changed one, tick it again once it matches. On this device Who changed it wasn’t recorded. ' +
-    'Amount: $45.00 Ticked: no Keep this version In the pack’s shared copy Who changed it wasn’t recorded. Amount: $40.00 Ticked: yes Keep this version'), 'money under a tick: ' + t);
-  ok(t.includes('On this device Who changed it wasn’t recorded. The same, apart from who recorded it and when. Keep this version'), 'stamps only');
+  ok(t.includes('3 ledger entries were changed on this device and on another one, and the versions don’t match. Pick the version to keep for each. Nothing from this device is shared until you do.'), 'three: ' + t);
+  ok(t.includes('Pizza · Sep 10 One device ticked this entry against the bank statement while the other changed its amount, date or in/out. Keep the version that ' +
+    'matches the bank statement. If you keep the changed one, tick it again once it matches. On this device No change to this entry was recorded on this copy. ' +
+    'Amount: $45.00 Ticked: no Keep this version In the pack’s shared copy No change to this entry was recorded on this copy. Amount: $40.00 Ticked: yes Keep this version'), 'money under a tick: ' + t);
+  ok(t.includes('On this device No change to this entry was recorded on this copy. Reads the same as the other version. They differ only in record-keeping details, such as who ' +
+    'entered it and when, so either can be kept. Keep this version'), 'stamps only');
   // One choice of two entries (a reverse made on both): each named, and the latest change behind each side.
   const pair = [{ ids: ['l2', 'rv-l2'], rows: [{ id: 'l2', parts: ['off'], mine: row({ voidReason: 'Bounced' }), theirs: row({ voidReason: 'Never cashed' }),
     mineBy: c6Ev('a1', 'reverse', 'l2', 2, { by: 'Pat' }), theirsBy: c6Ev('b1', 'reverse', 'l2', 2, { by: 'Sam' }) },
     { id: 'rv-l2', parts: ['content'], mine: row({ id: 'rv-l2', date: '2026-10-02' }), theirs: row({ id: 'rv-l2', date: '2026-10-03' }),
       mineBy: c6Ev('a0', 'reverse', 'l2', 1, { by: 'Pat' }), theirsBy: c6Ev('b2', 'reverse', 'l2', 3, { by: 'Alex' }) }] }];
   const pt = c6Text(c6Chooser(pair).html);
-  ok(/Pizza · Sep 10 · −\$40\.00 Pizza · Oct 2 · −\$40\.00 On this device Changed by Pat on [^.]*\. Reason: Bounced Date: Oct 2 Keep this version In the pack’s shared copy Changed by Alex on [^.]*\. Reason: Never cashed Date: Oct 3 Keep this version/.test(pt),
+  // (Treasurer review of C6, 6, 7: the reversal's header without the date the two disagree on; said to go together; each line named.)
+  ok(/Pizza · Sep 10 · −\$40\.00 Pizza These 2 entries go together \(an entry and its reversal\), so one pick keeps both\. On this device Changed by Pat on [^.]*\. Pizza · Void reason: Bounced Pizza · Date: Oct 2 Keep this version In the pack’s shared copy Changed by Alex on [^.]*\. Pizza · Void reason: Never cashed Pizza · Date: Oct 3 Keep this version/.test(pt),
     'one choice, two entries: ' + pt);
   // Every value is escaped.
   const evil = [{ ids: ['x<'], rows: [{ id: 'x<', parts: ['content'], mine: row({ id: 'x<', description: '<img src=x>' }), theirs: row({ id: 'x<', description: '<b>' }),
@@ -24739,6 +24747,46 @@ test('C6 review: the chooser offers only the version that can be kept, and says 
   const noMoney = [{ ids: ['l2'], rows: [{ id: 'l2', parts: ['content', 'tick'], mine: row({ description: 'Pizza night' }), theirs: row({ reconciled: true }),
     mineBy: null, theirsBy: null, money: false, lock: null }] }];
   ok(!/amount, date or in\/out/.test(c6Text(c6Chooser(noMoney).html)), 'a money note with no money moved');
+});
+
+test('C6 review: a pick’s history line, the statement and reversal it chose between, and the chooser’s headers and who-lines in the treasurer’s words', () => {
+  // (4) What a resolve says in the change history, and why.
+  const x = sandbox([...C6_MERGE_FNS, 'LEDGER_OP_LABELS', 'LEDGER_FIELD_LABELS', 'ledgerEventLines', 'ledgerLogValue', 'fmt', 'fmtDateShort', 'ledgerEntryNamed',
+    'ledgerStatementName', 'ledgerRowName']);
+  const row = (o) => C6_ROW(Object.assign({ ref: '7' }, o));
+  let more = x.ledgerResolveMore({ mine: row({ description: 'Pizza party' }), theirs: row({ description: 'Pizza night' }) }, 'theirs');
+  eq([more.f, more.why], [{ description: ['Pizza party', 'Pizza night'] }, 'Changed on two devices at once. The first value is the version not kept.'], 'a pick of the words');
+  more = x.ledgerResolveMore({ mine: row({ enteredBy: 'Sam' }), theirs: row() }, 'theirs');
+  eq([more.f, more.why], [{}, 'Changed on two devices at once. The two versions differed only in record-keeping details.'], 'a pick of record-keeping details');
+  eq(JSON.parse(JSON.stringify(x.ledgerEventLines({ op: 'resolve', f: { voidReason: ['Twice', 'Bounced'] } }, {}))),
+    [{ what: 'Kept one of two versions: void reason', before: 'Twice', after: 'Bounced' }], 'the history line');
+  // (5) The statement it was cleared on, and the reversal that cancels it, are what a pick chose between too,
+  // named as a leader reads them.
+  more = x.ledgerResolveMore({ mine: row({ reconciled: true, statementId: 'st-1', reversedBy: 'rv-x' }), theirs: row({ reconciled: true, statementId: 'st-2' }) }, 'mine');
+  eq(more.f, { statementId: ['st-2', 'st-1'], reversedBy: [null, 'rv-x'] }, 'the statement and the reversal');
+  const names = { statement: (id) => x.ledgerStatementName([{ id: 'st-1', date: '2026-09-30' }], id),
+    entry: (id) => x.ledgerRowName([{ id: 'rv-x', description: 'Reversal of “Pizza”' }], id) };
+  eq([x.ledgerLogValue('statementId', 'st-1', names), x.ledgerLogValue('statementId', 'st-9', names), x.ledgerLogValue('reversedBy', 'rv-x', names),
+    x.ledgerLogValue('reversedBy', 'rv-9', names)], ['Sep 30', 'a statement not in this book', 'Reversal of “Pizza”', 'an entry not in this book'], 'the values');
+  // In the chooser, named from the other copy when only it has them yet.
+  const other = { statements: [{ id: 'st-2', date: '2026-10-31' }], ledger: [{ id: 'rv-y', date: '2026-10-02', description: 'Reversal of “Dues”', amountCents: 100, direction: 'in' }] };
+  const items = [{ ids: ['l2'], rows: [{ id: 'l2', parts: ['off'], mine: row({ id: 'l2', reconciled: true, statementId: 'st-2' }),
+    theirs: row({ id: 'l2', reconciled: true, reversedBy: 'rv-y' }), mineBy: null, theirsBy: null, money: false, lock: null }] }];
+  let t = c6Text(c6Chooser(items, {}, `sync.rowChoice.remote.json = ${JSON.stringify(JSON.stringify(other))};`).html);
+  ok(t.includes('On this device No change to this entry was recorded on this copy. Statement: Oct 31 Reversed by: (none) Keep this version') &&
+    t.includes('In the pack’s shared copy No change to this entry was recorded on this copy. Statement: (none) Reversed by: Reversal of “Dues” Keep this version'),
+    'named from the other copy: ' + t);
+  // (7) The header shows only what both versions agree on.
+  const hd = (m, th) => c6Text(c6Chooser([{ ids: ['l2'], rows: [{ id: 'l2', parts: ['content'], mine: row(Object.assign({ id: 'l2' }, m)), theirs: row(Object.assign({ id: 'l2' }, th)),
+    mineBy: null, theirsBy: null, money: false, lock: null }] }]).html).split(' On this device')[0].split('change history. ')[1];
+  eq([hd({}, { lineId: 'L1' }), hd({ amountCents: 4500 }, {}), hd({ direction: 'in' }, {}), hd({ date: '2026-09-11' }, {})],
+    ['Pizza · Sep 10 · −$40.00', 'Pizza · Sep 10', 'Pizza · Sep 10', 'Pizza'], 'the headers');
+  // (8) With nothing logged behind it: on the side whose book locked the period, what that side did.
+  const lk = [{ ids: ['l2'], rows: [{ id: 'l2', parts: ['content', 'tick'], mine: row({ id: 'l2', amountCents: 4500 }), theirs: row({ id: 'l2' }),
+    mineBy: null, theirsBy: null, money: true, lock: { side: 'mine', kind: 'period', date: '2026-09-30' } }] }];
+  t = c6Text(c6Chooser(lk).html);
+  ok(t.includes('On this device No change to this entry was recorded on this copy.') &&
+    t.includes('In the pack’s shared copy The entry itself wasn’t changed there. Its period was reconciled through Sep 30.'), 'who, under a lock: ' + t);
 });
 
 test('C6: parents never see the chooser or a resolve, and the reload gate refuses its buttons', () => {
@@ -24921,10 +24969,11 @@ test('C6: the copy chooser says when both copies closed the same year out, and w
   const { html } = chooserHtml(close('B', 2), close('A', 1));
   const t = html.replace(/<[^>]+>/g, '');
   const date = (iso) => vm.runInContext(`fmtArchiveDate('${iso}')`, chooserHtml(close('B', 2), close('A', 1)).ctx);
-  ok(t.includes(`Both copies have been closed out to 2027, but separately: the cloud copy on ${date('2026-07-01T12:00:00.000Z')}, this device on ${date('2026-07-02T12:00:00.000Z')}. ` +
-    'Each started 2027 with its own book, so they can’t be put together.Keep one. Anything entered on the other since its close-out has to be entered again.' +
-    'Whichever you keep, the other copy is gone for everyone. Download this device’s copy first.'), 'the words: ' + t);
-  ok(!/closed out to 2027, but separately/.test(chooserHtml(close('A', 1), close('A', 1)).html.replace(/<[^>]+>/g, '')), 'the same close-out said to be two');
+  ok(t.includes(`Both copies closed out the year separately, to 2027: the cloud copy on ${date('2026-07-01T12:00:00.000Z')}, this device on ${date('2026-07-02T12:00:00.000Z')}. ` +
+    'Each started 2027 with its own book and its own year-end record, so the two can’t be combined.' +
+    'Keep one, usually the one more has been entered in since. Anything entered on the other since its close-out has to be entered again.' +
+    'Whichever you keep, the other copy, including its year-end record, is gone for everyone. Download this device’s copy first.'), 'the words: ' + t);
+  ok(!/closed out the year separately/.test(chooserHtml(close('A', 1), close('A', 1)).html.replace(/<[^>]+>/g, '')), 'the same close-out said to be two');
   ok(!/separately/.test(chooserHtml(seed, seed).html), 'a same-year copy never closed out');
   ok(!/<b>/.test(chooserHtml(close('B', 2), Object.assign(close('A', 1), { archives: [{ id: 'x', kind: 'season', year: 2026, closedAt: '<b>' }] })).html), 'not escaped');
 });

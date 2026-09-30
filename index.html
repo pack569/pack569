@@ -8814,7 +8814,7 @@
     edit: 'Changed', add: 'Added', 'delete': 'Deleted', tick: 'Ticked against a statement', untick: 'Un-ticked',
     unmakeup: 'Tier make-up taken back', notcommission: 'Marked not the commission', reassign: 'Family unlinked',
     opening: 'Opening balance changed', reconcile: 'Marked reconciled', restore: 'Backup restored',
-    'void': 'Voided', unvoid: 'Un-voided', reverse: 'Reversed', correct: 'Corrected', resolve: 'Resolved', reopen: 'Statement reopened',
+    'void': 'Voided', unvoid: 'Un-voided', reverse: 'Reversed', correct: 'Corrected', resolve: 'Kept one of two versions', reopen: 'Statement reopened',
     review: 'Statement reviewed', balance: 'Ending balance added'   // Phase 3, C5 (C5 review: "ending balance", the treasurer's words)
   };
   var LEDGER_FIELD_LABELS = {
@@ -8822,10 +8822,11 @@
     method: 'method', ref: 'reference', source: 'source', scoutId: 'scout (family)', donor: 'donor', reimbursement: 'reimbursement',
     notCommission: 'counted as other income', tierMakeup: 'tier make-up', openingCents: 'opening balance', openingDate: 'opening date',
     reconciledThrough: 'reconciled through', statementCents: 'statement ending balance',
-    reconciled: 'ticked', voidReason: 'reason'   // Phase 3, C6: what a 'resolve' kept
+    reconciled: 'ticked', voidReason: 'void reason',   // Phase 3, C6: what a 'resolve' kept (treasurer review of C6, 4)
+    statementId: 'statement', reversedBy: 'reversed by'   // treasurer review of C6 (5)
   };
   // One value from an event's `f`, as a leader reads it. `names` turns an id into a name
-  // ({ line, scout, tier }: each id → name or ''). Pure given `names`.
+  // ({ line, scout, tier, statement, entry }: each id → name or ''). Pure given `names`.
   function ledgerLogValue(k, v, names) {
     if (v === null || v === undefined || v === '') return '(none)';
     if (k === 'amountCents' || k === 'openingCents' || k === 'statementCents') return typeof v === 'number' ? fmt(v) : String(v);
@@ -8836,6 +8837,10 @@
     if (k === 'lineId' && n.line) return n.line(v) || 'a removed budget line';
     if (k === 'scoutId' && n.scout) return n.scout(v) || 'a removed family';
     if (k === 'tierMakeup' && n.tier) return n.tier(v) || 'a removed tier';
+    // Treasurer review of C6 (5) — the statement an entry was cleared on, by its date; the reversal
+    // that cancels it, by its name.
+    if (k === 'statementId' && n.statement) return n.statement(v) || 'a statement not in this book';
+    if (k === 'reversedBy' && n.entry) return n.entry(v) || 'an entry not in this book';
     return String(v);
   }
   // An event as lines: one per field it changed ({ what, before, after }), or one saying what was
@@ -14197,15 +14202,19 @@
   // What a 'resolve' event says (logLedger's `more`), for conflict row `r` and the copy picked (`pick`,
   // 'mine' or 'theirs'): each field a leader reads that the two versions differ in, [the version not
   // kept, the one kept], and that it was changed on two devices at once. Pure.
-  var LEDGER_RESOLVE_FIELDS = LEDGER_EDIT_FIELDS.concat(['reconciled', 'voidReason']);
-  var LEDGER_RESOLVE_WHY = 'Changed on two devices at once. The version after the arrow was kept.';
+  // Treasurer review of C6 (5) — and the statement it was cleared on, and the reversal that cancels it:
+  // two versions that differ there don't "read the same".
+  var LEDGER_RESOLVE_FIELDS = LEDGER_EDIT_FIELDS.concat(['reconciled', 'statementId', 'voidReason', 'reversedBy']);
+  // Treasurer review of C6 (4).
+  var LEDGER_RESOLVE_WHY = 'Changed on two devices at once. The first value is the version not kept.';
+  var LEDGER_RESOLVE_WHY_SAME = 'Changed on two devices at once. The two versions differed only in record-keeping details.';
   function ledgerResolveMore(r, pick) {
     var kept = pick === 'mine' ? r.mine : r.theirs, not = pick === 'mine' ? r.theirs : r.mine, f = {};
     LEDGER_RESOLVE_FIELDS.forEach(function (k) {
       var a = not[k] === undefined ? null : not[k], b = kept[k] === undefined ? null : kept[k];
       if (!(ledgerEmpty(a) && ledgerEmpty(b)) && a !== b) f[k] = [a, b];
     });
-    return { f: f, why: LEDGER_RESOLVE_WHY };
+    return { f: f, why: Object.keys(f).length ? LEDGER_RESOLVE_WHY : LEDGER_RESOLVE_WHY_SAME };
   }
   // mergeLedgerRows' `set` written onto every row of `s` it names, in both lists, and onto `other`'s
   // (the other copy, when given) too. In place; returns how many of `s`'s rows it changed.
@@ -15180,9 +15189,10 @@
     render();
     return changed;
   }
-  var ROW_PICK_NEEDED = 'Pick a version of each entry to save.';
-  var ROW_PICKS_CHANGED = 'Something changed since you picked. Check each entry again, then save.';
-  var ROW_PICKS_SAVED = 'Saved. Each entry you picked a version of says so in its change history.';
+  // Treasurer review of C6 (11).
+  var ROW_PICK_NEEDED = 'Pick a version of each entry, then save.';
+  var ROW_PICKS_CHANGED = 'An entry changed again while you were picking, so its pick was cleared. Pick it again, then save.';
+  var ROW_PICKS_SAVED = 'Saved. Each entry’s change history shows the version that wasn’t kept.';
   // Treasurer review of C6 (1) — a pick the entry has been locked against since (F1b). (2): a reversed
   // entry's, in the same words.
   var ROW_PICK_LOCKED = 'Not saved: an entry was reconciled since you picked, so only its reconciled version can be kept. Pick again, then save.';
@@ -15289,10 +15299,11 @@
     if (typeof y !== 'number' || !cloud || !cloud.budget || cloud.budget.programYear !== y) return '';
     var c = seasonCloseoutOf(cloud, y - 1), m = seasonCloseoutOf(mine, y - 1);
     if (!c || !m || c.id === m.id) return '';
-    return '<p><strong>Both copies have been closed out to ' + y + ', but separately:</strong> the cloud copy on ' + esc(fmtArchiveDate(String(c.closedAt || ''))) +
-      ', this device on ' + esc(fmtArchiveDate(String(m.closedAt || ''))) + '. Each started ' + y + ' with its own book, so they can’t be put together.</p>' +
-      '<p>Keep one. Anything entered on the other since its close-out has to be entered again.</p>' +
-      '<p class="small">Whichever you keep, the other copy is gone for everyone. Download this device’s copy first.</p>';
+    // Treasurer review of C6 (11).
+    return '<p><strong>Both copies closed out the year separately, to ' + y + ':</strong> the cloud copy on ' + esc(fmtArchiveDate(String(c.closedAt || ''))) +
+      ', this device on ' + esc(fmtArchiveDate(String(m.closedAt || ''))) + '. Each started ' + y + ' with its own book and its own year-end record, so the two can’t be combined.</p>' +
+      '<p>Keep one, usually the one more has been entered in since. Anything entered on the other since its close-out has to be entered again.</p>' +
+      '<p class="small">Whichever you keep, the other copy, including its year-end record, is gone for everyone. Download this device’s copy first.</p>';
   }
   // What only this device has, so nobody picks a copy without knowing what the other loses.
   function syncOnlyHereHtml(only) {
@@ -21143,8 +21154,21 @@
     return {
       line: function (id) { var l = getBudgetLine(id); return l ? (l.name || 'Untitled line') : ''; },
       scout: function (id) { var s = getScout(id); return s ? (s.name || '') : ''; },
-      tier: function (id) { var t = state.rewardTiers.tiers.filter(function (x) { return x.id === id; })[0]; return t ? (t.name || 'a reward tier') : ''; }
+      tier: function (id) { var t = state.rewardTiers.tiers.filter(function (x) { return x.id === id; })[0]; return t ? (t.name || 'a reward tier') : ''; },
+      // Treasurer review of C6 (5) — a statement by its date, and an entry (a reversal) by its name.
+      statement: function (id) { return ledgerStatementName(state.statements, id); },
+      entry: function (id) { return ledgerRowName(arrOf(state.ledger).concat(arrOf(state.ledgerAside)), id); }
     };
+  }
+  // The date of statement `id` in `statements`, as the log shows it ('' when it isn't there). Pure.
+  function ledgerStatementName(statements, id) {
+    var st = arrOf(statements).filter(function (x) { return x && x.id === id; })[0];
+    return st && st.date ? fmtDateShort(String(st.date)) : '';
+  }
+  // Entry `id` of `rows` by its description (or its date and amount), '' when it isn't there. Pure.
+  function ledgerRowName(rows, id) {
+    var e = arrOf(rows).filter(function (x) { return x && x.id === id; })[0];
+    return e ? (e.description || ledgerEntryNamed(e)) : '';
   }
   function ledgerEntryLabel(id) {
     // Phase 3, C5 — a statement's own events (reviewed, reopened) name the statement.
@@ -26299,7 +26323,7 @@
   // each entry named as the change history names it, both versions side by side (one above the
   // other on a phone) with what differs, who changed it and when, and a button to keep each.
   var ROW_CHOOSER_TITLE = 'Two versions of the same ledger entries';
-  var ROW_CHOOSER_KEPT = 'Everything else both devices changed is kept. The version you don’t keep is written in the entry’s change history.';
+  var ROW_CHOOSER_KEPT = 'Every other change from both devices is kept. The version you don’t keep is noted in the entry’s change history.';   // treasurer review of C6 (11)
   // Treasurer review of C6 (1, 2, 3) — why an entry is asked about when its money is what moved, keyed on
   // mergeLedgerRows' `money` and `lock`: locked (reconciled through its date, or on a standing
   // statement), only the reconciled version can be kept; ticked only, either can; reversed on one
@@ -26317,37 +26341,67 @@
     return lock.kind === 'statement' ? 'Can’t be kept: it changes the money of an entry on the ' + fmtDateShort(lock.date) + ' statement.'
       : 'Can’t be kept: it changes the money of an entry reconciled through ' + fmtDateShort(lock.date) + '.';
   }
-  var ROW_SAME_BUT_STAMPS = 'The same, apart from who recorded it and when.';
+  // Treasurer review of C6 (5, 11) — the chooser's words.
+  var ROW_SAME_BUT_STAMPS = 'Reads the same as the other version. They differ only in record-keeping details, such as who entered it and when, so either can be kept.';
   function rowChooserIntro(n) {
     return n === 1
-      ? 'Another device changed a ledger entry that this device changed too, and the two versions don’t match. Pick the version to keep. Nothing is shared until you do.'
-      : 'Another device changed ' + n + ' ledger entries that this device changed too, and the versions don’t match. Pick the version to keep for each. Nothing is shared until you do.';
+      ? 'A ledger entry was changed on this device and on another one, and the two versions don’t match. Pick the version to keep. Nothing from this device is shared until you do.'
+      : n + ' ledger entries were changed on this device and on another one, and the versions don’t match. Pick the version to keep for each. Nothing from this device is shared until you do.';
   }
-  function ledgerConflictName(e) {
-    return (e.description || 'An entry') + ' · ' + fmtDateShort(e.date) + ' · ' + (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents || 0);
+  // Treasurer review of C6 (6) — an item of several entries (an entry and its reversal) is one pick.
+  function rowChooserTogether(k) {
+    return k === 2 ? 'These 2 entries go together (an entry and its reversal), so one pick keeps both.'
+      : 'These ' + k + ' entries go together, so one pick keeps all of them.';
+  }
+  // Treasurer review of C6 (7) — an entry named by what both versions say: its date, and its amount,
+  // only where the two agree (either alone would be one side's figures in the other's name).
+  function ledgerConflictName(m, t) {
+    var h = m.description || 'An entry';
+    if (m.date !== t.date) return h;
+    h += ' · ' + fmtDateShort(m.date);
+    if (m.amountCents !== t.amountCents || m.direction !== t.direction) return h;
+    return h + ' · ' + (m.direction === 'in' ? '+' : '−') + fmt(m.amountCents || 0);
   }
   // What `side`'s version of conflict row `r` says where the two differ, one line a field (the
-  // fields a 'resolve' records). Pure given `names` (ledgerLogValue's).
-  function ledgerConflictLines(r, side, names) {
+  // fields a 'resolve' records). `prefix`: the entry's short name, for an item of several (6). Pure
+  // given `names` (ledgerLogValue's).
+  function ledgerConflictLines(r, side, names, prefix) {
     var e = side === 'mine' ? r.mine : r.theirs, o = side === 'mine' ? r.theirs : r.mine;
     return LEDGER_RESOLVE_FIELDS.filter(function (k) { return !(ledgerEmpty(e[k]) && ledgerEmpty(o[k])) && e[k] !== o[k]; }).map(function (k) {
-      return ledgerCap(LEDGER_FIELD_LABELS[k] || k) + ': ' + ledgerLogValue(k, e[k], names);
+      return (prefix ? prefix + ' · ' : '') + ledgerCap(LEDGER_FIELD_LABELS[k] || k) + ': ' + ledgerLogValue(k, e[k], names);
     });
   }
-  function ledgerConflictWho(ev) {
-    if (!ev) return 'Who changed it wasn’t recorded.';
+  // Who changed `side`'s version, from the latest event behind it (`ev`). With none (treasurer review
+  // of C6, 8): on the side a lock of the period comes from (`lock`, rowItemLock: the other side is the
+  // one that can't be kept), what that side did do; otherwise, that nothing was recorded.
+  function ledgerConflictWho(ev, side, lock) {
+    if (!ev) {
+      return lock && lock.kind === 'period' && lock.side !== side
+        ? 'The entry itself wasn’t changed there. Its period was reconciled through ' + fmtDateShort(lock.date) + '.'
+        : 'No change to this entry was recorded on this copy.';
+    }
     var when = ledgerLogWhen(ev.at);
     return 'Changed by ' + (ev.by || 'someone') + (when ? ' on ' + fmtDateShort(when.slice(0, 10)) + ' at ' + when.slice(11) : '') + '.';
   }
   function renderRowChooser(o, rc) {
     var names = ledgerLogNames(), n = 0, all = true;
+    // A statement or a reversal only the other copy has yet is named from it (treasurer review of C6, 5).
+    var other = null;
+    try { other = JSON.parse(rc.remote && typeof rc.remote.json === 'string' ? rc.remote.json : ''); } catch (e) { /* named by the fallbacks */ }
+    var hereStatement = names.statement, hereEntry = names.entry;
+    names.statement = function (id) { return (hereStatement && hereStatement(id)) || ledgerStatementName(other && other.statements, id); };
+    names.entry = function (id) {
+      return (hereEntry && hereEntry(id)) || ledgerRowName(arrOf(other && other.ledger).concat(arrOf(other && other.ledgerAside)), id);
+    };
     rc.items.forEach(function (it) { n += it.ids.length; if (it.rows.some(function (r) { return !rc.picks[r.id]; })) all = false; });
     var h = '<div class="overlay" role="dialog" aria-modal="true" aria-label="' + esc(ROW_CHOOSER_TITLE) + '"><div class="overlay-inner"><div class="card">' +
       '<h2 class="section display">' + esc(ROW_CHOOSER_TITLE) + '</h2>' +
       '<p>' + esc(rowChooserIntro(n)) + '</p><p class="small muted">' + esc(ROW_CHOOSER_KEPT) + '</p>';
     rc.items.forEach(function (it) {
+      var many = it.rows.length > 1;
       h += '<div style="border-top:1px solid var(--line);margin-top:12px;padding-top:10px">' +
-        it.rows.map(function (r) { return '<p style="margin:0"><strong>' + esc(ledgerConflictName(r.mine)) + '</strong></p>'; }).join('');
+        it.rows.map(function (r) { return '<p style="margin:0"><strong>' + esc(ledgerConflictName(r.mine, r.theirs)) + '</strong></p>'; }).join('') +
+        (many ? '<p class="small muted" style="margin:2px 0 0">' + esc(rowChooserTogether(it.rows.length)) + '</p>' : '');
       var lock = rowItemLock(it);
       var note = lock ? (lock.kind === 'pair' ? ROW_PAIR_NOTE : ROW_LOCKED_NOTE) : it.rows.some(function (r) { return r.money; }) ? ROW_TICKED_NOTE : '';
       if (note) h += '<p class="small" style="margin:4px 0 0">' + esc(note) + '</p>';
@@ -26356,12 +26410,12 @@
         it.rows.forEach(function (r) {
           var ev = r[side + 'By'];
           if (ev && (!by || String(ev.at || '') + ev.id > String(by.at || '') + by.id)) by = ev;
-          lines = lines.concat(ledgerConflictLines(r, side, names));
+          lines = lines.concat(ledgerConflictLines(r, side, names, many ? (r.mine.description || 'An entry') : ''));
         });
         if (!lines.length) lines = [ROW_SAME_BUT_STAMPS];
         return '<div style="flex:1 1 220px;min-width:0">' +
           '<p class="eyebrow" style="margin:0">' + (side === 'mine' ? 'On this device' : 'In the pack’s shared copy') + '</p>' +
-          '<p class="small muted" style="margin:2px 0 4px">' + esc(ledgerConflictWho(by)) + '</p>' +
+          '<p class="small muted" style="margin:2px 0 4px">' + esc(ledgerConflictWho(by, side, lock)) + '</p>' +
           '<ul class="small" style="margin:0 0 8px;padding-left:18px">' + lines.map(function (l) { return '<li>' + esc(l) + '</li>'; }).join('') + '</ul>' +
           (lock && lock.side === side ? '<p class="small" style="margin:0"><strong>' + esc(rowCantKeep(lock)) + '</strong></p>'
             : '<button type="button" class="btn small' + (picked ? ' primary' : '') + '" aria-pressed="' + (picked ? 'true' : 'false') + '" data-act="sync-row-pick:' +
