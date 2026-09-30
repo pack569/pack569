@@ -25971,6 +25971,33 @@ test('C7: archiving a scout whose family still owes is a two-tap confirm that sa
   ok(!h.includes('<img src=x') && h.includes('&lt;img'), 'the name was not escaped');
 });
 
+// Treasurer review of C7: the year-end close-out archives a crossed-over (Arrow of Light) scout, and the
+// family's open balance, or credit, still comes forward, attached to the archived scout, and is listed.
+test('C7: the close-out carries an all-archived family’s balance and credit forward, on the archived scout, and the family stays in the accounts', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`${[...new Set([...NORMALIZE_FNS, ...declClosure(['rolloverYear', 'familyAccountsNow', 'syncCharges'], ['state', 'ui', 'sync', 'render', 'save', 'showToast', 'uid', 'todayISO', 'commit', 'scheduleSyncPush'])])].map(decl).join('\n')}
+    var ui = {}, sync = {}, n = 0;
+    function todayISO() { return '2026-06-01'; } function uid() { n += 1; return 'u' + n; } function ledgerActor() { return 'Pat'; } function ledgerActorUid() { return 'u9'; }
+    var state = normalizeState(${JSON.stringify(Object.assign(preMigrationState(), {
+      scouts: [
+        { id: 'a1', name: 'Ada Lovelace', den: 'Arrow of Light', familyId: 'a1' },
+        { id: 'b1', name: 'Bo Diddley', den: 'Arrow of Light' },
+        { id: 'c1', name: 'Cal Ripken', den: 'Wolf', familyId: 'a1' }],
+      charges: [
+        { id: 'k1', scoutId: 'b1', lineId: '', amountCents: 4500, date: '2026-05-01', waivedBy: '', forgiven: null, label: 'Campout' },
+        { id: 'k2', scoutId: 'a1', lineId: '', amountCents: 1000, date: '2026-05-01', waivedBy: '', forgiven: null, label: 'Dues' }],
+      ledger: [{ id: 'p1', date: '2026-05-02', description: 'Dues', amountCents: 3000, direction: 'in', scoutId: 'a1', source: 'family' }]
+    }))});`, ctx);
+  try { vm.runInContext('rolloverYear()', ctx); } catch (e) { throw new Error('rolloverYear: ' + e.message); }
+  const out = JSON.parse(JSON.stringify(vm.runInContext('({ scouts: state.scouts.map(function (s) { return [s.id, !!s.archived]; }), charges: state.charges, ledger: state.ledger, acct: familyAccountsNow() })', ctx)));
+  eq(out.scouts, [['a1', true], ['b1', true], ['c1', false]], 'Arrow of Light crossed over');
+  // Bo's family (all archived) owes $45.00: one prior-year charge, on Bo.
+  eq(out.charges.map((c) => [c.scoutId, c.amountCents, c.lineId]), [['b1', 4500, '']], 'Bo’s balance came forward');
+  // The Lovelace family (Ada archived, Cal stays) paid $30 against $10: $20 credit, on the one who stays.
+  eq(out.ledger.map((e) => [e.scoutId, e.amountCents, e.source]), [['c1', 2000, 'carryover']], 'Ada’s family credit came forward');
+  eq(out.acct.map((a) => [a.key, a.outstanding, a.credit]).sort(), [['a1', 0, 2000], ['b1', 4500, 0]], 'both families are in the accounts');
+});
+
 atest('C7, api: an older page’s delete of a scout with payments keeps the scout, archived, and the payments’ family, on both devices', async () => {
   const over = { ledger: C3_ROWS, ledgerAside: [], book: C3_SEED.book, ledgerLog: [] };
   let { a, b, server } = await apiGonePair(over);
