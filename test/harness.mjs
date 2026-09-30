@@ -23501,7 +23501,7 @@ test('C5 review (F6): restoring a backup of the same year keeps the statements s
   ok(SCRIPT.split('data-act="import-json"').length === 2, 'another Import backup button');
   // A standing statement with a bad date, or reopened, doesn't move a lock; nor one on or before it.
   const f = sandbox(['statementLockForward', 'statementReopened', 'ledgerStampClean']);
-  const fwd = (rt, sts) => { const bk = { reconciledThrough: rt, statementDate: '2026-09-15', statementCents: 5 }; const to = f.statementLockForward(bk, JSON.parse(JSON.stringify(sts)));
+  const fwd = (rt, sts) => { const bk = { reconciledThrough: rt, statementDate: '2026-09-15', statementCents: 5 }; const to = f.statementLockForward(bk, JSON.parse(JSON.stringify(sts)), '2026-10-16');
     return [bk.reconciledThrough, to && to.id, bk.statementDate]; };
   const S = (id, date, o) => Object.assign({ id, date, by: 'Pat', at: '2026-10-01T00:00:00.000Z' }, o || {});
   eq(fwd('2026-08-31', [S('bad', '', { badDate: true }), S('ro', '2026-10-31', { reopenedAt: 'T' }), S('aug', '2026-08-31')]), ['2026-08-31', null, '2026-09-15'], 'nothing to move to');
@@ -23527,6 +23527,31 @@ test('C5 re-check (R2): a restore keeps this device’s past seasons the backup 
   ok(/This device’s 2026–2027 book will be replaced\./.test(line(2026, [], 2025)), 'none');
   eq([line(2026, [{}], 2026), x.importBookYearHtml(null, [], { book: { year: 1 } })], ['', ''], 'the same year');
   ok(/'This replaces everything currently in the pack record\.<\/p>' \+\s*(\/\/[^\n]*\s*)*importBookYearHtml\(state\.book, state\.statements, o\.data\) \+/.test(SCRIPT), 'the overlay');
+});
+
+test('R1–R7 verification (F1): a restore never locks the book past tomorrow, nor a book closed out', () => {
+  // Today Sep 30: a standing statement through Dec 31 (a clock-ahead device's), the lock at Aug 31.
+  const f = sandbox(['statementLockForward', 'statementReopened', 'ledgerStampClean']);
+  const S = (id, date, o) => Object.assign({ id, date, by: 'Pat', at: '2026-10-01T00:00:00.000Z' }, o || {});
+  const fwd = (bk, sts, tomorrow) => { bk = Object.assign({ reconciledThrough: '2026-08-31' }, bk); const to = f.statementLockForward(bk, sts, tomorrow);
+    return [bk.reconciledThrough, to && to.id]; };
+  eq(fwd({}, [S('dec', '2026-12-31')], '2026-10-01'), ['2026-08-31', null], 'locked through Dec 31');
+  // One through tomorrow still moves it, and the newest within the bound is the one taken.
+  eq(fwd({}, [S('dec', '2026-12-31'), S('oct', '2026-10-01'), S('sep', '2026-09-30')], '2026-10-01'), ['2026-10-01', 'oct'], 'through tomorrow');
+  // A book closed out is never moved; nor is one with no tomorrow given.
+  eq(fwd({ closedAt: '2026-07-01T00:00:00.000Z' }, [S('sep', '2026-09-30')], '2026-10-01'), ['2026-08-31', null], 'a book closed out');
+  eq([fwd({}, [S('sep', '2026-09-30')]), fwd({}, [S('sep', '2026-09-30')], '')], [['2026-08-31', null], ['2026-08-31', null]], 'no tomorrow');
+  // Pure: the statements are not touched.
+  const sts = [S('sep', '2026-09-30')], was = JSON.stringify(sts);
+  fwd({}, sts, '2026-10-01');
+  eq(JSON.stringify(sts), was, 'the statements changed');
+  // The restore itself, on a page whose today is Sep 30: the lock stays at Aug 31, and its log says nothing of Dec 31.
+  const p = c2tPage({ book: { year: 2026, reconciledThrough: '2026-08-31' },
+    more: `state.statements = ${JSON.stringify([C5_LEGACY(), S('st-dec', '2026-12-31')])}; function todayISO() { return '2026-09-30'; }` });
+  p.run(`admin = true; ui.overlay = { data: ${JSON.stringify({ ledger: [{ id: 'a' }], ledgerLog: [], book: { year: 2026, reconciledThrough: '2026-08-31' }, statements: [C5_LEGACY()] })} };` +
+    " act3('confirm-import')");
+  eq([p.get('state.book.reconciledThrough'), p.get('state.statements.length'), /2026-12-31/.test(p.get('log()[0].why'))], ['2026-08-31', 2, false], 'the restore');
+  ok(/statementLockForward\(state\.book, state\.statements, isoPlusDays\(todayISO\(\), 1\)\)/.test(SCRIPT), 'the restore’s bound');
 });
 
 test('C5 review (treasurer 6, F4): an entry a standing statement lists is not cleared again, and a list is cut at 2000 with the totals whole', () => {

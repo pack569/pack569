@@ -9430,10 +9430,15 @@
   // and its entries open to change. A statement being worked on that the lock now covers is done
   // with, as the sync merge leaves it. In place on `book`; returns the statement it moved to, or
   // null. Pure.
-  function statementLockForward(book, statements) {
+  // Verification of R1–R7 (F1) — not to a statement dated after `tomorrow` (isoPlusDays(todayISO(),
+  // 1), the caller's: the sync merge's bound), which the sync merge would not have locked through
+  // either: a clock-ahead device's Dec 31 would otherwise lock the book through Dec 31 on a
+  // restore. Nor in a book closed out. Without a `tomorrow`, nothing moves.
+  function statementLockForward(book, statements, tomorrow) {
     var rt = String((book && book.reconciledThrough) || ''), to = null;
+    if (!book || book.closedAt || typeof tomorrow !== 'string' || !tomorrow) return null;
     (statements || []).forEach(function (st) {
-      if (!st || statementReopened(st) || st.badDate || !/^\d{4}-\d{2}-\d{2}$/.test(st.date) || st.date <= rt) return;
+      if (!st || statementReopened(st) || st.badDate || !/^\d{4}-\d{2}-\d{2}$/.test(st.date) || st.date <= rt || st.date > tomorrow) return;
       if (!to || st.date + String(st.at || '') + st.id > to.date + String(to.at || '') + to.id) to = st;
     });
     if (!to) return null;
@@ -31032,7 +31037,7 @@
       // Security re-check of C5 (R1) — and a lock behind a statement still standing moves forward to
       // it (statementLockForward): a backup taken before Sep 30 was reconciled leaves Sep 30 standing,
       // and its entries are locked again, as they were before the restore.
-      var ciWas = state.book.reconciledThrough, ciFwd = statementLockForward(state.book, state.statements);
+      var ciWas = state.book.reconciledThrough, ciFwd = statementLockForward(state.book, state.statements, isoPlusDays(todayISO(), 1));
       // Treasurer review of C2 (L-5) — the ledger's log says a backup was restored, and what the
       // book held afterwards: from here on the book is the backup's, whatever it held before.
       logLedger('restore', 'book', { why: 'A backup was restored on this device. The book now holds the backup’s ' +
