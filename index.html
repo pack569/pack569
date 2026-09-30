@@ -9460,6 +9460,35 @@
     if (book.statementDate && book.statementDate <= to.date) { book.statementDate = ''; book.statementCents = 0; }
     return to;
   }
+  // Security review of C6 (F4), treasurer review (10) — for a restored backup: each counted entry of
+  // `rows` that a standing statement in force lists (not reopened, its date readable and within the
+  // book's lock, the latest such if more than one) is ticked again, from the statement: who signed it,
+  // and when. A backup from before the statement holds those entries unticked, and a restore is read by
+  // the merge as a change to every entry, so every device would take the untick. An entry already
+  // ticked on a statement is left as it is. In place; returns how many were ticked again. Pure.
+  function statementRetick(rows, statements, book) {
+    var rt = String((book && book.reconciledThrough) || ''), on = Object.create(null), n = 0;
+    (statements || []).forEach(function (st) {
+      if (!st || statementReopened(st) || st.badDate || !/^\d{4}-\d{2}-\d{2}$/.test(st.date) || !rt || st.date > rt || !Array.isArray(st.ticked)) return;
+      st.ticked.forEach(function (id) {
+        var was = on[id];
+        if (!was || st.date + String(st.at || '') + st.id > was.date + String(was.at || '') + was.id) on[id] = st;
+      });
+    });
+    (rows || []).forEach(function (e) {
+      var st = e && typeof e.id === 'string' ? on[e.id] : null;
+      if (!st || (e.reconciled === true && typeof e.statementId === 'string' && e.statementId)) return;
+      var at = typeof st.at === 'string' ? st.at : '', ms = Date.parse(at);
+      e.reconciled = true;
+      e.statementId = st.id;
+      e.approvedBy = ledgerStampClean(st.by);
+      e.approvedByUid = typeof st.byUid === 'string' ? st.byUid : '';
+      e.approvedAt = at;
+      if (isFinite(ms)) e.reconciledAt = ms; else delete e.reconciledAt;
+      n += 1;
+    });
+    return n;
+  }
   // The statement Mark reconciled writes, from the book as it stands (its statementDate and
   // statementCents, the figures reconcileTotals checked) and the rows: `stamp` { by, byUid, at },
   // `id` its id. The entries cleared on it are the ones ticked through its date that are not
@@ -31887,7 +31916,7 @@
       // the question is open.
       if (!canReopenStatement()) { ui.overlay = null; render(); showToast(RESTORE_REFUSED); return; }
       var ciLog = state.ledgerLog;
-      var ciSt = state.statements, ciYear = state.book ? state.book.year : undefined, ciArc = state.archives;
+      var ciSt = state.statements, ciYear = state.book ? state.book.year : undefined, ciArc = state.archives, ciRows = state.ledger;
       state = restoreGone(ui.overlay.data, state.gone, Date.now());
       // Security re-check of C5 (R2) — and this device's past seasons, as they are here: a season's
       // close-out (its summary, statements and change history) is written once, on the device that
@@ -31917,13 +31946,23 @@
       // it (statementLockForward): a backup taken before Sep 30 was reconciled leaves Sep 30 standing,
       // and its entries are locked again, as they were before the restore.
       var ciWas = state.book.reconciledThrough, ciFwd = statementLockForward(state.book, state.statements, isoPlusDays(todayISO(), 1));
+      // Security review of C6 (F4), treasurer review (10) — and the entries those statements list are
+      // ticked again (statementRetick), or every device would take the backup's untick of them.
+      var ciRetick = statementRetick(state.ledger, state.statements, state.book);
+      // …and whether an entry ticked here before (ciRows) is unticked now: its tick has to be made again.
+      var ciTicked = Object.create(null);
+      arrOf(ciRows).forEach(function (e) { if (e && e.reconciled === true && typeof e.id === 'string') ciTicked[e.id] = true; });
+      var ciUnticked = state.ledger.filter(function (e) { return e && ciTicked[e.id] && e.reconciled !== true; }).length;
       // Treasurer review of C2 (L-5) — the ledger's log says a backup was restored, and what the
       // book held afterwards: from here on the book is the backup's, whatever it held before.
       logLedger('restore', 'book', { why: 'A backup was restored on this device. The book now holds the backup’s ' +
         state.ledger.length + ' entr' + (state.ledger.length === 1 ? 'y' : 'ies') +
         (state.book.reconciledThrough ? ', reconciled through ' + state.book.reconciledThrough : ', none of it reconciled') + '.' +
         (ciFwd ? ' Restored as it was, the book would be ' + (ciWas ? 'reconciled only through ' + ciWas : 'not reconciled at all') +
-          ', but the statement through ' + ciFwd.date + ' still stands, so the book is locked through that date.' : '') });
+          ', but the statement through ' + ciFwd.date + ' still stands, so the book is locked through that date.' : '') +
+        (ciRetick ? ' ' + ciRetick + (ciRetick === 1 ? ' entry listed on a standing statement was' : ' entries listed on standing statements were') +
+          ' ticked again to match ' + (ciRetick === 1 ? 'it.' : 'them.') : '') +
+        (ciUnticked ? ' Ticks made after the backup that aren’t on a statement need ticking again.' : '') });
       ui.overlay = null; ui.storefrontId = null; ui.expandedScouts = {};
       commit(); return;
     }

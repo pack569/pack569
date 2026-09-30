@@ -19140,7 +19140,7 @@ const C2T_ACT = [
   c2Block(/    if \(act === 'confirm-import'\) \{[\s\S]*?\n    \}/, 'confirm-import')].join('\n');
 const C2T_CHANGE = c2Block(/    if \(ch === 'ledger-unrec-why'\) \{[^\n]*\}/, 'ledger-unrec-why');
 const C2T_MORE = `
-  ${['reconcileLockRefusal', 'reconcileLockAhead', 'reconcileTotals', 'entrySignedCents', 'arrOf'].map(slice).join('\n')}
+  ${['reconcileLockRefusal', 'reconcileLockAhead', 'reconcileTotals', 'entrySignedCents', 'arrOf', 'statementRetick'].map(slice).join('\n')}
   ${decl('RECONCILE_AHEAD_WHY')}
   ${decl('RECONCILE_AHEAD_LOGGED')}
   ${decl('RESTORE_REFUSED')}
@@ -19390,6 +19390,7 @@ test('C2 treasurer M-4: the log’s screens are leaders-only, and close-out says
 // The page's own confirm-import block, on a device of a pair, logging through the page's logLedger.
 const C2S_EXTRA = `${C2_LOG_EXTRA}
   ${slice('statementLockForward')}
+  ${slice('statementRetick')}   // C6 reviews (F4): a restore re-ticks what a standing statement lists
   ${decl('RESTORE_REFUSED')}
   function canReopenStatement() { return true; }   // an admin restores (security re-check of C5, R1)
   function confirmImport(data) { ui.overlay = { kind: 'import', data: data }; var act = 'confirm-import';
@@ -25075,6 +25076,50 @@ test('C6: the copy chooser says when both copies closed the same year out, and w
   ok(!/closed out the year separately/.test(chooserHtml(close('A', 1), close('A', 1)).html.replace(/<[^>]+>/g, '')), 'the same close-out said to be two');
   ok(!/separately/.test(chooserHtml(seed, seed).html), 'a same-year copy never closed out');
   ok(!/<b>/.test(chooserHtml(close('B', 2), Object.assign(close('A', 1), { archives: [{ id: 'x', kind: 'season', year: 2026, closedAt: '<b>' }] })).html), 'not escaped');
+});
+
+test('C6 review (F4): a restored backup from before a statement leaves the entries it lists ticked, on every device, and says so', () => {
+  // statementRetick: from the latest standing statement in force that lists each entry; not one ticked on a
+  // statement already, one reopened, or one after the book's lock.
+  const x = sandbox(['statementRetick', 'statementReopened', 'ledgerStampClean']);
+  const st = (id, date, ticked, o) => Object.assign({ id, date, ticked, by: 'Pat', byUid: 'u1', at: date + 'T20:00:00.000Z' }, o || {});
+  const rows = [{ id: 'a' }, { id: 'b', reconciled: true, statementId: 'st-x', approvedBy: 'Sam' }, { id: 'c', reconciled: true }, { id: 'd' }, { id: 'e' }];
+  const n = x.statementRetick(rows, [st('st-aug', '2026-08-31', ['a', 'c']), st('st-sep', '2026-09-30', ['a', 'b']),
+    st('st-old', '2026-07-31', ['d'], { reopenedAt: 'T', reopenedBy: 'Alex' }), st('st-oct', '2026-10-31', ['e'])], { reconciledThrough: '2026-09-30' });
+  eq([n, JSON.parse(JSON.stringify(rows))], [2, [
+    { id: 'a', reconciled: true, statementId: 'st-sep', approvedBy: 'Pat', approvedByUid: 'u1', approvedAt: '2026-09-30T20:00:00.000Z', reconciledAt: Date.parse('2026-09-30T20:00:00.000Z') },
+    { id: 'b', reconciled: true, statementId: 'st-x', approvedBy: 'Sam' },
+    { id: 'c', reconciled: true, statementId: 'st-aug', approvedBy: 'Pat', approvedByUid: 'u1', approvedAt: '2026-08-31T20:00:00.000Z', reconciledAt: Date.parse('2026-08-31T20:00:00.000Z') },
+    { id: 'd' }, { id: 'e' }]], 'what is ticked again');
+  // P7: September reconciled (statement S lists l2, ticked on it); l3 ticked since, on no statement. An admin
+  // restores a backup from before, with the book through Aug 31 and neither ticked.
+  const S = { id: 'st-sep', date: '2026-09-30', statementCents: 0, openingCents: 0, clearedCents: 0, bookCents: 0, ticked: ['l2'], outstanding: [],
+    by: 'Pat', byUid: 'u1', at: '2026-09-29T20:00:00.000Z' };
+  const tick = (o) => Object.assign({ reconciled: true, approvedBy: 'Sam', approvedByUid: 'u2', approvedAt: '2026-09-29T19:00:00.000Z', reconciledAt: 1790000000000 }, o);
+  const now = { ledger: [C3_ROWS[0], Object.assign({}, C3_ROWS[1], tick({ statementId: 'st-sep' })), Object.assign({}, C3_ROWS[2], tick({}))], ledgerAside: [], ledgerLog: [],
+    statements: [S], book: Object.assign({}, C3_SEED.book, { year: 2026, reconciledThrough: '2026-09-30', reconciledBy: 'Pat', reconciledAt: S.at }) };
+  const backup = JSON.stringify(goneSeedNorm(Object.assign({}, C3_SEED, { book: Object.assign({}, C3_SEED.book, { year: 2026 }) })));
+  const run = (dirtyB) => {
+    const { a, b, server } = fsGonePair(now);
+    a.run(C2S_EXTRA); b.run(C2S_EXTRA);
+    if (dirtyB) b.run(B1);
+    a.run(`confirmImport(normalizeState(${backup}))`); a.push();
+    b.hear(); if (dirtyB) b.push();
+    return { a, b, server };
+  };
+  const tickedOf = (st) => st.ledger.map((e) => [e.id, e.reconciled === true, e.statementId || '']);
+  for (const dirtyB of [false, true]) {
+    const { a, b, server } = run(dirtyB);
+    const want = [['l1', false, ''], ['l2', true, 'st-sep'], ['l3', false, '']];
+    eq([tickedOf(a.get('state')), tickedOf(server()), tickedOf(b.get('state')), server().book.reconciledThrough], [want, want, want, '2026-09-30'],
+      dirtyB ? 'a device with a change of its own, merging the restore' : 'a device taking the restore');
+    const l2 = server().ledger.find((e) => e.id === 'l2');
+    eq([l2.approvedBy, l2.approvedAt], ['Pat', S.at], 'ticked again from the statement');
+    eq(a.get("state.ledgerLog.filter(function (e) { return e.op === 'restore'; })[0].why"), 'A backup was restored on this device. The book now holds the backup’s 3 entries, ' +
+      'reconciled through 2026-09-30. Restored as it was, the book would be reconciled only through 2026-08-31, but the statement through 2026-09-30 still stands, so the ' +
+      'book is locked through that date. 1 entry listed on a standing statement was ticked again to match it. Ticks made after the backup that aren’t on a statement need ' +
+      'ticking again.', 'the restore’s why');
+  }
 });
 
 /* ---------------- report ---------------- */
