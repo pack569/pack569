@@ -1009,7 +1009,8 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
   'parseLegacyTime', 'migrateTierMakeUp', 'freshGone', 'clampGone', 'clampTickTimes', 'clampLogTimes', 'mergeLedgerLog', 'ledgerLogClip', 'utf8Bytes', 'campHash', 'stableRowId', 'newStableId', 'dedupeRowIds', 'normalizeState',
   // Security review of C3 (finding 1) — a row in both lists settles as the merge settles it.
-  'ledgerAsideSettle',
+  // Security review of option B (finding 2) — with the pairing, chain and all.
+  'ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept',
   // Phase 3, C4 — and a reversed row and its reversal stay together (M3).
   'ledgerPairCheck',
   // Phase 3, C1 — the ledger row normalizer, shared by the rows set aside.
@@ -1019,7 +1020,7 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
 // LIVE STOPGAP — what every slice of the sync merge needs besides it (freshGone is in NORMALIZE_FNS).
-const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'ledgerTickedAt', 'reconciledFates', 'reconciledFatesText', 'noteReconciledFates', 'restoreGone', 'entryAfterOpening', 'ledgerDateReconciled', 'fmt', 'fmtDateShort', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays', 'ledgerAsideSettle', 'keepLostVoids', 'ledgerPairCheck'];
+const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'ledgerTickedAt', 'reconciledFates', 'reconciledFatesText', 'noteReconciledFates', 'restoreGone', 'entryAfterOpening', 'ledgerDateReconciled', 'fmt', 'fmtDateShort', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays', 'ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept', 'keepLostVoids', 'ledgerPairCheck'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
   const ctx = vm.createContext({});
@@ -18191,7 +18192,7 @@ const C2_FNS = ['fmt', 'fmtDate', 'fmtDateShort', 'toCents', 'toCentsSigned', 'e
   'ledgerDateReconciled', 'ledgerLockedWhy', 'LEDGER_MAX_CENTS', 'LEDGER_EDIT_FIELDS', 'LEDGER_LOCKED_FIELDS', 'ledgerRowDiff',
   'ledgerRowFields', 'LEDGER_PAIR_FIXED', 'ledgerPairOf', 'ledgerEditRefusal', 'ledgerBackdateWarning', 'applyLedgerEdit', 'ledgerWho', 'logLedger', 'logOpening',
   'openingLockedWhy', 'LEDGER_OPS', 'ledgerEvent', 'ledgerLogClip', 'ledgerStampClean', 'stampApproved', 'stampEntered', 'ledgerActorName',
-  'ledgerDraftDefault', 'ledgerDraft', 'arm', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays', 'ledgerAsideSettle', 'keepLostVoids', 'ledgerPairCheck'];
+  'ledgerDraftDefault', 'ledgerDraft', 'arm', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays', 'ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept', 'keepLostVoids', 'ledgerPairCheck'];
 // The book is reconciled through Aug 31 from a Jul 1 opening. u1 is open; r1 is ticked (after the
 // period); p1 is dated in the period, not ticked; q1 is ticked in the period by a page from before
 // any stamps; pre is before the opening date; m1 is a tier make-up in the period.
@@ -19575,7 +19576,7 @@ test('C3, Firestore: a row ticked and locked on one device is kept counted over 
 });
 
 test('C3: which list a row settles in — the merged mark, then the log, then voided', () => {
-  const x = sandbox(['ledgerAsideSettle']);
+  const x = sandbox(['ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept']);
   const run = (marks, log) => {
     const r = x.ledgerAsideSettle([{ id: 'a' }, { id: 'b' }], [{ id: 'a', off: 'void' }, { id: 'z', off: 'void' }], marks, log);
     return JSON.parse(JSON.stringify([r.ledger.map((e) => e.id), r.aside.map((e) => e.id), r.moved]));
@@ -20535,7 +20536,7 @@ test('C4 (option B): a load keeps a reversed entry’s marks, never an email; a 
     ledgerAside: [row('X', 4000, 'out', { off: 'void', voidReason: 'Entered twice' })], gone: { ledger: { X: 5 } } }, 'both lists');
   const where = (st) => [st.ledger.map((e) => e.id).sort(), st.ledgerAside.map((e) => e.id + ':' + e.off)];
   eq([where(both(true)), where(both(false))], [[['X', 'l1', 'rv-X'], []], [['l1'], ['X:void']]], 'in both lists');
-  const s = sandbox(['ledgerAsideSettle']);
+  const s = sandbox(['ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept']);
   const settleOf = (ledger, aside) => JSON.parse(JSON.stringify(s.ledgerAsideSettle(ledger, aside, { X: 5 }, [{ row: 'X', op: 'void' }])));
   eq([settleOf([{ id: 'X' }, { id: 'rv-X', reverses: 'X' }], [{ id: 'X', off: 'void' }]).moved, settleOf([{ id: 'X' }, { id: 'rv-X', reverses: 'X' }], [{ id: 'X', off: 'void' }]).ledger.length,
     settleOf([{ id: 'X' }], [{ id: 'X', off: 'void' }]).ledger.length,
@@ -21033,6 +21034,51 @@ test('C4 (option B), Firestore: two devices that both correct an entry, or one v
     c4Pair(a.get('state'), 'Never cashed'); c4Pair(b.get('state'), 'Never cashed');
     eq(server().ledgerLog.map((e) => e.op).sort(), ['reverse', 'void'], aFirst + ': the log keeps the void');
   }
+});
+
+// Security review of option B (finding 2) — the keep-over-delete rule read the raw `reverses`, not the
+// chain-aware pairing. X reversed; its reversal reversed in turn (X counts again); X voided; a stale
+// device still holding X counted saved. rv-X still named X, so X was kept, its void mark turned into a
+// put-back, and $40 counted again on every device. Now "cancels" is the pairing's, as ledgerCancelledWhy's is.
+test('Option B review (2), Firestore: an entry whose reversal was reversed, then voided, stays voided when a stale device saves', () => {
+  const CHAIN = [['l1', 'l3', 'rv-l2', 'rv-rv-l2'], ['l2:void']];
+  for (const staleFirst of [false, true]) {
+    const { a, b, server } = c4FsPair();
+    a.run("reverseRow('l2', 'Never cashed')"); a.push(); b.hear();   // B, from here on, is stale: l2 counted, reversed by rv-l2
+    a.run("reverseRow('rv-l2', 'It was cashed after all'); voidRow('l2', 'Entered twice')");
+    eq([c4Where(a.get('state')), c3Counted(a.get('state')), a.get("ledgerUnpaired(state.ledger).map(function (e) { return e.id; }).sort()")],
+      [CHAIN, C4_L2_MONEY, ['l1', 'l3']], staleFirst + ': A before any save');
+    b.run(B1);
+    if (staleFirst) { b.push(); a.hear(); a.push(); b.hear(); } else { a.push(); b.hear(); b.push(); a.hear(); }
+    for (const [who, st] of [['the pack record', server()], ['A', a.get('state')], ['B', b.get('state')]]) {
+      eq([c4Where(st), c3Counted(st)], [CHAIN, C4_L2_MONEY], `${staleFirst ? 'the stale device first' : 'the stale device last'}: ${who}`);
+    }
+    ok(server().gone.ledger.l2 > 0, staleFirst + ': the void’s mark became a put-back');
+  }
+  // Control: the case the rule is for still holds. X voided on one device while reversed on the other
+  // (its reversal counted): X is kept, and the two cancel (the C4 test above, both orders).
+});
+
+test('Option B review (2): ledgerCancelledKept and ledgerAsideSettle read "cancels" as the pairing does, chain and all', () => {
+  const x = sandbox(['ledgerPairOf', 'ledgerCancelledKept', 'ledgerAsideSettle']);
+  const R = (id, rev) => (rev ? { id, reverses: rev } : { id });
+  const kept = (rows, del) => Object.keys(x.ledgerCancelledKept(rows, (id) => del.indexOf(id) !== -1)).sort();
+  const cases = [
+    // [what, rows, deleted, kept]
+    ['X voided, its reversal counted', [R('X'), R('rv-X', 'X')], ['X'], ['X']],
+    ['X voided, its reversal voided too', [R('X'), R('rv-X', 'X')], ['X', 'rv-X'], []],
+    ['X voided, its reversal reversed (the finding)', [R('X'), R('rv-X', 'X'), R('rv-rv-X', 'rv-X')], ['X'], []],
+    ['the middle voided, its own reversal counted', [R('X'), R('rv-X', 'X'), R('rv-rv-X', 'rv-X')], ['rv-X'], ['rv-X']],
+    ['X voided, the second reversal voided: rv-X cancels X again', [R('X'), R('rv-X', 'X'), R('rv-rv-X', 'rv-X')], ['X', 'rv-rv-X'], ['X']],
+    ['nothing reverses it', [R('X'), R('Y')], ['X'], []],
+    ['a reversal on its own, its entry gone', [R('rv-X', 'X')], [], []]];
+  for (const [what, rows, del, want] of cases) eq(kept(rows, del), want, what);
+  // ledgerAsideSettle: X in both lists, marked deleted. With its reversal reversed it settles by the marks (voided).
+  const settle = (ledger) => JSON.parse(JSON.stringify(x.ledgerAsideSettle(ledger, [{ id: 'X', off: 'void' }], { X: 5 }, [{ row: 'X', op: 'void' }])));
+  const chain = settle([R('X'), R('rv-X', 'X'), R('rv-rv-X', 'rv-X')]);
+  eq([chain.ledger.map((e) => e.id), chain.aside.map((e) => e.id), chain.moved], [['rv-X', 'rv-rv-X'], ['X'], ['X']], 'a chain');
+  const pair = settle([R('X'), R('rv-X', 'X')]);
+  eq([pair.ledger.map((e) => e.id), pair.aside.map((e) => e.id)], [['X', 'rv-X'], []], 'control: a pair, counted over the void');
 });
 
 test('C4 (option B), Firestore: a pair set aside by C4’s first build stays set aside and reads as a delete through a sync; a device holding the entry ticked is told', () => {

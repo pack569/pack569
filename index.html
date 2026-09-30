@@ -7614,13 +7614,14 @@
   // Option B (owner, 2026-09-29) — a row a COUNTED reversal cancels counts, whatever the marks or
   // the log say (voided on one device while reversed on another): set aside, its reversal would be
   // left counting alone, and take the money out twice. Counted, the two cancel.
+  // Security review of option B (finding 2) — "cancels" as the pairing reads it, chain and all
+  // (ledgerCancelledKept, the rows in both lists as the ones in question): a reversal reversed
+  // again cancels nothing, so the entry it names settles by the marks as any row does.
   function ledgerAsideSettle(ledger, aside, marks, log) {
-    var live = {}, inAside = {}, cancelled = {};
+    var live = {}, inAside = {};
     ledger.forEach(function (e) { if (e && typeof e.id === 'string') live[e.id] = true; });
     aside.forEach(function (a) { if (a && typeof a.id === 'string') inAside[a.id] = true; });
-    ledger.forEach(function (e) {
-      if (e && typeof e.reverses === 'string' && e.reverses && !inAside[e.id]) cancelled[e.reverses] = true;
-    });
+    var cancelled = ledgerCancelledKept(ledger, function (id) { return inAside[id] === true; });
     var toAside = {}, toLive = {}, moved = [];
     function asideWins(id) {
       var m = marks && Object.prototype.hasOwnProperty.call(marks, id) ? marks[id] : 0;
@@ -7845,6 +7846,33 @@
       }
     });
     return pair;
+  }
+  // Security review of option B (finding 2) — the rows of `rows` (counted rows, by id: the first of
+  // each) that `deleted(id)` says are deleted but that a counted reversal still cancels, so they
+  // must stay counted: set aside, the reversal would count alone and take the money out twice.
+  // Row Y is one when the chain-aware pairing (ledgerPairOf) of the rows NOT deleted, with Y among
+  // them, pairs Y with a row that reverses it. So a reversal deleted (voided) cancels nothing, and
+  // nor does one reversed again: X → rv-X → rv-rv-X leaves X counting, and X voided then stays
+  // voided, whatever a stale device holds (it read the raw `reverses` before, and rv-X named X).
+  // Each row is asked on its own: one kept pairs with a row not deleted, so keeping it frees
+  // nothing further down its chain. For the merge (mergeRemoteAppendOnly's cancelledIds) and
+  // ledgerAsideSettle, as ledgerCancelledWhy asks for one row. Returns { id: true }. Pure.
+  function ledgerCancelledKept(rows, deleted) {
+    var byId = Object.create(null), live = [], named = Object.create(null), out = Object.create(null);
+    rows.forEach(function (e) {
+      if (!e || typeof e.id !== 'string' || byId[e.id]) return;
+      byId[e.id] = e;
+      if (deleted(e.id)) return;
+      live.push(e);
+      if (typeof e.reverses === 'string' && e.reverses) named[e.reverses] = true;
+    });
+    Object.keys(named).forEach(function (id) {
+      var y = byId[id];
+      if (!y || !deleted(id)) return;
+      var p = ledgerPairOf(live.concat([y]))[id], r = p ? byId[p] : null;
+      if (r && r.reverses === id) out[id] = true;
+    });
+    return out;
   }
   // Option B — why row `e` of the pack record `st` can't be voided because a counted reversal
   // cancels it, or ''. Voided, its reversal would be left counting alone, and take the money out
@@ -13070,12 +13098,13 @@
     // Dropped, its reversal would count alone and take the money out twice; kept, the two cancel.
     // Its mark is turned into a put-back, as keepReconciled's is, so every copy settles it counted
     // (ledgerAsideSettle reads the marks first, and keeps it counted too).
-    var cancelledIds = {};
-    [state.ledger, remote.ledger].forEach(function (list) {
-      (Array.isArray(list) ? list : []).forEach(function (x) {
-        if (x && typeof x.id === 'string' && typeof x.reverses === 'string' && x.reverses && !(gone && gone.ledger && gone.ledger[x.id] > 0)) cancelledIds[x.reverses] = true;
-      });
-    });
+    // Security review of option B (finding 2) — "cancels" as the pairing reads it over the counted
+    // rows of both copies, not deleted (ledgerCancelledKept), not the raw `reverses`: X reversed,
+    // rv-X reversed in turn (X counts again), X un-reconciled and voided, and a stale device still
+    // holding X counted merged. rv-X still named X, so X was kept, its void mark became a put-back,
+    // and its money counted again on every device.
+    var cancelledIds = ledgerCancelledKept((Array.isArray(state.ledger) ? state.ledger : []).concat(Array.isArray(remote.ledger) ? remote.ledger : []),
+      function (id) { return !!(gone && gone.ledger && gone.ledger[id] > 0); });
     function keepReconciled(log, x) {
       if (log === 'ledger' && cancelledIds[x.id] === true && reversedIds[x.id] !== true) {
         gone.ledger[x.id] = -Math.max(Date.now(), Math.min(gone.ledger[x.id], Date.now()) + 1);
