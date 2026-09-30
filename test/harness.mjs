@@ -1022,7 +1022,7 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
 // LIVE STOPGAP — what every slice of the sync merge needs besides it (freshGone is in NORMALIZE_FNS).
 const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'ledgerTickedAt', 'reconciledFates', 'reconciledFatesText', 'noteReconciledFates', 'restoreGone', 'entryAfterOpening', 'ledgerDateReconciled', 'fmt', 'fmtDateShort', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays', 'ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept', 'keepLostVoids', 'ledgerPairCheck',
   // Treasurer sign-off on option B (extra) — the sync's toast, and what it counts.
-  'LEADER_ROLES', 'LEDGER_LOOK_SYNC', 'ledgerLookCount', 'noteLedgerLookAfterSync', 'ledgerLookNotes', 'ledgerLiveReversals', 'ledgerEntryNamed', 'ledgerCap',
+  'LEADER_ROLES', 'LEDGER_LOOK_SYNC', 'LEDGER_LOOK_CLOBBERED', 'ledgerLookCount', 'noteLedgerLookAfterSync', 'ledgerLookNotes', 'ledgerLiveReversals', 'ledgerEntryNamed', 'ledgerCap',
   'ledgerTakeOut', 'LEDGER_TAKE_OUT_ANY', 'ledgerLocked', 'ledgerReversalOf'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
@@ -9295,6 +9295,7 @@ test('every guard in front of the pack feed, the parent feed and a push holds on
       fakeBe.pushPack = function () { pushed += 1; return { then: function () { return { catch: function () {} }; } }; };
       function stopDocFeed() {} function stopParentFeed() {} function renderSyncPill() {} function render() {}
       function onRemoteSnap() {} function syncFail() {} function clearTimeout() {} function setTimeout() {}
+      function ledgerLookCount() { return 0; }   // read before the push (security pass on option B sign-off, 3)
       var parentViewTimer = null, state = { rev: 1 };
       var feedBlocked = ${!!over.feedBlocked}, syncBlocked = ${!!over.syncBlocked}, inForce = ${!!over.inForce}, edit = ${over.edit !== false};
       function fixedFeedBlocked() { return feedBlocked; } function fixedSyncBlocked() { return syncBlocked; }
@@ -21355,6 +21356,17 @@ test('Decision C: the ledger says when a correction and the entry it corrects bo
 });
 
 // Treasurer sign-off on option B (extra) — a sync that brings "The ledger needs a look" on says so, once, to a leader.
+const LOOK_CLOBBERED = 'Another device saved changes while you were editing — check recent entries. The ledger needs a look: see Money · Ledger.';
+// A reverses l2, voids that reversal and reverses l2 again; B, which un-voided the first meanwhile, has
+// heard A's last save while dirty: its next push merges a second counted reversal of l2.
+function c4FsPairLook() {
+  const p = c4FsPair();
+  p.a.run("reverseRow('l2', 'Never cashed')"); p.a.push(); p.b.hear();
+  p.a.run("voidRow('rv-l2', 'Reversed the wrong entry')"); p.a.push(); p.b.hear();
+  p.a.run("reverseRow('l2', 'Returned by the bank')"); p.a.push();
+  p.b.run("unvoidRow('rv-l2'); toasts = []"); p.b.hear();
+  return p;
+}
 test('Treasurer sign-off (extra), Firestore: a sync that brings "The ledger needs a look" on says so once, to a leader', () => {
   const LOOK = 'After a sync, the ledger needs a look: see Money · Ledger.';
   const { a, b } = c4FsPair();
@@ -21365,8 +21377,10 @@ test('Treasurer sign-off (extra), Firestore: a sync that brings "The ledger need
   eq([a.get('ledgerLookCount()'), b.get('ledgerLookCount()')], [0, 0], 'nothing to say on either before the sync');
   // B hears A's save while dirty, and merges it at its push: two counted reversals.
   b.hear(); b.push();
+  // Security pass on option B sign-off (3) — B's save merged A's, and says so: one toast says both.
   const bt = b.get('toasts');
-  eq([b.get('ledgerLookCount()'), bt.filter((t) => t === LOOK).length], [1, 1], 'B, by the merge: ' + JSON.stringify(bt));
+  eq([b.get('ledgerLookCount()'), bt.filter((t) => t === LOOK_CLOBBERED).length, bt.filter((t) => t === LOOK).length, bt[bt.length - 1]], [1, 1, 0, LOOK_CLOBBERED],
+    'B, by the merge: ' + JSON.stringify(bt));
   // A takes B's copy: after its "Updated" toast, before anything the fates say.
   a.run('toasts = []'); a.hear();
   const at = a.get('toasts');
@@ -21385,6 +21399,51 @@ test('Treasurer sign-off (extra), Firestore: a sync that brings "The ledger need
   eq(b.get('toasts'), [], 'a parent is told');
   b.run("sync.myRole = 'editor'; toasts = []; noteLedgerLookAfterSync(0); noteLedgerLookAfterSync(1)");
   eq(b.get('toasts'), [LOOK], 'an editor, from none; and not from some');
+});
+
+// Security pass on the option B sign-off (3) — the sync's "The ledger needs a look" was missed when Firestore
+// reran the push (the rerun read the book its first run had merged into), and when a later copy was taken after
+// the merge (adoptRemote read the merged book); it could be said under the reload gate; and said after the
+// merge's own toast, it replaced it unread.
+test('Security pass (3), Firestore: the sync’s "ledger needs a look" survives a rerun and a later copy, is not said under the hold, and keeps the merge’s words', () => {
+  const LOOK = 'After a sync, the ledger needs a look: see Money · Ledger.';
+  const CLOBBER = 'Another device saved changes while you were editing — check recent entries.';
+  // As above: B, dirty and flagged, about to merge A's second reversal of l2 over its own un-void.
+  const scene = () => {
+    const { b } = c4FsPairLook();
+    eq([b.get('ledgerLookCount()'), b.get('sync.clobber')], [0, true], 'the scene');
+    return b;
+  };
+  // The push's transaction: run twice (another device wrote in between), or `after` its write.
+  const tx = (after) => `fakeFirestore.runTransaction = function (db, body) {
+    var t = { get: function (ref) { return now(snapOf(ref.path)); },
+      set: function (ref, d) { txSets.push([ref.path, d]); reads[ref.path] = JSON.parse(JSON.stringify(d)); ${after || ''} } };
+    ${after ? '' : 'body(t);'}
+    return body(t);
+  };`;
+  // A rerun: its merge adds nothing, but the first run's did.
+  const r = scene();
+  r.run(tx()); r.push();
+  const rt = r.get('toasts');
+  eq([r.get('ledgerLookCount()'), rt[rt.length - 1], rt.filter((t) => t === LOOK_CLOBBERED).length], [1, LOOK_CLOBBERED, 1], 'a rerun: ' + JSON.stringify(rt));
+  // A later save lands on top of B's while it is out, and B, with no edit since, takes it.
+  const l = scene();
+  l.run(tx("sync.remoteRec = { rev: d.rev + 1, device: 'devA', json: d.json };")); l.push();
+  const lt = l.get('toasts');
+  eq([lt.indexOf('Updated from another device') !== -1, lt[lt.length - 1], lt.filter((t) => t === LOOK_CLOBBERED).length],
+    [true, LOOK_CLOBBERED, 1], 'a later copy taken: ' + JSON.stringify(lt));
+  // The hold (a newer page's record, PACK_FORMAT) engaging while the push is out: nothing said of the book.
+  const h = scene();
+  h.run(tx('sync.newerFormat = true;')); h.push();
+  const ht = h.get('toasts');
+  eq([h.get('ledgerLookCount()'), h.get('packFormatHeld()'), ht.filter((t) => t === LOOK || t === LOOK_CLOBBERED).length], [1, true, 0], 'under the hold: ' + JSON.stringify(ht));
+  h.run('toasts = []; noteLedgerLookAfterSync(0, true); noteLedgerLookAfterSync(0)');
+  eq(h.get('toasts'), [], 'asked again under the hold');
+  // Control: a save that merged nothing to look at says only that it merged.
+  const n = c4FsPair();
+  n.a.run("reverseRow('l2', 'Never cashed')"); n.a.push();
+  n.b.run(B1); n.b.hear(); n.b.push();
+  eq(n.b.get('toasts').filter((t) => t === CLOBBER || t === LOOK || t === LOOK_CLOBBERED), [CLOBBER], 'control: nothing to look at');
 });
 
 // Treasurer sign-off on option B (10) — a reversal of a reversal read “Reversal of “Reversal of “Pizza”””.

@@ -13646,12 +13646,17 @@
     return ledgerLookNotes(state.ledger || [], state.book).length;
   }
   var LEDGER_LOOK_SYNC = 'After a sync, the ledger needs a look: see Money · Ledger.';
+  // Security pass on option B sign-off (3) — a save that merged another device's changes has just
+  // said so; this said after it would replace it unread. So when both are said, one toast says both.
+  var LEDGER_LOOK_CLOBBERED = 'Another device saved changes while you were editing — check recent entries. The ledger needs a look: see Money · Ledger.';
   // `was` is ledgerLookCount() before the sync's merge or copy. Once: while the notes stay, the next
   // sync starts from more than none. Called before noteReconciledFates, whose toast (it points at
-  // Money · Ledger too) comes after it.
-  function noteLedgerLookAfterSync(was) {
-    if (was || !ledgerLookCount()) return;
-    showToast(LEDGER_LOOK_SYNC, { duration: 10000 });
+  // Money · Ledger too) comes after it. `clobbered`: the save merged another device's changes.
+  // Security pass on option B sign-off (3) — and nothing under the reload gate (PACK_FORMAT): a hold
+  // engaged mid-push has its own banner, and the book is read no further.
+  function noteLedgerLookAfterSync(was, clobbered) {
+    if (packFormatHeld() || was || !ledgerLookCount()) return;
+    showToast(clobbered ? LEDGER_LOOK_CLOBBERED : LEDGER_LOOK_SYNC, { duration: 10000 });
   }
   function noteReconciledFates(f) {
     var seen = sync.fatesSeen || (sync.fatesSeen = {});
@@ -13703,6 +13708,10 @@
     // Reconciled ledger rows the merge kept over a delete, or a delete took (named below).
     // Outside the attempt: a rerun finds them already settled, and adds nothing.
     var keptRows = [], lostRows = [], splitRows = [];
+    // Treasurer sign-off on option B (extra) — what "The ledger needs a look" said before this save.
+    // Security pass on option B sign-off (3) — outside the attempt too: a rerun would read the book
+    // its first run had already merged into, and the toast was never said.
+    var lookWas = ledgerLookCount();
     // `remote` is the record as it stands at this attempt (null if none). The backend may run
     // this more than once when another device writes in between; the merge is id-guarded, so
     // a rerun appends nothing twice, and the rev is re-derived from each fresh read.
@@ -13747,7 +13756,6 @@
       // they chose to write over (sync.seasonKeptRev) is written over whole, and only that one.
       if (clobbered && remoteRev === sync.seasonKeptRev) clobbered = false;
       if (clobbered && seasonMoved(remote)) return { record: null, result: { season: remote } };
-      var lookWas = clobbered ? ledgerLookCount() : 0;   // treasurer sign-off on option B (extra)
       var mergedN = clobbered ? mergeRemoteAppendOnly(remote, keptRows, lostRows, splitRows) : 0;
       var nextRev = be.serverRevs ? remoteRev + 1 : Math.max(state.rev || 0, remoteRev) + 1;
       state.fmt = PACK_FORMAT;   // the reload gate: the format this page writes
@@ -13808,7 +13816,9 @@
       // Everything heard so far was in what was merged and sent, unless a later save came.
       if (!later) sync.clobber = false;
       sync.seasonKeptRev = null;
-      if (later && !editedSince) adoptRemote(later, { toast: true });
+      // Security pass on option B sign-off (3) — with what the book said before this save: adoptRemote
+      // would read it after the merge, and never say the merge brought "The ledger needs a look" on.
+      if (later && !editedSince) adoptRemote(later, { toast: true, lookWas: res.lookWas, clobbered: res.clobbered });
       else {
         if (!editedSince) sync.dirty = false;
         else if (sync.dirty) scheduleSyncPush();
@@ -13816,7 +13826,7 @@
       }
       // Treasurer sign-off on option B (extra) — the merge brought "The ledger needs a look" on. Not
       // when a later copy was taken instead: adoptRemote asked it of that.
-      if (res.clobbered && !(later && !editedSince)) noteLedgerLookAfterSync(res.lookWas);
+      if (res.clobbered && !(later && !editedSince)) noteLedgerLookAfterSync(res.lookWas, true);
       // After adoptRemote, whose toast would otherwise replace it (C2, m1).
       noteReconciledFates({ kept: keptRows, lost: lostRows, split: splitRows });
       scheduleParentViewRefresh(); // Parent phase — regenerate the sanitized copy (leaders only)
@@ -13900,7 +13910,8 @@
     if (!ns) return false;
     // Re-review of the stopgap, item 2 — what the copy taken did to reconciled rows, said below.
     var fates = reconciledFates(state && state.ledger, state && state.gone && state.gone.ledger, ns.ledger, ns.gone && ns.gone.ledger);
-    var lookWas = state ? ledgerLookCount() : 0;   // treasurer sign-off on option B (extra)
+    // Treasurer sign-off on option B (extra) — or, from syncPush, what it said before that save's merge.
+    var lookWas = opts && typeof opts.lookWas === 'number' ? opts.lookWas : state ? ledgerLookCount() : 0;
     keepLostVoids(state, ns);   // Phase 3, C3
     state = ns;
     state.rev = typeof d.rev === 'number' ? d.rev : 0;
@@ -13918,7 +13929,7 @@
     save();
     render();
     if (opts && opts.toast) showToast('Updated from another device');
-    noteLedgerLookAfterSync(lookWas);   // treasurer sign-off on option B (extra): after that toast, before the fates'
+    noteLedgerLookAfterSync(lookWas, !!(opts && opts.clobbered));   // treasurer sign-off on option B (extra): after that toast, before the fates'
     fates.split = splitRows;
     noteReconciledFates(fates);
     return true;
