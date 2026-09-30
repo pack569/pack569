@@ -521,7 +521,7 @@ How these plans fit a Pack 569 den night:
 
 ---
 
-## Open questions for Keith
+## Open questions
 1. **Meeting counts.** ANSWERED 2026-09-29: keep the counts as drafted, and Fellowship stays at 2 meetings.
 2. **Bear Strong: 3 meetings or 2?** ANSWERED 2026-09-29: 3 meetings, the same as Wolf Running With the Pack.
 3. **Standing Tall Reqs 2 and 3: home or den?** ANSWERED 2026-09-29: at home, as drafted.

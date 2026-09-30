@@ -59,7 +59,7 @@ You're picking up the **den-meeting lesson plans** for Cub Scout Pack 569's app.
 - After any content edit, check two things:
   - Every den meeting (not outings) still totals 40 minutes or less. Sum the `· N min` values per `### Meeting`.
   - The count of `- Say:` lines is unchanged, unless steps were intentionally added or removed.
-- **Gotcha:** meeting steps and open questions are both numbered "N. **…**". When you mark answers, scope the edit to the text after `## Open questions for Keith`.
+- **Gotcha:** meeting steps and open questions are both numbered "N. **…**". When you mark answers, scope the edit to the text after `## Open questions`.
 - Commit messages follow the repo's style: one sentence saying what now works, in present tense, with no prefix, and a short plain body. End with the Co-Authored-By line.
 - **Only I push, merge, or deploy.** Deploys are the manual pipeline from `main`. GitHub Pages is gone, and the Cloudflare build doesn't publish `docs/`.
 

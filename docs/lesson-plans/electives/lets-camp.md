@@ -13,7 +13,7 @@ How these plans fit a Pack 569 den night:
 - **Five ranks, not six.** Lion, Tiger, Wolf, Bear and Webelos each have a Let's Camp! elective. The official names carry the rank ("Let's Camp Lion"), and the app drops the suffix. **Arrow of Light has no Let's Camp!** The AoL adventure list on scouting.org doesn't include it, the app's AoL electives don't either, and the AoL URL returned only a maintenance page on 2026-09-30. AoL camping sits inside the required Outdoor Adventurer adventure, which covers a den or troop campout, campsite layout and food safety. That adventure isn't planned here.
 - **Six Essentials, not Scout Basic Essentials.** All five Let's Camp! pages use the **Cub Scout Six Essentials**: a filled water bottle, a first-aid kit, a whistle, a flashlight, sun protection and trail food. The eleven-item **Scout Basic Essentials** list, which adds a pocketknife and matches, belongs to AoL Outdoor Adventurer Req 1 (official Scout Basic Essentials activity). It isn't taught here.
 - **Which campouts count.** Lion to Bear: every official page accepts a pack campout or a council or district Cub Scout overnight camp. Webelos: a campout with the den, the pack or the family. Pack 569 has three campouts on the app's Camping tab:
-  - **Fort Yargo State Park, Winder.** The pack's own campout, in late March. 2026 was Mar 27–29, and the 2027 date needs checking. The pack runs it, so the pack provides the BALOO-trained adult. Keith: it's council-approved, because the pack camped there last year.
+  - **Fort Yargo State Park, Winder.** The pack's own campout, in late March. 2026 was Mar 27–29, and the 2027 date needs checking. The pack runs it, so the pack provides the BALOO-trained adult. It's council-approved, because the pack camped there last year.
   - **Scoutland, on Lake Lanier.** The Apalachee District fall family weekend, in early October (2026: Oct 2–4). The district runs it.
   - **Camp Rainey Mountain, Clayton.** The council's spring family weekend, in late April. The 2027 dates aren't posted yet.
   - **This year:** Scoutland is two days away, so the dens aim at Fort Yargo, or at Rainey Mountain as a second chance.
@@ -30,12 +30,12 @@ How these plans fit a Pack 569 den night:
   - Fire building and outdoor cooking are Webelos and AoL only. Lions, Tigers, Wolves and Bears watch from outside the fire ring, and adults build, light, tend and put out the fire.
   - Fueled devices (stoves and lanterns) are marked for Scouts BSA and up. Adults run every stove and fuel lantern at the campout.
   - **The Firem'n Chit is a Scouts BSA award only.** The official page says Scouts BSA members earn it, so no Cub Scout holds one or needs it. Adults carry the matches, and adults light every fire for Lions to Bears.
-  - Webelos (and AoL) fire lighting is the den leader's choice (Keith): Option A, an adult lights it; Option B, the scout lights it with an adult at their elbow. Webelos Req 7 lets a Webelos light the fire lay under adult supervision "if circumstances permit."
+  - Webelos (and AoL) fire lighting is the den leader's choice (pack rule): Option A, an adult lights it; Option B, the scout lights it with an adult at their elbow. Webelos Req 7 lets a Webelos light the fire lay under adult supervision "if circumstances permit."
   - S'mores follow the official Behavior Around Campfires safety moment: stay outside the ring, never pull anything out of the fire, use a skewer long enough to keep your body outside the ring, and never flick hot food.
 - **Knives.** Nothing in this adventure needs a knife.
-  - Keith's rule: a scout who has earned their rank's knife adventure this year (Bear Whittling, AoL Knife Safety) may use a knife under supervision at home, campouts and outings, but never at den meetings, where adults do the cutting. Here that means a Bear who has earned Whittling may use a pocketknife at the campout under supervision.
+  - The pack's rule: a scout who has earned their rank's knife adventure this year (Bear Whittling, AoL Knife Safety) may use a knife under supervision at home, campouts and outings, but never at den meetings, where adults do the cutting. Here that means a Bear who has earned Whittling may use a pocketknife at the campout under supervision.
   - Webelos have no pocketknife adventure. Chef's Knife covers kitchen knives. So Webelos don't carry pocketknives, and tinder for the fire lay is bought or gathered by hand, not carved.
-- **Food.** No food at den meetings. Trail food in the Six Essentials games stays sealed, or is a picture. Keith's cooking rule: meals are cooked at home, at a pack campout, or at a Webelos/AoL den or patrol campout, with adults running the stoves.
+- **Food.** No food at den meetings. Trail food in the Six Essentials games stays sealed, or is a picture. The pack's cooking rule: meals are cooked at home, at a pack campout, or at a Webelos/AoL den or patrol campout, with adults running the stoves.
   - Families cook. Lions to Bears help with jobs that don't involve heat.
   - Webelos may cook outdoors with an adult beside them, and the Webelos plan one den meal as part of Req 1.
 - **Allergies and EpiPens.** The official Webelos page says to review every scout's health record for food allergies and restrictions. It also says that if any youth or adult carries an EpiPen, at least one other adult must know how to give it. The official Cub Scout camping page says to plan for food allergies and EpiPens at every pack campout. Pack 569 applies both rules to every rank. Make the s'mores and trail food allergy-safe (no nuts unless the den is clear).
@@ -46,7 +46,7 @@ How these plans fit a Pack 569 den night:
   - **Ticks:** they are active in Georgia by late March (the app's Fort Yargo page). Adults put on repellent, and everyone gets a tick check each night and after the trip.
   - **Heat:** early-October afternoons at Scoutland can still feel like summer, so plan water and shade.
   - **Cold:** March and April nights can drop into the 30s. Bring sleeping pads and cold-rated bags.
-- **Tents at den meetings.** Tiger (Option A), Bear and Webelos pitch tents at a den meeting. The pack has loaner tents (Keith, 2026-09-30). Borrow from the pack's gear and return them the same night. No stakes indoors. Keep the shock-corded poles pointed away from faces.
+- **Tents at den meetings.** Tiger (Option A), Bear and Webelos pitch tents at a den meeting. The pack has loaner tents (pack rule). Borrow from the pack's gear and return them the same night. No stakes indoors. Keep the shock-corded poles pointed away from faces.
 - Two registered adults 21 or over in every den room, and no one-on-one contact. For Lions and Tigers, an adult partner doesn't count as one of the two unless they are registered as a leader. If any girl attends, one of the two registered adults is a woman 21 or over.
 - **Sources.** On 2026-09-30 I read, using the r.jina.ai reader:
   - the five official Let's Camp! pages
@@ -434,7 +434,7 @@ How these plans fit a Pack 569 den night:
 - Safety notes:
   - Gear game: it's like musical chairs, so leave room between the chairs, and walk rather than dive.
   - Tents: adults check every tent for missing parts beforehand (official page). Carry poles pointed down. Outdoors, an adult handles the stakes and mallet. Indoors, no stakes.
-  - **Knives:** nothing here needs one. A Bear who has earned Whittling this year may carry a pocketknife at the campout and use it under supervision, but never at den meetings (Keith). Everyone else leaves knives at home.
+  - **Knives:** nothing here needs one. A Bear who has earned Whittling this year may carry a pocketknife at the campout and use it under supervision, but never at den meetings (pack rule). Everyone else leaves knives at home.
   - At the campout, Bears never build, light or tend a fire (Age Appropriate Guidelines).
   - A Bear tents only with their own parent or guardian and siblings.
   - Two registered adults in the den room. No one-on-one. If any girl attends, one of the two registered adults is a woman 21 or over.
@@ -546,7 +546,7 @@ How these plans fit a Pack 569 den night:
 - Done at a pack meeting: nothing.
 - Done at a pack campout: Req 1 (going), Req 2, Req 3, the fire spot for Req 6, and the fire for Req 7. The den leader confirms each Webelos who stayed the night and did each campout requirement.
 - Leader's choice for Req 1: Option A · the pack campout (Fort Yargo, or a council family weekend). / Option B · a Webelos den campout, using the app's den campout template: a council-designated site, a BALOO-trained adult, and parents attending or two registered leaders supervising. Either way the den plans its own part at Meeting 1. The official requirement also accepts a family campout. Pack 569's guides use the pack or den campout (see Open questions).
-- Leader's choice for lighting the fire (Req 7): Option A · **an adult lights** the Webelos' fire lay. No Cub Scout can hold a Firem'n Chit. The Webelos builds the lay, watches it burn, and puts it out, and explains the lighting steps aloud. The official requirement makes lighting conditional ("if circumstances permit"), so this still meets it (check with the Advancement Chair). / Option B · **the Webelos strikes the match**, with an adult at their elbow, as the official requirement and the official Build A Fire activity allow. Keith approved both options as the den leader's choice (2026-09-30). Keep an adult at arm's length and a bucket of water ready.
+- Leader's choice for lighting the fire (Req 7): Option A · **an adult lights** the Webelos' fire lay. No Cub Scout can hold a Firem'n Chit. The Webelos builds the lay, watches it burn, and puts it out, and explains the lighting steps aloud. The official requirement makes lighting conditional ("if circumstances permit"), so this still meets it (check with the Advancement Chair). / Option B · **the Webelos strikes the match**, with an adult at their elbow, as the official requirement and the official Build A Fire activity allow. The pack approved both options as the den leader's choice (2026-09-30). Keep an adult at arm's length and a bucket of water ready.
 - Leader's choice for Req 9: Option A · the den follow-up (Meeting 5). / Option B · at home, sharing with family, as the official requirement allows. The family tells the den leader it's done.
 - Safety notes:
   - **Fire:** Webelos may build fires (Age Appropriate Guidelines). Every fire goes in an existing fire ring, with a full 5-gallon water bucket and a shovel or metal rake beside it (official Build A Fire). Check the fire-danger rating and any burn ban that morning (check the park's rules). No liquid accelerants, ever (official). When pouring water, keep faces back from the steam (official). The fire isn't out until the ashes are cold to the touch.
@@ -704,7 +704,7 @@ How these plans fit a Pack 569 den night:
 
 ---
 
-## Open questions for Keith
+## Open questions
 1. **Which campout, and when?** Scoutland is this weekend (Oct 2–4), too soon for den meetings. Fort Yargo's 2027 date (the app's standard year puts it in March) and Camp Rainey Mountain's 2027 dates aren't posted. Each den needs the date to schedule its meetings in the 4 weeks before. Should dens plan on Fort Yargo, with Rainey Mountain as the make-up?
 2. **Do the council weekends count as "Done at a pack campout"?** ANSWERED 2026-09-30: yes. A council or district overnight (Rainey Mountain, Scoutland) counts as well as the pack campout.
 3. **Fort Yargo approval on file.** You've said Fort Yargo is council-approved because the pack camped there last year. Is there written council approval, or a Pack Overnight Campout Site Appraisal Form, on file for 2027? Does the council want it renewed each year (check)?

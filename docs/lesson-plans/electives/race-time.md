@@ -12,11 +12,11 @@ How these plans fit a Pack 569 den night:
 - The guides don't tick requirements. Leaders record progress on the app's Advancement board afterward.
 - **Timing.** Every rank does two den meetings. Meeting 1 (kit night) comes 4–6 weeks before the derby. Meeting 2 (pit stop) comes 1–2 weeks before the derby and before check-in, because the sportsmanship requirement has to happen "before the race." The app's standard year puts the Pinewood Derby in January and a Raingutter Regatta in March (`SEED_ACTIVITIES` in `index.html`). The pack's real dates are unknown (check).
 - **Cars are built at home with family.** Den meetings cover design, rules, safety, a weight and wheel check, and sportsmanship. Each rank's Meeting 1 sends home a family build note written for that rank.
-- **Tools.** No saws, drills or knives are used at any den meeting. Scouts use pencils, scissors, stickers and markers there. The official build-day pages say only adults may use power tools (band saw, scroll saw, Dremel, drill), with eye and ear protection. They also say that from Tiger up, a scout may cut the block with a handsaw. Lions may not use hand tools at all. The Age Appropriate Guidelines (08/24) agree: hand tools from Tiger up, and power tools for adults only. **Pack 569 (Keith, 2026-09-30):**
+- **Tools.** No saws, drills or knives are used at any den meeting. Scouts use pencils, scissors, stickers and markers there. The official build-day pages say only adults may use power tools (band saw, scroll saw, Dremel, drill), with eye and ear protection. They also say that from Tiger up, a scout may cut the block with a handsaw. Lions may not use hand tools at all. The Age Appropriate Guidelines (08/24) agree: hand tools from Tiger up, and power tools for adults only. **Pack 569 (pack rule):**
   - At home, a Tiger-to-AoL scout may cut with a handsaw under close adult supervision. Power tools and drilling are for adults only.
   - A scout who has earned their rank's knife adventure this year (Bear Whittling, AoL Knife Safety) may carve their own car at home under adult supervision. Everyone else leaves carving to an adult.
   - Den meetings never use saws, drills or knives.
-- **Which races count.** Every official Race Time page names the Pinewood Derby and the Raingutter Regatta, and a Space Derby doesn't count. **Pack 569 runs no Raingutter Regatta (Keith, 2026-09-30), so the pack Pinewood Derby is the race for every rank.**
+- **Which races count.** Every official Race Time page names the Pinewood Derby and the Raingutter Regatta, and a Space Derby doesn't count. **Pack 569 runs no Raingutter Regatta (pack rule), so the pack Pinewood Derby is the race for every rank.**
 - **Pack build day.** Pack 569 holds a car build day (date: check). Families can do Req 1's building there. Power tools are for adults only, with eye and ear protection. AoL scouts mentor younger scouts there.
 - **All-dens options.** Where two ranks' den nights are the same, a line says how to share them. Each rank's section still stands on its own.
 - Two registered adults 21 or over in every den room, and no one-on-one contact. For Lions and Tigers, an adult partner doesn't count as one of the two unless they are registered as a leader (https://www.scouting.org/health-and-safety/yp-faqs/). If any girl attends, one of the two registered adults is a woman 21 or over.
@@ -127,7 +127,7 @@ How these plans fit a Pack 569 den night:
   - Two registered adults in the den room. Partners don't count unless they are registered. No drop-offs. If any girl attends, one of the two registered adults is a woman 21 or over.
 - Family build note (send with the kit at Meeting 1):
   - This is your Tiger's car, built with you. Let your Tiger make the choices.
-  - **Adult jobs:** power-tool cutting and all drilling (with eye protection for anyone nearby), gluing in weights, graphite, and any spray paint or primer. A Tiger may cut with a handsaw at home with close adult supervision (Keith, 2026-09-30).
+  - **Adult jobs:** power-tool cutting and all drilling (with eye protection for anyone nearby), gluing in weights, graphite, and any spray paint or primer. A Tiger may cut with a handsaw at home with close adult supervision (pack rule).
   - **Tiger jobs, with you beside them:** the design, sanding, brush painting with water-based acrylic, decorating, and tapping in axle nails with a small hammer while you hold the car.
   - **Where to work:** a garage with the door up, outdoors, or a covered table. Sand outside. Everyone washes their hands.
   - **Weights:** tungsten or steel are best. With lead, only adults handle it, and everyone washes their hands. Never melt lead.
@@ -210,7 +210,7 @@ How these plans fit a Pack 569 den night:
   - Two registered adults in the den room. No one-on-one. If any girl attends, one of the two registered adults is a woman 21 or over.
 - Family build note (send with the kit at Meeting 1):
   - Req 1 says "with an adult." Your Wolf does as much as they safely can, and you do the rest.
-  - **Adult jobs:** power-tool cutting and all drilling (with eye protection for anyone nearby), gluing in weights, graphite, and spray paint or primer. A Wolf may cut with a handsaw at home with close adult supervision (Keith, 2026-09-30).
+  - **Adult jobs:** power-tool cutting and all drilling (with eye protection for anyone nearby), gluing in weights, graphite, and spray paint or primer. A Wolf may cut with a handsaw at home with close adult supervision (pack rule).
   - **Wolf jobs:** the design, sanding, brush painting with water-based acrylic, decorating, and tapping in axles with a small hammer while you steady the car.
   - **Where to work:** a garage with the door up, outdoors, or a covered table. Sand outside. Everyone washes their hands.
   - **Weights:** tungsten or steel are best. With lead, adults handle it, and everyone washes their hands. Never melt lead.
@@ -284,7 +284,7 @@ How these plans fit a Pack 569 den night:
   - Bears may use paintbrushes, scissors, hammers and screwdrivers, with training and an adult watching the whole time (official page).
   - The official build-day page allows a scout to cut with a handsaw. Pack 569: allowed at home with close adult supervision; never at den meetings.
   - Power tools and drilling are for adults only, with eye and ear protection. No saws, drills or knives at den meetings.
-  - **Carving:** a Bear who has earned Whittling this year may carve their own car at home, supervised by an adult (Keith, 2026-09-30). Check the scout's current knife card or pledge (check). Otherwise an adult carves.
+  - **Carving:** a Bear who has earned Whittling this year may carve their own car at home, supervised by an adult (pack rule). Check the scout's current knife card or pledge (check). Otherwise an adult carves.
   - Graphite, weights, strong glues and spray paint are adult jobs (family build note).
   - No food at these meetings. Flag derby snacks and allergies (check).
   - Two registered adults in the den room. No one-on-one. If any girl attends, one of the two registered adults is a woman 21 or over.
@@ -438,7 +438,7 @@ How these plans fit a Pack 569 den night:
   - AoLs may use paintbrushes, scissors, hammers and screwdrivers, with training and an adult watching the whole time (official page).
   - The official AoL build-day page allows a scout to cut with a handsaw. Pack 569: allowed at home with close adult supervision; never at den meetings.
   - Power tools and drilling are for adults only, with eye and ear protection. No saws, drills or knives at den meetings.
-  - **Carving:** Knife Safety is an AoL elective, and the Age Appropriate Guidelines require a scout to earn their rank's knife adventure, and re-earn it each year, before using a pocketknife. An AoL scout who has earned Knife Safety this year may carve their own car at home, supervised by an adult (Keith, 2026-09-30). Otherwise an adult carves.
+  - **Carving:** Knife Safety is an AoL elective, and the Age Appropriate Guidelines require a scout to earn their rank's knife adventure, and re-earn it each year, before using a pocketknife. An AoL scout who has earned Knife Safety this year may carve their own car at home, supervised by an adult (pack rule). Otherwise an adult carves.
   - **Mentoring visits:** the AoL den leader and a second registered adult go with the AoLs. The younger den keeps its own two registered adults. AoLs work with small groups in the open room, never with one younger scout alone and never out of sight.
   - "Support, don't do it for them" (official Build Day Leader activity): AoLs don't handle tools for younger scouts.
   - No food at these meetings. Flag derby snacks and allergies (check).
@@ -499,7 +499,7 @@ How these plans fit a Pack 569 den night:
 
 ---
 
-## Open questions for Keith
+## Open questions
 1. **Pinewood Derby date and check-in.** The app's standard year puts the Pinewood Derby in January (`SEED_ACTIVITIES`). What's the real date and venue, and when is check-in (the night before or that morning)? Every rank's Meeting 1 should fall 4–6 weeks before, and Meeting 2 should fall 1–2 weeks before and ahead of check-in, because the sportsmanship requirement must come before the race.
 2. **Raingutter Regatta.** ANSWERED 2026-09-30: Pack 569 runs no Regatta. The Regatta paths are removed, and the derby is the race.
 3. **Kits.** Who provides them: does the pack buy one per registered scout, or do families buy their own at the Scout Shop? What's the cost, is it in the budget, and when are kits handed out? Are there spares for new scouts?

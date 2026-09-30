@@ -481,7 +481,7 @@ How these plans fit a Pack 569 den night:
 
 ---
 
-## Open questions for Keith
+## Open questions
 1. **Meeting counts (updated).** ANSWERED 2026-09-29: 2–3 meetings per adventure, fitted to 40-minute den time.
 2. **New in draft 3: Running With the Pack could go back to 2 meetings.** ANSWERED 2026-09-29: keep 3 meetings.
 3. **New in draft 3: Is 40 minutes the real den time?** Every den night here totals 35–40 minutes. If walking from the pack opening to the den rooms eats into that, cut the "(set-up)" steps first, because none of them completes a requirement.

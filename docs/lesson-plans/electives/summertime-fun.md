@@ -2,7 +2,7 @@
 
 > **A guide, not the rulebook.** These are ideas to help a den leader run the meeting. They are not a complete or official source. The official requirements on scouting.org and the Guide to Safe Scouting always come first. If something here is unclear or unsettled, use your judgment and check with the Cubmaster.
 
-Researched 2026-09-30 by the cubmaster-program agent, using the format of Let's Camp! (draft 2) and Race Time (draft 2). This is the next elective in the pass. Every plan here is in our own words. Requirements are only summarized, so use the official page for the full text. Anything marked "(check)" still needs confirming. Nothing is in the app yet. Draft 2 (2026-09-30) applies Keith's answers to open questions 1, 3, 5 and 7. Draft 3 (2026-09-30) applies his answer to open question 6: the pack never runs a swim, so the Webelos and AoL pool options are replaced with dry official outing ideas.
+Researched 2026-09-30 by the cubmaster-program agent, using the format of Let's Camp! (draft 2) and Race Time (draft 2). This is the next elective in the pass. Every plan here is in our own words. Requirements are only summarized, so use the official page for the full text. Anything marked "(check)" still needs confirming. Nothing is in the app yet. Draft 2 (2026-09-30) applies the pack's answers to open questions 1, 3, 5 and 7. Draft 3 (2026-09-30) applies his answer to open question 6: the pack never runs a swim, so the Webelos and AoL pool options are replaced with dry official outing ideas.
 
 How these plans fit a Pack 569 den night:
 - The pack does the opening ceremony together: flag, Pledge, Oath and Law. Each den then splits off for about 40 minutes.
@@ -10,13 +10,13 @@ How these plans fit a Pack 569 den night:
 - "Reqs: N" means the step does real work on that requirement. "Reqs: N (set-up)" means the step only sets up or reinforces it and does not complete it.
 - The guides don't tick requirements. Leaders record progress on the app's Advancement board afterward.
 - **Summertime Fun is not like other electives.** Every rank has one requirement: take part in three Cub Scout activities at any time from May through August. Each of the three can be a den activity, a pack activity or a council activity, in any mix. For AoL the den option is called a "patrol activity." That's the whole adventure. The official activity pages give ideas only (listed under each rank), and "You can choose other activities."
-- **Only outings and events count (Keith, 2026-09-30).** A regular den night or pack meeting is not one of the three. Only these count:
+- **Only outings and events count (pack rule).** A regular den night or pack meeting is not one of the three. Only these count:
   - den summer outings (a patrol outing for AoL)
   - pack summer events that are outings or special events, not the routine pack meeting
   - council camps and events
   - Each rank still gets one 40-minute kickoff den night in May, but it's only for planning and gives no credit. All its steps are (set-up).
   - The other three "meetings" are the three outings. A scout needs three outings or events, and the make-ups listed under each rank give a scout who misses one a path to three.
-- **Counting twice is allowed (Keith, 2026-09-30).** One outing may count for Summertime Fun and for another adventure at the same time, such as a den outing that also does work on another adventure, or adventure work done at day camp. The official Summertime Fun pages don't say either way.
+- **Counting twice is allowed (pack rule).** One outing may count for Summertime Fun and for another adventure at the same time, such as a den outing that also does work on another adventure, or adventure work done at day camp. The official Summertime Fun pages don't say either way.
 - **Which scouts, and which summer.** Summertime Fun belongs to the rank a scout is *moving into*. The Tiger page says it's for the summer after kindergarten, the Wolf page the summer after 1st grade, and so on up to AoL after 4th grade. The Scouting America systems move every scout up a grade on June 1 (the 2024 program FAQ). A council cross-check (manatoc.org) says the same: rising Tigers through rising AoLs. So in **summer 2027**:
   - This year's Lions earn **Tiger** Summertime Fun, and the summer den leader runs their May kickoff.
   - This year's Tigers earn **Wolf**, Wolves earn **Bear**, Bears earn **Webelos**, and Webelos earn **AoL**.
@@ -48,8 +48,8 @@ How these plans fit a Pack 569 den night:
     - North Georgia afternoons in June and July are hot and humid, and thunderstorms build after lunch. At the first thunder, everyone goes into hard-topped cars or a solid building.
   - **Sun:** hats and shade. Families put sunscreen on at home before the outing. Scouts reapply their own, and leaders don't apply it to other people's children (pack practice).
   - **Ticks and mosquitoes** (Guide to Safe Scouting, Animal and Insect Hazards): repellent, and a tick-check habit. Families put repellent on before the outing, and adults handle any spray. Stay on trails and out of tall grass. Tick-check at home that night.
-  - **Water:** Pack 569 never runs a swim (Keith, 2026-09-30). Scouts swim only at council camps such as Cub Summer Splash, where the camp runs Safe Swim Defense, or with their families on their own. No one goes in any creek, pond or lake on a den or pack outing.
-  - **Food:** no cooking at these activities. Keith's cooking rule: meals are cooked at home, at a pack campout, or at a Webelos/AoL den or patrol campout, with adults running the stoves.
+  - **Water:** Pack 569 never runs a swim (pack rule). Scouts swim only at council camps such as Cub Summer Splash, where the camp runs Safe Swim Defense, or with their families on their own. No one goes in any creek, pond or lake on a den or pack outing.
+  - **Food:** no cooking at these activities. The pack's cooking rule: meals are cooked at home, at a pack campout, or at a Webelos/AoL den or patrol campout, with adults running the stoves.
     - A sealed, no-cook snack is fine with an allergy check first and hand-washing, using wipes or sanitizer at a park.
   - **Devices:** scouts don't use them. On geocaching outings the leader's phone does the navigating, and scouts use printed clue cards.
   - **Knives:** nothing here needs one. A rising Bear or rising AoL hasn't earned that rank's knife adventure yet this year, so adults handle any knife.
@@ -72,8 +72,8 @@ How these plans fit a Pack 569 den night:
 - Requirements (own words):
   1. Join three Cub Scout activities, any mix, May through August. (den outing, pack summer outing or special event, or council camp or event; with the adult partner. Regular den nights and pack meetings, including the May kickoff, don't count.)
 - Done at the pack opening: nothing.
-- Done at a pack meeting: nothing. A regular pack meeting doesn't count, even between May and August (Keith, 2026-09-30).
-- Done at a pack summer event: one of the three: the pack's July Summertime Fun activity, held as an outing or special event. Any other pack outing or special event from May to August also counts (check the pack's 2027 calendar). The May crossover and the August recruiting night count only if the pack holds them as an outing or special event rather than a regular pack meeting (check). The summer den leader confirms who came.
+- Done at a pack meeting: nothing. A regular pack meeting doesn't count, even between May and August (pack rule).
+- Done at a pack summer event: one of the three: The pack's July Summertime Fun activity, held as an outing or special event. Any other pack outing or special event from May to August also counts (check the pack's 2027 calendar). The May crossover and the August recruiting night count only if the pack holds them as an outing or special event rather than a regular pack meeting (check). The summer den leader confirms who came.
 - Done at a council camp: one of the three: the district day camp or twilight camp, a Scoutland Summer Quest session, or Cub Summer Splash (2027 dates: check). NEGA requires a parent or adult at day camp with every Tiger.
 - Leader's choice for the den outing: Option A · Short Day Hike: about a mile on an easy, shady trail (official den example). / Option B · Park Scavenger Hunt: pairs hunt from a picture list (official den example). It's the same slot with the same minutes.
 - Make-ups (a Tiger who misses one of the three still has a path; regular den nights and pack meetings don't count):
@@ -165,7 +165,7 @@ How these plans fit a Pack 569 den night:
 - All-dens option: this is the pack's event. Each den keeps its own group, buddy pairs and headcount inside it.
 - Prep:
   - The Cubmaster or activities chair plans the pack's July Summertime Fun activity (the app's standard year) as an outing or special event, not a routine pack meeting, so it counts. The official pack ideas are pack camping, fishing, a bike rodeo and ride, bowling, stargazing with a local astronomy club, and a zoo, aquarium or science museum visit.
-  - The pack never runs a swim (Keith, 2026-09-30). Fishing is from the shore or a dock, and no one wades. Boating needs Safety Afloat.
+  - The pack never runs a swim (pack rule). Fishing is from the shore or a dock, and no one wades. Boating needs Safety Afloat.
   - The summer den leader brings the roster and knows which partner comes with each Tiger.
 - Supplies: roster, buddy list, water, first-aid kit, whistle
 - Tell parents before they leave: That's another of the three. Council camp options are on the family note. Tell me if your Tiger goes.
@@ -185,7 +185,7 @@ How these plans fit a Pack 569 den night:
 ### Meeting 4 of 4 · Council Summer Camp (outing, a council camp session)
 - The council runs the program. The den steps below are only for a den that attends together. A family that goes on its own texts the summer den leader afterward.
 - Prep: in March and April:
-  - Share NEGA's summer list: the pack's district day camp and twilight camp (check), Scoutland Summer Quest, and Cub Summer Splash (2027 dates and fees: check).
+  - Share NEGA's summer list: The pack's district day camp and twilight camp (check), Scoutland Summer Quest, and Cub Summer Splash (2027 dates and fees: check).
   - Encourage families to **register the den for the same week**.
   - NEGA requires a parent or adult with every Tiger at day camp.
   - Day camps usually need adult volunteers. Ask the camp director (check).
@@ -208,8 +208,8 @@ How these plans fit a Pack 569 den night:
 - Requirements (own words):
   1. Join three Cub Scout activities, any mix, May through August. (den outing, pack summer outing or special event, or council camp or event. Regular den nights and pack meetings, including the May kickoff, don't count.)
 - Done at the pack opening: nothing.
-- Done at a pack meeting: nothing. A regular pack meeting doesn't count, even between May and August (Keith, 2026-09-30).
-- Done at a pack summer event: one of the three: the pack's July Summertime Fun activity, held as an outing or special event. Any other pack outing or special event from May to August also counts (check the pack's 2027 calendar). The May crossover and the August recruiting night count only if the pack holds them as an outing or special event rather than a regular pack meeting (check). The summer den leader confirms who came.
+- Done at a pack meeting: nothing. A regular pack meeting doesn't count, even between May and August (pack rule).
+- Done at a pack summer event: one of the three: The pack's July Summertime Fun activity, held as an outing or special event. Any other pack outing or special event from May to August also counts (check the pack's 2027 calendar). The May crossover and the August recruiting night count only if the pack holds them as an outing or special event rather than a regular pack meeting (check). The summer den leader confirms who came.
 - Done at a council camp: one of the three: the district day camp or twilight camp, a Scoutland Summer Quest session, or Cub Summer Splash (2027 dates: check).
 - Leader's choice for the den outing: Option A · Geocaching: the leader's phone navigates, and scouts use printed clue cards (official den example). / Option B · Day Hike: 1–2 miles on a shady trail (official den example). It's the same slot with the same minutes.
 - Make-ups (a Wolf who misses one of the three still has a path; regular den nights and pack meetings don't count):
@@ -297,7 +297,7 @@ How these plans fit a Pack 569 den night:
 
 ### Meeting 3 of 4 · Pack Summer Event (outing, about 120 min)
 - All-dens option: this is the pack's event. Each den keeps its own group, buddy pairs and headcount.
-- Prep: the pack plans its July Summertime Fun activity as an outing or special event, not a routine pack meeting, so it counts. The official ideas are pack camping, fishing, a bike rodeo and ride, bowling, stargazing, and a zoo, aquarium or science museum. The pack never runs a swim (Keith, 2026-09-30). Boating needs Safety Afloat. Fishing is from the shore or a dock, and no one wades. The summer den leader brings the roster.
+- Prep: the pack plans its July Summertime Fun activity as an outing or special event, not a routine pack meeting, so it counts. The official ideas are pack camping, fishing, a bike rodeo and ride, bowling, stargazing, and a zoo, aquarium or science museum. The pack never runs a swim (pack rule). Boating needs Safety Afloat. Fishing is from the shore or a dock, and no one wades. The summer den leader brings the roster.
 - Supplies: roster, buddy list, water, first-aid kit, whistle
 - Tell parents before they leave: That's another of the three. If your Wolf goes to a council camp, text me.
 1. **Den Meet-Up** · den · 10 min · Reqs: 1 (set-up)
@@ -335,8 +335,8 @@ How these plans fit a Pack 569 den night:
 - Requirements (own words):
   1. Join three Cub Scout activities, any mix, May through August. (den outing, pack summer outing or special event, or council camp or event. Regular den nights and pack meetings, including the May kickoff, don't count.)
 - Done at the pack opening: nothing.
-- Done at a pack meeting: nothing. A regular pack meeting doesn't count, even between May and August (Keith, 2026-09-30).
-- Done at a pack summer event: one of the three: the pack's July Summertime Fun activity, held as an outing or special event. Any other pack outing or special event from May to August also counts (check the pack's 2027 calendar). The May crossover and the August recruiting night count only if the pack holds them as an outing or special event rather than a regular pack meeting (check). The summer den leader confirms who came.
+- Done at a pack meeting: nothing. A regular pack meeting doesn't count, even between May and August (pack rule).
+- Done at a pack summer event: one of the three: The pack's July Summertime Fun activity, held as an outing or special event. Any other pack outing or special event from May to August also counts (check the pack's 2027 calendar). The May crossover and the August recruiting night count only if the pack holds them as an outing or special event rather than a regular pack meeting (check). The summer den leader confirms who came.
 - Done at a council camp: one of the three: the district day camp or twilight camp, a Scoutland Summer Quest session, or Cub Summer Splash (2027 dates: check).
 - Leader's choice for the den outing: Option A · Store Workshop: a Saturday-morning kids' build workshop at a home-improvement store (official den example; store schedule: check). / Option B · Day Hike with a nature scavenger list (official den examples).
 - Make-ups (a Bear who misses one of the three still has a path; regular den nights and pack meetings don't count):
@@ -423,7 +423,7 @@ How these plans fit a Pack 569 den night:
 
 ### Meeting 3 of 4 · Pack Summer Event (outing, about 120 min)
 - All-dens option: this is the pack's event. Each den keeps its own group, buddy pairs and headcount.
-- Prep: the pack plans its July Summertime Fun activity as an outing or special event, not a routine pack meeting, so it counts. The official ideas are pack camping, fishing, a bike rodeo and ride, bowling, stargazing, and a zoo, aquarium or science museum. The pack never runs a swim (Keith, 2026-09-30). Boating needs Safety Afloat. Fishing is from the shore or a dock, and no one wades. The summer den leader brings the roster.
+- Prep: the pack plans its July Summertime Fun activity as an outing or special event, not a routine pack meeting, so it counts. The official ideas are pack camping, fishing, a bike rodeo and ride, bowling, stargazing, and a zoo, aquarium or science museum. The pack never runs a swim (pack rule). Boating needs Safety Afloat. Fishing is from the shore or a dock, and no one wades. The summer den leader brings the roster.
 - Supplies: roster, buddy list, water, first-aid kit, whistle
 - Tell parents before they leave: That's another of the three. If your Bear goes to a council camp, text me.
 1. **Den Meet-Up** · den · 10 min · Reqs: 1 (set-up)
@@ -457,12 +457,12 @@ How these plans fit a Pack 569 den night:
 
 ## Summertime Fun (Webelos)
 - Elective · Meetings: 4 (a May planning den night with no credit, then three summer outings or events; a scout needs three, and make-ups count) · Official page: https://www.scouting.org/cub-scout-adventures/summertime-fun-webelos/ · Other sources: https://www.scouting.org/cub-scout-activities/den-activity-webelos/, https://www.scouting.org/cub-scout-activities/pack-activity-webelos/, https://www.scouting.org/cub-scout-activities/council-activity-webelos/, https://www.scouting.org/program-updates/summertime-fun/, https://www.scouting.org/program-updates/cub-scout-program-updates-faq-1-3-24/, https://www.scouting.org/health-and-safety/gss/gss02/, https://www.scouting.org/health-and-safety/gss/gss13/, https://www.scouting.org/health-and-safety/safety-moments/heat-related-illness/, https://www.nega-bsa.org/cs-twi-stem-cmp, https://www.nega-bsa.org/SummerCubFun, https://www.nega-bsa.org/cubsplash, https://www.manatoc.org/cub-summer · Checked: 2026-09-30
-- Summary: This is for the summer after 3rd grade. The scouts are this spring's Bears. The summer den leader holds a planning night (no credit) at the Bear den's last den night in May. The scouts help plan the den outing, and for the scavenger hunt they write the list themselves. The pack never runs a swim (Keith, 2026-09-30), so both den outing options stay out of the water. The three that count are a den outing, the pack's July event and a council camp, with make-ups for a scout who misses one. Any three outings or events between May 1 and August 31 earn it. A Webelos who misses it can earn the AoL version next summer (official page).
+- Summary: This is for the summer after 3rd grade. The scouts are this spring's Bears. The summer den leader holds a planning night (no credit) at the Bear den's last den night in May. The scouts help plan the den outing, and for the scavenger hunt they write the list themselves. The pack never runs a swim (pack rule), so both den outing options stay out of the water. The three that count are a den outing, the pack's July event and a council camp, with make-ups for a scout who misses one. Any three outings or events between May 1 and August 31 earn it. A Webelos who misses it can earn the AoL version next summer (official page).
 - Requirements (own words):
   1. Join three Cub Scout activities, any mix, May through August. (den outing, pack summer outing or special event, or council camp or event. Regular den nights and pack meetings, including the May kickoff, don't count.)
 - Done at the pack opening: nothing.
-- Done at a pack meeting: nothing. A regular pack meeting doesn't count, even between May and August (Keith, 2026-09-30).
-- Done at a pack summer event: one of the three: the pack's July Summertime Fun activity, held as an outing or special event. Any other pack outing or special event from May to August also counts (check the pack's 2027 calendar). The May crossover and the August recruiting night count only if the pack holds them as an outing or special event rather than a regular pack meeting (check). The summer den leader confirms who came.
+- Done at a pack meeting: nothing. A regular pack meeting doesn't count, even between May and August (pack rule).
+- Done at a pack summer event: one of the three: The pack's July Summertime Fun activity, held as an outing or special event. Any other pack outing or special event from May to August also counts (check the pack's 2027 calendar). The May crossover and the August recruiting night count only if the pack holds them as an outing or special event rather than a regular pack meeting (check). The summer den leader confirms who came.
 - Done at a council camp: one of the three: the district day camp or twilight camp, a Scoutland Summer Quest session, or Cub Summer Splash (2027 dates: check).
 - Leader's choice for the den outing: Option A · Day Hike: 2–3 miles on a shady trail (official den example). / Option B · Scavenger Hunt: buddy pairs work a nature list the den wrote at the kickoff, inside a set boundary in a shady park (official den example). It's the same slot with the same minutes.
 - Make-ups (a Webelos who misses one of the three still has a path; regular den nights and pack meetings don't count):
@@ -470,7 +470,7 @@ How these plans fit a Pack 569 den night:
   - a second council session, such as another Scoutland Summer Quest Saturday, or Cub Summer Splash on top of day camp (whether a second session counts: see Open question 2, check)
   - any other pack outing or special event from May to August, such as a June or August pack event if the pack adds one (check)
 - Safety notes:
-  - Water: the pack never runs a swim (Keith, 2026-09-30). No one goes in any creek, pond or lake on the outing. Scouts swim only at council camp or with their families.
+  - Water: the pack never runs a swim (pack rule). No one goes in any creek, pond or lake on the outing. Scouts swim only at council camp or with their families.
   - Scavenger hunt (Option B): look and point, don't pick. Stay on paths and inside the boundary, with an adult at each end of it. Stay out of tall grass.
   - Heat: morning outings, water, and shade breaks. Anyone pale, dizzy or with a headache goes to the shade with water and an adult.
   - Thunder: everyone off the trail, into the building or the cars.
@@ -550,7 +550,7 @@ How these plans fit a Pack 569 den night:
 
 ### Meeting 3 of 4 · Pack Summer Event (outing, about 120 min)
 - All-dens option: this is the pack's event. Each den keeps its own group, buddy pairs and headcount.
-- Prep: the pack plans its July Summertime Fun activity as an outing or special event, not a routine pack meeting, so it counts. The official ideas are pack camping, fishing, a bike rodeo and ride, bowling, stargazing, and a zoo, aquarium or science museum. The pack never runs a swim (Keith, 2026-09-30). Boating needs Safety Afloat. Fishing is from the shore or a dock, and no one wades. The summer den leader brings the roster.
+- Prep: the pack plans its July Summertime Fun activity as an outing or special event, not a routine pack meeting, so it counts. The official ideas are pack camping, fishing, a bike rodeo and ride, bowling, stargazing, and a zoo, aquarium or science museum. The pack never runs a swim (pack rule). Boating needs Safety Afloat. Fishing is from the shore or a dock, and no one wades. The summer den leader brings the roster.
 - Supplies: roster, buddy list, water, first-aid kit, whistle
 - Tell parents before they leave: That's another of the three. If your Webelos goes to a council camp, text me.
 1. **Den Meet-Up** · den · 10 min · Reqs: 1 (set-up)
@@ -588,8 +588,8 @@ How these plans fit a Pack 569 den night:
 - Requirements (own words):
   1. Join three Cub Scout activities, any mix, May through August. (patrol outing, pack summer outing or special event, or council camp or event. Regular den nights and pack meetings, including the May kickoff, don't count.)
 - Done at the pack opening: nothing.
-- Done at a pack meeting: nothing. A regular pack meeting doesn't count, even between May and August (Keith, 2026-09-30).
-- Done at a pack summer event: one of the three: the pack's July Summertime Fun activity, held as an outing or special event. Any other pack outing or special event from May to August also counts (check the pack's 2027 calendar). The May crossover and the August recruiting night count only if the pack holds them as an outing or special event rather than a regular pack meeting (check); AoL scouts can still help at the recruiting night either way. The summer den leader confirms who came.
+- Done at a pack meeting: nothing. A regular pack meeting doesn't count, even between May and August (pack rule).
+- Done at a pack summer event: one of the three: The pack's July Summertime Fun activity, held as an outing or special event. Any other pack outing or special event from May to August also counts (check the pack's 2027 calendar). The May crossover and the August recruiting night count only if the pack holds them as an outing or special event rather than a regular pack meeting (check); AoL scouts can still help at the recruiting night either way. The summer den leader confirms who came.
 - Done at a council camp: one of the three: the district day camp or twilight camp, a Scoutland Summer Quest session, or Cub Summer Splash (2027 dates: check).
 - Leader's choice for the patrol outing: Option A · Geocaching Patrol Challenge: the leader's phone navigates, and scouts use printed clue cards (official patrol example). / Option B · Store Workshop: a Saturday-morning kids' build workshop at a home-improvement store, indoors and out of the heat (official patrol example; store schedule and age range: check). It's the same slot with the same minutes.
 - Make-ups (an AoL scout who misses one of the three still has a path, and this is the only summer, so plan them early; regular den nights and pack meetings don't count):
@@ -597,7 +597,7 @@ How these plans fit a Pack 569 den night:
   - a second council session, such as another Scoutland Summer Quest Saturday, or Cub Summer Splash on top of day camp (whether a second session counts: see Open question 2, check)
   - any other pack outing or special event from May to August, such as a June or August pack event if the pack adds one (check)
 - Safety notes:
-  - **Water:** the pack never runs a swim (Keith, 2026-09-30). No one goes in any creek, pond or lake on the outing. Scouts swim only at council camp or with their families.
+  - **Water:** the pack never runs a swim (pack rule). No one goes in any creek, pond or lake on the outing. Scouts swim only at council camp or with their families.
   - **Store workshop (Option B):** hammers and screwdrivers are fine for this age with training and an adult watching the whole time (Age Appropriate Guidelines). Eye protection for everyone at the table. The store's staff run it, and the patrol's two registered adults stay with the patrol.
   - **Knives:** none needed. A rising AoL hasn't earned Knife Safety yet this year, so adults handle any knife.
   - Geocaching: adults open any cache first, and scouts don't reach into holes or logs. No scout devices.
@@ -679,7 +679,7 @@ How these plans fit a Pack 569 den night:
 
 ### Meeting 3 of 4 · Pack Summer Event (outing, about 120 min)
 - All-dens option: this is the pack's event. Each den keeps its own group, buddy pairs and headcount.
-- Prep: the pack plans its July Summertime Fun activity as an outing or special event, not a routine pack meeting, so it counts. The official ideas are pack camping, fishing, a bike rodeo and ride, bowling, stargazing, and a zoo, aquarium or science museum. The pack never runs a swim (Keith, 2026-09-30). Boating needs Safety Afloat. Fishing is from the shore or a dock, and no one wades. The summer den leader brings the roster.
+- Prep: the pack plans its July Summertime Fun activity as an outing or special event, not a routine pack meeting, so it counts. The official ideas are pack camping, fishing, a bike rodeo and ride, bowling, stargazing, and a zoo, aquarium or science museum. The pack never runs a swim (pack rule). Boating needs Safety Afloat. Fishing is from the shore or a dock, and no one wades. The summer den leader brings the roster.
 - Supplies: roster, buddy list, water, first-aid kit, whistle
 - Tell parents before they leave: That's another of the three. If your scout goes to a council camp, text me.
 1. **Patrol Meet-Up** · den · 10 min · Reqs: 1 (set-up)
@@ -711,7 +711,7 @@ How these plans fit a Pack 569 den night:
 
 ---
 
-## Open questions for Keith
+## Open questions
 1. **Does a regular den or pack meeting count?** ANSWERED 2026-09-30: No. Only den summer outings, pack outings or special events (not the routine pack meeting), and council camps and events count, and the May kickoff is for planning only.
 2. **Does a camp week count as one activity or several?** These plans count one day camp or twilight camp week as one council activity, and one Scoutland Summer Quest session as one. Same question for Cub Summer Splash (one overnight, one activity).
 3. **Double counting.** ANSWERED 2026-09-30: Yes. One outing may count for Summertime Fun and for another adventure at the same time.

@@ -5,7 +5,7 @@
 Researched 2026-09-30 by the cubmaster-program agent, using the format of Summertime Fun (draft 1) and Let's Camp! (draft 2). This is the next elective in the pass. Every plan here is in our own words. Requirements are only summarized, so use the official lesson plans for the full text. Anything marked "(check)" still needs confirming. Nothing is in the app yet.
 
 How these adventures fit a Pack 569 den night:
-- **They don't.** Every rank has **zero den meetings** for all three range sports. Keith's ruling (2026-09-30): no part of Archery, BB Guns or Slingshot is done at a den meeting, and that includes the non-shooting parts (range rules, commands, gear, parts of the equipment). The official material says the same thing:
+- **They don't.** Every rank has **zero den meetings** for all three range sports. The pack's ruling: no part of Archery, BB Guns or Slingshot is done at a den meeting, and that includes the non-shooting parts (range rules, commands, gear, parts of the equipment). The official material says the same thing:
   - Each official rank page lists these three adventures on their own, under "Special Elective Adventures," and says they can only be completed at approved events with qualified instructors. That covers the whole adventure, not just the shooting.
   - Scouting America's Cub Scout range page says Cub Scout range and target activities happen at district and council events only. It adds that archery, BB guns and slingshots are "not approved unit activities."
   - The 2026 Range and Target Activities Manual (p. 20) says the same, and says these activities are prohibited at the pack level.
@@ -33,7 +33,7 @@ How these adventures fit a Pack 569 den night:
   - **Look back at summer 2026:** a scout who shot at a June 2026 day camp or at Cub Summer Splash in July 2026 may already have finished their *current* rank's version. Ask families for the camp's completion list.
 - **Lions can only use the family weekends.** NEGA's day and twilight camps take scouts entering grades 1–5, and Cub Summer Splash takes rising Tigers through AoL. By June a Lion is already a rising Tiger. Whether the Scoutland and Rainey ranges let Lions shoot needs checking.
 - **NEGA events and their ranges (2026 pages; 2027 dates aren't posted, check):**
-  - **Keith (2026-09-30): at Scoutland, Lions shoot bows and arrows, and Tigers and up shoot BB guns.** Slingshot is still unconfirmed.
+  - **Pack rule: at Scoutland, Lions shoot bows and arrows, and Tigers and up shoot BB guns.** Slingshot is still unconfirmed.
   - **Apalachee Fall Family Camping, Scoutland, Oct 2–4, 2026.** The page lists "Shooting Sports" but doesn't say which kinds. The app's Scoutland page says BB guns and archery (check). It's a whole-family event. The fee was $30 early and $35 by Sept 30, and it's now $45 on site.
   - **Spring Family Camping, Camp Rainey Mountain, Apr 24–26, 2026.** The page lists "BB's and Archery" and "Partial Adventure Achievements." It's a whole-family event. Adults 21 and over could take BB and Archery Rangemaster Training there on Saturday.
   - **Cub Scout day and twilight camps (June).** NEGA's list says activities may include bows and arrows and BB guns. It doesn't say which camps have which range (check with the Buford Day Camp and Lawrenceville Twilight Camp directors). They're for scouts entering grades 1–5, and a Tiger must bring a parent or adult.
@@ -81,7 +81,7 @@ How these adventures fit a Pack 569 den night:
   8. Talk about putting the gear away and storing it. (council range)
 - Done at the pack opening: nothing.
 - Done at a pack meeting: nothing. Once it's recorded, the adventure can be presented at a pack meeting.
-- Done at a council range: Reqs 1–8, all of them. Likely events: Apalachee Fall Family Camping at Scoutland (Oct 2–4, 2026: Lions shoot archery there, per Keith) and Spring Family Camping at Camp Rainey Mountain (late April 2027, check; "BB's and Archery" in 2026). The partner stays with the Lion on the range. The den leader confirms who took part from the camp's list. Fort Yargo has no range.
+- Done at a council range: Reqs 1–8, all of them. Likely events: Apalachee Fall Family Camping at Scoutland (Oct 2–4, 2026: Lions shoot archery there) and Spring Family Camping at Camp Rainey Mountain (late April 2027, check; "BB's and Archery" in 2026). The partner stays with the Lion on the range. The den leader confirms who took part from the camp's list. Fort Yargo has no range.
 - Leader's choice for how the den takes part: Option A · Den goes together: the den picks one family weekend, and the den leader and a second registered adult camp near each other and walk the Lions to the range as a group. / Option B · Families go on their own: each family signs up, and the den leader collects the camp's lists afterward.
 - What the den leader does:
   - Tell families which weekends have archery, with the dates and registration deadlines.
@@ -286,7 +286,7 @@ How these adventures fit a Pack 569 den night:
   8. Talk about putting away and storing the gun and gear. (council range)
 - Done at the pack opening: nothing.
 - Done at a pack meeting: nothing. The adventure can be presented there once it's recorded.
-- Done at a council range: Reqs 1–8, all of them. Likely events: Scoutland (Oct 2–4, 2026: Tigers and up shoot BB guns there, per Keith) and Rainey Mountain Spring Family Camping (late April 2027, check; it had "BB's" in 2026). Summer 2027 camps probably count toward Wolf (check). The partner stays with the Tiger. The den leader confirms who took part from the camp's list.
+- Done at a council range: Reqs 1–8, all of them. Likely events: Scoutland (Oct 2–4, 2026: Tigers and up shoot BB guns there) and Rainey Mountain Spring Family Camping (late April 2027, check; it had "BB's" in 2026). Summer 2027 camps probably count toward Wolf (check). The partner stays with the Tiger. The den leader confirms who took part from the camp's list.
 - Leader's choice for how the den takes part: Option A · Den goes together to one family weekend, with two registered adults. / Option B · Families go on their own and send the camp's list.
 - What the den leader does:
   - Tell families which council events have a BB range, with the dates and deadlines.
@@ -319,7 +319,7 @@ How these adventures fit a Pack 569 den night:
   8. Talk about putting away and storing the gun and gear. (council range)
 - Done at the pack opening: nothing.
 - Done at a pack meeting: nothing. The adventure can be presented there once it's recorded.
-- Done at a council range: Reqs 1–8, all of them. Likely events: Scoutland (Oct 2–4, 2026: Tigers and up shoot BB guns there, per Keith) and Rainey Mountain Spring Family Camping (late April 2027, check). Summer 2027 camps probably count toward Bear (check). The den leader confirms who took part from the camp's list.
+- Done at a council range: Reqs 1–8, all of them. Likely events: Scoutland (Oct 2–4, 2026: Tigers and up shoot BB guns there) and Rainey Mountain Spring Family Camping (late April 2027, check). Summer 2027 camps probably count toward Bear (check). The den leader confirms who took part from the camp's list.
 - Leader's choice for how the den takes part: Option A · Den goes together to one family weekend, with two registered adults. / Option B · Families go on their own and send the camp's list.
 - What the den leader does:
   - Tell families which council events have a BB range, with the dates and deadlines.
@@ -353,7 +353,7 @@ How these adventures fit a Pack 569 den night:
   8. Talk about putting away and storing the gun and gear. (council range)
 - Done at the pack opening: nothing.
 - Done at a pack meeting: nothing. The adventure can be presented there once it's recorded.
-- Done at a council range: Reqs 1–8, all of them. Likely events: Scoutland (Oct 2–4, 2026: Tigers and up shoot BB guns there, per Keith) and Rainey Mountain Spring Family Camping (late April 2027, check). Summer 2027 camps probably count toward Webelos (check). The den leader confirms who took part from the camp's list.
+- Done at a council range: Reqs 1–8, all of them. Likely events: Scoutland (Oct 2–4, 2026: Tigers and up shoot BB guns there) and Rainey Mountain Spring Family Camping (late April 2027, check). Summer 2027 camps probably count toward Webelos (check). The den leader confirms who took part from the camp's list.
 - Leader's choice for how the den takes part: Option A · Den goes together to one family weekend, with two registered adults. / Option B · Families go on their own and send the camp's list.
 - What the den leader does:
   - Tell families which council events have a BB range, with the dates and deadlines.
@@ -386,7 +386,7 @@ How these adventures fit a Pack 569 den night:
   8. Talk about putting away and storing the gun and gear. (council range)
 - Done at the pack opening: nothing.
 - Done at a pack meeting: nothing. The adventure can be presented there once it's recorded.
-- Done at a council range: Reqs 1–8, all of them. Likely events: Scoutland (Oct 2–4, 2026: Tigers and up shoot BB guns there, per Keith) and Rainey Mountain Spring Family Camping (late April 2027, check). Summer 2027 camps probably count toward AoL (check). The den leader confirms who took part from the camp's list.
+- Done at a council range: Reqs 1–8, all of them. Likely events: Scoutland (Oct 2–4, 2026: Tigers and up shoot BB guns there) and Rainey Mountain Spring Family Camping (late April 2027, check). Summer 2027 camps probably count toward AoL (check). The den leader confirms who took part from the camp's list.
 - Leader's choice for how the den takes part: Option A · Den goes together to one family weekend, with two registered adults. / Option B · Families go on their own and send the camp's list.
 - What the den leader does:
   - Tell families which council events have a BB range, with the dates and deadlines.
@@ -419,7 +419,7 @@ How these adventures fit a Pack 569 den night:
   8. Talk about putting away and storing the gun and gear. (council range)
 - Done at the pack opening: nothing.
 - Done at a pack meeting: nothing. The adventure can be presented there once it's recorded.
-- Done at a council range: Reqs 1–8, all of them. Likely events: **Scoutland, Oct 2–4, 2026** (Tigers and up shoot BB guns there, per Keith), and Rainey Mountain Spring Family Camping only if it comes before crossover (check). The den leader confirms who took part from the camp's list.
+- Done at a council range: Reqs 1–8, all of them. Likely events: **Scoutland, Oct 2–4, 2026** (Tigers and up shoot BB guns there), and Rainey Mountain Spring Family Camping only if it comes before crossover (check). The den leader confirms who took part from the camp's list.
 - Leader's choice for how the den takes part: Option A · Patrol goes together to Scoutland, with two registered adults. / Option B · Families go on their own and send the camp's list.
 - What the den leader does:
   - Tell families now that Scoutland may be their best chance.
@@ -624,7 +624,7 @@ How these adventures fit a Pack 569 den night:
 
 ---
 
-## Open questions for Keith
+## Open questions
 1. **Slingshot in NEGA.** None of NEGA's 2026 event pages I could read names a slingshot range: not Scoutland Fall Family Camping ("Shooting Sports"), not Rainey Spring Family Camping ("BB's and Archery"), not the day and twilight camps ("bow and arrows, BB guns"), and not Cub Summer Splash ("bow and arrow or BB guns"). May I ask the Apalachee District and the council program director which 2026–27 events will run one? If none do, should the app and the family notes say Slingshot isn't available to Pack 569 this year?
 2. **Scoutland this weekend (Oct 2–4).** Regular registration closed today, and on site is $45 per family. Which ranges will it run? Does it let Lions shoot archery, and slingshot if offered? Does it hand out completion lists? If the answers come in time, a quick email to families before Friday could give every den a chance at archery and BB guns this year.
 3. **Which rank's version at summer camps.** June and July camps come after the June 1 roll-over, so a rising Wolf's June archery most likely counts as Wolf Archery (check with the council advancement chair). If so, should den leaders ask families now about summer 2026 camps and record the current rank's range adventures from the camps' lists? Does Scoutbook Plus still accept them (check)?

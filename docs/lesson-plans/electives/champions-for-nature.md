@@ -4,7 +4,7 @@
 
 Researched 2026-09-30 by the cubmaster-program agent, using the format of Race Time, the first elective file. This is the second elective in the pass. Every plan here is written in our own words. Requirements are only summarized, so use the official page for the full text. Anything marked "(check)" still needs confirming. Nothing is in the app yet.
 
-Draft 2 (2026-09-30) adds Keith's answers on four points: the conservation project, where made items go, devices, and AoL food. On 2026-09-30 I re-read the official Food Miles Fruit Salad page (via r.jina.ai) for the AoL changes.
+Draft 2 (2026-09-30) adds the pack's answers on four points: the conservation project, where made items go, devices, and AoL food. On 2026-09-30 I re-read the official Food Miles Fruit Salad page (via r.jina.ai) for the AoL changes.
 
 How these plans fit a Pack 569 den night:
 - The pack does the opening ceremony together: flag, Pledge, Oath and Law. Each den then splits off for about 40 minutes.
@@ -20,7 +20,7 @@ How these plans fit a Pack 569 den night:
   - Webelos: habitats and one threatened or endangered animal.
   - Arrow of Light: local food, food deserts and oases, food waste.
   - Every rank ends with a conservation project.
-- **The conservation project: the den leader chooses.** Every rank has two options, and neither one is the default (Keith, 2026-09-30):
+- **The conservation project: the den leader chooses.** Every rank has two options, and neither one is the default (pack rule):
   - Option A: the all-dens April Scouting for Clean Waterways cleanup, which is an outing.
   - Option B: a project the den picks for itself from the official list. Each rank's plan gives one that fits:
     - Lion: bee pots.
@@ -35,7 +35,7 @@ How these plans fit a Pack 569 den night:
   - It can be held anywhere there's a need, such as parks, school grounds or a house of worship.
   - It should last only 1–2 hours.
   - Logging it in Scoutbook earns a certificate, and a patch is sold at the Scout Shop.
-  - Most units run it April–June. Pack 569 holds it in April (Keith, 2026-09-30).
+  - Most units run it April–June. Pack 569 holds it in April (pack rule).
   - The app's standard year already has an April "Spring hike / service project" (`SEED_ACTIVITIES`), which fits. Each rank's section has its own outing plan, so it still stands alone.
   - Official safety rules:
     - Gloves for everyone.
@@ -45,7 +45,7 @@ How these plans fit a Pack 569 den night:
     - Health forms reviewed.
     - A first-aid kit.
   - Pack 569 adds: permission from the landowner, the Service Project Planning Checklist, the SAFE Checklist, and the council outing process (check).
-- **Plants, planters and bee hotels: the den leader chooses** (Keith, 2026-09-30). Option A: they go home. Option B: they're placed at the chartered organization (the local church), with its permission. This applies to the Lion bee pots, the Tiger bottle planters and the Webelos bee hotels, and each of those ranks has it as a one-line leader's choice.
+- **Plants, planters and bee hotels: the den leader chooses** (pack rule). Option A: they go home. Option B: they're placed at the chartered organization (the local church), with its permission. This applies to the Lion bee pots, the Tiger bottle planters and the Webelos bee hotels, and each of those ranks has it as a one-line leader's choice.
 - **Outings** aren't normal den nights. They keep their own length and are marked "(outing, about N min)".
 - **Guest speakers.** No Champions for Nature requirement requires meeting an expert, so the den step is always Option A, and a pack guest-speaker night is Option B where it fits. One guest from the local recycling or solid-waste program (check) could cover Lion, Tiger and Wolf Req 3 on the same night. The guest-speaker dates are unknown.
 - **Tools on service projects** (2026 SAFE Project Tool Use chart, 680-028):
@@ -55,12 +55,12 @@ How these plans fit a Pack 569 den night:
   - No youth works 4 feet or more above the ground.
   - The official Lion and Tiger pages say Lions and Tigers may not use paintbrushes on a service project, although crafts are fine.
 - **Planting season.** The official seed-bomb activity says to plant in spring and check your area's growing season. In Georgia, fall and early spring are usually the planting windows for native perennials and trees (check with UGA Extension). Avoid scheduling the Lion bee pots or the Bear planting in deep winter or mid-summer heat.
-- **Devices: the leader's device only** (Keith, 2026-09-30). Scouts don't use phones or tablets at den meetings. For the Webelos and AoL research, the leader shows the material on their own device or brings printouts. When the leader shows a website, the official rules still apply: an adult controls all internet use, and parents are told first.
-- **Food.** Only AoL deals with food. Keith allows a no-cook food activity with an allergy check (2026-09-30), so AoL Meeting 1 offers the official Food Miles Fruit Salad for Req 2 as a leader's choice. The rules:
-  - Nothing is cooked at den meetings. Keith's cooking rule: meals are cooked at home, at a pack campout, or at a Webelos/AoL den or patrol campout, with adults running the stoves.
+- **Devices: the leader's device only** (pack rule). Scouts don't use phones or tablets at den meetings. For the Webelos and AoL research, the leader shows the material on their own device or brings printouts. When the leader shows a website, the official rules still apply: an adult controls all internet use, and parents are told first.
+- **Food.** Only AoL deals with food. The pack allows a no-cook food activity with an allergy check (2026-09-30), so AoL Meeting 1 offers the official Food Miles Fruit Salad for Req 2 as a leader's choice. The rules:
+  - Nothing is cooked at den meetings. The pack's cooking rule: meals are cooked at home, at a pack campout, or at a Webelos/AoL den or patrol campout, with adults running the stoves.
   - Check allergies before buying the fruit.
   - Everyone washes their hands before touching food.
-  - Knives (Keith's rule): a scout who has earned their rank's knife adventure this year (Bear Whittling, AoL Knife Safety) may use a knife under supervision at home, campouts and outings, but never at den meetings, where adults do the cutting. So at the den, adults cut the fruit, or the leader buys it pre-cut.
+  - Knives (the pack's rule): a scout who has earned their rank's knife adventure this year (Bear Whittling, AoL Knife Safety) may use a knife under supervision at home, campouts and outings, but never at den meetings, where adults do the cutting. So at the den, adults cut the fruit, or the leader buys it pre-cut.
   - The official Food Preservation activity (apple chips) needs cooking, so it stays out.
 - Two registered adults 21 or over in every den room, and no one-on-one contact, including online. For Lions and Tigers, an adult partner doesn't count as one of the two unless they are registered as a leader. If any girl attends, one of the two registered adults is a woman 21 or over.
 - **Sources.** On 2026-09-30 I read all six official Champions for Nature pages and the activity pages listed under each rank on scouting.org, using the r.jina.ai reader. I cross-checked all six ranks against the Michigan Crossroads Council's Oct 2024 requirement PDFs. They match, except for two points:
@@ -713,7 +713,7 @@ How these plans fit a Pack 569 den night:
   - Food (Meeting 1, Option A for Req 2), no cooking:
     - Check every scout's food allergies before buying the fruit.
     - Everyone washes their hands with soap and water before touching food.
-    - Knives: this is a den meeting, so no scout uses a knife, even one who has earned Knife Safety (Keith's rule). Adults cut the fruit, or the leader buys it pre-cut.
+    - Knives: this is a den meeting, so no scout uses a knife, even one who has earned Knife Safety (the pack's rule). Adults cut the fruit, or the leader buys it pre-cut.
     - Each scout gets their own cup and fork.
   - Devices: scouts don't use phones or tablets at den meetings. The leader shows websites on their own device, with parents told first (official page), or brings printouts.
   - Pumpkin Drive: adults lift and drive. Check with the recipient which pumpkins they accept, such as no paint, wax, glitter or candles, and whether carved or moldy ones are OK (check). The official page asks for health forms. Pumpkins are heavy, so scouts carry small ones only, with bent knees.
@@ -863,7 +863,7 @@ How these plans fit a Pack 569 den night:
 
 ---
 
-## Open questions for Keith
+## Open questions
 1. **When do dens run this elective?** Several parts are tied to a season:
    - planting: fall or early spring in Georgia (check)
    - Clean Waterways: most units run it April–June, and the app already has an April "Spring hike / service project"
@@ -900,7 +900,7 @@ How these plans fit a Pack 569 den night:
 8. **AoL Pumpkin Drive.** Is there a farm or animal rescue nearby that takes pumpkins (check the Pumpkins for Pigs network)? Is there a drop-off site and an adult with a truck? Can the AoLs have 3 minutes at the October pack meeting?
 9. **Bear planting partner.** Bears need an outing for Req 5 no matter what. If the den prefers planting to the cleanup, is there a parks department, school or tree program the pack already works with (check)?
 10. **Food activities.** The plan skips the official fruit salad and apple chips at den meetings, in line with your preference for cooking at home or at a pack campout. Is that right for AoL, or would you allow a no-cook fruit salad with an allergy check?
-    - **ANSWERED 2026-09-30:** A no-cook activity is allowed, with an allergy check and hand-washing. AoL Meeting 1 now offers the Food Miles Fruit Salad. Adults cut the fruit, or the leader buys it pre-cut; no scout cuts at a den meeting (Keith's knife rule). Apple chips stay out because they need cooking.
+    - **ANSWERED 2026-09-30:** A no-cook activity is allowed, with an allergy check and hand-washing. AoL Meeting 1 now offers the Food Miles Fruit Salad. Adults cut the fruit, or the leader buys it pre-cut; no scout cuts at a den meeting (the pack's knife rule). Apple chips stay out because they need cooking.
 11. **Lion Req 2 wording.** The official page lists five kinds of waste, while the Michigan PDF and the official activity list three. The plan teaches all five. Can the Advancement Chair confirm the wording Scoutbook Plus shows?
 12. **App (for app-engineer).**
     - "Champions for Nature" is spelled the same in all six rank elective lists in `ADVENTURES`.

@@ -406,7 +406,7 @@ How these plans fit a Pack 569 den night:
   - https://www.scouting.org/training/safeguarding-youth/
   - https://michiganscouting.org/wp-content/uploads/2024/10/Tiger-Adventure-Requirements.pdf
   - Checked: 2026-09-30
-- Summary: Parents lead the Protect Yourself Rules video at home. Shout, Run, Tell counts at the den relay when the Tiger's adult partner is their parent (Keith, 2026-09-30); a Tiger whose partner isn't a parent finishes it at home. The den covers reaching emergency help and what to do if lost, using S.A.W.: **Stay, Answer, Whistle** (stay put, answer when your name is called, and blow three short whistle blasts; official activity pages). The official page says the adventure may be done at home or as a den, and that parents, guardians and adult partners must be told the content before the meeting.
+- Summary: Parents lead the Protect Yourself Rules video at home. Shout, Run, Tell counts at the den relay when the Tiger's adult partner is their parent (pack rule); a Tiger whose partner isn't a parent finishes it at home. The den covers reaching emergency help and what to do if lost, using S.A.W.: **Stay, Answer, Whistle** (stay put, answer when your name is called, and blow three short whistle blasts; official activity pages). The official page says the adventure may be done at home or as a den, and that parents, guardians and adult partners must be told the content before the meeting.
 - Requirements (own words):
   1. With a parent's OK, watch the Tiger Protect Yourself Rules video. (at home)
   2. Show Shout, Run, Tell with your adult partner. (meeting, when the partner is the parent; otherwise at home)
@@ -472,7 +472,7 @@ How these plans fit a Pack 569 den night:
 
 ---
 
-## Open questions for Keith
+## Open questions
 1. **Meeting counts.** scouting.org doesn't suggest a number of den meetings. Scouter Mom estimates 1–2 per adventure (Bobcat "a single den meeting"). With 40-minute den time and Tiger attention spans, this draft uses:
    - Bobcat: 2 meetings
    - Team Tiger: 2 meetings

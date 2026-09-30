@@ -2,14 +2,14 @@
 
 > **A guide, not the rulebook.** These are ideas to help a den leader run the meeting. They are not a complete or official source. The official requirements on scouting.org and the Guide to Safe Scouting always come first. If something here is unclear or unsettled, use your judgment and check with the Cubmaster.
 
-Researched 2026-09-30 by the cubmaster-program agent, using the format of Fishing (draft 2) and Cycling (draft 2). Draft 2 was revised the same day with Keith's answers. This is the third theme in the elective pass: one adventure that every rank has under its own name. Every plan here is written in our own words. Requirements are only summarized, so use the official page for the full text. Anything marked "(check)" still needs confirming. Nothing is in the app yet.
+Researched 2026-09-30 by the cubmaster-program agent, using the format of Fishing (draft 2) and Cycling (draft 2). Draft 2 was revised the same day with the pack's answers. This is the third theme in the elective pass: one adventure that every rank has under its own name. Every plan here is written in our own words. Requirements are only summarized, so use the official page for the full text. Anything marked "(check)" still needs confirming. Nothing is in the app yet.
 
 How these plans fit a Pack 569 den night:
 - The pack does the opening ceremony together: flag, Pledge, Oath and Law. Each den then splits off for about 40 minutes.
 - Den meetings here have no gathering or opening steps. Each one is den steps plus one short den closing. The minutes add up to 35–40 and never go over 40.
 - "Reqs: N" means the step does real work on that requirement. "Reqs: N (set-up)" means the step only sets up or reinforces it and does not complete it.
 - The guides don't tick requirements. Leaders record progress on the app's Advancement board afterward.
-- **No den or pack swims (Keith, 2026-09-30).** Pack 569 never runs a swim. Each rank has:
+- **No den or pack swims (pack rule).** Pack 569 never runs a swim. Each rank has:
   - **One den night** (40 minutes or less) in the usual den room, on dry land. It covers water safety, buddy tags and the buddy board, getting in and out, reach-throw-don't-go, sun and pool rules, and (for Webelos) hypothermia. **Nobody goes in the water at a den night.**
   - **A "Done outside the den:" line.** Every in-water requirement is done outside the den, in one of three ways:
     - at a council camp or event with aquatics staff
@@ -26,7 +26,7 @@ How these plans fit a Pack 569 den night:
   - Complete the requirements, **or**
   - Take swim lessons. The Lion, Tiger, Webelos and AoL pages say "swim lessons". The Wolf and Bear pages say a swimming instruction program from an accredited instructor. **Or**
   - Pass the Scouting America swimmer test. This path is on the Wolf, Bear, Webelos and AoL pages. The Lion and Tiger pages don't list it.
-  - **Proof (Keith, 2026-09-30):** the Advancement Chair decides what proof counts, such as a lesson card, a certificate or a camp test card. The den leader checks with the Advancement Chair.
+  - **Proof (pack rule):** the Advancement Chair decides what proof counts, such as a lesson card, a certificate or a camp test card. The den leader checks with the Advancement Chair.
 - **Family swims and the supervision sentence.** The Lion, Tiger and Bear pages say all swimming activity must be supervised by a mature adult 21 or over trained in Safe Swim Defense (the other three pages: check). Whether a family swim at a pool with certified lifeguards meets that is the Advancement Chair's call (check).
 - **The eight points of Safe Swim Defense** (Guide to Safe Scouting, Aquatics Safety). This is what the den teaches on land, and what every Scouting swim follows:
   1. **Qualified supervision:** a mature adult aged 21 or over is in charge, trained in Safe Swim Defense within the last two years.
@@ -41,7 +41,7 @@ How these plans fit a Pack 569 den night:
   7. **Buddy system:** buddies are in the same ability group and check in and out together, using buddy tags on a buddy board. About every 10 minutes the lookout blows a whistle and calls "Buddies!". Pairs join and raise hands within a count of 10, and the lookout counts them.
   8. **Discipline:** go over the rules before any swim, and again at the water's edge.
 - **Where scouts finish the swim (outside the den):**
-  - **Cub Summer Splash at Camp Rainey Mountain** (July; the 2026 dates were July 17–19): the council page lists lake swimming for rising Tigers, Wolves, Bears, Webelos and AoLs. **Lions can't go.** Scouts may attend with a den, a pack or their family. For Pack 569 that means a family registers on its own (Keith: no den or pack swims). The 2026 cost was $175 per scout and $50 per adult. The page doesn't say whether aquatics staff give swim tests or run adventure requirements (check). The 2027 dates are unknown (check).
+  - **Cub Summer Splash at Camp Rainey Mountain** (July; the 2026 dates were July 17–19): the council page lists lake swimming for rising Tigers, Wolves, Bears, Webelos and AoLs. **Lions can't go.** Scouts may attend with a den, a pack or their family. For Pack 569 that means a family registers on its own (pack rule: no den or pack swims). The 2026 cost was $175 per scout and $50 per adult. The page doesn't say whether aquatics staff give swim tests or run adventure requirements (check). The 2027 dates are unknown (check).
   - **Day or resident camp swimming (check):** the council's 2026 Day, Twilight and STEM Camp page (rising 1st–5th graders) lists no swimming. I found no other council Cub camp with swimming besides Splash (check the 2027 pages).
   - **The council's Aquatics Adventure Weekends at Scoutland** are for Scouts BSA, Venturers and Sea Scouts, not Cub Scouts (check with the council).
   - **The pack's campouts are not swims:** Scoutland (October), Fort Yargo (March) and Rainey Mountain (April).
@@ -54,7 +54,7 @@ How these plans fit a Pack 569 den night:
     - Then swim 25 yards of easy resting backstroke.
     - The 100 yards are one swim with no stops and at least one sharp turn.
     - Finish by floating to rest (Guide).
-  - **Who gives it (Keith, 2026-09-30):** only pool staff or council camp aquatics staff. The pack has no tester. The official sources also allow a trained unit adult to give it, but Pack 569 doesn't use one. Whether a pool's own test is given as the Scouting America test is for the Advancement Chair to judge from the card (check).
+  - **Who gives it (pack rule):** only pool staff or council camp aquatics staff. The pack has no tester. The official sources also allow a trained unit adult to give it, but Pack 569 doesn't use one. Whether a pool's own test is given as the Scouting America test is for the Advancement Chair to judge from the card (check).
   - **How it's given** (Aquatics Supervision, ch. 5): one-on-one, with the tester as the scout's buddy, and a pole, ring buoy or throw bag within reach.
   - **A test is good for one year.**
   - **Trying counts.** Bear, Webelos and AoL only have to *attempt* a test. The official Swimmer Test AOL page says it's fine if a scout doesn't pass.
@@ -62,7 +62,7 @@ How these plans fit a Pack 569 den night:
   - A nonswimmer does every den-night requirement with everyone else.
   - Outside the den, they swim in the nonswimmer area. Swim lessons earn the whole adventure at every rank (official).
   - For a test attempt, the tester (pool or camp staff), the scout and the parent decide together whether the scout is ready to jump into deep water. No scout is ever pushed. Whether a partial try counts as an attempt is the Advancement Chair's call (check).
-- **Life jackets:** the official rules only (Keith). Safe Swim Defense doesn't call for life jackets in a nonswimmer area. The Guide lets a supervisor relax some deeper-water conditions when everyone wears a Coast Guard–approved life jacket. Read that wording before relying on it (check). A life jacket never moves a nonswimmer out of the nonswimmer area. The pack keeps no loaners.
+- **Life jackets:** the official rules only (pack rule). Safe Swim Defense doesn't call for life jackets in a nonswimmer area. The Guide lets a supervisor relax some deeper-water conditions when everyone wears a Coast Guard–approved life jacket. Read that wording before relying on it (check). A life jacket never moves a nonswimmer out of the nonswimmer area. The pack keeps no loaners.
 - **Timing:** scouts move up a grade on June 1, so the rank a summer swim counts for is the Advancement Chair's call (check). Council camp swims are in summer. Lessons and indoor pools run all year.
 - **Weather, sun and first aid** (facts the den teaches and families use):
   - **Lightning:** at the first thunder or lightning, everyone gets out of the water and into shelter. Wait at least 30 minutes after the last thunder or flash (Guide).
@@ -84,7 +84,7 @@ How these plans fit a Pack 569 den night:
 - **Food:** none. Water bottles only. The Webelos hypothermia step talks about warm drinks but doesn't serve any.
 - **Devices:** scouts don't use them. The leader's watch or phone is the timer.
 - **Counting twice:** Cub Summer Splash is one of the council camp choices in summertime-fun.md, so a scout who goes may also log it for Summertime Fun (see summertime-fun.md; check).
-- **Pack option:** none. Pack 569 never runs a swim (Keith, 2026-09-30).
+- **Pack option:** none. Pack 569 never runs a swim (pack rule).
 - **Guest speaker:** a certified lifeguard or a pool's aquatics staff could teach the rules at a den night or a pack guest-speaker night (check). This fits Lion Req 1 (adapted from the official Lions Learn from the Lifeguard) and Bear Req 1, which says "with your den or an adult".
 - **Leader reading:** the Guide's Aquatics Safety section, to teach the eight points.
 - **Sources.** On 2026-09-30 I read the following with the r.jina.ai reader:
@@ -296,7 +296,7 @@ How these plans fit a Pack 569 den night:
 - Done at a pack meeting: nothing. Pack 569 never runs a swim.
 - Done outside the den: Reqs 2–6, in one of these ways. The den leader checks with the Advancement Chair.
   - **At a council camp or event with aquatics staff:** Cub Summer Splash in July, for rising Wolves (2027 dates: check). Check whether camp staff classify swimmers and give a list covering Reqs 2–6, or give the swimmer test. Day or resident camp swimming: the council's 2026 day camp page lists none (check).
-  - **Swim lessons** from an accredited instructor earn Paws for Water outright. So does **passing the swimmer test**, given only by pool staff or council camp aquatics staff (official; Keith). Proof is whatever the Advancement Chair accepts, such as a lesson certificate or a test card.
+  - **Swim lessons** from an accredited instructor earn Paws for Water outright. So does **passing the swimmer test**, given only by pool staff or council camp aquatics staff (official; pack rule). Proof is whatever the Advancement Chair accepts, such as a lesson certificate or a test card.
   - **With family at a pool with certified lifeguards:** Req 3 names "your den or family", so a 30-minute family swim with a buddy fits Req 3 (official). Reqs 2, 4, 5 and 6 don't name a setting (check with the Advancement Chair). For Req 5, jump only where the pool allows it, into water chest-deep on that Wolf.
 - Leader's choice for Req 1: Option A · Rules Relay: two teams race to match picture cards to the eight rules taped on the wall (official). / Option B · Act It Out: small groups act out a safe or unsafe pool moment, and the den names the rule (official group role-play option; I couldn't find its page, so check). Both are the same step with the same minutes.
 - Non-swimmer:
@@ -372,8 +372,8 @@ How these plans fit a Pack 569 den night:
 - Done at a pack meeting: nothing. Pack 569 never runs a swim.
 - Done outside the den: Reqs 3–5, in one of these ways. The den leader checks with the Advancement Chair.
   - **At a council camp or event with aquatics staff:** Cub Summer Splash in July, for rising Bears (2027 dates: check). Check whether camp aquatics staff give the beginner test and give a list covering Reqs 3–5. Day or resident camp swimming: the council's 2026 day camp page lists none (check).
-  - **Swim lessons** from an accredited instructor earn Salmon Run outright. So does **passing the swimmer test**, given only by pool staff or council camp aquatics staff (official; Keith). Proof is whatever the Advancement Chair accepts.
-  - **With family at a pool with certified lifeguards:** Req 3 names "your den, pack, or family", so a 30-minute family swim with a buddy fits Req 3 (official). Req 4 says "with your den or an adult" (check with the Advancement Chair). Req 5 is tried only with pool staff giving the test (Keith).
+  - **Swim lessons** from an accredited instructor earn Salmon Run outright. So does **passing the swimmer test**, given only by pool staff or council camp aquatics staff (official; pack rule). Proof is whatever the Advancement Chair accepts.
+  - **With family at a pool with certified lifeguards:** Req 3 names "your den, pack, or family", so a 30-minute family swim with a buddy fits Req 3 (official). Req 4 says "with your den or an adult" (check with the Advancement Chair). Req 5 is tried only with pool staff giving the test (pack rule).
 - Leader's choice for Req 1: Option A · Qualified Supervision: the den leader explains the job and asks the official questions (official). / Option B · a guest who is Safe Swim Defense–trained or a certified lifeguard answers the Bears' questions. This fits the "with your den or an adult" wording (check). Both are the same step with the same minutes.
 - Req 6 on land: the Bear page doesn't say "from land" (Webelos and AoL do) or "in the water". These plans do it on land at the den night. Check with the Advancement Chair (see Open questions).
 - Non-swimmer:
@@ -451,7 +451,7 @@ How these plans fit a Pack 569 den night:
 - Done at a pack meeting: nothing. Pack 569 never runs a swim.
 - Done outside the den: Reqs 4–6, in one of these ways. The den leader checks with the Advancement Chair.
   - **At a council camp or event with aquatics staff:** Cub Summer Splash in July, for rising Webelos (2027 dates: check). Check whether camp aquatics staff give the swimmer test, and whether the camp's free swim has the three buddy checks per half hour that Req 6 asks for. Day or resident camp swimming: the council's 2026 day camp page lists none (check).
-  - **Swim lessons,** or **passing the swimmer test** given only by pool staff or council camp aquatics staff, earn Aquanaut outright (official; Keith). Proof is whatever the Advancement Chair accepts.
+  - **Swim lessons,** or **passing the swimmer test** given only by pool staff or council camp aquatics staff, earn Aquanaut outright (official; pack rule). Proof is whatever the Advancement Chair accepts.
   - **With family at a pool with certified lifeguards:** the Aquanaut page doesn't name a family setting, and Req 6 has "the qualified adult supervision" conduct the buddy checks. This path isn't offered unless the Advancement Chair allows it (check). A swimmer-test try given by pool staff fits Req 5 wherever it happens (check).
 - Where Req 2 happens: the page says "from land", so the den night completes it, in the den room with a taped shoreline, or in a gym or on grass.
 - Non-swimmer:
@@ -523,7 +523,7 @@ How these plans fit a Pack 569 den night:
 - Done at a pack meeting: nothing. Pack 569 never runs a swim.
 - Done outside the den: Reqs 3 and 4, in one of these ways. The den leader checks with the Advancement Chair.
   - **At a council camp or event with aquatics staff:** Cub Summer Splash in July, for rising AoLs (2027 dates: check). Check whether camp aquatics staff give the swimmer test, and whether the camp's free swim has the three buddy checks per half hour that Req 4 asks for. Day or resident camp swimming: the council's 2026 day camp page lists none (check).
-  - **Swim lessons,** or **passing the swimmer test** given only by pool staff or council camp aquatics staff, earn Swimming outright (official; Keith). A scout heading to Scouts BSA will need to pass the test for aquatics there, so lessons are worth it. Proof is whatever the Advancement Chair accepts.
+  - **Swim lessons,** or **passing the swimmer test** given only by pool staff or council camp aquatics staff, earn Swimming outright (official; pack rule). A scout heading to Scouts BSA will need to pass the test for aquatics there, so lessons are worth it. Proof is whatever the Advancement Chair accepts.
   - **With family at a pool with certified lifeguards:** the Swimming page doesn't name a family setting, and Req 4's buddy checks come from the qualified supervision. This path isn't offered unless the Advancement Chair allows it (check). A swimmer-test try given by pool staff fits Req 3 wherever it happens (check).
 - Where Req 2 happens: the page says "from land", so the den night completes it, in the den room with a taped shoreline, or in a gym or on grass.
 - Non-swimmer:
@@ -576,7 +576,7 @@ How these plans fit a Pack 569 den night:
 
 ---
 
-## Open questions for Keith
+## Open questions
 1. **Qualified supervisor.** ANSWERED 2026-09-30: the pack never runs a swim, so no den leader takes Safe Swim Defense training for these plans. Any Scouting swim, whoever runs it, follows Safe Swim Defense.
 2. **Who gives swim tests.** ANSWERED 2026-09-30: only pool staff or council camp aquatics staff. The pack has no tester.
 3. **Which rank a summer swim counts for.** ANSWERED 2026-09-30: no "swim before June 1" planning. Scouts move up a grade on June 1, and the rank a summer swim counts for is the Advancement Chair's call.
@@ -591,7 +591,7 @@ How these plans fit a Pack 569 den night:
 12. **App (for app-engineer):**
     - **Names:** all six official names match `ADVENTURES` (~lines 8988–9022) and `ADV_ELECTIVE_THEMES` `th:swimming` (~line 9038) exactly. No rename is needed.
     - **Credit:** each swim adventure is a one-meeting run. The den night gives the land requirements. Every in-water requirement comes from outside the den (the camp's list, a lesson card or a family note), so it needs a manual entry on the Advancement board, as does the "earned by lessons" or "earned by passing the swimmer test" path. This is the same "credit from outside the run" question as Fishing, Cycling and Summertime Fun.
-    - **Swim classification:** consider an optional per-scout record of a camp or pool test card: the group (swimmer, beginner or nonswimmer), the date and who gave it, expiring after one year (Keith to decide).
+    - **Swim classification:** consider an optional per-scout record of a camp or pool test card: the group (swimmer, beginner or nonswimmer), the date and who gave it, expiring after one year (Cubmaster to decide).
     - **Camp rules text (`CAMP_AGES`, ~lines 2565–2570):** it says "Day hikes, fishing and swimming are fine for every rank." That now conflicts with "Pack 569 never runs a swim". Suggest: "Day hikes and fishing are fine for every rank. The pack doesn't run swims; any Scouting swim follows Safe Swim Defense." Check the wording with the Camping Chair.
 13. **Family swims and the supervision sentence.** The Lion, Tiger and Bear pages say all swimming activity must be supervised by an adult 21 or over trained in Safe Swim Defense. Does the Advancement Chair accept a family swim at a pool with certified lifeguards (Lion, Tiger, Wolf, Bear) when the parent hasn't taken that training? Should Webelos and AoL, whose pages name no family setting, have any family path?
 

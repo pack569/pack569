@@ -11,11 +11,11 @@ How these plans fit a Pack 569 den night:
 - The guides don't tick requirements. Leaders record progress on the app's Advancement board afterward.
 - **Three kinds of meeting:**
   - **Indoor den nights** (40 min) in the usual den room.
-  - **Bike nights** (40 min, outing-style). Scouts bring bikes and helmets from home, and the den works outside. Each bike night has a "Where:" line. The place is the den leader's choice, **coordinated with the Cubmaster** (Keith, 2026-09-30).
+  - **Bike nights** (40 min, outing-style). Scouts bring bikes and helmets from home, and the den works outside. Each bike night has a "Where:" line. The place is the den leader's choice, **coordinated with the Cubmaster** (pack rule).
   - **Den rides** (outings, longer than 40 minutes, usually Saturday mornings) for the ride requirement. Every ride and every off-site bike night follows the council outing process (check).
 - **Six ranks, one theme.** The official names are On a Roll (Lion), Rolling Tigers (Tiger), **Pedal With the Pack** (Wolf), Bears on Bikes (Bear), Pedal Away (Webelos) and Cycling (AoL). The Wolf name has a capital W on the official page, on the official Cycling pack-meeting page and on the Michigan Crossroads council sheet. The app writes "Pedal with the Pack" (see Open questions). The other five match the app exactly.
 - **Bikes, not scooters or skates.** On a Roll is about bicycles. Every official page says a push or balance bike, training wheels, a tricycle or an adaptive bike is fine for a scout who can't ride a two-wheeler yet. No page mentions scooters or skates (check). Electric and hybrid bikes aren't allowed in Scouting activities (every official page), for adults as well as scouts.
-- **Where rides happen (Keith: closed or safe routes only):**
+- **Where rides happen (pack rule: closed or safe routes only):**
   - No official page at any rank requires riding in traffic. The AoL page's intro mentions "the open road or trail," and Pack 569 chooses the trail.
   - The official ride activities for Lion, Tiger and Bear call for a bike path away from traffic. The Wolf ride activity says to use parks or school playgrounds and to avoid parking lots. The Tiger bike rodeo allows a parking lot only with permission and cones blocking cars.
   - So all **rides** go on paved park paths. **Bike nights** may use a coned-off lot (with permission) or a school blacktop.
@@ -25,7 +25,7 @@ How these plans fit a Pack 569 den night:
   - The helmet sits level and low on the forehead.
   - The side straps form a V under each ear.
   - Only one or two fingers fit under the chin strap.
-  - Families bring their own helmets. The pack keeps no loaners (Keith, 2026-09-30).
+  - Families bring their own helmets. The pack keeps no loaners (pack rule).
   - No helmet, no ride. That scout does the family ride later.
 - **Before every ride, do the ABC Quick Check:** Air in the tires; Brakes; Cranks, Chain and Cogs (every official page, using the PBIC checklist). Riders wear closed-toe shoes (official ride activities), with laces tucked and no wide pant legs near the chain.
 - **Paperwork for off-site rides:** the official ride activities ask for an Annual Health and Medical Record (Parts A and B) for every participant, youth and adult. The Tiger and AoL pages ask for an Activity Consent Form for any ride away from the regular meeting place. Pack 569 uses both for every off-site ride and bike night.
@@ -39,7 +39,7 @@ How these plans fit a Pack 569 den night:
   - A den family may lend a bike, if the owner agrees (check the pack's view).
   - A balance bike, trike or training wheels counts for Lions, Tigers and Wolves.
 - **Hand tools.** The Age Appropriate Guidelines (08/24) mark hand tools for Wolf/Bear and older, not for Lions or Tigers (the reader gave me two different column readings, so check).
-  - Keith's rule is that tools stay with adults where needed, so here:
+  - The pack's rule is that tools stay with adults where needed, so here:
     - Lions and Tigers never hold a tool. Adults adjust.
     - Wolves and Bears may turn an Allen key or a quick-release with an adult's hand on the bike.
     - Webelos and AoL use tire levers and lube with an adult watching.
@@ -54,7 +54,7 @@ How these plans fit a Pack 569 den night:
   - **Serious injury:** call 911.
 - **Food:** none is needed. Trail food in the Webelos and AoL essentials stays sealed and gets an allergy check. No den picnics.
 - **Devices:** the official Webelos and AoL map activities give each pair a smart device. Pack 569 uses printed maps instead, and the leader's own device checks the distance.
-- **Counting twice (Keith):** a den ride between May 1 and August 31 is an outing. It also counts as one of the three Summertime Fun activities for the rank the scout is moving into (see summertime-fun.md). A bike rodeo and ride is one of the official Summertime Fun pack ideas.
+- **Counting twice (pack rule):** a den ride between May 1 and August 31 is an outing. It also counts as one of the three Summertime Fun activities for the rank the scout is moving into (see summertime-fun.md). A bike rodeo and ride is one of the official Summertime Fun pack ideas.
 - **Pack option:** the official Cycling pack-meeting page runs four stations (safety, obstacle course, gear and maintenance, races), ends with a pack ride, and maps each station to rank requirements. Pack 569 hasn't scheduled one (see Open questions). Each rank's "Done at a pack meeting:" line says what it would cover.
 - **Guest speaker:** the official Tiger options for Reqs 1–4 include a cycling expert, and Bear Req 1 has a biking-expert option. One of the pack's guest-speaker nights with a bike-shop mechanic could serve several dens (check).
 - **Sources.** On 2026-09-30 I read, using the r.jina.ai reader:
@@ -679,7 +679,7 @@ How these plans fit a Pack 569 den night:
 - Done at a pack meeting: nothing on the standard calendar. The official Cycling pack meeting covers Req 4 (Safety Station), Reqs 1–3 (Gear and Maintenance), and Req 7 if the pack ride is 10 miles.
 - Leader's choice for the bike night's place: Option A · the meeting-place lot, closed with cones, with permission, after the pack opening (check). / Option B · a school blacktop or park court (off-site; consent forms; meet there).
 - Leader's choice for the ride route (the patrol's Req 6 vote picks between approved routes): Option A · a local paved greenway, out and back to 10 miles (check the distance, road crossings and parking). / Option B · a park's paved loop trail, repeated to reach 10 miles (check). / Option C · Fort Yargo's paved trails as a patrol or pack ride at the pack campout (check the trail miles and surface).
-- **Essentials:** the AoL page says to bring the Scout Basic Essentials. The official AOL Bike Gear Check says a scout without Knife Safety or a Firem'n certification brings the other items. So matches stay home (adults carry the matches; the Firem'n Chit is Scouts BSA only). Keith's knife rule: a scout who has earned their rank's knife adventure this year (Bear Whittling, AoL Knife Safety) may use a knife under supervision at home, campouts and outings, but never at den meetings, where adults do the cutting. So on the ride, a pocketknife comes only for a scout who has earned Knife Safety this year.
+- **Essentials:** the AoL page says to bring the Scout Basic Essentials. The official AOL Bike Gear Check says a scout without Knife Safety or a Firem'n certification brings the other items. So matches stay home (adults carry the matches; the Firem'n Chit is Scouts BSA only). The pack's knife rule: a scout who has earned their rank's knife adventure this year (Bear Whittling, AoL Knife Safety) may use a knife under supervision at home, campouts and outings, but never at den meetings, where adults do the cutting. So on the ride, a pocketknife comes only for a scout who has earned Knife Safety this year.
 - No bike, or missed the ride:
   - A 10-mile family ride with a buddy counts, and the family may plan it (the official Reqs 6 and 7 accept patrol, pack or family). Tell the den leader.
   - For bike night and the flat repair, a scout may borrow a bike, if the owner agrees (check).
@@ -813,7 +813,7 @@ How these plans fit a Pack 569 den night:
 
 ---
 
-## Open questions for Keith
+## Open questions
 1. **When in the year?** Bike nights need daylight after den time. Spring (April–May) gives evenings light past 8 p.m. and cooler rides. Early September works too. What time does den time end on a den night? Which season should the dens plan on?
 2. **Where are bike nights held?** ANSWERED 2026-09-30: the den leader's choice, coordinated with the Cubmaster.
 3. **Loaner bikes and helmets.** ANSWERED 2026-09-30: families only. The pack has no loaner helmets or bikes. A scout with no helmet does the family ride instead.

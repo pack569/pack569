@@ -11,7 +11,7 @@ How these plans fit a Pack 569 den night:
 - The guides don't tick requirements. Leaders record progress on the app's Advancement board afterward.
 - **Three kinds of meeting:**
   - **Indoor den nights** (40 min) in the usual den room: safety rules, fish ID, bait, drawing, regulations, planning, knots.
-  - **Casting nights** (40 min, Wolf and Bear only). Scouts bring rods from home with the hook taken off. The den casts at targets on grass or in a gym. Each casting night has a "Where:" line. The place is the den leader's choice, **coordinated with the Cubmaster** (Keith, 2026-09-30).
+  - **Casting nights** (40 min, Wolf and Bear only). Scouts bring rods from home with the hook taken off. The den casts at targets on grass or in a gym. Each casting night has a "Where:" line. The place is the den leader's choice, **coordinated with the Cubmaster** (pack rule).
   - **Den fishing outings** (longer than 40 minutes, usually Saturday mornings) for the "go fishing" requirement. Every outing follows the council outing process (check).
 - **Six ranks, one theme.** The official names are Go Fish (Lion), Fish On (Tiger), A Wolf Goes Fishing (Wolf), A Bear Goes Fishing (Bear), Catch the Big One (Webelos) and Fishing (AoL). All six match the app exactly, including the lowercase "the" in Catch the Big One. They also match the official fishing blog post (Aug 2026) and the Michigan Crossroads requirement sheets (Oct 2024). No rename is needed.
 - **Where to fish:**
@@ -26,7 +26,7 @@ How these plans fit a Pack 569 den night:
   - **Scouts don't need a license.** Georgia residents under 16 don't need one. A $10 resident youth license is optional. Nonresident youth 15 and under don't need one either.
   - **Adults 16 and over who fish need one:** residents aged 16–64 and every nonresident 16 or over. On the DNR site, a resident one-day license was $5, plus $1 for each extra day (check current prices). Residents 65 and over should check the senior license rules.
   - **Adults who help.** Georgia's pages don't say whether an adult who only baits or casts for a child needs a license. The official Fishing Basics Instructor's Guide (Feb 2026) says anyone 16 or over who fishes *or helps the Scouts fish* on public water must have one.
-  - **Leader's choice for adult licenses (Keith, 2026-09-30):** Option A · every adult who baits, casts, unhooks or holds a rod carries a Georgia license. Adults who only do headcount and first aid don't need one. Den chiefs 16 or over who do any of those things need one too. / Option B · schedule the outing on a Georgia free fishing day, so no Georgia-resident adult needs one (a nonresident adult who fishes still needs one; check). The den leader tells families which option the den is using.
+  - **Leader's choice for adult licenses (pack rule):** Option A · every adult who baits, casts, unhooks or holds a rod carries a Georgia license. Adults who only do headcount and first aid don't need one. Den chiefs 16 or over who do any of those things need one too. / Option B · schedule the outing on a Georgia free fishing day, so no Georgia-resident adult needs one (a nonresident adult who fishes still needs one; check). The den leader tells families which option the den is using.
   - **Free fishing days:** Georgia residents need no fishing or trout license on public waters on these days. In 2026 they were **June 6, June 13 and September 26**. The 2027 dates aren't posted, but they usually fall in National Fishing and Boating Week in June and on National Hunting and Fishing Day in late September (check). An outing on a free fishing day (Option B) saves every resident adult the fee.
   - **Private ponds:** Georgia doesn't require a license to fish a private pond (eRegulations). Get the owner's permission in writing (check).
   - **Trout license:** only for designated trout waters, which this plan doesn't use.
@@ -34,26 +34,26 @@ How these plans fit a Pack 569 den night:
 - **Water safety:**
   - **Safe Swim Defense** covers swimming and any activity where people go into water **over knee deep** (Guide to Safe Scouting, Aquatics). Shore and dock fishing doesn't need it as long as nobody wades. **Pack 569: nobody wades.** A snagged line gets cut, not fetched.
   - **Safety Afloat** covers boats. This plan has no fishing from boats.
-  - **Life jackets:** the official Webelos and AoL safety activities say that non-swimmers fishing from a dock or wall wear a life jacket. **Pack 569 follows that official rule only (Keith, 2026-09-30):** a non-swimmer who fishes from a dock, pier or wall wears a U.S. Coast Guard–approved life jacket sized for them. Families of non-swimmers bring one and tell the den leader. The pack keeps no loaners. Any family may bring one for their scout, but it isn't required beyond the official rule.
+  - **Life jackets:** the official Webelos and AoL safety activities say that non-swimmers fishing from a dock or wall wear a life jacket. **Pack 569 follows that official rule only (pack rule):** a non-swimmer who fishes from a dock, pier or wall wears a U.S. Coast Guard–approved life jacket sized for them. Families of non-swimmers bring one and tell the den leader. The pack keeps no loaners. Any family may bring one for their scout, but it isn't required beyond the official rule.
   - **Buddies:** every official page uses the buddy system, and buddies must be able to see each other.
   - Leaders walk the site beforehand for steep banks, slippery rocks and drop-offs (official Safety First).
 - **Hooks and casting:**
   - **Barbless hooks**, or barbs pinched flat with pliers, and **no treble hooks** (the official Cub Scout Fishing Adventures Supplement, the Fishing Basics guide, and the Lion, Wolf and Bear outing activities). Adults pinch barbs before the outing.
   - **Adults bait the hooks and take fish off them** (official Safety First and Hooked on Safety). Pack 569 applies this at every rank. Webelos and AoL scouts tie their own hook on at the outing, with an adult beside them.
   - **No loose hooks at den meetings.** Every official practice activity takes the hooks off and ties on a flat washer or a practice plug (Cast & Learn, Cast-A-Thon Relay Challenge, Rod and Reel, Dry Run Fishing, Knot Stations). The Webelos and AoL gear meetings follow official supply lists that include barbless hooks.
-  - **Leader's choice for hooks at den meetings (Keith, 2026-09-30):** Option A · Sealed packets: barbless hooks stay sealed in their packets. Scouts learn from the packet and never handle a loose hook, and the leader takes the den's packets home. / Option B · No hooks: pictures or empty packets only, with no hooks at the den. This applies to the Webelos and AoL gear meetings and to any other meeting that would bring sealed hooks, such as the Wolf bait tray.
+  - **Leader's choice for hooks at den meetings (pack rule):** Option A · Sealed packets: barbless hooks stay sealed in their packets. Scouts learn from the packet and never handle a loose hook, and the leader takes the den's packets home. / Option B · No hooks: pictures or empty packets only, with no hooks at the den. This applies to the Webelos and AoL gear meetings and to any other meeting that would bring sealed hooks, such as the Wolf bait tray.
   - **Eye protection and hats:** the supplement calls them highly recommended. Pack 569 requires sunglasses or safety glasses for everyone in the casting area, at casting nights and outings. Families supply them.
   - **Casting manners** (official Safety First and the Fishing Basics guide): look behind you before every cast, keep 10 feet from the next angler, hold the pole upright when not fishing, and call "Fish on!" when reeling one in so others clear the line.
 - **Catch-and-release:**
-  - **Pack 569: every Scouting fishing activity is catch-and-release** (Keith, 2026-09-30). No fish are kept, and there are no fish fries.
+  - **Pack 569: every Scouting fishing activity is catch-and-release** (pack rule). No fish are kept, and there are no fish fries.
   - The official Lion and Wolf outing activities practice catch-and-release, and the Fishing Basics guide promotes it.
   - Wet your hands before touching a fish, support it under the belly, and get it back in the water fast (Fishing Basics). For sunfish, smooth the spiny fin down from the head. For catfish, keep clear of the side and back spines (official supplement).
   - If a fish swallows the hook, an adult cuts the line close and releases the fish. Don't dig for the hook.
 - **Knives:** nothing in this adventure needs one. Scissors or nail clippers cut line (the official tackle-box list has scissors).
-  - Keith's rule: a scout who has earned their rank's knife adventure this year (Bear Whittling, AoL Knife Safety) may use a knife under supervision at home, campouts and outings, but never at den meetings, where adults do the cutting. So at the fishing outing, an earned Bear or AoL scout may cut line with their own pocketknife under supervision. The official AoL Hook, Line and Sinker activity agrees for AoL.
+  - The pack's rule: a scout who has earned their rank's knife adventure this year (Bear Whittling, AoL Knife Safety) may use a knife under supervision at home, campouts and outings, but never at den meetings, where adults do the cutting. So at the fishing outing, an earned Bear or AoL scout may cut line with their own pocketknife under supervision. The official AoL Hook, Line and Sinker activity agrees for AoL.
   - Lions, Tigers, Wolves and Webelos have no pocketknife adventure in the app's lists, so their knives stay home.
   - No fish are kept, so there's no fish cleaning.
-- **Gear comes from home** (Keith: the pack keeps no loaners except tents). The easiest rigs are a short push-button spincast rod or a cane pole, which the supplement suggests for younger scouts.
+- **Gear comes from home** (pack rule: the pack keeps no loaners except tents). The easiest rigs are a short push-button spincast rod or a cane pole, which the supplement suggests for younger scouts.
   - Each rank has a "No rod, or missed the outing" path. A den family may lend a rod if the owner agrees (check). Bears can make a bamboo pole at their casting night.
   - Fort Yargo says visitors bring their own equipment.
 - **Timing, weather and first aid:**
@@ -70,7 +70,7 @@ How these plans fit a Pack 569 den night:
 - Two registered adults 21 or over in every den room and at every outing, and no one-on-one contact. For Lions and Tigers, an adult partner doesn't count as one of the two unless they are registered as a leader. If any girl attends, one of the two registered adults is a woman 21 or over. At the water, the official outing activities ask for extra adults. Aim for one adult for every two or three Wolves and older (pack suggestion; check).
 - **Food:** none is needed. The Wolf meat-stick bait option uses food as bait only, not to eat, with an allergy check first. Webelos and AoL trail food in the essentials stays sealed. No den picnics.
 - **Devices:** the official Tiger Our Fishing Spot activity and the Webelos Plan Your Fishing Adventure use a smart device. Pack 569 uses printed aerial maps and printed spot sheets, and the leader's own device checks anything else.
-- **Counting twice (Keith):** a den fishing outing between May 1 and August 31 also counts as one of the three Summertime Fun activities for the rank the scout is moving into (see summertime-fun.md). Fishing is one of the official Summertime Fun pack ideas.
+- **Counting twice (pack rule):** a den fishing outing between May 1 and August 31 also counts as one of the three Summertime Fun activities for the rank the scout is moving into (see summertime-fun.md). Fishing is one of the official Summertime Fun pack ideas.
 - **Pack option:** the official Fishing pack-meeting page is held **at a place where families can fish**. It runs four stations: equipment and casting, fish drawing, hook and bait, and go fishing. Its requirement map has errors: it labels the Tiger safety rules as Req 1 (they're Req 2), gives Webelos and AoL Req 4 the Bear wording, and lists "attach the hook" for Lions, Tigers and Wolves, who have no such requirement. Each rank's "Done at a pack meeting:" line below uses the corrected map (check). A July pack fishing day could serve as every den's outing (see Open questions).
 - **Guest speaker:** official options include a DNR representative (Tiger Req 1), a guest speaker on fish or regulations (Bear Reqs 1 and 2), and a guest speaker on local fish (AoL Req 3). One pack guest-speaker night with Georgia DNR Wildlife Resources fisheries staff or a park ranger could serve several dens (check who's available).
 - **Leader reading:** every official page points freshwater leaders to the Fishing Basics PowerPoint and Instructor's Guide (v2.1, Feb 2026). Read the guide once before your first outing.
@@ -435,7 +435,7 @@ How these plans fit a Pack 569 den night:
   - **Casting night:** hooks off, washers or practice plugs on (official Rod and Reel). Cones 6 feet apart. Sunglasses on.
   - **Knots:** practice on washers, never on hooks.
   - **Outing:** each Bear ties their own barbless hook on while holding it by the eye, with an adult beside them. Adults bait and unhook (official Safety First, Webelos).
-  - **Knives:** scissors or clippers cut line. A Bear who has earned Whittling this year may use their own pocketknife under supervision at the outing, never at den meetings (Keith). Everyone else leaves knives at home.
+  - **Knives:** scissors or clippers cut line. A Bear who has earned Whittling this year may use their own pocketknife under supervision at the outing, never at den meetings (pack rule). Everyone else leaves knives at home.
   - Life jackets for non-swimmers on docks, piers and walls (official).
   - Health forms for every participant, and consent forms.
   - Two registered adults 21 or over. No one-on-one. If any girl attends, one of the two registered adults is a woman 21 or over.
@@ -677,7 +677,7 @@ How these plans fit a Pack 569 den night:
 - Leader's choice for Req 3: Option A · a guest speaker on local fish, such as Georgia DNR fisheries staff, at one of the pack's guest-speaker nights (official option; check). / Option B · a flyer about the spot's fish and habitat, made in pairs (official option).
 - Leader's choice for hooks at Meeting 2: Option A · Sealed packets: barbless hooks, in the sample box and in scouts' tackle boxes, stay sealed in their packets. Scouts learn from the packet and never handle a loose hook, and the leader takes the sample box's packets home. / Option B · No hooks: pictures or empty packets only, with no hooks at the den. Scouts bring a picture or empty packet of the hook they chose.
 - Leader's choice for adult licenses: Option A · every adult who baits, casts, unhooks or holds a rod carries a Georgia license; adults who only do headcount and first aid don't need one. / Option B · the outing is on a Georgia free fishing day, so no resident adult needs one (see the header).
-- **Essentials:** the official Hook, Line and Sinker activity lists the Scout Basic Essentials. Matches stay home: adults carry the matches, and the Firem'n Chit is Scouts BSA only. A pocketknife comes only for a scout who has earned Knife Safety this year (Keith's rule). The official activity also lists a fishing license for the scout, but Georgia doesn't require one under 16.
+- **Essentials:** the official Hook, Line and Sinker activity lists the Scout Basic Essentials. Matches stay home: adults carry the matches, and the Firem'n Chit is Scouts BSA only. A pocketknife comes only for a scout who has earned Knife Safety this year (the pack's rule). The official activity also lists a fishing license for the scout, but Georgia doesn't require one under 16.
 - No rod, or missed the outing:
   - A family trip of an hour or more counts if the scout fishes following their plan. A scout fishing somewhere else first adjusts the plan with the den leader (check).
   - A den family may lend a rod, if the owner agrees (check). The scout still chooses the tackle alone for Req 6.
@@ -782,7 +782,7 @@ How these plans fit a Pack 569 den night:
 
 ---
 
-## Open questions for Keith
+## Open questions
 1. **When in the year?** Fish bite best in April–May and September–October. A June free fishing day saves every Georgia-resident adult a license (the 2027 dates aren't posted). Casting nights need daylight after den time. Which season should the dens plan on?
 2. **Fishing at pack campouts.** May a den fishing hour at the Fort Yargo pack campout count as the outing (late March water is cold and bites are slow)? Does a council program station at Rainey Mountain or Scoutland count if the den leader is there and times it? Scoutland's council page reportedly says a license at "17 and older," but Georgia law says 16. Can you check that with the council?
 3. **Adult licenses.** ANSWERED 2026-09-30: den leader's choice, Option A (every adult who baits, casts, unhooks or holds a rod has a license; headcount and first-aid adults don't) or Option B (outing on a Georgia free fishing day).

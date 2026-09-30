@@ -387,7 +387,7 @@ How these plans fit a Pack 569 den night:
   - https://www.scouting.org/cub-scout-activities/make-believe-parking-lot/
   - https://michiganscouting.org/wp-content/uploads/2024/10/Lion-Adventure-Requirements.pdf
   - Checked: 2026-09-30
-- Summary: Parents lead the Protect Yourself Rules video at home. Shout, Run, Tell counts at the den relay when the Lion's adult partner is their parent (Keith, 2026-09-30); a Lion whose partner isn't a parent finishes it at home. The den completes the pretend 911 call and safe street and parking-lot walking. Reqs 2–4 all say "with your Lion adult partner," which fits Lion den nights because partners are there.
+- Summary: Parents lead the Protect Yourself Rules video at home. Shout, Run, Tell counts at the den relay when the Lion's adult partner is their parent (pack rule); a Lion whose partner isn't a parent finishes it at home. The den completes the pretend 911 call and safe street and parking-lot walking. Reqs 2–4 all say "with your Lion adult partner," which fits Lion den nights because partners are there.
 - Requirements (own words):
   1. With a parent's OK, watch the Lion Protect Yourself Rules video. (at home)
   2. Show Shout, Run, Tell with your adult partner. (meeting, when the partner is the parent; otherwise at home)
@@ -452,7 +452,7 @@ How these plans fit a Pack 569 den night:
 
 ---
 
-## Open questions for Keith
+## Open questions
 1. **Meeting counts.** scouting.org doesn't suggest a number of den meetings. Scouter Mom estimates 1–2 per adventure. With 40-minute den time and Lion attention spans, this draft uses:
    - Bobcat: 2 meetings
    - King of the Jungle: 2 meetings
