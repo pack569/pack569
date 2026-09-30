@@ -14580,7 +14580,8 @@
     // aged out after 60 days, a backup from before the scout restored, then merged), a scout any entry names
     // on either copy, whom this copy lacks and the other holds, is taken from the other, archived: the rows
     // never point at nobody. A delete mark still standing against them becomes a put-back, as a held scout's
-    // does; no mark, or an old one, is left as it is.
+    // does, whatever its age while it stands (the code flips any positive mark); a mark already aged out, or never
+    // made, is nothing to flip, and the scout still comes back.
     if (Array.isArray(state.scouts) && Array.isArray(remote.scouts)) {
       var rowNamed = Object.create(null), scoutHere = Object.create(null);
       [state, remote].forEach(function (c) {
