@@ -1042,8 +1042,8 @@ const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'm
   'ledgerTakeOut', 'LEDGER_TAKE_OUT_ANY', 'ledgerLocked', 'ledgerReversalOf',
   // Phase 3, C5 — the statements, unioned by id, and the lock stepped back past a reopened one.
   'statementOnceGroups', 'statementReopened', 'statementPairMerge', 'mergeStatements', 'statementLockBack', 'statementBefore', 'ledgerStampClean',
-  // Phase 3, C6 — the per-row merge, and the entry chooser the push opens.
-  ...C6_MERGE_FNS, 'ledgerRowConflicts', 'rowChoice', 'refreshRowChoice', 'ledgerConflictSig', 'pickRowVersion', 'saveRowChoices', 'ROW_PICK_NEEDED',
+  // Phase 3, C6 — the per-row merge, the entry chooser the push opens, and two close-outs of one year.
+  ...C6_MERGE_FNS, 'seasonClosedTwice', 'seasonCloseoutOf', 'ledgerRowConflicts', 'rowChoice', 'refreshRowChoice', 'ledgerConflictSig', 'pickRowVersion', 'saveRowChoices', 'ROW_PICK_NEEDED',
   'ROW_PICKS_CHANGED', 'ROW_PICKS_SAVED'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
@@ -8960,7 +8960,7 @@ test('a push reads, merges and writes in one retried step, and the rev always cl
       ${slice('packLinked')}
       ${slice('syncPush')}
       ${FORMAT_GATE_SRC()}
-      ${['seasonMoved', 'reconciledFatesText', 'noteReconciledFates'].map(decl).join('\n')}
+      ${['seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', 'arrOf', 'reconciledFatesText', 'noteReconciledFates'].map(decl).join('\n')}
       syncPush();`, ctx);
     return ctx;
   };
@@ -9302,7 +9302,7 @@ test('once single-pack mode halts, nothing can push the pack record, even with t
     function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
     var state = { rev: 1 };
     var sync = { backend: fakeBe, pack: { docId: 'P' }, session: 1, deviceId: 'd', mode: 'online' };
-    ${['packLinked', 'haltFixedSync', 'scheduleSyncPush', 'syncPush', 'seasonMoved'].map(slice).join('\n')}
+    ${['packLinked', 'haltFixedSync', 'scheduleSyncPush', 'syncPush', 'seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', 'arrOf'].map(slice).join('\n')}
     ${FORMAT_GATE_SRC()}`, ctx);
   vm.runInContext('scheduleSyncPush()', ctx);
   eq(vm.runInContext('timers.length', ctx), 1, 'a linked device cannot schedule a push (the test proves nothing)');
@@ -9327,7 +9327,7 @@ test('every guard in front of the pack feed, the parent feed and a push holds on
       function fixedFeedBlocked() { return feedBlocked; } function fixedSyncBlocked() { return syncBlocked; }
       function accountsInForce() { return inForce; } function canEdit() { return edit; }
       var sync = { backend: fakeBe, pack: { docId: 'P' }, docId: 'P', session: 1, deviceId: 'd', mode: 'online', parentUnsub: null };
-      ${['cloudReady', 'packLinked', 'haltFixedSync', 'subscribeDoc', 'subscribeParentView', 'syncPush', 'seasonMoved'].map(slice).join('\n')}
+      ${['cloudReady', 'packLinked', 'haltFixedSync', 'subscribeDoc', 'subscribeParentView', 'syncPush', 'seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', 'arrOf'].map(slice).join('\n')}
       ${FORMAT_GATE_SRC()}`, c);
     return c;
   };
@@ -16239,7 +16239,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
       var sync = { backend: fakeBe, pack: { docId: 'P' }, session: 1, deviceId: 'd', clobber: false, dirty: true, mode: 'online',
         notice: '${over.notice || ''}', firstSnap: false,
         remoteRec: ${JSON.stringify(over.heard === undefined ? { rev: over.localRev, device: 'x', json: '{}' } : over.heard)} };
-      ${['packLinked', 'syncPush', 'seasonMoved', 'reconciledFatesText', 'noteReconciledFates', ...FORMAT_GATE_FNS].map(decl).join('\n')}
+      ${['packLinked', 'syncPush', 'seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', 'arrOf', 'reconciledFatesText', 'noteReconciledFates', ...FORMAT_GATE_FNS].map(decl).join('\n')}
       syncPush();`, ctx);
     const out = vm.runInContext('[records.length ? records[0].rev : null, merged, state.rev]', ctx);
     if (over.answers) out.push(JSON.parse(JSON.stringify(vm.runInContext('[firstAnswers, sync.dirty, sync.remoteRec && sync.remoteRec.rev]', ctx))));
@@ -16296,7 +16296,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
       function canEdit() { return true; } function render() {} function showToast() {} function scheduleSyncPush() { pushed += 1; }
       var ui = { overlay: { kind: 'sync-conflict', remote: { rev: 9 } } }, state = { rev: 2 };
       var sync = { backend: { serverRevs: ${serverRevs} } };
-      ${['seasonMoved', 'keepLocalCopy'].map(decl).join('\n')}
+      ${['seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', 'arrOf', 'keepLocalCopy'].map(decl).join('\n')}
       keepLocalCopy();`, ctx);
     return vm.runInContext('[state.rev, pushed, ui.overlay]', ctx);
   };
@@ -16888,7 +16888,7 @@ test('stopgap, Firestore: two devices that both re-import before either saves co
 
 // Treasurer M3 / popcorn 3: the copy chooser, drawn by the page's own renderOverlay.
 const CHOOSER_FNS = ['esc', 'fmt', 'fmtDateShort', 'fmtArchiveDate', 'arrOf', 'teBatchOf', 'dangerBtn', 'packSalesCents', 'teLastImportMs',
-  'rowsOnlyIn', 'syncCopyLine', 'syncYearsHtml', 'syncOnlyHereHtml', 'jsonBackup', 'renderOverlay', 'rowChoice'];
+  'rowsOnlyIn', 'syncCopyLine', 'syncYearsHtml', 'syncOnlyHereHtml', 'jsonBackup', 'renderOverlay', 'rowChoice', 'syncClosedTwiceHtml', 'seasonCloseoutOf'];
 function chooserHtml(mine, cloud, over) {
   const ctx = vm.createContext({});
   vm.runInContext(`${CHOOSER_FNS.map(slice).join('\n')}
@@ -17452,7 +17452,7 @@ test('stopgap: every path that deletes a money-log row marks it, an Undo marks i
   const roll = slice('rolloverYear');
   ok(/state\.gone = freshGone\(\);/.test(roll) && /b\.programYear \+= 1;/.test(roll),
     'close-out does not clear the marks and move the year (the season check depends on both)');
-  ok(/if \(clobbered && seasonMoved\(remote\)\) return \{ record: null/.test(slice('syncPush')), 'syncPush does not check the season');
+  ok(/if \(clobbered && \(seasonMoved\(remote\) \|\| seasonClosedTwice\(remote\)\)\) return \{ record: null/.test(slice('syncPush')), 'syncPush does not check the season');
   const chooser = slice('renderOverlay');
   ok(/syncYearsHtml\(rc\.budget && typeof rc\.budget\.programYear === 'number' \? rc\.budget\.programYear : null, state\.budget\.programYear, sync\.dirty\)/.test(chooser),
     'the chooser does not say the two copies are in different program years');
@@ -24650,6 +24650,82 @@ test('C6 property: with the charges on the page’s own syncCharges, two devices
     n += 1;
   }
   ok(n === 60 && waived > 20, 'too few cases with a make-up: ' + waived);
+});
+
+// Phase 3, C6 — a close-out as rolloverYear leaves these fields: the year's archive (its own id), the
+// year moved on, the logs cleared, and a family's credit carried into the new book as a new row.
+const C6_CLOSE = (dev, day) => `state.archives = (state.archives || []).concat([{ id: 'arc-${dev}', kind: 'season', year: state.budget.programYear,
+    closedAt: '2026-07-0${day}T12:00:00.000Z', packName: 'Test Pack' }]);
+  state.budget.programYear += 1; state.entries = []; state.inventory.distributions = []; state.fundraisers.forEach(function (f) { f.sales = []; });
+  state.ledger = [{ id: 'co-${dev}', date: '2027-06-30', description: 'Prior-year credit carried forward', amountCents: 500, direction: 'in', scoutId: 's1',
+    source: 'carryover' }];
+  state.ledgerAside = []; state.ledgerLog = []; state.statements = []; state.gone = freshGone(); commit()`;
+
+test('C6: two close-outs of the same year are told apart by the archive each wrote', () => {
+  const x = sandbox(['seasonClosedTwice', 'seasonCloseoutOf', 'arrOf']);
+  const rec = (py, arcs) => ({ json: JSON.stringify({ budget: { programYear: py }, archives: arcs }) });
+  const arc = (id, year) => ({ id, kind: 'season', year, closedAt: '2026-07-01T00:00:00.000Z' });
+  x.state = { budget: { programYear: 2027 }, archives: [arc('old', 2025), arc('mine', 2026)] };
+  eq([x.seasonClosedTwice(rec(2027, [arc('old', 2025), arc('theirs', 2026)])), x.seasonClosedTwice(rec(2027, [arc('old', 2025), arc('mine', 2026)])),
+    x.seasonClosedTwice(rec(2027, [arc('old', 2025)])), x.seasonClosedTwice(rec(2026, [arc('theirs', 2025)])),
+    x.seasonClosedTwice(rec(2027, [{ id: 'te', kind: 'trails-end', year: 2026 }])), x.seasonClosedTwice({ json: 'not json' })],
+    [true, false, false, false, false, false], 'two close-outs; the same one; one not closed out; another year (seasonMoved); not a season archive; unreadable');
+});
+
+test('C6, Firestore: a year closed out separately on two devices is not merged; the leader keeps one whole copy', () => {
+  // A and B both close 2026 out, each with a credit carried forward; A saves first.
+  let { a, b, server, rev } = fsGonePair();
+  a.run(C6_CLOSE('A', 1)); a.push();
+  b.run(C6_CLOSE('B', 2)); b.hear(); b.push();
+  eq([rev(), server().ledger.map((e) => e.id), b.get('[ui.overlay && ui.overlay.kind, sync.conflict && sync.conflict.rev, !!rowChoice()]')],
+    [4, ['co-A'], ['sync-conflict', 4, false]], 'B merged, or wasn’t asked');
+  // "Keep this device's copy": B's close-out, whole, and not asked again.
+  b.run('keepLocalCopy()'); b.push();
+  eq([rev(), server().ledger.map((e) => e.id), server().archives.map((x) => x.id), b.get('[ui.overlay, sync.conflict]')], [5, ['co-B'], ['arc-B'], [null, null]], 'keeping B’s');
+  a.hear();
+  eq(a.get('state.ledger.map(function (e) { return e.id; })'), ['co-B'], 'A after B’s save');
+  // "Use cloud copy": A's.
+  ({ a, b, server, rev } = fsGonePair());
+  a.run(C6_CLOSE('A', 1)); a.push();
+  b.run(C6_CLOSE('B', 2)); b.hear(); b.push();
+  b.run('adoptRemote(ui.overlay.remote, {}); ui.overlay = null');
+  eq([b.get('state.ledger.map(function (e) { return e.id; })'), b.get('sync.dirty'), rev()], [['co-A'], false, 4], 'using the cloud copy');
+  // Before C6 the two merged: both credits counted, one archive of 2026 lost.
+  ({ a, b, server, rev } = fsGonePair());
+  b.run(slice('syncPush').replace('if (clobbered && (seasonMoved(remote) || seasonClosedTwice(remote)))', 'if (clobbered && seasonMoved(remote))'));
+  a.run(C6_CLOSE('A', 1)); a.push();
+  b.run(C6_CLOSE('B', 2)); b.hear(); b.push();
+  eq([server().ledger.map((e) => e.id).sort(), server().archives.map((x) => x.id)], [['co-A', 'co-B'], ['arc-B']], 'control: the page before C6');
+});
+
+atest('C6, api: a year closed out separately on two devices is not merged; the leader keeps one whole copy', async () => {
+  const { a, b, server } = await apiGonePair();
+  b.run(C6_CLOSE('B', 2).replace('commit()', ''));
+  await a.edit(C6_CLOSE('A', 1).replace('commit()', ''));
+  b.reset();
+  b.run('commit()');
+  await settle([b], 800);
+  eq([b.log.filter((l) => /^PUT/.test(l)), server().ledger.map((e) => e.id), b.get('ui.overlay && ui.overlay.kind')], [[], ['co-A'], 'sync-conflict'], 'B merged, or wasn’t asked');
+  b.run('keepLocalCopy()');
+  await settle([b], 800);
+  eq([server().ledger.map((e) => e.id), server().archives.map((x) => x.id)], [['co-B'], ['arc-B']], 'keeping B’s');
+  await a.poll();
+  eq(a.get('state.ledger.map(function (e) { return e.id; })'), ['co-B'], 'A');
+});
+
+test('C6: the copy chooser says when both copies closed the same year out, and what to do', () => {
+  const seed = goneSeedNorm();
+  const close = (dev, day) => Object.assign(JSON.parse(JSON.stringify(seed)), { budget: Object.assign({}, seed.budget, { programYear: 2027 }),
+    archives: [{ id: 'arc-' + dev, kind: 'season', year: 2026, closedAt: '2026-07-0' + day + 'T12:00:00.000Z' }] });
+  const { html } = chooserHtml(close('B', 2), close('A', 1));
+  const t = html.replace(/<[^>]+>/g, '');
+  const date = (iso) => vm.runInContext(`fmtArchiveDate('${iso}')`, chooserHtml(close('B', 2), close('A', 1)).ctx);
+  ok(t.includes(`Both copies have been closed out to 2027, but separately: the cloud copy on ${date('2026-07-01T12:00:00.000Z')}, this device on ${date('2026-07-02T12:00:00.000Z')}. ` +
+    'Each started 2027 with its own book, so they can’t be put together.Keep one. Anything entered on the other since its close-out has to be entered again.' +
+    'Whichever you keep, the other copy is gone for everyone. Download this device’s copy first.'), 'the words: ' + t);
+  ok(!/closed out to 2027, but separately/.test(chooserHtml(close('A', 1), close('A', 1)).html.replace(/<[^>]+>/g, '')), 'the same close-out said to be two');
+  ok(!/separately/.test(chooserHtml(seed, seed).html), 'a same-year copy never closed out');
+  ok(!/<b>/.test(chooserHtml(close('B', 2), Object.assign(close('A', 1), { archives: [{ id: 'x', kind: 'season', year: 2026, closedAt: '<b>' }] })).html), 'not escaped');
 });
 
 /* ---------------- report ---------------- */

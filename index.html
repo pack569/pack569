@@ -14594,6 +14594,28 @@
     var ry = p && p.budget && p.budget.programYear, ly = state.budget && state.budget.programYear;
     return typeof ry === 'number' && typeof ly === 'number' && ry !== ly;
   }
+  // PHASE 3, C6 — both copies closed out the same year, each on its own device (two leaders, or one on
+  // two devices, before either saved): each started the new year with its own book, carried credits
+  // and archive of the year closed, so merged, a credit carried forward would count twice and one
+  // archive would be lost. The season archive each close-out wrote (buildSeasonArchive's id) says
+  // which a copy came from. syncPush asks which copy to keep, whole, as for seasonMoved.
+  function seasonClosedTwice(d) {
+    var p = null;
+    try { p = JSON.parse(typeof d.json === 'string' ? d.json : ''); } catch (e) { return false; }
+    var ly = state.budget && state.budget.programYear, ry = p && p.budget && p.budget.programYear;
+    if (typeof ly !== 'number' || ly !== ry) return false;
+    var a = seasonCloseoutOf(state, ly - 1), b = seasonCloseoutOf(p, ry - 1);
+    return !!a && !!b && a.id !== b.id;
+  }
+  // The season archive a copy's close-out of `year` wrote, or null. (A close-out of the same year
+  // again replaces it: performCloseout.)
+  function seasonCloseoutOf(s, year) {
+    var got = null;
+    arrOf(s && s.archives).forEach(function (a) {
+      if (a && a.kind === 'season' && a.year === year && typeof a.id === 'string' && a.id) got = a;
+    });
+    return got;
+  }
   function syncPush() {
     if (!packLinked()) return;
     if (fixedSyncBlocked()) return;   // SAFETY: single-pack mode, rules unproven — never write
@@ -14659,7 +14681,7 @@
       // over (seasonMoved). Nothing is sent; the leader is asked which copy to keep. The one copy
       // they chose to write over (sync.seasonKeptRev) is written over whole, and only that one.
       if (clobbered && remoteRev === sync.seasonKeptRev) clobbered = false;
-      if (clobbered && seasonMoved(remote)) return { record: null, result: { season: remote } };
+      if (clobbered && (seasonMoved(remote) || seasonClosedTwice(remote))) return { record: null, result: { season: remote } };
       // PHASE 3, C6 — a ledger entry both copies changed, differently (mergeLedgerRows): nothing is
       // sent, and the leader picks the version of each to keep (the chooser: saveRowChoices). Never
       // picked here, silently. Viewers never get this far: they don't push.
@@ -15146,6 +15168,18 @@
         '<p>Use the cloud copy, then close out the year again.</p>';
     return what + '<p class="small">Whichever you keep, the other year’s copy is gone for everyone. Download this device’s copy first.</p>';
   }
+  // Phase 3, C6 — both copies closed the same year out, separately (seasonClosedTwice): when each did,
+  // and what to do. '' otherwise. `cloud` as stored, not normalized.
+  function syncClosedTwiceHtml(cloud, mine) {
+    var y = mine && mine.budget && mine.budget.programYear;
+    if (typeof y !== 'number' || !cloud || !cloud.budget || cloud.budget.programYear !== y) return '';
+    var c = seasonCloseoutOf(cloud, y - 1), m = seasonCloseoutOf(mine, y - 1);
+    if (!c || !m || c.id === m.id) return '';
+    return '<p><strong>Both copies have been closed out to ' + y + ', but separately:</strong> the cloud copy on ' + esc(fmtArchiveDate(String(c.closedAt || ''))) +
+      ', this device on ' + esc(fmtArchiveDate(String(m.closedAt || ''))) + '. Each started ' + y + ' with its own book, so they can’t be put together.</p>' +
+      '<p>Keep one. Anything entered on the other since its close-out has to be entered again.</p>' +
+      '<p class="small">Whichever you keep, the other copy is gone for everyone. Download this device’s copy first.</p>';
+  }
   // What only this device has, so nobody picks a copy without knowing what the other loses.
   function syncOnlyHereHtml(only) {
     var parts = [], n = function (k, one, many) { var c = only[k].length; if (c) parts.push(c + ' ' + (c === 1 ? one : many)); };
@@ -15190,7 +15224,8 @@
     // Anything else leaves sync.clobber as it was (security review of the stopgap, S2): the
     // flag can be another leader's same-year save, heard before a re-subscribe brought this
     // chooser up, and its sales are merged in as they always were.
-    if (kept && kept.remote && seasonMoved(kept.remote)) sync.seasonKeptRev = kept.remote.rev;
+    // Phase 3, C6 — and one that closed the same year out separately (seasonClosedTwice).
+    if (kept && kept.remote && (seasonMoved(kept.remote) || seasonClosedTwice(kept.remote))) sync.seasonKeptRev = kept.remote.rev;
     render();
     scheduleSyncPush(); // rev bumps past the cloud copy's in the push transaction
   }
@@ -26553,6 +26588,7 @@
         // which is the newer year, in plain words, and what to do (treasurer review of the
         // stopgap, M3). Both buttons can lose money here, so the download comes first.
         syncYearsHtml(rc.budget && typeof rc.budget.programYear === 'number' ? rc.budget.programYear : null, state.budget.programYear, sync.dirty) +
+        syncClosedTwiceHtml(rc, state) +   // Phase 3, C6
         '<p class="small muted">' + syncCopyLine('Cloud copy', rc) + '<br>' + syncCopyLine('This device', state) + '</p>' +
         syncOnlyHereHtml(rowsOnlyIn(state, rc)) +
         '<div class="row"><button type="button" class="btn" data-act="sync-download-local">Download this device’s copy first</button></div>' +
