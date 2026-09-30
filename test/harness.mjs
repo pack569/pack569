@@ -23,6 +23,7 @@ import vm from 'node:vm';
 import { execSync, spawnSync } from 'node:child_process';
 import * as site from '../scripts/build-site.mjs';
 import { checkWrangler } from '../scripts/check-wrangler.mjs';
+import * as lessons from '../scripts/lesson-plans.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const HTML = readFileSync(join(ROOT, 'index.html'), 'utf8');
@@ -13450,8 +13451,8 @@ test('Y2: photo permission is NEVER published, printed or exported', () => {
 
 /* ================================================================
    Cloudflare hosting (2026-09-28). The site is built by scripts/build-site.mjs and deployed
-   only by hand from .github/workflows/website.yml. What is served is an allowlist of two
-   files; a preview is device-only; the CSP carries the script's hash instead of
+   only by hand from .github/workflows/website.yml. What is served is an allowlist of three
+   files (index.html, _headers, and plans.json, the den lesson plans); a preview is device-only; the CSP carries the script's hash instead of
    'unsafe-inline'. Builds go to a temp folder, never into the repo.
    ================================================================ */
 
@@ -13477,9 +13478,9 @@ const throwsBuild = (fn, what) => {
   throw new Error(what);
 };
 
-test('the preview build is two files, cannot reach the live pack, allows no Google origin, and is noindex', () => {
+test('the preview build is three files, cannot reach the live pack, allows no Google origin, and is noindex', () => {
   siteBuild();
-  eq(readdirSync(siteDir('preview')).sort(), ['_headers', 'index.html'], 'the preview folder');
+  eq(readdirSync(siteDir('preview')).sort(), ['_headers', 'index.html', 'plans.json'], 'the preview folder');
   const html = siteFile('preview', 'index.html');
   ok(/^  var FIREBASE_CONFIG = null;$/m.test(html), 'the preview keeps a Firebase config');
   ok(/^  var PACK_DOC_ID = null;$/m.test(html), 'the preview keeps the pack id');
@@ -13492,8 +13493,9 @@ test('the preview build is two files, cannot reach the live pack, allows no Goog
   const headers = siteFile('preview', '_headers');
   const csp = site.cspOf(headers);
   ok(!/google|gstatic|firebase/i.test(csp), 'the preview CSP allows a Google origin');
-  eq(site.cspDirectives(csp)['connect-src'], ['https://api.open-meteo.com', 'https://archive-api.open-meteo.com'],
-    'the preview connects to more than the weather');
+  // Its own site (plans.json, the lesson plans) and the weather: nothing else.
+  eq(site.cspDirectives(csp)['connect-src'], ["'self'", 'https://api.open-meteo.com', 'https://archive-api.open-meteo.com'],
+    'the preview connects to more than its own site and the weather');
   eq(site.cspDirectives(csp)['frame-src'], ["'none'"], 'the preview can frame something');
   ok(csp.indexOf(`'sha256-${scriptHash(html)}'`) >= 0, 'the preview CSP hash is not its script’s');
   ok(/^  X-Robots-Tag: noindex$/m.test(headers), 'the preview can be indexed');
@@ -13501,7 +13503,7 @@ test('the preview build is two files, cannot reach the live pack, allows no Goog
 
 test('the production build is the committed page, and its CSP hashes the script and allows Firebase', () => {
   siteBuild();
-  eq(readdirSync(siteDir('production')).sort(), ['_headers', 'index.html'], 'the production folder');
+  eq(readdirSync(siteDir('production')).sort(), ['_headers', 'index.html', 'plans.json'], 'the production folder');
   ok(siteFile('production', 'index.html') === HTML, 'production is not byte-for-byte index.html');
   const headers = siteFile('production', '_headers');
   const d = site.cspDirectives(site.cspOf(headers));
@@ -13525,7 +13527,7 @@ test('the production build is the committed page, and its CSP hashes the script 
 
 test('the staging build is the committed page on the pack’s own server: BACKEND api, no Firestore host, noindex', () => {
   siteBuild();
-  eq(readdirSync(siteDir('staging')).sort(), ['_headers', 'index.html'], 'the staging folder');
+  eq(readdirSync(siteDir('staging')).sort(), ['_headers', 'index.html', 'plans.json'], 'the staging folder');
   const html = siteFile('staging', 'index.html');
   // Byte for byte the committed page, but for two lines: BACKEND, and (YP review of stage C,
   // item 2) the STAGING flag that makes the page refuse the real move file.
@@ -13546,9 +13548,10 @@ test('the staging build is the committed page on the pack’s own server: BACKEN
   eq(d['script-src'][0], `'sha256-${scriptHash(html)}'`, 'the staging CSP hash is not its script’s');
   ok(d['frame-src'].indexOf('https://' + LIVE.config.authDomain) >= 0, 'Google sign-in cannot frame the authDomain on staging');
   ok(/^  X-Robots-Tag: noindex$/m.test(headers), 'staging can be indexed');
-  // Production is still the committed page, on Firestore, with no 'self' to connect to.
+  // Production is still the committed page, on Firestore; its 'self' is for plans.json.
   const prod = site.cspDirectives(site.cspOf(siteFile('production', '_headers')));
-  ok(prod['connect-src'].indexOf('https://firestore.googleapis.com') >= 0 && prod['connect-src'].indexOf("'self'") < 0,
+  eq(prod['connect-src'], ["'self'", 'https://firestore.googleapis.com', 'https://identitytoolkit.googleapis.com',
+    'https://securetoken.googleapis.com', 'https://www.googleapis.com', 'https://api.open-meteo.com', 'https://archive-api.open-meteo.com'],
     'production’s connect-src changed');
   // --verify: a staging page on Firestore, or with a Firestore host in its CSP, is refused; so is
   // each target passed as another.
@@ -13572,7 +13575,7 @@ test('the staging build is the committed page on the pack’s own server: BACKEN
   rmSync(pt, { recursive: true, force: true }); cpSync(siteDir('production'), pt, { recursive: true });
   writeFileSync(join(pt, 'index.html'), siteFile('production', 'index.html').replace('  var STAGING = false;', '  var STAGING = true;'));
   ok(/STAGING is true/.test(throwsBuild(() => site.verify({ dir: pt, target: 'production' }), 'production with STAGING')), 'production with STAGING');
-  eq(site.verify({ dir: siteDir('staging'), target: 'staging' }).files.map((f) => f.file), ['_headers', 'index.html'], 'a good staging build');
+  eq(site.verify({ dir: siteDir('staging'), target: 'staging' }).files.map((f) => f.file), ['_headers', 'index.html', 'plans.json'], 'a good staging build');
   // The CLI builds it.
   const r = spawnSync(process.execPath, [join(ROOT, 'scripts/build-site.mjs'), '--verify', siteDir('staging'), '--target', 'staging'], { encoding: 'utf8' });
   eq(r.status, 0, 'the --verify CLI refuses a good staging build: ' + r.stderr);
@@ -13584,6 +13587,7 @@ test('the switch-over is one line: a production page with BACKEND api gets the a
   try {
     writeFileSync(join(root, 'index.html'), HTML.replace("  var BACKEND = 'firestore';", "  var BACKEND = 'api';"));
     writeFileSync(join(root, '_headers'), readFileSync(join(ROOT, '_headers'), 'utf8'));
+    cpSync(join(ROOT, lessons.PLANS_DIR), join(root, lessons.PLANS_DIR), { recursive: true });
     const out = join(root, 'out');
     site.build({ target: 'production', out, root });
     const headers = readFileSync(join(out, '_headers'), 'utf8');
@@ -13634,7 +13638,7 @@ test('--verify refuses a production build passed as preview, the reverse, and a 
   siteBuild();
   throwsBuild(() => site.verify({ dir: siteDir('production'), target: 'preview' }), 'production passed as preview');
   throwsBuild(() => site.verify({ dir: siteDir('preview'), target: 'production' }), 'preview passed as production');
-  eq(site.verify({ dir: siteDir('preview'), target: 'preview' }).files.map((f) => f.file), ['_headers', 'index.html'], 'a good preview');
+  eq(site.verify({ dir: siteDir('preview'), target: 'preview' }).files.map((f) => f.file), ['_headers', 'index.html', 'plans.json'], 'a good preview');
   // A third file, a wrong hash, a live value slipped back in: each is refused.
   const t = join(SITE_TMP, 'tampered');
   const fresh = () => { rmSync(t, { recursive: true, force: true }); cpSync(siteDir('preview'), t, { recursive: true }); };
@@ -26095,6 +26099,254 @@ atest('C7, api: an older page’s delete of a scout with payments keeps the scou
   eq([c7Kept(server(), 'ls1'), a.get('sync.lookNotes')], [[[['s1', true], ['s2', false]], ['s1'], true], [C7_NOTE]], 'the delete saved last');
   await b.poll();
   eq(c7Kept(b.get('state'), 'ls1'), [[['s1', true], ['s2', false]], ['s1'], true], 'the paying device, after');
+});
+
+/* ================================================================
+   Den lesson plans (2026-09-30). docs/lesson-plans/*.md is the source; scripts/lesson-plans.mjs
+   parses it and build-site writes plans.json beside index.html; the page fetches it only when a
+   leader opens a plan (loadAdventurePlans). Leaders only: never in the parent view, the
+   digest, the .ics export or the pack record.
+   ================================================================ */
+
+let plansCache = null;
+// The real files, parsed once, as the build parses them (with ADVENTURES from index.html).
+const plansOut = () => {
+  if (!plansCache) {
+    const json = lessons.plansJson();
+    plansCache = { json, data: JSON.parse(json) };
+  }
+  return plansCache;
+};
+const planMd = () => lessons.PLAN_FILES.map((f) => readFileSync(join(ROOT, lessons.PLANS_DIR, f), 'utf8'));
+const allSteps = (d) => Object.keys(d.plans).flatMap((k) => d.plans[k].meetings.flatMap((m) => m.steps));
+// Every string anywhere in a value.
+const allStrings = (v, out = []) => {
+  if (typeof v === 'string') out.push(v);
+  else if (Array.isArray(v)) v.forEach((x) => allStrings(x, out));
+  else if (v && typeof v === 'object') Object.keys(v).forEach((k) => allStrings(v[k], out));
+  return out;
+};
+const ADV_DATA = lessons.adventuresFrom(HTML);
+
+test('lesson plans: the parser reads every real plan file, and only the plan files', () => {
+  const d = plansOut().data;
+  eq(d.format, 1, 'format');
+  ok(/^\*\*A guide, not the rulebook\.\*\* /.test(d.guide), 'the guide line is missing');
+  const files = new Set(Object.keys(d.plans).map((k) => d.plans[k].file));
+  eq([...files].sort(), lessons.PLAN_FILES.slice().sort(), 'a plan file gave no plans');
+  // What is NOT plan data stays out: open questions, safety reviews, the handoff and the build plan.
+  const onDisk = ['', 'electives/'].flatMap((sub) => readdirSync(join(ROOT, lessons.PLANS_DIR, sub))
+    .filter((f) => /\.md$/.test(f)).map((f) => sub + f));
+  eq(onDisk.filter((f) => lessons.PLAN_FILES.indexOf(f) < 0).sort(),
+    ['BUILD-PLAN.md', 'CONTINUE.md', 'open-questions.md', 'safety-review-camping.md', 'safety-review-youth-protection.md'],
+    'a markdown file in docs/lesson-plans is neither a plan file nor a known note (add it to PLAN_FILES, or here)');
+  planMd().forEach((t, i) => ok(/^> \*\*A guide, not the rulebook\.\*\*/m.test(t), lessons.PLAN_FILES[i] + ' has no guide line'));
+});
+
+test('lesson plans: a line the parser cannot read stops it with the file and line', () => {
+  const head = '# X\n\n> **A guide, not the rulebook.** x\n\n## Bobcat (Wolf)\n' +
+    '- Character & Leadership · Meetings: 1 · Official page: https://www.scouting.org/x/ · Checked: 2026-09-30\n' +
+    '- Summary: s\n- Requirements (own words):\n  1. Do it. (meeting)\n- Safety notes:\n  - Two adults.\n\n' +
+    '### Meeting 1 of 1 · T · 40 min\n- Prep: p\n- Supplies: s\n- Tell parents before they leave: t\n';
+  const step = '1. **A** · den · 10 min · Reqs: 1\n   - Say: "Hi."\n   - How: 1) One. 2) Two.\n   - Tip: **T:** t\n';
+  const tail = '\n## Open questions for Keith\n';
+  const good = lessons.parsePlanFile('t.md', head + step + tail, ADV_DATA);
+  eq(good.plans[0].meetings[0].steps[0].how.map((h) => h.n), [1, 2], 'the good file');
+  const bad = (text, re, what) => {
+    try { lessons.parsePlanFile('t.md', text, ADV_DATA); } catch (e) {
+      ok(e instanceof lessons.PlanError, what + ': not a PlanError');
+      ok(re.test(e.message), `${what}: "${e.message}"`);
+      return;
+    }
+    throw new Error(what + ' was accepted');
+  };
+  bad(head + step.replace('   - Say: "Hi."\n', '') + tail, /^t\.md:17: .*has no Say/, 'a step without a Say');
+  bad(head + step.replace(' · den · ', ' · gathering · ') + tail, /^t\.md:17: a numbered line that is not a step/, 'a gathering step');
+  bad(head + step.replace('10 min', '45 min') + tail, /^t\.md:13: .*steps add up to 45/, 'a den meeting over 40');
+  bad(head + 'Stray text.\n' + step + tail, /^t\.md:17: text outside any list item/, 'stray text');
+  bad(head.replace('Meeting 1 of 1', 'Meeting 2 of 1') + step + tail, /^t\.md:13: /, 'a meeting out of order');
+  bad(head.replace('## Bobcat (Wolf)', '## Bobcats (Wolf)') + step + tail, /is not a Wolf adventure in ADVENTURES/, 'a name ADVENTURES does not have');
+  bad(head.replace(' · Checked: 2026-09-30', '') + step + tail, /Checked/, 'no Checked date');
+  bad(head + step + tail.replace('## Open questions for Keith\n', ''), /Open questions/, 'no end marker');
+  bad(head + step.replace('Hi.', 'Hi.\t') + tail, /control character/, 'a tab');
+});
+
+test('lesson plans: every den meeting fits in 40 minutes, and its steps fit its header', () => {
+  const d = plansOut().data;
+  let den = 0;
+  for (const k of Object.keys(d.plans)) {
+    for (const m of d.plans[k].meetings) {
+      const total = m.steps.reduce((a, s) => a + s.mins, 0);
+      eq(m.stepMins, total, `${k} meeting ${m.n} stepMins`);
+      ok(['den', 'outing', 'add-on'].indexOf(m.kind) >= 0, `${k} meeting ${m.n} kind ${m.kind}`);
+      m.steps.forEach((s) => ok(s.kind === 'den' || s.kind === 'closing', `${k} meeting ${m.n}: a ${s.kind} step`));
+      if (m.kind === 'outing') continue;
+      if (m.kind === 'den') den++;
+      ok(total <= 40, `${k} meeting ${m.n} ("${m.title}") is ${total} minutes`);
+      ok(total <= m.mins, `${k} meeting ${m.n} ("${m.title}") says ${m.mins} but its steps are ${total}`);
+    }
+  }
+  ok(den > 100, `only ${den} den meetings`);
+});
+
+test('lesson plans: one step for every Say line in the plan files, and every step has its Say, How and Tip', () => {
+  const md = planMd().join('\n');
+  // "- Say:" and the one "- Say (to the younger den):" (AoL Race Time) — counted, not written down.
+  const says = (md.match(/^ *- Say(?: \([^)\n]*\))?:/gm) || []).length;
+  const plain = (md.match(/^ *- Say:/gm) || []).length;
+  const steps = allSteps(plansOut().data);
+  eq(steps.length, says, 'steps vs Say lines');
+  eq(steps.filter((s) => !s.sayTo).length, plain, 'steps without a "to …" vs plain "- Say:" lines');
+  ok(says > 800, `only ${says} Say lines`);
+  steps.forEach((s, i) => {
+    ok(typeof s.say === 'string' && s.say && typeof s.tip === 'string' && s.tip, `step ${i} (${s.title}) has no Say or Tip`);
+    ok(Array.isArray(s.how) && (s.how.length || (s.options || []).length >= 2), `step ${i} (${s.title}) has no How`);
+    ok(Array.isArray(s.done) && Array.isArray(s.setup) && typeof s.reqs === 'string', `step ${i} (${s.title}) reqs`);
+  });
+  // The "(set-up)" marker becomes the setup list: "3; 1 (set-up)" is done 3, sets up 1.
+  eq(lessons.parseReqs('3; 1 (set-up)'), { done: ['3'], setup: ['1'] }, '3; 1 (set-up)');
+  eq(lessons.parseReqs('6; 4, 8 (set-up)'), { done: ['6'], setup: ['4', '8'] }, '6; 4, 8 (set-up)');
+  eq(lessons.parseReqs('none'), { done: [], setup: [] }, 'none');
+  // Leader's-choice options inside a step are option blocks the leader picks between.
+  const swim = plansOut().data.plans['Lion :: Time to Swim'].meetings[0].steps[1];
+  eq(swim.options.map((o) => o.label), ['Option A · Lion Safe Swim Defense', 'Option B · Lifeguard guest'], 'Time to Swim step 2');
+  eq(swim.options.map((o) => o.how.map((h) => h.n)), [[1, 2, 3], [1, 2, 3]], 'each option numbered from 1');
+});
+
+test('lesson plans: each required adventure has a plan, and every plan key is an ADVENTURES name', () => {
+  const d = plansOut().data;
+  const keys = Object.keys(d.plans);
+  for (const den of Object.keys(ADV_DATA)) {
+    eq(ADV_DATA[den].required.length, 6, den + ' required');
+    ADV_DATA[den].required.forEach((a) => ok(d.plans[den + ' :: ' + a], `no plan for ${den} :: ${a}`));
+  }
+  keys.forEach((k) => {
+    const p = d.plans[k];
+    eq(k, p.den + ' :: ' + p.adventure, 'key');
+    const a = ADV_DATA[p.den];
+    ok(a && (a.required.indexOf(p.adventure) >= 0 || a.electives.indexOf(p.adventure) >= 0), `${k} is not in ADVENTURES`);
+  });
+  // Each spelling fix is still needed: its heading is in the markdown, its target in ADVENTURES.
+  const md = planMd().join('\n');
+  for (const from of Object.keys(lessons.NAME_FIXES)) {
+    ok(new RegExp('^## ' + from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ' \\(', 'm').test(md), `NAME_FIXES "${from}" is no longer in the markdown`);
+    ok(Object.keys(ADV_DATA).some((den) => ADV_DATA[den].required.concat(ADV_DATA[den].electives).indexOf(lessons.NAME_FIXES[from]) >= 0),
+      `NAME_FIXES "${from}" → "${lessons.NAME_FIXES[from]}", which ADVENTURES does not have`);
+  }
+  // Range electives have no den meetings; where they are done is kept.
+  const arch = d.plans['Wolf :: Archery'];
+  eq(arch.meetings.length, 0, 'Wolf Archery meetings');
+  ok(arch.done.some((x) => x.at === 'a council range' && /Reqs 1–8/.test(x.text)), 'Wolf Archery lost "Done at a council range"');
+  ok(!d.plans['Lion :: BB Gun'] && d.plans['Tiger :: BB Gun'] && d.plans['Arrow of Light :: BB Gun'], 'BB Gun is Tiger to AoL');
+});
+
+test('lesson plans: every plan has https sources, an official scouting.org page and a verified date', () => {
+  const d = plansOut().data;
+  for (const k of Object.keys(d.plans)) {
+    const p = d.plans[k];
+    ok(Array.isArray(p.sources) && p.sources.length, k + ' has no sources');
+    p.sources.forEach((u) => ok(/^https:\/\/[^\s<>"]+$/.test(u) && !/[.,;:)]$/.test(u), `${k}: source "${u}"`));
+    ok(/^https:\/\/(www\.)?scouting\.org\//.test(p.official) && p.sources[0] === p.official, k + ' official page');
+    ok(/^20\d\d-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(p.verified), `${k} verified "${p.verified}"`);
+    ok(p.summary && p.reqs.length && Array.isArray(p.safety) && p.safety.length, k + ' summary, reqs or safety notes');
+  }
+});
+
+test('lesson plans: no control character, no HTML tag, [date] kept, and plans.json stays under its cap', () => {
+  const { json, data } = plansOut();
+  const strs = allStrings(data);
+  strs.forEach((t) => {
+    ok(!/[\u0000-\u001f\u007f]/.test(t), 'a control character in: ' + JSON.stringify(t.slice(0, 60)));
+    ok(!/<[A-Za-z!?/]/.test(t), 'an HTML tag in: ' + t.slice(0, 60));
+  });
+  ok(strs.some((t) => /\[date\]/.test(t)), 'the [date] placeholders were lost');
+  ok(strs.some((t) => /\*\*[^*]+\*\*/.test(t)), 'the **bold** markdown was lost');
+  const bytes = Buffer.byteLength(json, 'utf8');
+  ok(bytes <= lessons.PLANS_MAX_BYTES, `plans.json is ${bytes} bytes, over PLANS_MAX_BYTES ${lessons.PLANS_MAX_BYTES}`);
+  eq(lessons.PLANS_MAX_BYTES, 1340000, 'the cap (1,072,908 bytes measured 2026-09-30, plus about 25%)');
+  // The build serves exactly these bytes, and --verify refuses any others.
+  siteBuild();
+  ok(siteFile('preview', 'plans.json') === json && siteFile('production', 'plans.json') === json, 'the built plans.json');
+  const t = join(SITE_TMP, 'plans-tampered');
+  rmSync(t, { recursive: true, force: true }); cpSync(siteDir('production'), t, { recursive: true });
+  writeFileSync(join(t, 'plans.json'), json.replace('"Bobcat"', '"Bobcat!"'));
+  ok(/plans\.json/.test(throwsBuild(() => site.verify({ dir: t, target: 'production' }), 'a changed plans.json')), 'a changed plans.json');
+  rmSync(join(t, 'plans.json'));
+  ok(/exactly/.test(throwsBuild(() => site.verify({ dir: t, target: 'production' }), 'no plans.json')), 'no plans.json');
+});
+
+test("lesson plans: the CSP lets every target fetch its own plans.json ('self' in connect-src)", () => {
+  for (const b of site.BACKENDS) ok(site.connectFor(b)[0] === "'self'", `BACKEND ${b} has no 'self'`);
+  eq(site.PREVIEW_CONNECT[0], "'self'", 'the preview');
+  siteBuild();
+  for (const target of site.TARGETS) {
+    const d = site.cspDirectives(site.cspOf(siteFile(target, '_headers')));
+    ok(d['connect-src'].indexOf("'self'") >= 0, target + ' cannot fetch plans.json');
+  }
+  // The switch to the pack's own server keeps it too (checked on a built page there, above).
+  ok(site.connectFor('api').indexOf('https://firestore.googleapis.com') < 0, "'api' reaches Firestore");
+});
+
+atest('lesson plans: loadAdventurePlans fetches once, fails kindly, and does not retry in a storm', async () => {
+  const mk = (answer) => {
+    const ctx = vm.createContext({ Promise, Error, now: 1000, calls: 0 });
+    vm.runInContext(`var Date = { now: function () { return now; } };
+      function fetch(url, init) { calls++; lastUrl = url; lastInit = init; return answer(); }
+      var lastUrl, lastInit;` + ['ADVENTURE_PLANS_URL', 'ADVENTURE_PLANS_FORMAT', 'ADVENTURE_PLANS_RETRY_MS', 'adventurePlansLoad', 'loadAdventurePlans'].map(decl).join('\n'), ctx);
+    ctx.answer = answer;
+    return ctx;
+  };
+  const good = { format: 1, guide: 'g', plans: { 'Wolf :: Bobcat': {} } };
+  const okCtx = mk(() => Promise.resolve({ ok: true, json: () => Promise.resolve(good) }));
+  const [a, b] = await Promise.all([vm.runInContext('loadAdventurePlans()', okCtx), vm.runInContext('loadAdventurePlans()', okCtx)]);
+  eq([okCtx.calls, a === b, a.format, okCtx.lastUrl, okCtx.lastInit.credentials], [1, true, 1, 'plans.json', 'same-origin'], 'a good load');
+  await vm.runInContext('loadAdventurePlans()', okCtx);
+  eq(okCtx.calls, 1, 'a second visit to a plan fetched again');
+  const friendly = /^The lesson plans couldn’t be loaded\. Check the connection and try again in a minute\.$/;
+  const refused = async (ctx, what) => {
+    try { await vm.runInContext('loadAdventurePlans()', ctx); } catch (e) { ok(friendly.test(e.message), `${what}: "${e.message}"`); return; }
+    throw new Error(what + ' resolved');
+  };
+  // Offline; a 404; Pages answering a missing file with index.html (not JSON); an older file's shape.
+  for (const [what, answer] of [
+    ['offline', () => Promise.reject(new TypeError('Failed to fetch'))],
+    ['a 404', () => Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve(good) })],
+    ['index.html instead', () => Promise.resolve({ ok: true, json: () => Promise.reject(new SyntaxError('Unexpected token <')) })],
+    ['another format', () => Promise.resolve({ ok: true, json: () => Promise.resolve({ format: 2, plans: {} }) })]]) {
+    await refused(mk(answer), what);
+  }
+  const off = mk(() => Promise.reject(new TypeError('Failed to fetch')));
+  await refused(off, 'offline');
+  await refused(off, 'offline again');
+  await refused(off, 'offline a third time');
+  eq(off.calls, 1, 'retries within the minute');
+  off.now += 60000;
+  off.answer = () => Promise.resolve({ ok: true, json: () => Promise.resolve(good) });
+  vm.runInContext('fetch = function () { calls++; return answer(); };', off);
+  eq((await vm.runInContext('loadAdventurePlans()', off)).format, 1, 'the retry after a minute');
+  eq(off.calls, 2, 'fetches after the minute');
+});
+
+test('lesson plans: leaders only — never in the pack record, the parent view, the digest or the .ics', () => {
+  const names = /loadAdventurePlans|adventurePlansLoad|ADVENTURE_PLANS_|plans\.json/;
+  for (const f of ['normalizeState', 'buildParentView', 'monthlyDigest', 'monthlyDigestLeaders', 'buildICS', 'parentEventICS',
+    'renderParentApp', 'writeParentView']) {
+    ok(!names.test(codeOnly(slice(f))), f + ' reads the lesson plans');
+  }
+  // Nothing but the loader touches its cache or its URL.
+  let rest = SCRIPT.replace(slice('loadAdventurePlans'), '');
+  for (const v of ['ADVENTURE_PLANS_URL', 'adventurePlansLoad']) rest = rest.replace(decl(v), '');
+  ok(!/adventurePlansLoad|ADVENTURE_PLANS_URL/.test(codeOnly(rest)), 'something else touches the loader’s cache or URL');
+  // A runtime check: a Wolf den meeting on Bobcat publishes none of the plan's words.
+  // Compared by the opening 40 characters of each longer string, so a piece of one is caught too.
+  const plan = plansOut().data.plans['Wolf :: Bobcat'];
+  const words = allStrings(plan.meetings).concat([plansOut().data.guide])
+    .map((t) => t.replace(/^["“*\s]+/, '').slice(0, 40)).filter((t) => t.length >= 30);
+  ok(words.length > 50, 'too few plan strings to look for');
+  const ctx = pvCtx(`state.events.push({ id: 'e9', kind: 'den', den: 'Wolf', date: '2026-10-13', time: '18:30', adventure: 'Bobcat', note: 'Church hall' });`);
+  const pv = JSON.stringify(vm.runInContext('buildParentView(state, { showStandings: false })', ctx));
+  ok(/Den meeting — Wolf/.test(pv) && /Church hall/.test(pv), 'the Wolf den meeting did not publish, so this proves nothing');
+  words.forEach((w) => ok(pv.indexOf(w) < 0, 'plan text in the parent view: ' + w));
 });
 
 /* ---------------- report ---------------- */

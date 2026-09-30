@@ -16,9 +16,11 @@ Pages. Creating the Cloudflare account, the Pages project or the zone changes no
 ## What changes, and what doesn't
 
 - **What is served.** GitHub Pages serves every file in the repo: SETUP.md, the design docs,
-  `test/`. The Cloudflare site serves exactly two files, `index.html` and `_headers`, written
-  by `scripts/build-site.mjs`. The repo is still public, so anything committed is still public
-  on GitHub; it just isn't on the website.
+  `test/`. The Cloudflare site serves exactly three files, `index.html`, `_headers` and
+  `plans.json` (the den lesson plans, made from `docs/lesson-plans/*.md`), written by
+  `scripts/build-site.mjs`. The repo is still public, so anything committed is still public
+  on GitHub; it just isn't on the website. (GitHub Pages has no `plans.json`, because it is
+  built, not committed: there a leader who opens a lesson plan is told it couldn't be loaded.)
 - **When it changes.** Cloudflare's site changes only when someone runs the **website**
   workflow by hand, and production only from `main`, after you approve; pushing or merging
   never deploys there. **GitHub Pages is different:** until you turn it off (cutover step 6),

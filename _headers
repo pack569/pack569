@@ -11,11 +11,13 @@
 #                the build refuses a page that has one.
 #   style-src    'unsafe-inline': the page is one <style> block and hundreds of style="…".
 #   img-src      the page's own images, data: and blob: (downloads, QR codes).
-#   connect-src  what the page's BACKEND needs. 'firestore' (production today): Firestore,
-#                Firebase Auth and open-meteo weather. 'api' (staging, and production once
-#                the pack moves): 'self' for this site's /api, Firebase Auth and weather —
-#                no Firestore host at all. Preview: open-meteo only, so even a stray config
-#                could not reach the live pack.
+#   connect-src  'self' on every target, for plans.json (the den lesson plans, fetched only
+#                when a leader opens one), plus what the page's BACKEND needs. 'firestore'
+#                (production today): Firestore, Firebase Auth and open-meteo weather. 'api'
+#                (staging, and production once the pack moves): 'self' also reaches this
+#                site's /api; Firebase Auth and weather — no Firestore host at all. Preview:
+#                'self' and open-meteo only, no Google origin, so even a stray config could
+#                not reach the live pack.
 #                The calendar-from-a-link fetch is deliberately not allowed; the dialog
 #                falls back to "paste the calendar text instead". See docs/cloudflare-setup.md.
 #   frame-src    production and staging: the Firebase authDomain and apis.google.com (sign-in).

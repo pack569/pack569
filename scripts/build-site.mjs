@@ -4,11 +4,13 @@
 // The app has no build step in the authoring sense: index.html IS the app. This script
 // exists for three reasons, and all three are boundaries rather than tooling:
 //
-//   1. WHAT IS SERVED. The repo is public, but the SITE serves only an allowlist: index.html
-//      and the generated _headers. Not SETUP.md, not the design docs, not test/, not .claude/,
-//      not CNAME, and never the untracked .index.pre-*.html backups sitting in a working copy.
-//      Anything that is not on ALLOWLIST cannot reach the output, because nothing is copied
-//      by pattern — each file is written by name.
+//   1. WHAT IS SERVED. The repo is public, but the SITE serves only an allowlist: index.html,
+//      the generated _headers, and plans.json, the den lesson plans that
+//      scripts/lesson-plans.mjs generates from docs/lesson-plans/*.md (the page fetches it only
+//      when a leader opens a plan). Not SETUP.md, not the design docs or the plan markdown,
+//      not test/, not .claude/, not CNAME, and never the untracked .index.pre-*.html backups
+//      sitting in a working copy. Anything that is not on ALLOWLIST cannot reach the output,
+//      because nothing is copied by pattern — each file is written by name.
 //   2. WHICH PACK A PREVIEW CAN REACH. A preview build rewrites FIREBASE_CONFIG and
 //      PACK_DOC_ID to null, so a preview is device-only and cannot read or write the live
 //      pack record, whoever opens it. The live values are then searched for in the output
@@ -41,11 +43,12 @@ import { createHash } from 'node:crypto';
 import { dirname, join, resolve, relative, isAbsolute, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
+import { plansJson, PlanError } from './lesson-plans.mjs';
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const TARGETS = ['production', 'staging', 'preview'];
 // Every file the site serves. Adding one here is a decision about what the public can fetch.
-export const ALLOWLIST = ['_headers', 'index.html'];
+export const ALLOWLIST = ['_headers', 'index.html', 'plans.json'];
 
 // The two declarations, exactly as index.html writes them (2-space indent, one per file).
 // A comment line in the file quotes `var FIREBASE_CONFIG = { … }` too; the `^  var` anchor is
@@ -73,6 +76,8 @@ const WEATHER = ['https://api.open-meteo.com', 'https://archive-api.open-meteo.c
 // www.googleapis.com is a guess at what sign-in may call; drop it after the first real
 // sign-in test on pack569.pages.dev if the Network tab shows nothing going there.
 // BACKEND 'api': Google sign-in and this site's own /api ('self'), and no Firestore host at all.
+// Every target also has 'self' for plans.json, the lesson plans the page fetches from its own
+// site (loadAdventurePlans). On a Firestore page 'self' reaches nothing else the page uses.
 const AUTH_CONNECT = ['https://identitytoolkit.googleapis.com', 'https://securetoken.googleapis.com', 'https://www.googleapis.com'];
 const FIRESTORE_CONNECT = ['https://firestore.googleapis.com'];
 const GOOGLE_CONNECT = FIRESTORE_CONNECT.concat(AUTH_CONNECT);
@@ -184,8 +189,10 @@ export function transform(html, target) {
 
 // What the page may connect to, for a signed-in build with this BACKEND.
 export function connectFor(backend) {
-  return backend === 'api' ? ["'self'"].concat(AUTH_CONNECT, WEATHER) : GOOGLE_CONNECT.concat(WEATHER);
+  return ["'self'"].concat(backend === 'api' ? AUTH_CONNECT : GOOGLE_CONNECT, WEATHER);
 }
+// A preview's: its own site (plans.json) and the weather, and no Google origin at all.
+export const PREVIEW_CONNECT = ["'self'"].concat(WEATHER);
 // The CSP origins for a target. authDomain comes from the config, not from this file.
 export function cspSources(target, live) {
   if (target === 'production' || target === 'staging') {
@@ -195,7 +202,7 @@ export function cspSources(target, live) {
       FRAME: ['https://' + live.config.authDomain, 'https://apis.google.com'].join(' ')
     };
   }
-  return { SCRIPT_ORIGINS: '', CONNECT: WEATHER.join(' '), FRAME: "'none'" };
+  return { SCRIPT_ORIGINS: '', CONNECT: PREVIEW_CONNECT.join(' '), FRAME: "'none'" };
 }
 
 // Fill the _headers template. Comment lines are dropped from the output; they are for the
@@ -263,8 +270,18 @@ function prepareOut(out, root) {
   return o;
 }
 
+// plans.json for this commit: the lesson plans parsed from docs/lesson-plans. A plan the parser
+// cannot read stops the build with its file and line, like any other build error.
+function plansFor(root) {
+  try { return plansJson({ root }); } catch (e) {
+    if (e instanceof PlanError) fail('the lesson plans: ' + e.message);
+    throw e;
+  }
+}
+
 export function build({ target, out = join(ROOT, '_site'), root = ROOT } = {}) {
   const src = readFileSync(join(root, 'index.html'), 'utf8');
+  const plans = plansFor(root);
   const hazards = cspHazards(src);
   if (hazards.length) {
     fail('index.html has what the CSP would block: ' +
@@ -276,6 +293,7 @@ export function build({ target, out = join(ROOT, '_site'), root = ROOT } = {}) {
   const dir = prepareOut(out, root);
   writeFileSync(join(dir, 'index.html'), t.html);
   writeFileSync(join(dir, '_headers'), headers);
+  writeFileSync(join(dir, 'plans.json'), plans);
   return verify({ dir, target, root });
 }
 
@@ -308,6 +326,8 @@ export function verify({ dir, target, root = ROOT }) {
   // Byte-for-byte what this commit's index.html becomes for this target.
   const expected = transform(readFileSync(join(root, 'index.html'), 'utf8'), target);
   if (html !== expected.html) fail(`index.html is not this commit's ${target} build`);
+  // The same plans for every target, byte for byte what this commit's markdown makes.
+  if (readFileSync(join(dir, 'plans.json'), 'utf8') !== plansFor(root)) fail('plans.json is not this commit’s lesson plans');
   if (target === 'preview') {
     for (const m of liveMarkers(expected.live)) {
       if (html.indexOf(m.value) >= 0 || headers.indexOf(m.value) >= 0) fail(`the preview contains the live ${m.what}`);
@@ -332,12 +352,13 @@ export function verify({ dir, target, root = ROOT }) {
   if (target === 'preview') {
     if (google) fail('the preview CSP allows a Google or Firebase origin');
     if (!/frame-src 'none'/.test(csp)) fail("the preview CSP must have frame-src 'none'");
+    if ((directives['connect-src'] || []).join(' ') !== PREVIEW_CONNECT.join(' ')) fail("the preview CSP's connect-src is not its own site and the weather");
     if (!noindex) fail('the preview must send X-Robots-Tag: noindex');
   } else {
     const want = [live.sdkBase, SIGN_IN_SCRIPT, 'https://' + live.config.authDomain];
     for (const o of want) if (csp.indexOf(o) < 0) fail(`the ${target} CSP is missing ${o}`);
     // connect-src is exactly what this page's BACKEND needs: Firestore only for 'firestore',
-    // this site's own /api only for 'api'.
+    // Firebase Auth and no Firestore for 'api'; 'self' (plans.json, and /api) for both.
     if ((directives['connect-src'] || []).join(' ') !== connectFor(live.backend).join(' ')) {
       fail(`the ${target} CSP's connect-src is not what BACKEND '${live.backend}' needs`);
     }

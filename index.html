@@ -9900,6 +9900,45 @@
     var hit = c.required.concat(c.electives).find(function (x) { return x.key === key; });
     return hit ? hit.label : '';
   }
+  // DEN LESSON PLANS (docs/lesson-plans/*.md). They are not in this page: they are about 1 MB of
+  // text, so scripts/build-site.mjs parses them into plans.json beside index.html, and this
+  // fetches it only when a leader opens a plan. A parent's phone never downloads it.
+  // { format, guide, plans: { 'Wolf :: Bobcat': { meetings: [{ steps: […] }], … } } }, keyed like
+  // the runs (den + ' :: ' + adventure, as ADVENTURES spells it). The text is markdown —
+  // **bold**, [date] placeholders — and whatever shows it escapes it first (esc()).
+  // ⚠ LEADERS ONLY. normalizeState and the state loader never read it, and nothing from a plan
+  // goes into buildParentView, the digest or the .ics export (the harness checks all three).
+  var ADVENTURE_PLANS_URL = 'plans.json';
+  var ADVENTURE_PLANS_FORMAT = 1;
+  // A failed load is kept for a minute: a leader tapping again, or a screen asking for several
+  // plans at once, gets the same answer instead of a request each time.
+  var ADVENTURE_PLANS_RETRY_MS = 60000;
+  var adventurePlansLoad = null;
+  // One fetch per visit. Resolves with the whole file; rejects with an Error whose message can
+  // be shown to the leader as it is.
+  function loadAdventurePlans() {
+    var held = adventurePlansLoad;
+    if (held && !(held.failedAt && Date.now() - held.failedAt >= ADVENTURE_PLANS_RETRY_MS)) return held.promise;
+    var load = { failedAt: 0, promise: null };
+    load.promise = new Promise(function (resolve) {
+      if (typeof fetch !== 'function') throw new Error('no-fetch');
+      resolve(fetch(ADVENTURE_PLANS_URL, { credentials: 'same-origin' }));
+    }).then(function (r) {
+      if (!r || !r.ok) throw new Error('http');
+      // Pages has no 404 page: a missing plans.json answers with index.html, and .json() refuses it.
+      return r.json();
+    }).then(function (j) {
+      if (!j || j.format !== ADVENTURE_PLANS_FORMAT || !j.plans || typeof j.plans !== 'object') throw new Error('shape');
+      return j;
+    }).catch(function () {
+      load.failedAt = Date.now();
+      throw new Error('The lesson plans couldn’t be loaded. Check the connection and try again in a minute.');
+    });
+    // Handled here too, so a failure nobody has asked about yet is not a console error.
+    load.promise.catch(function () {});
+    adventurePlansLoad = load;
+    return load.promise;
+  }
   // Short column headers for the grid; full names live in the title attr / aria-label.
   var ADV_SHORT = {
     'Bobcat': 'Bobcat', 'King of the Jungle': 'Jungle', "Lion's Pride": 'Pride', 'Mountain Lion': 'Mtn Lion',
