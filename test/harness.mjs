@@ -13095,7 +13095,7 @@ test('E1: due dates and family statements are NEVER published', () => {
     if (m) stFn = m[1] || m[2];
     if (/state\.statements/.test(line.replace(/\/\/.*$/, ''))) stUsers.add(stFn);
   });
-  eq([...stUsers].sort(), ['handleAction', 'mergeRemoteAppendOnly', 'renderReconcile', 'rolloverYear'], 'something new writes or reads state.statements');
+  eq([...stUsers].sort(), ['handleAction', 'mergeRemoteAppendOnly', 'renderBankStatementSheet', 'renderReconcile', 'rolloverYear', 'statementsCardHtml'], 'something new writes or reads state.statements');
   ok(/state\.statements = \[\];/.test(slice('rolloverYear')), 'close-out does not clear the bank statements');
   ok(!/statements/.test(bpv), 'buildParentView reads the bank statements');
   ok(/each charge's due date \(`dueDate`\), the pack's dues date \(`budget\.duesDueDate`\) and every\s+\/\/\s+family statement \(E1\)/.test(SCRIPT), 'the banner does not exclude them');
@@ -18924,7 +18924,9 @@ test('C3: nothing outside the book’s own plumbing reads the voided rows, so no
   // itself no longer sets anything aside.)
   eq([...users].sort(), ['dropScout', 'freshState', 'handleAction', 'isStateEmpty', 'keepLostVoids', 'ledgerAsideListHtml', 'ledgerAsideSettle', 'ledgerEntryLabel',
     'ledgerReverseSlot', 'ledgerUnvoidRow',
-    'ledgerVoidRow', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderLedger', 'renderLedgerEntries', 'restoreGone', 'rolloverYear'], 'who reads the voided rows');
+    // Phase 3, C5 — renderBankStatementSheet names an entry on a statement voided since; it totals nothing from it.
+    'ledgerVoidRow', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderBankStatementSheet', 'renderLedger', 'renderLedgerEntries', 'restoreGone',
+    'rolloverYear'], 'who reads the voided rows');
   // In handleAction: the void handlers, del-scout's log line, and (treasurer sign-off on C3) the voided CSV only.
   // Security re-check of option B (A) — and the void's Undo, asking whether the row it would put back is still voided.
   const h = slice('handleAction').split('\n').filter((l) => /ledgerAside/.test(l) && !/^\s*\/\//.test(l));
@@ -22761,6 +22763,93 @@ atest('C5, api: a statement signed on one device survives another’s save, and 
   await a.poll();
   const end = ['2026-08-31', [['st-2026-08-31', false, false], ['st-2026-09-30-A', true, true]]];
   eq([c5Of(server()), c5Of(a.get('state')), c5Of(b.get('state'))], [end, end, end], 'the two devices');
+});
+
+// Phase 3, C5 — the statements card and the printout, on a sandbox of the page's own renderers.
+const C5_VIEW_FNS = ['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'fmtDateYear', 'statementDay', 'statementByOn', 'statementLegacyLine', 'statementSheetData',
+  'statementReopened', 'statementReviewed', 'statementAdded', 'entrySignedCents', 'statementsCardHtml', 'statementBlockHtml', 'renderBankStatementSheet'];
+// Sep 30: r1 +$25 cleared on it, u1 −$84 outstanding; the opening $100 and q1 +$500 cleared before.
+const C5_SEP = () => ({ id: 'st-2026-09-30-a', date: '2026-09-30', statementCents: 62500, openingCents: 10000, clearedCents: 62500, bookCents: 54100,
+  ticked: ['r1'], outstanding: ['u1'], by: 'Pat Treasurer', byUid: 'u1', at: '2026-10-02T15:00:00.000Z' });
+function c5View(statements, more) {
+  const ctx = vm.createContext({});
+  vm.runInContext(`${C5_VIEW_FNS.map(slice).join('\n')}
+    ${decl('FLEUR')}
+    var state = { packName: 'Pack 569', ledger: ${JSON.stringify(C2_LEDGER())}, ledgerAside: [],
+      book: { reconciledThrough: '2026-09-30' }, statements: ${JSON.stringify(statements)} };
+    ${more || ''}`, ctx);
+  return ctx;
+}
+const c5Text = (html) => html.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+
+test('C5: the printout adds up — earlier statements, this one, the difference, what is outstanding', () => {
+  const x = sandbox(['statementSheetData', 'entrySignedCents']);
+  const rows = C2_LEDGER().concat([{ id: 'v9', off: 'void', date: '2026-09-02', description: 'Typo', amountCents: 100, direction: 'in' }]);
+  const d = JSON.parse(JSON.stringify(x.statementSheetData(Object.assign(C5_SEP(), { ticked: ['r1', 'v9', 'gone'] }), rows)));
+  eq(d.ticked.map((l) => [l.id, l.what, l.cents]), [['gone', 'An entry no longer in the book', 0], ['v9', 'Typo (voided since)', 100], ['r1', 'Dues', 2500]], 'the entries, by date');
+  eq([d.tickedSum, d.earlierCents, d.outstandingCents, d.differenceCents, d.outstanding.map((l) => [l.id, l.cents])],
+    [2600, 62500 - 10000 - 2600, 54100 - 62500, 0, [['u1', -8400]]], 'the figures');
+  eq(JSON.parse(JSON.stringify(x.statementSheetData({ id: 'st-2026-08-31', date: '2026-08-31', statementCents: null, openingCents: null, clearedCents: null,
+    bookCents: null, ticked: null, legacy: true }, rows))), { ticked: null, outstanding: null, tickedSum: 0, earlierCents: null, outstandingCents: null, differenceCents: null },
+    'a legacy statement has no figures');
+});
+
+test('C5: Money · Ledger lists the statements newest first, each with its printout, one page, with the reviewer’s line', () => {
+  const reopened = Object.assign(C5_SEP(), { id: 'st-2026-09-30-z', at: '2026-10-01T00:00:00.000Z',
+    reopenedAt: '2026-10-02T09:00:00.000Z', reopenedBy: 'Alex', reopenedByUid: 'u3', reopenWhy: 'A deposit was ticked twice' });
+  const sep = Object.assign(C5_SEP(), { supersedes: 'st-2026-09-30-z', reviewedAt: '2026-10-03T00:00:00.000Z', reviewedBy: 'Sam', reviewedByUid: 'u2' });
+  const x = c5View([C5_LEGACY(), reopened, sep]);
+  const card = c5Text(vm.runInContext('statementsCardHtml()', x));
+  eq(card, 'Statements reconciled Each statement is kept as it was when it was marked reconciled, newest first. ' +
+    'Statement through Wed, Sep 30 reviewed Statement balance $625.00 · ticked balance $625.00 · difference $0.00 ' +
+    '1 entry cleared on it, 1 outstanding. Reconciled by Pat Treasurer on Oct 2. Reviewed by Sam on Oct 3. Printout ' +
+    'Statement through Wed, Sep 30 reopened Statement balance $625.00 · ticked balance $625.00 · difference $0.00 ' +
+    '1 entry cleared on it, 1 outstanding. Reconciled by Pat Treasurer on Oct 1. Reopened by Alex on Oct 2: “A deposit was ticked twice”. Reconciled again by Pat Treasurer on Oct 2. Printout ' +
+    'Statement through Mon, Aug 31 Reconciled through Aug 31 by Sam on Sep 1. Recorded before statements were kept, so the statement balance wasn’t saved. Printout',
+    'the card');
+  ok(/data-act="st-print:st-2026-09-30-a"/.test(vm.runInContext('statementsCardHtml()', x)), 'no printout button');
+  eq(c5Text(vm.runInContext('statementsCardHtml()', c5View([]))),
+    'Statements reconciled None yet. When the ticked entries match a statement, mark it reconciled above and it is kept here.', 'none yet');
+  // A standing statement dated after the lock (a backup restored to before it) says it is not in force.
+  ok(/<span class="pill">not in force<\/span>/.test(vm.runInContext("state.book.reconciledThrough = '2026-08-31'; statementsCardHtml()", x)), 'not in force');
+  // The printout.
+  const sheet = (id) => c5Text(vm.runInContext(`renderBankStatementSheet({ kind: 'bank-statement', id: '${id}' })`, x));
+  const s = sheet('st-2026-09-30-a');
+  eq(s.replace(/^.*?Pack 569/, 'Pack 569'), 'Pack 569 — Bank statement reconciliation Statement ending September 30, 2026 ' +
+    'Reconciliation Book opening balance $100.00 Cleared on earlier statements $500.00 Cleared on this statement (1) $25.00 Ticked balance $625.00 ' +
+    'Statement ending balance $625.00 Difference (should be $0.00) $0.00 Outstanding, net (1) -$84.00 Book balance through Sep 30 $541.00 ' +
+    'Cleared on this statement Cleared on this statement Date Entry Ref Amount Sep 5 Dues +$25.00 ' +
+    'Outstanding on Sep 30 Outstanding on Sep 30 Date Entry Ref Amount Sep 10 Pinewood trophies 101 −$84.00 ' +
+    'Reconciled by Pat Treasurer on October 2, 2026. Reviewed by Sam on October 3, 2026.', 'the printout');
+  ok(/^&larr; Back Print \/ Save PDF/.test(s), 'the buttons: ' + s.slice(0, 40));
+  ok(/Reopened by Alex on October 2, 2026: “A deposit was ticked twice”\. This statement is no longer in force\./.test(sheet('st-2026-09-30-z')), 'a reopened one');
+  ok(/Reviewed by: _+ Date: _+$/.test(sheet('st-2026-09-30-z')), 'the reviewer’s line to sign');
+  eq(sheet('st-2026-08-31').replace(/^.*?September 30|^.*?August 31, 2026 /, ''), 'Reconciled through Aug 31 by Sam on Sep 1. Recorded before statements were kept, ' +
+    'so the statement balance wasn’t saved. Which entries were ticked on it wasn’t recorded either. Reviewed by: ______________________________ Date: ______________', 'a legacy one');
+  eq(vm.runInContext("renderBankStatementSheet({ id: 'nope' })", x), '', 'a statement not there');
+  // Every value is escaped.
+  const evil = Object.assign(C5_SEP(), { id: 'st-e', by: '<b>x</b>', reopenedAt: 'T', reopenedBy: '<i>', reopenWhy: '<img src=x>' });
+  const ev = c5View([evil]);
+  ok(!/<b>x|<i>|<img/.test(vm.runInContext('statementsCardHtml()', ev) + vm.runInContext("renderBankStatementSheet({ id: 'st-e' })", ev)), 'a value is not escaped');
+  // Wired: under Reconcile, the button opens the sheet, and the sheet is an overlay kind.
+  ok(/renderReconcile\(\) \+ statementsCardHtml\(\)/.test(slice('renderLedger')), 'the card is not under Reconcile');
+  ok(/if \(act\.indexOf\('st-print:'\) === 0\) \{ ui\.overlay = \{ kind: 'bank-statement', id: act\.slice\('st-print:'\.length\) \}; render\(\); return; \}/.test(slice('handleAction')), 'the printout button');
+  ok(/if \(o\.kind === 'bank-statement'\) return renderBankStatementSheet\(o\);/.test(SCRIPT), 'the overlay');
+});
+
+test('C5: parents never see a statement; the printout is the only statement action left open while the reload gate holds', () => {
+  const bpv = codeOnly(BPV());
+  ok(!/statement(s|Id|New|Sheet|Block|Legacy|Reopen|Review|Balance|InForce|LockBack)|st-print|bank-statement/.test(bpv), 'buildParentView reads a statement');
+  for (const f of ['renderParentApp', 'renderParentSchedule', 'renderParentStandings', 'renderParentCamping', 'monthlyDigest']) {
+    ok(!/state\.statements|statementsCardHtml|renderBankStatementSheet|bank-statement/.test(codeOnly(slice(f))), f + ' reads a statement');
+  }
+  const pa = /var PARENT_ACTS = \[([^\]]*)\]/.exec(SCRIPT)[1];
+  ok(!/'st-|bank-statement/.test(pa), 'a parent can open a statement');
+  const g = sandbox(['heldActAllowed', 'HELD_ACTS', 'HELD_ACT_PREFIXES', 'PARENT_ACTS', 'GATE_ACTS']);
+  const allowed = (a) => g.heldActAllowed(a);
+  eq(['st-print:st-1', 'st-review:st-1', 'st-reopen:st-1', 'st-reopen-go:st-1', 'st-reopen-cancel', 'st-balance:st-1', 'st-balance-go:st-1',
+    'st-balance-cancel', 'ledger-reconcile-lock'].map(allowed), [true, false, false, false, false, false, false, false, false], 'what is left open while held');
+  eq(['st-reopen-why', 'st-balance'].map((c) => vm.runInContext('HELD_CHANGES', sandbox(['HELD_CHANGES'])).indexOf(c)), [-1, -1], 'a statement’s box is left open while held');
 });
 
 /* ---------------- report ---------------- */

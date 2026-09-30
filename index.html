@@ -9362,6 +9362,54 @@
     if (was) st.supersedes = was.id;
     return { statement: st, rows: rows };
   }
+  // A statement's date, as a record says it: "September 30, 2026". `iso` YYYY-MM-DD. Pure.
+  function fmtDateYear(iso) {
+    var p = String(iso || '').split('-');
+    if (p.length !== 3) return String(iso || '');
+    return new Date(+p[0], +p[1] - 1, +p[2]).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+  }
+  // The day of a stamp's time (an ISO time), as fmtDateShort says it, or ''.
+  function statementDay(at) { return /^\d{4}-\d{2}-\d{2}/.test(String(at || '')) ? fmtDateShort(String(at).slice(0, 10)) : ''; }
+  // " by Pat on Oct 2" for who and when, each left out when not known; `long` for a printout, with
+  // the year ("on October 2, 2026"). Pure.
+  function statementByOn(by, at, long) {
+    var d = long ? (/^\d{4}-\d{2}-\d{2}/.test(String(at || '')) ? fmtDateYear(String(at).slice(0, 10)) : '') : statementDay(at);
+    return (by ? ' by ' + by : '') + (d ? ' on ' + d : '');
+  }
+  // What the printout lists (renderBankStatementSheet): the entries cleared on statement `st` and
+  // the ones outstanding, each { id, date, what, ref, cents (signed) } from `rows` (the counted rows
+  // and the ones set aside, as they are now: an entry voided since says so, and one no longer in the
+  // book says that), in date order; their totals; and what was cleared on earlier statements (the
+  // cleared balance less the opening and this statement's entries), so the page adds up. Figures
+  // the statement does not have (legacy) are null. Pure.
+  function statementSheetData(st, rows) {
+    var byId = Object.create(null);
+    (rows || []).forEach(function (e) { if (e && typeof e.id === 'string' && !byId[e.id]) byId[e.id] = e; });
+    function line(id) {
+      var e = byId[id];
+      if (!e) return { id: id, date: '', what: 'An entry no longer in the book', ref: '', cents: 0 };
+      return { id: id, date: String(e.date || ''), what: (e.description || '(no description)') + (e.off === 'void' ? ' (voided since)' : ''),
+        ref: String(e.ref || ''), cents: entrySignedCents(e) };
+    }
+    function lines(ids) {
+      return Array.isArray(ids) ? ids.map(line).sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0); }) : null;
+    }
+    function sum(l) { return (l || []).reduce(function (t, x) { return t + x.cents; }, 0); }
+    function num(v) { return typeof v === 'number' && isFinite(v); }
+    var ticked = lines(st.ticked), outstanding = lines(st.outstanding), tickedSum = sum(ticked);
+    return {
+      ticked: ticked, outstanding: outstanding, tickedSum: tickedSum,
+      earlierCents: num(st.clearedCents) && num(st.openingCents) && ticked ? st.clearedCents - st.openingCents - tickedSum : null,
+      outstandingCents: num(st.bookCents) && num(st.clearedCents) ? st.bookCents - st.clearedCents : null,
+      differenceCents: num(st.statementCents) && num(st.clearedCents) ? st.statementCents - st.clearedCents : null
+    };
+  }
+  // The treasurer's line for a legacy statement (treasurer review of C1, L1), and the balance added. Pure.
+  function statementLegacyLine(st) {
+    return 'Reconciled through ' + fmtDateShort(st.date) + statementByOn(st.by, st.at) +
+      '. Recorded before statements were kept, so the statement balance wasn’t saved.' +
+      (typeof st.addedCents === 'number' ? ' Its ending balance, ' + fmt(st.addedCents) + ', was added afterwards' + statementByOn(st.addedBy, st.addedAt) + '.' : '');
+  }
   // E1 — this charge's due date, from its line and the line's event as they stand now.
   function chargeDueNow(c) {
     var line = getBudgetLine(c.lineId);
@@ -20156,7 +20204,8 @@
         ? '<button type="button" class="btn small ghost" data-act="ledger-voided-csv">Voided &amp; reversed (CSV)</button>' : '') +
       '</div></div>';
     h += bookCard();
-    return h + (ui.ledgerView === 'reconcile' ? renderReconcile() : renderLedgerEntries());
+    // Phase 3, C5 — and under Reconcile, the statements already reconciled (statementsCardHtml).
+    return h + (ui.ledgerView === 'reconcile' ? renderReconcile() + statementsCardHtml() : renderLedgerEntries());
   }
   // Treasurer review of C2 (L-4) — what a locked row can't have done to it, in one line: the
   // "reconciled period" pill's tooltip, and the line in its Detail (a tooltip never shows on a
@@ -20626,6 +20675,104 @@
         '</div>';
     });
     return h + '</div>';
+  }
+  // PHASE 3, C5 — the statements reconciled, newest first, under the Reconcile view: each as it was
+  // signed (statementNew), what was done to it since, and its printout (st-print). Leaders only, as
+  // the whole ledger is: nothing here is published (buildParentView never reads state.statements).
+  function statementsCardHtml() {
+    var list = (state.statements || []).slice().reverse();
+    var h = '<div class="card"><h2 class="section display">Statements reconciled</h2>';
+    if (!list.length) {
+      return h + '<p class="empty">None yet. When the ticked entries match a statement, mark it reconciled above and it is kept here.</p></div>';
+    }
+    h += '<p class="small muted" style="margin:0 0 4px">Each statement is kept as it was when it was marked reconciled, newest first.</p>';
+    list.forEach(function (st) { h += statementBlockHtml(st, list, String(state.book.reconciledThrough || '')); });
+    return h + '</div>';
+  }
+  // One statement on that card. `list` all of them (a reopened one names the one that replaced it),
+  // `rt` the date the book is reconciled through: a statement standing but dated after it (a backup
+  // restored to before it, say) is not what the book is locked by, and says so.
+  function statementBlockHtml(st, list, rt) {
+    var reop = statementReopened(st), rev = statementReviewed(st);
+    var later = reop ? list.filter(function (x) { return x.supersedes === st.id; })[0] : null;
+    var off = !reop && (!rt || st.date > rt);
+    var n = Array.isArray(st.ticked) ? st.ticked.length : 0, m = Array.isArray(st.outstanding) ? st.outstanding.length : 0;
+    var h = '<div class="block-card" style="margin-top:8px">' +
+      '<div class="spread"><span class="assign-name">Statement through ' + esc(fmtDate(st.date)) + '</span><span>' +
+      (reop ? '<span class="pill">reopened</span>' : '') + (off ? '<span class="pill">not in force</span>' : '') +
+      (rev ? '<span class="pill navy">reviewed</span>' : '') + '</span></div>';
+    if (st.legacy) h += '<p class="small" style="margin:4px 0 0">' + esc(statementLegacyLine(st)) + '</p>';
+    else {
+      h += '<p class="small" style="margin:4px 0 0">Statement balance <span class="money">' + fmt(st.statementCents || 0) + '</span> · ticked balance <span class="money">' +
+        fmt(st.clearedCents || 0) + '</span> · difference <span class="money">' + fmt((st.statementCents || 0) - (st.clearedCents || 0)) + '</span></p>' +
+        '<p class="small muted" style="margin:2px 0 0">' + n + ' entr' + (n === 1 ? 'y' : 'ies') + ' cleared on it, ' + m + ' outstanding. Reconciled' +
+        esc(statementByOn(st.by, st.at)) + '.</p>';
+    }
+    if (rev) h += '<p class="small muted" style="margin:2px 0 0">Reviewed' + esc(statementByOn(st.reviewedBy, st.reviewedAt)) + '.</p>';
+    if (reop) {
+      h += '<p class="small" style="margin:2px 0 0">Reopened' + esc(statementByOn(st.reopenedBy, st.reopenedAt)) +
+        (st.reopenWhy ? ': “' + esc(st.reopenWhy) + '”' : '') + '.' + (later ? ' Reconciled again' + esc(statementByOn(later.by, later.at)) + '.' : '') + '</p>';
+    }
+    h += '<div class="row no-print" style="margin-top:6px">' +
+      '<button type="button" class="btn small ghost" data-act="st-print:' + esc(st.id) + '">Printout</button>' +
+      '</div>';
+    return h + '</div>';
+  }
+  // The one-page printout of a statement reconciled (ui.overlay kind 'bank-statement'), in the
+  // pattern of the family statement: Back, Print / Save PDF (te-print), and a sheet. What it was
+  // signed as, the entries cleared on it and those outstanding (as they read now: statementSheetData),
+  // who reconciled it and when, and the reviewer's line: signed in the app, or blank to sign on paper.
+  function renderBankStatementSheet(o) {
+    var st = (state.statements || []).filter(function (x) { return x.id === o.id; })[0];
+    if (!st) return '';
+    var d = statementSheetData(st, state.ledger.concat(state.ledgerAside || []));
+    function tr(label, cents, strong) {
+      var l = esc(label), v = cents === null ? '—' : fmt(cents);
+      return '<tr><td>' + (strong ? '<strong>' + l + '</strong>' : l) + '</td><td class="num">' + (strong ? '<strong>' + v + '</strong>' : v) + '</td></tr>';
+    }
+    function table(cap, lines, none) {
+      return '<p class="eyebrow" style="margin-top:16px">' + esc(cap) + '</p><div class="tbl-wrap"><table><caption class="visually-hidden">' + esc(cap) + '</caption>' +
+        '<thead><tr><th scope="col">Date</th><th scope="col">Entry</th><th scope="col">Ref</th><th scope="col" class="num">Amount</th></tr></thead><tbody>' +
+        (lines.length ? lines.map(function (l) {
+          return '<tr><td>' + esc(l.date ? fmtDateShort(l.date) : '') + '</td><td>' + esc(l.what) + '</td><td>' + esc(l.ref) + '</td>' +
+            '<td class="num">' + (l.cents < 0 ? '−' : '+') + fmt(Math.abs(l.cents)) + '</td></tr>';
+        }).join('') : '<tr><td colspan="4" class="muted">' + esc(none) + '</td></tr>') +
+        '</tbody></table></div>';
+    }
+    var h = '<div class="overlay" role="dialog" aria-modal="true" aria-label="Statement reconciliation"><div class="overlay-inner">' +
+      '<div class="row no-print" style="margin-bottom:12px">' +
+      '<button type="button" class="btn" data-act="close-overlay">&larr; Back</button>' +
+      '<button type="button" class="btn" data-act="te-print">Print / Save PDF</button></div>' +
+      '<div class="summary-sheet">' +
+      '<div class="row" style="gap:10px;margin-bottom:2px"><span class="fleur">' + FLEUR + '</span>' +
+      '<h1 style="margin:0">' + esc(state.packName || 'Pack') + ' — Bank statement reconciliation</h1></div>' +
+      '<p class="muted small" style="margin:0 0 12px">Statement ending ' + esc(fmtDateYear(st.date)) + '</p>';
+    if (statementReopened(st)) {
+      h += '<p class="small" style="margin:0 0 10px"><strong>' + esc('Reopened' + statementByOn(st.reopenedBy, st.reopenedAt, true) +
+        (st.reopenWhy ? ': “' + st.reopenWhy + '”' : '') + '. This statement is no longer in force.') + '</strong></p>';
+    }
+    if (st.legacy) {
+      h += '<p>' + esc(statementLegacyLine(st)) + '</p><p class="small muted">Which entries were ticked on it wasn’t recorded either.</p>';
+    } else {
+      var n = d.ticked ? d.ticked.length : 0, m = d.outstanding ? d.outstanding.length : 0;
+      h += '<div class="tbl-wrap"><table><caption class="visually-hidden">Reconciliation</caption><tbody>' +
+        tr('Book opening balance', typeof st.openingCents === 'number' ? st.openingCents : null) +
+        tr('Cleared on earlier statements', d.earlierCents) +
+        tr('Cleared on this statement (' + n + ')', d.ticked ? d.tickedSum : null) +
+        tr('Ticked balance', typeof st.clearedCents === 'number' ? st.clearedCents : null, true) +
+        tr('Statement ending balance', typeof st.statementCents === 'number' ? st.statementCents : null, true) +
+        tr('Difference (should be ' + fmt(0) + ')', d.differenceCents, true) +
+        tr('Outstanding, net (' + m + ')', d.outstandingCents) +
+        tr('Book balance through ' + fmtDateShort(st.date), typeof st.bookCents === 'number' ? st.bookCents : null) +
+        '</tbody></table></div>' +
+        table('Cleared on this statement', d.ticked || [], 'None') +
+        table('Outstanding on ' + fmtDateShort(st.date), d.outstanding || [], 'None') +
+        '<p class="small" style="margin:14px 0 0">Reconciled' + esc(statementByOn(st.by, st.at, true)) + '.</p>';
+    }
+    h += statementReviewed(st)
+      ? '<p class="small" style="margin:6px 0 0">Reviewed' + esc(statementByOn(st.reviewedBy, st.reviewedAt, true)) + '.</p>'
+      : '<p class="small" style="margin:18px 0 0">Reviewed by: ______________________________ &nbsp; Date: ______________</p>';
+    return h + '</div></div></div>';
   }
   function renderReconcile() {
     var bk = state.book;
@@ -21153,7 +21300,7 @@
     'copy-archive', 'copy-kickoff', 'makeup-msg', 'copy-makeup-msg', 'join-copy', 'pack-id-copy',
     'export-csv', 'export-ics', 'ledger-log-csv', 'ledger-voided-csv', 'copy-export', 'download-export',
     'export-json', 'sync-download-local'];
-  var HELD_ACT_PREFIXES = ['archive-sheet:', 'tier-due-open:'];
+  var HELD_ACT_PREFIXES = ['archive-sheet:', 'tier-due-open:', 'st-print:'];   // Phase 3, C5: a statement's printout
   // …and the two change fields that only filter what is shown.
   var HELD_CHANGES = ['ledger-search', 'ledger-line-filter'];
   function heldActAllowed(act) {
@@ -25482,6 +25629,8 @@
     if (o.kind === 'day-sheet') return renderDaySheet(o);
     // E1 — one family's statement. Leaders' copy; never published.
     if (o.kind === 'family-statement') return renderFamilyStatement(o);
+    // Phase 3, C5 — a reconciled bank statement's one-page printout. Leaders only; never published.
+    if (o.kind === 'bank-statement') return renderBankStatementSheet(o);
     // Wave A — the printable pack meeting agenda.
     if (o.kind === 'pk-agenda') return renderPackAgendaSheet(o);
     // Wave 19(15b) — full-schedule table, one glance.
@@ -29973,6 +30122,9 @@
       });
       return;
     }
+    // PHASE 3, C5 — a statement's printout (renderBankStatementSheet). Read-only: left open while the
+    // reload gate holds (HELD_ACT_PREFIXES).
+    if (act.indexOf('st-print:') === 0) { ui.overlay = { kind: 'bank-statement', id: act.slice('st-print:'.length) }; render(); return; }
     if (act === 'add-meeting') {
       var newMtg = freshEvent({
         kind: el.dataset.kind === 'pack' ? 'pack' : 'den',
