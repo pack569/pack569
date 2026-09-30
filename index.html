@@ -9560,31 +9560,50 @@
     var d = long ? (/^\d{4}-\d{2}-\d{2}/.test(String(at || '')) ? fmtDateYear(String(at).slice(0, 10)) : '') : statementDay(at);
     return (by ? ' by ' + by : '') + (d ? ' on ' + d : '');
   }
-  // What the printout lists (renderBankStatementSheet): the entries cleared on statement `st` and
-  // the ones outstanding, each { id, date, what, ref, cents (signed) } from `rows` (the counted rows
-  // and the ones set aside, as they are now: an entry voided since says so, and one no longer in the
-  // book says that), in date order; their totals; and what was cleared on earlier statements (the
-  // cleared balance less the opening and this statement's entries), so the page adds up. Figures
-  // the statement does not have (legacy) are null. Pure.
+  // "Oct 3, 2026" for YYYY-MM-DD `iso`, as the statement printout says a day with its year. Pure.
+  function fmtDateShortYear(iso) { return /^\d{4}-\d{2}-\d{2}$/.test(String(iso || '')) ? fmtDateShort(iso) + ', ' + String(iso).slice(0, 4) : ''; }
+  // What the printout lists (renderBankStatementSheet): the entries cleared on statement `st`, and
+  // the ones outstanding split into deposits (money in) and payments (money out), each { id, date,
+  // what, ref, cents (signed; null when not known) } from `rows` (the counted rows and the ones set
+  // aside, as they are now: an entry voided since says so), in date order.
+  // Treasurer review of C5 (4, 5) — the summary is the figures signed with the statement
+  // (statementNew: tickedCents, outInCents, outOutCents), so an entry changed or removed since
+  // can't be absorbed into "cleared on earlier statements" (clearedCents − openingCents −
+  // tickedCents); each list's total as it reads now is beside what was signed (`*Now`), for the
+  // printout to say where they differ. An entry no longer in the book is "since removed", its
+  // amount not known (and, its direction not known either, listed with the payments). A payment
+  // outstanding more than 90 days before the statement's date is marked `old`, to follow up.
+  // A statement signed before the figures were kept (`signed` false) falls back to the entries as
+  // they read now. Figures a statement does not have (legacy) are null. Pure.
   function statementSheetData(st, rows) {
     var byId = Object.create(null);
     (rows || []).forEach(function (e) { if (e && typeof e.id === 'string' && !byId[e.id]) byId[e.id] = e; });
+    var ninety = /^\d{4}-\d{2}-\d{2}$/.test(String(st.date || '')) ? isoPlusDays(st.date, -90) : '';
     function line(id) {
       var e = byId[id];
-      if (!e) return { id: id, date: '', what: 'An entry no longer in the book', ref: '', cents: 0 };
+      if (!e) return { id: id, date: '', what: 'An entry since removed from the book', ref: '', cents: null, dir: '' };
       return { id: id, date: String(e.date || ''), what: (e.description || '(no description)') + (e.off === 'void' ? ' (voided since)' : ''),
-        ref: String(e.ref || ''), cents: entrySignedCents(e) };
+        ref: String(e.ref || ''), cents: entrySignedCents(e), dir: e.direction === 'in' ? 'in' : 'out' };
     }
     function lines(ids) {
       return Array.isArray(ids) ? ids.map(line).sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0); }) : null;
     }
-    function sum(l) { return (l || []).reduce(function (t, x) { return t + x.cents; }, 0); }
+    function sum(l) { return (l || []).reduce(function (t, x) { return t + (x.cents || 0); }, 0); }
     function num(v) { return typeof v === 'number' && isFinite(v); }
-    var ticked = lines(st.ticked), outstanding = lines(st.outstanding), tickedSum = sum(ticked);
+    var ticked = lines(st.ticked), outstanding = lines(st.outstanding);
+    var deposits = outstanding ? outstanding.filter(function (l) { return l.dir === 'in'; }) : null;
+    var payments = outstanding ? outstanding.filter(function (l) { return l.dir !== 'in'; }) : null;
+    (payments || []).forEach(function (l) { l.old = !!(ninety && l.date && l.date < ninety); });
+    var tickedNow = sum(ticked), depositsNow = sum(deposits), paymentsNow = -sum(payments);
+    var signed = num(st.tickedCents) && num(st.outInCents) && num(st.outOutCents);
+    var tickedCents = signed ? st.tickedCents : (ticked ? tickedNow : null);
     return {
-      ticked: ticked, outstanding: outstanding, tickedSum: tickedSum,
-      earlierCents: num(st.clearedCents) && num(st.openingCents) && ticked ? st.clearedCents - st.openingCents - tickedSum : null,
-      outstandingCents: num(st.bookCents) && num(st.clearedCents) ? st.bookCents - st.clearedCents : null,
+      ticked: ticked, deposits: deposits, payments: payments, signed: signed,
+      tickedNow: tickedNow, depositsNow: depositsNow, paymentsNow: paymentsNow,
+      tickedCents: tickedCents,
+      outInCents: signed ? st.outInCents : (outstanding ? depositsNow : null),
+      outOutCents: signed ? st.outOutCents : (outstanding ? paymentsNow : null),
+      earlierCents: num(st.clearedCents) && num(st.openingCents) && tickedCents !== null ? st.clearedCents - st.openingCents - tickedCents : null,
       differenceCents: num(st.statementCents) && num(st.clearedCents) ? st.statementCents - st.clearedCents : null
     };
   }
@@ -20967,22 +20986,36 @@
   // pattern of the family statement: Back, Print / Save PDF (te-print), and a sheet. What it was
   // signed as, the entries cleared on it and those outstanding (as they read now: statementSheetData),
   // who reconciled it and when, and the reviewer's line: signed in the app, or blank to sign on paper.
+  // Treasurer review of C5 (4, 5) — for a committee or annual-review file: a two-sided summary from
+  // the figures signed with it; the outstanding entries as deposits and payments, a payment over 90
+  // days marked to follow up; each list's total, and where it now differs from what was signed; a
+  // blank line for the bank and account (never stored); a line to sign for each of the two leaders;
+  // and when it was printed. Security review of C5 (F4) — and when a list was cut at 2,000.
   function renderBankStatementSheet(o) {
     var st = (state.statements || []).filter(function (x) { return x.id === o.id; })[0];
     if (!st) return '';
     var d = statementSheetData(st, state.ledger.concat(state.ledgerAside || []));
+    var BLANK = '______________________';
+    function money(cents, plus) { return cents === null ? '—' : (cents < 0 ? '−' : (plus && cents > 0 ? '+' : '')) + fmt(Math.abs(cents)); }
     function tr(label, cents, strong) {
-      var l = esc(label), v = cents === null ? '—' : (cents < 0 ? '−' : '') + fmt(Math.abs(cents));
+      var l = esc(label), v = money(cents);
       return '<tr><td>' + (strong ? '<strong>' + l + '</strong>' : l) + '</td><td class="num">' + (strong ? '<strong>' + v + '</strong>' : v) + '</td></tr>';
     }
-    function table(cap, lines, none) {
-      return '<p class="eyebrow" style="margin-top:16px">' + esc(cap) + '</p><div class="tbl-wrap"><table><caption class="visually-hidden">' + esc(cap) + '</caption>' +
+    // One list, with its total as it reads now, and, when that isn't what was signed (`saved`,
+    // signed cents), what the difference is.
+    function table(cap, lines, now, saved) {
+      var h = '<p class="eyebrow" style="margin-top:16px">' + esc(cap) + '</p><div class="tbl-wrap"><table><caption class="visually-hidden">' + esc(cap) + '</caption>' +
         '<thead><tr><th scope="col">Date</th><th scope="col">Entry</th><th scope="col">Ref</th><th scope="col" class="num">Amount</th></tr></thead><tbody>' +
         (lines.length ? lines.map(function (l) {
-          return '<tr><td>' + esc(l.date ? fmtDateShort(l.date) : '') + '</td><td>' + esc(l.what) + '</td><td>' + esc(l.ref) + '</td>' +
-            '<td class="num">' + (l.cents < 0 ? '−' : '+') + fmt(Math.abs(l.cents)) + '</td></tr>';
-        }).join('') : '<tr><td colspan="4" class="muted">' + esc(none) + '</td></tr>') +
-        '</tbody></table></div>';
+          return '<tr><td>' + esc(l.date ? fmtDateShort(l.date) : '') + '</td><td>' + esc(l.what + (l.old ? ' (over 90 days: follow up)' : '')) + '</td><td>' + esc(l.ref) + '</td>' +
+            '<td class="num">' + (l.cents === null ? 'amount not known' : money(l.cents, true)) + '</td></tr>';
+        }).join('') : '<tr><td colspan="4" class="muted">None</td></tr>') +
+        '</tbody><tfoot><tr><td colspan="3"><strong>Total</strong></td><td class="num"><strong>' + money(now, true) + '</strong></td></tr></tfoot></table></div>';
+      if (d.signed && saved !== now) {
+        h += '<p class="small" style="margin:4px 0 0">These entries now total ' + esc(money(now, true)) + '; when the statement was marked reconciled they totalled ' +
+          esc(money(saved, true)) + '. The difference is in entries changed or removed since.</p>';
+      }
+      return h;
     }
     var h = '<div class="overlay" role="dialog" aria-modal="true" aria-label="Statement reconciliation"><div class="overlay-inner">' +
       '<div class="row no-print" style="margin-bottom:12px">' +
@@ -20991,7 +21024,8 @@
       '<div class="summary-sheet">' +
       '<div class="row" style="gap:10px;margin-bottom:2px"><span class="fleur">' + FLEUR + '</span>' +
       '<h1 style="margin:0">' + esc(state.packName || 'Pack') + ' — Bank statement reconciliation</h1></div>' +
-      '<p class="muted small" style="margin:0 0 12px">Statement ending ' + esc(fmtDateYear(st.date)) + '</p>';
+      '<p class="muted small" style="margin:0">Statement ending ' + esc(fmtDateYear(st.date)) + '</p>' +
+      '<p class="small" style="margin:4px 0 12px">Bank and account (last 4 digits): ' + BLANK + '</p>';
     if (statementReopened(st)) {
       h += '<p class="small" style="margin:0 0 10px"><strong>' + esc('Reopened' + statementByOn(st.reopenedBy, st.reopenedAt, true) +
         (st.reopenWhy ? ': “' + st.reopenWhy + '”' : '') + '. This statement is no longer in force.') + '</strong></p>';
@@ -20999,24 +21033,37 @@
     if (st.legacy) {
       h += '<p>' + esc(statementLegacyLine(st)) + '</p><p class="small muted">Which entries were ticked on it wasn’t recorded either.</p>';
     } else {
-      var n = d.ticked ? d.ticked.length : 0, m = d.outstanding ? d.outstanding.length : 0;
+      var n = d.ticked ? d.ticked.length : 0, nIn = d.deposits ? d.deposits.length : 0, nOut = d.payments ? d.payments.length : 0;
       h += '<div class="tbl-wrap"><table><caption class="visually-hidden">Reconciliation</caption><tbody>' +
-        tr('Book opening balance', typeof st.openingCents === 'number' ? st.openingCents : null) +
-        tr('Cleared on earlier statements', d.earlierCents) +
-        tr('Cleared on this statement (' + n + ')', d.ticked ? d.tickedSum : null) +
-        tr('Ticked balance', typeof st.clearedCents === 'number' ? st.clearedCents : null, true) +
-        tr('Statement ending balance', typeof st.statementCents === 'number' ? st.statementCents : null, true) +
-        tr('Difference (should be ' + fmt(0) + ')', d.differenceCents, true) +
-        tr('Outstanding, net (' + m + ')', d.outstandingCents) +
-        tr('Book balance through ' + fmtDateShort(st.date), typeof st.bookCents === 'number' ? st.bookCents : null) +
+        tr('Book opening balance' + (st.openingDate ? ' (' + fmtDateShortYear(st.openingDate) + ')' : ''), typeof st.openingCents === 'number' ? st.openingCents : null) +
+        tr('+ Cleared on earlier statements', d.earlierCents) +
+        tr('+ Cleared on this statement (' + n + ')', d.tickedCents) +
+        tr('= Ticked balance', typeof st.clearedCents === 'number' ? st.clearedCents : null, true) +
+        tr('Bank statement ending balance', typeof st.statementCents === 'number' ? st.statementCents : null, true) +
+        tr('Difference: bank less ticked (must be ' + fmt(0) + ')', d.differenceCents, true) +
+        tr('+ Deposits not yet on the statement (' + nIn + ')', d.outInCents) +
+        tr('− Payments not yet on the statement (' + nOut + ')', d.outOutCents) +
+        tr('= Book balance through ' + fmtDateShort(st.date), typeof st.bookCents === 'number' ? st.bookCents : null, true) +
         '</tbody></table></div>' +
-        table('Cleared on this statement', d.ticked || [], 'None') +
-        table('Outstanding on ' + fmtDateShort(st.date), d.outstanding || [], 'None') +
-        '<p class="small" style="margin:14px 0 0">Reconciled' + esc(statementByOn(st.by, st.at, true)) + '.</p>';
+        (st.truncated ? '<p class="small" style="margin:4px 0 0">This statement lists only the first 2,000 entries; the totals include all of them.</p>' : '') +
+        table('Cleared on this statement', d.ticked || [], d.tickedNow, d.tickedCents) +
+        table('Deposits not yet on the statement', d.deposits || [], d.depositsNow, d.outInCents) +
+        table('Payments not yet on the statement', d.payments || [], -d.paymentsNow, d.outOutCents === null ? null : -d.outOutCents);
     }
+    // Who reconciled it, and who reviewed it: each recorded in the app, with a line to sign.
+    var unknown = !st.by || st.by === 'this device';
+    h += '<p class="small" style="margin:18px 0 0">' + esc((unknown
+      ? 'Reconciled' + (statementByOn('', st.at, true)) + ' (who wasn’t recorded).'
+      : 'Reconciled' + statementByOn(st.by, st.at, true) + ' (recorded in the app).') + ' Signature: ' + BLANK) + '</p>';
     h += statementReviewed(st)
-      ? '<p class="small" style="margin:6px 0 0">Reviewed' + esc(statementByOn(st.reviewedBy, st.reviewedAt, true)) + '.</p>'
-      : '<p class="small" style="margin:18px 0 0">Reviewed by: ______________________________ &nbsp; Date: ______________</p>';
+      ? '<p class="small" style="margin:10px 0 0">' + esc('Reviewed' + statementByOn(st.reviewedBy, st.reviewedAt, true) + ' (recorded in the app). Signature: ' + BLANK) + '</p>'
+      : '<p class="small" style="margin:14px 0 0">Reviewed by: ' + BLANK + ' &nbsp; Role: ______________ &nbsp; Date: ____________</p>' +
+        '<p class="small" style="margin:2px 0 0">I compared this page with the bank’s own statement for this period.</p>';
+    var printed = 'Printed ' + fmtDateShortYear(todayISO()) + '.';
+    h += '<p class="small muted" style="margin:14px 0 0">' + esc(st.legacy ? printed : d.signed
+      ? printed + ' The summary figures are as they were when the statement was marked reconciled; the entries are listed as they read on the print date.'
+      : printed + ' This statement was marked reconciled before its summary figures were kept, so the lines for its own entries and those not yet on ' +
+        'the statement are worked out from the entries as they read on the print date.') + '</p>';
     return h + '</div></div></div>';
   }
   function renderReconcile() {

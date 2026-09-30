@@ -22800,7 +22800,7 @@ atest('C5, api: a statement signed on one device survives another’s save, and 
 const C5_VIEW_FNS = ['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'fmtDateYear', 'statementDay', 'statementByOn', 'statementLegacyLine', 'statementSheetData',
   'statementReopened', 'statementReviewed', 'statementAdded', 'entrySignedCents', 'statementsCardHtml', 'statementBlockHtml', 'renderBankStatementSheet',
   'statementButtonsHtml', 'statementReviewRefusal', 'ledgerActorName', 'statementReopenRefusal', 'statementReopenNote', 'statementBefore', 'LEDGER_VOID_REASON_MAX',
-  'statementReviewer', 'statementAwaitsReview'];
+  'statementReviewer', 'statementAwaitsReview', 'fmtDateShortYear', 'isoPlusDays'];
 // Sep 30: r1 +$25 cleared on it, u1 −$84 outstanding; the opening $100 and q1 +$500 cleared before.
 const C5_SEP = () => ({ id: 'st-2026-09-30-a', date: '2026-09-30', statementCents: 62500, openingCents: 10000, clearedCents: 62500, bookCents: 54100,
   ticked: ['r1'], outstanding: ['u1'], by: 'Pat Treasurer', byUid: 'u1', at: '2026-10-02T15:00:00.000Z' });
@@ -22812,6 +22812,7 @@ function c5View(statements, more) {
     var ui = { armed: null }, sync = { user: { uid: 'u1', displayName: 'Pat Treasurer' } }, editor = true, admin = false;
     function canEdit() { return editor; }
     function isAdmin() { return admin; } function accountsInForce() { return !!sync.user; }
+    function todayISO() { return '2026-10-03'; }
     function canReopenStatement() { return false; }
     var state = { packName: 'Pack 569', leaders: [], ledger: ${JSON.stringify(C2_LEDGER())}, ledgerAside: [],
       book: { reconciledThrough: '2026-09-30' }, statements: ${JSON.stringify(statements)} };
@@ -22820,22 +22821,32 @@ function c5View(statements, more) {
 }
 const c5Text = (html) => html.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
 
-test('C5: the printout adds up — earlier statements, this one, the difference, what is outstanding', () => {
-  const x = sandbox(['statementSheetData', 'entrySignedCents']);
-  const rows = C2_LEDGER().concat([{ id: 'v9', off: 'void', date: '2026-09-02', description: 'Typo', amountCents: 100, direction: 'in' }]);
-  const d = JSON.parse(JSON.stringify(x.statementSheetData(Object.assign(C5_SEP(), { ticked: ['r1', 'v9', 'gone'] }), rows)));
-  eq(d.ticked.map((l) => [l.id, l.what, l.cents]), [['gone', 'An entry no longer in the book', 0], ['v9', 'Typo (voided since)', 100], ['r1', 'Dues', 2500]], 'the entries, by date');
-  eq([d.tickedSum, d.earlierCents, d.outstandingCents, d.differenceCents, d.outstanding.map((l) => [l.id, l.cents])],
-    [2600, 62500 - 10000 - 2600, 54100 - 62500, 0, [['u1', -8400]]], 'the figures');
+// Sep 30 as signed since the C5 review (treasurer 4): r1 +$25 on it; u1 $84 out outstanding; nothing in.
+const C5_SEP_SIGNED = () => Object.assign(C5_SEP(), { tickedCents: 2500, outInCents: 0, outOutCents: 8400, openingDate: '2026-07-01' });
+test('C5: the printout adds up — from the figures signed with it, the outstanding split in and out, and each list as it reads now', () => {
+  const x = sandbox(['statementSheetData', 'entrySignedCents', 'isoPlusDays']);
+  const rows = C2_LEDGER().concat([{ id: 'v9', off: 'void', date: '2026-09-02', description: 'Typo', amountCents: 100, direction: 'in' },
+    { id: 'old1', date: '2026-06-25', description: 'Check 99', amountCents: 700, direction: 'out' }, { id: 'dep', date: '2026-09-29', description: 'Deposit', amountCents: 900, direction: 'in' }]);
+  const d = JSON.parse(JSON.stringify(x.statementSheetData(Object.assign(C5_SEP_SIGNED(), { ticked: ['r1', 'v9', 'gone'], outstanding: ['u1', 'old1', 'dep', 'gone2'] }), rows)));
+  eq(d.ticked.map((l) => [l.id, l.what, l.cents]), [['gone', 'An entry since removed from the book', null], ['v9', 'Typo (voided since)', 100], ['r1', 'Dues', 2500]],
+    'the entries, by date: one since removed has no amount');
+  eq([d.deposits.map((l) => l.id), d.payments.map((l) => [l.id, l.cents, l.old])], [['dep'], [['gone2', null, false], ['old1', -700, true], ['u1', -8400, false]]],
+    'deposits and payments; over 90 days');
+  // The summary is what was signed; each list's total as it reads now is beside it.
+  eq([d.signed, d.tickedCents, d.outInCents, d.outOutCents, d.earlierCents, d.differenceCents, d.tickedNow, d.depositsNow, d.paymentsNow],
+    [true, 2500, 0, 8400, 62500 - 10000 - 2500, 0, 2600, 900, 9100], 'the figures');
+  // Signed before the figures were kept: today's entries, as before.
+  const f = JSON.parse(JSON.stringify(x.statementSheetData(Object.assign(C5_SEP(), { ticked: ['r1', 'v9'] }), rows)));
+  eq([f.signed, f.tickedCents, f.earlierCents, f.outInCents, f.outOutCents], [false, 2600, 62500 - 10000 - 2600, 0, 8400], 'a statement signed before');
   eq(JSON.parse(JSON.stringify(x.statementSheetData({ id: 'st-2026-08-31', date: '2026-08-31', statementCents: null, openingCents: null, clearedCents: null,
-    bookCents: null, ticked: null, legacy: true }, rows))), { ticked: null, outstanding: null, tickedSum: 0, earlierCents: null, outstandingCents: null, differenceCents: null },
-    'a legacy statement has no figures');
+    bookCents: null, ticked: null, legacy: true }, rows))), { ticked: null, deposits: null, payments: null, signed: false, tickedNow: 0, depositsNow: 0, paymentsNow: 0,
+    tickedCents: null, outInCents: null, outOutCents: null, earlierCents: null, differenceCents: null }, 'a legacy statement has no figures');
 });
 
 test('C5: Money · Ledger lists the statements newest first, each with its printout, one page, with the reviewer’s line', () => {
   const reopened = Object.assign(C5_SEP(), { id: 'st-2026-09-30-z', at: '2026-10-01T00:00:00.000Z',
     reopenedAt: '2026-10-02T09:00:00.000Z', reopenedBy: 'Alex', reopenedByUid: 'u3', reopenWhy: 'A deposit was ticked twice' });
-  const sep = Object.assign(C5_SEP(), { supersedes: 'st-2026-09-30-z', reviewedAt: '2026-10-03T00:00:00.000Z', reviewedBy: 'Sam', reviewedByUid: 'u2' });
+  const sep = Object.assign(C5_SEP_SIGNED(), { supersedes: 'st-2026-09-30-z', reviewedAt: '2026-10-03T00:00:00.000Z', reviewedBy: 'Sam', reviewedByUid: 'u2' });
   const x = c5View([C5_LEGACY(), reopened, sep]);
   const card = c5Text(vm.runInContext('statementsCardHtml()', x));
   // Treasurer review of C5 (7): how many wait for a review, and what reviewing means under each.
@@ -22857,17 +22868,29 @@ test('C5: Money · Ledger lists the statements newest first, each with its print
   // The printout.
   const sheet = (id) => c5Text(vm.runInContext(`renderBankStatementSheet({ kind: 'bank-statement', id: '${id}' })`, x));
   const s = sheet('st-2026-09-30-a');
+  // Treasurer review of C5 (5): the two-sided summary, the outstanding split, totals, a line to sign for each, when printed.
   eq(s.replace(/^.*?Pack 569/, 'Pack 569'), 'Pack 569 — Bank statement reconciliation Statement ending September 30, 2026 ' +
-    'Reconciliation Book opening balance $100.00 Cleared on earlier statements $500.00 Cleared on this statement (1) $25.00 Ticked balance $625.00 ' +
-    'Statement ending balance $625.00 Difference (should be $0.00) $0.00 Outstanding, net (1) −$84.00 Book balance through Sep 30 $541.00 ' +
-    'Cleared on this statement Cleared on this statement Date Entry Ref Amount Sep 5 Dues +$25.00 ' +
-    'Outstanding on Sep 30 Outstanding on Sep 30 Date Entry Ref Amount Sep 10 Pinewood trophies 101 −$84.00 ' +
-    'Reconciled by Pat Treasurer on October 2, 2026. Reviewed by Sam on October 3, 2026.', 'the printout');
+    'Bank and account (last 4 digits): ______________________ ' +
+    'Reconciliation Book opening balance (Jul 1, 2026) $100.00 + Cleared on earlier statements $500.00 + Cleared on this statement (1) $25.00 ' +
+    '= Ticked balance $625.00 Bank statement ending balance $625.00 Difference: bank less ticked (must be $0.00) $0.00 ' +
+    '+ Deposits not yet on the statement (0) $0.00 − Payments not yet on the statement (1) $84.00 = Book balance through Sep 30 $541.00 ' +
+    'Cleared on this statement Cleared on this statement Date Entry Ref Amount Sep 5 Dues +$25.00 Total +$25.00 ' +
+    'Deposits not yet on the statement Deposits not yet on the statement Date Entry Ref Amount None Total $0.00 ' +
+    'Payments not yet on the statement Payments not yet on the statement Date Entry Ref Amount Sep 10 Pinewood trophies 101 −$84.00 Total −$84.00 ' +
+    'Reconciled by Pat Treasurer on October 2, 2026 (recorded in the app). Signature: ______________________ ' +
+    'Reviewed by Sam on October 3, 2026 (recorded in the app). Signature: ______________________ ' +
+    'Printed Oct 3, 2026. The summary figures are as they were when the statement was marked reconciled; the entries are listed as they read on the print date.',
+    'the printout');
   ok(/^&larr; Back Print \/ Save PDF/.test(s), 'the buttons: ' + s.slice(0, 40));
   ok(/Reopened by Alex on October 2, 2026: “A deposit was ticked twice”\. This statement is no longer in force\./.test(sheet('st-2026-09-30-z')), 'a reopened one');
-  ok(/Reviewed by: _+ Date: _+$/.test(sheet('st-2026-09-30-z')), 'the reviewer’s line to sign');
-  eq(sheet('st-2026-08-31').replace(/^.*?September 30|^.*?August 31, 2026 /, ''), 'Reconciled through Aug 31 by Sam on Sep 1. Recorded before statements were kept, ' +
-    'so the statement balance wasn’t saved. Which entries were ticked on it wasn’t recorded either. Reviewed by: ______________________________ Date: ______________', 'a legacy one');
+  // Not reviewed: the reviewer's lines to fill in. Signed before the figures were kept: the footer says the summary is worked out now.
+  ok(/ Reviewed by: _+ Role: _+ Date: _+ I compared this page with the bank’s own statement for this period\. Printed Oct 3, 2026\. This statement was marked reconciled before its summary figures were kept, so the lines for its own entries and those not yet on the statement are worked out from the entries as they read on the print date\.$/
+    .test(sheet('st-2026-09-30-z')), 'the reviewer’s line to sign: ' + sheet('st-2026-09-30-z'));
+  eq(sheet('st-2026-08-31').replace(/^.*?August 31, 2026 Bank and account \(last 4 digits\): _+ /, ''), 'Reconciled through Aug 31 by Sam on Sep 1. Recorded before statements were kept, ' +
+    'so the statement balance wasn’t saved. Which entries were ticked on it wasn’t recorded either. ' +
+    'Reconciled by Sam on September 1, 2026 (recorded in the app). Signature: ______________________ ' +
+    'Reviewed by: ______________________ Role: ______________ Date: ____________ I compared this page with the bank’s own statement for this period. Printed Oct 3, 2026.',
+    'a legacy one');
   eq(vm.runInContext("renderBankStatementSheet({ id: 'nope' })", x), '', 'a statement not there');
   // Every value is escaped.
   const evil = Object.assign(C5_SEP(), { id: 'st-e', by: '<b>x</b>', reopenedAt: 'T', reopenedBy: '<i>', reopenWhy: '<img src=x>' });
@@ -23348,6 +23371,28 @@ test('C5 review (treasurer 6, F4): an entry a standing statement lists is not cl
   eq(JSON.stringify(c5Norm(n)), JSON.stringify(n), 'not a fixed point');
   ok(!('tickedCents' in c5Norm(Object.assign(withSeeds(LEGACY_ROWS)(), { book: { openingCents: 0, reconciledThrough: '2026-09-30' }, statements: [C5_SEP()] })).statements[0]),
     'a statement signed before gained a figure');
+});
+
+test('C5 review (treasurer 4, 5; F4): the printout says where a list differs from what was signed, what to follow up, and who wasn’t recorded', () => {
+  // Sep 30 as signed: r1 +$25 and one since removed (+$15) cleared on it; u1 $84 and an old check out.
+  const st = Object.assign(C5_SEP_SIGNED(), { ticked: ['r1', 'gone'], tickedCents: 4000, outstanding: ['u1', 'old1'], outOutCents: 9100 });
+  const more = "state.ledger.push({ id: 'old1', date: '2026-06-25', description: 'Check 99', ref: '99', amountCents: 700, direction: 'out' })";
+  const sheet = (s) => c5Text(vm.runInContext(`renderBankStatementSheet({ id: '${s.id}' })`, c5View([s], more)));
+  const t = sheet(st);
+  ok(t.includes('An entry since removed from the book amount not known Sep 5 Dues +$25.00 Total +$25.00 These entries now total +$25.00; when the statement was ' +
+    'marked reconciled they totalled +$40.00. The difference is in entries changed or removed since.'), 'a list that differs: ' + t);
+  ok(t.includes('+ Cleared on this statement (2) $40.00'), 'the summary is not what was signed');
+  ok(t.includes('Jun 25 Check 99 (over 90 days: follow up) 99 −$7.00 Sep 10 Pinewood trophies 101 −$84.00 Total −$91.00 Deposits') ||
+    t.includes('Jun 25 Check 99 (over 90 days: follow up) 99 −$7.00 Sep 10 Pinewood trophies 101 −$84.00 Total −$91.00 Reconciled'), 'the payments: ' + t);
+  ok(!/These entries now total −/.test(t), 'a list that agrees says it differs');
+  // Who reconciled it wasn't recorded.
+  ok(sheet(Object.assign({}, st, { by: 'this device' })).includes('Reconciled on October 2, 2026 (who wasn’t recorded). Signature: ______________________'), 'this device');
+  ok(sheet(Object.assign({}, st, { by: '' })).includes('Reconciled on October 2, 2026 (who wasn’t recorded).'), 'no one');
+  // A list cut at 2,000 (F4).
+  ok(sheet(Object.assign({}, st, { truncated: true })).includes('$541.00 This statement lists only the first 2,000 entries; the totals include all of them. Cleared on this statement'), 'truncated');
+  ok(!/2,000/.test(t), 'a statement not cut says it was');
+  // The account line is a blank to fill in: nothing is typed or stored.
+  ok(!/<input|data-ch/.test(slice('renderBankStatementSheet')), 'the printout stores something');
 });
 
 /* ---------------- report ---------------- */
