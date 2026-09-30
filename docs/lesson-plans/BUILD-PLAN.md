@@ -19,7 +19,7 @@ Den leaders plan their meetings in **Program → Den plans**, but the app only k
   - Numbered steps that open and close. Each step has its minutes, requirement chips per den, a **Say** box, how-to bullets and a tip.
   - A supplies list, and a "Tell parents before they leave" box.
   - Reference tabs: Oath & Law with tap-to-explain points, sign/salute/handshake, and later the Outdoor Code and Six Essentials.
-- **All-dens nights:** a den switch shows Both dens or one den. Gathering, opening and closing are shared. Den time becomes a **breakout** with each den's own rank activity for the same category, using the app's existing `denAdvAt` model.
+- **All-dens nights:** a den switch shows Both dens or one den. The closing is shared. Den time becomes a **breakout** with each den's own rank activity for the same category, using the app's existing `denAdvAt` model.
 - **Progress:** the guide does **not** tick individual requirements (Keith's decision). At the end, a "Record in Advancement" button goes to the existing adventure board. The DESIGN-adventures.md §7 rule ("no requirement-level tracking") stands.
 - **Research format changes to timed steps:**
   - Each step has `title, mins, reqs, say, how[], tip, home?`, and each meeting totals about 60 minutes.
@@ -41,7 +41,7 @@ Den leaders plan their meetings in **Program → Den plans**, but the app only k
   - An outing sets its own length.
 - **Leader's-choice options (Keith, 2026-09-30):**
   - Where Keith leaves a choice to the den leader, the meeting offers **Option A / Option B**, for example a parents-invited night or home, or photo cards or real sealed products.
-  - The step data needs an `options: [{label, steps}]` form, or a meeting-level variant.
+  - The data carries these as `choices`, `forOptions`/`variants` and step-level `options` (see §2).
   - The Run screen lets the leader pick one before starting the timer, so the minutes add up for the option chosen.
 - **Pack-wide guest speaker:** requirements such as meeting an elected official can be done at the pack's yearly guest speaker night. That is a "done at a pack meeting" line, like "Done at the pack opening".
 - **Credit from events, not den runs (found during the electives research):** some requirements are done at pack or council events rather than den meetings:
@@ -76,22 +76,22 @@ Den leaders plan their meetings in **Program → Den plans**, but the app only k
   - Range electives (archery, BB gun, slingshot) must say "council-run range / trained range officer only".
 - Drafts are reviewed as Markdown in the scratchpad before any code is written. Keith can skim one rank's drafts before the rest are written.
 
-### 2. Data: `ADVENTURE_PLANS` inline constant in index.html
-- Plans go inline next to `ADVENTURES` (index.html:~7608), like the other static content. The page is one self-contained file.
-  - The CSP (`_headers`) allows only the page's hashed inline script and has no `connect-src 'self'`, so a separate data file would mean a CSP change.
-- **Shape:** it is keyed with the existing run-key separator, `den + ' :: ' + adventure`:
-  ```
-  'Wolf :: Council Fire': { verified, sources: [url], summary, safety: [], reqs: [{ n, text, where }],
-    meetings: [{ title, prep, supplies: [], tellParents,
-      steps: [{ kind: 'gathering'|'opening'|'den'|'closing', title, mins, reqs: '1, 2',
-                say, how: [], tip, home }] }] }
-  // All-dens night: shared gathering/opening/closing; 'den' steps from each den's plan → breakout
-  ```
-- Shared electives can reuse one text through a small helper with per-rank tweaks, so the same text isn't pasted six times.
-- **Size budget:** the required pass adds about 150 KB, and all adventures about 500 KB, to a 1.67 MB page.
-  - A harness test caps the constant's size.
-  - Before the elective pass, re-check the budget. If it's too big, move the plans to a same-origin JSON file fetched on demand; that needs `connect-src 'self'`, which the Phase 2 `/api` may already add.
-- The loader and `normalizeState` must never read `ADVENTURE_PLANS`, so where it is declared doesn't matter to them. The load-order rule at ~1941 still applies to anything they do read.
+### 2. Data: `plans.json`, built from the markdown and fetched on demand
+**Changed (Keith, 2026-09-30):** the plans are about 1.1 MB of text and the page is already 2.2 MB, so they are NOT an inline constant. Built in commit 670485c.
+- **Source:** the markdown in `docs/lesson-plans/` stays the only place plans are edited. `scripts/lesson-plans.mjs` parses it; `scripts/build-site.mjs` writes `plans.json` next to `index.html` and `_headers` (the site is now those three files), and `--verify` checks it byte for byte.
+  - The parser reads `ADVENTURES` out of index.html and refuses any plan key not in it. `NAME_FIXES` maps markdown spellings to the app's (e.g. "Pedal With the Pack"); a harness test fails if a mapping goes stale once the renames land.
+  - It publishes only the `## Name (Rank)` sections, never a file's intro or open-questions notes. It stops with `file:line` on anything it can't read, a den meeting over 40 minutes, control characters or HTML-like `<`.
+- **CSP:** connect-src now includes `'self'` for both backends and the preview.
+- **Page:** `loadAdventurePlans()` fetches the file once (same-origin), caches it, and on failure shows "The lesson plans couldn't be loaded…" and waits 60 s before trying again. **Plans arrive asynchronously, so every screen that shows them needs a loading state and a failed state.**
+- **Shape:** `{ format: 1, guide, plans: { 'Wolf :: Bobcat': plan } }`, keyed with the run-key separator `den + ' :: ' + adventure`.
+  - Plan: `den, adventure, heading, category, official, verified, sources[], summary, reqs[{n,text,where}], safety[], done?[], choices?[], notes?[], meetings[]`.
+  - Meeting: `n, of, title, kind: 'den'|'outing'|'add-on', mins, forOptions?, prep, supplies (text), tellParents, done?, choices?, variants?, steps[], stepMins`. The timer uses `stepMins` (a header can say 40 when the steps add up to less).
+  - Step: `n, title, kind: 'den'|'closing', mins, reqs, done[], setup[], say, sayTo?, how[{n,text}], tip, home[], options?, forOptions?`. There are no gathering or opening kinds.
+  - **Options** show up three ways: a leader's-choice line on the plan or meeting (`choices`), a meeting that belongs to one option (`forOptions`, with `variants` for the other), or two ways inside one step's How (`options`).
+  - Text keeps `**bold**` as markdown and contains no HTML. The UI must escape everything and convert only `**…**`.
+- Each rank's section of a shared elective is parsed as written. There's no shared-text helper.
+- **Size:** about 1.07 MB (93 plans, 191 meetings, 897 steps). `PLANS_MAX_BYTES` caps it at 1.34 MB in both the build and the harness.
+- `normalizeState` and the state loader never read plans; a harness test checks it.
 
 ### 3. Leader notes: `state.advNotes`
 - **Shape:** `{ 'Wolf :: Council Fire': { text, by, at } }`. It is normalized in `normalizeState` (near the event normalisation at ~4149–4177) and stays in the pack record.
@@ -122,6 +122,7 @@ The engineer is `app-engineer`, and commits follow the repo's house style.
 
 ## Critical files
 - `index.html`: `ADVENTURES` 7567, `ADV_ELECTIVE_THEMES` 7617, runs 7774+, `denAdvAt` 7724, `renderDenPlanner` 8129, `denMeetingsBlock` 8192, meeting editor ~13018, `agendaDetail` 12558, `buildParentView` 9969, `normalizeState` ~4149. Line numbers will have moved by the time this starts.
+- `scripts/lesson-plans.mjs` (parser), `scripts/build-site.mjs` (publishes `plans.json`), `loadAdventurePlans()` in index.html.
 - `test/harness.mjs`, `DESIGN-adventures.md`.
 
 ## Verification
