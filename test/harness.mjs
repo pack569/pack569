@@ -23515,9 +23515,12 @@ test('C5 re-check (R2): a restore keeps this device’s past seasons the backup 
   const S = (id, year, o) => Object.assign({ id, kind: 'season', year, packName: 'here' }, o || {});
   const p = c2tPage({ more: `state.archives = ${JSON.stringify([S('s25', 2025), S('s24', 2024), { id: 'te1', kind: 'trails-end', year: 2025 }])};` });
   p.run(`admin = true; ui.overlay = { data: { ledger: [], ledgerLog: [], book: { reconciledThrough: '' }, archives: ${JSON.stringify(
-    [S('s24', 2024, { packName: 'backup' }), S('s23', 2023, { packName: 'backup' }), { id: 'te0', kind: 'trails-end', year: 2024 }])} } }; act3('confirm-import')`);
-  eq(p.get('state.archives').map((a) => [a.id, a.packName || '']).sort(), [['s23', 'backup'], ['s24', 'here'], ['s25', 'here'], ['te0', '']],
-    'this device’s seasons (s25 lacking in the backup; s24, this device’s copy), the backup’s own, and its Trail’s End imports');
+    [S('s24', 2024, { packName: 'backup' }), S('s23', 2023, { packName: 'backup' }), S('s25b', 2025, { packName: 'backup' }),
+      { id: 'te0', kind: 'trails-end', year: 2024 }, { id: 'te5', kind: 'trails-end', year: 2025 }])} } }; act3('confirm-import')`);
+  // R1–R7 verification (F2): the backup's s25b, another id for a year this device has (s25), is
+  // dropped: Past seasons would list 2025 twice. Its Trail's End import of 2025 is not a season.
+  eq(p.get('state.archives').map((a) => [a.id, a.packName || '']).sort(), [['s23', 'backup'], ['s24', 'here'], ['s25', 'here'], ['te0', ''], ['te5', '']],
+    'this device’s seasons (s25 lacking in the backup; s24, this device’s copy; s25b, the same year), the backup’s own, and its Trail’s End imports');
   // Replace all data? says so when the backup's book is another year's, with this book's statements.
   const x = sandbox(['importBookYearHtml', 'arrOf', 'esc']);
   const line = (here, sts, there) => x.importBookYearHtml({ year: here }, sts, { book: { year: there } });

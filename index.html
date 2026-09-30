@@ -31018,9 +31018,12 @@
       // closed it out, so a backup from before it would lose it for good. Each season archive here
       // the backup lacks is kept, and one both have is this device's (by id). Trail's End imports
       // are the backup's, as before.
-      var ciMine = arrOf(ciArc).filter(function (a) { return a && a.kind === 'season'; }), ciIds = Object.create(null);
-      ciMine.forEach(function (a) { ciIds[a.id] = true; });
-      state.archives = arrOf(state.archives).filter(function (a) { return !ciIds[a && a.id]; }).concat(ciMine);
+      // Verification of R1–R7 (F2) — and one for a year this device has a season of (another id:
+      // that season closed out twice) is this device's too: Past seasons would list the year twice,
+      // and locationHistoryFrom count it twice.
+      var ciMine = arrOf(ciArc).filter(function (a) { return a && a.kind === 'season'; }), ciIds = Object.create(null), ciYears = Object.create(null);
+      ciMine.forEach(function (a) { ciIds[a.id] = true; ciYears[a.year] = true; });
+      state.archives = arrOf(state.archives).filter(function (a) { return !ciIds[a && a.id] && !(a && a.kind === 'season' && ciYears[a.year]); }).concat(ciMine);
       // Security re-review of C2 (#1) — the book is the backup's, but its history is not: this
       // device's log and the backup's, as one (mergeLedgerLog). The backup's alone lost every
       // change made since it was taken, for good, and so let anyone restore away their own trail.
