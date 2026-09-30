@@ -21675,6 +21675,10 @@ test('Option B review (5): SETUP.md’s recovery touches one pack, says where th
   const s4 = body.slice(body.indexOf('### 4.'), body.indexOf('### 5.'));
   const close = s4.indexOf('**First close every other tab or window of the page on that device**'), run = s4.indexOf('var k = ');
   ok(close > 0 && run > close, 'step 4 does not close the other tabs before the console');
+  // Security re-check of option B (E) — the device's own Web Inspector setting, and step 4 in the browser app that holds the copy.
+  ok(/\*\*iPhone or iPad\*\* has no console of its own[\s\S]{0,200}\*\*Settings → Safari → Advanced → Web Inspector\*\* turned on/.test(body), 'the Web Inspector setting');
+  const same = s4.indexOf('**in the same browser app on that device**');
+  ok(same > 0 && same < run, 'step 4 does not say to run it in the browser app that holds the copy');
 });
 
 test('reload gate: SETUP.md says how the owner recovers a record whose fmt is too high, starting with each device’s copy', () => {

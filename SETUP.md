@@ -700,7 +700,8 @@ only way out, and they are done by the owner.
 
 Steps 1 and 4 use the browser's developer console, so they need a **desktop browser** (Chrome,
 Edge, Firefox or Safari on a computer). An **iPhone or iPad** has no console of its own: it needs
-a Mac, with Safari's Web Inspector connected to the device by cable. **Don't clear the site's data**
+a Mac, with Safari's Web Inspector connected to the device by cable, and on the iPhone or iPad
+**Settings → Safari → Advanced → Web Inspector** turned on. **Don't clear the site's data**
 (or "website data", or the browser's history and site data) to get past the hold: that throws
 away that device's copy for good, and with it anything that was only on that device.
 
@@ -751,6 +752,11 @@ Change only `fmt`. Leave `rev` and everything else as it is.
 This is needed only after a rollback, and only on the devices where Backup (JSON) said "Backup
 not downloaded" in step 1. Such a device holds on its own stored copy, whatever the pack's copy
 says.
+
+Do this **in the same browser app on that device** that holds the copy: each browser keeps its
+own stored copy, so a console opened on the page in another browser, or on another device,
+changes a different copy and leaves the held one as it was. (On an iPhone or iPad, point the
+Mac's Web Inspector at the page as it is open in that browser app on that iPhone or iPad.)
 
 **First close every other tab or window of the page on that device**, so only one is open. A
 newer page still open in another tab saves its `fmt` back over the fix. Then, in the browser's
