@@ -1027,13 +1027,23 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
 // Phase 3, C6 — the per-row ledger merge and what it reads.
 const C6_MERGE_FNS = ['LEDGER_TICK_FIELDS', 'LEDGER_OFF_FIELDS', 'LEDGER_ENTERED_FIELDS', 'ledgerFieldPart', 'LEDGER_OPS', 'ledgerEventParts', 'ledgerMarksGone', 'ledgerMergeOpts', 'ledgerEmpty', 'ledgerPartKey', 'LEDGER_MONEY_FIELDS', 'ledgerLockedMeanwhile',
   'applyLedgerRowSet', 'mergeLedgerRows', 'applyLedgerMerge', 'LEDGER_EDIT_FIELDS', 'LEDGER_RESOLVE_FIELDS', 'LEDGER_RESOLVE_WHY', 'LEDGER_RESOLVE_WHY_SAME', 'ledgerResolveMore', 'ledgerLogRoom', 'utf8Bytes', 'arrOf', 'ledgerTickedAt', 'mergeStatements', 'statementPairMerge',
-  'statementOnceGroups', 'statementReopened'];
+  'statementOnceGroups', 'statementReopened',
+  // Phase 3, C7 — a family one copy's scout delete unlinked is put back, and the scout kept.
+  'ledgerRelink', 'ledgerScoutsHeld'];
 // A page from before C6 (as the live page is): its merge keeps this device's copy of every row both
 // copies hold, whole. For the tests that make an older page from the merge as it is now.
 const C6_MERGE_CALL = 'added += applyLedgerMerge(state, rowMerge.set, remote);';
+// (Before C7 too: preC7Merge, below.)
 const preC6Merge = (merge) => {
   ok(merge.indexOf(C6_MERGE_CALL) !== -1, 'the pre-C6 page could not be made');
-  return merge.split(C6_MERGE_CALL).join('');
+  return preC7Merge(merge.split(C6_MERGE_CALL).join(''));
+};
+// A page from before C7: its merge drops a scout another device deleted whatever the ledger says
+// (dropScout unlinking the scout's entries), and keeps nothing over the delete.
+const C7_HELD_CALL = 'var scoutsHeld = ledgerScoutsHeld(gone, state, remote, Date.now());';
+const preC7Merge = (merge) => {
+  ok(merge.indexOf(C7_HELD_CALL) !== -1, 'the pre-C7 page could not be made');
+  return merge.split(C7_HELD_CALL).join('var scoutsHeld = [];');
 };
 // LIVE STOPGAP — what every slice of the sync merge needs besides it (freshGone is in NORMALIZE_FNS).
 const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'ledgerTickedAt', 'reconciledFates', 'reconciledFatesText', 'noteReconciledFates', 'restoreGone', 'entryAfterOpening', 'ledgerDateReconciled', 'fmt', 'fmtDateShort', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays', 'ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept', 'keepLostVoids', 'ledgerPairCheck',
@@ -1060,7 +1070,9 @@ const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'm
   // Security re-check of C6 (N3) — and the change history says so.
   'chargeForgivenSummary', 'LEDGER_FORGIVEN_LOST_WHY', 'fmtDateShortYear',
   // Quick check of N1–N5 (5) — its reason, with emails and phone numbers taken out.
-  'ledgerContactScrub'];
+  'ledgerContactScrub',
+  // Phase 3, C7 — a scout kept, archived, over another device's delete, said.
+  'ledgerScoutKeptLook'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
   const ctx = vm.createContext({});
@@ -16988,12 +17000,13 @@ const ADD_TO_ALL = "state.fundraisers[0].sales.push({ id: 'fs2', scoutId: 's2', 
   "state.entries.push({ id: 'bs1', scoutId: 's1', kind: 'wagon', date: '', salesCents: 50, donationsCents: 0 }); " +
   "state.inventory.distributions.push({ id: 'd2', productId: 'p1', target: { kind: 'den', den: 'Bear' }, containers: 1 }); " +
   "state.charges.push({ id: 'c1', scoutId: 's1', lineId: 'x', amountCents: 500 }); " +
-  "state.ledger.push({ id: 'ls1', date: '2026-09-05', description: 'Ada dues', amountCents: 500, direction: 'in', scoutId: 's1' }); commit()";
+  // (Phase 3, C7 — a payment naming no family: one naming Ada keeps her, archived. 'C7, …' below.)
+  "state.ledger.push({ id: 'ls1', date: '2026-09-05', description: 'Ada dues', amountCents: 500, direction: 'in', scoutId: '' }); commit()";
 test('stopgap, Firestore: a deleted scout, fundraiser or product does not come back from a device still holding it', () => {
   const check = (st, how) => {
     eq([st.fundraisers.map((f) => f.id), st.scouts.map((x) => x.id), st.inventory.products.map((x) => x.id)], [[], ['s2'], []], `${how}: a deleted one came back`);
     eq([eIds(st), st.inventory.distributions.map((d) => d.id), st.charges.map((c) => c.id)], [['old2', 'x2'], [], []], `${how}: rows of a deleted one came back`);
-    eq(st.ledger.map((l) => [l.id, l.scoutId]), [['l1', ''], ['ls1', '']], `${how}: a payment was lost, or still points at the deleted scout`);
+    eq(st.ledger.map((l) => [l.id, l.scoutId]), [['l1', ''], ['ls1', '']], `${how}: a payment was lost`);
   };
   // The stale device saves last.
   const { a, b, server } = fsGonePair();
@@ -19033,9 +19046,10 @@ test('C3: nothing outside the book’s own plumbing reads the voided rows, so no
   // Phase 3, C6 — and the per-row merge (mergeLedgerRows, applyLedgerMerge), which settles a row both copies hold.
   // Treasurer review of C6 (5) — ledgerLogNames and renderRowChooser name a reversal (voided or not) in a
   // change history or the entry chooser; they total nothing.
-  // Phase 3, C7 — scoutHasLedger asks whether any entry, voided or not, names a scout; it totals nothing.
+  // Phase 3, C7 — scoutHasLedger and ledgerScoutsHeld ask whether any entry, voided or not, names a
+  // scout; they total nothing.
   eq([...users].sort(), ['applyLedgerMerge', 'dropScout', 'freshState', 'handleAction', 'isStateEmpty', 'keepLostVoids', 'ledgerAsideListHtml', 'ledgerAsideSettle', 'ledgerEntryLabel',
-    'ledgerLogNames', 'ledgerReverseSlot', 'ledgerUnvoidRow',
+    'ledgerLogNames', 'ledgerReverseSlot', 'ledgerScoutsHeld', 'ledgerUnvoidRow',
     // Phase 3, C5 — renderBankStatementSheet names an entry on a statement voided since; it totals nothing from it.
     'ledgerVoidRow', 'mergeLedgerRows', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderBankStatementSheet', 'renderLedger', 'renderLedgerEntries', 'renderRowChooser', 'restoreGone',
     'rolloverYear', 'scoutHasLedger'], 'who reads the voided rows');
@@ -19869,26 +19883,33 @@ test('C3, Firestore: restoring a backup that holds an entry voided keeps it void
   eq(c3Where(server()), [['l1', 'l3'], ['l2']], 'B, counting it, saved the un-void back over the restore');
 });
 
-test('C3, Firestore: deleting a scout unlinks their voided payments too, on this device and in the merge', () => {
-  const { a, b, server } = c3FsPair();
+test('C3, C7, Firestore: a scout whose payment is voided, deleted on another device, is kept archived, and the payment keeps its family', () => {
+  // (Until C7 the merge unlinked the voided payment. Owner, 2026-09-30: a voided entry is a ledger
+  // item too.) The delete is a page from before C7 (dropScout unlinks the scout's entries there).
+  const { a, b } = c3FsPair();
   a.run("voidRow('l3', 'Wrong family')"); a.push(); b.hear();
-  // On the device that deletes them (dropScout).
   b.run("markGone('scouts', ['s1']); dropScout('s1'); commit()");
-  eq(b.get("state.ledgerAside.map(function (e) { return [e.id, e.scoutId]; })"), [['l3', '']], 'dropScout');
-  // And in another device's merge: A voided it and has not heard the delete; B saved first.
+  eq(b.get("state.ledgerAside.map(function (e) { return [e.id, e.scoutId]; })"), [['l3', '']], 'dropScout, on the deleting page');
+  const kept = (st, how) => {
+    eq([st.scouts.map((x) => [x.id, !!x.archived]).sort(), st.ledgerAside.map((e) => [e.id, e.scoutId]), st.gone.scouts.s1 < 0],
+      [[['s1', true], ['s2', false]], [['l3', 's1']], true], how);
+  };
+  // In another device's merge: A voided it and has not heard the delete; B saved first.
   const q = c3FsPair();
   q.b.run("markGone('scouts', ['s1']); dropScout('s1'); commit()"); q.b.push();
   q.a.run("voidRow('l3', 'Wrong family')");
   q.a.hear(); q.a.push();
-  eq(q.server().ledgerAside.map((e) => [e.id, e.scoutId]), [['l3', '']], 'the merge');
-  // And the device that deleted them, taking a row voided on the other device in its merge (it has
-  // no scout left to drop, so only the merge unlinks it).
+  kept(q.server(), 'the other device’s merge');
+  q.b.hear();
+  kept(q.b.get('state'), 'the deleting device, after');
+  // And the device that deleted them, merging a row voided on the other device: it no longer holds
+  // the scout, so it takes them back from the other copy.
   const r = c3FsPair();
   r.b.run("voidRow('l3', 'Wrong family')"); r.b.push();
   r.a.run("markGone('scouts', ['s1']); dropScout('s1'); commit()");
   r.a.hear(); r.a.push();
-  eq([r.server().ledgerAside.map((e) => [e.id, e.scoutId]), r.a.get("state.ledgerAside.map(function (e) { return e.scoutId; })")], [[['l3', '']], ['']], 'the deleting device’s merge');
-  void a; void server;
+  kept(r.server(), 'the deleting device’s merge');
+  kept(r.a.get('state'), 'the deleting device');
 });
 
 /* Security review of C3, finding 1 — a row an old page saved in BOTH lists. */
@@ -24095,19 +24116,23 @@ test('C6: a backup restored changed every entry; who entered an entry is never a
   eq(r.set.x.reversedBy, undefined, 'a reversal of another entry');
   // The deletion marks decide what is deleted: the later mark, a tie to the deletion.
   const gone = x.ledgerMergeOpts({ gone: { ledger: { p: 5, q: -8, t: 7 }, scouts: { s: 3 } } }, { gone: { ledger: { p: -6, q: 9, t: -7 } } });
-  eq([gone.deleted('p'), gone.deleted('q'), gone.deleted('t'), gone.deleted('z'), gone.scoutGone('s'), gone.scoutGone('')], [false, true, true, false, true, false], 'the merged marks');
+  // (Phase 3, C7 — a scout's marks are each copy's own now: mergeLedgerRows reads them, ledgerRelink.)
+  eq([gone.deleted('p'), gone.deleted('q'), gone.deleted('t'), gone.deleted('z'), gone.scoutGone], [false, true, true, false, undefined], 'the merged marks');
 });
 
 test('C6: what the merge takes care of elsewhere, or can’t know, is not a change: a scout deleted, a delete and its Undo, an event past a full log', () => {
   const x = sandbox(C6_MERGE_FNS);
   const base = [C6_BASE()];
-  // A deleted Ada (her payment unlinked: one 'reassign'); B relabelled it. B's, unlinked by the merge.
-  const A = c6Rec([C6_ROW({ ref: '7' })], base.concat([c6Ev('a1', 'reassign', 'x', 2, { f: { scoutId: ['s1', ''] } })]));
+  // A deleted Ada (her payment unlinked: one 'reassign'); B relabelled it. B's, and (Phase 3, C7) with
+  // Ada's family put back: the merge keeps her, archived ('C7: …' below).
+  const adaGone = { gone: { scouts: { s1: 5 } } };
+  const A = c6Rec([C6_ROW({ ref: '7' })], base.concat([c6Ev('a1', 'reassign', 'x', 2, { f: { scoutId: ['s1', ''] } })]), adaGone);
   const B = c6Rec([C6_ROW({ ref: '7', scoutId: 's1', description: 'Dues (Ada)' })], base.concat([c6Ev('b1', 'edit', 'x', 3, { f: { description: ['Pizza', 'Dues (Ada)'] } })]));
-  let r = c6Both(x, A, B, { scoutGone: (id) => id === 's1' });
-  eq([r.conflicts, r.set.x.description], [[], 'Dues (Ada)'], 'a scout deleted');
+  let r = c6Both(x, A, B);
+  eq([r.conflicts, r.set.x.description, r.set.x.scoutId], [[], 'Dues (Ada)', 's1'], 'a scout deleted');
   // And the family id alone differing, the scout deleted: nothing to ask.
-  eq(c6Both(x, c6Rec([C6_ROW()], base), c6Rec([C6_ROW({ scoutId: 's1' })], base), { scoutGone: (id) => id === 's1' }).conflicts, [], 'an unlinked family');
+  r = c6Both(x, c6Rec([C6_ROW()], base, adaGone), c6Rec([C6_ROW({ scoutId: 's1' })], base));
+  eq([r.conflicts, r.set.x.scoutId], [[], 's1'], 'an unlinked family');
   // A deleted the row and put it back (Undo); B changed it: B's.
   const A2 = c6Rec([C6_ROW({ ref: '7' })], base.concat([c6Ev('a1', 'delete', 'x', 2), c6Ev('a2', 'add', 'x', 2, { why: 'Undo' })]));
   r = c6Both(x, A2, B);
@@ -25584,6 +25609,275 @@ test('Decision 22: closing out the year, and keeping this device’s copy over a
   // Neither is a parent's: no parent act reaches them.
   const pa = /var PARENT_ACTS = \[([^\]]*)\]/.exec(SCRIPT)[1];
   ok(!/closeout|sync-download-cloud|sync-keep-local/.test(pa), 'a parent can close out or keep a copy');
+});
+
+/* ================================================================
+   Phase 3, C7 — a scout with ledger entries is archived, never deleted (owner, 2026-09-30). The
+   merge doesn't take a delete from a page before C7 (or a crafted copy) of a scout an entry names on
+   either copy: the scout is kept, archived, every entry keeps its family, and the ledger needs a look.
+   ================================================================ */
+test('C7: a family one copy’s scout delete unlinked is put back on both, the same either way round, unless that copy changed the family itself', () => {
+  const x = sandbox(C6_MERGE_FNS);
+  const base = [C6_BASE()];
+  // The copy that deleted Ada, by its own marks. (A mark there that is a put-back is not a delete.)
+  const adaGone = { gone: { scouts: { s1: 5 } } };
+  const reassign = c6Ev('a1', 'reassign', 'x', 2, { f: { scoutId: ['s1', ''] } });
+  // A page from before C7 deleted Ada there: her payment unlinked, one 'reassign'. B relabelled it.
+  const A = c6Rec([C6_ROW({ ref: '7' })], base.concat([reassign]), adaGone);
+  const B = c6Rec([C6_ROW({ ref: '7', scoutId: 's1', description: 'Dues (Ada)' })], base.concat([c6Ev('b1', 'edit', 'x', 3, { f: { description: ['Pizza', 'Dues (Ada)'] } })]));
+  let r = c6Both(x, A, B);
+  eq([r.conflicts, r.set.x.scoutId, r.set.x.description], [[], 's1', 'Dues (Ada)'], 'relabelled on the other device');
+  let [a, b] = c6Apply(x, A, B, r.raw.set);
+  eq([a.x.scoutId, b.x.scoutId, c6Same(a.x, b.x)], ['s1', 's1', true], 'on both');
+  // B kept Ada over the delete (a put-back mark, B's own): still put back on a copy holding the delete.
+  eq(c6Both(x, A, c6Rec(B.ledger, B.ledgerLog, { gone: { scouts: { s1: -9 } } })).set.x.scoutId, 's1', 'the other copy kept her already');
+  // Only the family differing: put back, nothing to ask; with the reassign, or none (a crafted copy);
+  // counted or voided on either side.
+  for (const evs of [[reassign], []]) {
+    for (const [ma, ta] of [[false, false], [true, false], [false, true]]) {
+      const rec = (row, log, aside, more) => (aside ? c6Rec([], log, Object.assign({ ledgerAside: [Object.assign(row, { off: 'void', voidReason: 'Twice' })] }, more))
+        : c6Rec([row], log, more));
+      r = c6Both(x, rec(C6_ROW(), base.concat(evs), ma, adaGone), rec(C6_ROW({ scoutId: 's1' }), base, ta));
+      eq([r.conflicts, r.set.x.scoutId], [[], 's1'], `only the family, ${evs.length} events, ${ma}/${ta}`);
+    }
+  }
+  // Both changed the words: asked, and whichever is picked keeps the family; the chooser shows it on
+  // both versions, and the leader's pick doesn't log the family as changed.
+  const A2 = c6Rec([C6_ROW({ ref: '7', description: 'Pizza night' })], base.concat([reassign, c6Ev('a2', 'edit', 'x', 3, { f: { description: ['Pizza', 'Pizza night'] } })]), adaGone);
+  r = c6Both(x, A2, B);
+  eq([r.conflicts.length, r.conflicts[0].rows[0].parts, r.conflicts[0].rows[0].mine.scoutId, r.conflicts[0].rows[0].theirs.scoutId], [1, ['content'], 's1', 's1'], 'both changed the words');
+  for (const pick of ['mine', 'theirs']) {
+    r = c6Both(x, A2, B, { picks: { x: pick } });
+    eq([r.set.x.scoutId, r.set.x.description], ['s1', pick === 'mine' ? 'Pizza night' : 'Dues (Ada)'], 'picked ' + pick);
+    eq(Object.keys(x.ledgerResolveMore(r.conflicts[0].rows[0], pick).f), ['description'], 'the pick logs the family as changed');
+  }
+  // The copy naming nobody changed the family itself since (an edit or a pick of it, a backup
+  // restored): its change, settled as any is. An op this page doesn't know: asked (F5).
+  for (const ev of [c6Ev('a3', 'edit', 'x', 3, { f: { scoutId: ['s1', ''] } }), c6Ev('a3', 'resolve', 'x', 3, { f: { scoutId: ['s1', ''] } }), c6Ev('a3', 'restore', 'book', 3)]) {
+    r = c6Both(x, c6Rec([C6_ROW()], base.concat([reassign, ev]), adaGone), c6Rec([C6_ROW({ scoutId: 's1' })], base));
+    eq([r.conflicts, r.set.x.scoutId], [[], ''], ev.op + ' of the family');
+  }
+  r = c6Both(x, c6Rec([C6_ROW()], base.concat([reassign, c6Ev('a3', 'frobnicate', 'x', 3)]), adaGone), c6Rec([C6_ROW({ scoutId: 's1' })], base));
+  eq([r.conflicts.length, r.conflicts[0].rows[0].mine.scoutId, r.conflicts[0].rows[0].theirs.scoutId], [1, '', 's1'], 'an unknown op');
+  // The copy naming nobody hasn't Ada marked deleted (never did, the mark aged out, or it is a
+  // put-back): C6's rule, unchanged. The 'reassign' changed nothing, so the two differ with no event
+  // to say why, and it is asked. Nor does the other copy's mark put a family back.
+  for (const [ga, gb] of [[{}, {}], [{ gone: { scouts: { s1: -5 } } }, {}], [{}, adaGone]]) {
+    eq(c6Both(x, c6Rec(A.ledger, A.ledgerLog, ga), c6Rec([C6_ROW({ ref: '7', scoutId: 's1' })], base, gb)).conflicts.length, 1, 'not deleted there: ' + JSON.stringify([ga, gb]));
+  }
+  // Rows unlinked in the past, '' on both: nothing to put back.
+  eq(c6Both(x, c6Rec([C6_ROW({ ref: '7' })], base.concat([reassign]), adaGone), c6Rec([C6_ROW({ ref: '7', description: 'Dues' })], base.concat([c6Ev('b1', 'edit', 'x', 3, { f: { description: ['Pizza', 'Dues'] } })]))).set.x.scoutId,
+    '', 'a legacy unlinked row');
+  // ledgerRelink on its own: the scout, either way round, only when the copy naming nobody has that
+  // scout marked deleted, and only when its own events didn't change the family.
+  const ada = (id) => id === 's1', none = () => false;
+  const rl = (m, t, nm, nt, gm, gt) => x.ledgerRelink({ scoutId: m }, { scoutId: t }, nm || [], nt || [], gm === undefined ? ada : gm, gt === undefined ? ada : gt);
+  eq([rl('', 's1'), rl('s1', ''), rl('s1', undefined), rl('', ''), rl('s1', 's1'), rl('s1', 's2'), rl('', 's9'), rl('', 's1', [], [], null, ada), rl('', 's1', [], [], none, ada),
+    rl('', 's1', [], [], ada, none), rl('s1', '', [], [], none, ada), rl('s1', '', [], [], ada, none),
+    rl('', 's1', [reassign]), rl('s1', '', [], [reassign]), rl('s1', '', [reassign]), rl('', 's1', [c6Ev('e', 'edit', 'x', 3, { f: { description: ['a', 'b'] } })]),
+    rl('', 's1', [], [c6Ev('e', 'edit', 'x', 3, { f: { scoutId: ['', 's1'] } })])],
+  ['s1', 's1', 's1', '', '', '', '', '', '', 's1', 's1', '', 's1', 's1', 's1', 's1', 's1'], 'ledgerRelink');
+});
+
+test('C7: the scouts a merge keeps over a delete are those an entry on either copy names, counted or set aside, and their marks become put-backs', () => {
+  const x = sandbox(C6_MERGE_FNS);
+  const mine = { ledger: [{ scoutId: 's2' }, null, { scoutId: '' }], ledgerAside: [{ scoutId: 's1', off: 'void' }] };
+  const theirs = { ledger: [{ scoutId: 's4' }], ledgerAside: [{ scoutId: 's5', off: 'reversal' }] };
+  const run = (m, t) => {
+    const g = { scouts: { s1: 5, s2: -5, s3: 5, s4: 7, s5: 5000 } };
+    return [JSON.parse(JSON.stringify(x.ledgerScoutsHeld(g, m, t, 1000))), g.scouts];
+  };
+  const want = [['s1', 's4', 's5'], { s1: -1000, s2: -5, s3: 5, s4: -1000, s5: -1001 }];
+  eq(run(mine, theirs), want, 'held, and put back (never later than just after now)');
+  eq(run(theirs, mine), want, 'the other way round');
+  eq([x.ledgerScoutsHeld(null, mine, theirs, 1), x.ledgerScoutsHeld({}, mine, theirs, 1), x.ledgerScoutsHeld({ scouts: { s1: 5 } }, null, undefined, 1)].map((h) => h.length), [0, 0, 0], 'nothing to read');
+  // The note: first name only, and never blank.
+  const n = sandbox(['ledgerScoutKeptLook']);
+  eq([n.ledgerScoutKeptLook({ name: '  Ada   Lovelace ' }), n.ledgerScoutKeptLook({ name: '' }), n.ledgerScoutKeptLook(null)], [
+    'Ada was deleted on another device, but payments are recorded for this scout, so they were archived instead. Their payments still count for their family. Archived scouts are listed on Scouts · Roster.',
+    'A scout was deleted on another device, but payments are recorded for this scout, so they were archived instead. Their payments still count for their family. Archived scouts are listed on Scouts · Roster.',
+    'A scout was deleted on another device, but payments are recorded for this scout, so they were archived instead. Their payments still count for their family. Archived scouts are listed on Scouts · Roster.'], 'the note');
+  // Leaders only, as every note on the card is: nothing of it is published.
+  ok(!/scoutsHeld|ledgerScoutsHeld|ledgerScoutKeptLook|scoutkept/.test(codeOnly(BPV())), 'buildParentView reads it');
+});
+
+test('C7 property: with scouts deleted on older pages and on this one, and families changed, two devices’ merges agree either way round, are a fixed point, and every family named is on the roster', () => {
+  const w = c6World(['scoutHasLedger']);
+  vm.runInContext(`
+    function hasScout(sid) { return state.scouts.some(function (s) { return s.id === sid; }); }
+    // The merge's drop of a scout deleted elsewhere, as the page's dropScout does it for the roster and
+    // the ledger (c6World's is a no-op).
+    dropScout = function (sid) {
+      state.scouts = state.scouts.filter(function (s) { return s.id !== sid; });
+      state.ledger.concat(state.ledgerAside).forEach(function (e) { if (e.scoutId === sid) e.scoutId = ''; });
+    };
+    // A family changed on the entry (the page's edit, logged).
+    OPS.family = function (id, sid) {
+      var e = rowOf(id); if (!e || (e.scoutId || '') === sid) return false;
+      var was = ledgerRowFields(e); e.scoutId = sid; logLedger('edit', id, { f: ledgerRowDiff(was, e) }); return true;
+    };
+    // A page from before C7 deleting a scout (OLD_DEL_S1): their entries unlinked, one 'reassign'.
+    OPS.delold = function (sid) {
+      if (!hasScout(sid)) return false;
+      var rows = state.ledger.concat(state.ledgerAside).filter(function (e) { return e.scoutId === sid; }).map(function (e) { return e.id; });
+      markGone('scouts', [sid]); state.scouts = state.scouts.filter(function (s) { return s.id !== sid; });
+      state.ledger.concat(state.ledgerAside).forEach(function (e) { if (e.scoutId === sid) e.scoutId = ''; });
+      if (rows.length) logLedger('reassign', rows[0], { f: { scoutId: [sid, ''] }, rows: rows.slice(1) });
+      return true;
+    };
+    // This page's Delete: refused for a scout any entry names.
+    OPS.delnew = function (sid) {
+      if (!hasScout(sid) || scoutHasLedger(sid)) return false;
+      markGone('scouts', [sid]); state.scouts = state.scouts.filter(function (s) { return s.id !== sid; }); return true;
+    };`, w);
+  const r = c3Rand(7007);
+  const pick = (a) => a[Math.floor(r() * a.length)];
+  const get = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, w)));
+  const roster = (rec) => [rec.scouts.map((s) => s.id + (s.archived ? ' archived' : '')).sort(), Object.keys(rec.gone.scouts).sort().map((k) => k + (rec.gone.scouts[k] > 0 ? ' gone' : ' back'))];
+  let kept = 0, relinked = 0;
+  for (let n = 0; n < 160; n++) {
+    const base = c6Base(r, pick);
+    base.ledger.forEach((e) => { e.scoutId = pick(['', '', 's1', 's2']); });
+    const tA = [], tB = [];
+    for (let t = 1, k = 2 + Math.floor(r() * 6); k > 0; k--, t++) (r() < 0.5 ? tA : tB).push(1790000000000 + t * 60000);
+    const ids = base.ledger.map((e) => e.id);
+    const ops = (times) => times.map((t, i) => {
+      const k = pick(['desc', 'tick', 'void', 'unvoid', 'reverse', 'family', 'family', 'delold', 'delold', 'delnew', 'add']);
+      if (k === 'desc') return [t, k, pick(ids), 'says ' + i];
+      if (k === 'family') return [t, k, pick(ids), pick(['', 's1', 's2'])];
+      if (k === 'delold' || k === 'delnew') return [t, k, pick(['s1', 's2'])];
+      if (k === 'add') return [t, k, i];
+      return [t, k, pick(ids)];
+    });
+    const opsA = ops(tA), opsB = ops(tB);
+    w.base = base; w.opsA = opsA; w.opsB = opsB;
+    const A = get("dev(base, 'A', opsA).rec"), B = get("dev(base, 'B', opsB).rec");
+    w.A = A; w.B = B;
+    const conf = get('conflicts(A, B)');
+    const at = 1790000000000 + 3600000;
+    const mineAll = {}, theirsAll = {};
+    conf.forEach((c) => c.ids.forEach((id) => { mineAll[id] = 'mine'; theirsAll[id] = 'theirs'; }));
+    w.pa = mineAll; w.pb = theirsAll;
+    const AB = get(`merge(A, B, pa, ${at})`), BA = get(`merge(B, A, pb, ${at})`);
+    const what = `case ${n}: A ${JSON.stringify(opsA.map((o) => o.slice(1)))} B ${JSON.stringify(opsB.map((o) => o.slice(1)))}`;
+    // 1. Order independence: the same book, and the same roster and marks, whichever device merges.
+    eq(c6Diff(c6Book(BA), c6Book(AB)), [], what + ': the book, merged the other way round');
+    eq(roster(BA), roster(AB), what + ': the roster, merged the other way round');
+    eq(get('conflicts(B, A)').map(c6Swap), conf, what + ': the conflicts the other way round');
+    // 2. A fixed point.
+    w.AB = AB;
+    for (const other of ['A', 'B']) {
+      const again = get(`merge(AB, ${other}, {}, ${at})`);
+      eq([c6Diff(c6Book(again), c6Book(AB)), roster(again)], [[], roster(AB)], what + ': not a fixed point, with ' + other);
+    }
+    eq([get('conflicts(AB, A)'), get('conflicts(AB, B)')], [[], []], what + ': asked again');
+    // 3. Every family an entry names is on the merged roster: nothing points at a scout the merge dropped.
+    const on = new Set(AB.scouts.map((s) => s.id));
+    AB.ledger.concat(AB.ledgerAside).forEach((e) => { if (e.scoutId) ok(on.has(e.scoutId), `${what}: ${e.id} names ${e.scoutId}, who is not on the roster`); });
+    // 4. A scout an entry names on either copy, deleted on the other, is kept, archived.
+    ['s1', 's2'].forEach((sid) => {
+      const named = [A, B].some((c) => c.ledger.concat(c.ledgerAside).some((e) => e.scoutId === sid));
+      const deleted = [A, B].some((c) => c.gone.scouts[sid] > 0);
+      if (named && deleted && AB.ledger.concat(AB.ledgerAside).some((e) => e.scoutId === sid)) {
+        eq(AB.scouts.filter((s) => s.id === sid).map((s) => !!s.archived), [true], `${what}: ${sid} was not kept, archived`);
+        kept += 1;
+      }
+    });
+    // 5. Rows unlinked on both copies stay unlinked (never re-linked from the past).
+    A.ledger.concat(A.ledgerAside).forEach((e) => {
+      const f = B.ledger.concat(B.ledgerAside).find((x) => x.id === e.id);
+      const m = AB.ledger.concat(AB.ledgerAside).find((x) => x.id === e.id);
+      if (f && m && !e.scoutId && !f.scoutId) eq(m.scoutId || '', '', `${what}: ${e.id}, unlinked on both, was linked`);
+      if (f && m && !!e.scoutId !== !!f.scoutId && m.scoutId) relinked += 1;
+    });
+  }
+  ok(kept > 20 && relinked > 20, `too few cases: ${kept} kept, ${relinked} relinked`);
+});
+
+// What a page from before C7 did on Delete, for Ada (del-scout before 990fd89): her entries unlinked,
+// logged as one 'reassign'.
+const OLD_DEL_S1 = "var dsRows = state.ledger.concat(state.ledgerAside || []).filter(function (e) { return e.scoutId === 's1'; }).map(function (e) { return e.id; }); " +
+  "markGone('scouts', ['s1']); dropScout('s1'); if (dsRows.length) logLedger('reassign', dsRows[0], { f: { scoutId: ['s1', ''] }, rows: dsRows.slice(1) }); commit()";
+const C7_NOTE = 'Ada was deleted on another device, but payments are recorded for this scout, so they were archived instead. Their payments still count for their family. Archived scouts are listed on Scouts · Roster.';
+// The scouts (sorted, archived or not), the family of payment `id`, and whether Ada's mark is a put-back.
+const c7Kept = (st, id) => [st.scouts.map((x) => [x.id, !!x.archived]).sort(), st.ledger.concat(st.ledgerAside || []).filter((e) => e.id === (id || 'l3')).map((e) => e.scoutId),
+  st.gone.scouts.s1 < 0];
+const C7_KEPT = [[['s1', true], ['s2', false]], ['s1'], true];
+// A payment for Ada recorded on a device that hasn't heard she was deleted.
+const C7_PAY = "state.ledger.push({ id: 'ls1', date: '2026-09-05', description: 'Ada dues', amountCents: 500, direction: 'in', scoutId: 's1' }); commit()";
+
+test('C7, Firestore: an older page’s delete of a scout with payments keeps the scout, archived, and the payments’ family, on both devices', () => {
+  // A (a page from before C7) deletes Ada, whose dues (l3) are recorded, and saves; B, with an
+  // unsaved change, saves over it.
+  const { a, b, server } = c3FsPair();
+  a.run(OLD_DEL_S1); a.push();
+  eq([server().scouts.map((x) => x.id), server().ledger.find((e) => e.id === 'l3').scoutId], [['s2'], ''], 'what the older page saved');
+  b.run(B1); b.hear(); b.push();
+  eq(c7Kept(server()), C7_KEPT, 'the pack record');
+  eq(c7Kept(b.get('state')), C7_KEPT, 'B');
+  eq(b.get('sync.lookNotes'), [C7_NOTE], 'the note');
+  eq(server().ledgerLog.map((e) => [e.op, e.row]), [['reassign', 'l3']], 'the history: the older page’s, and nothing more');
+  a.hear();
+  eq(c7Kept(a.get('state')), C7_KEPT, 'A after B’s save');
+  // Merged again, nothing changes: the mark is a put-back now, and every entry names her.
+  const before = b.get('JSON.stringify(state)');
+  b.run(`mergeRemoteAppendOnly({ json: ${JSON.stringify(JSON.stringify(server()))} })`);
+  eq(b.get('JSON.stringify(state)'), before, 'merged again, B changed');
+  // Voided on B meanwhile: the same.
+  const v = c3FsPair();
+  v.a.run(OLD_DEL_S1); v.a.push();
+  v.b.run("voidRow('l3', 'Wrong family')"); v.b.hear(); v.b.push();
+  eq([c7Kept(v.server()), v.server().ledgerAside.map((e) => e.id)], [C7_KEPT, ['l3']], 'voided on the other device');
+  // Control: the merge of a page from before C7 drops Ada, and her payment names nobody.
+  const q = c3FsPair();
+  q.b.run(preC7Merge(slice('mergeRemoteAppendOnly')));
+  q.a.run(OLD_DEL_S1); q.a.push();
+  q.b.run(B1); q.b.hear(); q.b.push();
+  eq(c7Kept(q.server()).slice(0, 2), [[['s2', false]], ['']], 'control: before C7');
+});
+
+test('C7, Firestore: a scout deleted on one device while another records a payment for them is kept, archived, with it, whichever saves first', () => {
+  // (This page's Delete is taken: the deleting device's copy has no payment for Ada.)
+  const want = [[['s1', true], ['s2', false]], ['s1'], true];
+  // The delete saved first.
+  let { a, b, server } = fsGonePair();
+  a.run(DEL_SCOUT); a.push();
+  b.run(C7_PAY); b.hear(); b.push();
+  eq([c7Kept(server(), 'ls1'), b.get('sync.lookNotes')], [want, [C7_NOTE]], 'the payment saved last');
+  a.hear();
+  eq(c7Kept(a.get('state'), 'ls1'), want, 'the deleting device, after');
+  // The payment saved first: the deleting device, which no longer holds Ada, takes her back.
+  ({ a, b, server } = fsGonePair());
+  b.run(C7_PAY); b.push();
+  a.run(DEL_SCOUT); a.hear(); a.push();
+  eq([c7Kept(server(), 'ls1'), a.get('sync.lookNotes')], [want, [C7_NOTE]], 'the delete saved last');
+  eq(server().scouts.find((x) => x.id === 's1').name, 'Ada', 'her record');
+  b.hear();
+  eq(c7Kept(b.get('state'), 'ls1'), want, 'the paying device, after');
+  // Her popcorn entries the delete took stay deleted: only the ledger keeps a scout.
+  eq(eIds(server()), ['old2', 'x2'], 'the popcorn entries');
+});
+
+atest('C7, api: an older page’s delete of a scout with payments keeps the scout, archived, and the payments’ family, on both devices', async () => {
+  const over = { ledger: C3_ROWS, ledgerAside: [], book: C3_SEED.book, ledgerLog: [] };
+  let { a, b, server } = await apiGonePair(over);
+  for (const c of [a, b]) c.run(C3_EXTRA);
+  await a.edit(OLD_DEL_S1);
+  eq(server().scouts.map((x) => x.id), ['s2'], 'what the older page saved');
+  b.run(B1);
+  await settle([b], 800);
+  eq(c7Kept(server()), C7_KEPT, 'the pack record');
+  eq([c7Kept(b.get('state')), b.get('sync.lookNotes')], [C7_KEPT, [C7_NOTE]], 'B, and the note');
+  await a.poll();
+  eq(c7Kept(a.get('state')), C7_KEPT, 'A after B’s save');
+  // A delete on this page, and a payment on the other device saved first.
+  ({ a, b, server } = await apiGonePair());
+  await b.edit(C7_PAY);
+  a.run(DEL_SCOUT);
+  await settle([a], 800);
+  eq([c7Kept(server(), 'ls1'), a.get('sync.lookNotes')], [[[['s1', true], ['s2', false]], ['s1'], true], [C7_NOTE]], 'the delete saved last');
+  await b.poll();
+  eq(c7Kept(b.get('state'), 'ls1'), [[['s1', true], ['s2', false]], ['s1'], true], 'the paying device, after');
 });
 
 /* ---------------- report ---------------- */

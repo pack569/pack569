@@ -13908,9 +13908,11 @@
   //   copy's change, and only an entry the other copy changed since is asked about.
   //   Counted on both copies, the reverse marks are those of the copy whose reversal counts (the
   //   merge's rvMarked rule, kept), whatever the logs say; by the logs only when both count or neither.
-  //   A 'reassign' (a scout deleted) settles nothing here: the scout's deletion mark unlinks the
-  //   rows on every device (mergeRemoteAppendOnly), so a family the merged marks have deleted
-  //   (`scoutGone`) reads as none. Nor does an 'add' or 'delete': the marks settle those.
+  //   A 'reassign' (a scout deleted, on a page from before C7) settles nothing here. Since C7 a
+  //   scout an entry names is kept, archived, over a delete (mergeRemoteAppendOnly), and a family
+  //   one copy's delete unlinked is put back on both (ledgerRelink, by that copy's own marks).
+  //   Rows unlinked in the past read '' on both copies, and stay so. Nor does an 'add' or 'delete'
+  //   settle anything: the marks settle those.
   // THE LOG CAP (mergeLedgerLog): a copy whose log is full may have cut an old event the other
   // still holds, so one that sorts before everything a full log kept is not a change (its "last
   // agreed" is not known, and a missing old event proves nothing).
@@ -13973,7 +13975,7 @@
     }
     return {};
   }
-  // The deletion marks of two copies, for one log (a scout's): is `id` deleted once they are merged
+  // The deletion marks of two copies, for one log (the ledger's): is `id` deleted once they are merged
   // (the later mark; on a tie, the deletion: as mergeRemoteAppendOnly merges them)? Pure.
   function ledgerMarksGone(ma, mb) {
     return function (id) {
@@ -13985,11 +13987,12 @@
   }
   // A field with nothing in it: '', null, false or absent read alike (a row set aside carries '' and
   // null where a counted one has nothing; a flag not set is false or absent).
-  // What mergeLedgerRows needs from the two copies' deletion marks: whether a scout, and a ledger row,
-  // is deleted once they are merged. Pure.
+  // What mergeLedgerRows needs from the two copies' deletion marks: whether a ledger row is deleted
+  // once they are merged. Pure. (Until C7, whether a scout was too: mergeLedgerRows now reads each
+  // copy's own scout marks, ledgerRelink.)
   function ledgerMergeOpts(a, b, picks) {
     function marks(s, log) { return s && s.gone && s.gone[log]; }
-    return { picks: picks, scoutGone: ledgerMarksGone(marks(a, 'scouts'), marks(b, 'scouts')), deleted: ledgerMarksGone(marks(a, 'ledger'), marks(b, 'ledger')) };
+    return { picks: picks, deleted: ledgerMarksGone(marks(a, 'ledger'), marks(b, 'ledger')) };
   }
   function ledgerEmpty(v) { return v === '' || v === null || v === undefined || v === false; }
   // The fields that are the money itself: a locked row's change only by Correct (LEDGER_LOCKED_FIELDS).
@@ -14003,15 +14006,62 @@
     return [oth.date, src.date].some(function (d) { return !!d && !!ort && d <= ort && !(srt && d <= srt); });
   }
   // One part of a row, as compared: its fields, sorted, the empty ones left out. Pure.
-  function ledgerPartKey(e, part, scoutGone) {
+  // (Until C7 a family the merged marks had deleted read as none here: the merge unlinked it.)
+  function ledgerPartKey(e, part) {
     var c = {};
     Object.keys(e).sort().forEach(function (k) {
       if (k === 'id' || ledgerFieldPart(k) !== part) return;
       var v = e[k];
-      if (k === 'scoutId' && scoutGone && scoutGone(v)) v = '';
       if (!ledgerEmpty(v)) c[k] = v;
     });
     return JSON.stringify(c);
+  }
+  // PHASE 3, C7 (owner, 2026-09-30: a scout with ledger entries is archived, never deleted; a payment
+  // is money that moved, and its family link stays). Row `mr` (this copy's) and `tr` (the other's),
+  // one naming a scout and the other naming nobody, on a copy whose own marks (`goneM`, `goneT`: is a
+  // scout marked deleted there?) say that scout is deleted: that copy's delete unlinked it (a page
+  // from before C7, or a crafted copy; this page refuses the delete). The scout it names, which both
+  // copies then take. The merge keeps that scout (mergeRemoteAppendOnly's scoutsHeld), so nothing is
+  // left pointing at nobody. The unlinking copy's own mark, not the merged one: once a merge has kept
+  // the scout, its mark is a put-back, and a copy still holding the delete (a device that took the
+  // older page's save) must still have its row put back, not asked about. Not when the copy naming
+  // nobody has, since the two last agreed (its events, `newM` or `newT`, as mergeLedgerRows reads
+  // them), changed the family itself: an edit or a pick of it, a backup restored, an op this page
+  // doesn't know. That is a change like any other, and the merge settles it as one. A 'reassign' is
+  // the unlinking itself, so it is not. '' when there is nothing to put back. Pure, and the same
+  // either way round.
+  function ledgerRelink(mr, tr, newM, newT, goneM, goneT) {
+    var ms = typeof mr.scoutId === 'string' ? mr.scoutId : '', ts = typeof tr.scoutId === 'string' ? tr.scoutId : '';
+    if (!ms === !ts) return '';
+    var id = ms || ts, evs = ms ? newT : newM, gone = ms ? goneT : goneM;
+    if (!gone || !gone(id)) return '';
+    var changed = evs.some(function (ev) {
+      return ev.op === 'restore' || LEDGER_OPS.indexOf(ev.op) === -1 ||
+        (ev.op !== 'reassign' && !!ev.f && typeof ev.f === 'object' && Object.prototype.hasOwnProperty.call(ev.f, 'scoutId'));
+    });
+    return changed ? '' : id;
+  }
+  // PHASE 3, C7 — the scouts a merge keeps over a delete. A scout any entry names, on either copy
+  // (`mine`, `theirs`), counted or set aside, is never dropped for a delete: a page from before C7 (or
+  // a crafted copy) deleted them there, and unlinked their entries on that copy. Their mark in `g` (the
+  // merged marks) becomes a put-back, in place, as keepReconciled's does (never later than just after
+  // `now`), so every copy keeps them, a page from before C7 included. mergeRemoteAppendOnly then takes
+  // one this copy no longer holds back from the other (takeBack), archives each (the nearest thing to
+  // the delete that keeps the payments with the family), and says so on "The ledger needs a look". Read
+  // after mergeLedgerRows has put the family back on each entry the delete unlinked (ledgerRelink).
+  // The ids, sorted: the same whichever device merges.
+  function ledgerScoutsHeld(g, mine, theirs, now) {
+    var held = [], named = Object.create(null);
+    if (!g || !g.scouts) return held;
+    [mine, theirs].forEach(function (c) {
+      arrOf(c && c.ledger).concat(arrOf(c && c.ledgerAside)).forEach(function (e) { if (e && typeof e.scoutId === 'string' && e.scoutId) named[e.scoutId] = true; });
+    });
+    Object.keys(named).sort().forEach(function (id) {
+      if (!(g.scouts[id] > 0)) return;
+      g.scouts[id] = -Math.max(now, Math.min(g.scouts[id], now) + 1);
+      held.push(id);
+    });
+    return held;
   }
   // Write `fields` (mergeLedgerRows' `set` for the row) onto `row`, in place: undefined removes a
   // field. An empty value over an empty one is left as it is ('' and absent read alike), so a row set
@@ -14027,7 +14077,7 @@
   }
   function mergeLedgerRows(mine, theirs, opts) {
     opts = opts || {};
-    var picks = opts.picks || {}, scoutGone = opts.scoutGone || null;
+    var picks = opts.picks || {};
     function side(s) {
       var o = { rows: Object.create(null), evs: Object.create(null), ids: Object.create(null), sts: Object.create(null), full: false, first: '', restores: [] };
       arrOf(s && s.ledger).forEach(function (e) { if (e && typeof e.id === 'string' && !o.rows[e.id]) o.rows[e.id] = { row: e, list: 'counted' }; });
@@ -14049,6 +14099,9 @@
       // ('' sorts first) would put it before everything, and a full log's cut events would count.
       var dated = log.filter(function (ev) { return typeof ev.at === 'string' && ev.at; })[0];
       o.first = dated ? dated.at + '\u0000' + dated.id : '';
+      // Phase 3, C7 — is scout `id` marked deleted on this copy, by its own marks (ledgerRelink)?
+      var sg = s && s.gone && s.gone.scouts && typeof s.gone.scouts === 'object' ? s.gone.scouts : {};
+      o.scoutGone = function (id) { return typeof id === 'string' && !!id && Object.prototype.hasOwnProperty.call(sg, id) && sg[id] > 0; };
       return o;
     }
     var M = side(mine), T = side(theirs), deleted = opts.deleted || function () { return false; };
@@ -14158,6 +14211,10 @@
       if (newM.concat(newT).some(function (ev) { return LEDGER_OPS.indexOf(ev.op) === -1; })) {
         cm = { tick: true, off: true, content: true }; ct = { tick: true, off: true, content: true };
       }
+      // Phase 3, C7 — a family one copy's delete unlinked (ledgerRelink): the row is settled as if both
+      // copies named it, and both take it (below), whatever else is settled or picked.
+      var rl = ledgerRelink(mr, tr, newM, newT, M.scoutGone, T.scoutGone);
+      if (rl) { mr = Object.assign({}, mr, { scoutId: rl }); tr = Object.assign({}, tr, { scoutId: rl }); }
       function decide(part, same) {
         if (same) return 'same';
         if (cm[part] && !ct[part]) return 'mine';
@@ -14165,7 +14222,7 @@
         return 'conflict';
       }
       var how = {
-        content: decide('content', ledgerPartKey(mr, 'content', scoutGone) === ledgerPartKey(tr, 'content', scoutGone)),
+        content: decide('content', ledgerPartKey(mr, 'content') === ledgerPartKey(tr, 'content')),
         off: m.list === t.list ? decide('off', ledgerPartKey(mr, 'off') === ledgerPartKey(tr, 'off')) : 'same'
       };
       // Counted on both: the reverse marks of the copy whose reversal counts (as the merge's rvMarked
@@ -14249,6 +14306,7 @@
         var sid = !sa ? sb : !sb || sa === sb ? sa : ((stRank[sa] || 0) >= (stRank[sb] || 0) ? sa : sb);
         out.statementId = sid || undefined;
       }
+      if (rl) out.scoutId = rl;   // Phase 3, C7 — the family put back, on both copies
       set[id] = out;
     });
     // The items: conflicting rows an event on either copy names together are one choice.
@@ -14386,6 +14444,8 @@
       clampGone(gone, now);
       pruneGone(gone, now, goneClockOk(remoteNewest, now));
     }
+    // Phase 3, C7 — a scout any entry names is kept over a delete (ledgerScoutsHeld): archived, below.
+    var scoutsHeld = ledgerScoutsHeld(gone, state, remote, Date.now());
     function parentGone(log, id) { return !!(gone && gone[log] && typeof id === 'string' && gone[log][id] > 0); }
     function isGone(log, x) {
       if (!gone) return false;
@@ -14481,6 +14541,13 @@
       });
     }
     takeBack('scouts', state.scouts, remote.scouts);
+    // Phase 3, C7 — each scout kept over a delete (scoutsHeld), archived, and said.
+    scoutsHeld.forEach(function (id) {
+      var sc = arrOf(state.scouts).filter(function (x) { return x && x.id === id; })[0];
+      if (!sc) return;
+      if (!sc.archived) { sc.archived = true; added += 1; }
+      if (Array.isArray(look)) look.push({ kind: 'scoutkept', scout: sc });
+    });
     takeBack('fundraisers', state.fundraisers, remote.fundraisers);
     if (state.inventory && remote.inventory) takeBack('products', state.inventory.products, remote.inventory.products);
     state.entries = dropGone(state.entries, 'entries');
@@ -14627,7 +14694,8 @@
     // counted in what this returns: nobody needs telling that a history line came across.
     // Deletion marks don't apply: the log is append-only, and nothing is ever deleted from it.
     state.ledgerLog = mergeLedgerLog(state.ledgerLog, remote.ledgerLog);
-    // A deleted scout's payments stay (that money moved), pointing at nobody, as del-scout leaves them.
+    // A deleted scout's payments stay (that money moved), pointing at nobody, as del-scout left them
+    // until C7. (Since C7 no scout an entry names is deleted here, scoutsHeld, so this finds nothing.)
     if (Array.isArray(state.ledger)) state.ledger.forEach(function (e) { if (e && parentGone('scouts', e.scoutId)) e.scoutId = ''; });
     if (Array.isArray(state.ledgerAside)) state.ledgerAside.forEach(function (e) { if (e && parentGone('scouts', e.scoutId)) e.scoutId = ''; });
     if (state.inventory) state.inventory.distributions = dropGone(state.inventory.distributions, 'distributions');
@@ -14821,11 +14889,13 @@
   // page never merges the pack record, and nothing here is published.
   // Security re-check of C6 (N1c, N4, N5) — and 'twostatements' and 'voidlisted' from a merge, and
   // 'restorediff' from a backup restored (an admin's: confirm-import).
+  // Phase 3, C7 — and 'scoutkept': a scout kept, archived, over another device's delete.
   function noteLedgerLookFromMerge(look) {
     var seen = sync.lookSeen || (sync.lookSeen = {}), notes = sync.lookNotes || (sync.lookNotes = []), n = 0;
     arrOf(look).forEach(function (it) {
       var key = it && (it.kind === 'voidtick' || it.kind === 'twostatements' || it.kind === 'voidlisted') && it.row ? it.kind + ':' + it.row.id
         : it && it.kind === 'forgiven' && it.charge ? 'forgiven:' + it.charge.id
+        : it && it.kind === 'scoutkept' && it.scout ? 'scoutkept:' + it.scout.id
         : it && it.kind === 'restorediff' && it.statement ? 'restorediff:' + it.statement.id + ':' + it.statement.nowCents : '';
       if (!key || seen[key]) return;
       seen[key] = true;
@@ -14834,6 +14904,7 @@
         : it.kind === 'twostatements' ? ledgerTwoStatementsLook(it)
         : it.kind === 'voidlisted' ? ledgerVoidListedLook(it)
         : it.kind === 'restorediff' ? ledgerRestoreDiffLook(it.statement)
+        : it.kind === 'scoutkept' ? ledgerScoutKeptLook(it.scout)
         : ledgerCap(ledgerEntryNamed(it.row)) + ' was ticked on one device while voided on another. The void was kept, so it is no longer ticked. ' +
           'If the bank statement shows it cleared, un-void it and tick it again.');
       n += 1;
@@ -14845,6 +14916,13 @@
   function ledgerRestoreDiffLook(o) {
     return 'After the backup was restored, the entries the ' + fmtDateShort(o.date) + ' statement lists come to ' + ledgerSignedCents(o.nowCents) +
       ', not the ' + ledgerSignedCents(o.signedCents) + ' it was signed with, so the book no longer matches that statement. Check those entries against the bank statement.';
+  }
+  // Phase 3, C7 — a scout the merge kept, archived, over another device's delete (scoutsHeld), named by
+  // first name only (the first word of the name, as shortNames takes it). Pure.
+  function ledgerScoutKeptLook(sc) {
+    var first = String((sc && sc.name) || '').trim().split(/\s+/)[0];
+    return (first || 'A scout') + ' was deleted on another device, but payments are recorded for this scout, so they were archived instead. ' +
+      'Their payments still count for their family. Archived scouts are listed on Scouts · Roster.';
   }
   // Signed money, as the ledger's notes write it: "+$40.00", "−$40.00". Pure.
   function ledgerSignedCents(c) { return (c < 0 ? '−' : '+') + fmt(Math.abs(c)); }
@@ -30701,8 +30779,8 @@
   }
   // Remove a scout and everything that is theirs alone (del-scout; and the sync merge, for a
   // scout another device deleted — LIVE STOPGAP, see freshGone). Does not save.
-  // Phase 3, C7 — del-scout never drops one the ledger names (scoutHasLedger), so the ledger
-  // unlinking below is only ever the merge's, for a delete made on a page from before C7.
+  // Phase 3, C7 — never one the ledger names: del-scout refuses one (scoutHasLedger), and the merge
+  // keeps one (mergeRemoteAppendOnly's scoutsHeld). So the ledger unlinking below finds nothing now.
   function dropScout(id) {
     var goneScout = getScout(id); // capture before removal so we can preserve derby names
     state.scouts = state.scouts.filter(function (x) { return x.id !== id; });
