@@ -18190,7 +18190,8 @@ const C2_ACT = [
 const ASIDE_LIST_FNS = ['ledgerPairOf', 'ledgerPairRole', 'ledgerReversedLineHtml', 'ledgerReplacementId', 'ledgerReversalOf', 'ledgerReplacementFor',
   'ledgerLiveReversals', 'ledgerReversedAgainWhy', 'ledgerEntryNamed', 'ledgerCap', 'ledgerReversalName'];
 // Treasurer sign-off on option B (3) — how the ledger's notes name an entry, and how to take a row out.
-const LOOK_WORD_FNS = ['fmtDateShort', 'ledgerEntryNamed', 'ledgerCap', 'ledgerTakeOut', 'LEDGER_TAKE_OUT_ANY', 'ledgerLocked', 'ledgerDateReconciled', 'entryAfterOpening'];
+const LOOK_WORD_FNS = ['fmtDateShort', 'ledgerEntryNamed', 'ledgerCap', 'ledgerTakeOut', 'LEDGER_TAKE_OUT_ANY', 'ledgerLocked', 'ledgerDateReconciled', 'entryAfterOpening',
+  'ledgerReversalOf'];
 const C2_FNS = ['fmt', 'fmtDate', 'fmtDateShort', 'toCents', 'toCentsSigned', 'entryAfterOpening', 'entryOnStatement', 'ledgerLocked',
   'ledgerDateReconciled', 'ledgerLockedWhy', 'LEDGER_MAX_CENTS', 'LEDGER_EDIT_FIELDS', 'LEDGER_LOCKED_FIELDS', 'ledgerRowDiff',
   'ledgerRowFields', 'LEDGER_TAKE_OUT_ANY', 'LEDGER_PAIR_FIXED', 'ledgerPairFixedWhy', 'ledgerPairRole', 'ledgerTakeOut', 'ledgerEntryNamed', 'ledgerCap', 'ledgerPairOf', 'ledgerEditRefusal', 'ledgerBackdateWarning', 'applyLedgerEdit', 'ledgerWho', 'logLedger', 'logOpening',
@@ -21319,6 +21320,33 @@ test('Security re-check A: a reversal is not un-voided, nor its void undone, whi
   const c = c4Page();
   c.run("reverse2('u1', 'Wrong'); void2('rv-u1', 'Reversed by mistake'); var said = undo()");
   eq([c.get('said === undefined'), c.get("!!row('rv-u1')"), c.get('state.ledgerAside.length')], [true, true, 0], 'control: the Undo');
+});
+
+// Treasurer sign-off on option B (2), owner's decision C (2026-09-29) — a correction and the entry it corrects
+// both counting (the entry's reversal voided or reversed) goes on "The ledger needs a look", as well as the
+// correction's Detail line.
+test('Decision C: the ledger says when a correction and the entry it corrects both count', () => {
+  const x = sandbox(['esc', 'fmt', 'ledgerPairOf', 'ledgerLiveReversals', 'ledgerLookNotes', 'ledgerLookCardHtml', 'ledgerReversalOf', ...LOOK_WORD_FNS]);
+  const X = { id: 'X', date: '2026-09-10', description: 'Pizza', amountCents: 4000, direction: 'out' };
+  const rv = { id: 'rv-X', reverses: 'X', date: '2026-10-01', description: 'Reversal of “Pizza”', amountCents: 4000, direction: 'in' };
+  const rc = { id: 'rc-X', replaces: 'X', date: '2026-10-01', description: 'Pizza', amountCents: 4500, direction: 'out' };
+  const BOTH = (d) => `The correction of ${d} (Oct 1, −$45.00) and ${d} itself (Sep 10, −$40.00) both count, because the reversal of ${d} was voided or reversed. ` +
+    `Reverse ${d} again, or take the correction out.`;
+  const notes = (rows) => JSON.parse(JSON.stringify(x.ledgerLookNotes(rows)));
+  eq([notes([X, rv, rc]), notes([X, rc]), notes([X, rv, { id: 'rv-rv-X', reverses: 'rv-X', date: '2026-10-03', amountCents: 4000, direction: 'out' }, rc]),
+    notes([rc]), notes([X, rc, { id: 'rv-rc-X', reverses: 'rc-X', date: '2026-10-05', amountCents: 4500, direction: 'in' }]),
+    notes([Object.assign({}, X, { description: '' }), rc])],
+  [[], [BOTH('“Pizza”')], [BOTH('“Pizza”')], [], [], [BOTH('the Sep 10 entry of −$40.00')]],
+  'a correction whose entry is reversed; its reversal voided; its reversal reversed; the entry voided; the correction reversed; no description');
+  // Reversed again, the note goes; and it is escaped on the card.
+  eq(notes([X, rc, Object.assign({}, rv, { id: 'rv2-X' })]), [], 'reversed again');
+  ok(x.ledgerLookCardHtml([Object.assign({}, X, { description: '<b>' }), rc]).indexOf('The correction of “&lt;b&gt;”') !== -1, 'the card, escaped');
+  // On the page: q1 corrected, then its reversal reversed (the entry counts again beside its correction).
+  const p = c4Page();
+  p.run("correct2('q1', { amount: '450', rvdate: '2026-10-15' }, 'Wrong amount'); reverse2('rv-q1', 'Reversed by mistake')");
+  eq(JSON.parse(JSON.stringify(x.ledgerLookNotes(p.get('state').ledger))),
+    ['The correction of “Popcorn commission” (Oct 15, +$450.00) and “Popcorn commission” itself (Aug 10, +$500.00) both count, because the reversal of ' +
+      '“Popcorn commission” was voided or reversed. Reverse “Popcorn commission” again, or take the correction out.'], 'on the page');
 });
 
 // Treasurer sign-off on option B (10) — a reversal of a reversal read “Reversal of “Reversal of “Pizza”””.

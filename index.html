@@ -8059,6 +8059,16 @@
         fmt(Math.abs(cents(e) + cents(r))) + '. ' + ledgerCap(ledgerTakeOut(r, book, 'the reversal')) + ', then reverse ' + nm +
         ' again (if it isn’t reconciled or in the reconciled period, void it instead).');
     });
+    // Treasurer sign-off on option B (2), owner's decision C — a correction and the entry it corrects
+    // both counting: the entry's reversal was voided or reversed, so nothing cancels it now. Not when
+    // the correction is itself cancelled (reversed: taken out), nor when the entry isn't counted.
+    rows.forEach(function (rc) {
+      var x = rc && byId[rc.id] === rc && typeof rc.replaces === 'string' && rc.replaces ? byId[rc.replaces] : null;
+      if (!x || x === rc || ledgerReversalOf(rows, x, pairOf) || ledgerReversalOf(rows, rc, pairOf)) return;
+      var nm = ledgerEntryNamed(x);
+      out.push('The correction of ' + nm + ' (' + fmtDateShort(rc.date) + ', ' + signed(rc) + ') and ' + nm + ' itself (' + fmtDateShort(x.date) + ', ' +
+        signed(x) + ') both count, because the reversal of ' + nm + ' was voided or reversed. Reverse ' + nm + ' again, or take the correction out.');
+    });
     return out;
   }
   // M3 (treasurer review of C1) — a reversed row and its reversal are only ever set aside
