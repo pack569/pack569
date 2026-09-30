@@ -3624,13 +3624,23 @@
     // Phase 3, C5 review — until C8, the book's statements (each shaped as a live one is:
     // normalizeStatement) and its change log (plain events, never an email for who), and whether
     // either was too large to keep (fitSeasonBook). Absent on every archive closed before.
-    if (Array.isArray(a.statements)) a.statements = list(a.statements).map(normalizeStatement);
-    else delete a.statements;
-    if (Array.isArray(a.ledgerLog)) {
-      a.ledgerLog = a.ledgerLog.slice(0, 1000).filter(function (x) { return x && typeof x === 'object' && !Array.isArray(x); });
-      a.ledgerLog.forEach(function (ev) { if (ev.by !== undefined) ev.by = ledgerStampClean(ev.by); });
-    } else delete a.ledgerLog;
+    // Security re-check of C5 (R4) — each held to the live book's rules: a statement, and the list
+    // (one per id, in order, trimmed as a load trims: statementsCap); an event (normalizeLedgerEvent),
+    // and the log (one per id, in order, 1000 events and 128 KB: mergeLedgerLog). What a cap takes
+    // is said, as close-out says it (statementsTrimmed, ledgerLogTrimmed): Past seasons notes it.
+    function plain(x) { return !!x && typeof x === 'object' && !Array.isArray(x); }
     ['statementsTrimmed', 'ledgerLogTrimmed'].forEach(function (k) { if (a[k] !== true) delete a[k]; });
+    if (Array.isArray(a.statements)) {
+      var sts = mergeStatements(a.statements.filter(plain).map(normalizeStatement), []);
+      a.statements = statementsCap(sts, []);
+      if (a.statements.length < sts.length) a.statementsTrimmed = true;
+    } else delete a.statements;
+    if (Array.isArray(a.ledgerLog)) {
+      var evs = a.ledgerLog.filter(plain).map(normalizeLedgerEvent), evIds = Object.create(null), evN = 0;
+      evs.forEach(function (ev) { if (!evIds[ev.id]) { evIds[ev.id] = true; evN += 1; } });
+      a.ledgerLog = mergeLedgerLog(evs, []);
+      if (a.ledgerLog.length < evN) a.ledgerLogTrimmed = true;
+    } else delete a.ledgerLog;
     return true;
   }
   // -----------------------------------------------------------------------
@@ -4057,37 +4067,7 @@
     d.ledgerAside = aside;
     if (!Array.isArray(d.ledgerLog)) d.ledgerLog = [];
     d.ledgerLog = d.ledgerLog.filter(plainObj);
-    d.ledgerLog.forEach(function (ev) {
-      if (typeof ev.id !== 'string' || !ev.id) ev.id = stableRowId('lg', ev);   // as stored (L4)
-      if (ev.by !== undefined) ev.by = ledgerStampClean(ev.by);   // never an email (E2)
-      // C2 (treasurer review of C1, M4) — the shape every reader relies on: the row, the time
-      // and the op are strings; `f` an object, `rows` strings, `why` a string, or absent. An op
-      // this page does not know is kept as it is, as a newer page wrote it.
-      ['at', 'row', 'op'].forEach(function (k) { if (typeof ev[k] !== 'string') ev[k] = ''; });
-      // Security review of C2 (minor) — `at` is an ISO time as toISOString writes it, or '' ("time
-      // unknown"). Junk is cleared, not the event dropped: who changed what is still worth keeping
-      // in an audit trail, and '' sorts oldest, so a cap takes it first ("zzz" sorted after every
-      // real time and outlived them all). As an event with no time already was.
-      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/.test(ev.at)) ev.at = '';
-      ['byUid', 'dev'].forEach(function (k) { if (ev[k] !== undefined && typeof ev[k] !== 'string') ev[k] = ''; });
-      // Each field in `f` is [before, after]; anything else is dropped. The values are not scrubbed
-      // (security review of C1, m5, decided here): they are what the row said, a leader's own
-      // words and figures, the log is leaders-only like the ledger (never in buildParentView),
-      // and the page writes no email into a row. They are clipped (security review of C2, #3):
-      // a string to 200 characters, anything but a number, true, false or null to null.
-      if (ev.f !== undefined && !plainObj(ev.f)) delete ev.f;
-      if (ev.f) Object.keys(ev.f).forEach(function (k) {
-        if (!Array.isArray(ev.f[k]) || ev.f[k].length !== 2) delete ev.f[k];
-        else ev.f[k] = ev.f[k].map(ledgerLogClip);
-      });
-      // `rows`: row ids (none is anywhere near 200 characters), at most 1000 of them.
-      if (ev.rows !== undefined) {
-        if (!Array.isArray(ev.rows)) delete ev.rows;
-        else ev.rows = ev.rows.filter(function (r) { return typeof r === 'string' && r && r.length <= 200; }).slice(0, 1000);
-      }
-      if (ev.why !== undefined && typeof ev.why !== 'string') delete ev.why;
-      if (typeof ev.why === 'string' && ev.why.length > 500) ev.why = ev.why.slice(0, 500);
-    });
+    d.ledgerLog.forEach(normalizeLedgerEvent);   // security re-check of C5 (R4): shared with the season archive
     // C2 (M4, m5) — one of each event, in time order, capped (mergeLedgerLog): the sync merge
     // unions the log by id, and gives the same order and cap. At the end of normalizeState, after
     // clampLogTimes: that reads the clock, which this part never does.
@@ -8688,6 +8668,42 @@
   function ledgerLogClip(v) {
     if (typeof v === 'string') return v.length > 200 ? v.slice(0, 200) : v;
     return (typeof v === 'number' && isFinite(v)) || typeof v === 'boolean' ? v : null;
+  }
+  // One event of the ledger's log (an object), coerced in place: normalizeState's, for the live log
+  // and for a season archive's (security re-check of C5, R4: the archive's was looser, only `by`
+  // cleaned). An unknown key is kept, as a newer page wrote it; the byte cap (mergeLedgerLog) holds
+  // whatever it carries. Pure.
+  function normalizeLedgerEvent(ev) {
+    if (typeof ev.id !== 'string' || !ev.id) ev.id = stableRowId('lg', ev);   // as stored (L4)
+    if (ev.by !== undefined) ev.by = ledgerStampClean(ev.by);   // never an email (E2)
+    // C2 (treasurer review of C1, M4) — the shape every reader relies on: the row, the time
+    // and the op are strings; `f` an object, `rows` strings, `why` a string, or absent. An op
+    // this page does not know is kept as it is, as a newer page wrote it.
+    ['at', 'row', 'op'].forEach(function (k) { if (typeof ev[k] !== 'string') ev[k] = ''; });
+    // Security review of C2 (minor) — `at` is an ISO time as toISOString writes it, or '' ("time
+    // unknown"). Junk is cleared, not the event dropped: who changed what is still worth keeping
+    // in an audit trail, and '' sorts oldest, so a cap takes it first ("zzz" sorted after every
+    // real time and outlived them all). As an event with no time already was.
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/.test(ev.at)) ev.at = '';
+    ['byUid', 'dev'].forEach(function (k) { if (ev[k] !== undefined && typeof ev[k] !== 'string') ev[k] = ''; });
+    // Each field in `f` is [before, after]; anything else is dropped. The values are not scrubbed
+    // (security review of C1, m5, decided here): they are what the row said, a leader's own
+    // words and figures, the log is leaders-only like the ledger (never in buildParentView),
+    // and the page writes no email into a row. They are clipped (security review of C2, #3):
+    // a string to 200 characters, anything but a number, true, false or null to null.
+    if (ev.f !== undefined && !(ev.f && typeof ev.f === 'object' && !Array.isArray(ev.f))) delete ev.f;
+    if (ev.f) Object.keys(ev.f).forEach(function (k) {
+      if (!Array.isArray(ev.f[k]) || ev.f[k].length !== 2) delete ev.f[k];
+      else ev.f[k] = ev.f[k].map(ledgerLogClip);
+    });
+    // `rows`: row ids (none is anywhere near 200 characters), at most 1000 of them.
+    if (ev.rows !== undefined) {
+      if (!Array.isArray(ev.rows)) delete ev.rows;
+      else ev.rows = ev.rows.filter(function (r) { return typeof r === 'string' && r && r.length <= 200; }).slice(0, 1000);
+    }
+    if (ev.why !== undefined && typeof ev.why !== 'string') delete ev.why;
+    if (typeof ev.why === 'string' && ev.why.length > 500) ev.why = ev.why.slice(0, 500);
+    return ev;
   }
   // Phase 3, C2 — this device, now: the `who` ledgerEvent takes.
   function ledgerWho() {

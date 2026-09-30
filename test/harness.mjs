@@ -1016,6 +1016,8 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   // Phase 3, C5 — the statements: each one's shape, one of each, and a lock through a reopened one.
   'normalizeStatement', 'statementOnceGroups', 'statementReviewed', 'statementReopened', 'statementAdded', 'statementPairMerge',
   'mergeStatements', 'statementsCap', 'statementLockBack', 'statementBefore',
+  // Security re-check of C5 (R4) — one log event, live and archived alike.
+  'normalizeLedgerEvent',
   // Phase 3, C1 — the ledger row normalizer, shared by the rows set aside.
   'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeLedgerRow', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'ledgerUnpaired', 'entrySignedCents',
@@ -18030,8 +18032,9 @@ test('C1: close-out opens a new book for the new year, without last year’s asi
     'd.ledgerLog = mergeLedgerLog(d.ledgerLog, []);', 'if (!Array.isArray(state.ledgerLog)) state.ledgerLog = [];', 'state.ledgerLog.push(ev);',
     'state.ledgerLog = mergeLedgerLog(state.ledgerLog, []);', 'state.ledgerLog = mergeLedgerLog(state.ledgerLog, remote.ledgerLog);', 'state.ledgerLog = [];',
     'state.ledgerLog = mergeLedgerLog(ciLog, state.ledgerLog);'].concat(
-    // C5 review — a season archive's copy (not the live log): shaped on load, and written at close-out.
-    ["a.ledgerLog = a.ledgerLog.slice(0, 1000).filter(function (x) { return x && typeof x === 'object' && !Array.isArray(x); });", 'arc.ledgerLog = fit.ledgerLog;']).sort(),
+    // C5 review — a season archive's copy (not the live log): shaped on load (as the live one is,
+    // since the security re-check of C5, R4), and written at close-out.
+    ['a.ledgerLog = mergeLedgerLog(evs, []);', 'arc.ledgerLog = fit.ledgerLog;']).sort(),
     'something else writes the ledger log');
 });
 
@@ -23266,6 +23269,41 @@ test('C5 review (treasurer 3): close-out keeps the statements and the change log
   ok(/\(record\.ledger && record\.ledger\.trimmed\) \|\| record\.ledgerLogTrimmed \|\| record\.statementsTrimmed/.test(slice('performCloseout')), 'the toast');
 });
 
+test('C5 re-check (R4): a season archive’s change log and statements are held to the live caps, and say when one took something', () => {
+  const nz = sandbox(NORMALIZE_FNS);
+  const load = (arc) => JSON.parse(JSON.stringify(nz.normalizeState(Object.assign(preMigrationState(), { archives: [Object.assign({ kind: 'season', year: 2025, id: 'a1' }, arc)] })).archives[0]));
+  const ev = (i, o) => Object.assign({ id: 'lg-' + String(i).padStart(4, '0'), at: new Date(Date.UTC(2025, 8, 1) + i * 60000).toISOString(), op: 'tick', row: 'r' + i }, o || {});
+  // One event, as the live log shapes it: junk time cleared, `f` pairs only and clipped, `rows`
+  // strings only, `why` cut at 500, uids and devices strings, an email never who; an unknown key kept.
+  const one = load({ ledgerLog: [ev(1, { at: 'zzz', by: 'sam@example.com', byUid: 7, dev: {}, why: 'w'.repeat(600), rows: ['a', 3, 'x'.repeat(201)],
+    f: { amountCents: [1, 2], description: ['d'.repeat(300), { x: 1 }], bad: [1] }, extra: 'kept' })] }).ledgerLog[0];
+  eq([one.at, /@/.test(one.by), one.byUid, one.dev, one.why.length, one.rows, one.f, one.extra],
+    ['', false, '', '', 500, ['a'], { amountCents: [1, 2], description: ['d'.repeat(200), null] }, 'kept'], 'one event');
+  // The live code and the archive's are the one function.
+  ok(/d\.ledgerLog\.forEach\(normalizeLedgerEvent\);/.test(SCRIPT) && /a\.ledgerLog\.filter\(plain\)\.map\(normalizeLedgerEvent\)/.test(slice('normalizeSeasonArchive')), 'not shared');
+  // 1100 events: the newest 1000, in time order, and said (the old code kept the FIRST 1000 as stored).
+  const many = Array.from({ length: 1100 }, (_, i) => ev(i)).reverse();
+  const a = load({ ledgerLog: many });
+  eq([a.ledgerLog.length, a.ledgerLog[0].id, a.ledgerLog[999].id, a.ledgerLogTrimmed], [1000, 'lg-0100', 'lg-1099', true], 'by count');
+  // 300 events of ~480 bytes: cut to 128 KB, newest kept, and said.
+  const big = load({ ledgerLog: Array.from({ length: 300 }, (_, i) => ev(i, { op: 'edit', f: { description: ['x'.repeat(190), 'y'.repeat(190)] } })) });
+  ok(Buffer.byteLength(JSON.stringify(big.ledgerLog)) <= 128 * 1024 && big.ledgerLog.length < 300 && big.ledgerLog[big.ledgerLog.length - 1].id === 'lg-0299' && big.ledgerLogTrimmed === true, 'by bytes');
+  // The same event twice is one, and that is not a trim.
+  const dup = load({ ledgerLog: [ev(1), ev(1), ev(2)] });
+  eq([dup.ledgerLog.length, 'ledgerLogTrimmed' in dup], [2, false], 'a duplicate');
+  // Statements: one per id, in order, trimmed as a load trims (never a standing one), and said.
+  const R = { reopenedAt: '2025-11-01T00:00:00.000Z', reopenedBy: 'X', reopenedByUid: 'ux', reopenWhy: 'x' };
+  const sts = Array.from({ length: 205 }, (_, i) => Object.assign({ id: 'st-' + i, date: '2025-12-15', at: '2025-12-16T00:00:00.' + String(i).padStart(3, '0') + 'Z', by: 'X', byUid: 'ux' }, R))
+    .concat([Object.assign(C5_SEP(), { date: '2025-09-30' }), Object.assign(C5_SEP(), { date: '2025-09-30' })]);
+  const b = load({ statements: sts });
+  eq([b.statements.length, b.statements[0].id, b.statements.filter((q) => q.id === C5_SEP().id).length, b.statementsTrimmed], [200, C5_SEP().id, 1, true], 'statements');
+  const c = load({ statements: sts.slice(0, 10), ledgerLog: many.slice(0, 10) });
+  eq([c.statements.length, c.ledgerLog.length, 'statementsTrimmed' in c, 'ledgerLogTrimmed' in c], [10, 10, false, false], 'nothing to trim');
+  // A load of a load is the same.
+  const again = (arc) => JSON.parse(JSON.stringify(nz.normalizeState(Object.assign(preMigrationState(), { archives: [arc] })).archives[0]));
+  eq([JSON.stringify(again(a)) === JSON.stringify(a), JSON.stringify(again(b)) === JSON.stringify(b), JSON.stringify(again(big)) === JSON.stringify(big)], [true, true, true], 'not a fixed point');
+});
+
 test('C5 review (owner 4): no parent surface reads an archive’s statements or change log, and a built parent view carries none of them', () => {
   // Every parent surface, found in the page (a new one is checked too): none reads an archive,
   // a statement or the change log.
@@ -23315,7 +23353,8 @@ test('C5 review (F3): the cap never takes a statement standing or named by an en
   ok(/state\.statements = mergeStatements\(state\.statements, remote\.statements\);/.test(slice('mergeRemoteAppendOnly')), 'the sync merge');
   ok(/state\.statements = mergeStatements\(state\.statements, \[rlNew\.statement\]\);/.test(SCRIPT), 'Mark reconciled');
   ok(/state\.statements = mergeStatements\(ciSt, state\.statements\);/.test(SCRIPT), 'a restore');
-  eq(SCRIPT.split('statementsCap(').length, 3, 'statementsCap is called somewhere new');
+  // (A season archive's statements too: R4.)
+  eq(SCRIPT.split('statementsCap(').length, 4, 'statementsCap is called somewhere new');
   // A bad date: kept, marked, never in force, first in order; a good one keeps no mark; a fixed point.
   const n = c5Norm(Object.assign(withSeeds(LEGACY_ROWS)(), { book: { openingCents: 0, openingDate: '2026-07-01', reconciledThrough: '2026-08-31' },
     statements: [Object.assign(C5_SEP(), { id: 'st-z', date: '9999-99-99x' }), Object.assign(C5_SEP(), { id: 'st-n', date: 7 }), Object.assign(C5_LEGACY(), { badDate: true })] }));
