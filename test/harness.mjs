@@ -1013,6 +1013,9 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   'ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept',
   // Phase 3, C4 — and a reversed row and its reversal stay together (M3).
   'ledgerPairCheck',
+  // Phase 3, C5 — the statements: each one's shape, one of each, and a lock through a reopened one.
+  'normalizeStatement', 'statementOnceGroups', 'statementReviewed', 'statementReopened', 'statementAdded', 'statementPairMerge',
+  'mergeStatements', 'statementLockBack', 'statementBefore',
   // Phase 3, C1 — the ledger row normalizer, shared by the rows set aside.
   'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeLedgerRow', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'ledgerUnpaired', 'entrySignedCents',
@@ -1023,7 +1026,9 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
 const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'markGone', 'teBatchOf', 'TE_PRE_BATCH', 'teImportGone', 'clampGone', 'goneNewest', 'goneClockOk', 'ledgerTickedAt', 'reconciledFates', 'reconciledFatesText', 'noteReconciledFates', 'restoreGone', 'entryAfterOpening', 'ledgerDateReconciled', 'fmt', 'fmtDateShort', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays', 'ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept', 'keepLostVoids', 'ledgerPairCheck',
   // Treasurer sign-off on option B (extra) — the sync's toast, and what it counts.
   'LEADER_ROLES', 'LEDGER_LOOK_SYNC', 'LEDGER_LOOK_CLOBBERED', 'ledgerLookCount', 'noteLedgerLookAfterSync', 'ledgerLookNotes', 'ledgerLiveReversals', 'ledgerEntryNamed', 'ledgerCap',
-  'ledgerTakeOut', 'LEDGER_TAKE_OUT_ANY', 'ledgerLocked', 'ledgerReversalOf'];
+  'ledgerTakeOut', 'LEDGER_TAKE_OUT_ANY', 'ledgerLocked', 'ledgerReversalOf',
+  // Phase 3, C5 — the statements, unioned by id, and the lock stepped back past a reopened one.
+  'statementOnceGroups', 'statementReopened', 'statementPairMerge', 'mergeStatements', 'statementLockBack', 'statementBefore', 'ledgerStampClean'];
 
 test('saved "Tiger Roar" becomes "Tiger’s Roar", and an All-dens night keeps only what it can hold', () => {
   const ctx = vm.createContext({});
@@ -13081,9 +13086,16 @@ test('E1: due dates and family statements are NEVER published', () => {
   ok(!/statement/.test(pa), 'a parent can open a statement');
   ok(!/statement: \{|lastStatement|familyStatements/.test(SCRIPT), 'a statement is stored');
   // Phase 3, C1 — state.statements is the BANK statements the treasurer reconciled (leaders
-  // only), never a family's: nothing but close-out writes it outside normalizeState, and no
-  // parent path reads it.
-  eq(SCRIPT.split('state.statements').length - 1, 1, 'something new writes or reads state.statements');
+  // only), never a family's, and no parent path reads it. C5: the leaders' screens that write and
+  // read it are these (by the top-level function each use is in); a new one has to be looked at.
+  const stUsers = new Set();
+  let stFn = '';
+  codeOnly(SCRIPT).split('\n').forEach((line) => {
+    const m = /^  (?:function (\w+)\(|var (\w+) =)/.exec(line);
+    if (m) stFn = m[1] || m[2];
+    if (/state\.statements/.test(line.replace(/\/\/.*$/, ''))) stUsers.add(stFn);
+  });
+  eq([...stUsers].sort(), ['handleAction', 'mergeRemoteAppendOnly', 'renderReconcile', 'rolloverYear'], 'something new writes or reads state.statements');
   ok(/state\.statements = \[\];/.test(slice('rolloverYear')), 'close-out does not clear the bank statements');
   ok(!/statements/.test(bpv), 'buildParentView reads the bank statements');
   ok(/each charge's due date \(`dueDate`\), the pack's dues date \(`budget\.duesDueDate`\) and every\s+\/\/\s+family statement \(E1\)/.test(SCRIPT), 'the banner does not exclude them');
@@ -17928,7 +17940,8 @@ test('C1: the statement book.reconciledThrough records is synthesized once, figu
   const n = JSON.parse(JSON.stringify(sandbox(NORMALIZE_FNS).normalizeState(C1_RECORD())));
   eq(n.statements, [
     { id: 'st-2025-08-31', date: '2025-08-31', statementCents: 12000, by: 'Pat', reviewedBy: 'a signed-in leader' },
-    { id: 'st-2025-09-30', date: '2025-09-30', statementCents: null, openingCents: 10000, clearedCents: null, bookCents: null, ticked: null,
+    // Phase 3, C5 (treasurer review of C1, L1) — its opening is unknown too.
+    { id: 'st-2025-09-30', date: '2025-09-30', statementCents: null, openingCents: null, clearedCents: null, bookCents: null, ticked: null,
       by: 'a signed-in leader', byUid: '', at: '2025-10-02T12:00:00.000Z', legacy: true }], 'the statements');
   // Once: a second pass, or a record that already has it, adds none.
   const again = sandbox(NORMALIZE_FNS).normalizeState(JSON.parse(JSON.stringify(n)));
@@ -18202,7 +18215,10 @@ const C2_FNS = ['fmt', 'fmtDate', 'fmtDateShort', 'toCents', 'toCentsSigned', 'e
   'ledgerDateReconciled', 'ledgerLockedWhy', 'LEDGER_MAX_CENTS', 'LEDGER_EDIT_FIELDS', 'LEDGER_LOCKED_FIELDS', 'ledgerRowDiff',
   'ledgerRowFields', 'LEDGER_TAKE_OUT_ANY', 'LEDGER_PAIR_FIXED', 'ledgerPairFixedWhy', 'ledgerPairRole', 'ledgerTakeOut', 'ledgerEntryNamed', 'ledgerCap', 'ledgerPairOf', 'ledgerReversalOf', 'ledgerEditRefusal', 'ledgerBackdateWarning', 'applyLedgerEdit', 'ledgerWho', 'logLedger', 'logOpening',
   'openingLockedWhy', 'LEDGER_OPS', 'ledgerEvent', 'ledgerLogClip', 'ledgerStampClean', 'stampApproved', 'stampEntered', 'ledgerActorName',
-  'ledgerDraftDefault', 'ledgerDraft', 'arm', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays', 'ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept', 'keepLostVoids', 'ledgerPairCheck'];
+  'ledgerDraftDefault', 'ledgerDraft', 'arm', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays', 'ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept', 'keepLostVoids', 'ledgerPairCheck',
+  // Phase 3, C5 — Mark reconciled writes the statement.
+  'statementNew', 'statementInForce', 'statementReopened', 'statementReviewed', 'statementAdded', 'statementOnceGroups', 'statementPairMerge', 'mergeStatements',
+  'statementLockBack', 'statementBefore', 'entrySignedCents'];
 // The book is reconciled through Aug 31 from a Jul 1 opening. u1 is open; r1 is ticked (after the
 // period); p1 is dated in the period, not ticked; q1 is ticked in the period by a page from before
 // any stamps; pre is before the opening date; m1 is a tier make-up in the period.
@@ -18814,17 +18830,21 @@ const C3_READERS = {
   seasonLedgerRows: (L, x) => x.seasonLedgerRows(L, (id) => 'line ' + id, (id) => 'family ' + id),
   ledgerUnpaired: (L, x) => x.ledgerUnpaired(L).map((e) => e.id),
   ledgerPairOf: (L, x) => x.ledgerPairOf(L),   // Option B: which counted rows cancel which
-  ledgerVoidedCsv: (L, x) => x.ledgerVoidedCsv([], L)   // treasurer review of C4 (5): the reversed pairs it lists
+  ledgerVoidedCsv: (L, x) => x.ledgerVoidedCsv([], L),   // treasurer review of C4 (5): the reversed pairs it lists
+  // Phase 3, C5 — the statement Mark reconciled would write now, after one signed on the book's date.
+  statementNew: (L, x, c) => x.statementNew(L, c.book, c.book.reconciledThrough
+    ? [{ id: 'st-prev', date: c.book.reconciledThrough, ticked: ['e1'], at: '2026-09-02T00:00:00.000Z' }] : [], { by: 'Pat', byUid: 'u1', at: 'T' }, 'st-x')
 };
 // What those readers need besides themselves.
-const READER_DEPS = ['fmt', 'ledgerLogWhen', 'ledgerCsvCell', 'ledgerPairRole', 'ledgerReplacementId', 'ledgerReplacementFor'];
+const READER_DEPS = ['fmt', 'ledgerLogWhen', 'ledgerCsvCell', 'ledgerPairRole', 'ledgerReplacementId', 'ledgerReplacementFor',
+  'statementInForce', 'statementReopened'];
 // Security review of C4 (finding 1) — the readers that LIST or COUNT the rows, or tick them. A pair
 // that came apart and was sent back to the ledger is two counted rows that net to $0: these show
 // both (the treasurer ticks the reversal against the statement it is on), and only the balance is
 // the entry deleted (when the entry is after the opening date: its reversal, dated the day it was
 // made, always is). Every other reader is the entry deleted outright.
 const C4_LISTING_READERS = ['ledgerBalance', 'ledgerSort', 'ledgerTotals', 'reconcileTotals', 'reconcileStale', 'runningBalances', 'seasonLedgerRows', 'ledgerUnpaired',
-  'ledgerPairOf', 'ledgerVoidedCsv', 'ledgerReversalName'];
+  'ledgerPairOf', 'ledgerVoidedCsv', 'ledgerReversalName', 'statementNew'];
 const C3_STATE_READERS = {
   tierMakeupMap: (x) => x.tierMakeupMap(),
   tierMakeupPaidCents: (x) => [['t1', 's1'], ['t1', 's2'], ['t2', 's3']].map(([t, s]) => x.tierMakeupPaidCents(t, s))
@@ -19064,7 +19084,7 @@ test('C2 treasurer H-1: Mark reconciled takes a statement date, not after today 
   // The Reconcile view: no "through today", the reason in place of the button, and the armed button says what locks.
   const rr = slice('renderReconcile');
   ok(!/'today'/.test(rr), 'the view still offers "through today"');
-  ok(/var rlNo = reconcileLockRefusal\(bk, todayISO\(\)\);/.test(rr) && /\(rlNo\s*\? '<span style="color:var\(--accent-text\)">' \+ esc\(rlNo\)/.test(rr), 'the reason is not shown in place');
+  ok(/var rlNo = reconcileLockRefusal\(bk, todayISO\(\), state\.statements\);/.test(rr) && /\(rlNo\s*\? '<span style="color:var\(--accent-text\)">' \+ esc\(rlNo\)/.test(rr), 'the reason is not shown in place');
   ok(/'Tap again: entries dated on or before ' \+ fmtDateShort\(bk\.statementDate\) \+ ' will be locked'/.test(rr), 'the armed button');
 });
 
@@ -22543,6 +22563,197 @@ atest('reload gate, api: a save that reads a newer page’s record sends nothing
     { puts: 1, read: true, held: false, here: ['Edited', false], server: [5, 1, 'Edited'] }, 'control: a save over a page from before the gate');
   eq(await run(PACK_STATE({ rev: 4, fmt: 1, packName: 'This format' })),
     { puts: 1, read: true, held: false, here: ['Edited', false], server: [5, 1, 'Edited'] }, 'control: a save over this page’s format');
+});
+
+/* ================================================================
+   Phase 3, C5 — statements. Mark reconciled writes one record, kept as it was signed; normalizeState
+   gives a record its statements' shape (a legacy one for a book reconciled before statements were
+   kept); the sync merge unions them by id, the same statement changed on two devices ending the
+   same on both; a lock through a statement since reopened steps back.
+   ================================================================ */
+// A book reconciled through Aug 31 before statements were kept, as normalizeState gives it: the
+// legacy statement, signed Sep 1.
+const C5_LEGACY = () => ({ id: 'st-2026-08-31', date: '2026-08-31', statementCents: null, openingCents: null, clearedCents: null, bookCents: null,
+  ticked: null, by: 'Sam', byUid: '', at: '2026-09-01T12:00:00.000Z', legacy: true });
+const c5Norm = (rec) => JSON.parse(JSON.stringify(sandbox(NORMALIZE_FNS).normalizeState(JSON.parse(JSON.stringify(rec)))));
+
+test('C5: normalizeState gives a statement its shape, one of each, and a legacy one only for a date with none', () => {
+  const rec = withSeeds(LEGACY_ROWS)();
+  rec.book = { openingCents: 10000, openingDate: '2025-07-01', reconciledThrough: '2025-09-30', reconciledBy: 'Pat', reconciledAt: '2025-10-02T12:00:00.000Z' };
+  rec.statements = [
+    // One C5 wrote for Sep 30 (so no legacy one is added), with junk in each part.
+    { id: 'st-2025-09-30-abc', date: '2025-09-30', statementCents: 1234.4, openingCents: '10000', clearedCents: 1234, bookCents: Infinity,
+      ticked: ['l1', 7, '', 'x'.repeat(201), 'l2'], outstanding: 'l3', by: 'pat@example.com', byUid: 5, at: '2025-10-02T12:00:00.000Z',
+      reviewedBy: 'sam@example.com', reviewedByUid: 'u2', reviewedAt: '2025-10-03T00:00:00.000Z', legacy: 'yes', supersedes: 3, future: [1] },
+    // The same one again from another copy: reopened there.
+    { id: 'st-2025-09-30-abc', date: '2025-09-30', statementCents: 1234, openingCents: null, clearedCents: 1234, bookCents: null,
+      ticked: ['l1', 'l2'], outstanding: null, by: 'a signed-in leader', byUid: '', at: '2025-10-02T12:00:00.000Z', future: [1],
+      reopenedAt: '2025-10-04T00:00:00.000Z', reopenedBy: 'Alex', reopenedByUid: 'u3', reopenWhy: 'x'.repeat(600) },
+    // A legacy one from a page between C1 and C4, with the opening it gave it then.
+    { id: 'st-2025-08-31', date: '2025-08-31', statementCents: null, openingCents: 10000, clearedCents: null, bookCents: null, ticked: null,
+      by: 'Pat', byUid: '', at: '2025-09-01T12:00:00.000Z', legacy: true }];
+  const n = c5Norm(rec);
+  eq(n.statements.map((s) => s.id), ['st-2025-08-31', 'st-2025-09-30-abc'], 'one of each, in date order, and no legacy one beside a C5 one');
+  const [aug, sep] = n.statements;
+  eq([aug.openingCents, aug.legacy], [null, true], 'a legacy statement keeps no opening (L1)');
+  eq([sep.statementCents, sep.openingCents, sep.clearedCents, sep.bookCents, sep.ticked, sep.outstanding, sep.by, sep.byUid, 'legacy' in sep, 'supersedes' in sep, sep.future],
+    [1234, null, 1234, null, ['l1', 'l2'], null, 'a signed-in leader', '', false, false, [1]], 'the signed part');
+  eq([sep.reviewedBy, sep.reviewedByUid, sep.reviewedAt, sep.reopenedBy, sep.reopenWhy.length], ['a signed-in leader', 'u2', '2025-10-03T00:00:00.000Z', 'Alex', 500],
+    'reviewed in one copy and reopened in the other: both');
+  // Sep 30 is reopened, so the book steps back to Aug 31, with who and when from that statement.
+  eq([n.book.reconciledThrough, n.book.reconciledBy, n.book.reconciledAt], ['2025-08-31', 'Pat', '2025-09-01T12:00:00.000Z'], 'the lock through a reopened statement');
+  // A fixed point, and two devices give the same bytes.
+  eq(JSON.stringify(c5Norm(n)), JSON.stringify(n), 'not a fixed point');
+  eq(JSON.stringify(c5Norm(rec)), JSON.stringify(n), 'two devices');
+  // Aug 31 reopened too: nothing is left, so the book is not reconciled at all.
+  const r2 = JSON.parse(JSON.stringify(n));
+  Object.assign(r2.statements[0], { reopenedAt: '2025-10-05T00:00:00.000Z', reopenedBy: 'Alex', reopenedByUid: 'u3', reopenWhy: 'Wrong opening' });
+  const n2 = c5Norm(r2);
+  eq([n2.book.reconciledThrough, n2.book.reconciledBy, n2.book.reconciledAt, n2.statements.length], ['', '', '', 2], 'every statement reopened');
+  eq(JSON.stringify(c5Norm(n2)), JSON.stringify(n2), 'not a fixed point, every statement reopened');
+  // A page from before C5 locked Sep 30 again over the reopened one: taken as the stale copy it
+  // almost always is (a device from before the reopen), and stepped back.
+  const r3 = JSON.parse(JSON.stringify(n));
+  r3.book.reconciledThrough = '2025-09-30';
+  eq(c5Norm(r3).book.reconciledThrough, '2025-08-31', 'a stale lock through a reopened statement');
+  // A lock through a date with no statement at all gets its legacy one, as C1 gave it.
+  r3.book.reconciledThrough = '2025-10-31';
+  const n3 = c5Norm(r3);
+  eq([n3.book.reconciledThrough, n3.statements.map((s) => s.id)], ['2025-10-31', ['st-2025-08-31', 'st-2025-09-30-abc', 'st-2025-10-31']], 'a lock with no statement');
+});
+
+test('C5: a row’s statementId is a string on a ticked row, or absent; an untick takes it off, and a correction never copies it', () => {
+  const rec = withSeeds(LEGACY_ROWS)();
+  const descs = rec.ledger.map((e) => e.description);
+  Object.assign(rec.ledger[0], { reconciled: true, statementId: 'st-x' });
+  Object.assign(rec.ledger[1], { reconciled: true, statementId: 7 });
+  Object.assign(rec.ledger[2], { reconciled: false, statementId: 'st-x' });   // unticked by a page from before C5
+  const n = c5Norm(rec);
+  eq(descs.slice(0, 3).map((d) => n.ledger.find((e) => e.description === d)).map((e) => e.statementId || null), ['st-x', null, null], 'statementId');
+  eq(JSON.stringify(c5Norm(n)), JSON.stringify(n), 'not a fixed point');
+  // An old record gains nothing for it.
+  ok(!/statementId/.test(JSON.stringify(c5Norm(withSeeds(LEGACY_ROWS)()))), 'an old record gained a statementId');
+  ok(/else \{ delete e\.reconciledAt; delete e\.statementId; \}/.test(slice('stampApproved')), 'an untick keeps the statement it was cleared on');
+  ok(/'replaces', 'statementId'\]\.forEach\(function \(k\) \{ delete r\[k\]; \}\);/.test(slice('ledgerCorrectPlan')), 'a correction copies the original’s statement');
+});
+
+test('C5: Mark reconciled writes the statement as signed, and each entry cleared on it carries its id', () => {
+  // Reconciled through Aug 31 before statements were kept (the legacy statement, signed Sep 1).
+  const p = c2tPage({ book: { statementDate: '2026-09-30' } });
+  p.run(`state.statements = [${JSON.stringify(C5_LEGACY())}];
+    // p1 (Aug 15) was outstanding on Aug 31 and cleared in September: ticked since the legacy lock.
+    row('p1').reconciled = true; row('p1').approvedAt = '2026-09-20T00:00:00.000Z';
+    agree(); act3('ledger-reconcile-lock'); act3('ledger-reconcile-lock')`);
+  const st = p.get('state.statements');
+  eq(st.length, 2, 'the statements');
+  const s = st[1];
+  ok(/^st-2026-09-30-id\d+$/.test(s.id), 'the id: ' + s.id);
+  // Cleared: the opening $100, r1 +$25, q1 +$500 (ticked before the legacy lock), p1 −$12.
+  eq([s.date, s.statementCents, s.openingCents, s.clearedCents, s.bookCents, s.ticked, s.outstanding, s.by, s.byUid, /^2\d{3}-/.test(s.at), 'supersedes' in s],
+    ['2026-09-30', 61300, 10000, 61300, 54400, ['r1', 'p1'], ['u1', 'm1'], 'Pat Treasurer', 'u1', true, false], 'the statement');
+  eq(p.get("['r1', 'p1', 'q1', 'u1'].map(function (id) { return row(id).statementId || null; })"), [s.id, s.id, null, null], 'the entries’ statementId');
+  eq([p.get('state.book.reconciledThrough'), p.get('state.book.reconciledAt'), p.get('state.statements[0]')], ['2026-09-30', s.at, C5_LEGACY()], 'the book, and the legacy statement untouched');
+  // The same date again is refused while its statement stands.
+  p.run("toasts = []; state.book.statementDate = '2026-09-30'; agree(); act3('ledger-reconcile-lock')");
+  eq([p.get('toasts'), p.get('state.statements.length'), p.get('ui.armed')],
+    [['The book is already reconciled through Sep 30, and that statement is kept as it was signed.'], 2, null], 'the same date again');
+  // Once it is reopened (C5's reopen writes these), the date can be reconciled again: a new
+  // statement, with its own id, naming the one it replaces. Rows already on a standing statement
+  // are not listed again; r1 and p1 name the reopened one, so they are.
+  p.run(`Object.assign(state.statements[1], { reopenedAt: '2026-10-02T00:00:00.000Z', reopenedBy: 'Alex', reopenedByUid: 'u3', reopenWhy: 'Wrong balance' });
+    state.book.reconciledThrough = '2026-08-31'; toasts = []; agree(); act3('ledger-reconcile-lock'); act3('ledger-reconcile-lock')`);
+  const again = p.get('state.statements');
+  eq([again.length, again[2].date, again[2].id !== s.id, again[2].supersedes, again[2].ticked, p.get("row('r1').statementId")],
+    [3, '2026-09-30', true, s.id, ['r1', 'p1'], again[2].id], 'reconciled again after a reopen');
+  // The next statement lists only what cleared since.
+  p.run("row('u1').reconciled = true; state.book.statementDate = '2026-10-15'; agree(); act3('ledger-reconcile-lock'); act3('ledger-reconcile-lock')");
+  eq(p.get('state.statements[3].ticked'), ['u1'], 'the next statement');
+});
+
+test('C5: the statements merge by id, never lose one, and a statement changed on two devices ends the same on both', () => {
+  const ctx = sandbox(NORMALIZE_FNS);
+  const m = (a, b) => JSON.parse(JSON.stringify(ctx.mergeStatements(JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b)))));
+  const base = { id: 'st-2026-09-30-a', date: '2026-09-30', statementCents: 100, ticked: ['l1'], by: 'Pat', byUid: 'u1', at: '2026-10-01T00:00:00.000Z' };
+  const revA = Object.assign({}, base, { reviewedAt: '2026-10-02T00:00:00.000Z', reviewedBy: 'Sam', reviewedByUid: 'u2' });
+  const revB = Object.assign({}, base, { reviewedAt: '2026-10-02T00:00:01.000Z', reviewedBy: 'Lee', reviewedByUid: 'u4' });
+  const reo = Object.assign({}, base, { reopenedAt: '2026-10-03T00:00:00.000Z', reopenedBy: 'Alex', reopenedByUid: 'u3', reopenWhy: 'Wrong' });
+  const other = Object.assign({}, base, { id: 'st-2026-08-31', date: '2026-08-31' });
+  // Reviewed on both: the earlier review, whichever device merges.
+  eq(m([revA], [revB]), m([revB], [revA]), 'two reviews');
+  eq(m([revA], [revB])[0].reviewedBy, 'Sam', 'the earlier review');
+  // Reviewed on one, reopened on the other: both.
+  const both = m([revA], [reo]);
+  eq(both, m([reo], [revA]), 'a review and a reopen');
+  eq([both[0].reviewedBy, both[0].reopenedBy, both[0].reopenWhy], ['Sam', 'Alex', 'Wrong'], 'a review and a reopen');
+  // A statement only one copy has is kept; three copies in any order are one.
+  eq(m([other], [revA]).map((s) => s.id), ['st-2026-08-31', 'st-2026-09-30-a'], 'the union');
+  eq(m(m([revA], [reo]), [revB]), m([revB], m([reo], [revA])), 'three copies');
+  eq(m([revA, reo, revB], []), m([revB, revA, reo], []), 'three copies in one list');
+  eq(m(both, both), both, 'merged with itself');
+  // The sync merge unions them, same year only, and steps the lock back past a reopen.
+  const ms = slice('mergeRemoteAppendOnly');
+  ok(/if \(bkHere && bkThere && bkHere\.year === bkThere\.year\) \{\s*state\.statements = mergeStatements\(state\.statements, remote\.statements\);\s*statementLockBack\(bkHere, state\.statements\);/.test(ms),
+    'the merge does not union the statements, or step the lock back');
+  ok(ms.indexOf('statementLockBack(bkHere') < ms.indexOf("state.ledger = dropGone(state.ledger, 'ledger')"), 'the lock steps back after the ledger’s merge reads it');
+  const { isStateEmpty } = sandbox(['isStateEmpty']);
+  eq([isStateEmpty({ statements: [] }), isStateEmpty({ statements: [base] })], [true, false], 'a record with only a statement is empty');
+});
+
+// Two devices: A marks Sep 30 reconciled (the statement), while B has an unsaved change of its own.
+const C5_SEED = { book: { openingCents: 0, openingDate: '2026-07-01', reconciledThrough: '2026-08-31', reconciledBy: 'Sam', reconciledAt: '2026-09-01T12:00:00.000Z',
+  statementDate: '', statementCents: 0 } };
+const C5_SIGN = (who) => `state.statements.push({ id: 'st-2026-09-30-${who}', date: '2026-09-30', statementCents: 2500, openingCents: 0, clearedCents: 2500,
+    bookCents: 2500, ticked: ['l1'], outstanding: [], by: '${who}', byUid: 'u-${who}', at: '2026-10-01T00:00:00.000Z' });
+  state.ledger[0].reconciled = true; state.ledger[0].statementId = 'st-2026-09-30-${who}';
+  state.book.reconciledThrough = '2026-09-30'`;
+const c5Of = (st) => [st.book.reconciledThrough, st.statements.map((s) => [s.id, !!s.reviewedBy, !!s.reopenedBy])];
+test('C5, Firestore: a statement signed on one device survives another’s save, and a review on one and a reopen on the other end the same on both', () => {
+  let { a, b, server } = fsGonePair(C5_SEED);
+  b.run(B1);
+  a.run(C5_SIGN('A') + '; commit()'); a.push();
+  b.hear(); b.push();
+  const want = ['2026-09-30', [['st-2026-08-31', false, false], ['st-2026-09-30-A', false, false]]];
+  eq([c5Of(server()), c5Of(b.get('state'))], [want, want], 'B’s save lost the statement');
+  a.hear();
+  eq(c5Of(a.get('state')), want, 'A after B’s save');
+  // A reviews it, B reopens it (the lock back to Aug 31); neither has saved. Either saves first.
+  for (const aFirst of [true, false]) {
+    ({ a, b, server } = fsGonePair(C5_SEED));
+    a.run(C5_SIGN('A') + '; commit()'); a.push(); b.hear();
+    a.run("Object.assign(state.statements[1], { reviewedAt: '2026-10-02T00:00:00.000Z', reviewedBy: 'Sam', reviewedByUid: 'u-Sam' }); commit()");
+    b.run("Object.assign(state.statements[1], { reopenedAt: '2026-10-03T00:00:00.000Z', reopenedBy: 'Alex', reopenedByUid: 'u-Alex', reopenWhy: 'Wrong' }); " +
+      "state.book.reconciledThrough = '2026-08-31'; commit()");
+    const [first, last] = aFirst ? [a, b] : [b, a];
+    first.push(); last.hear(); last.push(); first.hear();
+    const end = ['2026-08-31', [['st-2026-08-31', false, false], ['st-2026-09-30-A', true, true]]];
+    eq([c5Of(server()), c5Of(a.get('state')), c5Of(b.get('state'))], [end, end, end], (aFirst ? 'A' : 'B') + ' first: the two devices');
+    eq(a.get('state.statements'), b.get('state.statements'), (aFirst ? 'A' : 'B') + ' first: the same bytes');
+    // And normalizing what the server holds changes none of it (the fixed point).
+    const n = c5Norm(server());
+    eq([n.statements, n.book.reconciledThrough], [server().statements, server().book.reconciledThrough], 'the server’s copy is not a fixed point');
+  }
+});
+
+atest('C5, api: a statement signed on one device survives another’s save, and a review and a reopen end the same on both', async () => {
+  // (The api client's normalizeState is a stub: the legacy statement is given as normalizeState gives it.)
+  const over = { ledger: GONE_SEED.ledger, book: C5_SEED.book, statements: [Object.assign(C5_LEGACY(), { by: 'Sam' })] };
+  const { a, b, server } = await apiGonePair(over);
+  b.run(B1);
+  await a.edit(C5_SIGN('A'));
+  await settle([b], 800);
+  const want = ['2026-09-30', [['st-2026-08-31', false, false], ['st-2026-09-30-A', false, false]]];
+  eq(c5Of(server()), want, 'B’s save lost the statement');
+  await a.poll();
+  eq(c5Of(a.get('state')), want, 'A after B’s save');
+  // A reviews, B reopens (B saves last, having not heard A's review).
+  await b.poll();
+  await a.edit("Object.assign(state.statements[1], { reviewedAt: '2026-10-02T00:00:00.000Z', reviewedBy: 'Sam', reviewedByUid: 'u-Sam' })");
+  b.run("Object.assign(state.statements[1], { reopenedAt: '2026-10-03T00:00:00.000Z', reopenedBy: 'Alex', reopenedByUid: 'u-Alex', reopenWhy: 'Wrong' }); " +
+    "state.book.reconciledThrough = '2026-08-31'; commit()");
+  await settle([b], 800);
+  await a.poll();
+  const end = ['2026-08-31', [['st-2026-08-31', false, false], ['st-2026-09-30-A', true, true]]];
+  eq([c5Of(server()), c5Of(a.get('state')), c5Of(b.get('state'))], [end, end, end], 'the two devices');
 });
 
 /* ---------------- report ---------------- */

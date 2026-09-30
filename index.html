@@ -4083,19 +4083,21 @@
     // clampLogTimes: that reads the clock, which this part never does.
     if (!Array.isArray(d.statements)) d.statements = [];
     d.statements = d.statements.filter(plainObj);
-    d.statements.forEach(function (st) {
-      if (typeof st.date !== 'string') st.date = '';
-      if (typeof st.id !== 'string' || !st.id) st.id = 'st-' + st.date;
-      if (st.by !== undefined) st.by = ledgerStampClean(st.by);
-      if (st.reviewedBy !== undefined) st.reviewedBy = ledgerStampClean(st.reviewedBy);
-    });
+    d.statements.forEach(normalizeStatement);   // C5
+    // C5 — the legacy statement only when no statement at all is dated reconciledThrough (C5's own
+    // have their own ids, so asking for the id 'st-' + the date would add one beside them). Its
+    // figures are all unknown, the opening too (treasurer review of C1, L1).
     var rt = d.book.reconciledThrough;
-    if (rt && !d.statements.some(function (st) { return st.id === 'st-' + rt; })) {
+    if (rt && !d.statements.some(function (st) { return st.date === rt; })) {
       d.statements.push({
-        id: 'st-' + rt, date: rt, statementCents: null, openingCents: d.book.openingCents, clearedCents: null, bookCents: null,
+        id: 'st-' + rt, date: rt, statementCents: null, openingCents: null, clearedCents: null, bookCents: null,
         ticked: null, by: d.book.reconciledBy, byUid: '', at: d.book.reconciledAt, legacy: true
       });
     }
+    // C5 — one of each statement, in date order (mergeStatements: a statement twice is one, as the
+    // sync merge makes it); and a book still locked through a statement since reopened steps back.
+    d.statements = mergeStatements(d.statements, []);
+    statementLockBack(d.book, d.statements);
     if (!Array.isArray(d.closedBooks)) d.closedBooks = [];
     d.closedBooks = d.closedBooks.filter(plainObj);
     d.teImport = (plainObj(d.teImport) && typeof d.teImport.batch === 'string' && d.teImport.batch)
@@ -4850,6 +4852,10 @@
       else e.voidedBy = ledgerStampClean(e.voidedBy);
     }
     e.reconciled = e.reconciled === true;
+    // Phase 3, C5 — the statement it was cleared on (statementNew), a string, on a ticked row only:
+    // an untick takes it off (stampApproved), and so does this for a row unticked by a page from
+    // before C5. Absent on every other row, and left absent.
+    if (e.statementId !== undefined && (typeof e.statementId !== 'string' || !e.reconciled)) delete e.statementId;
     // LIVE STOPGAP (see stampApproved) — when it was ticked, in ms. Absent (not 0) when unknown,
     // so a record from before it gains nothing. A row set aside keeps it too; C6's per-row merge,
     // reading the tick and untick events in ledgerLog, will make it redundant.
@@ -7786,7 +7792,8 @@
     r.reconciled = false;
     delete r.reconciledAt;
     r.approvedBy = ''; r.approvedAt = ''; r.approvedByUid = '';
-    ['reversedBy', 'voidReason', 'voidedBy', 'voidedByUid', 'voidedAt', 'reverses', 'replaces'].forEach(function (k) { delete r[k]; });
+    // Phase 3, C5 — nor the statement the original was cleared on (statementId).
+    ['reversedBy', 'voidReason', 'voidedBy', 'voidedByUid', 'voidedAt', 'reverses', 'replaces', 'statementId'].forEach(function (k) { delete r[k]; });
     var moved = false;
     if (rvDate && ledgerDateReconciled(r.date, book)) { r.date = rvDate; moved = true; }
     return { row: r, same: same, moved: moved, changed: changed };
@@ -8611,9 +8618,11 @@
   // the untick itself is logged (ledgerLog, 'untick'). The trail line shows an approval only on a
   // ticked row (ledgerTrailLine), and the next tick writes over it. reconciledAt still goes, so a
   // merge reads an unticked row as unticked (26a2685).
+  // Phase 3, C5 — an untick also takes off the statement it was cleared on (statementId): the
+  // statement still lists it, as signed, and a tick again puts it on the next one.
   function stampApproved(e, on) {
     if (on) { e.approvedBy = ledgerActor(); e.approvedByUid = ledgerActorUid(); e.approvedAt = new Date().toISOString(); e.reconciledAt = Date.now(); }
-    else delete e.reconciledAt;
+    else { delete e.reconciledAt; delete e.statementId; }
   }
   // Phase 3, C1 — one entry in state.ledgerLog (written by logLedger). What was done (`op`, one of
   // LEDGER_OPS) to which row (`rowId`; a statement's id for 'reopen'), by whom, when, on which
@@ -9133,13 +9142,16 @@
   // It locks every entry dated on or before the statement date, so the date must be one: a real
   // statement's ending date, not today by default (a statement is never "through today"), not in
   // the future (entries still to come would lock as they were entered), and not earlier than the
-  // lock already in force (that would quietly unlock a checked month; reopening a statement is a
-  // later update). The same date again is allowed: it re-signs the same statement. Pure.
+  // lock already in force (that would quietly unlock a checked month; since C5 an admin reopens a
+  // statement instead). The same date again was allowed, re-signing the statement, until C5. Pure.
   // Security re-review of C2 (minor) — except a lock AFTER today, which no statement can have
   // given (an older page, or a clock that was wrong): it may be lowered to a real statement's
   // date, or the book stays locked ahead of time for good. The handler logs that as a correction
   // (reconcileLockAhead).
-  function reconcileLockRefusal(book, today) {
+  // Phase 3, C5 — the same date again is refused while its statement stands (statements, when
+  // given: state.statements): that statement is kept as it was signed, and a second one for the
+  // same month would say it twice.
+  function reconcileLockRefusal(book, today, statements) {
     var sd = String((book && book.statementDate) || '');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(sd)) return 'Enter the statement’s ending date first.';
     if (sd > today) return 'A statement can’t end after today. Check the statement date.';
@@ -9147,6 +9159,9 @@
     if (rt && sd < rt && !reconcileLockAhead(book, today)) {
       return 'The book is already reconciled through ' + fmtDateShort(rt) + '. A statement ending earlier can’t be ' +
         'marked reconciled. Reopening a reconciled statement is coming in a later update.';
+    }
+    if (rt && sd === rt && statementInForce(statements, book)) {
+      return 'The book is already reconciled through ' + fmtDateShort(rt) + ', and that statement is kept as it was signed.';
     }
     return '';
   }
@@ -9158,6 +9173,195 @@
   // Treasurer sign-off: the card says how to put it right; the log says what was put right.
   var RECONCILE_AHEAD_WHY = 'The book is marked reconciled through a date that hasn’t happened yet. To correct it, enter your latest bank statement’s ending date and closing balance, tick its entries, and mark it reconciled; the lock moves back to that date.';
   var RECONCILE_AHEAD_LOGGED = 'Corrected: it had been marked reconciled through a date that hadn’t happened yet.';
+  // ---------------------------------------------------------------------------
+  // PHASE 3, C5 — STATEMENTS (design: "Reconcile-lock writes a statement; optional second
+  // reviewer; admin-only reopen, logged"; treasurer review of C1, M4 and L1).
+  //
+  // Mark reconciled writes one record to state.statements, and from then on nothing in it
+  // changes except three things, each done once: a second leader marks it reviewed; an admin
+  // reopens it, saying why; and, on a statement from before statements were kept (legacy), someone
+  // adds the statement's ending balance. It is never deleted: a reopened statement stays, marked,
+  // and the one reconciled for that date afterwards is a new record with its own id.
+  //   id              'st-' + date + '-' + uid(): unique, so a date reconciled again after a reopen
+  //                   is a new statement (M4). The legacy one is 'st-' + date (C1).
+  //   date            the statement's ending date: the book is reconciled through it
+  //   statementCents  the statement's ending balance as typed     } whole cents; null where
+  //   openingCents    the book's opening figure, which the cleared } not known (legacy, L1)
+  //                   balance is counted from                      }
+  //   clearedCents    the opening plus every entry ticked through the date
+  //   bookCents       the opening plus every entry through the date (cleared plus outstanding)
+  //   ticked          ids of the entries cleared on THIS statement (not an earlier one); null legacy
+  //   outstanding     ids of the entries through the date not ticked; absent on legacy
+  //   by, byUid, at   who marked it reconciled (never an email), their account's uid, and when
+  //   supersedes      the reopened statement for the same date that this one replaces, if any
+  //   reviewedAt, reviewedBy, reviewedByUid                    the second reviewer, once
+  //   reopenedAt, reopenedBy, reopenedByUid, reopenWhy         reopened by an admin, once
+  //   addedAt, addedCents, addedBy, addedByUid                 legacy only: the balance added, once
+  //   legacy          true on the one C1 synthesizes for a book reconciled before statements were kept
+  // Each entry cleared on a statement carries its id (statementId); an untick takes it off.
+  // ⚠ A CONVENIENCE RECORD, NOT PROOF, like the E2 stamps: on Firestore the client writes it, and
+  // the rules do not check it (the server's statements table will: design, D1).
+  // LEADERS ONLY: nothing here is published (buildParentView is an allowlist and never reads it).
+  // ---------------------------------------------------------------------------
+  // The parts of a statement that are set once after it is written, each as a group (its time
+  // first). A literal: normalizeState reads it before the script's vars are set.
+  function statementOnceGroups() {
+    return [['reviewedAt', 'reviewedBy', 'reviewedByUid'], ['reopenedAt', 'reopenedBy', 'reopenedByUid', 'reopenWhy'],
+      ['addedAt', 'addedCents', 'addedBy', 'addedByUid']];
+  }
+  // Has it been marked reviewed / reopened? Any of the group's stamps says so. Pure.
+  function statementReviewed(st) { return !!(st && (st.reviewedAt || st.reviewedByUid || st.reviewedBy)); }
+  function statementReopened(st) { return !!(st && (st.reopenedAt || st.reopenedByUid || st.reopenedBy)); }
+  function statementAdded(st) { return !!(st && (st.addedAt || typeof st.addedCents === 'number')); }
+  // One statement, coerced in place (normalizeState). Only what is there is coerced: a field that is
+  // absent stays absent, so a record gains nothing it did not have. Money is whole cents or null;
+  // row ids are strings (at most 2000 of them); stamps are never an email. A legacy statement has
+  // no figures at all (L1): the book never recorded them. Unknown fields are kept. Pure.
+  function normalizeStatement(st) {
+    if (typeof st.date !== 'string') st.date = '';
+    if (typeof st.id !== 'string' || !st.id) st.id = 'st-' + st.date;
+    ['statementCents', 'openingCents', 'clearedCents', 'bookCents', 'addedCents'].forEach(function (k) {
+      if (st[k] !== undefined) st[k] = typeof st[k] === 'number' && isFinite(st[k]) ? Math.round(st[k]) : null;
+    });
+    ['ticked', 'outstanding'].forEach(function (k) {
+      if (st[k] === undefined || st[k] === null) return;
+      st[k] = Array.isArray(st[k]) ? st[k].filter(function (r) { return typeof r === 'string' && r && r.length <= 200; }).slice(0, 2000) : null;
+    });
+    if (st.legacy === true) { st.statementCents = null; st.openingCents = null; st.clearedCents = null; st.bookCents = null; st.ticked = null; }
+    else if (st.legacy !== undefined) delete st.legacy;
+    ['by', 'reviewedBy', 'reopenedBy', 'addedBy'].forEach(function (k) { if (st[k] !== undefined) st[k] = ledgerStampClean(st[k]); });
+    ['byUid', 'at', 'reviewedAt', 'reviewedByUid', 'reopenedAt', 'reopenedByUid', 'addedAt', 'addedByUid', 'reopenWhy'].forEach(function (k) {
+      if (st[k] !== undefined && typeof st[k] !== 'string') st[k] = '';
+    });
+    if (typeof st.reopenWhy === 'string' && st.reopenWhy.length > 500) st.reopenWhy = st.reopenWhy.slice(0, 500);
+    if (st.supersedes !== undefined && typeof st.supersedes !== 'string') delete st.supersedes;
+    return st;
+  }
+  // The same statement from two copies (the same id), as one, the same on every device whichever
+  // is `a`: what it was signed as from the copy whose signed part sorts first (they only differ if
+  // something went wrong); and each part set once (the review, the reopen, the balance added) from
+  // the copy that has it, or, when both do, the earlier (then the one that sorts first). So a
+  // statement reviewed on one device and reopened on another is both, everywhere. Pure.
+  function statementPairMerge(a, b) {
+    var ja = JSON.stringify(a), jb = JSON.stringify(b);
+    if (ja === jb) return a;
+    var groups = statementOnceGroups(), once = Object.create(null);
+    groups.forEach(function (g) { g.forEach(function (k) { once[k] = true; }); });
+    function core(s) {
+      var c = {};
+      Object.keys(s).sort().forEach(function (k) { if (!once[k]) c[k] = s[k]; });
+      return JSON.stringify(c);
+    }
+    var ca = core(a), cb = core(b);
+    var base = ca < cb ? a : cb < ca ? b : (ja <= jb ? a : b);
+    var out = {};
+    Object.keys(base).forEach(function (k) { if (!once[k]) out[k] = base[k]; });
+    groups.forEach(function (g) {
+      function part(s) {
+        var p = {}, any = false;
+        g.forEach(function (k) { if (s[k] !== undefined) { p[k] = s[k]; if (s[k] !== '' && s[k] !== null) any = true; } });
+        return any ? p : null;
+      }
+      var pa = part(a), pb = part(b);
+      var ka = pa ? String(pa[g[0]] || '') + '\u0000' + JSON.stringify(pa) : '', kb = pb ? String(pb[g[0]] || '') + '\u0000' + JSON.stringify(pb) : '';
+      var pick = !pa ? pb : !pb ? pa : (ka <= kb ? pa : pb);
+      if (pick) g.forEach(function (k) { if (pick[k] !== undefined) out[k] = pick[k]; });
+    });
+    return out;
+  }
+  // Two copies' statements as one (the sync merge; normalizeState runs a record's own through it,
+  // with no `theirs`): every statement from either, one per id (statementPairMerge), by date, then
+  // when it was signed, then id. Never a deletion: statements are append-only. Capped at the newest
+  // 200 (a season is about twelve; close-out starts the next book with none). Pure.
+  function mergeStatements(mine, theirs) {
+    var byId = Object.create(null);
+    (mine || []).concat(theirs || []).forEach(function (st) {
+      if (!st || typeof st !== 'object' || Array.isArray(st) || typeof st.id !== 'string' || !st.id) return;
+      byId[st.id] = byId[st.id] ? statementPairMerge(byId[st.id], st) : st;
+    });
+    var all = Object.keys(byId).map(function (k) { return byId[k]; }).sort(function (x, y) {
+      var a = String(x.date) + '\u0000' + String(x.at || '') + '\u0000' + x.id, b = String(y.date) + '\u0000' + String(y.at || '') + '\u0000' + y.id;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+    return all.length > 200 ? all.slice(all.length - 200) : all;
+  }
+  // The statement the book is reconciled through: not reopened, dated book.reconciledThrough (the
+  // latest signed, if two devices both signed that date). Null when there is none. Pure.
+  function statementInForce(statements, book) {
+    var rt = String((book && book.reconciledThrough) || ''), got = null;
+    if (!rt) return null;
+    (statements || []).forEach(function (st) {
+      if (st && st.date === rt && !statementReopened(st) && (!got || String(st.at || '') + st.id > String(got.at || '') + got.id)) got = st;
+    });
+    return got;
+  }
+  // A book reconciled through a date whose every statement is reopened is reconciled through the
+  // latest statement before it that is not (with who and when from it), or not at all. A device
+  // still holding the book from before the reopen (a merge, or a page from before C5 saving over
+  // it) would otherwise lock that month again without a word. For normalizeState and the sync
+  // merge; a book reconciled through a date with no statement at all is left as it is (C1 gives it
+  // its legacy one). In place on `book`; returns true when it moved. Pure.
+  function statementLockBack(book, statements) {
+    var rt = String((book && book.reconciledThrough) || '');
+    if (!rt) return false;
+    var sameDay = (statements || []).filter(function (st) { return st && st.date === rt; });
+    if (!sameDay.length || sameDay.some(function (st) { return !statementReopened(st); })) return false;
+    var back = statementBefore(statements, rt);
+    book.reconciledThrough = back ? back.date : '';
+    book.reconciledBy = back ? ledgerStampClean(back.by) : '';
+    book.reconciledAt = back && typeof back.at === 'string' ? back.at : '';
+    return true;
+  }
+  // The latest statement not reopened dated before `date` (the latest signed, on a tie), or null:
+  // where a reopen steps the lock back to. Pure.
+  function statementBefore(statements, date) {
+    var back = null;
+    (statements || []).forEach(function (st) {
+      if (!st || statementReopened(st) || !/^\d{4}-\d{2}-\d{2}$/.test(st.date) || st.date >= date) return;
+      if (!back || st.date + String(st.at || '') + st.id > back.date + String(back.at || '') + back.id) back = st;
+    });
+    return back;
+  }
+  // The statement Mark reconciled writes, from the book as it stands (its statementDate and
+  // statementCents, the figures reconcileTotals checked) and the rows: `stamp` { by, byUid, at },
+  // `id` its id. The entries cleared on it are the ones ticked through its date that are not
+  // already on a statement still standing, nor cleared on one from before statements were kept (a
+  // legacy statement still standing, which kept no list): dated on or before it and ticked before
+  // it was signed (or with no time of ticking). Returns { statement, rows } (rows: the entries to
+  // give its id). Pure.
+  function statementNew(ledger, book, statements, stamp, id) {
+    stamp = stamp || {};
+    var sd = String(book.statementDate || ''), standing = Object.create(null);
+    (statements || []).forEach(function (st) { if (st && !statementReopened(st)) standing[st.id] = true; });
+    // The latest legacy statement still standing: it kept no list, so what it cleared is told by date.
+    var legacyPrev = null;
+    (statements || []).forEach(function (st) {
+      if (st && st.ticked === null && !statementReopened(st) && /^\d{4}-\d{2}-\d{2}$/.test(st.date) && (!legacyPrev || st.date > legacyPrev.date)) legacyPrev = st;
+    });
+    var opening = book.openingCents || 0, cleared = opening, all = opening, ticked = [], out = [], rows = [];
+    (ledger || []).forEach(function (e) {
+      if (!e || !entryAfterOpening(e, book) || !entryOnStatement(e, book)) return;
+      all += entrySignedCents(e);
+      if (e.reconciled !== true) { out.push(e.id); return; }
+      cleared += entrySignedCents(e);
+      if (typeof e.statementId === 'string' && standing[e.statementId]) return;
+      if (legacyPrev && String(e.date || '') <= legacyPrev.date &&
+        !(e.approvedAt && legacyPrev.at && String(e.approvedAt) > String(legacyPrev.at))) return;
+      ticked.push(e.id);
+      rows.push(e);
+    });
+    var st = {
+      id: id, date: sd, statementCents: book.statementCents || 0, openingCents: opening, clearedCents: cleared, bookCents: all,
+      ticked: ticked, outstanding: out, by: ledgerStampClean(stamp.by), byUid: typeof stamp.byUid === 'string' ? stamp.byUid : '',
+      at: typeof stamp.at === 'string' ? stamp.at : ''
+    };
+    var was = null;
+    (statements || []).forEach(function (x) {
+      if (x && x.date === sd && statementReopened(x) && (!was || String(x.reopenedAt || '') + x.id > String(was.reopenedAt || '') + was.id)) was = x;
+    });
+    if (was) st.supersedes = was.id;
+    return { statement: st, rows: rows };
+  }
   // E1 — this charge's due date, from its line and the line's event as they stand now.
   function chargeDueNow(c) {
     var line = getBudgetLine(c.lineId);
@@ -13450,6 +13654,15 @@
       bkHere.reconciledAt = bkThere.reconciledAt;
       if (bkHere.statementDate && bkHere.statementDate <= bkThere.reconciledThrough) { bkHere.statementDate = ''; bkHere.statementCents = 0; }
     }
+    // PHASE 3, C5 — the statements, both copies' as one (mergeStatements: by id, never deleted, and
+    // one statement changed on both devices, reviewed on one and reopened on the other, is the same
+    // on both). The deletion marks don't apply: nothing deletes a statement. Only between two books
+    // of the same year (close-out starts a book with none). Then a lock through a statement since
+    // reopened steps back (statementLockBack): the later lock just taken may be the one reopened.
+    if (bkHere && bkThere && bkHere.year === bkThere.year) {
+      state.statements = mergeStatements(state.statements, remote.statements);
+      statementLockBack(bkHere, state.statements);
+    }
     // Phase 0 — ledger entries get the same append-only protection as popcorn sales, and
     // for a stronger reason: two leaders posting receipts from two devices must not be able
     // to lose one another's transactions. A book that silently drops a row is not a book.
@@ -13848,6 +14061,7 @@
       // Phase 3, C2 (security review of C1, m5) — nor is a book whose rows are all set aside, or
       // that has only its history of changes: that is a treasurer's work too.
       !(s.ledgerAside && s.ledgerAside.length) && !(s.ledgerLog && s.ledgerLog.length) &&
+      !(s.statements && s.statements.length) &&   // Phase 3, C5 — nor one with a statement signed
       !(s.leaders && s.leaders.length);
   }
   // Compare pack records ignoring the sync counter itself.
@@ -20442,7 +20656,7 @@
     if (agrees && rec.ticked) {
       // Treasurer review of C2 (H-1) — through the statement's own date only, never "today"; the
       // reason in place of the button when it can't be marked; two taps, the second saying what locks.
-      var rlNo = reconcileLockRefusal(bk, todayISO());
+      var rlNo = reconcileLockRefusal(bk, todayISO(), state.statements);
       var rlArmed = ui.armed === 'ledger-reconcile-lock';
       h += '<p class="small" style="margin:10px 0 0"><span class="pill navy">Agreed</span> The book matches the statement. ' +
         (rlNo
@@ -29721,17 +29935,32 @@
     // Security re-review of C2 (minor) — and only while the ticked entries agree with the statement,
     // as the button is only shown then: a tap from a screen drawn before a sync changed them does
     // not lock a book that no longer matches. A lock after today lowered is logged as a correction.
+    // Phase 3, C5 — and it writes the statement, as signed (statementNew), into state.statements,
+    // and gives each entry cleared on it the statement's id. A lock after today put right leaves the
+    // statements after the new date reopened, in the correction's words (no statement ends after
+    // today, so they were never real ones).
     if (act === 'ledger-reconcile-lock') {
-      var rlNo = reconcileLockRefusal(state.book, todayISO());
+      var rlNo = reconcileLockRefusal(state.book, todayISO(), state.statements);
       var rlRec = reconcileTotals(state.ledger, state.book);
       if (!rlNo && (rlRec.difference !== 0 || !rlRec.ticked)) rlNo = 'The ticked entries no longer match the statement’s closing balance (the book may have changed on another device), so it wasn’t marked reconciled. Check the difference and try again.';
       if (rlNo) { if (ui.armed === act) ui.armed = null; showToast(rlNo); render(); return; }
       arm(act, function () {
         var rlWas = state.book.reconciledThrough || '';
         var rlFix = reconcileLockAhead(state.book, todayISO()) && state.book.statementDate < rlWas;
+        var rlAt = new Date().toISOString();
+        var rlNew = statementNew(state.ledger, state.book, state.statements, { by: ledgerActor(), byUid: ledgerActorUid(), at: rlAt },
+          'st-' + state.book.statementDate + '-' + uid());
+        if (rlFix) {
+          (state.statements || []).forEach(function (st) {
+            if (st.date <= state.book.statementDate || statementReopened(st)) return;
+            st.reopenedAt = rlAt; st.reopenedBy = rlNew.statement.by; st.reopenedByUid = rlNew.statement.byUid; st.reopenWhy = RECONCILE_AHEAD_LOGGED;
+          });
+        }
+        state.statements = mergeStatements(state.statements, [rlNew.statement]);
+        rlNew.rows.forEach(function (e) { e.statementId = rlNew.statement.id; });
         state.book.reconciledThrough = state.book.statementDate;
         state.book.reconciledBy = ledgerActor();                 // E2
-        state.book.reconciledAt = new Date().toISOString();
+        state.book.reconciledAt = rlAt;
         logLedger('reconcile', 'book', rlFix
           ? { f: { reconciledThrough: [rlWas, state.book.reconciledThrough] }, why: RECONCILE_AHEAD_LOGGED }
           : { f: { reconciledThrough: [rlWas, state.book.reconciledThrough] } });
