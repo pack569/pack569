@@ -13096,7 +13096,8 @@ test('E1: due dates and family statements are NEVER published', () => {
     if (/state\.statements/.test(line.replace(/\/\/.*$/, ''))) stUsers.add(stFn);
   });
   // C5 review: buildSeasonArchive copies them into the season archive, leaders only, until C8.
-  eq([...stUsers].sort(), ['buildSeasonArchive', 'handleAction', 'ledgerEntryLabel', 'mergeRemoteAppendOnly', 'renderBankStatementSheet', 'renderReconcile', 'rolloverYear',
+  // Security re-check of C5 (R2): renderOverlay counts them on Replace all data? (an admin's: R1).
+  eq([...stUsers].sort(), ['buildSeasonArchive', 'handleAction', 'ledgerEntryLabel', 'mergeRemoteAppendOnly', 'renderBankStatementSheet', 'renderOverlay', 'renderReconcile', 'rolloverYear',
     'statementButtonsHtml', 'statementsCardHtml'], 'something new writes or reads state.statements');
   ok(/state\.statements = \[\];/.test(slice('rolloverYear')), 'close-out does not clear the bank statements');
   ok(!/statements/.test(bpv), 'buildParentView reads the bank statements');
@@ -19065,7 +19066,7 @@ const C2T_ACT = [
   c2Block(/    if \(act === 'confirm-import'\) \{[\s\S]*?\n    \}/, 'confirm-import')].join('\n');
 const C2T_CHANGE = c2Block(/    if \(ch === 'ledger-unrec-why'\) \{[^\n]*\}/, 'ledger-unrec-why');
 const C2T_MORE = `
-  ${['reconcileLockRefusal', 'reconcileLockAhead', 'reconcileTotals', 'entrySignedCents'].map(slice).join('\n')}
+  ${['reconcileLockRefusal', 'reconcileLockAhead', 'reconcileTotals', 'entrySignedCents', 'arrOf'].map(slice).join('\n')}
   ${decl('RECONCILE_AHEAD_WHY')}
   ${decl('RECONCILE_AHEAD_LOGGED')}
   ${decl('RESTORE_REFUSED')}
@@ -23379,6 +23380,24 @@ test('C5 review (F6): restoring a backup of the same year keeps the statements s
   // A backup of another year's book: its statements alone, as the sync merge would have it.
   const r = run(back({ book: { year: 2025, reconciledThrough: '2026-06-30' }, statements: [] }));
   eq([r.get('state.statements'), r.get('state.book.reconciledThrough')], [[], '2026-06-30'], 'another year');
+});
+
+test('C5 re-check (R2): a restore keeps this device’s past seasons the backup lacks, and says when it replaces another year’s book', () => {
+  const S = (id, year, o) => Object.assign({ id, kind: 'season', year, packName: 'here' }, o || {});
+  const p = c2tPage({ more: `state.archives = ${JSON.stringify([S('s25', 2025), S('s24', 2024), { id: 'te1', kind: 'trails-end', year: 2025 }])};` });
+  p.run(`admin = true; ui.overlay = { data: { ledger: [], ledgerLog: [], book: { reconciledThrough: '' }, archives: ${JSON.stringify(
+    [S('s24', 2024, { packName: 'backup' }), S('s23', 2023, { packName: 'backup' }), { id: 'te0', kind: 'trails-end', year: 2024 }])} } }; act3('confirm-import')`);
+  eq(p.get('state.archives').map((a) => [a.id, a.packName || '']).sort(), [['s23', 'backup'], ['s24', 'here'], ['s25', 'here'], ['te0', '']],
+    'this device’s seasons (s25 lacking in the backup; s24, this device’s copy), the backup’s own, and its Trail’s End imports');
+  // Replace all data? says so when the backup's book is another year's, with this book's statements.
+  const x = sandbox(['importBookYearHtml', 'arrOf', 'esc']);
+  const line = (here, sts, there) => x.importBookYearHtml({ year: here }, sts, { book: { year: there } });
+  eq(line(2026, [{}, {}, {}], 2025), '<div class="warn" style="margin:0 0 10px"><p class="small" style="margin:0">This backup’s book is for the 2025–2026 program year. ' +
+    'This device’s 2026–2027 book and its 3 statements reconciled will be replaced.</p></div>', 'another year');
+  ok(/This device’s 2026–2027 book and its 1 statement reconciled will be replaced\./.test(line(2026, [{}], 2027)), 'one statement');
+  ok(/This device’s 2026–2027 book will be replaced\./.test(line(2026, [], 2025)), 'none');
+  eq([line(2026, [{}], 2026), x.importBookYearHtml(null, [], { book: { year: 1 } })], ['', ''], 'the same year');
+  ok(/'This replaces everything currently in the pack record\.<\/p>' \+\s*(\/\/[^\n]*\s*)*importBookYearHtml\(state\.book, state\.statements, o\.data\) \+/.test(SCRIPT), 'the overlay');
 });
 
 test('C5 review (treasurer 6, F4): an entry a standing statement lists is not cleared again, and a list is cut at 2000 with the totals whole', () => {

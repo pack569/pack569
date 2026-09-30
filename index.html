@@ -25901,6 +25901,9 @@
         '<p>The imported backup has <strong>' + o.data.scouts.length + ' scouts</strong>, <strong>' + o.data.storefronts.length +
         ' storefronts</strong>, and <strong>' + o.data.entries.length + ' wagon/online entries</strong>. ' +
         'This replaces everything currently in the pack record.</p>' +
+        // Security re-check of C5 (R2) — a backup of another year's book brings that book, and none
+        // of this one's statements (confirm-import merges them for the same year only).
+        importBookYearHtml(state.book, state.statements, o.data) +
         // LIVE STOPGAP (security review of the stopgap, S9; re-review, item 6): the pack's deletion
         // marks outlive it, and the restore marks what it brings back put back (restoreGone).
         // Phase 3, C2 (security review of C1, m4) — as it is: this device can only put back the
@@ -26605,6 +26608,18 @@
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(function () { done(true); }, fallback);
     } else fallback();
+  }
+  // Security re-check of C5 (R2) — the Replace all data? line for a backup whose book is another
+  // year's than this device's (`book`, `statements`: this device's; `rec`: the backup, normalized):
+  // that book comes in whole, and this one's statements go with this one (confirm-import merges the
+  // statements of the same year's book only). '' for the same year. Pure.
+  function importBookYearHtml(book, statements, rec) {
+    var there = rec && rec.book;
+    if (!book || !there || book.year === there.year) return '';
+    var n = arrOf(statements).length;
+    return '<div class="warn" style="margin:0 0 10px"><p class="small" style="margin:0">This backup’s book is for the ' +
+      esc(there.year + '–' + (there.year + 1)) + ' program year. This device’s ' + esc(book.year + '–' + (book.year + 1)) + ' book' +
+      (n ? ' and its ' + n + ' statement' + (n === 1 ? '' : 's') + ' reconciled' : '') + ' will be replaced.</p></div>';
   }
   function handleImportFile(input) {
     var file = input.files && input.files[0];
@@ -30928,8 +30943,16 @@
       // the question is open.
       if (!canReopenStatement()) { ui.overlay = null; render(); showToast(RESTORE_REFUSED); return; }
       var ciLog = state.ledgerLog;
-      var ciSt = state.statements, ciYear = state.book ? state.book.year : undefined;
+      var ciSt = state.statements, ciYear = state.book ? state.book.year : undefined, ciArc = state.archives;
       state = restoreGone(ui.overlay.data, state.gone, Date.now());
+      // Security re-check of C5 (R2) — and this device's past seasons, as they are here: a season's
+      // close-out (its summary, statements and change history) is written once, on the device that
+      // closed it out, so a backup from before it would lose it for good. Each season archive here
+      // the backup lacks is kept, and one both have is this device's (by id). Trail's End imports
+      // are the backup's, as before.
+      var ciMine = arrOf(ciArc).filter(function (a) { return a && a.kind === 'season'; }), ciIds = Object.create(null);
+      ciMine.forEach(function (a) { ciIds[a.id] = true; });
+      state.archives = arrOf(state.archives).filter(function (a) { return !ciIds[a && a.id]; }).concat(ciMine);
       // Security re-review of C2 (#1) — the book is the backup's, but its history is not: this
       // device's log and the backup's, as one (mergeLedgerLog). The backup's alone lost every
       // change made since it was taken, for good, and so let anyone restore away their own trail.
