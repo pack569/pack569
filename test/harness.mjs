@@ -26408,6 +26408,8 @@ const c8rec = (x, nw, tick, statementCents) => {
 //     signed total (−150.00 + 50.00 = −100.00), so 930.00 + 100.00 = 1,030.00 and the difference is 0.
 //  B. In July the check clears and so does f (−7.00): the bank says 1,030.00 − 150.00 − 7.00 = $873.00. Tick co-c and f: the ticked
 //     balance is 930.00 − 7.00 (f) − (+50.00: co-d still out) = 873.00, the difference 0. co-c ticked moves nothing: the opening holds it.
+//     (Treasurer's check: $873.00 is $880.00 − $7.00. $880.00 is what ticking the check alone gives: 930.00 less the deposit still out, +50.00;
+//     f is the $7.00 that then clears. The same figure both ways.)
 //  C. The deposit clears too: $923.00, and with all three ticked the ticked balance is 930.00 − 7.00 = 923.00.
 //  D. Without the offset (a page that doesn't know the carried rows, B): 930.00 − 7.00 = 923.00 against 873.00 is off by $50.00, a
 //     difference that is nothing missing at all.
@@ -26422,8 +26424,9 @@ test('C8-3: the ticked balance allows for the carried rows the bank has not show
   eq([rc.cleared, rc.difference, rc.carriedOpen, rc.carriedOpenCents, rc.carriedTicked], [92300, 0, 0, 0, 2], 'C: and the deposit');
   const d = J(x.reconcileTotals(b.ledger, b.book));
   eq([d.cleared, d.difference, d.carriedOpen], [92300, 87300 - 92300, 0], 'D: a page that does not read the carried rows is off by the $50.00 still out');
-  // A carried row dated after the statement can't be on it; a book with no carried rows is the old math exactly.
-  eq(J(x.reconcileTotals(a.ledger, a.book, a.aside.map((e) => (e.off === 'carried' ? Object.assign({}, e, { date: '2027-08-20' }) : e)))).carriedOpen, 0, 'after the statement date');
+  // Security review of C8-1..4 (L1): a carried row is offset whatever the statement's date (it is in the opening figure, and not on the bank's side until it
+  // clears), so even one dated after the statement counts; a book with no carried rows is the old math exactly.
+  eq(J(x.reconcileTotals(a.ledger, a.book, a.aside.map((e) => (e.off === 'carried' ? Object.assign({}, e, { date: '2027-08-20' }) : e)))).carriedOpen, 2, 'after the statement date');
   const plain = J(x.reconcileTotals(a.ledger, a.book, [])), none = J(x.reconcileTotals(a.ledger, a.book));
   eq([plain, none], [none, none], 'no aside, no carried rows: one answer');
   eq(Object.keys(none).sort(), ['after', 'carriedOpen', 'carriedOpenCents', 'carriedTicked', 'cleared', 'difference', 'open', 'statement', 'ticked'], 'and the figures it gave, with the carried three');
@@ -26954,6 +26957,27 @@ test('C8 security M2: the scouts the closed books name are worked out once a ren
   vm.runInContext("state.closedBooks = []; scoutHasLedger.memo = null;", x);
   eq(vm.runInContext("scoutHasLedger('s2')", x), false, 'and again after a render clears it');
   ok(/function render\(\) \{\n    scoutHasLedger\.memo = null;/.test(SCRIPT), 'render clears it');
+});
+
+// L1: a statement dated Jun 15 in the book that opens Jul 1, with the check carried from Jun 28. The statement ends before the book opens: refused, and, for a
+// page that lets it through, the carried rows are offset all the same, so the cleared balance is not overstated by the $150.00 check and the $50.00 deposit.
+test('C8 security L1: every unticked carried row is offset whatever the statement’s date, and a statement that ends before the book opens is refused', () => {
+  const x = sandbox([...C8_REC_FNS, 'statementNew', 'ledgerStampClean']), nw = c8New();
+  const early = (o) => Object.assign({}, nw.book, { statementDate: '2027-06-15', statementCents: 103000 }, o || {});
+  const carried = nw.aside.filter((e) => e.off === 'carried').map((e) => Object.assign({}, e, { date: e.id === 'co-c' ? '2027-06-28' : '2027-06-29' }));
+  const ledger = J(nw.ledger).map((e) => Object.assign(e, { reconciled: false }));
+  const r = J(x.reconcileTotals(ledger, early(), carried));
+  eq([r.cleared, r.difference, r.carriedOpen, r.carriedOpenCents], [103000, 0, 2, -10000], 'cleared: 930.00 + 150.00 − 50.00, not the 930.00 of the opening alone');
+  const s = J(x.statementNew(ledger, early(), [], { by: 'Pat', byUid: 'u1', at: 'T' }, 'st-early', carried)).statement;
+  eq([s.clearedCents, s.carriedOutCents, s.outstanding.filter((i) => i.indexOf('co-') === 0).sort()], [103000, -10000, ['co-c', 'co-d']], 'the statement signed with it');
+  // Tick all and Clear all reach a carried row the statement's date is before, as they reach the rest.
+  ok(!/entryOnStatement\(e, state\.book\) \|\| e\.reconciled === tick \|\| \(!tick && carriedRowFixed/.test(SCRIPT), 'Tick all does not skip a carried row for its date');
+  ok(/var recCarried = ledgerSort\(carriedRowsOf\(state\.ledgerAside\)\)\.filter\(function \(e\) \{ return !carriedRowFixed\(e, state\.statements\); \}\);/.test(SCRIPT), 'the Reconcile list shows every carried row');
+  // The refusal, in the treasurer's hands: a date before the opening date, and the ordinary ones as before.
+  const g = sandbox(declClosure(['reconcileLockRefusal'], []));
+  const no = (sd, o) => g.reconcileLockRefusal(Object.assign({}, nw.book, { statementDate: sd }, o || {}), '2027-09-30', [], true);
+  eq(no('2027-06-15'), 'That statement ends before this book opens on ' + vm.runInContext('fmtDateShort', g)('2027-07-01') + '. Everything before then is already in the opening balance. Check the statement date.', 'before the opening date');
+  eq([no('2027-07-01'), no('2027-07-31'), no('2027-06-15', { openingDate: '' })], ['', '', ''], 'the opening date itself and after; no opening date: as before');
 });
 
 /* ---------------- report ---------------- */

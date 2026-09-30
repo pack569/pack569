@@ -8571,8 +8571,10 @@
       if (!entryOnStatement(e, book)) { after++; return; }
       if (e.reconciled) { cleared += entrySignedCents(e); ticked++; } else open++;
     });
+    // Security review of C8-1..4 (L1) — every carried row counts, whatever the statement's date: each was dated on or before
+    // the old year's last day, so it is in the opening figure whatever statement comes first, and the bank will not show it
+    // until it clears. (A statement dated before the book opens is refused: reconcileLockRefusal.)
     carriedRowsOf(aside).forEach(function (e) {
-      if (!entryOnStatement(e, book)) return;
       if (e.reconciled === true) { cTicked++; return; }
       cOpen++;
       cOpenCents += entrySignedCents(e);
@@ -9640,6 +9642,11 @@
     var sd = String((book && book.statementDate) || '');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(sd)) return 'Enter the statement’s ending date first.';
     if (sd > today) return 'A statement can’t end after today. Check the statement date.';
+    // Security review of C8-1..4 (L1) — nor one that ends before this book opens: what came before is in the opening
+    // figure, and the rows carried from last year would be left out of a statement they cannot be on.
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(book.openingDate || '')) && sd < book.openingDate) {
+      return 'That statement ends before this book opens on ' + fmtDateShort(book.openingDate) + '. Everything before then is already in the opening balance. Check the statement date.';
+    }
     var rt = String(book.reconciledThrough || '');
     if (rt && sd < rt && !reconcileLockAhead(book, today)) {
       return 'The book is already reconciled through ' + fmtDateShort(rt) + '. A statement ending earlier can’t be ' +
@@ -9980,8 +9987,7 @@
       rows.push(e);
     });
     var carried = carriedRowsOf(aside), carriedTicked = [], carriedOut = 0;
-    carried.forEach(function (e) {
-      if (!entryOnStatement(e, book)) return;
+    carried.forEach(function (e) {   // every carried row, whatever the statement's date (reconcileTotals, L1)
       if (e.reconciled !== true) {
         out.push(e.id);
         if (e.direction === 'in') outIn += e.amountCents || 0; else outOut += e.amountCents || 0;
@@ -22946,7 +22952,7 @@
     var pending = ledgerSort(state.ledger).filter(function (e) { return entryAfterOpening(e, bk) && entryOnStatement(e, bk); });
     var recPair = ledgerPairOf(state.ledger);   // Option B — a reversal says what it cancels
     // Phase 3, C8 (C8-3) — the rows carried from last year not yet cleared on a statement still standing.
-    var recCarried = ledgerSort(carriedRowsOf(state.ledgerAside)).filter(function (e) { return entryOnStatement(e, bk) && !carriedRowFixed(e, state.statements); });
+    var recCarried = ledgerSort(carriedRowsOf(state.ledgerAside)).filter(function (e) { return !carriedRowFixed(e, state.statements); });
     h += '<div class="card"><h2 class="section display">Tick against the statement</h2>';
     if (!pending.length && !recCarried.length) {
       h += '<p class="empty">Nothing to reconcile yet.</p></div>';
@@ -32577,7 +32583,7 @@
       // Phase 3, C8 (C8-3) — and the rows carried from last year, the same way; one cleared on a
       // statement still standing keeps its tick (carriedRowFixed).
       carriedRowsOf(state.ledgerAside).forEach(function (e) {
-        if (!entryOnStatement(e, state.book) || e.reconciled === tick || (!tick && carriedRowFixed(e, state.statements))) return;
+        if (e.reconciled === tick || (!tick && carriedRowFixed(e, state.statements))) return;
         stampApproved(e, tick);
         e.reconciled = tick;
         tkIds.push(e.id);
