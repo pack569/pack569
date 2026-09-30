@@ -1,4 +1,6 @@
-# Open questions for Keith
+# Things to settle someday
+
+**None of this blocks the guides or the app.** The lesson plans are a guide for den leaders, not the rulebook, and they don't have to cover everything (Keith, 2026-09-30). Where a question is open, the drafts already say "(check)", leave a "[date]", or give the den leader Option A / Option B, and the official rules on scouting.org and the Guide to Safe Scouting come first. Pick a question off this list whenever it comes up, then push the answer into the drafts it affects.
 
 These are the questions still open across the 14 lesson-plan drafts (6 ranks and 8 electives) as of September 30, 2026. Answered items are left out. Questions that came up in more than one plan are merged into one, and each lists every plan it touches. Sections 1 to 7 need a decision or a quick check from Keith, or from whoever he hands them to. Section 8 is for the app-engineer and needs Keith only where it says so. "Suggested" is the recommendation already in the drafts, not a decision.
 

@@ -1,5 +1,7 @@
 # Let's Camp!: elective, all ranks (DRAFT 2, 40-minute den time)
 
+> **A guide, not the rulebook.** These are ideas to help a den leader run the meeting. They are not a complete or official source. The official requirements on scouting.org and the Guide to Safe Scouting always come first. If something here is unclear or unsettled, use your judgment and check with the Cubmaster.
+
 Researched 2026-09-30 by the cubmaster-program agent, using the format of Race Time (draft 2) and Champions for Nature (draft 1). This is the third elective in the pass. Every plan here is written in our own words. Requirements are only summarized, so use the official page for the full text. Anything marked "(check)" still needs confirming. Nothing is in the app yet.
 
 How these plans fit a Pack 569 den night:

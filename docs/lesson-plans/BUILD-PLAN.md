@@ -14,6 +14,7 @@ Den leaders plan their meetings in **Program → Den plans**, but the app only k
 **Update 2026-09-29: the plans become runnable meeting guides.** Keith pointed to his "Bobcat Night: Wolves & Bears" page (https://claude.ai/artifact/TnfxEbQRSRM4LzUcZLQp2E) as the model.
 - **Where:** each plan meeting becomes a **"Run this meeting"** screen inside the app, for leaders only. It opens from Den plans or from a den meeting on the calendar.
 - **What the screen has:**
+  - A short line at the top, the same on the plan panel: "A guide, not the rulebook. The official requirements and the Guide to Safe Scouting come first; check with your Cubmaster." (Keith, 2026-09-30: the plans are a guide for den leaders, not a complete or official source.)
   - A meeting timer (Start, Next step, Skip), where a skipped step's minutes come off the total.
   - Numbered steps that open and close. Each step has its minutes, requirement chips per den, a **Say** box, how-to bullets and a tip.
   - A supplies list, and a "Tell parents before they leave" box.

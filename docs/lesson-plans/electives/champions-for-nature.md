@@ -1,5 +1,7 @@
 # Champions for Nature: elective, all ranks (DRAFT 2, 40-minute den time)
 
+> **A guide, not the rulebook.** These are ideas to help a den leader run the meeting. They are not a complete or official source. The official requirements on scouting.org and the Guide to Safe Scouting always come first. If something here is unclear or unsettled, use your judgment and check with the Cubmaster.
+
 Researched 2026-09-30 by the cubmaster-program agent, using the format of Race Time, the first elective file. This is the second elective in the pass. Every plan here is written in our own words. Requirements are only summarized, so use the official page for the full text. Anything marked "(check)" still needs confirming. Nothing is in the app yet.
 
 Draft 2 (2026-09-30) adds Keith's answers on four points: the conservation project, where made items go, devices, and AoL food. On 2026-09-30 I re-read the official Food Miles Fruit Salad page (via r.jina.ai) for the AoL changes.
