@@ -8946,6 +8946,7 @@ test('a push reads, merges and writes in one retried step, and the rev always cl
         } };
       function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
       function mergeRemoteAppendOnly(d) { merged.push(d.rev); return 1; }
+      var chargeSyncs = 0; function syncCharges() { chargeSyncs += 1; }
       function ledgerRowConflicts() { return []; }   // Phase 3, C6: the merge is stubbed, and so is its pre-check
       function ledgerLookCount() { return 0; } function noteLedgerLookAfterSync() {}   // the merge is stubbed; so is what it brings on
       function save() { saved += 1; } function scheduleParentViewRefresh() {} function render() {}
@@ -8975,6 +8976,8 @@ test('a push reads, merges and writes in one retried step, and the rev always cl
   const clob = run({ remotes: [{ rev: 7 }, { rev: 9 }], localRev: 3, clobber: true });
   eq(vm.runInContext('[merged, records.map(function (r) { return r.rev; }), state.rev, sync.clobber, toasts.length]', clob),
     [[7, 9], [8, 10], 10, false, 1], 'a clobbered push that raced another device');
+  // Phase 3, C6 — each merge that changed something re-syncs the charges; a push with no merge doesn't.
+  eq([vm.runInContext('chargeSyncs', clob), vm.runInContext('chargeSyncs', plain)], [2, 0], 'the charges re-synced after a merge');
 });
 
 test('Firestore: a save before the pack record’s first answer never writes over what is there, and goes to the first-answer comparison', () => {
@@ -9027,6 +9030,7 @@ function fsFeedCtx(local, extra) {
     function holdPushes() { return false; } function scheduleParentViewRefresh() {} function render() { renders += 1; }
     function renderSyncPill() {} function save() { saves += 1; } function showToast(m) { toasts.push(m); }
     function syncFail(e) { throw e; }
+    var chargeSyncs = 0; function syncCharges() { chargeSyncs += 1; }   // Phase 3, C6: after a merge that changed something
     function clearTimeout(t) { delete timers[t]; } function setTimeout(fn) { timerSeq += 1; timers[timerSeq] = fn; return timerSeq; }
     function runTimers() { Object.keys(timers).forEach(function (id) { var f = timers[id]; delete timers[id]; if (f) f(); }); }
     function normalizeState(p) { return p && typeof p === 'object' && !Array.isArray(p) ? JSON.parse(JSON.stringify(p)) : null; }
@@ -15461,6 +15465,20 @@ function decl(name) {
   const opens = (line.match(/[{[(]/g) || []).length, closes = (line.match(/[}\])]/g) || []).length;
   return opens === closes && /[;}]\s*(\/\/.*)?$/.test(line) ? line : slice(name);
 }
+// Phase 3, C6 — every top-level declaration `roots` reach, by name, not counting `stop` (what the
+// sandbox gives them itself): for a function whose real dependencies a test wants, all of them.
+const TOP_NAMES = new Set([...SCRIPT.matchAll(/^  (?:function ([A-Za-z_$][\w$]*)\(|var ([A-Za-z_$][\w$]*) =)/gm)].map((m) => m[1] || m[2]));
+function declClosure(roots, stop) {
+  const seen = new Set(), no = new Set(stop || []), q = roots.slice();
+  while (q.length) {
+    const n = q.pop();
+    if (seen.has(n) || no.has(n)) continue;
+    seen.add(n);
+    const src = decl(n).replace(/\/\/.*$/gm, '').replace(/'(?:[^'\\]|\\.)*'/g, "''");
+    for (const id of new Set(src.match(/[A-Za-z_$][\w$]*/g) || [])) if (TOP_NAMES.has(id) && !seen.has(id)) q.push(id);
+  }
+  return [...seen];
+}
 const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_DOC_RE', 'JOIN_CODE_RE', 'loadJoin', 'activeJoin',
   'syncDocIdSource', 'sync', 'fixedSyncBlocked', 'fixedFeedBlocked', 'haltFixedSync', 'syncStop', 'clearAccountsRuntime',
   'syncFail', 'apiBackend', 'backendConfigured', 'loadBackend', 'cloudReady', 'packLinked', 'syncStart', 'subscribeDoc',
@@ -15553,6 +15571,7 @@ async function apiClient(w, who, o) {
     render = function () { renders += 1; };
     renderSyncPill = function () {};
     showToast = function (m) { toasts.push(m); };
+    syncCharges = function () {};   // Phase 3, C6: after a merge that changed something
     freshState = function () { return { rev: 0, packName: '', scouts: [], storefronts: [], entries: [], events: [], ledger: [],
       leaders: [], fundraisers: [], inventory: { distributions: [] }, fresh: true }; };
     normalizeState = function (p) {
@@ -24042,9 +24061,11 @@ test('C6: voids and reverses on both devices at once — the same list is settle
 const C6_OP_FNS = ['LEDGER_VOID_REASON_MAX', 'ledgerVoidRow', 'ledgerUnvoidRow', 'ledgerReversalId', 'ledgerReplacementId', 'ledgerReplacementFor', 'ledgerReverseSlot',
   'ledgerReverseRow', 'ledgerReversalName', 'ledgerReverseDateDefault', 'LEDGER_OPS', 'ledgerEvent', 'ledgerLogClip', 'ledgerWho', 'logLedger', 'ledgerRowDiff', 'ledgerRowFields',
   'LEDGER_EDIT_FIELDS', 'stampApproved', 'ledgerCancelledWhy', 'entrySignedCents', 'entryAfterOpening', 'mergeRemoteAppendOnly', 'statementInForce'];
-function c6World() {
+// `extra`: more of the page's declarations (the charges: syncCharges, run after a device's edits as
+// commit runs it, and after a merge that changed something as syncPush's build runs it).
+function c6World(extra) {
   const ctx = vm.createContext({});
-  const names = [...new Set([...NORMALIZE_FNS, ...GONE_FNS, ...C6_OP_FNS])];
+  const names = [...new Set([...NORMALIZE_FNS, ...GONE_FNS, ...C6_OP_FNS, ...(extra || [])])];
   vm.runInContext(`${names.map(decl).join('\n')}
     var clock = 1790000000000, who = 'A', seq = 0;
     Date.now = function () { return clock; };
@@ -24089,6 +24110,12 @@ function c6World() {
         var r = ledgerReverseRow(state, id, 'Returned by ' + who, { by: ledgerActor(), byUid: ledgerActorUid(), at: iso() }, ledgerReverseDateDefault(e, state.book, todayISO()));
         logLedger('reverse', id, { why: 'Returned by ' + who, rows: [r.reversal.id] }); return true;
       },
+      makeup: function (id, sid) {
+        state.ledger.push({ id: id, date: '2026-09-20', description: 'Bronze make-up', amountCents: 8000, direction: 'in', lineId: '', method: '', ref: '',
+          source: 'family', donor: '', scoutId: sid, tierMakeup: 't1', reimbursement: false, notCommission: false, reconciled: false, enteredBy: ledgerActor(),
+          enteredAt: iso(), approvedBy: '', approvedAt: '', enteredByUid: ledgerActorUid(), approvedByUid: '' });
+        return true;
+      },
       add: function (n) {
         state.ledger.push({ id: who.toLowerCase() + '-new' + n, date: '2026-10-0' + (1 + n % 9), description: who + ' new ' + n, amountCents: 100 * (1 + n),
           direction: n % 2 ? 'in' : 'out', lineId: '', method: '', ref: '', source: '', donor: '', scoutId: '', tierMakeup: '', reimbursement: false, notCommission: false,
@@ -24116,12 +24143,13 @@ function c6World() {
       state = norm(rec); who = name;
       var done = [];
       ops.forEach(function (o) { clock = o[0]; if (OPS[o[1]].apply(null, o.slice(2))) done.push(o); });
+      if (typeof syncCharges === 'function') syncCharges();
       return { rec: norm(state), done: done };
     }
     // This device (\`mine\`) merging the other's save, with the leader's picks; the record it would push.
     function merge(mine, theirs, picks, at) {
       clock = at; state = norm(mine); who = 'M';
-      mergeRemoteAppendOnly({ json: JSON.stringify(theirs) }, [], [], [], picks);
+      if (mergeRemoteAppendOnly({ json: JSON.stringify(theirs) }, [], [], [], picks) > 0 && typeof syncCharges === 'function') syncCharges();
       return norm(state);
     }
     function conflicts(mine, theirs) {
@@ -24547,6 +24575,81 @@ test('C6, Firestore: a save finds what changed on this device while the chooser 
   eq(b.get('rowChoice()'), null, 'a choice read against another record');
   // After the save, the ledger-look toast, and the fates, as a sync's.
   ok(/showToast\(ROW_PICKS_SAVED\);\n\s+noteLedgerLookAfterSync\(lookWas, false\);\n\s+noteReconciledFates\(\{ kept: kept, lost: lost, split: split \}\);/.test(slice('saveRowChoices')), 'what the save says');
+});
+
+// Phase 3, C6 — the charges, on the page's own syncCharges and everything it reads.
+const C6_CHARGE_FNS = () => declClosure(['syncCharges'], ['state', 'ui', 'sync', 'render', 'save', 'showToast', 'uid', 'todayISO', 'commit', 'scheduleSyncPush']);
+const C6_DUES_LINE = { id: 'L1', name: 'Dues', basis: 'per-head', scoutRateCents: 8000, adultRateCents: 0, siblingRateCents: 0, leaderRateCents: 0, flatCents: 0,
+  fundedBy: 'families', paidDirectTo: '', category: 'other', includeLeaders: false, includeAdults: false, eventId: '' };
+const C6_CHARGE = (id, sid) => ({ id, scoutId: sid, lineId: 'L1', who: 'scout', seq: 0, amountCents: 8000, date: '2026-07-01', dueDate: '', waivedBy: '', forgiven: null });
+// Dues of $80 a scout, charged to Ada (s1) and Bo (s2); a Bronze tier, out of reach by selling, covers them.
+const C6_DUES = () => ({ budget: { programYear: 2026, activities: [], expenses: [C6_DUES_LINE] },
+  rewardTiers: { tiers: [{ id: 't1', name: 'Bronze', thresholdCents: 900000, covers: ['L1'] }] }, charges: [C6_CHARGE('c1', 's1'), C6_CHARGE('c2', 's2')] });
+const C6_MAKEUP = (id, sid) => `state.ledger.push({ id: '${id}', date: '2026-09-20', description: 'Bronze make-up', amountCents: 8000, direction: 'in', lineId: '', method: '',
+  ref: '', source: 'family', donor: '', scoutId: '${sid}', tierMakeup: 't1', reimbursement: false, notCommission: false, reconciled: false, enteredBy: 'Pat', enteredAt: '',
+  approvedBy: '', approvedAt: '', enteredByUid: '', approvedByUid: '' })`;
+const c6Waived = (st) => st.charges.map((c) => [c.id, c.waivedBy]);
+
+test('C6, Firestore: a tier make-up recorded on one device waives the charge in what the other device sends, and merging again changes nothing', () => {
+  const fns = C6_CHARGE_FNS().map(decl).join('\n');
+  let { a, b, server } = c6FsPair(C6_DUES());
+  a.run(fns); b.run(fns);
+  eq([a.get('state.charges.length'), a.get('(syncCharges(), state.charges.length)'), c6Waived(a.get('state'))], [2, 2, [['c1', ''], ['c2', '']]], 'the charges to start');
+  // B records Ada's make-up (its commit re-syncs the charges: hers is waived) and saves.
+  b.run(`${C6_MAKEUP('mk1', 's1')}; syncCharges(); commit()`);
+  eq(c6Waived(b.get('state')), [['c1', 't1'], ['c2', '']], 'B: the make-up waives Ada’s dues');
+  b.push();
+  // A, with a change of its own, saves over it: the make-up comes in, and so does its waiver.
+  a.run(B2); a.hear(); a.push();
+  eq([server().ledger.some((e) => e.id === 'mk1'), c6Waived(server())], [true, [['c1', 't1'], ['c2', '']]], 'the charges A sent');
+  // The fixed point: merged with the pack's copy again, and re-synced, A's copy doesn't change.
+  const before = a.get('JSON.stringify(state)');
+  a.run(`mergeRemoteAppendOnly({ json: ${JSON.stringify(JSON.stringify(server()))} }); syncCharges();`);
+  eq(a.get('JSON.stringify(state)'), before, 'merged and re-synced again, A changed');
+  // Before C6 the charges went as A had them: Ada billed $80 beside the make-up that paid for Bronze.
+  ({ a, b, server } = c6FsPair(C6_DUES()));
+  a.run(fns); b.run(fns);
+  a.run(slice('syncPush').replace('      if (mergedN > 0) syncCharges();\n', ''));
+  b.run(`${C6_MAKEUP('mk1', 's1')}; syncCharges(); commit()`); b.push();
+  a.run(B2); a.hear(); a.push();
+  eq(c6Waived(server()), [['c1', ''], ['c2', '']], 'control: without the re-sync');
+});
+
+test('C6 property: with the charges on the page’s own syncCharges, two devices’ merges agree either way round and are a fixed point', () => {
+  const w = c6World(C6_CHARGE_FNS());
+  const r = c3Rand(66);
+  const pick = (a) => a[Math.floor(r() * a.length)];
+  const get = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, w)));
+  const book = (rec) => Object.assign(c6Book(rec), { charges: c6Canon(rec.charges.map((c) => [c.id, c.amountCents, c.waivedBy])) });
+  let n = 0, waived = 0;
+  for (let k = 0; k < 60; k++) {
+    const base = Object.assign(c6Base(r, pick), C6_DUES());
+    const tA = [], tB = [];
+    for (let t = 1, m = 2 + Math.floor(r() * 5); m > 0; m--, t++) (r() < 0.5 ? tA : tB).push(1790000000000 + t * 60000);
+    const ops = (name, times) => times.map((t, i) => {
+      const kind = pick(['makeup', 'makeup', 'void', 'reverse', 'desc', 'amount']);
+      if (kind === 'makeup') return [t, 'makeup', name + i, pick(['s1', 's2'])];
+      const target = pick(base.ledger.map((e) => e.id).concat([name === 'A' ? 'A0' : 'B0']));
+      return kind === 'desc' ? [t, kind, target, name + ' ' + i] : kind === 'amount' ? [t, kind, target, 100 * (1 + i)] : [t, kind, target];
+    });
+    w.base = base; w.opsA = ops('A', tA); w.opsB = ops('B', tB);
+    w.A = get("dev(base, 'A', opsA).rec"); w.B = get("dev(base, 'B', opsB).rec");
+    const conf = get('conflicts(A, B)'), pa = {}, pb = {};
+    conf.forEach((c) => c.ids.forEach((id) => { pa[id] = 'mine'; pb[id] = 'theirs'; }));
+    w.pa = pa; w.pb = pb;
+    const at = 1790000000000 + 3600000;
+    const AB = get(`merge(A, B, pa, ${at})`), BA = get(`merge(B, A, pb, ${at})`);
+    const what = `case ${k}: A ${JSON.stringify(w.opsA.map((o) => o.slice(1)))} B ${JSON.stringify(w.opsB.map((o) => o.slice(1)))}`;
+    eq(c6Diff(book(BA), book(AB)), [], what + ': merged the other way round');
+    w.AB = AB;
+    eq([c6Diff(book(get(`merge(AB, A, {}, ${at})`)), book(AB)), c6Diff(book(get(`merge(AB, B, {}, ${at})`)), book(AB))], [[], []], what + ': not a fixed point');
+    // What is waived is what the merged book's make-ups earn.
+    const madeUp = new Set(get("ledgerUnpaired(AB.ledger).filter(function (e) { return e.tierMakeup === 't1' && e.direction === 'in'; }).map(function (e) { return e.scoutId; })"));
+    eq(AB.charges.map((c) => [c.scoutId, c.waivedBy === 't1']), [['s1', madeUp.has('s1')], ['s2', madeUp.has('s2')]], what + ': the waivers');
+    if (madeUp.size) waived += 1;
+    n += 1;
+  }
+  ok(n === 60 && waived > 20, 'too few cases with a make-up: ' + waived);
 });
 
 /* ---------------- report ---------------- */

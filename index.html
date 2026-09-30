@@ -14668,6 +14668,12 @@
         if (rowItems.length) return { record: null, result: { rows: rowItems, rowsRemote: remote } };
       }
       var mergedN = clobbered ? mergeRemoteAppendOnly(remote, keptRows, lostRows, splitRows) : 0;
+      // PHASE 3, C6 — the charges follow the merged book. They are this device's (the merge keeps
+      // them whole), but what settles and waives them came in with the merge too: a payment against
+      // one, a tier make-up (or a sale) that earns a tier. So a merge that changed anything re-syncs
+      // them, as every edit does (commit), and what is sent agrees with itself: merged again, and
+      // re-synced again, nothing changes (the two-device tests hold it to that fixed point).
+      if (mergedN > 0) syncCharges();
       var nextRev = be.serverRevs ? remoteRev + 1 : Math.max(state.rev || 0, remoteRev) + 1;
       state.fmt = PACK_FORMAT;   // the reload gate: the format this page writes
       var record = {
