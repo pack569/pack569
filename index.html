@@ -14848,6 +14848,28 @@
   }
   // Signed money, as the ledger's notes write it: "+$40.00", "−$40.00". Pure.
   function ledgerSignedCents(c) { return (c < 0 ? '−' : '+') + fmt(Math.abs(c)); }
+  // Quick check of N1–N5 (2) — a restore's why, in the 500 characters the log keeps of one (ledgerEvent),
+  // every sentence whole: `head` (what the restore did), a sentence for each statement of `off`
+  // (statementRetick's) whose entries no longer come to what it was signed with, and `redo` (the advice
+  // about ticks made since, or ''), which room is kept for. Statements that don't fit are counted in one
+  // closing sentence instead. Only if that and the advice can't both fit is the advice left out (and
+  // then, if nothing else fits, the head is all). Pure.
+  function ledgerRestoreWhy(head, off, redo) {
+    var said = off.map(function (o) {
+      return ' The entries listed on the ' + o.date + ' statement now come to ' + ledgerSignedCents(o.nowCents) + ', not the ' +
+        ledgerSignedCents(o.signedCents) + ' it was signed with.';
+    });
+    var ends = [redo, ''];
+    for (var t = 0; t < ends.length; t++) {
+      for (var k = said.length; k >= 0; k--) {
+        var n = said.length - k;
+        var why = head + said.slice(0, k).join('') + (n ? ' ' + n + (k ? ' more' : '') + (n === 1
+          ? ' statement’s entries no longer add up to what it was signed with.' : ' statements’ entries no longer add up to what they were signed with.') : '') + ends[t];
+        if (why.length <= 500) return why;
+      }
+    }
+    return head;
+  }
   // Security re-check of C6 (N4) — a voided entry a standing statement lists as cleared (`it`: { row, date:
   // the statement's }): its tick stays with the statement, and one of the two has to change. Pure.
   function ledgerVoidListedLook(it) {
@@ -32166,15 +32188,13 @@
         (ciFwd ? ' Restored as it was, the book would be ' + (ciWas ? 'reconciled only through ' + ciWas : 'not reconciled at all') +
           ', but the statement through ' + ciFwd.date + ' still stands, so the book is locked through that date.' : '') +
         (ciRetick ? ' ' + ciRetick + (ciRetick === 1 ? ' entry listed on a standing statement was' : ' entries listed on standing statements were') +
-          ' ticked again to match ' + (ciRetick === 1 ? 'it.' : 'them.') : '') +
-        ciOff.map(function (o) {
-          return ' The entries listed on the ' + o.date + ' statement now come to ' + ledgerSignedCents(o.nowCents) + ', not the ' +
-            ledgerSignedCents(o.signedCents) + ' it was signed with.';
-        }).join('');
-      // (N5) — the log keeps 500 characters of a why (ledgerEvent): what the restore did comes first, and
-      // this advice last, only when it fits whole, never cut off mid-sentence.
+          ' ticked again to match ' + (ciRetick === 1 ? 'it.' : 'them.') : '');
+      // (N5) — the log keeps 500 characters of a why (ledgerEvent): what the restore did comes first, then
+      // each statement that no longer adds up, and this advice last, never cut off mid-sentence. Quick
+      // check of N1–N5 (2): the statements' sentences are whole too, and room is kept for the advice
+      // (ledgerRestoreWhy); one alone could push it out, and a second be cut.
       var ciRedo = ciUnticked ? ' Ticks made after the backup that aren’t on a statement need ticking again.' : '';
-      logLedger('restore', 'book', { why: ciWhy + (ciWhy.length + ciRedo.length <= 500 ? ciRedo : '') });
+      logLedger('restore', 'book', { why: ledgerRestoreWhy(ciWhy, ciOff, ciRedo) });
       noteLedgerLookFromMerge(ciOff.map(function (o) { return { kind: 'restorediff', statement: o }; }));
       ui.overlay = null; ui.storefrontId = null; ui.expandedScouts = {};
       commit(); return;

@@ -1054,7 +1054,7 @@ const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'm
   // Security re-check of C6 (N4) — a voided entry a standing statement lists, said.
   'ledgerVoidListedLook',
   // Security re-check of C6 (N5) — a restore whose money no longer matches a statement it re-ticked from.
-  'ledgerRestoreDiffLook', 'ledgerSignedCents',
+  'ledgerRestoreDiffLook', 'ledgerSignedCents', 'ledgerRestoreWhy',
   // Owner decision 23 — a charge forgiven on the other copy and not on this one.
   'chargesForgivenThere',
   // Security re-check of C6 (N3) — and the change history says so.
@@ -19158,7 +19158,7 @@ const C2T_ACT = [
 const C2T_CHANGE = c2Block(/    if \(ch === 'ledger-unrec-why'\) \{[^\n]*\}/, 'ledger-unrec-why');
 const C2T_MORE = `
   ${['reconcileLockRefusal', 'reconcileLockAhead', 'reconcileTotals', 'entrySignedCents', 'arrOf', 'statementRetick'].map(slice).join('\n')}
-  ${['noteLedgerLookFromMerge', 'ledgerRestoreDiffLook', 'ledgerSignedCents'].map(slice).join('\n')}   // security re-check of C6 (N5)
+  ${['noteLedgerLookFromMerge', 'ledgerRestoreDiffLook', 'ledgerSignedCents', 'ledgerRestoreWhy'].map(slice).join('\n')}   // security re-check of C6 (N5)
   ${decl('RECONCILE_AHEAD_WHY')}
   ${decl('RECONCILE_AHEAD_LOGGED')}
   ${decl('RESTORE_REFUSED')}
@@ -25352,16 +25352,57 @@ test('C6 review (F4): a restored backup from before a statement leaves the entri
     a.run(`confirmImport(normalizeState(${backup}))`); a.push();
     b.hear();
     eq(tickedOf(server()), [['l1', false, ''], ['l2', true, 'st-sep'], ['l3', false, '']], 'ticked again');
-    // (The advice about ticks made since comes last, and only whole: the log keeps 500 characters of a why.)
+    // (The advice about ticks made since comes last, and only whole: the log keeps 500 characters of a why.
+    // Quick check of N1–N5 (2): room is kept for it, so the statement that no longer adds up, whose
+    // sentence would push it out, is counted instead: ledgerRestoreWhy.)
     const why = a.get("state.ledgerLog.filter(function (e) { return e.op === 'restore'; })[0].why");
     const head = 'A backup was restored on this device. The book now holds the backup’s 3 entries, reconciled through 2026-09-30. Restored as it was, the book ' +
       'would be reconciled only through 2026-08-31, but the statement through 2026-09-30 still stands, so the book is locked through that date. 1 entry listed on a ' +
       'standing statement was ticked again to match it.';
     eq([why, a.get('sync.lookNotes || []')],
-      said ? [head + ' The entries listed on the 2026-09-30 statement now come to −$40.00, not the −$45.00 it was signed with.', ['After the backup was restored, the entries the Sep 30 statement lists come to −$40.00, not the −$45.00 it was signed with, so the book no longer ' +
+      said ? [head + ' 1 statement’s entries no longer add up to what it was signed with. Ticks made after the backup that aren’t on a statement need ticking again.',
+        ['After the backup was restored, the entries the Sep 30 statement lists come to −$40.00, not the −$45.00 it was signed with, so the book no longer ' +
         'matches that statement. Check those entries against the bank statement.']]
         : [head + ' Ticks made after the backup that aren’t on a statement need ticking again.', []], said ? 'the money differs' : 'control: the money matches');
     eq(b.get('sync.lookNotes || []'), [], 'said on the other device');
+  }
+});
+
+test('Quick check of N1–N5 (2): a restore’s why keeps every sentence whole in 500 characters, and keeps the advice about ticks made since', () => {
+  const x = sandbox(['ledgerRestoreWhy', 'ledgerSignedCents', 'fmt']);
+  // The head of the restore above (346 characters): it, two statements' sentences and the advice come to 629.
+  const HEAD = 'A backup was restored on this device. The book now holds the backup’s 3 entries, reconciled through 2026-09-30. Restored as it was, the book ' +
+    'would be reconciled only through 2026-08-31, but the statement through 2026-09-30 still stands, so the book is locked through that date. 1 entry listed on a ' +
+    'standing statement was ticked again to match it.';
+  const SHORT = 'A backup was restored on this device. The book now holds the backup’s 3 entries, reconciled through 2026-09-30.';
+  const REDO = ' Ticks made after the backup that aren’t on a statement need ticking again.';
+  const st = (d, now, signed) => ({ id: 'st-' + d, date: d, nowCents: now, signedCents: signed });
+  const S = (d, now, signed) => ' The entries listed on the ' + d + ' statement now come to ' + now + ', not the ' + signed + ' it was signed with.';
+  const two = [st('2026-08-31', -4000, -4500), st('2026-09-30', 1000, 1500)];
+  const why = x.ledgerRestoreWhy(HEAD, two, REDO);
+  eq(why, HEAD + ' 2 statements’ entries no longer add up to what they were signed with.' + REDO, 'two statements and the advice');
+  ok(why.length <= 500 && /\.$/.test(why) && why.indexOf(REDO) !== -1, 'cut, or the advice left out');
+  // Room: each statement said; or as many as fit, and the rest counted.
+  eq(x.ledgerRestoreWhy(SHORT, two, REDO), SHORT + S('2026-08-31', '−$40.00', '−$45.00') + S('2026-09-30', '+$10.00', '+$15.00') + REDO, 'both said');
+  const four = two.concat([st('2026-10-31', -100, -200), st('2026-11-30', -300, -400)]);
+  eq(x.ledgerRestoreWhy(SHORT, four, REDO), SHORT + S('2026-08-31', '−$40.00', '−$45.00') + S('2026-09-30', '+$10.00', '+$15.00') +
+    ' 2 more statements’ entries no longer add up to what they were signed with.' + REDO, 'two said, two counted');
+  eq(x.ledgerRestoreWhy(SHORT, four.slice(0, 3), REDO), SHORT + S('2026-08-31', '−$40.00', '−$45.00') + S('2026-09-30', '+$10.00', '+$15.00') +
+    S('2026-10-31', '−$1.00', '−$2.00') + REDO, 'three said (500 characters exactly would do)');
+  const H230 = SHORT + ' ' + 'x'.repeat(117) + '.';
+  eq(x.ledgerRestoreWhy(H230, two, REDO), H230 + S('2026-08-31', '−$40.00', '−$45.00') + ' 1 more statement’s entries no longer add up to what it was signed with.' + REDO,
+    'one said, one counted');
+  eq([x.ledgerRestoreWhy(HEAD, [], REDO), x.ledgerRestoreWhy(HEAD, [], ''), x.ledgerRestoreWhy(HEAD, two, ''), x.ledgerRestoreWhy(HEAD, two.slice(0, 1), '')],
+    [HEAD + REDO, HEAD, HEAD + ' 2 statements’ entries no longer add up to what they were signed with.', HEAD + S('2026-08-31', '−$40.00', '−$45.00')], 'no statements, no advice');
+  // Whatever the head's length and however many statements: at most 500, ending on a whole sentence, the
+  // advice there whenever it and the count fit.
+  for (let len = 120; len <= 480; len += 10) {
+    const head = SHORT + ' ' + 'x'.repeat(len - SHORT.length - 2) + '.';
+    for (let n = 0; n <= 6; n++) {
+      const w = x.ledgerRestoreWhy(head, four.concat(two, two).slice(0, n), REDO);
+      ok(w.length <= 500 && w.indexOf(head) === 0 && /\.$/.test(w), `cut: head ${len}, ${n} statements`);
+      if (head.length + 80 + REDO.length <= 500) ok(w.slice(-REDO.length) === REDO, `advice left out: head ${len}, ${n} statements`);
+    }
   }
 });
 
