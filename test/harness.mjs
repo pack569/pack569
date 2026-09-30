@@ -26268,7 +26268,7 @@ test('C8-1: fitting keeps the newest two years in full and older years compact w
   const none = J(c.fitClosedBook(fresh, older, 1000, bytes(one.books) - 100));
   eq(forms(none), [[2024, 'compact'], [2025, 'compact'], [2026, 'compact']], 'and then the newest');
   const tiny = J(c.fitClosedBook(fresh, older, 1000, 4000));
-  eq([tiny.fits, tiny.trimmed, tiny.books.every((b) => b.ledger.length === 0 && b.ledgerTrimmed)], [true, [2026, 2024, 2025], true], 'too big even compact: newest’s rows go first, then the oldest’s');
+  eq([tiny.fits, tiny.trimmed, tiny.books.every((b) => b.ledger.length === 0 && b.ledgerTrimmed)], [true, [2024, 2025, 2026], true], 'too big even compact: the oldest’s rows go first, the newest’s last (C8-7)');
   eq(J(c.fitClosedBook(fresh, [{ ...older[0], year: 2026 }], 1000, 1e9)).books.map((b) => [b.year, b.form]), [[2026, 'full']], 'a book for the same year is replaced');
   // A compact book stays compact even when it is one of the newest two; with one earlier year only, both stay full.
   const cp25 = J(c.compactClosedBook(older[1]));
@@ -27228,6 +27228,53 @@ test('C8-6: the entry form warns on a date inside a closed year, in the treasure
   eq(p.get('log().map(function (e) { return [e.op, e.row, e.why]; })'), [['add', added.id, 'Dated Jun 15, in 2025–26, which is closed out; saved after the warning.']], 'logged');
   const le = slice('renderLedgerEntries');
   ok(/ledgerClosedYearWarning\(dr\.date, state\.closedBooks\) \|\| ledgerBackdateWarning\(dr\.date, state\.book\)/.test(le), 'the form does not show it');
+});
+
+/* ================================================================
+   PHASE 3, C8-7 — the size budget (owner decision 33): two closed years in full, older years compact, measured at the record's 700 KB limit
+   for a realistic pack. Made-up rows throughout.
+   ================================================================ */
+// A year of a pack of about forty scouts: 350 entries (dues, fundraisers, campouts, supplies), 40 voided, 12 statements of 40 ticked and 30
+// outstanding entries (ids as uid() makes them), and 330 change-history events (a season's ~65 KB, as C2's test pins).
+const c8Year = (y) => {
+  const id = (k, i) => k + y + 'mfo2kz3a' + String(i).padStart(5, '0');
+  const who = ['Pat Example', 'Sam Example', 'Alex Example'];
+  const ledger = Array.from({ length: 350 }, (_, i) => c8row(id('r', i), (y + (i % 12 < 6 ? 0 : 1)) + '-' + String((6 + (i % 12)) % 12 + 1).padStart(2, '0') + '-' + String(1 + (i % 27)).padStart(2, '0'),
+    500 + i * 37, i % 3 ? 'in' : 'out', { description: 'Dues, family ' + (i % 40) + ' — ' + 'fall campout deposit'.slice(0, 8 + (i % 12)), lineId: 'L' + (i % 15), scoutId: 's' + (i % 40), source: i % 3 ? 'family' : '',
+      ref: i % 5 ? '' : String(1000 + i), method: 'check', enteredBy: who[i % 3], enteredAt: '2026-09-02T15:04:05.678Z', enteredByUid: 'Xy12Ab34Cd56Ef78Gh90Ij12Kl34',
+      approvedBy: i % 2 ? who[(i + 1) % 3] : '', approvedAt: i % 2 ? '2026-10-02T15:04:05.678Z' : '', reconciled: i % 2 === 1 }));
+  const aside = Array.from({ length: 40 }, (_, i) => Object.assign(c8row(id('v', i), y + '-10-05', 900, 'out'), { off: 'void', voidReason: 'Entered twice by mistake', voidedBy: who[0], voidedByUid: 'Xy12Ab34Cd56Ef78Gh90Ij12Kl34', voidedAt: '2026-10-06T10:00:00.000Z', reverses: '', reversedBy: '', carriedFrom: null }));
+  const log = Array.from({ length: 330 }, (_, i) => ({ id: 'lg-' + id('e', i), at: '2026-09-' + String(1 + (i % 27)).padStart(2, '0') + 'T10:00:00.000Z', by: who[i % 3], byUid: 'Xy12Ab34Cd56Ef78Gh90Ij12Kl34', dev: 'dev1', row: id('r', i % 350), op: 'edit', f: { description: ['Dues, family', 'Dues, family (Ada)'] } }));
+  const statements = Array.from({ length: 12 }, (_, m) => ({ id: 'st-' + y + '-' + String(m + 1).padStart(2, '0') + '-28-' + id('s', m), date: y + '-' + String(m + 1).padStart(2, '0') + '-28', statementCents: 1234567, openingCents: 1000000, clearedCents: 1234567, bookCents: 1200000,
+    ticked: Array.from({ length: 40 }, (_, i) => id('r', m * 20 + i)), outstanding: Array.from({ length: 30 }, (_, i) => id('r', m * 20 + 50 + i)), by: 'Pat Example', byUid: 'Xy12Ab34Cd56Ef78Gh90Ij12Kl34', at: '2026-09-02T15:04:05.678Z' }));
+  const book = Object.assign(J(C8_BOOK), { openingDate: y + '-07-01', reconciledThrough: (y + 1) + '-06-15', year: y });
+  return J(c8().closedBookBuild({ book, ledger, ledgerAside: aside, ledgerLog: log, statements }, Object.assign({}, C8_OPTS, { year: y, archiveId: 'arc-' + y,
+    lineNameOf: (l) => 'Budget line ' + l, familyOf: (s) => 'Ada and Ben' })).book);
+};
+test('C8-7: a realistic pack at the 700 KB limit keeps only the year just closed with its entries (two full years need a larger limit), older years lose theirs first', () => {
+  const c = c8(), KB = 1024, bytes = (v) => Buffer.byteLength(JSON.stringify(v));
+  const books = [2022, 2023, 2024, 2025].map(c8Year);
+  const [full, compact] = [bytes(books[3]), bytes(J(c.compactClosedBook(books[3])))];
+  // What the rest of the record holds after a close-out: the page's own fields, the archives, and room for next year's marks, log and statements
+  // (GONE_ROOM_BYTES 250 KB + the log's 128 KB + the statements' 32 KB), plus about 120 KB for the roster, plans and archives.
+  const other = 120 * KB + 250 * KB + 128 * KB + 32 * KB, limit = 700 * KB;
+  // The finding (for the owner): with the room next year needs reserved (410 KB) a realistic pack has ~170 KB for closed books at 700 KB, so two years in
+  // FULL (578 KB) never fit; the year just closed is kept compact (87 KB) and the older years lose their entries first.
+  const r = J(c.fitClosedBook(books[3], books.slice(0, 3), other, limit));
+  eq(r.books.map((b) => [b.year, b.form, !!b.ledgerTrimmed]), [[2022, 'compact', true], [2023, 'compact', true], [2024, 'compact', true], [2025, 'compact', false]], 'at 700 KB: all compact, only the year just closed keeps its entries');
+  eq([r.fits, r.trimmed, r.compacted], [true, [2022, 2023, 2024], [2022, 2023, 2024, 2025]], 'said');
+  ok(bytes(r.books) + other <= limit, 'the record would pass the limit: ' + (bytes(r.books) + other));
+  // With the limit the record can actually hold (Firestore's document is 1 MiB), two years are kept in full.
+  const roomy = J(c.fitClosedBook(books[3], books.slice(0, 3), 200 * KB, 1000 * KB));
+  eq(roomy.books.map((b) => [b.year, b.form]), [[2022, 'compact'], [2023, 'compact'], [2024, 'full'], [2025, 'full']], 'with 800 KB for closed books: two full years, the rest compact');
+  ok(full > 3 * compact && full < 300 * KB && compact > 10 * KB, `a realistic year is ${Math.round(full / KB)} KB full and ${Math.round(compact / KB)} KB compact`);
+  // A record with less room keeps fewer years in full, says which were shortened, and keeps the newest year's entries longest.
+  const tight = J(c.fitClosedBook(books[3], books.slice(0, 3), 420 * KB, 1000 * KB));
+  eq(tight.books.map((b) => [b.year, b.form, !!b.ledgerTrimmed]).slice(-2), [[2024, 'compact', false], [2025, 'full', false]], 'the earlier of the two goes compact first');
+  ok(tight.compacted.indexOf(2024) !== -1 && tight.fits, 'and it is said: ' + JSON.stringify(tight.compacted));
+  const none = J(c.fitClosedBook(books[3], [], 1000 * KB - 30 * KB, 1000 * KB));
+  eq([none.fits, none.trimmed.indexOf(2025) !== -1, none.books.find((b) => b.year === 2025).ledgerTrimmed], [true, true, true], 'when even a compact year does not fit, its entries go and it says so');
+  ok(none.books.find((b) => b.year === 2025).statements.length === 12 && none.books.find((b) => b.year === 2025).closingCents === books[3].closingCents, 'its statements and figures stay');
 });
 
 /* ---------------- report ---------------- */

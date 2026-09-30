@@ -8514,8 +8514,8 @@
   // (state.closedBooks), for a record whose size without any closed book is `otherBytes` and that must
   // stay under `limit`. Owner decision 33: the newest TWO closed years are kept in full (the year just closed
   // and the one before it, an auditor's usual two), older years compact. When the record cannot hold that: the
-  // earlier of the two is compacted, then the newest, then the newest's rows are dropped, then older years' rows,
-  // oldest first, until it fits. A book already compact stays compact (compaction is one way). Returns
+  // earlier of the two is compacted, then the newest, then older years' rows are dropped, oldest first, and the newest
+  // year's last, until it fits. A book already compact stays compact (compaction is one way). Returns
   // { books (by year), compacted: [years], trimmed: [years whose rows were dropped], fits }. A book for the same
   // year as `fresh` is replaced. Pure.
   function fitClosedBook(fresh, older, otherBytes, limit) {
@@ -8537,13 +8537,14 @@
       var i = at(y);
       if (list[i].form !== 'compact') { list[i] = compactClosedBook(list[i]); compacted.push(y); }
     });
-    if (size(list) > limit) {
-      var f = at(fresh.year);
-      list[f] = trimClosedBookRows(list[f]);
-      trimmed.push(fresh.year);
-    }
+    // Still too big even compact: the OLDEST years' rows go first, and the year just closed keeps its entries longest (it is the one the
+    // next review reads; C8-7, reversing C8-1's order after measuring a realistic pack at the limit).
     for (var i = 0; i < list.length && size(list) > limit; i++) {
       if (list[i].year !== fresh.year && list[i].ledger.length) { list[i] = trimClosedBookRows(list[i]); trimmed.push(list[i].year); }
+    }
+    if (size(list) > limit) {
+      var f = at(fresh.year);
+      if (list[f].ledger.length) { list[f] = trimClosedBookRows(list[f]); trimmed.push(fresh.year); }
     }
     return { books: list, compacted: compacted, trimmed: trimmed, fits: size(list) <= limit };
   }
