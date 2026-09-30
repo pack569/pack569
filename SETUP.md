@@ -698,6 +698,12 @@ happens in two ways:
 Nothing is lost while the page holds: each device keeps its own copy. The steps below are the
 only way out, and they are done by the owner.
 
+Steps 1 and 4 use the browser's developer console, so they need a **desktop browser** (Chrome,
+Edge, Firefox or Safari on a computer). An **iPhone or iPad** has no console of its own: it needs
+a Mac, with Safari's Web Inspector connected to the device by cable. **Don't clear the site's data**
+(or "website data", or the browser's history and site data) to get past the hold: that throws
+away that device's copy for good, and with it anything that was only on that device.
+
 ### 1. First, download or copy each device's stored record before changing `fmt`
 
 On **every** leader device that has used the page, before you touch the pack's copy:
@@ -705,7 +711,8 @@ On **every** leader device that has used the page, before you touch the pack's c
 - Open the page. If **Pack → Backup (JSON)** downloads a file, keep it. (It works while the hold
   comes from the pack's copy.)
 - If it says "Backup not downloaded", this device's own stored copy is the newer record. Open the
-  browser's developer console on the page and run
+  browser's developer console on the page (a desktop browser, or a Mac for an iPhone or iPad: see
+  above) and run
   `copy(localStorage.getItem('pack-popcorn-ledger-v1'))`, then paste into a text file and keep it.
 
 These files hold children's names and the pack's money. Keep them private: never in the repo,
@@ -720,8 +727,10 @@ The number to compare with is `PACK_FORMAT` in the `index.html` you serve.
   own `fmt` is the top-level `"fmt":N` (usually near the end). A `"fmt"` inside a note or a
   nested object is not it.
 - **D1** (`BACKEND = 'api'`):
-  `npx wrangler d1 execute pack569-prod --remote --env production --command "SELECT rev, json_extract(json, '$.fmt') AS fmt FROM pack_state"`
-  (for staging and preview: `pack569-preview`, without `--env production`).
+  `npx wrangler d1 execute pack569-prod --remote --env production --command "SELECT rev, json_extract(json, '$.fmt') AS fmt FROM pack_state WHERE pack_id = '<Pack ID>'"`
+  (for staging and preview: `pack569-preview`, without `--env production`). `<Pack ID>` is the
+  pack's id: `var PACK_DOC_ID` in the `index.html` you serve (before single-pack mode, the Pack tab
+  → **Shared sync** → **Pack ID**). Always keep the `WHERE`: the table can hold more than one pack.
 
 ### 3. Set `fmt` back to the page's `PACK_FORMAT`
 
@@ -731,8 +740,9 @@ Change only `fmt`. Leave `rev` and everything else as it is.
   the top-level `"fmt":N` to the served page's `PACK_FORMAT` (e.g. `"fmt":1`), check the rest of
   the text is untouched, paste it back, and **Update**.
 - **D1:**
-  `npx wrangler d1 execute pack569-prod --remote --env production --command "UPDATE pack_state SET json = json_set(json, '$.fmt', 1)"`
-  (with `1` being the served page's `PACK_FORMAT`). Run the `SELECT` from step 2 again to check.
+  `npx wrangler d1 execute pack569-prod --remote --env production --command "UPDATE pack_state SET json = json_set(json, '$.fmt', 1) WHERE pack_id = '<Pack ID>'"`
+  (with `1` being the served page's `PACK_FORMAT`, and `<Pack ID>` as in step 2). Without the
+  `WHERE` it would rewrite every pack in the database. Run the `SELECT` from step 2 again to check.
   If the change goes wrong, D1's Time Travel can put the database back to before it
   ([docs/cloudflare-setup.md](docs/cloudflare-setup.md), *Backups*).
 
@@ -740,7 +750,11 @@ Change only `fmt`. Leave `rev` and everything else as it is.
 
 This is needed only after a rollback, and only on the devices where Backup (JSON) said "Backup
 not downloaded" in step 1. Such a device holds on its own stored copy, whatever the pack's copy
-says. In the browser's developer console on the page, run:
+says.
+
+**First close every other tab or window of the page on that device**, so only one is open. A
+newer page still open in another tab saves its `fmt` back over the fix. Then, in the browser's
+developer console on the page (a desktop browser, or a Mac for an iPhone or iPad), run:
 
 ```js
 var k = 'pack-popcorn-ledger-v1', r = JSON.parse(localStorage.getItem(k)); r.fmt = 1; localStorage.setItem(k, JSON.stringify(r)); location.reload();

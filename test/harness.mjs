@@ -21496,6 +21496,26 @@ test('reload gate: a newer page’s record whose "fmt" key is spelled with an es
   eq(push(own), [1, false, 'Edited', false], 'control: an escaped key in this page’s format');
 });
 
+// Security review of option B (finding 5) — the recovery's D1 statements touched every pack in the
+// table; the console steps did not say they need a desktop browser (an iPhone or iPad needs a Mac), nor
+// that clearing site data throws that device's copy away; and step 4 did not say to close every other
+// tab first (a newer page still open saves its fmt back over the fix).
+test('Option B review (5): SETUP.md’s recovery touches one pack, says where the console is, and closes the other tabs first', () => {
+  const sec = SETUP.slice(SETUP.indexOf('## If a page stays "out of date" after a reload (the reload gate)'));
+  const end = sec.indexOf('\n## ', 3), body = end > 0 ? sec.slice(0, end) : sec;
+  const d1 = body.split('\n').filter((l) => /npx wrangler d1 execute/.test(l));
+  eq(d1.length, 2, 'the D1 statements');
+  ok(d1.every((l) => /pack_state\b[^"]* WHERE pack_id = '<Pack ID>'"`$/.test(l)), 'a D1 statement without WHERE pack_id: ' + d1.join(' | '));
+  ok(/pack_id\s+TEXT PRIMARY KEY/.test(readFileSync(join(ROOT, 'migrations/0001_init.sql'), 'utf8')), 'the column is not pack_id');
+  ok(/`<Pack ID>` is the\s+pack's id: `var PACK_DOC_ID` in the `index.html` you serve/.test(body) && /var PACK_DOC_ID = /.test(SCRIPT) &&
+    /Without the\s+`WHERE` it would rewrite every pack/.test(body), 'which pack');
+  ok(/need a \*\*desktop browser\*\*/.test(body) && /\*\*iPhone or iPad\*\* has no console of its own: it needs\s+a Mac/.test(body), 'the console needs a desktop browser');
+  ok(/\*\*Don't clear the site's data\*\*[\s\S]{0,200}throws\s+away that device's copy/.test(body), 'clearing site data');
+  const s4 = body.slice(body.indexOf('### 4.'), body.indexOf('### 5.'));
+  const close = s4.indexOf('**First close every other tab or window of the page on that device**'), run = s4.indexOf('var k = ');
+  ok(close > 0 && run > close, 'step 4 does not close the other tabs before the console');
+});
+
 test('reload gate: SETUP.md says how the owner recovers a record whose fmt is too high, starting with each device’s copy', () => {
   // Security review of the gate, finding 4: nothing in the app lifts such a hold.
   const at = SETUP.indexOf('## If a page stays "out of date" after a reload (the reload gate)');
