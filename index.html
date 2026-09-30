@@ -9238,6 +9238,11 @@
   //   bookCents       the opening plus every entry through the date (cleared plus outstanding)
   //   ticked          ids of the entries cleared on THIS statement (not an earlier one); null legacy
   //   outstanding     ids of the entries through the date not ticked; absent on legacy
+  //   tickedCents     what THIS statement's entries came to (signed)        } treasurer review of
+  //   outInCents      money in outstanding, and out (both as positive cents) } C5 (4): the printout's
+  //   outOutCents                                                           } summary, as signed;
+  //   openingDate     the book's opening date then                          } absent before it
+  //   truncated       true when a list above was cut at 2000 ids (the totals count them all: F4)
   //   by, byUid, at   who marked it reconciled (never an email), their account's uid, and when
   //   supersedes      the reopened statement for the same date that this one replaces, if any
   //   reviewedAt, reviewedBy, reviewedByUid                    the second reviewer, once
@@ -9270,7 +9275,7 @@
     if (typeof st.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(st.date)) { st.date = ''; st.badDate = true; }
     else if (st.badDate !== undefined) delete st.badDate;
     if (typeof st.id !== 'string' || !st.id) st.id = 'st-' + st.date;
-    ['statementCents', 'openingCents', 'clearedCents', 'bookCents', 'addedCents'].forEach(function (k) {
+    ['statementCents', 'openingCents', 'clearedCents', 'bookCents', 'addedCents', 'tickedCents', 'outInCents', 'outOutCents'].forEach(function (k) {
       if (st[k] !== undefined) st[k] = typeof st[k] === 'number' && isFinite(st[k]) ? Math.round(st[k]) : null;
     });
     ['ticked', 'outstanding'].forEach(function (k) {
@@ -9279,6 +9284,8 @@
     });
     if (st.legacy === true) { st.statementCents = null; st.openingCents = null; st.clearedCents = null; st.bookCents = null; st.ticked = null; }
     else if (st.legacy !== undefined) delete st.legacy;
+    if (st.openingDate !== undefined && typeof st.openingDate !== 'string') st.openingDate = '';
+    if (st.truncated !== undefined && st.truncated !== true) delete st.truncated;
     ['by', 'reviewedBy', 'reopenedBy', 'addedBy'].forEach(function (k) { if (st[k] !== undefined) st[k] = ledgerStampClean(st[k]); });
     ['byUid', 'at', 'reviewedAt', 'reviewedByUid', 'reopenedAt', 'reopenedByUid', 'addedAt', 'addedByUid', 'reopenWhy'].forEach(function (k) {
       if (st[k] !== undefined && typeof st[k] !== 'string') st[k] = '';
@@ -9391,32 +9398,51 @@
   // legacy statement still standing, which kept no list): dated on or before it and ticked before
   // it was signed (or with no time of ticking). Returns { statement, rows } (rows: the entries to
   // give its id). Pure.
+  // Treasurer review of C5 (6) — nor one a standing statement lists as cleared on it (its ticked[]),
+  // though the entry's own statementId was lost (another device's copy of the row, C6): cleared on
+  // two statements, it would print on both. (4) — and the figures its printout adds up are signed
+  // with it (tickedCents, outInCents, outOutCents, openingDate), not worked out afterwards from the
+  // rows as they are then. Security review of C5 (F4) — each list is cut at 2000 ids, as a load
+  // cuts it (normalizeStatement), and says so (truncated); the totals count every entry.
   function statementNew(ledger, book, statements, stamp, id) {
     stamp = stamp || {};
-    var sd = String(book.statementDate || ''), standing = Object.create(null);
-    (statements || []).forEach(function (st) { if (st && !statementReopened(st)) standing[st.id] = true; });
+    var sd = String(book.statementDate || ''), standing = Object.create(null), listed = Object.create(null);
+    (statements || []).forEach(function (st) {
+      if (!st || statementReopened(st)) return;
+      standing[st.id] = true;
+      (Array.isArray(st.ticked) ? st.ticked : []).forEach(function (rid) { listed[rid] = true; });
+    });
     // The latest legacy statement still standing: it kept no list, so what it cleared is told by date.
     var legacyPrev = null;
     (statements || []).forEach(function (st) {
       if (st && st.ticked === null && !statementReopened(st) && /^\d{4}-\d{2}-\d{2}$/.test(st.date) && (!legacyPrev || st.date > legacyPrev.date)) legacyPrev = st;
     });
     var opening = book.openingCents || 0, cleared = opening, all = opening, ticked = [], out = [], rows = [];
+    var tickedCents = 0, outIn = 0, outOut = 0;
     (ledger || []).forEach(function (e) {
       if (!e || !entryAfterOpening(e, book) || !entryOnStatement(e, book)) return;
       all += entrySignedCents(e);
-      if (e.reconciled !== true) { out.push(e.id); return; }
+      if (e.reconciled !== true) {
+        out.push(e.id);
+        if (e.direction === 'in') outIn += e.amountCents || 0; else outOut += e.amountCents || 0;
+        return;
+      }
       cleared += entrySignedCents(e);
       if (typeof e.statementId === 'string' && standing[e.statementId]) return;
+      if (listed[e.id]) return;
       if (legacyPrev && String(e.date || '') <= legacyPrev.date &&
         !(e.approvedAt && legacyPrev.at && String(e.approvedAt) > String(legacyPrev.at))) return;
       ticked.push(e.id);
+      tickedCents += entrySignedCents(e);
       rows.push(e);
     });
     var st = {
       id: id, date: sd, statementCents: book.statementCents || 0, openingCents: opening, clearedCents: cleared, bookCents: all,
-      ticked: ticked, outstanding: out, by: ledgerStampClean(stamp.by), byUid: typeof stamp.byUid === 'string' ? stamp.byUid : '',
+      ticked: ticked.slice(0, 2000), outstanding: out.slice(0, 2000), tickedCents: tickedCents, outInCents: outIn, outOutCents: outOut,
+      openingDate: String(book.openingDate || ''), by: ledgerStampClean(stamp.by), byUid: typeof stamp.byUid === 'string' ? stamp.byUid : '',
       at: typeof stamp.at === 'string' ? stamp.at : ''
     };
+    if (ticked.length > 2000 || out.length > 2000) st.truncated = true;
     var was = null;
     (statements || []).forEach(function (x) {
       if (x && x.date === sd && statementReopened(x) && (!was || String(x.reopenedAt || '') + x.id > String(was.reopenedAt || '') + was.id)) was = x;

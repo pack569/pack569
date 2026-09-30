@@ -22683,6 +22683,9 @@ test('C5: Mark reconciled writes the statement as signed, and each entry cleared
   // Cleared: the opening $100, r1 +$25, q1 +$500 (ticked before the legacy lock), p1 −$12.
   eq([s.date, s.statementCents, s.openingCents, s.clearedCents, s.bookCents, s.ticked, s.outstanding, s.by, s.byUid, /^2\d{3}-/.test(s.at), 'supersedes' in s],
     ['2026-09-30', 61300, 10000, 61300, 54400, ['r1', 'p1'], ['u1', 'm1'], 'Pat Treasurer', 'u1', true, false], 'the statement');
+  // C5 review (treasurer 4): what the printout adds up, signed with it. r1 +$25 and p1 −$12 on it;
+  // m1 +$15 in and u1 $84 out outstanding.
+  eq([s.tickedCents, s.outInCents, s.outOutCents, s.openingDate, 'truncated' in s], [1300, 1500, 8400, '2026-07-01', false], 'the signed figures');
   eq(p.get("['r1', 'p1', 'q1', 'u1'].map(function (id) { return row(id).statementId || null; })"), [s.id, s.id, null, null], 'the entries’ statementId');
   eq([p.get('state.book.reconciledThrough'), p.get('state.book.reconciledAt'), p.get('state.statements[0]')], ['2026-09-30', s.at, C5_LEGACY()], 'the book, and the legacy statement untouched');
   // The same date again is refused while its statement stands.
@@ -23316,6 +23319,35 @@ test('C5 review (F6): restoring a backup of the same year keeps the statements s
   // A backup of another year's book: its statements alone, as the sync merge would have it.
   const r = run(back({ book: { year: 2025, reconciledThrough: '2026-06-30' }, statements: [] }));
   eq([r.get('state.statements'), r.get('state.book.reconciledThrough')], [[], '2026-06-30'], 'another year');
+});
+
+test('C5 review (treasurer 6, F4): an entry a standing statement lists is not cleared again, and a list is cut at 2000 with the totals whole', () => {
+  const x = sandbox(['statementNew', 'statementReopened', 'entryAfterOpening', 'entryOnStatement', 'entrySignedCents', 'ledgerStampClean']);
+  const book = { openingCents: 1000, openingDate: '2026-07-01', statementDate: '2026-09-30', statementCents: 0 };
+  const row = (id, o) => Object.assign({ id, date: '2026-09-10', amountCents: 100, direction: 'in', reconciled: true }, o || {});
+  const aug = { id: 'st-aug', date: '2026-08-31', ticked: ['a1'], outstanding: [], at: '2026-09-01T00:00:00.000Z' };
+  const nu = (ledger, sts) => JSON.parse(JSON.stringify(x.statementNew(ledger, book, sts, { by: 'Pat', byUid: 'u1', at: 'T' }, 'st-new')));
+  // a1 was cleared on Aug 31, but this copy of the row lost its statementId (C6): not listed again.
+  const got = nu([row('a1', { date: '2026-08-20' }), row('b1'), row('c1', { reconciled: false, direction: 'out', amountCents: 40 })], [aug]);
+  eq([got.statement.ticked, got.rows.map((e) => e.id), got.statement.clearedCents, got.statement.tickedCents, got.statement.outInCents, got.statement.outOutCents],
+    [['b1'], ['b1'], 1200, 100, 0, 40], 'cleared on two statements');
+  // Unless that statement was reopened.
+  eq(nu([row('a1', { date: '2026-08-20' }), row('b1')], [Object.assign({}, aug, { reopenedAt: 'T', reopenedBy: 'Alex' })]).statement.ticked, ['a1', 'b1'], 'a reopened statement’s list');
+  // 2001 ticked and 2001 outstanding: each list cut at 2000, said, and the totals count every one.
+  const big = [];
+  for (let i = 0; i < 2001; i++) big.push(row('t' + i), row('o' + i, { reconciled: false, direction: 'out', amountCents: 1 }));
+  const b = nu(big, []);
+  eq([b.statement.ticked.length, b.statement.outstanding.length, b.statement.truncated, b.rows.length, b.statement.clearedCents, b.statement.tickedCents, b.statement.outOutCents,
+    b.statement.bookCents], [2000, 2000, true, 2001, 1000 + 200100, 200100, 2001, 1000 + 200100 - 2001], 'the cap');
+  eq('truncated' in nu(big.slice(0, 4000), []).statement, false, 'not cut');
+  // Loaded: the signed figures are whole cents or null; openingDate a string; truncated only true.
+  const n = c5Norm(Object.assign(withSeeds(LEGACY_ROWS)(), { book: { openingCents: 0, openingDate: '2026-07-01', reconciledThrough: '2026-09-30' },
+    statements: [Object.assign(C5_SEP(), { tickedCents: 12.6, outInCents: 'x', outOutCents: 3, openingDate: 5, truncated: 'yes' })] }));
+  const st = n.statements[0];
+  eq([st.tickedCents, st.outInCents, st.outOutCents, st.openingDate, 'truncated' in st], [13, null, 3, '', false], 'loaded');
+  eq(JSON.stringify(c5Norm(n)), JSON.stringify(n), 'not a fixed point');
+  ok(!('tickedCents' in c5Norm(Object.assign(withSeeds(LEGACY_ROWS)(), { book: { openingCents: 0, reconciledThrough: '2026-09-30' }, statements: [C5_SEP()] })).statements[0]),
+    'a statement signed before gained a figure');
 });
 
 /* ---------------- report ---------------- */
