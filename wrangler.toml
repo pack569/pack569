@@ -68,7 +68,7 @@ OWNER_MODE = "first-signer"
 [[d1_databases]]
 binding = "DB"
 database_name = "pack569-preview"
-database_id = "REPLACE_WITH_PACK569_PREVIEW_DATABASE_ID"
+database_id = "91341848-3d9f-468a-af0a-dce2f95afae9"
 migrations_dir = "migrations"
 
 [env.preview.vars]
@@ -80,7 +80,7 @@ OWNER_MODE = "first-signer"
 [[env.preview.d1_databases]]
 binding = "DB"
 database_name = "pack569-preview"
-database_id = "REPLACE_WITH_PACK569_PREVIEW_DATABASE_ID"
+database_id = "91341848-3d9f-468a-af0a-dce2f95afae9"
 migrations_dir = "migrations"
 
 [env.production.vars]
@@ -92,5 +92,5 @@ OWNER_MODE = "fixed"
 [[env.production.d1_databases]]
 binding = "DB"
 database_name = "pack569-prod"
-database_id = "REPLACE_WITH_PACK569_PROD_DATABASE_ID"
+database_id = "6e6700fa-03d1-42f2-b035-b1fb48131a78"
 migrations_dir = "migrations"
