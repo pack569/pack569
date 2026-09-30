@@ -4870,6 +4870,24 @@
     });
     return into;
   }
+  // The rows of every closed book, as entries a reader can name (id, date, description, reference,
+  // direction, amountCents): a full book's rows as they are, a compact book's from their short keys. For a
+  // statement dated after a year's cutoff that lists an entry dated before it (a check that cleared in
+  // July): the entry is in the closed book now. Pure.
+  function closedBookRows(books) {
+    var out = [];
+    arrOf(books).forEach(function (b) {
+      if (!b) return;
+      if (b.form === 'compact') {
+        arrOf(b.ledger).forEach(function (r) {
+          if (r && typeof r.i === 'string' && r.i) out.push({ id: r.i, date: r.d || '', description: r.t || '', ref: r.r || '', direction: r.c < 0 ? 'out' : 'in', amountCents: Math.abs(r.c || 0) });
+        });
+      } else {
+        arrOf(b.ledger).forEach(function (e) { if (e && typeof e.id === 'string') out.push(e); });
+      }
+    });
+    return out;
+  }
   // One ledger row, coerced in place (normalizeState). Shared by the counted rows (state.ledger,
   // `prefix` 'nl') and the rows set aside (state.ledgerAside, 'na'), so a row reads the same
   // wherever it sits and moving it between the two changes nothing about it. Never uid().
@@ -8472,15 +8490,43 @@
     });
     return Object.keys(byYear).map(function (y) { return byYear[y]; }).sort(function (a, b) { return a.year - b.year; });
   }
-  function reconcileTotals(ledger, book) {
-    var cleared = book.openingCents || 0, ticked = 0, open = 0, after = 0;
+  // PHASE 3, C8 (C8-3) — THE ROWS CARRIED FROM LAST YEAR, AND WHAT THEY DO TO RECONCILING. A check the
+  // bank had not cashed by June 30 is in the closing balance (closingBalanceAt) and so in the new book's
+  // opening figure, but the bank balance does not show it yet. The new book keeps a copy of it, uncounted
+  // (state.ledgerAside, off 'carried': carriedRowFor), so the treasurer can tick it when it clears. Until
+  // then the ticked balance is the opening figure, plus what is ticked this year, LESS every carried row
+  // still unticked (its signed amount: a check out is added back, a deposit in taken off), which is what the
+  // bank will show. A carried row ticked changes nothing: the opening figure holds it and the bank has it.
+  // Rows voided or reversed in a book are off 'void' and the like, never 'carried'. Pure.
+  function carriedRowsOf(aside) {
+    return (aside || []).filter(function (e) { return !!e && e.off === 'carried'; });
+  }
+  // A carried row ticked on a statement still standing (not reopened) is fixed there, as a counted row
+  // dated in the reconciled period is: it is not un-ticked from the Reconcile list. Pure.
+  function carriedRowFixed(e, statements) {
+    return !!e && e.reconciled === true && typeof e.statementId === 'string' && !!e.statementId &&
+      (statements || []).some(function (st) { return !!st && st.id === e.statementId && !statementReopened(st); });
+  }
+  // `aside` (state.ledgerAside) for the carried rows; left out, the book has none, as before C8. Returns the
+  // figures as they were, and: carriedOpen (how many carried rows the statement does not show yet), carriedOpenCents
+  // (their signed total: what is taken off the cleared balance), carriedTicked (how many are ticked).
+  function reconcileTotals(ledger, book, aside) {
+    var cleared = book.openingCents || 0, ticked = 0, open = 0, after = 0, cOpen = 0, cOpenCents = 0, cTicked = 0;
     ledger.forEach(function (e) {
       if (!entryAfterOpening(e, book)) return;
       if (!entryOnStatement(e, book)) { after++; return; }
       if (e.reconciled) { cleared += entrySignedCents(e); ticked++; } else open++;
     });
+    carriedRowsOf(aside).forEach(function (e) {
+      if (!entryOnStatement(e, book)) return;
+      if (e.reconciled === true) { cTicked++; return; }
+      cOpen++;
+      cOpenCents += entrySignedCents(e);
+    });
+    cleared -= cOpenCents;
     return {
       cleared: cleared, ticked: ticked, open: open, after: after,
+      carriedOpen: cOpen, carriedOpenCents: cOpenCents, carriedTicked: cTicked,
       statement: book.statementCents || 0,
       difference: (book.statementCents || 0) - cleared
     };
@@ -9624,10 +9670,10 @@
     if (typeof st.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(st.date)) { st.date = ''; st.badDate = true; }
     else if (st.badDate !== undefined) delete st.badDate;
     if (typeof st.id !== 'string' || !st.id) st.id = 'st-' + st.date;
-    ['statementCents', 'openingCents', 'clearedCents', 'bookCents', 'addedCents', 'tickedCents', 'outInCents', 'outOutCents'].forEach(function (k) {
+    ['statementCents', 'openingCents', 'clearedCents', 'bookCents', 'addedCents', 'tickedCents', 'outInCents', 'outOutCents', 'carriedOutCents'].forEach(function (k) {
       if (st[k] !== undefined) st[k] = typeof st[k] === 'number' && isFinite(st[k]) ? Math.round(st[k]) : null;
     });
-    ['ticked', 'outstanding'].forEach(function (k) {
+    ['ticked', 'outstanding', 'carriedTicked'].forEach(function (k) {
       if (st[k] === undefined || st[k] === null) return;
       st[k] = Array.isArray(st[k]) ? st[k].filter(function (r) { return typeof r === 'string' && r && r.length <= 200; }).slice(0, 2000) : null;
     });
@@ -9794,7 +9840,8 @@
     var rt = String((book && book.reconciledThrough) || ''), on = Object.create(null), n = 0, used = [];
     (statements || []).forEach(function (st) {
       if (!st || statementReopened(st) || st.badDate || !/^\d{4}-\d{2}-\d{2}$/.test(st.date) || !rt || st.date > rt || !Array.isArray(st.ticked)) return;
-      st.ticked.forEach(function (id) {
+      // Phase 3, C8 (C8-3) — and the carried rows it cleared (`carriedTicked`), when `rows` holds them.
+      st.ticked.concat(Array.isArray(st.carriedTicked) ? st.carriedTicked : []).forEach(function (id) {
         var was = on[id];
         if (!was || st.date + String(st.at || '') + st.id > was.date + String(was.at || '') + was.id) on[id] = st;
       });
@@ -9836,13 +9883,20 @@
   // with it (tickedCents, outInCents, outOutCents, openingDate), not worked out afterwards from the
   // rows as they are then. Security review of C5 (F4) — each list is cut at 2000 ids, as a load
   // cuts it (normalizeStatement), and says so (truncated); the totals count every entry.
-  function statementNew(ledger, book, statements, stamp, id) {
+  // Phase 3, C8 (C8-3) — `aside` (state.ledgerAside), for the rows carried from last year (carriedRowsOf):
+  // each one still unticked is outstanding on this statement, listed with the rest, and its signed total
+  // comes off the cleared balance (reconcileTotals: `carriedOutCents`, signed with the statement); each
+  // one ticked and not yet on a statement still standing is cleared on this one (`carriedTicked`, its
+  // ids, and in `rows`, so it is given the statement's id). A book with none writes the statement it
+  // always did, with neither key.
+  function statementNew(ledger, book, statements, stamp, id, aside) {
     stamp = stamp || {};
     var sd = String(book.statementDate || ''), standing = Object.create(null), listed = Object.create(null);
     (statements || []).forEach(function (st) {
       if (!st || statementReopened(st)) return;
       standing[st.id] = true;
       (Array.isArray(st.ticked) ? st.ticked : []).forEach(function (rid) { listed[rid] = true; });
+      (Array.isArray(st.carriedTicked) ? st.carriedTicked : []).forEach(function (rid) { listed[rid] = true; });
     });
     // The latest legacy statement still standing: it kept no list, so what it cleared is told by date.
     var legacyPrev = null;
@@ -9868,13 +9922,28 @@
       tickedCents += entrySignedCents(e);
       rows.push(e);
     });
+    var carried = carriedRowsOf(aside), carriedTicked = [], carriedOut = 0;
+    carried.forEach(function (e) {
+      if (!entryOnStatement(e, book)) return;
+      if (e.reconciled !== true) {
+        out.push(e.id);
+        if (e.direction === 'in') outIn += e.amountCents || 0; else outOut += e.amountCents || 0;
+        carriedOut += entrySignedCents(e);
+        return;
+      }
+      if ((typeof e.statementId === 'string' && standing[e.statementId]) || listed[e.id]) return;
+      carriedTicked.push(e.id);
+      rows.push(e);
+    });
+    cleared -= carriedOut;
     var st = {
       id: id, date: sd, statementCents: book.statementCents || 0, openingCents: opening, clearedCents: cleared, bookCents: all,
       ticked: ticked.slice(0, 2000), outstanding: out.slice(0, 2000), tickedCents: tickedCents, outInCents: outIn, outOutCents: outOut,
       openingDate: String(book.openingDate || ''), by: ledgerStampClean(stamp.by), byUid: typeof stamp.byUid === 'string' ? stamp.byUid : '',
       at: typeof stamp.at === 'string' ? stamp.at : ''
     };
-    if (ticked.length > 2000 || out.length > 2000) st.truncated = true;
+    if (carried.length) { st.carriedOutCents = carriedOut; st.carriedTicked = carriedTicked.slice(0, 2000); }
+    if (ticked.length > 2000 || out.length > 2000 || carriedTicked.length > 2000) st.truncated = true;
     var was = null;
     (statements || []).forEach(function (x) {
       if (x && x.date === sd && statementReopened(x) && (!was || String(x.reopenedAt || '') + x.id > String(was.reopenedAt || '') + was.id)) was = x;
@@ -10018,7 +10087,8 @@
     function line(id, out) {
       var e = byId[id];
       if (!e) return { id: id, date: '', what: 'An entry since removed from the book' + (out ? ' (not known whether a deposit or a payment)' : ''), ref: '', cents: null, dir: '' };
-      return { id: id, date: String(e.date || ''), what: (e.description || '(no description)') + (e.off === 'void' ? ' (voided since)' : ''),
+      return { id: id, date: String(e.date || ''), what: (e.description || '(no description)') + (e.off === 'void' ? ' (voided since)' : '') +
+          (e.off === 'carried' ? ' (carried from ' + (e.carriedFrom ? e.carriedFrom.year : 'last year') + ')' : ''),
         ref: String(e.ref || ''), cents: entrySignedCents(e), dir: e.direction === 'in' ? 'in' : 'out' };
     }
     function lines(ids, out) {
@@ -10026,7 +10096,7 @@
     }
     function sum(l) { return (l || []).reduce(function (t, x) { return t + (x.cents || 0); }, 0); }
     function num(v) { return typeof v === 'number' && isFinite(v); }
-    var ticked = lines(st.ticked), outstanding = lines(st.outstanding, true);
+    var ticked = lines(st.ticked), outstanding = lines(st.outstanding, true), carriedCleared = lines(st.carriedTicked);
     var deposits = outstanding ? outstanding.filter(function (l) { return l.dir === 'in'; }) : null;
     var payments = outstanding ? outstanding.filter(function (l) { return l.dir !== 'in'; }) : null;
     (payments || []).forEach(function (l) { l.old = !!(ninety && l.date && l.date < ninety); });
@@ -10034,12 +10104,13 @@
     var signed = num(st.tickedCents) && num(st.outInCents) && num(st.outOutCents);
     var tickedCents = signed ? st.tickedCents : (ticked ? tickedNow : null);
     return {
-      ticked: ticked, deposits: deposits, payments: payments, signed: signed,
+      ticked: ticked, deposits: deposits, payments: payments, signed: signed, carried: carriedCleared,
       tickedNow: tickedNow, depositsNow: depositsNow, paymentsNow: paymentsNow,
       tickedCents: tickedCents,
       outInCents: signed ? st.outInCents : (outstanding ? depositsNow : null),
       outOutCents: signed ? st.outOutCents : (outstanding ? paymentsNow : null),
-      earlierCents: num(st.clearedCents) && num(st.openingCents) && tickedCents !== null ? st.clearedCents - st.openingCents - tickedCents : null,
+      // Phase 3, C8 (C8-3) — the carried rows not yet on a statement came off the cleared balance: put back, this is what earlier statements cleared.
+      earlierCents: num(st.clearedCents) && num(st.openingCents) && tickedCents !== null ? st.clearedCents - st.openingCents - tickedCents + (num(st.carriedOutCents) ? st.carriedOutCents : 0) : null,
       differenceCents: num(st.statementCents) && num(st.clearedCents) ? st.statementCents - st.clearedCents : null
     };
   }
@@ -21908,7 +21979,7 @@
       '</div></div>';
     h += bookCard();
     // Phase 3, C5 — and under Reconcile, the statements already reconciled (statementsCardHtml).
-    return h + (ui.ledgerView === 'reconcile' ? renderReconcile() + statementsCardHtml() : renderLedgerEntries());
+    return h + (ui.ledgerView === 'reconcile' ? renderReconcile() + statementsCardHtml() : renderLedgerEntries() + carriedBlockHtml());
   }
   // Treasurer review of C2 (L-4) — what a locked row can't have done to it, in one line: the
   // "reconciled period" pill's tooltip, and the line in its Detail (a tooltip never shows on a
@@ -22531,7 +22602,7 @@
   function renderBankStatementSheet(o) {
     var st = (state.statements || []).filter(function (x) { return x.id === o.id; })[0];
     if (!st) return '';
-    var d = statementSheetData(st, state.ledger.concat(state.ledgerAside || []));
+    var d = statementSheetData(st, state.ledger.concat(state.ledgerAside || [], closedBookRows(state.closedBooks)));
     var BLANK = '______________________';
     function money(cents, plus) { return cents === null ? '—' : (cents < 0 ? '−' : (plus && cents > 0 ? '+' : '')) + fmt(Math.abs(cents)); }
     // The summary's labels are sentences: they wrap (the global `td { white-space: nowrap }` pushed
@@ -22574,10 +22645,13 @@
       h += '<p>' + esc(statementLegacyLine(st)) + '</p><p class="small muted">Which entries were ticked on it wasn’t recorded either.</p>';
     } else {
       var n = d.ticked ? d.ticked.length : 0, nIn = d.deposits ? d.deposits.length : 0, nOut = d.payments ? d.payments.length : 0;
+      var carriedN = (d.deposits || []).concat(d.payments || []).filter(function (l) { return /\(carried from /.test(l.what); }).length;
       h += '<div class="tbl-wrap"><table><caption class="visually-hidden">Reconciliation</caption><tbody>' +
         tr('Book opening balance' + (st.openingDate ? ' (' + fmtDateShortYear(st.openingDate) + ')' : ''), typeof st.openingCents === 'number' ? st.openingCents : null) +
         tr('+ Cleared on earlier statements', d.earlierCents) +
         tr('+ Cleared on this statement (' + n + ')', d.tickedCents) +
+        // Phase 3, C8 (C8-3) — what was carried from last year and the bank had not shown yet.
+        (typeof st.carriedOutCents === 'number' ? tr('± Carried from last year, not yet on the statement (' + carriedN + ')', -st.carriedOutCents) : '') +
         tr('= Ticked balance', typeof st.clearedCents === 'number' ? st.clearedCents : null, true) +
         tr('Bank statement ending balance', typeof st.statementCents === 'number' ? st.statementCents : null, true) +
         tr('Difference: bank less ticked (must be ' + fmt(0) + ')', d.differenceCents, true) +
@@ -22587,6 +22661,8 @@
         '</tbody></table></div>' +
         (st.truncated ? '<p class="small" style="margin:4px 0 0">This statement lists only the first 2,000 entries; the totals include all of them.</p>' : '') +
         table('Cleared on this statement', d.ticked || [], d.tickedNow, d.tickedCents) +
+        (d.carried && d.carried.length ? table('Carried from last year, cleared on this statement', d.carried, d.carried.reduce(function (t, l) { return t + (l.cents || 0); }, 0),
+          d.carried.reduce(function (t, l) { return t + (l.cents || 0); }, 0)) : '') +
         table('Deposits not yet on the statement', d.deposits || [], d.depositsNow, d.outInCents) +
         table('Payments not yet on the statement', d.payments || [], -d.paymentsNow, d.outOutCents === null ? null : -d.outOutCents);
     }
@@ -22612,7 +22688,7 @@
   }
   function renderReconcile() {
     var bk = state.book;
-    var rec = reconcileTotals(state.ledger, bk);
+    var rec = reconcileTotals(state.ledger, bk, state.ledgerAside);
     var agrees = rec.difference === 0;
     var h = '<div class="card"><h2 class="section display">Reconcile to the bank</h2>' +
       '<p class="small muted" style="margin:0 0 10px">Tick every entry that appears on the statement, then type the statement’s ending balance. ' +
@@ -22636,7 +22712,11 @@
       // Security re-review of C2 (minor) — a lock after today can be put right with a real statement.
       if (reconcileLockAhead(bk, todayISO())) h += '<p class="small" style="margin:6px 0 0;color:var(--accent-text)">' + esc(RECONCILE_AHEAD_WHY) + '</p>';
     }
-    if (agrees && rec.ticked) {
+    // Phase 3, C8 (C8-3) — what was carried in from last year, and what it does to the ticked balance (reconcileTotals).
+    if (rec.carriedOpen) {
+      h += '<p class="small muted" style="margin:10px 0 0">' + esc(reconcileCarriedLine(rec, state.ledgerAside)) + '</p>';
+    }
+    if (agrees && (rec.ticked || rec.carriedTicked)) {
       // Treasurer review of C2 (H-1) — through the statement's own date only, never "today"; the
       // reason in place of the button when it can't be marked; two taps, the second saying what locks.
       var rlNo = reconcileLockRefusal(bk, todayISO(), state.statements, canReopenStatement());
@@ -22648,7 +22728,7 @@
             esc(rlArmed
               ? 'Tap again: entries dated on or before ' + fmtDateShort(bk.statementDate) + ' will be locked'
               : 'Mark reconciled through ' + fmtDate(bk.statementDate)) + '</button></p>');
-    } else if (rec.difference !== 0 && (rec.statement || rec.ticked)) {
+    } else if (rec.difference !== 0 && (rec.statement || rec.ticked || rec.carriedTicked)) {
       h += '<p class="small" style="margin:10px 0 0">Off by <strong class="money">' + fmt(Math.abs(rec.difference)) + '</strong> — ' +
         (rec.difference > 0
           ? 'the bank holds more than the ticked entries account for, so an income entry is probably missing.'
@@ -22658,8 +22738,10 @@
 
     var pending = ledgerSort(state.ledger).filter(function (e) { return entryAfterOpening(e, bk) && entryOnStatement(e, bk); });
     var recPair = ledgerPairOf(state.ledger);   // Option B — a reversal says what it cancels
+    // Phase 3, C8 (C8-3) — the rows carried from last year not yet cleared on a statement still standing.
+    var recCarried = ledgerSort(carriedRowsOf(state.ledgerAside)).filter(function (e) { return entryOnStatement(e, bk) && !carriedRowFixed(e, state.statements); });
     h += '<div class="card"><h2 class="section display">Tick against the statement</h2>';
-    if (!pending.length) {
+    if (!pending.length && !recCarried.length) {
       h += '<p class="empty">Nothing to reconcile yet.</p></div>';
       return h;
     }
@@ -22716,6 +22798,61 @@
         '<span class="money small rec-amt">' +
           (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents) + '</span>' +
         '</label>';
+    });
+    // Phase 3, C8 (C8-3) — the rows carried from last year: already in the opening balance, not counted
+    // again, ticked here when the bank shows them (the tick handler: led-rec on a carried row).
+    if (recCarried.length) {
+      h += '<p class="eyebrow" style="margin-top:14px">Carried from ' + esc(carriedYearsText(recCarried)) + '</p>' +
+        '<p class="small muted" style="margin:0 0 8px">' + esc(RECONCILE_CARRIED_HELP) + '</p>';
+      recCarried.slice().reverse().forEach(function (e) {
+        var cWho = e.description || '(no description)';
+        h += '<label class="lrow entry rec-row' + (e.direction === 'in' ? ' in' : '') + '">' +
+          '<input type="checkbox" data-ch="led-rec" data-id="' + esc(e.id) + '"' + (e.reconciled ? ' checked' : '') +
+            ' aria-label="Carried from ' + esc(carriedYearsText([e])) + ', ticked against the statement: ' + esc(cWho) + ', ' +
+            (e.direction === 'in' ? 'money in ' : 'money out ') + fmt(e.amountCents) + '">' +
+          '<span class="small muted rec-when">' + esc(fmtDateShort(e.date)) + '</span>' +
+          '<span class="lname small">' + esc(cWho) + '</span>' +
+          (e.ref ? '<span class="small muted rec-ref">#' + esc(e.ref) + '</span>' : '') +
+          '<span class="money small rec-amt">' + (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents) + '</span>' +
+          '</label>';
+      });
+    }
+    return h + '</div>';
+  }
+  // Phase 3, C8 (C8-3) — treasurer-facing words for the rows carried from last year (new wording, for the
+  // treasurer's sign-off). The program years the rows were carried from, "2026–27" (and "2025–26 and 2026–27").
+  function carriedYearsText(rows) {
+    var ys = [];
+    rows.forEach(function (e) {
+      var y = e.carriedFrom && typeof e.carriedFrom.year === 'number' ? e.carriedFrom.year : null;
+      if (y !== null && ys.indexOf(y) === -1) ys.push(y);
+    });
+    ys.sort();
+    if (!ys.length) return 'last year';
+    return ys.map(function (y) { return y + '–' + String(y + 1).slice(2); }).join(' and ');
+  }
+  var RECONCILE_CARRIED_HELP = 'Checks and deposits the bank had not shown when the year closed. They are already in the opening balance, so they are not counted again. Tick each one when it appears on a statement.';
+  // One sentence for the Reconcile screen: how many are waiting, and what that does to the ticked balance.
+  function reconcileCarriedLine(rec, aside) {
+    var n = rec.carriedOpen, these = n === 1 ? 'it' : 'them';
+    return n + (n === 1 ? ' entry' : ' entries') + ' from ' + carriedYearsText(carriedRowsOf(aside).filter(function (e) { return e.reconciled !== true; })) +
+      (n === 1 ? ' is' : ' are') + ' still waiting to show on the bank statement, and ' + (n === 1 ? 'is' : 'are') + ' already in the opening balance. The ticked balance allows for ' + these +
+      ' until you tick ' + these + ' below.';
+  }
+  // Phase 3, C8 (C8-3) — the Entries view's block for them: what they are, and whether the bank has shown each. Read-only.
+  function carriedBlockHtml() {
+    var rows = ledgerSort(carriedRowsOf(state.ledgerAside));
+    if (!rows.length) return '';
+    var h = '<div class="card"><h2 class="section display">Carried from ' + esc(carriedYearsText(rows)) + '</h2>' +
+      '<p class="small muted" style="margin:0 0 8px">Entered in an earlier year, and not on a bank statement when it closed. They are already in this year’s opening balance, so they are not counted again. ' +
+      'Tick them on the Reconcile screen when they clear.</p>';
+    rows.reverse().forEach(function (e) {
+      h += '<div class="lrow entry' + (e.direction === 'in' ? ' in' : '') + '">' +
+        '<span class="small muted rec-when">' + esc(fmtDateShort(e.date)) + '</span>' +
+        '<span class="lname">' + esc(e.description || '(no description)') + '</span>' +
+        '<span class="money small">' + (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents) + '</span>' +
+        (e.ref ? '<span class="small muted">#' + esc(e.ref) + '</span>' : '') +
+        '<span class="pill navy">' + (e.reconciled ? 'cleared' : 'not yet cleared') + '</span></div>';
     });
     return h + '</div>';
   }
@@ -32213,6 +32350,14 @@
           tkIds.push(e.id);
         }
       });
+      // Phase 3, C8 (C8-3) — and the rows carried from last year, the same way; one cleared on a
+      // statement still standing keeps its tick (carriedRowFixed).
+      carriedRowsOf(state.ledgerAside).forEach(function (e) {
+        if (!entryOnStatement(e, state.book) || e.reconciled === tick || (!tick && carriedRowFixed(e, state.statements))) return;
+        stampApproved(e, tick);
+        e.reconciled = tick;
+        tkIds.push(e.id);
+      });
       if (tkIds.length) logLedger(tick ? 'tick' : 'untick', tkIds[0], { rows: tkIds.slice(1) });
       if (tkKept) {
         showToast(tkKept + ' entr' + (tkKept === 1 ? 'y' : 'ies') + ' reconciled on an earlier statement (through ' +
@@ -32237,15 +32382,15 @@
     // (reconcileLockRefusal), and each statement it reopens is logged as a reopen of its own.
     if (act === 'ledger-reconcile-lock') {
       var rlNo = reconcileLockRefusal(state.book, todayISO(), state.statements, canReopenStatement());
-      var rlRec = reconcileTotals(state.ledger, state.book);
-      if (!rlNo && (rlRec.difference !== 0 || !rlRec.ticked)) rlNo = 'The ticked entries no longer match the statement’s ending balance (the book may have changed on another device), so it wasn’t marked reconciled. Check the difference and try again.';
+      var rlRec = reconcileTotals(state.ledger, state.book, state.ledgerAside);
+      if (!rlNo && (rlRec.difference !== 0 || !(rlRec.ticked || rlRec.carriedTicked))) rlNo = 'The ticked entries no longer match the statement’s ending balance (the book may have changed on another device), so it wasn’t marked reconciled. Check the difference and try again.';
       if (rlNo) { if (ui.armed === act) ui.armed = null; showToast(rlNo); render(); return; }
       arm(act, function () {
         var rlWas = state.book.reconciledThrough || '';
         var rlFix = reconcileLockAhead(state.book, todayISO()) && state.book.statementDate < rlWas;
         var rlAt = new Date().toISOString();
         var rlNew = statementNew(state.ledger, state.book, state.statements, { by: ledgerActor(), byUid: ledgerActorUid(), at: rlAt },
-          'st-' + state.book.statementDate + '-' + uid());
+          'st-' + state.book.statementDate + '-' + uid(), state.ledgerAside);
         var rlReop = [];
         if (rlFix) {
           (state.statements || []).forEach(function (st) {
@@ -32733,7 +32878,7 @@
       // ticked again (statementRetick), or every device would take the backup's untick of them.
       // Security re-check of C6 (N5) — and whether the entries each lists, as restored, still come to what it
       // was signed with (ciOff): said in the restore's why and on "The ledger needs a look".
-      var ciOff = [], ciRetick = statementRetick(state.ledger, state.statements, state.book, ciOff);
+      var ciOff = [], ciRetick = statementRetick(state.ledger.concat(carriedRowsOf(state.ledgerAside)), state.statements, state.book, ciOff);
       // …and whether an entry ticked here before (ciRows) is unticked now: its tick has to be made again.
       var ciTicked = Object.create(null);
       arrOf(ciRows).forEach(function (e) { if (e && e.reconciled === true && typeof e.id === 'string') ciTicked[e.id] = true; });
@@ -33457,6 +33602,21 @@
     }
     if (ch.indexOf('led-') === 0) {
       var led = state.ledger.find(function (e) { return e.id === el.dataset.id; });
+      // Phase 3, C8 (C8-3) — the one thing done to a row carried from last year: tick it (or take the tick
+      // off) when the bank shows it. Its amount, date and words are last year's and read-only, so nothing
+      // else reaches it. Not one ticked on a statement still standing (carriedRowFixed): that stays, as a
+      // counted row's does (the list shows it ticked and disabled, and a screen drawn before a sync is
+      // refused here). Logged as every tick is (row 'co-…', the carried row's own id).
+      if (!led && ch === 'led-rec') {
+        var cr = carriedRowsOf(state.ledgerAside).filter(function (e) { return e.id === el.dataset.id; })[0];
+        if (!cr) return;
+        if (carriedRowFixed(cr, state.statements)) { showToast('That entry is already on a reconciled statement, so its tick can’t be taken off.'); render(); return; }
+        if (cr.reconciled === el.checked) return;
+        stampApproved(cr, el.checked);
+        cr.reconciled = el.checked;
+        logLedger(cr.reconciled ? 'tick' : 'untick', cr.id);
+        commit(); return;
+      }
       if (!led) return;
       var lk = ch.slice(4);
       var lv = lk === 'rec' ? el.checked : el.value;

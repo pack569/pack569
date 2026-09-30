@@ -874,7 +874,7 @@ test('a rung is set apart from its rows by more than a font weight', () => {
 // `state` — precisely so it can be exercised here rather than by clicking around.
 const LEDGER_FNS = ['ledgerSort', 'entrySignedCents', 'entryAfterOpening', 'ledgerBalance',
   'LEDGER_INCOME_SOURCES', 'entryIsRefund', 'entryRefundsFamily', 'ledgerUnpaired', 'lineIncomeCents', 'ledgerIncomeCents',
-  'lineActualCents', 'entryWantsLine', 'ledgerTotals', 'entryOnStatement', 'reconcileTotals', 'runningBalances'];
+  'lineActualCents', 'entryWantsLine', 'ledgerTotals', 'entryOnStatement', 'reconcileTotals', 'carriedRowsOf', 'runningBalances'];
 
 function entry(o) {
   return Object.assign({ id: 'x', date: '2025-10-01', description: '', amountCents: 0,
@@ -13154,7 +13154,7 @@ test('E1: due dates and family statements are NEVER published', () => {
   // Treasurer review of C6 (5): ledgerLogNames names the statement an entry was cleared on, in its change
   // history and the entry chooser (both leaders only), by its date.
   eq([...stUsers].sort(), ['buildSeasonArchive', 'handleAction', 'ledgerEntryLabel', 'ledgerLogNames', 'mergeRemoteAppendOnly', 'renderBankStatementSheet', 'renderOverlay',
-    'renderReconcile', 'rolloverYear', 'statementButtonsHtml', 'statementsCardHtml'], 'something new writes or reads state.statements');
+    'renderReconcile', 'rolloverYear', 'statementButtonsHtml', 'statementsCardHtml'].concat(['handleChange']).sort(), 'something new writes or reads state.statements');
   ok(/state\.statements = \[\];/.test(slice('rolloverYear')), 'close-out does not clear the bank statements');
   ok(!/statements/.test(bpv), 'buildParentView reads the bank statements');
   ok(/each charge's due date \(`dueDate`\), the pack's dues date \(`budget\.duesDueDate`\) and every\s+\/\/\s+family statement \(E1\)/.test(SCRIPT), 'the banner does not exclude them');
@@ -18339,7 +18339,7 @@ const C2_FNS = ['fmt', 'fmtDate', 'fmtDateShort', 'toCents', 'toCentsSigned', 'e
   'ledgerDraftDefault', 'ledgerDraft', 'arm', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays', 'ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept', 'keepLostVoids', 'ledgerPairCheck',
   // Phase 3, C5 — Mark reconciled writes the statement.
   'statementNew', 'statementInForce', 'statementReopened', 'statementReviewed', 'statementAdded', 'statementOnceGroups', 'statementPairMerge', 'mergeStatements',
-  'statementLockBack', 'statementBefore', 'statementLockForward', 'entrySignedCents'];
+  'statementLockBack', 'statementBefore', 'statementLockForward', 'entrySignedCents', 'carriedRowsOf', 'carriedRowFixed'];
 // The book is reconciled through Aug 31 from a Jul 1 opening. u1 is open; r1 is ticked (after the
 // period); p1 is dated in the period, not ticked; q1 is ticked in the period by a page from before
 // any stamps; pre is before the opening date; m1 is a tier make-up in the period.
@@ -18996,7 +18996,7 @@ test('C3 property: every ledger reader gives the same answer with an entry voide
   eq(found, Object.keys(C3_READERS).sort(), 'a ledger reader the property does not check (add it to C3_READERS)');
   const x = sandbox(['entryPaysCharges', 'entryRefundsFamily', 'entryIsRefund', 'chargeIsOpen', 'entrySignedCents', 'entryAfterOpening',
     'entryOnStatement', 'entryWantsLine', 'ledgerLocked', 'ledgerDateReconciled', 'LEDGER_VOID_REASON_MAX', 'ledgerVoidRow', 'ledgerUnvoidRow',
-    'normalizeAsideRow', 'ledgerStampClean', 'tierMakeupMap', 'tierMakeupPaidCents', 'chargeSetTotals', 'RECONCILE_STALE_DAYS', 'LEDGER_INCOME_SOURCES', 'COMMISSION_LOOKALIKE_SOURCES'].concat(READER_DEPS, found));
+    'normalizeAsideRow', 'carriedRowsOf', 'ledgerStampClean', 'tierMakeupMap', 'tierMakeupPaidCents', 'chargeSetTotals', 'RECONCILE_STALE_DAYS', 'LEDGER_INCOME_SOURCES', 'COMMISSION_LOOKALIKE_SOURCES'].concat(READER_DEPS, found));
   const r = c3Rand(569);
   const pick = (a) => a[Math.floor(r() * a.length)];
   let checked = 0;
@@ -19058,15 +19058,20 @@ test('C3: nothing outside the book’s own plumbing reads the voided rows, so no
   // Phase 3, C7 — scoutHasLedger and ledgerScoutsHeld ask whether any entry, voided or not, names a
   // scout; they total nothing.
   // Phase 3, C8 — closedBookBuild moves the voided rows to the year they were voided in (closed book or new book); it totals nothing from them.
-  eq([...users].sort(), ['applyLedgerMerge', 'closedBookBuild', 'dropScout', 'freshState', 'handleAction', 'isStateEmpty', 'keepLostVoids', 'ledgerAsideListHtml', 'ledgerAsideSettle', 'ledgerEntryLabel',
+  // Phase 3, C8 (C8-3) — and the carried rows, which are aside rows too: the Reconcile screen and the Entries block list them
+  // (carriedRowsOf), and the tick handler ticks them; none of them is voided money, and reconcileTotals counts them only as an offset.
+  eq([...users].sort(), ['applyLedgerMerge', 'carriedBlockHtml', 'closedBookBuild', 'dropScout', 'freshState', 'handleAction', 'handleChange', 'isStateEmpty', 'keepLostVoids', 'ledgerAsideListHtml', 'ledgerAsideSettle', 'ledgerEntryLabel',
     'ledgerLogNames', 'ledgerReverseSlot', 'ledgerScoutsHeld', 'ledgerUnvoidRow',
     // Phase 3, C5 — renderBankStatementSheet names an entry on a statement voided since; it totals nothing from it.
-    'ledgerVoidRow', 'mergeLedgerRows', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderBankStatementSheet', 'renderLedger', 'renderLedgerEntries', 'renderRowChooser', 'restoreGone',
+    'ledgerVoidRow', 'mergeLedgerRows', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderBankStatementSheet', 'renderLedger', 'renderLedgerEntries', 'renderReconcile', 'renderRowChooser', 'restoreGone',
     'rolloverYear', 'scoutHasLedger'], 'who reads the voided rows');
   // In handleAction: the void handlers and (treasurer sign-off on C3) the voided CSV only. (C7: del-scout's
   // log line is gone, with the unlinking it logged.)
   // Security re-check of option B (A) — and the void's Undo, asking whether the row it would put back is still voided.
-  const h = slice('handleAction').split('\n').filter((l) => /ledgerAside/.test(l) && !/^\s*\/\//.test(l));
+  // Phase 3, C8 (C8-3) — and the carried rows, which take part in reconciling only: Tick all, Mark reconciled's two calls
+  // (reconcileTotals, statementNew) and the restore's re-tick read them by carriedRowsOf, which keeps only rows off 'carried'.
+  const h = slice('handleAction').split('\n').filter((l) => /ledgerAside/.test(l) && !/^\s*\/\//.test(l) &&
+    !/carriedRowsOf\(state\.ledgerAside\)|reconcileTotals\(state\.ledger, state\.book, state\.ledgerAside\)|uid\(\), state\.ledgerAside\);/.test(l));
   eq(h.length, 3, 'handleAction reads the voided rows somewhere new: ' + h.join(' | '));
   ok(/var vdOff = \(state\.ledgerAside \|\| \[\]\)\.filter\(function \(e\) \{ return e && e\.id === vdId && e\.off === 'void'; \}\)\[0\];/.test(h.join('\n')), h.join('\n'));
   ok(/var uvRow = \(state\.ledgerAside \|\| \[\]\)\.find/.test(h.join('\n')) &&
@@ -19236,7 +19241,7 @@ const C2T_ACT = [
   c2Block(/    if \(act === 'confirm-import'\) \{[\s\S]*?\n    \}/, 'confirm-import')].join('\n');
 const C2T_CHANGE = c2Block(/    if \(ch === 'ledger-unrec-why'\) \{[^\n]*\}/, 'ledger-unrec-why');
 const C2T_MORE = `
-  ${['reconcileLockRefusal', 'reconcileLockAhead', 'reconcileTotals', 'entrySignedCents', 'arrOf', 'statementRetick'].map(slice).join('\n')}
+  ${['reconcileLockRefusal', 'reconcileLockAhead', 'reconcileTotals', 'carriedRowsOf', 'carriedRowFixed', 'statementReopened', 'entrySignedCents', 'arrOf', 'statementRetick'].map(slice).join('\n')}
   ${['noteLedgerLookFromMerge', 'ledgerRestoreDiffLook', 'ledgerSignedCents', 'ledgerRestoreWhy'].map(slice).join('\n')}   // security re-check of C6 (N5)
   ${decl('RECONCILE_AHEAD_WHY')}
   ${decl('RECONCILE_AHEAD_LOGGED')}
@@ -19488,6 +19493,7 @@ test('C2 treasurer M-4: the log’s screens are leaders-only, and close-out says
 const C2S_EXTRA = `${C2_LOG_EXTRA}
   ${slice('statementLockForward')}
   ${slice('statementRetick')}   // C6 reviews (F4): a restore re-ticks what a standing statement lists
+  ${slice('carriedRowsOf')}
   ${decl('RESTORE_REFUSED')}
   function canReopenStatement() { return true; }   // an admin restores (security re-check of C5, R1)
   function confirmImport(data) { ui.overlay = { kind: 'import', data: data }; var act = 'confirm-import';
@@ -20275,7 +20281,7 @@ const C4_ACT = [
   c2Block(/    if \(act\.indexOf\('ledger-reverse-go:'\) === 0 \|\| act\.indexOf\('ledger-correct-go:'\) === 0\) \{[\s\S]*?\n    \}/, 'ledger-reverse-go')].join('\n');
 const C4_CHANGE = c2Block(/    if \(ch === 'ledger-fix-why'\)[^\n]*\n    if \(ch\.indexOf\('ledger-fix-'\) === 0\) \{[\s\S]*?\n    \}/, 'ledger-fix-*');
 const C4_MORE = C2R_MORE + `
-  ${C4_FNS.concat(['dollars', 'entrySignedCents', 'reconcileTotals', 'ledgerBalance', 'ledgerSort', 'runningBalances', 'ledgerUnpaired']).map(slice).join('\n')}
+  ${C4_FNS.concat(['dollars', 'entrySignedCents', 'reconcileTotals', 'carriedRowsOf', 'ledgerBalance', 'ledgerSort', 'runningBalances', 'ledgerUnpaired']).map(slice).join('\n')}
   function act4(act, el) { el = el || { dataset: {} }; (function () {\n${C4_ACT}\n})(); }
   function change4(ch, value) { var el = { value: value, dataset: {} }; (function () {\n${C4_CHANGE}\n})(); }
   // Reverse or correct under the entry's Detail, the figures typed over its own, the why, and each button twice.
@@ -20653,7 +20659,7 @@ test('C4 property (option B): after a Reverse the family, tier and line readers 
   eq(found, Object.keys(C3_READERS).sort(), 'a ledger reader the property does not check (add it to C3_READERS)');
   const x = sandbox(['entryPaysCharges', 'entryRefundsFamily', 'entryIsRefund', 'chargeIsOpen', 'entrySignedCents', 'entryAfterOpening',
     'entryOnStatement', 'entryWantsLine', 'ledgerLocked', 'ledgerDateReconciled', 'LEDGER_VOID_REASON_MAX', 'normalizeAsideRow', 'ledgerStampClean',
-    'tierMakeupMap', 'tierMakeupPaidCents', 'chargeSetTotals', 'RECONCILE_STALE_DAYS', 'LEDGER_INCOME_SOURCES', 'COMMISSION_LOOKALIKE_SOURCES',
+    'tierMakeupMap', 'tierMakeupPaidCents', 'chargeSetTotals', 'RECONCILE_STALE_DAYS', 'LEDGER_INCOME_SOURCES', 'COMMISSION_LOOKALIKE_SOURCES', 'carriedRowsOf',
     'applyLedgerEdit', 'toCents', 'ledgerRowFields', 'LEDGER_EDIT_FIELDS', 'LEDGER_MAX_CENTS', 'fmtDateShort', 'isoPlusDays'].concat(READER_DEPS, C4_FNS, found));
   vm.runInContext('function ledgerLineIsDirect() { return false; }', x);
   const r = c3Rand(4569);
@@ -21138,9 +21144,10 @@ test('C4: the Reverse or correct form says what each does and what the corrected
 // "reversal", with the reason under the entry; the Reconcile list says what a reversal is, in the
 // treasurer's words, unless its entry was ticked on an earlier statement.
 test('C4 (option B): Entries shows both rows with their pills and the reason; the Reconcile list says what a reversal cancels', () => {
-  const x = sandbox(['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'dollars', 'renderLedgerEntries', 'renderReconcile', 'runningBalances', 'ledgerSort', 'ledgerMatches',
+  const x = sandbox(['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'dollars', 'renderLedgerEntries', 'renderReconcile', 'carriedRowsOf', 'carriedRowFixed', 'carriedYearsText', 'reconcileCarriedLine', 'carriedBlockHtml', 'runningBalances', 'ledgerSort', 'ledgerMatches',
     'entryAfterOpening', 'entryOnStatement', 'entrySignedCents', 'reconcileTotals', 'ledgerLocked', 'ledgerDateReconciled', 'entryWantsLine', 'entryRefundsFamily',
     'LEDGER_FILTERS', 'ledgerLockNote', 'ledgerFixButtonHtml', 'ledgerCorrectsLine', ...ASIDE_LIST_FNS]);
+  vm.runInContext(decl('RECONCILE_CARRIED_HELP'), x);
   vm.runInContext(`var ui = { ledgerOpen: {}, armed: null, ledgerFilter: {}, fixAsk: null, voidAsk: null };
     var state = { book: { openingCents: 100000, openingDate: '2026-07-01', reconciledThrough: '2026-08-31', statementDate: '2026-09-30', statementCents: 0 }, ledgerAside: [],
       ledger: [
@@ -23026,7 +23033,7 @@ atest('C5, api: a statement signed on one device survives another’s save, and 
 const C5_VIEW_FNS = ['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'fmtDateYear', 'statementDay', 'statementByOn', 'statementLegacyLine', 'statementSheetData',
   'statementReopened', 'statementReviewed', 'statementAdded', 'entrySignedCents', 'statementsCardHtml', 'statementBlockHtml', 'renderBankStatementSheet',
   'statementButtonsHtml', 'statementReviewRefusal', 'ledgerActorName', 'statementReopenRefusal', 'statementReopenNote', 'statementBefore', 'LEDGER_VOID_REASON_MAX',
-  'statementReviewer', 'statementAwaitsReview', 'fmtDateShortYear', 'isoPlusDays'];
+  'statementReviewer', 'statementAwaitsReview', 'fmtDateShortYear', 'isoPlusDays', 'closedBookRows', 'arrOf'];
 // Sep 30: r1 +$25 cleared on it, u1 −$84 outstanding; the opening $100 and q1 +$500 cleared before.
 const C5_SEP = () => ({ id: 'st-2026-09-30-a', date: '2026-09-30', statementCents: 62500, openingCents: 10000, clearedCents: 62500, bookCents: 54100,
   ticked: ['r1'], outstanding: ['u1'], by: 'Pat Treasurer', byUid: 'u1', at: '2026-10-02T15:00:00.000Z' });
@@ -23065,7 +23072,7 @@ test('C5: the printout adds up — from the figures signed with it, the outstand
   const f = JSON.parse(JSON.stringify(x.statementSheetData(Object.assign(C5_SEP(), { ticked: ['r1', 'v9'] }), rows)));
   eq([f.signed, f.tickedCents, f.earlierCents, f.outInCents, f.outOutCents], [false, 2600, 62500 - 10000 - 2600, 0, 8400], 'a statement signed before');
   eq(JSON.parse(JSON.stringify(x.statementSheetData({ id: 'st-2026-08-31', date: '2026-08-31', statementCents: null, openingCents: null, clearedCents: null,
-    bookCents: null, ticked: null, legacy: true }, rows))), { ticked: null, deposits: null, payments: null, signed: false, tickedNow: 0, depositsNow: 0, paymentsNow: 0,
+    bookCents: null, ticked: null, legacy: true }, rows))), { ticked: null, deposits: null, payments: null, signed: false, carried: null, tickedNow: 0, depositsNow: 0, paymentsNow: 0,
     tickedCents: null, outInCents: null, outOutCents: null, earlierCents: null, differenceCents: null }, 'a legacy statement has no figures');
 });
 
@@ -23779,7 +23786,7 @@ test('R1–R7 verification (INFO): a load steps a lock back past a reopened stat
 });
 
 test('C5 review (treasurer 6, F4): an entry a standing statement lists is not cleared again, and a list is cut at 2000 with the totals whole', () => {
-  const x = sandbox(['statementNew', 'statementReopened', 'entryAfterOpening', 'entryOnStatement', 'entrySignedCents', 'ledgerStampClean']);
+  const x = sandbox(['statementNew', 'carriedRowsOf', 'statementReopened', 'entryAfterOpening', 'entryOnStatement', 'entrySignedCents', 'ledgerStampClean']);
   const book = { openingCents: 1000, openingDate: '2026-07-01', statementDate: '2026-09-30', statementCents: 0 };
   const row = (id, o) => Object.assign({ id, date: '2026-09-10', amountCents: 100, direction: 'in', reconciled: true }, o || {});
   const aug = { id: 'st-aug', date: '2026-08-31', ticked: ['a1'], outstanding: [], at: '2026-09-01T00:00:00.000Z' };
@@ -26367,6 +26374,173 @@ test('C8-2: a row carried from last year is not a voided or reversed entry: it i
   eq(lines([carried]).length, 1, 'only the header');
   eq(lines([carried, voided]).length, 2, 'the voided one, not the carried');
   ok(/const aside = \(state\.ledgerAside \|\| \[\]\)\.filter|var aside = \(state\.ledgerAside \|\| \[\]\)\.filter\(function \(e\) \{ return e && e\.off !== 'carried'; \}\)/.test(slice('ledgerAsideListHtml')), 'the Voided & reversed list reads only rows set aside for a reason');
+});
+
+/* ================================================================
+   C8-3: reconciling the new year's book with the rows carried from the old one. Still nothing writes a
+   carried row on the live page: these tests build the new book with closedBookBuild.
+   ================================================================ */
+// The new year's book the C8-1 close-out leaves: $930.00 open on Jul 1 2027, f (−$7.00, Jul 1) and g (+$3.00, Aug 15) counted,
+// the $150.00 check (co-c) and the $50.00 deposit (co-d) carried, and a row voided in August.
+const c8New = () => {
+  const c = c8(), out = J(c.closedBookBuild(C8_SRC(), C8_OPTS));
+  return { ledger: out.open.ledger, aside: out.open.ledgerAside, statements: out.open.statements,
+    book: { openingCents: out.closingCents, openingDate: '2027-07-01', reconciledThrough: '', statementDate: '2027-07-31', statementCents: 0, year: 2027 } };
+};
+const C8_REC_FNS = ['reconcileTotals', 'carriedRowsOf', 'entryAfterOpening', 'entryOnStatement', 'entrySignedCents', 'statementReopened', 'carriedRowFixed'];
+const c8rec = (x, nw, tick, statementCents) => {
+  const ledger = J(nw.ledger), aside = J(nw.aside);
+  ledger.forEach((e) => { e.reconciled = tick.indexOf(e.id) !== -1; });
+  aside.forEach((e) => { if (e.off === 'carried') e.reconciled = tick.indexOf(e.id) !== -1; });
+  return { ledger, aside, book: Object.assign({}, nw.book, { statementCents }) };
+};
+
+// Hand-worked, in the order the bank sees it. Jun 30: the book says $930.00, but the $150.00 check (co-c) has not been cashed and the
+// $50.00 deposit (co-d) is not in yet, so the BANK says 930.00 + 150.00 − 50.00 = $1,030.00.
+//  A. Nothing ticked, the statement (Jul 31) shows $1,030.00: the ticked balance is the opening 930.00 less the two carried rows'
+//     signed total (−150.00 + 50.00 = −100.00), so 930.00 + 100.00 = 1,030.00 and the difference is 0.
+//  B. In July the check clears and so does f (−7.00): the bank says 1,030.00 − 150.00 − 7.00 = $873.00. Tick co-c and f: the ticked
+//     balance is 930.00 − 7.00 (f) − (+50.00: co-d still out) = 873.00, the difference 0. co-c ticked moves nothing: the opening holds it.
+//  C. The deposit clears too: $923.00, and with all three ticked the ticked balance is 930.00 − 7.00 = 923.00.
+//  D. Without the offset (a page that doesn't know the carried rows, B): 930.00 − 7.00 = 923.00 against 873.00 is off by $50.00, a
+//     difference that is nothing missing at all.
+test('C8-3: the ticked balance allows for the carried rows the bank has not shown, so the first statement of the year comes to a difference of zero', () => {
+  const x = sandbox(C8_REC_FNS), nw = c8New();
+  eq(nw.aside.filter((e) => e.off === 'carried').map((e) => [e.id, e.direction, e.amountCents]), [['co-c', 'out', 15000], ['co-d', 'in', 5000]], 'the carried rows');
+  const a = c8rec(x, nw, [], 103000), ra = J(x.reconcileTotals(a.ledger, a.book, a.aside));
+  eq([ra.cleared, ra.difference, ra.carriedOpen, ra.carriedOpenCents, ra.carriedTicked, ra.ticked], [103000, 0, 2, -10000, 0, 0], 'A: nothing ticked, the bank at $1,030.00');
+  const b = c8rec(x, nw, ['co-c', 'f'], 87300), rb = J(x.reconcileTotals(b.ledger, b.book, b.aside));
+  eq([rb.cleared, rb.difference, rb.carriedOpen, rb.carriedOpenCents, rb.carriedTicked, rb.ticked], [87300, 0, 1, 5000, 1, 1], 'B: the check and f cleared, the bank at $873.00');
+  const c = c8rec(x, nw, ['co-c', 'co-d', 'f'], 92300), rc = J(x.reconcileTotals(c.ledger, c.book, c.aside));
+  eq([rc.cleared, rc.difference, rc.carriedOpen, rc.carriedOpenCents, rc.carriedTicked], [92300, 0, 0, 0, 2], 'C: and the deposit');
+  const d = J(x.reconcileTotals(b.ledger, b.book));
+  eq([d.cleared, d.difference, d.carriedOpen], [92300, 87300 - 92300, 0], 'D: a page that does not read the carried rows is off by the $50.00 still out');
+  // A carried row dated after the statement can't be on it; a book with no carried rows is the old math exactly.
+  eq(J(x.reconcileTotals(a.ledger, a.book, a.aside.map((e) => (e.off === 'carried' ? Object.assign({}, e, { date: '2027-08-20' }) : e)))).carriedOpen, 0, 'after the statement date');
+  const plain = J(x.reconcileTotals(a.ledger, a.book, [])), none = J(x.reconcileTotals(a.ledger, a.book));
+  eq([plain, none], [none, none], 'no aside, no carried rows: one answer');
+  eq(Object.keys(none).sort(), ['after', 'carriedOpen', 'carriedOpenCents', 'carriedTicked', 'cleared', 'difference', 'open', 'statement', 'ticked'], 'and the figures it gave, with the carried three');
+  // Voided rows in the same list are not carried rows.
+  eq(J(x.reconcileTotals(a.ledger, a.book, a.aside)).carriedOpen, 2, 'the row voided in August is not counted as carried');
+});
+
+test('C8-3: Mark reconciled writes the statement with the carried rows in it: signed offset, outstanding and cleared, and the printout adds up', () => {
+  const x = sandbox(['statementNew', 'statementSheetData', 'carriedRowsOf', 'statementReopened', 'entryAfterOpening', 'entryOnStatement', 'entrySignedCents', 'ledgerStampClean', 'isoPlusDays']);
+  const nw = c8New(), b = c8rec(x, nw, ['co-c', 'f'], 87300);
+  const n = J(x.statementNew(b.ledger, b.book, [], { by: 'Pat', byUid: 'u1', at: '2027-08-01T10:00:00.000Z' }, 'st-1', b.aside));
+  const st = n.statement;
+  eq([st.clearedCents, st.bookCents, st.openingCents, st.tickedCents, st.ticked, st.carriedTicked, st.outstanding, st.outInCents, st.outOutCents, st.carriedOutCents],
+    [87300, 92300, 93000, -700, ['f'], ['co-c'], ['co-d'], 5000, 0, 5000], 'the statement as signed');
+  eq(n.rows.map((e) => e.id).sort(), ['co-c', 'f'], 'the rows that get its id: the carried one too');
+  eq(st.statementCents + st.outInCents - st.outOutCents, st.bookCents, 'statement + deposits not yet in − payments not yet out = the book');
+  // The printout: what was cleared before is nothing, the carried row is named, and the lines add up to the ticked balance.
+  const all = b.ledger.concat(b.aside), d = J(x.statementSheetData(st, all));
+  eq([d.earlierCents, d.tickedCents, d.differenceCents, d.carried.map((l) => [l.id, l.what, l.cents])], [0, -700, 0, [['co-c', 'Row c (carried from 2026)', -15000]]], 'the printout’s figures');
+  eq(d.deposits.map((l) => l.what), ['Row d (carried from 2026)'], 'the carried deposit still out is listed with the deposits');
+  eq(st.openingCents + d.earlierCents + d.tickedCents - st.carriedOutCents, st.clearedCents, 'opening + earlier + ticked − carried offset = the ticked balance');
+  // The next statement (Aug 31): co-c is on the standing July one and is left alone; co-d is outstanding again.
+  const rows = b.aside.map((e) => (e.id === 'co-c' ? Object.assign({}, e, { statementId: 'st-1' }) : e));
+  const aug = J(x.statementNew(b.ledger, Object.assign({}, b.book, { statementDate: '2027-08-31' }), [st], { by: 'Pat', byUid: 'u1', at: '2027-09-01T10:00:00.000Z' }, 'st-2', rows)).statement;
+  eq([aug.carriedTicked, aug.outstanding, aug.carriedOutCents, aug.clearedCents], [[], ['g', 'co-d'], 5000, 93000 - 700 - 5000], 'the August statement: g (Aug 15) not ticked, co-d still out');
+  // A book with no carried rows writes the statement it always did: no carried keys.
+  const old = J(x.statementNew(b.ledger, b.book, [], { by: 'Pat', byUid: 'u1', at: 'T' }, 'st-x', [])).statement;
+  ok(!('carriedOutCents' in old) && !('carriedTicked' in old), 'a book with no carried rows');
+});
+
+test('C8-3: a restored backup ticks a carried row again from the statement that cleared it; a statement’s carried fields are coerced', () => {
+  const x = sandbox(['statementRetick', 'statementReopened', 'ledgerStampClean', 'entrySignedCents', 'normalizeStatement']);
+  const rows = [{ id: 'f', direction: 'out', amountCents: 700, reconciled: false }, { id: 'co-c', off: 'carried', direction: 'out', amountCents: 15000, reconciled: false }];
+  const st = { id: 'st-1', date: '2027-07-31', ticked: ['f'], carriedTicked: ['co-c'], tickedCents: -700, by: 'Pat', byUid: 'u1', at: '2027-08-01T10:00:00.000Z' };
+  const off = [], n = x.statementRetick(rows, [st], { reconciledThrough: '2027-07-31' }, off);
+  eq([n, rows.map((e) => [e.id, e.reconciled, e.statementId]), off], [2, [['f', true, 'st-1'], ['co-c', true, 'st-1']], []], 'both ticked again, and the signed total (counted rows only) still agrees');
+  const c = J(x.normalizeStatement({ id: 's', date: '2027-07-31', carriedOutCents: 12.4, carriedTicked: ['a', 5, '', 'b'] }));
+  eq([c.carriedOutCents, c.carriedTicked], [12, ['a', 'b']], 'coerced');
+  eq(J(x.normalizeStatement({ id: 's', date: '2027-07-31' })).carriedOutCents, undefined, 'and absent stays absent');
+});
+
+test('C8-3: a carried row is ticked and un-ticked on the Reconcile screen, logged as any tick, except one cleared on a statement still standing', () => {
+  const carried = () => JSON.stringify(c8New().aside.filter((e) => e.off === 'carried'));
+  const p = c2Page({ ledger: c8New().ledger.map((e) => C2_ROW(e)), book: c8New().book });
+  p.run('state.ledgerAside = ' + carried());
+  const co = () => p.get("state.ledgerAside.filter(function (e) { return e.id === 'co-c'; })[0]");
+  p.run("change('led-rec', 'co-c', '', true)");
+  let r = co();
+  eq([r.reconciled, r.approvedBy, typeof r.reconciledAt, p.get('commits'), p.get('log().map(function (e) { return [e.op, e.row]; })')], [true, 'Pat Treasurer', 'number', 1, [['tick', 'co-c']]], 'ticked');
+  p.run("change('led-rec', 'co-c', '', false)");
+  r = co();
+  eq([r.reconciled, 'reconciledAt' in r, p.get('commits'), p.get('log().map(function (e) { return e.op; })')], [false, false, 2, ['tick', 'untick']], 'un-ticked');
+  p.run("change('led-rec', 'co-c', '', false)");
+  eq(p.get('commits'), 2, 'no change, no commit');
+  // Cleared on a statement still standing: its tick stays, and the leader is told. Reopened, it can come off.
+  p.run("change('led-rec', 'co-c', '', true); state.ledgerAside.forEach(function (e) { if (e.id === 'co-c') e.statementId = 'st-1'; }); state.statements = [{ id: 'st-1', date: '2027-07-31' }]; toasts = []; commits = 0; log().length = 0; change('led-rec', 'co-c', '', false)");
+  eq([co().reconciled, p.get('commits'), p.get('log().length'), p.get('toasts.length')], [true, 0, 0, 1], 'fixed on a standing statement');
+  p.run("state.statements = [{ id: 'st-1', date: '2027-07-31', reopenedAt: '2027-08-09T00:00:00.000Z' }]; change('led-rec', 'co-c', '', false)");
+  eq([co().reconciled, p.get('commits')], [false, 1], 'the statement reopened: it can come off');
+  // A row that is not there is no change.
+  p.run("commits = 0; change('led-rec', 'nope', '', true)");
+  eq(p.get('commits'), 0, 'an unknown row');
+  // Tick all and Clear all ticks take the carried rows too, in the one event, and leave a fixed one ticked.
+  p.run("state.statements = []; state.ledgerAside.forEach(function (e) { e.reconciled = false; delete e.statementId; }); state.book.statementDate = '2027-07-31'; log().length = 0; act('ledger-tick-all')");
+  eq(p.get('state.ledgerAside.map(function (e) { return e.reconciled; })'), [true, true], 'Tick all ticks both carried rows');
+  ok(p.get('log()[0].rows.concat([log()[0].row])').indexOf('co-d') !== -1, 'in the one event');
+  p.run("state.ledgerAside[0].statementId = 'st-1'; state.statements = [{ id: 'st-1', date: '2027-07-31' }]; act('ledger-untick-all')");
+  eq(p.get('state.ledgerAside.map(function (e) { return e.reconciled; })'), [true, false], 'Clear all ticks leaves the one on a standing statement');
+});
+
+test('C8-3: the Reconcile screen lists the carried rows under their own heading, says what they do to the ticked balance, and the Entries view names them', () => {
+  const x = sandbox(['esc', 'fmt', 'fmtDate', 'fmtDateShort', 'dollars', 'renderLedgerEntries', 'renderReconcile', ...C8_REC_FNS, 'carriedYearsText', 'reconcileCarriedLine', 'carriedBlockHtml',
+    'ledgerSort', 'runningBalances', 'ledgerLocked', 'ledgerDateReconciled', 'entryWantsLine', 'entryRefundsFamily', 'LEDGER_FILTERS', 'ledgerLockNote', 'ledgerFixButtonHtml', 'ledgerCorrectsLine', ...ASIDE_LIST_FNS]);
+  vm.runInContext(decl('RECONCILE_CARRIED_HELP'), x);
+  const nw = c8New();
+  vm.runInContext(`var ui = { ledgerOpen: {}, armed: null, ledgerFilter: {}, fixAsk: null, voidAsk: null };
+    var state = ${JSON.stringify({ book: Object.assign({}, nw.book, { statementCents: 103000 }), ledger: nw.ledger, ledgerAside: nw.aside, statements: [] })};
+    function ledgerDraft() { return { date: '', direction: 'out', description: '', amount: '', lineId: '', method: '', ref: '', scoutId: '', source: '' }; }
+    function ledgerBackdateWarning() { return ''; } function ledgerMoveWarning() { return ''; } function lineSelectOptions() { return ''; }
+    function methodSelectOptions() { return ''; } function scoutSelectOptions() { return ''; } function sourceSelectOptions() { return ''; }
+    function ledgerLineIsDirect() { return false; } function ledgerVoidFormHtml() { return ''; } function ledgerFixFormHtml() { return ''; }
+    function getScout() { return null; } function entryNeedsReceipt() { return false; } function ledgerTrailLine() { return ''; } function ledgerHistoryHtml() { return ''; }
+    function ledgerAsideListHtml() { return ''; } function getBudgetLine() { return null; }
+    function reconcileLockRefusal() { return ''; } function reconcileLockAhead() { return false; } var RECONCILE_AHEAD_WHY = '';
+    function canReopenStatement() { return false; }
+    function todayISO() { return '2027-09-15'; }`, x);
+  const text = (h) => h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  const rc = x.renderReconcile(), t = text(rc);
+  ok(t.includes('2 entries from 2026–27 are still waiting to show on the bank statement, and are already in the opening balance. The ticked balance allows for them until you tick them below.'), 'the sentence: ' + t);
+  ok(/<p class="eyebrow"[^>]*>Carried from 2026–27<\/p>/.test(rc), 'the heading');
+  const ids = [...rc.matchAll(/data-ch="led-rec" data-id="([^"]*)"/g)].map((m) => m[1]);
+  eq(ids, ['f', 'co-d', 'co-c'], 'the counted rows on the statement (g, Aug 15, waits), then the carried ones, newest first');
+  ok(/aria-label="Carried from 2026–27, ticked against the statement: Row c, money out \$150\.00"/.test(rc), 'the carried row’s accessible name');
+  eq([/Ticked balance/.test(rc), />\$1,030\.00<\/span><span class="l">Ticked balance/.test(rc), />\$0\.00<\/span><span class="l">Difference/.test(rc)], [true, true, true], 'the figures: $1,030.00 ticked balance, difference $0.00');
+  // Only carried rows to tick: the list is not "Nothing to reconcile yet".
+  vm.runInContext("state.ledger = [];", x);
+  ok(/data-id="co-c"/.test(x.renderReconcile()) && !/Nothing to reconcile yet/.test(x.renderReconcile()), 'only carried rows');
+  // Entries: its own block, after the list, read-only, and each row says whether the bank has shown it.
+  const blk = x.carriedBlockHtml(), bt = text(blk);
+  ok(bt.includes('Carried from 2026–27') && bt.includes('Row c') && bt.includes('not yet cleared') && !/<input/.test(blk), 'the Entries block: ' + bt);
+  vm.runInContext("state.ledgerAside.forEach(function (e) { if (e.id === 'co-c') e.reconciled = true; });", x);
+  ok(/cleared<\/span>/.test(x.carriedBlockHtml()), 'and cleared once ticked');
+  vm.runInContext("state.ledgerAside = [];", x);
+  eq(x.carriedBlockHtml(), '', 'nothing to show without carried rows');
+  // Fixed on a standing statement, a row leaves the Reconcile list.
+  vm.runInContext("state.ledgerAside = " + JSON.stringify(nw.aside.map((e) => (e.id === 'co-c' ? Object.assign({}, e, { reconciled: true, statementId: 'st-1' }) : e))) + "; state.statements = [{ id: 'st-1', date: '2027-07-31' }]; state.ledger = " + JSON.stringify(nw.ledger) + ";", x);
+  eq([...x.renderReconcile().matchAll(/data-ch="led-rec" data-id="([^"]*)"/g)].map((m) => m[1]), ['f', 'co-d'], 'cleared on a statement still standing: off the list');
+});
+
+test('C8-3: Mark reconciled and the restore read the carried rows; the printout shows the carried line and the rows cleared; closed books’ rows can be named by a later statement', () => {
+  const act = slice('handleAction');
+  ok(/var rlRec = reconcileTotals\(state\.ledger, state\.book, state\.ledgerAside\);/.test(act), 'the lock’s re-check');
+  ok(/'st-' \+ state\.book\.statementDate \+ '-' \+ uid\(\), state\.ledgerAside\);/.test(act), 'the statement written');
+  ok(/statementRetick\(state\.ledger\.concat\(carriedRowsOf\(state\.ledgerAside\)\)/.test(act), 'the restore');
+  ok(/reconcileTotals\(state\.ledger, bk, state\.ledgerAside\)/.test(slice('renderReconcile')), 'the screen’s figures');
+  const x = sandbox(['closedBookRows', 'arrOf']);
+  const out = J(x.closedBookRows([{ year: 2026, form: 'full', ledger: [{ id: 'a', date: '2027-06-28', amountCents: 5, direction: 'out' }, null] },
+    { year: 2025, form: 'compact', ledger: [{ i: 'b', d: '2026-01-01', c: -300, t: 'Fee', r: '12' }, { i: 'c', d: '2026-01-02', c: 200, t: 'Dues' }] }]));
+  eq(out.map((e) => [e.id, e.direction, e.amountCents]), [['a', 'out', 5], ['b', 'out', 300], ['c', 'in', 200]], 'rows of both forms');
+  ok(/statementSheetData\(st, state\.ledger\.concat\(state\.ledgerAside \|\| \[\], closedBookRows\(state\.closedBooks\)\)\)/.test(slice('renderBankStatementSheet')), 'the printout names entries in closed books');
+  ok(/'± Carried from last year, not yet on the statement/.test(slice('renderBankStatementSheet')), 'the carried line on the printout');
+  ok(/renderLedgerEntries\(\) \+ carriedBlockHtml\(\)/.test(slice('renderLedger')), 'the Entries view shows the carried block');
+  // The page still parses as a whole.
+  new vm.Script(SCRIPT);
 });
 
 /* ---------------- report ---------------- */
