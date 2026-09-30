@@ -18527,7 +18527,8 @@ const C2R_ACT = [
   c2Block(/    if \(act\.indexOf\('tier-reimburse:'\) === 0\) \{[\s\S]*?\n    \}/, 'tier-reimburse'),
   c2Block(/    if \(act\.indexOf\('del-scout:'\) === 0\) \{[\s\S]*?\n    \}/, 'del-scout')].join('\n');
 const C2R_MORE = `
-  ${['LEDGER_VOID_REASON_MAX', 'ledgerVoidRefusal', 'ledgerVoidRow', 'ledgerUnvoidRow', 'normalizeAsideRow', 'ledgerPairOf', 'ledgerReversalOf', 'ledgerCancelledWhy'].map(slice).join('\n')}
+  ${['LEDGER_VOID_REASON_MAX', 'ledgerVoidRefusal', 'ledgerVoidRow', 'ledgerUnvoidRow', 'normalizeAsideRow', 'ledgerPairOf', 'ledgerReversalOf', 'ledgerCancelledWhy',
+    'ledgerLiveReversals', 'ledgerReversedAgainWhy'].map(slice).join('\n')}
   var undo = null, undoWords = null, marks = [], editor = true;
   state.ledgerAside = [];
   ui.voidAsk = null; ui.voidWhy = '';
@@ -18888,8 +18889,10 @@ test('C3: nothing outside the book’s own plumbing reads the voided rows, so no
     'ledgerReverseSlot', 'ledgerUnvoidRow',
     'ledgerVoidRow', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderLedger', 'renderLedgerEntries', 'restoreGone', 'rolloverYear'], 'who reads the voided rows');
   // In handleAction: the void handlers, del-scout's log line, and (treasurer sign-off on C3) the voided CSV only.
+  // Security re-check of option B (A) — and the void's Undo, asking whether the row it would put back is still voided.
   const h = slice('handleAction').split('\n').filter((l) => /ledgerAside/.test(l) && !/^\s*\/\//.test(l));
-  eq(h.length, 3, 'handleAction reads the voided rows somewhere new: ' + h.join(' | '));
+  eq(h.length, 4, 'handleAction reads the voided rows somewhere new: ' + h.join(' | '));
+  ok(/var vdAgain = ledgerReversedAgainWhy\(state, \(state\.ledgerAside \|\| \[\]\)\.filter\(function \(e\) \{ return e && e\.id === vdId && e\.off === 'void'; \}\)\[0\]\);/.test(h.join('\n')), h.join('\n'));
   ok(/var uvRow = \(state\.ledgerAside \|\| \[\]\)\.find/.test(h.join('\n')) && /var dsRows = state\.ledger\.concat\(state\.ledgerAside \|\| \[\]\)/.test(h.join('\n')) &&
     /text: ledgerVoidedCsv\(state\.ledgerAside, state\.ledger\) \};/.test(h.join('\n')), h.join('\n'));
   // renderLedger only asks whether there is a voided row, for the CSV button.
@@ -21194,7 +21197,112 @@ test('Option B review (3): a mark left by a reversal since voided says nothing u
 });
 
 /* Security re-check of option B (2026-09-29) — findings A to D. */
+const RECHECK_AGAIN = (d) => `${d} has been reversed again since; void that reversal first.`;
 const RECHECK_MIRROR = 'A reversal mirrors its entry. To change it, reverse the reversal (the entry counts again), then reverse or correct the entry.';
+const RECHECK_TWO = (d) => `Two reversals of ${d} count. Void one of them.`;
+
+// Finding A — X reversed (rv-X), rv-X voided, X reversed again (rv2-X), then rv-X un-voided: X, rv-X and
+// rv2-X all counted, the money out twice, and X could not be voided. Un-void and the void's Undo now refuse.
+test('Security re-check A: a reversal is not un-voided, nor its void undone, while another reversal of its entry counts', () => {
+  const x = sandbox(['ledgerPairOf', 'ledgerLiveReversals', 'ledgerReversedAgainWhy']);
+  const R = (id, rev, d) => Object.assign({ id }, rev ? { reverses: rev } : {}, d ? { description: d } : {});
+  const why = (ledger, e) => x.ledgerReversedAgainWhy({ ledger }, e);
+  eq([why([R('X', '', 'Pizza'), R('rv2-X', 'X')], R('rv-X', 'X')), why([R('X', '', 'Pizza')], R('rv-X', 'X')), why([R('X', '', 'Pizza'), R('rv2-X', 'X')], R('Y')),
+    why([R('X', '', 'Pizza'), R('rv2-X', 'X'), R('rv-rv2-X', 'rv2-X')], R('rv-X', 'X')), why([R('rv2-X', 'X')], R('rv-X', 'X')),
+    why([R('X', '', 'Pizza'), R('rv-X', 'X')], R('rv-X', 'X'))],
+  [RECHECK_AGAIN('“Pizza”'), '', '', '', RECHECK_AGAIN('That entry'), ''], 'ledgerReversedAgainWhy');
+  // The page's handlers. u1 (open, Sep 10) reversed, its reversal voided, u1 reversed again.
+  const no = RECHECK_AGAIN('“Pinewood trophies”');
+  const p = c4Page();
+  p.run("reverse2('u1', 'Wrong'); void2('rv-u1', 'Reversed by mistake'); reverse2('u1', 'Returned by the bank')");
+  eq([p.get('ids()').slice(-1), p.get("aside('rv-u1').off")], [['rv2-u1'], 'void'], 'reversed again');
+  p.run("toasts = []; commits = 0; marks = []; act2('ledger-unvoid:rv-u1'); act2('ledger-unvoid:rv-u1')");
+  eq([p.get("!!aside('rv-u1')"), p.get("!!row('rv-u1')"), p.get('commits'), p.get('marks'), p.get('ui.armed'), p.get('toasts'), p.get("log().filter(function (e) { return e.op === 'unvoid'; }).length")],
+    [true, false, 0, [], null, [no, no], 0], 'un-void refused');
+  // Once that reversal is voided, the first can come back.
+  p.run("void2('rv2-u1', 'Two reversals'); toasts = []; act2('ledger-unvoid:rv-u1'); act2('ledger-unvoid:rv-u1')");
+  eq([p.get("!!row('rv-u1')"), p.get("ledgerUnpaired(state.ledger).some(function (e) { return /u1/.test(e.id); })")], [true, false], 'un-voided once the other is voided');
+  // The void's Undo: u1 reversed again in its few seconds.
+  const q = c4Page();
+  q.run("reverse2('u1', 'Wrong'); void2('rv-u1', 'Reversed by mistake'); var undoRv = undo; reverse2('u1', 'Returned by the bank'); marks = []; var said = undoRv()");
+  eq([q.get("said || ''"), q.get("(aside('rv-u1') || {}).off"), q.get('marks'), q.get("log().filter(function (e) { return e.op === 'unvoid'; }).length")], [no, 'void', [], 0], 'the Undo refused');
+  // Control: with nothing else reversing u1, the Undo puts the reversal back.
+  const c = c4Page();
+  c.run("reverse2('u1', 'Wrong'); void2('rv-u1', 'Reversed by mistake'); var said = undo()");
+  eq([c.get('said === undefined'), c.get("!!row('rv-u1')"), c.get('state.ledgerAside.length')], [true, true, 0], 'control: the Undo');
+});
+
+// Finding A (b) and finding D — "The ledger needs a look" on Money · Ledger: two counted reversals of one
+// entry, or a pair that no longer cancels. Said, never resolved automatically.
+test('Security re-check A and D: the ledger says when two reversals of an entry count, or a pair no longer cancels', () => {
+  const x = sandbox(['esc', 'fmt', 'ledgerPairOf', 'ledgerLiveReversals', 'ledgerLookNotes', 'ledgerLookCardHtml']);
+  const X = { id: 'X', description: 'Pizza', amountCents: 4000, direction: 'out' };
+  const rv = (id, o) => Object.assign({ id, reverses: 'X', description: 'Reversal of “Pizza”', amountCents: 4000, direction: 'in' }, o || {});
+  const notes = (rows) => JSON.parse(JSON.stringify(x.ledgerLookNotes(rows)));
+  eq(notes([X, rv('rv-X')]), [], 'a pair');
+  eq(notes([X, rv('rv-X'), rv('rv2-X')]), [RECHECK_TWO('“Pizza”')], 'two reversals');
+  eq(notes([X, rv('rv-X'), rv('rv2-X'), rv('rv3-X')]), ['3 reversals of “Pizza” count. Void all but one of them.'], 'three');
+  eq(notes([X, rv('rv-X'), rv('rv2-X'), rv('rv-rv2-X', { reverses: 'rv2-X', direction: 'out' })]), [], 'the second reversed in turn');
+  eq(notes([rv('rv-X'), rv('rv2-X')]), [RECHECK_TWO('an entry')], 'the entry not counted');
+  eq(notes([X, rv('rv-X', { amountCents: 5000 })]),
+    ['“Pizza” and its reversal no longer cancel (−$40.00 and +$50.00). Void the reversal, then reverse the entry again.'], 'amounts differ');
+  eq(notes([X, rv('rv-X', { direction: 'out' })]),
+    ['“Pizza” and its reversal no longer cancel (−$40.00 and −$40.00). Void the reversal, then reverse the entry again.'], 'the same direction');
+  eq(notes([Object.assign({}, X, { description: '' }), rv('rv-X', { amountCents: 3900 })]),
+    ['An entry and its reversal no longer cancel (−$40.00 and +$39.00). Void the reversal, then reverse the entry again.'], 'no description');
+  eq(notes([X, rv('rv-X'), rv('rv-rv-X', { reverses: 'rv-X', direction: 'out', amountCents: 100 })]),
+    ['“Reversal of “Pizza”” and its reversal no longer cancel (+$40.00 and −$1.00). Void the reversal, then reverse the entry again.'], 'a chain');
+  // The card: every word escaped, no Got it (it goes when the book is put right), and in renderLedger.
+  eq(x.ledgerLookCardHtml([X, rv('rv-X')]), '', 'nothing to say');
+  const bad = Object.assign({}, X, { description: '<img src=x onerror=alert(1)>' });
+  const card = x.ledgerLookCardHtml([bad, rv('rv-X'), rv('rv2-X')]);
+  eq(card, '<div class="card" role="status"><h2 class="section display">The ledger needs a look</h2>' +
+    '<p style="margin:0 0 10px">Two reversals of “&lt;img src=x onerror=alert(1)&gt;” count. Void one of them.</p></div>', 'the card');
+  ok(/\n    h \+= ledgerLookCardHtml\(state\.ledger\);[^\n]*\n    h \+= '<div class="card"><h2 class="section display">Ledger<\/h2>'/.test(slice('renderLedger')), 'renderLedger does not show it');
+  ok(!/ledgerLook/.test(codeOnly(BPV())) && !/ledgerLook/.test(codeOnly(slice('renderParentApp'))), 'it reaches the parents');
+});
+
+test('Security re-check A, Firestore: a reversal put back on a device that never heard of the second reversal is flagged, not silently counted twice', () => {
+  const look = sandbox(['fmt', 'ledgerPairOf', 'ledgerLiveReversals', 'ledgerLookNotes']);
+  const notes = (st) => JSON.parse(JSON.stringify(look.ledgerLookNotes(st.ledger)));
+  for (const aFirst of [true, false]) {
+    const { a, b, server } = c4FsPair();
+    a.run("reverseRow('l2', 'Never cashed')"); a.push(); b.hear();
+    a.run("voidRow('rv-l2', 'Reversed the wrong entry')"); a.push(); b.hear();
+    a.run("reverseRow('l2', 'Returned by the bank')");   // B never hears of rv2-l2 before it un-voids
+    b.run("unvoidRow('rv-l2')");
+    if (aFirst) { a.push(); b.hear(); b.push(); a.hear(); } else { b.push(); a.hear(); a.push(); b.hear(); }
+    for (const [who, st] of [['the pack record', server()], ['A', a.get('state')], ['B', b.get('state')]]) {
+      eq([c4Where(st), c3Counted(st), notes(st)], [[['l1', 'l2', 'l3', 'rv-l2', 'rv2-l2'], []], C4_L2_MONEY + 4000, [RECHECK_TWO('“Pizza”')]], `${aFirst ? 'A' : 'B'} first: ${who}`);
+    }
+  }
+});
+
+test('Security re-check A, Firestore: a reversal reused and ticked on one device, kept over the other’s void, is flagged beside that device’s next reversal', () => {
+  const look = sandbox(['fmt', 'ledgerPairOf', 'ledgerLiveReversals', 'ledgerLookNotes']);
+  const notes = (st) => JSON.parse(JSON.stringify(look.ledgerLookNotes(st.ledger)));
+  const { a, b, server } = c4FsPair();
+  a.run("reverseRow('l2', 'Never cashed')"); a.push(); b.hear();
+  a.run("voidRow('rv-l2', 'Reversed the wrong entry')"); a.push(); b.hear();
+  // B reverses l2 again, voids that, and reverses it a third time; A, not having heard, reverses it again
+  // under the same id as B's second, and ticks it on the October statement.
+  b.run("reverseRow('l2', 'B: returned'); voidRow('rv2-l2', 'B: wrong one'); reverseRow('l2', 'B: returned again')"); b.push();
+  a.run("reverseRow('l2', 'A: returned'); var t = state.ledger.find(function (e) { return e.id === 'rv2-l2'; }); t.reconciled = true; t.reconciledAt = Date.now() + 60000; commit()");
+  a.push(); b.hear();
+  for (const [who, st] of [['the pack record', server()], ['A', a.get('state')], ['B', b.get('state')]]) {
+    eq([c4Where(st), c3Counted(st), notes(st)], [[['l1', 'l2', 'l3', 'rv2-l2', 'rv3-l2'], ['rv-l2:void']], C4_L2_MONEY + 4000, [RECHECK_TWO('“Pizza”')]], who);
+  }
+});
+
+test('Security re-check D, Firestore: a pair whose figures a page from before option B changed in place is flagged', () => {
+  const look = sandbox(['fmt', 'ledgerPairOf', 'ledgerLiveReversals', 'ledgerLookNotes']);
+  const { a, b } = c4FsPair();
+  a.run("reverseRow('l2', 'Never cashed')"); a.push(); b.hear();
+  // What an older page's edit in place does (this page refuses it: Option B review 1).
+  b.run("state.ledger.find(function (e) { return e.id === 'rv-l2'; }).amountCents = 4500; commit()"); b.push(); a.hear();
+  eq(JSON.parse(JSON.stringify(look.ledgerLookNotes(a.get('state').ledger))),
+    ['“Pizza” and its reversal no longer cancel (−$40.00 and +$45.00). Void the reversal, then reverse the entry again.'], 'A');
+});
 
 // Finding B — Correct on a reversal gave it other figures: rv-X corrected to $215 paired with its own
 // reversal, X counted again for the family, and the book netted −$15. A reversal is reversed, never corrected.

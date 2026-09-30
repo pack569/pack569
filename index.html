@@ -7939,6 +7939,61 @@
     if (!ledgerReversalOf(st.ledger || [], e)) return '';
     return 'That entry has been reversed, so it can’t be voided: its reversal already cancels it. If the reversal was a mistake, void or reverse the reversal instead.';
   }
+  // Security re-check of option B (finding A) — the reversals of each entry that count and cancel:
+  // each counted row of `rows` that reverses it and is not itself cancelled by a reversal of its own
+  // (the pairing's, chain and all: ledgerPairOf, `pairOf` when it is already worked out). One is a
+  // reversed entry; two take its money out twice, and the pairing can cancel only one of them.
+  // Returns { entry id: [reversal, …] }. Pure.
+  function ledgerLiveReversals(rows, pairOf) {
+    pairOf = pairOf || ledgerPairOf(rows);
+    var byId = Object.create(null), out = Object.create(null);
+    rows.forEach(function (e) { if (e && typeof e.id === 'string' && !byId[e.id]) byId[e.id] = e; });
+    rows.forEach(function (e) {
+      if (!e || byId[e.id] !== e || typeof e.reverses !== 'string' || !e.reverses) return;
+      var p = pairOf[e.id] ? byId[pairOf[e.id]] : null;
+      if (p && p.reverses === e.id) return;   // reversed in turn: it cancels nothing
+      (out[e.reverses] = out[e.reverses] || []).push(e);
+    });
+    return out;
+  }
+  // Security re-check of option B (finding A) — why the voided row `e` of the pack record `st` can't
+  // be un-voided (or its void undone), or ''. X reversed (rv-X), rv-X voided, X reversed again
+  // (rv2-X), then rv-X un-voided: X, rv-X and rv2-X all counted, the money out twice, and the family
+  // and tier readers disagreeing with the balance. So a reversal comes back only while no other
+  // counted reversal cancels the same entry. Pure.
+  function ledgerReversedAgainWhy(st, e) {
+    if (!e || typeof e.reverses !== 'string' || !e.reverses) return '';
+    var rows = st.ledger || [];
+    var others = (ledgerLiveReversals(rows)[e.reverses] || []).filter(function (x) { return x.id !== e.id; });
+    if (!others.length) return '';
+    var o = rows.filter(function (x) { return x && x.id === e.reverses; })[0];
+    return (o && o.description ? '“' + o.description + '”' : 'That entry') + ' has been reversed again since; void that reversal first.';
+  }
+  // Security re-check of option B (findings A and D) — what on Money · Ledger says the book needs a
+  // look, from the counted `rows` as they stand: an entry two counted reversals cancel (two devices,
+  // each unaware of the other's, a reversal un-voided and another kept ticked over its void), and a
+  // pair that no longer cancels (its amounts differ, or both go the same way: a page from before
+  // option B edits a pair's figures in place, a hand-edited or restored record). Only said, never
+  // put right here: which reversal is the mistake is the treasurer's call. Plain text. Pure.
+  function ledgerLookNotes(rows) {
+    var pairOf = ledgerPairOf(rows), live = ledgerLiveReversals(rows, pairOf), byId = Object.create(null), out = [];
+    rows.forEach(function (e) { if (e && typeof e.id === 'string' && !byId[e.id]) byId[e.id] = e; });
+    function named(e) { return e && e.description ? '“' + e.description + '”' : ''; }
+    function signed(e) { return (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents); }
+    Object.keys(live).forEach(function (id) {
+      var n = live[id].length;
+      if (n < 2) return;
+      out.push((n === 2 ? 'Two' : String(n)) + ' reversals of ' + (named(byId[id]) || 'an entry') + ' count. ' +
+        (n === 2 ? 'Void one of them.' : 'Void all but one of them.'));
+    });
+    rows.forEach(function (r) {
+      var e = r && byId[r.id] === r && r.reverses && pairOf[r.id] === r.reverses ? byId[r.reverses] : null;
+      if (!e || (r.amountCents === e.amountCents && r.direction !== e.direction)) return;
+      out.push((named(e) || 'An entry') + ' and its reversal no longer cancel (' + signed(e) + ' and ' + signed(r) + '). ' +
+        'Void the reversal, then reverse the entry again.');
+    });
+    return out;
+  }
   // M3 (treasurer review of C1) — a reversed row and its reversal are only ever set aside
   // TOGETHER. A 'reversed' row whose reversal is missing, or a 'reversal' whose original is not
   // set aside as 'reversed', goes back to st.ledger, counted, and so does the original that
@@ -19660,6 +19715,15 @@
     }
     return h + '</div>';
   }
+  // Security re-check of option B (findings A and D) — "The ledger needs a look" (ledgerLookNotes),
+  // on Money · Ledger beside what a sync changed. Worked out from the counted rows each time, so it
+  // stays until the book is put right (no Got it), and goes then. Every word escaped.
+  function ledgerLookCardHtml(rows) {
+    var notes = ledgerLookNotes(rows || []);
+    if (!notes.length) return '';
+    return '<div class="card" role="status"><h2 class="section display">The ledger needs a look</h2>' +
+      notes.map(function (t) { return '<p style="margin:0 0 10px">' + esc(t) + '</p>'; }).join('') + '</div>';
+  }
   function renderLedger() {
     var bk = state.book;
     var tot = ledgerTotals(state.ledger, bk);
@@ -19672,6 +19736,7 @@
         (sync.splitNote ? '<p style="margin:0 0 10px">' + esc(sync.splitNote) + '</p>' : '') +
         '<button type="button" class="btn small" data-act="ledger-fates-dismiss">Got it</button></div>'
       : '';
+    h += ledgerLookCardHtml(state.ledger);   // security re-check of option B (A, D)
     h += '<div class="card"><h2 class="section display">Ledger</h2>' +
       '<p class="small muted" style="margin:0 0 10px">Every dollar that actually moved. Unlike the budget — which is a plan — this is a record, ' +
       'so the balance below can be held next to a bank statement and checked.</p>' +
@@ -29265,6 +29330,10 @@
       // Treasurer sign-off on C3 — the toasts in the treasurer's words.
       var vdLabel = vd.row.description ? '“' + vd.row.description + '”' : 'an entry';
       deleteWithUndo(vdLabel, function () {
+        // Security re-check of option B (finding A) — a reversal voided, its entry reversed again in
+        // the Undo's few seconds (here, or by a sync): back, it would be a second reversal counting.
+        var vdAgain = ledgerReversedAgainWhy(state, (state.ledgerAside || []).filter(function (e) { return e && e.id === vdId && e.off === 'void'; })[0]);
+        if (vdAgain) return vdAgain;
         var vdBack = ledgerUnvoidRow(state, vdId, vd.ix);
         // A sync in the Undo's few seconds can have settled it elsewhere (ledgerAsideSettle).
         if (!vdBack) {
@@ -29294,7 +29363,9 @@
       if (!uvRow) return;
       // Security review of C3 (minor) — said here, as Void it says it, not left to commit().
       if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
-      var uvNo = ledgerLockedWhy(uvRow, state.book, '', 'unvoid');
+      // Security re-check of option B (finding A) — nor a reversal whose entry has been reversed
+      // again since (ledgerReversedAgainWhy): both would count. Asked on each tap, as the lock is.
+      var uvNo = ledgerLockedWhy(uvRow, state.book, '', 'unvoid') || ledgerReversedAgainWhy(state, uvRow);
       if (uvNo) { if (ui.armed === act) ui.armed = null; showToast(uvNo); render(); return; }
       // Treasurer sign-off on C3 — the first tap also opens an optional "why" box (ui.unvoidWhy,
       // cleared here so an earlier row's words never carry over), armed long enough to type a line
