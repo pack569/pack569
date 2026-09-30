@@ -20171,16 +20171,19 @@ test('C3 review (minor): a viewer’s Un-void is refused on the tap, before anyt
   eq([p.get("!!row('u1')"), p.get('commits')], [true, 1], 'an editor');
 });
 
-test('C3 review (minor): a voided row kept from a copy that lost it is unlinked from a scout that copy deleted or lacks', () => {
-  const k = sandbox(['keepLostVoids']);
-  const cur = { book: { year: 2026 }, ledgerAside: [
+test('C3 review (minor), reversed by C7: a voided row kept from a copy that lost it keeps its scout, archived, never unlinked', () => {
+  const k = sandbox(['arrOf', 'keepLostVoids']);
+  const cur = { book: { year: 2026 }, scouts: [{ id: 's1', name: 'Ada' }, { id: 's2', name: 'Bo' }], ledgerAside: [
     { id: 'v1', off: 'void', scoutId: 's1' }, { id: 'v2', off: 'void', scoutId: 's9' }, { id: 'v3', off: 'void', scoutId: 's2' }, { id: 'v4', off: 'void', scoutId: '' }] };
-  const ns = { ledger: [], ledgerAside: [], book: { year: 2026 }, scouts: [{ id: 's1' }, { id: 's2' }],
+  const ns = { ledger: [], ledgerAside: [], book: { year: 2026 }, scouts: [{ id: 's2', name: 'Bo' }],
     gone: { ledger: { v1: 5, v2: 5, v3: 5, v4: 5 }, scouts: { s1: 7, s2: -7 } } };
   k.keepLostVoids(cur, ns);
-  eq(JSON.parse(JSON.stringify(ns.ledgerAside.map((e) => [e.id, e.scoutId]))), [['v1', ''], ['v2', ''], ['v3', 's2'], ['v4', '']],
-    'deleted there (s1), not there (s9), there and put back (s2)');
+  const out = JSON.parse(JSON.stringify(ns));
+  eq(out.ledgerAside.map((e) => [e.id, e.scoutId]), [['v1', 's1'], ['v2', 's9'], ['v3', 's2'], ['v4', '']], 'no row is unlinked');
+  eq(out.scouts.map((s) => [s.id, !!s.archived]), [['s2', false], ['s1', true]], 'Ada comes across, archived; Bo was there already');
+  ok(out.gone.scouts.s1 < 0 && out.gone.scouts.s2 === -7, 'Ada’s delete mark is a put-back');
   eq(cur.ledgerAside.map((e) => e.scoutId), ['s1', 's9', 's2', ''], 'this device’s copy was changed');
+  eq(cur.scouts.map((s) => !!s.archived), [false, false], 'this device’s scouts were archived');
   // Two devices: B voids Ada's payment (l3) and saves; A, a page from before C3 that also deleted
   // Ada, saves over it with l3 in neither list. B keeps l3 voided, pointing at nobody.
   const merge = preC6Merge(slice('mergeRemoteAppendOnly'));
@@ -20192,7 +20195,8 @@ test('C3 review (minor): a voided row kept from a copy that lost it is unlinked 
   a.hear(); a.push();
   eq(c3Where(server()), [['l1', 'l2'], []], 'what the old page saved');
   b.hear();
-  eq([c3Where(b.get('state')), b.get("state.ledgerAside.map(function (e) { return e.scoutId; })")], [[['l1', 'l2'], ['l3']], ['']], 'B kept it, still Ada’s');
+  eq([c3Where(b.get('state')), b.get("state.ledgerAside.map(function (e) { return e.scoutId; })")], [[['l1', 'l2'], ['l3']], ['s1']], 'B kept it, still Ada’s');
+  eq(b.get("state.scouts.map(function (s) { return [s.id, !!s.archived]; })"), [['s2', false], ['s1', true]], 'and Ada, archived (decision 24)');
 });
 
 test('C3 review (minor): restoring a backup from before a row was voided leaves it voided, not counted, on every device', () => {

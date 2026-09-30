@@ -15245,8 +15245,8 @@
   // copy taken (`ns`, normalized) has in neither list, and still marks deleted, is kept, voided,
   // in `ns` (same year's book only): the next save from here puts it back in the pack's copy. A
   // row put back, or not marked at all (a close-out clears the marks), is not. In place on `ns`.
-  // Security review of C3 (minors) — a row kept is unlinked from a scout the copy taken has deleted,
-  // or does not have, as del-scout and the merge unlink one: a payment stays, pointing at nobody.
+  // Security review of C3 (minors), reversed by C7 (owner decision 24) — a row kept is no longer
+  // unlinked from a scout the copy taken has deleted or lacks: the scout is kept, archived (below).
   // And a restore of a backup from before the row was voided does not stop it being kept: the
   // restore leaves its mark (restoreGone puts back only what the backup holds), and a device with
   // an unsaved change would bring the row back voided in its merge anyway (settleVoided). Kept
@@ -15273,7 +15273,25 @@
       if (!(x && typeof x.id === 'string' && !have[x.id] &&
         ((x.off === 'void' && marks && marks[x.id] > 0) || pairKept[x.id] === true))) return;
       var y = JSON.parse(JSON.stringify(x));
-      if (y.scoutId && (scoutsGone[y.scoutId] > 0 || scouts[y.scoutId] !== true)) y.scoutId = '';
+      // Security review of C7 (F1; owner decision 24) — never unlinked: a scout a row names is kept. The
+      // copy taken lacks the scout or marks them deleted, so this device's record of them comes across,
+      // archived, and a delete mark against them becomes a put-back (ledgerScoutsHeld's). If this device
+      // has no record of them either, the row keeps the id and the next merge with a copy that holds
+      // them (ledgerScoutsHeld, takeBack) brings them back.
+      if (y.scoutId && (scoutsGone[y.scoutId] > 0 || scouts[y.scoutId] !== true)) {
+        var own = arrOf(cur.scouts).filter(function (s) { return s && s.id === y.scoutId; })[0];
+        if (own && scouts[y.scoutId] !== true) {
+          own = JSON.parse(JSON.stringify(own));
+          own.archived = true;
+          if (!Array.isArray(ns.scouts)) ns.scouts = [];
+          ns.scouts.push(own);
+          scouts[y.scoutId] = true;
+        }
+        if (scoutsGone[y.scoutId] > 0) {
+          var nowMs = Date.now();
+          scoutsGone[y.scoutId] = -Math.max(nowMs, Math.min(scoutsGone[y.scoutId], nowMs) + 1);
+        }
+      }
       ns.ledgerAside.push(y);
       have[y.id] = true;
     });
