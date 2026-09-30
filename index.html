@@ -15578,6 +15578,11 @@
     var names = books.map(function (b) { return closedYearText(b.year); }).join(' and ');
     return 'This device’s copy was kept over a cloud copy that had closed out ' + names + ', so that close-out is undone and its closed book is gone from the pack record.';
   }
+  // The same, for taking the cloud copy over a closed book only this device had (M4). Pure.
+  function closedBooksDroppedWhy(books) {
+    var names = books.map(function (b) { return closedYearText(b.year); }).join(' and ');
+    return 'The cloud copy was used on this device, which held a closed ' + names + ' book that the cloud copy did not have, so that closed book is gone from this device.';
+  }
   // The closed books of `theirs` (a copy's, as stored) that `mine` does not hold: another close-out of the same
   // year (a different archiveId) or a year this copy has not closed. A copy of this page holds one per year,
   // so the books in `mine` that `theirs` lacks are the other way round. Pure.
@@ -15682,6 +15687,10 @@
       // them, as every edit does (commit), and what is sent agrees with itself: merged again, and
       // re-synced again, nothing changes (the two-device tests hold it to that fixed point).
       if (mergedN > 0) syncCharges();
+      // Security review of C8-1..4 (H1) — a device that may not remove a closed book (anyone but an admin, where there
+      // are accounts) never writes one away: a write that is not a merge (the one copy this device was asked to
+      // keep, or a rev it had seen) takes the record's closed books in first.
+      if (!clobbered && remoteParsed && accountsInForce() && !canReopenStatement()) state.closedBooks = mergeClosedBooks(state.closedBooks, remoteParsed.closedBooks);
       var nextRev = be.serverRevs ? remoteRev + 1 : Math.max(state.rev || 0, remoteRev) + 1;
       state.fmt = PACK_FORMAT;   // the reload gate: the format this page writes
       var record = {
@@ -15871,6 +15880,9 @@
     // Treasurer sign-off on option B (extra) — or, from syncPush, what it said before that save's merge.
     var lookWas = opts && typeof opts.lookWas === 'number' ? opts.lookWas : state ? ledgerLookCount() : 0;
     keepLostVoids(state, ns);   // Phase 3, C3
+    // Security review of C8-1..4 (M4) — a closed book only this device has goes with the copy this device takes
+    // (the chooser's two taps, and its warning, syncClosedBooksHereHtml): said in the log, below.
+    var droppedBooks = state ? closedBooksLost(ns.closedBooks, state.closedBooks) : [];
     state = ns;
     state.rev = typeof d.rev === 'number' ? d.rev : 0;
     // This device now holds the server's copy: nothing is left to send or to merge at a save (a
@@ -15884,6 +15896,7 @@
     clearTimeout(sync.pushTimer);
     sync.pushTimer = null;
     if (sync.conflict) { sync.conflict = null; scheduleParentViewRefresh(); }
+    if (droppedBooks.length) logLedger('unclose', 'book', { why: closedBooksDroppedWhy(droppedBooks) });
     save();
     render();
     if (opts && opts.toast) showToast('Updated from another device');
@@ -16276,6 +16289,16 @@
       'Keeping this device’s copy undoes that close-out for everyone: the year’s closed book (its entries, statements and change history) is removed from the pack record, ' +
       'and the year is open again. Only an admin can do it. Download the cloud copy first, and keep the snapshot the close-out downloaded.</p></div>';
   }
+  // Security review of C8-1..4 (M4) — the other way round: this device holds a closed book the cloud copy does not, and
+  // using the cloud copy removes it from this device. '' when there is none. Two taps are asked for anyway. Pure.
+  function syncClosedBooksHereHtml(cloud, mine) {
+    var only = closedBooksLost(cloud && cloud.closedBooks, mine && mine.closedBooks);
+    if (!only.length) return '';
+    var names = only.map(function (b) { return closedYearText(b.year); }).join(' and ');
+    return '<div class="warn" style="margin:0 0 10px"><p class="small" style="margin:0"><strong>This device has the ' + esc(names) + ' close-out, and the cloud copy does not.</strong> ' +
+      'Using the cloud copy removes this device’s closed book (its entries, statements and change history), and the year is open again here. ' +
+      'Download this device’s copy first.</p></div>';
+  }
   // What only this device has, so nobody picks a copy without knowing what the other loses.
   function syncOnlyHereHtml(only) {
     var parts = [], n = function (k, one, many) { var c = only[k].length; if (c) parts.push(c + ' ' + (c === 1 ? one : many)); };
@@ -16311,14 +16334,18 @@
   // `d` replace a year another device closed out: `d` is from the other side of a close-out, or closed
   // the same year out separately (seasonMoved, seasonClosedTwice), and holds a season archive this device
   // hasn't? Its signed statements and change history would be gone for everyone. An admin's, then.
+  // Security review of C8-1..4 (H1) — and on a closed book alone: a cloud copy holding a closed book this device lacks is
+  // lost by keeping this device's copy, whether or not the two are a close-out apart (an editor with the same
+  // program year could otherwise remove a year's book, the chooser's "only an admin can" untrue).
   function keepLocalNeedsAdmin(d) {
-    if (!d || !(seasonMoved(d) || seasonClosedTwice(d))) return false;
+    if (!d) return false;
     var p = null;
     try { p = JSON.parse(typeof d.json === 'string' ? d.json : ''); } catch (e) { return false; }
+    if (closedBooksLost(state.closedBooks, p && p.closedBooks).length > 0) return true;   // Phase 3, C8 (C8-4) — a closed year's book
+    if (!(seasonMoved(d) || seasonClosedTwice(d))) return false;
     var here = Object.create(null);
     arrOf(state.archives).forEach(function (a) { if (a && typeof a.id === 'string') here[a.id] = true; });
-    return arrOf(p && p.archives).some(function (a) { return a && a.kind === 'season' && typeof a.id === 'string' && a.id && !here[a.id]; }) ||
-      closedBooksLost(state.closedBooks, p && p.closedBooks).length > 0;   // Phase 3, C8 (C8-4) — and a closed year's book
+    return arrOf(p && p.archives).some(function (a) { return a && a.kind === 'season' && typeof a.id === 'string' && a.id && !here[a.id]; });
   }
   // "Keep this device's copy" on the sync-conflict overlay (armed, two taps, in the click handler).
   function keepLocalCopy() {
@@ -16343,7 +16370,8 @@
     // said in the log, the last thing before the copy goes out.
     var keptLost = [];
     try { keptLost = closedBooksLost(state.closedBooks, (JSON.parse(typeof kept.remote.json === 'string' ? kept.remote.json : '') || {}).closedBooks); } catch (e) { keptLost = []; }
-    if (keptLost.length && (seasonMoved(kept.remote) || seasonClosedTwice(kept.remote))) { logLedger('unclose', 'book', { why: closedBooksKeptOverWhy(keptLost) }); save(); }
+    // Security review of C8-1..4 (H1) — whenever a book is lost, whatever the program years say.
+    if (keptLost.length) { logLedger('unclose', 'book', { why: closedBooksKeptOverWhy(keptLost) }); save(); }
     render();
     scheduleSyncPush(); // rev bumps past the cloud copy's in the push transaction
   }
@@ -16774,6 +16802,7 @@
   }
 
   function render() {
+    scoutHasLedger.memo = null;   // the scouts the closed books name, worked out again (scoutHasLedger)
     var y = window.scrollY;
     var active = document.activeElement;
     var sig = focusSignature(active);
@@ -27887,6 +27916,7 @@
         syncYearsHtml(rc.budget && typeof rc.budget.programYear === 'number' ? rc.budget.programYear : null, state.budget.programYear, sync.dirty) +
         syncClosedTwiceHtml(rc, state) +   // Phase 3, C6
         syncClosedBooksHtml(rc, state) +   // Phase 3, C8 (C8-4)
+        syncClosedBooksHereHtml(rc, state) +   // security review of C8-1..4 (M4)
         '<p class="small muted">' + syncCopyLine('Cloud copy', rc) + '<br>' + syncCopyLine('This device', state) + '</p>' +
         syncOnlyHereHtml(rowsOnlyIn(state, rc)) +
         '<div class="row"><button type="button" class="btn" data-act="sync-download-local">Download this device’s copy first</button>' +
@@ -31509,7 +31539,11 @@
   function scoutHasLedger(id) {
     if (typeof id !== 'string' || !id) return false;
     // Phase 3, C8 — and a year closed out is still the ledger: its rows name the scout too.
-    if (closedBookScouts(state.closedBooks, {})[id] === true) return true;
+    // Security review of C8-1..4 (M2) — built once a render (render() clears it), not once a scout: up to 20 books of
+    // up to 5000 rows each, and this is asked of every scout on the roster.
+    var memo = scoutHasLedger.memo;
+    if (!memo || memo.books !== state.closedBooks) memo = scoutHasLedger.memo = { books: state.closedBooks, named: closedBookScouts(state.closedBooks, {}) };
+    if (memo.named[id] === true) return true;
     return arrOf(state.ledger).concat(arrOf(state.ledgerAside)).some(function (e) { return !!e && e.scoutId === id; });
   }
   // Remove a scout and everything that is theirs alone (del-scout; and the sync merge, for a

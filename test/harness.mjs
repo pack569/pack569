@@ -1029,7 +1029,7 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
 // Phase 3, C8 (C8-4) — what the merge and the copy chooser read of closed books.
 const C8_SYNC_FNS = ['closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mergeClosedBooks', 'closedBookScouts', 'closedYearText', 'closedBooksKeptOverWhy',
-  'closedBooksUndone', 'closedBooksUndoneWhy'];
+  'closedBooksUndone', 'closedBooksUndoneWhy', 'closedBooksDroppedWhy'];
 // Phase 3, C6 — the per-row ledger merge and what it reads.
 const C6_MERGE_FNS = ['LEDGER_TICK_FIELDS', 'LEDGER_OFF_FIELDS', 'LEDGER_ENTERED_FIELDS', 'ledgerFieldPart', 'LEDGER_OPS', 'ledgerEventParts', 'ledgerMarksGone', 'ledgerMergeOpts', 'ledgerEmpty', 'ledgerPartKey', 'LEDGER_MONEY_FIELDS', 'ledgerLockedMeanwhile',
   'applyLedgerRowSet', 'mergeLedgerRows', 'applyLedgerMerge', 'LEDGER_EDIT_FIELDS', 'LEDGER_RESOLVE_FIELDS', 'LEDGER_RESOLVE_WHY', 'LEDGER_RESOLVE_WHY_SAME', 'ledgerResolveMore', 'ledgerLogRoom', 'utf8Bytes', 'arrOf', 'ledgerTickedAt', 'mergeStatements', 'statementPairMerge',
@@ -16929,7 +16929,7 @@ test('stopgap, Firestore: two devices that both re-import before either saves co
 
 // Treasurer M3 / popcorn 3: the copy chooser, drawn by the page's own renderOverlay.
 const CHOOSER_FNS = ['esc', 'fmt', 'fmtDateShort', 'fmtArchiveDate', 'arrOf', 'teBatchOf', 'dangerBtn', 'packSalesCents', 'teLastImportMs',
-  'rowsOnlyIn', 'syncCopyLine', 'syncYearsHtml', 'syncOnlyHereHtml', 'jsonBackup', 'renderOverlay', 'rowChoice', 'syncClosedTwiceHtml', 'syncClosedBooksHtml', 'seasonCloseoutOf', ...C8_SYNC_FNS,
+  'rowsOnlyIn', 'syncCopyLine', 'syncYearsHtml', 'syncOnlyHereHtml', 'jsonBackup', 'renderOverlay', 'rowChoice', 'syncClosedTwiceHtml', 'syncClosedBooksHtml', 'syncClosedBooksHereHtml', 'seasonCloseoutOf', ...C8_SYNC_FNS,
   // Owner decision 22 — across a close-out: the cloud copy's download, and keep-local an admin's.
   'seasonMoved', 'seasonClosedTwice', 'keepLocalNeedsAdmin', 'KEEP_LOCAL_REFUSED', 'CLOUD_COPY_NAME', 'canReopenStatement', 'isAdmin'];
 function chooserHtml(mine, cloud, over) {
@@ -26798,6 +26798,69 @@ test('C8 security M2: a compact row keeps the scout’s id, so a scout only a co
   const x = sandbox(['arrOf', 'closedBookScouts']);
   eq(J(x.closedBookScouts([cp], {})), { s2: true }, 'read back');
   eq(J(x.closedBookScouts([full], {})), { s2: true }, 'a full book, as before');
+});
+
+/* ================================================================
+   Security review of C8-1..4 — H1 (keeping this device's copy over a closed book is an admin's, on its own, and logged), M4 (using the
+   cloud copy over a closed book only this device has is warned of and logged), M2 (the scouts the closed books name, once a render).
+   ================================================================ */
+test('C8 security H1: keeping this device’s copy over a cloud copy with a closed book it lacks is an admin’s even in the same program year, and is logged', () => {
+  const book = C8_BOOK_OF(2025, 'arc-x');
+  const x = sandbox(['keepLocalNeedsAdmin', 'seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf']);
+  const rec = (books) => ({ rev: 9, json: JSON.stringify({ budget: { programYear: 2026 }, archives: [], closedBooks: books }) });
+  x.state = { budget: { programYear: 2026 }, archives: [], closedBooks: [] };
+  eq([x.keepLocalNeedsAdmin(rec([book])), x.keepLocalNeedsAdmin(rec([])), x.keepLocalNeedsAdmin({ rev: 9, json: 'nope' })], [true, false, false], 'a closed book only the cloud has, in the same program year; none; unreadable');
+  const keep = (admin) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`
+      var logged = [], toasts = [], pushed = 0;
+      function canEdit() { return true; } function canReopenStatement() { return ${admin}; } function render() {} function save() {}
+      function showToast(m) { toasts.push(m); } function scheduleSyncPush() { pushed += 1; } function logLedger(op, row, o) { logged.push([op, row, o && o.why]); }
+      var ui = { overlay: { kind: 'sync-conflict', remote: ${JSON.stringify(rec([book]))} } }, state = { rev: 2, budget: { programYear: 2026 }, archives: [], closedBooks: [] };
+      var sync = { backend: { serverRevs: false } };
+      ${['seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf', 'keepLocalCopy', 'keepLocalNeedsAdmin', 'KEEP_LOCAL_REFUSED'].map(decl).join('\n')}
+      keepLocalCopy();`, ctx);
+    return J(vm.runInContext('[logged, toasts.length, pushed, !!ui.overlay]', ctx));
+  };
+  eq(keep(false), [[], 1, 0, true], 'an editor: refused, nothing logged, the choice still open');
+  eq(keep(true), [[['unclose', 'book', 'This device’s copy was kept over a cloud copy that had closed out 2025–26, so that close-out is undone and its closed book is gone from the pack record.']], 0, 1, false],
+    'an admin: logged, though the program years match');
+  ok(/if \(!clobbered && remoteParsed && accountsInForce\(\) && !canReopenStatement\(\)\) state\.closedBooks = mergeClosedBooks\(state\.closedBooks, remoteParsed\.closedBooks\);/.test(SCRIPT),
+    'a device that may not remove a closed book takes the record’s in before a write that is not a merge');
+});
+
+test('C8 security M4: using the cloud copy over a closed book only this device has is warned of on the chooser and logged', () => {
+  const seed = goneSeedNorm();
+  const mine = Object.assign(J(seed), { closedBooks: [C8_BOOK_OF(2025, 'arc-here')] }), cloud = Object.assign(J(seed), { closedBooks: [] });
+  const t = chooserHtml(mine, cloud).html.replace(/<[^>]+>/g, '');
+  ok(t.includes('This device has the 2025–26 close-out, and the cloud copy does not. Using the cloud copy removes this device’s closed book (its entries, statements and change history), ' +
+    'and the year is open again here. Download this device’s copy first.'), 'the words: ' + t);
+  ok(!/This device has the/.test(chooserHtml(mine, mine).html) && !/This device has the/.test(chooserHtml(cloud, mine).html), 'nothing only this device has');
+  // Taking the cloud copy says so in the log.
+  const q = c3FsPair();
+  q.a.run(C8_CLOSE('A', 1)); q.a.push();
+  q.b.run(C8_CLOSE('B', 2)); q.b.hear(); q.b.push();
+  q.b.run('adoptRemote(ui.overlay.remote, {}); ui.overlay = null');
+  const ev = q.b.get('state.ledgerLog.filter(function (e) { return e.op === "unclose"; })');
+  eq([ev.length, ev[0] && ev[0].why], [1, 'The cloud copy was used on this device, which held a closed 2026–27 book that the cloud copy did not have, so that closed book is gone from this device.'], 'the log');
+  // A copy taken that drops no closed book says nothing.
+  const r = c3FsPair();
+  r.a.run(C6_CLOSE('A', 1)); r.a.push();
+  r.b.run(C6_CLOSE('B', 2)); r.b.hear(); r.b.push();
+  r.b.run('adoptRemote(ui.overlay.remote, {}); ui.overlay = null');
+  eq(r.b.get('state.ledgerLog.filter(function (e) { return e.op === "unclose"; }).length'), 0, 'no closed book lost, no event');
+});
+
+test('C8 security M2: the scouts the closed books name are worked out once a render, not once a scout', () => {
+  const x = sandbox(['arrOf', 'closedBookScouts', 'scoutHasLedger']);
+  const book = C8_BOOK_OF(2025, 'a');
+  vm.runInContext(`var calls = 0, real = closedBookScouts; closedBookScouts = function (b, into) { calls += 1; return real(b, into); };
+    var state = { ledger: [], ledgerAside: [], closedBooks: ${JSON.stringify([book])} };`, x);
+  eq(J(vm.runInContext("['s2', 's3', 's2', 's9', 's3'].map(scoutHasLedger)", x)), [true, false, true, false, false], 'who the closed book names');
+  eq(vm.runInContext('calls', x), 1, 'built once for five scouts');
+  vm.runInContext("state.closedBooks = []; scoutHasLedger.memo = null;", x);
+  eq(vm.runInContext("scoutHasLedger('s2')", x), false, 'and again after a render clears it');
+  ok(/function render\(\) \{\n    scoutHasLedger\.memo = null;/.test(SCRIPT), 'render clears it');
 });
 
 /* ---------------- report ---------------- */
