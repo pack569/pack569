@@ -19999,7 +19999,7 @@ test('C3 review (minor): a ledger id is escaped wherever it goes into an attribu
 test('C3 re-check (minor): a past season’s id is escaped in every attribute of its row, so a stored id can’t add markup or a second action', () => {
   // A restored backup can hold any string as an archive id (Pack · Past seasons, both kinds of row).
   const bad = 'x" data-act="del-scout:s1"><img src=y>\'';
-  const x = sandbox(['esc', 'tinyDangerBtn', 'seasonArchiveRow', 'renderPastSeasons']);
+  const x = sandbox(['esc', 'tinyDangerBtn', 'seasonArchiveRow', 'seasonBookTrimmedLine', 'renderPastSeasons']);
   vm.runInContext(`var ui = { armed: null, archiveOpen: {} }; ui.archiveOpen[${JSON.stringify(bad)}] = true;
     var state = { archives: [
       { id: ${JSON.stringify(bad)}, kind: 'season', year: 2025, closedAt: '', fundraising: { combinedCents: 0 }, budget: { actualCents: 0, balanceCents: 0 } },
@@ -22896,8 +22896,9 @@ test('C5: Money · Ledger lists the statements newest first, each with its print
     '1 entry cleared on it, 1 outstanding. Reconciled by Pat Treasurer on Oct 1. Reopened by Alex on Oct 2: “A deposit was ticked twice”. Reconciled again by Pat Treasurer on Oct 2. Printout ' +
     // Pat, an editor, can't review the legacy one (only an admin reviews, and not before its balance is added).
     'Statement through Mon, Aug 31 Reconciled through Aug 31 by Sam on Sep 1. Recorded before statements were kept, so its ending balance wasn’t saved at the time. ' +
-    'Not yet reviewed. A pack admin other than the one who reconciled it compares it with the bank’s own statement and marks it reviewed, or another ' +
-    'leader signs the printout. Printout Add the statement’s ending balance',
+    // Sign-off of the C5 follow-ups (3): it has no uid, so it is reviewed on paper, and says so.
+    'Not yet reviewed. Who reconciled it wasn’t recorded in the app, so it is reviewed on paper: another leader compares the printout with the ' +
+    'bank’s own statement and signs it. Printout Add the statement’s ending balance',
     'the card');
   ok(/data-act="st-print:st-2026-09-30-a"/.test(vm.runInContext('statementsCardHtml()', x)), 'no printout button');
   eq(c5Text(vm.runInContext('statementsCardHtml()', c5View([]))),
@@ -22923,7 +22924,7 @@ test('C5: Money · Ledger lists the statements newest first, each with its print
   ok(/^&larr; Back Print \/ Save PDF/.test(s), 'the buttons: ' + s.slice(0, 40));
   ok(/Reopened by Alex on October 2, 2026: “A deposit was ticked twice”\. This statement is no longer in force\./.test(sheet('st-2026-09-30-z')), 'a reopened one');
   // Not reviewed: the reviewer's lines to fill in. Signed before the figures were kept: the footer says the summary is worked out now.
-  ok(/ Reviewed by: _+ Role: _+ Date: _+ I compared this page with the bank’s own statement for this period\. Printed Oct 3, 2026\. This statement was marked reconciled before its summary figures were kept, so the lines for its own entries and those not yet on the statement are worked out from the entries as they read on the print date\.$/
+  ok(/ Reviewed by: _+ Role: _+ Date: _+ I compared this page with the bank’s own statement for this period\. Printed Oct 3, 2026\. This statement was marked reconciled before its summary figures were kept, so “Cleared on earlier statements”, “Cleared on this statement” and the two “not yet on the statement” lines are worked out from the entries as they read on the print date\. An entry changed or removed since then shows up in those lines, not as a difference\.$/
     .test(sheet('st-2026-09-30-z')), 'the reviewer’s line to sign: ' + sheet('st-2026-09-30-z'));
   eq(sheet('st-2026-08-31').replace(/^.*?August 31, 2026 Bank and account \(last 4 digits\): _+ /, ''), 'Reconciled through Aug 31 by Sam on Sep 1. Recorded before statements were kept, ' +
     'so its ending balance wasn’t saved at the time. Which entries were ticked on it wasn’t recorded either. ' +
@@ -22984,7 +22985,7 @@ const C5_SAM = "sync.user = { uid: 'u2', displayName: 'Sam Reviewer' }";
 const C5_RV = {
   signer: (who) => 'A statement has to be reviewed by a different leader from the one who reconciled it (' + who + '). Ask another pack admin to review it.',
   signIn: 'Sign in with your own account to mark a statement reviewed, so the review says who did it. If the pack doesn’t use accounts, sign the printout instead.',
-  admin: 'Only a pack admin can mark a statement reviewed. Another leader can sign the printout instead.',
+  admin: 'Only a pack admin can mark a statement reviewed. A leader other than the one who reconciled it can sign the printout instead.',
   off: 'This statement isn’t what the book is reconciled through right now, so it can’t be marked reviewed.',
   noBalance: 'Add the statement’s ending balance first, so there’s something to check against the bank.',
   unknown: 'Who reconciled this statement wasn’t recorded, so the app can’t tell whether you’re a different leader. Sign the printout instead.' };
@@ -23348,14 +23349,17 @@ test('C5 re-check (R5): the close-out toast says which part didn’t fit, and Pa
   ok(/showToast\(coTrim \? 'Welcome to the ' \+ \(year \+ 1\) \+ ' program year\. ' \+ coTrim : 'Welcome to the ' \+ \(year \+ 1\) \+ ' program year',\s*coTrim \? \{ duration: 10000 \} : undefined\);/.test(pc), 'the toast');
   ok(!/The ledger was too large for Past seasons/.test(SCRIPT), 'the old words');
   // Past seasons: one line under the summary when either was trimmed; none otherwise.
-  const r = sandbox(['seasonArchiveRow', 'SEASON_BOOK_TRIMMED', 'esc', 'fmt', 'fmtArchiveDate', 'seasonBalanceLabel', 'seasonCarriedLine', 'tinyDangerBtn']);
+  const r = sandbox(['seasonArchiveRow', 'seasonBookTrimmedLine', 'esc', 'fmt', 'fmtArchiveDate', 'seasonBalanceLabel', 'seasonCarriedLine', 'tinyDangerBtn']);
   vm.runInContext('var ui = { archiveOpen: {} };', r);
   const arc = (o) => Object.assign({ id: 'a1', year: 2025, closedAt: '2026-07-02T00:00:00.000Z', fundraising: { combinedCents: 100 },
     budget: { actualCents: 50, balanceCents: 50 } }, o || {});
-  const note = 'Some of this year’s statements or change history didn’t fit here; they are in the snapshot downloaded at close-out.';
-  const row = (o) => r.seasonArchiveRow(arc(o));
-  eq([row({ statementsTrimmed: true }).includes(note), row({ ledgerLogTrimmed: true }).includes(note), row().includes(note), row({ statements: [], ledgerLog: [] }).includes(note)],
-    [true, true, false, false], 'the note');
+  // Sign-off of the C5 follow-ups (12): built from the flags.
+  const note = (o) => (c5Text(r.seasonArchiveRow(arc(o))).match(/This year’s [^;]*; (it is|they are) in the snapshot downloaded at close-out\./g) || []).join(' | ');
+  eq([note({ statementsTrimmed: true, ledgerLogTrimmed: true }), note({ ledgerLogTrimmed: true }), note({ statementsTrimmed: true }), note(), note({ statements: [], ledgerLog: [] })], [
+    'This year’s statements reconciled and change history didn’t fit here; they are in the snapshot downloaded at close-out.',
+    'This year’s change history didn’t fit here; it is in the snapshot downloaded at close-out.',
+    'This year’s statements reconciled didn’t fit here; they are in the snapshot downloaded at close-out.', '', ''], 'the note');
+  ok(!/Some of this year’s statements or change history/.test(SCRIPT), 'the old note');
   // The E3 banner says who the archive does keep, until C8.
   ok(/UNTIL C8 the archive does keep who, in\s*another place \(security re-check of C5, R5\): its statements \(by, byUid,[\s\S]{0,120}its change log \(by, byUid, dev\)/.test(SCRIPT), 'the E3 banner');
 });
@@ -23492,7 +23496,9 @@ test('C5 review (F6): restoring a backup of the same year keeps the statements s
   const q = run(back({ statements: [Object.assign(C5_LEGACY(), { reopenedAt: '2026-09-05T00:00:00.000Z', reopenedBy: 'Alex', reopenedByUid: 'u3', reopenWhy: 'x' })] }));
   eq([q.get('state.statements').map((s) => [s.id, !!s.reopenedBy]), q.get('state.book.reconciledThrough')],
     [[['st-2026-08-31', true], ['st-2026-09-30-a', false]], '2026-09-30'], 'the lock through a reopened statement');
-  ok(/reconciled through no date, but the statement through 2026-09-30 still stands/.test(q.get('log()[0].why')), 'a lock stepped back to none');
+  // Sign-off of the C5 follow-ups (11): "not reconciled at all", not "reconciled through no date".
+  ok(/Restored as it was, the book would be not reconciled at all, but the statement through 2026-09-30 still stands/.test(q.get('log()[0].why')), 'a lock stepped back to none: ' + q.get('log()[0].why'));
+  ok(!/reconciled through no date/.test(SCRIPT), 'the old words');
   // An editor who is not an admin is refused, and nothing changes: not the book, not the log.
   const e = c2tPage({ book: { year: 2026, reconciledThrough: '2026-09-30' }, more: `state.statements = ${JSON.stringify(here)};` });
   e.run(`ui.overlay = { kind: 'import', data: ${back({ statements: [Object.assign(C5_LEGACY(), { reopenedAt: 'T', reopenedBy: 'Alex', reopenedByUid: 'u3', reopenWhy: 'x' })] })} };` +
@@ -23530,9 +23536,10 @@ test('C5 re-check (R2): a restore keeps this device’s past seasons the backup 
   const x = sandbox(['importBookYearHtml', 'arrOf', 'esc']);
   const line = (here, sts, there) => x.importBookYearHtml({ year: here }, sts, { book: { year: there } });
   eq(line(2026, [{}, {}, {}], 2025), '<div class="warn" style="margin:0 0 10px"><p class="small" style="margin:0">This backup’s book is for the 2025–2026 program year. ' +
-    'This device’s 2026–2027 book and its 3 statements reconciled will be replaced.</p></div>', 'another year');
-  ok(/This device’s 2026–2027 book and its 1 statement reconciled will be replaced\./.test(line(2026, [{}], 2027)), 'one statement');
-  ok(/This device’s 2026–2027 book will be replaced\./.test(line(2026, [], 2025)), 'none');
+    'This device’s 2026–2027 book and its 3 statements reconciled will be replaced. Download a backup of this device first if you may need them.</p></div>', 'another year');
+  ok(/This device’s 2026–2027 book and its 1 statement reconciled will be replaced\. Download a backup of this device first if you may need them\.<\/p>/.test(line(2026, [{}], 2027)), 'one statement');
+  // Sign-off of the C5 follow-ups (11): with none to lose, no backup is urged.
+  ok(/This device’s 2026–2027 book will be replaced\.<\/p>/.test(line(2026, [], 2025)), 'none');
   eq([line(2026, [{}], 2026), x.importBookYearHtml(null, [], { book: { year: 1 } })], ['', ''], 'the same year');
   ok(/'This replaces everything currently in the pack record\.<\/p>' \+\s*(\/\/[^\n]*\s*)*importBookYearHtml\(state\.book, state\.statements, o\.data\) \+/.test(SCRIPT), 'the overlay');
 });
@@ -23642,11 +23649,14 @@ test('C5 review (treasurer 8, 9): the card says why a statement isn’t in force
   // Not in force: the book reconciled only through Aug 31 (a backup restored), or not at all, or a date that can't be read.
   const card = (sts, more) => c5Text(vm.runInContext((more || '') + '; statementsCardHtml()', c5View(sts)));
   ok(card([C5_SEP()], "state.book.reconciledThrough = '2026-08-31'").includes('not in force The book is reconciled only through Aug 31, so this statement isn’t ' +
-    'locking anything. This usually means a backup from before it was restored. Bank ending balance'), 'not in force');
+    'locking anything. This usually means a backup made before it was reconciled was restored. Bank ending balance'), 'not in force');
   ok(card([C5_SEP()], "state.book.reconciledThrough = ''").includes('not in force The book isn’t reconciled through any date, so this statement isn’t locking ' +
-    'anything. This usually means a backup from before it was restored.'), 'not reconciled at all');
+    'anything. This usually means a backup made before it was reconciled was restored.'), 'not reconciled at all');
+  // Sign-off of the C5 follow-ups (4): a date that can't be read is said first, with no restore blamed, whatever the lock.
   const bad = Object.assign(C5_SEP(), { date: '', badDate: true });
-  ok(card([bad]).includes('not in force The book is reconciled only through Sep 30'), 'a date that can’t be read');
+  const badLine = 'not in force This statement’s date can’t be read, so it isn’t locking anything. It is kept as it was signed. Bank ending balance';
+  eq([card([bad]).includes(badLine), card([bad], "state.book.reconciledThrough = ''").includes(badLine), /reconciled only|any date|backup/.test(card([bad]))],
+    [true, true, false], 'a date that can’t be read: ' + card([bad]));
   ok(!/not in force|isn’t locking/.test(card([C5_SEP()])), 'one in force says it isn’t');
   // A date that can't be read is never waiting for a review, nor reviewable.
   const rv = sandbox(['statementReviewRefusal', 'statementReopened', 'statementReviewed', 'statementAdded', 'statementAwaitsReview']);
@@ -23661,6 +23671,44 @@ test('C5 review (treasurer 8, 9): the card says why a statement isn’t in force
   ok(/then type the statement’s ending balance\. /.test(rr) && /'<label class="fld">Statement ending balance \(\$\)<input/.test(rr), 'the Reconcile view');
   ok(!/closing balance/.test(rr + slice('statementBlockHtml') + slice('renderBankStatementSheet') + slice('statementLegacyLine')), 'a statement still says closing balance');
   ok(!/Statement balance/.test(slice('statementBlockHtml')), 'the card still says Statement balance');
+});
+
+test('C5 follow-ups (treasurer sign-off): who reviews where, a name that names no one, a removed entry’s direction, a year with no statements', () => {
+  // 3: the card's review line. Reconciled with an account, and accounts in force here: reviewed in
+  // the app. Otherwise (no uid: R6; or no accounts) it can't be, and says it is reviewed on paper.
+  const APP = 'Not yet reviewed. A pack admin other than the one who reconciled it compares it with the bank’s own statement and marks it reviewed, ' +
+    'or another leader signs the printout.';
+  const PAPER = 'Not yet reviewed. Who reconciled it wasn’t recorded in the app, so it is reviewed on paper: another leader compares the printout ' +
+    'with the bank’s own statement and signs it.';
+  const card = (sts, more) => c5Text(vm.runInContext((more || '') + '; statementsCardHtml()', c5View(sts)));
+  const which = (t) => [t.includes(APP), t.includes(PAPER)];
+  eq([which(card([C5_SEP()])), which(card([C5_SEP()], 'sync.user = null')), which(card([Object.assign(C5_SEP(), { byUid: '' })])),
+    which(card([Object.assign(C5_SEP(), { byUid: undefined })], 'sync.user = null'))],
+    [[true, false], [false, true], [false, true], [false, true]], 'the review line');
+  // Printout misses: 'a signed-in leader' names no one (as statementReviewRefusal treats it), for who
+  // reconciled it and for who reviewed it; a name is still recorded in the app.
+  const sheet = (s) => c5Text(vm.runInContext(`renderBankStatementSheet({ id: '${s.id}' })`, c5View([s])));
+  const rv = { reviewedByUid: 'u2', reviewedAt: '2026-10-03T00:00:00.000Z' };
+  const anon = sheet(Object.assign(C5_SEP_SIGNED(), { by: 'a signed-in leader', reviewedBy: 'a signed-in leader' }, rv));
+  ok(anon.includes('Reconciled on October 2, 2026 (who wasn’t recorded). Signature: ______________________ ' +
+    'Reviewed on October 3, 2026 (who wasn’t recorded). Signature: ______________________ Printed'), 'a signed-in leader: ' + anon);
+  ok(!/a signed-in leader/.test(anon), 'the printout names “a signed-in leader”');
+  eq(['', 'this device', 'Sam'].map((who) => /Reviewed (by Sam )?on October 3, 2026 \((who wasn’t recorded|recorded in the app)\)/
+    .exec(sheet(Object.assign(C5_SEP_SIGNED(), { reviewedBy: who }, rv))).slice(1)), [[undefined, 'who wasn’t recorded'], [undefined, 'who wasn’t recorded'],
+    ['by Sam ', 'recorded in the app']], 'who reviewed it');
+  // 10: an entry since removed, among the outstanding, says its direction isn't known; among those
+  // cleared on the statement it keeps its label. Its amount stays "amount not known".
+  const gone = sheet(Object.assign(C5_SEP_SIGNED(), { ticked: ['r1', 'gone'], outstanding: ['u1', 'gone2'] }));
+  ok(gone.includes('Payments not yet on the statement Date Entry Ref Amount An entry since removed from the book (not known whether a deposit or a payment) ' +
+    'amount not known Sep 10 Pinewood trophies'), 'an outstanding entry since removed: ' + gone);
+  ok(gone.includes('Cleared on this statement Date Entry Ref Amount An entry since removed from the book amount not known Sep 5 Dues'), 'a cleared one');
+  eq(gone.split('(not known whether').length, 2, 'said once, in the payments');
+  // 8: a year with no statements says "no statements reconciled", never "the 0 statements reconciled".
+  const cl = sandbox(['closeoutBookLine']);
+  eq([cl.closeoutBookLine({ statements: [], ledgerLog: [1, 2] }), cl.closeoutBookLine({ ledgerLog: [], ledgerLogTrimmed: true })], [
+    'Past seasons keeps no statements reconciled and the ledger’s change history (2 changes), for the annual review. The snapshot has them too.',
+    'Past seasons keeps no statements reconciled. The ledger’s change history is too large to keep there: download the snapshot, the only place it is kept.'],
+    'a year with no statements');
 });
 
 /* ---------------- report ---------------- */

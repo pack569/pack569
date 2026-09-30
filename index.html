@@ -9534,7 +9534,7 @@
     if (!who.byUid || !who.accounts) {
       return 'Sign in with your own account to mark a statement reviewed, so the review says who did it. If the pack doesn’t use accounts, sign the printout instead.';
     }
-    if (!who.admin) return 'Only a pack admin can mark a statement reviewed. Another leader can sign the printout instead.';
+    if (!who.admin) return 'Only a pack admin can mark a statement reviewed. A leader other than the one who reconciled it can sign the printout instead.';
     var named = !!st.by && st.by !== 'a signed-in leader' && st.by !== 'this device';
     // Security re-check of C5 (R6) — nor any with no uid, named or not: a name is only what a device
     // called its leader, so it can't tell two leaders apart (two called Pat, or one renamed). That is
@@ -9637,7 +9637,8 @@
   // can't be absorbed into "cleared on earlier statements" (clearedCents − openingCents −
   // tickedCents); each list's total as it reads now is beside what was signed (`*Now`), for the
   // printout to say where they differ. An entry no longer in the book is "since removed", its
-  // amount not known (and, its direction not known either, listed with the payments). A payment
+  // amount not known (and, its direction not known either, listed with the payments, and said so:
+  // sign-off of the C5 follow-ups, 10). A payment
   // outstanding more than 90 days before the statement's date is marked `old`, to follow up.
   // A statement signed before the figures were kept (`signed` false) falls back to the entries as
   // they read now. Figures a statement does not have (legacy) are null. Pure.
@@ -9645,18 +9646,18 @@
     var byId = Object.create(null);
     (rows || []).forEach(function (e) { if (e && typeof e.id === 'string' && !byId[e.id]) byId[e.id] = e; });
     var ninety = /^\d{4}-\d{2}-\d{2}$/.test(String(st.date || '')) ? isoPlusDays(st.date, -90) : '';
-    function line(id) {
+    function line(id, out) {
       var e = byId[id];
-      if (!e) return { id: id, date: '', what: 'An entry since removed from the book', ref: '', cents: null, dir: '' };
+      if (!e) return { id: id, date: '', what: 'An entry since removed from the book' + (out ? ' (not known whether a deposit or a payment)' : ''), ref: '', cents: null, dir: '' };
       return { id: id, date: String(e.date || ''), what: (e.description || '(no description)') + (e.off === 'void' ? ' (voided since)' : ''),
         ref: String(e.ref || ''), cents: entrySignedCents(e), dir: e.direction === 'in' ? 'in' : 'out' };
     }
-    function lines(ids) {
-      return Array.isArray(ids) ? ids.map(line).sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0); }) : null;
+    function lines(ids, out) {
+      return Array.isArray(ids) ? ids.map(function (id) { return line(id, out); }).sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0); }) : null;
     }
     function sum(l) { return (l || []).reduce(function (t, x) { return t + (x.cents || 0); }, 0); }
     function num(v) { return typeof v === 'number' && isFinite(v); }
-    var ticked = lines(st.ticked), outstanding = lines(st.outstanding);
+    var ticked = lines(st.ticked), outstanding = lines(st.outstanding, true);
     var deposits = outstanding ? outstanding.filter(function (l) { return l.dir === 'in'; }) : null;
     var payments = outstanding ? outstanding.filter(function (l) { return l.dir !== 'in'; }) : null;
     (payments || []).forEach(function (l) { l.old = !!(ninety && l.date && l.date < ninety); });
@@ -20995,11 +20996,15 @@
       '<div class="spread"><span class="assign-name">Statement through ' + (st.badDate ? 'a date that can’t be read' : esc(fmtDate(st.date))) + '</span><span>' +
       (reop ? '<span class="pill">reopened</span>' : '') + (off ? '<span class="pill">not in force</span>' : '') +
       (rev ? '<span class="pill navy">reviewed</span>' : '') + '</span></div>';
+    // Treasurer sign-off of the C5 follow-ups (4) — a date that can't be read says so first: no
+    // restore explains it, and the statement is kept as signed.
     if (off) {
-      h += '<p class="small" style="margin:4px 0 0">' + (rt
-        ? 'The book is reconciled only through ' + esc(fmtDateShort(rt)) + ', so this statement isn’t locking anything.'
-        : 'The book isn’t reconciled through any date, so this statement isn’t locking anything.') +
-        ' This usually means a backup from before it was restored.</p>';
+      h += '<p class="small" style="margin:4px 0 0">' + (st.badDate
+        ? 'This statement’s date can’t be read, so it isn’t locking anything. It is kept as it was signed.'
+        : (rt
+          ? 'The book is reconciled only through ' + esc(fmtDateShort(rt)) + ', so this statement isn’t locking anything.'
+          : 'The book isn’t reconciled through any date, so this statement isn’t locking anything.') +
+          ' This usually means a backup made before it was reconciled was restored.') + '</p>';
     }
     if (twice) h += '<p class="small" style="margin:4px 0 0">Marked reconciled twice for this date, on two devices; the later one is in force.</p>';
     if (st.legacy) h += '<p class="small" style="margin:4px 0 0">' + esc(statementLegacyLine(st)) + '</p>';
@@ -21010,10 +21015,15 @@
         esc(statementByOn(st.by, st.at)) + '.</p>';
     }
     if (rev) h += '<p class="small muted" style="margin:2px 0 0">Reviewed' + esc(statementByOn(st.reviewedBy, st.reviewedAt)) + '.</p>';
-    // Treasurer review of C5 (7), owner's decision — what reviewing it means, and who does it.
+    // Treasurer review of C5 (7), owner's decision — what reviewing it means, and who does it. Sign-off
+    // of the follow-ups (3) — a statement whose signer has no uid, or a pack without accounts, can't
+    // be reviewed in the app (statementReviewRefusal, R6): it is reviewed on paper, and says so.
     else if (statementAwaitsReview(st, rt)) {
-      h += '<p class="small muted" style="margin:2px 0 0">Not yet reviewed. A pack admin other than the one who reconciled it compares it with ' +
-        'the bank’s own statement and marks it reviewed, or another leader signs the printout.</p>';
+      h += '<p class="small muted" style="margin:2px 0 0">' + (st.byUid && accountsInForce()
+        ? 'Not yet reviewed. A pack admin other than the one who reconciled it compares it with ' +
+          'the bank’s own statement and marks it reviewed, or another leader signs the printout.'
+        : 'Not yet reviewed. Who reconciled it wasn’t recorded in the app, so it is reviewed on paper: another leader ' +
+          'compares the printout with the bank’s own statement and signs it.') + '</p>';
     }
     if (reop) {
       h += '<p class="small" style="margin:2px 0 0">Reopened' + esc(statementByOn(st.reopenedBy, st.reopenedAt)) +
@@ -21135,20 +21145,24 @@
         table('Deposits not yet on the statement', d.deposits || [], d.depositsNow, d.outInCents) +
         table('Payments not yet on the statement', d.payments || [], -d.paymentsNow, d.outOutCents === null ? null : -d.outOutCents);
     }
-    // Who reconciled it, and who reviewed it: each recorded in the app, with a line to sign.
-    var unknown = !st.by || st.by === 'this device';
-    h += '<p class="small" style="margin:18px 0 0">' + esc((unknown
+    // Who reconciled it, and who reviewed it: each recorded in the app, with a line to sign. Sign-off
+    // of the C5 follow-ups — 'a signed-in leader' names no one, as statementReviewRefusal treats it.
+    function unknown(by) { return !by || by === 'this device' || by === 'a signed-in leader'; }
+    h += '<p class="small" style="margin:18px 0 0">' + esc((unknown(st.by)
       ? 'Reconciled' + (statementByOn('', st.at, true)) + ' (who wasn’t recorded).'
       : 'Reconciled' + statementByOn(st.by, st.at, true) + ' (recorded in the app).') + ' Signature: ' + BLANK) + '</p>';
     h += statementReviewed(st)
-      ? '<p class="small" style="margin:10px 0 0">' + esc('Reviewed' + statementByOn(st.reviewedBy, st.reviewedAt, true) + ' (recorded in the app). Signature: ' + BLANK) + '</p>'
+      ? '<p class="small" style="margin:10px 0 0">' + esc((unknown(st.reviewedBy)
+        ? 'Reviewed' + statementByOn('', st.reviewedAt, true) + ' (who wasn’t recorded).'
+        : 'Reviewed' + statementByOn(st.reviewedBy, st.reviewedAt, true) + ' (recorded in the app).') + ' Signature: ' + BLANK) + '</p>'
       : '<p class="small" style="margin:14px 0 0">Reviewed by: ' + BLANK + ' &nbsp; Role: ______________ &nbsp; Date: ____________</p>' +
         '<p class="small" style="margin:2px 0 0">I compared this page with the bank’s own statement for this period.</p>';
     var printed = 'Printed ' + fmtDateShortYear(todayISO()) + '.';
     h += '<p class="small muted" style="margin:14px 0 0">' + esc(st.legacy ? printed : d.signed
       ? printed + ' The summary figures are as they were when the statement was marked reconciled; the entries are listed as they read on the print date.'
-      : printed + ' This statement was marked reconciled before its summary figures were kept, so the lines for its own entries and those not yet on ' +
-        'the statement are worked out from the entries as they read on the print date.') + '</p>';
+      : printed + ' This statement was marked reconciled before its summary figures were kept, so “Cleared on earlier statements”, “Cleared on this ' +
+        'statement” and the two “not yet on the statement” lines are worked out from the entries as they read on the print date. An entry changed ' +
+        'or removed since then shows up in those lines, not as a difference.') + '</p>';
     return h + '</div></div></div>';
   }
   function renderReconcile() {
@@ -26655,14 +26669,16 @@
   // Security re-check of C5 (R2) — the Replace all data? line for a backup whose book is another
   // year's than this device's (`book`, `statements`: this device's; `rec`: the backup, normalized):
   // that book comes in whole, and this one's statements go with this one (confirm-import merges the
-  // statements of the same year's book only). '' for the same year. Pure.
+  // statements of the same year's book only). '' for the same year. Sign-off of the C5 follow-ups
+  // (11) — with statements to lose, it says how to keep them. Pure.
   function importBookYearHtml(book, statements, rec) {
     var there = rec && rec.book;
     if (!book || !there || book.year === there.year) return '';
     var n = arrOf(statements).length;
     return '<div class="warn" style="margin:0 0 10px"><p class="small" style="margin:0">This backup’s book is for the ' +
       esc(there.year + '–' + (there.year + 1)) + ' program year. This device’s ' + esc(book.year + '–' + (book.year + 1)) + ' book' +
-      (n ? ' and its ' + n + ' statement' + (n === 1 ? '' : 's') + ' reconciled' : '') + ' will be replaced.</p></div>';
+      (n ? ' and its ' + n + ' statement' + (n === 1 ? '' : 's') + ' reconciled' : '') + ' will be replaced.' +
+      (n ? ' Download a backup of this device first if you may need them.' : '') + '</p></div>';
   }
   function handleImportFile(input) {
     var file = input.files && input.files[0];
@@ -29167,7 +29183,7 @@
       (seasonCarriedLine(a.budget) ? ' · ' + esc(seasonCarriedLine(a.budget).replace(/^C/, 'c')) : '') + '</p>' +
       // Security re-check of C5 (R5) — Past seasons shows neither the statements nor the change log
       // yet (C8), but says when some of either wasn't kept, so nobody takes the archive as whole.
-      (a.statementsTrimmed || a.ledgerLogTrimmed ? '<p class="small muted" style="margin:4px 0 0">' + esc(SEASON_BOOK_TRIMMED) + '</p>' : '');
+      (seasonBookTrimmedLine(a) ? '<p class="small muted" style="margin:4px 0 0">' + esc(seasonBookTrimmedLine(a)) + '</p>' : '');
     if (open) {
       h += '<div style="margin-top:10px">' + seasonArchiveTables(a) + '</div>' +
         '<div class="row no-print" style="margin-top:10px">' +
@@ -29175,7 +29191,18 @@
     }
     return h + '</div>';
   }
-  var SEASON_BOOK_TRIMMED = 'Some of this year’s statements or change history didn’t fit here; they are in the snapshot downloaded at close-out.';
+  // What of season archive `a`'s book Past seasons couldn't keep, from its flags (sign-off of the
+  // C5 follow-ups, 12): the change history goes first (fitSeasonBook), so statements trimmed at
+  // close-out means both; a load's cap (normalizeSeasonArchive) can trim the statements alone.
+  // '' when it kept everything. Pure.
+  function seasonBookTrimmedLine(a) {
+    if (a.statementsTrimmed && a.ledgerLogTrimmed) {
+      return 'This year’s statements reconciled and change history didn’t fit here; they are in the snapshot downloaded at close-out.';
+    }
+    if (a.statementsTrimmed) return 'This year’s statements reconciled didn’t fit here; they are in the snapshot downloaded at close-out.';
+    if (a.ledgerLogTrimmed) return 'This year’s change history didn’t fit here; it is in the snapshot downloaded at close-out.';
+    return '';
+  }
   // Security re-check of C5 (R5) — the close-out toast's second sentence: what Past seasons couldn't
   // keep of the season archive `arc`, in closeoutBookLine's words, now the snapshot is downloaded;
   // '' when it kept everything. The toast said "The ledger was too large" when only the change log
@@ -29193,17 +29220,18 @@
   }
   // Close-out preview overlay — computed live from state, nothing committed until confirm.
   // Phase 3, C5 review — what the season archive `arc` keeps of the book's statements and change
-  // log (fitSeasonBook), for the close-out preview. Pure.
+  // log (fitSeasonBook), for the close-out preview; "no statements reconciled" in a year with none
+  // (sign-off of the C5 follow-ups, 8). Pure.
   function closeoutBookLine(arc) {
     var n = (arc.statements || []).length, m = (arc.ledgerLog || []).length;
-    var st = n + ' statement' + (n === 1 ? '' : 's') + ' reconciled', lg = 'the ledger’s change history (' + m + ' change' + (m === 1 ? '' : 's') + ')';
+    var st = n ? 'the ' + n + ' statement' + (n === 1 ? '' : 's') + ' reconciled' : 'no statements reconciled', lg = 'the ledger’s change history (' + m + ' change' + (m === 1 ? '' : 's') + ')';
     if (arc.statementsTrimmed) {
       return 'The statements reconciled and the ledger’s change history are too large to keep in Past seasons. Download the snapshot: it is the only place they are kept.';
     }
     if (arc.ledgerLogTrimmed) {
-      return 'Past seasons keeps the ' + st + '. The ledger’s change history is too large to keep there: download the snapshot, the only place it is kept.';
+      return 'Past seasons keeps ' + st + '. The ledger’s change history is too large to keep there: download the snapshot, the only place it is kept.';
     }
-    return 'Past seasons keeps the ' + st + ' and ' + lg + ', for the annual review. The snapshot has them too.';
+    return 'Past seasons keeps ' + st + ' and ' + lg + ', for the annual review. The snapshot has them too.';
   }
   function renderCloseoutOverlay() {
     var arc = buildSeasonArchive();
@@ -31052,7 +31080,7 @@
       logLedger('restore', 'book', { why: 'A backup was restored on this device. The book now holds the backup’s ' +
         state.ledger.length + ' entr' + (state.ledger.length === 1 ? 'y' : 'ies') +
         (state.book.reconciledThrough ? ', reconciled through ' + state.book.reconciledThrough : ', none of it reconciled') + '.' +
-        (ciFwd ? ' Restored as it was, the book would be ' + (ciWas ? 'reconciled only through ' + ciWas : 'reconciled through no date') +
+        (ciFwd ? ' Restored as it was, the book would be ' + (ciWas ? 'reconciled only through ' + ciWas : 'not reconciled at all') +
           ', but the statement through ' + ciFwd.date + ' still stands, so the book is locked through that date.' : '') });
       ui.overlay = null; ui.storefrontId = null; ui.expandedScouts = {};
       commit(); return;
