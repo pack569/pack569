@@ -1034,7 +1034,7 @@ const C8_SYNC_FNS = ['closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mer
   'closedBookRank', 'closedBooksFuture', 'closedBooksMaxYear', 'closedBooksNormalized', 'normalizeClosedBook', 'normalizeLedgerRow', 'normalizeAsideRow', 'normalizeLedgerEvent',
   'stableRowId', 'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_ASIDE_OFF', 'arrOf',
   // M-B — the tombstones of a closed year.
-  'normalizeClosedGone', 'mergeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'closedGoneAdd', 'ledgerActorUid',
+  'normalizeClosedGone', 'mergeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'closedGoneAdd', 'ledgerActorUid', 'closedBooksShorter',
   // The merge ticks a carried row the other copy ticked (M1) and ticks again what a standing statement lists.
   'carriedRowsOf', 'statementRetick', 'entrySignedCents', 'entryAfterOpening', 'ledgerStampClean', 'statementReopened', 'normalizeStatement', 'statementAdded', 'LEDGER_TICK_FIELDS'];
 // Phase 3, C6 — the per-row ledger merge and what it reads.
@@ -27636,6 +27636,32 @@ test('C8 re-check M-B: a closed book with no season summary is a row of its own 
   run("canReopenStatement = function () { return false; }; toasts = []; ui.overlay = null; tap('del-book:2026');");
   eq(got('[ui.overlay, toasts]'), [null, ['Only a pack admin can delete a closed year.']], 'an editor is told');
   ok(/var orphans = closedBookOrphans\(state\);\s*if \(!state\.archives\.length && !orphans\.length\)/.test(SCRIPT), 'listed even when there is no season archive');
+});
+
+/* L-A: taking a copy that holds a closed book in a shorter form says so. */
+test('C8 re-check L-A: taking a cloud copy whose closed book is shorter than this device’s says so on “The ledger needs a look”', () => {
+  const x = sandbox(C8_SYNC_FNS), full = C8_BOOK_OF(2025, 'arc-25'), cp = J(x.compactClosedBook ? x.compactClosedBook(full) : full);
+  const compact = Object.assign(J(full), { form: 'compact', asideTrimmed: true, logTrimmed: true, ledger: [{ i: 'old1', d: '2026-01-10', c: 500, t: 'Dues' }] }); delete compact.names;
+  const trimmed = Object.assign(J(compact), { ledger: [], ledgerTrimmed: true });
+  eq(J(x.closedBooksShorter([compact], [full])), [{ year: 2025, archiveId: 'arc-25' }], 'compact over full');
+  eq(J(x.closedBooksShorter([trimmed], [compact])), [{ year: 2025, archiveId: 'arc-25' }], 'trimmed over compact');
+  eq(J(x.closedBooksShorter([full], [compact])), [], 'a fuller copy taken: nothing is lost');
+  eq(J(x.closedBooksShorter([full], [full])), [], 'the same: nothing');
+  eq(J(x.closedBooksShorter([Object.assign(J(compact), { archiveId: 'arc-other' })], [full])), [], 'another close-out is closedBooksLost’s to say, not this');
+  eq(J(x.closedBooksShorter([compact], [Object.assign(J(full), { archiveId: '' })])), [], 'a book with no close-out record is not compared');
+  // The page: B holds the full 2025 book, the cloud copy (A's) holds it compacted; taking the cloud copy says so, once, and B now holds the shorter book.
+  const { a, b, server } = c3FsPair();
+  a.run('state.closedBooks = ' + JSON.stringify([compact]) + '; commit()'); a.push();
+  b.run('state.closedBooks = ' + JSON.stringify([full]) + '; commit()');
+  b.run('adoptRemote(' + JSON.stringify({ rev: 9, device: 'devA', json: JSON.stringify(server()) }) + ', {})');
+  eq(b.get('state.closedBooks.map(function (k) { return k.form; })'), ['compact'], 'B took the shorter book');
+  eq(b.get('sync.lookNotes'), ['The closed 2025–26 book is now held in a shorter form, because another device’s copy of it was already shortened. Its money and its statements are kept, but not every entry, or its change history, may be listed.'], 'and says so');
+  // A copy with the same book as this device's says nothing.
+  const q = c3FsPair();
+  q.a.run('state.closedBooks = ' + JSON.stringify([full]) + '; commit()'); q.a.push();
+  q.b.run('state.closedBooks = ' + JSON.stringify([full]) + '; commit()');
+  q.b.run('adoptRemote(' + JSON.stringify({ rev: 9, device: 'devA', json: JSON.stringify(q.server()) }) + ', {})');
+  eq(q.b.get('sync.lookNotes'), [], 'nothing to say');
 });
 
 /* ---------------- report ---------------- */

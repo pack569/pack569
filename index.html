@@ -15821,6 +15821,18 @@
     var names = books.map(function (b) { return closedYearText(b.year); }).join(' and ');
     return 'The cloud copy was used on this device, which held a closed ' + names + ' book that the cloud copy did not have, so that closed book is gone from this device.';
   }
+  // Security re-check of C8-5..C8-10 (L-A) — the books of `held` (this device's) that `taken` (the copy this device is about to take over, normalized) holds
+  // in a shorter form: the same close-out (year and archiveId), a lower closedBookRank. closedBooksLost compares only the year and the archiveId, so
+  // a compacted or trimmed copy taken over a full one went unsaid. [{ year, archiveId }]. Pure.
+  function closedBooksShorter(taken, held) {
+    var mine = Object.create(null), out = [];
+    arrOf(held).forEach(function (b) { if (b && typeof b.archiveId === 'string' && b.archiveId) mine[b.year + ':' + b.archiveId] = b; });
+    arrOf(taken).forEach(function (b) {
+      var m = b && typeof b.archiveId === 'string' && b.archiveId ? mine[b.year + ':' + b.archiveId] : null;
+      if (m && closedBookRank(b) < closedBookRank(m)) out.push({ year: b.year, archiveId: b.archiveId });
+    });
+    return out;
+  }
   // The closed books of `theirs` (a copy's, as stored) that `mine` does not hold: another close-out of the same
   // year (a different archiveId) or a year this copy has not closed. A copy of this page holds one per year,
   // so the books in `mine` that `theirs` lacks are the other way round. Pure.
@@ -16131,6 +16143,8 @@
     // M-A — and what normalizeState set aside of the copy's books: any for a year past its program year, said on "The ledger needs a look".
     var adoptLook = [], adoptFuture = closedBooksFuture(parsed && parsed.closedBooks, ns.budget && ns.budget.programYear);
     if (adoptFuture.length) adoptLook.push({ kind: 'bookfuture', year: adoptFuture[0], n: adoptFuture.length });
+    // L-A — and a book this copy holds in a shorter form than this device's: this device's full book is the one that is lost.
+    if (state) closedBooksShorter(ns.closedBooks, state.closedBooks).forEach(function (b) { adoptLook.push({ kind: 'bookshorter', year: b.year, id: b.archiveId }); });
     state = ns;
     state.rev = typeof d.rev === 'number' ? d.rev : 0;
     // This device now holds the server's copy: nothing is left to send or to merge at a save (a
