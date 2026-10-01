@@ -490,8 +490,12 @@ totals and family balances, and the year's entries live in `state.closedBooks`.*
   same archive id and a lower form (compaction: full to compact, compact to trimmed) is refused without such
   an event; the page does the compaction inside a close-out, which writes the event.
   S39 validate each book: year an integer in [2000, 2100] and **at most the pack's current program year (or
-  the year of an undone close-out), the count cap applying after that bound** (the page's `closedBooksMaxYear`,
-  the later of the two copies' program years); at most 20 books, 5000 rows and events, 200 statements; a
+  the year of an undone close-out), the count cap applying after that bound** (the page's `closedBooksMaxYear`:
+  the later of the two copies' program years, but never more than one past THIS device's own). The bound is
+  compared with the **stored** `budget.programYear`, not the one in the incoming save, which is not trusted: it
+  changes only in a save with a `close` or `unclose` event by an admin, and by at most 1. On the page the
+  program year is an admin's field, not before a closed year and not past the calendar year + 1; and the 20-book
+  cap never evicts a book the saving copy already holds (it applies to the books it does not); at most 20 books, 5000 rows and events, 200 statements; a
   non-empty archive id that equals a season archive's id; `cutoff` equal to `closeoutCutoff(year)`;
   `closedBy` with no `@`; `closedByUid` the authed uid; `closedAt` the server's time; compact never back to
   full; `ledgerTrimmed` never cleared.

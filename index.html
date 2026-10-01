@@ -8647,13 +8647,16 @@
   }
   // The newest year a closed book may be for when copies `a` and `b` (a state, or a record parsed) are put together: the later of their
   // program years (M-A), or undefined when neither has one (no bound is applied). Pure.
+  // Security re-check of C8 (finding 1) — and never more than ONE past THIS device's own (`a`'s) program year: the other copy's year is written by whoever
+  // saved it, so it cannot lift the bound any further than the year a real close-out moves it.
   function closedBooksMaxYear(a, b) {
-    var best;
-    [a, b].forEach(function (s) {
+    var best, mineY;
+    [a, b].forEach(function (s, i) {
       var y = s && s.budget && typeof s.budget.programYear === 'number' && isFinite(s.budget.programYear) ? s.budget.programYear : undefined;
+      if (i === 0) mineY = y;
       if (y !== undefined && (best === undefined || y > best)) best = y;
     });
-    return best;
+    return mineY !== undefined && best > mineY + 1 ? mineY + 1 : best;
   }
   // Two copies' closed books as one, by year, the same on every device whichever is `mine` and however three
   // copies are taken two at a time. Security review of C8-1..4 (H2): ONE total order picks the book a year
@@ -8700,8 +8703,13 @@
     var won = Object.create(null), held = Object.create(null), nameless = Object.create(null);
     (mine || []).forEach(function (b) { if (valid(b)) { best(won, b); best(held, b); if (!named(b)) nameless[b.year] = true; } });
     (theirs || []).forEach(function (b) { if (valid(b)) { best(won, b); if (!named(b)) nameless[b.year] = true; } });
-    var years = Object.keys(won).map(Number).sort(function (a, b) { return a - b; });
-    if (years.length > 20) years = years.slice(years.length - 20);
+    // Security re-check of C8 (finding 1) — the 20-year cap never takes a year THIS copy holds: it applies to the books `mine` does not hold (the newest of
+    // them fill what room is left), so a crafted copy cannot push this device's real years out; `mine` alone is still cut to its newest 20.
+    var heldYears = Object.keys(held).map(Number).sort(function (a, b) { return a - b; });
+    if (heldYears.length > 20) heldYears = heldYears.slice(heldYears.length - 20);
+    var otherYears = Object.keys(won).map(Number).filter(function (y) { return !held[y]; }).sort(function (a, b) { return a - b; }), room = 20 - heldYears.length;
+    otherYears = room > 0 ? otherYears.slice(Math.max(0, otherYears.length - room)) : [];
+    var years = heldYears.concat(otherYears).sort(function (a, b) { return a - b; });
     var futureYears = Object.keys(future).map(Number).sort(function (a, b) { return a - b; });
     if (Array.isArray(look) && futureYears.length) look.push({ kind: 'bookfuture', year: futureYears[0], n: futureYears.length });
     if (Array.isArray(look)) {
@@ -34581,6 +34589,11 @@
     // Budget fields
     if (ch === 'bud-year') {
       var y = parseInt(el.value, 10);
+      // Security re-check of C8 (findings 1 and 3) — the program year bounds which closed books a pack keeps, so only a pack admin sets it (as closing out the
+      // year is), and only to a year that makes sense: not before a closed year, not more than a year past this calendar year (a typed 20277 is refused).
+      if (!canReopenStatement()) { showToast('Only a pack admin can change the program year.'); render(); return; }
+      var yMax = Math.max(arrOf(state.closedBooks).reduce(function (n, cb) { return cb && typeof cb.year === 'number' && cb.year > n ? cb.year : n; }, -Infinity), new Date().getFullYear()) + 1;
+      if (isFinite(y) && y > yMax) { showToast('The program year can’t be later than ' + yMax + '.'); render(); return; }
       // Security re-check of C8-5..C8-10 (M-A) — a closed book for a year past the program year is set aside as not this pack's (normalizeState), so
       // the year is not set before a year already closed out (a typed 207 for 2027 would otherwise take the closed books at the next load).
       var yClosed = arrOf(state.closedBooks).reduce(function (n, cb) { return cb && typeof cb.year === 'number' && cb.year > n ? cb.year : n; }, -Infinity);

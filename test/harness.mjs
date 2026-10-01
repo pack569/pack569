@@ -27529,8 +27529,8 @@ test('C8 re-check M-A: twenty crafted books for 2081-2100 do not push the real y
   const look = [];
   eq(J(c.mergeClosedBooks(J(real), J(crafted), look, 2026)).map((b) => b.year), [2024, 2025], 'only the real years, bound 2026');
   eq(J(look), [{ kind: 'bookfuture', year: 2081, n: 20 }], 'said once, with the first year and how many');
-  // Without a bound it is the old behaviour (the cap keeps the newest 20): the test fails if the bound is taken out.
-  eq(J(c.mergeClosedBooks(J(real), J(crafted))).map((b) => b.year).slice(0, 2), [2081, 2082], 'no bound: the crafted years win the cap');
+  // Without a bound the crafted years fill what room the cap leaves, after this copy's own (finding 1): the bound is what keeps them out altogether.
+  eq(J(c.mergeClosedBooks(J(real), J(crafted))).map((b) => b.year).slice(0, 3), [2024, 2025, 2083], 'no bound: this copy’s two years, then the crafted ones in the 18 places left');
   // Inclusive: a close-out undone leaves the book of the year the pack is in.
   eq(J(c.mergeClosedBooks([C8_BOOK_OF(2026, 'arc-26')], [], [], 2026)).map((b) => b.year), [2026], 'a book for the program year itself stays');
   eq(J(c.mergeClosedBooks([C8_BOOK_OF(2027, 'arc-27')], [], [], 2026)).map((b) => b.year), [], 'one year past it goes');
@@ -27561,6 +27561,23 @@ test('C8 re-check M-A: the merge, the push’s union and a restore all bound the
   eq(J(w.sync.lookNotes), [
     '20 closed books, from 2081–82 on, were set aside: they are for years this pack has not reached, so they were not made by a close-out here. Your own closed years are kept. If you expected them, ask a pack admin to look at the pack record.',
     'A closed book for 2090–91 was set aside: it is for a year this pack has not reached, so it was not made by a close-out here. Your own closed years are kept. If you expected it, ask a pack admin to look at the pack record.'], 'said once each');
+});
+
+test('C8 re-check finding 1+3: a remote program year of 2100 with twenty books 2081-2100 takes none of this device’s real years; the program year is an admin’s, and range-limited', () => {
+  const c = c8(), x = sandbox(C8_SYNC_FNS), real = Array.from({ length: 3 }, (_, i) => C8_BOOK_OF(2024 + i, 'arc-' + i));
+  const crafted = Array.from({ length: 20 }, (_, i) => C8_BOOK_OF(2081 + i, 'x-' + i));
+  const bound = x.closedBooksMaxYear({ budget: { programYear: 2027 } }, { budget: { programYear: 2100 } });
+  eq(bound, 2028, 'the remote copy’s 2100 lifts the bound one year past this device’s, no further');
+  const look = [];
+  eq(J(c.mergeClosedBooks(J(real), J(crafted), look, bound)).map((b) => b.year), [2024, 2025, 2026], 'real years kept');
+  eq(J(look), [{ kind: 'bookfuture', year: 2081, n: 20 }], 'and the set-aside said');
+  // Backstop: even with the bound lifted (the later of both, 2100), the cap leaves this copy’s books alone and fills the rest.
+  const wide = J(c.mergeClosedBooks(J(real), J(crafted), [], 2100)).map((b) => b.year);
+  eq([wide.length, wide.slice(0, 3)], [20, [2024, 2025, 2026]], 'mine is never evicted: 20 kept, this copy’s three among them');
+  eq(J(c.mergeClosedBooks(J(crafted), J(real), [], 2100)).map((b) => b.year).length, 20, 'a copy over twenty alone is still cut to 20');
+  eq(x.closedBooksMaxYear({ budget: { programYear: 2026 } }, { budget: { programYear: 2027 } }), 2027, 'a real close-out (one year on) is not held back');
+  const m = /if \(ch === 'bud-year'\) \{[\s\S]*?\n      return;/.exec(SCRIPT);
+  ok(m && /if \(!canReopenStatement\(\)\) \{ showToast\('Only a pack admin can change the program year\.'\)/.test(m[0]) && /y > yMax/.test(m[0]) && /new Date\(\)\.getFullYear\(\)\) \+ 1/.test(m[0]), 'admin only, and not past the calendar year + 1');
 });
 
 /* M-B: an admin's delete of a closed year leaves a tombstone, and no stale device brings the year back. */
