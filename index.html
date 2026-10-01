@@ -30866,6 +30866,8 @@
       'Reconcile it first (Money · Ledger · Reconcile), because once the year is closed out its entries and statements can’t be ticked. ' +
       'If it can’t be reconciled, an admin can close out anyway.';
   }
+  // Security re-check of C8-5..C8-10 (L-E) — what the leader is told when closing out the year failed part-way and the record was put back as it was.
+  var CLOSEOUT_FAILED = 'Closing out the year did not finish, so nothing was changed. The snapshot was already downloaded: keep it. Try again, and if it fails again, tell a pack admin.';
   var CLOSEOUT_JUNE_ASKED = 'The year’s last bank statement isn’t reconciled. Reconcile it first, or choose “June was not reconciled” on the close-out screen.';
   // C8-6 — what a close-out says it will do, beyond the year's figures (`info`), as plain-text lines for the preview, in order:
   // what is carried over, what stays open in the new year, which older closed year will be shortened to keep the pack
@@ -31293,17 +31295,31 @@
     if (closeoutJuneWhy(state.book, state.ledger.length > 0, year) && ui.closeoutJuneOk !== true) { ui.armed = null; render(); showToast(CLOSEOUT_JUNE_ASKED, { duration: 10000 }); return; }
     // 1. Snapshot download FIRST — the complete state exactly as it stands, before ANY mutation.
     download('pack-year-' + year + '-snapshot.json', 'application/json', JSON.stringify(state, null, 2));
-    // 2. Build + insert the season archive (replaces an earlier close-out of the SAME year;
-    //    a Trail's End import of the same year is a different kind and coexists).
-    var record = buildSeasonArchive();
-    var replaced = false;
-    state.archives = state.archives.map(function (a) {
-      if (a.kind === 'season' && a.year === record.year) { replaced = true; return record; }
-      return a;
-    });
-    if (!replaced) state.archives.push(record);
-    // 3. Roll the working state into next year (the year's book goes into closedBooks, closed at the cutoff).
-    var coDone = rolloverYear();
+    // Security re-check of C8-5..C8-10 (L-E) — steps 2 and 3 change the record a piece at a time (the archive goes in, then the book is cleared, then the closed book is
+    // written), so a failure part-way would leave the pack with a year half closed, saved by the next edit. The record as it stands is copied first; on an error it is put back
+    // whole, the screen is redrawn from it, and the leader is told (the snapshot was downloaded before any of it, and is theirs).
+    var coBefore = JSON.stringify(state), coJuneOk = ui.closeoutJuneOk;
+    var coDone;
+    try {
+      // 2. Build + insert the season archive (replaces an earlier close-out of the SAME year;
+      //    a Trail's End import of the same year is a different kind and coexists).
+      var record = buildSeasonArchive();
+      var replaced = false;
+      state.archives = state.archives.map(function (a) {
+        if (a.kind === 'season' && a.year === record.year) { replaced = true; return record; }
+        return a;
+      });
+      if (!replaced) state.archives.push(record);
+      // 3. Roll the working state into next year (the year's book goes into closedBooks, closed at the cutoff).
+      coDone = rolloverYear();
+    } catch (coErr) {
+      state = JSON.parse(coBefore);
+      ui.closeoutJuneOk = coJuneOk;
+      ui.armed = null;
+      render();
+      showToast(CLOSEOUT_FAILED, { duration: 10000 });
+      return;
+    }
     ui.overlay = null;
     if (!commit()) return;
     // E3 — the one case where the closed book is not the whole story: said, and for long enough to read

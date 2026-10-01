@@ -13319,7 +13319,7 @@ test('E3: close-out archives the family balances and the ledger’s totals, and 
   const pc = slice('performCloseout');
   ok(pc.indexOf('buildSeasonArchive()') < pc.indexOf('rolloverYear()'), 'the archive is built after the ledger is cleared');
   // (Security re-check of C5, R5: in closeoutTrimToast's words.)
-  ok(/var coDone = rolloverYear\(\);/.test(pc) && /var coTrim = closeoutTrimToast\(coDone\);/.test(pc) && /done\.trimmed/.test(slice('closeoutTrimToast')), 'no word to the treasurer when the ledger is trimmed');
+  ok(/coDone = rolloverYear\(\);/.test(pc) && /var coTrim = closeoutTrimToast\(coDone\);/.test(pc) && /done\.trimmed/.test(slice('closeoutTrimToast')), 'no word to the treasurer when the ledger is trimmed');
   const pre = slice('renderCloseoutOverlay');
   ok(/coBook && coBook\.ledgerTrimmed/.test(pre) && /SEASON_LEDGER_TRIMMED/.test(pre), 'the preview does not say the ledger will be trimmed');
   ok(/keep that file/.test(SCRIPT), 'the trimmed notice does not say to keep the JSON');
@@ -22547,7 +22547,7 @@ test('reload gate: a newer tab’s save while this page runs is never saved over
 // newer tab's), or '' (nothing held: the control).
 const HELD_DISPATCH_FNS = ['handleAction', 'handleChange', 'handleForm', 'handleFilePick', 'performCloseout', 'deleteWithUndo', 'arm',
   'heldActAllowed', 'refuseHeldAct', 'HELD_ACTS', 'HELD_ACT_PREFIXES', 'HELD_CHANGES', 'PARENT_ACTS', 'GATE_ACTS',
-  'FORMAT_CLOSEOUT', 'FORMAT_BACKUP', 'JSON_BACKUP_NAME', 'jsonBackup', 'toCents', 'closeoutTrimToast', 'CLOSEOUT_REFUSED', 'CLOUD_COPY_NAME',
+  'FORMAT_CLOSEOUT', 'FORMAT_BACKUP', 'JSON_BACKUP_NAME', 'jsonBackup', 'toCents', 'closeoutTrimToast', 'CLOSEOUT_REFUSED', 'CLOSEOUT_FAILED', 'CLOUD_COPY_NAME',
   // C8-6 — close-out is refused before the year's last day, and with its last statement unreconciled unless an admin said so.
   'closeoutEarlyWhy', 'closeoutJuneWhy', 'CLOSEOUT_JUNE_ASKED', 'closeoutCutoff', 'programYearEndISO', 'closedYearText', 'fmtDateShortYear', 'fmtDateShort', 'isoPlusDays'];
 const heldDispatchCtx = (hold) => {
@@ -27772,6 +27772,31 @@ test('C8 re-check L-D: a closed book shortened until its rows were dropped still
   eq([b.scouts.length, b.scouts[0], b.scouts[1].length], [2, 's1', 120], 'cut to shape');
   eq('scouts' in J(n.normalizeClosedBook({ year: 2026, scouts: [] })), false, 'an empty list is none');
   eq('scouts' in J(n.normalizeClosedBook({ year: 2026, scouts: 'nope' })), false, 'not a list');
+});
+
+/* L-E: a close-out that fails part-way leaves the record as it was. */
+test('C8 re-check L-E: a close-out that fails after changing the record puts the record back whole, redraws, and tells the leader', () => {
+  const ctx = heldDispatchCtx('');
+  const run = (js) => vm.runInContext(js, ctx), got = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, ctx)));
+  // The close-out is allowed (an admin, after the year's last day), and the steps it takes change the record before one of them fails.
+  run(`state.archives = [{ id: 'old', kind: 'trails-end', year: 2025 }]; state.ledger = [{ id: 'e1', date: '2027-01-01', amountCents: 5, direction: 'in' }]; state.closedBooks = [];
+    function buildSeasonArchive() { return { id: 'arc-new', kind: 'season', year: state.budget.programYear }; }
+    function rolloverYear() { state.ledger = []; state.closedBooks = [{ year: 2026 }]; state.budget.programYear += 1; throw new Error('the record is too big'); }
+    var renders = 0; function render() { renders += 1; } ui.closeoutJuneOk = true; ui.armed = 'closeout-confirm';`);
+  const before = JSON.stringify(got('state'));
+  run('toasts = []; downloads = []; performCloseout();');
+  eq(JSON.stringify(got('state')), before, 'the record is exactly as it was: the archive is not in it, the ledger is not cleared, the year has not moved');
+  eq(got('[toasts, renders > 0, ui.armed, ui.closeoutJuneOk, downloads.length, ui.overlay]'),
+    [['Closing out the year did not finish, so nothing was changed. The snapshot was already downloaded: keep it. Try again, and if it fails again, tell a pack admin.'], true, null, true, 1, { kind: 'closeout' }],
+    'the leader is told, the screen is redrawn, the snapshot was downloaded first, the close-out screen stays');
+  // And a close-out that works still works: the record moves on, and the welcome is said.
+  run(`function rolloverYear() { state.ledger = []; state.budget.programYear += 1; return { year: 2026, compacted: [], trimmed: [] }; } toasts = []; ui.armed = null; performCloseout();`);
+  eq(got('[state.budget.programYear, state.ledger.length, state.archives.map(function (a) { return a.id; })]'), [2027, 0, ['old', 'arc-new']], 'control: a close-out that does not fail');
+  ok(/Welcome to the 2027 program year/.test(got('toasts')[0]), 'and welcomes');
+  // Steps 2 and 3 are inside the guarded part, after the snapshot and the copy, and nothing else is.
+  const pc = slice('performCloseout');
+  ok(pc.indexOf('download(') < pc.indexOf('var coBefore = JSON.stringify(state)') && pc.indexOf('var coBefore') < pc.indexOf('try {') && pc.indexOf('try {') < pc.indexOf('buildSeasonArchive()') &&
+    pc.indexOf('rolloverYear()') < pc.indexOf('} catch (coErr) {') && pc.indexOf('state = JSON.parse(coBefore)') > pc.indexOf('catch (coErr)') && pc.indexOf('} catch (coErr) {') < pc.indexOf('commit()'), 'the order');
 });
 
 /* ---------------- report ---------------- */
