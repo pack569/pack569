@@ -77,6 +77,10 @@ function sandbox(names) {
   vm.runInContext(names.map(slice).join('\n'), ctx);
   return ctx;
 }
+// Shift totals from families (2026-10-01) switched off, for a sandbox that draws the parent
+// Schedule or a shift line without the sync layer. Their own tests are in "shift totals (S-2)".
+const SR_OFF = "function shiftReportToday() { return '2026-09-28'; }\nfunction parentShiftReportStatus() { return ''; }\n" +
+  "function parentShiftReportCard() { return ''; }\n";
 // The reload gate (PACK_FORMAT): what every page context with a pack-record feed or a push needs.
 // By decl (below): PACK_FORMAT is one line, and slice would run on past it.
 const FORMAT_GATE_FNS = ['PACK_FORMAT', 'formatAhead', 'formatStored', 'storedFormatAhead', 'formatHeldHere', 'packFormatAhead', 'packFormatHeld', 'holdNewerFormat',
@@ -7209,7 +7213,7 @@ test('a storefront publishes who is on each shift, and never a penny of it', () 
   const src = BPV();
   ok(/var shifts = blocksInDayOrder\(sf\)\.map/.test(src),
     'the shifts publish in stored order rather than the order the day happens');
-  ok(/return \{ when: fmtTimeRange\(b\.start, b\.end\), who: shiftWho\(b\) \};/.test(src),
+  ok(/return \{ when: fmtTimeRange\(b\.start, b\.end\), who: shiftWho\(b\), blockId: String\(b\.id \|\| ''\) \};/.test(src),
     'a published shift no longer carries who is on it');
   ok(/if \(shifts\.length\) ev\.shifts = shifts;/.test(src), 'the shifts never reach the document');
   // The whole reason shift money was withheld in the first place. Anchored on `b.` so the tier
@@ -7275,7 +7279,8 @@ test('the reward ladder publishes what a scout must SELL, and never who paid ins
 });
 
 test('a parent sees which shifts are open, and an old document still shows its windows', () => {
-  const ctx = sandbox(['esc', 'parentShiftLines']);
+  const ctx = vm.createContext({});
+  vm.runInContext(SR_OFF + ['esc', 'parentShiftLines'].map(slice).join('\n'), ctx);
   const html = ctx.parentShiftLines({ shifts: [
     { when: '10:00 AM–12:00 PM', who: ['Ada', 'Beckett H.'] },
     { when: '12:00 PM–2:00 PM', who: [] }
@@ -8702,8 +8707,10 @@ test('only the backend adapters touch the Firebase SDK, and the server’s adapt
   eq((outside.match(/FIREBASE_CONFIG/g) || []).length, 3, 'FIREBASE_CONFIG is read outside backendConfigured/loadBackend');
   ok(/function backendConfigured\(\) \{ return !!FIREBASE_CONFIG && \(BACKEND !== 'api' \|\| fixedPackMode\(\)\); \}/.test(outside) &&
     /\(BACKEND === 'api' \? apiBackend : firestoreBackend\)\.init\(FIREBASE_CONFIG\)/.test(outside), 'the two readers of FIREBASE_CONFIG moved');
-  // BACKEND is chosen in one place, and nothing else branches on it but the move-file offer.
-  eq((outside.match(/\bBACKEND\b/g) || []).length, 4, 'BACKEND is read somewhere new');
+  // BACKEND is chosen in one place, and nothing else branches on it but the move-file offer and
+  // whether a family can send shift totals (shiftReportsOn: the API only, 2026-10-01).
+  eq((outside.match(/\bBACKEND\b/g) || []).length, 5, 'BACKEND is read somewhere new');
+  ok(/return BACKEND === 'api' && !!sync\.user/.test(slice('shiftReportsOn')), 'shift totals are not API-only');
   ok(/^  var BACKEND = 'api';$/m.test(SCRIPT), 'the committed page is not on the pack’s own server');
   // apiBackend: Google sign-in only. It imports Firebase's app and auth modules and nothing else.
   const api = codeOnly(slice('apiBackend'));
@@ -9511,7 +9518,8 @@ test('calendar-only publishes the calendar and the cost of a year, and no child�
   ['standings', 'goals', 'derby', 'tiers', 'tierLadder'].forEach((k) =>
     ok(!(k in pv), `calendar-only publishes ${k}`));
   const sf = pv.events.find((e) => e.kind === 'storefront');
-  eq(sf.shifts, [{ when: '10:00 AM–12:00 PM' }, { when: '12:00 PM–2:00 PM' }],
+  // Bare but for the block's id (2026-10-01): an opaque id, so a family can still send totals.
+  eq(sf.shifts, [{ when: '10:00 AM–12:00 PM', blockId: 'b1' }, { when: '12:00 PM–2:00 PM', blockId: 'b2' }],
     'the shift windows are not published bare');
   // J2 — the year's cost is the pack's plan, with nobody in it, and a calendar-only link is
   // exactly who asks for it.
@@ -10769,6 +10777,7 @@ test('J7: a family’s controls are 44px, and the calendar says what is on a day
   const ctx = vm.createContext({});
   vm.runInContext(`var ui = {}; function monthKey(d) { return String(d).slice(0, 7); }
     function monthLabel(k) { return k; } function fmtDate(d) { return 'Sat, Oct 3'; }
+    ${SR_OFF}
     ${['esc', 'pad2', 'parentEventRow', 'parentShiftLines', 'parentCalendar'].map(slice).join('\n')}`, ctx);
   ctx.pv = { events: [
     { kind: 'meeting', date: '2026-10-03', title: 'Wolf den meeting' },
@@ -10834,6 +10843,7 @@ test('J8: What’s coming up is the next 30 days by month, with the rest one tap
     function parentCalendar() { return ''; }
     function parentFamilyCost() { return ''; }
     function parentNextUp() { return ''; }   // B2 has its own test
+    ${SR_OFF}
     ${['esc', 'pad2', 'PARENT_EMPTY_CAL', 'isoPlusDays', 'parentEventsByMonth', 'parentEventRow',
        'parentShiftLines', 'renderParentSchedule'].map(slice).join('\n')}`, ctx);
   eq(vm.runInContext("isoPlusDays('2026-09-28', 30)", ctx), '2026-10-28', 'thirty days on');
@@ -12092,6 +12102,7 @@ test('B2: Next up heads the family Schedule with everything on the next date, an
   const ctx = vm.createContext({});
   vm.runInContext(`var ui = {};
     function fmtDate(d) { return String(d); }
+    ${SR_OFF}
     ${['esc', 'parentEventRow', 'parentShiftLines', 'parentNextUp', 'isoPlusDays', 'campIsoOrBlank'].map(slice).join('\n')}`, ctx);
   const evs = [
     { kind: 'activity', date: '2026-09-20', title: 'Past hike' },
@@ -12107,7 +12118,7 @@ test('B2: Next up heads the family Schedule with everything on the next date, an
   eq(ctx.parentNextUp(evs, '2026-10-11'), '', 'a card with nothing in it');
   eq(ctx.parentNextUp(undefined, '2026-10-11'), '', 'no events list throws or draws a card');
   // First on the page. A campout deadline comes from the structured field (Wave C1), never the prose.
-  ok(/var h = parentNextUp\(evs, today, Array\.isArray\(pv\.camping\) \? pv\.camping : \[\]\) \+ parentCalendar\(pv, today\);/.test(slice('renderParentSchedule')),
+  ok(/var h = parentShiftReportCard\(pv, shiftReportToday\(\)\) \+\s*parentNextUp\(evs, today, Array\.isArray\(pv\.camping\) \? pv\.camping : \[\]\) \+ parentCalendar\(pv, today\);/.test(slice('renderParentSchedule')),
     'Next up is not at the top of the Schedule, or is not handed the published trips');
   ok(!/\.cost|\.when/.test(codeOnly(slice('parentNextUp'))), 'Next up reads a trip’s free text for a deadline');
 });
@@ -12415,6 +12426,7 @@ test('C1: the family’s Next up card says when online sign-up for a campout clo
   const ctx = vm.createContext({});
   vm.runInContext(`var ui = {};
     function fmtDate(d) { return 'D' + String(d); }
+    ${SR_OFF}
     ${['esc', 'parentEventRow', 'parentShiftLines', 'parentNextUp', 'isoPlusDays', 'campIsoOrBlank'].map(slice).join('\n')}`, ctx);
   const trips = [
     { name: 'Fall Family Camping', registrationDeadline: '2026-10-01' },
@@ -15948,6 +15960,10 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'isStateEmpty', 'stateFingerprint', 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'keepLocalCopy', 'SERVER_NOTICES', 'serverNotice',
   // Owner decision 22 — keeping this device's copy over another device's close-out is an admin's.
   'keepLocalNeedsAdmin', 'KEEP_LOCAL_REFUSED', 'canReopenStatement',
+  // 2026-10-01 — a family's shift totals: the sync side (the list, the send, the withdraw).
+  'SHIFT_REPORT_ROLES', 'SHIFT_REPORT_MAX_CENTS', 'SHIFT_REPORT_NOTE_MAX', 'SHIFT_REPORT_SAY', 'SHIFT_REPORT_SAY_ELSE', 'shiftReportsOn',
+  'shiftReportCents', 'shiftReportNote', 'shiftReportBody', 'shiftReportMessage', 'loadShiftReports', 'shiftReportFor', 'shiftReportAct',
+  'shiftReportSubmit', 'arm', 'ARM_WARNED_MS', 'dollars',
   ...FORMAT_GATE_FNS];
 const CLIENT_SRC = CLIENT_FNS.map(decl).join('\n');
 
@@ -17137,6 +17153,315 @@ test('api client: the move file carries what the import takes, for this pack onl
   eq(offer('firestore', { user: { uid: 'other' } }), [false, false], 'another admin on Firestore');
   eq(offer('api', { user: { uid: 'other' } }), [false, false], 'another admin on the server');
   eq(offer('firestore', { myRole: 'editor', ownerUid: 'own' }), [false, false], 'a demoted owner');
+});
+
+/* ================================================================
+   Shift totals (S-2, 2026-10-01) — the parent side. The published view carries each storefront's
+   sfId and each shift's blockId; a signed-in, approved member on the API sees "Enter shift
+   totals" on a shift from today or the last 14 days (Eastern time, as the server counts), sends
+   the two figures and a signature, and sees where their report stands. None of it touches the
+   pack record. The server's rules are tested above ("api shift reports: …").
+   ================================================================ */
+
+// The status line and the card, over a made-up sync. `o`: BACKEND, role, user, reports, others,
+// loaded, list (false: a backend with no shift-report calls, as firestoreBackend has).
+function srStatusCtx(o) {
+  o = o || {};
+  const ctx = vm.createContext({});
+  const be = o.list === false ? '{ isOpen: function () { return true; } }'
+    : '{ isOpen: function () { return true; }, listShiftReports: function () { return { then: function () {} }; } }';
+  vm.runInContext(`
+    var BACKEND = ${JSON.stringify(o.backend || 'api')};
+    var ui = ${JSON.stringify(o.ui || {})};
+    var sync = { user: ${o.user === null ? 'null' : "{ uid: 'uid-me' }"}, myRole: ${JSON.stringify('role' in o ? o.role : 'parent')},
+      docId: 'P', backend: ${be},
+      shiftReports: ${o.loaded === false ? 'null' : JSON.stringify({ reports: o.reports || [], others: o.others || [], loaded: true })} };
+    function accountsInForce() { return !!sync.user; }
+    function cloudReady() { return !!(sync.backend && sync.backend.isOpen() && sync.docId); }
+    function fmtDate(d) { return 'D' + d; }
+    function todayISO() { return '2026-10-03'; }
+    ${['esc', 'fmt', 'arrOf', 'isoPlusDays', 'SHIFT_REPORT_ROLES', 'SHIFT_REPORT_DAYS', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_NOTE_MAX',
+       'SHIFT_REPORT_ATTEST', 'shiftReportToday', 'shiftReportOpenFor', 'shiftReportsOn', 'shiftReportFor', 'parentShiftReportStatus',
+       'parentShiftReportForm', 'parentShiftReportCard', 'parentShiftLines'].map(decl).join('\n')}`, ctx);
+  return ctx;
+}
+const SR_TODAY = '2026-10-03';
+const srEv = (date, blocks) => ({ kind: 'storefront', sfId: 'sf1', date, title: 'Kroger', detail: '',
+  shifts: (blocks || ['b1']).map((b) => ({ when: '10:00 AM–12:00 PM', who: ['Ada'], blockId: b })) });
+const srLine = (ctx, ev, block) => vm.runInContext('parentShiftReportStatus', ctx)(ev, ev.shifts.find((s) => s.blockId === (block || 'b1')), SR_TODAY);
+const srReport = (over) => Object.assign({ id: 'r1', sfId: 'sf1', blockId: 'b1', teCents: 12345, cashCents: 2500, note: '', status: 'submitted',
+  mine: true, submittedByName: 'Test parent', reviewedByName: null, reviewNote: '' }, over || {});
+
+// buildParentView's standings half, stubbed as J12 stubs it: these tests are about the calendar.
+const SR_STANDINGS_STUBS = `
+  state.derby = { name: '', date: '', awards: [] };
+  function computePackTotals() { return { combined: 0, teGoal: 0, cashGoal: 0 }; }
+  function computeScoutTotals() { return {}; }
+  function visibleScoutRows() { return []; }
+  function rankBy(rows) { return rows; }
+  function tierProgressRows() { return []; }
+  function plannedTier() { return null; }
+  function derbyWinners() { return []; }
+  function sortedTiers() { return []; }
+  function salesForCommission(c) { return c; }`;
+test('shift totals: the parent view carries each storefront’s sfId and each shift’s blockId, with standings and without', () => {
+  const ctx = pvCtx(SR_STANDINGS_STUBS);
+  for (const showStandings of [true, false]) {
+    const pv = vm.runInContext(`buildParentView(state, { showStandings: ${showStandings} })`, ctx);
+    const sf = pv.events.find((e) => e.kind === 'storefront');
+    eq([sf.sfId, sf.shifts.map((s) => s.blockId)], ['sf1', ['b1', 'b2']], 'the ids, standings ' + showStandings);
+    eq(Object.keys(sf).sort(), ['date', 'detail', 'kind', 'sfId', 'shifts', 'title'], 'the storefront event’s keys, standings ' + showStandings);
+    eq(sf.shifts.map((s) => Object.keys(s).sort().join()), showStandings ? ['blockId,when,who', 'blockId,when,who'] : ['blockId,when', 'blockId,when'],
+      'a shift’s keys, standings ' + showStandings);
+    // Only storefronts carry ids; nothing else in the view gained one.
+    ok(pv.events.filter((e) => e.kind !== 'storefront').every((e) => !('sfId' in e) && !('shifts' in e)), 'a non-storefront event carries an id');
+  }
+  // Still a shape the server stores: the ids are nested in events, so PARENT_VIEW_KEYS is unchanged.
+  ok(/sfId: String\(sf\.id \|\| ''\)/.test(BPV()) && /blockId: String\(b\.id \|\| ''\)/.test(BPV()), 'the ids are not the record’s own');
+  const gate = BPV().indexOf('if (!withStandings) return out;');
+  ok(BPV().indexOf("blockId: String(b.id || '')") < gate, 'the ids are behind the standings gate');
+});
+
+atest('shift totals: a view built by the real buildParentView is one the server takes, and a family reports a shift from it', async () => {
+  await apiSetup();
+  const today = API.rules.packToday();
+  const yesterday = new Date(Date.parse(today + 'T00:00:00Z') - 86400000).toISOString().slice(0, 10);
+  const py = +yesterday.slice(0, 4) - (+yesterday.slice(5, 7) < 7 ? 1 : 0);
+  const ctx = pvCtx(SR_STANDINGS_STUBS + `state.storefronts[0].date = '${yesterday}'; state.budget.programYear = ${py};`);
+  const view = vm.runInContext('buildParentView(state, { showStandings: true })', ctx);
+  const w = await (await apiWorld()).seed();
+  eq((await w.call('editor', 'PUT', 'view', null, { body: view })).status, 200, 'the leader’s page publishes the view');
+  const r = await w.call('parent', 'POST', 'shiftReports', null, { body: { sfId: 'sf1', blockId: 'b2', teCents: 5000, cashCents: 0, attest: true } });
+  eq([r.status, r.body.report && r.body.report.blockId], [200, 'b2'], 'a family reports a shift from the published view');
+  const bad = await w.call('parent', 'POST', 'shiftReports', null, { body: { sfId: 'sf1', blockId: 'b9', teCents: 1, cashCents: 0, attest: true } });
+  eq(bad.body.reason, 'not-in-view', 'a block the view does not publish');
+});
+
+test('shift totals: the button is there only on the API, signed in, approved, and for a shift today or up to 14 days back', () => {
+  const on = (o, date) => srLine(srStatusCtx(o), srEv(date === undefined ? SR_TODAY : date));
+  const BTN = /data-act="shift-report-open" data-sf="sf1" data-block="b1">Enter shift totals</;
+  for (const role of ['admin', 'editor', 'viewer', 'parent']) ok(BTN.test(on({ role })), role + ' gets the button');
+  eq(on({ role: 'pending' }), '', 'pending');
+  eq(on({ role: null }), '', 'no role');
+  eq(on({ user: null }), '', 'signed out');
+  eq(on({ backend: 'firestore' }), '', 'a Firestore page');
+  eq(on({ list: false }), '', 'a backend with no shift-report calls');
+  eq(on({ loaded: false }), '', 'before the reports have come');
+  ok(BTN.test(on({}, '2026-09-19')), '14 days back');
+  eq(on({}, '2026-09-18'), '', '15 days back');
+  eq(on({}, '2026-10-04'), '', 'tomorrow');
+  eq(on({}, ''), '', 'no date');
+  // The window is the pack's day, in Eastern time, as the server counts it.
+  const ctx = srStatusCtx({});
+  eq(vm.runInContext("shiftReportToday(Date.parse('2026-10-04T03:30:00Z'))", ctx), '2026-10-03', 'late Saturday evening, Eastern');
+  eq(vm.runInContext("[shiftReportOpenFor('2026-10-03', '2026-10-03'), shiftReportOpenFor('2026-09-19', '2026-10-03'), shiftReportOpenFor('2026-09-18', '2026-10-03'), shiftReportOpenFor('2026-10-04', '2026-10-03')]", ctx),
+    [true, true, false, false], 'the window');
+  // Never by job: the gate reads the role and nothing else.
+  ok(!/myJobs|hasJob|JOBS/.test(codeOnly(slice('shiftReportsOn'))), 'the gate reads a job');
+  // In the shift line itself, beside the names.
+  const lctx = srStatusCtx({});
+  const lines = vm.runInContext('parentShiftLines', lctx)(srEv(vm.runInContext('shiftReportToday()', lctx)));
+  ok(/<span class="sf-who">Ada<\/span><div class="sr-status no-print">/.test(lines), 'the status is not in the shift line');
+  ok(/var today = shiftReportToday\(\);/.test(slice('parentShiftLines')), 'the shift line counts days by the device, not the pack');
+});
+
+test('shift totals: each shift says where its totals stand — yours, someone else’s, or sent back', () => {
+  const line = (o) => srLine(srStatusCtx(o), srEv(SR_TODAY));
+  const waiting = line({ reports: [srReport()] });
+  ok(/Sent — waiting for a leader/.test(waiting) && /\$123\.45 Trail’s End · \$25\.00 cash/.test(waiting), 'your report, waiting');
+  ok(/data-act="shift-report-open" data-sf="sf1" data-block="b1" data-rid="r1">Edit</.test(waiting), 'no Edit on your waiting report');
+  ok(/data-act="shift-report-withdraw" data-rid="r1">Withdraw</.test(waiting), 'no Withdraw on your waiting report');
+  ok(!/Enter shift totals/.test(waiting), 'a second report offered beside your waiting one');
+  ok(/Tap again to withdraw/.test(line({ reports: [srReport()], ui: { armed: 'shift-report-withdraw:r1' } })), 'Withdraw takes two taps');
+  const done = line({ reports: [srReport({ status: 'accepted', reviewedByName: 'Sam' })] });
+  ok(/Accepted by Sam/.test(done) && !/<button/.test(done), 'your report, accepted');
+  const back = line({ reports: [srReport({ status: 'returned', reviewNote: 'The box had $30 <b>cash</b>' })] });
+  ok(/Sent back: The box had \$30 &lt;b&gt;cash&lt;\/b&gt;/.test(back), 'your report, sent back, with the leader’s reason escaped');
+  ok(/data-act="shift-report-open" data-sf="sf1" data-block="b1">Send a new report</.test(back), 'no way to send a new one');
+  // Another family's.
+  const theirs = line({ others: [{ sfId: 'sf1', blockId: 'b1', status: 'submitted' }] });
+  ok(/Totals sent by another family/.test(theirs) && !/<button/.test(theirs), 'another family’s, waiting: no button');
+  const theirsDone = line({ others: [{ sfId: 'sf1', blockId: 'b1', status: 'accepted' }] });
+  ok(/Totals accepted/.test(theirsDone) && !/<button/.test(theirsDone), 'another family’s, accepted: no button');
+  ok(/Enter shift totals/.test(line({ others: [{ sfId: 'sf1', blockId: 'b1', status: 'returned' }] })), 'another family’s, sent back: the block is free');
+  ok(/Enter shift totals/.test(line({ others: [{ sfId: 'sf1', blockId: 'b2', status: 'submitted' }] })), 'another block’s report hid this one’s button');
+  ok(/Enter shift totals/.test(line({ others: [{ sfId: 'sf9', blockId: 'b1', status: 'submitted' }] })), 'another storefront’s report hid this one’s button');
+  // Yours sent back, and since then another family's is in: theirs holds the block.
+  ok(/Totals sent by another family/.test(line({ reports: [srReport({ status: 'returned' })], others: [{ sfId: 'sf1', blockId: 'b1', status: 'submitted' }] })),
+    'a block another family now holds still offers yours');
+  // Your newer report holds the block over your older sent-back one.
+  ok(/Sent — waiting/.test(line({ reports: [srReport({ id: 'r2' }), srReport({ status: 'returned' })] })), 'your newer report');
+  ok(/Enter shift totals/.test(line({ reports: [srReport({ status: 'withdrawn' })] })), 'after you withdrew');
+  // A leader previewing gets every report, unmarked as theirs: someone else's.
+  ok(/Totals sent by another family/.test(line({ role: 'admin', reports: [srReport({ mine: false, submittedByName: 'Nora' })] })), 'a leader previewing');
+  // Outside the window a report still says where it stands, but nothing new is offered.
+  const old = srLine(srStatusCtx({ reports: [srReport({ status: 'returned', reviewNote: 'x' })] }), srEv('2026-09-01'));
+  ok(/Sent back: x/.test(old) && !/<button/.test(old), 'an old sent-back report');
+  // No other family's amount or name can be drawn: the line never reads them off `others`.
+  ok(!/others[\s\S]{0,80}(teCents|cashCents|submittedByName)/.test(codeOnly(slice('shiftReportFor'))), 'another family’s figures are read');
+});
+
+test('shift totals: the card lists the last 14 days of shifts, newest first, and holds the one form', () => {
+  const pv = { events: [srEv('2026-09-30', ['b1']), Object.assign(srEv('2026-10-03', ['b5', 'b6']), { sfId: 'sf2', title: 'Publix' }),
+    srEv('2026-09-01', ['b9']), srEv('2026-10-10', ['bF']), { kind: 'meeting', date: '2026-10-02', title: 'Pack meeting' }] };
+  const card = (o) => vm.runInContext('parentShiftReportCard', srStatusCtx(o))(pv, SR_TODAY);
+  const h = card({});
+  ok(/<h2 class="section display">Storefront shift totals<\/h2>/.test(h), 'the card');
+  eq((h.match(/class="sr-row"/g) || []).length, 3, 'one row per shift in the window');
+  ok(h.indexOf('DPublix') < h.indexOf('DKroger') || h.indexOf('D2026-10-03') < h.indexOf('D2026-09-30'), 'newest first');
+  ok(!/b9|bF/.test(h), 'a shift outside the window');
+  eq(card({ role: 'pending' }), '', 'pending');
+  eq(card({ backend: 'firestore' }), '', 'Firestore');
+  eq(vm.runInContext('parentShiftReportCard', srStatusCtx({}))({ events: [srEv('2026-09-01')] }, SR_TODAY), '', 'no shift in the window');
+  ok(/Checking which shifts have totals/.test(card({ loaded: false })), 'while the reports load');
+  // The form, under its own shift, drawn once, with what was typed kept.
+  const f = card({ ui: { shiftReport: { sfId: 'sf2', blockId: 'b6', rid: '', te: '12.50', cash: '', note: 'Two "twenties"', attest: true, busy: false, problem: 'Enter the cash donations in dollars and cents, up to $10,000.' } } });
+  eq((f.match(/<form data-form="shift-report" id="srForm"/g) || []).length, 1, 'one form');
+  ok(/name="te" inputmode="decimal" autocomplete="off" placeholder="0.00" value="12.50"/.test(f) && /Two &quot;twenties&quot;<\/textarea>/.test(f), 'what was typed');
+  ok(/<label class="fld">Trail’s End amount \(\$\)<input/.test(f) && /<label class="fld">Cash donations \(\$\)<input/.test(f), 'the two figures, labelled as the leaders’ block labels them');
+  ok(/<label class="sr-attest"><input type="checkbox" name="attest" checked><span>I counted the cash with the scouts’ families, and the Trail’s End amount matches the app for this shift\.<\/span>/.test(f),
+    'the signature, in the plan’s words');
+  ok(/role="alert">Enter the cash donations/.test(f), 'the problem, said under the form');
+  ok(/>Send totals</.test(f) && /data-act="shift-report-cancel">Cancel</.test(f), 'the buttons');
+  ok(/maxlength="300"/.test(f), 'the note’s limit');
+  ok(/Sending…/.test(card({ ui: { shiftReport: { sfId: 'sf2', blockId: 'b6', rid: '', te: '', cash: '', note: '', attest: false, busy: true } } })), 'while sending');
+  ok(/Change your totals[\s\S]*Send changes/.test(card({ ui: { shiftReport: { sfId: 'sf2', blockId: 'b6', rid: 'r1', te: '', cash: '', note: '', attest: false } } })), 'editing');
+  ok(/var h = parentShiftReportCard\(pv, shiftReportToday\(\)\) \+/.test(slice('renderParentSchedule')), 'the card is not first on the Schedule');
+});
+
+test('shift totals: what a family types becomes whole cents, or a sentence saying what to fix', () => {
+  const ctx = sandbox(['SHIFT_REPORT_MAX_CENTS', 'SHIFT_REPORT_NOTE_MAX', 'SHIFT_REPORT_SAY', 'shiftReportCents', 'shiftReportNote', 'shiftReportBody']);
+  const c = (v) => vm.runInContext('shiftReportCents', ctx)(v);
+  eq(['12', '12.5', '12.50', '$1,234.56', ' 0 ', '.75', '0.00'].map(c), [1200, 1250, 1250, 123456, 0, 75, 0], 'amounts');
+  ok(['', '-5', '12.345', 'twelve', '1e3', '12.3.4', null].map(c).every((n) => Number.isNaN(n)), 'not amounts');
+  const body = (d) => JSON.parse(JSON.stringify(vm.runInContext('shiftReportBody', ctx)(d)));
+  const d = { sfId: 'sf1', blockId: 'b1', rid: '', te: '123.45', cash: '25', note: '  Two\n twenties ', attest: true };
+  eq(body(d), { body: { teCents: 12345, cashCents: 2500, note: 'Two twenties', attest: true, sfId: 'sf1', blockId: 'b1' } }, 'a new report');
+  eq(body(Object.assign({}, d, { rid: 'r1' })), { body: { teCents: 12345, cashCents: 2500, note: 'Two twenties', attest: true, action: 'edit' } }, 'an edit');
+  eq(body(Object.assign({}, d, { te: '' })).problem, 'Enter the Trail’s End amount in dollars and cents, up to $10,000.', 'no Trail’s End amount');
+  eq(body(Object.assign({}, d, { cash: '10000.01' })).problem, 'Enter the cash donations in dollars and cents, up to $10,000.', 'over the cap');
+  ok(!body(Object.assign({}, d, { cash: '10000' })).problem, 'the cap itself');
+  eq(body(Object.assign({}, d, { note: 'x'.repeat(301) })).problem, 'Keep the note to 300 characters or fewer.', 'a long note');
+  eq(body(Object.assign({}, d, { attest: false })).problem, 'Tick the box to confirm you counted the cash.', 'unsigned');
+});
+
+test('shift totals: every refusal the server can give has words a family can act on', () => {
+  const ctx = sandbox(['SHIFT_REPORT_SAY', 'SHIFT_REPORT_SAY_ELSE', 'shiftReportMessage']);
+  const say = (e) => vm.runInContext('shiftReportMessage', ctx)(e);
+  // Every reason the server's shift-report code can send: its 400s, and the 409s' reason or error.
+  const server = readFileSync(join(ROOT, 'functions/_lib/rules.js'), 'utf8') +
+    readdirSync(join(ROOT, 'functions/api/pack/[id]/shift-reports')).map((f) => readFileSync(join(ROOT, 'functions/api/pack/[id]/shift-reports', f), 'utf8')).join('\n');
+  const rules = server.slice(server.indexOf('// ---- Shift reports'));
+  const reasons = new Set([...rules.matchAll(/return '([a-z-]+)';/g), ...server.matchAll(/badRequest\('([a-z-]+)'\)/g)].map((m) => m[1]));
+  ['open', 'accepted', 'report-moved'].forEach((r) => reasons.add(r));
+  // Asked of a well-formed page, these only follow a bug, a stale page, or a leader's action.
+  const generic = ['sf-id', 'block-id', 'unknown-field', 'action', 'review-note', 'same-person'];
+  ok(reasons.size >= 14, 'the reasons found: ' + [...reasons]);
+  for (const r of reasons) {
+    const m = say({ code: 'invalid-argument', reason: r });
+    ok(m && m.indexOf(r) === -1 || r === 'note' || r === 'open' || r === 'accepted', `the raw reason ${r} is shown`);
+    if (generic.indexOf(r) === -1) ok(m !== vm.runInContext('SHIFT_REPORT_SAY_ELSE', ctx), `${r} has no words of its own`);
+  }
+  eq(say({ code: 'failed-precondition', reason: 'open' }), 'Another family has already sent totals for this shift. A leader is checking them.', 'a block taken');
+  eq(say({ code: 'invalid-argument', reason: 'too-old' }), 'This shift was more than 14 days ago. Give the totals to a leader instead.', 'too old');
+  eq(say({ code: 'permission-denied', reason: 'forbidden' }), 'Your account can’t send shift totals. Ask a leader.', 'refused');
+  eq(say({ code: 'unavailable', reason: '', message: 'Couldn’t reach the pack’s server.' }),
+    'Couldn’t reach the pack’s server. Your totals weren’t sent. Try again in a moment.', 'offline');
+});
+
+test('shift totals: the parent’s actions write the server’s table only — never the pack record — and Firestore has none of it', () => {
+  const pa = /var PARENT_ACTS = \[([^\]]*)\]/.exec(SCRIPT)[1];
+  ['shift-report-open', 'shift-report-cancel', 'shift-report-withdraw'].forEach((a) => ok(pa.indexOf("'" + a + "'") >= 0, a + ' is not a parent action'));
+  for (const f of ['shiftReportAct', 'shiftReportSubmit', 'loadShiftReports', 'shiftReportsOn', 'shiftReportFor', 'shiftReportBody',
+    'parentShiftReportStatus', 'parentShiftReportForm', 'parentShiftReportCard']) {
+    const code = codeOnly(slice(f));
+    ok(!/\bstate\b|\bsave\(|\bcommit\(|scheduleSyncPush|syncPush|pushPack|writeParentView|writeView/.test(code), f + ' touches the pack record');
+  }
+  // The only calls they make are the three shift-report ones.
+  const calls = [...['shiftReportAct', 'shiftReportSubmit', 'loadShiftReports'].map((f) => codeOnly(slice(f))).join('\n')
+    .matchAll(/(?:be|sync\.backend)\.(\w+)\(/g)].map((m) => m[1]);
+  eq([...new Set(calls)].sort(), ['listShiftReports', 'patchShiftReport', 'submitShiftReport'], 'the backend calls');
+  // The form is let through before handleForm's parent refusal, and only that form.
+  ok(/function handleForm\(f\) \{\s*(\/\/[^\n]*\n\s*)*if \(f\.dataset\.form === 'shift-report'\) \{ if \(!gateMode\(\)\) shiftReportSubmit\(f\); return; \}\s*if \(parentMode\(\) \|\| gateMode\(\)\) return;/.test(slice('handleForm')),
+    'the shift-totals form is not routed ahead of the parent refusal');
+  // API only: the server's adapter has the calls, Firestore's has none.
+  const api = slice('apiBackend'), fsb = slice('firestoreBackend');
+  ['listShiftReports', 'submitShiftReport', 'patchShiftReport'].forEach((m) => {
+    ok(new RegExp('\\n    ' + m + ': function').test(api), 'apiBackend has no ' + m);
+    ok(fsb.indexOf(m) === -1, 'firestoreBackend has ' + m);
+  });
+  ok(/'\/shift-reports\/' \+ encodeURIComponent\(rid\)/.test(api), 'a report id is not encoded into the path');
+  // Signing out, or another pack, drops the reports and any open form.
+  ok(/sync\.shiftReports = null;\s*ui\.shiftReport = null;/.test(slice('clearAccountsRuntime')), 'the reports outlive the account');
+});
+
+atest('shift totals: a family’s page lists, sends, edits and withdraws through the API, and never saves the pack', async () => {
+  await apiSetup();
+  const today = API.rules.packToday();
+  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent', pending: 'pending', newbie: 'parent' });
+  w.state(3, PACK_STATE());
+  const view = { rev: 3, packName: 'Test Pack', events: [{ kind: 'storefront', sfId: 'sf1', date: today, title: 'Kroger', detail: '',
+    shifts: [{ when: '10:00 AM–12:00 PM', blockId: 'b1' }, { when: '12:00 PM–2:00 PM', blockId: 'b2' }] }] };
+  w.db.raw.prepare('INSERT INTO parent_views (pack_id, payload, generated_at) VALUES (?, ?, 1)').run(API_PACK, JSON.stringify(view));
+  // A form, as the page's FormData reads it.
+  const form = (vals) => `({ values: ${JSON.stringify(vals)} })`;
+  const prep = (c) => c.run(`FormData = function (f) { return { get: function (k) { return Object.prototype.hasOwnProperty.call(f.values, k) ? f.values[k] : null; } }; };`);
+  const par = await (await apiClient(w, 'parent')).start();
+  prep(par);
+  await par.poll();
+  await settle([par]);
+  ok(par.log.indexOf('GET /P/shift-reports') >= 0, 'the reports are not fetched when the view arrives: ' + par.log.join(', '));
+  eq(par.get('[sync.shiftReports.loaded, sync.shiftReports.reports.length, shiftReportsOn()]'), [true, 0, true], 'the family’s reports');
+  const before = par.get('JSON.stringify(state)');
+  const saves0 = par.get('saves');
+  // Open, fill in, send.
+  par.run("shiftReportAct('shift-report-open', { dataset: { sf: 'sf1', block: 'b1' } })");
+  eq(par.get('[ui.shiftReport.sfId, ui.shiftReport.blockId, ui.shiftReport.rid]'), ['sf1', 'b1', ''], 'the form opens for the shift');
+  par.run(`shiftReportSubmit(${form({ te: '$123.45', cash: '25', note: 'Counted with the Smiths', attest: null })})`);
+  eq(par.get('[ui.shiftReport.problem, ui.shiftReport.busy]'), ['Tick the box to confirm you counted the cash.', false], 'unsigned: said, not sent');
+  ok(par.log.indexOf('POST /P/shift-reports') < 0, 'an unsigned report was sent');
+  par.reset();
+  par.run(`shiftReportSubmit(${form({ te: '$123.45', cash: '25', note: 'Counted with the Smiths', attest: 'on' })})`);
+  await settle([par]);
+  ok(par.log.indexOf('POST /P/shift-reports') >= 0 && par.log.indexOf('GET /P/shift-reports') >= 0, 'sent, then listed again: ' + par.log.join(', '));
+  eq(w.one('SELECT te_cents, cash_cents, note, status, submitted_by_uid FROM shift_reports'),
+    { te_cents: 12345, cash_cents: 2500, note: 'Counted with the Smiths', status: 'submitted', submitted_by_uid: 'uid-parent' }, 'the report on the server');
+  eq(par.get('[ui.shiftReport, sync.shiftReports.reports[0].status, toasts[toasts.length - 1]]'),
+    [null, 'submitted', 'Totals sent. A leader will check them before they count.'], 'the page after sending');
+  // Edit: the form opens with your figures, re-signed.
+  const rid = par.get('sync.shiftReports.reports[0].id');
+  par.run(`shiftReportAct('shift-report-open', { dataset: { sf: 'sf1', block: 'b1', rid: '${rid}' } })`);
+  eq(par.get('[ui.shiftReport.te, ui.shiftReport.cash, ui.shiftReport.note, ui.shiftReport.attest]'), ['123.45', '25.00', 'Counted with the Smiths', false], 'the edit form');
+  par.run(`shiftReportSubmit(${form({ te: '130', cash: '25', note: '', attest: 'on' })})`);
+  await settle([par]);
+  eq(w.one('SELECT te_cents, note FROM shift_reports'), { te_cents: 13000, note: '' }, 'the edit on the server');
+  // Another family, same shift: told in words, and the form closes.
+  const nb = await (await apiClient(w, 'newbie')).start();
+  prep(nb);
+  await nb.poll();
+  await settle([nb]);
+  eq(nb.get('sync.shiftReports.others'), [{ sfId: 'sf1', blockId: 'b1', status: 'submitted' }], 'the second family sees the block taken');
+  ok(nb.get('JSON.stringify(sync.shiftReports)').indexOf('13000') === -1, 'the second family has the first one’s figures');
+  nb.run("shiftReportAct('shift-report-open', { dataset: { sf: 'sf1', block: 'b1' } })");
+  nb.run(`shiftReportSubmit(${form({ te: '1', cash: '1', note: '', attest: 'on' })})`);
+  await settle([nb]);
+  eq(nb.get('[ui.shiftReport, toasts[toasts.length - 1]]'),
+    [null, 'Another family has already sent totals for this shift. A leader is checking them.'], 'a block already taken');
+  // Withdraw: two taps.
+  par.run(`shiftReportAct('shift-report-withdraw', { dataset: { rid: '${rid}' } })`);
+  eq(w.one('SELECT status FROM shift_reports').status, 'submitted', 'one tap withdrew it');
+  par.run(`shiftReportAct('shift-report-withdraw', { dataset: { rid: '${rid}' } })`);
+  await settle([par]);
+  eq([w.one('SELECT status FROM shift_reports').status, par.get('sync.shiftReports.reports[0].status')], ['withdrawn', 'withdrawn'], 'withdrawn');
+  // Through all of it: the pack record never saved, pushed or changed on the family's page.
+  eq([par.get('saves'), par.get('JSON.stringify(state)')], [saves0, before], 'the family’s page touched the pack record');
+  ok(!par.log.some((l) => /^PUT \/P$|^PUT \/P\/view/.test(l)) && !nb.log.some((l) => /^PUT \/P$|^PUT \/P\/view/.test(l)), 'a family’s page wrote the pack or the view');
+  eq(w.sql("SELECT action FROM audit WHERE action LIKE 'shift.%' ORDER BY id").map((r) => r.action),
+    ['shift.report', 'shift.report.edit', 'shift.report.withdraw'], 'the audit trail');
+  // A pending account's page never asks.
+  const pend = await (await apiClient(w, 'pending')).start();
+  await settle([pend]);
+  eq([pend.get('shiftReportsOn()'), pend.log.filter((l) => /shift-reports/.test(l)).length], [false, 0], 'a pending page asks for reports');
 });
 
 /* ================================================================

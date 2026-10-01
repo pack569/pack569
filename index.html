@@ -878,6 +878,23 @@
   }
   .sf-who { flex: 1 1 140px; min-width: 0; }
   .sf-shift.sf-open .sf-who { color: var(--ink-soft); font-style: italic; }
+  /* A family's shift totals (2026-10-01): the status under a shift, and the form. The status
+     takes a line of its own, under the time and the names, at every width. */
+  .sr-status { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 4px; font-size: 0.82rem; }
+  .sr-msg { font-weight: 650; }
+  .sr-msg.sr-done { color: var(--good); }
+  .sr-msg.sr-back { color: var(--accent-text); }
+  .sr-figs { color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+  .sr-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+  .sr-row { padding: 8px 0; }
+  .sr-row + .sr-row { border-top: 1px solid var(--line-soft); }
+  .sr-shift { font-size: 0.86rem; }
+  .sr-form { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; padding: 12px; border-radius: 10px; background: var(--surface-2); }
+  .sr-fields { display: flex; flex-wrap: wrap; gap: 10px 16px; }
+  .sr-form textarea { width: 100%; }
+  .sr-attest { display: flex; align-items: flex-start; gap: 10px; font-size: 0.86rem; line-height: 1.35; }
+  .sr-attest input[type="checkbox"] { width: 20px; height: 20px; min-height: 20px; padding: 0; margin: 1px 0 0; flex: 0 0 auto; accent-color: var(--accent); }
+  .sr-problem { color: var(--bad); margin: 0; font-weight: 600; }
   /* A phone cannot hold a 17-character time range and two full names on one line, and the
      wrapped two-column form reads as a mistake — a phantom column with nothing beside it. So
      below 520px the shift stacks on purpose: time as a small label, names under it. */
@@ -13147,6 +13164,9 @@
     // passphrase switch could skip the first parent-view write for the new pack.
     stopParentFeed();
     sync.parentView = null;
+    // A family's shift reports and an open shift-totals form belong to one account in one pack.
+    sync.shiftReports = null;
+    ui.shiftReport = null;
     sync.feed = sync.unsub ? sync.feed : null;
     if (sync.invitesUnsub) { try { sync.invitesUnsub(); } catch (e) { /* already gone */ } sync.invitesUnsub = null; }
     sync.invites = [];
@@ -13818,7 +13838,20 @@
       return this.call('POST', '/api/session?pack=' + encodeURIComponent(docId), joinCode ? { join: joinCode } : undefined);
     },
     // The one-time copy of the pack in (functions/api/pack/[id]/import.js). The owner only.
-    importPack: function (docId, body) { return this.write('POST', this.packPath(docId, '/import'), body); }
+    importPack: function (docId, body) { return this.write('POST', this.packPath(docId, '/import'), body); },
+    // ---- Shift reports (functions/api/pack/[id]/shift-reports/, 2026-10-01) ----
+    // A family's totals for one storefront shift. These never touch the pack record: a report
+    // lives in its own table, and a leader copies it onto the block when they accept it.
+    // firestoreBackend has none of these, so on a Firestore page the feature is simply absent.
+    // GET: { reports, others }. A leader gets every report; a parent their own, plus
+    // { sfId, blockId, status } for anyone else's.
+    listShiftReports: function (docId) { return this.call('GET', this.packPath(docId, '/shift-reports')); },
+    // POST { sfId, blockId, teCents, cashCents, note, attest: true }: { report }.
+    submitShiftReport: function (docId, body) { return this.call('POST', this.packPath(docId, '/shift-reports'), body); },
+    // PATCH { action: 'edit' | 'withdraw' | 'accept' | 'return', … }: { report }.
+    patchShiftReport: function (docId, rid, body) {
+      return this.call('PATCH', this.packPath(docId, '/shift-reports/' + encodeURIComponent(rid)), body);
+    }
   };
   // Is there a cloud to talk to at all? False in device-only mode and in every preview build
   // (the build rewrites FIREBASE_CONFIG to null), and every cloud path starts by asking.
@@ -14012,6 +14045,8 @@
       sync.parentView = view || null;
       if (sync.mode !== 'online') { sync.mode = 'online'; sync.error = ''; }
       render();
+      // A new view can bring new shifts: ask where their totals stand (API only; else nothing).
+      loadShiftReports();
     }, function (err) { if (sync.session === mine) syncFail(err); });
   }
   // Which document a role is allowed to read. EVERY fallback lands on 'doc' so the
@@ -15192,11 +15227,15 @@
         // ⚠ Calendar-only mode publishes NO child's name, and a shift's `who` is one — so there
         // the windows go out alone (the parent app already draws a shift with no `who` as a
         // bare time, which is how a document from before 2026-08-02 looks).
+        // 2026-10-01 — each shift carries its block's id, and the storefront its own (sfId,
+        // blockId), so a family can send in a shift's totals (POST /shift-reports, which checks
+        // the shift is in THIS published view). Opaque ids, no child data, so calendar-only mode
+        // keeps them too: a family there reports totals all the same.
         var shifts = blocksInDayOrder(sf).map(function (b) {
-          if (!withStandings) return { when: fmtTimeRange(b.start, b.end) };
-          return { when: fmtTimeRange(b.start, b.end), who: shiftWho(b) };
+          if (!withStandings) return { when: fmtTimeRange(b.start, b.end), blockId: String(b.id || '') };
+          return { when: fmtTimeRange(b.start, b.end), who: shiftWho(b), blockId: String(b.id || '') };
         }).filter(function (s) { return !!s.when; });
-        var ev = { kind: 'storefront', date: sf.date, title: String(sf.name || 'Storefront'), detail: '' };
+        var ev = { kind: 'storefront', sfId: String(sf.id || ''), date: sf.date, title: String(sf.name || 'Storefront'), detail: '' };
         if (shifts.length) ev.shifts = shifts;
         events.push(ev);
       });
@@ -19104,17 +19143,296 @@
   // A document published before this shipped carries `times` instead — a bare list of windows
   // with no names. Those already render above as time chips, so this simply adds nothing and the
   // old view degrades to exactly what it was rather than to a blank storefront.
+  // 2026-10-01 — and, for a signed-in member on the API, where the shift's totals stand, with
+  // "Enter shift totals" on a shift from today or the last 14 days (parentShiftReportStatus).
   function parentShiftLines(e) {
     var shifts = (e && Array.isArray(e.shifts)) ? e.shifts : [];
     if (!shifts.length) return '';
+    var today = shiftReportToday();
     var h = '<ul class="sf-shifts">';
     shifts.forEach(function (s) {
       var who = (s && Array.isArray(s.who)) ? s.who : [];
       h += '<li class="sf-shift' + (who.length ? '' : ' sf-open') + '">' +
         '<span class="sf-when">' + esc(String((s && s.when) || '')) + '</span>' +
-        '<span class="sf-who">' + (who.length ? esc(who.join(', ')) : 'Open') + '</span></li>';
+        '<span class="sf-who">' + (who.length ? esc(who.join(', ')) : 'Open') + '</span>' +
+        parentShiftReportStatus(e, s, today) + '</li>';
     });
     return h + '</ul>';
+  }
+  /* ----- Shift totals from families (2026-10-01; server: functions/api/pack/[id]/shift-reports/) -----
+     At the end of a storefront shift the parents at the table know the block's two figures: the
+     Trail's End amount and the cash donations. A signed-in family sends them in and signs that
+     they counted them; a leader then accepts the report as the second sign-off, and only then do
+     the figures reach the block (and the standings). Until then nothing here changes anything.
+     ⚠ NONE OF THIS TOUCHES THE PACK RECORD. A report lives in its own table on the server; these
+     functions read the published parent view, sync.shiftReports and ui.shiftReport, and write
+     only through apiBackend's three shift-report calls — never save(), commit() or `state`. That
+     is what lets a parent, who may not write the pack, send one (the harness holds it).
+     ⚠ API only. firestoreBackend has no shift-report calls, so on a Firestore page (the way back)
+     the feature is simply not there. Shown to any approved, signed-in member: the server allows
+     admin, editor, viewer and parent, and refuses pending — the same list. Never by job.
+     The window is the server's: a storefront dated today, or up to 14 days back, in the pack's
+     time zone (rules.js packToday, America/New_York). */
+  var SHIFT_REPORT_ROLES = ['admin', 'editor', 'viewer', 'parent'];
+  var SHIFT_REPORT_DAYS = 14;
+  var SHIFT_REPORT_TZ = 'America/New_York';
+  var SHIFT_REPORT_MAX_CENTS = 1000000;
+  var SHIFT_REPORT_NOTE_MAX = 300;
+  // The checkbox a family ticks to sign. The wording is the plan's (2026-10-01).
+  var SHIFT_REPORT_ATTEST = 'I counted the cash with the scouts’ families, and the Trail’s End amount matches the app for this shift.';
+  // What each refusal from the server means to a family. Keyed by the answer's reason (a 400's
+  // reason; a 409's reason or error). Anything not here gets SHIFT_REPORT_SAY_ELSE.
+  var SHIFT_REPORT_SAY = {
+    'not-in-view': 'This shift isn’t on the pack’s calendar any more. Reload the page, or ask a leader.',
+    'future': 'You can send totals once the shift has started, on the day or after.',
+    'too-old': 'This shift was more than 14 days ago. Give the totals to a leader instead.',
+    'attest': 'Tick the box to confirm you counted the cash.',
+    'te-cents': 'Enter the Trail’s End amount in dollars and cents, up to $10,000.',
+    'cash-cents': 'Enter the cash donations in dollars and cents, up to $10,000.',
+    'note': 'Keep the note to 300 characters or fewer.',
+    'open': 'Another family has already sent totals for this shift. A leader is checking them.',
+    'accepted': 'A leader has already accepted totals for this shift.',
+    'report-moved': 'This report changed while you had it open. Here’s where it stands now.'
+  };
+  var SHIFT_REPORT_SAY_ELSE = 'Something about this report wasn’t right. Reload the page and try again.';
+  // Today in the pack's time zone, as YYYY-MM-DD: the server's packToday. The device's own date
+  // only if this browser cannot name the zone.
+  function shiftReportToday(ms) {
+    try {
+      var parts = new Intl.DateTimeFormat('en-US', { timeZone: SHIFT_REPORT_TZ, year: 'numeric', month: '2-digit', day: '2-digit' })
+        .formatToParts(new Date(ms === undefined ? Date.now() : ms));
+      var get = function (t) { return parts.filter(function (p) { return p.type === t; })[0].value; };
+      return get('year') + '-' + get('month') + '-' + get('day');
+    } catch (e) { return todayISO(); }
+  }
+  // Can a report still be sent for a storefront on `date`? Today or up to 14 days back.
+  function shiftReportOpenFor(date, today) {
+    var d = String(date || '');
+    return /^\d{4}-\d{2}-\d{2}$/.test(d) && d <= today && d >= isoPlusDays(today, -SHIFT_REPORT_DAYS);
+  }
+  // Is the feature on for this person? The API backend, a Google account signed in, an approved
+  // role, and a pack to send to. Pending and signed-out people never see it.
+  function shiftReportsOn() {
+    return BACKEND === 'api' && !!sync.user && accountsInForce() && SHIFT_REPORT_ROLES.indexOf(sync.myRole) !== -1 &&
+      cloudReady() && typeof sync.backend.listShiftReports === 'function';
+  }
+  // A typed dollar amount as whole cents, or NaN. "12", "12.5", "$1,234.56" are fine; a blank, a
+  // negative or a third decimal place is not (the server takes whole cents only).
+  function shiftReportCents(v) {
+    var s = String(v == null ? '' : v).replace(/[$,\s]/g, '');
+    if (!/^(\d+(\.\d{0,2})?|\.\d{1,2})$/.test(s)) return NaN;
+    return Math.round(parseFloat(s) * 100);
+  }
+  // A note as the server stores it: one line, control characters gone.
+  function shiftReportNote(v) {
+    return String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f\s]+/g, ' ').trim();
+  }
+  // The request a draft makes, or { problem } in words a family can act on. `d` is ui.shiftReport
+  // with the form's values in it (te, cash, note, attest).
+  function shiftReportBody(d) {
+    var te = shiftReportCents(d.te), cash = shiftReportCents(d.cash), note = shiftReportNote(d.note);
+    if (!isFinite(te) || te > SHIFT_REPORT_MAX_CENTS) return { problem: SHIFT_REPORT_SAY['te-cents'] };
+    if (!isFinite(cash) || cash > SHIFT_REPORT_MAX_CENTS) return { problem: SHIFT_REPORT_SAY['cash-cents'] };
+    if (note.length > SHIFT_REPORT_NOTE_MAX) return { problem: SHIFT_REPORT_SAY.note };
+    if (d.attest !== true) return { problem: SHIFT_REPORT_SAY.attest };
+    var body = { teCents: te, cashCents: cash, note: note, attest: true };
+    if (d.rid) body.action = 'edit';
+    else { body.sfId = d.sfId; body.blockId = d.blockId; }
+    return { body: body };
+  }
+  // A failed call, in words. The server's reasons first; then the backend's own sentence for not
+  // reaching it at all, with what that means for the totals.
+  function shiftReportMessage(err) {
+    var why = err && err.reason;
+    if (why && Object.prototype.hasOwnProperty.call(SHIFT_REPORT_SAY, why)) return SHIFT_REPORT_SAY[why];
+    var code = err && err.code;
+    if (code === 'permission-denied') return 'Your account can’t send shift totals. Ask a leader.';
+    if (code === 'unavailable' || code === 'unauthenticated' || code === 'resource-exhausted') {
+      return String((err && err.message) || 'Couldn’t reach the pack’s server.') + ' Your totals weren’t sent. Try again in a moment.';
+    }
+    return SHIFT_REPORT_SAY_ELSE;
+  }
+  // The reports, from the server, into sync.shiftReports: { reports, others, loaded, error }.
+  // Asked for when the parent view arrives or the preview opens, when a family opens the form,
+  // and after every write. One at a time; a call while one is out runs once it is back.
+  function loadShiftReports() {
+    if (!shiftReportsOn()) return Promise.resolve(null);
+    var sr = sync.shiftReports || (sync.shiftReports = { reports: [], others: [], loaded: false, loading: false, again: false, error: '' });
+    if (sr.loading) { sr.again = true; return Promise.resolve(null); }
+    sr.loading = true;
+    var mine = sync.session;
+    return sync.backend.listShiftReports(sync.docId).then(function (r) {
+      if (sync.session !== mine || sync.shiftReports !== sr) return;
+      sr.reports = arrOf(r && r.reports);
+      sr.others = arrOf(r && r.others);
+      sr.loaded = true;
+      sr.error = '';
+    }, function (err) {
+      if (sync.session !== mine || sync.shiftReports !== sr) return;
+      sr.error = shiftReportMessage(err);
+    }).then(function () {
+      sr.loading = false;
+      if (sync.shiftReports !== sr) return;
+      if (sr.again) { sr.again = false; loadShiftReports(); }
+      render();
+    });
+  }
+  // Where one shift stands for this person: their own latest report (the one holding the block,
+  // if they have one), and whether someone else's report holds it ('submitted' or 'accepted').
+  // A leader previewing gets every report, so another person's is any not marked `mine`.
+  function shiftReportFor(sfId, blockId) {
+    var sr = sync.shiftReports;
+    var out = { loaded: !!(sr && sr.loaded), mine: null, other: '' };
+    if (!out.loaded) return out;
+    var holds = function (r) { return !!r && (r.status === 'submitted' || r.status === 'accepted'); };
+    arrOf(sr.reports).forEach(function (r) {   // newest first
+      if (!r || r.sfId !== sfId || r.blockId !== blockId) return;
+      if (r.mine) { if (!out.mine || (holds(r) && !holds(out.mine))) out.mine = r; }
+      else if (holds(r)) out.other = r.status;
+    });
+    arrOf(sr.others).forEach(function (o) {
+      if (o && o.sfId === sfId && o.blockId === blockId && holds(o)) out.other = o.status;
+    });
+    return out;
+  }
+  // One shift's line: where its totals stand, and what this person can do about them. '' when
+  // the feature is off, the reports have not come yet, or there is nothing to say or do.
+  function parentShiftReportStatus(e, s, today) {
+    if (!shiftReportsOn() || !e || !s || !e.sfId || !s.blockId) return '';
+    var info = shiftReportFor(e.sfId, s.blockId);
+    if (!info.loaded) return '';
+    var open = shiftReportOpenFor(e.date, today);
+    var m = info.mine;
+    var ids = ' data-sf="' + esc(e.sfId) + '" data-block="' + esc(s.blockId) + '"';
+    var figs = function (r) {
+      return ' <span class="sr-figs">' + esc(fmt(r.teCents || 0)) + ' Trail’s End · ' + esc(fmt(r.cashCents || 0)) + ' cash</span>';
+    };
+    var h = '';
+    if (m && m.status === 'submitted') {
+      var key = 'shift-report-withdraw:' + m.id, armed = ui.armed === key;
+      h = '<span class="sr-msg">Sent — waiting for a leader</span>' + figs(m) +
+        '<span class="sr-acts"><button type="button" class="btn small" data-act="shift-report-open"' + ids + ' data-rid="' + esc(m.id) + '">Edit</button>' +
+        '<button type="button" class="btn small' + (armed ? ' danger armed' : '') + '" data-act="shift-report-withdraw" data-rid="' + esc(m.id) + '">' +
+        (armed ? 'Tap again to withdraw' : 'Withdraw') + '</button></span>';
+    } else if (m && m.status === 'accepted') {
+      h = '<span class="sr-msg sr-done">Accepted by ' + esc(m.reviewedByName || 'a leader') + '</span>' + figs(m);
+    } else if (info.other) {
+      h = '<span class="sr-msg' + (info.other === 'accepted' ? ' sr-done' : '') + '">' +
+        (info.other === 'accepted' ? 'Totals accepted' : 'Totals sent by another family') + '</span>';
+    } else if (m && m.status === 'returned') {
+      h = '<span class="sr-msg sr-back">Sent back: ' + esc(m.reviewNote || 'a leader asked for another look') + '</span>' +
+        (open ? '<span class="sr-acts"><button type="button" class="btn small primary" data-act="shift-report-open"' + ids + '>Send a new report</button></span>' : '');
+    } else if (open) {
+      h = '<span class="sr-acts"><button type="button" class="btn small primary" data-act="shift-report-open"' + ids + '>Enter shift totals</button></span>';
+    }
+    return h ? '<div class="sr-status no-print">' + h + '</div>' : '';
+  }
+  // The form, for the shift in ui.shiftReport. Drawn once, in the Schedule's shift-totals card,
+  // so a shift that shows in three places on the page still has one form. What was typed lives
+  // in ui.shiftReport, so a render (a toast, a poll) does not lose it.
+  function parentShiftReportForm(e, s) {
+    var d = ui.shiftReport;
+    return '<form data-form="shift-report" id="srForm" class="sr-form no-print" novalidate>' +
+      '<p class="small" style="margin:0"><strong>' + (d.rid ? 'Change your totals' : 'Shift totals') + '</strong> · ' +
+      esc(String(e.title || 'Storefront')) + ', ' + esc(String(s.when || '')) + '</p>' +
+      '<div class="sr-fields">' +
+      '<label class="fld">Trail’s End amount ($)<input class="money-in" name="te" inputmode="decimal" autocomplete="off" placeholder="0.00" value="' +
+        esc(d.te) + '"></label>' +
+      '<label class="fld">Cash donations ($)<input class="money-in" name="cash" inputmode="decimal" autocomplete="off" placeholder="0.00" value="' +
+        esc(d.cash) + '"></label></div>' +
+      '<label class="fld">Note for the leader (optional)<textarea name="note" rows="2" maxlength="' + SHIFT_REPORT_NOTE_MAX + '">' +
+        esc(d.note) + '</textarea></label>' +
+      '<label class="sr-attest"><input type="checkbox" name="attest"' + (d.attest ? ' checked' : '') + '><span>' + esc(SHIFT_REPORT_ATTEST) + '</span></label>' +
+      (d.problem ? '<p class="small sr-problem" role="alert">' + esc(d.problem) + '</p>' : '') +
+      '<div class="sr-acts"><button type="submit" class="btn primary"' + (d.busy ? ' disabled' : '') + '>' +
+        (d.busy ? 'Sending…' : d.rid ? 'Send changes' : 'Send totals') + '</button>' +
+      '<button type="button" class="btn" data-act="shift-report-cancel">Cancel</button></div>' +
+      '<p class="small muted" style="margin:0">A leader checks these before they count toward anyone’s sales.</p></form>';
+  }
+  // The Schedule's shift-totals card: every published storefront shift from the last 14 days,
+  // with where its totals stand, and the form under the one being filled in. '' when the feature
+  // is off or there is no such shift. `today` is the pack's (shiftReportToday).
+  function parentShiftReportCard(pv, today) {
+    if (!shiftReportsOn()) return '';
+    var rows = [];
+    arrOf(pv && pv.events).forEach(function (e) {
+      if (!e || e.kind !== 'storefront' || !e.sfId || !shiftReportOpenFor(e.date, today)) return;
+      arrOf(e.shifts).forEach(function (s) { if (s && s.blockId) rows.push({ e: e, s: s }); });
+    });
+    if (!rows.length) return '';
+    rows.sort(function (a, b) { return String(b.e.date).localeCompare(String(a.e.date)); });   // newest first; stable within a day
+    var sr = sync.shiftReports, d = ui.shiftReport;
+    var h = '<div class="card no-print sr-card" id="srCard"><h2 class="section display">Storefront shift totals</h2>' +
+      '<p class="small muted" style="margin:0 0 6px">Worked a popcorn storefront shift? Send its totals before you leave the store.</p>';
+    if (sr && sr.error) h += '<p class="small sr-problem" role="alert">' + esc(sr.error) + '</p>';
+    else if (!sr || !sr.loaded) h += '<p class="small muted" style="margin:0">Checking which shifts have totals…</p>';
+    rows.forEach(function (r) {
+      h += '<div class="sr-row"><div class="sr-shift"><strong>' + esc(fmtDate(String(r.e.date))) + '</strong> · ' +
+        esc(String(r.e.title || 'Storefront')) + ' · ' + esc(String(r.s.when || '')) + '</div>';
+      h += d && d.sfId === r.e.sfId && d.blockId === r.s.blockId ? parentShiftReportForm(r.e, r.s) : parentShiftReportStatus(r.e, r.s, today);
+      h += '</div>';
+    });
+    return h + '</div>';
+  }
+  // The buttons: open the form (new, or editing your own), close it, withdraw (two taps).
+  function shiftReportAct(act, el) {
+    if (!shiftReportsOn()) return;
+    var ds = (el && el.dataset) || {};
+    if (act === 'shift-report-cancel') { ui.shiftReport = null; render(); return; }
+    if (act === 'shift-report-open') {
+      var rid = String(ds.rid || '');
+      var own = rid ? arrOf(sync.shiftReports && sync.shiftReports.reports).filter(function (r) { return r && r.id === rid && r.mine; })[0] : null;
+      if (rid && !own) return;
+      ui.shiftReport = { sfId: String(ds.sf || ''), blockId: String(ds.block || ''), rid: rid,
+        te: own ? dollars(own.teCents) || '0.00' : '', cash: own ? dollars(own.cashCents) || '0.00' : '', note: own ? String(own.note || '') : '',
+        attest: false, busy: false, problem: '' };
+      render();
+      var form = typeof document !== 'undefined' && document.getElementById('srForm');
+      if (form) {
+        if (form.scrollIntoView) form.scrollIntoView({ block: 'center' });
+        if (form.elements && form.elements.te) form.elements.te.focus({ preventScroll: true });
+      }
+      loadShiftReports();
+      return;
+    }
+    if (act === 'shift-report-withdraw') {
+      var wid = String(ds.rid || '');
+      if (!wid) return;
+      arm('shift-report-withdraw:' + wid, function () {
+        sync.backend.patchShiftReport(sync.docId, wid, { action: 'withdraw' }).then(function () {
+          showToast('Withdrawn. You can send new totals for this shift.');
+        }, function (err) { showToast(shiftReportMessage(err)); }).then(loadShiftReports);
+      }, ARM_WARNED_MS);
+    }
+  }
+  // The form sent: checked here first, in words, then POSTed (or PATCHed, editing your own).
+  function shiftReportSubmit(f) {
+    var d = ui.shiftReport;
+    if (!d || d.busy || !shiftReportsOn()) return;
+    var fd = new FormData(f);
+    d.te = String(fd.get('te') || '');
+    d.cash = String(fd.get('cash') || '');
+    d.note = String(fd.get('note') || '');
+    d.attest = fd.get('attest') === 'on';
+    var made = shiftReportBody(d);
+    d.problem = made.problem || '';
+    if (made.problem) { render(); return; }
+    d.busy = true;
+    render();
+    var be = sync.backend;
+    var call = d.rid ? be.patchShiftReport(sync.docId, d.rid, made.body) : be.submitShiftReport(sync.docId, made.body);
+    return call.then(function () {
+      if (ui.shiftReport === d) ui.shiftReport = null;
+      showToast(d.rid ? 'Changes sent. A leader will check them.' : 'Totals sent. A leader will check them before they count.');
+    }, function (err) {
+      d.busy = false;
+      d.problem = shiftReportMessage(err);
+      // The block is taken, or the report moved: the form has nothing left to send.
+      if (ui.shiftReport === d && /^(open|accepted|report-moved|not-in-view|too-old)$/.test(String(err && err.reason))) {
+        ui.shiftReport = null;
+        showToast(d.problem);
+      }
+    }).then(loadShiftReports);
   }
   // The month grid, built from the PUBLISHED events — the leader calendar's shape, without any of
   // its editing. A list answers "what is next"; a grid answers "what does October look like", and
@@ -19272,7 +19590,10 @@
     var evs = Array.isArray(pv.events) ? pv.events : [];
     var upcoming = evs.filter(function (e) { return String((e && e.date) || '') >= today; });
     var earlier = evs.filter(function (e) { return String((e && e.date) || '') < today; });
-    var h = parentNextUp(evs, today, Array.isArray(pv.camping) ? pv.camping : []) + parentCalendar(pv, today);
+    // 2026-10-01 — a storefront shift from the last two weeks, first: its totals are what a family
+    // at the table opens the app to send. In the pack's time zone, as the server counts it.
+    var h = parentShiftReportCard(pv, shiftReportToday()) +
+      parentNextUp(evs, today, Array.isArray(pv.camping) ? pv.camping : []) + parentCalendar(pv, today);
     // THE NEXT 30 DAYS, BY MONTH — parent-experience audit, 2026-09-28. The whole rest of the year
     // in one list was a scroll past March to reach the footer, when the question on a Tuesday is
     // "what is on this month". The rest is one tap away, and says how much of it there is.
@@ -33664,7 +33985,10 @@
   // other leader action is refused while parentMode() is true, so an exit that was not allowlisted
   // would leave an admin stuck until they reloaded.
   var PARENT_ACTS = ['parent-tab', 'parent-camp-trip', 'parent-earlier', 'parent-rest', 'parent-cal-prev', 'parent-cal-next',
-    'parent-cal-day', 'parent-cost-toggle', 'parent-preview-off', 'parent-print', 'parent-ics', 'parent-pack-list', 'sign-out-google', 'toast-action'];
+    'parent-cal-day', 'parent-cost-toggle', 'parent-preview-off', 'parent-print', 'parent-ics', 'parent-pack-list', 'sign-out-google', 'toast-action',
+    // 2026-10-01 — a family's shift totals. They write the server's shift_reports table through
+    // apiBackend alone, never the pack record (shiftReportAct, shiftReportSubmit).
+    'shift-report-open', 'shift-report-cancel', 'shift-report-withdraw'];
   // Join link phase — the three gate screens emit only these. Anything else that somehow
   // reaches the handler while a gate is up is ignored, so no code path can read or mutate
   // the pack record on a link visitor's / not-yet-approved user's device.
@@ -33991,9 +34315,13 @@
       ui.previewParent = true;
       ui.parentTab = 'schedule';   // start where a parent starts, not on whatever tab was last used
       ui.resetScroll = true;
-      render(); return;
+      render();
+      loadShiftReports();   // the shift-totals card, as a family sees it (API only)
+      return;
     }
     if (act === 'parent-preview-off') { ui.previewParent = false; ui.resetScroll = true; render(); return; }
+    // A family's shift totals (2026-10-01): the server's table, never the pack record.
+    if (act === 'shift-report-open' || act === 'shift-report-cancel' || act === 'shift-report-withdraw') { shiftReportAct(act, el); return; }
     // ---- Accounts ----
     if (act === 'sign-in-google') { signInWithGoogle(); return; }
     if (act === 'sign-out-google') { signOutGoogle(); return; }
@@ -36472,6 +36800,10 @@
   }
 
   function handleForm(f) {
+    // The one form the parent app draws: a family's shift totals (2026-10-01). It writes the
+    // server's shift_reports table, never the pack record, so it is let through here, before the
+    // parent refusal below; and it is not an edit the reload gate holds.
+    if (f.dataset.form === 'shift-report') { if (!gateMode()) shiftReportSubmit(f); return; }
     if (parentMode() || gateMode()) return; // Parent phase / join gates — neither renders a form
     if (packFormatHeld()) { refuseHeldAct(); return; }   // the reload gate: every form adds or changes
     var kind = f.dataset.form;
