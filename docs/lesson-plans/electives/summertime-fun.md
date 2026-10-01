@@ -101,7 +101,7 @@ How these plans fit a Pack 569 den night:
 ### Meeting 1 of 4 · Summer Kickoff · 40 min
 - Who: the Lion den (the rising Tigers) and their adult partners, at the last den night in May, led by the summer den leader. This is a planning night only and gives no credit.
 - All-dens option: the Lion, Tiger, Wolf and Bear dens can hold their kickoffs in one room. Steps 1 and 2 are nearly the same across ranks. Each den keeps its own leaders and its own summer calendar.
-- Leader's choice for the date: Option A · the last den night in **May**. / Option B · a late-**April** den night. Either way it's a planning night only and gives no credit, so the Tiger needs three summer outings or events after it.
+- When: the last den night in **May**, or a late-**April** den night. Either way it's a planning night only and gives no credit, so the Tiger needs three summer outings or events after it.
 - Prep: 1–2 weeks before:
   - Get the summer dates: the den outing, the pack's July event, the council camps and the make-up dates (2027: check).
   - Print a big May–August calendar poster with those dates marked.
@@ -237,7 +237,7 @@ How these plans fit a Pack 569 den night:
 ### Meeting 1 of 4 · Summer Kickoff · 40 min
 - Who: the Tiger den (the rising Wolves) and their adult partners, at the last den night in May, led by the summer den leader. This is a planning night only and gives no credit.
 - All-dens option: the Lion, Tiger, Wolf and Bear dens can share this room. Each den keeps its own leaders and summer calendar.
-- Leader's choice for the date: Option A · the last den night in **May**. / Option B · a late-**April** den night. Either way it's a planning night only and gives no credit.
+- When: the last den night in **May**, or a late-**April** den night. Either way it's a planning night only and gives no credit.
 - Prep: 1–2 weeks before:
   - Get the summer dates, including the make-up dates, and mark them on a May–August calendar poster.
   - Write a short hike story with 5 warning signs hidden in it: thirsty, headache, dizzy, very red or very pale face, and feeling sick.
@@ -363,7 +363,7 @@ How these plans fit a Pack 569 den night:
 ### Meeting 1 of 4 · Summer Kickoff · 40 min
 - Who: the Wolf den (the rising Bears), at the last den night in May, led by the summer den leader. This is a planning night only and gives no credit.
 - All-dens option: the Lion, Tiger, Wolf and Bear dens can share this room. Each den keeps its own leaders and summer calendar.
-- Leader's choice for the date: Option A · the last den night in **May**. / Option B · a late-**April** den night. Either way it's a planning night only and gives no credit.
+- When: the last den night in **May**, or a late-**April** den night. Either way it's a planning night only and gives no credit.
 - Prep: 1–2 weeks before:
   - Get the summer dates, including the make-up dates, and mark them on a May–August calendar poster.
   - For the tick game, an adult volunteer wears an old light-colored long-sleeve shirt and long socks with 10 small brown sticky dots on them (pretend ticks).
@@ -491,7 +491,7 @@ How these plans fit a Pack 569 den night:
 ### Meeting 1 of 4 · Summer Kickoff · 40 min
 - Who: the Bear den (the rising Webelos), at the last den night in May, led by the summer den leader. This is a planning night only and gives no credit.
 - All-dens option: the Wolf and Bear dens can share steps 1 and 3. The Bear den keeps its own planning step.
-- Leader's choice for the date: Option A · the last den night in **May**. / Option B · a late-**April** den night. Either way it's a planning night only and gives no credit.
+- When: the last den night in **May**, or a late-**April** den night. Either way it's a planning night only and gives no credit.
 - Prep: 1–2 weeks before:
   - Get the summer dates, including the make-up dates, and mark them on a May–August calendar poster.
   - Print a one-page outing planner: where, when, what to bring, buddy pairs, and a water and shade plan.
@@ -619,7 +619,7 @@ How these plans fit a Pack 569 den night:
 ### Meeting 1 of 4 · Summer Kickoff · 40 min
 - Who: the Webelos den (the rising AoL patrol), at the last den night in May, led by the summer den leader. This is a planning night only and gives no credit.
 - All-dens option: none. The patrol plans its own summer.
-- Leader's choice for the date: Option A · the last den night in **May**. / Option B · a late-**April** den night. Either way it's a planning night only and gives no credit.
+- When: the last den night in **May**, or a late-**April** den night. Either way it's a planning night only and gives no credit.
 - Prep: 1–2 weeks before:
   - Get the summer dates, including the make-up dates, and mark them on a May–August calendar poster.
   - Print a patrol outing planner: where, when, what to bring, buddy pairs, a heat plan and a weather plan.

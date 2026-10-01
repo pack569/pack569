@@ -1793,6 +1793,69 @@
   .plan-option { border: 1px dashed var(--line); border-radius: 8px; padding: 6px 10px; margin: 6px 0; }
   .plan-tell { background: var(--accent-soft); border-radius: 9px; padding: 8px 12px; margin: 10px 0; }
   .plan-notes { border-top: 2px solid var(--line); margin-top: 16px; padding-top: 10px; }
+  /* Run this meeting (runScreenHtml). Phone first: the clocks stay at the top while the sheet
+     scrolls, every button a leader hits standing in front of a den is at least 48px tall, and
+     nothing is wider than the screen at 375px: the Both-dens breakout is one column until there
+     is room for two. Going over time is the gold text colour, never the warning red. */
+  .run-overlay { padding: 8px 8px 0; }
+  @media (min-width: 900px) { .run-overlay .overlay-inner { max-width: 1000px; } }
+  .run-sheet { padding: 14px; }
+  .run-bar {
+    position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 10px; background: var(--surface); border-bottom: 1px solid var(--line); padding: 8px 0; margin: 0 0 10px;
+  }
+  .run-bar > .btn { min-height: 48px; }
+  .run-clocks { display: flex; flex-wrap: wrap; gap: 18px; }
+  .plan-sheet .run-clocks p { margin: 0; }
+  .run-lbl { display: block; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-soft); }
+  .run-time { font: 700 1.7rem/1.1 ui-monospace, Menlo, monospace; color: var(--ink); letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; }
+  .run-time.run-over { color: var(--accent-text); }
+  .run-step-clock .run-time { font-size: 1.3rem; }
+  .run-ctl { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+  .run-ctl > .btn { min-height: 48px; flex: 1 1 auto; font-size: 1rem; }
+  .run-ctl > .btn.primary { flex: 2 1 auto; }
+  /* The dock: Back / Skip / Next step (Start before, Record after), stuck to the bottom of the run
+     screen and clear of a phone's home bar. It is the sheet's last child, so at the end of the
+     page it sits below the last of the content instead of over it. */
+  .run-dock {
+    position: sticky; bottom: 0; z-index: 2; background: var(--surface); border-top: 1px solid var(--line);
+    margin: 14px -14px -14px; padding: 4px 14px calc(8px + env(safe-area-inset-bottom, 0px));
+    border-radius: 0 0 12px 12px; box-shadow: 0 -6px 14px color-mix(in srgb, var(--ink) 12%, transparent);
+  }
+  .run-dock .run-ctl { margin: 6px 0; }
+  .plan-sheet .run-dock-note { margin: 6px 0 0; font-weight: 700; }
+  .run-ctl-den { align-items: center; }
+  .run-ctl.run-ctl-den > .btn { min-height: 44px; }
+  .run-ctl-name { flex: 0 0 4.6em; font-weight: 700; font-size: 0.85rem; overflow-wrap: anywhere; }
+  /* On a phone the dock stays under about 140px: with Both dens, two rows of den controls are in
+     view and any more scroll inside the dock. */
+  @media (max-width: 600px) {
+    .run-dock-rows { max-height: 104px; overflow-y: auto; }
+    .run-dock-rows .run-ctl { margin: 4px 0; gap: 6px; }
+    .run-dock-rows .run-ctl > .btn { padding: 6px 10px; font-size: 0.92rem; }
+  }
+  .run-ctl > .btn.run-big { min-height: 56px; font-size: 1.15rem; }
+  .run-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+  .run-chips > .btn { min-height: 44px; max-width: 100%; text-align: left; }
+  .run-now { border: 2px solid var(--accent); border-radius: 12px; padding: 12px; margin: 10px 0; }
+  .run-title { font-family: Rockwell, "Roboto Slab", serif; font-size: 1.45rem; line-height: 1.2; margin: 2px 0 6px; }
+  .plan-sheet .run-meta { margin: 0 0 8px; }
+  .run-say { font-size: 1.12rem; line-height: 1.45; border-left-width: 5px; padding: 10px 12px; }
+  .run-list { list-style: none; margin: 4px 0 8px; padding: 0; }
+  .run-list.run-list-plain { list-style: decimal; padding-left: 1.4em; }
+  .run-li { margin: 0 0 6px; }
+  .run-li-toggle { width: 100%; min-height: 44px; font-size: 0.9rem; color: var(--ink); text-align: left; }
+  .run-li-toggle > span:last-child { flex: 1 1 auto; min-width: 0; }
+  .run-li-now .run-li-toggle { border-color: var(--accent); }
+  .run-li-body { padding: 8px 4px 0; }
+  .run-entry { border-top: 1px solid var(--line); margin-top: 10px; padding: 10px 0 4px; }
+  .plan-sheet .run-total { font-weight: 700; font-size: 1.05rem; margin: 6px 0; }
+  .run-switch { margin: 8px 0; }
+  .run-switch .snav { min-height: 44px; }
+  .run-breakout { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px; }
+  .run-col { min-width: 0; border-top: 3px solid var(--accent); padding-top: 6px; }
+  .run-resume { margin: 0 0 12px; }
+  .run-ref { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 8px; }
 </style>
 
 <a class="skip-link no-print" href="#view">Skip to content</a>
@@ -10037,7 +10100,7 @@
      nothing else is turned into markup, and [date] stays as written. A link is made only from an
      https:// address (planLink), never from anything else in the text. Plan text never goes into
      an event's note, the parent view, a toast or anything copied for families.
-     "Run this meeting" (the timer) is the next step; it opens from each meeting (see planMeetingHtml). */
+     "Run this meeting" (the timer, openRunMeeting below) opens from each meeting (planMeetingHtml). */
   // Where an adventure with no plan in the app points: the official list of adventures.
   var ADV_OFFICIAL_INDEX = 'https://www.scouting.org/programs/cub-scouts/adventures/';
   // The line at the top of every plan screen until the file has loaded (it then says its own, `guide`).
@@ -10105,7 +10168,8 @@
     var reqs = String(s.reqs == null ? '' : s.reqs).trim();
     var meta = [];
     if (typeof s.mins === 'number' && isFinite(s.mins)) meta.push(s.mins + ' min');
-    meta.push(reqs && reqs !== 'none' ? 'Req ' + reqs : 'no requirement');
+    // "(set-up)" in the plans reads "· prep only" (wording review, 2026-09-30); the markdown keeps it.
+    meta.push(reqs && reqs !== 'none' ? 'Req ' + reqs.replace(/\s*\(set-up\)/gi, ' · prep only') : 'no requirement');
     var h = '<li class="plan-step"><p class="plan-step-head"><strong>' + planInline(s.title) + '</strong>' +
       (s.kind === 'closing' ? ' <span class="pill navy">Closing</span>' : '') +
       ' <span class="small muted">· ' + esc(meta.join(' · ')) + '</span></p>';
@@ -10133,7 +10197,7 @@
   function planMeetingMins(m) {
     var steps = typeof m.stepMins === 'number' && isFinite(m.stepMins) ? m.stepMins : null;
     if (m.kind === 'den' && steps != null) {
-      return steps + ' min' + (typeof m.mins === 'number' && m.mins > steps ? ' (of ' + m.mins + ')' : '');
+      return steps + ' min' + (typeof m.mins === 'number' && m.mins > steps ? ' of steps (' + m.mins + ' min meeting)' : '');
     }
     return String(m.length || (steps != null ? steps + ' min' : ''));
   }
@@ -10146,7 +10210,7 @@
       '<span><strong>Meeting ' + esc(String(m.n || i + 1)) + (m.of ? ' of ' + esc(String(m.of)) : '') + ' · ' + planInline(m.title) + '</strong>' +
       ' <span class="muted">· ' + esc(planMeetingMins(m)) + '</span>' +
       (only ? ' <span class="pill">' + esc(only) + '</span>' : '') +
-      (m.kind === 'outing' ? ' <span class="pill navy">Outing</span>' : m.kind === 'add-on' ? ' <span class="pill navy">Add-on</span>' : '') +
+      (m.kind === 'outing' ? ' <span class="pill navy">Outing</span>' : m.kind === 'add-on' ? ' <span class="pill navy">Optional extra</span>' : '') +
       '</span></button>';
     if (!open) return h + '</div>';
     h += '<div class="plan-mtg-body">';
@@ -10164,7 +10228,11 @@
     if (m.tellParents) {
       h += '<div class="plan-tell"><p class="eyebrow">Tell parents before they leave</p>' + planBlockHtml(m.tellParents, 'plan-block') + '</div>';
     }
-    // The NEXT step hangs "Run this meeting" here (the timer, BUILD-PLAN "Run this meeting").
+    // Run this meeting: the timer (openRunMeeting). The handler knows the den and the adventure
+    // from the panel; `i` is the meeting's place in the plan.
+    if (steps.length) {
+      h += '<p class="no-print" style="margin:10px 0 0"><button type="button" class="btn primary" data-act="run-open" data-n="' + i + '">Run this meeting</button></p>';
+    }
     return h + '</div></div>';
   }
   // Everything under the panel's heading for a plan: summary, safety, the plan's own leader's
@@ -10203,7 +10271,8 @@
     }
     var src = Array.isArray(p.sources) ? p.sources : [];
     if (src.length) {
-      h += '<p class="eyebrow" style="margin-top:14px">Sources' + (p.verified ? ' · checked ' + esc(p.verified) : '') + '</p>' +
+      var checked = p.verified ? fmtDateShortYear(String(p.verified)) : '';
+      h += '<p class="eyebrow" style="margin-top:14px">Sources' + (checked ? ' (checked ' + esc(checked) + ')' : '') + '</p>' +
         '<ul class="plan-list small">' + src.map(function (u) { return '<li>' + planLink(u) + '</li>'; }).join('') + '</ul>';
     }
     return h;
@@ -10214,12 +10283,13 @@
     var stamp = n && (n.by || n.at)
       ? 'Last saved' + (n.by ? ' by ' + n.by : '') + (fmtDateShortYear(String(n.at || '').slice(0, 10)) ? ', ' + fmtDateShortYear(String(n.at).slice(0, 10)) : '')
       : '';
-    var h = '<div class="plan-notes"><h2 class="section display">Our den’s notes</h2>';
+    var den = String(key).split(' :: ')[0];
+    var h = '<div class="plan-notes"><h2 class="section display">' + esc(den) + ' den’s notes</h2>';
     if (edit) {
       h += '<label class="fld">What worked, and what to change next time' +
         '<textarea class="notes-in" data-ch="adv-note" data-key="' + esc(key) + '" maxlength="' + ADV_NOTE_MAX + '" rows="4">' +
         esc(n ? n.text : '') + '</textarea></label>' +
-        '<p class="small muted" style="margin:4px 0 0">Leaders only, never shown to families. Saves when you leave the box' +
+        '<p class="small muted" style="margin:4px 0 0">Leaders only, never shown to families. Saves when you tap outside the box' +
         (stamp ? ' · ' + esc(stamp) : '') + '.</p>';
     } else {
       h += n ? proseText(n.text) + (stamp ? '<p class="small muted" style="margin:4px 0 0">' + esc(stamp) + '.</p>' : '')
@@ -10247,7 +10317,7 @@
       h += '<div class="warn" role="alert"><p style="margin:0 0 8px">' + esc(o.error || 'The lesson plans couldn’t be loaded.') + '</p>' +
         '<button type="button" class="btn small" data-act="adv-plan-retry">Try again</button></div>';
     } else if (!plan) {
-      h += '<p>There’s no lesson plan in the app for ' + esc(o.name) + ' yet. Its requirements and den meeting ideas are on the official page above.</p>';
+      h += '<p>Find ' + esc(o.name) + ' in the official adventure list above for its requirements and den meeting ideas.</p>';
     } else h += advPlanBodyHtml(plan, o.open);
     h += advNoteBlock(key, canEdit());
     return h + '</div></div></div>';
@@ -10277,6 +10347,873 @@
     if (parentMode()) return '';
     return '<button type="button" class="btn small ghost no-print" data-act="adv-plan-open" data-den="' + esc(den) +
       '" data-name="' + esc(name) + '" aria-label="' + esc('Lesson plan for ' + den + ' ' + name) + '">Lesson plan</button>';
+  }
+  /* ----- Run this meeting (2026-09-30). BUILD-PLAN "What the screen has", "All-dens nights",
+     "Progress" and "Leader's-choice options". -----
+     A full-screen timer over one plan meeting, or over several dens' meetings on one night. It
+     opens from a meeting in the plan panel, and the calendar's den meeting will open it the same
+     way: openRunMeeting(entries), entries [{ den, adventure, meetingN }]. meetingN is the meeting's
+     PLACE in the plan, from 1, not its printed number: two plans number a variant meeting twice.
+     ⚠ LEADERS ONLY, and ON THIS DEVICE ONLY. The run — which step, when it started, what was
+     skipped, the option picked — lives in ui.overlay and in localStorage (RUN_MEETING_KEY), never
+     in the pack record: nothing here reads or writes `state`, nothing is synced, and what is
+     stored is names and numbers, never plan text. Every button is read-only (HELD_ACTS), and a
+     parent never reaches any of it (PARENT_ACTS refuses it; render() drops the overlay).
+     ⚠ NO REQUIREMENT TICKING (DESIGN-adventures §7, Keith 2026-09-29): the end screen's "Record in
+     Advancement" opens the den's adventure board, where a leader marks the adventure.
+     Rendering follows §4a through the plan panel's own pieces (planInline, planHowHtml,
+     planBlockHtml…): everything escaped, only **…** made bold, [date] left as written. */
+  // One run at a time on a device: starting another meeting replaces it.
+  var RUN_MEETING_KEY = 'pack569-run-meeting-v1';
+  // A run older than this is not offered back (a den night is an hour; a campout a day and a night).
+  var RUN_RESUME_MS = 36 * 3600000;
+  // How many dens one run takes: a leader with two dens, or a few dens on an All-dens night.
+  var RUN_MAX_DENS = 4;
+  // Reference tabs (Oath & Law with tap-to-explain points, sign/salute/handshake, later the Outdoor
+  // Code and the Six Essentials). The app does not hold that official text, and it is not written
+  // here from memory: each tab, once the content experts supply it, is { id, label, items } with
+  // items in the plans' own list shape ([{ text, items? }], **bold** only), and the run screen
+  // shows one tab per entry (runRefHtml). Empty, there are no tabs.
+  var RUN_REFERENCE = [];
+  // The entries a run is asked for, made safe: real dens, one entry per den, a meeting number.
+  function runEntriesClean(entries) {
+    var out = [], seen = {};
+    (Array.isArray(entries) ? entries : []).forEach(function (e) {
+      if (!e || typeof e !== 'object' || out.length >= RUN_MAX_DENS) return;
+      var den = String(e.den || ''), adv = String(e.adventure || ''), n = +e.meetingN;
+      if (DENS.indexOf(den) === -1 || seen[den] || !adv || adv.length > 80) return;
+      if (!(n >= 1 && n <= 20 && n === Math.floor(n))) return;
+      seen[den] = true;
+      out.push({ den: den, adventure: adv, meetingN: n });
+    });
+    return out;
+  }
+  // One entry's plan and meeting, from the loaded file (advPlanFor), or null.
+  function runMeetingOf(data, e) {
+    if (!e || DENS.indexOf(e.den) === -1) return null;
+    var plan = advPlanFor(data, advPlanKey(e.den, e.adventure));
+    var m = plan ? plan.meetings[(+e.meetingN || 0) - 1] : null;
+    return m && typeof m === 'object' ? { plan: plan, meeting: m } : null;
+  }
+  // The leader's-choice options a meeting turns on, as keys ('A', 'B'…): `all` is every option the
+  // meeting or its steps name (its `choices`, `forOptions`, `variants`, a step's `options` and
+  // `forOptions`); `pick` is the ones this meeting runs for (its forOptions, else all). Both empty
+  // when there is no choice to make. The plan's own choice lines are NOT counted (program review,
+  // 2026-09-30: Let's Camp! Tiger meeting 2 offered an Option C that only hid a step), with one
+  // exception: when the only letters are steps' forOptions (a step "for Option C"), the leader
+  // still needs the other options to pick from, and only the plan names them.
+  function runOptionKeys(plan, m) {
+    var seen = {}, own = 0;
+    function add(k) { k = String(k == null ? '' : k).trim(); if (/^[A-Z]$/.test(k)) seen[k] = true; }
+    function addOpts(list) { (Array.isArray(list) ? list : []).forEach(function (o) { if (o && typeof o === 'object') add(o.key); }); }
+    function addBlocks(list) { (Array.isArray(list) ? list : []).forEach(function (b) { if (b && typeof b === 'object') addOpts(b.options); }); }
+    var mm = m && typeof m === 'object' ? m : {};
+    addBlocks(mm.choices);
+    addOpts(mm.variants);
+    (Array.isArray(mm.forOptions) ? mm.forOptions : []).forEach(add);
+    (Array.isArray(mm.steps) ? mm.steps : []).forEach(function (s) { if (s && typeof s === 'object') addOpts(s.options); });
+    own = Object.keys(seen).length;
+    (Array.isArray(mm.steps) ? mm.steps : []).forEach(function (s) {
+      if (s && typeof s === 'object') (Array.isArray(s.forOptions) ? s.forOptions : []).forEach(add);
+    });
+    if (!Object.keys(seen).length) return { all: [], pick: [] };
+    if (!own) addBlocks(plan && plan.choices);
+    var all = Object.keys(seen).sort();
+    var only = (Array.isArray(mm.forOptions) ? mm.forOptions : []).map(String).filter(function (k) { return seen[k]; });
+    return { all: all, pick: only.length ? only : all };
+  }
+  // "This meeting is for Option A only. If your den chose Option B, skip it.", for a meeting that
+  // belongs to some options only.
+  function runOnlyLine(keys) {
+    var other = keys.all.filter(function (k) { return keys.pick.indexOf(k) === -1; });
+    if (!other.length) return '';
+    function list(ks) { return (ks.length === 1 ? 'Option ' : 'Options ') + ks.slice(0, -1).join(', ') + (ks.length > 1 ? ' or ' : '') + ks[ks.length - 1]; }
+    return 'This meeting is for ' + list(keys.pick).replace(' or ', ' and ') + ' only. If your den chose ' + list(other) + ', skip it.';
+  }
+  // A step option's own name: "Option A · Memory Game" → "Memory Game".
+  function runOptionName(o) {
+    var t = String(o && o.label != null ? o.label : '');
+    var i = t.indexOf('·');
+    return i === -1 ? '' : t.slice(i + 1).trim();
+  }
+  // The plan's choice lines this meeting's pick actually decides, not every one the plan has
+  // (program review: Fishing Wolf showed six). One counts when it is the plan's general choice (no
+  // `about`), when an option names this meeting ("Meeting 3"), when it is about a requirement that
+  // a step with options here works on, or when an option names one of those steps' options.
+  function runDrivingChoices(plan, m) {
+    var steps = (Array.isArray(m.steps) ? m.steps : []).filter(function (s) {
+      return s && typeof s === 'object' && ((Array.isArray(s.options) && s.options.length) || (Array.isArray(s.forOptions) && s.forOptions.length));
+    });
+    var reqs = {}, names = [];
+    steps.forEach(function (s) {
+      (String(s.reqs == null ? '' : s.reqs).match(/\d+/g) || []).forEach(function (n) { reqs[n] = true; });
+      (Array.isArray(s.options) ? s.options : []).forEach(function (o) { var nm = runOptionName(o).toLowerCase(); if (nm) names.push(nm); });
+    });
+    var here = new RegExp('\\bMeeting ' + String(+m.n || 0) + '\\b');
+    return (plan && Array.isArray(plan.choices) ? plan.choices : []).filter(function (c) {
+      if (!c || typeof c !== 'object' || !Array.isArray(c.options)) return false;
+      var about = String(c.about == null ? '' : c.about).trim();
+      if (!about) return true;
+      var req = /^Reqs? (\d+)/.exec(about);
+      if (req && reqs[req[1]]) return true;
+      return c.options.some(function (o) {
+        var t = String(o && o.text != null ? o.text : '');
+        return here.test(t) || names.some(function (nm) { return t.toLowerCase().indexOf(nm) !== -1; });
+      });
+    });
+  }
+  // The option a run goes with: '' when there is no choice, the only one when there is one, the
+  // leader's pick when it is one of them, and null while the leader still has to pick.
+  function runChosenOption(keys, picked) {
+    if (!keys.pick.length) return '';
+    if (keys.pick.length === 1) return keys.pick[0];
+    return keys.pick.indexOf(picked) !== -1 ? picked : null;
+  }
+  // The steps a meeting runs with an option, as { i, s } (i: the step's place in the meeting, which
+  // the run counts by). A step for other options only is left out.
+  function runPathSteps(m, opt) {
+    var out = [];
+    (m && Array.isArray(m.steps) ? m.steps : []).forEach(function (s, i) {
+      if (!s || typeof s !== 'object') return;
+      var only = Array.isArray(s.forOptions) ? s.forOptions.map(String) : [];
+      if (only.length && only.indexOf(opt) === -1) return;
+      out.push({ i: i, s: s });
+    });
+    return out;
+  }
+  function runStepMins(s) { return s && typeof s.mins === 'number' && isFinite(s.mins) && s.mins > 0 ? s.mins : 0; }
+  // Minutes of a list of { i, s }, less the skipped ones (`skipped`: step places).
+  function runListMins(list, skipped) {
+    var off = Array.isArray(skipped) ? skipped : [];
+    return list.reduce(function (n, x) { return n + (off.indexOf(x.i) === -1 ? runStepMins(x.s) : 0); }, 0);
+  }
+  // Everything the screen needs about the meetings, from the file and the picks ({ den: 'A' }):
+  // { entries: [{ den, adventure, meetingN, plan, meeting, keys, option, path }], tracks, closing,
+  // missing }. One den: its track is its whole path, closing and all. More than one (an All-dens
+  // night): each den's track is its `den` steps (the breakout), and the closing is SHARED — one
+  // closing for the room, from the youngest den that has one (DENS order), since it has to work for
+  // the youngest scouts there. The other dens' closings give way to it (`setAside`).
+  function runShape(data, entries, picks) {
+    var sh = { entries: [], tracks: [], closing: null, missing: [] };
+    var pk = picks && typeof picks === 'object' ? picks : {};
+    (Array.isArray(entries) ? entries : []).forEach(function (e) {
+      var got = runMeetingOf(data, e);
+      if (!got) { sh.missing.push(e); return; }
+      var keys = runOptionKeys(got.plan, got.meeting);
+      var opt = runChosenOption(keys, Object.prototype.hasOwnProperty.call(pk, e.den) ? pk[e.den] : '');
+      sh.entries.push({ den: e.den, adventure: e.adventure, meetingN: e.meetingN, plan: got.plan, meeting: got.meeting,
+        keys: keys, option: opt, path: runPathSteps(got.meeting, opt), setAside: [] });
+    });
+    if (sh.entries.length < 2) {
+      sh.tracks = sh.entries.map(function (x) { return x.path; });
+      return sh;
+    }
+    var order = sh.entries.map(function (x, k) { return k; }).sort(function (a, b) {
+      return DENS.indexOf(sh.entries[a].den) - DENS.indexOf(sh.entries[b].den);
+    });
+    order.some(function (k) {
+      var cl = sh.entries[k].path.filter(function (x) { return x.s.kind === 'closing'; });
+      if (!cl.length) return false;
+      sh.closing = { k: k, i: cl[cl.length - 1].i, s: cl[cl.length - 1].s };
+      return true;
+    });
+    sh.entries.forEach(function (x) {
+      x.setAside = x.path.filter(function (y) { return y.s.kind === 'closing'; });
+    });
+    sh.tracks = sh.entries.map(function (x) { return x.path.filter(function (y) { return y.s.kind !== 'closing'; }); });
+    return sh;
+  }
+  // A run's own record for a den (the shape leaves out a den whose plan is gone, so the two lists
+  // are matched by den, never by place).
+  function runEntryFor(run, den) {
+    var es = run && Array.isArray(run.entries) ? run.entries : [];
+    for (var k = 0; k < es.length; k++) if (es[k] && es[k].den === den) return es[k];
+    return null;
+  }
+  // The planned length of the run, in minutes: one den, its steps less the skipped ones; several,
+  // the longest den's breakout, then the shared closing.
+  function runPlannedMins(sh, run) {
+    var longest = 0;
+    sh.tracks.forEach(function (t, k) {
+      var e = runEntryFor(run, sh.entries[k].den);
+      longest = Math.max(longest, runListMins(t, e ? e.skipped : []));
+    });
+    return longest + (sh.closing ? runStepMins(sh.closing.s) : 0);
+  }
+  // A new run, started at `now`, for the shape as picked.
+  function runNew(sh, now) {
+    return { v: 1, startedAt: now, pausedAt: 0, closingAt: 0, finishedAt: 0, savedAt: now,
+      entries: sh.entries.map(function (x) {
+        return { den: x.den, adventure: x.adventure, meetingN: x.meetingN, option: x.option || '', step: 0, stepAt: now, skipped: [] };
+      }) };
+  }
+  // Is every den on the closing (or past its last step)?
+  function runTracksDone(sh, run) {
+    return sh.tracks.every(function (t, k) { var e = runEntryFor(run, sh.entries[k].den); return !e || e.step >= t.length; });
+  }
+  // Next step, Skip or Back for one den's track (k). A skipped step's minutes come off the total;
+  // Back to a skipped step takes it up again. The last step done: one den, the meeting is over;
+  // several, the shared closing starts when every den is through (and the meeting is over if
+  // there is none). Changes the run and returns it; pure apart from that.
+  function runMove(run, sh, k, how, now) {
+    var e = sh.entries[k] ? runEntryFor(run, sh.entries[k].den) : null, t = sh.tracks[k];
+    if (!e || !t || run.finishedAt) return run;
+    if (how === 'back') {
+      if (run.closingAt) { run.closingAt = 0; return run; }
+      if (e.step <= 0 || !t.length) return run;
+      e.step = Math.min(e.step, t.length) - 1;
+      var back = t[e.step].i;
+      e.skipped = e.skipped.filter(function (i) { return i !== back; });
+      e.stepAt = now;
+      return run;
+    }
+    if (e.step >= t.length) return run;
+    if (how === 'skip' && e.skipped.indexOf(t[e.step].i) === -1) e.skipped.push(t[e.step].i);
+    e.step += 1;
+    e.stepAt = now;
+    if (!runTracksDone(sh, run)) return run;
+    if (sh.closing && sh.tracks.length > 1) { if (!run.closingAt) run.closingAt = now; }
+    else run.finishedAt = now;
+    return run;
+  }
+  // Pause, and go on: on going on, every clock moves on by the pause, so no time is lost.
+  function runPause(run, now) {
+    if (!run || run.finishedAt) return run;
+    if (!run.pausedAt) { run.pausedAt = now; return run; }
+    var gap = Math.max(0, now - run.pausedAt);
+    run.startedAt += gap;
+    if (run.closingAt) run.closingAt += gap;
+    run.entries.forEach(function (e) { e.stepAt += gap; });
+    run.pausedAt = 0;
+    return run;
+  }
+  // "Back to the last step" from the end screen: the shared closing again, or each den's last step.
+  function runUnfinish(run, sh, now) {
+    if (!run || !run.finishedAt) return run;
+    run.finishedAt = 0;
+    if (sh.closing && sh.tracks.length > 1 && run.closingAt) return run;
+    sh.tracks.forEach(function (t, k) {
+      var e = runEntryFor(run, sh.entries[k].den);
+      if (e && t.length && e.step >= t.length) { e.step = t.length - 1; e.stepAt = now; }
+    });
+    return run;
+  }
+  // The clocks, in seconds left (below 0 is over): { mtg, steps: [one per den, null when through],
+  // closing }. A paused run's clocks stand at the pause.
+  function runClocks(run, sh, now) {
+    var at = run.pausedAt || run.finishedAt || now;
+    var out = { mtg: runPlannedMins(sh, run) * 60 - (at - run.startedAt) / 1000, steps: [], closing: null };
+    sh.tracks.forEach(function (t, k) {
+      var e = runEntryFor(run, sh.entries[k].den);
+      out.steps.push(e && e.step < t.length ? runStepMins(t[e.step].s) * 60 - (at - e.stepAt) / 1000 : null);
+    });
+    if (sh.closing && run.closingAt) out.closing = runStepMins(sh.closing.s) * 60 - (at - run.closingAt) / 1000;
+    return out;
+  }
+  // "6:05" left, or gently over: "2 min over". Never a warning colour; never stops anything.
+  function runClockText(secs) {
+    if (!(typeof secs === 'number' && isFinite(secs))) return '';
+    if (secs >= 0) { var s = Math.ceil(secs); return Math.floor(s / 60) + ':' + pad2(s % 60); }
+    return Math.max(1, Math.round(-secs / 60)) + ' min over';
+  }
+  /* ----- The run on this device (localStorage, RUN_MEETING_KEY). Names and numbers only:
+     { v: 1, entries: [{ den, adventure, meetingN, option, step, stepAt, skipped: [step places] }],
+       startedAt, pausedAt, closingAt, finishedAt, savedAt } (times in ms since 1970; 0 = not yet).
+     Storage can be blocked or full (a private window, a locked-down phone): every read and write is
+     in a try, and a run that cannot be kept still runs; it just isn't offered back. ----- */
+  // A stored run checked field by field, or null. Nothing else in it survives. A time further ahead
+  // than `now` + RUN_RESUME_MS, or a start after the save, is a tampered or broken run (security
+  // review, 2026-09-30): it would be offered back for ever.
+  function runCleanSaved(r, now) {
+    if (!r || typeof r !== 'object' || r.v !== 1 || !Array.isArray(r.entries)) return null;
+    var limit = (typeof now === 'number' && isFinite(now) ? now : Date.now()) + RUN_RESUME_MS;
+    var late = [r.startedAt, r.pausedAt, r.closingAt, r.finishedAt, r.savedAt].concat(r.entries.map(function (e) { return e && e.stepAt; }));
+    if (late.some(function (x) { return typeof x === 'number' && x > limit; })) return null;
+    if (typeof r.savedAt === 'number' && r.savedAt > 0 && typeof r.startedAt === 'number' && r.startedAt > r.savedAt) return null;
+    function num(x) { return typeof x === 'number' && isFinite(x) && x >= 0 ? x : 0; }
+    function place(x) { return typeof x === 'number' && x >= 0 && x <= 200 && x === Math.floor(x); }
+    var list = runEntriesClean(r.entries);
+    if (!list.length || list.length !== r.entries.length || !(num(r.startedAt) > 0)) return null;
+    var entries = list.map(function (e, k) {
+      var src = r.entries[k];
+      var skipped = [];
+      (Array.isArray(src.skipped) ? src.skipped : []).forEach(function (i) { if (place(i) && skipped.indexOf(i) === -1 && skipped.length < 200) skipped.push(i); });
+      return { den: e.den, adventure: e.adventure, meetingN: e.meetingN,
+        option: typeof src.option === 'string' && /^[A-Z]?$/.test(src.option) ? src.option : '',
+        step: place(src.step) ? src.step : 0, stepAt: num(src.stepAt) || num(r.startedAt), skipped: skipped };
+    });
+    return { v: 1, startedAt: num(r.startedAt), pausedAt: num(r.pausedAt), closingAt: num(r.closingAt),
+      finishedAt: num(r.finishedAt), savedAt: num(r.savedAt), entries: entries };
+  }
+  function runLoadSaved(now) {
+    var raw = null;
+    try { raw = localStorage.getItem(RUN_MEETING_KEY); } catch (e) { return null; }
+    if (!raw) return null;
+    try { return runCleanSaved(JSON.parse(raw), now); } catch (e2) { return null; }
+  }
+  // true when kept.
+  function runSave(run, now) {
+    var r = runCleanSaved(run, now);
+    if (!r) return false;
+    r.savedAt = now;
+    try { localStorage.setItem(RUN_MEETING_KEY, JSON.stringify(r)); return true; } catch (e) { return false; }
+  }
+  function runForget() {
+    try { localStorage.removeItem(RUN_MEETING_KEY); } catch (e) { /* storage blocked */ }
+  }
+  // Is the stored run this meeting, unfinished and recent? (Every den asked for is in it; resuming
+  // brings back all of its dens.)
+  function runResumable(saved, entries, now) {
+    if (!saved || saved.finishedAt || now - (saved.savedAt || saved.startedAt) > RUN_RESUME_MS) return false;
+    var list = Array.isArray(entries) ? entries : [];
+    return list.length > 0 && list.every(function (e) {
+      return saved.entries.some(function (s) { return s.den === e.den && s.adventure === e.adventure && s.meetingN === e.meetingN; });
+    });
+  }
+  /* ----- The screen (ui.overlay kind 'run-meeting'). Phone first: one column, big buttons; the
+     clocks stay at the top while the page scrolls. Pure: reads only the overlay and `now`. ----- */
+  // A step's requirements as chips. "(set-up)" in the plans shows as "prep only" (wording review,
+  // 2026-09-30); a part for another option is left out.
+  function runReqChips(reqs, opt) {
+    var t = String(reqs == null ? '' : reqs).trim();
+    if (!t || t === 'none') return '<span class="pill">No requirement</span>';
+    return t.split(';').map(function (part) {
+      var p = part.trim();
+      var m = /\(Option ([A-Z])\)/.exec(p);
+      if (!p || (m && opt && m[1] !== opt)) return '';
+      p = p.replace(/\s*\(Option [A-Z]\)/g, '');
+      var setup = /\(set-up\)/i.test(p);
+      p = p.replace(/\s*\(set-up\)/ig, '').trim();
+      return '<span class="pill' + (setup ? '' : ' navy') + '">Req ' + planInline(p) + (setup ? ' · prep only' : '') + '</span>';
+    }).join(' ');
+  }
+  // A step's working parts, for the option picked: the Say box first and large, then How (or the
+  // picked option's How), the Tip, at home and any notes.
+  function runStepBodyHtml(s, opt) {
+    var h = '';
+    if (s.say) {
+      h += '<div class="plan-say run-say"><p class="eyebrow">Say' + (s.sayTo ? ' (to ' + planInline(s.sayTo) + ')' : '') + '</p>' +
+        '<p>' + planInline(s.say) + '</p></div>';
+    }
+    if (Array.isArray(s.how) && s.how.length) h += '<p class="eyebrow">How</p>' + planHowHtml(s.how);
+    (Array.isArray(s.options) ? s.options : []).forEach(function (o) {
+      if (!o || typeof o !== 'object' || (opt && String(o.key) !== opt)) return;
+      h += '<div class="plan-option"><p class="eyebrow">' + planInline(o.label || ('Option ' + (o.key || ''))) + '</p>' + planHowHtml(o.how) + '</div>';
+    });
+    if (s.tip) h += '<p class="small"><strong>Tip:</strong> ' + planInline(s.tip) + '</p>';
+    (Array.isArray(s.home) ? s.home : []).forEach(function (x) {
+      h += '<p class="small"><strong>At home:</strong> ' + planInline(x) + '</p>';
+    });
+    (Array.isArray(s.notes) ? s.notes : []).forEach(function (b) { h += planBlockHtml(b, 'plan-block small'); });
+    return h;
+  }
+  // A clock: ticking (data-run-until, read by runTick) while the run goes, standing still when not.
+  function runClockHtml(secs, run, now) {
+    var live = !run.pausedAt && !run.finishedAt;
+    return '<span class="run-time' + (secs < 0 ? ' run-over' : '') + '"' +
+      (live ? ' data-run-until="' + Math.round(now + secs * 1000) + '"' : '') + '>' + esc(runClockText(secs)) + '</span>';
+  }
+  // The step in front of the den, large: title, minutes, requirements, its clock, then its parts.
+  // `eyebrow` is plain text ("Step 2 of 5"); `secs` is the step's own clock (the Both-dens columns
+  // have one each; a single den's is in the bar at the top), null for none.
+  function runNowHtml(s, opt, eyebrow, secs, run, now) {
+    return '<div class="run-now"><p class="eyebrow">' + esc(eyebrow) + (s.kind === 'closing' ? ' · closing' : '') + '</p>' +
+      '<h2 class="run-title">' + planInline(s.title) + '</h2>' +
+      '<p class="run-meta">' + esc(runStepMins(s) + ' min') + ' ' + runReqChips(s.reqs, opt) + '</p>' +
+      (secs == null ? '' : '<p class="run-step-clock">Step time left ' + runClockHtml(secs, run, now) + '</p>') +
+      runStepBodyHtml(s, opt) + '</div>';
+  }
+  // Previous, Skip, Next step for one den's track (k). `den` names the row (and the buttons, for a
+  // screen reader) when the dock has one row per den.
+  function runCtlHtml(k, atStart, last, label, den) {
+    var next = label || (last ? 'Finish' : 'Next step');
+    function aria(what) { return den ? ' aria-label="' + esc(den + ': ' + what) + '"' : ''; }
+    return '<div class="run-ctl' + (den ? ' run-ctl-den' : '') + '">' + (den ? '<span class="run-ctl-name">' + esc(den) + '</span>' : '') +
+      '<button type="button" class="btn" data-act="run-back" data-k="' + k + '"' + (atStart ? ' disabled' : '') + aria('previous step') + '>Previous</button>' +
+      '<button type="button" class="btn" data-act="run-skip" data-k="' + k + '"' + aria('skip this step') + '>Skip</button>' +
+      '<button type="button" class="btn primary" data-act="run-next" data-k="' + k + '"' + aria(next.toLowerCase()) + '>' + esc(next) + '</button></div>';
+  }
+  // A den's steps as a short list that opens and closes: done, skipped, now and still to come.
+  // `extra` is the shared closing, listed last on a den's own view.
+  function runListHtml(o, k, t, e, opt, extra) {
+    var h = '<ol class="run-list">';
+    t.forEach(function (y, p) {
+      var key = k + ':' + y.i, open = !!(o.open && o.open[key]);
+      var mark = !e ? '' : e.skipped.indexOf(y.i) !== -1 ? 'Skipped' : p < e.step ? 'Done' : p === e.step ? 'Now' : '';
+      h += '<li class="run-li' + (mark === 'Now' ? ' run-li-now' : '') + '"><button type="button" class="exp-toggle run-li-toggle" data-act="run-step" data-key="' +
+        esc(key) + '" aria-expanded="' + open + '"><span class="chev" aria-hidden="true">' + (open ? '▾' : '▸') + '</span><span>' +
+        planInline(y.s.title) + ' <span class="muted">· ' + esc(runStepMins(y.s) + ' min') + '</span>' +
+        (y.s.kind === 'closing' ? ' <span class="pill navy">Closing</span>' : '') +
+        (mark ? ' <span class="pill' + (mark === 'Now' ? ' navy' : '') + '">' + mark + '</span>' : '') + '</span></button>' +
+        (open ? '<div class="run-li-body"><p class="run-meta">' + runReqChips(y.s.reqs, opt) + '</p>' + runStepBodyHtml(y.s, opt) + '</div>' : '') + '</li>';
+    });
+    if (extra) h += '<li class="run-li"><p class="small" style="margin:6px 0">Then together: <strong>' + planInline(extra.s.title) + '</strong> · ' +
+      esc(runStepMins(extra.s) + ' min') + ' <span class="pill navy">Shared closing</span></p></li>';
+    return h + '</ol>';
+  }
+  // A den's closing that gives way to the shared one, said so, with that closing's own tip (on a den
+  // night it is a hand-off or clean-up note worth keeping; no den-night closing carries a
+  // requirement, program review 2026-09-30).
+  function runSetAsideHtml(x, sh) {
+    return x.setAside.filter(function (y) { return !(sh.closing && sh.closing.k === sh.entries.indexOf(x) && sh.closing.i === y.i); }).map(function (y) {
+      return '<p class="small muted">The ' + esc(x.den) + ' den skips its own closing (' + planInline(y.s.title) + ') for the shared one.' +
+        (y.s.tip ? ' Its tip still applies: ' + planInline(y.s.tip) : '') + '</p>';
+    }).join('');
+  }
+  // Under the shared closing: one line for the room, since every den's adults collect there.
+  var RUN_SHARED_CLOSING_NOTE = 'Hand every den’s scouts to their adult by name.';
+  function runRefHtml(o) {
+    if (!RUN_REFERENCE.length) return '';
+    var cur = o.ref || '';
+    var h = '<div class="run-ref no-print"><div class="row" style="gap:6px">' + RUN_REFERENCE.map(function (r) {
+      return '<button type="button" class="snav" data-act="run-ref" data-id="' + esc(r.id) + '"' + (cur === r.id ? ' aria-current="true"' : '') + '>' +
+        planInline(r.label) + '</button>';
+    }).join('') + '</div>';
+    RUN_REFERENCE.forEach(function (r) { if (r.id === cur) h += '<div class="plan-block">' + planItemsHtml(r.items) + '</div>'; });
+    return h + '</div>';
+  }
+  // A meeting as the plan numbers it ("Meeting 3 of 4"; a variant meeting shares a number).
+  function runMeetingLabel(m, place) {
+    return 'Meeting ' + String(m.n || place) + (m.of ? ' of ' + String(m.of) : '');
+  }
+  // Heading line for an entry: "Wolf · Bobcat · Meeting 1 of 2 · Meet the Den".
+  function runEntryHead(x) {
+    return esc(x.den) + ' · ' + esc(x.adventure) + ' · ' + esc(runMeetingLabel(x.meeting, x.meetingN)) + ' · ' + planInline(x.meeting.title);
+  }
+  // "at 6:42 PM", or "on Tuesday at 6:42 PM" for a run started another day.
+  var RUN_WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  function runStartedWhen(at, now) {
+    var d = new Date(at), n = new Date(now);
+    var same = d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
+    return (same ? '' : 'on ' + RUN_WEEKDAYS[d.getDay()] + ' ') + 'at ' + fmtClock(pad2(d.getHours()) + ':' + pad2(d.getMinutes()));
+  }
+  // The option buttons: "Option A · Memory Game", naming what the option picks where a step says.
+  function runPickLabel(m, key) {
+    var names = [];
+    (Array.isArray(m.steps) ? m.steps : []).forEach(function (s) {
+      (s && Array.isArray(s.options) ? s.options : []).forEach(function (o) {
+        var nm = o && String(o.key) === key ? runOptionName(o) : '';
+        if (nm && names.indexOf(nm) === -1) names.push(nm);
+      });
+    });
+    return 'Option ' + key + (names.length ? ' · ' + names.join(' / ') : '');
+  }
+  // Before the start: per den, the option to pick, the steps and minutes it makes, "Done at …",
+  // prep and supplies, and the total. Start (and "Add a den") are in the dock at the bottom, so a
+  // phone never scrolls to find them; the add picker opens at the top.
+  function runStartHtml(o, sh, now) {
+    var h = '';
+    if (o.resume) {
+      h += '<div class="warn run-resume"><p style="margin:0 0 8px">You started this meeting on this device ' +
+        esc(runStartedWhen(o.resume.startedAt, now)) + '.</p><div class="run-ctl">' +
+        '<button type="button" class="btn primary" data-act="run-resume">Resume</button>' +
+        '<button type="button" class="btn" data-act="run-restart">Start over</button></div></div>';
+    }
+    h += runAddHtml(o);
+    sh.entries.forEach(function (x, k) {
+      var m = x.meeting;
+      h += '<div class="run-entry"><h2 class="section display">' + runEntryHead(x) + '</h2>';
+      if (m.kind === 'outing') h += '<p class="small"><span class="pill navy">Outing</span> ' + esc(String(m.length || '')) + '</p>';
+      if (m.kind === 'add-on') h += '<p class="small"><span class="pill navy">Optional extra</span> ' + esc(String(m.length || '')) + '</p>';
+      var only = runOnlyLine(x.keys);
+      if (only) h += '<p class="run-only"><strong>' + esc(only) + '</strong></p>';
+      if (only || x.keys.pick.length > 1) {
+        runDrivingChoices(x.plan, m).forEach(function (b) { h += planBlockHtml(b, 'plan-block small'); });
+        (Array.isArray(m.choices) ? m.choices : []).forEach(function (b) { h += planBlockHtml(b, 'plan-block small'); });
+      }
+      if (x.keys.pick.length > 1) {
+        h += '<p class="eyebrow">Pick before you start</p><div class="run-ctl no-print">' + x.keys.pick.map(function (key) {
+          return '<button type="button" class="btn' + (x.option === key ? ' primary' : '') + '" data-act="run-pick" data-den="' + esc(x.den) +
+            '" data-key="' + esc(key) + '" aria-pressed="' + (x.option === key) + '">' + planInline(runPickLabel(m, key)) + '</button>';
+        }).join('') + '</div>';
+      }
+      (Array.isArray(m.variants) ? m.variants : []).forEach(function (v) {
+        if (!v || typeof v !== 'object' || (x.option && String(v.key) !== x.option)) return;
+        h += '<p class="small"><span class="pill navy">' + planInline(v.label || ('Option ' + (v.key || ''))) + '</span> ' + planInline(v.text) + '</p>';
+      });
+      if (x.option === null) h += '<p class="small muted" role="status">Pick an option to see its steps and minutes.</p>';
+      else {
+        h += '<p class="run-total">' + esc(runListMins(x.path, []) + ' min of steps') + '</p><ol class="run-list run-list-plain">' +
+          x.path.map(function (y) {
+            return '<li>' + planInline(y.s.title) + ' <span class="muted">· ' + esc(runStepMins(y.s) + ' min') + '</span>' +
+              (y.s.kind === 'closing' ? ' <span class="pill navy">Closing</span>' : '') + '</li>';
+          }).join('') + '</ol>';
+        if (sh.entries.length > 1) h += runSetAsideHtml(x, sh);
+      }
+      (Array.isArray(m.done) ? m.done : []).forEach(function (b) { h += planBlockHtml(b, 'plan-block plan-done'); });
+      if (m.prep) h += '<p class="eyebrow">Prep</p>' + planBlockHtml(m.prep, 'plan-block');
+      if (m.supplies && m.supplies.text) h += '<p class="eyebrow">Supplies</p><p>' + planInline(m.supplies.text) + '</p>';
+      if (k > 0) h += '<p class="no-print"><button type="button" class="btn small ghost" data-act="run-remove" data-den="' + esc(x.den) + '">Remove the ' + esc(x.den) + ' den</button></p>';
+      h += '</div>';
+    });
+    sh.missing.forEach(function (e) {
+      h += '<p class="warn">There’s no plan in the app for ' + esc(e.den) + ' · ' + esc(e.adventure) + ' meeting ' + esc(String(e.meetingN)) + '.</p>';
+    });
+    var picked = sh.entries.length > 0 && sh.entries.every(function (x) { return x.option !== null && x.path.length; });
+    if (sh.entries.length > 1) {
+      h += '<div class="run-entry"><p class="eyebrow">Together</p><p>' + (sh.closing
+        ? 'Each den works on its own steps at the same time. Then everyone comes together for one closing: <strong>' + planInline(sh.closing.s.title) +
+          '</strong> (' + esc(runStepMins(sh.closing.s) + ' min, from the ' + sh.entries[sh.closing.k].den + ' plan') + ').'
+        : 'Each den works on its own steps at the same time. None of these plans has a closing, so the meeting ends when every den is done.') + '</p></div>';
+    }
+    var total = picked ? 'Planned: ' + runPlannedMins(sh, null) + ' min' : 'Pick an option first';
+    return h + runDockHtml('<p class="run-dock-note">' + esc(total) + '</p>' +
+      '<div class="run-ctl"><button type="button" class="btn primary run-big" data-act="run-start"' + (picked ? '' : ' disabled') + '>Start</button>' +
+      (!o.adding && runAddDens(o).length ? '<button type="button" class="btn" data-act="run-add">Add a den</button>' : '') + '</div>');
+  }
+  // The control bar, stuck to the bottom of the run screen (CSS .run-dock): always in reach.
+  function runDockHtml(inner) {
+    return '<div class="run-dock no-print">' + inner + '</div>';
+  }
+  // Can a plan be run? Only a meeting with steps can (Archery, BB Guns and Slingshot are range
+  // days, with no den meetings at all).
+  function runRunnable(m) { return !!(m && typeof m === 'object' && Array.isArray(m.steps) && m.steps.length); }
+  function runPlanRunnable(p) { return !!(p && Array.isArray(p.meetings) && p.meetings.some(runRunnable)); }
+  // The other dens' runnable plans, for "Add another den's meeting": [{ den, names: [adventure] }].
+  function runAddDens(o) {
+    var used = (o.entries || []).map(function (e) { return e.den; });
+    if (used.length >= RUN_MAX_DENS) return [];
+    var plans = (o.data && o.data.plans && typeof o.data.plans === 'object') ? o.data.plans : {};
+    var keys = Object.keys(plans);
+    return DENS.filter(function (dn) { return used.indexOf(dn) === -1; }).map(function (dn) {
+      return { den: dn, names: keys.filter(function (key) {
+        return key.indexOf(dn + ' :: ') === 0 && runPlanRunnable(advPlanFor(o.data, key));
+      }).map(function (key) { return key.slice(dn.length + 4); }) };
+    }).filter(function (x) { return x.names.length; });
+  }
+  // The picker: the den, then the adventure, then the meeting, from the plans that can be run.
+  function runAddHtml(o) {
+    var a = o.adding;
+    if (!a) return '';
+    var dens = runAddDens(o);
+    if (!dens.length) return '';
+    var h = '<div class="run-entry run-add no-print"><p class="eyebrow">Add another den’s meeting</p><p class="small">Which den?</p><div class="run-chips">' + dens.map(function (x) {
+      return '<button type="button" class="btn' + (a.den === x.den ? ' primary' : '') + '" data-act="run-add" data-den="' + esc(x.den) + '">' + esc(x.den) + '</button>';
+    }).join('') + '</div>';
+    var cur = dens.filter(function (x) { return x.den === a.den; })[0];
+    if (cur) {
+      h += '<p class="small">Which adventure?</p><div class="run-chips">' + cur.names.map(function (nm) {
+        return '<button type="button" class="btn' + (a.name === nm ? ' primary' : '') + '" data-act="run-add" data-den="' + esc(cur.den) + '" data-name="' + esc(nm) + '">' +
+          esc(nm) + '</button>';
+      }).join('') + '</div>';
+    }
+    var p = cur && a.name && cur.names.indexOf(a.name) !== -1 ? advPlanFor(o.data, advPlanKey(cur.den, a.name)) : null;
+    if (p) {
+      h += '<p class="small">Which meeting?</p><div class="run-chips">' + p.meetings.map(function (m, i) {
+        return runRunnable(m) ? '<button type="button" class="btn" data-act="run-add" data-den="' + esc(cur.den) + '" data-name="' + esc(a.name) +
+          '" data-n="' + (i + 1) + '">' + esc(runMeetingLabel(m, i + 1)) + ' · ' + planInline(m.title) + '</button>' : '';
+      }).join('') + '</div>';
+    }
+    return h + '<p><button type="button" class="btn small ghost" data-act="run-add-cancel">Cancel</button></p></div>';
+  }
+  // While it runs: the clocks, the den switch, the step in front of the den (or, for Both dens,
+  // each den's step side by side), the steps to come; the controls are in the dock.
+  // ⚠ A phone's dock stays under about 140px (wording review, 2026-09-30): Both dens gives one
+  // compact row per den (two in view, the rest scroll inside the dock, .run-dock-rows), and Start
+  // the closing shares the row of a den that is done; one den's view gives that den's row and
+  // Start the closing.
+  function runLiveHtml(o, sh, now) {
+    var run = o.run, c = runClocks(run, sh, now), multi = sh.entries.length > 1;
+    var view = multi && o.view && o.view !== 'all' ? o.view : (multi ? 'all' : sh.entries[0].den);
+    var k0 = Math.max(0, sh.entries.map(function (x) { return x.den; }).indexOf(view));
+    var closingNow = multi && !!run.closingAt;
+    var stepSecs = closingNow ? c.closing : multi && view === 'all' ? null : c.steps[k0];
+    // A den's place in its track, kept inside it (a stored run can name a step the plan has lost).
+    function entryOf(x, t) {
+      var e = runEntryFor(run, x.den) || { step: 0, skipped: [] };
+      return { step: Math.max(0, Math.min(t.length, +e.step || 0)), skipped: Array.isArray(e.skipped) ? e.skipped : [] };
+    }
+    var h = '<div class="run-bar"><div class="run-clocks">' +
+      (stepSecs == null ? '' : '<p><span class="run-lbl">Step time left</span>' + runClockHtml(stepSecs, run, now) + '</p>') +
+      '<p><span class="run-lbl">Meeting time left</span>' + runClockHtml(c.mtg, run, now) + '</p></div>' +
+      '<button type="button" class="btn" data-act="run-pause">' + (run.pausedAt ? 'Unpause' : 'Pause') + '</button></div>';
+    if (run.pausedAt) h += '<p class="small muted" role="status">Paused. The clocks wait for you.</p>';
+    if (multi) {
+      h += '<div class="row run-switch no-print" style="gap:6px">' +
+        '<button type="button" class="snav" data-act="run-view" data-den=""' + (view === 'all' ? ' aria-current="true"' : '') + '>' +
+        (sh.entries.length === 2 ? 'Both dens' : 'All dens') + '</button>' +
+        sh.entries.map(function (x) {
+          return '<button type="button" class="snav" data-act="run-view" data-den="' + esc(x.den) + '"' + (view === x.den ? ' aria-current="true"' : '') + '>' +
+            esc(x.den) + '</button>';
+        }).join('') + '</div>';
+    }
+    var closeBtn = sh.closing ? '<button type="button" class="btn' + (runTracksDone(sh, run) ? ' primary' : '') + '" data-act="run-closing">Start the closing</button>' : '';
+    if (closingNow) {
+      var cx = sh.entries[sh.closing.k];
+      h += '<p class="eyebrow" style="margin-top:12px">Together · shared closing</p>' +
+        '<p class="run-only"><strong>' + esc(RUN_SHARED_CLOSING_NOTE) + '</strong></p>' +
+        runNowHtml(sh.closing.s, cx.option, 'From the ' + cx.den + ' plan', null, run, now);
+      return h + runRefHtml(o) + runDockHtml('<div class="run-ctl"><button type="button" class="btn" data-act="run-back" data-k="0">Back to den steps</button>' +
+        '<button type="button" class="btn primary" data-act="run-finish">Finish</button></div>');
+    }
+    if (multi && view === 'all') {
+      var rows = '', closeShown = false;
+      h += '<div class="run-breakout">' + sh.entries.map(function (x, k) {
+        var t = sh.tracks[k], e = entryOf(x, t);
+        var col = '<div class="run-col"><h2 class="section display">' + esc(x.den) + ' · ' + planInline(x.adventure) + '</h2>';
+        if (e.step >= t.length) {
+          col += '<p>' + esc(x.den) + ' den: all steps done.</p>';
+          rows += '<div class="run-ctl run-ctl-den"><span class="run-ctl-name">' + esc(x.den) + ' done</span>' +
+            '<button type="button" class="btn" data-act="run-back" data-k="' + k + '"' + (t.length ? '' : ' disabled') +
+            ' aria-label="' + esc(x.den + ': previous step') + '">Previous</button>' + (closeShown ? '' : closeBtn) + '</div>';
+          closeShown = true;
+        } else {
+          col += runNowHtml(t[e.step].s, x.option, 'Step ' + (e.step + 1) + ' of ' + t.length, c.steps[k], run, now);
+          rows += runCtlHtml(k, e.step === 0, false, 'Next step', x.den);
+        }
+        return col + runListHtml(o, k, t, e, x.option, null) + runSetAsideHtml(x, sh) + '</div>';
+      }).join('') + '</div>';
+      if (sh.closing) {
+        h += '<div class="run-entry"><p class="eyebrow">Then together</p><p><strong>' + planInline(sh.closing.s.title) + '</strong> · ' +
+          esc(runStepMins(sh.closing.s) + ' min') + ' <span class="pill navy">Shared closing</span></p>' +
+          '<p class="small">' + esc(RUN_SHARED_CLOSING_NOTE) + '</p>' + (closeShown ? '' : '<div class="run-ctl no-print">' + closeBtn + '</div>') + '</div>';
+      }
+      return h + runRefHtml(o) + runDockHtml('<div class="run-dock-rows">' + rows + '</div>');
+    }
+    var x = sh.entries[k0], t = sh.tracks[k0], e = entryOf(x, t);
+    var dock;
+    if (e.step >= t.length) {
+      h += '<div class="run-now"><p>' + (multi
+        ? 'The ' + esc(x.den) + ' den is done with its steps.' + (sh.closing ? ' The closing starts when every den is done, or tap Start the closing now.' : '')
+        : esc(x.den) + ' den: all steps done.') + '</p></div>';
+      dock = '<div class="run-ctl"><button type="button" class="btn" data-act="run-back" data-k="' + k0 + '"' + (t.length ? '' : ' disabled') + '>Previous</button>' +
+        (multi ? closeBtn : '') + '</div>';
+    } else {
+      h += runNowHtml(t[e.step].s, x.option, (multi ? x.den + ' · ' : '') + 'Step ' + (e.step + 1) + ' of ' + t.length, null, run, now);
+      dock = runCtlHtml(k0, e.step === 0, !multi && e.step === t.length - 1, null, multi ? x.den : '') +
+        (multi && closeBtn ? '<div class="run-ctl">' + closeBtn + '</div>' : '');
+    }
+    h += '<p class="eyebrow" style="margin-top:14px">' + esc(multi ? x.den + '’s steps' : 'The steps') + '</p>' +
+      runListHtml(o, k0, t, e, x.option, multi ? sh.closing : null) + (multi ? runSetAsideHtml(x, sh) : '');
+    return h + runRefHtml(o) + runDockHtml(dock);
+  }
+  // The end: what to tell parents before they leave, what goes home, and the way to the den's
+  // adventure board. Nothing is marked here (DESIGN-adventures §7).
+  function runEndHtml(o, sh) {
+    var run = o.run, multi = sh.entries.length > 1;
+    var used = Math.max(0, Math.round((run.finishedAt - run.startedAt) / 60000));
+    var h = '<h2 class="section display">Meeting done</h2><p class="small muted">' + esc('That took ' + used + ' min.') + '</p>';
+    sh.entries.forEach(function (x) {
+      var m = x.meeting;
+      if (m.tellParents) {
+        h += '<div class="plan-tell"><p class="eyebrow">Tell parents before they leave' + (multi ? ' · ' + esc(x.den) : '') + '</p>' +
+          planBlockHtml(m.tellParents, 'plan-block') + '</div>';
+      }
+    });
+    var home = [];
+    sh.entries.forEach(function (x) {
+      x.path.forEach(function (y) {
+        (Array.isArray(y.s.home) ? y.s.home : []).forEach(function (t) { home.push((multi ? esc(x.den) + ': ' : '') + planInline(t)); });
+      });
+    });
+    if (home.length) h += '<p class="eyebrow">At home</p><ul class="plan-list">' + home.map(function (t) { return '<li>' + t + '</li>'; }).join('') + '</ul>';
+    h += '<p class="small muted">Next: in Advancement, mark which scouts finished each requirement.</p>';
+    return h + runDockHtml('<div class="run-ctl">' + sh.entries.map(function (x) {
+      return '<button type="button" class="btn primary" data-act="run-record" data-den="' + esc(x.den) + '">Record ' + (multi ? 'the ' + esc(x.den) + ' den ' : '') + 'in Advancement</button>';
+    }).join('') + '</div><div class="run-ctl"><button type="button" class="btn" data-act="run-unfinish">Undo Finish</button>' +
+      '<button type="button" class="btn" data-act="run-close">Close</button></div>');
+  }
+  // The guide line in full before the start (and while loading); once the meeting runs, a phone
+  // has no room for it, so it shrinks to one line.
+  var RUN_GUIDE_SHORT = '**A guide, not the rulebook.**';
+  function runScreenHtml(o, now) {
+    var sh = o.status === 'ready' ? runShape(o.data, o.entries, o.picks) : null;
+    var guide = o.run ? RUN_GUIDE_SHORT : (o.data && typeof o.data.guide === 'string' && o.data.guide) || ADV_PLAN_GUIDE;
+    var first = o.entries && o.entries[0];
+    var label = first ? first.den + ' · ' + first.adventure : 'meeting';
+    var h = '<div class="overlay run-overlay" role="dialog" aria-modal="true" aria-label="' + esc('Run this meeting: ' + label) + '"><div class="overlay-inner">' +
+      '<div class="row no-print" style="margin-bottom:12px"><button type="button" class="btn" data-act="run-close">&larr; ' + (o.back ? 'Lesson plan' : 'Close') + '</button></div>' +
+      '<div class="summary-sheet plan-sheet run-sheet"><p class="eyebrow">Run this meeting · leaders only</p>' +
+      '<p class="small plan-guide">' + planInline(guide) + '</p>';
+    if (o.status === 'loading') return h + '<p class="small muted" role="status">Loading the lesson plan…</p></div></div></div>';
+    if (o.status === 'failed') {
+      return h + '<div class="warn" role="alert"><p style="margin:0 0 8px">' + esc(o.error || 'The lesson plans couldn’t be loaded.') + '</p>' +
+        '<button type="button" class="btn small" data-act="run-retry">Try again</button></div></div></div></div>';
+    }
+    if (!sh.entries.length) {
+      return h + '<p>There’s no lesson plan in the app for that meeting.</p></div></div></div>';
+    }
+    if (!o.run) h += runStartHtml(o, sh, now);
+    else if (o.run.finishedAt) h += runEndHtml(o, sh);
+    else h += runLiveHtml(o, sh, now);
+    return h + '</div></div></div>';
+  }
+  function renderRunMeeting(o) { return runScreenHtml(o, Date.now()); }
+  // Opens the run screen for these dens' meetings, and fills it when the plans arrive. Offers the
+  // run this device already has going for the same meeting. `back` is the plan panel to go back to.
+  // The calendar's den meeting (BUILD-PLAN step 3) calls this too, with one entry per den.
+  function openRunMeeting(entries, back) {
+    if (parentMode()) return;
+    var list = runEntriesClean(entries);
+    if (!list.length) return;
+    var saved = runLoadSaved(Date.now());
+    var o = { kind: 'run-meeting', entries: list, status: 'loading', data: null, error: '', picks: {}, run: null,
+      resume: runResumable(saved, list, Date.now()) ? saved : null, view: 'all', open: {}, adding: null, ref: '', back: back || null };
+    ui.overlay = o;
+    render();
+    loadAdventurePlans().then(function (j) {
+      if (ui.overlay !== o) return;
+      o.status = 'ready';
+      o.data = j;
+      render();
+    }, function (err) {
+      if (ui.overlay !== o) return;
+      o.status = 'failed';
+      o.error = (err && err.message) || '';
+      render();
+    });
+  }
+  // Take up a stored run: its dens, their options, and where each was.
+  function runResumeInto(o) {
+    var r = o.resume;
+    if (!r) return;
+    o.entries = r.entries.map(function (e) { return { den: e.den, adventure: e.adventure, meetingN: e.meetingN }; });
+    o.picks = {};
+    r.entries.forEach(function (e) { o.picks[e.den] = e.option; });
+    o.run = r;
+    o.resume = null;
+    o.adding = null;
+  }
+  // The run screen's buttons (handleAction sends every 'run-…' act here). ⚠ None of them writes
+  // the pack record: what changes is the overlay and this device's stored run (runSave).
+  function runAction(act, el) {
+    var o = ui.overlay;
+    var d = el && el.dataset ? el.dataset : {};
+    if (act === 'run-open') {
+      if (!o || o.kind !== 'adv-plan') return;
+      openRunMeeting([{ den: o.den, adventure: o.name, meetingN: (+d.n || 0) + 1 }], { den: o.den, name: o.name, open: o.open });
+      return;
+    }
+    if (!o || o.kind !== 'run-meeting') return;
+    if (act === 'run-close') {
+      if (o.back) openAdvPlan(o.back.den, o.back.name, o.back.open);
+      else { ui.overlay = null; render(); }
+      return;
+    }
+    if (act === 'run-retry') { openRunMeeting(o.entries, o.back); return; }
+    if (act === 'run-record') {
+      // The den's adventure board (Scouts → Advancement, showing that den).
+      ui.overlay = null;
+      if (DENS.indexOf(d.den) !== -1) ui.denFilter = d.den;
+      gotoNav('scouts', 'advancement');
+      return;
+    }
+    if (o.status !== 'ready') return;
+    var sh = runShape(o.data, o.entries, o.picks);
+    var now = Date.now(), keepScroll = true, changed = false;
+    if (act === 'run-step') {
+      var key = String(d.key || '');
+      if (o.open[key]) delete o.open[key]; else o.open[key] = true;
+    } else if (act === 'run-view') {
+      o.view = sh.entries.some(function (x) { return x.den === d.den; }) ? d.den : 'all';
+      keepScroll = false;
+    } else if (act === 'run-ref') {
+      o.ref = o.ref === d.id ? '' : String(d.id || '');
+    } else if (!o.run) {
+      // The start page.
+      if (act === 'run-pick') o.picks[String(d.den || '')] = String(d.key || '');
+      else if (act === 'run-start') {
+        if (!sh.entries.length || !sh.entries.every(function (x) { return x.option !== null && x.path.length; })) return;
+        o.entries = sh.entries.map(function (x) { return { den: x.den, adventure: x.adventure, meetingN: x.meetingN }; });
+        o.run = runNew(sh, now);
+        o.resume = null;
+        o.adding = null;
+        o.open = {};
+        changed = true;
+        keepScroll = false;
+      } else if (act === 'run-resume') { runResumeInto(o); keepScroll = false; }
+      else if (act === 'run-restart') { runForget(); o.resume = null; o.picks = {}; }
+      else if (act === 'run-add') {
+        if (!d.den) { o.adding = {}; keepScroll = false; }
+        else if (!d.name) o.adding = { den: d.den };
+        else if (!d.n) o.adding = { den: d.den, name: d.name };
+        else {
+          o.entries = runEntriesClean(o.entries.concat([{ den: d.den, adventure: d.name, meetingN: +d.n }]));
+          o.adding = null;
+        }
+      } else if (act === 'run-add-cancel') o.adding = null;
+      else if (act === 'run-remove') {
+        if (o.entries.length > 1) o.entries = o.entries.filter(function (e) { return e.den !== d.den; });
+      } else return;
+    } else {
+      // A move while paused is stamped at the pause, so going on starts it fresh.
+      var at = o.run.pausedAt || now, k = +d.k || 0;
+      var both = sh.entries.length > 1 && (!o.view || o.view === 'all');
+      if (act === 'run-next' || act === 'run-skip' || act === 'run-back') {
+        runMove(o.run, sh, k, act.slice(4), at);
+        keepScroll = both && !o.run.closingAt && !o.run.finishedAt;
+      } else if (act === 'run-pause') runPause(o.run, now);
+      else if (act === 'run-closing') { if (sh.closing && !o.run.closingAt) o.run.closingAt = at; keepScroll = false; }
+      else if (act === 'run-finish') { if (!o.run.finishedAt) o.run.finishedAt = at; keepScroll = false; }
+      else if (act === 'run-unfinish') { runUnfinish(o.run, sh, at); keepScroll = false; }
+      else return;
+      changed = true;
+    }
+    if (changed) runSave(o.run, now);
+    runRedraw(keepScroll);
+  }
+  // Redraws, keeping the run screen where it was scrolled (opening a step must not jump to the
+  // top); a move to the next step goes back to the top, where the step in front of the den is.
+  function runRedraw(keepScroll) {
+    var box = keepScroll && typeof document !== 'undefined' ? document.querySelector('#overlayHost .overlay') : null;
+    var y = box ? box.scrollTop : 0;
+    render();
+    var again = typeof document !== 'undefined' ? document.querySelector('#overlayHost .overlay') : null;
+    if (again) again.scrollTop = y;
+  }
+  /* ----- The clock and the screen staying on. A ticker writes the clocks once a second (only
+     their text: the screen is not redrawn, so nothing jumps under a leader's thumb), and only while
+     a run is going on an open run screen. runTimerSync() runs after every render(). ----- */
+  var runTicker = null;
+  var runWake = null, runWakeAsking = false, runWakeWanted = false;
+  function runTick() {
+    if (typeof document === 'undefined') return;
+    var els = document.querySelectorAll('[data-run-until]'), now = Date.now();
+    for (var i = 0; i < els.length; i++) {
+      var left = (+els[i].getAttribute('data-run-until') - now) / 1000;
+      els[i].textContent = runClockText(left);
+      els[i].classList.toggle('run-over', left < 0);
+    }
+  }
+  function runTimerSync() {
+    var o = ui.overlay;
+    var live = !!(o && o.kind === 'run-meeting' && o.run && !o.run.pausedAt && !o.run.finishedAt);
+    if (live && !runTicker) runTicker = setInterval(runTick, 1000);
+    if (!live && runTicker) { clearInterval(runTicker); runTicker = null; }
+    runWakeLock(live);
+  }
+  // Keeps the screen awake while the timer runs (the Screen Wake Lock API), and lets it go on a
+  // pause, at the end, or when the screen closes. ⚠ GUARDED: not every browser has it, it needs
+  // https, a phone can refuse it (low battery), and a hidden page loses it. Every failure is
+  // silent; the timer is the same without it. A page shown again asks again (the visibilitychange
+  // listener calls runTimerSync).
+  function runWakeLock(want) {
+    runWakeWanted = !!want;
+    try {
+      if (want) {
+        if (runWake || runWakeAsking) return;
+        if (typeof navigator === 'undefined' || !navigator.wakeLock || typeof navigator.wakeLock.request !== 'function') return;
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+        runWakeAsking = true;
+        Promise.resolve().then(function () { return navigator.wakeLock.request('screen'); }).then(function (lock) {
+          runWakeAsking = false;
+          if (!lock) return;
+          if (!runWakeWanted) { runWakeLet(lock); return; }
+          runWake = lock;
+          if (typeof lock.addEventListener === 'function') lock.addEventListener('release', function () { if (runWake === lock) runWake = null; });
+        }).catch(function () { runWakeAsking = false; });
+      } else if (runWake) {
+        var held = runWake;
+        runWake = null;
+        runWakeLet(held);
+      }
+    } catch (e) { runWakeAsking = false; }
+  }
+  function runWakeLet(lock) {
+    try {
+      var p = lock.release();
+      if (p && typeof p.catch === 'function') p.catch(function () {});
+    } catch (e) { /* already released */ }
   }
   // Short column headers for the grid; full names live in the title attr / aria-label.
   var ADV_SHORT = {
@@ -16720,6 +17657,8 @@
     if (!parent && !gate) v.innerHTML = formatBanner() + serverNoticeBanner() + v.innerHTML;
     renderSyncPill();
     document.getElementById('overlayHost').innerHTML = (parent || gate) ? '' : renderOverlay();
+    // Run this meeting: its clock ticks, and the screen stays awake, only while its run goes.
+    runTimerSync();
 
     // Restore focus (+ caret for inputs) so keyboard/VoiceOver users don't lose
     // their place on re-render — Wave 18(6) extends this to data-act buttons.
@@ -23192,6 +24131,9 @@
     'toggle-scout', 'cal-prev', 'cal-next', 'cal-day', 'cal-jump-day', 'nextup-day', 'agenda-toggle', 'agenda-past-toggle',
     'year-cost-toggle', 'budget-toggle-past', 'line-options', 'ledger-view', 'ledger-filter', 'ledger-toggle', 'adv-toggle',
     'denplan-past', 'pk-agenda-toggle', 'toggle-archive', 'adv-plan-open', 'adv-plan-retry', 'adv-plan-mtg',
+    'run-open', 'run-retry', 'run-close', 'run-pick', 'run-start', 'run-resume', 'run-restart', 'run-next', 'run-skip', 'run-back',
+    'run-pause', 'run-view', 'run-step', 'run-closing', 'run-finish', 'run-unfinish', 'run-record', 'run-add', 'run-add-cancel',
+    'run-remove', 'run-ref',
     'ledger-fix-cancel', 'ledger-void-cancel', 'charge-forgive-cancel', 'plan-adv-cancel',
     'open-summary', 'copy-summary', 'print-summary', 'open-digest', 'copy-digest', 'copy-digest-leaders', 'open-shop', 'copy-shop',
     'print-shop', 'pk-agenda-print', 'print-pk-agenda', 'sf-day-sheet', 'copy-day-sheet', 'sf-glance-open', 'copy-glance',
@@ -27688,6 +28630,8 @@
     if (o.kind === 'sf-glance') return renderGlance(o);
     // Den plans → Lesson plan. Leaders only, never published (renderAdvPlanSheet).
     if (o.kind === 'adv-plan') return renderAdvPlanSheet(o);
+    // …and its Run this meeting timer. Leaders only, on this device only (renderRunMeeting).
+    if (o.kind === 'run-meeting') return renderRunMeeting(o);
     return '';
   }
 
@@ -31137,6 +32081,11 @@
     }
   });
 
+  // Run this meeting — a phone that slept lost the wake lock and the ticks: ask again, and set
+  // the clocks right at once.
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') { runTimerSync(); runTick(); }
+  });
   // Wave 18(14) — flush a pending debounced save the moment the page might go away.
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'hidden' && persistPending) persistNow();
@@ -32698,6 +33647,12 @@
       if (ui.overlay && ui.overlay.kind === 'adv-plan') openAdvPlan(ui.overlay.den, ui.overlay.name, ui.overlay.open);
       return;
     }
+    // Run this meeting, from a meeting in the panel, and every button on its screen (runAction).
+    if (act === 'run-open' || act === 'run-retry' || act === 'run-close' || act === 'run-pick' || act === 'run-start' ||
+        act === 'run-resume' || act === 'run-restart' || act === 'run-next' || act === 'run-skip' || act === 'run-back' ||
+        act === 'run-pause' || act === 'run-view' || act === 'run-step' || act === 'run-closing' || act === 'run-finish' ||
+        act === 'run-unfinish' || act === 'run-record' || act === 'run-add' || act === 'run-add-cancel' || act === 'run-remove' ||
+        act === 'run-ref') { runAction(act, el); return; }
     if (act === 'adv-plan-mtg') {
       if (!ui.overlay || ui.overlay.kind !== 'adv-plan') return;
       var apN = +el.dataset.n;

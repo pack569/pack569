@@ -338,7 +338,7 @@ How these plans fit a Pack 569 den night:
    - Tip: **Note Req 2** for each Wolf who can name live, natural and artificial bait. **Worm cup:** the lid stays on. **Lure packets** stay sealed, and the leader takes them home.
 3. **Safety Rules Game** · den · 10 min · Reqs: 4
    - Say: "Real rule or fake rule? Let's find out."
-   - How: **Option A · Bait and Switch:** 1) Read the **six rules** first. 2) Pairs **flip cards**, calling "bait" for a rule and "switch" for a fake. / **Option B · Tacklebox Trivia:** 1) Two **teams** pick a category and points. 2) They answer in **question form**.
+   - How: 1) Read the **six rules** first. 2) Pick one: **Option A · Bait and Switch:** pairs **flip cards**, calling "bait" for a rule and "switch" for a fake. / **Option B · Tacklebox Trivia:** two **teams** pick a category and points, and answer in **question form**.
    - Tip: **Note Req 4** for each Wolf who can explain the rules. Add the casting rules: look behind, poles upright, and "Fish on!"
 4. **Clean-Up & Handoff** · closing · 5 min · Reqs: none
    - Say: "Five scraps each, then line up with your buddy."
