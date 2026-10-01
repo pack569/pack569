@@ -1520,6 +1520,15 @@ API backend they send them in.
   corrected report, and accepting that one asks old against new.
 - **Editing by hand after an accept** still works and is recorded the normal way. The block then
   stops saying "From …'s report".
+- **Two or more families on a shift: a second parent confirms** (S-4, Keith 2026-10-01). Where
+  the scouts on a block come from two or more families (`familyKeyOf`, so brothers and sisters
+  are one family), the report also needs a parent of a scout on that block to confirm it. That
+  is an account linked to the scout (`parentUids`), and never the sender. It comes before a
+  leader accepts. On the block, `cashCountedBy` is the sender, `cashVerifiedBy` is the second
+  parent, and `reportApprovedBy` is the leader who accepted. A leader can accept without a
+  second parent only by writing why (`reportOverride`, audited as `shift.accept.override`), and
+  then the leader is the verifier. An edit by the sender clears the confirmation, because
+  changed figures are not the ones that were checked.
 
 ---
 

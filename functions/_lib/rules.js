@@ -226,6 +226,51 @@ export function shiftReportFiguresProblem(body) {
   return null;
 }
 
+// The storefront event and the shift itself, in a parent view, or null. See shiftInView below.
+export function shiftOfView(view, sfId, blockId) {
+  const events = view && Array.isArray(view.events) ? view.events : [];
+  for (const ev of events) {
+    if (!ev || ev.kind !== 'storefront' || ev.sfId !== sfId || !Array.isArray(ev.shifts)) continue;
+    const shift = ev.shifts.filter((s) => s && s.blockId === blockId)[0];
+    if (shift) return { ev, shift };
+  }
+  return null;
+}
+// S-4 (Keith, 2026-10-01) — does a report on this published shift need a second parent? Yes when
+// the shift has scouts from two or more families (the view's `families`, buildParentView's count
+// of distinct family keys on the block). FAIL CLOSED: a shift whose count is missing or not a
+// whole number (a view published by a page from before S-4) needs one too; a leader can still
+// accept without one, with a written reason, and the next leader save republishes the count.
+export function shiftNeedsConfirm(shift) {
+  const n = shift && shift.families;
+  return !(typeof n === 'number' && Number.isInteger(n) && n >= 0 && n < 2);
+}
+// S-4 amendment — the accounts that are parents of a scout on this block, from the stored pack
+// record (pack_state.json, parsed): state.storefronts[sfId].blocks[blockId].assignments[].scoutId,
+// then those scouts' parentUids (set by an admin on the Members card; a parent of one scout is
+// linked to the whole family). null when the record, the storefront or the block is missing or
+// not the shape it should be: FAIL CLOSED, nobody confirms. Only a yes/no ever leaves the server.
+export function shiftParentUids(pack, sfId, blockId) {
+  if (!pack || typeof pack !== 'object' || !Array.isArray(pack.storefronts) || !Array.isArray(pack.scouts)) return null;
+  const sf = pack.storefronts.filter((x) => x && x.id === sfId)[0];
+  const b = sf && Array.isArray(sf.blocks) ? sf.blocks.filter((x) => x && x.id === blockId)[0] : null;
+  if (!b || !Array.isArray(b.assignments)) return null;
+  const on = {};
+  b.assignments.forEach((a) => { if (a && typeof a.scoutId === 'string') on[a.scoutId] = true; });
+  const out = [];
+  pack.scouts.forEach((sc) => {
+    if (!sc || !on[sc.id] || !Array.isArray(sc.parentUids)) return;
+    sc.parentUids.forEach((u) => { if (typeof u === 'string' && u && out.indexOf(u) === -1) out.push(u); });
+  });
+  return out;
+}
+// May this account confirm this report as the second parent? An approved member, a parent of a
+// scout on the shift, and not the sender. `parents` is shiftParentUids (null: nobody may).
+// Open for the treasurer (2026-10-01): two parents of one family may confirm each other.
+export function canConfirmShiftReport(role, uid, senderUid, parents) {
+  return canSubmitShiftReport(role) && !!uid && uid !== senderUid && Array.isArray(parents) && parents.indexOf(uid) !== -1;
+}
+
 // The storefront event in a parent view that holds this shift, or null. `view` is the stored
 // parent view (parent_views.payload, parsed): the page's buildParentView publishes each
 // storefront as { kind: 'storefront', sfId, date, shifts: [{ blockId, when, who? }] }.

@@ -4870,11 +4870,19 @@
           // S-3 (2026-10-01) — a family's accepted shift report: its id and sender, the accept
           // still being signed off on the server (reportPending), and a report sent back after it
           // was accepted (reportReturned). Shape-checked; anything else is dropped.
-          if (typeof b.reportId !== 'string' || !b.reportId) { delete b.reportId; delete b.reportFrom; }
-          else b.reportFrom = typeof b.reportFrom === 'string' ? b.reportFrom : '';
+          if (typeof b.reportId !== 'string' || !b.reportId) {
+            delete b.reportId; delete b.reportFrom; delete b.reportApprovedBy; delete b.reportConfirmedBy; delete b.reportOverride;
+          } else {
+            b.reportFrom = typeof b.reportFrom === 'string' ? b.reportFrom : '';
+            // S-4 — who accepted it, the second parent who confirmed it, and whether a leader overrode.
+            b.reportApprovedBy = typeof b.reportApprovedBy === 'string' ? b.reportApprovedBy : '';
+            b.reportConfirmedBy = typeof b.reportConfirmedBy === 'string' ? b.reportConfirmedBy : '';
+            b.reportOverride = b.reportOverride === true;
+          }
           var rp = b.reportPending;
           if (!rp || typeof rp !== 'object' || typeof rp.by !== 'string' || !Number.isInteger(rp.te) || !Number.isInteger(rp.cash) ||
             !rp.was || typeof rp.was !== 'object' || !b.reportId) delete b.reportPending;
+          else { rp.override = rp.override === true; rp.note = typeof rp.note === 'string' ? rp.note : ''; }
           if (!b.reportReturned || typeof b.reportReturned !== 'object') delete b.reportReturned;
           else b.reportReturned = { note: typeof b.reportReturned.note === 'string' ? b.reportReturned.note : '' };
         });
@@ -13188,10 +13196,12 @@
     // A family's shift reports and an open shift-totals form belong to one account in one pack.
     sync.shiftReports = null;
     ui.shiftReport = null;
+    ui.shiftConfirm = null;
     sync.srOut = null;
     sync.srRefused = null;
     ui.srConfirm = null;
     ui.srReturn = null;
+    ui.srOverride = null;
     sync.feed = sync.unsub ? sync.feed : null;
     if (sync.invitesUnsub) { try { sync.invitesUnsub(); } catch (e) { /* already gone */ } sync.invitesUnsub = null; }
     sync.invites = [];
@@ -15259,9 +15269,19 @@
         // blockId), so a family can send in a shift's totals (POST /shift-reports, which checks
         // the shift is in THIS published view). Opaque ids, no child data, so calendar-only mode
         // keeps them too: a family there reports totals all the same.
+        // S-4 (Keith, 2026-10-01) — and how many FAMILIES have scouts on it: a number, no names, so
+        // calendar-only mode keeps it too. Two or more, and the server asks a second parent from the
+        // shift to confirm the totals (functions/_lib/rules.js shiftNeedsConfirm). Brothers and
+        // sisters are one family (familyKeyOf); a scout no longer on the roster counts as their own.
         var shifts = blocksInDayOrder(sf).map(function (b) {
-          if (!withStandings) return { when: fmtTimeRange(b.start, b.end), blockId: String(b.id || '') };
-          return { when: fmtTimeRange(b.start, b.end), who: shiftWho(b), blockId: String(b.id || '') };
+          var fams = {};
+          ((b && b.assignments) || []).forEach(function (a) {
+            var sc = getScout(a.scoutId);
+            fams[sc ? 'f:' + familyKeyOf(sc) : 's:' + a.scoutId] = true;
+          });
+          var nFam = Object.keys(fams).length;
+          if (!withStandings) return { when: fmtTimeRange(b.start, b.end), blockId: String(b.id || ''), families: nFam };
+          return { when: fmtTimeRange(b.start, b.end), who: shiftWho(b), blockId: String(b.id || ''), families: nFam };
         }).filter(function (s) { return !!s.when; });
         var ev = { kind: 'storefront', sfId: String(sf.id || ''), date: sf.date, title: String(sf.name || 'Storefront'), detail: '' };
         if (shifts.length) ev.shifts = shifts;
@@ -19223,7 +19243,10 @@
     'note': 'Keep the note to 300 characters or fewer.',
     'open': 'Another family has already sent totals for this shift. A leader is checking them.',
     'accepted': 'A leader has already accepted totals for this shift.',
-    'report-moved': 'This report changed while you had it open. Here’s where it stands now.'
+    'report-moved': 'This report changed while you had it open. Here’s where it stands now.',
+    // S-4 — confirming another family's totals.
+    'not-shift-parent': 'Only a parent of a scout on this shift can confirm its totals. Ask a leader to link your account to your scout.',
+    'same-person': 'You sent these totals, so another parent from the shift has to confirm them.'
   };
   var SHIFT_REPORT_SAY_ELSE = 'Something about this report wasn’t right. Reload the page and try again.';
   // Today in the pack's time zone, as YYYY-MM-DD: the server's packToday. The device's own date
@@ -19318,16 +19341,17 @@
   // A leader previewing gets every report, so another person's is any not marked `mine`.
   function shiftReportFor(sfId, blockId) {
     var sr = sync.shiftReports;
-    var out = { loaded: !!(sr && sr.loaded), mine: null, other: '' };
+    // S-4: `otherOf` is that other report's entry, which says whether it waits for a second parent.
+    var out = { loaded: !!(sr && sr.loaded), mine: null, other: '', otherOf: null };
     if (!out.loaded) return out;
     var holds = function (r) { return !!r && (r.status === 'submitted' || r.status === 'accepted'); };
     arrOf(sr.reports).forEach(function (r) {   // newest first
       if (!r || r.sfId !== sfId || r.blockId !== blockId) return;
       if (r.mine) { if (!out.mine || (holds(r) && !holds(out.mine))) out.mine = r; }
-      else if (holds(r)) out.other = r.status;
+      else if (holds(r)) { out.other = r.status; out.otherOf = r; }
     });
     arrOf(sr.others).forEach(function (o) {
-      if (o && o.sfId === sfId && o.blockId === blockId && holds(o)) out.other = o.status;
+      if (o && o.sfId === sfId && o.blockId === blockId && holds(o)) { out.other = o.status; out.otherOf = o; }
     });
     return out;
   }
@@ -19345,19 +19369,39 @@
       return ' <span class="sr-figs">' + esc(fmt(r.teCents || 0)) + ' Trail’s End · ' + esc(fmt(r.cashCents || 0)) + ' cash</span>';
     };
     var h = '';
+    // S-4: a report that needs a second parent says which step it is at.
+    var sentMsg = function (r) {
+      if (r.needsConfirm && !r.confirmed) return 'Sent — waiting for a second parent from this shift';
+      if (r.needsConfirm && r.confirmed) return 'Confirmed by ' + (r.confirmedByName || 'a second parent') + ' — waiting for a leader';
+      return 'Sent — waiting for a leader';
+    };
+    var o = info.otherOf;
     if (m && m.status === 'submitted' && !shiftReportCanSend()) {
-      h = '<span class="sr-msg">Sent — waiting for a leader</span>' + figs(m);
+      h = '<span class="sr-msg">' + esc(sentMsg(m)) + '</span>' + figs(m);
     } else if (m && m.status === 'submitted') {
       var key = 'shift-report-withdraw:' + m.id, armed = ui.armed === key;
-      h = '<span class="sr-msg">Sent — waiting for a leader</span>' + figs(m) +
+      h = '<span class="sr-msg">' + esc(sentMsg(m)) + '</span>' + figs(m) +
         '<span class="sr-acts"><button type="button" class="btn small" data-act="shift-report-open"' + ids + ' data-rid="' + esc(m.id) + '">Edit</button>' +
         '<button type="button" class="btn small' + (armed ? ' danger armed' : '') + '" data-act="shift-report-withdraw" data-rid="' + esc(m.id) + '">' +
         (armed ? 'Tap again to withdraw' : 'Withdraw') + '</button></span>';
     } else if (m && m.status === 'accepted') {
       h = '<span class="sr-msg sr-done">Accepted by ' + esc(m.reviewedByName || 'a leader') + '</span>' + figs(m);
+    } else if (info.other === 'submitted' && o && o.needsConfirm && !o.confirmed) {
+      // S-4: another family's totals, waiting for a second parent. Only a parent of a scout on the
+      // shift is sent the figures (canConfirm), and only they get the button.
+      if (o.canConfirm && o.id) {
+        h = '<span class="sr-msg">Waiting for a second parent: check the totals and confirm</span>' +
+          ' <span class="sr-figs">' + esc(fmt(o.teCents || 0)) + ' Trail’s End · ' + esc(fmt(o.cashCents || 0)) + ' cash' +
+          (o.submittedByName ? ' · sent by ' + esc(o.submittedByName) : '') + '</span>' +
+          (open ? '<span class="sr-acts"><button type="button" class="btn small primary" data-act="shift-report-confirm-open"' + ids +
+            ' data-rid="' + esc(o.id) + '">Check and confirm</button></span>' : '');
+      } else {
+        h = '<span class="sr-msg">Waiting for a second parent from this shift</span>';
+      }
     } else if (info.other) {
       h = '<span class="sr-msg' + (info.other === 'accepted' ? ' sr-done' : '') + '">' +
-        (info.other === 'accepted' ? 'Totals accepted' : 'Totals sent by another family') + '</span>';
+        (info.other === 'accepted' ? 'Totals accepted' : o && o.needsConfirm && o.confirmed ? 'Totals sent and confirmed — waiting for a leader'
+          : 'Totals sent by another family') + '</span>';
     } else if (m && m.status === 'returned') {
       h = '<span class="sr-msg sr-back">Sent back: ' + esc(m.reviewNote || 'a leader asked for another look') + '</span>' +
         (open ? '<span class="sr-acts"><button type="button" class="btn small primary" data-act="shift-report-open"' + ids + '>Send a new report</button></span>' : '');
@@ -19388,6 +19432,24 @@
       '<button type="button" class="btn" data-act="shift-report-cancel">Cancel</button></div>' +
       '<p class="small muted" style="margin:0">A leader checks these before they count toward anyone’s sales.</p></form>';
   }
+  // S-4 — the second parent's check: the other family's two figures and note, the same signature
+  // box, and Confirm. Drawn once, in the card, like the report form. '' if the entry is gone.
+  function parentShiftConfirmForm(e, s) {
+    var cf = ui.shiftConfirm;
+    var o = arrOf(sync.shiftReports && sync.shiftReports.others).filter(function (x) { return x && x.id === cf.rid && x.canConfirm; })[0];
+    if (!o) return parentShiftReportStatus(e, s, shiftReportToday());
+    return '<form data-form="shift-report-confirm" id="srForm" class="sr-form no-print" novalidate>' +
+      '<p class="small" style="margin:0"><strong>Check the totals' + (o.submittedByName ? ' ' + esc(o.submittedByName) + ' sent' : '') + '</strong> · ' +
+      esc(String(e.title || 'Storefront')) + ', ' + esc(String(s.when || '')) + '</p>' +
+      '<p class="sr-amounts">Trail’s End <strong class="money">' + esc(fmt(o.teCents || 0)) + '</strong> · Cash donations <strong class="money">' +
+      esc(fmt(o.cashCents || 0)) + '</strong></p>' +
+      (o.note ? '<p class="small" style="margin:0">“' + esc(o.note) + '”</p>' : '') +
+      '<label class="sr-attest"><input type="checkbox" name="attest"' + (cf.attest ? ' checked' : '') + '><span>' + esc(SHIFT_REPORT_ATTEST) + '</span></label>' +
+      (cf.problem ? '<p class="small sr-problem" role="alert">' + esc(cf.problem) + '</p>' : '') +
+      '<div class="sr-acts"><button type="submit" class="btn primary"' + (cf.busy ? ' disabled' : '') + '>' + (cf.busy ? 'Sending…' : 'Confirm') + '</button>' +
+      '<button type="button" class="btn" data-act="shift-report-cancel">Cancel</button></div>' +
+      '<p class="small muted" style="margin:0">If these don’t match what you counted, don’t confirm. Talk to the other family, or tell a leader.</p></form>';
+  }
   // The Schedule's shift-totals card: every published storefront shift from the last 14 days,
   // with where its totals stand, and the form under the one being filled in. '' when the feature
   // is off or there is no such shift. `today` is the pack's (shiftReportToday).
@@ -19409,7 +19471,10 @@
     rows.forEach(function (r) {
       h += '<div class="sr-row"><div class="sr-shift"><strong>' + esc(fmtDate(String(r.e.date))) + '</strong> · ' +
         esc(String(r.e.title || 'Storefront')) + ' · ' + esc(String(r.s.when || '')) + '</div>';
-      h += d && shiftReportCanSend() && d.sfId === r.e.sfId && d.blockId === r.s.blockId ? parentShiftReportForm(r.e, r.s) : parentShiftReportStatus(r.e, r.s, today);
+      var cf = ui.shiftConfirm;
+      if (d && shiftReportCanSend() && d.sfId === r.e.sfId && d.blockId === r.s.blockId) h += parentShiftReportForm(r.e, r.s);
+      else if (cf && shiftReportCanSend() && cf.sfId === r.e.sfId && cf.blockId === r.s.blockId) h += parentShiftConfirmForm(r.e, r.s);
+      else h += parentShiftReportStatus(r.e, r.s, today);
       h += '</div>';
     });
     return h + '</div>';
@@ -19418,11 +19483,20 @@
   function shiftReportAct(act, el) {
     if (!shiftReportCanSend()) return;
     var ds = (el && el.dataset) || {};
-    if (act === 'shift-report-cancel') { ui.shiftReport = null; render(); return; }
+    if (act === 'shift-report-cancel') { ui.shiftReport = null; ui.shiftConfirm = null; render(); return; }
+    if (act === 'shift-report-confirm-open') {
+      ui.shiftReport = null;
+      ui.shiftConfirm = { rid: String(ds.rid || ''), sfId: String(ds.sf || ''), blockId: String(ds.block || ''), attest: false, busy: false, problem: '' };
+      render();
+      var cform = typeof document !== 'undefined' && document.getElementById('srForm');
+      if (cform && cform.scrollIntoView) cform.scrollIntoView({ block: 'center' });
+      return;
+    }
     if (act === 'shift-report-open') {
       var rid = String(ds.rid || '');
       var own = rid ? arrOf(sync.shiftReports && sync.shiftReports.reports).filter(function (r) { return r && r.id === rid && r.mine; })[0] : null;
       if (rid && !own) return;
+      ui.shiftConfirm = null;
       ui.shiftReport = { sfId: String(ds.sf || ''), blockId: String(ds.block || ''), rid: rid,
         te: own ? dollars(own.teCents) || '0.00' : '', cash: own ? dollars(own.cashCents) || '0.00' : '', note: own ? String(own.note || '') : '',
         attest: false, busy: false, problem: '' };
@@ -19444,6 +19518,28 @@
         }, function (err) { showToast(shiftReportMessage(err)); }).then(loadShiftReports);
       }, ARM_WARNED_MS);
     }
+  }
+  // S-4 — the second parent's Confirm: signed, then PATCHed. Writes the server's table only.
+  function shiftConfirmSubmit(f) {
+    var cf = ui.shiftConfirm;
+    if (!cf || cf.busy || !shiftReportCanSend()) return;
+    var fd = new FormData(f);
+    cf.attest = fd.get('attest') === 'on';
+    if (!cf.attest) { cf.problem = SHIFT_REPORT_SAY.attest; render(); return; }
+    cf.busy = true;
+    cf.problem = '';
+    render();
+    return sync.backend.patchShiftReport(sync.docId, cf.rid, { action: 'confirm', attest: true }).then(function () {
+      if (ui.shiftConfirm === cf) ui.shiftConfirm = null;
+      showToast('Confirmed. A leader will check the totals before they count.');
+    }, function (err) {
+      cf.busy = false;
+      cf.problem = shiftReportMessage(err);
+      if (ui.shiftConfirm === cf && /^(report-moved|not-shift-parent|same-person)$/.test(String(err && err.reason))) {
+        ui.shiftConfirm = null;
+        showToast(cf.problem);
+      }
+    }).then(loadShiftReports);
   }
   // The form sent: checked here first, in words, then POSTed (or PATCHed, editing your own).
   function shiftReportSubmit(f) {
@@ -21599,6 +21695,15 @@
   }
   // Is my uid the one that sent it?
   function srMine(r) { return !!(r && sync.user && r.submittedByUid && r.submittedByUid === sync.user.uid); }
+  // S-4 — does this report still need a second parent? And is anyone ABLE to give it: an account
+  // linked (Members card) as a parent of a scout on the block, other than the sender?
+  function srNeedsSecond(r) { return !!(r && r.needsConfirm && !r.confirmed); }
+  function srOtherParentLinked(r, b) {
+    return ((b && b.assignments) || []).some(function (a) {
+      var sc = getScout(a.scoutId);
+      return arrOf(sc && sc.parentUids).some(function (u) { return u && u !== r.submittedByUid; });
+    });
+  }
   // The figures on a block are "different" when the block holds money that is not the report's.
   function srReplaces(b, r) {
     var has = (b.salesCents || 0) + (b.donationsCents || 0) > 0;
@@ -21609,6 +21714,8 @@
     'same-person': 'You sent this report, so a second adult has to accept it.',
     'report-moved': 'The family changed or withdrew this report, or another leader dealt with it, before yours reached the server.',
     'review-note': 'Say why you are sending it back.',
+    'needs-confirm': 'This report needs a second parent from the shift to confirm it, or your written reason for accepting without one.',
+    'override-reason': 'Say why you are accepting it without a second parent.',
     'not-found': 'This report is no longer on the server.'
   };
   function leaderSrMessage(err) {
@@ -21635,6 +21742,13 @@
       esc(fmt(r.cashCents)) + '</strong></p>' +
       (r.note ? '<p class="small" style="margin:0 0 6px">“' + esc(r.note) + '”</p>' : '');
     if (!blk) h += '<p class="small warn" style="margin:0 0 6px">This shift is no longer on the pack’s schedule. Send it back so the family knows.</p>';
+    // S-4: who has signed, where the shift has two or more families.
+    if (r.needsConfirm) {
+      h += r.confirmed
+        ? '<p class="small" style="margin:0 0 6px">Counted by ' + esc(r.submittedByName || 'the family') + ' · confirmed by ' + esc(r.confirmedByName || 'a second parent') + '</p>'
+        : '<p class="small warn" style="margin:0 0 6px">Only one parent signed. This shift has scouts from more than one family, so a second parent from it should confirm.' +
+          (b && !srOtherParentLinked(r, b) ? ' No other parent on this shift is linked to an account: link them on the Members card, or accept without one and say why.' : '') + '</p>';
+    }
     var pending = b && b.reportPending && b.reportId === r.id;
     if (pending) {
       return h + '<p class="small muted" style="margin:0">Accepting: the block is saved first, then the report is signed off on the server.</p></div>';
@@ -21648,6 +21762,16 @@
         '<div class="sr-acts"><button type="submit" class="btn">Send back</button>' +
         '<button type="button" class="btn ghost" data-act="sr-cancel">Cancel</button></div></form></div>';
     }
+    if (blk && ui.srOverride === r.id) {
+      // S-4: accepting with one signature where two are needed. The reason goes to the server and
+      // the audit (shift.accept.override); the old figures, if any, are shown here too.
+      return h + '<form data-form="shift-report-override" class="sr-return" data-rid="' + esc(r.id) + '">' +
+        (srReplaces(b, r) ? '<p class="small" style="margin:0"><strong>This block already has figures:</strong> Trail’s End ' + esc(fmt(b.salesCents || 0)) +
+          ', cash ' + esc(fmt(b.donationsCents || 0)) + '. Accepting replaces them with the report’s.</p>' : '') +
+        '<label class="fld">Why accept without a second parent? This is kept with the report.<textarea name="reason" rows="2" maxlength="300" required></textarea></label>' +
+        '<div class="sr-acts"><button type="submit" class="btn primary">Accept without a second parent</button>' +
+        '<button type="button" class="btn ghost" data-act="sr-cancel">Cancel</button></div></form></div>';
+    }
     if (blk && ui.srConfirm === r.id) {
       return h + '<div class="sr-confirm"><p class="small" style="margin:0 0 6px"><strong>This block already has figures.</strong></p>' +
         '<table class="sr-cmp"><thead><tr><th></th><th class="num">Now</th><th class="num">From the report</th></tr></thead><tbody>' +
@@ -21659,6 +21783,7 @@
     }
     h += '<div class="sr-acts">';
     if (srMine(r)) h += '<span class="small warn" style="align-self:center">You sent this report, so a second adult has to accept it.</span>';
+    else if (blk && srNeedsSecond(r)) h += '<button type="button" class="btn" data-act="sr-override-open" data-rid="' + esc(r.id) + '">Accept without a second parent</button>';
     else if (blk) h += '<button type="button" class="btn primary" data-act="sr-accept" data-rid="' + esc(r.id) + '">Accept and sign as verifier</button>';
     h += '<button type="button" class="btn" data-act="sr-return-open" data-rid="' + esc(r.id) + '">Send back</button></div>';
     return h + '</div>';
@@ -21674,8 +21799,13 @@
         '. They still count. Check them, and have a second adult verify them again.</p>';
     }
     if (!b.reportId) return '';
+    // S-4: who confirmed (the second parent), and who accepted, if a leader other than the verifier.
+    var how = b.reportApprovedBy
+      ? (b.reportConfirmedBy ? ', confirmed by ' + b.reportConfirmedBy : '') + ', accepted by ' + b.reportApprovedBy +
+        (b.reportOverride ? ' without a second parent' : '')
+      : ', verified by ' + (b.cashVerifiedBy || 'a leader');
     var h = '<div class="spread" style="margin-top:8px"><p class="small muted" style="margin:0">From ' + esc(b.reportFrom || 'a family') +
-      '’s report, verified by ' + esc(b.cashVerifiedBy || 'a leader') + '.</p>';
+      '’s report' + esc(how) + '.</p>';
     var r = srReport(b.reportId);
     if (canReviewReports() && r && r.status === 'accepted') {
       h += ui.srReturn === r.id ? '' : '<button type="button" class="btn small ghost" data-act="sr-return-open" data-rid="' + esc(r.id) + '">Send back</button>';
@@ -21713,24 +21843,38 @@
   }
 
   // ---- The accept, and what finishes or undoes it ----
-  function acceptShiftReport(rid, confirmed) {
+  // `overrideReason` (S-4): accepting a report that still needs a second parent, with the leader's
+  // written reason. Without one such a report is not accepted here (the server refuses it too).
+  function acceptShiftReport(rid, confirmed, overrideReason) {
     if (!canReviewReports()) return;
     var r = srReport(rid), blk = srBlockOf(r);
     if (!r || r.status !== 'submitted' || !blk) { showToast('That report isn’t waiting any more.'); loadShiftReports(); return; }
     if (srMine(r)) { showToast(LEADER_SR_SAY['same-person']); return; }
+    var override = srNeedsSecond(r);
+    var reason = override ? shiftReportNote(overrideReason).slice(0, SHIFT_REPORT_NOTE_MAX) : '';
+    if (override && overrideReason === undefined) { ui.srOverride = rid; ui.srConfirm = null; render(); return; }
+    if (override && !reason) { showToast(LEADER_SR_SAY['override-reason']); return; }
     var b = blk.b;
-    if (!confirmed && srReplaces(b, r)) { ui.srConfirm = rid; render(); return; }
+    if (!override && !confirmed && srReplaces(b, r)) { ui.srConfirm = rid; render(); return; }
     ui.srConfirm = null;
+    ui.srOverride = null;
     var was = { salesCents: b.salesCents || 0, donationsCents: b.donationsCents || 0, cashCountedBy: b.cashCountedBy || '',
-      cashVerifiedBy: b.cashVerifiedBy || '', reportId: b.reportId || '', reportFrom: b.reportFrom || '' };
+      cashVerifiedBy: b.cashVerifiedBy || '', reportId: b.reportId || '', reportFrom: b.reportFrom || '',
+      reportApprovedBy: b.reportApprovedBy || '', reportConfirmedBy: b.reportConfirmedBy || '', reportOverride: b.reportOverride === true };
+    var me = ledgerActor();
     b.salesCents = r.teCents;
     b.donationsCents = r.cashCents;
+    // S-4: the sender counted; the second parent verified, or the leader where they overrode (or
+    // where the shift had one family, as in S-3). The accepting leader is the approver.
     b.cashCountedBy = String(r.submittedByName || '');
-    b.cashVerifiedBy = ledgerActor();
+    b.cashVerifiedBy = r.needsConfirm && r.confirmed ? String(r.confirmedByName || '') : me;
     b.reportId = r.id;
     b.reportFrom = String(r.submittedByName || '');
+    b.reportApprovedBy = me;
+    b.reportConfirmedBy = r.needsConfirm && r.confirmed ? String(r.confirmedByName || '') : '';
+    b.reportOverride = override;
     delete b.reportReturned;
-    b.reportPending = { by: sync.user.uid, te: r.teCents, cash: r.cashCents, was: was };
+    b.reportPending = { by: sync.user.uid, te: r.teCents, cash: r.cashCents, was: was, override: override, note: reason };
     if (!commit()) return;
     showToast('Accepted. Saving the block, then signing the report off on the server.');
     shiftReportsReconcile();
@@ -21761,8 +21905,13 @@
       if (b.cashCountedBy === b.reportFrom) b.cashCountedBy = was.cashCountedBy || '';
       b.cashVerifiedBy = was.cashVerifiedBy || '';
     }
-    if (was.reportId) { b.reportId = was.reportId; b.reportFrom = was.reportFrom || ''; }
-    else { delete b.reportId; delete b.reportFrom; }
+    if (was.reportId) {
+      b.reportId = was.reportId;
+      b.reportFrom = was.reportFrom || '';
+      b.reportApprovedBy = was.reportApprovedBy || '';
+      b.reportConfirmedBy = was.reportConfirmedBy || '';
+      b.reportOverride = was.reportOverride === true;
+    } else srUnlink(b);
     delete b.reportPending;
     if (commit()) showToast(msg + ' The block is back to what it was.');
   }
@@ -21793,7 +21942,9 @@
         if (r.teCents !== p.te || r.cashCents !== p.cash) { srRollback(b, 'The family changed their totals after you accepted them.'); return; }
         if (!srLanded(sf.id, b.id, rid)) return;   // step 2 has not reached the server yet
         sync.srOut[rid] = true;
-        sync.backend.patchShiftReport(sync.docId, rid, { action: 'accept', teCents: p.te, cashCents: p.cash }).then(function () {
+        var body = { action: 'accept', teCents: p.te, cashCents: p.cash };
+        if (p.override) { body.override = true; body.reviewNote = p.note; }
+        sync.backend.patchShiftReport(sync.docId, rid, body).then(function () {
           delete sync.srOut[rid];
           // Found again: a merge may have replaced the block object since.
           var blk = srBlockOf({ sfId: sf.id, blockId: b.id });
@@ -21813,9 +21964,16 @@
   // keeps the hand edit), and the sent-back warning goes too: someone has looked at them.
   function srHandEdited(b) {
     if (b.reportPending) return;
+    srUnlink(b);
+    delete b.reportReturned;
+  }
+  // A block's link to a report, and what it says about who signed, gone.
+  function srUnlink(b) {
     delete b.reportId;
     delete b.reportFrom;
-    delete b.reportReturned;
+    delete b.reportApprovedBy;
+    delete b.reportConfirmedBy;
+    delete b.reportOverride;
   }
   // After this device's save reaches the server (syncPush): step 3 of any accept waiting on it.
   function shiftReportsAfterPush() {
@@ -21835,8 +21993,7 @@
         state.storefronts.forEach(function (sf) {
           (sf.blocks || []).forEach(function (b) {
             if (b.reportId !== rid) return;
-            delete b.reportId;
-            delete b.reportFrom;
+            srUnlink(b);
             delete b.reportPending;
             b.cashVerifiedBy = '';
             b.reportReturned = { note: note.slice(0, SHIFT_REPORT_NOTE_MAX) };
@@ -21849,11 +22006,12 @@
   }
   function leaderShiftReportAct(act, el) {
     var rid = String((el && el.dataset && el.dataset.rid) || '');
-    if (act === 'sr-cancel') { ui.srConfirm = null; ui.srReturn = null; render(); return; }
+    if (act === 'sr-cancel') { ui.srConfirm = null; ui.srReturn = null; ui.srOverride = null; render(); return; }
     if (!canReviewReports() || !rid) return;
     if (act === 'sr-accept') { acceptShiftReport(rid, false); return; }
     if (act === 'sr-accept-confirm') { acceptShiftReport(rid, true); return; }
-    if (act === 'sr-return-open') { ui.srReturn = rid; ui.srConfirm = null; render(); }
+    if (act === 'sr-return-open') { ui.srReturn = rid; ui.srConfirm = null; ui.srOverride = null; render(); return; }
+    if (act === 'sr-override-open') { ui.srOverride = rid; ui.srConfirm = null; ui.srReturn = null; render(); }
   }
 
   /* ----- Scouts tab ----- */
@@ -34357,7 +34515,7 @@
     'parent-cal-day', 'parent-cost-toggle', 'parent-preview-off', 'parent-print', 'parent-ics', 'parent-pack-list', 'sign-out-google', 'toast-action',
     // 2026-10-01 — a family's shift totals. They write the server's shift_reports table through
     // apiBackend alone, never the pack record (shiftReportAct, shiftReportSubmit).
-    'shift-report-open', 'shift-report-cancel', 'shift-report-withdraw'];
+    'shift-report-open', 'shift-report-cancel', 'shift-report-withdraw', 'shift-report-confirm-open'];
   // Join link phase — the three gate screens emit only these. Anything else that somehow
   // reaches the handler while a gate is up is ignored, so no code path can read or mutate
   // the pack record on a link visitor's / not-yet-approved user's device.
@@ -34690,9 +34848,9 @@
     }
     if (act === 'parent-preview-off') { ui.previewParent = false; ui.resetScroll = true; render(); return; }
     // S-3 — a leader accepting or sending back a family's shift totals.
-    if (act === 'sr-accept' || act === 'sr-accept-confirm' || act === 'sr-return-open' || act === 'sr-cancel') { leaderShiftReportAct(act, el); return; }
+    if (act === 'sr-accept' || act === 'sr-accept-confirm' || act === 'sr-return-open' || act === 'sr-override-open' || act === 'sr-cancel') { leaderShiftReportAct(act, el); return; }
     // A family's shift totals (2026-10-01): the server's table, never the pack record.
-    if (act === 'shift-report-open' || act === 'shift-report-cancel' || act === 'shift-report-withdraw') { shiftReportAct(act, el); return; }
+    if (act === 'shift-report-open' || act === 'shift-report-cancel' || act === 'shift-report-withdraw' || act === 'shift-report-confirm-open') { shiftReportAct(act, el); return; }
     // ---- Accounts ----
     if (act === 'sign-in-google') { signInWithGoogle(); return; }
     if (act === 'sign-out-google') { signOutGoogle(); return; }
@@ -37175,12 +37333,15 @@
     // server's shift_reports table, never the pack record, so it is let through here, before the
     // parent refusal below; and it is not an edit the reload gate holds.
     if (f.dataset.form === 'shift-report') { if (!gateMode()) shiftReportSubmit(f); return; }
+    if (f.dataset.form === 'shift-report-confirm') { if (!gateMode()) shiftConfirmSubmit(f); return; }   // S-4
     if (parentMode() || gateMode()) return; // Parent phase / join gates — neither renders a form
     if (packFormatHeld()) { refuseHeldAct(); return; }   // the reload gate: every form adds or changes
     var kind = f.dataset.form;
     var fd = new FormData(f);
     // S-3 — a leader sending a family's shift report back, with the reason they will see.
     if (kind === 'shift-report-return') { returnShiftReport(String(f.dataset.rid || ''), String(fd.get('reason') || '')); return; }
+    // S-4 — accepting without a second parent, with the reason.
+    if (kind === 'shift-report-override') { acceptShiftReport(String(f.dataset.rid || ''), true, String(fd.get('reason') || '')); return; }
     // Phase 3b — forgiving a charge. It is NOT deleted: it stands, marked, with a reason
     // and who agreed it, so the pack can see what it chose to absorb.
     if (kind === 'charge-forgive') {

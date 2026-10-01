@@ -20,6 +20,10 @@
 //        back first (status is where it is now). The page should reload the reports.
 //   409 {error:'same-person', code:'failed-precondition'}    a leader accepting their own shift
 //        report: the second sign-off must be a different adult.
+//   409 {error:'not-shift-parent', code:'failed-precondition'}  S-4: confirming a shift report
+//        takes a parent of a scout on that shift (linked on the Members card), not the sender.
+//   409 {error:'needs-confirm', code:'failed-precondition'}  S-4: accepting a report that needs a
+//        second parent's confirmation and has none, without override: true and a reason.
 //   413 {error:'too-large', code:'resource-exhausted'}       over the size limit
 //   429 {error:'rate-limited', code:'resource-exhausted'}    too many sign-up link tries
 //
@@ -55,6 +59,8 @@ export const awaitingImport = () => json(409, { error: 'awaiting-import', code: 
 export const shiftReported = (why) => json(409, { error: 'shift-reported', code: 'failed-precondition', reason: why });
 export const reportMoved = (status) => json(409, { error: 'report-moved', code: 'failed-precondition', status: status || null });
 export const samePerson = () => json(409, { error: 'same-person', code: 'failed-precondition' });
+export const notShiftParent = () => json(409, { error: 'not-shift-parent', code: 'failed-precondition' });
+export const needsConfirm = () => json(409, { error: 'needs-confirm', code: 'failed-precondition' });
 export const unavailable = (why) => json(503, { error: 'unavailable', code: 'unavailable', reason: why || '' });
 
 // Thrown anywhere under a route; the router sends its response.

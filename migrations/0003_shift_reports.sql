@@ -16,7 +16,9 @@
 --   - the status is one of four;
 --   - an accepted report names a reviewer who is NOT the person who sent it (the cash box's
 --     "two different adults" rule, as the page's blockCashCheck has it);
---   - at most one report per block is open or accepted at a time (the partial unique index).
+--   - at most one report per block is open or accepted at a time (the partial unique index);
+--   - (S-4) a second parent's confirmation is never the sender's own, and an accepted report
+--     that needed one has it, or a leader's written override.
 --
 -- Every uid, name and time is the server's, from the member row and its clock; the page never
 -- sends them. A report outlives what it is about on purpose: a removed member's report, or one
@@ -46,12 +48,25 @@ CREATE TABLE shift_reports (
   reviewed_by_name   TEXT CHECK (reviewed_by_name IS NULL OR length(reviewed_by_name) <= 120),
   reviewed_at        INTEGER,
   review_note        TEXT NOT NULL DEFAULT '' CHECK (length(review_note) <= 300),
+  -- S-4 (Keith, 2026-10-01): a shift with scouts from two or more families needs a SECOND parent
+  -- of a scout on that shift to confirm the totals before a leader accepts them. needs_confirm is
+  -- set once, on the report's insert, from the stored parent view's count of families on the
+  -- shift; confirmed_by_* is that parent (cleared when the sender edits); overridden is a leader
+  -- accepting without one, with the reason in review_note.
+  needs_confirm      INTEGER NOT NULL DEFAULT 0 CHECK (needs_confirm IN (0, 1)),
+  confirmed_by_uid   TEXT CHECK (confirmed_by_uid IS NULL OR length(confirmed_by_uid) BETWEEN 1 AND 128),
+  confirmed_by_name  TEXT CHECK (confirmed_by_name IS NULL OR length(confirmed_by_name) <= 120),
+  confirmed_at       INTEGER,
+  overridden         INTEGER NOT NULL DEFAULT 0 CHECK (overridden IN (0, 1)),
   -- A fresh random value on every write. An audit row is written only if the row still holds
   -- the stamp its own write set, so a write that lost a race leaves no audit row behind.
   stamp              TEXT NOT NULL CHECK (length(stamp) BETWEEN 1 AND 64),
   CHECK (status != 'accepted' OR (reviewed_by_uid IS NOT NULL AND reviewed_at IS NOT NULL
                                   AND reviewed_by_uid != submitted_by_uid)),
-  CHECK (status != 'returned' OR (reviewed_by_uid IS NOT NULL AND reviewed_at IS NOT NULL))
+  CHECK (status != 'returned' OR (reviewed_by_uid IS NOT NULL AND reviewed_at IS NOT NULL)),
+  CHECK (confirmed_by_uid IS NULL OR (confirmed_by_uid != submitted_by_uid AND confirmed_at IS NOT NULL)),
+  CHECK (status != 'accepted' OR needs_confirm = 0 OR confirmed_by_uid IS NOT NULL
+         OR (overridden = 1 AND length(trim(review_note)) > 0))
 );
 
 -- One open-or-accepted report per block. A second family's report for a block that already has

@@ -20,13 +20,22 @@
 // What a parent reads: their own reports in full, and for every other block only whether it is
 // reported and where that stands — never another family's amounts, name or note. Leaders read
 // everything, as they read the ledger.
+// S-4 (Keith, 2026-10-01) — ONE EXCEPTION, ON PURPOSE. A shift with scouts from two or more
+// families needs a second parent to confirm the totals, and nobody can confirm figures they
+// cannot see. So a waiting report that needs a confirmation, on a shift from the reporting
+// window, shows its two amounts, its note and the sender's FIRST name to exactly the accounts
+// that may confirm it: parents of a scout on that shift (canConfirm, from the stored pack
+// record), never the sender. Never an account id, never to anyone else, never once it is
+// confirmed, accepted or closed. Everyone else sees only that it waits for a second parent.
 
 import { route, json, readObject, refuse, forbidden, badRequest, shiftReported } from '../../../../_lib/http.js';
 import { withMember, auditIf } from '../../../../_lib/pack.js';
-import { canSubmitShiftReport, canReadAllShiftReports, shiftReportProblem, cleanReportNote, packToday } from '../../../../_lib/rules.js';
+import { canSubmitShiftReport, canReadAllShiftReports, shiftReportProblem, cleanReportNote, packToday, shiftOfView, shiftNeedsConfirm,
+  shiftParentUids, canConfirmShiftReport, daysBetween, SHIFT_REPORT_DAYS } from '../../../../_lib/rules.js';
 
 export const REPORT_COLS = 'id, sf_id, block_id, te_cents, cash_cents, note, submitted_by_uid, submitted_by_name, submitted_at, ' +
-  'updated_at, status, reviewed_by_uid, reviewed_by_name, reviewed_at, review_note, stamp';
+  'updated_at, status, reviewed_by_uid, reviewed_by_name, reviewed_at, review_note, stamp, needs_confirm, confirmed_by_uid, confirmed_by_name, ' +
+  'confirmed_at, overridden';
 // The statuses that hold a block: one waiting for a leader, or one a leader accepted.
 export const HOLDS_BLOCK = "status IN ('submitted', 'accepted')";
 const POST_KEYS = ['sfId', 'blockId', 'teCents', 'cashCents', 'note', 'attest'];
@@ -35,15 +44,29 @@ const POST_KEYS = ['sfId', 'blockId', 'teCents', 'cashCents', 'note', 'attest'];
 // (`full`) also gets both account ids and the reviewer's whole name. A parent only ever reads
 // their own reports, and gets the reviewing leader's FIRST name only ("Accepted by Sam"): the
 // parent view leaves the leader roster out, names included. The stamp never leaves the server.
-const firstName = (n) => String(n || '').trim().split(/\s+/)[0] || null;
+export const firstName = (n) => String(n || '').trim().split(/\s+/)[0] || null;
 export function reportOut(row, uid, full) {
   const r = { id: row.id, sfId: row.sf_id, blockId: row.block_id, teCents: row.te_cents, cashCents: row.cash_cents,
     note: row.note, status: row.status, mine: row.submitted_by_uid === uid, submittedByName: row.submitted_by_name,
     submittedAt: row.submitted_at, updatedAt: row.updated_at,
     reviewedByName: full ? (row.reviewed_by_name || null) : firstName(row.reviewed_by_name),
-    reviewedAt: row.reviewed_at || null, reviewNote: row.review_note };
-  if (full) { r.submittedByUid = row.submitted_by_uid; r.reviewedByUid = row.reviewed_by_uid || null; }
+    reviewedAt: row.reviewed_at || null, reviewNote: row.review_note,
+    // S-4: the second parent's sign-off (first name to a parent), and a leader's override.
+    needsConfirm: row.needs_confirm === 1, confirmed: !!row.confirmed_by_uid,
+    confirmedByName: full ? (row.confirmed_by_name || null) : firstName(row.confirmed_by_name),
+    confirmedAt: row.confirmed_at || null, overridden: row.overridden === 1 };
+  if (full) { r.submittedByUid = row.submitted_by_uid; r.reviewedByUid = row.reviewed_by_uid || null; r.confirmedByUid = row.confirmed_by_uid || null; }
   return r;
+}
+// The stored pack record, parsed, for the S-4 parent check: { rev, pack }, or null when there is
+// none or it cannot be read (fail closed: nobody confirms). Up to MAX_STATE_BYTES of JSON, read
+// once a request and only when a confirmation is in question. Never sent to the caller.
+export async function readPackRecord(db, packId) {
+  const row = await db.prepare('SELECT rev, json FROM pack_state WHERE pack_id = ?').bind(packId).first();
+  if (!row || typeof row.json !== 'string' || row.json.length < 2) return null;
+  let pack = null;
+  try { pack = JSON.parse(row.json); } catch (e) { return null; }
+  return pack && typeof pack === 'object' && !Array.isArray(pack) ? { rev: row.rev, pack } : null;
 }
 export const readReport = (db, packId, id) =>
   db.prepare('SELECT ' + REPORT_COLS + ' FROM shift_reports WHERE pack_id = ? AND id = ?').bind(packId, id).first();
@@ -71,8 +94,37 @@ async function list({ db, packId, role, user }) {
     const seen = byBlock[row.block_id];
     if (!seen || (!/^(submitted|accepted)$/.test(seen.status) && /^(submitted|accepted)$/.test(row.status))) byBlock[row.block_id] = row;
   }
-  const others = Object.keys(byBlock).map((k) => byBlock[k]).filter((row) => row.submitted_by_uid !== user.uid)
-    .map((row) => ({ sfId: row.sf_id, blockId: row.block_id, status: row.status }));
+  const theirs = Object.keys(byBlock).map((k) => byBlock[k]).filter((row) => row.submitted_by_uid !== user.uid);
+  // S-4: which of those wait for a second parent, and whether this account may be it. The pack
+  // record and the view are read only if one does.
+  const waiting = theirs.filter((row) => row.status === 'submitted' && row.needs_confirm === 1 && !row.confirmed_by_uid);
+  let rec = null, view = null;
+  if (waiting.length) {
+    rec = await readPackRecord(db, packId);
+    const vrow = await db.prepare('SELECT payload FROM parent_views WHERE pack_id = ?').bind(packId).first();
+    try { view = vrow ? JSON.parse(vrow.payload) : null; } catch (e) { view = null; }
+  }
+  const today = packToday();
+  const others = theirs.map((row) => {
+    const o = { sfId: row.sf_id, blockId: row.block_id, status: row.status };
+    if (row.needs_confirm !== 1) return o;
+    o.needsConfirm = true;
+    o.confirmed = !!row.confirmed_by_uid;
+    if (waiting.indexOf(row) === -1) return o;
+    const at = shiftOfView(view, row.sf_id, row.block_id);
+    const ago = at ? daysBetween(at.ev.date, today) : NaN;
+    const inWindow = ago >= 0 && ago <= SHIFT_REPORT_DAYS;
+    o.canConfirm = inWindow && !!rec && canConfirmShiftReport(role, user.uid, row.submitted_by_uid, shiftParentUids(rec.pack, row.sf_id, row.block_id));
+    // Exactly what a second parent needs to check, and only to one who may confirm (above).
+    if (o.canConfirm) {
+      o.id = row.id;
+      o.teCents = row.te_cents;
+      o.cashCents = row.cash_cents;
+      o.note = row.note;
+      o.submittedByName = firstName(row.submitted_by_name);
+    }
+    return o;
+  });
   return json(200, { reports: own.map((row) => reportOut(row, user.uid, false)), others });
 }
 
@@ -85,6 +137,8 @@ async function submit({ request, db, packId, role, user, member }) {
   try { view = vrow ? JSON.parse(vrow.payload) : null; } catch (e) { view = null; }
   const why = shiftReportProblem(b, view, packToday());
   if (why) refuse(badRequest(why));
+  // S-4: from the stored view, never the body, so a family cannot opt out of a second signature.
+  const needsConfirm = shiftNeedsConfirm(shiftOfView(view, b.sfId, b.blockId).shift) ? 1 : 0;
   const held = await holder(db, packId, b.blockId);
   if (held) return heldAs(held);
   const id = crypto.randomUUID(), stamp = crypto.randomUUID(), now = Date.now();
@@ -93,13 +147,13 @@ async function submit({ request, db, packId, role, user, member }) {
   try {
     res = await db.batch([
       db.prepare('INSERT INTO shift_reports (id, pack_id, sf_id, block_id, te_cents, cash_cents, note, submitted_by_uid, ' +
-        "submitted_by_name, submitted_at, updated_at, status, review_note, stamp) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', '', ? " +
+        "submitted_by_name, submitted_at, updated_at, status, review_note, stamp, needs_confirm) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', '', ?, ? " +
         'WHERE NOT EXISTS (SELECT 1 FROM shift_reports WHERE pack_id = ? AND block_id = ? AND ' + HOLDS_BLOCK + ') AND ' +
         STILL_MEMBER(SUBMIT_ROLES))
-        .bind(id, packId, b.sfId, b.blockId, b.teCents, b.cashCents, note, user.uid, member.name || '', now, now, stamp,
+        .bind(id, packId, b.sfId, b.blockId, b.teCents, b.cashCents, note, user.uid, member.name || '', now, now, stamp, needsConfirm,
           packId, b.blockId, packId, user.uid, ...SUBMIT_ROLES),
       auditIf(db, packId, user.uid, 'shift.report', { report: id, sfId: b.sfId, blockId: b.blockId, teCents: b.teCents,
-        cashCents: b.cashCents }, now, 'EXISTS (SELECT 1 FROM shift_reports WHERE id = ? AND stamp = ?)', [id, stamp])
+        cashCents: b.cashCents, needsConfirm: needsConfirm === 1 }, now, 'EXISTS (SELECT 1 FROM shift_reports WHERE id = ? AND stamp = ?)', [id, stamp])
     ]);
   } catch (e) {
     // The partial unique index: another report took the block between the check and the write.

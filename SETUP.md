@@ -539,10 +539,32 @@ pack record, so a parent who can send one still can't write anything else.
   own report, just as the cash box refuses the same person as counter and verifier. A leader
   can send back a waiting or an accepted report, and must give a reason. The family then
   sends a corrected report as a new one.
+- **A second parent, when a shift has two or more families** (Keith, 2026-10-01): if the
+  scouts on a shift come from two or more families (brothers and sisters count as one), a
+  second parent has to confirm the report before a leader accepts it.
+  - The parent view publishes the number of families on each shift. It is only a number, and
+    it is published in calendar-only mode too. The server reads it from the stored view when
+    the report is sent, never from the report itself. If a view has no number (published
+    before this change), the report needs a second parent anyway.
+  - Only a **parent of a scout on that shift** can confirm: an account an admin has linked to
+    the scout on the Members card. The server checks this against the stored pack record. It
+    is never the sender, never `pending`, and never an account that isn't linked. If the
+    record, the storefront or the block can't be found, nobody can confirm.
+  - If the sender edits the report, the confirmation is cleared.
+  - An admin or editor can accept a report that has no second signature, but only with a
+    written reason. That accept is audited as `shift.accept.override`.
+  - On the block, the sender is "Cash counted by". "Verified by" is the confirming parent, or
+    the leader if they accepted without one. The accepting leader is shown as the approver.
+  - Open for the treasurer: two parents of the same family can currently confirm each
+    other's reports.
 - **Who sees what:** leaders (`admin`, `editor`, `viewer`) see every report in full. A parent
   sees their own reports and the first name of the leader who reviewed them. For anyone
   else's report, a parent sees only that the block has a report and whether it is waiting,
-  accepted, sent back or withdrawn. They never see another family's amounts, name or note.
+  accepted, sent back or withdrawn. They never see another family's amounts, name or note,
+  with **one exception**: a report still waiting for a second parent, on a shift from the last
+  14 days, shows its two amounts, its note and the sender's first name to the parents who are
+  allowed to confirm it, and to no one else. They can't confirm figures they can't see. No
+  account ids or links are ever sent.
 - Every report, edit, withdrawal, acceptance and send-back is written to the `audit` table
   in the same step as the change itself.
 
