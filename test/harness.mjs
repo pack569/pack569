@@ -1029,7 +1029,7 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
 // Phase 3, C8 (C8-4) — what the merge and the copy chooser read of closed books.
 const C8_SYNC_FNS = ['closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mergeClosedBooks', 'closedBookScouts', 'closedBookScoutIds', 'closedYearText', 'closedBooksKeptOverWhy', 'closeoutCarryDiffs',
-  'closedBooksUndone', 'closedBooksUndoneWhy', 'closedBooksDroppedWhy',
+  'closedBooksUndone', 'closedBooksUndoneWhy', 'closedBooksDroppedWhy', 'closedBookRows', 'statementLookupRows',
   // Security re-check of C8-5..C8-10 — the bound by program year (M-A), the push's union normalized (L-B), and what a merge says it set aside.
   'closedBookRank', 'closedBookScoutIds', 'closedBooksFuture', 'closedBooksMaxYear', 'closedBooksNormalized', 'normalizeClosedBook', 'normalizeLedgerRow', 'normalizeAsideRow', 'normalizeLedgerEvent',
   'stableRowId', 'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_ASIDE_OFF', 'arrOf',
@@ -19078,8 +19078,9 @@ test('C3: nothing outside the book’s own plumbing reads the voided rows, so no
   eq([...users].sort(), ['applyLedgerMerge', 'carriedBlockHtml', 'closedBookBuild', 'dropScout', 'freshState', 'handleAction', 'handleChange', 'isStateEmpty', 'keepLostVoids', 'ledgerAsideListHtml', 'ledgerAsideSettle', 'ledgerEntryLabel',
     'ledgerLogNames', 'ledgerReverseSlot', 'ledgerScoutsHeld', 'ledgerUnvoidRow',
     // Phase 3, C5 — renderBankStatementSheet names an entry on a statement voided since; it totals nothing from it.
-    'ledgerVoidRow', 'mergeLedgerRows', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderBankStatementSheet', 'renderCloseoutOverlay', 'renderLedger', 'renderLedgerEntries', 'renderReconcile', 'renderRowChooser', 'restoreGone',
-    'rolloverYear', 'scoutHasLedger'], 'who reads the voided rows');
+    'ledgerVoidRow', 'mergeLedgerRows', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderCloseoutOverlay', 'renderLedger', 'renderLedgerEntries', 'renderReconcile', 'renderRowChooser', 'restoreGone',
+    // Treasurer's review of C8 (F1) — statementLookupRows lists them (with the counted rows and the closed books') for a statement to name its entries by; it totals nothing.
+    'rolloverYear', 'scoutHasLedger', 'statementLookupRows'], 'who reads the voided rows');
   // In handleAction: the void handlers and (treasurer sign-off on C3) the voided CSV only. (C7: del-scout's
   // log line is gone, with the unlinking it logged.)
   // Security re-check of option B (A) — and the void's Undo, asking whether the row it would put back is still voided.
@@ -23055,7 +23056,7 @@ atest('C5, api: a statement signed on one device survives another’s save, and 
 
 // Phase 3, C5 — the statements card and the printout, on a sandbox of the page's own renderers.
 const C5_VIEW_FNS = ['carriedYearsText', 'esc', 'fmt', 'fmtDate', 'fmtDateShort', 'fmtDateYear', 'statementDay', 'statementByOn', 'statementLegacyLine', 'statementSheetData',
-  'statementReopened', 'statementReviewed', 'statementAdded', 'entrySignedCents', 'statementsCardHtml', 'statementBlockHtml', 'renderBankStatementSheet',
+  'statementReopened', 'statementReviewed', 'statementAdded', 'entrySignedCents', 'statementsCardHtml', 'statementBlockHtml', 'renderBankStatementSheet', 'statementLookupRows', 'statementClosedCount',
   'statementButtonsHtml', 'statementReviewRefusal', 'ledgerActorName', 'statementReopenRefusal', 'statementReopenNote', 'statementBefore', 'LEDGER_VOID_REASON_MAX',
   'statementReviewer', 'statementAwaitsReview', 'fmtDateShortYear', 'isoPlusDays', 'closedBookRows', 'arrOf'];
 // Sep 30: r1 +$25 cleared on it, u1 −$84 outstanding; the opening $100 and q1 +$500 cleared before.
@@ -26573,7 +26574,7 @@ test('C8-3: Mark reconciled and the restore read the carried rows; the printout 
   const out = J(x.closedBookRows([{ year: 2026, form: 'full', ledger: [{ id: 'a', date: '2027-06-28', amountCents: 5, direction: 'out' }, null] },
     { year: 2025, form: 'compact', ledger: [{ i: 'b', d: '2026-01-01', c: -300, t: 'Fee', r: '12' }, { i: 'c', d: '2026-01-02', c: 200, t: 'Dues' }] }]));
   eq(out.map((e) => [e.id, e.direction, e.amountCents]), [['a', 'out', 5], ['b', 'out', 300], ['c', 'in', 200]], 'rows of both forms');
-  ok(/statementSheetData\(st, state\.ledger\.concat\(state\.ledgerAside \|\| \[\], stBookAside, closedBookRows\(state\.closedBooks\)\)\)/.test(slice('renderBankStatementSheet')), 'the printout names entries in closed books');
+  ok(/statementSheetData\(st, statementLookupRows\(state, stBookAside\)\)/.test(slice('renderBankStatementSheet')) && /closedBookRows\(s && s\.closedBooks\)/.test(slice('statementLookupRows')), 'the printout names entries in closed books');
   ok(/'± Carried from last year, not yet on the statement, net \(' \+ carriedN \+ '\)'/.test(slice('renderBankStatementSheet')), 'the carried line on the printout, the net line');
   ok(/esc\(l\.what \+ \(l\.carried \? ' \(carried from ' \+ l\.carried \+ '\)' : ''\)/.test(slice('renderBankStatementSheet')) && /filter\(function \(l\) \{ return !!l\.carried; \}\)/.test(slice('renderBankStatementSheet')),
     'the row suffix and the count come from the flag, not from reading the description');
@@ -27815,6 +27816,61 @@ test('C8 re-check string 7: the delete screen says to check with the council bef
   ok(x.delSeasonText({ year: 2026 }, { year: 2026 }).endsWith('This can’t be undone here.' + W), 'a close-out with its book');
   ok(x.delSeasonText({ year: 2026 }, null).endsWith('This can’t be undone here.' + W), 'a close-out with no book');
   ok(x.delSeasonText({ year: 2026, orphan: true }, { year: 2026 }).endsWith('This can’t be undone here.' + W), 'a closed book alone');
+});
+
+/* F1: an entry of the closed year cleared on a statement dated after its cutoff. */
+// Hand-worked: opens Jul 1 2026 with $1,000.00. A $150.00 check dated Jun 28 clears Jul 10, a $50.00 deposit dated Jun 29 is not in the bank yet; the Jul 25 statement
+// is reconciled in July (the check ticked on it, the deposit outstanding), and the year is closed out in August. Closing balance Jun 30: 1,000 - 150 + 50 = $900.00.
+// A $30.00 deposit dated Jul 12 is on the same statement. The bank on Jul 25 shows 1,000 - 150 + 30 = $880.00. The new book opens at $900.00, carries the deposit
+// (unticked) and NOT the check (it cleared), and its Jul 25 statement reads 900 + 30 (the July deposit, ticked) - 50 (the Jun 29 deposit, not yet at the bank) = $880.00.
+const C8F1_STATEMENT = { id: 'st-jul25', date: '2027-07-25', statementCents: 88000, openingCents: 100000, clearedCents: 88000, bookCents: 88000, ticked: ['chk', 'jul'], outstanding: ['dep'],
+  tickedCents: -12000, outInCents: 5000, outOutCents: 0, openingDate: '2026-07-01', by: 'Pat Example', byUid: '', at: '2027-07-26T10:00:00.000Z' };
+const c8f1Rec = () => c8wRec({
+  book: { openingCents: 100000, openingDate: '2026-07-01', reconciledThrough: '2027-07-25', statementDate: '', statementCents: 0, year: 2026 },
+  ledger: [c8row('chk', '2027-06-28', 15000, 'out', { description: 'Check 1041 to the camp', ref: '1041', reconciled: true, statementId: 'st-jul25', approvedBy: 'Pat Example', approvedAt: '2027-07-26T10:00:00.000Z' }),
+    c8row('dep', '2027-06-29', 5000, 'in', { description: 'Popcorn deposit' }),
+    c8row('jul', '2027-07-12', 3000, 'in', { description: 'July dues', reconciled: true, statementId: 'st-jul25', approvedBy: 'Pat Example', approvedAt: '2027-07-26T10:00:00.000Z' })],
+  statements: [C8F1_STATEMENT] });
+test('C8 re-check F1: a Jun 28 check ticked on a Jul 25 statement, closed out in August, is not carried, not offset, printed from the closed book, and the statement stays open', () => {
+  const pre = sandbox(['closeoutClearedLater', 'closeoutSplit', 'closeoutPreviewLines', 'fmtDateShortYear', 'fmtDateShort', 'fmt', 'arrOf']);
+  const stBefore = J(c8f1Rec());
+  eq(pre.closeoutClearedLater(stBefore.ledger, stBefore.statements, '2027-06-30'), 1, 'before closing: one entry dated through Jun 30 was cleared on a later statement');
+  const ctx = c8wRun(c8f1Rec()), st = c8wGet(ctx, 'state'), done = c8wGet(ctx, 'done');
+  eq([done.closingCents, st.book.openingCents, st.book.openingDate], [90000, 90000, '2027-07-01'], 'the new book opens at the book’s balance on Jun 30');
+  eq([st.ledger.map((e) => e.id), st.ledgerAside.map((e) => [e.id, e.off])], [['jul'], [['co-dep', 'carried']]], 'the check is not in the new book and is not carried; the deposit still outstanding is carried');
+  eq(st.statements.map((x) => x.id), ['st-jul25'], 'the Jul 25 statement stays open in the new book');
+  eq(st.closedBooks[0].ledger.map((e) => [e.id, e.reconciled, e.statementId || '']), [['chk', true, 'st-jul25'], ['dep', false, '']], 'the check is in the closed book, still ticked on that statement');
+  // The new book's reconciling: opening 900.00 + the July deposit ticked 30.00, less the carried deposit 50.00 = 880.00 = the bank, difference zero.
+  const rt = sandbox(['reconcileTotals', 'carriedRowsOf', 'entryAfterOpening', 'entryOnStatement', 'entrySignedCents', 'statementReopened', 'carriedRowFixed']);
+  const rec = J(rt.reconcileTotals(st.ledger, Object.assign({}, st.book, { statementCents: 88000 }), st.ledgerAside));
+  eq([rec.cleared, rec.difference, rec.carriedOpen], [88000, 0, 1], 'the ticked balance is the bank’s, and nothing is offset for the check');
+  // The printout: the check from the closed book (not “since removed”), the deposit from its carried copy.
+  const sh = sandbox(['statementSheetData', 'statementLookupRows', 'closedBookRows', 'entrySignedCents', 'isoPlusDays', 'carriedYearsText', 'arrOf']);
+  const d = J(sh.statementSheetData(st.statements[0], sh.statementLookupRows(st, [])));
+  eq(d.ticked.map((l) => [l.what, l.cents, l.date]), [['Check 1041 to the camp', -15000, '2027-06-28'], ['July dues', 3000, '2027-07-12']], 'the printout lists the check by name, not “An entry since removed from the book”');
+  eq(d.payments.length + d.deposits.length, 1, 'one outstanding entry');
+  eq(d.deposits.map((l) => [l.what, l.carried, l.cents]), [['Popcorn deposit', '2026–27', 5000]], 'the deposit is read from its carried copy, and says it came from last year');
+  eq(J(sh.statementSheetData(st.statements[0], st.ledger.concat(st.ledgerAside))).ticked.map((l) => l.what), ['An entry since removed from the book', 'July dues'], 'control: without the closed books’ rows it was the old text');
+  // A restore of a backup that ticks the July deposit again: the statement’s listed entries still come to what it was signed with, so there is nothing to look at.
+  const rk = sandbox(['statementRetick', 'statementReopened', 'ledgerStampClean', 'entrySignedCents', 'closedBookRows', 'arrOf']);
+  const off = [], untick = (l) => l.map((e) => Object.assign(e, { reconciled: false, statementId: '' }));
+  rk.statementRetick(untick(J(st.ledger)), J(st.statements), Object.assign(J(st.book), { reconciledThrough: '2027-07-25' }), off, rk.closedBookRows(J(st.closedBooks)));
+  eq(off, [], 'no “no longer comes to what it was signed with” for the closed check');
+  const off2 = [];
+  rk.statementRetick(untick(J(st.ledger)), J(st.statements), Object.assign(J(st.book), { reconciledThrough: '2027-07-25' }), off2);
+  eq(off2.length, 1, 'control: without the closed rows it says so');
+  // Reopening it: nothing is un-ticked, and the note says the closed entry stays ticked.
+  const ro = sandbox(['statementReopenNote', 'statementClosedCount', 'statementBefore', 'statementReviewed', 'statementReopened', 'fmtDateShort', 'closedBookRows', 'arrOf']);
+  const closedN = ro.statementClosedCount(st.statements[0], st.closedBooks);
+  eq(closedN, 1, 'one of the entries it cleared is in a closed year');
+  ok(/ 1 entry it cleared is in a year already closed out, and stays ticked: a closed year can’t be changed\./.test(ro.statementReopenNote(st.statements[0], st.statements, closedN)), 'the reopen note says so');
+  ok(!/closed out, and/.test(ro.statementReopenNote(st.statements[0], st.statements, 0)), 'and says nothing when there is none');
+  // The preview.
+  const L = (n) => pre.closeoutPreviewLines({ cutoff: '2027-06-30', bankKnown: false, carried: null, clearedLater: n });
+  eq([L(0), L(1), L(3)], [[], ['1 entry dated through Jun 30, 2027 was cleared on a statement dated after it. It stays with that statement.'],
+    ['3 entries dated through Jun 30, 2027 were cleared on a statement dated after it. They stay with that statement.']], 'string 9');
+  ok(/clearedLater: closeoutClearedLater\(state\.ledger, state\.statements, coCut\)/.test(slice('renderCloseoutOverlay')), 'the preview reads it');
+  ok(/statementReopenNote\(st, state\.statements, statementClosedCount\(st, state\.closedBooks\)\)/.test(SCRIPT) && /state\.book, ciOff, closedBookRows\(state\.closedBooks\)\)/.test(SCRIPT), 'the reopen form and the restore read the closed books');
 });
 
 /* ---------------- report ---------------- */

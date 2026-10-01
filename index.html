@@ -4925,6 +4925,13 @@
     });
     return out;
   }
+  // Treasurer's review of C8-5..C8-10 (F1) — every row a statement can name an entry by, as a reader looks them up: the counted rows, the rows set aside (and
+  // `asideMore`, a closed book's own), the carried rows, and the rows of every closed book. A statement dated after a year's cutoff can list an entry
+  // dated before it (a check that cleared in July, on a statement reconciled before the close-out): the entry is in the closed book now, and without
+  // this the printout said "An entry since removed from the book". `s` is the pack record (a state). Pure.
+  function statementLookupRows(s, asideMore) {
+    return arrOf(s && s.ledger).concat(arrOf(s && s.ledgerAside), arrOf(asideMore), closedBookRows(s && s.closedBooks));
+  }
   // One ledger row, coerced in place (normalizeState). Shared by the counted rows (state.ledger,
   // `prefix` 'nl') and the rows set aside (state.ledgerAside, 'na'), so a row reads the same
   // wherever it sits and moving it between the two changes nothing about it. Never uid().
@@ -10087,7 +10094,8 @@
   // now, come to other than the figure signed with it (tickedCents: what ITS entries came to; not
   // clearedCents, which adds the opening and every earlier statement's), as { id, date, nowCents,
   // signedCents }. Not one signed before tickedCents was kept, nor one whose list was cut (truncated).
-  function statementRetick(rows, statements, book, off) {
+  // F1 — `extra` (optional, read, never changed): more rows to price the statements' lists from, the closed books' (statementLookupRows).
+  function statementRetick(rows, statements, book, off, extra) {
     var rt = String((book && book.reconciledThrough) || ''), on = Object.create(null), n = 0, used = [];
     (statements || []).forEach(function (st) {
       if (!st || statementReopened(st) || st.badDate || !/^\d{4}-\d{2}-\d{2}$/.test(st.date) || !rt || st.date > rt || !Array.isArray(st.ticked)) return;
@@ -10112,7 +10120,7 @@
     });
     if (Array.isArray(off)) {
       var byId = Object.create(null);
-      (rows || []).forEach(function (e) { if (e && typeof e.id === 'string' && !byId[e.id]) byId[e.id] = e; });
+      (rows || []).concat(Array.isArray(extra) ? extra : []).forEach(function (e) { if (e && typeof e.id === 'string' && !byId[e.id]) byId[e.id] = e; });
       used.forEach(function (st) {
         if (typeof st.tickedCents !== 'number' || !isFinite(st.tickedCents) || st.truncated) return;
         var now = st.ticked.reduce(function (t, id) { return t + (byId[id] ? entrySignedCents(byId[id]) : 0); }, 0);
@@ -10291,13 +10299,15 @@
   // (statementBefore), and what it leaves as it is. Pure.
   // Treasurer review of C5 (2, 8) — in the treasurer's words: the opening balance stays locked while
   // anything is ticked (openingLockedWhy), which entries open up, and a review does not carry over.
-  function statementReopenNote(st, statements) {
+  // F1 — `closedN` (optional): how many of the entries it cleared are in a closed year (statementClosedCount), which stay ticked.
+  function statementReopenNote(st, statements, closedN) {
     var back = statementBefore(statements, st.date);
     return (back ? 'The book will then be reconciled through ' + fmtDateShort(back.date) + '.'
       : 'The book will then not be reconciled at all. The opening balance stays locked until no entry is ticked.') +
       ' Entries stay ticked. Un-reconcile any ticked by mistake, fix what’s wrong, then mark the statement reconciled again. ' +
       (back ? 'Entries after ' + fmtDateShort(back.date) + ' that aren’t ticked' : 'Entries that aren’t ticked') + ' can be changed again. ' +
       'This statement stays in the list, marked reopened.' +
+      (closedN ? ' ' + closedN + (closedN === 1 ? ' entry it cleared is' : ' entries it cleared are') + ' in a year already closed out, and ' + (closedN === 1 ? 'stays' : 'stay') + ' ticked: a closed year can’t be changed.' : '') +
       (statementReviewed(st) ? ' It was reviewed' + (st.reviewedBy ? ' by ' + st.reviewedBy : '') + '; the statement reconciled again will need its own review.' : '');
   }
   // A statement's date, as a record says it: "September 30, 2026". `iso` YYYY-MM-DD. Pure.
@@ -10305,6 +10315,13 @@
     var p = String(iso || '').split('-');
     if (p.length !== 3) return String(iso || '');
     return new Date(+p[0], +p[1] - 1, +p[2]).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+  }
+  // F1 — how many of the entries statement `st` lists as cleared (its `ticked`) are rows of a closed book (`books`: state.closedBooks): ticked for good, whatever is done
+  // to the statement. Pure.
+  function statementClosedCount(st, books) {
+    var closed = Object.create(null);
+    closedBookRows(books).forEach(function (e) { closed[e.id] = true; });
+    return arrOf(st && st.ticked).filter(function (id) { return closed[id] === true; }).length;
   }
   // The day of a stamp's time (an ISO time), as fmtDateShort says it, or ''.
   function statementDay(at) { return /^\d{4}-\d{2}-\d{2}/.test(String(at || '')) ? fmtDateShort(String(at).slice(0, 10)) : ''; }
@@ -10336,6 +10353,9 @@
     var ninety = /^\d{4}-\d{2}-\d{2}$/.test(String(st.date || '')) ? isoPlusDays(st.date, -90) : '';
     function line(id, out) {
       var e = byId[id];
+      // F1 — an entry from a closed year that was outstanding when the year closed is carried as 'co-' + its id: the copy is what is waiting for the bank now.
+      var cp = byId['co-' + id];
+      if (cp && cp.off === 'carried') e = cp;
       if (!e) return { id: id, date: '', what: 'An entry since removed from the book' + (out ? ' (not known whether a deposit or a payment)' : ''), ref: '', cents: null, dir: '' };
       // A row carried from last year says so in `carried` (the program years it came from, as carriedYearsText says them), not in
       // `what`: the printout adds "(carried from 2026–27)" from it, and counts the rows, without reading the description.
@@ -23053,7 +23073,7 @@
           '<button type="button" class="btn small ' + (roArmed ? 'danger armed' : 'primary') + '" data-act="st-reopen-go:' + esc(st.id) + '">' +
             (roArmed ? 'Tap again to reopen it' : 'Reopen it') + '</button>' +
           '<button type="button" class="btn small ghost" data-act="st-reopen-cancel">Cancel</button></div>' +
-          '<p class="small muted" style="margin:4px 0 0;flex-basis:100%">' + esc(statementReopenNote(st, state.statements)) + '</p>';
+          '<p class="small muted" style="margin:4px 0 0;flex-basis:100%">' + esc(statementReopenNote(st, state.statements, statementClosedCount(st, state.closedBooks))) + '</p>';
       }
     }
     // A legacy statement's ending balance (treasurer review of C1, L1): once, by a leader who edits.
@@ -23092,7 +23112,7 @@
       });
     }
     if (!st) return '';
-    var d = statementSheetData(st, state.ledger.concat(state.ledgerAside || [], stBookAside, closedBookRows(state.closedBooks)));
+    var d = statementSheetData(st, statementLookupRows(state, stBookAside));
     var BLANK = '______________________';
     function money(cents, plus) { return cents === null ? '—' : (cents < 0 ? '−' : (plus && cents > 0 ? '+' : '')) + fmt(Math.abs(cents)); }
     // The summary's labels are sentences: they wrap (the global `td { white-space: nowrap }` pushed
@@ -30883,6 +30903,21 @@
   // record small (and that the snapshot this downloads has it in full), and the statements nobody has reviewed.
   //   info: { cutoff, bankKnown, carried { n, inCents, outCents }, openEntries, openVoided, openStatements,
   //           compacted [years, other than this year's], trimmed [years, likewise], unreviewed }. Pure.
+  // Treasurer's review of C8-5..C8-10 (F1, string 9) — how many of the year's entries (`rows`, counted, dated on or before `cutoff`) were cleared on a statement dated
+  // after it: a check dated Jun 28 that cleared Jul 10 and was ticked on a statement reconciled in July, before the year was closed out. They go into the closed
+  // book, ticked; the statement stays open in the new book, listing them. Counted by the statement id on the entry, or by the statement's own list of what it
+  // cleared (an entry whose own mark was lost). Pure.
+  function closeoutClearedLater(rows, statements, cutoff) {
+    var later = Object.create(null), listed = Object.create(null);
+    arrOf(statements).forEach(function (st) {
+      if (!st || String(st.date || '') <= cutoff) return;
+      later[st.id] = true;
+      arrOf(st.ticked).forEach(function (id) { listed[id] = true; });
+    });
+    return closeoutSplit(rows, cutoff).closed.filter(function (e) {
+      return !!e && e.reconciled === true && (later[e.statementId] === true || listed[e.id] === true);
+    }).length;
+  }
   function closeoutPreviewLines(info) {
     var out = [], d = fmtDateShortYear(info.cutoff), c = info.carried || { n: 0, inCents: 0, outCents: 0 };
     function pl(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
@@ -30891,6 +30926,11 @@
         ? pl(c.n, 'entry that the bank had not shown by ' + d + ' is', 'entries that the bank had not shown by ' + d + ' are') + ' carried into the new year (' + fmt(c.inCents) + ' money in, ' +
           fmt(c.outCents) + ' money out). They are already in the opening balance; tick each one on the Reconcile screen when it clears.'
         : 'Every entry through ' + d + ' is on a bank statement, so nothing is carried.');
+    }
+    // F1, string 9 — said first among what stays: entries of the year that sit on a statement dated after it.
+    if (info.clearedLater) {
+      out.push(info.clearedLater === 1 ? '1 entry dated through ' + d + ' was cleared on a statement dated after it. It stays with that statement.'
+        : info.clearedLater + ' entries dated through ' + d + ' were cleared on a statement dated after it. They stay with that statement.');
     }
     var stay = [];
     if (info.openEntries) stay.push(pl(info.openEntries, 'entry', 'entries'));
@@ -31881,7 +31921,7 @@
     var coCut = closeoutCutoff(year);
     var coLines = closeoutPreviewLines({
       cutoff: coCut, bankKnown: state.ledger.length > 0 && !!state.book.openingDate, carried: coBook ? coBook.carried : null,
-      openEntries: closeoutSplit(state.ledger, coCut).open.length,
+      openEntries: closeoutSplit(state.ledger, coCut).open.length, clearedLater: closeoutClearedLater(state.ledger, state.statements, coCut),
       openVoided: arrOf(coTrial.after.ledgerAside).filter(function (e) { return e && e.off !== 'carried'; }).length,
       openStatements: arrOf(coTrial.after.statements).length,
       compacted: coTrial.result.compacted.filter(function (y) { return y !== year; }), trimmed: coTrial.result.trimmed.filter(function (y) { return y !== year; }),
@@ -33809,7 +33849,7 @@
       // ticked again (statementRetick), or every device would take the backup's untick of them.
       // Security re-check of C6 (N5) — and whether the entries each lists, as restored, still come to what it
       // was signed with (ciOff): said in the restore's why and on "The ledger needs a look".
-      var ciOff = [], ciRetick = statementRetick(state.ledger.concat(carriedRowsOf(state.ledgerAside)), state.statements, state.book, ciOff);
+      var ciOff = [], ciRetick = statementRetick(state.ledger.concat(carriedRowsOf(state.ledgerAside)), state.statements, state.book, ciOff, closedBookRows(state.closedBooks));
       // …and whether an entry ticked here before (ciRows) is unticked now: its tick has to be made again.
       var ciTicked = Object.create(null);
       arrOf(ciRows).forEach(function (e) { if (e && e.reconciled === true && typeof e.id === 'string') ciTicked[e.id] = true; });
