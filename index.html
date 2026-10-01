@@ -1911,14 +1911,15 @@
   // ---------------------------------------------------------------------------
   // WHICH CLOUD the pack lives in:
   //   'firestore' — the pack record, members, invites and the parent view are Firestore
-  //                 documents, guarded by the SETUP.md Part C rules. What pack569.com runs.
+  //                 documents, guarded by the SETUP.md Part C rules. What pack569.com ran
+  //                 before the switch, and the way back to it.
   //   'api'       — this site's own server (functions/ in the repo, Cloudflare D1 behind it),
   //                 which enforces the same rules itself. Firebase is kept for Google sign-in
-  //                 only. Needs PACK_DOC_ID set; without one the page is device-only.
-  // Chosen at build time: scripts/build-site.mjs writes 'api' into the staging build, and the
-  // switch-over commit changes it here (docs/cloudflare-setup.md, "E. Moving the pack to its own server").
+  //                 only. Needs PACK_DOC_ID set; without one the page is device-only. What
+  //                 pack569.com runs since the switch-over commit (docs/cloudflare-setup.md,
+  //                 "E. Moving the pack to its own server"); staging is always 'api'.
   // ---------------------------------------------------------------------------
-  var BACKEND = 'firestore';
+  var BACKEND = 'api';
   // true in the staging build only (staging.pack569.pages.dev, made-up data only): the build
   // writes it, and --verify refuses a staging page without it or any other page with it. The
   // one thing it does: the copy-in refuses the real move file there (moveImportBody). Always

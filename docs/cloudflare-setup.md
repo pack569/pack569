@@ -300,8 +300,8 @@ see [One Firebase project](#one-firebase-project-an-accepted-risk) below.
 | `pack569-preview` | every preview link, and the `staging` link below |
 
 `wrangler.toml` says which is which. Which one the *page* uses is one line in `index.html`,
-`var BACKEND = …`. The committed page says `'firestore'`, so pack569.com keeps using Firestore
-and the live API sits unused until the switch
+`var BACKEND = …`. Until the switch, the committed page said `'firestore'`, so pack569.com kept
+using Firestore and the live API sat unused. The switch commit makes it `'api'`
 ([E. Moving the pack](#e-moving-the-pack-to-its-own-server-the-switch)). The `staging` build
 says `'api'`.
 
@@ -584,7 +584,7 @@ commit publishes the switched page there at once.
    page after step 3 is not in the file.
 2. Make the switch commit on a branch: in `index.html`, change `var BACKEND = 'firestore';`
    to `var BACKEND = 'api';`, and in `test/harness.mjs` the test that pins it (search for
-   "the committed page is not the Firestore build"). Run the harness, review, and merge to
+   "the committed page is not on the pack’s own server"). Run the harness, review, and merge to
    `main`. Nothing is deployed yet: the website workflow deploys only when you run it, and
    GitHub Pages is off (before you start).
 3. On pack569.com (still the Firestore page), signed in as the owner, wait for the pill to say

@@ -8704,7 +8704,7 @@ test('only the backend adapters touch the Firebase SDK, and the server’s adapt
     /\(BACKEND === 'api' \? apiBackend : firestoreBackend\)\.init\(FIREBASE_CONFIG\)/.test(outside), 'the two readers of FIREBASE_CONFIG moved');
   // BACKEND is chosen in one place, and nothing else branches on it but the move-file offer.
   eq((outside.match(/\bBACKEND\b/g) || []).length, 4, 'BACKEND is read somewhere new');
-  ok(/^  var BACKEND = 'firestore';$/m.test(SCRIPT), 'the committed page is not the Firestore build');
+  ok(/^  var BACKEND = 'api';$/m.test(SCRIPT), 'the committed page is not on the pack’s own server');
   // apiBackend: Google sign-in only. It imports Firebase's app and auth modules and nothing else.
   const api = codeOnly(slice('apiBackend'));
   eq((api.match(/import\(SYNC_SDK_BASE \+ '([^']+)'\)/g) || []).map((m) => /'([^']+)'/.exec(m)[1]),
@@ -13516,7 +13516,7 @@ test('the preview build is three files, cannot reach the live pack, allows no Go
   ok(/^  X-Robots-Tag: noindex$/m.test(headers), 'the preview can be indexed');
 });
 
-test('the production build is the committed page, and its CSP hashes the script and allows Firebase', () => {
+test('the production build is the committed page, and its CSP hashes the script and allows sign-in but not Firestore', () => {
   siteBuild();
   eq(readdirSync(siteDir('production')).sort(), ['_headers', 'index.html', 'plans.json'], 'the production folder');
   ok(siteFile('production', 'index.html') === HTML, 'production is not byte-for-byte index.html');
@@ -13528,10 +13528,10 @@ test('the production build is the committed page, and its CSP hashes the script 
   ok(/^https:\/\/www\.gstatic\.com\/firebasejs\/\d+\.\d+\.\d+\/$/.test(sdkBase), 'SYNC_SDK_BASE is not a versioned gstatic path');
   eq(d['script-src'], [`'sha256-${hash}'`, sdkBase, 'https://apis.google.com'], 'script-src');
   eq(d['default-src'], ["'none'"], 'default-src');
-  for (const o of ['https://firestore.googleapis.com', 'https://identitytoolkit.googleapis.com',
-    'https://securetoken.googleapis.com', 'https://api.open-meteo.com']) {
+  for (const o of ["'self'", 'https://identitytoolkit.googleapis.com', 'https://securetoken.googleapis.com', 'https://api.open-meteo.com']) {
     ok(d['connect-src'].indexOf(o) >= 0, `production cannot reach ${o}`);
   }
+  ok(!/firestore/i.test(headers), 'production can reach Firestore');
   ok(d['frame-src'].indexOf('https://' + LIVE.config.authDomain) >= 0, 'Google sign-in cannot frame the authDomain');
   ok(!/'unsafe-eval'/.test(headers) && d['script-src'].indexOf("'unsafe-inline'") < 0, 'the CSP allows inline or eval’d script');
   ok(/^  Cross-Origin-Opener-Policy: same-origin-allow-popups$/m.test(headers), 'the sign-in popup cannot report back');
@@ -13544,13 +13544,12 @@ test('the staging build is the committed page on the pack’s own server: BACKEN
   siteBuild();
   eq(readdirSync(siteDir('staging')).sort(), ['_headers', 'index.html', 'plans.json'], 'the staging folder');
   const html = siteFile('staging', 'index.html');
-  // Byte for byte the committed page, but for two lines: BACKEND, and (YP review of stage C,
-  // item 2) the STAGING flag that makes the page refuse the real move file.
+  // Byte for byte the committed page (already BACKEND 'api'), but for one line: (YP review of
+  // stage C, item 2) the STAGING flag that makes the page refuse the real move file.
   const a = HTML.split('\n'), b = html.split('\n');
   eq(a.length, b.length, 'staging has a different number of lines');
   const differ = a.map((l, i) => (l === b[i] ? null : [l, b[i]])).filter(Boolean);
-  eq(differ, [["  var BACKEND = 'firestore';", "  var BACKEND = 'api';"], ['  var STAGING = false;', '  var STAGING = true;']],
-    'staging changes more than BACKEND and STAGING');
+  eq(differ, [['  var STAGING = false;', '  var STAGING = true;']], 'staging changes more than STAGING');
   const live = site.liveConfig(html);
   eq([live.backend, live.staging, live.docId, live.config.projectId], ['api', true, LIVE.docId, LIVE.config.projectId], 'staging’s sign-in config and pack');
   eq([LIVE.staging, site.liveConfig(siteFile('production', 'index.html')).staging, site.liveConfig(siteFile('preview', 'index.html')).staging],
@@ -13563,11 +13562,9 @@ test('the staging build is the committed page on the pack’s own server: BACKEN
   eq(d['script-src'][0], `'sha256-${scriptHash(html)}'`, 'the staging CSP hash is not its script’s');
   ok(d['frame-src'].indexOf('https://' + LIVE.config.authDomain) >= 0, 'Google sign-in cannot frame the authDomain on staging');
   ok(/^  X-Robots-Tag: noindex$/m.test(headers), 'staging can be indexed');
-  // Production is still the committed page, on Firestore; its 'self' is for plans.json.
+  // Production is the committed page on the same server, so it may reach exactly what staging may.
   const prod = site.cspDirectives(site.cspOf(siteFile('production', '_headers')));
-  eq(prod['connect-src'], ["'self'", 'https://firestore.googleapis.com', 'https://identitytoolkit.googleapis.com',
-    'https://securetoken.googleapis.com', 'https://www.googleapis.com', 'https://api.open-meteo.com', 'https://archive-api.open-meteo.com'],
-    'production’s connect-src changed');
+  eq(prod['connect-src'], d['connect-src'], 'production’s connect-src differs from staging’s');
   // --verify: a staging page on Firestore, or with a Firestore host in its CSP, is refused; so is
   // each target passed as another.
   throwsBuild(() => site.verify({ dir: siteDir('staging'), target: 'production' }), 'staging passed as production');
@@ -13596,24 +13593,29 @@ test('the staging build is the committed page on the pack’s own server: BACKEN
   eq(r.status, 0, 'the --verify CLI refuses a good staging build: ' + r.stderr);
 });
 
-test('the switch-over is one line: a production page with BACKEND api gets the api CSP, and a staging page cannot be Firestore', () => {
-  // A copy of the repo's two inputs, with index.html switched, built as production.
+test('the way back is one line: a production page with BACKEND firestore gets the Firestore CSP, and a staging page cannot be Firestore', () => {
+  // A copy of the repo's two inputs, with index.html switched back to Firestore, built as production
+  // (docs/cloudflare-setup.md, "The way back").
   const root = mkdtempSync(join(tmpdir(), 'pack569-switch-'));
+  const BACK = HTML.replace("  var BACKEND = 'api';", "  var BACKEND = 'firestore';");
+  ok(BACK !== HTML, 'the committed page has no BACKEND api line to switch back');
   try {
-    writeFileSync(join(root, 'index.html'), HTML.replace("  var BACKEND = 'firestore';", "  var BACKEND = 'api';"));
+    writeFileSync(join(root, 'index.html'), BACK);
     writeFileSync(join(root, '_headers'), readFileSync(join(ROOT, '_headers'), 'utf8'));
     cpSync(join(ROOT, lessons.PLANS_DIR), join(root, lessons.PLANS_DIR), { recursive: true });
     const out = join(root, 'out');
     site.build({ target: 'production', out, root });
     const headers = readFileSync(join(out, '_headers'), 'utf8');
     const d = site.cspDirectives(site.cspOf(headers));
-    eq(d['connect-src'][0], "'self'", 'the switched production page cannot reach /api');
-    ok(!/firestore/i.test(headers) && !/X-Robots-Tag/.test(headers), 'the switched production CSP');
-    eq(site.verify({ dir: out, target: 'production', root }).target, 'production', 'the switched production build does not verify');
+    ok(d['connect-src'].indexOf('https://firestore.googleapis.com') >= 0 && !/X-Robots-Tag/.test(headers), 'the switched-back production CSP');
+    eq(site.verify({ dir: out, target: 'production', root }).target, 'production', 'the switched-back production build does not verify');
+    // Staging is BACKEND api whatever the committed page says.
+    site.build({ target: 'staging', out, root });
+    eq(site.liveConfig(readFileSync(join(out, 'index.html'), 'utf8')).backend, 'api', 'a Firestore page built a Firestore staging');
     // A BACKEND that is neither, or declared twice, stops the build.
-    writeFileSync(join(root, 'index.html'), HTML.replace("  var BACKEND = 'firestore';", "  var BACKEND = 'both';"));
+    writeFileSync(join(root, 'index.html'), HTML.replace("  var BACKEND = 'api';", "  var BACKEND = 'both';"));
     ok(/BACKEND/.test(throwsBuild(() => site.build({ target: 'staging', out, root }), 'an unknown BACKEND')), 'an unknown BACKEND');
-    writeFileSync(join(root, 'index.html'), HTML.replace("  var BACKEND = 'firestore';", "  var BACKEND = 'firestore';\n  var BACKEND = 'api';"));
+    writeFileSync(join(root, 'index.html'), HTML.replace("  var BACKEND = 'api';", "  var BACKEND = 'api';\n  var BACKEND = 'firestore';"));
     throwsBuild(() => site.build({ target: 'production', out, root }), 'BACKEND declared twice');
     // Only the staging build writes STAGING = true: a committed page saying it, or saying it
     // twice, or not at all, builds nothing.
