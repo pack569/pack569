@@ -27290,7 +27290,7 @@ test('C8-7: a realistic pack at the 700 KB limit keeps only the year just closed
    ================================================================ */
 const C8R_FNS = ['seasonBookOf', 'closedBookOf', 'closedBookLines', 'closedBookStatementsHtml', 'closedBookBlockHtml', 'closedBookEntriesCsv', 'closedBookLogCsv', 'closedYearText', 'arrOf',
   'esc', 'fmt', 'fmtDateShort', 'fmtDateShortYear', 'statementByOn', 'statementDay', 'statementReopened', 'statementReviewed', 'entrySignedCents', 'ledgerCsvCell', 'ledgerLogCsv',
-  'ledgerStatementName', 'ledgerRowName', 'ledgerEntryNamed', 'fmtDateYear', 'closedRvFormHtml', 'closedBookEntryFor', 'LEDGER_OP_LABELS', 'LEDGER_FIELD_LABELS', 'ledgerLogValue', 'ledgerEventLines', 'ledgerLogWhen', 'ledgerCap'];
+  'ledgerStatementName', 'ledgerRowName', 'ledgerEntryNamed', 'fmtDateYear', 'closedRvFormHtml', 'closedBookEntryFor', 'closedBookReversed', 'LEDGER_OP_LABELS', 'LEDGER_FIELD_LABELS', 'ledgerLogValue', 'ledgerEventLines', 'ledgerLogWhen', 'ledgerCap'];
 const c8r = (books, extra) => {
   const x = sandbox(C8R_FNS);
   vm.runInContext(`var state = { closedBooks: ${JSON.stringify(books)} }; function canEdit() { return true; } var ui = { armed: null }; ${extra || ''}`, x);
@@ -27395,7 +27395,7 @@ test('C8-9: a closed year’s entry is reversed by a counted reversal in the cur
   const W = heldDispatchCtx('');
   const run = (js) => vm.runInContext(js, W), got = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, W)));
   const book = C8R_FULL();
-  run(`${['closedBookOf', 'closedBookEntryFor', 'closedRvRefusal', 'ledgerClosedYearReversal', 'ledgerStampClean', 'ledgerContactScrub', 'arrOf', 'closedYearText'].map(decl).join('\n')}
+  run(`${['closedBookOf', 'closedBookEntryFor', 'closedBookReversed', 'closedRvRefusal', 'ledgerClosedYearReversal', 'ledgerStampClean', 'ledgerContactScrub', 'arrOf', 'closedYearText'].map(decl).join('\n')}
     var logs = []; function logLedger(op, row, more) { logs.push([op, row, more]); }
     function ledgerActor() { return 'Pat Example'; } function ledgerActorUid() { return 'u-pat'; }
     function canEdit() { return editor; } var editor = true;
@@ -27439,7 +27439,7 @@ test('C8-9: a closed year’s entry is reversed by a counted reversal in the cur
 });
 
 test('C8-9: the form lists the closed year’s entries (full or compact) and is escaped', () => {
-  const x = sandbox(['closedRvFormHtml', 'closedBookEntryFor', 'arrOf', 'esc', 'fmt', 'fmtDateShort']);
+  const x = sandbox(['closedRvFormHtml', 'closedBookEntryFor', 'closedBookReversed', 'arrOf', 'esc', 'fmt', 'fmtDateShort']);
   vm.runInContext("var ui = { armed: null, closedRvId: 'b', closedRvWhy: '\"><i>' };", x);
   const full = C8R_FULL(), compact = J(c8().compactClosedBook(full));
   const f = x.closedRvFormHtml(full), c = x.closedRvFormHtml(compact);
@@ -27662,6 +27662,52 @@ test('C8 re-check L-A: taking a cloud copy whose closed book is shorter than thi
   q.b.run('state.closedBooks = ' + JSON.stringify([full]) + '; commit()');
   q.b.run('adoptRemote(' + JSON.stringify({ rev: 9, device: 'devA', json: JSON.stringify(q.server()) }) + ', {})');
   eq(q.b.get('sync.lookNotes'), [], 'nothing to say');
+});
+
+/* M-C and F3: what a closed-year reversal refuses. */
+const C8MC_BOOK = () => C8_BOOK_OF(2026, 'arc-1', {
+  ledger: [c8row('p1', '2026-10-02', 5000, 'in', { description: 'Dues' }),
+    c8row('x1', '2026-11-02', 3000, 'out', { description: 'Check 1041', reversedBy: 'rvx1' }),   // reversed in the same year (option B: both rows count)
+    c8row('rvx1', '2026-11-20', 3000, 'in', { description: 'Reversal of Check 1041', reverses: 'x1' }),
+    c8row('c1', '2027-06-28', 1200, 'out', { description: 'Check 1050', ref: '1050' })],
+  statements: [], aside: [], log: [], names: { line: {}, family: {} } });
+test('C8 re-check M-C: an entry already reversed in its year, a reversal, and an entry reversed in a later book can’t be reversed from the closed year again, full or compact', () => {
+  const x = sandbox(['closedRvRefusal', 'closedBookEntryFor', 'closedBookReversed', 'closedRvFormHtml', 'arrOf', 'esc', 'fmt', 'fmtDateShort', 'compactClosedBook', 'closedCompactRow', 'ledgerStampClean']);
+  vm.runInContext("var ui = { armed: null, closedRvId: '', closedRvWhy: '' };", x);
+  const full = C8MC_BOOK(), compact = J(c8().compactClosedBook(full));
+  const R = (book, id, open, books) => x.closedRvRefusal(J(book), id, 'a reason', open || [], books);
+  const WHY = 'That entry has already been reversed in that year, or is itself a reversal, so it can’t be reversed here.';
+  for (const [name, book] of [['full', full], ['compact', compact]]) {
+    eq([R(book, 'x1'), R(book, 'rvx1'), R(book, 'p1'), R(book, 'c1')], [WHY, WHY, '', ''], name + ': the reversed entry and its reversal are refused, the others are not');
+    const h = x.closedRvFormHtml(J(book));
+    ok(/value="p1"/.test(h) && /value="c1"/.test(h) && !/value="x1"/.test(h) && !/value="rvx1"/.test(h), name + ': the form does not list them: ' + h);
+  }
+  eq(J(Object.keys(x.closedBookReversed(compact)).sort()), ['rvx1', 'x1'], 'the compact book still knows (rv and rb are kept)');
+  eq(compact.ledger.filter((r) => r.rv || r.rb).map((r) => [r.i, r.rv || '', r.rb || '']), [['x1', '', 'rvx1'], ['rvx1', 'x1', '']], 'what compacting keeps');
+  // An entry marked reversed with no row in the book to say so (a reversal that lives in the open book) is still refused.
+  const marked = J(full); marked.ledger = marked.ledger.filter((r) => r.id !== 'rvx1');
+  eq(R(marked, 'x1'), WHY, 'marked reversed, its reversal elsewhere');
+  // A reversal that has gone into a later closed year's book (rv-Y-id, or reverses 'Y:id') is one too.
+  const later = C8_BOOK_OF(2027, 'arc-2', { ledger: [c8row('rv-2026-p1', '2027-07-05', 5000, 'out', { reverses: '2026:p1' })], statements: [], aside: [], log: [], names: { line: {}, family: {} } });
+  eq(R(full, 'p1', [], [full, later]), 'That entry is already reversed: its reversal is in a later year’s book.', 'in a later year’s book');
+  eq(R(full, 'p1', [], [full]), '', 'control: no later book');
+  eq(R(full, 'p1', [{ id: 'rv-2026-p1' }]), 'That entry is already reversed: its reversal is in the current book.', 'in the current book, as before');
+});
+test('C8 re-check F3: an entry carried into this year and still unticked is refused, in the treasurer’s words; once it is ticked it can be reversed', () => {
+  const x = sandbox(['closedRvRefusal', 'closedBookEntryFor', 'closedBookReversed', 'arrOf']);
+  const book = C8MC_BOOK(), carried = (o) => Object.assign({ id: 'co-c1', off: 'carried', reconciled: false, carriedFrom: { year: 2026, id: 'c1' } }, o || {});
+  const W = 'That entry is still waiting for the bank and was carried into this year. Change it on the Reconcile screen, under “Carried from” last year, not here.';
+  eq(x.closedRvRefusal(J(book), 'c1', 'bounced', [carried()]), W, 'unticked carried copy');
+  eq(x.closedRvRefusal(J(book), 'c1', 'bounced', [carried({ reconciled: true })]), '', 'ticked: the bank has shown it');
+  eq(x.closedRvRefusal(J(book), 'p1', 'wrong family', [carried()]), '', 'another entry');
+  eq(x.closedRvRefusal(J(book), 'c1', 'bounced', []), '', 'no carried copy');
+  ok(/closedRvRefusal\(crBook, ui\.closedRvId, ui\.closedRvWhy, arrOf\(state\.ledger\)\.concat\(arrOf\(state\.ledgerAside\)\), state\.closedBooks\)/.test(SCRIPT) &&
+    /closedRvRefusal\(crBook2, ui\.closedRvId, crWhy, arrOf\(state\.ledger\)\.concat\(arrOf\(state\.ledgerAside\)\), state\.closedBooks\)/.test(SCRIPT), 'both taps ask with the rows set aside and the other books');
+});
+test('C8 re-check M-C: a compact closed book’s reversal keys are cut to shape on load', () => {
+  const n = sandbox(C8N_FNS);
+  const cp = J(n.normalizeClosedBook({ year: 2026, form: 'compact', ledger: [{ i: 'a', d: '2027-01-01', c: -5, t: 'z', rv: 'q'.repeat(900), rb: 7, zz: 1 }] }));
+  eq([Object.keys(cp.ledger[0]).sort(), cp.ledger[0].rv.length], [['c', 'd', 'i', 'rv', 't'], 300], 'rv kept and cut; a number is not a reversal id');
 });
 
 /* ---------------- report ---------------- */

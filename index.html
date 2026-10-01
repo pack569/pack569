@@ -4855,13 +4855,13 @@
     list('statements', MAX_STATEMENTS, 'statementsTrimmed');
     if (b.form === 'compact') {
       // A compact row's keys are closedCompactRow's and no others; each word is cut (300 characters).
-      var ROW_KEYS = ['i', 'd', 't', 'c', 'l', 'r', 's', 'f', 'k', 'sc', 'eb', 'ab'];
+      var ROW_KEYS = ['i', 'd', 't', 'c', 'l', 'r', 's', 'f', 'k', 'sc', 'eb', 'ab', 'rv', 'rb'];
       b.ledger.forEach(function (r) {
         Object.keys(r).forEach(function (k) { if (ROW_KEYS.indexOf(k) === -1) delete r[k]; });
         ['i', 'd', 't'].forEach(function (k) { if (typeof r[k] !== 'string') r[k] = ''; });
         r.c = typeof r.c === 'number' && isFinite(r.c) ? Math.round(r.c) : 0;
-        ['l', 'r', 's', 'f', 'sc', 'eb', 'ab'].forEach(function (k) { if (r[k] !== undefined && typeof r[k] !== 'string') delete r[k]; });
-        ['i', 'd', 't', 'l', 'r', 's', 'f', 'sc', 'eb', 'ab'].forEach(function (k) { if (typeof r[k] === 'string' && r[k].length > 300) r[k] = r[k].slice(0, 300); });
+        ['l', 'r', 's', 'f', 'sc', 'eb', 'ab', 'rv', 'rb'].forEach(function (k) { if (r[k] !== undefined && typeof r[k] !== 'string') delete r[k]; });
+        ['i', 'd', 't', 'l', 'r', 's', 'f', 'sc', 'eb', 'ab', 'rv', 'rb'].forEach(function (k) { if (typeof r[k] === 'string' && r[k].length > 300) r[k] = r[k].slice(0, 300); });
         ['eb', 'ab'].forEach(function (k) { if (typeof r[k] === 'string') r[k] = ledgerStampClean(r[k]); });
         if (r.k !== undefined && r.k !== 1) delete r.k;
       });
@@ -8385,6 +8385,10 @@
     if (e.enteredBy) r.eb = ledgerStampClean(e.enteredBy);
     if (e.approvedBy) r.ab = ledgerStampClean(e.approvedBy);
     if (e.reconciled) r.k = 1;
+    // Security re-check of C8-5..C8-10 (M-C) — and what a reversal says of itself (`rv`, the id it reverses) and what a reversed entry says of it
+    // (`rb`, its reversal's id), so a compact book can still tell a reversed entry, and a reversal, from one that is neither (closedRvRefusal).
+    if (typeof e.reverses === 'string' && e.reverses) r.rv = e.reverses;
+    if (typeof e.reversedBy === 'string' && e.reversedBy) r.rb = e.reversedBy;
     return r;
   }
   // Close the year out of one book, as data: `src` { book, ledger, ledgerAside, ledgerLog, statements }
@@ -31537,14 +31541,40 @@
   }
   // Why this reversal can't be recorded, or '': the year's book is held, the entry is in it, it has no reversal yet (`open`: the open book's
   // counted rows and rows set aside), and a reason was given (the change history keeps it). Pure.
-  function closedRvRefusal(book, id, why, open) {
+  // Security re-check of C8-5..C8-10 (M-C, F3) — and not an entry the closed book already reversed (its own `reversedBy`, or another row in it that
+  // reverses it), nor one that is itself a reversal: both rows of a pair are in the closed book (option B), and a second reversal on top would take the
+  // money out twice (closedBookReversed). Nor an entry carried into this year and still unticked (F3: `open` holds its copy, 'co-' + the id): the copy
+  // would stay outstanding for good, so it is dealt with where it is. `books` (state.closedBooks), when given: a reversal that has since gone into a
+  // later closed year counts as one too.
+  function closedRvRefusal(book, id, why, open, books) {
     if (!book) return 'That closed year is no longer in the pack record.';
     if (!id) return 'Pick the entry to reverse.';
     if (!closedBookEntryFor(book, id)) return 'That entry is not in the closed year.';
+    if (closedBookReversed(book)[id] === true) return 'That entry has already been reversed in that year, or is itself a reversal, so it can’t be reversed here.';
     var rvId = 'rv-' + book.year + '-' + id;
     if (arrOf(open).some(function (x) { return x && x.id === rvId; })) return 'That entry is already reversed: its reversal is in the current book.';
+    var later = arrOf(books).some(function (b) {
+      return !!b && b !== book && arrOf(b.ledger).concat(arrOf(b.aside)).some(function (x) { return !!x && (x.id === rvId || x.i === rvId || x.reverses === book.year + ':' + id || x.rv === book.year + ':' + id); });
+    });
+    if (later) return 'That entry is already reversed: its reversal is in a later year’s book.';
+    if (arrOf(open).some(function (x) { return !!x && x.id === 'co-' + id && x.off === 'carried' && x.reconciled !== true; })) {
+      return 'That entry is still waiting for the bank and was carried into this year. Change it on the Reconcile screen, under “Carried from” last year, not here.';
+    }
     if (String(why || '').trim().length < 3) return 'Say why first, in a few words. It goes in the change history.';
     return '';
+  }
+  // The ids in a closed book's ledger that can't be reversed from it again (M-C): an entry marked reversed, one another row in the book reverses, and a row that
+  // is itself a reversal (a full book's `reverses`/`reversedBy`, a compact book's `rv`/`rb`). { id: true }, no prototype. Pure.
+  function closedBookReversed(book) {
+    var out = Object.create(null), compact = !!book && book.form === 'compact';
+    arrOf(book && book.ledger).forEach(function (r) {
+      if (!r) return;
+      var id = compact ? r.i : r.id, rvs = compact ? r.rv : r.reverses, rb = compact ? r.rb : r.reversedBy;
+      if (typeof id !== 'string' || !id) return;
+      if (typeof rb === 'string' && rb) out[id] = true;
+      if (typeof rvs === 'string' && rvs) { out[id] = true; out[rvs] = true; }
+    });
+    return out;
   }
   // Are these two versions of a row the SAME closed-year reversal, made on two devices (same id 'rv-Y-id', both naming 'Y:id', the same money the
   // other way)? Then 'mine' or 'theirs', whichever was made first (its date, then when, then by whom: the same answer on both devices), so the merge
@@ -31557,7 +31587,8 @@
   }
   // The form under a closed book for reversing one of its entries (editors and admins): the entry, why, and two taps. Escaped.
   function closedRvFormHtml(book) {
-    var rows = arrOf(book.ledger).map(function (r) { return closedBookEntryFor(book, book.form === 'compact' ? r.i : r.id); }).filter(function (e) { return !!e; });
+    var done = closedBookReversed(book);
+    var rows = arrOf(book.ledger).map(function (r) { return closedBookEntryFor(book, book.form === 'compact' ? r.i : r.id); }).filter(function (e) { return !!e && done[e.id] !== true; });
     if (!rows.length) return '';
     rows.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
     var key = 'closed-rv:' + book.year, armed = ui.armed === key;
@@ -33902,12 +33933,12 @@
     if (act.indexOf('closed-rv:') === 0) {
       var crYear = +act.split(':')[1], crBook = closedBookOf(state, crYear);
       if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
-      var crNo = closedRvRefusal(crBook, ui.closedRvId, ui.closedRvWhy, arrOf(state.ledger).concat(arrOf(state.ledgerAside)));
+      var crNo = closedRvRefusal(crBook, ui.closedRvId, ui.closedRvWhy, arrOf(state.ledger).concat(arrOf(state.ledgerAside)), state.closedBooks);
       if (crNo) { showToast(crNo); return; }
       arm(act, function () {
         // Asked again on the second tap: a sync can have brought the reversal, or taken the book, since.
         var crBook2 = closedBookOf(state, crYear), crWhy = String(ui.closedRvWhy || '').trim();
-        var crNo2 = closedRvRefusal(crBook2, ui.closedRvId, crWhy, arrOf(state.ledger).concat(arrOf(state.ledgerAside)));
+        var crNo2 = closedRvRefusal(crBook2, ui.closedRvId, crWhy, arrOf(state.ledger).concat(arrOf(state.ledgerAside)), state.closedBooks);
         if (crNo2) { showToast(crNo2); render(); return; }
         var crEntry = closedBookEntryFor(crBook2, ui.closedRvId);
         var crToday = todayISO(), crDate = crToday > crBook2.cutoff ? crToday : isoPlusDays(crBook2.cutoff, 1);
