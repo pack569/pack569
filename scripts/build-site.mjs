@@ -59,7 +59,8 @@ const DOC_ID_RE = /^  var PACK_DOC_ID = ('[0-9a-f]{64}'|null);$/gm;
 // Where firestoreBackend.init() imports the SDK from. Production's script-src allows this exact path,
 // not all of www.gstatic.com, so a version bump in index.html moves the CSP with it.
 const SDK_BASE_RE = /^  var SYNC_SDK_BASE = '(https:\/\/[a-z0-9.-]+\/[A-Za-z0-9._\/-]*\/)';$/gm;
-// Where the pack lives: 'firestore' (Firestore, the live page today) or 'api' (this site's /api).
+// Where the pack lives: 'api' (this site's /api, the live page since the switch) or 'firestore'
+// (Firestore, the page before it and the way back).
 const BACKEND_RE = /^  var BACKEND = '(firestore|api)';$/gm;
 export const BACKENDS = ['firestore', 'api'];
 // Whether this is the staging page. Only the staging build says true; index.html says false.
