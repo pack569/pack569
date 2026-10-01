@@ -9718,8 +9718,9 @@
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return '';
     arrOf(closedBooks).forEach(function (b) { if (b && typeof b.cutoff === 'string' && b.cutoff > last) last = b.cutoff; });
     if (!last || d > last) return '';
+    // Treasurer's review of C8-5..C8-10 (string 4) — and what keeping the date does: it is before the new book's opening date, so it is in the family's account but not in the bank balance.
     return 'That date is in ' + closedYearText(ledgerProgramYearOf(d)) + ', which is closed out. Record it as a correction dated ' + fmtDateShort(isoPlusDays(last, 1)) +
-      ' or later, noting the original date.';
+      ' or later, noting the original date. If you keep this date, the entry is before this year’s opening balance, so it won’t count in the bank balance.';
   }
   // What a leader is told before a NEW entry dated in the reconciled period is saved, or ''.
   // Only a warning (owner's decision): the second tap saves it. Pure.
@@ -30862,13 +30863,21 @@
     var cutoff = closeoutCutoff(programYear);
     if (!hasRows || !book || !book.openingDate || String(book.reconciledThrough || '') >= cutoff) return '';
     var rt = String(book.reconciledThrough || '');
-    return 'The year’s last bank statement (' + fmtDateShortYear(cutoff) + ') isn’t reconciled: this book is reconciled ' + (rt ? 'only through ' + fmtDateShortYear(rt) : 'through no date yet') + '. ' +
-      'Reconcile it first (Money · Ledger · Reconcile), because once the year is closed out its entries and statements can’t be ticked. ' +
+    // Treasurer's review of C8-5..C8-10 (F4, string 1) — the rule is the same (reconciled through the cutoff), but it was worded as if the bank's
+    // statement must end on Jun 30, and banks cut their statements on the 25th or the 27th: a normal pack was told a Jun 30 statement was missing.
+    return (rt ? 'The book is reconciled only through ' + fmtDateShortYear(rt) + '. ' : 'The book has not been reconciled yet. ') +
+      'Closing out needs a reconciled statement dated ' + fmtDateShortYear(cutoff) + ' or later. Your bank’s June statement may end earlier, in which case the next statement covers it. ' +
+      'Reconcile it first (Money · Ledger · Reconcile): once the year is closed out, its entries and statements can’t be ticked. ' +
       'If it can’t be reconciled, an admin can close out anyway.';
   }
   // Security re-check of C8-5..C8-10 (L-E) — what the leader is told when closing out the year failed part-way and the record was put back as it was.
   var CLOSEOUT_FAILED = 'Closing out the year did not finish, so nothing was changed. The snapshot was already downloaded: keep it. Try again, and if it fails again, tell a pack admin.';
-  var CLOSEOUT_JUNE_ASKED = 'The year’s last bank statement isn’t reconciled. Reconcile it first, or choose “June was not reconciled” on the close-out screen.';
+  var CLOSEOUT_JUNE_ASKED = 'The book isn’t reconciled through Jun 30. Reconcile it first, or choose “June was not reconciled” on the close-out screen.';
+  // F4, string 3 — under the close-out button once an admin chose to go ahead: the date the book was reconciled through (`rt`, '' for none). Plain text. Pure.
+  function closeoutJuneNote(rt) {
+    return rt ? 'Closing out with the book reconciled only through ' + fmtDateShortYear(rt) + '. The change history will say so.'
+      : 'Closing out with the book not reconciled yet. The change history will say so.';
+  }
   // C8-6 — what a close-out says it will do, beyond the year's figures (`info`), as plain-text lines for the preview, in order:
   // what is carried over, what stays open in the new year, which older closed year will be shortened to keep the pack
   // record small (and that the snapshot this downloads has it in full), and the statements nobody has reviewed.
@@ -31013,13 +31022,14 @@
   }
   // What the log says of a close-out, in the 500 characters it keeps of a why: the year, that its book is kept and
   // read only, and what was carried over (`book`: closedBookBuild's). Plain text. Pure.
-  // C8-6 — and, when an admin closed the year out with its last statement unreconciled (`june`), that.
+  // C8-6 — and, when an admin closed the year out with its last statement unreconciled (`june`), that, with the date the book was reconciled through (F4, string 3).
   function closeoutLogWhy(book, june) {
     var c = book.carried || { n: 0, inCents: 0, outCents: 0 };
     return 'The ' + closedYearText(book.year) + ' year was closed out. Its book is kept and can no longer be changed. ' +
       (c.n ? c.n + (c.n === 1 ? ' entry' : ' entries') + ' not yet on a bank statement ' + (c.n === 1 ? 'was' : 'were') + ' carried into the new year (' +
         fmt(c.inCents) + ' in, ' + fmt(c.outCents) + ' out).' : 'Nothing was left to carry into the new year.') +
-      (june ? ' June was not reconciled when the year was closed out.' : '');
+      (june ? (book.reconciledThrough ? ' The book was reconciled only through ' + fmtDateShortYear(book.reconciledThrough) + ', not through ' + fmtDateShortYear(book.cutoff) + ', when the year was closed out.'
+        : ' The book had no reconciled date when the year was closed out.') : '');
   }
   // Roll the working state into next year. KEPT: packName, leaders, archives,
   // reward-tier config, commission rate + cash routing, product catalog, sync/rev.
@@ -31656,16 +31666,18 @@
       '<button type="button" class="btn small ' + (armed ? 'danger armed' : '') + '" data-act="' + esc(key) + '">' + (armed ? 'Tap again to record it' : 'Record the reversal') + '</button></div>';
   }
   var DEL_SEASON_REFUSED = 'Only a pack admin can delete a closed year.';
+  // Treasurer's review of C8-5..C8-10 (string 7) — unit financial records are kept for a period the council sets (the owner is asking it).
+  var DEL_SEASON_COUNCIL = 'Check with your council or chartered organization before removing a year’s records.';
   var DEL_SEASON_WHY_FIRST = 'Say why first, in a few words. It goes in the change history.';
   // What deleting a season's close-out removes, for its confirmation (`a` the archive, `book` its closed book or null). Plain text. Pure.
   // `a.orphan` (Security re-check of C8-5..C8-10, M-B): a closed book whose season summary is not in the pack record, which is all there is to remove.
   function delSeasonText(a, book) {
     if (a && a.orphan) {
       return 'This removes the ' + closedYearText(a.year) + ' closed book: its entries, voided entries, statements and change history are gone from the pack record. ' +
-        'Only the snapshot downloaded at close-out still has them. The balances and entries carried into the new year stay. This can’t be undone here.';
+        'Only the snapshot downloaded at close-out still has them. The balances and entries carried into the new year stay. This can’t be undone here. ' + DEL_SEASON_COUNCIL;
     }
     return 'This removes the ' + closedYearText(a.year) + ' season summary' + (book ? ' and its closed book: its entries, voided entries, statements and change history are gone from the pack record' : '') +
-      '. Only the snapshot downloaded at close-out still has ' + (book ? 'them' : 'the season’s entries') + '. The balances and entries carried into the new year stay. This can’t be undone here.';
+      '. Only the snapshot downloaded at close-out still has ' + (book ? 'them' : 'the season’s entries') + '. The balances and entries carried into the new year stay. This can’t be undone here. ' + DEL_SEASON_COUNCIL;
   }
   // What a delete screen (ui.overlay kind 'del-season', `o.id` a season archive's id, or 'book:YEAR' for a closed book with no season summary) is about:
   // { year, archiveId, arc: the archive or null, book: its closed book or null, orphan }, or null when it is no longer held. Reads the pack record.
@@ -31970,7 +31982,7 @@
         : '<button type="button" class="btn ' + (armed ? 'danger armed' : 'primary') + '" data-act="closeout-confirm">' +
           (armed ? 'Tap again to close ' + year : 'Download snapshot &amp; close the year') + '</button>') +
       '<button type="button" class="btn" data-act="close-overlay">Cancel</button></div>' +
-      (coJuneWhy && !coJuneBlocked && !coEarlyWhy ? '<p class="small muted no-print" style="margin:8px 0 0">Closing out with June not reconciled. The change history will say so.</p>' : '') +
+      (coJuneWhy && !coJuneBlocked && !coEarlyWhy ? '<p class="small muted no-print" style="margin:8px 0 0">' + esc(closeoutJuneNote(String(state.book.reconciledThrough || ''))) + '</p>' : '') +
       '</div></div></div>';
     return h;
   }

@@ -27147,7 +27147,7 @@ test('C8-5: the season archive says where its rows are, Past seasons reads them 
    PHASE 3, C8-6 — close-out is refused before the year's last day (decision 31) and with its last statement unreconciled unless an admin
    says so (decision 32); the preview says what the closed book will hold; the entry form warns on a date inside a closed year.
    ================================================================ */
-const c8x = () => sandbox(['closeoutEarlyWhy', 'closeoutJuneWhy', 'closeoutCutoff', 'programYearEndISO', 'closedYearText', 'fmtDateShortYear', 'fmtDateShort', 'isoPlusDays', 'closeoutPreviewLines', 'fmt', 'CLOSEOUT_JUNE_ASKED']);
+const c8x = () => sandbox(['closeoutEarlyWhy', 'closeoutJuneWhy', 'closeoutCutoff', 'programYearEndISO', 'closedYearText', 'fmtDateShortYear', 'fmtDateShort', 'isoPlusDays', 'closeoutPreviewLines', 'fmt', 'CLOSEOUT_JUNE_ASKED', 'closeoutJuneNote', 'closeoutLogWhy', 'closedYearText']);
 
 test('C8-6: a year can be closed out only after its last day (Jun 30), and the words say from when', () => {
   const x = c8x();
@@ -27166,8 +27166,18 @@ test('C8-6: the year’s last statement must be reconciled first; an admin can c
   const book = (o) => Object.assign({ openingDate: '2026-07-01', reconciledThrough: '2027-06-30' }, o);
   eq([x.closeoutJuneWhy(book(), true, 2026), x.closeoutJuneWhy(book({ reconciledThrough: '2027-07-31' }), true, 2026)], ['', ''], 'reconciled through the cutoff');
   eq(x.closeoutJuneWhy(book({ reconciledThrough: '2027-05-31' }), true, 2026),
-    'The year’s last bank statement (Jun 30, 2027) isn’t reconciled: this book is reconciled only through May 31, 2027. Reconcile it first (Money · Ledger · Reconcile), because once the year is closed out its entries and statements can’t be ticked. If it can’t be reconciled, an admin can close out anyway.', 'through May 31');
-  ok(/reconciled through no date yet\./.test(x.closeoutJuneWhy(book({ reconciledThrough: '' }), true, 2026)), 'never reconciled');
+    'The book is reconciled only through May 31, 2027. Closing out needs a reconciled statement dated Jun 30, 2027 or later. Your bank’s June statement may end earlier, in which case the next statement covers it. Reconcile it first (Money · Ledger · Reconcile): once the year is closed out, its entries and statements can’t be ticked. If it can’t be reconciled, an admin can close out anyway.', 'through May 31 (treasurer’s string 1)');
+  ok(x.closeoutJuneWhy(book({ reconciledThrough: '2027-06-25' }), true, 2026).startsWith('The book is reconciled only through Jun 25, 2027. Closing out needs a reconciled statement dated Jun 30, 2027 or later.'), 'a bank that cuts on the 25th is told the date it is reconciled through, not that a Jun 30 statement is missing');
+  eq(x.closeoutJuneWhy(book({ reconciledThrough: '' }), true, 2026),
+    'The book has not been reconciled yet. Closing out needs a reconciled statement dated Jun 30, 2027 or later. Your bank’s June statement may end earlier, in which case the next statement covers it. Reconcile it first (Money · Ledger · Reconcile): once the year is closed out, its entries and statements can’t be ticked. If it can’t be reconciled, an admin can close out anyway.', 'never reconciled');
+  ok(!/last bank statement/.test(SCRIPT), 'the year’s “last bank statement (Jun 30)” wording is still there');
+  eq(x.CLOSEOUT_JUNE_ASKED, 'The book isn’t reconciled through Jun 30. Reconcile it first, or choose “June was not reconciled” on the close-out screen.', 'string 2');
+  eq([x.closeoutJuneNote('2027-06-25'), x.closeoutJuneNote('')], ['Closing out with the book reconciled only through Jun 25, 2027. The change history will say so.', 'Closing out with the book not reconciled yet. The change history will say so.'], 'string 3: the note under the button');
+  ok(/esc\(closeoutJuneNote\(String\(state\.book\.reconciledThrough \|\| ''\)\)\)/.test(slice('renderCloseoutOverlay')), 'the note is under the button');
+  const lw = (rt) => x.closeoutLogWhy({ year: 2026, cutoff: '2027-06-30', reconciledThrough: rt, carried: { n: 0, inCents: 0, outCents: 0 } }, true);
+  ok(lw('2027-06-25').endsWith(' The book was reconciled only through Jun 25, 2027, not through Jun 30, 2027, when the year was closed out.'), 'string 3: the log, with the date: ' + lw('2027-06-25'));
+  ok(lw('').endsWith(' The book had no reconciled date when the year was closed out.'), 'string 3: the log, with no date');
+  ok(!/reconciled/.test(x.closeoutLogWhy({ year: 2026, cutoff: '2027-06-30', reconciledThrough: '2027-06-30', carried: { n: 0 } }, false)), 'nothing said when June was reconciled');
   eq([x.closeoutJuneWhy(book({ openingDate: '' }), true, 2026), x.closeoutJuneWhy(book({ reconciledThrough: '' }), false, 2026)], ['', ''], 'no bank balance, or nothing entered: nothing to reconcile');
   // Through the page's own dispatch (admin or not): asked, then allowed once, and a stale screen is still refused.
   const ctx = heldDispatchCtx('');
@@ -27190,8 +27200,8 @@ test('C8-6: the year’s last statement must be reconciled first; an admin can c
   const why = (ok2) => { const c = sandbox(NORMALIZE_FNS.concat(CLOSEOUT_SIZE_FNS));
     vm.runInContext(`var sync = { user: null }; var ui = { closeoutJuneOk: ${ok2} }; var state = normalizeState(${JSON.stringify(rec())}); rolloverYear();`, c);
     return [vm.runInContext('state.ledgerLog.filter(function (e) { return e.op === "close"; })[0].why', c), vm.runInContext('ui.closeoutJuneOk', c)]; };
-  ok(/ June was not reconciled when the year was closed out\.$/.test(why(true)[0]) && why(true)[1] === false, 'the close event does not say so, or the choice outlives the close-out: ' + why(true));
-  ok(!/June was not reconciled/.test(why(false)[0]), 'the close event says June was not reconciled when the flag was off');
+  ok(/ The book was reconciled only through May 31, 2027, not through Jun 30, 2027, when the year was closed out\.$/.test(why(true)[0]) && why(true)[1] === false, 'the close event does not say so, or the choice outlives the close-out: ' + why(true));
+  ok(!/was reconciled only through/.test(why(false)[0]), 'the close event says June was not reconciled when the flag was off');
 });
 
 test('C8-6: the preview says what is carried, what stays open, which older year will be shortened, and what nobody has reviewed', () => {
@@ -27218,7 +27228,7 @@ test('C8-6: the preview says what is carried, what stays open, which older year 
 test('C8-6: the entry form warns on a date inside a closed year, in the treasurer’s words, and the second tap saves it and logs it', () => {
   const x = sandbox(['ledgerClosedYearWarning', 'ledgerProgramYearOf', 'closedYearText', 'arrOf', 'isoPlusDays', 'fmtDateShort']);
   const books = [{ year: 2025, cutoff: '2026-06-30' }, { year: 2026, cutoff: '2027-06-30' }];
-  const W = 'That date is in 2026–27, which is closed out. Record it as a correction dated Jul 1 or later, noting the original date.';
+  const W = 'That date is in 2026–27, which is closed out. Record it as a correction dated Jul 1 or later, noting the original date. If you keep this date, the entry is before this year’s opening balance, so it won’t count in the bank balance.';
   eq(x.ledgerClosedYearWarning('2027-03-15', books), W, 'the treasurer’s words');
   eq([x.ledgerClosedYearWarning('2027-06-30', books), x.ledgerClosedYearWarning('2027-07-01', books), x.ledgerClosedYearWarning('2026-07-01', [{ year: 2025, cutoff: '2026-06-30' }]), x.ledgerClosedYearWarning('2026-06-30', [])],
     [W, '', '', ''], 'the last day is inside it, the next is not; no closed book: no warning');
@@ -27797,6 +27807,14 @@ test('C8 re-check L-E: a close-out that fails after changing the record puts the
   const pc = slice('performCloseout');
   ok(pc.indexOf('download(') < pc.indexOf('var coBefore = JSON.stringify(state)') && pc.indexOf('var coBefore') < pc.indexOf('try {') && pc.indexOf('try {') < pc.indexOf('buildSeasonArchive()') &&
     pc.indexOf('rolloverYear()') < pc.indexOf('} catch (coErr) {') && pc.indexOf('state = JSON.parse(coBefore)') > pc.indexOf('catch (coErr)') && pc.indexOf('} catch (coErr) {') < pc.indexOf('commit()'), 'the order');
+});
+
+test('C8 re-check string 7: the delete screen says to check with the council before removing a year’s records, for a close-out and for a closed book alone', () => {
+  const x = sandbox(['delSeasonText', 'DEL_SEASON_COUNCIL', 'closedYearText']);
+  const W = ' Check with your council or chartered organization before removing a year’s records.';
+  ok(x.delSeasonText({ year: 2026 }, { year: 2026 }).endsWith('This can’t be undone here.' + W), 'a close-out with its book');
+  ok(x.delSeasonText({ year: 2026 }, null).endsWith('This can’t be undone here.' + W), 'a close-out with no book');
+  ok(x.delSeasonText({ year: 2026, orphan: true }, { year: 2026 }).endsWith('This can’t be undone here.' + W), 'a closed book alone');
 });
 
 /* ---------------- report ---------------- */
