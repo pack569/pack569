@@ -136,8 +136,62 @@ four den meetings per adventure** is the normal shape — which is exactly what 
 ## 7. What deliberately does not happen
 
 - **Nothing is marked automatically.** Attendance never writes advancement.
-- **One adventure per meeting** (owner ruling). The field stays a single string.
+- **One MAIN adventure per meeting** (owner ruling 2026-08-02, extended 2026-10-01 — §8). The
+  field stays a single string; extra adventures at an event are a separate list, `advOffers`.
 - **No parent visibility.** Not asked for, and a per-scout progress board is a different privacy
   question from a campout page — the parent view publishes no advancement today and still doesn't.
 - **No requirement-level tracking.** This app is an at-a-glance tracker; the official record is
   Scoutbook Plus, which the Advancement card already says.
+
+## 8. Assigning adventures — 2026-10-01
+
+*Owner, extending the §7 ruling the same day: "add the ability to assign multiple electives to a
+meeting, i.e. the fall and spring family camping offer BBs, bows and arrows, fishing, and Let's
+Camp (Let's Camp is automatic to all who attend, the rest are electives)."*
+
+**The ruling now reads:** a den meeting still has ONE main adventure per den (`adventure`, or
+`packAdv` / `denAdv` on an All-dens night) — that is what a run of sessions is built from. Any
+event can also OFFER more adventures, and a campout or outing (kind `activity`) has only those.
+
+### Several adventures at one event — `ev.advOffers = [{ key, auto }]`
+
+- `key` is a pack-wide choice (`packAdvChoices`: `req:N`, `th:fishing`, `el:Archery`), so each
+  scout gets their own rank's version (`packAdvName`). A rank without it is simply not offered it
+  and the editor says so: Lions have no BB Gun, Arrow of Light has no "Let's Camp!".
+- `auto: true` — *everyone who attends earns it* (Let's Camp!): one button, the same path as the
+  run's Mark-done (`advMarkDone`, `'done'`, never `'awarded'`), for the active scouts checked in
+  whose rank has it.
+- `auto: false` — *offered, scouts who choose it*: a checklist of those attendees; the leader
+  ticks who did it. Nothing is recorded for anybody else, and never automatically.
+- **Not a session of a run.** A run's Mark-done credits everyone at every session, which is wrong
+  for an elective a scout walked past. Offers stay out of `meetingAdvs` / `adventureRuns` and
+  are counted on their own: Den plans (`denOfferEntries` → `denPlan`, "at Fall family campout
+  Oct 17"), the Den plans meeting list ("also …"), and the leaders' agenda sheet.
+- **Range sports** (Archery, BB Gun, Slingshot): a warning, not a block, on a den meeting — pack
+  rule, never at a den meeting, only on a council range. On an activity, a note that a pack-run
+  trip is not a council event. Fill the calendar leaves them off its list.
+- `normalizeState` keeps shape only (array, choice-shaped key once, boolean `auto`, at most 12,
+  none on a pack meeting). The rollover carries a campout's offers like its dens.
+- New seeds: the Fall and Spring family campouts (both council weekends) get Let's Camp! (auto)
+  and Archery, BB Gun, Fishing (offered). An existing event is never touched.
+- **Leaders only.** The parent view publishes no adventure for a meeting, so it publishes no
+  offers either; nor do the digest or the .ics.
+
+### Plan a meeting — on one already on the calendar
+
+Den plans' Plan a meeting lists this program year's upcoming meetings the den is at — its own and
+the All-dens nights — that have nothing for it (no adventure, no den line, not marked away, no
+pack-wide pick that reaches the den) and picks the first; "New den meeting on …" is still there.
+A den-only meeting gets `adventure`; an All-dens night gets `denAdv[den]`, never `packAdv`, which
+is the Cubmaster's. Re-checked on submit, so a meeting tagged meanwhile is never overwritten;
+Undo on the toast.
+
+### Fill the calendar
+
+On Den plans, editors only: an ordered list of pack-wide choices with a meeting count each
+(default: the lesson plan's den-meeting count — for a required category, the MOST any den with
+scouts needs, so no den runs out; else 1), a start date, and a preview. It fills the next All-dens
+nights in date order that have no `packAdv` and no typed adventure, skipping — never changing —
+any that do, and says how many meetings are left when the calendar runs out. Apply writes
+`packAdv` through `setPackAdv` (the meeting picker's writer), recomputed from the record at that
+moment; Undo on the toast. The list itself is `ui` only, never stored.

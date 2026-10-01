@@ -29630,6 +29630,245 @@ test('lesson plan box: the July check names the plans the dens use that were not
   eq(t.task(), [], 'only in July');
 });
 
+/* ========================================================================
+   Assigning adventures — 2026-10-01: Plan a meeting on one already on the calendar, Fill the
+   calendar, and several adventures at one event (advOffers).
+   ===================================================================== */
+const OFFER_FNS = ['packAdvChoices', 'packAdvLabel', 'ADV_OFFERS_MAX', 'ADV_RANGE_KEYS', 'evOffers', 'offerEventDens',
+  'offerByDen', 'offerAttendees', 'denOfferEntries', 'offersSummary', 'eventDens', 'byScoutName', 'denListLabel',
+  'denPlanOpenMeetings', 'fillCalendarPlan', 'planDenMeetingCount', 'fillPlanCount', 'advPlanFor', 'advPlanKey',
+  'denPlan', 'setPackAdv'];
+function offerSandbox(setup) {
+  const ctx = runSandbox(setup);
+  vm.runInContext(OFFER_FNS.map(slice).join('\n') + `
+    function advKindFor(scout, name) { var a = scout && ADVENTURES[scout.den]; return (a && a.required.indexOf(name) !== -1) ? 'req' : 'elect'; }`, ctx);
+  return ctx;
+}
+const OFFER_SETUP = `
+  var TODAY = '2026-10-01';
+  var SCOUTS = [{ id: 'l', name: 'Lia', den: 'Lion' }, { id: 't', name: 'Tam', den: 'Tiger' },
+                { id: 'w', name: 'Wes', den: 'Wolf' }, { id: 'r', name: 'Ray', den: 'Arrow of Light' },
+                { id: 'q', name: 'Quinn', den: 'Wolf' }];
+  var STATUS = { w: { "Let's Camp!": 'done' } };
+  var EVENTS = [
+    { id: 'c1', kind: 'activity', name: 'Fall family campout', dens: [], date: '2026-10-17',
+      advOffers: [{ key: "el:Let's Camp!", auto: true }, { key: 'el:BB Gun', auto: false }, { key: 'th:fishing', auto: false },
+                  { key: 'el:Nonsense', auto: false }, { key: 'el:BB Gun', auto: true }] },
+    { id: 'c2', kind: 'activity', name: 'Webelos Woods', dens: ['Webelos', 'Arrow of Light'], date: '2026-11-07',
+      advOffers: [{ key: "el:Let's Camp!", auto: true }] },
+    { id: 'p1', kind: 'pack', date: '2026-10-20', advOffers: [{ key: 'el:Archery', auto: false }] },
+    { id: 'old', kind: 'activity', name: 'Last spring', dens: [], date: '2026-04-18', advOffers: [{ key: 'el:Archery', auto: false }] }
+  ];
+  var ATT = { c1: { l: { scout: 1 }, t: { scout: 1 }, w: { scout: 1 }, r: { scout: 1 } } };`;
+
+test('advOffers: normalizeState keeps valid-looking offers once each, a boolean auto, at most 12, never on a pack meeting', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(NORMALIZE_FNS.map(slice).join('\n'), ctx);
+  const many = Array.from({ length: 15 }, (_, i) => ({ key: 'el:Thing ' + i, auto: 'yes' }));
+  const d = ctx.normalizeState({
+    version: 1, scouts: [],
+    events: [
+      { id: 'a', kind: 'activity', name: 'Campout', advOffers: [{ key: "el:Let's Camp!", auto: true }, { key: "el:Let's Camp!", auto: false },
+        { key: 'req:9' }, { key: 'th:Fishing' }, 'x', null, { key: 'th:fishing', auto: 1 }, { key: 'el:BB Gun', auto: false, extra: '<b>' }] },
+      { id: 'b', kind: 'den', den: 'Wolf', advOffers: many },
+      { id: 'c', kind: 'pack', advOffers: [{ key: 'el:Archery', auto: true }] },
+      { id: 'd', kind: 'activity', advOffers: 'el:Archery' },
+      { id: 'e', kind: 'activity', advOffers: [] }
+    ]
+  });
+  eq(JSON.parse(JSON.stringify(d.events[0].advOffers)), [{ key: "el:Let's Camp!", auto: true }, { key: 'th:fishing', auto: false },
+    { key: 'el:BB Gun', auto: false }], 'the first of a key wins, a bad key or shape goes, auto is a boolean (1 is not true), nothing else rides along');
+  eq(d.events[1].advOffers.length, 12, 'more than 12 offers kept');
+  ok(d.events[1].advOffers.every((o) => o.auto === false), '"yes" became true');
+  ok(!('advOffers' in d.events[2]), 'a pack meeting kept offers');
+  ok(!('advOffers' in d.events[3]) && !('advOffers' in d.events[4]), 'a non-array or empty list was kept');
+  // The loader runs before ADVENTURES exists; it must not read the choice list.
+  ok(!/evOffers|packAdvLabel|ADV_OFFERS_MAX/.test(codeOnly(slice('normalizeState'))), 'normalizeState reads something assigned after load()');
+  eq(vm.runInContext('ADV_OFFERS_MAX', sandbox(['ADV_OFFERS_MAX'])), 12, 'the cap and the loader’s literal 12 differ');
+});
+
+test('advOffers: each scout gets their own rank’s version; Lions have no BB Gun, Arrow of Light no Let’s Camp!', () => {
+  const ctx = offerSandbox(OFFER_SETUP);
+  eq(vm.runInContext('evOffers(EVENTS[0]).map(function (o) { return o.key + ":" + o.auto; })', ctx),
+    ["el:Let's Camp!:true", 'el:BB Gun:false', 'th:fishing:false'], 'an unknown key or a repeat was offered');
+  eq(vm.runInContext('evOffers(EVENTS[2])', ctx).length, 0, 'a pack meeting offers an adventure');
+  const bb = vm.runInContext("offerByDen(EVENTS[0], 'el:BB Gun')", ctx);
+  eq(bb.lacks, ['Lion'], 'Lions are offered BB Gun');
+  const camp = vm.runInContext("offerByDen(EVENTS[0], \"el:Let's Camp!\")", ctx);
+  eq(camp.lacks, ['Arrow of Light'], 'Arrow of Light is offered Let’s Camp!');
+  eq(vm.runInContext("offerByDen(EVENTS[0], 'th:fishing').has.map(function (x) { return x.name; })", ctx),
+    ['Go Fish', 'Fish On', 'A Wolf Goes Fishing', 'A Bear Goes Fishing', 'Catch the Big One', 'Fishing'], 'the fishing theme per rank');
+  eq(vm.runInContext("offerByDen(EVENTS[1], \"el:Let's Camp!\")", ctx), { has: [{ den: 'Webelos', name: "Let's Camp!" }], lacks: ['Arrow of Light'] },
+    'a den-limited activity is only for its dens');
+  // Who attended and can earn it: checked in, active, the rank has it. Quinn was not there.
+  const att = vm.runInContext("offerAttendees(EVENTS[0], \"el:Let's Camp!\")", ctx);
+  eq(att.can.map((r) => r.scout.id + ':' + r.status), ['l:', 't:', 'w:done'], 'the attendees who can earn Let’s Camp!');
+  eq(att.cannot.map((s) => s.id), ['r'], 'the Arrow of Light scout is not set apart');
+  eq(vm.runInContext("offerAttendees(EVENTS[0], 'el:BB Gun').cannot.map(function (s) { return s.id; })", ctx), ['l'], 'the Lion is offered BB Gun');
+  eq(vm.runInContext('offersSummary(evOffers(EVENTS[0]))', ctx), "Let's Camp! (everyone who attends) · BB Gun, Fishing (offered)", 'the agenda line');
+});
+
+test('advOffers: recording — auto is one tap for those who attended, an offered elective only for the scouts ticked', () => {
+  const auto = /if \(act === 'offer-mark'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/!omOffer\.auto\) return;/.test(auto), 'the one-tap button credits an offered elective to everyone');
+  ok(/canEdit\(\)/.test(auto), 'a viewer can record');
+  ok(/offerAttendees\(omEv, omOffer\.key\)\.can\.forEach/.test(auto) && /advMarkDone\(r\.scout\.id, advKindFor\(r\.scout, r\.name\), r\.name\)/.test(auto),
+    'not the same path as mtg-adv-mark (advMarkDone, the scout’s own rank’s name)');
+  const picked = /if \(kind === 'offer-mark-picked'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/fd\.getAll\('scout'\)/.test(picked) && /opIds\.indexOf\(r\.scout\.id\) !== -1 && advMarkDone/.test(picked),
+    'an offered elective is not limited to the ticked scouts who attended');
+  ok(/canEdit\(\)/.test(picked), 'a viewer can record an elective');
+  // Nothing in the offer code writes advancement any other way, or 'awarded'.
+  for (const n of ['advOffersEditor', 'advOffersMark', 'advOfferMarkFor', 'evOffers', 'offerAttendees']) {
+    ok(!/state\.advancement|'awarded'/.test(slice(n).replace(/status === 'awarded'/g, '')), n + ' writes advancement');
+  }
+  const mark = slice('advOfferMarkFor');
+  ok(/o\.auto/.test(mark) && /data-act="offer-mark"/.test(mark) && /data-form="offer-mark-picked"/.test(mark), 'the two recording paths are not both drawn');
+  ok(/Nothing is recorded for the rest/.test(mark), 'the offered list does not say nothing is recorded automatically');
+});
+
+test('advOffers: editor on campouts and den meetings, with the range-sport rule, and editors only change it', () => {
+  const ed = slice('advOffersEditor');
+  ok(/var edit = canEdit\(\);/.test(ed) && !/hasJob\(/.test(ed), 'the editor gates on something other than the role');
+  ok(/Everyone who attends earns it/.test(ed) && /Offered — scouts who choose it/.test(ed), 'the two kinds are not named');
+  ok(/den && ADV_RANGE_KEYS\.indexOf\(o\.key\) !== -1/.test(ed) && /class="warn small"/.test(ed), 'a range sport on a den meeting is not warned');
+  ok(/Not for ' \+ esc\(denListLabel\(by\.lacks\)\)/.test(ed), 'the ranks an offer is not for are not shown');
+  eq(vm.runInContext('ADV_RANGE_KEYS', sandbox(['ADV_RANGE_KEYS'])), ['el:Archery', 'el:BB Gun', 'el:Slingshot'], 'range sports');
+  const row = slice('renderMeetingRow');
+  ok(/advOffersEditor\(m\)/.test(row) && /advOffersMark\(m\)/.test(row), 'a den meeting has no offers');
+  ok(/advOffersEditor\(ev\) \+/.test(SCRIPT) && /renderAttendanceBlock\(ev\) \+ '<\/div>' \+ advOffersMark\(ev\)/.test(SCRIPT), 'an activity has no offers');
+  ok(/if \(ch === 'offer-auto'\)/.test(SCRIPT) && /if \(act === 'offer-del'\)/.test(SCRIPT) && /if \(kind === 'offer-add'\)/.test(SCRIPT), 'a handler is missing');
+  // The `ev-` change gate returns on any key it does not know, so an ev-* name would be dead code.
+  ok(!/data-ch="ev-offer|data-act="ev-offer/.test(SCRIPT), 'an offer control is behind the ev- gate');
+  const add = /if \(kind === 'offer-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/canEdit\(\)/.test(add) && /kind === 'pack'/.test(add) && /ADV_OFFERS_MAX/.test(add) && /packAdvLabel\(oaddKey\)/.test(add), 'adding is not checked');
+  ok(/delete mtg\.advOffers/.test(slice('clearMeetingAdvs')), 'a meeting turned into a pack meeting keeps its offers');
+  ok(/ADV_RANGE_KEYS\.indexOf\(m\.packAdv\)/.test(slice('packAdvPicker')), 'a range sport picked for every den is not warned');
+});
+
+test('advOffers: leaders only — never in the parent view, the digest or the .ics', () => {
+  ok(!/advOffers|evOffers|offersSummary/.test(codeOnly(BPV())), 'offers reached the parent view');
+  ok(!/advOffers|evOffers|offersSummary/.test(slice('monthlyDigest')), 'offers reached the digest');
+  ok(!/advOffers|evOffers/.test(slice('buildICS')), 'offers reached the .ics');
+  ok(!/advOffers|evOffers/.test(codeOnly(slice('agendaDetail')).replace(/evOffers\((m|ev)\)/g, '')), 'the agenda sheet reads offers some other way');
+});
+
+test('advOffers: Den plans counts an offered elective, and a required adventure offered, for the dens that can earn it', () => {
+  const ctx = offerSandbox(OFFER_SETUP);
+  const wolf = vm.runInContext("denPlan('Wolf', adventureRuns(), denOfferEntries('Wolf', EVENTS, 2026))", ctx);
+  eq(wolf.electives.map((e) => e.name + ':' + e.offeredAt.map((x) => x.id).join('+')),
+    ["Let's Camp!:c1", 'BB Gun:c1', 'A Wolf Goes Fishing:c1'], 'the campout’s electives for the Wolves');
+  eq(wolf.electivesPlanned, 3, 'offers do not count toward the two electives');
+  ok(!wolf.electives.some((e) => e.offeredAt.some((x) => x.id === 'old')), 'last program year’s campout counted');
+  const aol = vm.runInContext("denPlan('Arrow of Light', adventureRuns(), denOfferEntries('Arrow of Light', EVENTS, 2026))", ctx);
+  ok(!aol.electives.some((e) => /Camp/.test(e.name)), 'Arrow of Light planned a Let’s Camp!');
+  const lion = vm.runInContext("denPlan('Lion', adventureRuns(), denOfferEntries('Lion', EVENTS, 2026))", ctx);
+  ok(!lion.electives.some((e) => e.name === 'BB Gun'), 'Lions planned BB Gun');
+  // A required adventure offered at an event counts as planned.
+  vm.runInContext("EVENTS[0].advOffers.push({ key: 'req:3', auto: true })", ctx);
+  const w2 = vm.runInContext("denPlan('Wolf', adventureRuns(), denOfferEntries('Wolf', EVENTS, 2026))", ctx);
+  ok(!w2.unplanned.some((r) => r.name === 'Paws on the Path'), 'a required adventure offered at the campout is still unplanned');
+  eq(w2.required.find((r) => r.name === 'Paws on the Path').sessions, [], 'an event became a session of a run');
+  // Without offers, denPlan is what it was.
+  eq(vm.runInContext("denPlan('Wolf', adventureRuns()).electives.length", ctx), 0, 'denPlan without offers changed');
+  ok(/denPlan\(den, runs, denOfferEntries\(den, state\.events, py\)\)/.test(slice('renderDenPlanner')), 'Den plans does not pass the offers');
+  // Offers are not sessions: adventureRuns reads meetingAdvs, which never reads advOffers.
+  ok(!/advOffers|evOffers/.test(slice('meetingAdvs') + slice('adventureRuns')), 'an offer became a run session');
+});
+
+test('advOffers: the council family campouts are seeded with them; a pack’s own campouts are never touched; rollover keeps them', () => {
+  const { SEED_ACTIVITIES, SEED_CAMP_OFFERS } = sandbox(['PROGRAM_MONTHS', 'PROGRAM_TURN',
+    'PROGRAM_START_MONTH', 'SA_FEES', 'SEED_EXPENSES', 'SEED_ACTIVITIES', 'SEED_CAMP_OFFERS']);
+  eq(SEED_ACTIVITIES.filter((a) => a.offers === 'council').map((a) => a.name), ['Fall family campout', 'Spring family campout'], 'which seeds offer');
+  ok(!SEED_ACTIVITIES.some((a) => /Fort Yargo/.test(a.name) && a.offers), 'the pack-run Fort Yargo trip offers the ranges');
+  eq(JSON.parse(JSON.stringify(SEED_CAMP_OFFERS)), [{ key: "el:Let's Camp!", auto: true }, { key: 'el:Archery', auto: false },
+    { key: 'el:BB Gun', auto: false }, { key: 'th:fishing', auto: false }], 'the owner’s list: Let’s Camp! for all, the rest offered');
+  const seed = slice('seedStandardYear');
+  ok(/if \(existing\[t\.name\.toLowerCase\(\)\]\) return;[\s\S]*seedEv\.advOffers = SEED_CAMP_OFFERS\.map/.test(seed), 'offers are put on an existing event');
+  const roll = slice('rolloverYear');
+  ok(/offers: ev \? evOffers\(ev\)\.map/.test(roll) && /if \(c\.offers\.length\) ev\.advOffers = c\.offers;/.test(roll), 'the rollover drops a campout’s offers');
+});
+
+test('Plan a meeting: lists this year’s upcoming meetings the den is at with nothing for it, never one that has', () => {
+  const ctx = offerSandbox(`
+    var TODAY = '2026-10-01';
+    var SCOUTS = [{ id: 'w', name: 'Wes', den: 'Wolf' }, { id: 'b', name: 'Bo', den: 'Bear' }];
+    var STATUS = {}; var ATT = {};
+    var EVENTS = [
+      { id: 'own', kind: 'den', den: 'Wolf', date: '2026-10-06', adventure: '' },
+      { id: 'tagged', kind: 'den', den: 'Wolf', date: '2026-10-08', adventure: 'Bobcat' },
+      { id: 'bear', kind: 'den', den: 'Bear', date: '2026-10-07', adventure: '' },
+      { id: 'all', kind: 'den', den: '', date: '2026-10-13' },
+      { id: 'allPick', kind: 'den', den: '', date: '2026-10-14', packAdv: 'req:1' },
+      { id: 'allOff', kind: 'den', den: '', date: '2026-10-15', denAdv: { Wolf: false } },
+      { id: 'allLine', kind: 'den', den: '', date: '2026-10-16', denAdv: { Wolf: 'Footsteps' } },
+      { id: 'allBear', kind: 'den', den: '', date: '2026-10-17', denAdv: { Bear: 'Fellowship' } },
+      { id: 'allTyped', kind: 'den', den: '', date: '2026-10-18', adventure: 'Knot night' },
+      { id: 'past', kind: 'den', den: 'Wolf', date: '2026-09-29', adventure: '' },
+      { id: 'early', kind: 'den', den: '', date: '2026-08-20' },
+      { id: 'nextYear', kind: 'den', den: 'Wolf', date: '2027-07-06', adventure: '' },
+      { id: 'pk', kind: 'pack', den: '', date: '2026-10-20' }
+    ];`);
+  eq(vm.runInContext("denPlanOpenMeetings('Wolf', EVENTS, TODAY, 2026).map(function (e) { return e.id; })", ctx),
+    ['own', 'all', 'allBear'], 'the open meetings for the Wolves');
+  // A den with no scouts yet: the pack's pick does not "count" for it (denAdvAt), but tagging the
+  // night would still put a den line over the Cubmaster's choice — so it is not open either.
+  eq(vm.runInContext("denPlanOpenMeetings('Tiger', EVENTS, TODAY, 2026).map(function (e) { return e.id; })", ctx),
+    ['all', 'allOff', 'allLine', 'allBear'], 'a night with a pack-wide pick was open for an empty den');
+  const form = slice('denPlanForm');
+  ok(/name="where" value="' \+ esc\(e\.id\) \+ '"' \+ \(i \? '' : ' checked'\)/.test(form), 'the first open meeting is not the default');
+  ok(/value="new">New den meeting on/.test(form), 'a new meeting is no longer offered');
+  const h = /if \(kind === 'plan-adv'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/denPlanOpenMeetings\(paDen, state\.events, todayISO\(\), state\.budget\.programYear\)/.test(h), 'the meeting picked is not re-checked against the list');
+  ok(/if \(paEv\.den\) paEv\.adventure = paName;/.test(h) && /paEv\.denAdv\[paDen\] = paName;/.test(h), 'the tag goes to the wrong field');
+  ok(!/paEv\.packAdv\s*=/.test(h), 'Plan a meeting set the Cubmaster’s pack-wide choice');
+  ok(/actionLabel: 'Undo'/.test(h), 'no Undo');
+  ok(h.indexOf('if (!canEdit())') < h.indexOf('paWhere'), 'a viewer reaches the existing-meeting branch');
+});
+
+test('Fill the calendar: the next untagged All-dens nights in order, skipping any with a pick, and says what is left', () => {
+  const ctx = offerSandbox(`
+    var TODAY = '2026-10-01';
+    var SCOUTS = [{ id: 'w', name: 'Wes', den: 'Wolf' }, { id: 'l', name: 'Lia', den: 'Lion' }];
+    var STATUS = {}; var ATT = {};
+    var EVENTS = [
+      { id: 'n3', kind: 'den', den: '', date: '2026-10-27', time: '18:30' },
+      { id: 'n1', kind: 'den', den: '', date: '2026-10-06', time: '18:30' },
+      { id: 'n2', kind: 'den', den: '', date: '2026-10-13', time: '18:30', packAdv: 'req:4' },
+      { id: 'n2b', kind: 'den', den: '', date: '2026-10-20', adventure: 'Knot night' },
+      { id: 'own', kind: 'den', den: 'Wolf', date: '2026-10-08' },
+      { id: 'n4', kind: 'den', den: '', date: '2026-11-03', denAdv: { Wolf: 'Footsteps' } },
+      { id: 'past', kind: 'den', den: '', date: '2026-09-29' },
+      { id: 'after', kind: 'den', den: '', date: '2027-07-07' }
+    ];`);
+  const fp = vm.runInContext("fillCalendarPlan(EVENTS, [{ key: 'req:0', n: 2 }, { key: 'th:fishing', n: 2 }], TODAY, '2027-06-30')", ctx);
+  eq(fp.assign.map((a) => a.ev.id + '=' + a.key + ' ' + a.n + '/' + a.of), ['n1=req:0 1/2', 'n3=req:0 2/2', 'n4=th:fishing 1/2'],
+    'not the next free nights in date order');
+  eq([fp.nights, fp.leftCount, JSON.stringify(fp.left)], [3, 1, JSON.stringify([{ key: 'th:fishing', count: 1 }])], 'what is left over');
+  eq(vm.runInContext("fillCalendarPlan(EVENTS, [{ key: 'req:0', n: 1 }], '2026-10-10', '2027-06-30').assign[0].ev.id", ctx), 'n3', 'the start date is ignored');
+  // Applying uses the picker's writer: a den's line that now matches the pack's pick goes back to following it.
+  vm.runInContext("setPackAdv(EVENTS[5], 'req:2')", ctx);
+  eq([vm.runInContext('EVENTS[5].packAdv', ctx), vm.runInContext("'denAdv' in EVENTS[5]", ctx)], ['req:2', false], 'setPackAdv left a stale den line');
+  // Counts from the lesson plans: the most any den's plan has.
+  const data = { plans: {
+    'Wolf :: Bobcat': { meetings: [{ kind: 'den' }, { kind: 'den' }, { kind: 'outing' }] },
+    'Lion :: Bobcat': { meetings: [{ kind: 'den' }, { kind: 'den' }, { kind: 'den' }] },
+    'Bear :: Bobcat': { meetings: [{ kind: 'den' }, { kind: 'den' }, { kind: 'den' }, { kind: 'den' }] } } };
+  ctx.DATA = data;
+  eq(vm.runInContext("fillPlanCount('req:0', DATA, ['Wolf', 'Lion'])", ctx), 3, 'not the most of the dens counted');
+  eq(vm.runInContext("fillPlanCount('th:fishing', DATA, ['Wolf', 'Lion'])", ctx), 0, 'a choice with no plan has a count');
+  // The tool: editors only, range sports off its list, preview then Apply with an Undo.
+  const r = slice('renderFillCalendar');
+  ok(/packAdvOptions\(r\.key \|\| '', 'Pick an adventure…', ADV_RANGE_KEYS\)/.test(r), 'the range sports are on the fill list');
+  ok(/not enough: /.test(r) && /left unscheduled/.test(r), 'a calendar that runs out is not said');
+  ok(/if \(edit\) h \+= renderFillCalendar\(today\);/.test(slice('renderDenPlanner')), 'the tool is not editors-only on Den plans');
+  const ap = /if \(act === 'fill-apply'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/canEdit\(\)/.test(ap) && /fillCalendarNow\(/.test(ap) && /setPackAdv\(a\.ev, a\.key\)/.test(ap) && /actionLabel: 'Undo'/.test(ap), 'Apply is not checked, recomputed, written through setPackAdv and undoable');
+  ok(/if \(x\.ev\.packAdv !== x\.key\) return;/.test(ap), 'Undo takes back a pick somebody changed since');
+  ok(/flc\.rows = ADV_REQ_CATEGORIES\.map\(function \(x, i\) \{ return \{ key: 'req:' \+ i/.test(SCRIPT), 'no "6 required in order"');
+  ok(!/fillCal/.test(codeOnly(slice('normalizeState'))) && !/fillCal/.test(codeOnly(BPV())), 'the fill list reached the record or the parent view');
+});
+
 /* ---------------- report ---------------- */
 // The API tests are async; they run here, one at a time, each on its own database.
 for (const [name, fn] of asyncTests) {
