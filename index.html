@@ -4824,7 +4824,7 @@
     // cannot swell the record with one long word.
     if (b.year < 2000 || b.year > 2100) return null;
     var KNOWN = ['year', 'closedAt', 'closedBy', 'closedByUid', 'archiveId', 'cutoff', 'openingDate', 'openingCents', 'closingCents', 'reconciledThrough', 'carried', 'form',
-      'ledger', 'aside', 'log', 'statements', 'names', 'ledgerTrimmed', 'asideTrimmed', 'logTrimmed', 'statementsTrimmed'];
+      'ledger', 'aside', 'log', 'statements', 'names', 'ledgerTrimmed', 'asideTrimmed', 'logTrimmed', 'statementsTrimmed', 'scouts'];
     Object.keys(b).forEach(function (k) { if (KNOWN.indexOf(k) === -1) delete b[k]; });
     function plain(x) { return !!x && typeof x === 'object' && !Array.isArray(x); }
     function str(k) { if (typeof b[k] !== 'string') b[k] = ''; else if (b[k].length > 120) b[k] = b[k].slice(0, 120); }
@@ -4879,19 +4879,33 @@
       if (plain(nm[k])) Object.keys(nm[k]).slice(0, 2000).forEach(function (id) { if (typeof nm[k][id] === 'string') b.names[k][id.slice(0, 120)] = nm[k][id].slice(0, 200); });
     });
     if (b.form === 'compact') delete b.names;
+    // Security re-check of C8-5..C8-10 (L-D) — the ids of the scouts the rows that were dropped named (a book shortened to its totals, or its voided entries
+    // dropped): strings only, at most 2000, each cut. Read by closedBookScouts.
+    if (Array.isArray(b.scouts)) b.scouts = b.scouts.filter(function (x) { return typeof x === 'string' && x; }).slice(0, 2000).map(function (x) { return x.slice(0, 120); });
+    else delete b.scouts;
+    if (b.scouts && !b.scouts.length) delete b.scouts;
     ['ledgerTrimmed', 'asideTrimmed', 'logTrimmed', 'statementsTrimmed'].forEach(function (k) { if (b[k] !== undefined && b[k] !== true) delete b[k]; });
     return b;
   }
   // The ids of the scouts any closed book's rows name (a full row's scoutId, a compact row's `sc`), set true in `into`. C7 (owner decision 24): a scout the ledger names is
   // archived, never deleted, and a year closed out is still the ledger. Pure apart from `into`.
   function closedBookScouts(books, into) {
-    arrOf(books).forEach(function (b) {
-      arrOf(b && b.ledger).concat(arrOf(b && b.aside)).forEach(function (e) {
-        if (e && typeof e.scoutId === 'string' && e.scoutId) into[e.scoutId] = true;
-        if (e && typeof e.sc === 'string' && e.sc) into[e.sc] = true;   // a compact row keeps the scout's id too (closedCompactRow), so a scout a compacted year names is still never deleted
-      });
-    });
+    arrOf(books).forEach(function (b) { closedBookScoutIds(b).forEach(function (id) { into[id] = true; }); });
     return into;
+  }
+  // The ids of the scouts one closed book names: its rows' (a full row's scoutId, a compact row's `sc`, the rows set aside too) and, for a book
+  // shortened until its rows or its voided entries were dropped, the `scouts` list it kept for the purpose (Security re-check of C8-5..C8-10, L-D): a scout
+  // a closed year names is archived, never deleted, however short the book has become. In first-seen order. Pure.
+  function closedBookScoutIds(b) {
+    var seen = Object.create(null), out = [];
+    function add(id) { if (typeof id === 'string' && id && !seen[id]) { seen[id] = true; out.push(id); } }
+    arrOf(b && b.scouts).forEach(add);
+    arrOf(b && b.ledger).concat(arrOf(b && b.aside)).forEach(function (e) {
+      if (!e) return;
+      add(e.scoutId);
+      add(e.sc);   // a compact row keeps the scout's id too (closedCompactRow)
+    });
+    return out;
   }
   // The rows of every closed book, as entries a reader can name (id, date, description, reference,
   // direction, amountCents): a full book's rows as they are, a compact book's from their short keys. For a
@@ -8508,6 +8522,11 @@
     });
     if ((c.aside || []).length) c.asideTrimmed = true;
     if ((c.log || []).length) c.logTrimmed = true;
+    // L-D — the scouts only the rows set aside named are kept as a list (the compact rows keep their own).
+    var inRows = Object.create(null);
+    c.ledger.forEach(function (r) { if (r.sc) inRows[r.sc] = true; });
+    var extra = closedBookScoutIds(b).filter(function (id) { return !inRows[id]; });
+    if (extra.length) c.scouts = extra; else delete c.scouts;
     c.aside = [];
     c.log = [];
     delete c.names;
@@ -8519,6 +8538,9 @@
   function trimClosedBookRows(b) {
     var c = compactClosedBook(b);
     if (c.ledger.length) c.ledgerTrimmed = true;
+    // L-D — the rows go, the scouts they named stay (closedBookScouts reads the list).
+    var ids = closedBookScoutIds(c);
+    if (ids.length) c.scouts = ids; else delete c.scouts;
     c.ledger = [];
     return c;
   }
@@ -31577,13 +31599,29 @@
     return out;
   }
   // Are these two versions of a row the SAME closed-year reversal, made on two devices (same id 'rv-Y-id', both naming 'Y:id', the same money the
-  // other way)? Then 'mine' or 'theirs', whichever was made first (its date, then when, then by whom: the same answer on both devices), so the merge
-  // keeps one and never asks; '' when they are not twins. Pure.
+  // other way, and the same in everything but its date, who entered it and when, and its tick)? Then 'mine' or 'theirs', whichever was made first (its
+  // date, then when, then by whom, then the smaller JSON: the same answer on both devices), so the merge keeps one and never asks; '' when they are not
+  // twins (a row that also differs in a label or a mark is the ordinary conflict's to ask about). Pure.
   function closedRvTwin(a, b) {
     function ok(r) { return !!r && typeof r.id === 'string' && /^rv-\d{4}-./.test(r.id) && typeof r.reverses === 'string' && /^\d{4}:./.test(r.reverses); }
     if (!ok(a) || !ok(b) || a.id !== b.id || a.reverses !== b.reverses || a.amountCents !== b.amountCents || a.direction !== b.direction) return '';
+    // Security re-check of C8-5..C8-10 (L-C) — twins only when the two rows are otherwise the same: all but the date, who entered it and when, and the tick
+    // (each settled on its own). A row that also differs in a label, a mark or a void is not a twin, so it takes the ordinary conflict path, instead of the
+    // earlier row being kept over it and the change lost.
+    function rest(r) {
+      var o = {};
+      Object.keys(r).sort().forEach(function (k) {
+        if (k === 'date' || LEDGER_TICK_FIELDS.indexOf(k) !== -1 || LEDGER_ENTERED_FIELDS.indexOf(k) !== -1 || ledgerEmpty(r[k])) return;
+        o[k] = r[k];
+      });
+      return JSON.stringify(o);
+    }
+    if (rest(a) !== rest(b)) return '';
     function key(r) { return String(r.date || '') + '\u0000' + String(r.enteredAt || '') + '\u0000' + String(r.enteredBy || ''); }
-    return key(a) <= key(b) ? 'mine' : 'theirs';
+    var ka = key(a), kb = key(b);
+    if (ka !== kb) return ka < kb ? 'mine' : 'theirs';
+    // A tie on all three (two devices, one account, one moment): the smaller JSON, so the answer is the same on both devices.
+    return JSON.stringify(a) <= JSON.stringify(b) ? 'mine' : 'theirs';
   }
   // The form under a closed book for reversing one of its entries (editors and admins): the entry, why, and two taps. Escaped.
   function closedRvFormHtml(book) {

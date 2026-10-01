@@ -1028,10 +1028,10 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
 // Phase 3, C8 (C8-4) — what the merge and the copy chooser read of closed books.
-const C8_SYNC_FNS = ['closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mergeClosedBooks', 'closedBookScouts', 'closedYearText', 'closedBooksKeptOverWhy', 'closeoutCarryDiffs',
+const C8_SYNC_FNS = ['closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mergeClosedBooks', 'closedBookScouts', 'closedBookScoutIds', 'closedYearText', 'closedBooksKeptOverWhy', 'closeoutCarryDiffs',
   'closedBooksUndone', 'closedBooksUndoneWhy', 'closedBooksDroppedWhy',
   // Security re-check of C8-5..C8-10 — the bound by program year (M-A), the push's union normalized (L-B), and what a merge says it set aside.
-  'closedBookRank', 'closedBooksFuture', 'closedBooksMaxYear', 'closedBooksNormalized', 'normalizeClosedBook', 'normalizeLedgerRow', 'normalizeAsideRow', 'normalizeLedgerEvent',
+  'closedBookRank', 'closedBookScoutIds', 'closedBooksFuture', 'closedBooksMaxYear', 'closedBooksNormalized', 'normalizeClosedBook', 'normalizeLedgerRow', 'normalizeAsideRow', 'normalizeLedgerEvent',
   'stableRowId', 'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_ASIDE_OFF', 'arrOf',
   // M-B — the tombstones of a closed year.
   'normalizeClosedGone', 'mergeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'closedGoneAdd', 'ledgerActorUid', 'closedBooksShorter',
@@ -1044,7 +1044,7 @@ const C6_MERGE_FNS = ['closedRvTwin', 'LEDGER_TICK_FIELDS', 'LEDGER_OFF_FIELDS',
   // Phase 3, C7 — a family one copy's scout delete unlinked is put back, and the scout kept.
   'ledgerRelink', 'ledgerScoutsHeld',
   // Phase 3, C8 — a scout a closed year's rows name is named too.
-  'closedBookScouts'];
+  'closedBookScouts', 'closedBookScoutIds'];
 // A page from before C6 (as the live page is): its merge keeps this device's copy of every row both
 // copies hold, whole. For the tests that make an older page from the merge as it is now.
 const C6_MERGE_CALL = 'added += applyLedgerMerge(state, rowMerge.set, remote);';
@@ -18698,7 +18698,7 @@ const C2R_ACT = [
 const C2R_MORE = `
   ${['LEDGER_VOID_REASON_MAX', 'ledgerVoidRefusal', 'ledgerVoidRow', 'ledgerUnvoidRow', 'normalizeAsideRow', 'ledgerPairOf', 'ledgerReversalOf', 'ledgerCancelledWhy',
     'ledgerLiveReversals', 'ledgerReversedAgainWhy', 'ledgerUnvoidDateWhy'].map(slice).join('\n')}
-  ${['arrOf', 'SCOUT_LEDGER_KEEPS', 'SCOUT_LEDGER_REFUSED', 'closedBookScouts', 'scoutHasLedger'].map(decl).join('\n')}
+  ${['arrOf', 'SCOUT_LEDGER_KEEPS', 'SCOUT_LEDGER_REFUSED', 'closedBookScouts', 'closedBookScoutIds', 'scoutHasLedger'].map(decl).join('\n')}
   var undo = null, undoWords = null, marks = [], editor = true;
   state.ledgerAside = [];
   ui.voidAsk = null; ui.voidWhy = '';
@@ -19167,7 +19167,7 @@ test('C7: a scout any ledger entry names, counted, voided or reversed, is refuse
   ok(!/logLedger/.test(c2Block(/    if \(act\.indexOf\('del-scout:'\) === 0\) \{[\s\S]*?\n    \}/, 'del-scout')) && !/logLedger/.test(slice('dropScout')) && !/logLedger\('reassign'/.test(slice('mergeRemoteAppendOnly')), 'a delete logs an unlinking');
   // scoutHasLedger itself: both lists, never a blank id, and a record with no ledger at all.
   const x = vm.createContext({});
-  vm.runInContext(['arrOf', 'closedBookScouts', 'scoutHasLedger'].map(decl).join('\n') + "\nvar state = { ledger: [null, { scoutId: '' }, { scoutId: 'a' }], ledgerAside: [{ scoutId: 'b', off: 'void' }] };", x);
+  vm.runInContext(['arrOf', 'closedBookScouts', 'closedBookScoutIds', 'scoutHasLedger'].map(decl).join('\n') + "\nvar state = { ledger: [null, { scoutId: '' }, { scoutId: 'a' }], ledgerAside: [{ scoutId: 'b', off: 'void' }] };", x);
   eq(['a', 'b', 'c', '', undefined].map((id) => x.scoutHasLedger(id)), [true, true, false, false, false], 'scoutHasLedger');
   vm.runInContext('state.ledgerAside = undefined; state.ledger = undefined;', x);
   eq(x.scoutHasLedger('a'), false, 'a record with no ledger');
@@ -25743,7 +25743,7 @@ test('C7: the scouts a merge keeps over a delete are those an entry on either co
 });
 
 test('C7 property: with scouts deleted on older pages and on this one, and families changed, two devices’ merges agree either way round, are a fixed point, and every family named is on the roster', () => {
-  const w = c6World(['closedBookScouts', 'scoutHasLedger']);
+  const w = c6World(['closedBookScouts', 'closedBookScoutIds', 'scoutHasLedger']);
   vm.runInContext(`
     function hasScout(sid) { return state.scouts.some(function (s) { return s.id === sid; }); }
     // The merge's drop of a scout deleted elsewhere, as the page's dropScout does it for the roster and
@@ -26367,7 +26367,7 @@ test('C8-2: a pack with only a closed year is not empty, so no remote copy can b
 });
 
 test('C8-2: a scout a closed year’s rows name is a scout the ledger names: never deleted, and kept by a merge', () => {
-  const x = sandbox(['arrOf', 'closedBookScouts', 'scoutHasLedger', 'ledgerScoutsHeld']);
+  const x = sandbox(['arrOf', 'closedBookScouts', 'closedBookScoutIds', 'scoutHasLedger', 'ledgerScoutsHeld']);
   vm.runInContext("var state = { ledger: [], ledgerAside: [], closedBooks: [{ year: 2025, form: 'full', ledger: [null, { scoutId: 'a' }], aside: [{ scoutId: 'b', off: 'void' }] }, { year: 2024, form: 'compact', ledger: [{ i: 'x', f: 'Cy' }] }] };", x);
   eq(['a', 'b', 'c', 'Cy', '', undefined].map((id) => x.scoutHasLedger(id)), [true, true, false, false, false, false], 'scoutHasLedger');
   const g = { scouts: { a: 5, b: 5, c: 5 } };
@@ -26829,7 +26829,7 @@ test('C8 security M2: a compact row keeps the scout’s id, so a scout only a co
   const c = c8(), full = C8_BOOK_OF(2025, 'a', { names: { line: {}, family: { s2: 'Ada' } } });
   const cp = J(c.compactClosedBook(full));
   eq(cp.ledger[0], { i: 'old1', d: '2026-01-10', c: 500, t: 'Dues', s: 'family', f: 'Ada', sc: 's2' }, 'the compact row');
-  const x = sandbox(['arrOf', 'closedBookScouts']);
+  const x = sandbox(['arrOf', 'closedBookScouts', 'closedBookScoutIds']);
   eq(J(x.closedBookScouts([cp], {})), { s2: true }, 'read back');
   eq(J(x.closedBookScouts([full], {})), { s2: true }, 'a full book, as before');
 });
@@ -26977,7 +26977,7 @@ test('C8 security M1: two devices, a tick on one carried row and an untick of an
 });
 
 test('C8 security M2: the scouts the closed books name are worked out once a render, not once a scout', () => {
-  const x = sandbox(['arrOf', 'closedBookScouts', 'scoutHasLedger']);
+  const x = sandbox(['arrOf', 'closedBookScouts', 'closedBookScoutIds', 'scoutHasLedger']);
   const book = C8_BOOK_OF(2025, 'a');
   vm.runInContext(`var calls = 0, real = closedBookScouts; closedBookScouts = function (b, into) { calls += 1; return real(b, into); };
     var state = { ledger: [], ledgerAside: [], closedBooks: ${JSON.stringify([book])} };`, x);
@@ -27708,6 +27708,70 @@ test('C8 re-check M-C: a compact closed book’s reversal keys are cut to shape 
   const n = sandbox(C8N_FNS);
   const cp = J(n.normalizeClosedBook({ year: 2026, form: 'compact', ledger: [{ i: 'a', d: '2027-01-01', c: -5, t: 'z', rv: 'q'.repeat(900), rb: 7, zz: 1 }] }));
   eq([Object.keys(cp.ledger[0]).sort(), cp.ledger[0].rv.length], [['c', 'd', 'i', 'rv', 't'], 300], 'rv kept and cut; a number is not a reversal id');
+});
+
+/* L-C: closed-year reversal twins. */
+test('C8 re-check L-C: two reversals are twins only when otherwise equal, and an exact tie is settled the same way on both devices', () => {
+  const x = sandbox(declClosure(['closedRvTwin'], []));
+  const rv = c8row('rv-2026-b', '2027-07-05', 5000, 'out', { reverses: '2026:b' });
+  const at = '2027-07-05T10:00:00.000Z';
+  const a = Object.assign({}, rv, { enteredAt: at, enteredBy: 'Pat', enteredByUid: 'u-pat' }), b = Object.assign({}, rv, { date: '2027-07-06', enteredAt: '2027-07-06T10:00:00.000Z', enteredBy: 'Sam', enteredByUid: 'u-sam' });
+  eq([x.closedRvTwin(a, b), x.closedRvTwin(b, a)], ['mine', 'theirs'], 'the earlier, from either side (as before)');
+  // The tick is settled on its own: twins that differ only in who ticked them, and when, are still twins.
+  eq(x.closedRvTwin(Object.assign({}, a, { reconciled: true, approvedBy: 'Pat', statementId: 'st-1', reconciledAt: 5 }), b), 'mine', 'a tick on one of them');
+  // A row that differs in anything else is not a twin: the ordinary conflict path asks, and neither version is lost.
+  for (const [what, over] of [['a label', { description: 'Reversal, renamed' }], ['a reference', { ref: 'R9' }], ['a mark', { reversedBy: 'rv-rv-2026-b' }], ['a void', { voidReason: 'mistake', off: 'void' }]]) {
+    eq([x.closedRvTwin(a, Object.assign({}, b, over)), x.closedRvTwin(Object.assign({}, a, over), b)], ['', ''], what + ': not a twin');
+  }
+  // An exact tie (same date, same moment, same name): the answer is complementary, not 'mine' on both sides, so both devices keep the same row.
+  const t1 = Object.assign({}, a, { memo: 'one' }), t2 = Object.assign({}, a, { memo: 'one', approvedByUid: 'u-x' });
+  const r1 = x.closedRvTwin(t1, t2), r2 = x.closedRvTwin(t2, t1);
+  ok(r1 !== '' && r2 !== '' && r1 !== r2, 'a tie gives each device a different answer about the other: ' + r1 + ' ' + r2);
+  eq(x.closedRvTwin(a, a), 'mine', 'the same row');
+});
+test('C8 re-check L-C, Firestore: a reversal made on two devices, one of them also renamed, asks instead of losing the rename', () => {
+  const book = C8_BOOK_OF(2026, 'arc-1', { ledger: [c8row('b', '2026-10-02', 5000, 'in', { description: 'Dues' })], statements: [], aside: [], log: [], names: { line: {}, family: {} } });
+  const { a, b } = c3FsPair({ closedBooks: [book] });
+  const EXTRA = `${slice('ledgerClosedYearReversal')}`;
+  const rvOn = (dev, by) => `${EXTRA}
+    state.ledger.push(ledgerClosedYearReversal(2026, { id: 'b', description: 'Dues', amountCents: 5000, direction: 'in' }, { by: '${by}', byUid: 'u-${dev}', at: new Date(Date.now()).toISOString() }, '2027-07-0${dev === 'a' ? 5 : 6}'));
+    logLedger('reverse', 'rv-2026-b', { rows: ['2026:b'], why: 'Wrong family (${dev})' }); commit();`;
+  a.run(rvOn('a', 'Pat'));
+  b.run(skew(5000));
+  b.run(rvOn('b', 'Sam'));
+  b.run("var rr = state.ledger.filter(function (e) { return e.id === 'rv-2026-b'; })[0]; var was = rr.description; rr.description = 'Reversal, renamed on B'; logLedger('edit', 'rv-2026-b', { f: { description: [was, rr.description] } }); commit();");
+  a.push();
+  b.hear(); b.push();
+  ok(c6Asked(b) !== null, 'B is asked which version to keep: its rename is not silently dropped');
+});
+
+/* L-D: a shortened closed book still says which scouts it named. */
+test('C8 re-check L-D: a closed book shortened until its rows were dropped still names its scouts, so none of them can be deleted', () => {
+  const c = c8(), x = sandbox([...C8_SYNC_FNS, 'scoutHasLedger']);
+  const full = C8_BOOK_OF(2025, 'arc-25', { ledger: [c8row('r1', '2026-01-10', 500, 'in', { scoutId: 's1' }), c8row('r2', '2026-02-10', 700, 'in', { scoutId: 's2' }), c8row('r3', '2026-03-10', 100, 'out')],
+    aside: [{ ...c8row('v1', '2026-03-01', 111, 'out', { scoutId: 's3' }), off: 'void' }], names: { line: {}, family: {} } });
+  // Compact: the rows keep their own, and the scout only a voided entry named is listed.
+  const cp = J(c.compactClosedBook(full));
+  eq([cp.ledger.map((r) => r.sc || ''), cp.scouts, cp.aside], [['s1', 's2', ''], ['s3'], []], 'compact: the aside row is gone, its scout is listed');
+  eq(J(x.closedBookScoutIds(cp)).sort(), ['s1', 's2', 's3'], 'all three are named');
+  // Trimmed: the rows are gone, and the list says all three.
+  const tr = J(c.trimClosedBookRows(full));
+  eq([tr.ledger.length, tr.ledgerTrimmed, tr.scouts.sort()], [0, true, ['s1', 's2', 's3']], 'trimmed: the list holds every scout');
+  eq(J(x.closedBookScouts([tr], {})), { s1: true, s2: true, s3: true }, 'read back by closedBookScouts');
+  // A compact book trimmed in a later year keeps the list it had, plus its rows'.
+  eq(J(c.trimClosedBookRows(cp)).scouts.sort(), ['s1', 's2', 's3'], 'compact then trimmed');
+  // fitClosedBook's last resort (no room even for compact) is what writes it.
+  const fit = J(c.fitClosedBook(J(C8_BOOK_OF(2026, 'arc-26')), [full], 10, 1));
+  ok(fit.books.every((b) => b.ledger.length === 0 && b.ledgerTrimmed) && J(x.closedBookScouts(fit.books, {})).s1 === true, 'trimmed to fit: still names its scouts');
+  // And a scout a trimmed book names is not deletable.
+  vm.runInContext("var state = { ledger: [], ledgerAside: [], closedBooks: " + JSON.stringify([tr]) + " }; var scoutHasLedger_memo;", x);
+  eq([x.scoutHasLedger('s1'), x.scoutHasLedger('s3'), x.scoutHasLedger('s9')], [true, true, false], 'scoutHasLedger');
+  // Read on load: strings only, cut, a list of nothing is none.
+  const n = sandbox(C8N_FNS);
+  const b = J(n.normalizeClosedBook({ year: 2026, form: 'compact', ledgerTrimmed: true, ledger: [], scouts: ['s1', 7, '', 'x'.repeat(500), null] }));
+  eq([b.scouts.length, b.scouts[0], b.scouts[1].length], [2, 's1', 120], 'cut to shape');
+  eq('scouts' in J(n.normalizeClosedBook({ year: 2026, scouts: [] })), false, 'an empty list is none');
+  eq('scouts' in J(n.normalizeClosedBook({ year: 2026, scouts: 'nope' })), false, 'not a list');
 });
 
 /* ---------------- report ---------------- */
