@@ -1030,6 +1030,9 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
 // Phase 3, C8 (C8-4) — what the merge and the copy chooser read of closed books.
 const C8_SYNC_FNS = ['closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mergeClosedBooks', 'closedBookScouts', 'closedYearText', 'closedBooksKeptOverWhy', 'closeoutCarryDiffs',
   'closedBooksUndone', 'closedBooksUndoneWhy', 'closedBooksDroppedWhy',
+  // Security re-check of C8-5..C8-10 — the bound by program year (M-A), the push's union normalized (L-B), and what a merge says it set aside.
+  'closedBookRank', 'closedBooksFuture', 'closedBooksMaxYear', 'closedBooksNormalized', 'normalizeClosedBook', 'normalizeLedgerRow', 'normalizeAsideRow', 'normalizeLedgerEvent',
+  'stableRowId', 'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_ASIDE_OFF', 'arrOf',
   // The merge ticks a carried row the other copy ticked (M1) and ticks again what a standing statement lists.
   'carriedRowsOf', 'statementRetick', 'entrySignedCents', 'entryAfterOpening', 'ledgerStampClean', 'statementReopened', 'normalizeStatement', 'statementAdded', 'LEDGER_TICK_FIELDS'];
 // Phase 3, C6 — the per-row ledger merge and what it reads.
@@ -26854,7 +26857,7 @@ test('C8 security H1: keeping this device’s copy over a cloud copy with a clos
   eq(keep(false), [[], 1, 0, true], 'an editor: refused, nothing logged, the choice still open');
   eq(keep(true), [[['unclose', 'book', 'This device’s copy was kept over a cloud copy that had closed out 2025–26, so that close-out is undone and its closed book is gone from the pack record.']], 0, 1, false],
     'an admin: logged, though the program years match');
-  ok(/if \(!clobbered && remoteParsed && accountsInForce\(\) && !canReopenStatement\(\)\) state\.closedBooks = mergeClosedBooks\(state\.closedBooks, remoteParsed\.closedBooks\);/.test(SCRIPT),
+  ok(/if \(!clobbered && remoteParsed && accountsInForce\(\) && !canReopenStatement\(\)\) state\.closedBooks = mergeClosedBooks\(state\.closedBooks, closedBooksNormalized\(remoteParsed\.closedBooks\), undefined, closedBooksMaxYear\(state, remoteParsed\)\);/.test(SCRIPT),
     'a device that may not remove a closed book takes the record’s in before a write that is not a merge');
 });
 
@@ -27496,6 +27499,50 @@ test('C8-10: a crossed-over Arrow of Light family’s open balance and credit ar
   eq(c8wGet(ctx, 'state.ledger.map(function (e) { return [e.id, e.scoutId, e.amountCents, e.source]; })'), [['p2', 'b1', 1500, 'family'], ['co-credit-2026-a1', 'a1', 2000, 'carryover']], 'Ada’s family’s $20.00 credit, and Bo’s July payment, which pays the carried balance and is not taken off it twice');
   eq(c8wGet(ctx, 'acc.map(function (a) { return [a.key, a.outstanding, a.credit]; }).sort()'), [['a1', 0, 2000], ['b1', 3000, 0]], 'both archived families are in the accounts: Bo owes $30.00 now, Ada has $20.00 credit');
   eq(c8wGet(ctx, 'famsTotals.outstanding'), 3000, 'and in the totals (a credit with no charge in the set is not a charge set’s, as chargeTotals has always read it)');
+});
+
+/* ================================================================
+   Security re-check of C8-5..C8-10 (c8b-security-review.md) and the treasurer's review (c8b-treasurer-review.md): fixes.
+   M-A: a closed book is for a year the pack has reached; the 20-year cap comes after.
+   ================================================================ */
+test('C8 re-check M-A: twenty crafted books for 2081-2100 do not push the real years out; they are set aside, before the cap, and said', () => {
+  const c = c8(), real = [C8_BOOK_OF(2024, 'arc-24'), C8_BOOK_OF(2025, 'arc-25')];
+  const crafted = Array.from({ length: 20 }, (_, i) => C8_BOOK_OF(2081 + i, 'x-' + i));
+  const look = [];
+  eq(J(c.mergeClosedBooks(J(real), J(crafted), look, 2026)).map((b) => b.year), [2024, 2025], 'only the real years, bound 2026');
+  eq(J(look), [{ kind: 'bookfuture', year: 2081, n: 20 }], 'said once, with the first year and how many');
+  // Without a bound it is the old behaviour (the cap keeps the newest 20): the test fails if the bound is taken out.
+  eq(J(c.mergeClosedBooks(J(real), J(crafted))).map((b) => b.year).slice(0, 2), [2081, 2082], 'no bound: the crafted years win the cap');
+  // Inclusive: a close-out undone leaves the book of the year the pack is in.
+  eq(J(c.mergeClosedBooks([C8_BOOK_OF(2026, 'arc-26')], [], [], 2026)).map((b) => b.year), [2026], 'a book for the program year itself stays');
+  eq(J(c.mergeClosedBooks([C8_BOOK_OF(2027, 'arc-27')], [], [], 2026)).map((b) => b.year), [], 'one year past it goes');
+  const l2 = []; c.mergeClosedBooks([], [C8_BOOK_OF(2026, 'a')], l2, 2026); eq(l2, [], 'nothing set aside, nothing said');
+});
+test('C8 re-check M-A: a record is cut at its own program year on load, and the bound is the later of the two copies’ years', () => {
+  const n = sandbox(C8N_FNS), real = [C8_BOOK_OF(2023, 'arc-23'), C8_BOOK_OF(2024, 'arc-24')];
+  const crafted = Array.from({ length: 20 }, (_, i) => C8_BOOK_OF(2081 + i, 'x-' + i));
+  const st = J(n.normalizeState(Object.assign(preMigrationState(), { closedBooks: real.concat(crafted) })));
+  eq(st.closedBooks.map((b) => b.year), [2023, 2024], 'the program year is 2025: the real books stay');
+  const x = sandbox(C8_SYNC_FNS);
+  eq([x.closedBooksMaxYear({ budget: { programYear: 2026 } }, { budget: { programYear: 2027 } }), x.closedBooksMaxYear({ budget: { programYear: 2026 } }, null),
+    x.closedBooksMaxYear(null, {}), x.closedBooksMaxYear({ budget: { programYear: 'x' } }, { budget: { programYear: NaN } })], [2027, 2026, undefined, undefined], 'the later program year, or none');
+  eq(J(x.closedBooksFuture([C8_BOOK_OF(2027, 'a'), C8_BOOK_OF(2090, 'b'), C8_BOOK_OF(2090, 'c'), null, { year: 'x' }], 2026)), [2027, 2090], 'the years above a bound, once');
+  eq(J(x.closedBooksFuture([C8_BOOK_OF(2027, 'a')], undefined)), [], 'no bound, none');
+  // L-B: what comes off the wire into the push's union is cut to shape first.
+  eq(J(x.closedBooksNormalized([C8_BOOK_OF(2026, 'a', { evil: 'x', cutoff: '1999-01-01' }), 'junk', null, { year: 1850 }])).map((b) => [b.year, 'evil' in b, b.cutoff]), [[2026, false, '2027-06-30']], 'L-B: a crafted book is normalized');
+});
+test('C8 re-check M-A: the merge, the push’s union and a restore all bound the books by program year; taking a copy says what it set aside; the program year is not set before a closed year', () => {
+  ok(/state\.closedBooks = mergeClosedBooks\(state\.closedBooks, remote\.closedBooks, look, closedBooksMaxYear\(state, remote\)\)/.test(SCRIPT), 'the merge passes the bound');
+  ok(/mergeClosedBooks\(state\.closedBooks, closedBooksNormalized\(remoteParsed\.closedBooks\), undefined, closedBooksMaxYear\(state, remoteParsed\)\)/.test(SCRIPT), 'the push’s union is normalized (L-B) and bounded');
+  ok(/closedBooksMaxYear\(\{ budget: ciBudgetWas \}, state\)/.test(SCRIPT), 'a restore bounds by the later of the two program years');
+  ok(/adoptFuture = closedBooksFuture\(parsed && parsed\.closedBooks, ns\.budget && ns\.budget\.programYear\)[\s\S]{0,1500}noteLedgerLookFromMerge\(adoptLook\);\s+[^\n]*\n\s+noteLedgerLookAfterSync\(lookWas/.test(SCRIPT), 'adoptRemote says it before the toast counts');
+  const m = /if \(ch === 'bud-year'\) \{[\s\S]*?\n      return;/.exec(SCRIPT);
+  ok(m && /y < yClosed/.test(m[0]) && /showToast\(/.test(m[0]), 'the program year is refused before a closed year');
+  const w = sandbox(['noteLedgerLookFromMerge', 'ledgerClosedBookLook', 'closedYearText', 'arrOf']);
+  vm.runInContext("var sync = {}; function render() {}; noteLedgerLookFromMerge([{ kind: 'bookfuture', year: 2081, n: 20 }, { kind: 'bookfuture', year: 2081, n: 20 }, { kind: 'bookfuture', year: 2090, n: 1 }]);", w);
+  eq(J(w.sync.lookNotes), [
+    '20 closed books, from 2081–82 on, were set aside: they are for years this pack has not reached, so they were not made by a close-out here. Your own closed years are kept. If you expected them, ask a pack admin to look at the pack record.',
+    'A closed book for 2090–91 was set aside: it is for a year this pack has not reached, so it was not made by a close-out here. Your own closed years are kept. If you expected it, ask a pack admin to look at the pack record.'], 'said once each');
 });
 
 /* ---------------- report ---------------- */

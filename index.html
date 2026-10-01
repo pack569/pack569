@@ -4099,7 +4099,9 @@
     // dropped, as junk), and one per year, oldest first (mergeClosedBooks with nothing to merge: the
     // same pick the sync merge makes, so every device holds the same list).
     if (!Array.isArray(d.closedBooks)) d.closedBooks = [];
-    d.closedBooks = mergeClosedBooks(d.closedBooks.filter(plainObj).map(normalizeClosedBook).filter(function (b) { return !!b; }), []);
+    // Security re-check of C8-5..C8-10 (M-A) — and a book for a year the pack has not reached (past budget.programYear) is not a close-out
+    // of this pack: it is dropped here, before the cap, so it cannot push a real year out (adoptRemote says so on "The ledger needs a look").
+    d.closedBooks = mergeClosedBooks(d.closedBooks.filter(plainObj).map(normalizeClosedBook).filter(function (b) { return !!b; }), [], undefined, d.budget.programYear);
     d.teImport = (plainObj(d.teImport) && typeof d.teImport.batch === 'string' && d.teImport.batch)
       ? { batch: d.teImport.batch, at: typeof d.teImport.at === 'string' ? d.teImport.at : '' } : null;
     // -----------------------------------------------------------------------
@@ -8550,6 +8552,33 @@
     }
     return { books: list, compacted: compacted, trimmed: trimmed, fits: size(list) <= limit };
   }
+  // How complete a closed book is, for choosing between two of one year: a full book 2, a compact one 1, a compact one whose rows were
+  // dropped too (ledgerTrimmed) 0. Pure.
+  function closedBookRank(b) { return b && b.form === 'compact' ? (b.ledgerTrimmed ? 0 : 1) : 2; }
+  // The years of the books in `books` (a record's, as stored or normalized) above `maxYear`, oldest first: what mergeClosedBooks and
+  // normalizeState set aside (M-A). Pure.
+  function closedBooksFuture(books, maxYear) {
+    var out = [];
+    if (typeof maxYear !== 'number' || !isFinite(maxYear)) return out;
+    arrOf(books).forEach(function (b) { if (b && typeof b === 'object' && typeof b.year === 'number' && isFinite(b.year) && b.year > maxYear && out.indexOf(b.year) === -1) out.push(b.year); });
+    return out.sort(function (a, b) { return a - b; });
+  }
+  // Security re-check of C8-5..C8-10 (L-B) — a record's closed books as this page holds them: each coerced to the book's shape
+  // (normalizeClosedBook), what is not a book dropped. The record parsed straight off the wire (syncPush's union) is not normalized; a
+  // crafted book in it would otherwise be merged as it came. Pure apart from the coercion of what is passed.
+  function closedBooksNormalized(list) {
+    return arrOf(list).map(normalizeClosedBook).filter(function (b) { return !!b; });
+  }
+  // The newest year a closed book may be for when copies `a` and `b` (a state, or a record parsed) are put together: the later of their
+  // program years (M-A), or undefined when neither has one (no bound is applied). Pure.
+  function closedBooksMaxYear(a, b) {
+    var best;
+    [a, b].forEach(function (s) {
+      var y = s && s.budget && typeof s.budget.programYear === 'number' && isFinite(s.budget.programYear) ? s.budget.programYear : undefined;
+      if (y !== undefined && (best === undefined || y > best)) best = y;
+    });
+    return best;
+  }
   // Two copies' closed books as one, by year, the same on every device whichever is `mine` and however three
   // copies are taken two at a time. Security review of C8-1..4 (H2): ONE total order picks the book a year
   // keeps, and the merge is the largest of it, so it is commutative, associative and idempotent (the harness
@@ -8565,9 +8594,14 @@
   // ('booknameless'). No tombstone: the merge has no way to know a book was taken out on purpose, so a
   // book an admin's keep-local dropped comes back from a copy that still has it unless the 'unclose' event
   // in the log (keepLocalCopy writes it) says it was undone; that is what the server's S42 rule is for.
+  // Security re-check of C8-5..C8-10 (M-A) — and a book is for a year this pack has reached: `maxYear` (when a whole number) is the
+  // newest year a book may be for, the later of the two copies' program years (a close-out leaves a year closed that is the
+  // program year before it, and an undone one leaves the year itself, so the bound is inclusive). A book above it is not a
+  // close-out of this pack: it is set aside BEFORE the 20-year cap is applied, or an editor's copy with twenty books for
+  // 2081-2100 would push the real books out as the newest-first cap kept them, silently; `look` says so ('bookfuture').
   // Oldest year first. Pure apart from `look`.
-  function mergeClosedBooks(mine, theirs, look) {
-    function rank(b) { return b.form === 'compact' ? (b.ledgerTrimmed ? 0 : 1) : 2; }
+  function mergeClosedBooks(mine, theirs, look, maxYear) {
+    function rank(b) { return closedBookRank(b); }
     function named(b) { return typeof b.archiveId === 'string' && b.archiveId ? 1 : 0; }
     function better(a, b) {
       if (named(a) !== named(b)) return named(a) > named(b);
@@ -8578,13 +8612,20 @@
       if (rank(a) !== rank(b)) return rank(a) < rank(b);
       return JSON.stringify(a) < JSON.stringify(b);
     }
-    function valid(b) { return !!b && typeof b === 'object' && typeof b.year === 'number' && isFinite(b.year); }
+    var bounded = typeof maxYear === 'number' && isFinite(maxYear), future = Object.create(null);
+    function valid(b) {
+      if (!b || typeof b !== 'object' || typeof b.year !== 'number' || !isFinite(b.year)) return false;
+      if (bounded && b.year > maxYear) { future[b.year] = true; return false; }
+      return true;
+    }
     function best(into, b) { if (!into[b.year] || better(b, into[b.year])) into[b.year] = b; }
     var won = Object.create(null), held = Object.create(null), nameless = Object.create(null);
     (mine || []).forEach(function (b) { if (valid(b)) { best(won, b); best(held, b); if (!named(b)) nameless[b.year] = true; } });
     (theirs || []).forEach(function (b) { if (valid(b)) { best(won, b); if (!named(b)) nameless[b.year] = true; } });
     var years = Object.keys(won).map(Number).sort(function (a, b) { return a - b; });
     if (years.length > 20) years = years.slice(years.length - 20);
+    var futureYears = Object.keys(future).map(Number).sort(function (a, b) { return a - b; });
+    if (Array.isArray(look) && futureYears.length) look.push({ kind: 'bookfuture', year: futureYears[0], n: futureYears.length });
     if (Array.isArray(look)) {
       years.forEach(function (y) {
         var w = won[y], m = held[y];
@@ -15192,7 +15233,7 @@
     // seen from both sides. What this adds is counted, as a row is.
     var booksWere = arrOf(state.closedBooks).length;
     // (`remote` is normalizeState's, so the other copy's books are cut to shape already: normalizeClosedBook.)
-    state.closedBooks = mergeClosedBooks(state.closedBooks, remote.closedBooks, look);
+    state.closedBooks = mergeClosedBooks(state.closedBooks, remote.closedBooks, look, closedBooksMaxYear(state, remote));   // M-A: not past the later program year
     added += Math.max(0, arrOf(state.closedBooks).length - booksWere);
     // Phase 0 — ledger entries get the same append-only protection as popcorn sales, and
     // for a stronger reason: two leaders posting receipts from two devices must not be able
@@ -15514,7 +15555,7 @@
         : it && it.kind === 'scoutkept' && it.scout ? 'scoutkept:' + it.scout.id
         : it && it.kind === 'carrydiffers' && typeof it.id === 'string' ? 'carrydiffers:' + it.id + ':' + it.mine + ':' + it.theirs
         : it && it.kind === 'restorediff' && it.statement ? 'restorediff:' + it.statement.id + ':' + it.statement.nowCents
-        : it && (it.kind === 'bookreplaced' || it.kind === 'bookshorter' || it.kind === 'booknameless') && typeof it.year === 'number' ? it.kind + ':' + it.year + ':' + (it.id || '') : '';
+        : it && (it.kind === 'bookreplaced' || it.kind === 'bookshorter' || it.kind === 'booknameless' || it.kind === 'bookfuture') && typeof it.year === 'number' ? it.kind + ':' + it.year + ':' + (it.id || '') : '';
       if (!key || seen[key]) return;
       seen[key] = true;
       notes.push(it.kind === 'forgiven'
@@ -15524,7 +15565,7 @@
         : it.kind === 'restorediff' ? ledgerRestoreDiffLook(it.statement)
         : it.kind === 'scoutkept' ? ledgerScoutKeptLook(it.scout)
         : it.kind === 'carrydiffers' ? ledgerCarryDiffLook(it, it.scoutId ? closeoutFamilyWords(it.scoutId) : '')
-        : it.kind === 'bookreplaced' || it.kind === 'bookshorter' || it.kind === 'booknameless' ? ledgerClosedBookLook(it)
+        : it.kind === 'bookreplaced' || it.kind === 'bookshorter' || it.kind === 'booknameless' || it.kind === 'bookfuture' ? ledgerClosedBookLook(it)
         : ledgerCap(ledgerEntryNamed(it.row)) + ' was ticked on one device while voided on another. The void was kept, so it is no longer ticked. ' +
           'If the bank statement shows it cleared, un-void it and tick it again.');
       n += 1;
@@ -15540,8 +15581,15 @@
   // Security review of C8-1..4 (H2) — what a merge did to a closed book on this copy (mergeClosedBooks' `look`), said so
   // it is never silent: another device's close-out of the year took the place of this copy's, the book came across
   // in a shorter form, or a book with no close-out record was set aside. Plain text. Pure.
+  // Security re-check of C8-5..C8-10 (M-A) — and a closed book for a year this pack has not reached ('bookfuture': `year` the first, `n` how many)
+  // was set aside: it is not a close-out of this pack.
   function ledgerClosedBookLook(it) {
     var yr = closedYearText(it.year);
+    if (it.kind === 'bookfuture') {
+      return (it.n > 1 ? it.n + ' closed books, from ' + yr + ' on, were' : 'A closed book for ' + yr + ' was') + ' set aside: ' + (it.n > 1 ? 'they are' : 'it is') + ' for ' +
+        (it.n > 1 ? 'years' : 'a year') + ' this pack has not reached, so ' + (it.n > 1 ? 'they were' : 'it was') + ' not made by a close-out here. ' +
+        'Your own closed years are kept. If you expected ' + (it.n > 1 ? 'them' : 'it') + ', ask a pack admin to look at the pack record.';
+    }
     return it.kind === 'bookreplaced'
       ? 'Another device’s close-out of ' + yr + ' took the place of the closed ' + yr + ' book this device held, because it was closed out later. A year keeps one closed book. ' +
         'If that is not the close-out you expected, check the year’s figures on Money · Ledger.'
@@ -15831,7 +15879,7 @@
       // Security review of C8-1..4 (H1) — a device that may not remove a closed book (anyone but an admin, where there
       // are accounts) never writes one away: a write that is not a merge (the one copy this device was asked to
       // keep, or a rev it had seen) takes the record's closed books in first.
-      if (!clobbered && remoteParsed && accountsInForce() && !canReopenStatement()) state.closedBooks = mergeClosedBooks(state.closedBooks, remoteParsed.closedBooks);
+      if (!clobbered && remoteParsed && accountsInForce() && !canReopenStatement()) state.closedBooks = mergeClosedBooks(state.closedBooks, closedBooksNormalized(remoteParsed.closedBooks), undefined, closedBooksMaxYear(state, remoteParsed));
       var nextRev = be.serverRevs ? remoteRev + 1 : Math.max(state.rev || 0, remoteRev) + 1;
       state.fmt = PACK_FORMAT;   // the reload gate: the format this page writes
       var record = {
@@ -16024,6 +16072,9 @@
     // Security review of C8-1..4 (M4) — a closed book only this device has goes with the copy this device takes
     // (the chooser's two taps, and its warning, syncClosedBooksHereHtml): said in the log, below.
     var droppedBooks = state ? closedBooksLost(ns.closedBooks, state.closedBooks) : [];
+    // M-A — and what normalizeState set aside of the copy's books: any for a year past its program year, said on "The ledger needs a look".
+    var adoptLook = [], adoptFuture = closedBooksFuture(parsed && parsed.closedBooks, ns.budget && ns.budget.programYear);
+    if (adoptFuture.length) adoptLook.push({ kind: 'bookfuture', year: adoptFuture[0], n: adoptFuture.length });
     state = ns;
     state.rev = typeof d.rev === 'number' ? d.rev : 0;
     // This device now holds the server's copy: nothing is left to send or to merge at a save (a
@@ -16041,6 +16092,7 @@
     save();
     render();
     if (opts && opts.toast) showToast('Updated from another device');
+    noteLedgerLookFromMerge(adoptLook);   // what taking this copy set aside (M-A), on the card before the sync's toast counts it
     noteLedgerLookAfterSync(lookWas, !!(opts && opts.clobbered));   // treasurer sign-off on option B (extra): after that toast, before the fates'
     fates.split = splitRows;
     noteReconciledFates(fates);
@@ -33493,7 +33545,7 @@
       // the question is open.
       if (!canReopenStatement()) { ui.overlay = null; render(); showToast(RESTORE_REFUSED); return; }
       var ciLog = state.ledgerLog;
-      var ciSt = state.statements, ciYear = state.book ? state.book.year : undefined, ciArc = state.archives, ciRows = state.ledger, ciBooks = state.closedBooks;
+      var ciSt = state.statements, ciYear = state.book ? state.book.year : undefined, ciArc = state.archives, ciRows = state.ledger, ciBooks = state.closedBooks, ciBudgetWas = state.budget;
       state = restoreGone(ui.overlay.data, state.gone, Date.now());
       // Security re-check of C5 (R2) — and this device's past seasons, as they are here: a season's
       // close-out (its summary, statements and change history) is written once, on the device that
@@ -33514,7 +33566,8 @@
       // "The ledger needs a look" saying so (ledgerLookNotes); the log says so too ('unclose').
       var ciBookYears = Object.create(null);
       arrOf(ciBooks).forEach(function (b) { if (b && typeof b.year === 'number') ciBookYears[b.year] = true; });
-      state.closedBooks = mergeClosedBooks(arrOf(state.closedBooks).filter(function (b) { return !(b && ciBookYears[b.year]); }).concat(arrOf(ciBooks)), []);
+      state.closedBooks = mergeClosedBooks(arrOf(state.closedBooks).filter(function (b) { return !(b && ciBookYears[b.year]); }).concat(arrOf(ciBooks)), [], undefined,
+        closedBooksMaxYear({ budget: ciBudgetWas }, state));   // M-A: not past the later of this device's and the backup's program year
       var ciUndone = closedBooksUndone(state.closedBooks, state.book);
       if (ciUndone.length) logLedger('unclose', 'book', { why: closedBooksUndoneWhy(ciUndone) });
       // Security re-review of C2 (#1) — the book is the backup's, but its history is not: this
@@ -34238,6 +34291,10 @@
     // Budget fields
     if (ch === 'bud-year') {
       var y = parseInt(el.value, 10);
+      // Security re-check of C8-5..C8-10 (M-A) — a closed book for a year past the program year is set aside as not this pack's (normalizeState), so
+      // the year is not set before a year already closed out (a typed 207 for 2027 would otherwise take the closed books at the next load).
+      var yClosed = arrOf(state.closedBooks).reduce(function (n, cb) { return cb && typeof cb.year === 'number' && cb.year > n ? cb.year : n; }, -Infinity);
+      if (isFinite(y) && y < yClosed) { showToast('The ' + closedYearText(yClosed) + ' year was closed out, so the program year can’t be earlier than ' + yClosed + '.'); render(); return; }
       if (isFinite(y)) { state.budget.programYear = y; commit(); }
       return;
     }
