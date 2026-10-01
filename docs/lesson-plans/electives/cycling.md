@@ -463,7 +463,7 @@ How these plans fit a Pack 569 den night:
    - Tip: **Note Req 1** for each Bear wearing a correctly fitted helmet.
 2. **Dress the Rider** · den · 8 min · Reqs: 2
    - Say: "Dress our rider for a bike ride, and tell us why you chose each thing."
-   - How: **Option A · Dress the Cub Scout:** 1) Bears take turns picking **one item** from the pile for the figure. 2) The den **votes** on each one. 3) Talk about the **why**: loose clothes catch in the chain, sandals slip, and bright colors get seen. / **Option B · Safe or Not?:** 1) Hold up a **clothing card**. 2) Bears shout **"Ride!" or "Swap!"** 3) Ask, "**Why?**"
+   - How: 1) Pick one: **Option A · Dress the Cub Scout:** Bears take turns picking **one item** from the pile for the figure, and the den **votes** on each one. / **Option B · Safe or Not?:** hold up a **clothing card**, and Bears shout **"Ride!" or "Swap!"** 2) After each item or card, ask "**Why?**" Talk about the **why**: loose clothes catch in the chain, sandals slip, and bright colors get seen.
    - Tip: **Note Req 2** for each Bear who can explain a choice.
 3. **Left Turn, Right Turn** · den · 9 min · Reqs: 3
    - Say: "Walk the lane. When I call a signal, give it and do it."

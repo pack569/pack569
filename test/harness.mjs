@@ -27335,6 +27335,21 @@ test('run this meeting: the reviewed words — the two Backs, the clocks, Undo F
   ok(/Bear den’s notes/.test(notes) && /Saves when you tap outside the box/.test(notes), 'the notes block');
 });
 
+test('lesson plans: the inline picks and the summer date are not run-screen choices (program review, 2026-09-30)', () => {
+  const d = plansOut().data.plans;
+  for (const [k, i, j] of [['Bear :: Bears on Bikes', 0, 1], ['Wolf :: A Wolf Goes Fishing', 0, 2]]) {
+    const st = d[k].meetings[i].steps[j];
+    ok(!st.options && /Pick one: \*\*Option A · /.test(JSON.stringify(st.how)), `${k} meeting ${i + 1} step ${j + 1} is still a run-screen option`);
+  }
+  for (const r of ['Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light']) {
+    const m = d[r + ' :: Summertime Fun'].meetings[0];
+    ok(!m.choices && m.notes.some((n) => n.label === 'When' && /\*\*May\*\*.*\*\*April\*\*/.test(n.text)), r + ' Summertime Fun meeting 1: the date is still a pick');
+  }
+  const ctx = runCtx();
+  ctx.O = runOv([{ den: 'Tiger', adventure: 'Summertime Fun', meetingN: 1 }]);
+  ok(!/data-act="run-pick"/.test(vm.runInContext('runScreenHtml(O, NOW)', ctx)), 'Tiger Summertime Fun meeting 1 still asks for a pick');
+});
+
 /* ---------------- report ---------------- */
 // The API tests are async; they run here, one at a time, each on its own database.
 for (const [name, fn] of asyncTests) {
