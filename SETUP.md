@@ -508,6 +508,44 @@ after every save from then on. If parents report an empty screen, have a leader 
 page once. (If *no* leader has the app open, nothing regenerates — that's by design: only
 `admin`/`editor` may write it.)
 
+### Shift reports
+
+*Server only.* This needs `BACKEND = 'api'`. Firestore has no shift reports, and the rules
+block above says nothing about them. The server enforces these rules in
+`functions/_lib/rules.js` and `functions/api/pack/[id]/shift-reports/`.
+
+At the end of a storefront shift, a family enters the shift's two totals, the **Trail's End
+amount** and the **cash donations**, and ticks a box to sign that they counted them. A leader
+then accepts the report as the **second sign-off**, and only then do the figures reach the
+block and the standings. Reports are kept in their own table (`shift_reports`), never in the
+pack record, so a parent who can send one still can't write anything else.
+
+- **Who can send one:** any approved member, so `admin`, `editor`, `viewer` or `parent`.
+  `pending` members and accounts with no membership cannot. The server records the sender's
+  name, account and time from their member record. The page never sends them.
+- **Which shift:** only a shift the pack has published in the **parent view** (the storefront's
+  id and the block's id, as `buildParentView` wrote them). The storefront must be dated
+  **today or up to 14 days ago**, in the pack's time zone (Eastern). Nobody can report a shift
+  that is in the future, too old, or not published.
+- **The figures:** whole cents, from $0 to **$10,000** each, plus an optional note of at most
+  **300 characters**. The signature box must be ticked.
+- **One at a time:** each block can have only one report that is waiting or accepted. A
+  second report for the same block is refused until a leader sends the first one back or its
+  sender withdraws it.
+- **Changing a report:** only the sender can edit or withdraw it, and only while it is waiting.
+  An edit has to be signed again.
+- **Accepting or sending back:** only `admin` and `editor`. The leader who accepts must be a
+  **different adult** from the one who sent it. The server refuses a leader accepting their
+  own report, just as the cash box refuses the same person as counter and verifier. A leader
+  can send back a waiting or an accepted report, and must give a reason. The family then
+  sends a corrected report as a new one.
+- **Who sees what:** leaders (`admin`, `editor`, `viewer`) see every report in full. A parent
+  sees their own reports and the first name of the leader who reviewed them. For anyone
+  else's report, a parent sees only that the block has a report and whether it is waiting,
+  accepted, sent back or withdrawn. They never see another family's amounts, name or note.
+- Every report, edit, withdrawal, acceptance and send-back is written to the `audit` table
+  in the same step as the change itself.
+
 ### The sign-up link — the recommended way
 
 One link for **everyone**, leaders and families alike. Use it when you don't know (or don't

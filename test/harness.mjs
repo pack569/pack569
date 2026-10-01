@@ -14047,7 +14047,8 @@ function apiSetup() {
       const mods = { session: 'api/session.js', pack: 'api/pack/[id]/index.js', rev: 'api/pack/[id]/rev.js',
         members: 'api/pack/[id]/members/index.js', member: 'api/pack/[id]/members/[uid].js',
         invites: 'api/pack/[id]/invites/index.js', invite: 'api/pack/[id]/invites/[email].js',
-        join: 'api/pack/[id]/join.js', view: 'api/pack/[id]/view.js', import: 'api/pack/[id]/import.js' };
+        join: 'api/pack/[id]/join.js', view: 'api/pack/[id]/view.js', import: 'api/pack/[id]/import.js',
+        shiftReports: 'api/pack/[id]/shift-reports/index.js', shiftReport: 'api/pack/[id]/shift-reports/[rid].js' };
       API.mod = {};
       for (const k of Object.keys(mods)) API.mod[k] = await load(mods[k]);
     })();
@@ -14100,7 +14101,8 @@ async function apiWorld(envOver) {
     const id = o.pack || API_PACK;
     const p = Object.assign({ id }, params || {});
     const tail = { pack: '', rev: '/rev', members: '/members', member: '/members/' + p.uid, invites: '/invites',
-      invite: '/invites/' + p.email, join: '/join', view: '/view', import: '/import' }[what];
+      invite: '/invites/' + p.email, join: '/join', view: '/view', import: '/import', shiftReports: '/shift-reports',
+      shiftReport: '/shift-reports/' + p.rid }[what];
     return callApi(env, API.mod[what], { method, path: '/api/pack/' + id + tail, params: p,
       token: who ? await tokenFor(who, o.claims) : o.token, body: o.body, headers: o.headers });
   };
@@ -15454,6 +15456,390 @@ atest('api import: the owner comes out an admin even if Firestore said otherwise
     'the roles after the import');
 });
 
+/* ---- shift reports (migrations/0003_shift_reports.sql, 2026-10-01) ----
+   A family sends a storefront shift's two totals and signs them; an admin or editor accepts the
+   report as the second sign-off. Parents write only this table, under the rules in
+   functions/_lib/rules.js (canSubmitShiftReport, canReviewShiftReport, shiftReportProblem).
+   The shifts come from the STORED parent view, as buildParentView publishes them:
+   { kind: 'storefront', sfId, date, shifts: [{ blockId, when, who? }] }. */
+
+// A date `n` days from the pack's today (negative: in the past), as YYYY-MM-DD.
+function srDay(n) {
+  const t = Date.parse(API.rules.packToday() + 'T00:00:00Z') + n * 86400000;
+  return new Date(t).toISOString().slice(0, 10);
+}
+// The pack with everyone in it (a second parent, 'newbie'), and a parent view with storefronts
+// two days ago, today, on the edge (14 days ago), too old (15) and in three days.
+async function srWorld() {
+  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent', pending: 'pending',
+    newbie: 'parent' });
+  const sf = (sfId, n, blocks) => ({ kind: 'storefront', sfId, date: srDay(n), title: 'Test Market', detail: '',
+    shifts: blocks.map((blockId) => ({ when: '10:00 AM – 12:00 PM', who: ['Test'], blockId })) });
+  w.view = { rev: 1, packName: 'Test Pack', programYear: '2026-27', events: [
+    sf('sfPast', -2, ['b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7']), sf('sfToday', 0, ['bT']), sf('sfEdge', -14, ['bE']),
+    sf('sfOld', -15, ['bO']), sf('sfSoon', 3, ['bF']),
+    { kind: 'meeting', date: srDay(-1), title: 'Pack meeting', detail: '' }] };
+  w.db.raw.prepare('INSERT INTO parent_views (pack_id, payload, generated_at) VALUES (?, ?, 1)').run(API_PACK, JSON.stringify(w.view));
+  w.report = (who, over) => w.call(who, 'POST', 'shiftReports', null,
+    { body: Object.assign({ sfId: 'sfPast', blockId: 'b1', teCents: 12345, cashCents: 2500, note: 'Counted at the table', attest: true }, over || {}) });
+  w.act = (who, rid, body) => w.call(who, 'PATCH', 'shiftReport', { rid }, { body });
+  w.reports = (who) => w.call(who, 'GET', 'shiftReports');
+  return w;
+}
+// Hold the next `n` batches until all `n` have been asked for, then run them in order: every
+// request has done its reads before any of them writes, the worst interleaving there is.
+// `reverse` runs them last-asked first, so a race can be tried with either side landing first.
+function holdBatches(w, n, reverse) {
+  const orig = w.db.batch, waiting = [];
+  w.db.batch = function (list) {
+    return new Promise((res, rej) => {
+      waiting.push(() => orig.call(w.db, list).then(res, rej));
+      if (waiting.length === n) { w.db.batch = orig; (reverse ? waiting.slice().reverse() : waiting).forEach((f) => f()); }
+    });
+  };
+}
+
+atest('api shift reports: every role on every verb — pending and strangers get nothing, parents send, only admins and editors review', async () => {
+  const w = await srWorld();
+  await matrix(w, 'GET', 'shiftReports', expectFor(['owner', 'admin2', 'editor', 'viewer', 'parent']));
+  // Each approved member sends a report on a block of their own.
+  const block = { owner: 'b1', admin2: 'b2', editor: 'b3', viewer: 'b4', parent: 'b5', pending: 'b6', stranger: 'b7' };
+  await matrix(w, 'POST', 'shiftReports', expectFor(['owner', 'admin2', 'editor', 'viewer', 'parent']),
+    { opts: (who) => ({ body: { sfId: 'sfPast', blockId: block[who], teCents: 100, cashCents: 0, attest: true } }) });
+  eq(w.sql('SELECT block_id, submitted_by_uid, submitted_by_name, status FROM shift_reports ORDER BY block_id'),
+    ['owner', 'admin2', 'editor', 'viewer', 'parent'].map((who) => ({ block_id: block[who], submitted_by_uid: PEOPLE[who][0],
+      submitted_by_name: 'Test ' + who, status: 'submitted' })).sort((a, b) => a.block_id < b.block_id ? -1 : 1),
+    'who the server says sent each report');
+  const ridOf = (who) => w.one('SELECT id FROM shift_reports WHERE submitted_by_uid = ?', PEOPLE[who][0]).id;
+  const parentRid = ridOf('parent');
+  // Accept and return: admins and editors only. Everyone else gets the fixed 403.
+  for (const who of ['viewer', 'parent', 'newbie', 'pending', 'stranger']) {
+    denied(await w.act(who, parentRid, { action: 'accept', teCents: 100, cashCents: 0 }), who + ' accepting');
+    denied(await w.act(who, parentRid, { action: 'return', reviewNote: 'Recount' }), who + ' sending back');
+  }
+  // Edit and withdraw: the sender only — not even an admin, and not another parent.
+  for (const who of ['owner', 'admin2', 'editor', 'viewer', 'newbie', 'pending', 'stranger']) {
+    denied(await w.act(who, parentRid, { action: 'edit', teCents: 1, cashCents: 1, attest: true }), who + ' editing the parent\'s report');
+    denied(await w.act(who, parentRid, { action: 'withdraw' }), who + ' withdrawing the parent\'s report');
+  }
+  // A report id that does not exist: the same 403 to a non-reviewer, a 404 to a reviewer.
+  denied(await w.act('parent', '00000000-0000-0000-0000-000000000000', { action: 'withdraw' }), 'withdrawing a report that is not there');
+  eq((await w.act('editor', '00000000-0000-0000-0000-000000000000', { action: 'return', reviewNote: 'x' })).status, 404, 'a reviewer, no such report');
+  eq((await w.act('editor', 'not a/real id', { action: 'return', reviewNote: 'x' })).status, 404, 'a malformed report id');
+  eq(w.sql("SELECT count(*) AS n FROM shift_reports WHERE status != 'submitted'")[0].n, 0, 'a refused call changed a report');
+  eq(w.sql("SELECT count(*) AS n FROM audit WHERE action LIKE 'shift.%' AND action != 'shift.report'")[0].n, 0, 'a refused call left an audit row');
+  // The ones allowed.
+  eq((await w.act('editor', parentRid, { action: 'accept', teCents: 100, cashCents: 0 })).status, 200, 'an editor accepts');
+  eq((await w.act('admin2', ridOf('viewer'), { action: 'return', reviewNote: 'Recount please' })).status, 200, 'an admin sends one back');
+  eq((await w.act('viewer', ridOf('owner'), { action: 'accept', teCents: 100, cashCents: 0 })).status, 403, 'a viewer accepting a leader\'s');
+  eq((await w.act('parent', parentRid, { action: 'withdraw' })).status, 409, 'withdrawing an accepted report');
+  // A member sent back to pending, or removed, loses the lot at once.
+  w.db.raw.prepare("UPDATE members SET role = 'pending' WHERE uid = 'uid-parent'").run();
+  denied(await w.reports('parent'), 'a parent demoted to pending reading');
+  denied(await w.report('parent', { blockId: 'b6' }), 'a parent demoted to pending sending');
+  // Pages routes only GET and POST on the list, and only PATCH on one report.
+  eq((await w.call('owner', 'DELETE', 'shiftReports')).status, 405, 'DELETE on the list');
+  eq((await w.call('owner', 'GET', 'shiftReport', { rid: parentRid })).status, 405, 'GET on one report');
+});
+
+atest('api shift reports: a report is for a real shift in the parent view, today or in the last 14 days, signed, in whole cents', async () => {
+  const w = await srWorld();
+  const bad = async (over, reason, what) => {
+    const r = await w.report('parent', over);
+    eq([r.status, r.body && r.body.reason], [400, reason], what + ' (' + r.text.slice(0, 100) + ')');
+  };
+  await bad({ blockId: 'nope' }, 'not-in-view', 'a block that is not in the view');
+  await bad({ sfId: 'sfToday', blockId: 'b1' }, 'not-in-view', 'a block from another storefront');
+  await bad({ sfId: 'nope' }, 'not-in-view', 'a storefront that is not in the view');
+  await bad({ sfId: 'sfSoon', blockId: 'bF' }, 'future', 'a shift in three days');
+  await bad({ sfId: 'sfOld', blockId: 'bO' }, 'too-old', 'a shift 15 days ago');
+  await bad({ attest: undefined }, 'attest', 'no signature');
+  await bad({ attest: 'true' }, 'attest', 'a signature that is a string');
+  await bad({ attest: false }, 'attest', 'a signature unticked');
+  await bad({ teCents: 12.5 }, 'te-cents', 'half a cent');
+  await bad({ teCents: '12345' }, 'te-cents', 'cents as a string');
+  await bad({ teCents: -1 }, 'te-cents', 'a negative amount');
+  await bad({ cashCents: 1000001 }, 'cash-cents', 'cash over $10,000');
+  await bad({ cashCents: null }, 'cash-cents', 'no cash figure');
+  await bad({ note: 'x'.repeat(301) }, 'note', 'a 301-character note');
+  await bad({ note: 7 }, 'note', 'a note that is a number');
+  await bad({ sfId: 'sf/../x' }, 'sf-id', 'a storefront id with a slash');
+  await bad({ blockId: '' }, 'block-id', 'an empty block id');
+  await bad({ submittedByUid: 'uid-owner' }, 'unknown-field', 'a sender named in the body');
+  await bad({ status: 'accepted' }, 'unknown-field', 'a status in the body');
+  eq(w.sql('SELECT count(*) AS n FROM shift_reports')[0].n, 0, 'a refused report was written');
+  // In range: today, 14 days ago, the cap, a 300-character note (cleaned to one line).
+  eq((await w.report('parent', { sfId: 'sfToday', blockId: 'bT' })).status, 200, 'a shift today');
+  eq((await w.report('parent', { sfId: 'sfEdge', blockId: 'bE' })).status, 200, 'a shift 14 days ago');
+  const r = await w.report('parent', { teCents: 1000000, cashCents: 0, note: '  Two\n\ttwenties\u0000 short  ' + 'y'.repeat(260) });
+  eq(r.status, 200, 'the cap, and a long note');
+  eq([r.body.report.teCents, r.body.report.note.slice(0, 22), r.body.report.status, r.body.report.mine],
+    [1000000, 'Two twenties short yyy', 'submitted', true], 'the stored report');
+  // No parent view stored at all: nothing can be reported.
+  w.db.raw.prepare('DELETE FROM parent_views').run();
+  const none = await w.report('newbie', { blockId: 'b2' });
+  eq([none.status, none.body.reason], [400, 'not-in-view'], 'no parent view published');
+  // Calendar-only mode publishes the shift windows without names; the ids still let families report.
+  const quiet = JSON.parse(JSON.stringify(w.view));
+  quiet.events.forEach((e) => (e.shifts || []).forEach((s) => delete s.who));
+  w.db.raw.prepare('INSERT INTO parent_views (pack_id, payload, generated_at) VALUES (?, ?, 1)').run(API_PACK, JSON.stringify(quiet));
+  eq((await w.report('newbie', { blockId: 'b2' })).status, 200, 'a shift in a calendar-only view');
+});
+
+atest('api shift reports: the pack\'s today is Eastern time, and the rule helpers are pure', async () => {
+  await apiSetup();
+  const R = API.rules;
+  eq(R.PACK_TIME_ZONE, 'America/New_York', 'the pack time zone');
+  // 03:30 UTC on Oct 4 is still the evening of Oct 3 in New York.
+  eq(R.packToday(Date.parse('2026-10-04T03:30:00Z')), '2026-10-03', 'late Saturday evening, Eastern');
+  eq(R.packToday(Date.parse('2026-10-04T05:00:00Z')), '2026-10-04', 'after midnight, Eastern');
+  eq(R.packToday(Date.parse('2026-01-10T04:59:00Z')), '2026-01-09', 'winter: UTC-5');
+  eq([R.daysBetween('2026-10-01', '2026-10-15'), R.daysBetween('2026-10-15', '2026-10-01'), R.daysBetween('2026-03-01', '2026-03-09')],
+    [14, -14, 8], 'whole days, across the clock change');
+  ok(Number.isNaN(R.daysBetween('soon', '2026-10-01')), 'a date that is not a date');
+  eq(['admin', 'editor', 'viewer', 'parent', 'pending', 'none'].map(R.canSubmitShiftReport), [true, true, true, true, false, false], 'who may send');
+  eq(['admin', 'editor', 'viewer', 'parent', 'pending', 'none'].map(R.canReviewShiftReport), [true, true, false, false, false, false], 'who may review');
+  eq(['admin', 'editor', 'viewer', 'parent', 'pending', 'none'].map(R.canReadAllShiftReports), [true, true, true, false, false, false], 'who reads all');
+  const view = { events: [{ kind: 'storefront', sfId: 's1', date: '2026-10-03', shifts: [{ blockId: 'b1' }] },
+    { kind: 'meeting', sfId: 's2', date: '2026-10-03', shifts: [{ blockId: 'b2' }] }] };
+  const body = { sfId: 's1', blockId: 'b1', teCents: 0, cashCents: 0, attest: true };
+  eq(R.shiftReportProblem(body, view, '2026-10-03'), null, 'a shift on its own day');
+  eq(R.shiftReportProblem(Object.assign({}, body, { sfId: 's2', blockId: 'b2' }), view, '2026-10-03'), 'not-in-view', 'a meeting is not a storefront');
+  eq(R.shiftReportProblem(body, null, '2026-10-03'), 'not-in-view', 'no view');
+  eq(R.shiftReportProblem(body, { events: [{ kind: 'storefront', sfId: 's1', date: 'TBD', shifts: [{ blockId: 'b1' }] }] }, '2026-10-03'),
+    'not-in-view', 'a storefront with no date');
+});
+
+atest('api shift reports: one report per block at a time — a second waits, an accepted one holds it, a sent-back one frees it', async () => {
+  const w = await srWorld();
+  const first = await w.report('parent');
+  eq(first.status, 200, 'the first report');
+  const rid = first.body.report.id;
+  ok(/^[A-Za-z0-9-]{1,64}$/.test(rid), 'a report id the PATCH route takes: ' + rid);
+  const second = await w.report('newbie', { teCents: 99 });
+  eq([second.status, second.body.error, second.body.reason], [409, 'shift-reported', 'open'], 'a second report while one waits');
+  eq((await w.report('parent')).body.reason, 'open', 'the same family sending twice');
+  eq((await w.report('newbie', { blockId: 'b2' })).status, 200, 'another block is free');
+  eq((await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500 })).status, 200, 'accepted');
+  const third = await w.report('newbie');
+  eq([third.status, third.body.reason], [409, 'accepted'], 'a report on an accepted block');
+  // A leader reopens it; the family sends a corrected one.
+  const back = await w.act('owner', rid, { action: 'return', reviewNote: 'The cash box had $30, not $25.' });
+  eq([back.status, back.body.report.status, back.body.report.reviewNote], [200, 'returned', 'The cash box had $30, not $25.'], 'sent back after accepting');
+  const again = await w.report('parent', { cashCents: 3000 });
+  eq([again.status, again.body.report.status, again.body.report.cashCents], [200, 'submitted', 3000], 'the corrected report');
+  ok(again.body.report.id !== rid, 'a resubmission is a new report');
+  // A withdrawn report frees the block too.
+  eq((await w.act('parent', again.body.report.id, { action: 'withdraw' })).body.report.status, 'withdrawn', 'withdrawn');
+  eq((await w.report('newbie')).status, 200, 'another family reports the block after a withdrawal');
+  eq(w.sql("SELECT status, count(*) AS n FROM shift_reports WHERE block_id = 'b1' GROUP BY status ORDER BY status"),
+    [{ status: 'returned', n: 1 }, { status: 'submitted', n: 1 }, { status: 'withdrawn', n: 1 }], 'block b1\'s history');
+});
+
+atest('api shift reports: the sender edits or withdraws while it waits, a leader may not accept their own, and an accept names its figures', async () => {
+  const w = await srWorld();
+  const rid = (await w.report('parent')).body.report.id;
+  const ed = await w.act('parent', rid, { action: 'edit', teCents: 13000, cashCents: 2600, note: 'Recounted', attest: true });
+  eq([ed.status, ed.body.report.teCents, ed.body.report.cashCents, ed.body.report.note], [200, 13000, 2600, 'Recounted'], 'an edit');
+  const unsigned = await w.act('parent', rid, { action: 'edit', teCents: 1, cashCents: 1 });
+  eq([unsigned.status, unsigned.body.reason], [400, 'attest'], 'an edit must be signed again');
+  eq((await w.act('parent', rid, { action: 'edit', teCents: 1, cashCents: 1, attest: true, sfId: 'sfToday' })).body.reason, 'unknown-field', 'an edit moving the report to another shift');
+  eq((await w.act('parent', rid, { action: 'withdraw', note: 'x' })).body.reason, 'unknown-field', 'a withdraw carrying figures');
+  eq((await w.act('parent', rid, { action: 'delete' })).body.reason, 'action', 'an unknown action');
+  // An accept names the figures the leader saw; the family's edit a moment earlier wins.
+  const stale = await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500 });
+  eq([stale.status, stale.body.error, stale.body.status], [409, 'report-moved', 'submitted'], 'accepting figures the report no longer has');
+  eq((await w.act('editor', rid, { action: 'accept' })).body.reason, 'te-cents', 'an accept without figures');
+  eq((await w.act('editor', rid, { action: 'return' })).body.reason, 'review-note', 'sending back without a reason');
+  eq((await w.act('editor', rid, { action: 'return', reviewNote: '   ' })).body.reason, 'review-note', 'a blank reason');
+  // A leader's own report: another leader accepts it, never themselves.
+  const mine = (await w.report('editor', { blockId: 'b2' })).body.report.id;
+  const self = await w.act('editor', mine, { action: 'accept', teCents: 12345, cashCents: 2500 });
+  eq([self.status, self.body.error], [409, 'same-person'], 'an editor accepting their own report');
+  eq(w.one('SELECT status FROM shift_reports WHERE id = ?', mine).status, 'submitted', 'their own report after the refusal');
+  const other = await w.act('owner', mine, { action: 'accept', teCents: 12345, cashCents: 2500, reviewNote: 'Checked with the box' });
+  eq([other.status, other.body.report.status, other.body.report.reviewedByName, other.body.report.reviewedByUid, other.body.report.submittedByUid],
+    [200, 'accepted', 'Test owner', 'uid-owner', 'uid-editor'], 'another leader accepts it');
+  // After an accept nothing but a leader's return moves it.
+  eq((await w.act('editor', mine, { action: 'withdraw' })).status, 409, 'the sender withdrawing an accepted report');
+  eq((await w.act('editor', mine, { action: 'edit', teCents: 1, cashCents: 1, attest: true })).status, 409, 'the sender editing an accepted report');
+  eq((await w.act('admin2', mine, { action: 'accept', teCents: 12345, cashCents: 2500 })).status, 409, 'accepting twice');
+  eq((await w.act('parent', rid, { action: 'withdraw' })).body.report.status, 'withdrawn', 'the parent withdraws theirs');
+  eq((await w.act('parent', rid, { action: 'withdraw' })).body.error, 'report-moved', 'withdrawing twice');
+  eq((await w.act('editor', rid, { action: 'return', reviewNote: 'x' })).body.status, 'withdrawn', 'sending back a withdrawn report');
+});
+
+atest('api shift reports: every change leaves one audit row, in the same batch, and nothing else does', async () => {
+  const w = await srWorld();
+  const rid = (await w.report('parent')).body.report.id;
+  await w.act('parent', rid, { action: 'edit', teCents: 200, cashCents: 300, attest: true });
+  await w.act('editor', rid, { action: 'accept', teCents: 200, cashCents: 300 });
+  await w.act('owner', rid, { action: 'return', reviewNote: 'Wrong block' });
+  const rid2 = (await w.report('parent', { teCents: 5, cashCents: 6 })).body.report.id;
+  await w.act('parent', rid2, { action: 'withdraw' });
+  // Refused: none of these may leave a row.
+  await w.report('newbie', { blockId: 'nope' });
+  await w.act('newbie', rid2, { action: 'withdraw' });
+  await w.act('parent', rid2, { action: 'withdraw' });
+  await w.act('viewer', rid, { action: 'return', reviewNote: 'x' });
+  eq(w.sql("SELECT uid, action, detail FROM audit WHERE action LIKE 'shift.%' ORDER BY id").map((r) => [r.uid, r.action, JSON.parse(r.detail)]), [
+    ['uid-parent', 'shift.report', { report: rid, sfId: 'sfPast', blockId: 'b1', teCents: 12345, cashCents: 2500 }],
+    ['uid-parent', 'shift.report.edit', { report: rid, teCents: 200, cashCents: 300 }],
+    ['uid-editor', 'shift.accept', { report: rid, sfId: 'sfPast', blockId: 'b1', teCents: 200, cashCents: 300, submittedBy: 'uid-parent' }],
+    ['uid-owner', 'shift.return', { report: rid, sfId: 'sfPast', blockId: 'b1', from: 'accepted' }],
+    ['uid-parent', 'shift.report', { report: rid2, sfId: 'sfPast', blockId: 'b1', teCents: 5, cashCents: 6 }],
+    ['uid-parent', 'shift.report.withdraw', { report: rid2 }]
+  ], 'the audit trail');
+  ok(!/Counted at the table|Test parent/.test(w.sql("SELECT detail FROM audit WHERE action LIKE 'shift.%'").map((r) => r.detail).join()),
+    'an audit row holds a note or a name');
+  // The audit insert is in the write's own batch, and conditioned on that write's stamp.
+  const src = readFileSync(join(ROOT, 'functions/api/pack/[id]/shift-reports/[rid].js'), 'utf8') +
+    readFileSync(join(ROOT, 'functions/api/pack/[id]/shift-reports/index.js'), 'utf8');
+  eq((src.match(/auditIf\(db, packId, user\.uid, /g) || []).length, 2, 'the two audited batches');
+  ok(!/auditStmt/.test(src), 'an unconditional audit row in the shift-report endpoints');
+});
+
+atest('api shift reports: a parent reads their own in full and only the status of anyone else\'s; leaders read everything', async () => {
+  const w = await srWorld();
+  w.db.raw.prepare("UPDATE members SET name = 'Sam Leaderson' WHERE uid = 'uid-editor'").run();
+  w.db.raw.prepare("UPDATE members SET name = 'Nora Newfamily' WHERE uid = 'uid-newbie'").run();
+  const mine = (await w.report('parent', { blockId: 'b1' })).body.report.id;
+  const theirs = (await w.report('newbie', { blockId: 'b2', teCents: 77777, cashCents: 4321, note: 'Nora counted with Jo' })).body.report.id;
+  await w.report('newbie', { blockId: 'b3', teCents: 55555, cashCents: 1111 });
+  const old = (await w.report('newbie', { blockId: 'b4', teCents: 44444, cashCents: 2222 })).body.report.id;
+  await w.act('newbie', old, { action: 'withdraw' });
+  await w.act('editor', theirs, { action: 'accept', teCents: 77777, cashCents: 4321 });
+  await w.act('editor', mine, { action: 'accept', teCents: 12345, cashCents: 2500, reviewNote: 'Thanks!' });
+  const p = await w.reports('parent');
+  eq(p.status, 200, 'a parent\'s GET');
+  eq(p.body.reports.length, 1, 'a parent sees one full report: their own');
+  const own = p.body.reports[0];
+  eq([own.id, own.status, own.mine, own.teCents, own.reviewedByName, own.reviewNote, own.submittedByName],
+    [mine, 'accepted', true, 12345, 'Sam', 'Thanks!', 'Test parent'], 'their own report, with the leader\'s first name only');
+  ok(!('reviewedByUid' in own) && !('submittedByUid' in own) && !('stamp' in own), 'a parent\'s copy carries account ids or the stamp');
+  eq(p.body.others.sort((a, b) => a.blockId < b.blockId ? -1 : 1), [
+    { sfId: 'sfPast', blockId: 'b2', status: 'accepted' }, { sfId: 'sfPast', blockId: 'b3', status: 'submitted' },
+    { sfId: 'sfPast', blockId: 'b4', status: 'withdrawn' }], 'other families\' reports: block and status only');
+  for (const leak of ['77777', '55555', '44444', '4321', 'Nora', 'Newfamily', 'Jo', 'uid-newbie', theirs, 'Leaderson', 'uid-editor'])
+    ok(p.text.indexOf(leak) === -1, 'a parent\'s GET carries ' + leak);
+  // The other family sees the parent's block the same way, and their own in full.
+  const n = await w.reports('newbie');
+  eq([n.body.reports.length, n.body.others], [3, [{ sfId: 'sfPast', blockId: 'b1', status: 'accepted' }]], 'the second family\'s view');
+  ok(n.text.indexOf('12345') === -1 && n.text.indexOf('Test parent') === -1, 'the second family sees the first one\'s figures or name');
+  // A block reported again after a withdrawal: the report holding it is what a parent sees.
+  await w.report('newbie', { blockId: 'b4', teCents: 1, cashCents: 1 });
+  eq((await w.reports('parent')).body.others.filter((o) => o.blockId === 'b4'), [{ sfId: 'sfPast', blockId: 'b4', status: 'submitted' }],
+    'the block\'s current report, not its withdrawn one');
+  // Leaders, viewers included: every report, every field the page needs.
+  for (const who of ['owner', 'editor', 'viewer']) {
+    const l = await w.reports(who);
+    eq([l.status, l.body.reports.length, l.body.others], [200, 5, []], who + ' reads them all');
+    const t = l.body.reports.find((r) => r.id === theirs);
+    eq([t.submittedByName, t.submittedByUid, t.teCents, t.cashCents, t.note, t.reviewedByName, t.reviewedByUid, t.mine],
+      ['Nora Newfamily', 'uid-newbie', 77777, 4321, 'Nora counted with Jo', 'Sam Leaderson', 'uid-editor', false], who + ': a family\'s report in full');
+    ok(l.text.indexOf('stamp') === -1, who + ': the stamp left the server');
+  }
+});
+
+atest('api shift reports: two changes at once — exactly one wins, and only the winner is audited', async () => {
+  // Accept against send-back, both having read the report before either writes — in both orders,
+  // since a send-back is allowed from accepted too: landing second, it must still lose.
+  let w, rid, a, b;
+  for (const reverse of [false, true]) {
+    w = await srWorld();
+    rid = (await w.report('parent')).body.report.id;
+    holdBatches(w, 2, reverse);
+    [a, b] = await Promise.all([w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500 }),
+      w.act('owner', rid, { action: 'return', reviewNote: 'Recount' })]);
+    eq([a.status, b.status].sort(), [200, 409], 'accept and send-back at once (' + reverse + '): ' + a.text + ' / ' + b.text);
+    eq((a.status === 409 ? a : b).body.error, 'report-moved', 'the loser is told it moved');
+    eq(w.sql("SELECT count(*) AS n FROM audit WHERE action IN ('shift.accept', 'shift.return')")[0].n, 1, 'one audit row, for the winner');
+    eq(w.one('SELECT status FROM shift_reports WHERE id = ?', rid).status, a.status === 200 ? 'accepted' : 'returned', 'the report says who won');
+  }
+  // Withdraw against accept.
+  w = await srWorld();
+  rid = (await w.report('parent')).body.report.id;
+  holdBatches(w, 2);
+  [a, b] = await Promise.all([w.act('parent', rid, { action: 'withdraw' }), w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500 })]);
+  eq([a.status, b.status].sort(), [200, 409], 'withdraw and accept at once');
+  eq(w.sql("SELECT action FROM audit WHERE action IN ('shift.accept', 'shift.report.withdraw')").map((r) => r.action),
+    [a.status === 200 ? 'shift.report.withdraw' : 'shift.accept'], 'only the winner is audited');
+  eq(w.one('SELECT status FROM shift_reports WHERE id = ?', rid).status, a.status === 200 ? 'withdrawn' : 'accepted', 'withdraw/accept: the report says who won');
+  // An edit against an accept: the leader never signs for figures they did not see.
+  w = await srWorld();
+  rid = (await w.report('parent')).body.report.id;
+  holdBatches(w, 2);
+  [a, b] = await Promise.all([w.act('parent', rid, { action: 'edit', teCents: 1, cashCents: 2, attest: true }),
+    w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500 })]);
+  eq([a.status, b.status].sort(), [200, 409], 'edit and accept at once');
+  // Whoever won, an accepted report holds exactly the figures the leader named.
+  eq(w.one('SELECT status, te_cents FROM shift_reports WHERE id = ?', rid),
+    a.status === 200 ? { status: 'submitted', te_cents: 1 } : { status: 'accepted', te_cents: 12345 }, 'edit/accept: the report after the race');
+  // Two families reporting one block at once.
+  w = await srWorld();
+  holdBatches(w, 2);
+  [a, b] = await Promise.all([w.report('parent'), w.report('newbie')]);
+  eq([a.status, b.status].sort(), [200, 409], 'two reports on one block at once');
+  eq([(a.status === 409 ? a : b).body.error, w.sql("SELECT count(*) AS n FROM shift_reports WHERE block_id = 'b1'")[0].n,
+    w.sql("SELECT count(*) AS n FROM audit WHERE action = 'shift.report'")[0].n], ['shift-reported', 1, 1], 'one report, one audit row');
+  // A parent removed between the check and the write writes nothing.
+  w = await srWorld();
+  const orig = w.db.batch;
+  w.db.batch = function (list) { w.db.batch = orig; w.db.raw.prepare("DELETE FROM members WHERE uid = 'uid-parent'").run(); return orig.call(w.db, list); };
+  denied(await w.report('parent'), 'a report from a member removed mid-request');
+  eq(w.sql('SELECT count(*) AS n FROM shift_reports')[0].n, 0, 'the removed member\'s report was written');
+});
+
+atest('api shift reports: the table itself refuses what the rules refuse', async () => {
+  const w = await (await apiWorld()).seed({});
+  const refused = (sql, ...a) => { try { w.db.raw.prepare(sql).run(...a); return false; } catch (e) { return true; } };
+  let n = 0;
+  const ins = (over) => {
+    const r = Object.assign({ id: 'r' + (++n), pack_id: API_PACK, sf_id: 'sf1', block_id: 'b' + n, te_cents: 100, cash_cents: 0, note: '',
+      submitted_by_uid: 'uid-parent', submitted_by_name: 'P', submitted_at: 1, updated_at: 1, status: 'submitted',
+      reviewed_by_uid: null, reviewed_by_name: null, reviewed_at: null, stamp: 's' }, over);
+    const cols = Object.keys(r);
+    return refused('INSERT INTO shift_reports (' + cols.join(', ') + ') VALUES (' + cols.map(() => '?').join(', ') + ')', ...cols.map((c) => r[c]));
+  };
+  ok(!ins({}), 'a good report');
+  ok(ins({ te_cents: -1 }), 'a negative amount');
+  ok(ins({ cash_cents: 1000001 }), 'cash over $10,000');
+  ok(!ins({ cash_cents: 1000000 }), 'cash at $10,000');
+  ok(ins({ te_cents: 12.5 }), 'half a cent');
+  ok(ins({ te_cents: 'lots' }), 'an amount that is text');
+  ok(ins({ note: 'x'.repeat(301) }), 'a 301-character note');
+  ok(ins({ review_note: 'x'.repeat(301) }), 'a 301-character review note');
+  ok(ins({ submitted_by_name: 'x'.repeat(121) }), 'a 121-character name');
+  ok(ins({ status: 'approved' }), 'a status that is not one of the four');
+  ok(ins({ status: 'accepted' }), 'accepted with no reviewer');
+  ok(ins({ status: 'accepted', reviewed_by_uid: 'uid-parent', reviewed_by_name: 'P', reviewed_at: 2 }), 'accepted by the person who sent it');
+  ok(!ins({ status: 'accepted', reviewed_by_uid: 'uid-owner', reviewed_by_name: 'O', reviewed_at: 2 }), 'accepted by someone else');
+  ok(ins({ status: 'returned' }), 'returned with no reviewer');
+  ok(ins({ pack_id: 'no-such-pack' }), 'a report for no pack');
+  ok(ins({ sf_id: '' }), 'no storefront id');
+  // One open-or-accepted report per block.
+  ok(!ins({ block_id: 'shared' }), 'the first report on a block');
+  ok(ins({ block_id: 'shared' }), 'a second waiting report on the block');
+  ok(ins({ block_id: 'shared', status: 'accepted', reviewed_by_uid: 'uid-owner', reviewed_by_name: 'O', reviewed_at: 2 }), 'an accepted one beside a waiting one');
+  ok(!ins({ block_id: 'shared', status: 'withdrawn' }) && !ins({ block_id: 'shared', status: 'returned', reviewed_by_uid: 'uid-owner', reviewed_by_name: 'O', reviewed_at: 2 }),
+    'closed reports beside it');
+  ok(refused("UPDATE shift_reports SET status = 'accepted', reviewed_by_uid = 'uid-parent', reviewed_at = 2 WHERE block_id = 'shared' AND status = 'submitted'"),
+    'an update making the sender their own verifier');
+  // The migration is applied by wrangler from its file name, after the first two.
+  eq(MIGRATION_FILES.slice(0, 3), ['0001_init.sql', '0002_deployment.sql', '0003_shift_reports.sql'], 'the migrations, in order');
+});
+
+atest('api shift reports: SETUP.md Part C describes the rules the server holds', async () => {
+  await apiSetup();
+  const part = SETUP.slice(SETUP.indexOf('## Part C'), SETUP.indexOf('## Part D'));
+  const sec = part.slice(part.indexOf('### Shift reports'));
+  ok(part.indexOf('### Shift reports') > 0, 'no "Shift reports" subsection in Part C');
+  ok(/pending/.test(sec) && /admin.{0,20}editor/.test(sec) && /14 days/.test(sec) && /\$10,000/.test(sec) && /300 characters/.test(sec),
+    'the subsection leaves out a rule');
+  ok(/same person|different adult/i.test(sec) && /parent view/.test(sec), 'the subsection leaves out the second sign-off or the parent-view check');
+  eq([API.rules.SHIFT_REPORT_DAYS, API.rules.SHIFT_REPORT_MAX_CENTS, API.rules.SHIFT_REPORT_NOTE_MAX], [14, 1000000, 300], 'the numbers the doc quotes');
+});
+
 /* ---- the schema, and the code's shape ---- */
 
 atest('api schema: the tables themselves refuse what Part C refuses', async () => {
@@ -15507,7 +15893,8 @@ test('api functions/ is plain modules: relative imports only, routes only under 
   }
   eq(files.filter((f) => /^api\//.test(f)).sort(), ['api/pack/[id]/import.js', 'api/pack/[id]/index.js', 'api/pack/[id]/invites/[email].js',
     'api/pack/[id]/invites/index.js', 'api/pack/[id]/join.js', 'api/pack/[id]/members/[uid].js', 'api/pack/[id]/members/index.js',
-    'api/pack/[id]/rev.js', 'api/pack/[id]/view.js', 'api/session.js'], 'the routes');
+    'api/pack/[id]/rev.js', 'api/pack/[id]/shift-reports/[rid].js', 'api/pack/[id]/shift-reports/index.js', 'api/pack/[id]/view.js',
+    'api/session.js'], 'the routes');
 });
 
 /* ================================================================
@@ -15569,15 +15956,16 @@ const inflight = new Set();
 // The routes as Pages would map them: functions/api/… by path.
 function apiRoute(pathname) {
   if (pathname === '/api/session') return { mod: API.mod.session, params: {} };
-  const m = /^\/api\/pack\/([^/]+)(?:\/(rev|members|invites|join|view|import)(?:\/([^/]+))?)?$/.exec(pathname);
+  const m = /^\/api\/pack\/([^/]+)(?:\/(rev|members|invites|join|view|import|shift-reports)(?:\/([^/]+))?)?$/.exec(pathname);
   if (!m) return null;
   const params = { id: m[1] };
   let what = m[2] || 'pack';
   if (m[3] !== undefined) {
     if (what === 'members') { what = 'member'; params.uid = decodeURIComponent(m[3]); }
     else if (what === 'invites') { what = 'invite'; params.email = m[3]; }   // left encoded: the handler decodes
+    else if (what === 'shift-reports') { what = 'shiftReport'; params.rid = decodeURIComponent(m[3]); }
     else return null;
-  }
+  } else if (what === 'shift-reports') what = 'shiftReports';
   return { mod: API.mod[what], params };
 }
 function clientFetch(w, client) {
