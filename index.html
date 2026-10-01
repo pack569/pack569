@@ -1793,6 +1793,15 @@
   .plan-option { border: 1px dashed var(--line); border-radius: 8px; padding: 6px 10px; margin: 6px 0; }
   .plan-tell { background: var(--accent-soft); border-radius: 9px; padding: 8px 12px; margin: 10px 0; }
   .plan-notes { border-top: 2px solid var(--line); margin-top: 16px; padding-top: 10px; }
+  /* "Plan for tonight" on a den meeting (meetingPlanBox): the editor's and the agenda row's. */
+  .plan-tonight { border: 1px solid var(--line); border-left: 3px solid var(--navy); border-radius: 9px; padding: 8px 10px; margin: 8px 0 0; overflow-wrap: anywhere; }
+  .plan-tonight p { margin: 0 0 4px; }
+  .plan-tonight .eyebrow { margin: 0 0 4px; }
+  .plan-tonight-steps { margin: 2px 0 6px; padding-left: 1.4em; font-size: 0.85rem; }
+  .plan-tonight-den { border-top: 1px dashed var(--line); padding: 6px 0 2px; }
+  .plan-tonight-den:first-of-type { border-top: 0; padding-top: 0; }
+  .plan-tonight .row { margin-top: 6px; }
+  .plan-print-steps > li { margin: 0 0 10px; }
   /* Run this meeting (runScreenHtml). Phone first: the clocks stay at the top while the sheet
      scrolls, every button a leader hits standing in front of a den is at least 48px tall, and
      nothing is wider than the screen at 375px: the Both-dens breakout is one column until there
@@ -10052,7 +10061,9 @@
   }
   // DEN LESSON PLANS (docs/lesson-plans/*.md). They are not in this page: they are about 1 MB of
   // text, so scripts/build-site.mjs parses them into plans.json beside index.html, and this
-  // fetches it only when a leader opens a plan. A parent's phone never downloads it.
+  // fetches it only when a leader opens a plan, or a den meeting tagged with an official
+  // adventure (meetingPlanBox), or Home in July (the yearly check). A parent's phone never
+  // downloads it.
   // { format, guide, plans: { 'Wolf :: Bobcat': { meetings: [{ steps: […] }], … } } }, keyed like
   // the runs (den + ' :: ' + adventure, as ADVENTURES spells it). The text is markdown —
   // **bold**, [date] placeholders — and whatever shows it escapes it first (esc()).
@@ -10091,6 +10102,31 @@
     adventurePlansLoad = load;
     return load.promise;
   }
+  // The file as a screen that is PART of another one sees it (the den meeting's "Plan for
+  // tonight" box, the July Home task): { status: 'loading' | 'ready' | 'failed', data, error }.
+  // Asking starts the fetch once and redraws when it settles; a failure is kept for the same
+  // minute as the loader's, so a redraw never asks again (and never loops). Read-only: it never
+  // blocks the screen around it, and nothing from it is written anywhere.
+  var advPlansSeen = null;
+  function advPlansWant() {
+    var s = advPlansSeen;
+    if (s && !(s.status === 'failed' && Date.now() - s.at >= ADVENTURE_PLANS_RETRY_MS)) return s;
+    var seen = { status: 'loading', data: null, error: '', at: 0 };
+    advPlansSeen = seen;
+    loadAdventurePlans().then(function (j) {
+      seen.status = 'ready';
+      seen.data = j;
+      if (advPlansSeen === seen) render();
+    }, function (err) {
+      seen.status = 'failed';
+      seen.error = (err && err.message) || '';
+      seen.at = Date.now();
+      if (advPlansSeen === seen) render();
+    });
+    return seen;
+  }
+  // …and without asking: null until something has.
+  function advPlansHeld() { return advPlansSeen; }
   /* ----- The plan panel (Den plans → Lesson plan), 2026-09-30. BUILD-PLAN §4 and §4a. -----
      Every adventure row in Den plans has a Lesson plan button, plan or not: the plans arrive
      asynchronously, so a row cannot know, and the panel says which it is. Without a plan it shows
@@ -11443,6 +11479,270 @@
   // "2 of 3" / "the only session". Said the same way everywhere it appears.
   function sessionLabel(pos, of) {
     return of <= 1 ? 'one session' : ('session ' + pos + ' of ' + of);
+  }
+  /* ----- "Plan for tonight" on a den meeting (2026-09-30, BUILD-PLAN §4 "Meeting editor"). -----
+     A den meeting tagged with an adventure shows which meeting of the lesson plan tonight is, its
+     outline and supplies, and opens the plan panel or the run screen at it. It is in the meeting
+     editor and in the calendar's agenda row (agendaDetail), and prints as a leaders' copy.
+     HOW A NIGHT FINDS ITS PLAN MEETING (planNightFor). A den meeting on the calendar is a den
+     night, so tonight's place in the den's run of the adventure (runForMeeting: session 2 of 3)
+     is counted against the plan's DEN meetings only, in the plan's order:
+       - an outing or an optional extra is not a den night and is never "tonight"; the box names
+         it underneath ("also in the plan"), because it still has to be put on the calendar;
+       - a meeting for one leader's-choice option only is a den meeting like any other and keeps
+         its place, labelled "Option A only" (the plan panel has the other option's version);
+       - a run longer than the plan's den meetings: the nights past them are "extra time";
+       - a run shorter than the plan: tonight is still plan meeting N (the den may be going
+         faster, or has not put the rest on the calendar yet), and its last night says how many
+         the plan has, without guessing which.
+     ⚠ LEADERS ONLY, like the panel: never drawn for a parent, and nothing here writes `state` or
+     copies plan text anywhere (event notes, the parent view, the digest, the .ics). Rendering is
+     §4a's, through planInline. The plans load lazily (advPlansWant): the box says it is loading or
+     that the file failed, and the editor around it works either way. */
+  // Tonight in a plan. `pos` is tonight's place in the den's run (from 1); `runOf` the run's length
+  // (0 when the meeting is in no run yet, e.g. undated).
+  //   { kind: 'none' }                              no plan in the app
+  //   { kind: 'no-den', of: 0, others }             a plan with no den meetings (a range day)
+  //   { kind: 'extra', n, of, others, place }       past the plan's den meetings (place: the last one)
+  //   { kind: 'meeting', meeting, place, n, of, others, short }
+  // `place` is the meeting's place in plan.meetings from 1 (openRunMeeting's meetingN); `of` counts
+  // den meetings; `others` are the outings and extras [{ meeting, place }]; `short` is the run's
+  // last night while the plan has more.
+  function planNightFor(plan, pos, runOf) {
+    if (!plan || !Array.isArray(plan.meetings)) return { kind: 'none' };
+    var dens = [], others = [];
+    plan.meetings.forEach(function (m, i) {
+      if (!m || typeof m !== 'object') return;
+      if (m.kind === 'den') dens.push({ meeting: m, place: i + 1 });
+      else others.push({ meeting: m, place: i + 1 });
+    });
+    if (!dens.length) return { kind: 'no-den', of: 0, others: others };
+    var n = pos >= 1 ? Math.floor(pos) : 1;
+    if (n > dens.length) return { kind: 'extra', n: n, of: dens.length, others: others, place: dens[dens.length - 1].place };
+    var hit = dens[n - 1];
+    return { kind: 'meeting', meeting: hit.meeting, place: hit.place, n: n, of: dens.length, others: others,
+      short: runOf >= 1 && n === runOf && runOf < dens.length };
+  }
+  // Each den's night at a den meeting: [{ den, adventure, night }] — one row for a den's own
+  // meeting, one per den on an All-dens night (meetingAdvs, so denAdvAt decides each den's
+  // adventure). Only official adventures (a custom one has no plan, and needs no fetch); `night`
+  // is null until the plans are here (`data`).
+  function meetingPlanRows(m, data) {
+    return meetingAdvs(m).filter(function (x) {
+      return x.den && advOptionsForDen(x.den).indexOf(x.name) !== -1;
+    }).map(function (x) {
+      var r = runForMeeting(m, x.den);
+      return { den: x.den, adventure: x.name,
+        night: data ? planNightFor(advPlanFor(data, advPlanKey(x.den, x.name)), r ? r.position : 1, r ? r.of : 0) : null };
+    });
+  }
+  // The run screen's entries for the dens that have a plan meeting with steps tonight.
+  function meetingPlanEntries(rows) {
+    return (rows || []).filter(function (x) {
+      return x.night && x.night.kind === 'meeting' && runRunnable(x.night.meeting);
+    }).map(function (x) { return { den: x.den, adventure: x.adventure, meetingN: x.night.place }; });
+  }
+  // "Meeting 3 · Nature hike (outing)", for the outings and extras a plan also has.
+  function planOthersLine(others) {
+    var list = (others || []).map(function (o) {
+      var m = o.meeting;
+      return 'Meeting ' + esc(String(m.n || o.place)) + ' · ' + planInline(m.title) +
+        ' (' + (m.kind === 'add-on' ? 'optional extra' : 'outing') + ')';
+    });
+    return list.length ? '<p class="small muted">Also in the plan, not a den night: ' + list.join('; ') + '</p>' : '';
+  }
+  // The Lesson plan button: the panel, open at plan meeting `idx` (from 0).
+  function planTonightOpenBtn(row, idx) {
+    return '<button type="button" class="btn small ghost no-print" data-act="mtg-plan-open" data-den="' + esc(row.den) +
+      '" data-name="' + esc(row.adventure) + '" data-n="' + idx + '" aria-label="' + esc('Lesson plan for ' + row.den + ' ' + row.adventure) +
+      '">Lesson plan</button>';
+  }
+  // One den's night, compact. `full` adds the step outline and the outings (a den's own meeting);
+  // an All-dens night lists each den in a line or two.
+  function planTonightRowHtml(row, full) {
+    var nt = row.night;
+    var who = full ? '' : '<strong>' + esc(row.den) + '</strong> · ' + esc(row.adventure) + ' · ';
+    if (!nt || nt.kind === 'none') return '<p class="small muted">' + who + 'No lesson plan in the app for ' + esc(row.adventure) + '.</p>';
+    if (nt.kind === 'no-den') {
+      return '<p class="small">' + who + 'This plan has no den meetings.</p>' + planOthersLine(nt.others) +
+        '<div class="row no-print">' + planTonightOpenBtn(row, 0) + '</div>';
+    }
+    if (nt.kind === 'extra') {
+      return '<p class="small">' + who + 'Plan has ' + nt.of + ' den meeting' + (nt.of === 1 ? '' : 's') + ' — this is extra time.</p>' +
+        (full ? planOthersLine(nt.others) : '') +
+        // Opens at the first outing (tonight may be it), or else the last den meeting.
+        '<div class="row no-print">' + planTonightOpenBtn(row, (nt.others.length ? nt.others[0].place : nt.place) - 1) + '</div>';
+    }
+    var m = nt.meeting;
+    var only = planOptionsLabel(m.forOptions);
+    var h = '<p>' + who + (full ? '' : 'meeting ' + nt.n + ' of ' + nt.of + ' · ') + '<strong>' + planInline(m.title) + '</strong>' +
+      ' <span class="small muted">· ' + esc(planMeetingMins(m)) + '</span>' +
+      (only ? ' <span class="pill">' + esc(only) + '</span>' : '') + '</p>';
+    if (only) h += '<p class="small muted">With the other option this meeting runs differently: see the plan.</p>';
+    if (full && nt.short) {
+      h += '<p class="small muted">The calendar has ' + nt.n + (nt.n === 1 ? ' night' : ' nights') + ' on this so far; the plan has ' +
+        nt.of + ' den meetings.</p>';
+    }
+    var steps = Array.isArray(m.steps) ? m.steps : [];
+    if (full && steps.length) {
+      h += '<ol class="plan-tonight-steps">' + steps.map(function (s) {
+        if (!s || typeof s !== 'object') return '';
+        var so = planOptionsLabel(s.forOptions);
+        return '<li>' + planInline(s.title) + (typeof s.mins === 'number' && isFinite(s.mins) ? ' <span class="muted">· ' + s.mins + ' min</span>' : '') +
+          (so ? ' <span class="muted">(' + esc(so) + ')</span>' : '') + '</li>';
+      }).join('') + '</ol>';
+    }
+    if (m.supplies && m.supplies.text) h += '<p class="small"><strong>Supplies:</strong> ' + planInline(m.supplies.text) + '</p>';
+    if (full) return h + planOthersLine(nt.others);   // its Lesson plan sits with Run and Print (meetingPlanBoxHtml)
+    return h + '<div class="row no-print">' + planTonightOpenBtn(row, nt.place - 1) + '</div>';
+  }
+  // The box. `seen` is advPlansWant()'s { status, data, error }; `rows` are meetingPlanRows'.
+  function meetingPlanBoxHtml(m, rows, seen) {
+    if (!rows || !rows.length) return '';
+    var many = !m.den;
+    var st = (seen && seen.status) || 'loading';
+    var first = rows[0].night;
+    if (!many && st === 'ready' && (!first || first.kind === 'none')) return planTonightRowHtml(rows[0], true);
+    var head = many ? 'Plans for tonight'
+      : 'Plan for tonight' + (st === 'ready' && first.kind === 'meeting' ? ' · meeting ' + first.n + ' of ' + first.of : '');
+    var h = '<div class="plan-tonight"><p class="eyebrow">' + esc(head) + '</p>';
+    if (st === 'failed') {
+      return h + '<p class="small" role="alert">' + esc(seen.error || 'The lesson plans couldn’t be loaded.') + '</p>' +
+        '<div class="row no-print"><button type="button" class="btn small" data-act="mtg-plan-retry">Try again</button></div></div>';
+    }
+    if (st !== 'ready') return h + '<p class="small muted" role="status">Loading the lesson plan…</p></div>';
+    h += rows.map(function (row) {
+      return many ? '<div class="plan-tonight-den">' + planTonightRowHtml(row, false) + '</div>' : planTonightRowHtml(row, true);
+    }).join('');
+    var entries = meetingPlanEntries(rows);
+    var btns = (!many && first.kind === 'meeting' ? planTonightOpenBtn(rows[0], first.place - 1) : '') +
+      (entries.length ? '<button type="button" class="btn small primary" data-act="mtg-plan-run" data-id="' + esc(m.id) + '">Run this meeting</button>' : '') +
+      (rows.some(function (r) { return r.night && r.night.kind !== 'none'; })
+        ? '<button type="button" class="btn small" data-act="mtg-plan-print" data-id="' + esc(m.id) + '">Print plan</button>' : '');
+    if (btns) h += '<div class="row no-print">' + btns + '</div>';
+    if (entries.length > RUN_MAX_DENS) {
+      h += '<p class="small muted">The run screen holds ' + RUN_MAX_DENS + ' dens at once, so it opens with ' +
+        esc(denListLabel(entries.slice(0, RUN_MAX_DENS).map(function (e) { return e.den; }))) + '.</p>';
+    }
+    return h + '</div>';
+  }
+  // The box for a den meeting, for leaders: asks for the plans only when a den on it works an
+  // official adventure.
+  function meetingPlanBox(m) {
+    if (parentMode() || !m || m.kind !== 'den') return '';
+    if (!meetingPlanRows(m, null).length) return '';
+    var seen = advPlansWant();
+    return meetingPlanBoxHtml(m, meetingPlanRows(m, seen.status === 'ready' ? seen.data : null), seen);
+  }
+  // The leaders' printout of tonight's plan (ui.overlay kind 'mtg-plan-print': { id, status, data,
+  // error }): each den's meeting, its supplies, and its steps with the Say text. Never for families.
+  function meetingPlanPrintHtml(rows) {
+    return (rows || []).map(function (row) {
+      var nt = row.night;
+      var h = '<h2 class="section display" style="margin-top:14px">' + esc(row.den + ' den · ' + row.adventure) +
+        (nt && nt.kind === 'meeting' ? ' · meeting ' + nt.n + ' of ' + nt.of : '') + '</h2>';
+      if (!nt || nt.kind === 'none') return h + '<p class="muted">No lesson plan in the app for this adventure.</p>';
+      if (nt.kind === 'no-den') return h + '<p class="muted">This plan has no den meetings.</p>';
+      if (nt.kind === 'extra') return h + '<p class="muted">The plan has ' + nt.of + ' den meeting' + (nt.of === 1 ? '' : 's') + ' — this is extra time.</p>';
+      var m = nt.meeting;
+      var only = planOptionsLabel(m.forOptions);
+      h += '<p><strong>' + planInline(m.title) + '</strong> <span class="muted">· ' + esc(planMeetingMins(m)) + '</span>' +
+        (only ? ' <span class="pill">' + esc(only) + '</span>' : '') + '</p>';
+      if (m.supplies && m.supplies.text) h += '<p><strong>Supplies:</strong> ' + planInline(m.supplies.text) + '</p>';
+      var steps = Array.isArray(m.steps) ? m.steps : [];
+      if (steps.length) {
+        h += '<ol class="plan-steps plan-print-steps">' + steps.map(function (s) {
+          if (!s || typeof s !== 'object') return '';
+          var so = planOptionsLabel(s.forOptions);
+          return '<li><p class="plan-step-head"><strong>' + planInline(s.title) + '</strong>' +
+            (typeof s.mins === 'number' && isFinite(s.mins) ? ' <span class="small muted">· ' + s.mins + ' min</span>' : '') +
+            (so ? ' <span class="pill">' + esc(so) + '</span>' : '') + '</p>' +
+            (s.say ? '<div class="plan-say"><p class="eyebrow">Say' + (s.sayTo ? ' (to ' + planInline(s.sayTo) + ')' : '') + '</p><p>' + planInline(s.say) + '</p></div>' : '') +
+            '</li>';
+        }).join('') + '</ol>';
+      }
+      return h;
+    }).join('');
+  }
+  function renderMeetingPlanPrint(o) {
+    var m = getEvent(o.id);
+    if (!m) return '';
+    var ready = o.status === 'ready';
+    var guide = (o.data && typeof o.data.guide === 'string' && o.data.guide) || ADV_PLAN_GUIDE;
+    var h = '<div class="overlay" role="dialog" aria-modal="true" aria-label="Lesson plan printout"><div class="overlay-inner">' +
+      '<div class="row no-print" style="margin-bottom:12px">' +
+      '<button type="button" class="btn" data-act="close-overlay">&larr; Back</button>' +
+      '<button type="button" class="btn primary" data-act="print-mtg-plan"' + (ready ? '' : ' disabled') + '>Print / Save PDF</button></div>' +
+      '<div class="summary-sheet plan-sheet">' +
+      '<h1 style="margin:0">' + esc(state.packName || 'Pack') + ' — ' + esc(m.den ? m.den + ' den meeting' : 'Den meeting, all dens') + '</h1>' +
+      '<p class="muted small" style="margin:0 0 8px">' + esc(fmtDate(m.date)) + (fmtClock(m.time) ? ' · ' + esc(fmtClock(m.time)) : '') +
+      ' · lesson plan, leaders’ copy (not for families)</p>' +
+      '<p class="small plan-guide">' + planInline(guide) + '</p>';
+    if (o.status === 'failed') {
+      h += '<div class="warn" role="alert"><p style="margin:0 0 8px">' + esc(o.error || 'The lesson plans couldn’t be loaded.') +
+        ' Nothing to print until they load.</p><button type="button" class="btn small" data-act="mtg-plan-print" data-id="' + esc(m.id) + '">Try again</button></div>';
+    } else if (!ready) h += '<p class="small muted" role="status">Loading the lesson plan…</p>';
+    else h += meetingPlanPrintHtml(meetingPlanRows(m, o.data));
+    return h + '</div></div></div>';
+  }
+  // Opens the printout and fills it when the plans arrive (load first, then print).
+  function openMeetingPlanPrint(id) {
+    if (parentMode() || !getEvent(id)) return;
+    var o = { kind: 'mtg-plan-print', id: String(id), status: 'loading', data: null, error: '' };
+    ui.overlay = o;
+    render();
+    loadAdventurePlans().then(function (j) {
+      if (ui.overlay !== o) return;
+      o.status = 'ready';
+      o.data = j;
+      render();
+    }, function (err) {
+      if (ui.overlay !== o) return;
+      o.status = 'failed';
+      o.error = (err && err.message) || '';
+      render();
+    });
+  }
+  // The box's and the printout's buttons. Read-only: they open screens, never write `state`.
+  function meetingPlanAction(act, el) {
+    var d = el && el.dataset ? el.dataset : {};
+    if (act === 'mtg-plan-open') {
+      var open = {};
+      open[Math.max(0, +d.n || 0)] = true;
+      openAdvPlan(d.den || '', d.name || '', open);
+    } else if (act === 'mtg-plan-run') {
+      var seen = advPlansHeld(), m = getEvent(d.id);
+      if (!m || !seen || seen.status !== 'ready') return;
+      openRunMeeting(meetingPlanEntries(meetingPlanRows(m, seen.data)));
+    } else if (act === 'mtg-plan-retry') {
+      advPlansSeen = null;
+      advPlansWant();
+      render();
+    } else if (act === 'mtg-plan-print') openMeetingPlanPrint(d.id);
+    else if (act === 'print-mtg-plan') window.print();
+  }
+  // The yearly check's plans (homeTasks, July): the plans a den has a meeting on, any year, whose
+  // `verified` date is more than a year before `today`, as "Wolf Bobcat". Pure.
+  function staleAdvPlans(data, keys, today) {
+    var t = String(today || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return [];
+    var cut = (+t.slice(0, 4) - 1) + t.slice(4);
+    var seen = {};
+    return (keys || []).filter(function (k) {
+      if (seen[k]) return false;
+      seen[k] = true;
+      var p = advPlanFor(data, k);
+      var v = p && typeof p.verified === 'string' ? p.verified : '';
+      return !!p && (!/^\d{4}-\d{2}-\d{2}$/.test(v) || v < cut);
+    }).map(function (k) { return k.replace(' :: ', ' '); }).sort();
+  }
+  // Every den + adventure a den meeting on the calendar works, as plan keys.
+  function advPlanKeysUsed() {
+    var out = [];
+    state.events.forEach(function (ev) {
+      meetingAdvs(ev).forEach(function (x) { if (x.den) out.push(advPlanKey(x.den, x.name)); });
+    });
+    return out;
   }
   /* ----- Make-up at home: the message for the family (Wave A, 2026-09-28) ----------------
      The make-up list says who missed a session; this is the note a den leader sends them.
@@ -19173,6 +19473,8 @@
             (mShort ? ' <span class="muted">· ' + mShort + ' with a session to make up</span>' : ''));
         }
       });
+      // Tonight's lesson plan meeting, the same box as the editor's, with its Print plan.
+      if (m.kind === 'den') h += meetingPlanBox(m);
       h += line('Where', m.note ? esc(m.note) : '<span class="muted">no location or notes yet</span>');
       // The agenda sheet is the LEADER-facing surface — it is what gets printed and carried into
       // the room — so this is where the internal note belongs, and the only rendered place it
@@ -19552,7 +19854,8 @@
       '<input type="time" class="time-in" data-ch="mtg-time" data-id="' + m.id + '" value="' + esc(m.time || '') + '" aria-label="Meeting time">' +
       tinyDangerBtn('del-event:' + m.id, 'Remove meeting') +
       '</div>' +
-      (m.kind === 'den' ? advTargetPicker(m) : '') +
+      // …and, for leaders, which meeting of the lesson plan tonight is (meetingPlanBox).
+      (m.kind === 'den' ? advTargetPicker(m) + meetingPlanBox(m) : '') +
       // Two notes, and each one says who reads it. The single field this replaces was labelled
       // "Location / notes (optional)" with nothing to say it went out to every family — so
       // "ask the Alvarez family to bring the canopy, they still owe for spring" would have been
@@ -24133,7 +24436,7 @@
     'denplan-past', 'pk-agenda-toggle', 'toggle-archive', 'adv-plan-open', 'adv-plan-retry', 'adv-plan-mtg',
     'run-open', 'run-retry', 'run-close', 'run-pick', 'run-start', 'run-resume', 'run-restart', 'run-next', 'run-skip', 'run-back',
     'run-pause', 'run-view', 'run-step', 'run-closing', 'run-finish', 'run-unfinish', 'run-record', 'run-add', 'run-add-cancel',
-    'run-remove', 'run-ref',
+    'run-remove', 'run-ref', 'mtg-plan-open', 'mtg-plan-run', 'mtg-plan-retry', 'mtg-plan-print', 'print-mtg-plan',
     'ledger-fix-cancel', 'ledger-void-cancel', 'charge-forgive-cancel', 'plan-adv-cancel',
     'open-summary', 'copy-summary', 'print-summary', 'open-digest', 'copy-digest', 'copy-digest-leaders', 'open-shop', 'copy-shop',
     'print-shop', 'pk-agenda-print', 'print-pk-agenda', 'sf-day-sheet', 'copy-day-sheet', 'sf-glance-open', 'copy-glance',
@@ -24697,9 +25000,18 @@
     }
     // Yearly: the adventure lists are hard-coded, and a renamed or new adventure is a den
     // leader typing one the app then calls off-list. The fix is an edit to ADVENTURES here.
-    if (adventureCheckDue(ADVENTURES_VERIFIED, today)) {
-      add('advancement', 'whenever', 'Check the Cub Scout adventure list against scouting.org for this year',
-        'Last checked ' + fmtDate(ADVENTURES_VERIFIED) + ' · new or renamed adventures need the app updated', 'scouts', 'advancement');
+    // The same July task names the lesson plans the dens use that were checked over a year ago
+    // (staleAdvPlans), once the plans have loaded (Home asks for them in July).
+    var plansHeld = today.slice(5, 7) === '07' ? advPlansHeld() : null;
+    var stalePlans = plansHeld && plansHeld.status === 'ready' ? staleAdvPlans(plansHeld.data, advPlanKeysUsed(), today) : [];
+    var listDue = adventureCheckDue(ADVENTURES_VERIFIED, today);
+    if (listDue || stalePlans.length) {
+      add('advancement', 'whenever', listDue ? 'Check the Cub Scout adventure list against scouting.org for this year'
+        : 'Check the den lesson plans against scouting.org for this year',
+        (listDue ? 'Last checked ' + fmtDate(ADVENTURES_VERIFIED) + ' · new or renamed adventures need the app updated' : '') +
+        (stalePlans.length ? (listDue ? ' · ' : '') + 'Lesson plans checked over a year ago: ' +
+          denListLabel(stalePlans.length > 3 ? stalePlans.slice(0, 3).concat([(stalePlans.length - 3) + ' more']) : stalePlans) : ''),
+        'scouts', 'advancement');
     }
     return out;
   }
@@ -24810,6 +25122,8 @@
     }
 
     /* ----- Needs you ----- */
+    // July's yearly check names stale lesson plans, so the plans are asked for (once) in July.
+    if (todayISO().slice(5, 7) === '07' && advPlanKeysUsed().length) advPlansWant();
     var tasks = homeTasks();
     var LIMIT = 5;
     var mine = [], rest = [];
@@ -28632,6 +28946,8 @@
     if (o.kind === 'adv-plan') return renderAdvPlanSheet(o);
     // …and its Run this meeting timer. Leaders only, on this device only (renderRunMeeting).
     if (o.kind === 'run-meeting') return renderRunMeeting(o);
+    // A den meeting's lesson plan, printed for the leaders (renderMeetingPlanPrint). Never published.
+    if (o.kind === 'mtg-plan-print') return renderMeetingPlanPrint(o);
     return '';
   }
 
@@ -33653,6 +33969,9 @@
         act === 'run-pause' || act === 'run-view' || act === 'run-step' || act === 'run-closing' || act === 'run-finish' ||
         act === 'run-unfinish' || act === 'run-record' || act === 'run-add' || act === 'run-add-cancel' || act === 'run-remove' ||
         act === 'run-ref') { runAction(act, el); return; }
+    // A den meeting's "Plan for tonight" box and its printout (meetingPlanAction).
+    if (act === 'mtg-plan-open' || act === 'mtg-plan-run' || act === 'mtg-plan-retry' || act === 'mtg-plan-print' ||
+        act === 'print-mtg-plan') { meetingPlanAction(act, el); return; }
     if (act === 'adv-plan-mtg') {
       if (!ui.overlay || ui.overlay.kind !== 'adv-plan') return;
       var apN = +el.dataset.n;

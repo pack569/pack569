@@ -11610,7 +11610,8 @@ test('A5: the adventure list carries a verified date, and the July check reads i
   eq(due('2025-07-01', '2026-06-30'), false, 'June is not July');
   eq(due('', '2026-07-10'), true, 'a list never checked is due');
   const fn = /function homeTasks\(\) \{[\s\S]*?\n    return out;\n  \}/.exec(SCRIPT)[0];
-  ok(/adventureCheckDue\(ADVENTURES_VERIFIED, today\)\) \{\s*add\('advancement'/.test(fn),
+  ok(/var listDue = adventureCheckDue\(ADVENTURES_VERIFIED, today\);/.test(fn) &&
+    /if \(listDue \|\| stalePlans\.length\) \{\s*add\('advancement'/.test(fn),
     'the Home task is not wired to the advancement job');
 });
 
@@ -27348,6 +27349,279 @@ test('lesson plans: the inline picks and the summer date are not run-screen choi
   const ctx = runCtx();
   ctx.O = runOv([{ den: 'Tiger', adventure: 'Summertime Fun', meetingN: 1 }]);
   ok(!/data-act="run-pick"/.test(vm.runInContext('runScreenHtml(O, NOW)', ctx)), 'Tiger Summertime Fun meeting 1 still asks for a pick');
+});
+
+/* ---------------- "Plan for tonight" on a den meeting (2026-09-30, BUILD-PLAN §4 "Meeting editor") ----------------
+   Which meeting of the lesson plan tonight is, in the meeting editor and the agenda row, its
+   printout for leaders, and the July check's stale plans. Leaders only; nothing written. */
+const BOX_FNS = ['esc', 'planInline', 'planOptionsLabel', 'planMeetingMins', 'advPlanKey', 'advPlanFor', 'RUN_MAX_DENS',
+  'runRunnable', 'denListLabel', 'planNightFor', 'meetingPlanRows', 'meetingPlanEntries', 'planOthersLine', 'planTonightOpenBtn',
+  'planTonightRowHtml', 'meetingPlanBoxHtml', 'meetingPlanPrintHtml', 'staleAdvPlans', 'advPlanKeysUsed'];
+// The run model (runSandbox) with the box over it, the real plans in DATA.
+const BOX_SETUP = `
+  var TODAY = '2026-10-20';
+  var SCOUTS = [{ id: 'l', name: 'Lu', den: 'Lion' }, { id: 't', name: 'Ty', den: 'Tiger' }, { id: 'w', name: 'Wes', den: 'Wolf' },
+    { id: 'b', name: 'Bo', den: 'Bear' }, { id: 'v', name: 'Vi', den: 'Webelos' }];
+  var STATUS = {}, ATT = {};
+  var EVENTS = [
+    { id: 'w1', kind: 'den', den: 'Wolf', date: '2026-10-06', adventure: 'Bobcat' },
+    { id: 'w2', kind: 'den', den: 'Wolf', date: '2026-10-13', adventure: 'bobcat' },
+    { id: 'w3', kind: 'den', den: 'Wolf', date: '2026-10-20', adventure: 'Bobcat' },
+    { id: 'b1', kind: 'den', den: 'Bear', date: '2026-10-06', adventure: 'Bear Habitat' },
+    { id: 'c1', kind: 'den', den: 'Wolf', date: '2026-11-03', adventure: 'Knot night' },
+    { id: 'a1', kind: 'den', den: '', date: '2026-11-10', packAdv: 'req:0', denAdv: { Bear: false, Tiger: 'Tigers in the Wild' }, adventure: 'Bobcat' },
+    { id: 'p1', kind: 'pack', den: '', date: '2026-11-17' }
+  ];`;
+function boxCtx(setup = BOX_SETUP) {
+  const ctx = runSandbox(setup + '\n' + BOX_FNS.map(decl).join('\n'));
+  ctx.DATA = plansOut().data;
+  return ctx;
+}
+const ev = (ctx, id) => vm.runInContext(`EVENTS.find(function (e) { return e.id === '${id}'; })`, ctx);
+
+test('plan for tonight: tonight is counted against the plan’s den meetings — extra time, outings, option-only and no plan', () => {
+  const ctx = boxCtx();
+  const d = plansOut().data.plans;
+  const night = (key, pos, runOf) => {
+    const n = ctx.planNightFor(d[key] || null, pos, runOf);
+    return [n.kind, n.place, n.n, n.of, !!n.short, (n.others || []).map((o) => o.place).join(',')];
+  };
+  eq(night('Wolf :: Bobcat', 1, 2), ['meeting', 1, 1, 2, false, ''], 'Wolf Bobcat night 1');
+  eq(night('Wolf :: Bobcat', 2, 3), ['meeting', 2, 2, 2, false, ''], 'Wolf Bobcat night 2');
+  eq(night('Wolf :: Bobcat', 3, 3), ['extra', 2, 3, 2, false, ''], 'a third night on a two-meeting plan is extra time');
+  eq(night('Wolf :: Bobcat', 1, 1), ['meeting', 1, 1, 2, true, ''], 'a one-night run: plan meeting 1, and its last night says so');
+  eq(night('Wolf :: Bobcat', 0, 0), ['meeting', 1, 1, 2, false, ''], 'no run (undated): meeting 1');
+  // An outing is never a den night: Bear Habitat is two den meetings and an outing.
+  eq(night('Bear :: Bear Habitat', 2, 3), ['meeting', 2, 2, 2, false, '3'], 'Bear Habitat night 2');
+  eq(night('Bear :: Bear Habitat', 3, 3), ['extra', 2, 3, 2, false, '3'], 'Bear Habitat night 3 is not the outing');
+  eq(night('Tiger :: Summertime Fun', 2, 2), ['extra', 1, 2, 1, false, '2,3,4'], 'Summertime Fun has one den meeting');
+  // An outing in the middle is stepped over: First Aid's fourth den night is its fifth meeting.
+  eq(night('Arrow of Light :: First Aid', 4, 4), ['meeting', 5, 4, 4, false, '4'], 'AoL First Aid night 4');
+  // An option-only den meeting keeps its place, labelled.
+  const mf = ctx.planNightFor(d['Webelos :: My Family'], 2, 2);
+  eq([mf.kind, mf.place, mf.meeting.forOptions], ['meeting', 2, ['A']], 'My Family meeting 2 (Option A only)');
+  ok(/<span class="pill">Option A only<\/span>/.test(ctx.planTonightRowHtml({ den: 'Webelos', adventure: 'My Family', night: mf }, true)), 'not labelled');
+  // No plan, and a plan with no den meetings.
+  eq(ctx.planNightFor(null, 1, 1).kind, 'none', 'no plan');
+  eq(ctx.planNightFor({ meetings: [{ kind: 'outing', n: 1, title: 'Range day', steps: [] }] }, 1, 1).kind, 'no-den', 'a range day');
+  // Through the run model: the Wolf den's three Bobcat nights, the third extra; a custom
+  // adventure and a pack meeting have no rows (and need no plans).
+  const kinds = ['w1', 'w2', 'w3'].map((id) => vm.runInContext(`meetingPlanRows(EVENTS.find(function (e) { return e.id === '${id}'; }), DATA)`, ctx)[0].night.kind + ':' +
+    vm.runInContext(`meetingPlanRows(EVENTS.find(function (e) { return e.id === '${id}'; }), DATA)`, ctx)[0].night.n);
+  eq(kinds, ['meeting:1', 'meeting:2', 'extra:3'], 'the Wolf den’s Bobcat nights');
+  eq(vm.runInContext("meetingPlanRows(EVENTS[4], DATA).length + meetingPlanRows(EVENTS[6], DATA).length", ctx), 0, 'a custom adventure or a pack meeting');
+  eq(vm.runInContext("meetingPlanRows(EVENTS[0], null)[0].night", ctx), null, 'rows before the plans load');
+  // The box, for each case.
+  const box = (id) => vm.runInContext(`meetingPlanBoxHtml(EVENTS.find(function (e) { return e.id === '${id}'; }), meetingPlanRows(EVENTS.find(function (e) { return e.id === '${id}'; }), DATA), { status: 'ready', data: DATA })`, ctx);
+  const w1 = box('w1');
+  ok(/<p class="eyebrow">Plan for tonight · meeting 1 of 2<\/p>/.test(w1), 'the heading: ' + w1.slice(0, 200));
+  ok(/<strong>Meet the Den<\/strong>/.test(w1) && /<ol class="plan-tonight-steps">/.test(w1) && /<strong>Supplies:<\/strong>/.test(w1), 'title, outline, supplies');
+  eq((w1.match(/<li>/g) || []).length, d['Wolf :: Bobcat'].meetings[0].steps.length, 'one outline line per step');
+  ok(/data-act="mtg-plan-open" data-den="Wolf" data-name="Bobcat" data-n="0"/.test(w1), 'Lesson plan does not open at meeting 1');
+  ok(/data-act="mtg-plan-run" data-id="w1">Run this meeting/.test(w1) && /data-act="mtg-plan-print" data-id="w1"/.test(w1), 'Run and Print');
+  ok(!/<p class="plan-say|Say<\/p>/.test(w1), 'the box carries the Say text (the printout does)');
+  const w3 = box('w3');
+  ok(/Plan has 2 den meetings — this is extra time\./.test(w3) && /data-n="1"/.test(w3) && !/mtg-plan-run/.test(w3), 'extra time: ' + w3);
+  const b1 = box('b1');
+  ok(/Also in the plan, not a den night: Meeting 3 · .* \(outing\)/.test(b1), 'the outing is not named');
+  const none = ctx.meetingPlanBoxHtml({ id: 'x', den: 'Wolf' }, [{ den: 'Wolf', adventure: 'Paws of Skill', night: { kind: 'none' } }], { status: 'ready' });
+  eq(none, '<p class="small muted">No lesson plan in the app for Paws of Skill.</p>', 'no plan is one quiet line');
+});
+
+test('plan for tonight: an All-dens night lists each den’s meeting from denAdvAt, with one Run for every den', () => {
+  const ctx = boxCtx();
+  const rows = vm.runInContext('meetingPlanRows(EVENTS[5], DATA)', ctx);
+  const want = vm.runInContext("DENS.map(function (dn) { return [dn, denAdvAt(EVENTS[5], dn).name]; }).filter(function (x) { return x[1]; })", ctx);
+  eq(rows.map((r) => [r.den, r.adventure]), want, 'not one row per den, as denAdvAt says');
+  eq(want, [['Lion', 'Bobcat'], ['Tiger', 'Tigers in the Wild'], ['Wolf', 'Bobcat'], ['Webelos', 'Bobcat']],
+    'the fixture: the pack’s Bobcat, Tiger’s own, Bear away, no Arrow of Light scouts');
+  eq(vm.runInContext('meetingAdvs(EVENTS[5])[0]', ctx), { den: '', name: 'Bobcat' }, 'the fixture: an adventure typed for all dens before packAdv (no den, so no plan)');
+  // The Wolf den's fourth Bobcat night is extra time, so it has no run entry; the others are night 1.
+  eq(vm.runInContext('meetingPlanEntries(meetingPlanRows(EVENTS[5], DATA))', ctx),
+    [{ den: 'Lion', adventure: 'Bobcat', meetingN: 1 }, { den: 'Tiger', adventure: 'Tigers in the Wild', meetingN: 1 }, { den: 'Webelos', adventure: 'Bobcat', meetingN: 1 }],
+    'the run entries');
+  const html = vm.runInContext("meetingPlanBoxHtml(EVENTS[5], meetingPlanRows(EVENTS[5], DATA), { status: 'ready' })", ctx);
+  ok(/<p class="eyebrow">Plans for tonight<\/p>/.test(html), 'heading');
+  eq((html.match(/class="plan-tonight-den"/g) || []).length, 4, 'one line per den');
+  eq((html.match(/data-act="mtg-plan-run"/g) || []).length, 1, 'one Run this meeting');
+  eq((html.match(/data-act="mtg-plan-open"/g) || []).length, 4, 'a Lesson plan per den');
+  ok(/<strong>Wolf<\/strong> · Bobcat · Plan has 2 den meetings — this is extra time\./.test(html), 'the Wolf line');
+  ok(!/The run screen holds/.test(html), 'four dens or fewer need no note');
+  // Five dens with a meeting: the run screen takes four, and the box says which.
+  const five = boxCtx(BOX_SETUP.replace("denAdv: { Bear: false, Tiger: 'Tigers in the Wild' }", "denAdv: {}")
+    .replace(/\{ id: 'w[123]'[^\n]*\n/g, ''));
+  const fh = vm.runInContext("meetingPlanBoxHtml(EVENTS[2], meetingPlanRows(EVENTS[2], DATA), { status: 'ready' })", five);
+  ok(/The run screen holds 4 dens at once, so it opens with Lion, Tiger, Wolf and Bear\./.test(fh), 'five dens: ' + fh.slice(-300));
+  // The button hands openRunMeeting exactly those entries.
+  const w = vm.createContext({});
+  vm.runInContext(`var got = null, EV = ${JSON.stringify(ev(ctx, 'a1'))}, ROWS = ${JSON.stringify(rows)};
+    function getEvent(id) { return id === 'a1' ? EV : null; }
+    function advPlansHeld() { return { status: 'ready', data: {} }; }
+    function meetingPlanRows() { return ROWS; }
+    function openRunMeeting(e) { got = e; }
+    ${['RUN_MAX_DENS', 'runRunnable', 'meetingPlanEntries', 'meetingPlanAction'].map(decl).join('\n')}`, w);
+  w.ROWS = rows;
+  w.meetingPlanAction('mtg-plan-run', { dataset: { id: 'a1' } });
+  eq(JSON.parse(JSON.stringify(w.got)).map((e) => e.den + ':' + e.meetingN), ['Lion:1', 'Tiger:1', 'Webelos:1'], 'Run this meeting');
+});
+
+test('plan for tonight: loading and failed never block the editor, and the box is leaders only', () => {
+  const ctx = boxCtx();
+  const draw = (seen) => vm.runInContext(`meetingPlanBoxHtml(EVENTS[0], meetingPlanRows(EVENTS[0], null), ${JSON.stringify(seen)})`, ctx);
+  const loading = draw({ status: 'loading' });
+  ok(/<div class="plan-tonight"><p class="eyebrow">Plan for tonight<\/p><p class="small muted" role="status">Loading the lesson plan…<\/p><\/div>/.test(loading), 'loading: ' + loading);
+  const failed = draw({ status: 'failed', error: 'The lesson plans couldn’t be loaded. Check the connection and try again in a minute.' });
+  ok(/role="alert">The lesson plans couldn’t be loaded\./.test(failed) && /data-act="mtg-plan-retry">Try again/.test(failed), 'failed: ' + failed);
+  ok(!/mtg-plan-run|mtg-plan-open/.test(loading + failed), 'buttons before the plans are here');
+  // Wired into the editor and the agenda row, for leaders only, asking without waiting.
+  ok(/advTargetPicker\(m\) \+ meetingPlanBox\(m\)/.test(slice('renderMeetingRow')), 'the editor has no box');
+  ok(/if \(m\.kind === 'den'\) h \+= meetingPlanBox\(m\);/.test(slice('agendaDetail')), 'the agenda row has no box');
+  const mb = slice('meetingPlanBox');
+  ok(/if \(parentMode\(\) \|\| !m \|\| m\.kind !== 'den'\) return '';/.test(mb) && /advPlansWant\(\)/.test(mb) && !/\.then\(/.test(mb), 'the box: ' + mb);
+  ok(!/meetingPlanBox|mtg-plan|renderMeetingPlanPrint/.test(codeOnly(slice('renderParentApp'))), 'the parent app draws the box');
+  const parentActs = /var PARENT_ACTS = \[([\s\S]*?)\];/.exec(SCRIPT)[1];
+  ok(!/mtg-plan/.test(parentActs), 'a box action is allowed in the parent app');
+  const held = /var HELD_ACTS = \[([\s\S]*?)\];/.exec(SCRIPT)[1];
+  for (const a of ['mtg-plan-open', 'mtg-plan-run', 'mtg-plan-retry', 'mtg-plan-print', 'print-mtg-plan']) ok(held.indexOf("'" + a + "'") > -1, a + ' is refused while held');
+  ok(/if \(o\.kind === 'mtg-plan-print'\) return renderMeetingPlanPrint\(o\);/.test(slice('renderOverlay')), 'the printout is not an overlay');
+  // Nothing in the box, the printout or their buttons writes the pack record or a note.
+  for (const f of ['planNightFor', 'meetingPlanRows', 'meetingPlanEntries', 'planTonightRowHtml', 'meetingPlanBoxHtml', 'meetingPlanBox',
+    'meetingPlanPrintHtml', 'renderMeetingPlanPrint', 'openMeetingPlanPrint', 'meetingPlanAction', 'advPlansWant', 'staleAdvPlans', 'advPlanKeysUsed']) {
+    const c = jsCode(slice(f));
+    ok(!/\bstate(\.[\w$]+|\[[^\]]*\])*\s*=[^=]|\bsave\(|commit\(|showToast\(|\.note\b|noteInternal/.test(c), f + ' writes the pack record, a toast or a note');
+  }
+});
+
+atest('plan for tonight: the plans are asked for once, redraw when they come, and a failure waits its minute', async () => {
+  const mk = () => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`var renders = 0, asks = 0, ANSWER = null, NOW = 1000; Date.now = function () { return NOW; };
+      function render() { renders++; } function loadAdventurePlans() { asks++; return ANSWER; }
+      ${['ADVENTURE_PLANS_RETRY_MS', 'advPlansSeen', 'advPlansWant', 'advPlansHeld'].map(decl).join('\n')}`, ctx);
+    return ctx;
+  };
+  const a = mk();
+  a.ANSWER = Promise.resolve({ format: 1, plans: {} });
+  eq(a.advPlansHeld(), null, 'nothing asked yet');
+  eq(a.advPlansWant().status, 'loading', 'loading');
+  a.advPlansWant();
+  await null; await null;
+  eq([a.advPlansWant().status, a.asks, a.renders], ['ready', 1, 1], 'asked once, drawn once');
+  const b = mk();
+  b.ANSWER = Promise.reject(new Error('The lesson plans couldn’t be loaded. Check the connection and try again in a minute.'));
+  b.ANSWER.catch(() => {});
+  b.advPlansWant();
+  await null; await null;
+  const s = b.advPlansWant();
+  eq([s.status, /couldn’t be loaded/.test(s.error), b.asks, b.renders], ['failed', true, 1, 1], 'failed, and a redraw did not ask again');
+  b.NOW += 59000; b.advPlansWant();
+  eq(b.asks, 1, 'asked again inside the minute');
+  b.NOW += 1000; b.ANSWER = Promise.resolve({ format: 1, plans: {} });
+  eq([b.advPlansWant().status, b.asks], ['loading', 2], 'after the minute');
+});
+
+test('plan for tonight: plan text is escaped in the box and the printout, only **…** is bold, and [date] stays', () => {
+  const ctx = boxCtx();
+  const plan = JSON.parse(JSON.stringify(plansOut().data.plans['Wolf :: Bobcat']));
+  const m = plan.meetings[0];
+  m.title = '<img src=x onerror=alert(1)> **Meet**';
+  m.supplies = { text: '</div><script>alert(2)</script> [date]' };
+  m.forOptions = ['A"><b>'];
+  m.steps[0].title = '<a href="javascript:alert(3)">x</a>';
+  m.steps[0].say = '"><svg onload=alert(4)> **Hi** [date]';
+  m.steps[0].sayTo = '<i>den</i>';
+  plan.meetings.push({ n: 3, kind: 'outing', title: '<u>Hike</u>', steps: [] });
+  const night = ctx.planNightFor(plan, 1, 2);
+  const row = { den: 'Wolf', adventure: 'Bob"cat<', night };
+  const box = ctx.meetingPlanBoxHtml({ id: 'e"1', den: 'Wolf' }, [row], { status: 'ready' });
+  const print = ctx.meetingPlanPrintHtml([row]);
+  for (const [what, html] of [['the box', box], ['the printout', print]]) {
+    ok(!panelMarkupProblem(html), what + ': ' + panelMarkupProblem(html));
+    ok(!/<img|<script|<svg|<a |<u>|<i>|<b>/.test(html), what + ' made markup of plan text');
+    ok(html.indexOf('&lt;img src=x onerror=alert(1)&gt; <strong>Meet</strong>') > -1, what + ': the title');
+    ok(html.indexOf('&lt;/div&gt;&lt;script&gt;alert(2)&lt;/script&gt; [date]') > -1, what + ': the supplies');
+    ok(html.indexOf('**') === -1, what + ': a ** left');
+  }
+  ok(box.indexOf('data-name="Bob&quot;cat&lt;"') > -1 && box.indexOf('data-id="e&quot;1"') > -1, 'attributes');
+  ok(box.indexOf('&lt;u&gt;Hike&lt;/u&gt; (outing)') > -1, 'the outing line');
+  ok(print.indexOf('&quot;&gt;&lt;svg onload=alert(4)&gt; <strong>Hi</strong> [date]') > -1 && print.indexOf('Say (to &lt;i&gt;den&lt;/i&gt;)') > -1, 'the Say text');
+  // The printout of a real meeting: every step, each with its Say; the supplies.
+  const real = ctx.meetingPlanPrintHtml(vm.runInContext('meetingPlanRows(EVENTS[0], DATA)', ctx));
+  const steps = plansOut().data.plans['Wolf :: Bobcat'].meetings[0].steps;
+  eq((real.match(/<p class="eyebrow">Say/g) || []).length, steps.filter((s) => s.say).length, 'a Say per step');
+  ok(/<h2 class="section display"[^>]*>Wolf den · Bobcat · meeting 1 of 2<\/h2>/.test(real) && /<strong>Supplies:<\/strong>/.test(real), 'the printout heading and supplies');
+  ok(!panelMarkupProblem(real), 'the real printout: ' + panelMarkupProblem(real));
+  // The sheet around it waits for the plans before it can print, and says so if they fail.
+  const ps = slice('renderMeetingPlanPrint');
+  ok(/data-act="print-mtg-plan"' \+ \(ready \? '' : ' disabled'\)/.test(ps) && /Nothing to print until they load\./.test(ps), 'the printout prints before the plans load');
+  ok(/leaders’ copy \(not for families\)/.test(ps), 'the printout does not say whose copy it is');
+});
+
+test('plan for tonight: the parent view, the digest and the .ics carry no plan text from a tagged den meeting', () => {
+  const plan = plansOut().data.plans['Wolf :: Bobcat'];
+  const words = allStrings(plan.meetings).map((t) => t.replace(/^["“*\s]+/, '').slice(0, 40)).filter((t) => t.length >= 30);
+  ok(words.length > 50, 'too few plan strings to look for');
+  const plant = `
+    state.events.push({ id: 'e9', kind: 'den', den: 'Wolf', date: '2026-10-13', time: '18:30', adventure: 'Bobcat', note: 'Church hall' });
+    state.events.push({ id: 'e10', kind: 'den', den: '', date: '2026-10-20', time: '18:30', packAdv: 'req:0', note: 'All dens' });`;
+  const pvc = pvCtx(plant + `
+    ${['pad2', 'campHash', 'parseLegacyTime', 'icsEscape', 'icsFold', 'icsDate', 'icsTime', 'icsNextDay', 'icsEndPlusHour', 'parentEventICS'].map(slice).join('\n')}`);
+  const pv = vm.runInContext('buildParentView(state, { showStandings: false })', pvc);
+  const files = pv.events.map((e) => pvc.parentEventICS(e, '20260928T120000Z')).join('');
+  const dg = digestCtx();
+  vm.runInContext(`state.events[0] = { id: 'e9', kind: 'den', den: 'Wolf', date: '2026-10-06', time: '18:30', adventure: 'Bobcat', note: 'Church hall' };`, dg);
+  const digest = vm.runInContext("monthlyDigest('2026-10')", dg) + vm.runInContext("monthlyDigestLeaders('2026-10')", dg);
+  const ic = vm.createContext({});
+  vm.runInContext(PRIV_STATE + plant + `
+    function pad2(n) { return (n < 10 ? '0' : '') + n; }
+    ${['buildICS', 'icsStamp', 'icsDate', 'icsTime', 'icsNextDay', 'icsEndPlusHour', 'icsEscape', 'icsFold', 'eventIsMeeting', 'eventLabel', 'fmt'].map(slice).join('\n')}`, ic);
+  const ics = vm.runInContext('buildICS()', ic);
+  const out = { 'the parent view': JSON.stringify(pv), 'a family’s calendar file': files, 'the digest': digest, 'the calendar file': ics };
+  ok(/Church hall/.test(out['the parent view']) && /Den meeting/.test(files) && /Church hall/.test(digest) && /Den meeting — Wolf/.test(ics),
+    'the den meeting did not reach all four, so this proves nothing');
+  for (const [where, text] of Object.entries(out)) words.forEach((w) => ok(text.indexOf(w) < 0, 'plan text in ' + where + ': ' + w));
+  for (const f of ['buildParentView', 'monthlyDigest', 'monthlyDigestLeaders', 'buildICS', 'parentEventICS', 'normalizeState']) {
+    ok(!/meetingPlan|planNightFor|advPlansWant|advPlansHeld|advPlansSeen|staleAdvPlans|planTonight/.test(codeOnly(slice(f))), f + ' reads tonight’s plan');
+  }
+});
+
+test('plan for tonight: the July check names the plans the dens use that were checked over a year ago', () => {
+  const ctx = boxCtx();
+  const data = JSON.parse(JSON.stringify(plansOut().data));
+  data.plans['Wolf :: Bobcat'].verified = '2025-07-01';
+  data.plans['Bear :: Bear Habitat'].verified = '2025-07-20';
+  data.plans['Lion :: Bobcat'].verified = '2024-01-01';
+  data.plans['Tiger :: Tigers in the Wild'].verified = 'unknown';   // not a date: counted as never checked
+  data.plans['Bear :: Bobcat'].verified = '2020-01-01';   // no Bear den meeting on Bobcat: not counted
+  ctx.D2 = data;
+  const keys = vm.runInContext('advPlanKeysUsed()', ctx);
+  ok(keys.indexOf('Wolf :: Bobcat') > -1 && keys.indexOf('Tiger :: Tigers in the Wild') > -1 && keys.indexOf('Bear :: Bobcat') === -1, 'the plans in use: ' + keys);
+  ok(keys.indexOf('Wolf :: Knot night') > -1, 'a custom adventure is a key (and has no plan)');
+  ok(keys.every((k) => /^(Lion|Tiger|Wolf|Bear|Webelos|Arrow of Light) :: /.test(k)), 'a key without a den: ' + keys);
+  eq(ctx.staleAdvPlans(data, keys, '2026-07-15'), ['Lion Bobcat', 'Tiger Tigers in the Wild', 'Wolf Bobcat'], 'July 2026');
+  eq(ctx.staleAdvPlans(data, keys, '2026-07-25'), ['Bear Bear Habitat', 'Lion Bobcat', 'Tiger Tigers in the Wild', 'Wolf Bobcat'], 'a year and five days');
+  eq(ctx.staleAdvPlans(plansOut().data, keys, '2026-07-15'), [], 'the real plans are fresh');
+  eq(ctx.staleAdvPlans(data, [], '2026-07-15'), [], 'no meetings, no plans to check');
+  // The task, in July, once the plans are here — and asked for by Home in July.
+  const fn = slice('homeTasks');
+  ok(/var plansHeld = today\.slice\(5, 7\) === '07' \? advPlansHeld\(\) : null;/.test(fn) &&
+    /staleAdvPlans\(plansHeld\.data, advPlanKeysUsed\(\), today\)/.test(fn), 'homeTasks does not read the stale plans in July');
+  ok(/if \(todayISO\(\)\.slice\(5, 7\) === '07' && advPlanKeysUsed\(\)\.length\) advPlansWant\(\);\n    var tasks = homeTasks\(\);/.test(SCRIPT), 'Home does not ask for the plans in July');
+  const t = vm.createContext({});
+  vm.runInContext(`var out = [], today = '2026-07-15', ADVENTURES_VERIFIED = '2026-07-01', HELD = null, KEYS = ${JSON.stringify(keys)};
+    function add(job, tier, title, detail) { out.push({ job: job, title: title, detail: detail }); }
+    function advPlansHeld() { return HELD; } function advPlanKeysUsed() { return KEYS; } function fmtDate(x) { return x; }
+    ${['adventureCheckDue', 'staleAdvPlans', 'advPlanFor', 'denListLabel'].map(decl).join('\n')}
+    function task() { out = []; ${/    \/\/ The same July task names[\s\S]*?\n    \}\n/.exec(fn)[0]} return out; }`, t);
+  eq(t.task(), [], 'no plans loaded, a fresh list: no task');
+  t.HELD = { status: 'ready', data };
+  eq(JSON.parse(JSON.stringify(t.task())), [{ job: 'advancement', title: 'Check the den lesson plans against scouting.org for this year',
+    detail: 'Lesson plans checked over a year ago: Lion Bobcat, Tiger Tigers in the Wild and Wolf Bobcat' }], 'the plans’ task');
+  vm.runInContext("ADVENTURES_VERIFIED = '2025-06-01'; today = '2026-07-25'", t);
+  const both = t.task()[0];
+  ok(/^Check the Cub Scout adventure list/.test(both.title) && /Last checked 2025-06-01 · new or renamed .* · Lesson plans checked over a year ago: Bear Bear Habitat, Lion Bobcat, Tiger Tigers in the Wild and 1 more$/.test(both.detail), 'both: ' + both.detail);
+  vm.runInContext("today = '2026-08-15'", t);
+  eq(t.task(), [], 'only in July');
 });
 
 /* ---------------- report ---------------- */
