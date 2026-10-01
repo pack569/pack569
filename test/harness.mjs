@@ -1034,7 +1034,7 @@ const C8_SYNC_FNS = ['closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mer
   'closedBookRank', 'closedBookScoutIds', 'closedBooksFuture', 'closedBooksMaxYear', 'closedBooksNormalized', 'normalizeClosedBook', 'normalizeLedgerRow', 'normalizeAsideRow', 'normalizeLedgerEvent',
   'stableRowId', 'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_ASIDE_OFF', 'arrOf',
   // M-B — the tombstones of a closed year.
-  'normalizeClosedGone', 'mergeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'closedGoneAdd', 'closedGoneDrops', 'ledgerActorUid', 'closedBooksShorter',
+  'normalizeClosedGone', 'mergeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'closedGoneAdd', 'closedGoneDrops', 'closedGoneForKeep', 'ledgerActorUid', 'closedBooksShorter',
   // The merge ticks a carried row the other copy ticked (M1) and ticks again what a standing statement lists.
   'carriedRowsOf', 'statementRetick', 'entrySignedCents', 'entryAfterOpening', 'ledgerStampClean', 'statementReopened', 'normalizeStatement', 'statementAdded', 'LEDGER_TICK_FIELDS'];
 // Phase 3, C6 — the per-row ledger merge and what it reads.
@@ -26666,7 +26666,7 @@ test('C8-4: keeping this device’s copy over a close-out is an admin’s when t
   const mine = Object.assign(J(seed), { closedBooks: [] }), cloud = Object.assign(J(seed), { budget: Object.assign({}, seed.budget, { programYear: 2027 }), closedBooks: [C8_BOOK_OF(2026, 'arc-x')] });
   const t = chooserHtml(mine, cloud).html.replace(/<[^>]+>/g, '');
   ok(t.includes('The cloud copy has the 2026–27 close-out, and this device does not. Keeping this device’s copy undoes that close-out for everyone: the year’s closed book (its entries, statements and change history) ' +
-    'is removed from the pack record, and the year is open again. Only a pack admin can do this. Download the cloud copy first.'), 'the words: ' + t);
+    'is removed from the pack record, and the year is open again. The 2026–27 year is deleted for good: no device can bring it back. Only a pack admin can do this. Download the cloud copy first.'), 'the words: ' + t);
   ok(!/undoes that close-out/.test(chooserHtml(cloud, cloud).html), 'nothing lost');
   ok(!/undoes that close-out/.test(chooserHtml(cloud, mine).html), 'the cloud holds no closed book this device lacks');
 });
@@ -27659,9 +27659,20 @@ test('C8 re-check finding 2: a stale device that is told of a deletion says so o
   eq(b.get('(sync.lookNotes || []).filter(function (n) { return /permanently deleted/.test(n); }).length'), 1, 'B was told, once');
 });
 
+test('C8 re-check finding 4: keeping this device’s copy deletes for good only the years the chooser lists', () => {
+  const x = sandbox(C8_SYNC_FNS.concat(['syncClosedBooksHtml', 'esc']));
+  const lost = [C8_BOOK_OF(2025, 'arc-25')];
+  const cloudArc = [{ id: 'arc-25', kind: 'season', year: 2025 }, { id: 'arc-24', kind: 'season', year: 2024 }, { id: 'arc-25', kind: 'trails-end', year: 2025 }, { id: 'arc-25b', kind: 'season', year: 2025 }, { id: 'held', kind: 'season', year: 2025 }];
+  eq(J(x.closedGoneForKeep(lost, cloudArc, [{ id: 'held', kind: 'season', year: 2025 }])).map((t) => t.year + ':' + t.archiveId),
+    ['2025:arc-25', '2025:arc-25', '2025:arc-25b'], 'the lost book, and the cloud’s season archives of ITS year this device lacks (not 2024’s, no import, not one this device holds)');
+  eq(J(x.closedGoneForKeep([], cloudArc, [])), [], 'no book lost: nothing is deleted for good, however many archives the cloud has');
+  const html = x.syncClosedBooksHtml({ closedBooks: [C8_BOOK_OF(2025, 'arc-25'), C8_BOOK_OF(2024, 'arc-24')] }, { closedBooks: [C8_BOOK_OF(2024, 'arc-24')] });
+  ok(html.indexOf('The 2025–26 year is deleted for good: no device can bring it back.') !== -1, 'the chooser lists the year that is deleted');
+});
+
 test('C8 re-check M-B: the admin paths write the tombstone (deleting a closed year, keeping this device’s copy), a restore keeps this device’s, and a plain save takes the record’s in', () => {
   ok(/closedGoneAdd\(dsSj\.year, dsSj\.archiveId\);/.test(SCRIPT), 'del-season-confirm writes it');
-  ok(/if \(canReopenStatement\(\)\) try \{\s*var keptParsed[\s\S]{0,700}keptLost\.forEach\(function \(b\) \{ closedGoneAdd\(b\.year, b\.archiveId\); \}\)/.test(SCRIPT), 'keeping this device’s copy writes it, an admin’s only');
+  ok(/if \(canReopenStatement\(\)\) try \{\s*var keptParsed[\s\S]{0,700}closedGoneForKeep\(keptLost, keptParsed\.archives, state\.archives\)\.forEach\(function \(t\) \{ closedGoneAdd\(t\.year, t\.archiveId\); \}\)/.test(SCRIPT), 'keeping this device’s copy writes it, an admin’s only');
   ok(/state\.closedGone = mergeClosedGone\(ciGone, state\.closedGone\);/.test(SCRIPT) && /closedGoneArchives\(arrOf\(state\.archives\)\.filter/.test(SCRIPT), 'a restore keeps this device’s tombstones and drops what they name');
   ok(/if \(!clobbered && remoteParsed\) \{\s*var pushGoneWas[^\n]*\n\s*state\.closedGone = mergeClosedGone\(state\.closedGone, remoteParsed\.closedGone\);/.test(SCRIPT), 'a save that is not a merge takes the record’s tombstones in, whoever writes');
   ok(/state\.closedGone = mergeClosedGone\(state\.closedGone, remote\.closedGone\);\s*\n[^\n]*closedGoneDrops[^\n]*\n\s*state\.closedBooks = mergeClosedBooks\(/.test(SCRIPT), 'the merge unions them before the books');

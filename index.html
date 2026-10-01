@@ -16626,13 +16626,26 @@
   // device's copy does not: keeping this device's copy undoes that close-out for everyone, and its closed book goes from the pack record.
   // '' when there is none. `cloud` as stored, not normalized. The same stronger line is on the chooser for a copy that is on the other side of a
   // close-out (syncYearsHtml); this says what is lost. Pure.
+  // Security re-check of C8 (finding 4) — what keeping this device's copy deletes for good: the closed books `lost` (closedBooksLost) and the cloud copy's season
+  // archives (`cloudArchives`) of THOSE years that this device's (`hereArchives`) lacks, as [{ year, archiveId }] to tombstone. Nothing for a year whose book is not
+  // lost, so the years the chooser lists (syncClosedBooksHtml) are exactly the years that are deleted. Pure.
+  function closedGoneForKeep(lost, cloudArchives, hereArchives) {
+    var out = [], years = Object.create(null), here = Object.create(null);
+    arrOf(lost).forEach(function (b) { if (b && typeof b.year === 'number') { years[b.year] = true; out.push({ year: b.year, archiveId: typeof b.archiveId === 'string' ? b.archiveId : '' }); } });
+    arrOf(hereArchives).forEach(function (a) { if (a && typeof a.id === 'string') here[a.id] = true; });
+    arrOf(cloudArchives).forEach(function (a) {
+      if (a && a.kind === 'season' && typeof a.id === 'string' && a.id && typeof a.year === 'number' && years[a.year] && !here[a.id]) out.push({ year: a.year, archiveId: a.id });
+    });
+    return out;
+  }
   function syncClosedBooksHtml(cloud, mine) {
     var lost = closedBooksLost(mine && mine.closedBooks, cloud && cloud.closedBooks);
     if (!lost.length) return '';
     var names = lost.map(function (b) { return closedYearText(b.year); }).join(' and ');
     return '<div class="warn" style="margin:0 0 10px"><p class="small" style="margin:0"><strong>The cloud copy has the ' + esc(names) + ' close-out, and this device does not.</strong> ' +
       'Keeping this device’s copy undoes that close-out for everyone: the year’s closed book (its entries, statements and change history) is removed from the pack record, ' +
-      'and the year is open again. Only a pack admin can do this. Download the cloud copy first.</p></div>';
+      'and the year is open again. The ' + esc(names) + ' ' + (lost.length === 1 ? 'year is' : 'years are') + ' deleted for good: no device can bring ' + (lost.length === 1 ? 'it' : 'them') + ' back. ' +
+      'Only a pack admin can do this. Download the cloud copy first.</p></div>';
   }
   // Security review of C8-1..4 (M4) — the other way round: this device holds a closed book the cloud copy does not, and
   // using the cloud copy removes it from this device. '' when there is none. Two taps are asked for anyway. Pure.
@@ -16717,14 +16730,11 @@
     try { keptLost = closedBooksLost(state.closedBooks, (JSON.parse(typeof kept.remote.json === 'string' ? kept.remote.json : '') || {}).closedBooks); } catch (e) { keptLost = []; }
     // Security review of C8-1..4 (H1) — whenever a book is lost, whatever the program years say.
     if (keptLost.length) { logLedger('unclose', 'book', { why: closedBooksKeptOverWhy(keptLost) }); save(); }
-    // M-B — and the years it removes are tombstoned (their closed books, and the season archives this device lacks), so a stale device does not bring them back.
+    // M-B — and the years it removes are tombstoned (their closed books, and the season archives of those years this device lacks: finding 4, no others), so a stale device does not bring them back.
     // (An admin's only: keepLocalNeedsAdmin has refused anyone else whenever a closed book is lost.)
     if (canReopenStatement()) try {
       var keptParsed = JSON.parse(typeof kept.remote.json === 'string' ? kept.remote.json : '') || {};
-      keptLost.forEach(function (b) { closedGoneAdd(b.year, b.archiveId); });
-      var keptHere = Object.create(null);
-      arrOf(state.archives).forEach(function (a) { if (a && typeof a.id === 'string') keptHere[a.id] = true; });
-      arrOf(keptParsed.archives).forEach(function (a) { if (a && a.kind === 'season' && typeof a.id === 'string' && a.id && typeof a.year === 'number' && !keptHere[a.id]) closedGoneAdd(a.year, a.id); });
+      closedGoneForKeep(keptLost, keptParsed.archives, state.archives).forEach(function (t) { closedGoneAdd(t.year, t.archiveId); });
       if (state.closedGone.length) save();
     } catch (e) { /* the copy was read above; nothing to tombstone */ }
     render();
