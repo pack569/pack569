@@ -8334,7 +8334,7 @@
   //     The bank will not show an outstanding check yet; the new book says so (carriedRowFor, and
   //     reconcileTotals' offset), so the first statement still comes to a difference of zero.
   //   * The year's rows, rows set aside, statements and change history go into ONE closed book
-  //     (closedBookBuild), read-only from then on; the newest two years in full (owner decision 33), older years compacted
+  //     (closedBookBuild), read-only from then on; the newest year in full (owner decision 35, amending 33), older years compacted
   //     (compactClosedBook) and fitted to the record (fitClosedBook); two copies' closed books as one
   //     (mergeClosedBooks).
   // Dates are compared as YYYY-MM-DD strings, as everywhere in the ledger: a row with no date sorts
@@ -8553,31 +8553,30 @@
   }
   // The closed books to keep after closing `fresh` (a full book, closedBookBuild's) over `older`
   // (state.closedBooks), for a record whose size without any closed book is `otherBytes` and that must
-  // stay under `limit`. Owner decision 33: the newest TWO closed years are kept in full (the year just closed
-  // and the one before it, an auditor's usual two), older years compact. When the record cannot hold that: the
-  // earlier of the two is compacted, then the newest, then older years' rows are dropped, oldest first, and the newest
-  // year's last, until it fits. A book already compact stays compact (compaction is one way). Returns
+  // stay under `limit`. Owner decision 35 (amending decision 33): ONE closed year is kept in full, the newest (the year just
+  // closed), and every older year is compact (each entry with who entered and who ticked it, and the statements; the voided
+  // entries and the change history stay in the snapshot downloaded at close-out). The measure showed two full years do not fit
+  // the 700 KB limit, which the owner is not raising. When the record cannot hold even that: the newest is compacted too,
+  // then older years' rows are dropped, oldest first, and the newest year's last, until it fits. A book already compact stays
+  // compact (compaction is one way). Returns
   // { books (by year), compacted: [years], trimmed: [years whose rows were dropped], fits }. A book for the same
   // year as `fresh` is replaced. Pure.
   function fitClosedBook(fresh, older, otherBytes, limit) {
     var compacted = [], trimmed = [];
     var all = (older || []).filter(function (b) { return b.year !== fresh.year; }).concat([fresh]).sort(function (a, b) { return a.year - b.year; });
-    var full = Object.create(null);
-    all.slice(-2).forEach(function (b) { full[b.year] = true; });
+    var newest = all[all.length - 1].year;
     var list = all.map(function (b) {
-      if (full[b.year] || b.form === 'compact') return b;
+      if (b.year === newest || b.form === 'compact') return b;
       compacted.push(b.year);
       return compactClosedBook(b);
     });
     function size(l) { return otherBytes + utf8Bytes(JSON.stringify(l)); }
     function at(year) { for (var i = 0; i < list.length; i++) if (list[i].year === year) return i; return -1; }
-    // The kept years, earlier first: the earlier of the two goes compact before the newest does.
-    var kept = all.slice(-2).map(function (b) { return b.year; });
-    kept.forEach(function (y) {
-      if (size(list) <= limit) return;
-      var i = at(y);
-      if (list[i].form !== 'compact') { list[i] = compactClosedBook(list[i]); compacted.push(y); }
-    });
+    // Still too big with the one full year: it goes compact too.
+    if (size(list) > limit) {
+      var ni = at(newest);
+      if (list[ni].form !== 'compact') { list[ni] = compactClosedBook(list[ni]); compacted.push(newest); }
+    }
     // Still too big even compact: the OLDEST years' rows go first, and the year just closed keeps its entries longest (it is the one the
     // next review reads; C8-7, reversing C8-1's order after measuring a realistic pack at the limit).
     for (var i = 0; i < list.length && size(list) > limit; i++) {
@@ -30910,7 +30909,7 @@
       : 'Closing out with the book not reconciled yet. The change history will say so.';
   }
   // C8-6 — what a close-out says it will do, beyond the year's figures (`info`), as plain-text lines for the preview, in order:
-  // what is carried over, what stays open in the new year, which older closed year will be shortened to keep the pack
+  // what is carried over, what stays open in the new year, which older closed year will be shortened (owner decision 35: only the newest is kept in full) to keep the pack
   // record small (and that the snapshot this downloads has it in full), and the statements nobody has reviewed.
   //   info: { cutoff, bankKnown, carried { n, inCents, outCents }, openEntries, openVoided, openStatements,
   //           compacted [years, other than this year's], trimmed [years, likewise], unreviewed }. Pure.
@@ -30948,8 +30947,9 @@
     if (info.openVoided) stay.push(pl(info.openVoided, 'voided entry', 'voided entries'));
     if (info.openStatements) stay.push(pl(info.openStatements, 'statement', 'statements'));
     if (stay.length) out.push('Dated after ' + d + ', and staying open in the new year: ' + stay.join(', ') + '.');
+    // Owner decision 35 — only the newest closed year is kept in full: the year before it is shortened as older years are.
     (info.compacted || []).filter(function (y) { return (info.trimmed || []).indexOf(y) === -1; }).forEach(function (y) {
-      out.push('The ' + closedYearText(y) + ' closed book will be shortened to keep the pack record small: its entries and statements stay, but not its voided entries or its change history. ' +
+      out.push('The ' + closedYearText(y) + ' closed book will be shortened, as older years are: its entries (with who entered and ticked each) and statements stay, but not its voided entries or its change history. ' +
         'The snapshot this downloads has them in full: keep it.');
     });
     (info.trimmed || []).forEach(function (y) {
@@ -31332,8 +31332,8 @@
     ui.calSelectedDate = null;
     ui.closeoutJuneOk = false;
     // C8-5 — the closed book goes into the pack record, the new year's log starts with the close-out (who, when, and
-    // which years are closed now), and the record is measured: the two newest closed years stay in full, older ones
-    // are compacted, and one that would not fit is shortened (fitClosedBook, owner decision 33). The size counts
+    // which years are closed now), and the record is measured: the newest closed year stays in full, older ones
+    // are compacted, and one that would not fit is shortened (fitClosedBook, owner decisions 33 and 35). The size counts
     // the record as it now stands: the archive, the new book, and room for what next year fills (as seasonLedgerNow's
     // trial run did).
     var yearsBefore = arrOf(state.closedBooks).map(function (x) { return x.year; }).sort(function (x, y) { return x - y; });
@@ -31595,7 +31595,7 @@
     var c = book.carried || { n: 0 };
     if (c.n) out.push(c.n + (c.n === 1 ? ' entry' : ' entries') + ' not yet on a bank statement ' + (c.n === 1 ? 'was' : 'were') + ' carried into the next year (' + fmt(c.inCents) + ' money in, ' + fmt(c.outCents) + ' money out).');
     if (book.ledgerTrimmed) out.push('This year’s entries were too large to keep in the pack record, so only its totals and statements are kept. The snapshot downloaded at close-out has the entries.');
-    else if (book.form === 'compact') out.push('This year’s book was shortened to keep the pack record small: its entries and statements are kept, but not its voided entries or its change history. The snapshot downloaded at close-out has them.');
+    else if (book.form === 'compact') out.push('This year’s book was shortened, as older years are (only the newest closed year is kept in full): its entries and statements are kept, but not its voided entries or its change history. The snapshot downloaded at close-out has them.');
     return out;
   }
   // The closed book's statements, as a table of what each was signed as (from the book: never changed now), newest first, each with its printout. Escaped.
@@ -31891,10 +31891,13 @@
     }
     var cp = done.compacted || [];
     if (!cp.length) return '';
-    return 'The ' + cp.map(closedYearText).join(' and ') + ' closed ' + (cp.length === 1 ? 'book was' : 'books were') +
-      ' shortened to keep the pack record small: ' + (cp.length === 1 ? 'its entries and statements are' : 'their entries and statements are') + ' kept, but not ' +
-      (cp.length === 1 ? 'its voided entries or its change history. ' : 'their voided entries or their change history. ') +
-      'The snapshot just downloaded has them: keep it.';
+    // Owner decision 35 — an older year is shortened as every older year is; the year just closed only when the pack record has no room for it in full.
+    var older = cp.filter(function (y) { return y !== done.year; }), self = cp.indexOf(done.year) !== -1;
+    function kept(n) { return (n === 1 ? 'its' : 'their') + ' entries and statements are kept, but not ' + (n === 1 ? 'its voided entries or its change history. ' : 'their voided entries or their change history. '); }
+    var out = '';
+    if (older.length) out += 'The ' + older.map(closedYearText).join(' and ') + ' closed ' + (older.length === 1 ? 'book was' : 'books were') + ' shortened, as older years are: ' + kept(older.length);
+    if (self) out += 'The ' + closedYearText(done.year) + ' closed book was shortened to keep the pack record small: ' + kept(1);
+    return out + 'The snapshot just downloaded has them: keep it.';
   }
   // Close-out preview overlay — computed live from state, nothing committed until confirm.
   // The close-out as it would leave the record: performCloseout's own steps (the archive in, replacing an earlier

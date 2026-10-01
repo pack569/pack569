@@ -417,15 +417,22 @@ totals and family balances, and the year's entries live in `state.closedBooks`.*
   drops the voided rows and the history (`asideTrimmed`, `logTrimmed`). Compaction is one way.
   `ledgerTrimmed` (no rows, totals and statements only) is the last resort. The season archive keeps
   the totals and family balances and says its rows are in the book (`ledger.inBook`).
-- **Size (decision 33, measured in C8-7).** The newest two years are kept full and older years
-  compact *while the record has room* (`fitClosedBook`, `ARCHIVE_DOC_SOFT_LIMIT` 700 KB, with
-  `GONE_ROOM_BYTES` + the log's and statements' room kept free). A realistic pack (about 40 scouts,
-  350 entries, 12 statements, a season's history a year) is about **290 KB a year full and 87 KB
-  compact**, and the room kept free is 410 KB, so at 700 KB two full years **do not fit**: every year
-  is compact and only the year just closed keeps its entries (older years lose theirs first). Two full
-  years need about 800 KB for closed books. The limit and the reserve are the owner's to set
-  (Firestore's document is 1 MiB); the preview and the closing toast say which years are shortened, and
-  that the snapshot downloaded at close-out has them in full.
+- **Size (decision 35, which amends decision 33; measured in C8-7).** **One** closed year is kept in
+  full, the newest, and every older year is compact (each entry with who entered and who ticked it, and
+  the statements; voided entries and the change history stay in the snapshot downloaded at close-out)
+  *while the record has room* (`fitClosedBook`, `ARCHIVE_DOC_SOFT_LIMIT` 700 KB, unchanged, with
+  `GONE_ROOM_BYTES` + the log's and statements' room kept free). When even that does not fit, the newest
+  is compacted too, then older years' entries are dropped, oldest first, and the newest year's last.
+  A realistic pack (about 40 scouts, 350 entries, 12 statements, a season's history a year) is about
+  **290 KB a year full and 87 KB compact**, and the room kept free is 410 KB, so at 700 KB even one full
+  year **does not fit** (290 + 3 x 87 = 551 KB of closed books against about 170 KB): every year is
+  compact and only the year just closed keeps its entries (older years lose theirs first). Decision 33
+  had said two full years, which need about 800 KB. The limit and the reserve are the owner's to set
+  (Firestore's document is 1 MiB); the preview and the closing toast say which years are shortened ("as
+  older years are", or "to keep the pack record small" for the year just closed), and that the snapshot
+  downloaded at close-out has them in full. How long the pack must keep its records is the council's to
+  say (the owner is asking; one council's guidance, not checked here, is the treasurer's tenure, 2-3 years
+  on paper and 5-7 years of access): if it is seven, keep each close-out's snapshot; the closed book is a convenience.
 - **Corrections to a closed year** are a counted reversal in the open book (`ledgerClosedYearReversal`:
   id `rv-Y-id`, `reverses: 'Y:id'`, dated after the cutoff), two taps and a reason, by an editor or an
   admin (Past seasons · Closed book · Reverse an entry), logged as `reverse`. One closed entry has one

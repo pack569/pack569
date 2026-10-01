@@ -23544,9 +23544,12 @@ test('C5 re-check (R5): the close-out toast says which part didn’t fit, and Pa
   // C8-5: the toast reads what rolloverYear did to the closed books (fitClosedBook's compacted and trimmed years).
   eq([t(null), t({ year: 2026, compacted: [], trimmed: [] }), t({ year: 2026, compacted: [2025], trimmed: [] }), t({ year: 2026, compacted: [2024, 2025], trimmed: [] }),
     t({ year: 2026, compacted: [2026], trimmed: [2026] })], ['', '',
-    'The 2025–26 closed book was shortened to keep the pack record small: its entries and statements are kept, but not its voided entries or its change history. The snapshot just downloaded has them: keep it.',
-    'The 2024–25 and 2025–26 closed books were shortened to keep the pack record small: their entries and statements are kept, but not their voided entries or their change history. The snapshot just downloaded has them: keep it.',
-    'The 2026–27 entries were too large to keep in the pack record, so only its totals and statements are kept. Keep the snapshot just downloaded: it is the only place the entries are kept.'], 'the toast’s words');
+    'The 2025–26 closed book was shortened, as older years are: its entries and statements are kept, but not its voided entries or its change history. The snapshot just downloaded has them: keep it.',
+    'The 2024–25 and 2025–26 closed books were shortened, as older years are: their entries and statements are kept, but not their voided entries or their change history. The snapshot just downloaded has them: keep it.',
+    'The 2026–27 entries were too large to keep in the pack record, so only its totals and statements are kept. Keep the snapshot just downloaded: it is the only place the entries are kept.'], 'the toast’s words (owner decision 35)');
+  // The year just closed is shortened only when the record has no room for it in full, and the toast says so in its own words.
+  eq(t({ year: 2026, compacted: [2025, 2026], trimmed: [] }),
+    'The 2025–26 closed book was shortened, as older years are: its entries and statements are kept, but not its voided entries or its change history. The 2026–27 closed book was shortened to keep the pack record small: its entries and statements are kept, but not its voided entries or its change history. The snapshot just downloaded has them: keep it.', 'an older year, and the year just closed for room');
   // Close-out itself: the welcome, then those words, shown for ten seconds; the welcome alone, as before.
   const pc = slice('performCloseout');
   ok(/showToast\(coTrim \? 'Welcome to the ' \+ \(year \+ 1\) \+ ' program year\. ' \+ coTrim : 'Welcome to the ' \+ \(year \+ 1\) \+ ' program year',\s*coTrim \? \{ duration: 10000 \} : undefined\);/.test(pc), 'the toast');
@@ -26254,7 +26257,7 @@ test('C8-1: compacting keeps the money and the words, who entered and who ticked
   eq([J(c.trimClosedBookRows(full)).ledger, J(c.trimClosedBookRows(full)).closingCents], [[], 93000], 'and keeps the figures');
 });
 
-test('C8-1: fitting keeps the newest two years in full and older years compact while the record has room, then compacts the earlier of the two, then the newest, then drops rows', () => {
+test('C8-1: fitting keeps the newest year in full and every older year compact (owner decision 35), then compacts the newest too, then drops rows', () => {
   const c = c8();
   const big = (y) => {
     const s = C8_SRC(); s.ledger = [];
@@ -26266,22 +26269,23 @@ test('C8-1: fitting keeps the newest two years in full and older years compact w
   const bytes = (l) => Buffer.byteLength(JSON.stringify(l));
   const forms = (r) => r.books.map((b) => [b.year, b.form]);
   const roomy = J(c.fitClosedBook(fresh, older, 1000, 1e9));
-  eq(forms(roomy), [[2024, 'compact'], [2025, 'full'], [2026, 'full']], 'the newest two full, the older compact (owner decision 33)');
-  eq([roomy.fits, roomy.compacted, roomy.trimmed], [true, [2024], []], 'reported');
-  // Room for one year in full but not two: the earlier of the two is compacted first.
+  eq(forms(roomy), [[2024, 'compact'], [2025, 'compact'], [2026, 'full']], 'the newest one full, every older year compact (owner decision 35, which amends 33)');
+  eq([roomy.fits, roomy.compacted, roomy.trimmed], [true, [2024, 2025], []], 'reported');
+  // Room for the year in full but not with the older years: the older years are compact already; the newest goes compact too.
   const one = J(c.fitClosedBook(fresh, older, 1000, bytes(roomy.books) - 100));
-  eq(forms(one), [[2024, 'compact'], [2025, 'compact'], [2026, 'full']], 'too big with both in full: the earlier of the two compacted');
-  eq([one.fits, one.compacted], [true, [2024, 2025]], 'reported');
-  // Not even that: the newest goes compact too.
+  eq(forms(one), [[2024, 'compact'], [2025, 'compact'], [2026, 'compact']], 'too big with the newest in full: it is compacted too');
+  eq([one.fits, one.compacted], [true, [2024, 2025, 2026]], 'reported');
+  // Not even that: the oldest year's rows go.
   const none = J(c.fitClosedBook(fresh, older, 1000, bytes(one.books) - 100));
-  eq(forms(none), [[2024, 'compact'], [2025, 'compact'], [2026, 'compact']], 'and then the newest');
+  eq(none.books.map((b) => [b.year, b.form, !!b.ledgerTrimmed]), [[2024, 'compact', true], [2025, 'compact', false], [2026, 'compact', false]], 'and then the oldest year’s entries');
+  eq([none.fits, none.trimmed], [true, [2024]], 'reported');
   const tiny = J(c.fitClosedBook(fresh, older, 1000, 4000));
   eq([tiny.fits, tiny.trimmed, tiny.books.every((b) => b.ledger.length === 0 && b.ledgerTrimmed)], [true, [2024, 2025, 2026], true], 'too big even compact: the oldest’s rows go first, the newest’s last (C8-7)');
   eq(J(c.fitClosedBook(fresh, [{ ...older[0], year: 2026 }], 1000, 1e9)).books.map((b) => [b.year, b.form]), [[2026, 'full']], 'a book for the same year is replaced');
-  // A compact book stays compact even when it is one of the newest two; with one earlier year only, both stay full.
+  // A compact book stays compact; the year before the newest is compacted, never kept full beside it.
   const cp25 = J(c.compactClosedBook(older[1]));
   eq(forms(J(c.fitClosedBook(fresh, [older[0], cp25], 1000, 1e9))), [[2024, 'compact'], [2025, 'compact'], [2026, 'full']], 'compaction is one way');
-  eq(forms(J(c.fitClosedBook(fresh, [older[1]], 1000, 1e9))), [[2025, 'full'], [2026, 'full']], 'the year before, and this year: both full');
+  eq(forms(J(c.fitClosedBook(fresh, [older[1]], 1000, 1e9))), [[2025, 'compact'], [2026, 'full']], 'the year before is compact, this year full');
 });
 
 test('C8-1: two copies’ closed books are one, the same either way round: a book compacted on one device stays compact, a later close-out of a year replaces an earlier', () => {
@@ -27215,8 +27219,8 @@ test('C8-6: the preview says what is carried, what stays open, which older year 
   eq(L({ bankKnown: false }), [], 'no bank balance: no carried line');
   eq(L({ openEntries: 2, openVoided: 1, openStatements: 1 })[1], 'Dated after Jun 30, 2027, and staying open in the new year: 2 entries, 1 voided entry, 1 statement.', 'what stays open');
   eq(L({ compacted: [2024, 2025] }).slice(1), [
-    'The 2024–25 closed book will be shortened to keep the pack record small: its entries and statements stay, but not its voided entries or its change history. The snapshot this downloads has them in full: keep it.',
-    'The 2025–26 closed book will be shortened to keep the pack record small: its entries and statements stay, but not its voided entries or its change history. The snapshot this downloads has them in full: keep it.'], 'older years shortened');
+    'The 2024–25 closed book will be shortened, as older years are: its entries (with who entered and ticked each) and statements stay, but not its voided entries or its change history. The snapshot this downloads has them in full: keep it.',
+    'The 2025–26 closed book will be shortened, as older years are: its entries (with who entered and ticked each) and statements stay, but not its voided entries or its change history. The snapshot this downloads has them in full: keep it.'], 'older years shortened (owner decision 35)');
   eq(L({ compacted: [2024], trimmed: [2024] }).slice(1), ['The 2024–25 closed book is too large to keep every entry: only its totals and statements will stay. The snapshot this downloads has the entries: keep it.'], 'one that does not fit');
   eq(L({ unreviewed: 1 })[1], '1 statement has not been reviewed yet. Once the year is closed out a statement can’t be reviewed, so have an admin who did not sign it review it on the Reconcile screen first.', 'unreviewed, one');
   ok(/^2 statements have not been reviewed yet\..*sign them\) review them/.test(L({ unreviewed: 2 })[1].replace('did not sign them review them', 'did not sign them) review them')), 'unreviewed, two');
@@ -27269,7 +27273,7 @@ const c8Year = (y) => {
   return J(c8().closedBookBuild({ book, ledger, ledgerAside: aside, ledgerLog: log, statements }, Object.assign({}, C8_OPTS, { year: y, archiveId: 'arc-' + y,
     lineNameOf: (l) => 'Budget line ' + l, familyOf: (s) => 'Ada and Ben' })).book);
 };
-test('C8-7: a realistic pack at the 700 KB limit keeps only the year just closed with its entries (two full years need a larger limit), older years lose theirs first', () => {
+test('C8-7: a realistic pack at the 700 KB limit keeps only the year just closed with its entries, and then only compact; one full year needs a larger limit (owner decision 35)', () => {
   const c = c8(), KB = 1024, bytes = (v) => Buffer.byteLength(JSON.stringify(v));
   const books = [2022, 2023, 2024, 2025].map(c8Year);
   const [full, compact] = [bytes(books[3]), bytes(J(c.compactClosedBook(books[3])))];
@@ -27277,19 +27281,20 @@ test('C8-7: a realistic pack at the 700 KB limit keeps only the year just closed
   // (GONE_ROOM_BYTES 250 KB + the log's 128 KB + the statements' 32 KB), plus about 120 KB for the roster, plans and archives.
   const other = 120 * KB + 250 * KB + 128 * KB + 32 * KB, limit = 700 * KB;
   // The finding (for the owner): with the room next year needs reserved (410 KB) a realistic pack has ~170 KB for closed books at 700 KB, so two years in
-  // FULL (578 KB) never fit; the year just closed is kept compact (87 KB) and the older years lose their entries first.
+  // FULL (578 KB) never fit, and one full year with the older ones compact (290 + 3 x 87 = 551 KB) does not either; the year just closed is kept compact (87 KB) and the older
+  // years lose their entries first.
   const r = J(c.fitClosedBook(books[3], books.slice(0, 3), other, limit));
   eq(r.books.map((b) => [b.year, b.form, !!b.ledgerTrimmed]), [[2022, 'compact', true], [2023, 'compact', true], [2024, 'compact', true], [2025, 'compact', false]], 'at 700 KB: all compact, only the year just closed keeps its entries');
   eq([r.fits, r.trimmed, r.compacted], [true, [2022, 2023, 2024], [2022, 2023, 2024, 2025]], 'said');
   ok(bytes(r.books) + other <= limit, 'the record would pass the limit: ' + (bytes(r.books) + other));
-  // With the limit the record can actually hold (Firestore's document is 1 MiB), two years are kept in full.
+  // With the limit the record can actually hold (Firestore's document is 1 MiB), the year just closed is kept in full and the older years compact.
   const roomy = J(c.fitClosedBook(books[3], books.slice(0, 3), 200 * KB, 1000 * KB));
-  eq(roomy.books.map((b) => [b.year, b.form]), [[2022, 'compact'], [2023, 'compact'], [2024, 'full'], [2025, 'full']], 'with 800 KB for closed books: two full years, the rest compact');
+  eq(roomy.books.map((b) => [b.year, b.form]), [[2022, 'compact'], [2023, 'compact'], [2024, 'compact'], [2025, 'full']], 'with 800 KB for closed books: one full year, the rest compact');
   ok(full > 3 * compact && full < 300 * KB && compact > 10 * KB, `a realistic year is ${Math.round(full / KB)} KB full and ${Math.round(compact / KB)} KB compact`);
-  // A record with less room keeps fewer years in full, says which were shortened, and keeps the newest year's entries longest.
-  const tight = J(c.fitClosedBook(books[3], books.slice(0, 3), 420 * KB, 1000 * KB));
-  eq(tight.books.map((b) => [b.year, b.form, !!b.ledgerTrimmed]).slice(-2), [[2024, 'compact', false], [2025, 'full', false]], 'the earlier of the two goes compact first');
-  ok(tight.compacted.indexOf(2024) !== -1 && tight.fits, 'and it is said: ' + JSON.stringify(tight.compacted));
+  // A record with less room (450 KB for closed books: one full year and three compact need 551 KB) keeps even the newest year compact, says so, and keeps every year's entries.
+  const tight = J(c.fitClosedBook(books[3], books.slice(0, 3), 550 * KB, 1000 * KB));
+  eq(tight.books.map((b) => [b.year, b.form, !!b.ledgerTrimmed]).slice(-2), [[2024, 'compact', false], [2025, 'compact', false]], 'the newest year goes compact too');
+  ok(tight.compacted.indexOf(2025) !== -1 && tight.compacted.indexOf(2024) !== -1 && tight.fits && tight.trimmed.length === 0, 'and it is said: ' + JSON.stringify(tight.compacted));
   const none = J(c.fitClosedBook(books[3], [], 1000 * KB - 30 * KB, 1000 * KB));
   eq([none.fits, none.trimmed.indexOf(2025) !== -1, none.books.find((b) => b.year === 2025).ledgerTrimmed], [true, true, true], 'when even a compact year does not fit, its entries go and it says so');
   ok(none.books.find((b) => b.year === 2025).statements.length === 12 && none.books.find((b) => b.year === 2025).closingCents === books[3].closingCents, 'its statements and figures stay');
@@ -27324,7 +27329,7 @@ test('C8-8: Past seasons shows a closed year as read-only, with what it kept, it
   ok(/May 31, 2027 \$1,050\.00 by Pat Example on Jun 1; reviewed by Sam Example on Jun 2 Print/.test(h) && /Entries \(CSV\) Change history \(CSV\) Voided &amp; reversed \(CSV\)/.test(h), h);
   ok(!/shortened|too large/.test(h), 'a full book says nothing is missing');
   const hc = t([compact]);
-  ok(/This year’s book was shortened to keep the pack record small: its entries and statements are kept, but not its voided entries or its change history\. The snapshot downloaded at close-out has them\./.test(hc) &&
+  ok(/This year’s book was shortened, as older years are \(only the newest closed year is kept in full\): its entries and statements are kept, but not its voided entries or its change history\. The snapshot downloaded at close-out has them\./.test(hc) &&
     /Entries \(CSV\)/.test(hc) && !/Change history \(CSV\)|Voided/.test(hc), 'a compact book: its entries and statements, no log or voided entries to download: ' + hc);
   ok(/too large to keep in the pack record, so only its totals and statements are kept/.test(t([Object.assign(J(compact), { ledger: [], ledgerTrimmed: true })])), 'a book without its entries says so');
   // No book for an archive that says its rows are in one: said; an archive from before C8: nothing added; another close-out's book: not this archive's.
