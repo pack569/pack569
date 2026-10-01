@@ -27121,8 +27121,8 @@ test('C8-5: two figures for one carried id are said, naming the family, once', (
   w.it = { kind: 'carrydiffers', id: 'co-charge-2026-f1', what: 'balance', scoutId: 'b1', mine: 3500, theirs: 4500 };
   vm.runInContext('noteLedgerLookFromMerge([it]); noteLedgerLookFromMerge([it]); noteLedgerLookFromMerge([Object.assign({}, it, { scoutId: "zz", id: "co-charge-2026-zz" })]);', w);
   eq(J(w.sync.lookNotes), [
-    'The balance carried forward for Ada and Ben’s family is $35.00 on this device and $45.00 on another device, because both closed out the same year. This device’s figure was kept. Check Ada and Ben’s account on Money · Dues & fees, and correct it if it should be different.',
-    'The balance carried forward for a family is $35.00 on this device and $45.00 on another device, because both closed out the same year. This device’s figure was kept. Check the family’s account on Money · Dues & fees, and correct it if it should be different.'],
+    'The balance carried forward for Ada and Ben’s family is $35.00 on this device and $45.00 on another device, because both closed out the same year. One figure was kept. Check Ada and Ben’s account on Money · Dues & fees, and correct it if it should be different.',
+    'The balance carried forward for a family is $35.00 on this device and $45.00 on another device, because both closed out the same year. One figure was kept. Check the family’s account on Money · Dues & fees, and correct it if it should be different.'],
     'the notes, each said once');
   ok(/closeoutCarryDiffs\(state\.charges, remote\.charges, state\.ledger, remote\.ledger\)\.forEach\(function \(it\) \{ look\.push\(it\); \}\);/.test(slice('mergeRemoteAppendOnly')), 'the merge does not collect them');
 });
@@ -27301,7 +27301,7 @@ test('C8-7: a realistic pack at the 700 KB limit keeps only the year just closed
    ================================================================ */
 const C8R_FNS = ['seasonBookOf', 'closedBookOf', 'closedBookLines', 'closedBookStatementsHtml', 'closedBookBlockHtml', 'closedBookEntriesCsv', 'closedBookLogCsv', 'closedYearText', 'arrOf',
   'esc', 'fmt', 'fmtDateShort', 'fmtDateShortYear', 'statementByOn', 'statementDay', 'statementReopened', 'statementReviewed', 'entrySignedCents', 'ledgerCsvCell', 'ledgerLogCsv',
-  'ledgerStatementName', 'ledgerRowName', 'ledgerEntryNamed', 'fmtDateYear', 'closedRvFormHtml', 'closedBookEntryFor', 'closedBookReversed', 'LEDGER_OP_LABELS', 'LEDGER_FIELD_LABELS', 'ledgerLogValue', 'ledgerEventLines', 'ledgerLogWhen', 'ledgerCap'];
+  'ledgerStatementName', 'ledgerRowName', 'ledgerEntryNamed', 'fmtDateYear', 'closedRvFormHtml', 'closedBookEntryFor', 'closedBookReversed', 'CLOSED_RV_FAMILY', 'CLOSED_RV_FAMILY_DONE', 'closedRvToast', 'fmtDateShort', 'LEDGER_OP_LABELS', 'LEDGER_FIELD_LABELS', 'ledgerLogValue', 'ledgerEventLines', 'ledgerLogWhen', 'ledgerCap'];
 const c8r = (books, extra) => {
   const x = sandbox(C8R_FNS);
   vm.runInContext(`var state = { closedBooks: ${JSON.stringify(books)} }; function canEdit() { return true; } var ui = { armed: null }; ${extra || ''}`, x);
@@ -27406,7 +27406,7 @@ test('C8-9: a closed year’s entry is reversed by a counted reversal in the cur
   const W = heldDispatchCtx('');
   const run = (js) => vm.runInContext(js, W), got = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, W)));
   const book = C8R_FULL();
-  run(`${['closedBookOf', 'closedBookEntryFor', 'closedBookReversed', 'closedRvRefusal', 'ledgerClosedYearReversal', 'ledgerStampClean', 'ledgerContactScrub', 'arrOf', 'closedYearText'].map(decl).join('\n')}
+  run(`${['closedBookOf', 'closedBookEntryFor', 'closedBookReversed', 'CLOSED_RV_FAMILY', 'CLOSED_RV_FAMILY_DONE', 'closedRvToast', 'fmtDateShort', 'closedRvRefusal', 'ledgerClosedYearReversal', 'ledgerStampClean', 'ledgerContactScrub', 'arrOf', 'closedYearText'].map(decl).join('\n')}
     var logs = []; function logLedger(op, row, more) { logs.push([op, row, more]); }
     function ledgerActor() { return 'Pat Example'; } function ledgerActorUid() { return 'u-pat'; }
     function canEdit() { return editor; } var editor = true;
@@ -27429,7 +27429,7 @@ test('C8-9: a closed year’s entry is reversed by a counted reversal in the cur
   eq([rv.id, rv.reverses, rv.amountCents, rv.direction, rv.reconciled, rv.enteredBy, rv.description], ['rv-2026-b', '2026:b', 5000, 'out', false, 'Pat Example', 'Reversal of “Row b” (2026)'], 'the reversal: the same money the other way, naming the closed entry');
   ok(/^\d{4}-\d{2}-\d{2}$/.test(rv.date) && rv.date > '2027-06-30', 'dated after the closed year: ' + rv.date);
   eq([st[1].length, st[1][0][0], st[1][0][1], st[1][0][2].rows, st[1][0][2].why], [1, 'reverse', 'rv-2026-b', ['2026:b'], 'Wrong family'], 'logged, with its reason');
-  ok(/^Reversal recorded in the current book, dated .*\. Tick it on the Reconcile screen when the bank shows it\.$/.test(st[2][0]), st[2][0]);
+  ok(/^Reversal recorded in the current book, dated .*\. Tick it on the Reconcile screen when the bank shows it\. It does not change what the family owes: check their account on Money · Dues & fees\.$/.test(st[2][0]), 'entry b was a family’s: ' + st[2][0]);
   eq([st[3], st[4]], ['', ''], 'the form is cleared');
   eq(JSON.stringify(got('state.closedBooks')), was, 'the closed book was not touched');
   // Once is enough: the same entry again is refused, and so is an entry that is not in the book.
@@ -27450,7 +27450,7 @@ test('C8-9: a closed year’s entry is reversed by a counted reversal in the cur
 });
 
 test('C8-9: the form lists the closed year’s entries (full or compact) and is escaped', () => {
-  const x = sandbox(['closedRvFormHtml', 'closedBookEntryFor', 'closedBookReversed', 'arrOf', 'esc', 'fmt', 'fmtDateShort']);
+  const x = sandbox(['closedRvFormHtml', 'closedBookEntryFor', 'closedBookReversed', 'CLOSED_RV_FAMILY', 'CLOSED_RV_FAMILY_DONE', 'closedRvToast', 'fmtDateShort', 'arrOf', 'esc', 'fmt', 'fmtDateShort']);
   vm.runInContext("var ui = { armed: null, closedRvId: 'b', closedRvWhy: '\"><i>' };", x);
   const full = C8R_FULL(), compact = J(c8().compactClosedBook(full));
   const f = x.closedRvFormHtml(full), c = x.closedRvFormHtml(compact);
@@ -27683,7 +27683,7 @@ const C8MC_BOOK = () => C8_BOOK_OF(2026, 'arc-1', {
     c8row('c1', '2027-06-28', 1200, 'out', { description: 'Check 1050', ref: '1050' })],
   statements: [], aside: [], log: [], names: { line: {}, family: {} } });
 test('C8 re-check M-C: an entry already reversed in its year, a reversal, and an entry reversed in a later book can’t be reversed from the closed year again, full or compact', () => {
-  const x = sandbox(['closedRvRefusal', 'closedBookEntryFor', 'closedBookReversed', 'closedRvFormHtml', 'arrOf', 'esc', 'fmt', 'fmtDateShort', 'compactClosedBook', 'closedCompactRow', 'ledgerStampClean']);
+  const x = sandbox(['closedRvRefusal', 'closedBookEntryFor', 'closedBookReversed', 'CLOSED_RV_FAMILY', 'CLOSED_RV_FAMILY_DONE', 'closedRvToast', 'fmtDateShort', 'closedRvFormHtml', 'arrOf', 'esc', 'fmt', 'fmtDateShort', 'compactClosedBook', 'closedCompactRow', 'ledgerStampClean']);
   vm.runInContext("var ui = { armed: null, closedRvId: '', closedRvWhy: '' };", x);
   const full = C8MC_BOOK(), compact = J(c8().compactClosedBook(full));
   const R = (book, id, open, books) => x.closedRvRefusal(J(book), id, 'a reason', open || [], books);
@@ -27705,7 +27705,7 @@ test('C8 re-check M-C: an entry already reversed in its year, a reversal, and an
   eq(R(full, 'p1', [{ id: 'rv-2026-p1' }]), 'That entry is already reversed: its reversal is in the current book.', 'in the current book, as before');
 });
 test('C8 re-check F3: an entry carried into this year and still unticked is refused, in the treasurer’s words; once it is ticked it can be reversed', () => {
-  const x = sandbox(['closedRvRefusal', 'closedBookEntryFor', 'closedBookReversed', 'arrOf']);
+  const x = sandbox(['closedRvRefusal', 'closedBookEntryFor', 'closedBookReversed', 'CLOSED_RV_FAMILY', 'CLOSED_RV_FAMILY_DONE', 'closedRvToast', 'fmtDateShort', 'arrOf']);
   const book = C8MC_BOOK(), carried = (o) => Object.assign({ id: 'co-c1', off: 'carried', reconciled: false, carriedFrom: { year: 2026, id: 'c1' } }, o || {});
   const W = 'That entry is still waiting for the bank and was carried into this year. Change it on the Reconcile screen, under “Carried from” last year, not here.';
   eq(x.closedRvRefusal(J(book), 'c1', 'bounced', [carried()]), W, 'unticked carried copy');
@@ -27910,6 +27910,22 @@ test('C8 re-check F2: the year’s dues are counted through the cutoff too, and 
   const arc = c8wGet(ctx, 'arc');
   eq([arc.dues.collectedCents, arc.dues.outstandingCents], [2000, 4000], 'collected through Jun 30 only: $20.00 of $60.00 (the July payment pays the carried balance, in the new book)');
   eq(c8wGet(ctx, '[n, after, seen]'), [2, 2, 2], 'the ledger is put back, even when the work throws');
+});
+
+/* Decision 34 (strings 5 and 6): a reversal of a closed year's payment is a warning only. */
+test('C8 re-check string 5/6 (decision 34): the reversal form says it does not change what a family owes, and so does the toast when the entry was a family’s; nothing adjusts the family', () => {
+  const x = sandbox(['closedRvFormHtml', 'closedBookEntryFor', 'closedBookReversed', 'CLOSED_RV_FAMILY', 'CLOSED_RV_FAMILY_DONE', 'closedRvToast', 'arrOf', 'esc', 'fmt', 'fmtDateShort']);
+  vm.runInContext("var ui = { armed: null, closedRvId: '', closedRvWhy: '' };", x);
+  const full = C8R_FULL(), compact = J(c8().compactClosedBook(full));
+  for (const [name, book] of [['full', full], ['compact', compact]]) {
+    ok(x.closedRvFormHtml(J(book)).includes('If the entry was a payment from a family, it does not change what that family owes: adjust their charge on Money · Dues &amp; fees if they should still owe it. Pick the entry, say why, and tap twice.'), name + ': string 5, on the form');
+    eq([J(x.closedBookEntryFor(J(book), 'b')).scoutId, J(x.closedBookEntryFor(J(book), 'a')).scoutId], ['s1', ''], name + ': the entry says whether it was for a family');
+  }
+  eq(x.closedRvToast('2027-07-05', true), 'Reversal recorded in the current book, dated Jul 5. Tick it on the Reconcile screen when the bank shows it. It does not change what the family owes: check their account on Money · Dues & fees.', 'string 6, a family’s entry');
+  eq(x.closedRvToast('2027-07-05', false), 'Reversal recorded in the current book, dated Jul 5. Tick it on the Reconcile screen when the bank shows it.', 'an entry for no family');
+  // Warning only (decision 34): the reversal handler touches no charge and no family account.
+  const h = /if \(act\.indexOf\('closed-rv:'\) === 0\) \{[\s\S]*?\n    \}\n    if \(act\.indexOf\('closed-csv:'\)/.exec(SCRIPT);
+  ok(h && !/state\.charges|syncCharges|chargeTotals|familyAccounts/.test(h[0]) && /closedRvToast\(crDate, !!crEntry\.scoutId\)/.test(h[0]), 'the reversal adjusts no family’s charge');
 });
 
 /* ---------------- report ---------------- */

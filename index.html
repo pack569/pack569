@@ -15716,10 +15716,11 @@
     return out;
   }
   // The look note for one of them (`fam`: the family's first names, or '' when the roster has none). Plain text. Pure.
+  // Treasurer's review of C8-5..C8-10 — "One figure was kept", not "This device's": a balance (a charge) is this device's, but a credit (an entry) is the leader's pick of the two copies' when they differ.
   function ledgerCarryDiffLook(it, fam) {
     var who = fam ? fam + '’s family' : 'a family';
     return 'The ' + it.what + ' carried forward for ' + who + ' is ' + fmt(it.mine) + ' on this device and ' + fmt(it.theirs) + ' on another device, because both closed out the same year. ' +
-      'This device’s figure was kept. Check ' + (fam ? fam + '’s' : 'the family’s') + ' account on Money · Dues & fees, and correct it if it should be different.';
+      'One figure was kept. Check ' + (fam ? fam + '’s' : 'the family’s') + ' account on Money · Dues & fees, and correct it if it should be different.';
   }
   // Phase 3, C7 — a scout the merge kept, archived, over another device's delete (scoutsHeld), named by
   // first name only (the first word of the name, as shortNames takes it). Pure.
@@ -31636,8 +31637,9 @@
     var compact = !!book && book.form === 'compact';
     var row = arrOf(book && book.ledger).filter(function (e) { return e && (compact ? e.i === id : e.id === id); })[0];
     if (!row) return null;
-    return compact ? { id: row.i, date: row.d || '', description: row.t || '', amountCents: Math.abs(row.c || 0), direction: row.c < 0 ? 'out' : 'in' }
-      : { id: row.id, date: row.date || '', description: row.description || '', amountCents: row.amountCents || 0, direction: row.direction === 'in' ? 'in' : 'out' };
+    // `scoutId`: the family the entry was for ('' for none), so the reversal can say what it does not do to the family's account (decision 34).
+    return compact ? { id: row.i, date: row.d || '', description: row.t || '', amountCents: Math.abs(row.c || 0), direction: row.c < 0 ? 'out' : 'in', scoutId: typeof row.sc === 'string' ? row.sc : '' }
+      : { id: row.id, date: row.date || '', description: row.description || '', amountCents: row.amountCents || 0, direction: row.direction === 'in' ? 'in' : 'out', scoutId: typeof row.scoutId === 'string' ? row.scoutId : '' };
   }
   // Why this reversal can't be recorded, or '': the year's book is held, the entry is in it, it has no reversal yet (`open`: the open book's
   // counted rows and rows set aside), and a reason was given (the change history keeps it). Pure.
@@ -31709,13 +31711,21 @@
     rows.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
     var key = 'closed-rv:' + book.year, armed = ui.armed === key;
     return '<p class="eyebrow" style="margin-top:14px">Reverse an entry</p>' +
-      '<p class="small" style="margin:0 0 8px">A closed year can’t be changed. To correct it, record a reversal in the current book, dated today: it puts the same money back the other way and names the original entry. Pick the entry, say why, and tap twice.</p>' +
+      '<p class="small" style="margin:0 0 8px">A closed year can’t be changed. To correct it, record a reversal in the current book, dated today: it puts the same money back the other way and names the original entry. ' + esc(CLOSED_RV_FAMILY) + ' Pick the entry, say why, and tap twice.</p>' +
       '<div class="lrow no-print"><select data-ch="closed-rv-id" aria-label="Entry to reverse"><option value="">Pick an entry…</option>' +
       rows.map(function (e) {
         return '<option value="' + esc(e.id) + '"' + (ui.closedRvId === e.id ? ' selected' : '') + '>' + esc(fmtDateShort(e.date) + ' · ' + (e.description || 'no description') + ' · ' + (e.direction === 'in' ? '+' : '−') + fmt(e.amountCents)) + '</option>';
       }).join('') + '</select>' +
       '<input class="lname" data-ch="closed-rv-why" value="' + esc(ui.closedRvWhy || '') + '" maxlength="200" placeholder="Why is it being reversed?" aria-label="Why it is reversed">' +
       '<button type="button" class="btn small ' + (armed ? 'danger armed' : '') + '" data-act="' + esc(key) + '">' + (armed ? 'Tap again to record it' : 'Record the reversal') + '</button></div>';
+  }
+  // Owner decision 34 (treasurer's strings 5 and 6) — a reversal of a closed year's payment is a warning only: the reversal takes the money out of the bank balance, and does not change what
+  // the family owes (nothing adjusts a family's charge automatically): the treasurer does that on Money · Dues & fees. Said on the form, and in the toast when the entry was a family's.
+  var CLOSED_RV_FAMILY = 'If the entry was a payment from a family, it does not change what that family owes: adjust their charge on Money · Dues & fees if they should still owe it.';
+  var CLOSED_RV_FAMILY_DONE = ' It does not change what the family owes: check their account on Money · Dues & fees.';
+  // The toast after a closed-year reversal: where it is, dated, and (when the entry was for a family) that their account is as it was. Plain text. Pure.
+  function closedRvToast(date, family) {
+    return 'Reversal recorded in the current book, dated ' + fmtDateShort(date) + '. Tick it on the Reconcile screen when the bank shows it.' + (family ? CLOSED_RV_FAMILY_DONE : '');
   }
   var DEL_SEASON_REFUSED = 'Only a pack admin can delete a closed year.';
   // Treasurer's review of C8-5..C8-10 (string 7) — unit financial records are kept for a period the council sets (the owner is asking it).
@@ -34064,7 +34074,7 @@
         state.ledger.push(crRv);
         logLedger('reverse', crRv.id, { rows: [crYear + ':' + crEntry.id], why: ledgerContactScrub(crWhy).slice(0, 300) });
         ui.closedRvId = ''; ui.closedRvWhy = '';
-        if (commit()) showToast('Reversal recorded in the current book, dated ' + fmtDateShort(crDate) + '. Tick it on the Reconcile screen when the bank shows it.');
+        if (commit()) showToast(closedRvToast(crDate, !!crEntry.scoutId));
       });
       return;
     }
