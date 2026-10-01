@@ -26754,8 +26754,8 @@ const RUN_FNS = ['esc', 'planInline', 'planLink', 'planOptionsLabel', 'planItems
   'runOnlyLine', 'runChosenOption', 'runPathSteps', 'runStepMins', 'runListMins', 'runShape', 'runEntryFor', 'runPlannedMins',
   'runNew', 'runTracksDone', 'runMove', 'runPause', 'runUnfinish', 'runClocks', 'runClockText', 'runCleanSaved', 'runLoadSaved',
   'runSave', 'runForget', 'runResumable', 'runReqChips', 'runStepBodyHtml', 'runClockHtml', 'runNowHtml', 'runCtlHtml',
-  'runListHtml', 'runSetAsideHtml', 'runRefHtml', 'runMeetingLabel', 'runEntryHead', 'runStartHtml', 'runAddHtml', 'runLiveHtml',
-  'runEndHtml', 'runScreenHtml'];
+  'runListHtml', 'runSetAsideHtml', 'runRefHtml', 'runMeetingLabel', 'runEntryHead', 'runStartHtml', 'runDockHtml', 'runRunnable',
+  'runPlanRunnable', 'runAddDens', 'runAddHtml', 'runLiveHtml', 'runEndHtml', 'RUN_GUIDE_SHORT', 'runScreenHtml'];
 // A page-like sandbox: the run's functions, a localStorage (that can be made to fail), and the
 // screen's own wiring (openRunMeeting, runAction) over a ui and a `state` that refuses to be touched.
 const RUN_T0 = 1790000000000;
@@ -27168,6 +27168,67 @@ atest('run this meeting: the wake lock is guarded, asked for while the timer run
   ok(/typeof navigator === 'undefined' \|\| !navigator\.wakeLock \|\| typeof navigator\.wakeLock\.request !== 'function'/.test(src), 'the feature test');
   ok(/^\s*try \{/m.test(src) && /\.catch\(function \(\) \{ runWakeAsking = false; \}\)/.test(src), 'the guards');
   ok(/document\.addEventListener\('visibilitychange', function \(\) \{\n\s*if \(document\.visibilityState === 'visible'\) \{ runTimerSync\(\); runTick\(\); \}/.test(SCRIPT), 'a page shown again does not ask again');
+});
+
+
+test('run this meeting: on a phone the controls are docked at the bottom, and the full guide line is on the start page only', () => {
+  const ctx = runCtx();
+  const dock = (html) => { const i = html.indexOf('<div class="run-dock no-print">'); return i < 0 ? '' : html.slice(i); };
+  const one = runOv([{ den: 'Wolf', adventure: 'Bobcat', meetingN: 1 }]);
+  ctx.O = one;
+  const start = vm.runInContext('runScreenHtml(O, NOW)', ctx);
+  ok(/data-act="run-start"/.test(dock(start)) && /data-act="run-add">Add another den’s meeting</.test(dock(start)) && /Total: 40 min/.test(dock(start)), 'Start is not docked');
+  eq((start.match(/data-act="run-start"/g) || []).length, 1, 'one Start');
+  const live = vm.runInContext('O.run = runNew(runShape(O.data, O.entries, O.picks), NOW); runScreenHtml(O, NOW)', ctx);
+  for (const a of ['run-back', 'run-skip', 'run-next']) ok(new RegExp(`data-act="${a}"`).test(dock(live)), a + ' is not docked');
+  ok(!/data-act="run-next"/.test(live.slice(0, live.indexOf('run-dock'))), 'a Next above the dock');
+  ok(/data-act="run-pause"/.test(live.slice(0, live.indexOf('run-dock'))), 'Pause left the clocks');
+  // The dock is the sheet's last child, so the last of the content is above it, not under it.
+  ok(/<\/div><\/div><\/div><\/div><\/div>$/.test(live) && dock(live).indexOf('run-list') === -1, 'the dock is not last');
+  const end = vm.runInContext('O.run.finishedAt = NOW + 60000; runScreenHtml(O, NOW)', ctx);
+  ok(/data-act="run-record"/.test(dock(end)), 'Record is not docked');
+  // Both dens: a row per den, and Start the closing, in the dock.
+  ctx.O = runOv([{ den: 'Bear', adventure: 'Bear Strong', meetingN: 1 }, { den: 'Wolf', adventure: 'Bobcat', meetingN: 1 }]);
+  const both = vm.runInContext('O.run = runNew(runShape(O.data, O.entries, O.picks), NOW); runScreenHtml(O, NOW)', ctx);
+  const bd = dock(both);
+  ok(/run-ctl-name">Bear<[\s\S]*data-act="run-next" data-k="0"[\s\S]*run-ctl-name">Wolf<[\s\S]*data-act="run-next" data-k="1"[\s\S]*data-act="run-closing"/.test(bd), 'the both-dens dock');
+  ok(!/data-act="run-(next|closing)"/.test(both.slice(0, both.indexOf('run-dock'))), 'a control above the dock');
+  const closing = vm.runInContext('O.run.closingAt = NOW; runScreenHtml(O, NOW)', ctx);
+  ok(/data-act="run-finish"/.test(dock(closing)), 'Finish is not docked');
+  // The CSS: stuck to the bottom, clear of the home bar.
+  ok(/\.run-dock \{[^}]*position: sticky; bottom: 0;[^}]*env\(safe-area-inset-bottom/.test(SCRIPT_CSS), 'the dock is not sticky with a safe area');
+  // The guide: in full before the start, one line after.
+  const full = plansOut().data.guide;
+  const fullText = 'These are ideas to help a den leader';
+  ok(full.indexOf(fullText) > -1, 'the guide changed, so this proves nothing');
+  ok(start.indexOf(fullText) > -1, 'the start page lost the full guide');
+  for (const [k, html] of [['live', live], ['end', end], ['both', both]]) {
+    ok(html.indexOf(fullText) === -1 && /<p class="small plan-guide"><strong>A guide, not the rulebook\.<\/strong><\/p>/.test(html), k + ': the guide line');
+    ok(/Run this meeting · leaders only/.test(html), k + ': the eyebrow');
+  }
+});
+
+test('run this meeting: “Add another den’s meeting” lists only plans with a meeting to run', () => {
+  const ctx = runCtx();
+  const d = plansOut().data;
+  const rangeOnly = Object.keys(d.plans).filter((k) => k.indexOf('Bear :: ') === 0 && !d.plans[k].meetings.some((m) => m.steps && m.steps.length));
+  ok(rangeOnly.length >= 1, 'no Bear plan without den meetings, so this proves nothing: ' + rangeOnly);
+  ctx.O = Object.assign(runOv([{ den: 'Wolf', adventure: 'Bobcat', meetingN: 1 }]), { adding: { den: 'Bear' } });
+  const html = vm.runInContext('runScreenHtml(O, NOW)', ctx);
+  ok(/data-den="Bear" data-name="Bear Strong"/.test(html), 'a runnable Bear plan is missing');
+  for (const k of rangeOnly) ok(html.indexOf('data-name="' + k.slice(8).replace(/'/g, '&#39;') + '"') === -1, 'listed with nothing to run: ' + k);
+  ok(html.indexOf('data-act="run-add" data-den="Wolf"') === -1, 'the den already in the run is offered');
+  // A den whose only plan has no den meeting is left out; a meeting without steps is not offered.
+  const fake = { format: 1, guide: 'g', plans: {
+    'Wolf :: Bobcat': d.plans['Wolf :: Bobcat'],
+    'Lion :: Range Day': { meetings: [{ n: 1, title: 'Range', steps: [] }] },
+    'Tiger :: Mixed': { meetings: [{ n: 1, title: 'Outing', steps: [] }, { n: 2, title: 'Den night', steps: [{ n: 1, title: 's', kind: 'den', mins: 5 }] }] } } };
+  ctx.O = Object.assign(runOv([{ den: 'Wolf', adventure: 'Bobcat', meetingN: 1 }]), { data: fake, adding: { den: 'Tiger', name: 'Mixed' } });
+  const f = vm.runInContext('runScreenHtml(O, NOW)', ctx);
+  ok(f.indexOf('data-den="Lion"') === -1, 'a den with nothing to run is offered');
+  ok(f.indexOf('data-n="1"') === -1 && f.indexOf('data-name="Mixed" data-n="2"') > -1, 'the meetings offered');
+  ctx.O = Object.assign(runOv([{ den: 'Wolf', adventure: 'Bobcat', meetingN: 1 }]), { data: { format: 1, plans: { 'Wolf :: Bobcat': d.plans['Wolf :: Bobcat'], 'Lion :: Range Day': fake.plans['Lion :: Range Day'] } } });
+  ok(!/data-act="run-add"/.test(vm.runInContext('runScreenHtml(O, NOW)', ctx)), 'Add another den’s meeting with no other den to run');
 });
 
 /* ---------------- report ---------------- */
