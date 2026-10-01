@@ -164,9 +164,9 @@ jobs:
           name: site
           path: _site
 
-      # A second check in a second job: exactly index.html + _headers, byte-for-byte this
-      # commit's build for the chosen target, the CSP hash matching the script, and a preview
-      # carrying none of the live config.
+      # A second check in a second job: exactly index.html + _headers + plans.json, byte-for-byte
+      # this commit's build for the chosen target, the CSP hash matching the script, and a
+      # preview carrying none of the live config.
       - name: Verify the site
         env:
           TARGET: ${{ inputs.deploy_target }}
