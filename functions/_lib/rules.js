@@ -123,13 +123,17 @@ export const canDeleteInvite = (role, emailKey, target) => isAdmin(role) || emai
 //   - none of PARENT_VIEW_STANDINGS_KEYS while the pack has "show standings" off: those are
 //     exactly what buildParentView writes after `if (!withStandings) return out;`;
 //   - no key named noteInternal anywhere in it (leaders-only meeting notes; the page's
-//     "MUST NOT reach any outbound surface");
+//     "MUST NOT reach any outbound surface"), nor advNotes or advPlanEdits (each den's notes on
+//     a lesson plan, and the pack's own edits to the plans: leaders only, security review of the
+//     lesson plans, 2026-09-30). buildParentView never writes any of them; this is the backstop
+//     for a page that one day did. The refusal's reason is 'view-note-internal' for all three
+//     (the name it already had, which the import's audit records);
 //   - nested no deeper than PARENT_VIEW_MAX_DEPTH, so the database can always edit it.
 // generatedAt is not in the list: the server stamps its own, and drops one that is sent.
 export const PARENT_VIEW_KEYS = ['rev', 'packName', 'programYear', 'events', 'camping', 'welcome', 'contact', 'familyCost',
   'standings', 'goals', 'derby', 'tiers', 'tierLadder'];
 export const PARENT_VIEW_STANDINGS_KEYS = ['standings', 'goals', 'derby', 'tiers', 'tierLadder'];
-export const PARENT_VIEW_NEVER_KEYS = ['noteInternal'];
+export const PARENT_VIEW_NEVER_KEYS = ['noteInternal', 'advNotes', 'advPlanEdits'];
 // How many objects and arrays deep a view may nest, the view itself being 1. See below.
 export const PARENT_VIEW_MAX_DEPTH = 64;
 // Why this view may not be stored, or null if it may. `view` is a parsed JSON object.
