@@ -983,6 +983,8 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   // DENS: the event coercion rebuilds `dens` in rank order against it.
   'DENS',
   'programYearEndISO', 'EVENT_KINDS', 'freshEvent', 'ADV_RENAMES', 'dateToSlot',
+  // Den notes on the lesson plans (state.advNotes).
+  'ADV_NOTE_MAX', 'ADV_NOTES_MAX_TOTAL', 'advPlanKey', 'normalizeAdvNotes',
   // Wave A — the event coercion normalizes a pack meeting's agenda.
   'PACK_AGENDA', 'normalizeAgenda',
   'ATT_MAX_HEADS', 'attHeads', 'freshAttendance', 'attEmpty', 'attTotals',
@@ -15131,6 +15133,10 @@ test('api parent view: the server\'s allowlist is buildParentView\'s own top-lev
   eq(list('PARENT_VIEW_KEYS'), pageAll, 'rules.js PARENT_VIEW_KEYS vs buildParentView\'s keys');
   eq(list('PARENT_VIEW_STANDINGS_KEYS'), pageGated, 'rules.js PARENT_VIEW_STANDINGS_KEYS vs the keys behind the standings gate');
   ok(list('PARENT_VIEW_NEVER_KEYS').indexOf('noteInternal') >= 0, 'noteInternal is not refused');
+  // The lesson plans' leaders-only fields (security review, 2026-09-30): each den's notes, and the
+  // pack's own edits to a plan.
+  for (const k of ['advNotes', 'advPlanEdits']) ok(list('PARENT_VIEW_NEVER_KEYS').indexOf(k) >= 0, k + ' is not refused');
+  ok(pageAll.every((k) => list('PARENT_VIEW_NEVER_KEYS').indexOf(k) === -1), 'a key buildParentView writes is on the never list');
 });
 
 atest('api parent view: the server stores only buildParentView\'s shape — its keys, no standings while they are off, no noteInternal', async () => {
@@ -15146,7 +15152,11 @@ atest('api parent view: the server stores only buildParentView\'s shape — its 
     [Object.assign({}, full, { ledger: [] }), 'view-key', 'a key buildParentView never writes'],
     [Object.assign({}, full, { budget: { total: 1 } }), 'view-key', 'the budget'],
     [Object.assign({}, full, { events: [{ title: 'Den meeting', noteInternal: 'leaders only' }] }), 'view-note-internal', 'a nested noteInternal'],
-    [Object.assign({}, full, { camping: [{ sections: [[{ noteInternal: '' }]] }] }), 'view-note-internal', 'a deeply nested noteInternal (even empty)']
+    [Object.assign({}, full, { camping: [{ sections: [[{ noteInternal: '' }]] }] }), 'view-note-internal', 'a deeply nested noteInternal (even empty)'],
+    // The lesson plans' leaders-only fields, anywhere in the view (security review, 2026-09-30).
+    [Object.assign({}, full, { events: [{ title: 'Den meeting', advNotes: { 'Wolf :: Bobcat': { text: 'x' } } }] }), 'view-note-internal', 'a den’s lesson-plan notes'],
+    [Object.assign({}, full, { camping: [{ sections: [[{ advPlanEdits: {} }]] }] }), 'view-note-internal', 'the pack’s plan edits, nested and empty'],
+    [Object.assign({}, full, { advNotes: {} }), 'view-key', 'advNotes at the top']
   ]) {
     const r = await put(body);
     eq([r.status, r.body.reason], [400, reason], what);
@@ -15154,6 +15164,7 @@ atest('api parent view: the server stores only buildParentView\'s shape — its 
   eq(stored(), full, 'a refused view replaced the stored one');
   // A noteInternal as a VALUE (a leader typing the word) is not a key and is fine.
   eq((await put(Object.assign({}, full, { packName: 'noteInternal' }))).status, 200, 'the word as a value');
+  eq((await put(Object.assign({}, full, { packName: 'advNotes' }))).status, 200, 'advNotes as a value');
   // Standings off: each gated key is refused, and switching them off takes them out of the stored view at once.
   const cfg = { open: false, code: 'Code123abc', showStandings: false, showAmounts: true, contact: '' };
   eq((await w.call('owner', 'PUT', 'join', null, { body: cfg })).status, 200, 'standings switched off');
@@ -15379,6 +15390,8 @@ atest('api import: a parent view PUT /view would refuse is left behind and named
   const cases = [
     [{ join: off, view: { packName: 'Test Pack', standings: [{ name: 'Test' }] } }, 'view-standings-off', 'standings, with the imported join config saying off'],
     [{ view: { packName: 'Test Pack', events: [{ noteInternal: 'x' }] } }, 'view-note-internal', 'a noteInternal'],
+    [{ view: { packName: 'Test Pack', events: [{ advNotes: { 'Wolf :: Bobcat': { text: 'x' } } }] } }, 'view-note-internal', 'a den’s lesson-plan notes'],
+    [{ view: { packName: 'Test Pack', camping: [{ advPlanEdits: {} }] } }, 'view-note-internal', 'the pack’s plan edits'],
     [{ view: { packName: 'Test Pack', budget: {} } }, 'view-key', 'a key buildParentView never writes'],
     [{ view: { packName: 'Test Pack', events: JSON.parse('['.repeat(1000) + ']'.repeat(1000)) } }, 'view-too-deep', 'a view 1,001 deep']
   ];
@@ -26399,6 +26412,337 @@ test('lesson plans: leaders only — never in the pack record, the parent view, 
   const pv = JSON.stringify(vm.runInContext('buildParentView(state, { showStandings: false })', ctx));
   ok(/Den meeting — Wolf/.test(pv) && /Church hall/.test(pv), 'the Wolf den meeting did not publish, so this proves nothing');
   words.forEach((w) => ok(pv.indexOf(w) < 0, 'plan text in the parent view: ' + w));
+});
+
+/* ---------------- The plan panel and the den's notes (2026-09-30, BUILD-PLAN §3, §4, §4a) ---------------- */
+// The panel's renderers, pure, over the escaper.
+const PANEL_FNS = ['esc', 'planInline', 'planLink', 'planOptionsLabel', 'planItemsHtml', 'planBlockHtml', 'planHowHtml',
+  'planStepHtml', 'planMeetingMins', 'planMeetingHtml', 'advPlanBodyHtml'];
+const panelCtx = () => sandbox(PANEL_FNS);
+// Every meeting open.
+const allOpen = (plan) => Object.fromEntries(plan.meetings.map((m, i) => [i, true]));
+// What markup the panel may produce, and nothing else.
+const PANEL_TAGS = new Set(['div', 'p', 'strong', 'span', 'ul', 'ol', 'li', 'a', 'button', 'h1', 'h2', 'label', 'textarea']);
+const panelMarkupProblem = (html) => {
+  for (const m of html.matchAll(/<\/?([a-zA-Z0-9]+)([^>]*)>/g)) {
+    if (!PANEL_TAGS.has(m[1].toLowerCase())) return 'a <' + m[1] + '> tag';
+    // Attribute values are escaped (no raw " inside), so an on… inside one is text, not a handler.
+    if (/\son[a-z]+\s*=/i.test(m[2].replace(/"[^"]*"/g, '""'))) return 'an on… handler: ' + m[0];
+    if (m[1] === 'a' && m[0][1] !== '/' && !/^ href="https:\/\/[^"]+" target="_blank" rel="noopener noreferrer"$/.test(m[2])) return 'a link: ' + m[0];
+  }
+  return null;
+};
+
+test('lesson plans: the Lesson plan button is on every Den plans adventure row, for leaders only', () => {
+  const r = slice('renderDenPlanner');
+  eq((r.match(/advPlanBtn\(den, rq\.name\)/g) || []).length, 2, 'a required adventure row, planned or not, has no Lesson plan button');
+  ok(/advPlanBtn\(den, el\.name\)/.test(r), 'an elective row has no Lesson plan button');
+  const b = slice('advPlanBtn');
+  ok(!/hasJob\(|canEdit\(/.test(b), 'the button is gated on a job or the edit role: a viewer reads plans too');
+  const run = (parent) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`${slice('esc')}\n${b}\nfunction parentMode() { return ${parent}; }`, ctx);
+    return ctx.advPlanBtn('Wolf', 'Paws on the Path');
+  };
+  eq(run(true), '', 'a parent (or an admin previewing as one) is drawn the button');
+  const btn = run(false);
+  ok(/data-act="adv-plan-open" data-den="Wolf" data-name="Paws on the Path"/.test(btn) && />Lesson plan<\/button>$/.test(btn), 'the button: ' + btn);
+  // Never in the parent app: not drawn there, and refused there if it somehow arrived.
+  ok(!/advPlanBtn|adv-plan|renderAdvPlanSheet/.test(codeOnly(slice('renderParentApp'))), 'the parent app draws a plan');
+  const parentActs = /var PARENT_ACTS = \[([\s\S]*?)\];/.exec(SCRIPT)[1];
+  ok(!/adv-plan/.test(parentActs), 'a plan action is allowed in the parent app');
+  ok(/if \(parent \|\| gate\) ui\.overlay = null;/.test(SCRIPT), 'an open panel survives into the parent app');
+  ok(/if \(o\.kind === 'adv-plan'\) return renderAdvPlanSheet\(o\);/.test(slice('renderOverlay')), 'the panel is not an overlay');
+  // Opening and reading a plan writes nothing, so it stays open while the page is out of date.
+  const held = /var HELD_ACTS = \[([\s\S]*?)\];/.exec(SCRIPT)[1];
+  for (const a of ['adv-plan-open', 'adv-plan-retry', 'adv-plan-mtg']) ok(held.indexOf("'" + a + "'") > -1, a + ' is refused while held');
+  for (const a of ['adv-plan-open', 'adv-plan-retry', 'adv-plan-mtg']) {
+    const h = new RegExp(`if \\(act === '${a}'\\) \\{[\\s\\S]*?\\n    \\}`).exec(SCRIPT);
+    ok(h && !/commit\(\)|state\./.test(h[0]), a + ' writes the pack record');
+  }
+});
+
+test('lesson plans: every real plan renders whole, escaped, with only the panel’s own markup', () => {
+  const ctx = panelCtx();
+  const d = plansOut().data;
+  let links = 0;
+  for (const [key, plan] of Object.entries(d.plans)) {
+    const html = ctx.advPlanBodyHtml(plan, allOpen(plan));
+    const bad = panelMarkupProblem(html);
+    ok(!bad, `${key}: ${bad}`);
+    ok(html.indexOf('**') === -1, `${key}: a ** was left unconverted`);
+    eq((html.match(/<li class="plan-step">/g) || []).length, plan.meetings.reduce((n, m) => n + m.steps.length, 0), key + ': steps drawn');
+    eq((html.match(/data-act="adv-plan-mtg"/g) || []).length, plan.meetings.length, key + ': meeting toggles');
+    links += (html.match(/<a /g) || []).length;
+  }
+  eq(links, Object.values(d.plans).reduce((n, p) => n + p.sources.length, 0), 'every source is a link, and nothing else is');
+  // One plan, read for what a leader needs.
+  const wb = d.plans['Wolf :: Bobcat'];
+  const html = ctx.advPlanBodyHtml(wb, allOpen(wb));
+  for (const s of ['Meeting 1 of 2', 'Meet the Den', '40 min', 'Tell parents before they leave', 'Safety', 'Supplies for the whole adventure',
+    'Done at the pack opening', 'Requirements, in brief', '<strong>Tip:</strong>', 'At home:', '<p class="eyebrow">Say</p>', 'Req 1']) {
+    ok(html.indexOf(s) > -1, 'Wolf Bobcat lacks ' + s);
+  }
+  ok(/class="warn plan-safety"/.test(html), 'the safety notes are not in a box');
+  ok(html.indexOf('Parent&#39;s Guide') > -1 && html.indexOf("Parent's Guide") === -1, 'an apostrophe was not escaped');
+  // Closed, a meeting is its heading only.
+  const shut = ctx.advPlanBodyHtml(wb, {});
+  ok(shut.indexOf('aria-expanded="false"') > -1 && shut.indexOf('class="plan-step"') === -1, 'a closed meeting shows its steps');
+  ok(ctx.advPlanBodyHtml(wb, { 1: true }).indexOf('aria-expanded="true"') > -1, 'meeting 2 does not open on its own');
+  // Options three ways: a step's Option A / Option B, a meeting for one option, the other's variant.
+  const dg = d.plans['Arrow of Light :: Duty to God'];
+  const dgh = ctx.advPlanBodyHtml(dg, allOpen(dg));
+  ok(/<div class="plan-option"><p class="eyebrow">Option B · guest at the den<\/p><ol/.test(dgh) && /Option A · helper map/.test(dgh), 'a step’s options are not shown as blocks');
+  const cfn = d.plans['Lion :: Champions for Nature'];
+  ok(/<span class="pill">Option A only<\/span>/.test(ctx.advPlanBodyHtml(cfn, {})), 'a meeting for one option is not labelled');
+  const mf = d.plans['Webelos :: My Family'];
+  ok(/<span class="pill navy">Option B<\/span> this is the only My Family/.test(ctx.advPlanBodyHtml(mf, { 0: true })), 'a variant is not labelled');
+  const oa = d.plans['Arrow of Light :: Outdoor Adventurer'];
+  ok(/overnight, about 24 hours/.test(ctx.advPlanBodyHtml(oa, {})), 'an outing lost its own length');
+  eq(ctx.planOptionsLabel(['A', 'C']), 'Options A and C only', 'two options');
+});
+
+test('lesson plans: a plan carrying HTML comes out as text, **x** as bold, and only https:// is linked', () => {
+  const ctx = panelCtx();
+  const p = JSON.parse(JSON.stringify(plansOut().data.plans['Wolf :: Bobcat']));
+  p.summary = '<script>alert(1)</script> **x** and [date]';
+  p.category = '"><img src=x onerror=alert(2)>';
+  p.safety[0].text = '<iframe src="https://evil.example"></iframe>';
+  p.sources = ['javascript:alert(3)', 'http://plain.example/', 'https://ok.example/a?b=1&c="2"', 'https://ok.example/" onmouseover="alert(4)',
+    'https://fine.example/page?a=1&b=2'];
+  const st = p.meetings[0].steps[0];
+  st.title = '<b onclick=alert(5)>Name</b>';
+  st.say = '<img src=x onerror=alert(6)>';
+  st.how[0].text = '**<em>bold</em>** [date]';
+  st.tip = '**x**';
+  st.home = ['<svg onload=alert(7)>'];
+  st.options = [{ key: 'A', label: 'Option A <u>', how: [{ n: 1, text: '<a href="javascript:x">y</a>' }] }];
+  p.meetings[0].tellParents = { text: '</div><div onclick=alert(8)>' };
+  p.meetings[0].supplies = { text: '<style>body{}</style>' };
+  const html = ctx.advPlanBodyHtml(p, allOpen(p));
+  const bad = panelMarkupProblem(html);
+  ok(!bad, 'hostile text made markup: ' + bad);
+  ok(html.indexOf('&lt;script&gt;alert(1)&lt;/script&gt;') > -1 && html.indexOf('&lt;img src=x onerror=alert(6)&gt;') > -1, 'the text was dropped, not shown');
+  ok(html.indexOf('<strong>x</strong>') > -1, '**x** is not bold');
+  ok(html.indexOf('<strong>&lt;em&gt;bold&lt;/em&gt;</strong>') > -1, 'bold around escaped text');
+  ok((html.match(/\[date\]/g) || []).length === 2, '[date] is not left as written');
+  ok(!/href="(?!https:)/.test(html), 'a link to something other than https://');
+  eq((html.match(/<a /g) || []).length, 1, 'only the plain https:// source is a link');
+  ok(html.indexOf('<a href="https://fine.example/page?a=1&amp;b=2" target="_blank" rel="noopener noreferrer">') > -1, 'the plain https:// source');
+  ok(html.indexOf('href="https://ok.example/a?b=1&amp;c=&quot;2&quot;"') === -1, 'an address with a quote in it was linked');
+  // The heading, the guide and the official link, in the panel around it.
+  const sheet = sheetCtx();
+  vm.runInContext("var P = " + JSON.stringify(p) + "; P.heading = '<img src=x onerror=alert(9)> **Bobcat**'; P.official = 'javascript:alert(10)';", sheet);
+  const top = vm.runInContext("renderAdvPlanSheet({ kind: 'adv-plan', den: 'Wolf', name: 'Bobcat', status: 'ready', data: { guide: '<b>**A guide**</b>', plans: { 'Wolf :: Bobcat': P } }, open: {} })", sheet);
+  ok(!panelMarkupProblem(top), 'the sheet: ' + panelMarkupProblem(top));
+  ok(top.indexOf('<h1>&lt;img src=x onerror=alert(9)&gt; <strong>Bobcat</strong></h1>') > -1, 'the heading');
+  ok(top.indexOf('&lt;b&gt;<strong>A guide</strong>&lt;/b&gt;') > -1, 'the guide line');
+  ok(top.indexOf('javascript:') > -1 && !/href="javascript/.test(top), 'the official link');
+});
+
+// The whole panel, around a fixture state and the role.
+function sheetCtx(edit = true, notes = {}) {
+  const ctx = vm.createContext({});
+  vm.runInContext(`var DENS = ${JSON.stringify(['Lion', 'Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light'])};
+    var state = { advNotes: ${JSON.stringify(notes)} };
+    function canEdit() { return ${edit}; }
+    function fmtDateShortYear(iso) { return /^\\d{4}-\\d{2}-\\d{2}$/.test(iso) ? 'Oct 1, 2026' : ''; }
+    ${PANEL_FNS.concat(['ADV_NOTE_MAX', 'ADV_PLAN_GUIDE', 'ADV_OFFICIAL_INDEX', 'advPlanKey', 'advPlanFor', 'proseText',
+      'advNoteBlock', 'renderAdvPlanSheet']).map(slice).join('\n')}`, ctx);
+  return ctx;
+}
+
+test('lesson plans: the panel says it is loading, says when the plans failed with Try again, and says when there is no plan', () => {
+  const ctx = sheetCtx();
+  const draw = (o) => vm.runInContext('renderAdvPlanSheet(' + JSON.stringify(Object.assign({ kind: 'adv-plan', den: 'Wolf', name: 'Bobcat', open: {} }, o)) + ')', ctx);
+  const loading = draw({ status: 'loading' });
+  ok(/role="status">Loading the lesson plan…/.test(loading), 'no loading state');
+  ok(/A guide, not the rulebook\./.test(loading) && loading.indexOf('href="https://www.scouting.org/programs/cub-scouts/adventures/"') > -1,
+    'the guide line and the official link wait for the file');
+  ok(!/adv-plan-retry|plan-mtg/.test(loading), 'the loading state offers a retry or a meeting');
+  const failed = draw({ status: 'failed', error: 'The lesson plans couldn’t be loaded. Check the connection and try again in a minute.' });
+  ok(/<div class="warn" role="alert"><p[^>]*>The lesson plans couldn’t be loaded\./.test(failed), 'the failure is not said');
+  ok(/data-act="adv-plan-retry">Try again<\/button>/.test(failed), 'no Try again');
+  const none = draw({ status: 'ready', name: 'Paws of Skill', data: plansOut().data });
+  ok(/There’s no lesson plan in the app for Paws of Skill yet/.test(none) && none.indexOf('cub-scout-adventures/') === -1, 'an adventure without a plan');
+  ok(none.indexOf('href="https://www.scouting.org/programs/cub-scouts/adventures/"') > -1, 'an adventure without a plan has no official link');
+  ok(/Our den’s notes/.test(none), 'an adventure without a plan has no den notes');
+  const real = draw({ status: 'ready', data: plansOut().data, open: { 0: true } });
+  ok(real.indexOf('href="' + plansOut().data.plans['Wolf :: Bobcat'].official + '"') > -1 && /<h1>Bobcat \(Wolf\)<\/h1>/.test(real), 'the plan’s own heading and link');
+  ok(real.indexOf('<strong>A guide, not the rulebook.</strong> These are ideas') > -1, 'the file’s own guide line');
+  ok(real.indexOf('Our den’s notes') > real.indexOf('Supplies for the whole adventure'), 'the notes are not at the bottom');
+  ok(!panelMarkupProblem(real), 'the panel: ' + panelMarkupProblem(real));
+});
+
+atest('lesson plans: the panel fills when the plans arrive, fails kindly, and leaves a closed panel alone', async () => {
+  const run = async (answer, closeFirst) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`var DENS = ['Lion', 'Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light'];
+      var ui = { overlay: null }; var renders = 0; function render() { renders++; }
+      var ANSWER; function loadAdventurePlans() { return ANSWER; }
+      ${slice('openAdvPlan')}`, ctx);
+    ctx.ANSWER = answer;
+    ctx.openAdvPlan('Wolf', 'Bobcat');
+    const o = ctx.ui.overlay;
+    eq([o.kind, o.status, o.den, o.name, ctx.renders], ['adv-plan', 'loading', 'Wolf', 'Bobcat', 1], 'opened, loading');
+    if (closeFirst) ctx.ui.overlay = null;
+    await answer.catch(() => {});
+    await null;
+    return { o, ctx };
+  };
+  const ok1 = await run(Promise.resolve({ format: 1, plans: {} }));
+  eq([ok1.o.status, !!ok1.o.data, ok1.ctx.renders], ['ready', true, 2], 'filled');
+  const bad = await run(Promise.reject(new Error('The lesson plans couldn’t be loaded. Check the connection and try again in a minute.')));
+  eq([bad.o.status, /couldn’t be loaded/.test(bad.o.error), bad.ctx.renders], ['failed', true, 2], 'failed');
+  const gone = await run(Promise.resolve({ format: 1, plans: {} }), true);
+  eq([gone.ctx.ui.overlay, gone.o.status, gone.ctx.renders], [null, 'loading', 1], 'a closed panel was reopened or redrawn');
+  // Not a den: nothing opens.
+  const ctx = vm.createContext({});
+  vm.runInContext(`var DENS = ['Wolf']; var ui = { overlay: null }; function render() {} function loadAdventurePlans() { throw new Error('fetched'); }
+    ${slice('openAdvPlan')}`, ctx);
+  ctx.openAdvPlan('Dragon', 'Bobcat');
+  eq(ctx.ui.overlay, null, 'a panel for a den that is not one');
+});
+
+test('lesson plans: the den’s notes normalize — junk dropped, text capped, a renamed adventure’s note moved, key order', () => {
+  const n = sandbox(NORMALIZE_FNS);
+  const out = (v) => JSON.parse(JSON.stringify(n.normalizeAdvNotes(v)));
+  const got = out(JSON.parse(JSON.stringify({
+    'Wolf :: Bobcat': { text: 'The soft ball works better.', by: 'Pat', at: '2026-10-01T10:00:00.000Z', extra: 1 },
+    'Wolf :: Long one': { text: 'x'.repeat(5000), by: 7, at: null },
+    'Dragon :: Bobcat': { text: 'not a den' },
+    'Wolf :: ': { text: 'no name' },
+    'Wolf': { text: 'no separator' },
+    'Bear :: Fellowship': { text: '   \n ' },
+    'Bear :: Bear Strong': 'a string',
+    'Tiger :: Team Tiger': { text: 5 },
+    'Tiger :: Tigers in the Wild': ['x'],
+    'Lion :: Lion Roar': { text: 'old name', at: '2026-01-01' },
+    'Tiger :: Tiger Roar': { text: 'old name' },
+    "Tiger :: Tiger's Roar": { text: 'new name' },
+    ['Bear :: ' + 'y'.repeat(121)]: { text: 'too long a name' }
+  })));
+  eq(Object.keys(got), ["Lion :: Lion's Roar", "Tiger :: Tiger's Roar", 'Wolf :: Bobcat', 'Wolf :: Long one'], 'the notes kept, in key order');
+  eq(got['Wolf :: Bobcat'], { text: 'The soft ball works better.', by: 'Pat', at: '2026-10-01T10:00:00.000Z' }, 'a note');
+  eq([got['Wolf :: Long one'].text.length, got['Wolf :: Long one'].by, got['Wolf :: Long one'].at], [4000, '', ''], 'the cap, and junk who and when');
+  eq([got["Lion :: Lion's Roar"].text, got["Tiger :: Tiger's Roar"].text], ['old name', 'new name'], 'the rename');
+  eq([out(null), out([]), out('x'), out({ __proto__: null })], [{}, {}, {}, {}], 'not a map');
+  eq(out(JSON.parse('{"__proto__": {"text": "x"}, "Wolf :: __proto__": {"text": "a name like any other"}}')), { 'Wolf :: __proto__': { text: 'a name like any other', by: '', at: '' } }, 'a __proto__ key');
+  eq(out({ 'Wolf :: A': { text: 'one\r\ntwo\rthree' } })['Wolf :: A'].text, 'one\ntwo\nthree', 'line endings');
+  // Past the total, the newest notes are kept.
+  const many = {};
+  for (let i = 0; i < 40; i++) many['Bear :: Note ' + String(i).padStart(2, '0')] = { text: 'z'.repeat(4000), at: '2026-10-' + String(i % 28 + 1).padStart(2, '0') + 'T' + String(i).padStart(2, '0') };
+  const capped = out(many);
+  eq(Object.keys(capped).length, 120000 / 4000, 'the total');
+  ok(capped['Bear :: Note 39'] && !capped['Bear :: Note 00'], 'the oldest went first');
+  // In the pack record: a record without any gets an empty map, a fresh pack has one, and normalizing twice changes nothing.
+  const ns = slice('normalizeState');
+  ok(/d\.advNotes = normalizeAdvNotes\(d\.advNotes\);/.test(ns), 'normalizeState does not normalize the notes');
+  ok(/advNotes: \{\},/.test(slice('freshState')), 'a new pack has no notes map');
+  const rec = withSeeds(LEGACY_ROWS)();
+  const once = n.normalizeState(rec);
+  eq(JSON.parse(JSON.stringify(once.advNotes)), {}, 'an old record');
+  once.advNotes = { 'Wolf :: Bobcat': { text: 'kept', by: 'Pat', at: '2026-10-01' }, 'Nope': { text: 'x' } };
+  const twice = JSON.stringify(n.normalizeState(JSON.parse(JSON.stringify(once))));
+  eq(JSON.parse(twice).advNotes, { 'Wolf :: Bobcat': { text: 'kept', by: 'Pat', at: '2026-10-01' } }, 'through normalizeState');
+  eq(JSON.stringify(n.normalizeState(JSON.parse(twice))), twice, 'not a fixed point');
+  // The editor's box is as long as the cap.
+  ok(/maxlength="' \+ ADV_NOTE_MAX \+ '"/.test(slice('advNoteBlock')), 'the box does not stop at the cap');
+});
+
+// The den-notes change branch, run on its own over a stubbed page.
+function noteCtx(edit) {
+  const branch = /\n    if \(ch === 'adv-note'\) \{[\s\S]*?\n    \}\n/.exec(SCRIPT);
+  ok(branch, 'the adv-note change branch was not found');
+  const ctx = vm.createContext({});
+  vm.runInContext(`var DENS = ['Lion', 'Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light'];
+    ${slice('ADV_NOTE_MAX')}\n${slice('ADV_NOTES_MAX_TOTAL')}
+    var state = { advNotes: { 'Wolf :: Bobcat': { text: 'old', by: 'Pat', at: '2026-09-01' } } };
+    var EDIT = ${edit}, commits = 0, toasts = [], renders = 0;
+    function canEdit() { return EDIT; }
+    function commit() { if (!EDIT) return false; commits++; return true; }
+    function render() { renders++; }
+    function showToast(msg, opts) { toasts.push({ msg: msg, opts: opts }); }
+    function ledgerActor() { return 'Sam'; }
+    function change(key, value) { var el = { dataset: { ch: 'adv-note', key: key }, value: value }; var ch = el.dataset.ch; ${branch[0]} }`, ctx);
+  return ctx;
+}
+
+test('lesson plans: editors and admins save a den’s note through commit(); a viewer cannot', () => {
+  const viewer = noteCtx(false);
+  viewer.change('Wolf :: Bobcat', 'a viewer’s words');
+  eq([viewer.state.advNotes['Wolf :: Bobcat'].text, viewer.commits, viewer.toasts.length], ['old', 0, 1], 'a viewer changed a note');
+  ok(/Read-only/.test(viewer.toasts[0].msg), 'the viewer is not told why');
+  viewer.change('Wolf :: Council Fire', 'new');
+  ok(!('Wolf :: Council Fire' in viewer.state.advNotes), 'a viewer added a note');
+  ok(!/textarea/.test(sheetCtx(false, { 'Wolf :: Bobcat': { text: 'Read me', by: 'Pat', at: '2026-10-01' } }).advNoteBlock('Wolf :: Bobcat', false)), 'a viewer is drawn the box');
+  ok(/Read me/.test(sheetCtx(false, { 'Wolf :: Bobcat': { text: 'Read me', by: 'Pat', at: '2026-10-01' } }).advNoteBlock('Wolf :: Bobcat', false)), 'a viewer cannot read the note');
+  ok(/data-ch="adv-note" data-key="Wolf :: Bobcat" maxlength="4000"/.test(sheetCtx(true).advNoteBlock('Wolf :: Bobcat', true)), 'an editor has no box');
+  // An editor.
+  const ed = noteCtx(true);
+  ed.change('Wolf :: Council Fire', 'Bring a flag.\r\nAsk the Bears to help.');
+  const n = ed.state.advNotes['Wolf :: Council Fire'];
+  eq([n.text, n.by, /^\d{4}-\d{2}-\d{2}T/.test(n.at), ed.commits], ['Bring a flag.\nAsk the Bears to help.', 'Sam', true, 1], 'saved');
+  ed.change('Wolf :: Council Fire', 'Bring a flag.\nAsk the Bears to help.');
+  eq(ed.commits, 1, 'an unchanged note was saved again');
+  ed.change('Wolf :: Council Fire', 'x'.repeat(5000));
+  eq(ed.state.advNotes['Wolf :: Council Fire'].text.length, 4000, 'the cap');
+  // Emptied, it goes, with an Undo that puts it back.
+  ed.change('Wolf :: Bobcat', '  ');
+  ok(!('Wolf :: Bobcat' in ed.state.advNotes), 'an emptied note stayed');
+  const t = ed.toasts.pop();
+  ok(t.msg === 'Note cleared.' && t.opts.actionLabel === 'Undo', 'no Undo');
+  t.opts.onAction();
+  eq(ed.state.advNotes['Wolf :: Bobcat'].text, 'old', 'Undo');
+  // Not a den, or past the total: nothing changes.
+  ed.change('Dragon :: Bobcat', 'x');
+  ed.change('', 'x');
+  ok(!('Dragon :: Bobcat' in ed.state.advNotes), 'a note for a den that is not one');
+  for (let i = 0; i < 29; i++) ed.state.advNotes['Bear :: N' + i] = { text: 'z'.repeat(4000), by: '', at: '' };
+  const before = ed.commits;
+  ed.change('Bear :: One more', 'y'.repeat(4000));
+  ok(!('Bear :: One more' in ed.state.advNotes) && ed.commits === before && /full/.test(ed.toasts.pop().msg), 'a note past the total was saved');
+  // The words never go into a toast.
+  ok(ed.toasts.every((x) => !/flag|old|zzz/.test(x.msg)), 'a note’s words in a toast');
+});
+
+test('lesson plans: a den’s notes, the pack’s plan edits and a meeting’s adventure never reach a family', () => {
+  const CANARY = 'ZQ-CANARY-7731';
+  const plant = `
+    state.advNotes = { 'Wolf :: Bobcat': { text: '${CANARY}-note', by: 'Pat', at: '2026-10-01' } };
+    state.advPlanEdits = { 'Wolf :: Bobcat': { plan: { summary: '${CANARY}-edit', meetings: [{ title: '${CANARY}-mtg', steps: [{ say: '${CANARY}-say' }] }] }, base: '2026-09-29', by: 'Pat', at: '2026-10-01' } };
+    state.events.push({ id: 'e9', kind: 'den', den: 'Wolf', date: '2026-10-13', time: '18:30', adventure: '${CANARY}-adv', note: 'Church hall', location: 'Church' });
+    state.events.push({ id: 'e10', kind: 'den', den: '', date: '2026-10-20', time: '18:30', packAdv: '${CANARY}-pack', denAdv: { Wolf: '${CANARY}-den' }, note: 'All dens' });`;
+  // The parent view, and each published event as a family's calendar file.
+  const ctx = pvCtx(plant + `
+    ${['pad2', 'campHash', 'parseLegacyTime', 'icsEscape', 'icsFold', 'icsDate', 'icsTime', 'icsNextDay', 'icsEndPlusHour', 'parentEventICS'].map(slice).join('\n')}`);
+  const pv = vm.runInContext('buildParentView(state, { showStandings: false })', ctx);
+  const pvText = JSON.stringify(pv);
+  ok(/Church hall/.test(pvText) && /All dens/.test(pvText), 'the den meetings did not publish, so this proves nothing');
+  ok(pvText.indexOf(CANARY) === -1, 'the parent view: ' + pvText.slice(pvText.indexOf(CANARY) - 60, pvText.indexOf(CANARY) + 40));
+  const files = pv.events.map((e) => ctx.parentEventICS(e, '20260928T120000Z')).join('');
+  ok(/Den meeting/.test(files), 'no den meeting in the families’ calendar files');
+  ok(files.indexOf(CANARY) === -1, 'a family’s calendar file');
+  // The families' digest (and the leaders', for good measure).
+  const dg = digestCtx();
+  vm.runInContext(plant.replace(/state\.events\.push\([^\n]*\n/g, '') + `
+    state.events[0].adventure = '${CANARY}-adv'; state.events[0].packAdv = '${CANARY}-pack'; state.events[0].denAdv = { Wolf: '${CANARY}-den' };`, dg);
+  const digest = vm.runInContext("monthlyDigest('2026-10')", dg) + vm.runInContext("monthlyDigestLeaders('2026-10')", dg);
+  ok(/Pack meeting/.test(digest), 'the meeting did not reach the digest, so this proves nothing');
+  ok(digest.indexOf(CANARY) === -1, 'the digest');
+  // The calendar file a leader exports for BAND and the subscription.
+  const ic = vm.createContext({});
+  vm.runInContext(PRIV_STATE + plant + `
+    function pad2(n) { return (n < 10 ? '0' : '') + n; }
+    ${['buildICS', 'icsStamp', 'icsDate', 'icsTime', 'icsNextDay', 'icsEndPlusHour', 'icsEscape', 'icsFold',
+       'eventIsMeeting', 'eventLabel', 'fmt'].map(slice).join('\n')}`, ic);
+  const ics = vm.runInContext('buildICS()', ic);
+  ok(/Den meeting — Wolf/.test(ics), 'the den meeting is not in the calendar file, so this proves nothing');
+  ok(ics.indexOf(CANARY) === -1, 'the calendar file');
+  // …and by source, the four never read them.
+  for (const f of ['buildParentView', 'monthlyDigest', 'buildICS', 'parentEventICS']) {
+    ok(!/advNotes|advPlanEdits|renderAdvPlanSheet|advPlanBodyHtml/.test(codeOnly(slice(f))), f + ' reads the notes or the plans');
+  }
 });
 
 /* ---------------- report ---------------- */

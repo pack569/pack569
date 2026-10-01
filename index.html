@@ -1763,6 +1763,32 @@
   }
 
   @media print { .subnav-wrap, .skip-link { display: none !important; } }
+
+  /* ---------- Lesson plans (2026-09-30) ---------- */
+  /* The plan panel (renderAdvPlanSheet). No new tokens: the cream sheet, a gold rule on the
+     guide line, navy on the Say box. Everything wraps, so a phone (375px) never scrolls sideways:
+     a source address has no spaces, so it breaks anywhere. */
+  .plan-sheet { overflow-wrap: anywhere; }
+  .plan-sheet p { margin: 0 0 8px; }
+  .plan-guide { border-left: 3px solid var(--accent); padding: 2px 0 2px 10px; margin: 6px 0 10px; color: var(--ink-soft); }
+  .plan-list { margin: 4px 0 8px; padding-left: 1.3em; }
+  .plan-list li { margin: 2px 0; }
+  .plan-block { margin: 6px 0; }
+  .plan-done { border-left: 3px solid var(--good); padding-left: 10px; }
+  .plan-safety { margin: 10px 0; }
+  .plan-mtg { border-top: 1px solid var(--line); padding: 8px 0; }
+  .plan-mtg-toggle { width: 100%; font-size: 0.9rem; color: var(--ink); }
+  .plan-mtg-toggle > span:last-child { flex: 1 1 auto; min-width: 0; }
+  @media print { .plan-mtg-toggle { border: none; padding: 0; background: none; } }
+  .plan-mtg-body { padding: 10px 2px 0; }
+  .plan-steps { margin: 4px 0 8px; padding-left: 1.4em; }
+  .plan-steps > li { margin: 0 0 14px; }
+  .plan-step-head { margin: 0 0 4px; }
+  .plan-say { background: var(--surface-2); border-left: 3px solid var(--navy); border-radius: 8px; padding: 8px 10px; margin: 6px 0; }
+  .plan-say p:last-child { margin: 0; }
+  .plan-option { border: 1px dashed var(--line); border-radius: 8px; padding: 6px 10px; margin: 6px 0; }
+  .plan-tell { background: var(--accent-soft); border-radius: 9px; padding: 8px 12px; margin: 10px 0; }
+  .plan-notes { border-top: 2px solid var(--line); margin-top: 16px; padding-top: 10px; }
 </style>
 
 <a class="skip-link no-print" href="#view">Skip to content</a>
@@ -1964,6 +1990,58 @@
   // 'Tiger Roar' was this app's own misspelling, not a handbook rename: the adventure has always
   // been "Tiger's Roar" (council requirement sheets, checked 2026-09-28). Same migration.
   var ADV_RENAMES = { 'Lion Roar': "Lion's Roar", 'Tiger Roar': "Tiger's Roar" };
+  // DEN NOTES ON A LESSON PLAN (state.advNotes, 2026-09-30; docs/lesson-plans/BUILD-PLAN.md §3).
+  // { 'Wolf :: Bobcat': { text, by, at } }, keyed like the plans (advPlanKey). What a den leader
+  // learned running it: "the soft ball works better than a beanbag". Kept in the pack record, so
+  // it syncs and carries from year to year (rolloverYear and advanceDens never touch it).
+  // ⚠ LEADERS ONLY: buildParentView is an allowlist and never reads it, and the server refuses a
+  // parent view with an advNotes key anywhere in it (PARENT_VIEW_NEVER_KEYS, functions/_lib/rules.js).
+  // A note is capped at ADV_NOTE_MAX characters, all of them together at ADV_NOTES_MAX_TOTAL: the
+  // pack record has a size cap of its own, and the lesson plans' pack edits (§3a) share it.
+  // Must be assigned BEFORE `var state = load()` runs: normalizeAdvNotes reads both.
+  var ADV_NOTE_MAX = 4000;
+  var ADV_NOTES_MAX_TOTAL = 120000;
+  // One den's adventure, as plans.json and state.advNotes key it (the runs' separator: a den
+  // name comes from DENS, so ' :: ' cannot occur in it).
+  function advPlanKey(den, name) { return String(den || '') + ' :: ' + String(name || ''); }
+  // state.advNotes as read: a key is a known den and a name; a note is non-blank text, capped,
+  // with who and when as short strings. Anything else is dropped. A note under a handbook rename's
+  // old name moves to the new one (ADV_RENAMES), unless the new name has one already. Past the
+  // total, the oldest notes go first — a guard against a broken record, not a limit anyone meets
+  // (a few paragraphs on each adventure every den runs is a fraction of it; the editor refuses past
+  // it, in words).
+  function normalizeAdvNotes(v) {
+    var src = (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
+    var keep = [];
+    Object.keys(src).forEach(function (k) {
+      var n = src[k];
+      var i = k.indexOf(' :: ');
+      if (i < 1 || !n || typeof n !== 'object' || Array.isArray(n) || typeof n.text !== 'string') return;
+      var den = k.slice(0, i), name = k.slice(i + 4).trim();
+      if (DENS.indexOf(den) === -1 || !name || name.length > 120) return;
+      var text = n.text.replace(/\r\n?/g, '\n').slice(0, ADV_NOTE_MAX);
+      if (!text.trim()) return;
+      // Own names only: ADV_RENAMES['__proto__'] would otherwise be Object.prototype.
+      var to = Object.prototype.hasOwnProperty.call(ADV_RENAMES, name) ? ADV_RENAMES[name] : '';
+      keep.push({ key: advPlanKey(den, to || name), renamed: !!to, note: {
+        text: text,
+        by: typeof n.by === 'string' ? n.by.slice(0, 80) : '',
+        at: typeof n.at === 'string' ? n.at.slice(0, 40) : ''
+      } });
+    });
+    // A note already under the new name wins over one carried across from the old.
+    keep.sort(function (a, b) { return (a.renamed - b.renamed) || String(b.note.at).localeCompare(String(a.note.at)); });
+    var out = {}, total = 0;
+    keep.forEach(function (x) {
+      if (out[x.key] || total + x.note.text.length > ADV_NOTES_MAX_TOTAL) return;
+      total += x.note.text.length;
+      out[x.key] = x.note;
+    });
+    // Back in key order, so two devices write the same bytes whatever order the record had.
+    var sorted = {};
+    Object.keys(out).sort().forEach(function (k) { sorted[k] = out[k]; });
+    return sorted;
+  }
   // The program year runs JULY → JUNE, because July is when this pack starts planning the
   // year ahead. Scouting America's own "Ideal Year of Scouting" worksheet runs September →
   // August; a pack that plans in the summer would spend two months with no year to plan
@@ -3500,6 +3578,7 @@
       popcornCouncil: freshPopcornCouncil(), // Wave D1 — council dates + settlement; leaders only, never published
       camping: freshCamping(),   // one page per pack campout, published to parents
       onboarding: {},            // Wave B5 — new-member checklist by scout id; leaders only, never published
+      advNotes: {},              // each den's notes on a lesson plan (normalizeAdvNotes); leaders only, never published
       recruitKit: freshRecruitKit(), // Wave B4 — School Night checklist; leaders only, never published
       welcome: freshWelcome(),   // Wave B1 — "New to the pack", published once a leader switches it on
       archives: [],
@@ -3897,6 +3976,10 @@
       ONBOARD_TICKS.forEach(function (t) { n[t] = o[t] === true; });
       d.onboarding[k] = n;
     });
+    // Each den's notes on a lesson plan (normalizeAdvNotes, next to ADV_RENAMES). Additive: a page
+    // from before it keeps the key untouched (an unknown key survives this function) and shows
+    // nothing from it, so PACK_FORMAT stays where it is. Leaders only; buildParentView never reads it.
+    d.advNotes = normalizeAdvNotes(d.advNotes);
     // Wave B4 — the School Night checklist. Only the four known items survive, as booleans.
     if (!d.recruitKit || typeof d.recruitKit !== 'object' || Array.isArray(d.recruitKit)) d.recruitKit = freshRecruitKit();
     d.recruitKit.year = (typeof d.recruitKit.year === 'number' && isFinite(d.recruitKit.year)) ? Math.floor(d.recruitKit.year) : 0;
@@ -9941,6 +10024,256 @@
     adventurePlansLoad = load;
     return load.promise;
   }
+  /* ----- The plan panel (Den plans → Lesson plan), 2026-09-30. BUILD-PLAN §4 and §4a. -----
+     Every adventure row in Den plans has a Lesson plan button, plan or not: the plans arrive
+     asynchronously, so a row cannot know, and the panel says which it is. Without a plan it shows
+     the official adventure pages, and the den's notes either way.
+     ⚠ RENDERING (security review, §4a): every plan field is untrusted text, the original or a
+     pack's edit alike. It is escaped first (planInline), and then only **…** becomes <strong>;
+     nothing else is turned into markup, and [date] stays as written. A link is made only from an
+     https:// address (planLink), never from anything else in the text. Plan text never goes into
+     an event's note, the parent view, a toast or anything copied for families.
+     "Run this meeting" (the timer) is the next step; it opens from each meeting (see planMeetingHtml). */
+  // Where an adventure with no plan in the app points: the official list of adventures.
+  var ADV_OFFICIAL_INDEX = 'https://www.scouting.org/programs/cub-scouts/adventures/';
+  // The line at the top of every plan screen until the file has loaded (it then says its own, `guide`).
+  var ADV_PLAN_GUIDE = '**A guide, not the rulebook.** The official requirements and the Guide to Safe Scouting come first; check with your Cubmaster.';
+  // The plan a screen shows for one den's adventure, from the loaded file, or null. (§3a will read
+  // the pack's own edit, state.advPlanEdits, here first, so every plan screen picks it up at once.)
+  function advPlanFor(data, key) {
+    var plans = data && data.plans;
+    var p = plans && typeof plans === 'object' && Object.prototype.hasOwnProperty.call(plans, key) ? plans[key] : null;
+    return p && typeof p === 'object' && Array.isArray(p.meetings) ? p : null;
+  }
+  // One line of plan text as HTML: escaped, then **bold** — and nothing else.
+  function planInline(s) {
+    return esc(String(s == null ? '' : s)).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  }
+  // A link, only to an https:// address; anything else is shown as plain text.
+  function planLink(url, label) {
+    var u = String(url == null ? '' : url);
+    var text = esc(label == null ? u : label);
+    // No space, quote, angle bracket or backslash (an apostrophe is fine: esc() writes it as &#39;).
+    if (!/^https:\/\/[^\s"<>\\]+$/.test(u)) return text;
+    return '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + text + '</a>';
+  }
+  // "Option A only" / "Options A and B only", from a meeting's or a step's forOptions.
+  function planOptionsLabel(keys) {
+    var k = (Array.isArray(keys) ? keys : []).map(function (x) { return String(x); }).filter(Boolean);
+    if (!k.length) return '';
+    return (k.length === 1 ? 'Option ' : 'Options ') + k.slice(0, -1).join(', ') + (k.length > 1 ? ' and ' : '') + k[k.length - 1] + ' only';
+  }
+  // A list as the parser keeps it: [{ text, items?, para? }]. A `para` item is a paragraph between
+  // runs of bullets; the rest are bullets, each with its own sub-list.
+  function planItemsHtml(items) {
+    if (!Array.isArray(items) || !items.length) return '';
+    var h = '', run = [];
+    function flush() { if (run.length) h += '<ul class="plan-list">' + run.join('') + '</ul>'; run = []; }
+    items.forEach(function (it) {
+      if (!it || typeof it !== 'object') return;
+      if (it.para) { flush(); h += '<p>' + planInline(it.text) + '</p>' + planItemsHtml(it.items); }
+      else run.push('<li>' + planInline(it.text) + planItemsHtml(it.items) + '</li>');
+    });
+    flush();
+    return h;
+  }
+  // A labelled block: a "Done at …" line, a leader's choice with its options, a note, the prep.
+  // { label?, text?, options?: [{ key, label, text }], items? }
+  function planBlockHtml(b, cls) {
+    if (!b || typeof b !== 'object') return '';
+    var head = (b.label ? '<strong>' + planInline(b.label) + '</strong>' + (b.text ? ': ' : '') : '') + (b.text ? planInline(b.text) : '');
+    var opts = (Array.isArray(b.options) ? b.options : []).map(function (o) {
+      if (!o || typeof o !== 'object') return '';
+      return '<li><strong>' + planInline(o.label || ('Option ' + (o.key || ''))) + '</strong>' + (o.text ? ': ' + planInline(o.text) : '') + '</li>';
+    }).join('');
+    var body = (head ? '<p>' + head + '</p>' : '') + (opts ? '<ul class="plan-list">' + opts + '</ul>' : '') + planItemsHtml(b.items);
+    return body ? '<div class="' + (cls || 'plan-block') + '">' + body + '</div>' : '';
+  }
+  function planHowHtml(how) {
+    if (!Array.isArray(how) || !how.length) return '';
+    return '<ol class="plan-list">' + how.map(function (x) {
+      return x && typeof x === 'object' ? '<li>' + planInline(x.text) + planItemsHtml(x.items) + '</li>' : '';
+    }).join('') + '</ol>';
+  }
+  // One step: title · minutes · reqs, then Say, How (or its Option A / Option B), Tip, at home.
+  function planStepHtml(s) {
+    if (!s || typeof s !== 'object') return '';
+    var reqs = String(s.reqs == null ? '' : s.reqs).trim();
+    var meta = [];
+    if (typeof s.mins === 'number' && isFinite(s.mins)) meta.push(s.mins + ' min');
+    meta.push(reqs && reqs !== 'none' ? 'Req ' + reqs : 'no requirement');
+    var h = '<li class="plan-step"><p class="plan-step-head"><strong>' + planInline(s.title) + '</strong>' +
+      (s.kind === 'closing' ? ' <span class="pill navy">Closing</span>' : '') +
+      ' <span class="small muted">· ' + esc(meta.join(' · ')) + '</span></p>';
+    var only = planOptionsLabel(s.forOptions);
+    if (only) h += '<p class="small"><span class="pill">' + esc(only) + '</span></p>';
+    if (s.say) {
+      h += '<div class="plan-say"><p class="eyebrow">Say' + (s.sayTo ? ' (to ' + planInline(s.sayTo) + ')' : '') + '</p>' +
+        '<p>' + planInline(s.say) + '</p></div>';
+    }
+    if (Array.isArray(s.how) && s.how.length) h += '<p class="eyebrow">How</p>' + planHowHtml(s.how);
+    (Array.isArray(s.options) ? s.options : []).forEach(function (o) {
+      if (!o || typeof o !== 'object') return;
+      h += '<div class="plan-option"><p class="eyebrow">' + planInline(o.label || ('Option ' + (o.key || ''))) + '</p>' + planHowHtml(o.how) + '</div>';
+    });
+    if (s.tip) h += '<p class="small"><strong>Tip:</strong> ' + planInline(s.tip) + '</p>';
+    (Array.isArray(s.home) ? s.home : []).forEach(function (x) {
+      h += '<p class="small"><strong>At home:</strong> ' + planInline(x) + '</p>';
+    });
+    (Array.isArray(s.notes) ? s.notes : []).forEach(function (b) { h += planBlockHtml(b, 'plan-block small'); });
+    return h + '</li>';
+  }
+  // A meeting's length for its heading. A den meeting is its steps' minutes (stepMins, which the
+  // timer will use), with the header's figure when the steps come to less; an outing or an add-on
+  // keeps its own words ("overnight, about 24 hours").
+  function planMeetingMins(m) {
+    var steps = typeof m.stepMins === 'number' && isFinite(m.stepMins) ? m.stepMins : null;
+    if (m.kind === 'den' && steps != null) {
+      return steps + ' min' + (typeof m.mins === 'number' && m.mins > steps ? ' (of ' + m.mins + ')' : '');
+    }
+    return String(m.length || (steps != null ? steps + ' min' : ''));
+  }
+  // One meeting, open or closed. `i` is its place in the plan (the toggle's data-n).
+  function planMeetingHtml(m, i, open) {
+    if (!m || typeof m !== 'object') return '';
+    var only = planOptionsLabel(m.forOptions);
+    var h = '<div class="plan-mtg"><button type="button" class="exp-toggle plan-mtg-toggle" data-act="adv-plan-mtg" data-n="' + i +
+      '" aria-expanded="' + !!open + '"><span class="chev" aria-hidden="true">' + (open ? '▾' : '▸') + '</span>' +
+      '<span><strong>Meeting ' + esc(String(m.n || i + 1)) + (m.of ? ' of ' + esc(String(m.of)) : '') + ' · ' + planInline(m.title) + '</strong>' +
+      ' <span class="muted">· ' + esc(planMeetingMins(m)) + '</span>' +
+      (only ? ' <span class="pill">' + esc(only) + '</span>' : '') +
+      (m.kind === 'outing' ? ' <span class="pill navy">Outing</span>' : m.kind === 'add-on' ? ' <span class="pill navy">Add-on</span>' : '') +
+      '</span></button>';
+    if (!open) return h + '</div>';
+    h += '<div class="plan-mtg-body">';
+    (Array.isArray(m.variants) ? m.variants : []).forEach(function (v) {
+      if (!v || typeof v !== 'object') return;
+      h += '<p class="small"><span class="pill navy">' + planInline(v.label || ('Option ' + (v.key || ''))) + '</span> ' + planInline(v.text) + '</p>';
+    });
+    (Array.isArray(m.done) ? m.done : []).forEach(function (b) { h += planBlockHtml(b, 'plan-block plan-done'); });
+    (Array.isArray(m.choices) ? m.choices : []).forEach(function (b) { h += planBlockHtml(b, 'plan-block'); });
+    (Array.isArray(m.notes) ? m.notes : []).forEach(function (b) { h += planBlockHtml(b, 'plan-block'); });
+    if (m.prep) h += '<p class="eyebrow">Prep</p>' + planBlockHtml(m.prep, 'plan-block');
+    if (m.supplies && m.supplies.text) h += '<p class="eyebrow">Supplies</p><p>' + planInline(m.supplies.text) + '</p>';
+    var steps = Array.isArray(m.steps) ? m.steps : [];
+    if (steps.length) h += '<p class="eyebrow">Steps</p><ol class="plan-steps">' + steps.map(planStepHtml).join('') + '</ol>';
+    if (m.tellParents) {
+      h += '<div class="plan-tell"><p class="eyebrow">Tell parents before they leave</p>' + planBlockHtml(m.tellParents, 'plan-block') + '</div>';
+    }
+    // The NEXT step hangs "Run this meeting" here (the timer, BUILD-PLAN "Run this meeting").
+    return h + '</div></div>';
+  }
+  // Everything under the panel's heading for a plan: summary, safety, the plan's own leader's
+  // choices and "Done at …" lines, the meetings, the supplies for the whole adventure, sources.
+  // `open` is { meeting index: true }. Pure: reads only the plan.
+  function advPlanBodyHtml(plan, open) {
+    var p = plan || {};
+    var meetings = Array.isArray(p.meetings) ? p.meetings : [];
+    var h = '';
+    if (p.category) h += '<p class="small" style="margin:0 0 6px"><span class="pill navy">' + planInline(p.category) + '</span> ' +
+      '<span class="muted">' + meetings.length + (meetings.length === 1 ? ' meeting' : ' meetings') + '</span></p>';
+    if (p.summary) h += '<p>' + planInline(p.summary) + '</p>';
+    var safety = Array.isArray(p.safety) ? p.safety : [];
+    if (safety.length) {
+      h += '<div class="warn plan-safety"><p class="eyebrow">Safety</p><ul class="plan-list">' + safety.map(function (x) {
+        return x && typeof x === 'object' ? '<li>' + planInline(x.text) + planItemsHtml(x.items) + '</li>' : '';
+      }).join('') + '</ul></div>';
+    }
+    (Array.isArray(p.choices) ? p.choices : []).forEach(function (b) { h += planBlockHtml(b, 'plan-block'); });
+    (Array.isArray(p.done) ? p.done : []).forEach(function (b) { h += planBlockHtml(b, 'plan-block plan-done'); });
+    (Array.isArray(p.notes) ? p.notes : []).forEach(function (b) { h += planBlockHtml(b, 'plan-block'); });
+    var reqs = Array.isArray(p.reqs) ? p.reqs : [];
+    if (reqs.length) {
+      h += '<p class="eyebrow" style="margin-top:12px">Requirements, in brief</p><ol class="plan-list small">' + reqs.map(function (r) {
+        return r && typeof r === 'object' ? '<li>' + planInline(r.text) + (r.where ? ' <span class="muted">(' + planInline(r.where) + ')</span>' : '') + '</li>' : '';
+      }).join('') + '</ol>';
+    }
+    h += '<h2 class="section display" style="margin-top:14px">Meetings</h2>';
+    h += meetings.map(function (m, i) { return planMeetingHtml(m, i, !!(open && open[i])); }).join('');
+    var sup = meetings.filter(function (m) { return m && m.supplies && m.supplies.text; });
+    if (sup.length) {
+      h += '<h2 class="section display" style="margin-top:14px">Supplies for the whole adventure</h2><ul class="plan-list">' +
+        sup.map(function (m) {
+          return '<li><strong>Meeting ' + esc(String(m.n || '')) + ' · ' + planInline(m.title) + ':</strong> ' + planInline(m.supplies.text) + '</li>';
+        }).join('') + '</ul>';
+    }
+    var src = Array.isArray(p.sources) ? p.sources : [];
+    if (src.length) {
+      h += '<p class="eyebrow" style="margin-top:14px">Sources' + (p.verified ? ' · checked ' + esc(p.verified) : '') + '</p>' +
+        '<ul class="plan-list small">' + src.map(function (u) { return '<li>' + planLink(u) + '</li>'; }).join('') + '</ul>';
+    }
+    return h;
+  }
+  // The den's notes, at the bottom of the panel: editors and admins write, everyone else reads.
+  function advNoteBlock(key, edit) {
+    var n = (state.advNotes || {})[key] || null;
+    var stamp = n && (n.by || n.at)
+      ? 'Last saved' + (n.by ? ' by ' + n.by : '') + (fmtDateShortYear(String(n.at || '').slice(0, 10)) ? ', ' + fmtDateShortYear(String(n.at).slice(0, 10)) : '')
+      : '';
+    var h = '<div class="plan-notes"><h2 class="section display">Our den’s notes</h2>';
+    if (edit) {
+      h += '<label class="fld">What worked, and what to change next time' +
+        '<textarea class="notes-in" data-ch="adv-note" data-key="' + esc(key) + '" maxlength="' + ADV_NOTE_MAX + '" rows="4">' +
+        esc(n ? n.text : '') + '</textarea></label>' +
+        '<p class="small muted" style="margin:4px 0 0">Leaders only, never shown to families. Saves when you leave the box' +
+        (stamp ? ' · ' + esc(stamp) : '') + '.</p>';
+    } else {
+      h += n ? proseText(n.text) + (stamp ? '<p class="small muted" style="margin:4px 0 0">' + esc(stamp) + '.</p>' : '')
+        : '<p class="small muted" style="margin:0">No notes yet. A pack editor or admin can add them.</p>';
+    }
+    return h + '</div>';
+  }
+  // The panel itself (ui.overlay kind 'adv-plan': { den, name, status, data, error, open }).
+  function renderAdvPlanSheet(o) {
+    var key = advPlanKey(o.den, o.name);
+    var plan = o.status === 'ready' ? advPlanFor(o.data, key) : null;
+    var title = plan && plan.heading ? plan.heading : o.name + ' (' + o.den + ')';
+    var guide = (o.data && typeof o.data.guide === 'string' && o.data.guide) || ADV_PLAN_GUIDE;
+    var h = '<div class="overlay" role="dialog" aria-modal="true" aria-label="' + esc('Lesson plan: ' + title) + '"><div class="overlay-inner">' +
+      '<div class="row no-print" style="margin-bottom:12px"><button type="button" class="btn" data-act="close-overlay">&larr; Back</button></div>' +
+      '<div class="summary-sheet plan-sheet">' +
+      '<p class="eyebrow">' + esc(o.den) + ' den · lesson plan</p>' +
+      '<h1>' + planInline(title) + '</h1>' +
+      '<p class="small plan-guide">' + planInline(guide) + '</p>' +
+      '<p class="small" style="margin:0 0 12px">' +
+      (plan && plan.official ? planLink(plan.official, 'Official requirements on scouting.org') : planLink(ADV_OFFICIAL_INDEX, 'The official adventures on scouting.org')) +
+      '</p>';
+    if (o.status === 'loading') h += '<p class="small muted" role="status">Loading the lesson plan…</p>';
+    else if (o.status === 'failed') {
+      h += '<div class="warn" role="alert"><p style="margin:0 0 8px">' + esc(o.error || 'The lesson plans couldn’t be loaded.') + '</p>' +
+        '<button type="button" class="btn small" data-act="adv-plan-retry">Try again</button></div>';
+    } else if (!plan) {
+      h += '<p>There’s no lesson plan in the app for ' + esc(o.name) + ' yet. Its requirements and den meeting ideas are on the official page above.</p>';
+    } else h += advPlanBodyHtml(plan, o.open);
+    h += advNoteBlock(key, canEdit());
+    return h + '</div></div></div>';
+  }
+  // Opens the panel, and fills it when the plans arrive. A panel closed (or replaced) meanwhile is
+  // left alone. `open` carries the meetings a Try again had open.
+  function openAdvPlan(den, name, open) {
+    if (DENS.indexOf(den) === -1 || !name) return;
+    var o = { kind: 'adv-plan', den: den, name: String(name), status: 'loading', data: null, error: '', open: open || { 0: true } };
+    ui.overlay = o;
+    render();
+    loadAdventurePlans().then(function (j) {
+      if (ui.overlay !== o) return;
+      o.status = 'ready';
+      o.data = j;
+      render();
+    }, function (err) {
+      if (ui.overlay !== o) return;
+      o.status = 'failed';
+      o.error = (err && err.message) || '';
+      render();
+    });
+  }
+  // The Lesson plan button on a Den plans row. Leaders only: Den plans is the leaders' app, and a
+  // parent (or an admin previewing as one) is never drawn it.
+  function advPlanBtn(den, name) {
+    if (parentMode()) return '';
+    return '<button type="button" class="btn small ghost no-print" data-act="adv-plan-open" data-den="' + esc(den) +
+      '" data-name="' + esc(name) + '" aria-label="' + esc('Lesson plan for ' + den + ' ' + name) + '">Lesson plan</button>';
+  }
   // Short column headers for the grid; full names live in the title attr / aria-label.
   var ADV_SHORT = {
     'Bobcat': 'Bobcat', 'King of the Jungle': 'Jungle', "Lion's Pride": 'Pride', 'Mountain Lion': 'Mtn Lion',
@@ -10444,10 +10777,10 @@
         if (rq.sessions.length) {
           h += '<div class="assign-row"><span class="assign-name">✓ ' + esc(rq.name) + '</span>' +
             '<span class="small muted">' + rq.sessions.length + (rq.sessions.length === 1 ? ' meeting' : ' meetings') +
-            (rq.allDens ? ' (all dens)' : '') + ' · ' + esc(denPlanDates(rq.sessions, today)) + '</span></div>';
+            (rq.allDens ? ' (all dens)' : '') + ' · ' + esc(denPlanDates(rq.sessions, today)) + '</span>' + advPlanBtn(den, rq.name) + '</div>';
         } else {
           h += '<div class="assign-row"><span class="assign-name">' + esc(rq.name) + ' <span class="pill navy">no meeting planned</span></span>' +
-            (edit && !open ? '<button type="button" class="btn small" data-act="plan-adv" data-den="' + esc(den) + '" data-name="' + esc(rq.name) +
+            advPlanBtn(den, rq.name) + (edit && !open ? '<button type="button" class="btn small" data-act="plan-adv" data-den="' + esc(den) + '" data-name="' + esc(rq.name) +
               '" aria-label="' + esc('Plan a ' + den + ' den meeting for ' + rq.name) + '">Plan a meeting</button>' : '') + '</div>';
           if (open) h += denPlanForm(den, rq.name, today);
         }
@@ -10463,7 +10796,7 @@
       if (ui.planAdv && ui.planAdv.den === den && !ui.planAdv.name) h += denPlanForm(den, '', today);
       plan.electives.forEach(function (el) {
         h += '<div class="assign-row"><span class="assign-name">' + esc(el.name) + '</span>' +
-          '<span class="small muted">' + esc(denPlanDates(el.sessions, today)) + '</span></div>';
+          '<span class="small muted">' + esc(denPlanDates(el.sessions, today)) + '</span>' + advPlanBtn(den, el.name) + '</div>';
       });
       h += denMeetingsBlock(den, today, edit);
       h += '</div>';
@@ -22854,7 +23187,7 @@
     'toggle-season-setup', 'toggle-home-rest', 'den-filter', 'toggle-archived', 'toggle-leaders-archived', 'toggle-completed',
     'toggle-scout', 'cal-prev', 'cal-next', 'cal-day', 'cal-jump-day', 'nextup-day', 'agenda-toggle', 'agenda-past-toggle',
     'year-cost-toggle', 'budget-toggle-past', 'line-options', 'ledger-view', 'ledger-filter', 'ledger-toggle', 'adv-toggle',
-    'denplan-past', 'pk-agenda-toggle', 'toggle-archive',
+    'denplan-past', 'pk-agenda-toggle', 'toggle-archive', 'adv-plan-open', 'adv-plan-retry', 'adv-plan-mtg',
     'ledger-fix-cancel', 'ledger-void-cancel', 'charge-forgive-cancel', 'plan-adv-cancel',
     'open-summary', 'copy-summary', 'print-summary', 'open-digest', 'copy-digest', 'copy-digest-leaders', 'open-shop', 'copy-shop',
     'print-shop', 'pk-agenda-print', 'print-pk-agenda', 'sf-day-sheet', 'copy-day-sheet', 'sf-glance-open', 'copy-glance',
@@ -27349,6 +27682,8 @@
     if (o.kind === 'pk-agenda') return renderPackAgendaSheet(o);
     // Wave 19(15b) — full-schedule table, one glance.
     if (o.kind === 'sf-glance') return renderGlance(o);
+    // Den plans → Lesson plan. Leaders only, never published (renderAdvPlanSheet).
+    if (o.kind === 'adv-plan') return renderAdvPlanSheet(o);
     return '';
   }
 
@@ -30756,6 +31091,10 @@
     if (ui.overlay) {
       if (e.key === 'Escape') {
         e.preventDefault();
+        // A den's note being typed saves as it would on leaving the box (blur fires its change)
+        // before the panel goes, rather than vanishing with it.
+        var escNote = document.activeElement;
+        if (escNote && escNote.matches && escNote.matches('textarea[data-ch="adv-note"]')) escNote.blur();
         ui.armed = null;
         ui.overlay = null;
         render();
@@ -32348,6 +32687,20 @@
       return;
     }
     if (act === 'close-overlay') { ui.overlay = null; render(); return; }
+    // Den plans → Lesson plan: open the panel (on every adventure row; the panel says whether it
+    // has a plan), try the file again after a failed load, and open or close one meeting.
+    if (act === 'adv-plan-open') { openAdvPlan(el.dataset.den || '', el.dataset.name || ''); return; }
+    if (act === 'adv-plan-retry') {
+      if (ui.overlay && ui.overlay.kind === 'adv-plan') openAdvPlan(ui.overlay.den, ui.overlay.name, ui.overlay.open);
+      return;
+    }
+    if (act === 'adv-plan-mtg') {
+      if (!ui.overlay || ui.overlay.kind !== 'adv-plan') return;
+      var apN = +el.dataset.n;
+      if (ui.overlay.open[apN]) delete ui.overlay.open[apN]; else ui.overlay.open[apN] = true;
+      render();
+      return;
+    }
     if (act === 'paste-ics') { ui.overlay = { kind: 'ics-paste', text: '' }; render(); return; }
     if (act === 'ics-paste-go') { submitIcsPaste(); return; }
     // Wave 7b — the buttons are disabled until the sharing settings are known; this is the same
@@ -32835,6 +33188,36 @@
     // field existed. Kept as typed (like the commission rates) so a half-typed "3" on the way
     // to "30" doesn't get normalized out from under the cursor.
     if (ch === 'cash-scout-pct') { state.cashScoutPct = el.value; commit(); return; }
+    // A den's notes on a lesson plan (state.advNotes, BUILD-PLAN §3). Editors and admins: a viewer
+    // is never drawn the box, and is refused here before anything changes. Emptied, the note goes
+    // (with an Undo). Never echoed into a toast: the words are leaders' only.
+    if (ch === 'adv-note') {
+      var anKey = String(el.dataset.key || '');
+      var anI = anKey.indexOf(' :: ');
+      if (anI < 1 || DENS.indexOf(anKey.slice(0, anI)) === -1) return;
+      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); render(); return; }
+      var anText = String(el.value || '').replace(/\r\n?/g, '\n').slice(0, ADV_NOTE_MAX);
+      var anPrev = state.advNotes[anKey] || null;
+      if ((anPrev ? anPrev.text : '') === anText) return;
+      if (!anText.trim()) {
+        if (!anPrev) return;
+        delete state.advNotes[anKey];
+        if (commit()) {
+          showToast('Note cleared.', { actionLabel: 'Undo', onAction: function () { state.advNotes[anKey] = anPrev; commit(); } });
+        }
+        return;
+      }
+      var anOthers = Object.keys(state.advNotes).reduce(function (t, k) {
+        return k === anKey ? t : t + String(state.advNotes[k].text || '').length;
+      }, 0);
+      if (anOthers + anText.length > ADV_NOTES_MAX_TOTAL) {
+        showToast('Not saved: the pack’s lesson-plan notes are full. Shorten or clear an older note first.');
+        return;
+      }
+      state.advNotes[anKey] = { text: anText, by: ledgerActor(), at: new Date().toISOString() };
+      commit();
+      return;
+    }
     // Camping. One branch for the header fields, one for a section's heading and body. Stored
     // verbatim — this is prose, and trimming it would eat the trailing newline somebody left
     // on purpose before typing the next paragraph.
