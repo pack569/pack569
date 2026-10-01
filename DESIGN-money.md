@@ -483,7 +483,7 @@ totals and family balances, and the year's entries live in `state.closedBooks`.*
   change what the family owes.
 - **A family's credit is a private-benefit question the council has not answered;** record retention
   (units commonly keep three to seven years) is unverified and is a question for the council.
-- **Server rules for the later D1 work, S38–S48** (S38–S44 from the security review of C8-1..4, S38 and S39 revised and S45–S48 added by the re-check of C8-5..C8-10; nothing
+- **Server rules for the later D1 work, S38–S49** (S38–S44 from the security review of C8-1..4, S38 and S39 revised and S45–S48 added by the re-check of C8-5..C8-10, S39 and S47 revised and S49 added by the second re-check; nothing
   enforces them on the Firestore page):
   S38 (revised by the re-check of C8-5..C8-10) `closedBooks` is changed ONLY in a save that carries a `close`
   or `unclose` event by an authed admin: no editor adds, compacts, replaces or removes one. A book of the
@@ -530,6 +530,9 @@ totals and family balances, and the year's entries live in `state.closedBooks`.*
   taking a copy drops a held book or archive because of a tombstone this device did not have.
   S48 `co-charge-Y-key` and `co-credit-Y-key` rows are written or changed only in a save that also writes the
   `close` event for Y, and their amount equals the figure recomputed from the closed book and the charges.
+  S49 (second re-check of C8) on a closed book, `scouts` (a shortened book's list of the scouts its rows name) and the
+  compact rows' `rv` / `rb` reversal marks are read-only after the book's `close` event (inside S38): only a save
+  with a `close` or `unclose` event by an admin writes them.
 
 ---
 
