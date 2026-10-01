@@ -302,6 +302,15 @@
   .den-adv-list { margin-top: 6px; display: grid; gap: 3px; }
   .den-adv { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
   .den-adv-name { font-weight: 650; min-width: 5.5em; }
+  /* Den plans: "Plan a meeting" on a meeting already on the calendar, or a new one. */
+  .plan-where { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px 8px; margin: 0; display: grid; gap: 4px; min-width: 0; }
+  .plan-where-opt { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 0.9rem; }
+  /* Den plans: Fill the calendar's rows, and an event's several adventures. */
+  .fill-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0; }
+  .fill-row select { flex: 1 1 180px; max-width: 100%; }
+  .fill-row input[type="number"] { width: 4.5em; }
+  .offer-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 4px 0; }
+  .offer-row .offer-name { font-weight: 650; flex: 1 1 140px; }
   /* A reward tier's small print, inside the parent ladder's table cell: table-sized, not page-sized. */
   .camp-body.pv-tier-note { font-size: 0.85rem; line-height: 1.45; margin-top: 4px; }
   .pv-tier-note p, .pv-tier-note .camp-list { margin-bottom: 6px; }
@@ -4449,6 +4458,19 @@
         });
       }
       if (Object.keys(dAdv).length) e.denAdv = dAdv; else delete e.denAdv;
+      // Several adventures at one event (evOffers, 2026-10-01): [{ key, auto }] on a den meeting
+      // or an activity. Shape only, as for packAdv: a choice-shaped key, once each, a boolean
+      // auto, at most 12 (ADV_OFFERS_MAX). A pack meeting works no adventure and keeps none.
+      var offs = [], offSeen = {};
+      if (e.kind !== 'pack' && Array.isArray(e.advOffers)) {
+        e.advOffers.forEach(function (o) {
+          if (offs.length >= 12 || !o || typeof o !== 'object' || typeof o.key !== 'string') return;
+          if (!/^(req:[0-5]|th:[a-z]+|el:\S.*)$/.test(o.key) || offSeen[o.key]) return;
+          offSeen[o.key] = 1;
+          offs.push({ key: o.key, auto: o.auto === true });
+        });
+      }
+      if (offs.length) e.advOffers = offs; else delete e.advOffers;
       // Wave A — the pack meeting agenda. Kept on any kind, not cleared when a meeting is
       // switched to a den meeting: switching back should not have thrown the Cubmaster's
       // plan away, and it is only ever shown (and only counts) on a pack meeting.
@@ -5305,6 +5327,7 @@
     archiveOpen: {},    // Wave 13 — { archiveId: true } expanded Past Seasons summaries (not persisted)
     repeatOffer: null,  // Wave 19(22) — meeting id showing the one-time "Repeat weekly" mini-form (not persisted)
     planAdv: null,      // Wave A — { den, name } the den planner's open "plan a meeting" form ('' name = an elective)
+    fillCal: null,      // 2026-10-01 — Den plans' Fill the calendar: { rows: [{ key, n, nSet }], from } (not persisted)
     pkAgendaOpen: {},   // Wave A — { eventId: true } pack meetings with the agenda editor open
     agendaOpen: {},     // Wave 20 — { eventKey: true } expanded month-agenda rows (not persisted)
     denPlanPast: {},    // { den: true } Den plans also lists that den's held meetings (not persisted)
@@ -10743,6 +10766,86 @@
     var hit = c.required.concat(c.electives).find(function (x) { return x.key === key; });
     return hit ? hit.label : '';
   }
+  /* ----- Several adventures at one event (owner ask, 2026-10-01). -----
+     "add the ability to assign multiple electives to a meeting, i.e. the fall and spring family
+     camping offer BBs, bows and arrows, fishing, and Let's Camp (Let's Camp is automatic to all
+     who attend, the rest are electives)."
+         ev.advOffers = [{ key, auto }]
+     `key` is a pack-wide choice (packAdvChoices), so each scout gets their own rank's version
+     (packAdvName) and a rank without it — Lions have no BB Gun, Arrow of Light no "Let's Camp!" —
+     simply is not offered it. `auto: true` is "everyone who attends earns it"; `auto: false` is
+     "offered — scouts who choose it". On a campout or outing (kind 'activity'), and as EXTRAS on
+     a den meeting, whose one main adventure (adventure / packAdv / denAdv) stays exactly as it
+     was: the 2026-08-02 ruling still holds for that, and this extends it (DESIGN-adventures.md §7).
+     NOT A SESSION OF A RUN (adventureRuns). A run's Mark-done credits everyone checked in, which
+     is right for "Let's Camp!" and wrong for an elective a scout walked past. So an offer is its
+     own one-night list, recorded on the event (advOfferMarkFor), counted on Den plans
+     (denOfferEntries) and printed on the agenda sheet. Nothing is marked automatically: an
+     offered elective is ticked scout by scout, and advMarkDone stays the only writer.
+     ⚠ LEADERS ONLY, like every adventure: not in buildParentView, the digest or the .ics. */
+  // normalizeState keeps at most 12 (it cannot read this: it runs before this line does).
+  var ADV_OFFERS_MAX = 12;
+  // Shooting sports. Pack rule, and the national one (CAMP_PACK_RUN): never at a den meeting —
+  // only on a council range with a certified range master, e.g. the Scoutland weekend.
+  var ADV_RANGE_KEYS = ['el:Archery', 'el:BB Gun', 'el:Slingshot'];
+  // An event's offers, valid keys only, once each, with their labels.
+  function evOffers(ev) {
+    var out = [], seen = {};
+    (ev && ev.kind !== 'pack' && Array.isArray(ev.advOffers) ? ev.advOffers : []).forEach(function (o) {
+      if (!o || typeof o.key !== 'string' || seen[o.key] || !packAdvLabel(o.key) || out.length >= ADV_OFFERS_MAX) return;
+      seen[o.key] = 1;
+      out.push({ key: o.key, auto: o.auto === true, label: packAdvLabel(o.key) });
+    });
+    return out;
+  }
+  // The dens an event is for: a den meeting's own den, an activity's dens, else every rank.
+  function offerEventDens(ev) {
+    if (ev && ev.kind === 'den' && ev.den) return [ev.den];
+    var d = eventDens(ev);
+    return (d.length ? d : DENS).filter(function (dn) { return !!ADVENTURES[dn]; });
+  }
+  // One offer, den by den: { has: [{ den, name }], lacks: [den] }.
+  function offerByDen(ev, key) {
+    var has = [], lacks = [];
+    offerEventDens(ev).forEach(function (dn) {
+      var nm = packAdvName(key, dn);
+      if (nm) has.push({ den: dn, name: nm }); else lacks.push(dn);
+    });
+    return { has: has, lacks: lacks };
+  }
+  // Scouts checked in at the event, split by whether their rank has the offer. Active scouts only,
+  // like a run's roster (meetingRoster): an archived scout is not credited with anything new.
+  //   { can: [{ scout, name, status }], cannot: [scout] }
+  function offerAttendees(ev, key) {
+    var can = [], cannot = [];
+    byScoutName(activeScouts().filter(function (s) { return wasCheckedIn(ev.id, s.id); })).forEach(function (s) {
+      var nm = packAdvName(key, s.den);
+      if (nm) can.push({ scout: s, name: nm, status: advStatus(s.id, advKindFor(s, nm), nm) });
+      else cannot.push(s);
+    });
+    return { can: can, cannot: cannot };
+  }
+  // Every offer this program year that one den can earn: [{ ev, name, auto }] — Den plans counts
+  // these with the den meetings (denPlan). Dated events only, like a run's sessions.
+  function denOfferEntries(den, events, py) {
+    var from = programYearStartISO(py), to = programYearEndISO(py);
+    var out = [];
+    (events || []).forEach(function (ev) {
+      if (!ev.date || ev.date < from || ev.date > to || offerEventDens(ev).indexOf(den) === -1) return;
+      evOffers(ev).forEach(function (o) {
+        var nm = packAdvName(o.key, den);
+        if (nm) out.push({ ev: ev, name: nm, auto: o.auto });
+      });
+    });
+    return out;
+  }
+  // "Let's Camp! (everyone who attends) · Archery, BB Gun (offered)" — the agenda sheet's line.
+  function offersSummary(offers) {
+    var auto = offers.filter(function (o) { return o.auto; }).map(function (o) { return o.label; });
+    var chosen = offers.filter(function (o) { return !o.auto; }).map(function (o) { return o.label; });
+    return [auto.length ? auto.join(', ') + ' (everyone who attends)' : '',
+      chosen.length ? chosen.join(', ') + ' (offered)' : ''].filter(Boolean).join(' · ');
+  }
   // DEN LESSON PLANS (docs/lesson-plans/*.md). They are not in this page: they are about 1 MB of
   // text, so scripts/build-site.mjs parses them into plans.json beside index.html, and this
   // fetches it only when a leader opens a plan, or a den meeting tagged with an official
@@ -11973,6 +12076,9 @@
   // OWNER RULING, 2026-08-02: never more than one adventure per meeting, but an adventure can
   // take several meetings to complete. So the field stays a single string and the multiplicity
   // is on the other side — many meetings, one adventure.
+  // EXTENDED BY THE OWNER, 2026-10-01: that is the meeting's MAIN adventure. Any event can also
+  // offer more (evOffers, ev.advOffers) — a campout's Let's Camp! and range electives — kept as
+  // a separate list so they never become sessions of a run (DESIGN-adventures.md §8).
   // Read through advCanonicalName (AUDIT FIX 2026-09-27) so a meeting typed "council fire"
   // and one picked as "Council Fire" are the same adventure everywhere a run is built or
   // shown — including meetings saved before the editor started normalizing.
@@ -12698,8 +12804,11 @@
      An "All dens" meeting is a session for every den (meetingRoster reads it the same way),
      so it counts here too — but only for names on THIS den's list, or an All-dens Council
      Fire would show up as a Bear elective. A den's own custom adventure counts as an elective,
-     which is how advKindFor files it on the Advancement grid. */
-  function denPlan(den, runs) {
+     which is how advKindFor files it on the Advancement grid.
+     `offers` (2026-10-01, denOfferEntries): adventures offered at an event — a campout's
+     "Let's Camp!" and electives. They count as planned, listed as `offeredAt`, never as sessions:
+     an event is not a den meeting, and a run's sessions are den meetings. */
+  function denPlan(den, runs, offers) {
     var adv = ADVENTURES[den] || { required: [], electives: [] };
     var mine = (runs || []).filter(function (r) {
       if (r.den === den) return true;
@@ -12710,9 +12819,15 @@
       list.forEach(function (r) { all = all.concat(r.sessions); });
       return all.sort(function (a, b) { return String(a.date).localeCompare(String(b.date)); });
     }
+    var offs = offers || [];
+    function offeredAt(nm) {
+      return offs.filter(function (o) { return o.name.toLowerCase() === nm.toLowerCase(); })
+        .map(function (o) { return o.ev; })
+        .sort(function (a, b) { return String(a.date).localeCompare(String(b.date)); });
+    }
     var required = adv.required.map(function (nm) {
       var rs = mine.filter(function (r) { return r.adventure === nm; });
-      return { name: nm, sessions: sessionsOf(rs), allDens: rs.length > 0 && rs.every(function (r) { return !r.den; }) };
+      return { name: nm, sessions: sessionsOf(rs), allDens: rs.length > 0 && rs.every(function (r) { return !r.den; }), offeredAt: offeredAt(nm) };
     });
     var byName = {}, electives = [];
     mine.forEach(function (r) {
@@ -12721,10 +12836,15 @@
       if (!byName[k]) { byName[k] = { name: r.adventure, runs: [] }; electives.push(byName[k]); }
       byName[k].runs.push(r);
     });
-    electives = electives.map(function (e) { return { name: e.name, sessions: sessionsOf(e.runs) }; });
+    offs.forEach(function (o) {
+      if (adv.required.indexOf(o.name) !== -1) return;
+      var k = o.name.toLowerCase();
+      if (!byName[k]) { byName[k] = { name: o.name, runs: [] }; electives.push(byName[k]); }
+    });
+    electives = electives.map(function (e) { return { name: e.name, sessions: sessionsOf(e.runs), offeredAt: offeredAt(e.name) }; });
     return {
       den: den, required: required, electives: electives,
-      unplanned: required.filter(function (r) { return !r.sessions.length; }),
+      unplanned: required.filter(function (r) { return !r.sessions.length && !r.offeredAt.length; }),
       electivesPlanned: electives.length, electivesNeeded: 2
     };
   }
@@ -12741,23 +12861,196 @@
     var d = new Date(+p[0], +p[1] - 1, +p[2] + 14);
     return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
   }
+  // "at Fall family campout Oct 17 ✓" — where an adventure is offered at an event (denOfferEntries).
+  function denOfferedLine(evs, today) {
+    return evs.length ? 'at ' + evs.map(function (ev) {
+      return eventLabel(ev) + ' ' + fmtDateShort(ev.date) + (ev.date < today ? ' ✓' : '');
+    }).join(' · ') : '';
+  }
   // "Sep 1 · Sep 15 · Oct 6", marking the ones already held.
   function denPlanDates(sessions, today) {
     return sessions.map(function (ev) { return fmtDateShort(ev.date) + (ev.date < today ? ' ✓' : ''); }).join(' · ');
   }
+  // Meetings already on the calendar that "Plan a meeting" can use instead of adding one (owner,
+  // 2026-10-01): this program year's den meetings from today on that this den is at — its own,
+  // and the All-dens nights — with nothing for it yet. On an All-dens night that means no line of
+  // its own, not marked away ('off'), no pack-wide pick that reaches this den, and no adventure
+  // typed for every den before packAdv existed. Never one that already says something: picking
+  // it would overwrite a choice somebody made.
+  function denPlanOpenMeetings(den, events, today, py) {
+    var from = programYearStartISO(py), to = programYearEndISO(py);
+    return (events || []).filter(function (e) {
+      if (e.kind !== 'den' || !e.date || e.date < today || e.date < from || e.date > to) return false;
+      if (e.den) return e.den === den && !evAdventure(e);
+      if (evAdventure(e) || packAdvName(e.packAdv, den)) return false;
+      var at = denAdvAt(e, den);
+      return !at.name && at.from !== 'off';
+    }).sort(function (a, b) {
+      return String(a.date).localeCompare(String(b.date)) || String(a.time || '').localeCompare(String(b.time || ''));
+    });
+  }
+  // How many open meetings the form lists before "New den meeting on". A plan is for the next
+  // few; a meeting further out is still there to pick on the calendar.
+  var DEN_PLAN_OPEN_MAX = 6;
   function denPlanForm(den, name, today) {
     var py = state.budget.programYear;
     var idx = DENS.indexOf(den);
     var adv = ADVENTURES[den] || { electives: [] };
+    var open = denPlanOpenMeetings(den, state.events, today, py).slice(0, DEN_PLAN_OPEN_MAX);
+    var dateIn = '<input type="date" name="date" required value="' + esc(denPlanDefaultDate(den, state.events, today)) +
+      '" min="' + programYearStartISO(py) + '" max="' + programYearEndISO(py) + '" aria-label="New den meeting date">';
+    // With a meeting to use, the choice comes first and the first one is picked; without one, the
+    // form is the plain "Den meeting on" it always was.
+    var where = open.length
+      ? '<fieldset class="plan-where"><legend class="small muted">Which meeting</legend>' +
+        open.map(function (e, i) {
+          return '<label class="plan-where-opt"><input type="radio" name="where" value="' + esc(e.id) + '"' + (i ? '' : ' checked') + '>' +
+            esc(fmtDate(e.date) + (fmtClock(e.time) ? ' · ' + fmtClock(e.time) : '') + (e.den ? ' · ' + den + ' only' : ' · All dens')) + '</label>';
+        }).join('') +
+        '<label class="plan-where-opt"><input type="radio" name="where" value="new">New den meeting on ' + dateIn + '</label></fieldset>'
+      : '<input type="hidden" name="where" value="new"><label class="fld">Den meeting on' + dateIn + '</label>';
     return '<form data-form="plan-adv" data-den="' + esc(den) + '" class="row no-print" style="margin:6px 0 8px;gap:6px;align-items:flex-end">' +
       (name
         ? '<input type="hidden" name="name" value="' + esc(name) + '">'
         : '<label class="fld">Elective<input name="name" list="planElect-' + idx + '" required placeholder="Pick or type one" style="min-width:180px"></label>' +
           '<datalist id="planElect-' + idx + '">' + adv.electives.map(function (n) { return '<option value="' + esc(n) + '">'; }).join('') + '</datalist>') +
-      '<label class="fld">Den meeting on<input type="date" name="date" required value="' + esc(denPlanDefaultDate(den, state.events, today)) +
-        '" min="' + programYearStartISO(py) + '" max="' + programYearEndISO(py) + '"></label>' +
-      '<button class="btn small primary" type="submit">Add den meeting</button>' +
+      where +
+      '<button class="btn small primary" type="submit">' + (open.length ? 'Plan it' : 'Add den meeting') + '</button>' +
       '<button type="button" class="btn small ghost" data-act="plan-adv-cancel">Cancel</button></form>';
+  }
+  /* ----- Fill the calendar (owner ask, 2026-10-01). -----
+     The Cubmaster's year in one go: an ordered list of pack-wide choices (packAdvChoices), each
+     with how many meetings it takes, laid onto the All-dens nights from a date on, in date order.
+     Only a night with NOTHING picked is filled — no packAdv, and no adventure typed for every den
+     before packAdv existed. A night that has one is skipped, never overwritten. A den's own line
+     (denAdv) is the den leader's and stays; it already says what that den does that night.
+     PREVIEW FIRST. Nothing is written until Apply, which sets packAdv through setPackAdv (the
+     picker's own writer), and the toast has an Undo. The list lives in ui.fillCal, never in
+     `state`: it is a tool, not a record.
+     The range sports are not on its list: an All-dens night is a den meeting (ADV_RANGE_KEYS). */
+  var FILL_MAX_ROWS = 12;
+  var FILL_MAX_N = 12;
+  // The nights a fill would use, and what goes on each. Pure.
+  //   rows [{ key, n }]  →  { assign: [{ ev, key, n, of }], left: [{ key, count }], leftCount, nights }
+  function fillCalendarPlan(events, rows, from, to) {
+    var nights = (events || []).filter(function (e) {
+      return e.kind === 'den' && !e.den && e.date && e.date >= from && e.date <= to && !e.packAdv && !evAdventure(e);
+    }).sort(function (a, b) {
+      return String(a.date).localeCompare(String(b.date)) || String(a.time || '').localeCompare(String(b.time || ''));
+    });
+    var want = [];
+    (rows || []).forEach(function (r) {
+      for (var k = 1; k <= r.n; k++) want.push({ key: r.key, n: k, of: r.n });
+    });
+    var assign = [];
+    for (var i = 0; i < want.length && i < nights.length; i++) {
+      assign.push({ ev: nights[i], key: want[i].key, n: want[i].n, of: want[i].of });
+    }
+    var left = [];
+    want.slice(assign.length).forEach(function (w) {
+      var last = left[left.length - 1];
+      if (last && last.key === w.key) last.count += 1; else left.push({ key: w.key, count: 1 });
+    });
+    return { assign: assign, left: left, leftCount: want.length - assign.length, nights: nights.length };
+  }
+  // Den meetings in a lesson plan (an outing or an add-on is not an All-dens night).
+  function planDenMeetingCount(plan) {
+    return plan && Array.isArray(plan.meetings)
+      ? plan.meetings.filter(function (m) { return m && typeof m === 'object' && m.kind === 'den'; }).length : 0;
+  }
+  // How many meetings a pack-wide choice takes, from the lesson plans: the MOST any of `dens`
+  // needs, because a required category is a different adventure in every rank, and the
+  // shorter plans are done early rather than a longer one cut off. 0 when no plan says.
+  function fillPlanCount(key, data, dens) {
+    var most = 0;
+    (dens || []).forEach(function (dn) {
+      var nm = packAdvName(key, dn);
+      if (nm) most = Math.max(most, planDenMeetingCount(advPlanFor(data, advPlanKey(dn, nm))));
+    });
+    return most;
+  }
+  // The ranks a fill is counted for: the dens with scouts, or every rank before the roster is in.
+  function fillDens() {
+    var withScouts = DENS.filter(function (dn) { return ADVENTURES[dn] && activeScouts().some(function (s) { return s.den === dn; }); });
+    return withScouts.length ? withScouts : DENS.filter(function (dn) { return !!ADVENTURES[dn]; });
+  }
+  // ui.fillCal's rows with their meeting counts: one the leader typed, else the plan's, else 1.
+  function fillRowsNow(data) {
+    var dens = fillDens();
+    return ((ui.fillCal && ui.fillCal.rows) || []).filter(function (r) { return r.key && packAdvLabel(r.key); }).map(function (r) {
+      var fromPlan = data ? fillPlanCount(r.key, data, dens) : 0;
+      var n = r.nSet ? r.n : (fromPlan || 1);
+      return { key: r.key, n: Math.max(1, Math.min(FILL_MAX_N, n)), fromPlan: !r.nSet && fromPlan > 0 };
+    });
+  }
+  function fillCalendarNow(data) {
+    var f = ui.fillCal || {};
+    var py = state.budget.programYear;
+    var from = /^\d{4}-\d{2}-\d{2}$/.test(f.from || '') ? f.from : todayISO();
+    return fillCalendarPlan(state.events, fillRowsNow(data), from, programYearEndISO(py));
+  }
+  function renderFillCalendar(today) {
+    var f = ui.fillCal;
+    if (!f) {
+      return '<div class="card no-print"><div class="spread"><div><h2 class="section display" style="margin:0">Fill the calendar</h2>' +
+        '<p class="small muted" style="margin:4px 0 0">Put the pack’s adventures on the All-dens nights that have none yet, in order. ' +
+        'You see every date before anything is saved.</p></div>' +
+        '<button type="button" class="btn small" data-act="fill-open">Fill the calendar</button></div></div>';
+    }
+    var plans = advPlansWant();
+    var data = plans.status === 'ready' ? plans.data : null;
+    var rows = fillRowsNow(data);
+    var h = '<div class="card no-print"><div class="spread"><h2 class="section display" style="margin:0">Fill the calendar</h2>' +
+      '<button type="button" class="btn small ghost" data-act="fill-close">Close</button></div>' +
+      '<p class="small muted" style="margin:4px 0 8px">Adventures in the order the pack will do them. Each one goes on the next ' +
+      'All-dens nights with nothing picked yet; a night that already has an adventure is skipped, never changed. ' +
+      'A den that is behind or ahead still changes its own line under its Meetings below.</p>';
+    var dens = fillDens();
+    (f.rows || []).forEach(function (r, i) {
+      var planN = r.key && data ? fillPlanCount(r.key, data, dens) : 0;
+      var n = r.nSet ? r.n : (planN || 1);
+      h += '<div class="fill-row"><span class="small muted">' + (i + 1) + '.</span>' +
+        '<select data-ch="fill-key" data-i="' + i + '" aria-label="Adventure ' + (i + 1) + '">' +
+          packAdvOptions(r.key || '', 'Pick an adventure…', ADV_RANGE_KEYS) + '</select>' +
+        '<input type="number" min="1" max="' + FILL_MAX_N + '" step="1" inputmode="numeric" data-ch="fill-n" data-i="' + i + '" value="' + n +
+          '" aria-label="Meetings for adventure ' + (i + 1) + '">' +
+        '<span class="small muted">' + (n === 1 ? 'meeting' : 'meetings') + (!r.nSet && planN ? ' (lesson plan)' : '') + '</span>' +
+        '<button type="button" class="btiny" data-act="fill-up" data-i="' + i + '" aria-label="Move adventure ' + (i + 1) + ' up"' + (i ? '' : ' disabled') + '>↑</button>' +
+        '<button type="button" class="btiny" data-act="fill-down" data-i="' + i + '" aria-label="Move adventure ' + (i + 1) + ' down"' +
+          (i < f.rows.length - 1 ? '' : ' disabled') + '>↓</button>' +
+        '<button type="button" class="btiny" data-act="fill-del" data-i="' + i + '" aria-label="Remove adventure ' + (i + 1) + '">✕</button></div>';
+    });
+    h += '<div class="row" style="margin-top:6px;gap:6px;flex-wrap:wrap;align-items:flex-end">' +
+      (f.rows.length < FILL_MAX_ROWS ? '<button type="button" class="btn small" data-act="fill-add">+ Add an adventure</button>' : '') +
+      '<button type="button" class="btn small ghost" data-act="fill-req6">Start with the 6 required in order</button>' +
+      '<label class="fld">Starting from<input type="date" data-ch="fill-from" value="' + esc(f.from || today) + '"></label></div>';
+    h += '<p class="small muted" style="margin:6px 0 0">' +
+      (plans.status === 'loading' ? 'Loading the lesson plans for meeting counts… ' : plans.status === 'failed' ? 'The lesson plans didn’t load, so each starts at 1 meeting. ' : '') +
+      'A meeting count starts at the lesson plan’s, where there is one: for a required adventure, the most any den’s plan has, ' +
+      'so no den runs out — a den with a shorter plan finishes early. Change any count. Archery, BB Gun and Slingshot are not ' +
+      'on the list: range sports are never at a den meeting (add them to a council campout instead).</p>';
+    if (!rows.length) return h + '</div>';
+    var fp = fillCalendarNow(data);
+    h += '<p class="eyebrow" style="margin:12px 0 4px">Preview</p>';
+    if (!fp.nights) {
+      h += '<p class="small muted" style="margin:0">No All-dens nights without an adventure from ' + esc(fmtDate(f.from || today)) +
+        ' to the end of the program year. Add them on the calendar (+ Den meeting, All dens, then Repeat).</p>';
+    }
+    fp.assign.forEach(function (a) {
+      h += '<div class="assign-row"><span class="assign-name" style="font-weight:500">' + esc(fmtDate(a.ev.date)) + '</span>' +
+        '<span class="small">' + esc(packAdvLabel(a.key)) + (a.of > 1 ? ' <span class="muted">· ' + a.n + ' of ' + a.of + '</span>' : '') + '</span></div>';
+    });
+    if (fp.leftCount) {
+      h += '<p class="warn small" style="margin:6px 0 0">' + fp.nights + (fp.nights === 1 ? ' night is' : ' nights are') + ' not enough: ' +
+        fp.leftCount + (fp.leftCount === 1 ? ' meeting' : ' meetings') + ' left unscheduled — ' +
+        esc(fp.left.map(function (x) { return packAdvLabel(x.key) + (x.count > 1 ? ' (' + x.count + ')' : ''); }).join(', ')) +
+        '. Add more All-dens nights on the calendar, then fill again.</p>';
+    }
+    if (fp.assign.length) {
+      h += '<div class="row" style="margin-top:8px"><button type="button" class="btn small primary" data-act="fill-apply">Put these on ' +
+        fp.assign.length + (fp.assign.length === 1 ? ' night' : ' nights') + '</button></div>';
+    }
+    return h + '</div>';
   }
   function renderDenPlanner() {
     var today = todayISO();
@@ -12771,6 +13064,7 @@
       'every den works the adventure the pack picked on the calendar unless its leader changes it under ' +
       '<strong>Meetings</strong> below' + (edit ? '; Plan a meeting adds a meeting for one den' : '') +
       '. ✓ marks a meeting already held.</p></div>';
+    if (edit) h += renderFillCalendar(today);
     // Dens with scouts or with anything planned; with neither anywhere, every den, so a new pack
     // can plan before the roster is in. A den leader's own dens first — order only, never a filter.
     var mineFirst = myDens();
@@ -12783,16 +13077,17 @@
       return (mineFirst.indexOf(b) !== -1) - (mineFirst.indexOf(a) !== -1) || DENS.indexOf(a) - DENS.indexOf(b);
     });
     dens.forEach(function (den) {
-      var plan = denPlan(den, runs);
+      var plan = denPlan(den, runs, denOfferEntries(den, state.events, py));
       var done = plan.required.length - plan.unplanned.length;
       h += '<div class="card"><h2 class="section display">' + esc(den) +
         ' <span class="pill ' + (plan.unplanned.length ? 'navy' : 'good') + '">' + done + ' of ' + plan.required.length + ' required planned</span></h2>';
       plan.required.forEach(function (rq) {
         var open = ui.planAdv && ui.planAdv.den === den && ui.planAdv.name === rq.name;
-        if (rq.sessions.length) {
+        if (rq.sessions.length || rq.offeredAt.length) {
           h += '<div class="assign-row"><span class="assign-name">✓ ' + esc(rq.name) + '</span>' +
-            '<span class="small muted">' + rq.sessions.length + (rq.sessions.length === 1 ? ' meeting' : ' meetings') +
-            (rq.allDens ? ' (all dens)' : '') + ' · ' + esc(denPlanDates(rq.sessions, today)) + '</span>' + advPlanBtn(den, rq.name) + '</div>';
+            '<span class="small muted">' + (rq.sessions.length ? rq.sessions.length + (rq.sessions.length === 1 ? ' meeting' : ' meetings') +
+            (rq.allDens ? ' (all dens)' : '') + ' · ' + esc(denPlanDates(rq.sessions, today)) : '') +
+            (rq.sessions.length && rq.offeredAt.length ? ' · ' : '') + esc(denOfferedLine(rq.offeredAt, today)) + '</span>' + advPlanBtn(den, rq.name) + '</div>';
         } else {
           h += '<div class="assign-row"><span class="assign-name">' + esc(rq.name) + ' <span class="pill navy">no meeting planned</span></span>' +
             advPlanBtn(den, rq.name) + (edit && !open ? '<button type="button" class="btn small" data-act="plan-adv" data-den="' + esc(den) + '" data-name="' + esc(rq.name) +
@@ -12811,7 +13106,8 @@
       if (ui.planAdv && ui.planAdv.den === den && !ui.planAdv.name) h += denPlanForm(den, '', today);
       plan.electives.forEach(function (el) {
         h += '<div class="assign-row"><span class="assign-name">' + esc(el.name) + '</span>' +
-          '<span class="small muted">' + esc(denPlanDates(el.sessions, today)) + '</span>' + advPlanBtn(den, el.name) + '</div>';
+          '<span class="small muted">' + esc(denPlanDates(el.sessions, today) + (el.sessions.length && el.offeredAt.length ? ' · ' : '') +
+            denOfferedLine(el.offeredAt, today)) + '</span>' + advPlanBtn(den, el.name) + '</div>';
       });
       h += denMeetingsBlock(den, today, edit);
       h += '</div>';
@@ -12844,6 +13140,8 @@
       var at = shared ? denAdvAt(e, den) : { name: evAdventure(e), from: 'own' };
       var r = at.name ? runForMeeting(e, shared ? den : undefined) : null;
       var when = fmtDate(e.date) + (fmtClock(e.time) ? ' · ' + fmtClock(e.time) : '') + (shared ? ' · All dens' : ' · ' + den + ' only');
+      // The meeting's extra adventures (evOffers), in this den's own version.
+      var alsoNames = evOffers(e).map(function (o) { return packAdvName(o.key, den); }).filter(Boolean);
       var right;
       if (edit) {
         var cur = at.from === 'off' ? '-' : (at.from === 'den' || at.from === 'own') ? at.name : '';
@@ -12865,6 +13163,7 @@
       h += '<div class="assign-row' + (e.date < today ? ' wk-past' : '') + '"><span class="assign-name" style="font-weight:500">' +
         esc(when) + (r && r.of > 1 ? ' <span class="small muted">· ' + esc(sessionLabel(r.position, r.of)) + '</span>' : '') +
         (shared && (at.from === 'den' || at.from === 'off') ? ' <span class="pill navy">changed for ' + esc(den) + '</span>' : '') +
+        (alsoNames.length ? ' <span class="small muted">· also ' + esc(alsoNames.join(', ')) + '</span>' : '') +
         '</span>' + right + '</div>';
     });
     return h;
@@ -13105,7 +13404,7 @@
     { slot: 2, name: 'School Night — join & recruiting' },   // September
     { slot: 2, name: 'Popcorn kickoff' },                    // September
     { slot: 2, name: 'Monthly pack meeting' },               // September — see above
-    { slot: 3, name: 'Fall family campout' },                // October
+    { slot: 3, name: 'Fall family campout', offers: 'council' },  // October — Scoutland (SEED_CAMP_OFFERS)
     { slot: 4, name: 'Scouting for Food' },                  // November
     { slot: 5, name: 'Holiday pack party' },                 // December
     { slot: 6, name: 'Pinewood Derby' },                     // January
@@ -13113,12 +13412,24 @@
     { slot: 8, name: 'Raingutter Regatta' },                 // March
     { slot: 8, name: 'Pack campout — Fort Yargo' },          // March — the Camping tab's Fort Yargo trip
     { slot: 9, name: 'Spring hike / service project' },      // April
-    { slot: 9, name: 'Spring family campout' },              // April — the Camping tab's Spring Family Camping
+    { slot: 9, name: 'Spring family campout', offers: 'council' }, // April — the Camping tab's Spring Family Camping
     // Crossover stays in May. Many packs hold it at the Blue & Gold banquet in February instead;
     // a pack that does just moves this row's date — the slot is only where it starts.
     { slot: 10, name: 'Crossover & graduation' },            // May
     { slot: 11, name: 'Day camp week' },                     // June
     { slot: 11, name: 'Resident camp' }                      // June
+  ];
+  // The two council family weekends (CAMP_COUNCIL_TRIP_NAMES) — owner, 2026-10-01: they "offer
+  // BBs, bows and arrows, fishing, and Let's Camp (Let's Camp is automatic to all who attend, the
+  // rest are electives)". Council-run with a certified range master, so the range sports are
+  // allowed there (CAMP_PACK_RUN). evOffers resolves each rank's own version and leaves out the
+  // ones a rank lacks (Lions: no BB Gun; Arrow of Light: no Let's Camp!). A new seed only — an
+  // event a pack already has is never touched, so a live pack's campouts are unchanged.
+  var SEED_CAMP_OFFERS = [
+    { key: "el:Let's Camp!", auto: true },
+    { key: 'el:Archery', auto: false },
+    { key: 'el:BB Gun', auto: false },
+    { key: 'th:fishing', auto: false }
   ];
   function seedStandardYear() {
     var existing = {};
@@ -13136,6 +13447,7 @@
     SEED_ACTIVITIES.forEach(function (t) {
       if (existing[t.name.toLowerCase()]) return; // idempotent — name match, any slot
       var seedEv = freshEvent({ kind: 'activity', slot: t.slot, name: t.name });
+      if (t.offers === 'council') seedEv.advOffers = SEED_CAMP_OFFERS.map(function (o) { return { key: o.key, auto: o.auto }; });
       state.events.push(seedEv);
       state.budget.activities.push(freshLine({ name: t.name, eventId: seedEv.id }));
       added += 1;
@@ -20501,6 +20813,9 @@
             (mShort ? ' <span class="muted">· ' + mShort + ' with a session to make up</span>' : ''));
         }
       });
+      // …and the extras offered beside it (evOffers).
+      var mOffers = evOffers(m);
+      if (mOffers.length) h += line('Also', esc(offersSummary(mOffers)));
       // Tonight's lesson plan meeting, the same box as the editor's, with its Print plan.
       if (m.kind === 'den') h += meetingPlanBox(m, 'agenda');
       h += line('Where', m.note ? esc(m.note) : '<span class="muted">no location or notes yet</span>');
@@ -20534,6 +20849,9 @@
       if (aDens) h += line('Who', esc(aDens) + ' <span class="muted">only</span>');
       if (ev.location) h += line('Where', esc(ev.location).replace(/\n/g, '<br>'));
       if (ev.note) h += line('Details', esc(ev.note).replace(/\n/g, '<br>'));
+      // What scouts can earn there (evOffers) — leaders' sheet only, like every adventure.
+      var aOffers = evOffers(ev);
+      if (aOffers.length) h += line('Adventures', esc(offersSummary(aOffers)));
       if (!aLine) {
         // The case that could not exist before Phase 2: something on the calendar that
         // nobody has budgeted for. An imported BAND calendar is now full of these, and
@@ -20808,8 +21126,11 @@
             // the Budget row edits this same field, never a copy of it.
             '<div class="brow-opts" style="border-top:0;padding-top:0;margin-top:8px">' +
             denPickerControls(ev) + denPickerNote(ev) + '</div>' +
+            // A campout's adventures (evOffers): what it offers, then — once attendance is in —
+            // recording them, under the attendance it reads.
+            advOffersEditor(ev) +
             '<div class="row" style="margin-top:8px;align-items:flex-start">' +
-            renderRsvpBlock(ev.id) + renderAttendanceBlock(ev) + '</div></div>';
+            renderRsvpBlock(ev.id) + renderAttendanceBlock(ev) + '</div>' + advOffersMark(ev) + '</div>';
         });
       } else {
         h += '<p class="small muted">Nothing scheduled yet.</p>';
@@ -20883,7 +21204,7 @@
       tinyDangerBtn('del-event:' + m.id, 'Remove meeting') +
       '</div>' +
       // …and, for leaders, which meeting of the lesson plan tonight is (meetingPlanBox).
-      (m.kind === 'den' ? advTargetPicker(m) + meetingPlanBox(m, 'editor') : '') +
+      (m.kind === 'den' ? advTargetPicker(m) + meetingPlanBox(m, 'editor') + advOffersEditor(m) : '') +
       // Two notes, and each one says who reads it. The single field this replaces was labelled
       // "Location / notes (optional)" with nothing to say it went out to every family — so
       // "ask the Alvarez family to bring the canopy, they still owe for spring" would have been
@@ -20899,6 +21220,7 @@
       renderRsvpBlock(m.id) + renderAttendanceBlock(m) +
       '</div>' +
       renderMeetingAdvMark(m) +
+      (m.kind === 'den' ? advOffersMark(m) : '') +
       // Wave 19(22) — one-time repeat offer, only on the just-added meeting.
       // Bulk-create like the storefront "Add weekly" — no recurrence model.
       // Wave A: every week OR every other week (dens that meet twice a month), and — only once
@@ -20957,18 +21279,25 @@
   }
   // The pack-wide adventure <select>: the six required categories, then the electives more than
   // one rank shares. `value` is a packAdv key.
-  function packAdvOptions(value, noneLabel) {
+  // `skip`: keys left off the list (Fill the calendar leaves off the range sports; an event's
+  // offers, the ones it already has) — except `value` itself, which always shows.
+  function packAdvOptions(value, noneLabel, skip) {
     var c = packAdvChoices();
+    function keep(x) { return x.key === value || !skip || skip.indexOf(x.key) === -1; }
     function opt(x) { return '<option value="' + esc(x.key) + '"' + (x.key === value ? ' selected' : '') + '>' + esc(x.label) + '</option>'; }
     return '<option value="">' + esc(noneLabel) + '</option>' +
-      '<optgroup label="Required — each den’s own">' + c.required.map(opt).join('') + '</optgroup>' +
-      '<optgroup label="Electives">' + c.electives.map(opt).join('') + '</optgroup>';
+      '<optgroup label="Required — each den’s own">' + c.required.filter(keep).map(opt).join('') + '</optgroup>' +
+      '<optgroup label="Electives">' + c.electives.filter(keep).map(opt).join('') + '</optgroup>';
   }
   // An All-dens night: one choice for the whole pack, then what that means den by den. A den
   // leader changes their own den's line on Den plans, not here — this row is the Cubmaster's.
   function packAdvPicker(m) {
     var h = '<label class="fld" style="margin-top:6px">Adventure for every den' +
       '<select data-ch="mtg-pack-adv" data-id="' + esc(m.id) + '">' + packAdvOptions(m.packAdv || '', 'None set') + '</select></label>';
+    if (ADV_RANGE_KEYS.indexOf(m.packAdv) !== -1) {
+      h += '<p class="warn small" style="margin:4px 0 0">Pack rule: ' + esc(packAdvLabel(m.packAdv)) + ' is a range sport — never at a den ' +
+        'meeting, only on a council range with a certified range master.</p>';
+    }
     var dens = DENS.filter(function (dn) {
       return ADVENTURES[dn] && (denAdvAt(m, dn).from === 'den' || denAdvAt(m, dn).from === 'off' ||
         activeScouts().some(function (s) { return s.den === dn; }));
@@ -20991,7 +21320,19 @@
   }
   // A pack meeting works no adventure: everything a den meeting held goes.
   function clearMeetingAdvs(mtg) {
-    mtg.den = ''; mtg.adventure = ''; delete mtg.denAdv; delete mtg.packAdv;
+    mtg.den = ''; mtg.adventure = ''; delete mtg.denAdv; delete mtg.packAdv; delete mtg.advOffers;
+  }
+  // The Cubmaster's pack-wide choice on an All-dens night ('' clears it). A den's own line that
+  // now says the same as the new choice stops being a change and follows it again. One writer
+  // for the meeting's picker and Den plans' Fill the calendar.
+  function setPackAdv(m, key) {
+    if (key && packAdvLabel(key)) m.packAdv = key; else delete m.packAdv;
+    if (m.denAdv) {
+      Object.keys(m.denAdv).forEach(function (dn) {
+        if (m.denAdv[dn] && advCanonicalName(dn, m.denAdv[dn]) === packAdvName(m.packAdv, dn)) delete m.denAdv[dn];
+      });
+      if (!Object.keys(m.denAdv).length) delete m.denAdv;
+    }
   }
   // An All-dens night narrowed to one den keeps THAT den's adventure as its own; the other
   // dens' go with the other dens.
@@ -21024,6 +21365,103 @@
      a den leader can sign off without chasing anybody, and the ones who were not are a
      make-up-at-home list. That is what these two lists are, and the copy says so. `advMarkDone`
      remains the only writer — nothing here marks anything on its own. */
+  /* ----- "Adventures at this event" (evOffers, 2026-10-01). -----
+     The editor: on a campout or outing it is the event's adventures; on a den meeting it is MORE
+     adventures beside the main one, which the box above still holds. Each offer is one pack-wide
+     choice, "everyone who attends earns it" or "offered — scouts who choose it", and says which
+     ranks it is not for. Editors only change it; anyone else reads it. */
+  function advOffersEditor(ev) {
+    var offers = evOffers(ev);
+    var edit = canEdit();
+    var den = ev.kind === 'den';
+    if (!offers.length && !edit) return '';
+    var h = '<div class="adv-offers" style="margin-top:8px"><p class="eyebrow" style="margin:0 0 2px">' +
+      (den ? 'More adventures at this meeting' : 'Adventures at this event') + '</p>';
+    if (!offers.length) {
+      h += '<p class="small muted" style="margin:0">' + (den
+        ? 'Optional: anything beyond the main adventure above that scouts can earn tonight.'
+        : 'What scouts can earn here — e.g. “Let’s Camp!” for everyone who comes, and electives they can choose.') + '</p>';
+    }
+    offers.forEach(function (o) {
+      var by = offerByDen(ev, o.key);
+      h += '<div class="offer-row"><span class="offer-name">' + esc(o.label) + '</span>' +
+        (edit
+          ? '<select data-ch="offer-auto" data-id="' + esc(ev.id) + '" data-key="' + esc(o.key) + '" aria-label="' + esc('How ' + o.label + ' is earned') + '">' +
+            '<option value="1"' + (o.auto ? ' selected' : '') + '>Everyone who attends earns it</option>' +
+            '<option value="0"' + (o.auto ? '' : ' selected') + '>Offered — scouts who choose it</option></select>' +
+            '<button type="button" class="btiny" data-act="offer-del" data-id="' + esc(ev.id) + '" data-key="' + esc(o.key) +
+            '" aria-label="' + esc('Remove ' + o.label) + '" title="' + esc('Remove ' + o.label) + '">✕</button>'
+          : '<span class="small muted">' + (o.auto ? 'everyone who attends earns it' : 'offered — scouts who choose it') + '</span>') +
+        '</div>';
+      // Each rank's own version, where it differs from the label, and the ranks it is not for.
+      var named = by.has.filter(function (x) { return x.name !== o.label; });
+      if (named.length || by.lacks.length) {
+        h += '<p class="small muted" style="margin:0 0 4px">' +
+          (named.length ? esc(named.map(function (x) { return x.den + ': ' + x.name; }).join(' · ')) : '') +
+          (named.length && by.lacks.length ? ' · ' : '') +
+          (by.lacks.length ? 'Not for ' + esc(denListLabel(by.lacks)) + ' — not in that rank’s adventures' : '') + '</p>';
+      }
+      if (den && ADV_RANGE_KEYS.indexOf(o.key) !== -1) {
+        h += '<p class="warn small" style="margin:0 0 4px">Pack rule: ' + esc(o.label) + ' is a range sport — never at a den meeting, ' +
+          'only on a council range with a certified range master (like the Scoutland campout).</p>';
+      } else if (ADV_RANGE_KEYS.indexOf(o.key) !== -1) {
+        // Not a block on an activity: the council weekends are exactly where these are done. Just
+        // the rule, since a pack-run trip is not one of them (CAMP_PACK_RUN).
+        h += '<p class="small muted" style="margin:0 0 4px">A range sport: only at a council or district event with a certified ' +
+          'range master — not on a trip the pack runs itself.</p>';
+      }
+    });
+    if (edit && offers.length < ADV_OFFERS_MAX) {
+      h += '<form data-form="offer-add" data-id="' + esc(ev.id) + '" class="row no-print" style="margin-top:4px;gap:6px;align-items:center">' +
+        '<select name="key" required aria-label="Adventure to add">' +
+          packAdvOptions('', 'Add an adventure…', offers.map(function (o) { return o.key; })) + '</select>' +
+        '<select name="auto" aria-label="How it is earned">' +
+          '<option value="0">Offered — scouts who choose it</option><option value="1">Everyone who attends earns it</option></select>' +
+        '<button class="btn small" type="submit">Add</button></form>';
+    }
+    return h + '</div>';
+  }
+  // Recording, below the attendance it reads. Nothing is marked on its own, and an offered
+  // elective is never marked for everyone: the leader ticks who did it.
+  function advOffersMark(ev) {
+    return evOffers(ev).map(function (o) { return advOfferMarkFor(ev, o); }).join('');
+  }
+  function advOfferMarkFor(ev, o) {
+    var att = offerAttendees(ev, o.key);
+    if (!att.can.length && !att.cannot.length) return '';   // no attendance taken yet
+    var edit = canEdit();
+    var todo = att.can.filter(function (r) { return !r.status; });
+    var had = att.can.filter(function (r) { return r.status; });
+    var h = '<div class="adv-run"><div class="spread"><strong>' + esc(o.label) + '</strong>' +
+      '<span class="small muted">' + (o.auto ? 'everyone who attends' : 'offered') + '</span></div>';
+    if (o.auto) {
+      if (todo.length && edit) {
+        h += '<div class="row" style="margin-top:6px"><button type="button" class="btn small" data-act="offer-mark" data-id="' + esc(ev.id) +
+          '" data-key="' + esc(o.key) + '">Mark “' + esc(o.label) + '” done for ' + todo.length + (todo.length === 1 ? ' scout' : ' scouts') +
+          ' who attended</button></div>';
+      } else if (todo.length) {
+        h += '<p class="small muted" style="margin:6px 0 0">' + todo.length + (todo.length === 1 ? ' scout' : ' scouts') + ' who attended not recorded yet.</p>';
+      }
+    } else if (todo.length && edit) {
+      h += '<form data-form="offer-mark-picked" data-id="' + esc(ev.id) + '" data-key="' + esc(o.key) + '" style="margin-top:6px">' +
+        '<p class="small muted" style="margin:0 0 4px">Tick the scouts who did it. Nothing is recorded for the rest.</p>' +
+        '<div class="rsvp-list">' + todo.map(function (r) {
+          return '<label class="att-row"><input type="checkbox" name="scout" value="' + esc(r.scout.id) + '"><span class="att-name">' +
+            esc(r.scout.name) + (r.name !== o.label ? ' <span class="small muted">' + esc(r.name) + '</span>' : '') + '</span></label>';
+        }).join('') + '</div>' +
+        '<button class="btn small" type="submit" style="margin-top:6px">Mark done</button></form>';
+    } else if (todo.length) {
+      h += '<p class="small muted" style="margin:6px 0 0">' + todo.length + ' who attended can earn it — not recorded yet.</p>';
+    }
+    if (had.length) {
+      h += '<p class="small muted" style="margin:6px 0 0">Already recorded: ' + esc(had.map(function (r) { return r.scout.name; }).join(', ')) + '.</p>';
+    }
+    if (att.cannot.length) {
+      h += '<p class="small muted" style="margin:6px 0 0">Not for ' + esc(att.cannot.map(function (s) { return s.name + ' (' + (s.den || 'no den') + ')'; }).join(', ')) +
+        ' — not in their rank’s adventures.</p>';
+    }
+    return h + '</div>';
+  }
   function renderMeetingAdvMark(m) {
     return runsForMeeting(m).map(function (r) { return meetingAdvMarkFor(m, r); }).join('');
   }
@@ -32925,7 +33363,10 @@
         // Who it was for. Webelos Woods is a Webelos event every year — the restriction is by
         // den, not by the scouts who happened to be in it, so it survives the rollover exactly
         // as the location and the packing list do. Losing it would quietly re-bill the pack.
-        dens: ev ? eventDens(ev).slice() : []
+        dens: ev ? eventDens(ev).slice() : [],
+        // …and what scouts can earn there (evOffers): the fall weekend offers Let's Camp! and the
+        // ranges every year. A plan, like the dens; nobody's record — those stay on advancement.
+        offers: ev ? evOffers(ev).map(function (o) { return { key: o.key, auto: o.auto }; }) : []
       };
     });
     b.programYear += 1;
@@ -32938,6 +33379,7 @@
     b.activities = carried.map(function (c) {
       var x = c.line;
       var ev = freshEvent({ kind: 'activity', name: x.name || '', slot: c.slot, location: c.location, note: c.note, dens: c.dens });
+      if (c.offers.length) ev.advOffers = c.offers;
       state.events.push(ev);
       return freshLine({
         name: x.name || '', eventId: ev.id, basis: x.basis,
@@ -35302,6 +35744,54 @@
     // Wave A — the den planner's inline "plan a meeting" form. Opening it writes nothing.
     if (act === 'plan-adv') { ui.planAdv = { den: el.dataset.den || '', name: el.dataset.name || '' }; render(); return; }
     if (act === 'plan-adv-cancel') { ui.planAdv = null; render(); return; }
+    // Den plans — Fill the calendar (renderFillCalendar). The list is ui only until Apply.
+    if (act === 'fill-open') {
+      if (!canEdit()) return;
+      ui.fillCal = { rows: [{ key: '', n: 1, nSet: false }], from: todayISO() };
+      render(); return;
+    }
+    if (act === 'fill-close') { ui.fillCal = null; render(); return; }
+    if (/^fill-(add|del|up|down|req6)$/.test(act)) {
+      var flc = ui.fillCal;
+      if (!flc || !canEdit()) return;
+      var fli = parseInt(el.dataset.i, 10);
+      if (act === 'fill-add' && flc.rows.length < FILL_MAX_ROWS) flc.rows.push({ key: '', n: 1, nSet: false });
+      else if (act === 'fill-del' && flc.rows[fli]) flc.rows.splice(fli, 1);
+      else if (act === 'fill-up' && fli > 0 && flc.rows[fli]) flc.rows.splice(fli - 1, 0, flc.rows.splice(fli, 1)[0]);
+      else if (act === 'fill-down' && fli >= 0 && fli < flc.rows.length - 1) flc.rows.splice(fli + 1, 0, flc.rows.splice(fli, 1)[0]);
+      else if (act === 'fill-req6') flc.rows = ADV_REQ_CATEGORIES.map(function (x, i) { return { key: 'req:' + i, n: 1, nSet: false }; });
+      if (!flc.rows.length) flc.rows.push({ key: '', n: 1, nSet: false });
+      render(); return;
+    }
+    // Recomputed from the record as it is NOW, not from what the preview drew: a night tagged
+    // since (a sync, another tab) is skipped like any other, never overwritten.
+    if (act === 'fill-apply') {
+      if (!canEdit() || !ui.fillCal) return;
+      var fpHeld = advPlansHeld();
+      var fpPlan = fillCalendarNow(fpHeld && fpHeld.status === 'ready' ? fpHeld.data : null);
+      if (!fpPlan.assign.length) return;
+      var fpDone = fpPlan.assign.map(function (a) {
+        var was = a.ev.denAdv ? JSON.parse(JSON.stringify(a.ev.denAdv)) : null;
+        setPackAdv(a.ev, a.key);
+        return { ev: a.ev, key: a.key, denAdv: was };
+      });
+      ui.fillCal = null;
+      if (!commit()) return;
+      showToast('Adventures put on ' + fpDone.length + ' All-dens night' + (fpDone.length === 1 ? '' : 's') +
+        (fpPlan.leftCount ? ' · ' + fpPlan.leftCount + ' left unscheduled' : ''), {
+        actionLabel: 'Undo', duration: 6000,
+        onAction: function () {
+          // Only a night still on what this put there; a den's line it tidied comes back.
+          fpDone.forEach(function (x) {
+            if (x.ev.packAdv !== x.key) return;
+            delete x.ev.packAdv;
+            if (x.denAdv) x.ev.denAdv = x.denAdv;
+          });
+          if (commit()) showToast('Put back');
+        }
+      });
+      return;
+    }
     if (act === 'denplan-past') {
       ui.denPlanPast = ui.denPlanPast || {};
       ui.denPlanPast[el.dataset.den] = !ui.denPlanPast[el.dataset.den];
@@ -35772,6 +36262,35 @@
         ui.overlay.addRoster = !ui.overlay.addRoster;
         render();
       }
+      return;
+    }
+    // An event's several adventures (evOffers): remove one.
+    if (act === 'offer-del') {
+      var odEv = getEvent(el.dataset.id);
+      if (!canEdit() || !odEv || !Array.isArray(odEv.advOffers)) return;
+      var odIx = odEv.advOffers.findIndex(function (o) { return o && o.key === el.dataset.key; });
+      if (odIx === -1) return;
+      var odGone = odEv.advOffers.splice(odIx, 1)[0];
+      if (!odEv.advOffers.length) delete odEv.advOffers;
+      deleteWithUndo(packAdvLabel(odGone.key) || 'adventure', function () {
+        odEv.advOffers = odEv.advOffers || [];
+        if (!odEv.advOffers.some(function (o) { return o.key === odGone.key; })) odEv.advOffers.splice(Math.min(odIx, odEv.advOffers.length), 0, odGone);
+      });
+      return;
+    }
+    // "Everyone who attends earns it" (Let's Camp!): the same path as mtg-adv-mark — 'done', never
+    // 'awarded', one-way, the scouts checked in whose rank has it. Refused for an offered elective:
+    // that one is ticked scout by scout (offer-mark-picked), never credited to everyone.
+    if (act === 'offer-mark') {
+      var omEv = getEvent(el.dataset.id);
+      var omOffer = omEv ? evOffers(omEv).find(function (o) { return o.key === el.dataset.key; }) : null;
+      if (!canEdit() || !omOffer || !omOffer.auto) return;
+      var omDid = 0;
+      offerAttendees(omEv, omOffer.key).can.forEach(function (r) {
+        if (advMarkDone(r.scout.id, advKindFor(r.scout, r.name), r.name)) omDid += 1;
+      });
+      if (!omDid) return;
+      if (commit()) showToast('Marked ' + omOffer.label + ' done for ' + omDid + ' scout' + (omDid === 1 ? '' : 's') + ' who attended');
       return;
     }
     // Wave 16 — mark the den meeting's planned adventure done for everyone checked in.
@@ -36690,14 +37209,30 @@
     if (ch === 'mtg-pack-adv') {
       var paM = getEvent(el.dataset.id);
       if (!canEdit() || !paM || paM.kind !== 'den' || paM.den) return;
-      if (el.value && packAdvLabel(el.value)) paM.packAdv = el.value; else delete paM.packAdv;
-      if (paM.denAdv) {
-        Object.keys(paM.denAdv).forEach(function (dn) {
-          if (paM.denAdv[dn] && advCanonicalName(dn, paM.denAdv[dn]) === packAdvName(paM.packAdv, dn)) delete paM.denAdv[dn];
-        });
-        if (!Object.keys(paM.denAdv).length) delete paM.denAdv;
-      }
+      setPackAdv(paM, el.value);
       commit(); return;
+    }
+    // An event's several adventures (evOffers): everyone who attends, or offered.
+    if (ch === 'offer-auto') {
+      var oaEv = getEvent(el.dataset.id);
+      if (!canEdit() || !oaEv || !Array.isArray(oaEv.advOffers)) return;
+      var oaO = oaEv.advOffers.find(function (o) { return o && o.key === el.dataset.key; });
+      if (!oaO) return;
+      oaO.auto = el.value === '1';
+      commit(); return;
+    }
+    // Den plans — Fill the calendar's rows and start date: ui only, nothing saved (fill-apply saves).
+    if (ch === 'fill-key' || ch === 'fill-n' || ch === 'fill-from') {
+      var fcl = ui.fillCal;
+      if (!fcl || !canEdit()) return;
+      var fcr = fcl.rows[parseInt(el.dataset.i, 10)];
+      if (ch === 'fill-key' && fcr) { fcr.key = packAdvLabel(el.value) ? el.value : ''; fcr.nSet = false; }
+      else if (ch === 'fill-n' && fcr) {
+        var fcn = parseInt(el.value, 10);
+        fcr.n = isFinite(fcn) ? Math.max(1, Math.min(FILL_MAX_N, fcn)) : 1;
+        fcr.nSet = true;
+      } else if (ch === 'fill-from') fcl.from = /^\d{4}-\d{2}-\d{2}$/.test(el.value) ? el.value : todayISO();
+      render(); return;
     }
     // Den plans: one den's adventure at one meeting. On the den's own meeting that is the
     // meeting's adventure; on an All-dens night it is that den's line — '' follows the pack's
@@ -37037,12 +37572,69 @@
     // Wave A — a den meeting from the den planner, already tagged with the adventure. Lands on
     // the calendar day with the Repeat offer open, so a three-meeting adventure is one more tap
     // (Repeat, every other week, same adventure).
+    // An event's several adventures (evOffers): add one. A den meeting or an activity, never a
+    // pack meeting; a choice only once; at most ADV_OFFERS_MAX.
+    if (kind === 'offer-add') {
+      var oaddEv = getEvent(f.dataset.id);
+      var oaddKey = String(fd.get('key') || '');
+      if (!canEdit() || !oaddEv || oaddEv.kind === 'pack' || !packAdvLabel(oaddKey)) return;
+      var oaddList = evOffers(oaddEv).map(function (o) { return { key: o.key, auto: o.auto }; });
+      if (oaddList.some(function (o) { return o.key === oaddKey; }) || oaddList.length >= ADV_OFFERS_MAX) return;
+      oaddList.push({ key: oaddKey, auto: String(fd.get('auto') || '') === '1' });
+      oaddEv.advOffers = oaddList;
+      commit(); return;
+    }
+    // An offered elective: only the scouts the leader ticked, and only ones checked in whose rank
+    // has it (offerAttendees) — a stale form can never credit anybody else.
+    if (kind === 'offer-mark-picked') {
+      var opEv = getEvent(f.dataset.id);
+      var opOffer = opEv ? evOffers(opEv).find(function (o) { return o.key === f.dataset.key; }) : null;
+      if (!canEdit() || !opOffer) return;
+      var opIds = fd.getAll('scout').map(String);
+      if (!opIds.length) { showToast('Tick the scouts who did it first.'); return; }
+      var opDid = 0;
+      offerAttendees(opEv, opOffer.key).can.forEach(function (r) {
+        if (opIds.indexOf(r.scout.id) !== -1 && advMarkDone(r.scout.id, advKindFor(r.scout, r.name), r.name)) opDid += 1;
+      });
+      if (!opDid) { render(); return; }
+      if (commit()) showToast('Marked ' + opOffer.label + ' done for ' + opDid + ' scout' + (opDid === 1 ? '' : 's'));
+      return;
+    }
     if (kind === 'plan-adv') {
       if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
       var paDen = f.dataset.den || '';
       var paName = advCanonicalName(paDen, fd.get('name'));
+      if (!paName || DENS.indexOf(paDen) === -1) return;
+      // A meeting already on the calendar (owner, 2026-10-01). Checked against the same list the
+      // form drew, so a meeting that was tagged since (a sync, another tab) is never overwritten.
+      // The den's own meeting gets its adventure; an All-dens night gets this den's line
+      // (denAdv) — never packAdv, which is the Cubmaster's pick for every den.
+      var paWhere = String(fd.get('where') || 'new');
+      if (paWhere !== 'new') {
+        var paEv = denPlanOpenMeetings(paDen, state.events, todayISO(), state.budget.programYear)
+          .find(function (e) { return e.id === paWhere; });
+        if (!paEv) { ui.planAdv = null; render(); showToast('That meeting has an adventure now — nothing was changed.'); return; }
+        var paWas = paEv.den ? paEv.adventure : (paEv.denAdv ? paEv.denAdv[paDen] : undefined);
+        if (paEv.den) paEv.adventure = paName;
+        else { paEv.denAdv = paEv.denAdv || {}; paEv.denAdv[paDen] = paName; }
+        ui.planAdv = null;
+        if (!commit()) return;
+        showToast(paName + ' planned for ' + paDen + ' — ' + fmtDate(paEv.date) + (paEv.den ? '' : ' (All dens)'), {
+          actionLabel: 'Undo', duration: 6000,
+          onAction: function () {
+            // Only if it still says what this put there.
+            if (paEv.den) { if (paEv.adventure === paName) paEv.adventure = paWas || ''; }
+            else if (paEv.denAdv && paEv.denAdv[paDen] === paName) {
+              if (paWas === undefined) delete paEv.denAdv[paDen]; else paEv.denAdv[paDen] = paWas;
+              if (!Object.keys(paEv.denAdv).length) delete paEv.denAdv;
+            }
+            if (commit()) showToast('Put back');
+          }
+        });
+        return;
+      }
       var paDate = String(fd.get('date') || '');
-      if (!paName || !/^\d{4}-\d{2}-\d{2}$/.test(paDate) || DENS.indexOf(paDen) === -1) return;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(paDate)) return;
       var paLast = state.events.filter(function (e) { return e.kind === 'den' && e.den === paDen && e.time; })
         .sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); })[0];
       var paMtg = freshEvent({ kind: 'den', den: paDen, date: paDate, slot: dateToSlot(paDate),
