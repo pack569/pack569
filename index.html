@@ -175,6 +175,10 @@
 
   /* ---------- Layout ---------- */
   main { max-width: 760px; margin: 0 auto; padding: 16px 12px 80px; }
+  /* Who built the site — static, outside <main>, so render() never touches it and it reads the
+     same on every screen, the join gates included. It names no pack, since a gate may not show
+     the pack's name yet. Off printouts (no-print): a handout is the pack's, not ours. */
+  .site-foot { max-width: 760px; margin: -48px auto 0; padding: 0 12px 24px; text-align: center; }
   .card {
     background: var(--surface);
     border: 1px solid var(--line);
@@ -1889,6 +1893,10 @@
 <main id="view" tabindex="-1"></main>
 <div id="overlayHost"></div>
 <div id="toastHost" class="no-print" aria-live="polite"></div>
+<footer class="site-foot no-print small muted">
+  Website built and maintained by pack volunteer Keith Dougherty (Taylor Logan LLC).
+  Not an official Scouting America or council website.
+</footer>
 
 <script>
 (function () {
