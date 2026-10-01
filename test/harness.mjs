@@ -1034,7 +1034,7 @@ const C8_SYNC_FNS = ['closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mer
   'closedBookRank', 'closedBookScoutIds', 'closedBooksFuture', 'closedBooksMaxYear', 'closedBooksNormalized', 'normalizeClosedBook', 'normalizeLedgerRow', 'normalizeAsideRow', 'normalizeLedgerEvent',
   'stableRowId', 'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_ASIDE_OFF', 'arrOf',
   // M-B — the tombstones of a closed year.
-  'normalizeClosedGone', 'mergeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'closedGoneAdd', 'ledgerActorUid', 'closedBooksShorter',
+  'normalizeClosedGone', 'mergeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'closedGoneAdd', 'closedGoneDrops', 'ledgerActorUid', 'closedBooksShorter',
   // The merge ticks a carried row the other copy ticked (M1) and ticks again what a standing statement lists.
   'carriedRowsOf', 'statementRetick', 'entrySignedCents', 'entryAfterOpening', 'ledgerStampClean', 'statementReopened', 'normalizeStatement', 'statementAdded', 'LEDGER_TICK_FIELDS'];
 // Phase 3, C6 — the per-row ledger merge and what it reads.
@@ -27553,7 +27553,7 @@ test('C8 re-check M-A: the merge, the push’s union and a restore all bound the
   ok(/state\.closedBooks = mergeClosedBooks\(state\.closedBooks, remote\.closedBooks, look, closedBooksMaxYear\(state, remote\), state\.closedGone\)/.test(SCRIPT), 'the merge passes the bound');
   ok(/mergeClosedBooks\(state\.closedBooks, closedBooksNormalized\(remoteParsed\.closedBooks\), undefined, closedBooksMaxYear\(state, remoteParsed\), state\.closedGone\)/.test(SCRIPT), 'the push’s union is normalized (L-B) and bounded');
   ok(/closedBooksMaxYear\(\{ budget: ciBudgetWas \}, state\)/.test(SCRIPT), 'a restore bounds by the later of the two program years');
-  ok(/adoptFuture = closedBooksFuture\(parsed && parsed\.closedBooks, ns\.budget && ns\.budget\.programYear\)[\s\S]{0,1500}noteLedgerLookFromMerge\(adoptLook\);\s+[^\n]*\n\s+noteLedgerLookAfterSync\(lookWas/.test(SCRIPT), 'adoptRemote says it before the toast counts');
+  ok(/adoptFuture = closedBooksFuture\(parsed && parsed\.closedBooks, ns\.budget && ns\.budget\.programYear\)[\s\S]{0,2400}noteLedgerLookFromMerge\(adoptLook\);\s+[^\n]*\n\s+noteLedgerLookAfterSync\(lookWas/.test(SCRIPT), 'adoptRemote says it before the toast counts');
   const m = /if \(ch === 'bud-year'\) \{[\s\S]*?\n      return;/.exec(SCRIPT);
   ok(m && /y < yClosed/.test(m[0]) && /showToast\(/.test(m[0]), 'the program year is refused before a closed year');
   const w = sandbox(['noteLedgerLookFromMerge', 'ledgerClosedBookLook', 'closedYearText', 'arrOf']);
@@ -27583,14 +27583,14 @@ test('C8 re-check finding 1+3: a remote program year of 2100 with twenty books 2
 /* M-B: an admin's delete of a closed year leaves a tombstone, and no stale device brings the year back. */
 test('C8 re-check M-B: a tombstone is cut to shape, one per year and archive, never lost by a merge, and names a book or season archive to drop', () => {
   const x = sandbox(C8_SYNC_FNS);
-  const T = (year, archiveId, at, byUid) => ({ year, archiveId, at: at || '2027-10-01T10:00:00.000Z', byUid: byUid || 'u-admin' });
-  eq(J(x.normalizeClosedGone([T(2026, 'arc-26'), T(2026, 'arc-26', '2027-11-01T10:00:00.000Z'), { year: 1850, archiveId: 'x' }, { year: 'x' }, null, 'junk', [], T(2025, 'arc-25')])),
+  const T = (year, archiveId, at, byUid) => ({ year, archiveId, at: at || '2025-10-01T10:00:00.000Z', byUid: byUid || 'u-admin' });
+  eq(J(x.normalizeClosedGone([T(2026, 'arc-26'), T(2026, 'arc-26', '2025-11-01T10:00:00.000Z'), { year: 1850, archiveId: 'x' }, { year: 'x' }, null, 'junk', [], T(2025, 'arc-25')])),
     [T(2025, 'arc-25'), T(2026, 'arc-26')], 'junk and years out of range dropped; one per (year, archive), the earlier at');
   eq(J(x.normalizeClosedGone(null)), [], 'not a list');
-  const big = J(x.normalizeClosedGone(Array.from({ length: 300 }, (_, i) => T(2000 + (i % 100), 'a' + i, '2027-01-01T00:00:' + String(i % 60).padStart(2, '0') + '.000Z'))));
-  eq(big.length, 200, 'the newest 200');
-  const long = J(x.normalizeClosedGone([{ year: 2026, archiveId: 'y'.repeat(500), at: 'z'.repeat(500), byUid: 'u'.repeat(500), evil: 1 }]))[0];
-  eq([long.archiveId.length, long.at.length, long.byUid.length, 'evil' in long], [120, 40, 120, false], 'strings cut, unknown keys dropped');
+  const big = J(x.normalizeClosedGone(Array.from({ length: 300 }, (_, i) => T(2000 + (i % 100), 'a' + i, '2025-01-01T00:00:' + String(i % 60).padStart(2, '0') + '.000Z'))));
+  eq(big.length, 50, 'the newest 50');
+  const long = J(x.normalizeClosedGone([{ year: 2026, archiveId: 'y'.repeat(500), at: '2025-10-01T10:00:00.000Z', byUid: 'u'.repeat(500), evil: 1 }]))[0];
+  eq([long.archiveId.length, long.at.length, long.byUid.length, 'evil' in long], [40, 24, 120, false], 'strings cut, unknown keys dropped');
   // A merge never takes one off, and the same either way round.
   const a = [T(2025, 'arc-25')], b = [T(2026, 'arc-26')];
   eq(J(x.mergeClosedGone(a, b)), J(x.mergeClosedGone(b, a)), 'commutative');
@@ -27630,12 +27630,41 @@ test('C8 re-check M-B: a device that still holds a year an admin deleted does no
   a.hear();
   eq(a.get('[state.closedBooks.map(function (x) { return x.year; }), state.closedGone.length]'), [[2024], 1], 'A after');
 });
+test('C8 re-check finding 2: a tombstone needs a real date no more than a day ahead of this device, is capped at 50, cuts the archive id at 40, and a deletion made elsewhere is said', () => {
+  const x = sandbox(C8_SYNC_FNS), NOW = Date.parse('2026-09-30T12:00:00.000Z');
+  const T = (year, archiveId, at) => ({ year, archiveId, at, byUid: 'u-admin' });
+  const keep = (list) => J(x.normalizeClosedGone(list, NOW)).map((t) => t.archiveId);
+  eq(keep([T(2026, 'now', '2026-09-30T12:00:00.000Z'), T(2026, 'tomorrow', '2026-10-01T11:00:00.000Z'), T(2026, 'later', '2026-10-01T13:00:00.000Z'), T(2026, 'far', '2999-01-01T00:00:00.000Z'),
+    T(2026, 'junk', 'zzzz'), T(2026, 'blank', ''), T(2026, 'num', 5)]).sort(), ['now', 'tomorrow'], 'a day ahead is allowed; more, a non-date, or none is dropped');
+  const many = Array.from({ length: 60 }, (_, i) => T(2000 + i, 'id' + i, '2026-01-' + String(1 + (i % 28)).padStart(2, '0') + 'T00:00:00.000Z'));
+  eq(J(x.normalizeClosedGone(many, NOW)).length, 50, 'at most 50');
+  const long = 'k'.repeat(60), cut = J(x.normalizeClosedGone([T(2026, long, '2026-01-01T00:00:00.000Z')], NOW))[0];
+  eq([cut.archiveId.length, x.closedGoneHas([cut], 2026, long)], [40, true], 'an id is cut to 40 and still matches the long one');
+  const gone = [T(2025, 'arc-25', '2026-01-01T00:00:00.000Z'), T(2024, 'arc-24', '2026-01-02T00:00:00.000Z')];
+  const books = [C8_BOOK_OF(2025, 'arc-25'), C8_BOOK_OF(2023, 'arc-23')], arcs = [{ id: 'arc-24', kind: 'season', year: 2024 }, { id: 'arc-24', kind: 'trails-end', year: 2024 }];
+  eq(J(x.closedGoneDrops(books, arcs, [], gone)).map((d) => d.kind + ':' + d.year + ':' + d.id).sort(), ['bookgone:2024:arc-24', 'bookgone:2025:arc-25'], 'a held book and a held season archive');
+  eq(J(x.closedGoneDrops(books, arcs, [gone[0]], gone)).map((d) => d.year), [2024], 'one this device already had is not said again');
+  eq(J(x.closedGoneDrops([C8_BOOK_OF(2023, 'arc-23')], [{ id: 'arc-24', kind: 'trails-end', year: 2024 }], [], gone)), [], 'nothing held, nothing said (a Trail’s End import is never named)');
+  const w = sandbox(['noteLedgerLookFromMerge', 'ledgerClosedBookLook', 'closedYearText', 'arrOf', 'fmtDateShort']);
+  vm.runInContext("var sync = {}; function render() {}; noteLedgerLookFromMerge([{ kind: 'bookgone', year: 2025, id: 'arc-25', at: '2026-10-01T10:00:00.000Z', byUid: 'u' }, { kind: 'bookgone', year: 2025, id: 'arc-25', at: '2026-10-01T10:00:00.000Z', byUid: 'u' }]);", w);
+  eq(J(w.sync.lookNotes), ['The closed 2025–26 year was permanently deleted on Oct 1 by a pack admin on another device, so this device’s copy of it was removed as well. If you did not expect that, ask the pack admins.'], 'said once, in plain words');
+  ok(/closedGoneDrops\(goneBooks, goneArc, goneWas, state\.closedGone\)\.forEach/.test(SCRIPT) && /closedGoneDrops\(pushBooks, pushArc, pushGoneWas, state\.closedGone\)\.forEach/.test(SCRIPT) && /closedGoneDrops\(state\.closedBooks, state\.archives, state\.closedGone, ns\.closedGone\)/.test(SCRIPT), 'the merge, the push and taking a copy each say it');
+});
+test('C8 re-check finding 2: a stale device that is told of a deletion says so on its card', () => {
+  const put = (books) => 'state.closedBooks = ' + JSON.stringify(books) + '; commit()';
+  const { a, b } = c3FsPair();
+  b.run(put([C8_BOOK_OF(2024, 'arc-24'), C8_BOOK_OF(2025, 'arc-25')])); b.push(); a.hear();
+  a.run("closedGoneAdd(2025, 'arc-25'); state.closedBooks = state.closedBooks.filter(function (x) { return x.year !== 2025; }); commit()"); a.push();
+  b.run('sync.lookNotes = []; sync.lookSeen = {}; commit()'); b.hear(); b.push();
+  eq(b.get('(sync.lookNotes || []).filter(function (n) { return /permanently deleted/.test(n); }).length'), 1, 'B was told, once');
+});
+
 test('C8 re-check M-B: the admin paths write the tombstone (deleting a closed year, keeping this device’s copy), a restore keeps this device’s, and a plain save takes the record’s in', () => {
   ok(/closedGoneAdd\(dsSj\.year, dsSj\.archiveId\);/.test(SCRIPT), 'del-season-confirm writes it');
   ok(/if \(canReopenStatement\(\)\) try \{\s*var keptParsed[\s\S]{0,700}keptLost\.forEach\(function \(b\) \{ closedGoneAdd\(b\.year, b\.archiveId\); \}\)/.test(SCRIPT), 'keeping this device’s copy writes it, an admin’s only');
   ok(/state\.closedGone = mergeClosedGone\(ciGone, state\.closedGone\);/.test(SCRIPT) && /closedGoneArchives\(arrOf\(state\.archives\)\.filter/.test(SCRIPT), 'a restore keeps this device’s tombstones and drops what they name');
-  ok(/if \(!clobbered && remoteParsed\) \{\s*state\.closedGone = mergeClosedGone\(state\.closedGone, remoteParsed\.closedGone\);/.test(SCRIPT), 'a save that is not a merge takes the record’s tombstones in, whoever writes');
-  ok(/state\.closedGone = mergeClosedGone\(state\.closedGone, remote\.closedGone\);\s*\n\s*state\.closedBooks = mergeClosedBooks\(/.test(SCRIPT), 'the merge unions them before the books');
+  ok(/if \(!clobbered && remoteParsed\) \{\s*var pushGoneWas[^\n]*\n\s*state\.closedGone = mergeClosedGone\(state\.closedGone, remoteParsed\.closedGone\);/.test(SCRIPT), 'a save that is not a merge takes the record’s tombstones in, whoever writes');
+  ok(/state\.closedGone = mergeClosedGone\(state\.closedGone, remote\.closedGone\);\s*\n[^\n]*closedGoneDrops[^\n]*\n\s*state\.closedBooks = mergeClosedBooks\(/.test(SCRIPT), 'the merge unions them before the books');
   // Nothing else writes the list: the only assignments are the union, the merge, and normalize.
   const writers = SCRIPT.split('\n').filter((l) => /closedGone\s*=[^=]/.test(l) && !/^\s*\/\//.test(l)).length;
   eq(writers, 5, 'normalizeState, closedGoneAdd, the merge, the push’s union, and the restore');

@@ -521,8 +521,13 @@ totals and family balances, and the year's entries live in `state.closedBooks`.*
   date must be after the cutoff. (Forged events in a change history are otherwise accepted: S42 and this rule
   are what bound them.)
   S47 removing a season archive, or re-adding one whose id was `unclose`d or tombstoned in `closedGone`, needs an
-  admin and an `unclose` event with a reason; a stale re-add is refused or dropped. `closedGone` is only
-  added to by an admin's save and never shortened except by the page's own 200-newest cap.
+  admin and an `unclose` event with a reason; a stale re-add is refused or dropped. (Revised by the second
+  re-check of C8.) `closedGone` gains an entry only in an admin save that also writes an `unclose` event for that
+  year with a reason; an entry is immutable and never removed; at most 1 added per save and at most 50 in all
+  (the page keeps the newest 50, cuts an `archiveId` to 40 characters, and drops an `at` that is not a date or
+  is more than a day ahead of the device's clock: the server uses ITS clock); and a tombstoned archive or
+  book cannot be re-added. The page also says on "The ledger needs a look" (`bookgone`) whenever a merge or
+  taking a copy drops a held book or archive because of a tombstone this device did not have.
   S48 `co-charge-Y-key` and `co-credit-Y-key` rows are written or changed only in a save that also writes the
   `close` event for Y, and their amount equals the figure recomputed from the closed book and the charges.
 
