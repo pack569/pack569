@@ -27873,6 +27873,45 @@ test('C8 re-check F1: a Jun 28 check ticked on a Jul 25 statement, closed out in
   ok(/statementReopenNote\(st, state\.statements, statementClosedCount\(st, state\.closedBooks\)\)/.test(SCRIPT) && /state\.book, ciOff, closedBookRows\(state\.closedBooks\)\)/.test(SCRIPT), 'the reopen form and the restore read the closed books');
 });
 
+/* F2: the season sheet's money figures are the year's own, through the cutoff. */
+// Hand-worked: one budget line, "Camp", planned $300.00 flat. The year's camp cost is $200.00 on Oct 20 2026; a $300.00 camp deposit for NEXT year is paid Jul 10 2027
+// and a $40.00 supply bill Aug 5. The year is closed out in September: the sheet's Spent is $200.00, not $540.00; the new year's Camp line starts from $200.00
+// (last year's actual), and the $300.00 and $40.00 are in the new book, open, on the new line.
+const F2_FNS = [...new Set([...NORMALIZE_FNS, ...declClosure(['buildSeasonArchive', 'rolloverYear', 'withClosedYearLedger'], ['state', 'ui', 'sync', 'render', 'save', 'showToast', 'commit', 'scheduleSyncPush'])])];
+const c8f2Rec = () => c8wRec({
+  budget: { programYear: 2026, activities: [], expenses: [{ id: 'C1', name: 'Camp', basis: 'flat', flatCents: 30000, category: 'camp' }] },
+  book: { openingCents: 100000, openingDate: '2026-07-01', reconciledThrough: '2027-06-30', statementDate: '', statementCents: 0, year: 2026 },
+  ledger: [c8row('camp1', '2026-10-20', 20000, 'out', { description: 'Camp fees', lineId: 'C1' }),
+    c8row('camp2', '2027-07-10', 30000, 'out', { description: 'Camp deposit for next year', lineId: 'C1' }),
+    c8row('supp', '2027-08-05', 4000, 'out', { description: 'Supplies', lineId: 'C1' })] });
+test('C8 re-check F2: the season sheet’s Spent, line actuals and the next year’s seed come from the year’s closed rows, not July and August entries', () => {
+  const ctx = sandbox(F2_FNS);
+  vm.runInContext(`var sync = { user: null }; var ui = {}; var state = normalizeState(${JSON.stringify(c8f2Rec())}); var before = JSON.stringify(state.ledger);
+    var arc = buildSeasonArchive(); var same = JSON.stringify(state.ledger) === before; var done = rolloverYear();`, ctx);
+  const arc = c8wGet(ctx, 'arc'), st = c8wGet(ctx, 'state');
+  eq(c8wGet(ctx, 'same'), true, 'building the sheet leaves the ledger as it was');
+  eq([arc.budget.actualCents, arc.budget.expenses.map((x) => [x.name, x.actualCents])], [20000, [['Camp', 20000]]], 'Spent is the year’s $200.00, and the Camp line’s actual is too (not $540.00)');
+  eq(arc.ledger.totals.entries, 1, 'and the ledger totals, as before, are the year’s one entry');
+  eq(st.budget.expenses[0].flatCents, 20000, 'next year’s Camp line is seeded from last year’s actual, $200.00 (not the whole ledger’s $540.00)');
+  eq(st.ledger.map((e) => [e.id, e.amountCents]), [['camp2', 30000], ['supp', 4000]], 'the July deposit and August bill are in the new book, open');
+  ok(st.ledger.every((e) => e.lineId === st.budget.expenses[0].id), 'on the new year’s Camp line');
+  // The preview reads the same figures (the close-out screen shows what the sheet will say).
+  ok(/var coBud = withClosedYearLedger\(year, computeBudget\);/.test(slice('renderCloseoutOverlay')), 'the preview’s own figure');
+  ok(/var seedRows = closeoutSplit\(state\.ledger, closingCutoff\)\.closed;[\s\S]{0,200}lineActualCents\(seedRows, x\.id\)/.test(slice('rolloverYear')), 'the seed');
+  // A close-out held in a copy (the preview’s trial) leaves the live ledger whole as well.
+  eq(c8wGet(ctx, 'state.ledger.length'), 2, 'control: rollover cleared the closed year’s rows from the live book');
+});
+test('C8 re-check F2: the year’s dues are counted through the cutoff too, and the whole ledger is put back after', () => {
+  const ctx = sandbox(F2_FNS);
+  const rec = c8wRec({ scouts: [{ id: 's1', name: 'Ada Example', den: 'Wolf', familyId: 's1' }], charges: [c8wCharge('k1', 's1', 6000)],
+    ledger: [c8wPay('p1', '2027-05-02', 2000, 's1'), c8wPay('p2', '2027-07-09', 1500, 's1')] });
+  vm.runInContext(`var sync = { user: null }; var ui = {}; var state = normalizeState(${JSON.stringify(rec)}); var n = state.ledger.length; var arc = buildSeasonArchive(); var after = state.ledger.length;
+    var seen = (function () { try { withClosedYearLedger(2026, function () { throw new Error('x'); }); } catch (e) { return state.ledger.length; } })();`, ctx);
+  const arc = c8wGet(ctx, 'arc');
+  eq([arc.dues.collectedCents, arc.dues.outstandingCents], [2000, 4000], 'collected through Jun 30 only: $20.00 of $60.00 (the July payment pays the carried balance, in the new book)');
+  eq(c8wGet(ctx, '[n, after, seen]'), [2, 2, 2], 'the ledger is put back, even when the work throws');
+});
+
 /* ---------------- report ---------------- */
 // The API tests are async; they run here, one at a time, each on its own database.
 for (const [name, fn] of asyncTests) {

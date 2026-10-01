@@ -30690,12 +30690,22 @@
       return { name: nameOf(a), owedCents: a.owed, paidCents: a.paid, balanceCents: a.balance };
     });
   }
+  // Treasurer's review of C8-5..C8-10 (F2) — the year's money figures are the year's: what is dated on or before its cutoff (closeoutSplit), not the whole ledger
+  // as it stands the day the year is closed out. A close-out in September has July and August entries in the ledger, which belong to the new year's book; read
+  // whole, a July camp deposit was in the old year's "Spent" and open again on the new year's line. `fn` is run with state.ledger the year's closed rows,
+  // then put back (in a finally). Returns what `fn` returns.
+  function withClosedYearLedger(year, fn) {
+    var was = state.ledger;
+    state.ledger = closeoutSplit(was, closeoutCutoff(year)).closed;
+    try { return fn(); } finally { state.ledger = was; }
+  }
   function buildSeasonArchive() {
     var pack = computePackTotals();
-    var bud = computeBudget();
+    var year = state.budget.programYear;
+    var closedRows = closeoutSplit(state.ledger, closeoutCutoff(year)).closed;   // F2
+    var bud = withClosedYearLedger(year, computeBudget);
     var carry = closingCarryNow(bud);   // M6 — see budget.carriedCents below
     var totals = computeScoutTotals();
-    var year = state.budget.programYear;
     // Active + credited-archived scouts (same roster rule as the Totals boards), desc by combined.
     var scoutRows = rankBy(visibleScoutRows(totals), function (r) { return r.t.combined; }).map(function (r) {
       return { name: r.name, den: r.den || '', salesCents: r.t.sales, donCents: r.t.don, combinedCents: r.t.combined };
@@ -30715,7 +30725,7 @@
       var n = attTotals(state.attendance[m.id]).scouts;
       if (n > 0 && rosterN > 0) { attSum += Math.min(100, Math.round(n / rosterN * 100)); attN += 1; }
     });
-    var fees = feesTotals();
+    var fees = withClosedYearLedger(year, feesTotals);   // F2: the dues collected through the cutoff
     // When the Pack tab's "Advance dens" already ran for this year, the ranks this season was
     // worked in are gone from the roster and their marks were cleared with the move — so the
     // summary taken at that moment IS this season's advancement. Otherwise read it live.
@@ -30749,10 +30759,10 @@
         // instead of estimate × roster. The archived shape is unchanged, so every past
         // season still reads exactly as it did; only the source of the number is better.
         activities: state.budget.activities.map(function (x) {
-          return { name: x.name || '', slot: lineSlot(x), estCents: linePlanned(x), actualCents: lineActual(x.id) };
+          return { name: x.name || '', slot: lineSlot(x), estCents: linePlanned(x), actualCents: lineActualCents(closedRows, x.id) };
         }),
         expenses: state.budget.expenses.map(function (x) {
-          return { name: x.name || '', estCents: linePlanned(x), actualCents: lineActual(x.id), perScout: linePerHead(x) };
+          return { name: x.name || '', estCents: linePlanned(x), actualCents: lineActualCents(closedRows, x.id), perScout: linePerHead(x) };
         })
       },
       events: {
@@ -31074,7 +31084,7 @@
   // Roll the working state into next year. KEPT: packName, leaders, archives,
   // reward-tier config, commission rate + cash routing, product catalog, sync/rev.
   function rolloverYear() {
-    var bud = computeBudget(); // BEFORE any mutation — the true ending balance carries over (even a shortfall)
+    var bud = withClosedYearLedger(state.budget.programYear, computeBudget); // BEFORE any mutation — the true ending balance carries over (even a shortfall); F2: the year's own rows
     // Phase 0/1 — the closing BANK balance, captured before the ledger is cleared. This is
     // the reconciled cash position, not a projection, and it becomes next year's opening
     // figure so the new book starts from a number that was checked against a statement.
@@ -31111,9 +31121,11 @@
     //
     // Read before programYear moves, because lineActual is keyed on this year's line ids.
     var seedFlat = {};
+    // F2 — and from the year's own rows: a July deposit is next year's, and would otherwise be in this year's total as well as open on next year's line.
+    var seedRows = closeoutSplit(state.ledger, closingCutoff).closed;
     b.activities.concat(b.expenses).forEach(function (x) {
       if (linePerHead(x)) return;
-      var act = lineActual(x.id);
+      var act = lineActualCents(seedRows, x.id);
       seedFlat[x.id] = act > 0 ? act : (x.flatCents || 0);
     });
     // Phase 2 — the calendar entry each activity was attached to, captured before events[]
@@ -31934,7 +31946,7 @@
     // is. This said "the starting balance becomes this year's ending balance" and showed the
     // projection, when since M2 a book with an opening date carries its bank balance instead.
     // Same inputs as rolloverYear's closingBankKnown / closingCarryover, read the same way.
-    var coBud = computeBudget();
+    var coBud = withClosedYearLedger(year, computeBudget);   // F2: the year's own rows, as the archive reads them
     var coBankKnown = state.ledger.length > 0 && !!state.book.openingDate;
     var coCarry = closingCarryNow(coBud).cents;
     var coCarryLine = coBankKnown
