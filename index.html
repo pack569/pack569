@@ -895,6 +895,17 @@
   .sr-attest { display: flex; align-items: flex-start; gap: 10px; font-size: 0.86rem; line-height: 1.35; }
   .sr-attest input[type="checkbox"] { width: 20px; height: 20px; min-height: 20px; padding: 0; margin: 1px 0 0; flex: 0 0 auto; accent-color: var(--accent); }
   .sr-problem { color: var(--bad); margin: 0; font-weight: 600; }
+  /* S-3 — the leaders' review card, above a block's money fields, and the storefront list's banner. */
+  .sr-review { margin-top: 12px; padding: 12px; border-radius: 10px; border: 2px solid var(--accent); background: var(--accent-soft); }
+  .sr-amounts { margin: 6px 0; font-size: 0.95rem; }
+  .sr-confirm { margin-top: 6px; }
+  .sr-cmp { width: 100%; font-size: 0.86rem; }
+  .sr-cmp th, .sr-cmp td { padding: 3px 6px; }
+  .sr-return { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+  .sr-return textarea { width: 100%; }
+  .sr-banner-row { padding: 6px 0; gap: 8px; }
+  .sr-banner-row + .sr-banner-row { border-top: 1px solid var(--line-soft); }
+  .sr-badge { background: var(--accent); color: #fff; font-size: 0.7rem; vertical-align: middle; }
   /* A phone cannot hold a 17-character time range and two full names on one line, and the
      wrapped two-column form reads as a mistake — a phantom column with nothing beside it. So
      below 520px the shift stacks on purpose: time as a small label, names under it. */
@@ -4856,6 +4867,16 @@
           // Wave D2 — the two adults who counted the cash. Free text; leaders only.
           b.cashCountedBy = typeof b.cashCountedBy === 'string' ? b.cashCountedBy : '';
           b.cashVerifiedBy = typeof b.cashVerifiedBy === 'string' ? b.cashVerifiedBy : '';
+          // S-3 (2026-10-01) — a family's accepted shift report: its id and sender, the accept
+          // still being signed off on the server (reportPending), and a report sent back after it
+          // was accepted (reportReturned). Shape-checked; anything else is dropped.
+          if (typeof b.reportId !== 'string' || !b.reportId) { delete b.reportId; delete b.reportFrom; }
+          else b.reportFrom = typeof b.reportFrom === 'string' ? b.reportFrom : '';
+          var rp = b.reportPending;
+          if (!rp || typeof rp !== 'object' || typeof rp.by !== 'string' || !Number.isInteger(rp.te) || !Number.isInteger(rp.cash) ||
+            !rp.was || typeof rp.was !== 'object' || !b.reportId) delete b.reportPending;
+          if (!b.reportReturned || typeof b.reportReturned !== 'object') delete b.reportReturned;
+          else b.reportReturned = { note: typeof b.reportReturned.note === 'string' ? b.reportReturned.note : '' };
         });
         // Wave 22 — recorded weather, shape-checked here and nowhere else. A record whose tag
         // isn't one of the four is DROPPED rather than kept as a broken half-value:
@@ -13167,6 +13188,10 @@
     // A family's shift reports and an open shift-totals form belong to one account in one pack.
     sync.shiftReports = null;
     ui.shiftReport = null;
+    sync.srOut = null;
+    sync.srRefused = null;
+    ui.srConfirm = null;
+    ui.srReturn = null;
     sync.feed = sync.unsub ? sync.feed : null;
     if (sync.invitesUnsub) { try { sync.invitesUnsub(); } catch (e) { /* already gone */ } sync.invitesUnsub = null; }
     sync.invites = [];
@@ -14020,6 +14045,9 @@
         // onRemoteSnap would read the empty pack as a first answer and seed it again.
         if (sync.notice) return;
         onRemoteSnap(rec, meta);
+        // S-3 — the pack record answered (the page's load, or a change): read the families' shift
+        // reports again too. API only, and leaders here (shiftReportsOn).
+        loadShiftReports();
       },
       function (err) { if (sync.session === mine) syncFail(err); });
   }
@@ -17463,6 +17491,8 @@
         else if (sync.dirty) scheduleSyncPush();
         save(); // no re-render needed — nothing visible changed
       }
+      // S-3 — an accepted shift report whose block this save carried is signed off now.
+      shiftReportsAfterPush();
       // Treasurer sign-off on option B (extra) — the merge brought "The ledger needs a look" on. Not
       // when a later copy was taken instead: adoptRemote asked it of that.
       if (res.clobbered && !(later && !editedSince)) noteLedgerLookAfterSync(res.lookWas, true);
@@ -18365,6 +18395,7 @@
     ui.armed = null;
     ui.resetScroll = true;
     render();
+    if (w === 'popcorn') loadShiftReports();   // S-3: the storefronts' waiting shift reports
   }
   // Which workspaces carry one of this user's jobs. MARKING ONLY — never filters the strip.
   function myWorkspaceIds() {
@@ -19213,9 +19244,13 @@
   // Is the feature on for this person? The API backend, a Google account signed in, an approved
   // role, and a pack to send to. Pending and signed-out people never see it.
   function shiftReportsOn() {
-    return BACKEND === 'api' && !!sync.user && accountsInForce() && SHIFT_REPORT_ROLES.indexOf(sync.myRole) !== -1 &&
+    return shiftReportsOffered() && !!sync.user && accountsInForce() && SHIFT_REPORT_ROLES.indexOf(sync.myRole) !== -1 &&
       cloudReady() && typeof sync.backend.listShiftReports === 'function';
   }
+  // May this person SEND one from here? Not from the parent preview (S-3): a leader looking at what
+  // families see would otherwise file a real report by tapping it. The preview shows where each
+  // shift's totals stand, and no buttons.
+  function shiftReportCanSend() { return shiftReportsOn() && !previewingParent(); }
   // A typed dollar amount as whole cents, or NaN. "12", "12.5", "$1,234.56" are fine; a blank, a
   // negative or a third decimal place is not (the server takes whole cents only).
   function shiftReportCents(v) {
@@ -19274,6 +19309,7 @@
       sr.loading = false;
       if (sync.shiftReports !== sr) return;
       if (sr.again) { sr.again = false; loadShiftReports(); }
+      shiftReportsReconcile();   // S-3: finish or undo a leader's accept (leaders who edit only)
       render();
     });
   }
@@ -19303,12 +19339,15 @@
     if (!info.loaded) return '';
     var open = shiftReportOpenFor(e.date, today);
     var m = info.mine;
+    if (!shiftReportCanSend()) open = false;   // the parent preview: where it stands, and no buttons
     var ids = ' data-sf="' + esc(e.sfId) + '" data-block="' + esc(s.blockId) + '"';
     var figs = function (r) {
       return ' <span class="sr-figs">' + esc(fmt(r.teCents || 0)) + ' Trail’s End · ' + esc(fmt(r.cashCents || 0)) + ' cash</span>';
     };
     var h = '';
-    if (m && m.status === 'submitted') {
+    if (m && m.status === 'submitted' && !shiftReportCanSend()) {
+      h = '<span class="sr-msg">Sent — waiting for a leader</span>' + figs(m);
+    } else if (m && m.status === 'submitted') {
       var key = 'shift-report-withdraw:' + m.id, armed = ui.armed === key;
       h = '<span class="sr-msg">Sent — waiting for a leader</span>' + figs(m) +
         '<span class="sr-acts"><button type="button" class="btn small" data-act="shift-report-open"' + ids + ' data-rid="' + esc(m.id) + '">Edit</button>' +
@@ -19364,19 +19403,20 @@
     var sr = sync.shiftReports, d = ui.shiftReport;
     var h = '<div class="card no-print sr-card" id="srCard"><h2 class="section display">Storefront shift totals</h2>' +
       '<p class="small muted" style="margin:0 0 6px">Worked a popcorn storefront shift? Send its totals before you leave the store.</p>';
+    if (!shiftReportCanSend()) h += '<p class="small muted" style="margin:0 0 6px"><strong>Preview:</strong> families send their totals here. You can’t send them from the preview.</p>';
     if (sr && sr.error) h += '<p class="small sr-problem" role="alert">' + esc(sr.error) + '</p>';
     else if (!sr || !sr.loaded) h += '<p class="small muted" style="margin:0">Checking which shifts have totals…</p>';
     rows.forEach(function (r) {
       h += '<div class="sr-row"><div class="sr-shift"><strong>' + esc(fmtDate(String(r.e.date))) + '</strong> · ' +
         esc(String(r.e.title || 'Storefront')) + ' · ' + esc(String(r.s.when || '')) + '</div>';
-      h += d && d.sfId === r.e.sfId && d.blockId === r.s.blockId ? parentShiftReportForm(r.e, r.s) : parentShiftReportStatus(r.e, r.s, today);
+      h += d && shiftReportCanSend() && d.sfId === r.e.sfId && d.blockId === r.s.blockId ? parentShiftReportForm(r.e, r.s) : parentShiftReportStatus(r.e, r.s, today);
       h += '</div>';
     });
     return h + '</div>';
   }
   // The buttons: open the form (new, or editing your own), close it, withdraw (two taps).
   function shiftReportAct(act, el) {
-    if (!shiftReportsOn()) return;
+    if (!shiftReportCanSend()) return;
     var ds = (el && el.dataset) || {};
     if (act === 'shift-report-cancel') { ui.shiftReport = null; render(); return; }
     if (act === 'shift-report-open') {
@@ -19408,7 +19448,7 @@
   // The form sent: checked here first, in words, then POSTed (or PATCHed, editing your own).
   function shiftReportSubmit(f) {
     var d = ui.shiftReport;
-    if (!d || d.busy || !shiftReportsOn()) return;
+    if (!d || d.busy || !shiftReportCanSend()) return;
     var fd = new FormData(f);
     d.te = String(fd.get('te') || '');
     d.cash = String(fd.get('cash') || '');
@@ -20161,6 +20201,7 @@
     // Wave 19(15b) — always visible at the top of the list (empty state included).
     var h = '<div class="row no-print" style="margin:0 0 12px">' +
       '<button type="button" class="btn" data-act="sf-glance-open">Schedule at a glance</button></div>';
+    h += renderShiftReportsBanner();   // S-3: families' shift totals waiting for a leader
     if (canEdit()) {
     h += '<div class="card"><h2 class="section display">New storefront</h2>' +
       '<form data-form="add-storefront" class="row">' +
@@ -20293,9 +20334,12 @@
     var aria = sf.name + ', ' + fmtDate(sf.date) + ', ' +
       (cov.total ? cov.covered + ' of ' + cov.total + ' shift' + (cov.total === 1 ? '' : 's') + ' covered' : 'no shifts added yet') +
       (t.combined ? ', ' + fmt(t.combined) + ' recorded' : '');
+    var srN = srWaitingOn(sf);   // S-3: families' reports waiting on this storefront
+    if (srN) aria += ', ' + srN + ' shift report' + (srN === 1 ? '' : 's') + ' to review';
     return '<div class="list-row sf-row" data-act="open-storefront" data-id="' + sf.id +
       '" role="button" tabindex="0" aria-label="' + esc(aria) + '">' +
-      '<div class="sf-main"><div class="lr-name">' + esc(sf.name) + '</div>' +
+      '<div class="sf-main"><div class="lr-name">' + esc(sf.name) +
+      (srN ? ' <span class="pill sr-badge">' + srN + ' to review</span>' : '') + '</div>' +
       '<div class="small muted">' + esc(fmtDate(sf.date)) + ' · ' + sf.blocks.length + ' block' + (sf.blocks.length === 1 ? '' : 's') +
       ' · ' + covSeg +
       (function () { var wc = weatherChip(sf); return wc ? ' · ' + wc : ''; })() +
@@ -21376,6 +21420,8 @@
   var STOREFRONT_SAFETY = 'Buddy system \u00b7 a parent with every scout, an adult at the table at all times \u00b7 scouts stay at the table and never approach cars \u00b7 two adults count the cash before it leaves the table';
   // Printed after each shift's cash count: the family can move its cash into Trail's End credit.
   var STOREFRONT_CASH_TO_CREDIT = 'Parents can convert cash to credit in the Trail\u2019s End app at the end of the shift.';
+  // S-3 (2026-10-01) — on the day sheet under each shift, where families send their totals (API only).
+  var DAY_SHEET_REPORT = 'Parents: enter these totals on pack569.com before you leave.';
   var WAGON_SAFETY = 'Door to door: never go inside a customer\u2019s home, and no door-to-door alone.';
   // What is wrong with a block's cash count, once the storefront's day has passed: 'blank' when
   // either adult is missing, 'same' when one person is both; '' when it is fine, when the day has
@@ -21434,6 +21480,12 @@
     }
     h += '</div>';
 
+    // S-3 (2026-10-01) — a family's report of this block's totals, waiting for a leader: above the
+    // money fields it would fill in.
+    srWaiting().forEach(function (r) {
+      if (leaderReportsOn() && r.sfId === sf.id && r.blockId === b.id) h += renderShiftReportCard(r, { sf: sf, b: b });
+    });
+
     // Wave 21 — the "Adults on this block" roster (Wave 16) is gone: a parent comes with
     // each scout, so signing up a scout IS signing up an adult.
 
@@ -21465,6 +21517,7 @@
     var cashChk = blockCashCheck(b, sf.date, todayISO());
     if (cashChk === 'blank') h += '<p class="warn small" style="margin:8px 0 0">Name both adults who counted this block\u2019s cash \u2014 one counts, a second checks.</p>';
     else if (cashChk === 'same') h += '<p class="warn small" style="margin:8px 0 0">The same person counted and verified this cash. A second adult has to check it.</p>';
+    h += renderBlockReportLine(b);   // S-3: where the figures came from, when a report put them there
     // Y1 — whether the named adults are two registered adults 21+. Leaders only.
     var bSup = blockSupervision(b);
     if (bSup) {
@@ -21487,6 +21540,320 @@
     }
     h += '</div>';
     return h;
+  }
+
+  /* ----- Shift reports, the leaders' side (S-3, 2026-10-01) -----
+     A family's report of a shift's totals (the parent side is with parentShiftLines) waits here
+     for an admin or editor to accept it as the SECOND sign-off on the cash. Accepting writes the
+     report's figures onto the block, so the block's scouts get their credit through blockShares
+     exactly as for figures typed in by hand.
+     THE ACCEPT, IN ORDER, AND WHY: the block is the pack's record of the money, and the report is
+     the server's record of who signed for it. They are two writes to two places, so:
+       1. the block gets the figures, cashCountedBy (the family's name), cashVerifiedBy (this
+          leader's, as ledgerActor names them: never an email), reportId, reportFrom, and a
+          `reportPending` marker holding what the block said before ({ by, te, cash, was });
+       2. the pack record is saved, the normal CAS save;
+       3. once the server's copy holds the block (sync.remoteRec), the report is PATCHed to
+          accepted with exactly the figures shown, and the marker is cleared.
+     Steps 3 on is shiftReportsReconcile, run after every save lands and every time the reports
+     are read, so an accept the page lost (a closed tab, no signal) is finished on the next load.
+     Only the account that accepted (`by`) finishes or undoes it: another leader's device sees the
+     marker in the merged record and leaves it alone. A refusal (the family edited or withdrew
+     it first, a leader sent it back, the same person) puts the block back as it was, where the
+     block still holds what the accept wrote; a hand edit since is kept. A server that cannot be
+     reached is not a refusal: the marker stays and it is tried again.
+     LEADERS ONLY. Viewers see the reports and no buttons; parents never reach any of this. API
+     only, as the parent side (shiftReportsOffered). */
+  function shiftReportsOffered() { return BACKEND === 'api'; }
+  // The leaders' side is on: the API, an approved leader, and not the parent preview.
+  function leaderReportsOn() {
+    return shiftReportsOn() && LEADER_ROLES.indexOf(sync.myRole) !== -1 && !parentMode();
+  }
+  // Who may accept or send back: the people who may write the pack record (the server's
+  // canReviewShiftReport). A viewer reads.
+  function canReviewReports() {
+    return leaderReportsOn() && (sync.myRole === 'admin' || sync.myRole === 'editor') && canEdit();
+  }
+  function srReports() {
+    var sr = sync.shiftReports;
+    return sr && sr.loaded ? arrOf(sr.reports) : [];
+  }
+  function srReport(rid) { return srReports().filter(function (r) { return r && r.id === rid; })[0] || null; }
+  // The reports waiting for a leader, oldest first (the order they came in).
+  function srWaiting() {
+    return srReports().filter(function (r) { return r && r.status === 'submitted'; })
+      .sort(function (a, b) { return (a.submittedAt || 0) - (b.submittedAt || 0); });
+  }
+  // The block a report is about, or null when it is gone (deleted, or rolled over with its season).
+  function srBlockOf(r) {
+    var sf = r && getStorefront(r.sfId);
+    var b = sf ? (sf.blocks || []).filter(function (x) { return x && x.id === r.blockId; })[0] : null;
+    return b ? { sf: sf, b: b } : null;
+  }
+  // When a report was sent, as a leader reads it: "Thu, Oct 1, 6:40 PM".
+  function srWhen(ms) {
+    if (!ms) return '';
+    var d = new Date(ms);
+    return fmtDate(d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate())) + ', ' +
+      d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  }
+  // Is my uid the one that sent it?
+  function srMine(r) { return !!(r && sync.user && r.submittedByUid && r.submittedByUid === sync.user.uid); }
+  // The figures on a block are "different" when the block holds money that is not the report's.
+  function srReplaces(b, r) {
+    var has = (b.salesCents || 0) + (b.donationsCents || 0) > 0;
+    return has && ((b.salesCents || 0) !== r.teCents || (b.donationsCents || 0) !== r.cashCents);
+  }
+  // What the server's refusal of an accept or a send-back means, said to a leader.
+  var LEADER_SR_SAY = {
+    'same-person': 'You sent this report, so a second adult has to accept it.',
+    'report-moved': 'The family changed or withdrew this report, or another leader dealt with it, before yours reached the server.',
+    'review-note': 'Say why you are sending it back.',
+    'not-found': 'This report is no longer on the server.'
+  };
+  function leaderSrMessage(err) {
+    var why = (err && err.reason) || (err && err.code) || '';
+    if (Object.prototype.hasOwnProperty.call(LEADER_SR_SAY, why)) return LEADER_SR_SAY[why];
+    if (err && err.code === 'permission-denied') return 'Your account can’t accept or send back shift reports.';
+    return String((err && err.message) || 'The pack’s server couldn’t do that.');
+  }
+  // A failure that is only "not now": the server was not reached. Anything else is an answer.
+  function srNotNow(err) {
+    var c = err && err.code;
+    return c === 'unavailable' || c === 'unauthenticated' || c === 'resource-exhausted';
+  }
+
+  // ---- Rendering ----
+  // The card for one waiting report, above the block's money fields (or, for a report whose
+  // block is gone, in the storefront list's banner). `blk` is { sf, b } or null.
+  function renderShiftReportCard(r, blk) {
+    var b = blk && blk.b;
+    var h = '<div class="sr-review" data-rid="' + esc(r.id) + '"><p class="eyebrow" style="margin:0 0 4px">Shift report from a family</p>' +
+      '<p class="small" style="margin:0"><strong>' + esc(r.submittedByName || 'A family') + '</strong> sent these totals' +
+      (r.submittedAt ? ' · ' + esc(srWhen(r.submittedAt)) : '') + (r.updatedAt && r.updatedAt !== r.submittedAt ? ' (changed since)' : '') + '</p>' +
+      '<p class="sr-amounts">Trail’s End <strong class="money">' + esc(fmt(r.teCents)) + '</strong> · Cash donations <strong class="money">' +
+      esc(fmt(r.cashCents)) + '</strong></p>' +
+      (r.note ? '<p class="small" style="margin:0 0 6px">“' + esc(r.note) + '”</p>' : '');
+    if (!blk) h += '<p class="small warn" style="margin:0 0 6px">This shift is no longer on the pack’s schedule. Send it back so the family knows.</p>';
+    var pending = b && b.reportPending && b.reportId === r.id;
+    if (pending) {
+      return h + '<p class="small muted" style="margin:0">Accepting: the block is saved first, then the report is signed off on the server.</p></div>';
+    }
+    if (!canReviewReports()) {
+      return h + '<p class="small muted" style="margin:0">An admin or editor accepts or sends back shift reports.</p></div>';
+    }
+    if (ui.srReturn === r.id) {
+      return h + '<form data-form="shift-report-return" class="sr-return" data-rid="' + esc(r.id) + '">' +
+        '<label class="fld">Why are you sending it back? The family sees this.<textarea name="reason" rows="2" maxlength="300" required></textarea></label>' +
+        '<div class="sr-acts"><button type="submit" class="btn">Send back</button>' +
+        '<button type="button" class="btn ghost" data-act="sr-cancel">Cancel</button></div></form></div>';
+    }
+    if (blk && ui.srConfirm === r.id) {
+      return h + '<div class="sr-confirm"><p class="small" style="margin:0 0 6px"><strong>This block already has figures.</strong></p>' +
+        '<table class="sr-cmp"><thead><tr><th></th><th class="num">Now</th><th class="num">From the report</th></tr></thead><tbody>' +
+        '<tr><td>Trail’s End</td><td class="num">' + esc(fmt(b.salesCents || 0)) + '</td><td class="num">' + esc(fmt(r.teCents)) + '</td></tr>' +
+        '<tr><td>Cash donations</td><td class="num">' + esc(fmt(b.donationsCents || 0)) + '</td><td class="num">' + esc(fmt(r.cashCents)) + '</td></tr>' +
+        '</tbody></table><p class="small" style="margin:6px 0">Accepting replaces the block’s figures, and the names on its cash count, with the report’s.</p>' +
+        '<div class="sr-acts"><button type="button" class="btn primary" data-act="sr-accept-confirm" data-rid="' + esc(r.id) + '">Replace and accept</button>' +
+        '<button type="button" class="btn ghost" data-act="sr-cancel">Cancel</button></div></div></div>';
+    }
+    h += '<div class="sr-acts">';
+    if (srMine(r)) h += '<span class="small warn" style="align-self:center">You sent this report, so a second adult has to accept it.</span>';
+    else if (blk) h += '<button type="button" class="btn primary" data-act="sr-accept" data-rid="' + esc(r.id) + '">Accept and sign as verifier</button>';
+    h += '<button type="button" class="btn" data-act="sr-return-open" data-rid="' + esc(r.id) + '">Send back</button></div>';
+    return h + '</div>';
+  }
+  // Under a block's cash count: where its figures came from, when a report put them there.
+  function renderBlockReportLine(b) {
+    if (b.reportPending && b.reportId) {
+      return '<p class="small muted" style="margin:8px 0 0">Accepting ' + esc(b.reportFrom || 'a family') + '’s report: waiting for the save to reach the server.</p>';
+    }
+    if (b.reportReturned) {
+      return '<p class="warn small" style="margin:8px 0 0">These figures came from a report a leader sent back' +
+        (b.reportReturned.note ? ' (“' + esc(b.reportReturned.note) + '”)' : '') +
+        '. They still count. Check them, and have a second adult verify them again.</p>';
+    }
+    if (!b.reportId) return '';
+    var h = '<div class="spread" style="margin-top:8px"><p class="small muted" style="margin:0">From ' + esc(b.reportFrom || 'a family') +
+      '’s report, verified by ' + esc(b.cashVerifiedBy || 'a leader') + '.</p>';
+    var r = srReport(b.reportId);
+    if (canReviewReports() && r && r.status === 'accepted') {
+      h += ui.srReturn === r.id ? '' : '<button type="button" class="btn small ghost" data-act="sr-return-open" data-rid="' + esc(r.id) + '">Send back</button>';
+    }
+    h += '</div>';
+    if (r && ui.srReturn === r.id && canReviewReports()) {
+      h += '<form data-form="shift-report-return" class="sr-return" data-rid="' + esc(r.id) + '">' +
+        '<label class="fld">Why are you sending it back? The family sees this. The figures stay on the block until someone corrects them.' +
+        '<textarea name="reason" rows="2" maxlength="300" required></textarea></label>' +
+        '<div class="sr-acts"><button type="submit" class="btn">Send back</button>' +
+        '<button type="button" class="btn ghost" data-act="sr-cancel">Cancel</button></div></form>';
+    }
+    return h;
+  }
+  // Top of the storefront list: the reports waiting, each with a way to it.
+  function renderShiftReportsBanner() {
+    if (!leaderReportsOn()) return '';
+    var waiting = srWaiting();
+    if (!waiting.length) return '';
+    var h = '<div class="card sr-banner"><h2 class="section display">Shift reports to review <span class="pill">' + waiting.length + '</span></h2>';
+    waiting.forEach(function (r) {
+      var blk = srBlockOf(r);
+      if (!blk) { h += renderShiftReportCard(r, null); return; }
+      var rng = fmtTimeRange(blk.b.start, blk.b.end) || blk.b.label;
+      h += '<div class="spread sr-banner-row"><p class="small" style="margin:0"><strong>' + esc(blk.sf.name || 'Storefront') + '</strong> · ' +
+        esc(fmtDate(blk.sf.date)) + ' · ' + esc(rng) + ' · from ' + esc(r.submittedByName || 'a family') + '</p>' +
+        '<button type="button" class="btn small" data-act="open-storefront" data-id="' + esc(blk.sf.id) + '">Review</button></div>';
+    });
+    return h + '</div>';
+  }
+  // How many reports wait on one storefront (the list's badge).
+  function srWaitingOn(sf) {
+    if (!leaderReportsOn()) return 0;
+    return srWaiting().filter(function (r) { return r.sfId === sf.id && !!srBlockOf(r); }).length;
+  }
+
+  // ---- The accept, and what finishes or undoes it ----
+  function acceptShiftReport(rid, confirmed) {
+    if (!canReviewReports()) return;
+    var r = srReport(rid), blk = srBlockOf(r);
+    if (!r || r.status !== 'submitted' || !blk) { showToast('That report isn’t waiting any more.'); loadShiftReports(); return; }
+    if (srMine(r)) { showToast(LEADER_SR_SAY['same-person']); return; }
+    var b = blk.b;
+    if (!confirmed && srReplaces(b, r)) { ui.srConfirm = rid; render(); return; }
+    ui.srConfirm = null;
+    var was = { salesCents: b.salesCents || 0, donationsCents: b.donationsCents || 0, cashCountedBy: b.cashCountedBy || '',
+      cashVerifiedBy: b.cashVerifiedBy || '', reportId: b.reportId || '', reportFrom: b.reportFrom || '' };
+    b.salesCents = r.teCents;
+    b.donationsCents = r.cashCents;
+    b.cashCountedBy = String(r.submittedByName || '');
+    b.cashVerifiedBy = ledgerActor();
+    b.reportId = r.id;
+    b.reportFrom = String(r.submittedByName || '');
+    delete b.reportReturned;
+    b.reportPending = { by: sync.user.uid, te: r.teCents, cash: r.cashCents, was: was };
+    if (!commit()) return;
+    showToast('Accepted. Saving the block, then signing the report off on the server.');
+    shiftReportsReconcile();
+  }
+  // Does the server's copy of the pack hold this block with this report on it, pending? Then the
+  // save in step 2 has landed, and the PATCH may go.
+  function srLanded(sfId, blockId, rid) {
+    var rec = sync.remoteRec;
+    if (!rec || typeof rec.json !== 'string' || rec.json.indexOf(rid) === -1) return false;
+    var d = null;
+    try { d = JSON.parse(rec.json); } catch (e) { return false; }
+    var sf = arrOf(d && d.storefronts).filter(function (x) { return x && x.id === sfId; })[0];
+    var b = sf ? arrOf(sf.blocks).filter(function (x) { return x && x.id === blockId; })[0] : null;
+    return !!(b && b.reportId === rid && b.reportPending);
+  }
+  // The accept is done: the marker goes, the figures stay.
+  function srSettle(b) {
+    delete b.reportPending;
+    commit();
+  }
+  // The accept is undone: the block goes back to what it held, where it still holds what the
+  // accept wrote. A figure or name changed by hand since is kept, and only the link goes.
+  function srRollback(b, msg) {
+    var p = b.reportPending, was = (p && p.was) || {};
+    if (p && (b.salesCents || 0) === p.te && (b.donationsCents || 0) === p.cash) {
+      b.salesCents = was.salesCents || 0;
+      b.donationsCents = was.donationsCents || 0;
+      if (b.cashCountedBy === b.reportFrom) b.cashCountedBy = was.cashCountedBy || '';
+      b.cashVerifiedBy = was.cashVerifiedBy || '';
+    }
+    if (was.reportId) { b.reportId = was.reportId; b.reportFrom = was.reportFrom || ''; }
+    else { delete b.reportId; delete b.reportFrom; }
+    delete b.reportPending;
+    if (commit()) showToast(msg + ' The block is back to what it was.');
+  }
+  // Finish or undo every accept this account started. Runs after a save lands and after the
+  // reports are read. Idempotent: an accept already done, or already out, is left alone.
+  function shiftReportsReconcile() {
+    if (!canReviewReports() || !sync.shiftReports || !sync.shiftReports.loaded) return;
+    var me = sync.user.uid;
+    sync.srOut = sync.srOut || {};
+    sync.srRefused = sync.srRefused || {};
+    state.storefronts.forEach(function (sf) {
+      (sf.blocks || []).forEach(function (b) {
+        var p = b.reportPending;
+        if (!p || p.by !== me || !b.reportId) return;
+        var rid = b.reportId, r = srReport(rid);
+        if (sync.srOut[rid]) return;
+        if (!r) { srRollback(b, LEADER_SR_SAY['not-found']); return; }
+        if (r.status === 'accepted') {
+          if (r.teCents === p.te && r.cashCents === p.cash) srSettle(b);
+          else srRollback(b, 'Another leader accepted different figures for this report.');
+          return;
+        }
+        if (r.status !== 'submitted') {
+          srRollback(b, r.status === 'withdrawn' ? 'The family withdrew this report.' : 'A leader sent this report back.');
+          return;
+        }
+        if (sync.srRefused[rid]) { var why = sync.srRefused[rid]; delete sync.srRefused[rid]; srRollback(b, why); return; }
+        if (r.teCents !== p.te || r.cashCents !== p.cash) { srRollback(b, 'The family changed their totals after you accepted them.'); return; }
+        if (!srLanded(sf.id, b.id, rid)) return;   // step 2 has not reached the server yet
+        sync.srOut[rid] = true;
+        sync.backend.patchShiftReport(sync.docId, rid, { action: 'accept', teCents: p.te, cashCents: p.cash }).then(function () {
+          delete sync.srOut[rid];
+          // Found again: a merge may have replaced the block object since.
+          var blk = srBlockOf({ sfId: sf.id, blockId: b.id });
+          if (blk && blk.b.reportPending && blk.b.reportId === rid) srSettle(blk.b);
+          loadShiftReports();
+        }, function (err) {
+          delete sync.srOut[rid];
+          if (srNotNow(err)) { showToast('Couldn’t reach the pack’s server. The accept will be tried again.'); return; }
+          sync.srRefused[rid] = leaderSrMessage(err);
+          loadShiftReports();   // read again: an accept that landed from another device settles instead
+        });
+      });
+    });
+  }
+  // A leader typed a figure over one a report put there: the figures are theirs now, so the
+  // "From …'s report" line goes. Not while an accept is still out (reconcile settles that, and
+  // keeps the hand edit), and the sent-back warning goes too: someone has looked at them.
+  function srHandEdited(b) {
+    if (b.reportPending) return;
+    delete b.reportId;
+    delete b.reportFrom;
+    delete b.reportReturned;
+  }
+  // After this device's save reaches the server (syncPush): step 3 of any accept waiting on it.
+  function shiftReportsAfterPush() {
+    if (sync.shiftReports && sync.shiftReports.loaded) shiftReportsReconcile();
+  }
+  // Send a report back, with the reason the family will see. An accepted one too: its figures
+  // stay on the block, which loses the link and its verifier and says they need a fresh check.
+  function returnShiftReport(rid, reason) {
+    if (!canReviewReports()) return;
+    var note = shiftReportNote(reason);
+    if (!note) { showToast(LEADER_SR_SAY['review-note']); return; }
+    var r = srReport(rid);
+    var wasAccepted = !!(r && r.status === 'accepted');
+    sync.backend.patchShiftReport(sync.docId, rid, { action: 'return', reviewNote: note.slice(0, SHIFT_REPORT_NOTE_MAX) }).then(function () {
+      ui.srReturn = null;
+      if (wasAccepted) {
+        state.storefronts.forEach(function (sf) {
+          (sf.blocks || []).forEach(function (b) {
+            if (b.reportId !== rid) return;
+            delete b.reportId;
+            delete b.reportFrom;
+            delete b.reportPending;
+            b.cashVerifiedBy = '';
+            b.reportReturned = { note: note.slice(0, SHIFT_REPORT_NOTE_MAX) };
+          });
+        });
+        commit();
+      }
+      showToast(wasAccepted ? 'Sent back. The figures stay on the block until someone corrects them.' : 'Sent back to the family.');
+    }, function (err) { showToast(leaderSrMessage(err)); }).then(loadShiftReports);
+  }
+  function leaderShiftReportAct(act, el) {
+    var rid = String((el && el.dataset && el.dataset.rid) || '');
+    if (act === 'sr-cancel') { ui.srConfirm = null; ui.srReturn = null; render(); return; }
+    if (!canReviewReports() || !rid) return;
+    if (act === 'sr-accept') { acceptShiftReport(rid, false); return; }
+    if (act === 'sr-accept-confirm') { acceptShiftReport(rid, true); return; }
+    if (act === 'sr-return-open') { ui.srReturn = rid; ui.srConfirm = null; render(); }
   }
 
   /* ----- Scouts tab ----- */
@@ -30435,6 +30802,7 @@
       lines.push('  Cash counted by ' + (sheetFirstName(b.cashCountedBy) || '______') +
         '   Verified by ' + (sheetFirstName(b.cashVerifiedBy) || '______'));
       lines.push('  ' + STOREFRONT_CASH_TO_CREDIT);
+      if (shiftReportsOffered()) lines.push('  ' + DAY_SHEET_REPORT);
     });
     lines.push('');
     lines.push('Two-deep leadership required at all times.');
@@ -30467,6 +30835,7 @@
         '<p class="small" style="margin:6px 0 0">Cash counted by ' + (esc(sheetFirstName(b.cashCountedBy)) || '________') +
         '&nbsp;&nbsp;&nbsp;Verified by ' + (esc(sheetFirstName(b.cashVerifiedBy)) || '________') + '</p>' +
         '<p class="small" style="margin:4px 0 0">' + esc(STOREFRONT_CASH_TO_CREDIT) + '</p>' +
+        (shiftReportsOffered() ? '<p class="small" style="margin:4px 0 0"><strong>' + esc(DAY_SHEET_REPORT) + '</strong></p>' : '') +
         '</div>';
     });
     h += '<p class="small" style="margin:6px 0 0"><strong>Two-deep leadership required at all times.</strong></p>' +
@@ -34320,6 +34689,8 @@
       return;
     }
     if (act === 'parent-preview-off') { ui.previewParent = false; ui.resetScroll = true; render(); return; }
+    // S-3 — a leader accepting or sending back a family's shift totals.
+    if (act === 'sr-accept' || act === 'sr-accept-confirm' || act === 'sr-return-open' || act === 'sr-cancel') { leaderShiftReportAct(act, el); return; }
     // A family's shift totals (2026-10-01): the server's table, never the pack record.
     if (act === 'shift-report-open' || act === 'shift-report-cancel' || act === 'shift-report-withdraw') { shiftReportAct(act, el); return; }
     // ---- Accounts ----
@@ -36777,10 +37148,10 @@
     }
     if (ch === 'b-start') { b.start = el.value.trim(); commit(); return; }
     if (ch === 'b-end') { b.end = el.value.trim(); commit(); return; }
-    if (ch === 'b-sales') { b.salesCents = toCents(el.value); commit(); return; }
-    if (ch === 'b-don') { b.donationsCents = toCents(el.value); commit(); return; }
+    if (ch === 'b-sales') { b.salesCents = toCents(el.value); srHandEdited(b); commit(); return; }
+    if (ch === 'b-don') { b.donationsCents = toCents(el.value); srHandEdited(b); commit(); return; }
     if (ch === 'b-cash-counted') { b.cashCountedBy = el.value; commit(); return; }
-    if (ch === 'b-cash-verified') { b.cashVerifiedBy = el.value; commit(); return; }
+    if (ch === 'b-cash-verified') { b.cashVerifiedBy = el.value; if (String(el.value).trim()) delete b.reportReturned; commit(); return; }
     if (ch === 'weight') {
       var a = b.assignments.find(function (x) { return x.scoutId === el.dataset.scout; });
       if (a) {
@@ -36808,6 +37179,8 @@
     if (packFormatHeld()) { refuseHeldAct(); return; }   // the reload gate: every form adds or changes
     var kind = f.dataset.form;
     var fd = new FormData(f);
+    // S-3 — a leader sending a family's shift report back, with the reason they will see.
+    if (kind === 'shift-report-return') { returnShiftReport(String(f.dataset.rid || ''), String(fd.get('reason') || '')); return; }
     // Phase 3b — forgiving a charge. It is NOT deleted: it stands, marked, with a reason
     // and who agreed it, so the pack can see what it chose to absorb.
     if (kind === 'charge-forgive') {

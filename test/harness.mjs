@@ -63,7 +63,14 @@ const codeOnly = (src) => src.split('\n').filter((l) => !/^\s*\/\//.test(l)).joi
 // Declarations inside the IIFE are indented exactly two spaces, so a declaration ends at the
 // first line that is `  }` / `  };` / `  ];` at that same indent. Good enough, and it fails
 // loudly (ReferenceError in the sandbox) rather than silently if the file's style drifts.
+// S-3 (2026-10-01) — the sync layer's two calls into shift reports (subscribeDoc, syncPush), as
+// no-ops: a sandbox of the sync code has no API backend to ask. In C8_SYNC_FNS, so every sync
+// sandbox gets them; a sandbox that slices the real ones after it (the api client) gets those.
+const SR_SYNC_STUBS = 'shiftReportsSyncStubs';
+const SR_SYNC_STUB_SRC = 'function loadShiftReports() { return Promise.resolve(null); }\nfunction shiftReportsAfterPush() {}\n' +
+  'function shiftReportsOffered() { return false; }\n';
 function slice(name) {
+  if (name === SR_SYNC_STUBS) return SR_SYNC_STUB_SRC;
   const re = new RegExp(`^  (?:function ${name}\\(|var ${name} =)`, 'm');
   const m = re.exec(SCRIPT);
   if (!m) throw new Error(`harness: could not find declaration "${name}" in index.html`);
@@ -1035,7 +1042,7 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
 // Phase 3, C8 (C8-4) — what the merge and the copy chooser read of closed books.
-const C8_SYNC_FNS = ['closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mergeClosedBooks', 'closedBookScouts', 'closedBookScoutIds', 'closedYearText', 'closedBooksKeptOverWhy', 'closeoutCarryDiffs',
+const C8_SYNC_FNS = [SR_SYNC_STUBS, 'closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mergeClosedBooks', 'closedBookScouts', 'closedBookScoutIds', 'closedYearText', 'closedBooksKeptOverWhy', 'closeoutCarryDiffs',
   'closedBooksUndone', 'closedBooksUndoneWhy', 'closedBooksDroppedWhy', 'closedBookRows', 'statementLookupRows',
   // Security re-check of C8-5..C8-10 — the bound by program year (M-A), the push's union normalized (L-B), and what a merge says it set aside.
   'closedBookRank', 'closedBookScoutIds', 'closedBooksFuture', 'closedBooksMaxYear', 'closedBooksNormalized', 'normalizeClosedBook', 'normalizeLedgerRow', 'normalizeAsideRow', 'normalizeLedgerEvent',
@@ -8708,9 +8715,10 @@ test('only the backend adapters touch the Firebase SDK, and the server’s adapt
   ok(/function backendConfigured\(\) \{ return !!FIREBASE_CONFIG && \(BACKEND !== 'api' \|\| fixedPackMode\(\)\); \}/.test(outside) &&
     /\(BACKEND === 'api' \? apiBackend : firestoreBackend\)\.init\(FIREBASE_CONFIG\)/.test(outside), 'the two readers of FIREBASE_CONFIG moved');
   // BACKEND is chosen in one place, and nothing else branches on it but the move-file offer and
-  // whether a family can send shift totals (shiftReportsOn: the API only, 2026-10-01).
+  // whether shift reports are offered at all (shiftReportsOffered: the API only, 2026-10-01).
   eq((outside.match(/\bBACKEND\b/g) || []).length, 5, 'BACKEND is read somewhere new');
-  ok(/return BACKEND === 'api' && !!sync\.user/.test(slice('shiftReportsOn')), 'shift totals are not API-only');
+  ok(/function shiftReportsOffered\(\) \{ return BACKEND === 'api'; \}/.test(outside) &&
+    /return shiftReportsOffered\(\) && !!sync\.user/.test(slice('shiftReportsOn')), 'shift totals are not API-only');
   ok(/^  var BACKEND = 'api';$/m.test(SCRIPT), 'the committed page is not on the pack’s own server');
   // apiBackend: Google sign-in only. It imports Firebase's app and auth modules and nothing else.
   const api = codeOnly(slice('apiBackend'));
@@ -9589,7 +9597,7 @@ test('the copied standings name children the way the parent view does, and nobod
 
 test('the storefront day sheet names children by their public names', () => {
   const ctx = vm.createContext({});
-  vm.runInContext(PRIV_STATE + ['shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'STOREFRONT_SAFETY', 'sheetFirstName', 'daySheetText', 'blocksInDayOrder',
+  vm.runInContext(PRIV_STATE + [SR_SYNC_STUBS, 'shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'STOREFRONT_SAFETY', 'sheetFirstName', 'daySheetText', 'blocksInDayOrder',
     'blockScoutNames', 'fmtTimeRange', 'fmtClock'].map(slice).join('\n'), ctx);
   const txt = vm.runInContext('daySheetText(state.storefronts[0])', ctx);
   noSurname(txt, 'the day sheet');
@@ -12999,7 +13007,7 @@ test('D2: a worked block past its day warns when the cash count lacks two differ
 
 test('D2: the day sheet carries the safety rules and the cash count, first names only, and nothing is published', () => {
   const ctx = vm.createContext({});
-  vm.runInContext(PRIV_STATE + ['shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'STOREFRONT_SAFETY', 'STOREFRONT_CASH_TO_CREDIT', 'sheetFirstName', 'daySheetText',
+  vm.runInContext(PRIV_STATE + [SR_SYNC_STUBS, 'shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'STOREFRONT_SAFETY', 'STOREFRONT_CASH_TO_CREDIT', 'sheetFirstName', 'daySheetText',
     'blocksInDayOrder', 'blockScoutNames', 'fmtTimeRange', 'fmtClock'].map(slice).join('\n'), ctx);
   vm.runInContext("state.storefronts[0].blocks[0].cashCountedBy = 'Dana Quenneville'; state.storefronts[0].blocks[0].cashVerifiedBy = 'Sam Hartwellington';", ctx);
   const txt = vm.runInContext('daySheetText(state.storefronts[0])', ctx);
@@ -15924,6 +15932,7 @@ test('api functions/ is plain modules: relative imports only, routes only under 
 // One declaration, exactly. slice() runs to the next closing brace at two-space indent, which for
 // a one-line declaration is the END OF THE NEXT FUNCTION: it would drag real code over a stub.
 function decl(name) {
+  if (name === SR_SYNC_STUBS) return SR_SYNC_STUB_SRC;
   const re = new RegExp(`^  (?:function ${name}\\(|var ${name} =)[^\\n]*$`, 'm');
   const m = re.exec(SCRIPT);
   if (!m) throw new Error(`harness: could not find declaration "${name}"`);
@@ -15964,6 +15973,11 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'SHIFT_REPORT_ROLES', 'SHIFT_REPORT_MAX_CENTS', 'SHIFT_REPORT_NOTE_MAX', 'SHIFT_REPORT_SAY', 'SHIFT_REPORT_SAY_ELSE', 'shiftReportsOn',
   'shiftReportCents', 'shiftReportNote', 'shiftReportBody', 'shiftReportMessage', 'loadShiftReports', 'shiftReportFor', 'shiftReportAct',
   'shiftReportSubmit', 'arm', 'ARM_WARNED_MS', 'dollars',
+  // S-3 — the leaders' side: the accept, its reconcile, the send-back.
+  'shiftReportsOffered', 'shiftReportCanSend', 'leaderReportsOn', 'canReviewReports', 'srReports', 'srReport', 'srWaiting', 'srBlockOf',
+  'srMine', 'srReplaces', 'LEADER_SR_SAY', 'leaderSrMessage', 'srNotNow', 'acceptShiftReport', 'srLanded', 'srSettle', 'srRollback',
+  'shiftReportsReconcile', 'shiftReportsAfterPush', 'returnShiftReport', 'leaderShiftReportAct', 'srHandEdited', 'getStorefront',
+  'ledgerActor', 'ledgerActorName',
   ...FORMAT_GATE_FNS];
 const CLIENT_SRC = CLIENT_FNS.map(decl).join('\n');
 
@@ -17178,10 +17192,11 @@ function srStatusCtx(o) {
       shiftReports: ${o.loaded === false ? 'null' : JSON.stringify({ reports: o.reports || [], others: o.others || [], loaded: true })} };
     function accountsInForce() { return !!sync.user; }
     function cloudReady() { return !!(sync.backend && sync.backend.isOpen() && sync.docId); }
+    function previewingParent() { return ${!!o.preview}; }
     function fmtDate(d) { return 'D' + d; }
     function todayISO() { return '2026-10-03'; }
     ${['esc', 'fmt', 'arrOf', 'isoPlusDays', 'SHIFT_REPORT_ROLES', 'SHIFT_REPORT_DAYS', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_NOTE_MAX',
-       'SHIFT_REPORT_ATTEST', 'shiftReportToday', 'shiftReportOpenFor', 'shiftReportsOn', 'shiftReportFor', 'parentShiftReportStatus',
+       'SHIFT_REPORT_ATTEST', 'shiftReportsOffered', 'shiftReportCanSend', 'shiftReportToday', 'shiftReportOpenFor', 'shiftReportsOn', 'shiftReportFor', 'parentShiftReportStatus',
        'parentShiftReportForm', 'parentShiftReportCard', 'parentShiftLines'].map(decl).join('\n')}`, ctx);
   return ctx;
 }
@@ -17462,6 +17477,373 @@ atest('shift totals: a family’s page lists, sends, edits and withdraws through
   const pend = await (await apiClient(w, 'pending')).start();
   await settle([pend]);
   eq([pend.get('shiftReportsOn()'), pend.log.filter((l) => /shift-reports/.test(l)).length], [false, 0], 'a pending page asks for reports');
+});
+
+/* ================================================================
+   Shift totals (S-3, 2026-10-01) — the leaders' side. A waiting report gets a card above its
+   block's money fields; an admin or editor accepts it as the second sign-off. The accept writes
+   the block, the normal save carries it, and only then is the report PATCHed to accepted
+   (shiftReportsReconcile); a refusal puts the block back. Viewers read; parents never reach it.
+   ================================================================ */
+
+// A leader's page, cut down: the pack record, the reports, and a backend that records each PATCH
+// and answers it when the test says (`answer(i, ok|err)`). `o`: role, uid, name, reports, state.
+function srLeaderCtx(o) {
+  o = o || {};
+  const ctx = vm.createContext({});
+  const st = o.state || {
+    scouts: [{ id: 's1', name: 'Ada Example' }, { id: 's2', name: 'Bo Example' }, { id: 's3', name: 'Cy Example' }],
+    leaders: [{ id: 'l1', name: 'Sam Leader', uid: 'uid-ed' }],
+    storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [
+      { id: 'b1', label: 'Block 1', start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }, { scoutId: 's2', weight: 2 }],
+        salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '' },
+      { id: 'b2', label: 'Block 2', start: '12:00', end: '14:00', assignments: [{ scoutId: 's3', weight: 1 }],
+        salesCents: 5000, donationsCents: 0, cashCountedBy: 'Jo', cashVerifiedBy: 'Lee' }] }]
+  };
+  vm.runInContext(`
+    var state = ${JSON.stringify(st)};
+    var ui = {};
+    var LEADER_ROLES = ['admin', 'editor', 'viewer'];
+    var patches = [], answers = [], toasts = [], commits = 0, loads = 0;
+    var sync = { user: { uid: ${JSON.stringify(o.uid || 'uid-ed')}, displayName: ${JSON.stringify(o.name === undefined ? 'Sam Leader' : o.name)} },
+      myRole: ${JSON.stringify(o.role || 'editor')}, docId: 'P', remoteRec: null,
+      shiftReports: { loaded: true, reports: ${JSON.stringify(o.reports || [])}, others: [] },
+      backend: { patchShiftReport: function (d, rid, body) {
+        patches.push({ rid: rid, body: body });
+        return new Promise(function (res, rej) { answers.push({ res: res, rej: rej }); });
+      } } };
+    function shiftReportsOn() { return true; }
+    function parentMode() { return false; }
+    function canEdit() { return sync.myRole === 'admin' || sync.myRole === 'editor'; }
+    function commit() { if (!canEdit()) return false; commits += 1; return true; }
+    function showToast(m) { toasts.push(m); }
+    function render() {}
+    function loadShiftReports() { loads += 1; return Promise.resolve(null); }
+    function fmtDate(d) { return 'D' + d; }
+    function fmtTimeRange(a, b) { return a + '–' + b; }
+    function pad2(n) { return (n < 10 ? '0' : '') + n; }
+    ${['esc', 'fmt', 'arrOf', 'getStorefront', 'blockShares', 'ledgerActor', 'ledgerActorName', 'SHIFT_REPORT_NOTE_MAX', 'shiftReportNote',
+       'leaderReportsOn', 'canReviewReports', 'srReports', 'srReport', 'srWaiting', 'srBlockOf', 'srWhen', 'srMine', 'srReplaces',
+       'LEADER_SR_SAY', 'leaderSrMessage', 'srNotNow', 'renderShiftReportCard', 'renderBlockReportLine', 'renderShiftReportsBanner',
+       'srWaitingOn', 'acceptShiftReport', 'srLanded', 'srSettle', 'srRollback', 'shiftReportsReconcile', 'shiftReportsAfterPush',
+       'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct'].map(decl).join('\n')}`, ctx);
+  const run = (js) => vm.runInContext(js, ctx);
+  const get = (js) => JSON.parse(JSON.stringify(run(js) === undefined ? null : run(js)));
+  // The save landed: the server's copy is this page's copy.
+  const landed = () => run('sync.remoteRec = { rev: 9, json: JSON.stringify(state) }');
+  const answer = async (i, err) => { run(`answers[${i}].${err ? 'rej' : 'res'}(${err ? JSON.stringify(err) : '{}'})`); for (let k = 0; k < 5; k++) await new Promise((r) => setImmediate(r)); };
+  return { ctx, run, get, landed, answer, block: (id) => get(`state.storefronts[0].blocks.filter(function (b) { return b.id === '${id}'; })[0]`) };
+}
+const srRep = (over) => Object.assign({ id: 'rep-1', sfId: 'sf1', blockId: 'b1', teCents: 12345, cashCents: 2500, note: 'Counted with Jo', status: 'submitted',
+  mine: false, submittedByName: 'Nora Newfamily', submittedByUid: 'uid-nora', submittedAt: Date.parse('2026-10-03T22:40:00Z'),
+  updatedAt: Date.parse('2026-10-03T22:40:00Z'), reviewedByName: null, reviewedByUid: null, reviewNote: '' }, over || {});
+
+atest('shift reports S-3: accepting writes the block, the scouts get their split, and the report is signed off only once the save has landed', async () => {
+  const L = srLeaderCtx({ reports: [srRep()] });
+  L.run("acceptShiftReport('rep-1', false)");
+  const b = L.block('b1');
+  eq([b.salesCents, b.donationsCents, b.cashCountedBy, b.cashVerifiedBy, b.reportId, b.reportFrom],
+    [12345, 2500, 'Nora Newfamily', 'Sam Leader', 'rep-1', 'Nora Newfamily'], 'the block after the accept');
+  eq(b.reportPending, { by: 'uid-ed', te: 12345, cash: 2500, was: { salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '', reportId: '', reportFrom: '' } },
+    'what the accept keeps to undo itself');
+  eq(L.get('commits'), 1, 'the accept saves the block');
+  // The scouts' credit is the ordinary split, weighted 1:2.
+  eq(L.get("blockShares(state.storefronts[0].blocks[0]).map(function (s) { return [s.scoutId, s.sales, s.don]; })"),
+    [['s1', 4115, 833], ['s2', 8230, 1667]], 'blockShares credits the block’s scouts');
+  // Not yet: the save has not reached the server.
+  L.run('shiftReportsAfterPush()');
+  eq(L.get('patches.length'), 0, 'the report was signed off before the block was saved');
+  L.landed();
+  L.run('shiftReportsAfterPush()');
+  L.run('shiftReportsReconcile()');   // twice: one PATCH out at a time
+  eq(L.get('patches'), [{ rid: 'rep-1', body: { action: 'accept', teCents: 12345, cashCents: 2500 } }], 'the PATCH names exactly the figures shown');
+  await L.answer(0);
+  eq([L.block('b1').reportPending, L.block('b1').salesCents, L.get('commits'), L.get('loads')], [undefined, 12345, 2, 1], 'signed off: the marker goes, the figures stay');
+  // An email for a display name never lands in the verifier.
+  const E = srLeaderCtx({ reports: [srRep()], name: 'sam@example.com' });
+  E.run("acceptShiftReport('rep-1', false)");
+  eq(E.block('b1').cashVerifiedBy, 'Sam Leader', 'the verifier, from the leader record, not the email');
+  ok(E.block('b1').cashVerifiedBy.indexOf('@') === -1, 'an email as the verifier');
+});
+
+test('shift reports S-3: a block that already holds different figures asks first, old against new', () => {
+  const L = srLeaderCtx({ reports: [srRep({ id: 'rep-2', blockId: 'b2', teCents: 6000, cashCents: 700 })] });
+  L.run("acceptShiftReport('rep-2', false)");
+  eq([L.get('ui.srConfirm'), L.block('b2').salesCents, L.get('commits')], ['rep-2', 5000, 0], 'the first tap only asks');
+  const card = L.run("renderShiftReportCard(srReport('rep-2'), srBlockOf(srReport('rep-2')))");
+  ok(/This block already has figures/.test(card) && /<td>Trail’s End<\/td><td class="num">\$50\.00<\/td><td class="num">\$60\.00<\/td>/.test(card) &&
+    /<td>Cash donations<\/td><td class="num">\$0\.00<\/td><td class="num">\$7\.00<\/td>/.test(card), 'old against new');
+  ok(/data-act="sr-accept-confirm" data-rid="rep-2">Replace and accept</.test(card), 'no way to confirm');
+  L.run("leaderShiftReportAct('sr-accept-confirm', { dataset: { rid: 'rep-2' } })");
+  eq([L.block('b2').salesCents, L.block('b2').donationsCents, L.block('b2').reportPending.was.salesCents, L.block('b2').reportPending.was.cashCountedBy],
+    [6000, 700, 5000, 'Jo'], 'replaced, with the old figures kept to undo');
+  // The same figures, or an empty block: nothing to confirm.
+  const S = srLeaderCtx({ reports: [srRep({ id: 'rep-3', blockId: 'b2', teCents: 5000, cashCents: 0 })] });
+  S.run("acceptShiftReport('rep-3', false)");
+  eq([S.get('ui.srConfirm'), S.get('commits')], [null, 1], 'figures that match');
+  const Z = srLeaderCtx({ reports: [srRep()] });
+  Z.run("acceptShiftReport('rep-1', false)");
+  eq([Z.get('ui.srConfirm'), Z.get('commits')], [null, 1], 'an empty block');
+});
+
+test('shift reports S-3: an accept the page lost is finished on the next load — by the leader who made it, and only once its save is on the server', () => {
+  const pend = (by) => ({ by, te: 12345, cash: 2500, was: { salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '', reportId: '', reportFrom: '' } });
+  const st = (by) => ({ scouts: [], leaders: [], storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [
+    { id: 'b1', label: 'Block 1', assignments: [], salesCents: 12345, donationsCents: 2500, cashCountedBy: 'Nora Newfamily', cashVerifiedBy: 'Sam Leader',
+      reportId: 'rep-1', reportFrom: 'Nora Newfamily', reportPending: pend(by) }] }] });
+  const L = srLeaderCtx({ reports: [srRep()], state: st('uid-ed') });
+  L.run('shiftReportsReconcile()');
+  eq(L.get('patches.length'), 0, 'retried before the server had the block');
+  L.landed();
+  L.run('shiftReportsReconcile()');
+  eq(L.get('patches'), [{ rid: 'rep-1', body: { action: 'accept', teCents: 12345, cashCents: 2500 } }], 'retried with the block’s figures');
+  const O = srLeaderCtx({ reports: [srRep()], state: st('uid-someone-else') });
+  O.landed();
+  O.run('shiftReportsReconcile()');
+  eq([O.get('patches.length'), O.block('b1').reportPending.by], [0, 'uid-someone-else'], 'another leader’s accept, finished or undone here');
+  ok(/waiting for the save to reach the server/.test(O.run('renderBlockReportLine(state.storefronts[0].blocks[0])')), 'the block does not say it is mid-accept');
+  // Already accepted (this account's other device got there): settled, not sent again.
+  const A = srLeaderCtx({ reports: [srRep({ status: 'accepted', reviewedByUid: 'uid-ed' })], state: st('uid-ed') });
+  A.landed();
+  A.run('shiftReportsReconcile()');
+  eq([A.get('patches.length'), A.block('b1').reportPending, A.block('b1').salesCents], [0, undefined, 12345], 'an accept that already landed');
+});
+
+atest('shift reports S-3: each refusal puts the block back as it was, and a server not reached is tried again', async () => {
+  // Accept on b2 (5000 counted by Jo, verified by Lee), then the refusal.
+  const setup = (rep) => {
+    const L = srLeaderCtx({ reports: [rep || srRep({ id: 'rep-2', blockId: 'b2', teCents: 6000, cashCents: 700 })] });
+    L.run("acceptShiftReport('rep-2', true)");
+    L.landed();
+    return L;
+  };
+  const back = (L, what) => {
+    const b = L.block('b2');
+    eq([b.salesCents, b.donationsCents, b.cashCountedBy, b.cashVerifiedBy, b.reportId, b.reportPending], [5000, 0, 'Jo', 'Lee', undefined, undefined], what + ': the block');
+  };
+  for (const [reason, said] of [['same-person', 'a second adult has to accept it'], ['report-moved', 'before yours reached the server']]) {
+    const L = setup();
+    L.run('shiftReportsReconcile()');
+    await L.answer(0, { code: 'failed-precondition', reason });
+    eq(L.get('loads'), 1, reason + ': read again before deciding');
+    L.run('shiftReportsReconcile()');   // the reports, read again, still say waiting
+    back(L, reason);
+    ok(L.get('toasts').some((t) => t.indexOf(said) >= 0 && /The block is back to what it was\.$/.test(t)), reason + ': not said: ' + L.get('toasts'));
+    eq(L.get('patches.length'), 1, reason + ': sent again');
+  }
+  const W = setup();
+  W.run("sync.shiftReports.reports[0].status = 'withdrawn'; shiftReportsReconcile()");
+  back(W, 'withdrawn');
+  ok(W.get('toasts').some((t) => /The family withdrew this report\./.test(t)), 'withdrawn: not said');
+  const R = setup();
+  R.run("sync.shiftReports.reports[0].status = 'returned'; shiftReportsReconcile()");
+  back(R, 'sent back');
+  const C = setup();
+  C.run('sync.shiftReports.reports[0].teCents = 6100; shiftReportsReconcile()');
+  back(C, 'the family edited');
+  eq(C.get('patches.length'), 0, 'the family edited: signed off anyway');
+  const G = setup();
+  G.run('sync.shiftReports.reports = []; shiftReportsReconcile()');
+  back(G, 'gone from the server');
+  // A hand edit since the accept is kept; only the link goes.
+  const H = setup();
+  H.run("state.storefronts[0].blocks[1].salesCents = 6050; sync.shiftReports.reports[0].status = 'withdrawn'; shiftReportsReconcile()");
+  eq([H.block('b2').salesCents, H.block('b2').reportId, H.block('b2').reportPending], [6050, undefined, undefined], 'a hand edit since');
+  // The server not reached: kept, and tried again.
+  const U = setup();
+  U.run('shiftReportsReconcile()');
+  await U.answer(0, { code: 'unavailable', reason: '' });
+  eq([U.block('b2').salesCents, U.block('b2').reportPending.te], [6000, 6000], 'unreached: the accept stands');
+  ok(U.get('toasts').some((t) => /tried again/.test(t)), 'unreached: not said');
+  U.run('shiftReportsReconcile()');
+  eq(U.get('patches.length'), 2, 'unreached: not tried again');
+  // A permission refusal undoes it too.
+  const P = setup();
+  P.run('shiftReportsReconcile()');
+  await P.answer(0, { code: 'permission-denied', reason: 'forbidden' });
+  P.run('shiftReportsReconcile()');
+  back(P, 'refused');
+});
+
+test('shift reports S-3: a viewer reads the card with no buttons, and the sender of a report cannot accept it', () => {
+  const V = srLeaderCtx({ role: 'viewer', reports: [srRep()] });
+  const card = V.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
+  ok(/Nora Newfamily<\/strong> sent these totals/.test(card) && /\$123\.45/.test(card) && /\$25\.00/.test(card) && /“Counted with Jo”/.test(card), 'the card’s content');
+  ok(!/<button|<form/.test(card) && /An admin or editor accepts or sends back shift reports\./.test(card), 'a viewer’s card has buttons');
+  V.run("acceptShiftReport('rep-1', true); leaderShiftReportAct('sr-return-open', { dataset: { rid: 'rep-1' } })");
+  eq([V.block('b1').salesCents, V.get('commits'), V.get('ui.srReturn')], [0, 0, null], 'a viewer accepted or opened a send-back');
+  ok(/<p class="eyebrow"[^>]*>Shift report from a family<\/p>/.test(card), 'the card’s heading');
+  const E = srLeaderCtx({ reports: [srRep()] });
+  const ed = E.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
+  ok(/data-act="sr-accept" data-rid="rep-1">Accept and sign as verifier</.test(ed) && /data-act="sr-return-open" data-rid="rep-1">Send back</.test(ed), 'an editor’s buttons');
+  // Their own report: no Accept, said why; the server refuses it anyway.
+  const M = srLeaderCtx({ reports: [srRep({ submittedByUid: 'uid-ed', submittedByName: 'Sam Leader', mine: true })] });
+  const own = M.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
+  ok(!/sr-accept/.test(own) && /You sent this report, so a second adult has to accept it\./.test(own), 'the sender’s own card');
+  M.run("acceptShiftReport('rep-1', true)");
+  eq([M.block('b1').salesCents, M.get('commits'), M.get('toasts')], [0, 0, ['You sent this report, so a second adult has to accept it.']], 'the sender accepting');
+});
+
+atest('shift reports S-3: sending back an accepted report keeps its figures, drops the link and the verifier, and says they need a fresh check', async () => {
+  const st = { scouts: [], leaders: [], storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [
+    { id: 'b1', label: 'Block 1', assignments: [], salesCents: 12345, donationsCents: 2500, cashCountedBy: 'Nora Newfamily', cashVerifiedBy: 'Sam Leader',
+      reportId: 'rep-1', reportFrom: 'Nora Newfamily' }] }] };
+  const L = srLeaderCtx({ state: st, reports: [srRep({ status: 'accepted', reviewedByName: 'Sam Leader' })] });
+  ok(/From Nora Newfamily’s report, verified by Sam Leader\./.test(L.run('renderBlockReportLine(state.storefronts[0].blocks[0])')), 'the accepted block’s line');
+  L.run("returnShiftReport('rep-1', '   ')");
+  eq([L.get('patches.length'), L.get('toasts')], [0, ['Say why you are sending it back.']], 'a send-back with no reason');
+  L.run("returnShiftReport('rep-1', 'The box had $30')");
+  eq(L.get('patches'), [{ rid: 'rep-1', body: { action: 'return', reviewNote: 'The box had $30' } }], 'the send-back');
+  await L.answer(0);
+  const b = L.block('b1');
+  eq([b.salesCents, b.donationsCents, b.cashCountedBy, b.cashVerifiedBy, b.reportId, b.reportReturned], [12345, 2500, 'Nora Newfamily', '', undefined, { note: 'The box had $30' }],
+    'the block after an accepted report is sent back');
+  ok(/came from a report a leader sent back \(“The box had \$30”\)\. They still count\. Check them, and have a second adult verify them again\./.test(L.run('renderBlockReportLine(state.storefronts[0].blocks[0])')),
+    'the warning');
+  // Typing a verifier, or a figure, clears it: someone has looked.
+  L.run('srHandEdited(state.storefronts[0].blocks[0])');
+  eq(L.block('b1').reportReturned, undefined, 'a hand edit leaves the warning');
+});
+
+test('shift reports S-3: the storefront list says how many wait, and a report whose shift is gone can still be sent back', () => {
+  const L = srLeaderCtx({ reports: [srRep(), srRep({ id: 'rep-9', blockId: 'gone', submittedByName: 'Pat Family' }), srRep({ id: 'rep-x', status: 'accepted' })] });
+  const ban = L.run('renderShiftReportsBanner()');
+  ok(/Shift reports to review <span class="pill">2<\/span>/.test(ban), 'the count');
+  ok(/<strong>Kroger<\/strong> · D2026-10-03 · 10:00–12:00 · from Nora Newfamily/.test(ban) && /data-act="open-storefront" data-id="sf1">Review</.test(ban), 'a waiting report, one tap away');
+  ok(/This shift is no longer on the pack’s schedule\. Send it back so the family knows\./.test(ban) && /data-rid="rep-9">Send back</.test(ban) && !/data-rid="rep-9">Accept/.test(ban),
+    'a report whose block is gone');
+  eq(L.run("srWaitingOn(state.storefronts[0])"), 1, 'the storefront’s badge');
+  eq(srLeaderCtx({ reports: [] }).run('renderShiftReportsBanner()'), '', 'nothing waiting');
+  ok(/var srN = srWaitingOn\(sf\);/.test(slice('storefrontRow')) && /srN \+ ' to review<\/span>'/.test(slice('storefrontRow')), 'the badge on the row');
+  ok(/h \+= renderShiftReportsBanner\(\);/.test(slice('renderStorefrontList')), 'the banner on the list');
+  ok(/srWaiting\(\)\.forEach[\s\S]{0,200}renderShiftReportCard\(r, \{ sf: sf, b: b \}\)/.test(slice('renderBlock')) &&
+    slice('renderBlock').indexOf('renderShiftReportCard') < slice('renderBlock').indexOf('data-ch="b-sales"'), 'the card is not above the money fields');
+});
+
+test('shift reports S-3: accepted money is money to the Trail’s End import, the day sheet tells families where to send totals, and the block’s new fields are shape-checked', () => {
+  const ctx = sandbox(['teDroppedSignups']);
+  const block = { id: 'b1', assignments: [{ scoutId: 's1', weight: 1 }], salesCents: 12345, donationsCents: 2500, reportId: 'rep-1', reportFrom: 'Nora' };
+  eq(ctx.teDroppedSignups(block, { scouts: [] }), [], 'a block holding accepted money is re-split by the import');
+  ok(/shiftReportsOffered\(\)\) lines\.push\('  ' \+ DAY_SHEET_REPORT\)/.test(slice('daySheetText')) &&
+    /shiftReportsOffered\(\) \? '<p class="small" style="margin:4px 0 0"><strong>' \+ esc\(DAY_SHEET_REPORT\)/.test(slice('renderDaySheet')), 'the day sheet line');
+  eq(vm.runInContext('DAY_SHEET_REPORT', sandbox(['DAY_SHEET_REPORT'])), 'Parents: enter these totals on pack569.com before you leave.', 'the wording');
+  const n = sandbox(NORMALIZE_FNS);
+  const rec = JSON.parse(JSON.stringify(preMigrationState()));
+  rec.storefronts = [{ id: 'sf1', name: 'K', date: '2026-10-03', blocks: [
+    { id: 'b1', label: 'B', assignments: [], salesCents: 1, donationsCents: 0, reportId: 'rep-1', reportFrom: 'Nora',
+      reportPending: { by: 'uid-ed', te: 1, cash: 0, was: { salesCents: 0 } }, reportReturned: { note: 'x', extra: 1 } },
+    { id: 'b2', label: 'B', assignments: [], reportId: 7, reportFrom: 'Nora', reportPending: { by: 'uid-ed', te: 1.5, cash: 0, was: {} } },
+    { id: 'b3', label: 'B', assignments: [], reportPending: { by: 'uid-ed', te: 1, cash: 0, was: {} }, reportReturned: 'yes' }] }];
+  const out = n.normalizeState(rec);
+  const bs = out.storefronts[0].blocks;
+  eq([bs[0].reportId, bs[0].reportFrom, !!bs[0].reportPending, bs[0].reportReturned], ['rep-1', 'Nora', true, { note: 'x' }], 'a good block');
+  eq([bs[1].reportId, bs[1].reportFrom, bs[1].reportPending], [undefined, undefined, undefined], 'a bad id and a fractional figure');
+  eq([bs[2].reportPending, bs[2].reportReturned], [undefined, undefined], 'a marker with no report, and a bad warning');
+});
+
+test('shift reports S-3: the parent preview shows where totals stand and sends nothing', () => {
+  const P = srStatusCtx({ preview: true, role: 'admin', reports: [srReport()], ui: { shiftReport: { sfId: 'sf1', blockId: 'b1', rid: '', te: '1', cash: '1', note: '', attest: true } } });
+  const line = srLine(P, srEv(SR_TODAY));
+  ok(/Sent — waiting for a leader/.test(line) && !/<button/.test(line), 'a status with buttons in the preview');
+  ok(!/<button/.test(srLine(srStatusCtx({ preview: true, role: 'admin' }), srEv(SR_TODAY))), 'Enter shift totals in the preview');
+  const card = vm.runInContext('parentShiftReportCard', P)({ events: [srEv(SR_TODAY)] }, SR_TODAY);
+  ok(/<strong>Preview:<\/strong> families send their totals here\. You can’t send them from the preview\./.test(card) && !/<form/.test(card), 'the preview card draws the form');
+  ok(/function shiftReportAct\(act, el\) \{\s*if \(!shiftReportCanSend\(\)\) return;/.test(slice('shiftReportAct')) &&
+    /if \(!d \|\| d\.busy \|\| !shiftReportCanSend\(\)\) return;/.test(slice('shiftReportSubmit')), 'the preview can send');
+  ok(/return shiftReportsOn\(\) && !previewingParent\(\);/.test(slice('shiftReportCanSend')), 'the preview gate');
+  // The leaders' side is off in the preview too.
+  ok(/&& !parentMode\(\);/.test(slice('leaderReportsOn')), 'the leaders’ side runs in the preview');
+});
+
+atest('shift reports S-3: a leader’s page accepts a family’s report against the real server, finishes a lost accept on the next load, and undoes a refused one', async () => {
+  await apiSetup();
+  const today = API.rules.packToday();
+  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent', pending: 'pending', newbie: 'parent' });
+  const blk = (id, extra) => Object.assign({ id, label: id, start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }],
+    salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '' }, extra || {});
+  const pack = PACK_STATE({ scouts: [{ id: 's1', name: 'Ada' }], storefronts: [{ id: 'sf1', name: 'Kroger', date: today,
+    blocks: [blk('b1'), blk('b2'), blk('b3', { salesCents: 900, cashCountedBy: 'Jo', cashVerifiedBy: 'Lee' })] }] });
+  w.state(3, pack);
+  const VIEW = { rev: 3, packName: 'Test Pack',
+    events: [{ kind: 'storefront', sfId: 'sf1', date: today, title: 'Kroger', detail: '', shifts: ['b1', 'b2', 'b3'].map((b) => ({ when: '10–12', blockId: b })) }] };
+  w.db.raw.prepare('INSERT INTO parent_views (pack_id, payload, generated_at) VALUES (?, ?, 1)').run(API_PACK, JSON.stringify(VIEW));
+  // A leader's page republishes the view after each save; the sandbox's stand-in buildParentView
+  // has no storefronts, so it is pinned to this one (the real one's ids are tested above).
+  const pin = (c) => { c.run('buildParentView = function () { return ' + JSON.stringify(VIEW) + '; };'); return c; };
+  const send = async (who, blockId, te, cash) => {
+    const r = await w.call(who, 'POST', 'shiftReports', null, { body: { sfId: 'sf1', blockId, teCents: te, cashCents: cash, attest: true } });
+    eq(r.status, 200, 'a report on ' + blockId + ' (' + r.text + ')');
+    return r.body.report.id;
+  };
+  const r1 = await send('parent', 'b1', 12345, 2500);
+  const ed = await pin(await apiClient(w, 'editor', { state: pack })).start(1200);
+  ok(ed.log.indexOf('GET /P/shift-reports') >= 0, 'the leader’s page did not read the reports on load: ' + ed.log.join(', '));
+  eq(ed.get("srWaiting().map(function (r) { return r.id; })"), [r1], 'the waiting report');
+  // Accept: the block first, the save, then the PATCH.
+  ed.reset();
+  ed.run(`acceptShiftReport('${r1}', false)`);
+  await settle([ed], 1200);
+  await settle([ed], 1200);
+  const order = ed.log.filter((l) => /^PUT \/P$|^PATCH \/P\/shift-reports/.test(l));
+  eq(order.slice(0, 2), ['PUT /P', 'PATCH /P/shift-reports/' + r1], 'saved, then signed off');
+  eq(w.one('SELECT status, reviewed_by_uid, te_cents FROM shift_reports WHERE id = ?', r1), { status: 'accepted', reviewed_by_uid: 'uid-editor', te_cents: 12345 }, 'the report');
+  const server = () => JSON.parse(w.one('SELECT json FROM pack_state WHERE pack_id = ?', API_PACK).json).storefronts[0].blocks;
+  const s1 = server()[0];
+  eq([s1.salesCents, s1.donationsCents, s1.cashCountedBy, s1.cashVerifiedBy, s1.reportId, s1.reportFrom, s1.reportPending],
+    [12345, 2500, 'Test parent', 'Test editor', r1, 'Test parent', undefined], 'the block on the server, settled');
+  // A lost accept: the PATCH never reaches the server. The next page load finishes it.
+  const r2 = await send('newbie', 'b2', 4000, 100);
+  ed.run('loadShiftReports()');
+  await settle([ed], 1200);
+  ed.intercept = async (method, path) => (method === 'PATCH'
+    ? new Response(JSON.stringify({ error: 'unavailable', code: 'unavailable' }), { status: 503, headers: { 'content-type': 'application/json' } }) : undefined);
+  ed.run(`acceptShiftReport('${r2}', false)`);
+  await settle([ed], 1200);
+  await settle([ed], 1200);
+  eq([w.one('SELECT status FROM shift_reports WHERE id = ?', r2).status, server()[1].reportPending && server()[1].reportPending.by], ['submitted', 'uid-editor'],
+    'the block saved, the report not signed off');
+  const ed2 = await pin(await apiClient(w, 'editor', { state: JSON.parse(w.one('SELECT json FROM pack_state WHERE pack_id = ?', API_PACK).json) })).start(1200);
+  await settle([ed2], 1200);
+  await settle([ed2], 1200);
+  eq(w.one('SELECT status, te_cents FROM shift_reports WHERE id = ?', r2), { status: 'accepted', te_cents: 4000 }, 'the next load finished the accept');
+  eq(server()[1].reportPending, undefined, 'the marker left on the server');
+  // A refused accept: the family withdraws while the leader's accept is on its way. Undone.
+  const r3 = await send('parent', 'b3', 7000, 0);
+  ed2.run('loadShiftReports()');
+  await settle([ed2], 1200);
+  ed2.run(`acceptShiftReport('${r3}', true)`);
+  eq(ed2.get("state.storefronts[0].blocks[2].salesCents"), 7000, 'accepted over the hand-entered figures');
+  eq((await w.call('parent', 'PATCH', 'shiftReport', { rid: r3 }, { body: { action: 'withdraw' } })).status, 200, 'the family withdraws');
+  await settle([ed2], 1200);
+  await settle([ed2], 1200);
+  await settle([ed2], 1200);
+  const b3 = server()[2];
+  eq([b3.salesCents, b3.cashCountedBy, b3.cashVerifiedBy, b3.reportId, b3.reportPending], [900, 'Jo', 'Lee', undefined, undefined], 'the block put back, on the server');
+  ok(ed2.get('toasts').some((t) => /The block is back to what it was\./.test(t)), 'the leader was not told');
+  eq(w.one('SELECT status FROM shift_reports WHERE id = ?', r3).status, 'withdrawn', 'the report');
+  // The leader's own report: the server and the page both refuse.
+  const r4 = await send('editor', 'b3', 1, 1);
+  ed2.run('loadShiftReports()');
+  await settle([ed2], 1200);
+  ed2.run(`acceptShiftReport('${r4}', true)`);
+  await settle([ed2], 1200);
+  eq([w.one('SELECT status FROM shift_reports WHERE id = ?', r4).status, ed2.get('state.storefronts[0].blocks[2].salesCents')], ['submitted', 900], 'a leader accepting their own');
+  // A viewer's page reads every report and changes nothing.
+  const vw = await (await apiClient(w, 'viewer', { state: JSON.parse(w.one('SELECT json FROM pack_state WHERE pack_id = ?', API_PACK).json) })).start(1200);
+  await settle([vw], 1200);
+  ok(vw.get('srReports().length') >= 4 && vw.get('canReviewReports()') === false, 'the viewer’s page');
+  vw.run(`acceptShiftReport('${r4}', true)`);
+  await settle([vw], 1200);
+  eq([w.one('SELECT status FROM shift_reports WHERE id = ?', r4).status, vw.log.filter((l) => /^PUT|^PATCH/.test(l)).length], ['submitted', 0], 'a viewer accepted');
+  // An admin previewing the parent app sends nothing.
+  const ow = await pin(await apiClient(w, 'owner', { state: JSON.parse(w.one('SELECT json FROM pack_state WHERE pack_id = ?', API_PACK).json) })).start(1200);
+  ow.run(`FormData = function (f) { return { get: function (k) { return f.values[k] || null; } }; }; ui.previewParent = true;`);
+  ow.reset();
+  ow.run("shiftReportAct('shift-report-open', { dataset: { sf: 'sf1', block: 'b1' } })");
+  eq(ow.get('ui.shiftReport || null'), null, 'the preview opened the form');
+  ow.run("ui.shiftReport = { sfId: 'sf1', blockId: 'b2', rid: '', te: '1', cash: '1', note: '', attest: true }; shiftReportSubmit({ values: { te: '1', cash: '1', note: '', attest: 'on' } })");
+  await settle([ow], 1200);
+  eq(ow.log.filter((l) => /^POST \/P\/shift-reports|^PATCH \/P\/shift-reports/.test(l)), [], 'the preview sent a report');
 });
 
 /* ================================================================
