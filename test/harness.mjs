@@ -1022,7 +1022,7 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   // Security re-check of C5 (R4) — one log event, live and archived alike.
   'normalizeLedgerEvent',
   // Phase 3, C1 — the ledger row normalizer, shared by the rows set aside.
-  'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeClosedBook', 'mergeClosedBooks', 'normalizeLedgerRow', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
+  'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeClosedBook', 'mergeClosedBooks', 'closedBookRank', 'normalizeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'normalizeLedgerRow', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'ledgerUnpaired', 'entrySignedCents',
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
@@ -1033,6 +1033,8 @@ const C8_SYNC_FNS = ['closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mer
   // Security re-check of C8-5..C8-10 — the bound by program year (M-A), the push's union normalized (L-B), and what a merge says it set aside.
   'closedBookRank', 'closedBooksFuture', 'closedBooksMaxYear', 'closedBooksNormalized', 'normalizeClosedBook', 'normalizeLedgerRow', 'normalizeAsideRow', 'normalizeLedgerEvent',
   'stableRowId', 'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_ASIDE_OFF', 'arrOf',
+  // M-B — the tombstones of a closed year.
+  'normalizeClosedGone', 'mergeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'closedGoneAdd', 'ledgerActorUid',
   // The merge ticks a carried row the other copy ticked (M1) and ticks again what a standing statement lists.
   'carriedRowsOf', 'statementRetick', 'entrySignedCents', 'entryAfterOpening', 'ledgerStampClean', 'statementReopened', 'normalizeStatement', 'statementAdded', 'LEDGER_TICK_FIELDS'];
 // Phase 3, C6 — the per-row ledger merge and what it reads.
@@ -16317,7 +16319,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
       var timers = [], adopted = 0;
       function scheduleParentViewRefresh() {} function renderSyncPill() {} function render() {} function syncPush() {}
       function clearTimeout() {} function setTimeout(fn) { timers.push(fn); return 't'; }
-      function canEdit() { return true; } function save() {} function showToast() {}
+      function canEdit() { return true; } function save() {} function showToast() {} function canReopenStatement() { return true; }
       function normalizeState(p) { return p && typeof p === 'object' ? p : null; }
       function adoptRemote(d) { adopted += 1; state.rev = d.rev; return true; }
       var ui = { tab: 'home', overlay: null };
@@ -16340,7 +16342,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
     const ctx = vm.createContext({});
     vm.runInContext(`
       var pushed = 0;
-      function canEdit() { return true; } function render() {} function showToast() {} function scheduleSyncPush() { pushed += 1; }
+      function canEdit() { return true; } function render() {} function showToast() {} function scheduleSyncPush() { pushed += 1; } function canReopenStatement() { return true; }
       var ui = { overlay: { kind: 'sync-conflict', remote: { rev: 9 } } }, state = { rev: 2 };
       var sync = { backend: { serverRevs: ${serverRevs} } };
       ${['seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf', 'keepLocalCopy', 'keepLocalNeedsAdmin'].map(decl).join('\n')}
@@ -20172,7 +20174,7 @@ test('C3 review (minor): a ledger id is escaped wherever it goes into an attribu
 test('C3 re-check (minor): a past season’s id is escaped in every attribute of its row, so a stored id can’t add markup or a second action', () => {
   // A restored backup can hold any string as an archive id (Pack · Past seasons, both kinds of row).
   const bad = 'x" data-act="del-scout:s1"><img src=y>\'';
-  const x = sandbox(['esc', 'tinyDangerBtn', 'seasonArchiveRow', 'seasonBookTrimmedLine', 'renderPastSeasons']);
+  const x = sandbox(['esc', 'tinyDangerBtn', 'seasonArchiveRow', 'seasonBookTrimmedLine', 'renderPastSeasons', 'closedBookOrphans', 'closedBookOrphanRow', 'closedYearText', 'arrOf']);
   vm.runInContext(`var ui = { armed: null, archiveOpen: {} }; ui.archiveOpen[${JSON.stringify(bad)}] = true;
     var state = { archives: [
       { id: ${JSON.stringify(bad)}, kind: 'season', year: 2025, closedAt: '', fundraising: { combinedCents: 0 }, budget: { actualCents: 0, balanceCents: 0 } },
@@ -26857,7 +26859,7 @@ test('C8 security H1: keeping this device’s copy over a cloud copy with a clos
   eq(keep(false), [[], 1, 0, true], 'an editor: refused, nothing logged, the choice still open');
   eq(keep(true), [[['unclose', 'book', 'This device’s copy was kept over a cloud copy that had closed out 2025–26, so that close-out is undone and its closed book is gone from the pack record.']], 0, 1, false],
     'an admin: logged, though the program years match');
-  ok(/if \(!clobbered && remoteParsed && accountsInForce\(\) && !canReopenStatement\(\)\) state\.closedBooks = mergeClosedBooks\(state\.closedBooks, closedBooksNormalized\(remoteParsed\.closedBooks\), undefined, closedBooksMaxYear\(state, remoteParsed\)\);/.test(SCRIPT),
+  ok(/if \(!clobbered && remoteParsed && accountsInForce\(\) && !canReopenStatement\(\)\) state\.closedBooks = mergeClosedBooks\(state\.closedBooks, closedBooksNormalized\(remoteParsed\.closedBooks\), undefined, closedBooksMaxYear\(state, remoteParsed\), state\.closedGone\);/.test(SCRIPT),
     'a device that may not remove a closed book takes the record’s in before a write that is not a merge');
 });
 
@@ -27354,7 +27356,7 @@ test('C8-8: a closed year’s statement prints from its book, listing entries fr
 test('C8-8: deleting a closed year is an admin’s, with a reason that is logged, and takes its closed book with it; a Trail’s End import is deleted as before', () => {
   const W = heldDispatchCtx('');
   const run = (js) => vm.runInContext(js, W), got = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, W)));
-  run(`${['seasonBookOf', 'closedBookOf', 'closedBookLines', 'ledgerContactScrub', 'closedYearText', 'arrOf', 'delSeasonText', 'DEL_SEASON_REFUSED', 'DEL_SEASON_WHY_FIRST'].map(decl).join('\n')}
+  run(`${['seasonBookOf', 'closedBookOf', 'closedBookLines', 'ledgerContactScrub', 'closedYearText', 'arrOf', 'delSeasonText', 'delSeasonSubject', 'closedBookOrphans', 'closedGoneAdd', 'mergeClosedGone', 'normalizeClosedGone', 'ledgerActorUid', 'DEL_SEASON_REFUSED', 'DEL_SEASON_WHY_FIRST'].map(decl).join('\n')}
     var logs = []; function logLedger(op, row, more) { logs.push([op, row, more.why]); }
     state.archives = [{ id: 'arc-1', kind: 'season', year: 2026 }, { id: 'te1', kind: 'trails-end', year: 2025 }];
     state.closedBooks = [${JSON.stringify(C8_BOOK_OF(2026, 'arc-1'))}, ${JSON.stringify(C8_BOOK_OF(2025, 'arc-0'))}]; ui.armed = null; ui.overlay = null; ui.archiveOpen = {};`);
@@ -27532,8 +27534,8 @@ test('C8 re-check M-A: a record is cut at its own program year on load, and the 
   eq(J(x.closedBooksNormalized([C8_BOOK_OF(2026, 'a', { evil: 'x', cutoff: '1999-01-01' }), 'junk', null, { year: 1850 }])).map((b) => [b.year, 'evil' in b, b.cutoff]), [[2026, false, '2027-06-30']], 'L-B: a crafted book is normalized');
 });
 test('C8 re-check M-A: the merge, the push’s union and a restore all bound the books by program year; taking a copy says what it set aside; the program year is not set before a closed year', () => {
-  ok(/state\.closedBooks = mergeClosedBooks\(state\.closedBooks, remote\.closedBooks, look, closedBooksMaxYear\(state, remote\)\)/.test(SCRIPT), 'the merge passes the bound');
-  ok(/mergeClosedBooks\(state\.closedBooks, closedBooksNormalized\(remoteParsed\.closedBooks\), undefined, closedBooksMaxYear\(state, remoteParsed\)\)/.test(SCRIPT), 'the push’s union is normalized (L-B) and bounded');
+  ok(/state\.closedBooks = mergeClosedBooks\(state\.closedBooks, remote\.closedBooks, look, closedBooksMaxYear\(state, remote\), state\.closedGone\)/.test(SCRIPT), 'the merge passes the bound');
+  ok(/mergeClosedBooks\(state\.closedBooks, closedBooksNormalized\(remoteParsed\.closedBooks\), undefined, closedBooksMaxYear\(state, remoteParsed\), state\.closedGone\)/.test(SCRIPT), 'the push’s union is normalized (L-B) and bounded');
   ok(/closedBooksMaxYear\(\{ budget: ciBudgetWas \}, state\)/.test(SCRIPT), 'a restore bounds by the later of the two program years');
   ok(/adoptFuture = closedBooksFuture\(parsed && parsed\.closedBooks, ns\.budget && ns\.budget\.programYear\)[\s\S]{0,1500}noteLedgerLookFromMerge\(adoptLook\);\s+[^\n]*\n\s+noteLedgerLookAfterSync\(lookWas/.test(SCRIPT), 'adoptRemote says it before the toast counts');
   const m = /if \(ch === 'bud-year'\) \{[\s\S]*?\n      return;/.exec(SCRIPT);
@@ -27543,6 +27545,97 @@ test('C8 re-check M-A: the merge, the push’s union and a restore all bound the
   eq(J(w.sync.lookNotes), [
     '20 closed books, from 2081–82 on, were set aside: they are for years this pack has not reached, so they were not made by a close-out here. Your own closed years are kept. If you expected them, ask a pack admin to look at the pack record.',
     'A closed book for 2090–91 was set aside: it is for a year this pack has not reached, so it was not made by a close-out here. Your own closed years are kept. If you expected it, ask a pack admin to look at the pack record.'], 'said once each');
+});
+
+/* M-B: an admin's delete of a closed year leaves a tombstone, and no stale device brings the year back. */
+test('C8 re-check M-B: a tombstone is cut to shape, one per year and archive, never lost by a merge, and names a book or season archive to drop', () => {
+  const x = sandbox(C8_SYNC_FNS);
+  const T = (year, archiveId, at, byUid) => ({ year, archiveId, at: at || '2027-10-01T10:00:00.000Z', byUid: byUid || 'u-admin' });
+  eq(J(x.normalizeClosedGone([T(2026, 'arc-26'), T(2026, 'arc-26', '2027-11-01T10:00:00.000Z'), { year: 1850, archiveId: 'x' }, { year: 'x' }, null, 'junk', [], T(2025, 'arc-25')])),
+    [T(2025, 'arc-25'), T(2026, 'arc-26')], 'junk and years out of range dropped; one per (year, archive), the earlier at');
+  eq(J(x.normalizeClosedGone(null)), [], 'not a list');
+  const big = J(x.normalizeClosedGone(Array.from({ length: 300 }, (_, i) => T(2000 + (i % 100), 'a' + i, '2027-01-01T00:00:' + String(i % 60).padStart(2, '0') + '.000Z'))));
+  eq(big.length, 200, 'the newest 200');
+  const long = J(x.normalizeClosedGone([{ year: 2026, archiveId: 'y'.repeat(500), at: 'z'.repeat(500), byUid: 'u'.repeat(500), evil: 1 }]))[0];
+  eq([long.archiveId.length, long.at.length, long.byUid.length, 'evil' in long], [120, 40, 120, false], 'strings cut, unknown keys dropped');
+  // A merge never takes one off, and the same either way round.
+  const a = [T(2025, 'arc-25')], b = [T(2026, 'arc-26')];
+  eq(J(x.mergeClosedGone(a, b)), J(x.mergeClosedGone(b, a)), 'commutative');
+  eq(J(x.mergeClosedGone(a, [])), a, 'a copy that lacks it cannot remove it');
+  eq(J(x.mergeClosedGone(x.mergeClosedGone(a, b), a)), J(x.mergeClosedGone(a, b)), 'idempotent');
+  // What one names.
+  eq([x.closedGoneHas(a, 2025, 'arc-25'), x.closedGoneHas(a, 2025, 'arc-other'), x.closedGoneHas(a, 2026, 'arc-25'), x.closedGoneHas([T(2025, '')], 2025, ''), x.closedGoneHas([T(2025, '')], 2026, ''), x.closedGoneHas([T(2025, '')], 2025, 'arc-25')],
+    [true, false, true, true, false, false], 'by archive id; a book with no id by its year; a new close-out of the year is not held back');
+  eq(J(x.closedGoneArchives([{ id: 'arc-25', kind: 'season', year: 2025 }, { id: 'arc-26', kind: 'season', year: 2026 }, { id: 'arc-25', kind: 'trails-end', year: 2025 }], a)).map((r) => r.id + ':' + r.kind),
+    ['arc-26:season', 'arc-25:trails-end'], 'a season archive goes, a Trail’s End import never');
+  // Books: dropped from either copy, before the cap and whatever the year; a year closed out again (a new id) stays.
+  const books = (l, t, look) => J(x.mergeClosedBooks(J(l), J(t), look, 2030, a)).map((bk) => bk.year + ':' + bk.archiveId);
+  eq(books([C8_BOOK_OF(2025, 'arc-25'), C8_BOOK_OF(2024, 'arc-24')], []), ['2024:arc-24'], 'this copy’s');
+  eq(books([], [C8_BOOK_OF(2025, 'arc-25')]), [], 'the other copy’s');
+  eq(books([C8_BOOK_OF(2025, 'arc-25b')], [C8_BOOK_OF(2025, 'arc-25')]), ['2025:arc-25b'], 'closed out again, a new id');
+  // And a record read on load.
+  const n = sandbox(C8N_FNS);
+  const st = J(n.normalizeState(Object.assign(preMigrationState(), { closedBooks: [C8_BOOK_OF(2024, 'arc-24'), C8_BOOK_OF(2023, 'arc-23')], closedGone: [T(2024, 'arc-24'), { year: 'x' }] })));
+  eq([st.closedBooks.map((bk) => bk.archiveId), st.closedGone.map((t) => t.archiveId)], [['arc-23'], ['arc-24']], 'normalizeState: tombstoned book dropped, tombstone kept, junk cut');
+});
+test('C8 re-check M-B: a device that still holds a year an admin deleted does not bring it back when it saves, and the tombstone stays on both', () => {
+  const put = (books) => 'state.closedBooks = ' + JSON.stringify(books) + '; commit()';
+  const { a, b, server } = c3FsPair();
+  b.run(put([C8_BOOK_OF(2024, 'arc-24'), C8_BOOK_OF(2025, 'arc-25')]) + "; state.archives = [{ id: 'arc-25', kind: 'season', year: 2025 }]; commit()"); b.push();
+  a.hear();
+  eq(a.get('state.closedBooks.map(function (x) { return x.year; })'), [2024, 2025], 'A has both years');
+  eq(a.get('state.archives.map(function (x) { return x.id; })'), ['arc-25'], 'and the 2025 season summary');
+  // A, an admin, deletes 2025 (the page's own steps in del-season-confirm) and saves.
+  a.run("closedGoneAdd(2025, 'arc-25'); state.archives = []; state.closedBooks = state.closedBooks.filter(function (x) { return x.year !== 2025; }); commit()"); a.push();
+  eq([server().closedBooks.map((x) => x.year), server().closedGone.map((t) => [t.year, t.archiveId])], [[2024], [[2025, 'arc-25']]], 'the record');
+  // B has not heard: it still holds both years, and saves.
+  b.run(B1); b.hear(); b.push();
+  eq(server().closedBooks.map((x) => x.year), [2024], 'the record after the stale device saved: 2025 stays deleted');
+  eq(server().closedGone.map((t) => t.archiveId), ['arc-25'], 'and the tombstone is still there');
+  eq(server().archives.map((r) => r.id), [], 'and its season summary does not come back either');
+  eq(b.get('state.closedBooks.map(function (x) { return x.year; })'), [2024], 'B’s own copy has it gone too');
+  a.hear();
+  eq(a.get('[state.closedBooks.map(function (x) { return x.year; }), state.closedGone.length]'), [[2024], 1], 'A after');
+});
+test('C8 re-check M-B: the admin paths write the tombstone (deleting a closed year, keeping this device’s copy), a restore keeps this device’s, and a plain save takes the record’s in', () => {
+  ok(/closedGoneAdd\(dsSj\.year, dsSj\.archiveId\);/.test(SCRIPT), 'del-season-confirm writes it');
+  ok(/if \(canReopenStatement\(\)\) try \{\s*var keptParsed[\s\S]{0,700}keptLost\.forEach\(function \(b\) \{ closedGoneAdd\(b\.year, b\.archiveId\); \}\)/.test(SCRIPT), 'keeping this device’s copy writes it, an admin’s only');
+  ok(/state\.closedGone = mergeClosedGone\(ciGone, state\.closedGone\);/.test(SCRIPT) && /closedGoneArchives\(arrOf\(state\.archives\)\.filter/.test(SCRIPT), 'a restore keeps this device’s tombstones and drops what they name');
+  ok(/if \(!clobbered && remoteParsed\) \{\s*state\.closedGone = mergeClosedGone\(state\.closedGone, remoteParsed\.closedGone\);/.test(SCRIPT), 'a save that is not a merge takes the record’s tombstones in, whoever writes');
+  ok(/state\.closedGone = mergeClosedGone\(state\.closedGone, remote\.closedGone\);\s*\n\s*state\.closedBooks = mergeClosedBooks\(/.test(SCRIPT), 'the merge unions them before the books');
+  // Nothing else writes the list: the only assignments are the union, the merge, and normalize.
+  const writers = SCRIPT.split('\n').filter((l) => /closedGone\s*=[^=]/.test(l) && !/^\s*\/\//.test(l)).length;
+  eq(writers, 5, 'normalizeState, closedGoneAdd, the merge, the push’s union, and the restore');
+});
+test('C8 re-check M-B: a closed book with no season summary is a row of its own in Past seasons, and an admin deletes it with a reason, which writes the tombstone', () => {
+  const W = heldDispatchCtx('');
+  const run = (js) => vm.runInContext(js, W), got = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, W)));
+  run(`${['seasonBookOf', 'closedBookOf', 'closedBookOrphans', 'closedBookOrphanRow', 'closedBookBlockHtml', 'closedYearText', 'arrOf', 'delSeasonText', 'delSeasonSubject', 'closedGoneAdd', 'mergeClosedGone', 'normalizeClosedGone',
+    'ledgerActorUid', 'ledgerContactScrub', 'DEL_SEASON_REFUSED', 'DEL_SEASON_WHY_FIRST'].map(decl).join('\n')}
+    function closedBookLines() { return ['lines']; } function closedBookStatementsHtml() { return 'ST'; } function closedRvFormHtml() { return ''; } function canEdit() { return true; }
+    var logs = []; function logLedger(op, row, more) { logs.push([op, row, more.why]); }
+    state.archives = [{ id: 'arc-1', kind: 'season', year: 2026 }]; state.closedGone = [];
+    state.closedBooks = [${JSON.stringify(C8_BOOK_OF(2026, 'arc-1'))}, ${JSON.stringify(C8_BOOK_OF(2025, 'arc-0'))}]; ui.armed = null; ui.overlay = null; ui.archiveOpen = {};`);
+  eq(got('closedBookOrphans(state).map(function (b) { return b.year; })'), [2025], 'only the book no summary names');
+  run("canReopenStatement = function () { return false; }");
+  ok(/class="btiny"/.test(run("closedBookOrphanRow(state.closedBooks[1])")) === false, 'no ✕ for an editor');
+  run("canReopenStatement = function () { return true; }");
+  const row = run("closedBookOrphanRow(state.closedBooks[1])");
+  ok(/2025–26 closed book/.test(row) && /No season summary/.test(row) && /data-act="del-book:2025"/.test(row) && /data-id="book:2025"/.test(row), 'the row, with its ✕');
+  run("ui.archiveOpen['book:2025'] = true;");
+  ok(/closed-csv:entries:2025|ST/.test(run("closedBookOrphanRow(state.closedBooks[1])")) , 'opened, it shows the book');
+  // The delete: the screen, no reason, then two taps.
+  run("toasts = []; tap('del-book:2025');");
+  eq(got('ui.overlay'), { kind: 'del-season', id: 'book:2025' }, 'the screen');
+  eq(got('delSeasonSubject(ui.overlay).orphan'), true, 'about an orphan');
+  run("toasts = []; ui.delSeasonWhy = 'A copy of an old book'; tap('del-season-confirm'); tap('del-season-confirm');");
+  eq(got('[state.closedBooks.map(function (b) { return b.year; }), state.archives.length, state.closedGone.map(function (t) { return [t.year, t.archiveId]; }), toasts]'),
+    [[2026], 1, [[2025, 'arc-0']], ['Deleted the 2025–26 closed book']], 'the book is gone and tombstoned; the other year and its summary stay');
+  ok(/^The 2025–26 closed book, which had no season summary, was deleted from Past seasons\. Reason: A copy of an old book$/.test(got('logs')[0][2]), 'the log says why');
+  // An editor cannot start it, and the past-seasons list shows the row even with no season archives.
+  run("canReopenStatement = function () { return false; }; toasts = []; ui.overlay = null; tap('del-book:2026');");
+  eq(got('[ui.overlay, toasts]'), [null, ['Only a pack admin can delete a closed year.']], 'an editor is told');
+  ok(/var orphans = closedBookOrphans\(state\);\s*if \(!state\.archives\.length && !orphans\.length\)/.test(SCRIPT), 'listed even when there is no season archive');
 });
 
 /* ---------------- report ---------------- */

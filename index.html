@@ -3511,7 +3511,7 @@
       balooNoticeDismissed: false, // K1 — one-time "den campout says BALOO is not required" card on Home
       rev: 0,
       // Phase 3, C1 — the ledger's audit model (see normalizeState). Leaders only, never published.
-      ledgerAside: [], ledgerLog: [], statements: [], closedBooks: [], teImport: null
+      ledgerAside: [], ledgerLog: [], statements: [], closedBooks: [], closedGone: [], teImport: null
     };
     s.book.year = s.budget.programYear;
     return s;
@@ -4055,6 +4055,7 @@
     //   statements[]       each statement reconciled; the one book.reconciledThrough records is
     //                      synthesized here, 'st-' + its date, figures unknown (null), legacy
     //   closedBooks[]      years closed out (C8); objects only here
+    //   closedGone[]       closed years an admin deleted on purpose, [{ year, archiveId, at, byUid }]: a book or season archive with one of these ids is dropped by every merge, so a stale device cannot bring it back (C8, M-B)
     //   teImport           the Trail's End import in force, { batch, at }, or null (C9)
     // LEADERS ONLY: nothing here is published (buildParentView is an allowlist).
     if (typeof d.book.year !== 'number' || !isFinite(d.book.year) || Math.round(d.book.year) !== d.book.year) d.book.year = d.budget.programYear;
@@ -4101,7 +4102,9 @@
     if (!Array.isArray(d.closedBooks)) d.closedBooks = [];
     // Security re-check of C8-5..C8-10 (M-A) — and a book for a year the pack has not reached (past budget.programYear) is not a close-out
     // of this pack: it is dropped here, before the cap, so it cannot push a real year out (adoptRemote says so on "The ledger needs a look").
-    d.closedBooks = mergeClosedBooks(d.closedBooks.filter(plainObj).map(normalizeClosedBook).filter(function (b) { return !!b; }), [], undefined, d.budget.programYear);
+    // Security re-check of C8-5..C8-10 (M-B) — and not one an admin deleted on purpose (closedGone, below): the list is read first.
+    d.closedGone = normalizeClosedGone(d.closedGone);
+    d.closedBooks = mergeClosedBooks(d.closedBooks.filter(plainObj).map(normalizeClosedBook).filter(function (b) { return !!b; }), [], undefined, d.budget.programYear, d.closedGone);
     d.teImport = (plainObj(d.teImport) && typeof d.teImport.batch === 'string' && d.teImport.batch)
       ? { batch: d.teImport.batch, at: typeof d.teImport.at === 'string' ? d.teImport.at : '' } : null;
     // -----------------------------------------------------------------------
@@ -4658,6 +4661,7 @@
       }).sort(function (x, y) { return y.cents - x.cents; });
       return true;
     });
+    d.archives = closedGoneArchives(d.archives, d.closedGone);   // M-B: a season an admin deleted stays deleted
     // Wave 7: canonicalize times to 24h 'HH:MM'. Legacy data holds free-text like '9:00 AM';
     // new values already arrive as 'HH:MM' from <input type="time"> and pass through unchanged.
     if (Array.isArray(d.meetings)) {
@@ -8552,6 +8556,46 @@
     }
     return { books: list, compacted: compacted, trimmed: trimmed, fits: size(list) <= limit };
   }
+  // Security re-check of C8-5..C8-10 (M-B) — THE TOMBSTONES OF A CLOSED YEAR. An admin's delete of a closed year (Past seasons), or keeping this device's copy over
+  // one, removes its closed book and its season archive; the merge unions books by year and knows nothing of what was taken out, so a device still holding the
+  // year (a stale tab) brought it back at its next save, and the log still said it was deleted. A deletion now leaves a tombstone, state.closedGone:
+  // [{ year, archiveId, at, byUid }], written ONLY by an admin's path (del-season-confirm, keeping this device's copy, a restore), unioned by every merge
+  // (never removed by one: a save that does not carry it takes the record's in first), and read by mergeClosedBooks and closedGoneArchives, which drop a
+  // book or season archive whose archiveId is in it (a book with no archiveId, by its year). A year closed out AGAIN has a new archiveId, so it is not
+  // held back. Coerced here: a year 2000-2100, strings cut, one per (year, archiveId) (the earlier `at`, then the smaller JSON, so every device keeps the same),
+  // the newest 200. No clock is read. Pure.
+  function normalizeClosedGone(list) {
+    var seen = Object.create(null), out = [];
+    function str(v, n) { return typeof v === 'string' ? v.slice(0, n) : ''; }
+    (Array.isArray(list) ? list : []).forEach(function (t) {
+      if (!t || typeof t !== 'object' || Array.isArray(t)) return;
+      if (typeof t.year !== 'number' || !isFinite(t.year) || Math.round(t.year) !== t.year || t.year < 2000 || t.year > 2100) return;
+      var o = { year: t.year, archiveId: str(t.archiveId, 120), at: str(t.at, 40), byUid: str(t.byUid, 120) }, k = o.year + ':' + o.archiveId, was = seen[k];
+      if (was && (was.at < o.at || (was.at === o.at && JSON.stringify(was) <= JSON.stringify(o)))) return;
+      seen[k] = o;
+    });
+    Object.keys(seen).forEach(function (k) { out.push(seen[k]); });
+    out.sort(function (a, b) { return a.at < b.at ? -1 : a.at > b.at ? 1 : a.year - b.year || (a.archiveId < b.archiveId ? -1 : a.archiveId > b.archiveId ? 1 : 0); });
+    if (out.length > 200) out = out.slice(out.length - 200);
+    return out.sort(function (a, b) { return a.year - b.year || (a.archiveId < b.archiveId ? -1 : a.archiveId > b.archiveId ? 1 : 0); });
+  }
+  // An admin's deletion of a closed year, written down (state.closedGone): the year and the id of the book or season archive taken out, when and by whom (the
+  // account's uid; '' with no accounts). Only the admin paths call this. In place on `state`.
+  function closedGoneAdd(year, archiveId) {
+    state.closedGone = mergeClosedGone(state.closedGone, [{ year: year, archiveId: String(archiveId || ''), at: new Date().toISOString(), byUid: ledgerActorUid() }]);
+  }
+  // Two copies' tombstones as one (normalizeClosedGone of both): nothing is ever taken off. Pure.
+  function mergeClosedGone(mine, theirs) {
+    return normalizeClosedGone(arrOf(mine).concat(arrOf(theirs)));
+  }
+  // Is the closed book or season archive of `year` with id `archiveId` ('' for a book with no close-out record) tombstoned in `gone`? Pure.
+  function closedGoneHas(gone, year, archiveId) {
+    return arrOf(gone).some(function (t) { return !!t && (archiveId ? t.archiveId === archiveId : t.archiveId === '' && t.year === year); });
+  }
+  // `archives` (state.archives) without the season close-outs `gone` tombstones. A new array; Trail's End imports are never touched. Pure.
+  function closedGoneArchives(archives, gone) {
+    return arrOf(archives).filter(function (a) { return !(a && a.kind === 'season' && typeof a.id === 'string' && a.id && closedGoneHas(gone, a.year, a.id)); });
+  }
   // How complete a closed book is, for choosing between two of one year: a full book 2, a compact one 1, a compact one whose rows were
   // dropped too (ledgerTrimmed) 0. Pure.
   function closedBookRank(b) { return b && b.form === 'compact' ? (b.ledgerTrimmed ? 0 : 1) : 2; }
@@ -8591,16 +8635,17 @@
   // year where a different close-out took the place of this copy's ({ kind: 'bookreplaced' }: closedAt is
   // written by the client, so a later one wins only because the rules are not here), where the book came
   // across in a shorter form ('bookshorter'), and where a book with no close-out record was set aside
-  // ('booknameless'). No tombstone: the merge has no way to know a book was taken out on purpose, so a
-  // book an admin's keep-local dropped comes back from a copy that still has it unless the 'unclose' event
-  // in the log (keepLocalCopy writes it) says it was undone; that is what the server's S42 rule is for.
+  // ('booknameless'). A book an admin took out on purpose does not come back from a copy that still has it: it
+  // is tombstoned (state.closedGone, `gone` here; Security re-check of C8-5..C8-10, M-B), and a tombstoned book is dropped
+  // from either copy, whatever the program year says.
+  // Security re-check of C8-5..C8-10 (M-B) — `gone` (state.closedGone, both copies' as one): a book it tombstones is dropped, whichever copy holds it.
   // Security re-check of C8-5..C8-10 (M-A) — and a book is for a year this pack has reached: `maxYear` (when a whole number) is the
   // newest year a book may be for, the later of the two copies' program years (a close-out leaves a year closed that is the
   // program year before it, and an undone one leaves the year itself, so the bound is inclusive). A book above it is not a
   // close-out of this pack: it is set aside BEFORE the 20-year cap is applied, or an editor's copy with twenty books for
   // 2081-2100 would push the real books out as the newest-first cap kept them, silently; `look` says so ('bookfuture').
   // Oldest year first. Pure apart from `look`.
-  function mergeClosedBooks(mine, theirs, look, maxYear) {
+  function mergeClosedBooks(mine, theirs, look, maxYear, gone) {
     function rank(b) { return closedBookRank(b); }
     function named(b) { return typeof b.archiveId === 'string' && b.archiveId ? 1 : 0; }
     function better(a, b) {
@@ -8616,6 +8661,7 @@
     function valid(b) {
       if (!b || typeof b !== 'object' || typeof b.year !== 'number' || !isFinite(b.year)) return false;
       if (bounded && b.year > maxYear) { future[b.year] = true; return false; }
+      if (closedGoneHas(gone, b.year, typeof b.archiveId === 'string' ? b.archiveId : '')) return false;   // M-B: an admin deleted it on purpose
       return true;
     }
     function best(into, b) { if (!into[b.year] || better(b, into[b.year])) into[b.year] = b; }
@@ -15233,7 +15279,10 @@
     // seen from both sides. What this adds is counted, as a row is.
     var booksWere = arrOf(state.closedBooks).length;
     // (`remote` is normalizeState's, so the other copy's books are cut to shape already: normalizeClosedBook.)
-    state.closedBooks = mergeClosedBooks(state.closedBooks, remote.closedBooks, look, closedBooksMaxYear(state, remote));   // M-A: not past the later program year
+    // M-B — the tombstones of both copies first (nothing takes one off), then a book or season archive one names goes, from either.
+    state.closedGone = mergeClosedGone(state.closedGone, remote.closedGone);
+    state.closedBooks = mergeClosedBooks(state.closedBooks, remote.closedBooks, look, closedBooksMaxYear(state, remote), state.closedGone);   // M-A: not past the later program year
+    state.archives = closedGoneArchives(state.archives, state.closedGone);
     added += Math.max(0, arrOf(state.closedBooks).length - booksWere);
     // Phase 0 — ledger entries get the same append-only protection as popcorn sales, and
     // for a stronger reason: two leaders posting receipts from two devices must not be able
@@ -15879,7 +15928,14 @@
       // Security review of C8-1..4 (H1) — a device that may not remove a closed book (anyone but an admin, where there
       // are accounts) never writes one away: a write that is not a merge (the one copy this device was asked to
       // keep, or a rev it had seen) takes the record's closed books in first.
-      if (!clobbered && remoteParsed && accountsInForce() && !canReopenStatement()) state.closedBooks = mergeClosedBooks(state.closedBooks, closedBooksNormalized(remoteParsed.closedBooks), undefined, closedBooksMaxYear(state, remoteParsed));
+      // M-B — and whoever writes, the record's tombstones stay (a save that does not carry one is a stale device's, and cannot take it off): taken in first,
+      // and what one names is dropped here too.
+      if (!clobbered && remoteParsed) {
+        state.closedGone = mergeClosedGone(state.closedGone, remoteParsed.closedGone);
+        state.archives = closedGoneArchives(state.archives, state.closedGone);
+        state.closedBooks = mergeClosedBooks(state.closedBooks, [], undefined, undefined, state.closedGone);
+      }
+      if (!clobbered && remoteParsed && accountsInForce() && !canReopenStatement()) state.closedBooks = mergeClosedBooks(state.closedBooks, closedBooksNormalized(remoteParsed.closedBooks), undefined, closedBooksMaxYear(state, remoteParsed), state.closedGone);
       var nextRev = be.serverRevs ? remoteRev + 1 : Math.max(state.rev || 0, remoteRev) + 1;
       state.fmt = PACK_FORMAT;   // the reload gate: the format this page writes
       var record = {
@@ -16565,6 +16621,16 @@
     try { keptLost = closedBooksLost(state.closedBooks, (JSON.parse(typeof kept.remote.json === 'string' ? kept.remote.json : '') || {}).closedBooks); } catch (e) { keptLost = []; }
     // Security review of C8-1..4 (H1) — whenever a book is lost, whatever the program years say.
     if (keptLost.length) { logLedger('unclose', 'book', { why: closedBooksKeptOverWhy(keptLost) }); save(); }
+    // M-B — and the years it removes are tombstoned (their closed books, and the season archives this device lacks), so a stale device does not bring them back.
+    // (An admin's only: keepLocalNeedsAdmin has refused anyone else whenever a closed book is lost.)
+    if (canReopenStatement()) try {
+      var keptParsed = JSON.parse(typeof kept.remote.json === 'string' ? kept.remote.json : '') || {};
+      keptLost.forEach(function (b) { closedGoneAdd(b.year, b.archiveId); });
+      var keptHere = Object.create(null);
+      arrOf(state.archives).forEach(function (a) { if (a && typeof a.id === 'string') keptHere[a.id] = true; });
+      arrOf(keptParsed.archives).forEach(function (a) { if (a && a.kind === 'season' && typeof a.id === 'string' && a.id && typeof a.year === 'number' && !keptHere[a.id]) closedGoneAdd(a.year, a.id); });
+      if (state.closedGone.length) save();
+    } catch (e) { /* the copy was read above; nothing to tombstone */ }
     render();
     scheduleSyncPush(); // rev bumps past the cloud copy's in the push transaction
   }
@@ -25140,7 +25206,8 @@
   function renderPastSeasons() {
     var h = '<div class="card"><h2 class="section display">Past seasons <span class="pill navy">' + state.archives.length + '</span></h2>' +
       '<p class="small muted" style="margin:0 0 10px">Read-only records from previous years — Trail’s End sales imports and full season close-outs, for season-over-season comparison. Kept separate from this year’s pack record.</p>';
-    if (!state.archives.length) {
+    var orphans = closedBookOrphans(state);
+    if (!state.archives.length && !orphans.length) {
       h += '<div class="empty" style="margin:0">No past seasons saved yet. Import a Trail’s End Sales Transaction report above, or use <strong>Close out the year</strong> below when the program year wraps up.</div></div>';
       return h;
     }
@@ -25166,6 +25233,20 @@
       }
       h += '</div>';
     });
+    orphans.sort(function (x, y) { return y.year - x.year; }).forEach(function (b) { h += closedBookOrphanRow(b); });
+    return h + '</div>';
+  }
+  // Security re-check of C8-5..C8-10 (M-B) — a closed book whose season summary is not in the pack record: a row of its own, so the book can be read, and
+  // deleted by an admin (with a reason, as a close-out is), rather than sitting in the record where nothing lists it. Escaped.
+  function closedBookOrphanRow(b) {
+    var key = 'book:' + b.year, open = !!ui.archiveOpen[key];
+    var h = '<div class="block-card">' +
+      '<div class="spread"><button type="button" class="exp-toggle" data-act="toggle-archive" data-id="' + esc(key) + '" aria-expanded="' + open + '">' +
+      '<span class="chev">' + (open ? '▾' : '▸') + '</span><strong>' + esc(closedYearText(b.year)) + ' closed book</strong> <span class="pill navy">No season summary</span></button>' +
+      (canReopenStatement() ? '<button type="button" class="btiny" data-act="del-book:' + b.year + '" aria-label="Delete the ' + esc(closedYearText(b.year)) + ' closed book" title="Delete the ' + esc(closedYearText(b.year)) + ' closed book">✕</button>' : '') + '</div>' +
+      '<p class="small muted" style="margin:6px 0 0">This year’s closed book is in the pack record, but its season summary is not. ' +
+      (b.archiveId ? '' : 'It has no record of which close-out made it. ') + 'Its entries and statements are below.</p>';
+    if (open) h += '<div style="margin-top:10px">' + closedBookBlockHtml({ id: b.archiveId, year: b.year, kind: 'season', ledger: { inBook: true } }) + '</div>';
     return h + '</div>';
   }
 
@@ -31478,18 +31559,42 @@
   var DEL_SEASON_REFUSED = 'Only a pack admin can delete a closed year.';
   var DEL_SEASON_WHY_FIRST = 'Say why first, in a few words. It goes in the change history.';
   // What deleting a season's close-out removes, for its confirmation (`a` the archive, `book` its closed book or null). Plain text. Pure.
+  // `a.orphan` (Security re-check of C8-5..C8-10, M-B): a closed book whose season summary is not in the pack record, which is all there is to remove.
   function delSeasonText(a, book) {
+    if (a && a.orphan) {
+      return 'This removes the ' + closedYearText(a.year) + ' closed book: its entries, voided entries, statements and change history are gone from the pack record. ' +
+        'Only the snapshot downloaded at close-out still has them. The balances and entries carried into the new year stay. This can’t be undone here.';
+    }
     return 'This removes the ' + closedYearText(a.year) + ' season summary' + (book ? ' and its closed book: its entries, voided entries, statements and change history are gone from the pack record' : '') +
       '. Only the snapshot downloaded at close-out still has ' + (book ? 'them' : 'the season’s entries') + '. The balances and entries carried into the new year stay. This can’t be undone here.';
   }
+  // What a delete screen (ui.overlay kind 'del-season', `o.id` a season archive's id, or 'book:YEAR' for a closed book with no season summary) is about:
+  // { year, archiveId, arc: the archive or null, book: its closed book or null, orphan }, or null when it is no longer held. Reads the pack record.
+  function delSeasonSubject(o) {
+    var id = String((o && o.id) || '');
+    if (id.indexOf('book:') === 0) {
+      var year = +id.slice(5), ob = closedBookOrphans(state).filter(function (b) { return b.year === year; })[0];
+      return ob ? { year: ob.year, archiveId: ob.archiveId, arc: null, book: ob, orphan: true } : null;
+    }
+    var a = arrOf(state.archives).filter(function (x) { return x && x.id === id && x.kind === 'season'; })[0];
+    return a ? { year: a.year, archiveId: a.id, arc: a, book: seasonBookOf(a), orphan: false } : null;
+  }
+  // Security re-check of C8-5..C8-10 (M-B) — the closed books in `s` (a state) that no season archive in it names: the close-out's summary is gone (or never
+  // came), and Past seasons has no row to open or delete them by. Listed as a row of their own. Pure.
+  function closedBookOrphans(s) {
+    return arrOf(s && s.closedBooks).filter(function (b) {
+      return !!b && !arrOf(s.archives).some(function (a) { return !!a && a.kind === 'season' && a.year === b.year && a.id === b.archiveId; });
+    });
+  }
   // The confirmation for deleting a season's close-out (ui.overlay kind 'del-season'): what goes, a box for why, two taps. Escaped.
   function renderDelSeasonOverlay(o) {
-    var a = state.archives.filter(function (x) { return x.id === o.id && x.kind === 'season'; })[0];
-    if (!a) return '';
+    var sj = delSeasonSubject(o);
+    if (!sj) return '';
+    var a = { year: sj.year, orphan: sj.orphan };
     var armed = ui.armed === 'del-season-confirm';
     return '<div class="overlay" role="dialog" aria-modal="true" aria-label="Delete a close-out"><div class="overlay-inner">' +
-      '<div class="summary-sheet"><h1 style="margin:0 0 8px">Delete the ' + esc(closedYearText(a.year)) + ' close-out</h1>' +
-      '<p class="small" style="margin:0 0 10px">' + esc(delSeasonText(a, seasonBookOf(a))) + '</p>' +
+      '<div class="summary-sheet"><h1 style="margin:0 0 8px">Delete the ' + esc(closedYearText(a.year)) + (sj.orphan ? ' closed book' : ' close-out') + '</h1>' +
+      '<p class="small" style="margin:0 0 10px">' + esc(delSeasonText(a, sj.book)) + '</p>' +
       '<label class="small" for="delSeasonWhy" style="display:block;margin:0 0 4px">Why is it being deleted?</label>' +
       '<input class="lname" id="delSeasonWhy" data-ch="del-season-why" value="' + esc(ui.delSeasonWhy || '') + '" maxlength="200" style="width:100%">' +
       '<div class="row no-print" style="margin-top:14px"><button type="button" class="btn ' + (armed ? 'danger armed' : 'primary') + '" data-act="del-season-confirm">' +
@@ -33545,7 +33650,7 @@
       // the question is open.
       if (!canReopenStatement()) { ui.overlay = null; render(); showToast(RESTORE_REFUSED); return; }
       var ciLog = state.ledgerLog;
-      var ciSt = state.statements, ciYear = state.book ? state.book.year : undefined, ciArc = state.archives, ciRows = state.ledger, ciBooks = state.closedBooks, ciBudgetWas = state.budget;
+      var ciSt = state.statements, ciYear = state.book ? state.book.year : undefined, ciArc = state.archives, ciRows = state.ledger, ciBooks = state.closedBooks, ciBudgetWas = state.budget, ciGone = state.closedGone;
       state = restoreGone(ui.overlay.data, state.gone, Date.now());
       // Security re-check of C5 (R2) — and this device's past seasons, as they are here: a season's
       // close-out (its summary, statements and change history) is written once, on the device that
@@ -33557,7 +33662,9 @@
       // and locationHistoryFrom count it twice.
       var ciMine = arrOf(ciArc).filter(function (a) { return a && a.kind === 'season'; }), ciIds = Object.create(null), ciYears = Object.create(null);
       ciMine.forEach(function (a) { ciIds[a.id] = true; ciYears[a.year] = true; });
-      state.archives = arrOf(state.archives).filter(function (a) { return !ciIds[a && a.id] && !(a && a.kind === 'season' && ciYears[a.year]); }).concat(ciMine);
+      // Security re-check of C8-5..C8-10 (M-B) — and this device's tombstones are never lost to a backup: a year an admin deleted since does not come back with it.
+      state.closedGone = mergeClosedGone(ciGone, state.closedGone);
+      state.archives = closedGoneArchives(arrOf(state.archives).filter(function (a) { return !ciIds[a && a.id] && !(a && a.kind === 'season' && ciYears[a.year]); }).concat(ciMine), state.closedGone);
       // Phase 3, C8 (C8-4; owner decision 27) — and this device's closed books, by year: the backup's book
       // for a year this device has closed is this device's (as a season archive is), and a year the
       // backup lacks stays. A restore never drops a closed year, then. Restoring a backup from before a
@@ -33567,7 +33674,7 @@
       var ciBookYears = Object.create(null);
       arrOf(ciBooks).forEach(function (b) { if (b && typeof b.year === 'number') ciBookYears[b.year] = true; });
       state.closedBooks = mergeClosedBooks(arrOf(state.closedBooks).filter(function (b) { return !(b && ciBookYears[b.year]); }).concat(arrOf(ciBooks)), [], undefined,
-        closedBooksMaxYear({ budget: ciBudgetWas }, state));   // M-A: not past the later of this device's and the backup's program year
+        closedBooksMaxYear({ budget: ciBudgetWas }, state), state.closedGone);   // M-A: not past the later of this device's and the backup's program year
       var ciUndone = closedBooksUndone(state.closedBooks, state.book);
       if (ciUndone.length) logLedger('unclose', 'book', { why: closedBooksUndoneWhy(ciUndone) });
       // Security re-review of C2 (#1) — the book is the backup's, but its history is not: this
@@ -33764,15 +33871,17 @@
       if (!canReopenStatement()) { ui.overlay = null; ui.armed = null; render(); showToast(DEL_SEASON_REFUSED); return; }
       if (String(ui.delSeasonWhy || '').trim().length < 3) { showToast(DEL_SEASON_WHY_FIRST); return; }
       arm('del-season-confirm', function () {
-        var dsArc = state.archives.filter(function (a) { return a.id === dsO.id && a.kind === 'season'; })[0];
-        if (!dsArc) { ui.overlay = null; render(); return; }
-        var dsBook = seasonBookOf(dsArc), dsWhy = ledgerContactScrub(String(ui.delSeasonWhy || '').trim()).slice(0, 200);
-        state.archives = state.archives.filter(function (a) { return a.id !== dsO.id; });
+        var dsSj = delSeasonSubject(dsO);
+        if (!dsSj) { ui.overlay = null; render(); return; }
+        var dsArc = dsSj.arc, dsBook = dsSj.book, dsWhy = ledgerContactScrub(String(ui.delSeasonWhy || '').trim()).slice(0, 200);
+        closedGoneAdd(dsSj.year, dsSj.archiveId);   // M-B: a stale device cannot bring the year back
+        if (dsArc) state.archives = state.archives.filter(function (a) { return a.id !== dsArc.id; });
         if (dsBook) state.closedBooks = arrOf(state.closedBooks).filter(function (b) { return b !== dsBook; });
         delete ui.archiveOpen[dsO.id];
-        logLedger('unclose', 'book', { why: 'The ' + closedYearText(dsArc.year) + ' close-out was deleted from Past seasons' + (dsBook ? ', with its closed book' : '') + '. Reason: ' + dsWhy });
+        logLedger('unclose', 'book', { why: dsArc ? 'The ' + closedYearText(dsSj.year) + ' close-out was deleted from Past seasons' + (dsBook ? ', with its closed book' : '') + '. Reason: ' + dsWhy
+          : 'The ' + closedYearText(dsSj.year) + ' closed book, which had no season summary, was deleted from Past seasons. Reason: ' + dsWhy });
         ui.overlay = null; ui.delSeasonWhy = '';
-        if (commit()) showToast('Deleted the ' + closedYearText(dsArc.year) + ' close-out');
+        if (commit()) showToast(dsArc ? 'Deleted the ' + closedYearText(dsSj.year) + ' close-out' : 'Deleted the ' + closedYearText(dsSj.year) + ' closed book');
       });
       return;
     }
@@ -33813,6 +33922,11 @@
       var ca = (state.archives.filter(function (a) { return a.id === (ui.overlay && ui.overlay.id); })[0]);
       if (ca) copyText(archiveText(ca), function () { ui.overlay.copied = true; render(); });
       return;
+    }
+    if (act.indexOf('del-book:') === 0) {
+      // M-B — a closed book with no season summary (closedBookOrphans): deleted as a close-out is, by an admin, with a reason.
+      if (!canReopenStatement()) { showToast(DEL_SEASON_REFUSED); return; }
+      ui.delSeasonWhy = ''; ui.armed = null; ui.overlay = { kind: 'del-season', id: 'book:' + act.split(':')[1] }; render(); return;
     }
     if (act.indexOf('del-archive:') === 0) {
       // C8-8 (owner decision 28) — a season's close-out (with its closed book) is deleted only by an admin, with a reason, and the log says so.
