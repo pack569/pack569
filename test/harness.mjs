@@ -14042,6 +14042,7 @@ function apiSetup() {
       API.rules = await load('_lib/rules.js');
       API.http = await load('_lib/http.js');
       API.pack = await load('_lib/pack.js');
+      API.access = await load('_lib/access.js');
       API.fetches = 0;
       API.useTestKeys = () => API.token.setJwksFetcher(async () => { API.fetches++; return { keys: [API.jwk], maxAge: 3600 }; });
       API.useTestKeys();
@@ -15509,6 +15510,166 @@ test('api functions/ is plain modules: relative imports only, routes only under 
   eq(files.filter((f) => /^api\//.test(f)).sort(), ['api/pack/[id]/import.js', 'api/pack/[id]/index.js', 'api/pack/[id]/invites/[email].js',
     'api/pack/[id]/invites/index.js', 'api/pack/[id]/join.js', 'api/pack/[id]/members/[uid].js', 'api/pack/[id]/members/index.js',
     'api/pack/[id]/rev.js', 'api/pack/[id]/view.js', 'api/session.js'], 'the routes');
+});
+
+/* ================================================================
+   Position-based access, stage 1 (2026-10-01; the approved plan). functions/_lib/access.js holds
+   one table: the positions, the sections, what each position may do with each section, and
+   which section owns each key of the pack record. index.html carries a byte-identical copy
+   between the same markers. The server refuses a save that changes a key the caller can't edit.
+   ================================================================ */
+
+const ACCESS_SRC = readFileSync(join(ROOT, 'functions/_lib/access.js'), 'utf8');
+function accessCopy(text, where) {
+  const b = text.split('/*ACCESS-BEGIN*/'), e = text.split('/*ACCESS-END*/');
+  eq([b.length, e.length], [2, 2], where + ': the ACCESS markers, once each');
+  return text.slice(text.indexOf('/*ACCESS-BEGIN*/') + 16, text.indexOf('/*ACCESS-END*/'));
+}
+const ACCESS_JSON = () => JSON.parse(accessCopy(ACCESS_SRC, 'access.js'));
+
+test('positions: the access table in index.html is a byte-identical copy of the one in functions/_lib/access.js', () => {
+  const server = accessCopy(ACCESS_SRC, 'access.js'), page = accessCopy(SCRIPT, 'index.html');
+  ok(server === page, 'the two ACCESS tables differ: change both or neither');
+  const t = JSON.parse(server);
+  eq(Object.keys(t), ['positions', 'sections', 'denMeetingFields', 'access', 'keyOwner', 'goneOwner'], 'the table\'s parts');
+  ok(/^  var ACCESS_TABLE = \/\*ACCESS-BEGIN\*\/\{$/m.test(SCRIPT), 'index.html: var ACCESS_TABLE = /*ACCESS-BEGIN*/{');
+  ok(/^export const ACCESS_TABLE = \/\*ACCESS-BEGIN\*\/\{$/m.test(ACCESS_SRC), 'access.js: export const ACCESS_TABLE = /*ACCESS-BEGIN*/{');
+});
+
+test('positions: every position and every section is in the table, and the sections are the page\'s own', () => {
+  const t = ACCESS_JSON();
+  const ids = t.positions.map((p) => p.id);
+  eq(ids, ['chair', 'cubmaster', 'asstcub', 'denleader', 'asstden', 'treasurer', 'kernel', 'advancement', 'outdoor', 'membership', 'parent'], 'the positions');
+  ok(t.positions.every((p) => typeof p.label === 'string' && p.label), 'a position with no label');
+  eq(Object.keys(t.access), ids, 'access has one row per position, in order');
+  const levels = ['edit', 'read', 'hidden'];
+  for (const p of ids) {
+    const a = t.access[p];
+    eq(Object.keys(a), ['default', 'edit', 'hidden'], p + ': its row');
+    ok(levels.indexOf(a.default) >= 0, p + ': default level ' + a.default);
+    a.edit.concat(a.hidden).forEach((s) => ok(t.sections.indexOf(s) >= 0, p + ' names a section that is not one: ' + s));
+    ok(a.edit.every((s) => a.hidden.indexOf(s) === -1), p + ': a section both edited and hidden');
+  }
+  // WORKSPACES' sections (index.html), with Camping's trips as one section, and the two sub-sections.
+  const ws = slice('WORKSPACES');
+  const pageSecs = [...ws.matchAll(/\{ id: '([a-z]+)', label: '[^']*' \}/g)].map((m) => m[1]);
+  ok(pageSecs.length >= 19, 'too few WORKSPACES sections read: ' + pageSecs);
+  eq(t.sections.slice().sort(), pageSecs.concat(['camping', 'attendance', 'calendar.denmeeting']).sort(), 'the sections vs WORKSPACES');
+  eq(t.denMeetingFields, ['adventure', 'denAdv', 'note', 'noteInternal'], 'what a den leader may change on a den meeting');
+});
+
+test('positions: every key of the pack record, and every kind of deletion mark, has an owner', () => {
+  const t = ACCESS_JSON();
+  const owners = t.sections.concat(['admin', 'shared']);
+  for (const k of Object.keys(t.keyOwner)) {
+    const o = t.keyOwner[k];
+    (Array.isArray(o) ? o : [o]).forEach((s) => ok(owners.indexOf(s) >= 0, k + ' is owned by ' + s + ', which is no section'));
+    ok(!Array.isArray(o) || o.every((s) => s !== 'admin' && s !== 'shared'), k + ': a bucket inside a list');
+  }
+  Object.keys(t.goneOwner).forEach((g) => ok(t.sections.indexOf(t.goneOwner[g]) >= 0, 'gone.' + g + ' is owned by ' + t.goneOwner[g]));
+  ok(!('gone' in t.keyOwner), 'gone is split by sub-key, not owned whole');
+  const owned = (k) => k === 'gone' || Object.prototype.hasOwnProperty.call(t.keyOwner, k);
+  // 1. freshState's keys, and normalizeState's, as they run.
+  const ctx = sandbox(NORMALIZE_FNS.concat(['freshState']));
+  const fresh = ctx.freshState();
+  const after = ctx.normalizeState(JSON.parse(JSON.stringify(preMigrationState())));
+  for (const k of Object.keys(fresh).concat(Object.keys(after))) ok(owned(k), 'state.' + k + ' has no owning section (keyOwner)');
+  // 2. Every key normalizeState names (d.x), and every state.x anywhere in the page.
+  const named = new Set([...slice('normalizeState').matchAll(/\bd\.([A-Za-z_]\w*)/g)].map((m) => m[1])
+    .concat([...SCRIPT.matchAll(/\bstate\.([A-Za-z_]\w*)/g)].map((m) => m[1])));
+  ok(named.size > 40, 'too few state keys read: ' + named.size);
+  for (const k of named) ok(owned(k), 'state.' + k + ' (named in the page) has no owning section');
+  // 3. Every deletion log (freshGone, and whatever normalizeState keeps).
+  const goneLogs = Object.keys(sandbox(['freshGone']).freshGone());
+  ok(goneLogs.length >= 8, 'too few gone logs');
+  goneLogs.concat(Object.keys(after.gone || {})).forEach((g) => ok(Object.prototype.hasOwnProperty.call(t.goneOwner, g), 'gone.' + g + ' has no owner'));
+  // 4. The admin-only and shared buckets, as the plan has them.
+  eq(Object.keys(t.keyOwner).filter((k) => t.keyOwner[k] === 'admin').sort(), ['archives', 'closedBooks', 'closedGone'], 'the admin-only keys');
+  eq(Object.keys(t.keyOwner).filter((k) => t.keyOwner[k] === 'shared').sort(),
+    ['balooNoticeDismissed', 'fmt', 'movedNoticeDismissed', 'rev', 'startHereDismissed', 'version'], 'the shared keys');
+  eq([t.keyOwner.statements, t.keyOwner.ledger, t.keyOwner.events, t.keyOwner.attendance, t.goneOwner.ledger, t.goneOwner.scouts],
+    ['ledger', 'ledger', 'calendar', 'attendance', 'ledger', 'roster'], 'a few owners that matter');
+});
+
+test('positions: no access decision reads JOBS or myJobs (a leader edits their own job record; a job is a lens)', () => {
+  ok(!/\bJOBS\b|myJobs|hasJob|jobLabel/.test(codeOnly(ACCESS_SRC).replace(/^\/\/.*$/gm, '')), 'functions/_lib/access.js reads a job');
+  ok(!/\bJOBS\b|myJobs|hasJob/.test(accessCopy(SCRIPT, 'index.html')), 'the page\'s ACCESS table names a job');
+  // Nothing on the server knows the page's jobs at all.
+  const files = readdirSync(join(ROOT, 'functions'), { recursive: true }).filter((f) => /\.js$/.test(f));
+  for (const f of files) ok(!/\bJOBS\b|myJobs|hasJob/.test(codeOnly(readFileSync(join(ROOT, 'functions', f), 'utf8'))), f + ' reads a job');
+  // And no page function that will read the table (sectionAccess and friends, once they exist) reads one.
+  for (const n of ['sectionAccess', 'canEditSection', 'canSeeSection', 'effectiveAccess']) {
+    if (new RegExp(`^  function ${n}\\(`, 'm').test(SCRIPT)) ok(!/\bJOBS\b|myJobs|hasJob/.test(codeOnly(slice(n))), n + ' reads a job');
+  }
+});
+
+atest('positions: the table is the plan\'s matrix, assistants are their principals, and a parent sees nothing', async () => {
+  await apiSetup();
+  const A = API.access;
+  // The approved plan's matrix (2026-10-01), as letters, plus the owner's later decisions: the den
+  // meeting sub-section (a den leader picks the adventure and writes the notes) and attendance.
+  const cols = ['chair', 'cubmaster', 'denleader', 'treasurer', 'kernel', 'advancement', 'outdoor', 'membership'];
+  const plan = {
+    home: 'RRRRRRRR', calendar: 'EERRRRRR', 'calendar.denmeeting': 'EEERRRRR', attendance: 'EEERRRRR',
+    denplan: 'REERRRRR', derby: 'EERRRRRR', camping: 'RERRRRER', roster: 'RRRRRRRE', advancement: 'REERRERR',
+    joining: 'ERRRRRRE', storefronts: 'RRRRERRR', totals: 'RRRRERRR', rewards: 'RRRRERRR',
+    inventory: 'RRHREHHH', council: 'RRHREHHH',
+    budget: 'ERRERRRR', ledger: 'ERHERHHH', dues: 'ERHERHHH', fundraisers: 'ERHERHHH',
+    sharing: 'RRRRRRRR', people: 'ERHRRRRR', season: 'EERRRRRR'
+  };
+  const L = { E: 'edit', R: 'read', H: 'hidden' };
+  eq(Object.keys(plan).sort(), A.SECTIONS.slice().sort(), 'the plan covers every section');
+  for (const s of A.SECTIONS) cols.forEach((p, i) => eq(A.ACCESS[p][s], L[plan[s][i]], `${p} / ${s}`));
+  eq(A.ACCESS.asstcub, A.ACCESS.cubmaster, 'the Assistant Cubmaster is the Cubmaster');
+  eq(A.ACCESS.asstden, A.ACCESS.denleader, 'the Assistant Den Leader is the Den Leader');
+  ok(A.SECTIONS.every((s) => A.ACCESS.parent[s] === 'hidden'), 'a parent position sees a section');
+  eq(Object.keys(A.ACCESS), A.POSITIONS, 'ACCESS has every position');
+});
+
+atest('positions: effectiveAccess — admin edits all, a legacy editor all but the admin bucket, a viewer reads, a leader gets the most of their positions', async () => {
+  await apiSetup();
+  const A = API.access, all = A.SECTIONS.concat(['admin', 'shared']);
+  const every = (acc, lvl) => all.every((s) => acc[s] === lvl);
+  ok(every(A.effectiveAccess('admin', []), 'edit'), 'admin');
+  const ed = A.effectiveAccess('editor', ['kernel']);
+  ok(A.SECTIONS.concat(['shared']).every((s) => ed[s] === 'edit') && ed.admin === 'read', 'editor: ' + JSON.stringify(ed));
+  ok(every(A.effectiveAccess('viewer', ['chair']), 'read'), 'viewer (positions ignored)');
+  for (const r of ['parent', 'pending', 'none', '', undefined, 'Admin']) ok(every(A.effectiveAccess(r, ['chair']), 'hidden'), 'role ' + r);
+  // The most permissive of several positions.
+  const two = A.effectiveAccess('leader', ['denleader', 'treasurer']);
+  eq([two.ledger, two.inventory, two.attendance, two.calendar, two['calendar.denmeeting'], two.roster, two.shared, two.admin],
+    ['edit', 'read', 'edit', 'read', 'edit', 'read', 'edit', 'read'], 'Den Leader + Treasurer (hidden and read is read)');
+  eq(A.effectiveAccess('leader', ['denleader', 'kernel']).inventory, 'edit', 'hidden loses to edit');
+  eq(A.effectiveAccess('leader', ['denleader', 'advancement']).inventory, 'hidden', 'hidden and hidden');
+  // No positions, or none this file knows: nothing to edit, nothing to see but the buckets.
+  for (const ps of [[], null, ['cor'], ['__proto__', 'constructor'], [1, {}]]) {
+    const e = A.effectiveAccess('leader', ps);
+    ok(A.SECTIONS.every((s) => e[s] === 'hidden') && e.shared === 'read' && e.admin === 'read', 'leader with ' + JSON.stringify(ps));
+  }
+  eq(A.effectiveAccess('leader', ['parent']).home, 'hidden', 'a leader whose only position is Parent');
+  // Full calendar carries the den meeting sub-section with it.
+  ok(A.POSITIONS.every((p) => A.ACCESS[p].calendar !== 'edit' || A.ACCESS[p]['calendar.denmeeting'] === 'edit'), 'calendar edit without den meetings');
+  // canEditOwner: a list is any of; a bucket only by name.
+  const k = A.effectiveAccess('leader', ['kernel']);
+  eq([A.canEditOwner(k, ['totals', 'budget']), A.canEditOwner(k, 'budget'), A.canEditOwner(k, 'admin'), A.canEditOwner(k, 'shared'), A.canEditOwner(k, 'nope')],
+    [true, false, false, true, false], 'canEditOwner');
+  eq([A.ownerOfKey('archives'), A.ownerOfKey('somethingNew'), A.ownerOfKey('constructor'), A.ownerOfKey('__proto__'), A.ownerOfGone('ledger'), A.ownerOfGone('later')],
+    ['admin', 'admin', 'admin', 'admin', 'ledger', 'admin'], 'unknown keys fail closed');
+});
+
+atest('positions: sameJson compares objects by key whatever the order, arrays in order, and does not recurse', async () => {
+  await apiSetup();
+  const S = API.access.sameJson;
+  ok(S({ a: 1, b: [1, { c: 2, d: null }] }, JSON.parse('{"b":[1,{"d":null,"c":2}],"a":1}')), 'reordered keys');
+  ok(!S([1, 2], [2, 1]), 'an array reordered is a change');
+  ok(!S({ a: 1 }, { a: 1, b: null }), 'an added key');
+  ok(!S({ a: [] }, { a: {} }) && !S({ a: null }, { a: {} }) && !S('1', 1) && !S(0, false), 'types');
+  ok(!S(JSON.parse('{"__proto__":1}'), {}), 'a __proto__ key is a key');
+  let deepA = 0, deepB = 0;
+  for (let i = 0; i < 200000; i++) { deepA = [deepA]; deepB = [deepB]; }
+  ok(S(deepA, deepB), 'two records nested 200,000 deep');
+  deepB = [deepB];
+  ok(!S(deepA, deepB), 'one level more');
 });
 
 /* ================================================================
@@ -19096,7 +19257,8 @@ test('C3: nothing outside the book’s own plumbing reads the voided rows, so no
   // Phase 3, C8 — closedBookBuild moves the voided rows to the year they were voided in (closed book or new book); it totals nothing from them.
   // Phase 3, C8 (C8-3) — and the carried rows, which are aside rows too: the Reconcile screen and the Entries block list them
   // (carriedRowsOf), and the tick handler ticks them; none of them is voided money, and reconcileTotals counts them only as an offset.
-  eq([...users].sort(), ['applyLedgerMerge', 'carriedBlockHtml', 'closedBookBuild', 'dropScout', 'freshState', 'handleAction', 'handleChange', 'isStateEmpty', 'keepLostVoids', 'ledgerAsideListHtml', 'ledgerAsideSettle', 'ledgerEntryLabel',
+  // Positions, stage 1 (2026-10-01) — ACCESS_TABLE names the key, to say which section owns it; it reads no row.
+  eq([...users].sort(), ['ACCESS_TABLE', 'applyLedgerMerge', 'carriedBlockHtml', 'closedBookBuild', 'dropScout', 'freshState', 'handleAction', 'handleChange', 'isStateEmpty', 'keepLostVoids', 'ledgerAsideListHtml', 'ledgerAsideSettle', 'ledgerEntryLabel',
     'ledgerLogNames', 'ledgerReverseSlot', 'ledgerScoutsHeld', 'ledgerUnvoidRow',
     // Phase 3, C5 — renderBankStatementSheet names an entry on a statement voided since; it totals nothing from it.
     'ledgerVoidRow', 'mergeLedgerRows', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderCloseoutOverlay', 'renderLedger', 'renderLedgerEntries', 'renderReconcile', 'renderRowChooser', 'restoreGone',

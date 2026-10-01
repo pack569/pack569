@@ -2030,6 +2030,100 @@
   var JOB_BY_ID = {};
   JOBS.forEach(function (j) { JOB_BY_ID[j.id] = j; });
   function jobLabel(id) { return JOB_BY_ID[id] ? JOB_BY_ID[id].label : ''; }
+  // POSITIONS (stage 1 of position-based access, 2026-10-01) — NOT jobs. A position is a
+  // permission an admin gives a leader account (member_positions on the server); a job above is
+  // a lens a leader can set on their own record. The two share some ids and labels and nothing
+  // else: no access decision may read JOBS or myJobs() (the harness checks).
+  // This is a byte-identical copy of the table in functions/_lib/access.js, which says what each
+  // position may edit and which section owns each key of the pack record; the server refuses a
+  // save that changes a key the leader can't edit. The harness fails if the copies differ.
+  // Not read by anything here yet: the page's own gates (canEdit) are unchanged until the client
+  // steps of the plan land.
+  var ACCESS_TABLE = /*ACCESS-BEGIN*/{
+    "positions": [
+      {"id": "chair", "label": "Committee Chair"},
+      {"id": "cubmaster", "label": "Cubmaster"},
+      {"id": "asstcub", "label": "Assistant Cubmaster"},
+      {"id": "denleader", "label": "Den Leader"},
+      {"id": "asstden", "label": "Assistant Den Leader"},
+      {"id": "treasurer", "label": "Treasurer"},
+      {"id": "kernel", "label": "Popcorn Kernel"},
+      {"id": "advancement", "label": "Advancement Chair"},
+      {"id": "outdoor", "label": "Camping Chair"},
+      {"id": "membership", "label": "Membership Chair"},
+      {"id": "parent", "label": "Parent"}
+    ],
+    "sections": ["home", "calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "roster", "advancement", "joining", "storefronts", "totals", "rewards", "inventory", "council", "budget", "ledger", "dues", "fundraisers", "sharing", "people", "season"],
+    "denMeetingFields": ["adventure", "denAdv", "note", "noteInternal"],
+    "access": {
+      "chair": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "derby", "joining", "budget", "ledger", "dues", "fundraisers", "people", "season"], "hidden": []},
+      "cubmaster": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "advancement", "season"], "hidden": []},
+      "asstcub": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "advancement", "season"], "hidden": []},
+      "denleader": {"default": "read", "edit": ["calendar.denmeeting", "attendance", "denplan", "advancement"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers", "people"]},
+      "asstden": {"default": "read", "edit": ["calendar.denmeeting", "attendance", "denplan", "advancement"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers", "people"]},
+      "treasurer": {"default": "read", "edit": ["budget", "ledger", "dues", "fundraisers"], "hidden": []},
+      "kernel": {"default": "read", "edit": ["storefronts", "totals", "rewards", "inventory", "council"], "hidden": []},
+      "advancement": {"default": "read", "edit": ["advancement"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
+      "outdoor": {"default": "read", "edit": ["camping"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
+      "membership": {"default": "read", "edit": ["roster", "joining"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
+      "parent": {"default": "hidden", "edit": [], "hidden": []}
+    },
+    "keyOwner": {
+      "version": "shared",
+      "fmt": "shared",
+      "rev": "shared",
+      "startHereDismissed": "shared",
+      "movedNoticeDismissed": "shared",
+      "balooNoticeDismissed": "shared",
+      "events": "calendar",
+      "meetings": "calendar",
+      "rsvps": "calendar",
+      "attendance": "attendance",
+      "advNotes": "denplan",
+      "advPlanEdits": "denplan",
+      "derby": "derby",
+      "camping": "camping",
+      "scouts": "roster",
+      "advancement": "advancement",
+      "onboarding": "joining",
+      "welcome": "joining",
+      "recruitKit": "joining",
+      "storefronts": "storefronts",
+      "entries": "totals",
+      "packLoc": "totals",
+      "teImport": "totals",
+      "commissionPct": ["totals", "budget"],
+      "commissionPctOnline": ["totals", "budget"],
+      "goalCents": ["totals", "budget"],
+      "goalIsDerived": ["totals", "budget"],
+      "stretchGoalCents": ["totals", "budget"],
+      "cashGoalCents": ["totals", "budget"],
+      "cashThroughTrailsEnd": ["totals", "budget"],
+      "cashScoutPct": ["totals", "budget"],
+      "cashInCommission": ["totals", "budget"],
+      "cashInGoal": ["totals", "budget"],
+      "rewardTiers": "rewards",
+      "inventory": "inventory",
+      "popcornCouncil": "council",
+      "budget": "budget",
+      "ledger": "ledger",
+      "book": "ledger",
+      "ledgerAside": "ledger",
+      "ledgerLog": "ledger",
+      "statements": "ledger",
+      "charges": "dues",
+      "collected": "dues",
+      "fundraisers": "fundraisers",
+      "packName": "sharing",
+      "leaders": "people",
+      "densAdvancedYear": "season",
+      "densAdvancedSummary": "season",
+      "archives": "admin",
+      "closedBooks": "admin",
+      "closedGone": "admin"
+    },
+    "goneOwner": {"entries": "totals", "imports": "totals", "ledger": "ledger", "distributions": "inventory", "products": "inventory", "sales": "fundraisers", "fundraisers": "fundraisers", "scouts": "roster"}
+  }/*ACCESS-END*/;
   // Module-scope array guard. (normalizeSeasonArchive has its own `list()`, but that one is
   // local to it — this is the one everything outside the normalizer uses.)
   function arrOf(v) { return Array.isArray(v) ? v : []; }
