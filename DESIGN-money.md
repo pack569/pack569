@@ -1507,6 +1507,11 @@ API backend they send them in.
 - **Two different adults.** The leader who accepts must be neither the one who sent the report
   nor the parent who confirmed it. The server refuses both, and the page doesn't offer them.
   This is the cash box's own rule (`blockCashCheck`, "same person").
+- **A different family from the sender** (Keith, 2026-10-01). The accepting leader isn't in the
+  sender's family, by the scouts each account is linked to (`familyKeyOf`, siblings as one). If
+  they share one, only an override with a reason is left (`reportOverride: 'same-family'`). The
+  server holds the rule in the accept's own write (rules.js `sameFamily`, against the pack
+  record's rev). An account linked to no scout shares no family.
 - **Who verified the cash** (Keith, review round 1). On a shift with two or more families, the
   confirming parent. On a one-family shift, the accepting leader, because they collected and
   counted the cash at the end of the storefront ("I collected and counted this cash — accept").

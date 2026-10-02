@@ -562,6 +562,14 @@ pack record, so a parent who can send one still can't write anything else.
   refuses the same person as counter and verifier. A leader can send back a waiting or an
   accepted report, and must give a reason. The family then sends a corrected report as a new
   one.
+- **A different family from the sender** (Keith, 2026-10-01): the accepting leader must not be
+  in the sender's family. The server works out each account's families from the stored pack
+  record: the families of the scouts an admin has linked that account to on the Members card,
+  with brothers and sisters as one family. If the leader and the sender share one, the plain
+  accept and "I collected and counted this cash" are refused. The only way left is to accept
+  with a written reason, which is audited as an override, and the block says "accepted by
+  ‹leader› (same family as the sender)". If either account is linked to no scout, the accept
+  works as before. The rule reads links between people, never pack jobs.
 - **Who verified the cash** (Keith, review round 1). Every accepted report names who did:
   - **Two or more families on the shift:** the parent from the other family who confirmed it.
     The accepting leader is recorded as the approver.

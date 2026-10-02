@@ -4928,10 +4928,11 @@
             b.reportApprovedBy = typeof b.reportApprovedBy === 'string' ? b.reportApprovedBy : '';
             b.reportConfirmedBy = typeof b.reportConfirmedBy === 'string' ? b.reportConfirmedBy : '';
             // Review round 1 — which override: '' (none), 'second-parent' (two families, one signed),
-            // 'not-collected' (one family, the leader did not collect the cash); its reason; and
+            // 'not-collected' (one family, the leader did not collect the cash), 'same-family' (the leader
+            // is in the sender's family, Keith 2026-10-01); its reason; and
             // whether the accepting leader collected and counted the cash.
             b.reportOverride = b.reportOverride === true ? 'second-parent'
-              : (b.reportOverride === 'second-parent' || b.reportOverride === 'not-collected' ? b.reportOverride : '');
+              : (/^(second-parent|not-collected|same-family)$/.test(String(b.reportOverride)) ? b.reportOverride : '');
             b.reportOverrideNote = typeof b.reportOverrideNote === 'string' ? b.reportOverrideNote : '';
             b.reportCollected = b.reportCollected === true;
           }
@@ -22812,6 +22813,19 @@
   // Is my uid the one that sent it? The one that confirmed it?
   function srMine(r) { return !!(r && sync.user && r.submittedByUid && r.submittedByUid === sync.user.uid); }
   function srIConfirmed(r) { return !!(r && sync.user && r.confirmedByUid && r.confirmedByUid === sync.user.uid); }
+  // Keith (2026-10-01) — am I in the sender's family? The family keys (familyKeyOf) of the scouts
+  // whose parentUids hold my account, against the sender's: the server's rules.js sameFamily, on
+  // this device's copy of the record. Linked to no scout, either of us: no. Links only, never jobs.
+  function srSameFamily(r) {
+    if (!r || !sync.user || !r.submittedByUid) return false;
+    var fams = function (uid) {
+      var out = {};
+      state.scouts.forEach(function (sc) { if (sc && arrOf(sc.parentUids).indexOf(uid) !== -1) out[familyKeyOf(sc)] = true; });
+      return out;
+    };
+    var mine = fams(sync.user.uid), theirs = fams(r.submittedByUid);
+    return Object.keys(mine).some(function (k) { return theirs[k] === true; });
+  }
   // S-4 — does this report still need a second parent? And is anyone ABLE to give it: an account
   // linked (Members card) as a parent of a scout on the block from ANOTHER FAMILY than the sender
   // (review round 1: the server's shiftConfirmers, on this device's copy of the record)?
@@ -22863,6 +22877,8 @@
     'review-note': 'Say why you are sending it back.',
     'needs-confirm': 'This report needs a parent from another family on the shift to confirm it, or your written reason for accepting without one.',
     'not-collected': 'Say that you collected and counted this cash, or accept without collecting it and say why.',
+    'same-family': 'You’re in the same family as the parent who sent this, so another leader should accept it — or accept with a reason.',
+    'override-reason-family': 'Say why you are accepting it yourself.',
     'override-reason': 'Say why you are accepting it without a second parent.',
     'override-reason-collect': 'Say why you are accepting it without collecting the cash.',
     'not-found': 'This report is no longer on the server.',
@@ -22938,14 +22954,15 @@
     if (blk && ui.srOverride === r.id) {
       // An override: one parent's signature where two are needed, or a one-family shift whose cash
       // this leader did not collect. The reason goes to the server, the audit and the block.
-      var two = !!r.needsConfirm;
+      var two = !!r.needsConfirm, fam = srSameFamily(r);
       return h + '<form data-form="shift-report-override" class="sr-return" data-rid="' + esc(r.id) + '">' +
         (srReplaces(b, r) ? '<p class="small" style="margin:0"><strong>This block already has figures:</strong> Trail’s End ' + esc(fmt(b.salesCents || 0)) +
           ', cash ' + esc(fmt(b.donationsCents || 0)) + '. Accepting replaces them with the report’s.</p>' : '') +
-        '<label class="fld">' + (two ? 'Why accept without a second parent?' : 'Why accept without collecting the cash? Nobody will be named as having verified it.') +
+        '<label class="fld">' + (fam ? 'Why accept it yourself? You’re in the same family as the parent who sent it.'
+          : two ? 'Why accept without a second parent?' : 'Why accept without collecting the cash? Nobody will be named as having verified it.') +
         ' This is kept with the report and the season’s record.<textarea name="reason" rows="2" maxlength="300" required>' +
           esc(srReasonDraft('shift-report-override', r.id)) + '</textarea></label>' +
-        '<div class="sr-acts"><button type="submit" class="btn primary">' + (two ? 'Accept without a second parent' : 'Accept without collecting the cash') + '</button>' +
+        '<div class="sr-acts"><button type="submit" class="btn primary">' + (fam ? 'Accept with a reason' : two ? 'Accept without a second parent' : 'Accept without collecting the cash') + '</button>' +
         '<button type="button" class="btn ghost" data-act="sr-cancel">Cancel</button></div></form></div>';
     }
     if (blk && ui.srConfirm === r.id) {
@@ -22965,6 +22982,10 @@
     h += '<div class="sr-acts">';
     if (srMine(r)) h += '<span class="small warn" style="align-self:center">' + esc(LEADER_SR_SAY['same-person']) + '</span>';
     else if (srIConfirmed(r)) h += '<span class="small warn" style="align-self:center">' + esc(LEADER_SR_SAY.confirmer) + '</span>';
+    else if (blk && srSameFamily(r)) {
+      h += '<span class="small warn" style="align-self:center;flex:1 1 100%">' + esc(LEADER_SR_SAY['same-family']) + '</span>' +
+        '<button type="button" class="btn" data-act="sr-override-open" data-rid="' + esc(r.id) + '">Accept with a reason</button>';
+    }
     else if (blk && r.needsConfirm && r.confirmed) h += '<button type="button" class="btn primary" data-act="sr-accept" data-rid="' + esc(r.id) + '">Accept totals</button>';
     else if (blk && r.needsConfirm) h += '<button type="button" class="btn" data-act="sr-override-open" data-rid="' + esc(r.id) + '">Accept without a second parent</button>';
     else if (blk && r.salesCashCents > 0) {
@@ -23140,7 +23161,8 @@
     var from = 'From ' + (b.reportFrom || 'a family') + '’s report', by = b.reportApprovedBy, how;
     if (!by) how = from + ', verified by ' + (b.cashVerifiedBy || 'a leader') + '.';
     else if (b.reportOverride) {
-      how = from + ', accepted by ' + by + (b.reportOverride === 'not-collected' ? ' without collecting the cash' : ' without a second parent') +
+      how = from + ', accepted by ' + by + (b.reportOverride === 'same-family' ? ' (same family as the sender)'
+        : b.reportOverride === 'not-collected' ? ' without collecting the cash' : ' without a second parent') +
         (b.reportOverrideNote ? ': “' + b.reportOverrideNote + '”' : '') + '.';
     } else if (b.reportConfirmedBy) how = from + ', confirmed by ' + b.reportConfirmedBy + ', accepted by ' + by + '.';
     else if (b.reportCollected) how = from + ', collected and counted by ' + by + ', who accepted it.';
@@ -23232,12 +23254,14 @@
     if (!r || r.status !== 'submitted' || !blk) { showToast('That report isn’t waiting any more.'); loadShiftReports(); return; }
     if (srMine(r)) { showToast(LEADER_SR_SAY['same-person']); return; }
     if (srIConfirmed(r)) { showToast(LEADER_SR_SAY.confirmer); return; }
+    // Keith (2026-10-01): in the sender's family, only an override with a reason (the server holds it too).
+    var same = srSameFamily(r);
     var confirmed = !!(r.needsConfirm && r.confirmed);
-    var collected = !r.needsConfirm && o.collected === true;
-    var override = !confirmed && !collected;
+    var collected = !same && !r.needsConfirm && o.collected === true;
+    var override = same || (!confirmed && !collected);
     var reason = override ? shiftReportNote(o.reason).slice(0, SHIFT_REPORT_NOTE_MAX) : '';
     if (override && o.reason === undefined) { ui.srOverride = rid; ui.srConfirm = null; render(); return; }
-    if (override && !reason) { showToast(LEADER_SR_SAY[r.needsConfirm ? 'override-reason' : 'override-reason-collect']); return; }
+    if (override && !reason) { showToast(LEADER_SR_SAY[same ? 'override-reason-family' : r.needsConfirm ? 'override-reason' : 'override-reason-collect']); return; }
     var b = blk.b;
     if (!override && !o.replaceOk && srReplaces(b, r)) { ui.srConfirm = rid; ui.srConfirmCollected = collected; render(); return; }
     ui.srConfirm = null;
@@ -23265,7 +23289,7 @@
     b.reportFrom = counted;
     b.reportApprovedBy = me;
     b.reportConfirmedBy = confirmed ? srNameClean(r.confirmedByName) : '';
-    b.reportOverride = override ? (r.needsConfirm ? 'second-parent' : 'not-collected') : '';
+    b.reportOverride = override ? (same ? 'same-family' : r.needsConfirm ? 'second-parent' : 'not-collected') : '';
     b.reportOverrideNote = reason;
     b.reportCollected = collected;
     delete b.reportReturned;

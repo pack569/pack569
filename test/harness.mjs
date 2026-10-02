@@ -16117,7 +16117,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'shiftReportsReconcile', 'shiftReportsAfterPush', 'returnShiftReport', 'leaderShiftReportAct', 'srHandEdited', 'getStorefront',
   'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout', 'shiftConfirmSubmit',
   'srIConfirmed', 'srFamiliesNow', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'familyKeyOf', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
-  'srSameFigures', 'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
+  'srSameFigures', 'srSameFamily', 'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
   'srScheduleRefresh', 'parentDoc', 'parentPreviewDoc', 'shiftReportOpenFor', 'shiftReportToday', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_DAYS', 'isoPlusDays',
   'srFormOpen', 'srMirror', 'srReasonDraft', 'srNameClean',
   'ledgerActor', 'ledgerActorName',
@@ -17686,7 +17686,7 @@ function srLeaderCtx(o) {
        'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srReasonDraft', 'srNameClean', 'ledgerStampClean', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout',
        'srIConfirmed', 'srFamiliesNow', 'srNeedsCheck', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'SR_CHECK_TE', 'SR_IMPORT_FIRST', 'familyKeyOf',
        'blockCashCheck', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
-       'srSameFigures', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
+       'srSameFigures', 'srSameFamily', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
        'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay'].map(decl).join('\n')}
     function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }`, ctx);
   const run = (js) => vm.runInContext(js, ctx);
@@ -18257,6 +18257,58 @@ atest('my shifts: each account gets the ids of its own scouts’ shifts — brot
   }
   v.db.raw.prepare('DELETE FROM parent_views').run();
   eq((await v.call('parent', 'GET', 'shiftReports')).body.myShifts, [], 'no parent view');
+});
+
+/* Keith (2026-10-01) — the leader who accepts a report is from a different family than the sender
+   (rules.js sameFamily, from the stored pack record's parentUids). Same family: only an override
+   with a reason. An account linked to no scout shares no family. */
+atest('same family: a leader in the sender’s family accepts only with a reason — siblings count — and an unlinked leader accepts as before', async () => {
+  const w = await s4World();
+  const link = (uid, scoutIds) => {
+    const st = JSON.parse(w.one('SELECT json FROM pack_state').json);
+    st.scouts.forEach((sc) => { if (scoutIds.indexOf(sc.id) !== -1) sc.parentUids = (sc.parentUids || []).concat([uid]); });
+    w.db.raw.prepare('UPDATE pack_state SET json = ?, rev = rev + 1').run(JSON.stringify(st));
+  };
+  // One family on b2 (Bo and Cy, famB): newbie sends it. The editor is linked to Cy only — a sibling of Bo.
+  const r2 = (await w.send('newbie', 'b2')).body.report.id;
+  link('uid-editor', ['s3']);
+  const acc = (who, rid, over) => w.act(who, rid, Object.assign({ action: 'accept', teCents: 12345, cashCents: 2500 }, over || {}));
+  const c = await acc('editor', r2, { collected: true });
+  eq([c.status, c.body.error], [409, 'same-family'], 'a sibling-linked leader’s collected accept');
+  eq((await acc('editor', r2, {})).body.error, 'same-family', 'a plain accept');
+  eq((await acc('editor', r2, { override: true, reviewNote: '  ' })).body.reason, 'review-note', 'an override with no reason');
+  eq(w.sql("SELECT count(*) AS n FROM audit WHERE action LIKE 'shift.accept%'")[0].n, 0, 'a refused accept was audited');
+  const o = await acc('editor', r2, { override: true, reviewNote: 'Only leader at the table' });
+  eq([o.status, o.body.report.status, o.body.report.overridden, o.body.report.collected], [200, 'accepted', true, false], 'the override, with a reason');
+  const a = w.audit('shift.accept.override').map((x) => JSON.parse(x.detail));
+  eq([a.length, a[0].sameFamily, a[0].reason, a[0].collected], [1, true, 'Only leader at the table', false], 'audited as an override, same family');
+  // Two families on b1: parent (Ada) sends, newbie confirms. The admin is linked to Ada's family: refused; the owner, linked to nobody: allowed.
+  const r1 = (await w.send('parent', 'b1')).body.report.id;
+  eq((await w.confirm('newbie', r1)).status, 200, 'confirmed by the other family');
+  link('uid-admin2', ['s1']);
+  eq((await acc('admin2', r1)).body.error, 'same-family', 'a leader linked to the sender’s own scout');
+  const ok1 = await acc('owner', r1);
+  eq([ok1.status, ok1.body.report.overridden], [200, false], 'an unlinked leader accepts as before');
+  eq(w.audit('shift.accept').length, 1, 'the plain accept’s audit');
+  // A link added between the server's read of the record and its write: the write names the rev.
+  const v = await s4World();
+  const rv = (await v.send('newbie', 'b2')).body.report.id;
+  const orig = v.db.batch;
+  v.db.batch = function (list) {
+    v.db.batch = orig;
+    const st = JSON.parse(v.one('SELECT json FROM pack_state').json);
+    st.scouts.find((sc) => sc.id === 's2').parentUids.push('uid-editor');
+    v.db.raw.prepare('UPDATE pack_state SET json = ?, rev = rev + 1').run(JSON.stringify(st));
+    return orig.call(v.db, list);
+  };
+  const late = await v.act('editor', rv, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
+  eq([late.status, late.body.error, v.one('SELECT status FROM shift_reports WHERE id = ?', rv).status], [409, 'report-moved', 'submitted'],
+    'a link added while the accept was on its way');
+  // The rule itself, pure.
+  const R = API.rules, pack = { scouts: [{ id: 'a', parentUids: ['u1'] }, { id: 'b', familyId: 'f', parentUids: ['u2'] }, { id: 'c', familyId: 'f', parentUids: ['u3'] }] };
+  eq([R.sameFamily(pack, 'u2', 'u3'), R.sameFamily(pack, 'u1', 'u2'), R.sameFamily(pack, 'u1', 'nobody'), R.sameFamily(pack, 'u1', 'u1'), R.sameFamily(null, 'u1', 'u1')],
+    [true, false, false, true, false], 'siblings, two families, unlinked, the same person, no record');
+  ok(!/job/i.test(R.sameFamily.toString() + R.familiesOf.toString()), 'the rule reads pack jobs');
 });
 
 atest('S-4: the table refuses a sender confirming their own, and an accept a second parent never signed with no reason', async () => {
@@ -18874,6 +18926,40 @@ test('my shifts: the family’s card lists their own scouts’ shifts first, mar
   // The page keeps ids only, whatever the answer carries.
   ok(/sr\.myShifts = arrOf\(r && r\.myShifts\)\.filter\(function \(x\) \{ return x && typeof x\.sfId === 'string' && typeof x\.blockId === 'string'; \}\)\s*\.map\(function \(x\) \{ return \{ sfId: x\.sfId, blockId: x\.blockId \}; \}\);/.test(slice('loadShiftReports')),
     'loadShiftReports keeps more than the ids');
+});
+
+atest('same family: the leader’s card hides the accept from a leader in the sender’s family, says why, and the override says so on the block', async () => {
+  const st = { scouts: [{ id: 's1', name: 'Ada', familyId: 'fam1', parentUids: ['uid-nora'] }, { id: 's2', name: 'Bo', familyId: 'fam1', parentUids: ['uid-ed'] }],
+    leaders: [{ id: 'l1', name: 'Sam Leader', uid: 'uid-ed' }], storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [
+      { id: 'b1', label: 'Block 1', start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }], salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '' }] }] };
+  const L = srLeaderCtx({ state: st, reports: [srRep({ salesCashCents: 500 })] });
+  eq(L.run("srSameFamily(srReport('rep-1'))"), true, 'brother and sister: one family');
+  const card = L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
+  ok(card.indexOf('You’re in the same family as the parent who sent this, so another leader should accept it — or accept with a reason.') !== -1 &&
+    /data-act="sr-override-open" data-rid="rep-1">Accept with a reason</.test(card), 'the words and the one way left');
+  ok(!/data-act="sr-accept|sr-also-cash/.test(card), 'a plain or collected accept offered');
+  L.run("acceptShiftReport('rep-1', { collected: true })");
+  eq([L.get('ui.srOverride'), L.block('b1').salesCents], ['rep-1', 0], 'the collected accept only opens the reason');
+  ok(/Why accept it yourself\? You’re in the same family as the parent who sent it\.[\s\S]*>Accept with a reason</.test(
+    L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))")), 'the reason form');
+  L.run("acceptShiftReport('rep-1', { reason: '' })");
+  eq(L.get('toasts').pop(), 'Say why you are accepting it yourself.', 'no reason');
+  L.run("acceptShiftReport('rep-1', { reason: 'Only leader at the table' })");
+  const b = L.block('b1');
+  eq([b.salesCents, b.reportOverride, b.reportOverrideNote, b.cashVerifiedBy, b.reportCollected, b.reportPending.override, !!b.reportPending.alsoCash],
+    [12345, 'same-family', 'Only leader at the table', '', false, true, false], 'an override: nobody named as verifier');
+  L.landed();
+  L.run('shiftReportsReconcile()');
+  eq(L.get('patches[0].body'), { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 500, override: true, reviewNote: 'Only leader at the table' }, 'the PATCH');
+  await L.answer(0);
+  ok(/From Nora Newfamily’s report, accepted by Sam Leader \(same family as the sender\): “Only leader at the table”\./.test(L.run('renderBlockReportLine(state.storefronts[0].blocks[0])')),
+    'the block says so');
+  // Linked to no scout, or another family: as before.
+  const U = srLeaderCtx({ reports: [srRep()] });
+  ok(/data-act="sr-accept-collected"/.test(U.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))")), 'an unlinked leader');
+  ok(!/job/i.test(codeOnly(slice('srSameFamily'))), 'the page’s rule reads pack jobs');
+  eq(sandbox(NORMALIZE_FNS).normalizeState(Object.assign(JSON.parse(JSON.stringify(preMigrationState())), { storefronts: [{ id: 'sf1', name: 'K', date: '2026-10-03',
+    blocks: [{ id: 'b1', label: 'B', assignments: [], reportId: 'r', reportOverride: 'same-family' }] }] })).storefronts[0].blocks[0].reportOverride, 'same-family', 'kept by normalizeState');
 });
 
 /* S-5 (Keith, 2026-10-01) — on the page: the family's third figure, and the leaders' "cash to

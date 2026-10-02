@@ -39,6 +39,12 @@
 //       leader accepts only as an override, with a written reason, and nobody is the verifier.
 //     · a leader who confirmed a report as a parent may not accept it (409 same-person);
 //     · the accept is recorded once, in accepted_* and accept_note, which nothing later changes.
+//   - Keith (2026-10-01): the accepting leader is from a DIFFERENT FAMILY than the sender (rules.js
+//     sameFamily, from the stored pack record's parentUids, read per rev as the confirm reads it).
+//     If they share one, a plain or collected accept is refused (409 same-family), and only an
+//     override with a written reason is left, audited shift.accept.override with sameFamily: true.
+//     The write lands only if the pack record's rev is still the one read. An account linked to no
+//     scout shares no family (allowed, as before); a pack with no record decides nothing either.
 //   - Sending back needs a reason, and works on a waiting report or an accepted one (a leader
 //     reopening a report that went in wrong). A family sends a corrected one as a new report.
 // Every change is compared in the write itself: the UPDATE names the state it was decided
@@ -48,10 +54,10 @@
 // win. The audit row is in the same batch and lands only with its own change.
 
 import { route, json, readObject, refuse, forbidden, notFound, badRequest, reportMoved, samePerson, notShiftParent, needsConfirm,
-  notCollected } from '../../../../_lib/http.js';
+  notCollected, sameFamilyRefused } from '../../../../_lib/http.js';
 import { withMember, auditIf } from '../../../../_lib/pack.js';
 import { canSubmitShiftReport, canReviewShiftReport, canReadAllShiftReports, shiftReportFiguresProblem, cleanReportNote, reportSalesCash,
-  SHIFT_REPORT_NOTE_MAX, shiftConfirmers, canConfirmShiftReport, shiftOfView, daysBetween, packToday, SHIFT_REPORT_DAYS } from '../../../../_lib/rules.js';
+  SHIFT_REPORT_NOTE_MAX, shiftConfirmers, sameFamily, canConfirmShiftReport, shiftOfView, daysBetween, packToday, SHIFT_REPORT_DAYS } from '../../../../_lib/rules.js';
 import { reportOut, readReport, readPackRecord, STILL_MEMBER, SUBMIT_ROLES } from './index.js';
 
 const REVIEW_ROLES = ['admin', 'editor'];
@@ -170,24 +176,28 @@ async function patch({ request, db, packId, role, user, member, params }) {
     // Who verified the cash. Two or more families: the confirming parent. One family: this leader,
     // who collected and counted it. Anything else is an override, with a written reason, and no
     // verifier: one parent's signature where two are needed, or a leader who did not collect it.
+    const rec = await readPackRecord(db, packId);
+    const same = !!rec && sameFamily(rec.pack, user.uid, row.submitted_by_uid);
     const confirmed = row.needs_confirm === 1 && !!row.confirmed_by_uid;
-    const collected = row.needs_confirm === 0 && b.collected === true;
-    const override = !confirmed && !collected;
-    if (override && b.override !== true) return row.needs_confirm === 1 ? needsConfirm() : notCollected();
+    const collected = !same && row.needs_confirm === 0 && b.collected === true;
+    const override = same || (!confirmed && !collected);
+    if (override && b.override !== true) return same ? sameFamilyRefused() : row.needs_confirm === 1 ? needsConfirm() : notCollected();
     const note = reviewNote(b.reviewNote, override);
     roles = REVIEW_ROLES;
     update = db.prepare("UPDATE shift_reports SET status = 'accepted', reviewed_by_uid = ?, reviewed_by_name = ?, reviewed_at = ?, " +
       'review_note = ?, overridden = ?, accepted_by_uid = ?, accepted_by_name = ?, accepted_at = ?, accept_note = ?, verified_by_leader = ?, ' +
       "updated_at = ?, stamp = ? WHERE pack_id = ? AND id = ? AND stamp = ? AND status = 'submitted' AND accepted_by_uid IS NULL " +
       'AND submitted_by_uid != ? AND (confirmed_by_uid IS NULL OR confirmed_by_uid != ?) AND te_cents = ? AND cash_cents = ? ' +
-      'AND sales_cash_cents = ? AND (needs_confirm = 0 OR confirmed_by_uid IS NOT NULL OR ? = 1) AND ' + STILL_MEMBER(roles))
+      'AND sales_cash_cents = ? AND (needs_confirm = 0 OR confirmed_by_uid IS NOT NULL OR ? = 1) AND ' +
+      (rec ? '(SELECT rev FROM pack_state WHERE pack_id = ?) = ? AND ' : '') + STILL_MEMBER(roles))
       .bind(user.uid, name, now, note, override ? 1 : 0, user.uid, name, now, note, collected ? 1 : 0, now, stamp, packId, rid, row.stamp,
-        user.uid, user.uid, b.teCents, b.cashCents, salesCash, override ? 1 : 0, packId, user.uid, ...roles);
+        user.uid, user.uid, b.teCents, b.cashCents, salesCash, override ? 1 : 0, ...(rec ? [packId, rec.rev] : []), packId, user.uid, ...roles);
     audit = override ? 'shift.accept.override' : 'shift.accept';
     detail = { report: rid, sfId: row.sf_id, blockId: row.block_id, teCents: row.te_cents, cashCents: row.cash_cents, salesCashCents: row.sales_cash_cents,
       submittedBy: row.submitted_by_uid, submittedByName: row.submitted_by_name, reviewerName: name, reviewNote: note, collected };
     if (row.confirmed_by_uid) { detail.confirmedBy = row.confirmed_by_uid; detail.confirmedByName = row.confirmed_by_name || ''; }
     if (override) detail.reason = note;
+    if (same) detail.sameFamily = true;
   } else if (action === 'salescash') {
     if (b.outcome !== null && b.outcome !== 'collected' && b.outcome !== 'converted') refuse(badRequest('outcome'));
     if (!Number.isInteger(b.salesCashCents) || b.salesCashCents <= 0) refuse(badRequest('sales-cash-cents'));
