@@ -13015,8 +13015,10 @@ test('D2: the day sheet carries the safety rules and the cash count, first names
   const rule = 'Buddy system · a parent with every scout, an adult at the table at all times · scouts stay at the table and never approach cars · two adults count the cash before it leaves the table';
   eq(ctx.STOREFRONT_SAFETY, rule, 'the safety line');
   // Popcorn-kernel review, round 1 (pack policy): sales cash is converted at the table.
-  const credit = 'Cash from popcorn sales: convert it to credit in the Trail’s End app (Cash to Credit) before you leave the table, and no later than midnight. ' +
-    'Converting doesn’t change the Trail’s End amount, and that parent keeps the cash. Cash donations stay in the jar for the pack.';
+  // Parent-experience review 21: before you leave the table; midnight only as Trail's End's cutoff.
+  const credit = 'Cash from popcorn sales: convert it to credit in the Trail’s End app (Cash to Credit) before you leave the table. ' +
+    '(Trail’s End’s own cutoff is midnight.) Converting doesn’t change the Trail’s End amount. The parent who converts it keeps that cash. ' +
+    'Cash donations stay in the jar and go to the leader collecting the money.';
   eq(ctx.STOREFRONT_CASH_TO_CREDIT, credit, 'the cash-to-credit line');
   const tl = txt.split('\n');
   const afterCount = tl.map((l, i) => /Cash counted by/.test(l) ? tl[i + 1] : null).filter((l) => l != null);
@@ -15745,7 +15747,8 @@ atest('api shift reports: a parent reads their own in full and only the status o
     { sfId: 'sfPast', blockId: 'b2', status: 'accepted' }, { sfId: 'sfPast', blockId: 'b3', status: 'submitted' },
     { sfId: 'sfPast', blockId: 'b4', status: 'withdrawn' }], 'other families\' reports: block and status only');
   for (const leak of ['77777', '55555', '44444', '4321', 'Nora', 'Newfamily', 'Jo', 'uid-newbie', theirs, 'Leaderson', 'uid-editor'])
-    ok(p.text.indexOf(leak) === -1, 'a parent\'s GET carries ' + leak);
+    // An amount as a JSON value (":4321"), so a timestamp or an id that happens to hold the digits is not a leak.
+    ok(p.text.indexOf(/^\d+$/.test(leak) ? ':' + leak : leak) === -1, 'a parent\'s GET carries ' + leak);
   // The other family sees the parent's block the same way, and their own in full.
   const n = await w.reports('newbie');
   eq([n.body.reports.length, n.body.others], [3, [{ sfId: 'sfPast', blockId: 'b1', status: 'accepted' }]], 'the second family\'s view');
@@ -15985,6 +15988,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout', 'shiftConfirmSubmit',
   'srIConfirmed', 'srFamiliesNow', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'familyKeyOf',
   'srScheduleRefresh', 'parentDoc', 'parentPreviewDoc', 'shiftReportOpenFor', 'shiftReportToday', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_DAYS', 'isoPlusDays',
+  'srFormOpen', 'srMirror', 'srReasonDraft',
   'ledgerActor', 'ledgerActorName',
   ...FORMAT_GATE_FNS];
 const CLIENT_SRC = CLIENT_FNS.map(decl).join('\n');
@@ -17205,14 +17209,16 @@ function srStatusCtx(o) {
     function todayISO() { return '2026-10-03'; }
     ${['esc', 'fmt', 'arrOf', 'isoPlusDays', 'SHIFT_REPORT_ROLES', 'SHIFT_REPORT_DAYS', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_NOTE_MAX',
        'SHIFT_REPORT_ATTEST', 'SHIFT_CONFIRM_ATTEST', 'SHIFT_REPORT_TE_HINT', 'SHIFT_REPORT_CASH_HINT', 'SHIFT_REPORT_CASH_POLICY', 'SHIFT_REPORT_INTRO',
-       'shiftReportNowHM', 'shiftReportsOffered', 'shiftReportCanSend', 'shiftReportToday', 'shiftReportOpenFor', 'shiftReportsOn', 'shiftReportFor', 'parentShiftReportStatus',
+       'shiftReportNowHM', 'shiftReportsOffered', 'shiftReportCanSend', 'shiftReportToday', 'SHIFT_REPORT_NOTE_HINT', 'srField', 'shiftReportOpenFor', 'shiftReportsOn', 'shiftReportFor', 'parentShiftReportStatus',
        'parentShiftReportForm', 'parentShiftReportCard', 'parentShiftLines', 'parentShiftConfirmForm'].map(decl).join('\n')}`, ctx);
   return ctx;
 }
 const SR_TODAY = '2026-10-03';
 const srEv = (date, blocks) => ({ kind: 'storefront', sfId: 'sf1', date, title: 'Kroger', detail: '',
   shifts: (blocks || ['b1']).map((b) => ({ when: '10:00 AM–12:00 PM', who: ['Ada'], blockId: b })) });
-const srLine = (ctx, ev, block) => vm.runInContext('parentShiftReportStatus', ctx)(ev, ev.shifts.find((s) => s.blockId === (block || 'b1')), SR_TODAY);
+// The line as the Storefront shift totals card draws it, buttons and all (parent-experience review 6:
+// elsewhere a shift line carries the status only).
+const srLine = (ctx, ev, block) => vm.runInContext('parentShiftReportStatus', ctx)(ev, ev.shifts.find((s) => s.blockId === (block || 'b1')), SR_TODAY, true);
 const srReport = (over) => Object.assign({ id: 'r1', sfId: 'sf1', blockId: 'b1', teCents: 12345, cashCents: 2500, note: '', status: 'submitted',
   mine: true, submittedByName: 'Test parent', reviewedByName: null, reviewNote: '' }, over || {});
 
@@ -17263,7 +17269,7 @@ atest('shift totals: a view built by the real buildParentView is one the server 
 
 test('shift totals: the button is there only on the API, signed in, approved, and for a shift today or up to 14 days back', () => {
   const on = (o, date) => srLine(srStatusCtx(o), srEv(date === undefined ? SR_TODAY : date));
-  const BTN = /data-act="shift-report-open" data-sf="sf1" data-block="b1">Enter shift totals</;
+  const BTN = /data-act="shift-report-open" data-sf="sf1" data-block="b1" aria-label="Enter shift totals for D20[\d-]+, 10:00 AM–12:00 PM">Enter shift totals</;
   for (const role of ['admin', 'editor', 'viewer', 'parent']) ok(BTN.test(on({ role })), role + ' gets the button');
   eq(on({ role: 'pending' }), '', 'pending');
   eq(on({ role: null }), '', 'no role');
@@ -17282,10 +17288,12 @@ test('shift totals: the button is there only on the API, signed in, approved, an
     [true, true, false, false], 'the window');
   // Never by job: the gate reads the role and nothing else.
   ok(!/myJobs|hasJob|JOBS/.test(codeOnly(slice('shiftReportsOn'))), 'the gate reads a job');
-  // In the shift line itself, beside the names.
-  const lctx = srStatusCtx({});
+  // In the shift line itself, beside the names: where it stands, and no buttons (parent-experience review 6).
+  const lctx = srStatusCtx({ reports: [srReport()] });
   const lines = vm.runInContext('parentShiftLines', lctx)(srEv(vm.runInContext('shiftReportToday()', lctx)));
-  ok(/<span class="sf-who">Ada<\/span><div class="sr-status no-print">/.test(lines), 'the status is not in the shift line');
+  ok(/<span class="sf-who">Ada<\/span><div class="sr-status no-print"><span class="sr-msg">Sent — waiting for a leader<\/span>/.test(lines), 'the status is not in the shift line');
+  ok(!/<button/.test(lines), 'a shift line outside the card carries buttons');
+  ok(/parentShiftReportStatus\(e, s, today, false\)/.test(slice('parentShiftLines')), 'the shift line asks for buttons');
   ok(/var today = shiftReportToday\(\);/.test(slice('parentShiftLines')), 'the shift line counts days by the device, not the pack');
 });
 
@@ -17293,15 +17301,15 @@ test('shift totals: each shift says where its totals stand — yours, someone el
   const line = (o) => srLine(srStatusCtx(o), srEv(SR_TODAY));
   const waiting = line({ reports: [srReport()] });
   ok(/Sent — waiting for a leader/.test(waiting) && /\$123\.45 Trail’s End · \$25\.00 cash/.test(waiting), 'your report, waiting');
-  ok(/data-act="shift-report-open" data-sf="sf1" data-block="b1" data-rid="r1">Edit</.test(waiting), 'no Edit on your waiting report');
-  ok(/data-act="shift-report-withdraw" data-rid="r1">Withdraw</.test(waiting), 'no Withdraw on your waiting report');
+  ok(/data-act="shift-report-open" data-sf="sf1" data-block="b1" data-rid="r1" aria-label="Edit your totals for D2026-10-03, 10:00 AM–12:00 PM">Edit</.test(waiting), 'no Edit on your waiting report');
+  ok(/data-act="shift-report-withdraw" data-rid="r1" aria-label="Withdraw your totals for D2026-10-03, 10:00 AM–12:00 PM">Withdraw</.test(waiting), 'no Withdraw on your waiting report');
   ok(!/Enter shift totals/.test(waiting), 'a second report offered beside your waiting one');
   ok(/Tap again to withdraw/.test(line({ reports: [srReport()], ui: { armed: 'shift-report-withdraw:r1' } })), 'Withdraw takes two taps');
   const done = line({ reports: [srReport({ status: 'accepted', reviewedByName: 'Sam' })] });
   ok(/Accepted by Sam/.test(done) && !/<button/.test(done), 'your report, accepted');
   const back = line({ reports: [srReport({ status: 'returned', reviewNote: 'The box had $30 <b>cash</b>' })] });
-  ok(/Sent back: The box had \$30 &lt;b&gt;cash&lt;\/b&gt;/.test(back), 'your report, sent back, with the leader’s reason escaped');
-  ok(/data-act="shift-report-open" data-sf="sf1" data-block="b1">Send a new report</.test(back), 'no way to send a new one');
+  ok(/Sent back by a leader: “The box had \$30 &lt;b&gt;cash&lt;\/b&gt;”\. Fix them and send new totals\./.test(back), 'your report, sent back, with the leader’s reason escaped');
+  ok(/data-act="shift-report-open" data-sf="sf1" data-block="b1" aria-label="Send new totals for D2026-10-03, 10:00 AM–12:00 PM">Send new totals</.test(back), 'no way to send a new one');
   // Another family's.
   const theirs = line({ others: [{ sfId: 'sf1', blockId: 'b1', status: 'submitted' }] });
   ok(/Totals sent by another family/.test(theirs) && !/<button/.test(theirs), 'another family’s, waiting: no button');
@@ -17320,7 +17328,7 @@ test('shift totals: each shift says where its totals stand — yours, someone el
   ok(/Totals sent by another family/.test(line({ role: 'admin', reports: [srReport({ mine: false, submittedByName: 'Nora' })] })), 'a leader previewing');
   // Outside the window a report still says where it stands, but nothing new is offered.
   const old = srLine(srStatusCtx({ reports: [srReport({ status: 'returned', reviewNote: 'x' })] }), srEv('2026-09-01'));
-  ok(/Sent back: x/.test(old) && !/<button/.test(old), 'an old sent-back report');
+  ok(/Sent back by a leader: “x”\. Give the corrected totals to a leader\./.test(old) && !/<button/.test(old), 'an old sent-back report');
   // No other family's amount or name can be drawn: the line never reads them off `others`.
   ok(!/others[\s\S]{0,80}(teCents|cashCents|submittedByName)/.test(codeOnly(slice('shiftReportFor'))), 'another family’s figures are read');
 });
@@ -17330,7 +17338,7 @@ test('shift totals: the card lists the last 14 days of shifts, newest first, and
     srEv('2026-09-01', ['b9']), srEv('2026-10-10', ['bF']), { kind: 'meeting', date: '2026-10-02', title: 'Pack meeting' }] };
   const card = (o) => vm.runInContext('parentShiftReportCard', srStatusCtx(o))(pv, SR_TODAY);
   const h = card({});
-  ok(/<h2 class="section display">Storefront shift totals<\/h2>/.test(h), 'the card');
+  ok(/<h2 class="section display" id="srCardHead" tabindex="-1">Storefront shift totals<\/h2>/.test(h), 'the card');
   eq((h.match(/class="sr-row"/g) || []).length, 3, 'one row per shift in the window');
   ok(h.indexOf('DPublix') < h.indexOf('DKroger') || h.indexOf('D2026-10-03') < h.indexOf('D2026-09-30'), 'newest first');
   ok(!/b9|bF/.test(h), 'a shift outside the window');
@@ -17341,9 +17349,10 @@ test('shift totals: the card lists the last 14 days of shifts, newest first, and
   // The form, under its own shift, drawn once, with what was typed kept.
   const f = card({ ui: { shiftReport: { sfId: 'sf2', blockId: 'b6', rid: '', te: '12.50', cash: '', note: 'Two "twenties"', attest: true, busy: false, problem: 'Enter the cash donations in dollars and cents, up to $10,000.' } } });
   eq((f.match(/<form data-form="shift-report" id="srForm"/g) || []).length, 1, 'one form');
-  ok(/name="te" inputmode="decimal" autocomplete="off" placeholder="0.00" aria-describedby="srTeHint" value="12.50"/.test(f) && /Two &quot;twenties&quot;<\/textarea>/.test(f), 'what was typed');
-  ok(/<label class="fld">Trail’s End amount \(\$\)<input/.test(f) && /<label class="fld">Cash donations \(\$\)<input/.test(f), 'the two figures, labelled as the leaders’ block labels them');
-  ok(/<label class="sr-attest"><input type="checkbox" name="attest" checked><span>I counted this shift’s cash donations, and the Trail’s End amount is this shift’s total in the Trail’s End app\.<\/span>/.test(f),
+  ok(/<input id="srTe" name="te" aria-describedby="srTeHint" class="money-in" inputmode="decimal" autocomplete="off" placeholder="0.00" value="12.50">/.test(f) &&
+    /Two &quot;twenties&quot;<\/textarea>/.test(f), 'what was typed');
+  ok(/<label for="srTe">Trail’s End amount \(\$\)<\/label>/.test(f) && /<label for="srCash">Cash donations \(\$\)<\/label>/.test(f), 'the two figures, labelled as the leaders’ block labels them');
+  ok(/<label class="sr-attest"><input type="checkbox" id="srAttest" name="attest" checked><span>I counted this shift’s cash donations, and the Trail’s End amount is this shift’s total in the Trail’s End app\.<\/span>/.test(f),
     'the signature, in the popcorn review’s words');
   ok(/role="alert">Enter the cash donations/.test(f), 'the problem, said under the form');
   ok(/>Send totals</.test(f) && /data-act="shift-report-cancel">Cancel</.test(f), 'the buttons');
@@ -17362,11 +17371,13 @@ test('shift totals: what a family types becomes whole cents, or a sentence sayin
   const d = { sfId: 'sf1', blockId: 'b1', rid: '', te: '123.45', cash: '25', note: '  Two\n twenties ', attest: true };
   eq(body(d), { body: { teCents: 12345, cashCents: 2500, note: 'Two twenties', attest: true, sfId: 'sf1', blockId: 'b1' } }, 'a new report');
   eq(body(Object.assign({}, d, { rid: 'r1' })), { body: { teCents: 12345, cashCents: 2500, note: 'Two twenties', attest: true, action: 'edit' } }, 'an edit');
-  eq(body(Object.assign({}, d, { te: '' })).problem, 'Enter the Trail’s End amount in dollars and cents, up to $10,000.', 'no Trail’s End amount');
-  eq(body(Object.assign({}, d, { cash: '10000.01' })).problem, 'Enter the cash donations in dollars and cents, up to $10,000.', 'over the cap');
+  eq([body(Object.assign({}, d, { te: '' })).problem, body(Object.assign({}, d, { te: '' })).field],
+    ['Enter the Trail’s End amount in dollars, like 125.50. Enter 0 if there were no sales. Up to $10,000.', 'te'], 'no Trail’s End amount');
+  eq(body(Object.assign({}, d, { cash: '10000.01' })).problem, 'Enter the cash donations in dollars, like 18.00. Enter 0 if the jar was empty. Up to $10,000.', 'over the cap');
   ok(!body(Object.assign({}, d, { cash: '10000' })).problem, 'the cap itself');
   eq(body(Object.assign({}, d, { note: 'x'.repeat(301) })).problem, 'Keep the note to 300 characters or fewer.', 'a long note');
-  eq(body(Object.assign({}, d, { attest: false })).problem, 'Tick the box to confirm you counted the cash.', 'unsigned');
+  eq([body(Object.assign({}, d, { attest: false })).problem, body(Object.assign({}, d, { attest: false })).field],
+    ['Check the box to say you counted the cash donations.', 'attest'], 'unsigned');
 });
 
 test('shift totals: every refusal the server can give has words a family can act on', () => {
@@ -17386,7 +17397,7 @@ test('shift totals: every refusal the server can give has words a family can act
     ok(m && m.indexOf(r) === -1 || r === 'note' || r === 'open' || r === 'accepted', `the raw reason ${r} is shown`);
     if (generic.indexOf(r) === -1) ok(m !== vm.runInContext('SHIFT_REPORT_SAY_ELSE', ctx), `${r} has no words of its own`);
   }
-  eq(say({ code: 'failed-precondition', reason: 'open' }), 'Another family has already sent totals for this shift. A leader is checking them.', 'a block taken');
+  eq(say({ code: 'failed-precondition', reason: 'open' }), 'Another family already sent totals for this shift. If you worked it with them, find it under Storefront shift totals and confirm it. Otherwise, ask a leader.', 'a block taken');
   eq(say({ code: 'invalid-argument', reason: 'too-old' }), 'This shift was more than 14 days ago. Give the totals to a leader instead.', 'too old');
   eq(say({ code: 'permission-denied', reason: 'forbidden' }), 'Your account can’t send shift totals. Ask a leader.', 'refused');
   eq(say({ code: 'unavailable', reason: '', message: 'Couldn’t reach the pack’s server.' }),
@@ -17446,7 +17457,7 @@ atest('shift totals: a family’s page lists, sends, edits and withdraws through
   par.run("shiftReportAct('shift-report-open', { dataset: { sf: 'sf1', block: 'b1' } })");
   eq(par.get('[ui.shiftReport.sfId, ui.shiftReport.blockId, ui.shiftReport.rid]'), ['sf1', 'b1', ''], 'the form opens for the shift');
   par.run(`shiftReportSubmit(${form({ te: '$123.45', cash: '25', note: 'Counted with the Smiths', attest: null })})`);
-  eq(par.get('[ui.shiftReport.problem, ui.shiftReport.busy]'), ['Tick the box to confirm you counted the cash.', false], 'unsigned: said, not sent');
+  eq(par.get('[ui.shiftReport.problem, ui.shiftReport.busy]'), ['Check the box to say you counted the cash donations.', false], 'unsigned: said, not sent');
   ok(par.log.indexOf('POST /P/shift-reports') < 0, 'an unsigned report was sent');
   par.reset();
   par.run(`shiftReportSubmit(${form({ te: '$123.45', cash: '25', note: 'Counted with the Smiths', attest: 'on' })})`);
@@ -17474,7 +17485,7 @@ atest('shift totals: a family’s page lists, sends, edits and withdraws through
   nb.run(`shiftReportSubmit(${form({ te: '1', cash: '1', note: '', attest: 'on' })})`);
   await settle([nb]);
   eq(nb.get('[ui.shiftReport, toasts[toasts.length - 1]]'),
-    [null, 'Another family has already sent totals for this shift. A leader is checking them.'], 'a block already taken');
+    [null, 'Another family already sent totals for this shift. If you worked it with them, find it under Storefront shift totals and confirm it. Otherwise, ask a leader.'], 'a block already taken');
   // Withdraw: two taps.
   par.run(`shiftReportAct('shift-report-withdraw', { dataset: { rid: '${rid}' } })`);
   eq(w.one('SELECT status FROM shift_reports').status, 'submitted', 'one tap withdrew it');
@@ -17539,7 +17550,7 @@ function srLeaderCtx(o) {
        'leaderReportsOn', 'canReviewReports', 'srReports', 'srReport', 'srWaiting', 'srBlockOf', 'srWhen', 'srMine', 'srReplaces',
        'LEADER_SR_SAY', 'leaderSrMessage', 'srNotNow', 'renderShiftReportCard', 'renderBlockReportLine', 'renderShiftReportsBanner',
        'srWaitingOn', 'acceptShiftReport', 'srLanded', 'srSettle', 'srRollback', 'shiftReportsReconcile', 'shiftReportsAfterPush',
-       'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout',
+       'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srReasonDraft', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout',
        'srIConfirmed', 'srFamiliesNow', 'srNeedsCheck', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'SR_CHECK_TE', 'SR_IMPORT_FIRST', 'familyKeyOf',
        'blockCashCheck', 'blocksInDayOrder'].map(decl).join('\n')}
     function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }`, ctx);
@@ -17696,7 +17707,7 @@ test('shift reports S-3: a viewer reads the card with no buttons, and the sender
   const E = srLeaderCtx({ reports: [srRep()] });
   const ed = E.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
   ok(/data-act="sr-accept-collected" data-rid="rep-1">I collected and counted this cash — accept</.test(ed) &&
-    /data-act="sr-override-open" data-rid="rep-1">Accept without collecting it</.test(ed) && /data-act="sr-return-open" data-rid="rep-1">Send back</.test(ed), 'an editor’s buttons');
+    /data-act="sr-override-open" data-rid="rep-1">Accept without collecting the cash</.test(ed) && /data-act="sr-return-open" data-rid="rep-1">Send back</.test(ed), 'an editor’s buttons');
   ok(/Check the Trail’s End amount against this shift in the Trail’s End unit dashboard before accepting\./.test(ed) &&
     /Run the Trail’s End shift import first if sign-ups changed in the app\. Once money is on the block, the import won’t change who’s on it\./.test(ed), 'the checks before accepting');
   // Their own report: no Accept, said why; the server refuses it anyway.
@@ -17750,7 +17761,7 @@ test('shift reports S-3: accepted money is money to the Trail’s End import, th
   ok(/shiftReportsOffered\(\)\) lines\.push\('  ' \+ DAY_SHEET_REPORT\)/.test(slice('daySheetText')) &&
     /shiftReportsOffered\(\) \? '<p class="small" style="margin:4px 0 0"><strong>' \+ esc\(DAY_SHEET_REPORT\)/.test(slice('renderDaySheet')), 'the day sheet line');
   eq(vm.runInContext('DAY_SHEET_REPORT', sandbox(['DAY_SHEET_REPORT'])), 'Before you leave: one parent sends these totals at pack569.com (Schedule, Storefront shift totals). ' +
-    'If two families worked this shift, a parent from the other family confirms them. Hand the cash donations to the leader collecting the money.', 'the wording');
+    'If more than one family worked this shift, a parent from another family confirms them. Hand the cash donations to the leader collecting the money.', 'the wording');
   const n = sandbox(NORMALIZE_FNS);
   const rec = JSON.parse(JSON.stringify(preMigrationState()));
   rec.storefronts = [{ id: 'sf1', name: 'K', date: '2026-10-03', blocks: [
@@ -18087,14 +18098,15 @@ atest('S-4: the table refuses a sender confirming their own, and an accept a sec
 
 test('S-4: the family page shows the second parent’s step, and the figures and Confirm only to a parent who may confirm', () => {
   const line = (o) => srLine(srStatusCtx(o), srEv(SR_TODAY));
-  ok(/Sent — waiting for a second parent from this shift/.test(line({ reports: [srReport({ needsConfirm: true, confirmed: false })] })), 'the sender, unconfirmed');
+  ok(/Sent\. Next, a parent from the other family opens Schedule on their phone and confirms it\./.test(line({ reports: [srReport({ needsConfirm: true, confirmed: false })] })), 'the sender, unconfirmed');
   ok(/Confirmed by Nora — waiting for a leader/.test(line({ reports: [srReport({ needsConfirm: true, confirmed: true, confirmedByName: 'Nora' })] })), 'the sender, confirmed');
   const may = line({ others: [{ sfId: 'sf1', blockId: 'b1', status: 'submitted', needsConfirm: true, confirmed: false, canConfirm: true, id: 'r9',
     teCents: 4800, cashCents: 300, note: 'x', submittedByName: 'Pat' }] });
-  ok(/Waiting for a second parent: check the totals and confirm/.test(may) && /\$48\.00 Trail’s End · \$3\.00 cash · sent by Pat/.test(may) &&
-    /data-act="shift-report-confirm-open" data-sf="sf1" data-block="b1" data-rid="r9">Check and confirm</.test(may), 'a parent who may confirm');
+  ok(/Another family sent these totals\. Check them, and confirm if they match\./.test(may) && /\$48\.00 Trail’s End · \$3\.00 cash donations · sent by Pat/.test(may) &&
+    /data-act="shift-report-confirm-open" data-sf="sf1" data-block="b1" data-rid="r9" aria-label="Check and confirm the totals for D2026-10-03, 10:00 AM–12:00 PM">Check and confirm</.test(may),
+    'a parent who may confirm');
   const mayNot = line({ others: [{ sfId: 'sf1', blockId: 'b1', status: 'submitted', needsConfirm: true, confirmed: false, canConfirm: false }] });
-  ok(/Waiting for a second parent from this shift/.test(mayNot) && !/<button|\$/.test(mayNot), 'a parent who may not');
+  ok(/Totals sent\. Waiting for a parent from another family on this shift to confirm them\./.test(mayNot) && !/<button|\$/.test(mayNot), 'a parent who may not');
   ok(/Totals sent and confirmed — waiting for a leader/.test(line({ others: [{ sfId: 'sf1', blockId: 'b1', status: 'submitted', needsConfirm: true, confirmed: true }] })),
     'another family’s, confirmed');
   ok(!/<button/.test(srLine(srStatusCtx({ preview: true, role: 'admin', others: [{ sfId: 'sf1', blockId: 'b1', status: 'submitted', needsConfirm: true,
@@ -18104,7 +18116,7 @@ test('S-4: the family page shows the second parent’s step, and the figures and
     teCents: 4800, cashCents: 300, note: 'One check', submittedByName: 'Pat' }], ui: { shiftConfirm: { rid: 'r9', sfId: 'sf1', blockId: 'b1', attest: false } } });
   const card = vm.runInContext('parentShiftReportCard', P)({ events: [srEv(SR_TODAY)] }, SR_TODAY);
   ok(/<form data-form="shift-report-confirm" id="srForm"/.test(card) && /Check the totals Pat sent/.test(card) && /\$48\.00/.test(card) &&
-    /“One check”/.test(card) && /name="attest"/.test(card) && />Confirm</.test(card), 'the confirm form');
+    /“One check”/.test(card) && /name="attest"/.test(card) && />Confirm totals</.test(card), 'the confirm form');
   ok(/If these don’t match what you counted, don’t confirm\./.test(card), 'what to do if they don’t match');
   const pa = /var PARENT_ACTS = \[([^\]]*)\]/.exec(SCRIPT)[1];
   ok(pa.indexOf("'shift-report-confirm-open'") >= 0, 'Confirm is not a parent action');
@@ -18182,7 +18194,7 @@ atest('S-4: end to end — two parents and a leader, and one parent and a leader
   eq([entry.canConfirm, entry.teCents, entry.id], [true, 12345, rid], 'what the second parent sees');
   nb.run(`shiftReportAct('shift-report-confirm-open', { dataset: { sf: 'sf1', block: 'b1', rid: '${rid}' } })`);
   nb.run("shiftConfirmSubmit({ values: {} })");
-  eq(nb.get('ui.shiftConfirm.problem'), 'Tick the box to confirm you counted the cash.', 'unsigned');
+  eq(nb.get('ui.shiftConfirm.problem'), 'Check the box to say these match what was counted at the table.', 'unsigned');
   nb.run("shiftConfirmSubmit({ values: { attest: 'on' } })");
   await settle([nb]);
   eq(w.one('SELECT confirmed_by_uid FROM shift_reports WHERE id = ?', rid).confirmed_by_uid, 'uid-newbie', 'confirmed on the server');
@@ -18393,7 +18405,7 @@ atest('round 1: a parent’s list reads the view first and the pack record only 
 test('round 1: the leader card’s buttons say who verifies the cash, and the confirmer is not offered Accept', () => {
   const card = (rep, o) => { const L = srLeaderCtx(Object.assign({ reports: [rep] }, o || {})); return L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))"); };
   const one = card(srRep());
-  ok(/>I collected and counted this cash — accept</.test(one) && />Accept without collecting it</.test(one) && !/>Accept totals</.test(one), 'one family');
+  ok(/>I collected and counted this cash — accept</.test(one) && />Accept without collecting the cash</.test(one) && !/>Accept totals</.test(one), 'one family');
   const two = card(srRep({ needsConfirm: true, confirmed: true, confirmedByName: 'Bo Parent', confirmedByUid: 'uid-bo' }));
   ok(/>Accept totals</.test(two) && !/collected and counted/.test(two), 'two families, confirmed');
   const solo = card(srRep({ needsConfirm: true, confirmed: false }));
@@ -18413,9 +18425,9 @@ atest('round 1: accepting a one-family shift without collecting it names nobody 
   const L = srLeaderCtx({ reports: [srRep()] });
   L.run("acceptShiftReport('rep-1', {})");
   eq(L.get('ui.srOverride'), 'rep-1', 'asks for the reason');
-  ok(/Why accept without collecting it\? Nobody will be named as having verified the cash\. This is kept with the report and the season’s record\./.test(
+  ok(/Why accept without collecting the cash\? Nobody will be named as having verified it\. This is kept with the report and the season’s record\./.test(
     L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))")) &&
-    />Accept without collecting it<\/button>/.test(L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))")), 'the form');
+    />Accept without collecting the cash<\/button>/.test(L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))")), 'the form');
   L.run("acceptShiftReport('rep-1', { replaceOk: true, reason: ' ' })");
   eq(L.get('toasts').pop(), 'Say why you are accepting it without collecting the cash.', 'a blank reason');
   L.run("acceptShiftReport('rep-1', { replaceOk: true, reason: 'Pat took it to the treasurer' })");
@@ -18513,19 +18525,22 @@ test('round 1: the different-family rule on the leader card, and the storefronts
 test('round 1: the family form says what each figure is, what to do with sales cash, and each signer signs for what they did', () => {
   const ctx = srStatusCtx({ ui: { shiftReport: { sfId: 'sf1', blockId: 'b1', rid: '', te: '', cash: '', note: '', attest: false } } });
   const f = vm.runInContext('parentShiftReportCard', ctx)({ events: [srEv(SR_TODAY)] }, SR_TODAY);
-  ok(/aria-describedby="srTeHint"[^>]*><span class="sr-hint" id="srTeHint">Everything entered in the Trail’s End app during this shift, card and cash, by every family on the shift\.<\/span>/.test(f),
-    'the Trail’s End hint');
-  ok(/id="srCashHint">Cash given without buying popcorn, from the donation jar\. Don’t count cash from popcorn sales or your starting change\. If a donation was entered in the app, it’s already in the Trail’s End amount, so leave it out here\.<\/span>/.test(f),
+  ok(/<div class="fld sr-field"><label for="srTe">Trail’s End amount \(\$\)<\/label><input id="srTe" name="te" aria-describedby="srTeHint" [^>]*><span class="sr-hint" id="srTeHint">Everything entered in the Trail’s End app during this shift, card and cash, by every family on the shift\.<\/span><\/div>/.test(f),
+    'the Trail’s End field: its label, its input, its hint outside the label');
+  ok(/<label for="srCash">Cash donations \(\$\)<\/label><input id="srCash" name="cash" aria-describedby="srCashHint" [^>]*><span class="sr-hint" id="srCashHint">Only the cash in the donation jar\. Leave out cash from popcorn sales, your starting change, and any donation already entered in the Trail’s End app\.<\/span>/.test(f),
     'the cash hint');
-  ok(/<strong>Convert any cash from popcorn sales to credit in the Trail’s End app before you leave\. Cash donations go to the leader collecting the money\.<\/strong>/.test(f), 'the sales-cash policy');
-  ok(/Worked a popcorn storefront shift\? Before you leave, one parent sends the shift’s totals for the whole table\. If another family worked it with you, a parent from that family confirms them here\. On two shifts in a row\? Send one for each shift, and count the donation jar when the shift changes\./.test(f),
+  ok(/<label for="srNote">Note for the leader \(optional\)<\/label><textarea id="srNote" name="note" aria-describedby="srNoteHint" [^>]*><\/textarea><span class="sr-hint" id="srNoteHint">Leaders and the other family on this shift can read this\. Don’t name scouts or share anything about a child\.<\/span>/.test(f),
+    'the note’s hint (youth-protection review 1)');
+  ok(/<strong>Convert any cash from popcorn sales to credit in the Trail’s End app before you leave the table\. \(Trail’s End’s own cutoff is midnight\.\) Cash donations stay in the jar and go to the leader collecting the money\.<\/strong><\/p><div class="sr-acts">/.test(f),
+    'the sales-cash policy, above the buttons');
+  ok(/Worked a popcorn table outside a store \(a storefront shift\)\? Before you leave, one parent sends the totals for the whole table\. If another family worked it with you, a parent from that family confirms them here\. Working two shifts in a row\? Send totals for each one, and count the donation jar when the shift changes\./.test(f),
     'the card’s intro');
   eq(vm.runInContext('SHIFT_CONFIRM_ATTEST', ctx), 'I worked this shift. These cash donations match what was counted at the table, and the Trail’s End amount matches the app.', 'the confirmer’s signature');
   ok(/esc\(SHIFT_CONFIRM_ATTEST\)/.test(slice('parentShiftConfirmForm')) && !/SHIFT_REPORT_ATTEST/.test(slice('parentShiftConfirmForm')), 'the confirmer signs the sender’s words');
   const say = sandbox(['SHIFT_REPORT_SAY']).SHIFT_REPORT_SAY;
-  eq([say.future, say['not-shift-parent'], say['too-many-open']], ['You can send totals on the day of the shift or after.',
+  eq([say.future, say['not-shift-parent'], say['too-many-open']], ['You can send totals once the shift has started.',
     'Only a parent from another family on this shift can confirm its totals. If that’s you, ask a leader to link your account to your scout.',
-    'You already have 3 shift reports waiting for a leader. Ask a leader to check those before you send more.'], 'the messages');
+    'You already have 3 sets of shift totals waiting for a leader. Ask a leader to check those before you send more.'], 'the messages');
 });
 
 test('round 1: "Enter shift totals" waits for the shift to start, by the pack’s clock', () => {
@@ -18574,7 +18589,7 @@ test('round 1: a family page reads the reports again each minute while a shift i
   const h = run({ events: inWin, hidden: true });
   vm.runInContext('timers[0].fn()', h);
   eq([vm.runInContext('loads', h), vm.runInContext('timers.length', h)], [0, 2], 'a hidden page waits for the next minute');
-  ok(/srScheduleRefresh\(\);\s*render\(\);/.test(slice('loadShiftReports')), 'each read schedules the next');
+  ok(/srScheduleRefresh\(\);\s*if \(!srFormOpen\(\)\) render\(\);/.test(slice('loadShiftReports')), 'each read schedules the next, and redraws only with no form open');
 });
 
 test('round 1: a scout on a shift whose totals still wait is not billed for missing a tier deadline', () => {
@@ -18627,6 +18642,102 @@ test('round 1: the season’s shift reports, as a leaders’ table and a CSV, wi
   ok(/Print or download this season’s record first\. <button type="button" class="btn small" data-act="sr-history-open">Shift reports this season<\/button>/.test(slice('renderCloseoutOverlay')),
     'not offered at close-out');
   ok(/'sr-history-open', 'sr-history-csv'/.test(slice('HELD_ACTS')), 'refused while the reload gate holds, though it only reads');
+});
+
+test('parent-experience review 1: what a family types survives a redraw — figures, note, box, a second parent’s box, a leader’s reason', () => {
+  const ctx = srStatusCtx({ ui: { shiftReport: { sfId: 'sf1', blockId: 'b1', rid: '', te: '', cash: '', note: '', attest: false, busy: false, problem: '' } } });
+  vm.runInContext(['srMirror', 'srReasonDraft'].map(decl).join('\n'), ctx);
+  const mirror = vm.runInContext('srMirror', ctx);
+  const el = (form, name, value, checked, rid) => ({ form: { dataset: { form, rid } }, name, value, checked });
+  ok(mirror(el('shift-report', 'te', '123.4')) && mirror(el('shift-report', 'cash', '18')) && mirror(el('shift-report', 'note', 'One check')) &&
+    mirror(el('shift-report', 'attest', 'on', true)), 'the family’s fields are kept as typed');
+  const f = vm.runInContext('parentShiftReportCard', ctx)({ events: [srEv(SR_TODAY)] }, SR_TODAY);
+  ok(/id="srTe" name="te"[^>]*value="123\.4"/.test(f) && /id="srCash" name="cash"[^>]*value="18"/.test(f) && />One check<\/textarea>/.test(f) &&
+    /id="srAttest" name="attest" checked/.test(f), 'a redraw puts back what was typed');
+  ok(!mirror(el('shift-report', 'other', 'x')) && !mirror({ form: null, name: 'te' }) && !mirror(el('ledger-add', 'te', 'x')), 'another field');
+  vm.runInContext("ui.shiftReport = null; ui.shiftConfirm = { rid: 'r9', sfId: 'sf1', blockId: 'b1', attest: false }", ctx);
+  ok(mirror(el('shift-report-confirm', 'attest', 'on', true)) && vm.runInContext('ui.shiftConfirm.attest', ctx) === true, 'the second parent’s box');
+  ok(mirror(el('shift-report-return', 'reason', 'Recount the jar', false, 'rep-1')) && mirror(el('shift-report-override', 'reason', 'Pat took it', false, 'rep-1')),
+    'a leader’s reasons');
+  eq([vm.runInContext("srReasonDraft('shift-report-return', 'rep-1')", ctx), vm.runInContext("srReasonDraft('shift-report-override', 'rep-1')", ctx)],
+    ['Recount the jar', 'Pat took it'], 'kept per form and report');
+  // …and the leader’s forms are drawn with it.
+  const L = srLeaderCtx({ reports: [srRep()] });
+  L.run("ui.srReasonText = { 'shift-report-return:rep-1': 'Recount <the> jar', 'shift-report-override:rep-1': 'Pat took it' }; ui.srReturn = 'rep-1'");
+  ok(/maxlength="300" required>Recount &lt;the&gt; jar<\/textarea>/.test(L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))")), 'the send-back reason, redrawn');
+  L.run("ui.srReturn = null; ui.srOverride = 'rep-1'");
+  ok(/required>Pat took it<\/textarea>/.test(L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))")), 'the override reason, redrawn');
+  // Wired: every input and change goes through srMirror first.
+  ok(/document\.addEventListener\('input', function \(e\) \{\s*if \(srMirror\(e\.target\)\) return;/.test(SCRIPT) &&
+    /document\.addEventListener\('change', function \(e\) \{\s*if \(srMirror\(e\.target\)\) return;/.test(SCRIPT), 'the listeners do not mirror');
+});
+
+test('parent-experience review 1: focus and the caret come back after a redraw, and a deliberate move wins', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    var ui = {}, focused = [], ranges = [];
+    function mk(id, name) { return { id: id, name: name, focus: function () { focused.push(id); document.activeElement = this; },
+      setSelectionRange: function (a, b) { ranges.push([id, a, b]); } }; }
+    var te = mk('srTe', 'te'), head = mk('srCardHead', ''), formEl = { dataset: { form: 'shift-report', rid: '' }, elements: { te: te } };
+    te.form = formEl;
+    var document = { activeElement: null, getElementById: function (id) { return id === 'srCardHead' ? head : id === 'srTe' ? te : null; },
+      querySelector: function (sel) { return sel === 'form[data-form="shift-report"]' ? formEl : null; } };
+    ${['srFocusSave', 'srFocusRestore'].map(decl).join('\n')}`, ctx);
+  vm.runInContext("document.activeElement = te; te.selectionStart = 3; te.selectionEnd = 3; var k = srFocusSave(); document.activeElement = null; srFocusRestore(k);", ctx);
+  eq(JSON.parse(JSON.stringify(vm.runInContext('[focused, ranges]', ctx))), [['srTe'], [['srTe', 3, 3]]], 'the field and the caret');
+  vm.runInContext("focused = []; ui.srFocusId = 'srCardHead'; srFocusRestore(k);", ctx);
+  eq(JSON.parse(JSON.stringify(vm.runInContext('[focused, ui.srFocusId]', ctx))), [['srCardHead'], null], 'a deliberate move, once');
+  vm.runInContext("focused = []; document.activeElement = { name: 'x', form: { dataset: { form: 'ledger-add' } } }; srFocusRestore(srFocusSave());", ctx);
+  eq(vm.runInContext('focused.length', ctx), 0, 'focus outside a shift-report form');
+  const r = slice('render');
+  ok(/var srKeep = srFocusSave\(\);/.test(r) && r.indexOf('srFocusRestore(srKeep);') > r.indexOf('var restored = findBySignature(sig);'), 'render does not keep the place');
+  // Where focus is moved on purpose.
+  ok(/ui\.srFocusId = 'srConfirmAttest';   \/\/ review 4/.test(slice('shiftReportAct')) && /ui\.srFocusId = 'srTe';/.test(slice('shiftReportAct')), 'opening a form');
+  ok(/ui\.srFocusId = \(\{ te: 'srTe', cash: 'srCash', note: 'srNote', attest: 'srAttest' \}\)\[made\.field\]/.test(slice('shiftReportSubmit')) &&
+    /ui\.srFocusId = 'srCardHead';/.test(slice('shiftReportSubmit')) && /ui\.srFocusId = 'srCardHead';/.test(slice('shiftConfirmSubmit')), 'a problem, or done');
+});
+
+test('parent-experience review 3, 34, 35: a field with a problem is marked and named; the form says when it is busy; a load error is not re-announced', () => {
+  const ctx = srStatusCtx({ ui: { shiftReport: { sfId: 'sf1', blockId: 'b1', rid: '', te: '', cash: '12', note: '', attest: true, busy: false,
+    problem: 'Enter the Trail’s End amount in dollars, like 125.50. Enter 0 if there were no sales. Up to $10,000.', problemField: 'te' } } });
+  const f = vm.runInContext('parentShiftReportCard', ctx)({ events: [srEv(SR_TODAY)] }, SR_TODAY);
+  ok(/<input id="srTe" name="te" aria-describedby="srTeHint srProblem" aria-invalid="true" /.test(f) && /<p class="small sr-problem" id="srProblem" role="alert">Enter the Trail’s End amount/.test(f),
+    'the field with the problem');
+  ok(!/id="srCash"[^>]*aria-invalid/.test(f), 'a field with no problem marked');
+  vm.runInContext("ui.shiftReport.busy = true; ui.shiftReport.problem = ''", ctx);
+  ok(/<form data-form="shift-report" id="srForm" class="sr-form no-print" novalidate aria-busy="true">/.test(vm.runInContext('parentShiftReportCard', ctx)({ events: [srEv(SR_TODAY)] }, SR_TODAY)),
+    'busy');
+  vm.runInContext("ui.shiftReport = null; sync.shiftReports.error = 'Couldn’t reach the pack’s server.'", ctx);
+  ok(/<p class="small sr-problem" role="status">Couldn’t reach/.test(vm.runInContext('parentShiftReportCard', ctx)({ events: [srEv(SR_TODAY)] }, SR_TODAY)), 'a load error');
+  const say = sandbox(['SHIFT_REPORT_SAY', 'SHIFT_REPORT_SAY_ELSE', 'shiftReportMessage']);
+  eq([say.shiftReportMessage({ code: 'unavailable', message: 'Couldn’t reach the pack’s server.' }, true), say.shiftReportMessage({ code: 'invalid-argument', reason: 'weird' })],
+    ['Couldn’t reach the pack’s server. Your confirmation wasn’t sent. Try again in a moment.',
+      'Your totals didn’t go through. Reload the page and try again. If it happens again, give the totals to a leader.'], 'the confirm’s network error, and the catch-all');
+  ok(/\.sr-attest \{[^}]*min-height: 44px; padding: 4px 0;/.test(SCRIPT_CSS), 'the box’s tap target');
+});
+
+atest('parent-experience review 1: an open form is not redrawn by a background read, and the send toast says what comes next', async () => {
+  await apiSetup();
+  const w = await s4World();
+  const pa = await apiClient(w, 'parent');
+  pa.run('buildParentView = function () { return ' + JSON.stringify(w.view) + '; };' +
+    'FormData = function (f) { return { get: function (k) { return Object.prototype.hasOwnProperty.call(f.values, k) ? f.values[k] : null; } }; };');
+  await pa.start();
+  await pa.poll();
+  await settle([pa]);
+  pa.run("shiftReportAct('shift-report-open', { dataset: { sf: 'sf1', block: 'b1' } })");
+  await settle([pa]);
+  const before = pa.get('renders');
+  pa.run('loadShiftReports()');
+  await settle([pa]);
+  eq(pa.get('renders'), before, 'a read of the reports redrew the open form');
+  pa.run("shiftReportSubmit({ values: { te: '123.45', cash: '25', note: '', attest: 'on' } })");
+  await settle([pa]);
+  eq(pa.get('toasts[toasts.length - 1]'), 'Totals sent. A parent from the other family confirms them next, then a leader checks them.', 'the toast for a two-family shift');
+  const after = pa.get('renders');
+  pa.run('loadShiftReports()');
+  await settle([pa]);
+  ok(pa.get('renders') > after, 'with no form open, a read redraws');
 });
 /* ================================================================
    LIVE STOPGAP (2026-09-29) — deletions survive the sync merge. mergeRemoteAppendOnly unions

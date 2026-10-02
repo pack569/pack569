@@ -893,7 +893,9 @@
   .sr-fields { display: flex; flex-direction: column; gap: 10px; }
   .sr-hint { font-weight: 400; font-size: 0.78rem; line-height: 1.35; color: var(--ink-soft); }
   .sr-form textarea { width: 100%; }
-  .sr-attest { display: flex; align-items: flex-start; gap: 10px; font-size: 0.86rem; line-height: 1.35; }
+  .sr-attest { display: flex; align-items: flex-start; gap: 10px; font-size: 0.86rem; line-height: 1.35; min-height: 44px; padding: 4px 0; }
+  .sr-field { display: flex; flex-direction: column; gap: 4px; font-size: 0.78rem; font-weight: 600; color: var(--ink-soft); }
+  .sr-field textarea { width: 100%; }
   .sr-attest input[type="checkbox"] { width: 20px; height: 20px; min-height: 20px; padding: 0; margin: 1px 0 0; flex: 0 0 auto; accent-color: var(--accent); }
   .sr-problem { color: var(--bad); margin: 0; font-weight: 600; }
   /* S-3 — the leaders' review card, above a block's money fields, and the storefront list's banner. */
@@ -18595,6 +18597,7 @@
 
   function render() {
     scoutHasLedger.memo = null;   // the scouts the closed books name, worked out again (scoutHasLedger)
+    var srKeep = srFocusSave();   // a shift-report form's field and caret (parent-experience review 1)
     var y = window.scrollY;
     var active = document.activeElement;
     var sig = focusSignature(active);
@@ -18719,6 +18722,7 @@
         }
       }
     }
+    srFocusRestore(srKeep);
     // Wave 18(7) — modal overlay lifecycle: scroll-lock the body, move focus to the
     // overlay's first button on open, and hand focus back to the opener on close.
     var curOverlayKind = ui.overlay ? ui.overlay.kind : null;
@@ -19227,7 +19231,7 @@
       h += '<li class="sf-shift' + (who.length ? '' : ' sf-open') + '">' +
         '<span class="sf-when">' + esc(String((s && s.when) || '')) + '</span>' +
         '<span class="sf-who">' + (who.length ? esc(who.join(', ')) : 'Open') + '</span>' +
-        parentShiftReportStatus(e, s, today) + '</li>';
+        parentShiftReportStatus(e, s, today, false) + '</li>';
     });
     return h + '</ul>';
   }
@@ -19254,34 +19258,43 @@
   // where the Trail's End figure comes from. The second parent's is their own (SHIFT_CONFIRM_ATTEST).
   var SHIFT_REPORT_ATTEST = 'I counted this shift’s cash donations, and the Trail’s End amount is this shift’s total in the Trail’s End app.';
   var SHIFT_CONFIRM_ATTEST = 'I worked this shift. These cash donations match what was counted at the table, and the Trail’s End amount matches the app.';
-  // Under each figure (popcorn-kernel review D2): what goes in it, and what does not.
+  // Under each figure (popcorn-kernel review D2; parent-experience review 23): what goes in it.
   // "Entered in", not "rung into": the parent app keeps "rung" for nothing (J8, the parent-language rule).
   var SHIFT_REPORT_TE_HINT = 'Everything entered in the Trail’s End app during this shift, card and cash, by every family on the shift.';
-  var SHIFT_REPORT_CASH_HINT = 'Cash given without buying popcorn, from the donation jar. Don’t count cash from popcorn sales or your starting change. ' +
-    'If a donation was entered in the app, it’s already in the Trail’s End amount, so leave it out here.';
-  // Pack policy (Keith, round 1): cash from popcorn sales is converted before anyone leaves.
-  var SHIFT_REPORT_CASH_POLICY = 'Convert any cash from popcorn sales to credit in the Trail’s End app before you leave. Cash donations go to the leader collecting the money.';
+  var SHIFT_REPORT_CASH_HINT = 'Only the cash in the donation jar. Leave out cash from popcorn sales, your starting change, and any donation already entered in the Trail’s End app.';
+  // Under the note (youth-protection review 1): who reads it, and what not to put in it.
+  var SHIFT_REPORT_NOTE_HINT = 'Leaders and the other family on this shift can read this. Don’t name scouts or share anything about a child.';
+  // Pack policy (Keith, round 1): cash from popcorn sales is converted before anyone leaves the
+  // table. Midnight is only Trail's End's own cutoff, said the same way here and on the day sheet
+  // (STOREFRONT_CASH_TO_CREDIT).
+  var SHIFT_REPORT_CASH_POLICY = 'Convert any cash from popcorn sales to credit in the Trail’s End app before you leave the table. ' +
+    '(Trail’s End’s own cutoff is midnight.) Cash donations stay in the jar and go to the leader collecting the money.';
   // What each refusal from the server means to a family. Keyed by the answer's reason (a 400's
   // reason; a 409's reason or error). Anything not here gets SHIFT_REPORT_SAY_ELSE.
   var SHIFT_REPORT_SAY = {
     'not-in-view': 'This shift isn’t on the pack’s calendar any more. Reload the page, or ask a leader.',
-    'future': 'You can send totals on the day of the shift or after.',
+    'future': 'You can send totals once the shift has started.',
     'too-old': 'This shift was more than 14 days ago. Give the totals to a leader instead.',
-    'attest': 'Tick the box to confirm you counted the cash.',
-    'te-cents': 'Enter the Trail’s End amount in dollars and cents, up to $10,000.',
-    'cash-cents': 'Enter the cash donations in dollars and cents, up to $10,000.',
+    'attest': 'Check the box to say you counted the cash donations.',
+    'attest-confirm': 'Check the box to say these match what was counted at the table.',
+    'te-cents': 'Enter the Trail’s End amount in dollars, like 125.50. Enter 0 if there were no sales. Up to $10,000.',
+    'cash-cents': 'Enter the cash donations in dollars, like 18.00. Enter 0 if the jar was empty. Up to $10,000.',
     'note': 'Keep the note to 300 characters or fewer.',
-    'open': 'Another family has already sent totals for this shift. A leader is checking them.',
+    'open': 'Another family already sent totals for this shift. If you worked it with them, find it under Storefront shift totals and confirm it. Otherwise, ask a leader.',
     'accepted': 'A leader has already accepted totals for this shift.',
-    'report-moved': 'This report changed while you had it open. Here’s where it stands now.',
+    'report-moved': 'These totals changed while you had them open. Here’s where they stand now.',
     // S-4 — confirming another family's totals.
     'not-shift-parent': 'Only a parent from another family on this shift can confirm its totals. If that’s you, ask a leader to link your account to your scout.',
     'same-person': 'You sent these totals, so another parent from the shift has to confirm them.',
     // Security review 6 — the caps on how many one account sends.
-    'too-many-open': 'You already have 3 shift reports waiting for a leader. Ask a leader to check those before you send more.',
+    'too-many-open': 'You already have 3 sets of shift totals waiting for a leader. Ask a leader to check those before you send more.',
     'too-many-today': 'That’s a lot of shift reports for one day. Ask a leader if you need to send more.'
   };
-  var SHIFT_REPORT_SAY_ELSE = 'Something about this report wasn’t right. Reload the page and try again.';
+  var SHIFT_REPORT_SAY_ELSE = 'Your totals didn’t go through. Reload the page and try again. If it happens again, give the totals to a leader.';
+  // The card's first line (popcorn-kernel review D4; parent-experience review 22).
+  var SHIFT_REPORT_INTRO = 'Worked a popcorn table outside a store (a storefront shift)? Before you leave, one parent sends the totals for the whole table. ' +
+    'If another family worked it with you, a parent from that family confirms them here. Working two shifts in a row? Send totals for each one, ' +
+    'and count the donation jar when the shift changes.';
   // Today in the pack's time zone, as YYYY-MM-DD: the server's packToday. The device's own date
   // only if this browser cannot name the zone.
   function shiftReportToday(ms) {
@@ -19331,58 +19344,6 @@
   function shiftReportNote(v) {
     return String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f\s]+/g, ' ').trim();
   }
-  // The request a draft makes, or { problem } in words a family can act on. `d` is ui.shiftReport
-  // with the form's values in it (te, cash, note, attest).
-  function shiftReportBody(d) {
-    var te = shiftReportCents(d.te), cash = shiftReportCents(d.cash), note = shiftReportNote(d.note);
-    if (!isFinite(te) || te > SHIFT_REPORT_MAX_CENTS) return { problem: SHIFT_REPORT_SAY['te-cents'] };
-    if (!isFinite(cash) || cash > SHIFT_REPORT_MAX_CENTS) return { problem: SHIFT_REPORT_SAY['cash-cents'] };
-    if (note.length > SHIFT_REPORT_NOTE_MAX) return { problem: SHIFT_REPORT_SAY.note };
-    if (d.attest !== true) return { problem: SHIFT_REPORT_SAY.attest };
-    var body = { teCents: te, cashCents: cash, note: note, attest: true };
-    if (d.rid) body.action = 'edit';
-    else { body.sfId = d.sfId; body.blockId = d.blockId; }
-    return { body: body };
-  }
-  // A failed call, in words. The server's reasons first; then the backend's own sentence for not
-  // reaching it at all, with what that means for the totals.
-  function shiftReportMessage(err) {
-    var why = err && err.reason;
-    if (why && Object.prototype.hasOwnProperty.call(SHIFT_REPORT_SAY, why)) return SHIFT_REPORT_SAY[why];
-    var code = err && err.code;
-    if (code === 'permission-denied') return 'Your account can’t send shift totals. Ask a leader.';
-    if (code === 'unavailable' || code === 'unauthenticated' || code === 'resource-exhausted') {
-      return String((err && err.message) || 'Couldn’t reach the pack’s server.') + ' Your totals weren’t sent. Try again in a moment.';
-    }
-    return SHIFT_REPORT_SAY_ELSE;
-  }
-  // The reports, from the server, into sync.shiftReports: { reports, others, loaded, error }.
-  // Asked for when the parent view arrives or the preview opens, when a family opens the form,
-  // and after every write. One at a time; a call while one is out runs once it is back.
-  function loadShiftReports() {
-    if (!shiftReportsOn()) return Promise.resolve(null);
-    var sr = sync.shiftReports || (sync.shiftReports = { reports: [], others: [], loaded: false, loading: false, again: false, error: '' });
-    if (sr.loading) { sr.again = true; return Promise.resolve(null); }
-    sr.loading = true;
-    var mine = sync.session;
-    return sync.backend.listShiftReports(sync.docId).then(function (r) {
-      if (sync.session !== mine || sync.shiftReports !== sr) return;
-      sr.reports = arrOf(r && r.reports);
-      sr.others = arrOf(r && r.others);
-      sr.loaded = true;
-      sr.error = '';
-    }, function (err) {
-      if (sync.session !== mine || sync.shiftReports !== sr) return;
-      sr.error = shiftReportMessage(err);
-    }).then(function () {
-      sr.loading = false;
-      if (sync.shiftReports !== sr) return;
-      if (sr.again) { sr.again = false; loadShiftReports(); }
-      shiftReportsReconcile();   // S-3: finish or undo a leader's accept (leaders who edit only)
-      srScheduleRefresh();
-      render();
-    });
-  }
   // Security review 10 — the family page reads the reports again once a minute while a shift is in
   // the reporting window and the page is showing, so a second parent at the table sees the first
   // one's report without reloading. Nothing scheduled otherwise; leaders reload on the pack feed.
@@ -19418,109 +19379,235 @@
     });
     return out;
   }
-  // One shift's line: where its totals stand, and what this person can do about them. '' when
-  // the feature is off, the reports have not come yet, or there is nothing to say or do.
-  function parentShiftReportStatus(e, s, today) {
+  // The request a draft makes, or { problem, field } in words a family can act on, `field` being
+  // the form field to mark and move to ('te', 'cash', 'note', 'attest'). `d` is ui.shiftReport,
+  // which holds what was typed (srMirror keeps it up to date as they type).
+  function shiftReportBody(d) {
+    var te = shiftReportCents(d.te), cash = shiftReportCents(d.cash), note = shiftReportNote(d.note);
+    if (!isFinite(te) || te > SHIFT_REPORT_MAX_CENTS) return { problem: SHIFT_REPORT_SAY['te-cents'], field: 'te' };
+    if (!isFinite(cash) || cash > SHIFT_REPORT_MAX_CENTS) return { problem: SHIFT_REPORT_SAY['cash-cents'], field: 'cash' };
+    if (note.length > SHIFT_REPORT_NOTE_MAX) return { problem: SHIFT_REPORT_SAY.note, field: 'note' };
+    if (d.attest !== true) return { problem: SHIFT_REPORT_SAY.attest, field: 'attest' };
+    var body = { teCents: te, cashCents: cash, note: note, attest: true };
+    if (d.rid) body.action = 'edit';
+    else { body.sfId = d.sfId; body.blockId = d.blockId; }
+    return { body: body };
+  }
+  // A failed call, in words. The server's reasons first; then the backend's own sentence for not
+  // reaching it at all, with what that means for what was being sent (`confirming`: a confirm).
+  function shiftReportMessage(err, confirming) {
+    var why = err && err.reason;
+    if (why && Object.prototype.hasOwnProperty.call(SHIFT_REPORT_SAY, why)) return SHIFT_REPORT_SAY[why];
+    var code = err && err.code;
+    if (code === 'permission-denied') return 'Your account can’t send shift totals. Ask a leader.';
+    if (code === 'unavailable' || code === 'unauthenticated' || code === 'resource-exhausted') {
+      return String((err && err.message) || 'Couldn’t reach the pack’s server.') + (confirming ? ' Your confirmation wasn’t sent.' : ' Your totals weren’t sent.') +
+        ' Try again in a moment.';
+    }
+    return SHIFT_REPORT_SAY_ELSE;
+  }
+  // Is a shift-report form open, the family's or a leader's? Then a background read of the
+  // reports does not redraw the page under it (parent-experience review 1: a redraw took the
+  // keyboard away mid-word, every minute).
+  function srFormOpen() { return !!(ui.shiftReport || ui.shiftConfirm || ui.srReturn || ui.srOverride); }
+  // The reports, from the server, into sync.shiftReports: { reports, others, loaded, error }.
+  // Asked for when the parent view arrives or the preview opens, when a family opens the form,
+  // and after every write. One at a time; a call while one is out runs once it is back.
+  function loadShiftReports() {
+    if (!shiftReportsOn()) return Promise.resolve(null);
+    var sr = sync.shiftReports || (sync.shiftReports = { reports: [], others: [], loaded: false, loading: false, again: false, error: '' });
+    if (sr.loading) { sr.again = true; return Promise.resolve(null); }
+    sr.loading = true;
+    var mine = sync.session;
+    return sync.backend.listShiftReports(sync.docId).then(function (r) {
+      if (sync.session !== mine || sync.shiftReports !== sr) return;
+      sr.reports = arrOf(r && r.reports);
+      sr.others = arrOf(r && r.others);
+      sr.loaded = true;
+      sr.error = '';
+    }, function (err) {
+      if (sync.session !== mine || sync.shiftReports !== sr) return;
+      sr.error = shiftReportMessage(err);
+    }).then(function () {
+      sr.loading = false;
+      if (sync.shiftReports !== sr) return;
+      if (sr.again) { sr.again = false; loadShiftReports(); }
+      shiftReportsReconcile();   // S-3: finish or undo a leader's accept (leaders who edit only)
+      srScheduleRefresh();
+      if (!srFormOpen()) render();
+    });
+  }
+  // What is typed into a shift-report form, kept in ui as it is typed (parent-experience review 1),
+  // so whatever redraws the page puts it back: the family's figures, note and box, the second
+  // parent's box, and a leader's send-back or override reason. True when it was one of those.
+  function srMirror(el) {
+    var f = el && el.form, kind = f && f.dataset ? f.dataset.form : '';
+    if (kind === 'shift-report' && ui.shiftReport) {
+      var d = ui.shiftReport;
+      if (el.name === 'te') d.te = el.value;
+      else if (el.name === 'cash') d.cash = el.value;
+      else if (el.name === 'note') d.note = el.value;
+      else if (el.name === 'attest') d.attest = !!el.checked;
+      else return false;
+      return true;
+    }
+    if (kind === 'shift-report-confirm' && ui.shiftConfirm && el.name === 'attest') { ui.shiftConfirm.attest = !!el.checked; return true; }
+    if ((kind === 'shift-report-return' || kind === 'shift-report-override') && el.name === 'reason') {
+      ui.srReasonText = ui.srReasonText || {};
+      ui.srReasonText[kind + ':' + String(f.dataset.rid || '')] = el.value;
+      return true;
+    }
+    return false;
+  }
+  // A leader's reason, as typed so far.
+  function srReasonDraft(kind, rid) { return String(((ui.srReasonText || {})[kind + ':' + rid]) || ''); }
+  // Focus in a shift-report form, before a redraw, and back after it: the same field, the same
+  // caret. ui.srFocusId (one render only) moves focus on purpose instead: to a field with a
+  // problem, the second parent's box, or the card's heading once the totals are sent.
+  function srFocusSave() {
+    var a = typeof document !== 'undefined' ? document.activeElement : null;
+    var f = a && a.form;
+    if (!f || !f.dataset || !/^shift-report/.test(String(f.dataset.form || '')) || !a.name) return null;
+    var k = { form: f.dataset.form, rid: String(f.dataset.rid || ''), name: a.name, start: null, end: null };
+    try { k.start = a.selectionStart; k.end = a.selectionEnd; } catch (e) { /* a checkbox */ }
+    return k;
+  }
+  function srFocusRestore(k) {
+    if (typeof document === 'undefined') return;
+    if (ui.srFocusId) {
+      var t = document.getElementById(ui.srFocusId);
+      ui.srFocusId = null;
+      if (t) { t.focus({ preventScroll: true }); return; }
+    }
+    if (!k || !/^[\w-]*$/.test(k.rid)) return;
+    var f = document.querySelector('form[data-form="' + k.form + '"]' + (k.rid ? '[data-rid="' + k.rid + '"]' : ''));
+    var el = f && f.elements ? f.elements[k.name] : null;
+    if (!el || document.activeElement === el) return;
+    el.focus({ preventScroll: true });
+    if (k.start != null && el.setSelectionRange) { try { el.setSelectionRange(k.start, k.end); } catch (e) { /* not text */ } }
+  }
+  // One shift's line: where its totals stand, and, with `showActs` (the Storefront shift totals
+  // card only: parent-experience review 6), what this person can do about it. '' when the feature
+  // is off, the reports have not come yet, or there is nothing to say or do.
+  function parentShiftReportStatus(e, s, today, showActs) {
     if (!shiftReportsOn() || !e || !s || !e.sfId || !s.blockId) return '';
     var info = shiftReportFor(e.sfId, s.blockId);
     if (!info.loaded) return '';
     var open = shiftReportOpenFor(e.date, today, s.start, shiftReportNowHM());
     var m = info.mine;
-    if (!shiftReportCanSend()) open = false;   // the parent preview: where it stands, and no buttons
+    var acts = !!showActs && shiftReportCanSend();   // the parent preview: where it stands, and no buttons
+    if (!acts) open = false;
     var ids = ' data-sf="' + esc(e.sfId) + '" data-block="' + esc(s.blockId) + '"';
+    // Each button names its shift for a screen reader (parent-experience review 5).
+    var forShift = ' for ' + fmtDate(String(e.date || '')) + ', ' + String(s.when || '');
+    var aria = function (what) { return ' aria-label="' + esc(what + forShift) + '"'; };
     var figs = function (r) {
-      return ' <span class="sr-figs">' + esc(fmt(r.teCents || 0)) + ' Trail’s End · ' + esc(fmt(r.cashCents || 0)) + ' cash</span>';
+      return ' <span class="sr-figs">' + esc(fmt(r.teCents || 0)) + ' Trail’s End · ' + esc(fmt(r.cashCents || 0)) + ' cash donations</span>';
     };
     var h = '';
     // S-4: a report that needs a second parent says which step it is at.
     var sentMsg = function (r) {
-      if (r.needsConfirm && !r.confirmed) return 'Sent — waiting for a second parent from this shift';
+      if (r.needsConfirm && !r.confirmed) return 'Sent. Next, a parent from the other family opens Schedule on their phone and confirms it.';
       if (r.needsConfirm && r.confirmed) return 'Confirmed by ' + (r.confirmedByName || 'a second parent') + ' — waiting for a leader';
       return 'Sent — waiting for a leader';
     };
     var o = info.otherOf;
-    if (m && m.status === 'submitted' && !shiftReportCanSend()) {
+    if (m && m.status === 'submitted' && !acts) {
       h = '<span class="sr-msg">' + esc(sentMsg(m)) + '</span>' + figs(m);
     } else if (m && m.status === 'submitted') {
       var key = 'shift-report-withdraw:' + m.id, armed = ui.armed === key;
       h = '<span class="sr-msg">' + esc(sentMsg(m)) + '</span>' + figs(m) +
-        '<span class="sr-acts"><button type="button" class="btn small" data-act="shift-report-open"' + ids + ' data-rid="' + esc(m.id) + '">Edit</button>' +
-        '<button type="button" class="btn small' + (armed ? ' danger armed' : '') + '" data-act="shift-report-withdraw" data-rid="' + esc(m.id) + '">' +
-        (armed ? 'Tap again to withdraw' : 'Withdraw') + '</button></span>';
+        '<span class="sr-acts"><button type="button" class="btn small" data-act="shift-report-open"' + ids + ' data-rid="' + esc(m.id) + '"' +
+          aria('Edit your totals') + '>Edit</button>' +
+        '<button type="button" class="btn small' + (armed ? ' danger armed' : '') + '" data-act="shift-report-withdraw" data-rid="' + esc(m.id) + '"' +
+          aria(armed ? 'Tap again to withdraw your totals' : 'Withdraw your totals') + '>' + (armed ? 'Tap again to withdraw' : 'Withdraw') + '</button></span>';
     } else if (m && m.status === 'accepted') {
-      h = '<span class="sr-msg sr-done">Accepted by ' + esc(m.reviewedByName || 'a leader') + '</span>' + figs(m);
+      h = '<span class="sr-msg sr-done">Accepted by ' + esc(m.reviewedByName || 'a leader') + '. It counts toward the scouts’ sales.</span>' + figs(m);
     } else if (info.other === 'submitted' && o && o.needsConfirm && !o.confirmed) {
-      // S-4: another family's totals, waiting for a second parent. Only a parent of a scout on the
-      // shift is sent the figures (canConfirm), and only they get the button.
+      // S-4: another family's totals, waiting for a second parent. Only a parent from another family
+      // on the shift is sent the figures (canConfirm), and only they get the button.
       if (o.canConfirm && o.id) {
-        h = '<span class="sr-msg">Waiting for a second parent: check the totals and confirm</span>' +
-          ' <span class="sr-figs">' + esc(fmt(o.teCents || 0)) + ' Trail’s End · ' + esc(fmt(o.cashCents || 0)) + ' cash' +
+        h = '<span class="sr-msg">Another family sent these totals. Check them, and confirm if they match.</span>' +
+          ' <span class="sr-figs">' + esc(fmt(o.teCents || 0)) + ' Trail’s End · ' + esc(fmt(o.cashCents || 0)) + ' cash donations' +
           (o.submittedByName ? ' · sent by ' + esc(o.submittedByName) : '') + '</span>' +
           (open ? '<span class="sr-acts"><button type="button" class="btn small primary" data-act="shift-report-confirm-open"' + ids +
-            ' data-rid="' + esc(o.id) + '">Check and confirm</button></span>' : '');
+            ' data-rid="' + esc(o.id) + '"' + aria('Check and confirm the totals') + '>Check and confirm</button></span>' : '');
       } else {
-        h = '<span class="sr-msg">Waiting for a second parent from this shift</span>';
+        h = '<span class="sr-msg">Totals sent. Waiting for a parent from another family on this shift to confirm them.</span>';
       }
     } else if (info.other) {
       h = '<span class="sr-msg' + (info.other === 'accepted' ? ' sr-done' : '') + '">' +
         (info.other === 'accepted' ? 'Totals accepted' : o && o.needsConfirm && o.confirmed ? 'Totals sent and confirmed — waiting for a leader'
-          : 'Totals sent by another family') + '</span>';
+          : 'Totals sent by another family. A leader will check them.') + '</span>';
     } else if (m && m.status === 'returned') {
-      h = '<span class="sr-msg sr-back">Sent back: ' + esc(m.reviewNote || 'a leader asked for another look') + '</span>' +
-        (open ? '<span class="sr-acts"><button type="button" class="btn small primary" data-act="shift-report-open"' + ids + '>Send a new report</button></span>' : '');
+      h = '<span class="sr-msg sr-back">Sent back by a leader: “' + esc(m.reviewNote || 'please check the totals again') + '”. ' +
+        (open ? 'Fix them and send new totals.' : 'Give the corrected totals to a leader.') + '</span>' +
+        (open ? '<span class="sr-acts"><button type="button" class="btn small primary" data-act="shift-report-open"' + ids + aria('Send new totals') +
+          '>Send new totals</button></span>' : '');
     } else if (open) {
-      h = '<span class="sr-acts"><button type="button" class="btn small primary" data-act="shift-report-open"' + ids + '>Enter shift totals</button></span>';
+      h = '<span class="sr-acts"><button type="button" class="btn small primary" data-act="shift-report-open"' + ids + aria('Enter shift totals') +
+        '>Enter shift totals</button></span>';
     }
     return h ? '<div class="sr-status no-print">' + h + '</div>' : '';
   }
+  // A field of the family's form: its label, the input, and its hint (parent-experience review
+  // 2: the hint outside the label, so the label is just the field's name). A problem with the
+  // field marks it invalid and points it at the alert (review 3).
+  function srField(id, name, label, input, hint, bad) {
+    return '<div class="fld sr-field"><label for="' + id + '">' + label + '</label>' +
+      input.replace(/^<INPUT(-TEXTAREA)? /, function (m0, ta) {
+        return '<' + (ta ? 'textarea' : 'input') + ' id="' + id + '" name="' + name + '" aria-describedby="' + id + 'Hint' + (bad ? ' srProblem' : '') + '"' +
+          (bad ? ' aria-invalid="true"' : '') + ' ';
+      }) +
+      '<span class="sr-hint" id="' + id + 'Hint">' + esc(hint) + '</span></div>';
+  }
   // The form, for the shift in ui.shiftReport. Drawn once, in the Schedule's shift-totals card,
   // so a shift that shows in three places on the page still has one form. What was typed lives
-  // in ui.shiftReport, so a render (a toast, a poll) does not lose it.
+  // in ui.shiftReport (srMirror), so a redraw puts it back.
   function parentShiftReportForm(e, s) {
-    var d = ui.shiftReport;
-    return '<form data-form="shift-report" id="srForm" class="sr-form no-print" novalidate>' +
+    var d = ui.shiftReport, bad = d.problem ? d.problemField : '';
+    return '<form data-form="shift-report" id="srForm" class="sr-form no-print" novalidate' + (d.busy ? ' aria-busy="true"' : '') + '>' +
       '<p class="small" style="margin:0"><strong>' + (d.rid ? 'Change your totals' : 'Shift totals') + '</strong> · ' +
       esc(String(e.title || 'Storefront')) + ', ' + esc(String(s.when || '')) + '</p>' +
       '<div class="sr-fields">' +
-      '<label class="fld">Trail’s End amount ($)<input class="money-in" name="te" inputmode="decimal" autocomplete="off" placeholder="0.00" aria-describedby="srTeHint" value="' +
-        esc(d.te) + '"><span class="sr-hint" id="srTeHint">' + esc(SHIFT_REPORT_TE_HINT) + '</span></label>' +
-      '<label class="fld">Cash donations ($)<input class="money-in" name="cash" inputmode="decimal" autocomplete="off" placeholder="0.00" aria-describedby="srCashHint" value="' +
-        esc(d.cash) + '"><span class="sr-hint" id="srCashHint">' + esc(SHIFT_REPORT_CASH_HINT) + '</span></label></div>' +
-      '<label class="fld">Note for the leader (optional)<textarea name="note" rows="2" maxlength="' + SHIFT_REPORT_NOTE_MAX + '">' +
-        esc(d.note) + '</textarea></label>' +
-      '<label class="sr-attest"><input type="checkbox" name="attest"' + (d.attest ? ' checked' : '') + '><span>' + esc(SHIFT_REPORT_ATTEST) + '</span></label>' +
-      (d.problem ? '<p class="small sr-problem" role="alert">' + esc(d.problem) + '</p>' : '') +
+      srField('srTe', 'te', 'Trail’s End amount ($)', '<INPUT class="money-in" inputmode="decimal" autocomplete="off" placeholder="0.00" value="' + esc(d.te) + '">',
+        SHIFT_REPORT_TE_HINT, bad === 'te') +
+      srField('srCash', 'cash', 'Cash donations ($)', '<INPUT class="money-in" inputmode="decimal" autocomplete="off" placeholder="0.00" value="' + esc(d.cash) + '">',
+        SHIFT_REPORT_CASH_HINT, bad === 'cash') + '</div>' +
+      srField('srNote', 'note', 'Note for the leader (optional)', '<INPUT-TEXTAREA rows="2" maxlength="' + SHIFT_REPORT_NOTE_MAX + '">' + esc(d.note) + '</textarea>',
+        SHIFT_REPORT_NOTE_HINT, bad === 'note') +
+      '<label class="sr-attest"><input type="checkbox" id="srAttest" name="attest"' + (d.attest ? ' checked' : '') +
+        (bad === 'attest' ? ' aria-invalid="true" aria-describedby="srProblem"' : '') + '><span>' + esc(SHIFT_REPORT_ATTEST) + '</span></label>' +
+      (d.problem ? '<p class="small sr-problem" id="srProblem" role="alert">' + esc(d.problem) + '</p>' : '') +
+      '<p class="small" style="margin:0"><strong>' + esc(SHIFT_REPORT_CASH_POLICY) + '</strong></p>' +
       '<div class="sr-acts"><button type="submit" class="btn primary"' + (d.busy ? ' disabled' : '') + '>' +
         (d.busy ? 'Sending…' : d.rid ? 'Send changes' : 'Send totals') + '</button>' +
       '<button type="button" class="btn" data-act="shift-report-cancel">Cancel</button></div>' +
-      '<p class="small" style="margin:0"><strong>' + esc(SHIFT_REPORT_CASH_POLICY) + '</strong></p>' +
       '<p class="small muted" style="margin:0">A leader checks these before they count toward anyone’s sales.</p></form>';
   }
-  // S-4 — the second parent's check: the other family's two figures and note, the same signature
-  // box, and Confirm. Drawn once, in the card, like the report form. '' if the entry is gone.
+  // S-4 — the second parent's check: the other family's two figures and note, their own signature
+  // box, and Confirm totals. Drawn once, in the card, like the report form. Their status line if
+  // the entry is gone.
   function parentShiftConfirmForm(e, s) {
     var cf = ui.shiftConfirm;
     var o = arrOf(sync.shiftReports && sync.shiftReports.others).filter(function (x) { return x && x.id === cf.rid && x.canConfirm; })[0];
-    if (!o) return parentShiftReportStatus(e, s, shiftReportToday());
-    return '<form data-form="shift-report-confirm" id="srForm" class="sr-form no-print" novalidate>' +
+    if (!o) return parentShiftReportStatus(e, s, shiftReportToday(), true);
+    return '<form data-form="shift-report-confirm" id="srForm" class="sr-form no-print" novalidate' + (cf.busy ? ' aria-busy="true"' : '') + '>' +
       '<p class="small" style="margin:0"><strong>Check the totals' + (o.submittedByName ? ' ' + esc(o.submittedByName) + ' sent' : '') + '</strong> · ' +
       esc(String(e.title || 'Storefront')) + ', ' + esc(String(s.when || '')) + '</p>' +
       '<p class="sr-amounts">Trail’s End <strong class="money">' + esc(fmt(o.teCents || 0)) + '</strong> · Cash donations <strong class="money">' +
       esc(fmt(o.cashCents || 0)) + '</strong></p>' +
       (o.note ? '<p class="small" style="margin:0">“' + esc(o.note) + '”</p>' : '') +
-      '<label class="sr-attest"><input type="checkbox" name="attest"' + (cf.attest ? ' checked' : '') + '><span>' + esc(SHIFT_CONFIRM_ATTEST) + '</span></label>' +
-      (cf.problem ? '<p class="small sr-problem" role="alert">' + esc(cf.problem) + '</p>' : '') +
-      '<div class="sr-acts"><button type="submit" class="btn primary"' + (cf.busy ? ' disabled' : '') + '>' + (cf.busy ? 'Sending…' : 'Confirm') + '</button>' +
+      '<label class="sr-attest"><input type="checkbox" id="srConfirmAttest" name="attest"' + (cf.attest ? ' checked' : '') +
+        (cf.problem ? ' aria-invalid="true" aria-describedby="srProblem"' : '') + '><span>' + esc(SHIFT_CONFIRM_ATTEST) + '</span></label>' +
+      (cf.problem ? '<p class="small sr-problem" id="srProblem" role="alert">' + esc(cf.problem) + '</p>' : '') +
+      '<div class="sr-acts"><button type="submit" class="btn primary"' + (cf.busy ? ' disabled' : '') + '>' + (cf.busy ? 'Sending…' : 'Confirm totals') + '</button>' +
       '<button type="button" class="btn" data-act="shift-report-cancel">Cancel</button></div>' +
       '<p class="small muted" style="margin:0">If these don’t match what you counted, don’t confirm. Talk to the other family, or tell a leader.</p></form>';
   }
-  // The card's first line (popcorn-kernel review D4).
-  var SHIFT_REPORT_INTRO = 'Worked a popcorn storefront shift? Before you leave, one parent sends the shift’s totals for the whole table. ' +
-    'If another family worked it with you, a parent from that family confirms them here. On two shifts in a row? Send one for each shift, ' +
-    'and count the donation jar when the shift changes.';
-  // The Schedule's shift-totals card: every published storefront shift from the last 14 days,
-  // with where its totals stand, and the form under the one being filled in. '' when the feature
-  // is off or there is no such shift. `today` is the pack's (shiftReportToday).
+  // The Schedule's shift-totals card: every published storefront shift from the last 14 days that
+  // has started, with where its totals stand and the buttons, and the form under the one being
+  // filled in. '' when the feature is off or there is no such shift. `today` is the pack's.
   function parentShiftReportCard(pv, today) {
     if (!shiftReportsOn()) return '';
     var rows = [];
@@ -19532,10 +19619,11 @@
     if (!rows.length) return '';
     rows.sort(function (a, b) { return String(b.e.date).localeCompare(String(a.e.date)); });   // newest first; stable within a day
     var sr = sync.shiftReports, d = ui.shiftReport;
-    var h = '<div class="card no-print sr-card" id="srCard"><h2 class="section display">Storefront shift totals</h2>' +
+    var h = '<div class="card no-print sr-card" id="srCard"><h2 class="section display" id="srCardHead" tabindex="-1">Storefront shift totals</h2>' +
       '<p class="small muted" style="margin:0 0 6px">' + esc(SHIFT_REPORT_INTRO) + '</p>';
     if (!shiftReportCanSend()) h += '<p class="small muted" style="margin:0 0 6px"><strong>Preview:</strong> families send their totals here. You can’t send them from the preview.</p>';
-    if (sr && sr.error) h += '<p class="small sr-problem" role="alert">' + esc(sr.error) + '</p>';
+    // role="status", not "alert": the minute's refresh redraws it, and it must not be read out again each time (review 34).
+    if (sr && sr.error) h += '<p class="small sr-problem" role="status">' + esc(sr.error) + '</p>';
     else if (!sr || !sr.loaded) h += '<p class="small muted" style="margin:0">Checking which shifts have totals…</p>';
     rows.forEach(function (r) {
       h += '<div class="sr-row"><div class="sr-shift"><strong>' + esc(fmtDate(String(r.e.date))) + '</strong> · ' +
@@ -19543,7 +19631,7 @@
       var cf = ui.shiftConfirm;
       if (d && shiftReportCanSend() && d.sfId === r.e.sfId && d.blockId === r.s.blockId) h += parentShiftReportForm(r.e, r.s);
       else if (cf && shiftReportCanSend() && cf.sfId === r.e.sfId && cf.blockId === r.s.blockId) h += parentShiftConfirmForm(r.e, r.s);
-      else h += parentShiftReportStatus(r.e, r.s, today);
+      else h += parentShiftReportStatus(r.e, r.s, today, true);
       h += '</div>';
     });
     return h + '</div>';
@@ -19556,6 +19644,7 @@
     if (act === 'shift-report-confirm-open') {
       ui.shiftReport = null;
       ui.shiftConfirm = { rid: String(ds.rid || ''), sfId: String(ds.sf || ''), blockId: String(ds.block || ''), attest: false, busy: false, problem: '' };
+      ui.srFocusId = 'srConfirmAttest';   // review 4: straight to the box they sign with
       render();
       var cform = typeof document !== 'undefined' && document.getElementById('srForm');
       if (cform && cform.scrollIntoView) cform.scrollIntoView({ block: 'center' });
@@ -19568,13 +19657,11 @@
       ui.shiftConfirm = null;
       ui.shiftReport = { sfId: String(ds.sf || ''), blockId: String(ds.block || ''), rid: rid,
         te: own ? dollars(own.teCents) || '0.00' : '', cash: own ? dollars(own.cashCents) || '0.00' : '', note: own ? String(own.note || '') : '',
-        attest: false, busy: false, problem: '' };
+        attest: false, busy: false, problem: '', problemField: '' };
+      ui.srFocusId = 'srTe';
       render();
       var form = typeof document !== 'undefined' && document.getElementById('srForm');
-      if (form) {
-        if (form.scrollIntoView) form.scrollIntoView({ block: 'center' });
-        if (form.elements && form.elements.te) form.elements.te.focus({ preventScroll: true });
-      }
+      if (form && form.scrollIntoView) form.scrollIntoView({ block: 'center' });
       loadShiftReports();
       return;
     }
@@ -19594,7 +19681,7 @@
     if (!cf || cf.busy || !shiftReportCanSend()) return;
     var fd = new FormData(f);
     cf.attest = fd.get('attest') === 'on';
-    if (!cf.attest) { cf.problem = SHIFT_REPORT_SAY.attest; render(); return; }
+    if (!cf.attest) { cf.problem = SHIFT_REPORT_SAY['attest-confirm']; ui.srFocusId = 'srConfirmAttest'; render(); return; }
     // The figures, and the version, this parent was shown (security review 1): if the sender has
     // changed them since, the server refuses, and the form shows the new ones.
     var o = arrOf(sync.shiftReports && sync.shiftReports.others).filter(function (x) { return x && x.id === cf.rid && x.canConfirm; })[0];
@@ -19605,14 +19692,16 @@
     return sync.backend.patchShiftReport(sync.docId, cf.rid, { action: 'confirm', attest: true, teCents: o.teCents, cashCents: o.cashCents,
       updatedAt: o.updatedAt }).then(function () {
       if (ui.shiftConfirm === cf) ui.shiftConfirm = null;
+      ui.srFocusId = 'srCardHead';   // review 35: back to the card, the form being gone
       showToast('Confirmed. A leader will check the totals before they count.');
     }, function (err) {
       cf.busy = false;
-      cf.problem = shiftReportMessage(err);
+      cf.problem = shiftReportMessage(err, true);
       if (ui.shiftConfirm === cf && /^(report-moved|not-shift-parent|same-person)$/.test(String(err && err.reason))) {
         ui.shiftConfirm = null;
         showToast(cf.problem);
-      }
+      } else ui.srFocusId = 'srConfirmAttest';
+      render();
     }).then(loadShiftReports);
   }
   // The form sent: checked here first, in words, then POSTed (or PATCHed, editing your own).
@@ -19626,22 +19715,33 @@
     d.attest = fd.get('attest') === 'on';
     var made = shiftReportBody(d);
     d.problem = made.problem || '';
-    if (made.problem) { render(); return; }
+    d.problemField = made.field || '';
+    if (made.problem) {
+      ui.srFocusId = ({ te: 'srTe', cash: 'srCash', note: 'srNote', attest: 'srAttest' })[made.field] || null;
+      render();
+      return;
+    }
     d.busy = true;
     render();
     var be = sync.backend;
     var call = d.rid ? be.patchShiftReport(sync.docId, d.rid, made.body) : be.submitShiftReport(sync.docId, made.body);
-    return call.then(function () {
+    return call.then(function (res) {
       if (ui.shiftReport === d) ui.shiftReport = null;
-      showToast(d.rid ? 'Changes sent. A leader will check them.' : 'Totals sent. A leader will check them before they count.');
+      ui.srFocusId = 'srCardHead';
+      var needs = !!(res && res.report && res.report.needsConfirm);
+      showToast(d.rid ? 'Changes sent. A leader will check them.'
+        : needs ? 'Totals sent. A parent from the other family confirms them next, then a leader checks them.'
+        : 'Totals sent. A leader will check them before they count.');
     }, function (err) {
       d.busy = false;
       d.problem = shiftReportMessage(err);
+      d.problemField = '';
       // The block is taken, or the report moved: the form has nothing left to send.
       if (ui.shiftReport === d && /^(open|accepted|report-moved|not-in-view|too-old)$/.test(String(err && err.reason))) {
         ui.shiftReport = null;
         showToast(d.problem);
       }
+      render();
     }).then(loadShiftReports);
   }
   // The month grid, built from the PUBLISHED events — the leader calendar's shape, without any of
@@ -21591,11 +21691,14 @@
   var STOREFRONT_SAFETY = 'Buddy system \u00b7 a parent with every scout, an adult at the table at all times \u00b7 scouts stay at the table and never approach cars \u00b7 two adults count the cash before it leaves the table';
   // Printed after each shift's cash count: the family can move its cash into Trail's End credit.
   // Pack policy (popcorn-kernel review D3, Keith round 1): sales cash is converted at the table.
-  var STOREFRONT_CASH_TO_CREDIT = 'Cash from popcorn sales: convert it to credit in the Trail\u2019s End app (Cash to Credit) before you leave the table, and no later than midnight. ' +
-    'Converting doesn\u2019t change the Trail\u2019s End amount, and that parent keeps the cash. Cash donations stay in the jar for the pack.';
+  // Parent-experience review 21: the deadline is the table, as pack policy says; midnight only as
+  // Trail's End's own cutoff, said the same way here and in the app (SHIFT_REPORT_CASH_POLICY).
+  var STOREFRONT_CASH_TO_CREDIT = 'Cash from popcorn sales: convert it to credit in the Trail\u2019s End app (Cash to Credit) before you leave the table. ' +
+    '(Trail\u2019s End\u2019s own cutoff is midnight.) Converting doesn\u2019t change the Trail\u2019s End amount. The parent who converts it keeps that cash. ' +
+    'Cash donations stay in the jar and go to the leader collecting the money.';
   // S-3 (2026-10-01) — on the day sheet under each shift, where families send their totals (API only).
-  var DAY_SHEET_REPORT = 'Before you leave: one parent sends these totals at pack569.com (Schedule, Storefront shift totals). If two families worked this shift, ' +
-    'a parent from the other family confirms them. Hand the cash donations to the leader collecting the money.';
+  var DAY_SHEET_REPORT = 'Before you leave: one parent sends these totals at pack569.com (Schedule, Storefront shift totals). If more than one family worked this shift, ' +
+    'a parent from another family confirms them. Hand the cash donations to the leader collecting the money.';
   var WAGON_SAFETY = 'Door to door: never go inside a customer\u2019s home, and no door-to-door alone.';
   // What is wrong with a block's cash count, once the storefront's day has passed: 'blank' when
   // either adult is missing, 'same' when one person is both; '' when it is fine, when the day has
@@ -21883,7 +21986,8 @@
     }
     if (ui.srReturn === r.id) {
       return h + '<form data-form="shift-report-return" class="sr-return" data-rid="' + esc(r.id) + '">' +
-        '<label class="fld">Why are you sending it back? The family sees this.<textarea name="reason" rows="2" maxlength="300" required></textarea></label>' +
+        '<label class="fld">Why are you sending it back? The family sees this.<textarea name="reason" rows="2" maxlength="300" required>' +
+          esc(srReasonDraft('shift-report-return', r.id)) + '</textarea></label>' +
         '<div class="sr-acts"><button type="submit" class="btn">Send back</button>' +
         '<button type="button" class="btn ghost" data-act="sr-cancel">Cancel</button></div></form></div>';
     }
@@ -21894,9 +21998,10 @@
       return h + '<form data-form="shift-report-override" class="sr-return" data-rid="' + esc(r.id) + '">' +
         (srReplaces(b, r) ? '<p class="small" style="margin:0"><strong>This block already has figures:</strong> Trail’s End ' + esc(fmt(b.salesCents || 0)) +
           ', cash ' + esc(fmt(b.donationsCents || 0)) + '. Accepting replaces them with the report’s.</p>' : '') +
-        '<label class="fld">' + (two ? 'Why accept without a second parent?' : 'Why accept without collecting it? Nobody will be named as having verified the cash.') +
-        ' This is kept with the report and the season’s record.<textarea name="reason" rows="2" maxlength="300" required></textarea></label>' +
-        '<div class="sr-acts"><button type="submit" class="btn primary">' + (two ? 'Accept without a second parent' : 'Accept without collecting it') + '</button>' +
+        '<label class="fld">' + (two ? 'Why accept without a second parent?' : 'Why accept without collecting the cash? Nobody will be named as having verified it.') +
+        ' This is kept with the report and the season’s record.<textarea name="reason" rows="2" maxlength="300" required>' +
+          esc(srReasonDraft('shift-report-override', r.id)) + '</textarea></label>' +
+        '<div class="sr-acts"><button type="submit" class="btn primary">' + (two ? 'Accept without a second parent' : 'Accept without collecting the cash') + '</button>' +
         '<button type="button" class="btn ghost" data-act="sr-cancel">Cancel</button></div></form></div>';
     }
     if (blk && ui.srConfirm === r.id) {
@@ -21917,7 +22022,7 @@
     else if (blk && r.needsConfirm) h += '<button type="button" class="btn" data-act="sr-override-open" data-rid="' + esc(r.id) + '">Accept without a second parent</button>';
     else if (blk) {
       h += '<button type="button" class="btn primary" data-act="sr-accept-collected" data-rid="' + esc(r.id) + '">I collected and counted this cash — accept</button>' +
-        '<button type="button" class="btn" data-act="sr-override-open" data-rid="' + esc(r.id) + '">Accept without collecting it</button>';
+        '<button type="button" class="btn" data-act="sr-override-open" data-rid="' + esc(r.id) + '">Accept without collecting the cash</button>';
     }
     h += '<button type="button" class="btn" data-act="sr-return-open" data-rid="' + esc(r.id) + '">Send back</button></div>';
     return h + '</div>';
@@ -21950,7 +22055,7 @@
     if (r && ui.srReturn === r.id && canReviewReports()) {
       h += '<form data-form="shift-report-return" class="sr-return" data-rid="' + esc(r.id) + '">' +
         '<label class="fld">Why are you sending it back? The family sees this. The figures stay on the block until someone corrects them.' +
-        '<textarea name="reason" rows="2" maxlength="300" required></textarea></label>' +
+        '<textarea name="reason" rows="2" maxlength="300" required>' + esc(srReasonDraft('shift-report-return', r.id)) + '</textarea></label>' +
         '<div class="sr-acts"><button type="submit" class="btn">Send back</button>' +
         '<button type="button" class="btn ghost" data-act="sr-cancel">Cancel</button></div></form>';
     }
@@ -22048,7 +22153,7 @@
     b.reportPending = { by: sync.user.uid, at: Date.now(), te: r.teCents, cash: r.cashCents, was: was,
       wrote: { counted: counted, verified: verified }, override: override, note: reason, collected: collected };
     if (!commit()) return;
-    showToast('Accepted. Saving the block, then signing the report off on the server.');
+    showToast('Accepted. Saving now. The family sees it as accepted once the save goes through.');
     shiftReportsReconcile();
   }
   // Does the server's copy of the pack hold this block with this report on it, pending? Then the
@@ -34734,6 +34839,7 @@
   // Phase 3, C2 — except a ledger row's amount and the opening figure: each change to those is
   // one logged event, so they commit once, on change, not a keystroke at a time (LEDGER_NOT_LIVE).
   document.addEventListener('input', function (e) {
+    if (srMirror(e.target)) return;   // a shift-report form: kept in ui as typed (parent-experience review 1)
     var el = e.target.closest('input.money-in[data-ch]');
     if (el && LEDGER_NOT_LIVE.indexOf(el.getAttribute('data-ch')) === -1) {
       liveEdit = true;
@@ -34779,6 +34885,7 @@
   });
   // On blur/change everything commits — money fields reformat here (e.g. "150" → "150.00").
   document.addEventListener('change', function (e) {
+    if (srMirror(e.target)) return;
     var el = e.target.closest('[data-ch]');
     if (el) handleChange(el);
     handleFilePick(e.target);
