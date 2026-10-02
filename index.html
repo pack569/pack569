@@ -32402,9 +32402,11 @@
   // has them. The sheet says "do not post" itself (2026-09-28), because the paper outlives this
   // comment.
   var DAY_SHEET_KEEP = 'Leaders\u2019 copy \u2014 keep with the shift leader, do not post';
-  // The day sheet's last line (2026-10-01): Scouting America's current wording for adult leadership, in
+  // The day sheet's last line (2026-10-01): a paraphrase of Scouting America's Barriers to Abuse, in
   // place of "Two-deep leadership required at all times." Said once here, for the text and the print.
-  var DAY_SHEET_TWO_ADULTS = 'Two registered adult leaders 21 or older at all times, and no one-on-one contact between an adult and a youth.';
+  // (A parent with every scout is STOREFRONT_SAFETY's, on the same sheet: not repeated here.)
+  var DAY_SHEET_TWO_ADULTS = 'Two registered adult leaders 21 or older at all times, and a registered female adult 21 or older when girls attend. ' +
+    'No one-on-one contact between an adult and a youth.';
   function daySheetText(sf) {
     var pub = publicNameMap(state.scouts);
     var lines = [];

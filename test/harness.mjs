@@ -13035,8 +13035,10 @@ test('D2: the day sheet carries the safety rules and the cash count, first names
   ok(/Cash counted by Dana {3}Verified by Sam/.test(txt), 'the cash count is not on the sheet by first name');
   ok(!/Quenneville|Hartwellington/.test(txt), 'a last name is on the day sheet');
   ok(/Cash counted by ______ {3}Verified by ______/.test(txt), 'an unnamed block has no blanks to fill in');
-  // 2026-10-01 — the last line, in Scouting America's current wording (not "two-deep leadership").
-  const sup = 'Two registered adult leaders 21 or older at all times, and no one-on-one contact between an adult and a youth.';
+  // 2026-10-01 — the last line, a paraphrase of Barriers to Abuse (not "two-deep leadership"), with the
+  // female-adult rule (youth-protection review, followups round 1).
+  const sup = 'Two registered adult leaders 21 or older at all times, and a registered female adult 21 or older when girls attend. ' +
+    'No one-on-one contact between an adult and a youth.';
   eq([ctx.DAY_SHEET_TWO_ADULTS, tl[tl.length - 1]], [sup, sup], 'the two-adults line, last on the text sheet');
   const rd = slice('renderDaySheet');
   ok(/'<p class="small" style="margin:6px 0 0"><strong>' \+ esc\(DAY_SHEET_TWO_ADULTS\) \+ '<\/strong><\/p>'/.test(rd), 'the printed sheet’s two-adults line');
