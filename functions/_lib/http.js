@@ -6,6 +6,12 @@
 //        already branches on code 'permission-denied' (it is what Firestore said), and a
 //        fixed body tells a caller nothing about why — not whether a member, invite or
 //        pack exists.
+//        ONE EXCEPTION: a save of the pack record by someone who may write it, refused for the
+//        parts of it they changed and may not edit (position-based access, stage 1):
+//        {error:'forbidden', code:'permission-denied', reason:'section', sections:[…]}, the
+//        sections (access.js), or 'admin', in the order the table lists them. It goes only to a
+//        member who could already read the whole record, so it tells them nothing new, and the
+//        page needs it to say what was refused and take the server's copy of those parts.
 //   409 {error:'conflict', code:'aborted', …remote}          the pack record moved on: here it is
 //   409 {error:'last-admin', code:'failed-precondition'}     the change would leave no admin
 //   409 {error:'awaiting-import', code:'failed-precondition'} production's pack is empty until the
@@ -36,6 +42,8 @@ export function json(status, body, extra) {
 
 export const FORBIDDEN_BODY = Object.freeze({ error: 'forbidden', code: 'permission-denied' });
 export const forbidden = () => json(403, FORBIDDEN_BODY);
+export const forbiddenSections = (sections) =>
+  json(403, { error: 'forbidden', code: 'permission-denied', reason: 'section', sections: sections.slice() });
 export const unauthenticated = (reason) =>
   json(401, { error: 'unauthenticated', code: 'unauthenticated', reason: reason || 'no-token' },
     { 'www-authenticate': 'Bearer' });

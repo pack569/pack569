@@ -71,7 +71,9 @@ export const isAdmin = (role) => role === 'admin';
 // packs/{doc} — 'pack.read': allow read: if isLeader();
 export const canReadPack = (role) => isLeader(role);
 // packs/{doc} — 'pack.write': allow write: if myRole() in ['admin', 'editor'];
-export const canWritePack = (role) => role === 'admin' || role === 'editor';
+// A 'leader' may send a write too; which of its changes may land is the section guard's to say
+// (access.js refusedSections, in the PUT), as it is for an editor's.
+export const canWritePack = (role) => role === 'admin' || role === 'editor' || role === 'leader';
 
 // public/join — 'join.read': allow read: if isLeader();  (the live code: leaders only)
 export const canReadJoin = (role) => isLeader(role);

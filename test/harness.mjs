@@ -14875,7 +14875,8 @@ atest('api Part C pack.read / pack.write: leaders read the pack record, admins a
   const got = await w.call('viewer', 'GET', 'pack');
   eq([got.body.exists, got.body.rev, JSON.parse(got.body.json).scouts[0].id], [true, 5, 's1'], 'the record a viewer reads');
   let rev = 5;
-  const writeAs = (who) => ({ body: { rev: 'x', by: who }, headers: { 'if-match': String(rev), 'x-pack-device': 'dev-' + who } });
+  // A key the pack record has (scouts): since positions, a key nobody planned for is an admin's only.
+  const writeAs = (who) => ({ body: { rev: 'x', scouts: [{ id: 's-' + who }] }, headers: { 'if-match': String(rev), 'x-pack-device': 'dev-' + who } });
   for (const who of ALL) {
     const r = await w.call(who, 'PUT', 'pack', null, writeAs(who));
     if (['owner', 'admin2', 'editor'].indexOf(who) >= 0) { eq([r.status, r.body.rev], [200, rev + 1], who + ' writes'); rev += 1; }
@@ -15833,10 +15834,6 @@ atest('positions: an invite can carry positions, and signing in on it makes a le
   for (const what of ['pack', 'members', 'view', 'rev', 'join']) ok([200].indexOf((await w.call('newbie', 'GET', what)).status) >= 0, 'a leader GET ' + what);
   eq((await w.call('newbie', 'GET', 'rev')).body.rev, 3, 'a leader gets the rev');
   denied(await w.call('newbie', 'GET', 'invites'), 'a leader listing invites');
-  // Until the pack PUT checks each section (the next commit), a leader writes nothing to the pack record.
-  if (!/refusedSections/.test(readFileSync(join(ROOT, 'functions/api/pack/[id]/index.js'), 'utf8'))) {
-    denied(await w.call('newbie', 'PUT', 'pack', null, { body: { scouts: [] }, headers: { 'if-match': '3' } }), 'a leader PUT pack with no section guard');
-  }
   // Revoking an invite takes its positions.
   await inv('owner', { positions: ['chair'] }, 'later@example.com');
   await w.call('owner', 'DELETE', 'invite', { email: 'later@example.com' });
