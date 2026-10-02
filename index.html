@@ -1272,6 +1272,9 @@
     cursor: pointer;
   }
   .adv-cell:hover { border-color: var(--accent); }
+  /* In progress (2026-10-02): outlined in the done colour, never filled — a half-way mark has to
+     read as "not yet" at a glance, beside the filled done and awarded cells. */
+  .adv-cell.partial { border: 2px dashed var(--accent); color: var(--ink); }
   .adv-cell.done { background: var(--accent); border-color: var(--accent); color: #1A1408; }
   .adv-cell.awarded { background: var(--good); border-color: var(--good); color: #FFF; }
   :root[data-theme="dark"] .adv-cell.awarded { color: #10241A; }
@@ -1279,6 +1282,12 @@
     :root:not([data-theme="light"]) .adv-cell.awarded { color: #10241A; }
   }
   table.adv-tbl th, table.adv-tbl td { text-align: center; }
+  .offer-dens { border: 0; padding: 0; margin: 2px 0 4px; display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; }
+  .offer-dens legend { float: left; padding: 0; margin-right: 6px; }
+  .offer-den { display: inline-flex; gap: 4px; align-items: center; min-height: 32px; }
+  .offer-den input[type="checkbox"] { width: 20px; height: 20px; min-height: 20px; padding: 0; margin: 0; flex: 0 0 auto; accent-color: var(--accent); }
+  .adv-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; margin: 8px 0 0; }
+  .adv-legend .adv-cell { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; min-height: 22px; font-size: .8rem; cursor: default; vertical-align: middle; margin-right: 4px; }
   table.adv-tbl th:first-child, table.adv-tbl td:first-child { text-align: left; }
 
   /* ---------- Wave 13: Trail's End import ---------- */
@@ -4536,16 +4545,27 @@
         });
       }
       if (Object.keys(dAdv).length) e.denAdv = dAdv; else delete e.denAdv;
-      // Several adventures at one event (evOffers, 2026-10-01): [{ key, auto }] on a den meeting
-      // or an activity. Shape only, as for packAdv: a choice-shaped key, once each, a boolean
-      // auto, at most 12 (ADV_OFFERS_MAX). A pack meeting works no adventure and keeps none.
+      // Several adventures at one event (evOffers, 2026-10-01): [{ key, auto, dens?, part? }] on a den
+      // meeting or an activity. Shape only, as for packAdv: a choice-shaped key, once each, a
+      // boolean auto, at most 12 (ADV_OFFERS_MAX). A pack meeting works no adventure and keeps none.
+      // `dens` (2026-10-02, DESIGN-adventures.md §9): the ranks an offer is for, when a leader has
+      // narrowed it — Webelos Woods' Outdoors for Arrow of Light only. DENS names only, rebuilt in
+      // DENS order (so once each); an empty list means every rank and is not kept. Whether a rank
+      // HAS the adventure is offerDens' question at read time — the loader must not ask it.
+      // `part` (owner, 2026-10-02): true when the event covers PART of the adventure (Webelos
+      // Woods' Outdoors), so it joins the den meetings as one of its parts (advParts). Kept only
+      // when true; absent is a full chance — one event earns it, as offers always did.
       var offs = [], offSeen = {};
       if (e.kind !== 'pack' && Array.isArray(e.advOffers)) {
         e.advOffers.forEach(function (o) {
           if (offs.length >= 12 || !o || typeof o !== 'object' || typeof o.key !== 'string') return;
           if (!/^(req:[0-5]|th:[a-z]+|el:\S.*)$/.test(o.key) || offSeen[o.key]) return;
           offSeen[o.key] = 1;
-          offs.push({ key: o.key, auto: o.auto === true });
+          var oDens = Array.isArray(o.dens) ? DENS.filter(function (dn) { return o.dens.indexOf(dn) !== -1; }) : [];
+          var oKeep = { key: o.key, auto: o.auto === true };
+          if (oDens.length) oKeep.dens = oDens;
+          if (o.part === true) oKeep.part = true;   // a PART of the adventure, not a full chance (§9)
+          offs.push(oKeep);
         });
       }
       if (offs.length) e.advOffers = offs; else delete e.advOffers;
@@ -4690,7 +4710,13 @@
       Object.keys(cm).forEach(function (sid) { if (cm[sid] !== true) delete cm[sid]; });
       if (!Object.keys(cm).length) delete d.collected[k];
     });
-    // Wave 3: advancement — { scoutId: { req: {name: 'done'|'awarded'}, elect: {…} } }
+    // Wave 3: advancement — { scoutId: { req: {name: 'partial'|'done'|'awarded'}, elect: {…},
+    //   notes?: { 'req|Name' | 'elect|Name': text } } }
+    // 'partial' (2026-10-02, DESIGN-adventures.md §9) is IN PROGRESS — started, not earned. Only
+    // 'done' and 'awarded' are earned (advEarned); every count of a rank reads that, never a
+    // truthy status. `notes` is a leader's short line on an in-progress adventure ("needs the
+    // 2-mile hike"): trimmed, at most 120 characters, and only beside a 'partial' — a note on a
+    // finished or cleared adventure is dropped. ⚠ LEADERS ONLY: never in the parent view.
     if (!d.advancement || typeof d.advancement !== 'object' || Array.isArray(d.advancement)) d.advancement = {};
     Object.keys(d.advancement).forEach(function (sid) {
       var av = d.advancement[sid];
@@ -4698,25 +4724,43 @@
       ['req', 'elect'].forEach(function (kk) {
         if (!av[kk] || typeof av[kk] !== 'object' || Array.isArray(av[kk])) { av[kk] = {}; return; }
         Object.keys(av[kk]).forEach(function (nm) {
-          if (av[kk][nm] !== 'done' && av[kk][nm] !== 'awarded') delete av[kk][nm];
+          if (av[kk][nm] !== 'partial' && av[kk][nm] !== 'done' && av[kk][nm] !== 'awarded') delete av[kk][nm];
         });
       });
+      if (!av.notes || typeof av.notes !== 'object' || Array.isArray(av.notes)) delete av.notes;
       if (!Object.keys(av.req).length && !Object.keys(av.elect).length) delete d.advancement[sid];
     });
     // Wave 15 — official handbook renames (ADV_RENAMES): migrate stored adventure keys.
-    // Runs AFTER the cleanup above, so values are only 'done'|'awarded'. When both the
-    // old and new spellings exist, the more advanced status wins (awarded > done).
+    // Runs AFTER the cleanup above, so values are only 'partial'|'done'|'awarded'. When both
+    // the old and new spellings exist, the more advanced status wins (awarded > done > partial),
+    // and an in-progress note moves with its adventure.
+    var advRankOf = { partial: 1, done: 2, awarded: 3 };
     Object.keys(d.advancement).forEach(function (sid) {
       var av = d.advancement[sid];
       ['req', 'elect'].forEach(function (kk) {
         Object.keys(av[kk]).forEach(function (nm) {
           var renamed = ADV_RENAMES[nm];
           if (!renamed) return;
-          var cur = av[kk][nm];
-          av[kk][renamed] = (cur === 'awarded' || av[kk][renamed] === 'awarded') ? 'awarded' : 'done';
+          var cur = av[kk][nm], had = av[kk][renamed];
+          av[kk][renamed] = (advRankOf[had] || 0) > advRankOf[cur] ? had : cur;
           delete av[kk][nm];
+          if (av.notes && typeof av.notes[kk + '|' + nm] === 'string') {
+            if (typeof av.notes[kk + '|' + renamed] !== 'string') av.notes[kk + '|' + renamed] = av.notes[kk + '|' + nm];
+            delete av.notes[kk + '|' + nm];
+          }
         });
       });
+      // The notes, after the renames: a string, beside an adventure still in progress.
+      if (av.notes) {
+        var nt = {};
+        Object.keys(av.notes).forEach(function (k) {
+          var bar = k.indexOf('|'), kk = k.slice(0, bar), v = av.notes[k];
+          if (bar === -1 || (kk !== 'req' && kk !== 'elect') || av[kk][k.slice(bar + 1)] !== 'partial' || typeof v !== 'string') return;
+          v = v.replace(/\s+/g, ' ').trim().slice(0, 120).trim();
+          if (v) nt[k] = v;
+        });
+        if (Object.keys(nt).length) av.notes = nt; else delete av.notes;
+      }
     });
     // Wave 4: other fundraisers — standalone side tally, separate from popcorn money.
     // [{ id, name, goalCents, sales: [{ id, scoutId, cents, date?, note? }] }]
@@ -11404,6 +11448,52 @@
     var hit = c.required.concat(c.electives).find(function (x) { return x.key === key; });
     return hit ? hit.label : '';
   }
+  // What an event can OFFER (advOffers; owner ask 2026-10-02, DESIGN-adventures.md §9): every
+  // required category and elective theme, as on an All-dens night, and ANY rank's elective — not
+  // only the ones two ranks share — because an offer can be narrowed to the ranks it is for
+  // (offer.dens): Arrow of Light's Knife Safety at Webelos Woods is an offer, and it is never a
+  // pick for every den. An elective that is one rank's version of a theme (Arrow of Light's
+  // "Fishing", Webelos' "Catch the Big One") is left to the theme, narrowed, so one event cannot
+  // offer the same adventure twice under two keys. One rank's elective is labelled with its rank.
+  // packAdvChoices stays the All-dens list. Built once — ADVENTURES is fixed.
+  function advOfferChoices() {
+    if (advOfferChoices.cache) return advOfferChoices.cache;
+    var pack = packAdvChoices(), inTheme = {}, ranks = {}, order = [];
+    ADV_ELECTIVE_THEMES.forEach(function (t) { Object.keys(t.byDen).forEach(function (dn) { inTheme[t.byDen[dn]] = true; }); });
+    DENS.forEach(function (dn) {
+      ((ADVENTURES[dn] || {}).electives || []).forEach(function (n) {
+        if (inTheme[n]) return;
+        if (!ranks[n]) { ranks[n] = []; order.push(n); }
+        ranks[n].push(dn);
+      });
+    });
+    return (advOfferChoices.cache = {
+      required: pack.required,
+      electives: ADV_ELECTIVE_THEMES.map(function (t) { return { key: t.key, label: t.label }; })
+        .concat(order.map(function (n) { return { key: 'el:' + n, label: ranks[n].length > 1 ? n : n + ' (' + ranks[n][0] + ')' }; }))
+        .sort(function (a, b) { return a.label.localeCompare(b.label); })
+    });
+  }
+  // What one stored offer is called: narrowed to ONE rank, that rank's own adventure ("Outdoor
+  // Adventurer", never "Outdoors for Arrow of Light"); else the pack-wide label.
+  function offerLabel(o) {
+    var dens = Array.isArray(o.dens) ? DENS.filter(function (dn) { return o.dens.indexOf(dn) !== -1; }) : [];
+    return (dens.length === 1 && packAdvName(o.key, dens[0])) || advOfferLabel(o.key);
+  }
+  // '' for a key that is not an offer choice — evOffers drops it.
+  function advOfferLabel(key) {
+    var c = advOfferChoices();
+    var hit = c.required.concat(c.electives).find(function (x) { return x.key === key; });
+    return hit ? hit.label : '';
+  }
+  // One stored offer, copied: the shape normalizeState keeps. Every writer that copies an offer
+  // (the seed, the rollover, the add form) goes through this, so `dens` is never dropped.
+  function offerCopy(o) {
+    var out = { key: o.key, auto: o.auto === true };
+    if (Array.isArray(o.dens) && o.dens.length) out.dens = o.dens.slice();
+    if (o.part === true) out.part = true;
+    return out;
+  }
   /* ----- Several adventures at one event (owner ask, 2026-10-01). -----
      "add the ability to assign multiple electives to a meeting, i.e. the fall and spring family
      camping offer BBs, bows and arrows, fishing, and Let's Camp (Let's Camp is automatic to all
@@ -11426,13 +11516,15 @@
   // Shooting sports. Pack rule, and the national one (CAMP_PACK_RUN): never at a den meeting —
   // only on a council range with a certified range master, e.g. the Scoutland weekend.
   var ADV_RANGE_KEYS = ['el:Archery', 'el:BB Gun', 'el:Slingshot'];
-  // An event's offers, valid keys only, once each, with their labels.
+  // An event's offers, valid keys only, once each, with their labels. `dens` is the narrowing
+  // a leader set (DENS names, [] = every rank); offerDens is what it means at this event.
   function evOffers(ev) {
     var out = [], seen = {};
     (ev && ev.kind !== 'pack' && Array.isArray(ev.advOffers) ? ev.advOffers : []).forEach(function (o) {
-      if (!o || typeof o.key !== 'string' || seen[o.key] || !packAdvLabel(o.key) || out.length >= ADV_OFFERS_MAX) return;
+      if (!o || typeof o.key !== 'string' || seen[o.key] || !advOfferLabel(o.key) || out.length >= ADV_OFFERS_MAX) return;
       seen[o.key] = 1;
-      out.push({ key: o.key, auto: o.auto === true, label: packAdvLabel(o.key) });
+      var dens = Array.isArray(o.dens) ? DENS.filter(function (dn) { return o.dens.indexOf(dn) !== -1; }) : [];
+      out.push({ key: o.key, auto: o.auto === true, label: offerLabel(o), dens: dens, part: o.part === true });
     });
     return out;
   }
@@ -11442,29 +11534,54 @@
     var d = eventDens(ev);
     return (d.length ? d : DENS).filter(function (dn) { return !!ADVENTURES[dn]; });
   }
-  // One offer, den by den: { has: [{ den, name }], lacks: [den] }.
+  // The dens one offer is for at this event: the event's dens, narrowed by the offer's `dens`
+  // when a leader set them (2026-10-02). `key` names the offer on `ev` — a key is on an event
+  // once (evOffers) — so every caller that passes a key gets the narrowing without carrying it.
+  // A narrowing that no longer meets the event's dens (the event's dens changed) narrows to
+  // nothing: the offer is then for nobody until a leader looks at it, never quietly for everyone.
+  function offerDens(ev, key) {
+    var o = evOffers(ev).find(function (x) { return x.key === key; });
+    var dens = offerEventDens(ev);
+    return o && o.dens.length ? dens.filter(function (dn) { return o.dens.indexOf(dn) !== -1; }) : dens;
+  }
+  // One offer, den by den, among the event's dens:
+  //   has    [{ den, name }]  the ranks it is for, each in its own rank's version
+  //   lacks  [den]            ranks without the adventure ("not in that rank's adventures")
+  //   off    [{ den, name }]  ranks that have it but a leader left out (offer.dens)
   function offerByDen(ev, key) {
-    var has = [], lacks = [];
+    var has = [], lacks = [], off = [];
+    var mine = offerDens(ev, key);
     offerEventDens(ev).forEach(function (dn) {
       var nm = packAdvName(key, dn);
-      if (nm) has.push({ den: dn, name: nm }); else lacks.push(dn);
+      if (!nm) lacks.push(dn);
+      else if (mine.indexOf(dn) !== -1) has.push({ den: dn, name: nm });
+      else off.push({ den: dn, name: nm });
     });
-    return { has: has, lacks: lacks };
+    return { has: has, lacks: lacks, off: off };
   }
-  // Scouts checked in at the event, split by whether their rank has the offer. Active scouts only,
+  // Scouts checked in at the event, split by whether the offer is for them. Active scouts only,
   // like a run's roster (meetingRoster): an archived scout is not credited with anything new.
-  //   { can: [{ scout, name, status }], cannot: [scout] }
+  //   { can: [{ scout, name, status, earned }], cannot: [scout], notFor: [scout] }
+  // `cannot`: their rank has no such adventure. `notFor` (2026-10-02): their rank has it but the
+  // offer is not for their den here — a leader narrowed it (offer.dens), or the event is for other
+  // dens (a younger sibling checked in at Webelos Woods). Neither list is ever credited.
   function offerAttendees(ev, key) {
-    var can = [], cannot = [];
+    var can = [], cannot = [], notFor = [];
+    var dens = offerDens(ev, key);
     byScoutName(activeScouts().filter(function (s) { return wasCheckedIn(ev.id, s.id); })).forEach(function (s) {
       var nm = packAdvName(key, s.den);
-      if (nm) can.push({ scout: s, name: nm, status: advStatus(s.id, advKindFor(s, nm), nm) });
-      else cannot.push(s);
+      if (!nm) cannot.push(s);
+      else if (dens.indexOf(s.den) === -1) notFor.push(s);
+      else {
+        var kind = advKindFor(s, nm);
+        can.push({ scout: s, name: nm, status: advStatus(s.id, kind, nm), earned: advEarned(s.id, kind, nm) });
+      }
     });
-    return { can: can, cannot: cannot };
+    return { can: can, cannot: cannot, notFor: notFor };
   }
-  // Every offer this program year that one den can earn: [{ ev, name, auto }] — Den plans counts
-  // these with the den meetings (denPlan). Dated events only, like a run's sessions.
+  // Every offer this program year that one den can earn: [{ ev, name, auto, part }] — Den plans
+  // counts these with the den meetings (denPlan), and advParts takes the ones marked `part`.
+  // Dated events only, like a run's sessions; only offers that are for this den (offerDens).
   function denOfferEntries(den, events, py) {
     var from = programYearStartISO(py), to = programYearEndISO(py);
     var out = [];
@@ -11472,16 +11589,22 @@
       if (!ev.date || ev.date < from || ev.date > to || offerEventDens(ev).indexOf(den) === -1) return;
       evOffers(ev).forEach(function (o) {
         var nm = packAdvName(o.key, den);
-        if (nm) out.push({ ev: ev, name: nm, auto: o.auto });
+        if (nm && offerDens(ev, o.key).indexOf(den) !== -1) out.push({ ev: ev, name: nm, auto: o.auto, part: o.part });
       });
     });
     return out;
   }
   // "Let's Camp! (everyone who attends) · Archery, BB Gun (offered)" — the agenda sheet's line.
+  // A narrowed offer names its ranks ("Archery for Webelos and Arrow of Light"); one narrowed to
+  // ONE rank is already called by that rank's name (offerLabel). A part reads "a part, for
+  // everyone who attends" (offer.part, §9).
   function offersSummary(offers) {
-    var auto = offers.filter(function (o) { return o.auto; }).map(function (o) { return o.label; });
-    var chosen = offers.filter(function (o) { return !o.auto; }).map(function (o) { return o.label; });
+    function lbl(o) { return o.label + (o.dens && o.dens.length > 1 ? ' for ' + denListLabel(o.dens) : ''); }
+    var auto = offers.filter(function (o) { return o.auto && !o.part; }).map(lbl);
+    var autoPart = offers.filter(function (o) { return o.auto && o.part; }).map(lbl);
+    var chosen = offers.filter(function (o) { return !o.auto; }).map(lbl);
     return [auto.length ? auto.join(', ') + ' (everyone who attends)' : '',
+      autoPart.length ? autoPart.join(', ') + ' (a part, for everyone who attends)' : '',
       chosen.length ? chosen.join(', ') + ' (offered)' : ''].filter(Boolean).join(' · ');
   }
   // DEN LESSON PLANS (docs/lesson-plans/*.md). They are not in this page: they are about 1 MB of
@@ -12835,7 +12958,8 @@
   //   missed    sessions ON OR BEFORE today that they were not checked in at
   //   pending   sessions still to come (after today) — the ones "missing this meeting" is about
   //   full      attended every session in the run, past and planned
-  //   status    already recorded on the Advancement tab ('', 'done', 'awarded')
+  //   status    already recorded on the Advancement tab ('', 'partial', 'done', 'awarded')
+  //   earned    status is done or awarded (advEarned) — 'partial' is in progress, not earned
   function runProgress(run, asOf) {
     var today = asOf || todayISO();
     var total = run.sessions.length;
@@ -12854,7 +12978,8 @@
       return {
         scout: s, attended: attended, missed: missed, pending: pending,
         count: attended.length, total: total, full: attended.length === total,
-        status: advStatus(s.id, advKindFor(s, run.adventure), run.adventure)
+        status: advStatus(s.id, advKindFor(s, run.adventure), run.adventure),
+        earned: advEarned(s.id, advKindFor(s, run.adventure), run.adventure)
       };
     });
     return {
@@ -12904,6 +13029,8 @@
       if (!run.sessions.every(function (ev) { return ev.date < t; })) return false;
       var roster = meetingRoster({ den: run.den });
       if (!roster.length) return false;
+      // ANY mark, in progress included (2026-10-02, deliberately truthy): the question is "has a
+      // leader recorded anything for this run", and a den marked in progress has been looked at.
       return !roster.some(function (s) {
         return advStatus(s.id, 'req', run.adventure) || advStatus(s.id, 'elect', run.adventure);
       });
@@ -12912,6 +13039,124 @@
   // "2 of 3" / "the only session". Said the same way everywhere it appears.
   function sessionLabel(pos, of) {
     return of <= 1 ? 'one session' : ('session ' + pos + ' of ' + of);
+  }
+  /* ----- An adventure's PARTS: den meetings and events together (owner, 2026-10-02). -----
+     "Add a way to separate adventures available for events per rank, auto handle partials if the
+     same adventure is assigned to multiple events, and mark partial credit earned manually."
+     Owner's rulings (DESIGN-adventures.md §9):
+       - den meetings AND events count together as the parts of one adventure, for one den, in
+         one program year: the den's run sessions (meetingAdvs, as adventureRuns builds them) plus
+         every dated event whose offers give that den the adventure AS A PART (offer.part, and
+         offer.dens through denOfferEntries). Arrow of Light's Outdoor Adventurer is two den
+         meetings and Webelos Woods. An offer without `part` is a full chance and no part of it.
+       - the app DERIVES progress; nothing is written until a leader taps. Attendance is evidence
+         (§3) — checked in at a part counts for that part, auto offer or not — and an offered
+         elective (auto: false) still needs the leader's tick to record anything at all.
+       - partial credit is a STATUS ('partial', ◐ in progress), not requirement tracking.
+     A run-shaped object, so runProgress reads it unchanged: the same pending/missed rule (tonight
+     is not the future), active scouts of the den only, this program year. Not a run: adventureRuns,
+     runForMeeting and the lesson plan's "session 2 of 3" are still den meetings only. */
+  // [{ ev, kind: 'session' | 'offer', auto }] in date order, one per event. An event that is
+  // both (a den meeting whose main adventure is also offered) is a session; two offers of the
+  // same adventure at one event (a theme and a category, say) are one part, auto if either is.
+  function advParts(den, name, py) {
+    var from = programYearStartISO(py), to = programYearEndISO(py);
+    var want = String(name || '').toLowerCase();
+    var byId = {}, out = [];
+    if (!den || !want) return out;
+    state.events.forEach(function (ev) {
+      if (!ev.date || ev.date < from || ev.date > to) return;
+      meetingAdvs(ev).forEach(function (pair) {
+        if (pair.den !== den || pair.name.toLowerCase() !== want || byId[ev.id]) return;
+        byId[ev.id] = { ev: ev, kind: 'session', auto: true };
+        out.push(byId[ev.id]);
+      });
+    });
+    denOfferEntries(den, state.events, py).forEach(function (o) {
+      // Only an offer that covers PART of the adventure (offer.part, owner 2026-10-02). Any other
+      // is a full chance — Let's Camp! at the fall OR the spring campout — and is no part of anything.
+      if (!o.part || o.name.toLowerCase() !== want) return;
+      var had = byId[o.ev.id];
+      if (had) { if (had.kind === 'offer' && o.auto) had.auto = true; return; }
+      byId[o.ev.id] = { ev: o.ev, kind: 'offer', auto: o.auto };
+      out.push(byId[o.ev.id]);
+    });
+    return out.sort(function (a, b) {
+      return String(a.ev.date).localeCompare(String(b.ev.date)) || String(a.ev.time || '').localeCompare(String(b.ev.time || ''));
+    });
+  }
+  // The parts as a run runProgress can read: { key, den, adventure, sessions: [ev], parts }.
+  // `key` is the den's run key (adventureRuns), so the make-up message finds the run from it.
+  function advPartsRun(den, name, py) {
+    var parts = advParts(den, name, py);
+    return { key: den + ' :: ' + String(name).toLowerCase(), den: den, adventure: name,
+      sessions: parts.map(function (x) { return x.ev; }), parts: parts };
+  }
+  // A run of den meetings, widened to its parts. A run for "All dens" (a typed adventure on an
+  // All-dens night, before packAdv) belongs to no one den and keeps its sessions as they are.
+  function advRunParts(run) {
+    if (!run.den) {
+      return { key: run.key, den: '', adventure: run.adventure, sessions: run.sessions.slice(),
+        parts: run.sessions.map(function (ev) { return { ev: ev, kind: 'session', auto: true }; }) };
+    }
+    return advPartsRun(run.den, run.adventure, state.budget.programYear);
+  }
+  // True when any part is an event's offer — the wording says "part" then, not "session".
+  function advPartsMixed(pr) {
+    return (pr.parts || []).some(function (x) { return x.kind === 'offer'; });
+  }
+  // "part 2 of 3" / "one part". Beside sessionLabel; the same shape.
+  function partLabel(pos, of) {
+    return of <= 1 ? 'one part' : ('part ' + pos + ' of ' + of);
+  }
+  // Where a part was, for "missed …": a den meeting by its date, an event by its name and date.
+  function advPartWhen(ev) {
+    return ev.kind === 'den' ? fmtDateShort(ev.date) : (eventLabel(ev) + ' ' + fmtDateShort(ev.date));
+  }
+  // WHO A LEADER'S TAP RECORDS, from one progress (runProgress of advRunParts / advPartsRun).
+  // The one rule both the den meeting and the event use, so they can never disagree:
+  //   done         on track — at every part held so far (tonight counts as held), at least one,
+  //                missed none — and not yet earned. Parts may still be to come: that is the
+  //                run's Mark-done as it always was (owner, 2026-10-02: "most dens wait for the
+  //                last one" is the leader's call, not the button's), and `left` says how many.
+  //   in progress  the rest who came to some but missed a part, with no mark yet.
+  // `partial` is blank marks only: advMarkPartial never writes over a mark, so a scout already in
+  // progress, done or awarded is not on it. `done` includes a scout in progress — advMarkDone
+  // upgrades them. One part: nobody can have come to some and missed some, so it is done only,
+  // exactly as before.  → { multi, left, done: [row], partial: [row] }
+  function advMarkable(p, asOf) {
+    var today = asOf || todayISO();
+    var left = p.run.sessions.filter(function (ev) { return ev.date > today; }).length;
+    return { multi: p.total > 1, left: left,
+      done: p.onTrack.filter(function (r) { return !r.earned; }),
+      partial: p.total > 1 ? p.scouts.filter(function (r) { return r.count > 0 && r.missed.length && !r.status; }) : [] };
+  }
+  // One offer at one event, scout by scout, with what a tap would record for each (advMarkable's
+  // rule — done when on track, else in progress):
+  //   { rows: [{ scout, name, status, earned, row, group, would: 'done' | 'partial' }],
+  //     groups: [{ den, name, run, prog, position, of, left }], cannot, notFor }
+  // Each den has its own parts (its rank's adventure, its own den meetings), so the parts are per
+  // den. An event that is not a part (undated, another program year) or an adventure with one
+  // part — and an offer that is a full chance, not a part (offer.part) — is the single case:
+  // 'done', as before.
+  function offerMarkable(ev, key, asOf) {
+    var today = asOf || todayISO(), py = state.budget.programYear;
+    var att = offerAttendees(ev, key), byDen = {}, groups = [];
+    var rows = att.can.map(function (r) {
+      var dn = r.scout.den, g = byDen[dn];
+      if (!g) {
+        var run = advPartsRun(dn, r.name, py);
+        var idx = run.sessions.findIndex(function (x) { return x.id === ev.id; });
+        g = byDen[dn] = { den: dn, name: r.name, run: run, position: idx + 1, of: idx === -1 ? 1 : run.sessions.length,
+          prog: idx === -1 ? null : runProgress(run, today),
+          left: run.sessions.filter(function (x) { return x.date > today; }).length };
+        groups.push(g);
+      }
+      var row = g.prog && g.of > 1 ? g.prog.scouts.find(function (x) { return x.scout.id === r.scout.id; }) : null;
+      var would = !row || (row.count > 0 && !row.missed.length) ? 'done' : 'partial';
+      return { scout: r.scout, name: r.name, status: r.status, earned: r.earned, row: row, group: g, would: would };
+    });
+    return { rows: rows, groups: groups, cannot: att.cannot, notFor: att.notFor };
   }
   /* ----- "From the lesson plan" on a den meeting (2026-09-30, BUILD-PLAN §4 "Meeting editor"). -----
      A den meeting tagged with an adventure shows which meeting of the lesson plan tonight is, its
@@ -13308,21 +13553,62 @@
       'Message for the family</button>';
   }
   function advRec(scoutId) { return state.advancement[scoutId] || null; }
+  // '' | 'partial' | 'done' | 'awarded'. TRUTHY IS NOT EARNED (2026-10-02): 'partial' is in
+  // progress. Anything that means "has it" — a rank's count, a badge, a filter of who still needs
+  // recording — asks advEarned. A bare advStatus is right only where any mark at all is the
+  // question (the grid cell, "already tracking that elective", "has a leader looked at it").
   function advStatus(scoutId, kind, name) {
     var a = advRec(scoutId);
     return (a && a[kind] && a[kind][name]) || '';
+  }
+  // Earned: done or awarded. Never 'partial'.
+  function advEarned(scoutId, kind, name) {
+    var st = advStatus(scoutId, kind, name);
+    return st === 'done' || st === 'awarded';
   }
   function advPrune(scoutId) {
     var a = state.advancement[scoutId];
     if (a && !Object.keys(a.req).length && !Object.keys(a.elect).length) delete state.advancement[scoutId];
   }
+  // The in-progress note ("needs the 2-mile hike") lives beside the mark and only while it is
+  // 'partial' (normalizeState drops any other). ⚠ LEADERS ONLY: never in buildParentView, the
+  // digest or the .ics — the harness checks all three.
+  var ADV_PARTIAL_NOTE_MAX = 120;
+  function advNote(scoutId, kind, name) {
+    var a = advRec(scoutId);
+    return (a && a.notes && a[kind] && a[kind][name] === 'partial' && a.notes[kind + '|' + name]) || '';
+  }
+  function advDropNote(a, kind, name) {
+    if (!a || !a.notes) return;
+    delete a.notes[kind + '|' + name];
+    if (!Object.keys(a.notes).length) delete a.notes;
+  }
+  // Does NOT commit. Returns true when the stored note changed. Only on an in-progress adventure.
+  function advSetNote(scoutId, kind, name, text) {
+    var a = advRec(scoutId);
+    if (!a || !a[kind] || a[kind][name] !== 'partial') return false;
+    var v = String(text == null ? '' : text).replace(/\s+/g, ' ').trim().slice(0, ADV_PARTIAL_NOTE_MAX).trim();
+    if (v === advNote(scoutId, kind, name)) return false;
+    if (!v) { advDropNote(a, kind, name); return true; }
+    if (!a.notes) a.notes = {};
+    a.notes[kind + '|' + name] = v;
+    return true;
+  }
+  // The grid cell's cycle (2026-10-02): blank → in progress (◐) → done (✓) → awarded (★) → blank.
+  // In progress comes first because that is the order a den works in; a leader recording a
+  // finished adventure taps twice. ADV_CYCLE is the order, read by advNextStatus and the legend.
+  var ADV_CYCLE = ['', 'partial', 'done', 'awarded'];
+  function advNextStatus(cur) {
+    var i = ADV_CYCLE.indexOf(cur || '');
+    return ADV_CYCLE[(i + 1) % ADV_CYCLE.length];
+  }
   function advCycle(scoutId, kind, name) {
     var a = state.advancement[scoutId];
     if (!a) a = state.advancement[scoutId] = { req: {}, elect: {} };
     if (!a[kind]) a[kind] = {};
-    var cur = a[kind][name];
-    if (!cur) a[kind][name] = 'done';
-    else if (cur === 'done') a[kind][name] = 'awarded';
+    var next = advNextStatus(a[kind][name]);
+    if (next !== 'partial') advDropNote(a, kind, name);
+    if (next) a[kind][name] = next;
     else { delete a[kind][name]; advPrune(scoutId); }
     commit();
   }
@@ -13333,72 +13619,142 @@
     var adv = scout && ADVENTURES[scout.den];
     return (adv && adv.required.indexOf(name) !== -1) ? 'req' : 'elect';
   }
-  // Wave 16 — one-way upgrade: blank → done. Never touches done/awarded (no downgrade).
-  // Does NOT commit — callers batch marks and commit once. Returns true when written.
+  // Wave 16 — one-way upgrade: blank or in progress → done. Never touches done/awarded (no
+  // downgrade). Since 2026-10-02 it upgrades 'partial' (it used to refuse any status), and the
+  // in-progress note goes with it. Does NOT commit — callers batch marks and commit once.
+  // Returns true when written.
   function advMarkDone(scoutId, kind, name) {
-    if (advStatus(scoutId, kind, name)) return false; // already done or awarded
+    if (advEarned(scoutId, kind, name)) return false; // already done or awarded
     var a = state.advancement[scoutId];
     if (!a) a = state.advancement[scoutId] = { req: {}, elect: {} };
     if (!a[kind]) a[kind] = {};
     a[kind][name] = 'done';
+    advDropNote(a, kind, name);
     return true;
   }
+  // 2026-10-02 — blank → in progress, and nothing else: never over a mark of any kind, so it can
+  // never take a scout's done or awarded away. Does NOT commit. Returns true when written.
+  function advMarkPartial(scoutId, kind, name) {
+    if (advStatus(scoutId, kind, name)) return false;
+    var a = state.advancement[scoutId];
+    if (!a) a = state.advancement[scoutId] = { req: {}, elect: {} };
+    if (!a[kind]) a[kind] = {};
+    a[kind][name] = 'partial';
+    return true;
+  }
+  // Electives EARNED. Counts keys that are done or awarded — an elective in progress is on the
+  // scout's list but is not one of the two the rank needs.
   function advElectCount(scoutId) {
     var a = advRec(scoutId);
-    return a ? Object.keys(a.elect || {}).length : 0; // only done/awarded survive normalize
+    return a ? Object.keys(a.elect || {}).filter(function (nm) { return advEarned(scoutId, 'elect', nm); }).length : 0;
   }
   function scoutAdvComplete(s) {
     var adv = ADVENTURES[s.den];
     if (!adv) return false;
-    var okReq = adv.required.every(function (nm) { return !!advStatus(s.id, 'req', nm); });
+    var okReq = adv.required.every(function (nm) { return advEarned(s.id, 'req', nm); });
     return okReq && advElectCount(s.id) >= 2;
   }
-  // Wave 19(30) — non-enforcing nudge: some non-Bobcat adventure is recorded while
-  // Bobcat is still blank (the handbook has Bobcat completed first).
+  // Wave 19(30) — non-enforcing nudge: some non-Bobcat adventure is earned while Bobcat is
+  // not (the handbook has Bobcat completed first). In progress counts on neither side: Bobcat
+  // started is still not completed first, and another adventure started is not one finished.
   function bobcatNudgeFor(scoutId) {
-    if (advStatus(scoutId, 'req', 'Bobcat')) return false;
+    if (advEarned(scoutId, 'req', 'Bobcat')) return false;
     var a = advRec(scoutId);
     if (!a) return false;
     var any = false;
     ['req', 'elect'].forEach(function (kk) {
-      Object.keys(a[kk] || {}).forEach(function (nm) { if (kk === 'elect' || nm !== 'Bobcat') any = true; });
+      Object.keys(a[kk] || {}).forEach(function (nm) {
+        if ((kk === 'elect' || nm !== 'Bobcat') && advEarned(scoutId, kk, nm)) any = true;
+      });
     });
     return any;
   }
-  // One tappable 3-state cell: blank → done (✓ gold) → awarded (★ green) → blank.
-  // Wave 19(30): `nudge` adds the amber Bobcat-first tint + title/aria hint.
+  // One tappable 4-state cell: blank → in progress (◐ outlined) → done (✓ gold) → awarded
+  // (★ green) → blank. Wave 19(30): `nudge` adds the amber Bobcat-first tint + title/aria hint.
+  // An in-progress cell's note rides in its title and label, so it is read wherever it is seen.
+  var ADV_STATUS_WORDS = { '': 'not started', partial: 'in progress', done: 'done', awarded: 'awarded' };
   function advCellBtn(scoutId, kind, name, nudge) {
     var st = advStatus(scoutId, kind, name);
-    var glyph = st === 'awarded' ? '★' : (st === 'done' ? '✓' : '');
-    var next = !st ? 'tap to mark done' : (st === 'done' ? 'tap to mark awarded' : 'tap to clear');
-    var lbl = name + ': ' + (st || 'not done') + ', ' + next;
+    var glyph = st === 'awarded' ? '★' : st === 'done' ? '✓' : st === 'partial' ? '◐' : '';
+    var next = advNextStatus(st);
+    var note = st === 'partial' ? advNote(scoutId, kind, name) : '';
+    var lbl = name + ': ' + (ADV_STATUS_WORDS[st] || st) + (note ? ' (' + note + ')' : '') +
+      ', tap to ' + (next ? 'mark ' + ADV_STATUS_WORDS[next] : 'clear');
     if (nudge) lbl += '. Bobcat is completed first';
+    var title = [st === 'partial' ? 'In progress' + (note ? ': ' + note : '') : '', nudge ? 'Bobcat is completed first' : ''].filter(Boolean).join(' · ');
     return '<button type="button" class="adv-cell' + (st ? ' ' + st : '') + (nudge ? ' bobcat-nudge' : '') + '" data-act="adv-cycle" data-scout="' + scoutId +
-      '" data-kind="' + kind + '" data-name="' + esc(name) + '"' + (nudge ? ' title="Bobcat is completed first"' : '') + ' aria-label="' + esc(lbl) + '">' + glyph + '</button>';
+      '" data-kind="' + kind + '" data-name="' + esc(name) + '"' + (title ? ' title="' + esc(title) + '"' : '') + ' aria-label="' + esc(lbl) + '">' + glyph + '</button>';
   }
-  // Every adventure the dens are working this program year, and who the attendance is behind.
+  // Every adventure the dens are working this program year, as its PARTS (advRunParts, 2026-10-02):
+  // each den's runs widened to the events that offer the adventure to the den, and any adventure
+  // a den has only at events when there are two or more of them (Let's Camp! at Webelos Woods and
+  // the fall campout). One event on its own is that event's business, as before. → run-shaped.
+  function advProgressUnits() {
+    var py = state.budget.programYear, seen = {}, units = [];
+    adventureRuns().forEach(function (run) {
+      var u = advRunParts(run);
+      seen[u.key] = true;
+      units.push(u);
+    });
+    DENS.forEach(function (den) {
+      denOfferEntries(den, state.events, py).forEach(function (o) {
+        var key = den + ' :: ' + o.name.toLowerCase();
+        if (seen[key]) return;
+        seen[key] = true;
+        var u = advPartsRun(den, o.name, py);
+        if (u.sessions.length > 1) units.push(u);
+      });
+    });
+    return units.sort(function (a, b) {
+      return String(a.sessions[0].date).localeCompare(String(b.sessions[0].date)) || a.adventure.localeCompare(b.adventure);
+    });
+  }
+  // Marks in progress that no card row already shows — set by hand on the grid, or for an
+  // adventure the calendar does not have. [{ scout, kind, name, note }], active scouts only.
+  function advLoosePartials(units) {
+    var shown = {};
+    units.forEach(function (u) { shown[(u.den || '*') + ' :: ' + u.adventure.toLowerCase()] = true; });
+    var out = [];
+    byScoutName(activeScouts()).forEach(function (s) {
+      var a = advRec(s.id);
+      if (!a) return;
+      ['req', 'elect'].forEach(function (kk) {
+        Object.keys(a[kk] || {}).forEach(function (nm) {
+          if (a[kk][nm] !== 'partial') return;
+          if (shown[(s.den || '') + ' :: ' + nm.toLowerCase()] || shown['* :: ' + nm.toLowerCase()]) return;
+          out.push({ scout: s, kind: kk, name: nm, note: advNote(s.id, kk, nm) });
+        });
+      });
+    });
+    return out;
+  }
   // The grid below this card answers "has Ada got Bobcat"; this answers the question that comes
   // first — "are we going to get the den through Bobcat, and who is behind" — which nothing in
   // the app could answer before, because it lives across several meetings rather than in one.
   function renderAdventureRunsCard() {
-    var runs = adventureRuns();
-    if (!runs.length) return '';
+    var units = advProgressUnits();
+    var loose = advLoosePartials(units);
+    if (!units.length && !loose.length) return '';
     var today = todayISO();
     var h = '<div class="card"><h2 class="section display">Adventures in progress</h2>' +
       '<p class="small muted" style="margin:0 0 10px">One row per adventure a den is working this year. ' +
-      'A meeting counts as a <strong>session</strong> when it names the adventure, so tagging the two or ' +
-      'three meetings that work it is what makes “2 of 3” mean anything. Attendance is <strong>evidence, ' +
-      'not the requirement</strong> — a scout who missed a night can do the work at home and be signed off.</p>';
-    runs.forEach(function (run) {
+      'A meeting counts as a <strong>session</strong> when it names the adventure, and an event that offers it to the den is a ' +
+      '<strong>part</strong> of it too, so tagging the meetings that work it is what makes “2 of 3” mean anything. Attendance is <strong>evidence, ' +
+      'not the requirement</strong> — a scout who missed a night can do the work at home or at another outing and be signed off.</p>';
+    units.forEach(function (run) {
       var p = runProgress(run, today);
+      var mixed = advPartsMixed(run);
+      var unit = mixed ? [' part', ' parts'] : [' session', ' sessions'];
       var past = run.sessions.filter(function (ev) { return ev.date < today; }).length;
-      var short = p.short.filter(function (row) { return !row.status; });
-      var done = p.scouts.filter(function (row) { return row.status; });
+      var short = p.short.filter(function (row) { return !row.earned; });
+      var done = p.scouts.filter(function (row) { return row.earned; });
+      // The family message is about den meetings (makeupMessage) and finds the den's run by key.
+      var hasRun = run.parts.some(function (x) { return x.kind === 'session'; });
       h += '<div class="adv-run">' +
         '<div class="spread"><strong>' + esc(run.adventure) + '</strong>' +
         '<span class="small muted">' + esc(run.den || 'All dens') + '</span></div>' +
         '<p class="small muted" style="margin:2px 0 0">' +
-        run.sessions.length + (run.sessions.length === 1 ? ' session' : ' sessions') +
+        run.sessions.length + (run.sessions.length === 1 ? unit[0] : unit[1]) +
         (past < run.sessions.length ? ' · ' + past + ' held' : ' · all held') +
         ' · ' + esc(advRunDates(run, '')) + '</p>';
       if (!p.scouts.length) {
@@ -13409,13 +13765,16 @@
         return b.count - a.count || a.scout.name.localeCompare(b.scout.name);
       }).map(function (row) {
         var badge = row.status === 'awarded' ? '<span class="pill good">awarded</span>'
-          : row.status === 'done' ? '<span class="pill good">recorded</span>' : '';
+          : row.status === 'done' ? '<span class="pill good">recorded</span>'
+          : row.status === 'partial' ? '<span class="pill">in progress</span>' : '';
+        var note = row.status === 'partial' ? advNote(row.scout.id, advKindFor(row.scout, run.adventure), run.adventure) : '';
         return '<div class="adv-prog"><span class="adv-prog-name">' + esc(row.scout.name) + '</span>' +
           '<span class="adv-prog-n">' + row.count + ' of ' + row.total + '</span>' +
           (badge ? ' ' + badge : '') +
-          (row.missed.length && !row.status
-            ? '<span class="small muted">make up ' + esc(row.missed.map(function (ev) { return fmtDateShort(ev.date); }).join(', ')) + '</span>' +
-              makeupMsgBtn(run, row)
+          (note ? '<span class="small muted">' + esc(note) + '</span>' : '') +
+          (row.missed.length && !row.earned
+            ? '<span class="small muted">make up ' + esc(row.missed.map(advPartWhen).join(', ')) + '</span>' +
+              (hasRun && row.missed.some(function (ev) { return ev.kind === 'den'; }) ? makeupMsgBtn(run, row) : '')
             : '') + '</div>';
       }).join('') + '</div>';
       if (done.length === p.scouts.length) {
@@ -13424,10 +13783,18 @@
           (np ? ' — <strong>' + esc(fmtDate(np.date)) + '</strong>' : '') + '.</p>';
       } else if (short.length) {
         h += '<p class="small muted" style="margin:6px 0 0">' + short.length +
-          (short.length === 1 ? ' scout has' : ' scouts have') + ' a session to make up at home.</p>';
+          (short.length === 1 ? ' scout has' : ' scouts have') + (mixed ? ' a part' : ' a session') + ' to make up at home or at another outing.</p>';
       }
       h += '</div>';
     });
+    if (loose.length) {
+      h += '<div class="adv-run"><strong>Also in progress</strong>' +
+        '<p class="small muted" style="margin:2px 0 0">Marked ◐ on the grid below, and not in a row above.</p>' +
+        '<div class="adv-prog-list">' + loose.map(function (x) {
+          return '<div class="adv-prog"><span class="adv-prog-name">' + esc(x.scout.name) + '</span>' +
+            '<span class="small">' + esc(x.name) + '</span>' + (x.note ? '<span class="small muted">' + esc(x.note) + '</span>' : '') + '</div>';
+        }).join('') + '</div></div>';
+    }
     return h + '</div>';
   }
   /* ----- Den year planner (Wave A, 2026-09-28) -------------------------------------------
@@ -13498,6 +13865,21 @@
     var p = last.split('-');
     var d = new Date(+p[0], +p[1] - 1, +p[2] + 14);
     return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+  // Den plans' line on where a den stands on one adventure (2026-10-02): its PARTS when meetings
+  // and events both carry it (advParts — the two count together), and how many of the den's active
+  // scouts have it recorded or in progress, a mark set by hand included. '' when there is nothing.
+  function denPlanProgress(den, name, py) {
+    var parts = advParts(den, name, py);
+    var mixed = parts.some(function (x) { return x.kind === 'offer'; }) && parts.some(function (x) { return x.kind === 'session'; });
+    var earned = 0, partial = 0;
+    activeScouts().forEach(function (s) {
+      if (s.den !== den) return;
+      var kind = advKindFor(s, name);
+      if (advEarned(s.id, kind, name)) earned += 1;
+      else if (advStatus(s.id, kind, name) === 'partial') partial += 1;
+    });
+    return [mixed ? parts.length + ' parts' : '', earned ? earned + ' recorded' : '', partial ? partial + ' in progress' : ''].filter(Boolean).join(' · ');
   }
   // "at Fall family campout Oct 17 ✓" — where an adventure is offered at an event (denOfferEntries).
   function denOfferedLine(evs, today) {
@@ -13721,13 +14103,16 @@
         ' <span class="pill ' + (plan.unplanned.length ? 'navy' : 'good') + '">' + done + ' of ' + plan.required.length + ' required planned</span></h2>';
       plan.required.forEach(function (rq) {
         var open = ui.planAdv && ui.planAdv.den === den && ui.planAdv.name === rq.name;
+        var rqProg = denPlanProgress(den, rq.name, py);
         if (rq.sessions.length || rq.offeredAt.length) {
           h += '<div class="assign-row"><span class="assign-name">✓ ' + esc(rq.name) + '</span>' +
             '<span class="small muted">' + (rq.sessions.length ? rq.sessions.length + (rq.sessions.length === 1 ? ' meeting' : ' meetings') +
             (rq.allDens ? ' (all dens)' : '') + ' · ' + esc(denPlanDates(rq.sessions, today)) : '') +
-            (rq.sessions.length && rq.offeredAt.length ? ' · ' : '') + esc(denOfferedLine(rq.offeredAt, today)) + '</span>' + advPlanBtn(den, rq.name) + '</div>';
+            (rq.sessions.length && rq.offeredAt.length ? ' · ' : '') + esc(denOfferedLine(rq.offeredAt, today)) +
+            (rqProg ? ' · ' + esc(rqProg) : '') + '</span>' + advPlanBtn(den, rq.name) + '</div>';
         } else {
-          h += '<div class="assign-row"><span class="assign-name">' + esc(rq.name) + ' <span class="pill navy">no meeting planned</span></span>' +
+          h += '<div class="assign-row"><span class="assign-name">' + esc(rq.name) + ' <span class="pill navy">no meeting planned</span>' +
+            (rqProg ? ' <span class="small muted">' + esc(rqProg) + '</span>' : '') + '</span>' +
             advPlanBtn(den, rq.name) + (edit && !open ? '<button type="button" class="btn small" data-act="plan-adv" data-den="' + esc(den) + '" data-name="' + esc(rq.name) +
               '" aria-label="' + esc('Plan a ' + den + ' den meeting for ' + rq.name) + '">Plan a meeting</button>' : '') + '</div>';
           if (open) h += denPlanForm(den, rq.name, today);
@@ -13745,7 +14130,8 @@
       plan.electives.forEach(function (el) {
         h += '<div class="assign-row"><span class="assign-name">' + esc(el.name) + '</span>' +
           '<span class="small muted">' + esc(denPlanDates(el.sessions, today) + (el.sessions.length && el.offeredAt.length ? ' · ' : '') +
-            denOfferedLine(el.offeredAt, today)) + '</span>' + advPlanBtn(den, el.name) + '</div>';
+            denOfferedLine(el.offeredAt, today) + (function (t) { return t ? ' · ' + t : ''; })(denPlanProgress(den, el.name, py))) + '</span>' +
+            advPlanBtn(den, el.name) + '</div>';
       });
       h += denMeetingsBlock(den, today, edit);
       h += '</div>';
@@ -13811,6 +14197,13 @@
       '<h2 class="section display" style="margin-bottom:0">Advancement</h2>' +
       '<button type="button" class="btn small" data-act="open-shop">Scout Shop list</button></div>' +
       '<p class="small muted" style="margin:6px 0 0">Unofficial at-a-glance tracker — the official record lives in Scoutbook Plus.</p>' +
+      // The cell's four states, in the order a tap steps through them (ADV_CYCLE).
+      '<p class="small muted adv-legend">' +
+        '<span><span class="adv-cell" aria-hidden="true"></span>not started</span>' +
+        '<span><span class="adv-cell partial" aria-hidden="true">◐</span>in progress</span>' +
+        '<span><span class="adv-cell done" aria-hidden="true">✓</span>done</span>' +
+        '<span><span class="adv-cell awarded" aria-hidden="true">★</span>awarded</span>' +
+        '<span>Tap a cell to step it on.</span></p>' +
       // Seam: a den meeting on the calendar can mark its adventure for everyone who checked
       // in, one tap. This is the other end of that — meetings that ran with an adventure
       // planned and nobody credited for it.
@@ -13863,16 +14256,30 @@
         // Wave 19(23): grouping here stays RANK-based (s.den) on purpose — denLabel is
         // display-only. Wave 19(30): amber nudge on a blank Bobcat once anything else is marked.
         var bobNudge = bobcatNudgeFor(s.id);
+        var sRec = advRec(s.id), partials = [];
+        ['req', 'elect'].forEach(function (kk) {
+          Object.keys((sRec && sRec[kk]) || {}).sort().forEach(function (nm) { if (sRec[kk][nm] === 'partial') partials.push({ kind: kk, name: nm }); });
+        });
+        var nPartial = partials.length;
         h += '<tr><td>' + esc(s.name) + '</td>' +
           adv.required.map(function (nm) { return '<td>' + advCellBtn(s.id, 'req', nm, nm === 'Bobcat' && bobNudge) + '</td>'; }).join('') +
           '<td><button type="button" class="exp-toggle" data-act="adv-toggle" data-id="' + s.id + '" aria-expanded="' + open +
-          '" aria-label="Electives for ' + esc(s.name) + '"><span class="chev" aria-hidden="true">' + (open ? '▾' : '▸') + '</span>' +
-          advElectCount(s.id) + '/2+</button></td></tr>';
+          '" aria-label="Electives and notes for ' + esc(s.name) + '"><span class="chev" aria-hidden="true">' + (open ? '▾' : '▸') + '</span>' +
+          advElectCount(s.id) + '/2+' + (nPartial ? ' <span class="small muted" title="In progress">◐' + nPartial + '</span>' : '') + '</button></td></tr>';
         if (open) {
           var a = advRec(s.id);
           var names = a ? Object.keys(a.elect || {}).sort() : [];
-          h += '<tr><td colspan="' + (adv.required.length + 2) + '" style="white-space:normal"><div class="block-card" style="margin:4px 0 8px;text-align:left">' +
-            '<p class="eyebrow">Electives — ' + esc(s.name) + '</p>';
+          h += '<tr><td colspan="' + (adv.required.length + 2) + '" style="white-space:normal"><div class="block-card" style="margin:4px 0 8px;text-align:left">';
+          // In progress, with the leader's note on each (advSetNote; leaders only, never published).
+          if (partials.length) {
+            h += '<p class="eyebrow">In progress — ' + esc(s.name) + '</p>' + partials.map(function (x) {
+              return '<label class="fld" style="margin:0 0 6px">' + esc(x.name) +
+                '<input type="text" maxlength="' + ADV_PARTIAL_NOTE_MAX + '" data-ch="adv-partial-note" data-scout="' + esc(s.id) + '" data-kind="' + x.kind +
+                '" data-name="' + esc(x.name) + '" value="' + esc(advNote(s.id, x.kind, x.name)) + '" placeholder="What is left, e.g. needs the 2-mile hike"' +
+                (canEdit() ? '' : ' readonly') + ' aria-label="' + esc('Note on ' + x.name + ' in progress for ' + s.name) + '"></label>';
+            }).join('');
+          }
+          h += '<p class="eyebrow">Electives — ' + esc(s.name) + '</p>';
           if (!names.length) h += '<p class="small muted" style="margin:4px 0 8px">No electives tracked yet — 2 are needed for the rank.</p>';
           names.forEach(function (nm) {
             var dkey = 'adv-edel:' + s.id + ':' + nm;
@@ -14042,6 +14449,9 @@
     { slot: 2, name: 'School Night — join & recruiting' },   // September
     { slot: 2, name: 'Popcorn kickoff' },                    // September
     { slot: 2, name: 'Monthly pack meeting' },               // September — see above
+    // NEGA's Webelos Woods — a council weekend at Scoutland in late September, for Webelos and
+    // Arrow of Light only (dens), so it never bills a younger family. See SEED_WOODS_OFFERS.
+    { slot: 2, name: 'Webelos Woods', dens: ['Webelos', 'Arrow of Light'], offers: 'woods' }, // September
     { slot: 3, name: 'Fall family campout', offers: 'council' },  // October — Scoutland (SEED_CAMP_OFFERS)
     { slot: 4, name: 'Scouting for Food' },                  // November
     { slot: 5, name: 'Holiday pack party' },                 // December
@@ -14063,11 +14473,38 @@
   // allowed there (CAMP_PACK_RUN). evOffers resolves each rank's own version and leaves out the
   // ones a rank lacks (Lions: no BB Gun; Arrow of Light: no Let's Camp!). A new seed only — an
   // event a pack already has is never touched, so a live pack's campouts are unchanged.
+  // Let's Camp! is a PART (offer.part; owner, 2026-10-02): with the den's own meetings on it, or
+  // the other campout, the weekend is one of its parts, so one campout records it in progress, not
+  // done, where the den has two or more parts — Keith's ruling, knowing that. The ranges and
+  // fishing stay full chances: one weekend earns them.
   var SEED_CAMP_OFFERS = [
-    { key: "el:Let's Camp!", auto: true },
+    { key: "el:Let's Camp!", auto: true, part: true },
     { key: 'el:Archery', auto: false },
     { key: 'el:BB Gun', auto: false },
     { key: 'th:fishing', auto: false }
+  ];
+  // Webelos Woods (NEGA's 2026 leader guide): a patrol camporee — round-robin stations (fire
+  // building, first aid, pancakes on coals, knots and tent pitch, flag raising, teamwork games)
+  // plus a council BB range and archery range. The council advertises no adventures, so only
+  // what the weekend really covers is offered:
+  //   * Let's Camp! — the overnight, like the family weekends: everyone who attends, for Webelos
+  //     (Arrow of Light has none), and a PART of it, as at the family weekends (SEED_CAMP_OFFERS).
+  //   * Archery, BB Gun — council ranges, so allowed (CAMP_PACK_RUN); ticked per scout.
+  //   * Outdoors (req:3) and Personal Safety (req:5) for ARROW OF LIGHT ONLY (`dens`, 2026-10-02):
+  //     the patrol campout is part of Outdoor Adventurer and the first-aid station part of First
+  //     Aid. Not for Webelos: one key covers both ranks, and NEGA has no hike, so it would offer
+  //     Webelos Walkabout to scouts who never walked — the dens filter is what makes these two
+  //     possible at all. `part: true` — the weekend covers PART of each, so it joins the den's
+  //     own meetings on it as one of its parts (advParts). Archery and BB Gun are full chances.
+  //   * Personal Fitness (req:4: Webelos Stronger, Faster, Higher; Arrow of Light Personal
+  //     Fitness) — a part, ticked by the leader for a den that planned and cooked its own meal.
+  var SEED_WOODS_OFFERS = [
+    { key: "el:Let's Camp!", auto: true, dens: ['Webelos'], part: true },
+    { key: 'el:Archery', auto: false },
+    { key: 'el:BB Gun', auto: false },
+    { key: 'req:3', auto: true, dens: ['Arrow of Light'], part: true },
+    { key: 'req:5', auto: true, dens: ['Arrow of Light'], part: true },
+    { key: 'req:4', auto: false, part: true }
   ];
   function seedStandardYear() {
     var existing = {};
@@ -14084,8 +14521,9 @@
     var added = 0;
     SEED_ACTIVITIES.forEach(function (t) {
       if (existing[t.name.toLowerCase()]) return; // idempotent — name match, any slot
-      var seedEv = freshEvent({ kind: 'activity', slot: t.slot, name: t.name });
-      if (t.offers === 'council') seedEv.advOffers = SEED_CAMP_OFFERS.map(function (o) { return { key: o.key, auto: o.auto }; });
+      var seedEv = freshEvent({ kind: 'activity', slot: t.slot, name: t.name, dens: (t.dens || []).slice() });
+      var seedOffers = t.offers === 'council' ? SEED_CAMP_OFFERS : t.offers === 'woods' ? SEED_WOODS_OFFERS : null;
+      if (seedOffers) seedEv.advOffers = seedOffers.map(offerCopy);   // offerCopy keeps an offer's dens
       state.events.push(seedEv);
       state.budget.activities.push(freshLine({ name: t.name, eventId: seedEv.id }));
       added += 1;
@@ -23553,6 +23991,16 @@
       '<optgroup label="Required — each den’s own">' + c.required.filter(keep).map(opt).join('') + '</optgroup>' +
       '<optgroup label="Electives">' + c.electives.filter(keep).map(opt).join('') + '</optgroup>';
   }
+  // The offer form's list (advOfferChoices): any rank's elective too, since an offer can be
+  // narrowed to the ranks it is for. `skip`: keys the event already offers.
+  function advOfferOptions(noneLabel, skip) {
+    var c = advOfferChoices();
+    function keep(x) { return !skip || skip.indexOf(x.key) === -1; }
+    function opt(x) { return '<option value="' + esc(x.key) + '">' + esc(x.label) + '</option>'; }
+    return '<option value="">' + esc(noneLabel) + '</option>' +
+      '<optgroup label="Required — each den’s own">' + c.required.filter(keep).map(opt).join('') + '</optgroup>' +
+      '<optgroup label="Electives">' + c.electives.filter(keep).map(opt).join('') + '</optgroup>';
+  }
   // An All-dens night: one choice for the whole pack, then what that means den by den. A den
   // leader changes their own den's line on Den plans, not here — this row is the Cubmaster's.
   function packAdvPicker(m) {
@@ -23607,9 +24055,27 @@
   }
   // "Aug 5 · Aug 12 (this one) · Aug 19" — what the run actually IS, which no single meeting
   // row can show on its own.
+  // Who signs work made up away from the den, by RANK (§3, program review 2026-10-02): Lion to
+  // Bear, a parent or adult partner signs and the den leader approves; Webelos and Arrow of
+  // Light, the den leader signs. `dens`: the scouts' dens. Never says the adventure is lost.
+  function makeupSignText(dens) {
+    var lead = dens.filter(function (d) { return d === 'Webelos' || d === 'Arrow of Light'; }).length;
+    var young = dens.length - lead, out = [];
+    if (young || !dens.length) out.push((lead ? 'for Lion to Bear, ' : '') + 'signed by a parent or adult partner, then approved by you');
+    if (lead) out.push((young ? 'for Webelos and Arrow of Light, ' : '') + 'signed by you as their den leader');
+    return out.join('; ');
+  }
+  // The reassurance under a list of scouts who missed a part or a session.
+  function makeupReassure(rows, what) {
+    return rows.map(function (row) { return esc(row.scout.name); }).join(', ') +
+      (rows.length === 1 ? ' has ' : ' have ') + 'missed ' + what + '. That does not cost them the ' +
+      'adventure — “Do Your Best” is the standard and the work can be done at home or at another outing, ' +
+      esc(makeupSignText(rows.map(function (row) { return row.scout.den || ''; }))) +
+      '. Mark them on <strong>Advancement</strong> once it is.';
+  }
   function advRunDates(run, hereId) {
     return run.sessions.map(function (ev) {
-      return fmtDateShort(ev.date) + (ev.id === hereId ? ' (this one)' : '');
+      return advPartWhen(ev) + (ev.id === hereId ? ' (this one)' : '');
     }).join(' · ');
   }
 
@@ -23653,17 +24119,37 @@
           ? '<select data-ch="offer-auto" data-id="' + esc(ev.id) + '" data-key="' + esc(o.key) + '" aria-label="' + esc('How ' + o.label + ' is earned') + '">' +
             '<option value="1"' + (o.auto ? ' selected' : '') + '>Everyone who attends earns it</option>' +
             '<option value="0"' + (o.auto ? '' : ' selected') + '>Offered — scouts who choose it</option></select>' +
+            '<label class="offer-den small"><input type="checkbox" data-ch="offer-part" data-id="' + esc(ev.id) + '" data-key="' + esc(o.key) + '"' +
+              (o.part ? ' checked' : '') + '> Covers part of it</label>' +
             '<button type="button" class="btiny" data-act="offer-del" data-id="' + esc(ev.id) + '" data-key="' + esc(o.key) +
             '" aria-label="' + esc('Remove ' + o.label) + '" title="' + esc('Remove ' + o.label) + '">✕</button>'
-          : '<span class="small muted">' + (o.auto ? 'everyone who attends earns it' : 'offered — scouts who choose it') + '</span>') +
+          : '<span class="small muted">' + (o.auto ? (o.part ? 'a part, for everyone who attends' : 'everyone who attends earns it')
+            : 'offered — scouts who choose it' + (o.part ? ' · covers part of it' : '')) + '</span>') +
         '</div>';
-      // Each rank's own version, where it differs from the label, and the ranks it is not for.
-      var named = by.has.filter(function (x) { return x.name !== o.label; });
-      if (named.length || by.lacks.length) {
-        h += '<p class="small muted" style="margin:0 0 4px">' +
-          (named.length ? esc(named.map(function (x) { return x.den + ': ' + x.name; }).join(' · ')) : '') +
-          (named.length && by.lacks.length ? ' · ' : '') +
-          (by.lacks.length ? 'Not for ' + esc(denListLabel(by.lacks)) + ' — not in that rank’s adventures' : '') + '</p>';
+      // Which ranks it is for (offer.dens, 2026-10-02). An editor gets a box per den at the event
+      // whose rank has it, labelled with that rank's own adventure — Webelos Woods' Outdoors is
+      // Arrow of Light's Outdoor Adventurer, and not Webelos Walkabout, because there is no hike.
+      // Unticking narrows it; the last box stays ticked (offer-dens). With one such den there is
+      // nothing to choose. Anyone else reads the ranks it is for, each in its own version.
+      var able = by.has.concat(by.off).sort(function (a, b) { return DENS.indexOf(a.den) - DENS.indexOf(b.den); });
+      var lacksNote = by.lacks.length ? 'Not for ' + esc(denListLabel(by.lacks)) + ' — not in that rank’s adventures' : '';
+      if (edit && able.length > 1) {
+        h += '<fieldset class="offer-dens"><legend class="small muted">For:</legend>' + able.map(function (x) {
+          var on = by.has.some(function (y) { return y.den === x.den; });
+          return '<label class="offer-den small"><input type="checkbox" data-ch="offer-dens" data-id="' + esc(ev.id) + '" data-key="' + esc(o.key) +
+            '" data-den="' + esc(x.den) + '"' + (on ? ' checked' : '') + (on && by.has.length === 1 ? ' disabled' : '') + '> ' +
+            esc(x.den) + (x.name !== x.den ? ' · ' + esc(x.name) : '') + '</label>';
+        }).join('') + '</fieldset>';
+        if (lacksNote) h += '<p class="small muted" style="margin:0 0 4px">' + lacksNote + '</p>';
+      } else {
+        // Each rank's own version, where it differs from the label, and the ranks it is not for.
+        var named = by.has.filter(function (x) { return x.name !== o.label || by.off.length; });
+        var offNote = by.off.length ? 'Not offered to ' + esc(denListLabel(by.off.map(function (x) { return x.den; }))) + ' here' : '';
+        if (named.length || lacksNote || offNote) {
+          h += '<p class="small muted" style="margin:0 0 4px">' +
+            [named.length ? esc(named.map(function (x) { return x.den + ': ' + x.name; }).join(' · ')) : '', offNote, lacksNote]
+              .filter(Boolean).join(' · ') + '</p>';
+        }
       }
       if (den && ADV_RANGE_KEYS.indexOf(o.key) !== -1) {
         h += '<p class="warn small" style="margin:0 0 4px">Pack rule: ' + esc(o.label) + ' is a range sport — never at a den meeting, ' +
@@ -23678,9 +24164,10 @@
     if (edit && offers.length < ADV_OFFERS_MAX) {
       h += '<form data-form="offer-add" data-id="' + esc(ev.id) + '" class="row no-print" style="margin-top:4px;gap:6px;align-items:center">' +
         '<select name="key" required aria-label="Adventure to add">' +
-          packAdvOptions('', 'Add an adventure…', offers.map(function (o) { return o.key; })) + '</select>' +
+          advOfferOptions('Add an adventure…', offers.map(function (o) { return o.key; })) + '</select>' +
         '<select name="auto" aria-label="How it is earned">' +
           '<option value="0">Offered — scouts who choose it</option><option value="1">Everyone who attends earns it</option></select>' +
+        '<label class="offer-den small"><input type="checkbox" name="part" value="1"> Covers part of it</label>' +
         '<button class="btn small" type="submit">Add</button></form>';
     }
     return h + '</div>';
@@ -23691,38 +24178,80 @@
     return evOffers(ev).map(function (o) { return advOfferMarkFor(ev, o); }).join('');
   }
   function advOfferMarkFor(ev, o) {
-    var att = offerAttendees(ev, o.key);
-    if (!att.can.length && !att.cannot.length) return '';   // no attendance taken yet
+    // offerMarkable (2026-10-02): the attendees the offer is for, each with what a tap records —
+    // done, or in progress where the adventure has more parts (den meetings, other events) than
+    // tonight and the scout has not been to all of them with none still to come.
+    var om = offerMarkable(ev, o.key);
+    if (!om.rows.length && !om.cannot.length && !om.notFor.length) return '';   // no attendance taken yet
     var edit = canEdit();
-    var todo = att.can.filter(function (r) { return !r.status; });
-    var had = att.can.filter(function (r) { return r.status; });
+    var todo = om.rows.filter(function (r) { return !r.earned; });
+    var had = om.rows.filter(function (r) { return r.earned; });
+    var toDone = todo.filter(function (r) { return r.would === 'done'; });
+    var toPart = todo.filter(function (r) { return r.would === 'partial' && !r.status; });
+    var multi = om.groups.filter(function (g) { return g.of > 1; });
     var h = '<div class="adv-run"><div class="spread"><strong>' + esc(o.label) + '</strong>' +
-      '<span class="small muted">' + (o.auto ? 'everyone who attends' : 'offered') + '</span></div>';
+      '<span class="small muted">' + (o.auto ? (o.part ? 'a part, for everyone who attends' : 'everyone who attends') : 'offered') + '</span></div>';
+    // Where tonight sits in each den's parts: "Arrow of Light · Outdoor Adventurer: part 2 of 3 —
+    // Sep 8 · Webelos Woods Sep 26 (this one) · Oct 6".
+    multi.forEach(function (g) {
+      h += '<p class="small muted" style="margin:2px 0 0">' + esc(g.den + (g.name !== o.label ? ' · ' + g.name : '') + ': ' +
+        partLabel(g.position, g.of) + ' — ' + advRunDates(g.run, ev.id)) + '</p>';
+    });
+    // Each scout's n of N where the adventure has more than one part.
+    var multiRows = om.rows.filter(function (r) { return r.row; });
+    if (multiRows.length) {
+      h += '<div class="adv-prog-list">' + multiRows.map(function (r) {
+        var badge = r.status === 'awarded' ? '<span class="pill good">awarded</span>' : r.status === 'done' ? '<span class="pill good">recorded</span>'
+          : r.status === 'partial' ? '<span class="pill">in progress</span>' : '';
+        return '<div class="adv-prog"><span class="adv-prog-name">' + esc(r.scout.name) + '</span>' +
+          '<span class="adv-prog-n">' + r.row.count + ' of ' + r.row.total + '</span>' + (badge ? ' ' + badge : '') +
+          (r.row.missed.length ? '<span class="small muted">missed ' + esc(r.row.missed.map(advPartWhen).join(', ')) + '</span>'
+            : r.row.pending.length ? '<span class="small muted">' + r.row.pending.length + ' still to come</span>' : '') + '</div>';
+      }).join('') + '</div>';
+    }
     if (o.auto) {
-      if (todo.length && edit) {
-        h += '<div class="row" style="margin-top:6px"><button type="button" class="btn small" data-act="offer-mark" data-id="' + esc(ev.id) +
-          '" data-key="' + esc(o.key) + '">Mark “' + esc(o.label) + '” done for ' + todo.length + (todo.length === 1 ? ' scout' : ' scouts') +
-          ' who attended</button></div>';
-      } else if (todo.length) {
-        h += '<p class="small muted" style="margin:6px 0 0">' + todo.length + (todo.length === 1 ? ' scout' : ' scouts') + ' who attended not recorded yet.</p>';
+      if (edit && (toDone.length || toPart.length)) {
+        h += '<div class="row" style="margin-top:6px;gap:6px">';
+        if (toDone.length) {
+          h += '<button type="button" class="btn small" data-act="offer-mark" data-id="' + esc(ev.id) +
+            '" data-key="' + esc(o.key) + '">Mark “' + esc(o.label) + '” done for ' + toDone.length + (toDone.length === 1 ? ' scout' : ' scouts') +
+            (multi.length ? (multi.some(function (g) { return g.left; }) ? ' at every part so far' : ' who attended every part') : ' who attended') + '</button>';
+        }
+        if (toPart.length) {
+          h += '<button type="button" class="btn small ghost" data-act="offer-mark-partial" data-id="' + esc(ev.id) +
+            '" data-key="' + esc(o.key) + '">Mark “' + esc(o.label) + '” in progress for ' + toPart.length + (toPart.length === 1 ? ' scout' : ' scouts') +
+            ' who attended some</button>';
+        }
+        h += '</div>';
+      } else if (toDone.length || toPart.length) {
+        h += '<p class="small muted" style="margin:6px 0 0">' + (toDone.length + toPart.length) + ((toDone.length + toPart.length) === 1 ? ' scout' : ' scouts') + ' who attended not recorded yet.</p>';
       }
     } else if (todo.length && edit) {
       h += '<form data-form="offer-mark-picked" data-id="' + esc(ev.id) + '" data-key="' + esc(o.key) + '" style="margin-top:6px">' +
-        '<p class="small muted" style="margin:0 0 4px">Tick the scouts who did it. Nothing is recorded for the rest.</p>' +
+        '<p class="small muted" style="margin:0 0 4px">Tick the scouts who did it. Nothing is recorded for the rest.' +
+        (multi.length ? ' Where it has more parts than this event, a ticked scout who has been to every part so far is recorded done — one who missed a part, in progress.' : '') + '</p>' +
         '<div class="rsvp-list">' + todo.map(function (r) {
           return '<label class="att-row"><input type="checkbox" name="scout" value="' + esc(r.scout.id) + '"><span class="att-name">' +
-            esc(r.scout.name) + (r.name !== o.label ? ' <span class="small muted">' + esc(r.name) + '</span>' : '') + '</span></label>';
+            esc(r.scout.name) + (r.name !== o.label && o.label.indexOf(r.name + ' (') !== 0 ? ' <span class="small muted">' + esc(r.name) + '</span>' : '') +
+            (r.row ? ' <span class="small muted">· ' + (r.would === 'done' ? 'done' : 'in progress') + '</span>' : '') + '</span></label>';
         }).join('') + '</div>' +
-        '<button class="btn small" type="submit" style="margin-top:6px">Mark done</button></form>';
+        '<button class="btn small" type="submit" style="margin-top:6px">Record</button></form>';
     } else if (todo.length) {
       h += '<p class="small muted" style="margin:6px 0 0">' + todo.length + ' who attended can earn it — not recorded yet.</p>';
     }
+    // The honest half, as on the den meeting: a missed part is a make-up, not a lost adventure.
+    var missedPart = om.rows.filter(function (r) { return r.row && r.row.missed.length && !r.earned; });
+    if (missedPart.length) h += '<p class="small muted" style="margin:6px 0 0">' + makeupReassure(missedPart, 'a part') + '</p>';
     if (had.length) {
       h += '<p class="small muted" style="margin:6px 0 0">Already recorded: ' + esc(had.map(function (r) { return r.scout.name; }).join(', ')) + '.</p>';
     }
-    if (att.cannot.length) {
-      h += '<p class="small muted" style="margin:6px 0 0">Not for ' + esc(att.cannot.map(function (s) { return s.name + ' (' + (s.den || 'no den') + ')'; }).join(', ')) +
+    if (om.cannot.length) {
+      h += '<p class="small muted" style="margin:6px 0 0">Not for ' + esc(om.cannot.map(function (s) { return s.name + ' (' + (s.den || 'no den') + ')'; }).join(', ')) +
         ' — not in their rank’s adventures.</p>';
+    }
+    if (om.notFor.length) {
+      h += '<p class="small muted" style="margin:6px 0 0">Not offered to ' + esc(om.notFor.map(function (s) { return s.name + ' (' + s.den + ')'; }).join(', ')) +
+        ' at this event.</p>';
     }
     return h + '</div>';
   }
@@ -23730,20 +24259,25 @@
     return runsForMeeting(m).map(function (r) { return meetingAdvMarkFor(m, r); }).join('');
   }
   function meetingAdvMarkFor(m, r) {
-    var p = r.prog, advName = r.run.adventure;
-    var multi = r.of > 1;
+    // The adventure's PARTS (advRunParts, 2026-10-02): this den's meetings on it and the events
+    // that offer it to the den. With no event among them it is the run, exactly as before.
+    var pr = advRunParts(r.run), advName = r.run.adventure, today = todayISO();
+    var p = runProgress(pr, today), mk = advMarkable(p, today);
+    var mixed = advPartsMixed(pr);
+    var of = pr.sessions.length, pos = pr.sessions.findIndex(function (ev) { return ev.id === m.id; }) + 1;
+    var multi = of > 1;
     // Anyone with an attendance mark anywhere in the run, or already recorded. A den with no
     // attendance taken yet has nothing to say, exactly as before.
     var anyMarks = p.scouts.some(function (row) { return row.count || row.status; });
     if (!anyMarks) return '';
 
-    var backed = p.onTrack.filter(function (row) { return !row.status; });   // every session so far
-    var shortOf = p.short.filter(function (row) { return !row.status; });    // missed at least one
-    var recorded = p.scouts.filter(function (row) { return row.status; });
+    var shortOf = p.short.filter(function (row) { return !row.earned; });    // missed at least one
+    var recorded = p.scouts.filter(function (row) { return row.earned; });
 
     var h = '<div class="adv-run">' +
       '<div class="spread"><strong>' + esc((r.run.den && !m.den ? r.run.den + ' · ' : '') + advName) + '</strong>' +
-      '<span class="small muted">' + esc(sessionLabel(r.position, r.of)) + '</span></div>';
+      '<span class="small muted">' + esc(mixed ? partLabel(pos, of) : sessionLabel(r.position, r.of)) + '</span></div>';
+    if (mixed) h += '<p class="small muted" style="margin:2px 0 0">Parts: ' + esc(advRunDates(pr, m.id)) + '</p>';
 
     // The per-scout line the owner asked for: n of N, and what they are missing.
     h += '<div class="adv-prog-list">' + p.scouts.slice().sort(function (a, b) {
@@ -23751,52 +24285,61 @@
     }).map(function (row) {
       var badge = row.status === 'awarded' ? '<span class="pill good">awarded</span>'
         : row.status === 'done' ? '<span class="pill good">recorded</span>'
-        : (row.full && multi) ? '<span class="pill">every session</span>'
+        : row.status === 'partial' ? '<span class="pill">in progress</span>'
+        : (row.full && multi) ? '<span class="pill">' + (mixed ? 'every part' : 'every session') + '</span>'
         : '';
       return '<div class="adv-prog"><span class="adv-prog-name">' + esc(row.scout.name) + '</span>' +
         '<span class="adv-prog-n">' + row.count + ' of ' + row.total + '</span>' +
         (badge ? ' ' + badge : '') +
         (row.missed.length
-          ? '<span class="small muted">missed ' + esc(row.missed.map(function (ev) { return fmtDateShort(ev.date); }).join(', ')) + '</span>'
+          ? '<span class="small muted">missed ' + esc(row.missed.map(advPartWhen).join(', ')) + '</span>'
           : (row.pending.length && multi
             ? '<span class="small muted">' + row.pending.length + ' still to come</span>'
             : '')) +
         '</div>';
     }).join('') + '</div>';
 
-    if (backed.length) {
-      // "Every session" and "every session SO FAR" are different claims, and only one of them
-      // is true while a session is still to come. Saying the wrong one puts a number on the
-      // button that the list right above it contradicts — 2 of 3 is not every session.
-      var left = run_pendingCount(r);
-      var who = backed.length + (backed.length === 1 ? ' scout' : ' scouts');
-      h += '<div class="row" style="margin-top:8px"><button type="button" class="btn small" ' +
-        'data-act="mtg-adv-mark" data-id="' + esc(m.id) + '" data-den="' + esc(r.run.den || '') + '" data-name="' + esc(advName) + '">' +
-        'Mark “' + esc(advName) + '” done for ' + who +
-        (multi ? (left ? ' who have been to every session so far' : ' with all ' + r.of + ' sessions') : '') +
-        '</button></div>';
-      if (multi && left) {
-        h += '<p class="small muted" style="margin:6px 0 0">' +
-          (left === 1 ? 'One session is still to come' : left + ' sessions are still to come') +
-          ' — most dens wait for the last one.</p>';
+    // Recording — a leader's tap, never attendance on its own (advMarkable says who).
+    if (canEdit() && (mk.done.length || mk.partial.length)) {
+      var parts = mixed ? 'part' : 'session';
+      h += '<div class="row" style="margin-top:8px;gap:6px">';
+      if (mk.done.length) {
+        var who = mk.done.length + (mk.done.length === 1 ? ' scout' : ' scouts');
+        h += '<button type="button" class="btn small" ' +
+          'data-act="mtg-adv-mark" data-id="' + esc(m.id) + '" data-den="' + esc(r.run.den || '') + '" data-name="' + esc(advName) + '">' +
+          'Mark “' + esc(advName) + '” done for ' + who +
+          (multi ? (mk.left ? ' who have been to every ' + parts + ' so far' : ' with all ' + of + ' ' + parts + 's') : '') + '</button>';
       }
+      if (mk.partial.length) {
+        h += '<button type="button" class="btn small ghost" ' +
+          'data-act="mtg-adv-partial" data-id="' + esc(m.id) + '" data-den="' + esc(r.run.den || '') + '" data-name="' + esc(advName) + '">' +
+          'Mark “' + esc(advName) + '” in progress for ' + mk.partial.length + (mk.partial.length === 1 ? ' scout' : ' scouts') +
+          ' who attended some</button>';
+      }
+      h += '</div>';
+    }
+    if (multi && mk.left) {
+      // "Every session" and "every session SO FAR" are different claims, and only one of them
+      // is true while a part is still to come. The button says which; this says how many.
+      h += '<p class="small muted" style="margin:6px 0 0">' +
+        (mk.left === 1 ? 'One ' + (mixed ? 'part is' : 'session is') + ' still to come' : mk.left + (mixed ? ' parts are' : ' sessions are') + ' still to come') +
+        ' — most dens wait for the last one.</p>';
     }
     // The honest half. A missed meeting is a make-up, not a lost adventure.
     if (shortOf.length) {
-      h += '<p class="small muted" style="margin:6px 0 0">' +
-        shortOf.map(function (row) { return esc(row.scout.name); }).join(', ') +
-        (shortOf.length === 1 ? ' has ' : ' have ') + 'missed a session. That does not cost them the ' +
-        'adventure — “Do Your Best” is the standard and the work can be done at home, signed by a ' +
-        'parent, then approved by you. Mark them on <strong>Advancement</strong> once it is.</p>' +
-        '<div class="row no-print" style="margin-top:6px;gap:6px">' + shortOf.map(function (row) {
+      h += '<p class="small muted" style="margin:6px 0 0">' + makeupReassure(shortOf, mixed ? 'a part' : 'a session') + '</p>' +
+        '<div class="row no-print" style="margin-top:6px;gap:6px">' + shortOf.filter(function (row) {
+          // The family message is about den meetings (makeupMessage); a missed campout is not one.
+          return row.missed.some(function (ev) { return ev.kind === 'den'; });
+        }).map(function (row) {
           return '<span class="small">' + esc(publicNameMap(state.scouts)[row.scout.id] || row.scout.name) + '</span>' +
             makeupMsgBtn(r.run, row);
         }).join('') + '</div>';
     }
-    if (!backed.length && recorded.length === p.scouts.length && p.scouts.length) {
+    if (!mk.done.length && recorded.length === p.scouts.length && p.scouts.length) {
       h += '<p class="small muted" style="margin:6px 0 0">Recorded for every scout in the den.</p>';
-    } else if (!backed.length && !shortOf.length) {
-      h += '<p class="small muted" style="margin:6px 0 0">Nobody is checked in for every session yet.</p>';
+    } else if (!mk.done.length && !mk.partial.length && !shortOf.length && !mk.left) {
+      h += '<p class="small muted" style="margin:6px 0 0">Nobody is checked in for every ' + (mixed ? 'part' : 'session') + ' yet.</p>';
     }
     // Where the award is actually handed over. Recognition is immediate at the den meeting and
     // FORMAL at the next pack meeting — so name that meeting, since the calendar knows it.
@@ -23806,13 +24349,6 @@
         (nextPack ? ' — <strong>' + esc(fmtDate(nextPack.date)) + '</strong>' : ' (none on the calendar yet)') + '.</p>';
     }
     return h + '</div>';
-  }
-  // Sessions of this run that have not happened yet. Not "of − position": a run's sessions are
-  // in date order but the meeting being looked at may itself be in the past or the future, and
-  // what matters for the wording is how many are still ahead of TODAY.
-  function run_pendingCount(r) {
-    var t = todayISO();
-    return r.run.sessions.filter(function (ev) { return ev.date > t; }).length;
   }
   // The dates a repeated meeting lands on: n more, `step` days apart (7 = weekly, 14 = every
   // other week), after `iso`. DST-safe: Date(y, m, d + k) local date math, the same as the
@@ -23922,7 +24458,9 @@
       adventureRuns().forEach(function (run) {
         var last = run.sessions[run.sessions.length - 1].date;
         if (last > when || (prev && last <= prev.date)) return;
-        var who = runProgress(run, when).complete.filter(function (row) { return !row.status; });
+        // Not yet EARNED: a scout marked in progress who has now been to every session is
+        // finished and still to be recorded (2026-10-02 — this was `!row.status`).
+        var who = runProgress(run, when).complete.filter(function (row) { return !row.earned; });
         if (!who.length) return;
         den(run.den || 'All dens').finished.push({ adventure: run.adventure, who: who.map(function (row) { return first(row.scout); }) });
         total += who.length;
@@ -30422,7 +30960,10 @@
     var marked = 0;
     Object.keys(state.advancement).forEach(function (sid) {
       var a = state.advancement[sid] || {};
-      marked += Object.keys(a.req || {}).length + Object.keys(a.elect || {}).length;
+      // Earned marks only — an adventure in progress is not one marked off (advEarned).
+      ['req', 'elect'].forEach(function (kk) {
+        Object.keys(a[kk] || {}).forEach(function (nm) { if (a[kk][nm] === 'done' || a[kk][nm] === 'awarded') marked += 1; });
+      });
     });
     var steps = [
       { jobs: ['cubmaster', 'asstcub', 'activities', 'outdoors'], t: 'Plan the year',
@@ -37109,7 +37650,8 @@
         dens: ev ? eventDens(ev).slice() : [],
         // …and what scouts can earn there (evOffers): the fall weekend offers Let's Camp! and the
         // ranges every year. A plan, like the dens; nobody's record — those stay on advancement.
-        offers: ev ? evOffers(ev).map(function (o) { return { key: o.key, auto: o.auto }; }) : []
+        // offerCopy keeps an offer's ranks (offer.dens): Webelos Woods' Outdoors stays Arrow of Light's.
+        offers: ev ? evOffers(ev).map(offerCopy) : []
       };
     });
     b.programYear += 1;
@@ -38868,6 +39410,7 @@
     }
     if (act === 'adv-toggle') { ui.advOpen[el.dataset.id] = !ui.advOpen[el.dataset.id]; render(); return; }
     if (act === 'adv-cycle') {
+      if (!canEdit()) return;
       var aKind = el.dataset.kind;
       if (aKind !== 'req' && aKind !== 'elect') return;
       advCycle(el.dataset.scout, aKind, el.dataset.name);
@@ -38877,7 +39420,7 @@
       var eScout = el.dataset.scout, eName = el.dataset.name;
       arm('adv-edel:' + eScout + ':' + eName, function () {
         var aRec = state.advancement[eScout];
-        if (aRec && aRec.elect) { delete aRec.elect[eName]; advPrune(eScout); }
+        if (aRec && aRec.elect) { delete aRec.elect[eName]; advDropNote(aRec, 'elect', eName); advPrune(eScout); }
         commit();
       });
       return;
@@ -40105,7 +40648,7 @@
       if (odIx === -1) return;
       var odGone = odEv.advOffers.splice(odIx, 1)[0];
       if (!odEv.advOffers.length) delete odEv.advOffers;
-      deleteWithUndo(packAdvLabel(odGone.key) || 'adventure', function () {
+      deleteWithUndo(offerLabel(odGone) || 'adventure', function () {
         odEv.advOffers = odEv.advOffers || [];
         if (!odEv.advOffers.some(function (o) { return o.key === odGone.key; })) odEv.advOffers.splice(Math.min(odIx, odEv.advOffers.length), 0, odGone);
       });
@@ -40114,43 +40657,54 @@
     // "Everyone who attends earns it" (Let's Camp!): the same path as mtg-adv-mark — 'done', never
     // 'awarded', one-way, the scouts checked in whose rank has it. Refused for an offered elective:
     // that one is ticked scout by scout (offer-mark-picked), never credited to everyone.
-    if (act === 'offer-mark') {
+    // Since 2026-10-02 the scouts are offerMarkable's: where this event is one part of several
+    // (offer.part), done for a scout on track, in progress (offer-mark-partial) for one who missed
+    // a part. A full chance, or one part, is exactly as before.
+    if (act === 'offer-mark' || act === 'offer-mark-partial') {
       var omEv = getEvent(el.dataset.id);
       var omOffer = omEv ? evOffers(omEv).find(function (o) { return o.key === el.dataset.key; }) : null;
       if (!canEdit() || !omOffer || !omOffer.auto) return;
-      var omDid = 0;
-      offerAttendees(omEv, omOffer.key).can.forEach(function (r) {
-        if (advMarkDone(r.scout.id, advKindFor(r.scout, r.name), r.name)) omDid += 1;
+      var omDone = act === 'offer-mark', omDid = 0;
+      offerMarkable(omEv, omOffer.key).rows.forEach(function (r) {
+        var omKind = advKindFor(r.scout, r.name);
+        if (omDone ? r.would === 'done' && advMarkDone(r.scout.id, omKind, r.name)
+          : r.would === 'partial' && advMarkPartial(r.scout.id, omKind, r.name)) omDid += 1;
       });
       if (!omDid) return;
-      if (commit()) showToast('Marked ' + omOffer.label + ' done for ' + omDid + ' scout' + (omDid === 1 ? '' : 's') + ' who attended');
+      if (commit()) showToast('Marked ' + omOffer.label + (omDone ? ' done' : ' in progress') + ' for ' + omDid + ' scout' + (omDid === 1 ? '' : 's') + ' who attended');
       return;
     }
     // Wave 16 — mark the den meeting's planned adventure done for everyone checked in.
-    if (act === 'mtg-adv-mark') {
+    // 2026-10-02 — and its in-progress twin (mtg-adv-partial). Both resolve the same way and ask
+    // advMarkable who: the adventure's PARTS (advRunParts — this den's meetings on it and the
+    // events offering it to the den), so the button drawn and the scouts written cannot differ.
+    if (act === 'mtg-adv-mark' || act === 'mtg-adv-partial') {
       var mam = getEvent(el.dataset.id);
-      if (!mam || mam.kind !== 'den') return;
+      if (!canEdit() || !mam || mam.kind !== 'den') return;
       var mamAdv;
       // Session-aware since 2026-08-02: the scouts credited are the ones checked in at every
       // session of the RUN that has happened, not merely everyone who turned up tonight. On a
       // one-session adventure those are the same set, so this is a strict generalization of
       // what the button did before. Since 2026-09-27 "has happened" includes TONIGHT and the
-      // scout must have been to at least one — see runProgress.onTrack.
+      // scout must have been to at least one — see runProgress.onTrack. Since 2026-10-02 the
+      // run's parts include events offering it as a part, and a scout who missed one can be
+      // recorded in progress instead (advMarkable).
       // data-den names WHICH den's run on an All-dens night; a single-den meeting has just one.
       var mamRun = runForMeeting(mam, el.dataset.den);
       if (!mamRun) return;
       // Credit the run's official spelling, not whatever was typed on this one meeting — a
       // mark written as "bobcat" would be a column the Advancement grid never shows.
       mamAdv = mamRun.run.adventure;
-      var mamDid = 0, mamHad = 0;
-      mamRun.prog.onTrack.forEach(function (row) {
-        if (advMarkDone(row.scout.id, advKindFor(row.scout, mamAdv), mamAdv)) mamDid += 1;
-        else mamHad += 1;
+      var mamParts = advRunParts(mamRun.run);
+      var mamMk = advMarkable(runProgress(mamParts));
+      var mamDid = 0, mamPartial = act === 'mtg-adv-partial';
+      (mamPartial ? mamMk.partial : mamMk.done).forEach(function (row) {
+        var mamKind = advKindFor(row.scout, mamAdv);
+        if (mamPartial ? advMarkPartial(row.scout.id, mamKind, mamAdv) : advMarkDone(row.scout.id, mamKind, mamAdv)) mamDid += 1;
       });
-      if (!mamDid && !mamHad) return;
-      if (commit()) showToast('Marked ' + mamAdv + ' done for ' + mamDid + ' scout' + (mamDid === 1 ? '' : 's') +
-        (mamHad ? ' · ' + mamHad + ' already had it' : '') +
-        (mamRun.of > 1 ? ' · all ' + mamRun.of + ' sessions' : ''));
+      if (!mamDid) return;
+      if (commit()) showToast('Marked ' + mamAdv + (mamPartial ? ' in progress' : ' done') + ' for ' + mamDid + ' scout' + (mamDid === 1 ? '' : 's') +
+        (!mamPartial && mamParts.sessions.length > 1 ? ' · all ' + mamParts.sessions.length + (advPartsMixed(mamParts) ? ' parts' : ' sessions') : ''));
       return;
     }
     // Wave 19(15) — storefront day sheet overlay + copy.
@@ -41120,6 +41674,41 @@
       oaO.auto = el.value === '1';
       commit(); return;
     }
+    // …and whether it covers PART of the adventure (offer.part, owner 2026-10-02) — a part joins
+    // the den meetings as one of its parts (advParts); otherwise one event earns it.
+    if (ch === 'offer-part') {
+      var opaEv = getEvent(el.dataset.id);
+      if (!canEdit() || !opaEv || !Array.isArray(opaEv.advOffers)) return;
+      var opaO = opaEv.advOffers.find(function (o) { return o && o.key === el.dataset.key; });
+      if (!opaO) return;
+      if (el.checked) opaO.part = true; else delete opaO.part;
+      commit(); return;
+    }
+    // …and which ranks it is for (offer.dens, 2026-10-02). The boxes are the event's dens whose
+    // rank has the adventure; all ticked is no narrowing (the field goes), and the last box
+    // cannot be unticked — removing an offer is its ✕, not an empty list.
+    if (ch === 'offer-dens') {
+      var odnEv = getEvent(el.dataset.id);
+      if (!canEdit() || !odnEv || !Array.isArray(odnEv.advOffers)) return;
+      var odnO = odnEv.advOffers.find(function (o) { return o && o.key === el.dataset.key; });
+      if (!odnO || DENS.indexOf(el.dataset.den) === -1) return;
+      var odnBy = offerByDen(odnEv, odnO.key);
+      var odnAll = odnBy.has.concat(odnBy.off).map(function (x) { return x.den; });
+      var odnOn = odnBy.has.map(function (x) { return x.den; }).filter(function (dn) { return dn !== el.dataset.den; });
+      if (el.checked) odnOn.push(el.dataset.den);
+      odnOn = DENS.filter(function (dn) { return odnOn.indexOf(dn) !== -1 && odnAll.indexOf(dn) !== -1; });
+      if (!odnOn.length) { showToast('Keep at least one rank — or remove the adventure with ✕.'); render(); return; }
+      if (odnOn.length === odnAll.length) delete odnO.dens; else odnO.dens = odnOn;
+      commit(); return;
+    }
+    // An adventure in progress: the leader's note ("needs the 2-mile hike"). Leaders only, like
+    // the grid; never published (advSetNote).
+    if (ch === 'adv-partial-note') {
+      var anKind = el.dataset.kind;
+      if (!canEdit() || (anKind !== 'req' && anKind !== 'elect')) return;
+      if (advSetNote(el.dataset.scout, anKind, el.dataset.name, el.value)) commit();
+      return;
+    }
     // Den plans — Fill the calendar's rows and start date: ui only, nothing saved (fill-apply saves).
     if (ch === 'fill-key' || ch === 'fill-n' || ch === 'fill-from') {
       var fcl = ui.fillCal;
@@ -41410,14 +41999,17 @@
       commit(); return;
     }
     if (kind === 'adv-add-elect') {
+      if (!canEdit()) return;
       // Wave 3 — add an elective (datalist offers the rank's official list; free text allowed).
-      // Adding means "mark done" — only done/awarded statuses exist in state.
+      // Adding means "mark done" (in progress is the cell's first step, not the add form's).
       var aSid = f.dataset.scout;
       var aName = String(fd.get('name') || '').trim();
       if (!aSid || !aName || !getScout(aSid)) return;
       var aRec2 = state.advancement[aSid];
       if (aRec2 && aRec2.elect && aRec2.elect[aName]) { showToast('Already tracking that elective'); return; }
-      advCycle(aSid, 'elect', aName); // blank → done, commits + re-renders
+      // Done, as it always was — the cycle now starts at in progress (advCycle), and a leader
+      // adding an elective is recording one finished. The cell beside it steps it from there.
+      if (advMarkDone(aSid, 'elect', aName)) commit();
       return;
     }
     if (kind === 'add-fundraiser') {
@@ -41493,27 +42085,34 @@
     if (kind === 'offer-add') {
       var oaddEv = getEvent(f.dataset.id);
       var oaddKey = String(fd.get('key') || '');
-      if (!canEdit() || !oaddEv || oaddEv.kind === 'pack' || !packAdvLabel(oaddKey)) return;
-      var oaddList = evOffers(oaddEv).map(function (o) { return { key: o.key, auto: o.auto }; });
+      if (!canEdit() || !oaddEv || oaddEv.kind === 'pack' || !advOfferLabel(oaddKey)) return;
+      var oaddList = evOffers(oaddEv).map(offerCopy);
       if (oaddList.some(function (o) { return o.key === oaddKey; }) || oaddList.length >= ADV_OFFERS_MAX) return;
-      oaddList.push({ key: oaddKey, auto: String(fd.get('auto') || '') === '1' });
+      var oaddNew = { key: oaddKey, auto: String(fd.get('auto') || '') === '1' };
+      if (String(fd.get('part') || '') === '1') oaddNew.part = true;   // covers part of it (§9)
+      oaddList.push(oaddNew);
       oaddEv.advOffers = oaddList;
       commit(); return;
     }
     // An offered elective: only the scouts the leader ticked, and only ones checked in whose rank
-    // has it (offerAttendees) — a stale form can never credit anybody else.
+    // has it and the offer is for (offerAttendees) — a stale form can never credit anybody else.
+    // 2026-10-02: a ticked scout is done if on track — every part held so far, none missed — else
+    // in progress (offerMarkable's `would`). A full-chance offer, or one part: done, as before.
     if (kind === 'offer-mark-picked') {
       var opEv = getEvent(f.dataset.id);
       var opOffer = opEv ? evOffers(opEv).find(function (o) { return o.key === f.dataset.key; }) : null;
       if (!canEdit() || !opOffer) return;
       var opIds = fd.getAll('scout').map(String);
       if (!opIds.length) { showToast('Tick the scouts who did it first.'); return; }
-      var opDid = 0;
-      offerAttendees(opEv, opOffer.key).can.forEach(function (r) {
-        if (opIds.indexOf(r.scout.id) !== -1 && advMarkDone(r.scout.id, advKindFor(r.scout, r.name), r.name)) opDid += 1;
+      var opDid = 0, opPart = 0;
+      offerMarkable(opEv, opOffer.key).rows.forEach(function (r) {
+        if (opIds.indexOf(r.scout.id) === -1) return;
+        var opKind = advKindFor(r.scout, r.name);
+        if (r.would === 'done' ? advMarkDone(r.scout.id, opKind, r.name) : (advMarkPartial(r.scout.id, opKind, r.name) && ++opPart)) opDid += 1;
       });
       if (!opDid) { render(); return; }
-      if (commit()) showToast('Marked ' + opOffer.label + ' done for ' + opDid + ' scout' + (opDid === 1 ? '' : 's'));
+      if (commit()) showToast('Marked ' + opOffer.label + ' for ' + opDid + ' scout' + (opDid === 1 ? '' : 's') +
+        (opPart ? ' · ' + opPart + ' in progress' : ''));
       return;
     }
     if (kind === 'plan-adv') {
