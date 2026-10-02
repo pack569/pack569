@@ -1,6 +1,7 @@
 // GET /api/pack/:id/view   the sanitized parent view: { exists, generatedAt, view }
 //                           (admin, editor, viewer, parent — never pending)
-// PUT /api/pack/:id/view   replace it with the JSON object a leader's page built  (admin, editor)
+// PUT /api/pack/:id/view   replace it with the JSON object a leader's page built  (admin, editor,
+//                          and a 'leader' who may edit at least one section: rules.js canWriteView)
 //
 // Part C 'view.read' and 'view.write'. The view is what buildParentView (index.html) makes,
 // an allowlist of what a family may see; the server stores what a leader's device sends and
@@ -22,8 +23,8 @@ async function get({ db, packId, role }) {
   return json(200, '{"exists":true,"generatedAt":' + Number(row.generated_at) + ',"view":' + row.payload + '}');
 }
 
-async function put({ request, db, packId, role }) {
-  if (!canWriteView(role)) return forbidden();
+async function put({ request, db, packId, role, positions }) {
+  if (!canWriteView(role, positions)) return forbidden();
   const text = await readText(request, MAX_STATE_BYTES);
   let v;
   try { v = JSON.parse(text); } catch (e) { refuse(badRequest('not-json')); }

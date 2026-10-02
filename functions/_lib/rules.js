@@ -17,11 +17,20 @@
 // Stricter than Part C, deliberately: every request needs a verified Google token
 // (functions/_lib/token.js). Part C let any signed-in session read its own member doc and
 // its own invite; here that session must also be a verified Google account.
+//
+// Beyond Part C: the role 'leader' (position-based access, stage 1, 2026-10-01). It exists only
+// on this API. A leader reads what any leader reads, and writes the pack record only where the
+// positions they hold allow (member_positions; what each position may edit is the table in
+// functions/_lib/access.js, which the pack PUT enforces key by key). Only an admin gives
+// positions. 'editor' and 'viewer' keep working as before until an admin assigns positions.
 
-export const ROLES = ['admin', 'editor', 'viewer', 'parent', 'pending'];
-export const LEADER_ROLES = ['admin', 'editor', 'viewer'];
+import { POSITIONS, SECTIONS, effectiveAccess } from './access.js';
+
+export const ROLES = ['admin', 'editor', 'viewer', 'leader', 'parent', 'pending'];
+export const LEADER_ROLES = ['admin', 'editor', 'viewer', 'leader'];
 // Part C: an invite's role must be one of these. 'admin' is granted in person, never by invite.
-export const INVITE_ROLES = ['editor', 'viewer', 'parent'];
+// 'leader' (not in Part C) comes with the positions it gives.
+export const INVITE_ROLES = ['editor', 'viewer', 'leader', 'parent'];
 export const MEMBER_NAME_MAX = 120;               // Part C memberKeysOk(): name.size() <= 120
 export const JOIN_CODE_RE = /^[A-Za-z0-9]{1,64}$/; // the page's JOIN_CODE_RE
 export const CONTACT_MAX = 160;                   // the page's cleanContactLine()
@@ -54,7 +63,7 @@ export const PART_C = {
   'viaGoogle': ["return request.auth.token.firebase.sign_in_provider == 'google.com'\n          && request.auth.token.email_verified == true;"]
 };
 
-// isLeader(): myRole() in ['admin', 'editor', 'viewer']
+// isLeader(): myRole() in ['admin', 'editor', 'viewer'] — and 'leader'
 export const isLeader = (role) => LEADER_ROLES.indexOf(role) !== -1;
 // isAdmin(): myRole() == 'admin'
 export const isAdmin = (role) => role === 'admin';
@@ -70,9 +79,29 @@ export const canReadJoin = (role) => isLeader(role);
 export const canWriteJoin = (role) => isAdmin(role);
 
 // public/view — 'view.read': approved members, never 'pending'
-export const canReadView = (role) => ['admin', 'editor', 'viewer', 'parent'].indexOf(role) !== -1;
+export const canReadView = (role) => ['admin', 'editor', 'viewer', 'leader', 'parent'].indexOf(role) !== -1;
 // public/view — 'view.write': allow write: if myRole() in ['admin', 'editor'];
-export const canWriteView = (role) => canWritePack(role);
+// And a 'leader' who may edit at least one section (the den meeting sub-section counts): the
+// parent view stays "always published" (owner decision, 2026-10-01), so every leader who can
+// change something parents see keeps it current. A leader who only reads may not. WHAT a view
+// may hold is parentViewProblem's to say, below, whoever writes it.
+export function canWriteView(role, positions) {
+  if (role === 'admin' || role === 'editor') return true;
+  if (role !== 'leader') return false;
+  const acc = effectiveAccess(role, positions);
+  return SECTIONS.some((s) => acc[s] === 'edit');
+}
+
+// A list of positions as a request may send it: distinct, each one access.js knows, at least
+// one. Returns them in POSITIONS order, or null.
+export function cleanPositions(v) {
+  if (!Array.isArray(v) || !v.length || v.length > POSITIONS.length) return null;
+  if (!v.every((p) => typeof p === 'string' && POSITIONS.indexOf(p) !== -1)) return null;
+  if (new Set(v).size !== v.length) return null;
+  return POSITIONS.filter((p) => v.indexOf(p) !== -1);
+}
+// The role a set of positions makes: a parent if Parent is all of them, otherwise a leader.
+export const roleForPositions = (ps) => (ps.every((p) => p === 'parent') ? 'parent' : 'leader');
 
 // members — 'members.read': the roster to leaders; to anyone else, only their own record.
 export const canReadRoster = (role) => isLeader(role);
@@ -109,7 +138,8 @@ export const canDeleteMember = (role) => isAdmin(role);
 // invites — 'invites.read': an admin lists them all; you may read the one for your own email.
 export const canListInvites = (role) => isAdmin(role);
 export const canReadInvite = (role, emailKey, target) => isAdmin(role) || emailKey === target;
-// invites — 'invites.write': admins only, and never for admin (or pending).
+// invites — 'invites.write': admins only, and never for admin (or pending). A 'leader' invite
+// carries its positions (the endpoint refuses one without).
 export const canWriteInvite = (role, inviteRole) => isAdmin(role) && INVITE_ROLES.indexOf(inviteRole) !== -1;
 // invites — 'invites.delete': an admin revokes; the invitee consumes their own.
 export const canDeleteInvite = (role, emailKey, target) => isAdmin(role) || emailKey === target;

@@ -15672,6 +15672,191 @@ atest('positions: sameJson compares objects by key whatever the order, arrays in
   ok(!S(deepA, deepB), 'one level more');
 });
 
+/* ---- positions: the accounts that hold them (migration 0003, members, invites, session) ---- */
+
+// One made-up leader account per position (lead_chair, lead_denleader, …), seeded straight into the tables.
+const POSITION_IDS = ['chair', 'cubmaster', 'asstcub', 'denleader', 'asstden', 'treasurer', 'kernel', 'advancement', 'outdoor', 'membership', 'parent'];
+POSITION_IDS.concat(['multi', 'none']).forEach((p) => { PEOPLE['lead_' + p] = ['uid-lead-' + p, 'lead-' + p + '@example.com']; });
+function seedLeader(w, who, positions, role) {
+  w.db.raw.prepare('INSERT INTO members (pack_id, uid, role, name, email, join_code, added_at) VALUES (?, ?, ?, ?, ?, NULL, ?)')
+    .run(API_PACK, PEOPLE[who][0], role || 'leader', 'Test ' + who, PEOPLE[who][1], Date.now());
+  for (const p of positions) w.db.raw.prepare('INSERT INTO member_positions (pack_id, uid, position, den) VALUES (?, ?, ?, NULL)').run(API_PACK, PEOPLE[who][0], p);
+  return w;
+}
+const heldBy = (w, who) => w.sql('SELECT position FROM member_positions WHERE pack_id = ? AND uid = ? ORDER BY position', API_PACK, PEOPLE[who][0]).map((r) => r.position);
+
+test('positions: migration 0003 names the same positions as access.js, and keeps every role the API knows', () => {
+  const sql = readFileSync(join(ROOT, 'migrations/0003_positions.sql'), 'utf8');
+  const lists = [...sql.matchAll(/position IN \(([^)]*)\)/g)].map((m) => [...m[1].matchAll(/'([a-z]+)'/g)].map((x) => x[1]));
+  eq(lists.length, 2, 'two position CHECKs');
+  lists.forEach((l) => eq(l, ACCESS_JSON().positions.map((p) => p.id), 'a position CHECK vs access.js'));
+  const roles = [...sql.matchAll(/role IN \(([^)]*)\)/g)].map((m) => [...m[1].matchAll(/'([a-z]+)'/g)].map((x) => x[1]));
+  const RULES = readFileSync(join(ROOT, 'functions/_lib/rules.js'), 'utf8');
+  const list = (name) => [...new RegExp(`export const ${name} = \\[([^\\]]*)\\];`).exec(RULES)[1].matchAll(/'([^']*)'/g)].map((x) => x[1]);
+  eq(roles, [list('ROLES'), list('INVITE_ROLES')], 'the members and invites role CHECKs vs rules.js');
+  ok(list('LEADER_ROLES').indexOf('leader') >= 0 && list('INVITE_ROLES').indexOf('admin') === -1, 'leader is a leader; no invite makes an admin');
+});
+
+atest('positions: migration 0003 keeps every member, invite and index, and the CHECKs take leader', async () => {
+  sqliteMod = sqliteMod || await loadSqlite();
+  const db = new sqliteMod.DatabaseSync(':memory:');
+  db.exec('PRAGMA foreign_keys = ON;');
+  const before = MIGRATION_FILES.filter((f) => f < '0003');
+  ok(before.length === 2 && MIGRATION_FILES.indexOf('0003_positions.sql') === 2, 'the migrations before 0003');
+  before.forEach((f) => db.exec(readFileSync(join(ROOT, 'migrations', f), 'utf8')));
+  db.exec("INSERT INTO packs (id, created_at) VALUES ('p1', 1), ('p2', 2)");
+  const roles = ['admin', 'editor', 'viewer', 'parent', 'pending'];
+  roles.forEach((r, i) => db.prepare('INSERT INTO members (pack_id, uid, role, name, email, join_code, added_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(i % 2 ? 'p2' : 'p1', 'u' + i, r, 'Test ' + r, r + '@example.com', r === 'pending' ? 'Code1' : null, 100 + i));
+  ['editor', 'viewer', 'parent'].forEach((r, i) => db.prepare('INSERT INTO invites (pack_id, email, role, invited_by_uid, invited_at) VALUES (?, ?, ?, ?, ?)')
+    .run('p1', 'inv' + i + '@example.com', r, 'u0', 200 + i));
+  db.exec("INSERT INTO audit (pack_id, at, uid, action, detail) VALUES ('p1', 1, 'u0', 'member.role', '{}')");
+  db.exec("INSERT INTO pack_state (pack_id, rev, json, device, updated_at) VALUES ('p1', 7, '{\"scouts\":[]}', 'd', 1)");
+  const dump = () => ['members', 'invites', 'audit', 'pack_state', 'packs'].map((t) => db.prepare('SELECT * FROM ' + t + ' ORDER BY 1, 2').all().map((r) => Object.assign({}, r)));
+  const was = dump();
+  db.exec(readFileSync(join(ROOT, 'migrations/0003_positions.sql'), 'utf8'));
+  eq(dump(), was, 'every row after the migration');
+  eq(db.prepare('PRAGMA foreign_key_check').all().length, 0, 'foreign keys');
+  const idx = db.prepare("SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'index' AND name = 'members_by_role'").get();
+  ok(idx && idx.tbl_name === 'members' && /\(pack_id, role\)/.test(idx.sql), 'members_by_role');
+  ok(!db.prepare("SELECT 1 FROM sqlite_master WHERE name IN ('members_new', 'invites_new')").get(), 'a rebuild table left behind');
+  const fk = (t) => db.prepare('PRAGMA foreign_key_list(' + t + ')').all().map((r) => r.table + '.' + r.to);
+  eq([fk('members'), fk('invites'), fk('member_positions'), fk('invite_positions')], [['packs.id'], ['packs.id'], ['packs.id'], ['packs.id']], 'foreign keys to packs');
+  const refused = (q, ...a) => { try { db.prepare(q).run(...a); return false; } catch (e) { return true; } };
+  ok(!refused("INSERT INTO members (pack_id, uid, role, added_at) VALUES ('p1', 'uL', 'leader', 1)"), 'a leader member');
+  ok(refused("INSERT INTO members (pack_id, uid, role, added_at) VALUES ('p1', 'uX', 'boss', 1)"), 'a role that is not one');
+  ok(!refused("INSERT INTO invites (pack_id, email, role, invited_by_uid, invited_at) VALUES ('p1', 'l@example.com', 'leader', 'u0', 1)"), 'a leader invite');
+  ok(refused("INSERT INTO invites (pack_id, email, role, invited_by_uid, invited_at) VALUES ('p1', 'a@example.com', 'admin', 'u0', 1)"), 'an admin invite');
+  ok(refused("INSERT INTO members (pack_id, uid, role, added_at) VALUES ('nope', 'uY', 'viewer', 1)"), 'a member of no pack');
+});
+
+atest('positions: the tables hold a position only for a leader, and it never outlives the role, the account or the invite', async () => {
+  const w = await (await apiWorld()).seed({ editor: 'editor', parent: 'parent' });
+  seedLeader(w, 'lead_multi', ['denleader', 'treasurer']);
+  const refused = (q, ...a) => { try { w.db.raw.prepare(q).run(...a); return false; } catch (e) { return /leader/.test(e.message); } };
+  const ins = 'INSERT INTO member_positions (pack_id, uid, position) VALUES (?, ?, ?)';
+  ok(refused(ins, API_PACK, PEOPLE.editor[0], 'chair'), 'a position on an editor');
+  ok(refused(ins, API_PACK, PEOPLE.parent[0], 'chair'), 'a leader position on a parent');
+  ok(!refused(ins, API_PACK, PEOPLE.parent[0], 'parent'), 'Parent on a parent');
+  ok(refused(ins, API_PACK, 'uid-nobody', 'chair'), 'a position on no account');
+  ok((() => { try { w.db.raw.prepare(ins).run(API_PACK, PEOPLE.lead_multi[0], 'boss'); return false; } catch (e) { return true; } })(), 'a position that is not one');
+  w.db.raw.prepare("UPDATE members SET name = 'Renamed' WHERE uid = ?").run(PEOPLE.lead_multi[0]);
+  eq(heldBy(w, 'lead_multi'), ['denleader', 'treasurer'], 'a name change keeps them');
+  w.db.raw.prepare("UPDATE members SET role = 'viewer' WHERE uid = ?").run(PEOPLE.lead_multi[0]);
+  eq(heldBy(w, 'lead_multi'), [], 'a role change takes them');
+  w.db.raw.prepare("UPDATE members SET role = 'leader' WHERE uid = ?").run(PEOPLE.lead_multi[0]);
+  w.db.raw.prepare(ins).run(API_PACK, PEOPLE.lead_multi[0], 'kernel');
+  w.db.raw.prepare('DELETE FROM members WHERE uid = ?').run(PEOPLE.lead_multi[0]);
+  eq(w.sql('SELECT count(*) AS n FROM member_positions WHERE uid = ?', PEOPLE.lead_multi[0])[0].n, 0, 'removing the account takes them');
+  // Invites the same way.
+  w.db.raw.prepare("INSERT INTO invites (pack_id, email, role, invited_by_uid, invited_at) VALUES (?, 'l@example.com', 'leader', 'uid-owner', 1)").run(API_PACK);
+  w.db.raw.prepare("INSERT INTO invites (pack_id, email, role, invited_by_uid, invited_at) VALUES (?, 'v@example.com', 'viewer', 'uid-owner', 1)").run(API_PACK);
+  const iins = 'INSERT INTO invite_positions (pack_id, email, position) VALUES (?, ?, ?)';
+  ok(refused(iins, API_PACK, 'v@example.com', 'chair'), 'a position on a viewer invite');
+  ok(!refused(iins, API_PACK, 'l@example.com', 'chair'), 'a position on a leader invite');
+  w.db.raw.prepare("DELETE FROM invites WHERE email = 'l@example.com'").run();
+  eq(w.sql('SELECT count(*) AS n FROM invite_positions')[0].n, 0, 'revoking the invite takes them');
+});
+
+atest('positions: an admin gives an account its positions (it becomes a leader, or a parent for Parent alone), audited; nobody else can', async () => {
+  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent', pending: 'pending' });
+  const give = (who, target, positions, extra) => w.call(who, 'PATCH', 'member', { uid: PEOPLE[target][0] }, { body: Object.assign({ positions }, extra || {}) });
+  const r = await give('owner', 'editor', ['treasurer', 'denleader']);
+  eq([r.status, r.body.role, r.body.positions], [200, 'leader', ['denleader', 'treasurer']], 'an editor given two positions');
+  eq(heldBy(w, 'editor'), ['denleader', 'treasurer'], 'what the table holds');
+  const a = w.audit('member.positions');
+  eq(a.length, 1, 'one audit row');
+  eq([a[0].uid, JSON.parse(a[0].detail)], ['uid-owner', { target: 'uid-editor', from: { role: 'editor', positions: [] }, to: { role: 'leader', positions: ['denleader', 'treasurer'] } }], 'the audit row');
+  // Again: replaced, not added to.
+  eq((await give('admin2', 'editor', ['kernel'])).body.positions, ['kernel'], 'replaced');
+  eq(heldBy(w, 'editor'), ['kernel'], 'replaced in the table');
+  // Parent alone makes a parent; a pending request can be approved straight into positions.
+  eq([(await give('owner', 'parent', ['parent'])).body.role, heldBy(w, 'parent')], ['parent', ['parent']], 'Parent alone');
+  eq((await give('owner', 'pending', ['membership', 'parent'])).body.role, 'leader', 'a pending request approved as Membership Chair (and a parent)');
+  // The account itself, and the members list, say so; GET is unchanged for one with none.
+  eq((await w.call('editor', 'GET', 'member', { uid: 'uid-editor' })).body.positions, ['kernel'], 'GET your own');
+  const list = (await w.call('viewer', 'GET', 'members')).body.members;
+  eq(list.filter((m) => m.positions).map((m) => [m.uid, m.positions]),
+    [['uid-editor', ['kernel']], ['uid-parent', ['parent']], ['uid-pending', ['membership', 'parent']]], 'the members list');
+  ok(!('positions' in list.filter((m) => m.uid === 'uid-viewer')[0]), 'an account with none has no positions field');
+  // Nobody but an admin: not for someone else, not for yourself.
+  denied(await give('editor', 'viewer', ['chair']), 'a leader giving someone positions');
+  denied(await give('viewer', 'viewer', ['chair']), 'a viewer giving themselves positions');
+  denied(await give('editor', 'editor', ['chair', 'treasurer']), 'a leader giving themselves more');
+  eq(heldBy(w, 'editor'), ['kernel'], 'after the refusals');
+  // A bad list is a 400; so is a role with it.
+  for (const bad of [[], 'chair', ['boss'], ['chair', 'chair'], [1], null, POSITION_IDS.concat(['chair'])]) {
+    eq((await give('owner', 'viewer', bad)).status, 400, 'positions ' + JSON.stringify(bad));
+  }
+  eq((await give('owner', 'viewer', ['chair'], { role: 'leader' })).body.reason, 'role-and-positions', 'role and positions together');
+  eq(w.one('SELECT role FROM members WHERE uid = ?', 'uid-viewer').role, 'viewer', 'after the 400s');
+  // A role change takes the positions with it.
+  eq((await w.call('owner', 'PATCH', 'member', { uid: 'uid-editor' }, { body: { role: 'viewer' } })).body.positions, undefined, 'made a viewer');
+  eq(heldBy(w, 'editor'), [], 'the positions went with the role');
+  // The last admin cannot be given positions (they would stop being an admin); nothing is written.
+  const one = await (await apiWorld()).seed({});
+  const last = await one.call('owner', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { positions: ['chair'] } });
+  eq([last.status, last.body.error], [409, 'last-admin'], 'the last admin given positions');
+  eq([one.one('SELECT role FROM members WHERE uid = ?', 'uid-owner').role, heldBy(one, 'owner'), one.audit('member.positions').length], ['admin', [], 0], 'after');
+  // Removing the account takes them.
+  await w.call('owner', 'DELETE', 'member', { uid: 'uid-pending' });
+  eq(heldBy(w, 'pending'), [], 'removed with the account');
+});
+
+atest('positions: an invite can carry positions, and signing in on it makes a leader holding exactly those', async () => {
+  const w = await (await apiWorld()).seed({ editor: 'editor' });
+  const inv = (who, body, email) => w.call(who, 'PUT', 'invite', { email: email || PEOPLE.newbie[1] }, { body });
+  const r = await inv('owner', { positions: ['denleader', 'cubmaster'] });
+  eq([r.status, r.body.role, r.body.positions], [200, 'leader', ['cubmaster', 'denleader']], 'a leader invite');
+  eq(JSON.parse(w.audit('invite.write')[0].detail), { email: PEOPLE.newbie[1], role: 'leader', positions: ['cubmaster', 'denleader'] }, 'its audit row');
+  eq((await w.call('owner', 'GET', 'invites')).body.invites.map((v) => v.positions), [['cubmaster', 'denleader']], 'the invites list');
+  eq((await w.call('newbie', 'GET', 'invite', { email: PEOPLE.newbie[1] })).body.positions, ['cubmaster', 'denleader'], 'the invitee reads it');
+  // Written again: replaced.
+  eq((await inv('owner', { positions: ['denleader'], role: 'leader' })).body.positions, ['denleader'], 'replaced, role agreeing');
+  // Refused: a leader invite with no positions, a role that disagrees, a bad list, a non-admin.
+  eq((await inv('owner', { role: 'leader' })).body.reason, 'positions', 'a leader invite without positions');
+  eq((await inv('owner', { role: 'viewer', positions: ['chair'] })).body.reason, 'role-and-positions', 'a role that disagrees');
+  eq((await inv('owner', { positions: ['boss'] })).status, 400, 'a position that is not one');
+  denied(await inv('editor', { positions: ['chair'] }), 'an editor inviting a leader');
+  denied(await inv('editor', { role: 'leader' }), 'an editor inviting a leader (role only)');
+  eq((await w.call('owner', 'GET', 'invite', { email: PEOPLE.newbie[1] })).body.positions, ['denleader'], 'after the refusals');
+  // Plain invites are as they were (no positions field).
+  const plain = await inv('owner', { role: 'viewer' }, 'plain@example.com');
+  eq([plain.status, plain.body.positions], [200, undefined], 'a viewer invite');
+  // Used: the account is a leader with exactly the invite's positions, and the invite is gone with them.
+  const s = await w.session('newbie');
+  eq([s.body.role, s.body.member.positions], ['leader', ['denleader']], 'signing in on it');
+  eq(heldBy(w, 'newbie'), ['denleader'], 'member_positions');
+  eq([w.sql('SELECT count(*) AS n FROM invites WHERE email = ?', PEOPLE.newbie[1])[0].n, w.sql('SELECT count(*) AS n FROM invite_positions')[0].n], [0, 0], 'the invite used up');
+  // A leader reads what leaders read.
+  w.state(3, { scouts: [] });
+  for (const what of ['pack', 'members', 'view', 'rev', 'join']) ok([200].indexOf((await w.call('newbie', 'GET', what)).status) >= 0, 'a leader GET ' + what);
+  eq((await w.call('newbie', 'GET', 'rev')).body.rev, 3, 'a leader gets the rev');
+  denied(await w.call('newbie', 'GET', 'invites'), 'a leader listing invites');
+  // Until the pack PUT checks each section (the next commit), a leader writes nothing to the pack record.
+  if (!/refusedSections/.test(readFileSync(join(ROOT, 'functions/api/pack/[id]/index.js'), 'utf8'))) {
+    denied(await w.call('newbie', 'PUT', 'pack', null, { body: { scouts: [] }, headers: { 'if-match': '3' } }), 'a leader PUT pack with no section guard');
+  }
+  // Revoking an invite takes its positions.
+  await inv('owner', { positions: ['chair'] }, 'later@example.com');
+  await w.call('owner', 'DELETE', 'invite', { email: 'later@example.com' });
+  eq(w.sql('SELECT count(*) AS n FROM invite_positions')[0].n, 0, 'revoked');
+});
+
+atest('positions: the parent view stays always published — a leader who edits any section writes it, one who only reads does not, and the allowlist holds for both', async () => {
+  // Owner decision, 2026-10-01: canWriteView = admin, editor, or a leader with Edit on a section.
+  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent' });
+  POSITION_IDS.filter((p) => p !== 'parent').forEach((p) => seedLeader(w, 'lead_' + p, [p]));
+  seedLeader(w, 'lead_none', []);
+  const put = (who, body) => w.call(who, 'PUT', 'view', null, { body: body || { packName: 'Test Pack', contact: 'by ' + who } });
+  for (const who of ['owner', 'editor'].concat(POSITION_IDS.filter((p) => p !== 'parent').map((p) => 'lead_' + p))) eq((await put(who)).status, 200, who + ' PUT view');
+  for (const who of ['lead_none', 'viewer', 'parent']) denied(await put(who), who + ' PUT view');
+  eq((await put('lead_denleader', { packName: 'x', budget: {} })).body.reason, 'view-key', 'a leader sending a key the view never has');
+  eq((await put('lead_kernel', { packName: 'x', events: [{ noteInternal: 'x' }] })).body.reason, 'view-note-internal', 'a leader sending a leaders-only note');
+  ok(API.rules.canWriteView('leader', ['denleader']) && !API.rules.canWriteView('leader', []) && !API.rules.canWriteView('leader', ['parent'])
+    && !API.rules.canWriteView('viewer', ['chair']) && API.rules.canWriteView('editor', []), 'canWriteView');
+});
+
 /* ================================================================
    Phase 2 stage C (2026-09-28) — the page's apiBackend against the real server, end to end.
    Each "client" is a sandbox running the page's REAL sync layer (syncStart, the session, the

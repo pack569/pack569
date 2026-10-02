@@ -7,8 +7,8 @@
 //   2. Already a member: nothing changes — never overwrite a role (re-signing in as an
 //      approved editor must not demote you) — except that the pack owner is always healed
 //      back to admin ('members.update.owner').
-//   3. Not a member: the owner becomes admin; an invitee becomes exactly the invited role and
-//      the invite is used up; a sign-up link visitor with the current code, while the link is
+//   3. Not a member: the owner becomes admin; an invitee becomes exactly the invited role, with
+//      exactly the positions it gave (a 'leader' invite), and the invite is used up; a sign-up link visitor with the current code, while the link is
 //      open, becomes 'pending'. Anyone else gets no row at all.
 // Answers { uid, role, member, ownerUid, rejected }. role null means no access; rejected says
 // why, with the page's own words for it: 'nolink' (no invite, no link), 'badcode' (a link
@@ -83,8 +83,13 @@ async function session(context) {
       await db.batch([
         db.prepare('INSERT INTO members (pack_id, uid, role, name, email, join_code, added_at) ' +
           'SELECT pack_id, ?, role, ?, ?, NULL, ? FROM invites WHERE pack_id = ? AND email = ? ' +
-          "AND role IN ('editor', 'viewer', 'parent') ON CONFLICT (pack_id, uid) DO NOTHING")
+          "AND role IN ('editor', 'viewer', 'leader', 'parent') ON CONFLICT (pack_id, uid) DO NOTHING")
           .bind(user.uid, name, user.email, now, packId, user.emailKey),
+        // The invite's positions, onto the account just made from it (before the invite, and its
+        // positions with it, are deleted below).
+        db.prepare('INSERT INTO member_positions (pack_id, uid, position, den) SELECT pack_id, ?, position, den FROM invite_positions ' +
+          'WHERE pack_id = ? AND email = ? AND EXISTS (SELECT 1 FROM members WHERE pack_id = ? AND uid = ? AND added_at = ?)')
+          .bind(user.uid, packId, user.emailKey, packId, user.uid, now),
         auditIf(db, packId, user.uid, 'invite.consume', { email: user.emailKey, role: inv.role }, now,
           'EXISTS (SELECT 1 FROM members WHERE pack_id = ? AND uid = ? AND added_at = ?)', [packId, user.uid, now]),
         db.prepare('DELETE FROM invites WHERE pack_id = ? AND email = ? AND EXISTS (SELECT 1 FROM members WHERE pack_id = ? AND uid = ?)')
