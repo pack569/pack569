@@ -867,11 +867,11 @@ The number to compare with is `PACK_FORMAT` in the `index.html` you serve.
 Change only `fmt`. Leave `rev` and everything else as it is.
 
 - **Firestore:** in the console, edit the `json` field. Copy its value into a text editor, change
-  the top-level `"fmt":N` to the served page's `PACK_FORMAT` (e.g. `"fmt":3`), check the rest of
+  the top-level `"fmt":N` to the served page's `PACK_FORMAT` (e.g. `"fmt":4`), check the rest of
   the text is untouched, paste it back, and **Update**.
 - **D1:**
-  `npx wrangler d1 execute pack569-prod --remote --env production --command "UPDATE pack_state SET json = json_set(json, '$.fmt', 3) WHERE pack_id = '<Pack ID>'"`
-  (with `3` being the served page's `PACK_FORMAT`, and `<Pack ID>` as in step 2). Without the
+  `npx wrangler d1 execute pack569-prod --remote --env production --command "UPDATE pack_state SET json = json_set(json, '$.fmt', 4) WHERE pack_id = '<Pack ID>'"`
+  (with `4` being the served page's `PACK_FORMAT`, and `<Pack ID>` as in step 2). Without the
   `WHERE` it would rewrite every pack in the database. Run the `SELECT` from step 2 again to check.
   If the change goes wrong, D1's Time Travel can put the database back to before it
   ([docs/cloudflare-setup.md](docs/cloudflare-setup.md), *Backups*).
@@ -892,10 +892,10 @@ newer page still open in another tab saves its `fmt` back over the fix. Then, in
 developer console on the page (a desktop browser, or a Mac for an iPhone or iPad), run:
 
 ```js
-var k = 'pack-popcorn-ledger-v1', r = JSON.parse(localStorage.getItem(k)); r.fmt = 3; localStorage.setItem(k, JSON.stringify(r)); location.reload();
+var k = 'pack-popcorn-ledger-v1', r = JSON.parse(localStorage.getItem(k)); r.fmt = 4; localStorage.setItem(k, JSON.stringify(r)); location.reload();
 ```
 
-(with `3` being the served page's `PACK_FORMAT`). The key is fixed and must never change: it is
+(with `4` being the served page's `PACK_FORMAT`). The key is fixed and must never change: it is
 where every device's copy lives.
 
 ### 5. Reload every device
