@@ -16882,9 +16882,10 @@ atest('positions guard: the sync log and the ledger log are append-only, each ne
   const mineN = (n, at) => { const out = []; for (let i = 0; i < n; i++) out.push(sl('m' + String(i).padStart(3, '0'), at || '2026-09-03T00:00:00.000Z', 'uid-lead-denleader')); return out; };
   SECTION_403(await wf.put('lead_denleader', Object.assign(GUARD_BASE(), { syncLog: full.concat([mine]) })), ['shared'], 'PoC: past the cap, nothing dropped');
   SECTION_403(await wf.put('lead_denleader', Object.assign(GUARD_BASE(), { syncLog: full.slice(5).concat([mine]) })), ['shared'], 'full: five dropped for one line');
-  SECTION_403(await w.put('lead_denleader', withSl(old.concat(mineN(201)))), ['shared'], '201 lines in one save');
-  eq((await w.put('lead_denleader', withSl(old.concat(mineN(200))))).status, 200, '200 lines in one save (a big keep-mine)');
-  eq([API.access.SYNC_LOG_CAP.add, Number(/var SYNC_LOG_ADD_MAX = (\d+);/.exec(SCRIPT)[1])], [200, 200], 'the page keeps to the server\'s per-save cap');
+  // Security re-check of ce6b8de (2, low): 200 a save let three saves push out everyone's history.
+  SECTION_403(await w.put('lead_denleader', withSl(old.concat(mineN(51)))), ['shared'], '51 lines in one save');
+  eq((await w.put('lead_denleader', withSl(old.concat(mineN(50))))).status, 200, '50 lines in one save (a big keep-mine)');
+  eq([API.access.SYNC_LOG_CAP.add, Number(/var SYNC_LOG_ADD_MAX = (\d+);/.exec(SCRIPT)[1])], [50, 50], 'the page keeps to the server\'s per-save cap');
   ok(/if \(logged\.length > SYNC_LOG_ADD_MAX\) logged = logged\.slice\(0, SYNC_LOG_ADD_MAX\);/.test(SCRIPT), 'the chooser trims its lines');
   SECTION_403(await w.put('lead_denleader', withSl(old.concat([sl('sl-9', '2099-01-01T00:00:00.000Z', 'uid-lead-denleader')]))), ['shared'], 'PoC: a line from 2099');
   const soon = new Date(Date.now() + 5 * 60 * 1000).toISOString();
@@ -17048,7 +17049,7 @@ atest('positions guard: a booth leader writes a shift report\'s fields on its bl
       'accepted_by_uid, accepted_by_name, accepted_at, reviewed_by_uid, reviewed_by_name, reviewed_at, review_note, needs_confirm, confirmed_by_uid, confirmed_by_name, confirmed_at, ' +
       'sales_cash_outcome, sales_cash_by_uid, sales_cash_by_name, sales_cash_at, verified_by_leader) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(id, API_PACK, r.sf, r.block, r.te, r.cash, r.sc, r.from, r.fromName, r.status, 'st-' + id, r.acceptedBy || null, r.acceptedBy ? 'X' : null, r.acceptedBy ? 2 : null,
-        r.reviewedBy || null, r.reviewedBy ? 'Y' : null, r.reviewedBy ? 3 : null, r.note || '', r.confirmedBy ? 1 : 0, r.confirmedBy || null, r.confirmedBy ? 'Bo Parent' : null,
+        r.reviewedBy || null, r.reviewedBy ? 'Y' : null, r.reviewedBy ? 3 : null, r.note || '', r.confirmedBy || r.needs ? 1 : 0, r.confirmedBy || null, r.confirmedBy ? 'Bo Parent' : null,
         r.confirmedBy ? 2 : null, r.outcome || null, r.outcome ? 'uid-lead-kernel' : null, r.outcome ? 'Test lead_kernel' : null, r.outcome ? 77 : null, r.acceptedBy && !r.confirmedBy ? 1 : 0);
   };
   report(w, 'r1');
@@ -17095,6 +17096,34 @@ atest('positions guard: a booth leader writes a shift report\'s fields on its bl
   eq((await put('lead_denleader', accept('lead_denleader', { cashVerifiedBy: 'Bo Parent', reportConfirmedBy: 'Bo Parent', reportCollected: false },
     { collected: false, wrote: { counted: 'Ada Parent', verified: 'Bo Parent' } }))).status, 200, 'a confirmed report: the confirming parent named');
   report(w, 'r1');
+  // Security re-check of ce6b8de, finding 3: the marker is refused wherever the accept PATCH would refuse it,
+  // with the override the page names for each case.
+  const overrode = (who, kind) => accept(who, { reportOverride: kind, reportOverrideNote: 'Only one parent was there', reportCollected: false, cashVerifiedBy: '' },
+    { override: true, note: 'Only one parent was there', collected: false, wrote: { counted: 'Ada Parent', verified: '' } });
+  const plain0 = accept('lead_denleader', { reportCollected: false, cashVerifiedBy: '' }, { collected: false, wrote: { counted: 'Ada Parent', verified: '' } });
+  report(w, 'r1', { needs: true });
+  SECTION_403(await put('lead_denleader', plain0), ['storefronts'], 'PoC: two families, nobody confirmed, no override');
+  SECTION_403(await put('lead_denleader', accept('lead_denleader')), ['storefronts'], 'two families: collected by the leader instead of a second parent');
+  SECTION_403(await put('lead_denleader', overrode('lead_denleader', 'not-collected')), ['storefronts'], 'two families: the wrong override');
+  eq((await put('lead_denleader', overrode('lead_denleader', 'second-parent'))).status, 200, 'two families: accepted without a second parent, with the reason');
+  report(w, 'r1');
+  SECTION_403(await put('lead_denleader', plain0), ['storefronts'], 'one family, not collected, no override');
+  SECTION_403(await put('lead_denleader', overrode('lead_denleader', 'second-parent')), ['storefronts'], 'one family: the wrong override');
+  eq((await put('lead_denleader', overrode('lead_denleader', 'not-collected'))).status, 200, 'one family, not collected, with the reason');
+  // The sender's family (rules.js sameFamily, from the stored record), as the PATCH reads it.
+  const famScouts = [{ id: 's1', name: 'Ada', familyId: 'f1', parentUids: ['uid-parent'] }, { id: 's2', name: 'Bo', familyId: 'f1', parentUids: ['uid-lead-denleader'] }];
+  const wfam = await guardWorld(Object.assign(GUARD_BASE(), { scouts: famScouts, storefronts: sfs() }));
+  report(wfam, 'r1');
+  const putFam = (who, b) => wfam.put(who, Object.assign(GUARD_BASE(), { scouts: famScouts, storefronts: sfs(b) }));
+  SECTION_403(await putFam('lead_denleader', accept('lead_denleader')), ['storefronts'], 'PoC: the sender\'s family collects and accepts');
+  SECTION_403(await putFam('lead_denleader', overrode('lead_denleader', 'not-collected')), ['storefronts'], 'the sender\'s family: the wrong override');
+  eq((await putFam('lead_denleader', overrode('lead_denleader', 'same-family'))).status, 200, 'the sender\'s family: accepted with the reason');
+  eq((await putFam('lead_asstden', accept('lead_asstden'))).status, 200, 'another family collects and accepts');
+  // Called with no family answer at all, it fails closed: the same family.
+  const den = API.access.effectiveAccess('leader', ['denleader']), denAct = API.access.effectiveActions('leader', ['denleader']);
+  eq(API.access.refusedSections({ storefronts: sfs() }, { storefronts: sfs(accept('lead_denleader')) }, den, 'uid-lead-denleader', denAct,
+    { reports: { r1: { id: 'r1', sf_id: 'sf1', block_id: 'b1', status: 'submitted', te_cents: 12345, cash_cents: 2500, sales_cash_cents: 300, submitted_by_uid: 'uid-parent',
+      submitted_by_name: 'Ada Parent', needs_confirm: 0 } }, name: 'Test lead_denleader', now: Date.now() }), ['storefronts'], 'no sameFamily: refused');
 
   // From an accept pending on the server: settled, undone, sent back, or taken over.
   const pend = accept('lead_asstden');
@@ -17166,18 +17195,25 @@ atest('positions guard: a scout\'s parent accounts and a linked scout\'s family 
   SECTION_403(await putF('lead_derbychair', { version: 2 }), ['admin'], 'PoC: a version no page reads');
   SECTION_403(await putF('lead_derbychair', { fmt: 4 }), ['admin'], 'a format taken back');
   SECTION_403(await putF('lead_derbychair', { fmt: 6.5 }), ['admin'], 'a format that is not a whole number');
-  eq((await putF('lead_derbychair', { fmt: 6 })).status, 200, 'a newer page, one format up');
+  // Security re-check of ce6b8de, finding 1: "one format up" held every page (the admins' too) at 5.
+  SECTION_403(await putF('lead_secretary', { fmt: 6 }), ['admin'], 'PoC: a secretary sets fmt 6 over every page\'s 5');
+  eq((await putF('lead_derbychair', { fmt: 5 })).status, 200, 'the format as it is');
   eq((await putF('owner', { fmt: 9999 })).status, 200, 'an admin is not compared');
+  const wl = await guardWorld(Object.assign(GUARD_BASE(), { fmt: 4 }));
+  eq((await wl.put('lead_derbychair', Object.assign(GUARD_BASE(), { fmt: 5 }))).status, 200, 'an older record, raised to the page\'s format');
+  SECTION_403(await wl.put('lead_derbychair', Object.assign(GUARD_BASE(), { fmt: 6 })), ['admin'], 'an older record raised past the page\'s format');
   const w0 = await guardWorld((() => { const b = GUARD_BASE(); delete b.version; return b; })());
   const noVer = (more) => { const b = Object.assign(GUARD_BASE(), more); return b; };
   eq((await w0.put('lead_derbychair', noVer({ version: 1, fmt: 5 }))).status, 200, 'a record that had neither: version 1, and the page\'s format');
-  SECTION_403(await w0.put('lead_derbychair', noVer({ version: 1, fmt: 11 })), ['admin'], 'a first format past FMT_FIRST_MAX');
-  ok(API.access.FMT_FIRST_MAX >= Number(/var PACK_FORMAT = (\d+);/.exec(SCRIPT)[1]), 'FMT_FIRST_MAX is below the page\'s PACK_FORMAT: every first save would be refused');
+  SECTION_403(await w0.put('lead_derbychair', noVer({ version: 1, fmt: 6 })), ['admin'], 'a first format past the page\'s');
+  eq(API.access.PACK_FORMAT, Number(/var PACK_FORMAT = (\d+);/.exec(SCRIPT)[1]), 'access.js PACK_FORMAT is not the page\'s: every leader\'s save would be refused, or a higher one taken');
+  eq([API.access.fmtOk(5, true, 6, true), API.access.fmtOk(4, true, 5, true), API.access.fmtOk(undefined, false, 5, true), API.access.fmtOk(5, true, 5, true),
+    API.access.fmtOk('4', true, 5, true), API.access.fmtOk(5, true, undefined, false)], [false, true, true, true, false, false], 'fmtOk');
 });
 
 atest('positions guard: deposits — the kernel records a storefront deposit, flagged for the treasurer, and sets the deadline; the rest of the ledger stays the treasurer\'s', async () => {
   const dep = (o) => Object.assign({ id: 'd1', date: '2026-10-05', description: 'Storefront cash donations banked', amountCents: 25000, direction: 'in', lineId: '', method: 'cash',
-    ref: '', source: 'storefront', donor: '', scoutId: '', reconciled: false, depositFor: 'sf1', depositFrom: '', depositTo: '', enteredBy: 'K', enteredAt: 'x',
+    ref: '', source: 'storefront', donor: '', scoutId: '', reconciled: false, depositFor: 'sf1', depositFrom: '', depositTo: '', enteredBy: 'Test lead_kernel', enteredAt: 'x',
     enteredByUid: 'uid-lead-kernel', approvedBy: '', approvedAt: '', approvedByUid: '', depositReview: true }, o || {});
   const w = await guardWorld(GUARD_BASE());
   const withLedger = (rows, more) => Object.assign(GUARD_BASE(), { ledger: GUARD_BASE().ledger.concat(rows) }, more || {});
@@ -17204,6 +17240,19 @@ atest('positions guard: deposits — the kernel records a storefront deposit, fl
     SECTION_403(await w.put('lead_kernel', withLedger([JSON.parse(JSON.stringify(row))])), ['ledger'], 'a kernel\'s deposit ' + what);
   }
   eq((await w.put('lead_kernel', withLedger([dep({ amountCents: 10000000 })]))).status, 200, 'a deposit of $100,000');
+  // Security re-check of ce6b8de, finding 5: no date past a week ahead, ten a save, and signed as the caller.
+  const dayAhead = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+  SECTION_403(await w.put('lead_kernel', withLedger([dep({ date: '2099-12-31' })])), ['ledger'], 'PoC: a deposit dated 2099');
+  SECTION_403(await w.put('lead_kernel', withLedger([dep({ date: dayAhead(9) })])), ['ledger'], 'a deposit dated nine days ahead');
+  eq((await w.put('lead_kernel', withLedger([dep({ date: dayAhead(6) })]))).status, 200, 'a slip dated six days ahead');
+  const tenOf = (n) => Array.from({ length: n }, (_, i) => dep({ id: 'd' + i, amountCents: 10000000 }));
+  SECTION_403(await w.put('lead_kernel', withLedger(tenOf(1000))), ['ledger'], 'PoC: 1000 deposits of $100,000 in one save');
+  SECTION_403(await w.put('lead_kernel', withLedger(tenOf(11))), ['ledger'], 'eleven deposits in one save');
+  eq((await w.put('lead_kernel', withLedger(tenOf(10)))).status, 200, 'ten deposits in one save');
+  SECTION_403(await w.put('lead_kernel', withLedger([dep({ enteredBy: 'Treasurer' })])), ['ledger'], 'PoC: a kernel signing as "Treasurer"');
+  SECTION_403(await w.put('lead_kernel', withLedger([dep({ enteredBy: '' })])), ['ledger'], 'a deposit signed by nobody');
+  eq([API.access.DEPOSIT_AHEAD_DAYS, API.access.DEPOSIT_MAX_CENTS], [Number(/var DEPOSIT_AHEAD_DAYS = (\d+);/.exec(SCRIPT)[1]), Number(/var DEPOSIT_ONLY_MAX_CENTS = (\d+);/.exec(SCRIPT)[1])],
+    'the page\'s limits are not the server\'s');
   const booked = (book) => guardWorld(Object.assign(GUARD_BASE(), { book }));
   const wb = await booked({ openingCents: 0, openingDate: '2026-09-01', reconciledThrough: '2026-09-30' });
   const putB = (row) => wb.put('lead_kernel', Object.assign(GUARD_BASE(), { book: { openingCents: 0, openingDate: '2026-09-01', reconciledThrough: '2026-09-30' },
@@ -17220,6 +17269,116 @@ atest('positions guard: deposits — the kernel records a storefront deposit, fl
     ledgerLog: [{ id: 'ev-dd', at: '2026-09-30T12:00:00.000Z', by: 'X', byUid: uid, dev: 'd', row: 'book', op: 'edit', f: { depositDays: [7, 10] } }] }));
   for (const who of ['lead_kernel', 'lead_treasurer', 'lead_chair']) eq((await days(who, 'uid-' + who.replace('_', '-'))).status, 200, who + ' setting the deposit deadline');
   SECTION_403(await days('lead_cubmaster', 'uid-lead-cubmaster'), ['ledger', 'deposits'], 'the Cubmaster setting it');
+});
+
+// Security re-check of ce6b8de, finding 4: "never the leader who entered it" was the page's alone. Below an
+// admin the server now holds who may take a deposit's flag off, how it is signed, and that it is logged
+// and audited; a ledger editor's own deposit of cash they collected must carry the flag, as the page says.
+atest('positions guard: a flagged deposit is checked by another ledger editor, signed and logged as the page does it, and audited', async () => {
+  const dep = (o) => Object.assign({ id: 'd1', date: '2026-10-01', description: 'Storefront cash donations banked', amountCents: 25000, direction: 'in', lineId: '', method: 'cash',
+    ref: '', source: 'storefront', donor: '', scoutId: '', reconciled: false, depositFor: 'sf1', depositFrom: '', depositTo: '', enteredBy: 'Test lead_kernel', enteredAt: 'x',
+    enteredByUid: 'uid-lead-kernel', approvedBy: '', approvedAt: '', approvedByUid: '', depositReview: true }, o || {});
+  const own = dep({ id: 'd2', enteredBy: 'Test lead_treasurer', enteredByUid: 'uid-lead-treasurer' });
+  const sfs = [{ id: 'sf1', name: 'Kroger', date: '2026-09-26', blocks: [{ id: 'b1', salesCents: 100, donationsCents: 2500, reportCollected: true, reportApprovedBy: 'Test lead_treasurer' }] },
+    { id: 'sf2', name: 'Publix', date: '2026-09-27', blocks: [{ id: 'b1', salesCents: 100, donationsCents: 900 }] }];
+  const base = Object.assign(GUARD_BASE(), { storefronts: sfs, ledger: GUARD_BASE().ledger.concat([dep(), own]) });
+  const w = await guardWorld(base);
+  const nowIso = () => new Date().toISOString();
+  const reviewed = (row, who, o) => { const e = Object.assign({}, row, { depositReviewedBy: 'Test ' + who, depositReviewedByUid: PEOPLE[who][0], depositReviewedAt: nowIso() }, o || {}); delete e.depositReview; return e; };
+  const line = (row, who, o) => Object.assign({ id: 'lg-rv-' + row, at: nowIso(), by: 'Test ' + who, byUid: PEOPLE[who][0], dev: 'd', row, op: 'edit', f: { depositReview: [true, null] } }, o || {});
+  const put = (who, rows, lines, more) => w.put(who, Object.assign(JSON.parse(JSON.stringify(base)), { ledger: GUARD_BASE().ledger.concat(rows), ledgerLog: lines || [] }, more || {}));
+  const audits = () => w.sql("SELECT action, detail FROM audit WHERE action = 'ledger.deposit.review' ORDER BY id").map((r) => [r.action, JSON.parse(r.detail)]);
+  eq((await put('lead_treasurer', [reviewed(dep(), 'lead_treasurer'), own], [line('d1', 'lead_treasurer')])).status, 200, 'the treasurer checks the kernel\'s deposit');
+  eq(audits(), [['ledger.deposit.review', { count: 1, ids: ['d1'] }]], 'the check is audited');
+  // The review's PoC: the treasurer clears the flag on the deposit of cash they collected themselves.
+  SECTION_403(await put('lead_treasurer', [dep(), reviewed(own, 'lead_treasurer')], [line('d2', 'lead_treasurer')]), ['ledger'], 'PoC: the treasurer clears their own deposit');
+  eq((await put('lead_chair', [dep(), reviewed(own, 'lead_chair')], [line('d2', 'lead_chair')])).status, 200, 'the chair checks the treasurer\'s');
+  for (const [what, row, lines] of [['with no line in the log', reviewed(dep(), 'lead_treasurer'), []],
+    ['logged in another\'s name', reviewed(dep(), 'lead_treasurer'), [line('d1', 'lead_chair')]],
+    ['logged for another row', reviewed(dep(), 'lead_treasurer'), [line('d2', 'lead_treasurer')]],
+    ['PoC: signed as someone else', reviewed(dep(), 'lead_treasurer', { depositReviewedBy: 'The Committee Chair' }), [line('d1', 'lead_treasurer')]],
+    ['PoC: another\'s uid as reviewer', reviewed(dep(), 'lead_treasurer', { depositReviewedByUid: 'uid-lead-chair' }), [line('d1', 'lead_treasurer')]],
+    ['reviewed an hour ago', reviewed(dep(), 'lead_treasurer', { depositReviewedAt: new Date(Date.now() - 3600000).toISOString() }), [line('d1', 'lead_treasurer')]],
+    ['reviewed at no time', reviewed(dep(), 'lead_treasurer', { depositReviewedAt: 'today' }), [line('d1', 'lead_treasurer')]],
+    ['its enterer changed', reviewed(dep(), 'lead_treasurer', { enteredByUid: 'uid-lead-chair' }), [line('d1', 'lead_treasurer')]]]) {
+    SECTION_403(await put('lead_treasurer', [row, own], lines), ['ledger'], 'a check ' + what);
+  }
+  SECTION_403(await put('lead_treasurer', [Object.assign(dep(), { depositReviewedBy: 'Test lead_treasurer' }), own]), ['ledger'], 'a reviewer named on a deposit still flagged');
+  SECTION_403(await put('lead_treasurer', [dep(), own, dep({ id: 'd3', enteredByUid: 'uid-lead-treasurer', enteredBy: 'T', depositReview: undefined, depositReviewedBy: 'X' })]),
+    ['ledger'], 'a deposit added already reviewed');
+  // A ledger editor's own deposit of cash they collected must carry the flag (the page's depositSelfCollected).
+  const mine = (o) => dep(Object.assign({ id: 'd3', enteredBy: 'Test lead_treasurer', enteredByUid: 'uid-lead-treasurer' }, o));
+  SECTION_403(await put('lead_treasurer', [dep(), own, mine({ depositReview: undefined })]), ['ledger'], 'PoC: the treasurer adds their own collected cash unflagged');
+  SECTION_403(await put('lead_treasurer', [dep(), own, mine({ depositReview: undefined, depositFor: '', depositFrom: '2026-09-20', depositTo: '2026-09-30' })]), ['ledger'],
+    'the same storefront, by its dates');
+  eq((await put('lead_treasurer', [dep(), own, mine()])).status, 200, 'flagged');
+  eq((await put('lead_treasurer', [dep(), own, mine({ depositReview: undefined, depositFor: 'sf2' })])).status, 200, 'cash someone else collected, unflagged');
+  eq((await put('lead_chair', [dep(), own, mine({ depositReview: undefined, enteredByUid: 'uid-lead-chair', enteredBy: 'Test lead_chair' })])).status, 200,
+    'the chair\'s deposit of cash the treasurer collected');
+  const salesCashSfs = [{ id: 'sf1', name: 'Kroger', date: '2026-09-26', blocks: [{ id: 'b1', salesCash: [{ reportId: 'r1', cents: 300, from: 'Ada', outcome: { outcome: 'collected', by: 'Test lead_chair', at: 1 } }] }] }];
+  const wsc = await guardWorld(Object.assign(GUARD_BASE(), { storefronts: salesCashSfs }));
+  SECTION_403(await wsc.put('lead_chair', Object.assign(GUARD_BASE(), { storefronts: salesCashSfs, ledger: GUARD_BASE().ledger.concat([mine({ depositReview: undefined, enteredByUid: 'uid-lead-chair' })]) })),
+    ['ledger'], 'the cash from sales the chair marked collected, unflagged');
+  eq((await put('owner', [reviewed(own, 'owner'), dep()], [])).status, 200, 'an admin is not compared');
+  // The kernel can't take it off at all (no ledger edit): the earlier review's PoC, still refused.
+  SECTION_403(await put('lead_kernel', [reviewed(dep(), 'lead_kernel'), own], [line('d1', 'lead_kernel')]), ['ledger'], 'the kernel clears their own');
+  // The page signs the check as the server knows the leader, and flags its own self-collected deposits.
+  ok(/drv\.depositReviewedBy = srSignName\(\);/.test(SCRIPT) && /drv\.depositReviewedByUid = ledgerActorUid\(\);/.test(SCRIPT) &&
+    /logLedger\('edit', drv\.id, \{ f: \{ depositReview: \[true, null\] \} \}\);/.test(SCRIPT), 'the page\'s check is not what the server takes');
+  ok(/if \(drEntry\.direction === 'in' && drEntry\.source === 'storefront'\) drEntry\.enteredBy = srSignName\(\);/.test(SCRIPT), 'a deposit is not signed as the server knows the leader');
+});
+
+// Security re-check of ce6b8de, finding 2: a Kernel's padded setting lines pushed the ledger's trail out in one save.
+atest('positions guard: a setting line from a leader who doesn\'t keep the books is small and typed; dropping the trail is bounded and audited', async () => {
+  const p5 = (i) => String(i).padStart(5, '0');
+  const lold = Array.from({ length: 900 }, (_, i) => ({ id: 'l' + p5(i), at: '2026-09-01T00:00:00.000Z', byUid: 't', op: 'add', row: 'r' + i, amountCents: 1000 }));
+  const kern = API.access.effectiveAccess('leader', ['kernel']), now = Date.parse('2026-10-02T12:00:00Z');
+  const big = 'x'.repeat(7900);
+  const adds = Array.from({ length: 16 }, (_, i) => ({ id: 'k' + p5(i), at: '2026-10-02T12:00:00.000Z', byUid: 'kern1', op: 'edit', row: 'book', f: { commissionPct: big } }));
+  let keep = []; for (let i = lold.length - 1; i >= 0; i--) { const t = [lold[i]].concat(keep).concat(adds); if (Buffer.byteLength(JSON.stringify(t)) > 128 * 1024) break; keep = [lold[i]].concat(keep); }
+  ok(keep.length < 100, 'the PoC still pushes most of the trail out (' + keep.length + ' kept)');
+  eq(API.access.refusedSections({ ledgerLog: lold }, { ledgerLog: keep.concat(adds) }, kern, 'kern1', {}, { now }), ['ledger'], 'PoC: 16 padded lines drop 871 of 900');
+  const setLine = (i, f, o) => Object.assign({ id: 'k' + p5(i), at: '2026-10-02T12:00:00.000Z', by: 'Test lead_kernel', byUid: 'kern1', dev: 'dev1', row: 'book', op: 'edit', f }, o || {});
+  const R = (line) => API.access.refusedSections({ ledgerLog: lold }, { ledgerLog: lold.concat([line]) }, kern, 'kern1', {}, { now });
+  eq(R(setLine(1, { commissionPct: [25, '26'] })), [], 'the commission as typed');
+  eq(R(setLine(1, { commissionPct: [null, 26.5] })), [], 'the commission first set');
+  eq(R(setLine(1, { goalCents: [100000, 150000] })), [], 'a goal');
+  eq(R(setLine(1, { cashThroughTrailsEnd: [false, true] })), [], 'cash through Trail\'s End');
+  eq(R(setLine(1, { wagonViaTEFrom: ['2026-09-01', ''] })), [], 'the wagon date cleared');
+  eq(R(setLine(1, { depositDays: [7, 10] })), [], 'the deposit days');
+  for (const [what, line] of [['a commission of words', setLine(1, { commissionPct: [25, 'all of it'] })], ['a goal of words', setLine(1, { goalCents: [0, 'lots'] })],
+    ['a goal that is an object', setLine(1, { goalCents: [0, { from: 1 }] })], ['a wagon date that is not one', setLine(1, { wagonViaTEFrom: ['', 'soon'] })],
+    ['three values', setLine(1, { goalCents: [0, 1, 2] })], ['a field the table does not know', setLine(1, { storefronts: [null, 1] })],
+    ['a key ledgerEvent never writes', setLine(1, { goalCents: [0, 1] }, { why: 'x' })], ['a line over a kilobyte', setLine(1, { goalCents: [0, 1] }, { by: 'x'.repeat(1100) })]]) {
+    eq(R(line), ['ledger'], 'a kernel\'s setting line: ' + what);
+  }
+  // A ledger editor's Tick all may still name many entries.
+  const tre = API.access.effectiveAccess('leader', ['treasurer']);
+  eq(API.access.refusedSections({ ledgerLog: lold }, { ledgerLog: lold.concat([setLine(1, undefined, { op: 'tick', row: 'L1', byUid: 'tre1', rows: Array.from({ length: 300 }, (_, i) => 'row-' + i) })]) },
+    tre, 'tre1', {}, { now }), [], 'a treasurer\'s long line');
+  // At the byte cap a line may push out two shorter ones (it is longer than one): not refused, or the page could never save it.
+  const sm = (i) => ({ id: 'a' + p5(i), at: '2026-09-01T00:00:00.000Z', byUid: 't', dev: 'device-' + 'd'.repeat(48), row: 'L' + i, op: 'tick' });   // the bytes bind before the count
+  const full = []; let size = 2; for (let i = 0; ; i++) { const one = Buffer.byteLength(JSON.stringify(sm(i))) + (i ? 1 : 0); if (size + one > 128 * 1024) break; size += one; full.push(sm(i)); }
+  const nl = setLine(1, { commissionPct: [25, '26'] }, { by: 'Test lead_kernel'.padEnd(300, '.') });   // a long name: longer than two old lines
+  const fits = (list) => Buffer.byteLength(JSON.stringify(list)) <= 128 * 1024;
+  let cut = 0; while (!fits(full.slice(cut).concat([nl]))) cut += 1;
+  ok(cut >= 2 && full.length < 1000, 'the test line pushes out ' + cut + ' of ' + full.length);
+  eq(API.access.refusedSections({ ledgerLog: full }, { ledgerLog: full.slice(cut).concat([nl]) }, kern, 'kern1', {}, { now }), [], 'one line at the cap, the oldest it needs dropped');
+  eq(API.access.refusedSections({ ledgerLog: full }, { ledgerLog: full.slice(cut + 1).concat([nl]) }, kern, 'kern1', {}, { now }), ['ledger'], 'one more than it needs');
+  // The bytes rule on its own: a ledger editor's big lines can't drop more than they add, whatever room there was.
+  const half = full.slice(0, Math.floor(full.length / 2));
+  const bigT = Array.from({ length: 10 }, (_, i) => setLine(50 + i, undefined, { op: 'tick', row: 'L1', byUid: 'tre1', rows: Array.from({ length: 600 }, (_, j) => 'row-' + j) }));
+  eq(API.access.refusedSections({ ledgerLog: half }, { ledgerLog: half.slice(400).concat(bigT) }, tre, 'tre1', {}, { now }), ['ledger'], 'lines dropped from a log with room');
+  // Through the PUT: a drop below an admin is audited, with the ids; an admin's is not.
+  const wl = await guardWorld(Object.assign(GUARD_BASE(), { ledgerLog: full, commissionPct: 25 }));
+  const realLine = Object.assign({}, nl, { byUid: 'uid-lead-kernel', at: new Date().toISOString() });
+  eq((await wl.put('lead_kernel', Object.assign(GUARD_BASE(), { ledgerLog: full.slice(cut).concat([realLine]), commissionPct: '26' }))).status, 200, 'the kernel\'s save at the cap');
+  const drops = wl.sql("SELECT uid, detail FROM audit WHERE action = 'ledger.log.drop'").map((r) => [r.uid, JSON.parse(r.detail)]);
+  eq(drops, [['uid-lead-kernel', { count: cut, oldest: '2026-09-01T00:00:00.000Z', newest: '2026-09-01T00:00:00.000Z', ids: full.slice(0, cut).map((e) => e.id) }]], 'the drop audited');
+  eq((await wl.put('owner', Object.assign(GUARD_BASE(), { ledgerLog: full.slice(cut).concat([Object.assign({}, realLine, { byUid: 'uid-owner' })]), commissionPct: '26' }))).status, 200, 'an admin\'s');
+  eq(wl.sql("SELECT COUNT(*) AS n FROM audit WHERE action = 'ledger.log.drop'")[0].n, 1, 'an admin\'s drop is not audited');
+  const many = API.access.putAudits({ ledgerLog: lold }, { ledgerLog: [] }, 'u', 'n', now);
+  ok(many.length === 1 && many[0].detail.count === 900 && JSON.stringify(many[0].detail).length <= 2000, 'a big drop\'s detail fits the audit table');
 });
 
 test('positions: a kernel\'s deposit keeps its review flag through the page; a settlement names the Chair who approved it', () => {
@@ -23044,7 +23203,8 @@ function c2Page(o) {
     Date.now = (function (f) { var t = 0; return function () { t += 1; return f() + t; }; })(Date.now);
     function showToast(m, o) { toasts.push(m); toastOpts.push(o === undefined ? null : o); } function render() { renders += 1; } function commit() { commits += 1; }
     function canEditSection() { return true; } function readOnlySay() { return ''; } function depositSelfCollected() { return false; }
-    var DEPOSIT_ONLY_DATE_SAY = '', DEPOSIT_ONLY_MAX_CENTS = 10000000;
+    var DEPOSIT_ONLY_DATE_SAY = '', DEPOSIT_ONLY_MAX_CENTS = 10000000, DEPOSIT_AHEAD_DAYS = 7;
+    function srSignName() { return ledgerActor(); } function isoPlusDays(iso, n) { var d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
     function setTimeout(f, ms) { armMs.push(ms); return 0; } function clearTimeout() {}
     function refundOverCreditWarning() { return ''; } function entryNeedsReceipt() { return false; } function ledgerLineIsDirect() { return false; }
     function todayISO() { return '2026-10-15'; } function programYearStartISO(py) { return py + '-07-01'; }

@@ -189,6 +189,16 @@ until an admin gives it some. Firestore keeps the four roles above.
   they can change the adventure, the notes and the adventures offered. On an All-dens night
   they can change only their own den's line. Attendance, den plans and advancement are still
   pack-wide for them in stage 1.
+- **What the server checks for the money** (security re-check of ce6b8de). Below an admin:
+  the record's `fmt` stays as it is or rises only to the server's own `PACK_FORMAT` (in
+  `access.js`, equal to the page's: raise both together). A Popcorn Kernel's deposit is dated
+  no more than a week ahead, at most ten in one save, and signed with their own name. Only a
+  Treasurer or Committee Chair who didn't enter a flagged deposit can mark it checked, signed
+  and logged as the page does it. A ledger keeper's own deposit of cash they collected must
+  stay flagged. A setting line in the ledger's history from someone who doesn't keep the books
+  is a small `[old, new]` pair. Two audit rows record what a leader could otherwise do
+  quietly: `ledger.deposit.review` (a flagged deposit marked checked) and `ledger.log.drop`
+  (lines of the ledger's history pushed out by its size cap).
 - **Hidden isn't private yet.** A part a position doesn't see is left out of their menus, but
   the whole pack record still reaches every leader's browser. Stage 2 splits the record on the
   server so a leader receives only what they may read.
@@ -867,8 +877,9 @@ happens in two ways:
   always to deploy the newer page again (or a fix on top of it). Only lower `fmt` by hand if you
   know the older page reads that record correctly: the change that raised `PACK_FORMAT` says what
   an older page gets wrong.
-- **Someone saved a bad `fmt`** (a hand-edited record, or an editor's device writing
-  `"fmt":999`). Nothing in the app can undo it, because every push, copy and import is refused
+- **Someone saved a bad `fmt`** (a hand-edited record, or an admin's device writing
+  `"fmt":999`; on the Cloudflare backend the server refuses any other format from anyone
+  below an admin). Nothing in the app can undo it, because every push, copy and import is refused
   over it. Lowering it by hand is the fix.
 
 Nothing is lost while the page holds: each device keeps its own copy. The steps below are the

@@ -5614,6 +5614,8 @@
   // and each browser's that opened it) then holds the older page, and nothing in the app lifts it.
   // Fix forward instead. If you must roll back, SETUP.md ("If a page stays out of date after a
   // reload") lowers fmt by hand, so the raising commit must say what an older page gets wrong.
+  // ⚠ RAISING THIS raises functions/_lib/access.js PACK_FORMAT in the same commit (the harness checks):
+  // below an admin, the server takes only its own format, so a leader can't hold every page with a higher one.
   // Declared up here, above `var state = load()`, because normalizeState reads it.
   var PACK_FORMAT = 5;
   // Keith, 2026-10-02 — the sync log's length (normalizeSyncLog, which normalizeState runs): the newest this many.
@@ -20559,7 +20561,8 @@
   // Final security check of ff0672a (lows) — and never by this device's clock: a slow clock must not drop another
   // device's decisions. An entry with no real time is dropped; the rest are sorted, and capped by count. The scrub
   // reaches the item's name and the field too.
-  var SYNC_LOG_ADD_MAX = 200;
+  // The server's per-save cap on new lines (access.js SYNC_LOG_CAP.add; security re-check of ce6b8de: 50, was 200).
+  var SYNC_LOG_ADD_MAX = 50;
   function normalizeSyncLog(list) {
     function str(v, max) { return typeof v === 'string' ? v.slice(0, max) : ''; }
     function val(v) { v = str(v, 200); return v.indexOf('@') === -1 ? v : 'Changed'; }
@@ -29475,6 +29478,7 @@
   // ---- Storefront deposits a leader who doesn't keep the books records, and their review (Keith, 2026-10-02;
   // the treasurer's review of 045e7ac, 4–6) ----
   var DEPOSIT_ONLY_MAX_CENTS = 10000000;   // the server's DEPOSIT_MAX_CENTS
+  var DEPOSIT_AHEAD_DAYS = 7;   // the server's: how far past today a deposit may be dated
   var DEPOSIT_ONLY_SAY = 'The cash donations from the storefronts that the pack keeps, as you banked them. The Treasurer checks it against the deposit slip and the bank.';
   var DEPOSIT_ONLY_DATE_SAY = 'That date is in a period the Treasurer has already reconciled or closed out, so the Treasurer enters this one. Ask the Treasurer.';
   var DEPOSIT_REVIEW_WHY = 'Recorded by the Popcorn Kernel, or by the leader who collected the cash. Check each against the deposit slip and the bank before you reconcile.';
@@ -40961,7 +40965,8 @@
       if (drv.enteredByUid && drv.enteredByUid === ledgerActorUid()) { showToast(DEPOSIT_REVIEW_OWN_SAY); return; }
       if (act.indexOf('deposit-review-ask-open:') === 0) { ui.depositAsk = drvId; render(); return; }
       delete drv.depositReview;
-      drv.depositReviewedBy = ledgerActor();
+      // Signed as the server knows this leader (srSignName), which it checks (security re-check of ce6b8de, 4).
+      drv.depositReviewedBy = srSignName();
       drv.depositReviewedByUid = ledgerActorUid();
       drv.depositReviewedAt = new Date().toISOString();
       logLedger('edit', drv.id, { f: { depositReview: [true, null] } });
@@ -40994,6 +40999,8 @@
       var drClosed = ledgerClosedYearWarning(dr.date, state.closedBooks);
       var drWarned = drBack || !!drClosed;
       if (depOnly && (drWarned || state.book.closedAt || (state.book.openingDate && dr.date < state.book.openingDate))) { showToast(DEPOSIT_ONLY_DATE_SAY); return; }
+      // Security re-check of ce6b8de (5) — and dated no more than a week ahead (access.js DEPOSIT_AHEAD_DAYS).
+      if (depOnly && dr.date > isoPlusDays(todayISO(), DEPOSIT_AHEAD_DAYS)) { showToast('A deposit can be dated at most a week from today. Check the date.'); return; }
       if (depOnly && amt > DEPOSIT_ONLY_MAX_CENTS) { showToast('That’s more than ' + fmt(DEPOSIT_ONLY_MAX_CENTS) + ' for one deposit — check the amount, or ask the Treasurer.'); return; }
       if (drWarned && ui.ledgerAddWarned !== dr.date) { ui.ledgerAddWarned = dr.date; render(); return; }
       // M1(c) — money out to a family on a family-direct line is a reimbursement, not a refund.
@@ -41025,6 +41032,10 @@
         }
       }
       stampEntered(drEntry);   // E2
+      // Security re-check of ce6b8de (5): a storefront deposit is entered under the name the server knows this
+      // leader by (srSignName: their member name), as a shift's accept is signed; the server holds a deposit
+      // holder's to it.
+      if (drEntry.direction === 'in' && drEntry.source === 'storefront') drEntry.enteredBy = srSignName();
       // The treasurer's review of 045e7ac (4, 5) — the Kernel's deposit is checked by the books' keeper; so is anyone's
       // deposit of cash they collected themselves on a shift it covers (one person handling every step).
       if (drEntry.source === 'storefront' && drEntry.direction === 'in' && (depOnly || depositSelfCollected(drEntry))) drEntry.depositReview = true;

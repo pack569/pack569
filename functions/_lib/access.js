@@ -428,7 +428,22 @@ export function appendOnlyOk(before, after, uid, cap, newOk, now) {
   if (!(logCmp(newest, oldest) < 0)) return false;
   if (after.length >= cap.max) return dropped.length <= added;
   if (!cap.bytes) return false;
+  // By bytes (security re-check of ce6b8de, finding 2a): no more dropped than was added, to within the
+  // one line the cap rounds by (every dropped line but the newest fits in the bytes the new lines take),
+  // whatever room the log had before; and the newest dropped would not have fitted (mergeLedgerLog's own
+  // sum). Not by count: a leader's one new line can be longer than the two oldest lines it pushes out,
+  // and the page has no way to drop less. A log already past its cap (stored before the cap) is only
+  // trimmed back toward it, by the second rule.
+  const sizeOf = (list) => list.reduce((n, e) => n + utf8(JSON.stringify(e)) + 1, 0);
+  const newLines = after.filter((e) => !own(was, e.id));
+  if (!over(prior) && sizeOf(dropped) - (utf8(JSON.stringify(newest)) + 1) > sizeOf(newLines)) return false;
   return logBytes(after) + utf8(JSON.stringify(newest)) + 1 > cap.bytes;
+}
+// The ids of the lines a save drops from a log (an audit row says which: refusedSections' caller).
+export function logDropped(before, after) {
+  const seen = Object.create(null);
+  (Array.isArray(after) ? after : []).forEach((e) => { if (plain(e) && typeof e.id === 'string') seen[e.id] = true; });
+  return (Array.isArray(before) ? before : []).filter((e) => plain(e) && typeof e.id === 'string' && !seen[e.id]).map((e) => e.id);
 }
 // The two logs' caps, as the page keeps them: SYNC_LOG_MAX; mergeLedgerLog's 1000 events and 128 KB.
 // The ledger's log is exact (security review of 714a920..045e7ac): a line there is never rewritten,
@@ -442,8 +457,14 @@ export function appendOnlyOk(before, after, uid, cap, newOk, now) {
 // sync log allows more, and the page keeps to it (SYNC_LOG_ADD_MAX, index.html).
 const SYNC_LOG_FILL = { byName: '', byUid: '', key: '', item: '', field: '', serverValue: '', keptValue: '', baseValue: '', mineValue: '',
   kept: 'mine', how: 'item', serverChangedAt: '', serverChangedAfter: '' };
-export const SYNC_LOG_CAP = { max: 500, line: 4096, add: 200, fill: SYNC_LOG_FILL };
+// Security re-check of ce6b8de (2, low): 200 own lines a save let three saves push out everyone's
+// conflict history; 50 is more than a leader keeps in one sitting.
+export const SYNC_LOG_CAP = { max: 500, line: 4096, add: 50, fill: SYNC_LOG_FILL };
 export const LEDGER_LOG_CAP = { max: 1000, bytes: 128 * 1024, exact: true, line: 8192, add: 50 };
+// A setting's line from a leader who does not keep the books (finding 2b): one setting's [old, new], a
+// few hundred bytes as the page writes it, so a kilobyte is plenty, and a line can't be padded to push
+// the trail out (the PoC: 16 lines of 7.9 KB dropped 871 of 900).
+export const LEDGER_LOG_SETTING_CAP = Object.assign({}, LEDGER_LOG_CAP, { line: 1024 });
 
 // state.syncLog (shared: any leader who edits something may log a kept-mine), append-only.
 export const syncLogOk = (before, after, uid, now) => appendOnlyOk(before, after, uid, SYNC_LOG_CAP, null, now);
@@ -453,15 +474,32 @@ export const syncLogOk = (before, after, uid, now) => appendOnlyOk(before, after
 // who does not may add only their own lines recording a pack setting they changed: a book 'edit'
 // whose every field is a setting they may edit (ownerOfBookLogField). Commission, goals, the wagon
 // date and the deposit days are logged on the book; the people who may set them are not all
-// ledger editors (logSettingEdit and its kin, index.html).
+// ledger editors (logSettingEdit and its kin, index.html). Such a line (finding 2b) is the shape
+// ledgerEvent writes, at most a kilobyte, and each field's value is a pair [old, new] of what that
+// setting holds (BOOK_SETTING_OK): a field the table does not name is refused.
 // A deposit holder's deposit logs nothing: the ledger's add path logs an 'add' only for a date in a
 // reconciled or closed period, and depositRowOk refuses those (the treasurer's review, item 4, closed
-// the allowance this had for it).
+// the allowance this had for it). Clearing a deposit's review flag is a ledger editor's, and its line
+// is checked with the row (depositReviewsOk).
+const pctLike = (v) => v === null || (typeof v === 'number' && isFinite(v)) || (typeof v === 'string' && v.length <= 12 && /^-?[0-9]*\.?[0-9]*$/.test(v));
+const centsLike = (v) => v === null || (Number.isInteger(v) && v >= 0 && v <= 1e11);
+const BOOK_SETTING_OK = Object.assign(Object.create(null), {
+  commissionPct: pctLike, commissionPctOnline: pctLike, cashScoutPct: pctLike, invCommissionPct: pctLike,
+  goalCents: centsLike, cashGoalCents: centsLike, stretchGoalCents: centsLike, orderTotalCents: centsLike,
+  cashThroughTrailsEnd: (v) => v === null || typeof v === 'boolean',
+  wagonViaTEFrom: (v) => v === null || v === '' || (typeof v === 'string' && ISO_DAY.test(v)),
+  depositDays: (v) => v === null || (Number.isInteger(v) && v >= 0 && v <= 366)
+});
+const LEDGER_EVENT_KEYS = ['id', 'at', 'by', 'byUid', 'dev', 'row', 'op', 'f'];
+function settingLineOk(e, access) {
+  if (!(e.op === 'edit' && e.row === 'book' && plain(e.f) && Object.keys(e.f).length > 0)) return false;
+  if (!Object.keys(e).every((k) => LEDGER_EVENT_KEYS.indexOf(k) !== -1)) return false;
+  return Object.keys(e.f).every((k) => own(BOOK_SETTING_OK, k) && canEditOwner(access, ownerOfBookLogField(k)) &&
+    Array.isArray(e.f[k]) && e.f[k].length === 2 && BOOK_SETTING_OK[k](e.f[k][0]) && BOOK_SETTING_OK[k](e.f[k][1]));
+}
 export function ledgerLogOk(before, after, uid, access, deposits, now) {
   const ledger = canEditOwner(access, 'ledger');
-  return appendOnlyOk(before, after, uid, LEDGER_LOG_CAP, ledger ? null : (e) =>
-    (e.op === 'edit' && e.row === 'book' && plain(e.f) && Object.keys(e.f).length > 0 &&
-      Object.keys(e.f).every((k) => canEditOwner(access, ownerOfBookLogField(k)))), now);
+  return appendOnlyOk(before, after, uid, ledger ? LEDGER_LOG_CAP : LEDGER_LOG_SETTING_CAP, ledger ? null : (e) => settingLineOk(e, access), now);
 }
 
 // A statement's parts set once after it is written (index.html statementOnceGroups): its review,
@@ -528,10 +566,12 @@ export function parentLinksOk(before, after) {
 // The record's `version` and `fmt` (finding 3). normalizeState refuses a record whose version is not
 // 1, and a fmt above a page's PACK_FORMAT holds every push of that page (formatAhead): one leader
 // setting either would stop the whole pack saving. Below an admin: version stays as it is (or is
-// written as 1 where the record had none); fmt stays, or rises by exactly one to a whole number, or
-// is written where the record had none as a whole number up to FMT_FIRST_MAX (the page's PACK_FORMAT
-// is below it: the harness checks).
-export const FMT_FIRST_MAX = 10;
+// written as 1 where the record had none); fmt stays as it is, or is written as PACK_FORMAT (this
+// server's, below) where the record had none or a lower one. Security re-check of ce6b8de, finding 1:
+// "rises by exactly one" let any leader set 5 -> 6 while every page was still at 5, so every page,
+// the admins' too, held its pushes. The server and the page deploy together (one Pages project), so
+// the format they agree on is a constant here: the harness checks it equals the page's PACK_FORMAT.
+export const PACK_FORMAT = 5;
 export function versionOk(s, hasS, n, hasN) {
   if (hasS && hasN) return sameJson(s, n);
   if (!hasS && !hasN) return true;
@@ -540,9 +580,8 @@ export function versionOk(s, hasS, n, hasN) {
 export function fmtOk(s, hasS, n, hasN) {
   if (hasS && hasN && sameJson(s, n)) return true;
   if (!hasS && !hasN) return true;
-  if (!hasN || !Number.isInteger(n) || n < 1) return false;
-  if (!hasS) return n <= FMT_FIRST_MAX;
-  return Number.isInteger(s) && n === s + 1;
+  if (!hasN || n !== PACK_FORMAT) return false;
+  return !hasS || (Number.isInteger(s) && s < PACK_FORMAT);
 }
 
 // ---- Shift reports and deposits: a slice of a section, for a leader who does not edit it ----
@@ -677,7 +716,16 @@ export function storefrontReportChangeOk(before, after, uid, ctx) {
           const note = typeof a.reportOverrideNote === 'string' ? a.reportOverrideNote : null;
           if (a.reportFrom !== counted || a.cashCountedBy !== counted || a.reportConfirmedBy !== confirmer || a.cashVerifiedBy !== verified ||
             a.reportApprovedBy !== me) return false;
-          if (collected && (confirmed || row.needs_confirm !== 0)) return false;
+          // Security re-check of ce6b8de, finding 3: the marker is refused wherever the accept PATCH would
+          // refuse it, with the override the page names for each (acceptShiftReport): in the sender's
+          // family (rules.js sameFamily, from the stored record: ctx.sameFamily; unknown is the same
+          // family, failing closed as the PATCH does), 'same-family'; two families, nobody confirmed,
+          // 'second-parent'; one family and the cash not collected, 'not-collected'. Collecting it is
+          // never this leader's in the sender's family.
+          const same = typeof c.sameFamily === 'function' ? c.sameFamily(uid, row.submitted_by_uid) === true : true;
+          if (collected && (same || confirmed || row.needs_confirm !== 0)) return false;
+          const required = same ? 'same-family' : confirmed || collected ? '' : row.needs_confirm === 1 ? 'second-parent' : 'not-collected';
+          if (override !== required) return false;
           if (typeof a.reportCollected !== 'boolean' || note === null || note.length > 300) return false;
           if (override ? OVERRIDES.indexOf(override) === -1 || !note.trim() : note !== '') return false;
           if (own(a, 'reportReturned')) return false;
@@ -795,10 +843,19 @@ const DEPOSIT_FIELDS = {
   enteredBy: shortText(120), enteredAt: shortText(40), enteredByUid: () => true
 };
 const DEPOSIT_NEEDS = ['id', 'date', 'amountCents', 'direction', 'source', 'depositReview', 'enteredByUid'];
-export function depositRowOk(e, uid, book) {
+// Security re-check of ce6b8de, finding 5: a deposit is dated no later than a week past the server's
+// day (a slip dated tomorrow is fine; 2099 is not), at most DEPOSITS_PER_SAVE of them come in one save
+// (the page adds one a tap), and the name it is entered under is the caller's own, as the page signs
+// (signerName: their member name), not "Treasurer".
+export const DEPOSIT_AHEAD_DAYS = 7, DEPOSITS_PER_SAVE = 10;
+const isoDayOf = (ms) => new Date(ms).toISOString().slice(0, 10);
+export function depositRowOk(e, uid, book, name, now) {
   if (!plain(e) || typeof uid !== 'string' || !uid || e.enteredByUid !== uid) return false;
   if (!DEPOSIT_NEEDS.every((k) => own(e, k))) return false;
   if (!Object.keys(e).every((k) => own(DEPOSIT_FIELDS, k) && DEPOSIT_FIELDS[k](e[k]))) return false;
+  if (e.enteredBy !== signerName(name)) return false;
+  const clock = typeof now === 'number' ? now : Date.now();
+  if (e.date > isoDayOf(clock + DEPOSIT_AHEAD_DAYS * 86400000)) return false;
   const bk = plain(book) ? book : {};
   if (bk.closedAt) return false;
   const rt = typeof bk.reconciledThrough === 'string' ? bk.reconciledThrough : '';
@@ -807,8 +864,9 @@ export function depositRowOk(e, uid, book) {
   return !(od && e.date < od);
 }
 // state.ledger changed by such a leader: every row there still there, as it was (by id), and every row
-// added a deposit (depositRowOk). Returns the ids added, or null when it is anything else.
-export function depositRowsAdded(before, after, uid, book) {
+// added a deposit (depositRowOk), at most DEPOSITS_PER_SAVE. Returns the ids added, or null when it is
+// anything else.
+export function depositRowsAdded(before, after, uid, book, name, now) {
   if (!Array.isArray(after)) return null;
   const was = Object.create(null);
   (Array.isArray(before) ? before : []).forEach((e) => { if (plain(e) && typeof e.id === 'string') was[e.id] = e; });
@@ -817,10 +875,72 @@ export function depositRowsAdded(before, after, uid, book) {
     if (!plain(e) || typeof e.id !== 'string' || !e.id || seen[e.id]) return null;
     seen[e.id] = true;
     if (own(was, e.id)) { if (!sameJson(was[e.id], e)) return null; continue; }
-    if (!depositRowOk(e, uid, book)) return null;
+    if (added.length >= DEPOSITS_PER_SAVE || !depositRowOk(e, uid, book, name, now)) return null;
     added.push(e.id);
   }
   return Object.keys(was).every((id) => seen[id]) ? added : null;
+}
+
+// ---- The treasurer's check of a flagged deposit, below an admin (security re-check of ce6b8de, 4) ----
+// The page (deposit-review-ok) takes the flag off a storefront deposit only for whoever keeps the books,
+// never the leader who entered it, and stamps who and when, with a ledgerLog line. The server holds the
+// same: for a leader who edits the ledger (one who doesn't can't change a row at all), a row that was
+// flagged (depositReview: true) and is not any more:
+//   - was not entered by the caller (enteredByUid);
+//   - names the caller as its reviewer, by uid and by the name the page signs with (signerName);
+//   - was reviewed within REVIEW_CLOCK_MS of the server's clock;
+//   - comes with the caller's own new ledgerLog line saying so (op 'edit', its row, f.depositReview [true, null]).
+// The review stamps change only then: never on another row, and a row added carries none. A deposit of
+// storefront cash such a leader adds carries the flag when the page's rule says it must
+// (depositSelfCollected): a storefront it covers has a block whose cash the caller collected, as the
+// record says it (an accept that collected it, or the cash from sales marked collected, under the
+// caller's signed name). The page also reads the server's reports, so it flags at least these.
+// Returns the ids reviewed (for the audit row 'ledger.deposit.review'), or null when refused.
+export const REVIEW_CLOCK_MS = 10 * 60 * 1000;
+const REVIEW_STAMPS = ['depositReviewedBy', 'depositReviewedByUid', 'depositReviewedAt'];
+function depositCoveredIds(e, storefronts) {
+  const ids = String(typeof e.depositFor === 'string' ? e.depositFor : '').split(',').map((x) => x.trim()).filter((x) => x);
+  const from = typeof e.depositFrom === 'string' ? e.depositFrom : '', to = typeof e.depositTo === 'string' ? e.depositTo : '';
+  return (Array.isArray(storefronts) ? storefronts : []).filter((sf) => plain(sf) && (ids.indexOf(sf.id) !== -1 ||
+    (from && to && typeof sf.date === 'string' && sf.date >= from && sf.date <= to)));
+}
+export function depositSelfCollectedOk(e, storefronts, me) {
+  return depositCoveredIds(e, storefronts).some((sf) => (Array.isArray(sf.blocks) ? sf.blocks : []).some((b) => plain(b) &&
+    ((b.reportCollected === true && b.reportApprovedBy === me) ||
+      (Array.isArray(b.salesCash) ? b.salesCash : []).some((x) => plain(x) && plain(x.outcome) && x.outcome.outcome === 'collected' && x.outcome.by === me))));
+}
+export function depositReviewsOk(s, n, uid, name, now) {
+  const before = Array.isArray(s.ledger) ? s.ledger : [], after = Array.isArray(n.ledger) ? n.ledger : [];
+  const me = signerName(name), clock = typeof now === 'number' ? now : Date.now();
+  const was = Object.create(null);
+  before.forEach((e) => { if (plain(e) && typeof e.id === 'string') was[e.id] = e; });
+  const hadLine = Object.create(null);
+  (Array.isArray(s.ledgerLog) ? s.ledgerLog : []).forEach((l) => { if (plain(l) && typeof l.id === 'string') hadLine[l.id] = true; });
+  const myLines = (Array.isArray(n.ledgerLog) ? n.ledgerLog : []).filter((l) => plain(l) && !hadLine[l.id] && l.byUid === uid);
+  const sfs = Array.isArray(n.storefronts) ? n.storefronts : s.storefronts;
+  const reviewed = [];
+  for (const e of after) {
+    if (!plain(e) || typeof e.id !== 'string') continue;
+    const b = own(was, e.id) ? was[e.id] : null;
+    if (!b) {
+      if (REVIEW_STAMPS.some((k) => own(e, k))) return null;
+      if (e.source === 'storefront' && e.direction === 'in' && e.depositReview !== true && depositSelfCollectedOk(e, sfs, me)) return null;
+      continue;
+    }
+    const cleared = b.depositReview === true && e.depositReview !== true;
+    if (!cleared) {
+      if (REVIEW_STAMPS.some((k) => own(b, k) !== own(e, k) || !sameJson(b[k], e[k]))) return null;
+      continue;
+    }
+    if (typeof b.enteredByUid === 'string' && b.enteredByUid === uid) return null;
+    if (e.enteredByUid !== b.enteredByUid) return null;
+    if (e.depositReviewedByUid !== uid || e.depositReviewedBy !== me) return null;
+    const at = typeof e.depositReviewedAt === 'string' && ISO_AT.test(e.depositReviewedAt) ? Date.parse(e.depositReviewedAt) : NaN;
+    if (!(Math.abs(at - clock) <= REVIEW_CLOCK_MS)) return null;
+    if (!myLines.some((l) => l.op === 'edit' && l.row === e.id && plain(l.f) && sameJson(l.f.depositReview, [true, null]))) return null;
+    reviewed.push(e.id);
+  }
+  return reviewed;
 }
 
 // The sections (and buckets) a write from `stored` to `next` (both parsed records) changes that
@@ -841,7 +961,7 @@ export function refusedSections(stored, next, access, uid, actions, ctx) {
   // A deposit holder who does not edit the ledger: the deposits they add, which their own log lines may name.
   let deposits = [];
   if (!canEditOwner(access, 'ledger') && access.deposits === 'edit' && !sameTop(s.ledger, own(s, 'ledger'), n.ledger, own(n, 'ledger'))) {
-    deposits = depositRowsAdded(own(s, 'ledger') ? s.ledger : [], own(n, 'ledger') ? n.ledger : [], uid, s.book);
+    deposits = depositRowsAdded(own(s, 'ledger') ? s.ledger : [], own(n, 'ledger') ? n.ledger : [], uid, s.book, cx.name, cx.now);
   }
   const keys = Object.create(null);
   Object.keys(s).concat(Object.keys(n)).forEach((k) => { keys[k] = true; });
@@ -867,11 +987,13 @@ export function refusedSections(stored, next, access, uid, actions, ctx) {
     if (k === 'ledgerLog') { if (!ledgerLogOk(was, now, uid, access, deposits || [], cx.now)) refuse(owner); continue; }
     if (k === 'ledger' && !canEditOwner(access, owner)) { if (!deposits || !deposits.length) refuse(owner); continue; }
     if (k === 'storefronts' && !canEditOwner(access, owner)) {
-      if (!(can.shiftVerify === true && storefrontReportChangeOk(was, now, uid, { reports: cx.reports, name: cx.name, canUndo: can.shiftUndo === true }))) refuse(owner);
+      if (!(can.shiftVerify === true && storefrontReportChangeOk(was, now, uid, { reports: cx.reports, name: cx.name, canUndo: can.shiftUndo === true,
+        sameFamily: cx.sameFamily }))) refuse(owner);
       continue;
     }
     if (canEditOwner(access, owner)) {
-      if (k === 'syncLog' && !syncLogOk(was, now, uid, cx.now)) refuse(owner);
+      if (k === 'ledger' && depositReviewsOk(s, n, uid, cx.name, cx.now) === null) refuse(owner);
+      else if (k === 'syncLog' && !syncLogOk(was, now, uid, cx.now)) refuse(owner);
       else if (k === 'statements' && !statementsOk(was, now, uid)) refuse(owner);
       else if (k === 'book' && !councilSettledOk(s[k], n[k], uid)) refuse(owner);
       else if (k === 'scouts' && !parentLinksOk(was, now)) refuse('admin');
@@ -881,4 +1003,40 @@ export function refusedSections(stored, next, access, uid, actions, ctx) {
     refuse(owner);
   }
   return Object.keys(refused).sort();
+}
+
+// The audit rows a save below an admin writes beside itself, once refusedSections has passed it
+// (security re-check of ce6b8de, findings 2c and 4): the ledger's own log is written by the page, so
+// the server keeps its own note of the two things a leader could otherwise do quietly:
+//   'ledger.deposit.review'  the flagged deposits this save marked as checked (depositReviewsOk);
+//   'ledger.log.drop'        lines of the ledger's log this save dropped (the cap pushing the oldest
+//                            out, which a padded line could otherwise do to the whole trail).
+// [{ action, detail }], each detail a few hundred bytes to under 2 KB (the audit table's CHECK).
+const AUDIT_DETAIL_MAX = 1800;
+function idsThatFit(ids, base) {
+  const out = [];
+  for (const id of ids) {
+    if (JSON.stringify(Object.assign({}, base, { ids: out.concat([id]) })).length > AUDIT_DETAIL_MAX) break;
+    out.push(id);
+  }
+  return out;
+}
+export function putAudits(stored, next, uid, name, now) {
+  const s = plain(stored) ? stored : {}, n = plain(next) ? next : {}, out = [];
+  if (!sameTop(s.ledger, own(s, 'ledger'), n.ledger, own(n, 'ledger'))) {
+    const reviewed = depositReviewsOk(s, n, uid, name, now) || [];
+    if (reviewed.length) {
+      const base = { count: reviewed.length };
+      out.push({ action: 'ledger.deposit.review', detail: Object.assign(base, { ids: idsThatFit(reviewed, base) }) });
+    }
+  }
+  if (Array.isArray(s.ledgerLog) && !sameTop(s.ledgerLog, true, n.ledgerLog, own(n, 'ledgerLog'))) {
+    const gone = logDropped(s.ledgerLog, n.ledgerLog);
+    if (gone.length) {
+      const ats = s.ledgerLog.filter((e) => plain(e) && gone.indexOf(e.id) !== -1).map((e) => String(e.at || '')).sort();
+      const base = { count: gone.length, oldest: ats[0] || '', newest: ats[ats.length - 1] || '' };
+      out.push({ action: 'ledger.log.drop', detail: Object.assign(base, { ids: idsThatFit(gone, base) }) });
+    }
+  }
+  return out;
 }

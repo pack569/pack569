@@ -37,7 +37,13 @@
 // period already reconciled, in a book not closed: access.js depositRowOk). An admin's save is not compared.
 // Some parts of a section are an admin's alone (security review of 714a920..045e7ac): a scout's
 // parent accounts and a linked scout's family (access.js parentLinksOk), and the record's version
-// and format (versionOk, fmtOk: a format may only rise by one); a change to them refuses 'admin'.
+// and format (versionOk, fmtOk: a format may only rise to the server's own PACK_FORMAT, which the
+// harness holds equal to the page's); a change to them refuses 'admin'.
+// Security re-check of ce6b8de: an accept's marker is refused wherever the accept PATCH would refuse
+// it (the sender's family, read from the stored record as the PATCH reads it: rules.js sameFamily);
+// a flagged deposit is marked checked only by a ledger editor who didn't enter it, signed and logged
+// (access.js depositReviewsOk); and two audit rows go in the save's own batch (access.js putAudits):
+// 'ledger.deposit.review' and 'ledger.log.drop'.
 // A save from a stale rev is the 409 it always was, before anything is compared.
 //
 // AWAITING IMPORT (production, OWNER_MODE fixed): the pack record is created only by the
@@ -47,9 +53,9 @@
 // the record on the first save.
 
 import { route, json, readText, refuse, forbidden, forbiddenSections, badRequest, awaitingImport, MAX_STATE_BYTES } from '../../../_lib/http.js';
-import { withMember, fixedOwnerMode } from '../../../_lib/pack.js';
-import { canReadPack, canWritePack, isAdmin } from '../../../_lib/rules.js';
-import { effectiveAccess, effectiveActions, refusedSections, storefrontReportIds, canEditOwner, SECTIONS } from '../../../_lib/access.js';
+import { withMember, fixedOwnerMode, auditIf } from '../../../_lib/pack.js';
+import { canReadPack, canWritePack, isAdmin, sameFamily } from '../../../_lib/rules.js';
+import { effectiveAccess, effectiveActions, refusedSections, storefrontReportIds, canEditOwner, putAudits, SECTIONS } from '../../../_lib/access.js';
 
 function stateOut(row) {
   return row
@@ -96,6 +102,7 @@ async function put({ request, env, db, packId, role, positions, user, member }) 
   try { parsed = JSON.parse(text); } catch (e) { refuse(badRequest('not-json')); }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) refuse(badRequest('not-an-object'));
 
+  let audits = [];
   if (!isAdmin(role)) {
     // The record this save would replace: the one at rev `base`. Another rev is the conflict the
     // UPDATE below would find anyway, answered now, before anything is compared. No record and
@@ -107,16 +114,26 @@ async function put({ request, env, db, packId, role, positions, user, member }) 
       if (cur) { try { stored = JSON.parse(cur.json); } catch (e) { stored = {}; } }
       const access = effectiveAccess(role, positions), actions = effectiveActions(role, positions);
       const reports = await namedReports(db, packId, stored, parsed, access, actions);
+      // sameFamily: whether the caller and a report's sender share a family in the stored record, as
+      // the accept PATCH asks it (security re-check of ce6b8de, finding 3).
       const refused = refusedSections(stored, parsed, access, user.uid, actions,
-        { reports: reports || {}, name: member && member.name, now: Date.now(), dens: member ? member.dens : [] });
+        { reports: reports || {}, name: member && member.name, now: Date.now(), dens: member ? member.dens : [],
+          sameFamily: (a, b) => sameFamily(stored, a, b) });
       if (reports === null && refused.indexOf('storefronts') === -1) refused.push('storefronts');
       if (refused.length) return forbiddenSections(sectionOrder(refused));
+      audits = putAudits(stored, parsed, user.uid, member && member.name, Date.now());
     }
   }
 
   const now = Date.now();
-  let r = await db.prepare('UPDATE pack_state SET rev = rev + 1, json = ?, device = ?, updated_at = ? WHERE pack_id = ? AND rev = ?')
-    .bind(text, device, now, packId, base).run();
+  const update = db.prepare('UPDATE pack_state SET rev = rev + 1, json = ?, device = ?, updated_at = ? WHERE pack_id = ? AND rev = ?')
+    .bind(text, device, now, packId, base);
+  // The audit rows (access.js putAudits) land only with the save: in its batch, each written only if
+  // the statement before it changed a row (changes(): the UPDATE for the first, the row before for the
+  // next), so a save that finds the rev moved writes none of them.
+  let r = audits.length
+    ? (await db.batch([update].concat(audits.map((x) => auditIf(db, packId, user.uid, x.action, x.detail, now, 'changes() = 1', [])))))[0]
+    : await update.run();
   if (!(r.meta && r.meta.changes === 1) && base === 0) {
     // In production the pack record is CREATED only by the import. Otherwise the first leader
     // to save after the switch — on an empty pack here, before the owner has copied it in —
