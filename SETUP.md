@@ -812,6 +812,16 @@ stops: it saves nothing, sends nothing, publishes nothing to parents, refuses ev
 shows "This page is out of date … Reload the page before you change anything else." Normally a reload loads the
 newer page and that is the end of it.
 
+A format can be skipped. If the release that raised it to 4 (storefront cash deposits) and the one
+that raised it to 5 (the sync decisions log) ship together, nothing breaks: a pack at 3 goes
+straight to 5, and every page at 3 or 4 holds and asks for a reload as above.
+
+When this change (format 5) first reaches a device that has been away, that device has no record
+of the last copy it synced. If nothing on it is unsent money (a sale, payment, hand-out or a
+changed amount the server doesn't have) and it is behind the pack, it takes the pack's copy
+without asking. Any other offline edits on it, such as RSVPs or a scout's details, are replaced by
+the pack's copy that one time. If it does hold unsent money, it asks which copy to keep.
+
 If a reload does **not** clear it, the record's `fmt` is higher than any page you serve. That
 happens in two ways:
 
@@ -867,11 +877,11 @@ The number to compare with is `PACK_FORMAT` in the `index.html` you serve.
 Change only `fmt`. Leave `rev` and everything else as it is.
 
 - **Firestore:** in the console, edit the `json` field. Copy its value into a text editor, change
-  the top-level `"fmt":N` to the served page's `PACK_FORMAT` (e.g. `"fmt":4`), check the rest of
+  the top-level `"fmt":N` to the served page's `PACK_FORMAT` (e.g. `"fmt":5`), check the rest of
   the text is untouched, paste it back, and **Update**.
 - **D1:**
-  `npx wrangler d1 execute pack569-prod --remote --env production --command "UPDATE pack_state SET json = json_set(json, '$.fmt', 4) WHERE pack_id = '<Pack ID>'"`
-  (with `4` being the served page's `PACK_FORMAT`, and `<Pack ID>` as in step 2). Without the
+  `npx wrangler d1 execute pack569-prod --remote --env production --command "UPDATE pack_state SET json = json_set(json, '$.fmt', 5) WHERE pack_id = '<Pack ID>'"`
+  (with `5` being the served page's `PACK_FORMAT`, and `<Pack ID>` as in step 2). Without the
   `WHERE` it would rewrite every pack in the database. Run the `SELECT` from step 2 again to check.
   If the change goes wrong, D1's Time Travel can put the database back to before it
   ([docs/cloudflare-setup.md](docs/cloudflare-setup.md), *Backups*).
@@ -892,15 +902,17 @@ newer page still open in another tab saves its `fmt` back over the fix. Then, in
 developer console on the page (a desktop browser, or a Mac for an iPhone or iPad), run:
 
 ```js
-var k = 'pack-popcorn-ledger-v1', r = JSON.parse(localStorage.getItem(k)); r.fmt = 4; localStorage.setItem(k, JSON.stringify(r)); location.reload();
+var k = 'pack-popcorn-ledger-v1', r = JSON.parse(localStorage.getItem(k)); r.fmt = 5; localStorage.setItem(k, JSON.stringify(r)); location.reload();
 ```
 
-(with `4` being the served page's `PACK_FORMAT`). The key is fixed and must never change: it is
+(with `5` being the served page's `PACK_FORMAT`). The key is fixed and must never change: it is
 where every device's copy lives.
 
 ### 5. Reload every device
 
-Each device then compares its copy with the pack's. Where they differ, the leader is asked
-which copy to keep, and the chooser lists what is only on that device. If anything is missing
+Each device then compares its copy with the pack's. A device with nothing unsent takes the pack's
+copy. One with changes it never sent merges them in, and the leader is asked only about anything
+the server changed too. A device that can't tell (one from before version 5 of the record, or with
+its storage full) asks which copy to keep, and the chooser lists what is only on that device. If anything is missing
 afterwards, it is in the files from step 1: **Pack → Import backup** one of them on a device, check
 it, and let it sync.

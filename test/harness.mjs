@@ -990,7 +990,7 @@ test('reconciling compares the TICKED entries to the statement', () => {
 
 // normalizeState is the single migration seam, so the migration is tested through it
 // rather than through a reimplementation of it.
-const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
+const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'SYNC_LOG_MAX', 'normalizeSyncLog', 'PROGRAM_MONTHS', 'PROGRAM_TURN', 'PROGRAM_START_MONTH',
   'defaultProgramYear', 'freshBudget', 'programYearStartISO',
   // DENS: the event coercion rebuilds `dens` in rank order against it.
   'DENS',
@@ -1042,8 +1042,22 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
   'WEATHER_TAGS', 'WX_DEFAULT_LOC', 'numOrNull'];
+// Keith, 2026-10-02 — ask about a conflict only when there is one: the base and the unsynced marker on the
+// device, the first answer's plan, the three-way merge, and the sync log. In C8_SYNC_FNS, so every sync
+// sandbox has them; their own tests are under "sync base".
+const SYNC_BASE_FNS = ['SYNC_BASE_KEY', 'SYNC_UNSYNCED_KEY', 'syncLocal', 'SYNC_UPDATED', 'syncWhenIso', 'syncBaseGet', 'syncBaseSet', 'syncUnsynced',
+  'syncMarkUnsynced', 'syncClearUnsynced', 'syncBaseForget', 'syncFirstPlan', 'SYNC_MERGE_SKIP', 'SYNC_BOOK_SKIP', 'SYNC_MAP_DEPTH', 'SYNC_GONE_LOGS',
+  'syncSame', 'syncRecKey', 'syncKeyed', 'syncPrimSet', 'syncThreeWay', 'syncItemSig', 'syncRecNorm', 'syncThreeWayOf', 'syncApplyThreeWay',
+  'SYNC_LOG_MAX', 'normalizeSyncLog', 'mergeSyncLog', 'syncServerWhen',
+  // Sync fix round 1 — rule d's money check, charges by what they charge, the opening balance's lock.
+  'syncMoneySubset', 'syncChargeKey', 'SYNC_OPENING_LOCKED_WHY', 'SYNC_OPENING_LOCKED_WHY_THERE', 'openingLockedWhy', 'entryAfterOpening', 'arrOf'];
+// …and the words the chooser and the log use for an item (leaders only).
+const SYNC_WORDS_FNS = ['SYNC_AREA_LABELS', 'SYNC_LIST_LABELS', 'SYNC_FIELD_LABELS', 'syncFieldWords', 'syncCap', 'syncClip', 'syncAt', 'syncScoutName',
+  'syncRecName', 'syncItemTitle', 'syncValueText', 'syncItemView', 'syncWhenText', 'syncServerWho', 'syncDecisionEntries', 'eventLabel', 'fmtTimeRange',
+  'fmtClock', 'fmtDate', 'fmtDateShort', 'monthLabel', 'ledgerLogWhen', 'fmt', 'ledgerStampClean',
+  'syncRecordFigures', 'syncItemList', 'syncItemBaseText', 'syncHiddenText', 'SYNC_BOTH_NUMBER', 'syncChildrenText', 'SYNC_LOG_HIDDEN', 'SYNC_LOG_MONEY', 'syncItemIsMoney'];
 // Phase 3, C8 (C8-4) — what the merge and the copy chooser read of closed books.
-const C8_SYNC_FNS = [SR_SYNC_STUBS, 'closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mergeClosedBooks', 'closedBookScouts', 'closedBookScoutIds', 'closedYearText', 'closedBooksKeptOverWhy', 'closeoutCarryDiffs',
+const C8_SYNC_FNS = [SR_SYNC_STUBS, ...SYNC_BASE_FNS, ...SYNC_WORDS_FNS, 'closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mergeClosedBooks', 'closedBookScouts', 'closedBookScoutIds', 'closedYearText', 'closedBooksKeptOverWhy', 'closeoutCarryDiffs',
   'closedBooksUndone', 'closedBooksUndoneWhy', 'closedBooksDroppedWhy', 'closedBookRows', 'statementLookupRows',
   // Security re-check of C8-5..C8-10 — the bound by program year (M-A), the push's union normalized (L-B), and what a merge says it set aside.
   'closedBookRank', 'closedBookScoutIds', 'closedBooksFuture', 'closedBooksMaxYear', 'closedBooksNormalized', 'normalizeClosedBook', 'normalizeLedgerRow', 'depositForIds', 'DEPOSIT_FOR_MAX', 'councilSettledNormal', 'COUNCIL_SETTLE_HOW', 'councilSettledMerged', 'councilSettledText', 'COUNCIL_SETTLE_LABELS', 'normalizeAsideRow', 'normalizeLedgerEvent',
@@ -1085,6 +1099,8 @@ const GONE_FNS = ['GONE_KEEP_MS', 'GONE_MAX', 'GONE_MAX_PARENT', 'pruneGone', 'm
   // Phase 3, C6 — the per-row merge, the entry chooser the push opens, and two close-outs of one year.
   ...C6_MERGE_FNS, 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'ledgerRowConflicts', 'rowChoice', 'refreshRowChoice', 'ledgerConflictSig', 'pickRowVersion', 'saveRowChoices', 'ROW_PICK_NEEDED',
   'ROW_PICKS_CHANGED', 'ROW_PICKS_SAVED',
+  // Keith, 2026-10-02 — the items both copies changed: their picks, and what saving them says.
+  'pickSyncItem', 'SYNC_PICKS_LOGGED', 'SYNC_PICKS_SERVER', 'SYNC_PICK_NEEDED',
   // Security review of C6 (F1a, F1b, F2) — the side a pick can't keep, and the save that refuses it.
   'rowItemLock', 'ROW_PICK_LOCKED', 'ROW_PICK_LOCKED_PAIR',
   // Security review of C6 (F3) — a tick merged onto a voided entry comes off, said on "The ledger needs a look".
@@ -8577,14 +8593,16 @@ function roleSubCtx(over) {
     var healCalls = 0, HEAL = null;
     function ensureMyMemberDoc() { healCalls += 1; return HEAL; }
     ${slice('stopLocalWrites')}
-    ${slice('applyRoleSubscription')}`, ctx);
+    ${slice('applyRoleSubscription')}
+    ${SYNC_BASE_FNS.map(decl).join('\n')}`, ctx);
   return ctx;
 }
 
 test('a member removed mid-session loses the pack from this device, not just the next read', () => {
   const ctx = roleSubCtx({});
   vm.runInContext('applyRoleSubscription(null, 1)', ctx);
-  eq(vm.runInContext('removed', ctx), ['pack-popcorn-ledger-v1'], 'the cached pack record was left in localStorage');
+  // (Keith, 2026-10-02 — and this device's base and unsynced marker with it: the base is a copy of the pack too.)
+  eq(vm.runInContext('removed', ctx), ['pack-popcorn-ledger-v1', 'pack-popcorn-ledger-v1-base', 'pack-popcorn-ledger-v1-unsynced'], 'the cached pack record was left in localStorage');
   eq(vm.runInContext('state', ctx), { fresh: true }, 'the pack record is still in memory');
   eq(vm.runInContext('stopped.sort()', ctx), ['doc', 'parent'], 'a feed was left running');
   eq(vm.runInContext('sync.parentView', ctx), null, 'the parent view was left on screen');
@@ -8754,7 +8772,7 @@ test('a device is told it was removed only by the server, end to end through the
       membersUnsub: null, membersScope: null, membersDeniedAs: null, membersFromServer: false,
       feed: 'parent', parentUnsub: function () {}, unsub: null, ownerUid: 'someone-else',
       accountsUnavailable: false, joinRejected: null, members: [] };
-    ${['LEADER_ROLES', 'cloudReady', 'feedForRole', 'recomputeMyRole', 'stopLocalWrites', 'applyRoleSubscription',
+    ${['LEADER_ROLES', 'cloudReady', 'feedForRole', 'recomputeMyRole', 'stopLocalWrites', 'applyRoleSubscription', ...SYNC_BASE_FNS,
        'applyMembersSubscription'].map(slice).join('\n')}
     firestoreBackend.open('P');
     applyMembersSubscription(1);`);
@@ -8770,7 +8788,7 @@ test('a device is told it was removed only by the server, end to end through the
   // The server says the doc is gone: that is a removal.
   vm.runInContext("watches[0].next(snapOf('packs/P/members/me', { fromCache: false }))", ctx);
   eq(vm.runInContext('[sync.membersFromServer, removed, sync.joinRejected]', ctx),
-    [true, ['pack-popcorn-ledger-v1'], 'removed'], 'the server’s word did not remove the device');
+    [true, ['pack-popcorn-ledger-v1', 'pack-popcorn-ledger-v1-base', 'pack-popcorn-ledger-v1-unsynced'], 'removed'], 'the server’s word did not remove the device');   // (and the base and marker: Keith, 2026-10-02)
   // A leader's roster: the collection, each member keyed by its doc id.
   const all = fsAdapterCtx(`firestoreBackend.open('P'); var got = null;
     firestoreBackend.subscribeMembers('P', 'all', 'me', function (list, meta) { got = [list, meta]; });
@@ -9337,6 +9355,7 @@ test('the pack record feed ignores its own echoes and keeps the raw record for t
     var state = { scouts: [{ id: 'a' }], rev: 2 };
     var sync = { firstSnap: true, mode: 'online', deviceId: 'dev1', dirty: false, clobber: false };
     ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap'].map(slice).join('\n')}
+    ${SYNC_BASE_FNS.map(decl).join('\n')}
     ${FORMAT_GATE_SRC()}`, ctx);
   // No shared copy yet: seed it from this device.
   vm.runInContext('onRemoteSnap(null, { fromServer: true, pendingWrites: false })', ctx);
@@ -16230,6 +16249,8 @@ async function apiClient(w, who, o) {
     var state = ${JSON.stringify(initialState)};
     store[KEY] = JSON.stringify(state);
     ${o.join ? `store[JOIN_KEY] = JSON.stringify({ docId: '${API_PACK}', code: ${JSON.stringify(o.join)} });` : ''}
+    ${o.unsynced ? "store['pack-popcorn-ledger-v1-unsynced'] = '1';" : ''}   // Keith, 2026-10-02 — this device has a change it never sent
+    ${o.base ? `store['pack-popcorn-ledger-v1-base'] = ${JSON.stringify(JSON.stringify(o.base))};` : ''}   // …and the server copy it last took in
     // Firebase Auth, as the page sees it: a signed-in Google account whose getIdToken the host answers.
     var AUTH = { currentUser: { uid: '${PEOPLE[who][0]}', email: '${PEOPLE[who][1]}', displayName: 'Test ${who}',
       emailVerified: true, isAnonymous: false, getIdToken: function (fresh) { return hostToken(!!fresh); } } };
@@ -16571,7 +16592,9 @@ atest('a copy choice closed with Escape keeps saying it waits, and a device that
   // Security review of 260f467..db851c7, F4.
   const w = await (await apiWorld()).seed();
   w.state(3, PACK_STATE());
-  const ed = await (await apiClient(w, 'editor', { state: PACK_STATE({ packName: 'Mine', scouts: [{ id: 'x', name: 'Old' }] }) })).start();
+  // (Sync conflicts, Keith 2026-10-02 — a device with unsaved work and no base to tell it from an old copy, as one
+  // from before the base: still asked, whole copy. One with nothing unsaved takes the server's copy quietly now.)
+  const ed = await (await apiClient(w, 'editor', { state: PACK_STATE({ packName: 'Mine', scouts: [{ id: 'x', name: 'Old' }] }), unsynced: true })).start();
   eq(ed.get('[ui.overlay && ui.overlay.kind, !!sync.conflict]'), ['sync-conflict', true], 'no choice to close (the test proves nothing)');
   ed.run('ui.overlay = null');   // Escape
   // The pill, the sync card's line and its button, from the page's own code.
@@ -16622,7 +16645,7 @@ atest('a copy choice closed with Escape keeps saying it waits, and a device that
       var state = { scouts: [{ id: 'a' }], rev: 5 };
       var sync = { firstSnap: false, mode: 'online', deviceId: 'dev1', dirty: true, clobber: false, conflict: { rev: 5 },
         remoteRec: { rev: 5 }, backend: { serverRevs: true }, membersFromServer: ${fromServer !== false} };
-      ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap', 'takeSharedAsViewer', 'rowChoice', ...FORMAT_GATE_FNS].map(decl).join('\n')}
+      ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap', 'takeSharedAsViewer', 'rowChoice', ...FORMAT_GATE_FNS, ...SYNC_BASE_FNS].map(decl).join('\n')}
       onRemoteSnap({ rev: 6, device: 'd2', json: '{}' }, { fromServer: true, pendingWrites: false });`, ctx);
     return JSON.parse(JSON.stringify(vm.runInContext('[adopted, sync.conflict && sync.conflict.rev, ui.overlay && ui.overlay.kind, toasts]', ctx)));
   };
@@ -16754,7 +16777,8 @@ atest('the move file is the pack as the server last had it, and is refused while
   // device's copy made to match, since nobody has chosen.
   const w2 = await (await apiWorld()).seed();
   w2.state(3, PACK_STATE());
-  const c = await (await apiClient(w2, 'owner', { state: PACK_STATE({ scouts: [{ id: 's2', name: 'Bo' }] }) })).start();
+  // (Sync conflicts, Keith 2026-10-02 — unsaved work and no base: the whole-copy chooser, as before.)
+  const c = await (await apiClient(w2, 'owner', { state: PACK_STATE({ scouts: [{ id: 's2', name: 'Bo' }] }), unsynced: true })).start();
   c.run("BACKEND = 'firestore'");
   eq(c.get('ui.overlay && ui.overlay.kind'), 'sync-conflict', 'no conflict (the test proves nothing)');
   c.run('ui.overlay = null; state.scouts = JSON.parse(sync.conflict.json).scouts; toasts.length = 0; downloadMoveFile()');
@@ -16913,7 +16937,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
       var state = ${JSON.stringify(over.local)};
       var sync = { firstSnap: true, mode: 'online', deviceId: 'dev1', dirty: false, clobber: false,
         backend: { serverRevs: ${!!over.serverRevs} } };
-      ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap', 'keepLocalCopy', 'keepLocalNeedsAdmin', ...FORMAT_GATE_FNS].map(decl).join('\n')}
+      ${['isStateEmpty', 'stateFingerprint', 'onRemoteSnap', 'keepLocalCopy', 'keepLocalNeedsAdmin', ...FORMAT_GATE_FNS, ...SYNC_BASE_FNS].map(decl).join('\n')}
       onRemoteSnap(${JSON.stringify(over.rec)}, { fromServer: true, pendingWrites: false });`, ctx);
     return vm.runInContext('[timers.length, state.rev, ui.overlay ? ui.overlay.kind : null]', ctx);
   };
@@ -19909,14 +19933,24 @@ test('stopgap, Firestore: a deleted scout, fundraiser or product does not come b
     eq([eIds(st), st.inventory.distributions.map((d) => d.id), st.charges.map((c) => c.id)], [['old2', 'x2'], [], []], `${how}: rows of a deleted one came back`);
     eq(st.ledger.map((l) => [l.id, l.scoutId]), [['l1', ''], ['ls1', '']], `${how}: a payment was lost`);
   };
-  // The stale device saves last.
+  // (Sync conflicts, Keith 2026-10-02 — B added a sale to the fundraiser A deleted: a real conflict now, so the device
+  // saving second is asked about exactly that, and sends nothing until it picks. Before, the delete won without a word.)
+  const asked = (d) => d.get('rowChoice() ? rowChoice().fields.map(function (it) { return it.key; }) : null');
+  // The stale device saves last, and keeps the server's version: the delete.
   const { a, b, server } = fsGonePair();
   a.run(`${DEL_FR}; ${DEL_SCOUT}; ${DEL_PROD}`);
   a.push();
   b.run(ADD_TO_ALL);
   b.hear();
   b.push();
+  // (Sync fix round 1, treasurer 2 — and about the scout and the product A deleted, which B recorded a sale and a hand-out for.)
+  eq([asked(b), server().ledger.map((l) => l.id)], [['.fundraisers#f1', '.scouts#s1', '.inventory.products#p1'], ['l1']], 'the stale device was not asked, or sent something');
+  b.run("pickSyncItem(rowChoice(), '*', 'theirs'); saveRowChoices()");
+  b.push();
   check(server(), 'the stale device saved last');
+  // (Sync fix round 1, treasurer 6b — the server's version kept is logged for money records: the scout's sale, the hand-out's product.)
+  // (Final treasurer check B3 — and the fundraiser: a fundraiser is money in the log now.)
+  eq(server().syncLog.map((e) => [e.item, e.kept, e.how]).sort(), [['Fundraiser · Raffle', 'server', 'all'], ['Popcorn product · Caramel', 'server', 'all'], ['Scout · Ada', 'server', 'all']], 'what was logged');
   eq([Object.keys(server().gone.fundraisers), Object.keys(server().gone.sales), Object.keys(server().gone.scouts), Object.keys(server().gone.products)],
     [['f1'], ['fs1'], ['s1'], ['p1']], 'the marks (a fundraiser is one; fs1 is the scout’s own sale)');
   a.hear();
@@ -19928,7 +19962,12 @@ test('stopgap, Firestore: a deleted scout, fundraiser or product does not come b
   p.a.run(`${DEL_FR}; ${DEL_SCOUT}; ${DEL_PROD}`);
   p.a.hear();
   p.a.push();
+  // …the deleting device saves last, and keeps its own version: the delete, over the sale added on the server. Logged.
+  eq(asked(p.a), ['.fundraisers#f1'], 'the deleting device was not asked');
+  p.a.run("pickSyncItem(rowChoice(), '.fundraisers#f1', 'mine'); saveRowChoices()");
+  p.a.push();
   check(p.server(), 'the deleting device saved last');
+  eq(p.server().syncLog.map((e) => [e.item, e.keptValue]), [['Fundraiser · Raffle', 'Deleted']], 'the delete over the server’s change was not logged');
   // A hand-out to the deleted scout, of a product that is still there, both ways.
   const ADD_D3 = "state.inventory.distributions.push({ id: 'd3', productId: 'p1', target: { kind: 'scout', id: 's1' }, containers: 1 }); commit()";
   for (const staleLast of [true, false]) {
@@ -20158,7 +20197,9 @@ test('stopgap, Firestore: "Keep this device’s copy" merges another leader’s 
   a.push();
   b.hear();
   eq(b.get('sync.clobber'), true, 'B was not flagged');
-  b.run('sync.firstSnap = true');
+  // (Sync conflicts, Keith 2026-10-02 — a device with a base merges here without asking (see "sync base"); this one
+  // has none, as a device from before the base, so its unsaved edit can't be told from an old copy and it is asked.)
+  b.run('sync.firstSnap = true; syncLocal.base = null');
   b.hear();
   eq(b.get('ui.overlay && ui.overlay.kind'), 'sync-conflict', 'B was not asked');
   b.run('keepLocalCopy()');
@@ -20494,7 +20535,14 @@ atest('stopgap, api: a deleted scout, fundraiser or product does not come back f
   await b.edit(ADD_TO_ALL);
   a.run(`${DEL_FR}; ${DEL_SCOUT}; ${DEL_PROD}`);
   await settle([a], 800);
+  // (Sync conflicts, Keith 2026-10-02 — B added a sale to the fundraiser A deleted: A is asked about exactly that,
+  // sends nothing until it picks, and keeps its delete, which is logged.)
+  eq([a.get('rowChoice() ? rowChoice().fields.map(function (it) { return it.key; }) : null'), server().fundraisers.length], [['.fundraisers#f1'], 1],
+    'the deleting device was not asked, or sent something');
+  a.run("pickSyncItem(rowChoice(), '.fundraisers#f1', 'mine'); saveRowChoices()");
+  await settle([a], 800);
   st = server();
+  eq(st.syncLog.map((e) => [e.item, e.keptValue, e.serverValue]), [['Fundraiser · Raffle', 'Deleted', 'Raffle · 2 sales ($10.00)']], 'the decision');   // (its figures, final check B3)   // (the server's version by its figures: treasurer 6c)
   eq([st.fundraisers.length, st.scouts.map((x) => x.id), st.inventory.products.length, eIds(st), st.inventory.distributions.length, st.ledger.map((l) => l.scoutId || '')],
     [0, ['s2'], 0, ['old2', 'x2'], 0, ['', '']], 'the deleting device saved last');
 });
@@ -20561,7 +20609,8 @@ atest('stopgap, api: "Keep this device’s copy" merges another leader’s save 
   const { a, b, server } = await apiGonePair();
   b.run(B1);
   await a.edit("state.entries.push({ id: 'a1', scoutId: 's1', kind: 'wagon', date: '', salesCents: 1, donationsCents: 0 })");
-  b.run('sync.clobber = true; sync.firstSnap = true; sync.remoteRec = null; clearTimeout(sync.pushTimer)');
+  // (Sync conflicts, Keith 2026-10-02 — with no base, as a device from before it: asked. With one it would merge.)
+  b.run('sync.clobber = true; sync.firstSnap = true; sync.remoteRec = null; clearTimeout(sync.pushTimer); syncBaseForget(); syncMarkUnsynced()');
   await b.poll();
   eq(b.get('ui.overlay && ui.overlay.kind'), 'sync-conflict', 'B was not asked');
   b.run('keepLocalCopy()');
@@ -21299,7 +21348,8 @@ test('C2: each change to an entry is one logged edit — every field it changed,
   p.run("change('led-ref', 'u1', '102'); change('led-amount', 'u1', '90.00')");
   eq(p.get('log().length'), 7, 'a change to the same value was logged');
   // The amount commits once, on change — not a keystroke at a time (each would be an edit).
-  ok(/var LEDGER_NOT_LIVE = \['led-amount', 'book-opening'\];/.test(SCRIPT) &&
+  // (Sync fix round 1 — and the goals, now logged on the book too.)
+  ok(/var LEDGER_NOT_LIVE = \['led-amount', 'book-opening', 'goal', 'cash-goal', 'stretch-goal', 'inv-order-total'\];/.test(SCRIPT) &&
      /if \(el && LEDGER_NOT_LIVE\.indexOf\(el\.getAttribute\('data-ch'\)\) === -1\) \{/.test(SCRIPT), 'the amount is committed as it is typed');
 });
 
@@ -21976,7 +22026,11 @@ test('C3: nothing outside the book’s own plumbing reads the voided rows, so no
     // Phase 3, C5 — renderBankStatementSheet names an entry on a statement voided since; it totals nothing from it.
     'ledgerVoidRow', 'mergeLedgerRows', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderCloseoutOverlay', 'renderLedger', 'renderLedgerEntries', 'renderReconcile', 'renderRowChooser', 'restoreGone',
     // Treasurer's review of C8 (F1) — statementLookupRows lists them (with the counted rows and the closed books') for a statement to name its entries by; it totals nothing.
-    'rolloverYear', 'scoutHasLedger', 'statementLookupRows'], 'who reads the voided rows');
+    'rolloverYear', 'scoutHasLedger', 'statementLookupRows',
+    // Sync conflicts (Keith, 2026-10-02) — SYNC_MERGE_SKIP names the key so the three-way merge leaves it to the rules above; it reads no row.
+    'SYNC_MERGE_SKIP',
+    // Sync fix round 1 — syncMoneySubset asks whether every row this device holds, voided or not, is on the server; it totals nothing.
+    'syncMoneySubset'].sort(), 'who reads the voided rows');
   // In handleAction: the void handlers and (treasurer sign-off on C3) the voided CSV only. (C7: del-scout's
   // log line is gone, with the unlinking it logged.)
   // Security re-check of option B (A) — and the void's Undo, asking whether the row it would put back is still voided.
@@ -25199,7 +25253,9 @@ test('reload gate, Firestore: a save that reads a newer page’s record writes n
   };
   eq(run(newerRec(5)), { sets: [], held: true, name: 'Edited', dirty: true, rev: 2, timers: 0 }, 'a push over a newer page’s record');
   // Control: the same save over a page from before the gate merges and writes, in this page's format.
-  eq(run({ rev: 5, device: 'd2', json: JSON.stringify(Object.assign({ rev: 5, packName: 'Other', scouts: [{ id: 'a' }] }, LOGS)) }),
+  // (Sync conflicts, Keith 2026-10-02 — the other device's save adds a scout, not a new pack name: a name
+  // changed on both devices is a conflict now, asked about, and nothing is written until a leader picks.)
+  eq(run({ rev: 5, device: 'd2', json: JSON.stringify(Object.assign({ rev: 5, packName: 'Old', scouts: [{ id: 'a' }, { id: 'b' }] }, LOGS)) }),
     { sets: [[6, PF]], held: false, name: 'Edited', dirty: false, rev: 6, timers: 0 }, 'control: a push over an older page’s record');
   // A page holding a newer page's record itself (loaded from a newer tab's save) never pushes it,
   // even over a record in this page's format, and never takes one over it.
@@ -25255,7 +25311,9 @@ test('reload gate: a newer page’s record whose "fmt" key is spelled with an es
   eq(push(Object.assign(escRec(5), { json: escRec(5).json.replace('"scouts"', '"storefronts":[],"entries":[],"events":[],"ledger":[],"leaders":[],"fundraisers":[],"scouts"') })),
     [0, true, 'Edited', true], 'a push over it');
   // Control: the same record in this page's format is merged and written over as ever.
-  const own = { rev: 5, device: 'd2', json: JSON.stringify(Object.assign({ rev: 5, packName: 'Other', scouts: [{ id: 'a' }] }, LOGS)).replace('"rev":5,', '"rev":5,"\\u0066mt":2,') };
+  // (Sync conflicts, Keith 2026-10-02 — the other device's save adds a scout, not a new pack name: a name
+  // changed on both devices is a conflict now, asked about, and nothing is written until a leader picks.)
+  const own = { rev: 5, device: 'd2', json: JSON.stringify(Object.assign({ rev: 5, packName: 'Old', scouts: [{ id: 'a' }, { id: 'b' }] }, LOGS)).replace('"rev":5,', '"rev":5,"\\u0066mt":2,') };
   eq(push(own), [1, false, 'Edited', false], 'control: an escaped key in this page’s format');
 });
 
@@ -25300,7 +25358,7 @@ test('reload gate: SETUP.md says how the owner recovers a record whose fmt is to
   ok(/Firestore Database\*\* → \*\*Data\*\* →\s+`packs` → the Pack ID document → the `json` field/.test(sec), 'the Firestore steps');
   // …and the page's own note on rolling back points at it.
   // Owner decision 26 (C7): the examples in it are this page's PACK_FORMAT, so raising it means updating them.
-  ok(PF === 4, 'PACK_FORMAT is ' + PF + ': item 11 raised it to 4 (a page at 3 reads a storefront cash deposit as plain income, counts one on a budget line twice in Funds in, and writes its source back blank); C8-5 raised it to 3');
+  ok(PF === 5, 'PACK_FORMAT is ' + PF + ': the sync log raised it to 5 (a page at 4 merges state.syncLog as its own copy, whole, and drops another device’s decisions); item 11 raised it to 4; C8-5 raised it to 3');
   ok(sec.includes('(e.g. `"fmt":' + PF + '`)') && sec.includes("json_set(json, '$.fmt', " + PF + ")") && sec.includes('r.fmt = ' + PF + ';') && sec.includes('(with `' + PF + '` being the served'),
     'SETUP.md’s examples are not PACK_FORMAT ' + PF);
   ok(/ROLLING BACK[\s\S]{0,400}SETUP\.md \("If a page stays out of date after a\s*\/\/ reload"\)/.test(SCRIPT.slice(0, SCRIPT.indexOf('var PACK_FORMAT = '))),
@@ -25382,7 +25440,7 @@ const gateStoreCtx = (stored) => {
     var liveEdit = false, persistTimer = null, persistPending = false, saveWarned = false;
     var loadBackupKept = false, loadLedgerSplits = [];
     var sync = { newerFormat: false, conflict: null }, ui = { overlay: null };
-    ${['load', 'save', 'commit', 'persistNow', 'refuseHeldEdit', 'FORMAT_REFUSED', ...FORMAT_GATE_FNS].map(decl).join('\n')}
+    ${['load', 'save', 'commit', 'persistNow', 'refuseHeldEdit', 'FORMAT_REFUSED', ...FORMAT_GATE_FNS, ...SYNC_BASE_FNS].map(decl).join('\n')}
     var state = load();
     var before = store[KEY];`, ctx);
   return ctx;
@@ -25448,7 +25506,7 @@ test('reload gate: a newer tab’s save while this page runs is never saved over
 // deleteWithUndo and two-tap arm, over gateStoreCtx's real load, save and commit. `hold`:
 // 'pack' (a newer record met from the pack: sync.newerFormat), 'device' (this browser's copy is a
 // newer tab's), or '' (nothing held: the control).
-const HELD_DISPATCH_FNS = ['handleAction', 'handleChange', 'handleForm', 'handleFilePick', 'performCloseout', 'deleteWithUndo', 'arm',
+const HELD_DISPATCH_FNS = [...SYNC_BASE_FNS, 'logSettingEdit', 'handleAction', 'handleChange', 'handleForm', 'handleFilePick', 'performCloseout', 'deleteWithUndo', 'arm',
   'heldActAllowed', 'refuseHeldAct', 'HELD_ACTS', 'HELD_ACT_PREFIXES', 'HELD_CHANGES', 'PARENT_ACTS', 'GATE_ACTS',
   'FORMAT_CLOSEOUT', 'FORMAT_BACKUP', 'JSON_BACKUP_NAME', 'jsonBackup', 'toCents', 'closeoutTrimToast', 'CLOSEOUT_REFUSED', 'CLOSEOUT_FAILED', 'CLOUD_COPY_NAME',
   // C8-6 — close-out is refused before the year's last day, and with its last statement unreconciled unless an admin said so.
@@ -25470,6 +25528,7 @@ const heldDispatchCtx = (hold) => {
     function handleImportFile() { picked.push('import'); } function handleMoveFile() { picked.push('move'); }
     function handleIcsImportFile() { picked.push('ics'); } function handleTeFile() { picked.push('te'); }
     function canReopenStatement() { return true; }   // an admin (owner decision 22: close-out is theirs)
+    var logged = []; function logLedger(op, row, more) { logged.push([op, row, more]); }   // (sync fix round 1: a goal edit is logged on the book)
     ${HELD_DISPATCH_FNS.map(decl).join('\n')}
     ${hold === 'pack' ? 'sync.newerFormat = true;' : ''}
     function tap(act, data) { handleAction(act, { dataset: data || {} }); }`, ctx);
@@ -25514,6 +25573,8 @@ test('reload gate: while either hold is on, an edit is refused before it changes
     [0, ['Deleted Akela'], ['pack-year-2026-snapshot.json'], ['Welcome to the 2027 program year'], 2027], 'control: nothing held');
   vm.runInContext("toasts = []; handleChange({ dataset: { ch: 'goal' }, value: '5.00' }); handleFilePick({ id: 'teFile', value: 'x' });", c);
   eq(JSON.parse(JSON.stringify(vm.runInContext('[state.goalCents, picked, toasts]', c))), [500, ['te'], []], 'control: a field and a file');
+  // (Sync fix round 1 — and the goal's change is logged on the book, once; while held, nothing was.)
+  eq(JSON.parse(JSON.stringify(vm.runInContext('logged', c))), [['edit', 'book', { f: { goalCents: [100, 500] } }]], 'control: the goal’s change was not logged');
 });
 
 test('reload gate: an edit that reaches commit() some other way is refused while held from the pack too', () => {
@@ -25751,9 +25812,11 @@ atest('reload gate, api: a save that reads a newer page’s record sends nothing
   };
   eq(await run(PACK_STATE({ rev: 4, fmt: NEWER_FMT, packName: 'Newer' })),
     { puts: 0, read: true, held: true, here: ['Edited', true], server: [4, NEWER_FMT, 'Newer'] }, 'a save over a newer page’s record');
-  eq(await run(PACK_STATE({ rev: 4, packName: 'Before the gate' })),
+  // (Sync conflicts, Keith 2026-10-02 — the other device's save adds a scout, not a new pack name: a name
+  // changed on both devices is a conflict now, asked about, and nothing is written until a leader picks.)
+  eq(await run(PACK_STATE({ rev: 4, scouts: [{ id: 's1', name: 'Ada' }, { id: 's2', name: 'Bo' }] })),
     { puts: 1, read: true, held: false, here: ['Edited', false], server: [5, PF, 'Edited'] }, 'control: a save over a page from before the gate');
-  eq(await run(PACK_STATE({ rev: 4, fmt: PF, packName: 'This format' })),
+  eq(await run(PACK_STATE({ rev: 4, fmt: PF, scouts: [{ id: 's1', name: 'Ada' }, { id: 's3', name: 'Cy' }] })),
     { puts: 1, read: true, held: false, here: ['Edited', false], server: [5, PF, 'Edited'] }, 'control: a save over this page’s format');
 });
 
@@ -27864,7 +27927,10 @@ const C6_CHOOSER_FNS = ['esc', 'fmt', 'fmtDateShort', 'ledgerCap', 'ledgerLogVal
   // Security re-check of C6 (N2) — entries locked on opposite sides: one button.
   'rowItemSplit', 'ROW_SPLIT_NOTE', 'ROW_SPLIT_KEEP', 'ROW_SPLIT_KEEPING',
   // Quick check of N1–N5 (3) — only when every entry is locked; with others locked to neither, both buttons and a line.
-  'rowItemSides', 'rowItemMixed', 'ROW_MIXED_NOTE'];
+  'rowItemSides', 'rowItemMixed', 'ROW_MIXED_NOTE',
+  // Sync conflicts (Keith, 2026-10-02) — the items both copies changed, beside the entries, and "Keep all".
+  'SYNC_CHOOSER_TITLE', 'SYNC_CHOOSER_KEPT', 'SYNC_CHOOSER_ENTRIES', 'SYNC_KEEP_ALL_MINE', 'SYNC_KEEP_ALL_THEIRS', 'SYNC_MINE_HEAD', 'SYNC_THEIRS_HEAD',
+  'SYNC_MINE_SUB', 'syncChooserIntro', 'renderSyncItems', 'SYNC_PICK_NEEDED', 'SYNC_BEFORE', 'syncKeepWords', 'SYNC_KEEP_SCOUT', 'SYNC_KEEP_PRODUCT'];
 function c6Chooser(items, picks, more) {
   const ctx = vm.createContext({});
   vm.runInContext(`${C6_CHOOSER_FNS.map(decl).join('\n')}
@@ -27889,14 +27955,15 @@ test('C6: the chooser names each entry, shows both versions with what differs an
     'A ledger entry was changed on this device and on another one, and the two versions don’t match. Pick the version to keep. Nothing from this device is shared until you do. ' +
     'Every other change from both devices is kept. The version you don’t keep is noted in the entry’s change history. ' +
     'Pizza party · Sep 10 · −$40.00 ' +
-    'On this device No change to this entry was recorded on this copy. Description: Pizza party Budget line: (none) Keep this version ' +
-    `In the pack’s shared copy Changed by Sam on ${whenText}. Description: Pizza night Budget line: Pack night Keep this version ` +
+  // (Sync fix round 1, treasurer 7 — one set of words in the overlay: the entries' headers and buttons are the items'.)
+    'Your change on this device No change to this entry was recorded on this copy. Description: Pizza party Budget line: (none) Keep mine ' +
+    `On the pack’s server Changed by Sam on ${whenText}. Description: Pizza night Budget line: Pack night Keep the server’s ` +
     'Download this device’s copy first Pick a version of each entry, then save.', 'the chooser');
   ok(/role="dialog" aria-modal="true" aria-label="Two versions of the same ledger entries"/.test(html), 'not a dialog');
-  ok(/data-act="sync-row-pick:mine:l2"[^>]*>Keep this version/.test(html) && /aria-pressed="false" data-act="sync-row-pick:theirs:l2"/.test(html), 'the buttons');
+  ok(/data-act="sync-row-pick:mine:l2"[^>]*>Keep mine/.test(html) && /aria-pressed="false" data-act="sync-row-pick:theirs:l2"/.test(html), 'the buttons');
   // Picked: said on the button, and the save offered (two taps).
   ({ html } = c6Chooser(items, { l2: 'theirs' }));
-  ok(/class="btn small primary" aria-pressed="true" data-act="sync-row-pick:theirs:l2">✓ Keeping this version</.test(html), 'the pick is not shown');
+  ok(/class="btn small primary" aria-pressed="true" data-act="sync-row-pick:theirs:l2">✓ Keeping the server’s</.test(html), 'the pick is not shown');
   ok(/data-act="sync-rows-save">Save my choices</.test(html) && !/Pick a version of each entry/.test(html), 'no save');
   ({ html } = c6Chooser(items, { l2: 'theirs' }, "ui.armed = 'sync-rows-save';"));
   ok(/class="btn danger armed" data-act="sync-rows-save">Tap again to save</.test(html), 'the second tap');
@@ -27907,10 +27974,10 @@ test('C6: the chooser names each entry, shows both versions with what differs an
   const t = c6Text(c6Chooser(two).html);
   ok(t.includes('3 ledger entries were changed on this device and on another one, and the versions don’t match. Pick the version to keep for each. Nothing from this device is shared until you do.'), 'three: ' + t);
   ok(t.includes('Pizza · Sep 10 One device ticked this entry against the bank statement while the other changed its amount, date or in/out. Keep the version that ' +
-    'matches the bank statement. If you keep the changed one, tick it again once it matches. On this device No change to this entry was recorded on this copy. ' +
-    'Amount: $45.00 Ticked: no Keep this version In the pack’s shared copy No change to this entry was recorded on this copy. Amount: $40.00 Ticked: yes Keep this version'), 'money under a tick: ' + t);
-  ok(t.includes('On this device No change to this entry was recorded on this copy. Reads the same as the other version. They differ only in record-keeping details, such as who ' +
-    'entered it and when, so either can be kept. Keep this version'), 'stamps only');
+    'matches the bank statement. If you keep the changed one, tick it again once it matches. Your change on this device No change to this entry was recorded on this copy. ' +
+    'Amount: $45.00 Ticked: no Keep mine On the pack’s server No change to this entry was recorded on this copy. Amount: $40.00 Ticked: yes Keep the server’s'), 'money under a tick: ' + t);
+  ok(t.includes('Your change on this device No change to this entry was recorded on this copy. Reads the same as the other version. They differ only in record-keeping details, such as who ' +
+    'entered it and when, so either can be kept. Keep mine'), 'stamps only');
   // One choice of two entries (a reverse made on both): each named, and the latest change behind each side.
   const pair = [{ ids: ['l2', 'rv-l2'], rows: [{ id: 'l2', parts: ['off'], mine: row({ voidReason: 'Bounced' }), theirs: row({ voidReason: 'Never cashed' }),
     mineBy: c6Ev('a1', 'reverse', 'l2', 2, { by: 'Pat' }), theirsBy: c6Ev('b1', 'reverse', 'l2', 2, { by: 'Sam' }) },
@@ -27918,7 +27985,7 @@ test('C6: the chooser names each entry, shows both versions with what differs an
       mineBy: c6Ev('a0', 'reverse', 'l2', 1, { by: 'Pat' }), theirsBy: c6Ev('b2', 'reverse', 'l2', 3, { by: 'Alex' }) }] }];
   const pt = c6Text(c6Chooser(pair).html);
   // (Treasurer review of C6, 6, 7: the reversal's header without the date the two disagree on; said to go together; each line named.)
-  ok(/Pizza · Sep 10 · −\$40\.00 Pizza These 2 entries go together \(an entry and its reversal\), so one pick keeps both\. On this device Changed by Pat on [^.]*\. Pizza · Void reason: Bounced Pizza · Date: Oct 2 Keep this version In the pack’s shared copy Changed by Alex on [^.]*\. Pizza · Void reason: Never cashed Pizza · Date: Oct 3 Keep this version/.test(pt),
+  ok(/Pizza · Sep 10 · −\$40\.00 Pizza These 2 entries go together \(an entry and its reversal\), so one pick keeps both\. Your change on this device Changed by Pat on [^.]*\. Pizza · Void reason: Bounced Pizza · Date: Oct 2 Keep mine On the pack’s server Changed by Alex on [^.]*\. Pizza · Void reason: Never cashed Pizza · Date: Oct 3 Keep the server’s/.test(pt),
     'one choice, two entries: ' + pt);
   // Every value is escaped.
   const evil = [{ ids: ['x<'], rows: [{ id: 'x<', parts: ['content'], mine: row({ id: 'x<', description: '<img src=x>' }), theirs: row({ id: 'x<', description: '<b>' }),
@@ -27938,7 +28005,7 @@ test('C6 review: the chooser offers only the version that can be kept, and says 
   ok(t.includes('This entry was reconciled on one device while the other changed its amount, date or in/out. A reconciled entry’s money can’t be changed in place, ' +
     'so only the reconciled version can be kept. If the other figures are right, keep the reconciled version, then open the entry’s Detail and tap Reverse or correct. ' +
     'The fix is dated after the reconciled period, and that period stays as reconciled.'), 'the locked note: ' + t);
-  ok(t.includes('Ticked: no Can’t be kept: it changes the money of an entry reconciled through Sep 30. In the pack’s shared copy'), 'the period: ' + t);
+  ok(t.includes('Ticked: no Can’t be kept: it changes the money of an entry reconciled through Sep 30. On the pack’s server'), 'the period: ' + t);
   ok(!/sync-row-pick:mine:l2/.test(c6Chooser(locked('period', '2026-09-30')).html) && /sync-row-pick:theirs:l2/.test(c6Chooser(locked('period', '2026-09-30')).html), 'the buttons');
   ok(c6Text(c6Chooser(locked('statement', '2026-09-30')).html).includes('Can’t be kept: it changes the money of an entry on the Sep 30 statement.'), 'the statement');
   t = c6Text(c6Chooser(locked('pair', '')).html);
@@ -27975,7 +28042,7 @@ test('C6 re-check (N2): entries locked on opposite sides get one button, keeping
   let { html, ctx } = c6Chooser(split);
   eq(html.match(/data-act="sync-row-pick:[^"]*"/g), ['data-act="sync-row-pick:mine:l2"'], 'the buttons');
   ok(/aria-pressed="false" data-act="sync-row-pick:mine:l2">Keep each entry’s reconciled version</.test(html), 'the one button');
-  ok(!/Keep this version|Keeping this version|Can’t be kept/.test(html), 'a two-button pick');
+  ok(!/Keep mine|Keep the server’s|Keeping mine|Keeping the server’s|Can’t be kept/.test(html), 'a two-button pick');
   ok(c6Text(html).includes('These entries were reconciled on different devices, so each keeps its own reconciled version. The entry and its reversal may then no longer ' +
     'cancel each other: after you save, see “The ledger needs a look” on Money · Ledger.'), 'the note: ' + c6Text(html));
   eq([vm.runInContext('rowItemLock(sync.rowChoice.items[0])', ctx), vm.runInContext('rowItemSplit(sync.rowChoice.items[0])', ctx)], [null, true], 'the item');
@@ -27991,7 +28058,7 @@ test('C6 re-check (N2): entries locked on opposite sides get one button, keeping
   const one = [{ ids: ['l2', 'rv-l2'], rows: [split[0].rows[0], Object.assign({}, split[0].rows[1], { lock: { side: '', kind: 'both', date: '2026-10-05', both: { mine: '2026-09-30', theirs: '2026-10-05' } } })] }];
   ({ html, ctx } = c6Chooser(one));
   eq(html.match(/data-act="sync-row-pick:[^"]*"/g), ['data-act="sync-row-pick:mine:l2"'], 'one side locked');
-  ok(/>Keep this version</.test(html) && /Can’t be kept: it changes the money of an entry on the Sep 30 statement\./.test(html), 'one side locked: ' + c6Text(html));
+  ok(/>Keep (mine|the server’s)</.test(html) && /Can’t be kept: it changes the money of an entry on the Sep 30 statement\./.test(html), 'one side locked: ' + c6Text(html));
   eq(vm.runInContext('[rowItemLock(sync.rowChoice.items[0]).side, rowItemSplit(sync.rowChoice.items[0])]', ctx), ['theirs', false], 'one side locked: the item');
 });
 
@@ -28008,7 +28075,7 @@ test('Quick check of N1–N5 (3): entries locked on opposite sides beside one lo
   const mixed = [{ ids: ['l2', 'rv-l2', 'co-l2'], rows }];
   const { html, ctx } = c6Chooser(mixed);
   eq(html.match(/data-act="sync-row-pick:[^"]*"/g), ['data-act="sync-row-pick:mine:l2"', 'data-act="sync-row-pick:theirs:l2"'], 'the buttons');
-  ok(/>Keep this version</.test(html) && !/Keep each entry’s reconciled version|Can’t be kept/.test(html), 'one button, or a side barred: ' + c6Text(html));
+  ok(/>Keep (mine|the server’s)</.test(html) && !/Keep each entry’s reconciled version|Can’t be kept/.test(html), 'one button, or a side barred: ' + c6Text(html));
   ok(c6Text(html).includes('Some of these entries were reconciled on one device and some on the other. Whichever version you keep, each reconciled entry keeps ' +
     'its reconciled version, and your pick decides the rest. The entry and its reversal may then no longer cancel each other: after you save, ' +
     'see “The ledger needs a look” on Money · Ledger.'), 'the note: ' + c6Text(html));
@@ -28044,20 +28111,20 @@ test('C6 review: a pick’s history line, the statement and reversal it chose be
   const items = [{ ids: ['l2'], rows: [{ id: 'l2', parts: ['off'], mine: row({ id: 'l2', reconciled: true, statementId: 'st-2' }),
     theirs: row({ id: 'l2', reconciled: true, reversedBy: 'rv-y' }), mineBy: null, theirsBy: null, money: false, lock: null }] }];
   let t = c6Text(c6Chooser(items, {}, `sync.rowChoice.remote.json = ${JSON.stringify(JSON.stringify(other))};`).html);
-  ok(t.includes('On this device No change to this entry was recorded on this copy. Statement: Oct 31 Reversed by: (none) Keep this version') &&
-    t.includes('In the pack’s shared copy No change to this entry was recorded on this copy. Statement: (none) Reversed by: Reversal of “Dues” Keep this version'),
+  ok(t.includes('Your change on this device No change to this entry was recorded on this copy. Statement: Oct 31 Reversed by: (none) Keep mine') &&
+    t.includes('On the pack’s server No change to this entry was recorded on this copy. Statement: (none) Reversed by: Reversal of “Dues” Keep the server’s'),
     'named from the other copy: ' + t);
   // (7) The header shows only what both versions agree on.
   const hd = (m, th) => c6Text(c6Chooser([{ ids: ['l2'], rows: [{ id: 'l2', parts: ['content'], mine: row(Object.assign({ id: 'l2' }, m)), theirs: row(Object.assign({ id: 'l2' }, th)),
-    mineBy: null, theirsBy: null, money: false, lock: null }] }]).html).split(' On this device')[0].split('change history. ')[1];
+    mineBy: null, theirsBy: null, money: false, lock: null }] }]).html).split(' Your change on this device')[0].split('change history. ')[1];
   eq([hd({}, { lineId: 'L1' }), hd({ amountCents: 4500 }, {}), hd({ direction: 'in' }, {}), hd({ date: '2026-09-11' }, {})],
     ['Pizza · Sep 10 · −$40.00', 'Pizza · Sep 10', 'Pizza · Sep 10', 'Pizza'], 'the headers');
   // (8) With nothing logged behind it: on the side whose book locked the period, what that side did.
   const lk = [{ ids: ['l2'], rows: [{ id: 'l2', parts: ['content', 'tick'], mine: row({ id: 'l2', amountCents: 4500 }), theirs: row({ id: 'l2' }),
     mineBy: null, theirsBy: null, money: true, lock: { side: 'mine', kind: 'period', date: '2026-09-30' } }] }];
   t = c6Text(c6Chooser(lk).html);
-  ok(t.includes('On this device No change to this entry was recorded on this copy.') &&
-    t.includes('In the pack’s shared copy The entry itself wasn’t changed there. Its period was reconciled through Sep 30.'), 'who, under a lock: ' + t);
+  ok(t.includes('Your change on this device No change to this entry was recorded on this copy.') &&
+    t.includes('On the pack’s server The entry itself wasn’t changed there. Its period was reconciled through Sep 30.'), 'who, under a lock: ' + t);
 });
 
 test('C6: parents never see the chooser or a resolve, and the reload gate refuses its buttons', () => {
@@ -28095,7 +28162,9 @@ test('C6, Firestore: a save finds what changed on this device while the chooser 
   eq(b.get('rowChoice()'), null, 'a choice read against another record');
   // After the save, the ledger-look toast, and the fates, as a sync's.
   // (C6 reviews: and what the merge said needs a look, before the toast counts it.)
-  ok(/showToast\(ROW_PICKS_SAVED\);\n\s+noteLedgerLookFromMerge\(look\);[^\n]*\n\s+noteLedgerLookAfterSync\(lookWas, false\);\n\s+noteReconciledFates\(\{ kept: kept, lost: lost, split: split \}\);/.test(slice('saveRowChoices')), 'what the save says');
+  // (Sync conflicts, Keith 2026-10-02 — the toast is ROW_PICKS_SAVED when entries were picked, held in saidWhat.)
+  ok(/var saidWhat = rc\.items\.length \? ROW_PICKS_SAVED : /.test(slice('saveRowChoices')) &&
+    /showToast\(saidWhat\);\n\s+noteLedgerLookFromMerge\(look\);[^\n]*\n\s+noteLedgerLookAfterSync\(lookWas, false\);\n\s+noteReconciledFates\(\{ kept: kept, lost: lost, split: split \}\);/.test(slice('saveRowChoices')), 'what the save says');
 });
 
 // Phase 3, C6 — the charges, on the page's own syncCharges and everything it reads.
@@ -28130,10 +28199,13 @@ test('C6, Firestore: a tier make-up recorded on one device waives the charge in 
   // Before C6 the charges went as A had them: Ada billed $80 beside the make-up that paid for Bronze.
   ({ a, b, server } = c6FsPair(C6_DUES()));
   a.run(fns); b.run(fns);
-  a.run(slice('syncPush').replace('      if (mergedN > 0) syncCharges();\n', ''));
+  // (Sync conflicts, Keith 2026-10-02 — the line now re-syncs after a three-way merge too.)
+  a.run(slice('syncPush').replace('      if (mergedN > 0 || (three && three.theirsN > 0)) syncCharges();\n', ''));
   b.run(`${C6_MAKEUP('mk1', 's1')}; syncCharges(); commit()`); b.push();
   a.run(B2); a.hear(); a.push();
-  eq(c6Waived(server()), [['c1', ''], ['c2', '']], 'control: without the re-sync');
+  // (Sync fix round 1, treasurer 1 — the charges merge charge by charge now, so the waiver B made comes across even
+  // without the re-sync; before, A's charges went whole, unwaived. Its base: both devices started on rev 3.)
+  eq(c6Waived(server()), [['c1', 't1'], ['c2', '']], 'control: without the re-sync, the per-charge merge alone');
 });
 
 test('Decision 23: a charge forgiven on another device but not on this one is named, with its family, on “The ledger needs a look” of the device that merged', () => {
@@ -28148,6 +28220,9 @@ test('Decision 23: a charge forgiven on another device but not on this one is na
   const { a, b, server } = c6FsPair(Object.assign(C6_DUES(), fams));
   const fns = declClosure(['chargeLookName'], ['state', 'ui', 'sync', 'render', 'save', 'showToast', 'uid', 'todayISO', 'commit', 'scheduleSyncPush']).map(decl).join('\n');
   b.run(fns);
+  // (Sync fix round 1, treasurer 1 — Keith's per-charge merge replaces decision 23: a device that knows its base takes the
+  // forgiveness, as below. This B has no base, as a device from before it: its charges still go whole, and it says so.)
+  b.run('syncLocal.base = null');
   a.run(`state.charges[0].forgiven = ${JSON.stringify(fg)}; commit()`); a.push();
   b.run(B2); b.hear(); b.push();
   const note = 'Ada and Bo’s “Dues” charge was forgiven on another device, but that was lost when this device saved, so the family owes it again. Check it on Money · Dues & fees and forgive it again if it should be.';
@@ -28183,6 +28258,12 @@ test('Decision 23: a charge forgiven on another device but not on this one is na
   eq(JSON.parse(JSON.stringify(px.ledgerEventParts(fgEv, server().charges[0].id))), {}, 'the merge reads it as a change to the entry');
   // Named for a leader only: the parent view never carries it (the card is Money · Ledger's).
   ok(!/chargesForgivenThere|chargeLookName|lookNotes|chargeForgivenSummary|ledgerLog/.test(codeOnly(BPV())), 'buildParentView reads it');
+  // (Sync fix round 1, treasurer 1) — with its base, B takes A's forgiveness: nothing lost, nothing to say.
+  const k = c6FsPair(Object.assign(C6_DUES(), fams));
+  k.b.run(fns);
+  k.a.run(`state.charges[0].forgiven = ${JSON.stringify(fg)}; commit()`); k.a.push();
+  k.b.run(B2); k.b.hear(); k.b.push();
+  eq([k.server().charges.map((c) => !!c.forgiven), k.b.get('sync.lookNotes || []')], [[true, false], []], 'B with its base');
 });
 
 test('Quick check of N1–N5 (1): a forgiveness with a long reason, lost to two merges, is in the change history once', () => {
@@ -28193,6 +28274,7 @@ test('Quick check of N1–N5 (1): a forgiveness with a long reason, lost to two 
   const lost = (st) => st.ledgerLog.filter((e) => e.why === 'Forgiven on another device. That forgiveness was not kept when this device saved.');
   // A forgives Ada's dues and saves; B saves over it (merge 1). A saves its forgiven copy again; B saves over it again (merge 2).
   a.run(`state.charges[0].forgiven = ${JSON.stringify(fg)}; commit()`); a.push();
+  b.run('syncLocal.base = null');   // (sync fix round 1: a device with no base, whose charges go whole; with one, it is kept)
   b.run(B2); b.hear(); b.push();
   eq(lost(b.get('state')).map((e) => e.f.forgiven[0].length), [200], 'the first merge');
   a.run(B1); a.push();
@@ -28307,7 +28389,9 @@ test('C6, Firestore: a year closed out separately on two devices is not merged; 
   b.run(slice('syncPush').replace('if (clobbered && (seasonMoved(remote) || seasonClosedTwice(remote)))', 'if (clobbered && seasonMoved(remote))'));
   a.run(C6_CLOSE('A', 1)); a.push();
   b.run(C6_CLOSE('B', 2)); b.hear(); b.push();
-  eq([server().ledger.map((e) => e.id).sort(), server().archives.map((x) => x.id)], [['co-A', 'co-B'], ['arc-B']], 'control: the page before C6');
+  // (Sync conflicts, Keith 2026-10-02 — the three-way merge adds the server's new past season, so both 2026 archives
+  // are kept now; both credits are still counted, which is what seasonClosedTwice prevents.)
+  eq([server().ledger.map((e) => e.id).sort(), server().archives.map((x) => x.id)], [['co-A', 'co-B'], ['arc-B', 'arc-A']], 'control: the page before C6');
 });
 
 atest('C6, api: a year closed out separately on two devices is not merged; the leader keeps one whole copy', async () => {
@@ -33030,7 +33114,8 @@ test('item 11: DESIGN-money.md has the posting rule, and the format was raised f
   const doc = readFileSync(join(ROOT, 'DESIGN-money.md'), 'utf8');
   ok(/#### Storefront cash deposits/.test(doc) && /Storefront cash deposit/.test(doc) && /no budget line/.test(doc) && /never Funds in/i.test(doc), 'the posting rule');
   ok(!/\*\*Not built yet: the deposit\.\*\*/.test(doc), '§3.5 still says the deposit is not built');
-  ok(/4 is this build's\s*\/\/ record: a ledger entry can say it is a storefront cash deposit/.test(SCRIPT), 'PACK_FORMAT does not say what 4 is');
+  // (Sync conflicts, Keith 2026-10-02 — 5 is this build's now; 4's reason stays, as the one before.)
+  ok(/4 was this record: a ledger entry can say it is a storefront cash deposit/.test(SCRIPT), 'PACK_FORMAT does not say what 4 is');
 });
 
 /* ================================================================
@@ -33332,6 +33417,743 @@ test('wagon cutover: the setting says which scouts’ reward tiers would change 
     'Moved to Jul 1, reward tiers would change for: Ada Example (none → Bronze).', 'the words');
   eq(vm.runInContext("wagonCutoverTierText([], 'Jul 1')", ctx), 'Moved to Jul 1, no scout’s reward tier would change.', 'nothing changes');
   ok(/wagonCutoverTierText\(wagonCutoverTierChanges\(programYearStartISO\(state\.budget\.programYear\)\)/.test(slice('seasonSetupCard')), 'the setting does not say');
+});
+
+/* ================================================================
+   Sync conflicts (Keith, 2026-10-02) — ask about a conflict only when there is one. The device keeps
+   the server copy it last took in (the base) and whether it has a change the server hasn't accepted
+   (unsynced); the first answer asks only about a real conflict (syncFirstPlan); a push over a server
+   copy that moved merges three ways (syncThreeWay); the chooser lists exactly what both changed; a
+   leader's own version kept over a server change is logged (state.syncLog). "sync base: …".
+   ================================================================ */
+const SB = () => sandbox([...SYNC_BASE_FNS, 'ledgerStampClean']);
+// A sandbox of the base and marker over a fake localStorage (`store`), with `failBase`: a full one for the base.
+function sbStore(store, failBase) {
+  const ctx = vm.createContext({});
+  vm.runInContext(`var store = ${JSON.stringify(store || {})}, sync = { docId: 'P' };
+    var localStorage = { getItem: function (k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
+      setItem: function (k, v) { if (${!!failBase} && k === SYNC_BASE_KEY) throw new Error('QuotaExceededError'); store[k] = String(v); },
+      removeItem: function (k) { delete store[k]; } };
+    ${SYNC_BASE_FNS.map(decl).join('\n')}`, ctx);
+  return ctx;
+}
+
+test('sync base: the base and the marker are kept under KEY + "-base" and KEY + "-unsynced", outside the pack record', () => {
+  const KEY = /var KEY = '([^']+)'/.exec(SCRIPT)[1], x = SB();
+  eq([x.SYNC_BASE_KEY, x.SYNC_UNSYNCED_KEY], [KEY + '-base', KEY + '-unsynced'], 'the keys');
+  ok(KEY === 'pack-popcorn-ledger-v1', 'the record’s own key changed');
+  // Written and read back, for this pack only.
+  const c = sbStore();
+  vm.runInContext("syncBaseSet({ rev: 7, json: '{\"a\":1}', updatedAt: 1790000000000 }); syncMarkUnsynced();", c);
+  eq(JSON.parse(vm.runInContext('store[SYNC_BASE_KEY]', c)), { doc: 'P', rev: 7, at: new Date(1790000000000).toISOString(), json: '{"a":1}' }, 'the base as stored');
+  eq(vm.runInContext("[store[SYNC_UNSYNCED_KEY], syncUnsynced()]", c), ['1', true], 'the marker');
+  const r = sbStore(vm.runInContext('store', c));   // a reload
+  eq(vm.runInContext('[syncBaseGet().rev, syncUnsynced()]', r), [7, true], 'not read back after a reload');
+  eq(vm.runInContext("sync.docId = 'Q'; syncBaseGet()", r), null, 'another pack’s base was used');
+  vm.runInContext("sync.docId = 'P'; syncClearUnsynced()", r);
+  eq(vm.runInContext('[syncUnsynced(), SYNC_UNSYNCED_KEY in store, !!syncBaseGet()]', r), [false, false, true], 'cleared');
+  vm.runInContext('syncBaseForget()', r);
+  eq(vm.runInContext('[syncBaseGet(), Object.keys(store)]', r), [null, []], 'forgotten with the record');
+  // Unreadable storage: nobody can say, so the first answer asks (null), as before.
+  const u = vm.createContext({});
+  vm.runInContext(`var sync = { docId: 'P' }; var localStorage = { getItem: function () { throw new Error('denied'); } };
+    ${SYNC_BASE_FNS.map(decl).join('\n')}`, u);
+  eq(vm.runInContext('[syncUnsynced(), syncBaseGet()]', u), [null, null], 'unreadable storage');
+  // Never in the pack record, never published: buildParentView (an allowlist) names neither, nor the log.
+  ok(!/syncLog|syncLocal|SYNC_BASE_KEY/.test(codeOnly(BPV())), 'the family view reads the sync log or the base');
+  ok(!/state\.syncLocal|state\.unsynced|state\.base\b/.test(codeOnly(SCRIPT)), 'the base or the marker is kept in the pack record');
+});
+
+test('sync base: a full localStorage keeps the base for the session only, and after a reload the device is asked as before', () => {
+  const c = sbStore({ 'pack-popcorn-ledger-v1-base': JSON.stringify({ doc: 'P', rev: 2, at: '', json: '{}' }) }, true);
+  vm.runInContext("syncBaseSet({ rev: 9, json: '{\"b\":2}' }, true); syncMarkUnsynced();", c);
+  eq(vm.runInContext('[syncBaseGet().rev, SYNC_BASE_KEY in store, store[SYNC_UNSYNCED_KEY]]', c), [9, false, '1'],
+    'the session lost its base, or a stale one was left in storage');
+  const r = sbStore(vm.runInContext('store', c));
+  eq(vm.runInContext("syncFirstPlan({ unsynced: syncUnsynced(), base: syncBaseGet(), localRev: 9, remoteRev: 11, apart: false })", r), 'choose',
+    'after the reload, unsaved work with no base was not asked about');
+});
+
+test('sync base: the first answer asks only about a real conflict (syncFirstPlan), and the rule is wired in', () => {
+  const rows = [
+    // [unsynced, base rev, local rev, server rev, apart] → plan
+    [false, 3, 3, 5, false, 'adopt'],     // the phone with an old copy and nothing unsaved
+    [false, 5, 5, 5, false, 'adopt'],
+    [false, null, 3, 5, false, 'adopt'],  // rule d: a device from before the base, nothing to say it has unsaved work
+    [false, null, 7, 5, false, 'choose'], // …but ahead of the server: ambiguous
+    [false, 7, 7, 5, false, 'choose'],    // the server went back past this device's base
+    [true, 5, 5, 5, false, 'push'],       // unsaved changes, nobody else saved
+    [true, 3, 3, 5, false, 'merge'],      // unsaved changes, and the server moved
+    [true, 3, 3, 5, true, 'choose'],      // …across a close-out
+    [true, null, 3, 5, false, 'choose'],  // unsaved, no base (pre-change device, or storage full)
+    [null, 3, 3, 5, false, 'choose']];    // storage unreadable
+  const run = (src) => {
+    const x = vm.createContext({});
+    vm.runInContext(src, x);
+    return rows.map((r) => vm.runInContext(`syncFirstPlan(${JSON.stringify({ unsynced: r[0], base: r[1] === null ? null : { rev: r[1] }, localRev: r[2], remoteRev: r[3], apart: r[4] })})`, x));
+  };
+  const src = decl('syncFirstPlan');
+  eq(run(src), rows.map((r) => r[5]), 'the plans');
+  // Mutation check: "not unsynced means adopt" broken, the old-copy phone is no longer taken quietly.
+  const broken = src.replace("if (p.base) return p.base.rev <= p.remoteRev ? 'adopt' : 'choose';", "if (p.base) return 'choose';");
+  ok(broken !== src && run(broken)[0] !== 'adopt', 'the table does not catch the rule broken');
+  // The close-out check is asked only when it decides.
+  let asked = 0;
+  const x = sandbox(['syncFirstPlan']);
+  x.syncFirstPlan({ unsynced: false, base: { rev: 3 }, remoteRev: 5, apart: () => { asked += 1; return true; } });
+  x.syncFirstPlan({ unsynced: true, base: { rev: 5 }, remoteRev: 5, apart: () => { asked += 1; return true; } });
+  eq(asked, 0, 'asked when nothing hangs on it');
+  // Wired: onRemoteSnap asks the plan after the viewer's rule, and takes, sends or merges by it.
+  const snap = slice('onRemoteSnap');
+  ok(snap.indexOf('var plan = syncFirstPlan(') > snap.indexOf("if (!canEdit() && (sync.membersFromServer || !sync.membersHeard)) { adoptRemote(d, {}); return; }"), 'the plan is asked before the viewer’s rule');
+  ok(/if \(plan === 'adopt'\) \{ adoptRemote\(d, \{ toast: true, toastText: SYNC_UPDATED \}\); return; \}/.test(snap), 'adopt is not quiet adoption');
+  ok(/if \(plan === 'merge'\) sync\.clobber = true;/.test(snap), 'a merge is not flagged for the push');
+});
+
+// Three copies of a small pack, made from one by a change each (`fb`, `fm`, `ft`: functions of a copy).
+const TW_SEED = () => ({ packName: 'Pack 569', goalCents: 100000,
+  scouts: [{ id: 's1', name: 'Ada', den: 'Wolf' }, { id: 's2', name: 'Bo', den: 'Bear' }],
+  leaders: [{ id: 'L1', name: 'Pat', dens: ['Wolf'] }, { id: 'L2', name: 'Sam', dens: [] }],
+  events: [{ id: 'e1', kind: 'activity', name: 'Hike', date: '2026-10-10', location: 'Park' }],
+  storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-05', blocks: [{ id: 'b1', start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }] }] }],
+  budget: { programYear: 2026, activities: [{ id: 'a1', name: 'Campout', estCents: 5000 }], expenses: [] },
+  rsvps: { e1: { s1: { s: 'yes', adults: 1 } } },
+  book: { year: 2026, openingCents: 1000, reconciledThrough: '2026-08-31' },
+  ledger: [{ id: 'l1', amountCents: 100 }], charges: [{ id: 'c1' }], gone: { scouts: {} }, syncLog: [],
+  archives: [{ id: 'arc1', kind: 'season', year: 2025 }] });
+function tw(fm, ft, picks, src) {
+  const x = vm.createContext({});
+  vm.runInContext(src || SYNC_BASE_FNS.map(decl).join('\n'), x);
+  const b = TW_SEED(), m = TW_SEED(), t = TW_SEED();
+  if (fm) fm(m);
+  if (ft) ft(t);
+  x.args = [b, m, t, picks || {}];
+  const before = JSON.stringify(x.args);
+  const r = J(vm.runInContext('syncThreeWay(args[0], args[1], args[2], args[3])', x));
+  ok(JSON.stringify(x.args) === before, 'syncThreeWay changed what it was given');
+  return r;
+}
+
+test('sync base: what only one side changed is taken from it, record by record, and nothing is asked', () => {
+  const r = tw((m) => {
+    m.scouts[0].den = 'Bear';                                       // a field of a record
+    m.events.push({ id: 'e2', kind: 'activity', name: 'Pumpkins', date: '2026-10-24' });   // a record added
+    m.rsvps.e1.s2 = { s: 'no', adults: 0 };                         // a map entry added
+    m.leaders[0].dens.push('Tiger');                                // a set, added to
+    m.storefronts[0].blocks[0].assignments.push({ scoutId: 's2', weight: 1 });   // a sign-up, by scout
+  }, (t) => {
+    t.scouts[1].name = 'Bob';
+    t.events[0].location = 'Lake';
+    t.budget.activities[0].estCents = 6000;
+    t.leaders[0].dens.push('Bear');
+    t.leaders.splice(1, 1);                                         // a leader deleted (no deletion marks)
+    t.book.openingCents = 2000;                                     // the opening balance: merged
+    t.book.reconciledThrough = '2026-09-30';                        // the lock: its own rule, this device's here
+    t.ledger.push({ id: 'l2' }); t.charges = []; t.gone.scouts.zz = 5;   // left to the rules that settle them
+    t.archives.push({ id: 'arc2', kind: 'trails-end', year: 2026 });
+  });
+  eq(r.items, [], 'asked about something only one side changed');
+  const g = r.merged;
+  eq([g.scouts.map((s) => [s.id, s.name, s.den]), g.events.map((e) => [e.id, e.location || '']), g.rsvps.e1, g.budget.activities[0].estCents],
+    [[['s1', 'Ada', 'Bear'], ['s2', 'Bob', 'Bear']], [['e1', 'Lake'], ['e2', '']], { s1: { s: 'yes', adults: 1 }, s2: { s: 'no', adults: 0 } }, 6000], 'the records');
+  eq([g.leaders.map((l) => [l.id, l.dens]), g.storefronts[0].blocks[0].assignments.map((a) => a.scoutId)], [[['L1', ['Wolf', 'Tiger', 'Bear']]], ['s1', 's2']], 'the set and the sign-ups');
+  eq([g.book.openingCents, g.book.reconciledThrough], [2000, '2026-08-31'], 'the book');
+  eq(['ledger', 'gone', 'syncLog', 'rev', 'fmt'].filter((k) => k in g), [], 'a key the rules settle was merged here');
+  eq(g.charges, [], 'the charges: the server removed c1, this device left it as it was');
+  eq(g.archives.map((a) => a.id), ['arc1', 'arc2'], 'a past season the server added');
+  eq([r.mineN > 0, r.theirsN > 0], [true, true], 'the counts');
+});
+
+test('sync base: what both changed differently is a conflict, one item a thing, and nothing else is', () => {
+  const both = (m, t) => tw(m, t);
+  const keys = (r) => r.items.map((it) => it.key);
+  const r = both((m) => {
+    m.scouts[0].den = 'Bear'; m.scouts[0].name = 'Addie';
+    m.goalCents = 120000;
+    m.rsvps.e1.s1.s = 'no';
+    m.storefronts[0].blocks[0].assignments[0].weight = 2;
+    m.events = [];                                                  // deleted here, changed there
+    m.packName = 'Pack 569 (same)';
+  }, (t) => {
+    t.scouts[0].den = 'Tiger'; t.scouts[0].name = 'Addie';          // the same name on both: no conflict
+    t.goalCents = 90000;
+    t.rsvps.e1.s1.s = 'maybe';
+    t.storefronts[0].blocks[0].assignments[0].weight = 3;
+    t.events[0].date = '2026-10-11';
+    t.packName = 'Pack 569 (same)';
+  });
+  eq(keys(r).sort(), ['.events#e1', '.goalCents', '.rsvps.e1.s1', '.scouts#s1', '.storefronts#sf1.blocks#b1.assignments#s:s1'].sort(), 'the conflicts');
+  const s1 = r.items.find((it) => it.key === '.scouts#s1');
+  eq(s1.fields.map((f) => [f.path, f.base, f.mine, f.theirs]), [[['den'], 'Wolf', 'Bear', 'Tiger']], 'the scout’s');
+  eq(r.merged.scouts[0].name, 'Addie', 'a change both made the same way');
+  // Picks: the server's for the scout, this device's for the rest.
+  const p = tw((m) => { m.scouts[0].den = 'Bear'; m.goalCents = 1; }, (t) => { t.scouts[0].den = 'Tiger'; t.goalCents = 2; }, { '.scouts#s1': 'theirs', '.goalCents': 'mine' });
+  eq([p.merged.scouts[0].den, p.merged.goalCents], ['Tiger', 1], 'the picks');
+  // Mutation check: the detector broken (a conflict quietly kept as this device's), nothing is asked.
+  const src = SYNC_BASE_FNS.map(decl).join('\n'), broken = src.replace('      return conflict(path, b, m, t);', '      return clone(m);');
+  ok(broken !== src && tw((m) => { m.goalCents = 1; }, (t) => { t.goalCents = 2; }, {}, broken).items.length === 0, 'the test does not catch a broken detector');
+});
+
+test('sync base: in a list with deletion marks, a delete is left to the marks, and a delete against a change is asked', () => {
+  // The server deleted Bo; this device didn't touch him: kept here, for the marks to take (dropScout cascades).
+  let r = tw(null, (t) => { t.scouts.splice(1, 1); t.gone.scouts.s2 = 5; });
+  eq([r.items, r.merged.scouts.map((s) => s.id)], [[], ['s1', 's2']], 'the server’s delete');
+  // This device deleted Bo: gone.
+  r = tw((m) => { m.scouts.splice(1, 1); }, null);
+  eq(r.merged.scouts.map((s) => s.id), ['s1'], 'this device’s delete');
+  // Deleted on the server, changed here: asked, as a delete.
+  r = tw((m) => { m.scouts[1].den = 'Lion'; }, (t) => { t.scouts.splice(1, 1); t.gone.scouts.s2 = 5; });
+  eq(r.items.map((it) => [it.key, it.gone, it.goneId, it.deleted]), [['.scouts#s2', 'scouts', 's2', 'theirs']], 'the conflict');
+  eq(tw((m) => { m.scouts[1].den = 'Lion'; }, (t) => { t.scouts.splice(1, 1); t.gone.scouts.s2 = 5; }, { '.scouts#s2': 'theirs' }).merged.scouts.map((s) => s.id),
+    ['s1', 's2'], 'the server’s delete kept is left to its mark');
+  // A list without marks (the leaders): the server's delete is taken here.
+  eq(tw(null, (t) => { t.leaders.splice(0, 1); }).merged.leaders.map((l) => l.id), ['L2'], 'a leader the server deleted');
+});
+
+test('sync base: the chooser names each item in plain words, money as money, and never an id', () => {
+  const x = sandbox([...SYNC_BASE_FNS, ...SYNC_WORDS_FNS]);
+  const m = TW_SEED(), t = TW_SEED(), b = TW_SEED();
+  m.scouts[0].den = 'Bear'; t.scouts[0].den = 'Tiger';
+  m.budget.activities[0].estCents = 7500; t.budget.activities[0].estCents = 6250;
+  m.rsvps.e1.s1.s = 'no'; t.rsvps.e1.s1.s = 'maybe';
+  m.storefronts[0].blocks[0].assignments[0].weight = 2; t.storefronts[0].blocks[0].assignments[0].weight = 3;
+  m.events[0].date = '2026-10-17'; t.events[0].date = '2026-10-11';
+  m.goalCents = 120000; t.goalCents = 90000;
+  m.leaders.splice(0, 1); t.leaders[0].name = 'Patricia';
+  const r = x.syncThreeWay(b, m, t, {});
+  const views = J(r.items.map((it) => x.syncItemView(it, [m, t, b])));
+  const by = {};
+  views.sort((p, q) => (p.title < q.title ? -1 : 1)).forEach((v) => { by[v.title] = v.lines.map((l) => [l.label, l.mine, l.theirs]); });
+  const want = {
+    'Scout · Ada': [['Den', 'Bear', 'Tiger']],
+    'Budget line · Campout': [['Estimate', '$75.00', '$62.50']],
+    'RSVP · Hike · Oct 17 · Ada': [['Reply', 'No', 'Maybe']],
+    'Storefront · Kroger · Oct 5 · shift 10:00 AM–12:00 PM · sign-up Ada': [['Share', '2', '3']],
+    'Calendar · Hike · Oct 17': [['Date', x.fmtDate('2026-10-17') + ', 2026', x.fmtDate('2026-10-11') + ', 2026']],
+    'Pack settings · Pack goal': [['', '$1,200.00', '$900.00']],
+    'Leader · Patricia': [['', 'Deleted', 'Changed: name']]
+  };
+  eq(by, Object.fromEntries(Object.keys(want).sort().map((k) => [k, want[k]])), 'the words');
+  const all = JSON.stringify(views);
+  ok(!/\b(s1|s2|e1|sf1|b1|a1|L1)\b/.test(all), 'an id is shown: ' + all);
+});
+
+test('sync base: the sync log is append-only, newest 500, with no email in it, and every merge keeps both copies’', () => {
+  const x = sandbox(['SYNC_LOG_MAX', 'normalizeSyncLog', 'mergeSyncLog', 'ledgerStampClean']);
+  const e = (i, o) => Object.assign({ id: 'sl-' + i, at: '2026-10-02T10:' + String(i % 60).padStart(2, '0') + ':00.000Z', byName: 'Pat', item: 'Scout · Ada', field: 'Den',
+    serverValue: 'Wolf', keptValue: 'Bear' }, o || {});
+  const got = J(x.normalizeSyncLog([e(2), e(1), e(1, { keptValue: 'twice' }), e(3, { byName: 'pat@example.com' }), 'junk', { at: 'no id' }]));
+  eq(got.map((g) => [g.id, g.byName, g.keptValue]), [['sl-1', 'Pat', 'Bear'], ['sl-2', 'Pat', 'Bear'], ['sl-3', 'a signed-in leader', 'Bear']], 'kept, in order, one each, no email');
+  eq(Object.keys(got[0]).sort(), ['at', 'baseValue', 'byName', 'byUid', 'field', 'how', 'id', 'item', 'kept', 'keptValue', 'key', 'mineValue', 'serverChangedAfter', 'serverChangedAt', 'serverValue'], 'the shape');
+  const many = Array.from({ length: 520 }, (_, i) => e(i, { at: '2026-10-02T10:00:00.' + String(i).padStart(3, '0') + 'Z' }));
+  const cut = J(x.normalizeSyncLog(many));
+  eq([cut.length, cut[0].id, cut[499].id], [500, 'sl-20', 'sl-519'], 'the newest 500');
+  eq(J(x.mergeSyncLog([e(1)], [e(2), e(1)])).map((g) => g.id), ['sl-1', 'sl-2'], 'merged');
+  // Normalized with the record, unioned in every merge and every plain save, and in the format raise.
+  ok(/d\.syncLog = normalizeSyncLog\(d\.syncLog\);/.test(slice('normalizeState')), 'normalizeState');
+  ok(/state\.syncLog = mergeSyncLog\(state\.syncLog, remote\.syncLog\);/.test(slice('mergeRemoteAppendOnly')), 'the merge');
+  ok(/state\.syncLog = mergeSyncLog\(state\.syncLog, normalizeSyncLog\(remoteParsed\.syncLog\)\);/.test(slice('syncPush')), 'a plain save');
+  ok(/5 is this build's\s*\/\/ record \(Keith, 2026-10-02\): state\.syncLog/.test(SCRIPT), 'PACK_FORMAT does not say what 5 is');
+});
+
+test('sync base, Firestore: on the page’s own normalizeState, changes to different things merge without asking, and keeping the server’s version writes nothing', () => {
+  // (This sandbox's storage has no getItem: the marker is read from memory, syncLocal.)
+  const { a, b, server, rev } = fsGonePair();
+  eq([a.get('syncBaseGet() && syncBaseGet().rev'), b.get('syncLocal.unsynced')], [3, false], 'the devices did not start on a base');
+  // Different things: merged, nothing asked, both kept (before, B's whole roster went back over A's change).
+  a.run("state.scouts[0].den = 'Tiger'; commit()"); a.push();
+  b.run("state.scouts[1].name = 'Bob'; commit()"); b.hear(); b.push();
+  eq([rev(), server().scouts.map((x) => [x.name, x.den]), b.get('[ui.overlay, syncBaseGet().rev, syncLocal.unsynced]')],
+    [5, [['Ada', 'Tiger'], ['Bob', 'Bear']], [null, 5, false]], 'the merge');
+  // The same thing: asked, nothing sent. Keeping the server's version, with nothing else of B's, writes nothing.
+  a.hear();
+  a.run("state.scouts[0].den = 'Lion'; commit()"); a.push();
+  b.run("state.scouts[0].den = 'Bear'; commit()"); b.hear(); b.push();
+  eq([rev(), b.get('rowChoice() && rowChoice().fields.map(function (it) { return it.key; })')], [6, ['.scouts#s1']], 'B was not asked, or sent');
+  const sets = b.get('txSets.length');
+  b.run("pickSyncItem(rowChoice(), '*', 'theirs'); saveRowChoices()"); b.push();
+  eq([rev(), b.get('txSets.length') - sets, b.get('[state.scouts[0].den, sync.dirty, syncLocal.unsynced, syncBaseGet().rev, !!sync.conflict]')],
+    [6, 0, ['Lion', false, false, 6, false]], 'keeping the server’s version wrote');
+  eq(server().syncLog, [], 'and logged');
+});
+
+// ---- On the page's real sync layer against the real server (the api client above). ----
+// (With the lists the page's normalizeState always fills in, which the api client's stand-in does not.)
+const SB_SEED = () => PACK_STATE({ scouts: [{ id: 's1', name: 'Ada', den: 'Wolf' }, { id: 's2', name: 'Bo', den: 'Bear' }],
+  events: [{ id: 'e1', name: 'Hike', date: '2026-10-10', location: 'Park' }], archives: [], closedBooks: [], closedGone: [], ledgerAside: [], ledgerLog: [], syncLog: [] });
+const SB_BASE = (rev, obj) => ({ doc: API_PACK, rev, at: '', json: JSON.stringify(obj) });
+const sbPuts = (c) => c.log.filter((l) => /^PUT \/P$/.test(l)).length;
+// A pack at rev 3 that another device has since saved as rev 5 (`theirs` changes the seed), and a phone that
+// last took in rev 3 (its base) with `mine` changes on it, and `unsynced` if it has not sent them.
+async function sbPhone(o) {
+  const w = await (await apiWorld()).seed();
+  w.state(3, SB_SEED());
+  const theirs = SB_SEED();
+  if (o.theirs) { o.theirs(theirs); apiSetPack(w, 5, Object.assign(theirs, { rev: 5 })); }
+  const mine = SB_SEED();
+  if (o.mine) o.mine(mine);
+  const ph = await apiClient(w, o.who || 'editor', { state: mine, base: SB_BASE(3, SB_SEED()), unsynced: !!o.unsynced });
+  if (o.before) ph.run(o.before);
+  await ph.start(800);
+  return { w, ph, server: () => serverState(w) };
+}
+const sbAsked = (c) => c.get('rowChoice() ? rowChoice().fields.map(function (it) { return it.key; }) : null');
+
+atest('sync base, api: a phone with an old copy and nothing unsaved takes the pack’s copy quietly, and writes nothing', async () => {
+  const { ph, server } = await sbPhone({ theirs: (t) => { t.scouts[1].den = 'Lion'; t.packName = 'Pack 569'; } });
+  eq([ph.get('[ui.overlay && ui.overlay.kind, !!sync.conflict, state.packName, state.rev, state.scouts[1].den]'), sbPuts(ph), server().rev],
+    [[null, false, 'Pack 569', 5, 'Lion'], 0, 5], 'the phone was asked, or wrote');
+  eq(ph.get('toasts'), [ph.get('SYNC_UPDATED')], 'what it said');
+  eq(ph.get('[syncBaseGet().rev, syncUnsynced()]'), [5, false], 'the base after');
+  // Control (mutation check, on the page itself): the rule "not unsynced means adopt" broken, the phone is asked.
+  const m = await sbPhone({ theirs: (t) => { t.scouts[1].den = 'Lion'; },
+    before: decl('syncFirstPlan').replace("if (p.base) return p.base.rev <= p.remoteRev ? 'adopt' : 'choose';", "if (p.base) return 'choose';") });
+  eq(m.ph.get('ui.overlay && ui.overlay.kind'), 'sync-conflict', 'control: the broken rule still took the copy quietly (the test proves nothing)');
+  // Nothing changed at all: nothing said.
+  const same = await sbPhone({});
+  eq([same.ph.get('toasts'), sbPuts(same.ph)], [[], 0], 'a copy that matched said something, or wrote');
+});
+
+atest('sync base, api: unsaved changes and nobody else saved: they go out as any save, without asking', async () => {
+  const w = await (await apiWorld()).seed();
+  w.state(3, SB_SEED());
+  const mine = SB_SEED();
+  mine.scouts[0].den = 'Bear';
+  const ph = await (await apiClient(w, 'editor', { state: mine, base: SB_BASE(3, SB_SEED()), unsynced: true })).start(800);
+  eq([ph.get('ui.overlay && ui.overlay.kind'), sbPuts(ph), serverState(w).rev, serverState(w).json.scouts[0].den], [null, 1, 4, 'Bear'], 'the offline change');
+  eq(ph.get('[syncBaseGet().rev, syncUnsynced(), sync.dirty]'), [4, false, false], 'after the save');
+});
+
+atest('sync base, api: unsaved changes and the server moved, on different things: merged without asking', async () => {
+  const { ph, server } = await sbPhone({ unsynced: true,
+    mine: (m) => { m.scouts[0].den = 'Bear'; m.events.push({ id: 'e2', name: 'Pumpkins', date: '2026-10-24' }); },
+    theirs: (t) => { t.scouts[1].name = 'Bob'; t.events[0].location = 'Lake'; } });
+  const s = server().json;
+  eq([ph.get('ui.overlay && ui.overlay.kind'), server().rev, s.scouts.map((x) => [x.name, x.den]), s.events.map((e) => [e.id, e.location || ''])],
+    [null, 6, [['Ada', 'Bear'], ['Bob', 'Bear']], [['e1', 'Lake'], ['e2', '']]], 'both sides’ changes');
+  eq([ph.get('[syncBaseGet().rev, syncUnsynced()]'), s.syncLog || []], [[6, false], []], 'after, and nothing logged');
+});
+
+atest('sync base, api: a change made offline that overlaps one on the server opens the chooser on exactly that, and nothing is sent', async () => {
+  const o = { unsynced: true,
+    mine: (m) => { m.scouts[0].den = 'Bear'; m.packName = 'Pack 569 Cubs'; },
+    theirs: (t) => { t.scouts[0].den = 'Tiger'; t.events[0].location = 'Lake'; } };
+  const { ph, server } = await sbPhone(o);
+  eq([ph.get('ui.overlay && ui.overlay.kind'), sbAsked(ph), ph.get('rowChoice().items.length'), sbPuts(ph), server().rev],
+    ['sync-conflict', ['.scouts#s1'], 0, 0, 5], 'the chooser');
+  // Keep mine: written, with the server's other change; logged, who and what was replaced.
+  ph.run("pickSyncItem(rowChoice(), '.scouts#s1', 'mine'); saveRowChoices()");
+  await settle([ph], 800);
+  let s = server().json;
+  eq([server().rev, s.scouts[0].den, s.packName, s.events[0].location], [6, 'Bear', 'Pack 569 Cubs', 'Lake'], 'keeping mine');
+  eq(s.syncLog.map((e) => [e.byName, e.item, e.field, e.serverValue, e.keptValue, typeof e.serverChangedAt, !!e.at]),
+    [['Test editor', 'Scout · Ada', 'Den', 'Tiger', 'Bear', 'string', true]], 'the log');
+  eq([ph.get('toasts[toasts.length - 1]'), ph.get('[ui.overlay, !!sync.conflict, syncUnsynced()]')], [ph.get('SYNC_PICKS_LOGGED'), [null, false, false]], 'after');
+  // Keep the server's, with another change of this device's: that one goes, the item is the server's, nothing logged.
+  const t2 = await sbPhone(o);
+  t2.ph.run("pickSyncItem(rowChoice(), '.scouts#s1', 'theirs'); saveRowChoices()");
+  await settle([t2.ph], 800);
+  s = t2.server().json;
+  eq([t2.server().rev, s.scouts[0].den, s.packName, s.syncLog || []], [6, 'Tiger', 'Pack 569 Cubs', []], 'keeping the server’s');
+  // Keep the server's, and nothing else of this device's: nothing is written at all.
+  const t3 = await sbPhone({ unsynced: true, mine: (m) => { m.scouts[0].den = 'Bear'; }, theirs: (t) => { t.scouts[0].den = 'Tiger'; } });
+  t3.ph.reset();
+  t3.ph.run("pickSyncItem(rowChoice(), '.scouts#s1', 'theirs'); saveRowChoices()");
+  await settle([t3.ph], 800);
+  eq([sbPuts(t3.ph), t3.server().rev, t3.ph.get('[state.scouts[0].den, state.rev, syncUnsynced(), sync.dirty, toasts[toasts.length - 1]]')],
+    [0, 5, ['Tiger', 5, false, false, t3.ph.get('SYNC_PICKS_SERVER')]], 'keeping the server’s wrote something');
+  // Unpicked: nothing is saved, and the chooser says so.
+  const t4 = await sbPhone(o);
+  t4.ph.run('saveRowChoices()');
+  await settle([t4.ph], 800);
+  eq([sbPuts(t4.ph), t4.ph.get('toasts[toasts.length - 1]')], [0, t4.ph.get('SYNC_PICK_NEEDED')], 'saved with nothing picked');
+});
+
+atest('sync base, api: "Keep all mine" and "Keep all the server’s" pick every item', async () => {
+  const o = { unsynced: true,
+    mine: (m) => { m.scouts[0].den = 'Bear'; m.events[0].location = 'Field'; },
+    theirs: (t) => { t.scouts[0].den = 'Tiger'; t.events[0].location = 'Lake'; } };
+  const a = await sbPhone(o);
+  eq(sbAsked(a.ph).sort(), ['.events#e1', '.scouts#s1'], 'two items');
+  a.ph.run("pickSyncItem(rowChoice(), '*', 'mine'); saveRowChoices()");
+  await settle([a.ph], 800);
+  let s = a.server().json;
+  eq([s.scouts[0].den, s.events[0].location, s.syncLog.map((e) => e.keptValue).sort()], ['Bear', 'Field', ['Bear', 'Field']], 'all mine');
+  const b = await sbPhone(o);
+  b.ph.reset();
+  b.ph.run("pickSyncItem(rowChoice(), '*', 'theirs'); saveRowChoices()");
+  await settle([b.ph], 800);
+  eq([sbPuts(b.ph), b.ph.get('[state.scouts[0].den, state.events[0].location]')], [0, ['Tiger', 'Lake']], 'all the server’s');
+  // The buttons, and the dispatch they reach.
+  ok(/data-act="sync-pick-all:mine">' \+ esc\(SYNC_KEEP_ALL_MINE\)/.test(slice('renderRowChooser')) && /data-act="sync-pick-all:theirs">' \+ esc\(SYNC_KEEP_ALL_THEIRS\)/.test(slice('renderRowChooser')), 'the buttons');
+  ok(/pickSyncItem\(ipc, act\.indexOf\('sync-pick-all:'\) === 0 \? '\*' : act\.slice/.test(slice('handleAction')), 'the dispatch');
+});
+
+atest('sync base, api: a viewer is never asked, and takes the pack’s copy', async () => {
+  const { ph } = await sbPhone({ who: 'viewer', unsynced: true, mine: (m) => { m.scouts[0].den = 'Bear'; }, theirs: (t) => { t.scouts[0].den = 'Tiger'; } });
+  eq([ph.get('[ui.overlay, !!sync.conflict, rowChoice(), state.scouts[0].den]'), sbPuts(ph)], [[null, false, null, 'Tiger'], 0], 'the viewer');
+});
+
+atest('sync base, api: a device from before the base takes the pack’s copy when nothing says it has unsaved work, and is asked when something does', async () => {
+  const w = await (await apiWorld()).seed();
+  w.state(5, Object.assign(SB_SEED(), { rev: 5, packName: 'Newer' }));
+  const old = await (await apiClient(w, 'editor', { state: SB_SEED() })).start(800);
+  eq([old.get('[ui.overlay && ui.overlay.kind, state.packName, syncBaseGet() && syncBaseGet().rev]'), sbPuts(old)], [[null, 'Newer', 5], 0], 'quietly');
+  const w2 = await (await apiWorld()).seed();
+  w2.state(5, Object.assign(SB_SEED(), { rev: 5, packName: 'Newer' }));
+  const dirty = await (await apiClient(w2, 'editor', { state: SB_SEED(), unsynced: true })).start(800);
+  eq([dirty.get('[ui.overlay && ui.overlay.kind, state.packName]'), sbPuts(dirty)], [['sync-conflict', 'Test Pack'], 0], 'asked, whole copy');
+});
+
+atest('sync base, api: with localStorage full, the session still merges three ways, and after a reload the device is asked as before', async () => {
+  const w = await (await apiWorld()).seed();
+  w.state(3, SB_SEED());
+  const full = "var realSet = localStorage.setItem; localStorage.setItem = function (k, v) { if (k === SYNC_BASE_KEY) throw new Error('QuotaExceededError'); realSet(k, v); };";
+  const ph = await apiClient(w, 'editor', { state: SB_SEED() });
+  ph.run(full);
+  await ph.start(800);
+  eq(ph.get('[syncBaseGet() && syncBaseGet().rev, SYNC_BASE_KEY in store]'), [3, false], 'the base in memory, none stored');
+  // Another device saves while this one has an edit: merged three ways, without asking.
+  apiSetPack(w, 4, Object.assign(SB_SEED(), { rev: 4, packName: 'Renamed' }));
+  ph.run("state.scouts[0].den = 'Bear'; commit()");
+  await settle([ph], 800);
+  eq([ph.get('ui.overlay && ui.overlay.kind'), serverState(w).rev, serverState(w).json.packName, serverState(w).json.scouts[0].den], [null, 5, 'Renamed', 'Bear'], 'the merge');
+  // A reload with an edit unsent and no base stored: the whole-copy chooser, as before this change.
+  ph.run("state.scouts[1].den = 'Lion'; save(); syncMarkUnsynced()");
+  apiSetPack(w, 6, Object.assign(SB_SEED(), { rev: 6, packName: 'Again' }));
+  const again = await (await apiClient(w, 'editor', { state: ph.get('state'), unsynced: true })).start(800);
+  eq([again.get('ui.overlay && ui.overlay.kind'), sbPuts(again)], ['sync-conflict', 0], 'after the reload');
+});
+
+test('sync base: the chooser of items is drawn phone-first, with both versions and the buttons, and the Pack tab lists the decisions', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`${[...C6_CHOOSER_FNS, ...SYNC_BASE_FNS, ...SYNC_WORDS_FNS, 'pickSyncItem', 'pickRowVersion', 'ledgerConflictSig', 'syncDecisionLine', 'SYNC_LOG_INTRO', 'renderSyncDecisions', 'arrOf', 'syncLogRoomNotice'].map(decl).join('\n')}
+    function ledgerLogNames() { return { line: function () { return ''; }, scout: function () { return ''; }, tier: function () { return ''; } }; }
+    var localStorage = { getItem: function () { return null; }, setItem: function () {}, removeItem: function () {} };
+    var state = ${JSON.stringify(Object.assign(TW_SEED(), { scouts: [{ id: 's1', name: 'Ada', den: 'Bear' }] }))};
+    var theirs = ${JSON.stringify(Object.assign(TW_SEED(), { scouts: [{ id: 's1', name: 'Ada', den: 'Tiger' }] }))};
+    var base = ${JSON.stringify(TW_SEED())};
+    var ui = { armed: null, overlay: { kind: 'sync-conflict', remote: { rev: 5, updatedAt: '2026-10-02T14:05:00.000Z', json: JSON.stringify(theirs) } } };
+    var sync = { docId: 'P', conflict: ui.overlay.remote };
+    syncBaseSet({ rev: 4, json: JSON.stringify(base), updatedAt: '2026-10-01T09:00:00.000Z' });
+    var three = syncThreeWay(base, state, theirs, {});
+    sync.rowChoice = { remote: sync.conflict, items: [], picks: {}, seen: {}, fields: three.items, fieldPicks: {}, fieldSeen: {} };`, ctx);
+  const text = (h) => c6Text(h);
+  let h = vm.runInContext('renderRowChooser(ui.overlay, rowChoice())', ctx);
+  const t = text(h);
+  for (const s of ['Changed here and on the server', 'One thing was changed on this device while it was offline, and on the pack’s server too.', 'Scout · Ada',
+    'Your change on this device', 'Not on the server yet.', 'On the pack’s server', 'Changed on the server on Oct 2 at', 'Den: Bear', 'Den: Tiger', 'Keep mine', 'Keep the server’s',
+    'Pick a version of each one, then save.']) ok(t.indexOf(s) !== -1, 'missing: ' + s + ' in ' + t);
+  ok(!/Save my choices/.test(t) && !/Keep all mine/.test(t), 'save offered before a pick, or "Keep all" for one item');
+  ok(/flex:1 1 220px;min-width:0/.test(h), 'the two versions do not stack on a phone');
+  vm.runInContext("pickSyncItem(rowChoice(), '.scouts#s1', 'mine')", ctx);
+  h = vm.runInContext('renderRowChooser(ui.overlay, rowChoice())', ctx);
+  ok(/✓ Keeping mine/.test(h) && /Save my choices/.test(h), 'the pick, and the save');
+  // Who, when the server copy's log knows it.
+  vm.runInContext(`theirs.syncLog = [{ id: 'sl-1', at: '2026-10-02T13:00:00.000Z', byName: 'Sam', key: '.scouts#s1.den', keptValue: 'Tiger' }];
+    ui.overlay.remote.json = JSON.stringify(theirs); sync.rowChoice.remote = ui.overlay.remote;`, ctx);
+  ok(/Changed by Sam, Oct 2 at/.test(text(vm.runInContext('renderRowChooser(ui.overlay, rowChoice())', ctx))), 'who changed it, from the log');
+  // The Pack tab's list: nothing when empty; each decision in words, newest first.
+  eq(vm.runInContext('renderSyncDecisions()', ctx), '', 'an empty log drew a card');
+  vm.runInContext(`state.syncLog = [{ id: 'a', at: '2026-10-02T15:00:00.000Z', byName: 'Pat', item: 'Scout · Ada', field: 'Den', serverValue: 'Tiger', keptValue: 'Bear',
+    serverChangedAt: '2026-10-02T14:05:00.000Z', serverChangedAfter: '' }]`, ctx);
+  const card = text(vm.runInContext('renderSyncDecisions()', ctx));
+  ok(card.indexOf('Sync decisions') !== -1 && card.indexOf('Scout · Ada · Den: kept “Bear”, replacing “Tiger” (set on the server on Oct 2 at') !== -1 && /By Pat, Oct 2 at/.test(card), card);
+  ok(/h \+= renderSyncDecisions\(\);/.test(slice('renderPackSharing')), 'the card is not on Pack · Sharing');
+});
+
+/* ---- Sync fix round 1 (reviews of 6b48119): security 1–9, treasurer 1–7, the pre-existing gap. ---- */
+atest('sync fix (security 1, HIGH): a device from before the base never drops offline work quietly; it is asked, and sends nothing', async () => {
+  const extra = (o) => Object.assign(SB_SEED(), o || {});
+  const run = async (serverRev, local) => {
+    const w = await (await apiWorld()).seed();
+    w.state(serverRev, Object.assign(SB_SEED(), { rev: serverRev, packName: 'Newer' }));
+    const c = await apiClient(w, 'editor', { state: local });   // no base, no marker: a page from before this change
+    await c.start(800);
+    return [c.get('[ui.overlay && ui.overlay.kind, state.packName]'), sbPuts(c), serverState(w).rev];
+  };
+  const withEntry = extra({ entries: [{ id: 'off1', scoutId: 's1', kind: 'wagon', date: '2026-10-01', salesCents: 2500, donationsCents: 0 }] });
+  eq(await run(3, withEntry), [['sync-conflict', 'Test Pack'], 0, 3], 'an extra popcorn sale at the same rev');
+  eq(await run(5, withEntry), [['sync-conflict', 'Test Pack'], 0, 5], 'an extra popcorn sale, server ahead');
+  eq(await run(5, extra({ ledger: [{ id: 'l0', amountCents: 100 }, { id: 'off2', amountCents: 900 }] })), [['sync-conflict', 'Test Pack'], 0, 5], 'an extra ledger entry');
+  eq(await run(3, extra({ packName: 'Renamed here' })), [['sync-conflict', 'Renamed here'], 0, 3], 'a different copy at the same rev');
+  // Control: behind, and nothing only here: taken quietly.
+  eq(await run(5, SB_SEED()), [[null, 'Newer'], 0, 5], 'control: an old copy with nothing of its own');
+});
+
+test('sync fix (security 1, treasurer 4): syncMoneySubset finds every money row only this device has, and the plan asks', () => {
+  const x = sandbox([...SYNC_BASE_FNS]);
+  const cp = () => ({ ledger: [{ id: 'l1' }], ledgerAside: [{ id: 'v1' }], entries: [{ id: 'e1' }], fundraisers: [{ id: 'f', sales: [{ id: 's1' }] }],
+    inventory: { distributions: [{ id: 'd1' }] }, storefronts: [{ id: 'sf', blocks: [{ id: 'b', salesCash: [{ reportId: 'r1', cents: 5 }] }] }], gone: {} });
+  const mine = cp(), theirs = cp();
+  eq(x.syncMoneySubset(mine, theirs), true, 'the same rows');
+  for (const [what, f] of [['ledger', (m) => m.ledger.push({ id: 'l2' })], ['set aside', (m) => m.ledgerAside.push({ id: 'v2' })], ['entries', (m) => m.entries.push({ id: 'e2' })],
+    ['sales', (m) => m.fundraisers[0].sales.push({ id: 's2' })], ['hand-outs', (m) => m.inventory.distributions.push({ id: 'd2' })],
+    ['cash from sales', (m) => m.storefronts[0].blocks[0].salesCash.push({ reportId: 'r2', cents: 5 })]]) {
+    const m = cp(); f(m);
+    eq(x.syncMoneySubset(m, theirs), false, 'missed: ' + what);
+  }
+  const m = cp(); m.entries.push({ id: 'e2' });
+  eq(x.syncMoneySubset(m, Object.assign(cp(), { gone: { entries: { e2: 5 } } })), true, 'a row the server deleted is not this device’s work');
+  // Final security check of ff0672a (A) — the same ids, an amount changed here: this device's work too.
+  for (const [what, f] of [['a shift’s sales', (c) => { c.storefronts[0].blocks[0].salesCents = 4500; }], ['a ledger amount', (c) => { c.ledger[0].amountCents = 900; }],
+    ['a sale’s amount', (c) => { c.entries[0].salesCents = 100; }], ['a hand-out’s containers', (c) => { c.inventory.distributions[0].containers = 2; }],
+    ['cash from sales', (c) => { c.storefronts[0].blocks[0].salesCash[0].cents = 9; }]]) {
+    const c = cp(); f(c);
+    eq(x.syncMoneySubset(c, cp()), false, 'missed a changed amount: ' + what);
+  }
+  ok(/onlyHere: function \(\) \{ return !syncMoneySubset\(state, remoteNorm\) \|\| closedBooksLost\(remoteNorm\.closedBooks, state\.closedBooks\)\.length > 0; \}/.test(slice('onRemoteSnap')), 'the plan is not asked about it');
+  // The plan: behind and something only here, or a close-out between, is asked. Mutation check: the money check ignored, it is taken.
+  const plan = (src, o) => { const c = vm.createContext({}); vm.runInContext(src, c); c.o = o; return vm.runInContext('syncFirstPlan(o)', c); };
+  const src = decl('syncFirstPlan');
+  eq([plan(src, { unsynced: false, base: null, localRev: 3, remoteRev: 5, onlyHere: true }), plan(src, { unsynced: false, base: null, localRev: 3, remoteRev: 5, apart: () => true }),
+    plan(src, { unsynced: false, base: null, localRev: 5, remoteRev: 5 }), plan(src, { unsynced: true, base: { rev: 5 }, remoteRev: 5, serverIsBase: () => false })],
+    ['choose', 'choose', 'choose', 'merge'], 'the plans (security 1, 7)');
+  const broken = src.replace('return ask(p.apart) || ask(p.onlyHere) ? \'choose\' : \'adopt\';', "return ask(p.apart) ? 'choose' : 'adopt';");
+  ok(broken !== src && plan(broken, { unsynced: false, base: null, localRev: 3, remoteRev: 5, onlyHere: true }) === 'adopt', 'the test does not catch the money check removed');
+});
+
+atest('sync fix (security 2): a server copy behind this device’s base (a restore) is never merged into; the whole-copy choice', async () => {
+  const w = await (await apiWorld()).seed();
+  w.state(3, SB_SEED());
+  const mine = SB_SEED();
+  mine.scouts[0].den = 'Bear';
+  const c = await apiClient(w, 'editor', { state: mine, base: SB_BASE(6, SB_SEED()), unsynced: true });
+  await c.start(800);
+  eq([c.get('[ui.overlay && ui.overlay.kind, !!rowChoice()]'), sbPuts(c)], [['sync-conflict', false], 0], 'merged over a restore at first answer');
+  // In a push (the in-session path): the sentinel, and the push hands it to the whole-copy choice.
+  const x = vm.createContext({});
+  vm.runInContext(`var sync = { docId: 'P' }, state = {}; var localStorage = { getItem: function () { return null; }, setItem: function () {}, removeItem: function () {} };
+    ${SYNC_BASE_FNS.map(decl).join('\n')}
+    syncBaseSet({ rev: 6, json: '{"scouts":[]}' });`, x);
+  eq(J(vm.runInContext("syncThreeWayOf({ rev: 4, json: '{\"scouts\":[]}' })", x)), { whole: true, items: [] }, 'the sentinel');
+  ok(/if \(three && three\.whole\) return \{ record: null, result: \{ season: remote \} \};/.test(slice('syncPush')), 'the push merges over it');
+  // A base whose copy can't be read is no base.
+  const y = sbStore({ 'pack-popcorn-ledger-v1-base': JSON.stringify({ doc: 'P', rev: 3, at: '', json: '{not json' }) });
+  eq(vm.runInContext('syncBaseGet()', y), null, 'a corrupt base was used');
+});
+
+test('sync fix (security 3, 5, 6, 8): the log keeps no contact detail, note or id; drops bad times; the marker is written again; "changed by" is this item’s', () => {
+  const x = sandbox([...SYNC_BASE_FNS, ...SYNC_WORDS_FNS]);
+  vm.runInContext("var n = 0; function uid() { n += 1; return 'u' + n; }", x);
+  const b = { leaders: [{ id: 'L1', name: 'Pat', email: 'pat at the old address', phone: 'old number', notes: 'gate code 1234' }], scouts: [{ id: 's1', name: 'Ada', note: '' }],
+    events: [{ id: 'e1', name: 'Hike', date: '2026-10-10' }], budget: { activities: [{ id: 'a1', name: 'Hike fee', eventId: 'e1', estCents: 100 }], expenses: [] } };
+  const m = J(b), t = J(b);
+  m.leaders[0].email = 'pat at home'; t.leaders[0].email = 'pat at work';
+  m.leaders[0].phone = 'home number'; t.leaders[0].phone = '';
+  m.scouts[0].note = 'allergic'; t.scouts[0].note = 'nut allergy';
+  m.events.push({ id: 'e2', name: 'Lake', date: '2026-10-11' });
+  m.budget.activities[0].eventId = 'e2'; t.budget.activities[0].eventId = '';
+  const r = x.syncThreeWay(b, m, t, {});
+  const picks = {}; r.items.forEach((it) => { picks[it.key] = 'mine'; });
+  const log = J(x.syncDecisionEntries(r.items, picks, [m, t, b], { at: '', since: '' }, { name: 'Pat', uid: 'u1' }, {}));
+  const all = JSON.stringify(log);
+  ok(!/pat at|number|gate code|allergic|nut allergy|"e1"|"e2"|"a1"/.test(all), 'a contact detail, a note or an id was logged: ' + all);
+  eq(log.map((e) => [e.field, e.keptValue, e.serverValue]).sort(), [['Calendar event', 'Lake · Oct 11', 'Blank'], ['Email', 'Changed', 'Changed'], ['Note', 'Changed', 'Changed'], ['Phone', 'Changed', 'Not set']].sort(), 'the values');
+  // Load: an '@' scrubbed; a bad or far-future time dropped; one id once, as clipped; the key cut to 200.
+  const now = Date.now(), iso = (ms) => new Date(ms).toISOString();
+  // (Final security check of ff0672a — never dropped by this device's clock: one 3 days ahead is kept, sorted last; '@' in the item too.)
+  const got = J(x.normalizeSyncLog([{ id: 'a', at: iso(now), serverValue: 'someone@example.com', keptValue: 'k', key: 'k'.repeat(300), item: 'Leader · pat@example.com' },
+    { id: 'b', at: 'yesterday' }, { id: 'c', at: iso(now + 3 * 86400000) }, { id: 'd'.repeat(50), at: iso(now) }, { id: 'd'.repeat(40) + 'zz', at: iso(now) }]));
+  eq(got.map((e) => [e.id.length, e.serverValue, e.key.length, e.item]), [[1, 'Changed', 200, 'Changed'], [40, '', 0, ''], [1, '', 0, '']], 'the log as loaded');
+  // The marker is written again after another tab cleared it.
+  const c = sbStore();
+  vm.runInContext("syncMarkUnsynced(); delete store[SYNC_UNSYNCED_KEY]; syncMarkUnsynced();", c);
+  eq(vm.runInContext('store[SYNC_UNSYNCED_KEY]', c), '1', 'the marker was not written again');
+  // "Changed by" reads this item's entries only, not one whose key starts the same.
+  const it = { key: '.scouts#s1' }, view = { lines: [{ theirs: 'Tiger' }] };
+  eq(x.syncServerWho(it, view, [{ key: '.scouts#s10.den', keptValue: 'Tiger', byName: 'Sam', at: iso(now) }], {}), 'Changed on the server since this device last synced.', 'another item’s entry');
+  ok(/^Changed by Sam/.test(x.syncServerWho(it, view, [{ key: '.scouts#s1.den', keptValue: 'Tiger', byName: 'Sam', at: iso(now) }], {})), 'this item’s entry');
+});
+
+test('sync fix (security 4): this device’s copy goes out at first answer only on the server’s word, as the viewer’s rule reads it', () => {
+  ok(/if \(\(plan === 'push' \|\| plan === 'merge'\) && accountsInForce\(\) && !\(sync\.membersFromServer \|\| !sync\.membersHeard\)\) plan = 'choose';/.test(slice('onRemoteSnap')), 'the role check');
+});
+
+test('sync fix (treasurer 1): charges merge charge by charge, matched by what they charge, never by id', () => {
+  const x = sandbox([...SYNC_BASE_FNS]);
+  const key = (c) => c.lineId + '|' + c.scoutId;
+  const ch = (id, sid, o) => Object.assign({ id, scoutId: sid, lineId: 'L1', amountCents: 8000, waivedBy: '', forgiven: null }, o || {});
+  const run = (b, m, t, theirsGone, mineGone) => J(x.syncThreeWay({ charges: b, scouts: [] }, { charges: m, scouts: [{ id: 's1' }, { id: 's2' }], gone: { scouts: mineGone || {} } },
+    { charges: t, scouts: [], gone: { scouts: theirsGone || {} } }, {}, { chargeKey: key }));
+  // The server waived Ada's (under its own id); this device didn't touch it: taken, on this device's id.
+  let r = run([ch('a1', 's1')], [ch('a1', 's1')], [ch('z9', 's1', { waivedBy: 't1' })]);
+  eq([r.merged.charges, r.look, r.items], [[ch('a1', 's1', { waivedBy: 't1' })], [], []], 'the server’s change');
+  // This device forgave it; the server didn't touch it: kept.
+  r = run([ch('a1', 's1')], [ch('a1', 's1', { forgiven: { by: 'Pat' } })], [ch('z9', 's1')]);
+  eq(r.merged.charges[0].forgiven, { by: 'Pat' }, 'this device’s change');
+  // Both, differently: this device's, said on "The ledger needs a look", never asked.
+  r = run([ch('a1', 's1')], [ch('a1', 's1', { amountCents: 7000 })], [ch('z9', 's1', { waivedBy: 't1' })]);
+  eq([r.merged.charges[0].amountCents, r.merged.charges[0].waivedBy, r.look.map((l) => l.kind), r.items], [7000, '', ['chargeboth'], []], 'both');
+  // A charge the server dropped with a scout it deleted stays, for the marks (C7 keeps a scout an entry names).
+  r = run([ch('a1', 's1')], [ch('a1', 's1')], [], { s1: 5 });
+  eq(r.merged.charges.map((c) => c.id), ['a1'], 'dropped with the scout');
+  // A charge the server raised for a scout this device deleted does not come in.
+  r = J(x.syncThreeWay({ charges: [] }, { charges: [], scouts: [{ id: 's2' }], gone: { scouts: { s1: 5 } } }, { charges: [ch('z1', 's1')] }, {}, { chargeKey: key }));
+  eq(r.merged.charges, [], 'a charge for a scout deleted here');
+  // A forgiveness the other copy has is matched by key too.
+  const f = sandbox(['chargesForgivenThere', 'arrOf']);
+  eq(J(f.chargesForgivenThere([ch('a1', 's1')], [ch('z9', 's1', { forgiven: { by: 'Sam' } })], key)).map((c) => c.id), ['a1'], 'by key');
+  eq(J(f.chargesForgivenThere([ch('a1', 's1')], [ch('z9', 's1', { forgiven: { by: 'Sam' } })])).length, 0, 'by id without one');
+  ok(/chargesForgivenThere\(state\.charges, remote\.charges, syncChargeKey\)/.test(slice('mergeRemoteAppendOnly')), 'the merge matches by key');
+  ok(!/'charges'/.test(decl('SYNC_MERGE_SKIP')), 'charges still left whole');
+  ok(/Charges in a sync merge \(Keith, 2026-10-02; replaces owner decision 23\)/.test(readFileSync(join(ROOT, 'DESIGN-money.md'), 'utf8')), 'DESIGN-money.md');
+});
+
+test('sync fix (treasurer 2): a scout or product the server deleted, that this device recorded money for, is asked about on the parent', () => {
+  const x = sandbox([...SYNC_BASE_FNS, ...SYNC_WORDS_FNS]);
+  const seed = () => ({ scouts: [{ id: 's1', name: 'Ada' }, { id: 's2', name: 'Bo' }], entries: [], fundraisers: [{ id: 'f1', name: 'Raffle', sales: [] }],
+    inventory: { products: [{ id: 'p1', name: 'Caramel' }], distributions: [] }, gone: {} });
+  const b = seed(), m = seed(), t = seed();
+  m.entries.push({ id: 'x1', scoutId: 's2', salesCents: 2000, donationsCents: 500 }, { id: 'x2', scoutId: 's2', salesCents: 2000, donationsCents: 0 });
+  m.inventory.distributions.push({ id: 'd1', productId: 'p1', target: { kind: 'scout', id: 's2' }, containers: 1 });
+  t.scouts.splice(1, 1); t.inventory.products = []; t.gone = { scouts: { s2: 5 }, products: { p1: 5 } };
+  const r = x.syncThreeWay(b, m, t, {});
+  eq(J(r.items.map((it) => [it.key, it.gone, it.deleted])), [['.scouts#s2', 'scouts', 'theirs'], ['.inventory.products#p1', 'products', 'theirs']], 'the items');
+  const v = J(r.items.map((it) => x.syncItemView(it, [m, t, b])));
+  eq(v.map((w) => [w.title, w.lines[0].mine, w.lines[0].theirs]), [['Scout · Bo', 'Not on the server yet: 2 popcorn sales ($45.00), 1 hand-out (1 container)', 'Deleted'],
+    ['Popcorn product · Caramel', 'Not on the server yet: 1 hand-out (1 container)', 'Deleted']], 'the words');
+  // Nothing recorded for them since the base: nothing asked (the marks take them, as before).
+  eq(J(x.syncThreeWay(b, seed(), t, {}).items), [], 'asked with nothing recorded');
+});
+
+test('sync fix (treasurer 3; final check B1): the opening balance never moves under a locked book; what was not kept is logged and said, naming the right device', () => {
+  const run = (hereLocked) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`var logged = [], sync = { docId: 'P' };
+      function logLedger(op, row, more) { logged.push([op, row, more]); state.ledgerLog.push({ op: op, row: row, f: more.f, why: more.why }); }
+      ${[...SYNC_BASE_FNS, 'fmtDateShort', 'fmt', 'syncOpeningLockedNote', 'SYNC_OPENING_LOCKED_WHY_THERE'].map(decl).join('\n')}
+      var book = function (cents, date, rt) { return { openingCents: cents, openingDate: date, reconciledThrough: rt }; };
+      var base = { book: book(1000, '2026-07-01', ''), ledger: [], ledgerLog: [] };
+      var state = ${hereLocked} ? { book: book(1000, '2026-07-01', '2026-08-31'), ledger: [], ledgerLog: [] } : { book: book(2500, '2026-07-02', ''), ledger: [], ledgerLog: [] };
+      var theirs = ${hereLocked} ? { book: book(2500, '2026-07-02', ''), ledger: [], ledgerLog: [] } : { book: book(1000, '2026-07-01', '2026-08-31'), ledger: [], ledgerLog: [] };
+      var three = syncThreeWay(base, state, theirs, {}); three.theirs = theirs;
+      var look = syncApplyThreeWay(three, {}); syncApplyThreeWay(three, {});`, ctx);
+    return (js) => J(vm.runInContext(js, ctx));
+  };
+  // This book is reconciled; the server changed the opening: the server's change is not kept ('there').
+  let g = run(true);
+  eq(g('[state.book.openingCents, state.book.openingDate, look.map(function (l) { return [l.kind, l.side, l.discarded, l.kept]; })]'),
+    [1000, '2026-07-01', [['openinglocked', 'there', 2500, 1000]]], 'locked here');
+  eq(g('logged'), [['resolve', 'book', { f: { openingCents: [2500, 1000], openingDate: ['2026-07-02', '2026-07-01'] }, why: g('SYNC_OPENING_LOCKED_WHY_THERE') }]], 'logged once, though run twice');
+  eq(g('syncOpeningLockedNote(look[0])'), 'A change to the opening balance ($25.00) made on another device wasn’t kept: this book was reconciled first, so its opening balance is locked. ' +
+    'It stays $10.00. If the opening was wrong, record the difference as an adjusting entry dated today and say why.', 'the note, there');
+  // The server's book is reconciled; this device changed the opening: this device's change is not kept ('here').
+  g = run(false);
+  eq(g('[state.book.openingCents, look.map(function (l) { return [l.side, l.discarded, l.kept]; }), logged[0][2].why === SYNC_OPENING_LOCKED_WHY]'), [1000, [['here', 2500, 1000]], true], 'locked there');
+  eq(g('syncOpeningLockedNote(look[0])'), 'Your change to the opening balance ($25.00) wasn’t kept: the book was reconciled on another device first, so its opening balance is locked. ' +
+    'It stays $10.00. If the opening was wrong, record the difference as an adjusting entry dated today and say why.', 'the note, here');
+  eq([g('SYNC_OPENING_LOCKED_WHY'), g('SYNC_OPENING_LOCKED_WHY_THERE')],
+    ['Not kept: the book was reconciled, or had entries ticked against a statement, on another device before this change reached it, so its opening balance is locked. If the opening was wrong, record the difference as an adjusting entry dated today and say why.',
+      'Not kept: this change came from another device after this book was reconciled, or had entries ticked against a statement, here, so its opening balance is locked. If the opening was wrong, record the difference as an adjusting entry dated today and say why.'], 'the reasons');
+});
+
+test('sync fix (treasurer 5, 6): the value before either change is shown and logged; money is logged whichever side is kept; Keep all says so; a CSV', () => {
+  const x = sandbox([...SYNC_BASE_FNS, ...SYNC_WORDS_FNS, 'syncDecisionLine', 'syncLogCsv', 'ledgerCsvCell', 'syncLogRoomNotice']);
+  vm.runInContext("var n = 0; function uid() { n += 1; return 'u' + n; }", x);
+  const b = { goalCents: 100000, scouts: [{ id: 's1', name: 'Ada', den: 'Wolf' }], budget: { activities: [{ id: 'a1', name: 'Campout', estCents: 5000 }], expenses: [] } };
+  const m = J(b), t = J(b);
+  m.goalCents = 120000; t.goalCents = 90000;
+  m.scouts[0].den = 'Bear'; t.scouts[0].den = 'Tiger';
+  m.budget.activities[0].estCents = 7500; t.budget.activities[0].estCents = 6250;
+  const r = x.syncThreeWay(b, m, t, {});
+  const views = J(r.items.map((it) => x.syncItemView(it, [m, t, b])));
+  eq(views.map((v) => [v.title, v.lines[0].base, v.lines[0].both]).sort(), [['Budget line · Campout', '$50.00', true], ['Pack settings · Pack goal', '$1,000.00', true], ['Scout · Ada', 'Wolf', false]].sort(), 'before either change');
+  const picks = {}, hows = {};
+  r.items.forEach((it) => { picks[it.key] = 'theirs'; hows[it.key] = 'all'; });
+  const log = J(x.syncDecisionEntries(r.items, picks, [m, t, b], { at: '2026-10-02T14:05:00.000Z', since: '' }, { name: 'Pat', uid: 'u1' }, hows));
+  eq(log.map((e) => [e.item, e.kept, e.how, e.baseValue, e.mineValue]).sort(), [['Budget line · Campout', 'server', 'all', '$50.00', '$75.00'], ['Pack settings · Pack goal', 'server', 'all', '$1,000.00', '$1,200.00']].sort(),
+    'the server’s kept: money only, with how');
+  eq(x.syncDecisionLine(log.find((e) => e.item === 'Budget line · Campout')),
+    'Budget line · Campout · Estimate: kept the server’s “$62.50”; this device’s change to “$75.00” was not kept; it was “$50.00” before either change. (Keep all.)', 'a server pick, in words');
+  eq(x.syncDecisionLine({ item: 'Scout · Ada', field: 'Den', kept: 'mine', keptValue: 'Bear', serverValue: 'Tiger', baseValue: 'Wolf', serverChangedAt: '' }),
+    'Scout · Ada · Den: kept “Bear”, replacing “Tiger”; it was “Wolf” before either change.', 'a pick of mine, in words');
+  const csv = x.syncLogCsv(log);
+  ok(csv.split('\n')[0] === 'Date,Who,Item,Field,Kept,Server’s value,This device’s value,Before either change,Server’s set,How' && /Server’s,\$62\.50,\$75\.00,\$50\.00/.test(csv) && !/@/.test(csv), csv);
+  eq([x.syncLogRoomNotice(100), /three-quarters/.test(x.syncLogRoomNotice(375)), /full/.test(x.syncLogRoomNotice(500))], ['', true, true], 'the room');
+  ok(/data-act="sync-log-csv">Sync decisions \(CSV\)</.test(slice('renderLedger')) && /if \(act === 'sync-log-csv'\)/.test(slice('handleAction')), 'the export beside the ledger’s history');
+  ok(/SYNC_BEFORE \+ ' '/.test(slice('renderSyncItems')) && /esc\(SYNC_BOTH_NUMBER\)/.test(slice('renderSyncItems')), 'the chooser shows them');
+  eq(decl('SYNC_LOG_INTRO').includes('Each time a leader chose between a change made on their device and one the pack’s server had made since. ') &&
+    decl('SYNC_LOG_INTRO').includes('Money changes are listed whichever version was kept.'), true, 'the intro');
+});
+
+test('sync fix (pre-existing gap): a budget line removed takes its collection marks with it, and Undo puts them back', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`var state = { budget: { activities: [{ id: 'a1', name: 'Hike' }], expenses: [] }, charges: [], collected: { a1: { s1: true }, 'act:a1': { s2: true }, b2: { s1: true } } };
+    ${decl('removeBudgetLine')}
+    var u = removeBudgetLine('a1'); var after = JSON.parse(JSON.stringify(state.collected)); u.restore();`, ctx);
+  eq(J(vm.runInContext('[after, state.collected]', ctx)), [{ b2: { s1: true } }, { b2: { s1: true }, a1: { s1: true }, 'act:a1': { s2: true } }], 'the marks');
+  ok(/if \(ch === 'commission'\) \{ logSettingEdit\('commissionPct', el\.value\); commit\(\); return; \}/.test(slice('handleChange')) &&
+    /if \(ch === 'cash-scout-pct'\) \{ logSettingEdit\('cashScoutPct', el\.value\); commit\(\); return; \}/.test(slice('handleChange')) &&
+    /if \(ch === 'cash-via-te'\) \{ logSettingEdit\('cashThroughTrailsEnd', el\.checked\); commit\(\); return; \}/.test(slice('handleChange')), 'the settings are logged');
+  ok(['goal', 'cash-goal', 'stretch-goal', 'inv-order-total'].every((k) => decl('LEDGER_NOT_LIVE').includes("'" + k + "'")), 'a goal is logged a keystroke at a time');
+  // (Final treasurer check — and the popcorn order's commission and total.)
+  ok(/if \(ch === 'inv-order-total'\) \{ logSettingEdit\('orderTotalCents', toCents\(el\.value\), state\.inventory\);/.test(slice('handleChange')) &&
+    /if \(ch === 'inv-comm'\) \{ logSettingEdit\('commissionPct', el\.value, state\.inventory, 'invCommissionPct'\);/.test(slice('handleChange')), 'the order settings');
+  const ls = vm.createContext({});
+  vm.runInContext(`var logged = [], state = { inventory: { commissionPct: '30' } }; function logLedger(op, row, more) { logged.push([op, row, more]); }
+    ${decl('logSettingEdit')} logSettingEdit('commissionPct', '33', state.inventory, 'invCommissionPct'); logSettingEdit('commissionPct', '33', state.inventory, 'invCommissionPct');`, ls);
+  eq(J(vm.runInContext('[state.inventory.commissionPct, logged]', ls)), ['33', [['edit', 'book', { f: { invCommissionPct: ['30', '33'] } }]]], 'one change, one event');
+});
+
+/* ---- Final checks of ff0672a: security A and lows, treasurer B1–B3 and follow-ups. ---- */
+test('sync final (B2): keeping a scout the server deleted brings back every sale this device holds for them, not only the new one', () => {
+  // A deletes Ada (her sales x1 and old1 go, marked); B, still holding them, records another (bs9) and saves after.
+  const { a, b, server } = fsGonePair();
+  a.run(DEL_SCOUT); a.push();
+  b.run("state.entries.push({ id: 'bs9', scoutId: 's1', kind: 'wagon', date: '', salesCents: 300, donationsCents: 0 }); commit()");
+  b.hear(); b.push();
+  const keys = b.get('rowChoice() ? rowChoice().fields.map(function (it) { return it.key; }) : null');
+  ok(keys && keys.indexOf('.scouts#s1') !== -1, 'B was not asked about Ada: ' + JSON.stringify(keys));
+  b.run("pickSyncItem(rowChoice(), '.scouts#s1', 'mine'); pickSyncItem(rowChoice(), '*', 'mine'); saveRowChoices()"); b.push();
+  const s = server();
+  eq([s.scouts.map((x) => x.id).sort(), eIds(s).filter((id) => ['x1', 'old1', 'bs9'].indexOf(id) !== -1).sort(), s.gone.entries.x1 < 0, s.gone.scouts.s1 < 0],
+    [['s1', 's2'], ['bs9', 'old1', 'x1'], true, true], 'Ada and all her sales');
+  const mut = b.get('rowChoice()');
+  eq(mut, null, 'the choice was left waiting');
+  // The words under "Your change on this device".
+  ok(/SYNC_KEEP_SCOUT : SYNC_KEEP_PRODUCT/.test(slice('renderSyncItems')), 'the chooser does not say what keeping it does');
+  eq([decl('SYNC_KEEP_SCOUT').includes('Keeping this puts the scout back, with every sale and hand-out this device has for them.'),
+    decl('SYNC_KEEP_PRODUCT').includes('Keeping this puts the product back, with every hand-out this device has for it.')], [true, true], 'the words');
+});
+
+test('sync final (B3): a fundraiser or storefront counts as money in the log; a deleted fundraiser kept as the server’s is logged, with its figures', () => {
+  const x = sandbox([...SYNC_BASE_FNS, ...SYNC_WORDS_FNS]);
+  vm.runInContext("var n = 0; function uid() { n += 1; return 'u' + n; }", x);
+  const b = { fundraisers: [{ id: 'f1', name: 'Raffle', sales: [{ id: 'fs1', cents: 500 }] }], gone: {} };
+  const m = J(b), t = { fundraisers: [], gone: { fundraisers: { f1: 5 } } };
+  m.fundraisers[0].sales.push({ id: 'fs2', cents: 300 });
+  const r = x.syncThreeWay(b, m, t, {});
+  const log = J(x.syncDecisionEntries(r.items, { '.fundraisers#f1': 'theirs' }, [m, t, b], {}, { name: 'Pat', uid: '' }, {}));
+  eq(log.map((e) => [e.item, e.kept, e.serverValue, e.mineValue, e.baseValue]), [['Fundraiser · Raffle', 'server', 'Deleted', 'Raffle · 2 sales ($8.00)', 'Raffle · 1 sale ($5.00)']], 'the entry');
+  const sf = { id: 'sf1', name: 'Grocery', date: '2026-10-05', blocks: [{ id: 'b1', salesCents: 4000, donationsCents: 500, salesCash: [{ reportId: 'r', cents: 1200 }] }, { id: 'b2', salesCents: 1000, donationsCents: 0 }] };
+  eq(x.syncRecordFigures('storefronts', sf, []), 'Grocery · Oct 5 · 2 shifts · sales $50.00 · cash donations $5.00 · cash from sales $12.00', 'a storefront');
+  ok(['fundraisers', 'storefronts'].every((k) => x.SYNC_LOG_MONEY.lists.indexOf(k) !== -1), 'not money');
+});
+
+test('sync final (security lows): the chooser never shows a contact detail, an account or a note, nor before either change', () => {
+  const x = sandbox([...SYNC_BASE_FNS, ...SYNC_WORDS_FNS]);
+  const b = { leaders: [{ id: 'L1', name: 'Pat', email: 'old address', uid: 'acct-1', notes: 'gate code' }] }, m = J(b), t = J(b);
+  m.leaders[0].email = 'home address'; t.leaders[0].email = '';
+  m.leaders[0].uid = 'acct-2'; t.leaders[0].uid = 'acct-3';
+  m.leaders[0].notes = 'new code'; t.leaders[0].notes = 'other code';
+  const v = J(x.syncThreeWay(b, m, t, {}).items.map((it) => x.syncItemView(it, [m, t, b])));
+  const all = JSON.stringify(v);
+  ok(!/address|acct-|code/.test(all), 'shown: ' + all);
+  eq(v[0].lines.map((l) => [l.label, l.base, l.mine, l.theirs]), [['Email', 'Set', 'Changed', 'Not set'], ['Signed-in account', 'Set', 'Changed', 'Changed'], ['Notes', 'Set', 'Changed', 'Changed']], 'the lines');
+});
+
+test('sync final (charges follow-ups): one charge raised on both devices on different days is one; a changed charge of a scout deleted there says so', () => {
+  const x = sandbox([...SYNC_BASE_FNS]);
+  const key = (c) => c.lineId + '|' + c.scoutId;
+  const ch = (id, o) => Object.assign({ id, scoutId: 's1', lineId: 'L1', amountCents: 8000, date: '2026-09-01', waivedBy: '' }, o || {});
+  let r = J(x.syncThreeWay({ charges: [] }, { charges: [ch('a', { date: '2026-09-02' })], scouts: [] }, { charges: [ch('z', { date: '2026-09-05' })], scouts: [] }, {}, { chargeKey: key }));
+  eq([r.merged.charges.map((c) => [c.id, c.date]), r.look], [[['a', '2026-09-02']], []], 'raised twice');
+  r = J(x.syncThreeWay({ charges: [ch('a')] }, { charges: [ch('a', { waivedBy: 't1' })], scouts: [{ id: 's1' }] }, { charges: [], scouts: [], gone: { scouts: { s1: 5 } } }, {}, { chargeKey: key }));
+  eq(r.look.map((l) => [l.kind, l.scoutGone]), [['chargeboth', true]], 'the note’s flag');
+  ok(/it\.scoutGone \? ' was changed on this device, and the scout was deleted on another device\.'/.test(slice('noteLedgerLookFromMerge')), 'the words');
+  ok(/paired with the other copies' by their order/.test(readFileSync(join(ROOT, 'DESIGN-money.md'), 'utf8')), 'DESIGN-money.md');
+  ok(/Any other offline edits on it, such as RSVPs or a scout's details, are replaced by\s+the pack's copy that one time\./.test(readFileSync(join(ROOT, 'SETUP.md'), 'utf8')), 'SETUP.md’s note on rule (d)');
 });
 
 /* ---------------- report ---------------- */

@@ -2036,6 +2036,24 @@ real spend back down by the roster before seeding next year's estimate; and the 
 divergence merge** unions `state.ledger`, so two leaders posting receipts from two devices
 cannot lose each other's transactions.
 
+**Charges in a sync merge (Keith, 2026-10-02; replaces owner decision 23).** Decision 23 kept a
+device's charges whole when it saved over another device's copy, so a charge forgiven or waived
+elsewhere lost that when the stale device saved (it was only said on "The ledger needs a look").
+Now, when the device knows the server copy it last took in (its sync base), the charges merge
+**charge by charge**, matched by what they charge (`chargeMatchKey`: the line, the family or
+scout, who, the sequence), never by id, since each device raises its own ids for the same
+charge. A change made on one side only is taken. A charge both devices changed differently keeps
+this device's version and is named on "The ledger needs a look" (family and line) for the
+treasurer to settle; it is never put to the conflict chooser. The merge runs before `syncCharges`,
+so `syncCharges` finds the server's charges already there and raises none of them again. A
+device with no base still keeps its own charges whole (nothing tells it which side changed what),
+and a forgiveness the other copy had is still logged and said, matched by `chargeMatchKey` too.
+Two charges in one copy with the same match key (which `syncCharges` should never leave) are
+paired with the other copies' by their order: the first with the first, the second with the
+second. A charge raised on both devices since the base, for the same amount, is the same charge
+whichever day each raised it. When the server deleted a charge's scout and this device changed
+the charge, the note says the scout was deleted on another device.
+
 **Phase 2 — split events out. ✅ BUILT.** `state.events[]` now holds every meeting and the
 calendar half of every activity; `meetings[]` is emptied (not deleted — an older build reading the
 record finds an empty calendar rather than a missing key). Budget lines keep their own id, because

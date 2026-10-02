@@ -551,7 +551,9 @@ Until the copy is made, the live pack on the server is empty, and **no one's sav
 it**. The API refuses the first save to an empty pack in production (it answers
 `awaiting-import`). A leader who opens the new page before you have copied the pack in sees
 "Waiting for the pack's owner to copy the pack over". Their changes stay on their own device.
-When the pack arrives, the page compares, and asks them which copy to keep if the two differ.
+When the pack arrives, the page compares. It takes the pack's copy if their device has nothing
+unsent, and otherwise merges their changes in, asking only about anything changed on both sides, or
+which whole copy to keep if it can't tell.
 If the server itself is not set up (a missing database id or `deployment` row), the page says
 "The pack's server isn't set up yet" and keeps its own copy.
 
@@ -600,8 +602,8 @@ commit publishes the switched page there at once.
 4. Actions → **website** → Run workflow from `main`, `production`, and approve it.
 5. Open pack569.com, sign in as the owner. The page says the server has no copy of the pack
    yet. Pack → Sharing → **Copy pack to new server…** → the file → check the pack's name, its
-   newest event and the counts → **Copy it in**. If this device's copy differs from the file,
-   the page asks which to keep. Choose **Use cloud copy**: that is the file you just copied in.
+   newest event and the counts → **Copy it in**. If this device has changes it never sent, the
+   page may ask which copy to keep. Choose **Use cloud copy**: that is the file you just copied in.
 6. Check: the Members card lists everyone; a second leader signs in and sees the pack; a
    parent account sees the calendar. The owner's page republishes the family view as soon as
    the pack arrives.
