@@ -1662,7 +1662,9 @@ donations (kept), with no budget line, so they aren't counted twice."
   whose kept cash is still not covered and is more than N days old gets, on the Reconcile line and
   (the oldest) as a Treasurer item on Home: "Storefront cash donations from ‹store, date› ($X)
   haven't been deposited after N days. Pack policy: deposit within N days." Leaders only; never
-  in `buildParentView`. A storefront with no date can't be aged and is never late.
+  in `buildParentView`. The setting shows whenever there is a storefront (treasurer re-check of
+  89c08b5, 9). A storefront with no date can't be aged: if it has kept cash the line says "‹name› has
+  kept cash donations and no date, so the ‹N›-day deposit rule can't check it. Give it a date."
 - **Format.** An older page (format 3) reads the new source as blank, so it counts a deposit
   filed on a line in Funds in, and its next save writes the blank back. `PACK_FORMAT` is 4, one
   raise for everything in this branch.

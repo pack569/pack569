@@ -8162,6 +8162,15 @@
     return 'Storefront cash donations from ' + x.name + ' (' + fmt(x.cents) + ') haven\u2019t been deposited after ' + days +
       ' days. Pack policy: deposit within ' + days + ' days.';
   }
+  // Treasurer re-check of 89c08b5 (9) — storefronts with kept cash and no date, which the deposit rule
+  // can't age (storefrontDepositsLate leaves them out), and the words. Pure.
+  function storefrontsUndatedKept(storefronts, viaTE) {
+    return arrOf(storefronts).filter(function (sf) { return sf && !sf.date && storefrontKeptCents(sf, viaTE) > 0; });
+  }
+  function storefrontUndatedText(sf, days) {
+    return (String((sf && sf.name) || '').trim() || 'A storefront') + ' has kept cash donations and no date, so the ' + days +
+      '-day deposit rule can\u2019t check it. Give it a date.';
+  }
   var DEPOSIT_DAYS_NOTE = 'This is the pack\u2019s own rule. Scouting America asks for deposits \u2018in a timely manner\u2019 without a number of days.';
   // The storefront cash deposits that name storefront `id`: { count, cents } (the delete confirm,
   // treasurer review of item 11, 19). Counted rows only. Pure.
@@ -27385,11 +27394,14 @@
   function storefrontCashCheckHtml() {
     var lines = storefrontCashLines(storefrontCashCheck(state.storefronts, state.ledger, state.cashThroughTrailsEnd, closedBooksLastCutoff(state.closedBooks),
       computePackTotals().wagonKeptDon));
-    if (!lines.length) return '';
+    // Treasurer re-check of 89c08b5 (9) — the setting shows whenever there is a storefront, cash or not.
+    if (!lines.length && !state.storefronts.length) return '';
     // Owner, 2026-10-01 — the deposit deadline: a warning per storefront past it, and the pack's setting.
     var dd = depositDaysOf(state.depositDays);
     storefrontDepositsLate(state.storefronts, state.ledger, state.cashThroughTrailsEnd, closedBooksLastCutoff(state.closedBooks), todayISO(), dd)
       .forEach(function (x) { lines.push({ warn: true, text: storefrontLateText(x, dd) }); });
+    storefrontsUndatedKept(state.storefronts, state.cashThroughTrailsEnd)
+      .forEach(function (sf) { lines.push({ warn: true, text: storefrontUndatedText(sf, dd) }); });
     return lines.map(function (ln, i) {
       return '<p class="small" style="margin:' + (i ? '4' : '10') + 'px 0 0' + (ln.warn ? ';color:var(--accent-text)' : '') + '"' + (ln.warn ? ' role="alert"' : '') + '>' +
         (i ? '' : '<span class="pill navy">Storefront cash</span> ') + esc(ln.text) + '</p>';

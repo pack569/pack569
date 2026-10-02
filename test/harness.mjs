@@ -32427,6 +32427,12 @@ test('deposit deadline: what each deposit covers, named storefronts first, then 
   ok(/var lateSf = storefrontDepositsLate\([^\n]*\);\s*if \(lateSf\.length\) \{\s*add\('treasurer', 'now', storefrontLateText\(lateSf\[0\], lateDd\)/.test(SCRIPT), 'the Home queue');
   ok(/if \(ch === 'deposit-days'\) \{[\s\S]{0,300}logLedger\('edit', 'book', \{ f: \{ depositDays: \[ddWas, ddNow\] \} \}\)/.test(SCRIPT), 'the setting is not logged');
   ok(!/depositDays|storefrontDepositsLate|DEPOSIT_DAYS/.test(codeOnly(BPV())), 'the parent view reads the deadline');
+  // Treasurer re-check of 89c08b5 (9) — the setting whenever there is a storefront; an undated one with kept cash is said.
+  const u = sandbox(declClosure(['storefrontsUndatedKept', 'storefrontUndatedText'], []));
+  eq(J(u.storefrontsUndatedKept([{ id: 'n', name: 'Ace', date: '', blocks: [{ donationsCents: 100 }] }, { id: 'm', name: 'Bo', date: '', blocks: [{ donationsCents: 0 }] }, SF[0]], false)).map((s) => s.id), ['n'], 'undated with kept cash');
+  eq(u.storefrontsUndatedKept([{ id: 'n', date: '', blocks: [{ donationsCents: 100 }] }], true).length, 0, 'nothing kept through Trail’s End');
+  eq(u.storefrontUndatedText({ name: 'Ace Hardware' }, 7), 'Ace Hardware has kept cash donations and no date, so the 7-day deposit rule can’t check it. Give it a date.', 'the words');
+  ok(/if \(!lines\.length && !state\.storefronts\.length\) return '';/.test(h) && /storefrontsUndatedKept\(state\.storefronts, state\.cashThroughTrailsEnd\)/.test(h), 'shown whenever there is a storefront, and the undated said');
 });
 
 /* ================================================================
