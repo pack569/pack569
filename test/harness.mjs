@@ -7220,7 +7220,7 @@ test('a storefront publishes who is on each shift, and never a penny of it', () 
   const src = BPV();
   ok(/var shifts = blocksInDayOrder\(sf\)\.map/.test(src),
     'the shifts publish in stored order rather than the order the day happens');
-  ok(/return \{ when: fmtTimeRange\(b\.start, b\.end\), who: shiftWho\(b\), blockId: String\(b\.id \|\| ''\), families: nFam \};/.test(src),
+  ok(/return \{ when: fmtTimeRange\(b\.start, b\.end\), who: shiftWho\(b\), blockId: String\(b\.id \|\| ''\), families: nFam, start: st \};/.test(src),
     'a published shift no longer carries who is on it');
   ok(/if \(shifts\.length\) ev\.shifts = shifts;/.test(src), 'the shifts never reach the document');
   // The whole reason shift money was withheld in the first place. Anchored on `b.` so the tier
@@ -9527,7 +9527,7 @@ test('calendar-only publishes the calendar and the cost of a year, and no child�
     ok(!(k in pv), `calendar-only publishes ${k}`));
   const sf = pv.events.find((e) => e.kind === 'storefront');
   // Bare but for the block's id (2026-10-01): an opaque id, so a family can still send totals.
-  eq(sf.shifts, [{ when: '10:00 AM–12:00 PM', blockId: 'b1', families: 2 }, { when: '12:00 PM–2:00 PM', blockId: 'b2', families: 1 }],
+  eq(sf.shifts, [{ when: '10:00 AM–12:00 PM', blockId: 'b1', families: 2, start: '10:00' }, { when: '12:00 PM–2:00 PM', blockId: 'b2', families: 1, start: '12:00' }],
     'the shift windows are not published bare');
   // J2 — the year's cost is the pack's plan, with nobody in it, and a calendar-only link is
   // exactly who asks for it.
@@ -13014,7 +13014,9 @@ test('D2: the day sheet carries the safety rules and the cash count, first names
   // Popcorn Kernel review — the table's rules; the door-to-door ones are wagon guidance only.
   const rule = 'Buddy system · a parent with every scout, an adult at the table at all times · scouts stay at the table and never approach cars · two adults count the cash before it leaves the table';
   eq(ctx.STOREFRONT_SAFETY, rule, 'the safety line');
-  const credit = 'Parents can convert cash to credit in the Trail’s End app at the end of the shift.';
+  // Popcorn-kernel review, round 1 (pack policy): sales cash is converted at the table.
+  const credit = 'Cash from popcorn sales: convert it to credit in the Trail’s End app (Cash to Credit) before you leave the table, and no later than midnight. ' +
+    'Converting doesn’t change the Trail’s End amount, and that parent keeps the cash. Cash donations stay in the jar for the pack.';
   eq(ctx.STOREFRONT_CASH_TO_CREDIT, credit, 'the cash-to-credit line');
   const tl = txt.split('\n');
   const afterCount = tl.map((l, i) => /Cash counted by/.test(l) ? tl[i + 1] : null).filter((l) => l != null);
@@ -15982,6 +15984,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'shiftReportsReconcile', 'shiftReportsAfterPush', 'returnShiftReport', 'leaderShiftReportAct', 'srHandEdited', 'getStorefront',
   'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout', 'shiftConfirmSubmit',
   'srIConfirmed', 'srFamiliesNow', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'familyKeyOf',
+  'srScheduleRefresh', 'parentDoc', 'parentPreviewDoc', 'shiftReportOpenFor', 'shiftReportToday', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_DAYS', 'isoPlusDays',
   'ledgerActor', 'ledgerActorName',
   ...FORMAT_GATE_FNS];
 const CLIENT_SRC = CLIENT_FNS.map(decl).join('\n');
@@ -17201,7 +17204,8 @@ function srStatusCtx(o) {
     function fmtDate(d) { return 'D' + d; }
     function todayISO() { return '2026-10-03'; }
     ${['esc', 'fmt', 'arrOf', 'isoPlusDays', 'SHIFT_REPORT_ROLES', 'SHIFT_REPORT_DAYS', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_NOTE_MAX',
-       'SHIFT_REPORT_ATTEST', 'shiftReportsOffered', 'shiftReportCanSend', 'shiftReportToday', 'shiftReportOpenFor', 'shiftReportsOn', 'shiftReportFor', 'parentShiftReportStatus',
+       'SHIFT_REPORT_ATTEST', 'SHIFT_CONFIRM_ATTEST', 'SHIFT_REPORT_TE_HINT', 'SHIFT_REPORT_CASH_HINT', 'SHIFT_REPORT_CASH_POLICY', 'SHIFT_REPORT_INTRO',
+       'shiftReportNowHM', 'shiftReportsOffered', 'shiftReportCanSend', 'shiftReportToday', 'shiftReportOpenFor', 'shiftReportsOn', 'shiftReportFor', 'parentShiftReportStatus',
        'parentShiftReportForm', 'parentShiftReportCard', 'parentShiftLines', 'parentShiftConfirmForm'].map(decl).join('\n')}`, ctx);
   return ctx;
 }
@@ -17231,7 +17235,7 @@ test('shift totals: the parent view carries each storefront’s sfId and each sh
     const sf = pv.events.find((e) => e.kind === 'storefront');
     eq([sf.sfId, sf.shifts.map((s) => s.blockId)], ['sf1', ['b1', 'b2']], 'the ids, standings ' + showStandings);
     eq(Object.keys(sf).sort(), ['date', 'detail', 'kind', 'sfId', 'shifts', 'title'], 'the storefront event’s keys, standings ' + showStandings);
-    eq(sf.shifts.map((s) => Object.keys(s).sort().join()), showStandings ? ['blockId,families,when,who', 'blockId,families,when,who'] : ['blockId,families,when', 'blockId,families,when'],
+    eq(sf.shifts.map((s) => Object.keys(s).sort().join()), showStandings ? ['blockId,families,start,when,who', 'blockId,families,start,when,who'] : ['blockId,families,start,when', 'blockId,families,start,when'],
       'a shift’s keys, standings ' + showStandings);
     // Only storefronts carry ids; nothing else in the view gained one.
     ok(pv.events.filter((e) => e.kind !== 'storefront').every((e) => !('sfId' in e) && !('shifts' in e)), 'a non-storefront event carries an id');
@@ -17337,10 +17341,10 @@ test('shift totals: the card lists the last 14 days of shifts, newest first, and
   // The form, under its own shift, drawn once, with what was typed kept.
   const f = card({ ui: { shiftReport: { sfId: 'sf2', blockId: 'b6', rid: '', te: '12.50', cash: '', note: 'Two "twenties"', attest: true, busy: false, problem: 'Enter the cash donations in dollars and cents, up to $10,000.' } } });
   eq((f.match(/<form data-form="shift-report" id="srForm"/g) || []).length, 1, 'one form');
-  ok(/name="te" inputmode="decimal" autocomplete="off" placeholder="0.00" value="12.50"/.test(f) && /Two &quot;twenties&quot;<\/textarea>/.test(f), 'what was typed');
+  ok(/name="te" inputmode="decimal" autocomplete="off" placeholder="0.00" aria-describedby="srTeHint" value="12.50"/.test(f) && /Two &quot;twenties&quot;<\/textarea>/.test(f), 'what was typed');
   ok(/<label class="fld">Trail’s End amount \(\$\)<input/.test(f) && /<label class="fld">Cash donations \(\$\)<input/.test(f), 'the two figures, labelled as the leaders’ block labels them');
-  ok(/<label class="sr-attest"><input type="checkbox" name="attest" checked><span>I counted the cash with the scouts’ families, and the Trail’s End amount matches the app for this shift\.<\/span>/.test(f),
-    'the signature, in the plan’s words');
+  ok(/<label class="sr-attest"><input type="checkbox" name="attest" checked><span>I counted this shift’s cash donations, and the Trail’s End amount is this shift’s total in the Trail’s End app\.<\/span>/.test(f),
+    'the signature, in the popcorn review’s words');
   ok(/role="alert">Enter the cash donations/.test(f), 'the problem, said under the form');
   ok(/>Send totals</.test(f) && /data-act="shift-report-cancel">Cancel</.test(f), 'the buttons');
   ok(/maxlength="300"/.test(f), 'the note’s limit');
@@ -17415,7 +17419,8 @@ test('shift totals: the parent’s actions write the server’s table only — n
   });
   ok(/'\/shift-reports\/' \+ encodeURIComponent\(rid\)/.test(api), 'a report id is not encoded into the path');
   // Signing out, or another pack, drops the reports and any open form.
-  ok(/sync\.shiftReports = null;\s*ui\.shiftReport = null;/.test(slice('clearAccountsRuntime')), 'the reports outlive the account');
+  ok(/sync\.shiftReports = null;\s*clearTimeout\(sync\.srTimer\);\s*sync\.srTimer = null;\s*ui\.shiftReport = null;/.test(slice('clearAccountsRuntime')),
+    'the reports, or their refresh, outlive the account');
 });
 
 atest('shift totals: a family’s page lists, sends, edits and withdraws through the API, and never saves the pack', async () => {
@@ -17744,7 +17749,8 @@ test('shift reports S-3: accepted money is money to the Trail’s End import, th
   eq(ctx.teDroppedSignups(block, { scouts: [] }), [], 'a block holding accepted money is re-split by the import');
   ok(/shiftReportsOffered\(\)\) lines\.push\('  ' \+ DAY_SHEET_REPORT\)/.test(slice('daySheetText')) &&
     /shiftReportsOffered\(\) \? '<p class="small" style="margin:4px 0 0"><strong>' \+ esc\(DAY_SHEET_REPORT\)/.test(slice('renderDaySheet')), 'the day sheet line');
-  eq(vm.runInContext('DAY_SHEET_REPORT', sandbox(['DAY_SHEET_REPORT'])), 'Parents: enter these totals on pack569.com before you leave.', 'the wording');
+  eq(vm.runInContext('DAY_SHEET_REPORT', sandbox(['DAY_SHEET_REPORT'])), 'Before you leave: one parent sends these totals at pack569.com (Schedule, Storefront shift totals). ' +
+    'If two families worked this shift, a parent from the other family confirms them. Hand the cash donations to the leader collecting the money.', 'the wording');
   const n = sandbox(NORMALIZE_FNS);
   const rec = JSON.parse(JSON.stringify(preMigrationState()));
   rec.storefronts = [{ id: 'sf1', name: 'K', date: '2026-10-03', blocks: [
@@ -18503,6 +18509,73 @@ test('round 1: the different-family rule on the leader card, and the storefronts
   eq(srLeaderCtx({ state: st, today: '2026-09-01', reports: [] }).run('renderShiftReportsBanner()'), '', 'a storefront not yet worked');
 });
 
+
+test('round 1: the family form says what each figure is, what to do with sales cash, and each signer signs for what they did', () => {
+  const ctx = srStatusCtx({ ui: { shiftReport: { sfId: 'sf1', blockId: 'b1', rid: '', te: '', cash: '', note: '', attest: false } } });
+  const f = vm.runInContext('parentShiftReportCard', ctx)({ events: [srEv(SR_TODAY)] }, SR_TODAY);
+  ok(/aria-describedby="srTeHint"[^>]*><span class="sr-hint" id="srTeHint">Everything entered in the Trail’s End app during this shift, card and cash, by every family on the shift\.<\/span>/.test(f),
+    'the Trail’s End hint');
+  ok(/id="srCashHint">Cash given without buying popcorn, from the donation jar\. Don’t count cash from popcorn sales or your starting change\. If a donation was entered in the app, it’s already in the Trail’s End amount, so leave it out here\.<\/span>/.test(f),
+    'the cash hint');
+  ok(/<strong>Convert any cash from popcorn sales to credit in the Trail’s End app before you leave\. Cash donations go to the leader collecting the money\.<\/strong>/.test(f), 'the sales-cash policy');
+  ok(/Worked a popcorn storefront shift\? Before you leave, one parent sends the shift’s totals for the whole table\. If another family worked it with you, a parent from that family confirms them here\. On two shifts in a row\? Send one for each shift, and count the donation jar when the shift changes\./.test(f),
+    'the card’s intro');
+  eq(vm.runInContext('SHIFT_CONFIRM_ATTEST', ctx), 'I worked this shift. These cash donations match what was counted at the table, and the Trail’s End amount matches the app.', 'the confirmer’s signature');
+  ok(/esc\(SHIFT_CONFIRM_ATTEST\)/.test(slice('parentShiftConfirmForm')) && !/SHIFT_REPORT_ATTEST/.test(slice('parentShiftConfirmForm')), 'the confirmer signs the sender’s words');
+  const say = sandbox(['SHIFT_REPORT_SAY']).SHIFT_REPORT_SAY;
+  eq([say.future, say['not-shift-parent'], say['too-many-open']], ['You can send totals on the day of the shift or after.',
+    'Only a parent from another family on this shift can confirm its totals. If that’s you, ask a leader to link your account to your scout.',
+    'You already have 3 shift reports waiting for a leader. Ask a leader to check those before you send more.'], 'the messages');
+});
+
+test('round 1: "Enter shift totals" waits for the shift to start, by the pack’s clock', () => {
+  const ctx = srStatusCtx({});
+  const open = vm.runInContext('shiftReportOpenFor', ctx);
+  eq([open('2026-10-03', '2026-10-03', '14:00', '13:59'), open('2026-10-03', '2026-10-03', '14:00', '14:00'), open('2026-10-02', '2026-10-03', '14:00', '09:00'),
+    open('2026-10-03', '2026-10-03', '', '09:00'), open('2026-10-03', '2026-10-03', '14:00', '')], [false, true, true, true, true], 'before, at, a day after, no start, no clock');
+  eq(vm.runInContext("shiftReportNowHM(Date.parse('2026-10-04T03:30:00Z'))", ctx), '23:30', 'half past eleven, Eastern');
+  ok(/var open = shiftReportOpenFor\(e\.date, today, s\.start, shiftReportNowHM\(\)\);/.test(slice('parentShiftReportStatus')), 'the status line ignores the start');
+  ok(/shiftReportOpenFor\(e\.date, today, s\.start, nowHM\)\) rows\.push/.test(slice('parentShiftReportCard')), 'the card lists a shift not yet started');
+  const pv = vm.runInContext(`buildParentView(state, { showStandings: false })`, pvCtx(SR_STANDINGS_STUBS));
+  eq(pv.events.find((e) => e.kind === 'storefront').shifts.map((s) => s.start), ['10:00', '12:00'], 'the start is published');
+});
+
+test('round 1: the day sheet tells parents to send totals, and what the cash-donations blank is', () => {
+  ok(/Trail’s End \$ ______   Cash donations \(jar only, not entered in the app\) \$ ______/.test(slice('daySheetText')), 'the text blanks');
+  ok(/Cash donations \(jar only, not entered in the app\) \$ ________/.test(slice('renderDaySheet')), 'the printed blanks');
+});
+
+test('round 1: a family page reads the reports again each minute while a shift is in the window, and only then', () => {
+  const run = (o) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`
+      var timers = [], loads = 0, hidden = ${!!o.hidden};
+      var document = { visibilityState: hidden ? 'hidden' : 'visible' };
+      function setTimeout(fn, ms) { timers.push({ fn: fn, ms: ms }); return timers.length; }
+      function clearTimeout() {}
+      var sync = {};
+      function shiftReportsOn() { return ${o.on !== false}; }
+      function parentMode() { return ${o.parent !== false}; }
+      function parentDoc() { return ${JSON.stringify({ events: o.events || [] })}; }
+      function shiftReportToday() { return '2026-10-03'; }
+      function loadShiftReports() { loads += 1; }
+      ${['arrOf', 'isoPlusDays', 'SHIFT_REPORT_DAYS', 'shiftReportOpenFor', 'srScheduleRefresh'].map(decl).join('\n')}
+      srScheduleRefresh();`, ctx);
+    return ctx;
+  };
+  const inWin = [{ kind: 'storefront', date: '2026-10-01' }];
+  const a = run({ events: inWin });
+  eq(vm.runInContext('timers.map(function (t) { return t.ms; })', a), [60000], 'a shift in the window: once a minute');
+  vm.runInContext('timers[0].fn()', a);
+  eq(vm.runInContext('loads', a), 1, 'the minute passes: read again');
+  eq(vm.runInContext('timers.length', run({ events: [{ kind: 'storefront', date: '2026-09-01' }] })), 0, 'no shift in the window');
+  eq(vm.runInContext('timers.length', run({ events: inWin, parent: false })), 0, 'a leader’s page');
+  eq(vm.runInContext('timers.length', run({ events: inWin, on: false })), 0, 'shift reports off');
+  const h = run({ events: inWin, hidden: true });
+  vm.runInContext('timers[0].fn()', h);
+  eq([vm.runInContext('loads', h), vm.runInContext('timers.length', h)], [0, 2], 'a hidden page waits for the next minute');
+  ok(/srScheduleRefresh\(\);\s*render\(\);/.test(slice('loadShiftReports')), 'each read schedules the next');
+});
 /* ================================================================
    LIVE STOPGAP (2026-09-29) — deletions survive the sync merge. mergeRemoteAppendOnly unions
    the four money logs by id; state.gone is what stops a device still holding a deleted row
