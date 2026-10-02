@@ -14143,7 +14143,7 @@ async function apiWorld(envOver) {
     const tail = { pack: '', rev: '/rev', members: '/members', member: '/members/' + p.uid, invites: '/invites',
       invite: '/invites/' + p.email, join: '/join', view: '/view', import: '/import', shiftReports: '/shift-reports',
       shiftReport: '/shift-reports/' + p.rid }[what];
-    return callApi(env, API.mod[what], { method, path: '/api/pack/' + id + tail, params: p,
+    return callApi(env, API.mod[what], { method, path: '/api/pack/' + id + tail + (o.query || ''), params: p,
       token: who ? await tokenFor(who, o.claims) : o.token, body: o.body, headers: o.headers });
   };
   w.sql = (q, ...a) => db.raw.prepare(q).all(...a).map((r) => Object.assign({}, r));
@@ -16123,7 +16123,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'shiftReportsReconcile', 'shiftReportsAfterPush', 'returnShiftReport', 'leaderShiftReportAct', 'srHandEdited', 'getStorefront',
   'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout', 'shiftConfirmSubmit',
   'srIConfirmed', 'srFamiliesNow', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'familyKeyOf', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
-  'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
+  'srParentStore', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
   'srScheduleRefresh', 'parentDoc', 'parentPreviewDoc', 'shiftReportOpenFor', 'shiftReportToday', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_DAYS', 'isoPlusDays',
   'srFormOpen', 'srMirror', 'srReasonDraft', 'srNameClean',
   'ledgerActor', 'ledgerActorName',
@@ -16152,7 +16152,7 @@ function clientFetch(w, client) {
     const p = (async () => {
       if (client.before) { const b = client.before; client.before = null; await b(init.method, path); }
       const u = new URL(path, 'https://staging.pack569.pages.dev');
-      client.log.push(init.method + ' ' + u.pathname.replace('/api/pack/' + API_PACK, '/P'));
+      client.log.push(init.method + ' ' + u.pathname.replace('/api/pack/' + API_PACK, '/P') + (u.search === '?as=parent' ? u.search : ''));   // the parent preview's ask
       if (client.intercept) { const r = await client.intercept(init.method, u.pathname, init); if (r) return r; }
       const route = apiRoute(u.pathname);
       if (!route) return new Response('not found', { status: 404, headers: { 'content-type': 'text/html' } });
@@ -17339,6 +17339,8 @@ function srStatusCtx(o) {
     var sync = { user: ${o.user === null ? 'null' : "{ uid: 'uid-me' }"}, myRole: ${JSON.stringify('role' in o ? o.role : 'parent')},
       docId: 'P', backend: ${be},
       shiftReports: ${o.loaded === false ? 'null' : JSON.stringify({ reports: o.reports || [], others: o.others || [], loaded: true })} };
+    // In the preview the card reads the parent-shaped answer (srParentStore): here, the same one.
+    sync.srPreview = ${o.preview ? 'sync.shiftReports' : 'null'};
     function accountsInForce() { return !!sync.user; }
     function cloudReady() { return !!(sync.backend && sync.backend.isOpen() && sync.docId); }
     function previewingParent() { return ${!!o.preview}; }
@@ -17346,7 +17348,8 @@ function srStatusCtx(o) {
     function todayISO() { return '2026-10-03'; }
     ${['esc', 'fmt', 'arrOf', 'isoPlusDays', 'SHIFT_REPORT_ROLES', 'SHIFT_REPORT_DAYS', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_NOTE_MAX',
        'SHIFT_REPORT_ATTEST', 'SHIFT_CONFIRM_ATTEST', 'SHIFT_REPORT_TE_HINT', 'SHIFT_REPORT_CASH_HINT', 'SHIFT_REPORT_CASH_POLICY', 'SHIFT_REPORT_INTRO',
-       'SHIFT_REPORT_SALES_CASH_HINT', 'srSalesCashFig', 'srIsMyShift', 'SR_MY_SHIFT',
+       'SHIFT_REPORT_SALES_CASH_HINT', 'srSalesCashFig', 'srIsMyShift', 'SR_MY_SHIFT', 'srParentStore', 'SR_SHOW_ALL', 'SR_SHOW_MINE', 'SR_UNLINKED',
+       'SR_NONE_MINE', 'SR_PREVIEW_LINE',
        'shiftReportNowHM', 'shiftReportsOffered', 'shiftReportCanSend', 'shiftReportToday', 'SHIFT_REPORT_NOTE_HINT', 'srField', 'shiftReportOpenFor', 'shiftReportsOn', 'shiftReportFor', 'parentShiftReportStatus',
        'parentShiftReportForm', 'parentShiftReportCard', 'parentShiftLines', 'parentShiftConfirmForm'].map(decl).join('\n')}`, ctx);
   return ctx;
@@ -17529,7 +17532,7 @@ test('shift totals: every refusal the server can give has words a family can act
   ['open', 'accepted', 'report-moved'].forEach((r) => reasons.add(r));
   // Asked of a well-formed page, these only follow a bug, a stale page, or a leader's action.
   // 'outcome' and 'no-sales-cash' answer only a leader's 'salescash' (LEADER_SR_SAY), never a family.
-  const generic = ['sf-id', 'block-id', 'unknown-field', 'action', 'review-note', 'same-person', 'override', 'figures', 'collected', 'outcome', 'no-sales-cash'];
+  const generic = ['sf-id', 'block-id', 'unknown-field', 'action', 'review-note', 'same-person', 'override', 'figures', 'collected', 'outcome', 'no-sales-cash', 'as'];
   ok(reasons.size >= 14, 'the reasons found: ' + [...reasons]);
   for (const r of reasons) {
     const m = say({ code: 'invalid-argument', reason: r });
@@ -17569,7 +17572,7 @@ test('shift totals: the parent’s actions write the server’s table only — n
   });
   ok(/'\/shift-reports\/' \+ encodeURIComponent\(rid\)/.test(api), 'a report id is not encoded into the path');
   // Signing out, or another pack, drops the reports and any open form.
-  ok(/sync\.shiftReports = null;\s*clearTimeout\(sync\.srTimer\);\s*sync\.srTimer = null;\s*ui\.shiftReport = null;/.test(slice('clearAccountsRuntime')),
+  ok(/sync\.shiftReports = null;\s*sync\.srPreview = null;\s*clearTimeout\(sync\.srTimer\);\s*sync\.srTimer = null;\s*ui\.shiftReport = null;/.test(slice('clearAccountsRuntime')),
     'the reports, or their refresh, outlive the account');
 });
 
@@ -17692,7 +17695,7 @@ function srLeaderCtx(o) {
        'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srReasonDraft', 'srNameClean', 'ledgerStampClean', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout',
        'srIConfirmed', 'srFamiliesNow', 'srNeedsCheck', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'SR_CHECK_TE', 'SR_IMPORT_FIRST', 'familyKeyOf',
        'blockCashCheck', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
-       'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashHistorySay', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
+       'srParentStore', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashHistorySay', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
        'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay'].map(decl).join('\n')}
     function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }`, ctx);
   const run = (js) => vm.runInContext(js, ctx);
@@ -17917,17 +17920,31 @@ test('shift reports S-3: accepted money is money to the Trail’s End import, th
   eq([bs[2].reportPending, bs[2].reportReturned], [undefined, undefined], 'a marker with no report, and a bad warning');
 });
 
-test('shift reports S-3: the parent preview shows where totals stand and sends nothing', () => {
+test('preview as a parent: the parent preview is the leader’s own parent self — the card acts, and nothing else in the preview does', () => {
+  // Keith (2026-10-01): a leader who is also a parent sends their family's totals from the preview.
   const P = srStatusCtx({ preview: true, role: 'admin', reports: [srReport()], ui: { shiftReport: { sfId: 'sf1', blockId: 'b1', rid: '', te: '1', cash: '1', note: '', attest: true } } });
-  const line = srLine(P, srEv(SR_TODAY));
-  ok(/Sent — waiting for a leader/.test(line) && !/<button/.test(line), 'a status with buttons in the preview');
-  ok(!/<button/.test(srLine(srStatusCtx({ preview: true, role: 'admin' }), srEv(SR_TODAY))), 'Enter shift totals in the preview');
+  ok(/Sent — waiting for a leader/.test(srLine(P, srEv(SR_TODAY))) && /data-act="shift-report-withdraw"/.test(srLine(P, srEv(SR_TODAY))), 'their own report, with its buttons');
+  ok(/>Enter shift totals</.test(srLine(srStatusCtx({ preview: true, role: 'admin' }), srEv(SR_TODAY))), 'Enter shift totals in the preview');
   const card = vm.runInContext('parentShiftReportCard', P)({ events: [srEv(SR_TODAY)] }, SR_TODAY);
-  ok(/<strong>Preview:<\/strong> families send their totals here\. You can’t send them from the preview\./.test(card) && !/<form/.test(card), 'the preview card draws the form');
-  ok(/function shiftReportAct\(act, el\) \{\s*if \(!shiftReportCanSend\(\)\) return;/.test(slice('shiftReportAct')) &&
-    /if \(!d \|\| d\.busy \|\| !shiftReportCanSend\(\)\) return;/.test(slice('shiftReportSubmit')), 'the preview can send');
-  ok(/return shiftReportsOn\(\) && !previewingParent\(\);/.test(slice('shiftReportCanSend')), 'the preview gate');
-  // The leaders' side is off in the preview too.
+  ok(card.indexOf('<strong>Preview:</strong> This is the card as you’d see it as a parent, with your own scout’s shifts. It isn’t a test: totals you send, change or confirm here ' +
+    'are real and go out under your name. Another leader has to accept them.') !== -1 &&
+    /<form data-form="shift-report"/.test(card), 'the preview card: its line, and the form');
+  ok(!/You can’t send them from the preview/.test(SCRIPT), 'the old line');
+  // It reads the parent-shaped answer, kept apart from the leader's own.
+  ok(/function srParentStore\(\) \{ return previewingParent\(\) \? sync\.srPreview : sync\.shiftReports; \}/.test(SCRIPT) &&
+    /var key = previewingParent\(\) \? 'srPreview' : 'shiftReports';/.test(slice('loadShiftReports')) &&
+    /sync\.backend\.listShiftReports\(sync\.docId, key === 'srPreview'\)/.test(slice('loadShiftReports')) &&
+    /if \(key === 'shiftReports'\) shiftReportsReconcile\(\);/.test(slice('loadShiftReports')), 'the preview’s answer');
+  ok(/listShiftReports: function \(docId, asParent\) \{ return this\.call\('GET', this\.packPath\(docId, '\/shift-reports'\) \+ \(asParent \? '\?as=parent' : ''\)\); \}/.test(slice('apiBackend')),
+    'asked for as a parent');
+  for (const f of ['shiftReportFor', 'parentShiftConfirmForm', 'srIsMyShift', 'parentShiftReportCard', 'shiftReportAct', 'shiftConfirmSubmit'])
+    ok(!/sync\.shiftReports/.test(codeOnly(slice(f))), f + ' reads the leader’s answer');
+  // Everything else in the preview stays refused: only PARENT_ACTS pass, and none of them is a leader's.
+  ok(/else if \(parentMode\(\) && PARENT_ACTS\.indexOf\(act\) === -1\) return;/.test(SCRIPT), 'the preview gate on actions');
+  const pa = /var PARENT_ACTS = \[([^\]]*)\]/.exec(SCRIPT)[1];
+  ['sr-accept', 'sr-accept-collected', 'sr-cash-collected', 'sr-return-open', 'del-block', 'parent-preview-on'].forEach((a2) => ok(pa.indexOf("'" + a2 + "'") === -1, a2 + ' passes in the preview'));
+  ok(/if \(parentMode\(\) \|\| gateMode\(\)\) return; \/\/ Parent phase/.test(slice('handleForm')), 'other forms in the preview');
+  // The leaders' side is off in the preview, as before.
   ok(/&& !parentMode\(\);/.test(slice('leaderReportsOn')), 'the leaders’ side runs in the preview');
 });
 
@@ -17941,7 +17958,8 @@ atest('shift reports S-3: a leader’s page accepts a family’s report against 
     blocks: [blk('b1'), blk('b2'), blk('b3', { salesCents: 900, cashCountedBy: 'Jo', cashVerifiedBy: 'Lee' })] }] });
   w.state(3, pack);
   const VIEW = { rev: 3, packName: 'Test Pack',
-    events: [{ kind: 'storefront', sfId: 'sf1', date: today, title: 'Kroger', detail: '', shifts: ['b1', 'b2', 'b3'].map((b) => ({ when: '10–12', blockId: b, families: 1 })) }] };
+    // b4: published, free for the preview's own report at the end.
+    events: [{ kind: 'storefront', sfId: 'sf1', date: today, title: 'Kroger', detail: '', shifts: ['b1', 'b2', 'b3', 'b4'].map((b) => ({ when: '10–12', blockId: b, families: 1 })) }] };
   w.db.raw.prepare('INSERT INTO parent_views (pack_id, payload, generated_at) VALUES (?, ?, 1)').run(API_PACK, JSON.stringify(VIEW));
   // A leader's page republishes the view after each save; the sandbox's stand-in buildParentView
   // has no storefronts, so it is pinned to this one (the real one's ids are tested above).
@@ -18011,15 +18029,24 @@ atest('shift reports S-3: a leader’s page accepts a family’s report against 
   vw.run(`acceptShiftReport('${r4}', { collected: true, replaceOk: true })`);
   await settle([vw], 1200);
   eq([w.one('SELECT status FROM shift_reports WHERE id = ?', r4).status, vw.log.filter((l) => /^PUT|^PATCH/.test(l)).length], ['submitted', 0], 'a viewer accepted');
-  // An admin previewing the parent app sends nothing.
+  // An admin previewing the parent app is their own parent self there (Keith, 2026-10-01): the
+  // parent-shaped answer, and a real report, sent as them.
   const ow = await pin(await apiClient(w, 'owner', { state: JSON.parse(w.one('SELECT json FROM pack_state WHERE pack_id = ?', API_PACK).json) })).start(1200);
   ow.run(`FormData = function (f) { return { get: function (k) { return f.values[k] || null; } }; }; ui.previewParent = true;`);
   ow.reset();
-  ow.run("shiftReportAct('shift-report-open', { dataset: { sf: 'sf1', block: 'b1' } })");
-  eq(ow.get('ui.shiftReport || null'), null, 'the preview opened the form');
-  ow.run("ui.shiftReport = { sfId: 'sf1', blockId: 'b2', rid: '', te: '1', cash: '1', note: '', attest: true }; shiftReportSubmit({ values: { te: '1', cash: '1', note: '', attest: 'on' } })");
+  ow.run('loadShiftReports()');
   await settle([ow], 1200);
-  eq(ow.log.filter((l) => /^POST \/P\/shift-reports|^PATCH \/P\/shift-reports/.test(l)), [], 'the preview sent a report');
+  ok(ow.log.indexOf('GET /P/shift-reports?as=parent') >= 0, 'the preview asked as a parent: ' + ow.log.join(', '));
+  ok(ow.get('sync.srPreview.loaded') === true && !/submittedByUid|acceptNote|salesCashOutcome/.test(JSON.stringify(ow.get('sync.srPreview'))), 'nothing leader-only in it');
+  ok(ow.get('srReports().length') >= 4, 'the leader’s own answer is left as it was');
+  ow.run("shiftReportAct('shift-report-open', { dataset: { sf: 'sf1', block: 'b1' } })");
+  ok(ow.get('ui.shiftReport || null') !== null, 'the preview opens the form');
+  const before = w.sql("SELECT count(*) AS n FROM shift_reports WHERE submitted_by_uid = 'uid-owner'")[0].n;
+  ow.run("ui.shiftReport = { sfId: 'sf1', blockId: 'b4', rid: '', te: '1', cash: '1', note: '', attest: true }; shiftReportSubmit({ values: { te: '1', cash: '1', note: '', attest: 'on' } })");
+  await settle([ow], 1200);
+  ok(ow.log.some((l) => /^POST \/P\/shift-reports$/.test(l)), 'the preview sent a report');
+  eq(w.sql("SELECT count(*) AS n FROM shift_reports WHERE submitted_by_uid = 'uid-owner'")[0].n, before + 1, 'sent as the owner');
+  eq(ow.log.filter((l) => /^PUT \/P$/.test(l)).length, 0, 'the preview saved the pack');
 });
 
 /* ================================================================
@@ -18221,6 +18248,59 @@ atest('S-4: a parent who may confirm sees the figures to check — only they, on
   ok(r2, 'the report');
 });
 
+/* Preview as a parent (Keith, 2026-10-01) — GET /shift-reports?as=parent answers any approved role
+   exactly as a parent with that uid would be answered: the parent shape, never a leader-only field. */
+const SR_LEADER_ONLY = ['submittedByUid', 'reviewedByUid', 'confirmedByUid', 'acceptedByUid', 'acceptedByName', 'acceptedAt', 'acceptNote', 'collected',
+  'salesCashOutcome', 'salesCashByName', 'salesCashByUid', 'salesCashAt'];
+atest('as a parent: a leader who is also a parent gets exactly a parent’s answer — own reports in the parent shape, others as status, myShifts — and nothing leader-only', async () => {
+  const w = await s4World();
+  // The editor is a parent too: linked to Ada, as the `parent` account is.
+  const st = JSON.parse(w.one('SELECT json FROM pack_state').json);
+  st.scouts.find((sc) => sc.id === 's1').parentUids.push('uid-editor');
+  w.db.raw.prepare('UPDATE pack_state SET json = ?, rev = rev + 1').run(JSON.stringify(st));
+  const mine = (await w.send('editor', 'b3', { salesCashCents: 100 })).body.report.id;
+  await w.act('owner', mine, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 100, override: true, reviewNote: 'Test' });
+  await w.act('owner', mine, { action: 'salescash', outcome: 'collected', salesCashCents: 100 });
+  const theirs = (await w.send('newbie', 'b1')).body.report.id;   // two families: Ada's (the editor's) may confirm it
+  await w.send('parent', 'b5');   // Ada's family sends it: the editor, of that family, may not confirm it
+  const g = await w.call('editor', 'GET', 'shiftReports', null, { query: '?as=parent' });
+  eq(g.status, 200, 'an editor’s parent-shaped GET');
+  eq(g.body.reports.map((r) => r.id), [mine], 'their own reports only');
+  const own = g.body.reports[0];
+  SR_LEADER_ONLY.forEach((k) => ok(!(k in own), 'a leader-only field: ' + k));
+  // The same keys a parent's own report has.
+  const pk = Object.keys((await w.call('parent', 'GET', 'shiftReports')).body.reports[0]);
+  eq(Object.keys(own).sort(), pk.sort(), 'the parent shape');
+  const o1 = g.body.others.find((o) => o.blockId === 'b1');
+  eq([o1.id, o1.canConfirm, o1.teCents], [theirs, true, 12345], 'another family’s report they may confirm, as a parent sees it');
+  eq(g.body.others.find((o) => o.blockId === 'b5'), { sfId: 'sf1', blockId: 'b5', status: 'submitted', needsConfirm: true, confirmed: false, canConfirm: false },
+    'one they may not: status only');
+  eq([g.body.myShifts.map((x) => x.blockId), g.body.linked], [['b1', 'b3', 'b5'], true], 'myShifts and linked');
+  ok(!/uid-|Test owner|salesCashOutcome|acceptNote/.test(g.text), 'no account ids, leader names or leader fields: ' + g.text.slice(0, 200));
+  // Security review: the editor confirms another family's report from the preview; once accepted, the
+  // editor (its confirmer) may not record what became of its cash.
+  const sw = await s4World();
+  const st2 = JSON.parse(sw.one('SELECT json FROM pack_state').json);
+  st2.scouts.find((sc) => sc.id === 's1').parentUids.push('uid-editor');
+  sw.db.raw.prepare('UPDATE pack_state SET json = ?, rev = rev + 1').run(JSON.stringify(st2));
+  const cr = (await sw.send('newbie', 'b1', { salesCashCents: 300 })).body.report.id;
+  const seen = (await sw.call('editor', 'GET', 'shiftReports', null, { query: '?as=parent' })).body.others.find((o) => o.id === cr);
+  eq((await sw.act('editor', cr, { action: 'confirm', attest: true, teCents: seen.teCents, cashCents: seen.cashCents, salesCashCents: seen.salesCashCents,
+    updatedAt: seen.updatedAt })).status, 200, 'the editor confirms, as a parent');
+  eq((await sw.act('owner', cr, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 300 })).status, 200, 'the owner accepts');
+  eq((await sw.act('editor', cr, { action: 'salescash', outcome: 'collected', salesCashCents: 300 })).body.error, 'same-person', 'the confirmer records its cash');
+  eq(sw.sql("SELECT count(*) AS n FROM audit WHERE action LIKE 'shift.salescash.%'")[0].n, 0, 'audited a refusal');
+  eq((await sw.act('owner', cr, { action: 'salescash', outcome: 'collected', salesCashCents: 300 })).status, 200, 'another leader does');
+  // Without ?as=parent, the editor reads as a leader, as before.
+  const full = await w.call('editor', 'GET', 'shiftReports');
+  ok(full.body.reports.length >= 3 && full.body.reports.some((r) => r.submittedByUid), 'the leader’s answer, unchanged');
+  eq((await w.call('editor', 'GET', 'shiftReports', null, { query: '?as=leader' })).body.reason, 'as', 'nothing else may be asked');
+  denied(await w.call('pending', 'GET', 'shiftReports', null, { query: '?as=parent' }), 'pending, as a parent');
+  denied(await w.call('stranger', 'GET', 'shiftReports', null, { query: '?as=parent' }), 'a stranger, as a parent');
+  eq([(await w.call('loose', 'GET', 'shiftReports')).body.linked, (await w.call('viewer', 'GET', 'shiftReports', null, { query: '?as=parent' })).body.linked],
+    [false, false], 'linked to no scout');
+});
+
 /* Your scout's shifts first (Keith, 2026-10-01) — GET /shift-reports also answers myShifts: the
    published shifts in the reporting window with a scout whose parentUids hold the caller's uid, from
    the stored pack record. Ids only; fail closed. */
@@ -18387,7 +18467,8 @@ test('S-4: the family page shows the second parent’s step, and the figures and
   ok(/Totals sent\. Waiting for a parent from another family on this shift to confirm them\./.test(mayNot) && !/<button|\$/.test(mayNot), 'a parent who may not');
   ok(/Totals sent and confirmed — waiting for a leader/.test(line({ others: [{ sfId: 'sf1', blockId: 'b1', status: 'submitted', needsConfirm: true, confirmed: true }] })),
     'another family’s, confirmed');
-  ok(!/<button/.test(srLine(srStatusCtx({ preview: true, role: 'admin', others: [{ sfId: 'sf1', blockId: 'b1', status: 'submitted', needsConfirm: true,
+  // Keith (2026-10-01): the preview is the leader's own parent self, so a leader-parent who may confirm can.
+  ok(/data-act="shift-report-confirm-open"/.test(srLine(srStatusCtx({ preview: true, role: 'admin', others: [{ sfId: 'sf1', blockId: 'b1', status: 'submitted', needsConfirm: true,
     confirmed: false, canConfirm: true, id: 'r9', teCents: 1, cashCents: 1 }] }), srEv(SR_TODAY))), 'Confirm in the preview');
   // The confirm form, in the card: the other family's figures and the same signature box.
   const P = srStatusCtx({ others: [{ sfId: 'sf1', blockId: 'b1', status: 'submitted', needsConfirm: true, confirmed: false, canConfirm: true, id: 'r9',
@@ -18950,26 +19031,41 @@ test('round 1: the season’s shift reports, as a leaders’ table and a CSV, wi
   ok(/'sr-history-open', 'sr-history-csv'/.test(slice('HELD_ACTS')), 'refused while the reload gate holds, though it only reads');
 });
 
-test('my shifts: the family’s card lists their own scouts’ shifts first, marked, and leaves the rest in order', () => {
+test('my shifts: the family’s card lists only their own family’s shifts, marked, and the toggle shows the rest in order', () => {
   const pv = { events: [srEv('2026-09-30', ['b1']), Object.assign(srEv('2026-10-03', ['b5', 'b6']), { sfId: 'sf2', title: 'Publix' }), srEv('2026-10-01', ['b2'])] };
-  const card = (o) => vm.runInContext('parentShiftReportCard', srStatusCtx(o))(pv, SR_TODAY);
   const order = (h) => [...h.matchAll(/<div class="sr-row"><div class="sr-shift">(<span class="pill sr-mine">Your family’s shift<\/span> )?<strong>D([\d-]+)<\/strong> · (\w+)/g)]
     .map((m) => (m[1] ? '*' : '') + m[2] + ' ' + m[3]);
-  const plain = order(card({}));
-  eq(plain, ['2026-10-03 Publix', '2026-10-03 Publix', '2026-10-01 Kroger', '2026-09-30 Kroger'], 'with none of theirs: newest first, as before');
-  eq(order(card({ others: [] , reports: [] })), plain, 'the same with no myShifts at all');
+  const all = ['2026-10-03 Publix', '2026-10-03 Publix', '2026-10-01 Kroger', '2026-09-30 Kroger'];
+  // An account linked to no scout: every shift, newest first, and how to fix it.
+  const un = vm.runInContext('parentShiftReportCard', srStatusCtx({}))(pv, SR_TODAY);
+  eq(order(un), all, 'linked to no scout: the full list');
+  ok(un.indexOf('Your account isn’t linked to your scout yet, so every shift is listed. Ask a leader to link your account to your scout, and you’ll see just your family’s shifts.') !== -1 &&
+    !/sr-show-all/.test(un), 'the line, and no toggle');
   const ctx = srStatusCtx({});
-  vm.runInContext("sync.shiftReports.myShifts = [{ sfId: 'sf1', blockId: 'b1' }, { sfId: 'sf2', blockId: 'b6' }]", ctx);
-  const h = vm.runInContext('parentShiftReportCard', ctx)(pv, SR_TODAY);
-  eq(order(h), ['*2026-10-03 Publix', '*2026-09-30 Kroger', '2026-10-03 Publix', '2026-10-01 Kroger'], 'theirs first, marked; the rest in their order');
-  ok(h.indexOf('data-block="b6"') < h.indexOf('data-block="b1"') && h.indexOf('data-block="b1"') < h.indexOf('data-block="b5"'), 'the right shifts marked');
-  eq((h.match(/Your family’s shift/g) || []).length, 2, 'marked once each');
-  // A shift of theirs outside the window is not added: the card lists only what it would anyway.
-  vm.runInContext("sync.shiftReports.myShifts = [{ sfId: 'sf1', blockId: 'b9' }]", ctx);
-  eq(order(vm.runInContext('parentShiftReportCard', ctx)(pv, SR_TODAY)), plain, 'an id the card does not list');
-  // The page keeps ids only, whatever the answer carries.
-  ok(/sr\.myShifts = arrOf\(r && r\.myShifts\)\.filter\(function \(x\) \{ return x && typeof x\.sfId === 'string' && typeof x\.blockId === 'string'; \}\)\s*\.map\(function \(x\) \{ return \{ sfId: x\.sfId, blockId: x\.blockId \}; \}\);/.test(slice('loadShiftReports')),
-    'loadShiftReports keeps more than the ids');
+  vm.runInContext("sync.shiftReports.myShifts = [{ sfId: 'sf1', blockId: 'b1' }, { sfId: 'sf2', blockId: 'b6' }]; sync.shiftReports.linked = true;", ctx);
+  const card = () => vm.runInContext('parentShiftReportCard', ctx)(pv, SR_TODAY);
+  const h = card();
+  eq(order(h), ['*2026-10-03 Publix', '*2026-09-30 Kroger'], 'only their family’s, marked');
+  ok(h.indexOf('data-block="b6"') < h.indexOf('data-block="b1"'), 'newest first');
+  ok(/id="srShowAll" data-act="sr-show-all" aria-expanded="false">Worked a shift that isn’t listed\? Show all shifts</.test(h), 'the toggle');
+  vm.runInContext('ui.srShowAll = true', ctx);
+  const h2 = card();
+  eq(order(h2), ['*2026-10-03 Publix', '*2026-09-30 Kroger', '2026-10-03 Publix', '2026-10-01 Kroger'], 'all of them: theirs first, the rest in their order');
+  ok(/aria-expanded="true">Show only your family’s shifts</.test(h2), 'and back');
+  vm.runInContext('ui.srShowAll = false', ctx);
+  // Linked, but none of theirs in the window.
+  vm.runInContext("sync.shiftReports.myShifts = []", ctx);
+  ok(card().indexOf('Your family has no storefront shifts from the last 14 days.') !== -1 && /Show all shifts/.test(card()), 'none of theirs');
+  // Always shown: a shift with totals they may confirm, and one with their own report on it.
+  vm.runInContext("sync.shiftReports.others = [{ sfId: 'sf1', blockId: 'b2', status: 'submitted', needsConfirm: true, confirmed: false, canConfirm: true, id: 'r9', teCents: 1, cashCents: 0, salesCashCents: 0, updatedAt: 1 }];" +
+    "sync.shiftReports.reports = [{ id: 'r1', sfId: 'sf2', blockId: 'b5', status: 'submitted', mine: true, teCents: 1, cashCents: 0 }];", ctx);
+  eq(order(card()), ['2026-10-03 Publix', '2026-10-01 Kroger'], 'one to confirm and their own report, though not their family’s');
+  // The toggle is a parent action, ui only.
+  ok(/var PARENT_ACTS = \[[^\]]*'sr-show-all'/.test(SCRIPT) &&
+    /if \(act === 'sr-show-all'\) \{ ui\.srShowAll = ui\.srShowAll !== true; ui\.srFocusId = 'srShowAll'; render\(\); return; \}/.test(SCRIPT),
+    'the toggle’s action, keeping focus on the toggle');
+  ok(/sr\.myShifts = arrOf\(r && r\.myShifts\)\.filter\(function \(x\) \{ return x && typeof x\.sfId === 'string' && typeof x\.blockId === 'string'; \}\)\s*\.map\(function \(x\) \{ return \{ sfId: x\.sfId, blockId: x\.blockId \}; \}\);/.test(slice('loadShiftReports')) &&
+    /sr\.linked = !!\(r && r\.linked === true\);/.test(slice('loadShiftReports')), 'loadShiftReports keeps more than the ids and a yes/no');
 });
 
 atest('same family: the leader’s card hides the accept from a leader in the sender’s family, says why, and the override says so on the block', async () => {
@@ -19086,6 +19182,12 @@ atest('same family: a leader can’t record their own or their family’s cash f
   U.run("srCashAct('sr-cash-collected', { dataset: { rid: 'rep-1' } })");
   await U.answer(0, { code: 'failed-precondition', reason: 'same-family' });
   eq(U.get('toasts').pop(), 'You’re in the same family as the parent who sent this, so another leader records what became of its cash.', 'the server’s same-family');
+  // The parent who confirmed it, too (security review of the parent preview).
+  const Cf = srLeaderCtx({ reports: [srRep({ status: 'accepted', salesCashCents: 500, salesCashOutcome: null, confirmedByUid: 'uid-ed', confirmed: true })],
+    state: { scouts: [], leaders: [{ id: 'l1', name: 'Sam Leader', uid: 'uid-ed' }], storefronts: [{ id: 'sf1', name: 'K', date: '2026-10-03',
+      blocks: [{ id: 'b1', label: 'B', assignments: [], salesCash: [{ reportId: 'rep-1', cents: 500, from: 'N', outcome: null }] }] }] } });
+  const cb = Cf.run('renderBlockCashToCollect(state.storefronts[0], state.storefronts[0].blocks[0])');
+  ok(!/sr-cash-collected/.test(cb) && cb.indexOf('You confirmed this report as a parent, so another leader records what became of its cash.') !== -1, 'the confirmer');
   // pack-moved: the accept is read again and tried again; the block keeps the figures.
   const P = srLeaderCtx({ reports: [srRep()] });
   P.run("acceptShiftReport('rep-1', { collected: true })");

@@ -14464,6 +14464,7 @@
     sync.parentView = null;
     // A family's shift reports and an open shift-totals form belong to one account in one pack.
     sync.shiftReports = null;
+    sync.srPreview = null;
     clearTimeout(sync.srTimer);
     sync.srTimer = null;
     ui.shiftReport = null;
@@ -15152,7 +15153,8 @@
     // firestoreBackend has none of these, so on a Firestore page the feature is simply absent.
     // GET: { reports, others }. A leader gets every report; a parent their own, plus
     // { sfId, blockId, status } for anyone else's.
-    listShiftReports: function (docId) { return this.call('GET', this.packPath(docId, '/shift-reports')); },
+    // asParent: the answer a parent with this account would get (?as=parent): the parent preview's.
+    listShiftReports: function (docId, asParent) { return this.call('GET', this.packPath(docId, '/shift-reports') + (asParent ? '?as=parent' : '')); },
     // POST { sfId, blockId, teCents, cashCents, note, attest: true }: { report }.
     submitShiftReport: function (docId, body) { return this.call('POST', this.packPath(docId, '/shift-reports'), body); },
     // PATCH { action: 'edit' | 'withdraw' | 'accept' | 'return', … }: { report }.
@@ -20603,10 +20605,12 @@
     return shiftReportsOffered() && !!sync.user && accountsInForce() && SHIFT_REPORT_ROLES.indexOf(sync.myRole) !== -1 &&
       cloudReady() && typeof sync.backend.listShiftReports === 'function';
   }
-  // May this person SEND one from here? Not from the parent preview (S-3): a leader looking at what
-  // families see would otherwise file a real report by tapping it. The preview shows where each
-  // shift's totals stand, and no buttons.
-  function shiftReportCanSend() { return shiftReportsOn() && !previewingParent(); }
+  // May this person SEND one from here? Yes, the parent preview included (Keith, 2026-10-01): a
+  // leader who is also a parent sends, edits, withdraws and confirms their own family's totals from
+  // the preview, as that parent, from the parent-shaped answer (srParentStore). Only this card acts
+  // in the preview: every other preview action stays refused (PARENT_ACTS). The server's rules are
+  // unchanged, so the same leader still can't accept or record their own report later.
+  function shiftReportCanSend() { return shiftReportsOn(); }
   // A typed dollar amount as whole cents, or NaN. "12", "12.5", "$1,234.56" are fine; a blank, a
   // negative or a third decimal place is not (the server takes whole cents only).
   function shiftReportCents(v) {
@@ -20638,7 +20642,7 @@
   // if they have one), and whether someone else's report holds it ('submitted' or 'accepted').
   // A leader previewing gets every report, so another person's is any not marked `mine`.
   function shiftReportFor(sfId, blockId) {
-    var sr = sync.shiftReports;
+    var sr = srParentStore();
     // S-4: `otherOf` is that other report's entry, which says whether it waits for a second parent.
     var out = { loaded: !!(sr && sr.loaded), mine: null, other: '', otherOf: null };
     if (!out.loaded) return out;
@@ -20688,32 +20692,40 @@
   // reports does not redraw the page under it (parent-experience review 1: a redraw took the
   // keyboard away mid-word, every minute).
   function srFormOpen() { return !!(ui.shiftReport || ui.shiftConfirm || ui.srReturn || ui.srOverride); }
-  // The reports, from the server, into sync.shiftReports: { reports, others, loaded, error }.
+  // The reports a family's card reads (Keith, 2026-10-01): a parent's own answer. In the parent
+  // preview that is the leader's PARENT-SHAPED answer (GET ?as=parent), kept apart in sync.srPreview,
+  // so the preview shows exactly what this account would see as a parent, and nothing leader-only;
+  // the leader's own answer (sync.shiftReports) is left as it is for the leaders' side.
+  function srParentStore() { return previewingParent() ? sync.srPreview : sync.shiftReports; }
+  // The reports, from the server, into sync.shiftReports (or, in the preview, sync.srPreview):
+  // { reports, others, myShifts, linked, loaded, error }.
   // Asked for when the parent view arrives or the preview opens, when a family opens the form,
   // and after every write. One at a time; a call while one is out runs once it is back.
   function loadShiftReports() {
     if (!shiftReportsOn()) return Promise.resolve(null);
-    var sr = sync.shiftReports || (sync.shiftReports = { reports: [], others: [], myShifts: [], loaded: false, loading: false, again: false, error: '' });
+    var key = previewingParent() ? 'srPreview' : 'shiftReports';
+    var sr = sync[key] || (sync[key] = { reports: [], others: [], myShifts: [], linked: false, loaded: false, loading: false, again: false, error: '' });
     if (sr.loading) { sr.again = true; return Promise.resolve(null); }
     sr.loading = true;
     var mine = sync.session;
-    return sync.backend.listShiftReports(sync.docId).then(function (r) {
-      if (sync.session !== mine || sync.shiftReports !== sr) return;
+    return sync.backend.listShiftReports(sync.docId, key === 'srPreview').then(function (r) {
+      if (sync.session !== mine || sync[key] !== sr) return;
       sr.reports = arrOf(r && r.reports);
       sr.others = arrOf(r && r.others);
       // Your scout's shifts (2026-10-01): ids only, from the server; anything else is dropped.
       sr.myShifts = arrOf(r && r.myShifts).filter(function (x) { return x && typeof x.sfId === 'string' && typeof x.blockId === 'string'; })
         .map(function (x) { return { sfId: x.sfId, blockId: x.blockId }; });
+      sr.linked = !!(r && r.linked === true);
       sr.loaded = true;
       sr.error = '';
     }, function (err) {
-      if (sync.session !== mine || sync.shiftReports !== sr) return;
+      if (sync.session !== mine || sync[key] !== sr) return;
       sr.error = shiftReportMessage(err);
     }).then(function () {
       sr.loading = false;
-      if (sync.shiftReports !== sr) return;
+      if (sync[key] !== sr) return;
       if (sr.again) { sr.again = false; loadShiftReports(); }
-      shiftReportsReconcile();   // S-3: finish or undo a leader's accept (leaders who edit only)
+      if (key === 'shiftReports') shiftReportsReconcile();   // S-3: finish or undo a leader's accept (leaders who edit only)
       srScheduleRefresh();
       if (!srFormOpen()) render();
     });
@@ -20881,7 +20893,7 @@
   // the entry is gone.
   function parentShiftConfirmForm(e, s) {
     var cf = ui.shiftConfirm;
-    var o = arrOf(sync.shiftReports && sync.shiftReports.others).filter(function (x) { return x && x.id === cf.rid && x.canConfirm; })[0];
+    var o = arrOf(srParentStore() && srParentStore().others).filter(function (x) { return x && x.id === cf.rid && x.canConfirm; })[0];
     if (!o) return parentShiftReportStatus(e, s, shiftReportToday(), true);
     return '<form data-form="shift-report-confirm" id="srForm" class="sr-form no-print" novalidate' + (cf.busy ? ' aria-busy="true"' : '') + '>' +
       '<p class="small" style="margin:0"><strong>Check the totals' + (o.submittedByName ? ' ' + esc(o.submittedByName) + ' sent' : '') + '</strong> · ' +
@@ -20900,14 +20912,25 @@
   // Is this one of this account's own scouts' shifts? The server says (GET's myShifts: a shift
   // with a scout whose parentUids hold this account), by ids only: the page never sees the links.
   function srIsMyShift(sfId, blockId) {
-    var sr = sync.shiftReports;
+    var sr = srParentStore();
     return arrOf(sr && sr.myShifts).some(function (x) { return x && x.sfId === sfId && x.blockId === blockId; });
   }
   var SR_MY_SHIFT = 'Your family’s shift';
-  // The Schedule's shift-totals card: every published storefront shift from the last 14 days that
-  // has started, with where its totals stand and the buttons, and the form under the one being
+  // Keith (2026-10-01): the card lists your family's shifts, and under them a toggle shows the rest
+  // (a parent covering for another family). Kept in ui only, never saved.
+  var SR_SHOW_ALL = 'Worked a shift that isn’t listed? Show all shifts';
+  var SR_SHOW_MINE = 'Show only your family’s shifts';
+  var SR_UNLINKED = 'Your account isn’t linked to your scout yet, so every shift is listed. Ask a leader to link your account to your scout, and you’ll see just your family’s shifts.';
+  var SR_NONE_MINE = 'Your family has no storefront shifts from the last 14 days.';
+  // True as said: the server never lets a leader accept a report they sent (same-person).
+  var SR_PREVIEW_LINE = 'This is the card as you’d see it as a parent, with your own scout’s shifts. It isn’t a test: totals you send, change or confirm here ' +
+    'are real and go out under your name. Another leader has to accept them.';
+  // The Schedule's shift-totals card: the published storefront shifts from the last 14 days that
+  // have started, with where their totals stand and the buttons, and the form under the one being
   // filled in. '' when the feature is off or there is no such shift. `today` is the pack's.
-  // Your scout's shifts come first, marked (Keith, 2026-10-01); the rest keep their order.
+  // Keith (2026-10-01): only YOUR FAMILY'S shifts (myShifts), first and marked, and always any shift
+  // whose totals you may confirm, your own report's, and the one being filled in; the rest behind
+  // the toggle. An account linked to no scout sees every shift, and is told how to fix that.
   function parentShiftReportCard(pv, today) {
     if (!shiftReportsOn()) return '';
     var rows = [];
@@ -20918,16 +20941,28 @@
     });
     if (!rows.length) return '';
     rows.sort(function (a, b) { return String(b.e.date).localeCompare(String(a.e.date)); });   // newest first; stable within a day
-    rows.forEach(function (r) { r.mine = srIsMyShift(r.e.sfId, r.s.blockId); });
+    var sr = srParentStore(), d = ui.shiftReport, cf0 = ui.shiftConfirm;
+    var on = function (x, r) { return !!(x && x.sfId === r.e.sfId && x.blockId === r.s.blockId); };
+    rows.forEach(function (r) {
+      r.mine = srIsMyShift(r.e.sfId, r.s.blockId);
+      var info = shiftReportFor(r.e.sfId, r.s.blockId), o = info.otherOf;
+      r.keep = r.mine || !!info.mine || on(d, r) || on(cf0, r) ||
+        !!(info.other === 'submitted' && o && o.canConfirm && o.needsConfirm && !o.confirmed);
+    });
     rows = rows.filter(function (r) { return r.mine; }).concat(rows.filter(function (r) { return !r.mine; }));
-    var sr = sync.shiftReports, d = ui.shiftReport;
+    var loaded = !!(sr && sr.loaded);
+    var linked = loaded && (sr.linked === true || arrOf(sr.myShifts).length > 0);
+    var all = !loaded || !linked || ui.srShowAll === true;
+    var shown = all ? rows : rows.filter(function (r) { return r.keep; });
     var h = '<div class="card no-print sr-card" id="srCard"><h2 class="section display" id="srCardHead" tabindex="-1">Storefront shift totals</h2>' +
       '<p class="small muted" style="margin:0 0 6px">' + esc(SHIFT_REPORT_INTRO) + '</p>';
-    if (!shiftReportCanSend()) h += '<p class="small muted" style="margin:0 0 6px"><strong>Preview:</strong> families send their totals here. You can’t send them from the preview.</p>';
+    if (previewingParent()) h += '<p class="small muted" style="margin:0 0 6px"><strong>Preview:</strong> ' + esc(SR_PREVIEW_LINE) + '</p>';
     // role="status", not "alert": the minute's refresh redraws it, and it must not be read out again each time (review 34).
     if (sr && sr.error) h += '<p class="small sr-problem" role="status">' + esc(sr.error) + '</p>';
-    else if (!sr || !sr.loaded) h += '<p class="small muted" style="margin:0">Checking which shifts have totals…</p>';
-    rows.forEach(function (r) {
+    else if (!loaded) h += '<p class="small muted" style="margin:0">Checking which shifts have totals…</p>';
+    else if (!linked) h += '<p class="small muted" style="margin:0 0 6px">' + esc(SR_UNLINKED) + '</p>';
+    else if (!shown.length) h += '<p class="small muted" style="margin:0 0 6px">' + esc(SR_NONE_MINE) + '</p>';
+    shown.forEach(function (r) {
       h += '<div class="sr-row"><div class="sr-shift">' +
         (r.mine ? '<span class="pill sr-mine">' + esc(SR_MY_SHIFT) + '</span> ' : '') + '<strong>' + esc(fmtDate(String(r.e.date))) + '</strong> · ' +
         esc(String(r.e.title || 'Storefront')) + ' · ' + esc(String(r.s.when || '')) + '</div>';
@@ -20937,6 +20972,11 @@
       else h += parentShiftReportStatus(r.e, r.s, today, true);
       h += '</div>';
     });
+    // The toggle: only for a linked account with shifts the list leaves out (or showing them now).
+    if (linked && (ui.srShowAll === true || shown.length < rows.length)) {
+      h += '<div class="sr-acts" style="margin-top:6px"><button type="button" class="btn small ghost" id="srShowAll" data-act="sr-show-all" aria-expanded="' +
+        (ui.srShowAll === true ? 'true' : 'false') + '">' + esc(ui.srShowAll === true ? SR_SHOW_MINE : SR_SHOW_ALL) + '</button></div>';
+    }
     return h + '</div>';
   }
   // The buttons: open the form (new, or editing your own), close it, withdraw (two taps).
@@ -20955,7 +20995,7 @@
     }
     if (act === 'shift-report-open') {
       var rid = String(ds.rid || '');
-      var own = rid ? arrOf(sync.shiftReports && sync.shiftReports.reports).filter(function (r) { return r && r.id === rid && r.mine; })[0] : null;
+      var own = rid ? arrOf(srParentStore() && srParentStore().reports).filter(function (r) { return r && r.id === rid && r.mine; })[0] : null;
       if (rid && !own) return;
       ui.shiftConfirm = null;
       ui.shiftReport = { sfId: String(ds.sf || ''), blockId: String(ds.block || ''), rid: rid,
@@ -20988,7 +21028,7 @@
     if (!cf.attest) { cf.problem = SHIFT_REPORT_SAY['attest-confirm']; ui.srFocusId = 'srConfirmAttest'; render(); return; }
     // The figures, and the version, this parent was shown (security review 1): if the sender has
     // changed them since, the server refuses, and the form shows the new ones.
-    var o = arrOf(sync.shiftReports && sync.shiftReports.others).filter(function (x) { return x && x.id === cf.rid && x.canConfirm; })[0];
+    var o = arrOf(srParentStore() && srParentStore().others).filter(function (x) { return x && x.id === cf.rid && x.canConfirm; })[0];
     if (!o) { ui.shiftConfirm = null; render(); return; }
     cf.busy = true;
     cf.problem = '';
@@ -23428,6 +23468,7 @@
     // Security re-check (followups round 3): recording what became of the cash from sales.
     'cash-same-person': 'You sent this report, so another leader records what became of its cash.',
     'cash-same-family': 'You’re in the same family as the parent who sent this, so another leader records what became of its cash.',
+    'cash-confirmer': 'You confirmed this report as a parent, so another leader records what became of its cash.',
     'override-reason-family': 'Say why you are accepting it yourself.',
     'override-reason': 'Say why you are accepting it without a second parent.',
     'override-reason-collect': 'Say why you are accepting it without collecting the cash.',
@@ -23630,7 +23671,8 @@
   function srCashNotMine(rid) {
     var r = srReport(rid);
     if (!r) return '';
-    return srMine(r) ? LEADER_SR_SAY['cash-same-person'] : srSameFamily(r) ? LEADER_SR_SAY['cash-same-family'] : '';
+    return srMine(r) ? LEADER_SR_SAY['cash-same-person'] : srIConfirmed(r) ? LEADER_SR_SAY['cash-confirmer']
+      : srSameFamily(r) ? LEADER_SR_SAY['cash-same-family'] : '';
   }
   // The two buttons for a report's cash, or why this leader has none.
   function srCashButtons(rid, cents) {
@@ -23742,7 +23784,8 @@
       var why = (err && err.reason) || '';
       // Treasurer (followups round 3): the accept's own "I also collected it" didn't land.
       if (quiet && outcome === 'collected') { showToast('The totals were accepted, but the ' + fmt(cents) + ' wasn’t marked collected. Press Collected on the shift.'); return loadShiftReports(); }
-      showToast(why === 'same-person' ? LEADER_SR_SAY['cash-same-person'] : why === 'same-family' ? LEADER_SR_SAY['cash-same-family'] : leaderSrMessage(err));
+      showToast(why === 'same-person' ? LEADER_SR_SAY[srIConfirmed(srReport(rid)) ? 'cash-confirmer' : 'cash-same-person']
+        : why === 'same-family' ? LEADER_SR_SAY['cash-same-family'] : leaderSrMessage(err));
       return loadShiftReports();
     });
   }
@@ -37129,7 +37172,9 @@
     'parent-cal-day', 'parent-cost-toggle', 'parent-preview-off', 'parent-print', 'parent-ics', 'parent-pack-list', 'sign-out-google', 'toast-action',
     // 2026-10-01 — a family's shift totals. They write the server's shift_reports table through
     // apiBackend alone, never the pack record (shiftReportAct, shiftReportSubmit).
-    'shift-report-open', 'shift-report-cancel', 'shift-report-withdraw', 'shift-report-confirm-open'];
+    'shift-report-open', 'shift-report-cancel', 'shift-report-withdraw', 'shift-report-confirm-open',
+    // Keith (2026-10-01): show every shift in the window, not only the family's (ui only).
+    'sr-show-all'];
   // Join link phase — the three gate screens emit only these. Anything else that somehow
   // reaches the handler while a gate is up is ignored, so no code path can read or mutate
   // the pack record on a link visitor's / not-yet-approved user's device.
@@ -37460,12 +37505,18 @@
       loadShiftReports();   // the shift-totals card, as a family sees it (API only)
       return;
     }
-    if (act === 'parent-preview-off') { ui.previewParent = false; ui.resetScroll = true; render(); return; }
+    if (act === 'parent-preview-off') {
+      ui.previewParent = false; ui.resetScroll = true; ui.shiftReport = null; ui.shiftConfirm = null;
+      render();
+      loadShiftReports();   // the leader's own answer again: a report sent from the preview shows here too
+      return;
+    }
     // S-3 — a leader accepting or sending back a family's shift totals.
     if (/^sr-(accept|accept-collected|accept-confirm|return-open|override-open|cancel|takeover|undo)$/.test(act)) { leaderShiftReportAct(act, el); return; }
     if (/^sr-(cash-collected|cash-converted|cash-replaced|cash-undo|also-cash)$/.test(act)) { srCashAct(act, el); return; }
     // A family's shift totals (2026-10-01): the server's table, never the pack record.
     if (act === 'shift-report-open' || act === 'shift-report-cancel' || act === 'shift-report-withdraw' || act === 'shift-report-confirm-open') { shiftReportAct(act, el); return; }
+    if (act === 'sr-show-all') { ui.srShowAll = ui.srShowAll !== true; ui.srFocusId = 'srShowAll'; render(); return; }   // focus stays on the toggle
     // ---- Accounts ----
     if (act === 'sign-in-google') { signInWithGoogle(); return; }
     if (act === 'sign-out-google') { signOutGoogle(); return; }

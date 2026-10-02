@@ -229,6 +229,8 @@ async function patch({ request, db, packId, role, user, member, params }) {
     // record, same rev in the write). An undo is open to any admin or editor.
     if (!undo) {
       if (row.submitted_by_uid === user.uid) return samePerson();
+      // Nor the parent who confirmed it (security review of the parent preview: a leader-parent can now confirm).
+      if (row.confirmed_by_uid && row.confirmed_by_uid === user.uid) return samePerson();
       famRec = await readPackForFamily(db, packId);
       if (familyOf(famRec, user.uid, row.submitted_by_uid)) return sameFamilyRefused();
     }
@@ -236,10 +238,10 @@ async function patch({ request, db, packId, role, user, member, params }) {
     update = db.prepare('UPDATE shift_reports SET sales_cash_outcome = ?, sales_cash_by_uid = ?, sales_cash_by_name = ?, sales_cash_at = ?, ' +
       "updated_at = ?, stamp = ? WHERE pack_id = ? AND id = ? AND stamp = ? AND (status = 'accepted' OR (status = 'returned' AND accepted_by_uid IS NOT NULL)) " +
       (b.outcome === 'replaced' ? "AND status = 'returned' " : '') + 'AND sales_cash_cents = ? AND ' +
-      'sales_cash_outcome IS ' + (undo ? 'NOT NULL' : 'NULL') + ' AND ' + (undo ? '' : 'submitted_by_uid != ? AND ') +
+      'sales_cash_outcome IS ' + (undo ? 'NOT NULL' : 'NULL') + ' AND ' + (undo ? '' : 'submitted_by_uid != ? AND (confirmed_by_uid IS NULL OR confirmed_by_uid != ?) AND ') +
       (famRec ? '(SELECT rev FROM pack_state WHERE pack_id = ?) = ? AND ' : '') + STILL_MEMBER(roles))
       .bind(undo ? null : b.outcome, undo ? null : user.uid, undo ? null : name, undo ? null : now, now, stamp, packId, rid, row.stamp,
-        b.salesCashCents, ...(undo ? [] : [user.uid]), ...(famRec ? [packId, famRec.rev] : []), packId, user.uid, ...roles);
+        b.salesCashCents, ...(undo ? [] : [user.uid, user.uid]), ...(famRec ? [packId, famRec.rev] : []), packId, user.uid, ...roles);
     audit = 'shift.salescash.' + (undo ? 'undo' : b.outcome);
     detail = { report: rid, sfId: row.sf_id, blockId: row.block_id, salesCashCents: row.sales_cash_cents, byName: name };
     if (undo) detail.was = { outcome: row.sales_cash_outcome, byName: row.sales_cash_by_name || '', at: row.sales_cash_at };
