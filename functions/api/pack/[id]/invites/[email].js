@@ -16,6 +16,9 @@
 // roleForPositions). `role` may come with it only if it says the same. A 'leader' invite with no
 // positions is refused. Writing an invite again replaces its positions; /api/session copies
 // them to the new account when the invite is used.
+// RETIRED ROLES (Keith, 2026-10-02): a new invite is a leader (with positions) or a parent
+// (rules.js INVITE_ROLES); { role: 'editor' } or 'viewer' is refused. An editor or viewer invite
+// written before the switch still stands and still lets its person in, read-only.
 
 import { route, json, readObject, refuse, forbidden, notFound, badRequest } from '../../../../_lib/http.js';
 import { withMember, auditStmt, auditIf } from '../../../../_lib/pack.js';

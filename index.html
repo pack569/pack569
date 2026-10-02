@@ -2076,8 +2076,9 @@
   function jobLabel(id) { return JOB_BY_ID[id] ? JOB_BY_ID[id].label : ''; }
   // POSITIONS (stage 1 of position-based access, 2026-10-01) — NOT jobs. A position is a
   // permission an admin gives a leader account (member_positions on the server); a job above is
-  // a lens a leader can set on their own record. The two share some ids and labels and nothing
-  // else: no access decision may read JOBS or myJobs() (the harness checks).
+  // a lens a leader can set on their own record. The two share their ids and labels (Keith,
+  // 2026-10-02: every job but 'cor' is a position, plus Parent; the Chartered Org Rep is made an
+  // admin) and nothing else: no access decision may read JOBS or myJobs() (the harness checks).
   // This is a byte-identical copy of the table in functions/_lib/access.js, which says what each
   // position may edit and which section owns each key of the pack record; the server refuses a
   // save that changes a key the leader can't edit. The harness fails if the copies differ.
@@ -2085,31 +2086,41 @@
   // steps of the plan land.
   var ACCESS_TABLE = /*ACCESS-BEGIN*/{
     "positions": [
-      {"id": "chair", "label": "Committee Chair"},
       {"id": "cubmaster", "label": "Cubmaster"},
       {"id": "asstcub", "label": "Assistant Cubmaster"},
-      {"id": "denleader", "label": "Den Leader"},
-      {"id": "asstden", "label": "Assistant Den Leader"},
+      {"id": "chair", "label": "Committee Chair"},
       {"id": "treasurer", "label": "Treasurer"},
+      {"id": "secretary", "label": "Secretary"},
       {"id": "kernel", "label": "Popcorn Kernel"},
       {"id": "advancement", "label": "Advancement Chair"},
-      {"id": "outdoor", "label": "Camping Chair"},
+      {"id": "activities", "label": "Activities Chair"},
       {"id": "membership", "label": "Membership Chair"},
+      {"id": "outdoors", "label": "Outdoor / Camping Chair"},
+      {"id": "derbychair", "label": "Pinewood Derby Chair"},
+      {"id": "comms", "label": "Communications"},
+      {"id": "trainer", "label": "Pack Trainer"},
+      {"id": "denleader", "label": "Den Leader"},
+      {"id": "asstden", "label": "Assistant Den Leader"},
       {"id": "parent", "label": "Parent"}
     ],
     "sections": ["home", "calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "roster", "advancement", "joining", "storefronts", "totals", "rewards", "inventory", "council", "budget", "ledger", "dues", "fundraisers", "sharing", "people", "season"],
     "denMeetingFields": ["adventure", "denAdv", "note", "noteInternal"],
     "access": {
-      "chair": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "derby", "joining", "budget", "ledger", "dues", "fundraisers", "people", "season"], "hidden": []},
       "cubmaster": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "advancement", "season"], "hidden": []},
       "asstcub": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "advancement", "season"], "hidden": []},
-      "denleader": {"default": "read", "edit": ["calendar.denmeeting", "attendance", "denplan", "advancement"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers", "people"]},
-      "asstden": {"default": "read", "edit": ["calendar.denmeeting", "attendance", "denplan", "advancement"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers", "people"]},
+      "chair": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "derby", "joining", "budget", "ledger", "dues", "fundraisers", "people", "season"], "hidden": []},
       "treasurer": {"default": "read", "edit": ["budget", "ledger", "dues", "fundraisers"], "hidden": []},
+      "secretary": {"default": "read", "edit": ["roster"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
       "kernel": {"default": "read", "edit": ["storefronts", "totals", "rewards", "inventory", "council"], "hidden": []},
       "advancement": {"default": "read", "edit": ["advancement"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
-      "outdoor": {"default": "read", "edit": ["camping"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
+      "activities": {"default": "read", "edit": ["calendar", "calendar.denmeeting"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
       "membership": {"default": "read", "edit": ["roster", "joining"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
+      "outdoors": {"default": "read", "edit": ["camping"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
+      "derbychair": {"default": "read", "edit": ["derby"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
+      "comms": {"default": "read", "edit": [], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
+      "trainer": {"default": "read", "edit": [], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
+      "denleader": {"default": "read", "edit": ["calendar.denmeeting", "attendance", "denplan", "advancement"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers", "people"]},
+      "asstden": {"default": "read", "edit": ["calendar.denmeeting", "attendance", "denplan", "advancement"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers", "people"]},
       "parent": {"default": "hidden", "edit": [], "hidden": []}
     },
     "keyOwner": {

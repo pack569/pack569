@@ -14082,7 +14082,9 @@ const PEOPLE = {
   owner: ['uid-owner', 'owner@example.com'], admin2: ['uid-admin2', 'admin2@example.com'],
   editor: ['uid-editor', 'editor1@example.com'], viewer: ['uid-viewer', 'viewer1@example.com'],
   parent: ['uid-parent', 'parent1@example.com'], pending: ['uid-pending', 'pending1@example.com'],
-  stranger: ['uid-stranger', 'stranger@example.com'], newbie: ['uid-newbie', 'newbie@example.com']
+  stranger: ['uid-stranger', 'stranger@example.com'], newbie: ['uid-newbie', 'newbie@example.com'],
+  // A third admin, where a test needs two leaders who review besides the owner (editor retired, 2026-10-02).
+  admin3: ['uid-admin3', 'admin3@example.com']
 };
 const FORBIDDEN_TEXT = '{"error":"forbidden","code":"permission-denied"}';
 let apiReady = null;
@@ -14170,13 +14172,16 @@ async function apiWorld(envOver) {
   w.one = (q, ...a) => w.sql(q, ...a)[0];
   w.audit = (action) => w.sql('SELECT uid, action, detail FROM audit WHERE action = ? ORDER BY id', action);
   // The owner claims through the API; everyone else is put in the members table directly.
+  // A role 'leader:kernel,chair' seeds a leader holding those positions.
   w.seed = async (roles) => {
     const s = await w.session('owner');
     eq(s.body.role, 'admin', 'the seeding owner');
     const r = roles || { admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent', pending: 'pending' };
     for (const who of Object.keys(r)) {
+      const [role, held] = r[who].split(':');
       db.raw.prepare('INSERT INTO members (pack_id, uid, role, name, email, join_code, added_at) VALUES (?, ?, ?, ?, ?, NULL, ?)')
-        .run(API_PACK, PEOPLE[who][0], r[who], 'Test ' + who, PEOPLE[who][1], Date.now());
+        .run(API_PACK, PEOPLE[who][0], role, 'Test ' + who, PEOPLE[who][1], Date.now());
+      for (const p of held ? held.split(',') : []) db.raw.prepare('INSERT INTO member_positions (pack_id, uid, position, den) VALUES (?, ?, ?, NULL)').run(API_PACK, PEOPLE[who][0], p);
     }
     return w;
   };
@@ -14691,27 +14696,31 @@ atest('api session: a sign-up link visitor never claims an unowned pack', async 
 
 atest('api session: the owner is healed back to admin, whoever demoted them (members.update.owner)', async () => {
   const w = await (await apiWorld()).seed();
-  eq((await w.call('admin2', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { role: 'viewer' } })).status, 200, 'a co-admin demotes the owner');
+  eq((await w.call('admin2', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { role: 'parent' } })).status, 200, 'a co-admin demotes the owner');
   w.db.raw.prepare("UPDATE members SET join_code = 'abc', email = 'someone-else@example.com' WHERE uid = 'uid-owner'").run();
   const s = await w.session('owner');
   eq([s.body.role, s.body.member.email, s.body.member.joinCode], ['admin', 'owner@example.com', undefined], 'the healed owner, written whole');
-  eq(w.audit('member.heal').map((a) => JSON.parse(a.detail)), [{ from: 'viewer', to: 'admin' }], 'the heal is audited');
+  eq(w.audit('member.heal').map((a) => JSON.parse(a.detail)), [{ from: 'parent', to: 'admin' }], 'the heal is audited');
   // Never anyone else: a demoted co-admin signing in stays demoted.
-  await w.call('owner', 'PATCH', 'member', { uid: 'uid-admin2' }, { body: { role: 'viewer' } });
-  eq((await w.session('admin2')).body.role, 'viewer', 'a demoted non-owner');
+  await w.call('owner', 'PATCH', 'member', { uid: 'uid-admin2' }, { body: { role: 'parent' } });
+  eq((await w.session('admin2')).body.role, 'parent', 'a demoted non-owner');
 });
 
 atest('api session: an invite admits exactly its role, matched on the lowercased email, and is used up (members.create.invite)', async () => {
   const w = await (await apiWorld()).seed({});
-  eq((await w.call('owner', 'PUT', 'invite', { email: 'newbie@example.com' }, { body: { role: 'editor' } })).status, 200, 'the invite');
+  eq((await w.call('owner', 'PUT', 'invite', { email: 'newbie@example.com' }, { body: { positions: ['secretary'] } })).status, 200, 'the invite');
   const s = await w.session('newbie', undefined, undefined, { email: 'NewBie@Example.com' });
-  eq([s.body.role, s.body.member.email], ['editor', 'NewBie@Example.com'], 'the invitee, with capitals in their Google email');
+  eq([s.body.role, s.body.member.email], ['leader', 'NewBie@Example.com'], 'the invitee, with capitals in their Google email');
   eq(w.sql('SELECT count(*) AS n FROM invites')[0].n, 0, 'the invite was not used up');
-  eq(w.audit('invite.consume').map((a) => [a.uid, JSON.parse(a.detail).role]), [['uid-newbie', 'editor']], 'the audit row');
+  eq(w.audit('invite.consume').map((a) => [a.uid, JSON.parse(a.detail).role]), [['uid-newbie', 'leader']], 'the audit row');
   // Someone already in the pack keeps their role; a waiting invite does not change it.
-  await w.call('owner', 'PUT', 'invite', { email: 'parent1@example.com' }, { body: { role: 'viewer' } });
+  await w.call('owner', 'PUT', 'invite', { email: 'parent1@example.com' }, { body: { positions: ['chair'] } });
   w.db.raw.prepare("INSERT INTO members (pack_id, uid, role, name, email, added_at) VALUES (?, 'uid-parent', 'parent', 'P', 'parent1@example.com', 1)").run(API_PACK);
-  eq((await w.session('parent')).body.role, 'parent', 'an existing parent with an editor invite waiting');
+  eq((await w.session('parent')).body.role, 'parent', 'an existing parent with a leader invite waiting');
+  // An editor invite written before editor was retired (2026-10-02) still lets its person in, as an
+  // editor, who reads and writes nothing until an admin gives them positions.
+  w.db.raw.prepare("INSERT INTO invites (pack_id, email, role, invited_by_uid, invited_at) VALUES (?, 'editor1@example.com', 'editor', 'uid-owner', 1)").run(API_PACK);
+  eq((await w.session('editor')).body.role, 'editor', 'an editor invite from before the switch');
   // An invite row the rules would refuse (an old 'admin' invite, forced in by SQL around the CHECK) admits nothing.
   w.db.raw.exec('PRAGMA ignore_check_constraints = ON');
   w.db.raw.prepare("INSERT INTO invites (pack_id, email, role, invited_by_uid, invited_at) VALUES (?, 'stranger@example.com', 'admin', 'uid-owner', 1)").run(API_PACK);
@@ -14928,7 +14937,7 @@ atest('api tenancy: a role in one pack is nothing in another', async () => {
 
 /* ---- the pack record ---- */
 
-atest('api Part C pack.read / pack.write: leaders read the pack record, admins and editors write it, nobody else either', async () => {
+atest('api Part C pack.read / pack.write: leaders read the pack record, admins write it (a retired editor no longer), nobody else either', async () => {
   const w = await (await apiWorld()).seed();
   w.state(5, { scouts: [{ id: 's1', name: 'Test Scout' }] });
   await matrix(w, 'GET', 'pack', expectFor(['owner', 'admin2', 'editor', 'viewer']));
@@ -14939,22 +14948,22 @@ atest('api Part C pack.read / pack.write: leaders read the pack record, admins a
   const writeAs = (who) => ({ body: { rev: 'x', scouts: [{ id: 's-' + who }] }, headers: { 'if-match': String(rev), 'x-pack-device': 'dev-' + who } });
   for (const who of ALL) {
     const r = await w.call(who, 'PUT', 'pack', null, writeAs(who));
-    if (['owner', 'admin2', 'editor'].indexOf(who) >= 0) { eq([r.status, r.body.rev], [200, rev + 1], who + ' writes'); rev += 1; }
+    if (['owner', 'admin2'].indexOf(who) >= 0) { eq([r.status, r.body.rev], [200, rev + 1], who + ' writes'); rev += 1; }
     else denied(r, who + ' PUT pack');
   }
-  eq(w.one('SELECT rev, device FROM pack_state'), { rev: 8, device: 'dev-editor' }, 'the stored record');
+  eq(w.one('SELECT rev, device FROM pack_state'), { rev: 7, device: 'dev-admin2' }, 'the stored record');
 });
 
 atest('api pack PUT is compare-and-swap: a stale rev gets 409 with the stored copy, and a retry on it lands', async () => {
   const w = await (await apiWorld()).seed();
   const put = (who, rev, body) => w.call(who, 'PUT', 'pack', null, { body, headers: { 'if-match': String(rev), 'x-pack-device': who } });
   // The first write to an empty pack is from rev 0; a second "first write" loses.
-  eq((await put('editor', 0, { ledger: ['e1'] })).body.rev, 1, 'the first write');
+  eq((await put('admin2', 0, { ledger: ['e1'] })).body.rev, 1, 'the first write');
   const lost = await put('owner', 0, { ledger: ['o1'] });
-  eq([lost.status, lost.body.code, lost.body.rev, lost.body.device], [409, 'aborted', 1, 'editor'], 'a second first write');
+  eq([lost.status, lost.body.code, lost.body.rev, lost.body.device], [409, 'aborted', 1, 'admin2'], 'a second first write');
   eq(JSON.parse(lost.body.json), { ledger: ['e1'] }, 'the 409 carries the stored copy');
   // Two devices both at rev 1: one lands, the other gets the remote copy, merges, retries on its rev.
-  eq((await put('editor', 1, { ledger: ['e1', 'e2'] })).body.rev, 2, 'editor from rev 1');
+  eq((await put('admin2', 1, { ledger: ['e1', 'e2'] })).body.rev, 2, 'editor from rev 1');
   const stale = await put('owner', 1, { ledger: ['e1', 'o1'] });
   eq([stale.status, stale.body.rev], [409, 2], 'owner from rev 1');
   eq((await put('owner', stale.body.rev, { ledger: ['e1', 'e2', 'o1'] })).body.rev, 3, 'the retry on the remote rev');
@@ -14991,7 +15000,7 @@ atest('api rev poll: leaders get the rev, parents only when the view changed, pe
   await matrix(w, 'GET', 'rev', expectFor(['owner', 'admin2', 'editor', 'viewer', 'parent']));
   eq((await w.call('viewer', 'GET', 'rev')).body, { viewAt: null, rev: 7 }, 'a viewer');
   eq((await w.call('parent', 'GET', 'rev')).body, { viewAt: null }, 'a parent (no rev: that is part of the pack record)');
-  await w.call('editor', 'PUT', 'view', null, { body: { packName: 'Test Pack' } });
+  await w.call('admin2', 'PUT', 'view', null, { body: { packName: 'Test Pack' } });
   ok((await w.call('parent', 'GET', 'rev')).body.viewAt > 0, 'the parent does not see the view change');
 });
 
@@ -15018,8 +15027,12 @@ atest('api Part C members.admin / members.update.self / members.update.owner / m
   const w = await (await apiWorld()).seed();
   const patch = (who, uid, body) => w.call(who, 'PATCH', 'member', { uid }, { body });
   // members.admin: an admin changes anyone's role.
-  eq((await patch('admin2', 'uid-parent', { role: 'editor' })).body.role, 'editor', 'an admin promoting a parent');
-  eq(w.audit('member.role').map((a) => JSON.parse(a.detail)), [{ target: 'uid-parent', from: 'parent', to: 'editor' }], 'the role change audit');
+  eq((await patch('admin2', 'uid-parent', { role: 'admin' })).body.role, 'admin', 'an admin promoting a parent');
+  eq(w.audit('member.role').map((a) => JSON.parse(a.detail)), [{ target: 'uid-parent', from: 'parent', to: 'admin' }], 'the role change audit');
+  // Retired (2026-10-02): no account is made an editor or viewer again, and a leader comes only with
+  // positions. An editor or viewer keeps the role it has (sent back unchanged, it is no change).
+  for (const r of ['editor', 'viewer', 'leader']) eq((await patch('owner', 'uid-pending', { role: r })).body.reason, 'role', 'an admin setting ' + r);
+  eq((await patch('viewer', 'uid-viewer', { role: 'viewer', name: 'V' })).status, 200, 'a viewer sending their own role back');
   denied(await patch('editor', 'uid-viewer', { role: 'editor' }), 'an editor promoting a viewer');
   denied(await patch('viewer', 'uid-pending', { role: 'parent' }), 'a viewer approving a request');
   // members.update.self: your own row, same role. Promoting yourself is the attack.
@@ -15039,7 +15052,7 @@ atest('api Part C members.admin / members.update.self / members.update.owner / m
   denied(await patch('owner', 'uid-viewer', { joinCode: 'abc' }), 'an admin sending another field');
   eq((await patch('owner', 'uid-viewer', { role: 'owner' })).status, 400, 'a role that does not exist');
   // members.update.owner: the owner restores their own admin role; nobody else can.
-  await patch('admin2', 'uid-owner', { role: 'viewer' });
+  await patch('admin2', 'uid-owner', { role: 'parent' });
   eq((await patch('owner', 'uid-owner', { role: 'admin' })).body.role, 'admin', 'the owner restoring their admin role');
   denied(await patch('stranger', 'uid-stranger', { role: 'admin' }), 'a stranger with no row');
   eq((await patch('owner', 'uid-nobody', { role: 'editor' })).status, 404, 'an admin changing a row that is not there');
@@ -15064,14 +15077,14 @@ atest('api members PATCH: a non-admin touching someone else\'s row gets the one 
 
 atest('api last admin: no change or removal leaves a pack with no admin', async () => {
   const w = await (await apiWorld()).seed({ editor: 'editor' });
-  const r1 = await w.call('owner', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { role: 'editor' } });
+  const r1 = await w.call('owner', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { role: 'parent' } });
   eq([r1.status, r1.body.code], [409, 'failed-precondition'], 'the only admin demoting themselves');
   eq((await w.call('owner', 'DELETE', 'member', { uid: 'uid-owner' })).status, 409, 'the only admin removing themselves');
   eq(w.one("SELECT role FROM members WHERE uid = 'uid-owner'").role, 'admin', 'the only admin was changed');
   eq(w.audit('member.role').length + w.audit('member.remove').length, 0, 'a refused change was audited');
   // With two admins, either may step down — but then the other is the last.
   await w.call('owner', 'PATCH', 'member', { uid: 'uid-editor' }, { body: { role: 'admin' } });
-  eq((await w.call('editor', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { role: 'viewer' } })).status, 200, 'one of two admins demoted');
+  eq((await w.call('editor', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { role: 'parent' } })).status, 200, 'one of two admins demoted');
   eq((await w.call('editor', 'DELETE', 'member', { uid: 'uid-editor' })).status, 409, 'the remaining admin removing themselves');
   // Renaming the last admin is not a demotion.
   eq((await w.call('editor', 'PATCH', 'member', { uid: 'uid-editor' }, { body: { name: 'Test Admin' } })).status, 200, 'renaming the last admin');
@@ -15098,11 +15111,15 @@ atest('api Part C members.admin (delete): only admins remove members, and the re
 atest('api Part C invites.write: only admins invite, never as admin, and the inviter is recorded by account id', async () => {
   const w = await (await apiWorld()).seed();
   const inv = (who, email, body) => w.call(who, 'PUT', 'invite', { email }, { body });
-  for (const role of ['editor', 'viewer', 'parent']) {
-    const r = await inv('admin2', role + '9@example.com', { role });
+  for (const body of [{ positions: ['treasurer'] }, { positions: ['kernel'], role: 'leader' }, { role: 'parent' }]) {
+    const role = body.role || (body.positions ? 'leader' : '');
+    const r = await inv('admin2', role + body.positions + '9@example.com', body);
     eq([r.status, r.body.role, r.body.invitedByUid], [200, role, 'uid-admin2'], 'an admin inviting a ' + role);
     ok(r.text.indexOf('admin2@example.com') === -1, 'the invite carries the inviter\'s email');
   }
+  // Retired (2026-10-02): no new editor or viewer invite.
+  denied(await inv('owner', 'x9@example.com', { role: 'editor' }), 'an editor invite');
+  denied(await inv('owner', 'x9@example.com', { role: 'viewer' }), 'a viewer invite');
   denied(await inv('owner', 'x9@example.com', { role: 'admin' }), 'an admin invite');
   denied(await inv('owner', 'x9@example.com', { role: 'pending' }), 'a pending invite');
   denied(await inv('owner', 'x9@example.com', {}), 'an invite with no role');
@@ -15119,14 +15136,14 @@ atest('api Part C invites.write: only admins invite, never as admin, and the inv
   eq((await inv('owner', 'x9@example.com', { role: 'parent', email: 'x9@example.com' })).status, 200, 'the same email in the body');
   eq((await inv('owner', 'X9@example.com', { role: 'parent' })).status, 404, 'an address that is not lowercased');
   eq((await inv('owner', 'not-an-email', { role: 'parent' })).status, 404, 'not an address');
-  eq((await inv('owner', encodeURIComponent('x9@example.com'), { role: 'viewer' })).body.role, 'viewer', 'a percent-encoded path');
+  eq((await inv('owner', encodeURIComponent('x9@example.com'), { positions: ['comms'] })).body.role, 'leader', 'a percent-encoded path');
   eq(w.audit('invite.write').length, 5, 'each invite written is audited, and no refused one');
 });
 
 atest('api Part C invites.read / invites.delete: admins list and revoke; an invitee reads and declines only their own', async () => {
   const w = await (await apiWorld()).seed();
   await w.call('owner', 'PUT', 'invite', { email: 'stranger@example.com' }, { body: { role: 'parent' } });
-  await w.call('owner', 'PUT', 'invite', { email: 'newbie@example.com' }, { body: { role: 'editor' } });
+  await w.call('owner', 'PUT', 'invite', { email: 'newbie@example.com' }, { body: { positions: ['chair'] } });
   await matrix(w, 'GET', 'invites', expectFor(['owner', 'admin2']));
   eq((await w.call('owner', 'GET', 'invites')).body.invites.map((i) => i.email).sort(), ['newbie@example.com', 'stranger@example.com'], 'the list');
   // Your own, matched on your Google email lowercased.
@@ -15172,15 +15189,15 @@ atest('api Part C join.read / join.write: leaders read the live code, admins wri
 
 /* ---- the parent view ---- */
 
-atest('api Part C view.read / view.write: approved members read the parent view (never pending); admins and editors write it', async () => {
+atest('api Part C view.read / view.write: approved members read the parent view (never pending); admins write it (a retired editor no longer)', async () => {
   const w = await (await apiWorld()).seed();
   eq((await w.call('parent', 'GET', 'view')).body, { exists: false }, 'no view yet');
-  await matrix(w, 'PUT', 'view', expectFor(['owner', 'admin2', 'editor']), { opts: (who) => ({ body: { packName: 'Test Pack', contact: 'by ' + who } }) });
+  await matrix(w, 'PUT', 'view', expectFor(['owner', 'admin2']), { opts: (who) => ({ body: { packName: 'Test Pack', contact: 'by ' + who } }) });
   await matrix(w, 'GET', 'view', expectFor(['owner', 'admin2', 'editor', 'viewer', 'parent']));
   const r = await w.call('parent', 'GET', 'view');
-  eq([r.body.exists, r.body.view], [true, { packName: 'Test Pack', contact: 'by editor' }], 'what a parent reads');
+  eq([r.body.exists, r.body.view], [true, { packName: 'Test Pack', contact: 'by admin2' }], 'what a parent reads');
   ok(typeof r.body.generatedAt === 'number', 'generatedAt');
-  for (const bad of ['[1]', 'nope', 'null']) eq((await w.call('editor', 'PUT', 'view', null, { body: bad })).status, 400, 'a view of ' + bad);
+  for (const bad of ['[1]', 'nope', 'null']) eq((await w.call('admin2', 'PUT', 'view', null, { body: bad })).status, 400, 'a view of ' + bad);
 });
 
 test('api parent view: the server\'s allowlist is buildParentView\'s own top-level keys, and its standings keys are exactly those behind the standings gate', () => {
@@ -15221,7 +15238,7 @@ test('api parent view: the server\'s allowlist is buildParentView\'s own top-lev
 atest('api parent view: the server stores only buildParentView\'s shape — its keys, no standings while they are off, no noteInternal', async () => {
   // Security review of stage A, finding 7.
   const w = await (await apiWorld()).seed();
-  const put = (body) => w.call('editor', 'PUT', 'view', null, { body });
+  const put = (body) => w.call('admin2', 'PUT', 'view', null, { body });
   const stored = () => { const r = w.one('SELECT payload FROM parent_views'); return r && JSON.parse(r.payload); };
   const full = { rev: 3, packName: 'Test Pack', programYear: '2026-27', events: [], contact: 'Ask the cubmaster',
     standings: [{ name: 'Test' }], goals: null, derby: null, tiers: [{ name: 'Gold' }], tierLadder: { anchorName: 'Gold' } };
@@ -15317,17 +15334,17 @@ atest('api parent view: standings switched off between the check and the write a
   eq((await w.call('owner', 'PUT', 'join', null, { body: cfg })).status, 200, 'standings on');
   const race = standingsRaceDb(w);
   w.env.DB = race.racy;
-  const r = await w.call('editor', 'PUT', 'view', null, { body: full });
+  const r = await w.call('admin2', 'PUT', 'view', null, { body: full });
   eq(race.fired(), 1, 'the race was not staged (the endpoint no longer reads the switch this way)');
   eq([r.status, r.body.reason], [400, 'view-standings-off'], 'a standings view written after standings went off');
   eq(w.sql('SELECT count(*) AS n FROM parent_views')[0].n, 0, 'the standings view was stored while standings are off');
   // The same race with a calendar-only view: nothing to hold back, so it is written.
-  eq((await w.call('editor', 'PUT', 'view', null, { body: { rev: 4, packName: 'Test Pack', events: [] } })).status, 200, 'a calendar-only view');
+  eq((await w.call('admin2', 'PUT', 'view', null, { body: { rev: 4, packName: 'Test Pack', events: [] } })).status, 200, 'a calendar-only view');
   eq(JSON.parse(w.one('SELECT payload FROM parent_views').payload), { rev: 4, packName: 'Test Pack', events: [] }, 'the calendar-only view');
   // And a standings view once the pack's switch is on again, raced by nothing, still stores.
   w.env.DB = w.db;
   await w.call('owner', 'PUT', 'join', null, { body: cfg });
-  eq((await w.call('editor', 'PUT', 'view', null, { body: full })).status, 200, 'standings on, no race');
+  eq((await w.call('admin2', 'PUT', 'view', null, { body: full })).status, 200, 'standings on, no race');
   eq(JSON.parse(w.one('SELECT payload FROM parent_views').payload).standings, full.standings, 'the standings view');
 
   // The import: the pack's join config says on when it is read, off when the batch writes.
@@ -15362,7 +15379,7 @@ atest('api parent view: a view too deep to store is a 400, not a server error (P
   };
   try {
     const w = await (await apiWorld()).seed();
-    const r = await w.call('editor', 'PUT', 'view', null, { body: real({ packName: 'Too Deep', events: [] }) });
+    const r = await w.call('admin2', 'PUT', 'view', null, { body: real({ packName: 'Too Deep', events: [] }) });
     eq([r.status, r.body.reason], [400, 'view-too-deep'], 'PUT /view');
     eq(w.sql('SELECT count(*) AS n FROM parent_views')[0].n, 0, 'something was stored');
     const wi = await (await apiWorld()).seed({});
@@ -15420,26 +15437,26 @@ atest('api import: only the pack owner, only into an empty pack, only once — a
 
 atest('api import: in production a save cannot create the pack record before the import (409 awaiting-import), so the import is never blocked', async () => {
   // Security review of stage A, finding 4.
-  const w = await (await apiWorld({ OWNER_MODE: 'fixed', PACK_OWNER_UID: 'uid-owner' })).seed({ editor: 'editor' });
+  const w = await (await apiWorld({ OWNER_MODE: 'fixed', PACK_OWNER_UID: 'uid-owner' })).seed({ admin2: 'admin' });
   const put = (who, rev, body) => w.call(who, 'PUT', 'pack', null, { body, headers: { 'if-match': String(rev), 'x-pack-device': who } });
-  for (const who of ['editor', 'owner']) {
+  for (const who of ['admin2', 'owner']) {
     const r = await put(who, 0, { scouts: [] });
     eq([r.status, r.body.error, r.body.code, r.body.reason], [409, 'awaiting-import', 'failed-precondition', 'awaiting-import'], who + ' saving before the import');
     ok(r.body.json === undefined && r.body.rev === undefined, 'the awaiting-import answer carries a record to merge');
   }
-  eq((await w.call('editor', 'GET', 'pack')).body, { exists: false, rev: 0 }, 'GET before the import');
+  eq((await w.call('admin2', 'GET', 'pack')).body, { exists: false, rev: 0 }, 'GET before the import');
   eq(w.sql('SELECT count(*) AS n FROM pack_state')[0].n, 0, 'a save before the import created the record');
   eq((await w.call('owner', 'POST', 'import', null, { body: importBody() })).status, 200, 'the import after refused saves');
   // After it: an ordinary compare-and-swap. A stale "first write" is a conflict carrying the record.
-  const late = await put('editor', 0, { scouts: [] });
+  const late = await put('admin2', 0, { scouts: [] });
   eq([late.status, late.body.code, late.body.rev], [409, 'aborted', 41], 'a rev-0 save after the import');
-  eq((await put('editor', 41, { scouts: [1] })).body.rev, 42, 'a save on the imported rev');
+  eq((await put('admin2', 41, { scouts: [1] })).body.rev, 42, 'a save on the imported rev');
   // A record lost after the import (a wipe, a restore) can be written again from rev 0: the lock is there.
   w.db.raw.prepare('DELETE FROM pack_state').run();
-  eq((await put('editor', 0, { scouts: [2] })).status, 200, 'a rev-0 save after the import and a wipe');
+  eq((await put('admin2', 0, { scouts: [2] })).status, 200, 'a rev-0 save after the import and a wipe');
   // Previews (first-signer) are unchanged: the first save creates the record.
-  const p = await (await apiWorld()).seed({ editor: 'editor' });
-  eq((await p.call('editor', 'PUT', 'pack', null, { body: {}, headers: { 'if-match': '0' } })).status, 200, 'a preview\'s first save');
+  const p = await (await apiWorld()).seed({ admin2: 'admin' });
+  eq((await p.call('admin2', 'PUT', 'pack', null, { body: {}, headers: { 'if-match': '0' } })).status, 200, 'a preview\'s first save');
   // The client contract is written down where the next stage will look.
   ok(/409 \{error:'awaiting-import', code:'failed-precondition'\}/.test(readFileSync(join(ROOT, 'functions/_lib/http.js'), 'utf8')), 'http.js does not document awaiting-import');
 });
@@ -15488,17 +15505,17 @@ atest('api import: a parent view PUT /view would refuse is left behind and named
   eq(r.body.viewSkipped, 'view-standings-off', 'standings off here, on in the import');
   // Review of 5690c3a..20b4fd6, item 4: a parent view already here wins, and the answer does not
   // claim the imported one was stored.
-  const w2 = await (await apiWorld()).seed({ editor: 'editor' });
+  const w2 = await (await apiWorld()).seed({ admin2: 'admin' });
   const mine = { rev: 1, packName: 'Test Pack', events: [] };
-  eq((await w2.call('editor', 'PUT', 'view', null, { body: mine })).status, 200, 'a parent view before the import');
+  eq((await w2.call('admin2', 'PUT', 'view', null, { body: mine })).status, 200, 'a parent view before the import');
   const r2 = await w2.call('owner', 'POST', 'import', null, { body: importBody({ view: { packName: 'Imported Pack', events: [] } }) });
   eq([r2.status, r2.body.imported, r2.body.view, r2.body.viewSkipped], [200, true, false, 'view-exists'], 'the import\'s answer with a view already here');
   eq(JSON.parse(w2.one('SELECT payload FROM parent_views').payload), mine, 'the view already here was replaced');
   // Review of eb504db..366f6c9, item 3: with standings off here too, a view already here that
   // held back an imported view with no standings in it is still what the answer names.
-  const w4 = await (await apiWorld()).seed({ editor: 'editor' });
+  const w4 = await (await apiWorld()).seed({ admin2: 'admin' });
   await w4.call('owner', 'PUT', 'join', null, { body: { open: false, code: 'Code123abc', showStandings: false, showAmounts: true } });
-  eq((await w4.call('editor', 'PUT', 'view', null, { body: mine })).status, 200, 'a parent view without standings, standings off');
+  eq((await w4.call('admin2', 'PUT', 'view', null, { body: mine })).status, 200, 'a parent view without standings, standings off');
   const r4 = await w4.call('owner', 'POST', 'import', null, { body: importBody({ view: { packName: 'Imported Pack', events: [] } }) });
   eq([r4.status, r4.body.view, r4.body.viewSkipped], [200, false, 'view-exists'], 'no standings in the view, standings off, a view already here');
   eq(JSON.parse(w4.one('SELECT payload FROM parent_views').payload), mine, 'the view already here was replaced (standings off)');
@@ -15533,7 +15550,7 @@ function srDay(n) {
 // two days ago, today, on the edge (14 days ago), too old (15) and in three days.
 async function srWorld() {
   const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent', pending: 'pending',
-    newbie: 'parent' });
+    newbie: 'parent', admin3: 'admin' });
   const sf = (sfId, n, blocks) => ({ kind: 'storefront', sfId, date: srDay(n), title: 'Test Market', detail: '',
     shifts: blocks.map((blockId) => ({ when: '10:00 AM – 12:00 PM', who: ['Test'], blockId, families: 1 })) });
   w.view = { rev: 1, packName: 'Test Pack', programYear: '2026-27', events: [
@@ -15560,7 +15577,7 @@ function holdBatches(w, n, reverse) {
   };
 }
 
-atest('api shift reports: every role on every verb — pending and strangers get nothing, parents send, only admins and editors review', async () => {
+atest('api shift reports: every role on every verb — pending and strangers get nothing, parents send, only admins review', async () => {
   const w = await srWorld();
   await matrix(w, 'GET', 'shiftReports', expectFor(['owner', 'admin2', 'editor', 'viewer', 'parent']));
   // Each approved member sends a report on a block of their own.
@@ -15573,8 +15590,8 @@ atest('api shift reports: every role on every verb — pending and strangers get
     'who the server says sent each report');
   const ridOf = (who) => w.one('SELECT id FROM shift_reports WHERE submitted_by_uid = ?', PEOPLE[who][0]).id;
   const parentRid = ridOf('parent');
-  // Accept and return: admins and editors only. Everyone else gets the fixed 403.
-  for (const who of ['viewer', 'parent', 'newbie', 'pending', 'stranger']) {
+  // Accept and return: admins only (a retired editor no longer, 2026-10-02). Everyone else gets the fixed 403.
+  for (const who of ['editor', 'viewer', 'parent', 'newbie', 'pending', 'stranger']) {
     denied(await w.act(who, parentRid, { action: 'accept', teCents: 100, cashCents: 0, collected: true }), who + ' accepting');
     denied(await w.act(who, parentRid, { action: 'return', reviewNote: 'Recount' }), who + ' sending back');
   }
@@ -15585,12 +15602,12 @@ atest('api shift reports: every role on every verb — pending and strangers get
   }
   // A report id that does not exist: the same 403 to a non-reviewer, a 404 to a reviewer.
   denied(await w.act('parent', '00000000-0000-0000-0000-000000000000', { action: 'withdraw' }), 'withdrawing a report that is not there');
-  eq((await w.act('editor', '00000000-0000-0000-0000-000000000000', { action: 'return', reviewNote: 'x' })).status, 404, 'a reviewer, no such report');
-  eq((await w.act('editor', 'not a/real id', { action: 'return', reviewNote: 'x' })).status, 404, 'a malformed report id');
+  eq((await w.act('admin3', '00000000-0000-0000-0000-000000000000', { action: 'return', reviewNote: 'x' })).status, 404, 'a reviewer, no such report');
+  eq((await w.act('admin3', 'not a/real id', { action: 'return', reviewNote: 'x' })).status, 404, 'a malformed report id');
   eq(w.sql("SELECT count(*) AS n FROM shift_reports WHERE status != 'submitted'")[0].n, 0, 'a refused call changed a report');
   eq(w.sql("SELECT count(*) AS n FROM audit WHERE action LIKE 'shift.%' AND action != 'shift.report'")[0].n, 0, 'a refused call left an audit row');
   // The ones allowed.
-  eq((await w.act('editor', parentRid, { action: 'accept', teCents: 100, cashCents: 0, collected: true })).status, 200, 'an editor accepts');
+  eq((await w.act('admin3', parentRid, { action: 'accept', teCents: 100, cashCents: 0, collected: true })).status, 200, 'an admin accepts');
   eq((await w.act('admin2', ridOf('viewer'), { action: 'return', reviewNote: 'Recount please' })).status, 200, 'an admin sends one back');
   eq((await w.act('viewer', ridOf('owner'), { action: 'accept', teCents: 100, cashCents: 0, collected: true })).status, 403, 'a viewer accepting a leader\'s');
   eq((await w.act('parent', parentRid, { action: 'withdraw' })).status, 409, 'withdrawing an accepted report');
@@ -15659,7 +15676,7 @@ atest('api shift reports: the pack\'s today is Eastern time, and the rule helper
     [14, -14, 8], 'whole days, across the clock change');
   ok(Number.isNaN(R.daysBetween('soon', '2026-10-01')), 'a date that is not a date');
   eq(['admin', 'editor', 'viewer', 'parent', 'pending', 'none'].map(R.canSubmitShiftReport), [true, true, true, true, false, false], 'who may send');
-  eq(['admin', 'editor', 'viewer', 'parent', 'pending', 'none'].map(R.canReviewShiftReport), [true, true, false, false, false, false], 'who may review');
+  eq(['admin', 'editor', 'viewer', 'parent', 'pending', 'none'].map(R.canReviewShiftReport), [true, false, false, false, false, false], 'who may review (an editor no longer: retired, 2026-10-02)');
   eq(['admin', 'editor', 'viewer', 'parent', 'pending', 'none'].map(R.canReadAllShiftReports), [true, true, true, false, false, false], 'who reads all');
   const view = { events: [{ kind: 'storefront', sfId: 's1', date: '2026-10-03', shifts: [{ blockId: 'b1' }] },
     { kind: 'meeting', sfId: 's2', date: '2026-10-03', shifts: [{ blockId: 'b2' }] }] };
@@ -15681,7 +15698,7 @@ atest('api shift reports: one report per block at a time — a second waits, an 
   eq([second.status, second.body.error, second.body.reason], [409, 'shift-reported', 'open'], 'a second report while one waits');
   eq((await w.report('parent')).body.reason, 'open', 'the same family sending twice');
   eq((await w.report('newbie', { blockId: 'b2' })).status, 200, 'another block is free');
-  eq((await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })).status, 200, 'accepted');
+  eq((await w.act('admin2', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })).status, 200, 'accepted');
   const third = await w.report('newbie');
   eq([third.status, third.body.reason], [409, 'accepted'], 'a report on an accepted block');
   // A leader reopens it; the family sends a corrected one.
@@ -15708,33 +15725,33 @@ atest('api shift reports: the sender edits or withdraws while it waits, a leader
   eq((await w.act('parent', rid, { action: 'withdraw', note: 'x' })).body.reason, 'unknown-field', 'a withdraw carrying figures');
   eq((await w.act('parent', rid, { action: 'delete' })).body.reason, 'action', 'an unknown action');
   // An accept names the figures the leader saw; the family's edit a moment earlier wins.
-  const stale = await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
+  const stale = await w.act('admin3', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
   eq([stale.status, stale.body.error, stale.body.status], [409, 'report-moved', 'submitted'], 'accepting figures the report no longer has');
-  eq((await w.act('editor', rid, { action: 'accept' })).body.reason, 'te-cents', 'an accept without figures');
-  eq((await w.act('editor', rid, { action: 'return' })).body.reason, 'review-note', 'sending back without a reason');
-  eq((await w.act('editor', rid, { action: 'return', reviewNote: '   ' })).body.reason, 'review-note', 'a blank reason');
+  eq((await w.act('admin3', rid, { action: 'accept' })).body.reason, 'te-cents', 'an accept without figures');
+  eq((await w.act('admin3', rid, { action: 'return' })).body.reason, 'review-note', 'sending back without a reason');
+  eq((await w.act('admin3', rid, { action: 'return', reviewNote: '   ' })).body.reason, 'review-note', 'a blank reason');
   // A leader's own report: another leader accepts it, never themselves.
-  const mine = (await w.report('editor', { blockId: 'b2' })).body.report.id;
-  const self = await w.act('editor', mine, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
+  const mine = (await w.report('admin3', { blockId: 'b2' })).body.report.id;
+  const self = await w.act('admin3', mine, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
   eq([self.status, self.body.error], [409, 'same-person'], 'an editor accepting their own report');
   eq(w.one('SELECT status FROM shift_reports WHERE id = ?', mine).status, 'submitted', 'their own report after the refusal');
   const other = await w.act('owner', mine, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true, reviewNote: 'Checked with the box' });
   eq([other.status, other.body.report.status, other.body.report.reviewedByName, other.body.report.reviewedByUid, other.body.report.submittedByUid],
-    [200, 'accepted', 'Test owner', 'uid-owner', 'uid-editor'], 'another leader accepts it');
+    [200, 'accepted', 'Test owner', 'uid-owner', 'uid-admin3'], 'another leader accepts it');
   // After an accept nothing but a leader's return moves it.
-  eq((await w.act('editor', mine, { action: 'withdraw' })).status, 409, 'the sender withdrawing an accepted report');
-  eq((await w.act('editor', mine, { action: 'edit', teCents: 1, cashCents: 1, attest: true })).status, 409, 'the sender editing an accepted report');
+  eq((await w.act('admin3', mine, { action: 'withdraw' })).status, 409, 'the sender withdrawing an accepted report');
+  eq((await w.act('admin3', mine, { action: 'edit', teCents: 1, cashCents: 1, attest: true })).status, 409, 'the sender editing an accepted report');
   eq((await w.act('admin2', mine, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })).status, 409, 'accepting twice');
   eq((await w.act('parent', rid, { action: 'withdraw' })).body.report.status, 'withdrawn', 'the parent withdraws theirs');
   eq((await w.act('parent', rid, { action: 'withdraw' })).body.error, 'report-moved', 'withdrawing twice');
-  eq((await w.act('editor', rid, { action: 'return', reviewNote: 'x' })).body.status, 'withdrawn', 'sending back a withdrawn report');
+  eq((await w.act('admin3', rid, { action: 'return', reviewNote: 'x' })).body.status, 'withdrawn', 'sending back a withdrawn report');
 });
 
 atest('api shift reports: every change leaves one audit row, in the same batch, and nothing else does', async () => {
   const w = await srWorld();
   const rid = (await w.report('parent')).body.report.id;
   await w.act('parent', rid, { action: 'edit', teCents: 200, cashCents: 300, attest: true });
-  await w.act('editor', rid, { action: 'accept', teCents: 200, cashCents: 300, collected: true });
+  await w.act('admin2', rid, { action: 'accept', teCents: 200, cashCents: 300, collected: true });
   await w.act('owner', rid, { action: 'return', reviewNote: 'Wrong block' });
   const rid2 = (await w.report('parent', { teCents: 5, cashCents: 6 })).body.report.id;
   await w.act('parent', rid2, { action: 'withdraw' });
@@ -15746,8 +15763,8 @@ atest('api shift reports: every change leaves one audit row, in the same batch, 
   eq(w.sql("SELECT uid, action, detail FROM audit WHERE action LIKE 'shift.%' ORDER BY id").map((r) => [r.uid, r.action, JSON.parse(r.detail)]), [
     ['uid-parent', 'shift.report', { report: rid, sfId: 'sfPast', blockId: 'b1', teCents: 12345, cashCents: 2500, salesCashCents: 0, needsConfirm: false }],
     ['uid-parent', 'shift.report.edit', { report: rid, teCents: 200, cashCents: 300, salesCashCents: 0, confirmationCleared: false }],
-    ['uid-editor', 'shift.accept', { report: rid, sfId: 'sfPast', blockId: 'b1', teCents: 200, cashCents: 300, salesCashCents: 0, submittedBy: 'uid-parent',
-      submittedByName: 'Test parent', reviewerName: 'Test editor', reviewNote: '', collected: true }],
+    ['uid-admin2', 'shift.accept', { report: rid, sfId: 'sfPast', blockId: 'b1', teCents: 200, cashCents: 300, salesCashCents: 0, submittedBy: 'uid-parent',
+      submittedByName: 'Test parent', reviewerName: 'Test admin2', reviewNote: '', collected: true }],
     ['uid-owner', 'shift.return', { report: rid, sfId: 'sfPast', blockId: 'b1', from: 'accepted', reason: 'Wrong block', reviewerName: 'Test owner' }],
     ['uid-parent', 'shift.report', { report: rid2, sfId: 'sfPast', blockId: 'b1', teCents: 5, cashCents: 6, salesCashCents: 0, needsConfirm: false }],
     ['uid-parent', 'shift.report.withdraw', { report: rid2 }]
@@ -15764,15 +15781,15 @@ atest('api shift reports: every change leaves one audit row, in the same batch, 
 
 atest('api shift reports: a parent reads their own in full and only the status of anyone else\'s; leaders read everything', async () => {
   const w = await srWorld();
-  w.db.raw.prepare("UPDATE members SET name = 'Sam Leaderson' WHERE uid = 'uid-editor'").run();
+  w.db.raw.prepare("UPDATE members SET name = 'Sam Leaderson' WHERE uid = 'uid-admin2'").run();
   w.db.raw.prepare("UPDATE members SET name = 'Nora Newfamily' WHERE uid = 'uid-newbie'").run();
   const mine = (await w.report('parent', { blockId: 'b1' })).body.report.id;
   const theirs = (await w.report('newbie', { blockId: 'b2', teCents: 77777, cashCents: 4321, note: 'Nora counted with Jo' })).body.report.id;
   await w.report('newbie', { blockId: 'b3', teCents: 55555, cashCents: 1111 });
   const old = (await w.report('newbie', { blockId: 'b4', teCents: 44444, cashCents: 2222 })).body.report.id;
   await w.act('newbie', old, { action: 'withdraw' });
-  await w.act('editor', theirs, { action: 'accept', teCents: 77777, cashCents: 4321, collected: true });
-  await w.act('editor', mine, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true, reviewNote: 'Thanks!' });
+  await w.act('admin2', theirs, { action: 'accept', teCents: 77777, cashCents: 4321, collected: true });
+  await w.act('admin2', mine, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true, reviewNote: 'Thanks!' });
   const p = await w.reports('parent');
   eq(p.status, 200, 'a parent\'s GET');
   eq(p.body.reports.length, 1, 'a parent sees one full report: their own');
@@ -15783,7 +15800,7 @@ atest('api shift reports: a parent reads their own in full and only the status o
   eq(p.body.others.sort((a, b) => a.blockId < b.blockId ? -1 : 1), [
     { sfId: 'sfPast', blockId: 'b2', status: 'accepted' }, { sfId: 'sfPast', blockId: 'b3', status: 'submitted' },
     { sfId: 'sfPast', blockId: 'b4', status: 'withdrawn' }], 'other families\' reports: block and status only');
-  for (const leak of ['77777', '55555', '44444', '4321', 'Nora', 'Newfamily', 'Jo', 'uid-newbie', theirs, 'Leaderson', 'uid-editor'])
+  for (const leak of ['77777', '55555', '44444', '4321', 'Nora', 'Newfamily', 'Jo', 'uid-newbie', theirs, 'Leaderson', 'uid-admin2'])
     // An amount as a JSON value (":4321"), so a timestamp or an id that happens to hold the digits is not a leak.
     ok(p.text.indexOf(/^\d+$/.test(leak) ? ':' + leak : leak) === -1, 'a parent\'s GET carries ' + leak);
   // The other family sees the parent's block the same way, and their own in full.
@@ -15795,12 +15812,12 @@ atest('api shift reports: a parent reads their own in full and only the status o
   eq((await w.reports('parent')).body.others.filter((o) => o.blockId === 'b4'), [{ sfId: 'sfPast', blockId: 'b4', status: 'submitted' }],
     'the block\'s current report, not its withdrawn one');
   // Leaders, viewers included: every report, every field the page needs.
-  for (const who of ['owner', 'editor', 'viewer']) {
+  for (const who of ['owner', 'admin2', 'viewer']) {
     const l = await w.reports(who);
     eq([l.status, l.body.reports.length, l.body.others], [200, 5, []], who + ' reads them all');
     const t = l.body.reports.find((r) => r.id === theirs);
     eq([t.submittedByName, t.submittedByUid, t.teCents, t.cashCents, t.note, t.reviewedByName, t.reviewedByUid, t.mine],
-      ['Nora Newfamily', 'uid-newbie', 77777, 4321, 'Nora counted with Jo', 'Sam Leaderson', 'uid-editor', false], who + ': a family\'s report in full');
+      ['Nora Newfamily', 'uid-newbie', 77777, 4321, 'Nora counted with Jo', 'Sam Leaderson', 'uid-admin2', false], who + ': a family\'s report in full');
     ok(l.text.indexOf('stamp') === -1, who + ': the stamp left the server');
   }
 });
@@ -15813,7 +15830,7 @@ atest('api shift reports: two changes at once — exactly one wins, and only the
     w = await srWorld();
     rid = (await w.report('parent')).body.report.id;
     holdBatches(w, 2, reverse);
-    [a, b] = await Promise.all([w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true }),
+    [a, b] = await Promise.all([w.act('admin2', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true }),
       w.act('owner', rid, { action: 'return', reviewNote: 'Recount' })]);
     eq([a.status, b.status].sort(), [200, 409], 'accept and send-back at once (' + reverse + '): ' + a.text + ' / ' + b.text);
     eq((a.status === 409 ? a : b).body.error, 'report-moved', 'the loser is told it moved');
@@ -15824,7 +15841,7 @@ atest('api shift reports: two changes at once — exactly one wins, and only the
   w = await srWorld();
   rid = (await w.report('parent')).body.report.id;
   holdBatches(w, 2);
-  [a, b] = await Promise.all([w.act('parent', rid, { action: 'withdraw' }), w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })]);
+  [a, b] = await Promise.all([w.act('parent', rid, { action: 'withdraw' }), w.act('admin2', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })]);
   eq([a.status, b.status].sort(), [200, 409], 'withdraw and accept at once');
   eq(w.sql("SELECT action FROM audit WHERE action IN ('shift.accept', 'shift.report.withdraw')").map((r) => r.action),
     [a.status === 200 ? 'shift.report.withdraw' : 'shift.accept'], 'only the winner is audited');
@@ -15834,7 +15851,7 @@ atest('api shift reports: two changes at once — exactly one wins, and only the
   rid = (await w.report('parent')).body.report.id;
   holdBatches(w, 2);
   [a, b] = await Promise.all([w.act('parent', rid, { action: 'edit', teCents: 1, cashCents: 2, attest: true }),
-    w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })]);
+    w.act('admin2', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })]);
   eq([a.status, b.status].sort(), [200, 409], 'edit and accept at once');
   // Whoever won, an accepted report holds exactly the figures the leader named.
   eq(w.one('SELECT status, te_cents FROM shift_reports WHERE id = ?', rid),
@@ -15920,16 +15937,16 @@ atest('S-5: a report carries the cash from sales still in hand — 0 by default,
   eq((await w.act('parent', rid, { action: 'edit', teCents: 9000, cashCents: 100, salesCashCents: 9001, attest: true })).body.reason,
     'sales-cash-cents', 'an edit over the Trail’s End amount');
   // An accept names it: a leader never signs for a figure they did not see.
-  const stale = await w.act('editor', rid, { action: 'accept', teCents: 9000, cashCents: 100, collected: true });
+  const stale = await w.act('admin2', rid, { action: 'accept', teCents: 9000, cashCents: 100, collected: true });
   eq([stale.status, stale.body.error], [409, 'report-moved'], 'an accept that leaves out cash the report says is still in hand');
-  eq((await w.act('editor', rid, { action: 'accept', teCents: 9000, cashCents: 100, salesCashCents: 1, collected: true })).body.error, 'report-moved',
+  eq((await w.act('admin2', rid, { action: 'accept', teCents: 9000, cashCents: 100, salesCashCents: 1, collected: true })).body.error, 'report-moved',
     'an accept naming a different amount');
-  eq((await w.act('editor', rid, { action: 'accept', teCents: 9000, cashCents: 100, salesCashCents: -1, collected: true })).body.reason, 'sales-cash-cents',
+  eq((await w.act('admin2', rid, { action: 'accept', teCents: 9000, cashCents: 100, salesCashCents: -1, collected: true })).body.reason, 'sales-cash-cents',
     'an accept naming a negative amount');
-  const acc = await w.act('editor', rid, { action: 'accept', teCents: 9000, cashCents: 100, salesCashCents: 1525, collected: true });
+  const acc = await w.act('admin2', rid, { action: 'accept', teCents: 9000, cashCents: 100, salesCashCents: 1525, collected: true });
   eq([acc.status, acc.body.report.status, acc.body.report.salesCashCents], [200, 'accepted', 1525], 'the accept');
   // A leader's accept of a report that has none still works as it did, naming nothing.
-  eq((await w.act('editor', plain.body.report.id, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })).status, 200, 'an accept of a report with none');
+  eq((await w.act('admin2', plain.body.report.id, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })).status, 200, 'an accept of a report with none');
   // The audit: the figure in every row that carries the figures.
   eq(w.audit('shift.report.edit').map((a) => JSON.parse(a.detail).salesCashCents), [1525], 'the edit’s audit');
   eq(w.audit('shift.accept').map((a) => JSON.parse(a.detail).salesCashCents), [1525, 0], 'the accepts’ audit');
@@ -15947,30 +15964,30 @@ atest('S-5: a leader records the cash from sales as collected or converted — a
   const w = await srWorld();
   const rid = (await w.report('parent', { blockId: 'b1', salesCashCents: 1525 })).body.report.id;
   const set = (who, body, id) => w.act(who, id || rid, Object.assign({ action: 'salescash' }, body));
-  eq((await set('editor', { outcome: 'collected', salesCashCents: 1525 })).body.error, 'report-moved', 'a report still waiting');
-  await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 1525, collected: true });
+  eq((await set('admin3', { outcome: 'collected', salesCashCents: 1525 })).body.error, 'report-moved', 'a report still waiting');
+  await w.act('admin3', rid, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 1525, collected: true });
   for (const who of ['viewer', 'parent', 'newbie', 'pending', 'stranger']) denied(await set(who, { outcome: 'collected', salesCashCents: 1525 }), who);
-  eq((await set('editor', { outcome: 'lost', salesCashCents: 1525 })).body.reason, 'outcome', 'an outcome that is not one of the two');
-  eq((await set('editor', { outcome: 'collected' })).body.reason, 'sales-cash-cents', 'no amount named');
-  eq((await set('editor', { outcome: 'collected', salesCashCents: 1525, note: 'x' })).body.reason, 'unknown-field', 'an unknown field');
-  eq((await set('editor', { outcome: 'collected', salesCashCents: 1500 })).body.error, 'report-moved', 'a different amount');
-  eq((await set('editor', { outcome: null, salesCashCents: 1525 })).body.error, 'report-moved', 'undoing nothing');
+  eq((await set('admin3', { outcome: 'lost', salesCashCents: 1525 })).body.reason, 'outcome', 'an outcome that is not one of the two');
+  eq((await set('admin3', { outcome: 'collected' })).body.reason, 'sales-cash-cents', 'no amount named');
+  eq((await set('admin3', { outcome: 'collected', salesCashCents: 1525, note: 'x' })).body.reason, 'unknown-field', 'an unknown field');
+  eq((await set('admin3', { outcome: 'collected', salesCashCents: 1500 })).body.error, 'report-moved', 'a different amount');
+  eq((await set('admin3', { outcome: null, salesCashCents: 1525 })).body.error, 'report-moved', 'undoing nothing');
   const none = (await w.report('parent', { blockId: 'b2' })).body.report.id;
-  await w.act('editor', none, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
-  eq((await set('editor', { outcome: 'collected', salesCashCents: 1 }, none)).body.reason, 'no-sales-cash', 'a report with no cash from sales');
+  await w.act('admin3', none, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
+  eq((await set('admin3', { outcome: 'collected', salesCashCents: 1 }, none)).body.reason, 'no-sales-cash', 'a report with no cash from sales');
   eq(w.sql("SELECT count(*) AS n FROM audit WHERE action LIKE 'shift.salescash.%'")[0].n, 0, 'a refused call left an audit row');
   // Collected, then undone, then converted.
-  const c = await set('editor', { outcome: 'collected', salesCashCents: 1525 });
+  const c = await set('admin3', { outcome: 'collected', salesCashCents: 1525 });
   eq([c.status, c.body.report.salesCashOutcome, c.body.report.salesCashByName, c.body.report.salesCashByUid, typeof c.body.report.salesCashAt],
-    [200, 'collected', 'Test editor', 'uid-editor', 'number'], 'collected');
+    [200, 'collected', 'Test admin3', 'uid-admin3', 'number'], 'collected');
   eq((await set('owner', { outcome: 'converted', salesCashCents: 1525 })).body.error, 'report-moved', 'a second outcome over the first');
   const u = await set('owner', { outcome: null, salesCashCents: 1525 });
   eq([u.status, u.body.report.salesCashOutcome, u.body.report.salesCashByName], [200, null, null], 'undone');
   eq((await set('admin2', { outcome: 'converted', salesCashCents: 1525 })).body.report.salesCashOutcome, 'converted', 'converted');
   eq(w.sql("SELECT uid, action, detail FROM audit WHERE action LIKE 'shift.salescash.%' ORDER BY id").map((a) => [a.uid, a.action, JSON.parse(a.detail)]), [
-    ['uid-editor', 'shift.salescash.collected', { report: rid, sfId: 'sfPast', blockId: 'b1', salesCashCents: 1525, byName: 'Test editor' }],
+    ['uid-admin3', 'shift.salescash.collected', { report: rid, sfId: 'sfPast', blockId: 'b1', salesCashCents: 1525, byName: 'Test admin3' }],
     ['uid-owner', 'shift.salescash.undo', { report: rid, sfId: 'sfPast', blockId: 'b1', salesCashCents: 1525, byName: 'Test owner',
-      was: { outcome: 'collected', byName: 'Test editor', at: c.body.report.salesCashAt } }],
+      was: { outcome: 'collected', byName: 'Test admin3', at: c.body.report.salesCashAt } }],
     ['uid-admin2', 'shift.salescash.converted', { report: rid, sfId: 'sfPast', blockId: 'b1', salesCashCents: 1525, byName: 'Test admin2' }]], 'the audit');
   // A parent's own report never says who collected it or when; a leader's does.
   const mine = (await w.reports('parent')).body.reports.find((r) => r.id === rid);
@@ -15979,9 +15996,9 @@ atest('S-5: a leader records the cash from sales as collected or converted — a
   // Two leaders at once: one records it, the other is told it moved, one audit row.
   const v = await srWorld();
   const vr = (await v.report('parent', { salesCashCents: 700 })).body.report.id;
-  await v.act('editor', vr, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 700, collected: true });
+  await v.act('admin3', vr, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 700, collected: true });
   holdBatches(v, 2);
-  const [a, b] = await Promise.all([v.act('editor', vr, { action: 'salescash', outcome: 'collected', salesCashCents: 700 }),
+  const [a, b] = await Promise.all([v.act('admin3', vr, { action: 'salescash', outcome: 'collected', salesCashCents: 700 }),
     v.act('owner', vr, { action: 'salescash', outcome: 'converted', salesCashCents: 700 })]);
   eq([[a.status, b.status].sort(), v.sql("SELECT count(*) AS n FROM audit WHERE action LIKE 'shift.salescash.%'")[0].n], [[200, 409], 1], 'two at once');
   // The table: no outcome without cash, a name and a time; only the two outcomes.
@@ -16109,7 +16126,14 @@ test('positions: the access table in index.html is a byte-identical copy of the 
 test('positions: every position and every section is in the table, and the sections are the page\'s own', () => {
   const t = ACCESS_JSON();
   const ids = t.positions.map((p) => p.id);
-  eq(ids, ['chair', 'cubmaster', 'asstcub', 'denleader', 'asstden', 'treasurer', 'kernel', 'advancement', 'outdoor', 'membership', 'parent'], 'the positions');
+  eq(ids, ['cubmaster', 'asstcub', 'chair', 'treasurer', 'secretary', 'kernel', 'advancement', 'activities', 'membership', 'outdoors',
+    'derbychair', 'comms', 'trainer', 'denleader', 'asstden', 'parent'], 'the positions');
+  // Position ids are the page's job ids (Keith, 2026-10-02): every job but the Chartered Org Rep
+  // (made an admin, never a position), in JOBS' order, then Parent. Ids only: a job is still a lens.
+  const jobs = [...slice('JOBS').matchAll(/\{ id: '([a-z]+)',\s+label: '([^']*)'/g)].map((m) => [m[1], m[2]]);
+  ok(jobs.length >= 16, 'too few JOBS read');
+  eq(ids, jobs.map((j) => j[0]).filter((j) => j !== 'cor').concat(['parent']), 'the positions vs JOBS');
+  eq(t.positions.slice(0, -1).map((p) => p.label), jobs.filter((j) => j[0] !== 'cor').map((j) => j[1]), 'the labels vs JOBS');
   ok(t.positions.every((p) => typeof p.label === 'string' && p.label), 'a position with no label');
   eq(Object.keys(t.access), ids, 'access has one row per position, in order');
   const levels = ['edit', 'read', 'hidden'];
@@ -16178,15 +16202,20 @@ atest('positions: the table is the plan\'s matrix, assistants are their principa
   const A = API.access;
   // The approved plan's matrix (2026-10-01), as letters, plus the owner's later decisions: the den
   // meeting sub-section (a den leader picks the adventure and writes the notes) and attendance.
-  const cols = ['chair', 'cubmaster', 'denleader', 'treasurer', 'kernel', 'advancement', 'outdoor', 'membership'];
+  // The five later committee positions (Keith, 2026-10-02) are the last five letters: Secretary
+  // edits the roster, Activities the calendar, the Derby Chair the derby; Communications and the
+  // Trainer read; like the other chairs, all five are kept out of the ledger, dues and fundraisers.
+  const cols = ['chair', 'cubmaster', 'denleader', 'treasurer', 'kernel', 'advancement', 'outdoors', 'membership',
+    'secretary', 'activities', 'derbychair', 'comms', 'trainer'];
   const plan = {
-    home: 'RRRRRRRR', calendar: 'EERRRRRR', 'calendar.denmeeting': 'EEERRRRR', attendance: 'EEERRRRR',
-    denplan: 'REERRRRR', derby: 'EERRRRRR', camping: 'RERRRRER', roster: 'RRRRRRRE', advancement: 'REERRERR',
-    joining: 'ERRRRRRE', storefronts: 'RRRRERRR', totals: 'RRRRERRR', rewards: 'RRRRERRR',
-    inventory: 'RRHREHHH', council: 'RRHREHHH',
-    budget: 'ERRERRRR', ledger: 'ERHERHHH', dues: 'ERHERHHH', fundraisers: 'ERHERHHH',
-    sharing: 'RRRRRRRR', people: 'ERHRRRRR', season: 'EERRRRRR'
+    home: 'RRRRRRRR' + 'RRRRR', calendar: 'EERRRRRR' + 'RERRR', 'calendar.denmeeting': 'EEERRRRR' + 'RERRR', attendance: 'EEERRRRR' + 'RRRRR',
+    denplan: 'REERRRRR' + 'RRRRR', derby: 'EERRRRRR' + 'RRERR', camping: 'RERRRRER' + 'RRRRR', roster: 'RRRRRRRE' + 'ERRRR', advancement: 'REERRERR' + 'RRRRR',
+    joining: 'ERRRRRRE' + 'RRRRR', storefronts: 'RRRRERRR' + 'RRRRR', totals: 'RRRRERRR' + 'RRRRR', rewards: 'RRRRERRR' + 'RRRRR',
+    inventory: 'RRHREHHH' + 'HHHHH', council: 'RRHREHHH' + 'HHHHH',
+    budget: 'ERRERRRR' + 'RRRRR', ledger: 'ERHERHHH' + 'HHHHH', dues: 'ERHERHHH' + 'HHHHH', fundraisers: 'ERHERHHH' + 'HHHHH',
+    sharing: 'RRRRRRRR' + 'RRRRR', people: 'ERHRRRRR' + 'RRRRR', season: 'EERRRRRR' + 'RRRRR'
   };
+  eq(cols.concat(['asstcub', 'asstden', 'parent']).sort(), A.POSITIONS.slice().sort(), 'the matrix covers every position');
   const L = { E: 'edit', R: 'read', H: 'hidden' };
   eq(Object.keys(plan).sort(), A.SECTIONS.slice().sort(), 'the plan covers every section');
   for (const s of A.SECTIONS) cols.forEach((p, i) => eq(A.ACCESS[p][s], L[plan[s][i]], `${p} / ${s}`));
@@ -16196,13 +16225,13 @@ atest('positions: the table is the plan\'s matrix, assistants are their principa
   eq(Object.keys(A.ACCESS), A.POSITIONS, 'ACCESS has every position');
 });
 
-atest('positions: effectiveAccess — admin edits all, a legacy editor all but the admin bucket, a viewer reads, a leader gets the most of their positions', async () => {
+atest('positions: effectiveAccess — admin edits all, a retired editor or viewer only reads, a leader gets the most of their positions', async () => {
   await apiSetup();
   const A = API.access, all = A.SECTIONS.concat(['admin', 'shared']);
   const every = (acc, lvl) => all.every((s) => acc[s] === lvl);
   ok(every(A.effectiveAccess('admin', []), 'edit'), 'admin');
-  const ed = A.effectiveAccess('editor', ['kernel']);
-  ok(A.SECTIONS.concat(['shared']).every((s) => ed[s] === 'edit') && ed.admin === 'read', 'editor: ' + JSON.stringify(ed));
+  // Retired (Keith, 2026-10-02): an editor reads everything and edits nothing, as a viewer does.
+  ok(every(A.effectiveAccess('editor', ['kernel']), 'read'), 'editor (retired; positions ignored)');
   ok(every(A.effectiveAccess('viewer', ['chair']), 'read'), 'viewer (positions ignored)');
   for (const r of ['parent', 'pending', 'none', '', undefined, 'Admin']) ok(every(A.effectiveAccess(r, ['chair']), 'hidden'), 'role ' + r);
   // The most permissive of several positions.
@@ -16212,7 +16241,7 @@ atest('positions: effectiveAccess — admin edits all, a legacy editor all but t
   eq(A.effectiveAccess('leader', ['denleader', 'kernel']).inventory, 'edit', 'hidden loses to edit');
   eq(A.effectiveAccess('leader', ['denleader', 'advancement']).inventory, 'hidden', 'hidden and hidden');
   // No positions, or none this file knows: nothing to edit, nothing to see but the buckets.
-  for (const ps of [[], null, ['cor'], ['__proto__', 'constructor'], [1, {}]]) {
+  for (const ps of [[], null, ['cor'], ['outdoor'], ['__proto__', 'constructor'], [1, {}]]) {
     const e = A.effectiveAccess('leader', ps);
     ok(A.SECTIONS.every((s) => e[s] === 'hidden') && e.shared === 'read' && e.admin === 'read', 'leader with ' + JSON.stringify(ps));
   }
@@ -16245,7 +16274,8 @@ atest('positions: sameJson compares objects by key whatever the order, arrays in
 /* ---- positions: the accounts that hold them (migration 0005, members, invites, session) ---- */
 
 // One made-up leader account per position (lead_chair, lead_denleader, …), seeded straight into the tables.
-const POSITION_IDS = ['chair', 'cubmaster', 'asstcub', 'denleader', 'asstden', 'treasurer', 'kernel', 'advancement', 'outdoor', 'membership', 'parent'];
+const POSITION_IDS = ['cubmaster', 'asstcub', 'chair', 'treasurer', 'secretary', 'kernel', 'advancement', 'activities', 'membership', 'outdoors',
+  'derbychair', 'comms', 'trainer', 'denleader', 'asstden', 'parent'];
 POSITION_IDS.concat(['multi', 'none']).forEach((p) => { PEOPLE['lead_' + p] = ['uid-lead-' + p, 'lead-' + p + '@example.com']; });
 function seedLeader(w, who, positions, role) {
   w.db.raw.prepare('INSERT INTO members (pack_id, uid, role, name, email, join_code, added_at) VALUES (?, ?, ?, ?, ?, NULL, ?)')
@@ -16263,8 +16293,11 @@ test('positions: migration 0005 names the same positions as access.js, and keeps
   const roles = [...sql.matchAll(/role IN \(([^)]*)\)/g)].map((m) => [...m[1].matchAll(/'([a-z]+)'/g)].map((x) => x[1]));
   const RULES = readFileSync(join(ROOT, 'functions/_lib/rules.js'), 'utf8');
   const list = (name) => [...new RegExp(`export const ${name} = \\[([^\\]]*)\\];`).exec(RULES)[1].matchAll(/'([^']*)'/g)].map((x) => x[1]);
-  eq(roles, [list('ROLES'), list('INVITE_ROLES')], 'the members and invites role CHECKs vs rules.js');
-  ok(list('LEADER_ROLES').indexOf('leader') >= 0 && list('INVITE_ROLES').indexOf('admin') === -1, 'leader is a leader; no invite makes an admin');
+  eq(roles, [list('ROLES'), list('INVITE_ROW_ROLES')], 'the members and invites role CHECKs vs rules.js');
+  ok(list('LEADER_ROLES').indexOf('leader') >= 0 && list('INVITE_ROW_ROLES').indexOf('admin') === -1, 'leader is a leader; no invite makes an admin');
+  // editor and viewer are retired (2026-10-02): still legal rows, never a new invite or a role set by name.
+  eq([list('RETIRED_ROLES'), list('INVITE_ROLES'), list('SETTABLE_ROLES')], [['editor', 'viewer'], ['leader', 'parent'], ['admin', 'parent', 'pending']], 'the retired roles');
+  ok(list('INVITE_ROLES').every((r) => list('INVITE_ROW_ROLES').indexOf(r) >= 0), 'a new invite role the table refuses');
 });
 
 atest('positions: migration 0005 keeps every member, invite, shift report and index, and the CHECKs take leader', async () => {
@@ -16338,11 +16371,11 @@ atest('positions: an admin gives an account its positions (it becomes a leader, 
   const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent', pending: 'pending' });
   const give = (who, target, positions, extra) => w.call(who, 'PATCH', 'member', { uid: PEOPLE[target][0] }, { body: Object.assign({ positions }, extra || {}) });
   const r = await give('owner', 'editor', ['treasurer', 'denleader']);
-  eq([r.status, r.body.role, r.body.positions], [200, 'leader', ['denleader', 'treasurer']], 'an editor given two positions');
+  eq([r.status, r.body.role, r.body.positions], [200, 'leader', ['treasurer', 'denleader']], 'an editor given two positions (in the table\'s order)');
   eq(heldBy(w, 'editor'), ['denleader', 'treasurer'], 'what the table holds');
   const a = w.audit('member.positions');
   eq(a.length, 1, 'one audit row');
-  eq([a[0].uid, JSON.parse(a[0].detail)], ['uid-owner', { target: 'uid-editor', from: { role: 'editor', positions: [] }, to: { role: 'leader', positions: ['denleader', 'treasurer'] } }], 'the audit row');
+  eq([a[0].uid, JSON.parse(a[0].detail)], ['uid-owner', { target: 'uid-editor', from: { role: 'editor', positions: [] }, to: { role: 'leader', positions: ['treasurer', 'denleader'] } }], 'the audit row');
   // Again: replaced, not added to.
   eq((await give('admin2', 'editor', ['kernel'])).body.positions, ['kernel'], 'replaced');
   eq(heldBy(w, 'editor'), ['kernel'], 'replaced in the table');
@@ -16367,7 +16400,7 @@ atest('positions: an admin gives an account its positions (it becomes a leader, 
   eq((await give('owner', 'viewer', ['chair'], { role: 'leader' })).body.reason, 'role-and-positions', 'role and positions together');
   eq(w.one('SELECT role FROM members WHERE uid = ?', 'uid-viewer').role, 'viewer', 'after the 400s');
   // A role change takes the positions with it.
-  eq((await w.call('owner', 'PATCH', 'member', { uid: 'uid-editor' }, { body: { role: 'viewer' } })).body.positions, undefined, 'made a viewer');
+  eq((await w.call('owner', 'PATCH', 'member', { uid: 'uid-editor' }, { body: { role: 'parent' } })).body.positions, undefined, 'made a parent');
   eq(heldBy(w, 'editor'), [], 'the positions went with the role');
   // The last admin cannot be given positions (they would stop being an admin); nothing is written.
   const one = await (await apiWorld()).seed({});
@@ -16396,9 +16429,12 @@ atest('positions: an invite can carry positions, and signing in on it makes a le
   denied(await inv('editor', { positions: ['chair'] }), 'an editor inviting a leader');
   denied(await inv('editor', { role: 'leader' }), 'an editor inviting a leader (role only)');
   eq((await w.call('owner', 'GET', 'invite', { email: PEOPLE.newbie[1] })).body.positions, ['denleader'], 'after the refusals');
-  // Plain invites are as they were (no positions field).
-  const plain = await inv('owner', { role: 'viewer' }, 'plain@example.com');
-  eq([plain.status, plain.body.positions], [200, undefined], 'a viewer invite');
+  // A parent invite is as it was (no positions field). Editor and viewer are retired: no new invite as either.
+  const plain = await inv('owner', { role: 'parent' }, 'plain@example.com');
+  eq([plain.status, plain.body.positions], [200, undefined], 'a parent invite');
+  for (const r of ['editor', 'viewer']) denied(await inv('owner', { role: r }, 'retired@example.com'), 'a new ' + r + ' invite');
+  // The Chartered Org Rep is not a position (they are made an admin), nor is a misspelt one.
+  for (const p of ['cor', 'outdoor']) eq((await inv('owner', { positions: [p] }, 'retired@example.com')).body.reason, 'positions', 'an invite as ' + p);
   // Used: the account is a leader with exactly the invite's positions, and the invite is gone with them.
   const s = await w.session('newbie');
   eq([s.body.role, s.body.member.positions], ['leader', ['denleader']], 'signing in on it');
@@ -16416,17 +16452,19 @@ atest('positions: an invite can carry positions, and signing in on it makes a le
 });
 
 atest('positions: the parent view stays always published — a leader who edits any section writes it, one who only reads does not, and the allowlist holds for both', async () => {
-  // Owner decision, 2026-10-01: canWriteView = admin, editor, or a leader with Edit on a section.
+  // Owner decision, 2026-10-01: canWriteView = admin, or a leader with Edit on a section (the
+  // editor went with its retirement, 2026-10-02: Communications and the Trainer read, so they don't).
   const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent' });
   POSITION_IDS.filter((p) => p !== 'parent').forEach((p) => seedLeader(w, 'lead_' + p, [p]));
   seedLeader(w, 'lead_none', []);
   const put = (who, body) => w.call(who, 'PUT', 'view', null, { body: body || { packName: 'Test Pack', contact: 'by ' + who } });
-  for (const who of ['owner', 'editor'].concat(POSITION_IDS.filter((p) => p !== 'parent').map((p) => 'lead_' + p))) eq((await put(who)).status, 200, who + ' PUT view');
-  for (const who of ['lead_none', 'viewer', 'parent']) denied(await put(who), who + ' PUT view');
+  const readOnly = ['comms', 'trainer', 'parent'];
+  for (const who of ['owner'].concat(POSITION_IDS.filter((p) => readOnly.indexOf(p) === -1).map((p) => 'lead_' + p))) eq((await put(who)).status, 200, who + ' PUT view');
+  for (const who of ['lead_none', 'lead_comms', 'lead_trainer', 'editor', 'viewer', 'parent']) denied(await put(who), who + ' PUT view');
   eq((await put('lead_denleader', { packName: 'x', budget: {} })).body.reason, 'view-key', 'a leader sending a key the view never has');
   eq((await put('lead_kernel', { packName: 'x', events: [{ noteInternal: 'x' }] })).body.reason, 'view-note-internal', 'a leader sending a leaders-only note');
   ok(API.rules.canWriteView('leader', ['denleader']) && !API.rules.canWriteView('leader', []) && !API.rules.canWriteView('leader', ['parent'])
-    && !API.rules.canWriteView('viewer', ['chair']) && API.rules.canWriteView('editor', []), 'canWriteView');
+    && !API.rules.canWriteView('viewer', ['chair']) && !API.rules.canWriteView('editor', []) && !API.rules.canWriteView('leader', ['comms', 'trainer']), 'canWriteView');
 });
 
 /* ================================================================
@@ -16698,7 +16736,7 @@ atest('api client: two leaders save at once — the second is refused (409), mer
   const w = await (await apiWorld()).seed();
   w.state(3, PACK_STATE());
   const a = await (await apiClient(w, 'owner')).start();
-  const b = await (await apiClient(w, 'editor')).start();
+  const b = await (await apiClient(w, 'admin2')).start();
   eq([a.get('state.rev'), b.get('state.rev')], [3, 3], 'both start on rev 3');
   // b has read rev 3 and is about to write it; a's save lands in between.
   a.run("state.ledger.push({ id: 'la', amountCents: 500 }); commit()");
@@ -16715,7 +16753,7 @@ atest('api client: two leaders save at once — the second is refused (409), mer
   eq(b.log.filter((l) => /^PUT \/P$/.test(l)).length, 2, 'b did not retry after the conflict');
   const s = serverState(w);
   eq([s.rev, s.json.ledger.map((l) => l.id).sort()], [5, ['l0', 'la', 'lb']], 'the server lost an entry');
-  eq(s.device, 'dev-editor', 'the last writer');
+  eq(s.device, 'dev-admin2', 'the last writer');
   eq(b.get('[state.rev, sync.dirty, sync.clobber, state.ledger.length]'), [5, false, false, 3], 'b after the retry');
   ok(b.get('toasts').some((t) => /Another device saved changes/.test(t)), 'b was not told another device saved');
   // a hears of it at its next poll, and adopts it.
@@ -16876,7 +16914,7 @@ atest('api client: on switch day the owner’s copy is the one copied in, so it 
     eq(owner.get('sync.notice'), path === 'held, then the feed' ? 'awaiting-import' : '', `${path}: the owner’s device before the copy-in`);
     const mf = owner.get(`buildMoveFile({ packId: '${API_PACK}', record: { rev: 41, device: 'fs-dev', json: ${JSON.stringify(JSON.stringify(local))} },
       members: [{ uid: 'uid-owner', role: 'admin', name: 'O', email: 'owner@example.com' },
-        { uid: 'uid-editor', role: 'editor', name: 'E', email: 'editor1@example.com' }], invites: [], joinCfg: null, at: 'now' })`);
+        { uid: 'uid-admin2', role: 'admin', name: 'E', email: 'admin2@example.com' }], invites: [], joinCfg: null, at: 'now' })`);
     const body = owner.get(`moveImportBody(${JSON.stringify(mf)}, '${API_PACK}')`).body;
     eq((await w.call('owner', 'POST', 'import', null, { body })).status, 200, `${path}: the copy-in`);
     owner.reset();
@@ -16888,7 +16926,7 @@ atest('api client: on switch day the owner’s copy is the one copied in, so it 
     eq(owner.get('Object.keys(timers).filter(function (k) { return timers[k].ms === 800 || timers[k].ms === 10000; }).length'), 0,
       `${path}: a save is still scheduled`);
     // An editor renames the pack: a change the append-only merge does not carry.
-    const ed = await (await apiClient(w, 'editor')).start();
+    const ed = await (await apiClient(w, 'admin2')).start();
     await ed.edit("state.packName = 'Renamed Pack'");
     eq(serverState(w).rev, 42, `${path}: the editor’s save`);
     // The owner's device hears it, then saves an edit of its own.
@@ -16911,14 +16949,16 @@ atest('api client: a pack copied in at rev 0 goes in at rev 1, so a first save r
     const where = env.DEPLOY_ENV ? 'production' : 'staging';
     const w = env.DEPLOY_ENV ? await apiWorld(env) : await (await apiWorld()).seed();
     if (env.DEPLOY_ENV) {
-      // In production the editor gets in through the copied roster: bring it in first, then take
-      // the record away again, as if the copy-in were still to come.
+      // In production the second admin gets in through the copied roster: bring it in first, then
+      // take the record away again, as if the copy-in were still to come. (The editor this was,
+      // until that role was retired, 2026-10-02, writes nothing now.)
       await w.session('owner');
-      eq((await w.call('owner', 'POST', 'import', null, { body: importBody() })).status, 200, 'the roster');
+      const roster = importBody().members.concat([{ uid: 'uid-admin2', role: 'admin', name: 'Test Admin2', email: 'admin2@example.com', addedAt: 2500 }]);
+      eq((await w.call('owner', 'POST', 'import', null, { body: importBody({ members: roster }) })).status, 200, 'the roster');
       w.db.raw.prepare('DELETE FROM pack_state').run();
       w.db.raw.prepare('DELETE FROM import_lock').run();
     }
-    const ed = await (await apiClient(w, 'editor', { state: PACK_STATE() })).start();
+    const ed = await (await apiClient(w, 'admin2', { state: PACK_STATE() })).start();
     eq(ed.get('[sync.packMissing, sync.dirty]'), [true, true], `${where}: the editor did not hear "no pack" (the test proves nothing)`);
     let imported = null;
     ed.intercept = async (method) => {
@@ -16943,7 +16983,7 @@ atest('a copy choice closed with Escape keeps saying it waits, and a device that
   w.state(3, PACK_STATE());
   // (Sync conflicts, Keith 2026-10-02 — a device with unsaved work and no base to tell it from an old copy, as one
   // from before the base: still asked, whole copy. One with nothing unsaved takes the server's copy quietly now.)
-  const ed = await (await apiClient(w, 'editor', { state: PACK_STATE({ packName: 'Mine', scouts: [{ id: 'x', name: 'Old' }] }), unsynced: true })).start();
+  const ed = await (await apiClient(w, 'admin2', { state: PACK_STATE({ packName: 'Mine', scouts: [{ id: 'x', name: 'Old' }] }), unsynced: true })).start();
   eq(ed.get('[ui.overlay && ui.overlay.kind, !!sync.conflict]'), ['sync-conflict', true], 'no choice to close (the test proves nothing)');
   ed.run('ui.overlay = null');   // Escape
   // The pill, the sync card's line and its button, from the page's own code.
@@ -16969,11 +17009,10 @@ atest('a copy choice closed with Escape keeps saying it waits, and a device that
     'pressing the pill does not reopen the chooser');
   ok(/\(sync\.conflict \? '<div class="row" style="margin:0 0 8px"><button type="button" class="btn small primary" data-act="sync-choose">'/.test(slice('renderPackSharing')),
     'the sync card has no way back to the choice');
-  // An admin makes the editor a viewer while the choice waits: the device takes the shared copy,
-  // writes nothing, and is no longer waiting.
-  const owner = await (await apiClient(w, 'owner')).start();
-  owner.run("setMemberRole('uid-editor', 'viewer')");
-  await settle([owner]);
+  // The leader becomes view-only while the choice waits: the device takes the shared copy, writes
+  // nothing, and is no longer waiting. (A viewer row is put straight into the table: since editor
+  // and viewer were retired, 2026-10-02, no admin sets either, but the leftover rows still load.)
+  w.db.raw.prepare("UPDATE members SET role = 'viewer' WHERE uid = 'uid-admin2'").run();
   ed.reset();
   await ed.poll();
   await settle([ed], 1200);
@@ -17014,7 +17053,7 @@ atest('api client: an edit made while a save is out reaches the server, even whe
   // its save of a ledger row is on the wire. The owner then saves before the editor's next push.
   const w = await (await apiWorld()).seed();
   w.state(3, PACK_STATE());
-  const ed = await (await apiClient(w, 'editor', { state: PACK_STATE() })).start();
+  const ed = await (await apiClient(w, 'admin2', { state: PACK_STATE() })).start();
   const owner = await (await apiClient(w, 'owner', { state: PACK_STATE() })).start();
   eq([ed.get('[sync.dirty, state.rev]'), owner.get('[sync.dirty, state.rev]')], [[false, 3], [false, 3]], 'both devices start clean on rev 3');
   let renamed = false;
@@ -17051,7 +17090,7 @@ atest('api client: a pack copied in after a leader’s device heard "no pack" is
   const body = { pack: { rev: 10, device: 'fs-dev', json: JSON.stringify(copied) }, members: [], invites: [], join: null };
   for (const path of ['the seed', 'the 10 s retry', 'the feed, then the seed']) {
     const w = await (await apiWorld()).seed();
-    const ed = await (await apiClient(w, 'editor', { state: PACK_STATE() })).start();
+    const ed = await (await apiClient(w, 'admin2', { state: PACK_STATE() })).start();
     eq(ed.get('[sync.feed, sync.packMissing, sync.remoteRec, sync.dirty]'), ['doc', true, null, true], `${path}: the editor heard "no pack"`);
     ok(ed.get('Object.keys(timers).some(function (k) { return timers[k].ms === 800; })'), `${path}: no seed was scheduled (the test proves nothing)`);
     if (path === 'the 10 s retry') {
@@ -17774,7 +17813,7 @@ atest('shift totals: a view built by the real buildParentView is one the server 
   const ctx = pvCtx(SR_STANDINGS_STUBS + `state.storefronts[0].date = '${yesterday}'; state.budget.programYear = ${py};`);
   const view = vm.runInContext('buildParentView(state, { showStandings: true })', ctx);
   const w = await (await apiWorld()).seed();
-  eq((await w.call('editor', 'PUT', 'view', null, { body: view })).status, 200, 'the leader’s page publishes the view');
+  eq((await w.call('admin2', 'PUT', 'view', null, { body: view })).status, 200, 'the leader’s page publishes the view');
   const r = await w.call('parent', 'POST', 'shiftReports', null, { body: { sfId: 'sf1', blockId: 'b2', teCents: 5000, cashCents: 0, attest: true } });
   eq([r.status, r.body.report && r.body.report.blockId], [200, 'b2'], 'a family reports a shift from the published view');
   const bad = await w.call('parent', 'POST', 'shiftReports', null, { body: { sfId: 'sf1', blockId: 'b9', teCents: 1, cashCents: 0, attest: true } });
@@ -18324,7 +18363,7 @@ test('preview as a parent: the parent preview is the leader’s own parent self 
 atest('shift reports S-3: a leader’s page accepts a family’s report against the real server, finishes a lost accept on the next load, and undoes a refused one', async () => {
   await apiSetup();
   const today = API.rules.packToday();
-  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent', pending: 'pending', newbie: 'parent' });
+  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', admin3: 'admin', viewer: 'viewer', parent: 'parent', pending: 'pending', newbie: 'parent' });
   const blk = (id, extra) => Object.assign({ id, label: id, start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }],
     salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '' }, extra || {});
   const pack = PACK_STATE({ scouts: [{ id: 's1', name: 'Ada' }], storefronts: [{ id: 'sf1', name: 'Kroger', date: today,
@@ -18343,7 +18382,7 @@ atest('shift reports S-3: a leader’s page accepts a family’s report against 
     return r.body.report.id;
   };
   const r1 = await send('parent', 'b1', 12345, 2500);
-  const ed = await pin(await apiClient(w, 'editor', { state: pack })).start(1200);
+  const ed = await pin(await apiClient(w, 'admin3', { state: pack })).start(1200);
   ok(ed.log.indexOf('GET /P/shift-reports') >= 0, 'the leader’s page did not read the reports on load: ' + ed.log.join(', '));
   eq(ed.get("srWaiting().map(function (r) { return r.id; })"), [r1], 'the waiting report');
   // Accept: the block first, the save, then the PATCH.
@@ -18353,11 +18392,11 @@ atest('shift reports S-3: a leader’s page accepts a family’s report against 
   await settle([ed], 1200);
   const order = ed.log.filter((l) => /^PUT \/P$|^PATCH \/P\/shift-reports/.test(l));
   eq(order.slice(0, 2), ['PUT /P', 'PATCH /P/shift-reports/' + r1], 'saved, then signed off');
-  eq(w.one('SELECT status, reviewed_by_uid, te_cents FROM shift_reports WHERE id = ?', r1), { status: 'accepted', reviewed_by_uid: 'uid-editor', te_cents: 12345 }, 'the report');
+  eq(w.one('SELECT status, reviewed_by_uid, te_cents FROM shift_reports WHERE id = ?', r1), { status: 'accepted', reviewed_by_uid: 'uid-admin3', te_cents: 12345 }, 'the report');
   const server = () => JSON.parse(w.one('SELECT json FROM pack_state WHERE pack_id = ?', API_PACK).json).storefronts[0].blocks;
   const s1 = server()[0];
   eq([s1.salesCents, s1.donationsCents, s1.cashCountedBy, s1.cashVerifiedBy, s1.reportId, s1.reportFrom, s1.reportPending],
-    [12345, 2500, 'Test parent', 'Test editor', r1, 'Test parent', undefined], 'the block on the server, settled');
+    [12345, 2500, 'Test parent', 'Test admin3', r1, 'Test parent', undefined], 'the block on the server, settled');
   // A lost accept: the PATCH never reaches the server. The next page load finishes it.
   const r2 = await send('newbie', 'b2', 4000, 100);
   ed.run('loadShiftReports()');
@@ -18367,9 +18406,9 @@ atest('shift reports S-3: a leader’s page accepts a family’s report against 
   ed.run(`acceptShiftReport('${r2}', { collected: true })`);
   await settle([ed], 1200);
   await settle([ed], 1200);
-  eq([w.one('SELECT status FROM shift_reports WHERE id = ?', r2).status, server()[1].reportPending && server()[1].reportPending.by], ['submitted', 'uid-editor'],
+  eq([w.one('SELECT status FROM shift_reports WHERE id = ?', r2).status, server()[1].reportPending && server()[1].reportPending.by], ['submitted', 'uid-admin3'],
     'the block saved, the report not signed off');
-  const ed2 = await pin(await apiClient(w, 'editor', { state: JSON.parse(w.one('SELECT json FROM pack_state WHERE pack_id = ?', API_PACK).json) })).start(1200);
+  const ed2 = await pin(await apiClient(w, 'admin3', { state: JSON.parse(w.one('SELECT json FROM pack_state WHERE pack_id = ?', API_PACK).json) })).start(1200);
   await settle([ed2], 1200);
   await settle([ed2], 1200);
   eq(w.one('SELECT status, te_cents FROM shift_reports WHERE id = ?', r2), { status: 'accepted', te_cents: 4000 }, 'the next load finished the accept');
@@ -18389,7 +18428,7 @@ atest('shift reports S-3: a leader’s page accepts a family’s report against 
   ok(ed2.get('toasts').some((t) => /The block is back to what it was\./.test(t)), 'the leader was not told');
   eq(w.one('SELECT status FROM shift_reports WHERE id = ?', r3).status, 'withdrawn', 'the report');
   // The leader's own report: the server and the page both refuse.
-  const r4 = await send('editor', 'b3', 1, 1);
+  const r4 = await send('admin3', 'b3', 1, 1);
   ed2.run('loadShiftReports()');
   await settle([ed2], 1200);
   ed2.run(`acceptShiftReport('${r4}', { collected: true, replaceOk: true })`);
@@ -18437,7 +18476,7 @@ atest('shift reports S-3: a leader’s page accepts a family’s report against 
 async function s4World() {
   PEOPLE.other = PEOPLE.other || ['uid-other', 'other1@example.com'];
   PEOPLE.loose = PEOPLE.loose || ['uid-loose', 'loose1@example.com'];
-  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent', pending: 'pending',
+  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', admin3: 'admin', viewer: 'viewer', parent: 'parent', pending: 'pending',
     newbie: 'parent', other: 'parent', loose: 'parent' });
   const today = API.rules.packToday();
   const blk = (id, scouts) => ({ id, label: id, start: '10:00', end: '12:00', assignments: scouts.map((s) => ({ scoutId: s, weight: 1 })),
@@ -18547,7 +18586,7 @@ atest('S-4: no pack record, or no such storefront or block in it, and nobody con
 atest('S-4: a leader accepts a confirmed report, or an unconfirmed one only with a written reason', async () => {
   const w = await s4World();
   const rid = (await w.send('parent', 'b1')).body.report.id;
-  const accept = (over) => w.act('editor', rid, Object.assign({ action: 'accept', teCents: 12345, cashCents: 2500, collected: true }, over || {}));
+  const accept = (over) => w.act('admin2', rid, Object.assign({ action: 'accept', teCents: 12345, cashCents: 2500, collected: true }, over || {}));
   eq((await accept()).body.error, 'needs-confirm', 'unconfirmed, no override');
   eq((await accept({ override: true })).body.reason, 'review-note', 'an override with no reason');
   eq((await accept({ override: true, reviewNote: '   ' })).body.reason, 'review-note', 'an override with a blank reason');
@@ -18559,7 +18598,7 @@ atest('S-4: a leader accepts a confirmed report, or an unconfirmed one only with
   // Confirmed: a plain accept, naming the confirmer in the audit.
   const r2 = (await w.send('parent', 'b5')).body.report.id;
   await w.confirm('newbie', r2);
-  const a2 = await w.act('editor', r2, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
+  const a2 = await w.act('admin2', r2, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
   eq([a2.status, a2.body.report.overridden, JSON.parse(w.audit('shift.accept')[0].detail).confirmedBy], [200, false, 'uid-newbie'], 'a confirmed accept');
 });
 
@@ -18570,7 +18609,7 @@ atest('S-4: the sender’s edit clears a confirmation, and a confirm racing an e
   const ed = await w.act('parent', rid, { action: 'edit', teCents: 13000, cashCents: 2500, attest: true });
   eq([ed.body.report.confirmed, ed.body.report.confirmedByName, JSON.parse(w.audit('shift.report.edit')[0].detail).confirmationCleared], [false, null, true],
     'the edit cleared the confirmation');
-  eq((await w.act('editor', rid, { action: 'accept', teCents: 13000, cashCents: 2500, collected: true })).body.error, 'needs-confirm', 'an accept after the edit');
+  eq((await w.act('admin2', rid, { action: 'accept', teCents: 13000, cashCents: 2500, collected: true })).body.error, 'needs-confirm', 'an accept after the edit');
   for (const reverse of [false, true]) {
     const v = await s4World();
     const r = (await v.send('parent', 'b1')).body.report.id;
@@ -18629,14 +18668,14 @@ atest('as a parent: a leader who is also a parent gets exactly a parent’s answ
   const w = await s4World();
   // The editor is a parent too: linked to Ada, as the `parent` account is.
   const st = JSON.parse(w.one('SELECT json FROM pack_state').json);
-  st.scouts.find((sc) => sc.id === 's1').parentUids.push('uid-editor');
+  st.scouts.find((sc) => sc.id === 's1').parentUids.push('uid-admin2');
   w.db.raw.prepare('UPDATE pack_state SET json = ?, rev = rev + 1').run(JSON.stringify(st));
-  const mine = (await w.send('editor', 'b3', { salesCashCents: 100 })).body.report.id;
+  const mine = (await w.send('admin2', 'b3', { salesCashCents: 100 })).body.report.id;
   await w.act('owner', mine, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 100, override: true, reviewNote: 'Test' });
   await w.act('owner', mine, { action: 'salescash', outcome: 'collected', salesCashCents: 100 });
   const theirs = (await w.send('newbie', 'b1')).body.report.id;   // two families: Ada's (the editor's) may confirm it
   await w.send('parent', 'b5');   // Ada's family sends it: the editor, of that family, may not confirm it
-  const g = await w.call('editor', 'GET', 'shiftReports', null, { query: '?as=parent' });
+  const g = await w.call('admin2', 'GET', 'shiftReports', null, { query: '?as=parent' });
   eq(g.status, 200, 'an editor’s parent-shaped GET');
   eq(g.body.reports.map((r) => r.id), [mine], 'their own reports only');
   const own = g.body.reports[0];
@@ -18654,20 +18693,20 @@ atest('as a parent: a leader who is also a parent gets exactly a parent’s answ
   // editor (its confirmer) may not record what became of its cash.
   const sw = await s4World();
   const st2 = JSON.parse(sw.one('SELECT json FROM pack_state').json);
-  st2.scouts.find((sc) => sc.id === 's1').parentUids.push('uid-editor');
+  st2.scouts.find((sc) => sc.id === 's1').parentUids.push('uid-admin2');
   sw.db.raw.prepare('UPDATE pack_state SET json = ?, rev = rev + 1').run(JSON.stringify(st2));
   const cr = (await sw.send('newbie', 'b1', { salesCashCents: 300 })).body.report.id;
-  const seen = (await sw.call('editor', 'GET', 'shiftReports', null, { query: '?as=parent' })).body.others.find((o) => o.id === cr);
-  eq((await sw.act('editor', cr, { action: 'confirm', attest: true, teCents: seen.teCents, cashCents: seen.cashCents, salesCashCents: seen.salesCashCents,
+  const seen = (await sw.call('admin2', 'GET', 'shiftReports', null, { query: '?as=parent' })).body.others.find((o) => o.id === cr);
+  eq((await sw.act('admin2', cr, { action: 'confirm', attest: true, teCents: seen.teCents, cashCents: seen.cashCents, salesCashCents: seen.salesCashCents,
     updatedAt: seen.updatedAt })).status, 200, 'the editor confirms, as a parent');
   eq((await sw.act('owner', cr, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 300 })).status, 200, 'the owner accepts');
-  eq((await sw.act('editor', cr, { action: 'salescash', outcome: 'collected', salesCashCents: 300 })).body.error, 'same-person', 'the confirmer records its cash');
+  eq((await sw.act('admin2', cr, { action: 'salescash', outcome: 'collected', salesCashCents: 300 })).body.error, 'same-person', 'the confirmer records its cash');
   eq(sw.sql("SELECT count(*) AS n FROM audit WHERE action LIKE 'shift.salescash.%'")[0].n, 0, 'audited a refusal');
   eq((await sw.act('owner', cr, { action: 'salescash', outcome: 'collected', salesCashCents: 300 })).status, 200, 'another leader does');
   // Without ?as=parent, the editor reads as a leader, as before.
-  const full = await w.call('editor', 'GET', 'shiftReports');
+  const full = await w.call('admin2', 'GET', 'shiftReports');
   ok(full.body.reports.length >= 3 && full.body.reports.some((r) => r.submittedByUid), 'the leader’s answer, unchanged');
-  eq((await w.call('editor', 'GET', 'shiftReports', null, { query: '?as=leader' })).body.reason, 'as', 'nothing else may be asked');
+  eq((await w.call('admin2', 'GET', 'shiftReports', null, { query: '?as=leader' })).body.reason, 'as', 'nothing else may be asked');
   denied(await w.call('pending', 'GET', 'shiftReports', null, { query: '?as=parent' }), 'pending, as a parent');
   denied(await w.call('stranger', 'GET', 'shiftReports', null, { query: '?as=parent' }), 'a stranger, as a parent');
   eq([(await w.call('loose', 'GET', 'shiftReports')).body.linked, (await w.call('viewer', 'GET', 'shiftReports', null, { query: '?as=parent' })).body.linked],
@@ -18729,10 +18768,10 @@ atest('same family: recording the cash from sales refuses the sender and the sen
     w.db.raw.prepare('UPDATE pack_state SET json = ?, rev = rev + 1').run(JSON.stringify(st));
   };
   // An editor's own report on b2 (one family), accepted by the owner.
-  const mine = (await w.send('editor', 'b2', { salesCashCents: 300 })).body.report.id;
+  const mine = (await w.send('admin3', 'b2', { salesCashCents: 300 })).body.report.id;
   eq((await w.act('owner', mine, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 300, collected: true })).status, 200, 'accepted');
   const sc = (who, rid, outcome, cents) => w.act(who, rid, { action: 'salescash', outcome, salesCashCents: cents });
-  eq((await sc('editor', mine, 'collected', 300)).body.error, 'same-person', 'the sender recording their own');
+  eq((await sc('admin3', mine, 'collected', 300)).body.error, 'same-person', 'the sender recording their own');
   // newbie's report on b5, confirmed by Ada's family and accepted by the owner; admin2 is linked to Cy (newbie's family).
   const r3 = (await w.send('newbie', 'b5', { salesCashCents: 400 })).body.report.id;
   await w.confirm('parent', r3);
@@ -18746,9 +18785,9 @@ atest('same family: recording the cash from sales refuses the sender and the sen
   const v = await s4World();
   const rv = (await v.send('newbie', 'b2', { salesCashCents: 100 })).body.report.id;
   v.db.raw.prepare("UPDATE pack_state SET json = '{x', rev = rev + 1").run();
-  eq((await v.act('editor', rv, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 100, collected: true })).body.error, 'same-family',
+  eq((await v.act('admin3', rv, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 100, collected: true })).body.error, 'same-family',
     'an unreadable record: no plain accept');
-  eq((await v.act('editor', rv, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 100, override: true, reviewNote: 'Record broken' })).status, 200,
+  eq((await v.act('admin3', rv, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 100, override: true, reviewNote: 'Record broken' })).status, 200,
     'an override with a reason');
   eq((await v.act('owner', rv, { action: 'salescash', outcome: 'collected', salesCashCents: 100 })).body.error, 'same-family', 'nor a record of the cash');
   // No record at all decides nothing, as before.
@@ -18768,14 +18807,14 @@ atest('same family: a leader in the sender’s family accepts only with a reason
   };
   // One family on b2 (Bo and Cy, famB): newbie sends it. The editor is linked to Cy only — a sibling of Bo.
   const r2 = (await w.send('newbie', 'b2')).body.report.id;
-  link('uid-editor', ['s3']);
+  link('uid-admin3', ['s3']);
   const acc = (who, rid, over) => w.act(who, rid, Object.assign({ action: 'accept', teCents: 12345, cashCents: 2500 }, over || {}));
-  const c = await acc('editor', r2, { collected: true });
+  const c = await acc('admin3', r2, { collected: true });
   eq([c.status, c.body.error], [409, 'same-family'], 'a sibling-linked leader’s collected accept');
-  eq((await acc('editor', r2, {})).body.error, 'same-family', 'a plain accept');
-  eq((await acc('editor', r2, { override: true, reviewNote: '  ' })).body.reason, 'review-note', 'an override with no reason');
+  eq((await acc('admin3', r2, {})).body.error, 'same-family', 'a plain accept');
+  eq((await acc('admin3', r2, { override: true, reviewNote: '  ' })).body.reason, 'review-note', 'an override with no reason');
   eq(w.sql("SELECT count(*) AS n FROM audit WHERE action LIKE 'shift.accept%'")[0].n, 0, 'a refused accept was audited');
-  const o = await acc('editor', r2, { override: true, reviewNote: 'Only leader at the table' });
+  const o = await acc('admin3', r2, { override: true, reviewNote: 'Only leader at the table' });
   eq([o.status, o.body.report.status, o.body.report.overridden, o.body.report.collected], [200, 'accepted', true, false], 'the override, with a reason');
   const a = w.audit('shift.accept.override').map((x) => JSON.parse(x.detail));
   eq([a.length, a[0].sameFamily, a[0].reason, a[0].collected], [1, true, 'Only leader at the table', false], 'audited as an override, same family');
@@ -18794,11 +18833,11 @@ atest('same family: a leader in the sender’s family accepts only with a reason
   v.db.batch = function (list) {
     v.db.batch = orig;
     const st = JSON.parse(v.one('SELECT json FROM pack_state').json);
-    st.scouts.find((sc) => sc.id === 's2').parentUids.push('uid-editor');
+    st.scouts.find((sc) => sc.id === 's2').parentUids.push('uid-admin3');
     v.db.raw.prepare('UPDATE pack_state SET json = ?, rev = rev + 1').run(JSON.stringify(st));
     return orig.call(v.db, list);
   };
-  const late = await v.act('editor', rv, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
+  const late = await v.act('admin3', rv, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
   eq([late.status, late.body.error, v.one('SELECT status FROM shift_reports WHERE id = ?', rv).status], [409, 'pack-moved', 'submitted'],
     'a link added while the accept was on its way: pack-moved, so the page tries again');
   // The rule itself, pure.
@@ -18934,7 +18973,7 @@ atest('S-4: end to end — two parents and a leader, and one parent and a leader
   eq(w.one('SELECT confirmed_by_uid FROM shift_reports WHERE id = ?', rid).confirmed_by_uid, 'uid-newbie', 'confirmed on the server');
   eq(nb.get('saves'), 0, 'the second parent’s page saved the pack');
   // The leader accepts: counted by the sender, verified by the second parent, accepted by the leader.
-  const ed = pin(await apiClient(w, 'editor', { state: w.pack }));
+  const ed = pin(await apiClient(w, 'admin2', { state: w.pack }));
   await ed.start(1200);
   await settle([ed], 1200);
   ed.run(`acceptShiftReport('${rid}', { collected: true })`);
@@ -18943,7 +18982,7 @@ atest('S-4: end to end — two parents and a leader, and one parent and a leader
   const server = () => JSON.parse(w.one('SELECT json FROM pack_state WHERE pack_id = ?', API_PACK).json).storefronts[0].blocks;
   const b1 = server()[0];
   eq([b1.salesCents, b1.cashCountedBy, b1.cashVerifiedBy, b1.reportApprovedBy, b1.reportConfirmedBy, b1.reportPending],
-    [12345, 'Test parent', 'Test newbie', 'Test editor', 'Test newbie', undefined], 'the block on the server');
+    [12345, 'Test parent', 'Test newbie', 'Test admin2', 'Test newbie', undefined], 'the block on the server');
   eq(w.one('SELECT status, overridden FROM shift_reports WHERE id = ?', rid), { status: 'accepted', overridden: 0 }, 'the report');
   // One parent on a two-family shift, nobody confirms: the leader accepts with a reason.
   const r5 = (await w.send('parent', 'b5', { teCents: 5000, cashCents: 0 })).body.report.id;
@@ -18976,16 +19015,17 @@ atest('S-4: end to end — two parents and a leader, and one parent and a leader
    server and the leaders' page. Made-up names and accounts throughout.
    ================================================================ */
 
-// s4World, plus `spouse` (a second account of the sender's family, linked to s1) and the editor
-// linked as a parent of s2 (another family on b1), for the confirmer-may-not-accept rule.
+// s4World, plus `spouse` (a second account of the sender's family, linked to s1) and admin3 (a
+// leader who reviews; the editor until that role was retired, 2026-10-02) linked as a parent of s2
+// (another family on b1), for the confirmer-may-not-accept rule.
 async function r1World() {
   PEOPLE.spouse = PEOPLE.spouse || ['uid-spouse', 'spouse1@example.com'];
   const w = await s4World();
   w.db.raw.prepare("INSERT INTO members (pack_id, uid, role, name, email, join_code, added_at) VALUES (?, 'uid-spouse', 'parent', 'Test spouse', 'spouse1@example.com', NULL, 1)").run(API_PACK);
   const st = JSON.parse(w.one('SELECT json FROM pack_state').json);
   st.scouts[0].parentUids = ['uid-parent', 'uid-spouse'];
-  st.scouts[1].parentUids = ['uid-newbie', 'uid-editor'];
-  st.scouts[2].parentUids = ['uid-newbie', 'uid-editor'];
+  st.scouts[1].parentUids = ['uid-newbie', 'uid-admin3'];
+  st.scouts[2].parentUids = ['uid-newbie', 'uid-admin3'];
   w.db.raw.prepare('UPDATE pack_state SET json = ?, rev = rev + 1').run(JSON.stringify(st));
   return w;
 }
@@ -19062,8 +19102,8 @@ atest('round 1: who verified the cash — the confirming parent, the leader who 
 atest('round 1: a leader who confirmed a report as a parent may not accept it', async () => {
   const w = await r1World();
   const rid = (await w.send('parent', 'b1')).body.report.id;
-  eq((await w.confirm('editor', rid)).status, 200, 'the editor confirms, as Bo’s parent');
-  const a = await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500 });
+  eq((await w.confirm('admin3', rid)).status, 200, 'the leader confirms, as Bo’s parent');
+  const a = await w.act('admin3', rid, { action: 'accept', teCents: 12345, cashCents: 2500 });
   eq([a.status, a.body.error], [409, 'same-person'], 'the confirmer accepting');
   eq((await w.act('owner', rid, { action: 'accept', teCents: 12345, cashCents: 2500 })).status, 200, 'another leader accepting');
 });
@@ -19581,19 +19621,19 @@ atest('sent back after its accept: the cash from sales can still be recorded, or
   const w = await srWorld();
   const rid = (await w.report('parent', { blockId: 'b1', salesCashCents: 800 })).body.report.id;
   const sc = (who, outcome, id) => w.act(who, id || rid, { action: 'salescash', outcome, salesCashCents: 800 });
-  eq((await sc('editor', 'replaced')).body.error, 'report-moved', 'waiting: nothing to record');
-  await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 800, collected: true });
-  eq((await sc('editor', 'replaced')).body.reason, 'outcome', 'replaced, on a report still accepted');
+  eq((await sc('admin3', 'replaced')).body.error, 'report-moved', 'waiting: nothing to record');
+  await w.act('admin3', rid, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 800, collected: true });
+  eq((await sc('admin3', 'replaced')).body.reason, 'outcome', 'replaced, on a report still accepted');
   await w.act('owner', rid, { action: 'return', reviewNote: 'Wrong block' });
-  const rep = await sc('editor', 'replaced');
+  const rep = await sc('admin3', 'replaced');
   eq([rep.status, rep.body.report.status, rep.body.report.salesCashOutcome], [200, 'returned', 'replaced'], 'replaced, once sent back');
   eq(w.audit('shift.salescash.replaced').length, 1, 'audited');
   eq((await sc('owner', null)).body.report.salesCashOutcome, null, 'undone');
   eq((await sc('admin2', 'collected')).body.report.salesCashOutcome, 'collected', 'collected, on a sent-back report');
   // Never on one sent back before any accept.
   const r2 = (await w.report('newbie', { blockId: 'b2', salesCashCents: 800 })).body.report.id;
-  await w.act('editor', r2, { action: 'return', reviewNote: 'Recount' });
-  eq((await sc('editor', 'collected', r2)).body.error, 'report-moved', 'sent back before it was ever accepted');
+  await w.act('admin3', r2, { action: 'return', reviewNote: 'Recount' });
+  eq((await sc('admin3', 'collected', r2)).body.error, 'report-moved', 'sent back before it was ever accepted');
   ok(refusedOutcome(w, rid), 'the table took an outcome that is not one of the three');
   // The page: listed when its block is gone, with the third button; the history says where it went.
   const reps = [srRep({ id: 'back', blockId: 'gone', status: 'returned', acceptedByUid: 'uid-ed', salesCashCents: 800, salesCashOutcome: null }),
@@ -20800,11 +20840,13 @@ const GONE_API_STATE = (over) => PACK_STATE(JSON.parse(JSON.stringify(Object.ass
   scouts: GONE_SEED.scouts, budget: GONE_SEED.budget, entries: GONE_SEED.entries, ledger: GONE_SEED.ledger, fundraisers: GONE_SEED.fundraisers,
   inventory: GONE_SEED.inventory, rsvps: {}, attendance: {}, collected: {}, charges: [], advancement: {}, onboarding: {}, derby: { cars: [] },
   gone: { entries: {}, ledger: {}, distributions: {}, sales: {}, imports: {}, scouts: {}, fundraisers: {}, products: {} } }, over || {}))));
-async function apiGonePair(over) {
+async function apiGonePair(over, bWho) {
   const w = await (await apiWorld()).seed();
   w.state(3, GONE_API_STATE(over));
   const a = await (await apiClient(w, 'owner')).start();
-  const b = await (await apiClient(w, 'editor')).start();
+  // B is a second admin (an editor until that role was retired, 2026-10-02: the server takes nothing
+  // from one now), unless the test asks for someone else.
+  const b = await (await apiClient(w, bWho || 'admin2')).start();
   for (const c of [a, b]) c.run(GONE_EXTRA(c.who));
   eq([a.get('state.rev'), b.get('state.rev')], [3, 3], 'both start on rev 3');
   return { w, a, b, server: () => serverState(w).json, rev: () => serverState(w).rev };
@@ -21497,7 +21539,7 @@ atest('C2, api: two devices’ ledger logs are one log after a merge', async () 
   b.run(skew(5000));
   b.run("logLedger('tick', 'l1'); commit()");
   await settle([b], 800);
-  eq(server().ledgerLog.map((e) => [e.op, e.dev]), [['edit', 'dev-owner'], ['tick', 'dev-editor']], 'the merged log');
+  eq(server().ledgerLog.map((e) => [e.op, e.dev]), [['edit', 'dev-owner'], ['tick', 'dev-admin2']], 'the merged log');
 });
 
 /* ================================================================
@@ -26151,7 +26193,7 @@ atest('reload gate, api: a save that reads a newer page’s record sends nothing
   const run = async (theirs) => {
     const w = await (await apiWorld()).seed();
     w.state(3, PACK_STATE());
-    const ed = await (await apiClient(w, 'editor')).start();
+    const ed = await (await apiClient(w, 'admin2')).start();
     apiSetPack(w, 4, theirs);   // another device's save, which this one has not polled yet
     ed.reset();
     await ed.edit("state.packName = 'Edited'");
@@ -28239,7 +28281,7 @@ test('C6, Firestore: while the chooser waits the reload gate drops it, and a lea
 
 atest('C6, api: an entry both devices changed opens the chooser; the pick is logged, pushed, and reaches the other device', async () => {
   const over = { ledger: C3_ROWS, ledgerAside: [], book: C3_SEED.book, ledgerLog: [], statements: [] };
-  const { a, b, server } = await apiGonePair(over);
+  const { w, a, b, server } = await apiGonePair(over);
   for (const c of [a, b]) c.run(C6_EXTRA);
   b.run("editRow('l2', 'description', 'Pizza (B)')");
   await a.edit("editRow('l2', 'description', 'Pizza (A)')");
@@ -28257,8 +28299,8 @@ atest('C6, api: an entry both devices changed opens the chooser; the pick is log
   await a.edit("editRow('l3', 'description', 'Dues (A)')");
   await settle([b], 800);
   eq(c6Asked(b), [['l3']], 'B was not asked about l3');
-  a.run("setMemberRole('uid-editor', 'viewer')");
-  await settle([a]);
+  // View-only by a leftover viewer row (no admin sets one since 2026-10-02).
+  w.db.raw.prepare("UPDATE members SET role = 'viewer' WHERE uid = 'uid-admin2'").run();
   b.reset();
   await b.poll();
   await settle([b], 1200);
@@ -28745,7 +28787,8 @@ test('C6, Firestore: a year closed out separately on two devices is not merged; 
 });
 
 atest('C6, api: a year closed out separately on two devices is not merged; the leader keeps one whole copy', async () => {
-  const { a, b, server } = await apiGonePair();
+  // B is a (retired) editor: its page still edits, and nothing below reaches the server until B is an admin.
+  const { a, b, server } = await apiGonePair(undefined, 'editor');
   b.run(C6_CLOSE('B', 2).replace('commit()', ''));
   await a.edit(C6_CLOSE('A', 1).replace('commit()', ''));
   b.reset();
@@ -34042,7 +34085,7 @@ async function sbPhone(o) {
   if (o.theirs) { o.theirs(theirs); apiSetPack(w, 5, Object.assign(theirs, { rev: 5 })); }
   const mine = SB_SEED();
   if (o.mine) o.mine(mine);
-  const ph = await apiClient(w, o.who || 'editor', { state: mine, base: SB_BASE(3, SB_SEED()), unsynced: !!o.unsynced });
+  const ph = await apiClient(w, o.who || 'admin2', { state: mine, base: SB_BASE(3, SB_SEED()), unsynced: !!o.unsynced });
   if (o.before) ph.run(o.before);
   await ph.start(800);
   return { w, ph, server: () => serverState(w) };
@@ -34069,7 +34112,7 @@ atest('sync base, api: unsaved changes and nobody else saved: they go out as any
   w.state(3, SB_SEED());
   const mine = SB_SEED();
   mine.scouts[0].den = 'Bear';
-  const ph = await (await apiClient(w, 'editor', { state: mine, base: SB_BASE(3, SB_SEED()), unsynced: true })).start(800);
+  const ph = await (await apiClient(w, 'admin2', { state: mine, base: SB_BASE(3, SB_SEED()), unsynced: true })).start(800);
   eq([ph.get('ui.overlay && ui.overlay.kind'), sbPuts(ph), serverState(w).rev, serverState(w).json.scouts[0].den], [null, 1, 4, 'Bear'], 'the offline change');
   eq(ph.get('[syncBaseGet().rev, syncUnsynced(), sync.dirty]'), [4, false, false], 'after the save');
 });
@@ -34097,7 +34140,7 @@ atest('sync base, api: a change made offline that overlaps one on the server ope
   let s = server().json;
   eq([server().rev, s.scouts[0].den, s.packName, s.events[0].location], [6, 'Bear', 'Pack 569 Cubs', 'Lake'], 'keeping mine');
   eq(s.syncLog.map((e) => [e.byName, e.item, e.field, e.serverValue, e.keptValue, typeof e.serverChangedAt, !!e.at]),
-    [['Test editor', 'Scout · Ada', 'Den', 'Tiger', 'Bear', 'string', true]], 'the log');
+    [['Test admin2', 'Scout · Ada', 'Den', 'Tiger', 'Bear', 'string', true]], 'the log');
   eq([ph.get('toasts[toasts.length - 1]'), ph.get('[ui.overlay, !!sync.conflict, syncUnsynced()]')], [ph.get('SYNC_PICKS_LOGGED'), [null, false, false]], 'after');
   // Keep the server's, with another change of this device's: that one goes, the item is the server's, nothing logged.
   const t2 = await sbPhone(o);
@@ -34159,7 +34202,7 @@ atest('sync base, api: with localStorage full, the session still merges three wa
   const w = await (await apiWorld()).seed();
   w.state(3, SB_SEED());
   const full = "var realSet = localStorage.setItem; localStorage.setItem = function (k, v) { if (k === SYNC_BASE_KEY) throw new Error('QuotaExceededError'); realSet(k, v); };";
-  const ph = await apiClient(w, 'editor', { state: SB_SEED() });
+  const ph = await apiClient(w, 'admin2', { state: SB_SEED() });
   ph.run(full);
   await ph.start(800);
   eq(ph.get('[syncBaseGet() && syncBaseGet().rev, SYNC_BASE_KEY in store]'), [3, false], 'the base in memory, none stored');
@@ -34171,7 +34214,7 @@ atest('sync base, api: with localStorage full, the session still merges three wa
   // A reload with an edit unsent and no base stored: the whole-copy chooser, as before this change.
   ph.run("state.scouts[1].den = 'Lion'; save(); syncMarkUnsynced()");
   apiSetPack(w, 6, Object.assign(SB_SEED(), { rev: 6, packName: 'Again' }));
-  const again = await (await apiClient(w, 'editor', { state: ph.get('state'), unsynced: true })).start(800);
+  const again = await (await apiClient(w, 'admin2', { state: ph.get('state'), unsynced: true })).start(800);
   eq([again.get('ui.overlay && ui.overlay.kind'), sbPuts(again)], ['sync-conflict', 0], 'after the reload');
 });
 

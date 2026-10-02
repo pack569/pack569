@@ -20,7 +20,7 @@
 
 import { route, json, readObject, refuse } from '../_lib/http.js';
 import { servedPack, database, authenticate, ownerClaim, memberOf, memberOut, auditStmt, auditIf } from '../_lib/pack.js';
-import { INVITE_ROLES, JOIN_CODE_RE, MEMBER_NAME_MAX } from '../_lib/rules.js';
+import { INVITE_ROW_ROLES, JOIN_CODE_RE, MEMBER_NAME_MAX } from '../_lib/rules.js';
 
 export const JOIN_MAX_TRIES = 10;
 export const JOIN_WINDOW_MS = 60 * 60 * 1000;
@@ -79,7 +79,9 @@ async function session(context) {
     // 3b. members.create.invite — exactly the invited role, taken from the invite row in the
     // same statement, and the invite deleted with it (single-use).
     const inv = await db.prepare('SELECT role FROM invites WHERE pack_id = ? AND email = ?').bind(packId, user.emailKey).first();
-    if (inv && INVITE_ROLES.indexOf(inv.role) !== -1) {
+    // An editor or viewer invite from before the switch still lets its person in (read-only, needing
+    // a position: rules.js RETIRED_ROLES).
+    if (inv && INVITE_ROW_ROLES.indexOf(inv.role) !== -1) {
       await db.batch([
         db.prepare('INSERT INTO members (pack_id, uid, role, name, email, join_code, added_at) ' +
           'SELECT pack_id, ?, role, ?, ?, NULL, ? FROM invites WHERE pack_id = ? AND email = ? ' +

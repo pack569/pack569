@@ -19,7 +19,7 @@
 
 import { route, json, readObject, refuse, forbidden, badRequest, MAX_STATE_BYTES } from '../../../_lib/http.js';
 import { withMember, auditStmt, standingsShown, MAX_REV } from '../../../_lib/pack.js';
-import { ROLES, INVITE_ROLES, UID_RE, MEMBER_NAME_MAX, JOIN_CODE_RE, cleanContactLine, emailKey, parentViewProblem,
+import { ROLES, INVITE_ROW_ROLES, UID_RE, MEMBER_NAME_MAX, JOIN_CODE_RE, cleanContactLine, emailKey, parentViewProblem,
   PARENT_VIEW_STANDINGS_KEYS } from '../../../_lib/rules.js';
 
 const MAX_ROWS = 2000;
@@ -67,7 +67,8 @@ async function importPack({ request, db, packId, user }) {
   const iRows = [];
   invites.forEach((v) => {
     const key = v && emailKey(v.email);
-    if (!key || INVITE_ROLES.indexOf(v.role) === -1) { skipped += 1; return; }
+    // Firestore's invites are editor, viewer or parent: kept as they are (rules.js INVITE_ROW_ROLES).
+    if (!key || INVITE_ROW_ROLES.indexOf(v.role) === -1) { skipped += 1; return; }
     iRows.push({ email: key, role: v.role, invitedAt: time(v.invitedAt, now) });
   });
   const j = b.join;

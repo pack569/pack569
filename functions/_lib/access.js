@@ -13,7 +13,9 @@
 // A POSITION IS NOT A JOB. JOBS in index.html (cubmaster, treasurer, kernel, …) is a lens: it marks
 // and orders things, and a leader can edit their own job record. Nothing here reads it (the harness
 // checks): the positions a leader holds come only from the member_positions table, which only an
-// admin writes.
+// admin writes. The two share their ids (Keith, 2026-10-02): every job but 'cor' is a position of
+// the same id, plus 'parent'. The Chartered Org Rep is not a position: the COR is made an admin.
+// The harness checks the ids agree.
 //
 // The table between the markers is JSON, and index.html carries a byte-identical copy between the
 // same markers (var ACCESS_TABLE). The harness fails if the two differ. Change both or neither.
@@ -33,31 +35,41 @@
 //                     A sub-key not listed is 'admin'.
 export const ACCESS_TABLE = /*ACCESS-BEGIN*/{
     "positions": [
-      {"id": "chair", "label": "Committee Chair"},
       {"id": "cubmaster", "label": "Cubmaster"},
       {"id": "asstcub", "label": "Assistant Cubmaster"},
-      {"id": "denleader", "label": "Den Leader"},
-      {"id": "asstden", "label": "Assistant Den Leader"},
+      {"id": "chair", "label": "Committee Chair"},
       {"id": "treasurer", "label": "Treasurer"},
+      {"id": "secretary", "label": "Secretary"},
       {"id": "kernel", "label": "Popcorn Kernel"},
       {"id": "advancement", "label": "Advancement Chair"},
-      {"id": "outdoor", "label": "Camping Chair"},
+      {"id": "activities", "label": "Activities Chair"},
       {"id": "membership", "label": "Membership Chair"},
+      {"id": "outdoors", "label": "Outdoor / Camping Chair"},
+      {"id": "derbychair", "label": "Pinewood Derby Chair"},
+      {"id": "comms", "label": "Communications"},
+      {"id": "trainer", "label": "Pack Trainer"},
+      {"id": "denleader", "label": "Den Leader"},
+      {"id": "asstden", "label": "Assistant Den Leader"},
       {"id": "parent", "label": "Parent"}
     ],
     "sections": ["home", "calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "roster", "advancement", "joining", "storefronts", "totals", "rewards", "inventory", "council", "budget", "ledger", "dues", "fundraisers", "sharing", "people", "season"],
     "denMeetingFields": ["adventure", "denAdv", "note", "noteInternal"],
     "access": {
-      "chair": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "derby", "joining", "budget", "ledger", "dues", "fundraisers", "people", "season"], "hidden": []},
       "cubmaster": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "advancement", "season"], "hidden": []},
       "asstcub": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "advancement", "season"], "hidden": []},
-      "denleader": {"default": "read", "edit": ["calendar.denmeeting", "attendance", "denplan", "advancement"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers", "people"]},
-      "asstden": {"default": "read", "edit": ["calendar.denmeeting", "attendance", "denplan", "advancement"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers", "people"]},
+      "chair": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "derby", "joining", "budget", "ledger", "dues", "fundraisers", "people", "season"], "hidden": []},
       "treasurer": {"default": "read", "edit": ["budget", "ledger", "dues", "fundraisers"], "hidden": []},
+      "secretary": {"default": "read", "edit": ["roster"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
       "kernel": {"default": "read", "edit": ["storefronts", "totals", "rewards", "inventory", "council"], "hidden": []},
       "advancement": {"default": "read", "edit": ["advancement"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
-      "outdoor": {"default": "read", "edit": ["camping"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
+      "activities": {"default": "read", "edit": ["calendar", "calendar.denmeeting"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
       "membership": {"default": "read", "edit": ["roster", "joining"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
+      "outdoors": {"default": "read", "edit": ["camping"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
+      "derbychair": {"default": "read", "edit": ["derby"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
+      "comms": {"default": "read", "edit": [], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
+      "trainer": {"default": "read", "edit": [], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
+      "denleader": {"default": "read", "edit": ["calendar.denmeeting", "attendance", "denplan", "advancement"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers", "people"]},
+      "asstden": {"default": "read", "edit": ["calendar.denmeeting", "attendance", "denplan", "advancement"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers", "people"]},
       "parent": {"default": "hidden", "edit": [], "hidden": []}
     },
     "keyOwner": {
@@ -151,9 +163,10 @@ export const ownerOfGone = (k) => (own(GONE_OWNER, k) ? GONE_OWNER[k] : 'admin')
 // What a member may do with each section, from their role and (for 'leader') their positions:
 // section -> level, for every section and both buckets.
 //   admin    edit everything, the admin bucket too.
-//   editor   (legacy: full edit until an admin assigns positions) edit every section and
-//            'shared'; read 'admin'.
-//   viewer   (legacy) read everything.
+//   editor,  RETIRED (Keith, 2026-10-02): every committee job is its own position now. An
+//   viewer   account still holding either reads everything and edits nothing until an admin
+//            gives it positions (the Members card lists it as "needs a position"). The rows
+//            stay legal (the role CHECKs keep both) so they still load.
 //   leader   per section, the most permissive of their positions. Positions this file does not
 //            know are ignored. 'shared' is edit when any section is; 'admin' is read.
 //            'calendar' edit carries 'calendar.denmeeting' edit with it.
@@ -162,8 +175,7 @@ export function effectiveAccess(role, positions) {
   const out = {};
   const fill = (v) => { SECTIONS.concat(BUCKETS).forEach((s) => { out[s] = v; }); };
   if (role === 'admin') { fill('edit'); return out; }
-  if (role === 'editor') { fill('edit'); out.admin = 'read'; return out; }
-  if (role === 'viewer') { fill('read'); return out; }
+  if (role === 'editor' || role === 'viewer') { fill('read'); return out; }
   fill('hidden');
   if (role !== 'leader') return out;
   const held = Array.isArray(positions) ? positions : [];

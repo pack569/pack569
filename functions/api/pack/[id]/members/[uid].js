@@ -24,10 +24,14 @@
 // the same request, and at least one position (to take them all away, set a role instead; the
 // role change takes the positions with it, migration 0005). The last-admin rule holds: an admin
 // given positions stops being an admin. Recorded in the audit as 'member.positions'.
+// RETIRED ROLES (Keith, 2026-10-02): `role` may set admin, parent or pending (rules.js
+// SETTABLE_ROLES); never editor or viewer again, and leader only through positions. An editor or
+// viewer account left from before reads, writes nothing, and keeps its role until an admin
+// gives it positions.
 
 import { route, json, readObject, refuse, forbidden, notFound, badRequest, lastAdmin } from '../../../../_lib/http.js';
 import { withMember, memberOf, memberOut, auditIf } from '../../../../_lib/pack.js';
-import { ROLES, MEMBER_NAME_MAX, UID_RE, canReadMember, canUpdateMember, canDeleteMember, isAdmin, emailKey,
+import { ROLES, SETTABLE_ROLES, MEMBER_NAME_MAX, UID_RE, canReadMember, canUpdateMember, canDeleteMember, isAdmin, emailKey,
   cleanPositions, roleForPositions } from '../../../../_lib/rules.js';
 
 // Leaves an admin behind: the target is not an admin, or stays one, or is not the only one.
@@ -72,6 +76,10 @@ async function patch({ request, db, packId, role, user, params }) {
   const allowed = canUpdateMember({ role, uid: user.uid, target, currentRole: row.role, nextRole,
     isOwner: !!pack && pack.owner_uid === user.uid });
   if (!allowed) return forbidden();
+  // A role set by name is admin, parent or pending (SETTABLE_ROLES): a leader comes with positions,
+  // and editor and viewer are retired. A row keeping the role it has is no change. (After the
+  // check above, so only an admin can be told this.)
+  if (!positions && nextRole !== row.role && SETTABLE_ROLES.indexOf(nextRole) === -1) refuse(badRequest('role'));
   if (body.name !== undefined && (typeof body.name !== 'string' || body.name.length > MEMBER_NAME_MAX)) return forbidden();
   const self = target === user.uid;
   const name = body.name === undefined ? row.name : body.name;

@@ -69,7 +69,8 @@ import { reportOut, readReport, readPackRecord, readPackForFamily, STILL_MEMBER,
 // Is this leader in the sender's family, by the record read for it? An unreadable record says yes.
 const familyOf = (famRec, uid, senderUid) => !!famRec && (famRec.unreadable === true || sameFamily(famRec.pack, uid, senderUid));
 
-const REVIEW_ROLES = ['admin', 'editor'];
+// canReviewShiftReport, re-checked in the write. A retired editor no longer reviews.
+const REVIEW_ROLES = ['admin'];
 // What each action may carry, besides `action`.
 const ACTION_KEYS = {
   edit: ['teCents', 'cashCents', 'salesCashCents', 'note', 'attest'],
@@ -226,7 +227,7 @@ async function patch({ request, db, packId, role, user, member, params }) {
     if (undo ? !row.sales_cash_outcome : !!row.sales_cash_outcome) return reportMoved(row.status);
     // Security re-check (followups round 3): recording what became of the cash is a second adult's
     // word on it, as the accept is: never the sender, nor a leader in the sender's family (same
-    // record, same rev in the write). An undo is open to any admin or editor.
+    // record, same rev in the write). An undo is open to any reviewer.
     if (!undo) {
       if (row.submitted_by_uid === user.uid) return samePerson();
       // Nor the parent who confirmed it (security review of the parent preview: a leader-parent can now confirm).

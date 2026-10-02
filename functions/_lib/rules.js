@@ -22,15 +22,28 @@
 // on this API. A leader reads what any leader reads, and writes the pack record only where the
 // positions they hold allow (member_positions; what each position may edit is the table in
 // functions/_lib/access.js, which the pack PUT enforces key by key). Only an admin gives
-// positions. 'editor' and 'viewer' keep working as before until an admin assigns positions.
+// positions.
+// 'editor' and 'viewer' are RETIRED on this API (Keith, 2026-10-02): every committee job is its own
+// position. An account still holding either reads the pack record and writes none of it until
+// an admin gives it positions; no invite or role change makes a new one. Part C (Firestore) still
+// has both, and the rows stay legal here so the pack's existing accounts still load.
 
 import { POSITIONS, SECTIONS, effectiveAccess } from './access.js';
 
 export const ROLES = ['admin', 'editor', 'viewer', 'leader', 'parent', 'pending'];
 export const LEADER_ROLES = ['admin', 'editor', 'viewer', 'leader'];
-// Part C: an invite's role must be one of these. 'admin' is granted in person, never by invite.
-// 'leader' (not in Part C) comes with the positions it gives.
-export const INVITE_ROLES = ['editor', 'viewer', 'leader', 'parent'];
+// The two retired roles (above).
+export const RETIRED_ROLES = ['editor', 'viewer'];
+// The roles a NEW invite may give. Part C had ['editor', 'viewer', 'parent']; 'admin' is granted
+// in person, never by invite, and 'leader' (not in Part C) comes with the positions it gives.
+export const INVITE_ROLES = ['leader', 'parent'];
+// The roles an invite row may hold: the new ones, and the retired two, so an invite written
+// before the switch (or copied from Firestore by the import) still lets its person in, as a
+// read-only account that needs a position. The invites table's role CHECK is this list.
+export const INVITE_ROW_ROLES = ['editor', 'viewer', 'leader', 'parent'];
+// The roles an admin may set by name on the Members card. 'leader' comes only with positions
+// ({ positions }), and the retired two are never set again.
+export const SETTABLE_ROLES = ['admin', 'parent', 'pending'];
 export const MEMBER_NAME_MAX = 120;               // Part C memberKeysOk(): name.size() <= 120
 export const JOIN_CODE_RE = /^[A-Za-z0-9]{1,64}$/; // the page's JOIN_CODE_RE
 export const CONTACT_MAX = 160;                   // the page's cleanContactLine()
@@ -71,9 +84,9 @@ export const isAdmin = (role) => role === 'admin';
 // packs/{doc} — 'pack.read': allow read: if isLeader();
 export const canReadPack = (role) => isLeader(role);
 // packs/{doc} — 'pack.write': allow write: if myRole() in ['admin', 'editor'];
-// A 'leader' may send a write too; which of its changes may land is the section guard's to say
-// (access.js refusedSections, in the PUT), as it is for an editor's.
-export const canWritePack = (role) => role === 'admin' || role === 'editor' || role === 'leader';
+// Here: an admin, or a 'leader', whose changes land only where their positions allow (the section
+// guard, access.js refusedSections, in the PUT). A retired editor writes nothing.
+export const canWritePack = (role) => role === 'admin' || role === 'leader';
 
 // public/join — 'join.read': allow read: if isLeader();  (the live code: leaders only)
 export const canReadJoin = (role) => isLeader(role);
@@ -83,12 +96,12 @@ export const canWriteJoin = (role) => isAdmin(role);
 // public/view — 'view.read': approved members, never 'pending'
 export const canReadView = (role) => ['admin', 'editor', 'viewer', 'leader', 'parent'].indexOf(role) !== -1;
 // public/view — 'view.write': allow write: if myRole() in ['admin', 'editor'];
-// And a 'leader' who may edit at least one section (the den meeting sub-section counts): the
+// Here: an admin (a retired editor no longer), and a 'leader' who may edit at least one section (the den meeting sub-section counts): the
 // parent view stays "always published" (owner decision, 2026-10-01), so every leader who can
 // change something parents see keeps it current. A leader who only reads may not. WHAT a view
 // may hold is parentViewProblem's to say, below, whoever writes it.
 export function canWriteView(role, positions) {
-  if (role === 'admin' || role === 'editor') return true;
+  if (role === 'admin') return true;
   if (role !== 'leader') return false;
   const acc = effectiveAccess(role, positions);
   return SECTIONS.some((s) => acc[s] === 'edit');
@@ -120,7 +133,7 @@ export const canReadMember = (role, uid, target) => isLeader(role) || uid === ta
 // check and the write still wins.
 export function memberCreateRole(o) {
   if (o.isOwner) return 'admin';
-  if (o.invitedRole && INVITE_ROLES.indexOf(o.invitedRole) !== -1) return o.invitedRole;
+  if (o.invitedRole && INVITE_ROW_ROLES.indexOf(o.invitedRole) !== -1) return o.invitedRole;
   if (o.join && o.join.open === 1 && typeof o.joinCode === 'string' && o.joinCode === o.join.code) return 'pending';
   return null;
 }
@@ -211,9 +224,9 @@ export function emailKey(raw) {
 
 // Who may send a report: any approved member — never 'pending', never someone with no row.
 export const canSubmitShiftReport = (role) => ['admin', 'editor', 'viewer', 'parent'].indexOf(role) !== -1;
-// Who may accept one or send it back: the people who may write the pack record, since
-// accepting is what puts the figures into it.
-export const canReviewShiftReport = (role) => canWritePack(role);
+// Who may accept one or send it back: an admin. A retired editor no longer may (Keith,
+// 2026-10-02); the leaders at the booth get it as its own action next (shiftVerify).
+export const canReviewShiftReport = (role) => isAdmin(role);
 // Who sees every report in full (names, amounts, notes): the leaders, as with the ledger. A
 // parent sees their own in full, and of anyone else's only which blocks are spoken for.
 export const canReadAllShiftReports = (role) => isLeader(role);

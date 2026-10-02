@@ -2,9 +2,13 @@
 --
 -- A leader account can now hold one or more pack POSITIONS (Committee Chair, Cubmaster, Den
 -- Leader, Treasurer, …), and what it may edit follows from them (functions/_lib/access.js). Such
--- an account has the new role 'leader'. The old roles stay: 'editor' (full edit, until an admin
--- gives positions) and 'viewer' (read everything). 'leader' exists only on this API; the
--- Firestore rules (SETUP.md Part C) never had it.
+-- an account has the new role 'leader'. The position ids are the page's job ids (JOBS), every
+-- one but 'cor' (the Chartered Org Rep is made an admin), plus 'parent'.
+-- 'editor' and 'viewer' are retired (Keith, 2026-10-02): an account still holding either reads
+-- everything and edits nothing until an admin gives it positions, and no invite or role change
+-- makes a new one (rules.js). Both stay in the CHECKs below so those accounts, and invites
+-- written before the switch, still load. 'leader' exists only on this API; the Firestore rules
+-- (SETUP.md Part C) never had it.
 --
 -- 1. 'leader' joins the role CHECKs of members and invites. SQLite cannot change a CHECK in
 --    place, so both tables are rebuilt: a new table with the new CHECK, every row copied across,
@@ -34,7 +38,8 @@ DROP TABLE members;
 ALTER TABLE members_new RENAME TO members;
 CREATE INDEX members_by_role ON members (pack_id, role);
 
--- An invite still can never make an admin (or a pending request).
+-- An invite still can never make an admin (or a pending request). editor and viewer stay legal for
+-- invites written before the switch; rules.js INVITE_ROLES refuses new ones.
 CREATE TABLE invites_new (
   pack_id         TEXT NOT NULL REFERENCES packs(id),
   email           TEXT NOT NULL CHECK (length(email) BETWEEN 3 AND 320 AND email = lower(email)
@@ -52,8 +57,9 @@ ALTER TABLE invites_new RENAME TO invites;
 CREATE TABLE member_positions (
   pack_id   TEXT NOT NULL REFERENCES packs(id),
   uid       TEXT NOT NULL CHECK (length(uid) BETWEEN 1 AND 128),
-  position  TEXT NOT NULL CHECK (position IN ('chair', 'cubmaster', 'asstcub', 'denleader', 'asstden', 'treasurer',
-                                              'kernel', 'advancement', 'outdoor', 'membership', 'parent')),
+  position  TEXT NOT NULL CHECK (position IN ('cubmaster', 'asstcub', 'chair', 'treasurer', 'secretary', 'kernel',
+                                              'advancement', 'activities', 'membership', 'outdoors', 'derbychair',
+                                              'comms', 'trainer', 'denleader', 'asstden', 'parent')),
   den       TEXT CHECK (den IS NULL OR length(den) BETWEEN 1 AND 40),
   PRIMARY KEY (pack_id, uid, position)
 );
@@ -61,8 +67,9 @@ CREATE TABLE member_positions (
 CREATE TABLE invite_positions (
   pack_id   TEXT NOT NULL REFERENCES packs(id),
   email     TEXT NOT NULL CHECK (length(email) BETWEEN 3 AND 320),
-  position  TEXT NOT NULL CHECK (position IN ('chair', 'cubmaster', 'asstcub', 'denleader', 'asstden', 'treasurer',
-                                              'kernel', 'advancement', 'outdoor', 'membership', 'parent')),
+  position  TEXT NOT NULL CHECK (position IN ('cubmaster', 'asstcub', 'chair', 'treasurer', 'secretary', 'kernel',
+                                              'advancement', 'activities', 'membership', 'outdoors', 'derbychair',
+                                              'comms', 'trainer', 'denleader', 'asstden', 'parent')),
   den       TEXT CHECK (den IS NULL OR length(den) BETWEEN 1 AND 40),
   PRIMARY KEY (pack_id, email, position)
 );
