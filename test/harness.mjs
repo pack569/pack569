@@ -265,6 +265,51 @@ const nav = sandbox(['WORKSPACES', 'TAB_ALIAS']);
 const OLD_TABS = ['calendar', 'storefronts', 'scouts', 'advancement', 'totals',
   'budget', 'inventory', 'derby', 'pack'];
 
+// Pack positions, client step 4 (2026-10-02) — a section a leader's positions hide is not in the nav,
+// a workspace with none left is not either, a route into one lands elsewhere, and a section they only
+// read says so (and what they can still change there).
+test('positions nav: hidden sections and empty workspaces are not offered, routes into them land elsewhere, and read-only sections say so', () => {
+  const c = vm.createContext({});
+  vm.runInContext(`var sync = { user: { uid: 'u1' }, accountsUnavailable: false, myRole: 'leader', myPositions: [], backend: { startSession: function () {} } };
+    var ui = { tab: 'home', sections: {} }; function campingTrips() { return []; } function sortTripsByDate(t) { return t; } function tripTabLabel(t) { return t.name; }
+    function todayISO() { return '2026-10-02'; } function esc(x) { return String(x); } var WS_BY_ID = {}, SECTION_HOME = {};`, c);
+  vm.runInContext(['ACCESS_TABLE', 'ACCESS_LEVELS', 'arrOf', 'accessFor', 'actionsFor', 'accountsInForce', 'apiAccounts', 'accessMemo', 'myAccess', 'sectionAccess',
+    'canEditSection', 'canSeeSection', 'canDo', 'canEdit', 'SECTION_SAY', 'sectionGuardOn', 'ownKey', 'WORKSPACES', 'curWorkspace', 'sectionAccessId',
+    'workspaceVisible', 'sectionsOf', 'curSection', 'VIEW_ONLY_EXCEPT', 'viewOnlyBanner'].map(decl).join('\n') +
+    "\nWORKSPACES.forEach(function (w) { WS_BY_ID[w.id] = w; w.sections.forEach(function (s) { if (!SECTION_HOME[s.id]) SECTION_HOME[s.id] = w.id; }); });", c);
+  const run = (js) => vm.runInContext(js, c);
+  const as = (positions) => run(`sync.myPositions = ${JSON.stringify(positions)};`);
+  const strip = () => JSON.parse(run('JSON.stringify(WORKSPACES.filter(workspaceVisible).map(function (w) { return w.id + ":" + sectionsOf(w).map(function (s) { return s.id; }).join(","); }))'));
+  as(['denleader']);
+  eq(strip(), ['home:home', 'program:calendar,denplan,derby', 'camping:camp-none', 'scouts:roster,advancement,joining', 'popcorn:storefronts,totals,rewards',
+    'money:budget', 'pack:sharing,season'], 'a Den Leader: no inventory, council, ledger, dues, fundraisers or people');
+  run("ui.tab = 'money'; ui.sections.money = 'ledger';");
+  eq(run('curSection()'), 'budget', 'a route into the ledger lands on the budget');
+  as(['treasurer']);
+  eq(strip()[5], 'money:budget,ledger,dues,fundraisers', 'the Treasurer: all of Money');
+  // An empty workspace goes: a made-up position that hides all of Money.
+  run("ACCESS_TABLE.access.hideall = { default: 'read', edit: [], hidden: ['budget', 'ledger', 'deposits', 'dues', 'fundraisers'] }; accessMemo.key = null;");
+  as(['hideall']);
+  ok(!strip().some((x) => /^money:/.test(x)), 'a workspace with nothing to see is not offered');
+  run("ui.tab = 'money';");
+  eq(run('curWorkspace().id'), 'home', 'a route into it lands on Home');
+  run("delete ACCESS_TABLE.access.hideall; accessMemo.key = null;");
+  // The banner.
+  as(['denleader']);
+  eq([run("viewOnlyBanner('calendar')"), run("viewOnlyBanner('storefronts')"), run("viewOnlyBanner('advancement')"), run("viewOnlyBanner('home')"), run("viewOnlyBanner('ledger')")],
+    ['<div class="warn no-print view-only" role="note" style="margin:0 0 14px"><strong>View only</strong> — your positions don’t include editing the calendar. You can still change your dens’ meetings and attendance here.</div>',
+      '<div class="warn no-print view-only" role="note" style="margin:0 0 14px"><strong>View only</strong> — your positions don’t include editing storefronts. You can still change accepting shift reports here.</div>',
+      '', '', ''], 'a Den Leader: the calendar and the storefronts; advancement theirs; Home; the ledger hidden');
+  as(['kernel']);
+  eq(run("viewOnlyBanner('ledger')"), '<div class="warn no-print view-only" role="note" style="margin:0 0 14px"><strong>View only</strong> — your positions don’t include editing the ledger. You can still change recording storefront deposits here.</div>', 'the Kernel on the ledger');
+  run("sync.myRole = 'admin'");
+  eq(run("viewOnlyBanner('ledger')"), '', 'an admin');
+  run("sync.myRole = 'leader'; sync.backend = {}; sync.myRole = 'viewer';");
+  eq(strip().length, 7, 'Firestore: a viewer sees every workspace, as before');
+  ok(/WORKSPACES\.filter\(workspaceVisible\)/.test(slice('render')) && /viewOnlyBanner\(sectionAccessId\(sec\)\)/.test(slice('render')), 'render draws the strip and the banner from them');
+  ok(/canSeeSection\(sectionAccessId\(t\.section\)\)/.test(slice('renderHome')), 'Home leaves out tasks from hidden sections');
+});
+
 test('TAB_ALIAS covers every one of the nine old tabs', () => {
   // This is what lets the data-tab="…" strings already embedded across index.html keep
   // working untouched. A miss here is a dead button, not a crash — hence the test.
@@ -5689,7 +5734,7 @@ test('the seeded content states the rules a pack actually has to follow', () => 
 
 test('Camping sections are one per trip, and a trip id is never a route', () => {
   const ctx = vm.createContext({ state: { camping: { trips: [] } } });
-  vm.runInContext(slice('campingTrips') + slice('tripTabLabel') + slice('sectionsOf') + '\n' + CAMP_DATE_SRC, ctx);
+  vm.runInContext(slice('campingTrips') + slice('tripTabLabel') + slice('sectionsOf') + '\nfunction canSeeSection() { return true; }\n' + CAMP_DATE_SRC, ctx);
   const secs = (trips) => {
     ctx.state.camping.trips = trips;
     return vm.runInContext('sectionsOf({ id: "camping", dynamic: "camping", sections: [] })', ctx);
@@ -33803,7 +33848,7 @@ test('lesson plan box: the July check names the plans the dens use that were not
   const fn = slice('homeTasks');
   ok(/var plansHeld = today\.slice\(5, 7\) === '07' \? advPlansHeld\(\) : null;/.test(fn) &&
     /staleAdvPlans\(plansHeld\.data, advPlanKeysUsed\(\), today\)/.test(fn), 'homeTasks does not read the stale plans in July');
-  ok(/if \(todayISO\(\)\.slice\(5, 7\) === '07' && advPlanKeysUsed\(\)\.length\) advPlansWant\(\);\n    var tasks = homeTasks\(\);/.test(SCRIPT), 'Home does not ask for the plans in July');
+  ok(/if \(todayISO\(\)\.slice\(5, 7\) === '07' && advPlanKeysUsed\(\)\.length\) advPlansWant\(\);\n(    \/\/[^\n]*\n)*    var tasks = homeTasks\(\)/.test(SCRIPT), 'Home does not ask for the plans in July');
   const t = vm.createContext({});
   vm.runInContext(`var out = [], today = '2026-07-15', ADVENTURES_VERIFIED = '2026-07-01', HELD = null, KEYS = ${JSON.stringify(keys)};
     function add(job, tier, title, detail) { out.push({ job: job, title: title, detail: detail }); }

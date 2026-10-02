@@ -21164,14 +21164,32 @@
     WS_BY_ID[w.id] = w;
     w.sections.forEach(function (s) { if (!SECTION_HOME[s.id]) SECTION_HOME[s.id] = w.id; });
   });
-  function curWorkspace() { return WS_BY_ID[ui.tab] || WS_BY_ID.home; }
+  // Pack positions (client step 4) — a workspace a leader's positions hide entirely is not offered, and a
+  // route into one lands on Home. HIDDEN DECLUTTERS ONLY in stage 1: the record is on the device.
+  function curWorkspace() {
+    var w = WS_BY_ID[ui.tab] || WS_BY_ID.home;
+    return workspaceVisible(w) ? w : WS_BY_ID.home;
+  }
+  // The access section a nav section belongs to: itself, or 'camping' for a campout's tab.
+  function sectionAccessId(id) {
+    if (ACCESS_TABLE.sections.indexOf(id) !== -1) return id;
+    return SECTION_HOME[id] ? id : 'camping';
+  }
+  // Does this workspace have a section this account may see? Home always.
+  function workspaceVisible(w) {
+    if (!w) return false;
+    if (w.id === 'home') return true;
+    if (w.dynamic === 'camping') return canSeeSection('camping');
+    return w.sections.some(function (x) { return canSeeSection(x.id); });
+  }
   // The sections a workspace is offering RIGHT NOW. Static for five of the six; for Camping it
   // is one per trip. The empty case still returns a section, because curSection() and the
   // dispatch both assume there is one, and a workspace that renders nothing at all reads as a
   // bug rather than as "you have no trips yet".
   function sectionsOf(w) {
     if (!w) return [];
-    if (w.dynamic !== 'camping') return w.sections;
+    // Pack positions — a section a leader's positions hide is not offered (curSection then falls back).
+    if (w.dynamic !== 'camping') return w.sections.filter(function (x) { return canSeeSection(x.id); });
     var trips = campingTrips();
     if (!trips.length) return [{ id: 'camp-none', label: 'Camping' }];
     // Wave C1 — in date order, so the first tab is the next campout.
@@ -21399,7 +21417,7 @@
     // A family has no "workspaces" — that is the leaders' word for their six job areas.
     tabsEl.setAttribute('aria-label', parent ? 'Pack pages' : 'Workspaces');
     var secEl = document.getElementById('sections');
-    var tabDefs = gate ? [] : (parent ? parentTabDefs() : WORKSPACES);
+    var tabDefs = gate ? [] : (parent ? parentTabDefs() : WORKSPACES.filter(workspaceVisible));
     var tabAct = parent ? 'parent-tab' : 'tab';
     var tabCur = parent ? parentTab() : ui.tab;
     var mine = (gate || parent) ? {} : myWorkspaceIds();
@@ -21467,6 +21485,8 @@
     // Persistent read-only banner for a signed-in viewer (roles in force). Parents/pending
     // users are on the parent app instead, which carries its own notices.
     if (!parent && !gate && sync.user && !canEdit()) v.innerHTML = readOnlyBanner() + v.innerHTML;
+    // Pack positions (client step 4) — a leader who edits elsewhere, on a section their positions only read.
+    else if (!parent && !gate && sync.user) v.innerHTML = viewOnlyBanner(sectionAccessId(sec)) + v.innerHTML;
     if (!parent && !gate) v.innerHTML = formatBanner() + serverNoticeBanner() + v.innerHTML;
     renderSyncPill();
     document.getElementById('overlayHost').innerHTML = (parent || gate) ? '' : renderOverlay();
@@ -29720,8 +29740,33 @@
   /* ----- Pack tab ----- */
   // ---- Accounts UI ----
   function readOnlyBanner() {
+    // The pack's own server: a retired editor or viewer, or a leader whose positions edit nothing.
+    if (accountsInForce() && apiAccounts()) {
+      var why = sync.myRole === 'editor' || sync.myRole === 'viewer' ? 'your account needs a pack position before you can change anything. Ask a pack admin.'
+        : 'your positions don\u2019t include editing anything. Ask a pack admin if that\u2019s wrong.';
+      return '<div class="warn no-print" style="margin:0 0 14px"><strong>View only</strong> \u2014 ' + why + '</div>';
+    }
     return '<div class="warn no-print" style="margin:0 0 14px">' +
       '<strong>Read-only</strong> — you can view everything; ask a pack admin for edit access.</div>';
+  }
+  // "View only — your positions don't include editing the ledger." For a section this account reads but
+  // doesn't edit, when it edits something elsewhere (readOnlyBanner is for one that edits nothing). What
+  // they CAN still do there is said too: den meetings and attendance on the calendar, accepting shift
+  // reports on the storefronts, recording a deposit in the ledger. '' when there is nothing to say.
+  var VIEW_ONLY_EXCEPT = {
+    calendar: [['calendar.denmeeting', 'your dens\u2019 meetings'], ['attendance', 'attendance']],
+    storefronts: [['shiftVerify', 'accepting shift reports']],
+    ledger: [['deposits', 'recording storefront deposits']]
+  };
+  function viewOnlyBanner(id) {
+    if (!sectionGuardOn() || !id || id === 'home' || !canSeeSection(id) || canEditSection(id)) return '';
+    var say = SECTION_SAY[id];
+    if (!say) return '';
+    var but = (VIEW_ONLY_EXCEPT[id] || []).filter(function (x) {
+      return ownKey(ACCESS_TABLE.actions, x[0]) ? canDo(x[0]) : canEditSection(x[0]);
+    }).map(function (x) { return x[1]; });
+    return '<div class="warn no-print view-only" role="note" style="margin:0 0 14px"><strong>View only</strong> \u2014 your positions don\u2019t include editing ' +
+      esc(say[0]) + '.' + (but.length ? ' You can still change ' + esc(but.join(' and ')) + ' here.' : '') + '</div>';
   }
   // Role → pill class. admin=gold (default .pill), editor/viewer=navy, pending=amber/bad.
   function rolePill(role) {
@@ -30832,7 +30877,8 @@
     /* ----- Needs you ----- */
     // July's yearly check names stale lesson plans, so the plans are asked for (once) in July.
     if (todayISO().slice(5, 7) === '07' && advPlanKeysUsed().length) advPlansWant();
-    var tasks = homeTasks();
+    // Pack positions (client step 4) — nothing from a section this account's positions hide.
+    var tasks = homeTasks().filter(function (t) { return !t.section || canSeeSection(sectionAccessId(t.section)); });
     var LIMIT = 5;
     var mine = [], rest = [];
     if (jobIds.length) {
