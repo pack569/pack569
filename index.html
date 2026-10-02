@@ -2483,6 +2483,10 @@
   // How the popcorn was settled with the council (book.councilSettled.how; councilSettledNormal). Up
   // here for the same reason.
   var COUNCIL_SETTLE_HOW = ['paid', 'payout', 'even'];
+  // The day wagon cash donations started going through Trail's End (owner, 2026-10-01; Keith was not
+  // sure the season's earlier ones did). state.wagonViaTEFrom: absent = this date; '' = every wagon
+  // entry; a leader can move it (wagonCutoverOf). Up here because normalizeState reads it.
+  var WAGON_VIA_TE_DEFAULT = '2026-10-01';
   var LEDGER_SOURCE_LABELS = {
     family: 'Family payment', donation: 'Donation', fundraiser: 'Fundraiser',
     commission: 'Popcorn commission', carryover: 'Carryover', storefront: 'Storefront cash donations (kept)',
@@ -4135,6 +4139,10 @@
     d.recruitKit.done = {};
     RECRUIT_KIT_ITEMS.forEach(function (x) { if (rkDone[x.id] === true) d.recruitKit.done[x.id] = true; });
     d.recruitKit.flyerLink = d.recruitKit.flyerLink === true;
+    // Treasurer re-check of 89c08b5 (5) — the wagon cutover (wagonCutoverOf): an ISO date, '' (every wagon
+    // entry through Trail's End), or absent (WAGON_VIA_TE_DEFAULT). Junk is dropped, so it reads as the default.
+    if (d.wagonViaTEFrom !== undefined && d.wagonViaTEFrom !== '' &&
+      !(typeof d.wagonViaTEFrom === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d.wagonViaTEFrom))) delete d.wagonViaTEFrom;
     // Owner, 2026-10-01 — the pack's deposit deadline for kept storefront cash (depositDaysOf): whole days,
     // 1 to 60, or absent (the default, 7). A literal: this runs before the script's vars are set.
     if (d.depositDays !== undefined) {
@@ -5881,7 +5889,7 @@
   function computeScoutTotals(asOf) {
     var map = {};
     state.scouts.forEach(function (s) {
-      map[s.id] = { storeS: 0, storeD: 0, wagonS: 0, wagonD: 0, onS: 0, onD: 0, blocks: 0 };
+      map[s.id] = { storeS: 0, storeD: 0, wagonS: 0, wagonD: 0, wagonKeptD: 0, onS: 0, onD: 0, blocks: 0 };
     });
     state.storefronts.forEach(function (sf) {
       if (asOf && sf.date && sf.date > asOf) return;
@@ -5896,7 +5904,11 @@
       var m = map[e.scoutId];
       if (!m) return;
       if (asOf && e.date && e.date > asOf) return;
-      if (e.kind === 'wagon') { m.wagonS += e.salesCents; m.wagonD += e.donationsCents; }
+      if (e.kind === 'wagon') {
+        m.wagonS += e.salesCents; m.wagonD += e.donationsCents;
+        // Treasurer re-check of 89c08b5 (5) — before the cutover, the pack kept it (keptCashOf).
+        if (wagonEntryKept(e, false, wagonCutoverOf(state.wagonViaTEFrom))) m.wagonKeptD += e.donationsCents || 0;
+      }
       else { m.onS += e.salesCents; m.onD += e.donationsCents; }
     });
     Object.keys(map).forEach(function (id) {
@@ -5987,19 +5999,22 @@
     Object.keys(totals).forEach(function (id) {
       var t = totals[id];
       // Kept cash only: storefront (wagon cash runs through Trail's End and earns commission).
-      credited += cashScoutCredit(t.storeD || 0);
+      // Treasurer re-check of 89c08b5 (5) — and wagon cash kept before the cutover.
+      credited += cashScoutCredit((t.storeD || 0) + (t.wagonKeptD || 0));
     });
     return { on: true, rate: cashScoutRate(), kept: kept, credited: credited, free: Math.max(0, kept - credited) };
   }
   function computePackTotals() {
     // Summed from source records (not scout shares) so unassigned block money still counts.
-    var sales = 0, don = 0, onlineDon = 0, onlineSales = 0, storeDon = 0;
+    var sales = 0, don = 0, onlineDon = 0, onlineSales = 0, storeDon = 0, wagonKept = 0;
+    var cutover = wagonCutoverOf(state.wagonViaTEFrom);
     state.storefronts.forEach(function (sf) {
       sf.blocks.forEach(function (b) { sales += b.salesCents || 0; don += b.donationsCents || 0; storeDon += b.donationsCents || 0; });
     });
     state.entries.forEach(function (e) {
       sales += e.salesCents; don += e.donationsCents;
       if (e.kind === 'online') { onlineDon += e.donationsCents; onlineSales += e.salesCents; }
+      else if (wagonEntryKept(e, state.cashThroughTrailsEnd, cutover)) wagonKept += e.donationsCents || 0;
     });
     // Cash donations = all donations that aren't online (storefront-table + wagon cash).
     var cashDon = don - onlineDon;
@@ -6012,8 +6027,10 @@
     // wagon cash donations in the Trail's End app as Heroes & Helpers, so the pack never keeps
     // wagon cash: it is commissionable and in teEligible whatever the toggle says, and never in
     // cashKept. The toggle (state.cashThroughTrailsEnd) now governs storefront cash only.
-    var teEligible = sales + onlineDon + wagonDon + (viaTE ? storeDon : 0);
-    var cashKept = viaTE ? 0 : storeDon;
+    // Treasurer re-check of 89c08b5 (5) — except wagon entries dated before the cutover
+    // (state.wagonViaTEFrom), which stay kept as they were counted then (wagonEntryKept).
+    var cashKept = viaTE ? 0 : storeDon + wagonKept;
+    var teEligible = sales + don - cashKept;
     // The two channels, each with the money it actually earns commission on. Cash donations
     // ride with storefront/wagon: they are handed over in person, whatever the online rate is.
     var onlineEligible = onlineSales + onlineDon;
@@ -6033,7 +6050,7 @@
       onlineDon: onlineDon, cashDon: cashDon, eligible: teEligible, teEligible: teEligible,
       // The two kinds of cash donation, apart: storefront (kept unless the toggle is on) and wagon
       // (always through Trail's End).
-      storeCashDon: storeDon, wagonCashDon: wagonDon,
+      storeCashDon: storeDon, wagonCashDon: wagonDon, wagonKeptDon: viaTE ? 0 : wagonKept, wagonCutover: cutover,
       // Per channel, so the Popcorn card can show the split when the rates differ.
       onlineSales: onlineSales, onlineEligible: onlineEligible, otherEligible: otherEligible,
       commissionOnline: commissionOnline, commissionOther: commissionOther,
@@ -8047,8 +8064,10 @@
   //                `deposited`, and how many.
   // `storefronts` is state.storefronts (this season's: close-out clears them), `ledger` the counted
   // rows (state.ledger: a voided deposit is not in it, and a reversed pair cancels). Pure.
-  function storefrontCashCheck(storefronts, ledger, viaTE, lastCutoff) {
-    var t = { kept: 0, deposited: 0, count: 0, notYet: 0, over: 0, salesCash: 0, earlier: 0, earlierCount: 0, viaTE: !!viaTE };
+  // `wagonKept` (treasurer re-check of 89c08b5, 5): wagon cash donations kept before the cutover
+  // (computePackTotals().wagonKeptDon), part of `kept` so it still equals retainedCash; 0 when absent.
+  function storefrontCashCheck(storefronts, ledger, viaTE, lastCutoff, wagonKept) {
+    var t = { kept: 0, keptStorefront: 0, keptWagon: viaTE ? 0 : Math.max(0, wagonKept || 0), deposited: 0, count: 0, notYet: 0, over: 0, salesCash: 0, earlier: 0, earlierCount: 0, viaTE: !!viaTE };
     var here = Object.create(null), cut = typeof lastCutoff === 'string' ? lastCutoff : '';
     arrOf(storefronts).forEach(function (sf) {
       if (!sf) return;
@@ -8067,6 +8086,8 @@
       t.deposited += e.amountCents || 0;
       t.count += 1;
     });
+    t.keptStorefront = t.kept;
+    t.kept += t.keptWagon;
     t.notYet = Math.max(0, t.kept - t.deposited);
     t.over = Math.max(0, t.deposited - t.kept);
     return t;
@@ -8075,9 +8096,11 @@
   // treasurer's words (review of item 11, 3–4), "storefront" for "popcorn" (owner, 2026-10-01). Pure
   // given fmt.
   function storefrontCashLines(chk) {
-    if (!chk || !(chk.kept || chk.deposited || chk.salesCash || chk.earlier)) return [];
-    var out = [{ warn: false, text: 'Storefront cash donations kept ' + fmt(chk.kept) + ' · banked ' + fmt(chk.deposited) +
-      ' · still to bank ' + fmt(chk.notYet) + '.' }];
+    if (!chk || !(chk.kept || chk.deposited || chk.salesCash || chk.earlier)) return [];   // (kept includes keptWagon)
+    // Treasurer re-check of 89c08b5 (5) — with wagon cash kept before the cutover, the treasurer's first wording.
+    var out = [{ warn: false, text: (chk.keptWagon
+      ? 'Popcorn cash donations kept ' + fmt(chk.kept) + ' (storefronts ' + fmt(chk.keptStorefront) + ', wagon ' + fmt(chk.keptWagon) + ')'
+      : 'Storefront cash donations kept ' + fmt(chk.kept)) + ' \u00b7 banked ' + fmt(chk.deposited) + ' \u00b7 still to bank ' + fmt(chk.notYet) + '.' }];
     if (chk.viaTE) out.push({ warn: false, text: 'Storefront cash donations run through Trail’s End this season, so the pack keeps none of them.' });
     if (chk.over) {
       out.push({ warn: true, text: 'Storefront cash donation deposits are ' + fmt(chk.over) + ' more than the cash donations kept. ' +
@@ -10129,6 +10152,7 @@
     // Item 11 — what a storefront cash deposit covers.
     councilSettled: 'popcorn settled with the council',
     depositDays: 'deposit kept storefront cash within (days)',
+    wagonViaTEFrom: 'wagon cash through Trail’s End from',
     depositFor: 'storefronts it covers', depositFrom: 'covers from', depositTo: 'covers to', notStorefront: 'not storefront cash'
   };
   // One value from an event's `f`, as a leader reads it. `names` turns an id into a name
@@ -24044,10 +24068,16 @@
     // label that re-renders on a select, and it can't be wrong for either type.
     h += '<p class="eyebrow">Add wagon or online sales</p>' +
       '<form data-form="add-entry" data-scout="' + s.id + '" class="row" style="margin-bottom:6px">' +
-      '<label class="fld">Type<select name="kind"><option value="wagon">Wagon</option><option value="online">Online</option></select></label>' +
+      // Treasurer re-check of 89c08b5 (4b) — a NEW wagon entry has no Donations field: its Heroes & Helpers
+      // donations are in the Trail's End amount, and a second field is how they were typed twice. The
+      // type redraws the form (ui.entryKind). Existing entries keep what they hold, and it counts.
+      '<label class="fld">Type<select name="kind" data-ch="entry-kind"><option value="wagon"' + (ui.entryKind !== 'online' ? ' selected' : '') + '>Wagon</option>' +
+        '<option value="online"' + (ui.entryKind === 'online' ? ' selected' : '') + '>Online</option></select></label>' +
       '<label class="fld">Date<input type="date" name="date"></label>' +
-      '<label class="fld">Trail’s End amount ($)<input class="money-in" inputmode="decimal" name="sales" placeholder="0.00"></label>' +
-      '<label class="fld">Donations ($)<input class="money-in" inputmode="decimal" name="donations" placeholder="0.00"></label>' +
+      (ui.entryKind === 'online'
+        ? '<label class="fld">Trail’s End amount ($)<input class="money-in" inputmode="decimal" name="sales" placeholder="0.00"></label>' +
+          '<label class="fld">Donations ($)<input class="money-in" inputmode="decimal" name="donations" placeholder="0.00"></label>'
+        : '<label class="fld">Trail’s End amount (Heroes &amp; Helpers included) ($)<input class="money-in" inputmode="decimal" name="sales" placeholder="0.00"></label>') +
       '<button class="btn primary small" type="submit" style="align-self:flex-end">Add</button>' +
       '</form>' +
       '<p class="small muted" style="margin:0 0 10px">All of it is credited to ' + esc(s.name || 'this scout') + '. ' +
@@ -24196,12 +24226,34 @@
   // secondary = cash donations credited to the scout (storefront split + wagon scout-level).
   function eligibleOf(r) { return r.t.sales + r.t.onD; }
   function cashDonOf(r) { return r.t.storeD + r.t.wagonD; }
+  // The pack's wagon cutover date (state.wagonViaTEFrom): an ISO date, '' (every wagon entry goes through
+  // Trail's End), or the default when absent or junk. Pure.
+  function wagonCutoverOf(v) {
+    if (v === '') return '';
+    return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : WAGON_VIA_TE_DEFAULT;
+  }
+  // Is wagon (non-online) entry `e` cash the pack KEPT? Only one dated before the cutover (`cutover`:
+  // wagonCutoverOf), and only while the pack keeps cash (`viaTE` off): that is how the app counted wagon
+  // cash before the owner's decision of 2026-10-01. On or after it, or undated, it went through Trail's
+  // End. Pure.
+  function wagonEntryKept(e, viaTE, cutover) {
+    return !viaTE && !!e && e.kind !== 'online' && !!cutover && !!e.date && String(e.date) < cutover;
+  }
   // Owner, 2026-10-01 — said wherever the storefront-cash setting is.
   var WAGON_CASH_NOTE = 'Wagon cash donations always go through Trail’s End: families enter them in the Trail’s End app as Heroes &amp; Helpers, so the pack never keeps wagon cash.';
+  // Treasurer re-check of 89c08b5 (5) — the note, with the cutover date a leader can move. HTML.
+  function wagonCashNote(packT) {
+    var co = packT.wagonCutover;
+    return co ? 'Wagon cash donations dated before ' + esc(fmtDate(co)) + ' stay as the pack counted them' + (packT.wagonKeptDon ? ' (' + fmt(packT.wagonKeptDon) + ' kept)' : '') + '. ' + WAGON_CASH_NOTE
+      : WAGON_CASH_NOTE;
+  }
+  var WAGON_CUTOVER_NOTE = 'If this season’s earlier wagon donations were entered in the Trail’s End app, move this to the season’s start.';
   // The scout's cash donations the pack KEEPS: their storefront split, while storefront cash is
   // not run through Trail's End. Wagon cash always runs through Trail's End (owner, 2026-10-01),
   // so it is never kept. Mirrors computePackTotals' cashKept, scout by scout.
-  function keptCashOf(r) { return state.cashThroughTrailsEnd ? 0 : r.t.storeD; }
+  // Treasurer re-check of 89c08b5 (5) — plus wagon cash donations dated before the cutover, which
+  // the pack kept (wagonKeptD).
+  function keptCashOf(r) { return state.cashThroughTrailsEnd ? 0 : r.t.storeD + (r.t.wagonKeptD || 0); }
   // Goal progress base — sales, online donations and wagon cash donations (always Trail's End),
   // and the scout's storefront cash donations only while they run through Trail's End too.
   function goalBaseOf(r) { return r.t.sales + r.t.onD + cashDonOf(r) - keptCashOf(r); }
@@ -24420,6 +24472,29 @@
   }
   // The highest tier this scout has reached, per the map — the single reader of tierEarnedMap
   // for "which level is this scout on", so a deadline and a make-up payment both land here.
+  // Treasurer re-check of 89c08b5 (5) — which scouts' highest tier would change if the wagon cutover
+  // (state.wagonViaTEFrom) were `alt` instead: [{ id, name, now, then }], tier names ('' for none). Read
+  // as the leaders' screens read tiers (tierEarnedMap), once each way; state is put back as it was.
+  // Leaders only (the season setup card); never published.
+  function wagonCutoverTierChanges(alt) {
+    var tiers = sortedTiers();
+    if (!tiers.length) return [];
+    var had = Object.prototype.hasOwnProperty.call(state, 'wagonViaTEFrom'), was = state.wagonViaTEFrom;
+    var now = tierEarnedMap(), then;
+    try { state.wagonViaTEFrom = alt; then = tierEarnedMap(); }
+    finally { if (had) state.wagonViaTEFrom = was; else delete state.wagonViaTEFrom; }
+    return activeScouts().map(function (s) {
+      var a = earnedTierFor(s.id, tiers, now), b = earnedTierFor(s.id, tiers, then);
+      return { id: s.id, name: s.name || '', now: a ? (a.name || 'a tier') : '', then: b ? (b.name || 'a tier') : '' };
+    }).filter(function (x) { return x.now !== x.then; });
+  }
+  // Those changes in words, for the setting. Pure.
+  function wagonCutoverTierText(changes, altLabel) {
+    if (!changes.length) return 'Moved to ' + altLabel + ', no scout’s reward tier would change.';
+    return 'Moved to ' + altLabel + ', reward tiers would change for: ' + changes.map(function (c) {
+      return c.name + ' (' + (c.now || 'none') + ' \u2192 ' + (c.then || 'none') + ')';
+    }).join(', ') + '.';
+  }
   function earnedTierFor(scoutId, tiers, map) {
     var earned = null;
     for (var i = 0; i < tiers.length; i++) if ((map[tiers[i].id] || {})[scoutId]) earned = tiers[i];
@@ -25225,11 +25300,19 @@
       '<div class="row" style="margin-top:6px">' +
       '<label class="perscout"><input type="checkbox" data-ch="cash-via-te"' + (packT.viaTE ? ' checked' : '') + '> Run storefront cash donations through Trail’s End (Heroes &amp; Helpers)</label>' +
       '</div>' +
+      // Treasurer re-check of 89c08b5 (5) — when wagon cash started going through Trail's End.
+      '<div class="row" style="margin-top:6px"><label class="fld">Wagon cash donations go through Trail’s End from' +
+      '<input type="date" data-ch="wagon-via-te-from" value="' + esc(packT.wagonCutover) + '"></label></div>' +
+      '<p class="small muted" style="margin:4px 0 0">' + esc(WAGON_CUTOVER_NOTE) + ' Leave it blank and every wagon entry goes through Trail’s End.' +
+      // …and what moving it would do to the tiers, before anyone moves it.
+      (packT.wagonCutover && packT.wagonCutover > programYearStartISO(state.budget.programYear)
+        ? ' ' + esc(wagonCutoverTierText(wagonCutoverTierChanges(programYearStartISO(state.budget.programYear)), fmtDate(programYearStartISO(state.budget.programYear))))
+        : '') + '</p>' +
       '<p class="small muted" style="margin:8px 0 0">Storefront cash donations so far: <span class="money">' + fmt(packT.storeCashDon) + '</span>. ' +
       (packT.viaTE
         ? 'They’re entered as <strong>Heroes &amp; Helpers</strong> — commission applies and they count toward the Trail’s End goal.'
         : 'The pack <strong>keeps 100%</strong> — no commission, excluded from the Trail’s End goal, and counted toward the cash donations goal instead.') +
-      ' ' + WAGON_CASH_NOTE + ' ' +
+      ' ' + wagonCashNote(packT) + ' ' +
       '(Trail’s End calls these Heroes &amp; Helpers donations — recorded per scout in their app.)</p>' +
       // The scout's share of kept cash. Only offered while the pack keeps it: with the toggle on
       // the donation earns real commission and a credit on top would count it twice, so the field
@@ -25902,7 +25985,7 @@
         : '') +
       // Item 11 — a storefront cash deposit is in the bank, not in Funds in again; and too many is a Check.
       (function () {
-        var sc = storefrontCashCheck(state.storefronts, state.ledger, state.cashThroughTrailsEnd, closedBooksLastCutoff(state.closedBooks));
+        var sc = storefrontCashCheck(state.storefronts, state.ledger, state.cashThroughTrailsEnd, closedBooksLastCutoff(state.closedBooks), computePackTotals().wagonKeptDon);
         if (!(sc.deposited > 0)) return '';
         return '<p class="small muted" style="margin:8px 0 0">Storefront cash donation deposits in the ledger (' + fmt(sc.deposited) + ') are not added again: ' +
           'the cash donations they bank are already counted from the storefront figures.</p>' +
@@ -27300,7 +27383,8 @@
   // Reconcile card: the check a treasurer makes before the bank statement, and the one place a
   // deposit posted as something else, or one too many, shows. '' when there is no storefront cash.
   function storefrontCashCheckHtml() {
-    var lines = storefrontCashLines(storefrontCashCheck(state.storefronts, state.ledger, state.cashThroughTrailsEnd, closedBooksLastCutoff(state.closedBooks)));
+    var lines = storefrontCashLines(storefrontCashCheck(state.storefronts, state.ledger, state.cashThroughTrailsEnd, closedBooksLastCutoff(state.closedBooks),
+      computePackTotals().wagonKeptDon));
     if (!lines.length) return '';
     // Owner, 2026-10-01 — the deposit deadline: a warning per storefront past it, and the pack's setting.
     var dd = depositDaysOf(state.depositDays);
@@ -27324,7 +27408,8 @@
     var chk = councilMoneyCheck(state.ledger), settled = state.book.councilSettled || null;
     // Treasurer re-check of 89c08b5 (2) — beside what sales work out to, not the Council page's product figure.
     var est = computePackTotals().commission;
-    var keptZ = state.cashThroughTrailsEnd ? 0 : storefrontCashCheck(state.storefronts, state.ledger, false, closedBooksLastCutoff(state.closedBooks)).notYet;
+    var keptZ = state.cashThroughTrailsEnd ? 0 : storefrontCashCheck(state.storefronts, state.ledger, false, closedBooksLastCutoff(state.closedBooks),
+      computePackTotals().wagonKeptDon).notYet;
     var lines = councilMoneyLines(chk, settled, est, keptZ);
     if (!lines.length) return '';
     var h = lines.map(function (ln, i) {
@@ -32834,6 +32919,9 @@
         }).join(' · ') +
         '. These are in the grand total above but no scout is credited with them here — add any that belong to a scout by hand.</div>';
     }
+    teWagonDonationOverlap(teMatchScouts(arc.scouts).matched, state.entries, wagonCutoverOf(state.wagonViaTEFrom)).forEach(function (nm) {
+      g += '<div class="warn" style="margin:0 0 10px"><strong>' + esc(nm) + '</strong> has wagon donations typed here; the Trail’s End wagon total may already include them as Heroes &amp; Helpers.</div>';
+    });
     var overlap = teManualOverlap(teMatchScouts(arc.scouts).matched, state.entries);
     if (overlap.length) {
       g += '<div class="warn" style="margin:0 0 10px"><strong>' + esc(overlap.join(', ')) + '</strong> already ' +
@@ -34478,6 +34566,16 @@
   // orders in by hand before the first import, the import adds them a second time and the scout
   // is credited twice. The preview names them; deciding which to keep is a person's call.
   // Pure: takes the matched rows and the entries.
+  // Treasurer re-check of 89c08b5 (4a) — the matched scouts with wagon cash donations TYPED here (not
+  // imported), dated on or after the cutover (`cutover`: wagonCutoverOf) or undated: the Trail's End
+  // wagon total the import brings may already include them as Heroes & Helpers. Names. Pure.
+  function teWagonDonationOverlap(matched, entries, cutover) {
+    var typed = {};
+    (entries || []).forEach(function (e) {
+      if (e && e.source !== 'te-import' && e.kind === 'wagon' && (e.donationsCents || 0) > 0 && !(cutover && e.date && String(e.date) < cutover)) typed[e.scoutId] = true;
+    });
+    return matched.filter(function (r) { return typed[r.scoutId] && (r.wagonCents || 0) > 0; }).map(function (r) { return r.name; });
+  }
   function teManualOverlap(matched, entries) {
     var manual = {};
     (entries || []).forEach(function (e) {
@@ -38729,6 +38827,17 @@
     // field existed. Kept as typed (like the commission rates) so a half-typed "3" on the way
     // to "30" doesn't get normalized out from under the cursor.
     if (ch === 'cash-scout-pct') { state.cashScoutPct = el.value; commit(); return; }
+    if (ch === 'entry-kind') { ui.entryKind = el.value === 'online' ? 'online' : 'wagon'; render(); return; }   // a view choice, never saved
+    // Treasurer re-check of 89c08b5 (5) — the wagon cutover; logged on the book, as the deposit days are.
+    if (ch === 'wagon-via-te-from') {
+      var wcWas = wagonCutoverOf(state.wagonViaTEFrom), wcNow = el.value === '' ? '' : wagonCutoverOf(el.value);
+      if (el.value && wcNow !== el.value) { showToast('Pick a date, or clear it.'); render(); return; }
+      if (wcNow !== wcWas) {
+        state.wagonViaTEFrom = wcNow;
+        logLedger('edit', 'book', { f: { wagonViaTEFrom: [wcWas, wcNow] } });
+      }
+      commit(); return;
+    }
     // Owner, 2026-10-01 — the pack's deposit deadline, 1 to 60 days; logged on the book as the opening figure is.
     if (ch === 'deposit-days') {
       var ddWas = depositDaysOf(state.depositDays), ddNow = depositDaysOf(el.value);
@@ -39608,7 +39717,8 @@
     if (kind === 'add-entry') {
       var scoutId = f.dataset.scout;
       var sales = toCents(fd.get('sales'));
-      var don = toCents(fd.get('donations'));
+      // Treasurer re-check of 89c08b5 (4b) — a new wagon entry's donations are in its Trail's End amount.
+      var don = String(fd.get('kind') || 'wagon') === 'online' ? toCents(fd.get('donations')) : 0;
       if (!sales && !don) return;
       state.entries.push({
         id: uid(), scoutId: scoutId,

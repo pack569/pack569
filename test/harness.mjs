@@ -677,6 +677,7 @@ function coverageSandbox(setup) {
      ${slice('commissionRates')}
      ${slice('goalBaseOf')}
      ${slice('cashDonOf')}
+     ${slice('keptCashOf')}
      ${slice('cashScoutRate')}
      ${slice('cashCreditOn')}
      ${slice('cashScoutCredit')}
@@ -18887,7 +18888,8 @@ const GONE_TE_ROWS = [{ scoutId: 's1', name: 'Ada', onlineCents: 5000, wagonCent
 // The real importer and scout totals, on stubs for the preview's matching. Each device's clock
 // only moves forward, a second per reading, so a delete and its Undo are never the same ms.
 const GONE_EXTRA = (dev) => `
-  ${['blockShares', 'computeScoutTotals', 'teLiveEntriesFor', 'teCommitSalesLive', 'getScout', 'dropScout', 'ledgerActorName', 'stampApproved', 'chargeMatchKey', 'chargeKey', 'linePerFamily', 'getBudgetLine', 'chargeFamilyKey'].map(slice).join('\n')}
+  ${decl('WAGON_VIA_TE_DEFAULT')}
+  ${['blockShares', 'computeScoutTotals', 'wagonEntryKept', 'wagonCutoverOf', 'teLiveEntriesFor', 'teCommitSalesLive', 'getScout', 'dropScout', 'ledgerActorName', 'stampApproved', 'chargeMatchKey', 'chargeKey', 'linePerFamily', 'getBudgetLine', 'chargeFamilyKey'].map(slice).join('\n')}
   ${['ledgerActor', 'ledgerActorUid'].map(decl).join('\n')}
   var batchSeq = 0;
   uid = function () { batchSeq += 1; return '${dev}b' + batchSeq; };
@@ -32031,7 +32033,7 @@ test('wagon cash: always Trail’s End money, never kept, whatever the storefron
   // The copy says so: the setting is about storefront cash, and the wagon form tells families where to enter it.
   ok(/Run storefront cash donations through Trail’s End \(Heroes &amp; Helpers\)/.test(SCRIPT), 'the setting is not about storefront cash');
   ok(SCRIPT.includes("var WAGON_CASH_NOTE = 'Wagon cash donations always go through Trail’s End: families enter them in the Trail’s End app as Heroes &amp; Helpers, so the pack never keeps wagon cash.';") &&
-    /' ' \+ WAGON_CASH_NOTE \+ ' '/.test(slice('seasonSetupCard')), 'the setting does not say where wagon cash goes');
+    /' ' \+ wagonCashNote\(packT\) \+ ' '/.test(slice('seasonSetupCard')), 'the setting does not say where wagon cash goes');
   ok(/the family enters it in the Trail’s End app as Heroes &amp; Helpers, as well as here\. The pack never keeps wagon cash\./.test(SCRIPT), 'the wagon form');
   ok(!/a <strong>wagon<\/strong> donation is cash the pack keeps/.test(SCRIPT), 'the wagon form still says the pack keeps wagon cash');
   // The cash board is storefront cash, and credits only that.
@@ -32114,12 +32116,12 @@ test('item 11: the Reconcile line says storefront cash donations kept, banked an
   const closedYr = [sfRow('jun', 3000, { date: '2026-06-20' }), sfRow('jun2', 2000, { date: '2026-06-30', depositFor: 'k' }), sfRow('jul', 1000, { date: '2026-07-01' })];
   eq(lines(SF, closedYr, false, '2026-06-30'), ['Storefront cash donations kept $625.00 · banked $10.00 · still to bank $615.00.',
     '2 deposits ($50.00) are last season’s, or name a deleted storefront, and are not counted here.'], 'dated in a closed year');
-  ok(/storefrontCashCheck\(state\.storefronts, state\.ledger, state\.cashThroughTrailsEnd, closedBooksLastCutoff\(state\.closedBooks\)\)/.test(slice('storefrontCashCheckHtml')), 'the card passes the closed year');
+  ok(/storefrontCashCheck\(state\.storefronts, state\.ledger, state\.cashThroughTrailsEnd, closedBooksLastCutoff\(state\.closedBooks\),\s*computePackTotals\(\)\.wagonKeptDon\)/.test(slice('storefrontCashCheckHtml')), 'the card passes the closed year and the wagon cash kept');
   eq(sandbox(['closedBooksLastCutoff', 'arrOf']).closedBooksLastCutoff([{ cutoff: '2026-06-30' }, { cutoff: '2027-06-30' }, {}]), '2027-06-30', 'the newest cutoff');
   eq([lines([], [], false), lines([{ id: 'z', blocks: [{ donationsCents: 0 }] }], [], false)], [[], []], 'nothing to say');
   // On the Reconcile card, escaped, with the pack's own toggle; and the Budget card says the deposits are not added again.
   const h = slice('storefrontCashCheckHtml');
-  ok(/storefrontCashLines\(storefrontCashCheck\(state\.storefronts, state\.ledger, state\.cashThroughTrailsEnd, closedBooksLastCutoff\(state\.closedBooks\)\)\)/.test(h) && /esc\(ln\.text\)/.test(h), 'the check line');
+  ok(/storefrontCashLines\(storefrontCashCheck\(state\.storefronts, state\.ledger, state\.cashThroughTrailsEnd, closedBooksLastCutoff\(state\.closedBooks\),\s*computePackTotals\(\)\.wagonKeptDon\)\)/.test(h) && /esc\(ln\.text\)/.test(h), 'the check line');
   ok(/h \+= storefrontCashCheckHtml\(\);/.test(slice('renderReconcile')), 'the Reconcile card does not show it');
   const card = /function renderBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/Storefront cash donation deposits in the ledger \(' \+ fmt\(sc\.deposited\) \+ '\) are not added again: ' \+\s*'the cash donations they bank are already counted from the storefront figures\./.test(card) && /sc\.over > 0/.test(card), 'the Budget card');
@@ -32477,6 +32479,85 @@ atest('council settlement, api: a stale device saving after another settled, or 
   eq('councilSettled' in server().book, false, 'A did not save the take-back');
   await settle([b], 800);
   eq(['councilSettled' in server().book, b.get("'councilSettled' in state.book")], [false, false], 'a stale save brought the settlement back');
+});
+
+/* ================================================================
+   Treasurer re-check of 89c08b5 (4, 5) — the wagon cutover (state.wagonViaTEFrom, default 2026-10-01):
+   wagon entries dated before it stay kept, as they were counted then; and a new wagon entry has no
+   Donations field. Made-up data.
+   ================================================================ */
+function cutoverPack(cutover, viaTE) {
+  const ctx = sandbox(declClosure(['computePackTotals', 'storefrontCashCheck', 'storefrontCashLines'], ['activeScouts', 'packGoalCents', 'state']));
+  vm.runInContext(`var state = { cashThroughTrailsEnd: ${!!viaTE}, commissionPct: '30', commissionPctOnline: '', cashScoutPct: '', stretchGoalCents: 0, cashGoalCents: 0,
+      ${cutover === undefined ? '' : 'wagonViaTEFrom: ' + JSON.stringify(cutover) + ','}
+      storefronts: [{ id: 'k', name: 'Kroger', date: '2026-09-12', blocks: [{ salesCents: 90000, donationsCents: 20000 }] }],
+      entries: [{ kind: 'wagon', scoutId: 's1', date: '2026-09-20', salesCents: 30000, donationsCents: 5000 },
+        { kind: 'wagon', scoutId: 's1', date: '2026-10-03', salesCents: 10000, donationsCents: 700 },
+        { kind: 'wagon', scoutId: 's1', date: '', salesCents: 0, donationsCents: 300 }] };
+    function activeScouts() { return [{ id: 's1' }]; } function packGoalCents() { return 0; }`, ctx);
+  return ctx;
+}
+test('wagon cutover: wagon cash dated before it is kept as it was, on or after it (or undated) goes through Trail’s End', () => {
+  const tot = (co, te) => J(vm.runInContext('computePackTotals()', cutoverPack(co, te)));
+  const dflt = tot(undefined), blank = tot(''), early = tot('2026-07-01'), te = tot(undefined, true);
+  eq([dflt.wagonCutover, dflt.wagonKeptDon, dflt.cashKept, dflt.retainedCash], ['2026-10-01', 5000, 25000, 25000], 'the default: the Sep 20 wagon cash is kept');
+  eq([blank.wagonKeptDon, blank.cashKept, early.wagonKeptDon, early.cashKept], [0, 20000, 0, 20000], 'blank, or the season start: every wagon entry through Trail’s End');
+  eq([te.wagonKeptDon, te.cashKept], [0, 0], 'everything through Trail’s End');
+  eq([dflt.teEligible + dflt.cashKept, blank.teEligible + blank.cashKept], [dflt.combined, blank.combined], 'still every dollar once');
+  // The Reconcile line's kept is still retainedCash, and says the wagon part.
+  const ctx = cutoverPack(undefined);
+  const chk = J(vm.runInContext('storefrontCashCheck(state.storefronts, [], false, "", computePackTotals().wagonKeptDon)', ctx));
+  eq([chk.kept, chk.keptStorefront, chk.keptWagon], [dflt.retainedCash, 20000, 5000], 'kept is not computePackTotals().retainedCash');
+  eq(vm.runInContext('storefrontCashLines(storefrontCashCheck(state.storefronts, [], false, "", 5000))[0].text', ctx),
+    'Popcorn cash donations kept $250.00 (storefronts $200.00, wagon $50.00) · banked $0.00 · still to bank $250.00.', 'the treasurer’s wording with wagon cash');
+  // A scout: the kept wagon cash is in keptCashOf, and out of the goal base.
+  const sc = coverageSandbox(`var RATE = '30', CASH_RATE = '50'; var TIERS = []; var SALES = { w: { sales: 0, onS: 0, onD: 0, storeD: 0, wagonD: 10000, wagonKeptD: 6000 } };`);
+  eq([vm.runInContext('keptCashOf({ t: SALES.w })', sc), vm.runInContext('goalBaseOf({ t: SALES.w })', sc), vm.runInContext('scoutCommissionOf({ t: SALES.w })', sc)],
+    [6000, 4000, 1200 + 3000], 'kept $60 earns the 50% credit, the $40 after the cutover 30% commission');
+  ok(/if \(wagonEntryKept\(e, false, wagonCutoverOf\(state\.wagonViaTEFrom\)\)\) m\.wagonKeptD \+= e\.donationsCents \|\| 0;/.test(slice('computeScoutTotals')), 'per scout');
+  ok(/credited \+= cashScoutCredit\(\(t\.storeD \|\| 0\) \+ \(t\.wagonKeptD \|\| 0\)\);/.test(slice('cashCreditTotals')), 'the credit totals');
+  // The setting: a date a leader moves, with the note; logged; normalized.
+  const w = sandbox(['wagonCutoverOf', 'WAGON_VIA_TE_DEFAULT']);
+  eq([undefined, '', '2026-07-01', 'soon', 5].map((v) => w.wagonCutoverOf(v)), ['2026-10-01', '', '2026-07-01', '2026-10-01', '2026-10-01'], 'read');
+  const nz = sandbox(NORMALIZE_FNS);
+  const nw = (v) => { const d = { version: 1, scouts: [] }; if (v !== undefined) d.wagonViaTEFrom = v; const r = nz.normalizeState(d); return 'wagonViaTEFrom' in r ? r.wagonViaTEFrom : '(absent)'; };
+  eq([nw(undefined), nw(''), nw('2026-07-01'), nw('July')], ['(absent)', '', '2026-07-01', '(absent)'], 'normalizeState');
+  const ss = slice('seasonSetupCard');
+  ok(/Wagon cash donations go through Trail’s End from' \+\s*'<input type="date" data-ch="wagon-via-te-from" value="' \+ esc\(packT\.wagonCutover\) \+ '">/.test(ss) && /esc\(WAGON_CUTOVER_NOTE\)/.test(ss), 'the setting');
+  eq(vm.runInContext('WAGON_CUTOVER_NOTE', sandbox(['WAGON_CUTOVER_NOTE'])), 'If this season’s earlier wagon donations were entered in the Trail’s End app, move this to the season’s start.', 'the note');
+  ok(/if \(ch === 'wagon-via-te-from'\) \{[\s\S]{0,500}logLedger\('edit', 'book', \{ f: \{ wagonViaTEFrom: \[wcWas, wcNow\] \} \}\)/.test(SCRIPT), 'the change is not logged');
+  ok(!/wagonViaTEFrom|wagonKept/.test(codeOnly(BPV())), 'the parent view reads it');
+});
+
+test('wagon cutover: a new wagon entry has no Donations field, and the import warns about wagon donations typed by hand', () => {
+  const f = /h \+= '<p class="eyebrow">Add wagon or online sales<\/p>'[\s\S]*?WAGON_SAFETY/.exec(SCRIPT)[0];
+  ok(/\(ui\.entryKind === 'online'\s*\? '<label class="fld">Trail’s End amount \(\$\)[\s\S]*?name="donations"[\s\S]*?: '<label class="fld">Trail’s End amount \(Heroes &amp; Helpers included\) \(\$\)<input[^']*name="sales"/.test(f), 'the wagon form');
+  ok(/var don = String\(fd\.get\('kind'\) \|\| 'wagon'\) === 'online' \? toCents\(fd\.get\('donations'\)\) : 0;/.test(SCRIPT), 'the add takes wagon donations');
+  const x = sandbox(['teWagonDonationOverlap']);
+  const matched = [{ scoutId: 'a', name: 'Ada', wagonCents: 5000 }, { scoutId: 'b', name: 'Ben', wagonCents: 5000 }, { scoutId: 'c', name: 'Cal', wagonCents: 0 }];
+  const entries = [{ scoutId: 'a', kind: 'wagon', date: '2026-10-05', donationsCents: 500 }, { scoutId: 'b', kind: 'wagon', date: '2026-09-05', donationsCents: 500 },
+    { scoutId: 'c', kind: 'wagon', date: '2026-10-05', donationsCents: 500 }, { scoutId: 'b', kind: 'wagon', date: '2026-10-05', donationsCents: 900, source: 'te-import' }];
+  eq(x.teWagonDonationOverlap(matched, entries, '2026-10-01'), ['Ada'], 'typed, after the cutover, and the import brings wagon sales');
+  ok(/has wagon donations typed here; the Trail’s End wagon total may already include them as Heroes &amp; Helpers\./.test(SCRIPT), 'the warning');
+});
+
+test('wagon cutover: the setting says which scouts’ reward tiers would change if it moved to the season start', () => {
+  const ctx = sandbox(declClosure(['wagonCutoverTierChanges', 'wagonCutoverTierText'], ['state', 'activeScouts']));
+  // Ada sold $200 and took $100 of wagon cash on Sep 20; Ben sold $500. One $50 tier, 30%, no cash credit.
+  vm.runInContext(`var state = { cashThroughTrailsEnd: false, commissionPct: '30', commissionPctOnline: '', cashScoutPct: '', ledger: [], storefronts: [],
+      scouts: [{ id: 'a', name: 'Ada Example' }, { id: 'b', name: 'Ben Example' }],
+      rewardTiers: { tiers: [{ id: 't1', name: 'Bronze', thresholdCents: 5000, covers: [] }, { id: 't2', name: 'Silver', thresholdCents: 15000, covers: [] }] },
+      entries: [{ id: 'e1', kind: 'wagon', scoutId: 'a', date: '2026-09-20', salesCents: 10000, donationsCents: 10000 },
+        { id: 'e2', kind: 'wagon', scoutId: 'b', date: '2026-09-20', salesCents: 50000, donationsCents: 0 }] };
+    function activeScouts() { return state.scouts; }`, ctx);
+  // Today Ada has $30 of commission (no tier); with the date at Jul 1 her $100 of wagon cash earns $30 more: $60, Bronze. Ben is Silver either way.
+  const ch = J(vm.runInContext("wagonCutoverTierChanges('2026-07-01')", ctx));
+  eq(ch, [{ id: 'a', name: 'Ada Example', now: '', then: 'Bronze' }], 'the changes');
+  eq(vm.runInContext("'wagonViaTEFrom' in state", ctx), false, 'the setting was not put back');
+  eq(vm.runInContext("wagonCutoverTierText(wagonCutoverTierChanges('2026-07-01'), 'Jul 1')", ctx),
+    'Moved to Jul 1, reward tiers would change for: Ada Example (none → Bronze).', 'the words');
+  eq(vm.runInContext("wagonCutoverTierText([], 'Jul 1')", ctx), 'Moved to Jul 1, no scout’s reward tier would change.', 'nothing changes');
+  ok(/wagonCutoverTierText\(wagonCutoverTierChanges\(programYearStartISO\(state\.budget\.programYear\)\)/.test(slice('seasonSetupCard')), 'the setting does not say');
 });
 
 /* ---------------- report ---------------- */

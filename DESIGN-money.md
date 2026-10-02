@@ -1292,12 +1292,24 @@ Helpers, so **the pack never keeps wagon cash**. The setting `cashThroughTrailsE
   cash reaches the pack through commission.
 - The wagon form tells families: "So does a wagon cash donation: the family enters it in the
   Trail's End app as Heroes & Helpers, as well as here. The pack never keeps wagon cash."
-- **For the treasurer to confirm:** the wagon entry's *Donations* field is still separate from
-  its *Trail's End amount*. If the Trail's End report's wagon total already includes Heroes &
-  Helpers donations, a family that types the donation in both fields, or a Trail's End import
-  plus a typed donation, counts it twice in `teEligible`. And a pack that kept wagon cash before
-  this sees its "kept" figure (and Funds in) fall by that cash, which now shows as commission at
-  the storefront rate instead: a recorded season changes in the middle.
+- **The cutover** (treasurer re-check of 89c08b5, 5; Keith was not sure the season's earlier wagon
+  donations went through the app). `state.wagonViaTEFrom`, default 2026-10-01: a wagon entry dated
+  before it stays kept, as the app counted it then (`wagonEntryKept`: in `cashKept`/`retainedCash`,
+  `wagonKeptDon`, a scout's `wagonKeptD` and so `keptCashOf` and the cash credit); on or after it,
+  or undated, it goes through Trail's End. A blank date sends every wagon entry through Trail's
+  End. Leaders edit it on the season setup card ("Wagon cash donations go through Trail's End
+  from ‹date›", with "If this season's earlier wagon donations were entered in the Trail's End app,
+  move this to the season's start."), and a change is logged on the book (`f.wagonViaTEFrom`).
+  Under the setting, while the date is after the season start, the card says whose reward tier
+  would change if it were moved there (`wagonCutoverTierChanges`, read as the leaders' screens read
+  tiers). With wagon cash kept, the Reconcile line uses the treasurer's first wording: "Popcorn cash
+  donations kept $X (storefronts $A, wagon $B) · banked $Y · still to bank $Z", and X is still
+  `retainedCash`. The deposit source keeps its storefront name; a deposit of kept wagon cash uses it.
+- **No double count on new wagon entries** (4). A new wagon entry has no Donations field: its amount
+  is "Trail's End amount (Heroes & Helpers included)". Existing entries keep what they hold, and it
+  counts. The Trail's End import warns for each matched scout with wagon donations typed by hand on
+  or after the cutover: "‹name› has wagon donations typed here; the Trail's End wagon total may
+  already include them as Heroes & Helpers." (`teWagonDonationOverlap`).
 
 #### Which tier the pack plans on — `planOnTierId`
 
