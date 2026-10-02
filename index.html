@@ -24422,7 +24422,8 @@
         '</div>';
     }).join('') + '</div>';
 
-    if (backed.length) {
+    // Pack positions — recording it writes advancement: whoever edits that (not, say, an Activities Chair).
+    if (backed.length && canEditSection('advancement')) {
       // "Every session" and "every session SO FAR" are different claims, and only one of them
       // is true while a session is still to come. Saying the wrong one puts a number on the
       // button that the list right above it contradicts — 2 of 3 is not every session.
@@ -29982,9 +29983,9 @@
   // they CAN still do there is said too: den meetings and attendance on the calendar, accepting shift
   // reports on the storefronts, recording a deposit in the ledger. '' when there is nothing to say.
   var VIEW_ONLY_EXCEPT = {
-    calendar: [['calendar.denmeeting', 'your dens\u2019 meetings'], ['attendance', 'attendance']],
-    storefronts: [['shiftVerify', 'accepting shift reports']],
-    ledger: [['deposits', 'recording storefront deposits']]
+    calendar: [['calendar.denmeeting', 'change your dens\u2019 meetings'], ['attendance', 'take attendance']],
+    storefronts: [['shiftVerify', 'accept shift reports']],
+    ledger: [['deposits', 'record storefront deposits']]
   };
   function viewOnlyBanner(id) {
     if (!sectionGuardOn() || !id || id === 'home' || !canSeeSection(id) || canEditSection(id)) return '';
@@ -29994,7 +29995,7 @@
       return ownKey(ACCESS_TABLE.actions, x[0]) ? canDo(x[0]) : canEditSection(x[0]);
     }).map(function (x) { return x[1]; });
     return '<div class="warn no-print view-only" role="note" style="margin:0 0 14px"><strong>View only</strong> \u2014 your positions don\u2019t include editing ' +
-      esc(say[0]) + '.' + (but.length ? ' You can still change ' + esc(but.join(' and ')) + ' here.' : '') + '</div>';
+      esc(say[0]) + '.' + (but.length ? ' You can still ' + esc(but.join(' and ')) + ' here.' : '') + '</div>';
   }
   // Role → pill class. admin=gold (default .pill), editor/viewer=navy, pending=amber/bad.
   function rolePill(role) {
@@ -41210,6 +41211,7 @@
     if (act === 'mtg-adv-mark') {
       var mam = getEvent(el.dataset.id);
       if (!mam || mam.kind !== 'den') return;
+      if (!canEditSection('advancement')) { showToast(readOnlySay('advancement')); return; }   // pack positions
       var mamAdv;
       // Session-aware since 2026-08-02: the scouts credited are the ones checked in at every
       // session of the RUN that has happened, not merely everyone who turned up tonight. On a

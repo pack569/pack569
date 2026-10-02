@@ -297,11 +297,11 @@ test('positions nav: hidden sections and empty workspaces are not offered, route
   // The banner.
   as(['denleader']);
   eq([run("viewOnlyBanner('calendar')"), run("viewOnlyBanner('storefronts')"), run("viewOnlyBanner('advancement')"), run("viewOnlyBanner('home')"), run("viewOnlyBanner('ledger')")],
-    ['<div class="warn no-print view-only" role="note" style="margin:0 0 14px"><strong>View only</strong> — your positions don’t include editing the calendar. You can still change your dens’ meetings and attendance here.</div>',
-      '<div class="warn no-print view-only" role="note" style="margin:0 0 14px"><strong>View only</strong> — your positions don’t include editing storefronts. You can still change accepting shift reports here.</div>',
+    ['<div class="warn no-print view-only" role="note" style="margin:0 0 14px"><strong>View only</strong> — your positions don’t include editing the calendar. You can still change your dens’ meetings and take attendance here.</div>',
+      '<div class="warn no-print view-only" role="note" style="margin:0 0 14px"><strong>View only</strong> — your positions don’t include editing storefronts. You can still accept shift reports here.</div>',
       '', '', ''], 'a Den Leader: the calendar and the storefronts; advancement theirs; Home; the ledger hidden');
   as(['kernel']);
-  eq(run("viewOnlyBanner('ledger')"), '<div class="warn no-print view-only" role="note" style="margin:0 0 14px"><strong>View only</strong> — your positions don’t include editing the ledger. You can still change recording storefront deposits here.</div>', 'the Kernel on the ledger');
+  eq(run("viewOnlyBanner('ledger')"), '<div class="warn no-print view-only" role="note" style="margin:0 0 14px"><strong>View only</strong> — your positions don’t include editing the ledger. You can still record storefront deposits here.</div>', 'the Kernel on the ledger');
   run("sync.myRole = 'admin'");
   eq(run("viewOnlyBanner('ledger')"), '', 'an admin');
   run("sync.myRole = 'leader'; sync.backend = {}; sync.myRole = 'viewer';");
@@ -17620,6 +17620,9 @@ test('positions client: canEdit() is left only where "edits anything" is meant; 
     /data-ch="mtg-kind" data-id="' \+ m\.id \+ '"' \+ calDis/.test(mr) && /\(cal \? tinyDangerBtn\('del-event:'/.test(mr) && /aria-label="Details parents will see" style="width:100%"' \+ dmDis/.test(mr) &&
     /ui\.repeatOffer === m\.id && cal/.test(mr), 'the meeting row');
   ok(/\? !canEditSection\('calendar'\) : !canEditDenMeeting\(mtg\)\)/.test(SCRIPT), 'the meeting handler');
+  // Crediting an adventure at a meeting writes advancement: the button and the handler follow it.
+  ok(/if \(backed\.length && canEditSection\('advancement'\)\)/.test(slice('meetingAdvMarkFor')) &&
+    /if \(act === 'mtg-adv-mark'\) \{[\s\S]{0,200}if \(!canEditSection\('advancement'\)\) \{ showToast\(readOnlySay\('advancement'\)\); return; \}/.test(SCRIPT), 'Mark done at a meeting');
 });
 
 // Client step 6 — the Members card on the pack's own server: positions, not editor and viewer.
