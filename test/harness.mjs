@@ -16676,6 +16676,12 @@ atest('positions guard: the sync log and the ledger log are append-only, each ne
   eq((await wl.put('lead_treasurer', withLl(lold.concat([ll('ev2', '2026-09-02T00:00:00.000Z', 'uid-lead-treasurer')])))).status, 200, 'a treasurer logging a tick');
   SECTION_403(await wl.put('lead_treasurer', withLl(lold.concat([ll('ev2', '2026-09-02T00:00:00.000Z', 'uid-lead-chair')]))), ['ledger'], 'a treasurer logging in a chair\'s name');
   SECTION_403(await wl.put('lead_treasurer', withLl([Object.assign({}, lold[0], { op: 'untick' })])), ['ledger'], 'a treasurer changing a line there');
+  // Security review of 714a920..045e7ac: the ledger's lines are exact, unlike the sync log's. A field
+  // added to a line there rewrites what it says was done, a ledger editor's change or not.
+  SECTION_403(await wl.put('lead_treasurer', withLl([Object.assign({}, lold[0], { why: 'it was always like this' })])), ['ledger'], 'a treasurer adding a reason to a line there');
+  SECTION_403(await wl.put('lead_chair', withLl([Object.assign({}, lold[0], { f: { amountCents: [100, 200] } })].concat([ll('ev2', '2026-09-02T00:00:00.000Z', 'uid-lead-chair')]))),
+    ['ledger'], 'a chair adding a change to a line there, beside a line of their own');
+  eq((await wl.put('owner', withLl([Object.assign({}, lold[0], { why: 'an admin' })]))).status, 200, 'an admin is not compared');
   SECTION_403(await wl.put('lead_treasurer', withLl([])), ['ledger'], 'a treasurer emptying the log');
   // A setting's changer logs it on the book, whoever they are, and only that.
   eq((await wl.put('lead_kernel', withLl(lold.concat([book('commissionPct', [25, 30], 'uid-lead-kernel')]), { commissionPct: 30 }))).status, 200, 'a kernel logging the commission');

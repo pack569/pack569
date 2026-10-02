@@ -27,7 +27,8 @@
 // (access.js denMeetingChangeOk). Some parts say who did something, and are checked entry by
 // entry against the caller's own uid, whoever may edit their section: the two logs are
 // append-only and a line added is the caller's own (syncLog for anyone, ledgerLog for the ledger's
-// editors, or a setting's for one who changed it); a statement there stays as it is and one added
+// editors, or a setting's for one who changed it; a ledgerLog line there stays exactly as it is,
+// the ledger's editors included); a statement there stays as it is and one added
 // is the caller's; a council settlement written is the caller's. Two slices of a section a leader may
 // write without editing it: a shift report's fields on a storefront block (shiftVerify: the
 // accept, its undo, its settle), and a deposit of storefront cash added to the ledger, flagged for

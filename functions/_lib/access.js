@@ -328,7 +328,8 @@ function keepsWhatItHad(was, now) {
 //   - the oldest dropped by the log's cap, and only then: every entry dropped sorts before every
 //     entry left, and the log is full: `cap.max` entries, or (cap.bytes) the newest one dropped
 //     would not have fitted in that many bytes of JSON (mergeLedgerLog's own sum);
-//   - every entry kept keeps what it had (keepsWhatItHad). Their order is the writer's to keep.
+//   - every entry kept keeps what it had (keepsWhatItHad), or, with cap.exact, is exactly what it was:
+//     not a field added either. Their order is the writer's to keep.
 export function appendOnlyOk(before, after, uid, cap, newOk) {
   if (!Array.isArray(after)) return false;
   const was = Object.create(null);
@@ -337,7 +338,7 @@ export function appendOnlyOk(before, after, uid, cap, newOk) {
   for (const e of after) {
     if (!plain(e) || typeof e.id !== 'string' || !e.id || seen[e.id]) return false;
     seen[e.id] = true;
-    if (own(was, e.id)) { if (!keepsWhatItHad(was[e.id], e)) return false; }
+    if (own(was, e.id)) { if (!(cap.exact ? sameJson(was[e.id], e) : keepsWhatItHad(was[e.id], e))) return false; }
     else if (typeof uid !== 'string' || !uid || e.byUid !== uid || (newOk && !newOk(e))) return false;
   }
   const dropped = Object.keys(was).filter((id) => !seen[id]).map((id) => was[id]);
@@ -350,13 +351,19 @@ export function appendOnlyOk(before, after, uid, cap, newOk) {
   return size + utf8(JSON.stringify(newest)) + 1 > cap.bytes;
 }
 // The two logs' caps, as the page keeps them: SYNC_LOG_MAX; mergeLedgerLog's 1000 events and 128 KB.
+// The ledger's log is exact (security review of 714a920..045e7ac): a line there is never rewritten,
+// not even by a field added to it, whoever edits the ledger. Every line the page writes is whole
+// (ledgerEvent), and normalizeLedgerEvent adds nothing to a line a page wrote; a field added to an
+// old line (a `why`, an `f`) would change what the trail says was done. The sync log keeps the
+// looser rule: normalizeSyncLog fills in a field an older page's line lacks.
 export const SYNC_LOG_CAP = { max: 500 };
-export const LEDGER_LOG_CAP = { max: 1000, bytes: 128 * 1024 };
+export const LEDGER_LOG_CAP = { max: 1000, bytes: 128 * 1024, exact: true };
 
 // state.syncLog (shared: any leader who edits something may log a kept-mine), append-only.
 export const syncLogOk = (before, after, uid) => appendOnlyOk(before, after, uid, SYNC_LOG_CAP, null);
 
-// state.ledgerLog, append-only. A leader who edits the ledger adds their own lines of any kind. One
+// state.ledgerLog, append-only for everyone below an admin, its own editors too: a line there stays
+// exactly as it is (LEDGER_LOG_CAP.exact). A leader who edits the ledger adds their own lines of any kind. One
 // who does not may add only their own lines recording a pack setting they changed: a book 'edit'
 // whose every field is a setting they may edit (ownerOfBookLogField). Commission, goals, the wagon
 // date and the deposit days are logged on the book; the people who may set them are not all
