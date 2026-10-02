@@ -16915,6 +16915,38 @@ atest('positions guard: a booth leader writes a shift report\'s fields on its bl
     'an outcome the server does not hold');
 });
 
+atest('positions guard: a scout\'s parent accounts and a linked scout\'s family are an admin\'s; so are the record\'s version and format', async () => {
+  const sc = (o) => Object.assign({ id: 's1', name: 'Ada', den: 'Wolf', familyId: '', parentUids: ['uid-parent'] }, o || {});
+  const kid = (o) => Object.assign({ id: 's2', name: 'Bo', den: 'Bear', familyId: '', parentUids: [] }, o || {});
+  const w = await guardWorld(Object.assign(GUARD_BASE(), { scouts: [sc(), kid()] }));
+  const put = (who, scouts, more) => w.put(who, Object.assign(GUARD_BASE(), { scouts }, more || {}));
+  // Security review of 714a920..045e7ac, finding 2: the review's PoC, and its kin.
+  SECTION_403(await put('lead_secretary', [sc({ parentUids: ['uid-parent', 'uid-lead-secretary'] }), kid()]), ['admin'], 'PoC: the secretary links their own account');
+  SECTION_403(await put('lead_membership', [sc({ parentUids: [] }), kid()]), ['admin'], 'a parent unlinked');
+  SECTION_403(await put('lead_membership', [sc({ familyId: 's2' }), kid()]), ['admin'], 'a linked scout moved to another family');
+  SECTION_403(await put('lead_secretary', [sc(), kid(), kid({ id: 's3', parentUids: ['uid-newbie'] })]), ['admin'], 'a scout added already linked');
+  SECTION_403(await put('lead_secretary', [kid()]), ['admin'], 'a linked scout removed');
+  eq((await put('lead_secretary', [sc({ name: 'Ada B.', den: 'Bear' }), kid()])).status, 200, 'a linked scout\'s name and den: the roster\'s');
+  eq((await put('lead_secretary', [sc(), kid({ familyId: 's1' })])).status, 200, 'an unlinked scout joining a family');
+  eq((await put('lead_secretary', [sc(), kid(), kid({ id: 's3' })])).status, 200, 'a scout added, unlinked');
+  eq((await put('lead_secretary', [sc()])).status, 200, 'an unlinked scout removed');
+  eq((await put('admin2', [sc({ parentUids: ['uid-parent', 'uid-newbie'] }), kid()])).status, 200, 'an admin links a parent');
+  // Finding 3: the PoC (any leader with something to edit), and the steps a page takes.
+  const wf = await guardWorld(Object.assign(GUARD_BASE(), { fmt: 5 }));
+  const putF = (who, more) => wf.put(who, Object.assign(GUARD_BASE(), { fmt: 5 }, more));
+  SECTION_403(await putF('lead_derbychair', { fmt: 9999 }), ['admin'], 'PoC: a format no page knows');
+  SECTION_403(await putF('lead_derbychair', { version: 2 }), ['admin'], 'PoC: a version no page reads');
+  SECTION_403(await putF('lead_derbychair', { fmt: 4 }), ['admin'], 'a format taken back');
+  SECTION_403(await putF('lead_derbychair', { fmt: 6.5 }), ['admin'], 'a format that is not a whole number');
+  eq((await putF('lead_derbychair', { fmt: 6 })).status, 200, 'a newer page, one format up');
+  eq((await putF('owner', { fmt: 9999 })).status, 200, 'an admin is not compared');
+  const w0 = await guardWorld((() => { const b = GUARD_BASE(); delete b.version; return b; })());
+  const noVer = (more) => { const b = Object.assign(GUARD_BASE(), more); return b; };
+  eq((await w0.put('lead_derbychair', noVer({ version: 1, fmt: 5 }))).status, 200, 'a record that had neither: version 1, and the page\'s format');
+  SECTION_403(await w0.put('lead_derbychair', noVer({ version: 1, fmt: 11 })), ['admin'], 'a first format past FMT_FIRST_MAX');
+  ok(API.access.FMT_FIRST_MAX >= Number(/var PACK_FORMAT = (\d+);/.exec(SCRIPT)[1]), 'FMT_FIRST_MAX is below the page\'s PACK_FORMAT: every first save would be refused');
+});
+
 atest('positions guard: deposits — the kernel records a storefront deposit, flagged for the treasurer, and sets the deadline; the rest of the ledger stays the treasurer\'s', async () => {
   const dep = (o) => Object.assign({ id: 'd1', date: '2026-10-05', description: 'Storefront cash donations banked', amountCents: 25000, direction: 'in', lineId: '', method: 'cash',
     ref: '', source: 'storefront', donor: '', scoutId: '', reconciled: false, depositFor: 'sf1', depositFrom: '', depositTo: '', enteredBy: 'K', enteredAt: 'x',

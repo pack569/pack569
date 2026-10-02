@@ -410,6 +410,55 @@ export function councilSettledOk(beforeBook, afterBook, uid) {
   return plain(a) && typeof uid === 'string' && !!uid && a.byUid === uid;
 }
 
+// ---- Parent links and the record's format: an admin's, in sections others edit ----
+
+// state.scouts below an admin (security review of 714a920..045e7ac, finding 2). The roster is the
+// Secretary's and the Membership Chair's, but a scout's parent accounts (parentUids, set by an admin
+// on the Members card) are the server's authority for who may confirm a family's shift report and
+// for the different-family rule (rules.js shiftConfirmers, sameFamily), and a linked scout's family
+// (familyId) decides who is in which family there. So below an admin: every scout's parentUids stay
+// exactly as they are (missing is []); a scout added has none; a scout with any is not removed; and a
+// scout with any keeps its familyId (missing is ''). An unlinked scout's family is the roster's.
+export function parentLinksOk(before, after) {
+  if (!Array.isArray(after)) return false;
+  const uids = (sc) => (Array.isArray(sc.parentUids) ? sc.parentUids : own(sc, 'parentUids') ? null : []);
+  const fam = (sc) => (own(sc, 'familyId') ? sc.familyId : '');
+  const was = Object.create(null);
+  (Array.isArray(before) ? before : []).forEach((sc) => { if (plain(sc) && typeof sc.id === 'string') was[sc.id] = sc; });
+  const seen = Object.create(null);
+  for (const sc of after) {
+    if (!plain(sc) || typeof sc.id !== 'string') return false;
+    seen[sc.id] = true;
+    const now = uids(sc);
+    if (now === null) return false;
+    if (!own(was, sc.id)) { if (now.length) return false; continue; }
+    const had = uids(was[sc.id]) || [];
+    if (!sameJson(had, now)) return false;
+    if (had.length && !sameJson(fam(was[sc.id]), fam(sc))) return false;
+  }
+  return Object.keys(was).every((id) => seen[id] || !(uids(was[id]) || []).length);
+}
+
+// The record's `version` and `fmt` (finding 3). normalizeState refuses a record whose version is not
+// 1, and a fmt above a page's PACK_FORMAT holds every push of that page (formatAhead): one leader
+// setting either would stop the whole pack saving. Below an admin: version stays as it is (or is
+// written as 1 where the record had none); fmt stays, or rises by exactly one to a whole number, or
+// is written where the record had none as a whole number up to FMT_FIRST_MAX (the page's PACK_FORMAT
+// is below it: the harness checks).
+export const FMT_FIRST_MAX = 10;
+export function versionOk(s, hasS, n, hasN) {
+  if (hasS && hasN) return sameJson(s, n);
+  if (!hasS && !hasN) return true;
+  return !hasS && n === 1;
+}
+export function fmtOk(s, hasS, n, hasN) {
+  if (hasS && hasN && sameJson(s, n)) return true;
+  if (!hasS && !hasN) return true;
+  if (!hasN || !Number.isInteger(n) || n < 1) return false;
+  if (!hasS) return n <= FMT_FIRST_MAX;
+  return Number.isInteger(s) && n === s + 1;
+}
+
 // ---- Shift reports and deposits: a slice of a section, for a leader who does not edit it ----
 
 // state.storefronts changed by a shiftVerify holder who does not edit storefronts (Keith, 2026-10-02):
@@ -694,6 +743,9 @@ export function refusedSections(stored, next, access, uid, actions, ctx) {
       }
       continue;
     }
+    // The record's format: an admin's to change (versionOk, fmtOk), whoever may write the rest.
+    if (k === 'version') { if (!versionOk(s[k], hasS, n[k], hasN)) refuse('admin'); continue; }
+    if (k === 'fmt') { if (!fmtOk(s[k], hasS, n[k], hasN)) refuse('admin'); continue; }
     if (sameTop(s[k], hasS, n[k], hasN)) continue;
     const owner = ownerOfKey(k);
     const was = hasS ? s[k] : [], now = hasN ? n[k] : [];
@@ -708,6 +760,7 @@ export function refusedSections(stored, next, access, uid, actions, ctx) {
       if (k === 'syncLog' && !syncLogOk(was, now, uid)) refuse(owner);
       else if (k === 'statements' && !statementsOk(was, now, uid)) refuse(owner);
       else if (k === 'book' && !councilSettledOk(s[k], n[k], uid)) refuse(owner);
+      else if (k === 'scouts' && !parentLinksOk(was, now)) refuse('admin');
       continue;
     }
     if (k === 'events' && access['calendar.denmeeting'] === 'edit' && denMeetingChangeOk(was, now)) continue;
