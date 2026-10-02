@@ -5413,6 +5413,13 @@
     // to review: true, or absent. The pack's server lets a leader who records deposits but does not edit
     // the ledger add only such a row (access.js depositRowOk); the treasurer's edit takes the flag off.
     if (e.depositReview !== true || e.source !== 'storefront') delete e.depositReview;
+    // The treasurer's review of it (the treasurer's review of 045e7ac, 6): who said it matches the slip and
+    // the bank, and when; or the question they asked the kernel. Strings, on a storefront deposit only.
+    ['depositReviewedBy', 'depositReviewedByUid', 'depositReviewedAt', 'depositReviewNote'].forEach(function (k) {
+      if (e[k] !== undefined && (typeof e[k] !== 'string' || e.source !== 'storefront')) delete e[k];
+    });
+    if (typeof e.depositReviewedBy === 'string') e.depositReviewedBy = ledgerStampClean(e.depositReviewedBy);
+    if (typeof e.depositReviewNote === 'string') e.depositReviewNote = e.depositReviewNote.slice(0, 300);
     if (e.source === 'storefront') {
       e.depositFor = depositForIds(e.depositFor).join(',');
       ['depositFrom', 'depositTo'].forEach(function (k) {
@@ -10382,6 +10389,7 @@
     statementId: 'statement', reversedBy: 'reversed by',   // treasurer review of C6 (5)
     forgiven: 'forgiveness',   // security re-check of C6 (N3): a charge's forgiveness lost to a merge
     closedYears: 'years closed out',   // Phase 3, C8 (C8-2): what a 'close' event changed (before, after)
+    depositReview: 'awaiting the treasurer\u2019s review', depositReviewNote: 'question for the kernel',   // the treasurer's review of 045e7ac (6)
     // Item 11 — what a storefront cash deposit covers.
     councilSettled: 'popcorn settled with the council',
     depositDays: 'deposit kept storefront cash within (days)',
@@ -28772,6 +28780,92 @@
       notes.concat(extra).map(function (t) { return '<p style="margin:0 0 10px">' + esc(t) + '</p>'; }).join('') +
       (extra.length ? '<button type="button" class="btn small" data-act="ledger-look-dismiss">Got it</button>' : '') + '</div>';
   }
+  // ---- Storefront deposits a leader who doesn't keep the books records, and their review (Keith, 2026-10-02;
+  // the treasurer's review of 045e7ac, 4–6) ----
+  var DEPOSIT_ONLY_MAX_CENTS = 10000000;   // the server's DEPOSIT_MAX_CENTS
+  var DEPOSIT_ONLY_SAY = 'The cash donations from the storefronts that the pack keeps, as you banked them. The Treasurer checks it against the deposit slip and the bank.';
+  var DEPOSIT_ONLY_DATE_SAY = 'That date is in a period the Treasurer has already reconciled or closed out, so the Treasurer enters this one. Ask the Treasurer.';
+  var DEPOSIT_REVIEW_WHY = 'Recorded by the Popcorn Kernel, or by the leader who collected the cash. Check each against the deposit slip and the bank before you reconcile.';
+  var DEPOSIT_REVIEW_OWN_SAY = 'You entered this deposit, so another leader who keeps the books checks it.';
+  function depositsToReviewSay(n) { return n + ' storefront deposit' + (n === 1 ? '' : 's') + ' to review'; }
+  function depositReconcileAskSay(n) {
+    return n + ' deposit' + (n === 1 ? '' : 's') + ' on this statement ' + (n === 1 ? 'hasn’t' : 'haven’t') +
+      ' been checked against the deposit slip. Review ' + (n === 1 ? 'it' : 'them') + ' first, or tap again to reconcile anyway.';
+  }
+  function depositsToReview() { return arrOf(state.ledger).filter(function (e) { return e && e.depositReview === true; }); }
+  // The storefronts a deposit covers: the ones it names, and any dated in its range.
+  function depositCoveredSfs(e) {
+    var ids = depositForIds(e.depositFor), from = e.depositFrom || '', to = e.depositTo || '';
+    return state.storefronts.filter(function (sf) { return ids.indexOf(sf.id) !== -1 || (from && to && sf.date >= from && sf.date <= to); });
+  }
+  // Did this leader record the cash collected on a shift the deposit covers (accepted a report saying they
+  // collected it, or marked its sales cash collected)? Then someone else checks the deposit (treasurer, 5).
+  function depositSelfCollected(e) {
+    var me = ledgerActorUid(), name = srSignName(), on = {};
+    var sfs = depositCoveredSfs(e);
+    sfs.forEach(function (sf) { on[sf.id] = true; });
+    if (srReports().some(function (r) {
+      return r && on[r.sfId] && ((r.salesCashOutcome === 'collected' && r.salesCashByUid === me) || (r.collected && r.acceptedByUid === me));
+    })) return true;
+    return sfs.some(function (sf) {
+      return (sf.blocks || []).some(function (b) {
+        return (b.reportCollected === true && b.reportApprovedBy === name) ||
+          srCashEntries(b).some(function (x) { return x && x.outcome && x.outcome.outcome === 'collected' && x.outcome.by === name; });
+      });
+    });
+  }
+  function depositOnlyFormHtml(dr) {
+    return '<div class="card"><h2 class="section display">Record a storefront deposit</h2>' +
+      '<p class="small muted" style="margin:0 0 8px">' + esc(DEPOSIT_ONLY_SAY) + '</p>' +
+      '<div class="lrow">' +
+      '<input type="date" data-ch="ledn-date" value="' + esc(dr.date) + '" aria-label="Date deposited">' +
+      '<input class="lname" data-ch="ledn-desc" value="' + esc(dr.description) + '" placeholder="Storefront cash donations banked" aria-label="Description">' +
+      '<input class="money-in" inputmode="decimal" data-ch="ledn-amount" value="' + esc(dr.amount) + '" placeholder="Amount" aria-label="Amount">' +
+      '<select data-ch="ledn-method" aria-label="Method">' + methodSelectOptions(dr.method) + '</select>' +
+      '<input class="lref" data-ch="ledn-ref" value="' + esc(dr.ref) + '" placeholder="Deposit slip no." aria-label="Deposit slip number">' +
+      '<button type="button" class="btn small primary" data-act="ledger-add">Record the deposit</button></div>' +
+      depositCoverFieldsHtml('ledn', '', dr) + '</div>';
+  }
+  // The books' check of each flagged deposit: what it covers (each shift's accepted figures and the cash from
+  // sales collected), the cash donations kept on those storefronts, and the difference. Whoever keeps the books.
+  function depositReviewCardHtml() {
+    if (!canEditSection('ledger')) return '';
+    var rows = depositsToReview();
+    if (!rows.length) return '';
+    var viaTE = !!state.cashThroughTrailsEnd, me = ledgerActorUid();
+    var h = '<div class="card"><h2 class="section display">' + esc(depositsToReviewSay(rows.length)) + '</h2>' +
+      '<p class="small muted" style="margin:0 0 8px">' + esc(DEPOSIT_REVIEW_WHY) + '</p>';
+    rows.forEach(function (e) {
+      var sfs = depositCoveredSfs(e);
+      var kept = sfs.reduce(function (n, sf) { return n + storefrontKeptCents(sf, viaTE); }, 0);
+      var diff = (e.amountCents || 0) - kept;
+      h += '<div class="ldeposit" style="margin:0 0 10px"><p style="margin:0"><strong class="money">' + esc(fmt(e.amountCents || 0)) + '</strong> banked ' +
+        esc(fmtDate(e.date)) + ' · entered by ' + esc(ledgerStampClean(e.enteredBy || '') || 'a leader') + (e.ref ? ' · slip ' + esc(e.ref) : '') + '</p>';
+      if (!sfs.length) h += '<p class="small muted" style="margin:4px 0 0">It doesn’t say which storefronts it covers.</p>';
+      sfs.forEach(function (sf) {
+        h += '<p class="small" style="margin:4px 0 0"><strong>' + esc(storefrontDepositName(sf)) + '</strong>: ' + (sf.blocks || []).map(function (b) {
+          var cash = srCashEntries(b).filter(function (x) { return x && x.outcome && x.outcome.outcome === 'collected'; }).reduce(function (n, x) { return n + (x.cents || 0); }, 0);
+          return esc(fmtTimeRange(b.start, b.end) || b.label || 'a shift') + ' Trail’s End ' + esc(fmt(b.salesCents || 0)) + ', cash donations ' + esc(fmt(b.donationsCents || 0)) +
+            (cash ? ', sales cash collected ' + esc(fmt(cash)) : '');
+        }).join('; ') + '</p>';
+      });
+      h += '<p class="small' + (diff ? ' warn' : '') + '" style="margin:4px 0 0"' + (diff ? ' role="alert"' : '') + '>Cash donations kept on ' +
+        (sfs.length === 1 ? 'that storefront' : 'those storefronts') + ': ' + esc(fmt(kept)) + '. Deposit minus that: ' + esc((diff < 0 ? '−' : '') + fmt(Math.abs(diff))) + '.</p>';
+      if (e.depositReviewNote) h += '<p class="small" style="margin:4px 0 0">Asked: “' + esc(e.depositReviewNote) + '”</p>';
+      if (e.enteredByUid && e.enteredByUid === me) h += '<p class="small muted" style="margin:6px 0 0">' + esc(DEPOSIT_REVIEW_OWN_SAY) + '</p>';
+      else if (ui.depositAsk === e.id) {
+        h += '<form data-form="deposit-review-ask" data-id="' + esc(e.id) + '" class="sr-return" style="margin-top:6px">' +
+          '<label class="fld">What should the kernel check?<textarea name="note" rows="2" maxlength="300" required></textarea></label>' +
+          '<div class="sr-acts"><button type="submit" class="btn small">Ask</button>' +
+          '<button type="button" class="btn small ghost" data-act="deposit-review-ask-cancel">Cancel</button></div></form>';
+      } else {
+        h += '<div class="row" style="margin-top:6px"><button type="button" class="btn small primary" data-act="deposit-review-ok:' + esc(e.id) + '">Matches the deposit slip / bank</button>' +
+          '<button type="button" class="btn small ghost" data-act="deposit-review-ask-open:' + esc(e.id) + '">Ask the kernel</button></div>';
+      }
+      h += '</div>';
+    });
+    return h + '</div>';
+  }
   function renderLedger() {
     var bk = state.book;
     var tot = ledgerTotals(state.ledger, bk);
@@ -28785,6 +28879,7 @@
         '<button type="button" class="btn small" data-act="ledger-fates-dismiss">Got it</button></div>'
       : '';
     h += ledgerLookCardHtml(state.ledger, state.book, sync.lookNotes, state.closedBooks);   // security re-check of option B (A, D); C6 reviews
+    h += depositReviewCardHtml();   // the treasurer's review of 045e7ac (6)
     h += '<div class="card"><h2 class="section display">Ledger</h2>' +
       '<p class="small muted" style="margin:0 0 10px">Every dollar that actually moved. Unlike the budget — which is a plan — this is a record, ' +
       'so the balance below can be held next to a bank statement and checked.</p>' +
@@ -29157,7 +29252,9 @@
   function renderLedgerEntries() {
     var dr = ledgerDraft();
     var addWarn = (ui.ledgerAddWarned && ui.ledgerAddWarned === dr.date) ? (ledgerClosedYearWarning(dr.date, state.closedBooks) || ledgerBackdateWarning(dr.date, state.book)) : '';
-    var h = '<div class="card"><h2 class="section display">Record a transaction</h2>' +
+    // Pack positions — a leader who doesn't keep the books records only a storefront deposit (the Kernel);
+    // one who neither keeps them nor records deposits records nothing here.
+    var h = !canEditSection('ledger') ? (canEditSection('deposits') ? depositOnlyFormHtml(dr) : '') : ('<div class="card"><h2 class="section display">Record a transaction</h2>' +
       '<div class="lrow">' +
       '<input type="date" data-ch="ledn-date" value="' + esc(dr.date) + '" aria-label="Date">' +
       '<select data-ch="ledn-dir" aria-label="In or out">' +
@@ -29211,7 +29308,7 @@
             ? ' Wagon cash donations dated before ' + esc(fmtDate(wagonCutoverOf(state.wagonViaTEFrom))) + ' were kept by the pack: bank them as ' +
               '<strong>Storefront cash donations (kept)</strong> too.'
             : '')
-        : ' The check to the council for popcorn is <strong>Popcorn money for the council</strong>, with no budget line: it is not a pack cost.') + '</p></div>';
+        : ' The check to the council for popcorn is <strong>Popcorn money for the council</strong>, with no budget line: it is not a pack cost.') + '</p></div>');
 
     // ---- filters + list ----
     var f = ui.ledgerFilter;
@@ -29276,6 +29373,8 @@
         '<span class="lbal small muted money">' + (pre ? 'before opening' : fmt(bal)) + '</span>' +
         // Option B (owner, 2026-09-29) — a reversed entry and its reversal both stay here, counted, and say which is which.
         (ePair ? '<span class="pill navy">' + esc(ePair) + '</span>' : '') +
+        // The treasurer's review of 045e7ac (6) — a deposit not yet checked against the slip and the bank: counted, and said.
+        (e.depositReview === true ? '<span class="pill bad">awaiting review</span>' : '') +
         (e.reconciled
           ? '<span class="pill navy">reconciled</span>' +
             // Treasurer review of C2 (L-5) — armed, it offers a box for why (optional, logged).
@@ -30961,6 +31060,14 @@
         '<div class="assign-row"><span class="assign-name">4 · Import your Trail’s End schedule</span><button type="button" class="btn small" data-act="goto" data-tab="popcorn" data-section="storefronts">Popcorn</button></div>' +
         '<div class="assign-row"><span class="assign-name">5 · Set commission &amp; goals</span><button type="button" class="btn small" data-act="goto" data-tab="money" data-section="budget">Budget</button></div>' +
         '</div>';
+    }
+
+    // The treasurer's review of 045e7ac (6) — storefront deposits waiting for the books' check, to whoever keeps them.
+    var depN = canEditSection('ledger') ? depositsToReview().length : 0;
+    if (depN) {
+      h += '<div class="card"><div class="spread"><h2 class="section display" style="margin-bottom:0">' + esc(depositsToReviewSay(depN)) + '</h2>' +
+        '<button type="button" class="btn small" data-act="goto" data-tab="money" data-section="ledger">Review</button></div>' +
+        '<p class="small muted" style="margin:6px 0 0">' + esc(DEPOSIT_REVIEW_WHY) + '</p></div>';
     }
 
     /* ----- Needs you ----- */
@@ -39786,8 +39893,32 @@
       showToast('Noted \u2014 it stays counted as other income. Change its amount or direction and the question comes back.');
       commit(); return;
     }
+    // The treasurer's review of 045e7ac (6) — a flagged storefront deposit: it matches the slip and the bank (the flag
+    // comes off, with who and when, logged), or a question for the kernel (kept on the row, logged). Whoever keeps the
+    // books, but never the leader who entered it.
+    if (act.indexOf('deposit-review-ok:') === 0 || act.indexOf('deposit-review-ask-open:') === 0) {
+      var drvId = act.slice(act.indexOf(':') + 1);
+      var drv = state.ledger.filter(function (e) { return e && e.id === drvId; })[0];
+      if (!drv || drv.depositReview !== true) return;
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
+      if (drv.enteredByUid && drv.enteredByUid === ledgerActorUid()) { showToast(DEPOSIT_REVIEW_OWN_SAY); return; }
+      if (act.indexOf('deposit-review-ask-open:') === 0) { ui.depositAsk = drvId; render(); return; }
+      delete drv.depositReview;
+      drv.depositReviewedBy = ledgerActor();
+      drv.depositReviewedByUid = ledgerActorUid();
+      drv.depositReviewedAt = new Date().toISOString();
+      logLedger('edit', drv.id, { f: { depositReview: [true, null] } });
+      if (commit()) showToast('Marked as matching the deposit slip and the bank. Reviewed by ' + drv.depositReviewedBy + '.');
+      return;
+    }
+    if (act === 'deposit-review-ask-cancel') { ui.depositAsk = null; render(); return; }
     if (act === 'ledger-add') {
       var dr = ledgerDraft();
+      // Pack positions — a leader who records deposits but doesn't keep the books (the Kernel): a storefront
+      // cash deposit only, flagged for the treasurer, and never into a period already signed off.
+      var depOnly = !canEditSection('ledger');
+      if (depOnly && !canEditSection('deposits')) { showToast(readOnlySay('ledger')); return; }
+      if (depOnly) { dr.direction = 'in'; dr.source = 'storefront'; dr.lineId = ''; dr.scoutId = ''; dr.donor = ''; }
       var amt = toCents(dr.amount);
       // Both are genuinely required: an entry with no amount records nothing, and one with
       // no date can't be placed in the running balance or ticked against a statement.
@@ -39805,6 +39936,8 @@
       // record it as a correction in the open year (a closed book is never changed).
       var drClosed = ledgerClosedYearWarning(dr.date, state.closedBooks);
       var drWarned = drBack || !!drClosed;
+      if (depOnly && (drWarned || state.book.closedAt || (state.book.openingDate && dr.date < state.book.openingDate))) { showToast(DEPOSIT_ONLY_DATE_SAY); return; }
+      if (depOnly && amt > DEPOSIT_ONLY_MAX_CENTS) { showToast('That’s more than ' + fmt(DEPOSIT_ONLY_MAX_CENTS) + ' for one deposit — check the amount, or ask the Treasurer.'); return; }
       if (drWarned && ui.ledgerAddWarned !== dr.date) { ui.ledgerAddWarned = dr.date; render(); return; }
       // M1(c) — money out to a family on a family-direct line is a reimbursement, not a refund.
       var drReimb = dr.direction !== 'in' && !!dr.scoutId && ledgerLineIsDirect(dr.lineId);
@@ -39835,6 +39968,9 @@
         }
       }
       stampEntered(drEntry);   // E2
+      // The treasurer's review of 045e7ac (4, 5) — the Kernel's deposit is checked by the books' keeper; so is anyone's
+      // deposit of cash they collected themselves on a shift it covers (one person handling every step).
+      if (drEntry.source === 'storefront' && drEntry.direction === 'in' && (depOnly || depositSelfCollected(drEntry))) drEntry.depositReview = true;
       // M1(b) — said BEFORE it is added, measured against the credit as it stands without it.
       var drWarn = refundOverCreditWarning(drEntry);
       // E2 — a reimbursement names its receipt. A warning, not a block: the money has moved
@@ -40138,6 +40274,9 @@
       var rlRec = reconcileTotals(state.ledger, state.book, state.ledgerAside);
       if (!rlNo && (rlRec.difference !== 0 || !(rlRec.ticked || rlRec.carriedTicked))) rlNo = 'The ticked entries no longer match the statement’s ending balance (the book may have changed on another device), so it wasn’t marked reconciled. Check the difference and try again.';
       if (rlNo) { if (ui.armed === act) ui.armed = null; showToast(rlNo); render(); return; }
+      // The treasurer's review of 045e7ac (6) — a statement holding a deposit nobody has checked against its slip asks first.
+      var rlFlag = state.ledger.filter(function (e) { return e && e.depositReview === true && e.reconciled === true && !e.statementId; }).length;
+      if (rlFlag && ui.armed !== act) showToast(depositReconcileAskSay(rlFlag));
       arm(act, function () {
         var rlWas = state.book.reconciledThrough || '';
         var rlFix = reconcileLockAhead(state.book, todayISO()) && state.book.statementDate < rlWas;
@@ -42052,6 +42191,20 @@
     var fd = new FormData(f);
     // S-3 — a leader sending a family's shift report back, with the reason they will see.
     if (kind === 'shift-report-return') { returnShiftReport(String(f.dataset.rid || ''), String(fd.get('reason') || '')); return; }
+    // The treasurer's review of 045e7ac (6) — "Ask the kernel": the question stays on the row, the flag stays on.
+    if (kind === 'deposit-review-ask') {
+      var daRow = state.ledger.filter(function (e) { return e && e.id === f.dataset.id; })[0];
+      var daNote = String(fd.get('note') || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+      if (!daRow || daRow.depositReview !== true) return;
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
+      if (!daNote) { showToast('Say what you want the kernel to check.'); return; }
+      var daWas = daRow.depositReviewNote || null;
+      daRow.depositReviewNote = daNote;
+      logLedger('edit', daRow.id, { f: { depositReviewNote: [daWas, daNote] } });
+      ui.depositAsk = null;
+      if (commit()) showToast('Asked. The deposit stays flagged until it’s checked.');
+      return;
+    }
     // Undoing a record of cash from sales, with the reason the server requires (reviews of 045e7ac).
     if (kind === 'sr-cash-undo') { srSalesCashSet(String(f.dataset.rid || ''), null, false, String(fd.get('reason') || '')); return; }
     // S-4 — accepting without a second parent, with the reason.

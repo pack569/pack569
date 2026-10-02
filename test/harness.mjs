@@ -22667,6 +22667,8 @@ function c2Page(o) {
     // and 'lg-id10' sorts before 'lg-id9'), so events one test writes stay in the order written.
     Date.now = (function (f) { var t = 0; return function () { t += 1; return f() + t; }; })(Date.now);
     function showToast(m, o) { toasts.push(m); toastOpts.push(o === undefined ? null : o); } function render() { renders += 1; } function commit() { commits += 1; }
+    function canEditSection() { return true; } function readOnlySay() { return ''; } function depositSelfCollected() { return false; }
+    var DEPOSIT_ONLY_DATE_SAY = '', DEPOSIT_ONLY_MAX_CENTS = 10000000;
     function setTimeout(f, ms) { armMs.push(ms); return 0; } function clearTimeout() {}
     function refundOverCreditWarning() { return ''; } function entryNeedsReceipt() { return false; } function ledgerLineIsDirect() { return false; }
     function todayISO() { return '2026-10-15'; } function programYearStartISO(py) { return py + '-07-01'; }
@@ -22681,6 +22683,68 @@ function c2Page(o) {
   const get = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, ctx)));
   return { ctx, run: (js) => vm.runInContext(js, ctx), get };
 }
+
+// Keith, 2026-10-02, and the treasurer's review of 045e7ac (4–6): the Kernel records a storefront deposit,
+// flagged for the treasurer; whoever keeps the books checks it against the slip and the bank, or asks;
+// nobody clears their own; a statement holding one asks first; it counts, said "awaiting review".
+test('positions deposits: the Kernel records a flagged storefront deposit; the books\' keeper checks it or asks; nobody clears their own', () => {
+  const review = /    if \(act\.indexOf\('deposit-review-ok:'\) === 0 \|\| act\.indexOf\('deposit-review-ask-open:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  const p = c2Page({ more: ['depositForIds', 'DEPOSIT_FOR_MAX'].map(decl).join('\n') +
+    `\nfunction act2(act, el) { el = el || { dataset: {} }; (function () {\n${review}\n})(); }\nvar DEPOSIT_REVIEW_OWN_SAY = 'own';` });
+  p.run("canEditSection = function (s) { return s === 'deposits'; }; DEPOSIT_ONLY_DATE_SAY = 'the treasurer enters it'; state.storefronts = [];");
+  p.run("ui.ledgerDraft = ledgerDraftDefault(); ui.ledgerDraft.date = '2026-09-10'; ui.ledgerDraft.amount = '250'; ui.ledgerDraft.direction = 'out'; ui.ledgerDraft.lineId = 'x1'; act('ledger-add')");
+  const d = p.get('state.ledger[state.ledger.length - 1]');
+  eq([d.amountCents, d.direction, d.source, d.lineId, d.scoutId, d.depositReview, d.enteredByUid, d.description],
+    [25000, 'in', 'storefront', '', '', true, 'u1', 'Storefront cash donations banked'], 'a storefront deposit, whatever the form said, flagged');
+  const n = p.get('state.ledger.length');
+  p.run("toasts = []; ui.ledgerDraft = ledgerDraftDefault(); ui.ledgerDraft.date = '2026-08-20'; ui.ledgerDraft.amount = '10'; act('ledger-add')");
+  eq([p.get('state.ledger.length'), p.get('toasts')], [n, ['the treasurer enters it']], 'dated in the reconciled period: refused, not warned');
+  // The books' keeper: not the one who entered it.
+  p.run("canEditSection = function () { return true; }; toasts = []; act2('deposit-review-ok:' + state.ledger[state.ledger.length - 1].id)");
+  eq([p.get('state.ledger[state.ledger.length - 1].depositReview'), p.get('toasts')], [true, ['own']], 'their own: not cleared');
+  p.run("sync.user.uid = 'u2'; sync.user.displayName = 'Lee Chair'; act2('deposit-review-ok:' + state.ledger[state.ledger.length - 1].id)");
+  const r = p.get('state.ledger[state.ledger.length - 1]');
+  eq([r.depositReview, r.depositReviewedBy, r.depositReviewedByUid, typeof r.depositReviewedAt, p.get('log()[log().length - 1].f')],
+    [undefined, 'Lee Chair', 'u2', 'string', { depositReview: [true, null] }], 'checked: the flag off, who and when, logged');
+  // A leader who neither keeps the books nor records deposits records nothing.
+  p.run("canEditSection = function () { return false; }; toasts = []; ui.ledgerDraft.amount = '5'; act('ledger-add')");
+  eq(p.get('state.ledger.length'), n, 'a den leader');
+  // The words and the shapes.
+  const say = vm.createContext({});
+  vm.runInContext(['depositsToReviewSay', 'depositReconcileAskSay', 'DEPOSIT_ONLY_SAY', 'DEPOSIT_ONLY_DATE_SAY', 'DEPOSIT_REVIEW_WHY', 'DEPOSIT_REVIEW_OWN_SAY'].map(decl).join('\n'), say);
+  eq([say.depositsToReviewSay(1), say.depositsToReviewSay(3), say.depositReconcileAskSay(2)],
+    ['1 storefront deposit to review', '3 storefront deposits to review',
+      '2 deposits on this statement haven’t been checked against the deposit slip. Review them first, or tap again to reconcile anyway.'], 'the words');
+  ok(/var rlFlag = state\.ledger\.filter\(function \(e\) \{ return e && e\.depositReview === true && e\.reconciled === true && !e\.statementId; \}\)\.length;\s*if \(rlFlag && ui\.armed !== act\) showToast\(depositReconcileAskSay\(rlFlag\)\);\s*arm\(act,/.test(SCRIPT),
+    'reconciling a statement that holds one asks first');
+  ok(/\(e\.depositReview === true \? '<span class="pill bad">awaiting review<\/span>' : ''\)/.test(slice('renderLedgerEntries')), 'it counts, said "awaiting review"');
+  ok(/var h = !canEditSection\('ledger'\) \? \(canEditSection\('deposits'\) \? depositOnlyFormHtml\(dr\) : ''\) : \(/.test(slice('renderLedgerEntries')), 'the forms: the books\' keeper, the deposit recorder, nobody else');
+  ok(/if \(kind === 'deposit-review-ask'\) \{[\s\S]*?daRow\.depositReviewNote = daNote;\s*logLedger\('edit', daRow\.id, \{ f: \{ depositReviewNote: \[daWas, daNote\] \} \}\);/.test(SCRIPT), 'Ask the kernel: kept on the row, logged, flag stays');
+  ok(/if \(drEntry\.source === 'storefront' && drEntry\.direction === 'in' && \(depOnly \|\| depositSelfCollected\(drEntry\)\)\) drEntry\.depositReview = true;/.test(SCRIPT),
+    'anyone\'s deposit of cash they collected themselves is flagged too');
+  // The review fields survive a load on a storefront deposit, and nowhere else.
+  const x = sandbox(['normalizeLedgerRow', 'stableRowId', 'depositForIds', 'DEPOSIT_FOR_MAX', 'LEDGER_METHODS', 'LEDGER_SOURCES', 'ledgerStampClean']);
+  const row = (o) => { const e = Object.assign({ id: 'd1', direction: 'in', source: 'storefront', amountCents: 100 }, o); x.normalizeLedgerRow(e, 'nl'); return JSON.parse(JSON.stringify(e)); };
+  eq([row({ depositReviewedBy: 'pat@example.com', depositReviewNote: 'x'.repeat(400) }).depositReviewedBy, row({ depositReviewNote: 'x'.repeat(400) }).depositReviewNote.length,
+    'depositReviewNote' in row({ depositReviewNote: 'Recount', source: 'donation' })], ['a signed-in leader', 300, false], 'normalized');
+});
+
+// The page's depositSelfCollected: a deposit of cash this leader collected on a shift it covers.
+test('positions deposits: a deposit of cash the depositor collected themselves is flagged for someone else', () => {
+  const c = vm.createContext({});
+  vm.runInContext(`var state = { storefronts: [{ id: 'sf1', date: '2026-10-03', blocks: [{ id: 'b1', reportCollected: true, reportApprovedBy: 'Kim Kernel' }] },
+    { id: 'sf2', date: '2026-10-10', blocks: [{ id: 'b2', salesCash: [{ reportId: 'r2', cents: 500, from: 'X', outcome: { outcome: 'collected', by: 'Lee', at: 1 } }] }] }] };
+    var me = 'u-k', myName = 'Kim Kernel', reps = [];
+    function ledgerActorUid() { return me; } function srSignName() { return myName; } function srReports() { return reps; }`, c);
+  vm.runInContext(['arrOf', 'depositForIds', 'DEPOSIT_FOR_MAX', 'depositCoveredSfs', 'srCashEntries', 'depositSelfCollected'].map(decl).join('\n'), c);
+  const self = (e) => vm.runInContext('depositSelfCollected(' + JSON.stringify(e) + ')', c);
+  eq([self({ depositFor: 'sf1' }), self({ depositFor: 'sf2' }), self({ depositFrom: '2026-10-01', depositTo: '2026-10-05' }), self({ depositFor: '' })],
+    [true, false, true, false], 'accepted saying they collected it; not on another shift; a date range; nothing named');
+  vm.runInContext("myName = 'Lee'", c);
+  eq(self({ depositFor: 'sf2' }), true, 'marked its sales cash collected');
+  vm.runInContext("myName = 'Nobody'; reps = [{ sfId: 'sf2', salesCashOutcome: 'collected', salesCashByUid: 'u-k' }]", c);
+  eq(self({ depositFor: 'sf2' }), true, 'the server\'s record of it, by account');
+});
 
 test('C2: each change to an entry is one logged edit — every field it changed, before and after, who, when, which device', () => {
   const p = c2Page();
@@ -25476,6 +25540,7 @@ test('C4 (option B): Entries shows both rows with their pills and the reason; th
     'entryAfterOpening', 'entryOnStatement', 'entrySignedCents', 'reconcileTotals', 'ledgerLocked', 'ledgerDateReconciled', 'entryWantsLine', 'entryRefundsFamily',
     'LEDGER_FILTERS', 'ledgerLockNote', 'ledgerFixButtonHtml', 'ledgerCorrectsLine', ...ASIDE_LIST_FNS]);
   vm.runInContext(decl('RECONCILE_CARRIED_HELP'), x);
+  vm.runInContext('function canEditSection() { return true; } function depositOnlyFormHtml() { return ""; }', x);
   vm.runInContext(`var ui = { ledgerOpen: {}, armed: null, ledgerFilter: {}, fixAsk: null, voidAsk: null };
     var state = { book: { openingCents: 100000, openingDate: '2026-07-01', reconciledThrough: '2026-08-31', statementDate: '2026-09-30', statementCents: 0 }, ledgerAside: [],
       ledger: [
@@ -26239,7 +26304,7 @@ test('Security re-check A and D: the ledger says when two reversals of an entry 
     '<p style="margin:0 0 10px">' + RECHECK_TWO('“&lt;img src=x onerror=alert(1)&gt;”', 'Oct 1 and Oct 5', '$40.00') + '</p></div>', 'the card');
   eq(x.ledgerLookCardHtml([X, rv('rv-X', { amountCents: 5000, reconciled: true })], BOOK).indexOf('Reverse the reversal (open its Detail') !== -1, true, 'the card passes the book on');
   // (C6 reviews: with what a merge said needs a look this session, after the book's own.)
-  ok(/\n    h \+= ledgerLookCardHtml\(state\.ledger, state\.book, sync\.lookNotes, state\.closedBooks\);[^\n]*\n    h \+= '<div class="card"><h2 class="section display">Ledger<\/h2>'/.test(slice('renderLedger')), 'renderLedger does not show it, with the book');
+  ok(/\n    h \+= ledgerLookCardHtml\(state\.ledger, state\.book, sync\.lookNotes, state\.closedBooks\);[^\n]*\n    h \+= depositReviewCardHtml\(\);[^\n]*\n    h \+= '<div class="card"><h2 class="section display">Ledger<\/h2>'/.test(slice('renderLedger')), 'renderLedger does not show it, with the book');
   ok(!/ledgerLook/.test(codeOnly(BPV())) && !/ledgerLook/.test(codeOnly(slice('renderParentApp'))), 'it reaches the parents');
 });
 
