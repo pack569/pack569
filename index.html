@@ -3743,7 +3743,8 @@
       balooNoticeDismissed: false, // K1 — one-time "den campout says BALOO is not required" card on Home
       rev: 0,
       // Phase 3, C1 — the ledger's audit model (see normalizeState). Leaders only, never published.
-      ledgerAside: [], ledgerLog: [], statements: [], closedBooks: [], closedGone: [], teImport: null
+      ledgerAside: [], ledgerLog: [], statements: [], closedBooks: [], closedGone: [], teImport: null,
+      syncLog: []                // Keith, 2026-10-02 — each kept-mine over a server change (normalizeSyncLog); leaders only, never published
     };
     s.book.year = s.budget.programYear;
     return s;
@@ -4135,6 +4136,8 @@
     // from before it keeps the key untouched (an unknown key survives this function) and shows
     // nothing from it, so PACK_FORMAT stays where it is. Leaders only; buildParentView never reads it.
     d.advNotes = normalizeAdvNotes(d.advNotes);
+    // Keith, 2026-10-02 — the sync decisions (normalizeSyncLog). Leaders only; buildParentView never reads it.
+    d.syncLog = normalizeSyncLog(d.syncLog);
     // Wave B4 — the School Night checklist. Only the four known items survive, as booleans.
     if (!d.recruitKit || typeof d.recruitKit !== 'object' || Array.isArray(d.recruitKit)) d.recruitKit = freshRecruitKit();
     d.recruitKit.year = (typeof d.recruitKit.year === 'number' && isFinite(d.recruitKit.year)) ? Math.floor(d.recruitKit.year) : 0;
@@ -5383,8 +5386,14 @@
   // way an older page would get wrong (reads it amiss, or writes back what it does not know). A
   // page that meets a record with a HIGHER fmt than its own (from another leader's device, a
   // backup, or this browser's storage written by a newer tab) never saves over it: it holds its
-  // pushes, leaves every copy as it is, and asks for a reload (packFormatHeld). 4 is this build's
-  // record: a ledger entry can say it is a storefront cash deposit (source 'storefront', treasurer review
+  // pushes, leaves every copy as it is, and asks for a reload (packFormatHeld). 5 is this build's
+  // record (Keith, 2026-10-02): state.syncLog, the log of each change a leader kept on their device over one
+  // the server had made since that device last synced. A page at 4 keeps the key but merges it as its own
+  // copy, whole: a stale page saving after another device logged a decision drops those entries, and so
+  // does its "Keep this device's copy". A log that can be lost without a word isn't a log. (A page at 4
+  // also asks "which copy?" at every first answer that differs, and its merge puts its own scouts, events
+  // and the rest back over another device's changes; this build's merges them three ways.)
+  // 4 was this record: a ledger entry can say it is a storefront cash deposit (source 'storefront', treasurer review
   // of shift reports, item 11). A page at 3 reads that source as blank, and so counts a deposit filed on a
   // budget line as income on top of the storefront figures (the double count item 11 closes), and on its
   // next save writes the blank back, which loses what the deposit was for good. The same raise covers the
@@ -5408,7 +5417,9 @@
   // Fix forward instead. If you must roll back, SETUP.md ("If a page stays out of date after a
   // reload") lowers fmt by hand, so the raising commit must say what an older page gets wrong.
   // Declared up here, above `var state = load()`, because normalizeState reads it.
-  var PACK_FORMAT = 4;
+  var PACK_FORMAT = 5;
+  // Keith, 2026-10-02 — the sync log's length (normalizeSyncLog, which normalizeState runs): the newest this many.
+  var SYNC_LOG_MAX = 500;
   // Is the pack record `p` (parsed, not normalized) from a page newer than this one? Pure.
   function formatAhead(p) {
     return !!p && typeof p === 'object' && typeof p.fmt === 'number' && isFinite(p.fmt) && Math.floor(p.fmt) > PACK_FORMAT;
@@ -5620,6 +5631,9 @@
     // charges are reconciled against attendance, rates and tier progress. Cheap: a pack is
     // tens of scouts, not thousands.
     syncCharges();
+    // Keith, 2026-10-02 — a change saved on this device that the server hasn't accepted yet, remembered past a
+    // reload (syncMarkUnsynced): the first answer then knows it is this device's own work, not an old copy.
+    syncMarkUnsynced();
     if (liveEdit) { render(); schedulePersist(); return true; }
     clearTimeout(persistTimer);
     persistTimer = null;
@@ -15422,6 +15436,7 @@
         sync.parentView = null;
         sync.feed = 'none';
         try { localStorage.removeItem(KEY); } catch (e) { /* storage blocked */ }
+        syncBaseForget();   // Keith, 2026-10-02 — and the base, with the record
         state = freshState();
         sync.joinRejected = 'removed';
         render();
@@ -15439,6 +15454,7 @@
         sync.parentView = null;
         sync.feed = 'none';
         try { localStorage.removeItem(KEY); } catch (e) { /* storage blocked */ }
+        syncBaseForget();   // Keith, 2026-10-02 — and the base, with the record
         state = freshState();
         if (sync.mode !== 'online') { sync.mode = 'online'; sync.error = ''; }
       }
@@ -15467,6 +15483,7 @@
       // them a fresh copy, and a later promotion re-adopts the cloud one. Any unsynced
       // local edit of theirs is intentionally discarded.
       try { localStorage.removeItem(KEY); } catch (e) { /* storage blocked */ }
+      syncBaseForget();   // Keith, 2026-10-02 — and the base, with the record
       state = freshState();
       subscribeParentView(mine);
     }
@@ -16998,6 +17015,7 @@
     if (!packLinked()) return;
     if (fixedSyncBlocked()) return;   // SAFETY: single-pack mode, rules unproven — never write
     sync.dirty = true;
+    syncMarkUnsynced();               // Keith, 2026-10-02 — and remembered past a reload
     if (sync.notice) return;          // holding edits on this device (holdPushes): send nothing
     if (packFormatHeld()) return;     // the reload gate: nothing is sent over a newer page's record
     clearTimeout(sync.pushTimer);
@@ -18161,6 +18179,8 @@
     // counted in what this returns: nobody needs telling that a history line came across.
     // Deletion marks don't apply: the log is append-only, and nothing is ever deleted from it.
     state.ledgerLog = mergeLedgerLog(state.ledgerLog, remote.ledgerLog);
+    // Keith, 2026-10-02 — the sync decisions too, both copies' as one (mergeSyncLog): append-only, never counted.
+    if (state.syncLog || remote.syncLog) state.syncLog = mergeSyncLog(state.syncLog, remote.syncLog);
     // A deleted scout's payments stay (that money moved), pointing at nobody, as del-scout left them
     // until C7. (Since C7 no scout an entry names is deleted here, scoutsHeld, so this finds nothing.)
     if (Array.isArray(state.ledger)) state.ledger.forEach(function (e) { if (e && parentGone('scouts', e.scoutId)) e.scoutId = ''; });
@@ -18692,9 +18712,17 @@
       // PHASE 3, C6 — a ledger entry both copies changed, differently (mergeLedgerRows): nothing is
       // sent, and the leader picks the version of each to keep (the chooser: saveRowChoices). Never
       // picked here, silently. Viewers never get this far: they don't push.
+      // Keith, 2026-10-02 — and, with a base (syncBaseGet), what both copies changed differently anywhere
+      // else in the record (syncThreeWay): asked in the same chooser, nothing sent. With none, what only one
+      // side changed is taken from that side, before the logs and the ledger are merged as always. With no
+      // base, the merge is the one from before: this device's copy, whole, but for the logs.
+      var three = null;
       if (clobbered) {
         var rowItems = ledgerRowConflicts(remote);
-        if (rowItems.length) return { record: null, result: { rows: rowItems, rowsRemote: remote } };
+        three = syncThreeWayOf(remote);
+        var fieldItems = three ? three.items : [];
+        if (rowItems.length || fieldItems.length) return { record: null, result: { rows: rowItems, fields: fieldItems, rowsRemote: remote } };
+        if (three) syncApplyThreeWay(three);
       }
       var mergedN = clobbered ? mergeRemoteAppendOnly(remote, keptRows, lostRows, splitRows, undefined, lookItems) : 0;
       // PHASE 3, C6 — the charges follow the merged book. They are this device's (the merge keeps
@@ -18702,7 +18730,14 @@
       // one, a tier make-up (or a sale) that earns a tier. So a merge that changed anything re-syncs
       // them, as every edit does (commit), and what is sent agrees with itself: merged again, and
       // re-synced again, nothing changes (the two-device tests hold it to that fixed point).
-      if (mergedN > 0) syncCharges();
+      if (mergedN > 0 || (three && three.theirsN > 0)) syncCharges();
+      // Keith, 2026-10-02 — merged three ways, this device's copy now stands on the server's (the new base). And
+      // when the merge is the server's copy exactly (nothing of this device's was left to send), nothing is
+      // written: a save would only make a new rev of the same pack.
+      if (three) {
+        syncBaseSet(remote);
+        if (stateFingerprint(state) === stateFingerprint(three.theirs)) return { record: null, result: { same: remote, was: JSON.stringify(state) } };
+      }
       // Security review of C8-1..4 (H1) — a device that may not remove a closed book (anyone but an admin, where there
       // are accounts) never writes one away: a write that is not a merge (the one copy this device was asked to
       // keep, or a rev it had seen) takes the record's closed books in first.
@@ -18714,6 +18749,8 @@
         closedGoneDrops(pushBooks, pushArc, pushGoneWas, state.closedGone).forEach(function (it) { lookItems.push(it); });   // finding 2
         state.archives = closedGoneArchives(state.archives, state.closedGone);
         state.closedBooks = mergeClosedBooks(state.closedBooks, [], undefined, undefined, state.closedGone);
+        // Keith, 2026-10-02 — and the record's sync decisions stay: the log is append-only, whoever writes.
+        state.syncLog = mergeSyncLog(state.syncLog, normalizeSyncLog(remoteParsed.syncLog));
       }
       if (!clobbered && remoteParsed && accountsInForce() && !canReopenStatement()) state.closedBooks = mergeClosedBooks(state.closedBooks, closedBooksNormalized(remoteParsed.closedBooks), undefined, closedBooksMaxYear(state, remoteParsed), state.closedGone);
       var nextRev = be.serverRevs ? remoteRev + 1 : Math.max(state.rev || 0, remoteRev) + 1;
@@ -18740,12 +18777,24 @@
         } else if (sync.dirty && !sync.conflict) scheduleSyncPush();
         return;
       }
+      if (res.same) {
+        // Keith, 2026-10-02 — the merge came out as the server's copy: nothing was sent, and this device
+        // takes that copy, unless it was edited since (then that edit goes out, on top of it).
+        // What the merge said needs a look, and did to reconciled rows, is said as an accepted save says it.
+        sync.remoteRec = { rev: res.same.rev, device: res.same.device, json: res.same.json };
+        noteLedgerLookFromMerge(lookItems);
+        if (JSON.stringify(state) === res.was) adoptRemote(res.same, { lookWas: lookWas, clobbered: true });
+        else { if (be.serverRevs && typeof res.same.rev === 'number') state.rev = res.same.rev; sync.clobber = false; scheduleSyncPush(); }
+        noteReconciledFates({ kept: keptRows, lost: lostRows, split: splitRows });
+        return;
+      }
       if (res.rows) {
         // As for a close-out below: the server's copy as read, and the chooser, one entry at a time.
+        // Keith, 2026-10-02 — the items both copies changed (res.fields) are asked in the same chooser.
         sync.remoteRec = { rev: res.rowsRemote.rev, device: res.rowsRemote.device, json: res.rowsRemote.json };
         if (!sync.conflict) {
           sync.conflict = res.rowsRemote;
-          sync.rowChoice = { remote: res.rowsRemote, items: res.rows, picks: {}, seen: {} };
+          sync.rowChoice = { remote: res.rowsRemote, items: res.rows, picks: {}, seen: {}, fields: res.fields || [], fieldPicks: {}, fieldSeen: {} };
           ui.overlay = { kind: 'sync-conflict', remote: res.rowsRemote };
           render();
         }
@@ -18777,6 +18826,10 @@
       var rr = sync.remoteRec;
       var later = rr && rr !== res.heard && typeof rr.rev === 'number' && rr.rev > res.nextRev ? rr : null;
       state.rev = res.nextRev;
+      // Keith, 2026-10-02 — what was sent is what this device's copy now stands on (the base), and with no
+      // edit since, nothing here is unsynced.
+      syncBaseSet(res.record, true);
+      if (!editedSince) syncClearUnsynced();
       // What the server now holds is exactly what this device sent, unless a later save is.
       if (!later) sync.remoteRec = { rev: res.record.rev, device: res.record.device, json: res.record.json };
       if (res.clobbered) {
@@ -18891,6 +18944,530 @@
       have[y.id] = true;
     });
   }
+  // ---------------------------------------------------------------------------
+  // ASK ABOUT A CONFLICT ONLY WHEN THERE IS ONE (Keith, 2026-10-02). A phone signed in before was
+  // asked "cloud copy or this device's copy?" every time it opened, only because its copy was
+  // older: sync.dirty lives in memory, so after a reload nothing said whether the difference was
+  // the device's own unsaved work or just saves it had not seen. Two things on the device now say:
+  //   the BASE      the last server copy this device's copy has taken in ({ doc, rev, at, json }),
+  //                 written on every adopt (adoptRemote), every push the server accepted (the record
+  //                 sent), every merge (the server copy merged in), and the first answer that
+  //                 matches. `doc` is the pack's id: a base for another pack is no base.
+  //   UNSYNCED      a change saved here that no accepted push has carried yet: set by commit and
+  //                 every push that sets out (scheduleSyncPush, the seed, the chooser's keep), cleared
+  //                 by an accepted push with no edit since, an adopt, and a first answer that matches.
+  // Both under their own keys, never in `state`, so they never sync. Two keys, not one: the marker is
+  // written on every edit, and rewriting a 164 KB base with it each time is waste. Both are also kept
+  // in memory (syncLocal), so a session still merges three-way when storage is full; a base that
+  // could not be stored is removed (a stale base is worse than none), and after a reload that device
+  // has none, and is asked as before (syncFirstPlan, rule d).
+  // The first answer (onRemoteSnap) then asks only when there is a real conflict (syncFirstPlan), and
+  // a push over a server copy that moved merges three ways (syncThreeWay) instead of putting this
+  // device's whole copy back over everything but the logs. Design: the commit that added this.
+  // ---------------------------------------------------------------------------
+  var SYNC_BASE_KEY = 'pack-popcorn-ledger-v1-base';         // KEY + '-base' (the harness holds it to that)
+  var SYNC_UNSYNCED_KEY = 'pack-popcorn-ledger-v1-unsynced'; // KEY + '-unsynced'
+  var syncLocal = { base: undefined, unsynced: undefined };   // undefined: not read from storage yet
+  // The first answer took the server's copy, and this device had nothing unsaved (syncFirstPlan 'adopt').
+  var SYNC_UPDATED = 'Updated to the pack’s latest copy.';
+  // A record's server time as an ISO string, or '' (the API sends one; Firestore's own write has a sentinel).
+  function syncWhenIso(v) {
+    var t = typeof v === 'number' ? v : typeof v === 'string' ? Date.parse(v) : v && typeof v.toMillis === 'function' ? v.toMillis() : NaN;
+    return typeof t === 'number' && isFinite(t) && t > 0 ? new Date(t).toISOString() : '';
+  }
+  // This pack's base, or null (none stored, unreadable, or another pack's).
+  function syncBaseGet() {
+    if (syncLocal.base === undefined) {
+      syncLocal.base = null;
+      try {
+        var b = JSON.parse(localStorage.getItem(SYNC_BASE_KEY) || 'null');
+        if (b && typeof b === 'object' && typeof b.doc === 'string' && typeof b.rev === 'number' && isFinite(b.rev) && typeof b.json === 'string') syncLocal.base = b;
+      } catch (e) { /* unreadable: no base */ }
+    }
+    var b2 = syncLocal.base, doc = sync && sync.docId ? String(sync.docId) : '';
+    return b2 && b2.doc === doc ? b2 : null;
+  }
+  // `rec` ({ rev, json, updatedAt }) is what this device's copy has now taken in. `own`: a record this
+  // device just saved, whose time is now (the API's own write carries none).
+  function syncBaseSet(rec, own) {
+    if (!rec || typeof rec.json !== 'string' || typeof rec.rev !== 'number') return;
+    syncLocal.base = { doc: sync && sync.docId ? String(sync.docId) : '', rev: rec.rev,
+      at: syncWhenIso(rec.updatedAt) || (own ? new Date().toISOString() : ''), json: rec.json };
+    try { localStorage.setItem(SYNC_BASE_KEY, JSON.stringify(syncLocal.base)); }
+    catch (e) { try { localStorage.removeItem(SYNC_BASE_KEY); } catch (e2) { /* storage blocked */ } }
+  }
+  // Is a change saved on this device that the server hasn't accepted? true, false, or null when
+  // storage can't be read and this session hasn't said either (then nobody can say, and the first
+  // answer asks, as before). Storage first: another tab of this browser may have saved since.
+  function syncUnsynced() {
+    try { return localStorage.getItem(SYNC_UNSYNCED_KEY) === '1' || syncLocal.unsynced === true; }
+    catch (e) { return syncLocal.unsynced === undefined ? null : syncLocal.unsynced; }
+  }
+  function syncMarkUnsynced() {
+    if (syncLocal.unsynced === true) return;
+    syncLocal.unsynced = true;
+    try { localStorage.setItem(SYNC_UNSYNCED_KEY, '1'); } catch (e) { /* kept in memory for this session */ }
+  }
+  function syncClearUnsynced() {
+    syncLocal.unsynced = false;
+    try { localStorage.removeItem(SYNC_UNSYNCED_KEY); } catch (e) { /* storage blocked */ }
+  }
+  // With the pack record itself (a removal, a demotion, waiting for approval): the device keeps nothing of it.
+  function syncBaseForget() {
+    syncLocal.base = null;
+    syncLocal.unsynced = false;
+    try { localStorage.removeItem(SYNC_BASE_KEY); localStorage.removeItem(SYNC_UNSYNCED_KEY); } catch (e) { /* storage blocked */ }
+  }
+  // The first answer, once the copies differ, the server's is readable and neither is empty, and this
+  // device may edit: what to do. Pure. `p`: { unsynced (true, false, or null: storage unreadable),
+  // base (this pack's, or null), localRev (this device's rev before the answer), remoteRev, apart
+  // (seasonMoved or seasonClosedTwice: only asked when it decides) }.
+  //   'adopt'   nothing here is unsaved: take the server's copy, quietly
+  //   'push'    unsaved changes, and nobody else has saved since: send them, as any save
+  //   'merge'   unsaved changes, and the server moved: syncPush merges three ways, and asks only
+  //             about what both changed
+  //   'choose'  the whole-copy chooser, the last resort: storage unreadable; unsaved work with no
+  //             base to tell it from an old copy (a device from before this, or storage full); the
+  //             server's rev behind this device's; or a close-out between the two
+  function syncFirstPlan(p) {
+    if (p.unsynced === null) return 'choose';
+    if (!p.unsynced) {
+      if (p.base) return p.base.rev <= p.remoteRev ? 'adopt' : 'choose';
+      return (p.localRev || 0) <= p.remoteRev ? 'adopt' : 'choose';   // rule d: a device from before the base
+    }
+    if (!p.base) return 'choose';
+    if (p.base.rev === p.remoteRev) return 'push';
+    if (p.base.rev > p.remoteRev || (typeof p.apart === 'function' ? p.apart() : p.apart)) return 'choose';
+    return 'merge';
+  }
+  // THE THREE-WAY MERGE. What the record keys hold that the rules already settle is left to them,
+  // as it was (mergeRemoteAppendOnly, syncCharges): the deletion marks; the ledger, its rows set aside,
+  // its log, statements and closed years (C1–C8: mergeLedgerRows, the chooser of entries, the locks);
+  // the charges (owner decision 23: this device's, re-synced); and the sync log (append-only, mergeSyncLog).
+  var SYNC_MERGE_SKIP = ['rev', 'fmt', 'version', 'gone', 'ledger', 'ledgerAside', 'ledgerLog', 'statements', 'closedBooks', 'closedGone', 'charges', 'syncLog'];
+  // …and in the book, what its own rules decide (the later lock, councilSettledMerged, the close-out): this
+  // device's, as before. The opening balance and its date merge three ways.
+  var SYNC_BOOK_SKIP = ['year', 'closedAt', 'closedBy', 'closedByUid', 'reconciledThrough', 'reconciledBy', 'reconciledAt', 'statementDate', 'statementCents', 'councilSettled'];
+  // The per-scout maps: how deep a path goes before it is one item (an event's RSVP from one scout,
+  // one scout's advancement), so a pick there is about that one thing.
+  var SYNC_MAP_DEPTH = { rsvps: 3, attendance: 3, collected: 3, advancement: 2, onboarding: 2, advNotes: 2 };
+  // The lists with deletion marks (state.gone), by the path of the list. A delete on one side only is
+  // left to the marks, so it cascades as it always has (dropScout, dropGone).
+  var SYNC_GONE_LOGS = { scouts: 'scouts', entries: 'entries', 'inventory.products': 'products', 'inventory.distributions': 'distributions',
+    fundraisers: 'fundraisers', 'fundraisers.sales': 'sales' };
+  // Deep equality, blind to key order and to a key that holds undefined. Pure.
+  function syncSame(a, b) {
+    if (a === b) return true;
+    if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
+    if (Array.isArray(a)) {
+      if (a.length !== b.length) return false;
+      for (var i = 0; i < a.length; i++) if (!syncSame(a[i], b[i])) return false;
+      return true;
+    }
+    var ka = Object.keys(a).filter(function (k) { return a[k] !== undefined; }), kb = Object.keys(b).filter(function (k) { return b[k] !== undefined; });
+    if (ka.length !== kb.length) return false;
+    for (var j = 0; j < ka.length; j++) if (!Object.prototype.hasOwnProperty.call(b, ka[j]) || !syncSame(a[ka[j]], b[ka[j]])) return false;
+    return true;
+  }
+  // The key a record in a list goes by: its id; else a shift sign-up's scoutId, a sales-cash entry's
+  // reportId; else '' (not a record). Pure.
+  function syncRecKey(x) {
+    if (!x || typeof x !== 'object' || Array.isArray(x)) return '';
+    if (typeof x.id === 'string' && x.id) return x.id;
+    if (typeof x.scoutId === 'string' && x.scoutId) return 's:' + x.scoutId;
+    if (typeof x.reportId === 'string' && x.reportId) return 'r:' + x.reportId;
+    return '';
+  }
+  // A list of records each with its own key, none twice: { by, order }. null otherwise. Pure.
+  function syncKeyed(list) {
+    if (!Array.isArray(list)) return null;
+    var by = Object.create(null), order = [];
+    for (var i = 0; i < list.length; i++) {
+      var k = syncRecKey(list[i]);
+      if (!k || by[k]) return null;
+      by[k] = list[i];
+      order.push(k);
+    }
+    return { by: by, order: order };
+  }
+  // A list of strings and numbers, none twice (a leader's dens, a tier's charges). Pure.
+  function syncPrimSet(list) {
+    if (!Array.isArray(list)) return false;
+    var seen = Object.create(null);
+    for (var i = 0; i < list.length; i++) {
+      var v = list[i], t = typeof v;
+      if (t !== 'string' && t !== 'number') return false;
+      if (seen[t + ':' + v]) return false;
+      seen[t + ':' + v] = true;
+    }
+    return true;
+  }
+  // `base`, `mine` and `theirs` are three pack records, normalized: the base this device last took in,
+  // this device's copy, and the server's. What only one side changed is taken; where both changed the
+  // same thing differently is a conflict. Pure; nothing in the three is changed. Returns:
+  //   merged   every key but SYNC_MERGE_SKIP's, merged (a key absent is gone from the record)
+  //   items    the conflicts, one a thing a leader would name: { key, path, fields: [{ path, base, mine,
+  //            theirs }], gone, goneId, deleted } (gone: the deletion-mark log of a record deleted on one
+  //            side, and changed on the other; deleted: 'mine' or 'theirs')
+  //   mineN, theirsN  how many changes each side alone made (for the toast; and 0 + 0 is no merge at all)
+  // `picks` (optional) { item key: 'mine' | 'theirs' }: a conflict picked takes that side; one not picked
+  // keeps this device's (and syncPush sends nothing while one is unpicked).
+  // How: equal → that; base = mine → theirs; base = theirs → mine; both changed: plain objects key by key,
+  // record lists record by record (this device's order, then the server's new ones), lists of plain values
+  // as sets (each side's adds and removes); anything else is a conflict.
+  function syncThreeWay(base, mine, theirs, picks) {
+    var items = [], byKey = Object.create(null), n = { mine: 0, theirs: 0 };
+    picks = picks || {};
+    function own(o, k) { return o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k) ? o[k] : undefined; }
+    function plain(v) { return !!v && typeof v === 'object' && !Array.isArray(v); }
+    function clone(v) { return v === undefined ? undefined : JSON.parse(JSON.stringify(v)); }
+    function keyOf(path) { return path.map(function (s) { return s.id !== undefined ? '#' + s.id : '.' + s.k; }).join(''); }
+    function listName(path) { return path.filter(function (s) { return s.k !== undefined; }).map(function (s) { return s.k; }).join('.'); }
+    function conflict(path, b, m, t) {
+      var last = -1;
+      path.forEach(function (s, i) { if (s.id !== undefined) last = i; });
+      var end = last >= 0 ? last + 1 : SYNC_MAP_DEPTH[path[0].k] ? Math.min(path.length, SYNC_MAP_DEPTH[path[0].k]) : path.length;
+      var ip = path.slice(0, end), key = keyOf(ip), it = byKey[key];
+      if (!it) { it = byKey[key] = { key: key, path: ip, fields: [] }; items.push(it); }
+      it.fields.push({ path: path.slice(end).map(function (s) { return s.k; }), base: clone(b), mine: clone(m), theirs: clone(t) });
+      var log = end === path.length && last === end - 1 ? SYNC_GONE_LOGS[listName(path)] : '';
+      if (log && (m === undefined || t === undefined)) { it.gone = log; it.goneId = path[last].id; it.deleted = m === undefined ? 'mine' : 'theirs'; }
+      // The server's delete kept: left for its mark to take, as a delete on the server only is (merge, below).
+      var tg = theirs && theirs.gone && theirs.gone[log];
+      if (log && t === undefined && picks[key] === 'theirs' && tg && tg[path[last].id] > 0) return clone(m);
+      return picks[key] === 'theirs' ? clone(t) : clone(m);
+    }
+    function merge(b, m, t, path) {
+      if (syncSame(m, t)) return clone(m);
+      // A list with deletion marks is always walked record by record, even when only the server changed it:
+      // a record it deleted is left for the marks to take (below).
+      var marked = Array.isArray(m) && Array.isArray(t) && !!SYNC_GONE_LOGS[listName(path)];
+      if (syncSame(b, m) && !marked) { n.theirs += 1; return clone(t); }
+      if (syncSame(b, t)) { n.mine += 1; return clone(m); }
+      if (plain(m) && plain(t) && (b === undefined || plain(b))) {
+        var out = {};
+        Object.keys(m).concat(Object.keys(t).filter(function (k) { return !Object.prototype.hasOwnProperty.call(m, k); })).forEach(function (k) {
+          var v = merge(own(b, k), own(m, k), own(t, k), path.concat([{ k: k }]));
+          if (v !== undefined) out[k] = v;
+        });
+        return out;
+      }
+      var km = syncKeyed(m), kt = km && syncKeyed(t), kb = b === undefined ? { by: Object.create(null), order: [] } : syncKeyed(b);
+      if (km && kt && kb) {
+        var res = [];
+        km.order.concat(kt.order.filter(function (k) { return !km.by[k]; })).forEach(function (k) {
+          var bi = kb.by[k], mi = km.by[k], ti = kt.by[k];
+          // Deleted on the server only, in a list with deletion marks: kept for the marks to take, so
+          // the delete cascades as it always has (dropScout: the scout's sign-ups, RSVPs, charges…).
+          if (marked && ti === undefined && bi !== undefined && mi !== undefined && syncSame(bi, mi)) { n.theirs += 1; res.push(clone(mi)); return; }
+          var v = merge(bi, mi, ti, path.concat([{ id: k }]));
+          if (v !== undefined) res.push(v);
+        });
+        return res;
+      }
+      if (syncPrimSet(m) && syncPrimSet(t) && (b === undefined || syncPrimSet(b))) {
+        var bs = b || [];
+        var set = m.filter(function (v) { return !(bs.indexOf(v) !== -1 && t.indexOf(v) === -1); });
+        t.forEach(function (v) { if (bs.indexOf(v) === -1 && set.indexOf(v) === -1) set.push(v); });
+        n.mine += 1; n.theirs += 1;
+        return set;
+      }
+      return conflict(path, b, m, t);
+    }
+    var merged = {}, seen = Object.create(null);
+    Object.keys(mine || {}).concat(Object.keys(theirs || {})).forEach(function (k) {
+      if (seen[k] || SYNC_MERGE_SKIP.indexOf(k) !== -1) return;
+      seen[k] = true;
+      var bk = own(base, k), mk = own(mine, k), tk = own(theirs, k);
+      // The past seasons are snapshots, and deleting one is the tombstones' (closedGone: closedGoneArchives,
+      // and closedGoneDrops, which says so): this device's list, and any the server added since the base.
+      if (k === 'archives' && Array.isArray(mk)) {
+        var had = Object.create(null), arcs = clone(mk);
+        (Array.isArray(bk) ? bk : []).concat(mk).forEach(function (x) { if (syncRecKey(x)) had[syncRecKey(x)] = true; });
+        (Array.isArray(tk) ? tk : []).forEach(function (x) { if (syncRecKey(x) && !had[syncRecKey(x)]) { had[syncRecKey(x)] = true; arcs.push(clone(x)); n.theirs += 1; } });
+        merged[k] = arcs;
+        return;
+      }
+      if (k === 'book' && plain(mk)) {
+        bk = clone(bk); tk = clone(tk);
+        SYNC_BOOK_SKIP.forEach(function (f) {
+          [bk, tk].forEach(function (o) { if (plain(o)) { if (mk[f] === undefined) delete o[f]; else o[f] = clone(mk[f]); } });
+        });
+      }
+      var v = merge(bk, mk, tk, [{ k: k }]);
+      if (v !== undefined) merged[k] = v;
+    });
+    return { merged: merged, items: items, mineN: n.mine, theirsN: n.theirs };
+  }
+  // What a pick was made against: both versions of each field in conflict. A pick holds only while
+  // they are the same (as ledgerConflictSig). Pure.
+  function syncItemSig(it) {
+    return JSON.stringify(it.fields.map(function (f) { return [f.path, f.mine === undefined ? null : f.mine, f.theirs === undefined ? null : f.theirs]; }));
+  }
+  // A pack record as a backend sent it (`d`), parsed and normalized; null if it can't be read.
+  function syncRecNorm(d) {
+    var p = null;
+    try { p = JSON.parse(d && typeof d.json === 'string' ? d.json : ''); } catch (e) { return null; }
+    return normalizeState(p);
+  }
+  // The three-way merge of this device's copy with the server's (`d`), from this pack's base: null with
+  // no base, or a copy that can't be read (then the merge is the one from before, with no base). The
+  // result carries `theirs` (the server's, normalized), `remote` (`d`) and `base` (the base record).
+  function syncThreeWayOf(d, picks) {
+    var b = syncBaseGet();
+    if (!b || !d) return null;
+    var baseNorm = syncRecNorm(b), theirs = syncRecNorm(d);
+    if (!baseNorm || !theirs) return null;
+    // This device's copy through the same normalizer as the other two, so a shape the page fills in on
+    // load (a field a new record was made without) never reads as a change of this device's.
+    var mine = normalizeState(JSON.parse(JSON.stringify(state))) || state;
+    var three = syncThreeWay(baseNorm, mine, theirs, picks);
+    three.theirs = theirs;
+    three.remote = d;
+    three.base = b;
+    return three;
+  }
+  // Puts a three-way merge (syncThreeWayOf) into this device's copy: every key it merged, as merged. And a
+  // record deleted on one side that the pick keeps the other side's version of: its deletion mark becomes a
+  // put-back (as takeBack and keepReconciled make one), so the merge of the marks that follows keeps it.
+  function syncApplyThreeWay(three, picks) {
+    var m = three.merged;
+    Object.keys(state).concat(Object.keys(m)).forEach(function (k) {
+      if (SYNC_MERGE_SKIP.indexOf(k) !== -1) return;
+      if (Object.prototype.hasOwnProperty.call(m, k)) state[k] = m[k]; else delete state[k];
+    });
+    var now = Date.now();
+    three.items.forEach(function (it) {
+      if (!it.gone || !picks || picks[it.key] !== (it.deleted === 'mine' ? 'theirs' : 'mine')) return;
+      if (!state.gone || typeof state.gone !== 'object') state.gone = freshGone();
+      if (!state.gone[it.gone]) state.gone[it.gone] = {};
+      var here = state.gone[it.gone][it.goneId], there = three.theirs && three.theirs.gone && three.theirs.gone[it.gone] ? three.theirs.gone[it.gone][it.goneId] : undefined;
+      var mark = Math.max(typeof here === 'number' ? Math.abs(here) : 0, typeof there === 'number' ? Math.abs(there) : 0);
+      state.gone[it.gone][it.goneId] = -Math.max(now, Math.min(mark, now) + 1);
+    });
+  }
+  // THE SYNC LOG (state.syncLog). One entry for each field where a leader kept this device's version over
+  // one the server had changed since this device last synced (saveRowChoices): { id, at, byName, byUid,
+  // key, item, field, serverValue, keptValue, serverChangedAt, serverChangedAfter }. byName as the ledger
+  // stamps it (ledgerActorName: never an email); the values as the chooser showed them, in plain words;
+  // serverChangedAt the time of the server save that held the replaced value (when it was set, if that was
+  // the only save since this device's base), serverChangedAfter the base's time when there were more
+  // ('' when exact). `key` (the item's path, ids and all) is never shown; it names the thing for the next
+  // chooser ("Changed by …"). Keeping the server's version changes nothing there, so it is not logged.
+  // Append-only: unioned by id in every merge and push (mergeSyncLog), the newest SYNC_LOG_MAX kept.
+  // LEADERS ONLY: shown on Pack · Sharing ("Sync decisions"); buildParentView, an allowlist, never reads it.
+  // (SYNC_LOG_MAX is declared above `var state = load()`, with PACK_FORMAT: normalizeState reads it.)
+  function normalizeSyncLog(list) {
+    function str(v, max) { return typeof v === 'string' ? v.slice(0, max) : ''; }
+    var seen = Object.create(null), out = [];
+    (Array.isArray(list) ? list : []).forEach(function (e) {
+      if (!e || typeof e !== 'object' || Array.isArray(e) || typeof e.id !== 'string' || !e.id || seen[e.id]) return;
+      seen[e.id] = true;
+      out.push({ id: str(e.id, 40), at: str(e.at, 40), byName: ledgerStampClean(str(e.byName, 80)), byUid: str(e.byUid, 128), key: str(e.key, 400),
+        item: str(e.item, 200), field: str(e.field, 120), serverValue: str(e.serverValue, 200), keptValue: str(e.keptValue, 200),
+        serverChangedAt: str(e.serverChangedAt, 40), serverChangedAfter: str(e.serverChangedAfter, 40) });
+    });
+    out.sort(function (a, b) { return a.at < b.at ? -1 : a.at > b.at ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0; });
+    return out.length > SYNC_LOG_MAX ? out.slice(out.length - SYNC_LOG_MAX) : out;
+  }
+  function mergeSyncLog(a, b) { return normalizeSyncLog((Array.isArray(a) ? a : []).concat(Array.isArray(b) ? b : [])); }
+  // ---- The chooser's words for a conflict item (syncThreeWay's), and the log's. Leaders only. ----
+  var SYNC_AREA_LABELS = {
+    scouts: 'Scout', leaders: 'Leader', events: 'Calendar', meetings: 'Meeting', storefronts: 'Storefront', entries: 'Popcorn sale',
+    fundraisers: 'Fundraiser', archives: 'Past season', rsvps: 'RSVP', attendance: 'Attendance', collected: 'Fee collected',
+    advancement: 'Advancement', onboarding: 'New-member checklist', advNotes: 'Den notes on a lesson plan', budget: 'Budget', book: 'Bank book',
+    inventory: 'Popcorn inventory', rewardTiers: 'Reward tiers', derby: 'Pinewood derby', camping: 'Camping', welcome: 'New to the pack',
+    popcornCouncil: 'Council popcorn dates', recruitKit: 'School Night kit', packLoc: 'Weather location', teImport: 'Trail’s End import'
+  };
+  // A record list inside another thing, by its key: what one of its records is called.
+  var SYNC_LIST_LABELS = {
+    activities: 'Budget line', expenses: 'Budget expense', tiers: 'Reward tier', products: 'Popcorn product', distributions: 'Popcorn hand-out',
+    trips: 'Campout', sections: 'section', blocks: 'shift', assignments: 'sign-up', salesCash: 'cash from sales', sales: 'sale',
+    cars: 'Derby car', awards: 'Derby award'
+  };
+  var SYNC_FIELD_LABELS = {
+    name: 'name', den: 'den', denLabel: 'den label', note: 'note', notes: 'notes', archived: 'archived', renewalMonth: 'renewal month',
+    familyId: 'family', parentUids: 'parent accounts', photoOk: 'photo permission', addedYear: 'year added', date: 'date', start: 'start time',
+    end: 'end time', title: 'title', location: 'location', phone: 'phone', email: 'email', role: 'role', jobs: 'jobs', dens: 'dens', uid: 'signed-in account',
+    sytCompleted: 'Youth Protection training completed', sytExpiry: 'Youth Protection training expires', kind: 'kind', packName: 'pack name',
+    programYear: 'program year', startingBalance: 'starting balance', s: 'reply', adults: 'adults', siblings: 'siblings', scout: 'scout came',
+    weight: 'share', covers: 'charges it covers', reward: 'reward', detail: 'details', body: 'text', url: 'link', hidden: 'hidden',
+    published: 'published', lanes: 'lanes', times: 'race times', racerName: 'racer', award: 'award', commissionPct: 'commission %',
+    goalCents: 'pack goal', goalIsDerived: 'goal worked out from the plan', eventId: 'calendar event', lineId: 'budget line', scoutId: 'scout',
+    productId: 'product', perCase: 'per case', cases: 'cases', loose: 'loose', slot: 'month', perScout: 'per scout', openingDate: 'opening date',
+    estCents: 'estimate', actualCents: 'actual', amountCents: 'amount', unitPriceCents: 'price each', thresholdCents: 'sales to reach it',
+    scoutRateCents: 'per scout', adultRateCents: 'per adult', siblingRateCents: 'per sibling', leaderRateCents: 'per leader', flatCents: 'flat amount',
+    openingCents: 'opening balance', duesDueDate: 'dues due date', req: 'requirements', elect: 'electives'
+  };
+  // A key in words: the table, else its camelCase split ("salesCents" → "sales"). Pure.
+  function syncFieldWords(k) {
+    k = String(k == null ? '' : k);
+    if (Object.prototype.hasOwnProperty.call(SYNC_FIELD_LABELS, k)) return SYNC_FIELD_LABELS[k];
+    var w = k.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').toLowerCase().replace(/ (cents|id)$/, '').trim();
+    return w || 'detail';
+  }
+  function syncCap(s) { s = String(s || ''); return s.charAt(0).toUpperCase() + s.slice(1); }
+  function syncClip(s, max) { s = String(s); return s.length > max ? s.slice(0, max - 1) + '…' : s; }
+  // What `path` (syncThreeWay's: { k } a key, { id } a record by its key) leads to in the first of `copies`
+  // (this device's, the server's, the base) that has it; undefined in none. Pure.
+  function syncAt(copies, path) {
+    var got;
+    copies.forEach(function (c) {
+      if (got !== undefined || !c) return;
+      var at = c;
+      path.forEach(function (s) {
+        if (at === undefined || at === null || typeof at !== 'object') { at = undefined; return; }
+        if (s.id !== undefined) { var kd = syncKeyed(at); at = kd ? kd.by[s.id] : undefined; }
+        else at = Object.prototype.hasOwnProperty.call(at, s.k) ? at[s.k] : undefined;
+      });
+      got = at;
+    });
+    return got;
+  }
+  function syncScoutName(copies, id) {
+    var sc = syncAt(copies, [{ k: 'scouts' }, { id: id }]);
+    return sc && sc.name ? String(sc.name) : 'a scout no longer on the roster';
+  }
+  // What a record is called, by the list it is in (`list`: its key). Pure given `copies`.
+  function syncRecName(list, x, copies) {
+    if (!x || typeof x !== 'object') return '';
+    if (list === 'events' || list === 'meetings') return eventLabel(x) + (x.date ? ' · ' + fmtDateShort(x.date) : '');
+    if (list === 'storefronts') return (x.name || 'Storefront') + (x.date ? ' · ' + fmtDateShort(x.date) : '');
+    if (list === 'blocks') return fmtTimeRange(x.start, x.end) || 'a shift';
+    if (list === 'assignments' || list === 'entries' || list === 'distributions') {
+      var who = typeof x.scoutId === 'string' && x.scoutId ? syncScoutName(copies, x.scoutId) : '';
+      return [who, x.date ? fmtDateShort(x.date) : ''].filter(Boolean).join(' · ') || (list === 'distributions' ? 'a hand-out' : 'a sale');
+    }
+    if (list === 'salesCash') return x.from ? 'from ' + x.from : 'cash from a shift report';
+    if (list === 'archives') return typeof x.year === 'number' ? String(x.year) + '–' + String(x.year + 1).slice(2) : 'a past season';
+    var n = x.name || x.title || x.description || x.racerName || x.award || '';
+    return n ? String(n) : 'an unnamed one';
+  }
+  // The item's name, in words: "Scout · Ada", "Storefront · Kroger · Oct 5 · shift 10:00 AM–12:00 PM",
+  // "RSVP · Pack meeting · Oct 7 · Ada", "Budget · Program year". Never an id. Pure given `copies`.
+  function syncItemTitle(it, copies) {
+    var p = it.path, top = p[0].k, parts = [];
+    if (SYNC_MAP_DEPTH[top]) {
+      parts.push(SYNC_AREA_LABELS[top]);
+      var k1 = p[1] && p[1].k;
+      if (k1 !== undefined && (top === 'rsvps' || top === 'attendance' || top === 'collected')) {
+        if (top === 'collected') {
+          var line = syncAt(copies, [{ k: 'budget' }, { k: 'activities' }, { id: k1 }]) || syncAt(copies, [{ k: 'budget' }, { k: 'expenses' }, { id: k1 }]);
+          parts.push(line && line.name ? line.name : 'a budget line');
+        } else if (k1.indexOf('sf:') === 0) {
+          parts.push(syncRecName('storefronts', syncAt(copies, [{ k: 'storefronts' }, { id: k1.slice(3) }]), copies) || 'a storefront');
+        } else parts.push(syncRecName('events', syncAt(copies, [{ k: 'events' }, { id: k1 }]), copies) || 'an event no longer on the calendar');
+        if (p[2]) parts.push(syncScoutName(copies, p[2].k));
+      } else if (k1 !== undefined && top !== 'advNotes') parts.push(syncScoutName(copies, k1));
+      return parts.join(' · ');
+    }
+    if (p.length === 1 || !p.some(function (s) { return s.id !== undefined; })) {
+      // A setting: its area, then the setting itself.
+      var area = SYNC_AREA_LABELS[top];
+      if (!area) return 'Pack settings · ' + syncCap(syncFieldWords(top));
+      return [area].concat(p.slice(1).map(function (s) { return syncCap(syncFieldWords(s.k)); })).join(' · ');
+    }
+    var lists = [];
+    p.forEach(function (s, i) {
+      if (s.id === undefined) { lists.push(s.k); return; }
+      var listKey = lists[lists.length - 1], rec = syncAt(copies, p.slice(0, i + 1));
+      var label = parts.length ? (SYNC_LIST_LABELS[listKey] || syncFieldWords(listKey))
+        : ((lists.length === 1 ? SYNC_AREA_LABELS[listKey] : SYNC_LIST_LABELS[listKey]) || syncCap(syncFieldWords(listKey)));
+      parts.push(label + (parts.length ? ' ' : ' · ') + syncRecName(listKey, rec, copies));
+    });
+    return parts.join(' · ');
+  }
+  // One value, in words: money as money, dates and times as dates and times, yes/no, a scout by name,
+  // lists of ids counted rather than shown. `k` is the field's own key. Pure given `copies`.
+  function syncValueText(k, v, copies) {
+    if (v === undefined || v === null) return 'Not set';
+    if (typeof v === 'boolean') return v ? 'Yes' : 'No';
+    if (typeof v === 'number') return /Cents$/.test(String(k)) || k === 'startingBalance' ? fmt(v) : String(v);
+    if (typeof v === 'string') {
+      if (!v) return 'Blank';
+      if (k === 'scoutId') return syncScoutName(copies, v);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return fmtDate(v) + ', ' + v.slice(0, 4);
+      if (/^\d{4}-\d{2}$/.test(v)) return monthLabel(v);
+      if (/^\d{2}:\d{2}$/.test(v)) return fmtClock(v) || v;
+      if (k === 's') return syncCap(v);
+      return syncClip(v.replace(/\s+/g, ' ').trim(), 140);
+    }
+    if (Array.isArray(v)) {
+      if (!v.length) return 'None';
+      var prims = v.every(function (x) { return typeof x === 'string' || typeof x === 'number'; });
+      // Lists that hold ids (a tier's charges, a scout's parent accounts) are counted, never shown.
+      if (prims && k !== 'covers' && k !== 'parentUids') return syncClip(v.join(', '), 140);
+      return v.length + (v.length === 1 ? ' item' : ' items');
+    }
+    var parts = [];
+    Object.keys(v).forEach(function (f) {
+      var x = v[f];
+      if (x === undefined || (x && typeof x === 'object')) return;
+      if (f === 'id' || /Uid$/.test(f) || (/Id$/.test(f) && f !== 'scoutId')) return;
+      parts.push(syncFieldWords(f) + ' ' + syncValueText(f, x, copies));
+    });
+    return parts.length ? syncCap(syncClip(parts.join(', '), 160)) : 'Set';
+  }
+  // The item as the chooser shows it: { title, lines: [{ label, mine, theirs }] }. A record deleted on one
+  // side reads "Deleted" there, and on the other side what it changed. Pure given `copies` ([mine, theirs, base]).
+  function syncItemView(it, copies) {
+    var lines = it.fields.map(function (f) {
+      var k = f.path.length ? f.path[f.path.length - 1] : (it.path[it.path.length - 1].k || '');   // a setting's own key
+      var label = f.path.length ? syncCap(f.path.map(syncFieldWords).join(' · ')) : '';
+      function side(v, other) {
+        if (f.path.length || (v !== undefined && other !== undefined)) return syncValueText(k, v, copies);
+        if (v === undefined) return 'Deleted';
+        var changed = f.base && typeof f.base === 'object' ? Object.keys(v).filter(function (x) { return x !== 'id' && !syncSame(v[x], f.base[x]); }) : [];
+        return changed.length ? 'Changed: ' + syncClip(changed.map(syncFieldWords).join(', '), 140) : 'Kept as it was';
+      }
+      return { label: label, mine: side(f.mine, f.theirs), theirs: side(f.theirs, f.mine), key: k };
+    });
+    return { title: syncItemTitle(it, copies), lines: lines };
+  }
+  // A time as the chooser says it: "Oct 2 at 9:14 AM" ('' for none).
+  function syncWhenText(iso) {
+    var w = ledgerLogWhen(iso);
+    return w ? fmtDateShort(w.slice(0, 10)) + ' at ' + (fmtClock(w.slice(11)) || w.slice(11)) : '';
+  }
+  // Who changed the server's side of an item, and when, as far as anything says: the newest entry in the
+  // server copy's sync log for the same thing whose kept value is the one there now; else when the server
+  // saved it (exactly, when the server copy is the only save since this device's base; else between the
+  // base and that save). Pure given its arguments.
+  function syncServerWho(it, view, theirsLog, ctx) {
+    var hit = null;
+    (Array.isArray(theirsLog) ? theirsLog : []).forEach(function (e) {
+      if (!e || typeof e.key !== 'string' || e.key.indexOf(it.key) !== 0) return;
+      if (!view.lines.some(function (l) { return l.theirs === e.keptValue; })) return;
+      if (!hit || String(e.at) > String(hit.at)) hit = e;
+    });
+    if (hit) return 'Changed by ' + (ledgerStampClean(hit.byName) || 'a leader') + (syncWhenText(hit.at) ? ', ' + syncWhenText(hit.at) : '') + '.';
+    var at = ctx && ctx.at ? syncWhenText(ctx.at) : '', since = ctx && ctx.since ? syncWhenText(ctx.since) : '';
+    if (at && ctx.exact) return 'Changed on the server on ' + at + '.';
+    if (at && since) return 'Changed on the server between ' + since + ' and ' + at + '.';
+    if (at) return 'Changed on the server on or before ' + at + '.';
+    return 'Changed on the server since this device last synced.';
+  }
+  // When the server copy `remote` was saved, against this device's base `b`: { at, since, exact }.
+  function syncServerWhen(remote, b) {
+    var at = syncWhenIso(remote && remote.updatedAt);
+    var exact = !!(b && remote && typeof remote.rev === 'number' && remote.rev === b.rev + 1);
+    return { at: at, since: exact ? '' : (b && b.at) || '', exact: exact };
+  }
+  // The log entries for the items kept as this device has them (`picks` 'mine'): one a field. Each says what
+  // was replaced on the server, and when that was set (syncServerWhen). `copies` [mine, theirs, base].
+  function syncDecisionEntries(items, picks, copies, when, by) {
+    var out = [], at = new Date().toISOString();
+    items.forEach(function (it) {
+      if (!picks || picks[it.key] !== 'mine') return;
+      var v = syncItemView(it, copies);
+      v.lines.forEach(function (l, i) {
+        out.push({ id: 'sl-' + uid() + '-' + out.length, at: at, byName: by.name, byUid: by.uid, key: it.key + (it.fields[i].path.length ? '.' + it.fields[i].path.join('.') : ''),
+          item: v.title, field: l.label, serverValue: l.theirs, keptValue: l.mine,
+          serverChangedAt: (when && when.at) || '', serverChangedAfter: (when && when.since) || '' });
+      });
+    });
+    return out;
+  }
   function adoptRemote(d, opts) {
     // The reload gate (PACK_FORMAT) — a newer page's record is not taken (this page would read it
     // amiss, and save it back so), and nothing is taken over one on this device.
@@ -18930,10 +19507,14 @@
     clearTimeout(sync.pushTimer);
     sync.pushTimer = null;
     if (sync.conflict) { sync.conflict = null; scheduleParentViewRefresh(); }
+    // Keith, 2026-10-02 — and this is the server copy this device's copy now stands on (the base), with
+    // nothing of its own left unsent.
+    syncBaseSet(d);
+    syncClearUnsynced();
     if (droppedBooks.length) logLedger('unclose', 'book', { why: closedBooksDroppedWhy(droppedBooks) });
     save();
     render();
-    if (opts && opts.toast) showToast('Updated from another device');
+    if (opts && opts.toast) showToast(opts.toastText || 'Updated from another device');
     noteLedgerLookFromMerge(adoptLook);   // what taking this copy set aside (M-A), on the card before the sync's toast counts it
     noteLedgerLookAfterSync(lookWas, !!(opts && opts.clobbered));   // treasurer sign-off on option B (extra): after that toast, before the fates'
     fates.split = splitRows;
@@ -18982,7 +19563,7 @@
       // owner's one-time copy-in finds it (import refuses a pack that has a record), and seeding
       // nothing would only take that away; the first real edit creates the record instead.
       if (wasFirst && canEdit() && !(serverRevs && isStateEmpty(state))) {
-        sync.dirty = true; clearTimeout(sync.pushTimer); sync.pushTimer = setTimeout(syncPush, 800);
+        sync.dirty = true; syncMarkUnsynced(); clearTimeout(sync.pushTimer); sync.pushTimer = setTimeout(syncPush, 800);
       }
       return;
     }
@@ -19004,6 +19585,7 @@
       if (!remoteNorm) return; // unreadable cloud copy — leave local data alone
       // BACKEND 'api': from the first answer on, state.rev is the server's rev — whichever copy
       // wins below — so syncPush can tell this device's base from a save it has not seen.
+      var revHere = state.rev || 0;   // this device's rev before the answer (syncFirstPlan, rule d)
       if (serverRevs) state.rev = remoteRev;
       if (isStateEmpty(state)) { adoptRemote(d, {}); return; } // nothing here yet — adopt silently
       if (stateFingerprint(remoteNorm) === stateFingerprint(state)) {
@@ -19018,11 +19600,13 @@
         clearTimeout(sync.pushTimer);
         sync.pushTimer = null;
         if (remoteRev > (state.rev || 0)) state.rev = remoteRev;
+        syncBaseSet(d);        // Keith, 2026-10-02 — in step with the server: this is the base
+        syncClearUnsynced();
         save();
         return;
       }
       if (isStateEmpty(remoteNorm) && canEdit()) { // M-3: read-only viewers never seed
-        sync.dirty = true; clearTimeout(sync.pushTimer); sync.pushTimer = setTimeout(syncPush, 800);
+        sync.dirty = true; syncMarkUnsynced(); clearTimeout(sync.pushTimer); sync.pushTimer = setTimeout(syncPush, 800);
         return;
       }
       // Both sides differ (or the cloud copy is empty). A read-only viewer can't "keep local",
@@ -19036,6 +19620,24 @@
       // written while the choice waits ("keep mine" refuses a viewer), and the server's
       // "viewer" takes the shared copy then (applyRoleSubscription, with a toast).
       if (!canEdit() && (sync.membersFromServer || !sync.membersHeard)) { adoptRemote(d, {}); return; }
+      // Keith, 2026-10-02 — an editor or admin is asked only when there is a real conflict (syncFirstPlan).
+      // Nothing unsaved here: the server's copy is just newer, and is taken quietly. Unsaved changes and
+      // nobody else has saved: they go out, as any save. Unsaved changes and the server moved: syncPush
+      // merges three ways from the base, and asks only about what both changed (the chooser of items).
+      // The whole-copy chooser below is the last resort: storage unreadable, unsaved work with no base to
+      // tell it from an old copy, a server behind this device, or a close-out between the two.
+      var unsyncedHere = sync.dirty ? true : syncUnsynced();
+      var plan = syncFirstPlan({ unsynced: unsyncedHere, base: unsyncedHere === null ? null : syncBaseGet(), localRev: revHere, remoteRev: remoteRev,
+        apart: function () { return seasonMoved(d) || seasonClosedTwice(d); } });
+      if (plan === 'adopt') { adoptRemote(d, { toast: true, toastText: SYNC_UPDATED }); return; }
+      if (plan === 'push' || plan === 'merge') {
+        sync.dirty = true;
+        syncMarkUnsynced();
+        if (plan === 'merge') sync.clobber = true;
+        clearTimeout(sync.pushTimer);
+        sync.pushTimer = setTimeout(syncPush, 800);
+        return;
+      }
       // Editors/admins pick which copy wins (two-tap each way).
       ui.overlay = { kind: 'sync-conflict', remote: d };
       sync.conflict = d;
@@ -19181,7 +19783,17 @@
       changed = true;
       delete rc.picks[id]; delete rc.seen[id];
     });
-    if (!rc.items.length) {
+    // Keith, 2026-10-02 — and the items both copies changed (syncThreeWay), asked of `d` the same way.
+    var three = syncThreeWayOf(d), fnow = {};
+    rc.fields = three ? three.items : [];
+    if (!rc.fieldPicks) { rc.fieldPicks = {}; rc.fieldSeen = {}; }
+    rc.fields.forEach(function (it) { fnow[it.key] = syncItemSig(it); });
+    Object.keys(rc.fieldPicks).forEach(function (k) {
+      if (rc.fieldSeen[k] === fnow[k]) return;
+      changed = true;
+      delete rc.fieldPicks[k]; delete rc.fieldSeen[k];
+    });
+    if (!rc.items.length && !rc.fields.length) {
       sync.conflict = null;
       sync.rowChoice = null;
       if (ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay = null;
@@ -19201,6 +19813,22 @@
   // entry's, in the same words.
   var ROW_PICK_LOCKED = 'Not saved: an entry was reconciled since you picked, so only its reconciled version can be kept. Pick again, then save.';
   var ROW_PICK_LOCKED_PAIR = 'Not saved: an entry was reversed since you picked, so only its reversed version can be kept. Pick again, then save.';
+  // Keith, 2026-10-02 — the toast after saving the items' picks (no ledger entries among them).
+  var SYNC_PICKS_LOGGED = 'Saved. Your versions are on the pack’s server now. Pack · Sharing lists what they replaced, under Sync decisions.';
+  var SYNC_PICKS_SERVER = 'Saved. This device has the server’s versions now.';
+  var SYNC_PICK_NEEDED = 'Pick a version of each one, then save.';
+  // Keith, 2026-10-02 — keep one side of an item both copies changed (`key`), or of every item and entry
+  // waiting (`key` '*', "Keep all mine" / "Keep all the server's"). An entry's locked side is never picked
+  // (pickRowVersion skips it, as its own button does).
+  function pickSyncItem(rc, key, side) {
+    if (side !== 'mine' && side !== 'theirs') return;
+    (rc.fields || []).forEach(function (it) {
+      if (key !== '*' && it.key !== key) return;
+      rc.fieldPicks[it.key] = side;
+      rc.fieldSeen[it.key] = syncItemSig(it);
+    });
+    if (key === '*') rc.items.forEach(function (it) { pickRowVersion(rc, it.ids[0], side); });
+  }
   // "Save my choices" (armed, two taps): asked again first, of the same record (this device's copy
   // may have changed while the chooser was closed); then the merge with the picks, and the push.
   function saveRowChoices() {
@@ -19222,10 +19850,23 @@
       it.rows.forEach(function (r) { delete rc.picks[r.id]; delete rc.seen[r.id]; });
     });
     if (barred) { render(); showToast(barred.kind === 'pair' ? ROW_PICK_LOCKED_PAIR : ROW_PICK_LOCKED); return; }
-    var missing = rc.items.some(function (it) { return it.rows.some(function (r) { return !rc.picks[r.id]; }); });
-    if (missing) { showToast(changed ? ROW_PICKS_CHANGED : ROW_PICK_NEEDED); return; }
+    var missing = rc.items.some(function (it) { return it.rows.some(function (r) { return !rc.picks[r.id]; }); }) ||
+      rc.fields.some(function (it) { return !rc.fieldPicks[it.key]; });
+    if (missing) { showToast(changed ? ROW_PICKS_CHANGED : rc.fields.length ? SYNC_PICK_NEEDED : ROW_PICK_NEEDED); return; }
     var picks = {}, kept = [], lost = [], split = [], look = [], lookWas = ledgerLookCount();
     rc.items.forEach(function (it) { it.rows.forEach(function (r) { picks[r.id] = rc.picks[r.id]; }); });
+    // Keith, 2026-10-02 — the three-way merge first, with the leader's picks (what only one side changed is
+    // taken from it), and each field kept as this device had it over the server's change is logged
+    // (syncDecisionEntries): who, when, what was replaced, and when that was set. Keeping the server's
+    // version changes nothing there, and is not logged.
+    var three = syncThreeWayOf(rc.remote, rc.fieldPicks), keptMine = false;
+    if (three) {
+      syncApplyThreeWay(three, rc.fieldPicks);
+      var logged = syncDecisionEntries(three.items, rc.fieldPicks, [state, three.theirs, null], syncServerWhen(rc.remote, three.base),
+        { name: ledgerActor(), uid: ledgerActorUid() });
+      keptMine = logged.length > 0;
+      if (logged.length) state.syncLog = mergeSyncLog(state.syncLog, logged);
+    }
     mergeRemoteAppendOnly(rc.remote, kept, lost, split, picks, look);
     sync.conflict = null;
     sync.rowChoice = null;
@@ -19235,8 +19876,17 @@
     // read at the push, and merged or asked about.
     sync.clobber = false;
     if (sync.backend && sync.backend.serverRevs && typeof rc.remote.rev === 'number') state.rev = rc.remote.rev;
-    if (!commit()) return;   // commit re-syncs the charges, saves and pushes
-    showToast(ROW_PICKS_SAVED);
+    // Keith, 2026-10-02 — this device's copy now stands on that one (the base). Every pick the server's, and
+    // nothing else of this device's left to send: the merge is the server's copy, so it is taken, and
+    // nothing is written.
+    var saidWhat = rc.items.length ? ROW_PICKS_SAVED : keptMine ? SYNC_PICKS_LOGGED : SYNC_PICKS_SERVER, took = false;
+    if (three) {
+      syncBaseSet(rc.remote);
+      syncCharges();
+      took = stateFingerprint(state) === stateFingerprint(three.theirs) && adoptRemote(rc.remote, { lookWas: lookWas });
+    }
+    if (!took && !commit()) return;   // commit re-syncs the charges, saves and pushes
+    showToast(saidWhat);
     noteLedgerLookFromMerge(look);   // Phase 3, C6 reviews
     noteLedgerLookAfterSync(lookWas, false);
     noteReconciledFates({ kept: kept, lost: lost, split: split });
@@ -28566,7 +29216,7 @@
   // until it is added. The Backup (JSON) downloads stay, and jsonBackup refuses them itself when
   // this device's own copy is the newer record. Parents' and the join gates' acts are all
   // read-only too (PARENT_ACTS, GATE_ACTS), except toast-action: its Undo and "New code" are edits.
-  var HELD_ACTS = ['reload-page', 'close-overlay', 'back', 'tab', 'section', 'goto', 'goto-pack', 'sync-choose',
+  var HELD_ACTS = ['reload-page', 'close-overlay', 'back', 'tab', 'section', 'goto', 'goto-pack', 'sync-choose', 'sync-log-all',
     'open-storefront', 'sign-out-google',
     'toggle-season-setup', 'toggle-home-rest', 'den-filter', 'toggle-archived', 'toggle-leaders-archived', 'toggle-completed',
     'toggle-scout', 'cal-prev', 'cal-next', 'cal-day', 'cal-jump-day', 'nextup-day', 'agenda-toggle', 'agenda-past-toggle',
@@ -29870,6 +30520,27 @@
   // Y2 — the rule a leader reads before posting a photo of the pack anywhere.
   var PHOTO_RULE = 'Before posting photos: only scouts with permission on file; first names only in captions, never last names or locations.';
   /* ----- Pack · Sharing — who can get in, and how the pack is published ----- */
+  // Keith, 2026-10-02 — the sync log (normalizeSyncLog), newest first: ten, or all of them. Nothing when it is
+  // empty. The pack record's, so leaders only (a parent's page never holds it; buildParentView never reads it).
+  var SYNC_LOG_INTRO = 'Each time a leader kept a change made on their device over one the pack’s server had made since that device last synced. ' +
+    'Keeping the server’s version changes nothing, so it isn’t listed.';
+  function syncDecisionLine(e) {
+    var set = e.serverChangedAt ? (e.serverChangedAfter ? 'set on the server between ' + syncWhenText(e.serverChangedAfter) + ' and ' + syncWhenText(e.serverChangedAt)
+      : 'set on the server on ' + syncWhenText(e.serverChangedAt)) : '';
+    return (e.field ? e.item + ' · ' + e.field : e.item) + ': kept “' + e.keptValue + '”, replacing “' + e.serverValue + '”' + (set ? ' (' + set + ')' : '') + '.';
+  }
+  function renderSyncDecisions() {
+    var log = arrOf(state.syncLog);
+    if (!log.length) return '';
+    var newest = log.slice().reverse(), shown = ui.syncLogAll ? newest : newest.slice(0, 10);
+    return '<div class="card"><h2 class="section display">Sync decisions</h2><p class="small muted" style="margin:0 0 8px">' + esc(SYNC_LOG_INTRO) + '</p>' +
+      '<ul class="small" style="margin:0;padding-left:18px">' + shown.map(function (e) {
+        var when = syncWhenText(e.at);
+        return '<li style="margin-bottom:6px">' + esc(syncDecisionLine(e)) + ' <span class="muted">' + esc('By ' + (ledgerStampClean(e.byName) || 'a leader') + (when ? ', ' + when : '') + '.') + '</span></li>';
+      }).join('') + '</ul>' +
+      (newest.length > 10 ? '<div class="row" style="margin-top:6px"><button type="button" class="btn small" data-act="sync-log-all">' +
+        (ui.syncLogAll ? 'Show the latest 10' : 'Show all ' + newest.length) + '</button></div>' : '') + '</div>';
+  }
   function renderPackSharing() {
     // Wave 21 — the pack's NAME, moved out of Budget's Season setup. It was never a money
     // setting: it's the pack's identity, it's what a parent sees on a shared link, and it
@@ -29927,6 +30598,8 @@
         ? 'Everyone an admin approves as editor or viewer can see the whole shared pack record.'
         : 'Anyone who knows the passphrase can view and edit the shared pack record.') + '</p></div>';
 
+    // Keith, 2026-10-02 — each change a leader kept on their device over the server's (state.syncLog).
+    h += renderSyncDecisions();
     // Members card (accounts layer — only renders when signed in with Google).
     h += renderMembersCard();
     // Join link phase — self-serve parent sign-up link (admins only).
@@ -32695,6 +33368,45 @@
     var when = ledgerLogWhen(ev.at);
     return 'Changed by ' + (ev.by || 'someone') + (when ? ' on ' + fmtDateShort(when.slice(0, 10)) + ' at ' + when.slice(11) : '') + '.';
   }
+  // Keith, 2026-10-02 — the chooser of items both copies changed (syncThreeWay: anything but ledger entries),
+  // beside the entries' (C6). Phone-first: the two versions stack at 390 px. Leaders only.
+  var SYNC_CHOOSER_TITLE = 'Changed here and on the server';
+  var SYNC_CHOOSER_KEPT = 'Every other change, from this device and from the server, is kept. If you keep your version over the server’s, ' +
+    'Pack · Sharing notes it under Sync decisions.';
+  var SYNC_CHOOSER_ENTRIES = 'Ledger entries';
+  var SYNC_KEEP_ALL_MINE = 'Keep all mine';
+  var SYNC_KEEP_ALL_THEIRS = 'Keep all the server’s';
+  var SYNC_MINE_HEAD = 'Your change on this device';
+  var SYNC_THEIRS_HEAD = 'On the pack’s server';
+  var SYNC_MINE_SUB = 'Not on the server yet.';
+  function syncChooserIntro(n) {
+    return n === 1
+      ? 'One thing was changed on this device while it was offline, and on the pack’s server too. Pick the version to keep. Nothing from this device is shared until you do.'
+      : n + ' things were changed on this device while it was offline, and on the pack’s server too. Pick the version to keep for each. Nothing from this device is shared until you do.';
+  }
+  // The items, one block each: both versions side by side, each with its "Keep" button. `other` is the
+  // server's copy as read (unparsed record's JSON, parsed), for names only this copy has yet.
+  function renderSyncItems(rc, other) {
+    var b = syncBaseGet(), copies = [state, other, null], when = syncServerWhen(rc.remote, b), h = '';
+    try { copies[2] = b ? JSON.parse(b.json) : null; } catch (e) { /* named from the other two */ }
+    rc.fields.forEach(function (it) {
+      var v = syncItemView(it, copies), pick = rc.fieldPicks[it.key];
+      h += '<div style="border-top:1px solid var(--line);margin-top:12px;padding-top:10px"><p style="margin:0"><strong>' + esc(v.title) + '</strong></p>' +
+        '<div class="row" style="align-items:flex-start;gap:12px;margin-top:6px">' + ['mine', 'theirs'].map(function (side) {
+          var picked = pick === side;
+          var sub = side === 'mine' ? SYNC_MINE_SUB : syncServerWho(it, v, other && other.syncLog, when);
+          return '<div style="flex:1 1 220px;min-width:0">' +
+            '<p class="eyebrow" style="margin:0">' + esc(side === 'mine' ? SYNC_MINE_HEAD : SYNC_THEIRS_HEAD) + '</p>' +
+            '<p class="small muted" style="margin:2px 0 4px">' + esc(sub) + '</p>' +
+            '<ul class="small" style="margin:0 0 8px;padding-left:18px">' + v.lines.map(function (l) {
+              return '<li>' + (l.label ? esc(l.label) + ': ' : '') + '<strong>' + esc(l[side]) + '</strong></li>';
+            }).join('') + '</ul>' +
+            '<button type="button" class="btn small' + (picked ? ' primary' : '') + '" aria-pressed="' + (picked ? 'true' : 'false') + '" data-act="sync-item-pick:' +
+            side + ':' + esc(it.key) + '">' + (picked ? (side === 'mine' ? '✓ Keeping mine' : '✓ Keeping the server’s') : (side === 'mine' ? 'Keep mine' : 'Keep the server’s')) + '</button></div>';
+        }).join('') + '</div></div>';
+    });
+    return h;
+  }
   function renderRowChooser(o, rc) {
     var names = ledgerLogNames(), n = 0, all = true;
     // A statement or a reversal only the other copy has yet is named from it (treasurer review of C6, 5).
@@ -32706,9 +33418,22 @@
       return (hereEntry && hereEntry(id)) || ledgerRowName(arrOf(other && other.ledger).concat(arrOf(other && other.ledgerAside)), id);
     };
     rc.items.forEach(function (it) { n += it.ids.length; if (it.rows.some(function (r) { return !rc.picks[r.id]; })) all = false; });
-    var h = '<div class="overlay" role="dialog" aria-modal="true" aria-label="' + esc(ROW_CHOOSER_TITLE) + '"><div class="overlay-inner"><div class="card">' +
-      '<h2 class="section display">' + esc(ROW_CHOOSER_TITLE) + '</h2>' +
-      '<p>' + esc(rowChooserIntro(n)) + '</p><p class="small muted">' + esc(ROW_CHOOSER_KEPT) + '</p>';
+    // Keith, 2026-10-02 — the items both copies changed (syncThreeWay) come first, then the entries.
+    var fields = rc.fields || [];
+    if (fields.some(function (it) { return !rc.fieldPicks[it.key]; })) all = false;
+    var title = fields.length ? SYNC_CHOOSER_TITLE : ROW_CHOOSER_TITLE;
+    var h = '<div class="overlay" role="dialog" aria-modal="true" aria-label="' + esc(title) + '"><div class="overlay-inner"><div class="card">' +
+      '<h2 class="section display">' + esc(title) + '</h2>' +
+      (fields.length ? '<p>' + esc(syncChooserIntro(fields.length + rc.items.length)) + '</p><p class="small muted">' + esc(SYNC_CHOOSER_KEPT) + '</p>'
+        : '<p>' + esc(rowChooserIntro(n)) + '</p><p class="small muted">' + esc(ROW_CHOOSER_KEPT) + '</p>');
+    if (fields.length + rc.items.length > 1) {
+      h += '<div class="row" style="margin:0 0 4px"><button type="button" class="btn small" data-act="sync-pick-all:mine">' + esc(SYNC_KEEP_ALL_MINE) + '</button>' +
+        '<button type="button" class="btn small" data-act="sync-pick-all:theirs">' + esc(SYNC_KEEP_ALL_THEIRS) + '</button></div>';
+    }
+    if (fields.length) h += renderSyncItems(rc, other);
+    if (fields.length && rc.items.length) {
+      h += '<h3 style="margin:16px 0 0">' + esc(SYNC_CHOOSER_ENTRIES) + '</h3><p class="small muted" style="margin:2px 0 0">' + esc(ROW_CHOOSER_KEPT) + '</p>';
+    }
     rc.items.forEach(function (it) {
       var many = it.rows.length > 1;
       h += '<div style="border-top:1px solid var(--line);margin-top:12px;padding-top:10px">' +
@@ -32746,7 +33471,7 @@
       (o.downloaded ? '<p class="small muted" style="margin-top:0">Downloaded as ' + esc(JSON_BACKUP_NAME) + '. Keep it until the treasurer has what was in it.</p>' : '') +
       '<div class="row">' + (all
         ? '<button type="button" class="btn ' + (armed ? 'danger armed' : 'primary') + '" data-act="sync-rows-save">' + (armed ? 'Tap again to save' : 'Save my choices') + '</button>'
-        : '<p class="small muted" style="margin:0">' + esc(ROW_PICK_NEEDED) + '</p>') +
+        : '<p class="small muted" style="margin:0">' + esc(fields.length ? SYNC_PICK_NEEDED : ROW_PICK_NEEDED) + '</p>') +
       '</div></div></div></div>';
   }
   function renderOverlay() {
@@ -39222,6 +39947,15 @@
       pickRowVersion(rpc, act.slice(('sync-row-pick:' + rpSide + ':').length), rpSide);
       render(); return;
     }
+    // Keith, 2026-10-02 — an item both copies changed: keep one side; or every item and entry at once.
+    if (act.indexOf('sync-item-pick:') === 0 || act.indexOf('sync-pick-all:') === 0) {
+      var ipc = rowChoice();
+      if (!ipc) return;
+      var ipSide = act.split(':')[1];
+      pickSyncItem(ipc, act.indexOf('sync-pick-all:') === 0 ? '*' : act.slice(('sync-item-pick:' + ipSide + ':').length), ipSide);
+      render(); return;
+    }
+    if (act === 'sync-log-all') { ui.syncLogAll = !ui.syncLogAll; render(); return; }
     if (act === 'sync-rows-save') { arm(act, saveRowChoices); return; }
     if (act === 'sync-use-cloud') {
       arm(act, function () {
