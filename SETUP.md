@@ -199,6 +199,9 @@ until an admin gives it some. Firestore keeps the four roles above.
   is a small `[old, new]` pair. Two audit rows record what a leader could otherwise do
   quietly: `ledger.deposit.review` (a flagged deposit marked checked) and `ledger.log.drop`
   (lines of the ledger's history pushed out by its size cap).
+- **Advancing the dens and closing out the year are an admin's** (Keith, 2026-10-02). The server
+  refuses anyone else's change to `densAdvancedYear` or `densAdvancedSummary`, as it does to the
+  archives and closed books.
 - **Hidden isn't private yet.** A part a position doesn't see is left out of their menus, but
   the whole pack record still reaches every leader's browser. Stage 2 splits the record on the
   server so a leader receives only what they may read.

@@ -16256,7 +16256,7 @@ test('positions: every key of the pack record, and every kind of deletion mark, 
   ok(goneLogs.length >= 8, 'too few gone logs');
   goneLogs.concat(Object.keys(after.gone || {})).forEach((g) => ok(Object.prototype.hasOwnProperty.call(t.goneOwner, g), 'gone.' + g + ' has no owner'));
   // 4. The admin-only and shared buckets, as the plan has them.
-  eq(Object.keys(t.keyOwner).filter((k) => t.keyOwner[k] === 'admin').sort(), ['archives', 'closedBooks', 'closedGone'], 'the admin-only keys');
+  eq(Object.keys(t.keyOwner).filter((k) => t.keyOwner[k] === 'admin').sort(), ['archives', 'closedBooks', 'closedGone', 'densAdvancedSummary', 'densAdvancedYear'], 'the admin-only keys (Advance dens: Keith, 2026-10-02)');
   eq(Object.keys(t.keyOwner).filter((k) => t.keyOwner[k] === 'shared').sort(),
     ['balooNoticeDismissed', 'fmt', 'movedNoticeDismissed', 'rev', 'startHereDismissed', 'syncLog', 'version'], 'the shared keys');
   eq([t.keyOwner.statements, t.keyOwner.ledger, t.keyOwner.events, t.keyOwner.attendance, t.goneOwner.ledger, t.goneOwner.scouts],
@@ -16705,7 +16705,8 @@ atest('positions guard: every position × section — a save changing one key la
   // A key of the record for each section that owns one alone (home and the den meeting sub-section own none).
   const keyOf = {};
   Object.keys(t.keyOwner).forEach((k) => { const o = t.keyOwner[k]; if (typeof o === 'string' && A.SECTIONS.indexOf(o) >= 0 && !keyOf[o]) keyOf[o] = k; });
-  eq(A.SECTIONS.filter((s) => !keyOf[s]), ['home', 'calendar.denmeeting'], 'sections with no key of their own');
+  // 'season' owns none since Advance dens became an admin's (Keith, 2026-10-02): its keys are 'admin'.
+  eq(A.SECTIONS.filter((s) => !keyOf[s]), ['home', 'calendar.denmeeting', 'season'], 'sections with no key of their own');
   let n = 0;
   for (const p of POSITION_IDS.filter((x) => x !== 'parent')) {
     for (const s of Object.keys(keyOf)) {
@@ -17658,6 +17659,41 @@ atest('positions client: a den leader\'s page keeps and sends only what their po
   eq([server().events[1].note, d.get('state.events[1].note'), d.get('sync.sectionRefused'), d.get('sync.sectionRetried')], ['', '', null, false], 'taken back; the retry landed');
   eq(d.get('toasts[toasts.length - 1]'), 'Some of your change wasn’t saved, because your positions don’t let you change the calendar. This device now shows the pack’s version.', 'said');
   eq(d.log.filter((l) => /^PUT \/P$/.test(l)).length, 2, 'refused once, then sent once: ' + d.log.join(', '));
+});
+
+// Keith (2026-10-02): Advance dens is an admin's, on the server too. The record of it (densAdvancedYear,
+// densAdvancedSummary) is 'admin' in the table; no leader below an admin writes it, in any combination of
+// positions, and a leader's page sends the server's copy of it (a default normalizeState fills in included).
+atest('positions guard: only an admin records Advance dens; a Cubmaster\'s ordinary save, and their page, leave it alone', async () => {
+  const t = ACCESS_JSON();
+  eq([t.keyOwner.densAdvancedYear, t.keyOwner.densAdvancedSummary], ['admin', 'admin'], 'the table');
+  const adv = { densAdvancedYear: 2025, densAdvancedSummary: { year: 2025, perDen: [] } };
+  const base = Object.assign(GUARD_BASE(), adv);
+  const w = await guardWorld(base);
+  seedLeader(w, 'newbie', ['chair', 'membership', 'cubmaster']);
+  const put = (who, more) => w.put(who, Object.assign(JSON.parse(JSON.stringify(base)), more));
+  SECTION_403(await put('lead_cubmaster', { densAdvancedYear: 2026 }), ['admin'], 'the Cubmaster recording it');
+  SECTION_403(await put('lead_chair', { densAdvancedYear: 2026 }), ['admin'], 'the Committee Chair recording it');
+  SECTION_403(await put('lead_asstcub', { densAdvancedSummary: { year: 2026, perDen: [] } }), ['admin'], 'the Assistant Cubmaster\'s summary');
+  SECTION_403(await put('newbie', { densAdvancedYear: 2026, scouts: [{ id: 's1', name: 'Ada', den: 'Bear' }] }), ['admin'],
+    'a leader with the season and the roster both: the whole advance');
+  eq((await put('newbie', { scouts: [{ id: 's1', name: 'Ada', den: 'Bear' }] })).status, 200, 'the same leader moving a scout on the roster');
+  eq((await put('owner', { densAdvancedYear: 2026, densAdvancedSummary: { year: 2026, perDen: [] } })).status, 200, 'an admin');
+  const ev = GUARD_BASE().events; ev[1].note = 'Bring a friend';
+  eq((await put('lead_cubmaster', { events: ev })).status, 200, 'the Cubmaster\'s ordinary save, the record of Advance dens as it was');
+  // The page: a record with no densAdvancedYear is normalized to 0 on every device; a Cubmaster's push sends the server's (none).
+  const w2 = await (await apiWorld()).seed();
+  seedLeader(w2, 'lead_cubmaster', ['cubmaster']);
+  const pack = PACK_STATE();
+  delete pack.densAdvancedYear; delete pack.densAdvancedSummary;
+  w2.state(3, pack);
+  const c = await (await apiClient(w2, 'lead_cubmaster', { state: pack })).start(1200);
+  // (apiClient's normalizeState is a stand-in: the real one's defaults, set as it would.)
+  c.run("state.densAdvancedYear = 0; state.densAdvancedSummary = null; state.events.push({ id: 'e-new', kind: 'pack', date: '2026-11-17', title: 'Pack meeting', note: '' }); commit();");
+  await settle([c], 1200);
+  const sj = serverState(w2).json;
+  eq([sj.events.some((e) => e.id === 'e-new'), 'densAdvancedYear' in sj, c.get('sync.mode'), c.get('sync.sectionRetried')], [true, false, 'online', false],
+    'saved, with the server\'s record of Advance dens (none), and nothing refused');
 });
 
 atest('positions client: the treasurer\'s page never sends a statement it made on load, nor rewrites one; the 403 body with sections is read as a refusal', async () => {

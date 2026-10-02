@@ -21,8 +21,9 @@
 //   403 {error:'forbidden', code:'permission-denied', reason:'section', sections:[…]}
 // A key changed is one whose value differs (objects compared whatever their key order, arrays in
 // order), was added, or was removed; a key missing on one side and empty on the other ([], {},
-// null) is not a change. The admin-only keys (archives, closedBooks, closedGone) are an admin's
-// alone, and so is a key access.js does not know. A retired editor or viewer changes nothing. A
+// null) is not a change. The admin-only keys (archives, closedBooks, closedGone, and the record of
+// Advance dens, densAdvancedYear and densAdvancedSummary: Keith, 2026-10-02) are an admin's alone,
+// and so is a key access.js does not know. A retired editor or viewer changes nothing. A
 // Den Leader's den meeting changes (its adventure and notes) are checked event by event
 // (access.js denMeetingChangeOk). Some parts say who did something, and are checked entry by
 // entry against the caller's own uid, whoever may edit their section: the two logs are

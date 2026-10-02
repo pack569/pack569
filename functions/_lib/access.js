@@ -141,8 +141,8 @@ export const ACCESS_TABLE = /*ACCESS-BEGIN*/{
       "fundraisers": "fundraisers",
       "packName": "sharing",
       "leaders": "people",
-      "densAdvancedYear": "season",
-      "densAdvancedSummary": "season",
+      "densAdvancedYear": "admin",
+      "densAdvancedSummary": "admin",
       "archives": "admin",
       "closedBooks": "admin",
       "closedGone": "admin"
