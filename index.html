@@ -906,6 +906,7 @@
   .sr-return textarea { width: 100%; }
   .sr-banner-row { padding: 6px 0; gap: 8px; }
   .sr-banner-row + .sr-banner-row { border-top: 1px solid var(--line-soft); }
+  .sr-hist { font-size: 0.8rem; }
   .sr-badge { background: var(--accent); color: #fff; font-size: 0.7rem; vertical-align: middle; }
   /* A phone cannot hold a 17-character time range and two full names on one line, and the
      wrapped two-column form reads as a mistake — a phantom column with nothing beside it. So
@@ -20369,7 +20370,8 @@
     var knownLocs = knownLocationNames();
     // Wave 19(15b) — always visible at the top of the list (empty state included).
     var h = '<div class="row no-print" style="margin:0 0 12px">' +
-      '<button type="button" class="btn" data-act="sf-glance-open">Schedule at a glance</button></div>';
+      '<button type="button" class="btn" data-act="sf-glance-open">Schedule at a glance</button>' +
+      (leaderReportsOn() ? '<button type="button" class="btn" data-act="sr-history-open">Shift reports this season</button>' : '') + '</div>';
     h += renderShiftReportsBanner();   // S-3: families' shift totals waiting for a leader
     if (canEdit()) {
     h += '<div class="card"><h2 class="section display">New storefront</h2>' +
@@ -22214,6 +22216,88 @@
     if (act === 'sr-override-open') { ui.srOverride = rid; ui.srConfirm = null; ui.srReturn = null; render(); }
   }
 
+  // Treasurer review, round 1 (C7) — scouts whose shift money is still WAITING: on a block with a
+  // family's report no leader has dealt with, or an accept still saving, at a storefront dated on
+  // or before `dueBy` (any date, with none). Billing them for missing a tier deadline now could
+  // bill a family whose totals, once accepted, reach it. { scoutId: true }, and how many reports.
+  function srHeldBefore(dueBy) {
+    var held = {}, n = 0;
+    var waiting = {};
+    srWaiting().forEach(function (r) { waiting[r.sfId + '|' + r.blockId] = true; });
+    state.storefronts.forEach(function (sf) {
+      if (!sf || (dueBy && !(String(sf.date || '') <= dueBy))) return;
+      (sf.blocks || []).forEach(function (b) {
+        if (!waiting[sf.id + '|' + b.id] && !b.reportPending) return;
+        n += 1;
+        (b.assignments || []).forEach(function (a) { held[a.scoutId] = true; });
+      });
+    });
+    return { scouts: held, count: n };
+  }
+  var SR_HELD_SCOUT = 'Shift totals still waiting for a leader. This scout may still reach this tier.';
+
+  /* ----- Shift reports this season (treasurer review, round 1, C10) -----
+     The season's record of every family's shift report: what was sent, who verified the cash, who
+     accepted it and why where it was overridden, what was sent back, and whether the block now
+     says something else. Leaders only: a record of figures and adults' names, never children's.
+     Built from the reports leaders read (400 days, and everything still waiting) and this
+     record's storefronts; printable, and a CSV. Offered from Storefronts and at close-out. */
+  function shiftReportHistoryRows(year) {
+    var from = programYearStartISO(year), to = programYearEndISO(year);
+    var rows = [];
+    srReports().forEach(function (r) {
+      var blk = srBlockOf(r);
+      var d = new Date(r.submittedAt || 0);
+      var date = blk && blk.sf.date ? blk.sf.date : d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+      if (!(date >= from && date <= to)) return;
+      var verified = r.confirmed ? 'confirmed by ' + (r.confirmedByName || 'a parent')
+        : r.collected ? 'collected by ' + (r.acceptedByName || 'the accepting leader') : '';
+      var differs = '';
+      if (r.status === 'accepted') differs = !blk || (blk.b.salesCents || 0) !== r.teCents || (blk.b.donationsCents || 0) !== r.cashCents ? 'Y' : 'N';
+      rows.push({ date: date, storefront: blk ? String(blk.sf.name || 'Storefront') : '(no longer on the schedule)',
+        shift: blk ? (fmtTimeRange(blk.b.start, blk.b.end) || String(blk.b.label || '')) : '', te: r.teCents || 0, cash: r.cashCents || 0,
+        sentBy: String(r.submittedByName || ''), verifiedBy: verified, acceptedBy: String(r.acceptedByName || ''),
+        overrideReason: r.overridden ? String(r.acceptNote || '') : '', status: String(r.status || ''),
+        sentBackReason: r.status === 'returned' ? String(r.reviewNote || '') : '', differs: differs });
+    });
+    return rows.sort(function (a, b) { return a.date.localeCompare(b.date) || a.shift.localeCompare(b.shift); });
+  }
+  var SR_HISTORY_HEAD = ['Date', 'Storefront', 'Shift', 'Trail’s End', 'Cash donations', 'Sent by', 'Verified by', 'Accepted by',
+    'Override reason', 'Status', 'Sent-back reason', 'Block now differs from report'];
+  function shiftReportHistoryCsv(rows) {
+    var lines = [SR_HISTORY_HEAD.map(ledgerCsvCell).join(',')];
+    rows.forEach(function (x) {
+      lines.push([x.date, x.storefront, x.shift, (x.te / 100).toFixed(2), (x.cash / 100).toFixed(2), x.sentBy, x.verifiedBy, x.acceptedBy,
+        x.overrideReason, x.status, x.sentBackReason, x.differs].map(ledgerCsvCell).join(','));
+    });
+    return lines.join('\n') + '\n';
+  }
+  function srYearLabel(year) { return year + '–' + String(year + 1).slice(2); }
+  function renderShiftReportHistory() {
+    var year = state.budget.programYear;
+    var rows = shiftReportHistoryRows(year);
+    var h = '<div class="overlay" role="dialog" aria-modal="true" aria-label="Shift reports this season"><div class="overlay-inner">' +
+      '<div class="row no-print" style="margin-bottom:12px">' +
+      '<button type="button" class="btn" data-act="close-overlay">&larr; Back</button>' +
+      '<button type="button" class="btn" data-act="te-print">Print / Save PDF</button>' +
+      '<button type="button" class="btn primary" data-act="sr-history-csv">Download CSV</button></div>' +
+      '<div class="summary-sheet"><h1 style="margin:0">' + esc(state.packName || 'Pack') + ' — shift reports, ' + esc(srYearLabel(year)) + '</h1>' +
+      '<p class="muted small" style="margin:0 0 10px">Leaders only. Every family’s storefront shift report this program year, and what became of it.</p>';
+    if (!rows.length) h += '<p class="small muted">No shift reports this program year.</p>';
+    else {
+      h += '<div class="tbl-wrap"><table class="sr-hist"><thead><tr>' + SR_HISTORY_HEAD.map(function (c) { return '<th scope="col">' + esc(c) + '</th>'; }).join('') +
+        '</tr></thead><tbody>';
+      rows.forEach(function (x) {
+        h += '<tr><td>' + esc(fmtDate(x.date)) + '</td><td>' + esc(x.storefront) + '</td><td>' + esc(x.shift) + '</td>' +
+          '<td class="num">' + esc(fmt(x.te)) + '</td><td class="num">' + esc(fmt(x.cash)) + '</td><td>' + esc(x.sentBy) + '</td>' +
+          '<td>' + esc(x.verifiedBy) + '</td><td>' + esc(x.acceptedBy) + '</td><td>' + esc(x.overrideReason) + '</td><td>' + esc(x.status) + '</td>' +
+          '<td>' + esc(x.sentBackReason) + '</td><td>' + esc(x.differs) + '</td></tr>';
+      });
+      h += '</tbody></table></div>';
+    }
+    return h + '</div></div></div>';
+  }
+
   /* ----- Scouts tab ----- */
   function renderScouts() {
     var totals = computeScoutTotals();
@@ -23029,6 +23113,7 @@
     var totals = computeScoutTotals(t.dueBy);
     var earned = map || tierEarnedMap();
     var cov = packCoverage(earned);   // once, for the sibling rule on a per-family fee
+    var held = srHeldBefore(t.dueBy).scouts;   // round 1 (C7): shift totals still waiting
     return activeScouts().filter(function (s) { return !(earned[t.id] || {})[s.id]; })
       .map(function (s) {
         // Per scout: what this tier would have saved THIS family (den limits, per-family fees).
@@ -23038,7 +23123,7 @@
         var short = Math.max(0, (t.thresholdCents || 0) - base);
         return {
           scout: s, base: base, short: short, cover: cover,
-          shortSales: salesForCommission(short), makeup: Math.min(short, cover)
+          shortSales: salesForCommission(short), makeup: Math.min(short, cover), held: !!held[s.id]
         };
       })
       .sort(function (a, b) { return a.short - b.short || a.scout.name.localeCompare(b.scout.name); });
@@ -26193,7 +26278,7 @@
     'ledger-fix-cancel', 'ledger-void-cancel', 'charge-forgive-cancel', 'plan-adv-cancel',
     'open-summary', 'copy-summary', 'print-summary', 'open-digest', 'copy-digest', 'copy-digest-leaders', 'open-shop', 'copy-shop',
     'print-shop', 'pk-agenda-print', 'print-pk-agenda', 'sf-day-sheet', 'copy-day-sheet', 'sf-glance-open', 'copy-glance',
-    'family-statement', 'copy-statement', 'family-sheet', 'parent-preview-on', 'kit-print-flyer', 'kit-print-qr', 'te-print',
+    'family-statement', 'copy-statement', 'family-sheet', 'parent-preview-on', 'sr-history-open', 'sr-history-csv', 'kit-print-flyer', 'kit-print-qr', 'te-print',
     'copy-archive', 'copy-kickoff', 'makeup-msg', 'copy-makeup-msg', 'join-copy', 'pack-id-copy',
     'export-csv', 'export-ics', 'ledger-log-csv', 'ledger-voided-csv', 'copy-export', 'download-export',
     'export-json', 'sync-download-local'];
@@ -28651,6 +28736,12 @@
         if (tierIsClosed(t) && tierCoverCentsPerScout(t) > 0) {
           var missed = tierShortfallRows(t, tierEarned);
           h += '<p class="eyebrow" style="margin:10px 0 4px">Missed the ' + esc(fmtDate(t.dueBy)) + ' deadline</p>';
+          // Round 1 (C7): families' shift totals dated before the deadline that no leader has dealt with.
+          var srHeld = srHeldBefore(t.dueBy).count;
+          if (srHeld) {
+            h += '<p class="warn small" style="margin:0 0 6px">' + srHeld + ' waiting report' + (srHeld === 1 ? ' is' : 's are') + ' dated before the ' +
+              esc(t.name || 'tier') + ' deadline. Accept or send ' + (srHeld === 1 ? 'it' : 'them') + ' back before you bill anyone.</p>';
+          }
           if (!missed.length) {
             h += '<p class="small" style="margin:0">Everybody reached it. Nothing to bill.</p>';
           } else {
@@ -28661,7 +28752,8 @@
                 (m.shortSales == null ? '' : ' (' + fmt(m.shortSales) + ' more of sales)') +
                 '</span></span>' +
                 '<span class="small">owes <strong class="money">' + fmt(m.cover) + '</strong></span>' +
-                (m.makeup > 0
+                (m.held ? '<span class="small warn">' + esc(SR_HELD_SCOUT) + '</span>' : '') +
+                (m.makeup > 0 && !m.held
                   ? makeupBtn({
                       tierId: t.id, scoutId: m.scout.id, rest: '',
                       label: 'Paid ' + fmt(m.makeup) + ' to make the tier',
@@ -30692,6 +30784,7 @@
     if (o.kind === 'te-archive') return renderArchiveSheet(o);
     // Wave 7 — year-end close-out preview + confirm.
     if (o.kind === 'closeout') return renderCloseoutOverlay();
+    if (o.kind === 'sr-history') return renderShiftReportHistory();
     // Phase 3, C8-8 (owner decision 28) — deleting a season's close-out: an admin's, with a reason.
     if (o.kind === 'del-season') return renderDelSeasonOverlay(o);
     // Wave 19(15) — printable storefront day sheet.
@@ -34426,6 +34519,9 @@
       '<li>Saves this summary to <strong>Past seasons</strong>' +
       (hasPrevSeason ? ' — <strong>replacing the earlier ' + year + ' close-out</strong>.' : ' (closing ' + year + ' again later would replace it).') + '</li>' +
       '<li>Downloads a full JSON snapshot — your complete backup of the year. Keep it somewhere safe.</li>' +
+      // Round 1 (C10): the families' shift reports live on the server, not in the snapshot.
+      (leaderReportsOn() ? '<li><strong>Shift reports:</strong> the families’ shift reports are kept on the pack’s server, not in the snapshot. ' +
+        'Print or download this season’s record first. <button type="button" class="btn small" data-act="sr-history-open">Shift reports this season</button></li>' : '') +
       '<li>Starts <strong>' + (year + 1) + '</strong>: activities are re-seeded into the same months with dates cleared and last year’s actual costs as the new estimates; ' + coCarryLine + '; ' +
       // Wave 19(3) — dynamic: skip the den-advance step when the Pack tab already ran it this year.
       (state.densAdvancedYear === year
@@ -36040,6 +36136,7 @@
       if (!mkT || !mkS) return;
       var mkRow = tierShortfallRows(mkT).filter(function (r) { return r.scout.id === mkS.id; })[0];
       if (!mkRow || mkRow.makeup <= 0) return;
+      if (mkRow.held && mkT.dueBy) { showToast(SR_HELD_SCOUT); return; }   // round 1 (C7)
       // ⚠ TWO TAPS (owner report, 2026-09-04: "if i select a scout tier ranking … it automatically
       // adds a ledger item"). This is the only control on the standings board that WRITES, and it
       // sits in a row a leader reads with their thumb: one stray tap put a payment in the book and
@@ -36481,6 +36578,19 @@
       return;
     }
     if (act === 'te-print') { window.print(); return; }
+    // Round 1 (C10) — the season's shift reports, leaders only; read-only, so allowed while held.
+    if (act === 'sr-history-open') {
+      if (!leaderReportsOn()) return;
+      ui.overlay = { kind: 'sr-history' };
+      render();
+      loadShiftReports();
+      return;
+    }
+    if (act === 'sr-history-csv') {
+      if (!leaderReportsOn()) return;
+      download('shift-reports-' + srYearLabel(state.budget.programYear) + '.csv', 'text/csv', shiftReportHistoryCsv(shiftReportHistoryRows(state.budget.programYear)));
+      return;
+    }
     // THE PARENTS-MEETING HANDOUT IS THE FAMILY PAGE (owner ruling, 2026-08-31). This used to open
     // a separately authored tier sheet; a second rendering of the same ladder is a second thing to
     // keep in step, and the standings sheet in this very file had already drifted four ways by the

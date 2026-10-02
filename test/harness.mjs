@@ -18576,6 +18576,58 @@ test('round 1: a family page reads the reports again each minute while a shift i
   eq([vm.runInContext('loads', h), vm.runInContext('timers.length', h)], [0, 2], 'a hidden page waits for the next minute');
   ok(/srScheduleRefresh\(\);\s*render\(\);/.test(slice('loadShiftReports')), 'each read schedules the next');
 });
+
+test('round 1: a scout on a shift whose totals still wait is not billed for missing a tier deadline', () => {
+  const ctx = srLeaderCtx({ reports: [srRep()] }).ctx;
+  vm.runInContext(['srHeldBefore', 'SR_HELD_SCOUT'].map(decl).join('\n'), ctx);
+  const held = (due) => JSON.parse(JSON.stringify(vm.runInContext(`srHeldBefore(${JSON.stringify(due)})`, ctx)));
+  eq(held('2026-10-05'), { scouts: { s1: true, s2: true }, count: 1 }, 'a waiting report before the deadline holds the block’s scouts');
+  eq(held('2026-10-01'), { scouts: {}, count: 0 }, 'a storefront after the deadline holds nobody');
+  eq(held(''), { scouts: { s1: true, s2: true }, count: 1 }, 'a tier with no deadline');
+  vm.runInContext("sync.shiftReports.reports[0].status = 'accepted'; state.storefronts[0].blocks[1].reportPending = { by: 'x', te: 1, cash: 0, was: {} };", ctx);
+  eq(held('2026-10-05'), { scouts: { s3: true }, count: 1 }, 'an accept still saving holds its scouts; an accepted report holds nobody');
+  ok(/var held = srHeldBefore\(t\.dueBy\)\.scouts;/.test(slice('tierShortfallRows')) && /held: !!held\[s\.id\]/.test(slice('tierShortfallRows')), 'the shortfall rows are not flagged');
+  const card = SCRIPT.slice(SCRIPT.indexOf("Missed the ' + esc(fmtDate(t.dueBy)) + ' deadline"), SCRIPT.indexOf("Missed the ' + esc(fmtDate(t.dueBy)) + ' deadline") + 2400);
+  ok(/' waiting report' \+ \(srHeld === 1 \? ' is' : 's are'\) \+ ' dated before the ' \+\s*esc\(t\.name \|\| 'tier'\) \+ ' deadline\. Accept or send ' \+ \(srHeld === 1 \? 'it' : 'them'\) \+ ' back before you bill anyone\./.test(card),
+    'the banner line');
+  ok(/m\.held \? '<span class="small warn">' \+ esc\(SR_HELD_SCOUT\)/.test(card) && /\(m\.makeup > 0 && !m\.held/.test(card), 'a held scout is still offered the make-up');
+  eq(vm.runInContext('SR_HELD_SCOUT', ctx), 'Shift totals still waiting for a leader. This scout may still reach this tier.', 'the words');
+  ok(/if \(mkRow\.held && mkT\.dueBy\) \{ showToast\(SR_HELD_SCOUT\); return; \}/.test(SCRIPT), 'the make-up handler bills a held scout');
+});
+
+test('round 1: the season’s shift reports, as a leaders’ table and a CSV, with the year and no child named', () => {
+  const st = { packName: 'Pack 569', budget: { programYear: 2026 },
+    scouts: [{ id: 's1', name: 'Ada Example' }, { id: 's2', name: 'Bo Example' }], leaders: [],
+    storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [
+      { id: 'b1', label: 'Block 1', start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }], salesCents: 12345, donationsCents: 2500 },
+      { id: 'b2', label: 'Block 2', start: '12:00', end: '14:00', assignments: [{ scoutId: 's2', weight: 1 }], salesCents: 9000, donationsCents: 0 }] }] };
+  const reps = [
+    srRep({ status: 'accepted', confirmed: true, confirmedByName: 'Bo Parent', acceptedByName: 'Sam Leader' }),
+    srRep({ id: 'rep-2', blockId: 'b2', teCents: 8000, cashCents: 0, status: 'accepted', collected: false, overridden: true, acceptNote: '=SUM(A1)', acceptedByName: 'Sam Leader' }),
+    srRep({ id: 'rep-3', blockId: 'b2', status: 'returned', reviewNote: 'Recount the jar', submittedAt: Date.parse('2026-10-03T20:00:00Z') }),
+    srRep({ id: 'rep-4', blockId: 'gone', status: 'submitted', submittedAt: Date.parse('2026-10-04T20:00:00Z') }),
+    srRep({ id: 'rep-5', status: 'accepted', collected: true, acceptedByName: 'Lee Leader', submittedAt: Date.parse('2025-11-01T20:00:00Z'), sfId: 'old', blockId: 'x' })];
+  const L = srLeaderCtx({ state: st, reports: reps });
+  vm.runInContext(['programYearStartISO', 'programYearEndISO', 'ledgerCsvCell', 'shiftReportHistoryRows', 'SR_HISTORY_HEAD', 'shiftReportHistoryCsv', 'srYearLabel',
+    'renderShiftReportHistory'].map(decl).join('\n'), L.ctx);
+  const rows = L.get('shiftReportHistoryRows(2026)');
+  eq(rows.map((r) => [r.storefront, r.shift, r.verifiedBy, r.acceptedBy, r.overrideReason, r.status, r.sentBackReason, r.differs]), [
+    ['Kroger', '10:00–12:00', 'confirmed by Bo Parent', 'Sam Leader', '', 'accepted', '', 'N'],
+    ['Kroger', '12:00–14:00', '', 'Sam Leader', '=SUM(A1)', 'accepted', '', 'Y'],
+    ['Kroger', '12:00–14:00', '', '', '', 'returned', 'Recount the jar', ''],
+    ['(no longer on the schedule)', '', '', '', '', 'submitted', '', '']], 'the rows: last season’s left out');
+  const csv = L.run('shiftReportHistoryCsv(shiftReportHistoryRows(2026))');
+  ok(csv.split('\n')[0] === 'Date,Storefront,Shift,Trail’s End,Cash donations,Sent by,Verified by,Accepted by,Override reason,Status,Sent-back reason,Block now differs from report',
+    'the header');
+  ok(/,'=SUM\(A1\),/.test(csv) && /2026-10-03,Kroger,10:00–12:00,123\.45,25\.00,Nora Newfamily,confirmed by Bo Parent,Sam Leader,,accepted,,N/.test(csv), 'the cells, formula-safe');
+  const html = L.run('renderShiftReportHistory()');
+  ok(/Pack 569 — shift reports, 2026–27/.test(html) && /data-act="sr-history-csv"/.test(html) && /data-act="te-print"/.test(html), 'the year, print and CSV');
+  ok(!/Ada|Bo Example/.test(html + csv), 'a child is named in the season’s record');
+  ok(/data-act="sr-history-open">Shift reports this season</.test(slice('renderStorefrontList')), 'not offered from Storefronts');
+  ok(/Print or download this season’s record first\. <button type="button" class="btn small" data-act="sr-history-open">Shift reports this season<\/button>/.test(slice('renderCloseoutOverlay')),
+    'not offered at close-out');
+  ok(/'sr-history-open', 'sr-history-csv'/.test(slice('HELD_ACTS')), 'refused while the reload gate holds, though it only reads');
+});
 /* ================================================================
    LIVE STOPGAP (2026-09-29) — deletions survive the sync merge. mergeRemoteAppendOnly unions
    the four money logs by id; state.gone is what stops a device still holding a deleted row
