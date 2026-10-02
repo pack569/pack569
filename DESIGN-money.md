@@ -1557,11 +1557,17 @@ API backend they send them in.
     one-family accept with some has "I collected and counted the cash donations — accept" and a
     box, "I also collected the $X cash from popcorn sales", which records it once the accept
     lands.
-  - **Trail's End's window** (Keith, 2026-10-01): storefront closeout and Cash to Credit stay
-    open up to 72 hours from the midnight that ends the storefront day, not until midnight. Pack
-    policy is still to convert at the table. Cash still out shows an amber line after 48 of
-    those hours and a red one after 72: "Trail's End closeout and Cash to Credit close 72 hours
-    after the storefront day."
+  - **Trail's End's window** (Keith, 2026-10-01; followups round 3). Storefront closeout and
+    Cash to Credit stay open up to 72 hours from midnight on the storefront date. The page reads
+    that conservatively, counting from the midnight that **begins** the storefront date in
+    Eastern time, until Keith confirms the reading with Trail's End or the council. All of it is
+    one constant, `TE_CASH_WINDOW`. Families are told "(Trail's End's own deadline is midnight
+    that day for families; leaders can finish it within 72 hours.)", and the pack's rule is
+    still to convert at the table. Leaders' cash still out shows amber from 48 hours ("…window
+    ends soon (72 hours). After that, this cash can only be collected and deposited.") and red
+    from 72 ("…72-hour window has closed. This cash can't be converted now: collect it and
+    deposit it as Popcorn money for the council."). "They converted it" stays available after
+    the window closes, and its toast asks for a check in the Trail's End app.
   - **Never lost without a word:** deleting the block or the storefront warns while any is
     still out, and so does the close-out. The reminder outlives the block either way: an
     accepted report with cash from sales still out whose block or storefront is gone (deleted,

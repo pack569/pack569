@@ -22606,12 +22606,25 @@
   var STOREFRONT_SAFETY = 'Buddy system \u00b7 a parent with every scout, an adult at the table at all times \u00b7 scouts stay at the table and never approach cars \u00b7 two adults count the cash before it leaves the table';
   // Printed after each shift's cash count: the family can move its cash into Trail's End credit.
   // Pack policy (popcorn-kernel review D3, Keith round 1): sales cash is converted at the table.
+  // Trail's End's own window for storefront closeout and Cash to Credit — ALL OF IT HERE, so it is one
+  // place to change. Keith (2026-10-01): up to 72 hours from midnight on the storefront date; the
+  // coordinator's call (followups round 3) is the conservative reading, counted from the midnight
+  // that BEGINS the storefront date, in the pack's time zone (SHIFT_REPORT_TZ, as the server's
+  // packToday). Keith will confirm the reading with Trail's End or the council. Families are told
+  // midnight that day (`family`, in brackets: the pack's rule is still the table); leaders see
+  // `late` from `warnHours` and `closed` from `hours` on cash from sales still out (srCashAge).
+  var TE_CASH_WINDOW = {
+    hours: 72,
+    warnHours: 48,
+    family: '(Trail\u2019s End\u2019s own deadline is midnight that day for families; leaders can finish it within 72 hours.)',
+    late: 'Trail\u2019s End\u2019s Cash to Credit and closeout window ends soon (72 hours). After that, this cash can only be collected and deposited.',
+    closed: 'Trail\u2019s End\u2019s 72-hour window has closed. This cash can\u2019t be converted now: collect it and deposit it as Popcorn money for the council.'
+  };
   // Parent-experience review 21: the deadline is the table, as pack policy says. Trail's End's own
-  // window is said only in brackets (Keith, 2026-10-01: storefront closeout and Cash to Credit stay
-  // open up to 72 hours from midnight on the storefront date, not until midnight). The family's form
-  // leaves it to this sheet (SHIFT_REPORT_CASH_POLICY).
+  // window is said only in brackets (TE_CASH_WINDOW.family). The family's form leaves it to this
+  // sheet (SHIFT_REPORT_CASH_POLICY).
   var STOREFRONT_CASH_TO_CREDIT = 'Cash from popcorn sales: convert it to credit in the Trail\u2019s End app (Cash to Credit) before you leave the table. ' +
-    '(Trail\u2019s End allows up to 72 hours after the storefront day, but the pack asks you to convert at the table.) Converting doesn\u2019t change the Trail\u2019s End amount. The parent who converts it keeps that cash. ' +
+    TE_CASH_WINDOW.family + ' Converting doesn\u2019t change the Trail\u2019s End amount. The parent who converts it keeps that cash. ' +
     'Cash donations stay in the jar and go to the leader collecting the money.';
   // S-3 (2026-10-01) — on the day sheet under each shift, where families send their totals (API only).
   var DAY_SHEET_REPORT = 'Before you leave: one parent sends these totals at pack569.com (Schedule, Storefront shift totals). If more than one family worked this shift, ' +
@@ -23029,21 +23042,36 @@
     return '<p class="small warn" style="margin:0 0 6px"><strong>Cash from popcorn sales to collect: ' + esc(fmt(cents)) + '</strong> reported by ' + esc(who) + '. ' +
       esc(SR_CASH_TO_COLLECT_WHY) + '</p>' + srCashAgeLine(sfDate);
   }
-  // Keith (2026-10-01): Trail's End closes storefront closeout and Cash to Credit 72 hours after the
-  // storefront day (from the midnight that ends it, on this device's clock). Cash from sales still
-  // out: amber once 48 of those hours have gone, red once all 72 have. 'ok' | 'late' | 'closed'.
-  var SR_CASH_72H = 'Trail’s End closeout and Cash to Credit close 72 hours after the storefront day.';
+  // How old is cash from sales still out, against Trail's End's window (TE_CASH_WINDOW): hours since
+  // the midnight that begins the storefront date in the pack's time zone. 'ok' | 'late' | 'closed'.
   function srCashAge(sfDate, nowMs) {
-    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(sfDate || ''));
-    if (!m) return 'ok';
-    var ends = new Date(+m[1], +m[2] - 1, +m[3] + 1).getTime();
-    var hours = ((nowMs === undefined ? Date.now() : nowMs) - ends) / 3600000;
-    return hours >= 72 ? 'closed' : hours >= 48 ? 'late' : 'ok';
+    var start = packDayStartMs(sfDate);
+    if (!isFinite(start)) return 'ok';
+    var hours = ((nowMs === undefined ? Date.now() : nowMs) - start) / 3600000;
+    return hours >= TE_CASH_WINDOW.hours ? 'closed' : hours >= TE_CASH_WINDOW.warnHours ? 'late' : 'ok';
+  }
+  // The midnight that begins `iso` (YYYY-MM-DD) in the pack's time zone, as ms; NaN if not a date.
+  // Eastern midnight is 04:00 or 05:00 UTC (daylight or standard time): whichever the zone says is
+  // 00:00 that day. A browser that can't name the zone gets this device's midnight.
+  function packDayStartMs(iso) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+    if (!m) return NaN;
+    var base = Date.UTC(+m[1], +m[2] - 1, +m[3]);
+    try {
+      var fmt0 = new Intl.DateTimeFormat('en-US', { timeZone: SHIFT_REPORT_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+      for (var off = 4; off <= 5; off++) {
+        var t = base + off * 3600000, parts = fmt0.formatToParts(new Date(t));
+        var get = function (k) { return parts.filter(function (p) { return p.type === k; })[0].value; };
+        if (get('year') + '-' + get('month') + '-' + get('day') === iso && get('hour') === '00' && get('minute') === '00') return t;
+      }
+    } catch (e) { /* no time zones here */ }
+    return new Date(+m[1], +m[2] - 1, +m[3]).getTime();
   }
   function srCashAgeLine(sfDate, nowMs) {
     var age = srCashAge(sfDate, nowMs);
     if (age === 'ok') return '';
-    return '<p class="small ' + (age === 'closed' ? 'sr-late-closed' : 'sr-late') + '" style="margin:0 0 6px">' + esc(SR_CASH_72H) + '</p>';
+    return '<p class="small ' + (age === 'closed' ? 'sr-late-closed' : 'sr-late') + '" style="margin:0 0 6px">' + esc(TE_CASH_WINDOW[age === 'closed' ? 'closed' : 'late']) + '</p>';
   }
   // A block's entries, and those still out (no outcome). `exceptRid`: leave that report's out.
   function srCashEntries(b) { return arrOf(b && b.salesCash); }
@@ -23322,7 +23350,8 @@
         var rng = fmtTimeRange(c.b.start, c.b.end) || c.b.label;
         h += '<div class="spread sr-banner-row"><p class="small" style="margin:0"><strong>' + esc(c.sf.name || 'Storefront') + '</strong> · ' +
           esc(fmtDate(c.sf.date)) + ' · ' + esc(rng) + ' · ' + esc(fmt(c.e.cents)) + ' reported by ' + esc(c.e.from || 'the family') +
-          (srCashAge(c.sf.date) === 'ok' ? '' : ' · <span class="' + (srCashAge(c.sf.date) === 'closed' ? 'sr-late-closed' : 'sr-late') + '">' + esc(SR_CASH_72H) + '</span>') + '</p>' +
+          (srCashAge(c.sf.date) === 'ok' ? '' : ' · <span class="' + (srCashAge(c.sf.date) === 'closed' ? 'sr-late-closed' : 'sr-late') + '">' +
+            esc(TE_CASH_WINDOW[srCashAge(c.sf.date) === 'closed' ? 'closed' : 'late']) + '</span>') + '</p>' +
           '<button type="button" class="btn small" data-act="open-storefront" data-id="' + esc(c.sf.id) + '">Open</button></div>';
       });
     }

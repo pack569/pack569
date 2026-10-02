@@ -9597,7 +9597,7 @@ test('the copied standings name children the way the parent view does, and nobod
 
 test('the storefront day sheet names children by their public names', () => {
   const ctx = vm.createContext({});
-  vm.runInContext(PRIV_STATE + [SR_SYNC_STUBS, 'shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'DAY_SHEET_TWO_ADULTS', 'STOREFRONT_SAFETY', 'sheetFirstName', 'daySheetText', 'blocksInDayOrder',
+  vm.runInContext(PRIV_STATE + [SR_SYNC_STUBS, 'shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'DAY_SHEET_TWO_ADULTS', 'STOREFRONT_SAFETY', 'TE_CASH_WINDOW', 'STOREFRONT_CASH_TO_CREDIT', 'sheetFirstName', 'daySheetText', 'blocksInDayOrder',
     'blockScoutNames', 'fmtTimeRange', 'fmtClock'].map(slice).join('\n'), ctx);
   const txt = vm.runInContext('daySheetText(state.storefronts[0])', ctx);
   noSurname(txt, 'the day sheet');
@@ -13008,7 +13008,7 @@ test('D2: a worked block past its day warns when the cash count lacks two differ
 
 test('D2: the day sheet carries the safety rules and the cash count, first names only, and nothing is published', () => {
   const ctx = vm.createContext({});
-  vm.runInContext(PRIV_STATE + [SR_SYNC_STUBS, 'shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'DAY_SHEET_TWO_ADULTS', 'STOREFRONT_SAFETY', 'STOREFRONT_CASH_TO_CREDIT', 'sheetFirstName', 'daySheetText',
+  vm.runInContext(PRIV_STATE + [SR_SYNC_STUBS, 'shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'DAY_SHEET_TWO_ADULTS', 'STOREFRONT_SAFETY', 'TE_CASH_WINDOW', 'STOREFRONT_CASH_TO_CREDIT', 'sheetFirstName', 'daySheetText',
     'blocksInDayOrder', 'blockScoutNames', 'fmtTimeRange', 'fmtClock'].map(slice).join('\n'), ctx);
   vm.runInContext("state.storefronts[0].blocks[0].cashCountedBy = 'Dana Quenneville'; state.storefronts[0].blocks[0].cashVerifiedBy = 'Sam Hartwellington';", ctx);
   const txt = vm.runInContext('daySheetText(state.storefronts[0])', ctx);
@@ -13016,10 +13016,10 @@ test('D2: the day sheet carries the safety rules and the cash count, first names
   const rule = 'Buddy system · a parent with every scout, an adult at the table at all times · scouts stay at the table and never approach cars · two adults count the cash before it leaves the table';
   eq(ctx.STOREFRONT_SAFETY, rule, 'the safety line');
   // Popcorn-kernel review, round 1 (pack policy): sales cash is converted at the table.
-  // Parent-experience review 21: before you leave the table. Keith (2026-10-01): Trail's End's own
-  // window is 72 hours after the storefront day, not midnight.
+  // Parent-experience review 21: before you leave the table. Followups round 3 (TE_CASH_WINDOW): families
+  // are told midnight that day; leaders can finish within 72 hours.
   const credit = 'Cash from popcorn sales: convert it to credit in the Trail’s End app (Cash to Credit) before you leave the table. ' +
-    '(Trail’s End allows up to 72 hours after the storefront day, but the pack asks you to convert at the table.) Converting doesn’t change the Trail’s End amount. The parent who converts it keeps that cash. ' +
+    '(Trail’s End’s own deadline is midnight that day for families; leaders can finish it within 72 hours.) Converting doesn’t change the Trail’s End amount. The parent who converts it keeps that cash. ' +
     'Cash donations stay in the jar and go to the leader collecting the money.';
   eq(ctx.STOREFRONT_CASH_TO_CREDIT, credit, 'the cash-to-credit line');
   const tl = txt.split('\n');
@@ -16118,7 +16118,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'shiftReportsReconcile', 'shiftReportsAfterPush', 'returnShiftReport', 'leaderShiftReportAct', 'srHandEdited', 'getStorefront',
   'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout', 'shiftConfirmSubmit',
   'srIConfirmed', 'srFamiliesNow', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'familyKeyOf', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
-  'srSameFigures', 'srSameFamily', 'SR_CASH_72H', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
+  'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
   'srScheduleRefresh', 'parentDoc', 'parentPreviewDoc', 'shiftReportOpenFor', 'shiftReportToday', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_DAYS', 'isoPlusDays',
   'srFormOpen', 'srMirror', 'srReasonDraft', 'srNameClean',
   'ledgerActor', 'ledgerActorName',
@@ -17687,7 +17687,7 @@ function srLeaderCtx(o) {
        'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srReasonDraft', 'srNameClean', 'ledgerStampClean', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout',
        'srIConfirmed', 'srFamiliesNow', 'srNeedsCheck', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'SR_CHECK_TE', 'SR_IMPORT_FIRST', 'familyKeyOf',
        'blockCashCheck', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
-       'srSameFigures', 'srSameFamily', 'SR_CASH_72H', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashHistorySay', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
+       'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashHistorySay', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
        'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay'].map(decl).join('\n')}
     function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }`, ctx);
   const run = (js) => vm.runInContext(js, ctx);
@@ -19001,24 +19001,34 @@ atest('same family: the leader’s card hides the accept from a leader in the se
     blocks: [{ id: 'b1', label: 'B', assignments: [], reportId: 'r', reportOverride: 'same-family' }] }] })).storefronts[0].blocks[0].reportOverride, 'same-family', 'kept by normalizeState');
 });
 
-test('72 hours: Trail’s End’s window is said as 72 hours, never midnight, and cash still out turns amber at 48 and red at 72', () => {
-  ok(!/midnight/i.test(codeOnly(SCRIPT).replace(/minutes past midnight/g, '')) && !/midnight/i.test(SETUP), 'midnight is still the cutoff somewhere');
+test('72 hours: one constant holds Trail’s End’s window, counted from the start of the storefront date in Eastern time, amber at 48 and red at 72', () => {
   const L = srLeaderCtx({ state: { scouts: [], leaders: [], storefronts: [{ id: 'sf1', name: 'K', date: '2020-01-04', blocks: [{ id: 'b1', label: 'B', start: '10:00', end: '12:00',
     assignments: [], salesCents: 100, donationsCents: 0, salesCash: [{ reportId: 'r9', cents: 100, from: 'Nora', outcome: null }] }] }] } });
-  const ends = new Date(2026, 9, 4).getTime();   // the midnight that ends Oct 3, on this device's clock
-  const age = (h) => L.run(`srCashAge('2026-10-03', ${ends + h * 3600000})`);
-  eq([age(-5), age(0), age(47.9), age(48), age(71.9), age(72), age(500)], ['ok', 'ok', 'ok', 'late', 'late', 'closed', 'closed'], 'the hours');
+  // The midnight that begins the date, Eastern: 04:00 UTC in daylight time, 05:00 in standard; the day DST ends begins in daylight time.
+  eq([L.run("packDayStartMs('2026-10-03')"), L.run("packDayStartMs('2026-12-05')"), L.run("packDayStartMs('2026-11-01')"), L.run("isNaN(packDayStartMs('soon'))")],
+    [Date.UTC(2026, 9, 3, 4), Date.UTC(2026, 11, 5, 5), Date.UTC(2026, 10, 1, 4), true], 'Eastern midnight');
+  const start = Date.UTC(2026, 9, 3, 4);
+  const age = (h) => L.run(`srCashAge('2026-10-03', ${start + h * 3600000})`);
+  eq([age(-5), age(0), age(47.9), age(48), age(71.9), age(72), age(500)], ['ok', 'ok', 'ok', 'late', 'late', 'closed', 'closed'], 'the hours, from the start of the date');
   eq(L.run("srCashAge('', 0)"), 'ok', 'no date');
-  const words = 'Trail’s End closeout and Cash to Credit close 72 hours after the storefront day.';
-  eq(L.run(`srCashAgeLine('2026-10-03', ${ends + 50 * 3600000})`), '<p class="small sr-late" style="margin:0 0 6px">' + words + '</p>', 'amber');
-  eq(L.run(`srCashAgeLine('2026-10-03', ${ends + 80 * 3600000})`), '<p class="small sr-late-closed" style="margin:0 0 6px">' + words + '</p>', 'red');
-  eq(L.run(`srCashAgeLine('2026-10-03', ${ends})`), '', 'not yet');
+  const W = L.get('TE_CASH_WINDOW');
+  eq(W, { hours: 72, warnHours: 48,
+    family: '(Trail’s End’s own deadline is midnight that day for families; leaders can finish it within 72 hours.)',
+    late: 'Trail’s End’s Cash to Credit and closeout window ends soon (72 hours). After that, this cash can only be collected and deposited.',
+    closed: 'Trail’s End’s 72-hour window has closed. This cash can’t be converted now: collect it and deposit it as Popcorn money for the council.' }, 'the one constant');
+  eq(L.run(`srCashAgeLine('2026-10-03', ${start + 50 * 3600000})`), '<p class="small sr-late" style="margin:0 0 6px">' + W.late + '</p>', 'amber says it ends soon');
+  eq(L.run(`srCashAgeLine('2026-10-03', ${start + 80 * 3600000})`), '<p class="small sr-late-closed" style="margin:0 0 6px">' + W.closed + '</p>', 'red says it closed');
+  eq(L.run(`srCashAgeLine('2026-10-03', ${start})`), '', 'not yet');
+  ok(/TE_CASH_WINDOW\.family \+ ' Converting/.test(SCRIPT), 'the day sheet’s bracket is the constant’s');
+  // (The camping health form's "Under 72 hours" is another rule, and left alone.)
+  ok(!/within 72 hours|72-hour window|window ends soon \(72|midnight that day/.test(codeOnly(SCRIPT).replace(/var TE_CASH_WINDOW = \{[\s\S]*?\n  \};/, '')) &&
+    !/cutoff is midnight/.test(codeOnly(SCRIPT)), 'the window is said somewhere other than the one constant');
   // On the block, the card and the banner, only while the cash is still out (a date long past here).
-  ok(L.run('renderBlockCashToCollect(state.storefronts[0], state.storefronts[0].blocks[0])').indexOf('sr-late-closed" style="margin:0 0 6px">' + words) !== -1, 'the block');
-  ok(L.run('renderShiftReportsBanner()').indexOf('<span class="sr-late-closed">' + words + '</span>') !== -1, 'the banner');
+  ok(L.run('renderBlockCashToCollect(state.storefronts[0], state.storefronts[0].blocks[0])').indexOf('sr-late-closed" style="margin:0 0 6px">' + W.closed) !== -1, 'the block');
+  ok(L.run('renderShiftReportsBanner()').indexOf('<span class="sr-late-closed">' + W.closed + '</span>') !== -1, 'the banner');
   ok(/srCashToCollectLine\(r\.salesCashCents, srNameClean\(r\.submittedByName\) \|\| 'the family', blk && blk\.sf\.date\)/.test(slice('renderShiftReportCard')), 'the card');
   L.run("state.storefronts[0].blocks[0].salesCash[0].outcome = { outcome: 'collected', by: 'Sam', at: 1 }");
-  ok(L.run('renderBlockCashToCollect(state.storefronts[0], state.storefronts[0].blocks[0])').indexOf(words) === -1, 'collected: no warning');
+  ok(L.run('renderBlockCashToCollect(state.storefronts[0], state.storefronts[0].blocks[0])').indexOf(W.closed) === -1, 'collected: no warning');
   ok(/\.sr-late-closed \{ color: var\(--bad\);/.test(HTML), 'red is the page’s own red');
 });
 
