@@ -23017,7 +23017,8 @@
   // onto the block's b.salesCash entry, which keeps its amount either way. One entry per accepted
   // report that had some, so accepting a later report onto the block never overwrites cash an
   // earlier one left to collect. Deleting the block or the storefront warns first; closing the year
-  // warns too. The server's record stays in Shift reports this season whatever happens to the block.
+  // warns too. The server's record stays in Shift reports this season whatever happens to the block,
+  // and while it is still out the banner lists it from there (srCashOrphans).
   var SR_CASH_TO_COLLECT_WHY = 'Cash from popcorn sales the family couldn’t convert to credit. It’s the council’s money: collect it, deposit it, ' +
     'and record it as Popcorn money for the council. It’s already in the Trail’s End amount, so it isn’t added again.';
   function srCashToCollectLine(cents, who, sfDate) {
@@ -23097,13 +23098,24 @@
         if (any) out.n += 1;
       });
     });
+    out.orphans = srCashOrphans();
+    out.orphans.forEach(function (r) { out.cents += r.salesCashCents; out.n += 1; });
     return out;
+  }
+  // Coordinator, followups round 2 — accepted reports with cash from sales still out whose block,
+  // or whole storefront, is gone (deleted, or rolled over with its season): read from the server's
+  // reports, which outlive the block, so the reminder never goes with it. Their buttons record the
+  // outcome on the server only (srSalesCashSet); there is no block to mirror it onto.
+  function srCashOrphans() {
+    return srReports().filter(function (r) {
+      return r && r.status === 'accepted' && r.salesCashCents > 0 && !r.salesCashOutcome && !srBlockOf(r);
+    });
   }
   // The close-out's line (treasurer 7c).
   function srCashCloseoutSay(t) {
     return 'Cash from popcorn sales still out: ' + fmt(t.cents) + ' across ' + t.n + ' shift' + (t.n === 1 ? '' : 's') + '. Collect it, deposit it, ' +
-      'and record it as Popcorn money for the council before you close the year. Closing clears the storefronts and this reminder; ' +
-      'the amounts stay in Shift reports this season.';
+      'and record it as Popcorn money for the council before you close the year. Closing clears the storefronts; ' +
+      'anything still out stays on the storefront list, and the amounts stay in Shift reports this season.';
   }
   function srCashToCollectSay(t) {
     return 'Cash from popcorn sales to collect: ' + fmt(t.cents) + ' across ' + t.n + ' shift' + (t.n === 1 ? '' : 's');
@@ -23112,16 +23124,17 @@
   function srCashRemoveWarn(cents, what) {
     if (!(cents > 0)) return '';
     return '<p class="small warn" role="alert" style="margin:6px 0 0">This ' + what + ' still has ' + esc(fmt(cents)) +
-      ' of cash from popcorn sales to collect. Removing it removes the reminder.</p>';
+      ' of cash from popcorn sales to collect. Removing it keeps the reminder on the storefront list until someone marks it.</p>';
   }
   // Record what became of a report's cash from sales: 'collected', 'converted', or null (undo). The
   // server first; the block's entry mirrors what it answers. `quiet`: no Undo toast (the accept's
   // own "I also collected it", which says so itself).
   function srSalesCashSet(rid, outcome, quiet) {
     if (!canReviewReports()) return Promise.resolve(null);
-    var hit = srCashEntry(rid);
-    if (!hit) return Promise.resolve(null);
-    var cents = hit.e.cents;
+    // The block's entry, or, for a report whose block is gone (srCashOrphans), the server's report alone.
+    var hit = srCashEntry(rid), rep0 = srReport(rid);
+    var cents = hit ? hit.e.cents : (rep0 && rep0.salesCashCents) || 0;
+    if (!(cents > 0)) return Promise.resolve(null);
     sync.srOut = sync.srOut || {};
     if (sync.srOut['cash:' + rid]) return Promise.resolve(null);
     sync.srOut['cash:' + rid] = true;
@@ -23249,6 +23262,15 @@
     // S-5 — cash from popcorn sales families still have, each shift with a way to it.
     if (toCollect.n) {
       h += sub(!waiting.length && !check.length, esc(srCashToCollectSay(toCollect)));
+      // A report whose shift is gone: its own row, and its own buttons (admins and editors).
+      toCollect.orphans.forEach(function (r) {
+        var ids = ' data-rid="' + esc(r.id) + '"';
+        h += '<div class="sr-banner-row"><p class="small" style="margin:0">' + esc(fmt(r.salesCashCents)) + ' reported by ' +
+          esc(srNameClean(r.submittedByName) || 'a family') + (r.submittedAt ? ' · sent ' + esc(srWhen(r.submittedAt)) : '') +
+          ' · <span class="muted">this shift is no longer on the schedule</span></p>' +
+          (canReviewReports() ? '<div class="sr-acts" style="margin-top:4px"><button type="button" class="btn small" data-act="sr-cash-collected"' + ids + '>Collected</button>' +
+            '<button type="button" class="btn small" data-act="sr-cash-converted"' + ids + '>They converted it</button></div>' : '') + '</div>';
+      });
       toCollect.list.forEach(function (c) {
         var rng = fmtTimeRange(c.b.start, c.b.end) || c.b.label;
         h += '<div class="spread sr-banner-row"><p class="small" style="margin:0"><strong>' + esc(c.sf.name || 'Storefront') + '</strong> · ' +

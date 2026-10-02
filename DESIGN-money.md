@@ -1560,9 +1560,12 @@ API backend they send them in.
     those hours and a red one after 72: "Trail's End closeout and Cash to Credit close 72 hours
     after the storefront day."
   - **Never lost without a word:** deleting the block or the storefront warns while any is
-    still out. So does the close-out, because closing clears the storefronts; the server's
-    record stays in Shift reports this season. It is leaders' only: `buildParentView` never
-    publishes it.
+    still out, and so does the close-out. The reminder outlives the block either way: an
+    accepted report with cash from sales still out whose block or storefront is gone (deleted,
+    or cleared at close-out) is listed in the storefront banner from the server's reports
+    (`srCashOrphans`), with its own Collected / They converted it, recorded on the server only.
+    That lasts as long as leaders' reports reach back (400 days). It is leaders' only:
+    `buildParentView` never publishes it.
 - **Sending back an accepted report.** The figures **stay** on the block and keep counting. The
   money was counted, and taking it off every scout's total because the paperwork is in question
   would move standings for a clerical reason. The block loses its link to the report and its

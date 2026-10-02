@@ -16118,7 +16118,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'shiftReportsReconcile', 'shiftReportsAfterPush', 'returnShiftReport', 'leaderShiftReportAct', 'srHandEdited', 'getStorefront',
   'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout', 'shiftConfirmSubmit',
   'srIConfirmed', 'srFamiliesNow', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'familyKeyOf', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
-  'srSameFigures', 'srSameFamily', 'SR_CASH_72H', 'srCashAge', 'srCashAgeLine', 'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
+  'srSameFigures', 'srSameFamily', 'SR_CASH_72H', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
   'srScheduleRefresh', 'parentDoc', 'parentPreviewDoc', 'shiftReportOpenFor', 'shiftReportToday', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_DAYS', 'isoPlusDays',
   'srFormOpen', 'srMirror', 'srReasonDraft', 'srNameClean',
   'ledgerActor', 'ledgerActorName',
@@ -17687,7 +17687,7 @@ function srLeaderCtx(o) {
        'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srReasonDraft', 'srNameClean', 'ledgerStampClean', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout',
        'srIConfirmed', 'srFamiliesNow', 'srNeedsCheck', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'SR_CHECK_TE', 'SR_IMPORT_FIRST', 'familyKeyOf',
        'blockCashCheck', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
-       'srSameFigures', 'srSameFamily', 'SR_CASH_72H', 'srCashAge', 'srCashAgeLine', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
+       'srSameFigures', 'srSameFamily', 'SR_CASH_72H', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
        'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay'].map(decl).join('\n')}
     function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }`, ctx);
   const run = (js) => vm.runInContext(js, ctx);
@@ -18984,6 +18984,34 @@ test('72 hours: Trail’s End’s window is said as 72 hours, never midnight, an
   ok(/\.sr-late-closed \{ color: var\(--bad\);/.test(HTML), 'red is the page’s own red');
 });
 
+atest('orphans: cash from sales still out on a report whose shift is gone stays in the banner, and is recorded on the server from there', async () => {
+  const reps = [srRep({ id: 'gone-1', blockId: 'gone', status: 'accepted', salesCashCents: 900, salesCashOutcome: null }),
+    srRep({ id: 'gone-2', sfId: 'no-sf', blockId: 'x', status: 'accepted', salesCashCents: 400, salesCashOutcome: null }),
+    srRep({ id: 'gone-done', blockId: 'gone', status: 'accepted', salesCashCents: 500, salesCashOutcome: 'collected' }),
+    srRep({ id: 'gone-back', blockId: 'gone', status: 'returned', salesCashCents: 500, salesCashOutcome: null }),
+    srRep({ id: 'here', blockId: 'b1', status: 'accepted', salesCashCents: 700, salesCashOutcome: null })];
+  const L = srLeaderCtx({ reports: reps });
+  eq(L.get('srCashOrphans().map(function (r) { return r.id; })'), ['gone-1', 'gone-2'], 'a gone block, a gone storefront; not one recorded, sent back, or still on its block');
+  eq([L.get('srCashToCollect().cents'), L.get('srCashToCollect().n')], [1300, 2], 'counted in the total');
+  const ban = L.run('renderShiftReportsBanner()');
+  ok(/Cash from popcorn sales to collect: \$13\.00 across 2 shifts/.test(ban) && /\$9\.00 reported by Nora Newfamily · sent [^<]*· <span class="muted">this shift is no longer on the schedule<\/span>/.test(ban),
+    'the banner row');
+  ok(/data-act="sr-cash-collected" data-rid="gone-1">Collected</.test(ban) && /data-act="sr-cash-converted" data-rid="gone-2">They converted it</.test(ban), 'its buttons');
+  L.run("srCashAct('sr-cash-collected', { dataset: { rid: 'gone-1' } })");
+  eq([L.get('patches[0]'), L.get('commits')], [{ rid: 'gone-1', body: { action: 'salescash', outcome: 'collected', salesCashCents: 900 } }, 0], 'the server only: no block to write');
+  await L.answer(0);
+  eq([L.get('loads'), L.get('toasts').pop()], [1, 'Marked $9.00 collected by Sam Leader. Deposit it and record it in the ledger as Popcorn money for the council.'], 'read again, and said');
+  // Once the server says so, it is gone from the banner.
+  L.run("sync.shiftReports.reports[0].salesCashOutcome = 'collected'");
+  eq(L.get('srCashOrphans().map(function (r) { return r.id; })'), ['gone-2'], 'recorded');
+  // After the season closes, every storefront is gone, and what is still out is still listed.
+  L.run('state.storefronts = []');
+  eq(L.get('srCashOrphans().map(function (r) { return r.id; })'), ['gone-2', 'here'], 'after the close-out');
+  // A viewer reads it, with no buttons.
+  const V = srLeaderCtx({ role: 'viewer', reports: reps });
+  ok(/no longer on the schedule/.test(V.run('renderShiftReportsBanner()')) && !/sr-cash-collected/.test(V.run('renderShiftReportsBanner()')), 'a viewer');
+});
+
 /* S-5 (Keith, 2026-10-01) — on the page: the family's third figure, and the leaders' "cash to
    collect". A custody figure only: never added to the block's sales or to any scout's split, and
    never published to parents. */
@@ -19110,14 +19138,15 @@ test('S-5: cash an earlier report left is never overwritten or lost without a wo
   ok(/<tr><td>Cash from popcorn sales to collect<\/td><td class="num">\$3\.00<\/td><td class="num">\$2\.00<\/td><\/tr>/.test(cmp) &&
     /with the report’s\. \$3\.00 from the earlier report hasn’t been marked collected\. Accepting this report doesn’t collect it\.<\/p>/.test(cmp), 'the replace check');
   // Deletes: said while the button is armed.
-  ok(/This shift still has \$3\.00 of cash from popcorn sales to collect\. Removing it removes the reminder\./.test(L.run("srCashRemoveWarn(srCashOpenCents(state.storefronts[0].blocks[0]), 'shift')")),
+  ok(/This shift still has \$3\.00 of cash from popcorn sales to collect\. Removing it keeps the reminder on the storefront list until someone marks it\./.test(L.run("srCashRemoveWarn(srCashOpenCents(state.storefronts[0].blocks[0]), 'shift')")),
     'the block delete');
   ok(/ui\.armed === 'del-block:' \+ sf\.id \+ ':' \+ b\.id \? srCashRemoveWarn\(srCashOpenCents\(b\), 'shift'\)/.test(slice('renderBlock')) &&
     /ui\.armed === 'del-sf:' \+ sf\.id \? srCashRemoveWarn\(/.test(SCRIPT), 'the deletes do not warn');
   eq(L.run("srCashRemoveWarn(0, 'shift')"), '', 'nothing to collect, nothing said');
   // Close-out.
   eq(L.run('srCashCloseoutSay(srCashToCollect())'), 'Cash from popcorn sales still out: $3.00 across 1 shift. Collect it, deposit it, and record it as Popcorn money ' +
-    'for the council before you close the year. Closing clears the storefronts and this reminder; the amounts stay in Shift reports this season.', 'the close-out line');
+    'for the council before you close the year. Closing clears the storefronts; anything still out stays on the storefront list, and the amounts stay in Shift reports this season.',
+    'the close-out line');
   const co = slice('renderCloseoutOverlay');
   ok(/var coCash = srCashToCollect\(\);/.test(co) && (co.match(/srCashToCollect\(\)/g) || []).length === 1 && /coCash\.n \? '<li/.test(co), 'the close-out computes it once and warns');
 });
