@@ -13001,7 +13001,7 @@ test('D2: a worked block past its day warns when the cash count lacks two differ
   const rb = slice('renderBlock');
   ok(/data-ch="b-cash-counted"/.test(rb) && /data-ch="b-cash-verified"/.test(rb) && /blockCashCheck\(b, sf\.date, todayISO\(\)\)/.test(rb),
     'the block editor has no cash-count fields or warning');
-  ok(/if \(ch === 'b-cash-counted'\) \{ b\.cashCountedBy = el\.value;/.test(SCRIPT) && /if \(ch === 'b-cash-verified'\) \{ b\.cashVerifiedBy = el\.value;/.test(SCRIPT),
+  ok(/if \(ch === 'b-cash-counted'\) \{ b\.cashCountedBy = el\.value;/.test(SCRIPT) && /if \(ch === 'b-cash-verified'\) \{[\s\S]{0,300}b\.cashVerifiedBy = el\.value;/.test(SCRIPT),
     'the fields are not stored');
 });
 
@@ -15988,7 +15988,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'srMine', 'srReplaces', 'LEADER_SR_SAY', 'leaderSrMessage', 'srNotNow', 'acceptShiftReport', 'srLanded', 'srSettle', 'srRollback',
   'shiftReportsReconcile', 'shiftReportsAfterPush', 'returnShiftReport', 'leaderShiftReportAct', 'srHandEdited', 'getStorefront',
   'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout', 'shiftConfirmSubmit',
-  'srIConfirmed', 'srFamiliesNow', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'familyKeyOf',
+  'srIConfirmed', 'srFamiliesNow', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'familyKeyOf', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
   'srScheduleRefresh', 'parentDoc', 'parentPreviewDoc', 'shiftReportOpenFor', 'shiftReportToday', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_DAYS', 'isoPlusDays',
   'srFormOpen', 'srMirror', 'srReasonDraft', 'srNameClean',
   'ledgerActor', 'ledgerActorName',
@@ -17554,7 +17554,7 @@ function srLeaderCtx(o) {
        'srWaitingOn', 'acceptShiftReport', 'srLanded', 'srSettle', 'srRollback', 'shiftReportsReconcile', 'shiftReportsAfterPush',
        'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srReasonDraft', 'srNameClean', 'ledgerStampClean', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout',
        'srIConfirmed', 'srFamiliesNow', 'srNeedsCheck', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'SR_CHECK_TE', 'SR_IMPORT_FIRST', 'familyKeyOf',
-       'blockCashCheck', 'blocksInDayOrder'].map(decl).join('\n')}
+       'blockCashCheck', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE'].map(decl).join('\n')}
     function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }`, ctx);
   const run = (js) => vm.runInContext(js, ctx);
   const get = (js) => JSON.parse(JSON.stringify(run(js) === undefined ? null : run(js)));
@@ -17979,7 +17979,7 @@ atest('S-4: no pack record, or no such storefront or block in it, and nobody con
   eq((await w.confirm('newbie', r4)).body.error, 'not-shift-parent', 'a block missing from the pack record');
   const r1 = (await w.send('parent', 'b1')).body.report.id;
   for (const [json, what] of [['{x', 'an unreadable record'], ['[]', 'a record that is not an object'], ['{"scouts":[]}', 'a record with no storefronts']]) {
-    w.db.raw.prepare('UPDATE pack_state SET json = ? WHERE pack_id = ?').run(json, API_PACK);
+    w.db.raw.prepare('UPDATE pack_state SET json = ?, rev = rev + 1 WHERE pack_id = ?').run(json, API_PACK);
     eq((await w.confirm('newbie', r1)).body.error, 'not-shift-parent', what);
   }
   w.db.raw.prepare('DELETE FROM pack_state').run();
@@ -18129,8 +18129,9 @@ test('S-4: the family page shows the second parent’s step, and the figures and
 
 atest('S-4: the leader’s card says who signed, says when no other parent is linked, and accepting without a second parent needs a reason', async () => {
   const needs = (over) => srRep(Object.assign({ needsConfirm: true, confirmed: false }, over || {}));
-  // b1 holds s1 and s2; in this pack nobody is linked.
+  // b1 holds s1 and s2; the sender is linked to s1 (Ada), and nobody to s2.
   const L = srLeaderCtx({ reports: [needs()] });
+  L.run("state.scouts[0].parentUids = ['uid-nora']");
   const card = L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
   ok(/Only one parent has signed\. Scouts from more than one family worked this shift, so a parent from another family needs to confirm before you accept\. If no one can, accept without one and say why\./.test(card) &&
     /No parent from another family on this shift is linked to an account: link them on the Members card\./.test(card),
@@ -18254,7 +18255,7 @@ async function r1World() {
   st.scouts[0].parentUids = ['uid-parent', 'uid-spouse'];
   st.scouts[1].parentUids = ['uid-newbie', 'uid-editor'];
   st.scouts[2].parentUids = ['uid-newbie', 'uid-editor'];
-  w.db.raw.prepare('UPDATE pack_state SET json = ?').run(JSON.stringify(st));
+  w.db.raw.prepare('UPDATE pack_state SET json = ?, rev = rev + 1').run(JSON.stringify(st));
   return w;
 }
 
@@ -18268,16 +18269,17 @@ atest('round 1: the confirmer is from another family than the sender — never a
   // A sender linked to no scout: any linked parent on the shift but the sender.
   const v = await r1World();
   const r2 = (await v.send('loose', 'b1')).body.report.id;
-  eq((await v.confirm('parent', r2)).status, 200, 'a shift parent, where the sender is linked to nobody');
+  // Security re-check 4: a sender linked to no scout has no family to rule out, so nobody confirms theirs.
+  eq((await v.confirm('parent', r2)).body.error, 'not-shift-parent', 'a shift parent, where the sender is linked to nobody');
   const after = (await v.call('newbie', 'GET', 'shiftReports')).body.others.find((o) => o.blockId === 'b1');
-  ok(!after.canConfirm && !('teCents' in after) && after.confirmed === true, 'once confirmed, nobody else is offered it or sent its figures');
+  ok(after.canConfirm === false && !('teCents' in after), 'an unlinked sender’s report offered to confirm');
   // The rule itself.
   const R = API.rules;
   const pack = { scouts: [{ id: 'a', familyId: 'F', parentUids: ['u1', 'u2'] }, { id: 'b', familyId: 'F', parentUids: ['u3'] }, { id: 'c', parentUids: ['u4'] }],
     storefronts: [{ id: 's', blocks: [{ id: 'k', assignments: [{ scoutId: 'a' }, { scoutId: 'b' }, { scoutId: 'c' }] }] }] };
   eq(R.shiftConfirmers(pack, 's', 'k', 'u1'), ['u4'], 'siblings (a and b) are the sender’s family; only c’s parent confirms');
   eq(R.shiftConfirmers(pack, 's', 'k', 'u4'), ['u1', 'u2', 'u3'], 'the other way round');
-  eq(R.shiftConfirmers(pack, 's', 'k', 'nobody'), ['u1', 'u2', 'u3', 'u4'], 'a sender linked to no scout');
+  eq(R.shiftConfirmers(pack, 's', 'k', 'nobody'), [], 'a sender linked to no scout: nobody confirms (a leader overrides)');
   eq(R.shiftConfirmers(pack, 's', 'gone', 'u1'), null, 'no such block');
   ok(!/Open for the treasurer/.test(readFileSync(join(ROOT, 'functions/_lib/rules.js'), 'utf8')), 'rules.js still leaves the family question open');
 });
@@ -18401,7 +18403,13 @@ atest('round 1: a parent’s list reads the view first and the pack record only 
   eq(reads.length, 0, 'the only one waiting is out of the window: the pack record read');
   w.db.raw.prepare('UPDATE parent_views SET payload = ?').run(JSON.stringify(w.view));
   const g = await w.call('newbie', 'GET', 'shiftReports');
-  eq([reads.length, g.body.others.find((o) => o.id === rid).canConfirm], [1, true], 'one in the window: read once');
+  eq([reads.length, g.body.others.find((o) => o.id === rid).canConfirm], [2, true], 'one in the window: the rev, then the record');
+  // Security re-check 3: the same rev again is the cheap read only; a new rev reads the record again.
+  await w.call('newbie', 'GET', 'shiftReports');
+  eq(reads.slice(2).map((q) => /SELECT rev FROM/.test(q) ? 'rev' : 'json'), ['rev'], 'the same rev: parsed once');
+  w.db.raw.prepare('UPDATE pack_state SET rev = rev + 1').run();
+  await w.call('newbie', 'GET', 'shiftReports');
+  eq(reads.slice(3).map((q) => /SELECT rev FROM/.test(q) ? 'rev' : 'json'), ['rev', 'json'], 'a new rev: read again');
 });
 
 test('round 1: the leader card’s buttons say who verifies the cash, and the confirmer is not offered Accept', () => {
@@ -18454,7 +18462,7 @@ atest('round 1: an accept stuck for 15 minutes can be finished or undone by anot
   const st = (p) => ({ scouts: [], leaders: [{ id: 'l1', name: 'Sam Leader', uid: 'uid-ed' }], storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [
     Object.assign({ id: 'b1', label: 'Block 1', assignments: [], salesCents: 12345, donationsCents: 2500, cashCountedBy: 'Nora Newfamily', cashVerifiedBy: '',
       reportId: 'rep-1', reportFrom: 'Nora Newfamily', reportApprovedBy: 'Lee Other' }, { reportPending: p })] }] });
-  const pend = (over) => Object.assign({ by: 'uid-lee', at: Date.now() - 16 * 60000, te: 12345, cash: 2500, override: true, note: 'Gone home', collected: false,
+  const pend = (over) => Object.assign({ by: 'uid-lee', at: Date.now() - 16 * 60000, te: 12345, cash: 2500, override: false, note: '', collected: false,
     was: { salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '', reportId: '', reportFrom: '' }, wrote: { counted: 'Nora Newfamily', verified: '' } }, over || {});
   const card = (L) => L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
   const fresh = srLeaderCtx({ reports: [srRep()], state: st(pend({ at: Date.now() - 60000 })) });
@@ -18469,6 +18477,7 @@ atest('round 1: an accept stuck for 15 minutes can be finished or undone by anot
   eq(L.get('patches').length, 1, 'finished by the leader who took it over');
   const U = srLeaderCtx({ reports: [srRep()], state: st(pend()) });
   U.run("leaderShiftReportAct('sr-undo', { dataset: { rid: 'rep-1' } })");
+  await U.answer(0);   // server-first (security re-check 1)
   eq([U.block('b1').salesCents, U.block('b1').reportId, U.block('b1').reportPending], [0, undefined, undefined], 'undone');
   const K = srLeaderCtx({ reports: [srRep()], state: st(pend({ collected: true, override: false, wrote: { counted: 'Nora Newfamily', verified: 'Lee Other' } })) });
   ok(!/sr-takeover/.test(card(K)) && /Only the leader who collected the cash can finish it; you can undo it\./.test(card(K)), 'a collector’s accept');
@@ -18782,6 +18791,69 @@ atest('youth protection: an email-shaped name is never written onto a block, sen
   const g = await w.call('newbie', 'GET', 'shiftReports');
   const o = g.body.others.find((x) => x.id === rid);
   ok(o && o.canConfirm && o.submittedByName === null && g.text.indexOf('@') === -1, 'the second parent is sent an email: ' + g.text.slice(0, 200));
+});
+
+atest('security re-check: undoing a stuck accept is server-first, and an accept that landed meanwhile is settled, not undone', async () => {
+  const st = (p) => ({ scouts: [], leaders: [{ id: 'l1', name: 'Sam Leader', uid: 'uid-ed' }], storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [
+    Object.assign({ id: 'b1', label: 'Block 1', assignments: [], salesCents: 12345, donationsCents: 2500, cashCountedBy: 'Nora Newfamily', cashVerifiedBy: '',
+      reportId: 'rep-1', reportFrom: 'Nora Newfamily', reportApprovedBy: 'Lee Other' }, { reportPending: p })] }] });
+  const pend = (over) => Object.assign({ by: 'uid-lee', at: Date.now() - 16 * 60000, te: 12345, cash: 2500, override: false, note: '', collected: false,
+    was: { salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '', reportId: '', reportFrom: '' }, wrote: { counted: 'Nora Newfamily', verified: '' } }, over || {});
+  // A's accept reaches the server while B's undo is on its way: B is told so, and settles.
+  const B = srLeaderCtx({ reports: [srRep()], state: st(pend()) });
+  B.run("leaderShiftReportAct('sr-undo', { dataset: { rid: 'rep-1' } })");
+  eq(B.get('patches'), [{ rid: 'rep-1', body: { action: 'return', reviewNote: 'Accept undone by a leader' } }], 'the undo asks the server first');
+  eq(B.block('b1').salesCents, 12345, 'the block went back before the server answered');
+  B.run("sync.shiftReports.reports[0].status = 'accepted'");
+  await B.answer(0, { code: 'failed-precondition', reason: 'report-moved' });
+  const b = B.block('b1');
+  eq([b.salesCents, b.reportId, b.reportPending], [12345, 'rep-1', undefined], 'settled, not rolled back');
+  ok(B.get('toasts').some((x) => /reached the server first, so it stands/.test(x)), 'not told');
+  // The server agrees: rolled back.
+  const U = srLeaderCtx({ reports: [srRep()], state: st(pend()) });
+  U.run("leaderShiftReportAct('sr-undo', { dataset: { rid: 'rep-1' } })");
+  await U.answer(0);
+  eq([U.block('b1').salesCents, U.block('b1').reportId, U.block('b1').reportPending], [0, undefined, undefined], 'undone once the server agreed');
+  // Already accepted when the button is pressed: settled, nothing sent.
+  const A = srLeaderCtx({ reports: [srRep({ status: 'accepted' })], state: st(pend()) });
+  A.run("leaderShiftReportAct('sr-undo', { dataset: { rid: 'rep-1' } }); leaderShiftReportAct('sr-takeover', { dataset: { rid: 'rep-1' } })");
+  eq([A.get('patches').length, A.block('b1').reportPending, A.block('b1').salesCents], [0, undefined, 12345], 'settled where it already landed');
+  // Not reached: nothing undone.
+  const N = srLeaderCtx({ reports: [srRep()], state: st(pend()) });
+  N.run("leaderShiftReportAct('sr-undo', { dataset: { rid: 'rep-1' } })");
+  await N.answer(0, { code: 'unavailable' });
+  eq(N.block('b1').reportPending.by, 'uid-lee', 'an undo the server never heard rolled the block back');
+  // (2) An override is the other leader's to finish, as a collector's is.
+  const O = srLeaderCtx({ reports: [srRep()], state: st(pend({ override: true, note: 'Gone home' })) });
+  const card = O.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
+  ok(!/sr-takeover/.test(card) && /Only the leader who wrote the reason can finish it; you can undo it\./.test(card) && /sr-undo/.test(card), 'the override card');
+  O.run("leaderShiftReportAct('sr-takeover', { dataset: { rid: 'rep-1' } })");
+  eq([O.block('b1').reportPending.by, O.get('patches').length], ['uid-lee', 0], 'an override taken over');
+});
+
+atest('security re-check: a sender linked to no scout has nobody to confirm, a parent’s list is bounded, and the day sheet prints no stand-in name', async () => {
+  // (4) The leader card says what to do.
+  const st = { scouts: [{ id: 's1', name: 'Ada', parentUids: ['uid-a'] }, { id: 's2', name: 'Bo', parentUids: ['uid-b'] }], leaders: [],
+    storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [{ id: 'b1', label: 'Block 1', assignments: [{ scoutId: 's1', weight: 1 }, { scoutId: 's2', weight: 1 }],
+      salesCents: 0, donationsCents: 0 }] }] };
+  const L = srLeaderCtx({ state: st, reports: [srRep({ needsConfirm: true, confirmed: false, submittedByUid: 'uid-nobody' })] });
+  const card = L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
+  ok(/The sender isn’t linked to a scout: link them on the Members card, or accept with a reason\./.test(card), 'the unlinked sender’s card');
+  eq(L.run("srOtherParentLinked(srReport('rep-1'), state.storefronts[0].blocks[0])"), false, 'the page offers a confirmer the server will refuse');
+  // (3) A parent's list: what holds a block, and 30 days of the rest.
+  const w = await r1World();
+  const now = Date.now();
+  const ins = (id, status, ago) => w.db.raw.prepare("INSERT INTO shift_reports (id, pack_id, sf_id, block_id, te_cents, cash_cents, submitted_by_uid, submitted_at, updated_at, " +
+    "status, stamp) VALUES (?, ?, 'sf1', ?, 1, 1, 'uid-parent', ?, ?, ?, 's')").run(id, API_PACK, id, now - ago, now - ago, status);
+  ins('old-gone', 'withdrawn', 40 * 86400000);
+  ins('new-gone', 'withdrawn', 5 * 86400000);
+  eq((await w.call('parent', 'GET', 'shiftReports')).body.reports.map((r) => r.id).sort(), ['new-gone'], 'a parent’s list');
+  // (5a) "a signed-in parent" prints as a blank.
+  const sh = sandbox(['sheetFirstName']);
+  eq([sh.sheetFirstName('a signed-in parent'), sh.sheetFirstName('a signed-in leader'), sh.sheetFirstName('Nora Newfamily'), sh.sheetFirstName('')], ['', '', 'Nora', ''],
+    'the day sheet’s names');
+  // (5b) A verifier typed by hand is not the collecting leader.
+  ok(/if \(ch === 'b-cash-verified'\) \{[\s\S]{0,300}if \(el\.value !== b\.cashVerifiedBy\) delete b\.reportCollected;/.test(SCRIPT), 'a hand-typed verifier keeps the collector flag');
 });
 /* ================================================================
    LIVE STOPGAP (2026-09-29) — deletions survive the sync merge. mergeRemoteAppendOnly unions

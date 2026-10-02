@@ -74,13 +74,26 @@ export function reportOut(row, uid, full) {
 }
 // The stored pack record, parsed, for the S-4 parent check: { rev, pack }, or null when there is
 // none or it cannot be read (fail closed: nobody confirms). Up to MAX_STATE_BYTES of JSON, read
-// once a request and only when a confirmation is in question. Never sent to the caller.
+// only when a confirmation is in question, and never sent to the caller.
+// Security re-check (3): parsed once per pack per rev. A cheap SELECT of the rev comes first, and
+// the record is read and parsed again only when the rev has moved. Cached per database binding,
+// so a preview and production (or two test databases) never share an entry. Read-only use.
+const packCache = new WeakMap();   // db -> Map(packId -> { rev, pack })
 export async function readPackRecord(db, packId) {
+  const head = await db.prepare('SELECT rev FROM pack_state WHERE pack_id = ?').bind(packId).first();
+  if (!head) return null;
+  let byPack = packCache.get(db);
+  if (!byPack) { byPack = new Map(); packCache.set(db, byPack); }
+  const hit = byPack.get(packId);
+  if (hit && hit.rev === head.rev) return hit;
   const row = await db.prepare('SELECT rev, json FROM pack_state WHERE pack_id = ?').bind(packId).first();
   if (!row || typeof row.json !== 'string' || row.json.length < 2) return null;
   let pack = null;
   try { pack = JSON.parse(row.json); } catch (e) { return null; }
-  return pack && typeof pack === 'object' && !Array.isArray(pack) ? { rev: row.rev, pack } : null;
+  if (!pack || typeof pack !== 'object' || Array.isArray(pack)) return null;
+  const rec = { rev: row.rev, pack };
+  byPack.set(packId, rec);
+  return rec;
 }
 export const readReport = (db, packId, id) =>
   db.prepare('SELECT ' + REPORT_COLS + ' FROM shift_reports WHERE pack_id = ? AND id = ?').bind(packId, id).first();
@@ -98,10 +111,13 @@ async function list({ db, packId, role, user }) {
   if (!canSubmitShiftReport(role)) return forbidden();
   // Leaders: the last SHIFT_REPORT_LEADER_DAYS days, and anything still waiting however old it is.
   // A parent's answer is built from every row, but sends only their own and a few words of the rest.
+  // A parent's answer only ever needs the reports holding a block, and closed ones from the last
+  // 30 days (security re-check 3: bounded, not the pack's whole history on every family's poll).
   const leader = canReadAllShiftReports(role);
   const r = await db.prepare('SELECT ' + REPORT_COLS + ' FROM shift_reports WHERE pack_id = ?' +
-    (leader ? " AND (status = 'submitted' OR submitted_at > ?)" : '') + ' ORDER BY submitted_at DESC, id')
-    .bind(...(leader ? [packId, Date.now() - SHIFT_REPORT_LEADER_DAYS * 86400000] : [packId])).all();
+    (leader ? " AND (status = 'submitted' OR submitted_at > ?)" : " AND (status IN ('submitted', 'accepted') OR submitted_at > ?)") +
+    ' ORDER BY submitted_at DESC, id')
+    .bind(packId, Date.now() - (leader ? SHIFT_REPORT_LEADER_DAYS : 30) * 86400000).all();
   const rows = r.results || [];
   if (leader) return json(200, { reports: rows.map((row) => reportOut(row, user.uid, true)), others: [] });
   // A parent: their own in full. For anyone else's, per block, only the report that holds it

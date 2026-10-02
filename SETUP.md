@@ -565,7 +565,8 @@ pack record, so a parent who can send one still can't write anything else.
   - Only a **parent from another family on that shift** can confirm: an account an admin has
     linked on the Members card to a scout on the shift whose family is not the sender's. A
     spouse, or a second account of the sender's family, can't confirm. If the sender isn't
-    linked to any scout, any linked parent on the shift can. The server checks this against the
+    linked to any scout, nobody can confirm, and a leader accepts it with a written reason (or
+    links the sender on the Members card first). The server checks this against the
     stored pack record. It is never the sender, never `pending`, and never an account that
     isn't linked. If the record, the storefront or the block can't be found, nobody can confirm.
   - A confirm names the figures it was shown. If the sender has changed them since, it is

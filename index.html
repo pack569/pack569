@@ -21713,7 +21713,13 @@
     return a === v ? 'same' : '';
   }
   // An adult's name as the day sheet prints it: first name only. '' stays '' (a blank to fill).
-  function sheetFirstName(n) { return String(n || '').trim().split(/\s+/)[0] || ''; }
+  // A stand-in for a name we don't have ("a signed-in parent": srNameClean) prints as a blank to fill
+  // in, not as its first word "a" (security re-check 5a).
+  function sheetFirstName(n) {
+    var s = String(n || '').trim();
+    if (/^a signed-in (parent|leader)$/.test(s)) return '';
+    return s.split(/\s+/)[0] || '';
+  }
   function renderBlock(sf, b) {
     var roster = activeScouts();
     var assignedIds = b.assignments.map(function (a) { return a.scoutId; });
@@ -21893,11 +21899,17 @@
   // linked (Members card) as a parent of a scout on the block from ANOTHER FAMILY than the sender
   // (review round 1: the server's shiftConfirmers, on this device's copy of the record)?
   function srNeedsSecond(r) { return !!(r && r.needsConfirm && !r.confirmed); }
+  // Security re-check (4): a sender linked to no scout has no family to rule out, so NOBODY can
+  // confirm theirs (the server's shiftConfirmers returns none); a leader accepts it with a reason.
+  function srSenderLinked(r) {
+    return state.scouts.some(function (sc) { return sc && arrOf(sc.parentUids).indexOf(r.submittedByUid) !== -1; });
+  }
   function srOtherParentLinked(r, b) {
     var senderFams = {};
     state.scouts.forEach(function (sc) {
       if (sc && arrOf(sc.parentUids).indexOf(r.submittedByUid) !== -1) senderFams[familyKeyOf(sc)] = true;
     });
+    if (!Object.keys(senderFams).length) return false;
     return ((b && b.assignments) || []).some(function (a) {
       var sc = getScout(a.scoutId);
       if (!sc || senderFams[familyKeyOf(sc)]) return false;
@@ -21973,7 +21985,8 @@
       h += r.confirmed
         ? '<p class="small" style="margin:0 0 6px">Counted by ' + esc(r.submittedByName || 'the family') + ' · confirmed by ' + esc(r.confirmedByName || 'a second parent') + '</p>'
         : '<p class="small warn" style="margin:0 0 6px">Only one parent has signed. Scouts from more than one family worked this shift, so a parent from another family needs to confirm before you accept. If no one can, accept without one and say why.' +
-          (b && !srOtherParentLinked(r, b) ? ' No parent from another family on this shift is linked to an account: link them on the Members card.' : '') + '</p>';
+          (b && !srSenderLinked(r) ? ' The sender isn’t linked to a scout: link them on the Members card, or accept with a reason.'
+            : b && !srOtherParentLinked(r, b) ? ' No parent from another family on this shift is linked to an account: link them on the Members card.' : '') + '</p>';
     } else if (b && srFamiliesNow(b) >= 2) {
       h += '<p class="small warn" style="margin:0 0 6px">This shift now has scouts from more than one family, but the report was sent when it had one, so no second parent was asked to confirm it.</p>';
     }
@@ -21982,8 +21995,10 @@
       h += '<p class="small muted" style="margin:0">Saving… the report is marked accepted once the save reaches the server.</p>';
       if (canReviewReports() && srStuck(p)) {
         h += '<p class="small warn" style="margin:6px 0">This accept has been waiting more than 15 minutes.' +
-          (p.collected ? ' Only the leader who collected the cash can finish it; you can undo it.' : ' Finishing it records you as the accepting leader.') + '</p>' +
-          '<div class="sr-acts">' + (p.collected ? '' : '<button type="button" class="btn small" data-act="sr-takeover" data-rid="' + esc(r.id) + '">Finish accepting</button>') +
+          (p.collected ? ' Only the leader who collected the cash can finish it; you can undo it.'
+            : p.override ? ' Only the leader who wrote the reason can finish it; you can undo it.'
+            : ' Finishing it records you as the accepting leader.') + '</p>' +
+          '<div class="sr-acts">' + (p.collected || p.override ? '' : '<button type="button" class="btn small" data-act="sr-takeover" data-rid="' + esc(r.id) + '">Finish accepting</button>') +
           '<button type="button" class="btn small ghost" data-act="sr-undo" data-rid="' + esc(r.id) + '">Undo</button></div>';
       }
       return h + '</div>';
@@ -22253,19 +22268,54 @@
   }
   // A stuck accept (SR_STUCK_MS old, another leader's): finish it as this leader, or undo it.
   // One the other leader made as the person who collected the cash is theirs to finish.
+  // Security re-check (1): the report must still be waiting, here and now — the first leader's
+  // accept may have landed since the button was drawn, and then the block is settled, not undone.
+  // Undo is SERVER-FIRST: the report is sent back, and only once the server agrees does the block
+  // go back; if the server says the first leader's accept got there first (report-moved, now
+  // accepted with these figures), the block is settled instead. (2) Neither an accept the other
+  // leader made as the person who collected the cash, nor one they overrode with their own written
+  // reason, is finished by anybody else.
   function srTakeOver(rid, undo) {
     if (!canReviewReports()) return;
     var r = srReport(rid), blk = r ? srBlockOf(r) : null;
     var b = blk && blk.b, p = b && b.reportPending;
     if (!p || b.reportId !== rid || !srStuck(p)) return;
-    if (undo) { srRollback(b, 'Undone.'); return; }
-    if (p.collected) return;
+    if (r.status !== 'submitted') { if (srAcceptedAsPending(r, p)) srSettle(b); return; }
+    if (undo) { srUndoServerFirst(rid, blk.sf.id, b.id); return; }
+    if (p.collected || p.override) return;
     if (srMine(r) || srIConfirmed(r)) { showToast(srMine(r) ? LEADER_SR_SAY['same-person'] : LEADER_SR_SAY.confirmer); return; }
     p.by = sync.user.uid;
     p.at = Date.now();
     b.reportApprovedBy = ledgerActor();
     if (!commit()) return;
     shiftReportsReconcile();
+  }
+  // Is this report accepted, on the server, with exactly the figures this pending accept wrote?
+  function srAcceptedAsPending(r, p) { return !!(r && p && r.status === 'accepted' && r.teCents === p.te && r.cashCents === p.cash); }
+  var SR_UNDO_NOTE = 'Accept undone by a leader';
+  function srUndoServerFirst(rid, sfId, blockId) {
+    sync.srOut = sync.srOut || {};
+    if (sync.srOut[rid]) return Promise.resolve(null);
+    sync.srOut[rid] = true;
+    var pendingNow = function () {
+      var cur = srBlockOf({ sfId: sfId, blockId: blockId });
+      return cur && cur.b.reportPending && cur.b.reportId === rid ? cur.b : null;
+    };
+    return sync.backend.patchShiftReport(sync.docId, rid, { action: 'return', reviewNote: SR_UNDO_NOTE }).then(function () {
+      delete sync.srOut[rid];
+      var b = pendingNow();
+      if (b) srRollback(b, 'Undone.');
+      return loadShiftReports();
+    }, function (err) {
+      delete sync.srOut[rid];
+      if (srNotNow(err)) { showToast('Couldn’t reach the pack’s server. Nothing was undone. Try again in a moment.'); return null; }
+      return loadShiftReports().then(function () {
+        var b = pendingNow();
+        if (!b) return;
+        if (srAcceptedAsPending(srReport(rid), b.reportPending)) { srSettle(b); showToast('The other leader’s accept reached the server first, so it stands.'); }
+        else showToast(leaderSrMessage(err));
+      });
+    });
   }
   // A leader typed a figure over one a report put there: the figures are theirs now, so the
   // "From …'s report" line goes. Not while an accept is still out (reconcile settles that, and
@@ -37754,7 +37804,14 @@
     if (ch === 'b-sales') { b.salesCents = toCents(el.value); srHandEdited(b); commit(); return; }
     if (ch === 'b-don') { b.donationsCents = toCents(el.value); srHandEdited(b); commit(); return; }
     if (ch === 'b-cash-counted') { b.cashCountedBy = el.value; commit(); return; }
-    if (ch === 'b-cash-verified') { b.cashVerifiedBy = el.value; if (String(el.value).trim()) delete b.reportReturned; commit(); return; }
+    if (ch === 'b-cash-verified') {
+      // A verifier typed by hand is not the leader who collected the cash (security re-check 5b): the
+      // supervision check counts whoever is named now.
+      if (el.value !== b.cashVerifiedBy) delete b.reportCollected;
+      b.cashVerifiedBy = el.value;
+      if (String(el.value).trim()) delete b.reportReturned;
+      commit(); return;
+    }
     if (ch === 'weight') {
       var a = b.assignments.find(function (x) { return x.scoutId === el.dataset.scout; });
       if (a) {

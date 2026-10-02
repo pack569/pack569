@@ -269,7 +269,8 @@ export function shiftParentUids(pack, sfId, blockId) {
 // scout's own id: the page's familyKeyOf) of every scout the sender is linked to; a confirmer
 // counts only through a scout on the block outside those families, so a spouse or a second
 // account of the same family never confirms. A sender linked to no scout has no family to rule
-// out, and any linked parent on the shift but the sender qualifies. null: fail closed, as above.
+// out, so NOBODY confirms theirs (security re-check 4: otherwise their own spouse could): a leader
+// accepts it with a written reason. null: fail closed, as above.
 export function shiftConfirmers(pack, sfId, blockId, senderUid) {
   if (shiftParentUids(pack, sfId, blockId) === null) return null;
   const famOf = (sc) => (typeof sc.familyId === 'string' && sc.familyId) || sc.id;
@@ -277,6 +278,7 @@ export function shiftConfirmers(pack, sfId, blockId, senderUid) {
   pack.scouts.forEach((sc) => {
     if (sc && Array.isArray(sc.parentUids) && sc.parentUids.indexOf(senderUid) !== -1) senderFams[famOf(sc)] = true;
   });
+  if (!Object.keys(senderFams).length) return [];
   const sf = pack.storefronts.filter((x) => x && x.id === sfId)[0];
   const b = sf.blocks.filter((x) => x && x.id === blockId)[0];
   const on = {};
