@@ -1,6 +1,7 @@
 // GET  /api/pack/:id/shift-reports   the storefront shift reports       (admin, editor, viewer, parent)
-//        leaders: { reports: [every report, in full], others: [] }
-//        a parent: { reports: [their own, in full], others: [{ sfId, blockId, status }] }
+//        leaders: { reports: [every report, in full], others: [], myShifts }
+//        a parent: { reports: [their own, in full], others: [{ sfId, blockId, status }], myShifts }
+//        myShifts: [{ sfId, blockId }], the caller's own scouts' shifts (see myShiftsFor below)
 // POST /api/pack/:id/shift-reports   send one: { sfId, blockId, teCents, cashCents, salesCashCents?, note?, attest: true }
 //                                     (admin, editor, viewer, parent — never pending)
 //
@@ -33,7 +34,7 @@
 import { route, json, readObject, refuse, forbidden, badRequest, shiftReported, tooManyReports } from '../../../../_lib/http.js';
 import { withMember, auditIf } from '../../../../_lib/pack.js';
 import { canSubmitShiftReport, canReadAllShiftReports, shiftReportProblem, cleanReportNote, packToday, shiftOfView, shiftNeedsConfirm, reportSalesCash,
-  shiftConfirmers, canConfirmShiftReport, daysBetween, SHIFT_REPORT_DAYS, SHIFT_REPORT_MAX_OPEN, SHIFT_REPORT_MAX_PER_DAY,
+  shiftConfirmers, shiftParentUids, canConfirmShiftReport, daysBetween, SHIFT_REPORT_DAYS, SHIFT_REPORT_MAX_OPEN, SHIFT_REPORT_MAX_PER_DAY,
   SHIFT_REPORT_LEADER_DAYS } from '../../../../_lib/rules.js';
 
 export const REPORT_COLS = 'id, sf_id, block_id, te_cents, cash_cents, note, submitted_by_uid, submitted_by_name, submitted_at, ' +
@@ -76,7 +77,8 @@ export function reportOut(row, uid, full) {
 }
 // The stored pack record, parsed, for the S-4 parent check: { rev, pack }, or null when there is
 // none or it cannot be read (fail closed: nobody confirms). Up to MAX_STATE_BYTES of JSON, read
-// only when a confirmation is in question, and never sent to the caller.
+// only when a confirmation is in question or (myShifts) a published shift is in the reporting
+// window, and never sent to the caller.
 // Security re-check (3): parsed once per pack per rev. A cheap SELECT of the rev comes first, and
 // the record is read and parsed again only when the rev has moved. Cached per database binding,
 // so a preview and production (or two test databases) never share an entry. Read-only use.
@@ -109,6 +111,40 @@ export const STILL_MEMBER = (roles) => 'EXISTS (SELECT 1 FROM members WHERE pack
   roles.map(() => '?').join(', ') + '))';
 export const SUBMIT_ROLES = ['admin', 'editor', 'viewer', 'parent'];
 
+// Your scout's shifts first (Keith, 2026-10-01): the published storefront shifts in the reporting
+// window (today or up to SHIFT_REPORT_DAYS back, as the family's card lists them) that have a scout
+// assigned whose parentUids hold the caller's uid, in the stored pack record (shiftParentUids: a
+// parent linked family-wide is on each sibling, so a shift with two of their children is listed
+// once). IDS ONLY, and only ids the parent view already publishes: never a scout, a name or a link.
+// The record is read only when a published shift is in the window, through the per-rev cache
+// (`getRec`: one read per request, shared with the S-4 check below).
+// FAIL CLOSED: no view, no record, anything unreadable, and the list is empty.
+async function myShiftsFor(getRec, uid, view) {
+  try {
+    const today = packToday();
+    const inWindow = [];
+    (view && Array.isArray(view.events) ? view.events : []).forEach((ev) => {
+      if (!ev || ev.kind !== 'storefront' || typeof ev.sfId !== 'string' || !Array.isArray(ev.shifts)) return;
+      const ago = daysBetween(ev.date, today);
+      if (!(ago >= 0 && ago <= SHIFT_REPORT_DAYS)) return;
+      ev.shifts.forEach((s) => { if (s && typeof s.blockId === 'string') inWindow.push({ sfId: ev.sfId, blockId: s.blockId }); });
+    });
+    if (!inWindow.length || !uid) return [];
+    const rec = await getRec();
+    if (!rec) return [];
+    return inWindow.filter((x) => {
+      const uids = shiftParentUids(rec.pack, x.sfId, x.blockId);
+      return Array.isArray(uids) && uids.indexOf(uid) !== -1;
+    });
+  } catch (e) {
+    return [];
+  }
+}
+const readView = async (db, packId) => {
+  const vrow = await db.prepare('SELECT payload FROM parent_views WHERE pack_id = ?').bind(packId).first();
+  try { return vrow ? JSON.parse(vrow.payload) : null; } catch (e) { return null; }
+};
+
 async function list({ db, packId, role, user }) {
   if (!canSubmitShiftReport(role)) return forbidden();
   // Leaders: the last SHIFT_REPORT_LEADER_DAYS days, and anything still waiting however old it is.
@@ -121,7 +157,11 @@ async function list({ db, packId, role, user }) {
     ' ORDER BY submitted_at DESC, id')
     .bind(packId, Date.now() - (leader ? SHIFT_REPORT_LEADER_DAYS : 30) * 86400000).all();
   const rows = r.results || [];
-  if (leader) return json(200, { reports: rows.map((row) => reportOut(row, user.uid, true)), others: [] });
+  const view = await readView(db, packId);
+  let recP = null;
+  const getRec = () => recP || (recP = readPackRecord(db, packId));
+  const myShifts = await myShiftsFor(getRec, user.uid, view);
+  if (leader) return json(200, { reports: rows.map((row) => reportOut(row, user.uid, true)), others: [], myShifts });
   // A parent: their own in full. For anyone else's, per block, only the report that holds it
   // (waiting or accepted) or else the latest — and of that only its block and status.
   const own = rows.filter((row) => row.submitted_by_uid === user.uid);
@@ -132,20 +172,19 @@ async function list({ db, packId, role, user }) {
   }
   const theirs = Object.keys(byBlock).map((k) => byBlock[k]).filter((row) => row.submitted_by_uid !== user.uid);
   // S-4: which of those wait for a second parent, on a shift still in the published view and the
-  // reporting window, and whether this account may be it. The view is read only if one waits; the
-  // pack record (up to 1.5 MB) only if one of those is still in the window (security review 4).
+  // reporting window, and whether this account may be it. The pack record (up to 1.5 MB) is read
+  // only while a published shift is in the window: for myShifts above, and for this (security
+  // review 4, widened by myShifts). Parsed once per rev, and read once per request.
   const today = packToday();
   let waiting = theirs.filter((row) => row.status === 'submitted' && row.needs_confirm === 1 && !row.confirmed_by_uid);
-  let rec = null, view = null;
+  let rec = null;
   if (waiting.length) {
-    const vrow = await db.prepare('SELECT payload FROM parent_views WHERE pack_id = ?').bind(packId).first();
-    try { view = vrow ? JSON.parse(vrow.payload) : null; } catch (e) { view = null; }
     waiting = waiting.filter((row) => {
       const at = shiftOfView(view, row.sf_id, row.block_id);
       const ago = at ? daysBetween(at.ev.date, today) : NaN;
       return ago >= 0 && ago <= SHIFT_REPORT_DAYS;
     });
-    if (waiting.length) rec = await readPackRecord(db, packId);
+    if (waiting.length) rec = await getRec();
   }
   const others = theirs.map((row) => {
     const o = { sfId: row.sf_id, blockId: row.block_id, status: row.status };
@@ -167,7 +206,7 @@ async function list({ db, packId, role, user }) {
     }
     return o;
   });
-  return json(200, { reports: own.map((row) => reportOut(row, user.uid, false)), others });
+  return json(200, { reports: own.map((row) => reportOut(row, user.uid, false)), others, myShifts });
 }
 
 async function submit({ request, db, packId, role, user, member }) {

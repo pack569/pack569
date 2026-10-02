@@ -20147,7 +20147,7 @@
   // and after every write. One at a time; a call while one is out runs once it is back.
   function loadShiftReports() {
     if (!shiftReportsOn()) return Promise.resolve(null);
-    var sr = sync.shiftReports || (sync.shiftReports = { reports: [], others: [], loaded: false, loading: false, again: false, error: '' });
+    var sr = sync.shiftReports || (sync.shiftReports = { reports: [], others: [], myShifts: [], loaded: false, loading: false, again: false, error: '' });
     if (sr.loading) { sr.again = true; return Promise.resolve(null); }
     sr.loading = true;
     var mine = sync.session;
@@ -20155,6 +20155,9 @@
       if (sync.session !== mine || sync.shiftReports !== sr) return;
       sr.reports = arrOf(r && r.reports);
       sr.others = arrOf(r && r.others);
+      // Your scout's shifts (2026-10-01): ids only, from the server; anything else is dropped.
+      sr.myShifts = arrOf(r && r.myShifts).filter(function (x) { return x && typeof x.sfId === 'string' && typeof x.blockId === 'string'; })
+        .map(function (x) { return { sfId: x.sfId, blockId: x.blockId }; });
       sr.loaded = true;
       sr.error = '';
     }, function (err) {
@@ -20347,9 +20350,17 @@
       '<button type="button" class="btn" data-act="shift-report-cancel">Cancel</button></div>' +
       '<p class="small muted" style="margin:0">If these don’t match what you counted, don’t confirm. Talk to the other family, or tell a leader.</p></form>';
   }
+  // Is this one of this account's own scouts' shifts? The server says (GET's myShifts: a shift
+  // with a scout whose parentUids hold this account), by ids only: the page never sees the links.
+  function srIsMyShift(sfId, blockId) {
+    var sr = sync.shiftReports;
+    return arrOf(sr && sr.myShifts).some(function (x) { return x && x.sfId === sfId && x.blockId === blockId; });
+  }
+  var SR_MY_SHIFT = 'Your scout’s shift';
   // The Schedule's shift-totals card: every published storefront shift from the last 14 days that
   // has started, with where its totals stand and the buttons, and the form under the one being
   // filled in. '' when the feature is off or there is no such shift. `today` is the pack's.
+  // Your scout's shifts come first, marked (Keith, 2026-10-01); the rest keep their order.
   function parentShiftReportCard(pv, today) {
     if (!shiftReportsOn()) return '';
     var rows = [];
@@ -20360,6 +20371,8 @@
     });
     if (!rows.length) return '';
     rows.sort(function (a, b) { return String(b.e.date).localeCompare(String(a.e.date)); });   // newest first; stable within a day
+    rows.forEach(function (r) { r.mine = srIsMyShift(r.e.sfId, r.s.blockId); });
+    rows = rows.filter(function (r) { return r.mine; }).concat(rows.filter(function (r) { return !r.mine; }));
     var sr = sync.shiftReports, d = ui.shiftReport;
     var h = '<div class="card no-print sr-card" id="srCard"><h2 class="section display" id="srCardHead" tabindex="-1">Storefront shift totals</h2>' +
       '<p class="small muted" style="margin:0 0 6px">' + esc(SHIFT_REPORT_INTRO) + '</p>';
@@ -20368,7 +20381,8 @@
     if (sr && sr.error) h += '<p class="small sr-problem" role="status">' + esc(sr.error) + '</p>';
     else if (!sr || !sr.loaded) h += '<p class="small muted" style="margin:0">Checking which shifts have totals…</p>';
     rows.forEach(function (r) {
-      h += '<div class="sr-row"><div class="sr-shift"><strong>' + esc(fmtDate(String(r.e.date))) + '</strong> · ' +
+      h += '<div class="sr-row"><div class="sr-shift">' +
+        (r.mine ? '<span class="pill sr-mine">' + esc(SR_MY_SHIFT) + '</span> ' : '') + '<strong>' + esc(fmtDate(String(r.e.date))) + '</strong> · ' +
         esc(String(r.e.title || 'Storefront')) + ' · ' + esc(String(r.s.when || '')) + '</div>';
       var cf = ui.shiftConfirm;
       if (d && shiftReportCanSend() && d.sfId === r.e.sfId && d.blockId === r.s.blockId) h += parentShiftReportForm(r.e, r.s);

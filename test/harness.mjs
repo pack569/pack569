@@ -17280,7 +17280,7 @@ function srStatusCtx(o) {
     function todayISO() { return '2026-10-03'; }
     ${['esc', 'fmt', 'arrOf', 'isoPlusDays', 'SHIFT_REPORT_ROLES', 'SHIFT_REPORT_DAYS', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_NOTE_MAX',
        'SHIFT_REPORT_ATTEST', 'SHIFT_CONFIRM_ATTEST', 'SHIFT_REPORT_TE_HINT', 'SHIFT_REPORT_CASH_HINT', 'SHIFT_REPORT_CASH_POLICY', 'SHIFT_REPORT_INTRO',
-       'SHIFT_REPORT_SALES_CASH_HINT', 'srSalesCashFig',
+       'SHIFT_REPORT_SALES_CASH_HINT', 'srSalesCashFig', 'srIsMyShift', 'SR_MY_SHIFT',
        'shiftReportNowHM', 'shiftReportsOffered', 'shiftReportCanSend', 'shiftReportToday', 'SHIFT_REPORT_NOTE_HINT', 'srField', 'shiftReportOpenFor', 'shiftReportsOn', 'shiftReportFor', 'parentShiftReportStatus',
        'parentShiftReportForm', 'parentShiftReportCard', 'parentShiftLines', 'parentShiftConfirmForm'].map(decl).join('\n')}`, ctx);
   return ctx;
@@ -18154,6 +18154,50 @@ atest('S-4: a parent who may confirm sees the figures to check — only they, on
   ok(r2, 'the report');
 });
 
+/* Your scout's shifts first (Keith, 2026-10-01) — GET /shift-reports also answers myShifts: the
+   published shifts in the reporting window with a scout whose parentUids hold the caller's uid, from
+   the stored pack record. Ids only; fail closed. */
+atest('my shifts: each account gets the ids of its own scouts’ shifts — brothers and sisters linked family-wide, once each — and nothing else', async () => {
+  const w = await s4World();
+  const mine = async (who) => { const g = await w.call(who, 'GET', 'shiftReports'); eq(g.status, 200, who + '’s GET'); return g; };
+  // b1: Ada (parent) + Bo (newbie); b2: Bo + Cy, brothers both linked to newbie; b3: Ada + Di (other); b5: Ada + Bo.
+  // b4 is published but not in the pack record.
+  const want = { parent: ['b1', 'b3', 'b5'], newbie: ['b1', 'b2', 'b5'], other: ['b3'], loose: [], editor: [], owner: [], viewer: [] };
+  for (const who of Object.keys(want)) {
+    const g = await mine(who);
+    eq(g.body.myShifts, want[who].map((b) => ({ sfId: 'sf1', blockId: b })), who + '’s shifts');
+    // Ids only: never a scout, a name, a family or an account.
+    ok(!/parentUids|familyId|famB|uid-|"Ada"|"Bo"|"Cy"|"Di"|scoutId|assignments/.test(g.text), who + ' was sent pack-record data: ' + g.text.slice(0, 300));
+    g.body.myShifts.forEach((x) => eq(Object.keys(x), ['sfId', 'blockId'], who + ': a shift carries more than its ids'));
+  }
+  denied(await w.call('pending', 'GET', 'shiftReports'), 'pending');
+  denied(await w.call('stranger', 'GET', 'shiftReports'), 'a stranger');
+  // A link added in the pack record shows at the next read (a new rev), and one taken off goes.
+  const st = JSON.parse(w.one('SELECT json FROM pack_state').json);
+  st.scouts.find((sc) => sc.id === 's4').parentUids = ['uid-other', 'uid-loose'];
+  st.scouts.find((sc) => sc.id === 's2').parentUids = [];
+  st.scouts.find((sc) => sc.id === 's3').parentUids = [];
+  w.db.raw.prepare('UPDATE pack_state SET json = ?, rev = rev + 1').run(JSON.stringify(st));
+  eq([(await mine('loose')).body.myShifts.map((x) => x.blockId), (await mine('newbie')).body.myShifts], [['b3'], []], 'after the links changed');
+  // Fail closed: a record that can't be read, or none at all.
+  for (const [json, what] of [['{x', 'an unreadable record'], ['[]', 'a record that is not an object'], ['{"scouts":[]}', 'a record with no storefronts']]) {
+    w.db.raw.prepare('UPDATE pack_state SET json = ?, rev = rev + 1').run(json);
+    eq((await mine('parent')).body.myShifts, [], what);
+  }
+  w.db.raw.prepare('DELETE FROM pack_state').run();
+  eq((await mine('parent')).body.myShifts, [], 'no pack record');
+  // Only shifts in the reporting window, as the card lists them: a view of old or future storefronts lists none.
+  const v = await s4World();
+  for (const [n, what] of [[-15, 'too old'], [1, 'tomorrow']]) {
+    const old = JSON.parse(JSON.stringify(v.view));
+    old.events[0].date = srDay(n);
+    v.db.raw.prepare('UPDATE parent_views SET payload = ? WHERE pack_id = ?').run(JSON.stringify(old), API_PACK);
+    eq((await v.call('parent', 'GET', 'shiftReports')).body.myShifts, [], what);
+  }
+  v.db.raw.prepare('DELETE FROM parent_views').run();
+  eq((await v.call('parent', 'GET', 'shiftReports')).body.myShifts, [], 'no parent view');
+});
+
 atest('S-4: the table refuses a sender confirming their own, and an accept a second parent never signed with no reason', async () => {
   const w = await (await apiWorld()).seed({});
   const refused = (sql, ...a) => { try { w.db.raw.prepare(sql).run(...a); return false; } catch (e) { return true; } };
@@ -18464,28 +18508,32 @@ atest('round 1: one account has at most 3 reports waiting and 20 a day; a leader
   eq((await ld.call('owner', 'GET', 'shiftReports')).body.reports.map((r) => r.id).sort(), ['forgotten', 'lastyear'], 'the leader’s list');
 });
 
-atest('round 1: a parent’s list reads the view first and the pack record only when a confirm is in question', async () => {
+atest('round 1: a parent’s list reads the pack record only while a published shift is in the window, once per request, parsed once per rev', async () => {
+  // Security review 4 read the record only when a confirm was in question. "Your scout's shifts
+  // first" (2026-10-01) needs it whenever a published shift is in the reporting window; the bound
+  // is now that, and the per-rev cache keeps a minute's poll to one cheap SELECT of the rev.
   const w = await r1World();
   const reads = [];
   const prep = w.db.prepare;
   w.db.prepare = (sql) => { if (/FROM pack_state/.test(sql)) reads.push(sql); return prep(sql); };
-  await w.call('newbie', 'GET', 'shiftReports');
-  eq(reads.length, 0, 'no report waiting: the pack record read');
-  const rid = (await w.send('parent', 'b1')).body.report.id;
+  const kinds = (from) => reads.slice(from).map((q) => /SELECT rev FROM/.test(q) ? 'rev' : 'json');
   const view = JSON.parse(JSON.stringify(w.view));
   view.events[0].date = '2020-01-01';
   w.db.raw.prepare('UPDATE parent_views SET payload = ?').run(JSON.stringify(view));
   await w.call('newbie', 'GET', 'shiftReports');
-  eq(reads.length, 0, 'the only one waiting is out of the window: the pack record read');
+  eq(reads.length, 0, 'no published shift in the window: the pack record read');
   w.db.raw.prepare('UPDATE parent_views SET payload = ?').run(JSON.stringify(w.view));
+  await w.call('newbie', 'GET', 'shiftReports');
+  eq(kinds(0), ['rev', 'json'], 'a shift in the window: the rev, then the record (for myShifts)');
+  const rid = (await w.send('parent', 'b1')).body.report.id;
+  const n = reads.length;
   const g = await w.call('newbie', 'GET', 'shiftReports');
-  eq([reads.length, g.body.others.find((o) => o.id === rid).canConfirm], [2, true], 'one in the window: the rev, then the record');
+  eq([kinds(n), g.body.others.find((o) => o.id === rid).canConfirm], [['rev'], true], 'a confirm in question too: still one read, from the cache');
   // Security re-check 3: the same rev again is the cheap read only; a new rev reads the record again.
-  await w.call('newbie', 'GET', 'shiftReports');
-  eq(reads.slice(2).map((q) => /SELECT rev FROM/.test(q) ? 'rev' : 'json'), ['rev'], 'the same rev: parsed once');
   w.db.raw.prepare('UPDATE pack_state SET rev = rev + 1').run();
+  const m = reads.length;
   await w.call('newbie', 'GET', 'shiftReports');
-  eq(reads.slice(3).map((q) => /SELECT rev FROM/.test(q) ? 'rev' : 'json'), ['rev', 'json'], 'a new rev: read again');
+  eq(kinds(m), ['rev', 'json'], 'a new rev: read again');
 });
 
 test('round 1: the leader card’s buttons say who verifies the cash, and the confirmer is not offered Accept', () => {
@@ -18740,6 +18788,28 @@ test('round 1: the season’s shift reports, as a leaders’ table and a CSV, wi
   ok(/Print or download this season’s record first\. <button type="button" class="btn small" data-act="sr-history-open">Shift reports this season<\/button>/.test(slice('renderCloseoutOverlay')),
     'not offered at close-out');
   ok(/'sr-history-open', 'sr-history-csv'/.test(slice('HELD_ACTS')), 'refused while the reload gate holds, though it only reads');
+});
+
+test('my shifts: the family’s card lists their own scouts’ shifts first, marked, and leaves the rest in order', () => {
+  const pv = { events: [srEv('2026-09-30', ['b1']), Object.assign(srEv('2026-10-03', ['b5', 'b6']), { sfId: 'sf2', title: 'Publix' }), srEv('2026-10-01', ['b2'])] };
+  const card = (o) => vm.runInContext('parentShiftReportCard', srStatusCtx(o))(pv, SR_TODAY);
+  const order = (h) => [...h.matchAll(/<div class="sr-row"><div class="sr-shift">(<span class="pill sr-mine">Your scout’s shift<\/span> )?<strong>D([\d-]+)<\/strong> · (\w+)/g)]
+    .map((m) => (m[1] ? '*' : '') + m[2] + ' ' + m[3]);
+  const plain = order(card({}));
+  eq(plain, ['2026-10-03 Publix', '2026-10-03 Publix', '2026-10-01 Kroger', '2026-09-30 Kroger'], 'with none of theirs: newest first, as before');
+  eq(order(card({ others: [] , reports: [] })), plain, 'the same with no myShifts at all');
+  const ctx = srStatusCtx({});
+  vm.runInContext("sync.shiftReports.myShifts = [{ sfId: 'sf1', blockId: 'b1' }, { sfId: 'sf2', blockId: 'b6' }]", ctx);
+  const h = vm.runInContext('parentShiftReportCard', ctx)(pv, SR_TODAY);
+  eq(order(h), ['*2026-10-03 Publix', '*2026-09-30 Kroger', '2026-10-03 Publix', '2026-10-01 Kroger'], 'theirs first, marked; the rest in their order');
+  ok(h.indexOf('data-block="b6"') < h.indexOf('data-block="b1"') && h.indexOf('data-block="b1"') < h.indexOf('data-block="b5"'), 'the right shifts marked');
+  eq((h.match(/Your scout’s shift/g) || []).length, 2, 'marked once each');
+  // A shift of theirs outside the window is not added: the card lists only what it would anyway.
+  vm.runInContext("sync.shiftReports.myShifts = [{ sfId: 'sf1', blockId: 'b9' }]", ctx);
+  eq(order(vm.runInContext('parentShiftReportCard', ctx)(pv, SR_TODAY)), plain, 'an id the card does not list');
+  // The page keeps ids only, whatever the answer carries.
+  ok(/sr\.myShifts = arrOf\(r && r\.myShifts\)\.filter\(function \(x\) \{ return x && typeof x\.sfId === 'string' && typeof x\.blockId === 'string'; \}\)\s*\.map\(function \(x\) \{ return \{ sfId: x\.sfId, blockId: x\.blockId \}; \}\);/.test(slice('loadShiftReports')),
+    'loadShiftReports keeps more than the ids');
 });
 
 /* S-5 (Keith, 2026-10-01) — on the page: the family's third figure, and the leaders' "cash to

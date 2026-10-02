@@ -597,6 +597,13 @@ pack record, so a parent who can send one still can't write anything else.
   14 days, shows its amounts (all three), its note and the sender's first name to the parents who are
   allowed to confirm it, and to no one else. They can't confirm figures they can't see. No
   account ids or links are ever sent.
+- **Your scout's shifts first** (Keith, 2026-10-01): the list also tells each account which
+  published shifts from the last 14 days have one of **their own** scouts on them (a scout an
+  admin has linked to that account on the Members card; a parent linked family-wide gets each
+  child's shifts). The server works this out from the stored pack record and sends **only the
+  storefront and block ids** the parent view already publishes, never a scout, a name or a link.
+  If the record can't be read, the list is empty. The family's *Storefront shift totals* card
+  shows those shifts first, marked "Your scout's shift".
 - Every report, edit, withdrawal, acceptance and send-back is written to the `audit` table
   in the same step as the change itself.
 
