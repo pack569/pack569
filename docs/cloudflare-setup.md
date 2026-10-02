@@ -341,7 +341,14 @@ Still on your computer, from the repo folder:
 
 Each one lists the files in `migrations/` it has not run yet (`0001_init.sql`,
 `0002_deployment.sql`, …), asks you to confirm, and creates the tables. Later changes add more
-files; apply those the same way, preview first. To check:
+files; apply those the same way, preview first, then production, and **before you deploy the code
+that uses them**. The new code reads the new columns, so on a database that doesn't have them
+yet, its calls fail. (For example, `0004_shift_report_sales_cash.sql` goes on both databases
+before the deploy that brings the "cash from popcorn sales" figure.) Before applying one, run
+`npx wrangler d1 migrations list pack569-preview --remote` (and the same for `pack569-prod` with
+`--env production`) to see which files it hasn't run yet. `0004_shift_report_sales_cash.sql` was
+changed several times before it was ever applied. If the list says it has already run anywhere,
+stop and ask: the version that ran is not the one in the repo. To check:
 
 ```
 npx wrangler d1 execute pack569-preview --remote --command "SELECT name FROM sqlite_master WHERE type = 'table'"

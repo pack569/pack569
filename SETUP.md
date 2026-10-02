@@ -533,6 +533,26 @@ pack record, so a parent who can send one still can't write anything else.
   that is in the future, too old, or not published.
 - **The figures:** whole cents, from $0 to **$10,000** each, plus an optional note of at most
   **300 characters**. The signature box must be ticked.
+- **Cash from popcorn sales not converted** (S-5, Keith 2026-10-01): an optional third figure,
+  for the whole shift. Pack policy is that families convert all cash from popcorn sales to
+  credit in the Trail's End app before they leave the table, so it should be $0. If it isn't,
+  the report says how much wasn't converted, the note says who has it, and that cash goes to
+  the leader collecting the money. It follows the same rules as the
+  other two figures (whole cents, $0 to $10,000), it defaults to $0 when left out, and it can't
+  be more than the Trail's End amount, because those sales are already part of it. For the same
+  reason it is **never added** to the block's sales or to any scout's standings. A second
+  parent's confirmation and a leader's accept must name it, like the other two figures. It is
+  never published to parents; another family sees it only in the one exception under *Who sees
+  what* below.
+- **What became of that cash** (treasurer and security review, followups round 1): only an
+  `admin` or `editor`, and only on a report that has some and was **accepted** (it may have
+  been sent back since), records on the server that they **collected** it, or that the family
+  **converted** it to credit after all. On a report sent back after it was accepted, they can
+  instead mark it **the same cash as the new report** (`replaced`), so a corrected report's
+  figure isn't counted twice. They can undo any of these. The record names the amount it is about and is refused if the report has moved
+  since. It keeps who recorded it and when, from their member record and the server's clock.
+  Each change is audited (`shift.salescash.collected`, `.converted`, `.replaced`, `.undo`), and leaders see
+  it in the season's shift-report history.
 - **One at a time:** each block can have only one report that is waiting or accepted. A
   second report for the same block is refused until a leader sends the first one back or its
   sender withdraws it.
@@ -544,6 +564,17 @@ pack record, so a parent who can send one still can't write anything else.
   refuses the same person as counter and verifier. A leader can send back a waiting or an
   accepted report, and must give a reason. The family then sends a corrected report as a new
   one.
+- **A different family from the sender** (Keith, 2026-10-01): the accepting leader must not be
+  in the sender's family. The server works out each account's families from the stored pack
+  record: the families of the scouts an admin has linked that account to on the Members card,
+  with brothers and sisters as one family. If the leader and the sender share one, the plain
+  accept and "I collected and counted this cash" are refused. The only way left is to accept
+  with a written reason, which is audited as an override, and the block says "accepted by
+  ‹leader› (same family as the sender)". If either account is linked to no scout, the accept
+  works as before. If the pack record exists but can't be read, the server treats it as the
+  same family, so only an accept with a reason gets through. The same rule applies to recording
+  what became of a report's cash from popcorn sales, which is never the sender either; anyone
+  may undo that record. The rule reads links between people, never pack jobs.
 - **Who verified the cash** (Keith, review round 1). Every accepted report names who did:
   - **Two or more families on the shift:** the parent from the other family who confirmed it.
     The accepting leader is recorded as the approver.
@@ -583,10 +614,17 @@ pack record, so a parent who can send one still can't write anything else.
   else's report, a parent sees only that the block has a report and whether it is waiting,
   accepted, sent back or withdrawn. They never see another family's amounts, name or note,
   with **one exception**: a report still waiting for a second parent, on a shift from the last
-  14 days, shows its two amounts, its note and the sender's first name to the parents who are
+  14 days, shows its amounts (all three), its note and the sender's first name to the parents who are
   allowed to confirm it, and to no one else. They can't confirm figures they can't see. No
   account ids or links are ever sent.
-- Every report, edit, withdrawal, acceptance and send-back is written to the `audit` table
+- **Your scout's shifts first** (Keith, 2026-10-01): the list also tells each account which
+  published shifts from the last 14 days have one of **their own** scouts on them (a scout an
+  admin has linked to that account on the Members card; a parent linked family-wide gets each
+  child's shifts). The server works this out from the stored pack record and sends **only the
+  storefront and block ids** the parent view already publishes, never a scout, a name or a link.
+  If the record can't be read, the list is empty. The family's *Storefront shift totals* card
+  shows those shifts first, marked "Your family's shift".
+- Every report, edit, withdrawal, acceptance, send-back and record of the cash from sales is written to the `audit` table
   in the same step as the change itself.
 
 ### The sign-up link — the recommended way

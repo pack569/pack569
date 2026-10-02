@@ -1554,6 +1554,11 @@ API backend they send them in.
 - **Two different adults.** The leader who accepts must be neither the one who sent the report
   nor the parent who confirmed it. The server refuses both, and the page doesn't offer them.
   This is the cash box's own rule (`blockCashCheck`, "same person").
+- **A different family from the sender** (Keith, 2026-10-01). The accepting leader isn't in the
+  sender's family, by the scouts each account is linked to (`familyKeyOf`, siblings as one). If
+  they share one, only an override with a reason is left (`reportOverride: 'same-family'`). The
+  server holds the rule in the accept's own write (rules.js `sameFamily`, against the pack
+  record's rev). An account linked to no scout shares no family.
 - **Who verified the cash** (Keith, review round 1). On a shift with two or more families, the
   confirming parent. On a one-family shift, the accepting leader, because they collected and
   counted the cash at the end of the storefront ("I collected and counted this cash — accept").
@@ -1572,6 +1577,50 @@ API backend they send them in.
   finishes or undoes it.
 - **Already holding figures.** Accepting onto a block that already has different figures shows
   old against new first, and replaces both the figures and the names on the cash count.
+- **Cash from popcorn sales not converted** (S-5, Keith 2026-10-01). Families convert all cash
+  from popcorn sales to credit in the Trail's End app before they leave the table. When they
+  can't, the report says how much wasn't converted (`sales_cash_cents`, 0 on almost every report).
+  It is a **custody** figure, not money: those sales were entered in the app, so they are already
+  inside `salesCents`, and the figure is never added to it, to `blockShares`, or to any total. It
+  is the council's money: a leader collects it, deposits it, and records the deposit in the
+  ledger as Popcorn money for the council. Nothing here writes a ledger row; a "Record deposit"
+  button can come with the storefront cash deposits work.
+  - **The record is the server's** (treasurer and security, followups round 1). An admin or
+    editor marks a report's cash **Collected** or **They converted it** (PATCH `salescash`,
+    audited, undoable), on an accepted report, or one sent back after its accept. On the sent-back
+    kind they can instead mark it **Same cash as the new report** (`replaced`), when the
+    corrected report holds the same cash, so it isn't counted twice. The season's history shows
+    who recorded it and when, and a settlement can later sum what was `collected` from
+    `shift_reports`, ignoring `converted` and `replaced`.
+  - **The block mirrors it**, one entry per accepted report: `b.salesCash = [{ reportId, cents,
+    from, outcome }]`, with `outcome` null while the cash is out, or `{ outcome, by, at }`. The
+    amount stays when it is collected. Accepting a later report onto the block adds its own entry
+    and never overwrites one an earlier report left to collect: the review card and the
+    replace check say so. A leader's page follows the server's record if another leader recorded
+    it elsewhere.
+  - **Where leaders see it:** "Cash from popcorn sales to collect" on the review card and the
+    block, a section in the storefront banner, and a column in the history and CSV. A
+    one-family accept with some has "I collected and counted the cash donations — accept" and a
+    box, "I also collected the $X cash from popcorn sales", which records it once the accept
+    lands.
+  - **Trail's End's window** (Keith, 2026-10-01; followups round 3). Storefront closeout and
+    Cash to Credit stay open up to 72 hours from midnight on the storefront date. The page reads
+    that conservatively, counting from the midnight that **begins** the storefront date in
+    Eastern time, until Keith confirms the reading with Trail's End or the council. All of it is
+    one constant, `TE_CASH_WINDOW`. Families are told "(Trail's End's own deadline is midnight
+    that day for families; leaders can finish it within 72 hours.)", and the pack's rule is
+    still to convert at the table. Leaders' cash still out shows amber from 48 hours ("…window
+    ends soon (72 hours). After that, this cash can only be collected and deposited.") and red
+    from 72 ("…72-hour window has closed. This cash can't be converted now: collect it and
+    deposit it as Popcorn money for the council."). "They converted it" stays available after
+    the window closes, and its toast asks for a check in the Trail's End app.
+  - **Never lost without a word:** deleting the block or the storefront warns while any is
+    still out, and so does the close-out. The reminder outlives the block either way: an
+    accepted report with cash from sales still out whose block or storefront is gone (deleted,
+    or cleared at close-out) is listed in the storefront banner from the server's reports
+    (`srCashOrphans`), with its own Collected / They converted it, recorded on the server only.
+    That lasts as long as leaders' reports reach back (400 days). It is leaders' only:
+    `buildParentView` never publishes it.
 - **Sending back an accepted report.** The figures **stay** on the block and keep counting. The
   money was counted, and taking it off every scout's total because the paperwork is in question
   would move standings for a clerical reason. The block loses its link to the report and its
@@ -1644,10 +1693,16 @@ donations (kept), with no budget line, so they aren't counted twice."
   newest closed year's last day (`closedBooksLastCutoff`; treasurer review, 17). Deleting a
   storefront a deposit names says so at the confirm: "A deposit of $Y in the ledger names this
   storefront. Deleting it takes its $K of kept cash out of Funds in." (19)
-- **Sales cash** a leader still holds (`salesCashInHandCents` on a block, once that field exists:
-  it is being added by the shift-report follow-ups and is read defensively, as $0 when missing)
-  is its own line: "Sales cash to pay the council $S: owed to the council, not pack income." It
-  is never part of X.
+- **Sales cash** owed to the council is its own line, read from the shift-report follow-ups' list
+  on each block (`b.salesCash`, above; `blockSalesCashParts`): the entries still out (outcome null)
+  and those collected but perhaps not yet banked ('collected'); 'converted' and 'replaced' are not
+  owed. "Sales cash to pay the council $S (still to collect $X · collected, to bank $Y): owed to the
+  council, not pack income." It is never part of X, and never Funds in. Collected sales cash is
+  banked as *Popcorn money for the council* (below), as the 72-hour window's red warning says.
+- **Follow-up, not built:** the server records each outcome (`sales_cash_outcome`, migration 0004).
+  Settling with the council should eventually reconcile against the sum of collected amounts: what
+  was collected should match what was banked as Popcorn money for the council, and a gap is sales
+  cash collected and not yet banked.
 - **The hint.** Money in posted as plain income (source blank, donation, fundraiser or other; no
   family) that looks like storefront cash donations gets: "Are these storefront cash donations
   the pack keeps? Record them as ‘Storefront cash donations (kept)’: they are already in Funds in
