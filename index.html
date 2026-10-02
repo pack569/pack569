@@ -2471,16 +2471,22 @@
   // 'storefront' (treasurer review of shift reports, item 11) — the bank deposit of storefront cash
   // donations the pack keeps. That cash is already in Funds in from the block figures, so the
   // deposit is never income (ledgerIncomeCents); see storefrontCashCheck.
-  var LEDGER_SOURCES = ['family', 'donation', 'fundraiser', 'commission', 'carryover', 'storefront', 'other', 'refund'];
+  // 'council' (owner, 2026-10-01; treasurer review of item 11, 9) — popcorn money that belongs to the
+  // council: sales cash banked for it (money in) and the pack's check to it (money out). A pass-
+  // through: never pack income or a pack cost, in either direction. See councilMoneyCheck.
+  var LEDGER_SOURCES = ['family', 'donation', 'fundraiser', 'commission', 'carryover', 'storefront', 'council', 'other', 'refund'];
   // The sources a family's payment can't have: the pack's own money (normalizeLedgerRow, applyLedgerEdit).
-  var LEDGER_NO_FAMILY_SOURCES = ['storefront'];
+  var LEDGER_NO_FAMILY_SOURCES = ['storefront', 'council'];
   // The most characters a storefront deposit's list of storefronts may hold (depositForIds). Up
   // here, above `var state = load()`, because normalizeLedgerRow reads it.
   var DEPOSIT_FOR_MAX = 1000;
+  // How the popcorn was settled with the council (book.councilSettled.how; councilSettledNormal). Up
+  // here for the same reason.
+  var COUNCIL_SETTLE_HOW = ['paid', 'payout', 'even'];
   var LEDGER_SOURCE_LABELS = {
     family: 'Family payment', donation: 'Donation', fundraiser: 'Fundraiser',
     commission: 'Popcorn commission', carryover: 'Carryover', storefront: 'Storefront cash donations (kept)',
-    other: 'Other', refund: 'Refund to a family'
+    council: 'Popcorn money for the council', other: 'Other', refund: 'Refund to a family'
   };
   // The book — where the ledger's running balance starts. Decision 12 in DESIGN-money.md
   // asked whether the ledger should open at the current bank balance or backfill the
@@ -4263,6 +4269,9 @@
     // E2 — who marked the last statement reconciled, and when.
     d.book.reconciledBy = ledgerStampClean(d.book.reconciledBy);   // never an email (E2)
     if (typeof d.book.reconciledAt !== 'string') d.book.reconciledAt = '';
+    // Owner, 2026-10-01 — the popcorn settled with the council (councilSettledNormal), or absent.
+    var cset = councilSettledNormal(d.book.councilSettled);
+    if (cset) d.book.councilSettled = cset; else delete d.book.councilSettled;
     // -----------------------------------------------------------------------
     // PHASE 3, C1 — the audit model, in the record and nothing else yet (no screen reads or
     // writes it until C2). Absent on every record before → the empty forms below, about 93 bytes.
@@ -5237,6 +5246,8 @@
     // and merges exactly as it did).
     // Security review of item 11 (low 1) — a storefront deposit is money in, and nobody's payment.
     if (e.source === 'storefront' && (e.direction !== 'in' || e.scoutId)) e.source = '';
+    // …and money for the council is nobody's payment either, in either direction.
+    if (e.source === 'council' && e.scoutId) e.source = '';
     // Treasurer review of item 11 (13) — the answer "not storefront cash": true, or absent.
     if (e.notStorefront !== true) delete e.notStorefront;
     if (e.source === 'storefront') {
@@ -6629,7 +6640,8 @@
       var il = getBudgetLine(id);
       return !!il && il.category === 'income';
     };
-    var income = ledgerIncomeCents(state.ledger, isIncomeLine, b.startingBalance || 0);
+    // Owner, 2026-10-01 — once the popcorn is settled with the council, its commission is actual (A − B + C).
+    var income = ledgerIncomeCents(state.ledger, isIncomeLine, b.startingBalance || 0, !!(state.book && state.book.councilSettled));
     var commissionEstimate = pack.commission || 0;
     var commission = income.hasCommission ? income.commission : commissionEstimate;
     // T4a — only a question while the estimate is what Funds in is counting.
@@ -6657,6 +6669,9 @@
       expPlanned: expPlanned, expActual: expActual, scouts: scouts,
       commission: commission, commissionKnown: pack.commission != null || income.hasCommission,
       commissionPosted: income.hasCommission, commissionEstimate: commissionEstimate,
+      // Owner, 2026-10-01 — settled with the council: the commission is the money banked for it less what
+      // was paid it, plus any commission checks (ledgerIncomeCents), and the Funds in sentence says so.
+      commissionSettled: income.settled, councilIn: income.councilIn, councilOut: income.councilOut,
       incomePosted: income.other, commissionLookalikes: lookalikes,
       // M3 — carryover entries counted because Starting funds is $0 (ledgerIncomeCents).
       ledgerCarryover: income.carryover,
@@ -7802,7 +7817,8 @@
   // left, source blank or "other".
   // A storefront cash deposit (item 11) is not a refund either: it is cash the block figures
   // already count, and taking it off a line's cost would be the M1 double count in another place.
-  var LEDGER_INCOME_SOURCES = ['family', 'donation', 'fundraiser', 'commission', 'carryover', 'storefront'];
+  // Nor is popcorn money for the council: it is not the pack's at all.
+  var LEDGER_INCOME_SOURCES = ['family', 'donation', 'fundraiser', 'commission', 'carryover', 'storefront', 'council'];
   function entryIsRefund(e) {
     return e.direction === 'in' && !e.scoutId && LEDGER_INCOME_SOURCES.indexOf(e.source) === -1;
   }
@@ -7813,6 +7829,9 @@
     if (!lineId) return 0;
     return ledgerUnpaired(ledger).reduce(function (n, e) {
       if (e.lineId !== lineId) return n;
+      // Popcorn money for the council (owner, 2026-10-01) — neither direction is the line's cost: the
+      // check to the council was never the pack's spending, and the sales cash never its refund.
+      if (e.source === 'council') return n;
       // Phase 3b — money in that settles a FAMILY's account is not a refund of what the
       // pack spent; it is income against a charge. Counting it here would make a dues line
       // read as NEGATIVE spending, and the pack's "actual spent" go below zero. A refund
@@ -7832,8 +7851,9 @@
     if (!lineId) return 0;
     return ledgerUnpaired(ledger).reduce(function (n, e) {
       if (e.lineId !== lineId || e.scoutId) return n;
-      // Item 11 — a storefront cash deposit filed on the line is not what the line brought in.
-      if (e.source === 'storefront') return n;
+      // Item 11 — a storefront cash deposit filed on the line is not what the line brought in, nor
+      // is popcorn money for the council, either way.
+      if (e.source === 'storefront' || e.source === 'council') return n;
       return n + entrySignedCents(e);
     }, 0);
   }
@@ -7853,10 +7873,24 @@
   // A family's payment (scoutId set) is none of these — it is counted through its charges.
   // `startingCents` is the budget's Starting funds. `carryover` in the result is the pack's own
   // carryover entries, counted only when Starting funds is $0 (M3, below).
-  function ledgerIncomeCents(ledger, isIncomeLine, startingCents) {
-    var t = { commission: 0, hasCommission: false, other: 0, carryover: 0 };
+  //
+  // `settled` (owner, 2026-10-01): the pack has settled the popcorn with the council (book.councilSettled).
+  // The council nets the commission off what the pack owes it and sends a check only when it owes the
+  // pack, so no commission cheque may ever arrive. Once settled the commission is ACTUAL: the money
+  // banked for the council, less what was paid to it, plus any commission checks posted —
+  //   commission = councilIn − councilOut + Σ source 'commission'
+  // (councilSettlement: owed = product − card − commission; the cash banked is product − card, so the
+  // check paid is cash − commission, and cash − check = commission). hasCommission is then true.
+  // `councilIn` / `councilOut` are reported either way. Popcorn money for the council is otherwise
+  // in neither direction of Funds in.
+  function ledgerIncomeCents(ledger, isIncomeLine, startingCents, settled) {
+    var t = { commission: 0, hasCommission: false, other: 0, carryover: 0, councilIn: 0, councilOut: 0, settled: !!settled };
     ledgerUnpaired(ledger).forEach(function (e) {
       var amt = e.amountCents || 0;
+      if (e.source === 'council' && !e.scoutId) {
+        if (e.direction === 'in') t.councilIn += amt; else t.councilOut += amt;
+        return;
+      }
       if (e.direction === 'in') {
         if (e.scoutId) return;
         // T5 — the carryover is already in Funds in as Starting funds. An entry recording it (the
@@ -7883,6 +7917,10 @@
         t.other -= amt;
       }
     });
+    if (settled) {
+      t.commission += t.councilIn - t.councilOut;
+      t.hasCommission = true;
+    }
     return t;
   }
   // Treasurer's review (T4a) — money in on an INCOME line that may be the council's commission
@@ -7919,7 +7957,7 @@
   // Item 11 — nor a storefront cash deposit: no line is right for it (its cash is counted from the
   // block figures), and the posting rule tells the treasurer to leave it blank.
   function entryWantsLine(e) {
-    return !e.lineId && !entryRefundsFamily(e) && e.source !== 'carryover' && e.source !== 'storefront';
+    return !e.lineId && !entryRefundsFamily(e) && e.source !== 'carryover' && e.source !== 'storefront' && e.source !== 'council';
   }
   // ---------------------------------------------------------------------------
   // STOREFRONT CASH DEPOSITS (treasurer review of shift reports, item 11; DESIGN-money §3.5).
@@ -8050,22 +8088,97 @@
     });
     return t;
   }
-  // Does money in `e` look like storefront cash donations posted as something else? The gentle hint
-  // under the add form and in an entry's Detail (STOREFRONT_CASH_HINT). Only plain income (source
-  // blank, donation, fundraiser or other; no family, no tier), not once the treasurer has answered
-  // "Not storefront cash" (`notStorefront`), only while the pack keeps storefront cash (run through
-  // Trail's End, no deposit of it is pack income), and only when it says so: the description says
-  // storefront or cash box, or names a storefront the pack held in the STOREFRONT_HINT_DAYS before
-  // its date (punctuation and spacing ignored: "Lowe's" is "Lowes"), or the amount is that
-  // storefront's kept cash donations, or everything kept and not yet banked. A question, never a
-  // change. Pure.
+  // ---------------------------------------------------------------------------
+  // POPCORN MONEY FOR THE COUNCIL (owner, 2026-10-01; treasurer review of item 11, 9–10).
+  //
+  // Sales cash (and any wagon or run-through-Trail's-End donation cash) belongs to the council. A
+  // pack that banks it and pays the council by check records both halves with source 'council':
+  // money in when the cash is banked, money out when the check goes. Neither is pack income or a
+  // pack cost (ledgerIncomeCents, lineActualCents, lineIncomeCents skip it, both ways); both are in
+  // the bank balance and reconcile. A cash box of sales and donations is one bank line and two rows
+  // (same date, same deposit-slip number in Ref), one per source; ticking both matches the bank.
+  //
+  // SETTLING (book.councilSettled: { on, how, by, byUid, at }, logged as 'settle' / 'unsettle').
+  // The council nets the commission off what the pack owes it (Keith, 2026-10-01), so the pack's
+  // check is the invoice less the commission, and a commission check arrives only when the council
+  // owes the pack. Once settled, Funds in's commission is actual, A − B + C (ledgerIncomeCents), and
+  // what is still held for the council IS the commission. `how` records what happened, and decides
+  // which warning the form gives; the sum is the same either way.
+  // ---------------------------------------------------------------------------
+  var COUNCIL_SETTLE_LABELS = { paid: 'the pack paid the council', payout: 'the council paid the pack a commission check', even: 'nothing changed hands' };
+  // The settlement as stored, or null for anything else (normalizeState: book.councilSettled). Pure.
+  function councilSettledNormal(s) {
+    if (!s || typeof s !== 'object' || Array.isArray(s)) return null;
+    if (typeof s.on !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s.on) || COUNCIL_SETTLE_HOW.indexOf(s.how) === -1) return null;
+    return { on: s.on, how: s.how, by: ledgerStampClean(s.by), byUid: typeof s.byUid === 'string' ? s.byUid : '', at: typeof s.at === 'string' ? s.at : '' };
+  }
+  // The settlement as the change history says it ("2026-12-02 · the pack paid the council"), or ''. Pure.
+  function councilSettledText(s) {
+    return s && COUNCIL_SETTLE_LABELS[s.how] ? s.on + ' \u00b7 ' + COUNCIL_SETTLE_LABELS[s.how] : '';
+  }
+  // The popcorn money held for the council, from the counted rows: { banked (A, money in), paid (B,
+  // money out), held (A − B, signed), checks (C, commission checks posted), commission (A − B + C) }.
+  // Pure.
+  function councilMoneyCheck(ledger) {
+    var t = { banked: 0, paid: 0, held: 0, checks: 0, commission: 0 };
+    ledgerUnpaired(arrOf(ledger)).forEach(function (e) {
+      if (!e || e.scoutId) return;
+      var amt = e.amountCents || 0;
+      if (e.source === 'council') { if (e.direction === 'in') t.banked += amt; else t.paid += amt; }
+      else if (e.source === 'commission' && e.direction === 'in') t.checks += amt;
+    });
+    t.held = t.banked - t.paid;
+    t.commission = t.held + t.checks;
+    return t;
+  }
+  // The Reconcile card's council line in words: [{ text, warn }]. `settled` is book.councilSettled
+  // (or null); `estimate` the commission the Council page works out (councilSettlement), or null.
+  // Pure given fmt and fmtDateShort.
+  function councilMoneyLines(chk, settled, estimate) {
+    if (!chk || !(chk.banked || chk.paid || settled)) return [];
+    var out = [{ warn: false, text: 'Popcorn money for the council: banked ' + fmt(chk.banked) + ' \u00b7 paid to the council ' + fmt(chk.paid) +
+      ' \u00b7 still held ' + fmt(chk.held) + '.' }];
+    if (chk.held < 0) {
+      out.push({ warn: true, text: 'More has been paid to the council than banked for it. Check that the sales cash was banked as Popcorn money for the council.' });
+    }
+    if (settled) {
+      out.push({ warn: false, text: 'Settled with the council on ' + fmtDateShort(settled.on) + ': ' + (COUNCIL_SETTLE_LABELS[settled.how] || '') + '. ' +
+        'The commission is actual now: ' + fmt(chk.banked) + ' banked \u2212 ' + fmt(chk.paid) + ' paid' +
+        (chk.checks ? ' + ' + fmt(chk.checks) + ' in commission checks' : '') + ' = ' + fmt(chk.commission) + ', and that is what Funds in counts.' });
+      if (estimate != null && estimate !== chk.commission) {
+        out.push({ warn: true, text: 'The Council page works the commission out at ' + fmt(estimate) + ', ' + fmt(Math.abs(estimate - chk.commission)) +
+          ' different. Check that all the sales cash is banked as Popcorn money for the council, and check the council\u2019s statement.' });
+      }
+    }
+    return out;
+  }
+  // Does money in `e` look like popcorn cash posted as something else? The gentle hint under the add
+  // form and in an entry's Detail. Only plain income (source blank, donation, fundraiser or other; no
+  // family, no tier), and not once the treasurer has answered "no" (`notStorefront`). Which hint
+  // (storefrontHintText), or '':
+  //   'kept'   while the pack keeps storefront cash: the description says storefront or cash box, or
+  //            names a storefront the pack held in the STOREFRONT_HINT_DAYS before its date
+  //            (punctuation and spacing ignored: "Lowe's" is "Lowes"), or the amount is that
+  //            storefront's kept cash donations, or everything kept and not yet banked
+  //   'te'     storefront cash run through Trail's End (treasurer review of item 11, 16): the same
+  //            words or name, never the amounts (nothing is kept to match): the council's money
+  //   'wagon'  the description says wagon: wagon cash always runs through Trail's End (owner,
+  //            2026-10-01), so it is the council's money
+  // A question, never a change. Pure.
   var STOREFRONT_HINT_SOURCES = ['', 'donation', 'fundraiser', 'other'];
   var STOREFRONT_HINT_DAYS = 45;
   var STOREFRONT_CASH_HINT = 'Are these storefront cash donations the pack keeps? Record them as ‘Storefront cash donations (kept)’: they are already in Funds in from the storefront figures.';
   function hintWords(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ''); }
+  var COUNCIL_TE_HINT = 'Is this storefront cash? Storefront cash donations run through Trail\u2019s End this season, so it is the council\u2019s money, not pack income: record it as \u2018Popcorn money for the council\u2019.';
+  var COUNCIL_WAGON_HINT = 'Is this wagon cash? Wagon cash goes through Trail\u2019s End, so it is the council\u2019s money, not pack income: record it as \u2018Popcorn money for the council\u2019.';
+  // The words for a hint kind (storefrontCashHint). Pure.
+  function storefrontHintText(kind) {
+    return kind === 'kept' ? STOREFRONT_CASH_HINT : kind === 'te' ? COUNCIL_TE_HINT : kind === 'wagon' ? COUNCIL_WAGON_HINT : '';
+  }
   function storefrontCashHint(e, storefronts, ledger, viaTE) {
-    if (!e || viaTE || e.direction !== 'in' || e.scoutId || e.tierMakeup || e.notStorefront === true) return false;
-    if (STOREFRONT_HINT_SOURCES.indexOf(e.source || '') === -1) return false;
+    if (!e || e.direction !== 'in' || e.scoutId || e.tierMakeup || e.notStorefront === true) return '';
+    if (STOREFRONT_HINT_SOURCES.indexOf(e.source || '') === -1) return '';
+    if (/\bwagons?\b/.test(String(e.description || '').toLowerCase())) return 'wagon';
     var amt = e.amountCents || 0, d = String(e.date || ''), text = String(e.description || '').toLowerCase(), squashed = hintWords(text);
     function recent(sf) {
       if (!sf.date || !d) return true;
@@ -8073,11 +8186,13 @@
       return !isFinite(gap) || (gap >= 0 && gap <= STOREFRONT_HINT_DAYS);
     }
     var sfs = arrOf(storefronts).filter(function (sf) { return sf && recent(sf); });
-    if (/store\s*-?\s*front|cash\s*box/.test(text)) return true;
-    if (sfs.some(function (sf) { var n = hintWords(sf.name); return n.length >= 4 && squashed.indexOf(n) !== -1; })) return true;
-    if (!(amt > 0)) return false;
-    if (sfs.some(function (sf) { return storefrontKeptCents(sf, false) === amt; })) return true;
-    return storefrontCashCheck(storefronts, ledger, false).notYet === amt;
+    var said = /store\s*-?\s*front|cash\s*box/.test(text) ||
+      sfs.some(function (sf) { var n = hintWords(sf.name); return n.length >= 4 && squashed.indexOf(n) !== -1; });
+    if (viaTE) return said ? 'te' : '';
+    if (said) return 'kept';
+    if (!(amt > 0)) return '';
+    if (sfs.some(function (sf) { return storefrontKeptCents(sf, false) === amt; })) return 'kept';
+    return storefrontCashCheck(storefronts, ledger, false).notYet === amt ? 'kept' : '';
   }
   function ledgerTotals(ledger, book) {
     var inC = 0, outC = 0, pre = 0, unrec = 0, uncat = 0;
@@ -9725,7 +9840,7 @@
   // undone, by a backup from before it restored over this book, or by keeping this device's copy over a
   // cloud copy that had closed the year out. 'close' is the close-out itself (written from C8-5).
   var LEDGER_OPS = ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile', 'restore',
-    'review', 'balance', 'close', 'unclose'];
+    'review', 'balance', 'close', 'unclose', 'settle', 'unsettle'];
   function ledgerEvent(op, rowId, who, more) {
     if (LEDGER_OPS.indexOf(op) === -1 || typeof rowId !== 'string' || !rowId) return null;
     who = who || {};
@@ -9899,7 +10014,9 @@
     'void': 'Voided', unvoid: 'Un-voided', reverse: 'Reversed', correct: 'Corrected', resolve: 'Kept one of two versions', reopen: 'Statement reopened',
     review: 'Statement reviewed', balance: 'Ending balance added',   // Phase 3, C5 (C5 review: "ending balance", the treasurer's words)
     close: 'Year closed out',   // Phase 3, C8 (C8-2; new wording for the treasurer's sign-off)
-    unclose: 'Close-out undone'   // Phase 3, C8 (C8-4; ditto)
+    unclose: 'Close-out undone',   // Phase 3, C8 (C8-4; ditto)
+    // Owner, 2026-10-01 — the popcorn settled with the council (row 'book', `f` councilSettled), and taken back.
+    settle: 'Popcorn settled with the council', unsettle: 'Popcorn settlement taken back'
   };
   var LEDGER_FIELD_LABELS = {
     date: 'date', description: 'description', amountCents: 'amount', direction: 'in or out', lineId: 'budget line',
@@ -9911,6 +10028,7 @@
     forgiven: 'forgiveness',   // security re-check of C6 (N3): a charge's forgiveness lost to a merge
     closedYears: 'years closed out',   // Phase 3, C8 (C8-2): what a 'close' event changed (before, after)
     // Item 11 — what a storefront cash deposit covers.
+    councilSettled: 'popcorn settled with the council',
     depositFor: 'storefronts it covers', depositFrom: 'covers from', depositTo: 'covers to', notStorefront: 'not storefront cash'
   };
   // One value from an event's `f`, as a leader reads it. `names` turns an id into a name
@@ -10290,12 +10408,13 @@
       // M1(c) — a family picked on a family-direct line is paid BACK, not refunded.
       if (lk === 'scout' && led.scoutId && ledgerLineIsDirect(led.lineId)) { led.source = ''; led.reimbursement = true; }
       else if (lk === 'scout') led.source = led.scoutId ? 'refund' : '';
-      else if (led.source !== 'refund') led.source = '';
+      // Owner, 2026-10-01 — the check to the council keeps its source (with no family).
+      else if (led.source !== 'refund' && !(led.source === 'council' && !led.scoutId)) led.source = '';
     }
     if (led.source !== 'donation') led.donor = '';
     // Item 11 — a storefront cash deposit is the pack's own cash, never a family's payment: picking
     // a family makes it a payment (source cleared). Choosing the source on a payment is ignored (above).
-    if (led.direction === 'in' && lk === 'scout' && led.scoutId && led.source === 'storefront') led.source = '';
+    if (lk === 'scout' && led.scoutId && led.direction === 'in' && LEDGER_NO_FAMILY_SOURCES.indexOf(led.source) !== -1) led.source = '';
     // Treasurer review of item 11 (13) — "not storefront cash" was an answer about this money as it
     // stood: a new amount, direction or source asks again.
     if ((lk === 'amount' || lk === 'dir' || lk === 'source') && led.notStorefront) led.notStorefront = false;
@@ -25629,7 +25748,10 @@
       // M1 — say WHICH commission figure is in there: the posted one replaces the estimate, and
       // a treasurer comparing the two needs to see both rather than wonder why Funds in moved.
       '<p class="small muted" style="margin:8px 0 0"><strong>Funds in</strong> = carryover (' + fmt(bud.startingBalance) + ') + popcorn commission (' + fmt(bud.commission) +
-        (bud.commissionPosted
+        (bud.commissionSettled
+          ? ' as settled with the council: ' + fmt(bud.councilIn) + ' banked for it \u2212 ' + fmt(bud.councilOut) + ' paid to it, plus any commission checks' +
+            (bud.commissionEstimate && bud.commissionEstimate !== bud.commission ? ' \u2014 sales work out to ' + fmt(bud.commissionEstimate) : '')
+          : bud.commissionPosted
           ? ' as posted to the ledger' + (bud.commissionEstimate && bud.commissionEstimate !== bud.commission
             ? ' — sales work out to ' + fmt(bud.commissionEstimate) +
               // T6 — a part-payment (the council often pays in two cheques) says what is still to come.
@@ -26176,6 +26298,15 @@
     });
     return h;
   }
+  // Owner, 2026-10-01 — money out's one source a leader picks: the check to the council (a refund is
+  // picked by its family). `pfx` 'ledn' (the add form) or 'led' (entry `id`). Escaped.
+  function outSourceSelectHtml(pfx, id, sel) {
+    return '<select data-ch="' + pfx + '-source"' + (id ? ' data-id="' + esc(id) + '"' : '') + ' aria-label="Source">' +
+      '<option value=""' + (sel === 'council' ? '' : ' selected') + '>A pack payment</option>' +
+      '<option value="council"' + (sel === 'council' ? ' selected' : '') + '>' + esc(LEDGER_SOURCE_LABELS.council) + '</option></select>';
+  }
+  var COUNCIL_ROW_NOTE = '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">Not pack income and not a pack cost: popcorn money for the council. ' +
+    'It is in the bank balance and reconciles as usual.</p>';
   // `family` (a saved row's scoutId) — the sources that can't carry a family are left out, so picking
   // one can never take a family's payment off their account (treasurer review of item 11, 20).
   function sourceSelectOptions(sel, family) {
@@ -26642,33 +26773,42 @@
       '<input class="lref" data-ch="ledn-ref" value="' + esc(dr.ref) + '" placeholder="Check no. / receipt" aria-label="Reference">' +
       (dr.direction === 'in'
         // Item 11 — a storefront cash deposit settles no family's account, so it has no family picker.
-        ? (dr.source === 'storefront' ? '' : '<select data-ch="ledn-scout" aria-label="Settles whose account">' + scoutSelectOptions(dr.scoutId) + '</select>') +
+        ? (LEDGER_NO_FAMILY_SOURCES.indexOf(dr.source) !== -1 ? '' : '<select data-ch="ledn-scout" aria-label="Settles whose account">' + scoutSelectOptions(dr.scoutId) + '</select>') +
           '<select data-ch="ledn-source" aria-label="Source">' + sourceSelectOptions(dr.source) + '</select>' +
           (dr.source === 'donation'
             ? '<input class="lname" data-ch="ledn-donor" value="' + esc(dr.donor) + '" placeholder="Who gave it" aria-label="Donor">'
             : '') +
           (dr.source === 'storefront' ? depositCoverFieldsHtml('ledn', '', dr) : '')
-        // T1 — money out can be a family's credit handed back; picking the family says so.
-        // M1(c) — on a line families pay directly, the only family money out is a reimbursement.
-        : (ledgerLineIsDirect(dr.lineId)
+        // Owner, 2026-10-01 — money out can be the pack's check to the council (no family then).
+        : outSourceSelectHtml('ledn', '', dr.source) +
+          (dr.source === 'council' ? ''
+          // T1 — money out can be a family's credit handed back; picking the family says so.
+          // M1(c) — on a line families pay directly, the only family money out is a reimbursement.
+          : (ledgerLineIsDirect(dr.lineId)
           ? '<select data-ch="ledn-scout" aria-label="Paid back to (reimbursement)">' +
             scoutSelectOptions(dr.scoutId, 'Paid back to (reimbursement)\u2026') + '</select>'
           : '<select data-ch="ledn-scout" aria-label="Refunded to which family">' +
-            scoutSelectOptions(dr.scoutId, '— not a refund to a family —') + '</select>')) +
+            scoutSelectOptions(dr.scoutId, '— not a refund to a family —') + '</select>'))) +
       '<button type="button" class="btn small primary" data-act="ledger-add">' + (addWarn ? 'Save it anyway' : 'Add entry') + '</button>' +
       '</div>' +
       // Phase 3, C2 — the reconciled-period warning, after the first tap (see ledger-add).
       (addWarn ? '<p class="small" role="alert" style="margin:8px 0 0;color:var(--accent-text)">' + esc(addWarn) + '</p>' : '') +
-      // Item 11 — plain income that looks like storefront cash: asked, never changed.
-      (storefrontCashHint(ledgerDraftEntry(dr), state.storefronts, state.ledger, state.cashThroughTrailsEnd)
-        ? '<p class="small" role="status" style="margin:8px 0 0"><span class="pill navy">Check</span> ' + esc(STOREFRONT_CASH_HINT) + '</p>' : '') +
+      // Item 11 — plain income that looks like popcorn cash: asked, never changed.
+      (function () {
+        var hk = storefrontCashHint(ledgerDraftEntry(dr), state.storefronts, state.ledger, state.cashThroughTrailsEnd);
+        return hk ? '<p class="small" role="status" style="margin:8px 0 0"><span class="pill navy">Check</span> ' + esc(storefrontHintText(hk)) + '</p>' : '';
+      })() +
       '<p class="small muted" style="margin:8px 0 0">Pick the budget line it belongs to and this entry becomes part of that line’s actual cost. ' +
       'Leave it blank if it doesn’t belong to one — you can set it later.' +
       // Item 11 — the posting rule, where the deposit is typed: on money in only (treasurer review, 6).
       (dr.direction === 'in'
         ? ' Storefront cash donations the pack keeps are already in Funds in from the storefront figures: bank them as ' +
-          '<strong>Storefront cash donations (kept)</strong>, with no budget line, so they aren’t counted twice.'
-        : '') + '</p></div>';
+          '<strong>Storefront cash donations (kept)</strong>, with no budget line, so they aren’t counted twice. ' +
+          // Owner, 2026-10-01 — the council's popcorn money, and the mixed cash box (treasurer review, 9).
+          'Sales cash, and any cash donations that go through Trail’s End, belong to the council: bank them as ' +
+          '<strong>Popcorn money for the council</strong>, with no budget line. A cash box with both is one line on the bank statement ' +
+          'but two entries here, with the same date and the same deposit-slip number in Ref, one for each; tick both against the statement.'
+        : ' The check to the council for popcorn is <strong>Popcorn money for the council</strong>, with no budget line: it is not a pack cost.') + '</p></div>';
 
     // ---- filters + list ----
     var f = ui.ledgerFilter;
@@ -26767,7 +26907,7 @@
               '<input class="lref" data-ch="led-ref" data-id="' + esc(e.id) + '" value="' + esc(e.ref) + '" placeholder="Check no. / receipt" aria-label="Reference">' +
               (e.direction === 'in'
                 // Item 11 — a storefront cash deposit has no family picker; it says what it covers instead.
-                ? (e.source === 'storefront' ? '' : '<select data-ch="led-scout" data-id="' + esc(e.id) + '" aria-label="Settles whose account">' + scoutSelectOptions(e.scoutId) + '</select>') +
+                ? (LEDGER_NO_FAMILY_SOURCES.indexOf(e.source) !== -1 ? '' : '<select data-ch="led-scout" data-id="' + esc(e.id) + '" aria-label="Settles whose account">' + scoutSelectOptions(e.scoutId) + '</select>') +
                   // Treasurer review of item 11 (20) — a payment's family is never stripped by a source: not offered.
                   '<select data-ch="led-source" data-id="' + esc(e.id) + '" aria-label="Source">' + sourceSelectOptions(e.source, e.scoutId) + '</select>' +
                   (e.source === 'donation'
@@ -26779,11 +26919,16 @@
                         'It is in the bank balance and reconciles as usual.</p>'
                     : '') +
                   // Treasurer review of item 11 (13) — only while not reconciled, and answerable "no" (notStorefront, as notCommission).
-                  (!e.reconciled && storefrontCashHint(e, state.storefronts, state.ledger, state.cashThroughTrailsEnd)
-                    ? '<p class="small" style="margin:6px 0 0;flex-basis:100%"><span class="pill navy">Check</span> ' + esc(STOREFRONT_CASH_HINT) +
-                      ' <button type="button" class="btn small ghost" data-act="not-storefront:' + esc(e.id) + '">Not storefront cash</button></p>' : '')
+                  (e.source === 'council' ? COUNCIL_ROW_NOTE : '') +
+                  (function () {
+                    var hk = e.reconciled ? '' : storefrontCashHint(e, state.storefronts, state.ledger, state.cashThroughTrailsEnd);
+                    return hk ? '<p class="small" style="margin:6px 0 0;flex-basis:100%"><span class="pill navy">Check</span> ' + esc(storefrontHintText(hk)) +
+                      ' <button type="button" class="btn small ghost" data-act="not-storefront:' + esc(e.id) + '">' + (hk === 'wagon' ? 'Not wagon cash' : 'Not storefront cash') + '</button></p>' : '';
+                  })()
+                // Owner, 2026-10-01 — money out with no family can be the check to the council.
+                : (!e.scoutId ? outSourceSelectHtml('led', e.id, e.source) + (e.source === 'council' ? COUNCIL_ROW_NOTE : '') : '') +
                 // M6 — a reimbursement says who it went to, since that is what marks it paid.
-                : (e.scoutId && !entryRefundsFamily(e)
+                (e.source === 'council' ? '' : e.scoutId && !entryRefundsFamily(e)
                   ? (getScout(e.scoutId)
                     ? '<span class="small muted" style="align-self:center">Paid back to ' + esc(getScout(e.scoutId).name) + '</span>'
                     : '')
@@ -27045,6 +27190,45 @@
         (i ? '' : '<span class="pill navy">Storefront cash</span> ') + esc(ln.text) + '</p>';
     }).join('');
   }
+  // Owner, 2026-10-01 (treasurer review of item 11, 9–10) — the popcorn money held for the council,
+  // and the step that settles it: "Popcorn settled with the council" opens a short form (ui.settleDraft:
+  // the date and how), shows what the commission becomes (A − B + C) beside what the Council page works
+  // out, and Mark settled writes book.councilSettled and a 'settle' event. Taken back with two taps.
+  // '' when there is no council money and nothing is settled. Leaders only, as the ledger is.
+  function councilMoneyHtml() {
+    var chk = councilMoneyCheck(state.ledger), settled = state.book.councilSettled || null;
+    var est = councilSettlement(state.popcornCouncil, inventoryTotals()).commissionCents;
+    var lines = councilMoneyLines(chk, settled, est);
+    if (!lines.length) return '';
+    var h = lines.map(function (ln, i) {
+      return '<p class="small" style="margin:' + (i ? '4' : '10') + 'px 0 0' + (ln.warn ? ';color:var(--accent-text)' : '') + '"' + (ln.warn ? ' role="alert"' : '') + '>' +
+        (i ? '' : '<span class="pill navy">Council</span> ') + esc(ln.text) + '</p>';
+    }).join('');
+    if (!canEdit() || state.book.closedAt) return h;
+    if (settled) {
+      var unArmed = ui.armed === 'council-unsettle';
+      return h + '<p class="small" style="margin:6px 0 0"><button type="button" class="btn small ghost' + (unArmed ? ' danger armed' : '') + '" data-act="council-unsettle">' +
+        (unArmed ? 'Tap again: the commission goes back to the estimate' : 'Not settled after all') + '</button></p>';
+    }
+    var d = ui.settleDraft;
+    if (!d) return h + '<p class="small" style="margin:6px 0 0"><button type="button" class="btn small" data-act="council-settle-open">Popcorn settled with the council</button></p>';
+    var warn = d.how === 'paid' && !chk.paid ? 'No payment to the council is in the ledger yet. Record the check as Popcorn money for the council first.'
+      : d.how === 'payout' && !chk.checks ? 'No Popcorn commission check is in the ledger yet. Post it first.'
+      : !chk.banked ? 'No sales cash is banked as Popcorn money for the council, so the commission would be the commission checks alone.' : '';
+    return h + '<div class="ldeposit" style="margin:8px 0 0">' +
+      '<p class="small" style="margin:0 0 4px"><strong>Popcorn settled with the council</strong></p>' +
+      '<div class="row" style="gap:8px">' +
+      '<label class="fld">Settled on<input type="date" data-ch="settle-on" value="' + esc(d.on || '') + '"></label>' +
+      '<label class="fld">How<select data-ch="settle-how">' + COUNCIL_SETTLE_HOW.map(function (k) {
+        return '<option value="' + k + '"' + (d.how === k ? ' selected' : '') + '>' + esc(COUNCIL_SETTLE_LABELS[k].charAt(0).toUpperCase() + COUNCIL_SETTLE_LABELS[k].slice(1)) + '</option>';
+      }).join('') + '</select></label></div>' +
+      '<p class="small" style="margin:6px 0 0">Funds in will count the commission as actual: ' + esc(fmt(chk.banked)) + ' banked for the council \u2212 ' +
+        esc(fmt(chk.paid)) + ' paid to it + ' + esc(fmt(chk.checks)) + ' in commission checks = <strong class="money">' + esc(fmt(chk.commission)) + '</strong>' +
+        (est != null ? ' (the Council page works it out at ' + esc(fmt(est)) + ')' : '') + '.</p>' +
+      (warn ? '<p class="small" role="alert" style="margin:6px 0 0;color:var(--accent-text)">' + esc(warn) + '</p>' : '') +
+      '<div class="row" style="margin-top:6px"><button type="button" class="btn small primary" data-act="council-settle-go">Mark settled</button>' +
+      '<button type="button" class="btn small ghost" data-act="council-settle-cancel">Cancel</button></div></div>';
+  }
   function renderReconcile() {
     var bk = state.book;
     var rec = reconcileTotals(state.ledger, bk, state.ledgerAside);
@@ -27094,6 +27278,7 @@
           : 'the ticked entries come to more than the bank holds, so a payment may be recorded that hasn’t cleared, or twice.') + '</p>';
     }
     h += storefrontCashCheckHtml();   // item 11
+    h += councilMoneyHtml();   // owner, 2026-10-01
     h += '</div>';
 
     var pending = ledgerSort(state.ledger).filter(function (e) { return entryAfterOpening(e, bk) && entryOnStatement(e, bk); });
@@ -36935,6 +37120,39 @@
     // M4 — the treasurer's answer to "is this the council's commission cheque?": no.
     // Treasurer review of item 11 (13) — "Not storefront cash": the hint stops asking about this entry,
     // as "Not the commission" does. A label, logged as an edit; a closed year takes nothing.
+    // Owner, 2026-10-01 — the popcorn settled with the council (councilMoneyHtml).
+    if (act === 'council-settle-open') {
+      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      var soChk = councilMoneyCheck(state.ledger);
+      ui.settleDraft = { on: todayISO(), how: soChk.paid ? 'paid' : soChk.checks ? 'payout' : 'paid' };
+      render(); return;
+    }
+    if (act === 'council-settle-cancel') { ui.settleDraft = null; render(); return; }
+    if (act === 'council-settle-go') {
+      var sd = ui.settleDraft;
+      if (!sd) return;
+      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (state.book.closedAt) { showToast('This year is closed out.'); return; }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(sd.on || '') || COUNCIL_SETTLE_HOW.indexOf(sd.how) === -1) { showToast('Enter the date it was settled.'); return; }
+      var sdWas = councilSettledText(state.book.councilSettled);
+      state.book.councilSettled = { on: sd.on, how: sd.how, by: ledgerActor(), byUid: ledgerActorUid(), at: new Date().toISOString() };
+      logLedger('settle', 'book', { f: { councilSettled: [sdWas || null, councilSettledText(state.book.councilSettled)] } });
+      ui.settleDraft = null;
+      showToast('Settled. Funds in now counts the commission as actual: the money held for the council.');
+      commit(); return;
+    }
+    if (act === 'council-unsettle') {
+      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      arm(act, function () {
+        if (!state.book.councilSettled) return;
+        if (state.book.closedAt) { showToast('This year is closed out.'); return; }
+        logLedger('unsettle', 'book', { f: { councilSettled: [councilSettledText(state.book.councilSettled), null] } });
+        delete state.book.councilSettled;
+        showToast('Not settled. The commission is the estimate from sales again, until a check is posted.');
+        commit();
+      });
+      return;
+    }
     if (act.indexOf('not-storefront:') === 0) {
       var nsE = state.ledger.find(function (e) { return e.id === act.slice('not-storefront:'.length); });
       if (!nsE) return;
@@ -36989,7 +37207,8 @@
         amountCents: amt, direction: dr.direction === 'in' ? 'in' : 'out',
         lineId: dr.lineId, method: dr.method, ref: dr.ref.trim(),
         // T1 — money out carrying a family is a refund of their money, and says so.
-        source: dr.direction === 'in' ? dr.source : ((dr.scoutId && !drReimb) ? 'refund' : ''),
+        // Owner, 2026-10-01 — or the check to the council, which names no family.
+        source: dr.direction === 'in' ? dr.source : ((dr.scoutId && !drReimb) ? 'refund' : (dr.source === 'council' ? 'council' : '')),
         donor: (dr.direction === 'in' && dr.source === 'donation') ? dr.donor.trim() : '',
         // Phase 3b — a payment carries the scout whose account it settles. Set from the
         // Dues screen, or picked here. T1 — a refund carries the family it went back to.
@@ -36998,6 +37217,7 @@
       if (drReimb) drEntry.reimbursement = true;
       // Item 11 — a storefront cash deposit: no family, what it covers, and words a later reader can
       // use when its storefronts are long gone (close-out clears them): the names, if none were typed.
+      if (drEntry.source === 'council') drEntry.scoutId = '';   // owner, 2026-10-01: nobody's payment
       if (drEntry.direction === 'in' && drEntry.source === 'storefront') {
         drEntry.scoutId = '';
         drEntry.depositFor = depositForIds(dr.depositFor).filter(function (x) { return !!getStorefront(x); }).join(',');
@@ -38730,6 +38950,12 @@
     }
     if (ch === 'book-statement') { state.book.statementCents = toCentsSigned(el.value); commit(); return; }
     if (ch === 'book-statement-date') { state.book.statementDate = el.value; commit(); return; }
+    // Owner, 2026-10-01 — the settlement form's draft, in `ui` until Mark settled.
+    if (ch === 'settle-on' || ch === 'settle-how') {
+      if (!ui.settleDraft) return;
+      if (ch === 'settle-on') ui.settleDraft.on = el.value; else ui.settleDraft.how = el.value;
+      render(); return;
+    }
     // Filters live in `ui`, so they re-render but never persist.
     if (ch === 'ledger-search') { ui.ledgerFilter.text = el.value; render(); return; }
     if (ch === 'ledger-line-filter') { ui.ledgerFilter.lineId = el.value; render(); return; }
@@ -38742,7 +38968,7 @@
       // T1 — the payer of money in is not the family refunded by money out: flipping clears it.
       if (nk === 'dir') { nd.direction = el.value === 'in' ? 'in' : 'out'; nd.scoutId = ''; render(); return; }
       // Item 11 — a storefront cash deposit is no family's payment: choosing it takes the family off.
-      if (nk === 'source') { nd.source = el.value; if (nd.source === 'storefront') nd.scoutId = ''; render(); return; }
+      if (nk === 'source') { nd.source = el.value; if (LEDGER_NO_FAMILY_SOURCES.indexOf(nd.source) !== -1) nd.scoutId = ''; render(); return; }
       if (nk === 'scout') { nd.scoutId = el.value; return; }
       // Item 11 — what a storefront cash deposit covers.
       if (nk === 'depfor') { nd.depositFor = depositForToggle(nd.depositFor, el.value, el.checked); return; }

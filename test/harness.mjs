@@ -1036,7 +1036,7 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   // Security re-check of C5 (R4) — one log event, live and archived alike.
   'normalizeLedgerEvent',
   // Phase 3, C1 — the ledger row normalizer, shared by the rows set aside.
-  'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeClosedBook', 'mergeClosedBooks', 'closedBookRank', 'normalizeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'normalizeLedgerRow', 'depositForIds', 'DEPOSIT_FOR_MAX', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
+  'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeClosedBook', 'mergeClosedBooks', 'closedBookRank', 'normalizeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'normalizeLedgerRow', 'depositForIds', 'DEPOSIT_FOR_MAX', 'councilSettledNormal', 'COUNCIL_SETTLE_HOW', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'ledgerUnpaired', 'entrySignedCents',
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
@@ -1045,7 +1045,7 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
 const C8_SYNC_FNS = [SR_SYNC_STUBS, 'closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mergeClosedBooks', 'closedBookScouts', 'closedBookScoutIds', 'closedYearText', 'closedBooksKeptOverWhy', 'closeoutCarryDiffs',
   'closedBooksUndone', 'closedBooksUndoneWhy', 'closedBooksDroppedWhy', 'closedBookRows', 'statementLookupRows',
   // Security re-check of C8-5..C8-10 — the bound by program year (M-A), the push's union normalized (L-B), and what a merge says it set aside.
-  'closedBookRank', 'closedBookScoutIds', 'closedBooksFuture', 'closedBooksMaxYear', 'closedBooksNormalized', 'normalizeClosedBook', 'normalizeLedgerRow', 'depositForIds', 'DEPOSIT_FOR_MAX', 'normalizeAsideRow', 'normalizeLedgerEvent',
+  'closedBookRank', 'closedBookScoutIds', 'closedBooksFuture', 'closedBooksMaxYear', 'closedBooksNormalized', 'normalizeClosedBook', 'normalizeLedgerRow', 'depositForIds', 'DEPOSIT_FOR_MAX', 'councilSettledNormal', 'COUNCIL_SETTLE_HOW', 'normalizeAsideRow', 'normalizeLedgerEvent',
   'stableRowId', 'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_ASIDE_OFF', 'arrOf',
   // M-B — the tombstones of a closed year.
   'normalizeClosedGone', 'mergeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'closedGoneAdd', 'closedGoneDrops', 'closedGoneForKeep', 'ledgerActorUid', 'closedBooksShorter',
@@ -9877,7 +9877,7 @@ test('T1: a refunded family credit leaves the account, and nothing is carried', 
   const tr = /function tierReimbursements\(map\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/!entryRefundsFamily\(e\)/.test(tr), 'a refund on a paid-direct line counts as a reimbursement');
   const add = /if \(act === 'ledger-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/source: dr\.direction === 'in' \? dr\.source : \(\(dr\.scoutId && !drReimb\) \? 'refund' : ''\)/.test(add) && /scoutId: dr\.scoutId,/.test(add),
+  ok(/source: dr\.direction === 'in' \? dr\.source : \(\(dr\.scoutId && !drReimb\) \? 'refund' : \(dr\.source === 'council' \? 'council' : ''\)\)/.test(add) && /scoutId: dr\.scoutId,/.test(add),
     'a new money-out entry cannot name the family refunded');
   const rows = /function renderLedgerEntries\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/data-ch="led-scout"[^\n]*Refunded to which family/.test(rows) && /data-ch="ledn-scout" aria-label="Refunded to which family"/.test(rows),
@@ -9992,7 +9992,7 @@ test('M3: with Starting funds at $0, a carryover entry counts, and the card asks
   const set = ctx.ledgerIncomeCents(L, isInc, 43000);
   eq([set.carryover, set.other], [0, 5000], 'with Starting funds set');
   const fn = slice('computeBudget');
-  ok(/ledgerIncomeCents\(state\.ledger, isIncomeLine, b\.startingBalance \|\| 0\)/.test(fn), 'computeBudget does not pass Starting funds');
+  ok(/ledgerIncomeCents\(state\.ledger, isIncomeLine, b\.startingBalance \|\| 0, !!\(state\.book && state\.book\.councilSettled\)\)/.test(fn), 'computeBudget does not pass Starting funds');
   ok(/ledgerCarryover: income\.carryover,/.test(fn), 'the counted carryover is not reported');
   const card = /function renderBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0].replace(/'\s*\+\s*'/g, '');
   ok(/bud\.ledgerCarryover > 0/.test(card) &&
@@ -20246,7 +20246,7 @@ test('C1: ledgerEvent builds one log entry, and nothing else', () => {
   eq(ev('reverse', 'l1', who, { rows: ['rv-l1'] }).rows, ['rv-l1'], 'a reversal names its row');
   eq(ev('tick', 'l1', { id: 'x', by: 'pat@example.com' }), { id: 'lg-x', at: '', by: 'a signed-in leader', byUid: '', dev: '', row: 'l1', op: 'tick' }, 'never an email');
   eq([ctx.ledgerEvent('someday', 'l1', who), ctx.ledgerEvent('edit', '', who), ctx.ledgerEvent('edit', 7, who)], [null, null, null], 'an unknown op, or no row');
-  eq([...ctx.LEDGER_OPS], ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile', 'restore', 'review', 'balance', 'close', 'unclose'], 'the ops');
+  eq([...ctx.LEDGER_OPS], ['edit', 'void', 'unvoid', 'reverse', 'correct', 'tick', 'untick', 'unmakeup', 'notcommission', 'reassign', 'resolve', 'reopen', 'add', 'opening', 'delete', 'reconcile', 'restore', 'review', 'balance', 'close', 'unclose', 'settle', 'unsettle'], 'the ops');
   // The rows it names are copied, not shared.
   const rows = ['a'];
   const e2 = ctx.ledgerEvent('correct', 'l1', who, { rows });
@@ -20475,7 +20475,7 @@ const ASIDE_LIST_FNS = ['ledgerPairOf', 'ledgerPairRole', 'ledgerReversedLineHtm
 const LOOK_WORD_FNS = ['arrOf', 'closedYearText', 'fmtDateShort', 'ledgerEntryNamed', 'ledgerCap', 'ledgerTakeOut', 'LEDGER_TAKE_OUT_ANY', 'ledgerLocked', 'ledgerDateReconciled', 'entryAfterOpening',
   'ledgerReversalOf'];
 const C2_FNS = ['fmt', 'fmtDate', 'fmtDateShort', 'toCents', 'toCentsSigned', 'entryAfterOpening', 'entryOnStatement', 'ledgerLocked',
-  'ledgerDateReconciled', 'ledgerLockedWhy', 'LEDGER_MAX_CENTS', 'LEDGER_EDIT_FIELDS', 'LEDGER_LOCKED_FIELDS', 'ledgerRowDiff',
+  'ledgerDateReconciled', 'ledgerLockedWhy', 'LEDGER_MAX_CENTS', 'LEDGER_EDIT_FIELDS', 'LEDGER_NO_FAMILY_SOURCES', 'LEDGER_LOCKED_FIELDS', 'ledgerRowDiff',
   'ledgerRowFields', 'LEDGER_TAKE_OUT_ANY', 'LEDGER_PAIR_FIXED', 'ledgerPairFixedWhy', 'ledgerPairRole', 'ledgerTakeOut', 'ledgerEntryNamed', 'ledgerCap', 'ledgerPairOf', 'ledgerReversalOf', 'ledgerEditRefusal', 'ledgerBackdateWarning', 'ledgerClosedYearWarning', 'ledgerProgramYearOf', 'closedYearText', 'arrOf', 'isoPlusDays', 'applyLedgerEdit', 'ledgerWho', 'logLedger', 'logOpening',
   'openingLockedWhy', 'LEDGER_OPS', 'ledgerEvent', 'ledgerLogClip', 'ledgerStampClean', 'stampApproved', 'stampEntered', 'ledgerActorName',
   'ledgerDraftDefault', 'ledgerDraft', 'arm', 'mergeLedgerLog', 'utf8Bytes', 'isoPlusDays', 'ledgerAsideSettle', 'ledgerPairOf', 'ledgerCancelledKept', 'keepLostVoids', 'ledgerPairCheck',
@@ -21095,7 +21095,8 @@ const C3_READERS = {
   ledgerBalance: (L, x, c) => x.ledgerBalance(L, c.book),
   lineActualCents: (L, x) => ['L1', 'L2', 'I1'].map((l) => x.lineActualCents(L, l)),
   lineIncomeCents: (L, x) => ['L1', 'L2', 'I1'].map((l) => x.lineIncomeCents(L, l)),
-  ledgerIncomeCents: (L, x) => x.ledgerIncomeCents(L, (id) => id === 'I1', 700),
+  ledgerIncomeCents: (L, x) => [false, true].map((settled) => x.ledgerIncomeCents(L, (id) => id === 'I1', 700, settled)),
+  councilMoneyCheck: (L, x) => x.councilMoneyCheck(L),   // owner, 2026-10-01
   commissionLookalikes: (L, x) => x.commissionLookalikes(L, (id) => id === 'I1'),
   ledgerTotals: (L, x, c) => x.ledgerTotals(L, c.book),
   reconcileTotals: (L, x, c) => x.reconcileTotals(L, c.book),
@@ -21157,7 +21158,7 @@ test('C3 property: every ledger reader gives the same answer with an entry voide
       const sid = pick(['s1', 's2', 's3', '', '']);
       return { id: 'e' + i, date: '2026-' + pick(['06', '07', '08', '09', '10', '11']) + '-' + pick(['01', '10', '15', '28']),
         description: 'Row ' + i, amountCents: 100 * (1 + Math.floor(r() * 200)), direction: dir, lineId: pick(['L1', 'L2', 'I1', '']),
-        method: pick(['', 'check', 'cash']), ref: pick(['', '101']), source: dir === 'in' ? pick(['', 'family', 'donation', 'popcorn', 'carryover', 'storefront']) : pick(['', 'refund']),
+        method: pick(['', 'check', 'cash']), ref: pick(['', '101']), source: dir === 'in' ? pick(['', 'family', 'donation', 'popcorn', 'carryover', 'storefront', 'council']) : pick(['', 'refund', 'council']),
         donor: '', scoutId: sid, tierMakeup: dir === 'in' && sid && r() < 0.2 ? pick(['t1', 't2']) : '', reimbursement: dir === 'out' && sid ? r() < 0.3 : false,
         notCommission: false, reconciled: r() < 0.3, enteredBy: '', enteredAt: '', approvedBy: '', approvedAt: '', enteredByUid: '', approvedByUid: '' };
     });
@@ -22833,7 +22834,7 @@ test('C4 property (option B): after a Reverse the family, tier and line readers 
       const rec = r() < 0.35;
       return { id: 'e' + i, date: '2026-' + pick(['06', '07', '08', '09', '10', '11']) + '-' + pick(['01', '10', '15', '28']),
         description: 'Row ' + i, amountCents: 100 * (1 + Math.floor(r() * 200)), direction: dir, lineId: pick(['L1', 'L2', 'I1', '']),
-        method: pick(['', 'check', 'cash']), ref: pick(['', '101']), source: dir === 'in' ? pick(['', 'family', 'donation', 'popcorn', 'carryover', 'commission', 'storefront']) : pick(['', 'refund']),
+        method: pick(['', 'check', 'cash']), ref: pick(['', '101']), source: dir === 'in' ? pick(['', 'family', 'donation', 'popcorn', 'carryover', 'commission', 'storefront', 'council']) : pick(['', 'refund', 'council']),
         donor: '', scoutId: sid, tierMakeup: dir === 'in' && sid && r() < 0.2 ? pick(['t1', 't2']) : '', reimbursement: dir === 'out' && sid ? r() < 0.3 : false,
         notCommission: r() < 0.2, reconciled: rec, enteredBy: '', enteredAt: '', approvedBy: rec ? 'Sam' : '', approvedAt: rec ? '2026-11-01T00:00:00.000Z' : '',
         enteredByUid: '', approvedByUid: '' };
@@ -23329,7 +23330,8 @@ test('C4 (option B): Entries shows both rows with their pills and the reason; th
     function ledgerAsideListHtml() { return ''; } function getBudgetLine() { return null; }
     function reconcileLockRefusal() { return ''; } function reconcileLockAhead() { return false; } var RECONCILE_AHEAD_WHY = '';
     function canReopenStatement() { return false; }
-    function storefrontCashHint() { return false; } function ledgerDraftEntry() { return {}; } function storefrontCashCheckHtml() { return ''; }   // item 11: its own tests
+    function storefrontCashHint() { return ''; } function ledgerDraftEntry() { return {}; } function storefrontCashCheckHtml() { return ''; }   // item 11: its own tests
+    function outSourceSelectHtml() { return ''; } function councilMoneyHtml() { return ''; } var LEDGER_NO_FAMILY_SOURCES = ['storefront', 'council'], COUNCIL_ROW_NOTE = '';
     function todayISO() { return '2026-10-15'; }`, x);
   // Entries: each row's pill, and the reason under the reversed entry only.
   const h = x.renderLedgerEntries();
@@ -28683,7 +28685,8 @@ test('C8-3: the Reconcile screen lists the carried rows under their own heading,
     function ledgerAsideListHtml() { return ''; } function getBudgetLine() { return null; }
     function reconcileLockRefusal() { return ''; } function reconcileLockAhead() { return false; } var RECONCILE_AHEAD_WHY = '';
     function canReopenStatement() { return false; }
-    function storefrontCashHint() { return false; } function ledgerDraftEntry() { return {}; } function storefrontCashCheckHtml() { return ''; }   // item 11: its own tests
+    function storefrontCashHint() { return ''; } function ledgerDraftEntry() { return {}; } function storefrontCashCheckHtml() { return ''; }   // item 11: its own tests
+    function outSourceSelectHtml() { return ''; } function councilMoneyHtml() { return ''; } var LEDGER_NO_FAMILY_SOURCES = ['storefront', 'council'], COUNCIL_ROW_NOTE = '';
     function todayISO() { return '2027-09-15'; }`, x);
   const text = (h) => h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   const rc = x.renderReconcile(), t = text(rc);
@@ -32041,7 +32044,7 @@ test('wagon cash: always Trail’s End money, never kept, whatever the storefron
    ================================================================ */
 const SF_FNS = declClosure(['ledgerIncomeCents', 'lineActualCents', 'lineIncomeCents', 'entryWantsLine', 'ledgerBalance', 'ledgerTotals', 'reconcileTotals',
   'storefrontCashCheck', 'storefrontCashLines', 'storefrontCashHint', 'STOREFRONT_CASH_HINT', 'depositForToggle', 'storefrontDepositName', 'commissionLookalikes',
-  'entryIsRefund'], []);
+  'entryIsRefund', 'storefrontHintText'], []);
 // Two storefronts: Kroger kept $425.00 of cash donations over two blocks (and sold $900.00), Publix $200.00. $625.00 kept in all.
 const SF_STORES = () => J([
   { id: 'k', name: 'Kroger', date: '2026-09-12', blocks: [{ donationsCents: 30000, salesCents: 90000 }, { donationsCents: 12500, salesCents: 0 }] },
@@ -32127,28 +32130,34 @@ test('item 11: plain income that looks like storefront cash gets the gentle hint
   // Treasurer review (15) — names match with punctuation and spacing ignored; (13) answered "no", it stops.
   const lowes = [{ id: 'l', name: 'Lowe’s Home', date: '2026-09-12', blocks: [{ donationsCents: 100 }] }];
   eq([x.storefrontCashHint({ direction: 'in', date: '2026-09-20', description: 'LOWES HOME table', source: '' }, lowes, [], false),
-    x.storefrontCashHint({ direction: 'in', date: '2026-09-20', description: 'Kroger', source: '', notStorefront: true }, SF, [], false)], [true, false], 'punctuation, and the answer');
+    x.storefrontCashHint({ direction: 'in', date: '2026-09-20', description: 'Kroger', source: '', notStorefront: true }, SF, [], false)], ['kept', ''], 'punctuation, and the answer');
   const hint = (o, L, te) => x.storefrontCashHint(Object.assign({ direction: 'in', date: '2026-09-22', amountCents: 0, description: '', source: '', scoutId: '', tierMakeup: '' }, o), SF, L || [], !!te);
   eq([hint({ description: 'Store front deposit' }), hint({ description: 'Cash box, Saturday' }), hint({ description: 'KROGER table' }),
     hint({ amountCents: 42500 }), hint({ amountCents: 20000, source: 'donation' }), hint({ amountCents: 62500, source: 'fundraiser' })],
-    [true, true, true, true, true, true], 'the description, a storefront by name, its kept cash, everything not yet deposited');
+    ['kept', 'kept', 'kept', 'kept', 'kept', 'kept'], 'the description, a storefront by name, its kept cash, everything not yet deposited');
   // Everything not yet deposited is less once Kroger's is in.
-  eq([hint({ amountCents: 20000 }, [sfRow('d1', 42500)]), hint({ amountCents: 62500 }, [sfRow('d1', 42500)])], [true, false], 'not yet deposited, after a deposit');
+  eq([hint({ amountCents: 20000 }, [sfRow('d1', 42500)]), hint({ amountCents: 62500 }, [sfRow('d1', 42500)])], ['kept', ''], 'not yet deposited, after a deposit');
   eq([hint({ amountCents: 4321, description: 'Bake sale' }), hint({ description: 'Kroger', date: '2026-12-01' }), hint({ amountCents: 42500, date: '2026-09-01' })],
-    [false, false, false], 'nothing like it, a storefront 80 days before, or one after the deposit');
+    ['', '', ''], 'nothing like it, a storefront 80 days before, or one after the deposit');
   eq([hint({ amountCents: 42500, source: 'storefront' }), hint({ amountCents: 42500, source: 'commission' }), hint({ amountCents: 42500, source: 'family', scoutId: 's1' }),
     hint({ amountCents: 42500, scoutId: 's1' }), hint({ amountCents: 42500, direction: 'out' }), hint({ amountCents: 42500 }, [], true), hint({ amountCents: 42500, tierMakeup: 't1' })],
-    [false, false, false, false, false, false, false], 'not a question for these');
+    ['', '', '', '', '', '', ''], 'not a question for these');
+  // Owner, 2026-10-01 (treasurer review, 16) — storefront cash run through Trail's End, and wagon cash, are the council's: the hint says so.
+  eq([hint({ description: 'Kroger table cash' }, [], true), hint({ amountCents: 42500 }, [], true), hint({ description: 'Wagon cash, Oak St' }), hint({ description: 'wagons', source: 'storefront' })],
+    ['te', '', 'wagon', ''], 'the council’s money');
+  eq(['te', 'wagon'].map((k) => x.storefrontHintText(k)), [
+    'Is this storefront cash? Storefront cash donations run through Trail’s End this season, so it is the council’s money, not pack income: record it as ‘Popcorn money for the council’.',
+    'Is this wagon cash? Wagon cash goes through Trail’s End, so it is the council’s money, not pack income: record it as ‘Popcorn money for the council’.'], 'the council hints');
   // Where it is shown: under the add form (asked of the draft) and in an entry's Detail; never a change, and redrawn only on change.
   const f = slice('renderLedgerEntries');
-  ok(/storefrontCashHint\(ledgerDraftEntry\(dr\), state\.storefronts, state\.ledger, state\.cashThroughTrailsEnd\)[\s\S]{0,200}esc\(STOREFRONT_CASH_HINT\)/.test(f), 'the add form');
-  ok(/!e\.reconciled && storefrontCashHint\(e, state\.storefronts, state\.ledger, state\.cashThroughTrailsEnd\)[\s\S]{0,200}esc\(STOREFRONT_CASH_HINT\)[\s\S]{0,120}data-act="not-storefront:/.test(f), 'an entry’s Detail: unreconciled only, with its answer');
+  ok(/var hk = storefrontCashHint\(ledgerDraftEntry\(dr\), state\.storefronts, state\.ledger, state\.cashThroughTrailsEnd\);[\s\S]{0,200}esc\(storefrontHintText\(hk\)\)/.test(f), 'the add form');
+  ok(/var hk = e\.reconciled \? '' : storefrontCashHint\(e, state\.storefronts, state\.ledger, state\.cashThroughTrailsEnd\);[\s\S]{0,200}esc\(storefrontHintText\(hk\)\)[\s\S]{0,120}data-act="not-storefront:/.test(f), 'an entry’s Detail: unreconciled only, with its answer');
   const ns = /if \(act\.indexOf\('not-storefront:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/state\.book\.closedAt/.test(ns) && /logLedger\('edit', nsE\.id, \{ f: \{ notStorefront: \[null, true\] \} \}\)/.test(ns) && /nsE\.notStorefront = true;/.test(ns), 'Not storefront cash');
   ok(/\(nk === 'desc' \|\| nk === 'amount'\) && !liveEdit &&\s*storefrontCashHint\(ledgerDraftEntry\(nd\)[^\n]*!== ndHint\) render\(\);/.test(SCRIPT), 'the draft redraws it mid-typing, or never');
   // The source is offered on money in, by its name; and the help under the form says the rule.
   eq(vm.runInContext('LEDGER_SOURCE_LABELS.storefront', sandbox(['LEDGER_SOURCE_LABELS'])), 'Storefront cash donations (kept)', 'the label');
-  ok(/\(dr\.direction === 'in'\s*\? ' Storefront cash donations the pack keeps are already in Funds in from the storefront figures: bank them as ' \+\s*'<strong>Storefront cash donations \(kept\)<\/strong>, with no budget line, so they aren’t counted twice\.'/.test(f), 'the help text, on money in only');
+  ok(/\(dr\.direction === 'in'\s*\? ' Storefront cash donations the pack keeps are already in Funds in from the storefront figures: bank them as ' \+\s*'<strong>Storefront cash donations \(kept\)<\/strong>, with no budget line, so they aren’t counted twice\. ' \+/.test(f), 'the help text, on money in only');
 });
 
 test('item 11: a deposit names the storefronts or dates it covers; the edits that go with the source are logged, and an older row is left as it was', () => {
@@ -32264,6 +32273,112 @@ test('item 11: DESIGN-money.md has the posting rule, and the format was raised f
   ok(/#### Storefront cash deposits/.test(doc) && /Storefront cash deposit/.test(doc) && /no budget line/.test(doc) && /never Funds in/i.test(doc), 'the posting rule');
   ok(!/\*\*Not built yet: the deposit\.\*\*/.test(doc), '§3.5 still says the deposit is not built');
   ok(/4 is this build's\s*\/\/ record: a ledger entry can say it is a storefront cash deposit/.test(SCRIPT), 'PACK_FORMAT does not say what 4 is');
+});
+
+/* ================================================================
+   Owner decision C (2026-10-01) — popcorn money for the council (source 'council'): sales cash banked for
+   the council and the pack's check to it. A pass-through, and a settlement step that makes the commission
+   actual. Made-up data throughout.
+   ================================================================ */
+const KC_FNS = declClosure(['ledgerIncomeCents', 'lineActualCents', 'lineIncomeCents', 'entryWantsLine', 'ledgerBalance', 'reconcileTotals', 'commissionLookalikes',
+  'councilMoneyCheck', 'councilMoneyLines', 'councilSettledNormal', 'councilSettledText', 'councilSettlement'], []);
+const kcRow = (id, cents, dir, o) => c8row(id, (o && o.date) || '2026-11-20', cents, dir, Object.assign({ source: 'council' }, o || {}));
+
+test('council money: neither pack income nor a pack cost, either way, on a line or not; in the bank and the statement', () => {
+  const x = sandbox(KC_FNS);
+  const isInc = (id) => id === 'POP';
+  const L = [kcRow('a', 70000, 'in', { lineId: 'POP' }), kcRow('b', 40000, 'out', { lineId: 'POP' }), kcRow('c', 500, 'out', { lineId: 'CAMP' }), kcRow('d', 200, 'in'),
+    c8row('fr', '2026-10-01', 5000, 'in', { lineId: 'POP', source: 'fundraiser' })];
+  const t = J(x.ledgerIncomeCents(L, isInc, 0));
+  eq([t.other, t.commission, t.hasCommission, t.councilIn, t.councilOut], [5000, 0, false, 70200, 40500], 'Funds in counted council money');
+  eq([x.lineActualCents(L, 'CAMP'), x.lineActualCents(L, 'POP'), x.lineIncomeCents(L, 'POP')], [0, 0, 5000], 'a line’s cost or income counted council money');
+  eq(L.slice(0, 4).map((e) => x.entryWantsLine(e)), [false, false, false, false], 'council money asks for a budget line');
+  eq(x.commissionLookalikes(L, isInc).map((k) => k.cents), [5000], 'council money read as maybe the commission');
+  const book = { openingCents: 0, openingDate: '2026-07-01', reconciledThrough: '', statementDate: '2026-11-30', statementCents: 0 };
+  eq(x.ledgerBalance(L, book), 70000 - 40000 - 500 + 200 + 5000, 'the bank balance');
+  // Normalized: either direction, never a family's.
+  const n = sandbox(['normalizeLedgerRow', 'depositForIds', 'DEPOSIT_FOR_MAX', 'LEDGER_SOURCES', 'LEDGER_METHODS', 'ledgerStampClean', 'stableRowId', 'fnv1a32'].filter((k) => TOP_NAMES.has(k)));
+  const nr = (o) => { const r = Object.assign({ id: 'r', date: '2026-11-20', amountCents: 100 }, o); n.normalizeLedgerRow(r, 'nl'); return r.source; };
+  eq([nr({ direction: 'in', source: 'council' }), nr({ direction: 'out', source: 'council' }), nr({ direction: 'in', source: 'council', scoutId: 's1' })], ['council', 'council', ''], 'normalized');
+  eq(vm.runInContext('LEDGER_SOURCE_LABELS.council', sandbox(['LEDGER_SOURCE_LABELS'])), 'Popcorn money for the council', 'the label');
+});
+
+test('council money: a check to the council keeps its source through an edit; a family is never stripped, and picking one makes a refund', () => {
+  const e = sandbox(['applyLedgerEdit', 'LEDGER_NO_FAMILY_SOURCES', 'depositForIds', 'DEPOSIT_FOR_MAX', 'toCents']);
+  vm.runInContext('function ledgerLineIsDirect() { return false; }', e);
+  const chk = { id: 'o', direction: 'out', source: 'council', scoutId: '', donor: '', ref: '', amountCents: 40000 };
+  e.applyLedgerEdit(chk, 'ref', '1051');
+  eq([chk.source, chk.ref], ['council', '1051'], 'an edit of its check number blanked the source');
+  e.applyLedgerEdit(chk, 'scout', 's1');
+  eq([chk.source, chk.scoutId], ['refund', 's1'], 'a family picked on money out is a refund');
+  const pay = { id: 'p', direction: 'in', source: 'family', scoutId: 's1', donor: '', amountCents: 100 };
+  e.applyLedgerEdit(pay, 'source', 'council');
+  eq([pay.source, pay.scoutId], ['family', 's1'], 'a family’s payment lost its family');
+  const out = { id: 'q', direction: 'out', source: '', scoutId: '', donor: '', amountCents: 100 };
+  e.applyLedgerEdit(out, 'source', 'council');
+  eq(out.source, 'council', 'money out took the source');
+  // The add: a check to the council names no family.
+  const add = /if \(act === 'ledger-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/if \(drEntry\.source === 'council'\) drEntry\.scoutId = '';/.test(add), 'the add keeps a family on council money');
+  // Offered on money out (the add form and an entry's Detail), with the help text saying both halves.
+  const f = slice('renderLedgerEntries');
+  ok(/outSourceSelectHtml\('ledn', '', dr\.source\)/.test(f) && /outSourceSelectHtml\('led', e\.id, e\.source\)/.test(f), 'money out has no council source');
+  ok(/A cash box with both is one line on the bank statement ' \+\s*'but two entries here, with the same date and the same deposit-slip number in Ref, one for each; tick both against the statement\./.test(f) &&
+    /The check to the council for popcorn is <strong>Popcorn money for the council<\/strong>, with no budget line: it is not a pack cost\./.test(f), 'the help text');
+});
+
+// Hand-worked against councilSettlement (owed = product − card − commission). Paid: $1,000.00 of product, $300.00 on cards, 30%:
+// commission $300.00, owed $400.00. The pack banked the $700.00 of cash and paid $400.00: $700 − $400 = $300 = the commission.
+// Payout: $200.00 of product, $180.00 on cards, 30%: commission $60.00, owed −$40.00, so the council sends $40.00. The pack banked
+// $20.00: $20 − $0 + $40 = $60 = the commission. (The commission check alone, $40.00, would be short by the cash banked.)
+test('council money: settling makes the commission actual, banked − paid + commission checks, which is councilSettlement’s commission', () => {
+  const x = sandbox(KC_FNS);
+  const inv = (order, pct) => ({ orderTotalCents: order, anyPriced: false, computedValueCents: 0, pctOk: true, pct });
+  const s1 = J(x.councilSettlement({ takeOrderCents: 0, cardCollectedCents: 30000, commissionCents: null }, inv(100000, 30)));
+  eq([s1.commissionCents, s1.owedCents], [30000, 40000], 'the paid case, as the Council page works it');
+  const paid = [kcRow('in', 70000, 'in'), kcRow('chk', 40000, 'out', { date: '2026-12-02' })];
+  const t1 = J(x.ledgerIncomeCents(paid, () => false, 0, true));
+  eq([t1.commission, t1.hasCommission, t1.settled], [s1.commissionCents, true, true], 'paid: the commission is the money still held');
+  eq(J(x.ledgerIncomeCents(paid, () => false, 0, false)).hasCommission, false, 'not settled: the estimate stands');
+  const s2 = J(x.councilSettlement({ takeOrderCents: 0, cardCollectedCents: 18000, commissionCents: null }, inv(20000, 30)));
+  eq([s2.commissionCents, s2.owedCents, s2.payout], [6000, -4000, true], 'the payout case');
+  const payout = [kcRow('in', 2000, 'in'), c8row('cc', '2026-12-10', 4000, 'in', { source: 'commission' })];
+  eq(J(x.ledgerIncomeCents(payout, () => false, 0, true)).commission, s2.commissionCents, 'payout: cash banked plus the council’s check');
+  eq(J(x.councilMoneyCheck(payout)), { banked: 2000, paid: 0, held: 2000, checks: 4000, commission: 6000 }, 'the check');
+  // The Reconcile line, settled and not, with the Council page's figure beside it.
+  const st = { on: '2026-12-02', how: 'paid', by: 'Pat', byUid: 'u1', at: '' };
+  const fds = vm.runInContext('fmtDateShort', x)('2026-12-02');
+  eq(x.councilMoneyLines(x.councilMoneyCheck(paid), null, 30000).map((l) => l.text), ['Popcorn money for the council: banked $700.00 · paid to the council $400.00 · still held $300.00.'], 'not settled');
+  eq(x.councilMoneyLines(x.councilMoneyCheck(paid), st, 31000).map((l) => (l.warn ? '! ' : '') + l.text), [
+    'Popcorn money for the council: banked $700.00 · paid to the council $400.00 · still held $300.00.',
+    'Settled with the council on ' + fds + ': the pack paid the council. The commission is actual now: $700.00 banked − $400.00 paid = $300.00, and that is what Funds in counts.',
+    '! The Council page works the commission out at $310.00, $10.00 different. Check that all the sales cash is banked as Popcorn money for the council, and check the council’s statement.'], 'settled');
+  eq(x.councilMoneyLines(x.councilMoneyCheck([kcRow('o', 500, 'out')]), null, null).map((l) => l.warn), [false, true], 'more paid than banked is a warning');
+  eq(x.councilMoneyLines(x.councilMoneyCheck([]), null, null), [], 'nothing to say');
+  // The settlement as stored, and as the change history says it.
+  eq([J(x.councilSettledNormal({ on: '2026-12-02', how: 'payout', by: 'pat@example.com', extra: 1 })), x.councilSettledNormal({ on: 'Dec 2', how: 'paid' }), x.councilSettledNormal({ on: '2026-12-02', how: 'maybe' })],
+    [{ on: '2026-12-02', how: 'payout', by: 'a signed-in leader', byUid: '', at: '' }, null, null], 'normalized (never an email)');
+  eq(x.councilSettledText(st), '2026-12-02 · the pack paid the council', 'the log’s words');
+});
+
+test('council money: the settle step is an editor’s, logged on the book, taken back with two taps, and gone at close-out', () => {
+  const go = /if \(act === 'council-settle-go'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/canEdit\(\)/.test(go) && /state\.book\.closedAt/.test(go) && /state\.book\.councilSettled = \{ on: sd\.on, how: sd\.how, by: ledgerActor\(\), byUid: ledgerActorUid\(\), at: new Date\(\)\.toISOString\(\) \};/.test(go) &&
+    /logLedger\('settle', 'book', \{ f: \{ councilSettled: \[sdWas \|\| null, councilSettledText\(state\.book\.councilSettled\)\] \} \}\)/.test(go), 'Mark settled');
+  const un = /if \(act === 'council-unsettle'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/arm\(act,/.test(un) && /logLedger\('unsettle', 'book'/.test(un) && /delete state\.book\.councilSettled;/.test(un), 'Not settled after all');
+  ok(/h \+= councilMoneyHtml\(\);/.test(slice('renderReconcile')) && /if \(!canEdit\(\) \|\| state\.book\.closedAt\) return h;/.test(slice('councilMoneyHtml')), 'the Reconcile card');
+  ok(/ledgerIncomeCents\(state\.ledger, isIncomeLine, b\.startingBalance \|\| 0, !!\(state\.book && state\.book\.councilSettled\)\)/.test(slice('computeBudget')), 'computeBudget does not read the settlement');
+  ok(/' as settled with the council: ' \+ fmt\(bud\.councilIn\) \+ ' banked for it \\u2212 ' \+ fmt\(bud\.councilOut\) \+ ' paid to it, plus any commission checks'/.test(SCRIPT), 'the Funds in sentence');
+  // normalizeState keeps it on the book, and a fresh book (close-out) has none.
+  const nz = sandbox(NORMALIZE_FNS);
+  const kept = nz.normalizeState({ version: 1, scouts: [], book: { openingCents: 0, openingDate: '', councilSettled: { on: '2026-12-02', how: 'paid', by: 'Pat' } } });
+  eq(J(kept.book.councilSettled), { on: '2026-12-02', how: 'paid', by: 'Pat', byUid: '', at: '' }, 'normalizeState');
+  eq('councilSettled' in nz.normalizeState({ version: 1, scouts: [], book: { councilSettled: 'yes' } }).book, false, 'junk kept');
+  const ctx = c8wRun(c8wRec({ book: Object.assign({}, C8_SRC().book, { councilSettled: { on: '2027-06-01', how: 'paid', by: 'Pat' } }), ledger: C8_SRC().ledger }));
+  eq('councilSettled' in c8wGet(ctx, 'state.book'), false, 'the new year starts settled');
+  // Never published.
+  ok(!/councilSettled|councilMoney|COUNCIL_SETTLE/.test(codeOnly(BPV())), 'the parent view reads the settlement');
 });
 
 /* ---------------- report ---------------- */

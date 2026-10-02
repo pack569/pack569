@@ -877,7 +877,7 @@ What actually moved. This is the record that makes the app reconcilable.
   method: 'check'|'cash'|'card'|'transfer'|'',
   ref,                           // check number / receipt
   scoutId,                       // set when it settles a charge
-  source,                        // 'family'|'donation'|'fundraiser'|'commission'|'carryover'|'storefront'|''
+  source,                        // 'family'|'donation'|'fundraiser'|'commission'|'carryover'|'storefront'|'council'|''
   donor }                        // who gave it, when source === 'donation'
 ```
 
@@ -1478,6 +1478,7 @@ workspaces — which is exactly the split the jobs model already encodes.
 | Recording a family payment | Treasurer | **Money · Ledger** | ledger `in`, `source: 'family'` |
 | Recording a donation that covers a scout | Treasurer | **Money · Ledger** | ledger `in`, `source: 'donation'`, `donor` |
 | Banking storefront cash donations the pack keeps | Treasurer | **Money · Ledger** | ledger `in`, `source: 'storefront'`, no budget line (see *Storefront cash deposits* below) |
+| Banking sales cash, and writing the check to the council | Treasurer | **Money · Ledger** | ledger `in` and `out`, `source: 'council'`, no budget line; then *Popcorn settled with the council* (see below) |
 
 Nobody has to be in two places. The person who ran the event says who came; the person with the
 chequebook says what it cost. The charges fall out of the two meeting.
@@ -1647,6 +1648,72 @@ donations (kept), with no budget line, so they aren't counted twice."
   takes the new season's storefronts with it: their kept cash leaves Funds in, and their
   deposits read as last season's. Close-out should refuse, or ask, while any storefront or
   popcorn entry is dated after the cutoff (treasurer review, 18).
+
+#### Popcorn money for the council, and settling with it (owner, 2026-10-01)
+
+Sales cash belongs to the council, and so does any cash donation that runs through Trail's End
+(every wagon donation, and storefront donations while that setting is on). NEGA's popcorn
+calendar has the unit pay the council by check (a post-dated unit check, then the unit payment),
+so a pack that banks the cash and writes the check records both halves.
+
+**The posting rule.** The sales cash banked is money in, and the check to the council is money
+out, both with the source **Popcorn money for the council** (`source: 'council'`) and **no budget
+line**. It is a pass-through: `ledgerIncomeCents`, `lineActualCents` and `lineIncomeCents` skip it
+in both directions, it is never a refund (`LEDGER_INCOME_SOURCES`), never a commission lookalike,
+and asks for no budget line (`entryWantsLine`). It is in the bank balance and reconciles like any
+row. It names no family (`normalizeLedgerRow`; `LEDGER_NO_FAMILY_SOURCES`). On money out it is
+the one source a leader picks (a refund is picked by its family). A cash box with sales and
+donations is one line on the bank statement and two rows here, with the same date and the same
+deposit-slip number in Ref: *Storefront cash donations (kept)* and *Popcorn money for the
+council*. Ticking both matches the bank, because reconcile adds the ticked rows. The ledger's help
+says this on money in, and on money out says the check to the council is not a pack cost.
+
+**The Reconcile line** (`councilMoneyCheck`): "Popcorn money for the council: banked $A · paid to
+the council $B · still held $A−B." More paid than banked is a warning.
+
+**Settling.** Keith's understanding: the council nets the commission off what the pack owes it,
+and sends a commission check only when it owes the pack. So no commission check may ever arrive,
+and Funds in would keep the sales estimate for ever. "Popcorn settled with the council" on the
+Reconcile card opens a short form: the date, and how (the pack paid the council; the council paid
+the pack a commission check; nothing changed hands). It shows what the commission becomes beside
+what the Council page works out. **Mark settled** writes `book.councilSettled = { on, how, by,
+byUid, at }` and a `settle` event on the book (`f.councilSettled`, in words). "Not settled after
+all" takes it back with two taps (`unsettle`). Editors and admins, never a closed year.
+
+Once settled, Funds in's commission is **actual** and `hasCommission` is true:
+
+    commission = A − B + C
+      A  money banked for the council   (source 'council', in)
+      B  money paid to the council      (source 'council', out)
+      C  commission checks posted       (source 'commission', in)
+
+Why: `councilSettlement` has owed = product − card − commission. The cash the pack banked is
+product − card, when all of it is banked. When the pack pays, B = owed, so A − B = commission.
+When the council pays, B = 0 and C = −owed = commission − A, so A + C = commission. One formula
+covers both, and after settling what is still held for the council *is* the commission. The
+`how` is what happened, and decides the form's warning (no check to the council in the ledger
+yet; no commission check yet; no sales cash banked); the sum is the same. The Reconcile line then
+reads "Settled with the council on ‹date›: ‹how›. The commission is actual now: $A banked − $B
+paid (+ $C in commission checks) = $X, and that is what Funds in counts", and warns when the
+Council page's figure differs.
+
+**For the treasurer to confirm:**
+- *The payout case.* The spec said that with a commission check "it's the posted commission rows".
+  If the pack also banked sales cash, the check alone is short by that cash (the council paid only
+  what it owed after the cash the pack held). A − B + C is the commission either way, and equals
+  the check alone when nothing was banked.
+- *Unsold product.* NEGA's Show & Sell has no returns, so the pack pays for product it did not
+  sell. Then A is less than product − card, and A − B + C is the commission less that product's
+  cost: what popcorn really netted the pack, shown as commission. The Council page's figure is the
+  commission before it, and the Reconcile line shows the difference.
+- *Heroes & Helpers cash.* Wagon cash (and storefront cash while it runs through Trail's End) is
+  banked as council money, so it is in A. That is right only if the council's invoice includes it
+  (so it is in B as well). If it does not, A − B + C overstates the commission by it.
+- *Where the settlement lives.* On `state.book`, like the opening figure: it is the year's, and
+  close-out starts a new book without it (the year's Funds in is read before). Two devices settling
+  differently at the same time keep whichever saves last, as for other book fields. The Council
+  page's own "Paid to the council on" (`popcornCouncil.paidOn`) is the Kernel's and is not set by
+  this; its overdue warning reads that field only.
 
 ---
 
