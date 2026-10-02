@@ -13024,7 +13024,7 @@ test('D2: a worked block past its day warns when the cash count lacks two differ
   ok(/b\.cashCountedBy = typeof b\.cashCountedBy === 'string' \? b\.cashCountedBy : '';/.test(SCRIPT) &&
     /b\.cashVerifiedBy = typeof b\.cashVerifiedBy === 'string' \? b\.cashVerifiedBy : '';/.test(SCRIPT), 'the cash count is not normalized');
   const rb = slice('renderBlock');
-  ok(/data-ch="b-cash-counted"/.test(rb) && /data-ch="b-cash-verified"/.test(rb) && /blockCashCheck\(b, sf\.date, todayISO\(\)\)/.test(rb),
+  ok(/data-ch="b-cash-counted"/.test(rb) && /data-ch="b-cash-verified"/.test(rb) && /blockCashCheck\(b, sf\.date, todayISO\(\), signoffFromOf\(state\.signoffFrom\)\)/.test(rb),
     'the block editor has no cash-count fields or warning');
   ok(/if \(ch === 'b-cash-counted'\) \{ b\.cashCountedBy = el\.value;/.test(SCRIPT) && /if \(ch === 'b-cash-verified'\) \{[\s\S]{0,300}b\.cashVerifiedBy = el\.value;/.test(SCRIPT),
     'the fields are not stored');
@@ -17694,6 +17694,8 @@ function srLeaderCtx(o) {
   };
   vm.runInContext(`
     var state = ${JSON.stringify(st)};
+    // Sign-off checks from (Keith, 2026-10-02): long before these storefronts, unless the test says.
+    if (state.signoffFrom === undefined) state.signoffFrom = '2000-01-01';
     var ui = {};
     var LEADER_ROLES = ['admin', 'editor', 'viewer'];
     var patches = [], answers = [], toasts = [], commits = 0, loads = 0;
@@ -17720,7 +17722,7 @@ function srLeaderCtx(o) {
        'srWaitingOn', 'acceptShiftReport', 'srLanded', 'srSettle', 'srRollback', 'shiftReportsReconcile', 'shiftReportsAfterPush',
        'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srReasonDraft', 'srNameClean', 'ledgerStampClean', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout',
        'srIConfirmed', 'srFamiliesNow', 'srNeedsCheck', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'SR_CHECK_TE', 'SR_IMPORT_FIRST', 'familyKeyOf',
-       'blockCashCheck', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
+       'blockCashCheck', 'signoffFromOf', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
        'srParentStore', 'srHomeFamilyOn', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashHistorySay', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
        'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay'].map(decl).join('\n')}
     function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }`, ctx);
@@ -19262,6 +19264,55 @@ test('Home storefronts to close: one predicate gates the card, which sums up the
   // The kernel's "no money entered yet" row steps aside for a storefront whose totals wait here.
   ok(/out\[out\.length - 1\]\.sfId = sf\.id;/.test(slice('homeTasks')) &&
     /if \(toClose\) tasks = tasks\.filter\(function \(t\) \{ return !\(t\.sfId && toClose\.sfIds\[t\.sfId\]\); \}\);/.test(hm), 'the same storefront said twice');
+});
+
+test('sign-off from: storefronts before the pack’s sign-off date aren’t asked for a second adult, and the date is stamped once and kept', () => {
+  // blockCashCheck: a worked past block with a name missing, before and after the date.
+  const c = sandbox(['blockCashCheck']);
+  const blank = { assignments: [{ scoutId: 's1' }], salesCents: 500, cashCountedBy: 'Jo', cashVerifiedBy: '' };
+  eq([c.blockCashCheck(blank, '2026-09-20', '2026-10-05', '2026-10-02'), c.blockCashCheck(blank, '2026-10-03', '2026-10-05', '2026-10-02'),
+    c.blockCashCheck(blank, '2026-10-02', '2026-10-05', '2026-10-02'), c.blockCashCheck(blank, '2026-09-20', '2026-10-05')],
+    ['', 'blank', 'blank', 'blank'], 'before the date: not asked; on or after it: asked; no date given: asked');
+  // normalizeState: missing or junk is stamped with today; a date is kept.
+  const nz = sandbox(NORMALIZE_FNS);
+  const today = vm.runInContext('todayISO()', nz);
+  const ns = (v) => { const d = { version: 1, scouts: [] }; if (v !== undefined) d.signoffFrom = v; return nz.normalizeState(d).signoffFrom; };
+  eq([ns(undefined), ns('soon'), ns(5), ns('2026-10-02')], [today, today, today, '2026-10-02'], 'stamped when missing, kept when set');
+  const so = sandbox(['signoffFromOf', 'todayISO', 'pad2']);
+  eq([so.signoffFromOf('2026-10-02'), so.signoffFromOf(undefined) === vm.runInContext('todayISO()', so)], ['2026-10-02', true], 'read');
+  // Every place the cash check is asked passes the date; homeTasks' "no money entered yet" too.
+  ok(/blockCashCheck\(b, sf\.date, todayISO\(\), signoffFromOf\(state\.signoffFrom\)\)/.test(slice('renderBlock')), 'the block card');
+  ok(/from = signoffFromOf\(state\.signoffFrom\)/.test(slice('srNeedsCheck')) && /blockCashCheck\(b, sf\.date, today, from\)/.test(slice('srNeedsCheck')), 'the banner’s list');
+  eq([...SCRIPT.matchAll(/blockCashCheck\(/g)].length, 3, 'a new place asks the cash check (pass it the sign-off date)');
+  ok(/cov\.covered > 0 && !\(sf\.date < signoffFromOf\(state\.signoffFrom\)\)\)/.test(slice('homeTasks')), 'the kernel’s no-money row');
+  // The banner and Home's card: a pre-date storefront with blank names is not listed; a waiting report and cash still out are.
+  const st = (from) => ({ signoffFrom: from, scouts: [{ id: 's1', name: 'Ada Example' }], leaders: [],
+    storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-09-28', blocks: [
+      { id: 'b1', label: 'Block 1', start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }], salesCents: 500, donationsCents: 0, cashCountedBy: 'Jo', cashVerifiedBy: '' },
+      { id: 'b2', label: 'Block 2', start: '12:00', end: '14:00', assignments: [], salesCents: 900, donationsCents: 0, cashCountedBy: 'Jo', cashVerifiedBy: 'Lee',
+        salesCash: [{ reportId: 'rep-2', cents: 2000, from: 'Nora', outcome: null }] },
+      { id: 'b3', label: 'Block 3', start: '14:00', end: '16:00', assignments: [{ scoutId: 's1', weight: 1 }], salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '' }] }] });
+  const run = (from) => {
+    const L = srLeaderCtx({ state: st(from), today: '2026-10-05', reports: [srRep({ id: 'rep-3', sfId: 'sf1', blockId: 'b3' })] });
+    vm.runInContext(['homeStorefrontsToClose', 'homeStorefrontsCard'].map(decl).join('\n'), L.ctx);
+    return { ban: L.run('renderShiftReportsBanner()'), home: L.run('homeStorefrontsCard(homeStorefrontsToClose())'), n: L.run('srNeedsCheck().length') };
+  };
+  const after = run('2026-09-01'), before = run('2026-10-02');
+  eq([after.n, before.n], [2, 0], 'needs a second adult’s check: after the date, before it');
+  ok(/Figures that need a second adult’s check/.test(after.ban) && !/Figures that need a second adult’s check|nobody named as verifying/.test(before.ban), 'the banner');
+  ok(/figures to check/.test(after.home) && !/figures to check/.test(before.home), 'Home’s card');
+  ok(/Shift reports to review/.test(before.ban) && /cash from popcorn sales to collect/i.test(before.ban), 'a waiting report and cash still out stay in the banner');
+  ok(/totals from Nora Newfamily to accept/.test(before.home) && /\$20\.00 cash from popcorn sales to collect/.test(before.home), '…and on Home');
+  // A report sent back after its accept is from shift reports, which are new: still asked about.
+  const rb = st('2026-10-02'); rb.storefronts[0].blocks[0].reportReturned = { note: 'x' };
+  eq(srLeaderCtx({ state: rb, today: '2026-10-05', reports: [] }).run('srNeedsCheck().map(function (c) { return c.why; })'), ['sent back after it was accepted'], 'a sent-back report before the date');
+  // The Storefronts page says the date, and whoever may edit the storefronts changes it there; logged on the book.
+  const sl = slice('renderStorefrontList');
+  ok(/h \+= canEdit\(\)\s*\? '<div class="row no-print" style="margin:0 0 12px"><label class="fld small">Sign-off checks apply to storefronts from' \+\s*'<input type="date" data-ch="signoff-from" value="' \+ esc\(soFrom\) \+ '"><\/label><\/div>'\s*: '<p class="small muted no-print" style="margin:0 0 12px">Sign-off checks apply to storefronts from ' \+ esc\(fmtDate\(soFrom\)\) \+ '\.<\/p>';/.test(sl), 'the line');
+  ok(/if \(ch === 'signoff-from'\) \{\s*if \(!canEdit\(\)\) \{ render\(\); return; \}[\s\S]{0,400}logLedger\('edit', 'book', \{ f: \{ signoffFrom: \[soWas, soNow\] \} \}\)/.test(SCRIPT), 'the change, gated and logged');
+  ok(!/myRole/.test(codeOnly(sl)), 'a role compared on the Storefronts page');
+  ok(/'signoffFrom'/.test(/var SYNC_LOG_MONEY = \{ keys: \[[^\]]*\]/.exec(SCRIPT)[0]), 'a sync decision about it is not logged');
+  ok(!/signoffFrom/.test(codeOnly(BPV())), 'the parent view reads it');
 });
 
 atest('same family: the leader’s card hides the accept from a leader in the sender’s family, says why, and the override says so on the block', async () => {

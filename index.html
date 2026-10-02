@@ -4155,6 +4155,10 @@
       var ddN = typeof d.depositDays === 'number' ? Math.round(d.depositDays) : NaN;
       if (isFinite(ddN) && ddN >= 1) d.depositDays = Math.min(60, ddN); else delete d.depositDays;
     }
+    // Keith (2026-10-02) — the first storefront date the sign-off checks ask about (signoffFromOf): an ISO
+    // date. Missing or junk is stamped with today, so the first page of this build to load the pack sets
+    // its go-live date and the next save keeps it. Storefronts before it were closed out the old way.
+    if (!(typeof d.signoffFrom === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d.signoffFrom))) d.signoffFrom = todayISO();
     if (!d.packName) d.packName = 'Pack 569';
     // Wave 22 — the weather lookup location. Defaulted rather than left blank so the feature
     // works on an existing pack record without anyone visiting a settings screen first; every
@@ -10231,6 +10235,7 @@
     cashThroughTrailsEnd: 'cash goes through Trail’s End', goalCents: 'Trail’s End goal', stretchGoalCents: 'stretch goal', cashGoalCents: 'cash donations goal',
     invCommissionPct: 'popcorn order commission (%)', orderTotalCents: 'popcorn order total',
     wagonViaTEFrom: 'wagon cash through Trail’s End from',
+    signoffFrom: 'sign-off checks from',
     depositFor: 'storefronts it covers', depositFrom: 'covers from', depositTo: 'covers to', notStorefront: 'not storefront cash'
   };
   // One value from an event's `f`, as a leader reads it. `names` turns an id into a name
@@ -19759,7 +19764,7 @@
   // or a note is logged as "Changed" or "Not set", never its value. `hows` { key: 'all' } for "Keep all". `when` from
   // syncServerWhen; `copies` [mine, theirs, base].
   var SYNC_LOG_HIDDEN = ['email', 'phone', 'uid', 'parentUids', 'noteInternal', 'notes', 'note'];
-  var SYNC_LOG_MONEY = { keys: ['depositDays', 'wagonViaTEFrom', 'cashThroughTrailsEnd', 'commissionPct', 'commissionPctOnline', 'cashScoutPct'],
+  var SYNC_LOG_MONEY = { keys: ['depositDays', 'wagonViaTEFrom', 'signoffFrom', 'cashThroughTrailsEnd', 'commissionPct', 'commissionPctOnline', 'cashScoutPct'],
     lists: ['entries', 'sales', 'distributions', 'salesCash', 'blocks', 'activities', 'expenses', 'tiers', 'products', 'fundraisers', 'storefronts'] };   // (+ final treasurer check B3)
   function syncItemIsMoney(it, k) {
     if (it.children || it.path[0].k === 'book' || /Cents$/.test(String(k)) || SYNC_LOG_MONEY.keys.indexOf(k) !== -1) return true;
@@ -22836,6 +22841,13 @@
       '<button type="button" class="btn" data-act="sf-glance-open">Schedule at a glance</button>' +
       (leaderReportsOn() ? '<button type="button" class="btn" data-act="sr-history-open">Shift reports this season</button>' : '') + '</div>';
     h += renderShiftReportsBanner();   // S-3: families' shift totals waiting for a leader
+    // Keith (2026-10-02) — from when the sign-off checks ask (state.signoffFrom): said here, and changed
+    // here by whoever may edit the storefronts (canEdit, as the rest of this page).
+    var soFrom = signoffFromOf(state.signoffFrom);
+    h += canEdit()
+      ? '<div class="row no-print" style="margin:0 0 12px"><label class="fld small">Sign-off checks apply to storefronts from' +
+        '<input type="date" data-ch="signoff-from" value="' + esc(soFrom) + '"></label></div>'
+      : '<p class="small muted no-print" style="margin:0 0 12px">Sign-off checks apply to storefronts from ' + esc(fmtDate(soFrom)) + '.</p>';
     if (canEdit()) {
     h += '<div class="card"><h2 class="section display">New storefront</h2>' +
       '<form data-form="add-storefront" class="row">' +
@@ -24220,11 +24232,18 @@
   var DAY_SHEET_REPORT = 'Before you leave: one parent sends these totals at pack569.com (Schedule, Storefront shift totals). If more than one family worked this shift, ' +
     'a parent from another family confirms them. Hand the cash donations to the leader collecting the money.';
   var WAGON_SAFETY = 'Door to door: never go inside a customer\u2019s home, and no door-to-door alone.';
+  // The first storefront date the sign-off checks ask about (state.signoffFrom, stamped by
+  // normalizeState); today if the record somehow has none. Pure given `v`.
+  function signoffFromOf(v) {
+    return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : todayISO();
+  }
   // What is wrong with a block's cash count, once the storefront's day has passed: 'blank' when
   // either adult is missing, 'same' when one person is both; '' when it is fine, when the day has
   // not passed yet, or when the block was never worked (no scouts, no money). Pure.
-  function blockCashCheck(b, sfDate, today) {
+  // `from` (signoffFromOf, Keith 2026-10-02): a storefront dated before it is not asked about.
+  function blockCashCheck(b, sfDate, today, from) {
     if (!b || !sfDate || !(today > sfDate)) return '';
+    if (from && sfDate < from) return '';
     var worked = (b.assignments || []).length > 0 || (b.salesCents || 0) + (b.donationsCents || 0) > 0;
     if (!worked) return '';
     var a = String(b.cashCountedBy || '').trim().toLowerCase().replace(/\s+/g, ' ');
@@ -24319,7 +24338,7 @@
       '<label class="fld">Cash counted by<input data-ch="b-cash-counted" data-sf="' + sf.id + '" data-id="' + b.id + '" value="' + esc(b.cashCountedBy || '') + '" placeholder="Adult\u2019s name" style="width:160px"></label>' +
       '<label class="fld">Verified by<input data-ch="b-cash-verified" data-sf="' + sf.id + '" data-id="' + b.id + '" value="' + esc(b.cashVerifiedBy || '') + '" placeholder="A second adult" style="width:160px"></label>' +
       '</div>';
-    var cashChk = blockCashCheck(b, sf.date, todayISO());
+    var cashChk = blockCashCheck(b, sf.date, todayISO(), signoffFromOf(state.signoffFrom));
     if (cashChk === 'blank') h += '<p class="warn small" style="margin:8px 0 0">Name both adults who counted this block\u2019s cash \u2014 one counts, a second checks.</p>';
     else if (cashChk === 'same') h += '<p class="warn small" style="margin:8px 0 0">The same person counted and verified this cash. A second adult has to check it.</p>';
     h += renderBlockReportLine(b);   // S-3: where the figures came from, when a report put them there
@@ -24889,11 +24908,13 @@
   // Treasurer review (C8) — the past blocks whose figures need a second adult's check: sent back
   // after an accept, or a cash count with a name missing or one person twice (blockCashCheck).
   function srNeedsCheck() {
-    var today = todayISO(), out = [];
+    var today = todayISO(), out = [], from = signoffFromOf(state.signoffFrom);
     state.storefronts.forEach(function (sf) {
       if (!sf || !sf.date || !(sf.date < today)) return;
       blocksInDayOrder(sf).forEach(function (b) {
-        var why = b.reportReturned ? 'sent back after it was accepted' : ({ blank: 'nobody named as verifying the cash', same: 'the same person counted and verified' })[blockCashCheck(b, sf.date, today)];
+        // Before the sign-off date (Keith, 2026-10-02) the cash names aren't asked about; a report sent
+        // back after its accept still is: that only happens through shift reports, which are new.
+        var why = b.reportReturned ? 'sent back after it was accepted' : ({ blank: 'nobody named as verifying the cash', same: 'the same person counted and verified' })[blockCashCheck(b, sf.date, today, from)];
         if (why) out.push({ sf: sf, b: b, why: why });
       });
     });
@@ -30009,7 +30030,7 @@
             fmtDate(sf.date) + (d === 0 ? ' · today' : d === 1 ? ' · tomorrow' : ' · in ' + d + ' days'),
             'popcorn', 'storefronts');
         }
-      } else if (d >= -60 && storefrontTotals(sf).combined === 0 && cov.covered > 0) {
+      } else if (d >= -60 && storefrontTotals(sf).combined === 0 && cov.covered > 0 && !(sf.date < signoffFromOf(state.signoffFrom))) {   // not before the sign-off date
         add('kernel', 'now', name + ' — no money entered yet',
           'Ran ' + fmtDate(sf.date) + ' with scouts assigned', 'popcorn', 'storefronts');
         out[out.length - 1].sfId = sf.id;   // renderHome leaves it out while its totals wait on "Storefronts to close"
@@ -40661,6 +40682,18 @@
       if (wcNow !== wcWas) {
         state.wagonViaTEFrom = wcNow;
         logLedger('edit', 'book', { f: { wagonViaTEFrom: [wcWas, wcNow] } });
+      }
+      commit(); return;
+    }
+    // Keith (2026-10-02) — the sign-off date (state.signoffFrom); logged on the book, as the wagon cutover is:
+    // moving it changes which cash counts are asked about.
+    if (ch === 'signoff-from') {
+      if (!canEdit()) { render(); return; }
+      var soWas = signoffFromOf(state.signoffFrom), soNow = String(el.value || '');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(soNow)) { showToast('Pick a date.'); render(); return; }
+      if (soNow !== soWas) {
+        state.signoffFrom = soNow;
+        logLedger('edit', 'book', { f: { signoffFrom: [soWas, soNow] } });
       }
       commit(); return;
     }
