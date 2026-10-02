@@ -1,5 +1,5 @@
 // GET /api/pack/:id   the pack record: { exists, rev, device, updatedAt, json }  (leaders)
-// PUT /api/pack/:id   replace it                                       (admin, editor, leader)
+// PUT /api/pack/:id   replace it                                       (admin, leader)
 //
 // Part C 'pack.read': allow read: if isLeader();  — parents and pending users never receive
 // the ledger; they read /view. 'pack.write': allow write: if myRole() in ['admin', 'editor'].
@@ -21,10 +21,14 @@
 //   403 {error:'forbidden', code:'permission-denied', reason:'section', sections:[…]}
 // A key changed is one whose value differs (objects compared whatever their key order, arrays in
 // order), was added, or was removed; a key missing on one side and empty on the other ([], {},
-// null) is not a change. A legacy editor may change every section but not the admin-only keys
-// (archives, closedBooks, closedGone), and nor may anyone else but an admin; a key access.js
-// does not know is admin-only. A Den Leader's den meeting changes (its adventure and notes) are
-// checked event by event (access.js denMeetingChangeOk). An admin's save is not compared.
+// null) is not a change. The admin-only keys (archives, closedBooks, closedGone) are an admin's
+// alone, and so is a key access.js does not know. A retired editor or viewer changes nothing. A
+// Den Leader's den meeting changes (its adventure and notes) are checked event by event
+// (access.js denMeetingChangeOk). Some parts say who did something, and are checked entry by
+// entry against the caller's own uid, whoever may edit their section: the two logs are
+// append-only and a line added is the caller's own (syncLog for anyone, ledgerLog for the ledger's
+// editors, or a setting's for one who changed it); a statement there stays as it is and one added
+// is the caller's; a council settlement written is the caller's. An admin's save is not compared.
 // A save from a stale rev is the 409 it always was, before anything is compared.
 //
 // AWAITING IMPORT (production, OWNER_MODE fixed): the pack record is created only by the
@@ -55,7 +59,7 @@ const conflict = (row) => json(409, Object.assign({ error: 'conflict', code: 'ab
 // The sections refused, in the table's order, 'admin' last.
 const sectionOrder = (list) => SECTIONS.concat(['shared', 'admin']).filter((s) => list.indexOf(s) !== -1);
 
-async function put({ request, env, db, packId, role, positions }) {
+async function put({ request, env, db, packId, role, positions, user }) {
   if (!canWritePack(role)) return forbidden();
   const m = /^\s*"?(\d{1,15})"?\s*$/.exec(request.headers.get('if-match') || '');
   if (!m) refuse(badRequest('if-match'));
@@ -76,7 +80,7 @@ async function put({ request, env, db, packId, role, positions }) {
     if (cur || base === 0) {
       let stored = {};
       if (cur) { try { stored = JSON.parse(cur.json); } catch (e) { stored = {}; } }
-      const refused = refusedSections(stored, parsed, effectiveAccess(role, positions));
+      const refused = refusedSections(stored, parsed, effectiveAccess(role, positions), user.uid);
       if (refused.length) return forbiddenSections(sectionOrder(refused));
     }
   }

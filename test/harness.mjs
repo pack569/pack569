@@ -16118,7 +16118,7 @@ test('positions: the access table in index.html is a byte-identical copy of the 
   const server = accessCopy(ACCESS_SRC, 'access.js'), page = accessCopy(SCRIPT, 'index.html');
   ok(server === page, 'the two ACCESS tables differ: change both or neither');
   const t = JSON.parse(server);
-  eq(Object.keys(t), ['positions', 'sections', 'denMeetingFields', 'access', 'keyOwner', 'goneOwner'], 'the table\'s parts');
+  eq(Object.keys(t), ['positions', 'sections', 'denMeetingFields', 'access', 'keyOwner', 'goneOwner', 'bookLogOwner'], 'the table\'s parts');
   ok(/^  var ACCESS_TABLE = \/\*ACCESS-BEGIN\*\/\{$/m.test(SCRIPT), 'index.html: var ACCESS_TABLE = /*ACCESS-BEGIN*/{');
   ok(/^export const ACCESS_TABLE = \/\*ACCESS-BEGIN\*\/\{$/m.test(ACCESS_SRC), 'access.js: export const ACCESS_TABLE = /*ACCESS-BEGIN*/{');
 });
@@ -16183,6 +16183,13 @@ test('positions: every key of the pack record, and every kind of deletion mark, 
     ['balooNoticeDismissed', 'fmt', 'movedNoticeDismissed', 'rev', 'startHereDismissed', 'syncLog', 'version'], 'the shared keys');
   eq([t.keyOwner.statements, t.keyOwner.ledger, t.keyOwner.events, t.keyOwner.attendance, t.goneOwner.ledger, t.goneOwner.scouts],
     ['ledger', 'ledger', 'calendar', 'attendance', 'ledger', 'roster'], 'a few owners that matter');
+  // 5. Every pack setting the ledger's log names on the book (logSettingEdit and the two inputs that log by hand)
+  // has an owner: a key of the record, or bookLogOwner for a name that is not one.
+  Object.keys(t.bookLogOwner).forEach((k) => ok(t.sections.indexOf(t.bookLogOwner[k]) >= 0 && !(k in t.keyOwner), 'bookLogOwner.' + k));
+  const logged = [...SCRIPT.matchAll(/logSettingEdit\('(\w+)', [^;]*?(?:, '(\w+)')?\);/g)].map((m) => m[2] || m[1])
+    .concat([...SCRIPT.matchAll(/logLedger\('edit', 'book', \{ f: \{ (\w+):/g)].map((m) => m[1]));
+  ok(logged.length >= 10, 'too few logged settings read: ' + logged);
+  logged.forEach((k) => ok(k in t.keyOwner || k in t.bookLogOwner, 'the book log names ' + k + ', which has no owner'));
 });
 
 test('positions: no access decision reads JOBS or myJobs (a leader edits their own job record; a job is a lens)', () => {
@@ -16465,6 +16472,228 @@ atest('positions: the parent view stays always published — a leader who edits 
   eq((await put('lead_kernel', { packName: 'x', events: [{ noteInternal: 'x' }] })).body.reason, 'view-note-internal', 'a leader sending a leaders-only note');
   ok(API.rules.canWriteView('leader', ['denleader']) && !API.rules.canWriteView('leader', []) && !API.rules.canWriteView('leader', ['parent'])
     && !API.rules.canWriteView('viewer', ['chair']) && !API.rules.canWriteView('editor', []) && !API.rules.canWriteView('leader', ['comms', 'trainer']), 'canWriteView');
+});
+
+/* ---- positions: the server's section guard on the pack PUT (step 4) ---- */
+
+// A pack world with one leader per position (lead_<id>) and the record `base` stored at rev 1; g.put(who, next)
+// saves `next` over it as `who` and puts `base` back afterwards, so every call is one change from the same copy.
+async function guardWorld(base) {
+  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent' });
+  POSITION_IDS.filter((p) => p !== 'parent').forEach((p) => seedLeader(w, 'lead_' + p, [p]));
+  const reset = () => { w.db.raw.prepare('DELETE FROM pack_state').run(); w.state(1, base); };
+  reset();
+  w.put = async (who, next) => {
+    const r = await w.call(who, 'PUT', 'pack', null, { body: next, headers: { 'if-match': '1', 'x-pack-device': 'dev-' + who } });
+    reset();
+    return r;
+  };
+  return w;
+}
+const GUARD_BASE = () => JSON.parse(JSON.stringify({
+  version: 3, rev: 1, packName: 'Test Pack', scouts: [{ id: 's1', name: 'Ada' }], leaders: [{ id: 'l1', name: 'Test Leader' }],
+  events: [{ id: 'e1', kind: 'den', date: '2026-10-06', time: '18:30', den: 'Wolf', adventure: 'a1', note: '', noteInternal: '', packAdv: 'p1' },
+    { id: 'e2', kind: 'pack', date: '2026-10-20', title: 'Pack meeting', note: '' }],
+  attendance: {}, advNotes: {}, derby: { cars: [] }, camping: { trips: [] }, advancement: {}, onboarding: {}, storefronts: [], entries: [],
+  rewardTiers: [], inventory: { products: [] }, popcornCouncil: {}, budget: { activities: [] }, ledger: [{ id: 'L1', amountCents: 500 }],
+  charges: [], fundraisers: [], densAdvancedYear: '', commissionPct: 25, depositDays: 7,
+  book: { openingCents: 0 }, ledgerLog: [], statements: [], syncLog: [], archives: [], closedBooks: [],
+  gone: { ledger: {}, entries: {} }
+}));
+// One change to a key, of whatever kind the key holds.
+function guardChange(rec, k) {
+  const v = rec[k];
+  if (Array.isArray(v)) v.push({ id: 'new-' + k });
+  else if (v && typeof v === 'object') v['new-' + k] = { x: 1 };
+  else if (typeof v === 'number') rec[k] = v + 1;
+  else rec[k] = String(v || '') + ' (changed)';
+  return rec;
+}
+const SECTION_403 = (r, sections, what) => {
+  eq([r.status, r.body.code, r.body.reason, r.body.sections], [403, 'permission-denied', 'section', sections], what + ' (' + r.text.slice(0, 160) + ')');
+};
+
+atest('positions guard: every position × section — a save changing one key lands exactly where the table says Edit', async () => {
+  const w = await guardWorld(GUARD_BASE());
+  const t = ACCESS_JSON(), A = API.access;
+  // A key of the record for each section that owns one alone (home and the den meeting sub-section own none).
+  const keyOf = {};
+  Object.keys(t.keyOwner).forEach((k) => { const o = t.keyOwner[k]; if (typeof o === 'string' && A.SECTIONS.indexOf(o) >= 0 && !keyOf[o]) keyOf[o] = k; });
+  eq(A.SECTIONS.filter((s) => !keyOf[s]), ['home', 'calendar.denmeeting'], 'sections with no key of their own');
+  let n = 0;
+  for (const p of POSITION_IDS.filter((x) => x !== 'parent')) {
+    for (const s of Object.keys(keyOf)) {
+      const k = keyOf[s];
+      if (!(k in GUARD_BASE())) continue;
+      const r = await w.put('lead_' + p, guardChange(GUARD_BASE(), k));
+      if (A.ACCESS[p][s] === 'edit') eq(r.status, 200, `${p} changing ${k} (${s}): ${r.text.slice(0, 120)}`);
+      else SECTION_403(r, [s], `${p} changing ${k} (${s})`);
+      n += 1;
+    }
+  }
+  ok(n >= 15 * 18, 'too few cases: ' + n);
+  // Both owners of a shared setting: a kernel (totals) and a treasurer (budget) set the commission; a den leader cannot.
+  for (const [who, st] of [['lead_kernel', 200], ['lead_treasurer', 200], ['lead_chair', 200], ['lead_denleader', 403]]) {
+    eq((await w.put(who, Object.assign(GUARD_BASE(), { commissionPct: 30 }))).status, st, who + ' setting the commission');
+  }
+  // An admin changes anything; a retired editor or viewer, nothing (the plain 403: they may not write at all).
+  eq((await w.put('owner', guardChange(guardChange(GUARD_BASE(), 'ledger'), 'archives'))).status, 200, 'an admin');
+  for (const who of ['editor', 'viewer', 'parent']) denied(await w.put(who, guardChange(GUARD_BASE(), 'scouts')), who + ' saving');
+});
+
+atest('positions guard: unchanged, reordered and empty-for-missing keys are no change; the admin-only and unknown keys are an admin\'s; gone is split', async () => {
+  const w = await guardWorld(GUARD_BASE());
+  const same = GUARD_BASE();
+  eq((await w.put('lead_comms', same)).status, 200, 'a read-only leader saving the record unchanged');
+  // Keys in another order, at every level.
+  const deep = {}; Object.keys(same).reverse().forEach((k) => { deep[k] = same[k]; });
+  deep.events = same.events.map((e) => { const o = {}; Object.keys(e).reverse().forEach((k) => { o[k] = e[k]; }); return o; });
+  eq((await w.put('lead_denleader', deep)).status, 200, 'every key in another order');
+  // A key missing on one side and empty on the other.
+  const fewer = GUARD_BASE(); delete fewer.charges; delete fewer.syncLog; fewer.newEmptyThing = [];
+  eq((await w.put('lead_denleader', fewer)).status, 200, 'an empty key dropped, a new empty one');
+  // An array reordered is a change (the ledger's order is its own).
+  const ro = GUARD_BASE(); ro.events.reverse();
+  SECTION_403(await w.put('lead_treasurer', ro), ['calendar'], 'the calendar reordered by a treasurer');
+  // Admin-only: archives, closedBooks, closedGone — and any key nobody planned for.
+  for (const k of ['archives', 'closedBooks']) SECTION_403(await w.put('lead_chair', guardChange(GUARD_BASE(), k)), ['admin'], 'a chair changing ' + k);
+  SECTION_403(await w.put('lead_treasurer', Object.assign(GUARD_BASE(), { closedGone: [{ year: '2025-26', archiveId: 'a' }] })), ['admin'], 'closedGone');
+  SECTION_403(await w.put('lead_chair', Object.assign(GUARD_BASE(), { somethingNew: 1 })), ['admin'], 'an unknown key');
+  SECTION_403(await w.put('lead_chair', Object.assign(GUARD_BASE(), { __proto__x: 1, constructor: { a: 1 } })), ['admin'], 'constructor as a key');
+  // gone, by sub-key: a kernel marks a sale deleted, never a ledger row.
+  const gl = GUARD_BASE(); gl.gone.ledger.L1 = 5;
+  SECTION_403(await w.put('lead_kernel', gl), ['ledger'], 'gone.ledger from a kernel');
+  eq((await w.put('lead_treasurer', gl)).status, 200, 'gone.ledger from a treasurer');
+  const ge = GUARD_BASE(); ge.gone.entries.x = 5;
+  eq((await w.put('lead_kernel', ge)).status, 200, 'gone.entries from a kernel');
+  const gx = GUARD_BASE(); gx.gone.later = { x: 1 };
+  SECTION_403(await w.put('lead_chair', gx), ['admin'], 'a gone sub-key nobody planned for');
+  // Two sections at once: both named, in the table's order.
+  SECTION_403(await w.put('lead_denleader', guardChange(guardChange(GUARD_BASE(), 'ledger'), 'scouts')), ['roster', 'ledger'], 'two refused at once');
+  // A stale save is the 409 it always was, before anything is compared.
+  const stale = await w.call('lead_comms', 'PUT', 'pack', null, { body: guardChange(GUARD_BASE(), 'ledger'), headers: { 'if-match': '0' } });
+  eq([stale.status, stale.body.code], [409, 'aborted'], 'a stale save');
+});
+
+atest('positions guard: a den leader changes a den meeting\'s adventure and notes, and nothing else on the calendar', async () => {
+  const w = await guardWorld(GUARD_BASE());
+  const ev = (f) => { const r = GUARD_BASE(); f(r.events); return r; };
+  for (const [what, f] of [['adventure', (e) => { e[0].adventure = 'a2'; }], ['note', (e) => { e[0].note = 'Bring string'; }],
+    ['noteInternal', (e) => { e[0].noteInternal = 'Leaders only'; }], ['denAdv', (e) => { e[0].denAdv = { Bear: 'b1' }; }],
+    ['events reordered', (e) => { e.reverse(); e[1].adventure = 'a3'; }]]) {
+    for (const who of ['lead_denleader', 'lead_asstden', 'lead_cubmaster', 'lead_activities']) eq((await w.put(who, ev(f))).status, 200, who + ': ' + what);
+    SECTION_403(await w.put('lead_advancement', ev(f)), ['calendar'], 'an advancement chair: ' + what);
+  }
+  for (const [what, f] of [['the date', (e) => { e[0].date = '2026-10-07'; }], ['the time', (e) => { e[0].time = '19:00'; }],
+    ['the den', (e) => { e[0].den = 'Bear'; }], ['the pack\'s pick', (e) => { e[0].packAdv = 'p2'; }], ['a new event', (e) => { e.push({ id: 'e3', kind: 'den', date: '2026-11-01' }); }],
+    ['an event removed', (e) => { e.pop(); }], ['a pack meeting\'s note', (e) => { e[1].note = 'x'; }], ['made a den meeting', (e) => { e[1].kind = 'den'; e[1].adventure = 'a1'; }],
+    ['a note that is not text', (e) => { e[0].note = { x: 1 }; }], ['an adventure field removed', (e) => { delete e[0].adventure; e[0].note = 'x'; e[0].date = '2026-10-08'; }]]) {
+    SECTION_403(await w.put('lead_denleader', ev(f)), ['calendar'], 'a den leader: ' + what);
+    eq((await w.put('lead_cubmaster', ev(f))).status, 200, 'the Cubmaster: ' + what);
+  }
+  // The den meeting sub-section is not the rest of the calendar either: RSVPs and meetings stay the Cubmaster's.
+  SECTION_403(await w.put('lead_denleader', Object.assign(GUARD_BASE(), { rsvps: { e1: { s1: 'yes' } } })), ['calendar'], 'a den leader writing an RSVP');
+  eq((await w.put('lead_denleader', Object.assign(GUARD_BASE(), { attendance: { e1: { s1: true } } }))).status, 200, 'a den leader taking attendance');
+});
+
+atest('positions guard: statements stay as they are below an admin; a statement added is the caller\'s own and unreviewed', async () => {
+  const st = (o) => Object.assign({ id: 'st-2026-08-31', date: '2026-08-31', statementCents: 1000, by: 'Test Treasurer', byUid: 'uid-lead-treasurer', at: '2026-09-01T00:00:00.000Z' }, o || {});
+  const base = Object.assign(GUARD_BASE(), { statements: [st()] });
+  const w = await guardWorld(base);
+  const withSt = (list) => Object.assign(GUARD_BASE(), { statements: list });
+  const mine = st({ id: 'st-2026-09-30', date: '2026-09-30', byUid: 'uid-lead-treasurer' });
+  eq((await w.put('lead_treasurer', withSt([st(), mine]))).status, 200, 'a treasurer adding their own');
+  eq((await w.put('lead_chair', withSt([st(), st({ id: 'st-2026-09-30', date: '2026-09-30', byUid: 'uid-lead-chair' })]))).status, 200, 'a chair adding their own');
+  eq((await w.put('lead_treasurer', withSt([mine, st()]))).status, 200, 'the same statements in another order');
+  for (const [what, list] of [
+    ['someone else\'s name on a new one', [st(), st({ id: 'st-2026-09-30', byUid: 'uid-lead-chair' })]],
+    ['no name on a new one', [st(), st({ id: 'st-2026-09-30', byUid: '' })]],
+    ['a new one already reviewed', [st(), Object.assign({}, mine, { reviewedAt: 'x', reviewedByUid: 'uid-lead-chair' })]],
+    ['a new one already reopened', [st(), Object.assign({}, mine, { reopenedAt: 'x' })]],
+    ['a review of one there', [st({ reviewedAt: '2026-09-02T00:00:00.000Z', reviewedBy: 'Chair', reviewedByUid: 'uid-lead-chair' })]],
+    ['a reopen of one there', [st({ reopenedAt: '2026-09-02T00:00:00.000Z', reopenWhy: 'x' })]],
+    ['one there changed', [st({ statementCents: 999 })]],
+    ['one there removed', []],
+    ['one there removed, another added', [mine]]]) {
+    SECTION_403(await w.put('lead_treasurer', withSt(list)), ['ledger'], 'a treasurer: ' + what);
+  }
+  SECTION_403(await w.put('lead_kernel', withSt([st(), st({ id: 'k', byUid: 'uid-lead-kernel' })])), ['ledger'], 'a kernel adding one');
+  denied(await w.put('editor', withSt([st({ statementCents: 1 })])), 'a retired editor changing one');
+  eq((await w.put('owner', withSt([st({ reopenedAt: '2026-09-02T00:00:00.000Z', reopenedByUid: 'uid-owner', reopenWhy: 'x' })]))).status, 200, 'an admin reopening one');
+  eq((await w.put('admin2', withSt([]))).status, 200, 'an admin removing one');
+});
+
+atest('positions guard: the sync log and the ledger log are append-only, each new line the caller\'s own; the cap may drop the oldest', async () => {
+  const sl = (id, at, byUid, o) => Object.assign({ id, at, byName: 'X', byUid, key: 'scouts.s1.name', item: 'Ada', field: 'Name', serverValue: 'A', keptValue: 'B',
+    baseValue: '', mineValue: '', kept: 'mine', how: 'item', serverChangedAt: '', serverChangedAfter: '' }, o || {});
+  const old = [sl('sl-1', '2026-09-01T00:00:00.000Z', 'uid-lead-chair'), sl('sl-2', '2026-09-02T00:00:00.000Z', 'uid-owner')];
+  const w = await guardWorld(Object.assign(GUARD_BASE(), { syncLog: old }));
+  const withSl = (list) => Object.assign(GUARD_BASE(), { syncLog: list });
+  const mine = sl('sl-3', '2026-09-03T00:00:00.000Z', 'uid-lead-denleader');
+  eq((await w.put('lead_denleader', withSl(old.concat([mine])))).status, 200, 'a den leader logging their own kept-mine');
+  // A newer page fills in a field an old line did not have: still the same line.
+  const filled = old.map((e) => Object.assign({}, e, { newField: '' }));
+  eq((await w.put('lead_denleader', withSl(filled))).status, 200, 'a field added to the lines there');
+  for (const [what, list] of [['a line in someone else\'s name', old.concat([sl('sl-3', '2026-09-03T00:00:00.000Z', 'uid-lead-chair')])],
+    ['a line with no name', old.concat([sl('sl-3', '2026-09-03T00:00:00.000Z', '')])],
+    ['a line there changed', [old[0], Object.assign({}, old[1], { keptValue: 'C' })]],
+    ['a line there losing a field', [old[0], (() => { const e = Object.assign({}, old[1]); delete e.serverValue; return e; })()]],
+    ['the oldest dropped, the log not full', [old[1], mine]],
+    ['the newest dropped', [old[0]]], ['the log emptied', []], ['the same line twice', old.concat([old[1]])]]) {
+    SECTION_403(await w.put('lead_denleader', withSl(list)), ['shared'], 'the sync log: ' + what);
+  }
+  denied(await w.put('viewer', withSl(old.concat([sl('sl-3', '2026-09-03T00:00:00.000Z', 'uid-viewer')]))), 'a viewer logging');
+  SECTION_403(await w.put('lead_comms', withSl(old.concat([sl('sl-3', '2026-09-03T00:00:00.000Z', 'uid-lead-comms')]))), ['shared'], 'a read-only leader logging');
+  // Full: 500 lines, the oldest goes as a new one comes.
+  const full = []; for (let i = 0; i < 500; i++) full.push(sl('f' + String(i).padStart(3, '0'), '2026-08-01T00:00:' + String(i % 60).padStart(2, '0') + '.' + String(i).padStart(3, '0') + 'Z', 'uid-owner'));
+  full.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id < b.id ? -1 : 1));
+  const wf = await guardWorld(Object.assign(GUARD_BASE(), { syncLog: full }));
+  eq((await wf.put('lead_denleader', Object.assign(GUARD_BASE(), { syncLog: full.slice(1).concat([mine]) }))).status, 200, 'full: the oldest dropped for a new line');
+  SECTION_403(await wf.put('lead_denleader', Object.assign(GUARD_BASE(), { syncLog: full.slice(0, 250).concat(full.slice(251), [mine]) })), ['shared'], 'full: a middle line dropped');
+
+  // The ledger's log.
+  const ll = (id, at, byUid, o) => Object.assign({ id, at, by: 'X', byUid, dev: 'd', row: 'L1', op: 'tick' }, o || {});
+  const lold = [ll('ev1', '2026-09-01T00:00:00.000Z', 'uid-lead-treasurer')];
+  const wl = await guardWorld(Object.assign(GUARD_BASE(), { ledgerLog: lold }));
+  const withLl = (list, more) => Object.assign(GUARD_BASE(), { ledgerLog: list }, more || {});
+  const book = (k, f, who) => ll('ev2', '2026-09-02T00:00:00.000Z', who, { row: 'book', op: 'edit', f: { [k]: f } });
+  eq((await wl.put('lead_treasurer', withLl(lold.concat([ll('ev2', '2026-09-02T00:00:00.000Z', 'uid-lead-treasurer')])))).status, 200, 'a treasurer logging a tick');
+  SECTION_403(await wl.put('lead_treasurer', withLl(lold.concat([ll('ev2', '2026-09-02T00:00:00.000Z', 'uid-lead-chair')]))), ['ledger'], 'a treasurer logging in a chair\'s name');
+  SECTION_403(await wl.put('lead_treasurer', withLl([Object.assign({}, lold[0], { op: 'untick' })])), ['ledger'], 'a treasurer changing a line there');
+  SECTION_403(await wl.put('lead_treasurer', withLl([])), ['ledger'], 'a treasurer emptying the log');
+  // A setting's changer logs it on the book, whoever they are, and only that.
+  eq((await wl.put('lead_kernel', withLl(lold.concat([book('commissionPct', [25, 30], 'uid-lead-kernel')]), { commissionPct: 30 }))).status, 200, 'a kernel logging the commission');
+  eq((await wl.put('lead_kernel', withLl(lold.concat([book('invCommissionPct', [25, 30], 'uid-lead-kernel')])))).status, 200, 'a kernel logging the inventory\'s commission');
+  SECTION_403(await wl.put('lead_kernel', withLl(lold.concat([ll('ev2', '2026-09-02T00:00:00.000Z', 'uid-lead-kernel')]))), ['ledger'], 'a kernel logging a tick');
+  SECTION_403(await wl.put('lead_kernel', withLl(lold.concat([book('councilSettled', [null, 'x'], 'uid-lead-kernel')]))), ['ledger'], 'a kernel logging a settlement');
+  SECTION_403(await wl.put('lead_kernel', withLl(lold.concat([book('commissionPct', [25, 30], 'uid-lead-chair')]), { commissionPct: 30 })), ['ledger'], 'a kernel logging in a chair\'s name');
+  SECTION_403(await wl.put('lead_denleader', withLl(lold.concat([book('commissionPct', [25, 30], 'uid-lead-denleader')]))), ['ledger'], 'a den leader logging the commission');
+  // The byte cap: the oldest goes when the newest it drops would not have fitted.
+  const big = (i, at) => ll('b' + String(i).padStart(4, '0'), at, 'uid-owner', { why: 'w'.repeat(400) });
+  const many = []; for (let i = 0; i < 300; i++) many.push(big(i, '2026-08-01T00:' + String(Math.floor(i / 60)).padStart(2, '0') + ':' + String(i % 60).padStart(2, '0') + '.000Z'));
+  ok(JSON.stringify(many).length > 128 * 1024, 'the test log is over the byte cap');
+  let from = many.length, size = 2;
+  while (from > 0) { const one = JSON.stringify(many[from - 1]).length + (from < many.length ? 1 : 0); if (size + one > 128 * 1024) break; size += one; from -= 1; }
+  const kept = many.slice(from - 1);   // one more than fits: stored like this, a new line pushes the oldest out
+  const wb = await guardWorld(Object.assign(GUARD_BASE(), { ledgerLog: kept }));
+  const add = ll('zz', '2026-09-09T00:00:00.000Z', 'uid-lead-treasurer');
+  eq((await wb.put('lead_treasurer', Object.assign(GUARD_BASE(), { ledgerLog: kept.slice(2).concat([add]) }))).status, 200, 'the byte cap dropping the oldest two');
+  SECTION_403(await wb.put('lead_treasurer', Object.assign(GUARD_BASE(), { ledgerLog: kept.slice(40).concat([add]) })), ['ledger'], 'forty dropped where two would do');
+});
+
+atest('positions guard: a council settlement written below an admin is the caller\'s own; taking it back is any ledger editor\'s', async () => {
+  const cs = (byUid) => ({ on: '2026-11-15', how: 'check', by: 'X', byUid, at: '2026-11-15T00:00:00.000Z' });
+  const w = await guardWorld(GUARD_BASE());
+  const withBook = (b) => Object.assign(GUARD_BASE(), { book: Object.assign({ openingCents: 0 }, b) });
+  eq((await w.put('lead_treasurer', withBook({ councilSettled: cs('uid-lead-treasurer') }))).status, 200, 'a treasurer settling');
+  eq((await w.put('lead_chair', withBook({ councilSettled: cs('uid-lead-chair') }))).status, 200, 'a chair settling');
+  SECTION_403(await w.put('lead_treasurer', withBook({ councilSettled: cs('uid-lead-chair') })), ['ledger'], 'a settlement in someone else\'s name');
+  SECTION_403(await w.put('lead_treasurer', withBook({ councilSettled: 'yes' })), ['ledger'], 'a settlement that is not one');
+  SECTION_403(await w.put('lead_kernel', withBook({ councilSettled: cs('uid-lead-kernel') })), ['ledger'], 'a kernel settling');
+  const ws = await guardWorld(withBook({ councilSettled: cs('uid-lead-chair') }));
+  eq((await ws.put('lead_treasurer', withBook({}))).status, 200, 'a treasurer taking back the chair\'s');
+  eq((await ws.put('lead_treasurer', withBook({ councilSettled: cs('uid-lead-chair'), openingCents: 5 }))).status, 200, 'the book changed, the settlement left as it was');
+  eq((await ws.put('owner', withBook({ councilSettled: cs('uid-lead-kernel') }))).status, 200, 'an admin writes what they like');
 });
 
 /* ================================================================

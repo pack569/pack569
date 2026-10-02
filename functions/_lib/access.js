@@ -27,12 +27,16 @@
 //   access            per position: its default level, and the sections it edits or cannot see
 //   keyOwner          each top-level key of the pack record -> its section; a list means any of
 //                     them. Two buckets that are not sections: 'shared' (bookkeeping any writer
-//                     changes: rev, the format, the one-time notices) and 'admin' (archives and
-//                     closed books: admins only, legacy editors included). A key not listed is
-//                     'admin': an unknown key fails closed.
+//                     changes: rev, the format, the one-time notices, and the sync log, which is
+//                     append-only: syncLogOk) and 'admin' (archives and closed books: admins
+//                     only). A key not listed is 'admin': an unknown key fails closed.
 //   goneOwner         state.gone is split by its sub-keys (the deletion marks of each log), so a
 //                     mark for the ledger cannot be written by someone who cannot edit the ledger.
 //                     A sub-key not listed is 'admin'.
+//   bookLogOwner      a pack setting the ledger's log names by a name that is not a key of the
+//                     record (logSettingEdit's `name`, for the inventory's own settings) -> its
+//                     section. With keyOwner, it says whose change a book 'edit' line records,
+//                     so a leader who changes a setting may log it (ledgerLogOk).
 export const ACCESS_TABLE = /*ACCESS-BEGIN*/{
     "positions": [
       {"id": "cubmaster", "label": "Cubmaster"},
@@ -129,7 +133,8 @@ export const ACCESS_TABLE = /*ACCESS-BEGIN*/{
       "closedBooks": "admin",
       "closedGone": "admin"
     },
-    "goneOwner": {"entries": "totals", "imports": "totals", "ledger": "ledger", "distributions": "inventory", "products": "inventory", "sales": "fundraisers", "fundraisers": "fundraisers", "scouts": "roster"}
+    "goneOwner": {"entries": "totals", "imports": "totals", "ledger": "ledger", "distributions": "inventory", "products": "inventory", "sales": "fundraisers", "fundraisers": "fundraisers", "scouts": "roster"},
+    "bookLogOwner": {"orderTotalCents": "inventory", "invCommissionPct": "inventory"}
   }/*ACCESS-END*/;
 
 export const LEVELS = ['hidden', 'read', 'edit'];
@@ -159,6 +164,9 @@ export const KEY_OWNER = Object.assign(Object.create(null), ACCESS_TABLE.keyOwne
 export const GONE_OWNER = Object.assign(Object.create(null), ACCESS_TABLE.goneOwner);
 export const ownerOfKey = (k) => (own(KEY_OWNER, k) ? KEY_OWNER[k] : 'admin');
 export const ownerOfGone = (k) => (own(GONE_OWNER, k) ? GONE_OWNER[k] : 'admin');
+const BOOK_LOG_OWNER = Object.assign(Object.create(null), ACCESS_TABLE.bookLogOwner);
+// Whose change a book 'edit' line's field records: a setting's own name, or a key of the record.
+export const ownerOfBookLogField = (k) => (own(BOOK_LOG_OWNER, k) ? BOOK_LOG_OWNER[k] : ownerOfKey(k));
 
 // What a member may do with each section, from their role and (for 'leader') their positions:
 // section -> level, for every section and both buckets.
@@ -267,9 +275,106 @@ export function denMeetingChangeOk(before, after) {
   return true;
 }
 
+// ---- The logs, the statements and the settlement: whose they are, entry by entry ----
+// A section's editors may change its keys, but some parts of them record WHO did something, and no
+// one below an admin may write those for anyone else, or rewrite what is there (the plan's step 4,
+// and the re-analysis of main, 2026-10-02). These run only for a caller who is not an admin.
+
+// The order the logs keep (mergeLedgerLog, normalizeSyncLog): by `at`, then id.
+const logCmp = (a, b) => {
+  const x = String(a.at || ''), y = String(b.at || '');
+  return x < y ? -1 : x > y ? 1 : (String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : 0);
+};
+const utf8 = (s) => new TextEncoder().encode(s).length;
+// An entry a log kept keeps every field it had, with the same value. A newer page may add a field
+// (normalizeSyncLog fills one in as ''), never change or drop one.
+function keepsWhatItHad(was, now) {
+  if (!plain(was) || !plain(now)) return false;
+  return Object.keys(was).every((k) => own(now, k) && sameJson(was[k], now[k]));
+}
+// An append-only log (state.syncLog, state.ledgerLog: lists of { id, at, byUid, … }) changed from
+// `before` to `after` only as its writers do:
+//   - entries added, each the caller's own (byUid === uid), and each one `newOk` passes;
+//   - the oldest dropped by the log's cap, and only then: every entry dropped sorts before every
+//     entry left, and the log is full: `cap.max` entries, or (cap.bytes) the newest one dropped
+//     would not have fitted in that many bytes of JSON (mergeLedgerLog's own sum);
+//   - every entry kept keeps what it had (keepsWhatItHad). Their order is the writer's to keep.
+export function appendOnlyOk(before, after, uid, cap, newOk) {
+  if (!Array.isArray(after)) return false;
+  const was = Object.create(null);
+  (Array.isArray(before) ? before : []).forEach((e) => { if (plain(e) && typeof e.id === 'string') was[e.id] = e; });
+  const seen = Object.create(null);
+  for (const e of after) {
+    if (!plain(e) || typeof e.id !== 'string' || !e.id || seen[e.id]) return false;
+    seen[e.id] = true;
+    if (own(was, e.id)) { if (!keepsWhatItHad(was[e.id], e)) return false; }
+    else if (typeof uid !== 'string' || !uid || e.byUid !== uid || (newOk && !newOk(e))) return false;
+  }
+  const dropped = Object.keys(was).filter((id) => !seen[id]).map((id) => was[id]);
+  if (!dropped.length) return true;
+  if (!after.length || !dropped.every((d) => after.every((e) => logCmp(d, e) < 0))) return false;
+  if (after.length >= cap.max) return true;
+  if (!cap.bytes) return false;
+  const newest = dropped.slice().sort(logCmp)[dropped.length - 1];
+  const size = 2 + after.reduce((n, e, i) => n + utf8(JSON.stringify(e)) + (i ? 1 : 0), 0);
+  return size + utf8(JSON.stringify(newest)) + 1 > cap.bytes;
+}
+// The two logs' caps, as the page keeps them: SYNC_LOG_MAX; mergeLedgerLog's 1000 events and 128 KB.
+export const SYNC_LOG_CAP = { max: 500 };
+export const LEDGER_LOG_CAP = { max: 1000, bytes: 128 * 1024 };
+
+// state.syncLog (shared: any leader who edits something may log a kept-mine), append-only.
+export const syncLogOk = (before, after, uid) => appendOnlyOk(before, after, uid, SYNC_LOG_CAP, null);
+
+// state.ledgerLog, append-only. A leader who edits the ledger adds their own lines of any kind. One
+// who does not may add only their own lines recording a pack setting they changed: a book 'edit'
+// whose every field is a setting they may edit (ownerOfBookLogField). Commission, goals, the wagon
+// date and the deposit days are logged on the book; the people who may set them are not all
+// ledger editors (logSettingEdit and its kin, index.html).
+export function ledgerLogOk(before, after, uid, access) {
+  const ledger = canEditOwner(access, 'ledger');
+  return appendOnlyOk(before, after, uid, LEDGER_LOG_CAP, ledger ? null : (e) =>
+    e.op === 'edit' && e.row === 'book' && plain(e.f) && Object.keys(e.f).length > 0 &&
+    Object.keys(e.f).every((k) => canEditOwner(access, ownerOfBookLogField(k))));
+}
+
+// A statement's parts set once after it is written (index.html statementOnceGroups): its review,
+// its reopening, the balance added to a legacy one. All three are an admin's.
+const STATEMENT_ONCE = ['reviewedAt', 'reviewedBy', 'reviewedByUid', 'reopenedAt', 'reopenedBy', 'reopenedByUid', 'reopenWhy',
+  'addedAt', 'addedCents', 'addedBy', 'addedByUid'];
+// state.statements, below an admin (owner decision, security re-check of C5, R1; the plan's step 4):
+// every statement there stays, exactly as it is (reviewing, reopening, changing or removing one is
+// an admin's: canReopenStatement); a statement added is the caller's own (byUid), and carries
+// none of the parts set once. By id: their order is the writer's.
+export function statementsOk(before, after, uid) {
+  if (!Array.isArray(after)) return false;
+  const was = Object.create(null);
+  (Array.isArray(before) ? before : []).forEach((st) => { if (plain(st) && typeof st.id === 'string') was[st.id] = st; });
+  const seen = Object.create(null);
+  for (const st of after) {
+    if (!plain(st) || typeof st.id !== 'string' || !st.id || seen[st.id]) return false;
+    seen[st.id] = true;
+    if (own(was, st.id)) { if (!sameJson(was[st.id], st)) return false; continue; }
+    if (typeof uid !== 'string' || !uid || st.byUid !== uid) return false;
+    if (STATEMENT_ONCE.some((k) => own(st, k))) return false;
+  }
+  return Object.keys(was).every((id) => seen[id]);
+}
+
+// state.book.councilSettled (the popcorn settled with the council): a settlement written or changed
+// is the caller's own (byUid). Taking one back (absent) names nobody, and is any ledger editor's.
+export function councilSettledOk(beforeBook, afterBook, uid) {
+  const b = plain(beforeBook) ? beforeBook.councilSettled : undefined;
+  const a = plain(afterBook) ? afterBook.councilSettled : undefined;
+  if (a === undefined || a === null || sameJson(a, b)) return true;
+  return plain(a) && typeof uid === 'string' && !!uid && a.byUid === uid;
+}
+
 // The sections (and buckets) a write from `stored` to `next` (both parsed records) changes that
-// `access` may not edit, sorted; [] when it may make every change in it.
-export function refusedSections(stored, next, access) {
+// `access` may not edit, sorted; [] when it may make every change in it. `uid` is the caller's: the
+// logs, the statements and the settlement say who did what, and nobody below an admin may say it
+// for someone else (above). Called only for a caller who is not an admin.
+export function refusedSections(stored, next, access, uid) {
   const refused = Object.create(null);
   const refuse = (owner) => { (Array.isArray(owner) ? owner : [owner]).forEach((s) => { refused[s] = true; }); };
   const s = plain(stored) ? stored : {}, n = plain(next) ? next : {};
@@ -289,8 +394,16 @@ export function refusedSections(stored, next, access) {
     }
     if (sameTop(s[k], hasS, n[k], hasN)) continue;
     const owner = ownerOfKey(k);
-    if (canEditOwner(access, owner)) continue;
-    if (k === 'events' && access['calendar.denmeeting'] === 'edit' && denMeetingChangeOk(hasS ? s[k] : [], hasN ? n[k] : [])) continue;
+    const was = hasS ? s[k] : [], now = hasN ? n[k] : [];
+    // The ledger's log: its own rule, for ledger editors and the setting-changers alike.
+    if (k === 'ledgerLog') { if (!ledgerLogOk(was, now, uid, access)) refuse(owner); continue; }
+    if (canEditOwner(access, owner)) {
+      if (k === 'syncLog' && !syncLogOk(was, now, uid)) refuse(owner);
+      else if (k === 'statements' && !statementsOk(was, now, uid)) refuse(owner);
+      else if (k === 'book' && !councilSettledOk(s[k], n[k], uid)) refuse(owner);
+      continue;
+    }
+    if (k === 'events' && access['calendar.denmeeting'] === 'edit' && denMeetingChangeOk(was, now)) continue;
     refuse(owner);
   }
   return Object.keys(refused).sort();
