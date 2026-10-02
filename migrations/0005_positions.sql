@@ -119,3 +119,15 @@ AFTER DELETE ON invites
 BEGIN
   DELETE FROM invite_positions WHERE pack_id = OLD.pack_id AND email = OLD.email;
 END;
+
+-- 3. Undoing a record of cash from popcorn sales (shift_reports.sales_cash_outcome, 0004) needs a
+--    written reason, as taking back an accept does (security and treasurer reviews of 045e7ac):
+--    undoing it erases the pack's only record of who has the cash. The last undo is kept on the
+--    report, with who and when, so the season's history can say it; the audit row
+--    (shift.salescash.undo, detail.reason) keeps every one. Recording the cash again leaves them.
+ALTER TABLE shift_reports ADD COLUMN sales_cash_undo_note TEXT
+  CHECK (sales_cash_undo_note IS NULL OR length(sales_cash_undo_note) BETWEEN 1 AND 300);
+ALTER TABLE shift_reports ADD COLUMN sales_cash_undo_by_name TEXT
+  CHECK (sales_cash_undo_by_name IS NULL OR length(sales_cash_undo_by_name) <= 120);
+ALTER TABLE shift_reports ADD COLUMN sales_cash_undo_at INTEGER
+  CHECK (sales_cash_undo_at IS NULL OR typeof(sales_cash_undo_at) = 'integer');

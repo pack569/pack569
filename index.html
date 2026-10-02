@@ -14634,6 +14634,7 @@
     ui.srConfirmCollected = false;
     ui.srReturn = null;
     ui.srOverride = null;
+    ui.srCashUndo = null;
     sync.feed = sync.unsub ? sync.feed : null;
     if (sync.invitesUnsub) { try { sync.invitesUnsub(); } catch (e) { /* already gone */ } sync.invitesUnsub = null; }
     sync.invites = [];
@@ -21866,7 +21867,7 @@
       return true;
     }
     if (kind === 'shift-report-confirm' && ui.shiftConfirm && el.name === 'attest') { ui.shiftConfirm.attest = !!el.checked; return true; }
-    if ((kind === 'shift-report-return' || kind === 'shift-report-override') && el.name === 'reason') {
+    if ((kind === 'shift-report-return' || kind === 'shift-report-override' || kind === 'sr-cash-undo') && el.name === 'reason') {
       ui.srReasonText = ui.srReasonText || {};
       ui.srReasonText[kind + ':' + String(f.dataset.rid || '')] = el.value;
       return true;
@@ -24582,6 +24583,7 @@
     'confirmer': 'You confirmed this report as a parent, so another leader has to accept it.',
     'report-moved': 'The family changed or withdrew this report, or another leader dealt with it, before yours reached the server.',
     'review-note': 'Say why you are sending it back.',
+    'cash-undo-note': 'Say why you are undoing it.',
     'needs-confirm': 'This report needs a parent from another family on the shift to confirm it, or your written reason for accepting without one.',
     'not-collected': 'Say that you collected and counted this cash, or accept without collecting it and say why.',
     'same-family': 'You’re in the same family as the parent who sent this, so another leader should accept it — or accept with a reason.',
@@ -24809,6 +24811,18 @@
       (r && r.status === 'returned' ? '<button type="button" class="btn small" data-act="sr-cash-replaced"' + ids +
         ' aria-label="' + esc(fmt(cents) + ' is the same cash as the new report') + '">Same cash as the new report</button>' : '') + '</div>';
   }
+  // Security and treasurer reviews of 045e7ac — undoing a record of the cash needs a reason, as taking
+  // back an accept does: it erases the pack's only record of who has the cash. The server keeps it in
+  // the audit and on the report (the season's history shows it). The Undo on the toast right after
+  // marking it is the recorder correcting their own tap, and says so (SR_CASH_UNDO_QUICK).
+  var SR_CASH_UNDO_QUICK = 'Undone right after it was marked, by the leader who marked it';
+  function srCashUndoForm(rid) {
+    return '<form data-form="sr-cash-undo" class="sr-return" data-rid="' + esc(rid) + '">' +
+      '<label class="fld">Why undo it? The cash goes back to “to collect”. Your reason is kept in the season’s shift report history.' +
+      '<textarea name="reason" rows="2" maxlength="300" required>' + esc(srReasonDraft('sr-cash-undo', rid)) + '</textarea></label>' +
+      '<div class="sr-acts"><button type="submit" class="btn">Undo</button>' +
+      '<button type="button" class="btn ghost" data-act="sr-cancel" data-rid="' + esc(rid) + '">Cancel</button></div></form>';
+  }
   // On the block: each report's cash from sales, still to collect (with the two buttons), or what
   // became of it (with Undo). Admins and editors record it; a viewer reads it.
   function renderBlockCashToCollect(sf, b) {
@@ -24818,9 +24832,11 @@
       if (!e.outcome) {
         h += '<div style="margin-top:8px">' + srCashToCollectLine(e.cents, e.from || 'the family', sf.date) + srCashButtons(e.reportId, e.cents) + '</div>';
       } else {
+        var asking = ui.srCashUndo === e.reportId && canReviewReports();
         h += '<div class="spread" style="margin-top:8px"><p class="small muted" style="margin:0">' + esc(fmt(e.cents)) + ' of cash from popcorn sales ' +
           esc(srCashOutcomeSay(e.outcome)) + '.</p>' +
-          (canReviewReports() ? '<button type="button" class="btn small ghost" data-act="sr-cash-undo"' + ids + '>Undo</button>' : '') + '</div>';
+          (canReviewReports() && !asking ? '<button type="button" class="btn small ghost" data-act="sr-cash-undo-open"' + ids + '>Undo</button>' : '') + '</div>';
+        if (asking) h += srCashUndoForm(e.reportId);
       }
     });
     return h;
@@ -24874,8 +24890,11 @@
   // Record what became of a report's cash from sales: 'collected', 'converted', or null (undo). The
   // server first; the block's entry mirrors what it answers. `quiet`: no Undo toast (the accept's
   // own "I also collected it", which says so itself).
-  function srSalesCashSet(rid, outcome, quiet) {
+  // An undo (outcome null) carries `reason`, which the server requires (SR_CASH_UNDO_QUICK from the toast).
+  function srSalesCashSet(rid, outcome, quiet, reason) {
     if (!canReviewReports()) return Promise.resolve(null);
+    var why0 = outcome ? '' : shiftReportNote(reason).slice(0, SHIFT_REPORT_NOTE_MAX);
+    if (!outcome && !why0) { showToast(LEADER_SR_SAY['cash-undo-note']); return Promise.resolve(null); }
     if (outcome && srCashNotMine(rid)) { showToast(srCashNotMine(rid)); return Promise.resolve(null); }
     // The block's entry, or, for a report whose block is gone (srCashOrphans), the server's report alone.
     var hit = srCashEntry(rid), rep0 = srReport(rid);
@@ -24884,8 +24903,11 @@
     sync.srOut = sync.srOut || {};
     if (sync.srOut['cash:' + rid]) return Promise.resolve(null);
     sync.srOut['cash:' + rid] = true;
-    return sync.backend.patchShiftReport(sync.docId, rid, { action: 'salescash', outcome: outcome, salesCashCents: cents }).then(function (res) {
+    var body = { action: 'salescash', outcome: outcome, salesCashCents: cents };
+    if (!outcome) body.reviewNote = why0;
+    return sync.backend.patchShiftReport(sync.docId, rid, body).then(function (res) {
       delete sync.srOut['cash:' + rid];
+      if (!outcome && ui.srCashUndo === rid) { ui.srCashUndo = null; if (ui.srReasonText) delete ui.srReasonText['sr-cash-undo:' + rid]; }
       var rep = res && res.report;
       var now = srCashEntry(rid);   // found again: a merge may have replaced the block since
       if (now) {
@@ -24896,7 +24918,7 @@
         var say = outcome === 'collected' ? 'Marked ' + fmt(cents) + ' collected by ' + ledgerActor() + '. ' + SR_CASH_DEPOSIT
           : outcome === 'converted' ? 'Marked ' + fmt(cents) + ' converted to credit by the family. Check that it shows in the Trail’s End app.'
           : outcome === 'replaced' ? 'Marked ' + fmt(cents) + ' as the same cash as the new report.' : 'Undone. ' + fmt(cents) + ' is still to collect.';
-        showToast(say, outcome ? { actionLabel: 'Undo', duration: 8000, onAction: function () { srSalesCashSet(rid, null); } } : undefined);
+        showToast(say, outcome ? { actionLabel: 'Undo', duration: 8000, onAction: function () { srSalesCashSet(rid, null, false, SR_CASH_UNDO_QUICK); } } : undefined);
       }
       return loadShiftReports();
     }, function (err) {
@@ -25335,7 +25357,7 @@
   function leaderShiftReportAct(act, el) {
     var ds = (el && el.dataset) || {};
     var rid = String(ds.rid || '');
-    if (act === 'sr-cancel') { ui.srConfirm = null; ui.srReturn = null; ui.srOverride = null; render(); return; }
+    if (act === 'sr-cancel') { ui.srConfirm = null; ui.srReturn = null; ui.srOverride = null; ui.srCashUndo = null; render(); return; }
     if (!canReviewReports() || !rid) return;
     if (act === 'sr-accept') { acceptShiftReport(rid, {}); return; }
     if (act === 'sr-accept-collected') { acceptShiftReport(rid, { collected: true }); return; }
@@ -25355,7 +25377,9 @@
       return;
     }
     if (!canReviewReports()) return;
-    srSalesCashSet(rid, act === 'sr-cash-collected' ? 'collected' : act === 'sr-cash-converted' ? 'converted' : act === 'sr-cash-replaced' ? 'replaced' : null);
+    if (act === 'sr-cash-undo-open') { ui.srCashUndo = rid; render(); return; }
+    var outcome = act === 'sr-cash-collected' ? 'collected' : act === 'sr-cash-converted' ? 'converted' : act === 'sr-cash-replaced' ? 'replaced' : null;
+    if (outcome) srSalesCashSet(rid, outcome);
   }
 
   // Treasurer review, round 1 (C7) — scouts whose shift money is still WAITING: on a block with a
@@ -25398,7 +25422,7 @@
       if (r.status === 'accepted') differs = !blk || (blk.b.salesCents || 0) !== r.teCents || (blk.b.donationsCents || 0) !== r.cashCents ? 'Y' : 'N';
       rows.push({ date: date, storefront: blk ? String(blk.sf.name || 'Storefront') : '(no longer on the schedule)',
         shift: blk ? (fmtTimeRange(blk.b.start, blk.b.end) || String(blk.b.label || '')) : '', te: r.teCents || 0, cash: r.cashCents || 0,
-        salesCash: r.salesCashCents || 0, salesCashBy: srCashHistorySay(r),
+        salesCash: r.salesCashCents || 0, salesCashBy: srCashHistorySay(r), cashUndoReason: srCashUndoSay(r),
         sentBy: srNameClean(r.submittedByName), verifiedBy: verified, acceptedBy: ledgerStampClean(r.acceptedByName || ''),
         overrideReason: r.overridden ? String(r.acceptNote || '') : '', status: String(r.status || ''),
         sentBackReason: r.status === 'returned' ? String(r.reviewNote || '') : '', differs: differs });
@@ -25414,13 +25438,13 @@
   // last column. Never a uid or an email; never a child.
   var SR_HISTORY_CSV_HEAD = ['Date', 'Storefront', 'Shift', 'Trail’s End', 'Cash donations', 'Popcorn sales cash not converted', 'Collected / converted by, on', 'Sent by', 'Verified by', 'Accepted by', 'Status',
     'Block now differs from report'];
-  var SR_HISTORY_REASONS_HEAD = 'Leaders’ reasons (override or sent back)';
+  var SR_HISTORY_REASONS_HEAD = 'Leaders’ reasons (override / sent back / cash record undone)';
   function shiftReportHistoryCsv(rows, withReasons) {
     var lines = [SR_HISTORY_CSV_HEAD.concat(withReasons ? [SR_HISTORY_REASONS_HEAD] : []).map(ledgerCsvCell).join(',')];
     rows.forEach(function (x) {
       var cells = [x.date, x.storefront, x.shift, (x.te / 100).toFixed(2), (x.cash / 100).toFixed(2), ((x.salesCash || 0) / 100).toFixed(2), x.salesCashBy || '', x.sentBy, x.verifiedBy, x.acceptedBy,
         x.status, x.differs];
-      if (withReasons) cells.push([x.overrideReason, x.sentBackReason].filter(Boolean).join(' / '));
+      if (withReasons) cells.push([x.overrideReason, x.sentBackReason, x.cashUndoReason ? 'Cash ' + x.cashUndoReason : ''].filter(Boolean).join(' / '));
       lines.push(cells.map(ledgerCsvCell).join(','));
     });
     return lines.join('\n') + '\n';
@@ -25434,6 +25458,15 @@
     var who = ledgerStampClean(r.salesCashByName || '') || 'a leader';
     return (r.salesCashOutcome === 'converted' ? 'converted, recorded by ' : r.salesCashOutcome === 'replaced' ? 'carried to the newer report, recorded by '
       : 'collected by ') + who + day;
+  }
+  // The last time a record of it was undone, and why (reviews of 045e7ac): "undone by Lee Leader,
+  // 2026-10-05: counted twice", or ''. A leader's written reason: on the screen, and in the CSV only
+  // when the reasons are asked for.
+  function srCashUndoSay(r) {
+    if (!r || !r.salesCashUndoNote) return '';
+    var d = new Date(r.salesCashUndoAt || 0);
+    var day = r.salesCashUndoAt ? ', ' + d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) : '';
+    return 'undone by ' + (ledgerStampClean(r.salesCashUndoByName || '') || 'a leader') + day + ': ' + String(r.salesCashUndoNote);
   }
   function srYearLabel(year) { return year + '–' + String(year + 1).slice(2); }
   // A generic name: the program year, nothing else (youth-protection review 4).
@@ -25458,7 +25491,8 @@
       rows.forEach(function (x) {
         h += '<tr><td>' + esc(fmtDate(x.date)) + '</td><td>' + esc(x.storefront) + '</td><td>' + esc(x.shift) + '</td>' +
           '<td class="num">' + esc(fmt(x.te)) + '</td><td class="num">' + esc(fmt(x.cash)) + '</td><td class="num">' + esc(fmt(x.salesCash || 0)) + '</td>' +
-          '<td>' + esc(x.salesCashBy || '') + '</td><td>' + esc(x.sentBy) + '</td>' +
+          '<td>' + esc(x.salesCashBy || '') + (x.cashUndoReason ? (x.salesCashBy ? '<br>' : '') + '<span class="small muted">' + esc(x.cashUndoReason) + '</span>' : '') +
+          '</td><td>' + esc(x.sentBy) + '</td>' +
           '<td>' + esc(x.verifiedBy) + '</td><td>' + esc(x.acceptedBy) + '</td><td>' + esc(x.overrideReason) + '</td><td>' + esc(x.status) + '</td>' +
           '<td>' + esc(x.sentBackReason) + '</td><td>' + esc(x.differs) + '</td></tr>';
       });
@@ -38749,7 +38783,7 @@
     }
     // S-3 — a leader accepting or sending back a family's shift totals.
     if (/^sr-(accept|accept-collected|accept-confirm|return-open|override-open|cancel|takeover|undo)$/.test(act)) { leaderShiftReportAct(act, el); return; }
-    if (/^sr-(cash-collected|cash-converted|cash-replaced|cash-undo|also-cash)$/.test(act)) { srCashAct(act, el); return; }
+    if (/^sr-(cash-collected|cash-converted|cash-replaced|cash-undo-open|also-cash)$/.test(act)) { srCashAct(act, el); return; }
     // A family's shift totals (2026-10-01): the server's table, never the pack record.
     if (act === 'shift-report-open' || act === 'shift-report-cancel' || act === 'shift-report-withdraw' || act === 'shift-report-confirm-open') { shiftReportAct(act, el); return; }
     if (act === 'sr-show-all') { ui.srShowAll = ui.srShowAll !== true; ui.srFocusId = 'srShowAll'; render(); return; }   // focus stays on the toggle
@@ -41480,6 +41514,8 @@
     var fd = new FormData(f);
     // S-3 — a leader sending a family's shift report back, with the reason they will see.
     if (kind === 'shift-report-return') { returnShiftReport(String(f.dataset.rid || ''), String(fd.get('reason') || '')); return; }
+    // Undoing a record of cash from sales, with the reason the server requires (reviews of 045e7ac).
+    if (kind === 'sr-cash-undo') { srSalesCashSet(String(f.dataset.rid || ''), null, false, String(fd.get('reason') || '')); return; }
     // S-4 — accepting without a second parent, with the reason.
     if (kind === 'shift-report-override') { acceptShiftReport(String(f.dataset.rid || ''), { replaceOk: true, reason: String(fd.get('reason') || '') }); return; }
     // Phase 3b — forgiving a charge. It is NOT deleted: it stands, marked, with a reason

@@ -47,7 +47,7 @@ import { canSubmitShiftReport, canReadAllShiftReports, shiftReportProblem, clean
 export const REPORT_COLS = 'id, sf_id, block_id, te_cents, cash_cents, note, submitted_by_uid, submitted_by_name, submitted_at, ' +
   'updated_at, status, reviewed_by_uid, reviewed_by_name, reviewed_at, review_note, stamp, needs_confirm, confirmed_by_uid, confirmed_by_name, ' +
   'confirmed_at, overridden, accepted_by_uid, accepted_by_name, accepted_at, accept_note, verified_by_leader, sales_cash_cents, ' +
-  'sales_cash_outcome, sales_cash_by_uid, sales_cash_by_name, sales_cash_at';
+  'sales_cash_outcome, sales_cash_by_uid, sales_cash_by_name, sales_cash_at, sales_cash_undo_note, sales_cash_undo_by_name, sales_cash_undo_at';
 // The statuses that hold a block: one waiting for a leader, or one a leader accepted.
 export const HOLDS_BLOCK = "status IN ('submitted', 'accepted')";
 const POST_KEYS = ['sfId', 'blockId', 'teCents', 'cashCents', 'salesCashCents', 'note', 'attest'];
@@ -84,6 +84,9 @@ export function reportOut(row, uid, full) {
     // 'converted' or null (still out), who recorded it and when.
     r.salesCashOutcome = row.sales_cash_outcome || null; r.salesCashByName = row.sales_cash_by_name || null;
     r.salesCashByUid = row.sales_cash_by_uid || null; r.salesCashAt = row.sales_cash_at || null;
+    // The last time a record of it was undone, and why (migration 0005): the season's history says it.
+    r.salesCashUndoNote = row.sales_cash_undo_note || ''; r.salesCashUndoByName = row.sales_cash_undo_by_name || null;
+    r.salesCashUndoAt = row.sales_cash_undo_at || null;
   }
   return r;
 }

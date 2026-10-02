@@ -15975,7 +15975,7 @@ atest('S-5: a leader records the cash from sales as collected or converted — a
   eq((await set('admin3', { outcome: 'collected' })).body.reason, 'sales-cash-cents', 'no amount named');
   eq((await set('admin3', { outcome: 'collected', salesCashCents: 1525, note: 'x' })).body.reason, 'unknown-field', 'an unknown field');
   eq((await set('admin3', { outcome: 'collected', salesCashCents: 1500 })).body.error, 'report-moved', 'a different amount');
-  eq((await set('admin3', { outcome: null, salesCashCents: 1525 })).body.error, 'report-moved', 'undoing nothing');
+  eq((await set('admin3', { outcome: null, salesCashCents: 1525, reviewNote: 'x' })).body.error, 'report-moved', 'undoing nothing');
   const none = (await w.report('parent', { blockId: 'b2' })).body.report.id;
   await w.act('admin3', none, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
   eq((await set('admin3', { outcome: 'collected', salesCashCents: 1 }, none)).body.reason, 'no-sales-cash', 'a report with no cash from sales');
@@ -15985,17 +15985,25 @@ atest('S-5: a leader records the cash from sales as collected or converted — a
   eq([c.status, c.body.report.salesCashOutcome, c.body.report.salesCashByName, c.body.report.salesCashByUid, typeof c.body.report.salesCashAt],
     [200, 'collected', 'Test admin3', 'uid-admin3', 'number'], 'collected');
   eq((await set('owner', { outcome: 'converted', salesCashCents: 1525 })).body.error, 'report-moved', 'a second outcome over the first');
-  const u = await set('owner', { outcome: null, salesCashCents: 1525 });
-  eq([u.status, u.body.report.salesCashOutcome, u.body.report.salesCashByName], [200, null, null], 'undone');
+  // Reviews of 045e7ac: an undo needs a reason, as a send-back does; recording one takes none.
+  for (const [what, note] of [['no reason', undefined], ['a blank one', '  \n '], ['one too long', 'x'.repeat(301)], ['not text', 7]]) {
+    eq((await set('owner', Object.assign({ outcome: null, salesCashCents: 1525 }, note === undefined ? {} : { reviewNote: note }))).body.reason, 'review-note', 'an undo with ' + what);
+  }
+  eq((await set('admin2', { outcome: 'converted', salesCashCents: 1525, reviewNote: 'x' })).body.reason, 'review-note', 'a reason on a record');
+  eq(w.sql("SELECT count(*) AS n FROM audit WHERE action LIKE 'shift.salescash.%'")[0].n, 1, 'a refused undo was audited');
+  const u = await set('owner', { outcome: null, salesCashCents: 1525, reviewNote: '  Counted\ttwice  ' });
+  eq([u.status, u.body.report.salesCashOutcome, u.body.report.salesCashByName, u.body.report.salesCashUndoNote, u.body.report.salesCashUndoByName, typeof u.body.report.salesCashUndoAt],
+    [200, null, null, 'Counted twice', 'Test owner', 'number'], 'undone, and why, by whom, when');
   eq((await set('admin2', { outcome: 'converted', salesCashCents: 1525 })).body.report.salesCashOutcome, 'converted', 'converted');
   eq(w.sql("SELECT uid, action, detail FROM audit WHERE action LIKE 'shift.salescash.%' ORDER BY id").map((a) => [a.uid, a.action, JSON.parse(a.detail)]), [
     ['uid-admin3', 'shift.salescash.collected', { report: rid, sfId: 'sfPast', blockId: 'b1', salesCashCents: 1525, byName: 'Test admin3' }],
     ['uid-owner', 'shift.salescash.undo', { report: rid, sfId: 'sfPast', blockId: 'b1', salesCashCents: 1525, byName: 'Test owner',
-      was: { outcome: 'collected', byName: 'Test admin3', at: c.body.report.salesCashAt } }],
+      was: { outcome: 'collected', byName: 'Test admin3', at: c.body.report.salesCashAt }, reason: 'Counted twice' }],
     ['uid-admin2', 'shift.salescash.converted', { report: rid, sfId: 'sfPast', blockId: 'b1', salesCashCents: 1525, byName: 'Test admin2' }]], 'the audit');
   // A parent's own report never says who collected it or when; a leader's does.
   const mine = (await w.reports('parent')).body.reports.find((r) => r.id === rid);
-  ok(!('salesCashOutcome' in mine) && !('salesCashByName' in mine), 'a parent reads the custody record');
+  ok(!('salesCashOutcome' in mine) && !('salesCashByName' in mine) && !('salesCashUndoNote' in mine), 'a parent reads the custody record');
+  eq((await w.reports('viewer')).body.reports.find((r) => r.id === rid).salesCashUndoNote, 'Counted twice', 'recording it again keeps the last undo\'s reason');
   eq((await w.reports('viewer')).body.reports.find((r) => r.id === rid).salesCashOutcome, 'converted', 'a viewer reads it');
   // Two leaders at once: one records it, the other is told it moved, one audit row.
   const v = await srWorld();
@@ -16323,6 +16331,7 @@ test('positions: migration 0005 names the same positions as access.js, and keeps
   ok(list('INVITE_ROLES').every((r) => list('INVITE_ROW_ROLES').indexOf(r) >= 0), 'a new invite role the table refuses');
 });
 
+const refused0 = (db, q, ...a) => { try { db.prepare(q).run(...a); return false; } catch (e) { return true; } };
 atest('positions: migration 0005 keeps every member, invite, shift report and index, and the CHECKs take leader', async () => {
   sqliteMod = sqliteMod || await loadSqlite();
   const db = new sqliteMod.DatabaseSync(':memory:');
@@ -16347,7 +16356,12 @@ atest('positions: migration 0005 keeps every member, invite, shift report and in
   const dump = () => ['members', 'invites', 'audit', 'pack_state', 'packs', 'shift_reports'].map((t) => db.prepare('SELECT * FROM ' + t + ' ORDER BY 1, 2').all().map((r) => Object.assign({}, r)));
   const was = dump();
   db.exec(readFileSync(join(ROOT, 'migrations/0005_positions.sql'), 'utf8'));
+  // Every row as it was; the shift reports gain the three columns of a cash record's last undo (empty).
+  was[5].forEach((r) => Object.assign(r, { sales_cash_undo_note: null, sales_cash_undo_by_name: null, sales_cash_undo_at: null }));
   eq(dump(), was, 'every row after the migration');
+  ok(refused0(db, "UPDATE shift_reports SET sales_cash_undo_note = '' WHERE id = 'r2'") && refused0(db, "UPDATE shift_reports SET sales_cash_undo_note = ? WHERE id = 'r2'", 'x'.repeat(301)) &&
+    !refused0(db, "UPDATE shift_reports SET sales_cash_undo_note = 'Counted twice', sales_cash_undo_by_name = 'Test admin', sales_cash_undo_at = 14 WHERE id = 'r2'"),
+    'an undo\'s reason: some words, at most 300 characters');
   eq(db.prepare('PRAGMA foreign_key_check').all().length, 0, 'foreign keys');
   const idx = db.prepare("SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'index' AND name = 'members_by_role'").get();
   ok(idx && idx.tbl_name === 'members' && /\(pack_id, role\)/.test(idx.sql), 'members_by_role');
@@ -16779,7 +16793,7 @@ atest('positions shift reports: an accept is taken back by the accepter or the u
   eq((await back('lead_asstden', wait)).status, 200, 'a den leader sending back a waiting report');
   // The cash from sales: recorded by any verifier; undone by its recorder, the accepter, or the undo list.
   const r7 = await accepted('b7', 'lead_denleader', 300);
-  const cash = (who, outcome) => w.act(who, r7, { action: 'salescash', outcome, salesCashCents: 300 });
+  const cash = (who, outcome) => w.act(who, r7, Object.assign({ action: 'salescash', outcome, salesCashCents: 300 }, outcome ? {} : { reviewNote: 'Wrong shift' }));
   eq((await cash('lead_asstden', 'collected')).body.report.salesCashOutcome, 'collected', 'a den leader recording it collected');
   eq((await cash('lead_denleader', null)).status, 200, 'the accepter undoing it');
   eq((await cash('lead_asstden', 'converted')).status, 200, 'recorded again');
@@ -18506,7 +18520,8 @@ function srLeaderCtx(o) {
        'srIConfirmed', 'srFamiliesNow', 'srNeedsCheck', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'SR_CHECK_TE', 'SR_IMPORT_FIRST', 'familyKeyOf',
        'blockCashCheck', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
        'srParentStore', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashHistorySay', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
-       'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay'].map(decl).join('\n')}
+       'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
+       'SR_CASH_UNDO_QUICK', 'srCashUndoForm', 'srCashUndoSay'].map(decl).join('\n')}
     function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }`, ctx);
   const run = (js) => vm.runInContext(js, ctx);
   const get = (js) => JSON.parse(JSON.stringify(run(js) === undefined ? null : run(js)));
@@ -19061,7 +19076,7 @@ atest('S-4: a parent who may confirm sees the figures to check — only they, on
 /* Preview as a parent (Keith, 2026-10-01) — GET /shift-reports?as=parent answers any approved role
    exactly as a parent with that uid would be answered: the parent shape, never a leader-only field. */
 const SR_LEADER_ONLY = ['submittedByUid', 'reviewedByUid', 'confirmedByUid', 'acceptedByUid', 'acceptedByName', 'acceptedAt', 'acceptNote', 'collected',
-  'salesCashOutcome', 'salesCashByName', 'salesCashByUid', 'salesCashAt'];
+  'salesCashOutcome', 'salesCashByName', 'salesCashByUid', 'salesCashAt', 'salesCashUndoNote', 'salesCashUndoByName', 'salesCashUndoAt'];
 atest('as a parent: a leader who is also a parent gets exactly a parent’s answer — own reports in the parent shape, others as status, myShifts — and nothing leader-only', async () => {
   const w = await s4World();
   // The editor is a parent too: linked to Ada, as the `parent` account is.
@@ -19168,7 +19183,7 @@ atest('same family: recording the cash from sales refuses the sender and the sen
   // An editor's own report on b2 (one family), accepted by the owner.
   const mine = (await w.send('admin3', 'b2', { salesCashCents: 300 })).body.report.id;
   eq((await w.act('owner', mine, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 300, collected: true })).status, 200, 'accepted');
-  const sc = (who, rid, outcome, cents) => w.act(who, rid, { action: 'salescash', outcome, salesCashCents: cents });
+  const sc = (who, rid, outcome, cents) => w.act(who, rid, Object.assign({ action: 'salescash', outcome, salesCashCents: cents }, outcome ? {} : { reviewNote: 'Test' }));
   eq((await sc('admin3', mine, 'collected', 300)).body.error, 'same-person', 'the sender recording their own');
   // newbie's report on b5, confirmed by Ada's family and accepted by the owner; admin2 is linked to Cy (newbie's family).
   const r3 = (await w.send('newbie', 'b5', { salesCashCents: 400 })).body.report.id;
@@ -19809,6 +19824,8 @@ test('round 1: the season’s shift reports, as a leaders’ table and a CSV, wi
     srRep({ id: 'rep-3', blockId: 'b2', status: 'returned', reviewNote: 'Recount the jar', submittedAt: Date.parse('2026-10-03T20:00:00Z') }),
     srRep({ id: 'rep-4', blockId: 'gone', status: 'submitted', submittedAt: Date.parse('2026-10-04T20:00:00Z') }),
     srRep({ id: 'rep-5', status: 'accepted', collected: true, acceptedByName: 'Lee Leader', submittedAt: Date.parse('2025-11-01T20:00:00Z'), sfId: 'old', blockId: 'x' })];
+  // Reviews of 045e7ac: the first report's cash record was undone once, with a reason, before it was recorded again.
+  Object.assign(reps[0], { salesCashUndoNote: 'Marked the wrong shift', salesCashUndoByName: 'Kim Kernel', salesCashUndoAt: new Date(2026, 9, 4, 9).getTime() });
   const L = srLeaderCtx({ state: st, reports: reps });
   vm.runInContext(['programYearStartISO', 'programYearEndISO', 'ledgerCsvCell', 'shiftReportHistoryRows', 'SR_HISTORY_HEAD', 'SR_HISTORY_CSV_HEAD',
     'SR_HISTORY_REASONS_HEAD', 'srCashHistorySay', 'shiftReportHistoryCsv', 'srYearLabel', 'srHistoryFileName', 'SR_HISTORY_DONT_SHARE', 'renderShiftReportHistory'].map(decl).join('\n'), L.ctx);
@@ -19823,9 +19840,11 @@ test('round 1: the season’s shift reports, as a leaders’ table and a CSV, wi
   ok(csv.split('\n')[0] === 'Date,Storefront,Shift,Trail’s End,Cash donations,Popcorn sales cash not converted,"Collected / converted by, on",Sent by,Verified by,Accepted by,Status,Block now differs from report', 'the header');
   ok(/2026-10-03,Kroger,10:00–12:00,123\.45,25\.00,20\.00,"collected by Lee Leader, 2026-10-04",Nora Newfamily,confirmed by Bo Parent,Sam Leader,accepted,N/.test(csv), 'the cells');
   ok(/12:00–14:00,80\.00,0\.00,0\.00,,/.test(csv), 'S-5: a report with no cash from sales to collect says 0.00, and nobody collected it');
-  ok(!/SUM|Recount/.test(csv), 'a leader’s reason in the CSV by default');
+  ok(!/SUM|Recount|wrong shift/.test(csv), 'a leader’s reason in the CSV by default');
+  ok(/,"?Cash undone by Kim Kernel, 2026-10-04: Marked the wrong shift"?\n/.test(L.run('shiftReportHistoryCsv(shiftReportHistoryRows(2026), true)')), 'the undo\'s reason, when asked for');
+  ok(/collected by Lee Leader, 2026-10-04<br><span class="small muted">undone by Kim Kernel, 2026-10-04: Marked the wrong shift<\/span>/.test(L.run('renderShiftReportHistory()')), 'and on the screen');
   const csvR = L.run('shiftReportHistoryCsv(shiftReportHistoryRows(2026), true)');
-  ok(csvR.split('\n')[0].endsWith(',Leaders’ reasons (override or sent back)') && /,'=SUM\(A1\)\n/.test(csvR) && /,Recount the jar\n/.test(csvR),
+  ok(csvR.split('\n')[0].endsWith(',Leaders’ reasons (override / sent back / cash record undone)') && /,'=SUM\(A1\)\n/.test(csvR) && /,Recount the jar\n/.test(csvR),
     'asked for: one labelled last column, formula-safe');
   eq(L.run('srHistoryFileName(2026)'), 'shift-reports-2026.csv', 'a generic file name');
   const html = L.run('renderShiftReportHistory()');
@@ -20018,7 +20037,7 @@ atest('same family: a leader can’t record their own or their family’s cash f
 atest('sent back after its accept: the cash from sales can still be recorded, or marked the same cash as the new report — never stuck, never twice', async () => {
   const w = await srWorld();
   const rid = (await w.report('parent', { blockId: 'b1', salesCashCents: 800 })).body.report.id;
-  const sc = (who, outcome, id) => w.act(who, id || rid, { action: 'salescash', outcome, salesCashCents: 800 });
+  const sc = (who, outcome, id) => w.act(who, id || rid, Object.assign({ action: 'salescash', outcome, salesCashCents: 800 }, outcome ? {} : { reviewNote: 'Test' }));
   eq((await sc('admin3', 'replaced')).body.error, 'report-moved', 'waiting: nothing to record');
   await w.act('admin3', rid, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 800, collected: true });
   eq((await sc('admin3', 'replaced')).body.reason, 'outcome', 'replaced, on a report still accepted');
@@ -20159,7 +20178,8 @@ atest('S-5: a leader sees the cash to collect, the accept carries it to the bloc
   eq([M.block('b1').salesCash[0].outcome.outcome, M.get('toasts').pop()],
     ['collected', 'Marked $15.25 collected by Sam Leader. Deposit it and record it in the ledger as Popcorn money for the council.'], 'collected');
   M.run('undoIt()');
-  eq(M.get('patches[1].body'), { action: 'salescash', outcome: null, salesCashCents: 1525 }, 'Undo asks the server');
+  eq(M.get('patches[1].body'), { action: 'salescash', outcome: null, salesCashCents: 1525, reviewNote: 'Undone right after it was marked, by the leader who marked it' },
+    'Undo on the toast asks the server, saying it was the recorder\'s own quick undo');
   await M.answer(1);
   eq([M.block('b1').salesCash, M.get('toasts').pop()], [[{ reportId: 'rep-1', cents: 1525, from: 'Nora Newfamily', outcome: null }], 'Undone. $15.25 is still to collect.'], 'undone');
   M.run("srCashAct('sr-cash-converted', { dataset: { rid: 'rep-1' } })");
@@ -20169,6 +20189,20 @@ atest('S-5: a leader sees the cash to collect, the accept carries it to the bloc
   M.run("sync.shiftReports.reports[0].salesCashOutcome = 'converted'; sync.shiftReports.reports[0].salesCashByName = 'Lee Leader'; sync.shiftReports.reports[0].salesCashAt = 5;");
   M.run('shiftReportsReconcile()');
   eq(M.block('b1').salesCash[0].outcome, { outcome: 'converted', by: 'Lee Leader', at: 5 }, 'mirrored from the server');
+  // Reviews of 045e7ac: the block's Undo asks why first, and sends nothing without a reason.
+  ok(/data-act="sr-cash-undo-open" data-rid="rep-1">Undo</.test(blk()) && !/data-form="sr-cash-undo"/.test(blk()), 'Undo, no form yet');
+  M.run("srCashAct('sr-cash-undo-open', { dataset: { rid: 'rep-1' } })");
+  ok(/<form data-form="sr-cash-undo" class="sr-return" data-rid="rep-1">[\s\S]*Why undo it\?[\s\S]*<textarea name="reason"[^>]*required>/.test(blk()) && !/sr-cash-undo-open/.test(blk()),
+    'the reason form, in place of the button');
+  const sent = M.get('patches').length;
+  M.run("srSalesCashSet('rep-1', null, false, '   ')");
+  eq([M.get('patches').length, M.get('toasts').pop()], [sent, 'Say why you are undoing it.'], 'no reason: nothing sent');
+  M.run("srSalesCashSet('rep-1', null, false, 'Counted on the wrong shift')");
+  eq(M.get('patches[' + sent + '].body'), { action: 'salescash', outcome: null, salesCashCents: 1525, reviewNote: 'Counted on the wrong shift' }, 'the undo carries the reason');
+  await M.answer(sent);
+  eq([M.block('b1').salesCash[0].outcome, M.get('ui.srCashUndo')], [null, null], 'undone, the form closed');
+  eq(M.run("srCashUndoSay({ salesCashUndoNote: 'Counted twice', salesCashUndoByName: 'Lee Leader', salesCashUndoAt: new Date(2026, 9, 5, 12).getTime() })"),
+    'undone by Lee Leader, 2026-10-05: Counted twice', 'the history\'s words');
   // A viewer reads the line, with no button.
   const V = srLeaderCtx({ role: 'viewer', state: { scouts: [], leaders: [], storefronts: [{ id: 'sf1', name: 'K', date: '2026-10-03', blocks: [
     { id: 'b1', label: 'B', assignments: [], salesCents: 100, donationsCents: 0, salesCash: [{ reportId: 'r9', cents: 100, from: 'Nora', outcome: null }] }] }] } });

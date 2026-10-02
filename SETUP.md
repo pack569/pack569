@@ -550,7 +550,9 @@ pack record, so a parent who can send one still can't write anything else.
   **converted** it to credit after all. On a report sent back after it was accepted, they can
   instead mark it **the same cash as the new report** (`replaced`), so a corrected report's
   figure isn't counted twice. The leader who recorded it, the leader who accepted the report,
-  the Popcorn Kernel, the Committee Chair, the Treasurer or an admin can undo it. The record names the amount it is about and is refused if the report has moved
+  the Popcorn Kernel, the Committee Chair, the Treasurer or an admin can undo it, and an undo
+  needs a written reason, as sending back an accepted report does (at most 300 characters; the
+  report keeps the last one, and who and when, and the audit keeps every one). The record names the amount it is about and is refused if the report has moved
   since. It keeps who recorded it and when, from their member record and the server's clock.
   Each change is audited (`shift.salescash.collected`, `.converted`, `.replaced`, `.undo`), and leaders see
   it in the season's shift-report history.

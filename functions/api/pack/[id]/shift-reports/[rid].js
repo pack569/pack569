@@ -14,7 +14,7 @@
 // report on the shift) only on the sent-back kind.
 //   { action: 'return', reviewNote }                              shiftVerify, waiting; accepted: the accepter or shiftUndo
 //   { action: 'salescash', outcome, salesCashCents }              shiftVerify, an accepted report holding cash from sales;
-//                                                                 outcome null (undo): its recorder or accepter, or shiftUndo
+//   { action: 'salescash', outcome: null, salesCashCents, reviewNote }  undo: its recorder or accepter, or shiftUndo, with a reason
 // WHO (Keith, 2026-10-02; access.js `actions`): shiftVerify is an admin, or a leader at the booth
 // (Chair, Cubmaster and assistant, Den Leader and assistant, Kernel, Treasurer), never a parent and
 // no longer the retired editor; shiftUndo is an admin, the Kernel, the Chair or the Treasurer. Each
@@ -81,7 +81,7 @@ const ACTION_KEYS = {
   confirm: ['attest', 'teCents', 'cashCents', 'salesCashCents', 'updatedAt'],
   accept: ['teCents', 'cashCents', 'salesCashCents', 'reviewNote', 'override', 'collected'],
   return: ['reviewNote'],
-  salescash: ['outcome', 'salesCashCents']
+  salescash: ['outcome', 'salesCashCents', 'reviewNote']
 };
 const RID_RE = /^[A-Za-z0-9-]{1,64}$/;
 
@@ -227,6 +227,11 @@ async function patch({ request, db, packId, role, positions, user, member, param
     // outcome to undo.
     if (b.salesCashCents !== row.sales_cash_cents) return reportMoved(row.status);
     const undo = b.outcome === null;
+    // Security and treasurer reviews of 045e7ac: an undo needs a written reason, as taking back an
+    // accept does (the send-back's rules: cleaned, at most SHIFT_REPORT_NOTE_MAX). Recording one
+    // takes none.
+    if (!undo && b.reviewNote !== undefined) refuse(badRequest('review-note'));
+    const undoNote = undo ? reviewNote(b.reviewNote, true) : null;
     if (undo ? !row.sales_cash_outcome : !!row.sales_cash_outcome) return reportMoved(row.status);
     // Security re-check (followups round 3): recording what became of the cash is a second adult's
     // word on it, as the accept is: never the sender, nor a leader in the sender's family (same
@@ -246,15 +251,16 @@ async function patch({ request, db, packId, role, positions, user, member, param
     gate = undo && !(user.uid === row.sales_cash_by_uid || user.uid === row.accepted_by_uid)
       ? holdsGate(packId, user.uid, 'shiftUndo') : holdsGate(packId, user.uid, 'shiftVerify', 'shiftUndo');
     update = db.prepare('UPDATE shift_reports SET sales_cash_outcome = ?, sales_cash_by_uid = ?, sales_cash_by_name = ?, sales_cash_at = ?, ' +
+      (undo ? 'sales_cash_undo_note = ?, sales_cash_undo_by_name = ?, sales_cash_undo_at = ?, ' : '') +
       "updated_at = ?, stamp = ? WHERE pack_id = ? AND id = ? AND stamp = ? AND (status = 'accepted' OR (status = 'returned' AND accepted_by_uid IS NOT NULL)) " +
       (b.outcome === 'replaced' ? "AND status = 'returned' " : '') + 'AND sales_cash_cents = ? AND ' +
       'sales_cash_outcome IS ' + (undo ? 'NOT NULL' : 'NULL') + ' AND ' + (undo ? '' : 'submitted_by_uid != ? AND (confirmed_by_uid IS NULL OR confirmed_by_uid != ?) AND ') +
       (famRec ? '(SELECT rev FROM pack_state WHERE pack_id = ?) = ? AND ' : '') + gate.sql)
-      .bind(undo ? null : b.outcome, undo ? null : user.uid, undo ? null : name, undo ? null : now, now, stamp, packId, rid, row.stamp,
+      .bind(undo ? null : b.outcome, undo ? null : user.uid, undo ? null : name, undo ? null : now, ...(undo ? [undoNote, name, now] : []), now, stamp, packId, rid, row.stamp,
         b.salesCashCents, ...(undo ? [] : [user.uid, user.uid]), ...(famRec ? [packId, famRec.rev] : []), ...gate.args);
     audit = 'shift.salescash.' + (undo ? 'undo' : b.outcome);
     detail = { report: rid, sfId: row.sf_id, blockId: row.block_id, salesCashCents: row.sales_cash_cents, byName: name };
-    if (undo) detail.was = { outcome: row.sales_cash_outcome, byName: row.sales_cash_by_name || '', at: row.sales_cash_at };
+    if (undo) { detail.was = { outcome: row.sales_cash_outcome, byName: row.sales_cash_by_name || '', at: row.sales_cash_at }; detail.reason = undoNote; }
   } else {
     if (row.status !== 'submitted' && row.status !== 'accepted') return reportMoved(row.status);
     // Sending back one that waits is any shiftVerify holder's. Sending back an ACCEPTED one takes the
