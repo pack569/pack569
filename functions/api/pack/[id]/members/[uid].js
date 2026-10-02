@@ -22,7 +22,7 @@
 // what it held. The account becomes a 'leader' — or a 'parent' when Parent is all it was given
 // (rules.js roleForPositions). Only an admin, never your own row otherwise, never with `role` in
 // the same request, and at least one position (to take them all away, set a role instead; the
-// role change takes the positions with it, migration 0003). The last-admin rule holds: an admin
+// role change takes the positions with it, migration 0005). The last-admin rule holds: an admin
 // given positions stops being an admin. Recorded in the audit as 'member.positions'.
 
 import { route, json, readObject, refuse, forbidden, notFound, badRequest, lastAdmin } from '../../../../_lib/http.js';
@@ -84,7 +84,7 @@ async function patch({ request, db, packId, role, user, params }) {
       .bind(nextRole, name, email, packId, target, nextRole, packId)
   ];
   // Written only if the role landed (the last-admin rule can stop it): the role change itself
-  // has already taken the old positions (migration 0003), and these replace them.
+  // has already taken the old positions (migration 0005), and these replace them.
   const landed = 'EXISTS (SELECT 1 FROM members WHERE pack_id = ? AND uid = ? AND role = ?)';
   if (positions) {
     stmts.push(

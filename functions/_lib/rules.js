@@ -202,3 +202,189 @@ export function emailKey(raw) {
   const k = String(raw == null ? '' : raw).trim().toLowerCase();
   return /^[^\s\/%@]+@[^\s\/%@]+\.[^\s\/%@]+$/.test(k) && k.length <= 320 ? k : null;
 }
+
+// ---- Shift reports (migrations/0003_shift_reports.sql) ----
+// Not a Firestore rule: Part C never had them, and the Firestore page never shows them. A
+// family sends a storefront shift's two totals and signs that they counted them; a leader
+// accepts the report as the second sign-off. SETUP.md Part C, "Shift reports", says the same
+// in prose.
+
+// Who may send a report: any approved member — never 'pending', never someone with no row.
+export const canSubmitShiftReport = (role) => ['admin', 'editor', 'viewer', 'parent'].indexOf(role) !== -1;
+// Who may accept one or send it back: the people who may write the pack record, since
+// accepting is what puts the figures into it.
+export const canReviewShiftReport = (role) => canWritePack(role);
+// Who sees every report in full (names, amounts, notes): the leaders, as with the ledger. A
+// parent sees their own in full, and of anyone else's only which blocks are spoken for.
+export const canReadAllShiftReports = (role) => isLeader(role);
+
+export const SHIFT_REPORT_MAX_CENTS = 1000000;    // $10,000: the migration's CHECK
+export const SHIFT_REPORT_NOTE_MAX = 300;
+export const SHIFT_REPORT_DAYS = 14;              // how long after the shift a report may be sent
+export const SHIFT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;   // the page's uid(), with room to spare
+// The pack's own calendar. The server has no "today" of its own anywhere else, and the page's
+// todayISO() is the device's local date; Pack 569 meets in Eastern time, so a shift on
+// Saturday is "today" all Saturday evening there, whatever UTC says.
+export const PACK_TIME_ZONE = 'America/New_York';
+
+// Today's date in the pack's time zone, as YYYY-MM-DD, at `ms` (default: now).
+export function packToday(ms) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: PACK_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' })
+    .formatToParts(new Date(ms === undefined ? Date.now() : ms));
+  const get = (t) => parts.filter((p) => p.type === t)[0].value;
+  return get('year') + '-' + get('month') + '-' + get('day');
+}
+// Whole days from date `a` to date `b` (both YYYY-MM-DD), or NaN if either is not a date.
+export function daysBetween(a, b) {
+  const t = (s) => (/^\d{4}-\d{2}-\d{2}$/.test(String(s)) ? Date.parse(s + 'T00:00:00Z') : NaN);
+  return Math.round((t(b) - t(a)) / 86400000);
+}
+
+// A note as it is stored: one line of plain text, like the page's cleanContactLine — but NOT
+// cut short. A note over the limit is refused, so a family's words are never silently trimmed.
+export function cleanReportNote(v) {
+  return String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f\s]+/g, ' ').trim();
+}
+const wholeCents = (v) => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= SHIFT_REPORT_MAX_CENTS;
+
+// S-5 (Keith, 2026-10-01) — the cash from popcorn sales a family still has at the end of the
+// shift: optional, and 0 when the body leaves it out (a page from before S-5). It is a custody
+// figure, not a sale: those sales are already inside the Trail's End amount, so it is never more
+// than that, and nothing ever adds it to a block's sales or a scout's split.
+export const reportSalesCash = (body) => (body && body.salesCashCents !== undefined ? body.salesCashCents : 0);
+
+// Why these figures may not be signed, or null. Shared by a new report and an edit: the amounts
+// as whole cents in range, a note if any within the limit, and the box ticked.
+export function shiftReportFiguresProblem(body) {
+  if (body.attest !== true) return 'attest';
+  if (!wholeCents(body.teCents)) return 'te-cents';
+  if (!wholeCents(body.cashCents)) return 'cash-cents';
+  const salesCash = reportSalesCash(body);
+  if (!wholeCents(salesCash) || salesCash > body.teCents) return 'sales-cash-cents';
+  if (body.note !== undefined && body.note !== null && typeof body.note !== 'string') return 'note';
+  if (cleanReportNote(body.note).length > SHIFT_REPORT_NOTE_MAX) return 'note';
+  return null;
+}
+
+// The storefront event and the shift itself, in a parent view, or null. See shiftInView below.
+export function shiftOfView(view, sfId, blockId) {
+  const events = view && Array.isArray(view.events) ? view.events : [];
+  for (const ev of events) {
+    if (!ev || ev.kind !== 'storefront' || ev.sfId !== sfId || !Array.isArray(ev.shifts)) continue;
+    const shift = ev.shifts.filter((s) => s && s.blockId === blockId)[0];
+    if (shift) return { ev, shift };
+  }
+  return null;
+}
+// S-4 (Keith, 2026-10-01) — does a report on this published shift need a second parent? Yes when
+// the shift has scouts from two or more families (the view's `families`, buildParentView's count
+// of distinct family keys on the block). FAIL CLOSED: a shift whose count is missing or not a
+// whole number (a view published by a page from before S-4) needs one too; a leader can still
+// accept without one, with a written reason, and the next leader save republishes the count.
+export function shiftNeedsConfirm(shift) {
+  const n = shift && shift.families;
+  return !(typeof n === 'number' && Number.isInteger(n) && n >= 0 && n < 2);
+}
+// S-4 amendment — the accounts that are parents of a scout on this block, from the stored pack
+// record (pack_state.json, parsed): state.storefronts[sfId].blocks[blockId].assignments[].scoutId,
+// then those scouts' parentUids (set by an admin on the Members card; a parent of one scout is
+// linked to the whole family). null when the record, the storefront or the block is missing or
+// not the shape it should be: FAIL CLOSED, nobody confirms. Only a yes/no ever leaves the server.
+export function shiftParentUids(pack, sfId, blockId) {
+  if (!pack || typeof pack !== 'object' || !Array.isArray(pack.storefronts) || !Array.isArray(pack.scouts)) return null;
+  const sf = pack.storefronts.filter((x) => x && x.id === sfId)[0];
+  const b = sf && Array.isArray(sf.blocks) ? sf.blocks.filter((x) => x && x.id === blockId)[0] : null;
+  if (!b || !Array.isArray(b.assignments)) return null;
+  const on = {};
+  b.assignments.forEach((a) => { if (a && typeof a.scoutId === 'string') on[a.scoutId] = true; });
+  const out = [];
+  pack.scouts.forEach((sc) => {
+    if (!sc || !on[sc.id] || !Array.isArray(sc.parentUids)) return;
+    sc.parentUids.forEach((u) => { if (typeof u === 'string' && u && out.indexOf(u) === -1) out.push(u); });
+  });
+  return out;
+}
+const famOf = (sc) => (typeof sc.familyId === 'string' && sc.familyId) || sc.id;
+// The family keys (the page's familyKeyOf: familyId, or the scout's own id) of every scout whose
+// parentUids hold `uid`, in the stored pack record: { key: true }, empty for an account linked to
+// no scout, or a record that isn't the right shape.
+export function familiesOf(pack, uid) {
+  const out = {};
+  if (!uid || !pack || typeof pack !== 'object' || !Array.isArray(pack.scouts)) return out;
+  pack.scouts.forEach((sc) => {
+    if (sc && Array.isArray(sc.parentUids) && sc.parentUids.indexOf(uid) !== -1) out[famOf(sc)] = true;
+  });
+  return out;
+}
+// Keith (2026-10-01) — the leader accepting a report must be from a DIFFERENT FAMILY than the
+// sender: true when the two accounts are linked to scouts of a shared family. An account linked
+// to no scout shares no family with anyone (allowed, as before). Links between people only,
+// never pack jobs.
+export function sameFamily(pack, uidA, uidB) {
+  const a = familiesOf(pack, uidA), b = familiesOf(pack, uidB);
+  return Object.keys(a).some((k) => b[k] === true);
+}
+// Review round 1 (Keith, 2026-10-01) — WHO MAY CONFIRM: a parent of a scout on the shift from a
+// DIFFERENT FAMILY than the sender. The sender's families are the family keys (familyId, or the
+// scout's own id: the page's familyKeyOf) of every scout the sender is linked to; a confirmer
+// counts only through a scout on the block outside those families, so a spouse or a second
+// account of the same family never confirms. A sender linked to no scout has no family to rule
+// out, so NOBODY confirms theirs (security re-check 4: otherwise their own spouse could): a leader
+// accepts it with a written reason. null: fail closed, as above.
+export function shiftConfirmers(pack, sfId, blockId, senderUid) {
+  if (shiftParentUids(pack, sfId, blockId) === null) return null;
+  const senderFams = familiesOf(pack, senderUid);
+  if (!Object.keys(senderFams).length) return [];
+  const sf = pack.storefronts.filter((x) => x && x.id === sfId)[0];
+  const b = sf.blocks.filter((x) => x && x.id === blockId)[0];
+  const on = {};
+  b.assignments.forEach((a) => { if (a && typeof a.scoutId === 'string') on[a.scoutId] = true; });
+  const out = [];
+  pack.scouts.forEach((sc) => {
+    if (!sc || !on[sc.id] || senderFams[famOf(sc)] || !Array.isArray(sc.parentUids)) return;
+    sc.parentUids.forEach((u) => { if (typeof u === 'string' && u && u !== senderUid && out.indexOf(u) === -1) out.push(u); });
+  });
+  return out;
+}
+// May this account confirm this report as the second parent? An approved member, one of the
+// shift's confirmers (shiftConfirmers: a parent from another family on the shift), not the sender.
+export function canConfirmShiftReport(role, uid, senderUid, confirmers) {
+  return canSubmitShiftReport(role) && !!uid && uid !== senderUid && Array.isArray(confirmers) && confirmers.indexOf(uid) !== -1;
+}
+// Review round 1 (security 6) — the most reports one account may have waiting at once, and send
+// in a day. A table holds a few shifts; anything more is a mistake or worse.
+export const SHIFT_REPORT_MAX_OPEN = 3;
+export const SHIFT_REPORT_MAX_PER_DAY = 20;
+// How far back a leader's list goes (and everything still waiting, whenever it was sent): a season
+// and a bit, so a year-end history has the whole season to read.
+export const SHIFT_REPORT_LEADER_DAYS = 400;
+
+// The storefront event in a parent view that holds this shift, or null. `view` is the stored
+// parent view (parent_views.payload, parsed): the page's buildParentView publishes each
+// storefront as { kind: 'storefront', sfId, date, shifts: [{ blockId, when, who? }] }.
+export function shiftInView(view, sfId, blockId) {
+  const events = view && Array.isArray(view.events) ? view.events : [];
+  for (const ev of events) {
+    if (!ev || ev.kind !== 'storefront' || ev.sfId !== sfId || !Array.isArray(ev.shifts)) continue;
+    if (ev.shifts.some((s) => s && s.blockId === blockId)) return ev;
+  }
+  return null;
+}
+
+// Why a new report may not be sent, or null. A report is for a shift the sender can see: one
+// in the parent view the pack has published (so a family can report only a real shift of this
+// year, and never one a leader has taken out), on a storefront dated today or in the last
+// SHIFT_REPORT_DAYS days in the pack's time zone (`today`, from packToday()).
+export function shiftReportProblem(body, view, today) {
+  if (typeof body.sfId !== 'string' || !SHIFT_ID_RE.test(body.sfId)) return 'sf-id';
+  if (typeof body.blockId !== 'string' || !SHIFT_ID_RE.test(body.blockId)) return 'block-id';
+  const figures = shiftReportFiguresProblem(body);
+  if (figures) return figures;
+  const ev = shiftInView(view, body.sfId, body.blockId);
+  if (!ev) return 'not-in-view';
+  const ago = daysBetween(ev.date, today);
+  if (Number.isNaN(ago)) return 'not-in-view';
+  if (ago < 0) return 'future';
+  if (ago > SHIFT_REPORT_DAYS) return 'too-old';
+  return null;
+}

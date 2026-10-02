@@ -508,6 +508,135 @@ after every save from then on. If parents report an empty screen, have a leader 
 page once. (If *no* leader has the app open, nothing regenerates — that's by design: only
 `admin`/`editor` may write it.)
 
+### Shift reports
+
+*Server only.* This needs `BACKEND = 'api'`. Firestore has no shift reports, and the rules
+block above says nothing about them. The server enforces these rules in
+`functions/_lib/rules.js` and `functions/api/pack/[id]/shift-reports/`.
+
+At the end of a storefront shift, a family enters the shift's two totals, the **Trail's End
+amount** and the **cash donations**, and ticks a box to sign that they counted them. A leader
+then accepts the report as the **second sign-off**, and only then do the figures reach the
+block and the standings. Reports are kept in their own table (`shift_reports`), never in the
+pack record, so a parent who can send one still can't write anything else.
+
+- **Who can send one:** any approved member, so `admin`, `editor`, `viewer` or `parent`.
+  `pending` members and accounts with no membership cannot. The server records the sender's
+  name, account and time from their member record. The page never sends them. A leader sends
+  one the same way a family does, through the API. The parent preview a leader opens on the
+  Pack tab only shows where reports stand; nothing can be sent from it.
+- **How many:** one account can have at most **3 reports waiting** at once, and send at most
+  **20 in a day**.
+- **Which shift:** only a shift the pack has published in the **parent view** (the storefront's
+  id and the block's id, as `buildParentView` wrote them). The storefront must be dated
+  **today or up to 14 days ago**, in the pack's time zone (Eastern). Nobody can report a shift
+  that is in the future, too old, or not published.
+- **The figures:** whole cents, from $0 to **$10,000** each, plus an optional note of at most
+  **300 characters**. The signature box must be ticked.
+- **Cash from popcorn sales not converted** (S-5, Keith 2026-10-01): an optional third figure,
+  for the whole shift. Pack policy is that families convert all cash from popcorn sales to
+  credit in the Trail's End app before they leave the table, so it should be $0. If it isn't,
+  the report says how much wasn't converted, the note says who has it, and that cash goes to
+  the leader collecting the money. It follows the same rules as the
+  other two figures (whole cents, $0 to $10,000), it defaults to $0 when left out, and it can't
+  be more than the Trail's End amount, because those sales are already part of it. For the same
+  reason it is **never added** to the block's sales or to any scout's standings. A second
+  parent's confirmation and a leader's accept must name it, like the other two figures. It is
+  never published to parents; another family sees it only in the one exception under *Who sees
+  what* below.
+- **What became of that cash** (treasurer and security review, followups round 1): only an
+  `admin` or `editor`, and only on a report that has some and was **accepted** (it may have
+  been sent back since), records on the server that they **collected** it, or that the family
+  **converted** it to credit after all. On a report sent back after it was accepted, they can
+  instead mark it **the same cash as the new report** (`replaced`), so a corrected report's
+  figure isn't counted twice. They can undo any of these. The record names the amount it is about and is refused if the report has moved
+  since. It keeps who recorded it and when, from their member record and the server's clock.
+  Each change is audited (`shift.salescash.collected`, `.converted`, `.replaced`, `.undo`), and leaders see
+  it in the season's shift-report history.
+- **One at a time:** each block can have only one report that is waiting or accepted. A
+  second report for the same block is refused until a leader sends the first one back or its
+  sender withdraws it.
+- **Changing a report:** only the sender can edit or withdraw it, and only while it is waiting.
+  An edit has to be signed again.
+- **Accepting or sending back:** only `admin` and `editor`. The leader who accepts must be a
+  **different adult** from the one who sent it, and from the parent who confirmed it. The
+  server refuses a leader accepting a report they sent or confirmed, just as the cash box
+  refuses the same person as counter and verifier. A leader can send back a waiting or an
+  accepted report, and must give a reason. The family then sends a corrected report as a new
+  one.
+- **A different family from the sender** (Keith, 2026-10-01): the accepting leader must not be
+  in the sender's family. The server works out each account's families from the stored pack
+  record: the families of the scouts an admin has linked that account to on the Members card,
+  with brothers and sisters as one family. If the leader and the sender share one, the plain
+  accept and "I collected and counted this cash" are refused. The only way left is to accept
+  with a written reason, which is audited as an override, and the block says "accepted by
+  ‹leader› (same family as the sender)". If either account is linked to no scout, the accept
+  works as before. If the pack record exists but can't be read, the server treats it as the
+  same family, so only an accept with a reason gets through. The same rule applies to recording
+  what became of a report's cash from popcorn sales, which is never the sender, nor the parent
+  who confirmed it, either; anyone may undo that record. The rule reads links between people, never pack jobs.
+- **Who verified the cash** (Keith, review round 1). Every accepted report names who did:
+  - **Two or more families on the shift:** the parent from the other family who confirmed it.
+    The accepting leader is recorded as the approver.
+  - **One family:** the accepting leader, who collected and counted the cash at the end of the
+    storefront. Their button says so: "I collected and counted this cash — accept".
+  - **Anyone else:** a leader who didn't collect it, or a two-family shift with only one
+    parent's signature, accepts with a written reason. That is an override, audited as
+    `shift.accept.override`, and nobody is named as verifier, so the block's cash-count
+    warning stays until someone checks it.
+  - The accept is recorded once (who, when, the reason, and whether they collected it), and
+    a later send-back doesn't change that record.
+- **A second parent, when a shift has two or more families** (Keith, 2026-10-01): if the
+  scouts on a shift come from two or more families (brothers and sisters count as one), a
+  second parent has to confirm the report before a leader accepts it.
+  - The parent view publishes the number of families on each shift. It is only a number, and
+    it is published in calendar-only mode too. The server reads it from the stored view when
+    the report is sent, never from the report itself. If a view has no number (published
+    before this change), the report needs a second parent anyway.
+  - Only a **parent from another family on that shift** can confirm: an account an admin has
+    linked on the Members card to a scout on the shift whose family is not the sender's. A
+    spouse, or a second account of the sender's family, can't confirm. If the sender isn't
+    linked to any scout, nobody can confirm, and a leader accepts it with a written reason (or
+    links the sender on the Members card first). The server checks this against the
+    stored pack record. It is never the sender, never `pending`, and never an account that
+    isn't linked. If the record, the storefront or the block can't be found, nobody can confirm.
+  - A confirm names the figures it was shown. If the sender has changed them since, it is
+    refused. It works only while the shift is still published and within the same 14 days.
+  - If the sender edits the report, the confirmation is cleared.
+  - An admin or editor can accept a report that has no second signature, but only with a
+    written reason (see *Who verified the cash* above).
+  - On the block, the sender is "Cash counted by" and the confirming parent is "Verified by".
+    The accepting leader is shown as the approver.
+- **Who sees what:** leaders (`admin`, `editor`, `viewer`) see every report in full, going back
+  400 days, plus any still waiting. A parent sees their own reports, the first name of the
+  leader who reviewed them and of the parent who confirmed them, and a leader's note only when
+  it is the reason the report was sent back. For anyone
+  else's report, a parent sees only that the block has a report and whether it is waiting,
+  accepted, sent back or withdrawn. They never see another family's amounts, name or note,
+  with **one exception**: a report still waiting for a second parent, on a shift from the last
+  14 days, shows its amounts (all three), its note and the sender's first name to the parents who are
+  allowed to confirm it, and to no one else. They can't confirm figures they can't see. No
+  account ids or links are ever sent.
+- **Your family's shifts** (Keith, 2026-10-01): the list also tells each account which
+  published shifts from the last 14 days have one of **their own** scouts on them (a scout an
+  admin has linked to that account on the Members card; a parent linked family-wide gets each
+  child's shifts), and whether the account is linked to any scout at all. The server works
+  this out from the stored pack record and sends **only the storefront and block ids** the
+  parent view already publishes, and a yes/no, never a scout, a name or a link. If the record
+  can't be read, the list is empty and the account counts as unlinked.
+  - The family's *Storefront shift totals* card lists **only** those shifts, marked "Your
+    family's shift". It also always lists a shift whose totals the account may confirm, and
+    one it has sent totals for. "Worked a different shift? Show all shifts" shows the rest.
+  - An account linked to no scout sees every shift, with a line asking a leader to link it.
+- **The parent preview is the leader's own parent self** (Keith, 2026-10-01): the preview asks
+  for `GET …/shift-reports?as=parent`, which any approved role may ask. It answers exactly what
+  a parent with that account would get, and never a leader-only field. From the preview, a
+  leader who is also a parent can send, change, withdraw and confirm their own family's
+  totals, as that parent. Everything else in the preview stays read-only. The rules above are
+  unchanged, so the same leader still can't accept their own report, or record its cash.
+- Every report, edit, withdrawal, acceptance, send-back and record of the cash from sales is written to the `audit` table
+  in the same step as the change itself.
+
 ### The sign-up link — the recommended way
 
 One link for **everyone**, leaders and families alike. Use it when you don't know (or don't
@@ -683,6 +812,16 @@ stops: it saves nothing, sends nothing, publishes nothing to parents, refuses ev
 shows "This page is out of date … Reload the page before you change anything else." Normally a reload loads the
 newer page and that is the end of it.
 
+A format can be skipped. If the release that raised it to 4 (storefront cash deposits) and the one
+that raised it to 5 (the sync decisions log) ship together, nothing breaks: a pack at 3 goes
+straight to 5, and every page at 3 or 4 holds and asks for a reload as above.
+
+When this change (format 5) first reaches a device that has been away, that device has no record
+of the last copy it synced. If nothing on it is unsent money (a sale, payment, hand-out or a
+changed amount the server doesn't have) and it is behind the pack, it takes the pack's copy
+without asking. Any other offline edits on it, such as RSVPs or a scout's details, are replaced by
+the pack's copy that one time. If it does hold unsent money, it asks which copy to keep.
+
 If a reload does **not** clear it, the record's `fmt` is higher than any page you serve. That
 happens in two ways:
 
@@ -738,11 +877,11 @@ The number to compare with is `PACK_FORMAT` in the `index.html` you serve.
 Change only `fmt`. Leave `rev` and everything else as it is.
 
 - **Firestore:** in the console, edit the `json` field. Copy its value into a text editor, change
-  the top-level `"fmt":N` to the served page's `PACK_FORMAT` (e.g. `"fmt":3`), check the rest of
+  the top-level `"fmt":N` to the served page's `PACK_FORMAT` (e.g. `"fmt":5`), check the rest of
   the text is untouched, paste it back, and **Update**.
 - **D1:**
-  `npx wrangler d1 execute pack569-prod --remote --env production --command "UPDATE pack_state SET json = json_set(json, '$.fmt', 3) WHERE pack_id = '<Pack ID>'"`
-  (with `3` being the served page's `PACK_FORMAT`, and `<Pack ID>` as in step 2). Without the
+  `npx wrangler d1 execute pack569-prod --remote --env production --command "UPDATE pack_state SET json = json_set(json, '$.fmt', 5) WHERE pack_id = '<Pack ID>'"`
+  (with `5` being the served page's `PACK_FORMAT`, and `<Pack ID>` as in step 2). Without the
   `WHERE` it would rewrite every pack in the database. Run the `SELECT` from step 2 again to check.
   If the change goes wrong, D1's Time Travel can put the database back to before it
   ([docs/cloudflare-setup.md](docs/cloudflare-setup.md), *Backups*).
@@ -763,15 +902,17 @@ newer page still open in another tab saves its `fmt` back over the fix. Then, in
 developer console on the page (a desktop browser, or a Mac for an iPhone or iPad), run:
 
 ```js
-var k = 'pack-popcorn-ledger-v1', r = JSON.parse(localStorage.getItem(k)); r.fmt = 3; localStorage.setItem(k, JSON.stringify(r)); location.reload();
+var k = 'pack-popcorn-ledger-v1', r = JSON.parse(localStorage.getItem(k)); r.fmt = 5; localStorage.setItem(k, JSON.stringify(r)); location.reload();
 ```
 
-(with `3` being the served page's `PACK_FORMAT`). The key is fixed and must never change: it is
+(with `5` being the served page's `PACK_FORMAT`). The key is fixed and must never change: it is
 where every device's copy lives.
 
 ### 5. Reload every device
 
-Each device then compares its copy with the pack's. Where they differ, the leader is asked
-which copy to keep, and the chooser lists what is only on that device. If anything is missing
+Each device then compares its copy with the pack's. A device with nothing unsent takes the pack's
+copy. One with changes it never sent merges them in, and the leader is asked only about anything
+the server changed too. A device that can't tell (one from before version 5 of the record, or with
+its storage full) asks which copy to keep, and the chooser lists what is only on that device. If anything is missing
 afterwards, it is in the files from step 1: **Pack → Import backup** one of them on a device, check
 it, and let it sync.

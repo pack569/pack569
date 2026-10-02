@@ -51,7 +51,11 @@ builds (`index.html` + `_headers`), deployed by hand from the `website` workflow
    archived scouts, Undo.
 4. Add tests to `test/harness.mjs` (source scans or sliced-eval of pure functions). Where it
    matters, confirm a test fails when the code it guards is broken.
-5. Run `node test/harness.mjs` — it must end with 0 failures. Report the passing count.
+5. The full harness takes about 95 seconds, so don't run it after every edit. While you
+   work, and for mutation checks, run only the tests you touched:
+   `HARNESS_ONLY='<regex of test names>' node test/harness.mjs`. Run the full
+   `node test/harness.mjs` once, when the change is done and before you commit; it must end
+   with 0 failures. Report the passing count.
 6. For UI changes, check in a browser: copy `index.html` to a scratch dir with
    `PACK_DOC_ID = null`, serve it with `python3 -m http.server 8569`, and look at it — including
    at phone width and in the parent preview if parents see it. Never point a test at the real

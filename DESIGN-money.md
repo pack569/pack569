@@ -877,7 +877,7 @@ What actually moved. This is the record that makes the app reconcilable.
   method: 'check'|'cash'|'card'|'transfer'|'',
   ref,                           // check number / receipt
   scoutId,                       // set when it settles a charge
-  source,                        // 'family'|'donation'|'fundraiser'|'commission'|'carryover'|''
+  source,                        // 'family'|'donation'|'fundraiser'|'commission'|'carryover'|'storefront'|'council'|''
   donor }                        // who gave it, when source === 'donation'
 ```
 
@@ -1271,6 +1271,51 @@ buys is out of it.
 `tierRateMissing()` counts this rate too — a pack running a donations-only drive can measure tiers
 on it alone.
 
+#### Wagon cash always runs through Trail's End (owner, 2026-10-01)
+
+Pack policy: a family enters wagon (door-to-door) cash donations in the Trail's End app as Heroes &
+Helpers, so **the pack never keeps wagon cash**. The setting `cashThroughTrailsEnd` now governs
+**storefront** cash only, and reads "Run storefront cash donations through Trail's End".
+
+- `computePackTotals` splits cash donations into `storeCashDon` (storefront blocks) and
+  `wagonCashDon` (every non-online entry). Wagon cash is in `teEligible`, earns commission at
+  the storefront/wagon rate, and is never in `cashKept` / `retainedCash`. Storefront cash goes
+  one way or the other by the setting, as before. `teEligible + cashKept` is still every dollar,
+  once (`pack.combined`), so the parents' single goal figure is unchanged.
+- Per scout, `keptCashOf(r)` is the storefront split while the pack keeps it, and 0 otherwise.
+  `goalBaseOf` is sales + online donations + every cash donation − kept cash, so a scout's wagon
+  cash counts toward the Trail's End goal and earns commission toward tiers
+  (`scoutCommissionOf`). The cash credit (`cashScoutPct`) applies to kept storefront cash only
+  (`cashScoutCredit(keptCashOf(r))`, `cashCreditTotals`).
+- The cash donation board is storefront cash only. The combined board's Cash column is kept cash.
+  Funds in's term reads "storefront cash donations kept in full", and the Budget card says wagon
+  cash reaches the pack through commission.
+- The wagon form tells families: "So does a wagon cash donation: the family enters it in the
+  Trail's End app as Heroes & Helpers, as well as here. The pack never keeps wagon cash."
+- **The cutover** (treasurer re-check of 89c08b5, 5; Keith was not sure the season's earlier wagon
+  donations went through the app). `state.wagonViaTEFrom`, default 2026-10-01: a wagon entry dated
+  before it stays kept, as the app counted it then (`wagonEntryKept`: in `cashKept`/`retainedCash`,
+  `wagonKeptDon`, a scout's `wagonKeptD` and so `keptCashOf` and the cash credit), and so does an
+  undated one (final treasurer check, B1: it predates the cutover; new wagon entries carry no
+  donations); on or after it, it goes through Trail's End. A blank date sends every wagon entry through Trail's
+  End. Leaders edit it on the season setup card ("Wagon cash donations go through Trail's End
+  from ‹date›", with "If this season's earlier wagon donations were entered in the Trail's End app,
+  move this to the season's start."), and a change is logged on the book (`f.wagonViaTEFrom`).
+  Under the setting, while the date is after the season start, the card says whose reward tier
+  would change if it were moved there (`wagonCutoverTierChanges`, read as the leaders' screens read
+  tiers). With wagon cash kept, the Reconcile line uses the treasurer's first wording: "Popcorn cash
+  donations kept $X (storefronts $A, wagon $B) · banked $Y · still to bank $Z", and X is still
+  `retainedCash`. The deposit source keeps its storefront name; a deposit of kept wagon cash uses it, and the money-in
+  help says so while any is kept: "Wagon cash donations dated before ‹cutover› were kept by the pack:
+  bank them as Storefront cash donations (kept) too." The hint asks about such a deposit as kept cash
+  ("Is this wagon cash donations the pack kept (before ‹cutover›)? Record them as ‘Storefront cash
+  donations (kept)’: they are already in Funds in."), not as the council's (B2).
+- **No double count on new wagon entries** (4). A new wagon entry has no Donations field: its amount
+  is "Trail's End amount (Heroes & Helpers included)". Existing entries keep what they hold, and it
+  counts. The Trail's End import warns for each matched scout with wagon donations typed by hand,
+  whatever their date (F3): "‹name› has wagon donations typed here; the Trail's End wagon total may
+  already include them as Heroes & Helpers." (`teWagonDonationOverlap`).
+
 #### Which tier the pack plans on — `planOnTierId`
 
 *Owner ask, 2026-07-27.* A waiver is a fact about sales that have happened, so in July it covers
@@ -1449,6 +1494,8 @@ workspaces — which is exactly the split the jobs model already encodes.
 | Forgiving a charge | Treasurer / Committee Chair | **Money · Dues & fees** | `charge.forgiven` |
 | Recording a family payment | Treasurer | **Money · Ledger** | ledger `in`, `source: 'family'` |
 | Recording a donation that covers a scout | Treasurer | **Money · Ledger** | ledger `in`, `source: 'donation'`, `donor` |
+| Banking storefront cash donations the pack keeps | Treasurer | **Money · Ledger** | ledger `in`, `source: 'storefront'`, no budget line (see *Storefront cash deposits* below) |
+| Banking sales cash, and writing the check to the council | Treasurer | **Money · Ledger** | ledger `in` and `out`, `source: 'council'`, no budget line; then *Popcorn settled with the council* (see below) |
 
 Nobody has to be in two places. The person who ran the event says who came; the person with the
 chequebook says what it cost. The charges fall out of the two meeting.
@@ -1484,6 +1531,294 @@ That is also the graceful degradation path if the Cubmaster never adopts the hea
 the Treasurer alone can keep a completely correct set of books, and only per-family billing needs
 the extra detail.
 
+#### A storefront shift's totals: the family counts, a leader verifies (2026-10-01)
+
+A storefront block records two figures, the **Trail's End amount** (`salesCents`) and the **cash
+donations** (`donationsCents`), plus the two adults who counted the cash box (`cashCountedBy`,
+`cashVerifiedBy`). The people who know those figures are the parents at the table, so on the
+API backend they send them in.
+
+| At the end of a shift | Who | Where | Record written |
+|---|---|---|---|
+| Both figures, signed "I counted it, these match the app" | any approved member, usually a parent at the table | **the parent app's Schedule**, "Enter shift totals" | a **shift report** on the server (`shift_reports`), *not* the pack record |
+| Confirming it, where two or more families worked the shift | a parent **from another family** on the shift, never the sender | **the parent app**, "Check and confirm" | the report only |
+| Accepting it | an admin or editor: never the sender, never the parent who confirmed it | **Popcorn · Storefronts**, the block's review card | the block: both figures, `cashCountedBy` = the sender, `cashVerifiedBy` = the confirming parent (two or more families) or the accepting leader who collected and counted the cash (one family), or blank on an override with a reason; `reportApprovedBy` = the accepting leader; `reportId`, `reportFrom` |
+| Sending it back, with a reason the family sees | an admin or editor | the same card | the report only |
+| …or typing the figures in by hand, as before | an admin or editor | the block's money fields | the block |
+
+- **Nothing counts until a leader accepts.** The block carries the figures from the moment a
+  leader taps Accept, and if the server refuses, they come off again. A waiting report is not
+  money: it is not on the block, so it is not in any scout's total or standings. Once accepted, the block's scouts get
+  their credit through the ordinary split (`blockShares`), and every rule that treats a block
+  "with money" as money, such as the Trail's End import refusing to re-split it, treats it the same.
+- **Two different adults.** The leader who accepts must be neither the one who sent the report
+  nor the parent who confirmed it. The server refuses both, and the page doesn't offer them.
+  This is the cash box's own rule (`blockCashCheck`, "same person").
+- **A different family from the sender** (Keith, 2026-10-01). The accepting leader isn't in the
+  sender's family, by the scouts each account is linked to (`familyKeyOf`, siblings as one). If
+  they share one, only an override with a reason is left (`reportOverride: 'same-family'`). The
+  server holds the rule in the accept's own write (rules.js `sameFamily`, against the pack
+  record's rev). An account linked to no scout shares no family.
+- **Who verified the cash** (Keith, review round 1). On a shift with two or more families, the
+  confirming parent. On a one-family shift, the accepting leader, because they collected and
+  counted the cash at the end of the storefront ("I collected and counted this cash — accept").
+  A leader who didn't collect it accepts "without collecting it", with a written reason; that
+  is an override, and `cashVerifiedBy` stays blank, so the cash-count warning stays up until
+  someone verifies it.
+- **The deposit** is a *Storefront cash deposit* in the ledger (below). Before it existed, a
+  deposit of kept cash donations posted with no budget line was unexplained income, and posted
+  as "Funds in" against the popcorn line it counted the same money twice, because the
+  storefront totals already count it.
+- **The accept is two writes, in order.** The block is written and saved first, carrying a
+  `reportPending` marker with what it held before. Then the report is signed off on the server
+  with exactly the figures shown. If the second write is refused (the family edited or withdrew
+  it, another leader sent it back), the block goes back to what it held. If the server isn't
+  reached, the marker stays and the next load finishes it. Only the leader who accepted
+  finishes or undoes it.
+- **Already holding figures.** Accepting onto a block that already has different figures shows
+  old against new first, and replaces both the figures and the names on the cash count.
+- **Cash from popcorn sales not converted** (S-5, Keith 2026-10-01). Families convert all cash
+  from popcorn sales to credit in the Trail's End app before they leave the table. When they
+  can't, the report says how much wasn't converted (`sales_cash_cents`, 0 on almost every report).
+  It is a **custody** figure, not money: those sales were entered in the app, so they are already
+  inside `salesCents`, and the figure is never added to it, to `blockShares`, or to any total. It
+  is the council's money: a leader collects it, deposits it, and records the deposit in the
+  ledger as Popcorn money for the council. Nothing here writes a ledger row; a "Record deposit"
+  button can come with the storefront cash deposits work.
+  - **The record is the server's** (treasurer and security, followups round 1). An admin or
+    editor marks a report's cash **Collected** or **They converted it** (PATCH `salescash`,
+    audited, undoable), on an accepted report, or one sent back after its accept. On the sent-back
+    kind they can instead mark it **Same cash as the new report** (`replaced`), when the
+    corrected report holds the same cash, so it isn't counted twice. The season's history shows
+    who recorded it and when, and a settlement can later sum what was `collected` from
+    `shift_reports`, ignoring `converted` and `replaced`.
+  - **The block mirrors it**, one entry per accepted report: `b.salesCash = [{ reportId, cents,
+    from, outcome }]`, with `outcome` null while the cash is out, or `{ outcome, by, at }`. The
+    amount stays when it is collected. Accepting a later report onto the block adds its own entry
+    and never overwrites one an earlier report left to collect: the review card and the
+    replace check say so. A leader's page follows the server's record if another leader recorded
+    it elsewhere.
+  - **Where leaders see it:** "Cash from popcorn sales to collect" on the review card and the
+    block, a section in the storefront banner, and a column in the history and CSV. A
+    one-family accept with some has "I collected and counted the cash donations — accept" and a
+    box, "I also collected the $X cash from popcorn sales", which records it once the accept
+    lands.
+  - **Trail's End's window** (Keith, 2026-10-01; followups round 3). Storefront closeout and
+    Cash to Credit stay open up to 72 hours from midnight on the storefront date. The page reads
+    that conservatively, counting from the midnight that **begins** the storefront date in
+    Eastern time, until Keith confirms the reading with Trail's End or the council. All of it is
+    one constant, `TE_CASH_WINDOW`. Families are told "(Trail's End's own deadline is midnight
+    that day for families; leaders can finish it within 72 hours.)", and the pack's rule is
+    still to convert at the table. Leaders' cash still out shows amber from 48 hours ("…window
+    ends soon (72 hours). After that, this cash can only be collected and deposited.") and red
+    from 72 ("…72-hour window has closed. This cash can't be converted now: collect it and
+    deposit it as Popcorn money for the council."). "They converted it" stays available after
+    the window closes, and its toast asks for a check in the Trail's End app.
+  - **Never lost without a word:** deleting the block or the storefront warns while any is
+    still out, and so does the close-out. The reminder outlives the block either way: an
+    accepted report with cash from sales still out whose block or storefront is gone (deleted,
+    or cleared at close-out) is listed in the storefront banner from the server's reports
+    (`srCashOrphans`), with its own Collected / They converted it, recorded on the server only.
+    That lasts as long as leaders' reports reach back (400 days). It is leaders' only:
+    `buildParentView` never publishes it.
+- **Sending back an accepted report.** The figures **stay** on the block and keep counting. The
+  money was counted, and taking it off every scout's total because the paperwork is in question
+  would move standings for a clerical reason. The block loses its link to the report and its
+  verifier, and says the figures need a fresh check by a second adult. The family can send a
+  corrected report, and accepting that one asks old against new.
+- **Editing by hand after an accept** still works and is recorded the normal way. The block then
+  stops saying "From …'s report".
+- **Two or more families on a shift: a second parent confirms** (S-4, Keith 2026-10-01). Where
+  the scouts on a block come from two or more families (`familyKeyOf`, so brothers and sisters
+  are one family), the report also needs a parent of a scout on that block to confirm it. That
+  is an account linked to the scout (`parentUids`), and never the sender. It comes before a
+  leader accepts. On the block, `cashCountedBy` is the sender, `cashVerifiedBy` is the second
+  parent, and `reportApprovedBy` is the leader who accepted. A leader can accept without a
+  second parent only by writing why (`reportOverride`, audited as `shift.accept.override`), and
+  then the leader is the verifier. An edit by the sender clears the confirmation, because
+  changed figures are not the ones that were checked.
+
+#### Storefront cash deposits (treasurer review of shift reports, item 11, 2026-10-01)
+
+Storefront cash donations the pack keeps (`cashThroughTrailsEnd` off) reach **Funds in** from
+the block figures, as *storefront cash donations kept in full*
+(`computePackTotals().retainedCash`), from the moment a leader types them or accepts a family's
+shift report. The money then goes to the bank, and the deposit is a ledger entry. Posted as
+income on a budget line, `ledgerIncomeCents` counted it again as other income, so Funds in was
+overstated by the whole deposit. Shift reports make block figures routine, so this would have
+been a common mistake. Wagon cash is never kept (owner, 2026-10-01: it runs through Trail's End),
+so the storefront blocks are the whole of the kept cash.
+
+**The posting rule.** Bank kept storefront cash donations as money in with the source
+**Storefront cash donations (kept)** (`source: 'storefront'`), **with no budget line**. The
+ledger's help under *Record a transaction* says so, on money in: "Storefront cash donations the
+pack keeps are already in Funds in from the storefront figures: bank them as Storefront cash
+donations (kept), with no budget line, so they aren't counted twice."
+
+- **Never Funds in.** `ledgerIncomeCents` skips it on a line or with none, so a deposit filed
+  on the popcorn line by habit is still not counted twice. It is not a refund off a line's
+  cost (`LEDGER_INCOME_SOURCES`), not what an income line brought in (`lineIncomeCents`), not
+  a commission lookalike, and does not want a budget line (`entryWantsLine`: it never adds to
+  "N entries have no budget line").
+- **Everything else as any row.** It moves the bank balance, is ticked against the statement,
+  locks when reconciled, is voided with a reason or reversed, is logged, merges per row, closes
+  out at June 30 (in the closed book, with its source; carried if the bank has not shown it),
+  and is in the CSVs as money in.
+- **Money in, and nobody's payment.** `normalizeLedgerRow` blanks the source on money out or on
+  a row with a family (security review, low 1). A family's payment is never stripped of its
+  family by a source (treasurer review, 20): on a saved row with a family the source is not
+  offered (`sourceSelectOptions`, `LEDGER_NO_FAMILY_SOURCES`), and `applyLedgerEdit` ignores it
+  if it arrives. Picking a family on a deposit makes it a payment, and the source goes. In the
+  add form, before anything is saved, choosing the source still takes the family off the draft.
+- **What it covers (optional).** Ticks for this season's storefronts, with what each kept
+  (`depositFor`, the storefront ids, comma-separated), and/or a date range (`depositFrom`,
+  `depositTo`). Labels: editable on a locked row, logged by name ("Kroger, Sep 12"). Typed with
+  no description, the entry is described as "Storefront cash donations banked — Kroger, Sep 12",
+  so the words outlive the storefronts, which close-out clears. Only ids of the page's shape are
+  kept, at most 50 and 1,000 characters (`depositForIds`); a date is a date or nothing; a tick
+  adds only a storefront on the list, and an id already named stays until it is unticked
+  (security review, lows 2–3).
+- **The check line** (Money · Ledger · Reconcile, `storefrontCashCheck`): "Storefront cash
+  donations kept $X · banked $Y · still to bank $Z." X is the kept cash donations from the block
+  figures this season, $0 while storefront cash runs through Trail's End, and always equal to
+  `computePackTotals().retainedCash` (a harness test holds them together). Y is the counted
+  storefront deposits. Z is X − Y, never below $0. When Y is more than X it warns: "Storefront
+  cash donation deposits are $D more than the cash donations kept. Check each one: is any of it
+  sales money owed to the council, or money from something else? Only storefront cash donations
+  the pack keeps belong here." The Budget card says "Storefront cash donation deposits in the
+  ledger ($Y) are not added again: the cash donations they bank are already counted from the
+  storefront figures", with a Check when Y is more than X.
+- **Last season's.** A deposit that is last season's, or names a deleted storefront, is left out
+  of Y and said apart: every storefront it names is off the list, or it is dated on or before the
+  newest closed year's last day (`closedBooksLastCutoff`; treasurer review, 17). Deleting a
+  storefront a deposit names says so at the confirm: "A deposit of $Y in the ledger names this
+  storefront. Deleting it takes its $K of kept cash out of Funds in." (19)
+- **Sales cash** owed to the council is its own line, read from the shift-report follow-ups' list
+  on each block (`b.salesCash`, above; `blockSalesCashParts`): the entries still out (outcome null)
+  and those collected but perhaps not yet banked ('collected'); 'converted' and 'replaced' are not
+  owed. "Sales cash to pay the council $S (still to collect $X · collected, to bank $Y): owed to the
+  council, not pack income." It is never part of X, and never Funds in. Collected sales cash is
+  banked as *Popcorn money for the council* (below), as the 72-hour window's red warning says.
+- **Follow-up, not built:** the server records each outcome (`sales_cash_outcome`, migration 0004).
+  Settling with the council should eventually reconcile against the sum of collected amounts: what
+  was collected should match what was banked as Popcorn money for the council, and a gap is sales
+  cash collected and not yet banked.
+- **The hint.** Money in posted as plain income (source blank, donation, fundraiser or other; no
+  family) that looks like storefront cash donations gets: "Are these storefront cash donations
+  the pack keeps? Record them as ‘Storefront cash donations (kept)’: they are already in Funds in
+  from the storefront figures." It looks like them when the description says storefront or cash
+  box, or names a storefront held in the 45 days before it (punctuation and spacing ignored:
+  "Lowe's" is "Lowes"), or the amount is that storefront's kept cash donations, or everything
+  kept and not yet banked. It shows under the add form and, while the entry is not reconciled, in
+  its Detail, with a **Not storefront cash** answer (`notStorefront`, as `notCommission`: logged,
+  and cleared when the amount, direction or source changes). It asks, and changes nothing.
+- **The deposit deadline** (owner, 2026-10-01). A pack setting on the Reconcile card, "Deposit kept
+  storefront cash within ‹7› days" (`state.depositDays`, whole days 1–60; absent is the default 7,
+  so no record grows). Beside it: "This is the pack's own rule. Scouting America asks for deposits
+  ‘in a timely manner’ without a number of days." A change is logged on the book (`edit`,
+  `f.depositDays`). `storefrontDepositsLate` works out what each deposit covers: the storefronts
+  it names first (oldest first, up to what each kept), then what is left of it, with every deposit
+  that names none, oldest storefront first; last season's deposits cover nothing. Each storefront
+  whose kept cash is still not covered and is more than N days old gets, on the Reconcile line and
+  (the oldest) as a Treasurer item on Home: "Storefront cash donations from ‹store, date› ($X)
+  haven't been deposited after N days. Pack policy: deposit within N days." Leaders only; never
+  in `buildParentView`. The setting shows whenever there is a storefront (treasurer re-check of
+  89c08b5, 9). A storefront with no date can't be aged: if it has kept cash the line says "‹name› has
+  kept cash donations and no date, so the ‹N›-day deposit rule can't check it. Give it a date."
+- **Format.** An older page (format 3) reads the new source as blank, so it counts a deposit
+  filed on a line in Funds in, and its next save writes the blank back. `PACK_FORMAT` is 4, one
+  raise for everything in this branch.
+- **Known gap (pre-existing, not this branch):** `rolloverYear` clears `state.storefronts` and
+  `state.entries` whatever their dates, and a close-out can run in September. A late close-out
+  takes the new season's storefronts with it: their kept cash leaves Funds in, and their
+  deposits read as last season's. Close-out should refuse, or ask, while any storefront or
+  popcorn entry is dated after the cutoff (treasurer review, 18).
+
+#### Popcorn money for the council, and settling with it (owner, 2026-10-01)
+
+Sales cash belongs to the council, and so does any cash donation that runs through Trail's End
+(every wagon donation, and storefront donations while that setting is on). NEGA's popcorn
+calendar has the unit pay the council by check (a post-dated unit check, then the unit payment),
+so a pack that banks the cash and writes the check records both halves.
+
+**The posting rule.** The sales cash banked is money in, and the check to the council is money
+out, both with the source **Popcorn money for the council** (`source: 'council'`) and **no budget
+line**. It is a pass-through: `ledgerIncomeCents`, `lineActualCents` and `lineIncomeCents` skip it
+in both directions, it is never a refund (`LEDGER_INCOME_SOURCES`), never a commission lookalike,
+and asks for no budget line (`entryWantsLine`). It is in the bank balance and reconciles like any
+row. It names no family (`normalizeLedgerRow`; `LEDGER_NO_FAMILY_SOURCES`). On money out it is
+the one source a leader picks (a refund is picked by its family). A cash box with sales and
+donations is one line on the bank statement and two rows here, with the same date and the same
+deposit-slip number in Ref: *Storefront cash donations (kept)* and *Popcorn money for the
+council*. Ticking both matches the bank, because reconcile adds the ticked rows. The ledger's help
+says this on money in, and on money out says the check to the council is not a pack cost.
+
+**The Reconcile line** (`councilMoneyCheck`): "Popcorn money for the council: banked $A · paid to
+the council $B · still held $A−B." More paid than banked is a warning.
+
+**Settling.** Keith's understanding: the council nets the commission off what the pack owes it,
+and sends a commission check only when it owes the pack. So no commission check may ever arrive,
+and Funds in would keep the sales estimate for ever. "Popcorn settled with the council" on the
+Reconcile card opens a short form: the date, and how (the pack paid the council; the council paid
+the pack a commission check; nothing changed hands). It shows what the commission becomes beside
+what the Council page works out. **Mark settled** writes `book.councilSettled = { on, how, by,
+byUid, at }` and a `settle` event on the book (`f.councilSettled`, in words). "Not settled after
+all" takes it back with two taps (`unsettle`). Editors and admins, never a closed year.
+
+Once settled, Funds in's commission is **actual** and `hasCommission` is true:
+
+    commission = A − B + C
+      A  money banked for the council   (source 'council', in)
+      B  money paid to the council      (source 'council', out)
+      C  commission checks posted       (source 'commission', in)
+
+Why: `councilSettlement` has owed = product − card − commission. The cash the pack banked is
+product − card, when all of it is banked. When the pack pays, B = owed, so A − B = commission.
+When the council pays, B = 0 and C = −owed = commission − A, so A + C = commission. One formula
+covers both, and after settling what is still held for the council *is* the commission. The
+`how` is what happened, and decides the form's warning (no check to the council in the ledger
+yet; no commission check yet; no sales cash banked); the sum is the same. The Reconcile line then
+reads "Settled with the council on ‹date›: ‹how›. The commission is actual now: $A banked − $B
+paid (+ $C in commission checks) = $X, and that is what Funds in counts", and the Funds in
+sentence adds "net of any Show & Sell product the pack paid for and didn't sell".
+
+**Cross-checks** (treasurer re-check of 89c08b5, 1–3):
+- The settled commission is compared with what *sales* work out to (`computePackTotals().commission`),
+  not the Council page's product figure. Higher: "Sales work out to $E in commission, $D more than
+  settled. Usually that is Show & Sell product the pack paid for and didn't sell, or sales cash not
+  yet banked as Popcorn money for the council. Check the council's statement." Lower: "…$D less than
+  settled. Check for storefront cash donations the pack keeps banked as Popcorn money for the council
+  (they belong under Storefront cash donations (kept)), or a commission check from another season."
+  The settle form shows "(sales work out to $E)".
+- While the pack keeps storefront cash, kept cash not yet banked as *Storefront cash donations
+  (kept)* beside any council money banked is a warning on the line and in the settle form: "If they
+  went into a Popcorn money for the council deposit, settling counts them twice in Funds in: once as
+  kept cash and again in the commission. Record that deposit as two rows, one for each source."
+- A commission check posted while money is still held for the council and nothing is settled is a
+  Check on the Budget card: Funds in counts the check alone, "not the $H still held for the council.
+  Once the council's statement is final, mark it settled on Money · Ledger · Reconcile."
+
+**For the treasurer to confirm:**
+- *The payout case.* The spec said that with a commission check "it's the posted commission rows".
+  If the pack also banked sales cash, the check alone is short by that cash (the council paid only
+  what it owed after the cash the pack held). A − B + C is the commission either way, and equals
+  the check alone when nothing was banked.
+- *Unsold product.* NEGA's Show & Sell has no returns, so the pack pays for product it did not
+  sell. Then A is less than product − card, and A − B + C is the commission less that product's
+  cost: what popcorn really netted the pack, shown as commission. The Council page's figure is the
+  commission before it, and the Reconcile line shows the difference.
+- *Heroes & Helpers cash.* Wagon cash (and storefront cash while it runs through Trail's End) is
+  banked as council money, so it is in A. That is right only if the council's invoice includes it
+  (so it is in B as well). If it does not, the total is still what the pack kept; that part is just labelled commission rather than kept cash.
+- *Where the settlement lives.* On `state.book`: it is the year's, and close-out starts a new book
+  without it (the year's Funds in is read before). The rest of a book is this device's in a merge,
+  so the settlement is merged on its own (security re-check of 89c08b5, 1): between two books of the
+  same year, neither closed, the newest `settle` or `unsettle` event in either copy's log decides
+  (`councilSettledMerged`), so a stale device saving after another settled, or took it back, does
+  not undo it. `at` must be an ISO time and `byUid` at most 128 characters. Once settled, the
+  Council page stops saying the payment is overdue (`councilPaymentWarning`), though its own "Paid
+  to the council on" is still the Kernel's to set. The closed book does not record the settlement
+  (optional in the review; the closed-book schema is the security reviewer's).
 ---
 
 ## 3.6 A year in the life
@@ -1700,6 +2035,24 @@ ledger, opens the new year's book at the closing bank balance, and divides a per
 real spend back down by the roster before seeding next year's estimate; and the **append-only
 divergence merge** unions `state.ledger`, so two leaders posting receipts from two devices
 cannot lose each other's transactions.
+
+**Charges in a sync merge (Keith, 2026-10-02; replaces owner decision 23).** Decision 23 kept a
+device's charges whole when it saved over another device's copy, so a charge forgiven or waived
+elsewhere lost that when the stale device saved (it was only said on "The ledger needs a look").
+Now, when the device knows the server copy it last took in (its sync base), the charges merge
+**charge by charge**, matched by what they charge (`chargeMatchKey`: the line, the family or
+scout, who, the sequence), never by id, since each device raises its own ids for the same
+charge. A change made on one side only is taken. A charge both devices changed differently keeps
+this device's version and is named on "The ledger needs a look" (family and line) for the
+treasurer to settle; it is never put to the conflict chooser. The merge runs before `syncCharges`,
+so `syncCharges` finds the server's charges already there and raises none of them again. A
+device with no base still keeps its own charges whole (nothing tells it which side changed what),
+and a forgiveness the other copy had is still logged and said, matched by `chargeMatchKey` too.
+Two charges in one copy with the same match key (which `syncCharges` should never leave) are
+paired with the other copies' by their order: the first with the first, the second with the
+second. A charge raised on both devices since the base, for the same amount, is the same charge
+whichever day each raised it. When the server deleted a charge's scout and this device changed
+the charge, the note says the scout was deleted on another device.
 
 **Phase 2 — split events out. ✅ BUILT.** `state.events[]` now holds every meeting and the
 calendar half of every activity; `meetings[]` is emptied (not deleted — an older build reading the
