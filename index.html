@@ -1462,8 +1462,8 @@
   /* Pack positions (client step 6) — the position picker: two columns of tick boxes on a phone,
      more as the card widens; each label wraps inside its own cell. */
   .pos-grid { flex-basis: 100%; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 12px; margin: 6px 0 0; }
-  .pos-grid label { display: flex; align-items: flex-start; gap: 6px; font-size: 0.9rem; min-height: 32px; }
-  .pos-grid input { margin-top: 3px; }
+  .pos-grid label { display: flex; align-items: center; gap: 6px; font-size: 0.9rem; min-height: 44px; }   /* a thumb's target: 16 positions and 6 dens */
+  .pos-grid input { margin: 0; }
   .pos-edit { flex-basis: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-top: 6px; }
 
   /* ---------- Parent phase ---------- */
@@ -16351,13 +16351,13 @@
   // for the toast below; the usual owner is the position that runs it day to day.
   var SECTION_SAY = {
     home: ['Home', ''], calendar: ['the calendar', 'the Cubmaster'], 'calendar.denmeeting': ['den meetings', 'the Cubmaster'],
-    attendance: ['attendance', 'a den leader'], denplan: ['den plans', 'the Cubmaster'], derby: ['the derby', 'the Derby Chair'],
-    camping: ['camping', 'the Outdoor Chair'], roster: ['the roster', 'the Membership Chair'], advancement: ['advancement', 'the Advancement Chair'],
-    joining: ['new families', 'the Membership Chair'], storefronts: ['storefronts', 'the Popcorn Kernel'], totals: ['popcorn sales', 'the Popcorn Kernel'],
+    attendance: ['attendance', 'a den leader'], denplan: ['den plans', 'the Cubmaster'], derby: ['the derby', 'the Pinewood Derby Chair'],
+    camping: ['camping', 'the Outdoor / Camping Chair'], roster: ['the roster', 'the Membership Chair'], advancement: ['advancement', 'the Advancement Chair'],
+    joining: ['new families', 'the Membership Chair'], storefronts: ['storefronts', 'the Popcorn Kernel'], totals: ['popcorn standings', 'the Popcorn Kernel'],
     rewards: ['popcorn rewards', 'the Popcorn Kernel'], inventory: ['popcorn inventory', 'the Popcorn Kernel'],
-    council: ['the council\u2019s popcorn', 'the Popcorn Kernel'], budget: ['the budget', 'the Treasurer'], ledger: ['the ledger', 'the Treasurer'],
+    council: ['the council page', 'the Popcorn Kernel'], budget: ['the budget', 'the Treasurer'], ledger: ['the ledger', 'the Treasurer'],
     deposits: ['deposits', 'the Treasurer'], dues: ['dues and fees', 'the Treasurer'], fundraisers: ['fundraisers', 'the Treasurer'],
-    sharing: ['sharing', ''], people: ['the leaders list', 'the Committee Chair'], season: ['the season', 'the Committee Chair']
+    sharing: ['sharing', ''], people: ['the People page', 'the Committee Chair'], season: ['the season', 'the Committee Chair']
   };
   // ---- The section guard: what a leader's page keeps, sends and takes (client step 3, 2026-10-02) ----
   // On the pack's own server, below an admin. Firestore, an admin, and a pack with no accounts are as
@@ -16596,8 +16596,8 @@
     var first = r.filter(function (x) { return x !== 'admin'; })[0] || r[0] || '';
     if (undoAsk && first === 'storefronts') return 'Your undo wasn’t saved: the pack’s server couldn’t check it against the family’s report. ' + SR_UNDO_ASK;
     var say = SECTION_SAY[first];
-    return 'Part of your change wasn’t saved: ' + (say ? 'your positions don’t include ' + say[0] : 'only a pack admin can change that') +
-      '. The pack’s copy of it is back on this device.';
+    return 'Some of your change wasn’t saved, because ' + (say ? 'your positions don’t let you change ' + say[0] : 'only a pack admin can change that') +
+      '. This device now shows the pack’s version.';
   }
   // The words for an edit this account can't make (the treasurer's review of 045e7ac, 2: the old
   // toast sent everyone to a role that no longer exists). `section` is the part they tried to change.
@@ -16605,8 +16605,8 @@
     if (!accountsInForce() || !apiAccounts()) return 'Read-only access \u2014 ask a pack admin to make you an editor.';
     if (sync.myRole === 'editor' || sync.myRole === 'viewer') return 'Your account needs a pack position before you can change anything. Ask a pack admin.';
     var say = SECTION_SAY[section];
-    if (!say) return 'Your positions don\u2019t include changing this. Ask a pack admin.';
-    return 'Your positions don\u2019t include ' + say[0] + '. Ask ' + (say[1] ? say[1] + ' or ' : '') + 'a pack admin.';
+    if (!say) return 'Your positions don\u2019t let you change this. Ask a pack admin.';
+    return 'Your positions don\u2019t let you change ' + say[0] + '. Ask ' + (say[1] ? say[1] + ' or ' : '') + 'a pack admin.';
   }
   // Parent phase — this user must NEVER see the pack record. Their whole app (renderParentApp)
   // is built from sync.parentView alone, so nothing in `state` can leak into their screen
@@ -16671,6 +16671,10 @@
   // archive (its signed statements and change history, since decision 19) over everyone's. The same
   // gate: canReopenStatement (an admin; with no accounts, whoever edits). The treasurer's words.
   var CLOSEOUT_REFUSED = 'Only a pack admin can close out the year.';
+  // Keith (2026-10-02) — so is Advance dens: it moves every scout up a rank and archives the Arrow of Light
+  // scouts, once a year. The same gate (an admin; with no accounts, whoever edits); anyone else is told whose it is.
+  var ADVANCE_DENS_REFUSED = 'Only a pack admin advances the dens. At crossover, ask one to move every scout up a rank.';
+  function canAdvanceDens() { return canReopenStatement(); }
   var KEEP_LOCAL_REFUSED = 'Only a pack admin can keep this device’s copy: it would replace a year another device closed out. Ask an admin, or use the cloud copy.';
   function adminCount() {
     var n = 0;
@@ -30695,9 +30699,16 @@
     var but = (VIEW_ONLY_EXCEPT[id] || []).filter(function (x) {
       return ownKey(ACCESS_TABLE.actions, x[0]) ? canDo(x[0]) : canEditSection(x[0]);
     }).map(function (x) { return x[1]; });
-    return '<div class="warn no-print view-only" role="note" style="margin:0 0 14px"><strong>View only</strong> \u2014 your positions don\u2019t include editing ' +
-      esc(say[0]) + '.' + (but.length ? ' You can still ' + esc(but.join(' and ')) + ' here.' : '') + '</div>';
+    // The wording review of ce6b8de (2): "View only" and then "you can still change" contradicted each other.
+    // With something left to do here, say that, and whose the rest is; "View only" only when there is nothing.
+    if (but.length) {
+      return '<div class="warn no-print view-only" role="note" style="margin:0 0 14px">You can ' + esc(but.join(' and ')) + ' here. The rest of ' +
+        esc(VIEW_ONLY_REST[id] || say[0]) + ' is ' + esc(say[1] ? say[1] + '\u2019s' : 'a pack admin\u2019s') + '.</div>';
+    }
+    return '<div class="warn no-print view-only" role="note" style="margin:0 0 14px"><strong>View only</strong> \u2014 your positions don\u2019t let you change ' +
+      esc(say[0]) + '.</div>';
   }
+  var VIEW_ONLY_REST = { calendar: 'the calendar', storefronts: 'the storefront schedule', ledger: 'the ledger' };
   // Role → pill class. admin=gold (default .pill), editor/viewer=navy, pending=amber/bad.
   function rolePill(role) {
     var cls = role === 'admin' ? 'pill' : (role === 'pending' ? 'pill bad' : 'pill navy');
@@ -30809,7 +30820,7 @@
     h += '</div>';
     if (!admin) {
       h += '<p class="small muted" style="margin:10px 0 0">Your role: <strong>' + esc(sync.myRole || 'pending') +
-        '</strong>. Ask an admin to change it.</p>';
+        '</strong>. Ask a pack admin to change it.</p>';
     } else {
       h += '<p class="small muted" style="margin:10px 0 0"><strong>admin</strong> and <strong>editor</strong> can edit everything. ' +
         '<strong>viewer</strong> sees the whole pack record but can’t change it. <strong>parent</strong> only ever sees the ' +
@@ -30845,21 +30856,42 @@
     var list = ACCESS_TABLE.sections.filter(function (sx) {
       return a[sx] === 'edit' && sx !== 'home' && !(sx === 'calendar.denmeeting' && a.calendar === 'edit');
     }).map(function (sx) { return SECTION_SAY[sx] ? SECTION_SAY[sx][0] : sx; });
-    if (!list.length) return 'Edits nothing: reads the pack’s record.';
+    if (!list.length) return 'Can look, but not change anything.';
     var last = list.pop();
     return 'Edits: ' + (list.length ? list.join(', ') + ' and ' : '') + last + '.';
   }
   function needsPosition(m) { return m && (m.role === 'editor' || m.role === 'viewer'); }
+  var DENS_NEEDED_SAY = 'Tick the dens they lead.';
+  // The admin's footnote (the wording review of ce6b8de, 7). Its claim about who doesn't get the money pages is the
+  // table's: the positions that hide none of them are exactly the ones named (the harness checks), and "in their menus"
+  // because stage 1 hides pages, not data.
+  var POSITIONS_FOOTNOTE = 'A leader’s positions decide what they can change. They can look at most of the rest. ' +
+    'Only an admin, the Cubmaster and Assistant Cubmaster, the Committee Chair, the Treasurer and the Popcorn Kernel have the ledger, dues, ' +
+    'fundraisers and popcorn inventory pages in their menus. A parent only ever sees the schedule and standings, never the money, dues, ' +
+    'inventory or leaders’ contact details. An admin edits everything.';
+  // "Make parent" on a member row (the wording review of ce6b8de, 1). A pending account: one tap, "Approve as a parent".
+  // A leader or an account that needs a position: two taps, like Make admin, and the second says what goes, in a
+  // phone's button: the position by name when it is short, else that they lose them all.
+  function makeParentBtn(m) {
+    if (m.role === 'pending') {
+      return '<button type="button" class="btn small" data-act="member-approve" data-uid="' + esc(m.uid) + '" data-role="parent">Approve as a parent</button>';
+    }
+    var key = 'member-make-parent:' + m.uid, armed = ui.armed === key;
+    var held = m.role === 'leader' ? positionsSay(m.positions, m.dens) : '';
+    var again = !held ? 'Tap again to confirm' : held.length <= 20 ? 'Tap again: drops ' + held : 'Tap again: they lose all positions';
+    return '<button type="button" class="btn small' + (armed ? ' danger armed' : '') + '" data-act="' + esc(key) + '">' + esc(armed ? again : 'Make parent') + '</button>';
+  }
   // The tick boxes, for a member (`kind` 'member', `id` its uid) or the invite form (`kind` 'invite').
   function positionPickerHtml(kind, id, draft) {
     var held = arrOf(draft && draft.positions), dens = arrOf(draft && draft.dens);
     var tag = ' data-kind="' + esc(kind) + '" data-uid="' + esc(id || '') + '"';
-    var h = '<div class="pos-grid" role="group" aria-label="Positions">' + ACCESS_TABLE.positions.map(function (p) {
+    var h = '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">Positions are the pack jobs this person does. Each one decides what they can change.</p>' +
+      '<div class="pos-grid" role="group" aria-label="Positions">' + ACCESS_TABLE.positions.map(function (p) {
       return '<label><input type="checkbox" data-ch="pos-tick"' + tag + ' value="' + esc(p.id) + '"' + (held.indexOf(p.id) !== -1 ? ' checked' : '') + '>' +
         '<span>' + esc(p.label) + '</span></label>';
     }).join('') + '</div>';
     if (held.some(function (x) { return DEN_POSITIONS.indexOf(x) !== -1; })) {
-      h += '<p class="small" style="margin:8px 0 0">Which dens do they lead? They change those dens’ meetings only.</p>' +
+      h += '<p class="small" style="margin:8px 0 0">Which dens do they lead? They can change only those dens’ meetings.</p>' +
         '<div class="pos-grid" role="group" aria-label="Dens they lead">' + DENS.map(function (d) {
           return '<label><input type="checkbox" data-ch="pos-den"' + tag + ' value="' + esc(d) + '"' + (dens.indexOf(d) !== -1 ? ' checked' : '') + '><span>' + esc(d) + '</span></label>';
         }).join('') + '</div>';
@@ -30878,11 +30910,11 @@
       var r = rank(m), who = m.name || m.email || 'Member', isSelf = m.uid === me;
       if (r !== lastRank) {
         h += (lastRank === -1 ? '' : '</div>') + (r === 0 ? '<p class="eyebrow" style="margin:8px 0 0">Needs a position</p>' +
-          '<p class="small muted" style="margin:0 0 4px">These accounts were editors or viewers. They can read the pack but change nothing until you tick their positions.</p>'
+          '<p class="small muted" style="margin:0 0 4px">These people signed in before positions existed. They can look but not change anything until you give them positions.</p>'
           : r === 1 ? '<p class="eyebrow" style="margin:8px 0 0">Waiting for approval</p>' : '<p class="eyebrow" style="margin:8px 0 0">Members</p>') + '<div class="acct-list">';
         lastRank = r;
       }
-      var desc = m.role === 'admin' ? 'Admin · edits everything' : m.role === 'parent' ? 'Parent' : m.role === 'pending' ? 'Waiting'
+      var desc = m.role === 'admin' ? 'Admin · edits everything' : m.role === 'parent' ? 'Parent' : m.role === 'pending' ? 'Waiting for approval'
         : m.role === 'leader' ? positionsSay(m.positions, m.dens) || 'Leader' : 'Needs a position';
       h += '<div class="acct-row"><div class="acct-who"><span class="acct-name">' + esc(who) + '</span>' +
         (sync.ownerUid && m.uid === sync.ownerUid ? ' <span class="pill navy acct-owner">owner</span>' : '') +
@@ -30896,9 +30928,9 @@
         var lock = isLastAdmin(m.uid);
         h += '<button type="button" class="btn small' + (needsPosition(m) || m.role === 'pending' ? ' primary' : '') + '" data-act="pos-edit-open" data-uid="' + esc(m.uid) + '">' +
           (m.role === 'leader' ? 'Change positions' : m.role === 'pending' ? 'Approve as a leader' : 'Give positions') + '</button>' +
-          (m.role !== 'parent' && !lock ? '<button type="button" class="btn small" data-act="member-approve" data-uid="' + esc(m.uid) + '" data-role="parent">Parent</button>' : '') +
+          (m.role !== 'parent' && !lock ? makeParentBtn(m) : '') +
           (m.role !== 'admin' && m.role !== 'pending' ? '<button type="button" class="btn small ghost' + (ui.armed === 'member-make-admin:' + m.uid ? ' danger armed' : '') + '" data-act="member-make-admin:' + esc(m.uid) + '">' +
-            (ui.armed === 'member-make-admin:' + m.uid ? 'Tap again: admin edits everything' : 'Make admin') + '</button>' : '') +
+            (ui.armed === 'member-make-admin:' + m.uid ? 'Tap again to confirm' : 'Make admin') + '</button>' : '') +
           (lock ? '<span class="small muted">only admin</span>' : tinyDangerBtn('member-remove:' + m.uid, 'Remove ' + who));
       }
       h += '</div>';
@@ -30913,10 +30945,9 @@
     if (lastRank !== -1) h += '</div>';
     if (!admin) {
       h += '<p class="small muted" style="margin:10px 0 0">Your access: <strong>' + esc(sync.myRole === 'leader' ? positionsSay(sync.myPositions, sync.leadDens) || 'leader'
-        : needsPosition({ role: sync.myRole }) ? 'needs a position' : (sync.myRole || 'pending')) + '</strong>. Ask an admin to change it.</p>';
+        : needsPosition({ role: sync.myRole }) ? 'needs a position' : (sync.myRole || 'pending')) + '</strong>. Ask a pack admin to change it.</p>';
     } else {
-      h += '<p class="small muted" style="margin:10px 0 0">A leader’s positions decide what they can change; they can read the rest. ' +
-        'A parent only ever sees the schedule and standings, never the money, dues, inventory or leaders’ contact details. An admin edits everything.</p>';
+      h += '<p class="small muted" style="margin:10px 0 0">' + esc(POSITIONS_FOOTNOTE) + '</p>';
       h += renderInvitesBlock();
     }
     return h;
@@ -30930,6 +30961,7 @@
     if (isLastAdmin(memberUid)) { showToast('Keep at least one admin.'); return; }
     var leads = positions.some(function (x) { return DEN_POSITIONS.indexOf(x) !== -1; });
     var dens = leads ? DENS.filter(function (x) { return arrOf(d.dens).indexOf(x) !== -1; }) : [];
+    if (leads && !dens.length) { showToast(DENS_NEEDED_SAY); return; }   // the wording review of ce6b8de (9)
     sync.backend.updateMemberPositions(sync.docId, memberUid, positions, dens).then(function () {
       ui.posEdit = null;
       showToast('Saved. ' + (positionsEditsSay(positions) || 'Parent.'));
@@ -30999,20 +31031,20 @@
     var h = '<hr class="divider"><p class="eyebrow">Invite someone</p>' +
       '<form data-form="invite-member" class="row" style="align-items:flex-end">' +
       '<label class="fld">Email<input type="email" name="email" data-ch="invite-email" value="' + esc(d.email || '') + '" placeholder="name@example.com" autocomplete="off" style="width:210px;max-width:100%"></label>' +
-      '<label class="fld">As<select class="acct-select" name="as" data-ch="invite-as">' +
-      '<option value="leader"' + (d.as === 'leader' ? ' selected' : '') + '>A leader, with positions</option>' +
+      '<label class="fld">Invite as<select class="acct-select" name="as" data-ch="invite-as">' +
+      '<option value="leader"' + (d.as === 'leader' ? ' selected' : '') + '>A leader (tick their positions)</option>' +
       '<option value="parent"' + (d.as !== 'leader' ? ' selected' : '') + '>A parent</option></select></label>' +
       '<button type="submit" class="btn small primary">Send invite</button>' +
       (d.as === 'leader' ? '<div class="pos-edit">' + positionPickerHtml('invite', '', d) + '</div>' : '') +
       '</form>' +
-      '<p class="small muted" style="margin:6px 0 0">They sign in with Google using that address and land straight in, with what you picked. ' +
+      '<p class="small muted" style="margin:6px 0 0">They get the access you picked as soon as they sign in with Google using that address. ' +
       'Nothing is emailed from here; send them the page link yourself.</p>';
     if (sync.invites.length) {
       h += '<p class="eyebrow" style="margin-top:12px">Invited — hasn’t signed in yet</p><div class="acct-list">';
       sync.invites.forEach(function (iv) {
         h += '<div class="acct-row"><div class="acct-who"><span class="acct-name">' + esc(iv.email) + '</span>' +
           '<span class="acct-email small">' + esc(iv.role === 'leader' ? positionsSay(iv.positions, iv.dens) : iv.role === 'parent' ? 'Parent' : 'Needs a position') + '</span></div>' +
-          '<div class="acct-ctl">' + tinyDangerBtn('invite-revoke:' + iv.email, 'Revoke the invite for ' + iv.email) + '</div></div>';
+          '<div class="acct-ctl">' + tinyDangerBtn('invite-revoke:' + iv.email, 'Cancel the invite for ' + iv.email) + '</div></div>';
       });
       h += '</div>';
     }
@@ -32976,12 +33008,17 @@
     // Wave 7 — year-end close-out entry point (preview overlay; nothing commits until confirmed)
     var cy = state.budget.programYear;
 
-    // Advance dens + close-out both mutate the roster/pack record — edit-only. Advancing the dens moves every
-    // scout (the roster) and records the year (the season): a leader needs both (the close-out is an admin's).
-    if (canEditSection('season') && canEditSection('roster')) {
+    // Advance dens + close-out both mutate the roster and the whole pack record: both are an admin's (Keith,
+    // 2026-10-02: canAdvanceDens; owner decision 22: canReopenStatement). Whoever reads the season sees the
+    // two cards, and anyone else is told whose they are, rather than looking for buttons that aren't there.
+    if (canSeeSection('season')) {
     // Wave 19(3) — standalone den advancement: crossover happens in spring, months
     // before the fiscal close-out. Once run, the close-out skips den advancement.
     h += '<div class="card"><h2 class="section display">Advance dens</h2>';
+    if (!canAdvanceDens()) {
+      h += '<p class="small muted" style="margin:0">' + (state.densAdvancedYear === cy ? 'Dens already advanced for ' + cy + '–' + (cy + 1) + '. ' : '') +
+        esc(ADVANCE_DENS_REFUSED) + '</p>';
+    } else {
     var advWarn = densAdvanceWarning();
     var advWarnHtml = advWarn ? '<p class="small" style="margin:8px 0 0">' + esc(advWarn) + '</p>' : '';
     if (state.densAdvancedYear === cy) {
@@ -32999,6 +33036,7 @@
         '<button type="button" class="btn' + (advDensArmed ? ' danger armed' : '') + '" data-act="adv-dens">' +
         (advDensArmed ? 'Tap again to advance every den' : 'Advance dens to next ranks') + '</button>' + (advDensArmed ? advWarnHtml : '');
     }
+    }   // end canAdvanceDens
     h += '</div>';
 
     h += '<div class="card"><h2 class="section display">Close out the year</h2>' +
@@ -33009,7 +33047,7 @@
       // Owner decision 22 — the button only for those who can use it; anyone else is told whose it is.
       (canReopenStatement() ? '<button type="button" class="btn primary" data-act="open-closeout">Close out the ' + cy + ' program year…</button>'
         : '<p class="small muted" style="margin:0">' + esc(CLOSEOUT_REFUSED) + '</p>') + '</div>';
-    } // end canEdit — advance dens + close-out
+    } // end canSeeSection('season') — advance dens + close-out
     return h;
   }
 
@@ -40531,6 +40569,12 @@
     }
     if (act === 'pos-edit-cancel') { ui.posEdit = null; render(); return; }
     if (act === 'pos-edit-save') { saveMemberPositions(String(el.dataset.uid || '')); return; }
+    if (act.indexOf('member-make-parent:') === 0) {
+      var mpUid = act.slice('member-make-parent:'.length);
+      if (!isAdmin()) return;
+      arm(act, function () { setMemberRole(mpUid, 'parent'); });
+      return;
+    }
     if (act.indexOf('member-make-admin:') === 0) {
       var maUid = act.slice('member-make-admin:'.length);
       if (!isAdmin()) return;
@@ -41996,6 +42040,7 @@
     }
     // Wave 19(3) — standalone den advancement (two-tap armed on both paths).
     if (act === 'adv-dens' || act === 'adv-dens-again') {
+      if (!canAdvanceDens()) { showToast(ADVANCE_DENS_REFUSED); return; }   // Keith, 2026-10-02: an admin's
       // Security review of C7 (re-check) — a family that still owes is asked about first (densAdvanceWarning):
       // the words show while the button is armed, for ARM_WARNED_MS. Checked here, not only where the button
       // is drawn, so a screen drawn before a charge was raised is asked too.
@@ -43424,6 +43469,7 @@
         var ivAs = String(fd.get('as') || ivD.as);
         var ivPos = ACCESS_TABLE.positions.map(function (p) { return p.id; }).filter(function (x) { return arrOf(ivD.positions).indexOf(x) !== -1; });
         var ivDens = ivPos.some(function (x) { return DEN_POSITIONS.indexOf(x) !== -1; }) ? DENS.filter(function (x) { return arrOf(ivD.dens).indexOf(x) !== -1; }) : [];
+        if (ivAs === 'leader' && !ivDens.length && ivPos.some(function (x) { return DEN_POSITIONS.indexOf(x) !== -1; })) { showToast(DENS_NEEDED_SAY); return; }
         createInvite(String(fd.get('email') || ''), ivAs === 'leader' ? 'leader' : 'parent', ivPos, ivDens);
         return;
       }

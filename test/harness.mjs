@@ -275,7 +275,7 @@ test('positions nav: hidden sections and empty workspaces are not offered, route
     function todayISO() { return '2026-10-02'; } function esc(x) { return String(x); } var WS_BY_ID = {}, SECTION_HOME = {};`, c);
   vm.runInContext(['ACCESS_TABLE', 'ACCESS_LEVELS', 'arrOf', 'accessFor', 'actionsFor', 'accountsInForce', 'apiAccounts', 'accessMemo', 'myAccess', 'sectionAccess',
     'canEditSection', 'canSeeSection', 'canDo', 'canEdit', 'SECTION_SAY', 'sectionGuardOn', 'ownKey', 'WORKSPACES', 'curWorkspace', 'sectionAccessId',
-    'workspaceVisible', 'sectionsOf', 'curSection', 'VIEW_ONLY_EXCEPT', 'viewOnlyBanner'].map(decl).join('\n') +
+    'workspaceVisible', 'sectionsOf', 'curSection', 'VIEW_ONLY_EXCEPT', 'VIEW_ONLY_REST', 'viewOnlyBanner'].map(decl).join('\n') +
     "\nWORKSPACES.forEach(function (w) { WS_BY_ID[w.id] = w; w.sections.forEach(function (s) { if (!SECTION_HOME[s.id]) SECTION_HOME[s.id] = w.id; }); });", c);
   const run = (js) => vm.runInContext(js, c);
   const as = (positions) => run(`sync.myPositions = ${JSON.stringify(positions)};`);
@@ -296,12 +296,15 @@ test('positions nav: hidden sections and empty workspaces are not offered, route
   run("delete ACCESS_TABLE.access.hideall; accessMemo.key = null;");
   // The banner.
   as(['denleader']);
-  eq([run("viewOnlyBanner('calendar')"), run("viewOnlyBanner('storefronts')"), run("viewOnlyBanner('advancement')"), run("viewOnlyBanner('home')"), run("viewOnlyBanner('ledger')")],
-    ['<div class="warn no-print view-only" role="note" style="margin:0 0 14px"><strong>View only</strong> — your positions don’t include editing the calendar. You can still change your dens’ meetings and take attendance here.</div>',
-      '<div class="warn no-print view-only" role="note" style="margin:0 0 14px"><strong>View only</strong> — your positions don’t include editing storefronts. You can still accept shift reports here.</div>',
-      '', '', ''], 'a Den Leader: the calendar and the storefronts; advancement theirs; Home; the ledger hidden');
+  // The wording review of ce6b8de (2): with something left to do, no "View only", and whose the rest is.
+  eq([run("viewOnlyBanner('calendar')"), run("viewOnlyBanner('storefronts')"), run("viewOnlyBanner('advancement')"), run("viewOnlyBanner('home')"), run("viewOnlyBanner('ledger')"),
+    run("viewOnlyBanner('derby')")],
+    ['<div class="warn no-print view-only" role="note" style="margin:0 0 14px">You can change your dens’ meetings and take attendance here. The rest of the calendar is the Cubmaster’s.</div>',
+      '<div class="warn no-print view-only" role="note" style="margin:0 0 14px">You can accept shift reports here. The rest of the storefront schedule is the Popcorn Kernel’s.</div>',
+      '', '', '', '<div class="warn no-print view-only" role="note" style="margin:0 0 14px"><strong>View only</strong> — your positions don’t let you change the derby.</div>'],
+    'a Den Leader: the calendar and the storefronts; advancement theirs; Home; the ledger hidden; the derby view only');
   as(['kernel']);
-  eq(run("viewOnlyBanner('ledger')"), '<div class="warn no-print view-only" role="note" style="margin:0 0 14px"><strong>View only</strong> — your positions don’t include editing the ledger. You can still record storefront deposits here.</div>', 'the Kernel on the ledger');
+  eq(run("viewOnlyBanner('ledger')"), '<div class="warn no-print view-only" role="note" style="margin:0 0 14px">You can record storefront deposits here. The rest of the ledger is the Treasurer’s.</div>', 'the Kernel on the ledger');
   run("sync.myRole = 'admin'");
   eq(run("viewOnlyBanner('ledger')"), '', 'an admin');
   run("sync.myRole = 'leader'; sync.backend = {}; sync.myRole = 'viewer';");
@@ -16326,8 +16329,8 @@ atest('positions: the page\'s sectionAccess, canEditSection, canSeeSection and c
   // The words (the treasurer's review of 045e7ac, 2).
   as({ role: 'leader', api: true, positions: ['kernel'] });
   eq([run("readOnlySay('ledger')"), run("readOnlySay('sharing')"), run("readOnlySay('')")],
-    ['Your positions don’t include the ledger. Ask the Treasurer or a pack admin.', 'Your positions don’t include sharing. Ask a pack admin.',
-      'Your positions don’t include changing this. Ask a pack admin.'], 'a leader');
+    ['Your positions don’t let you change the ledger. Ask the Treasurer or a pack admin.', 'Your positions don’t let you change sharing. Ask a pack admin.',
+      'Your positions don’t let you change this. Ask a pack admin.'], 'a leader');
   as({ role: 'viewer', api: true });
   eq(run("readOnlySay('ledger')"), 'Your account needs a pack position before you can change anything. Ask a pack admin.', 'a retired viewer');
   as({ role: 'viewer' });
@@ -17653,7 +17656,7 @@ atest('positions client: a den leader\'s page keeps and sends only what their po
   await settle([d], 1200);
   await settle([d], 1200);
   eq([server().events[1].note, d.get('state.events[1].note'), d.get('sync.sectionRefused'), d.get('sync.sectionRetried')], ['', '', null, false], 'taken back; the retry landed');
-  eq(d.get('toasts[toasts.length - 1]'), 'Part of your change wasn’t saved: your positions don’t include the calendar. The pack’s copy of it is back on this device.', 'said');
+  eq(d.get('toasts[toasts.length - 1]'), 'Some of your change wasn’t saved, because your positions don’t let you change the calendar. This device now shows the pack’s version.', 'said');
   eq(d.log.filter((l) => /^PUT \/P$/.test(l)).length, 2, 'refused once, then sent once: ' + d.log.join(', '));
 });
 
@@ -17791,6 +17794,16 @@ test('positions client: canEdit() is left only where "edits anything" is meant; 
     /if \(act === 'mtg-adv-mark' \|\| act === 'mtg-adv-partial'\) \{[\s\S]{0,200}if \(!canEditSection\('advancement'\)\) \{ showToast\(readOnlySay\('advancement'\)\); return; \}/.test(SCRIPT), 'Mark done at a meeting');
 });
 
+// Keith (2026-10-02): Advance dens is an admin's, like the close-out; anyone else who reads the season is told so.
+test('positions: Advance dens is a pack admin\'s, and the card says so to everyone else', () => {
+  const ps = slice('renderPackSeason');
+  ok(/if \(canSeeSection\('season'\)\) \{/.test(ps) && /if \(!canAdvanceDens\(\)\) \{[\s\S]{0,300}esc\(ADVANCE_DENS_REFUSED\)/.test(ps) && /data-act="adv-dens"/.test(ps),
+    'the card is not shown with the explanation');
+  ok(/if \(act === 'adv-dens' \|\| act === 'adv-dens-again'\) \{\s*if \(!canAdvanceDens\(\)\) \{ showToast\(ADVANCE_DENS_REFUSED\); return; \}/.test(SCRIPT), 'the handler is not an admin\'s');
+  ok(/function canAdvanceDens\(\) \{ return canReopenStatement\(\); \}/.test(SCRIPT), 'not the close-out\'s gate');
+  ok(/^Only a pack admin advances the dens\./.test(vm.runInContext('ADVANCE_DENS_REFUSED', sandbox(['ADVANCE_DENS_REFUSED']))), 'the words');
+});
+
 // Client step 6 — the Members card on the pack's own server: positions, not editor and viewer.
 test('positions members: the card lists who needs a position first, ticks positions (and a den leader\'s dens), says what they edit, and never offers editor or viewer', () => {
   const c = vm.createContext({});
@@ -17807,7 +17820,8 @@ test('positions members: the card lists who needs a position first, ticks positi
     function activeScouts() { return []; } function render() {} function showToast(m) { toasts.push(m); } function accountsToast() {}
     function tinyDangerBtn(a, l) { return '<button data-act="' + a + '">x</button>'; } function chipPicker() { return ''; } function byScoutName(x) { return x; }`, c);
   vm.runInContext(['ACCESS_TABLE', 'ACCESS_LEVELS', 'arrOf', 'accessFor', 'accountsInForce', 'apiAccounts', 'SECTION_SAY', 'DEN_POSITIONS', 'positionLabel', 'positionsSay',
-    'positionsEditsSay', 'needsPosition', 'positionPickerHtml', 'renderMembersPositions', 'saveMemberPositions', 'memberLinksHtml', 'renderInvitesPositions'].map(decl).join('\n') +
+    'positionsEditsSay', 'needsPosition', 'DENS_NEEDED_SAY', 'POSITIONS_FOOTNOTE', 'makeParentBtn', 'positionPickerHtml', 'renderMembersPositions', 'saveMemberPositions', 'memberLinksHtml',
+    'renderInvitesPositions'].map(decl).join('\n') +
     '\nfunction renderInvitesBlock() { return renderInvitesPositions(); }', c);
   const run = (js) => vm.runInContext(js, c);
   const html = run('renderMembersPositions(true, "u-a")');
@@ -17832,7 +17846,42 @@ test('positions members: the card lists who needs a position first, ticks positi
   run("ui.posEdit = { uid: 'u-e', positions: [], dens: [] }; sync.backend.calls = []; toasts = []; saveMemberPositions('u-e')");
   eq([JSON.parse(run('JSON.stringify(sync.backend.calls)')), run('toasts[0]')], [[], 'Tick at least one position, or make them a parent.'], 'none ticked');
   eq([run("positionsEditsSay(['comms'])"), run("positionsEditsSay(['parent'])"), run("positionsEditsSay(['cubmaster'])")],
-    ['Edits nothing: reads the pack’s record.', '', 'Edits: the calendar, attendance, den plans, the derby, camping, advancement and the season.'], 'the summaries');
+    ['Can look, but not change anything.', '', 'Edits: the calendar, attendance, den plans, the derby, camping, advancement and the season.'], 'the summaries');
+  // The wording review of ce6b8de (1, 9, 8, 11, layout): Make parent takes two taps on a leader's row and says what goes; a pending
+  // row approves as a parent in one; a den position needs a den; the picker says what a position is; the invite's words.
+  ok(/data-act="member-make-parent:u-l">Make parent</.test(html) && /data-act="member-make-parent:u-e">Make parent</.test(html) &&
+    /data-act="member-approve" data-uid="u-q" data-role="parent">Approve as a parent</.test(html) && !/>Parent<\/button>/.test(html), 'the parent buttons');
+  run("ui.armed = 'member-make-parent:u-l'");
+  ok(/danger armed" data-act="member-make-parent:u-l">Tap again: they lose all positions</.test(run('renderMembersPositions(true, "u-a")')), 'a long list: they lose all positions');
+  run("sync.members[3].positions = ['treasurer']");
+  ok(/>Tap again: drops Treasurer</.test(run('renderMembersPositions(true, "u-a")')), 'a short one is named');
+  run("sync.members[3].positions = ['treasurer', 'denleader']; ui.posEdit = null; ui.armed = 'member-make-parent:u-e'");
+  ok(/>Tap again to confirm</.test(run('renderMembersPositions(true, "u-a")')), 'no positions to drop');
+  run("ui.armed = 'member-make-admin:u-l'");
+  ok(/>Tap again to confirm</.test(run('renderMembersPositions(true, "u-a")')) && !/admin edits everything<\/button>/.test(run('renderMembersPositions(true, "u-a")')), 'Make admin\'s second tap fits the button');
+  run("ui.armed = null");
+  ok(/if \(act\.indexOf\('member-make-parent:'\) === 0\) \{\s*var mpUid = act\.slice\('member-make-parent:'\.length\);\s*if \(!isAdmin\(\)\) return;\s*arm\(act, function \(\) \{ setMemberRole\(mpUid, 'parent'\); \}\);/.test(SCRIPT),
+    'the second tap does not make them a parent');
+  run("ui.posEdit = { uid: 'u-e', positions: ['denleader'], dens: [] }; sync.backend.calls = []; toasts = []; saveMemberPositions('u-e')");
+  eq([JSON.parse(run('JSON.stringify(sync.backend.calls)')), run('toasts[0]')], [[], 'Tick the dens they lead.'], 'a Den Leader with no den is not saved');
+  ok(/if \(ivAs === 'leader' && !ivDens\.length && ivPos\.some\(function \(x\) \{ return DEN_POSITIONS\.indexOf\(x\) !== -1; \}\)\) \{ showToast\(DENS_NEEDED_SAY\); return; \}/.test(SCRIPT),
+    'an invite of a Den Leader with no den');
+  ok(/Positions are the pack jobs this person does\. Each one decides what they can change\./.test(run('renderMembersPositions(true, "u-a")')), 'what a position is');
+  ok(/Which dens do they lead\? They can change only those dens’ meetings\./.test(ed), 'the den question');
+  const inv = run("renderInvitesPositions()");
+  ok(/>Invite as<select/.test(inv) && />A leader \(tick their positions\)</.test(inv) && /They get the access you picked as soon as they sign in with Google using that address\./.test(inv) &&
+    /tinyDangerBtn\('invite-revoke:' \+ iv\.email, 'Cancel the invite for ' \+ iv\.email\)/.test(slice('renderInvitesPositions')), 'the invite\'s words');
+  ok(/Ask a pack admin to change it\./.test(run('renderMembersPositions(false, "u-a")')), 'a pack admin');
+  // Item 7: the footnote's fact is the table's. The positions that hide none of the money and popcorn-stock pages are exactly the ones it names.
+  const T = JSON.parse(/\/\*ACCESS-BEGIN\*\/([\s\S]*?)\/\*ACCESS-END\*\//.exec(SCRIPT)[1]);
+  const MONEY = ['ledger', 'dues', 'fundraisers', 'inventory', 'council'];
+  eq(Object.keys(T.access).filter((p) => p !== 'parent' && !MONEY.some((x) => T.access[p].hidden.indexOf(x) !== -1)).sort(), ['asstcub', 'chair', 'cubmaster', 'kernel', 'treasurer'],
+    'the leaders who have the money pages');
+  ok(Object.keys(T.access).filter((p) => p !== 'parent').every((p) => MONEY.every((x) => T.access[p].hidden.indexOf(x) !== -1) ||
+    !MONEY.some((x) => T.access[p].hidden.indexOf(x) !== -1)), 'a position hides some of those pages but not all');
+  ok(run('POSITIONS_FOOTNOTE').indexOf('Only an admin, the Cubmaster and Assistant Cubmaster, the Committee Chair, the Treasurer and the Popcorn Kernel have the ledger, dues, fundraisers and popcorn inventory pages in their menus.') !== -1 &&
+    run('renderMembersPositions(true, "u-a")').indexOf(run('POSITIONS_FOOTNOTE')) !== -1, 'the footnote');
+  ok(/\.pos-grid label \{[^}]*min-height: 44px;/.test(HTML), 'the tick boxes are small targets');
   // A member who isn't an admin reads their own access.
   run("sync.myRole = 'leader'; sync.myPositions = ['kernel']; sync.user.uid = 'u-l'");
   ok(/Your access: <strong>Popcorn Kernel<\/strong>/.test(run('renderMembersPositions(false, "u-l")')), 'a leader\'s own');
@@ -31029,7 +31078,7 @@ test('C7: Advance dens asks first when Arrow of Light families with no active si
     var ui = { armed: null }, sync = {}, commits = 0, timers = [];
     function todayISO() { return '2026-05-01'; } function uid() { return 'u'; }
     function setTimeout(f, ms) { timers.push(ms || 0); return 1; } function clearTimeout() {} function render() {} function showToast() {}
-    function commit() { commits += 1; return true; } function advPerDenSummary() { return []; }
+    function commit() { commits += 1; return true; } function advPerDenSummary() { return []; } function canAdvanceDens() { return true; }
     var state;
     function load(scouts, charges) {
       state = normalizeState(Object.assign(${JSON.stringify(preMigrationState())}, { scouts: scouts, charges: charges || [], ledger: [] }));
