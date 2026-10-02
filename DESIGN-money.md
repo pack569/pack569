@@ -877,7 +877,7 @@ What actually moved. This is the record that makes the app reconcilable.
   method: 'check'|'cash'|'card'|'transfer'|'',
   ref,                           // check number / receipt
   scoutId,                       // set when it settles a charge
-  source,                        // 'family'|'donation'|'fundraiser'|'commission'|'carryover'|''
+  source,                        // 'family'|'donation'|'fundraiser'|'commission'|'carryover'|'storefront'|''
   donor }                        // who gave it, when source === 'donation'
 ```
 
@@ -1449,6 +1449,7 @@ workspaces — which is exactly the split the jobs model already encodes.
 | Forgiving a charge | Treasurer / Committee Chair | **Money · Dues & fees** | `charge.forgiven` |
 | Recording a family payment | Treasurer | **Money · Ledger** | ledger `in`, `source: 'family'` |
 | Recording a donation that covers a scout | Treasurer | **Money · Ledger** | ledger `in`, `source: 'donation'`, `donor` |
+| Banking storefront cash donations the pack keeps | Treasurer | **Money · Ledger** | ledger `in`, `source: 'storefront'`, no budget line (see *Storefront cash deposits* below) |
 
 Nobody has to be in two places. The person who ran the event says who came; the person with the
 chequebook says what it cost. The charges fall out of the two meeting.
@@ -1513,11 +1514,10 @@ API backend they send them in.
   A leader who didn't collect it accepts "without collecting it", with a written reason; that
   is an override, and `cashVerifiedBy` stays blank, so the cash-count warning stays up until
   someone verifies it.
-- **Not built yet: the deposit.** Cash donations the pack keeps reach the bank as a ledger
-  entry, and there is no "storefront cash deposit" source yet (a follow-up). Until there is,
-  the risk is twofold. A deposit of kept cash donations posted with no budget line is
-  unexplained income. Posted as "Funds in" against the popcorn line, it counts the same money
-  twice, because the storefront totals already count it.
+- **The deposit** is a *Storefront cash deposit* in the ledger (below). Before it existed, a
+  deposit of kept cash donations posted with no budget line was unexplained income, and posted
+  as "Funds in" against the popcorn line it counted the same money twice, because the
+  storefront totals already count it.
 - **The accept is two writes, in order.** The block is written and saved first, carrying a
   `reportPending` marker with what it held before. Then the report is signed off on the server
   with exactly the figures shown. If the second write is refused (the family edited or withdrew
@@ -1542,6 +1542,59 @@ API backend they send them in.
   second parent only by writing why (`reportOverride`, audited as `shift.accept.override`), and
   then the leader is the verifier. An edit by the sender clears the confirmation, because
   changed figures are not the ones that were checked.
+
+#### Storefront cash deposits (treasurer review of shift reports, item 11, 2026-10-01)
+
+Cash donations the pack keeps (`cashThroughTrailsEnd` off) reach **Funds in** from the block
+figures, as *cash donations kept in full* (`computePackTotals().retainedCash`), from the moment
+a leader types them or accepts a family's shift report. The money then goes to the bank, and
+the deposit is a ledger entry. Posted as income on a budget line, `ledgerIncomeCents` counted it
+again as other income, so Funds in was overstated by the whole deposit. Shift reports make
+block figures routine, so this would have been a common mistake.
+
+**The posting rule.** Bank kept storefront cash donations as money in with the source
+**Storefront cash deposit** (`source: 'storefront'`), **with no budget line**. The ledger's
+help under *Record a transaction* says so.
+
+- **Never Funds in.** `ledgerIncomeCents` skips it on a line or with none, so a deposit filed
+  on the popcorn line by habit is still not counted twice. It is not a refund off a line's
+  cost (`LEDGER_INCOME_SOURCES`), not what an income line brought in (`lineIncomeCents`), not
+  a commission lookalike, and does not want a budget line (`entryWantsLine`: it never adds to
+  "N entries have no budget line").
+- **Everything else as any row.** It moves the bank balance, is ticked against the statement,
+  locks when reconciled, is voided with a reason or reversed, is logged, merges per row, closes
+  out at June 30 (in the closed book, with its source; carried if the bank has not shown it),
+  and is in the CSVs as money in.
+- **What it covers (optional).** Ticks for this season's storefronts, with what each kept
+  (`depositFor`, the storefront ids, comma-separated), and/or a date range (`depositFrom`,
+  `depositTo`). Labels: editable on a locked row, logged by name ("Kroger, Sep 12"). Typed with
+  no description, the entry is described as "Storefront cash deposit — Kroger, Sep 12", so the
+  words outlive the storefronts, which close-out clears. A family can't be picked on it: it is
+  the pack's own cash. Picking a family makes it a payment, and the source goes.
+- **The check line** (Money · Ledger · Reconcile, `storefrontCashCheck`): "Storefront cash kept
+  $X · deposited $Y · not yet deposited $Z." X is the kept cash donations from the block figures
+  this season, $0 while cash runs through Trail's End. Y is the counted storefront deposits. Z
+  is X − Y, never below $0. When Y is more than X it warns: "Storefront cash deposits are $D more
+  than the cash donations kept. Check each one: is any of it sales cash owed to Trail's End, or
+  money from something else?" The Budget card says the deposits are not added again, with a
+  Check when Y is more than X. A deposit that names only storefronts no longer on the list is
+  last season's: it is left out of Y and said apart. Sales cash a leader still holds
+  (`salesCashInHandCents` on a block, when the field is there) is its own line, "Sales cash to
+  pass to Trail's End $S: money owed to the council, not pack income." It is never part of X.
+- **The hint.** Money in posted as plain income (source blank, donation, fundraiser or other; no
+  family) that looks like storefront cash gets: "Is this storefront cash? Use ‘Storefront cash
+  deposit’ so it isn't counted twice in Funds in." It looks like storefront cash when the
+  description says storefront or cash box or names a storefront held in the 45 days before it,
+  or the amount is that storefront's kept cash donations, or everything kept and not yet
+  deposited. It shows under the add form and in the entry's Detail. It asks, and changes
+  nothing. Not shown while cash runs through Trail's End.
+- **Format.** An older page (format 3) reads the new source as blank, so it counts a deposit
+  filed on a line in Funds in, and its next save writes the blank back. `PACK_FORMAT` is 4.
+- **Not done, for the treasurer:** wagon cash donations are in *cash donations kept in full* too
+  but not in X (X is the storefront blocks), so a deposit that mixes them reads as more than
+  kept. And how a deposit of storefront **sales** cash should be recorded, when a pack banks it
+  and pays the council by check, is the treasurer's to say: today it is plain income, which
+  Funds in counts on a budget line and leaves out (as uncategorised) with none.
 
 ---
 

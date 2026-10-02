@@ -2468,10 +2468,14 @@
   // organisation — and the pack should be able to see and thank the second.
   // 'refund' is the one source for money OUT: a family's own money handed back (T1,
   // entryRefundsFamily). It is never offered on money in.
-  var LEDGER_SOURCES = ['family', 'donation', 'fundraiser', 'commission', 'carryover', 'other', 'refund'];
+  // 'storefront' (treasurer review of shift reports, item 11) — the bank deposit of storefront cash
+  // donations the pack keeps. That cash is already in Funds in from the block figures, so the
+  // deposit is never income (ledgerIncomeCents); see storefrontCashCheck.
+  var LEDGER_SOURCES = ['family', 'donation', 'fundraiser', 'commission', 'carryover', 'storefront', 'other', 'refund'];
   var LEDGER_SOURCE_LABELS = {
     family: 'Family payment', donation: 'Donation', fundraiser: 'Fundraiser',
-    commission: 'Popcorn commission', carryover: 'Carryover', other: 'Other', refund: 'Refund to a family'
+    commission: 'Popcorn commission', carryover: 'Carryover', storefront: 'Storefront cash deposit',
+    other: 'Other', refund: 'Refund to a family'
   };
   // The book — where the ledger's running balance starts. Decision 12 in DESIGN-money.md
   // asked whether the ledger should open at the current bank balance or backfill the
@@ -5222,6 +5226,18 @@
     e.tierMakeup = typeof e.tierMakeup === 'string' ? e.tierMakeup : '';
     // T1 — a refund is money out to a family, nothing else; a reimbursement says it is one.
     if (e.source === 'refund' && (e.direction !== 'out' || !e.scoutId)) e.source = '';
+    // Storefront cash deposit (shift reports, item 11) — what it covers: storefront ids
+    // (`depositFor`, comma-separated) and/or dates (`depositFrom`, `depositTo`). Strings, on a
+    // storefront deposit only; absent on every other row, and left absent (so an older row reads
+    // and merges exactly as it did).
+    if (e.source === 'storefront') {
+      e.depositFor = depositForIds(e.depositFor).join(',');
+      ['depositFrom', 'depositTo'].forEach(function (k) {
+        e[k] = (typeof e[k] === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(e[k])) ? e[k] : '';
+      });
+    } else {
+      delete e.depositFor; delete e.depositFrom; delete e.depositTo;
+    }
     e.reimbursement = e.reimbursement === true;
     // M4 (final review) — the treasurer has said this income is NOT the council's commission
     // cheque, so the Budget card stops asking. Cleared by any edit to its amount, source, line
@@ -5308,8 +5324,12 @@
   // way an older page would get wrong (reads it amiss, or writes back what it does not know). A
   // page that meets a record with a HIGHER fmt than its own (from another leader's device, a
   // backup, or this browser's storage written by a newer tab) never saves over it: it holds its
-  // pushes, leaves every copy as it is, and asks for a reload (packFormatHeld). 3 is this build's
-  // record: a close-out keeps the year's book in state.closedBooks, closed at June 30, with the entries it
+  // pushes, leaves every copy as it is, and asks for a reload (packFormatHeld). 4 is this build's
+  // record: a ledger entry can say it is a storefront cash deposit (source 'storefront', treasurer review
+  // of shift reports, item 11). A page at 3 reads that source as blank, and so counts a deposit filed on a
+  // budget line as income on top of the storefront figures (the double count item 11 closes), and on its
+  // next save writes the blank back, which loses what the deposit was for good. 3 was C8's: a close-out
+  // keeps the year's book in state.closedBooks, closed at June 30, with the entries it
   // carries over (C8, owner decision 30). A page at 2 reads a carried entry as an ordinary one and so
   // reconciles wrongly against it, closes a year out with no regard to the cutoff, and its merge drops
   // closedBooks, so it must not write over a record at 3. 2 was C7's (a scout any ledger entry names is
@@ -5322,7 +5342,7 @@
   // Fix forward instead. If you must roll back, SETUP.md ("If a page stays out of date after a
   // reload") lowers fmt by hand, so the raising commit must say what an older page gets wrong.
   // Declared up here, above `var state = load()`, because normalizeState reads it.
-  var PACK_FORMAT = 3;
+  var PACK_FORMAT = 4;
   // Is the pack record `p` (parsed, not normalized) from a page newer than this one? Pure.
   function formatAhead(p) {
     return !!p && typeof p === 'object' && typeof p.fmt === 'number' && isFinite(p.fmt) && Math.floor(p.fmt) > PACK_FORMAT;
@@ -7761,7 +7781,9 @@
   // went up by the commission twice. An entry whose source names it as income (commission,
   // a fundraiser, a donation, a family, the carryover) is never a refund; a refund is what is
   // left, source blank or "other".
-  var LEDGER_INCOME_SOURCES = ['family', 'donation', 'fundraiser', 'commission', 'carryover'];
+  // A storefront cash deposit (item 11) is not a refund either: it is cash the block figures
+  // already count, and taking it off a line's cost would be the M1 double count in another place.
+  var LEDGER_INCOME_SOURCES = ['family', 'donation', 'fundraiser', 'commission', 'carryover', 'storefront'];
   function entryIsRefund(e) {
     return e.direction === 'in' && !e.scoutId && LEDGER_INCOME_SOURCES.indexOf(e.source) === -1;
   }
@@ -7791,6 +7813,8 @@
     if (!lineId) return 0;
     return ledgerUnpaired(ledger).reduce(function (n, e) {
       if (e.lineId !== lineId || e.scoutId) return n;
+      // Item 11 — a storefront cash deposit filed on the line is not what the line brought in.
+      if (e.source === 'storefront') return n;
       return n + entrySignedCents(e);
     }, 0);
   }
@@ -7823,6 +7847,10 @@
         // pack's opening money out of Funds in altogether. Then it counts, on its own term, line
         // or no line, and the Budget card asks for it to be moved into Starting funds.
         if (e.source === 'carryover') { if (!(startingCents > 0)) t.carryover += amt; return; }
+        // Item 11 (treasurer review of shift reports) — storefront cash the pack keeps is already in
+        // Funds in from the block figures (computePackTotals: retainedCash). Its bank deposit is the
+        // same money, on a line or not: it moves the bank balance and reconciles, and is never income.
+        if (e.source === 'storefront') return;
         // T4(b) — a $0 entry is not the council's cheque, and must not switch the estimate off.
         if (e.source === 'commission') { t.commission += amt; if (amt > 0) t.hasCommission = true; return; }
         // Uncategorised income stays out, exactly as it always has: it never reached the
@@ -7869,8 +7897,141 @@
   // (it gives back their money; it is no line's cost, T1) and not a carryover (it is the opening
   // money, T5/M3). Both are right with no line, and counting them left the Treasurer's Home nag
   // "N entries have no budget line" up for ever, with nothing a treasurer could do to clear it. Pure.
+  // Item 11 — nor a storefront cash deposit: no line is right for it (its cash is counted from the
+  // block figures), and the posting rule tells the treasurer to leave it blank.
   function entryWantsLine(e) {
-    return !e.lineId && !entryRefundsFamily(e) && e.source !== 'carryover';
+    return !e.lineId && !entryRefundsFamily(e) && e.source !== 'carryover' && e.source !== 'storefront';
+  }
+  // ---------------------------------------------------------------------------
+  // STOREFRONT CASH DEPOSITS (treasurer review of shift reports, item 11; DESIGN-money §3.5).
+  //
+  // Cash donations the pack keeps at a storefront reach Funds in from the BLOCK FIGURES
+  // (computePackTotals: retainedCash), from the moment a leader types them or accepts a family's
+  // shift report. The bank deposit of that same cash is a ledger entry. Posted as income on a
+  // budget line it was counted a second time (ledgerIncomeCents, as other income), and Funds in
+  // was overstated by the whole deposit. Posted with no line it was right, and nothing said so.
+  //
+  // source 'storefront' says what the deposit is. It moves the bank balance and reconciles like any
+  // other row, and is never Funds in (ledgerIncomeCents skips it, on a line or not), never a refund
+  // off a line's cost (LEDGER_INCOME_SOURCES), and wants no budget line (entryWantsLine). It may
+  // say what it covers: storefront ids (`depositFor`, comma-separated: a string, so an edit
+  // compares, logs and merges like every other label) and/or a date range (`depositFrom`,
+  // `depositTo`). Those are labels. The one thing that reads them is the "kept · deposited" line,
+  // which leaves out a deposit that names only storefronts no longer on the list (last season's:
+  // close-out clears the storefronts).
+  // ---------------------------------------------------------------------------
+  // The storefront ids a deposit names (`v`: depositFor), as a list, in order, no repeats. Pure.
+  function depositForIds(v) {
+    var seen = Object.create(null), out = [];
+    String(v == null ? '' : v).split(',').forEach(function (s) {
+      s = s.trim();
+      if (s && !seen[s] && out.length < 50) { seen[s] = true; out.push(s); }
+    });
+    return out;
+  }
+  // A storefront as a deposit names it: "Kroger, Sep 14". Pure given fmtDateShort.
+  function storefrontDepositName(sf) {
+    var n = String((sf && sf.name) || '').trim() || 'Storefront';
+    return sf && sf.date ? n + ', ' + fmtDateShort(sf.date) : n;
+  }
+  // `v` (depositFor) with storefront `id` added (`on`) or taken out. Pure.
+  function depositForToggle(v, id, on) {
+    var ids = depositForIds(v).filter(function (x) { return x !== String(id); });
+    if (on && id) ids.push(String(id));
+    return depositForIds(ids.join(',')).join(',');
+  }
+  // The cash donations the pack keeps from one storefront: its blocks' donations, as
+  // computePackTotals counts them, and nothing while cash runs through Trail's End (`viaTE`:
+  // state.cashThroughTrailsEnd), when the pack keeps none of it. Pure.
+  function storefrontKeptCents(sf, viaTE) {
+    if (viaTE || !sf) return 0;
+    return arrOf(sf.blocks).reduce(function (n, b) { return n + ((b && b.donationsCents) || 0); }, 0);
+  }
+  // Cash from popcorn SALES a leader still holds for a block (`salesCashInHandCents`, added by the
+  // shift-report follow-ups; 0 on a block without it). The council's money, not the pack's. Pure.
+  function blockSalesCashInHand(b) {
+    var c = b && b.salesCashInHandCents;
+    return (typeof c === 'number' && isFinite(c) && c > 0) ? Math.round(c) : 0;
+  }
+  // The season's storefront cash, kept against deposited (the Reconcile card's check line):
+  //   kept         cash donations the pack keeps, from the block figures (storefrontKeptCents)
+  //   deposited    counted storefront cash deposits (money in, source 'storefront', no family)
+  //   notYet       kept − deposited, never below 0;  over: deposited − kept, never below 0
+  //   salesCash    sales cash leaders still hold, to pass to Trail's End (blockSalesCashInHand)
+  //   earlier      deposits that name only storefronts no longer on the list, left out of
+  //                `deposited` (they belong to a season already closed out), and how many
+  // `storefronts` is state.storefronts (this season's: close-out clears them), `ledger` the counted
+  // rows (state.ledger: a voided deposit is not in it, and a reversed pair cancels). Pure.
+  function storefrontCashCheck(storefronts, ledger, viaTE) {
+    var t = { kept: 0, deposited: 0, count: 0, notYet: 0, over: 0, salesCash: 0, earlier: 0, earlierCount: 0, viaTE: !!viaTE };
+    var here = Object.create(null);
+    arrOf(storefronts).forEach(function (sf) {
+      if (!sf) return;
+      if (typeof sf.id === 'string') here[sf.id] = true;
+      t.kept += storefrontKeptCents(sf, viaTE);
+      arrOf(sf.blocks).forEach(function (b) { t.salesCash += blockSalesCashInHand(b); });
+    });
+    ledgerUnpaired(arrOf(ledger)).forEach(function (e) {
+      if (!e || e.direction !== 'in' || e.source !== 'storefront' || e.scoutId) return;
+      var ids = depositForIds(e.depositFor);
+      if (ids.length && !ids.some(function (id) { return here[id] === true; })) {
+        t.earlier += e.amountCents || 0;
+        t.earlierCount += 1;
+        return;
+      }
+      t.deposited += e.amountCents || 0;
+      t.count += 1;
+    });
+    t.notYet = Math.max(0, t.kept - t.deposited);
+    t.over = Math.max(0, t.deposited - t.kept);
+    return t;
+  }
+  // The check line in words: [{ text, warn }], empty when there is no storefront cash at all. Pure
+  // given fmt.
+  function storefrontCashLines(chk) {
+    if (!chk || !(chk.kept || chk.deposited || chk.salesCash || chk.earlier)) return [];
+    var out = [{ warn: false, text: 'Storefront cash kept ' + fmt(chk.kept) + ' \u00b7 deposited ' + fmt(chk.deposited) +
+      ' \u00b7 not yet deposited ' + fmt(chk.notYet) + '.' }];
+    if (chk.viaTE) out.push({ warn: false, text: 'Cash donations run through Trail\u2019s End this season, so the pack keeps none of the storefront cash.' });
+    if (chk.over) {
+      out.push({ warn: true, text: 'Storefront cash deposits are ' + fmt(chk.over) + ' more than the cash donations kept. ' +
+        'Check each one: is any of it sales cash owed to Trail\u2019s End, or money from something else? Only kept cash donations are a storefront cash deposit.' });
+    }
+    if (chk.earlier) {
+      out.push({ warn: false, text: (chk.earlierCount === 1 ? '1 deposit' : chk.earlierCount + ' deposits') + ' (' + fmt(chk.earlier) +
+        ') for storefronts no longer on the list ' + (chk.earlierCount === 1 ? 'is' : 'are') + ' not counted here.' });
+    }
+    if (chk.salesCash) {
+      out.push({ warn: false, text: 'Sales cash to pass to Trail\u2019s End ' + fmt(chk.salesCash) +
+        ': money owed to the council, not pack income, so it is not a storefront cash deposit.' });
+    }
+    return out;
+  }
+  // Does money in `e` look like storefront cash posted as something else? The gentle hint under the
+  // add form and in an entry's Detail (STOREFRONT_CASH_HINT). Only plain income (source blank,
+  // donation, fundraiser or other; no family, no tier), only while the pack keeps the cash (with it
+  // run through Trail's End no deposit of it is pack income), and only when it says so: the
+  // description names a storefront, the cash box or a storefront the pack held in the
+  // STOREFRONT_HINT_DAYS before its date, or the amount is that storefront's kept cash donations,
+  // or everything kept and not yet deposited. A question, never a change. Pure.
+  var STOREFRONT_HINT_SOURCES = ['', 'donation', 'fundraiser', 'other'];
+  var STOREFRONT_HINT_DAYS = 45;
+  var STOREFRONT_CASH_HINT = 'Is this storefront cash? Use \u2018Storefront cash deposit\u2019 so it isn\u2019t counted twice in Funds in.';
+  function storefrontCashHint(e, storefronts, ledger, viaTE) {
+    if (!e || viaTE || e.direction !== 'in' || e.scoutId || e.tierMakeup) return false;
+    if (STOREFRONT_HINT_SOURCES.indexOf(e.source || '') === -1) return false;
+    var amt = e.amountCents || 0, d = String(e.date || ''), text = String(e.description || '').toLowerCase();
+    function recent(sf) {
+      if (!sf.date || !d) return true;
+      var gap = (Date.parse(d) - Date.parse(sf.date)) / 86400000;
+      return !isFinite(gap) || (gap >= 0 && gap <= STOREFRONT_HINT_DAYS);
+    }
+    var sfs = arrOf(storefronts).filter(function (sf) { return sf && recent(sf); });
+    if (/store\s*-?\s*front|cash\s*box/.test(text)) return true;
+    if (sfs.some(function (sf) { var n = String(sf.name || '').trim().toLowerCase(); return n.length >= 4 && text.indexOf(n) !== -1; })) return true;
+    if (!(amt > 0)) return false;
+    if (sfs.some(function (sf) { return storefrontKeptCents(sf, false) === amt; })) return true;
+    return storefrontCashCheck(storefronts, ledger, false).notYet === amt;
   }
   function ledgerTotals(ledger, book) {
     var inC = 0, outC = 0, pre = 0, unrec = 0, uncat = 0;
@@ -9702,14 +9863,18 @@
     reconciled: 'ticked', voidReason: 'void reason',   // Phase 3, C6: what a 'resolve' kept (treasurer review of C6, 4)
     statementId: 'statement', reversedBy: 'reversed by',   // treasurer review of C6 (5)
     forgiven: 'forgiveness',   // security re-check of C6 (N3): a charge's forgiveness lost to a merge
-    closedYears: 'years closed out'   // Phase 3, C8 (C8-2): what a 'close' event changed (before, after)
+    closedYears: 'years closed out',   // Phase 3, C8 (C8-2): what a 'close' event changed (before, after)
+    // Item 11 — what a storefront cash deposit covers.
+    depositFor: 'storefronts it covers', depositFrom: 'covers from', depositTo: 'covers to'
   };
   // One value from an event's `f`, as a leader reads it. `names` turns an id into a name
   // ({ line, scout, tier, statement, entry }: each id → name or ''). Pure given `names`.
   function ledgerLogValue(k, v, names) {
     if (v === null || v === undefined || v === '') return '(none)';
     if (k === 'amountCents' || k === 'openingCents' || k === 'statementCents') return typeof v === 'number' ? fmt(v) : String(v);
-    if (k === 'date' || k === 'openingDate' || k === 'reconciledThrough') return fmtDateShort(String(v));
+    if (k === 'date' || k === 'openingDate' || k === 'reconciledThrough' || k === 'depositFrom' || k === 'depositTo') return fmtDateShort(String(v));
+    // Item 11 — a source by the words the form shows it with (an unknown one as it is).
+    if (k === 'source' && Object.prototype.hasOwnProperty.call(LEDGER_SOURCE_LABELS, v)) return LEDGER_SOURCE_LABELS[v];
     if (k === 'direction') return v === 'in' ? 'money in' : v === 'out' ? 'money out' : String(v);
     if (typeof v === 'boolean') return v ? 'yes' : 'no';
     var n = names || {};
@@ -9720,6 +9885,10 @@
     // that cancels it, by its name.
     if (k === 'statementId' && n.statement) return n.statement(v) || 'a statement not in this book';
     if (k === 'reversedBy' && n.entry) return n.entry(v) || 'an entry not in this book';
+    // Item 11 — the storefronts a deposit covers, by name; one no longer on the list says so.
+    if (k === 'depositFor' && n.storefront) {
+      return depositForIds(v).map(function (id) { return n.storefront(id) || 'a storefront no longer on the list'; }).join('; ');
+    }
     return String(v);
   }
   // An event as lines: one per field it changed ({ what, before, after }), or one saying what was
@@ -9878,7 +10047,9 @@
   var LEDGER_NOT_LIVE = ['led-amount', 'book-opening'];
   // The fields an edit can change (and so the ones an 'edit' event carries). The tick and its
   // stamps are 'tick'/'untick' events, not edits; ids and the E2 entry stamps never change.
-  var LEDGER_EDIT_FIELDS = ['date', 'description', 'amountCents', 'direction', 'lineId', 'method', 'ref', 'source', 'scoutId', 'donor', 'reimbursement', 'notCommission', 'tierMakeup'];
+  // Item 11 — and what a storefront cash deposit covers (labels, like the budget line).
+  var LEDGER_EDIT_FIELDS = ['date', 'description', 'amountCents', 'direction', 'lineId', 'method', 'ref', 'source', 'scoutId', 'donor', 'reimbursement', 'notCommission', 'tierMakeup',
+    'depositFor', 'depositFrom', 'depositTo'];
   // { field: [before, after] } for each LEDGER_EDIT_FIELDS field that differs. Pure.
   function ledgerRowDiff(before, after) {
     var f = {};
@@ -10037,6 +10208,10 @@
     else if (lk === 'source') led.source = value;
     else if (lk === 'scout') led.scoutId = value;
     else if (lk === 'donor') led.donor = value;
+    // Item 11 — what a storefront cash deposit covers: the whole new list (depositForToggle), or a date.
+    else if (lk === 'depfor') led.depositFor = depositForIds(value).join(',');
+    else if (lk === 'depfrom') led.depositFrom = value;
+    else if (lk === 'depto') led.depositTo = value;
     else if (lk === 'rec') {
       if (led.reconciled !== !!value) stampApproved(led, !!value);   // E2
       led.reconciled = !!value;
@@ -10070,6 +10245,14 @@
       else if (led.source !== 'refund') led.source = '';
     }
     if (led.source !== 'donation') led.donor = '';
+    // Item 11 — a storefront cash deposit is the pack's own cash, never a family's payment: picking
+    // a family makes it a payment (source cleared), and choosing the source takes the family off.
+    if (led.direction === 'in' && lk === 'scout' && led.scoutId && led.source === 'storefront') led.source = '';
+    if (lk === 'source' && led.source === 'storefront') led.scoutId = '';
+    // …and what it covers goes with the source: '' on any other row (normalizeLedgerRow drops them).
+    if (led.source !== 'storefront') {
+      ['depositFor', 'depositFrom', 'depositTo'].forEach(function (k) { if (led[k] !== undefined) led[k] = ''; });
+    }
   }
   // The opening figure or date changed from `was` ({ openingCents, openingDate }): logged.
   function logOpening(was) {
@@ -25408,6 +25591,18 @@
           fmt(bud.ledgerCarryover) + '</strong> is in the ledger but Starting funds is $0 \u2014 set Starting funds to it ' +
           'and this entry stops counting.</p>'
         : '') +
+      // Item 11 — a storefront cash deposit is in the bank, not in Funds in again; and too many is a Check.
+      (function () {
+        var sc = storefrontCashCheck(state.storefronts, state.ledger, state.cashThroughTrailsEnd);
+        if (!(sc.deposited > 0)) return '';
+        return '<p class="small muted" style="margin:8px 0 0">Storefront cash deposits in the ledger (' + fmt(sc.deposited) + ') are not added again: ' +
+          'the cash donations they bank are already counted from the storefront figures.</p>' +
+          (sc.over > 0
+            ? '<p class="small" style="margin:8px 0 0"><span class="pill navy">Check</span> Storefront cash deposits are <strong class="money">' + fmt(sc.over) +
+              '</strong> more than the cash donations kept. Compare them on Money \u00b7 Ledger \u00b7 Reconcile. ' +
+              '<button type="button" class="btn small ghost" data-act="goto" data-tab="money" data-section="ledger">Open the ledger</button></p>'
+            : '');
+      })() +
       // T4a — money in on an income line while commission is still the sales estimate may be the
       // council's cheque counted twice. Asked, never assumed: the treasurer knows what it was.
       bud.commissionLookalikes.map(function (lk) {
@@ -25809,8 +26004,42 @@
     return {
       date: todayISO(), description: '', amount: '', direction: 'out',
       lineId: '', method: '', ref: '', source: '', donor: '',
-      scoutId: ''   // Phase 3b — set when this entry settles a family's charges
+      scoutId: '',   // Phase 3b — set when this entry settles a family's charges
+      depositFor: '', depositFrom: '', depositTo: ''   // item 11 — a storefront cash deposit's cover
     };
+  }
+  // Item 11 — the draft as the entry it would be, for storefrontCashHint (amount as typed).
+  function ledgerDraftEntry(dr) {
+    return { date: dr.date, description: dr.description, amountCents: toCents(dr.amount), direction: dr.direction,
+      source: dr.source, scoutId: dr.scoutId, tierMakeup: '' };
+  }
+  // Item 11 — what a storefront cash deposit covers, as fields: a tick per storefront this season
+  // (with the cash donations it kept) and a date range. `pfx` is 'ledn' (the add form) or 'led'
+  // (an entry, `id`). Escaped.
+  function depositCoverFieldsHtml(pfx, id, e) {
+    var ids = depositForIds(e.depositFor), viaTE = !!state.cashThroughTrailsEnd;
+    var idAttr = id ? ' data-id="' + esc(id) + '"' : '';
+    var h = '<div class="ldeposit" style="flex-basis:100%;margin:6px 0 0">' +
+      '<p class="small muted" style="margin:0 0 4px">What does this deposit cover? (optional)</p>';
+    var sfs = state.storefronts.slice();
+    // A storefront it names that is no longer on the list stays named, so a tick is never lost silently.
+    var gone = ids.filter(function (x) { return !getStorefront(x); });
+    if (sfs.length) {
+      h += '<div class="row" style="gap:4px 12px;margin:0 0 4px">' + sfs.map(function (sf) {
+        var kept = storefrontKeptCents(sf, viaTE);
+        return '<label class="perscout"><input type="checkbox" data-ch="' + pfx + '-depfor"' + idAttr + ' value="' + esc(sf.id) + '"' +
+          (ids.indexOf(sf.id) !== -1 ? ' checked' : '') + '> ' + esc(storefrontDepositName(sf)) +
+          (kept ? ' <span class="muted">(' + esc(fmt(kept)) + ' kept)</span>' : '') + '</label>';
+      }).join('') + '</div>';
+    }
+    if (gone.length) {
+      h += '<p class="small muted" style="margin:0 0 4px">Also names ' + (gone.length === 1 ? 'a storefront' : gone.length + ' storefronts') + ' no longer on the list.</p>';
+    }
+    h += '<div class="row" style="gap:8px">' +
+      '<label class="fld">From<input type="date" data-ch="' + pfx + '-depfrom"' + idAttr + ' value="' + esc(e.depositFrom || '') + '"></label>' +
+      '<label class="fld">To<input type="date" data-ch="' + pfx + '-depto"' + idAttr + ' value="' + esc(e.depositTo || '') + '"></label>' +
+      '</div></div>';
+    return h;
   }
   function ledgerDraft() {
     if (!ui.ledgerDraft) ui.ledgerDraft = ledgerDraftDefault();
@@ -26024,7 +26253,8 @@
       tier: function (id) { var t = state.rewardTiers.tiers.filter(function (x) { return x.id === id; })[0]; return t ? (t.name || 'a reward tier') : ''; },
       // Treasurer review of C6 (5) — a statement by its date, and an entry (a reversal) by its name.
       statement: function (id) { return ledgerStatementName(state.statements, id); },
-      entry: function (id) { return ledgerRowName(arrOf(state.ledger).concat(arrOf(state.ledgerAside)), id); }
+      entry: function (id) { return ledgerRowName(arrOf(state.ledger).concat(arrOf(state.ledgerAside)), id); },
+      storefront: function (id) { var sf = getStorefront(id); return sf ? storefrontDepositName(sf) : ''; }   // item 11
     };
   }
   // The date of statement `id` in `statements`, as the log shows it ('' when it isn't there). Pure.
@@ -26337,11 +26567,13 @@
       '<select data-ch="ledn-method" aria-label="Method">' + methodSelectOptions(dr.method) + '</select>' +
       '<input class="lref" data-ch="ledn-ref" value="' + esc(dr.ref) + '" placeholder="Check no. / receipt" aria-label="Reference">' +
       (dr.direction === 'in'
-        ? '<select data-ch="ledn-scout" aria-label="Settles whose account">' + scoutSelectOptions(dr.scoutId) + '</select>' +
+        // Item 11 — a storefront cash deposit settles no family's account, so it has no family picker.
+        ? (dr.source === 'storefront' ? '' : '<select data-ch="ledn-scout" aria-label="Settles whose account">' + scoutSelectOptions(dr.scoutId) + '</select>') +
           '<select data-ch="ledn-source" aria-label="Source">' + sourceSelectOptions(dr.source) + '</select>' +
           (dr.source === 'donation'
             ? '<input class="lname" data-ch="ledn-donor" value="' + esc(dr.donor) + '" placeholder="Who gave it" aria-label="Donor">'
-            : '')
+            : '') +
+          (dr.source === 'storefront' ? depositCoverFieldsHtml('ledn', '', dr) : '')
         // T1 — money out can be a family's credit handed back; picking the family says so.
         // M1(c) — on a line families pay directly, the only family money out is a reimbursement.
         : (ledgerLineIsDirect(dr.lineId)
@@ -26353,8 +26585,14 @@
       '</div>' +
       // Phase 3, C2 — the reconciled-period warning, after the first tap (see ledger-add).
       (addWarn ? '<p class="small" role="alert" style="margin:8px 0 0;color:var(--accent-text)">' + esc(addWarn) + '</p>' : '') +
+      // Item 11 — plain income that looks like storefront cash: asked, never changed.
+      (storefrontCashHint(ledgerDraftEntry(dr), state.storefronts, state.ledger, state.cashThroughTrailsEnd)
+        ? '<p class="small" role="status" style="margin:8px 0 0"><span class="pill navy">Check</span> ' + esc(STOREFRONT_CASH_HINT) + '</p>' : '') +
       '<p class="small muted" style="margin:8px 0 0">Pick the budget line it belongs to and this entry becomes part of that line’s actual cost. ' +
-      'Leave it blank if it doesn’t belong to one — you can set it later.</p></div>';
+      'Leave it blank if it doesn’t belong to one — you can set it later. ' +
+      // Item 11 — the posting rule, where the deposit is typed.
+      'Storefront cash donations the pack keeps are already in Funds in from the storefront figures: bank them as ' +
+      '<strong>Storefront cash deposit</strong>, with no budget line, so they aren’t counted twice.</p></div>';
 
     // ---- filters + list ----
     var f = ui.ledgerFilter;
@@ -26452,11 +26690,19 @@
               '<select data-ch="led-method" data-id="' + esc(e.id) + '" aria-label="Method">' + methodSelectOptions(e.method) + '</select>' +
               '<input class="lref" data-ch="led-ref" data-id="' + esc(e.id) + '" value="' + esc(e.ref) + '" placeholder="Check no. / receipt" aria-label="Reference">' +
               (e.direction === 'in'
-                ? '<select data-ch="led-scout" data-id="' + esc(e.id) + '" aria-label="Settles whose account">' + scoutSelectOptions(e.scoutId) + '</select>' +
+                // Item 11 — a storefront cash deposit has no family picker; it says what it covers instead.
+                ? (e.source === 'storefront' ? '' : '<select data-ch="led-scout" data-id="' + esc(e.id) + '" aria-label="Settles whose account">' + scoutSelectOptions(e.scoutId) + '</select>') +
                   '<select data-ch="led-source" data-id="' + esc(e.id) + '" aria-label="Source">' + sourceSelectOptions(e.source) + '</select>' +
                   (e.source === 'donation'
                     ? '<input class="lname" data-ch="led-donor" data-id="' + esc(e.id) + '" value="' + esc(e.donor) + '" placeholder="Who gave it" aria-label="Donor">'
-                    : '')
+                    : '') +
+                  (e.source === 'storefront'
+                    ? depositCoverFieldsHtml('led', e.id, e) +
+                      '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">Not counted in Funds in: the storefront figures already count this cash. ' +
+                        'It is in the bank balance and reconciles as usual.</p>'
+                    : '') +
+                  (storefrontCashHint(e, state.storefronts, state.ledger, state.cashThroughTrailsEnd)
+                    ? '<p class="small" style="margin:6px 0 0;flex-basis:100%"><span class="pill navy">Check</span> ' + esc(STOREFRONT_CASH_HINT) + '</p>' : '')
                 // M6 — a reimbursement says who it went to, since that is what marks it paid.
                 : (e.scoutId && !entryRefundsFamily(e)
                   ? (getScout(e.scoutId)
@@ -26709,6 +26955,17 @@
         'or removed since then shows up in those lines, not as a difference.') + '</p>';
     return h + '</div></div></div>';
   }
+  // Item 11 — the season's storefront cash, kept against deposited (storefrontCashCheck), under the
+  // Reconcile card: the check a treasurer makes before the bank statement, and the one place a
+  // deposit posted as something else, or one too many, shows. '' when there is no storefront cash.
+  function storefrontCashCheckHtml() {
+    var lines = storefrontCashLines(storefrontCashCheck(state.storefronts, state.ledger, state.cashThroughTrailsEnd));
+    if (!lines.length) return '';
+    return lines.map(function (ln, i) {
+      return '<p class="small" style="margin:' + (i ? '4' : '10') + 'px 0 0' + (ln.warn ? ';color:var(--accent-text)' : '') + '"' + (ln.warn ? ' role="alert"' : '') + '>' +
+        (i ? '' : '<span class="pill navy">Storefront cash</span> ') + esc(ln.text) + '</p>';
+    }).join('');
+  }
   function renderReconcile() {
     var bk = state.book;
     var rec = reconcileTotals(state.ledger, bk, state.ledgerAside);
@@ -26757,6 +27014,7 @@
           ? 'the bank holds more than the ticked entries account for, so an income entry is probably missing.'
           : 'the ticked entries come to more than the bank holds, so a payment may be recorded that hasn’t cleared, or twice.') + '</p>';
     }
+    h += storefrontCashCheckHtml();   // item 11
     h += '</div>';
 
     var pending = ledgerSort(state.ledger).filter(function (e) { return entryAfterOpening(e, bk) && entryOnStatement(e, bk); });
@@ -36646,6 +36904,18 @@
         scoutId: dr.scoutId, reconciled: false
       };
       if (drReimb) drEntry.reimbursement = true;
+      // Item 11 — a storefront cash deposit: no family, what it covers, and words a later reader can
+      // use when its storefronts are long gone (close-out clears them): the names, if none were typed.
+      if (drEntry.direction === 'in' && drEntry.source === 'storefront') {
+        drEntry.scoutId = '';
+        drEntry.depositFor = depositForIds(dr.depositFor).filter(function (x) { return !!getStorefront(x); }).join(',');
+        drEntry.depositFrom = /^\d{4}-\d{2}-\d{2}$/.test(dr.depositFrom || '') ? dr.depositFrom : '';
+        drEntry.depositTo = /^\d{4}-\d{2}-\d{2}$/.test(dr.depositTo || '') ? dr.depositTo : '';
+        if (!drEntry.description) {
+          drEntry.description = 'Storefront cash deposit' + (drEntry.depositFor
+            ? ' \u2014 ' + depositForIds(drEntry.depositFor).map(function (x) { return storefrontDepositName(getStorefront(x)); }).join('; ') : '');
+        }
+      }
       stampEntered(drEntry);   // E2
       // M1(b) — said BEFORE it is added, measured against the credit as it stands without it.
       var drWarn = refundOverCreditWarning(drEntry);
@@ -38379,8 +38649,16 @@
       var nk = ch.slice(5);
       // T1 — the payer of money in is not the family refunded by money out: flipping clears it.
       if (nk === 'dir') { nd.direction = el.value === 'in' ? 'in' : 'out'; nd.scoutId = ''; render(); return; }
-      if (nk === 'source') { nd.source = el.value; render(); return; }
+      // Item 11 — a storefront cash deposit is no family's payment: choosing it takes the family off.
+      if (nk === 'source') { nd.source = el.value; if (nd.source === 'storefront') nd.scoutId = ''; render(); return; }
       if (nk === 'scout') { nd.scoutId = el.value; return; }
+      // Item 11 — what a storefront cash deposit covers.
+      if (nk === 'depfor') { nd.depositFor = depositForToggle(nd.depositFor, el.value, el.checked); return; }
+      if (nk === 'depfrom') { nd.depositFrom = el.value; return; }
+      if (nk === 'depto') { nd.depositTo = el.value; return; }
+      // Item 11 — the storefront-cash hint follows the description and amount: redrawn on change
+      // (never mid-typing: liveEdit) only when it comes or goes.
+      var ndHint = storefrontCashHint(ledgerDraftEntry(nd), state.storefronts, state.ledger, state.cashThroughTrailsEnd);
       // M1(c) — on money out, the line decides whether the family picker is a refund or a
       // reimbursement, so it re-renders like the two selects above.
       if (nk === 'line' && nd.direction !== 'in') { nd.lineId = el.value; render(); return; }
@@ -38392,6 +38670,8 @@
       else if (nk === 'method') nd.method = el.value;
       else if (nk === 'ref') nd.ref = el.value;
       else if (nk === 'donor') nd.donor = el.value;
+      if ((nk === 'desc' || nk === 'amount') && !liveEdit &&
+        storefrontCashHint(ledgerDraftEntry(nd), state.storefronts, state.ledger, state.cashThroughTrailsEnd) !== ndHint) render();
       return;
     }
     if (ch.indexOf('led-') === 0) {
@@ -38413,7 +38693,8 @@
       }
       if (!led) return;
       var lk = ch.slice(4);
-      var lv = lk === 'rec' ? el.checked : el.value;
+      // Item 11 — a storefront tick on a deposit is the whole new list (applyLedgerEdit 'depfor').
+      var lv = lk === 'rec' ? el.checked : lk === 'depfor' ? depositForToggle(led.depositFor, el.value, el.checked) : el.value;
       // M10 — a reconciled entry's money can't be edited from under the statement it was ticked
       // on. Phase 3, C2 — nor can one dated in the reconciled period; but their labels can
       // (owner, 2026-09-29: LEDGER_LOCKED_FIELDS). An edit that would blank the amount or the
