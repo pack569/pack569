@@ -1526,7 +1526,7 @@ API backend they send them in.
   finishes or undoes it.
 - **Already holding figures.** Accepting onto a block that already has different figures shows
   old against new first, and replaces both the figures and the names on the cash count.
-- **Cash from popcorn sales still in hand** (S-5, Keith 2026-10-01). Families convert all cash
+- **Cash from popcorn sales not converted** (S-5, Keith 2026-10-01). Families convert all cash
   from popcorn sales to credit in the Trail's End app before they leave the table. When they
   can't, the report says how much wasn't converted (`sales_cash_cents`, 0 on almost every report).
   It is a **custody** figure, not money: those sales were entered in the app, so they are already

@@ -533,10 +533,11 @@ pack record, so a parent who can send one still can't write anything else.
   that is in the future, too old, or not published.
 - **The figures:** whole cents, from $0 to **$10,000** each, plus an optional note of at most
   **300 characters**. The signature box must be ticked.
-- **Cash from popcorn sales still in hand** (S-5, Keith 2026-10-01): an optional third figure.
-  Pack policy is that families convert all cash from popcorn sales to credit in the Trail's End
-  app before they leave the table, so it should be $0. If it isn't, the family enters what they
-  still have and hands it to the leader collecting the money. It follows the same rules as the
+- **Cash from popcorn sales not converted** (S-5, Keith 2026-10-01): an optional third figure,
+  for the whole shift. Pack policy is that families convert all cash from popcorn sales to
+  credit in the Trail's End app before they leave the table, so it should be $0. If it isn't,
+  the report says how much wasn't converted, the note says who has it, and that cash goes to
+  the leader collecting the money. It follows the same rules as the
   other two figures (whole cents, $0 to $10,000), it defaults to $0 when left out, and it can't
   be more than the Trail's End amount, because those sales are already part of it. For the same
   reason it is **never added** to the block's sales or to any scout's standings. A second
@@ -609,7 +610,7 @@ pack record, so a parent who can send one still can't write anything else.
   child's shifts). The server works this out from the stored pack record and sends **only the
   storefront and block ids** the parent view already publishes, never a scout, a name or a link.
   If the record can't be read, the list is empty. The family's *Storefront shift totals* card
-  shows those shifts first, marked "Your scout's shift".
+  shows those shifts first, marked "Your family's shift".
 - Every report, edit, withdrawal, acceptance, send-back and record of the cash from sales is written to the `audit` table
   in the same step as the change itself.
 

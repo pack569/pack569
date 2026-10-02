@@ -18723,15 +18723,17 @@ test('round 1: the family form says what each figure is, what to do with sales c
   const f = vm.runInContext('parentShiftReportCard', ctx)({ events: [srEv(SR_TODAY)] }, SR_TODAY);
   ok(/<div class="fld sr-field"><label for="srTe">Trail’s End amount \(\$\)<\/label><input id="srTe" name="te" aria-describedby="srTeHint" [^>]*><span class="sr-hint" id="srTeHint">Everything entered in the Trail’s End app during this shift, card and cash, by every family on the shift\.<\/span><\/div>/.test(f),
     'the Trail’s End field: its label, its input, its hint outside the label');
-  ok(/<label for="srCash">Cash donations \(\$\)<\/label><input id="srCash" name="cash" aria-describedby="srCashHint" [^>]*><span class="sr-hint" id="srCashHint">Only the cash in the donation jar\. Leave out cash from popcorn sales, your starting change, and any donation already entered in the Trail’s End app\.<\/span>/.test(f),
+  ok(/<label for="srCash">Cash donations \(\$\)<\/label><input id="srCash" name="cash" aria-describedby="srCashHint" [^>]*><span class="sr-hint" id="srCashHint">Only the cash in the donation jar\. Leave out your starting change, any donation already entered in the Trail’s End app, and cash from popcorn sales \(that goes in its own box below\)\.<\/span>/.test(f),
     'the cash hint');
   ok(/<label for="srNote">Note for the leader \(optional\)<\/label><textarea id="srNote" name="note" aria-describedby="srNoteHint" [^>]*><\/textarea><span class="sr-hint" id="srNoteHint">Leaders and the other family on this shift can read this\. Don’t name scouts or share anything about a child\.<\/span>/.test(f),
     'the note’s hint (youth-protection review 1)');
-  ok(/<strong>Convert any cash from popcorn sales to credit in the Trail’s End app before you leave the table\. \(Trail’s End’s own cutoff is midnight\.\) Cash donations stay in the jar and go to the leader collecting the money\.<\/strong><\/p><div class="sr-acts">/.test(f),
-    'the sales-cash policy, above the buttons');
+  // Followups round 1 (parent experience 9): the jar only; converting is the sales-cash box's hint, midnight the day sheet's.
+  ok(/<strong>Cash donations stay in the jar and go to the leader collecting the money\.<\/strong><\/p><div class="sr-acts">/.test(f) && !/midnight/.test(f),
+    'the cash policy, above the buttons');
   ok(/Worked a popcorn table outside a store \(a storefront shift\)\? Before you leave, one parent sends the totals for the whole table\. If another family worked it with you, a parent from that family confirms them here\. Working two shifts in a row\? Send totals for each one, and count the donation jar when the shift changes\./.test(f),
     'the card’s intro');
-  eq(vm.runInContext('SHIFT_CONFIRM_ATTEST', ctx), 'I worked this shift. These cash donations match what was counted at the table, and the Trail’s End amount matches the app.', 'the confirmer’s signature');
+  eq(vm.runInContext('SHIFT_CONFIRM_ATTEST', ctx), 'I worked this shift. These cash donations match what was counted at the table, and the Trail’s End amount matches the app. ' +
+    'Any cash from popcorn sales not converted is shown above.', 'the confirmer’s signature');
   ok(/esc\(SHIFT_CONFIRM_ATTEST\)/.test(slice('parentShiftConfirmForm')) && !/SHIFT_REPORT_ATTEST/.test(slice('parentShiftConfirmForm')), 'the confirmer signs the sender’s words');
   const say = sandbox(['SHIFT_REPORT_SAY']).SHIFT_REPORT_SAY;
   eq([say.future, say['not-shift-parent'], say['too-many-open']], ['You can send totals once the shift has started.',
@@ -18830,7 +18832,7 @@ test('round 1: the season’s shift reports, as a leaders’ table and a CSV, wi
     ['(no longer on the schedule)', '', '', '', '', 'submitted', '', '']], 'the rows: last season’s left out');
   // Youth-protection review 4: by default the CSV holds figures and adults' names, and no written reason.
   const csv = L.run('shiftReportHistoryCsv(shiftReportHistoryRows(2026))');
-  ok(csv.split('\n')[0] === 'Date,Storefront,Shift,Trail’s End,Cash donations,Cash from sales to collect,"Collected / converted by, on",Sent by,Verified by,Accepted by,Status,Block now differs from report', 'the header');
+  ok(csv.split('\n')[0] === 'Date,Storefront,Shift,Trail’s End,Cash donations,Popcorn sales cash not converted,"Collected / converted by, on",Sent by,Verified by,Accepted by,Status,Block now differs from report', 'the header');
   ok(/2026-10-03,Kroger,10:00–12:00,123\.45,25\.00,20\.00,"collected by Lee Leader, 2026-10-04",Nora Newfamily,confirmed by Bo Parent,Sam Leader,accepted,N/.test(csv), 'the cells');
   ok(/12:00–14:00,80\.00,0\.00,0\.00,,/.test(csv), 'S-5: a report with no cash from sales to collect says 0.00, and nobody collected it');
   ok(!/SUM|Recount/.test(csv), 'a leader’s reason in the CSV by default');
@@ -18839,7 +18841,7 @@ test('round 1: the season’s shift reports, as a leaders’ table and a CSV, wi
     'asked for: one labelled last column, formula-safe');
   eq(L.run('srHistoryFileName(2026)'), 'shift-reports-2026.csv', 'a generic file name');
   const html = L.run('renderShiftReportHistory()');
-  ok(/<th scope="col">Cash donations<\/th><th scope="col">Cash from sales to collect<\/th>/.test(html) && /<td class="num">\$20\.00<\/td>/.test(html),
+  ok(/<th scope="col">Cash donations<\/th><th scope="col">Popcorn sales cash not converted<\/th>/.test(html) && /<td class="num">\$20\.00<\/td>/.test(html),
     'S-5: the table’s cash-from-sales column');
   ok(/Pack 569 — shift reports, 2026–27/.test(html) && /data-act="sr-history-csv"/.test(html) && /data-act="te-print"/.test(html), 'the year, print and CSV');
   ok(/<strong>Don’t commit or post this file\.<\/strong>/.test(html) && /data-act="sr-history-reasons"/.test(html) && /Include leaders’ reasons in the CSV/.test(html),
@@ -18855,7 +18857,7 @@ test('round 1: the season’s shift reports, as a leaders’ table and a CSV, wi
 test('my shifts: the family’s card lists their own scouts’ shifts first, marked, and leaves the rest in order', () => {
   const pv = { events: [srEv('2026-09-30', ['b1']), Object.assign(srEv('2026-10-03', ['b5', 'b6']), { sfId: 'sf2', title: 'Publix' }), srEv('2026-10-01', ['b2'])] };
   const card = (o) => vm.runInContext('parentShiftReportCard', srStatusCtx(o))(pv, SR_TODAY);
-  const order = (h) => [...h.matchAll(/<div class="sr-row"><div class="sr-shift">(<span class="pill sr-mine">Your scout’s shift<\/span> )?<strong>D([\d-]+)<\/strong> · (\w+)/g)]
+  const order = (h) => [...h.matchAll(/<div class="sr-row"><div class="sr-shift">(<span class="pill sr-mine">Your family’s shift<\/span> )?<strong>D([\d-]+)<\/strong> · (\w+)/g)]
     .map((m) => (m[1] ? '*' : '') + m[2] + ' ' + m[3]);
   const plain = order(card({}));
   eq(plain, ['2026-10-03 Publix', '2026-10-03 Publix', '2026-10-01 Kroger', '2026-09-30 Kroger'], 'with none of theirs: newest first, as before');
@@ -18865,7 +18867,7 @@ test('my shifts: the family’s card lists their own scouts’ shifts first, mar
   const h = vm.runInContext('parentShiftReportCard', ctx)(pv, SR_TODAY);
   eq(order(h), ['*2026-10-03 Publix', '*2026-09-30 Kroger', '2026-10-03 Publix', '2026-10-01 Kroger'], 'theirs first, marked; the rest in their order');
   ok(h.indexOf('data-block="b6"') < h.indexOf('data-block="b1"') && h.indexOf('data-block="b1"') < h.indexOf('data-block="b5"'), 'the right shifts marked');
-  eq((h.match(/Your scout’s shift/g) || []).length, 2, 'marked once each');
+  eq((h.match(/Your family’s shift/g) || []).length, 2, 'marked once each');
   // A shift of theirs outside the window is not added: the card lists only what it would anyway.
   vm.runInContext("sync.shiftReports.myShifts = [{ sfId: 'sf1', blockId: 'b9' }]", ctx);
   eq(order(vm.runInContext('parentShiftReportCard', ctx)(pv, SR_TODAY)), plain, 'an id the card does not list');
@@ -18877,7 +18879,7 @@ test('my shifts: the family’s card lists their own scouts’ shifts first, mar
 /* S-5 (Keith, 2026-10-01) — on the page: the family's third figure, and the leaders' "cash to
    collect". A custody figure only: never added to the block's sales or to any scout's split, and
    never published to parents. */
-test('S-5: the family’s form asks for cash from popcorn sales still in hand — $0 unless they couldn’t convert it', () => {
+test('S-5: the family’s form asks for cash from popcorn sales not converted — $0 unless they couldn’t convert it', () => {
   const ctx = sandbox(['SHIFT_REPORT_MAX_CENTS', 'SHIFT_REPORT_NOTE_MAX', 'SHIFT_REPORT_SAY', 'shiftReportCents', 'shiftReportNote', 'shiftReportBody']);
   const body = (over) => JSON.parse(JSON.stringify(vm.runInContext('shiftReportBody', ctx)(Object.assign(
     { sfId: 'sf1', blockId: 'b1', rid: '', te: '123.45', cash: '25', note: '', attest: true }, over))));
@@ -18887,27 +18889,33 @@ test('S-5: the family’s form asks for cash from popcorn sales still in hand �
   eq(body({ salesCash: '20' }).body.salesCashCents, 2000, 'cash still in hand');
   eq(body({ salesCash: '20', rid: 'r1' }).body, { teCents: 12345, cashCents: 2500, note: '', attest: true, salesCashCents: 2000, action: 'edit' }, 'an edit carries it');
   const over = body({ salesCash: '123.46' });
-  eq([over.problem, over.field], ['Enter the cash from popcorn sales you still have in dollars, like 20.00, or 0. It can’t be more than the Trail’s End amount, ' +
-    'because those sales are part of it.', 'salesCash'], 'more than the Trail’s End amount');
+  eq([over.problem, over.field], ['Enter the cash from popcorn sales not converted, in dollars, like 20.00. Enter 0 if it was all converted. ' +
+    'It can’t be more than the Trail’s End amount, because those sales are already in it.', 'salesCash'], 'more than the Trail’s End amount');
   eq(body({ salesCash: '-5' }).field, 'salesCash', 'a negative amount');
   ok(!body({ salesCash: '123.45' }).problem, 'all of it');
   // The form: the field, its label and its hint, in Keith's words.
   const f = vm.runInContext('parentShiftReportCard', srStatusCtx({ ui: { shiftReport: { sfId: 'sf1', blockId: 'b1', rid: '', te: '', cash: '', note: '', attest: false } } }))(
     { events: [srEv(SR_TODAY)] }, SR_TODAY);
-  ok(/<label for="srSalesCash">Cash from popcorn sales still in hand \(\$\)<\/label><input id="srSalesCash" name="salesCash" aria-describedby="srSalesCashHint" class="money-in" inputmode="decimal" autocomplete="off" placeholder="0\.00" value="0\.00">/.test(f),
-    'the field, $0 to start');
-  ok(f.indexOf('<span class="sr-hint" id="srSalesCashHint">Should be $0: convert cash from popcorn sales to credit before you leave. ' +
-    'If you couldn’t, enter what you still have and hand it to the leader collecting the money.</span>') !== -1, 'the hint');
+  ok(/<label for="srSalesCash">Cash from popcorn sales not converted \(\$\)<\/label><input id="srSalesCash" name="salesCash" aria-describedby="srSalesCashHint" class="money-in" inputmode="decimal" autocomplete="off" placeholder="0\.00" value="">/.test(f),
+    'the field, blank to start (blank is $0)');
+  ok(f.indexOf('<span class="sr-hint" id="srSalesCashHint">Usually $0. Count only cash from popcorn sales that wasn’t converted with Cash to Credit in the Trail’s End app, ' +
+    'by any family on this shift. Cash you converted is yours to keep, so leave it out. Leave out the donation jar too. ' +
+    'Say in the note who has it, and hand it to the leader collecting the money.</span>') !== -1, 'the hint');
   ok(f.indexOf('srCash"') < f.indexOf('srSalesCash"') && f.indexOf('srSalesCash"') < f.indexOf('srNote"'), 'after the cash donations, before the note');
   // Where it stands: said only when there is some.
   const line = (r) => srLine(srStatusCtx({ reports: [srReport(r)] }), srEv(SR_TODAY));
-  ok(!/still in hand/.test(line({})), 'none: not mentioned');
-  ok(/\$123\.45 Trail’s End · \$25\.00 cash donations · \$20\.00 cash from sales still in hand<\/span>/.test(line({ salesCashCents: 2000 })), 'some: said after the other two');
+  ok(!/not converted/.test(line({})), 'none: not mentioned');
+  ok(/\$123\.45 Trail’s End · \$25\.00 cash donations · \$20\.00 cash from popcorn sales not converted \(hand it to a leader\)<\/span>/.test(line({ salesCashCents: 2000 })),
+    'some: said after the other two');
   // The second parent checks it with the others, and the confirm names it.
   const cf = vm.runInContext('parentShiftReportCard', srStatusCtx({ others: [{ sfId: 'sf1', blockId: 'b1', status: 'submitted', needsConfirm: true, confirmed: false,
     canConfirm: true, id: 'r9', teCents: 12345, cashCents: 2500, salesCashCents: 2000, note: '', submittedByName: 'Nora', updatedAt: 5 }],
     ui: { shiftConfirm: { rid: 'r9', sfId: 'sf1', blockId: 'b1', attest: false } } }))({ events: [srEv(SR_TODAY)] }, SR_TODAY);
-  ok(/Cash from sales still in hand <strong class="money">\$20\.00<\/strong>/.test(cf), 'the confirm form shows it');
+  ok(/ · Cash from popcorn sales not converted <strong class="money">\$20\.00<\/strong><\/p>/.test(cf), 'the confirm form shows it');
+  const cf0 = vm.runInContext('parentShiftReportCard', srStatusCtx({ others: [{ sfId: 'sf1', blockId: 'b1', status: 'submitted', needsConfirm: true, confirmed: false,
+    canConfirm: true, id: 'r9', teCents: 12345, cashCents: 2500, salesCashCents: 0, note: '', submittedByName: 'Nora', updatedAt: 5 }],
+    ui: { shiftConfirm: { rid: 'r9', sfId: 'sf1', blockId: 'b1', attest: false } } }))({ events: [srEv(SR_TODAY)] }, SR_TODAY);
+  ok(!/not converted <strong/.test(cf0), 'none: the confirm form leaves it out (no wrap at 390px)');
 });
 
 atest('S-5: a leader sees the cash to collect, the accept carries it to the block and never into the sales or the split, and the server records what became of it', async () => {

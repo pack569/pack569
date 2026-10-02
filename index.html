@@ -902,6 +902,7 @@
   .sr-row { padding: 8px 0; }
   .sr-row + .sr-row { border-top: 1px solid var(--line-soft); }
   .sr-shift { font-size: 0.86rem; }
+  .sr-mine { white-space: nowrap; }
   .sr-form { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; padding: 12px; border-radius: 10px; background: var(--surface-2); }
   .sr-fields { display: flex; flex-direction: column; gap: 10px; }
   .sr-hint { font-weight: 400; font-size: 0.78rem; line-height: 1.35; color: var(--ink-soft); }
@@ -19992,23 +19993,30 @@
   // The checkbox a family ticks to sign (popcorn-kernel review, round 1): what they counted, and
   // where the Trail's End figure comes from. The second parent's is their own (SHIFT_CONFIRM_ATTEST).
   var SHIFT_REPORT_ATTEST = 'I counted this shift’s cash donations, and the Trail’s End amount is this shift’s total in the Trail’s End app.';
-  var SHIFT_CONFIRM_ATTEST = 'I worked this shift. These cash donations match what was counted at the table, and the Trail’s End amount matches the app.';
+  // Followups round 1 (parent experience): the second parent attests the figures they are shown,
+  // the cash from popcorn sales not converted among them.
+  var SHIFT_CONFIRM_ATTEST = 'I worked this shift. These cash donations match what was counted at the table, and the Trail’s End amount matches the app. ' +
+    'Any cash from popcorn sales not converted is shown above.';
   // Under each figure (popcorn-kernel review D2; parent-experience review 23): what goes in it.
   // "Entered in", not "rung into": the parent app keeps "rung" for nothing (J8, the parent-language rule).
   var SHIFT_REPORT_TE_HINT = 'Everything entered in the Trail’s End app during this shift, card and cash, by every family on the shift.';
-  var SHIFT_REPORT_CASH_HINT = 'Only the cash in the donation jar. Leave out cash from popcorn sales, your starting change, and any donation already entered in the Trail’s End app.';
+  var SHIFT_REPORT_CASH_HINT = 'Only the cash in the donation jar. Leave out your starting change, any donation already entered in the Trail’s End app, ' +
+    'and cash from popcorn sales (that goes in its own box below).';
   // S-5 (Keith, 2026-10-01) — the third figure: cash from popcorn sales a family could not convert
   // before leaving. A custody figure for the leaders, never a sale: those sales are already in the
   // Trail's End amount, so it is never added to the block's sales or to anyone's split.
-  var SHIFT_REPORT_SALES_CASH_HINT = 'Should be $0: convert cash from popcorn sales to credit before you leave. ' +
-    'If you couldn’t, enter what you still have and hand it to the leader collecting the money.';
+  // Followups round 1 (treasurer 5 with parent experience 2): the whole shift's, not one family's,
+  // and who has it goes in the note.
+  var SHIFT_REPORT_SALES_CASH_HINT = 'Usually $0. Count only cash from popcorn sales that wasn’t converted with Cash to Credit in the Trail’s End app, ' +
+    'by any family on this shift. Cash you converted is yours to keep, so leave it out. Leave out the donation jar too. ' +
+    'Say in the note who has it, and hand it to the leader collecting the money.';
   // Under the note (youth-protection review 1): who reads it, and what not to put in it.
   var SHIFT_REPORT_NOTE_HINT = 'Leaders and the other family on this shift can read this. Don’t name scouts or share anything about a child.';
   // Pack policy (Keith, round 1): cash from popcorn sales is converted before anyone leaves the
-  // table. Midnight is only Trail's End's own cutoff, said the same way here and on the day sheet
-  // (STOREFRONT_CASH_TO_CREDIT).
-  var SHIFT_REPORT_CASH_POLICY = 'Convert any cash from popcorn sales to credit in the Trail’s End app before you leave the table. ' +
-    '(Trail’s End’s own cutoff is midnight.) Cash donations stay in the jar and go to the leader collecting the money.';
+  // table. Followups round 1 (parent experience 9): the form says that in the sales-cash box's hint,
+  // so this line is the jar only. Trail's End's midnight cutoff is the day sheet's to say
+  // (STOREFRONT_CASH_TO_CREDIT), not repeated here.
+  var SHIFT_REPORT_CASH_POLICY = 'Cash donations stay in the jar and go to the leader collecting the money.';
   // What each refusal from the server means to a family. Keyed by the answer's reason (a 400's
   // reason; a 409's reason or error). Anything not here gets SHIFT_REPORT_SAY_ELSE.
   var SHIFT_REPORT_SAY = {
@@ -20019,7 +20027,8 @@
     'attest-confirm': 'Check the box to say these match what was counted at the table.',
     'te-cents': 'Enter the Trail’s End amount in dollars, like 125.50. Enter 0 if there were no sales. Up to $10,000.',
     'cash-cents': 'Enter the cash donations in dollars, like 18.00. Enter 0 if the jar was empty. Up to $10,000.',
-    'sales-cash-cents': 'Enter the cash from popcorn sales you still have in dollars, like 20.00, or 0. It can’t be more than the Trail’s End amount, because those sales are part of it.',
+    'sales-cash-cents': 'Enter the cash from popcorn sales not converted, in dollars, like 20.00. Enter 0 if it was all converted. ' +
+      'It can’t be more than the Trail’s End amount, because those sales are already in it.',
     'note': 'Keep the note to 300 characters or fewer.',
     'open': 'Another family already sent totals for this shift. If you worked it with them, find it under Storefront shift totals and confirm it. Otherwise, ask a leader.',
     'accepted': 'A leader has already accepted totals for this shift.',
@@ -20239,7 +20248,7 @@
   // when there is some, since nearly every family converts it all before they leave.
   function srSalesCashFig(r) {
     var c = (r && r.salesCashCents) || 0;
-    return c > 0 ? ' · ' + esc(fmt(c)) + ' cash from sales still in hand' : '';
+    return c > 0 ? ' · ' + esc(fmt(c)) + ' cash from popcorn sales not converted (hand it to a leader)' : '';
   }
   // One shift's line: where its totals stand, and, with `showActs` (the Storefront shift totals
   // card only: parent-experience review 6), what this person can do about it. '' when the feature
@@ -20330,8 +20339,8 @@
         SHIFT_REPORT_TE_HINT, bad === 'te') +
       srField('srCash', 'cash', 'Cash donations ($)', '<INPUT class="money-in" inputmode="decimal" autocomplete="off" placeholder="0.00" value="' + esc(d.cash) + '">',
         SHIFT_REPORT_CASH_HINT, bad === 'cash') +
-      srField('srSalesCash', 'salesCash', 'Cash from popcorn sales still in hand ($)', '<INPUT class="money-in" inputmode="decimal" autocomplete="off" placeholder="0.00" value="' +
-        esc(d.salesCash == null ? '0.00' : d.salesCash) + '">', SHIFT_REPORT_SALES_CASH_HINT, bad === 'salesCash') + '</div>' +
+      srField('srSalesCash', 'salesCash', 'Cash from popcorn sales not converted ($)', '<INPUT class="money-in" inputmode="decimal" autocomplete="off" placeholder="0.00" value="' +
+        esc(d.salesCash == null ? '' : d.salesCash) + '">', SHIFT_REPORT_SALES_CASH_HINT, bad === 'salesCash') + '</div>' +
       srField('srNote', 'note', 'Note for the leader (optional)', '<INPUT-TEXTAREA rows="2" maxlength="' + SHIFT_REPORT_NOTE_MAX + '">' + esc(d.note) + '</textarea>',
         SHIFT_REPORT_NOTE_HINT, bad === 'note') +
       '<label class="sr-attest"><input type="checkbox" id="srAttest" name="attest"' + (d.attest ? ' checked' : '') +
@@ -20354,7 +20363,8 @@
       '<p class="small" style="margin:0"><strong>Check the totals' + (o.submittedByName ? ' ' + esc(o.submittedByName) + ' sent' : '') + '</strong> · ' +
       esc(String(e.title || 'Storefront')) + ', ' + esc(String(s.when || '')) + '</p>' +
       '<p class="sr-amounts">Trail’s End <strong class="money">' + esc(fmt(o.teCents || 0)) + '</strong> · Cash donations <strong class="money">' +
-      esc(fmt(o.cashCents || 0)) + '</strong> · Cash from sales still in hand <strong class="money">' + esc(fmt(o.salesCashCents || 0)) + '</strong></p>' +
+      esc(fmt(o.cashCents || 0)) + '</strong>' + (o.salesCashCents > 0 ? ' · Cash from popcorn sales not converted <strong class="money">' +
+        esc(fmt(o.salesCashCents)) + '</strong>' : '') + '</p>' +
       (o.note ? '<p class="small" style="margin:0">“' + esc(o.note) + '”</p>' : '') +
       '<label class="sr-attest"><input type="checkbox" id="srConfirmAttest" name="attest"' + (cf.attest ? ' checked' : '') +
         (cf.problem ? ' aria-invalid="true" aria-describedby="srProblem"' : '') + '><span>' + esc(SHIFT_CONFIRM_ATTEST) + '</span></label>' +
@@ -20369,7 +20379,7 @@
     var sr = sync.shiftReports;
     return arrOf(sr && sr.myShifts).some(function (x) { return x && x.sfId === sfId && x.blockId === blockId; });
   }
-  var SR_MY_SHIFT = 'Your scout’s shift';
+  var SR_MY_SHIFT = 'Your family’s shift';
   // The Schedule's shift-totals card: every published storefront shift from the last 14 days that
   // has started, with where its totals stand and the buttons, and the form under the one being
   // filled in. '' when the feature is off or there is no such shift. `today` is the pack's.
@@ -20426,7 +20436,7 @@
       ui.shiftConfirm = null;
       ui.shiftReport = { sfId: String(ds.sf || ''), blockId: String(ds.block || ''), rid: rid,
         te: own ? dollars(own.teCents) || '0.00' : '', cash: own ? dollars(own.cashCents) || '0.00' : '',
-        salesCash: own ? dollars(own.salesCashCents) || '0.00' : '0.00', note: own ? String(own.note || '') : '',
+        salesCash: own ? dollars(own.salesCashCents) || '' : '', note: own ? String(own.note || '') : '',
         attest: false, busy: false, problem: '', problemField: '' };
       ui.srFocusId = 'srTe';
       render();
@@ -22594,7 +22604,7 @@
   // Printed after each shift's cash count: the family can move its cash into Trail's End credit.
   // Pack policy (popcorn-kernel review D3, Keith round 1): sales cash is converted at the table.
   // Parent-experience review 21: the deadline is the table, as pack policy says; midnight only as
-  // Trail's End's own cutoff, said the same way here and in the app (SHIFT_REPORT_CASH_POLICY).
+  // Trail's End's own cutoff. The family's form leaves the cutoff to this sheet (SHIFT_REPORT_CASH_POLICY).
   var STOREFRONT_CASH_TO_CREDIT = 'Cash from popcorn sales: convert it to credit in the Trail\u2019s End app (Cash to Credit) before you leave the table. ' +
     '(Trail\u2019s End\u2019s own cutoff is midnight.) Converting doesn\u2019t change the Trail\u2019s End amount. The parent who converts it keeps that cash. ' +
     'Cash donations stay in the jar and go to the leader collecting the money.';
@@ -23550,14 +23560,14 @@
     });
     return rows.sort(function (a, b) { return a.date.localeCompare(b.date) || a.shift.localeCompare(b.shift); });
   }
-  // S-5: "Cash from sales to collect" is what the report said the family still had, whatever has
+  // S-5: "Popcorn sales cash not converted" is what the report said was still out, whatever has
   // been collected since (the block says what is still out).
-  var SR_HISTORY_HEAD = ['Date', 'Storefront', 'Shift', 'Trail’s End', 'Cash donations', 'Cash from sales to collect', 'Collected / converted by, on', 'Sent by', 'Verified by', 'Accepted by',
+  var SR_HISTORY_HEAD = ['Date', 'Storefront', 'Shift', 'Trail’s End', 'Cash donations', 'Popcorn sales cash not converted', 'Collected / converted by, on', 'Sent by', 'Verified by', 'Accepted by',
     'Override reason', 'Status', 'Sent-back reason', 'Block now differs from report'];
   // The CSV (youth-protection review 4): figures and adults' names only. The leaders' written
   // reasons, which can say anything, go in only when asked for (`withReasons`), as one labelled
   // last column. Never a uid or an email; never a child.
-  var SR_HISTORY_CSV_HEAD = ['Date', 'Storefront', 'Shift', 'Trail’s End', 'Cash donations', 'Cash from sales to collect', 'Collected / converted by, on', 'Sent by', 'Verified by', 'Accepted by', 'Status',
+  var SR_HISTORY_CSV_HEAD = ['Date', 'Storefront', 'Shift', 'Trail’s End', 'Cash donations', 'Popcorn sales cash not converted', 'Collected / converted by, on', 'Sent by', 'Verified by', 'Accepted by', 'Status',
     'Block now differs from report'];
   var SR_HISTORY_REASONS_HEAD = 'Leaders’ reasons (override or sent back)';
   function shiftReportHistoryCsv(rows, withReasons) {
