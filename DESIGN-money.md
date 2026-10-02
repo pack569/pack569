@@ -1705,8 +1705,24 @@ covers both, and after settling what is still held for the council *is* the comm
 `how` is what happened, and decides the form's warning (no check to the council in the ledger
 yet; no commission check yet; no sales cash banked); the sum is the same. The Reconcile line then
 reads "Settled with the council on ‹date›: ‹how›. The commission is actual now: $A banked − $B
-paid (+ $C in commission checks) = $X, and that is what Funds in counts", and warns when the
-Council page's figure differs.
+paid (+ $C in commission checks) = $X, and that is what Funds in counts", and the Funds in
+sentence adds "net of any Show & Sell product the pack paid for and didn't sell".
+
+**Cross-checks** (treasurer re-check of 89c08b5, 1–3):
+- The settled commission is compared with what *sales* work out to (`computePackTotals().commission`),
+  not the Council page's product figure. Higher: "Sales work out to $E in commission, $D more than
+  settled. Usually that is Show & Sell product the pack paid for and didn't sell, or sales cash not
+  yet banked as Popcorn money for the council. Check the council's statement." Lower: "…$D less than
+  settled. Check for storefront cash donations the pack keeps banked as Popcorn money for the council
+  (they belong under Storefront cash donations (kept)), or a commission check from another season."
+  The settle form shows "(sales work out to $E)".
+- While the pack keeps storefront cash, kept cash not yet banked as *Storefront cash donations
+  (kept)* beside any council money banked is a warning on the line and in the settle form: "If they
+  went into a Popcorn money for the council deposit, settling counts them twice in Funds in: once as
+  kept cash and again in the commission. Record that deposit as two rows, one for each source."
+- A commission check posted while money is still held for the council and nothing is settled is a
+  Check on the Budget card: Funds in counts the check alone, "not the $H still held for the council.
+  Once the council's statement is final, mark it settled on Money · Ledger · Reconcile."
 
 **For the treasurer to confirm:**
 - *The payout case.* The spec said that with a commission check "it's the posted commission rows".

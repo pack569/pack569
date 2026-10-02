@@ -32281,7 +32281,7 @@ test('item 11: DESIGN-money.md has the posting rule, and the format was raised f
    the council and the pack's check to it. A pass-through, and a settlement step that makes the commission
    actual. Made-up data throughout.
    ================================================================ */
-const KC_FNS = declClosure(['ledgerIncomeCents', 'lineActualCents', 'lineIncomeCents', 'entryWantsLine', 'ledgerBalance', 'reconcileTotals', 'commissionLookalikes',
+const KC_FNS = declClosure(['councilKeptTwiceText', 'councilEstimateText', 'ledgerIncomeCents', 'lineActualCents', 'lineIncomeCents', 'entryWantsLine', 'ledgerBalance', 'reconcileTotals', 'commissionLookalikes',
   'councilMoneyCheck', 'councilMoneyLines', 'councilSettledNormal', 'councilSettledText', 'councilSettlement'], []);
 const kcRow = (id, cents, dir, o) => c8row(id, (o && o.date) || '2026-11-20', cents, dir, Object.assign({ source: 'council' }, o || {}));
 
@@ -32353,7 +32353,20 @@ test('council money: settling makes the commission actual, banked − paid + com
   eq(x.councilMoneyLines(x.councilMoneyCheck(paid), st, 31000).map((l) => (l.warn ? '! ' : '') + l.text), [
     'Popcorn money for the council: banked $700.00 · paid to the council $400.00 · still held $300.00.',
     'Settled with the council on ' + fds + ': the pack paid the council. The commission is actual now: $700.00 banked − $400.00 paid = $300.00, and that is what Funds in counts.',
-    '! The Council page works the commission out at $310.00, $10.00 different. Check that all the sales cash is banked as Popcorn money for the council, and check the council’s statement.'], 'settled');
+    '! Sales work out to $310.00 in commission, $10.00 more than settled. Usually that is Show & Sell product the pack paid for and didn’t sell, or sales cash not yet banked as Popcorn money for the council. Check the council’s statement.'], 'settled');
+  // Treasurer re-check of 89c08b5 (1, 2) — the estimate lower, and kept storefront cash not banked as such while council money is.
+  eq(x.councilMoneyLines(x.councilMoneyCheck(paid), st, 29000, 20000).slice(2).map((l) => (l.warn ? '! ' : '') + l.text), [
+    '! Sales work out to $290.00 in commission, $10.00 less than settled. Check for storefront cash donations the pack keeps banked as Popcorn money for the council (they belong under Storefront cash donations (kept)), or a commission check from another season.',
+    '! Storefront cash donations kept $200.00 aren’t banked as ‘Storefront cash donations (kept)’. If they went into a Popcorn money for the council deposit, settling counts them twice in Funds in: once as kept cash and again in the commission. Record that deposit as two rows, one for each source.'],
+    'the cross-checks');
+  eq(x.councilMoneyLines(x.councilMoneyCheck([]), null, null, 20000), [], 'nothing banked for the council: no question');
+  const cmh = slice('councilMoneyHtml');
+  ok(/var est = computePackTotals\(\)\.commission;/.test(cmh) && /state\.cashThroughTrailsEnd \? 0 : storefrontCashCheck\(/.test(cmh) &&
+    /var warn = keptZ > 0 && chk\.banked > 0 \? councilKeptTwiceText\(keptZ\)/.test(cmh) && /' \(sales work out to ' \+ esc\(fmt\(est\)\) \+ '\)'/.test(cmh), 'the Reconcile card and the settle form');
+  const card = /function renderBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/!bud\.commissionSettled && bud\.commissionPosted && bud\.councilIn - bud\.councilOut > 0/.test(card) &&
+    /A commission check is posted, but popcorn isn\\u2019t marked settled with the council\. ' \+\s*'Funds in counts the check \(' \+ fmt\(bud\.commission\) \+ '\) alone, not the ' \+ fmt\(bud\.councilIn - bud\.councilOut\) \+ ' still held for the council\. ' \+\s*'Once the council\\u2019s statement is final, mark it settled on Money \\u00b7 Ledger \\u00b7 Reconcile\. '/.test(card), 'the Budget card’s Check');
+  ok(/plus any commission checks, ' \+\s*'net of any Show & Sell product the pack paid for and didn\\u2019t sell'/.test(card), 'the Funds in sentence');
   eq(x.councilMoneyLines(x.councilMoneyCheck([kcRow('o', 500, 'out')]), null, null).map((l) => l.warn), [false, true], 'more paid than banked is a warning');
   eq(x.councilMoneyLines(x.councilMoneyCheck([]), null, null), [], 'nothing to say');
   // The settlement as stored, and as the change history says it.
@@ -32370,7 +32383,7 @@ test('council money: the settle step is an editor’s, logged on the book, taken
   ok(/arm\(act,/.test(un) && /logLedger\('unsettle', 'book'/.test(un) && /delete state\.book\.councilSettled;/.test(un), 'Not settled after all');
   ok(/h \+= councilMoneyHtml\(\);/.test(slice('renderReconcile')) && /if \(!canEdit\(\) \|\| state\.book\.closedAt\) return h;/.test(slice('councilMoneyHtml')), 'the Reconcile card');
   ok(/ledgerIncomeCents\(state\.ledger, isIncomeLine, b\.startingBalance \|\| 0, !!\(state\.book && state\.book\.councilSettled\)\)/.test(slice('computeBudget')), 'computeBudget does not read the settlement');
-  ok(/' as settled with the council: ' \+ fmt\(bud\.councilIn\) \+ ' banked for it \\u2212 ' \+ fmt\(bud\.councilOut\) \+ ' paid to it, plus any commission checks'/.test(SCRIPT), 'the Funds in sentence');
+  ok(/' as settled with the council: ' \+ fmt\(bud\.councilIn\) \+ ' banked for it \\u2212 ' \+ fmt\(bud\.councilOut\) \+ ' paid to it, plus any commission checks, '/.test(SCRIPT), 'the Funds in sentence');
   // normalizeState keeps it on the book, and a fresh book (close-out) has none.
   const nz = sandbox(NORMALIZE_FNS);
   const kept = nz.normalizeState({ version: 1, scouts: [], book: { openingCents: 0, openingDate: '', councilSettled: { on: '2026-12-02', how: 'paid', by: 'Pat' } } });

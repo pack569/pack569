@@ -8218,9 +8218,24 @@
     return t;
   }
   // The Reconcile card's council line in words: [{ text, warn }]. `settled` is book.councilSettled
-  // (or null); `estimate` the commission the Council page works out (councilSettlement), or null.
-  // Pure given fmt and fmtDateShort.
-  function councilMoneyLines(chk, settled, estimate) {
+  // (or null); `estimate` the commission sales work out to (computePackTotals().commission: treasurer
+  // re-check of 89c08b5, 2), or null; `keptNotBanked` the storefront cash donations the pack keeps and
+  // has not banked as such (storefrontCashCheck().notYet, 0 while storefront cash runs through Trail's
+  // End). Pure given fmt and fmtDateShort.
+  // The treasurer's words for the two cross-checks (re-check of 89c08b5, 1 and 2).
+  function councilKeptTwiceText(z) {
+    return 'Storefront cash donations kept ' + fmt(z) + ' aren\u2019t banked as \u2018Storefront cash donations (kept)\u2019. If they went into a Popcorn money ' +
+      'for the council deposit, settling counts them twice in Funds in: once as kept cash and again in the commission. Record that deposit as two rows, one for each source.';
+  }
+  function councilEstimateText(estimate, settledCents) {
+    var d = Math.abs(estimate - settledCents);
+    return estimate > settledCents
+      ? 'Sales work out to ' + fmt(estimate) + ' in commission, ' + fmt(d) + ' more than settled. Usually that is Show & Sell product the pack paid for and didn\u2019t sell, ' +
+        'or sales cash not yet banked as Popcorn money for the council. Check the council\u2019s statement.'
+      : 'Sales work out to ' + fmt(estimate) + ' in commission, ' + fmt(d) + ' less than settled. Check for storefront cash donations the pack keeps banked as Popcorn money ' +
+        'for the council (they belong under Storefront cash donations (kept)), or a commission check from another season.';
+  }
+  function councilMoneyLines(chk, settled, estimate, keptNotBanked) {
     if (!chk || !(chk.banked || chk.paid || settled)) return [];
     var out = [{ warn: false, text: 'Popcorn money for the council: banked ' + fmt(chk.banked) + ' \u00b7 paid to the council ' + fmt(chk.paid) +
       ' \u00b7 still held ' + fmt(chk.held) + '.' }];
@@ -8231,11 +8246,9 @@
       out.push({ warn: false, text: 'Settled with the council on ' + fmtDateShort(settled.on) + ': ' + (COUNCIL_SETTLE_LABELS[settled.how] || '') + '. ' +
         'The commission is actual now: ' + fmt(chk.banked) + ' banked \u2212 ' + fmt(chk.paid) + ' paid' +
         (chk.checks ? ' + ' + fmt(chk.checks) + ' in commission checks' : '') + ' = ' + fmt(chk.commission) + ', and that is what Funds in counts.' });
-      if (estimate != null && estimate !== chk.commission) {
-        out.push({ warn: true, text: 'The Council page works the commission out at ' + fmt(estimate) + ', ' + fmt(Math.abs(estimate - chk.commission)) +
-          ' different. Check that all the sales cash is banked as Popcorn money for the council, and check the council\u2019s statement.' });
-      }
+      if (estimate != null && estimate !== chk.commission) out.push({ warn: true, text: councilEstimateText(estimate, chk.commission) });
     }
+    if (keptNotBanked > 0 && chk.banked > 0) out.push({ warn: true, text: councilKeptTwiceText(keptNotBanked) });
     return out;
   }
   // Does money in `e` look like popcorn cash posted as something else? The gentle hint under the add
@@ -25844,7 +25857,8 @@
       // a treasurer comparing the two needs to see both rather than wonder why Funds in moved.
       '<p class="small muted" style="margin:8px 0 0"><strong>Funds in</strong> = carryover (' + fmt(bud.startingBalance) + ') + popcorn commission (' + fmt(bud.commission) +
         (bud.commissionSettled
-          ? ' as settled with the council: ' + fmt(bud.councilIn) + ' banked for it \u2212 ' + fmt(bud.councilOut) + ' paid to it, plus any commission checks' +
+          ? ' as settled with the council: ' + fmt(bud.councilIn) + ' banked for it \u2212 ' + fmt(bud.councilOut) + ' paid to it, plus any commission checks, ' +
+            'net of any Show & Sell product the pack paid for and didn\u2019t sell' +
             (bud.commissionEstimate && bud.commissionEstimate !== bud.commission ? ' \u2014 sales work out to ' + fmt(bud.commissionEstimate) : '')
           : bud.commissionPosted
           ? ' as posted to the ledger' + (bud.commissionEstimate && bud.commissionEstimate !== bud.commission
@@ -25877,6 +25891,14 @@
         ? '<p class="small" style="margin:8px 0 0"><span class="pill navy">Check</span> A Carryover entry of <strong class="money">' +
           fmt(bud.ledgerCarryover) + '</strong> is in the ledger but Starting funds is $0 \u2014 set Starting funds to it ' +
           'and this entry stops counting.</p>'
+        : '') +
+      // Treasurer re-check of 89c08b5 (3) — a commission check posted, money still held for the council,
+      // and not settled: Funds in counts the check alone.
+      (!bud.commissionSettled && bud.commissionPosted && bud.councilIn - bud.councilOut > 0
+        ? '<p class="small" style="margin:8px 0 0"><span class="pill navy">Check</span> A commission check is posted, but popcorn isn\u2019t marked settled with the council. ' +
+          'Funds in counts the check (' + fmt(bud.commission) + ') alone, not the ' + fmt(bud.councilIn - bud.councilOut) + ' still held for the council. ' +
+          'Once the council\u2019s statement is final, mark it settled on Money \u00b7 Ledger \u00b7 Reconcile. ' +
+          '<button type="button" class="btn small ghost" data-act="goto" data-tab="money" data-section="ledger">Open the ledger</button></p>'
         : '') +
       // Item 11 — a storefront cash deposit is in the bank, not in Funds in again; and too many is a Check.
       (function () {
@@ -27300,8 +27322,10 @@
   // '' when there is no council money and nothing is settled. Leaders only, as the ledger is.
   function councilMoneyHtml() {
     var chk = councilMoneyCheck(state.ledger), settled = state.book.councilSettled || null;
-    var est = councilSettlement(state.popcornCouncil, inventoryTotals()).commissionCents;
-    var lines = councilMoneyLines(chk, settled, est);
+    // Treasurer re-check of 89c08b5 (2) — beside what sales work out to, not the Council page's product figure.
+    var est = computePackTotals().commission;
+    var keptZ = state.cashThroughTrailsEnd ? 0 : storefrontCashCheck(state.storefronts, state.ledger, false, closedBooksLastCutoff(state.closedBooks)).notYet;
+    var lines = councilMoneyLines(chk, settled, est, keptZ);
     if (!lines.length) return '';
     var h = lines.map(function (ln, i) {
       return '<p class="small" style="margin:' + (i ? '4' : '10') + 'px 0 0' + (ln.warn ? ';color:var(--accent-text)' : '') + '"' + (ln.warn ? ' role="alert"' : '') + '>' +
@@ -27315,7 +27339,8 @@
     }
     var d = ui.settleDraft;
     if (!d) return h + '<p class="small" style="margin:6px 0 0"><button type="button" class="btn small" data-act="council-settle-open">Popcorn settled with the council</button></p>';
-    var warn = d.how === 'paid' && !chk.paid ? 'No payment to the council is in the ledger yet. Record the check as Popcorn money for the council first.'
+    var warn = keptZ > 0 && chk.banked > 0 ? councilKeptTwiceText(keptZ)
+      : d.how === 'paid' && !chk.paid ? 'No payment to the council is in the ledger yet. Record the check as Popcorn money for the council first.'
       : d.how === 'payout' && !chk.checks ? 'No Popcorn commission check is in the ledger yet. Post it first.'
       : !chk.banked ? 'No sales cash is banked as Popcorn money for the council, so the commission would be the commission checks alone.' : '';
     return h + '<div class="ldeposit" style="margin:8px 0 0">' +
@@ -27327,7 +27352,7 @@
       }).join('') + '</select></label></div>' +
       '<p class="small" style="margin:6px 0 0">Funds in will count the commission as actual: ' + esc(fmt(chk.banked)) + ' banked for the council \u2212 ' +
         esc(fmt(chk.paid)) + ' paid to it + ' + esc(fmt(chk.checks)) + ' in commission checks = <strong class="money">' + esc(fmt(chk.commission)) + '</strong>' +
-        (est != null ? ' (the Council page works it out at ' + esc(fmt(est)) + ')' : '') + '.</p>' +
+        (est != null ? ' (sales work out to ' + esc(fmt(est)) + ')' : '') + '.</p>' +
       (warn ? '<p class="small" role="alert" style="margin:6px 0 0;color:var(--accent-text)">' + esc(warn) + '</p>' : '') +
       '<div class="row" style="margin-top:6px"><button type="button" class="btn small primary" data-act="council-settle-go">Mark settled</button>' +
       '<button type="button" class="btn small ghost" data-act="council-settle-cancel">Cancel</button></div></div>';
