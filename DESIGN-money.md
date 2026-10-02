@@ -1573,16 +1573,20 @@ API backend they send them in.
 
 #### Storefront cash deposits (treasurer review of shift reports, item 11, 2026-10-01)
 
-Cash donations the pack keeps (`cashThroughTrailsEnd` off) reach **Funds in** from the block
-figures, as *cash donations kept in full* (`computePackTotals().retainedCash`), from the moment
-a leader types them or accepts a family's shift report. The money then goes to the bank, and
-the deposit is a ledger entry. Posted as income on a budget line, `ledgerIncomeCents` counted it
-again as other income, so Funds in was overstated by the whole deposit. Shift reports make
-block figures routine, so this would have been a common mistake.
+Storefront cash donations the pack keeps (`cashThroughTrailsEnd` off) reach **Funds in** from
+the block figures, as *storefront cash donations kept in full*
+(`computePackTotals().retainedCash`), from the moment a leader types them or accepts a family's
+shift report. The money then goes to the bank, and the deposit is a ledger entry. Posted as
+income on a budget line, `ledgerIncomeCents` counted it again as other income, so Funds in was
+overstated by the whole deposit. Shift reports make block figures routine, so this would have
+been a common mistake. Wagon cash is never kept (owner, 2026-10-01: it runs through Trail's End),
+so the storefront blocks are the whole of the kept cash.
 
 **The posting rule.** Bank kept storefront cash donations as money in with the source
-**Storefront cash deposit** (`source: 'storefront'`), **with no budget line**. The ledger's
-help under *Record a transaction* says so.
+**Storefront cash donations (kept)** (`source: 'storefront'`), **with no budget line**. The
+ledger's help under *Record a transaction* says so, on money in: "Storefront cash donations the
+pack keeps are already in Funds in from the storefront figures: bank them as Storefront cash
+donations (kept), with no budget line, so they aren't counted twice."
 
 - **Never Funds in.** `ledgerIncomeCents` skips it on a line or with none, so a deposit filed
   on the popcorn line by habit is still not counted twice. It is not a refund off a line's
@@ -1593,36 +1597,56 @@ help under *Record a transaction* says so.
   locks when reconciled, is voided with a reason or reversed, is logged, merges per row, closes
   out at June 30 (in the closed book, with its source; carried if the bank has not shown it),
   and is in the CSVs as money in.
+- **Money in, and nobody's payment.** `normalizeLedgerRow` blanks the source on money out or on
+  a row with a family (security review, low 1). A family's payment is never stripped of its
+  family by a source (treasurer review, 20): on a saved row with a family the source is not
+  offered (`sourceSelectOptions`, `LEDGER_NO_FAMILY_SOURCES`), and `applyLedgerEdit` ignores it
+  if it arrives. Picking a family on a deposit makes it a payment, and the source goes. In the
+  add form, before anything is saved, choosing the source still takes the family off the draft.
 - **What it covers (optional).** Ticks for this season's storefronts, with what each kept
   (`depositFor`, the storefront ids, comma-separated), and/or a date range (`depositFrom`,
   `depositTo`). Labels: editable on a locked row, logged by name ("Kroger, Sep 12"). Typed with
-  no description, the entry is described as "Storefront cash deposit — Kroger, Sep 12", so the
-  words outlive the storefronts, which close-out clears. A family can't be picked on it: it is
-  the pack's own cash. Picking a family makes it a payment, and the source goes.
-- **The check line** (Money · Ledger · Reconcile, `storefrontCashCheck`): "Storefront cash kept
-  $X · deposited $Y · not yet deposited $Z." X is the kept cash donations from the block figures
-  this season, $0 while cash runs through Trail's End. Y is the counted storefront deposits. Z
-  is X − Y, never below $0. When Y is more than X it warns: "Storefront cash deposits are $D more
-  than the cash donations kept. Check each one: is any of it sales cash owed to Trail's End, or
-  money from something else?" The Budget card says the deposits are not added again, with a
-  Check when Y is more than X. A deposit that names only storefronts no longer on the list is
-  last season's: it is left out of Y and said apart. Sales cash a leader still holds
-  (`salesCashInHandCents` on a block, when the field is there) is its own line, "Sales cash to
-  pass to Trail's End $S: money owed to the council, not pack income." It is never part of X.
+  no description, the entry is described as "Storefront cash donations banked — Kroger, Sep 12",
+  so the words outlive the storefronts, which close-out clears. Only ids of the page's shape are
+  kept, at most 50 and 1,000 characters (`depositForIds`); a date is a date or nothing; a tick
+  adds only a storefront on the list, and an id already named stays until it is unticked
+  (security review, lows 2–3).
+- **The check line** (Money · Ledger · Reconcile, `storefrontCashCheck`): "Storefront cash
+  donations kept $X · banked $Y · still to bank $Z." X is the kept cash donations from the block
+  figures this season, $0 while storefront cash runs through Trail's End, and always equal to
+  `computePackTotals().retainedCash` (a harness test holds them together). Y is the counted
+  storefront deposits. Z is X − Y, never below $0. When Y is more than X it warns: "Storefront
+  cash donation deposits are $D more than the cash donations kept. Check each one: is any of it
+  sales money owed to the council, or money from something else? Only storefront cash donations
+  the pack keeps belong here." The Budget card says "Storefront cash donation deposits in the
+  ledger ($Y) are not added again: the cash donations they bank are already counted from the
+  storefront figures", with a Check when Y is more than X.
+- **Last season's.** A deposit that is last season's, or names a deleted storefront, is left out
+  of Y and said apart: every storefront it names is off the list, or it is dated on or before the
+  newest closed year's last day (`closedBooksLastCutoff`; treasurer review, 17). Deleting a
+  storefront a deposit names says so at the confirm: "A deposit of $Y in the ledger names this
+  storefront. Deleting it takes its $K of kept cash out of Funds in." (19)
+- **Sales cash** a leader still holds (`salesCashInHandCents` on a block, once that field exists:
+  it is being added by the shift-report follow-ups and is read defensively, as $0 when missing)
+  is its own line: "Sales cash to pay the council $S: owed to the council, not pack income." It
+  is never part of X.
 - **The hint.** Money in posted as plain income (source blank, donation, fundraiser or other; no
-  family) that looks like storefront cash gets: "Is this storefront cash? Use ‘Storefront cash
-  deposit’ so it isn't counted twice in Funds in." It looks like storefront cash when the
-  description says storefront or cash box or names a storefront held in the 45 days before it,
-  or the amount is that storefront's kept cash donations, or everything kept and not yet
-  deposited. It shows under the add form and in the entry's Detail. It asks, and changes
-  nothing. Not shown while cash runs through Trail's End.
+  family) that looks like storefront cash donations gets: "Are these storefront cash donations
+  the pack keeps? Record them as ‘Storefront cash donations (kept)’: they are already in Funds in
+  from the storefront figures." It looks like them when the description says storefront or cash
+  box, or names a storefront held in the 45 days before it (punctuation and spacing ignored:
+  "Lowe's" is "Lowes"), or the amount is that storefront's kept cash donations, or everything
+  kept and not yet banked. It shows under the add form and, while the entry is not reconciled, in
+  its Detail, with a **Not storefront cash** answer (`notStorefront`, as `notCommission`: logged,
+  and cleared when the amount, direction or source changes). It asks, and changes nothing.
 - **Format.** An older page (format 3) reads the new source as blank, so it counts a deposit
-  filed on a line in Funds in, and its next save writes the blank back. `PACK_FORMAT` is 4.
-- **Wagon cash** is never kept (owner, 2026-10-01: it runs through Trail's End), so X, the
-  storefront blocks' kept cash, is all of *storefront cash donations kept in full*.
-- **Not done, for the treasurer:** how a deposit of storefront **sales** cash should be recorded, when a pack banks it
-  and pays the council by check, is the treasurer's to say: today it is plain income, which
-  Funds in counts on a budget line and leaves out (as uncategorised) with none.
+  filed on a line in Funds in, and its next save writes the blank back. `PACK_FORMAT` is 4, one
+  raise for everything in this branch.
+- **Known gap (pre-existing, not this branch):** `rolloverYear` clears `state.storefronts` and
+  `state.entries` whatever their dates, and a close-out can run in September. A late close-out
+  takes the new season's storefronts with it: their kept cash leaves Funds in, and their
+  deposits read as last season's. Close-out should refuse, or ask, while any storefront or
+  popcorn entry is dated after the cutoff (treasurer review, 18).
 
 ---
 

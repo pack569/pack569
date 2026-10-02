@@ -1036,7 +1036,7 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
   // Security re-check of C5 (R4) — one log event, live and archived alike.
   'normalizeLedgerEvent',
   // Phase 3, C1 — the ledger row normalizer, shared by the rows set aside.
-  'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeClosedBook', 'mergeClosedBooks', 'closedBookRank', 'normalizeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'normalizeLedgerRow', 'depositForIds', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
+  'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeClosedBook', 'mergeClosedBooks', 'closedBookRank', 'normalizeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'normalizeLedgerRow', 'depositForIds', 'DEPOSIT_FOR_MAX', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'ledgerUnpaired', 'entrySignedCents',
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
@@ -1045,7 +1045,7 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
 const C8_SYNC_FNS = [SR_SYNC_STUBS, 'closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mergeClosedBooks', 'closedBookScouts', 'closedBookScoutIds', 'closedYearText', 'closedBooksKeptOverWhy', 'closeoutCarryDiffs',
   'closedBooksUndone', 'closedBooksUndoneWhy', 'closedBooksDroppedWhy', 'closedBookRows', 'statementLookupRows',
   // Security re-check of C8-5..C8-10 — the bound by program year (M-A), the push's union normalized (L-B), and what a merge says it set aside.
-  'closedBookRank', 'closedBookScoutIds', 'closedBooksFuture', 'closedBooksMaxYear', 'closedBooksNormalized', 'normalizeClosedBook', 'normalizeLedgerRow', 'depositForIds', 'normalizeAsideRow', 'normalizeLedgerEvent',
+  'closedBookRank', 'closedBookScoutIds', 'closedBooksFuture', 'closedBooksMaxYear', 'closedBooksNormalized', 'normalizeClosedBook', 'normalizeLedgerRow', 'depositForIds', 'DEPOSIT_FOR_MAX', 'normalizeAsideRow', 'normalizeLedgerEvent',
   'stableRowId', 'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_ASIDE_OFF', 'arrOf',
   // M-B — the tombstones of a closed year.
   'normalizeClosedGone', 'mergeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'closedGoneAdd', 'closedGoneDrops', 'closedGoneForKeep', 'ledgerActorUid', 'closedBooksShorter',
@@ -10108,7 +10108,7 @@ test('T1: a refund source only survives on money out that names a family', () =>
   ok(/if \(e\.source === 'refund' && \(e\.direction !== 'out' \|\| !e\.scoutId\)\) e\.source = '';/.test(ns),
     'a stray refund source is kept on money in, or with no family');
   ok(/e\.reimbursement = e\.reimbursement === true;/.test(ns), 'the reimbursement mark is not normalized');
-  const opts = /function sourceSelectOptions\(sel\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  const opts = /function sourceSelectOptions\(sel, family\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
   ok(/s !== 'refund'/.test(opts), 'Refund is offered as a source of money IN');
 });
 
@@ -21116,7 +21116,8 @@ const C3_READERS = {
   // C8-5 — each family's account as the year closed: the closed rows only (a reversal made after the cutoff of an entry before it read with them).
   closeoutFamilyAccounts: (L, x, c) => x.closeoutFamilyAccounts(c.charges, L, '2026-10-31', c.keyOf),
   // Item 11 — storefront cash kept against deposited, and the hint (which reads what is not yet deposited).
-  storefrontCashCheck: (L, x, c) => [false, true].map((te) => x.storefrontCashCheck(c.storefronts, L, te)),
+  storefrontCashCheck: (L, x, c) => [false, true].map((te) => x.storefrontCashCheck(c.storefronts, L, te)).concat([x.storefrontCashCheck(c.storefronts, L, false, '2026-08-31')]),
+  storefrontDepositsNaming: (L, x) => ['sf1', 'gone'].map((id) => x.storefrontDepositsNaming(L, id)),
   storefrontCashHint: (L, x, c) => [7500, 5000, 2500, 1200, 100].map((a) => x.storefrontCashHint({ direction: 'in', amountCents: a, date: '2026-09-20', source: '' }, c.storefronts, L, false))
 };
 // Item 11 — the storefronts those two read: $75 kept between two blocks, $9 of sales cash still in hand.
@@ -21124,7 +21125,7 @@ const C3_STOREFRONTS = [{ id: 'sf1', name: 'Kroger', date: '2026-09-01', blocks:
 // What those readers need besides themselves.
 const READER_DEPS = ['fmt', 'ledgerLogWhen', 'ledgerCsvCell', 'ledgerPairRole', 'ledgerReplacementId', 'ledgerReplacementFor',
   'statementInForce', 'statementReopened', 'fmtDateShort', 'arrOf', 'depositForIds', 'storefrontKeptCents', 'blockSalesCashInHand',
-  'STOREFRONT_HINT_SOURCES', 'STOREFRONT_HINT_DAYS'];
+  'STOREFRONT_HINT_SOURCES', 'STOREFRONT_HINT_DAYS', 'DEPOSIT_FOR_MAX', 'hintWords'];
 // Security review of C4 (finding 1) — the readers that LIST or COUNT the rows, or tick them. A pair
 // that came apart and was sent back to the ledger is two counted rows that net to $0: these show
 // both (the treasurer ticks the reversal against the statement it is on), and only the balance is
@@ -22819,7 +22820,7 @@ test('C4 property (option B): after a Reverse the family, tier and line readers 
   const x = sandbox(['entryPaysCharges', 'entryRefundsFamily', 'entryIsRefund', 'chargeIsOpen', 'entrySignedCents', 'entryAfterOpening',
     'entryOnStatement', 'entryWantsLine', 'ledgerLocked', 'ledgerDateReconciled', 'LEDGER_VOID_REASON_MAX', 'normalizeAsideRow', 'ledgerStampClean',
     'tierMakeupMap', 'tierMakeupPaidCents', 'chargeSetTotals', 'RECONCILE_STALE_DAYS', 'LEDGER_INCOME_SOURCES', 'COMMISSION_LOOKALIKE_SOURCES', 'carriedRowsOf',
-    'applyLedgerEdit', 'toCents', 'ledgerRowFields', 'LEDGER_EDIT_FIELDS', 'LEDGER_MAX_CENTS', 'fmtDateShort', 'isoPlusDays'].concat(READER_DEPS, C4_FNS, found));
+    'applyLedgerEdit', 'LEDGER_NO_FAMILY_SOURCES', 'toCents', 'ledgerRowFields', 'LEDGER_EDIT_FIELDS', 'LEDGER_MAX_CENTS', 'fmtDateShort', 'isoPlusDays'].concat(READER_DEPS, C4_FNS, found));
   vm.runInContext('function ledgerLineIsDirect() { return false; }', x);
   const r = c3Rand(4569);
   const pick = (a) => a[Math.floor(r() * a.length)];
@@ -32079,44 +32080,54 @@ test('item 11: a storefront cash deposit is in the bank balance, the ledger’s 
   eq([rec.cleared, rec.difference], [162500, 0], 'the ticked balance agrees with the statement');
 });
 
-test('item 11: the Reconcile line says storefront cash kept, deposited and not yet deposited, warns past what was kept, and reads Trail’s End and sales cash', () => {
+test('item 11: the Reconcile line says storefront cash donations kept, banked and still to bank, warns past what was kept, and reads Trail’s End and sales cash', () => {
   const x = sandbox(SF_FNS), SF = SF_STORES();
-  const lines = (sf, L, te) => x.storefrontCashLines(x.storefrontCashCheck(sf, L, te)).map((l) => (l.warn ? '! ' : '') + l.text);
+  const lines = (sf, L, te, cut) => x.storefrontCashLines(x.storefrontCashCheck(sf, L, te, cut)).map((l) => (l.warn ? '! ' : '') + l.text);
   // $425.00 banked for Kroger; Publix not yet. A voided deposit is not in the counted rows; a reversed pair cancels.
   const L = [sfRow('d1', 42500, { depositFor: 'k' }), c8row('fr', '2026-10-01', 5000, 'in', { source: 'fundraiser' }),
     sfRow('d9', 20000, { reversedBy: 'rv-d9' }), c8row('rv-d9', '2026-09-25', 20000, 'out', { reverses: 'd9' })];
   const c = J(x.storefrontCashCheck(SF, L, false));
   eq([c.kept, c.deposited, c.count, c.notYet, c.over, c.salesCash, c.earlier], [62500, 42500, 1, 20000, 0, 0, 0], 'the check');
-  eq(lines(SF, L, false), ['Storefront cash kept $625.00 · deposited $425.00 · not yet deposited $200.00.'], 'the line');
+  eq(lines(SF, L, false), ['Storefront cash donations kept $625.00 · banked $425.00 · still to bank $200.00.'], 'the line');
   // More deposited than kept: a warning, and not yet deposited never goes below $0.
   const over = L.concat([sfRow('d2', 25000, { depositFor: 'p' })]);
-  eq(lines(SF, over, false), ['Storefront cash kept $625.00 · deposited $675.00 · not yet deposited $0.00.',
-    '! Storefront cash deposits are $50.00 more than the cash donations kept. Check each one: is any of it sales cash owed to Trail’s End, or money from something else? Only kept cash donations are a storefront cash deposit.'], 'over');
+  eq(lines(SF, over, false), ['Storefront cash donations kept $625.00 · banked $675.00 · still to bank $0.00.',
+    '! Storefront cash donation deposits are $50.00 more than the cash donations kept. Check each one: is any of it sales money owed to the council, or money from something else? Only storefront cash donations the pack keeps belong here.'], 'over');
   // Cash run through Trail's End: the pack keeps none of it, so every deposit is too much.
-  eq(lines(SF, L, true), ['Storefront cash kept $0.00 · deposited $425.00 · not yet deposited $0.00.',
-    'Cash donations run through Trail’s End this season, so the pack keeps none of the storefront cash.',
-    '! Storefront cash deposits are $425.00 more than the cash donations kept. Check each one: is any of it sales cash owed to Trail’s End, or money from something else? Only kept cash donations are a storefront cash deposit.'], 'through Trail’s End');
+  eq(lines(SF, L, true), ['Storefront cash donations kept $0.00 · banked $425.00 · still to bank $0.00.',
+    'Storefront cash donations run through Trail’s End this season, so the pack keeps none of them.',
+    '! Storefront cash donation deposits are $425.00 more than the cash donations kept. Check each one: is any of it sales money owed to the council, or money from something else? Only storefront cash donations the pack keeps belong here.'], 'through Trail’s End');
   // Sales cash still in hand, on blocks that have the field (added in parallel): the council's, said apart. Junk and a missing field are $0.
   const held = SF_STORES();
   held[0].blocks[0].salesCashInHandCents = 12000; held[0].blocks[1].salesCashInHandCents = 'lots'; held[1].blocks[0].salesCashInHandCents = -5;
-  eq(lines(held, L, false).slice(1), ['Sales cash to pass to Trail’s End $120.00: money owed to the council, not pack income, so it is not a storefront cash deposit.'], 'sales cash');
+  eq(lines(held, L, false).slice(1), ['Sales cash to pay the council $120.00: owed to the council, not pack income.'], 'sales cash');
   eq(J(x.storefrontCashCheck(held, [], false)).notYet, 62500, 'sales cash changed what is kept');
   // A deposit naming only a storefront no longer on the list (last season's, cleared at close-out) is not this season's.
   const late = [sfRow('old', 9000, { depositFor: 'gone' }), sfRow('both', 1000, { depositFor: 'gone,k' })];
-  eq(lines(SF, late, false), ['Storefront cash kept $625.00 · deposited $10.00 · not yet deposited $615.00.',
-    '1 deposit ($90.00) for storefronts no longer on the list is not counted here.'], 'an earlier season’s deposit');
+  eq(lines(SF, late, false), ['Storefront cash donations kept $625.00 · banked $10.00 · still to bank $615.00.',
+    '1 deposit ($90.00) is last season’s, or names a deleted storefront, and is not counted here.'], 'an earlier season’s deposit');
+  // Treasurer review (17) — one dated in a year already closed out is last season's too, whatever it names.
+  const closedYr = [sfRow('jun', 3000, { date: '2026-06-20' }), sfRow('jun2', 2000, { date: '2026-06-30', depositFor: 'k' }), sfRow('jul', 1000, { date: '2026-07-01' })];
+  eq(lines(SF, closedYr, false, '2026-06-30'), ['Storefront cash donations kept $625.00 · banked $10.00 · still to bank $615.00.',
+    '2 deposits ($50.00) are last season’s, or name a deleted storefront, and are not counted here.'], 'dated in a closed year');
+  ok(/storefrontCashCheck\(state\.storefronts, state\.ledger, state\.cashThroughTrailsEnd, closedBooksLastCutoff\(state\.closedBooks\)\)/.test(slice('storefrontCashCheckHtml')), 'the card passes the closed year');
+  eq(sandbox(['closedBooksLastCutoff', 'arrOf']).closedBooksLastCutoff([{ cutoff: '2026-06-30' }, { cutoff: '2027-06-30' }, {}]), '2027-06-30', 'the newest cutoff');
   eq([lines([], [], false), lines([{ id: 'z', blocks: [{ donationsCents: 0 }] }], [], false)], [[], []], 'nothing to say');
   // On the Reconcile card, escaped, with the pack's own toggle; and the Budget card says the deposits are not added again.
   const h = slice('storefrontCashCheckHtml');
-  ok(/storefrontCashLines\(storefrontCashCheck\(state\.storefronts, state\.ledger, state\.cashThroughTrailsEnd\)\)/.test(h) && /esc\(ln\.text\)/.test(h), 'the check line');
+  ok(/storefrontCashLines\(storefrontCashCheck\(state\.storefronts, state\.ledger, state\.cashThroughTrailsEnd, closedBooksLastCutoff\(state\.closedBooks\)\)\)/.test(h) && /esc\(ln\.text\)/.test(h), 'the check line');
   ok(/h \+= storefrontCashCheckHtml\(\);/.test(slice('renderReconcile')), 'the Reconcile card does not show it');
   const card = /function renderBudget\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
-  ok(/Storefront cash deposits in the ledger \(' \+ fmt\(sc\.deposited\) \+ '\) are not added again/.test(card) && /sc\.over > 0/.test(card), 'the Budget card');
+  ok(/Storefront cash donation deposits in the ledger \(' \+ fmt\(sc\.deposited\) \+ '\) are not added again: ' \+\s*'the cash donations they bank are already counted from the storefront figures\./.test(card) && /sc\.over > 0/.test(card), 'the Budget card');
 });
 
 test('item 11: plain income that looks like storefront cash gets the gentle hint; a deposit, a family’s payment or cash run through Trail’s End does not', () => {
   const x = sandbox(SF_FNS), SF = SF_STORES();
-  eq(vm.runInContext('STOREFRONT_CASH_HINT', x), 'Is this storefront cash? Use ‘Storefront cash deposit’ so it isn’t counted twice in Funds in.', 'the words');
+  eq(vm.runInContext('STOREFRONT_CASH_HINT', x), 'Are these storefront cash donations the pack keeps? Record them as ‘Storefront cash donations (kept)’: they are already in Funds in from the storefront figures.', 'the words');
+  // Treasurer review (15) — names match with punctuation and spacing ignored; (13) answered "no", it stops.
+  const lowes = [{ id: 'l', name: 'Lowe’s Home', date: '2026-09-12', blocks: [{ donationsCents: 100 }] }];
+  eq([x.storefrontCashHint({ direction: 'in', date: '2026-09-20', description: 'LOWES HOME table', source: '' }, lowes, [], false),
+    x.storefrontCashHint({ direction: 'in', date: '2026-09-20', description: 'Kroger', source: '', notStorefront: true }, SF, [], false)], [true, false], 'punctuation, and the answer');
   const hint = (o, L, te) => x.storefrontCashHint(Object.assign({ direction: 'in', date: '2026-09-22', amountCents: 0, description: '', source: '', scoutId: '', tierMakeup: '' }, o), SF, L || [], !!te);
   eq([hint({ description: 'Store front deposit' }), hint({ description: 'Cash box, Saturday' }), hint({ description: 'KROGER table' }),
     hint({ amountCents: 42500 }), hint({ amountCents: 20000, source: 'donation' }), hint({ amountCents: 62500, source: 'fundraiser' })],
@@ -32131,36 +32142,52 @@ test('item 11: plain income that looks like storefront cash gets the gentle hint
   // Where it is shown: under the add form (asked of the draft) and in an entry's Detail; never a change, and redrawn only on change.
   const f = slice('renderLedgerEntries');
   ok(/storefrontCashHint\(ledgerDraftEntry\(dr\), state\.storefronts, state\.ledger, state\.cashThroughTrailsEnd\)[\s\S]{0,200}esc\(STOREFRONT_CASH_HINT\)/.test(f), 'the add form');
-  ok(/storefrontCashHint\(e, state\.storefronts, state\.ledger, state\.cashThroughTrailsEnd\)[\s\S]{0,200}esc\(STOREFRONT_CASH_HINT\)/.test(f), 'an entry’s Detail');
+  ok(/!e\.reconciled && storefrontCashHint\(e, state\.storefronts, state\.ledger, state\.cashThroughTrailsEnd\)[\s\S]{0,200}esc\(STOREFRONT_CASH_HINT\)[\s\S]{0,120}data-act="not-storefront:/.test(f), 'an entry’s Detail: unreconciled only, with its answer');
+  const ns = /if \(act\.indexOf\('not-storefront:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/state\.book\.closedAt/.test(ns) && /logLedger\('edit', nsE\.id, \{ f: \{ notStorefront: \[null, true\] \} \}\)/.test(ns) && /nsE\.notStorefront = true;/.test(ns), 'Not storefront cash');
   ok(/\(nk === 'desc' \|\| nk === 'amount'\) && !liveEdit &&\s*storefrontCashHint\(ledgerDraftEntry\(nd\)[^\n]*!== ndHint\) render\(\);/.test(SCRIPT), 'the draft redraws it mid-typing, or never');
   // The source is offered on money in, by its name; and the help under the form says the rule.
-  eq(vm.runInContext('LEDGER_SOURCE_LABELS.storefront', sandbox(['LEDGER_SOURCE_LABELS'])), 'Storefront cash deposit', 'the label');
-  ok(/bank them as ' \+\s*'<strong>Storefront cash deposit<\/strong>, with no budget line, so they aren’t counted twice\./.test(f), 'the help text');
+  eq(vm.runInContext('LEDGER_SOURCE_LABELS.storefront', sandbox(['LEDGER_SOURCE_LABELS'])), 'Storefront cash donations (kept)', 'the label');
+  ok(/\(dr\.direction === 'in'\s*\? ' Storefront cash donations the pack keeps are already in Funds in from the storefront figures: bank them as ' \+\s*'<strong>Storefront cash donations \(kept\)<\/strong>, with no budget line, so they aren’t counted twice\.'/.test(f), 'the help text, on money in only');
 });
 
 test('item 11: a deposit names the storefronts or dates it covers; the edits that go with the source are logged, and an older row is left as it was', () => {
-  const n = sandbox(['normalizeLedgerRow', 'depositForIds', 'LEDGER_SOURCES', 'LEDGER_METHODS', 'ledgerStampClean', 'stableRowId', 'fnv1a32']
+  const n = sandbox(['normalizeLedgerRow', 'depositForIds', 'DEPOSIT_FOR_MAX', 'LEDGER_SOURCES', 'LEDGER_METHODS', 'ledgerStampClean', 'stableRowId', 'fnv1a32']
     .filter((k) => TOP_NAMES.has(k)));
   const row = (o) => { const r = Object.assign({ id: 'r', date: '2026-09-22', amountCents: 100, direction: 'in' }, o); n.normalizeLedgerRow(r, 'nl'); return r; };
   const a = J(row({ source: 'storefront', depositFor: ' k, ,k,p ', depositFrom: '2026-09-12', depositTo: 'Sat' }));
   eq([a.source, a.depositFor, a.depositFrom, a.depositTo], ['storefront', 'k,p', '2026-09-12', ''], 'a storefront deposit, cleaned');
   const b = J(row({ source: 'fundraiser', depositFor: 'k', depositTo: '2026-09-30' }));
   eq(['depositFor' in b, 'depositFrom' in b, 'depositTo' in b], [false, false, false], 'the cover on another source');
-  const old = J(row({ source: 'donation' }));
-  ok(!Object.keys(old).some((k) => /^deposit/.test(k)), 'an older row gained fields');
+  const old = J(row({ source: 'donation', notStorefront: false }));
+  ok(!Object.keys(old).some((k) => /^deposit|notStorefront/.test(k)), 'an older row gained fields');
+  // Security review (lows 1, 2) — never on money out or a family's payment; ids only of the page's shape, and bounded.
+  eq([row({ source: 'storefront', direction: 'out' }).source, row({ source: 'storefront', scoutId: 's1' }).source], ['', ''], 'storefront on money out or a payment');
+  eq(row({ source: 'storefront', depositFor: 'k,<b>,a b,' + 'x'.repeat(65) + ',ok_1-2' }).depositFor, 'k,ok_1-2', 'only ids of the page’s shape');
+  const many = Array.from({ length: 80 }, (_, i) => 'id' + String(i).padStart(30, '0')).join(',');
+  ok(row({ source: 'storefront', depositFor: many }).depositFor.length <= 1000, 'the list is bounded');
+  eq(row({ source: 'storefront', notStorefront: true }).notStorefront, true, 'the answer is kept');
   // The edits (applyLedgerEdit): the source takes a family off; a family takes the source off; another source takes the cover off.
-  const e = sandbox(['applyLedgerEdit', 'depositForIds', 'depositForToggle', 'toCents', 'ledgerRowDiff', 'ledgerRowFields', 'LEDGER_EDIT_FIELDS', 'stampApproved']
+  const e = sandbox(['applyLedgerEdit', 'LEDGER_NO_FAMILY_SOURCES', 'depositForIds', 'DEPOSIT_FOR_MAX', 'depositForToggle', 'toCents', 'ledgerRowDiff', 'ledgerRowFields', 'LEDGER_EDIT_FIELDS', 'stampApproved']
     .filter((k) => TOP_NAMES.has(k)));
   vm.runInContext('function ledgerLineIsDirect() { return false; }', e);
-  const r = { id: 'r', direction: 'in', source: 'family', scoutId: 's1', donor: '', amountCents: 42500 };
+  // Treasurer review (20) — the source on a family's payment is ignored: the family is never stripped.
+  const pay = { id: 'p', direction: 'in', source: 'family', scoutId: 's1', donor: '', amountCents: 42500 };
+  e.applyLedgerEdit(pay, 'source', 'storefront');
+  eq([pay.source, pay.scoutId], ['family', 's1'], 'a family’s payment kept its family');
+  const opts = sandbox(['sourceSelectOptions', 'LEDGER_SOURCES', 'LEDGER_SOURCE_LABELS', 'LEDGER_NO_FAMILY_SOURCES', 'esc']);
+  eq([/value="storefront"/.test(opts.sourceSelectOptions('family', 's1')), /value="storefront"/.test(opts.sourceSelectOptions('', ''))], [false, true], 'offered only without a family');
+  const r = { id: 'r', direction: 'in', source: 'fundraiser', scoutId: '', donor: '', amountCents: 42500, notStorefront: true };
   e.applyLedgerEdit(r, 'source', 'storefront');
-  eq([r.source, r.scoutId], ['storefront', ''], 'choosing the source');
+  eq([r.source, r.scoutId, r.notStorefront], ['storefront', '', false], 'choosing the source; the "no" answer goes');
   const was = J(e.ledgerRowFields(r));
   e.applyLedgerEdit(r, 'depfor', e.depositForToggle(r.depositFor, 'k', true));
   e.applyLedgerEdit(r, 'depfor', e.depositForToggle(r.depositFor, 'p', true));
   e.applyLedgerEdit(r, 'depfrom', '2026-09-12');
-  eq([r.depositFor, r.depositFrom], ['k,p', '2026-09-12'], 'what it covers');
+  e.applyLedgerEdit(r, 'depto', 'next Tuesday');   // security review, low 3: not a date, not taken
+  eq([r.depositFor, r.depositFrom, r.depositTo], ['k,p', '2026-09-12', undefined], 'what it covers');
   eq(J(e.ledgerRowDiff(was, r)), { depositFor: [null, 'k,p'], depositFrom: [null, '2026-09-12'] }, 'the change is logged as fields');
+  ok(/el\.checked && !getStorefront\(el\.value\)\) \? \(led\.depositFor \|\| ''\)/.test(SCRIPT), 'a tick adds a storefront that is not on the list');
   e.applyLedgerEdit(r, 'depfor', e.depositForToggle(r.depositFor, 'k', false));
   eq(r.depositFor, 'p', 'a tick taken off');
   e.applyLedgerEdit(r, 'scout', 's2');
@@ -32169,14 +32196,18 @@ test('item 11: a deposit names the storefronts or dates it covers; the edits tha
   e.applyLedgerEdit(d, 'dir', 'out');
   eq([d.direction, d.source, d.depositFor], ['out', '', ''], 'money out is no deposit');
   // The change history says the source and the storefronts in words.
-  const lv = sandbox(['ledgerLogValue', 'LEDGER_SOURCE_LABELS', 'depositForIds', 'fmt', 'fmtDateShort']);
+  const lv = sandbox(['ledgerLogValue', 'LEDGER_SOURCE_LABELS', 'depositForIds', 'DEPOSIT_FOR_MAX', 'fmt', 'fmtDateShort']);
   const names = { storefront: (id) => (id === 'k' ? 'Kroger, Sep 12' : '') };
   eq([lv.ledgerLogValue('source', 'storefront', names), lv.ledgerLogValue('source', 'newer-kind', names), lv.ledgerLogValue('depositFor', 'k,gone', names)],
-    ['Storefront cash deposit', 'newer-kind', 'Kroger, Sep 12; a storefront no longer on the list'], 'the log’s words');
+    ['Storefront cash donations (kept)', 'newer-kind', 'Kroger, Sep 12; a storefront no longer on the list'], 'the log’s words');
   eq(sandbox(['storefrontDepositName', 'fmtDateShort']).storefrontDepositName({ name: ' Kroger ', date: '2026-09-12' }), 'Kroger, ' + sandbox(['fmtDateShort']).fmtDateShort('2026-09-12'), 'a storefront’s name');
   // The add form keeps only storefronts on the list, and words a later reader can use once they are gone.
   const add = /if \(act === 'ledger-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/drEntry\.source === 'storefront'[\s\S]{0,400}drEntry\.scoutId = '';[\s\S]{0,300}filter\(function \(x\) \{ return !!getStorefront\(x\); \}\)[\s\S]{0,700}'Storefront cash deposit'/.test(add), 'the add');
+  ok(/drEntry\.source === 'storefront'[\s\S]{0,400}drEntry\.scoutId = '';[\s\S]{0,300}filter\(function \(x\) \{ return !!getStorefront\(x\); \}\)[\s\S]{0,700}'Storefront cash donations banked'/.test(add), 'the add');
+  // Treasurer review (19) — deleting a storefront a deposit names says so at the confirm.
+  const sx = sandbox(['storefrontDepositsNaming', 'depositForIds', 'DEPOSIT_FOR_MAX', 'ledgerUnpaired', 'arrOf']);
+  eq(J(sx.storefrontDepositsNaming([sfRow('a', 100, { depositFor: 'k,p' }), sfRow('b', 200, { depositFor: 'p' }), c8row('c', '2026-09-01', 5, 'in')], 'p')), { count: 2, cents: 300 }, 'the deposits naming it');
+  ok(/ui\.armed !== 'del-sf:' \+ sf\.id[\s\S]{0,300}storefrontDepositsNaming\(state\.ledger, sf\.id\)[\s\S]{0,400}this storefront\. Deleting it takes its ' \+ esc\(fmt\(storefrontKeptCents\(sf, state\.cashThroughTrailsEnd\)\)\) \+\s*' of kept cash out of Funds in\./.test(SCRIPT), 'the delete confirm');
 });
 
 test('item 11: close-out keeps a deposit’s source in the closed book, carries an unticked one as it is, and next season does not count last season’s deposit', () => {
