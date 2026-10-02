@@ -91,7 +91,12 @@ const SR_OFF = "function shiftReportToday() { return '2026-09-28'; }\nfunction p
 // The reload gate (PACK_FORMAT): what every page context with a pack-record feed or a push needs.
 // By decl (below): PACK_FORMAT is one line, and slice would run on past it.
 const FORMAT_GATE_FNS = ['PACK_FORMAT', 'formatAhead', 'formatStored', 'storedFormatAhead', 'formatHeldHere', 'packFormatAhead', 'packFormatHeld', 'holdNewerFormat',
-  'dropCopyChoice'];
+  'dropCopyChoice'].concat(
+  // Pack positions (client step 3): the section guard commit(), syncPush and the merge consult. Off
+  // (sectionGuardOn) unless the context is a leader below an admin on the pack's own server.
+  ['apiAccounts', 'sectionGuardOn', 'ownKey', 'keyOwnerOf', 'goneOwnerOf', 'ownerEditable', 'keyWritable', 'guardBaseline', 'rollbackUneditable',
+    'pushBody', 'takeServerSections', 'takeServerUnwritable', 'sectionRefusedSay', 'syncThreeWayOwnOnly']);
+const SECTION_GUARD_FNS = FORMAT_GATE_FNS.slice(FORMAT_GATE_FNS.indexOf('apiAccounts'));
 const FORMAT_GATE_SRC = () => FORMAT_GATE_FNS.map(decl).join('\n');
 // Wave C1 — buildParentView sorts the trips by date and re-checks their ISO dates, so every
 // sandbox that builds it needs these. todayISO only where the sandbox has none of its own.
@@ -17397,6 +17402,88 @@ const serverState = (w) => {
   return row ? Object.assign({}, row, { json: JSON.parse(row.json) }) : null;
 };
 
+/* Pack positions, client step 3 (2026-10-02) — a leader's page against the real server: commit() puts
+   back what their positions don't edit; syncPush sends the server's copy of it (a derived change, a
+   legacy statement, another leader's log lines); a part the server still refuses is taken back from
+   the server, once, and said. */
+atest('positions client: a den leader\'s page keeps and sends only what their positions edit; a refused part comes back from the server, once, and is said', async () => {
+  const w = await (await apiWorld()).seed();
+  seedLeader(w, 'lead_denleader', ['denleader'], undefined, ['Wolf']);
+  const den = (id, d, o) => Object.assign({ id, kind: 'den', den: d, date: '2026-10-06', name: d + ' meeting', note: '', noteInternal: '', adventure: '' }, o || {});
+  const pack = PACK_STATE({ events: [den('e1', 'Wolf'), den('e3', 'Bear')], charges: [{ id: 'c0', scoutId: 's1', amountCents: 300 }],
+    syncLog: [{ id: 'sl-old', at: '2026-09-01T00:00:00.000Z', byUid: 'uid-owner', byName: 'Owner' }] });
+  w.state(3, pack);
+  const server = () => serverState(w).json;
+  const d = await (await apiClient(w, 'lead_denleader', { state: pack })).start(1200);
+  eq(d.get('[sync.myRole, sync.myPositions, sync.leadDens, canEditSection("ledger"), canSeeSection("ledger"), canEditSection("calendar.denmeeting"), canDo("shiftVerify")]'),
+    ['leader', ['denleader'], ['Wolf'], false, false, true, true], 'what the page learned from the session');
+  // commit()'s guard: a ledger edit goes back to the server's copy before anything is saved.
+  d.run("state.ledger[0].amountCents = 9; state.events[0].note = 'Bring string'; var back = rollbackUneditable(guardBaseline());");
+  eq(d.get('[back, state.ledger[0].amountCents, state.events[0].note]'), [['ledger'], 100, 'Bring string'], 'the ledger put back, the den meeting kept');
+  d.reset();
+  d.run('commit()');
+  await settle([d], 1200);
+  eq([server().events[0].note, server().ledger[0].amountCents, d.get('sync.mode')], ['Bring string', 100, 'online'], 'the den meeting saved');
+  // A change made for what they can't edit (the charges the attendance raises), and a log line by
+  // someone else this device holds (a restored copy's): the server's copy of each is sent, never refused.
+  d.run("state.charges = [{ id: 'c9', scoutId: 's1', amountCents: 999 }]; state.syncLog = state.syncLog.concat([{ id: 'sl-x', at: '2026-09-02T00:00:00.000Z', byUid: 'uid-lead-chair', byName: 'X' }]);" +
+    " state.events[0].note = 'Bring string and tape'; commit();");
+  await settle([d], 1200);
+  eq([server().events[0].note, server().charges, server().syncLog.map((e) => e.id), d.get('toasts.filter(function (t) { return /wasn/.test(t); }).length')],
+    ['Bring string and tape', pack.charges, ['sl-old'], 0], 'sent as the server has them, and nothing refused');
+  eq([d.get('sync.mode'), d.get('sync.sectionRetried')], ['online', false], 'no refusal');
+  // Another den's meeting: the page sends it (den meetings are theirs to edit), the server refuses the
+  // calendar, the page takes the server's events back and tries once more; said.
+  d.reset();
+  d.run("state.events[1].note = 'Not mine'; commit();");
+  await settle([d], 1200);
+  await settle([d], 1200);
+  eq([server().events[1].note, d.get('state.events[1].note'), d.get('sync.sectionRefused'), d.get('sync.sectionRetried')], ['', '', null, false], 'taken back; the retry landed');
+  eq(d.get('toasts[toasts.length - 1]'), 'Part of your change wasn’t saved: your positions don’t include the calendar. The pack’s copy of it is back on this device.', 'said');
+  eq(d.log.filter((l) => /^PUT \/P$/.test(l)).length, 2, 'refused once, then sent once: ' + d.log.join(', '));
+});
+
+atest('positions client: the treasurer\'s page never sends a statement it made on load, nor rewrites one; the 403 body with sections is read as a refusal', async () => {
+  const w = await (await apiWorld()).seed();
+  seedLeader(w, 'lead_treasurer', ['treasurer']);
+  const st = { id: 'st-1', date: '2026-09-15', statementCents: 1000, byUid: 'uid-owner', by: 'Owner', at: '2026-09-16T00:00:00.000Z' };
+  const pack = PACK_STATE({ statements: [st], book: { openingCents: 0, reconciledThrough: '2026-09-15' } });
+  w.state(3, pack);
+  const t = await (await apiClient(w, 'lead_treasurer', { state: pack })).start(1200);
+  // A legacy statement made on load (normalizeState does it on a device whose book is reconciled
+  // through a date no statement has), and a review written on another device's copy: neither goes.
+  t.run("state.statements.push({ id: 'st-2026-08-31', date: '2026-08-31', byUid: '', legacy: true }); state.statements[0].reviewedAt = 'x';" +
+    " state.ledger.push({ id: 'l2', amountCents: 50, direction: 'in', date: '2026-10-01' }); commit();");
+  await settle([t], 1200);
+  eq([serverState(w).json.statements, serverState(w).json.ledger.map((e) => e.id)], [[st], ['l0', 'l2']], 'the ledger row saved; the statements as the server has them');
+  eq([t.get('sync.mode'), t.get('sync.sectionRetried')], ['online', false], 'no refusal');
+  // The parser: the section refusal's body is a refusal; anything else shaped like it is not the server.
+  const answer = (body) => { try { t.run(`sync.backend.answer({ status: 403, headers: { get: function () { return 'application/json'; } } }, ${JSON.stringify(JSON.stringify(body))})`); return null; } catch (e) { return e; } };
+  const r = answer({ error: 'forbidden', code: 'permission-denied', reason: 'section', sections: ['ledger', 'admin'] });
+  eq([r.code, r.reason, JSON.parse(JSON.stringify(r.sections))], ['permission-denied', 'section', ['ledger', 'admin']], 'a section refusal');
+  eq(answer({ error: 'forbidden', code: 'permission-denied', reason: 'section', sections: 'ledger' }).code, 'unavailable', 'sections not a list');
+  eq(answer({ error: 'forbidden', code: 'permission-denied', reason: 'other', sections: ['ledger'] }).code, 'unavailable', 'another reason');
+  eq(answer({ error: 'forbidden', code: 'permission-denied' }).code, 'permission-denied', 'the fixed body, as before');
+});
+
+test('positions client: the three-way merge takes the server\'s version of what a leader can\'t edit, and never asks about it', () => {
+  const c = vm.createContext({});
+  vm.runInContext(`var sync = { user: { uid: 'u1' }, accountsUnavailable: false, myRole: 'leader', myPositions: ['denleader'], backend: { startSession: function () {} } };
+    function syncThreeWay() {} var SYNC_MERGE_SKIP = ['rev', 'gone', 'ledger'];`, c);
+  vm.runInContext(['ACCESS_TABLE', 'ACCESS_LEVELS', 'arrOf', 'accessFor', 'actionsFor', 'accountsInForce', 'apiAccounts', 'accessMemo', 'myAccess', 'sectionAccess',
+    'canEditSection', 'canSeeSection', 'canDo', 'canEdit', 'sectionGuardOn', 'ownKey', 'keyOwnerOf', 'goneOwnerOf', 'ownerEditable', 'keyWritable', 'syncThreeWayOwnOnly'].map(decl).join('\n'), c);
+  c.three = { merged: { budget: { mine: 1 }, events: [{ id: 'e1', note: 'mine' }], charges: [{ id: 'c1' }], advancement: { s1: 1 } },
+    items: [{ key: '.budget', path: [{ k: 'budget' }] }, { key: '.events#e1', path: [{ k: 'events' }, { id: 'e1' }] }, { key: '.charges', path: [{ k: 'charges' }] }],
+    look: [{ kind: 'chargeboth' }, { kind: 'opening' }] };
+  c.theirs = { budget: { theirs: 1 }, events: [{ id: 'e1', note: 'theirs' }], advancement: { s1: 2 } };
+  const r = JSON.parse(vm.runInContext('JSON.stringify(syncThreeWayOwnOnly(three, theirs))', c));
+  eq([r.merged.budget, r.merged.events[0].note, 'charges' in r.merged, r.merged.advancement, r.items.map((i) => i.key), r.look.map((x) => x.kind)],
+    [{ theirs: 1 }, 'mine', false, { s1: 1 }, ['.events#e1'], ['opening']], 'the budget and the charges the server\'s, not asked; the den meeting and advancement merged as always');
+  vm.runInContext("sync.myRole = 'admin'", c);
+  c.three2 = { merged: { budget: { mine: 1 } }, items: [{ key: '.budget', path: [{ k: 'budget' }] }] };
+  eq(JSON.parse(vm.runInContext('JSON.stringify(syncThreeWayOwnOnly(three2, theirs))', c)).items.length, 1, 'an admin is asked about everything, as before');
+});
+
 atest('api client: each role signs in with one session call and lands on the feed its role allows', async () => {
   const w = await (await apiWorld()).seed();
   w.state(3, PACK_STATE());
@@ -18058,7 +18145,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
       function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; } function render() {} function showToast() {} function scheduleSyncPush() { pushed += 1; } function canReopenStatement() { return true; }
       var ui = { overlay: { kind: 'sync-conflict', remote: { rev: 9 } } }, state = { rev: 2 };
       var sync = { backend: { serverRevs: ${serverRevs} } };
-      ${['seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf', 'keepLocalCopy', 'keepLocalNeedsAdmin'].map(decl).join('\n')}
+      ${['seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf', 'keepLocalCopy', 'keepLocalNeedsAdmin', ...SECTION_GUARD_FNS].map(decl).join('\n')}
       keepLocalCopy();`, ctx);
     return vm.runInContext('[state.rev, pushed, ui.overlay]', ctx);
   };
@@ -20816,7 +20903,7 @@ function fsGonePair(over) {
   let server = { rev: 3, device: 'd0', updatedAt: 'TS', json: JSON.stringify(Object.assign({}, seed, { rev: 3 })) };
   const dev = (name) => {
     const ctx = fsFeedCtx(Object.assign({}, seed, { rev: 3 }), NORMALIZE_FNS.map(slice).join('\n') +
-      ['keepLocalCopy', 'keepLocalNeedsAdmin', 'KEEP_LOCAL_REFUSED', 'canReopenStatement', 'isAdmin'].map(decl).join('\n') + GONE_EXTRA(name) + `
+      ['keepLocalCopy', 'keepLocalNeedsAdmin', 'KEEP_LOCAL_REFUSED', 'canReopenStatement', 'isAdmin', ...SECTION_GUARD_FNS].map(decl).join('\n') + GONE_EXTRA(name) + `
       sync.deviceId = '${name}';
       fakeFirestore.runTransaction = function (db, body) {
         return body({ get: function (ref) { return now(snapOf(ref.path)); },
@@ -22212,7 +22299,10 @@ test('C1: close-out opens a new book for the new year, without last year’s asi
     'state.ledgerLog = mergeLedgerLog(ciLog, state.ledgerLog);'].concat(
     // C5 review — a season archive's copy (not the live log): shaped on load (as the live one is,
     // since the security re-check of C5, R4). (C8-5: close-out no longer writes one, the closed book holds the log.)
-    ['a.ledgerLog = mergeLedgerLog(evs, []);']).sort(),
+    ['a.ledgerLog = mergeLedgerLog(evs, []);'],
+    // Pack positions (client step 3) — what a leader's save SENDS (pushBody), not this device's log: the
+    // server's lines and the leader's own new ones.
+    ['out.ledgerLog = mergeLedgerLog(clone(arrOf(srv.ledgerLog)), clone(ownNew(st.ledgerLog, idsOf(srv.ledgerLog))));']).sort(),
     'something else writes the ledger log');
 });
 
@@ -30982,7 +31072,7 @@ test('C8 security H1: keeping this device’s copy over a cloud copy with a clos
       function showToast(m) { toasts.push(m); } function scheduleSyncPush() { pushed += 1; } function logLedger(op, row, o) { logged.push([op, row, o && o.why]); }
       var ui = { overlay: { kind: 'sync-conflict', remote: ${JSON.stringify(rec([book]))} } }, state = { rev: 2, budget: { programYear: 2026 }, archives: [], closedBooks: [] };
       var sync = { backend: { serverRevs: false } };
-      ${['seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf', 'keepLocalCopy', 'keepLocalNeedsAdmin', 'KEEP_LOCAL_REFUSED'].map(decl).join('\n')}
+      ${['seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf', 'keepLocalCopy', 'keepLocalNeedsAdmin', 'KEEP_LOCAL_REFUSED', ...SECTION_GUARD_FNS].map(decl).join('\n')}
       keepLocalCopy();`, ctx);
     return J(vm.runInContext('[logged, toasts.length, pushed, !!ui.overlay]', ctx));
   };

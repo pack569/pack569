@@ -5748,6 +5748,19 @@
     // and a hold met from the pack (sync.newerFormat) would leave the newer page a change to sort
     // out (owner, 2026-09-29: refuse every edit while any hold is on).
     if (packFormatHeld()) { refuseHeldEdit(); return false; }
+    // Pack positions (client step 3) — on the pack's own server, below an admin: what this account's
+    // positions don't edit goes back as it was, BEFORE anything is saved or marked unsynced. A change
+    // made only there saves nothing; one made beside it saves the rest. The server is the real check.
+    if (sectionGuardOn()) {
+      var gWas = guardBaseline();
+      if (gWas) {
+        var gBack = rollbackUneditable(gWas);
+        if (gBack.length) {
+          showToast(readOnlySay(gBack[0]));
+          if (stateFingerprint(state) === stateFingerprint(gWas)) { render(); return false; }
+        }
+      }
+    }
     // Phase 3b — commit() is the one seam every mutation goes through, so it is where
     // charges are reconciled against attendance, rates and tier progress. Cheap: a pack is
     // tens of scouts, not thousands.
@@ -14323,6 +14336,8 @@
     members: [],               // live roster from packs/{docId}/members — runtime only, lives in Firestore
     myRole: null,              // this user's role: 'admin' | 'editor' | 'viewer' | 'pending' | null
     myPositions: [],           // the pack's own server: the positions this account holds (myAccess)
+    sectionRefused: null,      // the sections the server refused this device's last save (syncPush takes the server's copy of them, once)
+    sectionRetried: false,
     leadDens: [],              // …and the dens it leads as a Den Leader (own-den scope)
     ownerUid: null,            // packmeta/{docId}.owner — the first person to sign in / claim the pack
     ownerHealing: false,       // the owner's member doc vanished and ensureMyMemberDoc is recreating it
@@ -14983,8 +14998,12 @@
       var code = 'unavailable';
       if (body) {
         if (s === 403) {
-          // The server's refusal is ALWAYS exactly this body; anything else is not the server.
+          // The server's refusal is ALWAYS exactly this body; anything else is not the server. Or, for a
+          // save that changes parts the caller's positions don't edit (pack positions), the same with
+          // reason 'section' and the sections refused (functions/_lib/http.js forbiddenSections).
           if (Object.keys(body).length === 2 && body.error === 'forbidden' && body.code === 'permission-denied') code = 'permission-denied';
+          else if (Object.keys(body).length === 4 && body.error === 'forbidden' && body.code === 'permission-denied' && body.reason === 'section' &&
+            Array.isArray(body.sections) && body.sections.length && body.sections.every(function (x) { return typeof x === 'string'; })) code = 'permission-denied';
         } else if (s === 401) code = 'unauthenticated';
         else if (s === 409 && body.code === 'aborted') code = 'aborted';
         else if (s === 409 && body.code === 'failed-precondition') code = 'failed-precondition';
@@ -14994,6 +15013,7 @@
       }
       var err = this.fail(code, s, body);
       if (code === 'aborted') err.remote = body;
+      if (code === 'permission-denied' && body && body.reason === 'section') err.sections = body.sections.slice();
       if (s === 429) {
         var wait = Number(res.headers.get('retry-after'));
         if (isFinite(wait) && wait > 0) err.retryAfter = wait;
@@ -15850,6 +15870,175 @@
     deposits: ['deposits', 'the Treasurer'], dues: ['dues and fees', 'the Treasurer'], fundraisers: ['fundraisers', 'the Treasurer'],
     sharing: ['sharing', ''], people: ['the leaders list', 'the Committee Chair'], season: ['the season', 'the Committee Chair']
   };
+  // ---- The section guard: what a leader's page keeps, sends and takes (client step 3, 2026-10-02) ----
+  // On the pack's own server, below an admin. Firestore, an admin, and a pack with no accounts are as
+  // they always were (sectionGuardOn false). The server is the real check (access.js refusedSections);
+  // this keeps a leader's page from sending what it would refuse, and puts the pack's copy back when
+  // it does refuse.
+  function sectionGuardOn() { return apiAccounts() && accountsInForce() && sync.myRole !== 'admin'; }
+  function ownKey(o, k) { return !!o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k); }
+  // The section (or bucket, or list of sections) a key of the record belongs to, as access.js has it;
+  // a key it doesn't know is 'admin'. state.gone by its sub-keys.
+  function keyOwnerOf(k) { return ownKey(ACCESS_TABLE.keyOwner, k) ? ACCESS_TABLE.keyOwner[k] : 'admin'; }
+  function goneOwnerOf(g) { return ownKey(ACCESS_TABLE.goneOwner, g) ? ACCESS_TABLE.goneOwner[g] : 'admin'; }
+  function ownerEditable(owner) {
+    return (Array.isArray(owner) ? owner : [owner]).some(function (x) { return typeof x === 'string' && sectionAccess(x) === 'edit'; });
+  }
+  // May this account change key `k` at all: its whole section, or a slice the server checks entry by
+  // entry (a den meeting's fields, a shift report's block fields, a storefront deposit, a log line)?
+  function keyWritable(k) {
+    if (ownerEditable(keyOwnerOf(k))) return true;
+    if (k === 'events') return canEditSection('calendar.denmeeting');
+    if (k === 'storefronts') return canDo('shiftVerify');
+    if (k === 'ledger') return canEditSection('deposits');
+    if (k === 'ledgerLog') return canEdit();
+    return false;
+  }
+  // The copy this device's own edits are measured from: the server's as this device last took it in
+  // (the sync base), else what this device last saved. null when there is neither.
+  function guardBaseline() {
+    var b = syncBaseGet(), raw = null;
+    try { raw = b ? b.json : localStorage.getItem(KEY); } catch (e) { raw = null; }
+    try { var d = raw ? JSON.parse(raw) : null; return d && typeof d === 'object' && !Array.isArray(d) ? d : null; } catch (e2) { return null; }
+  }
+  // commit()'s guard: each key this account can't change goes back to the baseline, before anything
+  // is saved or marked unsynced. Returns the sections put back (none: []). state.gone by sub-key.
+  function rollbackUneditable(was) {
+    var back = [];
+    function note(owner) { (Array.isArray(owner) ? owner : [owner]).forEach(function (x) { if (back.indexOf(x) === -1) back.push(x); }); }
+    function same(a, b) { return JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b); }
+    Object.keys(state).concat(Object.keys(was)).forEach(function (k) {
+      if (k === 'rev' || k === 'fmt') return;
+      if (k === 'gone') {
+        var gs = ownKey(state, 'gone') && state.gone && typeof state.gone === 'object' ? state.gone : null, gw = was.gone && typeof was.gone === 'object' ? was.gone : {};
+        if (!gs) return;
+        Object.keys(gs).concat(Object.keys(gw)).forEach(function (g) {
+          if (ownerEditable(goneOwnerOf(g)) || same(gs[g], gw[g])) return;
+          if (ownKey(gw, g)) gs[g] = JSON.parse(JSON.stringify(gw[g])); else delete gs[g];
+          note(goneOwnerOf(g));
+        });
+        return;
+      }
+      if (keyWritable(k) || same(state[k], was[k])) return;
+      if (ownKey(was, k)) state[k] = JSON.parse(JSON.stringify(was[k])); else delete state[k];
+      note(keyOwnerOf(k));
+    });
+    return back.filter(function (x) { return x !== 'admin' && x !== 'shared'; }).concat(back.filter(function (x) { return x === 'admin'; }));
+  }
+  // What syncPush sends: this device's copy, but for what this account can't change, which is the
+  // server's (`srv`, the record as read for this save), so a change made for it (the charges the
+  // attendance raises, a shape a load fills in) is never sent to be refused. And, below an admin,
+  // the parts the server holds entry by entry are sent as it will take them (security review of
+  // 714a920..045e7ac, (b) and (c)): the two logs, the server's lines and this account's own new ones
+  // (a restored copy's lines by others are not sent again); the statements, the server's and this
+  // account's own new ones (a legacy statement this page made on load is an admin's to write); a
+  // deposit-only leader's ledger, the server's rows and their own new deposits; a scout's parent
+  // accounts and a linked scout's family, the server's; the version, the server's; the format, at
+  // most one past the server's. `refused` (sync.sectionRefused): sections the server refused this
+  // save, taken from the server whole. A new object; `st` is not changed.
+  function pushBody(st, srv, refused) {
+    if (!sectionGuardOn() || !srv || typeof srv !== 'object') return st;
+    var out = {}, me = ledgerActorUid(), r = arrOf(refused);
+    function clone(v) { return v === undefined ? undefined : JSON.parse(JSON.stringify(v)); }
+    function put(k, v) { if (v === undefined) delete out[k]; else out[k] = v; }
+    function taken(owner) { return (Array.isArray(owner) ? owner : [owner]).some(function (x) { return r.indexOf(x) !== -1; }); }
+    Object.keys(st).forEach(function (k) { out[k] = st[k]; });
+    Object.keys(st).concat(Object.keys(srv)).forEach(function (k) {
+      if (k === 'rev' || k === 'fmt') return;
+      if (k === 'gone') {
+        var g = {}, gs = st.gone && typeof st.gone === 'object' ? st.gone : {}, gv = srv.gone && typeof srv.gone === 'object' ? srv.gone : {};
+        Object.keys(gs).concat(Object.keys(gv)).forEach(function (x) {
+          var mine = ownerEditable(goneOwnerOf(x)) && !taken(goneOwnerOf(x));
+          var v = mine ? gs[x] : gv[x];
+          if (v !== undefined) g[x] = v;
+        });
+        put('gone', g);
+        return;
+      }
+      var owner = keyOwnerOf(k);
+      if (taken(owner) || !keyWritable(k)) { put(k, clone(srv[k])); return; }
+      if (k === 'ledger' && !ownerEditable(owner)) {
+        var hadL = {};
+        arrOf(srv.ledger).forEach(function (e) { if (e && e.id) hadL[e.id] = true; });
+        put(k, clone(arrOf(srv.ledger)).concat(arrOf(st.ledger).filter(function (e) {
+          return e && !hadL[e.id] && e.enteredByUid === me && e.depositReview === true;
+        })));
+      }
+    });
+    // The logs: the server's lines, and this account's own new ones.
+    function ownNew(list, had) { return arrOf(list).filter(function (e) { return e && typeof e.id === 'string' && !had[e.id] && e.byUid === me; }); }
+    function idsOf(list) { var h = {}; arrOf(list).forEach(function (e) { if (e && typeof e.id === 'string') h[e.id] = true; }); return h; }
+    if (ownKey(out, 'ledgerLog') && keyWritable('ledgerLog') && !taken('ledger')) {
+      out.ledgerLog = mergeLedgerLog(clone(arrOf(srv.ledgerLog)), clone(ownNew(st.ledgerLog, idsOf(srv.ledgerLog))));
+    }
+    if (ownKey(out, 'syncLog') && keyWritable('syncLog') && !taken('shared')) {
+      out.syncLog = mergeSyncLog(clone(arrOf(srv.syncLog)), clone(ownNew(st.syncLog, idsOf(srv.syncLog))));
+    }
+    if (ownKey(out, 'statements') && keyWritable('statements') && !taken('ledger')) {
+      var hadS = idsOf(srv.statements);
+      out.statements = clone(arrOf(srv.statements)).concat(clone(arrOf(st.statements).filter(function (x) {
+        return x && !hadS[x.id] && x.byUid === me && !x.legacy && !x.reviewedAt && !x.reopenedAt && !x.addedAt;
+      })));
+    }
+    // A scout's parent accounts, and a linked scout's family: the server's.
+    if (keyWritable('scouts') && !taken('roster') && Array.isArray(out.scouts) && Array.isArray(srv.scouts)) {
+      var sv = {};
+      srv.scouts.forEach(function (x) { if (x && typeof x.id === 'string') sv[x.id] = x; });
+      out.scouts = out.scouts.map(function (x) {
+        if (!x || typeof x !== 'object') return x;
+        var o = sv[x.id], y = clone(x), had = o ? arrOf(o.parentUids) : [];
+        // As the server has the key (an absent one stays absent; a new scout has none).
+        if (o && ownKey(o, 'parentUids')) y.parentUids = clone(o.parentUids);
+        else if (arrOf(y.parentUids).length || (o && !ownKey(o, 'parentUids'))) { if (o) delete y.parentUids; else y.parentUids = []; }
+        if (had.length) { if (ownKey(o, 'familyId')) y.familyId = o.familyId; else delete y.familyId; }
+        return y;
+      });
+    }
+    if (ownKey(srv, 'version')) out.version = srv.version;
+    if (typeof srv.fmt === 'number' && isFinite(srv.fmt) && typeof out.fmt === 'number' && out.fmt > srv.fmt + 1) out.fmt = Math.floor(srv.fmt) + 1;
+    return out;
+  }
+  // The server refused a save for `sections` (403 'section'): this device takes the server's copy of
+  // what those sections own (and, for 'admin', the parts above that are an admin's), keeps the rest,
+  // and tries once more (syncPush, via sync.sectionRefused). In place on state; `srv` is the record.
+  function takeServerSections(sections, srv) {
+    if (!srv || typeof srv !== 'object') return;
+    var r = arrOf(sections);
+    function takes(owner) { return (Array.isArray(owner) ? owner : [owner]).some(function (x) { return r.indexOf(x) !== -1; }); }
+    Object.keys(state).concat(Object.keys(srv)).forEach(function (k) {
+      if (k === 'rev' || k === 'fmt' || k === 'gone') return;
+      if (!takes(keyOwnerOf(k))) return;
+      if (ownKey(srv, k)) state[k] = JSON.parse(JSON.stringify(srv[k])); else delete state[k];
+    });
+    if (state.gone && srv.gone && typeof srv.gone === 'object') {
+      Object.keys(state.gone).concat(Object.keys(srv.gone)).forEach(function (g) {
+        if (!takes(goneOwnerOf(g))) return;
+        if (ownKey(srv.gone, g)) state.gone[g] = JSON.parse(JSON.stringify(srv.gone[g])); else delete state.gone[g];
+      });
+    }
+  }
+  // Every key (and deletion-mark log) this account can't change, as the server has it (`srv`). In place on state.
+  function takeServerUnwritable(srv) {
+    if (!srv || typeof srv !== 'object' || Array.isArray(srv)) return;
+    Object.keys(state).concat(Object.keys(srv)).forEach(function (k) {
+      if (k === 'rev' || k === 'fmt' || k === 'gone' || keyWritable(k)) return;
+      if (ownKey(srv, k)) state[k] = JSON.parse(JSON.stringify(srv[k])); else delete state[k];
+    });
+    if (state.gone && srv.gone && typeof srv.gone === 'object') {
+      Object.keys(state.gone).concat(Object.keys(srv.gone)).forEach(function (g) {
+        if (ownerEditable(goneOwnerOf(g))) return;
+        if (ownKey(srv.gone, g)) state.gone[g] = JSON.parse(JSON.stringify(srv.gone[g])); else delete state.gone[g];
+      });
+    }
+  }
+  // Said when the server refused part of a save and this device put the pack's copy back.
+  function sectionRefusedSay(sections) {
+    var r = arrOf(sections).filter(function (x) { return x !== 'shared'; });
+    var first = r.filter(function (x) { return x !== 'admin'; })[0] || r[0] || '';
+    var say = SECTION_SAY[first];
+    return 'Part of your change wasn’t saved: ' + (say ? 'your positions don’t include ' + say[0] : 'only a pack admin can change that') +
+      '. The pack’s copy of it is back on this device.';
+  }
   // The words for an edit this account can't make (the treasurer's review of 045e7ac, 2: the old
   // toast sent everyone to a role that no longer exists). `section` is the part they tried to change.
   function readOnlySay(section) {
@@ -18987,6 +19176,13 @@
       var remoteParsed = null;
       if (remote) { try { remoteParsed = JSON.parse(typeof remote.json === 'string' ? remote.json : ''); } catch (e) { /* unreadable */ } }
       if (formatAhead(remoteParsed)) return { record: null, result: { newer: true } };
+      // Pack positions (client step 3) — the server refused the last try for some sections: this device
+      // takes the server's copy of what they own, stands on that copy (the base), and tries once more.
+      var refusedNow = sync.sectionRefused || null;
+      if (refusedNow && remoteParsed && sectionGuardOn()) {
+        takeServerSections(refusedNow, remoteParsed);
+        syncBaseSet(remote);
+      }
       var remoteRev = remote && typeof remote.rev === 'number' ? remote.rev : 0;
       // BACKEND 'api' (be.serverRevs): the server stores exactly remoteRev + 1, and from the
       // pack record's first answer on, state.rev is a rev the server gave this device. Any other
@@ -19036,7 +19232,8 @@
       // written: a save would only make a new rev of the same pack.
       if (three) {
         syncBaseSet(remote);
-        if (stateFingerprint(state) === stateFingerprint(three.theirs)) return { record: null, result: { same: remote, was: JSON.stringify(state) } };
+        // (What would be sent: on the pack's server below an admin, the server's copy of what this account can't change.)
+        if (stateFingerprint(pushBody(state, three.theirs, refusedNow)) === stateFingerprint(three.theirs)) return { record: null, result: { same: remote, was: JSON.stringify(state) } };
       }
       // Security review of C8-1..4 (H1) — a device that may not remove a closed book (anyone but an admin, where there
       // are accounts) never writes one away: a write that is not a merge (the one copy this device was asked to
@@ -19055,13 +19252,16 @@
       if (!clobbered && remoteParsed && accountsInForce() && !canReopenStatement()) state.closedBooks = mergeClosedBooks(state.closedBooks, closedBooksNormalized(remoteParsed.closedBooks), undefined, closedBooksMaxYear(state, remoteParsed), state.closedGone);
       var nextRev = be.serverRevs ? remoteRev + 1 : Math.max(state.rev || 0, remoteRev) + 1;
       state.fmt = PACK_FORMAT;   // the reload gate: the format this page writes
+      // Pack positions — what is sent: this device's copy, but for what this account can't change (pushBody).
+      var stateSent = JSON.stringify(state);
       var record = {
         rev: nextRev,
         updatedAt: be.serverTime(),
         device: sync.deviceId,
-        json: JSON.stringify(state)
+        json: sectionGuardOn() && remoteParsed ? JSON.stringify(pushBody(state, remoteParsed, refusedNow)) : stateSent
       };
-      return { record: record, result: { nextRev: nextRev, mergedN: mergedN, clobbered: clobbered, heard: sync.remoteRec, record: record, lookWas: lookWas } };
+      return { record: record, result: { nextRev: nextRev, mergedN: mergedN, clobbered: clobbered, heard: sync.remoteRec, record: record, lookWas: lookWas,
+        stateSent: stateSent, refusedNow: refusedNow } };
     }).then(function (res) {
       if (sync.session !== mine) return;
       if (res.newer) { holdNewerFormat(); return; }
@@ -19116,7 +19316,9 @@
       // copy is compared, not edits counted, because a typed-in amount changes it 300 ms before
       // its save asks for a push (schedulePersist). Read before state.rev moves on, as the sent
       // copy was.
-      var editedSince = JSON.stringify(state) !== res.record.json;
+      var editedSince = JSON.stringify(state) !== res.stateSent;
+      // Pack positions — the retry after a refusal landed: said, and the next refusal may retry again.
+      if (res.refusedNow) { showToast(sectionRefusedSay(res.refusedNow)); sync.sectionRefused = null; sync.sectionRetried = false; }
       // Another device's save that landed on top of this one while it was out (review of
       // 86dfe38..4347cc6, item 1): the feed's server answer (sync.remoteRec) came after the copy
       // was built and is newer than what was written. It is not in what was sent, and its
@@ -19161,6 +19363,22 @@
     }).catch(function (err) {
       if (sync.session !== mine) return;
       if (holdPushes(err)) return;
+      // Pack positions (client step 3) — the server refused sections of this save (403 'section'):
+      // the server's copy of them is taken on the next try (above), which goes now, once. Refused
+      // again, it is said and left for the next edit.
+      if (err && err.code === 'permission-denied' && err.reason === 'section' && sectionGuardOn()) {
+        if (!sync.sectionRetried) {
+          sync.sectionRetried = true;
+          sync.sectionRefused = arrOf(err.sections).slice();
+          syncPush();
+          return;
+        }
+        sync.sectionRefused = null;
+        sync.sectionRetried = false;
+        showToast(sectionRefusedSay(err.sections) + ' Some of your change still couldn\u2019t be saved; reload the page to start again from the pack\u2019s copy.');
+        syncFail(err);
+        return;
+      }
       syncFail(err);
       clearTimeout(sync.retryTimer);
       sync.retryTimer = setTimeout(function () { if (sync.dirty && sync.session === mine) syncPush(); }, 10000);
@@ -19643,6 +19861,20 @@
   // result carries `theirs` (the server's, normalized), `remote` (`d`) and `base` (the base record).
   // Security review of 6b48119 (2) — a server copy behind the base (a backup restored there, a reset) is no
   // merge's: { whole: true }, and syncPush asks which whole copy to keep, as across a close-out.
+  // Pack positions (client step 3) — on the pack's own server, below an admin, a part this account can't
+  // change is the server's in a merge: taken whole, without asking, and never offered as "Keep mine" (its
+  // conflicts are dropped from the chooser; the charges too, which the treasurer settles). In place.
+  function syncThreeWayOwnOnly(three, theirs) {
+    if (!sectionGuardOn() || !three || !three.merged) return three;
+    var m = three.merged;
+    Object.keys(m).concat(Object.keys(theirs || {})).forEach(function (k) {
+      if (SYNC_MERGE_SKIP.indexOf(k) !== -1 || keyWritable(k)) return;
+      if (ownKey(theirs, k)) m[k] = JSON.parse(JSON.stringify(theirs[k])); else delete m[k];
+    });
+    three.items = three.items.filter(function (it) { return keyWritable(it.path && it.path[0] ? it.path[0].k : ''); });
+    if (!keyWritable('charges')) three.look = (three.look || []).filter(function (x) { return x.kind !== 'chargeboth'; });
+    return three;
+  }
   function syncThreeWayOf(d, picks) {
     var b = syncBaseGet();
     if (!b || !d) return null;
@@ -19653,6 +19885,7 @@
     // load (a field a new record was made without) never reads as a change of this device's.
     var mine = normalizeState(JSON.parse(JSON.stringify(state))) || state;
     var three = syncThreeWay(baseNorm, mine, theirs, picks, { chargeKey: syncChargeKey });
+    syncThreeWayOwnOnly(three, theirs);
     three.theirs = theirs;
     three.remote = d;
     three.base = b;
@@ -20662,6 +20895,11 @@
     ui.overlay = null;
     if (!canEdit()) { showToast(readOnlySay('')); render(); return; } // M-3
     sync.conflict = null;
+    // Pack positions (client step 3) — keeping this device's copy keeps only what this account may change:
+    // the rest is the cloud copy's, here and in what is sent (pushBody).
+    if (sectionGuardOn() && kept && kept.remote) {
+      try { takeServerUnwritable(JSON.parse(typeof kept.remote.json === 'string' ? kept.remote.json : '')); save(); } catch (e) { /* unreadable: pushBody sends the server's */ }
+    }
     // BACKEND 'api': the copy being overwritten is the one this leader was just shown, so it
     // counts as seen; only a save made after it is merged in at the push (syncPush).
     if (sync.backend && sync.backend.serverRevs && kept && kept.remote && typeof kept.remote.rev === 'number') state.rev = kept.remote.rev;
