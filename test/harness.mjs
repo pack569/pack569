@@ -17231,7 +17231,13 @@ atest('positions guard: deposits — the kernel records a storefront deposit, fl
   SECTION_403(await w.put('lead_kernel', Object.assign(GUARD_BASE(), { ledger: [{ id: 'L1', amountCents: 600 }, dep()] })), ['ledger'], 'a kernel changing a row there');
   SECTION_403(await w.put('lead_kernel', Object.assign(GUARD_BASE(), { ledger: [dep()] })), ['ledger'], 'a kernel removing a row');
   SECTION_403(await w.put('lead_denleader', withLedger([dep({ enteredByUid: 'uid-lead-denleader' })])), ['ledger'], 'a den leader recording a deposit');
-  eq((await w.put('lead_treasurer', withLedger([dep({ enteredByUid: 'uid-lead-treasurer', depositReview: undefined })]))).status, 200, 'the treasurer, no flag needed');
+  // The treasurer: no flag needed for cash someone else collected, on a storefront the record has (the final check:
+  // one covering none is flagged whoever enters it).
+  const sf1 = [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [] }];
+  const wt = await guardWorld(Object.assign(GUARD_BASE(), { storefronts: sf1 }));
+  eq((await wt.put('lead_treasurer', withLedger([dep({ enteredByUid: 'uid-lead-treasurer', depositReview: undefined })], { storefronts: sf1 }))).status, 200, 'the treasurer, no flag needed');
+  SECTION_403(await w.put('lead_treasurer', withLedger([dep({ enteredByUid: 'uid-lead-treasurer', depositReview: undefined })])), ['ledger'],
+    'the treasurer\'s, unflagged, for a storefront the record doesn\'t have');
   // Its 'add' line in the log (a deposit dated in a reconciled period): the kernel's own, for the deposit it adds.
   const add = (row, byUid) => ({ id: 'ev-add', at: '2026-09-30T12:00:00.000Z', by: 'K', byUid, dev: 'd', row, op: 'add', why: 'Dated inside the period reconciled' });
   // The treasurer's review, item 4: a deposit dated where a back-dated add would be logged is refused, so is its log line.
@@ -17343,6 +17349,11 @@ atest('positions guard: a flagged deposit is checked by another ledger editor, s
   SECTION_403(await put('lead_treasurer', [dep(), own, mine({ id: 'd9', depositFor: '', depositReview: undefined })]), ['ledger'],
     'PoC: a storefront deposit that names no storefront, unflagged');
   eq((await put('lead_treasurer', [dep(), own, mine({ id: 'd9', depositFor: '' })])).status, 200, 'flagged, it lands');
+  // The final check's follow-up: covering no storefront the record has is the same as naming none.
+  SECTION_403(await put('lead_treasurer', [dep(), own, mine({ id: 'd9', depositFor: 'sf-gone', depositReview: undefined })]), ['ledger'], 'a storefront that isn\'t there, unflagged');
+  SECTION_403(await put('lead_treasurer', [dep(), own, mine({ id: 'd9', depositFor: '', depositFrom: '2026-01-01', depositTo: '2026-01-31', depositReview: undefined })]), ['ledger'],
+    'a date range with no storefront in it, unflagged');
+  eq((await put('lead_treasurer', [dep(), own, mine({ id: 'd9', depositFor: 'sf-gone' })])).status, 200, 'flagged, it lands');
   eq((await put('lead_chair', [dep()])).status, 200, 'the chair removing the treasurer\'s');
   // The self-collected check reads the stored storefronts, which the same save can't rewrite first.
   const sClean = JSON.parse(JSON.stringify(sfs)); delete sClean[0].blocks[0].reportApprovedBy;
@@ -17352,7 +17363,7 @@ atest('positions guard: a flagged deposit is checked by another ledger editor, s
   ok(/\(depOnly \|\| depositSelfCollected\(drEntry\) \|\| depositNamesNone\(drEntry\)\)\) drEntry\.depositReview = true;/.test(SCRIPT), 'the page does not flag a deposit naming no storefront');
   ok(/if \(sync\.myRole !== 'admin' && vdRow\.depositReview === true && vdRow\.enteredByUid && vdRow\.enteredByUid === ledgerActorUid\(\)\) \{ showToast\(DEPOSIT_OWN_VOID_SAY\); return; \}/.test(SCRIPT),
     'the page voids its own unchecked deposit');
-  ok(/by: ledgerActor\(\), byUid: ledgerActorUid\(\)/.test(slice('ledgerWho')) && /typeof sync\.myName === 'string'/.test(slice('ledgerActor')),
+  ok(/by: ledgerActor\(\), byUid: ledgerActorUid\(\)/.test(slice('ledgerWho')) && /String\(sync\.myName == null \? '' : sync\.myName\)/.test(slice('ledgerActor')) && /function srSignName\(\) \{ return ledgerActor\(\); \}/.test(SCRIPT),
     'the ledger log is not signed as the server knows the leader');
   // The page signs the check as the server knows the leader, and flags its own self-collected deposits.
   ok(/drv\.depositReviewedBy = srSignName\(\);/.test(SCRIPT) && /drv\.depositReviewedByUid = ledgerActorUid\(\);/.test(SCRIPT) &&
@@ -17397,6 +17408,20 @@ atest('positions guard: a setting line from a leader who doesn\'t keep the books
   ok(Buffer.byteLength(JSON.stringify(real)) > 300, 'the long name puts the whole line over 300 bytes (the name is not counted): ' + Buffer.byteLength(JSON.stringify(real)));
   eq(R(real, longName), [], 'the longest real setting line');
   eq(R(Object.assign({}, real, { f: { wagonViaTEFrom: ['2026-09-01', '2026-10-01'] } }), longName), [], 'the wagon date, with it');
+  // A member with no name: the server signs them 'a signed-in leader', and so does their page (never their display name).
+  const pg = vm.createContext({});
+  vm.runInContext(`var sync = { backend: { startSession: function () {} }, user: { uid: 'k1', displayName: 'Kim Kernel' }, myName: null }, state = { leaders: [] };
+    function accountsInForce() { return true; }`, pg);
+  vm.runInContext(['ledgerActorName', 'ledgerActor', 'srSignName'].map(decl).join('\n'), pg);
+  eq([vm.runInContext('ledgerActor()', pg), vm.runInContext('srSignName()', pg), API.access.signerName(null), API.access.signerName('')],
+    ['a signed-in leader', 'a signed-in leader', 'a signed-in leader', 'a signed-in leader'], 'one fallback, page and server');
+  vm.runInContext("sync.myName = ' Kim K. '", pg);
+  eq([vm.runInContext('ledgerActor()', pg), API.access.signerName(' Kim K. ')], ['Kim K.', 'Kim K.'], 'a name, trimmed alike');
+  const wn = await guardWorld(GUARD_BASE());
+  wn.db.raw.prepare("UPDATE members SET name = '' WHERE uid = 'uid-lead-kernel'").run();
+  const nnLine = (by) => ({ id: 'lg-nn1', at: new Date().toISOString(), by, byUid: 'uid-lead-kernel', dev: 'dev1', row: 'book', op: 'edit', f: { commissionPct: [25, '30'] } });
+  eq((await wn.put('lead_kernel', Object.assign(GUARD_BASE(), { commissionPct: '30', ledgerLog: [nnLine('a signed-in leader')] }))).status, 200, 'a Kernel with no name saving the commission');
+  SECTION_403(await wn.put('lead_kernel', Object.assign(GUARD_BASE(), { commissionPct: '30', ledgerLog: [nnLine('Kim Kernel')] })), ['ledger'], '…signed with their display name instead');
   // The final check's PoC 5: 50 lines padded to about a kilobyte (id, device, name) dropped 301 of 850.
   const lold5 = Array.from({ length: 850 }, (_, i) => ({ id: 'l' + p5(i), at: '2026-09-01T00:00:00.000Z', by: 'Pat Treasurer', byUid: 't', dev: 'd1', row: 'r' + i, op: 'add', f: { amountCents: [null, 1000] } }));
   const pad5 = Array.from({ length: 50 }, (_, i) => ({ id: 'k' + p5(i) + 'x'.repeat(430), at: '2026-10-02T12:00:00.000Z', by: 'K', byUid: 'k1', dev: 'd'.repeat(430), row: 'book', op: 'edit',

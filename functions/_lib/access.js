@@ -902,8 +902,9 @@ export function depositRowsAdded(before, after, uid, book, name, now) {
 // storefront cash such a leader adds carries the flag when the page's rule says it must
 // (depositSelfCollected): a storefront it covers has a block whose cash the caller collected, as the
 // record says it (an accept that collected it, or the cash from sales marked collected, under the
-// caller's signed name) — read from the STORED record, which this save can't rewrite first — or it names no
-// storefront at all (nothing to check it against: the page flags those too). The page also reads the server's
+// caller's signed name) — read from the STORED record, which this save can't rewrite first — or it covers no
+// storefront there (none named, one that doesn't exist, a date range with none in it: nothing to check it
+// against; the page flags those too). The page also reads the server's
 // reports, so it flags at least these.
 // The final security check of 8dced37 (1): the self-review gate could be stepped round in two saves (rename the
 // enterer, then clear it) or by deleting the flagged row and adding it again. So who entered a row (enteredBy,
@@ -915,8 +916,6 @@ const REVIEW_STAMPS = ['depositReviewedBy', 'depositReviewedByUid', 'depositRevi
 const ENTERED_STAMPS = ['enteredBy', 'enteredByUid', 'enteredAt'];
 // A stamp as the page's normalizeLedgerRow leaves it: '' when missing, and an email never (ledgerStampClean).
 const enteredStamp = (e, k) => (typeof e[k] !== 'string' ? '' : k === 'enteredBy' ? stampClean(e[k]) : e[k]);
-const namesNoStorefront = (e) => !String(typeof e.depositFor === 'string' ? e.depositFor : '').split(',').some((x) => x.trim()) &&
-  !(typeof e.depositFrom === 'string' && e.depositFrom && typeof e.depositTo === 'string' && e.depositTo);
 function depositCoveredIds(e, storefronts) {
   const ids = String(typeof e.depositFor === 'string' ? e.depositFor : '').split(',').map((x) => x.trim()).filter((x) => x);
   const from = typeof e.depositFrom === 'string' ? e.depositFrom : '', to = typeof e.depositTo === 'string' ? e.depositTo : '';
@@ -944,7 +943,7 @@ export function depositReviewsOk(s, n, uid, name, now) {
     const b = own(was, e.id) ? was[e.id] : null;
     if (!b) {
       if (REVIEW_STAMPS.some((k) => own(e, k))) return null;
-      if (e.source === 'storefront' && e.direction === 'in' && e.depositReview !== true && (namesNoStorefront(e) || depositSelfCollectedOk(e, sfs, me))) return null;
+      if (e.source === 'storefront' && e.direction === 'in' && e.depositReview !== true && (!depositCoveredIds(e, sfs).length || depositSelfCollectedOk(e, sfs, me))) return null;
       continue;
     }
     if (ENTERED_STAMPS.some((k) => enteredStamp(b, k) !== enteredStamp(e, k))) return null;

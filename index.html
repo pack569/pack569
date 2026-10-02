@@ -10224,11 +10224,12 @@
   function scoutOwesCents(scoutId) { return familyOutstanding(state.charges, state.ledger, scoutId, chargeFamilyKey); }
   function familyAccountsNow() { return familyAccounts(state.charges, state.ledger, chargeFamilyKey); }
   // E2 — who is doing this, for the audit trail (ledgerActorName), and the stamps it leaves.
-  // On the pack's own server, the member name it holds (as srSignName signs a shift): what the server checks a
-  // setting line's `by` against (access.js settingLineOk, final security check of 8dced37), and the name on a deposit.
+  // On the pack's own server, exactly what the server signs this member as (access.js signerName, over the member
+  // name it holds): what it checks a setting line's `by`, a deposit's and an accept's names against (final security
+  // check of 8dced37). A member with no name is 'a signed-in leader' there too, never this device's display name.
   function ledgerActor() {
-    if (sync.backend && sync.backend.startSession && accountsInForce() && typeof sync.myName === 'string') {
-      var n = sync.myName.trim();
+    if (sync.backend && sync.backend.startSession && accountsInForce()) {
+      var n = String(sync.myName == null ? '' : sync.myName).trim();
       return n && n.indexOf('@') === -1 ? n : 'a signed-in leader';
     }
     return ledgerActorName(sync.user, state.leaders);
@@ -25775,15 +25776,9 @@
   // display name, and an account with none can carry its email). ledgerStampClean is the leaders'.
   // The name a leader signs a block with when they accept a report: their member name, as the pack's
   // server holds it (functions/_lib/access.js signerName), because the server checks a booth leader's
-  // accept against it (security review of 714a920..045e7ac, finding 1). On Firestore, or before the
-  // member record is known, the ledger's own name for this device (ledgerActor).
-  function srSignName() {
-    if (sync.backend && sync.backend.startSession && accountsInForce() && typeof sync.myName === 'string') {
-      var n = sync.myName.trim();
-      return n && n.indexOf('@') === -1 ? n : 'a signed-in leader';
-    }
-    return ledgerActor();
-  }
+  // accept against it (security review of 714a920..045e7ac, finding 1). ledgerActor is that name on the pack's
+  // own server (signerName's, a member with no name included), and the ledger's own name elsewhere.
+  function srSignName() { return ledgerActor(); }
   function srNameClean(v) {
     var n = String(v == null ? '' : v).trim();
     return n.indexOf('@') === -1 ? n : 'a signed-in parent';
@@ -29519,7 +29514,9 @@
   function depositsToReview() { return arrOf(state.ledger).filter(function (e) { return e && e.depositReview === true; }); }
   // The storefronts a deposit covers: the ones it names, and any dated in its range.
   function depositCoveredSfs(e) { return depositCoveredIn(e, state.storefronts); }
-  function depositNamesNone(e) { return !depositForIds(e.depositFor).length && !(e.depositFrom && e.depositTo); }
+  // Covers no storefront the record has: none named, one that isn't there, or a date range with none in it (the server's
+  // rule, access.js depositReviewsOk, over the record as it last saw it).
+  function depositNamesNone(e) { return !depositCoveredSfs(e).length; }
   var DEPOSIT_OWN_VOID_SAY = 'You entered this deposit and it isn’t checked yet. Ask the Treasurer or Committee Chair to check it, or to void it.';
   function depositCoveredIn(e, storefronts) {
     var ids = depositForIds(e.depositFor), from = e.depositFrom || '', to = e.depositTo || '';
