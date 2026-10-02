@@ -617,13 +617,23 @@ pack record, so a parent who can send one still can't write anything else.
   14 days, shows its amounts (all three), its note and the sender's first name to the parents who are
   allowed to confirm it, and to no one else. They can't confirm figures they can't see. No
   account ids or links are ever sent.
-- **Your scout's shifts first** (Keith, 2026-10-01): the list also tells each account which
+- **Your family's shifts** (Keith, 2026-10-01): the list also tells each account which
   published shifts from the last 14 days have one of **their own** scouts on them (a scout an
   admin has linked to that account on the Members card; a parent linked family-wide gets each
-  child's shifts). The server works this out from the stored pack record and sends **only the
-  storefront and block ids** the parent view already publishes, never a scout, a name or a link.
-  If the record can't be read, the list is empty. The family's *Storefront shift totals* card
-  shows those shifts first, marked "Your family's shift".
+  child's shifts), and whether the account is linked to any scout at all. The server works
+  this out from the stored pack record and sends **only the storefront and block ids** the
+  parent view already publishes, and a yes/no, never a scout, a name or a link. If the record
+  can't be read, the list is empty and the account counts as unlinked.
+  - The family's *Storefront shift totals* card lists **only** those shifts, marked "Your
+    family's shift". It also always lists a shift whose totals the account may confirm, and
+    one it has sent totals for. "Worked a different shift? Show all shifts" shows the rest.
+  - An account linked to no scout sees every shift, with a line asking a leader to link it.
+- **The parent preview is the leader's own parent self** (Keith, 2026-10-01): the preview asks
+  for `GET …/shift-reports?as=parent`, which any approved role may ask. It answers exactly what
+  a parent with that account would get, and never a leader-only field. From the preview, a
+  leader who is also a parent can send, change, withdraw and confirm their own family's
+  totals, as that parent. Everything else in the preview stays read-only. The rules above are
+  unchanged, so the same leader still can't accept their own report, or record its cash.
 - Every report, edit, withdrawal, acceptance, send-back and record of the cash from sales is written to the `audit` table
   in the same step as the change itself.
 

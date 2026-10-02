@@ -1,7 +1,13 @@
 // GET  /api/pack/:id/shift-reports   the storefront shift reports       (admin, editor, viewer, parent)
 //        leaders: { reports: [every report, in full], others: [], myShifts }
 //        a parent: { reports: [their own, in full], others: [{ sfId, blockId, status }], myShifts }
-//        myShifts: [{ sfId, blockId }], the caller's own scouts' shifts (see myShiftsFor below)
+//        myShifts: [{ sfId, blockId }], the caller's own scouts' shifts (see myShiftsAndLink below);
+//        linked: whether the caller is linked to any scout at all (a yes/no, nothing else)
+// GET /api/pack/:id/shift-reports?as=parent   (any approved role) exactly what a PARENT with the
+//        caller's uid would get: their own reports in the parent shape, everyone else's as status
+//        only (canConfirm where they may confirm), myShifts and linked — never a leader-only field.
+//        The parent preview asks for this, so a leader who is also a parent sees, and sends, as
+//        one (Keith, 2026-10-01). It only ever narrows what this role could read anyway.
 // POST /api/pack/:id/shift-reports   send one: { sfId, blockId, teCents, cashCents, salesCashCents?, note?, attest: true }
 //                                     (admin, editor, viewer, parent — never pending)
 //
@@ -34,7 +40,7 @@
 import { route, json, readObject, refuse, forbidden, badRequest, shiftReported, tooManyReports } from '../../../../_lib/http.js';
 import { withMember, auditIf } from '../../../../_lib/pack.js';
 import { canSubmitShiftReport, canReadAllShiftReports, shiftReportProblem, cleanReportNote, packToday, shiftOfView, shiftNeedsConfirm, reportSalesCash,
-  shiftConfirmers, shiftParentUids, canConfirmShiftReport, daysBetween, SHIFT_REPORT_DAYS, SHIFT_REPORT_MAX_OPEN, SHIFT_REPORT_MAX_PER_DAY,
+  shiftConfirmers, shiftParentUids, familiesOf, canConfirmShiftReport, daysBetween, SHIFT_REPORT_DAYS, SHIFT_REPORT_MAX_OPEN, SHIFT_REPORT_MAX_PER_DAY,
   SHIFT_REPORT_LEADER_DAYS } from '../../../../_lib/rules.js';
 
 export const REPORT_COLS = 'id, sf_id, block_id, te_cents, cash_cents, note, submitted_by_uid, submitted_by_name, submitted_at, ' +
@@ -134,7 +140,10 @@ export const SUBMIT_ROLES = ['admin', 'editor', 'viewer', 'parent'];
 // The record is read only when a published shift is in the window, through the per-rev cache
 // (`getRec`: one read per request, shared with the S-4 check below).
 // FAIL CLOSED: no view, no record, anything unreadable, and the list is empty.
-async function myShiftsFor(getRec, uid, view) {
+// myShifts, and whether the caller is linked to any scout (familiesOf: a yes/no, nothing of the
+// link itself), read only when a published shift is in the window, as above. Fail closed: not linked.
+async function myShiftsAndLink(getRec, uid, view) {
+  const none = { myShifts: [], linked: false };
   try {
     const today = packToday();
     const inWindow = [];
@@ -144,15 +153,18 @@ async function myShiftsFor(getRec, uid, view) {
       if (!(ago >= 0 && ago <= SHIFT_REPORT_DAYS)) return;
       ev.shifts.forEach((s) => { if (s && typeof s.blockId === 'string') inWindow.push({ sfId: ev.sfId, blockId: s.blockId }); });
     });
-    if (!inWindow.length || !uid) return [];
+    if (!inWindow.length || !uid) return none;
     const rec = await getRec();
-    if (!rec) return [];
-    return inWindow.filter((x) => {
-      const uids = shiftParentUids(rec.pack, x.sfId, x.blockId);
-      return Array.isArray(uids) && uids.indexOf(uid) !== -1;
-    });
+    if (!rec) return none;
+    return {
+      myShifts: inWindow.filter((x) => {
+        const uids = shiftParentUids(rec.pack, x.sfId, x.blockId);
+        return Array.isArray(uids) && uids.indexOf(uid) !== -1;
+      }),
+      linked: Object.keys(familiesOf(rec.pack, uid)).length > 0
+    };
   } catch (e) {
-    return [];
+    return none;
   }
 }
 const readView = async (db, packId) => {
@@ -160,13 +172,16 @@ const readView = async (db, packId) => {
   try { return vrow ? JSON.parse(vrow.payload) : null; } catch (e) { return null; }
 };
 
-async function list({ db, packId, role, user }) {
+async function list({ request, db, packId, role, user }) {
   if (!canSubmitShiftReport(role)) return forbidden();
+  // ?as=parent: the parent's answer, whatever the role (the parent preview). Nothing else is asked.
+  const asParam = new URL(request.url).searchParams.get('as');
+  if (asParam !== null && asParam !== 'parent') refuse(badRequest('as'));
   // Leaders: the last SHIFT_REPORT_LEADER_DAYS days, and anything still waiting however old it is.
   // A parent's answer is built from every row, but sends only their own and a few words of the rest.
   // A parent's answer only ever needs the reports holding a block, and closed ones from the last
   // 30 days (security re-check 3: bounded, not the pack's whole history on every family's poll).
-  const leader = canReadAllShiftReports(role);
+  const leader = canReadAllShiftReports(role) && asParam !== 'parent';
   const r = await db.prepare('SELECT ' + REPORT_COLS + ' FROM shift_reports WHERE pack_id = ?' +
     (leader ? " AND (status = 'submitted' OR submitted_at > ?)" : " AND (status IN ('submitted', 'accepted') OR submitted_at > ?)") +
     ' ORDER BY submitted_at DESC, id')
@@ -175,8 +190,8 @@ async function list({ db, packId, role, user }) {
   const view = await readView(db, packId);
   let recP = null;
   const getRec = () => recP || (recP = readPackRecord(db, packId));
-  const myShifts = await myShiftsFor(getRec, user.uid, view);
-  if (leader) return json(200, { reports: rows.map((row) => reportOut(row, user.uid, true)), others: [], myShifts });
+  const { myShifts, linked } = await myShiftsAndLink(getRec, user.uid, view);
+  if (leader) return json(200, { reports: rows.map((row) => reportOut(row, user.uid, true)), others: [], myShifts, linked });
   // A parent: their own in full. For anyone else's, per block, only the report that holds it
   // (waiting or accepted) or else the latest — and of that only its block and status.
   const own = rows.filter((row) => row.submitted_by_uid === user.uid);
@@ -221,7 +236,7 @@ async function list({ db, packId, role, user }) {
     }
     return o;
   });
-  return json(200, { reports: own.map((row) => reportOut(row, user.uid, false)), others, myShifts });
+  return json(200, { reports: own.map((row) => reportOut(row, user.uid, false)), others, myShifts, linked });
 }
 
 async function submit({ request, db, packId, role, user, member }) {
