@@ -812,6 +812,10 @@ stops: it saves nothing, sends nothing, publishes nothing to parents, refuses ev
 shows "This page is out of date … Reload the page before you change anything else." Normally a reload loads the
 newer page and that is the end of it.
 
+A format can be skipped. If the release that raised it to 4 (storefront cash deposits) and the one
+that raised it to 5 (the sync decisions log) ship together, nothing breaks: a pack at 3 goes
+straight to 5, and every page at 3 or 4 holds and asks for a reload as above.
+
 If a reload does **not** clear it, the record's `fmt` is higher than any page you serve. That
 happens in two ways:
 

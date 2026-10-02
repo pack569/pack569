@@ -18206,9 +18206,11 @@
     // ledger row's too, and the merge would read the event as a change to that entry's content
     // (ledgerEventParts), and its history show it. ledgerEntryLabel strips the prefix.
     var fgThere = Object.create(null);
-    arrOf(remote.charges).forEach(function (c) { if (c && typeof c.id === 'string' && c.forgiven && typeof c.forgiven === 'object') fgThere[c.id] = c.forgiven; });
-    chargesForgivenThere(state.charges, remote.charges).forEach(function (c) {
-      var was = ledgerLogClip(chargeForgivenSummary(fgThere[c.id])), fgRow = 'charge:' + c.id;
+    // (Treasurer review of 6b48119, 1b — matched by what the charge charges, not its id.)
+    var fgKey = function (c) { return syncChargeKey(c) || 'id:' + c.id; };
+    arrOf(remote.charges).forEach(function (c) { if (c && typeof c.id === 'string' && c.forgiven && typeof c.forgiven === 'object') fgThere[fgKey(c)] = c.forgiven; });
+    chargesForgivenThere(state.charges, remote.charges, syncChargeKey).forEach(function (c) {
+      var was = ledgerLogClip(chargeForgivenSummary(fgThere[fgKey(c)])), fgRow = 'charge:' + c.id;
       if (!arrOf(state.ledgerLog).some(function (ev) { return ev && ev.row === fgRow && ev.why === LEDGER_FORGIVEN_LOST_WHY && ev.f && ev.f.forgiven && ev.f.forgiven[0] === was; })) {
         logLedger('edit', fgRow, { f: { forgiven: [was, null] }, why: LEDGER_FORGIVEN_LOST_WHY });
       }
@@ -18224,10 +18226,13 @@
   }
   // Owner decision 23 — this copy's charges (`mine`) that the other copy (`theirs`) holds forgiven and this
   // one doesn't. Pure.
-  function chargesForgivenThere(mine, theirs) {
+  // Treasurer review of 6b48119 (1b) — matched by what the charge charges (`keyOf`, syncChargeKey), not by id: each
+  // device raises its own ids for the same charge. By id when no `keyOf` is given.
+  function chargesForgivenThere(mine, theirs, keyOf) {
     var there = Object.create(null);
-    arrOf(theirs).forEach(function (c) { if (c && typeof c.id === 'string' && c.forgiven && typeof c.forgiven === 'object') there[c.id] = true; });
-    return arrOf(mine).filter(function (c) { return c && typeof c.id === 'string' && there[c.id] && !c.forgiven; });
+    function key(c) { return (keyOf && keyOf(c)) || 'id:' + c.id; }
+    arrOf(theirs).forEach(function (c) { if (c && typeof c.id === 'string' && c.forgiven && typeof c.forgiven === 'object') there[key(c)] = c; });
+    return arrOf(mine).filter(function (c) { return c && typeof c.id === 'string' && there[key(c)] && !c.forgiven; });
   }
   // Security re-check of C6 (N3) — a forgiveness lost to a merge, as the change history keeps it: when,
   // who agreed and recorded it (never an email: ledgerStampClean), and why. The family is not in it:
@@ -18381,7 +18386,8 @@
     var seen = sync.lookSeen || (sync.lookSeen = {}), notes = sync.lookNotes || (sync.lookNotes = []), n = 0;
     arrOf(look).forEach(function (it) {
       var key = it && (it.kind === 'voidtick' || it.kind === 'twostatements' || it.kind === 'voidlisted') && it.row ? it.kind + ':' + it.row.id
-        : it && it.kind === 'forgiven' && it.charge ? 'forgiven:' + it.charge.id
+        : it && (it.kind === 'forgiven' || it.kind === 'chargeboth') && it.charge ? it.kind + ':' + it.charge.id
+        : it && it.kind === 'openinglocked' ? 'openinglocked:' + it.discarded + ':' + it.kept
         : it && it.kind === 'scoutkept' && it.scout ? 'scoutkept:' + it.scout.id
         : it && it.kind === 'carrydiffers' && typeof it.id === 'string' ? 'carrydiffers:' + it.id + ':' + it.mine + ':' + it.theirs
         : it && it.kind === 'restorediff' && it.statement ? 'restorediff:' + it.statement.id + ':' + it.statement.nowCents
@@ -18390,6 +18396,8 @@
       seen[key] = true;
       notes.push(it.kind === 'forgiven'
         ? chargeLookName(it.charge) + ' was forgiven on another device, but that was lost when this device saved, so the family owes it again. Check it on Money · Dues & fees and forgive it again if it should be.'
+        : it.kind === 'openinglocked' ? 'An opening balance of ' + fmt(it.discarded || 0) + ' from another device was not kept; the book keeps ' + fmt(it.kept || 0) + '. ' + SYNC_OPENING_LOCKED_WHY.replace(/^Not kept: t/, 'T')
+        : it.kind === 'chargeboth' ? chargeLookName(it.charge) + ' was changed on this device and on another one, differently. This device’s version was kept. Check it on Money · Dues & fees.'
         : it.kind === 'twostatements' ? ledgerTwoStatementsLook(it)
         : it.kind === 'voidlisted' ? ledgerVoidListedLook(it)
         : it.kind === 'restorediff' ? ledgerRestoreDiffLook(it.statement)
@@ -18720,9 +18728,10 @@
       if (clobbered) {
         var rowItems = ledgerRowConflicts(remote);
         three = syncThreeWayOf(remote);
+        if (three && three.whole) return { record: null, result: { season: remote } };
         var fieldItems = three ? three.items : [];
         if (rowItems.length || fieldItems.length) return { record: null, result: { rows: rowItems, fields: fieldItems, rowsRemote: remote } };
-        if (three) syncApplyThreeWay(three);
+        if (three) syncApplyThreeWay(three).forEach(function (it) { lookItems.push(it); });
       }
       var mergedN = clobbered ? mergeRemoteAppendOnly(remote, keptRows, lostRows, splitRows, undefined, lookItems) : 0;
       // PHASE 3, C6 — the charges follow the merged book. They are this device's (the merge keeps
@@ -18981,7 +18990,9 @@
       syncLocal.base = null;
       try {
         var b = JSON.parse(localStorage.getItem(SYNC_BASE_KEY) || 'null');
-        if (b && typeof b === 'object' && typeof b.doc === 'string' && typeof b.rev === 'number' && isFinite(b.rev) && typeof b.json === 'string') syncLocal.base = b;
+        // Security review of 6b48119 (2) — a base whose copy can't be read is no base.
+        var bj = b && typeof b.json === 'string' ? JSON.parse(b.json) : null;
+        if (b && typeof b === 'object' && typeof b.doc === 'string' && typeof b.rev === 'number' && isFinite(b.rev) && bj && typeof bj === 'object' && !Array.isArray(bj)) syncLocal.base = b;
       } catch (e) { /* unreadable: no base */ }
     }
     var b2 = syncLocal.base, doc = sync && sync.docId ? String(sync.docId) : '';
@@ -19003,10 +19014,10 @@
     try { return localStorage.getItem(SYNC_UNSYNCED_KEY) === '1' || syncLocal.unsynced === true; }
     catch (e) { return syncLocal.unsynced === undefined ? null : syncLocal.unsynced; }
   }
+  // Security review of 6b48119 (6) — written whenever storage doesn't already say so (another tab may have cleared it).
   function syncMarkUnsynced() {
-    if (syncLocal.unsynced === true) return;
     syncLocal.unsynced = true;
-    try { localStorage.setItem(SYNC_UNSYNCED_KEY, '1'); } catch (e) { /* kept in memory for this session */ }
+    try { if (localStorage.getItem(SYNC_UNSYNCED_KEY) !== '1') localStorage.setItem(SYNC_UNSYNCED_KEY, '1'); } catch (e) { /* kept in memory for this session */ }
   }
   function syncClearUnsynced() {
     syncLocal.unsynced = false;
@@ -19029,22 +19040,57 @@
   //   'choose'  the whole-copy chooser, the last resort: storage unreadable; unsaved work with no
   //             base to tell it from an old copy (a device from before this, or storage full); the
   //             server's rev behind this device's; or a close-out between the two
+  // Security review of 6b48119 (1, HIGH; treasurer 4) — rule d, a device from before the base, with nothing
+  // to say whether its copy is old or holds work it never sent: taken quietly only when it is BEHIND the
+  // server (localRev below), no close-out lies between them (`apart`), and it holds nothing the server
+  // lacks (`onlyHere`: syncMoneySubset and closedBooksLost, asked by onRemoteSnap). At the same rev a copy
+  // that differs is this device's own unsent work. Anything else is asked, whole copy.
+  // Security 7 — and "nobody else saved" is the server's rev at the base's AND its copy the base's
+  // (`serverIsBase`); a rev that matches over different content is merged.
   function syncFirstPlan(p) {
+    function ask(v) { return typeof v === 'function' ? v() : v; }
     if (p.unsynced === null) return 'choose';
     if (!p.unsynced) {
       if (p.base) return p.base.rev <= p.remoteRev ? 'adopt' : 'choose';
-      return (p.localRev || 0) <= p.remoteRev ? 'adopt' : 'choose';   // rule d: a device from before the base
+      if ((p.localRev || 0) >= p.remoteRev) return 'choose';
+      return ask(p.apart) || ask(p.onlyHere) ? 'choose' : 'adopt';
     }
     if (!p.base) return 'choose';
-    if (p.base.rev === p.remoteRev) return 'push';
-    if (p.base.rev > p.remoteRev || (typeof p.apart === 'function' ? p.apart() : p.apart)) return 'choose';
+    if (p.base.rev === p.remoteRev) return ask(p.serverIsBase) === false ? 'merge' : 'push';
+    if (p.base.rev > p.remoteRev || ask(p.apart)) return 'choose';
     return 'merge';
+  }
+  // Treasurer review of 6b48119 (4) — is every money row this device's copy (`mine`) holds also on the server's
+  // (`theirs`, normalized), or marked deleted there? The ledger and its rows set aside, the popcorn entries, the
+  // fundraiser sales, the hand-outs, and a storefront's cash from sales (by its report). Pure.
+  function syncMoneySubset(mine, theirs) {
+    function ids(list, h) { arrOf(list).forEach(function (x) { if (x && typeof x.id === 'string') h[x.id] = true; }); return h; }
+    function sales(c) { var out = []; arrOf(c && c.fundraisers).forEach(function (f) { out = out.concat(arrOf(f && f.sales)); }); return out; }
+    function cash(c) {
+      var out = [];
+      arrOf(c && c.storefronts).forEach(function (sf) { arrOf(sf && sf.blocks).forEach(function (b) { arrOf(b && b.salesCash).forEach(function (e) { if (e && e.reportId) out.push(e.reportId); }); }); });
+      return out;
+    }
+    var gone = (theirs && theirs.gone) || {};
+    function covered(list, there, log) {
+      return arrOf(list).every(function (x) { return !x || typeof x.id !== 'string' || there[x.id] || (gone[log] && gone[log][x.id] > 0); });
+    }
+    var ledgerThere = ids(theirs && theirs.ledgerAside, ids(theirs && theirs.ledger, Object.create(null)));
+    var cashThere = Object.create(null);
+    cash(theirs).forEach(function (r) { cashThere[r] = true; });
+    return covered(arrOf(mine && mine.ledger).concat(arrOf(mine && mine.ledgerAside)), ledgerThere, 'ledger') &&
+      covered(mine && mine.entries, ids(theirs && theirs.entries, Object.create(null)), 'entries') &&
+      covered(sales(mine), ids(sales(theirs), Object.create(null)), 'sales') &&
+      covered(mine && mine.inventory && mine.inventory.distributions, ids(theirs && theirs.inventory && theirs.inventory.distributions, Object.create(null)), 'distributions') &&
+      cash(mine).every(function (r) { return cashThere[r]; });
   }
   // THE THREE-WAY MERGE. What the record keys hold that the rules already settle is left to them,
   // as it was (mergeRemoteAppendOnly, syncCharges): the deletion marks; the ledger, its rows set aside,
   // its log, statements and closed years (C1–C8: mergeLedgerRows, the chooser of entries, the locks);
   // the charges (owner decision 23: this device's, re-synced); and the sync log (append-only, mergeSyncLog).
-  var SYNC_MERGE_SKIP = ['rev', 'fmt', 'version', 'gone', 'ledger', 'ledgerAside', 'ledgerLog', 'statements', 'closedBooks', 'closedGone', 'charges', 'syncLog'];
+  // (Treasurer review of 6b48119, 1 — the charges are merged now, charge by charge: Keith's decision, replacing
+  // owner decision 23. syncThreeWay's charge rule, below.)
+  var SYNC_MERGE_SKIP = ['rev', 'fmt', 'version', 'gone', 'ledger', 'ledgerAside', 'ledgerLog', 'statements', 'closedBooks', 'closedGone', 'syncLog'];
   // …and in the book, what its own rules decide (the later lock, councilSettledMerged, the close-out): this
   // device's, as before. The opening balance and its date merge three ways.
   var SYNC_BOOK_SKIP = ['year', 'closedAt', 'closedBy', 'closedByUid', 'reconciledThrough', 'reconciledBy', 'reconciledAt', 'statementDate', 'statementCents', 'councilSettled'];
@@ -19115,8 +19161,10 @@
   // How: equal → that; base = mine → theirs; base = theirs → mine; both changed: plain objects key by key,
   // record lists record by record (this device's order, then the server's new ones), lists of plain values
   // as sets (each side's adds and removes); anything else is a conflict.
-  function syncThreeWay(base, mine, theirs, picks) {
-    var items = [], byKey = Object.create(null), n = { mine: 0, theirs: 0 };
+  // `opts` (optional): { chargeKey(c) } — what makes two charges the same charge (chargeMatchKey: each device raises
+  // its own ids for it); by id without it. The result carries `look`: what "The ledger needs a look" should say.
+  function syncThreeWay(base, mine, theirs, picks, opts) {
+    var items = [], byKey = Object.create(null), n = { mine: 0, theirs: 0 }, look = [];
     picks = picks || {};
     function own(o, k) { return o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k) ? o[k] : undefined; }
     function plain(v) { return !!v && typeof v === 'object' && !Array.isArray(v); }
@@ -19181,6 +19229,40 @@
       var bk = own(base, k), mk = own(mine, k), tk = own(theirs, k);
       // The past seasons are snapshots, and deleting one is the tombstones' (closedGone: closedGoneArchives,
       // and closedGoneDrops, which says so): this device's list, and any the server added since the base.
+      // Treasurer review of 6b48119 (1; Keith: replaces owner decision 23) — the charges, charge by charge, matched by
+      // what they charge (opts.chargeKey), never by id (each device raises its own). One side's change is taken; a
+      // charge both changed differently keeps this device's version, and the ledger says to look at it. Never asked:
+      // a charge is the books' figure, and the treasurer settles it there. Before syncCharges, which then finds the
+      // server's charges already here and raises none of them again.
+      if (k === 'charges' && Array.isArray(mk)) {
+        var keyOfC = function (c, dup) {
+          var key = opts && opts.chargeKey ? opts.chargeKey(c) : '';
+          key = key || (c && typeof c.id === 'string' ? 'id:' + c.id : '');
+          dup[key] = (dup[key] || 0) + 1;
+          return dup[key] > 1 ? key + '#' + dup[key] : key;
+        };
+        var mapC = function (list) { var by = Object.create(null), order = [], dup = {}; (Array.isArray(list) ? list : []).forEach(function (c) { if (!c) return; var kk = keyOfC(c, dup); by[kk] = c; order.push(kk); }); return { by: by, order: order }; };
+        var noId = function (c) { var o = clone(c); if (o) delete o.id; return o; };
+        var cb = mapC(bk), cm = mapC(mk), ct = mapC(tk), out = [];
+        cm.order.concat(ct.order.filter(function (kk) { return !cm.by[kk]; })).forEach(function (kk) {
+          var b = cb.by[kk], m = cm.by[kk], t = ct.by[kk], got;
+          var tgS = theirs && theirs.gone && theirs.gone.scouts;
+          if (syncSame(noId(m), noId(t))) got = m;
+          // The charges of a scout the server deleted (dropScout took them there) are left with the scout, for the
+          // marks to settle: C7 keeps a scout any entry names, archived, and their charges with them.
+          else if (!t && b && m && m.scoutId && tgS && tgS[m.scoutId] > 0 && syncSame(noId(b), noId(m))) got = m;
+          else if (syncSame(noId(b), noId(m))) { n.theirs += 1; got = t && m ? Object.assign(clone(t), { id: m.id }) : t; }
+          else if (syncSame(noId(b), noId(t))) { n.mine += 1; got = m; }
+          else { got = m; look.push({ kind: 'chargeboth', charge: clone(m || t) }); }
+          // …and none for a scout this device deleted (its mark stands, and it isn't on this roster): the server's
+          // copy raised it before the delete reached it.
+          var mgS = mine && mine.gone && mine.gone.scouts, onRoster = got && arrOf(mine && mine.scouts).some(function (x) { return x && x.id === got.scoutId; });
+          if (got && got.scoutId && mgS && mgS[got.scoutId] > 0 && !onRoster) got = null;
+          if (got) out.push(clone(got));
+        });
+        merged[k] = out;
+        return;
+      }
       if (k === 'archives' && Array.isArray(mk)) {
         var had = Object.create(null), arcs = clone(mk);
         (Array.isArray(bk) ? bk : []).concat(mk).forEach(function (x) { if (syncRecKey(x)) had[syncRecKey(x)] = true; });
@@ -19197,12 +19279,44 @@
       var v = merge(bk, mk, tk, [{ k: k }]);
       if (v !== undefined) merged[k] = v;
     });
-    return { merged: merged, items: items, mineN: n.mine, theirsN: n.theirs };
+    // Treasurer review of 6b48119 (2) — a scout or a popcorn product the server deleted since the base, that this
+    // device still holds as it was, while it added or changed a sale, a fundraiser sale or a hand-out for it: the
+    // marks would take those with the parent, without a word. Asked, on the parent (deleted: 'theirs'); keeping
+    // this device's puts the parent back (syncApplyThreeWay), and with it what was recorded for it.
+    function changedHere(list, test, baseList) {
+      var was = syncKeyed(baseList) || { by: Object.create(null) };
+      return arrOf(list).filter(function (x) { return x && test(x) && !syncSame(x, was.by[syncRecKey(x)]); });
+    }
+    function salesOf(c) { var out = []; arrOf(c && c.fundraisers).forEach(function (f) { out = out.concat(arrOf(f && f.sales)); }); return out; }
+    function dists(c) { return arrOf(c && c.inventory && c.inventory.distributions); }
+    [{ list: 'scouts', path: [{ k: 'scouts' }], of: function (c) { return arrOf(c && c.scouts); } },
+      { list: 'products', path: [{ k: 'inventory' }, { k: 'products' }], of: function (c) { return arrOf(c && c.inventory && c.inventory.products); } }].forEach(function (par) {
+      var tg = theirs && theirs.gone && theirs.gone[par.list], kt = syncKeyed(par.of(theirs)) || { by: {} }, kb = syncKeyed(par.of(base)) || { by: {} };
+      par.of(mine).forEach(function (rec) {
+        var id = rec && rec.id, key = par.path.map(function (s) { return '.' + s.k; }).join('') + '#' + id;
+        if (typeof id !== 'string' || byKey[key] || kt.by[id] || !kb.by[id] || !(tg && tg[id] > 0)) return;
+        var kids = par.list === 'scouts'
+          ? { entries: changedHere(mine.entries, function (e) { return e.scoutId === id; }, base && base.entries),
+            sales: changedHere(salesOf(mine), function (x) { return x.scoutId === id; }, salesOf(base)),
+            distributions: changedHere(dists(mine), function (x) { return x.target && x.target.kind === 'scout' && x.target.id === id; }, dists(base)) }
+          : { entries: [], sales: [], distributions: changedHere(dists(mine), function (x) { return x.productId === id; }, dists(base)) };
+        if (!kids.entries.length && !kids.sales.length && !kids.distributions.length) return;
+        var it = byKey[key] = { key: key, path: par.path.concat([{ id: id }]), fields: [{ path: [], base: clone(kb.by[id]), mine: clone(rec), theirs: undefined }],
+          gone: par.list, goneId: id, deleted: 'theirs', children: clone(kids) };
+        items.push(it);
+      });
+    });
+    return { merged: merged, items: items, mineN: n.mine, theirsN: n.theirs, look: look };
   }
   // What a pick was made against: both versions of each field in conflict. A pick holds only while
   // they are the same (as ledgerConflictSig). Pure.
   function syncItemSig(it) {
     return JSON.stringify(it.fields.map(function (f) { return [f.path, f.mine === undefined ? null : f.mine, f.theirs === undefined ? null : f.theirs]; }));
+  }
+  // What makes two charges the same charge, on any device (chargeMatchKey, as syncCharges matches them); '' for a
+  // charge on no line (a prior-year balance), which goes by its id.
+  function syncChargeKey(c) {
+    return c && c.lineId ? 'k:' + chargeMatchKey(c, getBudgetLine(c.lineId), chargeFamilyKey) : '';
   }
   // A pack record as a backend sent it (`d`), parsed and normalized; null if it can't be read.
   function syncRecNorm(d) {
@@ -19213,15 +19327,18 @@
   // The three-way merge of this device's copy with the server's (`d`), from this pack's base: null with
   // no base, or a copy that can't be read (then the merge is the one from before, with no base). The
   // result carries `theirs` (the server's, normalized), `remote` (`d`) and `base` (the base record).
+  // Security review of 6b48119 (2) — a server copy behind the base (a backup restored there, a reset) is no
+  // merge's: { whole: true }, and syncPush asks which whole copy to keep, as across a close-out.
   function syncThreeWayOf(d, picks) {
     var b = syncBaseGet();
     if (!b || !d) return null;
+    if (typeof d.rev === 'number' && d.rev < b.rev) return { whole: true, items: [] };
     var baseNorm = syncRecNorm(b), theirs = syncRecNorm(d);
     if (!baseNorm || !theirs) return null;
     // This device's copy through the same normalizer as the other two, so a shape the page fills in on
     // load (a field a new record was made without) never reads as a change of this device's.
     var mine = normalizeState(JSON.parse(JSON.stringify(state))) || state;
-    var three = syncThreeWay(baseNorm, mine, theirs, picks);
+    var three = syncThreeWay(baseNorm, mine, theirs, picks, { chargeKey: syncChargeKey });
     three.theirs = theirs;
     three.remote = d;
     three.base = b;
@@ -19230,8 +19347,14 @@
   // Puts a three-way merge (syncThreeWayOf) into this device's copy: every key it merged, as merged. And a
   // record deleted on one side that the pick keeps the other side's version of: its deletion mark becomes a
   // put-back (as takeBack and keepReconciled make one), so the merge of the marks that follows keeps it.
+  // Treasurer review of 6b48119 (3) — and the opening balance never moves under a reconciled book: when the merged
+  // opening differs from a copy whose opening is locked (openingLockedWhy: reconciled, or entries ticked), that copy's
+  // opening is kept, logged on the book ('resolve', what was not kept first) and said on "The ledger needs a look".
+  // Returns what that should say (with the charges both changed: syncThreeWay's `look`).
+  var SYNC_OPENING_LOCKED_WHY = 'Not kept: the book was reconciled on another device before this change reached it, and a reconciled book’s opening balance is locked. ' +
+    'If the opening was wrong, record the difference as an adjusting entry dated today and say why.';
   function syncApplyThreeWay(three, picks) {
-    var m = three.merged;
+    var m = three.merged, look = (three.look || []).slice(), wasBook = state.book ? JSON.parse(JSON.stringify(state.book)) : null, wasLedger = state.ledger;
     Object.keys(state).concat(Object.keys(m)).forEach(function (k) {
       if (SYNC_MERGE_SKIP.indexOf(k) !== -1) return;
       if (Object.prototype.hasOwnProperty.call(m, k)) state[k] = m[k]; else delete state[k];
@@ -19245,6 +19368,21 @@
       var mark = Math.max(typeof here === 'number' ? Math.abs(here) : 0, typeof there === 'number' ? Math.abs(there) : 0);
       state.gone[it.gone][it.goneId] = -Math.max(now, Math.min(mark, now) + 1);
     });
+    var bk = state.book, th = three.theirs;
+    [{ book: wasBook, ledger: wasLedger }, { book: th && th.book, ledger: th && th.ledger }].some(function (c) {
+      if (!bk || !c.book || !openingLockedWhy(c.book, c.ledger)) return false;
+      if (bk.openingCents === c.book.openingCents && bk.openingDate === c.book.openingDate) return true;
+      var discarded = bk.openingCents;
+      bk.openingCents = c.book.openingCents;
+      bk.openingDate = c.book.openingDate;
+      var f = { openingCents: [discarded, bk.openingCents] };
+      // (Once: a push's transaction can run this again.)
+      if (!arrOf(state.ledgerLog).some(function (ev) { return ev && ev.op === 'resolve' && ev.row === 'book' && ev.why === SYNC_OPENING_LOCKED_WHY && ev.f && ev.f.openingCents &&
+        ev.f.openingCents[0] === discarded && ev.f.openingCents[1] === bk.openingCents; })) logLedger('resolve', 'book', { f: f, why: SYNC_OPENING_LOCKED_WHY });
+      look.push({ kind: 'openinglocked', discarded: discarded, kept: bk.openingCents });
+      return true;
+    });
+    return look;
   }
   // THE SYNC LOG (state.syncLog). One entry for each field where a leader kept this device's version over
   // one the server had changed since this device last synced (saveRowChoices): { id, at, byName, byUid,
@@ -19257,14 +19395,23 @@
   // Append-only: unioned by id in every merge and push (mergeSyncLog), the newest SYNC_LOG_MAX kept.
   // LEADERS ONLY: shown on Pack · Sharing ("Sync decisions"); buildParentView, an allowlist, never reads it.
   // (SYNC_LOG_MAX is declared above `var state = load()`, with PACK_FORMAT: normalizeState reads it.)
+  // Security review of 6b48119 (3, 5) — a value with an '@' in it is scrubbed to "Changed" (a stamp from before the
+  // redaction, or written by hand); an entry with no real time, or one more than a day ahead, is dropped; the id is
+  // deduplicated as kept (40 characters), and the key cut to 200. Treasurer review (6) — baseValue (what it was
+  // before either change), kept ('mine' or 'server') and how ('item' or 'all': Keep all).
   function normalizeSyncLog(list) {
     function str(v, max) { return typeof v === 'string' ? v.slice(0, max) : ''; }
-    var seen = Object.create(null), out = [];
+    function val(v) { v = str(v, 200); return v.indexOf('@') === -1 ? v : 'Changed'; }
+    if (!Array.isArray(list) || !list.length) return [];   // (and the clock is asked only when there is a log)
+    var seen = Object.create(null), out = [], ahead = Date.now() + 86400000;
     (Array.isArray(list) ? list : []).forEach(function (e) {
-      if (!e || typeof e !== 'object' || Array.isArray(e) || typeof e.id !== 'string' || !e.id || seen[e.id]) return;
-      seen[e.id] = true;
-      out.push({ id: str(e.id, 40), at: str(e.at, 40), byName: ledgerStampClean(str(e.byName, 80)), byUid: str(e.byUid, 128), key: str(e.key, 400),
-        item: str(e.item, 200), field: str(e.field, 120), serverValue: str(e.serverValue, 200), keptValue: str(e.keptValue, 200),
+      if (!e || typeof e !== 'object' || Array.isArray(e) || typeof e.id !== 'string' || !e.id) return;
+      var id = str(e.id, 40), at = str(e.at, 40), t = Date.parse(at);
+      if (seen[id] || !/^\d{4}-\d{2}-\d{2}T/.test(at) || !isFinite(t) || t > ahead) return;
+      seen[id] = true;
+      out.push({ id: id, at: at, byName: ledgerStampClean(str(e.byName, 80)), byUid: str(e.byUid, 128), key: str(e.key, 200),
+        item: str(e.item, 200), field: str(e.field, 120), serverValue: val(e.serverValue), keptValue: val(e.keptValue), baseValue: val(e.baseValue), mineValue: val(e.mineValue),
+        kept: e.kept === 'server' ? 'server' : 'mine', how: e.how === 'all' ? 'all' : 'item',
         serverChangedAt: str(e.serverChangedAt, 40), serverChangedAfter: str(e.serverChangedAfter, 40) });
     });
     out.sort(function (a, b) { return a.at < b.at ? -1 : a.at > b.at ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0; });
@@ -19386,6 +19533,14 @@
     if (typeof v === 'string') {
       if (!v) return 'Blank';
       if (k === 'scoutId') return syncScoutName(copies, v);
+      // Security review of 6b48119 (3) — an id is never shown: what it names, or that it is set.
+      if (/Id$/.test(String(k))) {
+        var named = k === 'eventId' ? syncAt(copies, [{ k: 'events' }, { id: v }])
+          : k === 'lineId' ? (syncAt(copies, [{ k: 'budget' }, { k: 'activities' }, { id: v }]) || syncAt(copies, [{ k: 'budget' }, { k: 'expenses' }, { id: v }]))
+          : k === 'productId' ? syncAt(copies, [{ k: 'inventory' }, { k: 'products' }, { id: v }])
+          : k === 'fundraiserId' ? syncAt(copies, [{ k: 'fundraisers' }, { id: v }]) : null;
+        return named ? syncRecName(k === 'eventId' ? 'events' : '', named, copies) : 'Set';
+      }
       if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return fmtDate(v) + ', ' + v.slice(0, 4);
       if (/^\d{4}-\d{2}$/.test(v)) return monthLabel(v);
       if (/^\d{2}:\d{2}$/.test(v)) return fmtClock(v) || v;
@@ -19410,17 +19565,63 @@
   }
   // The item as the chooser shows it: { title, lines: [{ label, mine, theirs }] }. A record deleted on one
   // side reads "Deleted" there, and on the other side what it changed. Pure given `copies` ([mine, theirs, base]).
+  // Treasurer review of 6b48119 (2) — what this device recorded for a parent the server deleted, in words. Pure.
+  function syncChildrenText(kids) {
+    var parts = [];
+    function money(list, f) { return list.reduce(function (n, x) { return n + f(x); }, 0); }
+    var e = arrOf(kids && kids.entries), sl = arrOf(kids && kids.sales), d = arrOf(kids && kids.distributions);
+    if (e.length) parts.push(e.length + (e.length === 1 ? ' popcorn sale (' : ' popcorn sales (') + fmt(money(e, function (x) { return (x.salesCents || 0) + (x.donationsCents || 0); })) + ')');
+    if (sl.length) parts.push(sl.length + (sl.length === 1 ? ' fundraiser sale (' : ' fundraiser sales (') + fmt(money(sl, function (x) { return x.cents || 0; })) + ')');
+    if (d.length) {
+      var cases = money(d, function (x) { return typeof x.containers === 'number' ? x.containers : 0; });
+      parts.push(d.length + (d.length === 1 ? ' hand-out (' : ' hand-outs (') + cases + (cases === 1 ? ' case)' : ' cases)'));
+    }
+    return 'Not on the server yet: ' + parts.join(', ');
+  }
+  // Treasurer review of 6b48119 (5) — a whole record in words, for a side that is the record (one deleted on the
+  // other side), and for what it was before either change: its name and its money. Never a contact detail or an id.
+  // `list` is the key of the list it is in. Pure given `copies`.
+  function syncRecordFigures(list, rec, copies) {
+    if (!rec || typeof rec !== 'object') return 'Not there';
+    var parts = [syncRecName(list, rec, copies)];
+    Object.keys(rec).forEach(function (k) { if (/Cents$/.test(k) && typeof rec[k] === 'number') parts.push(syncFieldWords(k) + ' ' + fmt(rec[k])); });
+    return syncClip(parts.filter(Boolean).join(' · '), 160);
+  }
+  // The list a record item's record is in (its key), or ''.
+  function syncItemList(it) {
+    var last = it.path[it.path.length - 1], prev = it.path[it.path.length - 2];
+    return last && last.id !== undefined && prev ? prev.k || '' : '';
+  }
+  function syncItemBaseText(it, copies) {
+    var f = it.fields[0];
+    return syncRecordFigures(syncItemList(it), f && f.base, copies);
+  }
+  // Treasurer review of 6b48119 (5) — said under a number both devices changed.
+  var SYNC_BOTH_NUMBER = 'Both devices changed this. If both changes were real, keep one and adjust it by hand afterwards.';
+  // The item as the chooser shows it: { title, lines: [{ label, mine, theirs, base, key, both, mineFig, theirsFig }] }.
+  // A record deleted on one side reads "Deleted" there, and on the other what it changed (mineFig/theirsFig: its
+  // figures, which the log keeps). `base`: what it was before either change. Pure given `copies` ([mine, theirs, base]).
   function syncItemView(it, copies) {
+    if (it.children) {
+      return { title: syncItemTitle(it, copies), lines: [{ label: '', mine: syncChildrenText(it.children), theirs: 'Deleted', base: syncItemBaseText(it, copies), key: '',
+        mineFig: syncChildrenText(it.children), theirsFig: 'Deleted' }] };
+    }
+    var list = syncItemList(it);
     var lines = it.fields.map(function (f) {
       var k = f.path.length ? f.path[f.path.length - 1] : (it.path[it.path.length - 1].k || '');   // a setting's own key
       var label = f.path.length ? syncCap(f.path.map(syncFieldWords).join(' · ')) : '';
+      var whole = !f.path.length && list;   // the record itself, deleted on one side
       function side(v, other) {
-        if (f.path.length || (v !== undefined && other !== undefined)) return syncValueText(k, v, copies);
+        if (!whole || (v !== undefined && other !== undefined)) return syncValueText(k, v, copies);
         if (v === undefined) return 'Deleted';
         var changed = f.base && typeof f.base === 'object' ? Object.keys(v).filter(function (x) { return x !== 'id' && !syncSame(v[x], f.base[x]); }) : [];
         return changed.length ? 'Changed: ' + syncClip(changed.map(syncFieldWords).join(', '), 140) : 'Kept as it was';
       }
-      return { label: label, mine: side(f.mine, f.theirs), theirs: side(f.theirs, f.mine), key: k };
+      function fig(v) { return whole ? (v === undefined ? 'Deleted' : syncRecordFigures(list, v, copies)) : ''; }
+      return { label: label, mine: side(f.mine, f.theirs), theirs: side(f.theirs, f.mine), key: k,
+        base: whole ? syncRecordFigures(list, f.base, copies) : syncValueText(k, f.base, copies),
+        both: typeof f.base === 'number' && typeof f.mine === 'number' && typeof f.theirs === 'number',
+        mineFig: fig(f.mine), theirsFig: fig(f.theirs) };
     });
     return { title: syncItemTitle(it, copies), lines: lines };
   }
@@ -19436,7 +19637,7 @@
   function syncServerWho(it, view, theirsLog, ctx) {
     var hit = null;
     (Array.isArray(theirsLog) ? theirsLog : []).forEach(function (e) {
-      if (!e || typeof e.key !== 'string' || e.key.indexOf(it.key) !== 0) return;
+      if (!e || typeof e.key !== 'string' || !(e.key === it.key || e.key.indexOf(it.key + '.') === 0)) return;   // security 8: this item, not one whose key starts the same
       if (!view.lines.some(function (l) { return l.theirs === e.keptValue; })) return;
       if (!hit || String(e.at) > String(hit.at)) hit = e;
     });
@@ -19453,16 +19654,36 @@
     var exact = !!(b && remote && typeof remote.rev === 'number' && remote.rev === b.rev + 1);
     return { at: at, since: exact ? '' : (b && b.at) || '', exact: exact };
   }
-  // The log entries for the items kept as this device has them (`picks` 'mine'): one a field. Each says what
-  // was replaced on the server, and when that was set (syncServerWhen). `copies` [mine, theirs, base].
-  function syncDecisionEntries(items, picks, copies, when, by) {
-    var out = [], at = new Date().toISOString();
+  // The log entries for the items picked (`picks`), one a field (syncDecisionLine says them). Logged: every field
+  // kept as this device has it (it replaces a server change), and, treasurer review of 6b48119 (6b), every money one
+  // kept as the server has it too (kept: 'server'), money being SYNC_LOG_MONEY's. Security review (3): a contact detail
+  // or a note is logged as "Changed" or "Not set", never its value. `hows` { key: 'all' } for "Keep all". `when` from
+  // syncServerWhen; `copies` [mine, theirs, base].
+  var SYNC_LOG_HIDDEN = ['email', 'phone', 'uid', 'parentUids', 'noteInternal', 'notes', 'note'];
+  var SYNC_LOG_MONEY = { keys: ['depositDays', 'wagonViaTEFrom', 'cashThroughTrailsEnd', 'commissionPct', 'commissionPctOnline', 'cashScoutPct'],
+    lists: ['entries', 'sales', 'distributions', 'salesCash', 'blocks', 'activities', 'expenses', 'tiers', 'products'] };
+  function syncItemIsMoney(it, k) {
+    if (it.children || it.path[0].k === 'book' || /Cents$/.test(String(k)) || SYNC_LOG_MONEY.keys.indexOf(k) !== -1) return true;
+    return it.path.some(function (s, i) { var nx = it.path[i + 1]; return s.k !== undefined && nx && nx.id !== undefined && SYNC_LOG_MONEY.lists.indexOf(s.k) !== -1; });
+  }
+  function syncDecisionEntries(items, picks, copies, when, by, hows) {
+    var out = [], at = new Date(Date.now()).toISOString();   // (the clock normalizeSyncLog checks against)
     items.forEach(function (it) {
-      if (!picks || picks[it.key] !== 'mine') return;
+      var pick = picks && picks[it.key];
+      if (pick !== 'mine' && pick !== 'theirs') return;
       var v = syncItemView(it, copies);
       v.lines.forEach(function (l, i) {
-        out.push({ id: 'sl-' + uid() + '-' + out.length, at: at, byName: by.name, byUid: by.uid, key: it.key + (it.fields[i].path.length ? '.' + it.fields[i].path.join('.') : ''),
-          item: v.title, field: l.label, serverValue: l.theirs, keptValue: l.mine,
+        var f = it.fields[i] || {};
+        if (pick === 'theirs' && !syncItemIsMoney(it, l.key)) return;
+        var hidden = SYNC_LOG_HIDDEN.indexOf(l.key) !== -1;
+        function say(raw, text, figText) {
+          if (hidden) return raw === undefined || raw === null || raw === '' || (Array.isArray(raw) && !raw.length) ? 'Not set' : 'Changed';
+          return figText || text;
+        }
+        out.push({ id: 'sl-' + uid() + '-' + out.length, at: at, byName: by.name, byUid: by.uid, key: it.key + (f.path && f.path.length ? '.' + f.path.join('.') : ''),
+          item: v.title, field: l.label, serverValue: say(f.theirs, l.theirs, l.theirsFig), keptValue: pick === 'mine' ? say(f.mine, l.mine, l.mineFig) : say(f.theirs, l.theirs, l.theirsFig),
+          baseValue: say(f.base, l.base), kept: pick === 'mine' ? 'mine' : 'server', how: hows && hows[it.key] === 'all' ? 'all' : 'item',
+          mineValue: say(f.mine, l.mine, l.mineFig),
           serverChangedAt: (when && when.at) || '', serverChangedAfter: (when && when.since) || '' });
       });
     });
@@ -19626,9 +19847,16 @@
       // merges three ways from the base, and asks only about what both changed (the chooser of items).
       // The whole-copy chooser below is the last resort: storage unreadable, unsaved work with no base to
       // tell it from an old copy, a server behind this device, or a close-out between the two.
-      var unsyncedHere = sync.dirty ? true : syncUnsynced();
-      var plan = syncFirstPlan({ unsynced: unsyncedHere, base: unsyncedHere === null ? null : syncBaseGet(), localRev: revHere, remoteRev: remoteRev,
-        apart: function () { return seasonMoved(d) || seasonClosedTwice(d); } });
+      var unsyncedHere = sync.dirty ? true : syncUnsynced(), baseHere = unsyncedHere === null ? null : syncBaseGet();
+      var plan = syncFirstPlan({ unsynced: unsyncedHere, base: baseHere, localRev: revHere, remoteRev: remoteRev,
+        apart: function () { return seasonMoved(d) || seasonClosedTwice(d); },
+        onlyHere: function () { return !syncMoneySubset(state, remoteNorm) || closedBooksLost(remoteNorm.closedBooks, state.closedBooks).length > 0; },
+        serverIsBase: function () { var bn = syncRecNorm(baseHere); return !!bn && stateFingerprint(bn) === stateFingerprint(remoteNorm); } });
+      // Security review of 6b48119 (4) — this device's own copy goes out (or is merged in) only on the server's word
+      // that it may edit. That word is the members watch's server answer, or, before the watch has answered at all,
+      // the session start's own read of this account's member doc (on the pack's server, POST /api/session), as for
+      // the viewer's rule above. A role from a cached roster (Firestore, offline) is not: the choice waits, whole copy.
+      if ((plan === 'push' || plan === 'merge') && accountsInForce() && !(sync.membersFromServer || !sync.membersHeard)) plan = 'choose';
       if (plan === 'adopt') { adoptRemote(d, { toast: true, toastText: SYNC_UPDATED }); return; }
       if (plan === 'push' || plan === 'merge') {
         sync.dirty = true;
@@ -19767,7 +19995,9 @@
     var parsed = null;
     try { parsed = JSON.parse(typeof d.json === 'string' ? d.json : ''); } catch (e) { /* unreadable: no entries found in it, below */ }
     if (formatAhead(parsed)) { holdNewerFormat(); return false; }
-    if (seasonMoved(d) || seasonClosedTwice(d)) {
+    // (Security review of 6b48119, 2 — and a server copy behind this device's base: whole copy too.)
+    var behind = syncThreeWayOf(d);
+    if (seasonMoved(d) || seasonClosedTwice(d) || (behind && behind.whole)) {
       sync.rowChoice = null;
       sync.conflict = d;
       if (ui.overlay && ui.overlay.kind === 'sync-conflict') ui.overlay.remote = d;
@@ -19784,7 +20014,7 @@
       delete rc.picks[id]; delete rc.seen[id];
     });
     // Keith, 2026-10-02 — and the items both copies changed (syncThreeWay), asked of `d` the same way.
-    var three = syncThreeWayOf(d), fnow = {};
+    var three = behind, fnow = {};
     rc.fields = three ? three.items : [];
     if (!rc.fieldPicks) { rc.fieldPicks = {}; rc.fieldSeen = {}; }
     rc.fields.forEach(function (it) { fnow[it.key] = syncItemSig(it); });
@@ -19822,10 +20052,12 @@
   // (pickRowVersion skips it, as its own button does).
   function pickSyncItem(rc, key, side) {
     if (side !== 'mine' && side !== 'theirs') return;
+    if (!rc.fieldHow) rc.fieldHow = {};
     (rc.fields || []).forEach(function (it) {
       if (key !== '*' && it.key !== key) return;
       rc.fieldPicks[it.key] = side;
       rc.fieldSeen[it.key] = syncItemSig(it);
+      rc.fieldHow[it.key] = key === '*' ? 'all' : 'item';   // treasurer review of 6b48119 (6d): the log says "Keep all"
     });
     if (key === '*') rc.items.forEach(function (it) { pickRowVersion(rc, it.ids[0], side); });
   }
@@ -19860,11 +20092,12 @@
     // (syncDecisionEntries): who, when, what was replaced, and when that was set. Keeping the server's
     // version changes nothing there, and is not logged.
     var three = syncThreeWayOf(rc.remote, rc.fieldPicks), keptMine = false;
+    if (three && three.whole) three = null;   // (refreshRowChoice has made that the whole-copy choice already)
     if (three) {
-      syncApplyThreeWay(three, rc.fieldPicks);
+      syncApplyThreeWay(three, rc.fieldPicks).forEach(function (it) { look.push(it); });
       var logged = syncDecisionEntries(three.items, rc.fieldPicks, [state, three.theirs, null], syncServerWhen(rc.remote, three.base),
-        { name: ledgerActor(), uid: ledgerActorUid() });
-      keptMine = logged.length > 0;
+        { name: ledgerActor(), uid: ledgerActorUid() }, rc.fieldHow);
+      keptMine = logged.some(function (e) { return e.kept === 'mine'; });
       if (logged.length) state.syncLog = mergeSyncLog(state.syncLog, logged);
     }
     mergeRemoteAppendOnly(rc.remote, kept, lost, split, picks, look);
@@ -27809,6 +28042,8 @@
       '<button type="button" class="btn small' + (ui.ledgerView === 'reconcile' ? ' primary' : '') + '" data-act="ledger-view" data-view="reconcile">Reconcile</button>' +
       // Treasurer review of C2 (M-4) — the whole log, as a CSV (the export overlay: copy or download).
       (state.ledgerLog.length ? '<button type="button" class="btn small ghost" data-act="ledger-log-csv">Change history (CSV)</button>' : '') +
+      // Treasurer review of 6b48119 (6e) — and the sync decisions beside it.
+      (arrOf(state.syncLog).length ? '<button type="button" class="btn small ghost" data-act="sync-log-csv">Sync decisions (CSV)</button>' : '') +
       // Treasurer sign-off on C3 — and the voided entries, for the annual review. Treasurer review of
       // C4 (5) — and the reversed ones: offered when there is a void or a reversed pair.
       ((state.ledgerAside || []).some(function (e) { return e.off === 'void' || e.off === 'reversed'; }) || Object.keys(ledgerPairOf(state.ledger)).length
@@ -29230,7 +29465,7 @@
     'print-shop', 'pk-agenda-print', 'print-pk-agenda', 'sf-day-sheet', 'copy-day-sheet', 'sf-glance-open', 'copy-glance',
     'family-statement', 'copy-statement', 'family-sheet', 'parent-preview-on', 'sr-history-open', 'sr-history-csv', 'sr-history-reasons', 'kit-print-flyer', 'kit-print-qr', 'te-print',
     'copy-archive', 'copy-kickoff', 'makeup-msg', 'copy-makeup-msg', 'join-copy', 'pack-id-copy',
-    'export-csv', 'export-ics', 'ledger-log-csv', 'ledger-voided-csv', 'copy-export', 'download-export',
+    'export-csv', 'export-ics', 'ledger-log-csv', 'sync-log-csv', 'ledger-voided-csv', 'copy-export', 'download-export',
     'export-json', 'sync-download-local'];
   var HELD_ACT_PREFIXES = ['archive-sheet:', 'tier-due-open:', 'st-print:', 'closed-csv:'];   // Phase 3, C5: a statement's printout
   // …and the two change fields that only filter what is shown.
@@ -30522,24 +30757,47 @@
   /* ----- Pack · Sharing — who can get in, and how the pack is published ----- */
   // Keith, 2026-10-02 — the sync log (normalizeSyncLog), newest first: ten, or all of them. Nothing when it is
   // empty. The pack record's, so leaders only (a parent's page never holds it; buildParentView never reads it).
-  var SYNC_LOG_INTRO = 'Each time a leader kept a change made on their device over one the pack’s server had made since that device last synced. ' +
-    'Keeping the server’s version changes nothing, so it isn’t listed.';
+  // (Treasurer review of 6b48119, 6 — money changes are listed whichever version was kept, with what it was before.)
+  var SYNC_LOG_INTRO = 'Each time a leader chose between a change made on their device and one the pack’s server had made since. ' +
+    'Money changes are listed whichever version was kept.';
   function syncDecisionLine(e) {
     var set = e.serverChangedAt ? (e.serverChangedAfter ? 'set on the server between ' + syncWhenText(e.serverChangedAfter) + ' and ' + syncWhenText(e.serverChangedAt)
       : 'set on the server on ' + syncWhenText(e.serverChangedAt)) : '';
-    return (e.field ? e.item + ' · ' + e.field : e.item) + ': kept “' + e.keptValue + '”, replacing “' + e.serverValue + '”' + (set ? ' (' + set + ')' : '') + '.';
+    var what = (e.field ? e.item + ' · ' + e.field : e.item) + ': ' + (e.kept === 'server'
+      ? 'kept the server’s “' + e.serverValue + '”; this device’s change to “' + (e.mineValue || 'something else') + '” was not kept'
+      : 'kept “' + e.keptValue + '”, replacing “' + e.serverValue + '”' + (set ? ' (' + set + ')' : ''));
+    return what + (e.baseValue ? '; it was “' + e.baseValue + '” before either change' : '') + '.' + (e.how === 'all' ? ' (Keep all.)' : '');
+  }
+  // Treasurer review of 6b48119 (6e) — as full as the ledger's history warns at: three-quarters, then full.
+  function syncLogRoomNotice(n) {
+    if (n >= SYNC_LOG_MAX) return 'The sync decisions are full: from here on the oldest are dropped to make room. Download them (Sync decisions (CSV)) to keep a copy.';
+    if (n >= SYNC_LOG_MAX * 0.75) return 'The sync decisions are three-quarters full. Once they fill, the oldest are dropped, so download them (Sync decisions (CSV)) now and then.';
+    return '';
+  }
+  // The log as a CSV, oldest first: when, who, what, which field, kept, the server's, this device's, before either change,
+  // when the server's was set, and how. Every cell through ledgerCsvCell; nothing in it is an email, a uid or an id
+  // (normalizeSyncLog, syncDecisionEntries). Pure.
+  function syncLogCsv(log) {
+    var rows = [['Date', 'Who', 'Item', 'Field', 'Kept', 'Server’s value', 'This device’s value', 'Before either change', 'Server’s set', 'How']];
+    arrOf(log).forEach(function (e) {
+      rows.push([ledgerLogWhen(e.at), e.byName, e.item, e.field, e.kept === 'server' ? 'Server’s' : 'This device’s', e.serverValue,
+        e.kept === 'server' ? e.mineValue : e.keptValue, e.baseValue, ledgerLogWhen(e.serverChangedAt), e.how === 'all' ? 'Keep all' : 'One item']);
+    });
+    return rows.map(function (r) { return r.map(ledgerCsvCell).join(','); }).join('\n') + '\n';
   }
   function renderSyncDecisions() {
     var log = arrOf(state.syncLog);
     if (!log.length) return '';
-    var newest = log.slice().reverse(), shown = ui.syncLogAll ? newest : newest.slice(0, 10);
+    var newest = log.slice().reverse(), shown = ui.syncLogAll ? newest : newest.slice(0, 10), room = syncLogRoomNotice(log.length);
     return '<div class="card"><h2 class="section display">Sync decisions</h2><p class="small muted" style="margin:0 0 8px">' + esc(SYNC_LOG_INTRO) + '</p>' +
+      (room ? '<div class="warn" style="margin:0 0 8px"><p class="small" style="margin:0">' + esc(room) + '</p></div>' : '') +
       '<ul class="small" style="margin:0;padding-left:18px">' + shown.map(function (e) {
         var when = syncWhenText(e.at);
         return '<li style="margin-bottom:6px">' + esc(syncDecisionLine(e)) + ' <span class="muted">' + esc('By ' + (ledgerStampClean(e.byName) || 'a leader') + (when ? ', ' + when : '') + '.') + '</span></li>';
       }).join('') + '</ul>' +
       (newest.length > 10 ? '<div class="row" style="margin-top:6px"><button type="button" class="btn small" data-act="sync-log-all">' +
-        (ui.syncLogAll ? 'Show the latest 10' : 'Show all ' + newest.length) + '</button></div>' : '') + '</div>';
+        (ui.syncLogAll ? 'Show the latest 10' : 'Show all ' + newest.length) + '</button></div>' : '') +
+      '<div class="row" style="margin-top:6px"><button type="button" class="btn small ghost" data-act="sync-log-csv">Sync decisions (CSV)</button></div></div>';
   }
   function renderPackSharing() {
     // Wave 21 — the pack's NAME, moved out of Budget's Season setup. It was never a money
@@ -33371,14 +33629,19 @@
   // Keith, 2026-10-02 — the chooser of items both copies changed (syncThreeWay: anything but ledger entries),
   // beside the entries' (C6). Phone-first: the two versions stack at 390 px. Leaders only.
   var SYNC_CHOOSER_TITLE = 'Changed here and on the server';
-  var SYNC_CHOOSER_KEPT = 'Every other change, from this device and from the server, is kept. If you keep your version over the server’s, ' +
-    'Pack · Sharing notes it under Sync decisions.';
+  var SYNC_CHOOSER_KEPT = 'Every other change, from this device and from the server, is kept. Pack · Sharing notes each choice under Sync decisions ' +
+    'when you keep your version, and every choice about money.';
   var SYNC_CHOOSER_ENTRIES = 'Ledger entries';
   var SYNC_KEEP_ALL_MINE = 'Keep all mine';
   var SYNC_KEEP_ALL_THEIRS = 'Keep all the server’s';
   var SYNC_MINE_HEAD = 'Your change on this device';
   var SYNC_THEIRS_HEAD = 'On the pack’s server';
   var SYNC_MINE_SUB = 'Not on the server yet.';
+  var SYNC_BEFORE = 'Before either change:';
+  // Treasurer review of 6b48119 (7) — one set of words in the overlay: the entries' buttons say what the items' do.
+  function syncKeepWords(side, picked) {
+    return picked ? (side === 'mine' ? '✓ Keeping mine' : '✓ Keeping the server’s') : (side === 'mine' ? 'Keep mine' : 'Keep the server’s');
+  }
   function syncChooserIntro(n) {
     return n === 1
       ? 'One thing was changed on this device while it was offline, and on the pack’s server too. Pick the version to keep. Nothing from this device is shared until you do.'
@@ -33391,7 +33654,10 @@
     try { copies[2] = b ? JSON.parse(b.json) : null; } catch (e) { /* named from the other two */ }
     rc.fields.forEach(function (it) {
       var v = syncItemView(it, copies), pick = rc.fieldPicks[it.key];
+      // Treasurer review of 6b48119 (5) — what it was before either change, and a word on a number both changed.
       h += '<div style="border-top:1px solid var(--line);margin-top:12px;padding-top:10px"><p style="margin:0"><strong>' + esc(v.title) + '</strong></p>' +
+        '<p class="small muted" style="margin:2px 0 0">' + esc(SYNC_BEFORE + ' ' + v.lines.map(function (l) { return (l.label ? l.label + ': ' : '') + l.base; }).join('; ')) + '</p>' +
+        (v.lines.some(function (l) { return l.both; }) ? '<p class="small" style="margin:2px 0 0">' + esc(SYNC_BOTH_NUMBER) + '</p>' : '') +
         '<div class="row" style="align-items:flex-start;gap:12px;margin-top:6px">' + ['mine', 'theirs'].map(function (side) {
           var picked = pick === side;
           var sub = side === 'mine' ? SYNC_MINE_SUB : syncServerWho(it, v, other && other.syncLog, when);
@@ -33402,7 +33668,7 @@
               return '<li>' + (l.label ? esc(l.label) + ': ' : '') + '<strong>' + esc(l[side]) + '</strong></li>';
             }).join('') + '</ul>' +
             '<button type="button" class="btn small' + (picked ? ' primary' : '') + '" aria-pressed="' + (picked ? 'true' : 'false') + '" data-act="sync-item-pick:' +
-            side + ':' + esc(it.key) + '">' + (picked ? (side === 'mine' ? '✓ Keeping mine' : '✓ Keeping the server’s') : (side === 'mine' ? 'Keep mine' : 'Keep the server’s')) + '</button></div>';
+            side + ':' + esc(it.key) + '">' + syncKeepWords(side, picked) + '</button></div>';
         }).join('') + '</div></div>';
     });
     return h;
@@ -33452,12 +33718,12 @@
         });
         if (!lines.length) lines = [ROW_SAME_BUT_STAMPS];
         return '<div style="flex:1 1 220px;min-width:0">' +
-          '<p class="eyebrow" style="margin:0">' + (side === 'mine' ? 'On this device' : 'In the pack’s shared copy') + '</p>' +
+          '<p class="eyebrow" style="margin:0">' + esc(side === 'mine' ? SYNC_MINE_HEAD : SYNC_THEIRS_HEAD) + '</p>' +
           '<p class="small muted" style="margin:2px 0 4px">' + esc(ledgerConflictWho(by, side, lock)) + '</p>' +
           '<ul class="small" style="margin:0 0 8px;padding-left:18px">' + lines.map(function (l) { return '<li>' + esc(l) + '</li>'; }).join('') + '</ul>' +
           (split ? '' : lock && lock.side === side ? '<p class="small" style="margin:0"><strong>' + esc(rowCantKeep(lock)) + '</strong></p>'
             : '<button type="button" class="btn small' + (picked ? ' primary' : '') + '" aria-pressed="' + (picked ? 'true' : 'false') + '" data-act="sync-row-pick:' +
-            side + ':' + esc(it.ids[0]) + '">' + (picked ? '✓ Keeping this version' : 'Keep this version') + '</button>') + '</div>';
+            side + ':' + esc(it.ids[0]) + '">' + syncKeepWords(side, picked) + '</button>') + '</div>';
       }).join('') + '</div>';
       if (split) {
         var kept = !!rc.picks[it.ids[0]];
@@ -38977,6 +39243,11 @@
     if (act === 'ledger-look-dismiss') { sync.lookNotes = []; render(); return; }   // Phase 3, C6 reviews
     // Treasurer review of C2 (M-4) — the ledger's change history as a CSV. Leaders only: this is on
     // Money · Ledger, which a parent never has (buildParentView carries no ledger and no log).
+    // Treasurer review of 6b48119 (6e) — the sync decisions as a CSV, leaders only (Money · Ledger, Pack · Sharing).
+    if (act === 'sync-log-csv') {
+      ui.overlay = { kind: 'export', title: 'Sync decisions (CSV)', name: 'sync-decisions.csv', mime: 'text/csv', text: syncLogCsv(state.syncLog) };
+      render(); return;
+    }
     if (act === 'ledger-log-csv') {
       ui.overlay = { kind: 'export', title: 'Ledger change history (CSV)', name: 'ledger-change-history.csv', mime: 'text/csv',
         text: ledgerLogCsv(state.ledgerLog, ledgerEntryLabel, ledgerLogNames()) };
