@@ -32402,6 +32402,9 @@
   // has them. The sheet says "do not post" itself (2026-09-28), because the paper outlives this
   // comment.
   var DAY_SHEET_KEEP = 'Leaders\u2019 copy \u2014 keep with the shift leader, do not post';
+  // The day sheet's last line (2026-10-01): Scouting America's current wording for adult leadership, in
+  // place of "Two-deep leadership required at all times." Said once here, for the text and the print.
+  var DAY_SHEET_TWO_ADULTS = 'Two registered adult leaders 21 or older at all times, and no one-on-one contact between an adult and a youth.';
   function daySheetText(sf) {
     var pub = publicNameMap(state.scouts);
     var lines = [];
@@ -32425,7 +32428,7 @@
       if (shiftReportsOffered()) lines.push('  ' + DAY_SHEET_REPORT);
     });
     lines.push('');
-    lines.push('Two-deep leadership required at all times.');
+    lines.push(DAY_SHEET_TWO_ADULTS);
     return lines.join('\n');
   }
   function renderDaySheet(o) {
@@ -32458,7 +32461,7 @@
         (shiftReportsOffered() ? '<p class="small" style="margin:4px 0 0"><strong>' + esc(DAY_SHEET_REPORT) + '</strong></p>' : '') +
         '</div>';
     });
-    h += '<p class="small" style="margin:6px 0 0"><strong>Two-deep leadership required at all times.</strong></p>' +
+    h += '<p class="small" style="margin:6px 0 0"><strong>' + esc(DAY_SHEET_TWO_ADULTS) + '</strong></p>' +
       '</div></div></div>';
     return h;
   }

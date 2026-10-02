@@ -9597,7 +9597,7 @@ test('the copied standings name children the way the parent view does, and nobod
 
 test('the storefront day sheet names children by their public names', () => {
   const ctx = vm.createContext({});
-  vm.runInContext(PRIV_STATE + [SR_SYNC_STUBS, 'shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'STOREFRONT_SAFETY', 'sheetFirstName', 'daySheetText', 'blocksInDayOrder',
+  vm.runInContext(PRIV_STATE + [SR_SYNC_STUBS, 'shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'DAY_SHEET_TWO_ADULTS', 'STOREFRONT_SAFETY', 'sheetFirstName', 'daySheetText', 'blocksInDayOrder',
     'blockScoutNames', 'fmtTimeRange', 'fmtClock'].map(slice).join('\n'), ctx);
   const txt = vm.runInContext('daySheetText(state.storefronts[0])', ctx);
   noSurname(txt, 'the day sheet');
@@ -13008,7 +13008,7 @@ test('D2: a worked block past its day warns when the cash count lacks two differ
 
 test('D2: the day sheet carries the safety rules and the cash count, first names only, and nothing is published', () => {
   const ctx = vm.createContext({});
-  vm.runInContext(PRIV_STATE + [SR_SYNC_STUBS, 'shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'STOREFRONT_SAFETY', 'STOREFRONT_CASH_TO_CREDIT', 'sheetFirstName', 'daySheetText',
+  vm.runInContext(PRIV_STATE + [SR_SYNC_STUBS, 'shortNames', 'publicNameMap', 'DAY_SHEET_KEEP', 'DAY_SHEET_TWO_ADULTS', 'STOREFRONT_SAFETY', 'STOREFRONT_CASH_TO_CREDIT', 'sheetFirstName', 'daySheetText',
     'blocksInDayOrder', 'blockScoutNames', 'fmtTimeRange', 'fmtClock'].map(slice).join('\n'), ctx);
   vm.runInContext("state.storefronts[0].blocks[0].cashCountedBy = 'Dana Quenneville'; state.storefronts[0].blocks[0].cashVerifiedBy = 'Sam Hartwellington';", ctx);
   const txt = vm.runInContext('daySheetText(state.storefronts[0])', ctx);
@@ -13035,7 +13035,12 @@ test('D2: the day sheet carries the safety rules and the cash count, first names
   ok(/Cash counted by Dana {3}Verified by Sam/.test(txt), 'the cash count is not on the sheet by first name');
   ok(!/Quenneville|Hartwellington/.test(txt), 'a last name is on the day sheet');
   ok(/Cash counted by ______ {3}Verified by ______/.test(txt), 'an unnamed block has no blanks to fill in');
+  // 2026-10-01 — the last line, in Scouting America's current wording (not "two-deep leadership").
+  const sup = 'Two registered adult leaders 21 or older at all times, and no one-on-one contact between an adult and a youth.';
+  eq([ctx.DAY_SHEET_TWO_ADULTS, tl[tl.length - 1]], [sup, sup], 'the two-adults line, last on the text sheet');
   const rd = slice('renderDaySheet');
+  ok(/'<p class="small" style="margin:6px 0 0"><strong>' \+ esc\(DAY_SHEET_TWO_ADULTS\) \+ '<\/strong><\/p>'/.test(rd), 'the printed sheet’s two-adults line');
+  ok(!/two-deep leadership/i.test(codeOnly(SCRIPT)), 'the old "two-deep leadership" wording is still in the page');
   ok((rd.match(/esc\(STOREFRONT_SAFETY\)/g) || []).length === 2, 'the printed sheet lacks the safety line at the top or on a shift');
   ok(/sheetFirstName\(b\.cashCountedBy\)/.test(rd) && /sheetFirstName\(b\.cashVerifiedBy\)/.test(rd), 'the printed sheet does not use first names');
   // Leaders only.
