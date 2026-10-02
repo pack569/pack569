@@ -16118,7 +16118,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'shiftReportsReconcile', 'shiftReportsAfterPush', 'returnShiftReport', 'leaderShiftReportAct', 'srHandEdited', 'getStorefront',
   'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout', 'shiftConfirmSubmit',
   'srIConfirmed', 'srFamiliesNow', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'familyKeyOf', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
-  'srSameFigures', 'srSameFamily', 'SR_CASH_72H', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
+  'srSameFigures', 'srSameFamily', 'SR_CASH_72H', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
   'srScheduleRefresh', 'parentDoc', 'parentPreviewDoc', 'shiftReportOpenFor', 'shiftReportToday', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_DAYS', 'isoPlusDays',
   'srFormOpen', 'srMirror', 'srReasonDraft', 'srNameClean',
   'ledgerActor', 'ledgerActorName',
@@ -17687,7 +17687,7 @@ function srLeaderCtx(o) {
        'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srReasonDraft', 'srNameClean', 'ledgerStampClean', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout',
        'srIConfirmed', 'srFamiliesNow', 'srNeedsCheck', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'SR_CHECK_TE', 'SR_IMPORT_FIRST', 'familyKeyOf',
        'blockCashCheck', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
-       'srSameFigures', 'srSameFamily', 'SR_CASH_72H', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
+       'srSameFigures', 'srSameFamily', 'SR_CASH_72H', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
        'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay'].map(decl).join('\n')}
     function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }`, ctx);
   const run = (js) => vm.runInContext(js, ctx);
@@ -18260,6 +18260,44 @@ atest('my shifts: each account gets the ids of its own scouts’ shifts — brot
   eq((await v.call('parent', 'GET', 'shiftReports')).body.myShifts, [], 'no parent view');
 });
 
+// Security re-check (followups round 3): recording what became of the cash from sales is held to the
+// accept's rule — never the sender, never a leader in the sender's family — and an unreadable pack
+// record decides "same family" for both.
+atest('same family: recording the cash from sales refuses the sender and the sender’s family; an unreadable record means an override', async () => {
+  const w = await s4World();
+  const link = (uid, scoutIds) => {
+    const st = JSON.parse(w.one('SELECT json FROM pack_state').json);
+    st.scouts.forEach((sc) => { if (scoutIds.indexOf(sc.id) !== -1) sc.parentUids = (sc.parentUids || []).concat([uid]); });
+    w.db.raw.prepare('UPDATE pack_state SET json = ?, rev = rev + 1').run(JSON.stringify(st));
+  };
+  // An editor's own report on b2 (one family), accepted by the owner.
+  const mine = (await w.send('editor', 'b2', { salesCashCents: 300 })).body.report.id;
+  eq((await w.act('owner', mine, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 300, collected: true })).status, 200, 'accepted');
+  const sc = (who, rid, outcome, cents) => w.act(who, rid, { action: 'salescash', outcome, salesCashCents: cents });
+  eq((await sc('editor', mine, 'collected', 300)).body.error, 'same-person', 'the sender recording their own');
+  // newbie's report on b5, confirmed by Ada's family and accepted by the owner; admin2 is linked to Cy (newbie's family).
+  const r3 = (await w.send('newbie', 'b5', { salesCashCents: 400 })).body.report.id;
+  await w.confirm('parent', r3);
+  eq((await w.act('owner', r3, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 400 })).status, 200, 'accepted, confirmed by Ada’s family');
+  link('uid-admin2', ['s3']);
+  eq((await sc('admin2', r3, 'converted', 400)).body.error, 'same-family', 'a leader in the sender’s family');
+  eq(w.sql("SELECT count(*) AS n FROM audit WHERE action LIKE 'shift.salescash.%'")[0].n, 0, 'a refused record was audited');
+  eq((await sc('owner', r3, 'collected', 400)).status, 200, 'another family’s leader records it');
+  eq((await sc('admin2', r3, null, 400)).status, 200, 'an undo is open to any admin or editor');
+  // A record that exists but can't be read: same family, for the accept and the record alike.
+  const v = await s4World();
+  const rv = (await v.send('newbie', 'b2', { salesCashCents: 100 })).body.report.id;
+  v.db.raw.prepare("UPDATE pack_state SET json = '{x', rev = rev + 1").run();
+  eq((await v.act('editor', rv, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 100, collected: true })).body.error, 'same-family',
+    'an unreadable record: no plain accept');
+  eq((await v.act('editor', rv, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 100, override: true, reviewNote: 'Record broken' })).status, 200,
+    'an override with a reason');
+  eq((await v.act('owner', rv, { action: 'salescash', outcome: 'collected', salesCashCents: 100 })).body.error, 'same-family', 'nor a record of the cash');
+  // No record at all decides nothing, as before.
+  v.db.raw.prepare('DELETE FROM pack_state').run();
+  eq((await v.act('owner', rv, { action: 'salescash', outcome: 'collected', salesCashCents: 100 })).status, 200, 'no record: allowed');
+});
+
 /* Keith (2026-10-01) — the leader who accepts a report is from a different family than the sender
    (rules.js sameFamily, from the stored pack record's parentUids). Same family: only an override
    with a reason. An account linked to no scout shares no family. */
@@ -18303,8 +18341,8 @@ atest('same family: a leader in the sender’s family accepts only with a reason
     return orig.call(v.db, list);
   };
   const late = await v.act('editor', rv, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
-  eq([late.status, late.body.error, v.one('SELECT status FROM shift_reports WHERE id = ?', rv).status], [409, 'report-moved', 'submitted'],
-    'a link added while the accept was on its way');
+  eq([late.status, late.body.error, v.one('SELECT status FROM shift_reports WHERE id = ?', rv).status], [409, 'pack-moved', 'submitted'],
+    'a link added while the accept was on its way: pack-moved, so the page tries again');
   // The rule itself, pure.
   const R = API.rules, pack = { scouts: [{ id: 'a', parentUids: ['u1'] }, { id: 'b', familyId: 'f', parentUids: ['u2'] }, { id: 'c', familyId: 'f', parentUids: ['u3'] }] };
   eq([R.sameFamily(pack, 'u2', 'u3'), R.sameFamily(pack, 'u1', 'u2'), R.sameFamily(pack, 'u1', 'nobody'), R.sameFamily(pack, 'u1', 'u1'), R.sameFamily(null, 'u1', 'u1')],
@@ -18996,7 +19034,7 @@ atest('orphans: cash from sales still out on a report whose shift is gone stays 
   const ban = L.run('renderShiftReportsBanner()');
   ok(/Cash from popcorn sales to collect: \$13\.00 across 2 shifts/.test(ban) && /\$9\.00 reported by Nora Newfamily · sent [^<]*· <span class="muted">this shift is no longer on the schedule<\/span>/.test(ban),
     'the banner row');
-  ok(/data-act="sr-cash-collected" data-rid="gone-1">Collected</.test(ban) && /data-act="sr-cash-converted" data-rid="gone-2">They converted it</.test(ban), 'its buttons');
+  ok(/data-act="sr-cash-collected" data-rid="gone-1"[^>]*>Collected</.test(ban) && /data-act="sr-cash-converted" data-rid="gone-2"[^>]*>They converted it</.test(ban), 'its buttons');
   L.run("srCashAct('sr-cash-collected', { dataset: { rid: 'gone-1' } })");
   eq([L.get('patches[0]'), L.get('commits')], [{ rid: 'gone-1', body: { action: 'salescash', outcome: 'collected', salesCashCents: 900 } }, 0], 'the server only: no block to write');
   await L.answer(0);
@@ -19010,6 +19048,40 @@ atest('orphans: cash from sales still out on a report whose shift is gone stays 
   // A viewer reads it, with no buttons.
   const V = srLeaderCtx({ role: 'viewer', reports: reps });
   ok(/no longer on the schedule/.test(V.run('renderShiftReportsBanner()')) && !/sr-cash-collected/.test(V.run('renderShiftReportsBanner()')), 'a viewer');
+});
+
+atest('same family: a leader can’t record their own or their family’s cash from sales, and an accept the pack moved under is tried again, not undone', async () => {
+  const st = { scouts: [{ id: 's1', name: 'Ada', familyId: 'fam1', parentUids: ['uid-nora'] }, { id: 's2', name: 'Bo', familyId: 'fam1', parentUids: ['uid-ed'] }],
+    leaders: [{ id: 'l1', name: 'Sam Leader', uid: 'uid-ed' }], storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [
+      { id: 'b1', label: 'Block 1', start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }], salesCents: 12345, donationsCents: 0,
+        salesCash: [{ reportId: 'rep-1', cents: 500, from: 'Nora', outcome: null }] }] }] };
+  const reps = [srRep({ status: 'accepted', salesCashCents: 500, salesCashOutcome: null }),
+    srRep({ id: 'rep-g', blockId: 'gone', status: 'accepted', salesCashCents: 200, salesCashOutcome: null, submittedByUid: 'uid-ed' })];
+  const L = srLeaderCtx({ state: st, reports: reps });
+  const blk = L.run('renderBlockCashToCollect(state.storefronts[0], state.storefronts[0].blocks[0])');
+  ok(!/sr-cash-collected|sr-cash-converted/.test(blk) &&
+    blk.indexOf('You’re in the same family as the parent who sent this, so another leader records what became of its cash.') !== -1, 'the block: same family');
+  const ban = L.run('renderShiftReportsBanner()');
+  ok(ban.indexOf('You sent this report, so another leader records what became of its cash.') !== -1 && !/data-rid="rep-g">Collected/.test(ban), 'the orphan row: the sender');
+  L.run("srCashAct('sr-cash-collected', { dataset: { rid: 'rep-1' } })");
+  eq([L.get('patches.length'), L.get('toasts').pop()], [0, 'You’re in the same family as the parent who sent this, so another leader records what became of its cash.'], 'refused here first');
+  // The server's refusal, in the same words (a page that didn't know).
+  const U = srLeaderCtx({ reports: [srRep({ status: 'accepted', salesCashCents: 500, salesCashOutcome: null })], state: { scouts: [], leaders: [{ id: 'l1', name: 'Sam Leader', uid: 'uid-ed' }],
+    storefronts: [{ id: 'sf1', name: 'K', date: '2026-10-03', blocks: [{ id: 'b1', label: 'B', assignments: [], salesCash: [{ reportId: 'rep-1', cents: 500, from: 'N', outcome: null }] }] }] } });
+  U.run("srCashAct('sr-cash-collected', { dataset: { rid: 'rep-1' } })");
+  await U.answer(0, { code: 'failed-precondition', reason: 'same-family' });
+  eq(U.get('toasts').pop(), 'You’re in the same family as the parent who sent this, so another leader records what became of its cash.', 'the server’s same-family');
+  // pack-moved: the accept is read again and tried again; the block keeps the figures.
+  const P = srLeaderCtx({ reports: [srRep()] });
+  P.run("acceptShiftReport('rep-1', { collected: true })");
+  P.landed();
+  P.run('shiftReportsReconcile()');
+  const loads = P.get('loads');
+  await P.answer(0, { code: 'failed-precondition', reason: 'pack-moved' });
+  eq([P.block('b1').salesCents, !!P.block('b1').reportPending, P.get('loads'), P.get('sync.srRefused && sync.srRefused["rep-1"] || null')], [12345, true, loads + 1, null],
+    'not undone, read again');
+  P.run('shiftReportsReconcile()');
+  eq(P.get('patches.length'), 2, 'tried again');
 });
 
 /* S-5 (Keith, 2026-10-01) — on the page: the family's third figure, and the leaders' "cash to

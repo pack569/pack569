@@ -43,8 +43,12 @@
 //     sameFamily, from the stored pack record's parentUids, read per rev as the confirm reads it).
 //     If they share one, a plain or collected accept is refused (409 same-family), and only an
 //     override with a written reason is left, audited shift.accept.override with sameFamily: true.
-//     The write lands only if the pack record's rev is still the one read. An account linked to no
-//     scout shares no family (allowed, as before); a pack with no record decides nothing either.
+//     The write lands only if the pack record's rev is still the one read (409 pack-moved if that is
+//     all that changed: the page tries again). An account linked to no scout shares no family
+//     (allowed, as before); a pack with no record decides nothing either, but a record that exists
+//     and can't be read decides "same family" (fail closed, followups round 3).
+//   - The same rule, and never the sender, for recording what became of the cash from sales
+//     ('salescash', followups round 3). Undoing one is open to any admin or editor.
 //   - Sending back needs a reason, and works on a waiting report or an accepted one (a leader
 //     reopening a report that went in wrong). A family sends a corrected one as a new report.
 // Every change is compared in the write itself: the UPDATE names the state it was decided
@@ -54,11 +58,14 @@
 // win. The audit row is in the same batch and lands only with its own change.
 
 import { route, json, readObject, refuse, forbidden, notFound, badRequest, reportMoved, samePerson, notShiftParent, needsConfirm,
-  notCollected, sameFamilyRefused } from '../../../../_lib/http.js';
+  notCollected, sameFamilyRefused, packMoved } from '../../../../_lib/http.js';
 import { withMember, auditIf } from '../../../../_lib/pack.js';
 import { canSubmitShiftReport, canReviewShiftReport, canReadAllShiftReports, shiftReportFiguresProblem, cleanReportNote, reportSalesCash,
   SHIFT_REPORT_NOTE_MAX, shiftConfirmers, sameFamily, canConfirmShiftReport, shiftOfView, daysBetween, packToday, SHIFT_REPORT_DAYS } from '../../../../_lib/rules.js';
-import { reportOut, readReport, readPackRecord, STILL_MEMBER, SUBMIT_ROLES } from './index.js';
+import { reportOut, readReport, readPackRecord, readPackForFamily, STILL_MEMBER, SUBMIT_ROLES } from './index.js';
+
+// Is this leader in the sender's family, by the record read for it? An unreadable record says yes.
+const familyOf = (famRec, uid, senderUid) => !!famRec && (famRec.unreadable === true || sameFamily(famRec.pack, uid, senderUid));
 
 const REVIEW_ROLES = ['admin', 'editor'];
 // What each action may carry, besides `action`.
@@ -103,6 +110,7 @@ async function patch({ request, db, packId, role, user, member, params }) {
   const now = Date.now(), stamp = crypto.randomUUID();
   const name = member.name || '';
   let update, roles, detail, audit;
+  let famRec = null;   // the pack record a family decision was made against (accept, salescash): its rev is in the write
   if (action === 'edit' || action === 'withdraw') {
     if (row.status !== 'submitted') return reportMoved(row.status);
     roles = SUBMIT_ROLES;
@@ -176,8 +184,9 @@ async function patch({ request, db, packId, role, user, member, params }) {
     // Who verified the cash. Two or more families: the confirming parent. One family: this leader,
     // who collected and counted it. Anything else is an override, with a written reason, and no
     // verifier: one parent's signature where two are needed, or a leader who did not collect it.
-    const rec = await readPackRecord(db, packId);
-    const same = !!rec && sameFamily(rec.pack, user.uid, row.submitted_by_uid);
+    famRec = await readPackForFamily(db, packId);
+    const rec = famRec;
+    const same = familyOf(famRec, user.uid, row.submitted_by_uid);
     const confirmed = row.needs_confirm === 1 && !!row.confirmed_by_uid;
     const collected = !same && row.needs_confirm === 0 && b.collected === true;
     const override = same || (!confirmed && !collected);
@@ -208,12 +217,21 @@ async function patch({ request, db, packId, role, user, member, params }) {
     if (b.salesCashCents !== row.sales_cash_cents) return reportMoved(row.status);
     const undo = b.outcome === null;
     if (undo ? !row.sales_cash_outcome : !!row.sales_cash_outcome) return reportMoved(row.status);
+    // Security re-check (followups round 3): recording what became of the cash is a second adult's
+    // word on it, as the accept is: never the sender, nor a leader in the sender's family (same
+    // record, same rev in the write). An undo is open to any admin or editor.
+    if (!undo) {
+      if (row.submitted_by_uid === user.uid) return samePerson();
+      famRec = await readPackForFamily(db, packId);
+      if (familyOf(famRec, user.uid, row.submitted_by_uid)) return sameFamilyRefused();
+    }
     roles = REVIEW_ROLES;
     update = db.prepare('UPDATE shift_reports SET sales_cash_outcome = ?, sales_cash_by_uid = ?, sales_cash_by_name = ?, sales_cash_at = ?, ' +
       "updated_at = ?, stamp = ? WHERE pack_id = ? AND id = ? AND stamp = ? AND status = 'accepted' AND sales_cash_cents = ? AND " +
-      'sales_cash_outcome IS ' + (undo ? 'NOT NULL' : 'NULL') + ' AND ' + STILL_MEMBER(roles))
+      'sales_cash_outcome IS ' + (undo ? 'NOT NULL' : 'NULL') + ' AND ' + (undo ? '' : 'submitted_by_uid != ? AND ') +
+      (famRec ? '(SELECT rev FROM pack_state WHERE pack_id = ?) = ? AND ' : '') + STILL_MEMBER(roles))
       .bind(undo ? null : b.outcome, undo ? null : user.uid, undo ? null : name, undo ? null : now, now, stamp, packId, rid, row.stamp,
-        b.salesCashCents, packId, user.uid, ...roles);
+        b.salesCashCents, ...(undo ? [] : [user.uid]), ...(famRec ? [packId, famRec.rev] : []), packId, user.uid, ...roles);
     audit = 'shift.salescash.' + (undo ? 'undo' : b.outcome);
     detail = { report: rid, sfId: row.sf_id, blockId: row.block_id, salesCashCents: row.sales_cash_cents, byName: name };
     if (undo) detail.was = { outcome: row.sales_cash_outcome, byName: row.sales_cash_by_name || '', at: row.sales_cash_at };
@@ -237,6 +255,12 @@ async function patch({ request, db, packId, role, user, member, params }) {
       roles.map(() => '?').join(', ') + ')').bind(packId, user.uid, ...roles).first();
     if (!still) return forbidden();
     const now2 = await readReport(db, packId, rid);
+    // Followups round 3 (treasurer 6a): the report is as it was, but the pack record the family
+    // decision rested on moved — say so, so the page tries again instead of undoing an accept.
+    if (famRec && now2 && now2.stamp === row.stamp) {
+      const head = await db.prepare('SELECT rev FROM pack_state WHERE pack_id = ?').bind(packId).first();
+      if (!head || head.rev !== famRec.rev) return packMoved();
+    }
     return reportMoved(now2 ? now2.status : null);
   }
   return json(200, { report: reportOut(await readReport(db, packId, rid), user.uid, canReadAllShiftReports(role)) });

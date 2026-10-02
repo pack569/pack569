@@ -104,6 +104,16 @@ export async function readPackRecord(db, packId) {
   byPack.set(packId, rec);
   return rec;
 }
+// Security re-check (followups round 3): for a FAMILY decision (rules.js sameFamily), a record that
+// exists but can't be read decides "same family" — fail closed, so only an override with a reason
+// gets through, as the confirm fails closed. Only a pack with no record at all decides nothing.
+// { rev, pack, unreadable? } or null (no record).
+export async function readPackForFamily(db, packId) {
+  const rec = await readPackRecord(db, packId);
+  if (rec) return rec;
+  const head = await db.prepare('SELECT rev FROM pack_state WHERE pack_id = ?').bind(packId).first();
+  return head ? { rev: head.rev, pack: null, unreadable: true } : null;
+}
 export const readReport = (db, packId, id) =>
   db.prepare('SELECT ' + REPORT_COLS + ' FROM shift_reports WHERE pack_id = ? AND id = ?').bind(packId, id).first();
 // The report holding a block, if any.

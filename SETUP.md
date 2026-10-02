@@ -569,7 +569,10 @@ pack record, so a parent who can send one still can't write anything else.
   accept and "I collected and counted this cash" are refused. The only way left is to accept
   with a written reason, which is audited as an override, and the block says "accepted by
   ‹leader› (same family as the sender)". If either account is linked to no scout, the accept
-  works as before. The rule reads links between people, never pack jobs.
+  works as before. If the pack record exists but can't be read, the server treats it as the
+  same family, so only an accept with a reason gets through. The same rule applies to recording
+  what became of a report's cash from popcorn sales, which is never the sender either; anyone
+  may undo that record. The rule reads links between people, never pack jobs.
 - **Who verified the cash** (Keith, review round 1). Every accepted report names who did:
   - **Two or more families on the shift:** the parent from the other family who confirmed it.
     The accepting leader is recorded as the approver.

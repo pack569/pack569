@@ -24,6 +24,8 @@
 -- ORDER: apply this to the preview database, then production, BEFORE deploying the code that uses
 -- it. The endpoints select these columns, and on a database without them every shift-report call
 -- fails. Apply with:  wrangler d1 migrations apply <database> --remote   (docs/cloudflare-setup.md)
+-- This file was edited in place before it was ever applied. Check `wrangler d1 migrations list
+-- <database> --remote` first: if 0004 has already run anywhere, stop and ask.
 
 ALTER TABLE shift_reports ADD COLUMN sales_cash_cents INTEGER NOT NULL DEFAULT 0
   CHECK (typeof(sales_cash_cents) = 'integer' AND sales_cash_cents BETWEEN 0 AND 1000000);

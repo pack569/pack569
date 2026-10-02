@@ -22882,6 +22882,9 @@
     'needs-confirm': 'This report needs a parent from another family on the shift to confirm it, or your written reason for accepting without one.',
     'not-collected': 'Say that you collected and counted this cash, or accept without collecting it and say why.',
     'same-family': 'You’re in the same family as the parent who sent this, so another leader should accept it — or accept with a reason.',
+    // Security re-check (followups round 3): recording what became of the cash from sales.
+    'cash-same-person': 'You sent this report, so another leader records what became of its cash.',
+    'cash-same-family': 'You’re in the same family as the parent who sent this, so another leader records what became of its cash.',
     'override-reason-family': 'Say why you are accepting it yourself.',
     'override-reason': 'Say why you are accepting it without a second parent.',
     'override-reason-collect': 'Say why you are accepting it without collecting the cash.',
@@ -23063,6 +23066,24 @@
     return (o.outcome === 'converted' ? 'converted to credit by the family, recorded by ' : 'collected by ') + (o.by || 'a leader') +
       (o.at ? ' · ' + srWhen(o.at) : '');
   }
+  // May I record what became of this report's cash? Not if I sent it, nor if I'm in the sender's
+  // family (the server's rule; a report not in the list is left to the server). '' or the reason.
+  function srCashNotMine(rid) {
+    var r = srReport(rid);
+    if (!r) return '';
+    return srMine(r) ? LEADER_SR_SAY['cash-same-person'] : srSameFamily(r) ? LEADER_SR_SAY['cash-same-family'] : '';
+  }
+  // The two buttons for a report's cash, or why this leader has none.
+  function srCashButtons(rid, cents) {
+    if (!canReviewReports()) return '';
+    var why = srCashNotMine(rid);
+    if (why) return '<p class="small muted" style="margin:4px 0 0">' + esc(why) + '</p>';
+    var ids = ' data-rid="' + esc(rid) + '"';
+    return '<div class="sr-acts" style="margin-top:4px"><button type="button" class="btn small" data-act="sr-cash-collected"' + ids +
+      ' aria-label="' + esc('Mark ' + fmt(cents) + ' of cash from popcorn sales collected') + '">Collected</button>' +
+      '<button type="button" class="btn small" data-act="sr-cash-converted"' + ids +
+      ' aria-label="' + esc('Mark ' + fmt(cents) + ' of cash from popcorn sales converted by the family') + '">They converted it</button></div>';
+  }
   // On the block: each report's cash from sales, still to collect (with the two buttons), or what
   // became of it (with Undo). Admins and editors record it; a viewer reads it.
   function renderBlockCashToCollect(sf, b) {
@@ -23070,11 +23091,7 @@
     srCashEntries(b).forEach(function (e) {
       var ids = ' data-rid="' + esc(e.reportId) + '"';
       if (!e.outcome) {
-        h += '<div style="margin-top:8px">' + srCashToCollectLine(e.cents, e.from || 'the family', sf.date) +
-          (canReviewReports() ? '<div class="sr-acts"><button type="button" class="btn small" data-act="sr-cash-collected"' + ids +
-            ' aria-label="' + esc('Mark ' + fmt(e.cents) + ' of cash from popcorn sales collected') + '">Collected</button>' +
-            '<button type="button" class="btn small" data-act="sr-cash-converted"' + ids +
-            ' aria-label="' + esc('Mark ' + fmt(e.cents) + ' of cash from popcorn sales converted by the family') + '">They converted it</button></div>' : '') + '</div>';
+        h += '<div style="margin-top:8px">' + srCashToCollectLine(e.cents, e.from || 'the family', sf.date) + srCashButtons(e.reportId, e.cents) + '</div>';
       } else {
         h += '<div class="spread" style="margin-top:8px"><p class="small muted" style="margin:0">' + esc(fmt(e.cents)) + ' of cash from popcorn sales ' +
           esc(srCashOutcomeSay(e.outcome)) + '.</p>' +
@@ -23131,6 +23148,7 @@
   // own "I also collected it", which says so itself).
   function srSalesCashSet(rid, outcome, quiet) {
     if (!canReviewReports()) return Promise.resolve(null);
+    if (outcome && srCashNotMine(rid)) { showToast(srCashNotMine(rid)); return Promise.resolve(null); }
     // The block's entry, or, for a report whose block is gone (srCashOrphans), the server's report alone.
     var hit = srCashEntry(rid), rep0 = srReport(rid);
     var cents = hit ? hit.e.cents : (rep0 && rep0.salesCashCents) || 0;
@@ -23154,7 +23172,8 @@
       return loadShiftReports();
     }, function (err) {
       delete sync.srOut['cash:' + rid];
-      showToast(leaderSrMessage(err));
+      var why = (err && err.reason) || '';
+      showToast(why === 'same-person' ? LEADER_SR_SAY['cash-same-person'] : why === 'same-family' ? LEADER_SR_SAY['cash-same-family'] : leaderSrMessage(err));
       return loadShiftReports();
     });
   }
@@ -23264,12 +23283,9 @@
       h += sub(!waiting.length && !check.length, esc(srCashToCollectSay(toCollect)));
       // A report whose shift is gone: its own row, and its own buttons (admins and editors).
       toCollect.orphans.forEach(function (r) {
-        var ids = ' data-rid="' + esc(r.id) + '"';
         h += '<div class="sr-banner-row"><p class="small" style="margin:0">' + esc(fmt(r.salesCashCents)) + ' reported by ' +
           esc(srNameClean(r.submittedByName) || 'a family') + (r.submittedAt ? ' · sent ' + esc(srWhen(r.submittedAt)) : '') +
-          ' · <span class="muted">this shift is no longer on the schedule</span></p>' +
-          (canReviewReports() ? '<div class="sr-acts" style="margin-top:4px"><button type="button" class="btn small" data-act="sr-cash-collected"' + ids + '>Collected</button>' +
-            '<button type="button" class="btn small" data-act="sr-cash-converted"' + ids + '>They converted it</button></div>' : '') + '</div>';
+          ' · <span class="muted">this shift is no longer on the schedule</span></p>' + srCashButtons(r.id, r.salesCashCents) + '</div>';
       });
       toCollect.list.forEach(function (c) {
         var rng = fmtTimeRange(c.b.start, c.b.end) || c.b.label;
@@ -23445,6 +23461,15 @@
         }, function (err) {
           delete sync.srOut[rid];
           if (srNotNow(err)) { showToast('Couldn’t reach the pack’s server. The accept will be tried again.'); return; }
+          // Followups round 3 (treasurer 6a): the pack record moved under the accept's family check —
+          // nothing was refused. Read again and try again, a few times; the marker stays either way.
+          if (err && err.reason === 'pack-moved') {
+            sync.srPackMoved = sync.srPackMoved || {};
+            sync.srPackMoved[rid] = (sync.srPackMoved[rid] || 0) + 1;
+            if (sync.srPackMoved[rid] <= 3) loadShiftReports();
+            else showToast('The pack changed while the accept was being signed off. It will be tried again.');
+            return;
+          }
           sync.srRefused[rid] = leaderSrMessage(err);
           loadShiftReports();   // read again: an accept that landed from another device settles instead
         });
