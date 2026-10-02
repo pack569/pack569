@@ -5354,7 +5354,14 @@
   // record: a ledger entry can say it is a storefront cash deposit (source 'storefront', treasurer review
   // of shift reports, item 11). A page at 3 reads that source as blank, and so counts a deposit filed on a
   // budget line as income on top of the storefront figures (the double count item 11 closes), and on its
-  // next save writes the blank back, which loses what the deposit was for good. 3 was C8's: a close-out
+  // next save writes the blank back, which loses what the deposit was for good. The same raise covers the
+  // rest of that branch (owner, 2026-10-01): a page at 3 reads source 'council' (popcorn money for the
+  // council) as blank too, and so counts the council's money as pack income or a pack cost; drops
+  // book.councilSettled (the popcorn settled with the council), so its Funds in goes back to the estimate
+  // and its save loses the settlement; its merge reads the 'settle' and 'unsettle' events as unknown ops
+  // (a conflict on every row they name); keeps wagon cash donations as kept cash, ignoring
+  // state.wagonViaTEFrom (the date wagon cash went through Trail's End); and ignores state.depositDays
+  // and an entry's notStorefront. 3 was C8's: a close-out
   // keeps the year's book in state.closedBooks, closed at June 30, with the entries it
   // carries over (C8, owner decision 30). A page at 2 reads a carried entry as an ordinary one and so
   // reconciles wrongly against it, closes a year out with no regard to the cutoff, and its merge drops
@@ -8164,7 +8171,32 @@
   function councilSettledNormal(s) {
     if (!s || typeof s !== 'object' || Array.isArray(s)) return null;
     if (typeof s.on !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s.on) || COUNCIL_SETTLE_HOW.indexOf(s.how) === -1) return null;
-    return { on: s.on, how: s.how, by: ledgerStampClean(s.by), byUid: typeof s.byUid === 'string' ? s.byUid : '', at: typeof s.at === 'string' ? s.at : '' };
+    // Security re-check of 89c08b5 (3) — `at` an ISO time, `byUid` an id: anything longer or else is ''.
+    return { on: s.on, how: s.how, by: ledgerStampClean(s.by),
+      byUid: typeof s.byUid === 'string' && s.byUid.length <= 128 ? s.byUid : '',
+      at: typeof s.at === 'string' && s.at.length <= 40 && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/.test(s.at) ? s.at : '' };
+  }
+  // The settlement two copies of one book agree on (mergeRemoteAppendOnly): `here` and `there` are the
+  // books, `logHere` and `logThere` their ledgerLogs. The newest 'settle' or 'unsettle' event on row
+  // 'book' in either log (by time, then id, as mergeLedgerLog orders them) decides: an unsettle, none;
+  // a settle, the copy's settlement that matches it (councilSettledText against its `f`), else whichever
+  // copy has one, the later `at` first. No such event: this device's, as before. Normalized
+  // (councilSettledNormal). A new object, or null. Pure.
+  function councilSettledMerged(here, there, logHere, logThere) {
+    var top = null, topKey = '';
+    arrOf(logHere).concat(arrOf(logThere)).forEach(function (ev) {
+      if (!ev || ev.row !== 'book' || (ev.op !== 'settle' && ev.op !== 'unsettle')) return;
+      var k = String(ev.at || '') + '\u0000' + String(ev.id || '');
+      if (!top || k > topKey) { top = ev; topKey = k; }
+    });
+    var h = councilSettledNormal(here && here.councilSettled), t = councilSettledNormal(there && there.councilSettled);
+    if (!top) return h;
+    if (top.op === 'unsettle') return null;
+    var said = top.f && Array.isArray(top.f.councilSettled) ? top.f.councilSettled[1] : null;
+    var match = [t, h].filter(function (s) { return s && councilSettledText(s) === said; });
+    if (match.length) return match[0];
+    var any = [h, t].filter(Boolean).sort(function (a, b) { return a.at < b.at ? 1 : a.at > b.at ? -1 : 0; });
+    return any[0] || null;
   }
   // The settlement as the change history says it ("2026-12-02 · the pack paid the council"), or ''. Pure.
   function councilSettledText(s) {
@@ -17881,6 +17913,14 @@
       bkHere.reconciledBy = bkThere.reconciledBy;
       bkHere.reconciledAt = bkThere.reconciledAt;
       if (bkHere.statementDate && bkHere.statementDate <= bkThere.reconciledThrough) { bkHere.statementDate = ''; bkHere.statementCents = 0; }
+    }
+    // Security re-check of 89c08b5 (1) — the popcorn settlement with the council is a book field, and the
+    // rest of the book is this device's: a stale copy saving after another device settled (or took it
+    // back) would undo that. Between two books of the same year, neither closed, it is taken from the
+    // newest 'settle' or 'unsettle' event either copy's log holds (councilSettledMerged).
+    if (bkHere && bkThere && !bkHere.closedAt && !bkThere.closedAt && bkHere.year === bkThere.year) {
+      var csM = councilSettledMerged(bkHere, bkThere, state.ledgerLog, remote.ledgerLog);
+      if (csM) bkHere.councilSettled = csM; else delete bkHere.councilSettled;
     }
     // PHASE 3, C5 — the statements, both copies' as one (mergeStatements: by id, never deleted, and
     // one statement changed on both devices, reviewed on one and reopened on the other, is the same
@@ -30743,8 +30783,10 @@
   // when it takes effect, not the last day before it). It never works out the reduced commission:
   // the council's "drops by 10%" doesn't say whether that is ten points or a tenth of the rate, so
   // the leader types what the statement shows.
-  function councilPaymentWarning(pc, today, dateLabel) {
-    if (!pc || pc.paidOn) return '';
+  // Treasurer re-check of 89c08b5 (8b) — nor once the treasurer has marked the popcorn settled with the
+  // council on the ledger (`settled`: state.book.councilSettled).
+  function councilPaymentWarning(pc, today, dateLabel, settled) {
+    if (!pc || pc.paidOn || settled) return '';
     var d = pc.dates || {};
     var drop = d.commissionDrop && d.commissionDrop.date, pay = d.payment && d.payment.date;
     if (drop && today >= drop) {
@@ -30846,7 +30888,7 @@
         '; the sum above comes to ' + (st.payout ? 'a payout of ' + esc(fmt(-st.owedCents)) : esc(fmt(st.owedCents)) + ' owed') +
         '. The statement is the authority — check the figures above against it.</p>';
     }
-    var payWarn = councilPaymentWarning(pc, today, fmtDate);
+    var payWarn = councilPaymentWarning(pc, today, fmtDate, state.book && state.book.councilSettled);
     if (payWarn) h += '<p class="warn small" style="margin:10px 0 0">' + esc(payWarn) + '</p>';
     h += '<p class="small muted" style="margin:10px 0 0">Not published to families, and not on the Budget: record the payment itself on the Ledger.</p></div>';
     return h;

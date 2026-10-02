@@ -1045,7 +1045,7 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'PROGRAM_MONTHS', 'PROGRAM_
 const C8_SYNC_FNS = [SR_SYNC_STUBS, 'closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mergeClosedBooks', 'closedBookScouts', 'closedBookScoutIds', 'closedYearText', 'closedBooksKeptOverWhy', 'closeoutCarryDiffs',
   'closedBooksUndone', 'closedBooksUndoneWhy', 'closedBooksDroppedWhy', 'closedBookRows', 'statementLookupRows',
   // Security re-check of C8-5..C8-10 — the bound by program year (M-A), the push's union normalized (L-B), and what a merge says it set aside.
-  'closedBookRank', 'closedBookScoutIds', 'closedBooksFuture', 'closedBooksMaxYear', 'closedBooksNormalized', 'normalizeClosedBook', 'normalizeLedgerRow', 'depositForIds', 'DEPOSIT_FOR_MAX', 'councilSettledNormal', 'COUNCIL_SETTLE_HOW', 'normalizeAsideRow', 'normalizeLedgerEvent',
+  'closedBookRank', 'closedBookScoutIds', 'closedBooksFuture', 'closedBooksMaxYear', 'closedBooksNormalized', 'normalizeClosedBook', 'normalizeLedgerRow', 'depositForIds', 'DEPOSIT_FOR_MAX', 'councilSettledNormal', 'COUNCIL_SETTLE_HOW', 'councilSettledMerged', 'councilSettledText', 'COUNCIL_SETTLE_LABELS', 'normalizeAsideRow', 'normalizeLedgerEvent',
   'stableRowId', 'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_ASIDE_OFF', 'arrOf',
   // M-B — the tombstones of a closed year.
   'normalizeClosedGone', 'mergeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'closedGoneAdd', 'closedGoneDrops', 'closedGoneForKeep', 'ledgerActorUid', 'closedBooksShorter',
@@ -12960,7 +12960,7 @@ test('D1: the commission-drop warning fires on the drop date and never calculate
   pc.paidOn = '2026-12-10';
   eq(ctx.councilPaymentWarning(pc, '2026-12-20', d), '', 'a warning after it was paid');
   ok(!/\* ?0?\.9|\* ?\(1 ?- ?0?\.1|pct ?- ?10|0\.1 ?\*/.test(slice('councilPaymentWarning') + slice('councilSettlement')), 'the drop is calculated');
-  ok(/councilPaymentWarning\(pc, today, fmtDate\)/.test(slice('renderPopcornCouncil')), 'the page does not show the warning');
+  ok(/councilPaymentWarning\(pc, today, fmtDate, state\.book && state\.book\.councilSettled\)/.test(slice('renderPopcornCouncil')), 'the page does not show the warning');
 });
 
 test('D1: the council page is a Popcorn section, rolls over, and is NEVER published', () => {
@@ -32412,6 +32412,58 @@ test('deposit deadline: what each deposit covers, named storefronts first, then 
   ok(/var lateSf = storefrontDepositsLate\([^\n]*\);\s*if \(lateSf\.length\) \{\s*add\('treasurer', 'now', storefrontLateText\(lateSf\[0\], lateDd\)/.test(SCRIPT), 'the Home queue');
   ok(/if \(ch === 'deposit-days'\) \{[\s\S]{0,300}logLedger\('edit', 'book', \{ f: \{ depositDays: \[ddWas, ddNow\] \} \}\)/.test(SCRIPT), 'the setting is not logged');
   ok(!/depositDays|storefrontDepositsLate|DEPOSIT_DAYS/.test(codeOnly(BPV())), 'the parent view reads the deadline');
+});
+
+/* ================================================================
+   Security re-check of 89c08b5 (1) — the popcorn settlement survives a sync: the newest settle or
+   unsettle event decides, whichever device saves last. Made-up data.
+   ================================================================ */
+test('council settlement merge: the newest settle or unsettle event decides, either way round, and junk stamps are dropped', () => {
+  const x = sandbox(['councilSettledMerged', 'councilSettledNormal', 'councilSettledText', 'COUNCIL_SETTLE_HOW', 'COUNCIL_SETTLE_LABELS', 'arrOf', 'ledgerStampClean']);
+  const S = { on: '2026-12-02', how: 'paid', by: 'Pat', byUid: 'u1', at: '2026-12-02T10:00:00.000Z' };
+  const S2 = { on: '2026-12-05', how: 'payout', by: 'Sam', byUid: 'u2', at: '2026-12-05T10:00:00.000Z' };
+  const ev = (id, op, at, s) => ({ id: 'lg-' + id, at, op, row: 'book', f: { councilSettled: op === 'settle' ? [null, x.councilSettledText(s)] : [x.councilSettledText(s), null] } });
+  const both = (h, t, lh, lt) => [J(x.councilSettledMerged({ councilSettled: h }, { councilSettled: t }, lh, lt)), J(x.councilSettledMerged({ councilSettled: t }, { councilSettled: h }, lt, lh))];
+  const settled = [ev('s', 'settle', '2026-12-02T10:00:00.000Z', S)];
+  eq(both(undefined, S, [], settled), [S, S], 'settled on one device, a stale copy saves: kept, either way round');
+  const un = settled.concat([ev('u', 'unsettle', '2026-12-03T10:00:00.000Z', S)]);
+  eq(both(S, undefined, settled, un), [null, null], 'taken back on one device, a stale copy still settled saves: taken back');
+  const again = un.concat([ev('s2', 'settle', '2026-12-05T10:00:00.000Z', S2)]);
+  eq(both(S, S2, settled, again), [S2, S2], 'settled again differently: the newest');
+  eq(both(S, undefined, [], []), [S, null], 'no event: each device keeps its own, as before');
+  eq(J(x.councilSettledNormal(Object.assign({}, S, { at: 'x'.repeat(41), byUid: 'u'.repeat(129) }))), Object.assign({}, S, { at: '', byUid: '' }), 'security re-check (3): at and byUid');
+  // In the merge: after the lock, same year, neither closed.
+  const m = slice('mergeRemoteAppendOnly');
+  ok(/if \(bkHere && bkThere && !bkHere\.closedAt && !bkThere\.closedAt && bkHere\.year === bkThere\.year\) \{\s*var csM = councilSettledMerged\(bkHere, bkThere, state\.ledgerLog, remote\.ledgerLog\);\s*if \(csM\) bkHere\.councilSettled = csM; else delete bkHere\.councilSettled;/.test(m), 'the merge');
+  ok(m.indexOf('councilSettledMerged(') > m.indexOf('bkHere.reconciledThrough = bkThere.reconciledThrough'), 'not after the lock');
+  // Treasurer re-check (8b): the Council page stops saying the payment is overdue once settled.
+  const w = sandbox(['councilPaymentWarning']);
+  const pc = { paidOn: '', dates: { payment: { date: '2026-12-02' } } };
+  eq([w.councilPaymentWarning(pc, '2026-12-10', (d) => d) !== '', w.councilPaymentWarning(pc, '2026-12-10', (d) => d, S)], [true, ''], 'the overdue warning');
+});
+
+// What the settle and unsettle steps write (the client sandbox has the merge, not the handlers): the book field and the event.
+const SETTLE_ON_A = (op) => {
+  const ev = (f) => "state.ledgerLog.push({ id: 'lg-" + op + "-' + Date.now(), at: new Date().toISOString(), by: 'Pat', byUid: 'u1', dev: 'dev-a', row: 'book', op: '" + op + "', f: { councilSettled: " + f + ' } });';
+  return op === 'settle'
+    ? "state.book.councilSettled = { on: '2026-12-02', how: 'paid', by: 'Pat', byUid: 'u1', at: new Date().toISOString() }; " + ev('[null, councilSettledText(state.book.councilSettled)]') + ' commit()'
+    : ev('[councilSettledText(state.book.councilSettled), null]') + ' delete state.book.councilSettled; commit()';
+};
+atest('council settlement, api: a stale device saving after another settled, or took it back, keeps what the newest did', async () => {
+  let { a, b, server } = await apiGonePair({ ledger: [], ledgerAside: [], ledgerLog: [], book: C3_SEED.book });
+  b.run(B1);   // B is stale, with an edit of its own
+  await a.edit(SETTLE_ON_A('settle'));
+  eq(server().book.councilSettled && server().book.councilSettled.on, '2026-12-02', 'A did not save the settlement');
+  await settle([b], 800);
+  eq([server().book.councilSettled && server().book.councilSettled.on, b.get("(state.book.councilSettled || {}).how || ''")], ['2026-12-02', 'paid'],
+    'a stale save lost the settlement');
+  // Now A takes it back while B, still settled, makes another edit and saves.
+  await a.poll();
+  b.run("state.entries.push({ id: 'b2', scoutId: 's2', kind: 'wagon', date: '', salesCents: 200, donationsCents: 0 }); commit()");
+  await a.edit(SETTLE_ON_A('unsettle'));
+  eq('councilSettled' in server().book, false, 'A did not save the take-back');
+  await settle([b], 800);
+  eq(['councilSettled' in server().book, b.get("'councilSettled' in state.book")], [false, false], 'a stale save brought the settlement back');
 });
 
 /* ---------------- report ---------------- */

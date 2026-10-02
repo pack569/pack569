@@ -1720,12 +1720,15 @@ Council page's figure differs.
 - *Heroes & Helpers cash.* Wagon cash (and storefront cash while it runs through Trail's End) is
   banked as council money, so it is in A. That is right only if the council's invoice includes it
   (so it is in B as well). If it does not, A − B + C overstates the commission by it.
-- *Where the settlement lives.* On `state.book`, like the opening figure: it is the year's, and
-  close-out starts a new book without it (the year's Funds in is read before). Two devices settling
-  differently at the same time keep whichever saves last, as for other book fields. The Council
-  page's own "Paid to the council on" (`popcornCouncil.paidOn`) is the Kernel's and is not set by
-  this; its overdue warning reads that field only.
-
+- *Where the settlement lives.* On `state.book`: it is the year's, and close-out starts a new book
+  without it (the year's Funds in is read before). The rest of a book is this device's in a merge,
+  so the settlement is merged on its own (security re-check of 89c08b5, 1): between two books of the
+  same year, neither closed, the newest `settle` or `unsettle` event in either copy's log decides
+  (`councilSettledMerged`), so a stale device saving after another settled, or took it back, does
+  not undo it. `at` must be an ISO time and `byUid` at most 128 characters. Once settled, the
+  Council page stops saying the payment is overdue (`councilPaymentWarning`), though its own "Paid
+  to the council on" is still the Kernel's to set. The closed book does not record the settlement
+  (optional in the review; the closed-book schema is the security reviewer's).
 ---
 
 ## 3.6 A year in the life
