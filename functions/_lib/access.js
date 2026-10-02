@@ -316,51 +316,83 @@ const logCmp = (a, b) => {
   return x < y ? -1 : x > y ? 1 : (String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : 0);
 };
 const utf8 = (s) => new TextEncoder().encode(s).length;
-// An entry a log kept keeps every field it had, with the same value. A newer page may add a field
-// (normalizeSyncLog fills one in as ''), never change or drop one.
-function keepsWhatItHad(was, now) {
+// A log's size as mergeLedgerLog counts it: the JSON of the list, in bytes.
+const logBytes = (list) => 2 + list.reduce((n, e, i) => n + utf8(JSON.stringify(e)) + (i ? 1 : 0), 0);
+// An entry a log kept keeps every field it had, with the same value; with cap.exact, it is exactly
+// what it was. A field it gains must be one cap.fill names, with the value cap.fill gives it: what
+// normalizeSyncLog fills in on a line an older page wrote (security review of 714a920..045e7ac, 4d:
+// before, any field could be added to anyone's line).
+function keptAsItWas(was, now, cap) {
   if (!plain(was) || !plain(now)) return false;
-  return Object.keys(was).every((k) => own(now, k) && sameJson(was[k], now[k]));
+  if (cap.exact) return sameJson(was, now);
+  if (!Object.keys(was).every((k) => own(now, k) && sameJson(was[k], now[k]))) return false;
+  const fill = plain(cap.fill) ? cap.fill : {};
+  return Object.keys(now).every((k) => own(was, k) || (own(fill, k) && now[k] === fill[k]));
 }
+// How far ahead of the server's clock a new line's time may be.
+export const LOG_AHEAD_MS = 10 * 60 * 1000;
+const ISO_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
 // An append-only log (state.syncLog, state.ledgerLog: lists of { id, at, byUid, … }) changed from
-// `before` to `after` only as its writers do:
-//   - entries added, each the caller's own (byUid === uid), and each one `newOk` passes;
-//   - the oldest dropped by the log's cap, and only then: every entry dropped sorts before every
-//     entry left, and the log is full: `cap.max` entries, or (cap.bytes) the newest one dropped
-//     would not have fitted in that many bytes of JSON (mergeLedgerLog's own sum);
-//   - every entry kept keeps what it had (keepsWhatItHad), or, with cap.exact, is exactly what it was:
-//     not a field added either. Their order is the writer's to keep.
-export function appendOnlyOk(before, after, uid, cap, newOk) {
+// `before` to `after` only as its writers do (security review of 714a920..045e7ac, finding 4):
+//   - entries added: at most cap.add in one save, each the caller's own (byUid === uid), at most
+//     cap.line bytes of JSON, timed (`at`, an ISO time as the page writes it) no later than the
+//     server's clock (`now`) plus LOG_AHEAD_MS, so a line "from 2099" can't outlive the rest; and
+//     each one `newOk` passes;
+//   - the log no longer than its cap (cap.max entries, cap.bytes of JSON), unless it already was,
+//     and then no longer than it was;
+//   - the oldest dropped by the cap, and only then: every entry dropped sorts before every entry left
+//     (the newest dropped before the oldest left: one pass), and only as many as the cap needs: no
+//     more than were added where the count is the cap, or, by bytes, the newest one dropped would not
+//     have fitted (mergeLedgerLog's own sum);
+//   - every entry kept as it was (keptAsItWas). Their order is the writer's to keep.
+export function appendOnlyOk(before, after, uid, cap, newOk, now) {
   if (!Array.isArray(after)) return false;
+  const clock = typeof now === 'number' ? now : Date.now();
+  const prior = Array.isArray(before) ? before : [];
   const was = Object.create(null);
-  (Array.isArray(before) ? before : []).forEach((e) => { if (plain(e) && typeof e.id === 'string') was[e.id] = e; });
+  prior.forEach((e) => { if (plain(e) && typeof e.id === 'string') was[e.id] = e; });
   const seen = Object.create(null);
+  let added = 0;
   for (const e of after) {
     if (!plain(e) || typeof e.id !== 'string' || !e.id || seen[e.id]) return false;
     seen[e.id] = true;
-    if (own(was, e.id)) { if (!(cap.exact ? sameJson(was[e.id], e) : keepsWhatItHad(was[e.id], e))) return false; }
-    else if (typeof uid !== 'string' || !uid || e.byUid !== uid || (newOk && !newOk(e))) return false;
+    if (own(was, e.id)) { if (!keptAsItWas(was[e.id], e, cap)) return false; continue; }
+    added += 1;
+    if (added > cap.add || typeof uid !== 'string' || !uid || e.byUid !== uid) return false;
+    if (typeof e.at !== 'string' || !ISO_AT.test(e.at) || !(Date.parse(e.at) <= clock + LOG_AHEAD_MS)) return false;
+    if (utf8(JSON.stringify(e)) > (cap.line || 4096)) return false;
+    if (newOk && !newOk(e)) return false;
   }
+  const over = (list) => list.length > cap.max || (cap.bytes && logBytes(list) > cap.bytes);
+  if (over(after) && (!over(prior) || after.length > prior.length || (cap.bytes && logBytes(after) > logBytes(prior)))) return false;
   const dropped = Object.keys(was).filter((id) => !seen[id]).map((id) => was[id]);
   if (!dropped.length) return true;
-  if (!after.length || !dropped.every((d) => after.every((e) => logCmp(d, e) < 0))) return false;
-  if (after.length >= cap.max) return true;
+  if (!after.length) return false;
+  let newest = dropped[0], oldest = after[0];
+  dropped.forEach((d) => { if (logCmp(d, newest) > 0) newest = d; });
+  after.forEach((e) => { if (logCmp(e, oldest) < 0) oldest = e; });
+  if (!(logCmp(newest, oldest) < 0)) return false;
+  if (after.length >= cap.max) return dropped.length <= added;
   if (!cap.bytes) return false;
-  const newest = dropped.slice().sort(logCmp)[dropped.length - 1];
-  const size = 2 + after.reduce((n, e, i) => n + utf8(JSON.stringify(e)) + (i ? 1 : 0), 0);
-  return size + utf8(JSON.stringify(newest)) + 1 > cap.bytes;
+  return logBytes(after) + utf8(JSON.stringify(newest)) + 1 > cap.bytes;
 }
 // The two logs' caps, as the page keeps them: SYNC_LOG_MAX; mergeLedgerLog's 1000 events and 128 KB.
 // The ledger's log is exact (security review of 714a920..045e7ac): a line there is never rewritten,
 // not even by a field added to it, whoever edits the ledger. Every line the page writes is whole
 // (ledgerEvent), and normalizeLedgerEvent adds nothing to a line a page wrote; a field added to an
-// old line (a `why`, an `f`) would change what the trail says was done. The sync log keeps the
-// looser rule: normalizeSyncLog fills in a field an older page's line lacks.
-export const SYNC_LOG_CAP = { max: 500 };
-export const LEDGER_LOG_CAP = { max: 1000, bytes: 128 * 1024, exact: true };
+// old line (a `why`, an `f`) would change what the trail says was done. The sync log may gain only
+// the fields normalizeSyncLog fills in on an older page's line, with the values it gives them.
+// A line's size: a sync log line's values are clipped to 200 characters (well under 4 KB); a ledger
+// line's `rows` may name every entry a Tick all ticked, so it gets 8 KB. Lines one save may add: the
+// ledger's page writes a handful; the conflict chooser logs one line per field a leader keeps, so the
+// sync log allows more, and the page keeps to it (SYNC_LOG_ADD_MAX, index.html).
+const SYNC_LOG_FILL = { byName: '', byUid: '', key: '', item: '', field: '', serverValue: '', keptValue: '', baseValue: '', mineValue: '',
+  kept: 'mine', how: 'item', serverChangedAt: '', serverChangedAfter: '' };
+export const SYNC_LOG_CAP = { max: 500, line: 4096, add: 200, fill: SYNC_LOG_FILL };
+export const LEDGER_LOG_CAP = { max: 1000, bytes: 128 * 1024, exact: true, line: 8192, add: 50 };
 
 // state.syncLog (shared: any leader who edits something may log a kept-mine), append-only.
-export const syncLogOk = (before, after, uid) => appendOnlyOk(before, after, uid, SYNC_LOG_CAP, null);
+export const syncLogOk = (before, after, uid, now) => appendOnlyOk(before, after, uid, SYNC_LOG_CAP, null, now);
 
 // state.ledgerLog, append-only for everyone below an admin, its own editors too: a line there stays
 // exactly as it is (LEDGER_LOG_CAP.exact). A leader who edits the ledger adds their own lines of any kind. One
@@ -370,12 +402,12 @@ export const syncLogOk = (before, after, uid) => appendOnlyOk(before, after, uid
 // ledger editors (logSettingEdit and its kin, index.html).
 // And a deposit holder may log the 'add' of a deposit they add in the same save (`deposits`, its ids):
 // the ledger's add path logs one when the date is in a reconciled or closed period.
-export function ledgerLogOk(before, after, uid, access, deposits) {
+export function ledgerLogOk(before, after, uid, access, deposits, now) {
   const ledger = canEditOwner(access, 'ledger'), added = Array.isArray(deposits) ? deposits : [];
   return appendOnlyOk(before, after, uid, LEDGER_LOG_CAP, ledger ? null : (e) =>
     (e.op === 'add' && added.indexOf(e.row) !== -1) ||
     (e.op === 'edit' && e.row === 'book' && plain(e.f) && Object.keys(e.f).length > 0 &&
-      Object.keys(e.f).every((k) => canEditOwner(access, ownerOfBookLogField(k)))));
+      Object.keys(e.f).every((k) => canEditOwner(access, ownerOfBookLogField(k)))), now);
 }
 
 // A statement's parts set once after it is written (index.html statementOnceGroups): its review,
@@ -750,14 +782,14 @@ export function refusedSections(stored, next, access, uid, actions, ctx) {
     const owner = ownerOfKey(k);
     const was = hasS ? s[k] : [], now = hasN ? n[k] : [];
     // The ledger's log: its own rule, for ledger editors and the setting-changers alike.
-    if (k === 'ledgerLog') { if (!ledgerLogOk(was, now, uid, access, deposits || [])) refuse(owner); continue; }
+    if (k === 'ledgerLog') { if (!ledgerLogOk(was, now, uid, access, deposits || [], cx.now)) refuse(owner); continue; }
     if (k === 'ledger' && !canEditOwner(access, owner)) { if (!deposits || !deposits.length) refuse(owner); continue; }
     if (k === 'storefronts' && !canEditOwner(access, owner)) {
       if (!(can.shiftVerify === true && storefrontReportChangeOk(was, now, uid, { reports: cx.reports, name: cx.name, canUndo: can.shiftUndo === true }))) refuse(owner);
       continue;
     }
     if (canEditOwner(access, owner)) {
-      if (k === 'syncLog' && !syncLogOk(was, now, uid)) refuse(owner);
+      if (k === 'syncLog' && !syncLogOk(was, now, uid, cx.now)) refuse(owner);
       else if (k === 'statements' && !statementsOk(was, now, uid)) refuse(owner);
       else if (k === 'book' && !councilSettledOk(s[k], n[k], uid)) refuse(owner);
       else if (k === 'scouts' && !parentLinksOk(was, now)) refuse('admin');

@@ -1048,7 +1048,7 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'SYNC_LOG_MAX', 'normalizeS
 const SYNC_BASE_FNS = ['SYNC_BASE_KEY', 'SYNC_UNSYNCED_KEY', 'syncLocal', 'SYNC_UPDATED', 'syncWhenIso', 'syncBaseGet', 'syncBaseSet', 'syncUnsynced',
   'syncMarkUnsynced', 'syncClearUnsynced', 'syncBaseForget', 'syncFirstPlan', 'SYNC_MERGE_SKIP', 'SYNC_BOOK_SKIP', 'SYNC_MAP_DEPTH', 'SYNC_GONE_LOGS',
   'syncSame', 'syncRecKey', 'syncKeyed', 'syncPrimSet', 'syncThreeWay', 'syncItemSig', 'syncRecNorm', 'syncThreeWayOf', 'syncApplyThreeWay',
-  'SYNC_LOG_MAX', 'normalizeSyncLog', 'mergeSyncLog', 'syncServerWhen',
+  'SYNC_LOG_MAX', 'SYNC_LOG_ADD_MAX', 'normalizeSyncLog', 'mergeSyncLog', 'syncServerWhen',
   // Sync fix round 1 — rule d's money check, charges by what they charge, the opening balance's lock.
   'syncMoneySubset', 'syncChargeKey', 'SYNC_OPENING_LOCKED_WHY', 'SYNC_OPENING_LOCKED_WHY_THERE', 'openingLockedWhy', 'entryAfterOpening', 'arrOf'];
 // …and the words the chooser and the log use for an item (leaders only).
@@ -16661,9 +16661,13 @@ atest('positions guard: the sync log and the ledger log are append-only, each ne
   const withSl = (list) => Object.assign(GUARD_BASE(), { syncLog: list });
   const mine = sl('sl-3', '2026-09-03T00:00:00.000Z', 'uid-lead-denleader');
   eq((await w.put('lead_denleader', withSl(old.concat([mine])))).status, 200, 'a den leader logging their own kept-mine');
-  // A newer page fills in a field an old line did not have: still the same line.
-  const filled = old.map((e) => Object.assign({}, e, { newField: '' }));
-  eq((await w.put('lead_denleader', withSl(filled))).status, 200, 'a field added to the lines there');
+  // A newer page fills in a field an old line did not have (normalizeSyncLog's, as it fills it): still the same line.
+  const oldNoAfter = old.map((e) => { const c = Object.assign({}, e); delete c.serverChangedAfter; return c; });
+  const wo = await guardWorld(Object.assign(GUARD_BASE(), { syncLog: oldNoAfter }));
+  eq((await wo.put('lead_denleader', withSl(old))).status, 200, 'normalizeSyncLog\'s field filled in on the lines there');
+  // Security review of 714a920..045e7ac, 4d: nothing else is added to anyone's line.
+  SECTION_403(await wo.put('lead_denleader', withSl(oldNoAfter.map((e) => Object.assign({}, e, { serverChangedAfter: 'x' })))), ['shared'], 'a filled field with a value');
+  SECTION_403(await w.put('lead_denleader', withSl(old.map((e) => Object.assign({}, e, { note: 'it was me' })))), ['shared'], 'PoC: a field added to someone else\'s line');
   for (const [what, list] of [['a line in someone else\'s name', old.concat([sl('sl-3', '2026-09-03T00:00:00.000Z', 'uid-lead-chair')])],
     ['a line with no name', old.concat([sl('sl-3', '2026-09-03T00:00:00.000Z', '')])],
     ['a line there changed', [old[0], Object.assign({}, old[1], { keptValue: 'C' })]],
@@ -16680,6 +16684,28 @@ atest('positions guard: the sync log and the ledger log are append-only, each ne
   const wf = await guardWorld(Object.assign(GUARD_BASE(), { syncLog: full }));
   eq((await wf.put('lead_denleader', Object.assign(GUARD_BASE(), { syncLog: full.slice(1).concat([mine]) }))).status, 200, 'full: the oldest dropped for a new line');
   SECTION_403(await wf.put('lead_denleader', Object.assign(GUARD_BASE(), { syncLog: full.slice(0, 250).concat(full.slice(251), [mine]) })), ['shared'], 'full: a middle line dropped');
+  // Finding 4: growth, flushing, and the time a line claims.
+  const mineN = (n, at) => { const out = []; for (let i = 0; i < n; i++) out.push(sl('m' + String(i).padStart(3, '0'), at || '2026-09-03T00:00:00.000Z', 'uid-lead-denleader')); return out; };
+  SECTION_403(await wf.put('lead_denleader', Object.assign(GUARD_BASE(), { syncLog: full.concat([mine]) })), ['shared'], 'PoC: past the cap, nothing dropped');
+  SECTION_403(await wf.put('lead_denleader', Object.assign(GUARD_BASE(), { syncLog: full.slice(5).concat([mine]) })), ['shared'], 'full: five dropped for one line');
+  SECTION_403(await w.put('lead_denleader', withSl(old.concat(mineN(201)))), ['shared'], '201 lines in one save');
+  eq((await w.put('lead_denleader', withSl(old.concat(mineN(200))))).status, 200, '200 lines in one save (a big keep-mine)');
+  eq([API.access.SYNC_LOG_CAP.add, Number(/var SYNC_LOG_ADD_MAX = (\d+);/.exec(SCRIPT)[1])], [200, 200], 'the page keeps to the server\'s per-save cap');
+  ok(/if \(logged\.length > SYNC_LOG_ADD_MAX\) logged = logged\.slice\(0, SYNC_LOG_ADD_MAX\);/.test(SCRIPT), 'the chooser trims its lines');
+  SECTION_403(await w.put('lead_denleader', withSl(old.concat([sl('sl-9', '2099-01-01T00:00:00.000Z', 'uid-lead-denleader')]))), ['shared'], 'PoC: a line from 2099');
+  const soon = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  eq((await w.put('lead_denleader', withSl(old.concat([sl('sl-9', soon, 'uid-lead-denleader')])))).status, 200, 'a line five minutes ahead (a clock a little fast)');
+  SECTION_403(await w.put('lead_denleader', withSl(old.concat([sl('sl-9', 'yesterday', 'uid-lead-denleader')]))), ['shared'], 'a line with no time');
+  SECTION_403(await w.put('lead_denleader', withSl(old.concat([sl('sl-9', '2026-09-03T00:00:00.000Z', 'uid-lead-denleader', { item: 'x'.repeat(5000) })]))), ['shared'], 'a line over 4 KB');
+  SECTION_403(await wf.put('lead_denleader', Object.assign(GUARD_BASE(), { syncLog: mineN(500, '2099-01-01T00:00:00.000Z') })), ['shared'], 'PoC: the whole log flushed by future lines');
+  // One pass: a long log stored over the cap, and a save that drops a line, answer quickly.
+  const huge = []; for (let i = 0; i < 3000; i++) huge.push(sl('h' + String(i).padStart(5, '0'), '2026-07-01T00:00:00.000Z', 'uid-owner'));
+  const wh = await guardWorld(Object.assign(GUARD_BASE(), { syncLog: huge }));
+  const t0 = Date.now();
+  eq((await wh.put('lead_denleader', Object.assign(GUARD_BASE(), { syncLog: huge.slice(1).concat([mine]) }))).status, 200, 'a log stored over the cap: one in, one out');
+  ok(Date.now() - t0 < 5000, 'the drop check took ' + (Date.now() - t0) + ' ms');
+  SECTION_403(await wh.put('lead_denleader', Object.assign(GUARD_BASE(), { syncLog: huge.concat([mine]) })), ['shared'], 'a log stored over the cap, grown');
+  SECTION_403(await wh.put('lead_denleader', Object.assign(GUARD_BASE(), { syncLog: huge.slice(10).concat([mine]) })), ['shared'], 'full: ten dropped for one line');
 
   // The ledger's log.
   const ll = (id, at, byUid, o) => Object.assign({ id, at, by: 'X', byUid, dev: 'd', row: 'L1', op: 'tick' }, o || {});
@@ -16697,6 +16723,14 @@ atest('positions guard: the sync log and the ledger log are append-only, each ne
     ['ledger'], 'a chair adding a change to a line there, beside a line of their own');
   eq((await wl.put('owner', withLl([Object.assign({}, lold[0], { why: 'an admin' })]))).status, 200, 'an admin is not compared');
   SECTION_403(await wl.put('lead_treasurer', withLl([])), ['ledger'], 'a treasurer emptying the log');
+  // Finding 4b's PoC: one huge line from the future, to push everyone else's out.
+  SECTION_403(await wl.put('lead_treasurer', withLl(lold.concat([ll('ev9', '2099-01-01T00:00:00.000Z', 'uid-lead-treasurer', { why: 'x'.repeat(131000) })]))), ['ledger'],
+    'PoC: a 131 KB line from 2099');
+  const few = []; for (let i = 0; i < 51; i++) few.push(ll('n' + i, '2026-09-05T00:00:00.000Z', 'uid-lead-treasurer'));
+  SECTION_403(await wl.put('lead_treasurer', withLl(lold.concat(few))), ['ledger'], 'fifty-one ledger lines in one save');
+  eq((await wl.put('lead_treasurer', withLl(lold.concat(few.slice(1))))).status, 200, 'fifty');
+  eq((await wl.put('lead_treasurer', withLl(lold.concat([ll('ev2', '2026-09-02T00:00:00.000Z', 'uid-lead-treasurer', { rows: Array.from({ length: 400 }, (_, i) => 'row-' + i) })])))).status,
+    200, 'a Tick all naming 400 entries (about 4.4 KB)');
   // A setting's changer logs it on the book, whoever they are, and only that.
   eq((await wl.put('lead_kernel', withLl(lold.concat([book('commissionPct', [25, 30], 'uid-lead-kernel')]), { commissionPct: 30 }))).status, 200, 'a kernel logging the commission');
   eq((await wl.put('lead_kernel', withLl(lold.concat([book('invCommissionPct', [25, 30], 'uid-lead-kernel')])))).status, 200, 'a kernel logging the inventory\'s commission');
@@ -16964,13 +16998,13 @@ atest('positions guard: deposits — the kernel records a storefront deposit, fl
   SECTION_403(await w.put('lead_denleader', withLedger([dep({ enteredByUid: 'uid-lead-denleader' })])), ['ledger'], 'a den leader recording a deposit');
   eq((await w.put('lead_treasurer', withLedger([dep({ enteredByUid: 'uid-lead-treasurer', depositReview: undefined })]))).status, 200, 'the treasurer, no flag needed');
   // Its 'add' line in the log (a deposit dated in a reconciled period): the kernel's own, for the deposit it adds.
-  const add = (row, byUid) => ({ id: 'ev-add', at: '2026-10-05T12:00:00.000Z', by: 'K', byUid, dev: 'd', row, op: 'add', why: 'Dated inside the period reconciled' });
+  const add = (row, byUid) => ({ id: 'ev-add', at: '2026-09-30T12:00:00.000Z', by: 'K', byUid, dev: 'd', row, op: 'add', why: 'Dated inside the period reconciled' });
   eq((await w.put('lead_kernel', withLedger([dep()], { ledgerLog: [add('d1', 'uid-lead-kernel')] }))).status, 200, 'the deposit and its add line');
   SECTION_403(await w.put('lead_kernel', withLedger([dep()], { ledgerLog: [add('L1', 'uid-lead-kernel')] })), ['ledger'], 'an add line for another row');
   SECTION_403(await w.put('lead_kernel', Object.assign(GUARD_BASE(), { ledgerLog: [add('d1', 'uid-lead-kernel')] })), ['ledger'], 'an add line with no deposit');
   // The deadline: the deposits sub-section, logged on the book by whoever sets it.
   const days = (who, uid) => w.put(who, Object.assign(GUARD_BASE(), { depositDays: 10,
-    ledgerLog: [{ id: 'ev-dd', at: '2026-10-05T12:00:00.000Z', by: 'X', byUid: uid, dev: 'd', row: 'book', op: 'edit', f: { depositDays: [7, 10] } }] }));
+    ledgerLog: [{ id: 'ev-dd', at: '2026-09-30T12:00:00.000Z', by: 'X', byUid: uid, dev: 'd', row: 'book', op: 'edit', f: { depositDays: [7, 10] } }] }));
   for (const who of ['lead_kernel', 'lead_treasurer', 'lead_chair']) eq((await days(who, 'uid-' + who.replace('_', '-'))).status, 200, who + ' setting the deposit deadline');
   SECTION_403(await days('lead_cubmaster', 'uid-lead-cubmaster'), ['ledger', 'deposits'], 'the Cubmaster setting it');
 });
