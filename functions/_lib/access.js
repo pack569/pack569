@@ -491,15 +491,23 @@ const BOOK_SETTING_OK = Object.assign(Object.create(null), {
   depositDays: (v) => v === null || (Number.isInteger(v) && v >= 0 && v <= 366)
 });
 const LEDGER_EVENT_KEYS = ['id', 'at', 'by', 'byUid', 'dev', 'row', 'op', 'f'];
-function settingLineOk(e, access) {
+// The final security check of 8dced37 (2): a setting line is signed as the caller (by === signerName, the
+// name the page signs with), its id and device id are short (the page's are under 20 characters), and the
+// rest of it is at most SETTING_LINE_MAX bytes. The signed name is left out of that sum: it is the member's own,
+// up to 120 characters, so it can't be padded, and the longest real line (a 120-character name, the online
+// commission) still fits.
+export const SETTING_LINE_MAX = 300, LOG_ID_MAX = 40;
+function settingLineOk(e, access, name) {
   if (!(e.op === 'edit' && e.row === 'book' && plain(e.f) && Object.keys(e.f).length > 0)) return false;
   if (!Object.keys(e).every((k) => LEDGER_EVENT_KEYS.indexOf(k) !== -1)) return false;
+  if (e.by !== signerName(name) || e.id.length > LOG_ID_MAX || !(typeof e.dev === 'string' && e.dev.length <= LOG_ID_MAX)) return false;
+  if (utf8(JSON.stringify(e)) - utf8(JSON.stringify(e.by)) > SETTING_LINE_MAX) return false;
   return Object.keys(e.f).every((k) => own(BOOK_SETTING_OK, k) && canEditOwner(access, ownerOfBookLogField(k)) &&
     Array.isArray(e.f[k]) && e.f[k].length === 2 && BOOK_SETTING_OK[k](e.f[k][0]) && BOOK_SETTING_OK[k](e.f[k][1]));
 }
-export function ledgerLogOk(before, after, uid, access, deposits, now) {
+export function ledgerLogOk(before, after, uid, access, deposits, now, name) {
   const ledger = canEditOwner(access, 'ledger');
-  return appendOnlyOk(before, after, uid, ledger ? LEDGER_LOG_CAP : LEDGER_LOG_SETTING_CAP, ledger ? null : (e) => settingLineOk(e, access), now);
+  return appendOnlyOk(before, after, uid, ledger ? LEDGER_LOG_CAP : LEDGER_LOG_SETTING_CAP, ledger ? null : (e) => settingLineOk(e, access, name), now);
 }
 
 // A statement's parts set once after it is written (index.html statementOnceGroups): its review,
@@ -894,10 +902,21 @@ export function depositRowsAdded(before, after, uid, book, name, now) {
 // storefront cash such a leader adds carries the flag when the page's rule says it must
 // (depositSelfCollected): a storefront it covers has a block whose cash the caller collected, as the
 // record says it (an accept that collected it, or the cash from sales marked collected, under the
-// caller's signed name). The page also reads the server's reports, so it flags at least these.
+// caller's signed name) — read from the STORED record, which this save can't rewrite first — or it names no
+// storefront at all (nothing to check it against: the page flags those too). The page also reads the server's
+// reports, so it flags at least these.
+// The final security check of 8dced37 (1): the self-review gate could be stepped round in two saves (rename the
+// enterer, then clear it) or by deleting the flagged row and adding it again. So who entered a row (enteredBy,
+// enteredByUid, enteredAt) never changes on a row there, and a flagged row isn't removed by the leader who
+// entered it (a void takes it out of the ledger too).
 // Returns the ids reviewed (for the audit row 'ledger.deposit.review'), or null when refused.
 export const REVIEW_CLOCK_MS = 10 * 60 * 1000;
 const REVIEW_STAMPS = ['depositReviewedBy', 'depositReviewedByUid', 'depositReviewedAt'];
+const ENTERED_STAMPS = ['enteredBy', 'enteredByUid', 'enteredAt'];
+// A stamp as the page's normalizeLedgerRow leaves it: '' when missing, and an email never (ledgerStampClean).
+const enteredStamp = (e, k) => (typeof e[k] !== 'string' ? '' : k === 'enteredBy' ? stampClean(e[k]) : e[k]);
+const namesNoStorefront = (e) => !String(typeof e.depositFor === 'string' ? e.depositFor : '').split(',').some((x) => x.trim()) &&
+  !(typeof e.depositFrom === 'string' && e.depositFrom && typeof e.depositTo === 'string' && e.depositTo);
 function depositCoveredIds(e, storefronts) {
   const ids = String(typeof e.depositFor === 'string' ? e.depositFor : '').split(',').map((x) => x.trim()).filter((x) => x);
   const from = typeof e.depositFrom === 'string' ? e.depositFrom : '', to = typeof e.depositTo === 'string' ? e.depositTo : '';
@@ -917,16 +936,18 @@ export function depositReviewsOk(s, n, uid, name, now) {
   const hadLine = Object.create(null);
   (Array.isArray(s.ledgerLog) ? s.ledgerLog : []).forEach((l) => { if (plain(l) && typeof l.id === 'string') hadLine[l.id] = true; });
   const myLines = (Array.isArray(n.ledgerLog) ? n.ledgerLog : []).filter((l) => plain(l) && !hadLine[l.id] && l.byUid === uid);
-  const sfs = Array.isArray(n.storefronts) ? n.storefronts : s.storefronts;
-  const reviewed = [];
+  const sfs = s.storefronts;
+  const reviewed = [], seen = Object.create(null);
   for (const e of after) {
     if (!plain(e) || typeof e.id !== 'string') continue;
+    seen[e.id] = true;
     const b = own(was, e.id) ? was[e.id] : null;
     if (!b) {
       if (REVIEW_STAMPS.some((k) => own(e, k))) return null;
-      if (e.source === 'storefront' && e.direction === 'in' && e.depositReview !== true && depositSelfCollectedOk(e, sfs, me)) return null;
+      if (e.source === 'storefront' && e.direction === 'in' && e.depositReview !== true && (namesNoStorefront(e) || depositSelfCollectedOk(e, sfs, me))) return null;
       continue;
     }
+    if (ENTERED_STAMPS.some((k) => enteredStamp(b, k) !== enteredStamp(e, k))) return null;
     const cleared = b.depositReview === true && e.depositReview !== true;
     if (!cleared) {
       if (REVIEW_STAMPS.some((k) => own(b, k) !== own(e, k) || !sameJson(b[k], e[k]))) return null;
@@ -940,6 +961,7 @@ export function depositReviewsOk(s, n, uid, name, now) {
     if (!myLines.some((l) => l.op === 'edit' && l.row === e.id && plain(l.f) && sameJson(l.f.depositReview, [true, null]))) return null;
     reviewed.push(e.id);
   }
+  if (Object.keys(was).some((id) => !seen[id] && was[id].depositReview === true && was[id].enteredByUid === uid)) return null;
   return reviewed;
 }
 
@@ -984,7 +1006,7 @@ export function refusedSections(stored, next, access, uid, actions, ctx) {
     const owner = ownerOfKey(k);
     const was = hasS ? s[k] : [], now = hasN ? n[k] : [];
     // The ledger's log: its own rule, for ledger editors and the setting-changers alike.
-    if (k === 'ledgerLog') { if (!ledgerLogOk(was, now, uid, access, deposits || [], cx.now)) refuse(owner); continue; }
+    if (k === 'ledgerLog') { if (!ledgerLogOk(was, now, uid, access, deposits || [], cx.now, cx.name)) refuse(owner); continue; }
     if (k === 'ledger' && !canEditOwner(access, owner)) { if (!deposits || !deposits.length) refuse(owner); continue; }
     if (k === 'storefronts' && !canEditOwner(access, owner)) {
       if (!(can.shiftVerify === true && storefrontReportChangeOk(was, now, uid, { reports: cx.reports, name: cx.name, canUndo: can.shiftUndo === true,

@@ -10224,7 +10224,15 @@
   function scoutOwesCents(scoutId) { return familyOutstanding(state.charges, state.ledger, scoutId, chargeFamilyKey); }
   function familyAccountsNow() { return familyAccounts(state.charges, state.ledger, chargeFamilyKey); }
   // E2 — who is doing this, for the audit trail (ledgerActorName), and the stamps it leaves.
-  function ledgerActor() { return ledgerActorName(sync.user, state.leaders); }
+  // On the pack's own server, the member name it holds (as srSignName signs a shift): what the server checks a
+  // setting line's `by` against (access.js settingLineOk, final security check of 8dced37), and the name on a deposit.
+  function ledgerActor() {
+    if (sync.backend && sync.backend.startSession && accountsInForce() && typeof sync.myName === 'string') {
+      var n = sync.myName.trim();
+      return n && n.indexOf('@') === -1 ? n : 'a signed-in leader';
+    }
+    return ledgerActorName(sync.user, state.leaders);
+  }
   function ledgerActorUid() { return (sync.user && sync.user.uid) ? String(sync.user.uid) : ''; }
   function stampEntered(e) {
     e.enteredBy = ledgerActor();
@@ -29511,6 +29519,8 @@
   function depositsToReview() { return arrOf(state.ledger).filter(function (e) { return e && e.depositReview === true; }); }
   // The storefronts a deposit covers: the ones it names, and any dated in its range.
   function depositCoveredSfs(e) { return depositCoveredIn(e, state.storefronts); }
+  function depositNamesNone(e) { return !depositForIds(e.depositFor).length && !(e.depositFrom && e.depositTo); }
+  var DEPOSIT_OWN_VOID_SAY = 'You entered this deposit and it isn’t checked yet. Ask the Treasurer or Committee Chair to check it, or to void it.';
   function depositCoveredIn(e, storefronts) {
     var ids = depositForIds(e.depositFor), from = e.depositFrom || '', to = e.depositTo || '';
     return arrOf(storefronts).filter(function (sf) { return sf && (ids.indexOf(sf.id) !== -1 || (from && to && sf.date >= from && sf.date <= to)); });
@@ -41128,7 +41138,8 @@
       if (drEntry.direction === 'in' && drEntry.source === 'storefront') drEntry.enteredBy = srSignName();
       // The treasurer's review of 045e7ac (4, 5) — the Kernel's deposit is checked by the books' keeper; so is anyone's
       // deposit of cash they collected themselves on a shift it covers (one person handling every step).
-      if (drEntry.source === 'storefront' && drEntry.direction === 'in' && (depOnly || depositSelfCollected(drEntry))) drEntry.depositReview = true;
+      // Final security check of 8dced37 (1): and one that names no storefront, which nobody can check it against.
+      if (drEntry.source === 'storefront' && drEntry.direction === 'in' && (depOnly || depositSelfCollected(drEntry) || depositNamesNone(drEntry))) drEntry.depositReview = true;
       // M1(b) — said BEFORE it is added, measured against the credit as it stands without it.
       var drWarn = refundOverCreditWarning(drEntry);
       // E2 — a reimbursement names its receipt. A warning, not a block: the money has moved
@@ -41208,6 +41219,9 @@
       var vdRow = state.ledger.find(function (e) { return e.id === vdId; });
       if (!vdRow) { ui.voidAsk = null; render(); return; }
       if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
+      // Final security check of 8dced37 (1): below an admin, the leader who entered a deposit still waiting for its check
+      // doesn't take it out of the ledger (the server refuses it too).
+      if (sync.myRole !== 'admin' && vdRow.depositReview === true && vdRow.enteredByUid && vdRow.enteredByUid === ledgerActorUid()) { showToast(DEPOSIT_OWN_VOID_SAY); return; }
       // Asked on the tap, not when the form opened: a sync can have locked it since.
       var vdWhy = String(ui.voidWhy || '').trim();
       var vdNo = ledgerLockedWhy(vdRow, state.book, '', 'void') || ledgerCancelledWhy(state, vdRow) ||   // Option B: the lock, a reversed entry,
