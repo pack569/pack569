@@ -16999,8 +16999,27 @@ atest('positions guard: deposits — the kernel records a storefront deposit, fl
   eq((await w.put('lead_treasurer', withLedger([dep({ enteredByUid: 'uid-lead-treasurer', depositReview: undefined })]))).status, 200, 'the treasurer, no flag needed');
   // Its 'add' line in the log (a deposit dated in a reconciled period): the kernel's own, for the deposit it adds.
   const add = (row, byUid) => ({ id: 'ev-add', at: '2026-09-30T12:00:00.000Z', by: 'K', byUid, dev: 'd', row, op: 'add', why: 'Dated inside the period reconciled' });
-  eq((await w.put('lead_kernel', withLedger([dep()], { ledgerLog: [add('d1', 'uid-lead-kernel')] }))).status, 200, 'the deposit and its add line');
+  // The treasurer's review, item 4: a deposit dated where a back-dated add would be logged is refused, so is its log line.
+  SECTION_403(await w.put('lead_kernel', withLedger([dep()], { ledgerLog: [add('d1', 'uid-lead-kernel')] })), ['ledger'], 'the deposit and an add line');
   SECTION_403(await w.put('lead_kernel', withLedger([dep()], { ledgerLog: [add('L1', 'uid-lead-kernel')] })), ['ledger'], 'an add line for another row');
+  // Security review of 714a920..045e7ac, finding 5 (its PoC first), and the treasurer's item 4.
+  for (const [what, row] of [['PoC: negative, reversing another row', dep({ amountCents: -500000, reverses: 'Y:L1' })], ['of a trillion cents', dep({ amountCents: 1e12 })],
+    ['of $0', dep({ amountCents: 0 })], ['of part of a cent', dep({ amountCents: 100.5 })], ['over $100,000', dep({ amountCents: 10000001 })],
+    ['on a budget line', dep({ lineId: 'act-1' })], ['with a field the form never writes', dep({ chargeId: 'c1' })], ['marked reversed', dep({ reversedBy: 'x' })],
+    ['with no date', dep({ date: 'soon' })], ['a reimbursement', dep({ reimbursement: true })]]) {
+    SECTION_403(await w.put('lead_kernel', withLedger([JSON.parse(JSON.stringify(row))])), ['ledger'], 'a kernel\'s deposit ' + what);
+  }
+  eq((await w.put('lead_kernel', withLedger([dep({ amountCents: 10000000 })]))).status, 200, 'a deposit of $100,000');
+  const booked = (book) => guardWorld(Object.assign(GUARD_BASE(), { book }));
+  const wb = await booked({ openingCents: 0, openingDate: '2026-09-01', reconciledThrough: '2026-09-30' });
+  const putB = (row) => wb.put('lead_kernel', Object.assign(GUARD_BASE(), { book: { openingCents: 0, openingDate: '2026-09-01', reconciledThrough: '2026-09-30' },
+    ledger: GUARD_BASE().ledger.concat([row]) }));
+  SECTION_403(await putB(dep({ date: '2026-09-30' })), ['ledger'], 'dated inside the reconciled period');
+  eq((await putB(dep({ date: '2026-10-01' }))).status, 200, 'dated the day after it');
+  SECTION_403(await putB(dep({ date: '2026-08-31' })), ['ledger'], 'dated before the opening date');
+  const wc = await booked({ openingCents: 0, closedAt: '2026-09-01T00:00:00.000Z' });
+  SECTION_403(await wc.put('lead_kernel', Object.assign(GUARD_BASE(), { book: { openingCents: 0, closedAt: '2026-09-01T00:00:00.000Z' }, ledger: GUARD_BASE().ledger.concat([dep()]) })),
+    ['ledger'], 'in a book closed out');
   SECTION_403(await w.put('lead_kernel', Object.assign(GUARD_BASE(), { ledgerLog: [add('d1', 'uid-lead-kernel')] })), ['ledger'], 'an add line with no deposit');
   // The deadline: the deposits sub-section, logged on the book by whoever sets it.
   const days = (who, uid) => w.put(who, Object.assign(GUARD_BASE(), { depositDays: 10,

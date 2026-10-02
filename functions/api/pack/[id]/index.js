@@ -31,8 +31,10 @@
 // the ledger's editors included); a statement there stays as it is and one added
 // is the caller's; a council settlement written is the caller's. Two slices of a section a leader may
 // write without editing it: a shift report's fields on a storefront block (shiftVerify: the
-// accept, its undo, its settle, each tied to the report's row in shift_reports, read here), and a deposit of storefront cash added to the ledger, flagged for
-// the treasurer (the 'deposits' sub-section). An admin's save is not compared.
+// accept, its undo, its settle, each tied to the report's row in shift_reports, read here), and a
+// deposit of storefront cash added to the ledger, flagged for the treasurer (the 'deposits'
+// sub-section: only the fields the add form writes, a whole amount up to $100,000, dated after the
+// period already reconciled, in a book not closed: access.js depositRowOk). An admin's save is not compared.
 // Some parts of a section are an admin's alone (security review of 714a920..045e7ac): a scout's
 // parent accounts and a linked scout's family (access.js parentLinksOk), and the record's version
 // and format (versionOk, fmtOk: a format may only rise by one); a change to them refuses 'admin'.

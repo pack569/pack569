@@ -400,12 +400,12 @@ export const syncLogOk = (before, after, uid, now) => appendOnlyOk(before, after
 // whose every field is a setting they may edit (ownerOfBookLogField). Commission, goals, the wagon
 // date and the deposit days are logged on the book; the people who may set them are not all
 // ledger editors (logSettingEdit and its kin, index.html).
-// And a deposit holder may log the 'add' of a deposit they add in the same save (`deposits`, its ids):
-// the ledger's add path logs one when the date is in a reconciled or closed period.
+// A deposit holder's deposit logs nothing: the ledger's add path logs an 'add' only for a date in a
+// reconciled or closed period, and depositRowOk refuses those (the treasurer's review, item 4, closed
+// the allowance this had for it).
 export function ledgerLogOk(before, after, uid, access, deposits, now) {
-  const ledger = canEditOwner(access, 'ledger'), added = Array.isArray(deposits) ? deposits : [];
+  const ledger = canEditOwner(access, 'ledger');
   return appendOnlyOk(before, after, uid, LEDGER_LOG_CAP, ledger ? null : (e) =>
-    (e.op === 'add' && added.indexOf(e.row) !== -1) ||
     (e.op === 'edit' && e.row === 'book' && plain(e.f) && Object.keys(e.f).length > 0 &&
       Object.keys(e.f).every((k) => canEditOwner(access, ownerOfBookLogField(k)))), now);
 }
@@ -714,20 +714,47 @@ export function storefrontReportChangeOk(before, after, uid, ctx) {
 }
 
 // A ledger row that is a deposit of storefront cash a 'deposits' holder who does not edit the ledger
-// may add (Keith, 2026-10-02: the kernel records the deposit, the treasurer reviews it). Money in,
-// marked as storefront cash and nobody's payment, entered by the caller, flagged for the treasurer
-// (depositReview: true; the treasurer's edit takes the flag off), and nothing the ledger's own
-// steps set: not ticked or on a statement, not voided, not approved.
-const DEPOSIT_UNSET = ['reconciled', 'reconciledAt', 'statementId', 'off', 'voidReason', 'voidedAt', 'voidedBy', 'voidedByUid',
-  'approvedBy', 'approvedByUid', 'approvedAt', 'tierMakeup', 'scoutId', 'reimbursement'];
-export function depositRowOk(e, uid) {
-  return plain(e) && typeof e.id === 'string' && !!e.id && e.direction === 'in' && e.source === 'storefront' &&
-    typeof e.amountCents === 'number' && typeof uid === 'string' && !!uid && e.enteredByUid === uid && e.depositReview === true &&
-    DEPOSIT_UNSET.every((k) => !e[k]);
+// may add (Keith, 2026-10-02: the kernel records the deposit, the treasurer reviews it). An
+// ALLOWLIST of the fields the page's add form writes (normalizeLedgerRow), each with what it may
+// hold (security review of 714a920..045e7ac, finding 5, and the treasurer's review, item 4):
+// money in, a whole number of cents above 0 and at most DEPOSIT_MAX_CENTS; marked as storefront
+// cash and nobody's payment; no budget line (the treasurer files it); entered by the caller;
+// flagged for the treasurer (depositReview: true; the treasurer's review takes it off); nothing the
+// ledger's own steps set (not ticked, approved, voided or reversed). And dated where nothing is
+// signed off yet: the book not closed out, the date after the period already reconciled
+// (book.reconciledThrough) and not before the opening date. Stricter than the warning a ledger
+// editor gets for a back-dated add, on purpose: the treasurer can still enter it.
+export const DEPOSIT_MAX_CENTS = 10000000;   // $100,000
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+const shortText = (max) => (v) => typeof v === 'string' && v.length <= max;
+const DEPOSIT_FIELDS = {
+  id: (v) => typeof v === 'string' && v.length > 0 && v.length <= 128,
+  date: (v) => typeof v === 'string' && ISO_DAY.test(v),
+  description: shortText(500), ref: shortText(200), donor: shortText(200), method: shortText(40),
+  amountCents: (v) => Number.isInteger(v) && v > 0 && v <= DEPOSIT_MAX_CENTS,
+  direction: (v) => v === 'in', source: (v) => v === 'storefront', depositReview: (v) => v === true,
+  lineId: (v) => v === '', scoutId: (v) => v === '', tierMakeup: (v) => v === '',
+  reimbursement: (v) => v === false, notCommission: (v) => v === false, reconciled: (v) => v === false,
+  approvedBy: (v) => v === '', approvedAt: (v) => v === '', approvedByUid: (v) => v === '',
+  depositFor: shortText(4000), depositFrom: (v) => v === '' || (typeof v === 'string' && ISO_DAY.test(v)),
+  depositTo: (v) => v === '' || (typeof v === 'string' && ISO_DAY.test(v)),
+  enteredBy: shortText(120), enteredAt: shortText(40), enteredByUid: () => true
+};
+const DEPOSIT_NEEDS = ['id', 'date', 'amountCents', 'direction', 'source', 'depositReview', 'enteredByUid'];
+export function depositRowOk(e, uid, book) {
+  if (!plain(e) || typeof uid !== 'string' || !uid || e.enteredByUid !== uid) return false;
+  if (!DEPOSIT_NEEDS.every((k) => own(e, k))) return false;
+  if (!Object.keys(e).every((k) => own(DEPOSIT_FIELDS, k) && DEPOSIT_FIELDS[k](e[k]))) return false;
+  const bk = plain(book) ? book : {};
+  if (bk.closedAt) return false;
+  const rt = typeof bk.reconciledThrough === 'string' ? bk.reconciledThrough : '';
+  if (rt && e.date <= rt) return false;
+  const od = typeof bk.openingDate === 'string' ? bk.openingDate : '';
+  return !(od && e.date < od);
 }
 // state.ledger changed by such a leader: every row there still there, as it was (by id), and every row
 // added a deposit (depositRowOk). Returns the ids added, or null when it is anything else.
-export function depositRowsAdded(before, after, uid) {
+export function depositRowsAdded(before, after, uid, book) {
   if (!Array.isArray(after)) return null;
   const was = Object.create(null);
   (Array.isArray(before) ? before : []).forEach((e) => { if (plain(e) && typeof e.id === 'string') was[e.id] = e; });
@@ -736,7 +763,7 @@ export function depositRowsAdded(before, after, uid) {
     if (!plain(e) || typeof e.id !== 'string' || !e.id || seen[e.id]) return null;
     seen[e.id] = true;
     if (own(was, e.id)) { if (!sameJson(was[e.id], e)) return null; continue; }
-    if (!depositRowOk(e, uid)) return null;
+    if (!depositRowOk(e, uid, book)) return null;
     added.push(e.id);
   }
   return Object.keys(was).every((id) => seen[id]) ? added : null;
@@ -759,7 +786,7 @@ export function refusedSections(stored, next, access, uid, actions, ctx) {
   // A deposit holder who does not edit the ledger: the deposits they add, which their own log lines may name.
   let deposits = [];
   if (!canEditOwner(access, 'ledger') && access.deposits === 'edit' && !sameTop(s.ledger, own(s, 'ledger'), n.ledger, own(n, 'ledger'))) {
-    deposits = depositRowsAdded(own(s, 'ledger') ? s.ledger : [], own(n, 'ledger') ? n.ledger : [], uid);
+    deposits = depositRowsAdded(own(s, 'ledger') ? s.ledger : [], own(n, 'ledger') ? n.ledger : [], uid, s.book);
   }
   const keys = Object.create(null);
   Object.keys(s).concat(Object.keys(n)).forEach((k) => { keys[k] = true; });
