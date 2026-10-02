@@ -215,12 +215,20 @@ export function cleanReportNote(v) {
 }
 const wholeCents = (v) => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= SHIFT_REPORT_MAX_CENTS;
 
-// Why these figures may not be signed, or null. Shared by a new report and an edit: both
-// amounts as whole cents in range, a note if any within the limit, and the box ticked.
+// S-5 (Keith, 2026-10-01) — the cash from popcorn sales a family still has at the end of the
+// shift: optional, and 0 when the body leaves it out (a page from before S-5). It is a custody
+// figure, not a sale: those sales are already inside the Trail's End amount, so it is never more
+// than that, and nothing ever adds it to a block's sales or a scout's split.
+export const reportSalesCash = (body) => (body && body.salesCashCents !== undefined ? body.salesCashCents : 0);
+
+// Why these figures may not be signed, or null. Shared by a new report and an edit: the amounts
+// as whole cents in range, a note if any within the limit, and the box ticked.
 export function shiftReportFiguresProblem(body) {
   if (body.attest !== true) return 'attest';
   if (!wholeCents(body.teCents)) return 'te-cents';
   if (!wholeCents(body.cashCents)) return 'cash-cents';
+  const salesCash = reportSalesCash(body);
+  if (!wholeCents(salesCash) || salesCash > body.teCents) return 'sales-cash-cents';
   if (body.note !== undefined && body.note !== null && typeof body.note !== 'string') return 'note';
   if (cleanReportNote(body.note).length > SHIFT_REPORT_NOTE_MAX) return 'note';
   return null;
@@ -264,6 +272,26 @@ export function shiftParentUids(pack, sfId, blockId) {
   });
   return out;
 }
+const famOf = (sc) => (typeof sc.familyId === 'string' && sc.familyId) || sc.id;
+// The family keys (the page's familyKeyOf: familyId, or the scout's own id) of every scout whose
+// parentUids hold `uid`, in the stored pack record: { key: true }, empty for an account linked to
+// no scout, or a record that isn't the right shape.
+export function familiesOf(pack, uid) {
+  const out = {};
+  if (!uid || !pack || typeof pack !== 'object' || !Array.isArray(pack.scouts)) return out;
+  pack.scouts.forEach((sc) => {
+    if (sc && Array.isArray(sc.parentUids) && sc.parentUids.indexOf(uid) !== -1) out[famOf(sc)] = true;
+  });
+  return out;
+}
+// Keith (2026-10-01) — the leader accepting a report must be from a DIFFERENT FAMILY than the
+// sender: true when the two accounts are linked to scouts of a shared family. An account linked
+// to no scout shares no family with anyone (allowed, as before). Links between people only,
+// never pack jobs.
+export function sameFamily(pack, uidA, uidB) {
+  const a = familiesOf(pack, uidA), b = familiesOf(pack, uidB);
+  return Object.keys(a).some((k) => b[k] === true);
+}
 // Review round 1 (Keith, 2026-10-01) — WHO MAY CONFIRM: a parent of a scout on the shift from a
 // DIFFERENT FAMILY than the sender. The sender's families are the family keys (familyId, or the
 // scout's own id: the page's familyKeyOf) of every scout the sender is linked to; a confirmer
@@ -273,11 +301,7 @@ export function shiftParentUids(pack, sfId, blockId) {
 // accepts it with a written reason. null: fail closed, as above.
 export function shiftConfirmers(pack, sfId, blockId, senderUid) {
   if (shiftParentUids(pack, sfId, blockId) === null) return null;
-  const famOf = (sc) => (typeof sc.familyId === 'string' && sc.familyId) || sc.id;
-  const senderFams = {};
-  pack.scouts.forEach((sc) => {
-    if (sc && Array.isArray(sc.parentUids) && sc.parentUids.indexOf(senderUid) !== -1) senderFams[famOf(sc)] = true;
-  });
+  const senderFams = familiesOf(pack, senderUid);
   if (!Object.keys(senderFams).length) return [];
   const sf = pack.storefronts.filter((x) => x && x.id === sfId)[0];
   const b = sf.blocks.filter((x) => x && x.id === blockId)[0];

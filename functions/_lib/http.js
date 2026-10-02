@@ -66,6 +66,11 @@ export const samePerson = () => json(409, { error: 'same-person', code: 'failed-
 export const notShiftParent = () => json(409, { error: 'not-shift-parent', code: 'failed-precondition' });
 export const needsConfirm = () => json(409, { error: 'needs-confirm', code: 'failed-precondition' });
 export const notCollected = () => json(409, { error: 'not-collected', code: 'failed-precondition' });
+// Keith (2026-10-01): the accepting leader is in the sender's family; only an override with a reason.
+export const sameFamilyRefused = () => json(409, { error: 'same-family', code: 'failed-precondition' });
+// The pack record moved between the server's read of it and the write that named its rev (a
+// same-family decision rests on it): nothing written, and the page tries again rather than undo.
+export const packMoved = () => json(409, { error: 'pack-moved', code: 'failed-precondition' });
 export const tooManyReports = (why) => json(409, { error: 'too-many-open', code: 'failed-precondition', reason: why });
 export const unavailable = (why) => json(503, { error: 'unavailable', code: 'unavailable', reason: why || '' });
 
