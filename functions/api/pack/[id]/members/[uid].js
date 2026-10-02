@@ -1,6 +1,6 @@
 // GET    /api/pack/:id/members/:uid   one account's record          (leaders; anyone, their own)
 // PATCH  /api/pack/:id/members/:uid   { role?, name? }              (admins; you, your own name)
-//                                     { positions, name? }          (admins)
+//                                     { positions, dens?, name? }   (admins)
 // DELETE /api/pack/:id/members/:uid   remove an account             (admins)
 //
 // Part C:
@@ -24,6 +24,9 @@
 // the same request, and at least one position (to take them all away, set a role instead; the
 // role change takes the positions with it, migration 0005). The last-admin rule holds: an admin
 // given positions stops being an admin. Recorded in the audit as 'member.positions'.
+// OWN DEN (Keith, 2026-10-02): `dens`, with the positions, names the dens a Den Leader or Assistant
+// Den Leader leads (the page's DENS names, access.js cleanDens); stored on those position rows, and
+// on no other. Only with a den position; left out, they lead none, and change no den meeting.
 // RETIRED ROLES (Keith, 2026-10-02): `role` may set admin, parent or pending (rules.js
 // SETTABLE_ROLES); never editor or viewer again, and leader only through positions. An editor or
 // viewer account left from before reads, writes nothing, and keeps its role until an admin
@@ -31,6 +34,7 @@
 
 import { route, json, readObject, refuse, forbidden, notFound, badRequest, lastAdmin } from '../../../../_lib/http.js';
 import { withMember, memberOf, memberOut, auditIf } from '../../../../_lib/pack.js';
+import { cleanDens, DEN_POSITIONS } from '../../../../_lib/access.js';
 import { ROLES, SETTABLE_ROLES, MEMBER_NAME_MAX, UID_RE, canReadMember, canUpdateMember, canDeleteMember, isAdmin, emailKey,
   cleanPositions, roleForPositions } from '../../../../_lib/rules.js';
 
@@ -58,9 +62,9 @@ async function patch({ request, db, packId, role, user, params }) {
   // a 400 for a bad role on a real member, 403 for a missing one, told them which was which).
   if (!isAdmin(role) && target !== user.uid) return forbidden();
   const body = await readObject(request, 4096);
-  for (const k of Object.keys(body)) if (k !== 'role' && k !== 'name' && k !== 'positions') return forbidden();
-  // Positions are an admin's to give, and never your own to send.
-  if (body.positions !== undefined && !isAdmin(role)) return forbidden();
+  for (const k of Object.keys(body)) if (k !== 'role' && k !== 'name' && k !== 'positions' && k !== 'dens') return forbidden();
+  // Positions (and a den leader's dens) are an admin's to give, and never your own to send.
+  if ((body.positions !== undefined || body.dens !== undefined) && !isAdmin(role)) return forbidden();
   const row = await memberOf(db, packId, target);
   // A missing row would be a create, and creates happen only in /api/session.
   if (!row) return isAdmin(role) ? notFound() : forbidden();
@@ -70,6 +74,11 @@ async function patch({ request, db, packId, role, user, params }) {
     if (body.role !== undefined) refuse(badRequest('role-and-positions'));
     positions = cleanPositions(body.positions);
     if (!positions) refuse(badRequest('positions'));
+  }
+  let dens = [];
+  if (body.dens !== undefined) {
+    dens = cleanDens(body.dens);
+    if (!positions || !dens || (dens.length && !positions.some((p) => DEN_POSITIONS.indexOf(p) !== -1))) refuse(badRequest('dens'));
   }
   const nextRole = positions ? roleForPositions(positions) : body.role === undefined ? row.role : body.role;
   const pack = await db.prepare('SELECT owner_uid FROM packs WHERE id = ?').bind(packId).first();
@@ -97,10 +106,12 @@ async function patch({ request, db, packId, role, user, params }) {
   if (positions) {
     stmts.push(
       db.prepare('DELETE FROM member_positions WHERE pack_id = ? AND uid = ? AND ' + landed).bind(packId, target, packId, target, nextRole),
-      db.prepare('INSERT INTO member_positions (pack_id, uid, position, den) SELECT ?, ?, value, NULL FROM json_each(?) WHERE ' + landed)
-        .bind(packId, target, JSON.stringify(positions), packId, target, nextRole),
+      db.prepare('INSERT INTO member_positions (pack_id, uid, position, dens) SELECT ?, ?, value, ' +
+        "CASE WHEN value IN ('denleader', 'asstden') THEN ? ELSE NULL END FROM json_each(?) WHERE " + landed)
+        .bind(packId, target, JSON.stringify(dens), JSON.stringify(positions), packId, target, nextRole),
       auditIf(db, packId, user.uid, 'member.positions',
-        { target, from: { role: row.role, positions: row.positions }, to: { role: nextRole, positions } }, now, landed, [packId, target, nextRole]));
+        { target, from: Object.assign({ role: row.role, positions: row.positions }, row.dens && row.dens.length ? { dens: row.dens } : {}),
+          to: Object.assign({ role: nextRole, positions }, dens.length ? { dens } : {}) }, now, landed, [packId, target, nextRole]));
   } else if (nextRole !== row.role) {
     stmts.push(auditIf(db, packId, user.uid, 'member.role', { target, from: row.role, to: nextRole }, now, landed, [packId, target, nextRole]));
   }

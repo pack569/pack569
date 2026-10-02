@@ -16,7 +16,11 @@
 --    else has to move. members_by_role goes with the old table and is made again.
 -- 2. member_positions: the positions each account holds. invite_positions: the positions an
 --    invite will give, copied to member_positions when the invite is used (/api/session).
---    `den` is for stage 2 (a Den Leader scoped to their own den); stage 1 leaves it NULL.
+--    `dens` (Keith, 2026-10-02: own-den scope in stage 1, for den meetings): on a Den Leader or
+--    Assistant Den Leader row, the dens they lead, a JSON array of the page's DENS names (the
+--    endpoints check the names; the CHECK only the shape); NULL on every other position. An
+--    array, not a row per den: a position is held once. Edited in place before it was applied
+--    anywhere (it had a `den` column, always NULL).
 --
 -- The positions are listed here as well as in access.js; the harness checks the two agree.
 
@@ -60,7 +64,8 @@ CREATE TABLE member_positions (
   position  TEXT NOT NULL CHECK (position IN ('cubmaster', 'asstcub', 'chair', 'treasurer', 'secretary', 'kernel',
                                               'advancement', 'activities', 'membership', 'outdoors', 'derbychair',
                                               'comms', 'trainer', 'denleader', 'asstden', 'parent')),
-  den       TEXT CHECK (den IS NULL OR length(den) BETWEEN 1 AND 40),
+  dens      TEXT CHECK (dens IS NULL OR (position IN ('denleader', 'asstden') AND length(dens) <= 200
+                                         AND json_valid(dens) AND json_type(dens) = 'array')),
   PRIMARY KEY (pack_id, uid, position)
 );
 
@@ -70,7 +75,8 @@ CREATE TABLE invite_positions (
   position  TEXT NOT NULL CHECK (position IN ('cubmaster', 'asstcub', 'chair', 'treasurer', 'secretary', 'kernel',
                                               'advancement', 'activities', 'membership', 'outdoors', 'derbychair',
                                               'comms', 'trainer', 'denleader', 'asstden', 'parent')),
-  den       TEXT CHECK (den IS NULL OR length(den) BETWEEN 1 AND 40),
+  dens      TEXT CHECK (dens IS NULL OR (position IN ('denleader', 'asstden') AND length(dens) <= 200
+                                         AND json_valid(dens) AND json_type(dens) = 'array')),
   PRIMARY KEY (pack_id, email, position)
 );
 

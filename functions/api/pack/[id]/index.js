@@ -108,7 +108,7 @@ async function put({ request, env, db, packId, role, positions, user, member }) 
       const access = effectiveAccess(role, positions), actions = effectiveActions(role, positions);
       const reports = await namedReports(db, packId, stored, parsed, access, actions);
       const refused = refusedSections(stored, parsed, access, user.uid, actions,
-        { reports: reports || {}, name: member && member.name, now: Date.now() });
+        { reports: reports || {}, name: member && member.name, now: Date.now(), dens: member ? member.dens : [] });
       if (reports === null && refused.indexOf('storefronts') === -1) refused.push('storefronts');
       if (refused.length) return forbiddenSections(sectionOrder(refused));
     }

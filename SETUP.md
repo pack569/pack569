@@ -173,6 +173,32 @@ How it works:
 - There's always **at least one admin** — the app won't let the last admin be removed or
   demoted.
 
+### Pack positions (the Cloudflare backend only)
+
+On the pack's own server (`BACKEND = 'api'`), `editor` and `viewer` are retired. A leader's
+account is `leader`, and an admin gives it one or more **pack positions** on the Members card:
+Cubmaster, Committee Chair, Treasurer, Popcorn Kernel, Den Leader, and the rest of the
+committee jobs. Each position edits some parts of the app and reads the rest
+(`functions/_lib/access.js` holds the table, and the page has a copy). The server refuses a
+save that changes a part the leader's positions don't edit. An account still `editor` or
+`viewer` from before reads everything, edits nothing, and is listed under "Needs a position"
+until an admin gives it some. Firestore keeps the four roles above.
+
+- **Den Leaders edit only their own dens' meetings** (Keith, 2026-10-02). With the Den Leader
+  or Assistant Den Leader position, the admin ticks the dens they lead. On those dens' meetings
+  they can change the adventure, the notes and the adventures offered. On an All-dens night
+  they can change only their own den's line. Attendance, den plans and advancement are still
+  pack-wide for them in stage 1.
+- **Hidden isn't private yet.** A part a position doesn't see is left out of their menus, but
+  the whole pack record still reaches every leader's browser. Stage 2 splits the record on the
+  server so a leader receives only what they may read.
+- **The parent view stays always published** (owner decision, 2026-10-01). Any leader who
+  edits something saves a fresh parent view, and the server checks only its shape
+  (`parentViewProblem`), not whether it matches the parts that leader edits. A Derby Chair
+  could therefore publish wrong event times to families. This is accepted for stage 1. Stage 2
+  should build the parent view on the server from the stored record, or compare each part of a
+  leader's view with the record (security review of 714a920..045e7ac, finding 6).
+
 ### What a parent sees (and what they can't)
 
 Firestore security rules can allow or deny a **whole document** — they can't hide *parts*

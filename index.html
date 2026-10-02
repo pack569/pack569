@@ -2104,7 +2104,9 @@
       {"id": "parent", "label": "Parent"}
     ],
     "sections": ["home", "calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "roster", "advancement", "joining", "storefronts", "totals", "rewards", "inventory", "council", "budget", "ledger", "deposits", "dues", "fundraisers", "sharing", "people", "season"],
-    "denMeetingFields": ["adventure", "denAdv", "note", "noteInternal"],
+    "denMeetingFields": ["adventure", "denAdv", "note", "noteInternal", "advOffers"],
+    "dens": ["Lion", "Tiger", "Wolf", "Bear", "Webelos", "Arrow of Light"],
+    "denPositions": ["denleader", "asstden"],
     "access": {
       "cubmaster": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "advancement", "season"], "hidden": []},
       "asstcub": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "advancement", "season"], "hidden": []},
@@ -23614,10 +23616,10 @@
       // "ask the Alvarez family to bring the canopy, they still owe for spring" would have been
       // published verbatim. Naming the audience at the field is the fix.
       '<p class="eyebrow note-cap">Parents see this</p>' +
-      '<input data-ch="mtg-note" data-id="' + m.id + '" value="' + esc(m.note || '') +
+      '<input maxlength="4000" data-ch="mtg-note" data-id="' + m.id + '" value="' + esc(m.note || '') +
         '" placeholder="Where it is, and what to bring" aria-label="Details parents will see" style="width:100%">' +
       '<p class="eyebrow note-cap note-cap-int">Leaders only \u00b7 never published</p>' +
-      '<input data-ch="mtg-note-internal" data-id="' + m.id + '" value="' + esc(m.noteInternal || '') +
+      '<input maxlength="4000" data-ch="mtg-note-internal" data-id="' + m.id + '" value="' + esc(m.noteInternal || '') +
         '" placeholder="Who is bringing what, follow-ups, anything not for families" aria-label="Internal note, leaders only" style="width:100%">' +
       (m.kind === 'pack' ? packAgendaBlock(m) : '') +
       '<div class="row" style="margin-top:8px;align-items:flex-start">' +

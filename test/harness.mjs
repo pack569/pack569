@@ -14185,7 +14185,9 @@ async function apiWorld(envOver) {
       const [role, held] = r[who].split(':');
       db.raw.prepare('INSERT INTO members (pack_id, uid, role, name, email, join_code, added_at) VALUES (?, ?, ?, ?, ?, NULL, ?)')
         .run(API_PACK, PEOPLE[who][0], role, 'Test ' + who, PEOPLE[who][1], Date.now());
-      for (const p of held ? held.split(',') : []) db.raw.prepare('INSERT INTO member_positions (pack_id, uid, position, den) VALUES (?, ?, ?, NULL)').run(API_PACK, PEOPLE[who][0], p);
+      // A den leader seeded this way leads the Wolf den (own-den scope, 2026-10-02).
+      for (const p of held ? held.split(',') : []) db.raw.prepare('INSERT INTO member_positions (pack_id, uid, position, dens) VALUES (?, ?, ?, ?)')
+        .run(API_PACK, PEOPLE[who][0], p, p === 'denleader' || p === 'asstden' ? '["Wolf"]' : null);
     }
     return w;
   };
@@ -16130,7 +16132,7 @@ test('positions: the access table in index.html is a byte-identical copy of the 
   const server = accessCopy(ACCESS_SRC, 'access.js'), page = accessCopy(SCRIPT, 'index.html');
   ok(server === page, 'the two ACCESS tables differ: change both or neither');
   const t = JSON.parse(server);
-  eq(Object.keys(t), ['positions', 'sections', 'denMeetingFields', 'access', 'keyOwner', 'goneOwner', 'bookLogOwner', 'actions', 'blockReportFields'], 'the table\'s parts');
+  eq(Object.keys(t), ['positions', 'sections', 'denMeetingFields', 'dens', 'denPositions', 'access', 'keyOwner', 'goneOwner', 'bookLogOwner', 'actions', 'blockReportFields'], 'the table\'s parts');
   ok(/^  var ACCESS_TABLE = \/\*ACCESS-BEGIN\*\/\{$/m.test(SCRIPT), 'index.html: var ACCESS_TABLE = /*ACCESS-BEGIN*/{');
   ok(/^export const ACCESS_TABLE = \/\*ACCESS-BEGIN\*\/\{$/m.test(ACCESS_SRC), 'access.js: export const ACCESS_TABLE = /*ACCESS-BEGIN*/{');
 });
@@ -16161,7 +16163,10 @@ test('positions: every position and every section is in the table, and the secti
   const pageSecs = [...ws.matchAll(/\{ id: '([a-z]+)', label: '[^']*' \}/g)].map((m) => m[1]);
   ok(pageSecs.length >= 19, 'too few WORKSPACES sections read: ' + pageSecs);
   eq(t.sections.slice().sort(), pageSecs.concat(['camping', 'attendance', 'calendar.denmeeting', 'deposits']).sort(), 'the sections vs WORKSPACES');
-  eq(t.denMeetingFields, ['adventure', 'denAdv', 'note', 'noteInternal'], 'what a den leader may change on a den meeting');
+  eq(t.denMeetingFields, ['adventure', 'denAdv', 'note', 'noteInternal', 'advOffers'], 'what a den leader may change on a den meeting');
+  // Own-den scope (Keith, 2026-10-02): the dens a den leader may be given are the page's.
+  eq(t.dens, JSON.parse('[' + /var DENS = \[([^\]]*)\];/.exec(SCRIPT)[1].replace(/'/g, '"') + ']'), 'the table\'s dens are the page\'s DENS');
+  eq(t.denPositions, ['denleader', 'asstden'], 'the positions that lead a den');
 });
 
 test('positions: every key of the pack record, and every kind of deletion mark, has an owner', () => {
@@ -16308,17 +16313,22 @@ atest('positions: sameJson compares objects by key whatever the order, arrays in
 const POSITION_IDS = ['cubmaster', 'asstcub', 'chair', 'treasurer', 'secretary', 'kernel', 'advancement', 'activities', 'membership', 'outdoors',
   'derbychair', 'comms', 'trainer', 'denleader', 'asstden', 'parent'];
 POSITION_IDS.concat(['multi', 'none']).forEach((p) => { PEOPLE['lead_' + p] = ['uid-lead-' + p, 'lead-' + p + '@example.com']; });
-function seedLeader(w, who, positions, role) {
+// `dens`: the dens a Den Leader or Assistant Den Leader position leads (own-den scope, 2026-10-02);
+// ['Wolf'] when not given, GUARD_BASE's den meeting's den.
+function seedLeader(w, who, positions, role, dens) {
   w.db.raw.prepare('INSERT INTO members (pack_id, uid, role, name, email, join_code, added_at) VALUES (?, ?, ?, ?, ?, NULL, ?)')
     .run(API_PACK, PEOPLE[who][0], role || 'leader', 'Test ' + who, PEOPLE[who][1], Date.now());
-  for (const p of positions) w.db.raw.prepare('INSERT INTO member_positions (pack_id, uid, position, den) VALUES (?, ?, ?, NULL)').run(API_PACK, PEOPLE[who][0], p);
+  for (const p of positions) {
+    w.db.raw.prepare('INSERT INTO member_positions (pack_id, uid, position, dens) VALUES (?, ?, ?, ?)')
+      .run(API_PACK, PEOPLE[who][0], p, p === 'denleader' || p === 'asstden' ? JSON.stringify(dens || ['Wolf']) : null);
+  }
   return w;
 }
 const heldBy = (w, who) => w.sql('SELECT position FROM member_positions WHERE pack_id = ? AND uid = ? ORDER BY position', API_PACK, PEOPLE[who][0]).map((r) => r.position);
 
 test('positions: migration 0005 names the same positions as access.js, and keeps every role the API knows', () => {
   const sql = readFileSync(join(ROOT, 'migrations/0005_positions.sql'), 'utf8');
-  const lists = [...sql.matchAll(/position IN \(([^)]*)\)/g)].map((m) => [...m[1].matchAll(/'([a-z]+)'/g)].map((x) => x[1]));
+  const lists = [...sql.matchAll(/position IN \(([^)]*)\)/g)].map((m) => [...m[1].matchAll(/'([a-z]+)'/g)].map((x) => x[1])).filter((l) => l.indexOf('cubmaster') !== -1);   // the dens CHECKs name the two den positions
   eq(lists.length, 2, 'two position CHECKs');
   lists.forEach((l) => eq(l, ACCESS_JSON().positions.map((p) => p.id), 'a position CHECK vs access.js'));
   const roles = [...sql.matchAll(/role IN \(([^)]*)\)/g)].map((m) => [...m[1].matchAll(/'([a-z]+)'/g)].map((x) => x[1]));
@@ -16447,6 +16457,33 @@ atest('positions: an admin gives an account its positions (it becomes a leader, 
   // Removing the account takes them.
   await w.call('owner', 'DELETE', 'member', { uid: 'uid-pending' });
   eq(heldBy(w, 'pending'), [], 'removed with the account');
+});
+
+// Own-den scope (Keith, 2026-10-02): an admin names the dens a Den Leader leads, with the positions; the
+// account, the members list, an invite and the session carry them; nobody else sets them.
+atest('positions: an admin names the dens a den leader leads; the invite, the session and the members list carry them; nobody else can', async () => {
+  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', viewer: 'viewer' });
+  const give = (who, target, body) => w.call(who, 'PATCH', 'member', { uid: PEOPLE[target][0] }, { body });
+  const r = await give('owner', 'editor', { positions: ['denleader', 'treasurer'], dens: ['Bear', 'Wolf'] });
+  eq([r.status, r.body.positions, r.body.dens], [200, ['treasurer', 'denleader'], ['Wolf', 'Bear']], 'a den leader of two dens (in DENS order)');
+  eq(w.sql('SELECT position, dens FROM member_positions WHERE uid = ? ORDER BY position', 'uid-editor').map((x) => [x.position, x.dens]),
+    [['denleader', '["Wolf","Bear"]'], ['treasurer', null]], 'stored on the den position only');
+  eq(JSON.parse(w.audit('member.positions')[0].detail).to, { role: 'leader', positions: ['treasurer', 'denleader'], dens: ['Wolf', 'Bear'] }, 'audited');
+  eq((await w.call('viewer', 'GET', 'members')).body.members.filter((m) => m.uid === 'uid-editor')[0].dens, ['Wolf', 'Bear'], 'the members list');
+  for (const [what, body] of [['a den that is not one', { positions: ['denleader'], dens: ['Dragons'] }], ['a den twice', { positions: ['denleader'], dens: ['Wolf', 'Wolf'] }],
+    ['dens with no den position', { positions: ['treasurer'], dens: ['Wolf'] }], ['dens with no positions', { dens: ['Wolf'] }], ['not a list', { positions: ['denleader'], dens: 'Wolf' }]]) {
+    eq((await give('owner', 'viewer', body)).body.reason, 'dens', what);
+  }
+  denied(await give('editor', 'editor', { positions: ['denleader'], dens: ['Lion'] }), 'a den leader naming their own dens');
+  denied(await give('viewer', 'editor', { dens: ['Lion'] }), 'someone else\'s dens, by a non-admin');
+  eq((await give('owner', 'editor', { positions: ['denleader'] })).body.dens, undefined, 'given again with none: a den leader of no den');
+  // An invite carries them, and signing in on it hands them over.
+  const inv = await w.call('owner', 'PUT', 'invite', { email: PEOPLE.newbie[1] }, { body: { positions: ['asstden'], dens: ['Tiger'] } });
+  eq([inv.status, inv.body.dens], [200, ['Tiger']], 'an invite with a den');
+  eq((await w.call('owner', 'PUT', 'invite', { email: 'x@example.com' }, { body: { positions: ['kernel'], dens: ['Tiger'] } })).body.reason, 'dens', 'an invite with dens and no den position');
+  denied(await w.call('editor', 'PUT', 'invite', { email: 'y@example.com' }, { body: { positions: ['denleader'], dens: ['Tiger'] } }), 'a non-admin\'s invite with dens');
+  const s = await w.session('newbie');
+  eq([s.body.member.positions, s.body.member.dens], [['asstden'], ['Tiger']], 'the session says them');
 });
 
 atest('positions: an invite can carry positions, and signing in on it makes a leader holding exactly those', async () => {
@@ -16624,6 +16661,47 @@ atest('positions guard: a den leader changes a den meeting\'s adventure and note
   // The den meeting sub-section is not the rest of the calendar either: RSVPs and meetings stay the Cubmaster's.
   SECTION_403(await w.put('lead_denleader', Object.assign(GUARD_BASE(), { rsvps: { e1: { s1: 'yes' } } })), ['calendar'], 'a den leader writing an RSVP');
   eq((await w.put('lead_denleader', Object.assign(GUARD_BASE(), { attendance: { e1: { s1: true } } }))).status, 200, 'a den leader taking attendance');
+});
+
+atest('positions guard: a den leader edits only their own dens\' meetings — on an All-dens night only their den\'s line; adventures offered are held to their shape', async () => {
+  const base = () => { const r = GUARD_BASE(); r.events.push({ id: 'e3', kind: 'den', date: '2026-10-07', den: 'Bear', adventure: 'b1', note: '', noteInternal: '' },
+    { id: 'e4', kind: 'den', date: '2026-10-08', den: '', adventure: '', note: '', noteInternal: '', packAdv: 'req:1', denAdv: { Bear: 'b2' } },
+    { id: 'e5', kind: 'activity', date: '2026-10-09', title: 'Campout', note: '' }); return r; };
+  const w = await guardWorld(base());
+  const ev = (f) => { const r = base(); f(r.events.reduce((m, e) => { m[e.id] = e; return m; }, {})); return r; };
+  const put = (who, f) => w.put(who, ev(f));
+  eq((await put('lead_denleader', (e) => { e.e1.note = 'Bring string'; })).status, 200, 'their own den (Wolf)');
+  SECTION_403(await put('lead_denleader', (e) => { e.e3.note = 'Bring string'; }), ['calendar'], 'another den\'s meeting (Bear)');
+  SECTION_403(await put('lead_denleader', (e) => { e.e3.adventure = 'b9'; }), ['calendar'], 'another den\'s adventure');
+  eq((await put('lead_denleader', (e) => { e.e4.denAdv = { Bear: 'b2', Wolf: 'w3' }; })).status, 200, 'All dens: their own den\'s line');
+  eq((await put('lead_denleader', (e) => { e.e4.denAdv = { Bear: 'b2', Wolf: false }; })).status, 200, 'All dens: their den not at this meeting');
+  SECTION_403(await put('lead_denleader', (e) => { e.e4.denAdv = { Bear: 'b3' }; }), ['calendar'], 'All dens: another den\'s line');
+  SECTION_403(await put('lead_denleader', (e) => { delete e.e4.denAdv; }), ['calendar'], 'All dens: another den\'s line taken off');
+  for (const [what, f] of [['the note', (e) => { e.e4.note = 'x'; }], ['the leaders\' note', (e) => { e.e4.noteInternal = 'x'; }], ['the adventure', (e) => { e.e4.adventure = 'x'; }],
+    ['adventures offered', (e) => { e.e4.advOffers = [{ key: 'el:x', auto: true }]; }], ['the pack\'s pick', (e) => { e.e4.packAdv = 'req:2'; }]]) {
+    SECTION_403(await put('lead_denleader', f), ['calendar'], 'All dens: ' + what);
+    eq((await put('lead_cubmaster', f)).status, 200, 'the Cubmaster, All dens: ' + what);
+  }
+  // advOffers on their own den's meeting (Keith, 2026-10-02), to the shape the page writes.
+  eq((await put('lead_denleader', (e) => { e.e1.advOffers = [{ key: 'el:Knots', auto: true }, { key: 'req:2', auto: false, dens: ['Wolf'], part: true }]; })).status, 200,
+    'adventures offered on their den meeting');
+  for (const [what, offers] of [['an unknown key', [{ key: 'el:x', auto: true, by: 'me' }]], ['auto not true or false', [{ key: 'el:x', auto: 'yes' }]],
+    ['a long key', [{ key: 'el:' + 'x'.repeat(80), auto: true }]], ['thirteen', Array.from({ length: 13 }, (_, i) => ({ key: 'el:' + i, auto: false }))],
+    ['a den that is not one', [{ key: 'el:x', auto: true, dens: ['Dragons'] }]], ['part false', [{ key: 'el:x', auto: true, part: false }]], ['not a list', { key: 'el:x' }]]) {
+    SECTION_403(await put('lead_denleader', (e) => { e.e1.advOffers = offers; }), ['calendar'], 'adventures offered: ' + what);
+  }
+  SECTION_403(await put('lead_denleader', (e) => { e.e5.advOffers = [{ key: 'el:x', auto: true }]; }), ['calendar'], 'adventures offered at an activity (a campout)');
+  // Finding 7: sizes.
+  SECTION_403(await put('lead_denleader', (e) => { e.e1.note = 'x'.repeat(4001); }), ['calendar'], 'a note over 4,000 characters');
+  eq((await put('lead_denleader', (e) => { e.e1.note = 'x'.repeat(4000); })).status, 200, 'a note of 4,000');
+  SECTION_403(await put('lead_denleader', (e) => { e.e1.adventure = 'x'.repeat(201); }), ['calendar'], 'a long adventure');
+  SECTION_403(await put('lead_denleader', (e) => { e.e4.denAdv = { Bear: 'b2', Wolf: 'x'.repeat(201) }; }), ['calendar'], 'a long den line');
+  SECTION_403(await put('lead_denleader', (e) => { e.e4.denAdv = { Bear: 'b2', Dragons: 'x' }; }), ['calendar'], 'a den line that is not a den');
+  // A den leader with no den changes no den meeting.
+  w.db.raw.prepare("UPDATE member_positions SET dens = NULL WHERE uid = 'uid-lead-asstden'").run();
+  SECTION_403(await put('lead_asstden', (e) => { e.e1.note = 'x'; }), ['calendar'], 'an assistant den leader with no den');
+  w.db.raw.prepare("UPDATE member_positions SET dens = '[\"Wolf\",\"Bear\"]' WHERE uid = 'uid-lead-asstden'").run();
+  eq((await put('lead_asstden', (e) => { e.e3.note = 'x'; e.e1.note = 'y'; })).status, 200, 'one leading two dens, both');
 });
 
 atest('positions guard: statements stay as they are below an admin; a statement added is the caller\'s own and unreviewed', async () => {

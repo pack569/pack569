@@ -89,7 +89,7 @@ async function session(context) {
           .bind(user.uid, name, user.email, now, packId, user.emailKey),
         // The invite's positions, onto the account just made from it (before the invite, and its
         // positions with it, are deleted below).
-        db.prepare('INSERT INTO member_positions (pack_id, uid, position, den) SELECT pack_id, ?, position, den FROM invite_positions ' +
+        db.prepare('INSERT INTO member_positions (pack_id, uid, position, dens) SELECT pack_id, ?, position, dens FROM invite_positions ' +
           'WHERE pack_id = ? AND email = ? AND EXISTS (SELECT 1 FROM members WHERE pack_id = ? AND uid = ? AND added_at = ?)')
           .bind(user.uid, packId, user.emailKey, packId, user.uid, now),
         auditIf(db, packId, user.uid, 'invite.consume', { email: user.emailKey, role: inv.role }, now,

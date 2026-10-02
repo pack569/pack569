@@ -68,7 +68,9 @@ export const ACCESS_TABLE = /*ACCESS-BEGIN*/{
       {"id": "parent", "label": "Parent"}
     ],
     "sections": ["home", "calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "roster", "advancement", "joining", "storefronts", "totals", "rewards", "inventory", "council", "budget", "ledger", "deposits", "dues", "fundraisers", "sharing", "people", "season"],
-    "denMeetingFields": ["adventure", "denAdv", "note", "noteInternal"],
+    "denMeetingFields": ["adventure", "denAdv", "note", "noteInternal", "advOffers"],
+    "dens": ["Lion", "Tiger", "Wolf", "Bear", "Webelos", "Arrow of Light"],
+    "denPositions": ["denleader", "asstden"],
     "access": {
       "cubmaster": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "advancement", "season"], "hidden": []},
       "asstcub": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "advancement", "season"], "hidden": []},
@@ -159,6 +161,14 @@ export const POSITIONS = ACCESS_TABLE.positions.map((p) => p.id);
 export const SECTIONS = ACCESS_TABLE.sections.slice();
 export const BUCKETS = ['admin', 'shared'];
 export const DEN_MEETING_FIELDS = ACCESS_TABLE.denMeetingFields.slice();
+export const DENS = ACCESS_TABLE.dens.slice();
+export const DEN_POSITIONS = ACCESS_TABLE.denPositions.slice();
+// The dens a request names for a den leader: distinct DENS names, in DENS order, or null.
+export function cleanDens(v) {
+  if (!Array.isArray(v) || v.length > DENS.length) return null;
+  if (!v.every((d) => typeof d === 'string' && DENS.indexOf(d) !== -1) || new Set(v).size !== v.length) return null;
+  return DENS.filter((d) => v.indexOf(d) !== -1);
+}
 export const ACTIONS = Object.keys(ACCESS_TABLE.actions);
 export const BLOCK_REPORT_FIELDS = ACCESS_TABLE.blockReportFields.slice();
 
@@ -278,10 +288,40 @@ const plain = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 // same events, by id (none added or removed; their order may differ), and every event that
 // changed is a den meeting (kind 'den', before and after) that changed only in
 // DEN_MEETING_FIELDS: which adventure it works on (`adventure`; `denAdv` on an all-dens
-// night, a den's own line) and its two notes. Its date, time, place, den, the Cubmaster's
-// pack-wide pick (packAdv), the agenda, and everything else stay as they were.
-export function denMeetingChangeOk(before, after) {
+// night, a den's own line), its two notes, and the adventures it offers (advOffers; Keith,
+// 2026-10-02). Its date, time, place, den, the Cubmaster's pack-wide pick (packAdv), the agenda,
+// and everything else stay as they were.
+// OWN DEN (Keith, 2026-10-02: enforced in stage 1, for den meetings). `dens` are the dens the
+// caller leads (member_positions.dens). A meeting of one den changes only if it is one of theirs;
+// on an All-dens night (no den) only their own dens' lines of denAdv change, and nothing else of
+// it. A den leader with no den changes no den meeting.
+// The values are held to the page's shapes and to a size (security review of 714a920..045e7ac,
+// finding 7, and the webelos-woods review): text the page never caps is capped here.
+export const DEN_NOTE_MAX = 4000, DEN_ADV_MAX = 200, OFFERS_MAX = 12, OFFER_KEY_MAX = 80, OFFER_DEN_MAX = 20;
+const OFFER_KEYS = ['key', 'auto', 'dens', 'part'];
+function offersOk(v) {
+  if (!Array.isArray(v) || v.length > OFFERS_MAX) return false;
+  return v.every((o) => plain(o) && Object.keys(o).every((k) => OFFER_KEYS.indexOf(k) !== -1) &&
+    typeof o.key === 'string' && o.key.length <= OFFER_KEY_MAX && typeof o.auto === 'boolean' &&
+    (!own(o, 'dens') || (Array.isArray(o.dens) && o.dens.length <= DENS.length &&
+      o.dens.every((d) => typeof d === 'string' && d.length <= OFFER_DEN_MAX && DENS.indexOf(d) !== -1))) &&
+    (!own(o, 'part') || o.part === true));
+}
+function denMeetingValuesOk(e) {
+  for (const k of ['note', 'noteInternal']) if (own(e, k) && !(typeof e[k] === 'string' && e[k].length <= DEN_NOTE_MAX)) return false;
+  if (own(e, 'adventure') && !(typeof e.adventure === 'string' && e.adventure.length <= DEN_ADV_MAX)) return false;
+  if (own(e, 'denAdv')) {
+    if (!plain(e.denAdv)) return false;
+    for (const d of Object.keys(e.denAdv)) {
+      const v = e.denAdv[d];
+      if (DENS.indexOf(d) === -1 || !(v === false || (typeof v === 'string' && v.length <= DEN_ADV_MAX))) return false;
+    }
+  }
+  return !own(e, 'advOffers') || offersOk(e.advOffers);
+}
+export function denMeetingChangeOk(before, after, dens) {
   if (!Array.isArray(before) || !Array.isArray(after) || before.length !== after.length) return false;
+  const mine = Array.isArray(dens) ? dens.filter((d) => typeof d === 'string' && DENS.indexOf(d) !== -1) : [];
   const was = Object.create(null);
   for (const e of before) {
     if (!plain(e) || typeof e.id !== 'string' || !e.id || was[e.id]) return false;
@@ -299,8 +339,21 @@ export function denMeetingChangeOk(before, after) {
       if (DEN_MEETING_FIELDS.indexOf(k) !== -1) continue;
       if (own(b, k) !== own(e, k) || !sameJson(b[k], e[k])) return false;
     }
-    for (const k of ['adventure', 'note', 'noteInternal']) if (own(e, k) && typeof e[k] !== 'string') return false;
-    if (own(e, 'denAdv') && !plain(e.denAdv)) return false;
+    if (!denMeetingValuesOk(e)) return false;
+    const den = typeof b.den === 'string' ? b.den : '';
+    if (den) {
+      if (mine.indexOf(den) === -1) return false;
+      continue;
+    }
+    // An All-dens night: their own dens' lines of denAdv, and nothing else.
+    for (const k of DEN_MEETING_FIELDS) {
+      if (k === 'denAdv') continue;
+      if (own(b, k) !== own(e, k) || !sameJson(b[k], e[k])) return false;
+    }
+    const db = plain(b.denAdv) ? b.denAdv : {}, da = plain(e.denAdv) ? e.denAdv : {};
+    for (const d of Object.keys(db).concat(Object.keys(da))) {
+      if ((own(db, d) !== own(da, d) || !sameJson(db[d], da[d])) && mine.indexOf(d) === -1) return false;
+    }
   }
   return true;
 }
@@ -776,7 +829,8 @@ export function depositRowsAdded(before, after, uid, book) {
 // report's fields on the storefronts. Called only for a caller who is not an admin.
 //
 // `ctx` is what the PUT read for it: { reports } (shift_reports rows, by id: storefrontReportIds) and
-// { name } (the caller's member name), for the storefronts slice; { now } (ms) for the logs.
+// { name } (the caller's member name), for the storefronts slice; { now } (ms) for the logs; { dens }
+// (the dens the caller leads) for den meetings.
 export function refusedSections(stored, next, access, uid, actions, ctx) {
   const cx = plain(ctx) ? ctx : {};
   const refused = Object.create(null);
@@ -822,7 +876,7 @@ export function refusedSections(stored, next, access, uid, actions, ctx) {
       else if (k === 'scouts' && !parentLinksOk(was, now)) refuse('admin');
       continue;
     }
-    if (k === 'events' && access['calendar.denmeeting'] === 'edit' && denMeetingChangeOk(was, now)) continue;
+    if (k === 'events' && access['calendar.denmeeting'] === 'edit' && denMeetingChangeOk(was, now, cx.dens)) continue;
     refuse(owner);
   }
   return Object.keys(refused).sort();
