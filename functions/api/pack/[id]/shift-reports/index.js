@@ -24,8 +24,8 @@
 // families needs a second parent to confirm the totals, and nobody can confirm figures they
 // cannot see. So a waiting report that needs a confirmation, on a shift from the reporting
 // window, shows its two amounts, its note and the sender's FIRST name to exactly the accounts
-// that may confirm it: parents of a scout on that shift (canConfirm, from the stored pack
-// record), never the sender. Never an account id, never to anyone else, never once it is
+// that may confirm it: a parent from another family on that shift (shiftConfirmers, from the
+// stored pack record), never the sender. Never an account id, never to anyone else, never once it is
 // confirmed, accepted or closed. Everyone else sees only that it waits for a second parent.
 
 import { route, json, readObject, refuse, forbidden, badRequest, shiftReported, tooManyReports } from '../../../../_lib/http.js';
@@ -45,7 +45,12 @@ const POST_KEYS = ['sfId', 'blockId', 'teCents', 'cashCents', 'note', 'attest'];
 // (`full`) also gets both account ids and the reviewer's whole name. A parent only ever reads
 // their own reports, and gets the reviewing leader's FIRST name only ("Accepted by Sam"): the
 // parent view leaves the leader roster out, names included. The stamp never leaves the server.
-export const firstName = (n) => String(n || '').trim().split(/\s+/)[0] || null;
+// A name as a parent reads it: the first word, and never an email address (youth-protection
+// review 3: a Google account with no display name can carry its email as the member's name).
+export const firstName = (n) => {
+  const s = String(n || '').trim();
+  return s && s.indexOf('@') === -1 ? s.split(/\s+/)[0] : null;
+};
 export function reportOut(row, uid, full) {
   const r = { id: row.id, sfId: row.sf_id, blockId: row.block_id, teCents: row.te_cents, cashCents: row.cash_cents,
     note: row.note, status: row.status, mine: row.submitted_by_uid === uid, submittedByName: row.submitted_by_name,

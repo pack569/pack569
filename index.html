@@ -21799,7 +21799,7 @@
     var bSup = blockSupervision(b);
     if (bSup) {
       h += '<p class="small' + (bSup.status === 'ok' ? ' muted' : ' warn') + '" style="margin:8px 0 0">' +
-        '<strong>Supervision:</strong> ' + esc(supervisionMessage(bSup)) + '</p>';
+        '<strong>Supervision:</strong> ' + esc(supervisionMessage(bSup)) + (b.reportCollected ? ' ' + esc(SR_COLLECTOR_NOT_SUPERVISING) : '') + '</p>';
     }
 
     if (hasMoney && !b.assignments.length) {
@@ -21913,6 +21913,13 @@
       fams[sc ? 'f:' + familyKeyOf(sc) : 's:' + a.scoutId] = true;
     });
     return Object.keys(fams).length;
+  }
+  // A family's or a parent's name as it goes onto the block, the day sheet and the season's record:
+  // never an email address (youth-protection review 3; the server's member name is the Google
+  // display name, and an account with none can carry its email). ledgerStampClean is the leaders'.
+  function srNameClean(v) {
+    var n = String(v == null ? '' : v).trim();
+    return n.indexOf('@') === -1 ? n : 'a signed-in parent';
   }
   // The figures on a block are "different" when the block holds money that is not the report's.
   function srReplaces(b, r) {
@@ -22136,8 +22143,8 @@
       reportOverrideNote: b.reportOverrideNote || '', reportCollected: b.reportCollected === true,
       reportReturned: b.reportReturned ? { note: String(b.reportReturned.note || '') } : null };
     var me = ledgerActor();
-    var counted = String(r.submittedByName || '');
-    var verified = confirmed ? String(r.confirmedByName || '') : collected ? me : '';
+    var counted = srNameClean(r.submittedByName);
+    var verified = confirmed ? srNameClean(r.confirmedByName) : collected ? me : '';
     b.salesCents = r.teCents;
     b.donationsCents = r.cashCents;
     b.cashCountedBy = counted;
@@ -22145,7 +22152,7 @@
     b.reportId = r.id;
     b.reportFrom = counted;
     b.reportApprovedBy = me;
-    b.reportConfirmedBy = confirmed ? String(r.confirmedByName || '') : '';
+    b.reportConfirmedBy = confirmed ? srNameClean(r.confirmedByName) : '';
     b.reportOverride = override ? (r.needsConfirm ? 'second-parent' : 'not-collected') : '';
     b.reportOverrideNote = reason;
     b.reportCollected = collected;
@@ -22355,13 +22362,13 @@
       var d = new Date(r.submittedAt || 0);
       var date = blk && blk.sf.date ? blk.sf.date : d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
       if (!(date >= from && date <= to)) return;
-      var verified = r.confirmed ? 'confirmed by ' + (r.confirmedByName || 'a parent')
-        : r.collected ? 'collected by ' + (r.acceptedByName || 'the accepting leader') : '';
+      var verified = r.confirmed ? 'confirmed by ' + (srNameClean(r.confirmedByName) || 'a parent')
+        : r.collected ? 'collected by ' + (ledgerStampClean(r.acceptedByName) || 'the accepting leader') : '';
       var differs = '';
       if (r.status === 'accepted') differs = !blk || (blk.b.salesCents || 0) !== r.teCents || (blk.b.donationsCents || 0) !== r.cashCents ? 'Y' : 'N';
       rows.push({ date: date, storefront: blk ? String(blk.sf.name || 'Storefront') : '(no longer on the schedule)',
         shift: blk ? (fmtTimeRange(blk.b.start, blk.b.end) || String(blk.b.label || '')) : '', te: r.teCents || 0, cash: r.cashCents || 0,
-        sentBy: String(r.submittedByName || ''), verifiedBy: verified, acceptedBy: String(r.acceptedByName || ''),
+        sentBy: srNameClean(r.submittedByName), verifiedBy: verified, acceptedBy: ledgerStampClean(r.acceptedByName || ''),
         overrideReason: r.overridden ? String(r.acceptNote || '') : '', status: String(r.status || ''),
         sentBackReason: r.status === 'returned' ? String(r.reviewNote || '') : '', differs: differs });
     });
@@ -22369,15 +22376,26 @@
   }
   var SR_HISTORY_HEAD = ['Date', 'Storefront', 'Shift', 'Trail’s End', 'Cash donations', 'Sent by', 'Verified by', 'Accepted by',
     'Override reason', 'Status', 'Sent-back reason', 'Block now differs from report'];
-  function shiftReportHistoryCsv(rows) {
-    var lines = [SR_HISTORY_HEAD.map(ledgerCsvCell).join(',')];
+  // The CSV (youth-protection review 4): figures and adults' names only. The leaders' written
+  // reasons, which can say anything, go in only when asked for (`withReasons`), as one labelled
+  // last column. Never a uid or an email; never a child.
+  var SR_HISTORY_CSV_HEAD = ['Date', 'Storefront', 'Shift', 'Trail’s End', 'Cash donations', 'Sent by', 'Verified by', 'Accepted by', 'Status',
+    'Block now differs from report'];
+  var SR_HISTORY_REASONS_HEAD = 'Leaders’ reasons (override or sent back)';
+  function shiftReportHistoryCsv(rows, withReasons) {
+    var lines = [SR_HISTORY_CSV_HEAD.concat(withReasons ? [SR_HISTORY_REASONS_HEAD] : []).map(ledgerCsvCell).join(',')];
     rows.forEach(function (x) {
-      lines.push([x.date, x.storefront, x.shift, (x.te / 100).toFixed(2), (x.cash / 100).toFixed(2), x.sentBy, x.verifiedBy, x.acceptedBy,
-        x.overrideReason, x.status, x.sentBackReason, x.differs].map(ledgerCsvCell).join(','));
+      var cells = [x.date, x.storefront, x.shift, (x.te / 100).toFixed(2), (x.cash / 100).toFixed(2), x.sentBy, x.verifiedBy, x.acceptedBy,
+        x.status, x.differs];
+      if (withReasons) cells.push([x.overrideReason, x.sentBackReason].filter(Boolean).join(' / '));
+      lines.push(cells.map(ledgerCsvCell).join(','));
     });
     return lines.join('\n') + '\n';
   }
   function srYearLabel(year) { return year + '–' + String(year + 1).slice(2); }
+  // A generic name: the program year, nothing else (youth-protection review 4).
+  function srHistoryFileName(year) { return 'shift-reports-' + year + '.csv'; }
+  var SR_HISTORY_DONT_SHARE = 'Don’t commit or post this file.';
   function renderShiftReportHistory() {
     var year = state.budget.programYear;
     var rows = shiftReportHistoryRows(year);
@@ -22385,7 +22403,9 @@
       '<div class="row no-print" style="margin-bottom:12px">' +
       '<button type="button" class="btn" data-act="close-overlay">&larr; Back</button>' +
       '<button type="button" class="btn" data-act="te-print">Print / Save PDF</button>' +
-      '<button type="button" class="btn primary" data-act="sr-history-csv">Download CSV</button></div>' +
+      '<button type="button" class="btn primary" data-act="sr-history-csv">Download CSV</button>' +
+      '<label class="perscout"><input type="checkbox" data-act="sr-history-reasons"' + (ui.srHistoryReasons ? ' checked' : '') + '>Include leaders’ reasons in the CSV</label></div>' +
+      '<p class="small no-print" style="margin:0 0 10px"><strong>' + esc(SR_HISTORY_DONT_SHARE) + '</strong></p>' +
       '<div class="summary-sheet"><h1 style="margin:0">' + esc(state.packName || 'Pack') + ' — shift reports, ' + esc(srYearLabel(year)) + '</h1>' +
       '<p class="muted small" style="margin:0 0 10px">Leaders only. Every family’s storefront shift report this program year, and what became of it.</p>';
     if (!rows.length) h += '<p class="small muted">No shift reports this program year.</p>';
@@ -26383,7 +26403,7 @@
     'ledger-fix-cancel', 'ledger-void-cancel', 'charge-forgive-cancel', 'plan-adv-cancel',
     'open-summary', 'copy-summary', 'print-summary', 'open-digest', 'copy-digest', 'copy-digest-leaders', 'open-shop', 'copy-shop',
     'print-shop', 'pk-agenda-print', 'print-pk-agenda', 'sf-day-sheet', 'copy-day-sheet', 'sf-glance-open', 'copy-glance',
-    'family-statement', 'copy-statement', 'family-sheet', 'parent-preview-on', 'sr-history-open', 'sr-history-csv', 'kit-print-flyer', 'kit-print-qr', 'te-print',
+    'family-statement', 'copy-statement', 'family-sheet', 'parent-preview-on', 'sr-history-open', 'sr-history-csv', 'sr-history-reasons', 'kit-print-flyer', 'kit-print-qr', 'te-print',
     'copy-archive', 'copy-kickoff', 'makeup-msg', 'copy-makeup-msg', 'join-copy', 'pack-id-copy',
     'export-csv', 'export-ics', 'ledger-log-csv', 'ledger-voided-csv', 'copy-export', 'download-export',
     'export-json', 'sync-download-local'];
@@ -26596,9 +26616,14 @@
     return 'Not two registered adults 21 or older' + (res.qualified ? ' (only ' + res.qualified + ')' : '') +
       (why.length ? ': ' + why.join('; ') : '') + '.';
   }
-  // A storefront block's adults, as the check reads them: the two cash-count names.
+  // A storefront block's adults, as the check reads them: the two cash-count names, but NOT a
+  // leader who is the verifier only because they collected and counted the cash at the end of a
+  // one-family shift (b.reportCollected, youth-protection review 2): collecting the money is not
+  // supervising the table. A second parent who confirmed (two families) does count: they signed
+  // "I worked this shift."
+  var SR_COLLECTOR_NOT_SUPERVISING = 'A leader who only collected the cash at the end of a shift isn\u2019t counted as supervising it.';
   function blockSupervision(b) {
-    var names = [b.cashCountedBy, b.cashVerifiedBy].filter(function (n) { return String(n || '').trim(); });
+    var names = [b.cashCountedBy, b.reportCollected ? '' : b.cashVerifiedBy].filter(function (n) { return String(n || '').trim(); });
     if (!names.length) return null;
     return supervisionCheck(names.map(function (n) { return { name: n, leader: leaderByName(n, state.leaders) }; }), null);
   }
@@ -26612,7 +26637,8 @@
       (sf.blocks || []).forEach(function (b) {
         var r = blockSupervision(b);
         if (!r) return;
-        rows.push({ when: sf.date, what: (sf.name || 'Storefront') + ' \u00b7 ' + (b.label || 'Block'), ok: r.status === 'ok', msg: supervisionMessage(r) });
+        rows.push({ when: sf.date, what: (sf.name || 'Storefront') + ' \u00b7 ' + (b.label || 'Block'), ok: r.status === 'ok',
+          msg: supervisionMessage(r) + (b.reportCollected ? ' ' + SR_COLLECTOR_NOT_SUPERVISING : '') });
       });
     });
     campingTrips().forEach(function (t) {
@@ -36695,9 +36721,11 @@
     }
     if (act === 'sr-history-csv') {
       if (!leaderReportsOn()) return;
-      download('shift-reports-' + srYearLabel(state.budget.programYear) + '.csv', 'text/csv', shiftReportHistoryCsv(shiftReportHistoryRows(state.budget.programYear)));
+      download(srHistoryFileName(state.budget.programYear), 'text/csv',
+        shiftReportHistoryCsv(shiftReportHistoryRows(state.budget.programYear), ui.srHistoryReasons === true));
       return;
     }
+    if (act === 'sr-history-reasons') { ui.srHistoryReasons = !ui.srHistoryReasons; render(); return; }
     // THE PARENTS-MEETING HANDOUT IS THE FAMILY PAGE (owner ruling, 2026-08-31). This used to open
     // a separately authored tier sheet; a second rendering of the same ladder is a second thing to
     // keep in step, and the standings sheet in this very file had already drifted four ways by the

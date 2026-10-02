@@ -13442,7 +13442,9 @@ test('Y1: leaders carry private yes/no/blank answers; the check reads the cash-c
   ok(/data-ch="ldr-yp" data-key="' \+ q\[0\] \+ '"/.test(row) && /private, never published/.test(row), 'no leader fields, or not marked private');
   ok(/if \(YP_LEADER_KEYS\.indexOf\(el\.dataset\.key\) !== -1\) ldr\[el\.dataset\.key\] = \(el\.value === 'yes' \|\| el\.value === 'no'\) \? el\.value : '';/.test(SCRIPT), 'the handler stores anything');
   const bs = slice('blockSupervision');
-  ok(/\[b\.cashCountedBy, b\.cashVerifiedBy\]/.test(bs) && /leaderByName\(n, state\.leaders\)/.test(bs) && /, null\);/.test(bs), 'storefronts are not read from the cash count, or guess at girls');
+  // Youth-protection review 2 (shift reports): the verifier counts, unless they are a leader who only collected the cash.
+  ok(/\[b\.cashCountedBy, b\.reportCollected \? '' : b\.cashVerifiedBy\]/.test(bs) && /leaderByName\(n, state\.leaders\)/.test(bs) && /, null\);/.test(bs),
+    'storefronts are not read from the cash count, or guess at girls');
   const card = slice('supervisionCard');
   ok(/rd\.twoLeaders === true/.test(card) && /Meetings don\\u2019t record which leaders came/.test(card), 'campouts or meetings are not handled as specified');
   ok(/Scouts have no gender on the roster/.test(card), 'the card does not say the female rule is unchecked');
@@ -15988,7 +15990,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout', 'shiftConfirmSubmit',
   'srIConfirmed', 'srFamiliesNow', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'familyKeyOf',
   'srScheduleRefresh', 'parentDoc', 'parentPreviewDoc', 'shiftReportOpenFor', 'shiftReportToday', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_DAYS', 'isoPlusDays',
-  'srFormOpen', 'srMirror', 'srReasonDraft',
+  'srFormOpen', 'srMirror', 'srReasonDraft', 'srNameClean',
   'ledgerActor', 'ledgerActorName',
   ...FORMAT_GATE_FNS];
 const CLIENT_SRC = CLIENT_FNS.map(decl).join('\n');
@@ -17550,7 +17552,7 @@ function srLeaderCtx(o) {
        'leaderReportsOn', 'canReviewReports', 'srReports', 'srReport', 'srWaiting', 'srBlockOf', 'srWhen', 'srMine', 'srReplaces',
        'LEADER_SR_SAY', 'leaderSrMessage', 'srNotNow', 'renderShiftReportCard', 'renderBlockReportLine', 'renderShiftReportsBanner',
        'srWaitingOn', 'acceptShiftReport', 'srLanded', 'srSettle', 'srRollback', 'shiftReportsReconcile', 'shiftReportsAfterPush',
-       'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srReasonDraft', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout',
+       'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srReasonDraft', 'srNameClean', 'ledgerStampClean', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout',
        'srIConfirmed', 'srFamiliesNow', 'srNeedsCheck', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'SR_CHECK_TE', 'SR_IMPORT_FIRST', 'familyKeyOf',
        'blockCashCheck', 'blocksInDayOrder'].map(decl).join('\n')}
     function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }`, ctx);
@@ -18623,20 +18625,28 @@ test('round 1: the season’s shift reports, as a leaders’ table and a CSV, wi
     srRep({ id: 'rep-4', blockId: 'gone', status: 'submitted', submittedAt: Date.parse('2026-10-04T20:00:00Z') }),
     srRep({ id: 'rep-5', status: 'accepted', collected: true, acceptedByName: 'Lee Leader', submittedAt: Date.parse('2025-11-01T20:00:00Z'), sfId: 'old', blockId: 'x' })];
   const L = srLeaderCtx({ state: st, reports: reps });
-  vm.runInContext(['programYearStartISO', 'programYearEndISO', 'ledgerCsvCell', 'shiftReportHistoryRows', 'SR_HISTORY_HEAD', 'shiftReportHistoryCsv', 'srYearLabel',
-    'renderShiftReportHistory'].map(decl).join('\n'), L.ctx);
+  vm.runInContext(['programYearStartISO', 'programYearEndISO', 'ledgerCsvCell', 'shiftReportHistoryRows', 'SR_HISTORY_HEAD', 'SR_HISTORY_CSV_HEAD',
+    'SR_HISTORY_REASONS_HEAD', 'shiftReportHistoryCsv', 'srYearLabel', 'srHistoryFileName', 'SR_HISTORY_DONT_SHARE', 'renderShiftReportHistory'].map(decl).join('\n'), L.ctx);
   const rows = L.get('shiftReportHistoryRows(2026)');
   eq(rows.map((r) => [r.storefront, r.shift, r.verifiedBy, r.acceptedBy, r.overrideReason, r.status, r.sentBackReason, r.differs]), [
     ['Kroger', '10:00–12:00', 'confirmed by Bo Parent', 'Sam Leader', '', 'accepted', '', 'N'],
     ['Kroger', '12:00–14:00', '', 'Sam Leader', '=SUM(A1)', 'accepted', '', 'Y'],
     ['Kroger', '12:00–14:00', '', '', '', 'returned', 'Recount the jar', ''],
     ['(no longer on the schedule)', '', '', '', '', 'submitted', '', '']], 'the rows: last season’s left out');
+  // Youth-protection review 4: by default the CSV holds figures and adults' names, and no written reason.
   const csv = L.run('shiftReportHistoryCsv(shiftReportHistoryRows(2026))');
-  ok(csv.split('\n')[0] === 'Date,Storefront,Shift,Trail’s End,Cash donations,Sent by,Verified by,Accepted by,Override reason,Status,Sent-back reason,Block now differs from report',
-    'the header');
-  ok(/,'=SUM\(A1\),/.test(csv) && /2026-10-03,Kroger,10:00–12:00,123\.45,25\.00,Nora Newfamily,confirmed by Bo Parent,Sam Leader,,accepted,,N/.test(csv), 'the cells, formula-safe');
+  ok(csv.split('\n')[0] === 'Date,Storefront,Shift,Trail’s End,Cash donations,Sent by,Verified by,Accepted by,Status,Block now differs from report', 'the header');
+  ok(/2026-10-03,Kroger,10:00–12:00,123\.45,25\.00,Nora Newfamily,confirmed by Bo Parent,Sam Leader,accepted,N/.test(csv), 'the cells');
+  ok(!/SUM|Recount/.test(csv), 'a leader’s reason in the CSV by default');
+  const csvR = L.run('shiftReportHistoryCsv(shiftReportHistoryRows(2026), true)');
+  ok(csvR.split('\n')[0].endsWith(',Leaders’ reasons (override or sent back)') && /,'=SUM\(A1\)\n/.test(csvR) && /,Recount the jar\n/.test(csvR),
+    'asked for: one labelled last column, formula-safe');
+  eq(L.run('srHistoryFileName(2026)'), 'shift-reports-2026.csv', 'a generic file name');
   const html = L.run('renderShiftReportHistory()');
   ok(/Pack 569 — shift reports, 2026–27/.test(html) && /data-act="sr-history-csv"/.test(html) && /data-act="te-print"/.test(html), 'the year, print and CSV');
+  ok(/<strong>Don’t commit or post this file\.<\/strong>/.test(html) && /data-act="sr-history-reasons"/.test(html) && /Include leaders’ reasons in the CSV/.test(html),
+    'the warning, and the reasons off by default');
+  for (const f of ['buildParentView', 'buildICS', 'parentEventICS', 'monthlyDigest']) ok(!/shiftReportHistory|srHistory/.test(codeOnly(f === 'buildParentView' ? BPV() : slice(f))), f + ' publishes the history');
   ok(!/Ada|Bo Example/.test(html + csv), 'a child is named in the season’s record');
   ok(/data-act="sr-history-open">Shift reports this season</.test(slice('renderStorefrontList')), 'not offered from Storefronts');
   ok(/Print or download this season’s record first\. <button type="button" class="btn small" data-act="sr-history-open">Shift reports this season<\/button>/.test(slice('renderCloseoutOverlay')),
@@ -18738,6 +18748,40 @@ atest('parent-experience review 1: an open form is not redrawn by a background r
   pa.run('loadShiftReports()');
   await settle([pa]);
   ok(pa.get('renders') > after, 'with no form open, a read redraws');
+});
+
+test('youth protection: a leader who only collected the cash is not a supervising adult; a confirming parent is', () => {
+  const ctx = sandbox([]);
+  vm.runInContext(`
+    var state = { leaders: [{ id: 'l1', name: 'Sam Leader', ypRegistered: 'yes', ypOver21: 'yes' }, { id: 'l2', name: 'Jo Parent', ypRegistered: 'yes', ypOver21: 'yes' }] };
+    ${declClosure(['blockSupervision', 'supervisionMessage', 'SR_COLLECTOR_NOT_SUPERVISING'], ['state']).map(decl).join('\n')}`, ctx);
+  const sup = (b) => JSON.parse(JSON.stringify(vm.runInContext('blockSupervision', ctx)(b)));
+  const collected = sup({ cashCountedBy: 'Jo Parent', cashVerifiedBy: 'Sam Leader', reportCollected: true });
+  const confirmed = sup({ cashCountedBy: 'Jo Parent', cashVerifiedBy: 'Sam Leader', reportConfirmedBy: 'Sam Leader' });
+  ok(collected.status !== 'ok' && confirmed.status === 'ok', 'the collector counted, or the confirmer not: ' + JSON.stringify([collected.status, confirmed.status]));
+  eq(vm.runInContext('SR_COLLECTOR_NOT_SUPERVISING', ctx), 'A leader who only collected the cash at the end of a shift isn’t counted as supervising it.', 'the words');
+  ok(/esc\(supervisionMessage\(bSup\)\) \+ \(b\.reportCollected \? ' ' \+ esc\(SR_COLLECTOR_NOT_SUPERVISING\) : ''\)/.test(slice('renderBlock')) &&
+    /b\.reportCollected \? ' ' \+ SR_COLLECTOR_NOT_SUPERVISING : ''/.test(slice('supervisionCard')), 'the block and the card do not say why');
+});
+
+atest('youth protection: an email-shaped name is never written onto a block, sent to a parent, or put in the season’s record', async () => {
+  const ctx = sandbox(['srNameClean', 'ledgerStampClean']);
+  eq([ctx.srNameClean('nora@example.com'), ctx.srNameClean(' Nora Newfamily '), ctx.srNameClean('')], ['a signed-in parent', 'Nora Newfamily', ''], 'srNameClean');
+  const L = srLeaderCtx({ reports: [srRep({ submittedByName: 'nora@example.com', needsConfirm: true, confirmed: true, confirmedByName: 'bo@example.com', confirmedByUid: 'uid-bo' })] });
+  L.run("acceptShiftReport('rep-1', {})");
+  const b = L.block('b1');
+  eq([b.cashCountedBy, b.cashVerifiedBy, b.reportFrom, b.reportConfirmedBy], ['a signed-in parent', 'a signed-in parent', 'a signed-in parent', 'a signed-in parent'],
+    'the block names nobody by email');
+  await apiSetup();
+  const idx = await import(new URL('../functions/api/pack/[id]/shift-reports/index.js', import.meta.url).href);
+  eq([idx.firstName('sam@example.com'), idx.firstName('Sam Leader'), idx.firstName('')], [null, 'Sam', null], 'the server’s first name');
+  // End to end: a sender whose member name is their email; the parent who reads it sees no email.
+  const w = await s4World();
+  w.db.raw.prepare("UPDATE members SET name = 'parent1@example.com' WHERE uid = 'uid-parent'").run();
+  const rid = (await w.send('parent', 'b1')).body.report.id;
+  const g = await w.call('newbie', 'GET', 'shiftReports');
+  const o = g.body.others.find((x) => x.id === rid);
+  ok(o && o.canConfirm && o.submittedByName === null && g.text.indexOf('@') === -1, 'the second parent is sent an email: ' + g.text.slice(0, 200));
 });
 /* ================================================================
    LIVE STOPGAP (2026-09-29) — deletions survive the sync merge. mergeRemoteAppendOnly unions
