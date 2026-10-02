@@ -1526,6 +1526,16 @@ API backend they send them in.
   finishes or undoes it.
 - **Already holding figures.** Accepting onto a block that already has different figures shows
   old against new first, and replaces both the figures and the names on the cash count.
+- **Cash from popcorn sales still in hand** (S-5, Keith 2026-10-01). Families convert all cash
+  from popcorn sales to credit in the Trail's End app before they leave the table. When they
+  can't, the report says how much they still have (`sales_cash_cents`, 0 on almost every report),
+  and on accept the block carries it as `salesCashInHandCents`. It is a **custody** figure, not
+  money: those sales were entered in the app, so they are already inside `salesCents`, and the
+  figure is never added to it, to `blockShares`, or to any total. Leaders see "Cash to collect" on
+  the block and the review card, a line in the storefront banner, and a column in the season's
+  shift-report history; a leader marks it **Collected** once they have it (Undo puts it back). It
+  is leaders' only: `buildParentView` never publishes it. The close-out warns while any is still
+  out, because clearing the storefronts clears the reminder (the report keeps the figure).
 - **Sending back an accepted report.** The figures **stay** on the block and keep counting. The
   money was counted, and taking it off every scout's total because the paperwork is in question
   would move standings for a clerical reason. The block loses its link to the report and its

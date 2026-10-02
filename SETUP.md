@@ -533,6 +533,17 @@ pack record, so a parent who can send one still can't write anything else.
   that is in the future, too old, or not published.
 - **The figures:** whole cents, from $0 to **$10,000** each, plus an optional note of at most
   **300 characters**. The signature box must be ticked.
+- **Cash from popcorn sales still in hand** (S-5, Keith 2026-10-01): an optional third figure.
+  Pack policy is that families convert all cash from popcorn sales to credit in the Trail's End
+  app before they leave the table, so it should be $0. If it isn't, the family enters what they
+  still have and hands it to the leader collecting the money. It follows the same rules as the
+  other two figures (whole cents, $0 to $10,000), it defaults to $0 when left out, and it can't
+  be more than the Trail's End amount, because those sales are already part of it. For the same
+  reason it is **never added** to the block's sales or to any scout's standings. A second
+  parent's confirmation and a leader's accept must name it, like the other two figures. Once a
+  report is accepted, leaders see it on the block as **Cash to collect** until someone marks it
+  collected. It is never published to parents; another family sees it only in the one
+  exception under *Who sees what* below.
 - **One at a time:** each block can have only one report that is waiting or accepted. A
   second report for the same block is refused until a leader sends the first one back or its
   sender withdraws it.
@@ -583,7 +594,7 @@ pack record, so a parent who can send one still can't write anything else.
   else's report, a parent sees only that the block has a report and whether it is waiting,
   accepted, sent back or withdrawn. They never see another family's amounts, name or note,
   with **one exception**: a report still waiting for a second parent, on a shift from the last
-  14 days, shows its two amounts, its note and the sender's first name to the parents who are
+  14 days, shows its amounts (all three), its note and the sender's first name to the parents who are
   allowed to confirm it, and to no one else. They can't confirm figures they can't see. No
   account ids or links are ever sent.
 - Every report, edit, withdrawal, acceptance and send-back is written to the `audit` table

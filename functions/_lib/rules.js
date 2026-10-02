@@ -215,12 +215,20 @@ export function cleanReportNote(v) {
 }
 const wholeCents = (v) => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= SHIFT_REPORT_MAX_CENTS;
 
-// Why these figures may not be signed, or null. Shared by a new report and an edit: both
-// amounts as whole cents in range, a note if any within the limit, and the box ticked.
+// S-5 (Keith, 2026-10-01) — the cash from popcorn sales a family still has at the end of the
+// shift: optional, and 0 when the body leaves it out (a page from before S-5). It is a custody
+// figure, not a sale: those sales are already inside the Trail's End amount, so it is never more
+// than that, and nothing ever adds it to a block's sales or a scout's split.
+export const reportSalesCash = (body) => (body && body.salesCashCents !== undefined ? body.salesCashCents : 0);
+
+// Why these figures may not be signed, or null. Shared by a new report and an edit: the amounts
+// as whole cents in range, a note if any within the limit, and the box ticked.
 export function shiftReportFiguresProblem(body) {
   if (body.attest !== true) return 'attest';
   if (!wholeCents(body.teCents)) return 'te-cents';
   if (!wholeCents(body.cashCents)) return 'cash-cents';
+  const salesCash = reportSalesCash(body);
+  if (!wholeCents(salesCash) || salesCash > body.teCents) return 'sales-cash-cents';
   if (body.note !== undefined && body.note !== null && typeof body.note !== 'string') return 'note';
   if (cleanReportNote(body.note).length > SHIFT_REPORT_NOTE_MAX) return 'note';
   return null;

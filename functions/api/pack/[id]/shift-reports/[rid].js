@@ -1,8 +1,10 @@
 // PATCH /api/pack/:id/shift-reports/:rid   change one shift report, by `action`:
-//   { action: 'edit', teCents, cashCents, note?, attest: true }   the sender, while it is waiting
+//   { action: 'edit', teCents, cashCents, salesCashCents?, note?, attest: true }   the sender, while it is waiting
 //   { action: 'withdraw' }                                        the sender, while it is waiting
-//   { action: 'confirm', teCents, cashCents, updatedAt, attest: true }  S-4: a parent from another family on the shift
-//   { action: 'accept', teCents, cashCents, collected?, reviewNote?, override? }  admin or editor; not their own, nor one they confirmed
+//   { action: 'confirm', teCents, cashCents, salesCashCents?, updatedAt, attest: true }  S-4: a parent from another family on the shift
+//   { action: 'accept', teCents, cashCents, salesCashCents?, collected?, reviewNote?, override? }  admin or editor; not their own, nor one they confirmed
+// S-5: salesCashCents, the cash from popcorn sales still in hand, is 0 when left out. A confirm
+// or an accept names it with the other two figures, and lands only if the report still holds it.
 //   { action: 'return', reviewNote }                              admin or editor; waiting or accepted
 // Answers { report } as GET would show it to the caller.
 //
@@ -42,17 +44,17 @@
 import { route, json, readObject, refuse, forbidden, notFound, badRequest, reportMoved, samePerson, notShiftParent, needsConfirm,
   notCollected } from '../../../../_lib/http.js';
 import { withMember, auditIf } from '../../../../_lib/pack.js';
-import { canSubmitShiftReport, canReviewShiftReport, canReadAllShiftReports, shiftReportFiguresProblem, cleanReportNote,
+import { canSubmitShiftReport, canReviewShiftReport, canReadAllShiftReports, shiftReportFiguresProblem, cleanReportNote, reportSalesCash,
   SHIFT_REPORT_NOTE_MAX, shiftConfirmers, canConfirmShiftReport, shiftOfView, daysBetween, packToday, SHIFT_REPORT_DAYS } from '../../../../_lib/rules.js';
 import { reportOut, readReport, readPackRecord, STILL_MEMBER, SUBMIT_ROLES } from './index.js';
 
 const REVIEW_ROLES = ['admin', 'editor'];
 // What each action may carry, besides `action`.
 const ACTION_KEYS = {
-  edit: ['teCents', 'cashCents', 'note', 'attest'],
+  edit: ['teCents', 'cashCents', 'salesCashCents', 'note', 'attest'],
   withdraw: [],
-  confirm: ['attest', 'teCents', 'cashCents', 'updatedAt'],
-  accept: ['teCents', 'cashCents', 'reviewNote', 'override', 'collected'],
+  confirm: ['attest', 'teCents', 'cashCents', 'salesCashCents', 'updatedAt'],
+  accept: ['teCents', 'cashCents', 'salesCashCents', 'reviewNote', 'override', 'collected'],
   return: ['reviewNote']
 };
 const RID_RE = /^[A-Za-z0-9-]{1,64}$/;
@@ -95,12 +97,13 @@ async function patch({ request, db, packId, role, user, member, params }) {
       const why = shiftReportFiguresProblem(b);
       if (why) refuse(badRequest(why));
       // S-4: changed figures are not what the second parent checked, so their confirmation goes.
-      update = db.prepare('UPDATE shift_reports SET te_cents = ?, cash_cents = ?, note = ?, updated_at = ?, stamp = ?, ' +
+      const salesCash = reportSalesCash(b);
+      update = db.prepare('UPDATE shift_reports SET te_cents = ?, cash_cents = ?, sales_cash_cents = ?, note = ?, updated_at = ?, stamp = ?, ' +
         'confirmed_by_uid = NULL, confirmed_by_name = NULL, confirmed_at = NULL ' +
         "WHERE pack_id = ? AND id = ? AND stamp = ? AND status = 'submitted' AND submitted_by_uid = ? AND " + STILL_MEMBER(roles))
-        .bind(b.teCents, b.cashCents, cleanReportNote(b.note), now, stamp, packId, rid, row.stamp, user.uid, packId, user.uid, ...roles);
+        .bind(b.teCents, b.cashCents, salesCash, cleanReportNote(b.note), now, stamp, packId, rid, row.stamp, user.uid, packId, user.uid, ...roles);
       audit = 'shift.report.edit';
-      detail = { report: rid, teCents: b.teCents, cashCents: b.cashCents, confirmationCleared: !!row.confirmed_by_uid };
+      detail = { report: rid, teCents: b.teCents, cashCents: b.cashCents, salesCashCents: salesCash, confirmationCleared: !!row.confirmed_by_uid };
     } else {
       update = db.prepare("UPDATE shift_reports SET status = 'withdrawn', updated_at = ?, stamp = ? " +
         "WHERE pack_id = ? AND id = ? AND stamp = ? AND status = 'submitted' AND submitted_by_uid = ? AND " + STILL_MEMBER(roles))
@@ -115,8 +118,13 @@ async function patch({ request, db, packId, role, user, member, params }) {
     if (b.attest !== true) refuse(badRequest('attest'));
     // The figures and the version the confirmer was shown (security review 1): an edit since, and
     // this is not what they checked.
-    if (!Number.isInteger(b.teCents) || !Number.isInteger(b.cashCents) || !Number.isInteger(b.updatedAt)) refuse(badRequest('figures'));
-    if (b.teCents !== row.te_cents || b.cashCents !== row.cash_cents || b.updatedAt !== row.updated_at) return reportMoved(row.status);
+    const salesCash = reportSalesCash(b);
+    if (!Number.isInteger(b.teCents) || !Number.isInteger(b.cashCents) || !Number.isInteger(salesCash) || !Number.isInteger(b.updatedAt)) {
+      refuse(badRequest('figures'));
+    }
+    if (b.teCents !== row.te_cents || b.cashCents !== row.cash_cents || salesCash !== row.sales_cash_cents || b.updatedAt !== row.updated_at) {
+      return reportMoved(row.status);
+    }
     // Only while the shift is still published and in the reporting window (security review 5).
     const vrow = await db.prepare('SELECT payload FROM parent_views WHERE pack_id = ?').bind(packId).first();
     let view = null;
@@ -133,12 +141,13 @@ async function patch({ request, db, packId, role, user, member, params }) {
     roles = SUBMIT_ROLES;
     update = db.prepare('UPDATE shift_reports SET confirmed_by_uid = ?, confirmed_by_name = ?, confirmed_at = ?, updated_at = ?, stamp = ? ' +
       "WHERE pack_id = ? AND id = ? AND stamp = ? AND status = 'submitted' AND needs_confirm = 1 AND confirmed_by_uid IS NULL " +
-      'AND submitted_by_uid != ? AND te_cents = ? AND cash_cents = ? AND updated_at = ? ' +
+      'AND submitted_by_uid != ? AND te_cents = ? AND cash_cents = ? AND sales_cash_cents = ? AND updated_at = ? ' +
       'AND (SELECT rev FROM pack_state WHERE pack_id = ?) = ? AND ' + STILL_MEMBER(roles))
-      .bind(user.uid, name, now, now, stamp, packId, rid, row.stamp, user.uid, b.teCents, b.cashCents, b.updatedAt, packId, rec.rev,
+      .bind(user.uid, name, now, now, stamp, packId, rid, row.stamp, user.uid, b.teCents, b.cashCents, salesCash, b.updatedAt, packId, rec.rev,
         packId, user.uid, ...roles);
     audit = 'shift.confirm';
-    detail = { report: rid, sfId: row.sf_id, blockId: row.block_id, teCents: row.te_cents, cashCents: row.cash_cents, confirmerName: name };
+    detail = { report: rid, sfId: row.sf_id, blockId: row.block_id, teCents: row.te_cents, cashCents: row.cash_cents,
+      salesCashCents: row.sales_cash_cents, confirmerName: name };
   } else if (action === 'accept') {
     if (row.status !== 'submitted') return reportMoved(row.status);
     if (row.submitted_by_uid === user.uid) return samePerson();
@@ -146,7 +155,9 @@ async function patch({ request, db, packId, role, user, member, params }) {
     if (row.confirmed_by_uid && row.confirmed_by_uid === user.uid) return samePerson();
     // The figures the leader is signing for: whole cents, as the report must hold them.
     for (const k of ['teCents', 'cashCents']) if (!Number.isInteger(b[k]) || b[k] < 0) refuse(badRequest(k === 'teCents' ? 'te-cents' : 'cash-cents'));
-    if (b.teCents !== row.te_cents || b.cashCents !== row.cash_cents) return reportMoved(row.status);
+    const salesCash = reportSalesCash(b);
+    if (!Number.isInteger(salesCash) || salesCash < 0) refuse(badRequest('sales-cash-cents'));
+    if (b.teCents !== row.te_cents || b.cashCents !== row.cash_cents || salesCash !== row.sales_cash_cents) return reportMoved(row.status);
     if (b.override !== undefined && typeof b.override !== 'boolean') refuse(badRequest('override'));
     if (b.collected !== undefined && typeof b.collected !== 'boolean') refuse(badRequest('collected'));
     // Who verified the cash. Two or more families: the confirming parent. One family: this leader,
@@ -162,11 +173,11 @@ async function patch({ request, db, packId, role, user, member, params }) {
       'review_note = ?, overridden = ?, accepted_by_uid = ?, accepted_by_name = ?, accepted_at = ?, accept_note = ?, verified_by_leader = ?, ' +
       "updated_at = ?, stamp = ? WHERE pack_id = ? AND id = ? AND stamp = ? AND status = 'submitted' AND accepted_by_uid IS NULL " +
       'AND submitted_by_uid != ? AND (confirmed_by_uid IS NULL OR confirmed_by_uid != ?) AND te_cents = ? AND cash_cents = ? ' +
-      'AND (needs_confirm = 0 OR confirmed_by_uid IS NOT NULL OR ? = 1) AND ' + STILL_MEMBER(roles))
+      'AND sales_cash_cents = ? AND (needs_confirm = 0 OR confirmed_by_uid IS NOT NULL OR ? = 1) AND ' + STILL_MEMBER(roles))
       .bind(user.uid, name, now, note, override ? 1 : 0, user.uid, name, now, note, collected ? 1 : 0, now, stamp, packId, rid, row.stamp,
-        user.uid, user.uid, b.teCents, b.cashCents, override ? 1 : 0, packId, user.uid, ...roles);
+        user.uid, user.uid, b.teCents, b.cashCents, salesCash, override ? 1 : 0, packId, user.uid, ...roles);
     audit = override ? 'shift.accept.override' : 'shift.accept';
-    detail = { report: rid, sfId: row.sf_id, blockId: row.block_id, teCents: row.te_cents, cashCents: row.cash_cents,
+    detail = { report: rid, sfId: row.sf_id, blockId: row.block_id, teCents: row.te_cents, cashCents: row.cash_cents, salesCashCents: row.sales_cash_cents,
       submittedBy: row.submitted_by_uid, submittedByName: row.submitted_by_name, reviewerName: name, reviewNote: note, collected };
     if (row.confirmed_by_uid) { detail.confirmedBy = row.confirmed_by_uid; detail.confirmedByName = row.confirmed_by_name || ''; }
     if (override) detail.reason = note;

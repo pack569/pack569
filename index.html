@@ -4941,12 +4941,19 @@
             rp.override = rp.override === true;
             rp.note = typeof rp.note === 'string' ? rp.note : '';
             rp.collected = rp.collected === true;
+            if (!(Number.isInteger(rp.salesCash) && rp.salesCash > 0)) delete rp.salesCash;   // S-5: only when there is some
             rp.at = typeof rp.at === 'number' && isFinite(rp.at) ? rp.at : 0;
             var rw = rp.wrote && typeof rp.wrote === 'object' ? rp.wrote : {};
             rp.wrote = { counted: typeof rw.counted === 'string' ? rw.counted : '', verified: typeof rw.verified === 'string' ? rw.verified : '' };
           }
           if (!b.reportReturned || typeof b.reportReturned !== 'object') delete b.reportReturned;
           else b.reportReturned = { note: typeof b.reportReturned.note === 'string' ? b.reportReturned.note : '' };
+          // S-5 — cash from popcorn sales a family still has, from an accepted report: whole cents
+          // above 0 and at most the server's $10,000, or nothing. Leaders only, custody only: no money
+          // math reads it. (A literal, not SHIFT_REPORT_MAX_CENTS: that is set further down the file.)
+          if (!(Number.isInteger(b.salesCashInHandCents) && b.salesCashInHandCents > 0 && b.salesCashInHandCents <= 1000000)) {
+            delete b.salesCashInHandCents;
+          }
         });
         // Wave 22 — recorded weather, shape-checked here and nowhere else. A record whose tag
         // isn't one of the four is DROPPED rather than kept as a broken half-value:
@@ -19977,6 +19984,11 @@
   // "Entered in", not "rung into": the parent app keeps "rung" for nothing (J8, the parent-language rule).
   var SHIFT_REPORT_TE_HINT = 'Everything entered in the Trail’s End app during this shift, card and cash, by every family on the shift.';
   var SHIFT_REPORT_CASH_HINT = 'Only the cash in the donation jar. Leave out cash from popcorn sales, your starting change, and any donation already entered in the Trail’s End app.';
+  // S-5 (Keith, 2026-10-01) — the third figure: cash from popcorn sales a family could not convert
+  // before leaving. A custody figure for the leaders, never a sale: those sales are already in the
+  // Trail's End amount, so it is never added to the block's sales or to anyone's split.
+  var SHIFT_REPORT_SALES_CASH_HINT = 'Should be $0: convert cash from popcorn sales to credit before you leave. ' +
+    'If you couldn’t, enter what you still have and hand it to the leader collecting the money.';
   // Under the note (youth-protection review 1): who reads it, and what not to put in it.
   var SHIFT_REPORT_NOTE_HINT = 'Leaders and the other family on this shift can read this. Don’t name scouts or share anything about a child.';
   // Pack policy (Keith, round 1): cash from popcorn sales is converted before anyone leaves the
@@ -19994,6 +20006,7 @@
     'attest-confirm': 'Check the box to say these match what was counted at the table.',
     'te-cents': 'Enter the Trail’s End amount in dollars, like 125.50. Enter 0 if there were no sales. Up to $10,000.',
     'cash-cents': 'Enter the cash donations in dollars, like 18.00. Enter 0 if the jar was empty. Up to $10,000.',
+    'sales-cash-cents': 'Enter the cash from popcorn sales you still have in dollars, like 20.00, or 0. It can’t be more than the Trail’s End amount, because those sales are part of it.',
     'note': 'Keep the note to 300 characters or fewer.',
     'open': 'Another family already sent totals for this shift. If you worked it with them, find it under Storefront shift totals and confirm it. Otherwise, ask a leader.',
     'accepted': 'A leader has already accepted totals for this shift.',
@@ -20095,15 +20108,19 @@
     return out;
   }
   // The request a draft makes, or { problem, field } in words a family can act on, `field` being
-  // the form field to mark and move to ('te', 'cash', 'note', 'attest'). `d` is ui.shiftReport,
+  // the form field to mark and move to ('te', 'cash', 'salesCash', 'note', 'attest'). `d` is ui.shiftReport,
   // which holds what was typed (srMirror keeps it up to date as they type).
   function shiftReportBody(d) {
     var te = shiftReportCents(d.te), cash = shiftReportCents(d.cash), note = shiftReportNote(d.note);
+    // S-5: blank is $0, the answer almost every family gives.
+    var salesCash = String(d.salesCash == null ? '' : d.salesCash).trim() === '' ? 0 : shiftReportCents(d.salesCash);
     if (!isFinite(te) || te > SHIFT_REPORT_MAX_CENTS) return { problem: SHIFT_REPORT_SAY['te-cents'], field: 'te' };
     if (!isFinite(cash) || cash > SHIFT_REPORT_MAX_CENTS) return { problem: SHIFT_REPORT_SAY['cash-cents'], field: 'cash' };
+    if (!isFinite(salesCash) || salesCash > te) return { problem: SHIFT_REPORT_SAY['sales-cash-cents'], field: 'salesCash' };
     if (note.length > SHIFT_REPORT_NOTE_MAX) return { problem: SHIFT_REPORT_SAY.note, field: 'note' };
     if (d.attest !== true) return { problem: SHIFT_REPORT_SAY.attest, field: 'attest' };
     var body = { teCents: te, cashCents: cash, note: note, attest: true };
+    if (salesCash > 0) body.salesCashCents = salesCash;   // left out, the server's 0
     if (d.rid) body.action = 'edit';
     else { body.sfId = d.sfId; body.blockId = d.blockId; }
     return { body: body };
@@ -20161,6 +20178,7 @@
       var d = ui.shiftReport;
       if (el.name === 'te') d.te = el.value;
       else if (el.name === 'cash') d.cash = el.value;
+      else if (el.name === 'salesCash') d.salesCash = el.value;
       else if (el.name === 'note') d.note = el.value;
       else if (el.name === 'attest') d.attest = !!el.checked;
       else return false;
@@ -20201,6 +20219,12 @@
     el.focus({ preventScroll: true });
     if (k.start != null && el.setSelectionRange) { try { el.setSelectionRange(k.start, k.end); } catch (e) { /* not text */ } }
   }
+  // S-5 — a report's cash from popcorn sales still in hand, after its other two figures: said only
+  // when there is some, since nearly every family converts it all before they leave.
+  function srSalesCashFig(r) {
+    var c = (r && r.salesCashCents) || 0;
+    return c > 0 ? ' · ' + esc(fmt(c)) + ' cash from sales still in hand' : '';
+  }
   // One shift's line: where its totals stand, and, with `showActs` (the Storefront shift totals
   // card only: parent-experience review 6), what this person can do about it. '' when the feature
   // is off, the reports have not come yet, or there is nothing to say or do.
@@ -20217,7 +20241,8 @@
     var forShift = ' for ' + fmtDate(String(e.date || '')) + ', ' + String(s.when || '');
     var aria = function (what) { return ' aria-label="' + esc(what + forShift) + '"'; };
     var figs = function (r) {
-      return ' <span class="sr-figs">' + esc(fmt(r.teCents || 0)) + ' Trail’s End · ' + esc(fmt(r.cashCents || 0)) + ' cash donations</span>';
+      return ' <span class="sr-figs">' + esc(fmt(r.teCents || 0)) + ' Trail’s End · ' + esc(fmt(r.cashCents || 0)) + ' cash donations' +
+        srSalesCashFig(r) + '</span>';
     };
     var h = '';
     // S-4: a report that needs a second parent says which step it is at.
@@ -20244,7 +20269,7 @@
       if (o.canConfirm && o.id) {
         h = '<span class="sr-msg">Another family sent these totals. Check them, and confirm if they match.</span>' +
           ' <span class="sr-figs">' + esc(fmt(o.teCents || 0)) + ' Trail’s End · ' + esc(fmt(o.cashCents || 0)) + ' cash donations' +
-          (o.submittedByName ? ' · sent by ' + esc(o.submittedByName) : '') + '</span>' +
+          srSalesCashFig(o) + (o.submittedByName ? ' · sent by ' + esc(o.submittedByName) : '') + '</span>' +
           (open ? '<span class="sr-acts"><button type="button" class="btn small primary" data-act="shift-report-confirm-open"' + ids +
             ' data-rid="' + esc(o.id) + '"' + aria('Check and confirm the totals') + '>Check and confirm</button></span>' : '');
       } else {
@@ -20288,7 +20313,9 @@
       srField('srTe', 'te', 'Trail’s End amount ($)', '<INPUT class="money-in" inputmode="decimal" autocomplete="off" placeholder="0.00" value="' + esc(d.te) + '">',
         SHIFT_REPORT_TE_HINT, bad === 'te') +
       srField('srCash', 'cash', 'Cash donations ($)', '<INPUT class="money-in" inputmode="decimal" autocomplete="off" placeholder="0.00" value="' + esc(d.cash) + '">',
-        SHIFT_REPORT_CASH_HINT, bad === 'cash') + '</div>' +
+        SHIFT_REPORT_CASH_HINT, bad === 'cash') +
+      srField('srSalesCash', 'salesCash', 'Cash from popcorn sales still in hand ($)', '<INPUT class="money-in" inputmode="decimal" autocomplete="off" placeholder="0.00" value="' +
+        esc(d.salesCash == null ? '0.00' : d.salesCash) + '">', SHIFT_REPORT_SALES_CASH_HINT, bad === 'salesCash') + '</div>' +
       srField('srNote', 'note', 'Note for the leader (optional)', '<INPUT-TEXTAREA rows="2" maxlength="' + SHIFT_REPORT_NOTE_MAX + '">' + esc(d.note) + '</textarea>',
         SHIFT_REPORT_NOTE_HINT, bad === 'note') +
       '<label class="sr-attest"><input type="checkbox" id="srAttest" name="attest"' + (d.attest ? ' checked' : '') +
@@ -20311,7 +20338,7 @@
       '<p class="small" style="margin:0"><strong>Check the totals' + (o.submittedByName ? ' ' + esc(o.submittedByName) + ' sent' : '') + '</strong> · ' +
       esc(String(e.title || 'Storefront')) + ', ' + esc(String(s.when || '')) + '</p>' +
       '<p class="sr-amounts">Trail’s End <strong class="money">' + esc(fmt(o.teCents || 0)) + '</strong> · Cash donations <strong class="money">' +
-      esc(fmt(o.cashCents || 0)) + '</strong></p>' +
+      esc(fmt(o.cashCents || 0)) + '</strong> · Cash from sales still in hand <strong class="money">' + esc(fmt(o.salesCashCents || 0)) + '</strong></p>' +
       (o.note ? '<p class="small" style="margin:0">“' + esc(o.note) + '”</p>' : '') +
       '<label class="sr-attest"><input type="checkbox" id="srConfirmAttest" name="attest"' + (cf.attest ? ' checked' : '') +
         (cf.problem ? ' aria-invalid="true" aria-describedby="srProblem"' : '') + '><span>' + esc(SHIFT_CONFIRM_ATTEST) + '</span></label>' +
@@ -20371,7 +20398,8 @@
       if (rid && !own) return;
       ui.shiftConfirm = null;
       ui.shiftReport = { sfId: String(ds.sf || ''), blockId: String(ds.block || ''), rid: rid,
-        te: own ? dollars(own.teCents) || '0.00' : '', cash: own ? dollars(own.cashCents) || '0.00' : '', note: own ? String(own.note || '') : '',
+        te: own ? dollars(own.teCents) || '0.00' : '', cash: own ? dollars(own.cashCents) || '0.00' : '',
+        salesCash: own ? dollars(own.salesCashCents) || '0.00' : '0.00', note: own ? String(own.note || '') : '',
         attest: false, busy: false, problem: '', problemField: '' };
       ui.srFocusId = 'srTe';
       render();
@@ -20404,8 +20432,9 @@
     cf.busy = true;
     cf.problem = '';
     render();
-    return sync.backend.patchShiftReport(sync.docId, cf.rid, { action: 'confirm', attest: true, teCents: o.teCents, cashCents: o.cashCents,
-      updatedAt: o.updatedAt }).then(function () {
+    var cbody = { action: 'confirm', attest: true, teCents: o.teCents, cashCents: o.cashCents, updatedAt: o.updatedAt };
+    if (o.salesCashCents > 0) cbody.salesCashCents = o.salesCashCents;   // S-5: what they were shown (left out, the server's 0)
+    return sync.backend.patchShiftReport(sync.docId, cf.rid, cbody).then(function () {
       if (ui.shiftConfirm === cf) ui.shiftConfirm = null;
       ui.srFocusId = 'srCardHead';   // review 35: back to the card, the form being gone
       showToast('Confirmed. A leader will check the totals before they count.');
@@ -20426,13 +20455,14 @@
     var fd = new FormData(f);
     d.te = String(fd.get('te') || '');
     d.cash = String(fd.get('cash') || '');
+    d.salesCash = String(fd.get('salesCash') || '');
     d.note = String(fd.get('note') || '');
     d.attest = fd.get('attest') === 'on';
     var made = shiftReportBody(d);
     d.problem = made.problem || '';
     d.problemField = made.field || '';
     if (made.problem) {
-      ui.srFocusId = ({ te: 'srTe', cash: 'srCash', note: 'srNote', attest: 'srAttest' })[made.field] || null;
+      ui.srFocusId = ({ te: 'srTe', cash: 'srCash', salesCash: 'srSalesCash', note: 'srNote', attest: 'srAttest' })[made.field] || null;
       render();
       return;
     }
@@ -22645,6 +22675,7 @@
     if (cashChk === 'blank') h += '<p class="warn small" style="margin:8px 0 0">Name both adults who counted this block\u2019s cash \u2014 one counts, a second checks.</p>';
     else if (cashChk === 'same') h += '<p class="warn small" style="margin:8px 0 0">The same person counted and verified this cash. A second adult has to check it.</p>';
     h += renderBlockReportLine(b);   // S-3: where the figures came from, when a report put them there
+    h += renderBlockCashToCollect(sf, b);   // S-5: cash from popcorn sales the family still has
     // Y1 — whether the named adults are two registered adults 21+. Leaders only.
     var bSup = blockSupervision(b);
     if (bSup) {
@@ -22686,9 +22717,10 @@
      the server's record of who signed for it. They are two writes to two places, so:
        1. the block gets the figures, the names (cashCountedBy = the sender, cashVerifiedBy as
           above, reportApprovedBy = this leader, as ledgerActor names them: never an email), the
-          link (reportId, reportFrom…) and a `reportPending` marker: { by, at, te, cash, was,
-          wrote, override, note, collected }, `was` being what the block held and `wrote` the two
-          names the accept wrote;
+          link (reportId, reportFrom…) and a `reportPending` marker: { by, at, te, cash, salesCash?,
+          was, wrote, override, note, collected }, `was` being what the block held and `wrote` the
+          two names the accept wrote (S-5: salesCash, the cash from sales still in hand, only when
+          there is some; the block carries it as salesCashInHandCents, custody only);
        2. the pack record is saved, the normal CAS save;
        3. once the server's copy holds the block (sync.remoteRec), the report is PATCHed to
           accepted with exactly the figures shown, and the marker is cleared.
@@ -22822,6 +22854,7 @@
       (r.submittedAt ? ' · ' + esc(srWhen(r.submittedAt)) : '') + (r.updatedAt && r.updatedAt !== r.submittedAt ? ' (changed since)' : '') + '</p>' +
       '<p class="sr-amounts">Trail’s End <strong class="money">' + esc(fmt(r.teCents)) + '</strong> · Cash donations <strong class="money">' +
       esc(fmt(r.cashCents)) + '</strong></p>' +
+      srCashToCollectLine(r.salesCashCents, srNameClean(r.submittedByName) || 'the family') +
       (r.note ? '<p class="small" style="margin:0 0 6px">“' + esc(r.note) + '”</p>' : '');
     if (!blk) h += '<p class="small warn" style="margin:0 0 6px">This shift is no longer on the pack’s schedule. Send it back so the family knows.</p>';
     // S-4: who has signed, where the shift has two or more families.
@@ -22893,6 +22926,42 @@
     h += '<button type="button" class="btn" data-act="sr-return-open" data-rid="' + esc(r.id) + '">Send back</button></div>';
     return h + '</div>';
   }
+  // S-5 (Keith, 2026-10-01) — cash from popcorn sales a family could not convert to credit before
+  // leaving, and still has. Pack policy is that they convert it all at the table, so this is a
+  // custody line for the leaders, said only when there is some. It is ALREADY INSIDE the Trail's
+  // End amount (those sales were entered in the app), so it is never added to salesCents or to
+  // blockShares. LEADERS ONLY: buildParentView never publishes it.
+  var SR_CASH_TO_COLLECT_WHY = 'Cash from popcorn sales the family couldn’t convert to credit. It’s already in the Trail’s End amount, so it isn’t added again.';
+  function srCashToCollectLine(cents, who) {
+    if (!(cents > 0)) return '';
+    return '<p class="small warn" style="margin:0 0 6px"><strong>Cash to collect: ' + esc(fmt(cents)) + '</strong> from ' + esc(who) + '. ' +
+      esc(SR_CASH_TO_COLLECT_WHY) + '</p>';
+  }
+  // On the block, once a report is accepted: how much is still to collect, and a way to say it has been.
+  function renderBlockCashToCollect(sf, b) {
+    var c = b.salesCashInHandCents || 0;
+    if (!(c > 0)) return '';
+    return '<div class="spread" style="margin-top:8px">' + srCashToCollectLine(c, b.reportFrom || b.cashCountedBy || 'the family').replace('margin:0 0 6px', 'margin:0') +
+      (canEdit() ? '<button type="button" class="btn small" data-act="sr-cash-collected" data-sf="' + esc(sf.id) + '" data-id="' + esc(b.id) + '"' +
+        ' aria-label="' + esc('Mark ' + fmt(c) + ' of cash from popcorn sales collected') + '">Collected</button>' : '') + '</div>';
+  }
+  // Every block still holding cash from popcorn sales to collect: { cents, n, list: [{ sf, b }] }.
+  function srCashToCollect() {
+    var out = { cents: 0, n: 0, list: [] };
+    state.storefronts.forEach(function (sf) {
+      (sf.blocks || []).forEach(function (b) {
+        var c = b.salesCashInHandCents || 0;
+        if (!(c > 0)) return;
+        out.cents += c;
+        out.n += 1;
+        out.list.push({ sf: sf, b: b });
+      });
+    });
+    return out;
+  }
+  function srCashToCollectSay(t) {
+    return 'Cash from popcorn sales to collect: ' + fmt(t.cents) + ' across ' + t.n + ' shift' + (t.n === 1 ? '' : 's');
+  }
   // Under a block's cash count: where its figures came from, when a report put them there.
   function renderBlockReportLine(b) {
     if (b.reportPending && b.reportId) {
@@ -22944,8 +23013,8 @@
   // need a second adult's check.
   function renderShiftReportsBanner() {
     if (!leaderReportsOn()) return '';
-    var waiting = srWaiting(), check = srNeedsCheck();
-    if (!waiting.length && !check.length) return '';
+    var waiting = srWaiting(), check = srNeedsCheck(), toCollect = srCashToCollect();
+    if (!waiting.length && !check.length && !toCollect.n) return '';
     var h = '<div class="card sr-banner">';
     if (waiting.length) {
       h += '<h2 class="section display">Shift reports to review <span class="pill">' + waiting.length + '</span></h2>';
@@ -22965,6 +23034,17 @@
         var rng = fmtTimeRange(c.b.start, c.b.end) || c.b.label;
         h += '<div class="spread sr-banner-row"><p class="small" style="margin:0"><strong>' + esc(c.sf.name || 'Storefront') + '</strong> · ' +
           esc(fmtDate(c.sf.date)) + ' · ' + esc(rng) + ' · ' + esc(c.why) + '</p>' +
+          '<button type="button" class="btn small" data-act="open-storefront" data-id="' + esc(c.sf.id) + '">Open</button></div>';
+      });
+    }
+    // S-5 — cash from popcorn sales families still have, each shift with a way to it.
+    if (toCollect.n) {
+      h += '<h3 class="section display" style="font-size:1rem;margin:' + (waiting.length || check.length ? '12px' : '0') + ' 0 4px">' +
+        esc(srCashToCollectSay(toCollect)) + '</h3>';
+      toCollect.list.forEach(function (c) {
+        var rng = fmtTimeRange(c.b.start, c.b.end) || c.b.label;
+        h += '<div class="spread sr-banner-row"><p class="small" style="margin:0"><strong>' + esc(c.sf.name || 'Storefront') + '</strong> · ' +
+          esc(fmtDate(c.sf.date)) + ' · ' + esc(rng) + ' · ' + esc(fmt(c.b.salesCashInHandCents)) + ' from ' + esc(c.b.reportFrom || c.b.cashCountedBy || 'the family') + '</p>' +
           '<button type="button" class="btn small" data-act="open-storefront" data-id="' + esc(c.sf.id) + '">Open</button></div>';
       });
     }
@@ -23001,11 +23081,15 @@
       reportApprovedBy: b.reportApprovedBy || '', reportConfirmedBy: b.reportConfirmedBy || '', reportOverride: b.reportOverride || '',
       reportOverrideNote: b.reportOverrideNote || '', reportCollected: b.reportCollected === true,
       reportReturned: b.reportReturned ? { note: String(b.reportReturned.note || '') } : null };
+    if (b.salesCashInHandCents > 0) was.salesCashInHandCents = b.salesCashInHandCents;   // S-5
     var me = ledgerActor();
     var counted = srNameClean(r.submittedByName);
     var verified = confirmed ? srNameClean(r.confirmedByName) : collected ? me : '';
     b.salesCents = r.teCents;
     b.donationsCents = r.cashCents;
+    // S-5 — custody only: never added to salesCents (it is already inside it) or to the split.
+    var salesCash = r.salesCashCents || 0;
+    if (salesCash > 0) b.salesCashInHandCents = salesCash; else delete b.salesCashInHandCents;
     b.cashCountedBy = counted;
     b.cashVerifiedBy = verified;
     b.reportId = r.id;
@@ -23018,6 +23102,7 @@
     delete b.reportReturned;
     b.reportPending = { by: sync.user.uid, at: Date.now(), te: r.teCents, cash: r.cashCents, was: was,
       wrote: { counted: counted, verified: verified }, override: override, note: reason, collected: collected };
+    if (salesCash > 0) b.reportPending.salesCash = salesCash;   // S-5: the third figure the accept names
     if (!commit()) return;
     showToast('Accepted. Saving now. The family sees it as accepted once the save goes through.');
     shiftReportsReconcile();
@@ -23050,6 +23135,10 @@
       b.salesCents = was.salesCents || 0;
       b.donationsCents = was.donationsCents || 0;
     }
+    // S-5 — the cash to collect, likewise, unless a leader has marked it collected since.
+    if (p && (b.salesCashInHandCents || 0) === (p.salesCash || 0)) {
+      if (was.salesCashInHandCents > 0) b.salesCashInHandCents = was.salesCashInHandCents; else delete b.salesCashInHandCents;
+    }
     if (typeof wrote.counted === 'string' && b.cashCountedBy === wrote.counted) b.cashCountedBy = was.cashCountedBy || '';
     if (typeof wrote.verified === 'string' && b.cashVerifiedBy === wrote.verified) b.cashVerifiedBy = was.cashVerifiedBy || '';
     if (was.reportId) {
@@ -23080,7 +23169,7 @@
         if (sync.srOut[rid]) return;
         if (!r) { srRollback(b, LEADER_SR_SAY['not-found']); return; }
         if (r.status === 'accepted') {
-          if (r.teCents === p.te && r.cashCents === p.cash) srSettle(b);
+          if (srAcceptedAsPending(r, p)) srSettle(b);
           else srRollback(b, 'Another leader accepted different figures for this report.');
           return;
         }
@@ -23089,10 +23178,11 @@
           return;
         }
         if (sync.srRefused[rid]) { var why = sync.srRefused[rid]; delete sync.srRefused[rid]; srRollback(b, why); return; }
-        if (r.teCents !== p.te || r.cashCents !== p.cash) { srRollback(b, 'The family changed their totals after you accepted them.'); return; }
+        if (!srSameFigures(r, p)) { srRollback(b, 'The family changed their totals after you accepted them.'); return; }
         if (!srLanded(sf.id, b.id, rid)) return;   // step 2 has not reached the server yet
         sync.srOut[rid] = true;
         var body = { action: 'accept', teCents: p.te, cashCents: p.cash };
+        if (p.salesCash > 0) body.salesCashCents = p.salesCash;   // S-5 (left out, the server's 0)
         if (p.collected) body.collected = true;
         if (p.override) { body.override = true; body.reviewNote = p.note; }
         sync.backend.patchShiftReport(sync.docId, rid, body).then(function () {
@@ -23135,7 +23225,12 @@
     shiftReportsReconcile();
   }
   // Is this report accepted, on the server, with exactly the figures this pending accept wrote?
-  function srAcceptedAsPending(r, p) { return !!(r && p && r.status === 'accepted' && r.teCents === p.te && r.cashCents === p.cash); }
+  function srAcceptedAsPending(r, p) { return !!(r && p && r.status === 'accepted' && srSameFigures(r, p)); }
+  // Does the report still hold the three figures this pending accept wrote? (S-5: the cash from
+  // sales still in hand is one of them; a marker from before S-5 has none, which is 0.)
+  function srSameFigures(r, p) {
+    return r.teCents === p.te && r.cashCents === p.cash && (r.salesCashCents || 0) === (p.salesCash || 0);
+  }
   var SR_UNDO_NOTE = 'Accept undone by a leader';
   function srUndoServerFirst(rid, sfId, blockId) {
     sync.srOut = sync.srOut || {};
@@ -23221,6 +23316,22 @@
     if (act === 'sr-return-open') { ui.srReturn = rid; ui.srConfirm = null; ui.srOverride = null; render(); return; }
     if (act === 'sr-override-open') { ui.srOverride = rid; ui.srConfirm = null; ui.srReturn = null; render(); }
   }
+  // S-5 — a leader has the cash from popcorn sales a family still had: the block stops asking for
+  // it. The report keeps the figure (the season's record); Undo puts it back on the block.
+  function srCashCollected(sfId, blockId) {
+    var blk = srBlockOf({ sfId: sfId, blockId: blockId });
+    if (!blk || !canEdit()) return;
+    var b = blk.b, was = b.salesCashInHandCents || 0;
+    if (!(was > 0)) return;
+    delete b.salesCashInHandCents;
+    if (!commit()) return;
+    showToast('Marked ' + fmt(was) + ' collected.', { actionLabel: 'Undo', duration: 6000, onAction: function () {
+      var again = srBlockOf({ sfId: sfId, blockId: blockId });
+      if (!again || again.b.salesCashInHandCents) return;
+      again.b.salesCashInHandCents = was;
+      commit();
+    } });
+  }
 
   // Treasurer review, round 1 (C7) — scouts whose shift money is still WAITING: on a block with a
   // family's report no leader has dealt with, or an accept still saving, at a storefront dated on
@@ -23262,24 +23373,27 @@
       if (r.status === 'accepted') differs = !blk || (blk.b.salesCents || 0) !== r.teCents || (blk.b.donationsCents || 0) !== r.cashCents ? 'Y' : 'N';
       rows.push({ date: date, storefront: blk ? String(blk.sf.name || 'Storefront') : '(no longer on the schedule)',
         shift: blk ? (fmtTimeRange(blk.b.start, blk.b.end) || String(blk.b.label || '')) : '', te: r.teCents || 0, cash: r.cashCents || 0,
+        salesCash: r.salesCashCents || 0,
         sentBy: srNameClean(r.submittedByName), verifiedBy: verified, acceptedBy: ledgerStampClean(r.acceptedByName || ''),
         overrideReason: r.overridden ? String(r.acceptNote || '') : '', status: String(r.status || ''),
         sentBackReason: r.status === 'returned' ? String(r.reviewNote || '') : '', differs: differs });
     });
     return rows.sort(function (a, b) { return a.date.localeCompare(b.date) || a.shift.localeCompare(b.shift); });
   }
-  var SR_HISTORY_HEAD = ['Date', 'Storefront', 'Shift', 'Trail’s End', 'Cash donations', 'Sent by', 'Verified by', 'Accepted by',
+  // S-5: "Cash from sales to collect" is what the report said the family still had, whatever has
+  // been collected since (the block says what is still out).
+  var SR_HISTORY_HEAD = ['Date', 'Storefront', 'Shift', 'Trail’s End', 'Cash donations', 'Cash from sales to collect', 'Sent by', 'Verified by', 'Accepted by',
     'Override reason', 'Status', 'Sent-back reason', 'Block now differs from report'];
   // The CSV (youth-protection review 4): figures and adults' names only. The leaders' written
   // reasons, which can say anything, go in only when asked for (`withReasons`), as one labelled
   // last column. Never a uid or an email; never a child.
-  var SR_HISTORY_CSV_HEAD = ['Date', 'Storefront', 'Shift', 'Trail’s End', 'Cash donations', 'Sent by', 'Verified by', 'Accepted by', 'Status',
+  var SR_HISTORY_CSV_HEAD = ['Date', 'Storefront', 'Shift', 'Trail’s End', 'Cash donations', 'Cash from sales to collect', 'Sent by', 'Verified by', 'Accepted by', 'Status',
     'Block now differs from report'];
   var SR_HISTORY_REASONS_HEAD = 'Leaders’ reasons (override or sent back)';
   function shiftReportHistoryCsv(rows, withReasons) {
     var lines = [SR_HISTORY_CSV_HEAD.concat(withReasons ? [SR_HISTORY_REASONS_HEAD] : []).map(ledgerCsvCell).join(',')];
     rows.forEach(function (x) {
-      var cells = [x.date, x.storefront, x.shift, (x.te / 100).toFixed(2), (x.cash / 100).toFixed(2), x.sentBy, x.verifiedBy, x.acceptedBy,
+      var cells = [x.date, x.storefront, x.shift, (x.te / 100).toFixed(2), (x.cash / 100).toFixed(2), ((x.salesCash || 0) / 100).toFixed(2), x.sentBy, x.verifiedBy, x.acceptedBy,
         x.status, x.differs];
       if (withReasons) cells.push([x.overrideReason, x.sentBackReason].filter(Boolean).join(' / '));
       lines.push(cells.map(ledgerCsvCell).join(','));
@@ -23308,7 +23422,8 @@
         '</tr></thead><tbody>';
       rows.forEach(function (x) {
         h += '<tr><td>' + esc(fmtDate(x.date)) + '</td><td>' + esc(x.storefront) + '</td><td>' + esc(x.shift) + '</td>' +
-          '<td class="num">' + esc(fmt(x.te)) + '</td><td class="num">' + esc(fmt(x.cash)) + '</td><td>' + esc(x.sentBy) + '</td>' +
+          '<td class="num">' + esc(fmt(x.te)) + '</td><td class="num">' + esc(fmt(x.cash)) + '</td><td class="num">' + esc(fmt(x.salesCash || 0)) + '</td>' +
+          '<td>' + esc(x.sentBy) + '</td>' +
           '<td>' + esc(x.verifiedBy) + '</td><td>' + esc(x.acceptedBy) + '</td><td>' + esc(x.overrideReason) + '</td><td>' + esc(x.status) + '</td>' +
           '<td>' + esc(x.sentBackReason) + '</td><td>' + esc(x.differs) + '</td></tr>';
       });
@@ -35566,6 +35681,9 @@
       // Round 1 (C10): the families' shift reports live on the server, not in the snapshot.
       (leaderReportsOn() ? '<li><strong>Shift reports:</strong> the families’ shift reports are kept on the pack’s server, not in the snapshot. ' +
         'Print or download this season’s record first. <button type="button" class="btn small" data-act="sr-history-open">Shift reports this season</button></li>' : '') +
+      // S-5 — the storefronts are cleared, and with them the blocks saying whose cash is still out.
+      (srCashToCollect().n ? '<li style="color:var(--accent-text)"><strong>' + esc(srCashToCollectSay(srCashToCollect())) + '.</strong> ' +
+        'Collect it first: closing clears the storefronts, and with them this reminder.</li>' : '') +
       '<li>Starts <strong>' + (year + 1) + '</strong>: activities are re-seeded into the same months with dates cleared and last year’s actual costs as the new estimates; ' + coCarryLine + '; ' +
       // Wave 19(3) — dynamic: skip the den-advance step when the Pack tab already ran it this year.
       (state.densAdvancedYear === year
@@ -36191,6 +36309,7 @@
     if (act === 'parent-preview-off') { ui.previewParent = false; ui.resetScroll = true; render(); return; }
     // S-3 — a leader accepting or sending back a family's shift totals.
     if (/^sr-(accept|accept-collected|accept-confirm|return-open|override-open|cancel|takeover|undo)$/.test(act)) { leaderShiftReportAct(act, el); return; }
+    if (act === 'sr-cash-collected') { srCashCollected(String(el.dataset.sf || ''), String(el.dataset.id || '')); return; }
     // A family's shift totals (2026-10-01): the server's table, never the pack record.
     if (act === 'shift-report-open' || act === 'shift-report-cancel' || act === 'shift-report-withdraw' || act === 'shift-report-confirm-open') { shiftReportAct(act, el); return; }
     // ---- Accounts ----

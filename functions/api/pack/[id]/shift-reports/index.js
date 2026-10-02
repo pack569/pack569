@@ -1,7 +1,7 @@
 // GET  /api/pack/:id/shift-reports   the storefront shift reports       (admin, editor, viewer, parent)
 //        leaders: { reports: [every report, in full], others: [] }
 //        a parent: { reports: [their own, in full], others: [{ sfId, blockId, status }] }
-// POST /api/pack/:id/shift-reports   send one: { sfId, blockId, teCents, cashCents, note?, attest: true }
+// POST /api/pack/:id/shift-reports   send one: { sfId, blockId, teCents, cashCents, salesCashCents?, note?, attest: true }
 //                                     (admin, editor, viewer, parent — never pending)
 //
 // Not a Part C rule: Firestore never had shift reports (migrations/0003_shift_reports.sql says
@@ -13,7 +13,9 @@
 //     time zone (rules.js shiftReportProblem). So a family reports only a real shift they can
 //     see, and never one in the future.
 //   - The figures: whole cents, 0 to $10,000 each, a note of at most 300 characters, and the
-//     signature box ticked (attest: true).
+//     signature box ticked (attest: true). S-5: the cash from popcorn sales still in hand
+//     (salesCashCents) is optional, 0 when left out, and never more than the Trail's End amount
+//     it is part of (migrations/0004_shift_report_sales_cash.sql).
 //   - One at a time: a block with a report waiting, or accepted, takes no second one (409
 //     shift-reported). The insert re-checks that in the same statement, and the table's
 //     partial unique index is the backstop, so two families sending at once cannot both land.
@@ -30,16 +32,16 @@
 
 import { route, json, readObject, refuse, forbidden, badRequest, shiftReported, tooManyReports } from '../../../../_lib/http.js';
 import { withMember, auditIf } from '../../../../_lib/pack.js';
-import { canSubmitShiftReport, canReadAllShiftReports, shiftReportProblem, cleanReportNote, packToday, shiftOfView, shiftNeedsConfirm,
+import { canSubmitShiftReport, canReadAllShiftReports, shiftReportProblem, cleanReportNote, packToday, shiftOfView, shiftNeedsConfirm, reportSalesCash,
   shiftConfirmers, canConfirmShiftReport, daysBetween, SHIFT_REPORT_DAYS, SHIFT_REPORT_MAX_OPEN, SHIFT_REPORT_MAX_PER_DAY,
   SHIFT_REPORT_LEADER_DAYS } from '../../../../_lib/rules.js';
 
 export const REPORT_COLS = 'id, sf_id, block_id, te_cents, cash_cents, note, submitted_by_uid, submitted_by_name, submitted_at, ' +
   'updated_at, status, reviewed_by_uid, reviewed_by_name, reviewed_at, review_note, stamp, needs_confirm, confirmed_by_uid, confirmed_by_name, ' +
-  'confirmed_at, overridden, accepted_by_uid, accepted_by_name, accepted_at, accept_note, verified_by_leader';
+  'confirmed_at, overridden, accepted_by_uid, accepted_by_name, accepted_at, accept_note, verified_by_leader, sales_cash_cents';
 // The statuses that hold a block: one waiting for a leader, or one a leader accepted.
 export const HOLDS_BLOCK = "status IN ('submitted', 'accepted')";
-const POST_KEYS = ['sfId', 'blockId', 'teCents', 'cashCents', 'note', 'attest'];
+const POST_KEYS = ['sfId', 'blockId', 'teCents', 'cashCents', 'salesCashCents', 'note', 'attest'];
 
 // A report as the page sees it. `uid` is the caller: `mine` says whether they sent it. A leader
 // (`full`) also gets both account ids and the reviewer's whole name. A parent only ever reads
@@ -53,7 +55,7 @@ export const firstName = (n) => {
 };
 export function reportOut(row, uid, full) {
   const r = { id: row.id, sfId: row.sf_id, blockId: row.block_id, teCents: row.te_cents, cashCents: row.cash_cents,
-    note: row.note, status: row.status, mine: row.submitted_by_uid === uid, submittedByName: row.submitted_by_name,
+    salesCashCents: row.sales_cash_cents || 0, note: row.note, status: row.status, mine: row.submitted_by_uid === uid, submittedByName: row.submitted_by_name,
     submittedAt: row.submitted_at, updatedAt: row.updated_at,
     reviewedByName: full ? (row.reviewed_by_name || null) : firstName(row.reviewed_by_name),
     // A leader's note reaches a family only as the reason it was sent back (security review 3): an
@@ -158,6 +160,7 @@ async function list({ db, packId, role, user }) {
       o.id = row.id;
       o.teCents = row.te_cents;
       o.cashCents = row.cash_cents;
+      o.salesCashCents = row.sales_cash_cents || 0;   // S-5: part of what they confirm
       o.note = row.note;
       o.submittedByName = firstName(row.submitted_by_name);
       o.updatedAt = row.updated_at;   // the confirm names the version it checked (security review 1)
@@ -193,20 +196,21 @@ async function submit({ request, db, packId, role, user, member }) {
   if (over) return tooManyReports(over);
   const id = crypto.randomUUID(), stamp = crypto.randomUUID();
   const note = cleanReportNote(b.note);
+  const salesCash = reportSalesCash(b);
   let res;
   try {
     res = await db.batch([
       db.prepare('INSERT INTO shift_reports (id, pack_id, sf_id, block_id, te_cents, cash_cents, note, submitted_by_uid, ' +
-        "submitted_by_name, submitted_at, updated_at, status, review_note, stamp, needs_confirm) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', '', ?, ? " +
+        "submitted_by_name, submitted_at, updated_at, status, review_note, stamp, needs_confirm, sales_cash_cents) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', '', ?, ?, ? " +
         'WHERE NOT EXISTS (SELECT 1 FROM shift_reports WHERE pack_id = ? AND block_id = ? AND ' + HOLDS_BLOCK + ') AND ' +
         "(SELECT count(*) FROM shift_reports WHERE pack_id = ? AND submitted_by_uid = ? AND status = 'submitted') < ? AND " +
         '(SELECT count(*) FROM shift_reports WHERE pack_id = ? AND submitted_by_uid = ? AND submitted_at > ?) < ? AND ' +
         STILL_MEMBER(SUBMIT_ROLES))
-        .bind(id, packId, b.sfId, b.blockId, b.teCents, b.cashCents, note, user.uid, member.name || '', now, now, stamp, needsConfirm,
+        .bind(id, packId, b.sfId, b.blockId, b.teCents, b.cashCents, note, user.uid, member.name || '', now, now, stamp, needsConfirm, salesCash,
           packId, b.blockId, packId, user.uid, SHIFT_REPORT_MAX_OPEN, packId, user.uid, now - 86400000, SHIFT_REPORT_MAX_PER_DAY,
           packId, user.uid, ...SUBMIT_ROLES),
       auditIf(db, packId, user.uid, 'shift.report', { report: id, sfId: b.sfId, blockId: b.blockId, teCents: b.teCents,
-        cashCents: b.cashCents, needsConfirm: needsConfirm === 1 }, now, 'EXISTS (SELECT 1 FROM shift_reports WHERE id = ? AND stamp = ?)', [id, stamp])
+        cashCents: b.cashCents, salesCashCents: salesCash, needsConfirm: needsConfirm === 1 }, now, 'EXISTS (SELECT 1 FROM shift_reports WHERE id = ? AND stamp = ?)', [id, stamp])
     ]);
   } catch (e) {
     // The partial unique index: another report took the block between the check and the write.
