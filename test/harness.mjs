@@ -8410,8 +8410,11 @@ test('the member doc the client writes is exactly what the rules accept', () => 
   // Invites the same way.
   const inv = /request\.resource\.data\.keys\(\)\.hasOnly\(\['role', 'email', 'invitedBy', 'invitedAt'\]\)/.test(RULES);
   ok(inv, 'the invite field list changed in the rules');
-  const invWrite = writeKeys(slice('createInvite'), 'be\\.putInvite\\(sync\\.docId, email, ');
+  // (Pack positions: the leader invite's positions and dens go only to the pack's own server, added under apiAccounts().)
+  const invWrite = writeKeys(slice('createInvite'), 'var ivData = ');
   eq(invWrite, [['role', 'email', 'invitedBy', 'invitedAt']], 'createInvite writes different fields from the rules');
+  ok(/if \(apiAccounts\(\) && role === 'leader'\) \{ ivData\.positions = /.test(slice('createInvite')) && /be\.putInvite\(sync\.docId, email, ivData\)/.test(slice('createInvite')),
+    'positions reach Firestore');
 });
 
 test('the client never writes a bare pending member, and never reads the join code first', () => {
@@ -17617,6 +17620,86 @@ test('positions client: canEdit() is left only where "edits anything" is meant; 
     /data-ch="mtg-kind" data-id="' \+ m\.id \+ '"' \+ calDis/.test(mr) && /\(cal \? tinyDangerBtn\('del-event:'/.test(mr) && /aria-label="Details parents will see" style="width:100%"' \+ dmDis/.test(mr) &&
     /ui\.repeatOffer === m\.id && cal/.test(mr), 'the meeting row');
   ok(/\? !canEditSection\('calendar'\) : !canEditDenMeeting\(mtg\)\)/.test(SCRIPT), 'the meeting handler');
+});
+
+// Client step 6 — the Members card on the pack's own server: positions, not editor and viewer.
+test('positions members: the card lists who needs a position first, ticks positions (and a den leader\'s dens), says what they edit, and never offers editor or viewer', () => {
+  const c = vm.createContext({});
+  vm.runInContext(`var sync = { user: { uid: 'u-a' }, accountsUnavailable: false, myRole: 'admin', myPositions: [], leadDens: [], ownerUid: 'u-a', docId: 'P',
+      members: [{ uid: 'u-a', role: 'admin', name: 'Ann Admin', email: 'a@example.com' }, { uid: 'u-e', role: 'editor', name: 'Ed Editor', email: 'e@example.com' },
+        { uid: 'u-v', role: 'viewer', name: 'Vi Viewer', email: 'v@example.com' }, { uid: 'u-l', role: 'leader', name: 'Lee Leader', email: 'l@example.com', positions: ['treasurer', 'denleader'], dens: ['Wolf'] },
+        { uid: 'u-p', role: 'parent', name: 'Pat Parent', email: 'p@example.com' }, { uid: 'u-q', role: 'pending', name: 'Quinn', email: 'q@example.com' }],
+      invites: [{ email: 'new@example.com', role: 'leader', positions: ['kernel'] }], backend: { startSession: function () {}, calls: [],
+        updateMemberPositions: function (d, uid, p, dn) { this.calls.push([uid, p, dn]); return Promise.resolve({}); } } };
+    var ui = { posEdit: null, armed: null }, state = { leaders: [], scouts: [] }, toasts = [];
+    var DENS = ['Lion', 'Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light'];
+    function esc(x) { return String(x == null ? '' : x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+    function isAdmin() { return true; } function cloudReady() { return true; } function isLastAdmin(u) { return u === 'u-a'; }
+    function activeScouts() { return []; } function render() {} function showToast(m) { toasts.push(m); } function accountsToast() {}
+    function tinyDangerBtn(a, l) { return '<button data-act="' + a + '">x</button>'; } function chipPicker() { return ''; } function byScoutName(x) { return x; }`, c);
+  vm.runInContext(['ACCESS_TABLE', 'ACCESS_LEVELS', 'arrOf', 'accessFor', 'accountsInForce', 'apiAccounts', 'SECTION_SAY', 'DEN_POSITIONS', 'positionLabel', 'positionsSay',
+    'positionsEditsSay', 'needsPosition', 'positionPickerHtml', 'renderMembersPositions', 'saveMemberPositions', 'memberLinksHtml', 'renderInvitesPositions'].map(decl).join('\n') +
+    '\nfunction renderInvitesBlock() { return renderInvitesPositions(); }', c);
+  const run = (js) => vm.runInContext(js, c);
+  const html = run('renderMembersPositions(true, "u-a")');
+  const order = [...html.matchAll(/class="eyebrow"[^>]*>([^<]+)<|class="acct-name">([^<]+)</g)].map((m) => m[1] || m[2]);
+  eq(order, ['Needs a position', 'Ed Editor', 'Vi Viewer', 'Waiting for approval', 'Quinn', 'Members', 'Ann Admin', 'Lee Leader', 'Pat Parent', 'Invite someone', 'Invited — hasn’t signed in yet', 'new@example.com'],
+    'needs a position first, then waiting, then the rest');
+  ok(!/>Approve as Editor<|>Viewer<|value="editor"|value="viewer"/.test(html), 'editor or viewer offered');
+  ok(/Lee Leader<\/span>[\s\S]*?Treasurer, Den Leader \(Wolf\)<\/span>[\s\S]*?Edits: den meetings, attendance, den plans, advancement, the budget, the ledger, deposits, dues and fees and fundraisers\.<\/span>/.test(html),
+    'a leader\'s positions and what they edit: ' + html.slice(html.indexOf('Lee Leader'), html.indexOf('Lee Leader') + 600));
+  ok(/data-act="pos-edit-open" data-uid="u-e">Give positions</.test(html) && /data-act="pos-edit-open" data-uid="u-q">Approve as a leader</.test(html) &&
+    /data-act="pos-edit-open" data-uid="u-l">Change positions</.test(html), 'the buttons');
+  ok(/Kernel/.test(html.slice(html.indexOf('new@example.com'))), 'a leader invite says its positions');
+  // The picker: Den Leader ticked asks which dens.
+  run("ui.posEdit = { uid: 'u-e', positions: ['denleader'], dens: [] }");
+  const ed = run('renderMembersPositions(true, "u-a")');
+  eq((ed.match(/data-ch="pos-tick"/g) || []).length, 16, 'every position, labels from the table');
+  ok(/Which dens do they lead\?/.test(ed) && (ed.match(/data-ch="pos-den"/g) || []).length === 6 && /Edits: den meetings, attendance, den plans and advancement\./.test(ed), 'the dens, and what a Den Leader edits');
+  run("ui.posEdit.dens = ['Bear', 'Wolf']; saveMemberPositions('u-e')");
+  eq(JSON.parse(run('JSON.stringify(sync.backend.calls)')), [['u-e', ['denleader'], ['Wolf', 'Bear']]], 'saved: the positions, and the dens in DENS order');
+  run("ui.posEdit = { uid: 'u-e', positions: ['treasurer'], dens: ['Wolf'] }; sync.backend.calls = []; saveMemberPositions('u-e')");
+  eq(JSON.parse(run('JSON.stringify(sync.backend.calls)')), [['u-e', ['treasurer'], []]], 'no den position: no dens sent');
+  run("ui.posEdit = { uid: 'u-e', positions: [], dens: [] }; sync.backend.calls = []; toasts = []; saveMemberPositions('u-e')");
+  eq([JSON.parse(run('JSON.stringify(sync.backend.calls)')), run('toasts[0]')], [[], 'Tick at least one position, or make them a parent.'], 'none ticked');
+  eq([run("positionsEditsSay(['comms'])"), run("positionsEditsSay(['parent'])"), run("positionsEditsSay(['cubmaster'])")],
+    ['Edits nothing: reads the pack’s record.', '', 'Edits: the calendar, attendance, den plans, the derby, camping, advancement and the season.'], 'the summaries');
+  // A member who isn't an admin reads their own access.
+  run("sync.myRole = 'leader'; sync.myPositions = ['kernel']; sync.user.uid = 'u-l'");
+  ok(/Your access: <strong>Popcorn Kernel<\/strong>/.test(run('renderMembersPositions(false, "u-l")')), 'a leader\'s own');
+});
+
+test('positions members: a leader record linked to an account shows its positions as its jobs (a lens), and myJobs follows them', () => {
+  const c = vm.createContext({});
+  vm.runInContext(`var sync = { user: { uid: 'u-l', email: 'l@example.com' }, accountsUnavailable: false, myRole: 'leader', myPositions: ['treasurer', 'denleader', 'parent'], leadDens: ['Bear'],
+      backend: { startSession: function () {} }, members: [{ uid: 'u-l', role: 'leader', positions: ['treasurer', 'denleader'], dens: ['Bear'] }] };
+    var state = { leaders: [{ id: 'l1', name: 'Lee', uid: 'u-l', jobs: ['kernel'], dens: ['Wolf'] }] };`, c);
+  vm.runInContext(['JOBS', 'JOB_BY_ID', 'arrOf', 'accountsInForce', 'apiAccounts', 'positionJobs', 'leaderForUser', 'leaderIsDenLeader', 'myJobs', 'myDens'].map(decl).join('\n') +
+    "\nJOBS.forEach(function (j) { JOB_BY_ID[j.id] = j; });", c);
+  const J = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, c)));
+  eq([J('myJobs()'), J('myDens()')], [['treasurer', 'denleader'], ['Bear']], 'the positions (not the record\'s own jobs), and the dens an admin named');
+  vm.runInContext("sync.backend = {}", c);
+  eq([J('myJobs()'), J('myDens()')], [['kernel'], []], 'Firestore: the record\'s jobs, as before');
+  const lr = slice('renderLeaderRow');
+  ok(/var fromPos = acct \? positionJobs\(acct\.role, acct\.positions\) : null;/.test(lr) && /var jobsBlock = fromPos \? posBlock : /.test(lr) && /From their account\\u2019s positions/.test(lr),
+    'the leader row shows the account\'s positions, read-only');
+});
+
+atest('positions members: an admin\'s page gives an account its positions through the real server, and invites a leader with positions', async () => {
+  const w = await (await apiWorld()).seed({ editor: 'editor' });
+  w.state(3, PACK_STATE());
+  const a = await (await apiClient(w, 'owner', { state: PACK_STATE() })).start(1200);
+  a.run("sync.backend.updateMemberPositions(sync.docId, 'uid-editor', ['denleader', 'treasurer'], ['Wolf'])");
+  await settle([a], 1200);
+  eq([w.one('SELECT role FROM members WHERE uid = ?', 'uid-editor').role, heldBy(w, 'editor'), w.one("SELECT dens FROM member_positions WHERE uid = 'uid-editor' AND position = 'denleader'").dens],
+    ['leader', ['denleader', 'treasurer'], '["Wolf"]'], 'the account');
+  a.run("sync.backend.putInvite(sync.docId, 'newbie@example.com', { role: 'leader', positions: ['kernel'], dens: [] })");
+  await settle([a], 1200);
+  const iv = await w.call('owner', 'GET', 'invite', { email: 'newbie@example.com' });
+  eq([iv.body.role, iv.body.positions], ['leader', ['kernel']], 'the invite');
+  a.run("sync.backend.putInvite(sync.docId, 'pa@example.com', { role: 'parent' })");
+  await settle([a], 1200);
+  eq((await w.call('owner', 'GET', 'invite', { email: 'pa@example.com' })).body.role, 'parent', 'a parent invite, as before');
 });
 
 atest('api client: each role signs in with one session call and lands on the feed its role allows', async () => {

@@ -1446,6 +1446,12 @@
   }
   .acct-select:hover { border-color: var(--accent); }
   .acct-select:disabled { opacity: 0.6; cursor: not-allowed; }
+  /* Pack positions (client step 6) — the position picker: two columns of tick boxes on a phone,
+     more as the card widens; each label wraps inside its own cell. */
+  .pos-grid { flex-basis: 100%; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 12px; margin: 6px 0 0; }
+  .pos-grid label { display: flex; align-items: flex-start; gap: 6px; font-size: 0.9rem; min-height: 32px; }
+  .pos-grid input { margin-top: 3px; }
+  .pos-edit { flex-basis: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-top: 6px; }
 
   /* ---------- Parent phase ---------- */
   /* Parents (and not-yet-approved users) get a SEPARATE app — renderParentApp — built only
@@ -15327,6 +15333,12 @@
         } });
     },
     updateMemberRole: function (docId, uid, role) { return this.write('PATCH', this.memberPath(docId, uid), { role: role }); },
+    // Pack positions (an admin's): the positions this account holds, all at once, and the dens a Den Leader leads.
+    updateMemberPositions: function (docId, uid, positions, dens) {
+      var body = { positions: positions };
+      if (dens && dens.length) body.dens = dens;
+      return this.write('PATCH', this.memberPath(docId, uid), body);
+    },
     deleteMember: function (docId, uid) { return this.write('DELETE', this.memberPath(docId, uid)); },
     invitePath: function (docId, key) { return this.packPath(docId, '/invites/' + encodeURIComponent(key)); },
     subscribeInvites: function (docId, onNext, onErr) {
@@ -15347,6 +15359,12 @@
     },
     // The server records who invited from the token; only the role and the address are sent.
     putInvite: function (docId, key, data) {
+      // A leader invite carries its positions (and a den leader's dens); its role is the server's to work out.
+      if (data && Array.isArray(data.positions) && data.positions.length) {
+        var body = { positions: data.positions, email: key };
+        if (Array.isArray(data.dens) && data.dens.length) body.dens = data.dens;
+        return this.write('PUT', this.invitePath(docId, key), body);
+      }
       return this.write('PUT', this.invitePath(docId, key), { role: data && data.role, email: key });
     },
     deleteInvite: function (docId, key) { return this.write('DELETE', this.invitePath(docId, key)); },
@@ -16241,12 +16259,24 @@
   // MEMBER_ROLES' job alone. [] means "we don't know", which is a valid, fully-working state:
   // Home falls back to the pack-wide queue and every workspace behaves exactly as before.
   function myJobs() {
+    // Pack positions (client step 6) — on the pack's own server a leader's positions are their jobs (the same ids):
+    // still only a lens here, for Home's order and the "yours" marks; what they may change is the positions' own.
+    var pj = positionJobs(sync.myRole, sync.myPositions);
+    if (pj) return pj;
     var l = leaderForUser();
     return l ? arrOf(l.jobs) : [];
+  }
+  // The jobs a member's positions name (every position but Parent is a job of the same id), or null when there
+  // are none to go by (Firestore, no accounts, or not a leader with positions).
+  function positionJobs(role, positions) {
+    if (!apiAccounts() || !accountsInForce() || role !== 'leader') return null;
+    var ids = arrOf(positions).filter(function (x) { return x !== 'parent' && JOB_BY_ID[x]; });
+    return ids.length ? ids : null;
   }
   function hasJob(id) { return myJobs().indexOf(id) !== -1; }
   // The dens a den-leader user is scoped to. [] = all dens (the default for everyone else).
   function myDens() {
+    if (positionJobs(sync.myRole, sync.myPositions)) return arrOf(sync.leadDens).slice();   // the dens an admin named
     var l = leaderForUser();
     return (l && leaderIsDenLeader(l)) ? arrOf(l.dens) : [];
   }
@@ -16609,6 +16639,8 @@
   var MEMBER_ROLES = ['admin', 'editor', 'viewer', 'parent'];
   function setMemberRole(memberUid, role) {
     if (MEMBER_ROLES.indexOf(role) === -1) return;
+    // Pack positions — on the pack's own server, editor and viewer are never set again (a leader comes with positions).
+    if (apiAccounts() && role !== 'admin' && role !== 'parent' && role !== 'pending') return;
     if (!isAdmin() || !cloudReady()) return;
     if (isLastAdmin(memberUid) && role !== 'admin') { showToast('Keep at least one admin.'); return; }
     sync.backend.updateMemberRole(sync.docId, memberUid, role).catch(function (err) { accountsToast(err); });
@@ -16677,9 +16709,13 @@
   // packs/{docId}/invites/{lowercased-email} = { role, email, invitedBy, invitedAt }. The
   // invitee consumes it on their first sign-in (ensureMyMemberDoc) and lands straight in
   // the invited role instead of 'pending'.
-  function createInvite(emailRaw, role) {
+  function createInvite(emailRaw, role, positions, dens) {
     if (!isAdmin() || !cloudReady()) return;
-    if (INVITE_ROLES.indexOf(role) === -1) return;
+    // Pack positions — on the pack's own server a leader comes with positions; editor and viewer are never invited again.
+    if (apiAccounts()) {
+      if (role === 'leader' && !arrOf(positions).length) { showToast('Tick at least one position for the leader.'); return; }
+      if (role !== 'leader' && role !== 'parent') return;
+    } else if (INVITE_ROLES.indexOf(role) === -1) return;
     var email = inviteEmailKey(emailRaw);
     if (!email || email.indexOf('@') < 1 || email.indexOf('.') === -1 || /[\/\s]/.test(email)) {
       showToast('Enter a valid email address.');
@@ -16694,13 +16730,17 @@
       return;
     }
     var be = sync.backend;
-    be.putInvite(sync.docId, email, {
+    var ivData = {
       role: role,
       email: email,
       invitedBy: (sync.user && (sync.user.email || sync.user.uid)) || '',
       invitedAt: be.serverTime()
-    }).then(function () {
-      showToast('Invited ' + email + ' as ' + role + '.');
+    };
+    // Pack positions — only on the pack's own server, which reads them (Firestore's rules allow no other keys).
+    if (apiAccounts() && role === 'leader') { ivData.positions = arrOf(positions).slice(); ivData.dens = arrOf(dens).slice(); }
+    be.putInvite(sync.docId, email, ivData).then(function () {
+      showToast('Invited ' + email + ' as ' + (role === 'leader' ? positionsSay(positions, dens) : role) + '.');
+      ui.inviteDraft = null;
       render(); // clears the form inputs
     }).catch(function (err) { accountsToast(err); });
   }
@@ -29977,6 +30017,8 @@
     }
     var admin = isAdmin();
     var me = sync.user.uid;
+    // Pack positions (client step 6) — on the pack's own server, the card speaks positions, not editor/viewer.
+    if (apiAccounts() && sync.members.length) return h + renderMembersPositions(admin, me) + '</div>';
     if (!sync.members.length) {
       h += '<p class="small muted" style="margin:0">No members yet — sign-in is still registering you. This card will fill in shortly.</p></div>';
       return h;
@@ -30075,12 +30117,157 @@
     h += '</div>';
     return h;
   }
+  // ---- Pack positions: the Members card on the pack's own server (client step 6, 2026-10-02) ----
+  // A leader's account holds one or more positions (labels from the table, which are JOBS' own words); an
+  // admin ticks them here. What each one edits is the table's (accessFor). An account still 'editor' or
+  // 'viewer' from before reads everything and edits nothing until it is given positions: listed first,
+  // as "Needs a position". Admin and parent are set by name; editor and viewer never again.
+  var DEN_POSITIONS = ACCESS_TABLE.denPositions;
+  function positionLabel(id) {
+    var p = ACCESS_TABLE.positions.filter(function (x) { return x.id === id; })[0];
+    return p ? p.label : id;
+  }
+  // "Den Leader (Wolf, Bear), Treasurer".
+  function positionsSay(positions, dens) {
+    var d = arrOf(dens);
+    return arrOf(positions).map(function (pid) {
+      return positionLabel(pid) + (DEN_POSITIONS.indexOf(pid) !== -1 && d.length ? ' (' + d.join(', ') + ')' : '');
+    }).join(', ');
+  }
+  // "Edits: den meetings, attendance, den plans and advancement." — what these positions together edit, in the
+  // app's words (SECTION_SAY), or that they only read. '' for none at all (Parent alone).
+  function positionsEditsSay(positions) {
+    var held = arrOf(positions).filter(function (x) { return x !== 'parent'; });
+    if (!held.length) return '';
+    var a = accessFor('leader', held);
+    var list = ACCESS_TABLE.sections.filter(function (sx) {
+      return a[sx] === 'edit' && sx !== 'home' && !(sx === 'calendar.denmeeting' && a.calendar === 'edit');
+    }).map(function (sx) { return SECTION_SAY[sx] ? SECTION_SAY[sx][0] : sx; });
+    if (!list.length) return 'Edits nothing: reads the pack’s record.';
+    var last = list.pop();
+    return 'Edits: ' + (list.length ? list.join(', ') + ' and ' : '') + last + '.';
+  }
+  function needsPosition(m) { return m && (m.role === 'editor' || m.role === 'viewer'); }
+  // The tick boxes, for a member (`kind` 'member', `id` its uid) or the invite form (`kind` 'invite').
+  function positionPickerHtml(kind, id, draft) {
+    var held = arrOf(draft && draft.positions), dens = arrOf(draft && draft.dens);
+    var tag = ' data-kind="' + esc(kind) + '" data-uid="' + esc(id || '') + '"';
+    var h = '<div class="pos-grid" role="group" aria-label="Positions">' + ACCESS_TABLE.positions.map(function (p) {
+      return '<label><input type="checkbox" data-ch="pos-tick"' + tag + ' value="' + esc(p.id) + '"' + (held.indexOf(p.id) !== -1 ? ' checked' : '') + '>' +
+        '<span>' + esc(p.label) + '</span></label>';
+    }).join('') + '</div>';
+    if (held.some(function (x) { return DEN_POSITIONS.indexOf(x) !== -1; })) {
+      h += '<p class="small" style="margin:8px 0 0">Which dens do they lead? They change those dens’ meetings only.</p>' +
+        '<div class="pos-grid" role="group" aria-label="Dens they lead">' + DENS.map(function (d) {
+          return '<label><input type="checkbox" data-ch="pos-den"' + tag + ' value="' + esc(d) + '"' + (dens.indexOf(d) !== -1 ? ' checked' : '') + '><span>' + esc(d) + '</span></label>';
+        }).join('') + '</div>';
+    }
+    var say = positionsEditsSay(held);
+    if (say) h += '<p class="small muted" style="margin:6px 0 0">' + esc(say) + '</p>';
+    return h;
+  }
+  function renderMembersPositions(admin, me) {
+    var rank = function (m) { return needsPosition(m) ? 0 : m.role === 'pending' ? 1 : 2; };
+    var sorted = sync.members.slice().sort(function (a, b) {
+      return rank(a) - rank(b) || String(a.name || a.email || '').localeCompare(String(b.name || b.email || ''));
+    });
+    var h = '', lastRank = -1;
+    sorted.forEach(function (m) {
+      var r = rank(m), who = m.name || m.email || 'Member', isSelf = m.uid === me;
+      if (r !== lastRank) {
+        h += (lastRank === -1 ? '' : '</div>') + (r === 0 ? '<p class="eyebrow" style="margin:8px 0 0">Needs a position</p>' +
+          '<p class="small muted" style="margin:0 0 4px">These accounts were editors or viewers. They can read the pack but change nothing until you tick their positions.</p>'
+          : r === 1 ? '<p class="eyebrow" style="margin:8px 0 0">Waiting for approval</p>' : '<p class="eyebrow" style="margin:8px 0 0">Members</p>') + '<div class="acct-list">';
+        lastRank = r;
+      }
+      var desc = m.role === 'admin' ? 'Admin · edits everything' : m.role === 'parent' ? 'Parent' : m.role === 'pending' ? 'Waiting'
+        : m.role === 'leader' ? positionsSay(m.positions, m.dens) || 'Leader' : 'Needs a position';
+      h += '<div class="acct-row"><div class="acct-who"><span class="acct-name">' + esc(who) + '</span>' +
+        (sync.ownerUid && m.uid === sync.ownerUid ? ' <span class="pill navy acct-owner">owner</span>' : '') +
+        (isSelf ? ' <span class="small muted">(you)</span>' : '') +
+        (m.email ? '<span class="acct-email small muted">' + esc(m.email) + '</span>' : '') +
+        '<span class="acct-email small">' + esc(desc) + '</span>' +
+        (m.role === 'leader' && positionsEditsSay(m.positions) ? '<span class="acct-email small muted">' + esc(positionsEditsSay(m.positions)) + '</span>' : '') +
+        '</div><div class="acct-ctl">';
+      var editing = ui.posEdit && ui.posEdit.uid === m.uid;
+      if (admin && !isSelf && !editing) {
+        var lock = isLastAdmin(m.uid);
+        h += '<button type="button" class="btn small' + (needsPosition(m) || m.role === 'pending' ? ' primary' : '') + '" data-act="pos-edit-open" data-uid="' + esc(m.uid) + '">' +
+          (m.role === 'leader' ? 'Change positions' : m.role === 'pending' ? 'Approve as a leader' : 'Give positions') + '</button>' +
+          (m.role !== 'parent' && !lock ? '<button type="button" class="btn small" data-act="member-approve" data-uid="' + esc(m.uid) + '" data-role="parent">Parent</button>' : '') +
+          (m.role !== 'admin' && m.role !== 'pending' ? '<button type="button" class="btn small ghost' + (ui.armed === 'member-make-admin:' + m.uid ? ' danger armed' : '') + '" data-act="member-make-admin:' + esc(m.uid) + '">' +
+            (ui.armed === 'member-make-admin:' + m.uid ? 'Tap again: admin edits everything' : 'Make admin') + '</button>' : '') +
+          (lock ? '<span class="small muted">only admin</span>' : tinyDangerBtn('member-remove:' + m.uid, 'Remove ' + who));
+      }
+      h += '</div>';
+      if (editing) {
+        h += '<div class="pos-edit">' + positionPickerHtml('member', m.uid, ui.posEdit) +
+          '<div class="row" style="margin-top:8px"><button type="button" class="btn small primary" data-act="pos-edit-save" data-uid="' + esc(m.uid) + '">Save positions</button>' +
+          '<button type="button" class="btn small ghost" data-act="pos-edit-cancel">Cancel</button></div></div>';
+      }
+      h += memberLinksHtml(m, admin);
+      h += '</div>';
+    });
+    if (lastRank !== -1) h += '</div>';
+    if (!admin) {
+      h += '<p class="small muted" style="margin:10px 0 0">Your access: <strong>' + esc(sync.myRole === 'leader' ? positionsSay(sync.myPositions, sync.leadDens) || 'leader'
+        : needsPosition({ role: sync.myRole }) ? 'needs a position' : (sync.myRole || 'pending')) + '</strong>. Ask an admin to change it.</p>';
+    } else {
+      h += '<p class="small muted" style="margin:10px 0 0">A leader’s positions decide what they can change; they can read the rest. ' +
+        'A parent only ever sees the schedule and standings, never the money, dues, inventory or leaders’ contact details. An admin edits everything.</p>';
+      h += renderInvitesBlock();
+    }
+    return h;
+  }
+  // Save an account's positions (an admin's). At least one; a den leader's dens with them.
+  function saveMemberPositions(memberUid) {
+    var d = ui.posEdit;
+    if (!isAdmin() || !cloudReady() || !d || d.uid !== memberUid) return;
+    var positions = ACCESS_TABLE.positions.map(function (p) { return p.id; }).filter(function (x) { return arrOf(d.positions).indexOf(x) !== -1; });
+    if (!positions.length) { showToast('Tick at least one position, or make them a parent.'); return; }
+    if (isLastAdmin(memberUid)) { showToast('Keep at least one admin.'); return; }
+    var leads = positions.some(function (x) { return DEN_POSITIONS.indexOf(x) !== -1; });
+    var dens = leads ? DENS.filter(function (x) { return arrOf(d.dens).indexOf(x) !== -1; }) : [];
+    sync.backend.updateMemberPositions(sync.docId, memberUid, positions, dens).then(function () {
+      ui.posEdit = null;
+      showToast('Saved. ' + (positionsEditsSay(positions) || 'Parent.'));
+      render();
+    }).catch(function (err) { accountsToast(err); });
+  }
+  // The leader-record link and the parent-of links under a member row (unchanged from the Firestore card).
+  function memberLinksHtml(m, admin) {
+    var h = '';
+    if (admin && m.role !== 'pending' && state.leaders.length) {
+      var linked = state.leaders.find(function (l) { return l.uid === m.uid; });
+      var autoMail = String(m.email || '').trim().toLowerCase();
+      var autoMatch = !linked && autoMail && state.leaders.find(function (l) { return String(l.email || '').trim().toLowerCase() === autoMail; });
+      h += '<div class="acct-link"><label class="small muted" style="display:flex;align-items:center;gap:6px">Leader record' +
+        '<select class="acct-select" data-ch="member-leader" data-uid="' + esc(m.uid) + '" aria-label="Leader record for ' + esc(m.name || m.email || 'member') + '">' +
+        '<option value="">' + (autoMatch ? esc(autoMatch.name || 'matched by email') + ' (matched by email)' : 'not linked yet') + '</option>' +
+        state.leaders.map(function (l) {
+          return '<option value="' + esc(l.id) + '"' + (linked && linked.id === l.id ? ' selected' : '') + '>' + esc(l.name || 'Unnamed leader') + '</option>';
+        }).join('') + '</select></label></div>';
+    }
+    if (admin && m.role !== 'pending' && activeScouts().length) {
+      var kids = byScoutName(activeScouts());
+      var linkedKids = kids.filter(function (sc) { return arrOf(sc.parentUids).indexOf(m.uid) !== -1; });
+      h += '<div class="acct-link"><span class="small muted">Parent of' + (linkedKids.length ? '' : ' — nobody yet') + '</span>' +
+        chipPicker({
+          id: m.uid, canEdit: true, removeAct: 'member-scout-remove', addCh: 'member-scout-add', addLabel: '+ Link a scout…',
+          chosen: linkedKids.map(function (sc) { return { value: sc.id, label: sc.name || 'scout' }; }),
+          addable: kids.filter(function (sc) { return linkedKids.indexOf(sc) === -1; }).map(function (sc) { return { value: sc.id, label: sc.name || 'scout' }; })
+        }) + '</div>';
+    }
+    return h;
+  }
   // Parent phase — admin-only "Invite someone" form + the outstanding invite list.
   function renderInvitesBlock() {
     if (sync.invitesUnavailable) {
       return '<hr class="divider"><p class="small muted" style="margin:0">Invites need the newest security rules ' +
         '(SETUP guide, Part C) — publish them to invite people by email.</p>';
     }
+    // Pack positions — on the pack's own server: a leader with positions, or a parent.
+    if (apiAccounts()) return renderInvitesPositions();
     var h = '<hr class="divider"><p class="eyebrow">Invite someone</p>' +
       '<form data-form="invite-member" class="row" style="align-items:flex-end">' +
       '<label class="fld">Email<input type="email" name="email" placeholder="parent@example.com" autocomplete="off" style="width:210px"></label>' +
@@ -30100,6 +30287,30 @@
           '<div class="acct-ctl">' + rolePill(iv.role) +
           tinyDangerBtn('invite-revoke:' + iv.email, 'Revoke the invite for ' + iv.email) +
           '</div></div>';
+      });
+      h += '</div>';
+    }
+    return h;
+  }
+  function renderInvitesPositions() {
+    var d = ui.inviteDraft || { as: 'parent', positions: [], dens: [] };
+    var h = '<hr class="divider"><p class="eyebrow">Invite someone</p>' +
+      '<form data-form="invite-member" class="row" style="align-items:flex-end">' +
+      '<label class="fld">Email<input type="email" name="email" data-ch="invite-email" value="' + esc(d.email || '') + '" placeholder="name@example.com" autocomplete="off" style="width:210px;max-width:100%"></label>' +
+      '<label class="fld">As<select class="acct-select" name="as" data-ch="invite-as">' +
+      '<option value="leader"' + (d.as === 'leader' ? ' selected' : '') + '>A leader, with positions</option>' +
+      '<option value="parent"' + (d.as !== 'leader' ? ' selected' : '') + '>A parent</option></select></label>' +
+      '<button type="submit" class="btn small primary">Send invite</button>' +
+      (d.as === 'leader' ? '<div class="pos-edit">' + positionPickerHtml('invite', '', d) + '</div>' : '') +
+      '</form>' +
+      '<p class="small muted" style="margin:6px 0 0">They sign in with Google using that address and land straight in, with what you picked. ' +
+      'Nothing is emailed from here; send them the page link yourself.</p>';
+    if (sync.invites.length) {
+      h += '<p class="eyebrow" style="margin-top:12px">Invited — hasn’t signed in yet</p><div class="acct-list">';
+      sync.invites.forEach(function (iv) {
+        h += '<div class="acct-row"><div class="acct-who"><span class="acct-name">' + esc(iv.email) + '</span>' +
+          '<span class="acct-email small">' + esc(iv.role === 'leader' ? positionsSay(iv.positions, iv.dens) : iv.role === 'parent' ? 'Parent' : 'Needs a position') + '</span></div>' +
+          '<div class="acct-ctl">' + tinyDangerBtn('invite-revoke:' + iv.email, 'Revoke the invite for ' + iv.email) + '</div></div>';
       });
       h += '</div>';
     }
@@ -30641,8 +30852,18 @@
   function renderLeaderRow(l) {
     var pills = l.archived ? [] : leaderStatus(l);
     var pillHtml = pills.map(function (p) { return '<span class="pill' + p.cls + '">' + esc(p.label) + '</span>'; }).join(' ');
+    // Pack positions (client step 6) — a leader record linked to an account with positions shows those as its jobs,
+    // read-only here: an admin changes them on the Members card. A job is still only a lens (JOBS never gates).
+    var acct = l.uid ? sync.members.filter(function (m) { return m.uid === l.uid; })[0] : null;
+    var fromPos = acct ? positionJobs(acct.role, acct.positions) : null;
+    if (fromPos) {
+      var posDens = arrOf(acct.dens);
+      var posBlock = '<div class="block-card" style="margin-top:8px"><p class="eyebrow">Jobs in the pack</p>' +
+        '<p class="small" style="margin:4px 0 0">' + esc(positionsSay(fromPos, posDens)) + '</p>' +
+        '<p class="small muted" style="margin:4px 0 0">From their account\u2019s positions. A pack admin changes them on Pack \u00b7 Sharing \u00b7 Members.</p></div>';
+    }
     var myJobIds = arrOf(l.jobs);
-    var jobsBlock = '<div class="block-card" style="margin-top:8px"><p class="eyebrow">Jobs in the pack</p>' +
+    var jobsBlock = fromPos ? posBlock : '<div class="block-card" style="margin-top:8px"><p class="eyebrow">Jobs in the pack</p>' +
       // The leftover-role note below already says "no job yet", so only one of the two shows.
       ((myJobIds.length || l.role) ? '' : '<p class="small muted" style="margin:4px 0 0">No job set yet — this leader sees the whole pack’s to-do list instead of their own.</p>') +
       chipPicker({
@@ -30651,7 +30872,7 @@
         addable: JOBS.filter(function (j) { return myJobIds.indexOf(j.id) === -1; })
           .map(function (j) { return { value: j.id, label: j.label }; })
       });
-    if (leaderIsDenLeader(l)) {
+    if (!fromPos && leaderIsDenLeader(l)) {
       var myDens = arrOf(l.dens);
       jobsBlock += '<p class="eyebrow" style="margin-top:10px">Their den' + (myDens.length > 1 ? 's' : '') + '</p>' +
         chipPicker({
@@ -30670,13 +30891,13 @@
     // season archives flatten to), and it's shown here only when it failed to map to any
     // job — otherwise a note somebody typed would silently vanish. Once a job is chosen the
     // leftover is redundant, so this hides itself.
-    if (l.role && !myJobIds.length) {
+    if (!fromPos && l.role && !myJobIds.length) {
       jobsBlock += '<p class="small muted" style="margin:10px 0 0">No job set yet — previously recorded as “' + esc(l.role) + '”. ' +
         'Pick the job or jobs above that match' +
         (canEditSection('people') ? ', then <button type="button" class="btn small ghost" data-act="ldr-role-clear" data-id="' + l.id + '">clear this note</button>' : '.') +
         '</p>';
     }
-    jobsBlock += '</div>';
+    if (!fromPos) jobsBlock += '</div>';
     return '<div class="leader-row' + (l.archived ? ' wk-past' : '') + '">' +
       '<div class="row" style="align-items:flex-end">' +
       (l.archived ? '<span class="pill navy" style="align-self:flex-end;margin-bottom:9px">moved on</span>' : '') +
@@ -39431,6 +39652,21 @@
     if (act === 'sign-in-google') { signInWithGoogle(); return; }
     if (act === 'sign-out-google') { signOutGoogle(); return; }
     if (act === 'member-approve') { setMemberRole(el.dataset.uid, el.dataset.role); return; }
+    // Pack positions (client step 6) — the position picker on a member row, and making someone an admin (two taps).
+    if (act === 'pos-edit-open') {
+      var peM = sync.members.filter(function (m) { return m.uid === el.dataset.uid; })[0];
+      if (!peM || !isAdmin()) return;
+      ui.posEdit = { uid: peM.uid, positions: arrOf(peM.positions).slice(), dens: arrOf(peM.dens).slice() };
+      render(); return;
+    }
+    if (act === 'pos-edit-cancel') { ui.posEdit = null; render(); return; }
+    if (act === 'pos-edit-save') { saveMemberPositions(String(el.dataset.uid || '')); return; }
+    if (act.indexOf('member-make-admin:') === 0) {
+      var maUid = act.slice('member-make-admin:'.length);
+      if (!isAdmin()) return;
+      arm(act, function () { setMemberRole(maUid, 'admin'); });
+      return;
+    }
     if (act.indexOf('member-remove:') === 0) {
       var rmUid = act.slice('member-remove:'.length);
       arm(act, function () { removeMember(rmUid); });
@@ -41577,6 +41813,23 @@
     if (ch === 'sync-pass') { setSyncPass(el.value); render(); return; }
     // Accounts: admin changes a member's role (writes directly to the members doc, NOT via commit()).
     if (ch === 'member-role') { setMemberRole(el.dataset.uid, el.value); return; }
+    // Pack positions (client step 6) — a tick in the position picker (a member's, or the invite form's). ui only until saved.
+    if (ch === 'pos-tick' || ch === 'pos-den') {
+      var ptD = el.dataset.kind === 'invite' ? (ui.inviteDraft = ui.inviteDraft || { as: 'leader', positions: [], dens: [] }) : ui.posEdit;
+      if (!ptD || !isAdmin() || (el.dataset.kind !== 'invite' && ptD.uid !== el.dataset.uid)) return;
+      var ptList = ch === 'pos-tick' ? 'positions' : 'dens', ptV = String(el.value || '');
+      var ptOk = ch === 'pos-tick' ? ACCESS_TABLE.positions.some(function (p) { return p.id === ptV; }) : DENS.indexOf(ptV) !== -1;
+      if (!ptOk) return;
+      ptD[ptList] = arrOf(ptD[ptList]).filter(function (x) { return x !== ptV; });
+      if (el.checked) ptD[ptList].push(ptV);
+      render(); return;
+    }
+    if (ch === 'invite-email') { ui.inviteDraft = ui.inviteDraft || { as: 'parent', positions: [], dens: [] }; ui.inviteDraft.email = el.value; return; }
+    if (ch === 'invite-as') {
+      ui.inviteDraft = ui.inviteDraft || { as: 'parent', positions: [], dens: [] };
+      ui.inviteDraft.as = el.value === 'leader' ? 'leader' : 'parent';
+      render(); return;
+    }
     // Wave 21 — link an account to a leader record. Unlike member-role (which writes the
     // members doc directly), this is an ordinary PACK RECORD edit, so it goes through commit().
     // A uid can only be on one leader at a time, so claiming it clears it everywhere else;
@@ -42229,6 +42482,14 @@
     }
     // Parent phase — admin invites someone by email (accounts layer; never touches the pack record).
     if (kind === 'invite-member') {
+      if (apiAccounts()) {
+        var ivD = ui.inviteDraft || { as: 'parent', positions: [], dens: [] };
+        var ivAs = String(fd.get('as') || ivD.as);
+        var ivPos = ACCESS_TABLE.positions.map(function (p) { return p.id; }).filter(function (x) { return arrOf(ivD.positions).indexOf(x) !== -1; });
+        var ivDens = ivPos.some(function (x) { return DEN_POSITIONS.indexOf(x) !== -1; }) ? DENS.filter(function (x) { return arrOf(ivD.dens).indexOf(x) !== -1; }) : [];
+        createInvite(String(fd.get('email') || ''), ivAs === 'leader' ? 'leader' : 'parent', ivPos, ivDens);
+        return;
+      }
       createInvite(String(fd.get('email') || ''), String(fd.get('role') || ''));
       return;
     }
