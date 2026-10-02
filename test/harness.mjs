@@ -95,7 +95,7 @@ const FORMAT_GATE_FNS = ['PACK_FORMAT', 'formatAhead', 'formatStored', 'storedFo
   // Pack positions (client step 3): the section guard commit(), syncPush and the merge consult. Off
   // (sectionGuardOn) unless the context is a leader below an admin on the pack's own server.
   ['apiAccounts', 'sectionGuardOn', 'ownKey', 'keyOwnerOf', 'goneOwnerOf', 'ownerEditable', 'keyWritable', 'guardBaseline', 'rollbackUneditable',
-    'pushBody', 'takeServerSections', 'takeServerUnwritable', 'sectionRefusedSay', 'syncThreeWayOwnOnly']);
+    'pushBody', 'takeServerSections', 'takeServerUnwritable', 'sectionRefusedSay', 'syncThreeWayOwnOnly', 'canEditDenMeeting', 'denMeetingKeep', 'depositOnlyKeep']);
 const SECTION_GUARD_FNS = FORMAT_GATE_FNS.slice(FORMAT_GATE_FNS.indexOf('apiAccounts'));
 const FORMAT_GATE_SRC = () => FORMAT_GATE_FNS.map(decl).join('\n');
 // Wave C1 — buildParentView sorts the trips by date and re-checks their ISO dates, so every
@@ -5767,7 +5767,7 @@ test('camping edits are behind canEdit, and deletes are two-tap with an undo', (
   ['camp-add-trip', 'camp-add-sec:', 'camp-del-sec:', 'camp-del-trip:'].forEach((a) => {
     const m = actBlock(a);
     ok(m, `the ${a} action is missing`);
-    ok(/if \(!canEdit\(\)\) return;/.test(m[0]), `${a} does not check canEdit()`);
+    ok(/if \(!canEditSection\('camping'\)\) \{ showToast\(readOnlySay\('camping'\)\); return; \}/.test(m[0]), `${a} does not check canEditSection('camping')`);
   });
   ['camp-del-sec:', 'camp-del-trip:'].forEach((a) => {
     const m = actBlock(a);
@@ -5946,7 +5946,7 @@ test('Den plans is where a den changes its line on an All-dens night', () => {
   ok(/dmMap\[dmDen\] = false/.test(h), '"not at this meeting" is not stored');
   ok(/dmVal === packAdvName\(dmM\.packAdv, dmDen\)\) delete dmMap\[dmDen\]/.test(h),
     'picking the pack’s own choice leaves a stale change behind');
-  ok(/canEdit\(\)/.test(h), 'a viewer can change a den’s adventure');
+  ok(/canEditDenMeeting\(dmM, dmDen\)/.test(h) && /canEditDenMeeting\(e, den\)/.test(slice('denMeetingsBlock')), 'a viewer (or another den’s leader) can change a den’s adventure');
   // Never published: the parent view is an allowlist, and these are leader planning.
   ok(!/denAdv|packAdv/.test(BPV()), 'the den adventures reached the parent view');
 });
@@ -6558,7 +6558,7 @@ test('a reward tier can carry the small print the covers list cannot hold', () =
   ok(!/innerHTML|' \+ note \+ '/.test(blk[0]), 'the note is interpolated raw somewhere');
   ok(/esc\(note\)/.test(blk[0]), 'the textarea does not escape its own value');
   // A read-only leader sees a note that exists, and no empty furniture when there is none.
-  ok(/if \(!canEdit\(\)\) \{\s*\n\s*if \(!note\.trim\(\)\) return '';/.test(blk[0]),
+  ok(/if \(!canEditSection\('rewards'\)\) \{\s*\n\s*if \(!note\.trim\(\)\) return '';/.test(blk[0]),
     'a read-only screen shows an empty labelled box');
   // Stored verbatim — trimming would eat the newline before the next bullet.
   const chBlock = /if \(ch === 'tier-name' \|\| ch === 'tier-threshold'[\s\S]*?commit\(\); return;\n    \}/.exec(SCRIPT);
@@ -11882,7 +11882,7 @@ test('A1: the planner is a Program section, writes only through a tagged den mee
   ok(/advCanonicalName\(paDen, fd\.get\('name'\)\)/.test(h), 'the typed elective is not canonicalised');
   // Buttons that edit are offered only to editors — a job never decides it.
   const r = slice('renderDenPlanner');
-  ok(/var edit = canEdit\(\);/.test(r) && !/hasJob\(/.test(r), 'the planner gates on something other than the role');
+  ok(/var edit = canEditSection\('calendar'\);/.test(r) && !/hasJob\(/.test(r), 'the planner gates on something other than the role (adding meetings is the calendar’s)');
   ok(!/denPlan|renderDenPlanner/.test(BPV()), 'the den planner reached the parent view');
 });
 
@@ -12175,8 +12175,8 @@ test('B1: every leader edit to the page is behind canEdit, and the editor says w
   ['welcome-add-sec', 'welcome-sec-hide:', 'welcome-del-sec:'].forEach((a) => {
     const i = SCRIPT.indexOf(`act${a.slice(-1) === ':' ? `.indexOf('${a}') === 0` : ` === '${a}'`}`);
     ok(i > -1, `no handler for ${a}`);
-    ok(/^\) \{\s*if \(!canEdit\(\)\) return;/.test(SCRIPT.slice(i + (a.slice(-1) === ':' ? `act.indexOf('${a}') === 0`.length : `act === '${a}'`.length))),
-      `${a} is not behind canEdit()`);
+    ok(/^\) \{\s*if \(!canEditSection\('joining'\)\) \{ showToast\(readOnlySay\('joining'\)\); return; \}/.test(SCRIPT.slice(i + (a.slice(-1) === ':' ? `act.indexOf('${a}') === 0`.length : `act === '${a}'`.length))),
+      `${a} is not behind canEditSection('joining')`);
   });
   const ed = slice('renderWelcomeEditor');
   ok(/Everything shown here goes to families exactly as/.test(ed), 'the editor does not say the page is published verbatim');
@@ -12377,7 +12377,7 @@ test('B5: the tracker is normalized, cleared at close-out, removed with its scou
   ok(!/onboarding/.test(codeOnly(slice('monthlyDigest'))), 'the family digest reads the tracker');
   const h = /if \(ch === 'ob-tick' \|\| ch === 'ob-track'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/commit\(\);/.test(h) && /ONBOARD_TICKS\.indexOf\(el\.dataset\.name\) === -1/.test(h), 'the tick handler writes unknown keys or skips commit()');
-  ok(/if \(act\.indexOf\('ob-untrack:'\) === 0\) \{\s*if \(!canEdit\(\)\) return;/.test(SCRIPT), 'untracking is not behind canEdit()');
+  ok(/if \(act\.indexOf\('ob-untrack:'\) === 0\) \{\s*if \(!canEditSection\('joining'\)\)/.test(SCRIPT), 'untracking is not behind canEditSection(\'joining\')');
   ok(/renderOnboarding\(\) \+ renderWelcomeEditor\(\)/.test(slice('renderJoining')), 'the tracker is not on Scouts → New families');
 });
 
@@ -12764,7 +12764,7 @@ test('C4: the den campout is a template added on request, never seeded, and stat
   ok(/seedCampingTrips\(\)\.concat\(campTemplates\(\)\)/.test(slice('refreshCampingSeed')), 'templates are outside the refresh');
   // Added only by the leader, once, behind canEdit().
   const h = /if \(act === 'camp-add-den'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
-  ok(h && /if \(!canEdit\(\)\) return;/.test(h[0]) && /if \(!getTrip\(DEN_CAMP_TRIP_ID\)\)/.test(h[0]), 'the add is ungated or can duplicate');
+  ok(h && /if \(!canEditSection\('camping'\)\)/.test(h[0]) && /if \(!getTrip\(DEN_CAMP_TRIP_ID\)\)/.test(h[0]), 'the add is ungated or can duplicate');
   ok(/data-act="camp-add-den"/.test(slice('renderCamping')), 'no button to add the template');
 });
 
@@ -13223,7 +13223,7 @@ test('E1: due dates are normalized, carried a year at close-out, and editable on
   ok(/data-ch="bud-dues-due"/.test(slice('renderBudget')), 'no dues date on the Budget');
   ok(/if \(ch === 'bud-dues-due'\) \{ state\.budget\.duesDueDate = campIsoOrBlank\(el\.value\); commit\(\); return; \}/.test(SCRIPT), 'dues date handler');
   const blk = slice('duesFamilyBlock');
-  ok(/data-ch="charge-due"/.test(blk) && /canEdit\(\) \? '' : ' disabled'/.test(blk), 'the charge date is not editable, or not gated');
+  ok(/data-ch="charge-due"/.test(blk) && /canEditSection\('dues'\) \? '' : ' disabled'/.test(blk), 'the charge date is not editable, or not gated');
   ok(/chargesOverdue\(f\.charges, paidOn, chargeDueNow, todayISO\(\)\)/.test(blk) && / overdue<\/span>/.test(blk), 'a family block does not say what is overdue');
   ok(/overdue\.<\/strong>/.test(slice('renderDues')), 'Family balances does not total the overdue');
 });
@@ -17293,7 +17293,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'shiftReportsReconcile', 'shiftReportsAfterPush', 'returnShiftReport', 'leaderShiftReportAct', 'srHandEdited', 'getStorefront',
   'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout', 'shiftConfirmSubmit',
   'srIConfirmed', 'srFamiliesNow', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'familyKeyOf', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
-  'srParentStore', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
+  'srParentStore', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashEntries', 'srMayUndo', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
   'srScheduleRefresh', 'parentDoc', 'parentPreviewDoc', 'shiftReportOpenFor', 'shiftReportToday', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_DAYS', 'isoPlusDays',
   'srFormOpen', 'srMirror', 'srReasonDraft', 'srNameClean', 'srSignName',
   'ledgerActor', 'ledgerActorName',
@@ -17527,6 +17527,96 @@ test('positions client: the three-way merge takes the server\'s version of what 
   vm.runInContext("sync.myRole = 'admin'", c);
   c.three2 = { merged: { budget: { mine: 1 } }, items: [{ key: '.budget', path: [{ k: 'budget' }] }] };
   eq(JSON.parse(vm.runInContext('JSON.stringify(syncThreeWayOwnOnly(three2, theirs))', c)).items.length, 1, 'an admin is asked about everything, as before');
+});
+
+// Client step 5 — the page's gates follow the positions: a den leader's page accepts a family's
+// shift report against the real server (the block the server ties to the report, finding 1), and
+// the commit guard keeps a den leader to their own dens' meeting fields and a kernel to deposits.
+atest('positions client: a den leader\'s page accepts a family\'s shift report through the real server, block and all', async () => {
+  await apiSetup();
+  const today = API.rules.packToday();
+  const w = await (await apiWorld()).seed({ parent: 'parent' });
+  seedLeader(w, 'lead_denleader', ['denleader'], undefined, ['Wolf']);
+  const blk = (id) => ({ id, label: id, start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }], salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '' });
+  const pack = PACK_STATE({ scouts: [{ id: 's1', name: 'Ada' }], storefronts: [{ id: 'sf1', name: 'Kroger', date: today, blocks: [blk('b1')] }] });
+  w.state(3, pack);
+  const VIEW = { rev: 3, packName: 'Test Pack', events: [{ kind: 'storefront', sfId: 'sf1', date: today, title: 'Kroger', detail: '', shifts: [{ when: '10–12', blockId: 'b1', families: 1 }] }] };
+  w.db.raw.prepare('INSERT INTO parent_views (pack_id, payload, generated_at) VALUES (?, ?, 1)').run(API_PACK, JSON.stringify(VIEW));
+  const r = await w.call('parent', 'POST', 'shiftReports', null, { body: { sfId: 'sf1', blockId: 'b1', teCents: 12345, cashCents: 2500, attest: true } });
+  eq(r.status, 200, 'the family\'s report');
+  const rid = r.body.report.id;
+  const d = await (await apiClient(w, 'lead_denleader', { state: pack })).start(1200);
+  d.run('buildParentView = function () { return ' + JSON.stringify(VIEW) + '; };');
+  eq(d.get('[canReviewReports(), canDo("shiftUndo"), canEditSection("storefronts")]'), [true, false, false], 'a den leader verifies, but neither undoes others\' nor edits storefronts');
+  d.reset();
+  d.run(`acceptShiftReport('${rid}', { collected: true })`);
+  await settle([d], 1200);
+  await settle([d], 1200);
+  eq(w.one('SELECT status, accepted_by_uid FROM shift_reports WHERE id = ?', rid), { status: 'accepted', accepted_by_uid: 'uid-lead-denleader' }, 'accepted');
+  const b = serverState(w).json.storefronts[0].blocks[0];
+  eq([b.salesCents, b.donationsCents, b.cashCountedBy, b.cashVerifiedBy, b.reportApprovedBy, b.reportPending], [12345, 2500, 'Test parent', 'Test lead_denleader',
+    'Test lead_denleader', undefined], 'the block on the server, signed with the member name, settled');
+  eq(d.get('sync.sectionRetried'), false, 'nothing refused');
+  // Their own accept is theirs to take back; another's is not (the undo list's).
+  eq(d.get(`srMayUndo([${JSON.stringify('uid-lead-denleader')}])`), true, 'their own');
+  eq(d.get(`srMayUndo(['uid-someone'])`), false, 'another leader\'s');
+});
+
+test('positions client: commit()\'s guard keeps a den leader to their dens\' meeting fields, and a kernel to their own flagged deposits', () => {
+  const c = vm.createContext({});
+  vm.runInContext(`var sync = { user: { uid: 'u-k' }, accountsUnavailable: false, myRole: 'leader', myPositions: ['denleader'], leadDens: ['Wolf'], backend: { startSession: function () {} } };
+    var DENS = ['Lion', 'Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light']; function ledgerActorUid() { return sync.user.uid; }`, c);
+  vm.runInContext(['ACCESS_TABLE', 'ACCESS_LEVELS', 'arrOf', 'accessFor', 'actionsFor', 'accountsInForce', 'apiAccounts', 'accessMemo', 'myAccess', 'sectionAccess',
+    'canEditSection', 'canSeeSection', 'canDo', 'canEdit', 'sectionGuardOn', 'canEditDenMeeting', 'denMeetingKeep', 'depositOnlyKeep'].map(decl).join('\n'), c);
+  const J = (js) => JSON.parse(vm.runInContext('JSON.stringify(' + js + ')', c));
+  c.before = [{ id: 'e1', kind: 'den', den: 'Wolf', date: 'd', note: '' }, { id: 'e2', kind: 'den', den: 'Bear', date: 'd', note: '' },
+    { id: 'e3', kind: 'den', den: '', date: 'd', note: '', denAdv: { Bear: 'b' } }, { id: 'e4', kind: 'activity', date: 'd', note: '' }];
+  const after = (f) => { const a = JSON.parse(JSON.stringify(c.before)); f(a); c.after = a; return J('denMeetingKeep(before, after)'); };
+  let r = after((a) => { a[0].note = 'mine'; a[0].advOffers = [{ key: 'el:x', auto: true }]; });
+  eq([r.back, r.list[0].note], [false, 'mine'], 'their own den\'s meeting: kept');
+  r = after((a) => { a[0].note = 'mine'; a[1].note = 'theirs'; a[0].date = 'moved'; });
+  eq([r.back, r.list[0].date, r.list[0].note, r.list[1].note], [true, 'd', '', ''], 'another den\'s, and a date: put back (the whole event)');
+  r = after((a) => { a[2].denAdv = { Bear: 'b', Wolf: 'w' }; });
+  eq([r.back, r.list[2].denAdv], [false, { Bear: 'b', Wolf: 'w' }], 'All dens: their own line');
+  r = after((a) => { a[2].denAdv = { Wolf: 'w' }; });
+  eq([r.back, r.list[2].denAdv], [true, { Bear: 'b' }], 'All dens: another den\'s line taken off, put back');
+  r = after((a) => { a[2].note = 'x'; });
+  eq(r.back, true, 'All dens: the note');
+  r = after((a) => { a.push({ id: 'e9', kind: 'den', den: 'Wolf' }); a.splice(3, 1); });
+  eq([r.back, r.list.map((e) => e.id)], [true, ['e1', 'e2', 'e3', 'e4']], 'a meeting added, an activity removed: put back');
+  // The Kernel: deposits only.
+  vm.runInContext("sync.myPositions = ['kernel'];", c);
+  c.lb = [{ id: 'L1', amountCents: 500 }];
+  const led = (rows) => { c.la = rows; return J('depositOnlyKeep(lb, la)'); };
+  const dep = { id: 'd1', amountCents: 100, direction: 'in', source: 'storefront', enteredByUid: 'u-k', depositReview: true };
+  eq(led([{ id: 'L1', amountCents: 500 }, dep]), { list: [{ id: 'L1', amountCents: 500 }, dep], back: false }, 'their flagged deposit kept');
+  eq(led([{ id: 'L1', amountCents: 9 }, Object.assign({}, dep, { depositReview: undefined })]), { list: [{ id: 'L1', amountCents: 500 }], back: true }, 'a row changed, an unflagged deposit: put back');
+  eq(led([]), { list: [{ id: 'L1', amountCents: 500 }], back: true }, 'a row removed: put back');
+});
+
+// Client step 5 — every canEdit() left in the page means "edits anything at all": the sync, the parent
+// view, the read-only banner, the shared dismiss flags. Everything about a part of the app asks
+// canEditSection (or canDo, or canEditDenMeeting). A new canEdit() elsewhere fails this.
+test('positions client: canEdit() is left only where "edits anything" is meant; every other gate names its section', () => {
+  const ALLOWED = ['commit', 'applyRoleSubscription', 'canEdit', 'keyWritable', 'canPreviewParent', 'canReopenStatement', 'scheduleParentViewRefresh',
+    'writeParentView', 'syncPush', 'onRemoteSnap', 'saveRowChoices', 'keepLocalCopy', 'render', 'handleAction'];
+  const lines = codeOnly(SCRIPT).split('\n');
+  let fn = null;
+  const found = {};
+  lines.forEach((l) => {
+    const m = /^  function ([A-Za-z0-9_]+)\(/.exec(l);
+    if (m) fn = m[1];
+    if (/\bcanEdit\(\)/.test(l.replace(/\/\/.*$/, ''))) found[fn] = (found[fn] || 0) + 1;
+  });
+  eq(Object.keys(found).filter((f) => ALLOWED.indexOf(f) === -1), [], 'canEdit() outside the allowlist');
+  eq(found.handleAction, 1, 'handleAction keeps one: the shared "where things moved" flag');
+  ok(/if \(canEdit\(\)\) save\(\);   \/\/ a shared dismiss flag/.test(SCRIPT), 'that one');
+  // The meeting row: when, which den, which kind and removing it are the calendar's; the notes and the adventure a den leader's on their dens.
+  const mr = slice('renderMeetingRow');
+  ok(/var cal = canEditSection\('calendar'\), calDis = cal \? '' : ' disabled', dmDis = canEditDenMeeting\(m\) \? '' : ' disabled';/.test(mr) &&
+    /data-ch="mtg-kind" data-id="' \+ m\.id \+ '"' \+ calDis/.test(mr) && /\(cal \? tinyDangerBtn\('del-event:'/.test(mr) && /aria-label="Details parents will see" style="width:100%"' \+ dmDis/.test(mr) &&
+    /ui\.repeatOffer === m\.id && cal/.test(mr), 'the meeting row');
+  ok(/\? !canEditSection\('calendar'\) : !canEditDenMeeting\(mtg\)\)/.test(SCRIPT), 'the meeting handler');
 });
 
 atest('api client: each role signs in with one session call and lands on the feed its role allows', async () => {
@@ -17872,7 +17962,7 @@ atest('a copy choice closed with Escape keeps saying it waits, and a device that
       var adopted = [], rendered = 0, toasts = [];
       function scheduleParentViewRefresh() {} function renderSyncPill() {} function render() { rendered += 1; }
       function syncPush() {} function clearTimeout() {} function setTimeout() {} function save() {} function showToast(m) { toasts.push(m); }
-      function canEdit() { return ${edit}; }
+      function canEdit() { return ${edit}; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function canDo() { return canEdit(); } function canEditDenMeeting() { return canEdit(); } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
       function normalizeState(p) { return p && typeof p === 'object' ? p : null; }
       function adoptRemote(d) { adopted.push(d.rev); sync.conflict = null; return true; }
       var ui = { tab: 'home', overlay: { kind: 'sync-conflict', remote: { rev: 5 } } };
@@ -18938,7 +19028,7 @@ function srLeaderCtx(o) {
       } } };
     function shiftReportsOn() { return true; }
     function parentMode() { return false; }
-    function canEdit() { return sync.myRole === 'admin' || sync.myRole === 'editor'; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
+    function canEdit() { return sync.myRole === 'admin' || sync.myRole === 'editor'; } function canDo(a) { return canEdit(); } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
     function commit() { if (!canEdit()) return false; commits += 1; return true; }
     function showToast(m) { toasts.push(m); }
     function render() {}
@@ -18954,7 +19044,7 @@ function srLeaderCtx(o) {
        'srIConfirmed', 'srFamiliesNow', 'srNeedsCheck', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'SR_CHECK_TE', 'SR_IMPORT_FIRST', 'familyKeyOf',
        'blockCashCheck', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
        'srParentStore', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashHistorySay', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
-       'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
+       'srCashEntries', 'srMayUndo', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
        'SR_CASH_UNDO_QUICK', 'srCashUndoForm', 'srCashUndoSay'].map(decl).join('\n')}
     function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }`, ctx);
   const run = (js) => vm.runInContext(js, ctx);
@@ -19104,7 +19194,7 @@ test('shift reports S-3: a viewer reads the card with no buttons, and the sender
   const V = srLeaderCtx({ role: 'viewer', reports: [srRep()] });
   const card = V.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
   ok(/Nora Newfamily<\/strong> sent these totals/.test(card) && /\$123\.45/.test(card) && /\$25\.00/.test(card) && /“Counted with Jo”/.test(card), 'the card’s content');
-  ok(!/<button|<form/.test(card) && /An admin or editor accepts or sends back shift reports\./.test(card), 'a viewer’s card has buttons');
+  ok(!/<button|<form/.test(card) && /A leader at the booth accepts or sends back shift reports: a den leader, the Cubmaster, the Popcorn Kernel, the Treasurer or the Committee Chair\./.test(card), 'a viewer’s card has buttons');
   V.run("acceptShiftReport('rep-1', { collected: true, replaceOk: true }); leaderShiftReportAct('sr-return-open', { dataset: { rid: 'rep-1' } })");
   eq([V.block('b1').salesCents, V.get('commits'), V.get('ui.srReturn')], [0, 0, null], 'a viewer accepted or opened a send-back');
   ok(/<p class="eyebrow"[^>]*>Shift report from a family<\/p>/.test(card), 'the card’s heading');
@@ -31711,7 +31801,7 @@ test('C8-9: a closed year’s entry is reversed by a counted reversal in the cur
   const H = heldDispatchCtx('pack');
   vm.runInContext(`toasts = []; ui.closedRvId = 'b'; ${T}; ${T};`, H);
   ok(JSON.parse(JSON.stringify(vm.runInContext('toasts.length', H))) > 0 && vm.runInContext('store[KEY] === before', H), 'refused while held');
-  ok(/if \(canEdit\(\)\) h \+= closedRvFormHtml\(book\);/.test(slice('closedBookBlockHtml')), 'the form is offered to a viewer');
+  ok(/if \(canEditSection\('ledger'\)\) h \+= closedRvFormHtml\(book\);/.test(slice('closedBookBlockHtml')), 'the form is offered to a viewer');
 });
 
 test('C8-9: the form lists the closed year’s entries (full or compact) and is escaped', () => {
@@ -32682,7 +32772,7 @@ function sheetCtx(edit = true, notes = {}) {
   const ctx = vm.createContext({});
   vm.runInContext(`var DENS = ${JSON.stringify(['Lion', 'Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light'])};
     var state = { advNotes: ${JSON.stringify(notes)} };
-    function canEdit() { return ${edit}; }
+    function canEdit() { return ${edit}; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function canDo() { return canEdit(); } function canEditDenMeeting() { return canEdit(); } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
     function fmtDateShortYear(iso) { return /^\\d{4}-\\d{2}-\\d{2}$/.test(iso) ? 'Oct 1, 2026' : ''; }
     ${PANEL_FNS.concat(['ADV_NOTE_MAX', 'ADV_PLAN_GUIDE', 'ADV_OFFICIAL_INDEX', 'advPlanKey', 'advPlanFor', 'proseText',
       'advNoteBlock', 'renderAdvPlanSheet']).map(slice).join('\n')}`, ctx);
@@ -33950,13 +34040,13 @@ test('advOffers: each scout gets their own rank’s version; Lions have no BB Gu
 test('advOffers: recording — auto is one tap for those who attended, an offered elective only for the scouts ticked', () => {
   const auto = /if \(act === 'offer-mark'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/!omOffer\.auto\) return;/.test(auto), 'the one-tap button credits an offered elective to everyone');
-  ok(/canEdit\(\)/.test(auto), 'a viewer can record');
+  ok(/canEditSection\('advancement'\)/.test(auto), 'a viewer (or anyone who doesn’t edit advancement) can record');
   ok(/offerAttendees\(omEv, omOffer\.key\)\.can\.forEach/.test(auto) && /advMarkDone\(r\.scout\.id, advKindFor\(r\.scout, r\.name\), r\.name\)/.test(auto),
     'not the same path as mtg-adv-mark (advMarkDone, the scout’s own rank’s name)');
   const picked = /if \(kind === 'offer-mark-picked'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/fd\.getAll\('scout'\)/.test(picked) && /opIds\.indexOf\(r\.scout\.id\) !== -1 && advMarkDone/.test(picked),
     'an offered elective is not limited to the ticked scouts who attended');
-  ok(/canEdit\(\)/.test(picked), 'a viewer can record an elective');
+  ok(/canEditSection\('advancement'\)/.test(picked), 'a viewer can record an elective');
   // Nothing in the offer code writes advancement any other way, or 'awarded'.
   for (const n of ['advOffersEditor', 'advOffersMark', 'advOfferMarkFor', 'evOffers', 'offerAttendees']) {
     ok(!/state\.advancement|'awarded'/.test(slice(n).replace(/status === 'awarded'/g, '')), n + ' writes advancement');
@@ -33968,7 +34058,7 @@ test('advOffers: recording — auto is one tap for those who attended, an offere
 
 test('advOffers: editor on campouts and den meetings, with the range-sport rule, and editors only change it', () => {
   const ed = slice('advOffersEditor');
-  ok(/var edit = canEdit\(\);/.test(ed) && !/hasJob\(/.test(ed), 'the editor gates on something other than the role');
+  ok(/var edit = canEditDenMeeting\(ev\);/.test(ed) && !/hasJob\(/.test(ed), 'the editor gates on something other than the role (or position)');
   ok(/Everyone who attends earns it/.test(ed) && /Offered — scouts who choose it/.test(ed), 'the two kinds are not named');
   ok(/den && ADV_RANGE_KEYS\.indexOf\(o\.key\) !== -1/.test(ed) && /class="warn small"/.test(ed), 'a range sport on a den meeting is not warned');
   ok(/Not for ' \+ esc\(denListLabel\(by\.lacks\)\)/.test(ed), 'the ranks an offer is not for are not shown');
@@ -33980,7 +34070,7 @@ test('advOffers: editor on campouts and den meetings, with the range-sport rule,
   // The `ev-` change gate returns on any key it does not know, so an ev-* name would be dead code.
   ok(!/data-ch="ev-offer|data-act="ev-offer/.test(SCRIPT), 'an offer control is behind the ev- gate');
   const add = /if \(kind === 'offer-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/canEdit\(\)/.test(add) && /kind === 'pack'/.test(add) && /ADV_OFFERS_MAX/.test(add) && /packAdvLabel\(oaddKey\)/.test(add), 'adding is not checked');
+  ok(/canEditDenMeeting\(oaddEv\)/.test(add) && /kind === 'pack'/.test(add) && /ADV_OFFERS_MAX/.test(add) && /packAdvLabel\(oaddKey\)/.test(add), 'adding is not checked');
   ok(/delete mtg\.advOffers/.test(slice('clearMeetingAdvs')), 'a meeting turned into a pack meeting keeps its offers');
   ok(/ADV_RANGE_KEYS\.indexOf\(m\.packAdv\)/.test(slice('packAdvPicker')), 'a range sport picked for every den is not warned');
 });
@@ -34102,7 +34192,7 @@ test('Fill the calendar: the next untagged All-dens nights in order, skipping an
   ok(/not enough: /.test(r) && /left unscheduled/.test(r), 'a calendar that runs out is not said');
   ok(/if \(edit\) h \+= renderFillCalendar\(today\);/.test(slice('renderDenPlanner')), 'the tool is not editors-only on Den plans');
   const ap = /if \(act === 'fill-apply'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/canEdit\(\)/.test(ap) && /fillCalendarNow\(/.test(ap) && /setPackAdv\(a\.ev, a\.key\)/.test(ap) && /actionLabel: 'Undo'/.test(ap), 'Apply is not checked, recomputed, written through setPackAdv and undoable');
+  ok(/canEditSection\('calendar'\)/.test(ap) && /fillCalendarNow\(/.test(ap) && /setPackAdv\(a\.ev, a\.key\)/.test(ap) && /actionLabel: 'Undo'/.test(ap), 'Apply is not checked, recomputed, written through setPackAdv and undoable');
   ok(/if \(x\.ev\.packAdv !== x\.key\) return;/.test(ap), 'Undo takes back a pick somebody changed since');
   ok(/flc\.rows = ADV_REQ_CATEGORIES\.map\(function \(x, i\) \{ return \{ key: 'req:' \+ i/.test(SCRIPT), 'no "6 required in order"');
   ok(!/fillCal/.test(codeOnly(slice('normalizeState'))) && !/fillCal/.test(codeOnly(BPV())), 'the fill list reached the record or the parent view');
@@ -34500,7 +34590,7 @@ test('council money: the settle step is an editor’s, logged on the book, taken
     /logLedger\('settle', 'book', \{ f: \{ councilSettled: \[sdWas \|\| null, councilSettledText\(state\.book\.councilSettled\)\] \} \}\)/.test(go), 'Mark settled');
   const un = /if \(act === 'council-unsettle'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/arm\(act,/.test(un) && /logLedger\('unsettle', 'book'/.test(un) && /delete state\.book\.councilSettled;/.test(un), 'Not settled after all');
-  ok(/h \+= councilMoneyHtml\(\);/.test(slice('renderReconcile')) && /if \(!canEdit\(\) \|\| state\.book\.closedAt\) return h;/.test(slice('councilMoneyHtml')), 'the Reconcile card');
+  ok(/h \+= councilMoneyHtml\(\);/.test(slice('renderReconcile')) && /if \(!canEditSection\('ledger'\) \|\| state\.book\.closedAt\) return h;/.test(slice('councilMoneyHtml')), 'the Reconcile card');
   ok(/ledgerIncomeCents\(state\.ledger, isIncomeLine, b\.startingBalance \|\| 0, !!\(state\.book && state\.book\.councilSettled\)\)/.test(slice('computeBudget')), 'computeBudget does not read the settlement');
   ok(/' as settled with the council: ' \+ fmt\(bud\.councilIn\) \+ ' banked for it \\u2212 ' \+ fmt\(bud\.councilOut\) \+ ' paid to it, plus any commission checks, '/.test(SCRIPT), 'the Funds in sentence');
   // normalizeState keeps it on the book, and a fresh book (close-out) has none.
@@ -34657,7 +34747,7 @@ test('wagon cutover: wagon cash dated before it (or undated) is kept as it was, 
   eq(vm.runInContext('WAGON_CUTOVER_NOTE', sandbox(['WAGON_CUTOVER_NOTE'])), 'If this season’s earlier wagon donations were entered in the Trail’s End app, move this to the season’s start.', 'the note');
   ok(/if \(ch === 'wagon-via-te-from'\) \{[\s\S]{0,500}logLedger\('edit', 'book', \{ f: \{ wagonViaTEFrom: \[wcWas, wcNow\] \} \}\)/.test(SCRIPT), 'the change is not logged');
   ok(!/wagonViaTEFrom|wagonKept/.test(codeOnly(BPV())), 'the parent view reads it');
-  ok(/data-ch="wagon-via-te-from" value="' \+ esc\(packT\.wagonCutover\) \+ '"' \+ \(canEdit\(\) \? '' : ' disabled'\)/.test(ss), 'a viewer can change the date');
+  ok(/data-ch="wagon-via-te-from" value="' \+ esc\(packT\.wagonCutover\) \+ '"' \+ \(\(canEditSection\('totals'\) \|\| canEditSection\('budget'\)\) \? '' : ' disabled'\)/.test(ss), 'a viewer can change the date');
   // B2 — the hint asks about wagon cash the pack kept as kept cash; F2 — the money-in help says to bank it so.
   const hx = sandbox(declClosure(['storefrontCashHint', 'storefrontHintText'], []));
   const hw = (o, te, co) => hx.storefrontCashHint(Object.assign({ direction: 'in', amountCents: 500, source: '', description: 'Wagon cash, Oak St' }, o), [], [], !!te, co);

@@ -11944,7 +11944,7 @@
     } else if (!plan) {
       h += '<p>Find ' + esc(o.name) + ' in the official adventure list above for its requirements and den meeting ideas.</p>';
     } else h += advPlanBodyHtml(plan, o.open);
-    h += advNoteBlock(key, canEdit());
+    h += advNoteBlock(key, canEditSection('denplan'));
     return h + '</div></div></div>';
   }
   // Opens the panel, and fills it when the plans arrive. A panel closed (or replaced) meanwhile is
@@ -13853,7 +13853,9 @@
     var today = todayISO();
     var runs = adventureRuns();
     var py = state.budget.programYear;
-    var edit = canEdit();
+    // Pack positions — adding meetings (Plan a meeting, Fill the calendar) is the calendar's; each den's
+    // adventure at a meeting is that meeting's (canEditDenMeeting, in denMeetingsBlock).
+    var edit = canEditSection('calendar');
     var h = '<div class="card"><h2 class="section display">Den year plans</h2>' +
       '<p class="small muted" style="margin:0">Each den’s required adventures against the den meetings tagged with them in the ' +
       py + '–' + (py + 1) + ' program year. A rank is the six required ' +
@@ -13906,7 +13908,7 @@
           '<span class="small muted">' + esc(denPlanDates(el.sessions, today) + (el.sessions.length && el.offeredAt.length ? ' · ' : '') +
             denOfferedLine(el.offeredAt, today)) + '</span>' + advPlanBtn(den, el.name) + '</div>';
       });
-      h += denMeetingsBlock(den, today, edit);
+      h += denMeetingsBlock(den, today);
       h += '</div>';
     });
     return h;
@@ -13915,7 +13917,7 @@
   // the den works on at each. This is where a den leader changes their den's line on an
   // All-dens night: still on last week's adventure, ahead, or not there (a make-up of its own).
   // Upcoming only until asked; a held meeting is changed to record what really happened.
-  function denMeetingsBlock(den, today, edit) {
+  function denMeetingsBlock(den, today) {
     var py = state.budget.programYear;
     var from = programYearStartISO(py), to = programYearEndISO(py);
     var all = state.events.filter(function (e) {
@@ -13940,7 +13942,7 @@
       // The meeting's extra adventures (evOffers), in this den's own version.
       var alsoNames = evOffers(e).map(function (o) { return packAdvName(o.key, den); }).filter(Boolean);
       var right;
-      if (edit) {
+      if (canEditDenMeeting(e, den)) {
         var cur = at.from === 'off' ? '-' : (at.from === 'den' || at.from === 'own') ? at.name : '';
         var packNm = shared ? packAdvName(e.packAdv, den) : '';
         var inList = !cur || cur === '-' || adv.required.indexOf(cur) !== -1 || adv.electives.indexOf(cur) !== -1;
@@ -15894,6 +15896,62 @@
     if (k === 'ledgerLog') return canEdit();
     return false;
   }
+  // May this account change a den meeting's adventure, notes and adventures offered (no `den`), or, on an
+  // All-dens night, one den's line of it (`den`)? Whoever edits the calendar may change anything; a Den
+  // Leader or Assistant Den Leader, only their own dens' (own-den scope, Keith 2026-10-02: the dens an
+  // admin named, sync.leadDens). The server holds the same rule (access.js denMeetingChangeOk).
+  function canEditDenMeeting(ev, den) {
+    if (canEditSection('calendar')) return true;
+    if (!ev || ev.kind !== 'den' || !canEditSection('calendar.denmeeting')) return false;
+    var mine = sectionGuardOn() ? arrOf(sync.leadDens) : DENS;
+    if (ev.den) return mine.indexOf(ev.den) !== -1;
+    return !!den && mine.indexOf(den) !== -1;
+  }
+  // commit()'s guard for a leader who changes den meetings but not the calendar: each event kept as it was
+  // but for what canEditDenMeeting allows on it (the den meeting fields of their own dens' meetings; on an
+  // All-dens night, their dens' lines of denAdv). An event added or removed goes back. { list, back }.
+  function denMeetingKeep(before, after) {
+    var was = {}, now = {}, back = false, fields = ACCESS_TABLE.denMeetingFields;
+    arrOf(before).forEach(function (e) { if (e && e.id) was[e.id] = e; });
+    arrOf(after).forEach(function (e) { if (e && e.id) now[e.id] = e; });
+    function same(a, b) { return JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b); }
+    var list = arrOf(before).map(function (b) {
+      if (!b || !b.id) return b;
+      var e = now[b.id];
+      if (!e) { back = true; return b; }
+      if (same(b, e)) return e;
+      var ok = b.kind === 'den' && e.kind === 'den' && Object.keys(b).concat(Object.keys(e)).every(function (k) {
+        return fields.indexOf(k) !== -1 || same(b[k], e[k]);
+      });
+      if (ok && b.den) ok = canEditDenMeeting(b);
+      else if (ok) {
+        ok = fields.every(function (k) { return k === 'denAdv' || same(b[k], e[k]); });
+        var db = b.denAdv || {}, da = e.denAdv || {};
+        if (ok) ok = Object.keys(db).concat(Object.keys(da)).every(function (d) { return same(db[d], da[d]) || canEditDenMeeting(b, d); });
+      }
+      if (!ok) back = true;
+      return ok ? e : b;
+    });
+    arrOf(after).forEach(function (e) { if (e && e.id && !was[e.id]) back = true; });
+    return { list: list, back: back };
+  }
+  // …and for a leader who records deposits but doesn't edit the ledger: the rows as they were, and their own
+  // new storefront deposits, flagged for the treasurer (access.js depositRowOk). { list, back }.
+  function depositOnlyKeep(before, after) {
+    var was = {}, me = ledgerActorUid(), back = false;
+    arrOf(before).forEach(function (e) { if (e && e.id) was[e.id] = e; });
+    var list = arrOf(before).slice();
+    var nowIds = {};
+    arrOf(after).forEach(function (e) {
+      if (!e || !e.id) return;
+      nowIds[e.id] = true;
+      if (was[e.id]) { if (JSON.stringify(was[e.id]) !== JSON.stringify(e)) back = true; return; }
+      if (e.enteredByUid === me && e.depositReview === true && e.source === 'storefront' && e.direction === 'in') list.push(e);
+      else back = true;
+    });
+    arrOf(before).forEach(function (e) { if (e && e.id && !nowIds[e.id]) back = true; });
+    return { list: list, back: back };
+  }
   // The copy this device's own edits are measured from: the server's as this device last took it in
   // (the sync base), else what this device last saved. null when there is neither.
   function guardBaseline() {
@@ -15919,7 +15977,19 @@
         });
         return;
       }
-      if (keyWritable(k) || same(state[k], was[k])) return;
+      if (same(state[k], was[k])) return;
+      // The slices the server checks entry by entry: kept as far as they go, the rest put back.
+      if (k === 'events' && !ownerEditable(keyOwnerOf(k)) && canEditSection('calendar.denmeeting')) {
+        var dk = denMeetingKeep(JSON.parse(JSON.stringify(arrOf(was.events))), state.events);
+        if (dk.back) { state.events = dk.list; note('calendar'); }
+        return;
+      }
+      if (k === 'ledger' && !ownerEditable(keyOwnerOf(k)) && canEditSection('deposits')) {
+        var lk = depositOnlyKeep(JSON.parse(JSON.stringify(arrOf(was.ledger))), state.ledger);
+        if (lk.back) { state.ledger = lk.list; note('ledger'); }
+        return;
+      }
+      if (keyWritable(k)) return;
       if (ownKey(was, k)) state[k] = JSON.parse(JSON.stringify(was[k])); else delete state[k];
       note(keyOwnerOf(k));
     });
@@ -23319,7 +23389,7 @@
   // exported, and three buttons that all opened the same picker would be a lie. What was
   // actually missing is that the three destinations were invisible, so they're listed.
   function teImportCard() {
-    if (!canEdit()) return '';
+    if (!canEditSection('totals')) return '';
     return '<div class="card"><h2 class="section display">Import from Trail’s End</h2>' +
       '<p class="small muted" style="margin:0 0 8px">Export a report from the Trail’s End Leader Portal → <strong>Reports</strong> ' +
       'as <strong>.xlsx</strong> or <strong>.csv</strong>. The app works out which of the four it is:</p>' +
@@ -23343,7 +23413,7 @@
       '<button type="button" class="btn" data-act="sf-glance-open">Schedule at a glance</button>' +
       (leaderReportsOn() ? '<button type="button" class="btn" data-act="sr-history-open">Shift reports this season</button>' : '') + '</div>';
     h += renderShiftReportsBanner();   // S-3: families' shift totals waiting for a leader
-    if (canEdit()) {
+    if (canEditSection('storefronts')) {
     h += '<div class="card"><h2 class="section display">New storefront</h2>' +
       '<form data-form="add-storefront" class="row">' +
       '<label class="fld">Store / location<input id="sfNameInput" name="name" data-ch="sf-new-name" placeholder="Kroger on Main St" list="locList" value="' + esc(ui.sfDraft.name) + '" style="width:200px"></label>' +
@@ -23993,14 +24063,18 @@
     // Wave 19(23): the den select below is RANK-based (DENS) on purpose — a scout's
     // free-text denLabel is display-only; meetings, advancement grouping, and the
     // attendance den-filter all key off s.den (the rank).
+    // Pack positions (Keith, 2026-10-01/02) — when, which den and which kind, removing it and repeating it are
+    // the calendar's (the Cubmaster's); a Den Leader changes their own dens' meetings' adventure, notes and the
+    // adventures offered (canEditDenMeeting), and takes attendance, and no more.
+    var cal = canEditSection('calendar'), calDis = cal ? '' : ' disabled', dmDis = canEditDenMeeting(m) ? '' : ' disabled';
     return '<div class="ev ev-meeting">' +
       '<div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">' +
       '<span class="ev-badge ' + (m.kind === 'pack' ? 'badge-pack' : 'badge-den') + '">' + (m.kind === 'pack' ? 'Pack' : 'Den') + '</span>' +
       rsvpPill(m.id) +
-      '<select data-ch="mtg-kind" data-id="' + m.id + '"><option value="den"' + (m.kind === 'den' ? ' selected' : '') + '>Den meeting</option><option value="pack"' + (m.kind === 'pack' ? ' selected' : '') + '>Pack meeting</option></select>' +
-      (m.kind === 'den' ? '<select data-ch="mtg-den" data-id="' + m.id + '"><option value="">All dens</option>' + DENS.map(function (d) { return '<option value="' + d + '"' + (m.den === d ? ' selected' : '') + '>' + d + '</option>'; }).join('') + '</select>' : '') +
-      '<input type="time" class="time-in" data-ch="mtg-time" data-id="' + m.id + '" value="' + esc(m.time || '') + '" aria-label="Meeting time">' +
-      tinyDangerBtn('del-event:' + m.id, 'Remove meeting') +
+      '<select data-ch="mtg-kind" data-id="' + m.id + '"' + calDis + '><option value="den"' + (m.kind === 'den' ? ' selected' : '') + '>Den meeting</option><option value="pack"' + (m.kind === 'pack' ? ' selected' : '') + '>Pack meeting</option></select>' +
+      (m.kind === 'den' ? '<select data-ch="mtg-den" data-id="' + m.id + '"' + calDis + '><option value="">All dens</option>' + DENS.map(function (d) { return '<option value="' + d + '"' + (m.den === d ? ' selected' : '') + '>' + d + '</option>'; }).join('') + '</select>' : '') +
+      '<input type="time" class="time-in" data-ch="mtg-time" data-id="' + m.id + '" value="' + esc(m.time || '') + '" aria-label="Meeting time"' + calDis + '>' +
+      (cal ? tinyDangerBtn('del-event:' + m.id, 'Remove meeting') : '') +
       '</div>' +
       // …and, for leaders, which meeting of the lesson plan tonight is (meetingPlanBox).
       (m.kind === 'den' ? advTargetPicker(m) + meetingPlanBox(m, 'editor') + advOffersEditor(m) : '') +
@@ -24010,10 +24084,10 @@
       // published verbatim. Naming the audience at the field is the fix.
       '<p class="eyebrow note-cap">Parents see this</p>' +
       '<input maxlength="4000" data-ch="mtg-note" data-id="' + m.id + '" value="' + esc(m.note || '') +
-        '" placeholder="Where it is, and what to bring" aria-label="Details parents will see" style="width:100%">' +
+        '" placeholder="Where it is, and what to bring" aria-label="Details parents will see" style="width:100%"' + dmDis + '>' +
       '<p class="eyebrow note-cap note-cap-int">Leaders only \u00b7 never published</p>' +
       '<input maxlength="4000" data-ch="mtg-note-internal" data-id="' + m.id + '" value="' + esc(m.noteInternal || '') +
-        '" placeholder="Who is bringing what, follow-ups, anything not for families" aria-label="Internal note, leaders only" style="width:100%">' +
+        '" placeholder="Who is bringing what, follow-ups, anything not for families" aria-label="Internal note, leaders only" style="width:100%"' + dmDis + '>' +
       (m.kind === 'pack' ? packAgendaBlock(m) : '') +
       '<div class="row" style="margin-top:8px;align-items:flex-start">' +
       renderRsvpBlock(m.id) + renderAttendanceBlock(m) +
@@ -24026,7 +24100,7 @@
       // the meeting names an adventure — an opt-in to tag the copies with it, which is all it
       // takes for them to read "session 2 of 3" (adventureRuns derives the run). Off by default:
       // a twelve-week repeat is rarely twelve weeks of one adventure.
-      (ui.repeatOffer === m.id
+      (ui.repeatOffer === m.id && cal
         ? '<form data-form="mtg-repeat" data-id="' + m.id + '" class="row no-print" style="margin-top:8px">' +
           '<label class="fld">Repeat<select name="every" aria-label="How often">' +
           '<option value="7">every week</option><option value="14">every other week</option></select></label>' +
@@ -24054,7 +24128,7 @@
   }
   function advFreeBox(m, r) {
     var allDens = !m.den;
-    var h = '<input data-ch="mtg-adv" data-id="' + esc(m.id) + '" list="advOpts-' + esc(m.id) + '" value="' +
+    var h = '<input data-ch="mtg-adv" data-id="' + esc(m.id) + '"' + (canEditDenMeeting(m) ? '' : ' disabled') + ' list="advOpts-' + esc(m.id) + '" value="' +
       esc(m.adventure || '') + '" placeholder="Adventure this meeting works toward (optional)" ' +
       'aria-label="' + (allDens ? 'Adventure typed for all dens' : 'Adventure this meeting works toward') + '" style="width:100%;margin-top:6px">' +
       '<datalist id="advOpts-' + esc(m.id) + '">' +
@@ -24092,7 +24166,7 @@
   // leader changes their own den's line on Den plans, not here — this row is the Cubmaster's.
   function packAdvPicker(m) {
     var h = '<label class="fld" style="margin-top:6px">Adventure for every den' +
-      '<select data-ch="mtg-pack-adv" data-id="' + esc(m.id) + '">' + packAdvOptions(m.packAdv || '', 'None set') + '</select></label>';
+      '<select data-ch="mtg-pack-adv" data-id="' + esc(m.id) + '"' + (canEditSection('calendar') ? '' : ' disabled') + '>' + packAdvOptions(m.packAdv || '', 'None set') + '</select></label>';
     if (ADV_RANGE_KEYS.indexOf(m.packAdv) !== -1) {
       h += '<p class="warn small" style="margin:4px 0 0">Pack rule: ' + esc(packAdvLabel(m.packAdv)) + ' is a range sport — never at a den ' +
         'meeting, only on a council range with a certified range master.</p>';
@@ -24171,7 +24245,7 @@
      ranks it is not for. Editors only change it; anyone else reads it. */
   function advOffersEditor(ev) {
     var offers = evOffers(ev);
-    var edit = canEdit();
+    var edit = canEditDenMeeting(ev);   // a den leader on their own dens' meetings; the calendar's editors anywhere
     var den = ev.kind === 'den';
     if (!offers.length && !edit) return '';
     var h = '<div class="adv-offers" style="margin-top:8px"><p class="eyebrow" style="margin:0 0 2px">' +
@@ -24228,7 +24302,8 @@
   function advOfferMarkFor(ev, o) {
     var att = offerAttendees(ev, o.key);
     if (!att.can.length && !att.cannot.length) return '';   // no attendance taken yet
-    var edit = canEdit();
+    // Crediting an adventure writes advancement: whoever edits it (not, say, an Activities Chair).
+    var edit = canEditSection('advancement');
     var todo = att.can.filter(function (r) { return !r.status; });
     var had = att.can.filter(function (r) { return r.status; });
     var h = '<div class="adv-run"><div class="spread"><strong>' + esc(o.label) + '</strong>' +
@@ -24567,7 +24642,7 @@
   // read-only screen is furniture.
   function tierNoteBlock(t) {
     var note = String(t.note || '');
-    if (!canEdit()) {
+    if (!canEditSection('rewards')) {
       if (!note.trim()) return '';
       return '<p class="eyebrow" style="margin:10px 0 4px">The small print</p>' +
         '<div class="camp-body">' + proseText(note) + '</div>';
@@ -24633,13 +24708,13 @@
     var manual = w.source === 'manual';
     var h = '<div class="card"><div class="spread">' +
       '<p class="eyebrow" style="margin:0">Weather</p>' +
-      (canEdit()
+      (canEditSection('totals')
         ? '<button type="button" class="btn small ghost" data-act="sf-weather-fetch" data-id="' + sf.id + '"' +
           (busy || !sf.date || manual ? ' disabled' : '') + '>' + (busy ? 'Looking up…' : 'Look it up') + '</button>'
         : '') + '</div>' +
       '<div class="row" style="margin-top:8px">' +
       '<label class="fld">Conditions<select data-ch="sf-weather" data-id="' + sf.id + '"' +
-      (canEdit() ? '' : ' disabled') + '>' +
+      (canEditSection('totals') ? '' : ' disabled') + '>' +
       '<option value="">Not recorded</option>' +
       WEATHER_TAGS.map(function (t) {
         return '<option value="' + t.id + '"' + (w.tag === t.id ? ' selected' : '') + '>' + esc(t.label) + '</option>';
@@ -24895,8 +24970,11 @@
   }
   // Who may accept or send back: the people who may write the pack record (the server's
   // canReviewShiftReport). A viewer reads.
+  // Pack positions (Keith, 2026-10-02) — the action shiftVerify: an admin, or a leader at the booth (the Chair,
+  // the Cubmaster and assistant, a Den Leader and assistant, the Kernel, the Treasurer); on Firestore, admin and
+  // editor as before. The server holds the same list (rules.js canReviewShiftReport).
   function canReviewReports() {
-    return leaderReportsOn() && (sync.myRole === 'admin' || sync.myRole === 'editor') && canEdit();
+    return leaderReportsOn() && canDo('shiftVerify');
   }
   function srReports() {
     var sr = sync.shiftReports;
@@ -24923,6 +25001,16 @@
   }
   // Is my uid the one that sent it? The one that confirmed it?
   function srMine(r) { return !!(r && sync.user && r.submittedByUid && r.submittedByUid === sync.user.uid); }
+  // Pack positions (Keith, 2026-10-02) — who may take an accept back (send back an accepted report), or undo a
+  // record of what became of its cash: the leader who accepted it (or recorded the cash), while they may still
+  // verify, or the undo list (shiftUndo: the Kernel, the Chair, the Treasurer, an admin). The server's
+  // canUndoShiftReport. `byUids`: the accepter, and for the cash its recorder.
+  function srMayUndo(byUids) {
+    if (!canReviewReports()) return false;
+    if (canDo('shiftUndo')) return true;
+    var me = sync.user && sync.user.uid;
+    return !!me && arrOf(byUids).indexOf(me) !== -1;
+  }
   function srIConfirmed(r) { return !!(r && sync.user && r.confirmedByUid && r.confirmedByUid === sync.user.uid); }
   // Keith (2026-10-01) — am I in the sender's family? The family keys (familyKeyOf) of the scouts
   // whose parentUids hold my account, against the sender's: the server's rules.js sameFamily, on
@@ -25069,7 +25157,7 @@
       return h + '</div>';
     }
     if (!canReviewReports()) {
-      return h + '<p class="small muted" style="margin:0">An admin or editor accepts or sends back shift reports.</p></div>';
+      return h + '<p class="small muted" style="margin:0">A leader at the booth accepts or sends back shift reports: a den leader, the Cubmaster, the Popcorn Kernel, the Treasurer or the Committee Chair.</p></div>';
     }
     if (ui.srReturn === r.id) {
       return h + '<form data-form="shift-report-return" class="sr-return" data-rid="' + esc(r.id) + '">' +
@@ -25246,10 +25334,11 @@
       if (!e.outcome) {
         h += '<div style="margin-top:8px">' + srCashToCollectLine(e.cents, e.from || 'the family', sf.date) + srCashButtons(e.reportId, e.cents) + '</div>';
       } else {
-        var asking = ui.srCashUndo === e.reportId && canReviewReports();
+        var eRep = srReport(e.reportId), mayUndo = srMayUndo(eRep ? [eRep.acceptedByUid, eRep.salesCashByUid] : []);
+        var asking = ui.srCashUndo === e.reportId && mayUndo;
         h += '<div class="spread" style="margin-top:8px"><p class="small muted" style="margin:0">' + esc(fmt(e.cents)) + ' of cash from popcorn sales ' +
           esc(srCashOutcomeSay(e.outcome)) + '.</p>' +
-          (canReviewReports() && !asking ? '<button type="button" class="btn small ghost" data-act="sr-cash-undo-open"' + ids + '>Undo</button>' : '') + '</div>';
+          (mayUndo && !asking ? '<button type="button" class="btn small ghost" data-act="sr-cash-undo-open"' + ids + '>Undo</button>' : '') + '</div>';
         if (asking) h += srCashUndoForm(e.reportId);
       }
     });
@@ -25410,11 +25499,11 @@
     else how = from + ', accepted by ' + by + '.';
     var h = '<div class="spread" style="margin-top:8px"><p class="small muted" style="margin:0">' + esc(how) + '</p>';
     var r = srReport(b.reportId);
-    if (canReviewReports() && r && r.status === 'accepted') {
+    if (canReviewReports() && r && r.status === 'accepted' && srMayUndo([r.acceptedByUid])) {
       h += ui.srReturn === r.id ? '' : '<button type="button" class="btn small ghost" data-act="sr-return-open" data-rid="' + esc(r.id) + '">Send back</button>';
     }
     h += '</div>';
-    if (r && ui.srReturn === r.id && canReviewReports()) {
+    if (r && ui.srReturn === r.id && canReviewReports() && (r.status !== 'accepted' || srMayUndo([r.acceptedByUid]))) {
       h += '<form data-form="shift-report-return" class="sr-return" data-rid="' + esc(r.id) + '">' +
         '<label class="fld">Why are you sending it back? The family sees this. The figures stay on the block until someone corrects them.' +
         '<textarea name="reason" rows="2" maxlength="300" required>' + esc(srReasonDraft('shift-report-return', r.id)) + '</textarea></label>' +
@@ -25922,7 +26011,7 @@
     // Wave 21 — built once here, not per row.
     var covered = packCoverageByScout();
     var h = '';
-    if (canEdit()) {
+    if (canEditSection('roster')) {
       h += '<div class="card"><h2 class="section display">Add a scout</h2>' +
         '<form data-form="add-scout" class="row">' +
         '<label class="fld">Name<input name="name" required placeholder="Scout name" style="width:180px"></label>' +
@@ -26122,7 +26211,7 @@
               'place, their own dues and their own parent’s place.') +
           '</p>' +
           chipPicker({
-            id: s.id, canEdit: canEdit(), removeAct: 'scout-family-remove', addCh: 'scout-family-add',
+            id: s.id, canEdit: canEditSection('roster'), removeAct: 'scout-family-remove', addCh: 'scout-family-add',
             addLabel: mine.length ? '+ Add another brother or sister…' : '+ Add a brother or sister…',
             chosen: mine.length ? byScoutName(fam).map(function (o) {
               return { value: o.id, label: (o.name || 'scout') + (o.id === s.id ? ' (this scout)' : '') };
@@ -27290,7 +27379,7 @@
 
     var h = '<div class="card"><div class="spread">' +
       '<h2 class="section display" style="margin-bottom:0">Weather</h2>' +
-      (canEdit() && missing
+      (canEditSection('totals') && missing
         ? '<button type="button" class="btn small" data-act="wx-fetch-all"' + (busy ? ' disabled' : '') + '>' +
           (busy ? 'Looking up…' : 'Look up ' + missing + ' missing') + '</button>'
         : '') + '</div>' +
@@ -27336,7 +27425,7 @@
   // because this table is the only thing that uses it — a wrong number here would be invisible
   // anywhere else, and would show up only as weather that quietly belonged to another town.
   function wxLocationRow(loc) {
-    if (!canEdit()) return '';
+    if (!canEditSection('totals')) return '';
     return '<details style="margin-top:12px"><summary class="small muted">Looked up for ' +
       esc(loc.label || 'the pack’s location') + '</summary>' +
       '<div class="row" style="margin-top:8px">' +
@@ -27409,7 +27498,7 @@
       '</div>' +
       // Treasurer re-check of 89c08b5 (5) — when wagon cash started going through Trail's End.
       '<div class="row" style="margin-top:6px"><label class="fld">Wagon cash donations go through Trail’s End from' +
-      '<input type="date" data-ch="wagon-via-te-from" value="' + esc(packT.wagonCutover) + '"' + (canEdit() ? '' : ' disabled') + '></label></div>' +
+      '<input type="date" data-ch="wagon-via-te-from" value="' + esc(packT.wagonCutover) + '"' + ((canEditSection('totals') || canEditSection('budget')) ? '' : ' disabled') + '></label></div>' +
       '<p class="small muted" style="margin:4px 0 0">' + esc(WAGON_CUTOVER_NOTE) + ' Leave it blank and every wagon entry goes through Trail’s End.' +
       // …and what moving it would do to the tiers, before anyone moves it.
       (packT.wagonCutover && packT.wagonCutover > programYearStartISO(state.budget.programYear)
@@ -29353,7 +29442,7 @@
   // once, in force), and hidden from everyone else, as Reopen is; two taps, since it can't be undone.
   function statementButtonsHtml(st, rt) {
     var h = '';
-    if (canEdit() && !statementReviewRefusal(st, statementReviewer(), state.book)) {
+    if (canEditSection('ledger') && !statementReviewRefusal(st, statementReviewer(), state.book)) {
       var rvArmed = ui.armed === 'st-review:' + st.id;
       h += '<button type="button" class="btn small' + (rvArmed ? ' danger armed' : '') + '" data-act="st-review:' + esc(st.id) + '">' +
         (rvArmed ? 'Tap again: I checked this against the bank’s statement' : 'Mark reviewed') + '</button>';
@@ -29375,7 +29464,7 @@
     }
     // A legacy statement's ending balance (treasurer review of C1, L1): once, by a leader who edits.
     // A box, then Add it, two taps (it can't be changed afterwards).
-    if (canEdit() && st.legacy === true && !statementAdded(st) && !statementReopened(st)) {
+    if (canEditSection('ledger') && st.legacy === true && !statementAdded(st) && !statementReopened(st)) {
       h += '<button type="button" class="btn small ghost" data-act="st-balance:' + esc(st.id) + '">Add the statement’s ending balance</button>';
       if (ui.stBalanceAsk === st.id) {
         var baArmed = ui.armed === 'st-balance-go:' + st.id;
@@ -29513,7 +29602,7 @@
     }).join('') +
       '<div class="row" style="margin-top:6px"><label class="fld">Deposit kept storefront cash within (days)' +
       '<input class="weight-in" type="number" min="1" max="60" step="1" inputmode="numeric" data-ch="deposit-days" value="' + esc(String(dd)) + '"' +
-      (canEdit() ? '' : ' disabled') + '></label></div>' +
+      (canEditSection('deposits') ? '' : ' disabled') + '></label></div>' +
       '<p class="small muted" style="margin:4px 0 0">' + esc(DEPOSIT_DAYS_NOTE) + '</p>';
   }
   // Owner, 2026-10-01 (treasurer review of item 11, 9–10) — the popcorn money held for the council,
@@ -29533,7 +29622,7 @@
       return '<p class="small" style="margin:' + (i ? '4' : '10') + 'px 0 0' + (ln.warn ? ';color:var(--accent-text)' : '') + '"' + (ln.warn ? ' role="alert"' : '') + '>' +
         (i ? '' : '<span class="pill navy">Council</span> ') + esc(ln.text) + '</p>';
     }).join('');
-    if (!canEdit() || state.book.closedAt) return h;
+    if (!canEditSection('ledger') || state.book.closedAt) return h;
     if (settled) {
       var unArmed = ui.armed === 'council-unsettle';
       return h + '<p class="small" style="margin:6px 0 0"><button type="button" class="btn small ghost' + (unArmed ? ' danger armed' : '') + '" data-act="council-unsettle">' +
@@ -30081,7 +30170,7 @@
   function renderRecruitKit() {
     var rk = state.recruitKit || freshRecruitKit();
     var py = state.budget.programYear;
-    var edit = canEdit();
+    var edit = canEditSection('joining');
     var url = kitJoinUrl();
     var dis = edit ? '' : ' disabled';
     function item(id, label, help) {
@@ -30458,7 +30547,7 @@
       // The leftover-role note below already says "no job yet", so only one of the two shows.
       ((myJobIds.length || l.role) ? '' : '<p class="small muted" style="margin:4px 0 0">No job set yet — this leader sees the whole pack’s to-do list instead of their own.</p>') +
       chipPicker({
-        id: l.id, canEdit: canEdit(), removeAct: 'ldr-job-remove', addCh: 'ldr-job-add', addLabel: '+ Add a job…',
+        id: l.id, canEdit: canEditSection('people'), removeAct: 'ldr-job-remove', addCh: 'ldr-job-add', addLabel: '+ Add a job…',
         chosen: myJobIds.map(function (j) { return { value: j, label: jobLabel(j) }; }),
         addable: JOBS.filter(function (j) { return myJobIds.indexOf(j.id) === -1; })
           .map(function (j) { return { value: j.id, label: j.label }; })
@@ -30467,7 +30556,7 @@
       var myDens = arrOf(l.dens);
       jobsBlock += '<p class="eyebrow" style="margin-top:10px">Their den' + (myDens.length > 1 ? 's' : '') + '</p>' +
         chipPicker({
-          id: l.id, canEdit: canEdit(), removeAct: 'ldr-den-remove', addCh: 'ldr-den-add', addLabel: '+ Add a den…',
+          id: l.id, canEdit: canEditSection('people'), removeAct: 'ldr-den-remove', addCh: 'ldr-den-add', addLabel: '+ Add a den…',
           chosen: myDens.map(function (dn) { return { value: dn, label: dn }; }),
           addable: DENS.filter(function (dn) { return myDens.indexOf(dn) === -1; })
             .map(function (dn) { return { value: dn, label: dn }; })
@@ -30485,7 +30574,7 @@
     if (l.role && !myJobIds.length) {
       jobsBlock += '<p class="small muted" style="margin:10px 0 0">No job set yet — previously recorded as “' + esc(l.role) + '”. ' +
         'Pick the job or jobs above that match' +
-        (canEdit() ? ', then <button type="button" class="btn small ghost" data-act="ldr-role-clear" data-id="' + l.id + '">clear this note</button>' : '.') +
+        (canEditSection('people') ? ', then <button type="button" class="btn small ghost" data-act="ldr-role-clear" data-id="' + l.id + '">clear this note</button>' : '.') +
         '</p>';
     }
     jobsBlock += '</div>';
@@ -30522,7 +30611,7 @@
           '<option value="no"' + (v === 'no' ? ' selected' : '') + '>No</option></select></label>';
       }).join('') +
       '<span class="small muted" style="align-self:flex-end;padding-bottom:9px">For the supervision check \u2014 private, never published.</span>' +
-      (canEdit()
+      (canEditSection('people')
         ? '<button type="button" class="btn small" data-act="' + (l.archived ? 'restore-leader' : 'archive-leader') + '" data-id="' + l.id + '" style="align-self:flex-end">' +
           (l.archived ? 'Bring back' : 'Moved on (keeps history)') + '</button>'
         : '') +
@@ -31313,7 +31402,7 @@
           (c.note ? '<br><span class="small muted">' + esc(c.note) + '</span>' : '') +
           (chargeIsOpen(c)
             ? '<br><label class="small muted charge-due">Due <input type="date" data-ch="charge-due" data-id="' + esc(c.id) + '" value="' + esc(cDue) + '"' +
-              (canEdit() ? '' : ' disabled') + ' aria-label="Due date"></label>' +
+              (canEditSection('dues') ? '' : ' disabled') + ' aria-label="Due date"></label>' +
               (c.dueDate ? ' <span class="small muted">(set by hand)</span>' : '')
             : '') + '</span>' +
           '<span class="money small">' + fmt(c.amountCents) + '</span>' +
@@ -31638,7 +31727,7 @@
       h += '<div class="empty" style="margin-bottom:10px">No leaders yet. Add your pack’s leadership roster to track Safeguarding Youth Training and registration renewals.</div>';
     }
     leaders.forEach(function (l) { h += renderLeaderRow(l); });
-    if (canEdit()) h += '<button type="button" class="btn small" data-act="add-leader" style="margin-top:10px">+ Add leader</button>';
+    if (canEditSection('people')) h += '<button type="button" class="btn small" data-act="add-leader" style="margin-top:10px">+ Add leader</button>';
     // Leaders who have moved on. Kept, not deleted: their training dates are the pack's
     // record of who was qualified when, and adult registration stops counting them.
     var goneLeaders = state.leaders.filter(function (l) { return l.archived; });
@@ -31685,7 +31774,7 @@
     // Wave 21 — the Trail's End import card moved to Popcorn · Storefronts, where the
     // Kernel who runs it actually works. This is the pointer left behind, next to Past
     // seasons because that is where a past-season sales report lands.
-    if (canEdit()) {
+    if (canEditSection('totals')) {
       h += '<div class="card"><h2 class="section display">Import from Trail’s End</h2>' +
         '<p class="small muted" style="margin:0 0 10px">Lives on <strong>Popcorn · Storefronts</strong> now. ' +
         'A past season’s sales report still archives into Past seasons below.</p>' +
@@ -31698,8 +31787,9 @@
     // Wave 7 — year-end close-out entry point (preview overlay; nothing commits until confirmed)
     var cy = state.budget.programYear;
 
-    // Advance dens + close-out both mutate the roster/pack record — edit-only.
-    if (canEdit()) {
+    // Advance dens + close-out both mutate the roster/pack record — edit-only. Advancing the dens moves every
+    // scout (the roster) and records the year (the season): a leader needs both (the close-out is an admin's).
+    if (canEditSection('season') && canEditSection('roster')) {
     // Wave 19(3) — standalone den advancement: crossover happens in spring, months
     // before the fiscal close-out. Once run, the close-out skips den advancement.
     h += '<div class="card"><h2 class="section display">Advance dens</h2>';
@@ -32689,7 +32779,7 @@
           shares.forEach(function (s) { byKey[s.coverKey] = s; });
           h += '<p class="eyebrow" style="margin:10px 0 4px">This tier covers</p>' +
             chipPicker({
-              id: t.id, canEdit: canEdit(), removeAct: 'tier-cover-remove', addCh: 'tier-cover-add',
+              id: t.id, canEdit: canEditSection('rewards'), removeAct: 'tier-cover-remove', addCh: 'tier-cover-add',
               addLabel: '+ Add a charge this tier covers…',
               // Stale keys (a deleted budget line, or an adult rate since zeroed) drop out here.
               chosen: covers.filter(function (k) { return byKey[k]; })
@@ -33472,7 +33562,7 @@
   // separate one would drift, and the drift would be invisible to whoever is editing.
   function renderCamping(sec) {
     var trips = campingTrips();
-    var edit = canEdit();
+    var edit = canEditSection('camping');
     if (!trips.length) {
       return '<div class="card"><h2 class="section display">Camping</h2>' +
         '<p class="small muted" style="margin:0 0 10px">No campouts on file. Each one gets its own tab up there, ' +
@@ -33725,7 +33815,7 @@
     var py = state.budget.programYear;
     var ob = state.onboarding || {};
     var list = onboardScouts(state.scouts, ob, py);
-    var edit = canEdit();
+    var edit = canEditSection('joining');
     var dis = edit ? '' : ' disabled';
     var paidMap = chargePaidAllocation(state.charges, state.ledger, chargeFamilyKey);
     var h = '<div class="card"><h2 class="section display">New families this year</h2>' +
@@ -33792,7 +33882,7 @@
   function renderWelcomeEditor() {
     var w = state.welcome || { published: false, sections: [] };
     var secs = welcomeSections();
-    var edit = canEdit();
+    var edit = canEditSection('joining');
     var live = publishedWelcome(w).length;
     var h = '<div class="card"><h2 class="section display">New to the pack</h2>' +
       '<p class="small muted" style="margin:0 0 8px">The page a new family reads: what a den and a pack meeting are, ' +
@@ -38203,7 +38293,7 @@
       (arrOf(book.aside).some(function (e) { return e && (e.off === 'void' || e.off === 'reversed'); }) ? '<button type="button" class="btn small ghost" data-act="closed-csv:voided:' + book.year + '">Voided &amp; reversed (CSV)</button>' : '') +
       '</div>';
     // C8-9 — and, for anyone who can edit, how to correct it.
-    if (canEdit()) h += closedRvFormHtml(book);
+    if (canEditSection('ledger')) h += closedRvFormHtml(book);
     return h;
   }
   // PHASE 3, C8-9 — reversing an entry in a closed year. The closed book is never changed: a correction is a COUNTED reversal in the open book
@@ -39025,11 +39115,11 @@
     }
     if (act === 'toggle-season-setup') { ui.seasonSetupOpen = !ui.seasonSetupOpen; render(); return; }
     // ----- Camping. Every one of these edits the pack record, so they all sit behind
-    // canEdit(): a viewer-role leader never sees the buttons, but the action handler is
+    // canEditSection('camping'): a leader who only reads it never sees the buttons, but the action handler is
     // reachable from a stale DOM after a role change and must not take their word for it.
     // Wave C4 — add the den campout template, once. A second tap goes to the one already there.
     if (act === 'camp-add-den') {
-      if (!canEdit()) return;
+      if (!canEditSection('camping')) { showToast(readOnlySay('camping')); return; }
       if (!getTrip(DEN_CAMP_TRIP_ID)) {
         state.camping.trips.push(seedDenCampTrip());
         commit();
@@ -39038,7 +39128,7 @@
       return;
     }
     if (act === 'camp-add-trip') {
-      if (!canEdit()) return;
+      if (!canEditSection('camping')) { showToast(readOnlySay('camping')); return; }
       var ntTrip = freshTrip('');
       state.camping.trips.push(ntTrip);
       commit();
@@ -39049,7 +39139,7 @@
       return;
     }
     if (act.indexOf('camp-add-sec:') === 0) {
-      if (!canEdit()) return;
+      if (!canEditSection('camping')) { showToast(readOnlySay('camping')); return; }
       var asT = getTrip(act.slice('camp-add-sec:'.length));
       if (!asT) return;
       asT.sections.push(freshTripSection('', ''));
@@ -39057,7 +39147,7 @@
       return;
     }
     if (act.indexOf('camp-del-sec:') === 0) {
-      if (!canEdit()) return;
+      if (!canEditSection('camping')) { showToast(readOnlySay('camping')); return; }
       arm(act, function () {
         var dsBits = act.split(':');
         var dsT = getTrip(dsBits[1]);
@@ -39072,7 +39162,7 @@
       return;
     }
     if (act.indexOf('camp-del-trip:') === 0) {
-      if (!canEdit()) return;
+      if (!canEditSection('camping')) { showToast(readOnlySay('camping')); return; }
       arm(act, function () {
         var dtId = act.slice('camp-del-trip:'.length);
         var dtIx = state.camping.trips.findIndex(function (t) { return t.id === dtId; });
@@ -39088,8 +39178,8 @@
       });
       return;
     }
-    // ----- "New to the pack" (Wave B1). Behind canEdit() for the camping reason above.
-    // ----- Wave B4 — School Night kit. Printing changes nothing, so no canEdit(); the link is
+    // ----- "New to the pack" (Wave B1). Behind canEditSection('joining') for the camping reason above.
+    // ----- Wave B4 — School Night kit. Printing changes nothing, so no edit check; the link is
     // re-checked here (kitJoinUrl: admin, link on, real code) rather than trusted from the page.
     if (act === 'kit-print-flyer') {
       var kfUrl = recruitKitFlyerLink(state.recruitKit, state.budget.programYear) ? kitJoinUrl() : '';
@@ -39103,19 +39193,19 @@
       return;
     }
     if (act.indexOf('ob-untrack:') === 0) {
-      if (!canEdit()) return;
+      if (!canEditSection('joining')) { showToast(readOnlySay('joining')); return; }
       delete state.onboarding[act.slice('ob-untrack:'.length)];
       commit();
       return;
     }
     if (act === 'welcome-add-sec') {
-      if (!canEdit()) return;
+      if (!canEditSection('joining')) { showToast(readOnlySay('joining')); return; }
       state.welcome.sections.push(freshWelcomeSection('', '', ''));
       commit();
       return;
     }
     if (act.indexOf('welcome-sec-hide:') === 0) {
-      if (!canEdit()) return;
+      if (!canEditSection('joining')) { showToast(readOnlySay('joining')); return; }
       var whS = getWelcomeSection(act.slice('welcome-sec-hide:'.length));
       if (!whS) return;
       whS.hidden = !whS.hidden;
@@ -39123,7 +39213,7 @@
       return;
     }
     if (act.indexOf('welcome-del-sec:') === 0) {
-      if (!canEdit()) return;
+      if (!canEditSection('joining')) { showToast(readOnlySay('joining')); return; }
       arm(act, function () {
         var wdId = act.slice('welcome-del-sec:'.length);
         var wdIx = state.welcome.sections.findIndex(function (s) { return s.id === wdId; });
@@ -39143,7 +39233,7 @@
     if (act === 'baloo-dismiss') { state.balooNoticeDismissed = true; commit(); return; } // K1
     if (act === 'moved-go') {
       state.movedNoticeDismissed = true;
-      if (canEdit()) save();
+      if (canEdit()) save();   // a shared dismiss flag: anyone who edits anything
       gotoNav(el.dataset.tab, el.dataset.section, false);
       return;
     }
@@ -40193,14 +40283,14 @@
     if (act === 'plan-adv-cancel') { ui.planAdv = null; render(); return; }
     // Den plans — Fill the calendar (renderFillCalendar). The list is ui only until Apply.
     if (act === 'fill-open') {
-      if (!canEdit()) return;
+      if (!canEditSection('calendar')) { showToast(readOnlySay('calendar')); return; }
       ui.fillCal = { rows: [{ key: '', n: 1, nSet: false }], from: todayISO() };
       render(); return;
     }
     if (act === 'fill-close') { ui.fillCal = null; render(); return; }
     if (/^fill-(add|del|up|down|req6)$/.test(act)) {
       var flc = ui.fillCal;
-      if (!flc || !canEdit()) return;
+      if (!flc || !canEditSection('calendar')) return;
       var fli = parseInt(el.dataset.i, 10);
       if (act === 'fill-add' && flc.rows.length < FILL_MAX_ROWS) flc.rows.push({ key: '', n: 1, nSet: false });
       else if (act === 'fill-del' && flc.rows[fli]) flc.rows.splice(fli, 1);
@@ -40213,7 +40303,7 @@
     // Recomputed from the record as it is NOW, not from what the preview drew: a night tagged
     // since (a sync, another tab) is skipped like any other, never overwritten.
     if (act === 'fill-apply') {
-      if (!canEdit() || !ui.fillCal) return;
+      if (!canEditSection('calendar') || !ui.fillCal) return;
       var fpHeld = advPlansHeld();
       var fpPlan = fillCalendarNow(fpHeld && fpHeld.status === 'ready' ? fpHeld.data : null);
       if (!fpPlan.assign.length) return;
@@ -40715,7 +40805,7 @@
     // An event's several adventures (evOffers): remove one.
     if (act === 'offer-del') {
       var odEv = getEvent(el.dataset.id);
-      if (!canEdit() || !odEv || !Array.isArray(odEv.advOffers)) return;
+      if (!canEditDenMeeting(odEv) || !odEv || !Array.isArray(odEv.advOffers)) return;
       var odIx = odEv.advOffers.findIndex(function (o) { return o && o.key === el.dataset.key; });
       if (odIx === -1) return;
       var odGone = odEv.advOffers.splice(odIx, 1)[0];
@@ -40732,7 +40822,7 @@
     if (act === 'offer-mark') {
       var omEv = getEvent(el.dataset.id);
       var omOffer = omEv ? evOffers(omEv).find(function (o) { return o.key === el.dataset.key; }) : null;
-      if (!canEdit() || !omOffer || !omOffer.auto) return;
+      if (!canEditSection('advancement') || !omOffer || !omOffer.auto) return;
       var omDid = 0;
       offerAttendees(omEv, omOffer.key).can.forEach(function (r) {
         if (advMarkDone(r.scout.id, advKindFor(r.scout, r.name), r.name)) omDid += 1;
@@ -41682,6 +41772,7 @@
     if (ch.indexOf('ev-') === 0) {
       var evr = getEvent(el.dataset.id);
       if (!evr) return;
+      if (!canEditSection('calendar')) { showToast(readOnlySay('calendar')); render(); return; }   // pack positions
       var evk = ch.slice(3);
       if (evk === 'name') evr.name = el.value;
       else if (evk === 'date') { evr.date = el.value; evr.slot = evr.date ? dateToSlot(evr.date) : evr.slot; }
@@ -41724,14 +41815,14 @@
     // that now says the same as the new choice stops being a change and follows it again.
     if (ch === 'mtg-pack-adv') {
       var paM = getEvent(el.dataset.id);
-      if (!canEdit() || !paM || paM.kind !== 'den' || paM.den) return;
+      if (!canEditSection('calendar') || !paM || paM.kind !== 'den' || paM.den) return;   // the pack's pick: the Cubmaster's
       setPackAdv(paM, el.value);
       commit(); return;
     }
     // An event's several adventures (evOffers): everyone who attends, or offered.
     if (ch === 'offer-auto') {
       var oaEv = getEvent(el.dataset.id);
-      if (!canEdit() || !oaEv || !Array.isArray(oaEv.advOffers)) return;
+      if (!canEditDenMeeting(oaEv) || !oaEv || !Array.isArray(oaEv.advOffers)) return;
       var oaO = oaEv.advOffers.find(function (o) { return o && o.key === el.dataset.key; });
       if (!oaO) return;
       oaO.auto = el.value === '1';
@@ -41740,7 +41831,7 @@
     // Den plans — Fill the calendar's rows and start date: ui only, nothing saved (fill-apply saves).
     if (ch === 'fill-key' || ch === 'fill-n' || ch === 'fill-from') {
       var fcl = ui.fillCal;
-      if (!fcl || !canEdit()) return;
+      if (!fcl || !canEditSection('calendar')) return;
       var fcr = fcl.rows[parseInt(el.dataset.i, 10)];
       if (ch === 'fill-key' && fcr) { fcr.key = packAdvLabel(el.value) ? el.value : ''; fcr.nSet = false; }
       else if (ch === 'fill-n' && fcr) {
@@ -41755,7 +41846,7 @@
     // choice again, '-' is "not at this meeting".
     if (ch === 'den-mtg-adv') {
       var dmM = getEvent(el.dataset.id), dmDen = el.dataset.den;
-      if (!canEdit() || !dmM || dmM.kind !== 'den' || DENS.indexOf(dmDen) === -1) return;
+      if (!dmM || dmM.kind !== 'den' || DENS.indexOf(dmDen) === -1 || !canEditDenMeeting(dmM, dmDen)) return;
       var dmVal = el.value === '-' ? '-' : advCanonicalName(dmDen, el.value);
       if (dmM.den) {
         if (dmM.den !== dmDen) return;
@@ -41775,6 +41866,10 @@
         ch === 'mtg-note-internal' || ch === 'mtg-adv') {
       var mtg = getEvent(el.dataset.id);   // Phase 2 — a meeting is an Event
       if (!mtg) return;
+      // Pack positions — when, which den and which kind are the calendar's; the rest a den leader's on their dens.
+      if ((ch === 'mtg-kind' || ch === 'mtg-den' || ch === 'mtg-time') ? !canEditSection('calendar') : !canEditDenMeeting(mtg)) {
+        showToast(readOnlySay('calendar')); render(); return;
+      }
       if (ch === 'mtg-kind') { mtg.kind = el.value; if (mtg.kind === 'pack') clearMeetingAdvs(mtg); }
       else if (ch === 'mtg-den') setMeetingDen(mtg, el.value);
       else if (ch === 'mtg-time') mtg.time = el.value;
@@ -42112,7 +42207,7 @@
     if (kind === 'offer-add') {
       var oaddEv = getEvent(f.dataset.id);
       var oaddKey = String(fd.get('key') || '');
-      if (!canEdit() || !oaddEv || oaddEv.kind === 'pack' || !packAdvLabel(oaddKey)) return;
+      if (!canEditDenMeeting(oaddEv) || !oaddEv || oaddEv.kind === 'pack' || !packAdvLabel(oaddKey)) return;
       var oaddList = evOffers(oaddEv).map(function (o) { return { key: o.key, auto: o.auto }; });
       if (oaddList.some(function (o) { return o.key === oaddKey; }) || oaddList.length >= ADV_OFFERS_MAX) return;
       oaddList.push({ key: oaddKey, auto: String(fd.get('auto') || '') === '1' });
@@ -42124,7 +42219,7 @@
     if (kind === 'offer-mark-picked') {
       var opEv = getEvent(f.dataset.id);
       var opOffer = opEv ? evOffers(opEv).find(function (o) { return o.key === f.dataset.key; }) : null;
-      if (!canEdit() || !opOffer) return;
+      if (!canEditSection('advancement') || !opOffer) return;
       var opIds = fd.getAll('scout').map(String);
       if (!opIds.length) { showToast('Tick the scouts who did it first.'); return; }
       var opDid = 0;
