@@ -20397,11 +20397,13 @@
   var SR_MY_SHIFT = 'Your family’s shift';
   // Keith (2026-10-01): the card lists your family's shifts, and under them a toggle shows the rest
   // (a parent covering for another family). Kept in ui only, never saved.
-  var SR_SHOW_ALL = 'Worked a different shift? Show all shifts';
+  var SR_SHOW_ALL = 'Worked a shift that isn’t listed? Show all shifts';
   var SR_SHOW_MINE = 'Show only your family’s shifts';
-  var SR_UNLINKED = 'Your account isn’t linked to your scout yet, so every shift is listed. Ask a leader to link it on the Members card, and your family’s shifts will show first.';
-  var SR_NONE_MINE = 'None of your family’s shifts are in the last 14 days.';
-  var SR_PREVIEW_LINE = 'This is the card as your own family sees it, and it works for real: totals you send, change or confirm here are sent as you.';
+  var SR_UNLINKED = 'Your account isn’t linked to your scout yet, so every shift is listed. Ask a leader to link your account to your scout, and you’ll see just your family’s shifts.';
+  var SR_NONE_MINE = 'Your family has no storefront shifts from the last 14 days.';
+  // True as said: the server never lets a leader accept a report they sent (same-person).
+  var SR_PREVIEW_LINE = 'This is the card as you’d see it as a parent, with your own scout’s shifts. It isn’t a test: totals you send, change or confirm here ' +
+    'are real and go out under your name. Another leader has to accept them.';
   // The Schedule's shift-totals card: the published storefront shifts from the last 14 days that
   // have started, with where their totals stand and the buttons, and the form under the one being
   // filled in. '' when the feature is off or there is no such shift. `today` is the pack's.
@@ -20451,7 +20453,7 @@
     });
     // The toggle: only for a linked account with shifts the list leaves out (or showing them now).
     if (linked && (ui.srShowAll === true || shown.length < rows.length)) {
-      h += '<div class="sr-acts" style="margin-top:6px"><button type="button" class="btn small ghost" data-act="sr-show-all" aria-expanded="' +
+      h += '<div class="sr-acts" style="margin-top:6px"><button type="button" class="btn small ghost" id="srShowAll" data-act="sr-show-all" aria-expanded="' +
         (ui.srShowAll === true ? 'true' : 'false') + '">' + esc(ui.srShowAll === true ? SR_SHOW_MINE : SR_SHOW_ALL) + '</button></div>';
     }
     return h + '</div>';
@@ -22936,6 +22938,7 @@
     // Security re-check (followups round 3): recording what became of the cash from sales.
     'cash-same-person': 'You sent this report, so another leader records what became of its cash.',
     'cash-same-family': 'You’re in the same family as the parent who sent this, so another leader records what became of its cash.',
+    'cash-confirmer': 'You confirmed this report as a parent, so another leader records what became of its cash.',
     'override-reason-family': 'Say why you are accepting it yourself.',
     'override-reason': 'Say why you are accepting it without a second parent.',
     'override-reason-collect': 'Say why you are accepting it without collecting the cash.',
@@ -23138,7 +23141,8 @@
   function srCashNotMine(rid) {
     var r = srReport(rid);
     if (!r) return '';
-    return srMine(r) ? LEADER_SR_SAY['cash-same-person'] : srSameFamily(r) ? LEADER_SR_SAY['cash-same-family'] : '';
+    return srMine(r) ? LEADER_SR_SAY['cash-same-person'] : srIConfirmed(r) ? LEADER_SR_SAY['cash-confirmer']
+      : srSameFamily(r) ? LEADER_SR_SAY['cash-same-family'] : '';
   }
   // The two buttons for a report's cash, or why this leader has none.
   function srCashButtons(rid, cents) {
@@ -23250,7 +23254,8 @@
       var why = (err && err.reason) || '';
       // Treasurer (followups round 3): the accept's own "I also collected it" didn't land.
       if (quiet && outcome === 'collected') { showToast('The totals were accepted, but the ' + fmt(cents) + ' wasn’t marked collected. Press Collected on the shift.'); return loadShiftReports(); }
-      showToast(why === 'same-person' ? LEADER_SR_SAY['cash-same-person'] : why === 'same-family' ? LEADER_SR_SAY['cash-same-family'] : leaderSrMessage(err));
+      showToast(why === 'same-person' ? LEADER_SR_SAY[srIConfirmed(srReport(rid)) ? 'cash-confirmer' : 'cash-same-person']
+        : why === 'same-family' ? LEADER_SR_SAY['cash-same-family'] : leaderSrMessage(err));
       return loadShiftReports();
     });
   }
@@ -36704,7 +36709,7 @@
     if (/^sr-(cash-collected|cash-converted|cash-replaced|cash-undo|also-cash)$/.test(act)) { srCashAct(act, el); return; }
     // A family's shift totals (2026-10-01): the server's table, never the pack record.
     if (act === 'shift-report-open' || act === 'shift-report-cancel' || act === 'shift-report-withdraw' || act === 'shift-report-confirm-open') { shiftReportAct(act, el); return; }
-    if (act === 'sr-show-all') { ui.srShowAll = ui.srShowAll !== true; render(); return; }
+    if (act === 'sr-show-all') { ui.srShowAll = ui.srShowAll !== true; ui.srFocusId = 'srShowAll'; render(); return; }   // focus stays on the toggle
     // ---- Accounts ----
     if (act === 'sign-in-google') { signInWithGoogle(); return; }
     if (act === 'sign-out-google') { signOutGoogle(); return; }

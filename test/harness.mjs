@@ -17921,7 +17921,8 @@ test('preview as a parent: the parent preview is the leader’s own parent self 
   ok(/Sent — waiting for a leader/.test(srLine(P, srEv(SR_TODAY))) && /data-act="shift-report-withdraw"/.test(srLine(P, srEv(SR_TODAY))), 'their own report, with its buttons');
   ok(/>Enter shift totals</.test(srLine(srStatusCtx({ preview: true, role: 'admin' }), srEv(SR_TODAY))), 'Enter shift totals in the preview');
   const card = vm.runInContext('parentShiftReportCard', P)({ events: [srEv(SR_TODAY)] }, SR_TODAY);
-  ok(card.indexOf('<strong>Preview:</strong> This is the card as your own family sees it, and it works for real: totals you send, change or confirm here are sent as you.') !== -1 &&
+  ok(card.indexOf('<strong>Preview:</strong> This is the card as you’d see it as a parent, with your own scout’s shifts. It isn’t a test: totals you send, change or confirm here ' +
+    'are real and go out under your name. Another leader has to accept them.') !== -1 &&
     /<form data-form="shift-report"/.test(card), 'the preview card: its line, and the form');
   ok(!/You can’t send them from the preview/.test(SCRIPT), 'the old line');
   // It reads the parent-shaped answer, kept apart from the leader's own.
@@ -18271,6 +18272,20 @@ atest('as a parent: a leader who is also a parent gets exactly a parent’s answ
     'one they may not: status only');
   eq([g.body.myShifts.map((x) => x.blockId), g.body.linked], [['b1', 'b3', 'b5'], true], 'myShifts and linked');
   ok(!/uid-|Test owner|salesCashOutcome|acceptNote/.test(g.text), 'no account ids, leader names or leader fields: ' + g.text.slice(0, 200));
+  // Security review: the editor confirms another family's report from the preview; once accepted, the
+  // editor (its confirmer) may not record what became of its cash.
+  const sw = await s4World();
+  const st2 = JSON.parse(sw.one('SELECT json FROM pack_state').json);
+  st2.scouts.find((sc) => sc.id === 's1').parentUids.push('uid-editor');
+  sw.db.raw.prepare('UPDATE pack_state SET json = ?, rev = rev + 1').run(JSON.stringify(st2));
+  const cr = (await sw.send('newbie', 'b1', { salesCashCents: 300 })).body.report.id;
+  const seen = (await sw.call('editor', 'GET', 'shiftReports', null, { query: '?as=parent' })).body.others.find((o) => o.id === cr);
+  eq((await sw.act('editor', cr, { action: 'confirm', attest: true, teCents: seen.teCents, cashCents: seen.cashCents, salesCashCents: seen.salesCashCents,
+    updatedAt: seen.updatedAt })).status, 200, 'the editor confirms, as a parent');
+  eq((await sw.act('owner', cr, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 300 })).status, 200, 'the owner accepts');
+  eq((await sw.act('editor', cr, { action: 'salescash', outcome: 'collected', salesCashCents: 300 })).body.error, 'same-person', 'the confirmer records its cash');
+  eq(sw.sql("SELECT count(*) AS n FROM audit WHERE action LIKE 'shift.salescash.%'")[0].n, 0, 'audited a refusal');
+  eq((await sw.act('owner', cr, { action: 'salescash', outcome: 'collected', salesCashCents: 300 })).status, 200, 'another leader does');
   // Without ?as=parent, the editor reads as a leader, as before.
   const full = await w.call('editor', 'GET', 'shiftReports');
   ok(full.body.reports.length >= 3 && full.body.reports.some((r) => r.submittedByUid), 'the leader’s answer, unchanged');
@@ -19019,7 +19034,7 @@ test('my shifts: the family’s card lists only their own family’s shifts, mar
   // An account linked to no scout: every shift, newest first, and how to fix it.
   const un = vm.runInContext('parentShiftReportCard', srStatusCtx({}))(pv, SR_TODAY);
   eq(order(un), all, 'linked to no scout: the full list');
-  ok(un.indexOf('Your account isn’t linked to your scout yet, so every shift is listed. Ask a leader to link it on the Members card, and your family’s shifts will show first.') !== -1 &&
+  ok(un.indexOf('Your account isn’t linked to your scout yet, so every shift is listed. Ask a leader to link your account to your scout, and you’ll see just your family’s shifts.') !== -1 &&
     !/sr-show-all/.test(un), 'the line, and no toggle');
   const ctx = srStatusCtx({});
   vm.runInContext("sync.shiftReports.myShifts = [{ sfId: 'sf1', blockId: 'b1' }, { sfId: 'sf2', blockId: 'b6' }]; sync.shiftReports.linked = true;", ctx);
@@ -19027,7 +19042,7 @@ test('my shifts: the family’s card lists only their own family’s shifts, mar
   const h = card();
   eq(order(h), ['*2026-10-03 Publix', '*2026-09-30 Kroger'], 'only their family’s, marked');
   ok(h.indexOf('data-block="b6"') < h.indexOf('data-block="b1"'), 'newest first');
-  ok(/data-act="sr-show-all" aria-expanded="false">Worked a different shift\? Show all shifts</.test(h), 'the toggle');
+  ok(/id="srShowAll" data-act="sr-show-all" aria-expanded="false">Worked a shift that isn’t listed\? Show all shifts</.test(h), 'the toggle');
   vm.runInContext('ui.srShowAll = true', ctx);
   const h2 = card();
   eq(order(h2), ['*2026-10-03 Publix', '*2026-09-30 Kroger', '2026-10-03 Publix', '2026-10-01 Kroger'], 'all of them: theirs first, the rest in their order');
@@ -19035,13 +19050,15 @@ test('my shifts: the family’s card lists only their own family’s shifts, mar
   vm.runInContext('ui.srShowAll = false', ctx);
   // Linked, but none of theirs in the window.
   vm.runInContext("sync.shiftReports.myShifts = []", ctx);
-  ok(card().indexOf('None of your family’s shifts are in the last 14 days.') !== -1 && /Show all shifts/.test(card()), 'none of theirs');
+  ok(card().indexOf('Your family has no storefront shifts from the last 14 days.') !== -1 && /Show all shifts/.test(card()), 'none of theirs');
   // Always shown: a shift with totals they may confirm, and one with their own report on it.
   vm.runInContext("sync.shiftReports.others = [{ sfId: 'sf1', blockId: 'b2', status: 'submitted', needsConfirm: true, confirmed: false, canConfirm: true, id: 'r9', teCents: 1, cashCents: 0, salesCashCents: 0, updatedAt: 1 }];" +
     "sync.shiftReports.reports = [{ id: 'r1', sfId: 'sf2', blockId: 'b5', status: 'submitted', mine: true, teCents: 1, cashCents: 0 }];", ctx);
   eq(order(card()), ['2026-10-03 Publix', '2026-10-01 Kroger'], 'one to confirm and their own report, though not their family’s');
   // The toggle is a parent action, ui only.
-  ok(/var PARENT_ACTS = \[[^\]]*'sr-show-all'/.test(SCRIPT) && /if \(act === 'sr-show-all'\) \{ ui\.srShowAll = ui\.srShowAll !== true; render\(\); return; \}/.test(SCRIPT), 'the toggle’s action');
+  ok(/var PARENT_ACTS = \[[^\]]*'sr-show-all'/.test(SCRIPT) &&
+    /if \(act === 'sr-show-all'\) \{ ui\.srShowAll = ui\.srShowAll !== true; ui\.srFocusId = 'srShowAll'; render\(\); return; \}/.test(SCRIPT),
+    'the toggle’s action, keeping focus on the toggle');
   ok(/sr\.myShifts = arrOf\(r && r\.myShifts\)\.filter\(function \(x\) \{ return x && typeof x\.sfId === 'string' && typeof x\.blockId === 'string'; \}\)\s*\.map\(function \(x\) \{ return \{ sfId: x\.sfId, blockId: x\.blockId \}; \}\);/.test(slice('loadShiftReports')) &&
     /sr\.linked = !!\(r && r\.linked === true\);/.test(slice('loadShiftReports')), 'loadShiftReports keeps more than the ids and a yes/no');
 });
@@ -19160,6 +19177,12 @@ atest('same family: a leader can’t record their own or their family’s cash f
   U.run("srCashAct('sr-cash-collected', { dataset: { rid: 'rep-1' } })");
   await U.answer(0, { code: 'failed-precondition', reason: 'same-family' });
   eq(U.get('toasts').pop(), 'You’re in the same family as the parent who sent this, so another leader records what became of its cash.', 'the server’s same-family');
+  // The parent who confirmed it, too (security review of the parent preview).
+  const Cf = srLeaderCtx({ reports: [srRep({ status: 'accepted', salesCashCents: 500, salesCashOutcome: null, confirmedByUid: 'uid-ed', confirmed: true })],
+    state: { scouts: [], leaders: [{ id: 'l1', name: 'Sam Leader', uid: 'uid-ed' }], storefronts: [{ id: 'sf1', name: 'K', date: '2026-10-03',
+      blocks: [{ id: 'b1', label: 'B', assignments: [], salesCash: [{ reportId: 'rep-1', cents: 500, from: 'N', outcome: null }] }] }] } });
+  const cb = Cf.run('renderBlockCashToCollect(state.storefronts[0], state.storefronts[0].blocks[0])');
+  ok(!/sr-cash-collected/.test(cb) && cb.indexOf('You confirmed this report as a parent, so another leader records what became of its cash.') !== -1, 'the confirmer');
   // pack-moved: the accept is read again and tried again; the block keeps the figures.
   const P = srLeaderCtx({ reports: [srRep()] });
   P.run("acceptShiftReport('rep-1', { collected: true })");

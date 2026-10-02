@@ -573,8 +573,8 @@ pack record, so a parent who can send one still can't write anything else.
   ‹leader› (same family as the sender)". If either account is linked to no scout, the accept
   works as before. If the pack record exists but can't be read, the server treats it as the
   same family, so only an accept with a reason gets through. The same rule applies to recording
-  what became of a report's cash from popcorn sales, which is never the sender either; anyone
-  may undo that record. The rule reads links between people, never pack jobs.
+  what became of a report's cash from popcorn sales, which is never the sender, nor the parent
+  who confirmed it, either; anyone may undo that record. The rule reads links between people, never pack jobs.
 - **Who verified the cash** (Keith, review round 1). Every accepted report names who did:
   - **Two or more families on the shift:** the parent from the other family who confirmed it.
     The accepting leader is recorded as the approver.
