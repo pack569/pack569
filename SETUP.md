@@ -545,11 +545,13 @@ pack record, so a parent who can send one still can't write anything else.
   never published to parents; another family sees it only in the one exception under *Who sees
   what* below.
 - **What became of that cash** (treasurer and security review, followups round 1): only an
-  `admin` or `editor`, and only on an **accepted** report that has some, records on the server
-  that they **collected** it, or that the family **converted** it to credit after all. They can
-  undo either. The record names the amount it is about and is refused if the report has moved
+  `admin` or `editor`, and only on a report that has some and was **accepted** (it may have
+  been sent back since), records on the server that they **collected** it, or that the family
+  **converted** it to credit after all. On a report sent back after it was accepted, they can
+  instead mark it **the same cash as the new report** (`replaced`), so a corrected report's
+  figure isn't counted twice. They can undo any of these. The record names the amount it is about and is refused if the report has moved
   since. It keeps who recorded it and when, from their member record and the server's clock.
-  Each change is audited (`shift.salescash.collected`, `.converted`, `.undo`), and leaders see
+  Each change is audited (`shift.salescash.collected`, `.converted`, `.replaced`, `.undo`), and leaders see
   it in the season's shift-report history.
 - **One at a time:** each block can have only one report that is waiting or accepted. A
   second report for the same block is refused until a leader sends the first one back or its

@@ -15,10 +15,13 @@
 -- Trail's End amount is the endpoint's rule (rules.js shiftReportFiguresProblem), not a CHECK.
 --
 -- What became of it (treasurer and security review, followups round 1): a leader records, on the
--- server and in the audit, that they COLLECTED the cash, or that the family CONVERTED it to
--- credit after all. sales_cash_outcome says which (NULL: still out), with who and when, from the
--- member row and the server's clock. Only an admin or editor, only on an accepted report holding
--- cash from sales, and undoable (rules.js canReviewShiftReport; [rid].js action 'salescash'). The
+-- server and in the audit, that they COLLECTED the cash, that the family CONVERTED it to
+-- credit after all, or (on a report sent back after it was accepted) that it was REPLACED: the same
+-- cash as the newer report on the shift, so it is not counted twice. A settlement counts only
+-- 'collected'. sales_cash_outcome says which (NULL: still out), with who and when, from the
+-- member row and the server's clock. Only an admin or editor (never the sender, nor the sender's
+-- family), only on an accepted report holding cash from sales (or one sent back after it was
+-- accepted), and undoable (rules.js canReviewShiftReport; [rid].js action 'salescash'). The
 -- settlement can later read the sum of what was collected from here.
 --
 -- ORDER: apply this to the preview database, then production, BEFORE deploying the code that uses
@@ -37,5 +40,5 @@ ALTER TABLE shift_reports ADD COLUMN sales_cash_at INTEGER
   CHECK (sales_cash_at IS NULL OR typeof(sales_cash_at) = 'integer');
 -- Last: its CHECK names the columns above (and SQLite checks it against them as it is added).
 ALTER TABLE shift_reports ADD COLUMN sales_cash_outcome TEXT
-  CHECK (sales_cash_outcome IS NULL OR (sales_cash_outcome IN ('collected', 'converted') AND sales_cash_cents > 0
+  CHECK (sales_cash_outcome IS NULL OR (sales_cash_outcome IN ('collected', 'converted', 'replaced') AND sales_cash_cents > 0
          AND sales_cash_by_uid IS NOT NULL AND sales_cash_at IS NOT NULL));

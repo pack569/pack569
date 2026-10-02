@@ -9,7 +9,9 @@
 // here and audited, not only on the pack record's block. 'salescash' sets outcome 'collected' (a
 // leader has the cash) or 'converted' (the family converted it to credit after all), or null to
 // undo either; it names the amount it is about. Audited shift.salescash.collected / .converted /
-// .undo. Only on an ACCEPTED report with cash from sales (a waiting one is not the pack's yet).
+// .replaced / .undo. Only on an ACCEPTED report with cash from sales (a waiting one is not the
+// pack's yet), or one sent back after it was accepted; 'replaced' (the same cash as the newer
+// report on the shift) only on the sent-back kind.
 //   { action: 'return', reviewNote }                              admin or editor; waiting or accepted
 //   { action: 'salescash', outcome, salesCashCents }              admin or editor; an accepted report holding cash from sales
 // Answers { report } as GET would show it to the caller.
@@ -208,9 +210,14 @@ async function patch({ request, db, packId, role, user, member, params }) {
     if (override) detail.reason = note;
     if (same) detail.sameFamily = true;
   } else if (action === 'salescash') {
-    if (b.outcome !== null && b.outcome !== 'collected' && b.outcome !== 'converted') refuse(badRequest('outcome'));
+    if (b.outcome !== null && b.outcome !== 'collected' && b.outcome !== 'converted' && b.outcome !== 'replaced') refuse(badRequest('outcome'));
     if (!Number.isInteger(b.salesCashCents) || b.salesCashCents <= 0) refuse(badRequest('sales-cash-cents'));
-    if (row.status !== 'accepted') return reportMoved(row.status);
+    // Treasurer re-check (followups round 3): an accepted report, or one a leader sent back AFTER
+    // accepting it — its cash was reported, and may still be out. 'replaced' (the same cash as a
+    // newer report on the shift, so it isn't counted twice) only on such a sent-back one.
+    const wasAccepted = row.status === 'accepted' || (row.status === 'returned' && !!row.accepted_by_uid);
+    if (!wasAccepted) return reportMoved(row.status);
+    if (b.outcome === 'replaced' && row.status !== 'returned') refuse(badRequest('outcome'));
     if (!(row.sales_cash_cents > 0)) refuse(badRequest('no-sales-cash'));
     // The amount the leader was shown, and the state they saw: nothing recorded yet to set one, an
     // outcome to undo.
@@ -227,7 +234,8 @@ async function patch({ request, db, packId, role, user, member, params }) {
     }
     roles = REVIEW_ROLES;
     update = db.prepare('UPDATE shift_reports SET sales_cash_outcome = ?, sales_cash_by_uid = ?, sales_cash_by_name = ?, sales_cash_at = ?, ' +
-      "updated_at = ?, stamp = ? WHERE pack_id = ? AND id = ? AND stamp = ? AND status = 'accepted' AND sales_cash_cents = ? AND " +
+      "updated_at = ?, stamp = ? WHERE pack_id = ? AND id = ? AND stamp = ? AND (status = 'accepted' OR (status = 'returned' AND accepted_by_uid IS NOT NULL)) " +
+      (b.outcome === 'replaced' ? "AND status = 'returned' " : '') + 'AND sales_cash_cents = ? AND ' +
       'sales_cash_outcome IS ' + (undo ? 'NOT NULL' : 'NULL') + ' AND ' + (undo ? '' : 'submitted_by_uid != ? AND ') +
       (famRec ? '(SELECT rev FROM pack_state WHERE pack_id = ?) = ? AND ' : '') + STILL_MEMBER(roles))
       .bind(undo ? null : b.outcome, undo ? null : user.uid, undo ? null : name, undo ? null : now, now, stamp, packId, rid, row.stamp,

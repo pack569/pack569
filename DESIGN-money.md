@@ -1541,8 +1541,11 @@ API backend they send them in.
   button can come with the storefront cash deposits work.
   - **The record is the server's** (treasurer and security, followups round 1). An admin or
     editor marks a report's cash **Collected** or **They converted it** (PATCH `salescash`,
-    audited, undoable), on an accepted report only. The season's history shows who recorded it
-    and when, and a settlement can later sum what was collected from `shift_reports`.
+    audited, undoable), on an accepted report, or one sent back after its accept. On the sent-back
+    kind they can instead mark it **Same cash as the new report** (`replaced`), when the
+    corrected report holds the same cash, so it isn't counted twice. The season's history shows
+    who recorded it and when, and a settlement can later sum what was `collected` from
+    `shift_reports`, ignoring `converted` and `replaced`.
   - **The block mirrors it**, one entry per accepted report: `b.salesCash = [{ reportId, cents,
     from, outcome }]`, with `outcome` null while the cash is out, or `{ outcome, by, at }`. The
     amount stays when it is collected. Accepting a later report onto the block adds its own entry
