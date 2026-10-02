@@ -31,7 +31,7 @@
 // the ledger's editors included); a statement there stays as it is and one added
 // is the caller's; a council settlement written is the caller's. Two slices of a section a leader may
 // write without editing it: a shift report's fields on a storefront block (shiftVerify: the
-// accept, its undo, its settle), and a deposit of storefront cash added to the ledger, flagged for
+// accept, its undo, its settle, each tied to the report's row in shift_reports, read here), and a deposit of storefront cash added to the ledger, flagged for
 // the treasurer (the 'deposits' sub-section). An admin's save is not compared.
 // A save from a stale rev is the 409 it always was, before anything is compared.
 //
@@ -44,7 +44,7 @@
 import { route, json, readText, refuse, forbidden, forbiddenSections, badRequest, awaitingImport, MAX_STATE_BYTES } from '../../../_lib/http.js';
 import { withMember, fixedOwnerMode } from '../../../_lib/pack.js';
 import { canReadPack, canWritePack, isAdmin } from '../../../_lib/rules.js';
-import { effectiveAccess, effectiveActions, refusedSections, SECTIONS } from '../../../_lib/access.js';
+import { effectiveAccess, effectiveActions, refusedSections, storefrontReportIds, canEditOwner, SECTIONS } from '../../../_lib/access.js';
 
 function stateOut(row) {
   return row
@@ -63,7 +63,23 @@ const conflict = (row) => json(409, Object.assign({ error: 'conflict', code: 'ab
 // The sections refused, in the table's order, 'admin' last.
 const sectionOrder = (list) => SECTIONS.concat(['shared', 'admin']).filter((s) => list.indexOf(s) !== -1);
 
-async function put({ request, env, db, packId, role, positions, user }) {
+// The shift reports a booth leader's save names on the storefronts (access.js storefrontReportChangeOk
+// ties each changed block to the server's own record of its report): id -> row, or {} when the save
+// leaves the storefronts alone or the caller edits them anyway. null: too many to read (refused).
+async function namedReports(db, packId, stored, parsed, access, actions) {
+  if (canEditOwner(access, 'storefronts') || actions.shiftVerify !== true) return {};
+  const ids = storefrontReportIds(stored.storefronts || [], parsed.storefronts || []);
+  if (ids === null) return null;
+  if (!ids.length) return {};
+  const r = await db.prepare('SELECT id, sf_id, block_id, status, te_cents, cash_cents, sales_cash_cents, submitted_by_uid, submitted_by_name, ' +
+    'confirmed_by_uid, confirmed_by_name, needs_confirm, accepted_by_uid, review_note, sales_cash_outcome, sales_cash_by_name, sales_cash_at ' +
+    'FROM shift_reports WHERE pack_id = ? AND id IN (SELECT value FROM json_each(?))').bind(packId, JSON.stringify(ids)).all();
+  const out = Object.create(null);
+  (r.results || []).forEach((row) => { out[row.id] = row; });
+  return out;
+}
+
+async function put({ request, env, db, packId, role, positions, user, member }) {
   if (!canWritePack(role)) return forbidden();
   const m = /^\s*"?(\d{1,15})"?\s*$/.exec(request.headers.get('if-match') || '');
   if (!m) refuse(badRequest('if-match'));
@@ -84,7 +100,11 @@ async function put({ request, env, db, packId, role, positions, user }) {
     if (cur || base === 0) {
       let stored = {};
       if (cur) { try { stored = JSON.parse(cur.json); } catch (e) { stored = {}; } }
-      const refused = refusedSections(stored, parsed, effectiveAccess(role, positions), user.uid, effectiveActions(role, positions));
+      const access = effectiveAccess(role, positions), actions = effectiveActions(role, positions);
+      const reports = await namedReports(db, packId, stored, parsed, access, actions);
+      const refused = refusedSections(stored, parsed, access, user.uid, actions,
+        { reports: reports || {}, name: member && member.name, now: Date.now() });
+      if (reports === null && refused.indexOf('storefronts') === -1) refused.push('storefronts');
       if (refused.length) return forbiddenSections(sectionOrder(refused));
     }
   }

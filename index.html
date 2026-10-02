@@ -15810,7 +15810,11 @@
     var uid = sync.user ? sync.user.uid : null;
     if (!uid) return;
     for (var i = 0; i < sync.members.length; i++) {
-      if (sync.members[i].uid === uid) { sync.myRole = sync.members[i].role || null; return; }
+      if (sync.members[i].uid === uid) {
+        sync.myRole = sync.members[i].role || null;
+        if (typeof sync.members[i].name === 'string') sync.myName = sync.members[i].name;
+        return;
+      }
     }
   }
   // Wave 21 — the account -> leader-record link. `sync.members` (uid + email) and
@@ -15932,6 +15936,7 @@
       if (sync.session !== mine) return;
       sync.ownerUid = s.ownerUid || null;
       sync.myRole = s.role || null;
+      sync.myName = s.member && typeof s.member.name === 'string' ? s.member.name : null;
       if (!sync.myRole) sync.joinRejected = SESSION_REJECTS.indexOf(s.rejected) !== -1 ? s.rejected : 'nolink';
       render();
       runAfter(sync.myRole);
@@ -24568,6 +24573,17 @@
   // A family's or a parent's name as it goes onto the block, the day sheet and the season's record:
   // never an email address (youth-protection review 3; the server's member name is the Google
   // display name, and an account with none can carry its email). ledgerStampClean is the leaders'.
+  // The name a leader signs a block with when they accept a report: their member name, as the pack's
+  // server holds it (functions/_lib/access.js signerName), because the server checks a booth leader's
+  // accept against it (security review of 714a920..045e7ac, finding 1). On Firestore, or before the
+  // member record is known, the ledger's own name for this device (ledgerActor).
+  function srSignName() {
+    if (sync.backend && sync.backend.startSession && accountsInForce() && typeof sync.myName === 'string') {
+      var n = sync.myName.trim();
+      return n && n.indexOf('@') === -1 ? n : 'a signed-in leader';
+    }
+    return ledgerActor();
+  }
   function srNameClean(v) {
     var n = String(v == null ? '' : v).trim();
     return n.indexOf('@') === -1 ? n : 'a signed-in parent';
@@ -24911,7 +24927,8 @@
       var rep = res && res.report;
       var now = srCashEntry(rid);   // found again: a merge may have replaced the block since
       if (now) {
-        now.e.outcome = outcome ? { outcome: outcome, by: ledgerActor(), at: (rep && rep.salesCashAt) || Date.now() } : null;
+        // As the server recorded it (srCashMirror's words), which is what the pack's server checks the block against.
+        now.e.outcome = outcome ? { outcome: outcome, by: ledgerStampClean((rep && rep.salesCashByName) || '') || 'a leader', at: (rep && rep.salesCashAt) || 0 } : null;
         commit();
       }
       if (!quiet) {
@@ -25105,7 +25122,7 @@
       reportApprovedBy: b.reportApprovedBy || '', reportConfirmedBy: b.reportConfirmedBy || '', reportOverride: b.reportOverride || '',
       reportOverrideNote: b.reportOverrideNote || '', reportCollected: b.reportCollected === true,
       reportReturned: b.reportReturned ? { note: String(b.reportReturned.note || '') } : null };
-    var me = ledgerActor();
+    var me = srSignName();
     var counted = srNameClean(r.submittedByName);
     var verified = confirmed ? srNameClean(r.confirmedByName) : collected ? me : '';
     b.salesCents = r.teCents;
@@ -25271,7 +25288,7 @@
     if (srMine(r) || srIConfirmed(r)) { showToast(srMine(r) ? LEADER_SR_SAY['same-person'] : LEADER_SR_SAY.confirmer); return; }
     p.by = sync.user.uid;
     p.at = Date.now();
-    b.reportApprovedBy = ledgerActor();
+    b.reportApprovedBy = srSignName();
     if (!commit()) return;
     shiftReportsReconcile();
   }

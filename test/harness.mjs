@@ -16808,32 +16808,111 @@ atest('positions shift reports: an accept is taken back by the accepter or the u
 atest('positions guard: a booth leader writes a shift report\'s fields on its block, and nothing else of the storefronts', async () => {
   const blk = (o) => Object.assign({ id: 'b1', label: '10–12', start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }], salesCents: 0, donationsCents: 0,
     cashCountedBy: '', cashVerifiedBy: '' }, o || {});
-  const sfs = (b, sfo) => [Object.assign({ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [b || blk()] }, sfo || {})];
+  const sfs = (b, sfo, more) => [Object.assign({ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [b || blk()].concat(more || []) }, sfo || {})];
   const base = Object.assign(GUARD_BASE(), { storefronts: sfs() });
   const w = await guardWorld(base);
-  const put = (who, b, sfo) => w.put(who, Object.assign(GUARD_BASE(), { storefronts: sfs(b, sfo) }));
-  const pending = (by, o) => Object.assign({ by, at: 1, te: 12345, cash: 2500, was: { salesCents: 0, donationsCents: 0 }, wrote: { counted: 'Ada', verified: 'Me' } }, o || {});
-  const accept = (by) => blk({ salesCents: 12345, donationsCents: 2500, cashCountedBy: 'Ada', cashVerifiedBy: 'Me', reportId: 'r1', reportFrom: 'Ada', reportApprovedBy: 'Me',
-    reportCollected: true, reportPending: pending(by), salesCash: [{ reportId: 'r1', cents: 300, from: 'Ada', outcome: null }] });
-  eq((await put('lead_denleader', accept('uid-lead-denleader'))).status, 200, 'a den leader\'s accept on the block');
-  eq((await put('lead_kernel', accept('uid-lead-chair'))).status, 200, 'the kernel edits storefronts: anything');
-  SECTION_403(await put('lead_comms', accept('uid-lead-comms')), ['storefronts'], 'a Communications leader (no shiftVerify)');
-  SECTION_403(await put('lead_denleader', accept('uid-lead-chair')), ['storefronts'], 'a marker in someone else\'s name');
+  // The server's record of the reports (security review of 714a920..045e7ac, finding 1): r1 waits on b1.
+  const report = (ww, id, o) => {
+    const r = Object.assign({ sf: 'sf1', block: 'b1', te: 12345, cash: 2500, sc: 300, status: 'submitted', from: 'uid-parent', fromName: 'Ada Parent' }, o || {});
+    if (!r.reviewedBy && r.acceptedBy) r.reviewedBy = r.acceptedBy;
+    ww.db.raw.prepare('DELETE FROM shift_reports WHERE id = ?').run(id);
+    ww.db.raw.prepare('INSERT INTO shift_reports (id, pack_id, sf_id, block_id, te_cents, cash_cents, sales_cash_cents, submitted_by_uid, submitted_by_name, submitted_at, updated_at, status, stamp, ' +
+      'accepted_by_uid, accepted_by_name, accepted_at, reviewed_by_uid, reviewed_by_name, reviewed_at, review_note, needs_confirm, confirmed_by_uid, confirmed_by_name, confirmed_at, ' +
+      'sales_cash_outcome, sales_cash_by_uid, sales_cash_by_name, sales_cash_at, verified_by_leader) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, API_PACK, r.sf, r.block, r.te, r.cash, r.sc, r.from, r.fromName, r.status, 'st-' + id, r.acceptedBy || null, r.acceptedBy ? 'X' : null, r.acceptedBy ? 2 : null,
+        r.reviewedBy || null, r.reviewedBy ? 'Y' : null, r.reviewedBy ? 3 : null, r.note || '', r.confirmedBy ? 1 : 0, r.confirmedBy || null, r.confirmedBy ? 'Bo Parent' : null,
+        r.confirmedBy ? 2 : null, r.outcome || null, r.outcome ? 'uid-lead-kernel' : null, r.outcome ? 'Test lead_kernel' : null, r.outcome ? 77 : null, r.acceptedBy && !r.confirmedBy ? 1 : 0);
+  };
+  report(w, 'r1');
+  const put = (who, b, sfo, more) => w.put(who, Object.assign(GUARD_BASE(), { storefronts: sfs(b, sfo, more) }));
+  const WAS = { salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '', reportId: '', reportFrom: '', reportApprovedBy: '', reportConfirmedBy: '',
+    reportOverride: '', reportOverrideNote: '', reportCollected: false, reportReturned: null };
+  // An accept as acceptShiftReport writes it: the sender's name, the accepter's member name, collected.
+  const accept = (who, o, po) => blk(Object.assign({ salesCents: 12345, donationsCents: 2500, cashCountedBy: 'Ada Parent', cashVerifiedBy: 'Test ' + who, reportId: 'r1', reportFrom: 'Ada Parent',
+    reportApprovedBy: 'Test ' + who, reportConfirmedBy: '', reportOverride: '', reportOverrideNote: '', reportCollected: true,
+    reportPending: Object.assign({ by: PEOPLE[who][0], at: 1, te: 12345, cash: 2500, was: WAS, wrote: { counted: 'Ada Parent', verified: 'Test ' + who }, override: false, note: '',
+      collected: true, salesCash: 300 }, po || {}),
+    salesCash: [{ reportId: 'r1', cents: 300, from: 'Ada Parent', outcome: null }] }, o || {}));
+  eq((await put('lead_denleader', accept('lead_denleader'))).status, 200, 'a den leader\'s accept on the block');
+  eq((await put('lead_kernel', accept('lead_chair'))).status, 200, 'the kernel edits storefronts: anything');
+  SECTION_403(await put('lead_comms', accept('lead_comms')), ['storefronts'], 'a Communications leader (no shiftVerify)');
+  SECTION_403(await put('lead_denleader', accept('lead_chair')), ['storefronts'], 'a marker in someone else\'s name');
   SECTION_403(await put('lead_denleader', blk({ salesCents: 99999 })), ['storefronts'], 'the figures, with no accept');
-  SECTION_403(await put('lead_denleader', Object.assign(accept('uid-lead-denleader'), { salesCents: 99999 })), ['storefronts'], 'figures other than the accept\'s');
-  SECTION_403(await put('lead_denleader', Object.assign(accept('uid-lead-denleader'), { label: '9–12' })), ['storefronts'], 'a block\'s other field');
-  SECTION_403(await put('lead_denleader', accept('uid-lead-denleader'), { name: 'Safeway' }), ['storefronts'], 'the storefront\'s name');
+  SECTION_403(await put('lead_denleader', Object.assign(accept('lead_denleader'), { label: '9–12' })), ['storefronts'], 'a block\'s other field');
+  SECTION_403(await put('lead_denleader', accept('lead_denleader'), { name: 'Safeway' }), ['storefronts'], 'the storefront\'s name');
   SECTION_403(await w.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs().concat([{ id: 'sf2', name: 'New', blocks: [] }]) })), ['storefronts'], 'a storefront added');
-  SECTION_403(await w.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: [Object.assign(sfs()[0], { blocks: [blk(), blk({ id: 'b2' })] })] })), ['storefronts'], 'a block added');
-  // From an accept pending on the server: settled (the marker goes, the figures stay) or undone (back to `was`).
-  const wp = await guardWorld(Object.assign(GUARD_BASE(), { storefronts: sfs(accept('uid-lead-asstden')) }));
-  const settled = accept('uid-lead-asstden'); delete settled.reportPending;
-  eq((await wp.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs(settled) }))).status, 200, 'settled');
-  eq((await wp.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs(blk()) }))).status, 200, 'undone, back to what the block held');
-  SECTION_403(await wp.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs(blk({ salesCents: 1 })) })), ['storefronts'], 'undone to other figures');
-  SECTION_403(await wp.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs(accept('uid-lead-chair')) })), ['storefronts'], 'the marker handed to someone else');
-  const taken = accept('uid-lead-denleader');
-  eq((await wp.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs(taken) }))).status, 200, 'a stuck accept taken over (the marker now this leader\'s)');
+  SECTION_403(await put('lead_denleader', blk(), null, [blk({ id: 'b2' })]), ['storefronts'], 'a block added');
+  // The review's PoC: figures and names the caller's own marker vouches for, but the report does not.
+  SECTION_403(await put('lead_denleader', accept('lead_denleader', { salesCents: 999999 }, { te: 999999 })), ['storefronts'], 'PoC: any figures, the marker agreeing');
+  SECTION_403(await put('lead_denleader', accept('lead_denleader', { cashVerifiedBy: 'The Treasurer' })), ['storefronts'], 'PoC: a forged verifier');
+  for (const [what, o, po] of [['another sender', { reportFrom: 'Someone Else', cashCountedBy: 'Someone Else' }, { wrote: { counted: 'Someone Else', verified: 'Test lead_denleader' } }],
+    ['another approver', { reportApprovedBy: 'The Cubmaster' }], ['a confirmer the report has not', { reportConfirmedBy: 'Bo Parent' }],
+    ['a report of no block', { reportId: 'r9' }], ['an override with no reason', { reportOverride: 'not-collected', reportCollected: false, cashVerifiedBy: '' },
+      { override: true, collected: false, wrote: { counted: 'Ada Parent', verified: '' } }],
+    ['a `was` the block never held', {}, { was: Object.assign({}, WAS, { salesCents: 50000 }) }], ['the cash from sales changed', { salesCash: [{ reportId: 'r1', cents: 9999, from: 'Ada Parent', outcome: null }] }],
+    ['the cash from sales already collected', { salesCash: [{ reportId: 'r1', cents: 300, from: 'Ada Parent', outcome: { outcome: 'collected', by: 'Me', at: 1 } }] }]]) {
+    SECTION_403(await put('lead_denleader', accept('lead_denleader', o, po)), ['storefronts'], 'an accept with ' + what);
+  }
+  // Not the sender's own, nor one they confirmed; not one another leader has accepted already; not on another block.
+  report(w, 'r1', { from: 'uid-lead-denleader' });
+  SECTION_403(await put('lead_denleader', accept('lead_denleader')), ['storefronts'], 'the sender accepting their own');
+  report(w, 'r1', { confirmedBy: 'uid-lead-denleader' });
+  SECTION_403(await put('lead_denleader', accept('lead_denleader')), ['storefronts'], 'the confirmer accepting it');
+  report(w, 'r1', { status: 'accepted', acceptedBy: 'uid-lead-chair' });
+  SECTION_403(await put('lead_denleader', accept('lead_denleader')), ['storefronts'], 'a report another leader accepted');
+  report(w, 'r1', { block: 'b2' });
+  SECTION_403(await put('lead_denleader', accept('lead_denleader')), ['storefronts'], 'a report of another block');
+  // Two families: the confirming parent verified the cash; the accepter did not collect it.
+  report(w, 'r1', { confirmedBy: 'uid-newbie' });
+  eq((await put('lead_denleader', accept('lead_denleader', { cashVerifiedBy: 'Bo Parent', reportConfirmedBy: 'Bo Parent', reportCollected: false },
+    { collected: false, wrote: { counted: 'Ada Parent', verified: 'Bo Parent' } }))).status, 200, 'a confirmed report: the confirming parent named');
+  report(w, 'r1');
+
+  // From an accept pending on the server: settled, undone, sent back, or taken over.
+  const pend = accept('lead_asstden');
+  const wp = await guardWorld(Object.assign(GUARD_BASE(), { storefronts: sfs(pend) }));
+  const putP = (who, b) => wp.put(who, Object.assign(GUARD_BASE(), { storefronts: sfs(b) }));
+  report(wp, 'r1');
+  const settled = accept('lead_asstden'); delete settled.reportPending;
+  SECTION_403(await putP('lead_denleader', settled), ['storefronts'], 'settled while the report still waits');
+  const undone = blk();   // srRollback with nothing linked before: the link and the accept's own cash entry go
+  SECTION_403(await putP('lead_denleader', undone), ['storefronts'], 'PoC: another leader\'s accept stripped while the report waits');
+  eq((await putP('lead_asstden', undone)).status, 200, 'undone by the leader whose accept it is');
+  eq((await putP('lead_kernel', undone)).status, 200, 'the kernel edits storefronts');
+  report(wp, 'r1', { status: 'accepted', acceptedBy: 'uid-lead-asstden' });
+  eq((await putP('lead_denleader', settled)).status, 200, 'settled once the report is accepted with those figures');
+  SECTION_403(await putP('lead_denleader', undone), ['storefronts'], 'an accept the server holds, undone');
+  report(wp, 'r1', { status: 'returned', reviewedBy: 'uid-lead-chair' });
+  eq((await putP('lead_denleader', undone)).status, 200, 'undone once the report was sent back');
+  SECTION_403(await putP('lead_denleader', blk({ salesCents: 1 })), ['storefronts'], 'undone to other figures');
+  report(wp, 'r1');
+  SECTION_403(await putP('lead_denleader', accept('lead_chair')), ['storefronts'], 'the marker handed to someone else');
+  // srTakeOver: the same accept, this leader's to finish; only for a confirmed one (not collected, not an override).
+  report(wp, 'r1', { confirmedBy: 'uid-newbie' });
+  const conf = (who, by) => accept(who, { cashVerifiedBy: 'Bo Parent', reportConfirmedBy: 'Bo Parent', reportCollected: false, reportApprovedBy: 'Test ' + by },
+    { collected: false, wrote: { counted: 'Ada Parent', verified: 'Bo Parent' } });
+  const wt = await guardWorld(Object.assign(GUARD_BASE(), { storefronts: sfs(conf('lead_asstden', 'lead_asstden')) }));
+  report(wt, 'r1', { confirmedBy: 'uid-newbie' });
+  const putT = (who, b) => wt.put(who, Object.assign(GUARD_BASE(), { storefronts: sfs(b) }));
+  eq((await putT('lead_denleader', conf('lead_denleader', 'lead_denleader'))).status, 200, 'a stuck accept taken over');
+  SECTION_403(await putT('lead_denleader', conf('lead_denleader', 'lead_chair')), ['storefronts'], 'taken over in another\'s name');
+  // An accepted report sent back (returnShiftReport): the link and the verifier go; the warning is the report's reason.
+  const acc = accept('lead_asstden'); delete acc.reportPending;
+  const wr = await guardWorld(Object.assign(GUARD_BASE(), { storefronts: sfs(acc) }));
+  report(wr, 'r1', { status: 'returned', acceptedBy: 'uid-lead-asstden', reviewedBy: 'uid-lead-asstden', note: 'Recount the jar' });
+  const back = (note) => blk({ salesCents: 12345, donationsCents: 2500, cashCountedBy: 'Ada Parent', cashVerifiedBy: '', reportReturned: { note },
+    salesCash: [{ reportId: 'r1', cents: 300, from: 'Ada Parent', outcome: null }] });
+  eq((await wr.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs(back('Recount the jar')) }))).status, 200, 'sent back');
+  SECTION_403(await wr.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs(back('All fine, trust me')) })), ['storefronts'], 'sent back with other words');
+  // The cash from sales: an entry's outcome is the server's, in its words.
+  report(wr, 'r1', { status: 'accepted', acceptedBy: 'uid-lead-asstden', outcome: 'collected' });
+  const cash = (outcome) => Object.assign(JSON.parse(JSON.stringify(acc)), { salesCash: [{ reportId: 'r1', cents: 300, from: 'Ada Parent', outcome }] });
+  eq((await wr.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs(cash({ outcome: 'collected', by: 'Test lead_kernel', at: 77 })) }))).status, 200,
+    'the server\'s record of the cash, mirrored');
+  SECTION_403(await wr.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs(cash({ outcome: 'collected', by: 'Test lead_denleader', at: 77 })) })), ['storefronts'],
+    'collected, in another name');
+  SECTION_403(await wr.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs(cash({ outcome: 'converted', by: 'Test lead_kernel', at: 77 })) })), ['storefronts'],
+    'an outcome the server does not hold');
 });
 
 atest('positions guard: deposits — the kernel records a storefront deposit, flagged for the treasurer, and sets the deadline; the rest of the ledger stays the treasurer\'s', async () => {
@@ -16943,7 +17022,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'srIConfirmed', 'srFamiliesNow', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'familyKeyOf', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
   'srParentStore', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
   'srScheduleRefresh', 'parentDoc', 'parentPreviewDoc', 'shiftReportOpenFor', 'shiftReportToday', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_DAYS', 'isoPlusDays',
-  'srFormOpen', 'srMirror', 'srReasonDraft', 'srNameClean',
+  'srFormOpen', 'srMirror', 'srReasonDraft', 'srNameClean', 'srSignName',
   'ledgerActor', 'ledgerActorName',
   ...FORMAT_GATE_FNS];
 const CLIENT_SRC = CLIENT_FNS.map(decl).join('\n');
@@ -18516,7 +18595,7 @@ function srLeaderCtx(o) {
        'leaderReportsOn', 'canReviewReports', 'srReports', 'srReport', 'srWaiting', 'srBlockOf', 'srWhen', 'srMine', 'srReplaces',
        'LEADER_SR_SAY', 'leaderSrMessage', 'srNotNow', 'renderShiftReportCard', 'renderBlockReportLine', 'renderShiftReportsBanner',
        'srWaitingOn', 'acceptShiftReport', 'srLanded', 'srSettle', 'srRollback', 'shiftReportsReconcile', 'shiftReportsAfterPush',
-       'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srReasonDraft', 'srNameClean', 'ledgerStampClean', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout',
+       'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srReasonDraft', 'srNameClean', 'srSignName', 'ledgerStampClean', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout',
        'srIConfirmed', 'srFamiliesNow', 'srNeedsCheck', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'SR_CHECK_TE', 'SR_IMPORT_FIRST', 'familyKeyOf',
        'blockCashCheck', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
        'srParentStore', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashHistorySay', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
@@ -18527,7 +18606,8 @@ function srLeaderCtx(o) {
   const get = (js) => JSON.parse(JSON.stringify(run(js) === undefined ? null : run(js)));
   // The save landed: the server's copy is this page's copy.
   const landed = () => run('sync.remoteRec = { rev: 9, json: JSON.stringify(state) }');
-  const answer = async (i, err) => { run(`answers[${i}].${err ? 'rej' : 'res'}(${err ? JSON.stringify(err) : '{}'})`); for (let k = 0; k < 5; k++) await new Promise((r) => setImmediate(r)); };
+  // `body`: what the server answers (the report a PATCH returns), {} when not given.
+  const answer = async (i, err, body) => { run(`answers[${i}].${err ? 'rej' : 'res'}(${err ? JSON.stringify(err) : JSON.stringify(body || {})})`); for (let k = 0; k < 5; k++) await new Promise((r) => setImmediate(r)); };
   return { ctx, run, get, landed, answer, block: (id) => get(`state.storefronts[0].blocks.filter(function (b) { return b.id === '${id}'; })[0]`) };
 }
 const srRep = (over) => Object.assign({ id: 'rep-1', sfId: 'sf1', blockId: 'b1', teCents: 12345, cashCents: 2500, note: 'Counted with Jo', status: 'submitted',
@@ -20157,7 +20237,7 @@ atest('S-5: a leader sees the cash to collect, the accept carries it to the bloc
   await L.answer(0);
   // The box: once the accept is on the server, the cash from sales is recorded collected there too.
   eq(L.get('patches[1]'), { rid: 'rep-1', body: { action: 'salescash', outcome: 'collected', salesCashCents: 1525 } }, 'the box’s PATCH, after the accept');
-  await L.answer(1);
+  await L.answer(1, null, { report: { salesCashOutcome: 'collected', salesCashByName: 'Sam Leader', salesCashAt: 5 } });
   eq([L.block('b1').salesCash[0].outcome.outcome, L.block('b1').salesCash[0].outcome.by, L.block('b1').salesCash[0].cents], ['collected', 'Sam Leader', 1525],
     'the block keeps the amount, and says who collected it');
   ok(/Cash from popcorn sales marked collected by Sam Leader\. Deposit it and record it in the ledger as Popcorn money for the council\./.test(L.get('toasts').join('|')), 'said');
@@ -20174,7 +20254,9 @@ atest('S-5: a leader sees the cash to collect, the accept carries it to the bloc
   M.run('var undoIt = null; showToast = function (m, o) { toasts.push(m); undoIt = o && o.onAction; };');
   M.run("srCashAct('sr-cash-collected', { dataset: { rid: 'rep-1' } })");
   eq([M.get('patches[0].body'), M.block('b1').salesCash[0].outcome], [{ action: 'salescash', outcome: 'collected', salesCashCents: 1525 }, null], 'nothing on the block until the server agrees');
-  await M.answer(0);
+  await M.answer(0, null, { report: { salesCashOutcome: 'collected', salesCashByName: 'Sam Leader', salesCashAt: 5 } });
+  // Security review of 714a920..045e7ac, finding 1: the block says it as the server recorded it (the pack's server checks it so).
+  eq(M.block('b1').salesCash[0].outcome, { outcome: 'collected', by: 'Sam Leader', at: 5 }, 'in the server\'s words and time');
   eq([M.block('b1').salesCash[0].outcome.outcome, M.get('toasts').pop()],
     ['collected', 'Marked $15.25 collected by Sam Leader. Deposit it and record it in the ledger as Popcorn money for the council.'], 'collected');
   M.run('undoIt()');
@@ -20378,8 +20460,8 @@ test('youth protection: a leader who only collected the cash is not a supervisin
 });
 
 atest('youth protection: an email-shaped name is never written onto a block, sent to a parent, or put in the season’s record', async () => {
-  const ctx = sandbox(['srNameClean', 'ledgerStampClean']);
-  eq([ctx.srNameClean('nora@example.com'), ctx.srNameClean(' Nora Newfamily '), ctx.srNameClean('')], ['a signed-in parent', 'Nora Newfamily', ''], 'srNameClean');
+  const ctx = sandbox(['srNameClean', 'srSignName', 'ledgerStampClean']);
+  eq([ctx.srNameClean('nora@example.com'), ctx.srNameClean(' Nora Newfamily '), ctx.srNameClean('')], ['a signed-in parent', 'Nora Newfamily', ''], 'srNameClean', 'srSignName');
   const L = srLeaderCtx({ reports: [srRep({ submittedByName: 'nora@example.com', needsConfirm: true, confirmed: true, confirmedByName: 'bo@example.com', confirmedByUid: 'uid-bo' })] });
   L.run("acceptShiftReport('rep-1', {})");
   const b = L.block('b1');

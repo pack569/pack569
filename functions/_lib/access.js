@@ -412,45 +412,222 @@ export function councilSettledOk(beforeBook, afterBook, uid) {
 
 // ---- Shift reports and deposits: a slice of a section, for a leader who does not edit it ----
 
-// state.storefronts changed only as accepting (or undoing, settling, or sending back) a shift report
-// changes it, for a shiftVerify holder who does not edit storefronts (Keith, 2026-10-02): the same
-// storefronts, by id, each as it was but for its blocks; the same blocks, by id, each as it was but
-// for BLOCK_REPORT_FIELDS. And of those, the two figures change only to what an accept wrote
-// (the block's reportPending.te and .cash, a marker the caller holds) or back to what the block held
-// before it (a marker taken away: its `was`); a marker written or changed is the caller's own (by).
-export function storefrontReportChangeOk(before, after, uid) {
-  if (!Array.isArray(before) || !Array.isArray(after) || before.length !== after.length) return false;
-  const byId = (list) => {
-    const m = Object.create(null);
-    for (const x of list) { if (!plain(x) || typeof x.id !== 'string' || !x.id || m[x.id]) return null; m[x.id] = x; }
-    return m;
-  };
-  const was = byId(before), now = byId(after);
-  if (!was || !now) return false;
+// state.storefronts changed by a shiftVerify holder who does not edit storefronts (Keith, 2026-10-02):
+// only as the page's shift-report steps change it, and each step tied to the server's own record of
+// the report (shift_reports, read by the PUT for the reports the changed blocks name: `ctx.reports`,
+// id -> row). Security review of 714a920..045e7ac, finding 1: the first version compared the
+// figures only with a marker the same caller wrote, so a den leader could put any figures and any
+// names on any block. Now:
+//   - the same storefronts, by id, each as it was but for its blocks; the same blocks, by id, each as
+//     it was but for BLOCK_REPORT_FIELDS (as before);
+//   - ACCEPT (step 1 of acceptShiftReport, or a stuck one taken over: srTakeOver): the caller's
+//     marker (reportPending.by) on a block whose reportId is a report OF THAT BLOCK still waiting
+//     (or accepted by the caller), not the caller's own nor one they confirmed; the marker's and the
+//     block's figures are the report's; the names are the report's (the sender's, the confirming
+//     parent's) and the caller's own (`ctx.name`, their member name as the page signs it); what
+//     the marker keeps to undo itself (`was`) is what the block held. A takeover changes only the
+//     marker's by/at and the approver's name;
+//   - SETTLE (the marker goes, srSettle): the report is accepted with the marker's figures;
+//   - UNDO (the marker goes, srRollback): each field back to the marker's `was` or left as it is; by
+//     the marker's own leader, an undo-list holder (`ctx.canUndo`), or once the report is no longer
+//     waiting (sent back, withdrawn) — never over a report accepted with the marker's figures;
+//   - SENT BACK (returnShiftReport on an accepted one): the report is sent back after an accept; the
+//     link and the verifier go, and the warning says the report's own reason;
+//   - THE CASH FROM SALES (b.salesCash): an entry's outcome is the report's (srCashMirror,
+//     srSalesCashSet) and names who recorded it as the report does; an accept adds its own entry;
+//     an undo takes its own entry (with no outcome) back off.
+// Anything else refuses the save.
+const PARENT_SIGNED = 'a signed-in parent', LEADER_SIGNED = 'a signed-in leader';
+// The page's srNameClean (a sender's or confirming parent's name on a block), and the name a leader
+// signs a block with (srSignName: their member name, as the server holds it).
+export const parentNameClean = (v) => { const n = String(v == null ? '' : v).trim(); return n.indexOf('@') === -1 ? n : PARENT_SIGNED; };
+export const signerName = (v) => { const n = String(v == null ? '' : v).trim(); return n && n.indexOf('@') === -1 ? n : LEADER_SIGNED; };
+const stampClean = (v) => (typeof v !== 'string' ? '' : v.indexOf('@') === -1 ? v : LEADER_SIGNED);
+// The fields an accept keeps in its marker's `was`, as acceptShiftReport writes them from the block.
+function blockWas(b) {
+  const str = (k) => (typeof b[k] === 'string' && b[k] ? b[k] : '');
+  return { salesCents: b.salesCents || 0, donationsCents: b.donationsCents || 0, cashCountedBy: str('cashCountedBy'), cashVerifiedBy: str('cashVerifiedBy'),
+    reportId: str('reportId'), reportFrom: str('reportFrom'), reportApprovedBy: str('reportApprovedBy'), reportConfirmedBy: str('reportConfirmedBy'),
+    reportOverride: str('reportOverride'), reportOverrideNote: str('reportOverrideNote'), reportCollected: b.reportCollected === true,
+    reportReturned: plain(b.reportReturned) ? { note: String(b.reportReturned.note || '') } : null };
+}
+// The link to a report (srUnlink takes these off).
+const LINK_FIELDS = ['reportId', 'reportFrom', 'reportApprovedBy', 'reportConfirmedBy', 'reportOverride', 'reportOverrideNote', 'reportCollected'];
+const OVERRIDES = ['same-family', 'second-parent', 'not-collected'];
+const listById = (list) => {
+  const m = Object.create(null);
+  for (const x of list) { if (!plain(x) || typeof x.id !== 'string' || !x.id || m[x.id]) return null; m[x.id] = x; }
+  return m;
+};
+// Blocks that differ between two storefront lists: [[sf id, before, after]], or null when the lists
+// do not pair up by id.
+function changedBlocks(before, after) {
+  if (!Array.isArray(before) || !Array.isArray(after) || before.length !== after.length) return null;
+  const was = listById(before), now = listById(after);
+  if (!was || !now) return null;
+  const out = [];
   for (const id of Object.keys(was)) {
     const sb = was[id], sa = now[id];
-    if (!sa) return false;
+    if (!sa) return null;
     const keys = Object.keys(sb).concat(Object.keys(sa));
-    if (keys.some((k) => k !== 'blocks' && (own(sb, k) !== own(sa, k) || !sameJson(sb[k], sa[k])))) return false;
+    if (keys.some((k) => k !== 'blocks' && (own(sb, k) !== own(sa, k) || !sameJson(sb[k], sa[k])))) return null;
     const bb = Array.isArray(sb.blocks) ? sb.blocks : [], ba = Array.isArray(sa.blocks) ? sa.blocks : [];
-    if (own(sb, 'blocks') !== own(sa, 'blocks') || bb.length !== ba.length) return false;
-    const bw = byId(bb), bn = byId(ba);
-    if (!bw || !bn) return false;
+    if (own(sb, 'blocks') !== own(sa, 'blocks') || bb.length !== ba.length) return null;
+    const bw = listById(bb), bn = listById(ba);
+    if (!bw || !bn) return null;
     for (const bid of Object.keys(bw)) {
-      const b = bw[bid], a = bn[bid];
-      if (!a) return false;
-      for (const k of Object.keys(b).concat(Object.keys(a))) {
-        if (BLOCK_REPORT_FIELDS.indexOf(k) === -1 && (own(b, k) !== own(a, k) || !sameJson(b[k], a[k]))) return false;
-      }
-      const pa = plain(a.reportPending) ? a.reportPending : null, pb = plain(b.reportPending) ? b.reportPending : null;
-      if (own(a, 'reportPending') && !sameJson(a.reportPending, b.reportPending) && !(pa && typeof uid === 'string' && uid && pa.by === uid)) return false;
-      const figs = (x) => [x.salesCents || 0, x.donationsCents || 0];
-      if (!sameJson(figs(a), figs(b))) {
-        const accept = pa && pa.by === uid && sameJson(figs(a), [pa.te, pa.cash]);
-        const undo = pb && !pa && plain(pb.was) && sameJson(figs(a), figs(pb.was));
-        if (!accept && !undo) return false;
+      if (!bn[bid]) return null;
+      if (!sameJson(bw[bid], bn[bid])) out.push([id, bw[bid], bn[bid]]);
+    }
+  }
+  return out;
+}
+// The report ids the changed blocks name (their reportId before and after, and their cash-from-sales
+// entries'), for the PUT to read; null when the storefronts do not pair up, or name too many.
+export const STOREFRONT_REPORTS_MAX = 100;
+export function storefrontReportIds(before, after) {
+  const blocks = changedBlocks(before, after);
+  if (!blocks) return null;
+  const ids = Object.create(null);
+  const add = (v) => { if (typeof v === 'string' && v) ids[v] = true; };
+  blocks.forEach(([, b, a]) => {
+    [b, a].forEach((x) => {
+      add(x.reportId);
+      (Array.isArray(x.salesCash) ? x.salesCash : []).forEach((e) => { if (plain(e)) add(e.reportId); });
+    });
+  });
+  const out = Object.keys(ids);
+  return out.length > STOREFRONT_REPORTS_MAX ? null : out;
+}
+export function storefrontReportChangeOk(before, after, uid, ctx) {
+  const blocks = changedBlocks(before, after);
+  if (!blocks || typeof uid !== 'string' || !uid) return false;
+  const c = plain(ctx) ? ctx : {}, reports = plain(c.reports) ? c.reports : {}, me = signerName(c.name);
+  const rowOf = (rid, sfId, blockId) => {
+    const r = typeof rid === 'string' && own(reports, rid) ? reports[rid] : null;
+    return r && r.sf_id === sfId && r.block_id === blockId ? r : null;
+  };
+  for (const [sfId, b, a] of blocks) {
+    for (const k of Object.keys(b).concat(Object.keys(a))) {
+      if (BLOCK_REPORT_FIELDS.indexOf(k) === -1 && (own(b, k) !== own(a, k) || !sameJson(b[k], a[k]))) return false;
+    }
+    const pa = plain(a.reportPending) ? a.reportPending : null, pb = plain(b.reportPending) ? b.reportPending : null;
+    if (own(a, 'reportPending') && !pa) return false;
+    // Everything but the cash entries: which step is this?
+    const rest = (x) => { const o = {}; BLOCK_REPORT_FIELDS.forEach((k) => { if (k !== 'salesCash' && own(x, k)) o[k] = x[k]; }); return o; };
+    let added = null, takenBack = null;   // the accept's own cash entry; the undone accept's report id
+    if (!sameJson(rest(b), rest(a))) {
+      if (pa && !sameJson(pa, pb)) {
+        // ACCEPT, or a stuck accept taken over.
+        const row = rowOf(a.reportId, sfId, b.id);
+        if (!row || pa.by !== uid || row.submitted_by_uid === uid || row.confirmed_by_uid === uid) return false;
+        if (!(row.status === 'submitted' || (row.status === 'accepted' && row.accepted_by_uid === uid))) return false;
+        if (pa.te !== row.te_cents || pa.cash !== row.cash_cents || a.salesCents !== row.te_cents || a.donationsCents !== row.cash_cents) return false;
+        const sc = row.sales_cash_cents || 0;
+        if (sc > 0 ? pa.salesCash !== sc : own(pa, 'salesCash')) return false;
+        if (own(pa, 'alsoCash') && !(pa.alsoCash === true && sc > 0 && pa.collected === true)) return false;
+        if (pb) {
+          // Taken over: the same accept, now this leader's to finish.
+          const keep = (x) => { const o = Object.assign({}, x); delete o.by; delete o.at; return o; };
+          if (b.reportId !== a.reportId || !sameJson(keep(pa), keep(pb)) || pb.collected || pb.override) return false;
+          const ra = rest(a), rb = rest(b);
+          delete ra.reportPending; delete rb.reportPending; delete ra.reportApprovedBy; delete rb.reportApprovedBy;
+          if (!sameJson(ra, rb) || a.reportApprovedBy !== me) return false;
+        } else {
+          const confirmed = row.needs_confirm === 1 && !!row.confirmed_by_uid;
+          const counted = parentNameClean(row.submitted_by_name), confirmer = confirmed ? parentNameClean(row.confirmed_by_name) : '';
+          const collected = a.reportCollected === true;
+          const verified = confirmed ? confirmer : collected ? me : '';
+          const override = typeof a.reportOverride === 'string' ? a.reportOverride : '';
+          const note = typeof a.reportOverrideNote === 'string' ? a.reportOverrideNote : null;
+          if (a.reportFrom !== counted || a.cashCountedBy !== counted || a.reportConfirmedBy !== confirmer || a.cashVerifiedBy !== verified ||
+            a.reportApprovedBy !== me) return false;
+          if (collected && (confirmed || row.needs_confirm !== 0)) return false;
+          if (typeof a.reportCollected !== 'boolean' || note === null || note.length > 300) return false;
+          if (override ? OVERRIDES.indexOf(override) === -1 || !note.trim() : note !== '') return false;
+          if (own(a, 'reportReturned')) return false;
+          if (pa.override !== !!override || pa.note !== note || pa.collected !== collected) return false;
+          if (!sameJson(pa.was, blockWas(b)) || !sameJson(pa.wrote, { counted, verified })) return false;
+          if (typeof pa.at !== 'number') return false;
+          const allowed = ['by', 'at', 'te', 'cash', 'was', 'wrote', 'override', 'note', 'collected', 'salesCash', 'alsoCash'];
+          if (Object.keys(pa).some((k) => allowed.indexOf(k) === -1)) return false;
+          if (sc > 0) added = { reportId: row.id, cents: sc, from: counted, outcome: null };
+        }
+      } else if (pb && !pa) {
+        const row = rowOf(b.reportId, sfId, b.id);
+        if (!row) return false;
+        const sameFigs = row.te_cents === pb.te && row.cash_cents === pb.cash && (row.sales_cash_cents || 0) === (pb.salesCash || 0);
+        const ra = rest(a), rb = rest(b);
+        delete rb.reportPending;
+        const unlinked = Object.assign({}, rb);
+        LINK_FIELDS.forEach((k) => { delete unlinked[k]; });
+        if (row.status === 'accepted' && sameFigs) {
+          // SETTLED: the marker goes; the link too, if the figures were changed by hand meanwhile.
+          if (!sameJson(ra, rb) && !sameJson(ra, unlinked)) return false;
+        } else {
+          // UNDONE: by the marker's leader, an undo-list holder, or once the report no longer waits.
+          if (!(pb.by === uid || c.canUndo === true || row.status === 'returned' || row.status === 'withdrawn' || row.status === 'accepted')) return false;
+          const was = plain(pb.was) ? pb.was : {};
+          const figs = (x) => [x.salesCents || 0, x.donationsCents || 0];
+          if (!sameJson(figs(a), figs(b)) && !sameJson(figs(a), [was.salesCents || 0, was.donationsCents || 0])) return false;
+          const val = (x, k) => (own(x, k) ? x[k] : k === 'reportCollected' ? false : k === 'reportReturned' ? null : '');
+          for (const k of BLOCK_REPORT_FIELDS) {
+            if (k === 'salesCents' || k === 'donationsCents' || k === 'salesCash' || k === 'reportPending') continue;
+            const v = val(a, k);
+            if (!sameJson(v, val(b, k)) && !(own(was, k) && sameJson(v, was[k]) && (k !== 'reportReturned' || v === null || plain(v)))) return false;
+          }
+          takenBack = b.reportId;
+        }
+      } else if (!pa && !pb && typeof b.reportId === 'string' && !own(a, 'reportId')) {
+        // SENT BACK after its accept.
+        const row = rowOf(b.reportId, sfId, b.id);
+        if (!row || row.status !== 'returned' || !row.accepted_by_uid) return false;
+        const want = Object.assign({}, rest(b));
+        LINK_FIELDS.forEach((k) => { delete want[k]; });
+        want.cashVerifiedBy = '';
+        want.reportReturned = { note: String(row.review_note || '').slice(0, 300) };
+        if (!sameJson(rest(a), want)) return false;
+      } else return false;
+    }
+    // The cash from sales, entry by entry.
+    const eb = Array.isArray(b.salesCash) ? b.salesCash : [], ea = Array.isArray(a.salesCash) ? a.salesCash : [];
+    if ((own(b, 'salesCash') && !Array.isArray(b.salesCash)) || (own(a, 'salesCash') && !Array.isArray(a.salesCash))) return false;
+    if (sameJson(eb, ea) && own(a, 'salesCash') === own(b, 'salesCash')) continue;
+    const byRid = (list) => {
+      const m = Object.create(null);
+      for (const e of list) { if (!plain(e) || typeof e.reportId !== 'string' || !e.reportId || m[e.reportId]) return null; m[e.reportId] = e; }
+      return m;
+    };
+    const mb = byRid(eb), ma = byRid(ea);
+    if (!mb || !ma) return false;
+    for (const rid of Object.keys(mb)) {
+      const e = mb[rid], f = ma[rid];
+      if (!f) {
+        if (rid === takenBack && !e.outcome) continue;   // the undone accept's own entry
+        return false;
       }
     }
+    for (const rid of Object.keys(ma)) {
+      const f = ma[rid], e = mb[rid];
+      if (added && rid === added.reportId) {
+        if (!sameJson(f, added)) return false;
+        continue;
+      }
+      if (!e || e.cents !== f.cents || e.from !== f.from || Object.keys(f).some((k) => ['reportId', 'cents', 'from', 'outcome'].indexOf(k) === -1)) return false;
+      if (sameJson(e.outcome, f.outcome)) continue;
+      const row = rowOf(rid, sfId, b.id);
+      if (!row) return false;
+      const want = row.sales_cash_outcome || null;
+      if (want === null ? f.outcome !== null : !(plain(f.outcome) && f.outcome.outcome === want &&
+        f.outcome.by === (stampClean(row.sales_cash_by_name || '') || 'a leader') && f.outcome.at === (row.sales_cash_at || 0) &&
+        Object.keys(f.outcome).length === 3)) return false;
+    }
+    if (added && !ma[added.reportId]) return false;
+    // The order the page writes: an accept's own entry last, the rest as they were.
+    const order = (list) => list.map((e) => e.reportId).filter((r) => !added || r !== added.reportId);
+    const orderB = order(eb).filter((r) => own(ma, r));
+    if (!sameJson(order(ea), orderB)) return false;
+    if (added && ea[ea.length - 1].reportId !== added.reportId) return false;
   }
   return true;
 }
@@ -489,7 +666,11 @@ export function depositRowsAdded(before, after, uid) {
 // logs, the statements and the settlement say who did what, and nobody below an admin may say it
 // for someone else (above). `actions` (effectiveActions) lets a shiftVerify holder write a shift
 // report's fields on the storefronts. Called only for a caller who is not an admin.
-export function refusedSections(stored, next, access, uid, actions) {
+//
+// `ctx` is what the PUT read for it: { reports } (shift_reports rows, by id: storefrontReportIds) and
+// { name } (the caller's member name), for the storefronts slice; { now } (ms) for the logs.
+export function refusedSections(stored, next, access, uid, actions, ctx) {
+  const cx = plain(ctx) ? ctx : {};
   const refused = Object.create(null);
   const refuse = (owner) => { (Array.isArray(owner) ? owner : [owner]).forEach((s) => { refused[s] = true; }); };
   const s = plain(stored) ? stored : {}, n = plain(next) ? next : {};
@@ -520,7 +701,7 @@ export function refusedSections(stored, next, access, uid, actions) {
     if (k === 'ledgerLog') { if (!ledgerLogOk(was, now, uid, access, deposits || [])) refuse(owner); continue; }
     if (k === 'ledger' && !canEditOwner(access, owner)) { if (!deposits || !deposits.length) refuse(owner); continue; }
     if (k === 'storefronts' && !canEditOwner(access, owner)) {
-      if (!(can.shiftVerify === true && storefrontReportChangeOk(was, now, uid))) refuse(owner);
+      if (!(can.shiftVerify === true && storefrontReportChangeOk(was, now, uid, { reports: cx.reports, name: cx.name, canUndo: can.shiftUndo === true }))) refuse(owner);
       continue;
     }
     if (canEditOwner(access, owner)) {
