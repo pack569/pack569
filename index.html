@@ -10461,7 +10461,7 @@
     statementId: 'statement', reversedBy: 'reversed by',   // treasurer review of C6 (5)
     forgiven: 'forgiveness',   // security re-check of C6 (N3): a charge's forgiveness lost to a merge
     closedYears: 'years closed out',   // Phase 3, C8 (C8-2): what a 'close' event changed (before, after)
-    depositReview: 'awaiting the treasurer\u2019s review', depositReviewNote: 'question for the kernel',   // the treasurer's review of 045e7ac (6)
+    depositReview: 'awaiting the treasurer\u2019s review', depositReviewNote: 'question for the Popcorn Kernel',   // the treasurer's review of 045e7ac (6)
     // Item 11 — what a storefront cash deposit covers.
     councilSettled: 'popcorn settled with the council',
     depositDays: 'deposit kept storefront cash within (days)',
@@ -16589,9 +16589,12 @@
     }
   }
   // Said when the server refused part of a save and this device put the pack's copy back.
-  function sectionRefusedSay(sections) {
+  // `undoAsk` (srUndoAskTake): a booth leader's undo of an accept was in the change, and the server can't
+  // check it against a report (the treasurer's sign-off of ce6b8de, 3): who can undo it is said, not a bare refusal.
+  function sectionRefusedSay(sections, undoAsk) {
     var r = arrOf(sections).filter(function (x) { return x !== 'shared'; });
     var first = r.filter(function (x) { return x !== 'admin'; })[0] || r[0] || '';
+    if (undoAsk && first === 'storefronts') return 'Your undo wasn’t saved: the pack’s server couldn’t check it against the family’s report. ' + SR_UNDO_ASK;
     var say = SECTION_SAY[first];
     return 'Part of your change wasn’t saved: ' + (say ? 'your positions don’t include ' + say[0] : 'only a pack admin can change that') +
       '. The pack’s copy of it is back on this device.';
@@ -19897,7 +19900,7 @@
       // copy was.
       var editedSince = JSON.stringify(state) !== res.stateSent;
       // Pack positions — the retry after a refusal landed: said, and the next refusal may retry again.
-      if (res.refusedNow) { showToast(sectionRefusedSay(res.refusedNow)); sync.sectionRefused = null; sync.sectionRetried = false; }
+      if (res.refusedNow) { showToast(sectionRefusedSay(res.refusedNow, srUndoAskTake())); sync.sectionRefused = null; sync.sectionRetried = false; }
       // Another device's save that landed on top of this one while it was out (review of
       // 86dfe38..4347cc6, item 1): the feed's server answer (sync.remoteRec) came after the copy
       // was built and is newer than what was written. It is not in what was sent, and its
@@ -19954,7 +19957,7 @@
         }
         sync.sectionRefused = null;
         sync.sectionRetried = false;
-        showToast(sectionRefusedSay(err.sections) + ' Some of your change still couldn\u2019t be saved; reload the page to start again from the pack\u2019s copy.');
+        showToast(sectionRefusedSay(err.sections, srUndoAskTake()) + ' Some of your change still couldn\u2019t be saved; reload the page to start again from the pack\u2019s copy.');
         syncFail(err);
         return;
       }
@@ -26368,6 +26371,9 @@
   // C4a). A sent-back warning the accept cleared comes back (C4b).
   function srRollback(b, msg) {
     var p = b.reportPending, was = (p && p.was) || {}, wrote = (p && p.wrote) || {};
+    // A booth leader's undo goes to the server tied to the report; if the server can't find it, only the undo
+    // list may (access.js storefrontReportChangeOk), and the refusal says so (sectionRefusedSay).
+    if (!canEditSection('storefronts') && !canDo('shiftUndo')) sync.srUndoAsk = Date.now();
     if (p && (b.salesCents || 0) === p.te && (b.donationsCents || 0) === p.cash) {
       b.salesCents = was.salesCents || 0;
       b.donationsCents = was.donationsCents || 0;
@@ -26490,6 +26496,14 @@
     return r.teCents === p.te && r.cashCents === p.cash && (r.salesCashCents || 0) === (p.salesCash || 0);
   }
   var SR_UNDO_NOTE = 'Accept undone by a leader';
+  // Who else can undo an accept (Keith, 2026-10-02: shiftUndo), for a booth leader who can't.
+  var SR_UNDO_ASK = 'Ask the Popcorn Kernel or Treasurer to undo it.';
+  // Was a booth leader's undo in the change the server just refused (srRollback, the last two minutes)? Once.
+  function srUndoAskTake() {
+    var t = sync.srUndoAsk;
+    sync.srUndoAsk = 0;
+    return !!t && Date.now() - t < 120000;
+  }
   function srUndoServerFirst(rid, sfId, blockId) {
     sync.srOut = sync.srOut || {};
     if (sync.srOut[rid]) return Promise.resolve(null);
@@ -26510,7 +26524,7 @@
         var b = pendingNow();
         if (!b) return;
         if (srAcceptedAsPending(srReport(rid), b.reportPending)) { srSettle(b); showToast('The other leader’s accept reached the server first, so it stands.'); }
-        else showToast(leaderSrMessage(err));
+        else showToast(err && err.code === 'permission-denied' ? 'You can’t undo another leader’s accept. ' + SR_UNDO_ASK : leaderSrMessage(err));
       });
     });
   }
@@ -29479,10 +29493,12 @@
   // the treasurer's review of 045e7ac, 4–6) ----
   var DEPOSIT_ONLY_MAX_CENTS = 10000000;   // the server's DEPOSIT_MAX_CENTS
   var DEPOSIT_AHEAD_DAYS = 7;   // the server's: how far past today a deposit may be dated
-  var DEPOSIT_ONLY_SAY = 'The cash donations from the storefronts that the pack keeps, as you banked them. The Treasurer checks it against the deposit slip and the bank.';
+  // Treasurer sign-off of ce6b8de (1): at the bank a kernel often puts sales cash on the same slip.
+  var DEPOSIT_ONLY_SAY = 'The cash donations from the storefronts that the pack keeps, as you banked them. Enter only the donations. ' +
+    'If the slip also had sales cash, say so in the description; the Treasurer records that part. The Treasurer checks it against the deposit slip and the bank.';
   var DEPOSIT_ONLY_DATE_SAY = 'That date is in a period the Treasurer has already reconciled or closed out, so the Treasurer enters this one. Ask the Treasurer.';
   var DEPOSIT_REVIEW_WHY = 'Recorded by the Popcorn Kernel, or by the leader who collected the cash. Check each against the deposit slip and the bank before you reconcile.';
-  var DEPOSIT_REVIEW_OWN_SAY = 'You entered this deposit, so another leader who keeps the books checks it.';
+  var DEPOSIT_REVIEW_OWN_SAY = 'You entered this one, so the Treasurer or Committee Chair checks it.';
   function depositsToReviewSay(n) { return n + ' storefront deposit' + (n === 1 ? '' : 's') + ' to review'; }
   function depositReconcileAskSay(n) {
     return n + ' deposit' + (n === 1 ? '' : 's') + ' on this statement ' + (n === 1 ? 'hasn’t' : 'haven’t') +
@@ -29490,9 +29506,42 @@
   }
   function depositsToReview() { return arrOf(state.ledger).filter(function (e) { return e && e.depositReview === true; }); }
   // The storefronts a deposit covers: the ones it names, and any dated in its range.
-  function depositCoveredSfs(e) {
+  function depositCoveredSfs(e) { return depositCoveredIn(e, state.storefronts); }
+  function depositCoveredIn(e, storefronts) {
     var ids = depositForIds(e.depositFor), from = e.depositFrom || '', to = e.depositTo || '';
-    return state.storefronts.filter(function (sf) { return ids.indexOf(sf.id) !== -1 || (from && to && sf.date >= from && sf.date <= to); });
+    return arrOf(storefronts).filter(function (sf) { return sf && (ids.indexOf(sf.id) !== -1 || (from && to && sf.date >= from && sf.date <= to)); });
+  }
+  // The books' check of one deposit, in cents (treasurer sign-off of ce6b8de, 1 and 2): the cash donations kept
+  // on the storefronts it covers; the other storefront deposits (not voided or reversed) that cover any of them, which a
+  // split deposit subtracts; what this one should then be; the difference; and the cash from sales collected
+  // on them (a mixed slip's difference is exactly that). Pure given storefrontKeptCents.
+  function depositCheckOf(e, ledger, storefronts, viaTE) {
+    var sfs = depositCoveredIn(e, storefronts), on = {};
+    sfs.forEach(function (sf) { on[sf.id] = true; });
+    var kept = sfs.reduce(function (n, sf) { return n + storefrontKeptCents(sf, viaTE); }, 0);
+    // ledgerUnpaired: a voided or reversed deposit is none (the C3/C4 properties hold every ledger reader to it).
+    var others = ledgerUnpaired(arrOf(ledger)).filter(function (r) {
+      return r && r.id !== e.id && r.direction === 'in' && r.source === 'storefront' &&
+        depositCoveredIn(r, storefronts).some(function (sf) { return on[sf.id]; });
+    }).reduce(function (n, r) { return n + (r.amountCents || 0); }, 0);
+    var salesCash = 0;
+    sfs.forEach(function (sf) {
+      (sf.blocks || []).forEach(function (b) {
+        srCashEntries(b).forEach(function (x) { if (x && x.outcome && x.outcome.outcome === 'collected') salesCash += x.cents || 0; });
+      });
+    });
+    var expected = kept - others;
+    return { sfs: sfs, kept: kept, others: others, expected: expected, diff: (e.amountCents || 0) - expected, salesCash: salesCash };
+  }
+  // …in words, under the deposit (the wording review of ce6b8de, 12).
+  function depositCheckSay(c) {
+    var one = c.sfs.length === 1;
+    var t = 'Cash donations kept on ' + (one ? 'that storefront' : 'those storefronts') + ': ' + fmt(c.kept) + '.';
+    if (c.others) t += ' Other deposits for ' + (one ? 'it' : 'them') + ': ' + fmt(c.others) + ', so this one should be ' + fmt(c.expected) + '.';
+    if (!c.diff) return t + ' They match.';
+    t += ' The deposit is ' + fmt(Math.abs(c.diff)) + (c.diff < 0 ? ' less' : ' more') + ' than that.';
+    if (c.diff > 0 && c.diff === c.salesCash) t += ' That’s the council’s sales cash. Record it as Popcorn money for the council, not here.';
+    return t;
   }
   // Did this leader record the cash collected on a shift the deposit covers (accepted a report saying they
   // collected it, or marked its sales cash collected)? Then someone else checks the deposit (treasurer, 5).
@@ -29532,9 +29581,7 @@
     var h = '<div class="card"><h2 class="section display">' + esc(depositsToReviewSay(rows.length)) + '</h2>' +
       '<p class="small muted" style="margin:0 0 8px">' + esc(DEPOSIT_REVIEW_WHY) + '</p>';
     rows.forEach(function (e) {
-      var sfs = depositCoveredSfs(e);
-      var kept = sfs.reduce(function (n, sf) { return n + storefrontKeptCents(sf, viaTE); }, 0);
-      var diff = (e.amountCents || 0) - kept;
+      var chk = depositCheckOf(e, state.ledger, state.storefronts, viaTE), sfs = chk.sfs, diff = chk.diff;
       h += '<div class="ldeposit" style="margin:0 0 10px"><p style="margin:0"><strong class="money">' + esc(fmt(e.amountCents || 0)) + '</strong> banked ' +
         esc(fmtDate(e.date)) + ' · entered by ' + esc(ledgerStampClean(e.enteredBy || '') || 'a leader') + (e.ref ? ' · slip ' + esc(e.ref) : '') + '</p>';
       if (!sfs.length) h += '<p class="small muted" style="margin:4px 0 0">It doesn’t say which storefronts it covers.</p>';
@@ -29545,18 +29592,17 @@
             (cash ? ', sales cash collected ' + esc(fmt(cash)) : '');
         }).join('; ') + '</p>';
       });
-      h += '<p class="small' + (diff ? ' warn' : '') + '" style="margin:4px 0 0"' + (diff ? ' role="alert"' : '') + '>Cash donations kept on ' +
-        (sfs.length === 1 ? 'that storefront' : 'those storefronts') + ': ' + esc(fmt(kept)) + '. Deposit minus that: ' + esc((diff < 0 ? '−' : '') + fmt(Math.abs(diff))) + '.</p>';
+      h += '<p class="small' + (diff ? ' warn' : '') + '" style="margin:4px 0 0"' + (diff ? ' role="alert"' : '') + '>' + esc(depositCheckSay(chk)) + '</p>';
       if (e.depositReviewNote) h += '<p class="small" style="margin:4px 0 0">Asked: “' + esc(e.depositReviewNote) + '”</p>';
       if (e.enteredByUid && e.enteredByUid === me) h += '<p class="small muted" style="margin:6px 0 0">' + esc(DEPOSIT_REVIEW_OWN_SAY) + '</p>';
       else if (ui.depositAsk === e.id) {
         h += '<form data-form="deposit-review-ask" data-id="' + esc(e.id) + '" class="sr-return" style="margin-top:6px">' +
-          '<label class="fld">What should the kernel check?<textarea name="note" rows="2" maxlength="300" required></textarea></label>' +
+          '<label class="fld">What should the Popcorn Kernel check?<textarea name="note" rows="2" maxlength="300" required></textarea></label>' +
           '<div class="sr-acts"><button type="submit" class="btn small">Ask</button>' +
           '<button type="button" class="btn small ghost" data-act="deposit-review-ask-cancel">Cancel</button></div></form>';
       } else {
-        h += '<div class="row" style="margin-top:6px"><button type="button" class="btn small primary" data-act="deposit-review-ok:' + esc(e.id) + '">Matches the deposit slip / bank</button>' +
-          '<button type="button" class="btn small ghost" data-act="deposit-review-ask-open:' + esc(e.id) + '">Ask the kernel</button></div>';
+        h += '<div class="row" style="margin-top:6px"><button type="button" class="btn small primary" data-act="deposit-review-ok:' + esc(e.id) + '">Matches slip and bank</button>' +
+          '<button type="button" class="btn small ghost" data-act="deposit-review-ask-open:' + esc(e.id) + '">Ask the Popcorn Kernel</button></div>';
       }
       h += '</div>';
     });
@@ -30070,7 +30116,7 @@
         // Option B (owner, 2026-09-29) — a reversed entry and its reversal both stay here, counted, and say which is which.
         (ePair ? '<span class="pill navy">' + esc(ePair) + '</span>' : '') +
         // The treasurer's review of 045e7ac (6) — a deposit not yet checked against the slip and the bank: counted, and said.
-        (e.depositReview === true ? '<span class="pill bad">awaiting review</span>' : '') +
+        (e.depositReview === true ? '<span class="pill bad">not checked yet</span>' : '') +
         (e.reconciled
           ? '<span class="pill navy">reconciled</span>' +
             // Treasurer review of C2 (L-5) — armed, it offers a box for why (optional, logged).
@@ -43341,7 +43387,7 @@
       var daNote = String(fd.get('note') || '').replace(/\s+/g, ' ').trim().slice(0, 300);
       if (!daRow || daRow.depositReview !== true) return;
       if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
-      if (!daNote) { showToast('Say what you want the kernel to check.'); return; }
+      if (!daNote) { showToast('Say what you want the Popcorn Kernel to check.'); return; }
       var daWas = daRow.depositReviewNote || null;
       daRow.depositReviewNote = daNote;
       logLedger('edit', daRow.id, { f: { depositReviewNote: [daWas, daNote] } });

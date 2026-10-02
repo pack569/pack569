@@ -95,7 +95,7 @@ const FORMAT_GATE_FNS = ['PACK_FORMAT', 'formatAhead', 'formatStored', 'storedFo
   // Pack positions (client step 3): the section guard commit(), syncPush and the merge consult. Off
   // (sectionGuardOn) unless the context is a leader below an admin on the pack's own server.
   ['apiAccounts', 'sectionGuardOn', 'ownKey', 'keyOwnerOf', 'goneOwnerOf', 'ownerEditable', 'keyWritable', 'guardBaseline', 'rollbackUneditable',
-    'pushBody', 'takeServerSections', 'takeServerUnwritable', 'sectionRefusedSay', 'syncThreeWayOwnOnly', 'canEditDenMeeting', 'denMeetingKeep', 'depositOnlyKeep']);
+    'pushBody', 'takeServerSections', 'takeServerUnwritable', 'sectionRefusedSay', 'srUndoAskTake', 'SR_UNDO_ASK', 'syncThreeWayOwnOnly', 'canEditDenMeeting', 'denMeetingKeep', 'depositOnlyKeep']);
 const SECTION_GUARD_FNS = FORMAT_GATE_FNS.slice(FORMAT_GATE_FNS.indexOf('apiAccounts'));
 const FORMAT_GATE_SRC = () => FORMAT_GATE_FNS.map(decl).join('\n');
 // Wave C1 — buildParentView sorts the trips by date and re-checks their ISO dates, so every
@@ -17459,7 +17459,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'srMine', 'srReplaces', 'LEADER_SR_SAY', 'leaderSrMessage', 'srNotNow', 'acceptShiftReport', 'srLanded', 'srSettle', 'srRollback',
   'shiftReportsReconcile', 'shiftReportsAfterPush', 'returnShiftReport', 'leaderShiftReportAct', 'srHandEdited', 'getStorefront',
   'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout', 'shiftConfirmSubmit',
-  'srIConfirmed', 'srFamiliesNow', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'familyKeyOf', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
+  'srIConfirmed', 'srFamiliesNow', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'familyKeyOf', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE', 'SR_UNDO_ASK',
   'srParentStore', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashEntries', 'srMayUndo', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
   'srScheduleRefresh', 'parentDoc', 'parentPreviewDoc', 'shiftReportOpenFor', 'shiftReportToday', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_DAYS', 'isoPlusDays',
   'srFormOpen', 'srMirror', 'srReasonDraft', 'srNameClean', 'srSignName',
@@ -19296,7 +19296,7 @@ function srLeaderCtx(o) {
        'srWaitingOn', 'acceptShiftReport', 'srLanded', 'srSettle', 'srRollback', 'shiftReportsReconcile', 'shiftReportsAfterPush',
        'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srReasonDraft', 'srNameClean', 'srSignName', 'ledgerStampClean', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout',
        'srIConfirmed', 'srFamiliesNow', 'srNeedsCheck', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'SR_CHECK_TE', 'SR_IMPORT_FIRST', 'familyKeyOf',
-       'blockCashCheck', 'signoffFromOf', 'SIGNOFF_FROM_DEFAULT', 'signoffHides', 'isoPlusDays', 'SHIFT_REPORT_DAYS', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
+       'blockCashCheck', 'signoffFromOf', 'SIGNOFF_FROM_DEFAULT', 'signoffHides', 'isoPlusDays', 'SHIFT_REPORT_DAYS', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE', 'SR_UNDO_ASK',
        'srParentStore', 'srHomeFamilyOn', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashHistorySay', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
        'srCashEntries', 'srMayUndo', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
        'SR_CASH_UNDO_QUICK', 'srCashUndoForm', 'srCashUndoSay'].map(decl).join('\n')}
@@ -23253,7 +23253,7 @@ test('positions deposits: the Kernel records a flagged storefront deposit; the b
       '2 deposits on this statement haven’t been checked against the deposit slip. Review them first, or tap again to reconcile anyway.'], 'the words');
   ok(/var rlFlag = state\.ledger\.filter\(function \(e\) \{ return e && e\.depositReview === true && e\.reconciled === true && !e\.statementId; \}\)\.length;\s*if \(rlFlag && ui\.armed !== act\) showToast\(depositReconcileAskSay\(rlFlag\)\);\s*arm\(act,/.test(SCRIPT),
     'reconciling a statement that holds one asks first');
-  ok(/\(e\.depositReview === true \? '<span class="pill bad">awaiting review<\/span>' : ''\)/.test(slice('renderLedgerEntries')), 'it counts, said "awaiting review"');
+  ok(/\(e\.depositReview === true \? '<span class="pill bad">not checked yet<\/span>' : ''\)/.test(slice('renderLedgerEntries')), 'it counts, said "not checked yet"');
   ok(/var h = !canEditSection\('ledger'\) \? \(canEditSection\('deposits'\) \? depositOnlyFormHtml\(dr\) : ''\) : \(/.test(slice('renderLedgerEntries')), 'the forms: the books\' keeper, the deposit recorder, nobody else');
   ok(/if \(kind === 'deposit-review-ask'\) \{[\s\S]*?daRow\.depositReviewNote = daNote;\s*logLedger\('edit', daRow\.id, \{ f: \{ depositReviewNote: \[daWas, daNote\] \} \}\);/.test(SCRIPT), 'Ask the kernel: kept on the row, logged, flag stays');
   ok(/if \(drEntry\.source === 'storefront' && drEntry\.direction === 'in' && \(depOnly \|\| depositSelfCollected\(drEntry\)\)\) drEntry\.depositReview = true;/.test(SCRIPT),
@@ -23272,7 +23272,7 @@ test('positions deposits: a deposit of cash the depositor collected themselves i
     { id: 'sf2', date: '2026-10-10', blocks: [{ id: 'b2', salesCash: [{ reportId: 'r2', cents: 500, from: 'X', outcome: { outcome: 'collected', by: 'Lee', at: 1 } }] }] }] };
     var me = 'u-k', myName = 'Kim Kernel', reps = [];
     function ledgerActorUid() { return me; } function srSignName() { return myName; } function srReports() { return reps; }`, c);
-  vm.runInContext(['arrOf', 'depositForIds', 'DEPOSIT_FOR_MAX', 'depositCoveredSfs', 'srCashEntries', 'depositSelfCollected'].map(decl).join('\n'), c);
+  vm.runInContext(['arrOf', 'depositForIds', 'DEPOSIT_FOR_MAX', 'depositCoveredSfs', 'depositCoveredIn', 'srCashEntries', 'depositSelfCollected'].map(decl).join('\n'), c);
   const self = (e) => vm.runInContext('depositSelfCollected(' + JSON.stringify(e) + ')', c);
   eq([self({ depositFor: 'sf1' }), self({ depositFor: 'sf2' }), self({ depositFrom: '2026-10-01', depositTo: '2026-10-05' }), self({ depositFor: '' })],
     [true, false, true, false], 'accepted saying they collected it; not on another shift; a date range; nothing named');
@@ -23280,6 +23280,47 @@ test('positions deposits: a deposit of cash the depositor collected themselves i
   eq(self({ depositFor: 'sf2' }), true, 'marked its sales cash collected');
   vm.runInContext("myName = 'Nobody'; reps = [{ sfId: 'sf2', salesCashOutcome: 'collected', salesCashByUid: 'u-k' }]", c);
   eq(self({ depositFor: 'sf2' }), true, 'the server\'s record of it, by account');
+});
+
+// The treasurer's sign-off of ce6b8de (1–3): a mixed slip, a storefront banked in two deposits, and a booth
+// leader whose undo the server can't check.
+test('positions deposits: the books\' check names a mixed slip, subtracts a storefront\'s other deposits, and a refused undo says who can', () => {
+  const c = vm.createContext({});
+  vm.runInContext(`function storefrontKeptCents(sf) { return sf.kept; } function fmt(c) { return '$' + (c / 100).toFixed(2); }`, c);
+  vm.runInContext(['arrOf', 'depositForIds', 'DEPOSIT_FOR_MAX', 'depositCoveredIn', 'srCashEntries', 'ledgerUnpaired', 'depositCheckOf', 'depositCheckSay'].map(decl).join('\n'), c);
+  const sfs = [{ id: 'sf1', date: '2026-10-03', kept: 25000, blocks: [{ id: 'b1', salesCash: [{ reportId: 'r1', cents: 4000, outcome: { outcome: 'collected', by: 'K', at: 1 } }] }] },
+    { id: 'sf2', date: '2026-10-04', kept: 10000, blocks: [] }];
+  const dep = (o) => Object.assign({ id: 'd1', direction: 'in', source: 'storefront', amountCents: 25000, depositFor: 'sf1' }, o);
+  const say = (e, ledger) => vm.runInContext('depositCheckSay(depositCheckOf(' + JSON.stringify(e) + ', ' + JSON.stringify(ledger || [e]) + ', ' + JSON.stringify(sfs) + ', false))', c);
+  eq(say(dep()), 'Cash donations kept on that storefront: $250.00. They match.', 'a match');
+  eq(say(dep({ amountCents: 23800 })), 'Cash donations kept on that storefront: $250.00. The deposit is $12.00 less than that.', 'less');
+  eq(say(dep({ amountCents: 29000 })), 'Cash donations kept on that storefront: $250.00. The deposit is $40.00 more than that. ' +
+    'That’s the council’s sales cash. Record it as Popcorn money for the council, not here.', 'a mixed slip: the difference is the sales cash collected');
+  eq(say(dep({ amountCents: 26000 })), 'Cash donations kept on that storefront: $250.00. The deposit is $10.00 more than that.', 'more, not the sales cash');
+  // One storefront banked in two deposits: each is checked against what the other leaves.
+  const a = dep({ amountCents: 10000 }), b = dep({ id: 'd2', amountCents: 15000 });
+  eq([say(a, [a, b]), say(b, [a, b])], ['Cash donations kept on that storefront: $250.00. Other deposits for it: $150.00, so this one should be $100.00. They match.',
+    'Cash donations kept on that storefront: $250.00. Other deposits for it: $100.00, so this one should be $150.00. They match.'], 'a split deposit: no false difference');
+  eq(say(a, [a, b, dep({ id: 'd3', depositFor: 'sf2', amountCents: 999 }), Object.assign(dep({ id: 'd4', amountCents: 500 }), { reversedBy: 'rv-d4' }),
+    dep({ id: 'rv-d4', direction: 'out', amountCents: 500, reverses: 'd4' }), dep({ id: 'd5', source: 'donation' })]),
+    'Cash donations kept on that storefront: $250.00. Other deposits for it: $150.00, so this one should be $100.00. They match.',
+    'not another storefront\'s, a reversed one, or a donation');
+  ok(/Enter only the donations\. If the slip also had sales cash, say so in the description; the Treasurer records that part\./.test(vm.runInContext('DEPOSIT_ONLY_SAY', sandbox(['DEPOSIT_ONLY_SAY']))),
+    'the kernel\'s form does not say to enter only the donations');
+  ok(/esc\(depositCheckSay\(chk\)\)/.test(slice('depositReviewCardHtml')) && /depositCheckOf\(e, state\.ledger, state\.storefronts, viaTE\)/.test(slice('depositReviewCardHtml')), 'the card');
+  // 3: a booth leader's undo refused for a missing report.
+  const u = vm.createContext({});
+  vm.runInContext(`var sync = { srUndoAsk: 0 }; var SECTION_SAY = { storefronts: ['storefronts', 'the Popcorn Kernel'] };`, u);
+  vm.runInContext(['arrOf', 'sectionRefusedSay', 'srUndoAskTake', 'SR_UNDO_ASK'].map(decl).join('\n'), u);
+  vm.runInContext('sync.srUndoAsk = Date.now()', u);
+  eq(vm.runInContext("sectionRefusedSay(['storefronts'], srUndoAskTake())", u),
+    'Your undo wasn’t saved: the pack’s server couldn’t check it against the family’s report. Ask the Popcorn Kernel or Treasurer to undo it.', 'the undo refused');
+  ok(!/Popcorn Kernel or Treasurer/.test(vm.runInContext("sectionRefusedSay(['storefronts'], srUndoAskTake())", u)), 'said once, not on the next refusal');
+  vm.runInContext('sync.srUndoAsk = Date.now() - 600000', u);
+  eq(vm.runInContext('srUndoAskTake()', u), false, 'an undo ten minutes ago is not this refusal');
+  ok(/if \(!canEditSection\('storefronts'\) && !canDo\('shiftUndo'\)\) sync\.srUndoAsk = Date\.now\(\);/.test(slice('srRollback')), 'a booth leader\'s rollback is not noted');
+  ok(/err\.code === 'permission-denied' \? 'You can’t undo another leader’s accept\. ' \+ SR_UNDO_ASK/.test(slice('srUndoServerFirst')), 'a refused undo PATCH is a bare refusal');
+  ok((SCRIPT.match(/sectionRefusedSay\([^)]*, srUndoAskTake\(\)\)/g) || []).length === 2, 'both refusal toasts ask');
 });
 
 test('C2: each change to an entry is one logged edit — every field it changed, before and after, who, when, which device', () => {
@@ -23878,14 +23919,16 @@ const C3_READERS = {
   // Item 11 — storefront cash kept against deposited, and the hint (which reads what is not yet deposited).
   storefrontCashCheck: (L, x, c) => [false, true].map((te) => x.storefrontCashCheck(c.storefronts, L, te)).concat([x.storefrontCashCheck(c.storefronts, L, false, '2026-08-31')]),
   storefrontDepositsNaming: (L, x) => ['sf1', 'gone'].map((id) => x.storefrontDepositsNaming(L, id)),
-  storefrontCashHint: (L, x, c) => [7500, 5000, 2500, 1200, 100].map((a) => x.storefrontCashHint({ direction: 'in', amountCents: a, date: '2026-09-20', source: '' }, c.storefronts, L, false))
+  storefrontCashHint: (L, x, c) => [7500, 5000, 2500, 1200, 100].map((a) => x.storefrontCashHint({ direction: 'in', amountCents: a, date: '2026-09-20', source: '' }, c.storefronts, L, false)),
+  // The treasurer's sign-off of ce6b8de (2) — a deposit's check subtracts the storefront's other deposits.
+  depositCheckOf: (L, x, c) => { const k = x.depositCheckOf({ id: 'zz', amountCents: 7500, depositFor: 'sf1' }, L, c.storefronts, false); return [k.kept, k.others, k.diff, k.salesCash]; }
 };
 // Item 11 — the storefronts those two read: $75 kept between two blocks, $9 of sales cash still out.
 const C3_STOREFRONTS = [{ id: 'sf1', name: 'Kroger', date: '2026-09-01', blocks: [{ donationsCents: 5000 }, { donationsCents: 2500, salesCash: [{ reportId: 'r1', cents: 900, from: '', outcome: null }] }] }];
 // What those readers need besides themselves.
 const READER_DEPS = ['fmt', 'ledgerLogWhen', 'ledgerCsvCell', 'ledgerPairRole', 'ledgerReplacementId', 'ledgerReplacementFor',
   'statementInForce', 'statementReopened', 'fmtDateShort', 'arrOf', 'depositForIds', 'storefrontKeptCents', 'blockSalesCashInHand', 'blockSalesCashParts',
-  'STOREFRONT_HINT_SOURCES', 'STOREFRONT_HINT_DAYS', 'DEPOSIT_FOR_MAX', 'hintWords', 'storefrontDepositName'];
+  'STOREFRONT_HINT_SOURCES', 'STOREFRONT_HINT_DAYS', 'DEPOSIT_FOR_MAX', 'hintWords', 'storefrontDepositName', 'depositCoveredIn', 'srCashEntries'];
 // Security review of C4 (finding 1) — the readers that LIST or COUNT the rows, or tick them. A pair
 // that came apart and was sent back to the ledger is two counted rows that net to $0: these show
 // both (the treasurer ticks the reversal against the statement it is on), and only the balance is
