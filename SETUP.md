@@ -540,10 +540,16 @@ pack record, so a parent who can send one still can't write anything else.
   other two figures (whole cents, $0 to $10,000), it defaults to $0 when left out, and it can't
   be more than the Trail's End amount, because those sales are already part of it. For the same
   reason it is **never added** to the block's sales or to any scout's standings. A second
-  parent's confirmation and a leader's accept must name it, like the other two figures. Once a
-  report is accepted, leaders see it on the block as **Cash to collect** until someone marks it
-  collected. It is never published to parents; another family sees it only in the one
-  exception under *Who sees what* below.
+  parent's confirmation and a leader's accept must name it, like the other two figures. It is
+  never published to parents; another family sees it only in the one exception under *Who sees
+  what* below.
+- **What became of that cash** (treasurer and security review, followups round 1): only an
+  `admin` or `editor`, and only on an **accepted** report that has some, records on the server
+  that they **collected** it, or that the family **converted** it to credit after all. They can
+  undo either. The record names the amount it is about and is refused if the report has moved
+  since. It keeps who recorded it and when, from their member record and the server's clock.
+  Each change is audited (`shift.salescash.collected`, `.converted`, `.undo`), and leaders see
+  it in the season's shift-report history.
 - **One at a time:** each block can have only one report that is waiting or accepted. A
   second report for the same block is refused until a leader sends the first one back or its
   sender withdraws it.
@@ -604,7 +610,7 @@ pack record, so a parent who can send one still can't write anything else.
   storefront and block ids** the parent view already publishes, never a scout, a name or a link.
   If the record can't be read, the list is empty. The family's *Storefront shift totals* card
   shows those shifts first, marked "Your scout's shift".
-- Every report, edit, withdrawal, acceptance and send-back is written to the `audit` table
+- Every report, edit, withdrawal, acceptance, send-back and record of the cash from sales is written to the `audit` table
   in the same step as the change itself.
 
 ### The sign-up link — the recommended way

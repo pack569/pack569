@@ -5,7 +5,13 @@
 //   { action: 'accept', teCents, cashCents, salesCashCents?, collected?, reviewNote?, override? }  admin or editor; not their own, nor one they confirmed
 // S-5: salesCashCents, the cash from popcorn sales still in hand, is 0 when left out. A confirm
 // or an accept names it with the other two figures, and lands only if the report still holds it.
+// Followups round 1 (treasurer and security): what became of that cash is a leader's record, kept
+// here and audited, not only on the pack record's block. 'salescash' sets outcome 'collected' (a
+// leader has the cash) or 'converted' (the family converted it to credit after all), or null to
+// undo either; it names the amount it is about. Audited shift.salescash.collected / .converted /
+// .undo. Only on an ACCEPTED report with cash from sales (a waiting one is not the pack's yet).
 //   { action: 'return', reviewNote }                              admin or editor; waiting or accepted
+//   { action: 'salescash', outcome, salesCashCents }              admin or editor; an accepted report holding cash from sales
 // Answers { report } as GET would show it to the caller.
 //
 // Not a Part C rule (see index.js beside this file, and SETUP.md Part C, "Shift reports").
@@ -55,7 +61,8 @@ const ACTION_KEYS = {
   withdraw: [],
   confirm: ['attest', 'teCents', 'cashCents', 'salesCashCents', 'updatedAt'],
   accept: ['teCents', 'cashCents', 'salesCashCents', 'reviewNote', 'override', 'collected'],
-  return: ['reviewNote']
+  return: ['reviewNote'],
+  salescash: ['outcome', 'salesCashCents']
 };
 const RID_RE = /^[A-Za-z0-9-]{1,64}$/;
 
@@ -79,7 +86,7 @@ async function patch({ request, db, packId, role, user, member, params }) {
   const action = b.action;
   if (typeof action !== 'string' || !Object.prototype.hasOwnProperty.call(ACTION_KEYS, action)) refuse(badRequest('action'));
   for (const k of Object.keys(b)) if (k !== 'action' && ACTION_KEYS[action].indexOf(k) === -1) refuse(badRequest('unknown-field'));
-  const reviewing = action === 'accept' || action === 'return';
+  const reviewing = action === 'accept' || action === 'return' || action === 'salescash';
   if (reviewing && !canReviewShiftReport(role)) return forbidden();
   const row = await readReport(db, packId, rid);
   // The sender's own actions: anyone else gets the one fixed 403, whether or not it exists.
@@ -181,6 +188,25 @@ async function patch({ request, db, packId, role, user, member, params }) {
       submittedBy: row.submitted_by_uid, submittedByName: row.submitted_by_name, reviewerName: name, reviewNote: note, collected };
     if (row.confirmed_by_uid) { detail.confirmedBy = row.confirmed_by_uid; detail.confirmedByName = row.confirmed_by_name || ''; }
     if (override) detail.reason = note;
+  } else if (action === 'salescash') {
+    if (b.outcome !== null && b.outcome !== 'collected' && b.outcome !== 'converted') refuse(badRequest('outcome'));
+    if (!Number.isInteger(b.salesCashCents) || b.salesCashCents <= 0) refuse(badRequest('sales-cash-cents'));
+    if (row.status !== 'accepted') return reportMoved(row.status);
+    if (!(row.sales_cash_cents > 0)) refuse(badRequest('no-sales-cash'));
+    // The amount the leader was shown, and the state they saw: nothing recorded yet to set one, an
+    // outcome to undo.
+    if (b.salesCashCents !== row.sales_cash_cents) return reportMoved(row.status);
+    const undo = b.outcome === null;
+    if (undo ? !row.sales_cash_outcome : !!row.sales_cash_outcome) return reportMoved(row.status);
+    roles = REVIEW_ROLES;
+    update = db.prepare('UPDATE shift_reports SET sales_cash_outcome = ?, sales_cash_by_uid = ?, sales_cash_by_name = ?, sales_cash_at = ?, ' +
+      "updated_at = ?, stamp = ? WHERE pack_id = ? AND id = ? AND stamp = ? AND status = 'accepted' AND sales_cash_cents = ? AND " +
+      'sales_cash_outcome IS ' + (undo ? 'NOT NULL' : 'NULL') + ' AND ' + STILL_MEMBER(roles))
+      .bind(undo ? null : b.outcome, undo ? null : user.uid, undo ? null : name, undo ? null : now, now, stamp, packId, rid, row.stamp,
+        b.salesCashCents, packId, user.uid, ...roles);
+    audit = 'shift.salescash.' + (undo ? 'undo' : b.outcome);
+    detail = { report: rid, sfId: row.sf_id, blockId: row.block_id, salesCashCents: row.sales_cash_cents, byName: name };
+    if (undo) detail.was = { outcome: row.sales_cash_outcome, byName: row.sales_cash_by_name || '', at: row.sales_cash_at };
   } else {
     if (row.status !== 'submitted' && row.status !== 'accepted') return reportMoved(row.status);
     roles = REVIEW_ROLES;

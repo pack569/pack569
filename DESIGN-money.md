@@ -1528,14 +1528,31 @@ API backend they send them in.
   old against new first, and replaces both the figures and the names on the cash count.
 - **Cash from popcorn sales still in hand** (S-5, Keith 2026-10-01). Families convert all cash
   from popcorn sales to credit in the Trail's End app before they leave the table. When they
-  can't, the report says how much they still have (`sales_cash_cents`, 0 on almost every report),
-  and on accept the block carries it as `salesCashInHandCents`. It is a **custody** figure, not
-  money: those sales were entered in the app, so they are already inside `salesCents`, and the
-  figure is never added to it, to `blockShares`, or to any total. Leaders see "Cash to collect" on
-  the block and the review card, a line in the storefront banner, and a column in the season's
-  shift-report history; a leader marks it **Collected** once they have it (Undo puts it back). It
-  is leaders' only: `buildParentView` never publishes it. The close-out warns while any is still
-  out, because clearing the storefronts clears the reminder (the report keeps the figure).
+  can't, the report says how much wasn't converted (`sales_cash_cents`, 0 on almost every report).
+  It is a **custody** figure, not money: those sales were entered in the app, so they are already
+  inside `salesCents`, and the figure is never added to it, to `blockShares`, or to any total. It
+  is the council's money: a leader collects it, deposits it, and records the deposit in the
+  ledger as Popcorn money for the council. Nothing here writes a ledger row; a "Record deposit"
+  button can come with the storefront cash deposits work.
+  - **The record is the server's** (treasurer and security, followups round 1). An admin or
+    editor marks a report's cash **Collected** or **They converted it** (PATCH `salescash`,
+    audited, undoable), on an accepted report only. The season's history shows who recorded it
+    and when, and a settlement can later sum what was collected from `shift_reports`.
+  - **The block mirrors it**, one entry per accepted report: `b.salesCash = [{ reportId, cents,
+    from, outcome }]`, with `outcome` null while the cash is out, or `{ outcome, by, at }`. The
+    amount stays when it is collected. Accepting a later report onto the block adds its own entry
+    and never overwrites one an earlier report left to collect: the review card and the
+    replace check say so. A leader's page follows the server's record if another leader recorded
+    it elsewhere.
+  - **Where leaders see it:** "Cash from popcorn sales to collect" on the review card and the
+    block, a section in the storefront banner, and a column in the history and CSV. A
+    one-family accept with some has "I collected and counted the cash donations — accept" and a
+    box, "I also collected the $X cash from popcorn sales", which records it once the accept
+    lands.
+  - **Never lost without a word:** deleting the block or the storefront warns while any is
+    still out. So does the close-out, because closing clears the storefronts; the server's
+    record stays in Shift reports this season. It is leaders' only: `buildParentView` never
+    publishes it.
 - **Sending back an accepted report.** The figures **stay** on the block and keep counting. The
   money was counted, and taking it off every scout's total because the paperwork is in question
   would move standings for a clerical reason. The block loses its link to the report and its

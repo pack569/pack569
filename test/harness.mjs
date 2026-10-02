@@ -15914,6 +15914,59 @@ atest('S-5: a report carries the cash from sales still in hand — 0 by default,
   ok(nb.text.indexOf('salesCash') === -1 && nb.text.indexOf(':1525') === -1, 'another family reads the cash still in hand: ' + nb.text.slice(0, 200));
 });
 
+// Followups round 1 (treasurer and security) — what became of the cash from sales is a leader's
+// record on the server: collected, or converted by the family after all, or undone; each audited.
+atest('S-5: a leader records the cash from sales as collected or converted — admin or editor, on an accepted report, named, audited, undoable', async () => {
+  const w = await srWorld();
+  const rid = (await w.report('parent', { blockId: 'b1', salesCashCents: 1525 })).body.report.id;
+  const set = (who, body, id) => w.act(who, id || rid, Object.assign({ action: 'salescash' }, body));
+  eq((await set('editor', { outcome: 'collected', salesCashCents: 1525 })).body.error, 'report-moved', 'a report still waiting');
+  await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 1525, collected: true });
+  for (const who of ['viewer', 'parent', 'newbie', 'pending', 'stranger']) denied(await set(who, { outcome: 'collected', salesCashCents: 1525 }), who);
+  eq((await set('editor', { outcome: 'lost', salesCashCents: 1525 })).body.reason, 'outcome', 'an outcome that is not one of the two');
+  eq((await set('editor', { outcome: 'collected' })).body.reason, 'sales-cash-cents', 'no amount named');
+  eq((await set('editor', { outcome: 'collected', salesCashCents: 1525, note: 'x' })).body.reason, 'unknown-field', 'an unknown field');
+  eq((await set('editor', { outcome: 'collected', salesCashCents: 1500 })).body.error, 'report-moved', 'a different amount');
+  eq((await set('editor', { outcome: null, salesCashCents: 1525 })).body.error, 'report-moved', 'undoing nothing');
+  const none = (await w.report('parent', { blockId: 'b2' })).body.report.id;
+  await w.act('editor', none, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
+  eq((await set('editor', { outcome: 'collected', salesCashCents: 1 }, none)).body.reason, 'no-sales-cash', 'a report with no cash from sales');
+  eq(w.sql("SELECT count(*) AS n FROM audit WHERE action LIKE 'shift.salescash.%'")[0].n, 0, 'a refused call left an audit row');
+  // Collected, then undone, then converted.
+  const c = await set('editor', { outcome: 'collected', salesCashCents: 1525 });
+  eq([c.status, c.body.report.salesCashOutcome, c.body.report.salesCashByName, c.body.report.salesCashByUid, typeof c.body.report.salesCashAt],
+    [200, 'collected', 'Test editor', 'uid-editor', 'number'], 'collected');
+  eq((await set('owner', { outcome: 'converted', salesCashCents: 1525 })).body.error, 'report-moved', 'a second outcome over the first');
+  const u = await set('owner', { outcome: null, salesCashCents: 1525 });
+  eq([u.status, u.body.report.salesCashOutcome, u.body.report.salesCashByName], [200, null, null], 'undone');
+  eq((await set('admin2', { outcome: 'converted', salesCashCents: 1525 })).body.report.salesCashOutcome, 'converted', 'converted');
+  eq(w.sql("SELECT uid, action, detail FROM audit WHERE action LIKE 'shift.salescash.%' ORDER BY id").map((a) => [a.uid, a.action, JSON.parse(a.detail)]), [
+    ['uid-editor', 'shift.salescash.collected', { report: rid, sfId: 'sfPast', blockId: 'b1', salesCashCents: 1525, byName: 'Test editor' }],
+    ['uid-owner', 'shift.salescash.undo', { report: rid, sfId: 'sfPast', blockId: 'b1', salesCashCents: 1525, byName: 'Test owner',
+      was: { outcome: 'collected', byName: 'Test editor', at: c.body.report.salesCashAt } }],
+    ['uid-admin2', 'shift.salescash.converted', { report: rid, sfId: 'sfPast', blockId: 'b1', salesCashCents: 1525, byName: 'Test admin2' }]], 'the audit');
+  // A parent's own report never says who collected it or when; a leader's does.
+  const mine = (await w.reports('parent')).body.reports.find((r) => r.id === rid);
+  ok(!('salesCashOutcome' in mine) && !('salesCashByName' in mine), 'a parent reads the custody record');
+  eq((await w.reports('viewer')).body.reports.find((r) => r.id === rid).salesCashOutcome, 'converted', 'a viewer reads it');
+  // Two leaders at once: one records it, the other is told it moved, one audit row.
+  const v = await srWorld();
+  const vr = (await v.report('parent', { salesCashCents: 700 })).body.report.id;
+  await v.act('editor', vr, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 700, collected: true });
+  holdBatches(v, 2);
+  const [a, b] = await Promise.all([v.act('editor', vr, { action: 'salescash', outcome: 'collected', salesCashCents: 700 }),
+    v.act('owner', vr, { action: 'salescash', outcome: 'converted', salesCashCents: 700 })]);
+  eq([[a.status, b.status].sort(), v.sql("SELECT count(*) AS n FROM audit WHERE action LIKE 'shift.salescash.%'")[0].n], [[200, 409], 1], 'two at once');
+  // The table: no outcome without cash, a name and a time; only the two outcomes.
+  const refused = (sql, ...x) => { try { v.db.raw.prepare(sql).run(...x); return false; } catch (e) { return true; } };
+  ok(refused("UPDATE shift_reports SET sales_cash_outcome = 'lost' WHERE id = ?", vr), 'an outcome that is not one of the two');
+  ok(refused('UPDATE shift_reports SET sales_cash_by_uid = NULL WHERE id = ?', vr), 'an outcome with nobody recording it');
+  ok(refused('UPDATE shift_reports SET sales_cash_at = NULL WHERE id = ?', vr), 'an outcome with no time');
+  ok(refused('UPDATE shift_reports SET sales_cash_cents = 0 WHERE id = ?', vr), 'an outcome on a report with no cash from sales');
+  ok(/apply this to the preview database, then production, BEFORE deploying the code that uses/.test(MIGRATION),
+    'the migration does not say to apply it before the code');
+});
+
 atest('S-5: a second parent confirms the cash still in hand too, and the table refuses what the rules refuse', async () => {
   const w = await s4World();
   const rid = (await w.send('parent', 'b1', { salesCashCents: 700 })).body.report.id;
@@ -16064,7 +16117,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'shiftReportsReconcile', 'shiftReportsAfterPush', 'returnShiftReport', 'leaderShiftReportAct', 'srHandEdited', 'getStorefront',
   'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout', 'shiftConfirmSubmit',
   'srIConfirmed', 'srFamiliesNow', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'familyKeyOf', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
-  'srSameFigures', 'srCashCollected',
+  'srSameFigures', 'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
   'srScheduleRefresh', 'parentDoc', 'parentPreviewDoc', 'shiftReportOpenFor', 'shiftReportToday', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_DAYS', 'isoPlusDays',
   'srFormOpen', 'srMirror', 'srReasonDraft', 'srNameClean',
   'ledgerActor', 'ledgerActorName',
@@ -17469,7 +17522,8 @@ test('shift totals: every refusal the server can give has words a family can act
   const reasons = new Set([...rules.matchAll(/return '([a-z-]+)';/g), ...server.matchAll(/badRequest\('([a-z-]+)'\)/g)].map((m) => m[1]));
   ['open', 'accepted', 'report-moved'].forEach((r) => reasons.add(r));
   // Asked of a well-formed page, these only follow a bug, a stale page, or a leader's action.
-  const generic = ['sf-id', 'block-id', 'unknown-field', 'action', 'review-note', 'same-person', 'override', 'figures', 'collected'];
+  // 'outcome' and 'no-sales-cash' answer only a leader's 'salescash' (LEADER_SR_SAY), never a family.
+  const generic = ['sf-id', 'block-id', 'unknown-field', 'action', 'review-note', 'same-person', 'override', 'figures', 'collected', 'outcome', 'no-sales-cash'];
   ok(reasons.size >= 14, 'the reasons found: ' + [...reasons]);
   for (const r of reasons) {
     const m = say({ code: 'invalid-argument', reason: r });
@@ -17633,7 +17687,7 @@ function srLeaderCtx(o) {
        'srIConfirmed', 'srFamiliesNow', 'srNeedsCheck', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'SR_CHECK_TE', 'SR_IMPORT_FIRST', 'familyKeyOf',
        'blockCashCheck', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
        'srSameFigures', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
-       'srCashCollected'].map(decl).join('\n')}
+       'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay'].map(decl).join('\n')}
     function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }`, ctx);
   const run = (js) => vm.runInContext(js, ctx);
   const get = (js) => JSON.parse(JSON.stringify(run(js) === undefined ? null : run(js)));
@@ -18759,14 +18813,15 @@ test('round 1: the season’s shift reports, as a leaders’ table and a CSV, wi
       { id: 'b1', label: 'Block 1', start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }], salesCents: 12345, donationsCents: 2500 },
       { id: 'b2', label: 'Block 2', start: '12:00', end: '14:00', assignments: [{ scoutId: 's2', weight: 1 }], salesCents: 9000, donationsCents: 0 }] }] };
   const reps = [
-    srRep({ status: 'accepted', confirmed: true, confirmedByName: 'Bo Parent', acceptedByName: 'Sam Leader', salesCashCents: 2000 }),
+    srRep({ status: 'accepted', confirmed: true, confirmedByName: 'Bo Parent', acceptedByName: 'Sam Leader', salesCashCents: 2000,
+      salesCashOutcome: 'collected', salesCashByName: 'Lee Leader', salesCashAt: new Date(2026, 9, 4, 12).getTime() }),
     srRep({ id: 'rep-2', blockId: 'b2', teCents: 8000, cashCents: 0, status: 'accepted', collected: false, overridden: true, acceptNote: '=SUM(A1)', acceptedByName: 'Sam Leader' }),
     srRep({ id: 'rep-3', blockId: 'b2', status: 'returned', reviewNote: 'Recount the jar', submittedAt: Date.parse('2026-10-03T20:00:00Z') }),
     srRep({ id: 'rep-4', blockId: 'gone', status: 'submitted', submittedAt: Date.parse('2026-10-04T20:00:00Z') }),
     srRep({ id: 'rep-5', status: 'accepted', collected: true, acceptedByName: 'Lee Leader', submittedAt: Date.parse('2025-11-01T20:00:00Z'), sfId: 'old', blockId: 'x' })];
   const L = srLeaderCtx({ state: st, reports: reps });
   vm.runInContext(['programYearStartISO', 'programYearEndISO', 'ledgerCsvCell', 'shiftReportHistoryRows', 'SR_HISTORY_HEAD', 'SR_HISTORY_CSV_HEAD',
-    'SR_HISTORY_REASONS_HEAD', 'shiftReportHistoryCsv', 'srYearLabel', 'srHistoryFileName', 'SR_HISTORY_DONT_SHARE', 'renderShiftReportHistory'].map(decl).join('\n'), L.ctx);
+    'SR_HISTORY_REASONS_HEAD', 'srCashHistorySay', 'shiftReportHistoryCsv', 'srYearLabel', 'srHistoryFileName', 'SR_HISTORY_DONT_SHARE', 'renderShiftReportHistory'].map(decl).join('\n'), L.ctx);
   const rows = L.get('shiftReportHistoryRows(2026)');
   eq(rows.map((r) => [r.storefront, r.shift, r.verifiedBy, r.acceptedBy, r.overrideReason, r.status, r.sentBackReason, r.differs]), [
     ['Kroger', '10:00–12:00', 'confirmed by Bo Parent', 'Sam Leader', '', 'accepted', '', 'N'],
@@ -18775,9 +18830,9 @@ test('round 1: the season’s shift reports, as a leaders’ table and a CSV, wi
     ['(no longer on the schedule)', '', '', '', '', 'submitted', '', '']], 'the rows: last season’s left out');
   // Youth-protection review 4: by default the CSV holds figures and adults' names, and no written reason.
   const csv = L.run('shiftReportHistoryCsv(shiftReportHistoryRows(2026))');
-  ok(csv.split('\n')[0] === 'Date,Storefront,Shift,Trail’s End,Cash donations,Cash from sales to collect,Sent by,Verified by,Accepted by,Status,Block now differs from report', 'the header');
-  ok(/2026-10-03,Kroger,10:00–12:00,123\.45,25\.00,20\.00,Nora Newfamily,confirmed by Bo Parent,Sam Leader,accepted,N/.test(csv), 'the cells');
-  ok(/12:00–14:00,80\.00,0\.00,0\.00,/.test(csv), 'S-5: a report with no cash from sales to collect says 0.00');
+  ok(csv.split('\n')[0] === 'Date,Storefront,Shift,Trail’s End,Cash donations,Cash from sales to collect,"Collected / converted by, on",Sent by,Verified by,Accepted by,Status,Block now differs from report', 'the header');
+  ok(/2026-10-03,Kroger,10:00–12:00,123\.45,25\.00,20\.00,"collected by Lee Leader, 2026-10-04",Nora Newfamily,confirmed by Bo Parent,Sam Leader,accepted,N/.test(csv), 'the cells');
+  ok(/12:00–14:00,80\.00,0\.00,0\.00,,/.test(csv), 'S-5: a report with no cash from sales to collect says 0.00, and nobody collected it');
   ok(!/SUM|Recount/.test(csv), 'a leader’s reason in the CSV by default');
   const csvR = L.run('shiftReportHistoryCsv(shiftReportHistoryRows(2026), true)');
   ok(csvR.split('\n')[0].endsWith(',Leaders’ reasons (override or sent back)') && /,'=SUM\(A1\)\n/.test(csvR) && /,Recount the jar\n/.test(csvR),
@@ -18855,69 +18910,123 @@ test('S-5: the family’s form asks for cash from popcorn sales still in hand �
   ok(/Cash from sales still in hand <strong class="money">\$20\.00<\/strong>/.test(cf), 'the confirm form shows it');
 });
 
-atest('S-5: a leader sees the cash to collect, the accept carries it to the block and never into the sales or the split, and Collected clears it', async () => {
+atest('S-5: a leader sees the cash to collect, the accept carries it to the block and never into the sales or the split, and the server records what became of it', async () => {
   const L = srLeaderCtx({ reports: [srRep({ salesCashCents: 1525 })] });
   const card = L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
-  ok(/<strong>Cash to collect: \$15\.25<\/strong> from Nora Newfamily\. Cash from popcorn sales the family couldn’t convert to credit\. It’s already in the Trail’s End amount, so it isn’t added again\./.test(card),
+  ok(card.indexOf('<strong>Cash from popcorn sales to collect: $15.25</strong> reported by Nora Newfamily. Cash from popcorn sales the family couldn’t convert to credit. ' +
+    'It’s the council’s money: collect it, deposit it, and record it as Popcorn money for the council. It’s already in the Trail’s End amount, so it isn’t added again.') !== -1,
     'the review card');
-  ok(!/Cash to collect/.test(srLeaderCtx({ reports: [srRep()] }).run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))")), 'none: not mentioned');
+  // Treasurer 6: the button verifies the cash donations; the cash from sales has its own box.
+  ok(/data-act="sr-also-cash" data-rid="rep-1"><span>I also collected the \$15\.25 cash from popcorn sales<\/span>/.test(card) &&
+    />I collected and counted the cash donations — accept</.test(card), 'the accept’s button and box');
+  const plain = srLeaderCtx({ reports: [srRep()] }).run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
+  ok(!/popcorn sales to collect|sr-also-cash/.test(plain) && />I collected and counted this cash — accept</.test(plain), 'none: as before');
+  L.run("srCashAct('sr-also-cash', { dataset: { rid: 'rep-1' }, checked: true })");
   L.run("acceptShiftReport('rep-1', { collected: true })");
   const b = L.block('b1');
-  eq([b.salesCents, b.donationsCents, b.salesCashInHandCents, b.reportPending.salesCash], [12345, 2500, 1525, 1525], 'the block: the sales as reported, the cash to collect beside them');
+  eq([b.salesCents, b.donationsCents, b.salesCash, b.reportPending.salesCash, b.reportPending.alsoCash],
+    [12345, 2500, [{ reportId: 'rep-1', cents: 1525, from: 'Nora Newfamily', outcome: null }], 1525, true], 'the block: the sales as reported, the cash to collect beside them');
   eq(L.get("blockShares(state.storefronts[0].blocks[0]).map(function (s) { return [s.scoutId, s.sales, s.don]; })"),
     [['s1', 4115, 833], ['s2', 8230, 1667]], 'the split is the Trail’s End amount’s, with nothing added');
   L.landed();
   L.run('shiftReportsReconcile()');
   eq(L.get('patches'), [{ rid: 'rep-1', body: { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 1525, collected: true } }], 'the accept names it');
-  await L.answer(0);
-  // The block and the banner, once accepted.
   L.run("sync.shiftReports.reports[0].status = 'accepted'");
-  const blk = L.run("renderBlockCashToCollect(state.storefronts[0], state.storefronts[0].blocks[0])");
-  ok(/Cash to collect: \$15\.25<\/strong> from Nora Newfamily\./.test(blk) && /data-act="sr-cash-collected" data-sf="sf1" data-id="b1"[^>]*>Collected</.test(blk), 'the block line and its button');
-  ok(/<h3[^>]*>Cash from popcorn sales to collect: \$15\.25 across 1 shift<\/h3>/.test(L.run('renderShiftReportsBanner()')), 'the banner');
-  // Collected: the block stops asking; Undo puts it back.
-  L.run('var undoIt = null; showToast = function (m, o) { toasts.push(m); undoIt = o && o.onAction; };');
-  L.run("srCashCollected('sf1', 'b1')");
-  eq([L.block('b1').salesCashInHandCents, L.get('toasts').pop(), L.run('renderShiftReportsBanner()')], [undefined, 'Marked $15.25 collected.', ''], 'collected');
-  L.run('undoIt()');
-  eq(L.block('b1').salesCashInHandCents, 1525, 'undone');
+  await L.answer(0);
+  // The box: once the accept is on the server, the cash from sales is recorded collected there too.
+  eq(L.get('patches[1]'), { rid: 'rep-1', body: { action: 'salescash', outcome: 'collected', salesCashCents: 1525 } }, 'the box’s PATCH, after the accept');
+  await L.answer(1);
+  eq([L.block('b1').salesCash[0].outcome.outcome, L.block('b1').salesCash[0].outcome.by, L.block('b1').salesCash[0].cents], ['collected', 'Sam Leader', 1525],
+    'the block keeps the amount, and says who collected it');
+  ok(/Cash from popcorn sales marked collected by Sam Leader\. Deposit it and record it in the ledger as Popcorn money for the council\./.test(L.get('toasts').join('|')), 'said');
+  ok(!/popcorn sales to collect/.test(L.run('renderShiftReportsBanner()')), 'the banner stops asking');
+  ok(/\$15\.25 of cash from popcorn sales collected by Sam Leader · /.test(L.run('renderBlockCashToCollect(state.storefronts[0], state.storefronts[0].blocks[0])')),
+    'the block says what became of it');
+  // The block's buttons, from the start: Collected, They converted it, Undo — each the server first.
+  const M = srLeaderCtx({ reports: [srRep({ status: 'accepted', salesCashCents: 1525, salesCashOutcome: null })], state: { scouts: [], leaders: [{ id: 'l1', name: 'Sam Leader', uid: 'uid-ed' }],
+    storefronts: [{ id: 'sf1', name: 'K', date: '2026-10-03', blocks: [{ id: 'b1', label: 'B', start: '10:00', end: '12:00', assignments: [], salesCents: 12345, donationsCents: 0,
+      salesCash: [{ reportId: 'rep-1', cents: 1525, from: 'Nora Newfamily', outcome: null }] }] }] } });
+  const blk = () => M.run('renderBlockCashToCollect(state.storefronts[0], state.storefronts[0].blocks[0])');
+  ok(/data-act="sr-cash-collected" data-rid="rep-1"[^>]*>Collected</.test(blk()) && /data-act="sr-cash-converted" data-rid="rep-1"[^>]*>They converted it</.test(blk()), 'the two buttons');
+  ok(/<h2 class="section display">Cash from popcorn sales to collect: \$15\.25 across 1 shift<\/h2>/.test(M.run('renderShiftReportsBanner()')), 'the banner, its own heading');
+  M.run('var undoIt = null; showToast = function (m, o) { toasts.push(m); undoIt = o && o.onAction; };');
+  M.run("srCashAct('sr-cash-collected', { dataset: { rid: 'rep-1' } })");
+  eq([M.get('patches[0].body'), M.block('b1').salesCash[0].outcome], [{ action: 'salescash', outcome: 'collected', salesCashCents: 1525 }, null], 'nothing on the block until the server agrees');
+  await M.answer(0);
+  eq([M.block('b1').salesCash[0].outcome.outcome, M.get('toasts').pop()],
+    ['collected', 'Marked $15.25 collected by Sam Leader. Deposit it and record it in the ledger as Popcorn money for the council.'], 'collected');
+  M.run('undoIt()');
+  eq(M.get('patches[1].body'), { action: 'salescash', outcome: null, salesCashCents: 1525 }, 'Undo asks the server');
+  await M.answer(1);
+  eq([M.block('b1').salesCash, M.get('toasts').pop()], [[{ reportId: 'rep-1', cents: 1525, from: 'Nora Newfamily', outcome: null }], 'Undone. $15.25 is still to collect.'], 'undone');
+  M.run("srCashAct('sr-cash-converted', { dataset: { rid: 'rep-1' } })");
+  await M.answer(2, { code: 'aborted', reason: 'report-moved' });
+  eq([M.block('b1').salesCash[0].outcome, M.get('toasts').pop()], [null, 'The family changed or withdrew this report, or another leader dealt with it, before yours reached the server.'], 'a refusal changes nothing on the block');
+  // Another leader's device recorded it: the block follows the server.
+  M.run("sync.shiftReports.reports[0].salesCashOutcome = 'converted'; sync.shiftReports.reports[0].salesCashByName = 'Lee Leader'; sync.shiftReports.reports[0].salesCashAt = 5;");
+  M.run('shiftReportsReconcile()');
+  eq(M.block('b1').salesCash[0].outcome, { outcome: 'converted', by: 'Lee Leader', at: 5 }, 'mirrored from the server');
   // A viewer reads the line, with no button.
   const V = srLeaderCtx({ role: 'viewer', state: { scouts: [], leaders: [], storefronts: [{ id: 'sf1', name: 'K', date: '2026-10-03', blocks: [
-    { id: 'b1', label: 'B', assignments: [], salesCents: 100, donationsCents: 0, salesCashInHandCents: 100, reportFrom: 'Nora' }] }] } });
-  ok(/Cash to collect: \$1\.00/.test(V.run("renderBlockCashToCollect(state.storefronts[0], state.storefronts[0].blocks[0])")) &&
-    !/<button/.test(V.run("renderBlockCashToCollect(state.storefronts[0], state.storefronts[0].blocks[0])")), 'a viewer');
-  // A refused accept puts the block back as it was.
+    { id: 'b1', label: 'B', assignments: [], salesCents: 100, donationsCents: 0, salesCash: [{ reportId: 'r9', cents: 100, from: 'Nora', outcome: null }] }] }] } });
+  const vb = V.run('renderBlockCashToCollect(state.storefronts[0], state.storefronts[0].blocks[0])');
+  ok(/Cash from popcorn sales to collect: \$1\.00/.test(vb) && !/<button/.test(vb), 'a viewer');
+  // A refused accept takes its own entry off, and only its own.
   const R = srLeaderCtx({ reports: [srRep({ salesCashCents: 1525 })] });
+  R.run("state.storefronts[0].blocks[0].salesCash = [{ reportId: 'rep-0', cents: 300, from: 'Jo', outcome: null }]");
   R.run("acceptShiftReport('rep-1', { collected: true })");
+  eq(R.block('b1').salesCash.map((e) => e.reportId), ['rep-0', 'rep-1'], 'beside the earlier report’s, never over it');
   R.landed();
   R.run("sync.shiftReports.reports[0].salesCashCents = 0");   // the family changed it after the accept
   R.run('shiftReportsReconcile()');
-  eq([R.block('b1').salesCashInHandCents, R.block('b1').salesCents, R.get('patches.length')], [undefined, 0, 0], 'a changed figure undoes the accept');
+  eq([R.block('b1').salesCash.map((e) => e.reportId), R.block('b1').salesCents, R.get('patches.length')], [['rep-0'], 0, 0], 'a changed figure undoes the accept');
+});
+
+test('S-5: cash an earlier report left is never overwritten or lost without a word — the replace check, the deletes, the close-out', () => {
+  const st = { scouts: [{ id: 's1', name: 'Ada' }], leaders: [], storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [
+    { id: 'b1', label: 'Block 1', start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }], salesCents: 5000, donationsCents: 0, cashCountedBy: 'Jo', cashVerifiedBy: 'Lee',
+      salesCash: [{ reportId: 'rep-0', cents: 300, from: 'Jo Family', outcome: null }] }] }] };
+  const L = srLeaderCtx({ state: st, reports: [srRep({ teCents: 6000, cashCents: 0, salesCashCents: 200 })] });
+  const card = L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
+  ok(/\$3\.00 from the earlier report hasn’t been marked collected\. Accepting this report doesn’t collect it\./.test(card), 'the card says so');
+  L.run("acceptShiftReport('rep-1', { collected: true })");
+  const cmp = L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
+  ok(/<tr><td>Cash from popcorn sales to collect<\/td><td class="num">\$3\.00<\/td><td class="num">\$2\.00<\/td><\/tr>/.test(cmp) &&
+    /with the report’s\. \$3\.00 from the earlier report hasn’t been marked collected\. Accepting this report doesn’t collect it\.<\/p>/.test(cmp), 'the replace check');
+  // Deletes: said while the button is armed.
+  ok(/This shift still has \$3\.00 of cash from popcorn sales to collect\. Removing it removes the reminder\./.test(L.run("srCashRemoveWarn(srCashOpenCents(state.storefronts[0].blocks[0]), 'shift')")),
+    'the block delete');
+  ok(/ui\.armed === 'del-block:' \+ sf\.id \+ ':' \+ b\.id \? srCashRemoveWarn\(srCashOpenCents\(b\), 'shift'\)/.test(slice('renderBlock')) &&
+    /ui\.armed === 'del-sf:' \+ sf\.id \? srCashRemoveWarn\(/.test(SCRIPT), 'the deletes do not warn');
+  eq(L.run("srCashRemoveWarn(0, 'shift')"), '', 'nothing to collect, nothing said');
+  // Close-out.
+  eq(L.run('srCashCloseoutSay(srCashToCollect())'), 'Cash from popcorn sales still out: $3.00 across 1 shift. Collect it, deposit it, and record it as Popcorn money ' +
+    'for the council before you close the year. Closing clears the storefronts and this reminder; the amounts stay in Shift reports this season.', 'the close-out line');
+  const co = slice('renderCloseoutOverlay');
+  ok(/var coCash = srCashToCollect\(\);/.test(co) && (co.match(/srCashToCollect\(\)/g) || []).length === 1 && /coCash\.n \? '<li/.test(co), 'the close-out computes it once and warns');
 });
 
 test('S-5: the cash to collect is leaders’ only — never in the parent view — and the record shape-checks it', () => {
   for (const showStandings of [true, false]) {
     const pv = vm.runInContext(`buildParentView(state, { showStandings: ${showStandings} })`,
-      pvCtx(SR_STANDINGS_STUBS + 'state.storefronts[0].blocks[0].salesCashInHandCents = 1525; state.storefronts[0].blocks[0].reportPending = { by: "u", te: 1, cash: 0, salesCash: 1525, was: {} };'));
-    const j = JSON.stringify(pv);
-    ok(!/salesCash|1525|15\.25/.test(j), 'published, standings ' + showStandings);
+      pvCtx(SR_STANDINGS_STUBS + 'state.storefronts[0].blocks[0].salesCash = [{ reportId: "r1", cents: 1525, from: "Nora", outcome: null }]; ' +
+        'state.storefronts[0].blocks[0].reportPending = { by: "u", te: 1, cash: 0, salesCash: 1525, was: {} };'));
+    ok(!/salesCash|1525|15\.25/.test(JSON.stringify(pv)), 'published, standings ' + showStandings);
   }
   ok(!/salesCash/.test(codeOnly(BPV())), 'buildParentView reads it');
   const n = sandbox(NORMALIZE_FNS);
   const rec = JSON.parse(JSON.stringify(preMigrationState()));
-  rec.storefronts = [{ id: 'sf1', name: 'K', date: '2026-10-03', blocks: [1525, 0, -5, 12.5, '20', 1000001, null].map((v, i) => {
-    const b = { id: 'b' + i, label: 'B', assignments: [], salesCents: 0, donationsCents: 0 };
-    if (v !== null) b.salesCashInHandCents = v;
-    return b;
-  }).concat([{ id: 'bp', label: 'B', assignments: [], reportId: 'rep-1', reportPending: { by: 'u', te: 1, cash: 0, salesCash: 'x', was: {} } }]) }];
+  const good = { reportId: 'r1', cents: 1525, from: 'Nora', outcome: { outcome: 'collected', by: 'Sam', at: 5 } };
+  rec.storefronts = [{ id: 'sf1', name: 'K', date: '2026-10-03', blocks: [
+    { id: 'b0', label: 'B', assignments: [], salesCash: [good, { reportId: 'r2', cents: 0 }, { reportId: '', cents: 5 }, { reportId: 'r3', cents: 12.5 }, { reportId: 'r4', cents: 1000001 },
+      { reportId: 'r5', cents: 7, outcome: { outcome: 'lost' } }, null] },
+    { id: 'b1', label: 'B', assignments: [], salesCash: [{ reportId: 'r2', cents: 0 }] },
+    { id: 'b2', label: 'B', assignments: [], salesCash: 'lots' },
+    { id: 'bp', label: 'B', assignments: [], reportId: 'rep-1', reportPending: { by: 'u', te: 1, cash: 0, salesCash: 1000001, alsoCash: 'yes', was: {} } }] }];
   const bs = n.normalizeState(rec).storefronts[0].blocks;
-  eq(bs.slice(0, 7).map((b) => b.salesCashInHandCents), [1525, undefined, undefined, undefined, undefined, undefined, undefined], 'whole cents above 0, or nothing');
-  eq([!!bs[7].reportPending, bs[7].reportPending.salesCash], [true, undefined], 'a marker’s figure');
-  // The closing season says so before it clears the storefronts.
-  const co = slice('renderCloseoutOverlay');
-  ok(/\(srCashToCollect\(\)\.n \? '<li style="color:var\(--accent-text\)"><strong>' \+ esc\(srCashToCollectSay\(srCashToCollect\(\)\)\)/.test(co) &&
-    co.indexOf("'Collect it first: closing clears the storefronts, and with them this reminder.</li>'") !== -1,
-    'the close-out does not warn');
+  eq(bs[0].salesCash, [good, { reportId: 'r5', cents: 7, outcome: null, from: '' }], 'good entries kept, an unknown outcome is still out, the rest dropped');
+  eq([bs[1].salesCash, bs[2].salesCash], [undefined, undefined], 'nothing left, or not a list');
+  eq([!!bs[3].reportPending, bs[3].reportPending.salesCash, bs[3].reportPending.alsoCash], [true, undefined, false], 'a marker’s figure, capped at $10,000 (security 3)');
 });
 
 test('parent-experience review 1: what a family types survives a redraw — figures, note, box, a second parent’s box, a leader’s reason', () => {

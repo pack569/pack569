@@ -39,7 +39,8 @@ import { canSubmitShiftReport, canReadAllShiftReports, shiftReportProblem, clean
 
 export const REPORT_COLS = 'id, sf_id, block_id, te_cents, cash_cents, note, submitted_by_uid, submitted_by_name, submitted_at, ' +
   'updated_at, status, reviewed_by_uid, reviewed_by_name, reviewed_at, review_note, stamp, needs_confirm, confirmed_by_uid, confirmed_by_name, ' +
-  'confirmed_at, overridden, accepted_by_uid, accepted_by_name, accepted_at, accept_note, verified_by_leader, sales_cash_cents';
+  'confirmed_at, overridden, accepted_by_uid, accepted_by_name, accepted_at, accept_note, verified_by_leader, sales_cash_cents, ' +
+  'sales_cash_outcome, sales_cash_by_uid, sales_cash_by_name, sales_cash_at';
 // The statuses that hold a block: one waiting for a leader, or one a leader accepted.
 export const HOLDS_BLOCK = "status IN ('submitted', 'accepted')";
 const POST_KEYS = ['sfId', 'blockId', 'teCents', 'cashCents', 'salesCashCents', 'note', 'attest'];
@@ -72,6 +73,10 @@ export function reportOut(row, uid, full) {
     // accepting leader collected and counted the cash themselves.
     r.acceptedByUid = row.accepted_by_uid || null; r.acceptedByName = row.accepted_by_name || null; r.acceptedAt = row.accepted_at || null;
     r.acceptNote = row.accept_note || ''; r.collected = row.verified_by_leader === 1;
+    // Followups round 1 — what became of the cash from sales (leaders only): 'collected',
+    // 'converted' or null (still out), who recorded it and when.
+    r.salesCashOutcome = row.sales_cash_outcome || null; r.salesCashByName = row.sales_cash_by_name || null;
+    r.salesCashByUid = row.sales_cash_by_uid || null; r.salesCashAt = row.sales_cash_at || null;
   }
   return r;
 }
