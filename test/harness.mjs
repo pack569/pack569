@@ -5275,8 +5275,10 @@ test('the pack-wide split only credits cash that reached a scout', () => {
   vm.runInContext(slice('cashScoutRate') + slice('cashCreditOn') + slice('cashScoutCredit') +
     slice('cashCreditTotals'), ctx);
   const out = vm.runInContext('cashCreditTotals()', ctx);
-  eq(out.credited, 7500, '30% of the $250 that actually reached a scout');
-  eq(out.free, 92500, 'unassigned cash is free money — no tier has a claim on it');
+  // Owner, 2026-10-01 — wagon cash runs through Trail's End and earns commission, so only the $200
+  // of storefront cash is credited.
+  eq(out.credited, 6000, '30% of the $200 of storefront cash that actually reached a scout (not the $50 of wagon cash)');
+  eq(out.free, 94000, 'unassigned cash is free money — no tier has a claim on it');
   eq(out.kept, 100000, 'kept is the pack figure, not the scouts’ share of it');
   ctx.state.cashScoutPct = '';
   eq(vm.runInContext('cashCreditTotals()', ctx), { on: false, rate: null, kept: 100000, credited: 0, free: 100000 },
@@ -6720,7 +6722,7 @@ test('the shift list survives a phone, and its times never wrap', () => {
 // The claim the footnote makes, tested on the two functions that decide it. Neither figure was
 // ever wrong; they answer different questions, and only kept cash can make them disagree.
 function goalBaseCtx(viaTE) {
-  const ctx = sandbox(['cashDonOf', 'goalBaseOf']);
+  const ctx = sandbox(['cashDonOf', 'keptCashOf', 'goalBaseOf']);
   vm.runInContext('var state = { cashThroughTrailsEnd: ' + (viaTE ? 'true' : 'false') + ' };', ctx);
   return ctx;
 }
@@ -6730,7 +6732,9 @@ const donorRow = { t: { sales: 32000, onD: 1000, storeD: 6000, wagonD: 3000 } };
 test('cash the pack keeps is the only thing that can split Raised from Of goal', () => {
   const kept = goalBaseCtx(false);
   const combined = donorRow.t.sales + donorRow.t.onD + donorRow.t.storeD + donorRow.t.wagonD;
-  eq(kept.goalBaseOf(donorRow), 33000, 'kept cash must stay out of the goal base');
+  // Owner, 2026-10-01 — wagon cash always runs through Trail's End, so its $30 is in the base: only
+  // the $60 of storefront cash is kept.
+  eq(kept.goalBaseOf(donorRow), 36000, 'kept storefront cash must stay out of the goal base, and wagon cash in it');
   ok(kept.goalBaseOf(donorRow) < combined,
     'with cash kept, the goal base should fall short of what the scout brought in');
   // Run it through Trail's End and the gap closes — which is why the footnote is conditional.
@@ -31986,6 +31990,47 @@ test('Fill the calendar: the next untagged All-dens nights in order, skipping an
   ok(/if \(x\.ev\.packAdv !== x\.key\) return;/.test(ap), 'Undo takes back a pick somebody changed since');
   ok(/flc\.rows = ADV_REQ_CATEGORIES\.map\(function \(x, i\) \{ return \{ key: 'req:' \+ i/.test(SCRIPT), 'no "6 required in order"');
   ok(!/fillCal/.test(codeOnly(slice('normalizeState'))) && !/fillCal/.test(codeOnly(BPV())), 'the fill list reached the record or the parent view');
+});
+
+/* ================================================================
+   Owner decision A (2026-10-01) — wagon cash donations always run through Trail's End: a family
+   enters them in the Trail's End app as Heroes & Helpers, so the pack never keeps wagon cash. The
+   storefront-cash toggle (state.cashThroughTrailsEnd) governs storefront cash only. Made-up data.
+   ================================================================ */
+// $900 of storefront sales with $200 of cash donations; a wagon entry of $300 with $50 of cash; an
+// online order of $100 with $10 donated.
+function wagonPack(viaTE) {
+  const ctx = sandbox(declClosure(['computePackTotals', 'storefrontCashCheck'], ['activeScouts', 'packGoalCents', 'state']));
+  vm.runInContext(`var state = { cashThroughTrailsEnd: ${viaTE}, commissionPct: '30', commissionPctOnline: '', cashScoutPct: '', stretchGoalCents: 0, cashGoalCents: 0,
+      storefronts: [{ id: 'k', name: 'Kroger', date: '2026-09-12', blocks: [{ salesCents: 90000, donationsCents: 20000 }] }],
+      entries: [{ kind: 'wagon', scoutId: 's1', salesCents: 30000, donationsCents: 5000 }, { kind: 'online', scoutId: 's1', salesCents: 10000, donationsCents: 1000 }] };
+    function activeScouts() { return [{ id: 's1' }]; } function packGoalCents() { return 0; }`, ctx);
+  return ctx;
+}
+test('wagon cash: always Trail’s End money, never kept, whatever the storefront-cash setting says', () => {
+  const off = wagonPack(false), on = wagonPack(true);
+  const p = J(vm.runInContext('computePackTotals()', off)), q = J(vm.runInContext('computePackTotals()', on));
+  eq([p.storeCashDon, p.wagonCashDon, p.cashDon], [20000, 5000, 25000], 'the two kinds of cash donation');
+  eq([p.cashKept, p.retainedCash, p.teEligible], [20000, 20000, 90000 + 30000 + 10000 + 1000 + 5000], 'storefront cash kept: the wagon $50 is Trail’s End money');
+  eq([q.cashKept, q.retainedCash, q.teEligible], [0, 0, 90000 + 30000 + 10000 + 1000 + 5000 + 20000], 'storefront cash run through Trail’s End too');
+  eq([p.teEligible + p.cashKept, q.teEligible + q.cashKept], [p.combined, q.combined], 'Trail’s End and kept are still disjoint and add up to everything');
+  eq(p.commission, Math.round((90000 + 30000 + 5000) * 0.3) + Math.round((10000 + 1000) * 0.3), 'the wagon cash earns commission');
+  // The Reconcile line's "kept" is Funds in's "storefront cash donations kept in full", in both modes.
+  for (const [ctx, st] of [[off, p], [on, q]]) {
+    eq(vm.runInContext('storefrontCashCheck(state.storefronts, [], state.cashThroughTrailsEnd).kept', ctx), st.retainedCash, 'kept is not computePackTotals().retainedCash');
+  }
+  // A scout: wagon cash in the goal base and earning commission, never the cash credit.
+  const sc = coverageSandbox(`var RATE = '30', CASH_RATE = '50'; var TIERS = []; var SALES = { w: { sales: 0, onS: 0, onD: 0, storeD: 0, wagonD: 10000 } };`);
+  eq([vm.runInContext('goalBaseOf({ t: SALES.w })', sc), vm.runInContext('scoutCommissionOf({ t: SALES.w })', sc), vm.runInContext('keptCashOf({ t: SALES.w })', sc)],
+    [10000, 3000, 0], 'wagon cash: in the base, 30% commission, no 50% credit');
+  // The copy says so: the setting is about storefront cash, and the wagon form tells families where to enter it.
+  ok(/Run storefront cash donations through Trail’s End \(Heroes &amp; Helpers\)/.test(SCRIPT), 'the setting is not about storefront cash');
+  ok(SCRIPT.includes("var WAGON_CASH_NOTE = 'Wagon cash donations always go through Trail’s End: families enter them in the Trail’s End app as Heroes &amp; Helpers, so the pack never keeps wagon cash.';") &&
+    /' ' \+ WAGON_CASH_NOTE \+ ' '/.test(slice('seasonSetupCard')), 'the setting does not say where wagon cash goes');
+  ok(/the family enters it in the Trail’s End app as Heroes &amp; Helpers, as well as here\. The pack never keeps wagon cash\./.test(SCRIPT), 'the wagon form');
+  ok(!/a <strong>wagon<\/strong> donation is cash the pack keeps/.test(SCRIPT), 'the wagon form still says the pack keeps wagon cash');
+  // The cash board is storefront cash, and credits only that.
+  ok(/rankBy\(rows, keptCashOf\)/.test(SCRIPT) && /cashScoutCredit\(keptCashOf\(r\)\)/.test(SCRIPT) && !/cashScoutCredit\(cashDonOf\(r\)\)/.test(SCRIPT), 'the cash board');
 });
 
 /* ================================================================

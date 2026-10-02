@@ -5953,15 +5953,16 @@
     var totals = computeScoutTotals(), credited = 0;
     Object.keys(totals).forEach(function (id) {
       var t = totals[id];
-      credited += cashScoutCredit((t.storeD || 0) + (t.wagonD || 0));
+      // Kept cash only: storefront (wagon cash runs through Trail's End and earns commission).
+      credited += cashScoutCredit(t.storeD || 0);
     });
     return { on: true, rate: cashScoutRate(), kept: kept, credited: credited, free: Math.max(0, kept - credited) };
   }
   function computePackTotals() {
     // Summed from source records (not scout shares) so unassigned block money still counts.
-    var sales = 0, don = 0, onlineDon = 0, onlineSales = 0;
+    var sales = 0, don = 0, onlineDon = 0, onlineSales = 0, storeDon = 0;
     state.storefronts.forEach(function (sf) {
-      sf.blocks.forEach(function (b) { sales += b.salesCents || 0; don += b.donationsCents || 0; });
+      sf.blocks.forEach(function (b) { sales += b.salesCents || 0; don += b.donationsCents || 0; storeDon += b.donationsCents || 0; });
     });
     state.entries.forEach(function (e) {
       sales += e.salesCents; don += e.donationsCents;
@@ -5969,11 +5970,17 @@
     });
     // Cash donations = all donations that aren't online (storefront-table + wagon cash).
     var cashDon = don - onlineDon;
+    var wagonDon = cashDon - storeDon;
     var viaTE = state.cashThroughTrailsEnd;
-    // One decision: cash either runs through Trail's End (Heroes & Helpers) — commissionable
-    // AND counted toward the Trail's End goal — or the pack keeps 100% (neither, but budgeted).
-    var teEligible = sales + onlineDon + (viaTE ? cashDon : 0);
-    var cashKept = viaTE ? 0 : cashDon;
+    // One decision, for STOREFRONT cash: it either runs through Trail's End (Heroes & Helpers) —
+    // commissionable AND counted toward the Trail's End goal — or the pack keeps 100% (neither,
+    // but budgeted).
+    // WAGON CASH ALWAYS RUNS THROUGH TRAIL'S END (owner, 2026-10-01: pack policy). A family enters
+    // wagon cash donations in the Trail's End app as Heroes & Helpers, so the pack never keeps
+    // wagon cash: it is commissionable and in teEligible whatever the toggle says, and never in
+    // cashKept. The toggle (state.cashThroughTrailsEnd) now governs storefront cash only.
+    var teEligible = sales + onlineDon + wagonDon + (viaTE ? storeDon : 0);
+    var cashKept = viaTE ? 0 : storeDon;
     // The two channels, each with the money it actually earns commission on. Cash donations
     // ride with storefront/wagon: they are handed over in person, whatever the online rate is.
     var onlineEligible = onlineSales + onlineDon;
@@ -5991,6 +5998,9 @@
     return {
       sales: sales, don: don, combined: sales + don, commission: commission, pct: pct,
       onlineDon: onlineDon, cashDon: cashDon, eligible: teEligible, teEligible: teEligible,
+      // The two kinds of cash donation, apart: storefront (kept unless the toggle is on) and wagon
+      // (always through Trail's End).
+      storeCashDon: storeDon, wagonCashDon: wagonDon,
       // Per channel, so the Popcorn card can show the split when the rates differ.
       onlineSales: onlineSales, onlineEligible: onlineEligible, otherEligible: otherEligible,
       commissionOnline: commissionOnline, commissionOther: commissionOther,
@@ -16497,8 +16507,9 @@
       // Trail's End and earns commission or the pack keeps all of it, and that decision changes
       // which bar a dollar lands in without changing anything a family did. A family just wants
       // to know how the pack is doing against what it needs.
-      // The two halves are disjoint by construction — teEligible carries cash only when the
-      // Trail's End toggle is on, and cashKept only when it is off — so their sum is exactly
+      // The two halves are disjoint by construction — teEligible carries storefront cash only when
+      // the Trail's End toggle is on (and wagon cash always), and cashKept storefront cash only when
+      // it is off — so their sum is exactly
       // pack.combined (sales + every donation), with nothing double-counted either way.
       var goals = null;
       var goalCents = (pack.teGoal || 0) + (pack.cashGoal || 0);
@@ -22816,8 +22827,8 @@
       '</div>' +
       '<p class="small muted" style="margin:6px 0 0">Trail’s End covers sales <em>and</em> any donation entered in the app — it all earns commission. ' +
       (state.cashThroughTrailsEnd
-        ? 'Cash donations are being entered as Heroes &amp; Helpers, so they earn commission too.'
-        : 'The pack keeps cash donations in full.') + '</p>';
+        ? 'Storefront cash donations are being entered as Heroes &amp; Helpers, so they earn commission too.'
+        : 'The pack keeps storefront cash donations in full.') + '</p>';
 
     // Wave D2 — the cash count: two adults, both named.
     h += '<div class="row" style="margin-top:10px">' +
@@ -23753,7 +23764,7 @@
     // amount it is everywhere else.
     // The second field genuinely depends on the type, and the math has always known this:
     // an ONLINE donation runs through Trail's End (commissionable, counts to the goal),
-    // while a WAGON donation is cash the pack keeps. One neutral label plus a note beats a
+    // and so does a WAGON donation (owner, 2026-10-01: always Heroes & Helpers). One neutral label plus a note beats a
     // label that re-renders on a select, and it can't be wrong for either type.
     h += '<p class="eyebrow">Add wagon or online sales</p>' +
       '<form data-form="add-entry" data-scout="' + s.id + '" class="row" style="margin-bottom:6px">' +
@@ -23764,8 +23775,9 @@
       '<button class="btn primary small" type="submit" style="align-self:flex-end">Add</button>' +
       '</form>' +
       '<p class="small muted" style="margin:0 0 10px">All of it is credited to ' + esc(s.name || 'this scout') + '. ' +
-      'An <strong>online</strong> donation goes through Trail’s End and earns commission; a <strong>wagon</strong> donation is cash the pack keeps' +
-      (state.cashThroughTrailsEnd ? ' — though cash is being entered as Heroes &amp; Helpers right now, so it earns commission too.' : '.') + '</p>' +
+      // Owner, 2026-10-01 — wagon cash always runs through Trail's End: the family enters it in the app.
+      'An <strong>online</strong> donation goes through Trail’s End and earns commission. So does a <strong>wagon</strong> cash donation: ' +
+      'the family enters it in the Trail’s End app as Heroes &amp; Helpers, as well as here. The pack never keeps wagon cash.</p>' +
       '<p class="small muted" style="margin:0 0 10px">' + esc(WAGON_SAFETY) + '</p>';
 
     // Entry log
@@ -23908,8 +23920,15 @@
   // secondary = cash donations credited to the scout (storefront split + wagon scout-level).
   function eligibleOf(r) { return r.t.sales + r.t.onD; }
   function cashDonOf(r) { return r.t.storeD + r.t.wagonD; }
-  // Goal progress base — adds the scout's cash donations only when the goal toggle is on.
-  function goalBaseOf(r) { return r.t.sales + r.t.onD + (state.cashThroughTrailsEnd ? cashDonOf(r) : 0); }
+  // Owner, 2026-10-01 — said wherever the storefront-cash setting is.
+  var WAGON_CASH_NOTE = 'Wagon cash donations always go through Trail’s End: families enter them in the Trail’s End app as Heroes &amp; Helpers, so the pack never keeps wagon cash.';
+  // The scout's cash donations the pack KEEPS: their storefront split, while storefront cash is
+  // not run through Trail's End. Wagon cash always runs through Trail's End (owner, 2026-10-01),
+  // so it is never kept. Mirrors computePackTotals' cashKept, scout by scout.
+  function keptCashOf(r) { return state.cashThroughTrailsEnd ? 0 : r.t.storeD; }
+  // Goal progress base — sales, online donations and wagon cash donations (always Trail's End),
+  // and the scout's storefront cash donations only while they run through Trail's End too.
+  function goalBaseOf(r) { return r.t.sales + r.t.onD + cashDonOf(r) - keptCashOf(r); }
 
   /* ----- Wave 8: reward tiers (what a scout earned the pack) ----- */
   // OWNER RULING, 2026-08-02: a tier threshold is the COMMISSION a scout has earned the pack —
@@ -23937,7 +23956,7 @@
     var other = goalBaseOf(r) - online;
     return Math.round(online * (rates.online || 0) / 100)
       + Math.round(other * (rates.base || 0) / 100)
-      + cashScoutCredit(cashDonOf(r));
+      + cashScoutCredit(keptCashOf(r));
   }
   // The sales that GUARANTEE a commission figure, worked out at the lower of the pack's two
   // rates — the same rate the goal is derived at. Every other channel earns more per dollar, so
@@ -24928,13 +24947,13 @@
         ? ' <strong>Your stretch goal is below the minimum, so it’s ignored.</strong>'
         : '') + '</p>' +
       '<div class="row" style="margin-top:6px">' +
-      '<label class="perscout"><input type="checkbox" data-ch="cash-via-te"' + (packT.viaTE ? ' checked' : '') + '> Run cash donations through Trail’s End (Heroes &amp; Helpers)</label>' +
+      '<label class="perscout"><input type="checkbox" data-ch="cash-via-te"' + (packT.viaTE ? ' checked' : '') + '> Run storefront cash donations through Trail’s End (Heroes &amp; Helpers)</label>' +
       '</div>' +
-      '<p class="small muted" style="margin:8px 0 0">Cash donations so far: <span class="money">' + fmt(packT.cashDon) + '</span>. ' +
+      '<p class="small muted" style="margin:8px 0 0">Storefront cash donations so far: <span class="money">' + fmt(packT.storeCashDon) + '</span>. ' +
       (packT.viaTE
         ? 'They’re entered as <strong>Heroes &amp; Helpers</strong> — commission applies and they count toward the Trail’s End goal.'
         : 'The pack <strong>keeps 100%</strong> — no commission, excluded from the Trail’s End goal, and counted toward the cash donations goal instead.') +
-      ' Either way they show on the cash-donations board and fund the pack budget. ' +
+      ' ' + WAGON_CASH_NOTE + ' ' +
       '(Trail’s End calls these Heroes &amp; Helpers donations — recorded per scout in their app.)</p>' +
       // The scout's share of kept cash. Only offered while the pack keeps it: with the toggle on
       // the donation earns real commission and a credit on top would count it twice, so the field
@@ -24967,8 +24986,8 @@
         (cc.kept > 0 && cc.credited === 0
           ? ' <strong>None of it is credited to anybody</strong> — that cash is on storefront blocks with no scouts assigned.'
           : '') + '</p>';
-    } else if (packT.cashDon > 0) {
-      h += '<p class="small muted" style="margin:6px 0 0">Right now <span class="money">' + fmt(packT.cashDon) +
+    } else if (packT.storeCashDon > 0) {
+      h += '<p class="small muted" style="margin:6px 0 0">Right now <span class="money">' + fmt(packT.storeCashDon) +
         '</span> of cash earns the scouts who brought it in nothing toward their tiers.</p>';
     }
     return h;
@@ -25578,12 +25597,14 @@
       // other-fundraiser loss was silently in the total but not the sentence.
       fundsInTerm('carryover entered in the ledger', bud.ledgerCarryover) +
       fundsInTerm('other income posted to the ledger', bud.incomePosted) +
-      fundsInTerm('cash donations kept in full', bud.retainedCash) +
+      fundsInTerm('storefront cash donations kept in full', bud.retainedCash) +
       fundsInTerm('family-paid fees collected', bud.feeIncomeGross) +
       fundsInTerm('refunds to families', -(bud.feeRefunds || 0)) +
       fundsInTerm('other fundraisers', bud.otherFundraiserIn) +
       '. <strong>Balance</strong> = funds in − actual spent.' +
-      (bud.viaTE ? ' Cash donations run through Trail’s End (Heroes & Helpers), so they reach the pack via commission.' : ' The pack keeps 100% of cash donations, so they’re added here in full.') + '</p>' +
+      (bud.viaTE ? ' Storefront cash donations run through Trail’s End (Heroes & Helpers), so they reach the pack via commission.' : ' The pack keeps 100% of storefront cash donations, so they’re added here in full.') +
+      // Owner, 2026-10-01 — wagon cash is never kept.
+      ' Wagon cash donations always go through Trail’s End, so they reach the pack via commission.</p>' +
       // M3 — the carryover lives in Starting funds. Counted from the ledger only while that is $0,
       // and said so, because the funding goal reads Starting funds and does not see the entry.
       (bud.ledgerCarryover > 0
@@ -29354,7 +29375,7 @@
       '<div class="row">' +
       '<div class="stat"><span class="v money">' + fmt(pack.teEligible) + '</span><span class="l">Trail’s End</span></div>' +
       (pack.viaTE ? '' :
-        '<div class="stat"><span class="v money">' + fmt(pack.cashKept) + '</span><span class="l">Cash donations</span></div>') +
+        '<div class="stat"><span class="v money">' + fmt(pack.cashKept) + '</span><span class="l">Storefront cash donations</span></div>') +
       '<div class="stat"><span class="v money">' + (pack.commission == null ? '—' : fmt(pack.commission)) + '</span>' +
       '<span class="l">Pack commission</span></div>' +
       // Wave 21 — what the pack actually ends up with. Sales themselves belong to Trail's
@@ -29374,11 +29395,11 @@
           ' · online <strong class="money">' + fmt(pack.onlineEligible) + '</strong> at ' +
           esc(String(pack.onlinePct == null ? '—' : pack.onlinePct)) + '% = <strong class="money">' + fmt(pack.commissionOnline || 0) + '</strong>.</p>'
         : '') +
-      '<p class="small muted" style="margin:8px 0 0">Trail’s End is sales plus donations entered in the app' +
+      '<p class="small muted" style="margin:8px 0 0">Trail’s End is sales plus donations entered in the app, wagon cash donations included' +
       (pack.viaTE
-        ? ', including cash donations — they’re being entered as Heroes &amp; Helpers, so everything here earns commission. ' +
+        ? ', and storefront cash donations too — they’re being entered as Heroes &amp; Helpers, so everything here earns commission. ' +
           '<strong>Total to the pack</strong> is the commission, since that’s all that comes back.'
-        : ' — it earns commission. Cash donations are kept in full and earn none. ' +
+        : ' — it earns commission. Storefront cash donations are kept in full and earn none. ' +
           '<strong>Total to the pack</strong> is commission plus those cash donations.') + '</p>';
 
     // Trail's End goal progress
@@ -29566,16 +29587,18 @@
     if (rows.length && !pack.viaTE) {
       var cc = cashCreditTotals();
       h += '<div class="card"><h2 class="section display">Cash donation standings</h2>' +
-        '<div class="tbl-wrap"><table><caption class="visually-hidden">Cash donation standings</caption><thead><tr><th scope="col"></th><th scope="col">Scout</th><th scope="col" class="num">Storefront</th><th scope="col" class="num">Wagon</th><th scope="col" class="num">Total cash</th>' +
+        // Owner, 2026-10-01 — storefront cash only: wagon cash runs through Trail's End, so it is
+        // on the Trail's End board with the rest of that scout's commissionable money.
+        '<div class="tbl-wrap"><table><caption class="visually-hidden">Cash donation standings</caption><thead><tr><th scope="col"></th><th scope="col">Scout</th><th scope="col" class="num">Storefront cash</th>' +
         (cc.on ? '<th scope="col" class="num">Earned</th>' : '') + '</tr></thead><tbody>';
-      rankBy(rows, cashDonOf).forEach(function (r, i) {
+      rankBy(rows, keptCashOf).forEach(function (r, i) {
         h += '<tr><td class="num muted">' + (i + 1) + '</td><td>' + esc(r.name) + (r.archived ? ' <span class="pill navy">archived</span>' : '') + '</td>' +
-          '<td class="num">' + fmt(r.t.storeD) + '</td><td class="num">' + fmt(r.t.wagonD) + '</td>' +
-          '<td class="num" style="font-weight:650">' + fmt(cashDonOf(r)) + '</td>' +
-          (cc.on ? '<td class="num money">' + fmt(cashScoutCredit(cashDonOf(r))) + '</td>' : '') + '</tr>';
+          '<td class="num" style="font-weight:650">' + fmt(keptCashOf(r)) + '</td>' +
+          (cc.on ? '<td class="num money">' + fmt(cashScoutCredit(keptCashOf(r))) + '</td>' : '') + '</tr>';
       });
       h += '</tbody></table></div>' +
-        '<p class="small muted" style="margin:8px 0 0">Cash credited to each scout — their split of storefront-table donations plus wagon donations logged to them (wagon isn’t split). The pack keeps all of it.' +
+        '<p class="small muted" style="margin:8px 0 0">Storefront cash donations credited to each scout: their split of each storefront table. The pack keeps all of it. ' +
+        'Wagon cash donations go through Trail’s End, so they are on the Trail’s End board.' +
         (cc.on
           ? ' <strong>Earned</strong> is the ' + esc(String(cc.rate)) + '% that counts toward that scout’s reward tiers — ' +
             '<span class="money">' + fmt(cc.credited) + '</span> of the <span class="money">' + fmt(cc.kept) +
@@ -29592,7 +29615,7 @@
         '<div class="tbl-wrap"><table><caption class="visually-hidden">Combined standings</caption><thead><tr><th scope="col"></th><th scope="col">Scout</th><th scope="col" class="num">Trail’s End</th><th scope="col" class="num">Cash</th><th scope="col" class="num">Combined</th></tr></thead><tbody>';
       rankBy(rows, function (r) { return r.t.combined; }).forEach(function (r, i) {
         h += '<tr><td class="num muted">' + (i + 1) + '</td><td>' + esc(r.name) + (r.archived ? ' <span class="pill navy">archived</span>' : '') + '</td>' +
-          '<td class="num">' + fmt(teOf(r)) + '</td><td class="num">' + fmt(cashDonOf(r)) + '</td>' +
+          '<td class="num">' + fmt(teOf(r)) + '</td><td class="num">' + fmt(keptCashOf(r)) + '</td>' +
           '<td class="num" style="font-weight:650">' + fmt(r.t.combined) + '</td></tr>';
       });
       h += '</tbody></table></div>' +
@@ -29852,7 +29875,7 @@
   function renderRewardTiers() {
     var rt = state.rewardTiers;
     var sum = rewardTierSummary();
-    var baseLabel = 'sales + online donations' + (state.cashThroughTrailsEnd ? ' + cash donations' : '');
+    var baseLabel = 'sales + online and wagon donations' + (state.cashThroughTrailsEnd ? ' + storefront cash donations' : '');
     // Wave 21 — every per-scout "families pay" line is something a tier can cover.
     var coverable = perScoutCharges().filter(function (c) { return lineFamilyFunded(c.item); });
     // Every share a tier can point at: the scout share of each billable line, plus the adult and
@@ -31783,7 +31806,7 @@
         // screen can't tell different stories.
         '<div class="stat"><span class="v money">' + fmt(pack.teEligible) + '</span><span class="l">Trail’s End</span></div>' +
         (pack.viaTE ? '' :
-          '<div class="stat"><span class="v money">' + fmt(pack.cashKept) + '</span><span class="l">Cash donations</span></div>') +
+          '<div class="stat"><span class="v money">' + fmt(pack.cashKept) + '</span><span class="l">Storefront cash donations</span></div>') +
         // ⚠ NOT "Commission (pack.pct%)". pack.pct is the STOREFRONT rate alone, so on a pack with
         // two rates — 35% at a table, 30% online, which is the ordinary case — that label put one
         // rate over a figure that is the sum of two calculations. On a sheet that gets handed to a

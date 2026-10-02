@@ -1271,6 +1271,34 @@ buys is out of it.
 `tierRateMissing()` counts this rate too — a pack running a donations-only drive can measure tiers
 on it alone.
 
+#### Wagon cash always runs through Trail's End (owner, 2026-10-01)
+
+Pack policy: a family enters wagon (door-to-door) cash donations in the Trail's End app as Heroes &
+Helpers, so **the pack never keeps wagon cash**. The setting `cashThroughTrailsEnd` now governs
+**storefront** cash only, and reads "Run storefront cash donations through Trail's End".
+
+- `computePackTotals` splits cash donations into `storeCashDon` (storefront blocks) and
+  `wagonCashDon` (every non-online entry). Wagon cash is in `teEligible`, earns commission at
+  the storefront/wagon rate, and is never in `cashKept` / `retainedCash`. Storefront cash goes
+  one way or the other by the setting, as before. `teEligible + cashKept` is still every dollar,
+  once (`pack.combined`), so the parents' single goal figure is unchanged.
+- Per scout, `keptCashOf(r)` is the storefront split while the pack keeps it, and 0 otherwise.
+  `goalBaseOf` is sales + online donations + every cash donation − kept cash, so a scout's wagon
+  cash counts toward the Trail's End goal and earns commission toward tiers
+  (`scoutCommissionOf`). The cash credit (`cashScoutPct`) applies to kept storefront cash only
+  (`cashScoutCredit(keptCashOf(r))`, `cashCreditTotals`).
+- The cash donation board is storefront cash only. The combined board's Cash column is kept cash.
+  Funds in's term reads "storefront cash donations kept in full", and the Budget card says wagon
+  cash reaches the pack through commission.
+- The wagon form tells families: "So does a wagon cash donation: the family enters it in the
+  Trail's End app as Heroes & Helpers, as well as here. The pack never keeps wagon cash."
+- **For the treasurer to confirm:** the wagon entry's *Donations* field is still separate from
+  its *Trail's End amount*. If the Trail's End report's wagon total already includes Heroes &
+  Helpers donations, a family that types the donation in both fields, or a Trail's End import
+  plus a typed donation, counts it twice in `teEligible`. And a pack that kept wagon cash before
+  this sees its "kept" figure (and Funds in) fall by that cash, which now shows as commission at
+  the storefront rate instead: a recorded season changes in the middle.
+
 #### Which tier the pack plans on — `planOnTierId`
 
 *Owner ask, 2026-07-27.* A waiver is a fact about sales that have happened, so in July it covers
@@ -1590,9 +1618,9 @@ help under *Record a transaction* says so.
   nothing. Not shown while cash runs through Trail's End.
 - **Format.** An older page (format 3) reads the new source as blank, so it counts a deposit
   filed on a line in Funds in, and its next save writes the blank back. `PACK_FORMAT` is 4.
-- **Not done, for the treasurer:** wagon cash donations are in *cash donations kept in full* too
-  but not in X (X is the storefront blocks), so a deposit that mixes them reads as more than
-  kept. And how a deposit of storefront **sales** cash should be recorded, when a pack banks it
+- **Wagon cash** is never kept (owner, 2026-10-01: it runs through Trail's End), so X, the
+  storefront blocks' kept cash, is all of *storefront cash donations kept in full*.
+- **Not done, for the treasurer:** how a deposit of storefront **sales** cash should be recorded, when a pack banks it
   and pays the council by check, is the treasurer's to say: today it is plain income, which
   Funds in counts on a budget line and leaves out (as uncategorised) with none.
 
