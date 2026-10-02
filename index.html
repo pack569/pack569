@@ -924,6 +924,10 @@
   .sr-return textarea { width: 100%; }
   .sr-banner-row { padding: 6px 0; gap: 8px; }
   .sr-banner-row + .sr-banner-row { border-top: 1px solid var(--line-soft); }
+  /* Parent-experience review (round 1 of Home's storefront cards): thumb-sized buttons in the shift
+     cards and banner rows, and the sign-off date; a Home row's needs on a line under its shift. */
+  #srCard button.btn, .sr-banner-row button.btn, .sr-home-close button.btn, input.signoff-in { min-height: 44px; }
+  .sr-home-needs { margin-top: 2px; }
   .sr-hist { font-size: 0.8rem; }
   .sr-badge { background: var(--accent); color: #fff; font-size: 0.7rem; vertical-align: middle; }
   /* A phone cannot hold a 17-character time range and two full names on one line, and the
@@ -2490,6 +2494,13 @@
   // sure the season's earlier ones did). state.wagonViaTEFrom: absent = this date; '' = every wagon
   // entry; a leader can move it (wagonCutoverOf). Up here because normalizeState reads it.
   var WAGON_VIA_TE_DEFAULT = '2026-10-01';
+  // Keith (2026-10-02; security and popcorn review, round 1) — the first storefront date the second-adult
+  // cash check asks about (state.signoffFrom, signoffFromOf): absent or junk = this date, the day the check
+  // went live; a leader can move it. Storefronts before it were closed out before anyone was asked.
+  var SIGNOFF_FROM_DEFAULT = '2026-10-02';
+  // The pack's time zone (shiftReportToday: the pack's day, as the server's packToday counts it). Up here
+  // because normalizeState reads the pack's day (signoffFrom's clamp) before the shift-report block runs.
+  var SHIFT_REPORT_TZ = 'America/New_York';
   var LEDGER_SOURCE_LABELS = {
     family: 'Family payment', donation: 'Donation', fundraiser: 'Fundraiser',
     commission: 'Popcorn commission', carryover: 'Carryover', storefront: 'Storefront cash donations (kept)',
@@ -4155,10 +4166,14 @@
       var ddN = typeof d.depositDays === 'number' ? Math.round(d.depositDays) : NaN;
       if (isFinite(ddN) && ddN >= 1) d.depositDays = Math.min(60, ddN); else delete d.depositDays;
     }
-    // Keith (2026-10-02) — the first storefront date the sign-off checks ask about (signoffFromOf): an ISO
-    // date. Missing or junk is stamped with today, so the first page of this build to load the pack sets
-    // its go-live date and the next save keeps it. Storefronts before it were closed out the old way.
-    if (!(typeof d.signoffFrom === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d.signoffFrom))) d.signoffFrom = todayISO();
+    // Keith (2026-10-02; review round 1) — the first storefront date the second-adult cash check asks
+    // about (signoffFromOf): an ISO date, or absent (SIGNOFF_FROM_DEFAULT). Never stamped: junk is dropped,
+    // so it reads as the default. A date after the pack's today (shiftReportToday, the pack's time zone,
+    // not this device's) is brought back to today: a future date would hide checks not yet due.
+    if (d.signoffFrom !== undefined) {
+      if (!(typeof d.signoffFrom === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d.signoffFrom))) delete d.signoffFrom;
+      else if (d.signoffFrom > shiftReportToday()) d.signoffFrom = shiftReportToday();
+    }
     if (!d.packName) d.packName = 'Pack 569';
     // Wave 22 — the weather lookup location. Defaulted rather than left blank so the feature
     // works on an existing pack record without anyone visiting a settings screen first; every
@@ -10235,7 +10250,7 @@
     cashThroughTrailsEnd: 'cash goes through Trail’s End', goalCents: 'Trail’s End goal', stretchGoalCents: 'stretch goal', cashGoalCents: 'cash donations goal',
     invCommissionPct: 'popcorn order commission (%)', orderTotalCents: 'popcorn order total',
     wagonViaTEFrom: 'wagon cash through Trail’s End from',
-    signoffFrom: 'sign-off checks from',
+    signoffFrom: 'second-adult cash checks from',
     depositFor: 'storefronts it covers', depositFrom: 'covers from', depositTo: 'covers to', notStorefront: 'not storefront cash'
   };
   // One value from an event's `f`, as a leader reads it. `names` turns an id into a name
@@ -21508,7 +21523,7 @@
      time zone (rules.js packToday, America/New_York). */
   var SHIFT_REPORT_ROLES = ['admin', 'editor', 'viewer', 'parent'];
   var SHIFT_REPORT_DAYS = 14;
-  var SHIFT_REPORT_TZ = 'America/New_York';
+  // (SHIFT_REPORT_TZ is declared with SIGNOFF_FROM_DEFAULT, near the top: normalizeState reads it.)
   var SHIFT_REPORT_MAX_CENTS = 1000000;
   var SHIFT_REPORT_NOTE_MAX = 300;
   // The checkbox a family ticks to sign (popcorn-kernel review, round 1): what they counted, and
@@ -21935,9 +21950,9 @@
     'are real and go out under your name. Another leader has to accept them.';
   // Keith (2026-10-02) — the same card on a leader's Home: its heading and first line, in a leader's
   // words. True as said, like the preview's line: the server never lets a leader accept their own.
-  var SR_HOME_HEAD = 'Your family’s shifts';
-  var SR_HOME_INTRO = 'You worked a storefront shift with your scout. Send the totals for the whole table here, the same as any parent, ' +
-    'or confirm totals another family sent. They go out under your name, and another leader has to accept them.';
+  var SR_HOME_HEAD = 'Your family’s storefront shifts';
+  var SR_HOME_INTRO = 'You and your scout worked a storefront shift. Before you leave the table, send its totals here, as any parent would, ' +
+    'or confirm totals another family sent. They go out under your name. Another leader has to accept them; you can’t accept your own.';
   // The Schedule's shift-totals card: the published storefront shifts from the last 14 days that
   // have started, with where their totals stand and the buttons, and the form under the one being
   // filled in. '' when the feature is off or there is no such shift. `today` is the pack's.
@@ -22841,13 +22856,7 @@
       '<button type="button" class="btn" data-act="sf-glance-open">Schedule at a glance</button>' +
       (leaderReportsOn() ? '<button type="button" class="btn" data-act="sr-history-open">Shift reports this season</button>' : '') + '</div>';
     h += renderShiftReportsBanner();   // S-3: families' shift totals waiting for a leader
-    // Keith (2026-10-02) — from when the sign-off checks ask (state.signoffFrom): said here, and changed
-    // here by whoever may edit the storefronts (canEdit, as the rest of this page).
-    var soFrom = signoffFromOf(state.signoffFrom);
-    h += canEdit()
-      ? '<div class="row no-print" style="margin:0 0 12px"><label class="fld small">Sign-off checks apply to storefronts from' +
-        '<input type="date" data-ch="signoff-from" value="' + esc(soFrom) + '"></label></div>'
-      : '<p class="small muted no-print" style="margin:0 0 12px">Sign-off checks apply to storefronts from ' + esc(fmtDate(soFrom)) + '.</p>';
+    h += signoffFromLine();
     if (canEdit()) {
     h += '<div class="card"><h2 class="section display">New storefront</h2>' +
       '<form data-form="add-storefront" class="row">' +
@@ -24217,10 +24226,12 @@
     warnHours: 48,
     family: '(Trail\u2019s End\u2019s own deadline is midnight that day for families; leaders can finish it within 72 hours.)',
     late: 'Trail\u2019s End\u2019s Cash to Credit and closeout window ends soon (72 hours). After that, this cash can only be collected and deposited.',
-    closed: 'Trail\u2019s End\u2019s 72-hour window has closed. This cash can\u2019t be converted now: collect it and deposit it as Popcorn money for the council.',
+    // Popcorn review, round 1: past 72 hours on this clock (from the start of the storefront date) is
+    // likely, not certain, to be past Trail's End's own, so neither form says it as fact.
+    closed: 'Past 72 hours: Trail\u2019s End may no longer convert this cash. Collect it and deposit it as Popcorn money for the council.',
     // Keith (2026-10-02): the same two, as a row on Home's "Storefronts to close" says them.
-    lateShort: 'Trail\u2019s End\u2019s 72-hour window ends soon',
-    closedShort: 'Trail\u2019s End\u2019s 72-hour window has closed'
+    lateShort: 'Convert soon: Trail\u2019s End\u2019s 72 hours are almost up',
+    closedShort: 'Past 72 hours: Trail\u2019s End may no longer convert this cash. Collect and deposit it.'
   };
   // Parent-experience review 21: the deadline is the table, as pack policy says. Trail's End's own
   // window is said only in brackets (TE_CASH_WINDOW.family). The family's form leaves it to this
@@ -24232,10 +24243,56 @@
   var DAY_SHEET_REPORT = 'Before you leave: one parent sends these totals at pack569.com (Schedule, Storefront shift totals). If more than one family worked this shift, ' +
     'a parent from another family confirms them. Hand the cash donations to the leader collecting the money.';
   var WAGON_SAFETY = 'Door to door: never go inside a customer\u2019s home, and no door-to-door alone.';
-  // The first storefront date the sign-off checks ask about (state.signoffFrom, stamped by
-  // normalizeState); today if the record somehow has none. Pure given `v`.
+  // The first storefront date the second-adult cash check asks about (state.signoffFrom); absent or junk,
+  // SIGNOFF_FROM_DEFAULT. Pure. (blockCashCheck compares it with the STOREFRONT's date only; whether
+  // that day has passed is still this device's todayISO, as it always was.)
   function signoffFromOf(v) {
-    return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : todayISO();
+    return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : SIGNOFF_FROM_DEFAULT;
+  }
+  // How many second-adult cash warnings moving the date from `from` to the later `to` would stop: the
+  // worked, past blocks dated in [from, to) whose count is blank or one person twice. Pure.
+  function signoffHides(storefronts, from, to, today) {
+    var n = 0;
+    (storefronts || []).forEach(function (sf) {
+      if (!sf || !sf.date || sf.date < from || !(sf.date < to)) return;
+      (sf.blocks || []).forEach(function (b) { if (blockCashCheck(b, sf.date, today, from)) n += 1; });
+    });
+    return n;
+  }
+  // Keith (2026-10-02; review round 1) — from when the second-adult cash check asks (state.signoffFrom).
+  // Whoever may edit the storefronts (canEdit, as the rest of this page) gets the date to change; anyone
+  // else reads it only while a storefront before it is from the last 60 days (the pack's day), when "why
+  // isn't that one asked about?" is a live question. A later date waits for a two-tap confirm that says
+  // how many warnings it stops (ui.signoffDraft, signoff-later).
+  function signoffFromLine() {
+    var from = signoffFromOf(state.signoffFrom), today = shiftReportToday();
+    if (!canEdit()) {
+      var recent = state.storefronts.some(function (sf) { return sf && sf.date && sf.date < from && sf.date >= isoPlusDays(today, -60); });
+      return recent ? '<p class="small muted no-print" style="margin:0 0 12px">Second-adult cash checks start with storefronts on ' + esc(fmtDate(from)) +
+        '. Earlier storefronts aren’t asked about.</p>' : '';
+    }
+    var dr = ui.signoffDraft && ui.signoffDraft > from && ui.signoffDraft <= today ? ui.signoffDraft : '';
+    var h = '<div class="no-print" style="margin:0 0 12px"><label class="fld small">Ask for a second adult’s cash check on storefronts from' +
+      '<input type="date" class="signoff-in" data-ch="signoff-from" max="' + esc(today) + '" value="' + esc(dr || from) + '" aria-describedby="signoffHint"></label>' +
+      '<p class="small muted" id="signoffHint" style="margin:4px 0 0">Earlier storefronts aren’t checked for a second adult.</p>';
+    if (dr) {
+      var n = signoffHides(state.storefronts, from, dr, todayISO()), armed = ui.armed === 'signoff-later:' + dr;
+      h += '<p class="small warn" role="alert" style="margin:6px 0 0">Moving this to ' + esc(fmtDate(dr)) + ' stops ' + n + ' second-adult cash warning' +
+        (n === 1 ? '' : 's') + ' on storefronts from ' + esc(fmtDate(from)) + ' to ' + esc(fmtDate(isoPlusDays(dr, -1))) + '.</p>' +
+        '<div class="sr-acts" style="margin-top:6px"><button type="button" class="btn small' + (armed ? ' danger armed' : '') + '" data-act="signoff-later" data-date="' + esc(dr) + '">' +
+        (armed ? 'Tap again to stop ' + n + ' warning' + (n === 1 ? '' : 's') : 'Move the date') + '</button>' +
+        '<button type="button" class="btn small ghost" data-act="signoff-later-cancel">Cancel</button></div>';
+    }
+    return h + '</div>';
+  }
+  // The date set (handleChange and the confirm), logged on the book as the wagon cutover is.
+  function setSignoffFrom(to) {
+    var was = signoffFromOf(state.signoffFrom);
+    ui.signoffDraft = '';
+    if (to === was) { render(); return; }
+    state.signoffFrom = to;
+    logLedger('edit', 'book', { f: { signoffFrom: [was, to] } });
+    commit();
   }
   // What is wrong with a block's cash count, once the storefront's day has passed: 'blank' when
   // either adult is missing, 'same' when one person is both; '' when it is fine, when the day has
@@ -24914,7 +24971,7 @@
       blocksInDayOrder(sf).forEach(function (b) {
         // Before the sign-off date (Keith, 2026-10-02) the cash names aren't asked about; a report sent
         // back after its accept still is: that only happens through shift reports, which are new.
-        var why = b.reportReturned ? 'sent back after it was accepted' : ({ blank: 'nobody named as verifying the cash', same: 'the same person counted and verified' })[blockCashCheck(b, sf.date, today, from)];
+        var why = b.reportReturned ? 'sent back after it was accepted' : ({ blank: 'cash count needs a second adult’s name', same: 'the same adult counted and checked the cash' })[blockCashCheck(b, sf.date, today, from)];
         if (why) out.push({ sf: sf, b: b, why: why });
       });
     });
@@ -24969,6 +25026,8 @@
           '<button type="button" class="btn small" data-act="open-storefront" data-id="' + esc(c.sf.id) + '">Open</button></div>';
       });
     }
+    // Review round 1 — from when the cash counts are asked about (state.signoffFrom).
+    h += '<p class="small muted" style="margin:8px 0 0">Second-adult cash checks from ' + esc(fmtDate(signoffFromOf(state.signoffFrom))) + '.</p>';
     return h + '</div>';
   }
   // How many reports wait on one storefront (the list's badge).
@@ -30030,7 +30089,7 @@
             fmtDate(sf.date) + (d === 0 ? ' · today' : d === 1 ? ' · tomorrow' : ' · in ' + d + ' days'),
             'popcorn', 'storefronts');
         }
-      } else if (d >= -60 && storefrontTotals(sf).combined === 0 && cov.covered > 0 && !(sf.date < signoffFromOf(state.signoffFrom))) {   // not before the sign-off date
+      } else if (d >= -60 && storefrontTotals(sf).combined === 0 && cov.covered > 0) {
         add('kernel', 'now', name + ' — no money entered yet',
           'Ran ' + fmtDate(sf.date) + ' with scouts assigned', 'popcorn', 'storefronts');
         out[out.length - 1].sfId = sf.id;   // renderHome leaves it out while its totals wait on "Storefronts to close"
@@ -30293,13 +30352,18 @@
   // canDo('shiftVerify'), and this follows it, so no role is compared here. Never by job.
   function homeStorefrontCashOn() { return canReviewReports() && !parentMode(); }
   // What the Storefronts banner (renderShiftReportsBanner) asks of leaders, one row per shift, oldest
-  // first: totals waiting to accept (srWaiting), figures needing a second adult's check
-  // (srNeedsCheck), cash from popcorn sales still with a family (srCashToCollect). Pure read:
-  // { rows: [{ sf, b, bits, late }], waiting, check, cash: { cents, n }, sfIds }; `sfIds` holds the
-  // storefronts with totals waiting. A report whose shift is gone is a row with no `sf`.
+  // first: totals waiting to review (srWaiting; those still waiting for the other family's confirm,
+  // srNeedsSecond, counted apart), cash counts needing a second adult (srNeedsCheck), cash from popcorn
+  // sales still with a family (srCashToCollect); and (popcorn review, round 1) a worked shift from the
+  // last 14 days with no money on it and no report at all (homeShiftNoTotals). A thing this leader may
+  // not do (their own report, their family's, one they confirmed: the server's rules) says "for another
+  // leader". Pure read: { rows: [{ sf, b, bits, late }], review, second, check, none, cash: { cents, n },
+  // sfIds }; `sfIds` holds the storefronts whose money is on its way (totals waiting, or none sent yet),
+  // which Needs you's "no money entered yet" leaves to this card. A report whose shift is gone is a row
+  // with no `sf`.
   function homeStorefrontsToClose() {
     var rows = [], byKey = {};
-    var out = { rows: rows, waiting: 0, check: 0, cash: { cents: 0, n: 0 }, sfIds: {} };
+    var out = { rows: rows, review: 0, second: 0, check: 0, none: 0, cash: { cents: 0, n: 0 }, sfIds: {} };
     function row(sf, b) {
       var k = sf && b ? sf.id + '/' + b.id : '';
       if (k && byKey[k]) return byKey[k];
@@ -30308,52 +30372,89 @@
       if (k) byKey[k] = r;
       return r;
     }
+    var other = ', for another leader';
     srWaiting().forEach(function (rep) {
-      var blk = srBlockOf(rep);
-      out.waiting += 1;
+      var blk = srBlockOf(rep), who = srNameClean(rep.submittedByName) || 'a family', bit;
       if (blk) out.sfIds[blk.sf.id] = true;
-      row(blk && blk.sf, blk && blk.b).bits.push(srMine(rep) ? 'your totals, for another leader to accept'
-        : 'totals from ' + (srNameClean(rep.submittedByName) || 'a family') + ' to accept');
+      if (srNeedsSecond(rep)) { out.second += 1; bit = 'totals from ' + who + ', waiting for the other family to confirm'; }
+      else {
+        out.review += 1;
+        bit = srMine(rep) ? 'your totals, waiting for another leader'
+          : 'totals from ' + who + ' to review' + (srSameFamily(rep) || srIConfirmed(rep) ? other : '');
+      }
+      row(blk && blk.sf, blk && blk.b).bits.push(bit);
     });
     srNeedsCheck().forEach(function (c) {
       out.check += 1;
-      row(c.sf, c.b).bits.push('figures to check: ' + c.why);
+      row(c.sf, c.b).bits.push(c.why);
+    });
+    homeShiftNoTotals().forEach(function (c) {
+      out.none += 1;
+      out.sfIds[c.sf.id] = true;
+      row(c.sf, c.b).bits.push('no totals entered or sent');
     });
     var cash = srCashToCollect();
     out.cash = { cents: cash.cents, n: cash.n };
     cash.list.forEach(function (c) {
       var r = row(c.sf, c.b), age = srCashAge(c.sf.date);
-      r.bits.push(fmt(c.e.cents) + ' cash from popcorn sales to collect');
+      r.bits.push(fmt(c.e.cents) + ' cash from popcorn sales to collect' + (srCashNotMine(c.e.reportId) ? other : ''));
       if (age === 'closed' || (age === 'late' && r.late !== 'closed')) r.late = age;
     });
-    cash.orphans.forEach(function (rep) { row(null, null).bits.push(fmt(rep.salesCashCents) + ' cash from popcorn sales to collect'); });
-    // Oldest first: the cash nearest Trail's End's window, and the longest wait. A gone shift last.
+    cash.orphans.forEach(function (rep) {
+      row(null, null).bits.push(fmt(rep.salesCashCents) + ' cash from popcorn sales to collect' + (srCashNotMine(rep.id) ? other : ''));
+    });
+    // Oldest first: the cash nearest Trail's End's 72 hours, and the longest wait. A gone shift last.
     rows.sort(function (a, b) {
       if (!a.sf || !b.sf) return (a.sf ? 0 : 1) - (b.sf ? 0 : 1);
       return String(a.sf.date || '').localeCompare(String(b.sf.date || '')) || String(a.b.start || '').localeCompare(String(b.b.start || ''));
     });
     return out;
   }
-  // The card: the counts in its heading, then a row per shift with Open, which lands on the
-  // storefront (open-storefront). A gone shift's Open is the storefront list, whose banner lists it.
+  // Popcorn review, round 1 — the shifts whose totals nobody has entered or sent: dated from the
+  // sign-off date (signoffFromOf) and in the last 14 days before the pack's today (shiftReportToday:
+  // the shift-totals window, in the pack's time zone), scouts on it, no money on the block, and no
+  // report about it in any status (the leaders' answer, srReports) nor on the block. [{ sf, b }].
+  function homeShiftNoTotals() {
+    var today = shiftReportToday(), since = isoPlusDays(today, -SHIFT_REPORT_DAYS), from = signoffFromOf(state.signoffFrom);
+    var reported = {};
+    srReports().forEach(function (r) { if (r) reported[r.sfId + '/' + r.blockId] = true; });
+    var out = [];
+    state.storefronts.forEach(function (sf) {
+      var d = String((sf && sf.date) || '');
+      if (!d || !(d < today) || d < since || d < from) return;
+      blocksInDayOrder(sf).forEach(function (b) {
+        if (!b || !(b.assignments || []).length || (b.salesCents || 0) + (b.donationsCents || 0) !== 0) return;
+        if (b.reportId || b.reportPending || reported[sf.id + '/' + b.id]) return;
+        out.push({ sf: sf, b: b });
+      });
+    });
+    return out;
+  }
+  // The card: what is waiting, counted, then a row per shift (its name, date and time, and under
+  // them what it still needs), each with Open, which lands on the storefront (open-storefront). A
+  // gone shift's Open is the storefront list, whose banner lists it.
   function homeStorefrontsCard(t) {
     if (!t || !t.rows.length) return '';
-    var say = [];
-    if (t.waiting) say.push(t.waiting + ' shift report' + (t.waiting === 1 ? '' : 's') + ' to accept');
-    if (t.check) say.push(t.check + ' shift' + (t.check === 1 ? '' : 's') + ' to check');
-    if (t.cash.n) say.push(fmt(t.cash.cents) + ' cash from sales to collect');
-    var h = '<div class="card no-print"><h2 class="section display">Storefronts to close <span class="pill">' + t.rows.length + '</span></h2>' +
-      '<p class="small muted" style="margin:0 0 6px">' + esc(say.join(' · ')) + '. Open a storefront to accept, check or collect.</p>';
+    var say = [], pl = function (n, one, many) { return n + ' ' + (n === 1 ? one : many); };
+    if (t.review) say.push(pl(t.review, 'shift totals to review', 'shift totals to review'));
+    if (t.second) say.push(pl(t.second, 'waiting for the other family', 'waiting for the other family'));
+    if (t.none) say.push(pl(t.none, 'shift with no totals', 'shifts with no totals'));
+    if (t.check) say.push(pl(t.check, 'cash count needing a second adult', 'cash counts needing a second adult'));
+    if (t.cash.n) say.push(fmt(t.cash.cents) + ' cash from popcorn sales to collect');
+    var h = '<div class="card no-print sr-home-close"><h2 class="section display">Storefront shifts to finish <span class="pill">' +
+      pl(t.rows.length, 'shift', 'shifts') + '</span></h2>' +
+      '<p class="small muted" style="margin:0 0 6px">' + esc(say.join(' · ')) + '. Tap Open on a shift to finish it.</p>';
     t.rows.forEach(function (r) {
       var rng = r.b ? (fmtTimeRange(r.b.start, r.b.end) || r.b.label || '') : '';
-      var where = r.sf ? (r.sf.name || 'Storefront') + ', ' + fmtDate(r.sf.date) + (rng ? ', ' + rng : '') : 'A shift no longer on the schedule';
-      h += '<div class="spread sr-banner-row"><p class="small" style="margin:0">' +
-        (r.sf ? '<strong>' + esc(r.sf.name || 'Storefront') + '</strong> · ' + esc(fmtDate(r.sf.date)) + (rng ? ' · ' + esc(rng) : '')
-          : '<strong>A shift no longer on the schedule</strong>') +
-        ' · ' + esc(r.bits.join(' · ')) +
-        (r.late ? ' · <span class="' + (r.late === 'closed' ? 'sr-late-closed' : 'sr-late') + '">' + esc(TE_CASH_WINDOW[r.late === 'closed' ? 'closedShort' : 'lateShort']) + '</span>' : '') + '</p>' +
+      var where = r.sf ? 'Open ' + (r.sf.name || 'Storefront') + ', ' + fmtDate(r.sf.date) + (rng ? ', ' + rng : '') : 'Open the storefront list';
+      h += '<div class="spread sr-banner-row"><div class="small" style="min-width:0">' +
+        '<div>' + (r.sf ? '<strong>' + esc(r.sf.name || 'Storefront') + '</strong> · ' + esc(fmtDate(r.sf.date)) + (rng ? ' · ' + esc(rng) : '')
+          : '<strong>A shift no longer on the schedule</strong>') + '</div>' +
+        '<div class="sr-home-needs">' + esc(r.bits.join(' · ')) +
+        (r.late ? ' · <span class="' + (r.late === 'closed' ? 'sr-late-closed' : 'sr-late') + '">' + esc(TE_CASH_WINDOW[r.late === 'closed' ? 'closedShort' : 'lateShort']) + '</span>' : '') +
+        '</div></div>' +
         '<button type="button" class="btn small" data-act="open-storefront" data-id="' + esc(r.sf ? r.sf.id : '') + '" aria-label="' +
-          esc('Open ' + where) + '">Open</button></div>';
+          esc(where) + '">Open</button></div>';
     });
     return h + '</div>';
   }
@@ -38783,6 +38884,14 @@
     if (/^sr-(cash-collected|cash-converted|cash-replaced|cash-undo|also-cash)$/.test(act)) { srCashAct(act, el); return; }
     // A family's shift totals (2026-10-01): the server's table, never the pack record.
     if (act === 'shift-report-open' || act === 'shift-report-cancel' || act === 'shift-report-withdraw' || act === 'shift-report-confirm-open') { shiftReportAct(act, el); return; }
+    if (act === 'signoff-later-cancel') { ui.signoffDraft = ''; ui.armed = null; render(); return; }
+    if (act === 'signoff-later') {
+      if (!canEdit()) return;
+      var soTo = String(el.dataset.date || '');
+      if (soTo !== ui.signoffDraft || !(soTo > signoffFromOf(state.signoffFrom)) || soTo > shiftReportToday()) { ui.signoffDraft = ''; render(); return; }
+      arm('signoff-later:' + soTo, function () { setSignoffFrom(soTo); }, ARM_WARNED_MS);
+      return;
+    }
     if (act === 'sr-show-all') { ui.srShowAll = ui.srShowAll !== true; ui.srFocusId = 'srShowAll'; render(); return; }   // focus stays on the toggle
     // ---- Accounts ----
     if (act === 'sign-in-google') { signInWithGoogle(); return; }
@@ -40687,15 +40796,15 @@
     }
     // Keith (2026-10-02) — the sign-off date (state.signoffFrom); logged on the book, as the wagon cutover is:
     // moving it changes which cash counts are asked about.
+    // Review round 1: never a future date (the pack's day); a LATER date hides warnings, so it waits for
+    // the two-tap confirm (signoffFromLine); an earlier one asks about more, and is taken at once.
     if (ch === 'signoff-from') {
       if (!canEdit()) { render(); return; }
       var soWas = signoffFromOf(state.signoffFrom), soNow = String(el.value || '');
       if (!/^\d{4}-\d{2}-\d{2}$/.test(soNow)) { showToast('Pick a date.'); render(); return; }
-      if (soNow !== soWas) {
-        state.signoffFrom = soNow;
-        logLedger('edit', 'book', { f: { signoffFrom: [soWas, soNow] } });
-      }
-      commit(); return;
+      if (soNow > shiftReportToday()) { ui.signoffDraft = ''; showToast('Pick today or an earlier date.'); render(); return; }
+      if (soNow > soWas && signoffHides(state.storefronts, soWas, soNow, todayISO()) > 0) { ui.signoffDraft = soNow; ui.armed = null; render(); return; }
+      setSignoffFrom(soNow); return;
     }
     // Owner, 2026-10-01 — the pack's deposit deadline, 1 to 60 days; logged on the book as the opening figure is.
     if (ch === 'deposit-days') {
