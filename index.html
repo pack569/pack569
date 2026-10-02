@@ -1459,6 +1459,12 @@
   }
   .acct-select:hover { border-color: var(--accent); }
   .acct-select:disabled { opacity: 0.6; cursor: not-allowed; }
+  /* Pack positions (client step 6) — the position picker: two columns of tick boxes on a phone,
+     more as the card widens; each label wraps inside its own cell. */
+  .pos-grid { flex-basis: 100%; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 12px; margin: 6px 0 0; }
+  .pos-grid label { display: flex; align-items: center; gap: 6px; font-size: 0.9rem; min-height: 44px; }   /* a thumb's target: 16 positions and 6 dens */
+  .pos-grid input { margin: 0; }
+  .pos-edit { flex-basis: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-top: 6px; }
 
   /* ---------- Parent phase ---------- */
   /* Parents (and not-yet-approved users) get a SEPARATE app — renderParentApp — built only
@@ -2087,6 +2093,124 @@
   var JOB_BY_ID = {};
   JOBS.forEach(function (j) { JOB_BY_ID[j.id] = j; });
   function jobLabel(id) { return JOB_BY_ID[id] ? JOB_BY_ID[id].label : ''; }
+  // POSITIONS (stage 1 of position-based access, 2026-10-01) — NOT jobs. A position is a
+  // permission an admin gives a leader account (member_positions on the server); a job above is
+  // a lens a leader can set on their own record. The two share their ids and labels (Keith,
+  // 2026-10-02: every job but 'cor' is a position, plus Parent; the Chartered Org Rep is made an
+  // admin) and nothing else: no access decision may read JOBS or myJobs() (the harness checks).
+  // This is a byte-identical copy of the table in functions/_lib/access.js, which says what each
+  // position may edit and which section owns each key of the pack record; the server refuses a
+  // save that changes a key the leader can't edit. The harness fails if the copies differ.
+  // Not read by anything here yet: the page's own gates (canEdit) are unchanged until the client
+  // steps of the plan land.
+  var ACCESS_TABLE = /*ACCESS-BEGIN*/{
+    "positions": [
+      {"id": "cubmaster", "label": "Cubmaster"},
+      {"id": "asstcub", "label": "Assistant Cubmaster"},
+      {"id": "chair", "label": "Committee Chair"},
+      {"id": "treasurer", "label": "Treasurer"},
+      {"id": "secretary", "label": "Secretary"},
+      {"id": "kernel", "label": "Popcorn Kernel"},
+      {"id": "advancement", "label": "Advancement Chair"},
+      {"id": "activities", "label": "Activities Chair"},
+      {"id": "membership", "label": "Membership Chair"},
+      {"id": "outdoors", "label": "Outdoor / Camping Chair"},
+      {"id": "derbychair", "label": "Pinewood Derby Chair"},
+      {"id": "comms", "label": "Communications"},
+      {"id": "trainer", "label": "Pack Trainer"},
+      {"id": "denleader", "label": "Den Leader"},
+      {"id": "asstden", "label": "Assistant Den Leader"},
+      {"id": "parent", "label": "Parent"}
+    ],
+    "sections": ["home", "calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "roster", "advancement", "joining", "storefronts", "totals", "rewards", "inventory", "council", "budget", "ledger", "deposits", "dues", "fundraisers", "sharing", "people", "season"],
+    "denMeetingFields": ["adventure", "denAdv", "note", "noteInternal", "advOffers"],
+    "dens": ["Lion", "Tiger", "Wolf", "Bear", "Webelos", "Arrow of Light"],
+    "denPositions": ["denleader", "asstden"],
+    "access": {
+      "cubmaster": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "advancement", "season"], "hidden": []},
+      "asstcub": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "advancement", "season"], "hidden": []},
+      "chair": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "derby", "joining", "budget", "ledger", "deposits", "dues", "fundraisers", "people", "season"], "hidden": []},
+      "treasurer": {"default": "read", "edit": ["budget", "ledger", "deposits", "dues", "fundraisers"], "hidden": []},
+      "secretary": {"default": "read", "edit": ["roster"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "kernel": {"default": "read", "edit": ["storefronts", "totals", "rewards", "inventory", "council", "deposits"], "hidden": []},
+      "advancement": {"default": "read", "edit": ["advancement"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "activities": {"default": "read", "edit": ["calendar", "calendar.denmeeting"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "membership": {"default": "read", "edit": ["roster", "joining"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "outdoors": {"default": "read", "edit": ["camping"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "derbychair": {"default": "read", "edit": ["derby"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "comms": {"default": "read", "edit": [], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "trainer": {"default": "read", "edit": [], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "denleader": {"default": "read", "edit": ["calendar.denmeeting", "attendance", "denplan", "advancement"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers", "people"]},
+      "asstden": {"default": "read", "edit": ["calendar.denmeeting", "attendance", "denplan", "advancement"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers", "people"]},
+      "parent": {"default": "hidden", "edit": [], "hidden": []}
+    },
+    "keyOwner": {
+      "version": "shared",
+      "fmt": "shared",
+      "rev": "shared",
+      "startHereDismissed": "shared",
+      "movedNoticeDismissed": "shared",
+      "balooNoticeDismissed": "shared",
+      "syncLog": "shared",
+      "events": "calendar",
+      "meetings": "calendar",
+      "rsvps": "calendar",
+      "attendance": "attendance",
+      "advNotes": "denplan",
+      "advPlanEdits": "denplan",
+      "derby": "derby",
+      "camping": "camping",
+      "scouts": "roster",
+      "advancement": "advancement",
+      "onboarding": "joining",
+      "welcome": "joining",
+      "recruitKit": "joining",
+      "storefronts": "storefronts",
+      "entries": "totals",
+      "packLoc": "totals",
+      "teImport": "totals",
+      "commissionPct": ["totals", "budget"],
+      "commissionPctOnline": ["totals", "budget"],
+      "goalCents": ["totals", "budget"],
+      "goalIsDerived": ["totals", "budget"],
+      "stretchGoalCents": ["totals", "budget"],
+      "cashGoalCents": ["totals", "budget"],
+      "cashThroughTrailsEnd": ["totals", "budget"],
+      "cashScoutPct": ["totals", "budget"],
+      "cashInCommission": ["totals", "budget"],
+      "cashInGoal": ["totals", "budget"],
+      "wagonViaTEFrom": ["totals", "budget"],
+      "rewardTiers": "rewards",
+      "inventory": "inventory",
+      "popcornCouncil": "council",
+      "budget": "budget",
+      "ledger": "ledger",
+      "book": "ledger",
+      "ledgerAside": "ledger",
+      "ledgerLog": "ledger",
+      "statements": "ledger",
+      "signoffFrom": "ledger",
+      "depositDays": "deposits",
+      "charges": "dues",
+      "collected": "dues",
+      "fundraisers": "fundraisers",
+      "packName": "sharing",
+      "leaders": "people",
+      "densAdvancedYear": "admin",
+      "densAdvancedSummary": "admin",
+      "archives": "admin",
+      "closedBooks": "admin",
+      "closedGone": "admin"
+    },
+    "goneOwner": {"entries": "totals", "imports": "totals", "ledger": "ledger", "distributions": "inventory", "products": "inventory", "sales": "fundraisers", "fundraisers": "fundraisers", "scouts": "roster"},
+    "bookLogOwner": {"orderTotalCents": "inventory", "invCommissionPct": "inventory"},
+    "actions": {
+      "shiftVerify": ["cubmaster", "asstcub", "chair", "treasurer", "kernel", "denleader", "asstden"],
+      "shiftUndo": ["chair", "treasurer", "kernel"]
+    },
+    "blockReportFields": ["salesCents", "donationsCents", "cashCountedBy", "cashVerifiedBy", "reportId", "reportFrom", "reportApprovedBy", "reportConfirmedBy",
+      "reportOverride", "reportOverrideNote", "reportCollected", "reportReturned", "reportPending", "salesCash"]
+  }/*ACCESS-END*/;
   // Module-scope array guard. (normalizeSeasonArchive has its own `list()`, but that one is
   // local to it — this is the one everything outside the normalizer uses.)
   function arrOf(v) { return Array.isArray(v) ? v : []; }
@@ -5355,6 +5479,17 @@
     if (e.source === 'council' && e.scoutId) e.source = '';
     // Treasurer review of item 11 (13) — the answer "not storefront cash": true, or absent.
     if (e.notStorefront !== true) delete e.notStorefront;
+    // Keith, 2026-10-02 (positions) — a storefront deposit the Popcorn Kernel recorded, for the treasurer
+    // to review: true, or absent. The pack's server lets a leader who records deposits but does not edit
+    // the ledger add only such a row (access.js depositRowOk); the treasurer's edit takes the flag off.
+    if (e.depositReview !== true || e.source !== 'storefront') delete e.depositReview;
+    // The treasurer's review of it (the treasurer's review of 045e7ac, 6): who said it matches the slip and
+    // the bank, and when; or the question they asked the kernel. Strings, on a storefront deposit only.
+    ['depositReviewedBy', 'depositReviewedByUid', 'depositReviewedAt', 'depositReviewNote'].forEach(function (k) {
+      if (e[k] !== undefined && (typeof e[k] !== 'string' || e.source !== 'storefront')) delete e[k];
+    });
+    if (typeof e.depositReviewedBy === 'string') e.depositReviewedBy = ledgerStampClean(e.depositReviewedBy);
+    if (typeof e.depositReviewNote === 'string') e.depositReviewNote = e.depositReviewNote.slice(0, 300);
     if (e.source === 'storefront') {
       e.depositFor = depositForIds(e.depositFor).join(',');
       ['depositFrom', 'depositTo'].forEach(function (k) {
@@ -5479,6 +5614,8 @@
   // and each browser's that opened it) then holds the older page, and nothing in the app lifts it.
   // Fix forward instead. If you must roll back, SETUP.md ("If a page stays out of date after a
   // reload") lowers fmt by hand, so the raising commit must say what an older page gets wrong.
+  // ⚠ RAISING THIS raises functions/_lib/access.js PACK_FORMAT in the same commit (the harness checks):
+  // below an admin, the server takes only its own format, so a leader can't hold every page with a higher one.
   // Declared up here, above `var state = load()`, because normalizeState reads it.
   var PACK_FORMAT = 5;
   // Keith, 2026-10-02 — the sync log's length (normalizeSyncLog, which normalizeState runs): the newest this many.
@@ -5675,7 +5812,7 @@
     // push. Every mutation path routes through commit(), so this one guard makes the whole
     // app genuinely read-only for them — the published security rules are the real backstop.
     if (!canEdit()) {
-      showToast('Read-only access — ask a pack admin to make you an editor.');
+      showToast(readOnlySay(''));
       // The change handler already mutated the in-memory state; reload the last persisted
       // copy and re-render so nothing stray lingers to ride a later legitimate commit if
       // this user is promoted mid-session (L-2). Nothing was ever saved or pushed.
@@ -5690,6 +5827,19 @@
     // and a hold met from the pack (sync.newerFormat) would leave the newer page a change to sort
     // out (owner, 2026-09-29: refuse every edit while any hold is on).
     if (packFormatHeld()) { refuseHeldEdit(); return false; }
+    // Pack positions (client step 3) — on the pack's own server, below an admin: what this account's
+    // positions don't edit goes back as it was, BEFORE anything is saved or marked unsynced. A change
+    // made only there saves nothing; one made beside it saves the rest. The server is the real check.
+    if (sectionGuardOn()) {
+      var gWas = guardBaseline();
+      if (gWas) {
+        var gBack = rollbackUneditable(gWas);
+        if (gBack.length) {
+          showToast(readOnlySay(gBack[0]));
+          if (stateFingerprint(state) === stateFingerprint(gWas)) { render(); return false; }
+        }
+      }
+    }
     // Phase 3b — commit() is the one seam every mutation goes through, so it is where
     // charges are reconciled against attendance, rates and tier progress. Cheap: a pack is
     // tens of scouts, not thousands.
@@ -8325,9 +8475,19 @@
     if (!s || typeof s !== 'object' || Array.isArray(s)) return null;
     if (typeof s.on !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s.on) || COUNCIL_SETTLE_HOW.indexOf(s.how) === -1) return null;
     // Security re-check of 89c08b5 (3) — `at` an ISO time, `byUid` an id: anything longer or else is ''.
-    return { on: s.on, how: s.how, by: ledgerStampClean(s.by),
+    var out = { on: s.on, how: s.how, by: ledgerStampClean(s.by),
       byUid: typeof s.byUid === 'string' && s.byUid.length <= 128 ? s.byUid : '',
       at: typeof s.at === 'string' && s.at.length <= 40 && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/.test(s.at) ? s.at : '' };
+    // Keith, 2026-10-02 — the Committee Chair who approved it, by name (named, not a sign-in: the
+    // treasurer types it). Only when there is one, so a settlement from before reads as it did.
+    var ap = councilApproverClean(s.approvedBy);
+    if (ap) out.approvedBy = ap;
+    return out;
+  }
+  var COUNCIL_APPROVER_HINT = 'Type the Chair\u2019s name. The Chair should approve before you record this.';
+  // The approving Chair's name as stored: one line, at most 80 characters, never an email. Pure.
+  function councilApproverClean(v) {
+    return ledgerStampClean(String(typeof v === 'string' ? v : '').replace(/\s+/g, ' ').trim().slice(0, 80));
   }
   // The settlement two copies of one book agree on (mergeRemoteAppendOnly): `here` and `there` are the
   // books, `logHere` and `logThere` their ledgerLogs. The newest 'settle' or 'unsettle' event on row
@@ -8346,14 +8506,26 @@
     if (!top) return h;
     if (top.op === 'unsettle') return null;
     var said = top.f && Array.isArray(top.f.councilSettled) ? top.f.councilSettled[1] : null;
-    var match = [t, h].filter(function (s) { return s && councilSettledText(s) === said; });
+    // A line from before the approver was in it (treasurer's review of 045e7ac, 1) still matches.
+    var match = [t, h].filter(function (s) { return s && (councilSettledText(s) === said || councilSettledText(s, true) === said); });
     if (match.length) return match[0];
     var any = [h, t].filter(Boolean).sort(function (a, b) { return a.at < b.at ? 1 : a.at > b.at ? -1 : 0; });
     return any[0] || null;
   }
-  // The settlement as the change history says it ("2026-12-02 · the pack paid the council"), or ''. Pure.
-  function councilSettledText(s) {
-    return s && COUNCIL_SETTLE_LABELS[s.how] ? s.on + ' \u00b7 ' + COUNCIL_SETTLE_LABELS[s.how] : '';
+  // The settlement as the change history says it ("2026-12-02 · the pack paid the council · approved by
+  // Jordan Lee"), or ''. The treasurer's review of 045e7ac (1): the approving Chair is in the line, so a
+  // settlement made again under another name is in the history too. `noName`: the line as it was
+  // written before that, which the merge still matches (councilSettledMerged). Pure.
+  function councilSettledText(s, noName) {
+    if (!s || !COUNCIL_SETTLE_LABELS[s.how]) return '';
+    var t = s.on + ' \u00b7 ' + COUNCIL_SETTLE_LABELS[s.how];
+    return !noName && s.approvedBy ? t + ' \u00b7 approved by ' + s.approvedBy : t;
+  }
+  // Did the leader who recorded the settlement name themselves as the approving Chair? Then the card
+  // says so, so it doesn't read as a second person's approval (the treasurer's review, 2). Pure.
+  function councilSettledBySelf(s) {
+    var a = String((s && s.approvedBy) || '').trim().toLowerCase(), b = String((s && s.by) || '').trim().toLowerCase();
+    return !!a && a === b;
   }
   // The popcorn money held for the council, from the counted rows: { banked (A, money in), paid (B,
   // money out), held (A − B, signed), checks (C, commission checks posted), commission (A − B + C) }.
@@ -8397,6 +8569,9 @@
     }
     if (settled) {
       out.push({ warn: false, text: 'Settled with the council on ' + fmtDateShort(settled.on) + ': ' + (COUNCIL_SETTLE_LABELS[settled.how] || '') + '. ' +
+        // A settlement from a page before the Chair was asked for names nobody (the treasurer's review, 1).
+        (settled.approvedBy ? 'Approved by ' + settled.approvedBy + ', Committee Chair' + (councilSettledBySelf(settled) ? ' (recorded by the Chair)' : '') + '. '
+          : 'Approved by: not recorded. ') +
         'The commission is actual now: ' + fmt(chk.banked) + ' banked \u2212 ' + fmt(chk.paid) + ' paid' +
         (chk.checks ? ' + ' + fmt(chk.checks) + ' in commission checks' : '') + ' = ' + fmt(chk.commission) + ', and that is what Funds in counts.' });
       if (estimate != null && estimate !== chk.commission) out.push({ warn: true, text: councilEstimateText(estimate, chk.commission) });
@@ -10049,7 +10224,16 @@
   function scoutOwesCents(scoutId) { return familyOutstanding(state.charges, state.ledger, scoutId, chargeFamilyKey); }
   function familyAccountsNow() { return familyAccounts(state.charges, state.ledger, chargeFamilyKey); }
   // E2 — who is doing this, for the audit trail (ledgerActorName), and the stamps it leaves.
-  function ledgerActor() { return ledgerActorName(sync.user, state.leaders); }
+  // On the pack's own server, exactly what the server signs this member as (access.js signerName, over the member
+  // name it holds): what it checks a setting line's `by`, a deposit's and an accept's names against (final security
+  // check of 8dced37). A member with no name is 'a signed-in leader' there too, never this device's display name.
+  function ledgerActor() {
+    if (sync.backend && sync.backend.startSession && accountsInForce()) {
+      var n = String(sync.myName == null ? '' : sync.myName).trim();
+      return n && n.indexOf('@') === -1 ? n : 'a signed-in leader';
+    }
+    return ledgerActorName(sync.user, state.leaders);
+  }
   function ledgerActorUid() { return (sync.user && sync.user.uid) ? String(sync.user.uid) : ''; }
   function stampEntered(e) {
     e.enteredBy = ledgerActor();
@@ -10286,6 +10470,7 @@
     statementId: 'statement', reversedBy: 'reversed by',   // treasurer review of C6 (5)
     forgiven: 'forgiveness',   // security re-check of C6 (N3): a charge's forgiveness lost to a merge
     closedYears: 'years closed out',   // Phase 3, C8 (C8-2): what a 'close' event changed (before, after)
+    depositReview: 'awaiting the treasurer\u2019s review', depositReviewNote: 'question for the Popcorn Kernel',   // the treasurer's review of 045e7ac (6)
     // Item 11 — what a storefront cash deposit covers.
     councilSettled: 'popcorn settled with the council',
     depositDays: 'deposit kept storefront cash within (days)',
@@ -11928,7 +12113,7 @@
     } else if (!plan) {
       h += '<p>Find ' + esc(o.name) + ' in the official adventure list above for its requirements and den meeting ideas.</p>';
     } else h += advPlanBodyHtml(plan, o.open);
-    h += advNoteBlock(key, canEdit());
+    h += advNoteBlock(key, canEditSection('denplan'));
     return h + '</div></div></div>';
   }
   // Opens the panel, and fills it when the plans arrive. A panel closed (or replaced) meanwhile is
@@ -14096,7 +14281,9 @@
     var today = todayISO();
     var runs = adventureRuns();
     var py = state.budget.programYear;
-    var edit = canEdit();
+    // Pack positions — adding meetings (Plan a meeting, Fill the calendar) is the calendar's; each den's
+    // adventure at a meeting is that meeting's (canEditDenMeeting, in denMeetingsBlock).
+    var edit = canEditSection('calendar');
     var h = '<div class="card"><h2 class="section display">Den year plans</h2>' +
       '<p class="small muted" style="margin:0">Each den’s required adventures against the den meetings tagged with them in the ' +
       py + '–' + (py + 1) + ' program year. A rank is the six required ' +
@@ -14153,7 +14340,7 @@
             denOfferedLine(el.offeredAt, today) + (function (t) { return t ? ' · ' + t : ''; })(denPlanProgress(den, el.name, py))) + '</span>' +
             advPlanBtn(den, el.name) + '</div>';
       });
-      h += denMeetingsBlock(den, today, edit);
+      h += denMeetingsBlock(den, today);
       h += '</div>';
     });
     return h;
@@ -14162,7 +14349,7 @@
   // the den works on at each. This is where a den leader changes their den's line on an
   // All-dens night: still on last week's adventure, ahead, or not there (a make-up of its own).
   // Upcoming only until asked; a held meeting is changed to record what really happened.
-  function denMeetingsBlock(den, today, edit) {
+  function denMeetingsBlock(den, today) {
     var py = state.budget.programYear;
     var from = programYearStartISO(py), to = programYearEndISO(py);
     var all = state.events.filter(function (e) {
@@ -14187,7 +14374,7 @@
       // The meeting's extra adventures (evOffers), in this den's own version.
       var alsoNames = evOffers(e).map(function (o) { return packAdvName(o.key, den); }).filter(Boolean);
       var right;
-      if (edit) {
+      if (canEditDenMeeting(e, den)) {
         var cur = at.from === 'off' ? '-' : (at.from === 'den' || at.from === 'own') ? at.name : '';
         var packNm = shared ? packAdvName(e.packAdv, den) : '';
         var inList = !cur || cur === '-' || adv.required.indexOf(cur) !== -1 || adv.electives.indexOf(cur) !== -1;
@@ -14296,7 +14483,7 @@
               return '<label class="fld" style="margin:0 0 6px">' + esc(x.name) +
                 '<input type="text" maxlength="' + ADV_PARTIAL_NOTE_MAX + '" data-ch="adv-partial-note" data-scout="' + esc(s.id) + '" data-kind="' + x.kind +
                 '" data-name="' + esc(x.name) + '" value="' + esc(advNote(s.id, x.kind, x.name)) + '" placeholder="What is left, e.g. needs the 2-mile hike"' +
-                (canEdit() ? '' : ' readonly') + ' aria-label="' + esc('Note on ' + x.name + ' in progress for ' + s.name) + '"></label>';
+                (canEditSection('advancement') ? '' : ' readonly') + ' aria-label="' + esc('Note on ' + x.name + ' in progress for ' + s.name) + '"></label>';
             }).join('');
           }
           h += '<p class="eyebrow">Electives — ' + esc(s.name) + '</p>';
@@ -14634,6 +14821,10 @@
     user: null,                // Google identity {uid, displayName, email, photoURL} or null (null = anonymous/legacy)
     members: [],               // live roster from packs/{docId}/members — runtime only, lives in Firestore
     myRole: null,              // this user's role: 'admin' | 'editor' | 'viewer' | 'pending' | null
+    myPositions: [],           // the pack's own server: the positions this account holds (myAccess)
+    sectionRefused: null,      // the sections the server refused this device's last save (syncPush takes the server's copy of them, once)
+    sectionRetried: false,
+    leadDens: [],              // …and the dens it leads as a Den Leader (own-den scope)
     ownerUid: null,            // packmeta/{docId}.owner — the first person to sign in / claim the pack
     ownerHealing: false,       // the owner's member doc vanished and ensureMyMemberDoc is recreating it
     accountsUnavailable: false,// true when packmeta/members reads are permission-denied (legacy rules) → roles NOT enforced
@@ -14943,6 +15134,8 @@
     sync.membersDeniedAs = null;
     sync.members = [];
     sync.myRole = null;
+    sync.myPositions = [];
+    sync.leadDens = [];
     sync.ownerUid = null;
     sync.accountsUnavailable = false;
     // Parent phase: the derived-view feed + invite listener belong to ONE pack (docId), so
@@ -14963,6 +15156,7 @@
     ui.srConfirmCollected = false;
     ui.srReturn = null;
     ui.srOverride = null;
+    ui.srCashUndo = null;
     sync.feed = sync.unsub ? sync.feed : null;
     if (sync.invitesUnsub) { try { sync.invitesUnsub(); } catch (e) { /* already gone */ } sync.invitesUnsub = null; }
     sync.invites = [];
@@ -15290,8 +15484,12 @@
       var code = 'unavailable';
       if (body) {
         if (s === 403) {
-          // The server's refusal is ALWAYS exactly this body; anything else is not the server.
+          // The server's refusal is ALWAYS exactly this body; anything else is not the server. Or, for a
+          // save that changes parts the caller's positions don't edit (pack positions), the same with
+          // reason 'section' and the sections refused (functions/_lib/http.js forbiddenSections).
           if (Object.keys(body).length === 2 && body.error === 'forbidden' && body.code === 'permission-denied') code = 'permission-denied';
+          else if (Object.keys(body).length === 4 && body.error === 'forbidden' && body.code === 'permission-denied' && body.reason === 'section' &&
+            Array.isArray(body.sections) && body.sections.length && body.sections.every(function (x) { return typeof x === 'string'; })) code = 'permission-denied';
         } else if (s === 401) code = 'unauthenticated';
         else if (s === 409 && body.code === 'aborted') code = 'aborted';
         else if (s === 409 && body.code === 'failed-precondition') code = 'failed-precondition';
@@ -15301,6 +15499,7 @@
       }
       var err = this.fail(code, s, body);
       if (code === 'aborted') err.remote = body;
+      if (code === 'permission-denied' && body && body.reason === 'section') err.sections = body.sections.slice();
       if (s === 429) {
         var wait = Number(res.headers.get('retry-after'));
         if (isFinite(wait) && wait > 0) err.retryAfter = wait;
@@ -15604,6 +15803,12 @@
         } });
     },
     updateMemberRole: function (docId, uid, role) { return this.write('PATCH', this.memberPath(docId, uid), { role: role }); },
+    // Pack positions (an admin's): the positions this account holds, all at once, and the dens a Den Leader leads.
+    updateMemberPositions: function (docId, uid, positions, dens) {
+      var body = { positions: positions };
+      if (dens && dens.length) body.dens = dens;
+      return this.write('PATCH', this.memberPath(docId, uid), body);
+    },
     deleteMember: function (docId, uid) { return this.write('DELETE', this.memberPath(docId, uid)); },
     invitePath: function (docId, key) { return this.packPath(docId, '/invites/' + encodeURIComponent(key)); },
     subscribeInvites: function (docId, onNext, onErr) {
@@ -15624,6 +15829,12 @@
     },
     // The server records who invited from the token; only the role and the address are sent.
     putInvite: function (docId, key, data) {
+      // A leader invite carries its positions (and a den leader's dens); its role is the server's to work out.
+      if (data && Array.isArray(data.positions) && data.positions.length) {
+        var body = { positions: data.positions, email: key };
+        if (Array.isArray(data.dens) && data.dens.length) body.dens = data.dens;
+        return this.write('PUT', this.invitePath(docId, key), body);
+      }
       return this.write('PUT', this.invitePath(docId, key), { role: data && data.role, email: key });
     },
     deleteInvite: function (docId, key) { return this.write('DELETE', this.invitePath(docId, key)); },
@@ -16055,9 +16266,356 @@
   // collections are reachable. Anonymous, legacy-rules (permission-denied), and no-config
   // all fall through to "not in force" → everyone edits, precisely today's behavior.
   function accountsInForce() { return !!(sync.user && !sync.accountsUnavailable); }
+  // Does this account edit anything at all? With roles not in force, everyone edits everything, as
+  // always. On Firestore: admin and editor. On the pack's own server (pack positions): a leader whose
+  // positions edit at least one section, or an admin; a retired editor or viewer edits nothing.
+  // WHICH parts they edit is canEditSection's; this is only "anything".
   function canEdit() {
     if (!accountsInForce()) return true;              // anonymous / legacy / accounts-unavailable → full edit
-    return sync.myRole === 'admin' || sync.myRole === 'editor';
+    var a = myAccess().access;
+    return ACCESS_TABLE.sections.some(function (s) { return a[s] === 'edit'; });
+  }
+  // ---- Pack positions: what this account may do with each part of the app (stage 1, 2026-10-02) ----
+  // Each section of the app (ACCESS_TABLE.sections: WORKSPACES' sections, plus 'attendance',
+  // 'calendar.denmeeting' and 'deposits') is 'edit', 'read' or 'hidden' for this account:
+  //   - roles not in force (no sign-in, legacy rules, no accounts): 'edit' everywhere, as always;
+  //   - Firestore (sync.backend has no startSession): the four roles, as Part C has them: admin and
+  //     editor edit everything, a viewer reads it, a parent or pending account sees none of it;
+  //   - the pack's own server: functions/_lib/access.js effectiveAccess, from the role and the
+  //     positions the server says this account holds (sync.myPositions, from the session and the
+  //     members list). The SERVER enforces it (the pack PUT refuses a section the caller can't
+  //     edit); this only lets the page say so first, and hide what is hidden. HIDDEN IS NOT
+  //     PRIVATE in stage 1: the whole record still reaches every leader's device.
+  // A position is not a job: nothing here reads JOBS, myJobs() or leaders[].jobs (the harness checks).
+  // Memoized on what it is decided from.
+  var ACCESS_LEVELS = ['hidden', 'read', 'edit'];
+  function apiAccounts() { return !!(sync.backend && sync.backend.startSession); }
+  // effectiveAccess (access.js), on the page's copy of the table: section (and bucket) -> level.
+  function accessFor(role, positions) {
+    var out = {}, all = ACCESS_TABLE.sections.concat(['admin', 'shared']);
+    function fill(v) { all.forEach(function (s) { out[s] = v; }); }
+    if (role === 'admin') { fill('edit'); return out; }
+    if (role === 'editor' || role === 'viewer') { fill('read'); return out; }
+    fill('hidden');
+    if (role !== 'leader') return out;
+    var held = arrOf(positions), any = false;
+    ACCESS_TABLE.sections.forEach(function (s) {
+      var best = 0;
+      held.forEach(function (p) {
+        var a = typeof p === 'string' && Object.prototype.hasOwnProperty.call(ACCESS_TABLE.access, p) ? ACCESS_TABLE.access[p] : null;
+        if (!a) return;
+        var lv = a.edit.indexOf(s) !== -1 ? 'edit' : a.hidden.indexOf(s) !== -1 ? 'hidden' : a['default'];
+        best = Math.max(best, ACCESS_LEVELS.indexOf(lv));
+      });
+      out[s] = ACCESS_LEVELS[best];
+      if (best === 2) any = true;
+    });
+    if (out.calendar === 'edit') out['calendar.denmeeting'] = 'edit';
+    out.shared = any ? 'edit' : 'read';
+    out.admin = 'read';
+    return out;
+  }
+  // effectiveActions (access.js): action -> true/false. An admin may do each; a leader, an action
+  // one of their positions lists; nobody else.
+  function actionsFor(role, positions) {
+    var out = {}, held = arrOf(positions);
+    Object.keys(ACCESS_TABLE.actions).forEach(function (a) {
+      out[a] = role === 'admin' || (role === 'leader' && held.some(function (p) { return ACCESS_TABLE.actions[a].indexOf(p) !== -1; }));
+    });
+    return out;
+  }
+  var accessMemo = { key: null, access: null, actions: null };
+  function myAccess() {
+    var inForce = accountsInForce(), api = apiAccounts();
+    var key = (inForce ? 1 : 0) + '|' + (api ? 1 : 0) + '|' + String(sync.myRole || '') + '|' + arrOf(sync.myPositions).join(',');
+    if (accessMemo.key === key) return accessMemo;
+    var access, actions = {};
+    if (!inForce) {
+      access = accessFor('admin', []);
+      Object.keys(ACCESS_TABLE.actions).forEach(function (k) { actions[k] = true; });
+    } else if (!api) {
+      // Firestore: Part C's four roles. An editor edits everything but the admin-only keys.
+      var r = sync.myRole;
+      access = accessFor(r === 'admin' || r === 'editor' ? 'admin' : r === 'viewer' ? 'viewer' : 'none', []);
+      if (r === 'editor') access.admin = 'read';
+      Object.keys(ACCESS_TABLE.actions).forEach(function (k) { actions[k] = r === 'admin' || r === 'editor'; });
+    } else {
+      access = accessFor(sync.myRole, sync.myPositions);
+      actions = actionsFor(sync.myRole, sync.myPositions);
+    }
+    accessMemo = { key: key, access: access, actions: actions };
+    return accessMemo;
+  }
+  // 'edit' | 'read' | 'hidden' for a section id; a section the table doesn't know is the admin
+  // bucket's (as the server treats a key it doesn't know).
+  function sectionAccess(id) {
+    var a = myAccess().access;
+    return Object.prototype.hasOwnProperty.call(a, id) ? a[id] : a.admin;
+  }
+  function canEditSection(id) { return sectionAccess(id) === 'edit'; }
+  function canSeeSection(id) { return sectionAccess(id) !== 'hidden'; }
+  // An action of the table (shiftVerify, shiftUndo) this account may do.
+  function canDo(action) { return myAccess().actions[action] === true; }
+  // Who to ask about a section a leader can't edit, and what to call it: [what, who]. Plain words
+  // for the toast below; the usual owner is the position that runs it day to day.
+  var SECTION_SAY = {
+    home: ['Home', ''], calendar: ['the calendar', 'the Cubmaster'], 'calendar.denmeeting': ['den meetings', 'the Cubmaster'],
+    attendance: ['attendance', 'a den leader'], denplan: ['den plans', 'the Cubmaster'], derby: ['the derby', 'the Pinewood Derby Chair'],
+    camping: ['camping', 'the Outdoor / Camping Chair'], roster: ['the roster', 'the Membership Chair'], advancement: ['advancement', 'the Advancement Chair'],
+    joining: ['new families', 'the Membership Chair'], storefronts: ['storefronts', 'the Popcorn Kernel'], totals: ['popcorn standings', 'the Popcorn Kernel'],
+    rewards: ['popcorn rewards', 'the Popcorn Kernel'], inventory: ['popcorn inventory', 'the Popcorn Kernel'],
+    council: ['the council page', 'the Popcorn Kernel'], budget: ['the budget', 'the Treasurer'], ledger: ['the ledger', 'the Treasurer'],
+    deposits: ['deposits', 'the Treasurer'], dues: ['dues and fees', 'the Treasurer'], fundraisers: ['fundraisers', 'the Treasurer'],
+    sharing: ['sharing', ''], people: ['the People page', 'the Committee Chair'], season: ['the season', 'the Committee Chair']
+  };
+  // ---- The section guard: what a leader's page keeps, sends and takes (client step 3, 2026-10-02) ----
+  // On the pack's own server, below an admin. Firestore, an admin, and a pack with no accounts are as
+  // they always were (sectionGuardOn false). The server is the real check (access.js refusedSections);
+  // this keeps a leader's page from sending what it would refuse, and puts the pack's copy back when
+  // it does refuse.
+  function sectionGuardOn() { return apiAccounts() && accountsInForce() && sync.myRole !== 'admin'; }
+  function ownKey(o, k) { return !!o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k); }
+  // The section (or bucket, or list of sections) a key of the record belongs to, as access.js has it;
+  // a key it doesn't know is 'admin'. state.gone by its sub-keys.
+  function keyOwnerOf(k) { return ownKey(ACCESS_TABLE.keyOwner, k) ? ACCESS_TABLE.keyOwner[k] : 'admin'; }
+  function goneOwnerOf(g) { return ownKey(ACCESS_TABLE.goneOwner, g) ? ACCESS_TABLE.goneOwner[g] : 'admin'; }
+  function ownerEditable(owner) {
+    return (Array.isArray(owner) ? owner : [owner]).some(function (x) { return typeof x === 'string' && sectionAccess(x) === 'edit'; });
+  }
+  // May this account change key `k` at all: its whole section, or a slice the server checks entry by
+  // entry (a den meeting's fields, a shift report's block fields, a storefront deposit, a log line)?
+  function keyWritable(k) {
+    if (ownerEditable(keyOwnerOf(k))) return true;
+    if (k === 'events') return canEditSection('calendar.denmeeting');
+    if (k === 'storefronts') return canDo('shiftVerify');
+    if (k === 'ledger') return canEditSection('deposits');
+    if (k === 'ledgerLog') return canEdit();
+    return false;
+  }
+  // May this account change a den meeting's adventure, notes and adventures offered (no `den`), or, on an
+  // All-dens night, one den's line of it (`den`)? Whoever edits the calendar may change anything; a Den
+  // Leader or Assistant Den Leader, only their own dens' (own-den scope, Keith 2026-10-02: the dens an
+  // admin named, sync.leadDens). The server holds the same rule (access.js denMeetingChangeOk).
+  function canEditDenMeeting(ev, den) {
+    if (canEditSection('calendar')) return true;
+    if (!ev || ev.kind !== 'den' || !canEditSection('calendar.denmeeting')) return false;
+    var mine = sectionGuardOn() ? arrOf(sync.leadDens) : DENS;
+    if (ev.den) return mine.indexOf(ev.den) !== -1;
+    return !!den && mine.indexOf(den) !== -1;
+  }
+  // commit()'s guard for a leader who changes den meetings but not the calendar: each event kept as it was
+  // but for what canEditDenMeeting allows on it (the den meeting fields of their own dens' meetings; on an
+  // All-dens night, their dens' lines of denAdv). An event added or removed goes back. { list, back }.
+  function denMeetingKeep(before, after) {
+    var was = {}, now = {}, back = false, fields = ACCESS_TABLE.denMeetingFields;
+    arrOf(before).forEach(function (e) { if (e && e.id) was[e.id] = e; });
+    arrOf(after).forEach(function (e) { if (e && e.id) now[e.id] = e; });
+    function same(a, b) { return JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b); }
+    var list = arrOf(before).map(function (b) {
+      if (!b || !b.id) return b;
+      var e = now[b.id];
+      if (!e) { back = true; return b; }
+      if (same(b, e)) return e;
+      var ok = b.kind === 'den' && e.kind === 'den' && Object.keys(b).concat(Object.keys(e)).every(function (k) {
+        return fields.indexOf(k) !== -1 || same(b[k], e[k]);
+      });
+      if (ok && b.den) ok = canEditDenMeeting(b);
+      else if (ok) {
+        ok = fields.every(function (k) { return k === 'denAdv' || same(b[k], e[k]); });
+        var db = b.denAdv || {}, da = e.denAdv || {};
+        if (ok) ok = Object.keys(db).concat(Object.keys(da)).every(function (d) { return same(db[d], da[d]) || canEditDenMeeting(b, d); });
+      }
+      if (!ok) back = true;
+      return ok ? e : b;
+    });
+    arrOf(after).forEach(function (e) { if (e && e.id && !was[e.id]) back = true; });
+    return { list: list, back: back };
+  }
+  // …and for a leader who records deposits but doesn't edit the ledger: the rows as they were, and their own
+  // new storefront deposits, flagged for the treasurer (access.js depositRowOk). { list, back }.
+  function depositOnlyKeep(before, after) {
+    var was = {}, me = ledgerActorUid(), back = false;
+    arrOf(before).forEach(function (e) { if (e && e.id) was[e.id] = e; });
+    var list = arrOf(before).slice();
+    var nowIds = {};
+    arrOf(after).forEach(function (e) {
+      if (!e || !e.id) return;
+      nowIds[e.id] = true;
+      if (was[e.id]) { if (JSON.stringify(was[e.id]) !== JSON.stringify(e)) back = true; return; }
+      if (e.enteredByUid === me && e.depositReview === true && e.source === 'storefront' && e.direction === 'in') list.push(e);
+      else back = true;
+    });
+    arrOf(before).forEach(function (e) { if (e && e.id && !nowIds[e.id]) back = true; });
+    return { list: list, back: back };
+  }
+  // The copy this device's own edits are measured from: the server's as this device last took it in
+  // (the sync base), else what this device last saved. null when there is neither.
+  function guardBaseline() {
+    var b = syncBaseGet(), raw = null;
+    try { raw = b ? b.json : localStorage.getItem(KEY); } catch (e) { raw = null; }
+    try { var d = raw ? JSON.parse(raw) : null; return d && typeof d === 'object' && !Array.isArray(d) ? d : null; } catch (e2) { return null; }
+  }
+  // commit()'s guard: each key this account can't change goes back to the baseline, before anything
+  // is saved or marked unsynced. Returns the sections put back (none: []). state.gone by sub-key.
+  function rollbackUneditable(was) {
+    var back = [];
+    function note(owner) { (Array.isArray(owner) ? owner : [owner]).forEach(function (x) { if (back.indexOf(x) === -1) back.push(x); }); }
+    function same(a, b) { return JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b); }
+    Object.keys(state).concat(Object.keys(was)).forEach(function (k) {
+      if (k === 'rev' || k === 'fmt') return;
+      if (k === 'gone') {
+        var gs = ownKey(state, 'gone') && state.gone && typeof state.gone === 'object' ? state.gone : null, gw = was.gone && typeof was.gone === 'object' ? was.gone : {};
+        if (!gs) return;
+        Object.keys(gs).concat(Object.keys(gw)).forEach(function (g) {
+          if (ownerEditable(goneOwnerOf(g)) || same(gs[g], gw[g])) return;
+          if (ownKey(gw, g)) gs[g] = JSON.parse(JSON.stringify(gw[g])); else delete gs[g];
+          note(goneOwnerOf(g));
+        });
+        return;
+      }
+      if (same(state[k], was[k])) return;
+      // The slices the server checks entry by entry: kept as far as they go, the rest put back.
+      if (k === 'events' && !ownerEditable(keyOwnerOf(k)) && canEditSection('calendar.denmeeting')) {
+        var dk = denMeetingKeep(JSON.parse(JSON.stringify(arrOf(was.events))), state.events);
+        if (dk.back) { state.events = dk.list; note('calendar'); }
+        return;
+      }
+      if (k === 'ledger' && !ownerEditable(keyOwnerOf(k)) && canEditSection('deposits')) {
+        var lk = depositOnlyKeep(JSON.parse(JSON.stringify(arrOf(was.ledger))), state.ledger);
+        if (lk.back) { state.ledger = lk.list; note('ledger'); }
+        return;
+      }
+      if (keyWritable(k)) return;
+      if (ownKey(was, k)) state[k] = JSON.parse(JSON.stringify(was[k])); else delete state[k];
+      note(keyOwnerOf(k));
+    });
+    return back.filter(function (x) { return x !== 'admin' && x !== 'shared'; }).concat(back.filter(function (x) { return x === 'admin'; }));
+  }
+  // What syncPush sends: this device's copy, but for what this account can't change, which is the
+  // server's (`srv`, the record as read for this save), so a change made for it (the charges the
+  // attendance raises, a shape a load fills in) is never sent to be refused. And, below an admin,
+  // the parts the server holds entry by entry are sent as it will take them (security review of
+  // 714a920..045e7ac, (b) and (c)): the two logs, the server's lines and this account's own new ones
+  // (a restored copy's lines by others are not sent again); the statements, the server's and this
+  // account's own new ones (a legacy statement this page made on load is an admin's to write); a
+  // deposit-only leader's ledger, the server's rows and their own new deposits; a scout's parent
+  // accounts and a linked scout's family, the server's; the version, the server's; the format, at
+  // most one past the server's. `refused` (sync.sectionRefused): sections the server refused this
+  // save, taken from the server whole. A new object; `st` is not changed.
+  function pushBody(st, srv, refused) {
+    if (!sectionGuardOn() || !srv || typeof srv !== 'object') return st;
+    var out = {}, me = ledgerActorUid(), r = arrOf(refused);
+    function clone(v) { return v === undefined ? undefined : JSON.parse(JSON.stringify(v)); }
+    function put(k, v) { if (v === undefined) delete out[k]; else out[k] = v; }
+    function taken(owner) { return (Array.isArray(owner) ? owner : [owner]).some(function (x) { return r.indexOf(x) !== -1; }); }
+    Object.keys(st).forEach(function (k) { out[k] = st[k]; });
+    Object.keys(st).concat(Object.keys(srv)).forEach(function (k) {
+      if (k === 'rev' || k === 'fmt') return;
+      if (k === 'gone') {
+        var g = {}, gs = st.gone && typeof st.gone === 'object' ? st.gone : {}, gv = srv.gone && typeof srv.gone === 'object' ? srv.gone : {};
+        Object.keys(gs).concat(Object.keys(gv)).forEach(function (x) {
+          var mine = ownerEditable(goneOwnerOf(x)) && !taken(goneOwnerOf(x));
+          var v = mine ? gs[x] : gv[x];
+          if (v !== undefined) g[x] = v;
+        });
+        put('gone', g);
+        return;
+      }
+      var owner = keyOwnerOf(k);
+      if (taken(owner) || !keyWritable(k)) { put(k, clone(srv[k])); return; }
+      if (k === 'ledger' && !ownerEditable(owner)) {
+        var hadL = {};
+        arrOf(srv.ledger).forEach(function (e) { if (e && e.id) hadL[e.id] = true; });
+        put(k, clone(arrOf(srv.ledger)).concat(arrOf(st.ledger).filter(function (e) {
+          return e && !hadL[e.id] && e.enteredByUid === me && e.depositReview === true;
+        })));
+      }
+    });
+    // The logs: the server's lines, and this account's own new ones.
+    function ownNew(list, had) { return arrOf(list).filter(function (e) { return e && typeof e.id === 'string' && !had[e.id] && e.byUid === me; }); }
+    function idsOf(list) { var h = {}; arrOf(list).forEach(function (e) { if (e && typeof e.id === 'string') h[e.id] = true; }); return h; }
+    if (ownKey(out, 'ledgerLog') && keyWritable('ledgerLog') && !taken('ledger')) {
+      out.ledgerLog = mergeLedgerLog(clone(arrOf(srv.ledgerLog)), clone(ownNew(st.ledgerLog, idsOf(srv.ledgerLog))));
+    }
+    if (ownKey(out, 'syncLog') && keyWritable('syncLog') && !taken('shared')) {
+      out.syncLog = mergeSyncLog(clone(arrOf(srv.syncLog)), clone(ownNew(st.syncLog, idsOf(srv.syncLog))));
+    }
+    if (ownKey(out, 'statements') && keyWritable('statements') && !taken('ledger')) {
+      var hadS = idsOf(srv.statements);
+      out.statements = clone(arrOf(srv.statements)).concat(clone(arrOf(st.statements).filter(function (x) {
+        return x && !hadS[x.id] && x.byUid === me && !x.legacy && !x.reviewedAt && !x.reopenedAt && !x.addedAt;
+      })));
+    }
+    // A scout's parent accounts, and a linked scout's family: the server's.
+    if (keyWritable('scouts') && !taken('roster') && Array.isArray(out.scouts) && Array.isArray(srv.scouts)) {
+      var sv = {};
+      srv.scouts.forEach(function (x) { if (x && typeof x.id === 'string') sv[x.id] = x; });
+      out.scouts = out.scouts.map(function (x) {
+        if (!x || typeof x !== 'object') return x;
+        var o = sv[x.id], y = clone(x), had = o ? arrOf(o.parentUids) : [];
+        // As the server has the key (an absent one stays absent; a new scout has none).
+        if (o && ownKey(o, 'parentUids')) y.parentUids = clone(o.parentUids);
+        else if (arrOf(y.parentUids).length || (o && !ownKey(o, 'parentUids'))) { if (o) delete y.parentUids; else y.parentUids = []; }
+        if (had.length) { if (ownKey(o, 'familyId')) y.familyId = o.familyId; else delete y.familyId; }
+        return y;
+      });
+    }
+    if (ownKey(srv, 'version')) out.version = srv.version;
+    if (typeof srv.fmt === 'number' && isFinite(srv.fmt) && typeof out.fmt === 'number' && out.fmt > srv.fmt + 1) out.fmt = Math.floor(srv.fmt) + 1;
+    return out;
+  }
+  // The server refused a save for `sections` (403 'section'): this device takes the server's copy of
+  // what those sections own (and, for 'admin', the parts above that are an admin's), keeps the rest,
+  // and tries once more (syncPush, via sync.sectionRefused). In place on state; `srv` is the record.
+  function takeServerSections(sections, srv) {
+    if (!srv || typeof srv !== 'object') return;
+    var r = arrOf(sections);
+    function takes(owner) { return (Array.isArray(owner) ? owner : [owner]).some(function (x) { return r.indexOf(x) !== -1; }); }
+    Object.keys(state).concat(Object.keys(srv)).forEach(function (k) {
+      if (k === 'rev' || k === 'fmt' || k === 'gone') return;
+      if (!takes(keyOwnerOf(k))) return;
+      if (ownKey(srv, k)) state[k] = JSON.parse(JSON.stringify(srv[k])); else delete state[k];
+    });
+    if (state.gone && srv.gone && typeof srv.gone === 'object') {
+      Object.keys(state.gone).concat(Object.keys(srv.gone)).forEach(function (g) {
+        if (!takes(goneOwnerOf(g))) return;
+        if (ownKey(srv.gone, g)) state.gone[g] = JSON.parse(JSON.stringify(srv.gone[g])); else delete state.gone[g];
+      });
+    }
+  }
+  // Every key (and deletion-mark log) this account can't change, as the server has it (`srv`). In place on state.
+  function takeServerUnwritable(srv) {
+    if (!srv || typeof srv !== 'object' || Array.isArray(srv)) return;
+    Object.keys(state).concat(Object.keys(srv)).forEach(function (k) {
+      if (k === 'rev' || k === 'fmt' || k === 'gone' || keyWritable(k)) return;
+      if (ownKey(srv, k)) state[k] = JSON.parse(JSON.stringify(srv[k])); else delete state[k];
+    });
+    if (state.gone && srv.gone && typeof srv.gone === 'object') {
+      Object.keys(state.gone).concat(Object.keys(srv.gone)).forEach(function (g) {
+        if (ownerEditable(goneOwnerOf(g))) return;
+        if (ownKey(srv.gone, g)) state.gone[g] = JSON.parse(JSON.stringify(srv.gone[g])); else delete state.gone[g];
+      });
+    }
+  }
+  // Said when the server refused part of a save and this device put the pack's copy back.
+  // `undoAsk` (srUndoAskTake): a booth leader's undo of an accept was in the change, and the server can't
+  // check it against a report (the treasurer's sign-off of ce6b8de, 3): who can undo it is said, not a bare refusal.
+  function sectionRefusedSay(sections, undoAsk) {
+    var r = arrOf(sections).filter(function (x) { return x !== 'shared'; });
+    var first = r.filter(function (x) { return x !== 'admin'; })[0] || r[0] || '';
+    if (undoAsk && first === 'storefronts') return 'Your undo wasn’t saved: the pack’s server couldn’t check it against the family’s report. ' + SR_UNDO_ASK;
+    var say = SECTION_SAY[first];
+    return 'Some of your change wasn’t saved, because ' + (say ? 'your positions don’t let you change ' + say[0] : 'only a pack admin can change that') +
+      '. This device now shows the pack’s version.';
+  }
+  // The words for an edit this account can't make (the treasurer's review of 045e7ac, 2: the old
+  // toast sent everyone to a role that no longer exists). `section` is the part they tried to change.
+  function readOnlySay(section) {
+    if (!accountsInForce() || !apiAccounts()) return 'Read-only access \u2014 ask a pack admin to make you an editor.';
+    if (sync.myRole === 'editor' || sync.myRole === 'viewer') return 'Your account needs a pack position before you can change anything. Ask a pack admin.';
+    var say = SECTION_SAY[section];
+    if (!say) return 'Your positions don\u2019t let you change this. Ask a pack admin.';
+    return 'Your positions don\u2019t let you change ' + say[0] + '. Ask ' + (say[1] ? say[1] + ' or ' : '') + 'a pack admin.';
   }
   // Parent phase — this user must NEVER see the pack record. Their whole app (renderParentApp)
   // is built from sync.parentView alone, so nothing in `state` can leak into their screen
@@ -16122,6 +16680,10 @@
   // archive (its signed statements and change history, since decision 19) over everyone's. The same
   // gate: canReopenStatement (an admin; with no accounts, whoever edits). The treasurer's words.
   var CLOSEOUT_REFUSED = 'Only a pack admin can close out the year.';
+  // Keith (2026-10-02) — so is Advance dens: it moves every scout up a rank and archives the Arrow of Light
+  // scouts, once a year. The same gate (an admin; with no accounts, whoever edits); anyone else is told whose it is.
+  var ADVANCE_DENS_REFUSED = 'Only a pack admin advances the dens. At crossover, ask one to move every scout up a rank.';
+  function canAdvanceDens() { return canReopenStatement(); }
   var KEEP_LOCAL_REFUSED = 'Only a pack admin can keep this device’s copy: it would replace a year another device closed out. Ask an admin, or use the cloud copy.';
   function adminCount() {
     var n = 0;
@@ -16135,10 +16697,18 @@
   }
   function recomputeMyRole() {
     sync.myRole = null;
+    sync.myPositions = [];
+    sync.leadDens = [];
     var uid = sync.user ? sync.user.uid : null;
     if (!uid) return;
     for (var i = 0; i < sync.members.length; i++) {
-      if (sync.members[i].uid === uid) { sync.myRole = sync.members[i].role || null; return; }
+      if (sync.members[i].uid === uid) {
+        sync.myRole = sync.members[i].role || null;
+        if (typeof sync.members[i].name === 'string') sync.myName = sync.members[i].name;
+        sync.myPositions = arrOf(sync.members[i].positions).slice();
+        sync.leadDens = arrOf(sync.members[i].dens).slice();
+        return;
+      }
     }
   }
   // Wave 21 — the account -> leader-record link. `sync.members` (uid + email) and
@@ -16166,12 +16736,24 @@
   // MEMBER_ROLES' job alone. [] means "we don't know", which is a valid, fully-working state:
   // Home falls back to the pack-wide queue and every workspace behaves exactly as before.
   function myJobs() {
+    // Pack positions (client step 6) — on the pack's own server a leader's positions are their jobs (the same ids):
+    // still only a lens here, for Home's order and the "yours" marks; what they may change is the positions' own.
+    var pj = positionJobs(sync.myRole, sync.myPositions);
+    if (pj) return pj;
     var l = leaderForUser();
     return l ? arrOf(l.jobs) : [];
+  }
+  // The jobs a member's positions name (every position but Parent is a job of the same id), or null when there
+  // are none to go by (Firestore, no accounts, or not a leader with positions).
+  function positionJobs(role, positions) {
+    if (!apiAccounts() || !accountsInForce() || role !== 'leader') return null;
+    var ids = arrOf(positions).filter(function (x) { return x !== 'parent' && JOB_BY_ID[x]; });
+    return ids.length ? ids : null;
   }
   function hasJob(id) { return myJobs().indexOf(id) !== -1; }
   // The dens a den-leader user is scoped to. [] = all dens (the default for everyone else).
   function myDens() {
+    if (positionJobs(sync.myRole, sync.myPositions)) return arrOf(sync.leadDens).slice();   // the dens an admin named
     var l = leaderForUser();
     return (l && leaderIsDenLeader(l)) ? arrOf(l.dens) : [];
   }
@@ -16186,6 +16768,8 @@
       sync.membersScope = null;
       sync.members = [];
       sync.myRole = null;
+      sync.myPositions = [];
+      sync.leadDens = [];
       sync.ownerUid = null;
     }
     if (ui.tab === 'pack') render();
@@ -16260,6 +16844,10 @@
       if (sync.session !== mine) return;
       sync.ownerUid = s.ownerUid || null;
       sync.myRole = s.role || null;
+      sync.myName = s.member && typeof s.member.name === 'string' ? s.member.name : null;
+      // Pack positions (the pack's own server): what this account may edit (myAccess), and the dens it leads.
+      sync.myPositions = s.member ? arrOf(s.member.positions).slice() : [];
+      sync.leadDens = s.member ? arrOf(s.member.dens).slice() : [];
       if (!sync.myRole) sync.joinRejected = SESSION_REJECTS.indexOf(s.rejected) !== -1 ? s.rejected : 'nolink';
       render();
       runAfter(sync.myRole);
@@ -16295,7 +16883,9 @@
   // moves onto the pack record. The scope follows the role both ways, and a denied roster read
   // (a leader demoted mid-session) drops to the own-doc watch rather than being read as "the
   // rules aren't published", which is what handleAccountsError would conclude.
-  var LEADER_ROLES = ['admin', 'editor', 'viewer'];
+  // 'leader' (a leader holding pack positions) exists only on the API backend (functions/_lib/rules.js
+  // LEADER_ROLES); Firestore never has one, so there the list is Part C's isLeader() as before.
+  var LEADER_ROLES = ['admin', 'editor', 'viewer', 'leader'];
   function applyMembersSubscription(mine) {
     if (sync.session !== mine || !cloudReady() || !sync.user) return;
     var leader = LEADER_ROLES.indexOf(sync.myRole) !== -1;
@@ -16526,6 +17116,8 @@
   var MEMBER_ROLES = ['admin', 'editor', 'viewer', 'parent'];
   function setMemberRole(memberUid, role) {
     if (MEMBER_ROLES.indexOf(role) === -1) return;
+    // Pack positions — on the pack's own server, editor and viewer are never set again (a leader comes with positions).
+    if (apiAccounts() && role !== 'admin' && role !== 'parent' && role !== 'pending') return;
     if (!isAdmin() || !cloudReady()) return;
     if (isLastAdmin(memberUid) && role !== 'admin') { showToast('Keep at least one admin.'); return; }
     sync.backend.updateMemberRole(sync.docId, memberUid, role).catch(function (err) { accountsToast(err); });
@@ -16594,9 +17186,13 @@
   // packs/{docId}/invites/{lowercased-email} = { role, email, invitedBy, invitedAt }. The
   // invitee consumes it on their first sign-in (ensureMyMemberDoc) and lands straight in
   // the invited role instead of 'pending'.
-  function createInvite(emailRaw, role) {
+  function createInvite(emailRaw, role, positions, dens) {
     if (!isAdmin() || !cloudReady()) return;
-    if (INVITE_ROLES.indexOf(role) === -1) return;
+    // Pack positions — on the pack's own server a leader comes with positions; editor and viewer are never invited again.
+    if (apiAccounts()) {
+      if (role === 'leader' && !arrOf(positions).length) { showToast('Tick at least one position for the leader.'); return; }
+      if (role !== 'leader' && role !== 'parent') return;
+    } else if (INVITE_ROLES.indexOf(role) === -1) return;
     var email = inviteEmailKey(emailRaw);
     if (!email || email.indexOf('@') < 1 || email.indexOf('.') === -1 || /[\/\s]/.test(email)) {
       showToast('Enter a valid email address.');
@@ -16611,13 +17207,17 @@
       return;
     }
     var be = sync.backend;
-    be.putInvite(sync.docId, email, {
+    var ivData = {
       role: role,
       email: email,
       invitedBy: (sync.user && (sync.user.email || sync.user.uid)) || '',
       invitedAt: be.serverTime()
-    }).then(function () {
-      showToast('Invited ' + email + ' as ' + role + '.');
+    };
+    // Pack positions — only on the pack's own server, which reads them (Firestore's rules allow no other keys).
+    if (apiAccounts() && role === 'leader') { ivData.positions = arrOf(positions).slice(); ivData.dens = arrOf(dens).slice(); }
+    be.putInvite(sync.docId, email, ivData).then(function () {
+      showToast('Invited ' + email + ' as ' + (role === 'leader' ? positionsSay(positions, dens) : role) + '.');
+      ui.inviteDraft = null;
       render(); // clears the form inputs
     }).catch(function (err) { accountsToast(err); });
   }
@@ -19171,6 +19771,13 @@
       var remoteParsed = null;
       if (remote) { try { remoteParsed = JSON.parse(typeof remote.json === 'string' ? remote.json : ''); } catch (e) { /* unreadable */ } }
       if (formatAhead(remoteParsed)) return { record: null, result: { newer: true } };
+      // Pack positions (client step 3) — the server refused the last try for some sections: this device
+      // takes the server's copy of what they own, stands on that copy (the base), and tries once more.
+      var refusedNow = sync.sectionRefused || null;
+      if (refusedNow && remoteParsed && sectionGuardOn()) {
+        takeServerSections(refusedNow, remoteParsed);
+        syncBaseSet(remote);
+      }
       var remoteRev = remote && typeof remote.rev === 'number' ? remote.rev : 0;
       // BACKEND 'api' (be.serverRevs): the server stores exactly remoteRev + 1, and from the
       // pack record's first answer on, state.rev is a rev the server gave this device. Any other
@@ -19220,7 +19827,8 @@
       // written: a save would only make a new rev of the same pack.
       if (three) {
         syncBaseSet(remote);
-        if (stateFingerprint(state) === stateFingerprint(three.theirs)) return { record: null, result: { same: remote, was: JSON.stringify(state) } };
+        // (What would be sent: on the pack's server below an admin, the server's copy of what this account can't change.)
+        if (stateFingerprint(pushBody(state, three.theirs, refusedNow)) === stateFingerprint(three.theirs)) return { record: null, result: { same: remote, was: JSON.stringify(state) } };
       }
       // Security review of C8-1..4 (H1) — a device that may not remove a closed book (anyone but an admin, where there
       // are accounts) never writes one away: a write that is not a merge (the one copy this device was asked to
@@ -19239,13 +19847,16 @@
       if (!clobbered && remoteParsed && accountsInForce() && !canReopenStatement()) state.closedBooks = mergeClosedBooks(state.closedBooks, closedBooksNormalized(remoteParsed.closedBooks), undefined, closedBooksMaxYear(state, remoteParsed), state.closedGone);
       var nextRev = be.serverRevs ? remoteRev + 1 : Math.max(state.rev || 0, remoteRev) + 1;
       state.fmt = PACK_FORMAT;   // the reload gate: the format this page writes
+      // Pack positions — what is sent: this device's copy, but for what this account can't change (pushBody).
+      var stateSent = JSON.stringify(state);
       var record = {
         rev: nextRev,
         updatedAt: be.serverTime(),
         device: sync.deviceId,
-        json: JSON.stringify(state)
+        json: sectionGuardOn() && remoteParsed ? JSON.stringify(pushBody(state, remoteParsed, refusedNow)) : stateSent
       };
-      return { record: record, result: { nextRev: nextRev, mergedN: mergedN, clobbered: clobbered, heard: sync.remoteRec, record: record, lookWas: lookWas } };
+      return { record: record, result: { nextRev: nextRev, mergedN: mergedN, clobbered: clobbered, heard: sync.remoteRec, record: record, lookWas: lookWas,
+        stateSent: stateSent, refusedNow: refusedNow } };
     }).then(function (res) {
       if (sync.session !== mine) return;
       if (res.newer) { holdNewerFormat(); return; }
@@ -19300,7 +19911,9 @@
       // copy is compared, not edits counted, because a typed-in amount changes it 300 ms before
       // its save asks for a push (schedulePersist). Read before state.rev moves on, as the sent
       // copy was.
-      var editedSince = JSON.stringify(state) !== res.record.json;
+      var editedSince = JSON.stringify(state) !== res.stateSent;
+      // Pack positions — the retry after a refusal landed: said, and the next refusal may retry again.
+      if (res.refusedNow) { showToast(sectionRefusedSay(res.refusedNow, srUndoAskTake())); sync.sectionRefused = null; sync.sectionRetried = false; }
       // Another device's save that landed on top of this one while it was out (review of
       // 86dfe38..4347cc6, item 1): the feed's server answer (sync.remoteRec) came after the copy
       // was built and is newer than what was written. It is not in what was sent, and its
@@ -19345,6 +19958,22 @@
     }).catch(function (err) {
       if (sync.session !== mine) return;
       if (holdPushes(err)) return;
+      // Pack positions (client step 3) — the server refused sections of this save (403 'section'):
+      // the server's copy of them is taken on the next try (above), which goes now, once. Refused
+      // again, it is said and left for the next edit.
+      if (err && err.code === 'permission-denied' && err.reason === 'section' && sectionGuardOn()) {
+        if (!sync.sectionRetried) {
+          sync.sectionRetried = true;
+          sync.sectionRefused = arrOf(err.sections).slice();
+          syncPush();
+          return;
+        }
+        sync.sectionRefused = null;
+        sync.sectionRetried = false;
+        showToast(sectionRefusedSay(err.sections, srUndoAskTake()) + ' Some of your change still couldn\u2019t be saved; reload the page to start again from the pack\u2019s copy.');
+        syncFail(err);
+        return;
+      }
       syncFail(err);
       clearTimeout(sync.retryTimer);
       sync.retryTimer = setTimeout(function () { if (sync.dirty && sync.session === mine) syncPush(); }, 10000);
@@ -19827,6 +20456,20 @@
   // result carries `theirs` (the server's, normalized), `remote` (`d`) and `base` (the base record).
   // Security review of 6b48119 (2) — a server copy behind the base (a backup restored there, a reset) is no
   // merge's: { whole: true }, and syncPush asks which whole copy to keep, as across a close-out.
+  // Pack positions (client step 3) — on the pack's own server, below an admin, a part this account can't
+  // change is the server's in a merge: taken whole, without asking, and never offered as "Keep mine" (its
+  // conflicts are dropped from the chooser; the charges too, which the treasurer settles). In place.
+  function syncThreeWayOwnOnly(three, theirs) {
+    if (!sectionGuardOn() || !three || !three.merged) return three;
+    var m = three.merged;
+    Object.keys(m).concat(Object.keys(theirs || {})).forEach(function (k) {
+      if (SYNC_MERGE_SKIP.indexOf(k) !== -1 || keyWritable(k)) return;
+      if (ownKey(theirs, k)) m[k] = JSON.parse(JSON.stringify(theirs[k])); else delete m[k];
+    });
+    three.items = three.items.filter(function (it) { return keyWritable(it.path && it.path[0] ? it.path[0].k : ''); });
+    if (!keyWritable('charges')) three.look = (three.look || []).filter(function (x) { return x.kind !== 'chargeboth'; });
+    return three;
+  }
   function syncThreeWayOf(d, picks) {
     var b = syncBaseGet();
     if (!b || !d) return null;
@@ -19837,6 +20480,7 @@
     // load (a field a new record was made without) never reads as a change of this device's.
     var mine = normalizeState(JSON.parse(JSON.stringify(state))) || state;
     var three = syncThreeWay(baseNorm, mine, theirs, picks, { chargeKey: syncChargeKey });
+    syncThreeWayOwnOnly(three, theirs);
     three.theirs = theirs;
     three.remote = d;
     three.base = b;
@@ -19933,6 +20577,8 @@
   // Final security check of ff0672a (lows) — and never by this device's clock: a slow clock must not drop another
   // device's decisions. An entry with no real time is dropped; the rest are sorted, and capped by count. The scrub
   // reaches the item's name and the field too.
+  // The server's per-save cap on new lines (access.js SYNC_LOG_CAP.add; security re-check of ce6b8de: 50, was 200).
+  var SYNC_LOG_ADD_MAX = 50;
   function normalizeSyncLog(list) {
     function str(v, max) { return typeof v === 'string' ? v.slice(0, max) : ''; }
     function val(v) { v = str(v, 200); return v.indexOf('@') === -1 ? v : 'Changed'; }
@@ -20623,7 +21269,7 @@
   function saveRowChoices() {
     var rc = rowChoice();
     if (!rc) return;
-    if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); render(); return; }
+    if (!canEdit()) { showToast(readOnlySay('')); render(); return; }
     // (The reload gate has dropped the choice already, dropCopyChoice; and commit refuses.)
     // (Security review of C6, F6 — which also asks of it what a push would: a newer page's record, or
     // another close-out, and nothing is merged.)
@@ -20655,6 +21301,8 @@
       var logged = syncDecisionEntries(three.items, rc.fieldPicks, [state, three.theirs, null], syncServerWhen(rc.remote, three.base),
         { name: ledgerActor(), uid: ledgerActorUid() }, rc.fieldHow);
       keptMine = logged.some(function (e) { return e.kept === 'mine'; });
+      // The pack's server takes at most SYNC_LOG_ADD_MAX new lines in one save (access.js SYNC_LOG_CAP.add).
+      if (logged.length > SYNC_LOG_ADD_MAX) logged = logged.slice(0, SYNC_LOG_ADD_MAX);
       if (logged.length) state.syncLog = mergeSyncLog(state.syncLog, logged);
     }
     mergeRemoteAppendOnly(rc.remote, kept, lost, split, picks, look);
@@ -20841,8 +21489,13 @@
     // Owner decision 22 — refused, the choice stays open (the cloud copy is still theirs to take).
     if (kept && kept.remote && keepLocalNeedsAdmin(kept.remote) && !canReopenStatement()) { showToast(KEEP_LOCAL_REFUSED); render(); return; }
     ui.overlay = null;
-    if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); render(); return; } // M-3
+    if (!canEdit()) { showToast(readOnlySay('')); render(); return; } // M-3
     sync.conflict = null;
+    // Pack positions (client step 3) — keeping this device's copy keeps only what this account may change:
+    // the rest is the cloud copy's, here and in what is sent (pushBody).
+    if (sectionGuardOn() && kept && kept.remote) {
+      try { takeServerUnwritable(JSON.parse(typeof kept.remote.json === 'string' ? kept.remote.json : '')); save(); } catch (e) { /* unreadable: pushBody sends the server's */ }
+    }
     // BACKEND 'api': the copy being overwritten is the one this leader was just shown, so it
     // counts as seen; only a save made after it is merged in at the push (syncPush).
     if (sync.backend && sync.backend.serverRevs && kept && kept.remote && typeof kept.remote.rev === 'number') state.rev = kept.remote.rev;
@@ -21107,14 +21760,32 @@
     WS_BY_ID[w.id] = w;
     w.sections.forEach(function (s) { if (!SECTION_HOME[s.id]) SECTION_HOME[s.id] = w.id; });
   });
-  function curWorkspace() { return WS_BY_ID[ui.tab] || WS_BY_ID.home; }
+  // Pack positions (client step 4) — a workspace a leader's positions hide entirely is not offered, and a
+  // route into one lands on Home. HIDDEN DECLUTTERS ONLY in stage 1: the record is on the device.
+  function curWorkspace() {
+    var w = WS_BY_ID[ui.tab] || WS_BY_ID.home;
+    return workspaceVisible(w) ? w : WS_BY_ID.home;
+  }
+  // The access section a nav section belongs to: itself, or 'camping' for a campout's tab.
+  function sectionAccessId(id) {
+    if (ACCESS_TABLE.sections.indexOf(id) !== -1) return id;
+    return SECTION_HOME[id] ? id : 'camping';
+  }
+  // Does this workspace have a section this account may see? Home always.
+  function workspaceVisible(w) {
+    if (!w) return false;
+    if (w.id === 'home') return true;
+    if (w.dynamic === 'camping') return canSeeSection('camping');
+    return w.sections.some(function (x) { return canSeeSection(x.id); });
+  }
   // The sections a workspace is offering RIGHT NOW. Static for five of the six; for Camping it
   // is one per trip. The empty case still returns a section, because curSection() and the
   // dispatch both assume there is one, and a workspace that renders nothing at all reads as a
   // bug rather than as "you have no trips yet".
   function sectionsOf(w) {
     if (!w) return [];
-    if (w.dynamic !== 'camping') return w.sections;
+    // Pack positions — a section a leader's positions hide is not offered (curSection then falls back).
+    if (w.dynamic !== 'camping') return w.sections.filter(function (x) { return canSeeSection(x.id); });
     var trips = campingTrips();
     if (!trips.length) return [{ id: 'camp-none', label: 'Camping' }];
     // Wave C1 — in date order, so the first tab is the next campout.
@@ -21343,7 +22014,7 @@
     // A family has no "workspaces" — that is the leaders' word for their six job areas.
     tabsEl.setAttribute('aria-label', parent ? 'Pack pages' : 'Workspaces');
     var secEl = document.getElementById('sections');
-    var tabDefs = gate ? [] : (parent ? parentTabDefs() : WORKSPACES);
+    var tabDefs = gate ? [] : (parent ? parentTabDefs() : WORKSPACES.filter(workspaceVisible));
     var tabAct = parent ? 'parent-tab' : 'tab';
     var tabCur = parent ? parentTab() : ui.tab;
     var mine = (gate || parent) ? {} : myWorkspaceIds();
@@ -21411,6 +22082,8 @@
     // Persistent read-only banner for a signed-in viewer (roles in force). Parents/pending
     // users are on the parent app instead, which carries its own notices.
     if (!parent && !gate && sync.user && !canEdit()) v.innerHTML = readOnlyBanner() + v.innerHTML;
+    // Pack positions (client step 4) — a leader who edits elsewhere, on a section their positions only read.
+    else if (!parent && !gate && sync.user) v.innerHTML = viewOnlyBanner(sectionAccessId(sec)) + v.innerHTML;
     if (!parent && !gate) v.innerHTML = formatBanner() + serverNoticeBanner() + v.innerHTML;
     renderSyncPill();
     document.getElementById('overlayHost').innerHTML = (parent || gate) ? '' : renderOverlay();
@@ -21956,10 +22629,10 @@
      is what lets a parent, who may not write the pack, send one (the harness holds it).
      ⚠ API only. firestoreBackend has no shift-report calls, so on a Firestore page (the way back)
      the feature is simply not there. Shown to any approved, signed-in member: the server allows
-     admin, editor, viewer and parent, and refuses pending — the same list. Never by job.
+     admin, editor, viewer, leader and parent, and refuses pending — the same list. Never by job.
      The window is the server's: a storefront dated today, or up to 14 days back, in the pack's
      time zone (rules.js packToday, America/New_York). */
-  var SHIFT_REPORT_ROLES = ['admin', 'editor', 'viewer', 'parent'];
+  var SHIFT_REPORT_ROLES = ['admin', 'editor', 'viewer', 'leader', 'parent'];
   var SHIFT_REPORT_DAYS = 14;
   // (SHIFT_REPORT_TZ is declared with SIGNOFF_FROM_DEFAULT, near the top: normalizeState reads it.)
   var SHIFT_REPORT_MAX_CENTS = 1000000;
@@ -22207,7 +22880,7 @@
       return true;
     }
     if (kind === 'shift-report-confirm' && ui.shiftConfirm && el.name === 'attest') { ui.shiftConfirm.attest = !!el.checked; return true; }
-    if ((kind === 'shift-report-return' || kind === 'shift-report-override') && el.name === 'reason') {
+    if ((kind === 'shift-report-return' || kind === 'shift-report-override' || kind === 'sr-cash-undo') && el.name === 'reason') {
       ui.srReasonText = ui.srReasonText || {};
       ui.srReasonText[kind + ':' + String(f.dataset.rid || '')] = el.value;
       return true;
@@ -23270,7 +23943,7 @@
   // exported, and three buttons that all opened the same picker would be a lie. What was
   // actually missing is that the three destinations were invisible, so they're listed.
   function teImportCard() {
-    if (!canEdit()) return '';
+    if (!canEditSection('totals')) return '';
     return '<div class="card"><h2 class="section display">Import from Trail’s End</h2>' +
       '<p class="small muted" style="margin:0 0 8px">Export a report from the Trail’s End Leader Portal → <strong>Reports</strong> ' +
       'as <strong>.xlsx</strong> or <strong>.csv</strong>. The app works out which of the four it is:</p>' +
@@ -23295,7 +23968,7 @@
       (leaderReportsOn() ? '<button type="button" class="btn" data-act="sr-history-open">Shift reports this season</button>' : '') + '</div>';
     h += renderShiftReportsBanner();   // S-3: families' shift totals waiting for a leader
     h += signoffFromLine();
-    if (canEdit()) {
+    if (canEditSection('storefronts')) {
     h += '<div class="card"><h2 class="section display">New storefront</h2>' +
       '<form data-form="add-storefront" class="row">' +
       '<label class="fld">Store / location<input id="sfNameInput" name="name" data-ch="sf-new-name" placeholder="Kroger on Main St" list="locList" value="' + esc(ui.sfDraft.name) + '" style="width:200px"></label>' +
@@ -23945,14 +24618,18 @@
     // Wave 19(23): the den select below is RANK-based (DENS) on purpose — a scout's
     // free-text denLabel is display-only; meetings, advancement grouping, and the
     // attendance den-filter all key off s.den (the rank).
+    // Pack positions (Keith, 2026-10-01/02) — when, which den and which kind, removing it and repeating it are
+    // the calendar's (the Cubmaster's); a Den Leader changes their own dens' meetings' adventure, notes and the
+    // adventures offered (canEditDenMeeting), and takes attendance, and no more.
+    var cal = canEditSection('calendar'), calDis = cal ? '' : ' disabled', dmDis = canEditDenMeeting(m) ? '' : ' disabled';
     return '<div class="ev ev-meeting">' +
       '<div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">' +
       '<span class="ev-badge ' + (m.kind === 'pack' ? 'badge-pack' : 'badge-den') + '">' + (m.kind === 'pack' ? 'Pack' : 'Den') + '</span>' +
       rsvpPill(m.id) +
-      '<select data-ch="mtg-kind" data-id="' + m.id + '"><option value="den"' + (m.kind === 'den' ? ' selected' : '') + '>Den meeting</option><option value="pack"' + (m.kind === 'pack' ? ' selected' : '') + '>Pack meeting</option></select>' +
-      (m.kind === 'den' ? '<select data-ch="mtg-den" data-id="' + m.id + '"><option value="">All dens</option>' + DENS.map(function (d) { return '<option value="' + d + '"' + (m.den === d ? ' selected' : '') + '>' + d + '</option>'; }).join('') + '</select>' : '') +
-      '<input type="time" class="time-in" data-ch="mtg-time" data-id="' + m.id + '" value="' + esc(m.time || '') + '" aria-label="Meeting time">' +
-      tinyDangerBtn('del-event:' + m.id, 'Remove meeting') +
+      '<select data-ch="mtg-kind" data-id="' + m.id + '"' + calDis + '><option value="den"' + (m.kind === 'den' ? ' selected' : '') + '>Den meeting</option><option value="pack"' + (m.kind === 'pack' ? ' selected' : '') + '>Pack meeting</option></select>' +
+      (m.kind === 'den' ? '<select data-ch="mtg-den" data-id="' + m.id + '"' + calDis + '><option value="">All dens</option>' + DENS.map(function (d) { return '<option value="' + d + '"' + (m.den === d ? ' selected' : '') + '>' + d + '</option>'; }).join('') + '</select>' : '') +
+      '<input type="time" class="time-in" data-ch="mtg-time" data-id="' + m.id + '" value="' + esc(m.time || '') + '" aria-label="Meeting time"' + calDis + '>' +
+      (cal ? tinyDangerBtn('del-event:' + m.id, 'Remove meeting') : '') +
       '</div>' +
       // …and, for leaders, which meeting of the lesson plan tonight is (meetingPlanBox).
       (m.kind === 'den' ? advTargetPicker(m) + meetingPlanBox(m, 'editor') + advOffersEditor(m) : '') +
@@ -23961,11 +24638,11 @@
       // "ask the Alvarez family to bring the canopy, they still owe for spring" would have been
       // published verbatim. Naming the audience at the field is the fix.
       '<p class="eyebrow note-cap">Parents see this</p>' +
-      '<input data-ch="mtg-note" data-id="' + m.id + '" value="' + esc(m.note || '') +
-        '" placeholder="Where it is, and what to bring" aria-label="Details parents will see" style="width:100%">' +
+      '<input maxlength="4000" data-ch="mtg-note" data-id="' + m.id + '" value="' + esc(m.note || '') +
+        '" placeholder="Where it is, and what to bring" aria-label="Details parents will see" style="width:100%"' + dmDis + '>' +
       '<p class="eyebrow note-cap note-cap-int">Leaders only \u00b7 never published</p>' +
-      '<input data-ch="mtg-note-internal" data-id="' + m.id + '" value="' + esc(m.noteInternal || '') +
-        '" placeholder="Who is bringing what, follow-ups, anything not for families" aria-label="Internal note, leaders only" style="width:100%">' +
+      '<input maxlength="4000" data-ch="mtg-note-internal" data-id="' + m.id + '" value="' + esc(m.noteInternal || '') +
+        '" placeholder="Who is bringing what, follow-ups, anything not for families" aria-label="Internal note, leaders only" style="width:100%"' + dmDis + '>' +
       (m.kind === 'pack' ? packAgendaBlock(m) : '') +
       '<div class="row" style="margin-top:8px;align-items:flex-start">' +
       renderRsvpBlock(m.id) + renderAttendanceBlock(m) +
@@ -23978,7 +24655,7 @@
       // the meeting names an adventure — an opt-in to tag the copies with it, which is all it
       // takes for them to read "session 2 of 3" (adventureRuns derives the run). Off by default:
       // a twelve-week repeat is rarely twelve weeks of one adventure.
-      (ui.repeatOffer === m.id
+      (ui.repeatOffer === m.id && cal
         ? '<form data-form="mtg-repeat" data-id="' + m.id + '" class="row no-print" style="margin-top:8px">' +
           '<label class="fld">Repeat<select name="every" aria-label="How often">' +
           '<option value="7">every week</option><option value="14">every other week</option></select></label>' +
@@ -24006,7 +24683,7 @@
   }
   function advFreeBox(m, r) {
     var allDens = !m.den;
-    var h = '<input data-ch="mtg-adv" data-id="' + esc(m.id) + '" list="advOpts-' + esc(m.id) + '" value="' +
+    var h = '<input data-ch="mtg-adv" data-id="' + esc(m.id) + '"' + (canEditDenMeeting(m) ? '' : ' disabled') + ' list="advOpts-' + esc(m.id) + '" value="' +
       esc(m.adventure || '') + '" placeholder="Adventure this meeting works toward (optional)" ' +
       'aria-label="' + (allDens ? 'Adventure typed for all dens' : 'Adventure this meeting works toward') + '" style="width:100%;margin-top:6px">' +
       '<datalist id="advOpts-' + esc(m.id) + '">' +
@@ -24054,7 +24731,7 @@
   // leader changes their own den's line on Den plans, not here — this row is the Cubmaster's.
   function packAdvPicker(m) {
     var h = '<label class="fld" style="margin-top:6px">Adventure for every den' +
-      '<select data-ch="mtg-pack-adv" data-id="' + esc(m.id) + '">' + packAdvOptions(m.packAdv || '', 'None set') + '</select></label>';
+      '<select data-ch="mtg-pack-adv" data-id="' + esc(m.id) + '"' + (canEditSection('calendar') ? '' : ' disabled') + '>' + packAdvOptions(m.packAdv || '', 'None set') + '</select></label>';
     if (ADV_RANGE_KEYS.indexOf(m.packAdv) !== -1) {
       h += '<p class="warn small" style="margin:4px 0 0">Pack rule: ' + esc(packAdvLabel(m.packAdv)) + ' is a range sport — never at a den ' +
         'meeting, only on a council range with a certified range master.</p>';
@@ -24151,7 +24828,7 @@
      ranks it is not for. Editors only change it; anyone else reads it. */
   function advOffersEditor(ev) {
     var offers = evOffers(ev);
-    var edit = canEdit();
+    var edit = canEditDenMeeting(ev);   // a den leader on their own dens' meetings; the calendar's editors anywhere
     var den = ev.kind === 'den';
     if (!offers.length && !edit) return '';
     var h = '<div class="adv-offers" style="margin-top:8px"><p class="eyebrow" style="margin:0 0 2px">' +
@@ -24232,7 +24909,8 @@
     // tonight and the scout has not been to all of them with none still to come.
     var om = offerMarkable(ev, o.key);
     if (!om.rows.length && !om.cannot.length && !om.notFor.length) return '';   // no attendance taken yet
-    var edit = canEdit();
+    // Crediting an adventure writes advancement: whoever edits it (not, say, an Activities Chair).
+    var edit = canEditSection('advancement');
     var todo = om.rows.filter(function (r) { return !r.earned; });
     var had = om.rows.filter(function (r) { return r.earned; });
     var toDone = todo.filter(function (r) { return r.would === 'done'; });
@@ -24349,7 +25027,8 @@
     }).join('') + '</div>';
 
     // Recording — a leader's tap, never attendance on its own (advMarkable says who).
-    if (canEdit() && (mk.done.length || mk.partial.length)) {
+    // Pack positions — recording it writes advancement: whoever edits that (not, say, an Activities Chair).
+    if (canEditSection('advancement') && (mk.done.length || mk.partial.length)) {
       var parts = mixed ? 'part' : 'session';
       h += '<div class="row" style="margin-top:8px;gap:6px">';
       if (mk.done.length) {
@@ -24619,7 +25298,7 @@
   // read-only screen is furniture.
   function tierNoteBlock(t) {
     var note = String(t.note || '');
-    if (!canEdit()) {
+    if (!canEditSection('rewards')) {
       if (!note.trim()) return '';
       return '<p class="eyebrow" style="margin:10px 0 4px">The small print</p>' +
         '<div class="camp-body">' + proseText(note) + '</div>';
@@ -24685,13 +25364,13 @@
     var manual = w.source === 'manual';
     var h = '<div class="card"><div class="spread">' +
       '<p class="eyebrow" style="margin:0">Weather</p>' +
-      (canEdit()
+      (canEditSection('totals')
         ? '<button type="button" class="btn small ghost" data-act="sf-weather-fetch" data-id="' + sf.id + '"' +
           (busy || !sf.date || manual ? ' disabled' : '') + '>' + (busy ? 'Looking up…' : 'Look it up') + '</button>'
         : '') + '</div>' +
       '<div class="row" style="margin-top:8px">' +
       '<label class="fld">Conditions<select data-ch="sf-weather" data-id="' + sf.id + '"' +
-      (canEdit() ? '' : ' disabled') + '>' +
+      (canEditSection('totals') ? '' : ' disabled') + '>' +
       '<option value="">Not recorded</option>' +
       WEATHER_TAGS.map(function (t) {
         return '<option value="' + t.id + '"' + (w.tag === t.id ? ' selected' : '') + '>' + esc(t.label) + '</option>';
@@ -24798,13 +25477,14 @@
     return n;
   }
   // Keith (2026-10-02; review round 1) — from when the second-adult cash check asks (state.signoffFrom).
-  // Whoever may edit the storefronts (canEdit, as the rest of this page) gets the date to change; anyone
+  // Whoever keeps the books (canEditSection('ledger'): pack positions put state.signoffFrom in the ledger,
+  // so a Popcorn Kernel can't move the date past their own cash counts) gets the date to change; anyone
   // else reads it only while a storefront before it is from the last 60 days (the pack's day), when "why
   // isn't that one asked about?" is a live question. A later date waits for a two-tap confirm that says
   // how many warnings it stops (ui.signoffDraft, signoff-later).
   function signoffFromLine() {
     var from = signoffFromOf(state.signoffFrom), today = shiftReportToday();
-    if (!canEdit()) {
+    if (!canEditSection('ledger')) {
       var recent = state.storefronts.some(function (sf) { return sf && sf.date && sf.date < from && sf.date >= isoPlusDays(today, -60); });
       return recent ? '<p class="small muted no-print" style="margin:0 0 12px">Second-adult cash checks start with storefronts on ' + esc(fmtDate(from)) +
         '. Earlier storefronts aren’t asked about.</p>' : '';
@@ -25005,8 +25685,11 @@
   }
   // Who may accept or send back: the people who may write the pack record (the server's
   // canReviewShiftReport). A viewer reads.
+  // Pack positions (Keith, 2026-10-02) — the action shiftVerify: an admin, or a leader at the booth (the Chair,
+  // the Cubmaster and assistant, a Den Leader and assistant, the Kernel, the Treasurer); on Firestore, admin and
+  // editor as before. The server holds the same list (rules.js canReviewShiftReport).
   function canReviewReports() {
-    return leaderReportsOn() && (sync.myRole === 'admin' || sync.myRole === 'editor') && canEdit();
+    return leaderReportsOn() && canDo('shiftVerify');
   }
   function srReports() {
     var sr = sync.shiftReports;
@@ -25033,6 +25716,16 @@
   }
   // Is my uid the one that sent it? The one that confirmed it?
   function srMine(r) { return !!(r && sync.user && r.submittedByUid && r.submittedByUid === sync.user.uid); }
+  // Pack positions (Keith, 2026-10-02) — who may take an accept back (send back an accepted report), or undo a
+  // record of what became of its cash: the leader who accepted it (or recorded the cash), while they may still
+  // verify, or the undo list (shiftUndo: the Kernel, the Chair, the Treasurer, an admin). The server's
+  // canUndoShiftReport. `byUids`: the accepter, and for the cash its recorder.
+  function srMayUndo(byUids) {
+    if (!canReviewReports()) return false;
+    if (canDo('shiftUndo')) return true;
+    var me = sync.user && sync.user.uid;
+    return !!me && arrOf(byUids).indexOf(me) !== -1;
+  }
   function srIConfirmed(r) { return !!(r && sync.user && r.confirmedByUid && r.confirmedByUid === sync.user.uid); }
   // Keith (2026-10-01) — am I in the sender's family? The family keys (familyKeyOf) of the scouts
   // whose parentUids hold my account, against the sender's: the server's rules.js sameFamily, on
@@ -25081,6 +25774,11 @@
   // A family's or a parent's name as it goes onto the block, the day sheet and the season's record:
   // never an email address (youth-protection review 3; the server's member name is the Google
   // display name, and an account with none can carry its email). ledgerStampClean is the leaders'.
+  // The name a leader signs a block with when they accept a report: their member name, as the pack's
+  // server holds it (functions/_lib/access.js signerName), because the server checks a booth leader's
+  // accept against it (security review of 714a920..045e7ac, finding 1). ledgerActor is that name on the pack's
+  // own server (signerName's, a member with no name included), and the ledger's own name elsewhere.
+  function srSignName() { return ledgerActor(); }
   function srNameClean(v) {
     var n = String(v == null ? '' : v).trim();
     return n.indexOf('@') === -1 ? n : 'a signed-in parent';
@@ -25096,6 +25794,7 @@
     'confirmer': 'You confirmed this report as a parent, so another leader has to accept it.',
     'report-moved': 'The family changed or withdrew this report, or another leader dealt with it, before yours reached the server.',
     'review-note': 'Say why you are sending it back.',
+    'cash-undo-note': 'Say why you are undoing it.',
     'needs-confirm': 'This report needs a parent from another family on the shift to confirm it, or your written reason for accepting without one.',
     'not-collected': 'Say that you collected and counted this cash, or accept without collecting it and say why.',
     'same-family': 'You’re in the same family as the parent who sent this, so another leader should accept it — or accept with a reason.',
@@ -25167,7 +25866,7 @@
       return h + '</div>';
     }
     if (!canReviewReports()) {
-      return h + '<p class="small muted" style="margin:0">An admin or editor accepts or sends back shift reports.</p></div>';
+      return h + '<p class="small muted" style="margin:0">A leader at the booth accepts or sends back shift reports: a den leader, the Cubmaster, the Popcorn Kernel, the Treasurer or the Committee Chair.</p></div>';
     }
     if (ui.srReturn === r.id) {
       return h + '<form data-form="shift-report-return" class="sr-return" data-rid="' + esc(r.id) + '">' +
@@ -25323,6 +26022,18 @@
       (r && r.status === 'returned' ? '<button type="button" class="btn small" data-act="sr-cash-replaced"' + ids +
         ' aria-label="' + esc(fmt(cents) + ' is the same cash as the new report') + '">Same cash as the new report</button>' : '') + '</div>';
   }
+  // Security and treasurer reviews of 045e7ac — undoing a record of the cash needs a reason, as taking
+  // back an accept does: it erases the pack's only record of who has the cash. The server keeps it in
+  // the audit and on the report (the season's history shows it). The Undo on the toast right after
+  // marking it is the recorder correcting their own tap, and says so (SR_CASH_UNDO_QUICK).
+  var SR_CASH_UNDO_QUICK = 'Undone right after it was marked, by the leader who marked it';
+  function srCashUndoForm(rid) {
+    return '<form data-form="sr-cash-undo" class="sr-return" data-rid="' + esc(rid) + '">' +
+      '<label class="fld">Why undo it? The cash goes back to “to collect”. Your reason is kept in the season’s shift report history.' +
+      '<textarea name="reason" rows="2" maxlength="300" required>' + esc(srReasonDraft('sr-cash-undo', rid)) + '</textarea></label>' +
+      '<div class="sr-acts"><button type="submit" class="btn">Undo</button>' +
+      '<button type="button" class="btn ghost" data-act="sr-cancel" data-rid="' + esc(rid) + '">Cancel</button></div></form>';
+  }
   // On the block: each report's cash from sales, still to collect (with the two buttons), or what
   // became of it (with Undo). Admins and editors record it; a viewer reads it.
   function renderBlockCashToCollect(sf, b) {
@@ -25332,9 +26043,12 @@
       if (!e.outcome) {
         h += '<div style="margin-top:8px">' + srCashToCollectLine(e.cents, e.from || 'the family', sf.date) + srCashButtons(e.reportId, e.cents) + '</div>';
       } else {
+        var eRep = srReport(e.reportId), mayUndo = srMayUndo(eRep ? [eRep.acceptedByUid, eRep.salesCashByUid] : []);
+        var asking = ui.srCashUndo === e.reportId && mayUndo;
         h += '<div class="spread" style="margin-top:8px"><p class="small muted" style="margin:0">' + esc(fmt(e.cents)) + ' of cash from popcorn sales ' +
           esc(srCashOutcomeSay(e.outcome)) + '.</p>' +
-          (canReviewReports() ? '<button type="button" class="btn small ghost" data-act="sr-cash-undo"' + ids + '>Undo</button>' : '') + '</div>';
+          (mayUndo && !asking ? '<button type="button" class="btn small ghost" data-act="sr-cash-undo-open"' + ids + '>Undo</button>' : '') + '</div>';
+        if (asking) h += srCashUndoForm(e.reportId);
       }
     });
     return h;
@@ -25388,8 +26102,11 @@
   // Record what became of a report's cash from sales: 'collected', 'converted', or null (undo). The
   // server first; the block's entry mirrors what it answers. `quiet`: no Undo toast (the accept's
   // own "I also collected it", which says so itself).
-  function srSalesCashSet(rid, outcome, quiet) {
+  // An undo (outcome null) carries `reason`, which the server requires (SR_CASH_UNDO_QUICK from the toast).
+  function srSalesCashSet(rid, outcome, quiet, reason) {
     if (!canReviewReports()) return Promise.resolve(null);
+    var why0 = outcome ? '' : shiftReportNote(reason).slice(0, SHIFT_REPORT_NOTE_MAX);
+    if (!outcome && !why0) { showToast(LEADER_SR_SAY['cash-undo-note']); return Promise.resolve(null); }
     if (outcome && srCashNotMine(rid)) { showToast(srCashNotMine(rid)); return Promise.resolve(null); }
     // The block's entry, or, for a report whose block is gone (srCashOrphans), the server's report alone.
     var hit = srCashEntry(rid), rep0 = srReport(rid);
@@ -25398,19 +26115,23 @@
     sync.srOut = sync.srOut || {};
     if (sync.srOut['cash:' + rid]) return Promise.resolve(null);
     sync.srOut['cash:' + rid] = true;
-    return sync.backend.patchShiftReport(sync.docId, rid, { action: 'salescash', outcome: outcome, salesCashCents: cents }).then(function (res) {
+    var body = { action: 'salescash', outcome: outcome, salesCashCents: cents };
+    if (!outcome) body.reviewNote = why0;
+    return sync.backend.patchShiftReport(sync.docId, rid, body).then(function (res) {
       delete sync.srOut['cash:' + rid];
+      if (!outcome && ui.srCashUndo === rid) { ui.srCashUndo = null; if (ui.srReasonText) delete ui.srReasonText['sr-cash-undo:' + rid]; }
       var rep = res && res.report;
       var now = srCashEntry(rid);   // found again: a merge may have replaced the block since
       if (now) {
-        now.e.outcome = outcome ? { outcome: outcome, by: ledgerActor(), at: (rep && rep.salesCashAt) || Date.now() } : null;
+        // As the server recorded it (srCashMirror's words), which is what the pack's server checks the block against.
+        now.e.outcome = outcome ? { outcome: outcome, by: ledgerStampClean((rep && rep.salesCashByName) || '') || 'a leader', at: (rep && rep.salesCashAt) || 0 } : null;
         commit();
       }
       if (!quiet) {
         var say = outcome === 'collected' ? 'Marked ' + fmt(cents) + ' collected by ' + ledgerActor() + '. ' + SR_CASH_DEPOSIT
           : outcome === 'converted' ? 'Marked ' + fmt(cents) + ' converted to credit by the family. Check that it shows in the Trail’s End app.'
           : outcome === 'replaced' ? 'Marked ' + fmt(cents) + ' as the same cash as the new report.' : 'Undone. ' + fmt(cents) + ' is still to collect.';
-        showToast(say, outcome ? { actionLabel: 'Undo', duration: 8000, onAction: function () { srSalesCashSet(rid, null); } } : undefined);
+        showToast(say, outcome ? { actionLabel: 'Undo', duration: 8000, onAction: function () { srSalesCashSet(rid, null, false, SR_CASH_UNDO_QUICK); } } : undefined);
       }
       return loadShiftReports();
     }, function (err) {
@@ -25487,11 +26208,11 @@
     else how = from + ', accepted by ' + by + '.';
     var h = '<div class="spread" style="margin-top:8px"><p class="small muted" style="margin:0">' + esc(how) + '</p>';
     var r = srReport(b.reportId);
-    if (canReviewReports() && r && r.status === 'accepted') {
+    if (canReviewReports() && r && r.status === 'accepted' && srMayUndo([r.acceptedByUid])) {
       h += ui.srReturn === r.id ? '' : '<button type="button" class="btn small ghost" data-act="sr-return-open" data-rid="' + esc(r.id) + '">Send back</button>';
     }
     h += '</div>';
-    if (r && ui.srReturn === r.id && canReviewReports()) {
+    if (r && ui.srReturn === r.id && canReviewReports() && (r.status !== 'accepted' || srMayUndo([r.acceptedByUid]))) {
       h += '<form data-form="shift-report-return" class="sr-return" data-rid="' + esc(r.id) + '">' +
         '<label class="fld">Why are you sending it back? The family sees this. The figures stay on the block until someone corrects them.' +
         '<textarea name="reason" rows="2" maxlength="300" required>' + esc(srReasonDraft('shift-report-return', r.id)) + '</textarea></label>' +
@@ -25601,7 +26322,7 @@
       reportApprovedBy: b.reportApprovedBy || '', reportConfirmedBy: b.reportConfirmedBy || '', reportOverride: b.reportOverride || '',
       reportOverrideNote: b.reportOverrideNote || '', reportCollected: b.reportCollected === true,
       reportReturned: b.reportReturned ? { note: String(b.reportReturned.note || '') } : null };
-    var me = ledgerActor();
+    var me = srSignName();
     var counted = srNameClean(r.submittedByName);
     var verified = confirmed ? srNameClean(r.confirmedByName) : collected ? me : '';
     b.salesCents = r.teCents;
@@ -25657,6 +26378,9 @@
   // C4a). A sent-back warning the accept cleared comes back (C4b).
   function srRollback(b, msg) {
     var p = b.reportPending, was = (p && p.was) || {}, wrote = (p && p.wrote) || {};
+    // A booth leader's undo goes to the server tied to the report; if the server can't find it, only the undo
+    // list may (access.js storefrontReportChangeOk), and the refusal says so (sectionRefusedSay).
+    if (!canEditSection('storefronts') && !canDo('shiftUndo')) sync.srUndoAsk = Date.now();
     if (p && (b.salesCents || 0) === p.te && (b.donationsCents || 0) === p.cash) {
       b.salesCents = was.salesCents || 0;
       b.donationsCents = was.donationsCents || 0;
@@ -25767,7 +26491,7 @@
     if (srMine(r) || srIConfirmed(r)) { showToast(srMine(r) ? LEADER_SR_SAY['same-person'] : LEADER_SR_SAY.confirmer); return; }
     p.by = sync.user.uid;
     p.at = Date.now();
-    b.reportApprovedBy = ledgerActor();
+    b.reportApprovedBy = srSignName();
     if (!commit()) return;
     shiftReportsReconcile();
   }
@@ -25779,6 +26503,14 @@
     return r.teCents === p.te && r.cashCents === p.cash && (r.salesCashCents || 0) === (p.salesCash || 0);
   }
   var SR_UNDO_NOTE = 'Accept undone by a leader';
+  // Who else can undo an accept (Keith, 2026-10-02: shiftUndo), for a booth leader who can't.
+  var SR_UNDO_ASK = 'Ask the Popcorn Kernel or Treasurer to undo it.';
+  // Was a booth leader's undo in the change the server just refused (srRollback, the last two minutes)? Once.
+  function srUndoAskTake() {
+    var t = sync.srUndoAsk;
+    sync.srUndoAsk = 0;
+    return !!t && Date.now() - t < 120000;
+  }
   function srUndoServerFirst(rid, sfId, blockId) {
     sync.srOut = sync.srOut || {};
     if (sync.srOut[rid]) return Promise.resolve(null);
@@ -25799,7 +26531,7 @@
         var b = pendingNow();
         if (!b) return;
         if (srAcceptedAsPending(srReport(rid), b.reportPending)) { srSettle(b); showToast('The other leader’s accept reached the server first, so it stands.'); }
-        else showToast(leaderSrMessage(err));
+        else showToast(err && err.code === 'permission-denied' ? 'You can’t undo another leader’s accept. ' + SR_UNDO_ASK : leaderSrMessage(err));
       });
     });
   }
@@ -25853,7 +26585,7 @@
   function leaderShiftReportAct(act, el) {
     var ds = (el && el.dataset) || {};
     var rid = String(ds.rid || '');
-    if (act === 'sr-cancel') { ui.srConfirm = null; ui.srReturn = null; ui.srOverride = null; render(); return; }
+    if (act === 'sr-cancel') { ui.srConfirm = null; ui.srReturn = null; ui.srOverride = null; ui.srCashUndo = null; render(); return; }
     if (!canReviewReports() || !rid) return;
     if (act === 'sr-accept') { acceptShiftReport(rid, {}); return; }
     if (act === 'sr-accept-collected') { acceptShiftReport(rid, { collected: true }); return; }
@@ -25873,7 +26605,9 @@
       return;
     }
     if (!canReviewReports()) return;
-    srSalesCashSet(rid, act === 'sr-cash-collected' ? 'collected' : act === 'sr-cash-converted' ? 'converted' : act === 'sr-cash-replaced' ? 'replaced' : null);
+    if (act === 'sr-cash-undo-open') { ui.srCashUndo = rid; render(); return; }
+    var outcome = act === 'sr-cash-collected' ? 'collected' : act === 'sr-cash-converted' ? 'converted' : act === 'sr-cash-replaced' ? 'replaced' : null;
+    if (outcome) srSalesCashSet(rid, outcome);
   }
 
   // Treasurer review, round 1 (C7) — scouts whose shift money is still WAITING: on a block with a
@@ -25916,7 +26650,7 @@
       if (r.status === 'accepted') differs = !blk || (blk.b.salesCents || 0) !== r.teCents || (blk.b.donationsCents || 0) !== r.cashCents ? 'Y' : 'N';
       rows.push({ date: date, storefront: blk ? String(blk.sf.name || 'Storefront') : '(no longer on the schedule)',
         shift: blk ? (fmtTimeRange(blk.b.start, blk.b.end) || String(blk.b.label || '')) : '', te: r.teCents || 0, cash: r.cashCents || 0,
-        salesCash: r.salesCashCents || 0, salesCashBy: srCashHistorySay(r),
+        salesCash: r.salesCashCents || 0, salesCashBy: srCashHistorySay(r), cashUndoReason: srCashUndoSay(r),
         sentBy: srNameClean(r.submittedByName), verifiedBy: verified, acceptedBy: ledgerStampClean(r.acceptedByName || ''),
         overrideReason: r.overridden ? String(r.acceptNote || '') : '', status: String(r.status || ''),
         sentBackReason: r.status === 'returned' ? String(r.reviewNote || '') : '', differs: differs });
@@ -25932,13 +26666,13 @@
   // last column. Never a uid or an email; never a child.
   var SR_HISTORY_CSV_HEAD = ['Date', 'Storefront', 'Shift', 'Trail’s End', 'Cash donations', 'Popcorn sales cash not converted', 'Collected / converted by, on', 'Sent by', 'Verified by', 'Accepted by', 'Status',
     'Block now differs from report'];
-  var SR_HISTORY_REASONS_HEAD = 'Leaders’ reasons (override or sent back)';
+  var SR_HISTORY_REASONS_HEAD = 'Leaders’ reasons (override / sent back / cash record undone)';
   function shiftReportHistoryCsv(rows, withReasons) {
     var lines = [SR_HISTORY_CSV_HEAD.concat(withReasons ? [SR_HISTORY_REASONS_HEAD] : []).map(ledgerCsvCell).join(',')];
     rows.forEach(function (x) {
       var cells = [x.date, x.storefront, x.shift, (x.te / 100).toFixed(2), (x.cash / 100).toFixed(2), ((x.salesCash || 0) / 100).toFixed(2), x.salesCashBy || '', x.sentBy, x.verifiedBy, x.acceptedBy,
         x.status, x.differs];
-      if (withReasons) cells.push([x.overrideReason, x.sentBackReason].filter(Boolean).join(' / '));
+      if (withReasons) cells.push([x.overrideReason, x.sentBackReason, x.cashUndoReason ? 'Cash ' + x.cashUndoReason : ''].filter(Boolean).join(' / '));
       lines.push(cells.map(ledgerCsvCell).join(','));
     });
     return lines.join('\n') + '\n';
@@ -25952,6 +26686,15 @@
     var who = ledgerStampClean(r.salesCashByName || '') || 'a leader';
     return (r.salesCashOutcome === 'converted' ? 'converted, recorded by ' : r.salesCashOutcome === 'replaced' ? 'carried to the newer report, recorded by '
       : 'collected by ') + who + day;
+  }
+  // The last time a record of it was undone, and why (reviews of 045e7ac): "undone by Lee Leader,
+  // 2026-10-05: counted twice", or ''. A leader's written reason: on the screen, and in the CSV only
+  // when the reasons are asked for.
+  function srCashUndoSay(r) {
+    if (!r || !r.salesCashUndoNote) return '';
+    var d = new Date(r.salesCashUndoAt || 0);
+    var day = r.salesCashUndoAt ? ', ' + d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) : '';
+    return 'undone by ' + (ledgerStampClean(r.salesCashUndoByName || '') || 'a leader') + day + ': ' + String(r.salesCashUndoNote);
   }
   function srYearLabel(year) { return year + '–' + String(year + 1).slice(2); }
   // A generic name: the program year, nothing else (youth-protection review 4).
@@ -25976,7 +26719,8 @@
       rows.forEach(function (x) {
         h += '<tr><td>' + esc(fmtDate(x.date)) + '</td><td>' + esc(x.storefront) + '</td><td>' + esc(x.shift) + '</td>' +
           '<td class="num">' + esc(fmt(x.te)) + '</td><td class="num">' + esc(fmt(x.cash)) + '</td><td class="num">' + esc(fmt(x.salesCash || 0)) + '</td>' +
-          '<td>' + esc(x.salesCashBy || '') + '</td><td>' + esc(x.sentBy) + '</td>' +
+          '<td>' + esc(x.salesCashBy || '') + (x.cashUndoReason ? (x.salesCashBy ? '<br>' : '') + '<span class="small muted">' + esc(x.cashUndoReason) + '</span>' : '') +
+          '</td><td>' + esc(x.sentBy) + '</td>' +
           '<td>' + esc(x.verifiedBy) + '</td><td>' + esc(x.acceptedBy) + '</td><td>' + esc(x.overrideReason) + '</td><td>' + esc(x.status) + '</td>' +
           '<td>' + esc(x.sentBackReason) + '</td><td>' + esc(x.differs) + '</td></tr>';
       });
@@ -25991,7 +26735,7 @@
     // Wave 21 — built once here, not per row.
     var covered = packCoverageByScout();
     var h = '';
-    if (canEdit()) {
+    if (canEditSection('roster')) {
       h += '<div class="card"><h2 class="section display">Add a scout</h2>' +
         '<form data-form="add-scout" class="row">' +
         '<label class="fld">Name<input name="name" required placeholder="Scout name" style="width:180px"></label>' +
@@ -26191,7 +26935,7 @@
               'place, their own dues and their own parent’s place.') +
           '</p>' +
           chipPicker({
-            id: s.id, canEdit: canEdit(), removeAct: 'scout-family-remove', addCh: 'scout-family-add',
+            id: s.id, canEdit: canEditSection('roster'), removeAct: 'scout-family-remove', addCh: 'scout-family-add',
             addLabel: mine.length ? '+ Add another brother or sister…' : '+ Add a brother or sister…',
             chosen: mine.length ? byScoutName(fam).map(function (o) {
               return { value: o.id, label: (o.name || 'scout') + (o.id === s.id ? ' (this scout)' : '') };
@@ -27359,7 +28103,7 @@
 
     var h = '<div class="card"><div class="spread">' +
       '<h2 class="section display" style="margin-bottom:0">Weather</h2>' +
-      (canEdit() && missing
+      (canEditSection('totals') && missing
         ? '<button type="button" class="btn small" data-act="wx-fetch-all"' + (busy ? ' disabled' : '') + '>' +
           (busy ? 'Looking up…' : 'Look up ' + missing + ' missing') + '</button>'
         : '') + '</div>' +
@@ -27405,7 +28149,7 @@
   // because this table is the only thing that uses it — a wrong number here would be invisible
   // anywhere else, and would show up only as weather that quietly belonged to another town.
   function wxLocationRow(loc) {
-    if (!canEdit()) return '';
+    if (!canEditSection('totals')) return '';
     return '<details style="margin-top:12px"><summary class="small muted">Looked up for ' +
       esc(loc.label || 'the pack’s location') + '</summary>' +
       '<div class="row" style="margin-top:8px">' +
@@ -27478,7 +28222,7 @@
       '</div>' +
       // Treasurer re-check of 89c08b5 (5) — when wagon cash started going through Trail's End.
       '<div class="row" style="margin-top:6px"><label class="fld">Wagon cash donations go through Trail’s End from' +
-      '<input type="date" data-ch="wagon-via-te-from" value="' + esc(packT.wagonCutover) + '"' + (canEdit() ? '' : ' disabled') + '></label></div>' +
+      '<input type="date" data-ch="wagon-via-te-from" value="' + esc(packT.wagonCutover) + '"' + ((canEditSection('totals') || canEditSection('budget')) ? '' : ' disabled') + '></label></div>' +
       '<p class="small muted" style="margin:4px 0 0">' + esc(WAGON_CUTOVER_NOTE) + ' Leave it blank and every wagon entry goes through Trail’s End.' +
       // …and what moving it would do to the tiers, before anyone moves it.
       (packT.wagonCutover && packT.wagonCutover > programYearStartISO(state.budget.programYear)
@@ -28752,6 +29496,129 @@
       notes.concat(extra).map(function (t) { return '<p style="margin:0 0 10px">' + esc(t) + '</p>'; }).join('') +
       (extra.length ? '<button type="button" class="btn small" data-act="ledger-look-dismiss">Got it</button>' : '') + '</div>';
   }
+  // ---- Storefront deposits a leader who doesn't keep the books records, and their review (Keith, 2026-10-02;
+  // the treasurer's review of 045e7ac, 4–6) ----
+  var DEPOSIT_ONLY_MAX_CENTS = 10000000;   // the server's DEPOSIT_MAX_CENTS
+  var DEPOSIT_AHEAD_DAYS = 7;   // the server's: how far past today a deposit may be dated
+  // Treasurer sign-off of ce6b8de (1): at the bank a kernel often puts sales cash on the same slip.
+  var DEPOSIT_ONLY_SAY = 'The cash donations from the storefronts that the pack keeps, as you banked them. Enter only the donations. ' +
+    'If the slip also had sales cash, say so in the description; the Treasurer records that part. The Treasurer checks it against the deposit slip and the bank.';
+  var DEPOSIT_ONLY_DATE_SAY = 'That date is in a period the Treasurer has already reconciled or closed out, so the Treasurer enters this one. Ask the Treasurer.';
+  var DEPOSIT_REVIEW_WHY = 'Recorded by the Popcorn Kernel, or by the leader who collected the cash. Check each against the deposit slip and the bank before you reconcile.';
+  var DEPOSIT_REVIEW_OWN_SAY = 'You entered this one, so the Treasurer or Committee Chair checks it.';
+  function depositsToReviewSay(n) { return n + ' storefront deposit' + (n === 1 ? '' : 's') + ' to review'; }
+  function depositReconcileAskSay(n) {
+    return n + ' deposit' + (n === 1 ? '' : 's') + ' on this statement ' + (n === 1 ? 'hasn’t' : 'haven’t') +
+      ' been checked against the deposit slip. Review ' + (n === 1 ? 'it' : 'them') + ' first, or tap again to reconcile anyway.';
+  }
+  function depositsToReview() { return arrOf(state.ledger).filter(function (e) { return e && e.depositReview === true; }); }
+  // The storefronts a deposit covers: the ones it names, and any dated in its range.
+  function depositCoveredSfs(e) { return depositCoveredIn(e, state.storefronts); }
+  // Covers no storefront the record has: none named, one that isn't there, or a date range with none in it (the server's
+  // rule, access.js depositReviewsOk, over the record as it last saw it).
+  function depositNamesNone(e) { return !depositCoveredSfs(e).length; }
+  var DEPOSIT_OWN_VOID_SAY = 'You entered this deposit and it isn’t checked yet. Ask the Treasurer or Committee Chair to check it, or to void it.';
+  function depositCoveredIn(e, storefronts) {
+    var ids = depositForIds(e.depositFor), from = e.depositFrom || '', to = e.depositTo || '';
+    return arrOf(storefronts).filter(function (sf) { return sf && (ids.indexOf(sf.id) !== -1 || (from && to && sf.date >= from && sf.date <= to)); });
+  }
+  // The books' check of one deposit, in cents (treasurer sign-off of ce6b8de, 1 and 2): the cash donations kept
+  // on the storefronts it covers; the other storefront deposits (not voided or reversed) that cover any of them, which a
+  // split deposit subtracts; what this one should then be; the difference; and the cash from sales collected
+  // on them (a mixed slip's difference is exactly that). Pure given storefrontKeptCents.
+  function depositCheckOf(e, ledger, storefronts, viaTE) {
+    var sfs = depositCoveredIn(e, storefronts), on = {};
+    sfs.forEach(function (sf) { on[sf.id] = true; });
+    var kept = sfs.reduce(function (n, sf) { return n + storefrontKeptCents(sf, viaTE); }, 0);
+    // ledgerUnpaired: a voided or reversed deposit is none (the C3/C4 properties hold every ledger reader to it).
+    var others = ledgerUnpaired(arrOf(ledger)).filter(function (r) {
+      return r && r.id !== e.id && r.direction === 'in' && r.source === 'storefront' &&
+        depositCoveredIn(r, storefronts).some(function (sf) { return on[sf.id]; });
+    }).reduce(function (n, r) { return n + (r.amountCents || 0); }, 0);
+    var salesCash = 0;
+    sfs.forEach(function (sf) {
+      (sf.blocks || []).forEach(function (b) {
+        srCashEntries(b).forEach(function (x) { if (x && x.outcome && x.outcome.outcome === 'collected') salesCash += x.cents || 0; });
+      });
+    });
+    var expected = kept - others;
+    return { sfs: sfs, kept: kept, others: others, expected: expected, diff: (e.amountCents || 0) - expected, salesCash: salesCash };
+  }
+  // …in words, under the deposit (the wording review of ce6b8de, 12).
+  function depositCheckSay(c) {
+    var one = c.sfs.length === 1;
+    var t = 'Cash donations kept on ' + (one ? 'that storefront' : 'those storefronts') + ': ' + fmt(c.kept) + '.';
+    if (c.others) t += ' Other deposits for ' + (one ? 'it' : 'them') + ': ' + fmt(c.others) + ', so this one should be ' + fmt(c.expected) + '.';
+    if (!c.diff) return t + ' They match.';
+    t += ' The deposit is ' + fmt(Math.abs(c.diff)) + (c.diff < 0 ? ' less' : ' more') + ' than that.';
+    if (c.diff > 0 && c.diff === c.salesCash) t += ' That’s the council’s sales cash. Record it as Popcorn money for the council, not here.';
+    return t;
+  }
+  // Did this leader record the cash collected on a shift the deposit covers (accepted a report saying they
+  // collected it, or marked its sales cash collected)? Then someone else checks the deposit (treasurer, 5).
+  function depositSelfCollected(e) {
+    var me = ledgerActorUid(), name = srSignName(), on = {};
+    var sfs = depositCoveredSfs(e);
+    sfs.forEach(function (sf) { on[sf.id] = true; });
+    if (srReports().some(function (r) {
+      return r && on[r.sfId] && ((r.salesCashOutcome === 'collected' && r.salesCashByUid === me) || (r.collected && r.acceptedByUid === me));
+    })) return true;
+    return sfs.some(function (sf) {
+      return (sf.blocks || []).some(function (b) {
+        return (b.reportCollected === true && b.reportApprovedBy === name) ||
+          srCashEntries(b).some(function (x) { return x && x.outcome && x.outcome.outcome === 'collected' && x.outcome.by === name; });
+      });
+    });
+  }
+  function depositOnlyFormHtml(dr) {
+    return '<div class="card"><h2 class="section display">Record a storefront deposit</h2>' +
+      '<p class="small muted" style="margin:0 0 8px">' + esc(DEPOSIT_ONLY_SAY) + '</p>' +
+      '<div class="lrow">' +
+      '<input type="date" data-ch="ledn-date" value="' + esc(dr.date) + '" aria-label="Date deposited">' +
+      '<input class="lname" data-ch="ledn-desc" value="' + esc(dr.description) + '" placeholder="Storefront cash donations banked" aria-label="Description">' +
+      '<input class="money-in" inputmode="decimal" data-ch="ledn-amount" value="' + esc(dr.amount) + '" placeholder="Amount" aria-label="Amount">' +
+      '<select data-ch="ledn-method" aria-label="Method">' + methodSelectOptions(dr.method) + '</select>' +
+      '<input class="lref" data-ch="ledn-ref" value="' + esc(dr.ref) + '" placeholder="Deposit slip no." aria-label="Deposit slip number">' +
+      '<button type="button" class="btn small primary" data-act="ledger-add">Record the deposit</button></div>' +
+      depositCoverFieldsHtml('ledn', '', dr) + '</div>';
+  }
+  // The books' check of each flagged deposit: what it covers (each shift's accepted figures and the cash from
+  // sales collected), the cash donations kept on those storefronts, and the difference. Whoever keeps the books.
+  function depositReviewCardHtml() {
+    if (!canEditSection('ledger')) return '';
+    var rows = depositsToReview();
+    if (!rows.length) return '';
+    var viaTE = !!state.cashThroughTrailsEnd, me = ledgerActorUid();
+    var h = '<div class="card"><h2 class="section display">' + esc(depositsToReviewSay(rows.length)) + '</h2>' +
+      '<p class="small muted" style="margin:0 0 8px">' + esc(DEPOSIT_REVIEW_WHY) + '</p>';
+    rows.forEach(function (e) {
+      var chk = depositCheckOf(e, state.ledger, state.storefronts, viaTE), sfs = chk.sfs, diff = chk.diff;
+      h += '<div class="ldeposit" style="margin:0 0 10px"><p style="margin:0"><strong class="money">' + esc(fmt(e.amountCents || 0)) + '</strong> banked ' +
+        esc(fmtDate(e.date)) + ' · entered by ' + esc(ledgerStampClean(e.enteredBy || '') || 'a leader') + (e.ref ? ' · slip ' + esc(e.ref) : '') + '</p>';
+      if (!sfs.length) h += '<p class="small muted" style="margin:4px 0 0">It doesn’t say which storefronts it covers.</p>';
+      sfs.forEach(function (sf) {
+        h += '<p class="small" style="margin:4px 0 0"><strong>' + esc(storefrontDepositName(sf)) + '</strong>: ' + (sf.blocks || []).map(function (b) {
+          var cash = srCashEntries(b).filter(function (x) { return x && x.outcome && x.outcome.outcome === 'collected'; }).reduce(function (n, x) { return n + (x.cents || 0); }, 0);
+          return esc(fmtTimeRange(b.start, b.end) || b.label || 'a shift') + ' Trail’s End ' + esc(fmt(b.salesCents || 0)) + ', cash donations ' + esc(fmt(b.donationsCents || 0)) +
+            (cash ? ', sales cash collected ' + esc(fmt(cash)) : '');
+        }).join('; ') + '</p>';
+      });
+      h += '<p class="small' + (diff ? ' warn' : '') + '" style="margin:4px 0 0"' + (diff ? ' role="alert"' : '') + '>' + esc(depositCheckSay(chk)) + '</p>';
+      if (e.depositReviewNote) h += '<p class="small" style="margin:4px 0 0">Asked: “' + esc(e.depositReviewNote) + '”</p>';
+      if (e.enteredByUid && e.enteredByUid === me) h += '<p class="small muted" style="margin:6px 0 0">' + esc(DEPOSIT_REVIEW_OWN_SAY) + '</p>';
+      else if (ui.depositAsk === e.id) {
+        h += '<form data-form="deposit-review-ask" data-id="' + esc(e.id) + '" class="sr-return" style="margin-top:6px">' +
+          '<label class="fld">What should the Popcorn Kernel check?<textarea name="note" rows="2" maxlength="300" required></textarea></label>' +
+          '<div class="sr-acts"><button type="submit" class="btn small">Ask</button>' +
+          '<button type="button" class="btn small ghost" data-act="deposit-review-ask-cancel">Cancel</button></div></form>';
+      } else {
+        h += '<div class="row" style="margin-top:6px"><button type="button" class="btn small primary" data-act="deposit-review-ok:' + esc(e.id) + '">Matches slip and bank</button>' +
+          '<button type="button" class="btn small ghost" data-act="deposit-review-ask-open:' + esc(e.id) + '">Ask the Popcorn Kernel</button></div>';
+      }
+      h += '</div>';
+    });
+    return h + '</div>';
+  }
   function renderLedger() {
     var bk = state.book;
     var tot = ledgerTotals(state.ledger, bk);
@@ -28765,6 +29632,7 @@
         '<button type="button" class="btn small" data-act="ledger-fates-dismiss">Got it</button></div>'
       : '';
     h += ledgerLookCardHtml(state.ledger, state.book, sync.lookNotes, state.closedBooks);   // security re-check of option B (A, D); C6 reviews
+    h += depositReviewCardHtml();   // the treasurer's review of 045e7ac (6)
     h += '<div class="card"><h2 class="section display">Ledger</h2>' +
       '<p class="small muted" style="margin:0 0 10px">Every dollar that actually moved. Unlike the budget — which is a plan — this is a record, ' +
       'so the balance below can be held next to a bank statement and checked.</p>' +
@@ -29137,7 +30005,9 @@
   function renderLedgerEntries() {
     var dr = ledgerDraft();
     var addWarn = (ui.ledgerAddWarned && ui.ledgerAddWarned === dr.date) ? (ledgerClosedYearWarning(dr.date, state.closedBooks) || ledgerBackdateWarning(dr.date, state.book)) : '';
-    var h = '<div class="card"><h2 class="section display">Record a transaction</h2>' +
+    // Pack positions — a leader who doesn't keep the books records only a storefront deposit (the Kernel);
+    // one who neither keeps them nor records deposits records nothing here.
+    var h = !canEditSection('ledger') ? (canEditSection('deposits') ? depositOnlyFormHtml(dr) : '') : ('<div class="card"><h2 class="section display">Record a transaction</h2>' +
       '<div class="lrow">' +
       '<input type="date" data-ch="ledn-date" value="' + esc(dr.date) + '" aria-label="Date">' +
       '<select data-ch="ledn-dir" aria-label="In or out">' +
@@ -29191,7 +30061,7 @@
             ? ' Wagon cash donations dated before ' + esc(fmtDate(wagonCutoverOf(state.wagonViaTEFrom))) + ' were kept by the pack: bank them as ' +
               '<strong>Storefront cash donations (kept)</strong> too.'
             : '')
-        : ' The check to the council for popcorn is <strong>Popcorn money for the council</strong>, with no budget line: it is not a pack cost.') + '</p></div>';
+        : ' The check to the council for popcorn is <strong>Popcorn money for the council</strong>, with no budget line: it is not a pack cost.') + '</p></div>');
 
     // ---- filters + list ----
     var f = ui.ledgerFilter;
@@ -29256,6 +30126,8 @@
         '<span class="lbal small muted money">' + (pre ? 'before opening' : fmt(bal)) + '</span>' +
         // Option B (owner, 2026-09-29) — a reversed entry and its reversal both stay here, counted, and say which is which.
         (ePair ? '<span class="pill navy">' + esc(ePair) + '</span>' : '') +
+        // The treasurer's review of 045e7ac (6) — a deposit not yet checked against the slip and the bank: counted, and said.
+        (e.depositReview === true ? '<span class="pill bad">not checked yet</span>' : '') +
         (e.reconciled
           ? '<span class="pill navy">reconciled</span>' +
             // Treasurer review of C2 (L-5) — armed, it offers a box for why (optional, logged).
@@ -29422,7 +30294,7 @@
   // once, in force), and hidden from everyone else, as Reopen is; two taps, since it can't be undone.
   function statementButtonsHtml(st, rt) {
     var h = '';
-    if (canEdit() && !statementReviewRefusal(st, statementReviewer(), state.book)) {
+    if (canEditSection('ledger') && !statementReviewRefusal(st, statementReviewer(), state.book)) {
       var rvArmed = ui.armed === 'st-review:' + st.id;
       h += '<button type="button" class="btn small' + (rvArmed ? ' danger armed' : '') + '" data-act="st-review:' + esc(st.id) + '">' +
         (rvArmed ? 'Tap again: I checked this against the bank’s statement' : 'Mark reviewed') + '</button>';
@@ -29444,7 +30316,7 @@
     }
     // A legacy statement's ending balance (treasurer review of C1, L1): once, by a leader who edits.
     // A box, then Add it, two taps (it can't be changed afterwards).
-    if (canEdit() && st.legacy === true && !statementAdded(st) && !statementReopened(st)) {
+    if (canEditSection('ledger') && st.legacy === true && !statementAdded(st) && !statementReopened(st)) {
       h += '<button type="button" class="btn small ghost" data-act="st-balance:' + esc(st.id) + '">Add the statement’s ending balance</button>';
       if (ui.stBalanceAsk === st.id) {
         var baArmed = ui.armed === 'st-balance-go:' + st.id;
@@ -29582,7 +30454,7 @@
     }).join('') +
       '<div class="row" style="margin-top:6px"><label class="fld">Deposit kept storefront cash within (days)' +
       '<input class="weight-in" type="number" min="1" max="60" step="1" inputmode="numeric" data-ch="deposit-days" value="' + esc(String(dd)) + '"' +
-      (canEdit() ? '' : ' disabled') + '></label></div>' +
+      (canEditSection('deposits') ? '' : ' disabled') + '></label></div>' +
       '<p class="small muted" style="margin:4px 0 0">' + esc(DEPOSIT_DAYS_NOTE) + '</p>';
   }
   // Owner, 2026-10-01 (treasurer review of item 11, 9–10) — the popcorn money held for the council,
@@ -29602,7 +30474,7 @@
       return '<p class="small" style="margin:' + (i ? '4' : '10') + 'px 0 0' + (ln.warn ? ';color:var(--accent-text)' : '') + '"' + (ln.warn ? ' role="alert"' : '') + '>' +
         (i ? '' : '<span class="pill navy">Council</span> ') + esc(ln.text) + '</p>';
     }).join('');
-    if (!canEdit() || state.book.closedAt) return h;
+    if (!canEditSection('ledger') || state.book.closedAt) return h;
     if (settled) {
       var unArmed = ui.armed === 'council-unsettle';
       return h + '<p class="small" style="margin:6px 0 0"><button type="button" class="btn small ghost' + (unArmed ? ' danger armed' : '') + '" data-act="council-unsettle">' +
@@ -29620,7 +30492,10 @@
       '<label class="fld">Settled on<input type="date" data-ch="settle-on" value="' + esc(d.on || '') + '"></label>' +
       '<label class="fld">How<select data-ch="settle-how">' + COUNCIL_SETTLE_HOW.map(function (k) {
         return '<option value="' + k + '"' + (d.how === k ? ' selected' : '') + '>' + esc(COUNCIL_SETTLE_LABELS[k].charAt(0).toUpperCase() + COUNCIL_SETTLE_LABELS[k].slice(1)) + '</option>';
-      }).join('') + '</select></label></div>' +
+      }).join('') + '</select></label>' +
+      '<label class="fld">Approved by (Committee Chair)<input type="text" data-ch="settle-approved" maxlength="80" autocomplete="off" aria-describedby="settle-approved-hint" value="' +
+        esc(d.approvedBy || '') + '"></label></div>' +
+      '<p class="small muted" id="settle-approved-hint" style="margin:4px 0 0">' + esc(COUNCIL_APPROVER_HINT) + '</p>' +
       '<p class="small" style="margin:6px 0 0">Funds in will count the commission as actual: ' + esc(fmt(chk.banked)) + ' banked for the council \u2212 ' +
         esc(fmt(chk.paid)) + ' paid to it + ' + esc(fmt(chk.checks)) + ' in commission checks = <strong class="money">' + esc(fmt(chk.commission)) + '</strong>' +
         (est != null ? ' (sales work out to ' + esc(fmt(est)) + ')' : '') + '.</p>' +
@@ -29806,9 +30681,41 @@
   /* ----- Pack tab ----- */
   // ---- Accounts UI ----
   function readOnlyBanner() {
+    // The pack's own server: a retired editor or viewer, or a leader whose positions edit nothing.
+    if (accountsInForce() && apiAccounts()) {
+      var why = sync.myRole === 'editor' || sync.myRole === 'viewer' ? 'your account needs a pack position before you can change anything. Ask a pack admin.'
+        : 'your positions don\u2019t include editing anything. Ask a pack admin if that\u2019s wrong.';
+      return '<div class="warn no-print" style="margin:0 0 14px"><strong>View only</strong> \u2014 ' + why + '</div>';
+    }
     return '<div class="warn no-print" style="margin:0 0 14px">' +
       '<strong>Read-only</strong> — you can view everything; ask a pack admin for edit access.</div>';
   }
+  // "View only — your positions don't include editing the ledger." For a section this account reads but
+  // doesn't edit, when it edits something elsewhere (readOnlyBanner is for one that edits nothing). What
+  // they CAN still do there is said too: den meetings and attendance on the calendar, accepting shift
+  // reports on the storefronts, recording a deposit in the ledger. '' when there is nothing to say.
+  var VIEW_ONLY_EXCEPT = {
+    calendar: [['calendar.denmeeting', 'change your dens\u2019 meetings'], ['attendance', 'take attendance']],
+    storefronts: [['shiftVerify', 'accept shift reports']],
+    ledger: [['deposits', 'record storefront deposits']]
+  };
+  function viewOnlyBanner(id) {
+    if (!sectionGuardOn() || !id || id === 'home' || !canSeeSection(id) || canEditSection(id)) return '';
+    var say = SECTION_SAY[id];
+    if (!say) return '';
+    var but = (VIEW_ONLY_EXCEPT[id] || []).filter(function (x) {
+      return ownKey(ACCESS_TABLE.actions, x[0]) ? canDo(x[0]) : canEditSection(x[0]);
+    }).map(function (x) { return x[1]; });
+    // The wording review of ce6b8de (2): "View only" and then "you can still change" contradicted each other.
+    // With something left to do here, say that, and whose the rest is; "View only" only when there is nothing.
+    if (but.length) {
+      return '<div class="warn no-print view-only" role="note" style="margin:0 0 14px">You can ' + esc(but.join(' and ')) + ' here. The rest of ' +
+        esc(VIEW_ONLY_REST[id] || say[0]) + ' is ' + esc(say[1] ? say[1] + '\u2019s' : 'a pack admin\u2019s') + '.</div>';
+    }
+    return '<div class="warn no-print view-only" role="note" style="margin:0 0 14px"><strong>View only</strong> \u2014 your positions don\u2019t let you change ' +
+      esc(say[0]) + '.</div>';
+  }
+  var VIEW_ONLY_REST = { calendar: 'the calendar', storefronts: 'the storefront schedule', ledger: 'the ledger' };
   // Role → pill class. admin=gold (default .pill), editor/viewer=navy, pending=amber/bad.
   function rolePill(role) {
     var cls = role === 'admin' ? 'pill' : (role === 'pending' ? 'pill bad' : 'pill navy');
@@ -29830,6 +30737,8 @@
     }
     var admin = isAdmin();
     var me = sync.user.uid;
+    // Pack positions (client step 6) — on the pack's own server, the card speaks positions, not editor/viewer.
+    if (apiAccounts() && sync.members.length) return h + renderMembersPositions(admin, me) + '</div>';
     if (!sync.members.length) {
       h += '<p class="small muted" style="margin:0">No members yet — sign-in is still registering you. This card will fill in shortly.</p></div>';
       return h;
@@ -29918,7 +30827,7 @@
     h += '</div>';
     if (!admin) {
       h += '<p class="small muted" style="margin:10px 0 0">Your role: <strong>' + esc(sync.myRole || 'pending') +
-        '</strong>. Ask an admin to change it.</p>';
+        '</strong>. Ask a pack admin to change it.</p>';
     } else {
       h += '<p class="small muted" style="margin:10px 0 0"><strong>admin</strong> and <strong>editor</strong> can edit everything. ' +
         '<strong>viewer</strong> sees the whole pack record but can’t change it. <strong>parent</strong> only ever sees the ' +
@@ -29928,12 +30837,178 @@
     h += '</div>';
     return h;
   }
+  // ---- Pack positions: the Members card on the pack's own server (client step 6, 2026-10-02) ----
+  // A leader's account holds one or more positions (labels from the table, which are JOBS' own words); an
+  // admin ticks them here. What each one edits is the table's (accessFor). An account still 'editor' or
+  // 'viewer' from before reads everything and edits nothing until it is given positions: listed first,
+  // as "Needs a position". Admin and parent are set by name; editor and viewer never again.
+  var DEN_POSITIONS = ACCESS_TABLE.denPositions;
+  function positionLabel(id) {
+    var p = ACCESS_TABLE.positions.filter(function (x) { return x.id === id; })[0];
+    return p ? p.label : id;
+  }
+  // "Den Leader (Wolf, Bear), Treasurer".
+  function positionsSay(positions, dens) {
+    var d = arrOf(dens);
+    return arrOf(positions).map(function (pid) {
+      return positionLabel(pid) + (DEN_POSITIONS.indexOf(pid) !== -1 && d.length ? ' (' + d.join(', ') + ')' : '');
+    }).join(', ');
+  }
+  // "Edits: den meetings, attendance, den plans and advancement." — what these positions together edit, in the
+  // app's words (SECTION_SAY), or that they only read. '' for none at all (Parent alone).
+  function positionsEditsSay(positions) {
+    var held = arrOf(positions).filter(function (x) { return x !== 'parent'; });
+    if (!held.length) return '';
+    var a = accessFor('leader', held);
+    var list = ACCESS_TABLE.sections.filter(function (sx) {
+      return a[sx] === 'edit' && sx !== 'home' && !(sx === 'calendar.denmeeting' && a.calendar === 'edit');
+    }).map(function (sx) { return SECTION_SAY[sx] ? SECTION_SAY[sx][0] : sx; });
+    if (!list.length) return 'Can look, but not change anything.';
+    var last = list.pop();
+    return 'Edits: ' + (list.length ? list.join(', ') + ' and ' : '') + last + '.';
+  }
+  function needsPosition(m) { return m && (m.role === 'editor' || m.role === 'viewer'); }
+  var DENS_NEEDED_SAY = 'Tick the dens they lead.';
+  // The admin's footnote (the wording review of ce6b8de, 7). Its claim about who doesn't get the money pages is the
+  // table's: the positions that hide none of them are exactly the ones named (the harness checks), and "in their menus"
+  // because stage 1 hides pages, not data.
+  var POSITIONS_FOOTNOTE = 'A leader’s positions decide what they can change. They can look at most of the rest. ' +
+    'Only an admin, the Cubmaster and Assistant Cubmaster, the Committee Chair, the Treasurer and the Popcorn Kernel have the ledger, dues, ' +
+    'fundraisers and popcorn inventory pages in their menus. A parent only ever sees the schedule and standings, never the money, dues, ' +
+    'inventory or leaders’ contact details. An admin edits everything.';
+  // "Make parent" on a member row (the wording review of ce6b8de, 1). A pending account: one tap, "Approve as a parent".
+  // A leader or an account that needs a position: two taps, like Make admin, and the second says what goes, in a
+  // phone's button: the position by name when it is short, else that they lose them all.
+  function makeParentBtn(m) {
+    if (m.role === 'pending') {
+      return '<button type="button" class="btn small" data-act="member-approve" data-uid="' + esc(m.uid) + '" data-role="parent">Approve as a parent</button>';
+    }
+    var key = 'member-make-parent:' + m.uid, armed = ui.armed === key;
+    var held = m.role === 'leader' ? positionsSay(m.positions, m.dens) : '';
+    var again = !held ? 'Tap again to confirm' : held.length <= 20 ? 'Tap again: drops ' + held : 'Tap again: they lose all positions';
+    return '<button type="button" class="btn small' + (armed ? ' danger armed' : '') + '" data-act="' + esc(key) + '">' + esc(armed ? again : 'Make parent') + '</button>';
+  }
+  // The tick boxes, for a member (`kind` 'member', `id` its uid) or the invite form (`kind` 'invite').
+  function positionPickerHtml(kind, id, draft) {
+    var held = arrOf(draft && draft.positions), dens = arrOf(draft && draft.dens);
+    var tag = ' data-kind="' + esc(kind) + '" data-uid="' + esc(id || '') + '"';
+    var h = '<p class="small muted" style="margin:6px 0 0;flex-basis:100%">Positions are the pack jobs this person does. Each one decides what they can change.</p>' +
+      '<div class="pos-grid" role="group" aria-label="Positions">' + ACCESS_TABLE.positions.map(function (p) {
+      return '<label><input type="checkbox" data-ch="pos-tick"' + tag + ' value="' + esc(p.id) + '"' + (held.indexOf(p.id) !== -1 ? ' checked' : '') + '>' +
+        '<span>' + esc(p.label) + '</span></label>';
+    }).join('') + '</div>';
+    if (held.some(function (x) { return DEN_POSITIONS.indexOf(x) !== -1; })) {
+      h += '<p class="small" style="margin:8px 0 0">Which dens do they lead? They can change only those dens’ meetings.</p>' +
+        '<div class="pos-grid" role="group" aria-label="Dens they lead">' + DENS.map(function (d) {
+          return '<label><input type="checkbox" data-ch="pos-den"' + tag + ' value="' + esc(d) + '"' + (dens.indexOf(d) !== -1 ? ' checked' : '') + '><span>' + esc(d) + '</span></label>';
+        }).join('') + '</div>';
+    }
+    var say = positionsEditsSay(held);
+    if (say) h += '<p class="small muted" style="margin:6px 0 0">' + esc(say) + '</p>';
+    return h;
+  }
+  function renderMembersPositions(admin, me) {
+    var rank = function (m) { return needsPosition(m) ? 0 : m.role === 'pending' ? 1 : 2; };
+    var sorted = sync.members.slice().sort(function (a, b) {
+      return rank(a) - rank(b) || String(a.name || a.email || '').localeCompare(String(b.name || b.email || ''));
+    });
+    var h = '', lastRank = -1;
+    sorted.forEach(function (m) {
+      var r = rank(m), who = m.name || m.email || 'Member', isSelf = m.uid === me;
+      if (r !== lastRank) {
+        h += (lastRank === -1 ? '' : '</div>') + (r === 0 ? '<p class="eyebrow" style="margin:8px 0 0">Needs a position</p>' +
+          '<p class="small muted" style="margin:0 0 4px">These people signed in before positions existed. They can look but not change anything until you give them positions.</p>'
+          : r === 1 ? '<p class="eyebrow" style="margin:8px 0 0">Waiting for approval</p>' : '<p class="eyebrow" style="margin:8px 0 0">Members</p>') + '<div class="acct-list">';
+        lastRank = r;
+      }
+      var desc = m.role === 'admin' ? 'Admin · edits everything' : m.role === 'parent' ? 'Parent' : m.role === 'pending' ? 'Waiting for approval'
+        : m.role === 'leader' ? positionsSay(m.positions, m.dens) || 'Leader' : 'Needs a position';
+      h += '<div class="acct-row"><div class="acct-who"><span class="acct-name">' + esc(who) + '</span>' +
+        (sync.ownerUid && m.uid === sync.ownerUid ? ' <span class="pill navy acct-owner">owner</span>' : '') +
+        (isSelf ? ' <span class="small muted">(you)</span>' : '') +
+        (m.email ? '<span class="acct-email small muted">' + esc(m.email) + '</span>' : '') +
+        '<span class="acct-email small">' + esc(desc) + '</span>' +
+        (m.role === 'leader' && positionsEditsSay(m.positions) ? '<span class="acct-email small muted">' + esc(positionsEditsSay(m.positions)) + '</span>' : '') +
+        '</div><div class="acct-ctl">';
+      var editing = ui.posEdit && ui.posEdit.uid === m.uid;
+      if (admin && !isSelf && !editing) {
+        var lock = isLastAdmin(m.uid);
+        h += '<button type="button" class="btn small' + (needsPosition(m) || m.role === 'pending' ? ' primary' : '') + '" data-act="pos-edit-open" data-uid="' + esc(m.uid) + '">' +
+          (m.role === 'leader' ? 'Change positions' : m.role === 'pending' ? 'Approve as a leader' : 'Give positions') + '</button>' +
+          (m.role !== 'parent' && !lock ? makeParentBtn(m) : '') +
+          (m.role !== 'admin' && m.role !== 'pending' ? '<button type="button" class="btn small ghost' + (ui.armed === 'member-make-admin:' + m.uid ? ' danger armed' : '') + '" data-act="member-make-admin:' + esc(m.uid) + '">' +
+            (ui.armed === 'member-make-admin:' + m.uid ? 'Tap again to confirm' : 'Make admin') + '</button>' : '') +
+          (lock ? '<span class="small muted">only admin</span>' : tinyDangerBtn('member-remove:' + m.uid, 'Remove ' + who));
+      }
+      h += '</div>';
+      if (editing) {
+        h += '<div class="pos-edit">' + positionPickerHtml('member', m.uid, ui.posEdit) +
+          '<div class="row" style="margin-top:8px"><button type="button" class="btn small primary" data-act="pos-edit-save" data-uid="' + esc(m.uid) + '">Save positions</button>' +
+          '<button type="button" class="btn small ghost" data-act="pos-edit-cancel">Cancel</button></div></div>';
+      }
+      h += memberLinksHtml(m, admin);
+      h += '</div>';
+    });
+    if (lastRank !== -1) h += '</div>';
+    if (!admin) {
+      h += '<p class="small muted" style="margin:10px 0 0">Your access: <strong>' + esc(sync.myRole === 'leader' ? positionsSay(sync.myPositions, sync.leadDens) || 'leader'
+        : needsPosition({ role: sync.myRole }) ? 'needs a position' : (sync.myRole || 'pending')) + '</strong>. Ask a pack admin to change it.</p>';
+    } else {
+      h += '<p class="small muted" style="margin:10px 0 0">' + esc(POSITIONS_FOOTNOTE) + '</p>';
+      h += renderInvitesBlock();
+    }
+    return h;
+  }
+  // Save an account's positions (an admin's). At least one; a den leader's dens with them.
+  function saveMemberPositions(memberUid) {
+    var d = ui.posEdit;
+    if (!isAdmin() || !cloudReady() || !d || d.uid !== memberUid) return;
+    var positions = ACCESS_TABLE.positions.map(function (p) { return p.id; }).filter(function (x) { return arrOf(d.positions).indexOf(x) !== -1; });
+    if (!positions.length) { showToast('Tick at least one position, or make them a parent.'); return; }
+    if (isLastAdmin(memberUid)) { showToast('Keep at least one admin.'); return; }
+    var leads = positions.some(function (x) { return DEN_POSITIONS.indexOf(x) !== -1; });
+    var dens = leads ? DENS.filter(function (x) { return arrOf(d.dens).indexOf(x) !== -1; }) : [];
+    if (leads && !dens.length) { showToast(DENS_NEEDED_SAY); return; }   // the wording review of ce6b8de (9)
+    sync.backend.updateMemberPositions(sync.docId, memberUid, positions, dens).then(function () {
+      ui.posEdit = null;
+      showToast('Saved. ' + (positionsEditsSay(positions) || 'Parent.'));
+      render();
+    }).catch(function (err) { accountsToast(err); });
+  }
+  // The leader-record link and the parent-of links under a member row (unchanged from the Firestore card).
+  function memberLinksHtml(m, admin) {
+    var h = '';
+    if (admin && m.role !== 'pending' && state.leaders.length) {
+      var linked = state.leaders.find(function (l) { return l.uid === m.uid; });
+      var autoMail = String(m.email || '').trim().toLowerCase();
+      var autoMatch = !linked && autoMail && state.leaders.find(function (l) { return String(l.email || '').trim().toLowerCase() === autoMail; });
+      h += '<div class="acct-link"><label class="small muted" style="display:flex;align-items:center;gap:6px">Leader record' +
+        '<select class="acct-select" data-ch="member-leader" data-uid="' + esc(m.uid) + '" aria-label="Leader record for ' + esc(m.name || m.email || 'member') + '">' +
+        '<option value="">' + (autoMatch ? esc(autoMatch.name || 'matched by email') + ' (matched by email)' : 'not linked yet') + '</option>' +
+        state.leaders.map(function (l) {
+          return '<option value="' + esc(l.id) + '"' + (linked && linked.id === l.id ? ' selected' : '') + '>' + esc(l.name || 'Unnamed leader') + '</option>';
+        }).join('') + '</select></label></div>';
+    }
+    if (admin && m.role !== 'pending' && activeScouts().length) {
+      var kids = byScoutName(activeScouts());
+      var linkedKids = kids.filter(function (sc) { return arrOf(sc.parentUids).indexOf(m.uid) !== -1; });
+      h += '<div class="acct-link"><span class="small muted">Parent of' + (linkedKids.length ? '' : ' — nobody yet') + '</span>' +
+        chipPicker({
+          id: m.uid, canEdit: true, removeAct: 'member-scout-remove', addCh: 'member-scout-add', addLabel: '+ Link a scout…',
+          chosen: linkedKids.map(function (sc) { return { value: sc.id, label: sc.name || 'scout' }; }),
+          addable: kids.filter(function (sc) { return linkedKids.indexOf(sc) === -1; }).map(function (sc) { return { value: sc.id, label: sc.name || 'scout' }; })
+        }) + '</div>';
+    }
+    return h;
+  }
   // Parent phase — admin-only "Invite someone" form + the outstanding invite list.
   function renderInvitesBlock() {
     if (sync.invitesUnavailable) {
       return '<hr class="divider"><p class="small muted" style="margin:0">Invites need the newest security rules ' +
         '(SETUP guide, Part C) — publish them to invite people by email.</p>';
     }
+    // Pack positions — on the pack's own server: a leader with positions, or a parent.
+    if (apiAccounts()) return renderInvitesPositions();
     var h = '<hr class="divider"><p class="eyebrow">Invite someone</p>' +
       '<form data-form="invite-member" class="row" style="align-items:flex-end">' +
       '<label class="fld">Email<input type="email" name="email" placeholder="parent@example.com" autocomplete="off" style="width:210px"></label>' +
@@ -29953,6 +31028,30 @@
           '<div class="acct-ctl">' + rolePill(iv.role) +
           tinyDangerBtn('invite-revoke:' + iv.email, 'Revoke the invite for ' + iv.email) +
           '</div></div>';
+      });
+      h += '</div>';
+    }
+    return h;
+  }
+  function renderInvitesPositions() {
+    var d = ui.inviteDraft || { as: 'parent', positions: [], dens: [] };
+    var h = '<hr class="divider"><p class="eyebrow">Invite someone</p>' +
+      '<form data-form="invite-member" class="row" style="align-items:flex-end">' +
+      '<label class="fld">Email<input type="email" name="email" data-ch="invite-email" value="' + esc(d.email || '') + '" placeholder="name@example.com" autocomplete="off" style="width:210px;max-width:100%"></label>' +
+      '<label class="fld">Invite as<select class="acct-select" name="as" data-ch="invite-as">' +
+      '<option value="leader"' + (d.as === 'leader' ? ' selected' : '') + '>A leader (tick their positions)</option>' +
+      '<option value="parent"' + (d.as !== 'leader' ? ' selected' : '') + '>A parent</option></select></label>' +
+      '<button type="submit" class="btn small primary">Send invite</button>' +
+      (d.as === 'leader' ? '<div class="pos-edit">' + positionPickerHtml('invite', '', d) + '</div>' : '') +
+      '</form>' +
+      '<p class="small muted" style="margin:6px 0 0">They get the access you picked as soon as they sign in with Google using that address. ' +
+      'Nothing is emailed from here; send them the page link yourself.</p>';
+    if (sync.invites.length) {
+      h += '<p class="eyebrow" style="margin-top:12px">Invited — hasn’t signed in yet</p><div class="acct-list">';
+      sync.invites.forEach(function (iv) {
+        h += '<div class="acct-row"><div class="acct-who"><span class="acct-name">' + esc(iv.email) + '</span>' +
+          '<span class="acct-email small">' + esc(iv.role === 'leader' ? positionsSay(iv.positions, iv.dens) : iv.role === 'parent' ? 'Parent' : 'Needs a position') + '</span></div>' +
+          '<div class="acct-ctl">' + tinyDangerBtn('invite-revoke:' + iv.email, 'Cancel the invite for ' + iv.email) + '</div></div>';
       });
       h += '</div>';
     }
@@ -30122,7 +31221,7 @@
   function renderRecruitKit() {
     var rk = state.recruitKit || freshRecruitKit();
     var py = state.budget.programYear;
-    var edit = canEdit();
+    var edit = canEditSection('joining');
     var url = kitJoinUrl();
     var dis = edit ? '' : ' disabled';
     function item(id, label, help) {
@@ -30494,21 +31593,31 @@
   function renderLeaderRow(l) {
     var pills = l.archived ? [] : leaderStatus(l);
     var pillHtml = pills.map(function (p) { return '<span class="pill' + p.cls + '">' + esc(p.label) + '</span>'; }).join(' ');
+    // Pack positions (client step 6) — a leader record linked to an account with positions shows those as its jobs,
+    // read-only here: an admin changes them on the Members card. A job is still only a lens (JOBS never gates).
+    var acct = l.uid ? sync.members.filter(function (m) { return m.uid === l.uid; })[0] : null;
+    var fromPos = acct ? positionJobs(acct.role, acct.positions) : null;
+    if (fromPos) {
+      var posDens = arrOf(acct.dens);
+      var posBlock = '<div class="block-card" style="margin-top:8px"><p class="eyebrow">Jobs in the pack</p>' +
+        '<p class="small" style="margin:4px 0 0">' + esc(positionsSay(fromPos, posDens)) + '</p>' +
+        '<p class="small muted" style="margin:4px 0 0">From their account\u2019s positions. A pack admin changes them on Pack \u00b7 Sharing \u00b7 Members.</p></div>';
+    }
     var myJobIds = arrOf(l.jobs);
-    var jobsBlock = '<div class="block-card" style="margin-top:8px"><p class="eyebrow">Jobs in the pack</p>' +
+    var jobsBlock = fromPos ? posBlock : '<div class="block-card" style="margin-top:8px"><p class="eyebrow">Jobs in the pack</p>' +
       // The leftover-role note below already says "no job yet", so only one of the two shows.
       ((myJobIds.length || l.role) ? '' : '<p class="small muted" style="margin:4px 0 0">No job set yet — this leader sees the whole pack’s to-do list instead of their own.</p>') +
       chipPicker({
-        id: l.id, canEdit: canEdit(), removeAct: 'ldr-job-remove', addCh: 'ldr-job-add', addLabel: '+ Add a job…',
+        id: l.id, canEdit: canEditSection('people'), removeAct: 'ldr-job-remove', addCh: 'ldr-job-add', addLabel: '+ Add a job…',
         chosen: myJobIds.map(function (j) { return { value: j, label: jobLabel(j) }; }),
         addable: JOBS.filter(function (j) { return myJobIds.indexOf(j.id) === -1; })
           .map(function (j) { return { value: j.id, label: j.label }; })
       });
-    if (leaderIsDenLeader(l)) {
+    if (!fromPos && leaderIsDenLeader(l)) {
       var myDens = arrOf(l.dens);
       jobsBlock += '<p class="eyebrow" style="margin-top:10px">Their den' + (myDens.length > 1 ? 's' : '') + '</p>' +
         chipPicker({
-          id: l.id, canEdit: canEdit(), removeAct: 'ldr-den-remove', addCh: 'ldr-den-add', addLabel: '+ Add a den…',
+          id: l.id, canEdit: canEditSection('people'), removeAct: 'ldr-den-remove', addCh: 'ldr-den-add', addLabel: '+ Add a den…',
           chosen: myDens.map(function (dn) { return { value: dn, label: dn }; }),
           addable: DENS.filter(function (dn) { return myDens.indexOf(dn) === -1; })
             .map(function (dn) { return { value: dn, label: dn }; })
@@ -30523,13 +31632,13 @@
     // season archives flatten to), and it's shown here only when it failed to map to any
     // job — otherwise a note somebody typed would silently vanish. Once a job is chosen the
     // leftover is redundant, so this hides itself.
-    if (l.role && !myJobIds.length) {
+    if (!fromPos && l.role && !myJobIds.length) {
       jobsBlock += '<p class="small muted" style="margin:10px 0 0">No job set yet — previously recorded as “' + esc(l.role) + '”. ' +
         'Pick the job or jobs above that match' +
-        (canEdit() ? ', then <button type="button" class="btn small ghost" data-act="ldr-role-clear" data-id="' + l.id + '">clear this note</button>' : '.') +
+        (canEditSection('people') ? ', then <button type="button" class="btn small ghost" data-act="ldr-role-clear" data-id="' + l.id + '">clear this note</button>' : '.') +
         '</p>';
     }
-    jobsBlock += '</div>';
+    if (!fromPos) jobsBlock += '</div>';
     return '<div class="leader-row' + (l.archived ? ' wk-past' : '') + '">' +
       '<div class="row" style="align-items:flex-end">' +
       (l.archived ? '<span class="pill navy" style="align-self:flex-end;margin-bottom:9px">moved on</span>' : '') +
@@ -30563,7 +31672,7 @@
           '<option value="no"' + (v === 'no' ? ' selected' : '') + '>No</option></select></label>';
       }).join('') +
       '<span class="small muted" style="align-self:flex-end;padding-bottom:9px">For the supervision check \u2014 private, never published.</span>' +
-      (canEdit()
+      (canEditSection('people')
         ? '<button type="button" class="btn small" data-act="' + (l.archived ? 'restore-leader' : 'archive-leader') + '" data-id="' + l.id + '" style="align-self:flex-end">' +
           (l.archived ? 'Bring back' : 'Moved on (keeps history)') + '</button>'
         : '') +
@@ -31068,10 +32177,19 @@
     var toClose = homeStorefrontCashOn() ? homeStorefrontsToClose() : null;
     if (toClose) h += homeStorefrontsCard(toClose);
 
+    // The treasurer's review of 045e7ac (6) — storefront deposits waiting for the books' check, to whoever keeps them.
+    var depN = canEditSection('ledger') ? depositsToReview().length : 0;
+    if (depN) {
+      h += '<div class="card"><div class="spread"><h2 class="section display" style="margin-bottom:0">' + esc(depositsToReviewSay(depN)) + '</h2>' +
+        '<button type="button" class="btn small" data-act="goto" data-tab="money" data-section="ledger">Review</button></div>' +
+        '<p class="small muted" style="margin:6px 0 0">' + esc(DEPOSIT_REVIEW_WHY) + '</p></div>';
+    }
+
     /* ----- Needs you ----- */
     // July's yearly check names stale lesson plans, so the plans are asked for (once) in July.
     if (todayISO().slice(5, 7) === '07' && advPlanKeysUsed().length) advPlansWant();
-    var tasks = homeTasks();
+    // Pack positions (client step 4) — nothing from a section this account's positions hide.
+    var tasks = homeTasks().filter(function (t) { return !t.section || canSeeSection(sectionAccessId(t.section)); });
     // A storefront whose totals wait on "Storefronts to close" is not also "no money entered yet":
     // accepting them is how the money gets entered. Without that card (a viewer), the row stays.
     if (toClose) tasks = tasks.filter(function (t) { return !(t.sfId && toClose.sfIds[t.sfId]); });
@@ -31512,7 +32630,7 @@
           (c.note ? '<br><span class="small muted">' + esc(c.note) + '</span>' : '') +
           (chargeIsOpen(c)
             ? '<br><label class="small muted charge-due">Due <input type="date" data-ch="charge-due" data-id="' + esc(c.id) + '" value="' + esc(cDue) + '"' +
-              (canEdit() ? '' : ' disabled') + ' aria-label="Due date"></label>' +
+              (canEditSection('dues') ? '' : ' disabled') + ' aria-label="Due date"></label>' +
               (c.dueDate ? ' <span class="small muted">(set by hand)</span>' : '')
             : '') + '</span>' +
           '<span class="money small">' + fmt(c.amountCents) + '</span>' +
@@ -31837,7 +32955,7 @@
       h += '<div class="empty" style="margin-bottom:10px">No leaders yet. Add your pack’s leadership roster to track Safeguarding Youth Training and registration renewals.</div>';
     }
     leaders.forEach(function (l) { h += renderLeaderRow(l); });
-    if (canEdit()) h += '<button type="button" class="btn small" data-act="add-leader" style="margin-top:10px">+ Add leader</button>';
+    if (canEditSection('people')) h += '<button type="button" class="btn small" data-act="add-leader" style="margin-top:10px">+ Add leader</button>';
     // Leaders who have moved on. Kept, not deleted: their training dates are the pack's
     // record of who was qualified when, and adult registration stops counting them.
     var goneLeaders = state.leaders.filter(function (l) { return l.archived; });
@@ -31884,7 +33002,7 @@
     // Wave 21 — the Trail's End import card moved to Popcorn · Storefronts, where the
     // Kernel who runs it actually works. This is the pointer left behind, next to Past
     // seasons because that is where a past-season sales report lands.
-    if (canEdit()) {
+    if (canEditSection('totals')) {
       h += '<div class="card"><h2 class="section display">Import from Trail’s End</h2>' +
         '<p class="small muted" style="margin:0 0 10px">Lives on <strong>Popcorn · Storefronts</strong> now. ' +
         'A past season’s sales report still archives into Past seasons below.</p>' +
@@ -31897,11 +33015,17 @@
     // Wave 7 — year-end close-out entry point (preview overlay; nothing commits until confirmed)
     var cy = state.budget.programYear;
 
-    // Advance dens + close-out both mutate the roster/pack record — edit-only.
-    if (canEdit()) {
+    // Advance dens + close-out both mutate the roster and the whole pack record: both are an admin's (Keith,
+    // 2026-10-02: canAdvanceDens; owner decision 22: canReopenStatement). Whoever reads the season sees the
+    // two cards, and anyone else is told whose they are, rather than looking for buttons that aren't there.
+    if (canSeeSection('season')) {
     // Wave 19(3) — standalone den advancement: crossover happens in spring, months
     // before the fiscal close-out. Once run, the close-out skips den advancement.
     h += '<div class="card"><h2 class="section display">Advance dens</h2>';
+    if (!canAdvanceDens()) {
+      h += '<p class="small muted" style="margin:0">' + (state.densAdvancedYear === cy ? 'Dens already advanced for ' + cy + '–' + (cy + 1) + '. ' : '') +
+        esc(ADVANCE_DENS_REFUSED) + '</p>';
+    } else {
     var advWarn = densAdvanceWarning();
     var advWarnHtml = advWarn ? '<p class="small" style="margin:8px 0 0">' + esc(advWarn) + '</p>' : '';
     if (state.densAdvancedYear === cy) {
@@ -31919,6 +33043,7 @@
         '<button type="button" class="btn' + (advDensArmed ? ' danger armed' : '') + '" data-act="adv-dens">' +
         (advDensArmed ? 'Tap again to advance every den' : 'Advance dens to next ranks') + '</button>' + (advDensArmed ? advWarnHtml : '');
     }
+    }   // end canAdvanceDens
     h += '</div>';
 
     h += '<div class="card"><h2 class="section display">Close out the year</h2>' +
@@ -31929,7 +33054,7 @@
       // Owner decision 22 — the button only for those who can use it; anyone else is told whose it is.
       (canReopenStatement() ? '<button type="button" class="btn primary" data-act="open-closeout">Close out the ' + cy + ' program year…</button>'
         : '<p class="small muted" style="margin:0">' + esc(CLOSEOUT_REFUSED) + '</p>') + '</div>';
-    } // end canEdit — advance dens + close-out
+    } // end canSeeSection('season') — advance dens + close-out
     return h;
   }
 
@@ -32888,7 +34013,7 @@
           shares.forEach(function (s) { byKey[s.coverKey] = s; });
           h += '<p class="eyebrow" style="margin:10px 0 4px">This tier covers</p>' +
             chipPicker({
-              id: t.id, canEdit: canEdit(), removeAct: 'tier-cover-remove', addCh: 'tier-cover-add',
+              id: t.id, canEdit: canEditSection('rewards'), removeAct: 'tier-cover-remove', addCh: 'tier-cover-add',
               addLabel: '+ Add a charge this tier covers…',
               // Stale keys (a deleted budget line, or an adult rate since zeroed) drop out here.
               chosen: covers.filter(function (k) { return byKey[k]; })
@@ -33671,7 +34796,7 @@
   // separate one would drift, and the drift would be invisible to whoever is editing.
   function renderCamping(sec) {
     var trips = campingTrips();
-    var edit = canEdit();
+    var edit = canEditSection('camping');
     if (!trips.length) {
       return '<div class="card"><h2 class="section display">Camping</h2>' +
         '<p class="small muted" style="margin:0 0 10px">No campouts on file. Each one gets its own tab up there, ' +
@@ -33924,7 +35049,7 @@
     var py = state.budget.programYear;
     var ob = state.onboarding || {};
     var list = onboardScouts(state.scouts, ob, py);
-    var edit = canEdit();
+    var edit = canEditSection('joining');
     var dis = edit ? '' : ' disabled';
     var paidMap = chargePaidAllocation(state.charges, state.ledger, chargeFamilyKey);
     var h = '<div class="card"><h2 class="section display">New families this year</h2>' +
@@ -33991,7 +35116,7 @@
   function renderWelcomeEditor() {
     var w = state.welcome || { published: false, sections: [] };
     var secs = welcomeSections();
-    var edit = canEdit();
+    var edit = canEditSection('joining');
     var live = publishedWelcome(w).length;
     var h = '<div class="card"><h2 class="section display">New to the pack</h2>' +
       '<p class="small muted" style="margin:0 0 8px">The page a new family reads: what a den and a pack meeting are, ' +
@@ -38403,7 +39528,7 @@
       (arrOf(book.aside).some(function (e) { return e && (e.off === 'void' || e.off === 'reversed'); }) ? '<button type="button" class="btn small ghost" data-act="closed-csv:voided:' + book.year + '">Voided &amp; reversed (CSV)</button>' : '') +
       '</div>';
     // C8-9 — and, for anyone who can edit, how to correct it.
-    if (canEdit()) h += closedRvFormHtml(book);
+    if (canEditSection('ledger')) h += closedRvFormHtml(book);
     return h;
   }
   // PHASE 3, C8-9 — reversing an entry in a closed year. The closed book is never changed: a correction is a COUNTED reversal in the open book
@@ -39026,6 +40151,9 @@
     // after the first tap, it disarms Add it).
     var stWhyEl = e.target.closest('input[data-ch="st-reopen-why"]');
     if (stWhyEl) ui.stReopenWhy = stWhyEl.value;
+    // Keith, 2026-10-02 — and the name of the Chair who approved the council settlement.
+    var apEl = e.target.closest('input[data-ch="settle-approved"]');
+    if (apEl && ui.settleDraft) ui.settleDraft.approvedBy = apEl.value;
     var stBalEl = e.target.closest('input[data-ch="st-balance"]');
     if (stBalEl) { ui.stBalance = stBalEl.value; if (/^st-balance-go:/.test(String(ui.armed || ''))) ui.armed = null; }
     // Phase 3, C4 — and the Reverse or correct form's why and figures (a figure typed disarms it).
@@ -39222,11 +40350,11 @@
     }
     if (act === 'toggle-season-setup') { ui.seasonSetupOpen = !ui.seasonSetupOpen; render(); return; }
     // ----- Camping. Every one of these edits the pack record, so they all sit behind
-    // canEdit(): a viewer-role leader never sees the buttons, but the action handler is
+    // canEditSection('camping'): a leader who only reads it never sees the buttons, but the action handler is
     // reachable from a stale DOM after a role change and must not take their word for it.
     // Wave C4 — add the den campout template, once. A second tap goes to the one already there.
     if (act === 'camp-add-den') {
-      if (!canEdit()) return;
+      if (!canEditSection('camping')) { showToast(readOnlySay('camping')); return; }
       if (!getTrip(DEN_CAMP_TRIP_ID)) {
         state.camping.trips.push(seedDenCampTrip());
         commit();
@@ -39235,7 +40363,7 @@
       return;
     }
     if (act === 'camp-add-trip') {
-      if (!canEdit()) return;
+      if (!canEditSection('camping')) { showToast(readOnlySay('camping')); return; }
       var ntTrip = freshTrip('');
       state.camping.trips.push(ntTrip);
       commit();
@@ -39246,7 +40374,7 @@
       return;
     }
     if (act.indexOf('camp-add-sec:') === 0) {
-      if (!canEdit()) return;
+      if (!canEditSection('camping')) { showToast(readOnlySay('camping')); return; }
       var asT = getTrip(act.slice('camp-add-sec:'.length));
       if (!asT) return;
       asT.sections.push(freshTripSection('', ''));
@@ -39254,7 +40382,7 @@
       return;
     }
     if (act.indexOf('camp-del-sec:') === 0) {
-      if (!canEdit()) return;
+      if (!canEditSection('camping')) { showToast(readOnlySay('camping')); return; }
       arm(act, function () {
         var dsBits = act.split(':');
         var dsT = getTrip(dsBits[1]);
@@ -39269,7 +40397,7 @@
       return;
     }
     if (act.indexOf('camp-del-trip:') === 0) {
-      if (!canEdit()) return;
+      if (!canEditSection('camping')) { showToast(readOnlySay('camping')); return; }
       arm(act, function () {
         var dtId = act.slice('camp-del-trip:'.length);
         var dtIx = state.camping.trips.findIndex(function (t) { return t.id === dtId; });
@@ -39285,8 +40413,8 @@
       });
       return;
     }
-    // ----- "New to the pack" (Wave B1). Behind canEdit() for the camping reason above.
-    // ----- Wave B4 — School Night kit. Printing changes nothing, so no canEdit(); the link is
+    // ----- "New to the pack" (Wave B1). Behind canEditSection('joining') for the camping reason above.
+    // ----- Wave B4 — School Night kit. Printing changes nothing, so no edit check; the link is
     // re-checked here (kitJoinUrl: admin, link on, real code) rather than trusted from the page.
     if (act === 'kit-print-flyer') {
       var kfUrl = recruitKitFlyerLink(state.recruitKit, state.budget.programYear) ? kitJoinUrl() : '';
@@ -39300,19 +40428,19 @@
       return;
     }
     if (act.indexOf('ob-untrack:') === 0) {
-      if (!canEdit()) return;
+      if (!canEditSection('joining')) { showToast(readOnlySay('joining')); return; }
       delete state.onboarding[act.slice('ob-untrack:'.length)];
       commit();
       return;
     }
     if (act === 'welcome-add-sec') {
-      if (!canEdit()) return;
+      if (!canEditSection('joining')) { showToast(readOnlySay('joining')); return; }
       state.welcome.sections.push(freshWelcomeSection('', '', ''));
       commit();
       return;
     }
     if (act.indexOf('welcome-sec-hide:') === 0) {
-      if (!canEdit()) return;
+      if (!canEditSection('joining')) { showToast(readOnlySay('joining')); return; }
       var whS = getWelcomeSection(act.slice('welcome-sec-hide:'.length));
       if (!whS) return;
       whS.hidden = !whS.hidden;
@@ -39320,7 +40448,7 @@
       return;
     }
     if (act.indexOf('welcome-del-sec:') === 0) {
-      if (!canEdit()) return;
+      if (!canEditSection('joining')) { showToast(readOnlySay('joining')); return; }
       arm(act, function () {
         var wdId = act.slice('welcome-del-sec:'.length);
         var wdIx = state.welcome.sections.findIndex(function (s) { return s.id === wdId; });
@@ -39340,7 +40468,7 @@
     if (act === 'baloo-dismiss') { state.balooNoticeDismissed = true; commit(); return; } // K1
     if (act === 'moved-go') {
       state.movedNoticeDismissed = true;
-      if (canEdit()) save();
+      if (canEdit()) save();   // a shared dismiss flag: anyone who edits anything
       gotoNav(el.dataset.tab, el.dataset.section, false);
       return;
     }
@@ -39423,12 +40551,12 @@
     }
     // S-3 — a leader accepting or sending back a family's shift totals.
     if (/^sr-(accept|accept-collected|accept-confirm|return-open|override-open|cancel|takeover|undo)$/.test(act)) { leaderShiftReportAct(act, el); return; }
-    if (/^sr-(cash-collected|cash-converted|cash-replaced|cash-undo|also-cash)$/.test(act)) { srCashAct(act, el); return; }
+    if (/^sr-(cash-collected|cash-converted|cash-replaced|cash-undo-open|also-cash)$/.test(act)) { srCashAct(act, el); return; }
     // A family's shift totals (2026-10-01): the server's table, never the pack record.
     if (act === 'shift-report-open' || act === 'shift-report-cancel' || act === 'shift-report-withdraw' || act === 'shift-report-confirm-open') { shiftReportAct(act, el); return; }
     if (act === 'signoff-later-cancel') { ui.signoffDraft = ''; ui.armed = null; render(); return; }
     if (act === 'signoff-later') {
-      if (!canEdit()) return;
+      if (!canEditSection('ledger')) return;
       var soTo = String(el.dataset.date || '');
       if (soTo !== ui.signoffDraft || !(soTo > signoffFromOf(state.signoffFrom)) || soTo > shiftReportToday()) { ui.signoffDraft = ''; render(); return; }
       arm('signoff-later:' + soTo, function () { setSignoffFrom(soTo); }, ARM_WARNED_MS);
@@ -39439,6 +40567,27 @@
     if (act === 'sign-in-google') { signInWithGoogle(); return; }
     if (act === 'sign-out-google') { signOutGoogle(); return; }
     if (act === 'member-approve') { setMemberRole(el.dataset.uid, el.dataset.role); return; }
+    // Pack positions (client step 6) — the position picker on a member row, and making someone an admin (two taps).
+    if (act === 'pos-edit-open') {
+      var peM = sync.members.filter(function (m) { return m.uid === el.dataset.uid; })[0];
+      if (!peM || !isAdmin()) return;
+      ui.posEdit = { uid: peM.uid, positions: arrOf(peM.positions).slice(), dens: arrOf(peM.dens).slice() };
+      render(); return;
+    }
+    if (act === 'pos-edit-cancel') { ui.posEdit = null; render(); return; }
+    if (act === 'pos-edit-save') { saveMemberPositions(String(el.dataset.uid || '')); return; }
+    if (act.indexOf('member-make-parent:') === 0) {
+      var mpUid = act.slice('member-make-parent:'.length);
+      if (!isAdmin()) return;
+      arm(act, function () { setMemberRole(mpUid, 'parent'); });
+      return;
+    }
+    if (act.indexOf('member-make-admin:') === 0) {
+      var maUid = act.slice('member-make-admin:'.length);
+      if (!isAdmin()) return;
+      arm(act, function () { setMemberRole(maUid, 'admin'); });
+      return;
+    }
     if (act.indexOf('member-remove:') === 0) {
       var rmUid = act.slice('member-remove:'.length);
       arm(act, function () { removeMember(rmUid); });
@@ -39685,7 +40834,7 @@
     }
     if (act === 'adv-toggle') { ui.advOpen[el.dataset.id] = !ui.advOpen[el.dataset.id]; render(); return; }
     if (act === 'adv-cycle') {
-      if (!canEdit()) return;
+      if (!canEditSection('advancement')) return;
       var aKind = el.dataset.kind;
       if (aKind !== 'req' && aKind !== 'elect') return;
       advCycle(el.dataset.scout, aKind, el.dataset.name);
@@ -39841,7 +40990,7 @@
     // as "Not the commission" does. A label, logged as an edit; a closed year takes nothing.
     // Owner, 2026-10-01 — the popcorn settled with the council (councilMoneyHtml).
     if (act === 'council-settle-open') {
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       var soChk = councilMoneyCheck(state.ledger);
       ui.settleDraft = { on: todayISO(), how: soChk.paid ? 'paid' : soChk.checks ? 'payout' : 'paid' };
       render(); return;
@@ -39850,18 +40999,21 @@
     if (act === 'council-settle-go') {
       var sd = ui.settleDraft;
       if (!sd) return;
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       if (state.book.closedAt) { showToast('This year is closed out.'); return; }
       if (!/^\d{4}-\d{2}-\d{2}$/.test(sd.on || '') || COUNCIL_SETTLE_HOW.indexOf(sd.how) === -1) { showToast('Enter the date it was settled.'); return; }
+      // Keith, 2026-10-02 — the settlement names the Committee Chair who approved it (named, not gated).
+      if (!councilApproverClean(sd.approvedBy)) { showToast('Enter the name of the Committee Chair who approved the settlement.'); return; }
       var sdWas = councilSettledText(state.book.councilSettled);
-      state.book.councilSettled = { on: sd.on, how: sd.how, by: ledgerActor(), byUid: ledgerActorUid(), at: new Date().toISOString() };
+      state.book.councilSettled = { on: sd.on, how: sd.how, by: ledgerActor(), byUid: ledgerActorUid(), at: new Date().toISOString(),
+        approvedBy: councilApproverClean(sd.approvedBy) };
       logLedger('settle', 'book', { f: { councilSettled: [sdWas || null, councilSettledText(state.book.councilSettled)] } });
       ui.settleDraft = null;
-      showToast('Settled. Funds in now counts the commission as actual: the money held for the council.');
+      showToast('Settled, approved by ' + state.book.councilSettled.approvedBy + '. Funds in now counts the commission as actual: the money held for the council.');
       commit(); return;
     }
     if (act === 'council-unsettle') {
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       arm(act, function () {
         if (!state.book.councilSettled) return;
         if (state.book.closedAt) { showToast('This year is closed out.'); return; }
@@ -39899,8 +41051,33 @@
       showToast('Noted \u2014 it stays counted as other income. Change its amount or direction and the question comes back.');
       commit(); return;
     }
+    // The treasurer's review of 045e7ac (6) — a flagged storefront deposit: it matches the slip and the bank (the flag
+    // comes off, with who and when, logged), or a question for the kernel (kept on the row, logged). Whoever keeps the
+    // books, but never the leader who entered it.
+    if (act.indexOf('deposit-review-ok:') === 0 || act.indexOf('deposit-review-ask-open:') === 0) {
+      var drvId = act.slice(act.indexOf(':') + 1);
+      var drv = state.ledger.filter(function (e) { return e && e.id === drvId; })[0];
+      if (!drv || drv.depositReview !== true) return;
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
+      if (drv.enteredByUid && drv.enteredByUid === ledgerActorUid()) { showToast(DEPOSIT_REVIEW_OWN_SAY); return; }
+      if (act.indexOf('deposit-review-ask-open:') === 0) { ui.depositAsk = drvId; render(); return; }
+      delete drv.depositReview;
+      // Signed as the server knows this leader (srSignName), which it checks (security re-check of ce6b8de, 4).
+      drv.depositReviewedBy = srSignName();
+      drv.depositReviewedByUid = ledgerActorUid();
+      drv.depositReviewedAt = new Date().toISOString();
+      logLedger('edit', drv.id, { f: { depositReview: [true, null] } });
+      if (commit()) showToast('Marked as matching the deposit slip and the bank. Reviewed by ' + drv.depositReviewedBy + '.');
+      return;
+    }
+    if (act === 'deposit-review-ask-cancel') { ui.depositAsk = null; render(); return; }
     if (act === 'ledger-add') {
       var dr = ledgerDraft();
+      // Pack positions — a leader who records deposits but doesn't keep the books (the Kernel): a storefront
+      // cash deposit only, flagged for the treasurer, and never into a period already signed off.
+      var depOnly = !canEditSection('ledger');
+      if (depOnly && !canEditSection('deposits')) { showToast(readOnlySay('ledger')); return; }
+      if (depOnly) { dr.direction = 'in'; dr.source = 'storefront'; dr.lineId = ''; dr.scoutId = ''; dr.donor = ''; }
       var amt = toCents(dr.amount);
       // Both are genuinely required: an entry with no amount records nothing, and one with
       // no date can't be placed in the running balance or ticked against a statement.
@@ -39918,6 +41095,10 @@
       // record it as a correction in the open year (a closed book is never changed).
       var drClosed = ledgerClosedYearWarning(dr.date, state.closedBooks);
       var drWarned = drBack || !!drClosed;
+      if (depOnly && (drWarned || state.book.closedAt || (state.book.openingDate && dr.date < state.book.openingDate))) { showToast(DEPOSIT_ONLY_DATE_SAY); return; }
+      // Security re-check of ce6b8de (5) — and dated no more than a week ahead (access.js DEPOSIT_AHEAD_DAYS).
+      if (depOnly && dr.date > isoPlusDays(todayISO(), DEPOSIT_AHEAD_DAYS)) { showToast('A deposit can be dated at most a week from today. Check the date.'); return; }
+      if (depOnly && amt > DEPOSIT_ONLY_MAX_CENTS) { showToast('That’s more than ' + fmt(DEPOSIT_ONLY_MAX_CENTS) + ' for one deposit — check the amount, or ask the Treasurer.'); return; }
       if (drWarned && ui.ledgerAddWarned !== dr.date) { ui.ledgerAddWarned = dr.date; render(); return; }
       // M1(c) — money out to a family on a family-direct line is a reimbursement, not a refund.
       var drReimb = dr.direction !== 'in' && !!dr.scoutId && ledgerLineIsDirect(dr.lineId);
@@ -39948,6 +41129,14 @@
         }
       }
       stampEntered(drEntry);   // E2
+      // Security re-check of ce6b8de (5): a storefront deposit is entered under the name the server knows this
+      // leader by (srSignName: their member name), as a shift's accept is signed; the server holds a deposit
+      // holder's to it.
+      if (drEntry.direction === 'in' && drEntry.source === 'storefront') drEntry.enteredBy = srSignName();
+      // The treasurer's review of 045e7ac (4, 5) — the Kernel's deposit is checked by the books' keeper; so is anyone's
+      // deposit of cash they collected themselves on a shift it covers (one person handling every step).
+      // Final security check of 8dced37 (1): and one that names no storefront, which nobody can check it against.
+      if (drEntry.source === 'storefront' && drEntry.direction === 'in' && (depOnly || depositSelfCollected(drEntry) || depositNamesNone(drEntry))) drEntry.depositReview = true;
       // M1(b) — said BEFORE it is added, measured against the credit as it stands without it.
       var drWarn = refundOverCreditWarning(drEntry);
       // E2 — a reimbursement names its receipt. A warning, not a block: the money has moved
@@ -40016,7 +41205,7 @@
       if (!vaRow) return;
       var vaLocked = ledgerLockedWhy(vaRow, state.book, '', 'void') || ledgerCancelledWhy(state, vaRow);   // Option B
       if (vaLocked) { showToast(vaLocked); return; }
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       if (ui.voidAsk !== vaId) ui.voidWhy = '';
       ui.voidAsk = vaId;
       render(); return;
@@ -40026,7 +41215,10 @@
       var vdId = act.split(':')[1];
       var vdRow = state.ledger.find(function (e) { return e.id === vdId; });
       if (!vdRow) { ui.voidAsk = null; render(); return; }
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
+      // Final security check of 8dced37 (1): below an admin, the leader who entered a deposit still waiting for its check
+      // doesn't take it out of the ledger (the server refuses it too).
+      if (sync.myRole !== 'admin' && vdRow.depositReview === true && vdRow.enteredByUid && vdRow.enteredByUid === ledgerActorUid()) { showToast(DEPOSIT_OWN_VOID_SAY); return; }
       // Asked on the tap, not when the form opened: a sync can have locked it since.
       var vdWhy = String(ui.voidWhy || '').trim();
       var vdNo = ledgerLockedWhy(vdRow, state.book, '', 'void') || ledgerCancelledWhy(state, vdRow) ||   // Option B: the lock, a reversed entry,
@@ -40086,7 +41278,7 @@
       var uvRow = (state.ledgerAside || []).find(function (e) { return e.id === uvId && e.off === 'void'; });
       if (!uvRow) return;
       // Security review of C3 (minor) — said here, as Void it says it, not left to commit().
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       // Security re-check of option B (finding A) — nor a reversal whose entry has been reversed
       // again since (ledgerReversedAgainWhy): both would count. Asked on each tap, as the lock is.
       // Security pass on option B sign-off (1b) — nor one whose entry is now dated after it
@@ -40118,7 +41310,7 @@
       var fxId = act.slice('ledger-fix:'.length);
       var fxRow = state.ledger.find(function (e) { return e.id === fxId; });
       if (!fxRow) return;
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       if (ui.fixAsk !== fxId) {
         ui.fixWhy = '';
         // Option B — and the reversal's date: today unless the treasurer picks another.
@@ -40134,7 +41326,7 @@
       var fgId = act.slice(act.indexOf(':') + 1);
       var fgRow = state.ledger.find(function (e) { return e.id === fgId; });
       if (!fgRow) { ui.fixAsk = null; render(); return; }
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       var fgWhy = String(ui.fixWhy || '').trim();
       // Option B — the reversal's date as picked (the form starts it at ledgerReverseDateDefault).
       var fgOn = String((ui.fixDraft && ui.fixDraft.rvdate) || '');
@@ -40251,6 +41443,9 @@
       var rlRec = reconcileTotals(state.ledger, state.book, state.ledgerAside);
       if (!rlNo && (rlRec.difference !== 0 || !(rlRec.ticked || rlRec.carriedTicked))) rlNo = 'The ticked entries no longer match the statement’s ending balance (the book may have changed on another device), so it wasn’t marked reconciled. Check the difference and try again.';
       if (rlNo) { if (ui.armed === act) ui.armed = null; showToast(rlNo); render(); return; }
+      // The treasurer's review of 045e7ac (6) — a statement holding a deposit nobody has checked against its slip asks first.
+      var rlFlag = state.ledger.filter(function (e) { return e && e.depositReview === true && e.reconciled === true && !e.statementId; }).length;
+      if (rlFlag && ui.armed !== act) showToast(depositReconcileAskSay(rlFlag));
       arm(act, function () {
         var rlWas = state.book.reconciledThrough || '';
         var rlFix = reconcileLockAhead(state.book, todayISO()) && state.book.statementDate < rlWas;
@@ -40293,7 +41488,7 @@
     if (act.indexOf('st-review:') === 0) {
       var svSt = (state.statements || []).filter(function (x) { return x.id === act.slice('st-review:'.length); })[0];
       if (!svSt) return;
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       var svNo = statementReviewRefusal(svSt, statementReviewer(), state.book);
       if (svNo) { if (ui.armed === act) ui.armed = null; showToast(svNo); render(); return; }
       arm(act, function () {
@@ -40329,7 +41524,7 @@
     if (act.indexOf('st-balance:') === 0) {
       var sbSt = (state.statements || []).filter(function (x) { return x.id === act.slice('st-balance:'.length); })[0];
       if (!sbSt) return;
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       var sbNo = statementBalanceRefusal(sbSt, '0');
       if (sbNo) { showToast(sbNo); render(); return; }
       if (ui.stBalanceAsk !== sbSt.id) ui.stBalance = '';
@@ -40340,7 +41535,7 @@
     if (act.indexOf('st-balance-go:') === 0) {
       var sdSt = (state.statements || []).filter(function (x) { return x.id === act.slice('st-balance-go:'.length); })[0];
       if (!sdSt) { ui.stBalanceAsk = null; render(); return; }
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       var sdNo = statementBalanceRefusal(sdSt, ui.stBalance);
       if (sdNo) { if (ui.armed === act) ui.armed = null; showToast(sdNo); render(); return; }
       arm(act, function () {
@@ -40396,14 +41591,14 @@
     if (act === 'plan-adv-cancel') { ui.planAdv = null; render(); return; }
     // Den plans — Fill the calendar (renderFillCalendar). The list is ui only until Apply.
     if (act === 'fill-open') {
-      if (!canEdit()) return;
+      if (!canEditSection('calendar')) { showToast(readOnlySay('calendar')); return; }
       ui.fillCal = { rows: [{ key: '', n: 1, nSet: false }], from: todayISO() };
       render(); return;
     }
     if (act === 'fill-close') { ui.fillCal = null; render(); return; }
     if (/^fill-(add|del|up|down|req6)$/.test(act)) {
       var flc = ui.fillCal;
-      if (!flc || !canEdit()) return;
+      if (!flc || !canEditSection('calendar')) return;
       var fli = parseInt(el.dataset.i, 10);
       if (act === 'fill-add' && flc.rows.length < FILL_MAX_ROWS) flc.rows.push({ key: '', n: 1, nSet: false });
       else if (act === 'fill-del' && flc.rows[fli]) flc.rows.splice(fli, 1);
@@ -40416,7 +41611,7 @@
     // Recomputed from the record as it is NOW, not from what the preview drew: a night tagged
     // since (a sync, another tab) is skipped like any other, never overwritten.
     if (act === 'fill-apply') {
-      if (!canEdit() || !ui.fillCal) return;
+      if (!canEditSection('calendar') || !ui.fillCal) return;
       var fpHeld = advPlansHeld();
       var fpPlan = fillCalendarNow(fpHeld && fpHeld.status === 'ready' ? fpHeld.data : null);
       if (!fpPlan.assign.length) return;
@@ -40856,6 +42051,7 @@
     }
     // Wave 19(3) — standalone den advancement (two-tap armed on both paths).
     if (act === 'adv-dens' || act === 'adv-dens-again') {
+      if (!canAdvanceDens()) { showToast(ADVANCE_DENS_REFUSED); return; }   // Keith, 2026-10-02: an admin's
       // Security review of C7 (re-check) — a family that still owes is asked about first (densAdvanceWarning):
       // the words show while the button is armed, for ARM_WARNED_MS. Checked here, not only where the button
       // is drawn, so a screen drawn before a charge was raised is asked too.
@@ -40918,7 +42114,7 @@
     // An event's several adventures (evOffers): remove one.
     if (act === 'offer-del') {
       var odEv = getEvent(el.dataset.id);
-      if (!canEdit() || !odEv || !Array.isArray(odEv.advOffers)) return;
+      if (!canEditDenMeeting(odEv) || !odEv || !Array.isArray(odEv.advOffers)) return;
       var odIx = odEv.advOffers.findIndex(function (o) { return o && o.key === el.dataset.key; });
       if (odIx === -1) return;
       var odGone = odEv.advOffers.splice(odIx, 1)[0];
@@ -40938,7 +42134,7 @@
     if (act === 'offer-mark' || act === 'offer-mark-partial') {
       var omEv = getEvent(el.dataset.id);
       var omOffer = omEv ? evOffers(omEv).find(function (o) { return o.key === el.dataset.key; }) : null;
-      if (!canEdit() || !omOffer || !omOffer.auto) return;
+      if (!canEditSection('advancement') || !omOffer || !omOffer.auto) return;
       var omDone = act === 'offer-mark', omDid = 0;
       offerMarkable(omEv, omOffer.key).rows.forEach(function (r) {
         var omKind = advKindFor(r.scout, r.name);
@@ -40955,7 +42151,8 @@
     // events offering it to the den), so the button drawn and the scouts written cannot differ.
     if (act === 'mtg-adv-mark' || act === 'mtg-adv-partial') {
       var mam = getEvent(el.dataset.id);
-      if (!canEdit() || !mam || mam.kind !== 'den') return;
+      if (!mam || mam.kind !== 'den') return;
+      if (!canEditSection('advancement')) { showToast(readOnlySay('advancement')); return; }   // pack positions
       var mamAdv;
       // Session-aware since 2026-08-02: the scouts credited are the ones checked in at every
       // session of the RUN that has happened, not merely everyone who turned up tonight. On a
@@ -41074,7 +42271,7 @@
     }
     if (act.indexOf('closed-rv:') === 0) {
       var crYear = +act.split(':')[1], crBook = closedBookOf(state, crYear);
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       var crNo = closedRvRefusal(crBook, ui.closedRvId, ui.closedRvWhy, arrOf(state.ledger).concat(arrOf(state.ledgerAside)), state.closedBooks);
       if (crNo) { showToast(crNo); return; }
       arm(act, function () {
@@ -41353,7 +42550,7 @@
     // Review round 1: never a future date (the pack's day); a LATER date hides warnings, so it waits for
     // the two-tap confirm (signoffFromLine); an earlier one asks about more, and is taken at once.
     if (ch === 'signoff-from') {
-      if (!canEdit()) { render(); return; }
+      if (!canEditSection('ledger')) { render(); return; }
       var soWas = signoffFromOf(state.signoffFrom), soNow = String(el.value || '');
       if (!/^\d{4}-\d{2}-\d{2}$/.test(soNow)) { showToast('Pick a date.'); render(); return; }
       if (soNow > shiftReportToday()) { ui.signoffDraft = ''; showToast('Pick today or an earlier date.'); render(); return; }
@@ -41376,7 +42573,7 @@
       var anKey = String(el.dataset.key || '');
       var anI = anKey.indexOf(' :: ');
       if (anI < 1 || DENS.indexOf(anKey.slice(0, anI)) === -1) return;
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); render(); return; }
+      if (!canEditSection('denplan')) { showToast(readOnlySay('denplan')); render(); return; }
       var anText = String(el.value || '').replace(/\r\n?/g, '\n').slice(0, ADV_NOTE_MAX);
       var anPrev = state.advNotes[anKey] || null;
       if ((anPrev ? anPrev.text : '') === anText) return;
@@ -41574,6 +42771,23 @@
     if (ch === 'sync-pass') { setSyncPass(el.value); render(); return; }
     // Accounts: admin changes a member's role (writes directly to the members doc, NOT via commit()).
     if (ch === 'member-role') { setMemberRole(el.dataset.uid, el.value); return; }
+    // Pack positions (client step 6) — a tick in the position picker (a member's, or the invite form's). ui only until saved.
+    if (ch === 'pos-tick' || ch === 'pos-den') {
+      var ptD = el.dataset.kind === 'invite' ? (ui.inviteDraft = ui.inviteDraft || { as: 'leader', positions: [], dens: [] }) : ui.posEdit;
+      if (!ptD || !isAdmin() || (el.dataset.kind !== 'invite' && ptD.uid !== el.dataset.uid)) return;
+      var ptList = ch === 'pos-tick' ? 'positions' : 'dens', ptV = String(el.value || '');
+      var ptOk = ch === 'pos-tick' ? ACCESS_TABLE.positions.some(function (p) { return p.id === ptV; }) : DENS.indexOf(ptV) !== -1;
+      if (!ptOk) return;
+      ptD[ptList] = arrOf(ptD[ptList]).filter(function (x) { return x !== ptV; });
+      if (el.checked) ptD[ptList].push(ptV);
+      render(); return;
+    }
+    if (ch === 'invite-email') { ui.inviteDraft = ui.inviteDraft || { as: 'parent', positions: [], dens: [] }; ui.inviteDraft.email = el.value; return; }
+    if (ch === 'invite-as') {
+      ui.inviteDraft = ui.inviteDraft || { as: 'parent', positions: [], dens: [] };
+      ui.inviteDraft.as = el.value === 'leader' ? 'leader' : 'parent';
+      render(); return;
+    }
     // Wave 21 — link an account to a leader record. Unlike member-role (which writes the
     // members doc directly), this is an ordinary PACK RECORD edit, so it goes through commit().
     // A uid can only be on one leader at a time, so claiming it clears it everywhere else;
@@ -41734,6 +42948,8 @@
       if (ch === 'settle-on') ui.settleDraft.on = el.value; else ui.settleDraft.how = el.value;
       render(); return;
     }
+    // The approving Chair's name: kept as typed, not redrawn (a redraw would take the cursor away).
+    if (ch === 'settle-approved') { if (ui.settleDraft) ui.settleDraft.approvedBy = el.value; return; }
     // Filters live in `ui`, so they re-render but never persist.
     if (ch === 'ledger-search') { ui.ledgerFilter.text = el.value; render(); return; }
     if (ch === 'ledger-line-filter') { ui.ledgerFilter.lineId = el.value; render(); return; }
@@ -41906,6 +43122,7 @@
     if (ch.indexOf('ev-') === 0) {
       var evr = getEvent(el.dataset.id);
       if (!evr) return;
+      if (!canEditSection('calendar')) { showToast(readOnlySay('calendar')); render(); return; }   // pack positions
       var evk = ch.slice(3);
       if (evk === 'name') evr.name = el.value;
       else if (evk === 'date') { evr.date = el.value; evr.slot = evr.date ? dateToSlot(evr.date) : evr.slot; }
@@ -41948,14 +43165,14 @@
     // that now says the same as the new choice stops being a change and follows it again.
     if (ch === 'mtg-pack-adv') {
       var paM = getEvent(el.dataset.id);
-      if (!canEdit() || !paM || paM.kind !== 'den' || paM.den) return;
+      if (!canEditSection('calendar') || !paM || paM.kind !== 'den' || paM.den) return;   // the pack's pick: the Cubmaster's
       setPackAdv(paM, el.value);
       commit(); return;
     }
     // An event's several adventures (evOffers): everyone who attends, or offered.
     if (ch === 'offer-auto') {
       var oaEv = getEvent(el.dataset.id);
-      if (!canEdit() || !oaEv || !Array.isArray(oaEv.advOffers)) return;
+      if (!canEditDenMeeting(oaEv) || !oaEv || !Array.isArray(oaEv.advOffers)) return;
       var oaO = oaEv.advOffers.find(function (o) { return o && o.key === el.dataset.key; });
       if (!oaO) return;
       oaO.auto = el.value === '1';
@@ -41965,7 +43182,7 @@
     // the den meetings as one of its parts (advParts); otherwise one event earns it.
     if (ch === 'offer-part') {
       var opaEv = getEvent(el.dataset.id);
-      if (!canEdit() || !opaEv || !Array.isArray(opaEv.advOffers)) return;
+      if (!canEditDenMeeting(opaEv) || !opaEv || !Array.isArray(opaEv.advOffers)) return;
       var opaO = opaEv.advOffers.find(function (o) { return o && o.key === el.dataset.key; });
       if (!opaO) return;
       if (el.checked) opaO.part = true; else delete opaO.part;
@@ -41976,7 +43193,7 @@
     // cannot be unticked — removing an offer is its ✕, not an empty list.
     if (ch === 'offer-dens') {
       var odnEv = getEvent(el.dataset.id);
-      if (!canEdit() || !odnEv || !Array.isArray(odnEv.advOffers)) return;
+      if (!canEditDenMeeting(odnEv) || !odnEv || !Array.isArray(odnEv.advOffers)) return;
       var odnO = odnEv.advOffers.find(function (o) { return o && o.key === el.dataset.key; });
       if (!odnO || DENS.indexOf(el.dataset.den) === -1) return;
       var odnBy = offerByDen(odnEv, odnO.key);
@@ -41992,14 +43209,14 @@
     // the grid; never published (advSetNote).
     if (ch === 'adv-partial-note') {
       var anKind = el.dataset.kind;
-      if (!canEdit() || (anKind !== 'req' && anKind !== 'elect')) return;
+      if (!canEditSection('advancement') || (anKind !== 'req' && anKind !== 'elect')) return;
       if (advSetNote(el.dataset.scout, anKind, el.dataset.name, el.value)) commit();
       return;
     }
     // Den plans — Fill the calendar's rows and start date: ui only, nothing saved (fill-apply saves).
     if (ch === 'fill-key' || ch === 'fill-n' || ch === 'fill-from') {
       var fcl = ui.fillCal;
-      if (!fcl || !canEdit()) return;
+      if (!fcl || !canEditSection('calendar')) return;
       var fcr = fcl.rows[parseInt(el.dataset.i, 10)];
       if (ch === 'fill-key' && fcr) { fcr.key = packAdvLabel(el.value) ? el.value : ''; fcr.nSet = false; }
       else if (ch === 'fill-n' && fcr) {
@@ -42014,7 +43231,7 @@
     // choice again, '-' is "not at this meeting".
     if (ch === 'den-mtg-adv') {
       var dmM = getEvent(el.dataset.id), dmDen = el.dataset.den;
-      if (!canEdit() || !dmM || dmM.kind !== 'den' || DENS.indexOf(dmDen) === -1) return;
+      if (!dmM || dmM.kind !== 'den' || DENS.indexOf(dmDen) === -1 || !canEditDenMeeting(dmM, dmDen)) return;
       var dmVal = el.value === '-' ? '-' : advCanonicalName(dmDen, el.value);
       if (dmM.den) {
         if (dmM.den !== dmDen) return;
@@ -42034,6 +43251,10 @@
         ch === 'mtg-note-internal' || ch === 'mtg-adv') {
       var mtg = getEvent(el.dataset.id);   // Phase 2 — a meeting is an Event
       if (!mtg) return;
+      // Pack positions — when, which den and which kind are the calendar's; the rest a den leader's on their dens.
+      if ((ch === 'mtg-kind' || ch === 'mtg-den' || ch === 'mtg-time') ? !canEditSection('calendar') : !canEditDenMeeting(mtg)) {
+        showToast(readOnlySay('calendar')); render(); return;
+      }
       if (ch === 'mtg-kind') { mtg.kind = el.value; if (mtg.kind === 'pack') clearMeetingAdvs(mtg); }
       else if (ch === 'mtg-den') setMeetingDen(mtg, el.value);
       else if (ch === 'mtg-time') mtg.time = el.value;
@@ -42216,6 +43437,22 @@
     var fd = new FormData(f);
     // S-3 — a leader sending a family's shift report back, with the reason they will see.
     if (kind === 'shift-report-return') { returnShiftReport(String(f.dataset.rid || ''), String(fd.get('reason') || '')); return; }
+    // The treasurer's review of 045e7ac (6) — "Ask the kernel": the question stays on the row, the flag stays on.
+    if (kind === 'deposit-review-ask') {
+      var daRow = state.ledger.filter(function (e) { return e && e.id === f.dataset.id; })[0];
+      var daNote = String(fd.get('note') || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+      if (!daRow || daRow.depositReview !== true) return;
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
+      if (!daNote) { showToast('Say what you want the Popcorn Kernel to check.'); return; }
+      var daWas = daRow.depositReviewNote || null;
+      daRow.depositReviewNote = daNote;
+      logLedger('edit', daRow.id, { f: { depositReviewNote: [daWas, daNote] } });
+      ui.depositAsk = null;
+      if (commit()) showToast('Asked. The deposit stays flagged until it’s checked.');
+      return;
+    }
+    // Undoing a record of cash from sales, with the reason the server requires (reviews of 045e7ac).
+    if (kind === 'sr-cash-undo') { srSalesCashSet(String(f.dataset.rid || ''), null, false, String(fd.get('reason') || '')); return; }
     // S-4 — accepting without a second parent, with the reason.
     if (kind === 'shift-report-override') { acceptShiftReport(String(f.dataset.rid || ''), { replaceOk: true, reason: String(fd.get('reason') || '') }); return; }
     // Phase 3b — forgiving a charge. It is NOT deleted: it stands, marked, with a reason
@@ -42238,6 +43475,15 @@
     }
     // Parent phase — admin invites someone by email (accounts layer; never touches the pack record).
     if (kind === 'invite-member') {
+      if (apiAccounts()) {
+        var ivD = ui.inviteDraft || { as: 'parent', positions: [], dens: [] };
+        var ivAs = String(fd.get('as') || ivD.as);
+        var ivPos = ACCESS_TABLE.positions.map(function (p) { return p.id; }).filter(function (x) { return arrOf(ivD.positions).indexOf(x) !== -1; });
+        var ivDens = ivPos.some(function (x) { return DEN_POSITIONS.indexOf(x) !== -1; }) ? DENS.filter(function (x) { return arrOf(ivD.dens).indexOf(x) !== -1; }) : [];
+        if (ivAs === 'leader' && !ivDens.length && ivPos.some(function (x) { return DEN_POSITIONS.indexOf(x) !== -1; })) { showToast(DENS_NEEDED_SAY); return; }
+        createInvite(String(fd.get('email') || ''), ivAs === 'leader' ? 'leader' : 'parent', ivPos, ivDens);
+        return;
+      }
       createInvite(String(fd.get('email') || ''), String(fd.get('role') || ''));
       return;
     }
@@ -42286,7 +43532,7 @@
       commit(); return;
     }
     if (kind === 'adv-add-elect') {
-      if (!canEdit()) return;
+      if (!canEditSection('advancement')) return;
       // Wave 3 — add an elective (datalist offers the rank's official list; free text allowed).
       // Adding means "mark done" (in progress is the cell's first step, not the add form's).
       var aSid = f.dataset.scout;
@@ -42372,7 +43618,7 @@
     if (kind === 'offer-add') {
       var oaddEv = getEvent(f.dataset.id);
       var oaddKey = String(fd.get('key') || '');
-      if (!canEdit() || !oaddEv || oaddEv.kind === 'pack' || !advOfferLabel(oaddKey)) return;
+      if (!canEditDenMeeting(oaddEv) || !oaddEv || oaddEv.kind === 'pack' || !advOfferLabel(oaddKey)) return;
       var oaddList = evOffers(oaddEv).map(offerCopy);
       if (oaddList.some(function (o) { return o.key === oaddKey; }) || oaddList.length >= ADV_OFFERS_MAX) return;
       var oaddNew = { key: oaddKey, auto: String(fd.get('auto') || '') === '1' };
@@ -42388,7 +43634,7 @@
     if (kind === 'offer-mark-picked') {
       var opEv = getEvent(f.dataset.id);
       var opOffer = opEv ? evOffers(opEv).find(function (o) { return o.key === f.dataset.key; }) : null;
-      if (!canEdit() || !opOffer) return;
+      if (!canEditSection('advancement') || !opOffer) return;
       var opIds = fd.getAll('scout').map(String);
       if (!opIds.length) { showToast('Tick the scouts who did it first.'); return; }
       var opDid = 0, opPart = 0;
@@ -42403,7 +43649,8 @@
       return;
     }
     if (kind === 'plan-adv') {
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      // It adds a meeting to the calendar: the calendar's, not the den plans' (a den leader asks the Cubmaster).
+      if (!canEditSection('calendar')) { showToast(readOnlySay('calendar')); return; }
       var paDen = f.dataset.den || '';
       var paName = advCanonicalName(paDen, fd.get('name'));
       if (!paName || DENS.indexOf(paDen) === -1) return;

@@ -2,7 +2,7 @@
 //   { action: 'edit', teCents, cashCents, salesCashCents?, note?, attest: true }   the sender, while it is waiting
 //   { action: 'withdraw' }                                        the sender, while it is waiting
 //   { action: 'confirm', teCents, cashCents, salesCashCents?, updatedAt, attest: true }  S-4: a parent from another family on the shift
-//   { action: 'accept', teCents, cashCents, salesCashCents?, collected?, reviewNote?, override? }  admin or editor; not their own, nor one they confirmed
+//   { action: 'accept', teCents, cashCents, salesCashCents?, collected?, reviewNote?, override? }  shiftVerify; not their own, nor one they confirmed
 // S-5: salesCashCents, the cash from popcorn sales still in hand, is 0 when left out. A confirm
 // or an accept names it with the other two figures, and lands only if the report still holds it.
 // Followups round 1 (treasurer and security): what became of that cash is a leader's record, kept
@@ -12,8 +12,13 @@
 // .replaced / .undo. Only on an ACCEPTED report with cash from sales (a waiting one is not the
 // pack's yet), or one sent back after it was accepted; 'replaced' (the same cash as the newer
 // report on the shift) only on the sent-back kind.
-//   { action: 'return', reviewNote }                              admin or editor; waiting or accepted
-//   { action: 'salescash', outcome, salesCashCents }              admin or editor; an accepted report holding cash from sales
+//   { action: 'return', reviewNote }                              shiftVerify, waiting; accepted: the accepter or shiftUndo
+//   { action: 'salescash', outcome, salesCashCents }              shiftVerify, an accepted report holding cash from sales;
+//   { action: 'salescash', outcome: null, salesCashCents, reviewNote }  undo: its recorder or accepter, or shiftUndo, with a reason
+// WHO (Keith, 2026-10-02; access.js `actions`): shiftVerify is an admin, or a leader at the booth
+// (Chair, Cubmaster and assistant, Den Leader and assistant, Kernel, Treasurer), never a parent and
+// no longer the retired editor; shiftUndo is an admin, the Kernel, the Chair or the Treasurer. Each
+// write re-checks it against members and member_positions (index.js STILL_HOLDS).
 // Answers { report } as GET would show it to the caller.
 //
 // Not a Part C rule (see index.js beside this file, and SETUP.md Part C, "Shift reports").
@@ -50,7 +55,7 @@
 //     (allowed, as before); a pack with no record decides nothing either, but a record that exists
 //     and can't be read decides "same family" (fail closed, followups round 3).
 //   - The same rule, and never the sender, for recording what became of the cash from sales
-//     ('salescash', followups round 3). Undoing one is open to any admin or editor.
+//     ('salescash', followups round 3). Undoing one is its recorder's, the accepter's, or shiftUndo's.
 //   - Sending back needs a reason, and works on a waiting report or an accepted one (a leader
 //     reopening a report that went in wrong). A family sends a corrected one as a new report.
 // Every change is compared in the write itself: the UPDATE names the state it was decided
@@ -62,14 +67,13 @@
 import { route, json, readObject, refuse, forbidden, notFound, badRequest, reportMoved, samePerson, notShiftParent, needsConfirm,
   notCollected, sameFamilyRefused, packMoved } from '../../../../_lib/http.js';
 import { withMember, auditIf } from '../../../../_lib/pack.js';
-import { canSubmitShiftReport, canReviewShiftReport, canReadAllShiftReports, shiftReportFiguresProblem, cleanReportNote, reportSalesCash,
+import { canSubmitShiftReport, canReviewShiftReport, canUndoShiftReport, canReadAllShiftReports, shiftReportFiguresProblem, cleanReportNote, reportSalesCash,
   SHIFT_REPORT_NOTE_MAX, shiftConfirmers, sameFamily, canConfirmShiftReport, shiftOfView, daysBetween, packToday, SHIFT_REPORT_DAYS } from '../../../../_lib/rules.js';
-import { reportOut, readReport, readPackRecord, readPackForFamily, STILL_MEMBER, SUBMIT_ROLES } from './index.js';
+import { reportOut, readReport, readPackRecord, readPackForFamily, SUBMIT_ROLES, memberGate, holdsGate } from './index.js';
 
 // Is this leader in the sender's family, by the record read for it? An unreadable record says yes.
 const familyOf = (famRec, uid, senderUid) => !!famRec && (famRec.unreadable === true || sameFamily(famRec.pack, uid, senderUid));
 
-const REVIEW_ROLES = ['admin', 'editor'];
 // What each action may carry, besides `action`.
 const ACTION_KEYS = {
   edit: ['teCents', 'cashCents', 'salesCashCents', 'note', 'attest'],
@@ -77,7 +81,7 @@ const ACTION_KEYS = {
   confirm: ['attest', 'teCents', 'cashCents', 'salesCashCents', 'updatedAt'],
   accept: ['teCents', 'cashCents', 'salesCashCents', 'reviewNote', 'override', 'collected'],
   return: ['reviewNote'],
-  salescash: ['outcome', 'salesCashCents']
+  salescash: ['outcome', 'salesCashCents', 'reviewNote']
 };
 const RID_RE = /^[A-Za-z0-9-]{1,64}$/;
 
@@ -93,7 +97,7 @@ function reviewNote(v, required) {
   return n;
 }
 
-async function patch({ request, db, packId, role, user, member, params }) {
+async function patch({ request, db, packId, role, positions, user, member, params }) {
   const rid = reportId(params);
   // Pending, and anyone with no member row, are refused before anything is read.
   if (!canSubmitShiftReport(role)) return forbidden();
@@ -102,7 +106,7 @@ async function patch({ request, db, packId, role, user, member, params }) {
   if (typeof action !== 'string' || !Object.prototype.hasOwnProperty.call(ACTION_KEYS, action)) refuse(badRequest('action'));
   for (const k of Object.keys(b)) if (k !== 'action' && ACTION_KEYS[action].indexOf(k) === -1) refuse(badRequest('unknown-field'));
   const reviewing = action === 'accept' || action === 'return' || action === 'salescash';
-  if (reviewing && !canReviewShiftReport(role)) return forbidden();
+  if (reviewing && !canReviewShiftReport(role, positions)) return forbidden();
   const row = await readReport(db, packId, rid);
   // The sender's own actions: anyone else gets the one fixed 403, whether or not it exists.
   if ((action === 'edit' || action === 'withdraw') && (!row || row.submitted_by_uid !== user.uid)) return forbidden();
@@ -111,11 +115,11 @@ async function patch({ request, db, packId, role, user, member, params }) {
 
   const now = Date.now(), stamp = crypto.randomUUID();
   const name = member.name || '';
-  let update, roles, detail, audit;
+  let update, gate, detail, audit;
   let famRec = null;   // the pack record a family decision was made against (accept, salescash): its rev is in the write
   if (action === 'edit' || action === 'withdraw') {
     if (row.status !== 'submitted') return reportMoved(row.status);
-    roles = SUBMIT_ROLES;
+    gate = memberGate(packId, user.uid, SUBMIT_ROLES);
     if (action === 'edit') {
       const why = shiftReportFiguresProblem(b);
       if (why) refuse(badRequest(why));
@@ -123,14 +127,14 @@ async function patch({ request, db, packId, role, user, member, params }) {
       const salesCash = reportSalesCash(b);
       update = db.prepare('UPDATE shift_reports SET te_cents = ?, cash_cents = ?, sales_cash_cents = ?, note = ?, updated_at = ?, stamp = ?, ' +
         'confirmed_by_uid = NULL, confirmed_by_name = NULL, confirmed_at = NULL ' +
-        "WHERE pack_id = ? AND id = ? AND stamp = ? AND status = 'submitted' AND submitted_by_uid = ? AND " + STILL_MEMBER(roles))
-        .bind(b.teCents, b.cashCents, salesCash, cleanReportNote(b.note), now, stamp, packId, rid, row.stamp, user.uid, packId, user.uid, ...roles);
+        "WHERE pack_id = ? AND id = ? AND stamp = ? AND status = 'submitted' AND submitted_by_uid = ? AND " + gate.sql)
+        .bind(b.teCents, b.cashCents, salesCash, cleanReportNote(b.note), now, stamp, packId, rid, row.stamp, user.uid, ...gate.args);
       audit = 'shift.report.edit';
       detail = { report: rid, teCents: b.teCents, cashCents: b.cashCents, salesCashCents: salesCash, confirmationCleared: !!row.confirmed_by_uid };
     } else {
       update = db.prepare("UPDATE shift_reports SET status = 'withdrawn', updated_at = ?, stamp = ? " +
-        "WHERE pack_id = ? AND id = ? AND stamp = ? AND status = 'submitted' AND submitted_by_uid = ? AND " + STILL_MEMBER(roles))
-        .bind(now, stamp, packId, rid, row.stamp, user.uid, packId, user.uid, ...roles);
+        "WHERE pack_id = ? AND id = ? AND stamp = ? AND status = 'submitted' AND submitted_by_uid = ? AND " + gate.sql)
+        .bind(now, stamp, packId, rid, row.stamp, user.uid, ...gate.args);
       audit = 'shift.report.withdraw';
       detail = { report: rid };
     }
@@ -161,13 +165,13 @@ async function patch({ request, db, packId, role, user, member, params }) {
     const rec = await readPackRecord(db, packId);
     const confirmers = rec ? shiftConfirmers(rec.pack, row.sf_id, row.block_id, row.submitted_by_uid) : null;
     if (!canConfirmShiftReport(role, user.uid, row.submitted_by_uid, confirmers)) return notShiftParent();
-    roles = SUBMIT_ROLES;
+    gate = memberGate(packId, user.uid, SUBMIT_ROLES);
     update = db.prepare('UPDATE shift_reports SET confirmed_by_uid = ?, confirmed_by_name = ?, confirmed_at = ?, updated_at = ?, stamp = ? ' +
       "WHERE pack_id = ? AND id = ? AND stamp = ? AND status = 'submitted' AND needs_confirm = 1 AND confirmed_by_uid IS NULL " +
       'AND submitted_by_uid != ? AND te_cents = ? AND cash_cents = ? AND sales_cash_cents = ? AND updated_at = ? ' +
-      'AND (SELECT rev FROM pack_state WHERE pack_id = ?) = ? AND ' + STILL_MEMBER(roles))
+      'AND (SELECT rev FROM pack_state WHERE pack_id = ?) = ? AND ' + gate.sql)
       .bind(user.uid, name, now, now, stamp, packId, rid, row.stamp, user.uid, b.teCents, b.cashCents, salesCash, b.updatedAt, packId, rec.rev,
-        packId, user.uid, ...roles);
+        ...gate.args);
     audit = 'shift.confirm';
     detail = { report: rid, sfId: row.sf_id, blockId: row.block_id, teCents: row.te_cents, cashCents: row.cash_cents,
       salesCashCents: row.sales_cash_cents, confirmerName: name };
@@ -194,15 +198,15 @@ async function patch({ request, db, packId, role, user, member, params }) {
     const override = same || (!confirmed && !collected);
     if (override && b.override !== true) return same ? sameFamilyRefused() : row.needs_confirm === 1 ? needsConfirm() : notCollected();
     const note = reviewNote(b.reviewNote, override);
-    roles = REVIEW_ROLES;
+    gate = holdsGate(packId, user.uid, 'shiftVerify');
     update = db.prepare("UPDATE shift_reports SET status = 'accepted', reviewed_by_uid = ?, reviewed_by_name = ?, reviewed_at = ?, " +
       'review_note = ?, overridden = ?, accepted_by_uid = ?, accepted_by_name = ?, accepted_at = ?, accept_note = ?, verified_by_leader = ?, ' +
       "updated_at = ?, stamp = ? WHERE pack_id = ? AND id = ? AND stamp = ? AND status = 'submitted' AND accepted_by_uid IS NULL " +
       'AND submitted_by_uid != ? AND (confirmed_by_uid IS NULL OR confirmed_by_uid != ?) AND te_cents = ? AND cash_cents = ? ' +
       'AND sales_cash_cents = ? AND (needs_confirm = 0 OR confirmed_by_uid IS NOT NULL OR ? = 1) AND ' +
-      (rec ? '(SELECT rev FROM pack_state WHERE pack_id = ?) = ? AND ' : '') + STILL_MEMBER(roles))
+      (rec ? '(SELECT rev FROM pack_state WHERE pack_id = ?) = ? AND ' : '') + gate.sql)
       .bind(user.uid, name, now, note, override ? 1 : 0, user.uid, name, now, note, collected ? 1 : 0, now, stamp, packId, rid, row.stamp,
-        user.uid, user.uid, b.teCents, b.cashCents, salesCash, override ? 1 : 0, ...(rec ? [packId, rec.rev] : []), packId, user.uid, ...roles);
+        user.uid, user.uid, b.teCents, b.cashCents, salesCash, override ? 1 : 0, ...(rec ? [packId, rec.rev] : []), ...gate.args);
     audit = override ? 'shift.accept.override' : 'shift.accept';
     detail = { report: rid, sfId: row.sf_id, blockId: row.block_id, teCents: row.te_cents, cashCents: row.cash_cents, salesCashCents: row.sales_cash_cents,
       submittedBy: row.submitted_by_uid, submittedByName: row.submitted_by_name, reviewerName: name, reviewNote: note, collected };
@@ -223,10 +227,15 @@ async function patch({ request, db, packId, role, user, member, params }) {
     // outcome to undo.
     if (b.salesCashCents !== row.sales_cash_cents) return reportMoved(row.status);
     const undo = b.outcome === null;
+    // Security and treasurer reviews of 045e7ac: an undo needs a written reason, as taking back an
+    // accept does (the send-back's rules: cleaned, at most SHIFT_REPORT_NOTE_MAX). Recording one
+    // takes none.
+    if (!undo && b.reviewNote !== undefined) refuse(badRequest('review-note'));
+    const undoNote = undo ? reviewNote(b.reviewNote, true) : null;
     if (undo ? !row.sales_cash_outcome : !!row.sales_cash_outcome) return reportMoved(row.status);
     // Security re-check (followups round 3): recording what became of the cash is a second adult's
     // word on it, as the accept is: never the sender, nor a leader in the sender's family (same
-    // record, same rev in the write). An undo is open to any admin or editor.
+    // record, same rev in the write). An undo is open to any reviewer.
     if (!undo) {
       if (row.submitted_by_uid === user.uid) return samePerson();
       // Nor the parent who confirmed it (security review of the parent preview: a leader-parent can now confirm).
@@ -234,24 +243,36 @@ async function patch({ request, db, packId, role, user, member, params }) {
       famRec = await readPackForFamily(db, packId);
       if (familyOf(famRec, user.uid, row.submitted_by_uid)) return sameFamilyRefused();
     }
-    roles = REVIEW_ROLES;
+    // Keith (2026-10-02): undoing it is the undo list's (shiftUndo: the kernel, the chair, the
+    // treasurer; an admin), or the leader who recorded it or accepted the report. Recording it is
+    // any shiftVerify holder's. Who recorded and accepted it is the row's, and the stamp in the write
+    // holds them still.
+    if (undo && !canUndoShiftReport(role, positions, user.uid, [row.sales_cash_by_uid, row.accepted_by_uid])) return forbidden();
+    gate = undo && !(user.uid === row.sales_cash_by_uid || user.uid === row.accepted_by_uid)
+      ? holdsGate(packId, user.uid, 'shiftUndo') : holdsGate(packId, user.uid, 'shiftVerify', 'shiftUndo');
     update = db.prepare('UPDATE shift_reports SET sales_cash_outcome = ?, sales_cash_by_uid = ?, sales_cash_by_name = ?, sales_cash_at = ?, ' +
+      (undo ? 'sales_cash_undo_note = ?, sales_cash_undo_by_name = ?, sales_cash_undo_at = ?, ' : '') +
       "updated_at = ?, stamp = ? WHERE pack_id = ? AND id = ? AND stamp = ? AND (status = 'accepted' OR (status = 'returned' AND accepted_by_uid IS NOT NULL)) " +
       (b.outcome === 'replaced' ? "AND status = 'returned' " : '') + 'AND sales_cash_cents = ? AND ' +
       'sales_cash_outcome IS ' + (undo ? 'NOT NULL' : 'NULL') + ' AND ' + (undo ? '' : 'submitted_by_uid != ? AND (confirmed_by_uid IS NULL OR confirmed_by_uid != ?) AND ') +
-      (famRec ? '(SELECT rev FROM pack_state WHERE pack_id = ?) = ? AND ' : '') + STILL_MEMBER(roles))
-      .bind(undo ? null : b.outcome, undo ? null : user.uid, undo ? null : name, undo ? null : now, now, stamp, packId, rid, row.stamp,
-        b.salesCashCents, ...(undo ? [] : [user.uid, user.uid]), ...(famRec ? [packId, famRec.rev] : []), packId, user.uid, ...roles);
+      (famRec ? '(SELECT rev FROM pack_state WHERE pack_id = ?) = ? AND ' : '') + gate.sql)
+      .bind(undo ? null : b.outcome, undo ? null : user.uid, undo ? null : name, undo ? null : now, ...(undo ? [undoNote, name, now] : []), now, stamp, packId, rid, row.stamp,
+        b.salesCashCents, ...(undo ? [] : [user.uid, user.uid]), ...(famRec ? [packId, famRec.rev] : []), ...gate.args);
     audit = 'shift.salescash.' + (undo ? 'undo' : b.outcome);
     detail = { report: rid, sfId: row.sf_id, blockId: row.block_id, salesCashCents: row.sales_cash_cents, byName: name };
-    if (undo) detail.was = { outcome: row.sales_cash_outcome, byName: row.sales_cash_by_name || '', at: row.sales_cash_at };
+    if (undo) { detail.was = { outcome: row.sales_cash_outcome, byName: row.sales_cash_by_name || '', at: row.sales_cash_at }; detail.reason = undoNote; }
   } else {
     if (row.status !== 'submitted' && row.status !== 'accepted') return reportMoved(row.status);
-    roles = REVIEW_ROLES;
+    // Sending back one that waits is any shiftVerify holder's. Sending back an ACCEPTED one takes the
+    // accept back (Keith, 2026-10-02): the leader who accepted it, or the undo list (shiftUndo), with
+    // the reason every send-back needs, in the audit. The write names the status it decided on.
+    const takesBack = row.status === 'accepted';
+    if (takesBack && !canUndoShiftReport(role, positions, user.uid, [row.accepted_by_uid])) return forbidden();
+    gate = takesBack && user.uid !== row.accepted_by_uid ? holdsGate(packId, user.uid, 'shiftUndo') : holdsGate(packId, user.uid, 'shiftVerify');
     update = db.prepare("UPDATE shift_reports SET status = 'returned', reviewed_by_uid = ?, reviewed_by_name = ?, reviewed_at = ?, " +
-      "review_note = ?, updated_at = ?, stamp = ? WHERE pack_id = ? AND id = ? AND stamp = ? AND status IN ('submitted', 'accepted') " +
-      'AND ' + STILL_MEMBER(roles))
-      .bind(user.uid, name, now, reviewNote(b.reviewNote, true), now, stamp, packId, rid, row.stamp, packId, user.uid, ...roles);
+      "review_note = ?, updated_at = ?, stamp = ? WHERE pack_id = ? AND id = ? AND stamp = ? AND status = ? " +
+      'AND ' + gate.sql)
+      .bind(user.uid, name, now, reviewNote(b.reviewNote, true), now, stamp, packId, rid, row.stamp, row.status, ...gate.args);
     audit = 'shift.return';
     detail = { report: rid, sfId: row.sf_id, blockId: row.block_id, from: row.status, reason: cleanReportNote(b.reviewNote), reviewerName: name };
   }
@@ -261,8 +282,7 @@ async function patch({ request, db, packId, role, user, member, params }) {
       [packId, rid, stamp])]);
   if (!(res[0].meta && res[0].meta.changes === 1)) {
     // Nothing written. Either the caller lost the role this needs a moment ago, or the report moved.
-    const still = await db.prepare('SELECT 1 AS ok FROM members WHERE pack_id = ? AND uid = ? AND role IN (' +
-      roles.map(() => '?').join(', ') + ')').bind(packId, user.uid, ...roles).first();
+    const still = await db.prepare('SELECT 1 AS ok WHERE ' + gate.sql).bind(...gate.args).first();
     if (!still) return forbidden();
     const now2 = await readReport(db, packId, rid);
     // Followups round 3 (treasurer 6a): the report is as it was, but the pack record the family

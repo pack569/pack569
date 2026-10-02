@@ -91,7 +91,12 @@ const SR_OFF = "function shiftReportToday() { return '2026-09-28'; }\nfunction p
 // The reload gate (PACK_FORMAT): what every page context with a pack-record feed or a push needs.
 // By decl (below): PACK_FORMAT is one line, and slice would run on past it.
 const FORMAT_GATE_FNS = ['PACK_FORMAT', 'formatAhead', 'formatStored', 'storedFormatAhead', 'formatHeldHere', 'packFormatAhead', 'packFormatHeld', 'holdNewerFormat',
-  'dropCopyChoice'];
+  'dropCopyChoice'].concat(
+  // Pack positions (client step 3): the section guard commit(), syncPush and the merge consult. Off
+  // (sectionGuardOn) unless the context is a leader below an admin on the pack's own server.
+  ['apiAccounts', 'sectionGuardOn', 'ownKey', 'keyOwnerOf', 'goneOwnerOf', 'ownerEditable', 'keyWritable', 'guardBaseline', 'rollbackUneditable',
+    'pushBody', 'takeServerSections', 'takeServerUnwritable', 'sectionRefusedSay', 'srUndoAskTake', 'SR_UNDO_ASK', 'syncThreeWayOwnOnly', 'canEditDenMeeting', 'denMeetingKeep', 'depositOnlyKeep']);
+const SECTION_GUARD_FNS = FORMAT_GATE_FNS.slice(FORMAT_GATE_FNS.indexOf('apiAccounts'));
 const FORMAT_GATE_SRC = () => FORMAT_GATE_FNS.map(decl).join('\n');
 // Wave C1 — buildParentView sorts the trips by date and re-checks their ISO dates, so every
 // sandbox that builds it needs these. todayISO only where the sandbox has none of its own.
@@ -259,6 +264,54 @@ const nav = sandbox(['WORKSPACES', 'TAB_ALIAS']);
 
 const OLD_TABS = ['calendar', 'storefronts', 'scouts', 'advancement', 'totals',
   'budget', 'inventory', 'derby', 'pack'];
+
+// Pack positions, client step 4 (2026-10-02) — a section a leader's positions hide is not in the nav,
+// a workspace with none left is not either, a route into one lands elsewhere, and a section they only
+// read says so (and what they can still change there).
+test('positions nav: hidden sections and empty workspaces are not offered, routes into them land elsewhere, and read-only sections say so', () => {
+  const c = vm.createContext({});
+  vm.runInContext(`var sync = { user: { uid: 'u1' }, accountsUnavailable: false, myRole: 'leader', myPositions: [], backend: { startSession: function () {} } };
+    var ui = { tab: 'home', sections: {} }; function campingTrips() { return []; } function sortTripsByDate(t) { return t; } function tripTabLabel(t) { return t.name; }
+    function todayISO() { return '2026-10-02'; } function esc(x) { return String(x); } var WS_BY_ID = {}, SECTION_HOME = {};`, c);
+  vm.runInContext(['ACCESS_TABLE', 'ACCESS_LEVELS', 'arrOf', 'accessFor', 'actionsFor', 'accountsInForce', 'apiAccounts', 'accessMemo', 'myAccess', 'sectionAccess',
+    'canEditSection', 'canSeeSection', 'canDo', 'canEdit', 'SECTION_SAY', 'sectionGuardOn', 'ownKey', 'WORKSPACES', 'curWorkspace', 'sectionAccessId',
+    'workspaceVisible', 'sectionsOf', 'curSection', 'VIEW_ONLY_EXCEPT', 'VIEW_ONLY_REST', 'viewOnlyBanner'].map(decl).join('\n') +
+    "\nWORKSPACES.forEach(function (w) { WS_BY_ID[w.id] = w; w.sections.forEach(function (s) { if (!SECTION_HOME[s.id]) SECTION_HOME[s.id] = w.id; }); });", c);
+  const run = (js) => vm.runInContext(js, c);
+  const as = (positions) => run(`sync.myPositions = ${JSON.stringify(positions)};`);
+  const strip = () => JSON.parse(run('JSON.stringify(WORKSPACES.filter(workspaceVisible).map(function (w) { return w.id + ":" + sectionsOf(w).map(function (s) { return s.id; }).join(","); }))'));
+  as(['denleader']);
+  eq(strip(), ['home:home', 'program:calendar,denplan,derby', 'camping:camp-none', 'scouts:roster,advancement,joining', 'popcorn:storefronts,totals,rewards',
+    'money:budget', 'pack:sharing,season'], 'a Den Leader: no inventory, council, ledger, dues, fundraisers or people');
+  run("ui.tab = 'money'; ui.sections.money = 'ledger';");
+  eq(run('curSection()'), 'budget', 'a route into the ledger lands on the budget');
+  as(['treasurer']);
+  eq(strip()[5], 'money:budget,ledger,dues,fundraisers', 'the Treasurer: all of Money');
+  // An empty workspace goes: a made-up position that hides all of Money.
+  run("ACCESS_TABLE.access.hideall = { default: 'read', edit: [], hidden: ['budget', 'ledger', 'deposits', 'dues', 'fundraisers'] }; accessMemo.key = null;");
+  as(['hideall']);
+  ok(!strip().some((x) => /^money:/.test(x)), 'a workspace with nothing to see is not offered');
+  run("ui.tab = 'money';");
+  eq(run('curWorkspace().id'), 'home', 'a route into it lands on Home');
+  run("delete ACCESS_TABLE.access.hideall; accessMemo.key = null;");
+  // The banner.
+  as(['denleader']);
+  // The wording review of ce6b8de (2): with something left to do, no "View only", and whose the rest is.
+  eq([run("viewOnlyBanner('calendar')"), run("viewOnlyBanner('storefronts')"), run("viewOnlyBanner('advancement')"), run("viewOnlyBanner('home')"), run("viewOnlyBanner('ledger')"),
+    run("viewOnlyBanner('derby')")],
+    ['<div class="warn no-print view-only" role="note" style="margin:0 0 14px">You can change your dens’ meetings and take attendance here. The rest of the calendar is the Cubmaster’s.</div>',
+      '<div class="warn no-print view-only" role="note" style="margin:0 0 14px">You can accept shift reports here. The rest of the storefront schedule is the Popcorn Kernel’s.</div>',
+      '', '', '', '<div class="warn no-print view-only" role="note" style="margin:0 0 14px"><strong>View only</strong> — your positions don’t let you change the derby.</div>'],
+    'a Den Leader: the calendar and the storefronts; advancement theirs; Home; the ledger hidden; the derby view only');
+  as(['kernel']);
+  eq(run("viewOnlyBanner('ledger')"), '<div class="warn no-print view-only" role="note" style="margin:0 0 14px">You can record storefront deposits here. The rest of the ledger is the Treasurer’s.</div>', 'the Kernel on the ledger');
+  run("sync.myRole = 'admin'");
+  eq(run("viewOnlyBanner('ledger')"), '', 'an admin');
+  run("sync.myRole = 'leader'; sync.backend = {}; sync.myRole = 'viewer';");
+  eq(strip().length, 7, 'Firestore: a viewer sees every workspace, as before');
+  ok(/WORKSPACES\.filter\(workspaceVisible\)/.test(slice('render')) && /viewOnlyBanner\(sectionAccessId\(sec\)\)/.test(slice('render')), 'render draws the strip and the banner from them');
+  ok(/canSeeSection\(sectionAccessId\(t\.section\)\)/.test(slice('renderHome')), 'Home leaves out tasks from hidden sections');
+});
 
 test('TAB_ALIAS covers every one of the nine old tabs', () => {
   // This is what lets the data-tab="…" strings already embedded across index.html keep
@@ -1039,7 +1092,7 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'SYNC_LOG_MAX', 'normalizeS
   // Security re-check of C5 (R4) — one log event, live and archived alike.
   'normalizeLedgerEvent',
   // Phase 3, C1 — the ledger row normalizer, shared by the rows set aside.
-  'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeClosedBook', 'mergeClosedBooks', 'closedBookRank', 'normalizeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'normalizeLedgerRow', 'depositForIds', 'DEPOSIT_FOR_MAX', 'councilSettledNormal', 'COUNCIL_SETTLE_HOW', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
+  'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeClosedBook', 'mergeClosedBooks', 'closedBookRank', 'normalizeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'normalizeLedgerRow', 'depositForIds', 'DEPOSIT_FOR_MAX', 'councilSettledNormal', 'councilApproverClean', 'COUNCIL_SETTLE_HOW', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'ledgerUnpaired', 'entrySignedCents',
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
@@ -1050,7 +1103,7 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'SYNC_LOG_MAX', 'normalizeS
 const SYNC_BASE_FNS = ['SYNC_BASE_KEY', 'SYNC_UNSYNCED_KEY', 'syncLocal', 'SYNC_UPDATED', 'syncWhenIso', 'syncBaseGet', 'syncBaseSet', 'syncUnsynced',
   'syncMarkUnsynced', 'syncClearUnsynced', 'syncBaseForget', 'syncFirstPlan', 'SYNC_MERGE_SKIP', 'SYNC_BOOK_SKIP', 'SYNC_MAP_DEPTH', 'SYNC_GONE_LOGS',
   'syncSame', 'syncRecKey', 'syncKeyed', 'syncPrimSet', 'syncThreeWay', 'syncItemSig', 'syncRecNorm', 'syncThreeWayOf', 'syncApplyThreeWay',
-  'SYNC_LOG_MAX', 'normalizeSyncLog', 'mergeSyncLog', 'syncServerWhen',
+  'SYNC_LOG_MAX', 'SYNC_LOG_ADD_MAX', 'normalizeSyncLog', 'mergeSyncLog', 'syncServerWhen',
   // Sync fix round 1 — rule d's money check, charges by what they charge, the opening balance's lock.
   'syncMoneySubset', 'syncChargeKey', 'SYNC_OPENING_LOCKED_WHY', 'SYNC_OPENING_LOCKED_WHY_THERE', 'openingLockedWhy', 'entryAfterOpening', 'arrOf'];
 // …and the words the chooser and the log use for an item (leaders only).
@@ -1062,7 +1115,7 @@ const SYNC_WORDS_FNS = ['SYNC_AREA_LABELS', 'SYNC_LIST_LABELS', 'SYNC_FIELD_LABE
 const C8_SYNC_FNS = [SR_SYNC_STUBS, ...SYNC_BASE_FNS, ...SYNC_WORDS_FNS, 'closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mergeClosedBooks', 'closedBookScouts', 'closedBookScoutIds', 'closedYearText', 'closedBooksKeptOverWhy', 'closeoutCarryDiffs',
   'closedBooksUndone', 'closedBooksUndoneWhy', 'closedBooksDroppedWhy', 'closedBookRows', 'statementLookupRows',
   // Security re-check of C8-5..C8-10 — the bound by program year (M-A), the push's union normalized (L-B), and what a merge says it set aside.
-  'closedBookRank', 'closedBookScoutIds', 'closedBooksFuture', 'closedBooksMaxYear', 'closedBooksNormalized', 'normalizeClosedBook', 'normalizeLedgerRow', 'depositForIds', 'DEPOSIT_FOR_MAX', 'councilSettledNormal', 'COUNCIL_SETTLE_HOW', 'councilSettledMerged', 'councilSettledText', 'COUNCIL_SETTLE_LABELS', 'normalizeAsideRow', 'normalizeLedgerEvent',
+  'closedBookRank', 'closedBookScoutIds', 'closedBooksFuture', 'closedBooksMaxYear', 'closedBooksNormalized', 'normalizeClosedBook', 'normalizeLedgerRow', 'depositForIds', 'DEPOSIT_FOR_MAX', 'councilSettledNormal', 'councilApproverClean', 'COUNCIL_SETTLE_HOW', 'councilSettledMerged', 'councilSettledText', 'COUNCIL_SETTLE_LABELS', 'normalizeAsideRow', 'normalizeLedgerEvent',
   'stableRowId', 'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_ASIDE_OFF', 'arrOf',
   // M-B — the tombstones of a closed year.
   'normalizeClosedGone', 'mergeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'closedGoneAdd', 'closedGoneDrops', 'closedGoneForKeep', 'ledgerActorUid', 'closedBooksShorter',
@@ -5686,7 +5739,7 @@ test('the seeded content states the rules a pack actually has to follow', () => 
 
 test('Camping sections are one per trip, and a trip id is never a route', () => {
   const ctx = vm.createContext({ state: { camping: { trips: [] } } });
-  vm.runInContext(slice('campingTrips') + slice('tripTabLabel') + slice('sectionsOf') + '\n' + CAMP_DATE_SRC, ctx);
+  vm.runInContext(slice('campingTrips') + slice('tripTabLabel') + slice('sectionsOf') + '\nfunction canSeeSection() { return true; }\n' + CAMP_DATE_SRC, ctx);
   const secs = (trips) => {
     ctx.state.camping.trips = trips;
     return vm.runInContext('sectionsOf({ id: "camping", dynamic: "camping", sections: [] })', ctx);
@@ -5719,7 +5772,7 @@ test('camping edits are behind canEdit, and deletes are two-tap with an undo', (
   ['camp-add-trip', 'camp-add-sec:', 'camp-del-sec:', 'camp-del-trip:'].forEach((a) => {
     const m = actBlock(a);
     ok(m, `the ${a} action is missing`);
-    ok(/if \(!canEdit\(\)\) return;/.test(m[0]), `${a} does not check canEdit()`);
+    ok(/if \(!canEditSection\('camping'\)\) \{ showToast\(readOnlySay\('camping'\)\); return; \}/.test(m[0]), `${a} does not check canEditSection('camping')`);
   });
   ['camp-del-sec:', 'camp-del-trip:'].forEach((a) => {
     const m = actBlock(a);
@@ -5899,7 +5952,7 @@ test('Den plans is where a den changes its line on an All-dens night', () => {
   ok(/dmMap\[dmDen\] = false/.test(h), '"not at this meeting" is not stored');
   ok(/dmVal === packAdvName\(dmM\.packAdv, dmDen\)\) delete dmMap\[dmDen\]/.test(h),
     'picking the pack’s own choice leaves a stale change behind');
-  ok(/canEdit\(\)/.test(h), 'a viewer can change a den’s adventure');
+  ok(/canEditDenMeeting\(dmM, dmDen\)/.test(h) && /canEditDenMeeting\(e, den\)/.test(slice('denMeetingsBlock')), 'a viewer (or another den’s leader) can change a den’s adventure');
   // Never published: the parent view is an allowlist, and these are leader planning.
   ok(!/denAdv|packAdv/.test(BPV()), 'the den adventures reached the parent view');
 });
@@ -6513,7 +6566,7 @@ test('a reward tier can carry the small print the covers list cannot hold', () =
   ok(!/innerHTML|' \+ note \+ '/.test(blk[0]), 'the note is interpolated raw somewhere');
   ok(/esc\(note\)/.test(blk[0]), 'the textarea does not escape its own value');
   // A read-only leader sees a note that exists, and no empty furniture when there is none.
-  ok(/if \(!canEdit\(\)\) \{\s*\n\s*if \(!note\.trim\(\)\) return '';/.test(blk[0]),
+  ok(/if \(!canEditSection\('rewards'\)\) \{\s*\n\s*if \(!note\.trim\(\)\) return '';/.test(blk[0]),
     'a read-only screen shows an empty labelled box');
   // Stored verbatim — trimming would eat the newline before the next bullet.
   const chBlock = /if \(ch === 'tier-name' \|\| ch === 'tier-threshold'[\s\S]*?commit\(\); return;\n    \}/.exec(SCRIPT);
@@ -8365,8 +8418,11 @@ test('the member doc the client writes is exactly what the rules accept', () => 
   // Invites the same way.
   const inv = /request\.resource\.data\.keys\(\)\.hasOnly\(\['role', 'email', 'invitedBy', 'invitedAt'\]\)/.test(RULES);
   ok(inv, 'the invite field list changed in the rules');
-  const invWrite = writeKeys(slice('createInvite'), 'be\\.putInvite\\(sync\\.docId, email, ');
+  // (Pack positions: the leader invite's positions and dens go only to the pack's own server, added under apiAccounts().)
+  const invWrite = writeKeys(slice('createInvite'), 'var ivData = ');
   eq(invWrite, [['role', 'email', 'invitedBy', 'invitedAt']], 'createInvite writes different fields from the rules');
+  ok(/if \(apiAccounts\(\) && role === 'leader'\) \{ ivData\.positions = /.test(slice('createInvite')) && /be\.putInvite\(sync\.docId, email, ivData\)/.test(slice('createInvite')),
+    'positions reach Firestore');
 });
 
 test('the client never writes a bare pending member, and never reads the join code first', () => {
@@ -8423,7 +8479,11 @@ test('who may read what: roster, join code and parent view', () => {
   eq(scopeFor('parent'), ['self', 'me'], 'a parent subscribes to the whole members collection');
   eq(scopeFor('pending'), ['self', 'me'], 'a pending user subscribes to the whole members collection');
   eq(scopeFor('editor'), ['all', 'me'], 'a leader does not watch the roster');
-  eq(/var LEADER_ROLES = (\[[^\]]*\])/.exec(SCRIPT)[1], "['admin', 'editor', 'viewer']", 'LEADER_ROLES drifted from isLeader()');
+  eq(scopeFor('leader'), ['all', 'me'], 'a leader holding positions does not watch the roster');
+  // isLeader(), and the API's 'leader' (positions, 2026-10-02), which Firestore never has.
+  eq(/var LEADER_ROLES = (\[[^\]]*\])/.exec(SCRIPT)[1], "['admin', 'editor', 'viewer', 'leader']", 'LEADER_ROLES drifted from isLeader()');
+  eq(/var LEADER_ROLES = (\[[^\]]*\])/.exec(SCRIPT)[1], /export const LEADER_ROLES = (\[[^\]]*\]);/.exec(readFileSync(join(ROOT, 'functions/_lib/rules.js'), 'utf8'))[1],
+    'LEADER_ROLES vs the server\'s');
   ok(!/subscribeMembers/.test(slice('startAccounts')) && /applyMembersSubscription\(mine\)/.test(slice('startAccounts')),
     'startAccounts subscribes the whole roster for every role again');
 });
@@ -8635,7 +8695,7 @@ test('nothing is published to parents before the join config has said whether st
     var built = 0;
     function buildParentView() { built += 1; return { events: [] }; }
     function accountsInForce() { return true; }
-    function canEdit() { return true; }
+    function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
     function fixedSyncBlocked() { return false; }
     function clearTimeout() {}
     var parentViewTimer = null, parentViewFingerprint = null;
@@ -8659,7 +8719,7 @@ test('only a device holding the pack record, after its first answer, publishes t
     const ctx = vm.createContext({});
     vm.runInContext(FAKE_BE + `
       function buildParentView() { return { events: [] }; }
-      function accountsInForce() { return true; } function canEdit() { return true; }
+      function accountsInForce() { return true; } function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
       function fixedSyncBlocked() { return false; } function clearTimeout() {}
       function stopDocFeed() {} function stopParentFeed() {} function renderSyncPill() {} function render() {}
       var parentViewTimer = null, parentViewFingerprint = null, state = {};
@@ -8839,7 +8899,7 @@ test('Firestore: an editor’s copy waiting on a choice is dropped for "view-onl
       membersUnsub: null, membersScope: null, membersDeniedAs: null, membersFromServer: false, membersHeard: false, members: [],
       feed: 'doc', unsub: null, parentUnsub: null, mode: 'connecting', notice: '', firstSnap: true, remoteRec: null,
       conflict: null, dirty: false, clobber: false, pushTimer: null, packMissing: false };
-    ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'feedForRole', 'recomputeMyRole',
+    ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'ACCESS_TABLE', 'ACCESS_LEVELS', 'apiAccounts', 'accessFor', 'actionsFor', 'accessMemo', 'myAccess', 'sectionAccess', 'canEditSection', 'canSeeSection', 'canDo', 'SECTION_SAY', 'readOnlySay', 'feedForRole', 'recomputeMyRole',
        'stopLocalWrites', 'stopDocFeed', 'subscribeDoc', 'applyRoleSubscription', 'applyMembersSubscription', 'isStateEmpty',
        'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', ...C8_SYNC_FNS, 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush', ...FORMAT_GATE_FNS].map(decl).join('\n')}
     subscribeDoc(1);
@@ -8890,7 +8950,7 @@ test('Firestore: the server confirming a cached roster is heard, and a viewer’
       membersUnsub: null, membersScope: null, membersDeniedAs: null, membersFromServer: false, membersHeard: false, members: [],
       feed: 'doc', unsub: null, parentUnsub: null, mode: 'connecting', notice: '', firstSnap: true, remoteRec: null,
       conflict: null, dirty: false, clobber: false, pushTimer: null, packMissing: false };
-    ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'feedForRole', 'recomputeMyRole',
+    ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'ACCESS_TABLE', 'ACCESS_LEVELS', 'apiAccounts', 'accessFor', 'actionsFor', 'accessMemo', 'myAccess', 'sectionAccess', 'canEditSection', 'canSeeSection', 'canDo', 'SECTION_SAY', 'readOnlySay', 'feedForRole', 'recomputeMyRole',
        'stopLocalWrites', 'stopDocFeed', 'subscribeDoc', 'applyRoleSubscription', 'applyMembersSubscription', 'isStateEmpty',
        'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', ...C8_SYNC_FNS, 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush', ...FORMAT_GATE_FNS].map(decl).join('\n')}
     subscribeDoc(1);
@@ -9035,7 +9095,7 @@ test('a push reads, merges and writes in one retried step, and the rev always cl
           REMOTES.forEach(function (rm) { out = build(rm); records.push(out.record); });
           return now(out.result);
         } };
-      function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
+      function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
       function mergeRemoteAppendOnly(d) { merged.push(d.rev); return 1; }
       var chargeSyncs = 0; function syncCharges() { chargeSyncs += 1; }
       function ledgerRowConflicts() { return []; }   // Phase 3, C6: the merge is stubbed, and so is its pre-check
@@ -9079,7 +9139,7 @@ test('Firestore: a save before the pack record’s first answer never writes ove
   const run = (o) => {
     const ctx = fsAdapterCtx(`
       var toasts = [], timers = [], saves = 0;
-      function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
+      function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
       function holdPushes() { return false; } function scheduleParentViewRefresh() {} function render() {} function renderSyncPill() {}
       function save() { saves += 1; } function showToast(m) { toasts.push(m); } function syncFail(e) { throw e; }
       function clearTimeout() {} function setTimeout(fn, ms) { timers.push(ms); return 't'; }
@@ -9117,7 +9177,7 @@ function fsFeedCtx(local, extra) {
   return fsAdapterCtx(`
     var toasts = [], timers = {}, timerSeq = 0, saves = 0, renders = 0;
     function fixedSyncBlocked() { return false; } function fixedFeedBlocked() { return false; }
-    function accountsInForce() { return false; } function canEdit() { return true; }
+    function accountsInForce() { return false; } function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
     function holdPushes() { return false; } function scheduleParentViewRefresh() {} function render() { renders += 1; }
     function renderSyncPill() {} function save() { saves += 1; } function showToast(m) { toasts.push(m); }
     function syncFail(e) { throw e; }
@@ -9353,7 +9413,7 @@ test('the pack record feed ignores its own echoes and keeps the raw record for t
     var timers = [], adopted = [], rendered = 0;
     function scheduleParentViewRefresh() {} function renderSyncPill() {} function render() { rendered += 1; }
     function syncPush() {} function clearTimeout() {} function setTimeout(fn) { timers.push(fn); return 't'; }
-    function canEdit() { return true; } function save() {}
+    function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; } function save() {}
     function normalizeState(p) { return p && typeof p === 'object' ? p : null; }
     function adoptRemote(d, o) { adopted.push([d, !!(o && o.toast)]); return true; }
     var ui = { tab: 'home', overlay: null };
@@ -9391,7 +9451,7 @@ test('once single-pack mode halts, nothing can push the pack record, even with t
     var fakeBe = { pushPack: function () { pushed += 1; return { then: function () { return { catch: function () {} }; } }; } };
     function stopDocFeed() {} function stopParentFeed() {} function renderSyncPill() {} function render() {}
     function clearTimeout() {} function setTimeout(fn) { timers.push(fn); return 't'; }
-    function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
+    function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
     var state = { rev: 1 };
     var sync = { backend: fakeBe, pack: { docId: 'P' }, session: 1, deviceId: 'd', mode: 'online' };
     ${['packLinked', 'haltFixedSync', 'scheduleSyncPush', 'syncPush', 'seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf'].map(slice).join('\n')}
@@ -9417,7 +9477,7 @@ test('every guard in front of the pack feed, the parent feed and a push holds on
       var parentViewTimer = null, state = { rev: 1 };
       var feedBlocked = ${!!over.feedBlocked}, syncBlocked = ${!!over.syncBlocked}, inForce = ${!!over.inForce}, edit = ${over.edit !== false};
       function fixedFeedBlocked() { return feedBlocked; } function fixedSyncBlocked() { return syncBlocked; }
-      function accountsInForce() { return inForce; } function canEdit() { return edit; }
+      function accountsInForce() { return inForce; } function canEdit() { return edit; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
       var sync = { backend: fakeBe, pack: { docId: 'P' }, docId: 'P', session: 1, deviceId: 'd', mode: 'online', parentUnsub: null };
       ${['cloudReady', 'packLinked', 'haltFixedSync', 'subscribeDoc', 'subscribeParentView', 'syncPush', 'seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf'].map(slice).join('\n')}
       ${FORMAT_GATE_SRC()}`, c);
@@ -11828,12 +11888,12 @@ test('A1: the planner is a Program section, writes only through a tagged den mee
   ok(prog.sections.some((s) => s.id === 'denplan'), 'no Den plans section in Program');
   ok(/sec === 'denplan'\) v\.innerHTML = renderDenPlanner\(\)/.test(SCRIPT), 'the section is not dispatched');
   const h = /if \(kind === 'plan-adv'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/if \(!canEdit\(\)\)/.test(h), 'a viewer can add a meeting from the planner');
+  ok(/if \(!canEditSection\('calendar'\)\)/.test(h), 'a viewer (or a den leader, who edits den plans, not the calendar) can add a meeting from the planner');
   ok(/freshEvent\(\{ kind: 'den', den: paDen, date: paDate[\s\S]*adventure: paName \}\)/.test(h), 'the meeting is not pre-tagged');
   ok(/advCanonicalName\(paDen, fd\.get\('name'\)\)/.test(h), 'the typed elective is not canonicalised');
   // Buttons that edit are offered only to editors — a job never decides it.
   const r = slice('renderDenPlanner');
-  ok(/var edit = canEdit\(\);/.test(r) && !/hasJob\(/.test(r), 'the planner gates on something other than the role');
+  ok(/var edit = canEditSection\('calendar'\);/.test(r) && !/hasJob\(/.test(r), 'the planner gates on something other than the role (adding meetings is the calendar’s)');
   ok(!/denPlan|renderDenPlanner/.test(BPV()), 'the den planner reached the parent view');
 });
 
@@ -12126,8 +12186,8 @@ test('B1: every leader edit to the page is behind canEdit, and the editor says w
   ['welcome-add-sec', 'welcome-sec-hide:', 'welcome-del-sec:'].forEach((a) => {
     const i = SCRIPT.indexOf(`act${a.slice(-1) === ':' ? `.indexOf('${a}') === 0` : ` === '${a}'`}`);
     ok(i > -1, `no handler for ${a}`);
-    ok(/^\) \{\s*if \(!canEdit\(\)\) return;/.test(SCRIPT.slice(i + (a.slice(-1) === ':' ? `act.indexOf('${a}') === 0`.length : `act === '${a}'`.length))),
-      `${a} is not behind canEdit()`);
+    ok(/^\) \{\s*if \(!canEditSection\('joining'\)\) \{ showToast\(readOnlySay\('joining'\)\); return; \}/.test(SCRIPT.slice(i + (a.slice(-1) === ':' ? `act.indexOf('${a}') === 0`.length : `act === '${a}'`.length))),
+      `${a} is not behind canEditSection('joining')`);
   });
   const ed = slice('renderWelcomeEditor');
   ok(/Everything shown here goes to families exactly as/.test(ed), 'the editor does not say the page is published verbatim');
@@ -12328,7 +12388,7 @@ test('B5: the tracker is normalized, cleared at close-out, removed with its scou
   ok(!/onboarding/.test(codeOnly(slice('monthlyDigest'))), 'the family digest reads the tracker');
   const h = /if \(ch === 'ob-tick' \|\| ch === 'ob-track'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/commit\(\);/.test(h) && /ONBOARD_TICKS\.indexOf\(el\.dataset\.name\) === -1/.test(h), 'the tick handler writes unknown keys or skips commit()');
-  ok(/if \(act\.indexOf\('ob-untrack:'\) === 0\) \{\s*if \(!canEdit\(\)\) return;/.test(SCRIPT), 'untracking is not behind canEdit()');
+  ok(/if \(act\.indexOf\('ob-untrack:'\) === 0\) \{\s*if \(!canEditSection\('joining'\)\)/.test(SCRIPT), 'untracking is not behind canEditSection(\'joining\')');
   ok(/renderOnboarding\(\) \+ renderWelcomeEditor\(\)/.test(slice('renderJoining')), 'the tracker is not on Scouts → New families');
 });
 
@@ -12715,7 +12775,7 @@ test('C4: the den campout is a template added on request, never seeded, and stat
   ok(/seedCampingTrips\(\)\.concat\(campTemplates\(\)\)/.test(slice('refreshCampingSeed')), 'templates are outside the refresh');
   // Added only by the leader, once, behind canEdit().
   const h = /if \(act === 'camp-add-den'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
-  ok(h && /if \(!canEdit\(\)\) return;/.test(h[0]) && /if \(!getTrip\(DEN_CAMP_TRIP_ID\)\)/.test(h[0]), 'the add is ungated or can duplicate');
+  ok(h && /if \(!canEditSection\('camping'\)\)/.test(h[0]) && /if \(!getTrip\(DEN_CAMP_TRIP_ID\)\)/.test(h[0]), 'the add is ungated or can duplicate');
   ok(/data-act="camp-add-den"/.test(slice('renderCamping')), 'no button to add the template');
 });
 
@@ -13174,7 +13234,7 @@ test('E1: due dates are normalized, carried a year at close-out, and editable on
   ok(/data-ch="bud-dues-due"/.test(slice('renderBudget')), 'no dues date on the Budget');
   ok(/if \(ch === 'bud-dues-due'\) \{ state\.budget\.duesDueDate = campIsoOrBlank\(el\.value\); commit\(\); return; \}/.test(SCRIPT), 'dues date handler');
   const blk = slice('duesFamilyBlock');
-  ok(/data-ch="charge-due"/.test(blk) && /canEdit\(\) \? '' : ' disabled'/.test(blk), 'the charge date is not editable, or not gated');
+  ok(/data-ch="charge-due"/.test(blk) && /canEditSection\('dues'\) \? '' : ' disabled'/.test(blk), 'the charge date is not editable, or not gated');
   ok(/chargesOverdue\(f\.charges, paidOn, chargeDueNow, todayISO\(\)\)/.test(blk) && / overdue<\/span>/.test(blk), 'a family block does not say what is overdue');
   ok(/overdue\.<\/strong>/.test(slice('renderDues')), 'Family balances does not total the overdue');
 });
@@ -14087,7 +14147,9 @@ const PEOPLE = {
   owner: ['uid-owner', 'owner@example.com'], admin2: ['uid-admin2', 'admin2@example.com'],
   editor: ['uid-editor', 'editor1@example.com'], viewer: ['uid-viewer', 'viewer1@example.com'],
   parent: ['uid-parent', 'parent1@example.com'], pending: ['uid-pending', 'pending1@example.com'],
-  stranger: ['uid-stranger', 'stranger@example.com'], newbie: ['uid-newbie', 'newbie@example.com']
+  stranger: ['uid-stranger', 'stranger@example.com'], newbie: ['uid-newbie', 'newbie@example.com'],
+  // A third admin, where a test needs two leaders who review besides the owner (editor retired, 2026-10-02).
+  admin3: ['uid-admin3', 'admin3@example.com']
 };
 const FORBIDDEN_TEXT = '{"error":"forbidden","code":"permission-denied"}';
 let apiReady = null;
@@ -14105,6 +14167,7 @@ function apiSetup() {
       API.rules = await load('_lib/rules.js');
       API.http = await load('_lib/http.js');
       API.pack = await load('_lib/pack.js');
+      API.access = await load('_lib/access.js');
       API.fetches = 0;
       API.useTestKeys = () => API.token.setJwksFetcher(async () => { API.fetches++; return { keys: [API.jwk], maxAge: 3600 }; });
       API.useTestKeys();
@@ -14174,13 +14237,18 @@ async function apiWorld(envOver) {
   w.one = (q, ...a) => w.sql(q, ...a)[0];
   w.audit = (action) => w.sql('SELECT uid, action, detail FROM audit WHERE action = ? ORDER BY id', action);
   // The owner claims through the API; everyone else is put in the members table directly.
+  // A role 'leader:kernel,chair' seeds a leader holding those positions.
   w.seed = async (roles) => {
     const s = await w.session('owner');
     eq(s.body.role, 'admin', 'the seeding owner');
     const r = roles || { admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent', pending: 'pending' };
     for (const who of Object.keys(r)) {
+      const [role, held] = r[who].split(':');
       db.raw.prepare('INSERT INTO members (pack_id, uid, role, name, email, join_code, added_at) VALUES (?, ?, ?, ?, ?, NULL, ?)')
-        .run(API_PACK, PEOPLE[who][0], r[who], 'Test ' + who, PEOPLE[who][1], Date.now());
+        .run(API_PACK, PEOPLE[who][0], role, 'Test ' + who, PEOPLE[who][1], Date.now());
+      // A den leader seeded this way leads the Wolf den (own-den scope, 2026-10-02).
+      for (const p of held ? held.split(',') : []) db.raw.prepare('INSERT INTO member_positions (pack_id, uid, position, dens) VALUES (?, ?, ?, ?)')
+        .run(API_PACK, PEOPLE[who][0], p, p === 'denleader' || p === 'asstden' ? '["Wolf"]' : null);
     }
     return w;
   };
@@ -14695,27 +14763,31 @@ atest('api session: a sign-up link visitor never claims an unowned pack', async 
 
 atest('api session: the owner is healed back to admin, whoever demoted them (members.update.owner)', async () => {
   const w = await (await apiWorld()).seed();
-  eq((await w.call('admin2', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { role: 'viewer' } })).status, 200, 'a co-admin demotes the owner');
+  eq((await w.call('admin2', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { role: 'parent' } })).status, 200, 'a co-admin demotes the owner');
   w.db.raw.prepare("UPDATE members SET join_code = 'abc', email = 'someone-else@example.com' WHERE uid = 'uid-owner'").run();
   const s = await w.session('owner');
   eq([s.body.role, s.body.member.email, s.body.member.joinCode], ['admin', 'owner@example.com', undefined], 'the healed owner, written whole');
-  eq(w.audit('member.heal').map((a) => JSON.parse(a.detail)), [{ from: 'viewer', to: 'admin' }], 'the heal is audited');
+  eq(w.audit('member.heal').map((a) => JSON.parse(a.detail)), [{ from: 'parent', to: 'admin' }], 'the heal is audited');
   // Never anyone else: a demoted co-admin signing in stays demoted.
-  await w.call('owner', 'PATCH', 'member', { uid: 'uid-admin2' }, { body: { role: 'viewer' } });
-  eq((await w.session('admin2')).body.role, 'viewer', 'a demoted non-owner');
+  await w.call('owner', 'PATCH', 'member', { uid: 'uid-admin2' }, { body: { role: 'parent' } });
+  eq((await w.session('admin2')).body.role, 'parent', 'a demoted non-owner');
 });
 
 atest('api session: an invite admits exactly its role, matched on the lowercased email, and is used up (members.create.invite)', async () => {
   const w = await (await apiWorld()).seed({});
-  eq((await w.call('owner', 'PUT', 'invite', { email: 'newbie@example.com' }, { body: { role: 'editor' } })).status, 200, 'the invite');
+  eq((await w.call('owner', 'PUT', 'invite', { email: 'newbie@example.com' }, { body: { positions: ['secretary'] } })).status, 200, 'the invite');
   const s = await w.session('newbie', undefined, undefined, { email: 'NewBie@Example.com' });
-  eq([s.body.role, s.body.member.email], ['editor', 'NewBie@Example.com'], 'the invitee, with capitals in their Google email');
+  eq([s.body.role, s.body.member.email], ['leader', 'NewBie@Example.com'], 'the invitee, with capitals in their Google email');
   eq(w.sql('SELECT count(*) AS n FROM invites')[0].n, 0, 'the invite was not used up');
-  eq(w.audit('invite.consume').map((a) => [a.uid, JSON.parse(a.detail).role]), [['uid-newbie', 'editor']], 'the audit row');
+  eq(w.audit('invite.consume').map((a) => [a.uid, JSON.parse(a.detail).role]), [['uid-newbie', 'leader']], 'the audit row');
   // Someone already in the pack keeps their role; a waiting invite does not change it.
-  await w.call('owner', 'PUT', 'invite', { email: 'parent1@example.com' }, { body: { role: 'viewer' } });
+  await w.call('owner', 'PUT', 'invite', { email: 'parent1@example.com' }, { body: { positions: ['chair'] } });
   w.db.raw.prepare("INSERT INTO members (pack_id, uid, role, name, email, added_at) VALUES (?, 'uid-parent', 'parent', 'P', 'parent1@example.com', 1)").run(API_PACK);
-  eq((await w.session('parent')).body.role, 'parent', 'an existing parent with an editor invite waiting');
+  eq((await w.session('parent')).body.role, 'parent', 'an existing parent with a leader invite waiting');
+  // An editor invite written before editor was retired (2026-10-02) still lets its person in, as an
+  // editor, who reads and writes nothing until an admin gives them positions.
+  w.db.raw.prepare("INSERT INTO invites (pack_id, email, role, invited_by_uid, invited_at) VALUES (?, 'editor1@example.com', 'editor', 'uid-owner', 1)").run(API_PACK);
+  eq((await w.session('editor')).body.role, 'editor', 'an editor invite from before the switch');
   // An invite row the rules would refuse (an old 'admin' invite, forced in by SQL around the CHECK) admits nothing.
   w.db.raw.exec('PRAGMA ignore_check_constraints = ON');
   w.db.raw.prepare("INSERT INTO invites (pack_id, email, role, invited_by_uid, invited_at) VALUES (?, 'stranger@example.com', 'admin', 'uid-owner', 1)").run(API_PACK);
@@ -14932,32 +15004,33 @@ atest('api tenancy: a role in one pack is nothing in another', async () => {
 
 /* ---- the pack record ---- */
 
-atest('api Part C pack.read / pack.write: leaders read the pack record, admins and editors write it, nobody else either', async () => {
+atest('api Part C pack.read / pack.write: leaders read the pack record, admins write it (a retired editor no longer), nobody else either', async () => {
   const w = await (await apiWorld()).seed();
   w.state(5, { scouts: [{ id: 's1', name: 'Test Scout' }] });
   await matrix(w, 'GET', 'pack', expectFor(['owner', 'admin2', 'editor', 'viewer']));
   const got = await w.call('viewer', 'GET', 'pack');
   eq([got.body.exists, got.body.rev, JSON.parse(got.body.json).scouts[0].id], [true, 5, 's1'], 'the record a viewer reads');
   let rev = 5;
-  const writeAs = (who) => ({ body: { rev: 'x', by: who }, headers: { 'if-match': String(rev), 'x-pack-device': 'dev-' + who } });
+  // A key the pack record has (scouts): since positions, a key nobody planned for is an admin's only.
+  const writeAs = (who) => ({ body: { rev: 'x', scouts: [{ id: 's-' + who }] }, headers: { 'if-match': String(rev), 'x-pack-device': 'dev-' + who } });
   for (const who of ALL) {
     const r = await w.call(who, 'PUT', 'pack', null, writeAs(who));
-    if (['owner', 'admin2', 'editor'].indexOf(who) >= 0) { eq([r.status, r.body.rev], [200, rev + 1], who + ' writes'); rev += 1; }
+    if (['owner', 'admin2'].indexOf(who) >= 0) { eq([r.status, r.body.rev], [200, rev + 1], who + ' writes'); rev += 1; }
     else denied(r, who + ' PUT pack');
   }
-  eq(w.one('SELECT rev, device FROM pack_state'), { rev: 8, device: 'dev-editor' }, 'the stored record');
+  eq(w.one('SELECT rev, device FROM pack_state'), { rev: 7, device: 'dev-admin2' }, 'the stored record');
 });
 
 atest('api pack PUT is compare-and-swap: a stale rev gets 409 with the stored copy, and a retry on it lands', async () => {
   const w = await (await apiWorld()).seed();
   const put = (who, rev, body) => w.call(who, 'PUT', 'pack', null, { body, headers: { 'if-match': String(rev), 'x-pack-device': who } });
   // The first write to an empty pack is from rev 0; a second "first write" loses.
-  eq((await put('editor', 0, { ledger: ['e1'] })).body.rev, 1, 'the first write');
+  eq((await put('admin2', 0, { ledger: ['e1'] })).body.rev, 1, 'the first write');
   const lost = await put('owner', 0, { ledger: ['o1'] });
-  eq([lost.status, lost.body.code, lost.body.rev, lost.body.device], [409, 'aborted', 1, 'editor'], 'a second first write');
+  eq([lost.status, lost.body.code, lost.body.rev, lost.body.device], [409, 'aborted', 1, 'admin2'], 'a second first write');
   eq(JSON.parse(lost.body.json), { ledger: ['e1'] }, 'the 409 carries the stored copy');
   // Two devices both at rev 1: one lands, the other gets the remote copy, merges, retries on its rev.
-  eq((await put('editor', 1, { ledger: ['e1', 'e2'] })).body.rev, 2, 'editor from rev 1');
+  eq((await put('admin2', 1, { ledger: ['e1', 'e2'] })).body.rev, 2, 'editor from rev 1');
   const stale = await put('owner', 1, { ledger: ['e1', 'o1'] });
   eq([stale.status, stale.body.rev], [409, 2], 'owner from rev 1');
   eq((await put('owner', stale.body.rev, { ledger: ['e1', 'e2', 'o1'] })).body.rev, 3, 'the retry on the remote rev');
@@ -14994,7 +15067,7 @@ atest('api rev poll: leaders get the rev, parents only when the view changed, pe
   await matrix(w, 'GET', 'rev', expectFor(['owner', 'admin2', 'editor', 'viewer', 'parent']));
   eq((await w.call('viewer', 'GET', 'rev')).body, { viewAt: null, rev: 7 }, 'a viewer');
   eq((await w.call('parent', 'GET', 'rev')).body, { viewAt: null }, 'a parent (no rev: that is part of the pack record)');
-  await w.call('editor', 'PUT', 'view', null, { body: { packName: 'Test Pack' } });
+  await w.call('admin2', 'PUT', 'view', null, { body: { packName: 'Test Pack' } });
   ok((await w.call('parent', 'GET', 'rev')).body.viewAt > 0, 'the parent does not see the view change');
 });
 
@@ -15021,8 +15094,12 @@ atest('api Part C members.admin / members.update.self / members.update.owner / m
   const w = await (await apiWorld()).seed();
   const patch = (who, uid, body) => w.call(who, 'PATCH', 'member', { uid }, { body });
   // members.admin: an admin changes anyone's role.
-  eq((await patch('admin2', 'uid-parent', { role: 'editor' })).body.role, 'editor', 'an admin promoting a parent');
-  eq(w.audit('member.role').map((a) => JSON.parse(a.detail)), [{ target: 'uid-parent', from: 'parent', to: 'editor' }], 'the role change audit');
+  eq((await patch('admin2', 'uid-parent', { role: 'admin' })).body.role, 'admin', 'an admin promoting a parent');
+  eq(w.audit('member.role').map((a) => JSON.parse(a.detail)), [{ target: 'uid-parent', from: 'parent', to: 'admin' }], 'the role change audit');
+  // Retired (2026-10-02): no account is made an editor or viewer again, and a leader comes only with
+  // positions. An editor or viewer keeps the role it has (sent back unchanged, it is no change).
+  for (const r of ['editor', 'viewer', 'leader']) eq((await patch('owner', 'uid-pending', { role: r })).body.reason, 'role', 'an admin setting ' + r);
+  eq((await patch('viewer', 'uid-viewer', { role: 'viewer', name: 'V' })).status, 200, 'a viewer sending their own role back');
   denied(await patch('editor', 'uid-viewer', { role: 'editor' }), 'an editor promoting a viewer');
   denied(await patch('viewer', 'uid-pending', { role: 'parent' }), 'a viewer approving a request');
   // members.update.self: your own row, same role. Promoting yourself is the attack.
@@ -15042,7 +15119,7 @@ atest('api Part C members.admin / members.update.self / members.update.owner / m
   denied(await patch('owner', 'uid-viewer', { joinCode: 'abc' }), 'an admin sending another field');
   eq((await patch('owner', 'uid-viewer', { role: 'owner' })).status, 400, 'a role that does not exist');
   // members.update.owner: the owner restores their own admin role; nobody else can.
-  await patch('admin2', 'uid-owner', { role: 'viewer' });
+  await patch('admin2', 'uid-owner', { role: 'parent' });
   eq((await patch('owner', 'uid-owner', { role: 'admin' })).body.role, 'admin', 'the owner restoring their admin role');
   denied(await patch('stranger', 'uid-stranger', { role: 'admin' }), 'a stranger with no row');
   eq((await patch('owner', 'uid-nobody', { role: 'editor' })).status, 404, 'an admin changing a row that is not there');
@@ -15067,14 +15144,14 @@ atest('api members PATCH: a non-admin touching someone else\'s row gets the one 
 
 atest('api last admin: no change or removal leaves a pack with no admin', async () => {
   const w = await (await apiWorld()).seed({ editor: 'editor' });
-  const r1 = await w.call('owner', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { role: 'editor' } });
+  const r1 = await w.call('owner', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { role: 'parent' } });
   eq([r1.status, r1.body.code], [409, 'failed-precondition'], 'the only admin demoting themselves');
   eq((await w.call('owner', 'DELETE', 'member', { uid: 'uid-owner' })).status, 409, 'the only admin removing themselves');
   eq(w.one("SELECT role FROM members WHERE uid = 'uid-owner'").role, 'admin', 'the only admin was changed');
   eq(w.audit('member.role').length + w.audit('member.remove').length, 0, 'a refused change was audited');
   // With two admins, either may step down — but then the other is the last.
   await w.call('owner', 'PATCH', 'member', { uid: 'uid-editor' }, { body: { role: 'admin' } });
-  eq((await w.call('editor', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { role: 'viewer' } })).status, 200, 'one of two admins demoted');
+  eq((await w.call('editor', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { role: 'parent' } })).status, 200, 'one of two admins demoted');
   eq((await w.call('editor', 'DELETE', 'member', { uid: 'uid-editor' })).status, 409, 'the remaining admin removing themselves');
   // Renaming the last admin is not a demotion.
   eq((await w.call('editor', 'PATCH', 'member', { uid: 'uid-editor' }, { body: { name: 'Test Admin' } })).status, 200, 'renaming the last admin');
@@ -15101,11 +15178,15 @@ atest('api Part C members.admin (delete): only admins remove members, and the re
 atest('api Part C invites.write: only admins invite, never as admin, and the inviter is recorded by account id', async () => {
   const w = await (await apiWorld()).seed();
   const inv = (who, email, body) => w.call(who, 'PUT', 'invite', { email }, { body });
-  for (const role of ['editor', 'viewer', 'parent']) {
-    const r = await inv('admin2', role + '9@example.com', { role });
+  for (const body of [{ positions: ['treasurer'] }, { positions: ['kernel'], role: 'leader' }, { role: 'parent' }]) {
+    const role = body.role || (body.positions ? 'leader' : '');
+    const r = await inv('admin2', role + body.positions + '9@example.com', body);
     eq([r.status, r.body.role, r.body.invitedByUid], [200, role, 'uid-admin2'], 'an admin inviting a ' + role);
     ok(r.text.indexOf('admin2@example.com') === -1, 'the invite carries the inviter\'s email');
   }
+  // Retired (2026-10-02): no new editor or viewer invite.
+  denied(await inv('owner', 'x9@example.com', { role: 'editor' }), 'an editor invite');
+  denied(await inv('owner', 'x9@example.com', { role: 'viewer' }), 'a viewer invite');
   denied(await inv('owner', 'x9@example.com', { role: 'admin' }), 'an admin invite');
   denied(await inv('owner', 'x9@example.com', { role: 'pending' }), 'a pending invite');
   denied(await inv('owner', 'x9@example.com', {}), 'an invite with no role');
@@ -15122,14 +15203,14 @@ atest('api Part C invites.write: only admins invite, never as admin, and the inv
   eq((await inv('owner', 'x9@example.com', { role: 'parent', email: 'x9@example.com' })).status, 200, 'the same email in the body');
   eq((await inv('owner', 'X9@example.com', { role: 'parent' })).status, 404, 'an address that is not lowercased');
   eq((await inv('owner', 'not-an-email', { role: 'parent' })).status, 404, 'not an address');
-  eq((await inv('owner', encodeURIComponent('x9@example.com'), { role: 'viewer' })).body.role, 'viewer', 'a percent-encoded path');
+  eq((await inv('owner', encodeURIComponent('x9@example.com'), { positions: ['comms'] })).body.role, 'leader', 'a percent-encoded path');
   eq(w.audit('invite.write').length, 5, 'each invite written is audited, and no refused one');
 });
 
 atest('api Part C invites.read / invites.delete: admins list and revoke; an invitee reads and declines only their own', async () => {
   const w = await (await apiWorld()).seed();
   await w.call('owner', 'PUT', 'invite', { email: 'stranger@example.com' }, { body: { role: 'parent' } });
-  await w.call('owner', 'PUT', 'invite', { email: 'newbie@example.com' }, { body: { role: 'editor' } });
+  await w.call('owner', 'PUT', 'invite', { email: 'newbie@example.com' }, { body: { positions: ['chair'] } });
   await matrix(w, 'GET', 'invites', expectFor(['owner', 'admin2']));
   eq((await w.call('owner', 'GET', 'invites')).body.invites.map((i) => i.email).sort(), ['newbie@example.com', 'stranger@example.com'], 'the list');
   // Your own, matched on your Google email lowercased.
@@ -15175,15 +15256,15 @@ atest('api Part C join.read / join.write: leaders read the live code, admins wri
 
 /* ---- the parent view ---- */
 
-atest('api Part C view.read / view.write: approved members read the parent view (never pending); admins and editors write it', async () => {
+atest('api Part C view.read / view.write: approved members read the parent view (never pending); admins write it (a retired editor no longer)', async () => {
   const w = await (await apiWorld()).seed();
   eq((await w.call('parent', 'GET', 'view')).body, { exists: false }, 'no view yet');
-  await matrix(w, 'PUT', 'view', expectFor(['owner', 'admin2', 'editor']), { opts: (who) => ({ body: { packName: 'Test Pack', contact: 'by ' + who } }) });
+  await matrix(w, 'PUT', 'view', expectFor(['owner', 'admin2']), { opts: (who) => ({ body: { packName: 'Test Pack', contact: 'by ' + who } }) });
   await matrix(w, 'GET', 'view', expectFor(['owner', 'admin2', 'editor', 'viewer', 'parent']));
   const r = await w.call('parent', 'GET', 'view');
-  eq([r.body.exists, r.body.view], [true, { packName: 'Test Pack', contact: 'by editor' }], 'what a parent reads');
+  eq([r.body.exists, r.body.view], [true, { packName: 'Test Pack', contact: 'by admin2' }], 'what a parent reads');
   ok(typeof r.body.generatedAt === 'number', 'generatedAt');
-  for (const bad of ['[1]', 'nope', 'null']) eq((await w.call('editor', 'PUT', 'view', null, { body: bad })).status, 400, 'a view of ' + bad);
+  for (const bad of ['[1]', 'nope', 'null']) eq((await w.call('admin2', 'PUT', 'view', null, { body: bad })).status, 400, 'a view of ' + bad);
 });
 
 test('api parent view: the server\'s allowlist is buildParentView\'s own top-level keys, and its standings keys are exactly those behind the standings gate', () => {
@@ -15224,7 +15305,7 @@ test('api parent view: the server\'s allowlist is buildParentView\'s own top-lev
 atest('api parent view: the server stores only buildParentView\'s shape — its keys, no standings while they are off, no noteInternal', async () => {
   // Security review of stage A, finding 7.
   const w = await (await apiWorld()).seed();
-  const put = (body) => w.call('editor', 'PUT', 'view', null, { body });
+  const put = (body) => w.call('admin2', 'PUT', 'view', null, { body });
   const stored = () => { const r = w.one('SELECT payload FROM parent_views'); return r && JSON.parse(r.payload); };
   const full = { rev: 3, packName: 'Test Pack', programYear: '2026-27', events: [], contact: 'Ask the cubmaster',
     standings: [{ name: 'Test' }], goals: null, derby: null, tiers: [{ name: 'Gold' }], tierLadder: { anchorName: 'Gold' } };
@@ -15320,17 +15401,17 @@ atest('api parent view: standings switched off between the check and the write a
   eq((await w.call('owner', 'PUT', 'join', null, { body: cfg })).status, 200, 'standings on');
   const race = standingsRaceDb(w);
   w.env.DB = race.racy;
-  const r = await w.call('editor', 'PUT', 'view', null, { body: full });
+  const r = await w.call('admin2', 'PUT', 'view', null, { body: full });
   eq(race.fired(), 1, 'the race was not staged (the endpoint no longer reads the switch this way)');
   eq([r.status, r.body.reason], [400, 'view-standings-off'], 'a standings view written after standings went off');
   eq(w.sql('SELECT count(*) AS n FROM parent_views')[0].n, 0, 'the standings view was stored while standings are off');
   // The same race with a calendar-only view: nothing to hold back, so it is written.
-  eq((await w.call('editor', 'PUT', 'view', null, { body: { rev: 4, packName: 'Test Pack', events: [] } })).status, 200, 'a calendar-only view');
+  eq((await w.call('admin2', 'PUT', 'view', null, { body: { rev: 4, packName: 'Test Pack', events: [] } })).status, 200, 'a calendar-only view');
   eq(JSON.parse(w.one('SELECT payload FROM parent_views').payload), { rev: 4, packName: 'Test Pack', events: [] }, 'the calendar-only view');
   // And a standings view once the pack's switch is on again, raced by nothing, still stores.
   w.env.DB = w.db;
   await w.call('owner', 'PUT', 'join', null, { body: cfg });
-  eq((await w.call('editor', 'PUT', 'view', null, { body: full })).status, 200, 'standings on, no race');
+  eq((await w.call('admin2', 'PUT', 'view', null, { body: full })).status, 200, 'standings on, no race');
   eq(JSON.parse(w.one('SELECT payload FROM parent_views').payload).standings, full.standings, 'the standings view');
 
   // The import: the pack's join config says on when it is read, off when the batch writes.
@@ -15365,7 +15446,7 @@ atest('api parent view: a view too deep to store is a 400, not a server error (P
   };
   try {
     const w = await (await apiWorld()).seed();
-    const r = await w.call('editor', 'PUT', 'view', null, { body: real({ packName: 'Too Deep', events: [] }) });
+    const r = await w.call('admin2', 'PUT', 'view', null, { body: real({ packName: 'Too Deep', events: [] }) });
     eq([r.status, r.body.reason], [400, 'view-too-deep'], 'PUT /view');
     eq(w.sql('SELECT count(*) AS n FROM parent_views')[0].n, 0, 'something was stored');
     const wi = await (await apiWorld()).seed({});
@@ -15423,26 +15504,26 @@ atest('api import: only the pack owner, only into an empty pack, only once — a
 
 atest('api import: in production a save cannot create the pack record before the import (409 awaiting-import), so the import is never blocked', async () => {
   // Security review of stage A, finding 4.
-  const w = await (await apiWorld({ OWNER_MODE: 'fixed', PACK_OWNER_UID: 'uid-owner' })).seed({ editor: 'editor' });
+  const w = await (await apiWorld({ OWNER_MODE: 'fixed', PACK_OWNER_UID: 'uid-owner' })).seed({ admin2: 'admin' });
   const put = (who, rev, body) => w.call(who, 'PUT', 'pack', null, { body, headers: { 'if-match': String(rev), 'x-pack-device': who } });
-  for (const who of ['editor', 'owner']) {
+  for (const who of ['admin2', 'owner']) {
     const r = await put(who, 0, { scouts: [] });
     eq([r.status, r.body.error, r.body.code, r.body.reason], [409, 'awaiting-import', 'failed-precondition', 'awaiting-import'], who + ' saving before the import');
     ok(r.body.json === undefined && r.body.rev === undefined, 'the awaiting-import answer carries a record to merge');
   }
-  eq((await w.call('editor', 'GET', 'pack')).body, { exists: false, rev: 0 }, 'GET before the import');
+  eq((await w.call('admin2', 'GET', 'pack')).body, { exists: false, rev: 0 }, 'GET before the import');
   eq(w.sql('SELECT count(*) AS n FROM pack_state')[0].n, 0, 'a save before the import created the record');
   eq((await w.call('owner', 'POST', 'import', null, { body: importBody() })).status, 200, 'the import after refused saves');
   // After it: an ordinary compare-and-swap. A stale "first write" is a conflict carrying the record.
-  const late = await put('editor', 0, { scouts: [] });
+  const late = await put('admin2', 0, { scouts: [] });
   eq([late.status, late.body.code, late.body.rev], [409, 'aborted', 41], 'a rev-0 save after the import');
-  eq((await put('editor', 41, { scouts: [1] })).body.rev, 42, 'a save on the imported rev');
+  eq((await put('admin2', 41, { scouts: [1] })).body.rev, 42, 'a save on the imported rev');
   // A record lost after the import (a wipe, a restore) can be written again from rev 0: the lock is there.
   w.db.raw.prepare('DELETE FROM pack_state').run();
-  eq((await put('editor', 0, { scouts: [2] })).status, 200, 'a rev-0 save after the import and a wipe');
+  eq((await put('admin2', 0, { scouts: [2] })).status, 200, 'a rev-0 save after the import and a wipe');
   // Previews (first-signer) are unchanged: the first save creates the record.
-  const p = await (await apiWorld()).seed({ editor: 'editor' });
-  eq((await p.call('editor', 'PUT', 'pack', null, { body: {}, headers: { 'if-match': '0' } })).status, 200, 'a preview\'s first save');
+  const p = await (await apiWorld()).seed({ admin2: 'admin' });
+  eq((await p.call('admin2', 'PUT', 'pack', null, { body: {}, headers: { 'if-match': '0' } })).status, 200, 'a preview\'s first save');
   // The client contract is written down where the next stage will look.
   ok(/409 \{error:'awaiting-import', code:'failed-precondition'\}/.test(readFileSync(join(ROOT, 'functions/_lib/http.js'), 'utf8')), 'http.js does not document awaiting-import');
 });
@@ -15491,17 +15572,17 @@ atest('api import: a parent view PUT /view would refuse is left behind and named
   eq(r.body.viewSkipped, 'view-standings-off', 'standings off here, on in the import');
   // Review of 5690c3a..20b4fd6, item 4: a parent view already here wins, and the answer does not
   // claim the imported one was stored.
-  const w2 = await (await apiWorld()).seed({ editor: 'editor' });
+  const w2 = await (await apiWorld()).seed({ admin2: 'admin' });
   const mine = { rev: 1, packName: 'Test Pack', events: [] };
-  eq((await w2.call('editor', 'PUT', 'view', null, { body: mine })).status, 200, 'a parent view before the import');
+  eq((await w2.call('admin2', 'PUT', 'view', null, { body: mine })).status, 200, 'a parent view before the import');
   const r2 = await w2.call('owner', 'POST', 'import', null, { body: importBody({ view: { packName: 'Imported Pack', events: [] } }) });
   eq([r2.status, r2.body.imported, r2.body.view, r2.body.viewSkipped], [200, true, false, 'view-exists'], 'the import\'s answer with a view already here');
   eq(JSON.parse(w2.one('SELECT payload FROM parent_views').payload), mine, 'the view already here was replaced');
   // Review of eb504db..366f6c9, item 3: with standings off here too, a view already here that
   // held back an imported view with no standings in it is still what the answer names.
-  const w4 = await (await apiWorld()).seed({ editor: 'editor' });
+  const w4 = await (await apiWorld()).seed({ admin2: 'admin' });
   await w4.call('owner', 'PUT', 'join', null, { body: { open: false, code: 'Code123abc', showStandings: false, showAmounts: true } });
-  eq((await w4.call('editor', 'PUT', 'view', null, { body: mine })).status, 200, 'a parent view without standings, standings off');
+  eq((await w4.call('admin2', 'PUT', 'view', null, { body: mine })).status, 200, 'a parent view without standings, standings off');
   const r4 = await w4.call('owner', 'POST', 'import', null, { body: importBody({ view: { packName: 'Imported Pack', events: [] } }) });
   eq([r4.status, r4.body.view, r4.body.viewSkipped], [200, false, 'view-exists'], 'no standings in the view, standings off, a view already here');
   eq(JSON.parse(w4.one('SELECT payload FROM parent_views').payload), mine, 'the view already here was replaced (standings off)');
@@ -15536,7 +15617,7 @@ function srDay(n) {
 // two days ago, today, on the edge (14 days ago), too old (15) and in three days.
 async function srWorld() {
   const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent', pending: 'pending',
-    newbie: 'parent' });
+    newbie: 'parent', admin3: 'admin' });
   const sf = (sfId, n, blocks) => ({ kind: 'storefront', sfId, date: srDay(n), title: 'Test Market', detail: '',
     shifts: blocks.map((blockId) => ({ when: '10:00 AM – 12:00 PM', who: ['Test'], blockId, families: 1 })) });
   w.view = { rev: 1, packName: 'Test Pack', programYear: '2026-27', events: [
@@ -15563,7 +15644,7 @@ function holdBatches(w, n, reverse) {
   };
 }
 
-atest('api shift reports: every role on every verb — pending and strangers get nothing, parents send, only admins and editors review', async () => {
+atest('api shift reports: every role on every verb — pending and strangers get nothing, parents send, only admins review', async () => {
   const w = await srWorld();
   await matrix(w, 'GET', 'shiftReports', expectFor(['owner', 'admin2', 'editor', 'viewer', 'parent']));
   // Each approved member sends a report on a block of their own.
@@ -15576,8 +15657,8 @@ atest('api shift reports: every role on every verb — pending and strangers get
     'who the server says sent each report');
   const ridOf = (who) => w.one('SELECT id FROM shift_reports WHERE submitted_by_uid = ?', PEOPLE[who][0]).id;
   const parentRid = ridOf('parent');
-  // Accept and return: admins and editors only. Everyone else gets the fixed 403.
-  for (const who of ['viewer', 'parent', 'newbie', 'pending', 'stranger']) {
+  // Accept and return: admins only (a retired editor no longer, 2026-10-02). Everyone else gets the fixed 403.
+  for (const who of ['editor', 'viewer', 'parent', 'newbie', 'pending', 'stranger']) {
     denied(await w.act(who, parentRid, { action: 'accept', teCents: 100, cashCents: 0, collected: true }), who + ' accepting');
     denied(await w.act(who, parentRid, { action: 'return', reviewNote: 'Recount' }), who + ' sending back');
   }
@@ -15588,12 +15669,12 @@ atest('api shift reports: every role on every verb — pending and strangers get
   }
   // A report id that does not exist: the same 403 to a non-reviewer, a 404 to a reviewer.
   denied(await w.act('parent', '00000000-0000-0000-0000-000000000000', { action: 'withdraw' }), 'withdrawing a report that is not there');
-  eq((await w.act('editor', '00000000-0000-0000-0000-000000000000', { action: 'return', reviewNote: 'x' })).status, 404, 'a reviewer, no such report');
-  eq((await w.act('editor', 'not a/real id', { action: 'return', reviewNote: 'x' })).status, 404, 'a malformed report id');
+  eq((await w.act('admin3', '00000000-0000-0000-0000-000000000000', { action: 'return', reviewNote: 'x' })).status, 404, 'a reviewer, no such report');
+  eq((await w.act('admin3', 'not a/real id', { action: 'return', reviewNote: 'x' })).status, 404, 'a malformed report id');
   eq(w.sql("SELECT count(*) AS n FROM shift_reports WHERE status != 'submitted'")[0].n, 0, 'a refused call changed a report');
   eq(w.sql("SELECT count(*) AS n FROM audit WHERE action LIKE 'shift.%' AND action != 'shift.report'")[0].n, 0, 'a refused call left an audit row');
   // The ones allowed.
-  eq((await w.act('editor', parentRid, { action: 'accept', teCents: 100, cashCents: 0, collected: true })).status, 200, 'an editor accepts');
+  eq((await w.act('admin3', parentRid, { action: 'accept', teCents: 100, cashCents: 0, collected: true })).status, 200, 'an admin accepts');
   eq((await w.act('admin2', ridOf('viewer'), { action: 'return', reviewNote: 'Recount please' })).status, 200, 'an admin sends one back');
   eq((await w.act('viewer', ridOf('owner'), { action: 'accept', teCents: 100, cashCents: 0, collected: true })).status, 403, 'a viewer accepting a leader\'s');
   eq((await w.act('parent', parentRid, { action: 'withdraw' })).status, 409, 'withdrawing an accepted report');
@@ -15662,7 +15743,7 @@ atest('api shift reports: the pack\'s today is Eastern time, and the rule helper
     [14, -14, 8], 'whole days, across the clock change');
   ok(Number.isNaN(R.daysBetween('soon', '2026-10-01')), 'a date that is not a date');
   eq(['admin', 'editor', 'viewer', 'parent', 'pending', 'none'].map(R.canSubmitShiftReport), [true, true, true, true, false, false], 'who may send');
-  eq(['admin', 'editor', 'viewer', 'parent', 'pending', 'none'].map(R.canReviewShiftReport), [true, true, false, false, false, false], 'who may review');
+  eq(['admin', 'editor', 'viewer', 'parent', 'pending', 'none'].map(R.canReviewShiftReport), [true, false, false, false, false, false], 'who may review (an editor no longer: retired, 2026-10-02)');
   eq(['admin', 'editor', 'viewer', 'parent', 'pending', 'none'].map(R.canReadAllShiftReports), [true, true, true, false, false, false], 'who reads all');
   const view = { events: [{ kind: 'storefront', sfId: 's1', date: '2026-10-03', shifts: [{ blockId: 'b1' }] },
     { kind: 'meeting', sfId: 's2', date: '2026-10-03', shifts: [{ blockId: 'b2' }] }] };
@@ -15684,7 +15765,7 @@ atest('api shift reports: one report per block at a time — a second waits, an 
   eq([second.status, second.body.error, second.body.reason], [409, 'shift-reported', 'open'], 'a second report while one waits');
   eq((await w.report('parent')).body.reason, 'open', 'the same family sending twice');
   eq((await w.report('newbie', { blockId: 'b2' })).status, 200, 'another block is free');
-  eq((await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })).status, 200, 'accepted');
+  eq((await w.act('admin2', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })).status, 200, 'accepted');
   const third = await w.report('newbie');
   eq([third.status, third.body.reason], [409, 'accepted'], 'a report on an accepted block');
   // A leader reopens it; the family sends a corrected one.
@@ -15711,33 +15792,33 @@ atest('api shift reports: the sender edits or withdraws while it waits, a leader
   eq((await w.act('parent', rid, { action: 'withdraw', note: 'x' })).body.reason, 'unknown-field', 'a withdraw carrying figures');
   eq((await w.act('parent', rid, { action: 'delete' })).body.reason, 'action', 'an unknown action');
   // An accept names the figures the leader saw; the family's edit a moment earlier wins.
-  const stale = await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
+  const stale = await w.act('admin3', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
   eq([stale.status, stale.body.error, stale.body.status], [409, 'report-moved', 'submitted'], 'accepting figures the report no longer has');
-  eq((await w.act('editor', rid, { action: 'accept' })).body.reason, 'te-cents', 'an accept without figures');
-  eq((await w.act('editor', rid, { action: 'return' })).body.reason, 'review-note', 'sending back without a reason');
-  eq((await w.act('editor', rid, { action: 'return', reviewNote: '   ' })).body.reason, 'review-note', 'a blank reason');
+  eq((await w.act('admin3', rid, { action: 'accept' })).body.reason, 'te-cents', 'an accept without figures');
+  eq((await w.act('admin3', rid, { action: 'return' })).body.reason, 'review-note', 'sending back without a reason');
+  eq((await w.act('admin3', rid, { action: 'return', reviewNote: '   ' })).body.reason, 'review-note', 'a blank reason');
   // A leader's own report: another leader accepts it, never themselves.
-  const mine = (await w.report('editor', { blockId: 'b2' })).body.report.id;
-  const self = await w.act('editor', mine, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
+  const mine = (await w.report('admin3', { blockId: 'b2' })).body.report.id;
+  const self = await w.act('admin3', mine, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
   eq([self.status, self.body.error], [409, 'same-person'], 'an editor accepting their own report');
   eq(w.one('SELECT status FROM shift_reports WHERE id = ?', mine).status, 'submitted', 'their own report after the refusal');
   const other = await w.act('owner', mine, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true, reviewNote: 'Checked with the box' });
   eq([other.status, other.body.report.status, other.body.report.reviewedByName, other.body.report.reviewedByUid, other.body.report.submittedByUid],
-    [200, 'accepted', 'Test owner', 'uid-owner', 'uid-editor'], 'another leader accepts it');
+    [200, 'accepted', 'Test owner', 'uid-owner', 'uid-admin3'], 'another leader accepts it');
   // After an accept nothing but a leader's return moves it.
-  eq((await w.act('editor', mine, { action: 'withdraw' })).status, 409, 'the sender withdrawing an accepted report');
-  eq((await w.act('editor', mine, { action: 'edit', teCents: 1, cashCents: 1, attest: true })).status, 409, 'the sender editing an accepted report');
+  eq((await w.act('admin3', mine, { action: 'withdraw' })).status, 409, 'the sender withdrawing an accepted report');
+  eq((await w.act('admin3', mine, { action: 'edit', teCents: 1, cashCents: 1, attest: true })).status, 409, 'the sender editing an accepted report');
   eq((await w.act('admin2', mine, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })).status, 409, 'accepting twice');
   eq((await w.act('parent', rid, { action: 'withdraw' })).body.report.status, 'withdrawn', 'the parent withdraws theirs');
   eq((await w.act('parent', rid, { action: 'withdraw' })).body.error, 'report-moved', 'withdrawing twice');
-  eq((await w.act('editor', rid, { action: 'return', reviewNote: 'x' })).body.status, 'withdrawn', 'sending back a withdrawn report');
+  eq((await w.act('admin3', rid, { action: 'return', reviewNote: 'x' })).body.status, 'withdrawn', 'sending back a withdrawn report');
 });
 
 atest('api shift reports: every change leaves one audit row, in the same batch, and nothing else does', async () => {
   const w = await srWorld();
   const rid = (await w.report('parent')).body.report.id;
   await w.act('parent', rid, { action: 'edit', teCents: 200, cashCents: 300, attest: true });
-  await w.act('editor', rid, { action: 'accept', teCents: 200, cashCents: 300, collected: true });
+  await w.act('admin2', rid, { action: 'accept', teCents: 200, cashCents: 300, collected: true });
   await w.act('owner', rid, { action: 'return', reviewNote: 'Wrong block' });
   const rid2 = (await w.report('parent', { teCents: 5, cashCents: 6 })).body.report.id;
   await w.act('parent', rid2, { action: 'withdraw' });
@@ -15749,8 +15830,8 @@ atest('api shift reports: every change leaves one audit row, in the same batch, 
   eq(w.sql("SELECT uid, action, detail FROM audit WHERE action LIKE 'shift.%' ORDER BY id").map((r) => [r.uid, r.action, JSON.parse(r.detail)]), [
     ['uid-parent', 'shift.report', { report: rid, sfId: 'sfPast', blockId: 'b1', teCents: 12345, cashCents: 2500, salesCashCents: 0, needsConfirm: false }],
     ['uid-parent', 'shift.report.edit', { report: rid, teCents: 200, cashCents: 300, salesCashCents: 0, confirmationCleared: false }],
-    ['uid-editor', 'shift.accept', { report: rid, sfId: 'sfPast', blockId: 'b1', teCents: 200, cashCents: 300, salesCashCents: 0, submittedBy: 'uid-parent',
-      submittedByName: 'Test parent', reviewerName: 'Test editor', reviewNote: '', collected: true }],
+    ['uid-admin2', 'shift.accept', { report: rid, sfId: 'sfPast', blockId: 'b1', teCents: 200, cashCents: 300, salesCashCents: 0, submittedBy: 'uid-parent',
+      submittedByName: 'Test parent', reviewerName: 'Test admin2', reviewNote: '', collected: true }],
     ['uid-owner', 'shift.return', { report: rid, sfId: 'sfPast', blockId: 'b1', from: 'accepted', reason: 'Wrong block', reviewerName: 'Test owner' }],
     ['uid-parent', 'shift.report', { report: rid2, sfId: 'sfPast', blockId: 'b1', teCents: 5, cashCents: 6, salesCashCents: 0, needsConfirm: false }],
     ['uid-parent', 'shift.report.withdraw', { report: rid2 }]
@@ -15767,15 +15848,15 @@ atest('api shift reports: every change leaves one audit row, in the same batch, 
 
 atest('api shift reports: a parent reads their own in full and only the status of anyone else\'s; leaders read everything', async () => {
   const w = await srWorld();
-  w.db.raw.prepare("UPDATE members SET name = 'Sam Leaderson' WHERE uid = 'uid-editor'").run();
+  w.db.raw.prepare("UPDATE members SET name = 'Sam Leaderson' WHERE uid = 'uid-admin2'").run();
   w.db.raw.prepare("UPDATE members SET name = 'Nora Newfamily' WHERE uid = 'uid-newbie'").run();
   const mine = (await w.report('parent', { blockId: 'b1' })).body.report.id;
   const theirs = (await w.report('newbie', { blockId: 'b2', teCents: 77777, cashCents: 4321, note: 'Nora counted with Jo' })).body.report.id;
   await w.report('newbie', { blockId: 'b3', teCents: 55555, cashCents: 1111 });
   const old = (await w.report('newbie', { blockId: 'b4', teCents: 44444, cashCents: 2222 })).body.report.id;
   await w.act('newbie', old, { action: 'withdraw' });
-  await w.act('editor', theirs, { action: 'accept', teCents: 77777, cashCents: 4321, collected: true });
-  await w.act('editor', mine, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true, reviewNote: 'Thanks!' });
+  await w.act('admin2', theirs, { action: 'accept', teCents: 77777, cashCents: 4321, collected: true });
+  await w.act('admin2', mine, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true, reviewNote: 'Thanks!' });
   const p = await w.reports('parent');
   eq(p.status, 200, 'a parent\'s GET');
   eq(p.body.reports.length, 1, 'a parent sees one full report: their own');
@@ -15786,7 +15867,7 @@ atest('api shift reports: a parent reads their own in full and only the status o
   eq(p.body.others.sort((a, b) => a.blockId < b.blockId ? -1 : 1), [
     { sfId: 'sfPast', blockId: 'b2', status: 'accepted' }, { sfId: 'sfPast', blockId: 'b3', status: 'submitted' },
     { sfId: 'sfPast', blockId: 'b4', status: 'withdrawn' }], 'other families\' reports: block and status only');
-  for (const leak of ['77777', '55555', '44444', '4321', 'Nora', 'Newfamily', 'Jo', 'uid-newbie', theirs, 'Leaderson', 'uid-editor'])
+  for (const leak of ['77777', '55555', '44444', '4321', 'Nora', 'Newfamily', 'Jo', 'uid-newbie', theirs, 'Leaderson', 'uid-admin2'])
     // An amount as a JSON value (":4321"), so a timestamp or an id that happens to hold the digits is not a leak.
     ok(p.text.indexOf(/^\d+$/.test(leak) ? ':' + leak : leak) === -1, 'a parent\'s GET carries ' + leak);
   // The other family sees the parent's block the same way, and their own in full.
@@ -15798,12 +15879,12 @@ atest('api shift reports: a parent reads their own in full and only the status o
   eq((await w.reports('parent')).body.others.filter((o) => o.blockId === 'b4'), [{ sfId: 'sfPast', blockId: 'b4', status: 'submitted' }],
     'the block\'s current report, not its withdrawn one');
   // Leaders, viewers included: every report, every field the page needs.
-  for (const who of ['owner', 'editor', 'viewer']) {
+  for (const who of ['owner', 'admin2', 'viewer']) {
     const l = await w.reports(who);
     eq([l.status, l.body.reports.length, l.body.others], [200, 5, []], who + ' reads them all');
     const t = l.body.reports.find((r) => r.id === theirs);
     eq([t.submittedByName, t.submittedByUid, t.teCents, t.cashCents, t.note, t.reviewedByName, t.reviewedByUid, t.mine],
-      ['Nora Newfamily', 'uid-newbie', 77777, 4321, 'Nora counted with Jo', 'Sam Leaderson', 'uid-editor', false], who + ': a family\'s report in full');
+      ['Nora Newfamily', 'uid-newbie', 77777, 4321, 'Nora counted with Jo', 'Sam Leaderson', 'uid-admin2', false], who + ': a family\'s report in full');
     ok(l.text.indexOf('stamp') === -1, who + ': the stamp left the server');
   }
 });
@@ -15816,7 +15897,7 @@ atest('api shift reports: two changes at once — exactly one wins, and only the
     w = await srWorld();
     rid = (await w.report('parent')).body.report.id;
     holdBatches(w, 2, reverse);
-    [a, b] = await Promise.all([w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true }),
+    [a, b] = await Promise.all([w.act('admin2', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true }),
       w.act('owner', rid, { action: 'return', reviewNote: 'Recount' })]);
     eq([a.status, b.status].sort(), [200, 409], 'accept and send-back at once (' + reverse + '): ' + a.text + ' / ' + b.text);
     eq((a.status === 409 ? a : b).body.error, 'report-moved', 'the loser is told it moved');
@@ -15827,7 +15908,7 @@ atest('api shift reports: two changes at once — exactly one wins, and only the
   w = await srWorld();
   rid = (await w.report('parent')).body.report.id;
   holdBatches(w, 2);
-  [a, b] = await Promise.all([w.act('parent', rid, { action: 'withdraw' }), w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })]);
+  [a, b] = await Promise.all([w.act('parent', rid, { action: 'withdraw' }), w.act('admin2', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })]);
   eq([a.status, b.status].sort(), [200, 409], 'withdraw and accept at once');
   eq(w.sql("SELECT action FROM audit WHERE action IN ('shift.accept', 'shift.report.withdraw')").map((r) => r.action),
     [a.status === 200 ? 'shift.report.withdraw' : 'shift.accept'], 'only the winner is audited');
@@ -15837,7 +15918,7 @@ atest('api shift reports: two changes at once — exactly one wins, and only the
   rid = (await w.report('parent')).body.report.id;
   holdBatches(w, 2);
   [a, b] = await Promise.all([w.act('parent', rid, { action: 'edit', teCents: 1, cashCents: 2, attest: true }),
-    w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })]);
+    w.act('admin2', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })]);
   eq([a.status, b.status].sort(), [200, 409], 'edit and accept at once');
   // Whoever won, an accepted report holds exactly the figures the leader named.
   eq(w.one('SELECT status, te_cents FROM shift_reports WHERE id = ?', rid),
@@ -15923,16 +16004,16 @@ atest('S-5: a report carries the cash from sales still in hand — 0 by default,
   eq((await w.act('parent', rid, { action: 'edit', teCents: 9000, cashCents: 100, salesCashCents: 9001, attest: true })).body.reason,
     'sales-cash-cents', 'an edit over the Trail’s End amount');
   // An accept names it: a leader never signs for a figure they did not see.
-  const stale = await w.act('editor', rid, { action: 'accept', teCents: 9000, cashCents: 100, collected: true });
+  const stale = await w.act('admin2', rid, { action: 'accept', teCents: 9000, cashCents: 100, collected: true });
   eq([stale.status, stale.body.error], [409, 'report-moved'], 'an accept that leaves out cash the report says is still in hand');
-  eq((await w.act('editor', rid, { action: 'accept', teCents: 9000, cashCents: 100, salesCashCents: 1, collected: true })).body.error, 'report-moved',
+  eq((await w.act('admin2', rid, { action: 'accept', teCents: 9000, cashCents: 100, salesCashCents: 1, collected: true })).body.error, 'report-moved',
     'an accept naming a different amount');
-  eq((await w.act('editor', rid, { action: 'accept', teCents: 9000, cashCents: 100, salesCashCents: -1, collected: true })).body.reason, 'sales-cash-cents',
+  eq((await w.act('admin2', rid, { action: 'accept', teCents: 9000, cashCents: 100, salesCashCents: -1, collected: true })).body.reason, 'sales-cash-cents',
     'an accept naming a negative amount');
-  const acc = await w.act('editor', rid, { action: 'accept', teCents: 9000, cashCents: 100, salesCashCents: 1525, collected: true });
+  const acc = await w.act('admin2', rid, { action: 'accept', teCents: 9000, cashCents: 100, salesCashCents: 1525, collected: true });
   eq([acc.status, acc.body.report.status, acc.body.report.salesCashCents], [200, 'accepted', 1525], 'the accept');
   // A leader's accept of a report that has none still works as it did, naming nothing.
-  eq((await w.act('editor', plain.body.report.id, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })).status, 200, 'an accept of a report with none');
+  eq((await w.act('admin2', plain.body.report.id, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })).status, 200, 'an accept of a report with none');
   // The audit: the figure in every row that carries the figures.
   eq(w.audit('shift.report.edit').map((a) => JSON.parse(a.detail).salesCashCents), [1525], 'the edit’s audit');
   eq(w.audit('shift.accept').map((a) => JSON.parse(a.detail).salesCashCents), [1525, 0], 'the accepts’ audit');
@@ -15950,41 +16031,49 @@ atest('S-5: a leader records the cash from sales as collected or converted — a
   const w = await srWorld();
   const rid = (await w.report('parent', { blockId: 'b1', salesCashCents: 1525 })).body.report.id;
   const set = (who, body, id) => w.act(who, id || rid, Object.assign({ action: 'salescash' }, body));
-  eq((await set('editor', { outcome: 'collected', salesCashCents: 1525 })).body.error, 'report-moved', 'a report still waiting');
-  await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 1525, collected: true });
+  eq((await set('admin3', { outcome: 'collected', salesCashCents: 1525 })).body.error, 'report-moved', 'a report still waiting');
+  await w.act('admin3', rid, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 1525, collected: true });
   for (const who of ['viewer', 'parent', 'newbie', 'pending', 'stranger']) denied(await set(who, { outcome: 'collected', salesCashCents: 1525 }), who);
-  eq((await set('editor', { outcome: 'lost', salesCashCents: 1525 })).body.reason, 'outcome', 'an outcome that is not one of the two');
-  eq((await set('editor', { outcome: 'collected' })).body.reason, 'sales-cash-cents', 'no amount named');
-  eq((await set('editor', { outcome: 'collected', salesCashCents: 1525, note: 'x' })).body.reason, 'unknown-field', 'an unknown field');
-  eq((await set('editor', { outcome: 'collected', salesCashCents: 1500 })).body.error, 'report-moved', 'a different amount');
-  eq((await set('editor', { outcome: null, salesCashCents: 1525 })).body.error, 'report-moved', 'undoing nothing');
+  eq((await set('admin3', { outcome: 'lost', salesCashCents: 1525 })).body.reason, 'outcome', 'an outcome that is not one of the two');
+  eq((await set('admin3', { outcome: 'collected' })).body.reason, 'sales-cash-cents', 'no amount named');
+  eq((await set('admin3', { outcome: 'collected', salesCashCents: 1525, note: 'x' })).body.reason, 'unknown-field', 'an unknown field');
+  eq((await set('admin3', { outcome: 'collected', salesCashCents: 1500 })).body.error, 'report-moved', 'a different amount');
+  eq((await set('admin3', { outcome: null, salesCashCents: 1525, reviewNote: 'x' })).body.error, 'report-moved', 'undoing nothing');
   const none = (await w.report('parent', { blockId: 'b2' })).body.report.id;
-  await w.act('editor', none, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
-  eq((await set('editor', { outcome: 'collected', salesCashCents: 1 }, none)).body.reason, 'no-sales-cash', 'a report with no cash from sales');
+  await w.act('admin3', none, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
+  eq((await set('admin3', { outcome: 'collected', salesCashCents: 1 }, none)).body.reason, 'no-sales-cash', 'a report with no cash from sales');
   eq(w.sql("SELECT count(*) AS n FROM audit WHERE action LIKE 'shift.salescash.%'")[0].n, 0, 'a refused call left an audit row');
   // Collected, then undone, then converted.
-  const c = await set('editor', { outcome: 'collected', salesCashCents: 1525 });
+  const c = await set('admin3', { outcome: 'collected', salesCashCents: 1525 });
   eq([c.status, c.body.report.salesCashOutcome, c.body.report.salesCashByName, c.body.report.salesCashByUid, typeof c.body.report.salesCashAt],
-    [200, 'collected', 'Test editor', 'uid-editor', 'number'], 'collected');
+    [200, 'collected', 'Test admin3', 'uid-admin3', 'number'], 'collected');
   eq((await set('owner', { outcome: 'converted', salesCashCents: 1525 })).body.error, 'report-moved', 'a second outcome over the first');
-  const u = await set('owner', { outcome: null, salesCashCents: 1525 });
-  eq([u.status, u.body.report.salesCashOutcome, u.body.report.salesCashByName], [200, null, null], 'undone');
+  // Reviews of 045e7ac: an undo needs a reason, as a send-back does; recording one takes none.
+  for (const [what, note] of [['no reason', undefined], ['a blank one', '  \n '], ['one too long', 'x'.repeat(301)], ['not text', 7]]) {
+    eq((await set('owner', Object.assign({ outcome: null, salesCashCents: 1525 }, note === undefined ? {} : { reviewNote: note }))).body.reason, 'review-note', 'an undo with ' + what);
+  }
+  eq((await set('admin2', { outcome: 'converted', salesCashCents: 1525, reviewNote: 'x' })).body.reason, 'review-note', 'a reason on a record');
+  eq(w.sql("SELECT count(*) AS n FROM audit WHERE action LIKE 'shift.salescash.%'")[0].n, 1, 'a refused undo was audited');
+  const u = await set('owner', { outcome: null, salesCashCents: 1525, reviewNote: '  Counted\ttwice  ' });
+  eq([u.status, u.body.report.salesCashOutcome, u.body.report.salesCashByName, u.body.report.salesCashUndoNote, u.body.report.salesCashUndoByName, typeof u.body.report.salesCashUndoAt],
+    [200, null, null, 'Counted twice', 'Test owner', 'number'], 'undone, and why, by whom, when');
   eq((await set('admin2', { outcome: 'converted', salesCashCents: 1525 })).body.report.salesCashOutcome, 'converted', 'converted');
   eq(w.sql("SELECT uid, action, detail FROM audit WHERE action LIKE 'shift.salescash.%' ORDER BY id").map((a) => [a.uid, a.action, JSON.parse(a.detail)]), [
-    ['uid-editor', 'shift.salescash.collected', { report: rid, sfId: 'sfPast', blockId: 'b1', salesCashCents: 1525, byName: 'Test editor' }],
+    ['uid-admin3', 'shift.salescash.collected', { report: rid, sfId: 'sfPast', blockId: 'b1', salesCashCents: 1525, byName: 'Test admin3' }],
     ['uid-owner', 'shift.salescash.undo', { report: rid, sfId: 'sfPast', blockId: 'b1', salesCashCents: 1525, byName: 'Test owner',
-      was: { outcome: 'collected', byName: 'Test editor', at: c.body.report.salesCashAt } }],
+      was: { outcome: 'collected', byName: 'Test admin3', at: c.body.report.salesCashAt }, reason: 'Counted twice' }],
     ['uid-admin2', 'shift.salescash.converted', { report: rid, sfId: 'sfPast', blockId: 'b1', salesCashCents: 1525, byName: 'Test admin2' }]], 'the audit');
   // A parent's own report never says who collected it or when; a leader's does.
   const mine = (await w.reports('parent')).body.reports.find((r) => r.id === rid);
-  ok(!('salesCashOutcome' in mine) && !('salesCashByName' in mine), 'a parent reads the custody record');
+  ok(!('salesCashOutcome' in mine) && !('salesCashByName' in mine) && !('salesCashUndoNote' in mine), 'a parent reads the custody record');
+  eq((await w.reports('viewer')).body.reports.find((r) => r.id === rid).salesCashUndoNote, 'Counted twice', 'recording it again keeps the last undo\'s reason');
   eq((await w.reports('viewer')).body.reports.find((r) => r.id === rid).salesCashOutcome, 'converted', 'a viewer reads it');
   // Two leaders at once: one records it, the other is told it moved, one audit row.
   const v = await srWorld();
   const vr = (await v.report('parent', { salesCashCents: 700 })).body.report.id;
-  await v.act('editor', vr, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 700, collected: true });
+  await v.act('admin3', vr, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 700, collected: true });
   holdBatches(v, 2);
-  const [a, b] = await Promise.all([v.act('editor', vr, { action: 'salescash', outcome: 'collected', salesCashCents: 700 }),
+  const [a, b] = await Promise.all([v.act('admin3', vr, { action: 'salescash', outcome: 'collected', salesCashCents: 700 }),
     v.act('owner', vr, { action: 'salescash', outcome: 'converted', salesCashCents: 700 })]);
   eq([[a.status, b.status].sort(), v.sql("SELECT count(*) AS n FROM audit WHERE action LIKE 'shift.salescash.%'")[0].n], [[200, 409], 1], 'two at once');
   // The table: no outcome without cash, a name and a time; only the two outcomes.
@@ -16086,6 +16175,1307 @@ test('api functions/ is plain modules: relative imports only, routes only under 
 });
 
 /* ================================================================
+   Position-based access, stage 1 (2026-10-01; the approved plan). functions/_lib/access.js holds
+   one table: the positions, the sections, what each position may do with each section, and
+   which section owns each key of the pack record. index.html carries a byte-identical copy
+   between the same markers. The server refuses a save that changes a key the caller can't edit.
+   ================================================================ */
+
+const ACCESS_SRC = readFileSync(join(ROOT, 'functions/_lib/access.js'), 'utf8');
+function accessCopy(text, where) {
+  const b = text.split('/*ACCESS-BEGIN*/'), e = text.split('/*ACCESS-END*/');
+  eq([b.length, e.length], [2, 2], where + ': the ACCESS markers, once each');
+  return text.slice(text.indexOf('/*ACCESS-BEGIN*/') + 16, text.indexOf('/*ACCESS-END*/'));
+}
+const ACCESS_JSON = () => JSON.parse(accessCopy(ACCESS_SRC, 'access.js'));
+
+test('positions: the access table in index.html is a byte-identical copy of the one in functions/_lib/access.js', () => {
+  const server = accessCopy(ACCESS_SRC, 'access.js'), page = accessCopy(SCRIPT, 'index.html');
+  ok(server === page, 'the two ACCESS tables differ: change both or neither');
+  const t = JSON.parse(server);
+  eq(Object.keys(t), ['positions', 'sections', 'denMeetingFields', 'dens', 'denPositions', 'access', 'keyOwner', 'goneOwner', 'bookLogOwner', 'actions', 'blockReportFields'], 'the table\'s parts');
+  ok(/^  var ACCESS_TABLE = \/\*ACCESS-BEGIN\*\/\{$/m.test(SCRIPT), 'index.html: var ACCESS_TABLE = /*ACCESS-BEGIN*/{');
+  ok(/^export const ACCESS_TABLE = \/\*ACCESS-BEGIN\*\/\{$/m.test(ACCESS_SRC), 'access.js: export const ACCESS_TABLE = /*ACCESS-BEGIN*/{');
+});
+
+test('positions: every position and every section is in the table, and the sections are the page\'s own', () => {
+  const t = ACCESS_JSON();
+  const ids = t.positions.map((p) => p.id);
+  eq(ids, ['cubmaster', 'asstcub', 'chair', 'treasurer', 'secretary', 'kernel', 'advancement', 'activities', 'membership', 'outdoors',
+    'derbychair', 'comms', 'trainer', 'denleader', 'asstden', 'parent'], 'the positions');
+  // Position ids are the page's job ids (Keith, 2026-10-02): every job but the Chartered Org Rep
+  // (made an admin, never a position), in JOBS' order, then Parent. Ids only: a job is still a lens.
+  const jobs = [...slice('JOBS').matchAll(/\{ id: '([a-z]+)',\s+label: '([^']*)'/g)].map((m) => [m[1], m[2]]);
+  ok(jobs.length >= 16, 'too few JOBS read');
+  eq(ids, jobs.map((j) => j[0]).filter((j) => j !== 'cor').concat(['parent']), 'the positions vs JOBS');
+  eq(t.positions.slice(0, -1).map((p) => p.label), jobs.filter((j) => j[0] !== 'cor').map((j) => j[1]), 'the labels vs JOBS');
+  ok(t.positions.every((p) => typeof p.label === 'string' && p.label), 'a position with no label');
+  eq(Object.keys(t.access), ids, 'access has one row per position, in order');
+  const levels = ['edit', 'read', 'hidden'];
+  for (const p of ids) {
+    const a = t.access[p];
+    eq(Object.keys(a), ['default', 'edit', 'hidden'], p + ': its row');
+    ok(levels.indexOf(a.default) >= 0, p + ': default level ' + a.default);
+    a.edit.concat(a.hidden).forEach((s) => ok(t.sections.indexOf(s) >= 0, p + ' names a section that is not one: ' + s));
+    ok(a.edit.every((s) => a.hidden.indexOf(s) === -1), p + ': a section both edited and hidden');
+  }
+  // WORKSPACES' sections (index.html), with Camping's trips as one section, and the two sub-sections.
+  const ws = slice('WORKSPACES');
+  const pageSecs = [...ws.matchAll(/\{ id: '([a-z]+)', label: '[^']*' \}/g)].map((m) => m[1]);
+  ok(pageSecs.length >= 19, 'too few WORKSPACES sections read: ' + pageSecs);
+  eq(t.sections.slice().sort(), pageSecs.concat(['camping', 'attendance', 'calendar.denmeeting', 'deposits']).sort(), 'the sections vs WORKSPACES');
+  eq(t.denMeetingFields, ['adventure', 'denAdv', 'note', 'noteInternal', 'advOffers'], 'what a den leader may change on a den meeting');
+  // Own-den scope (Keith, 2026-10-02): the dens a den leader may be given are the page's.
+  eq(t.dens, JSON.parse('[' + /var DENS = \[([^\]]*)\];/.exec(SCRIPT)[1].replace(/'/g, '"') + ']'), 'the table\'s dens are the page\'s DENS');
+  eq(t.denPositions, ['denleader', 'asstden'], 'the positions that lead a den');
+});
+
+test('positions: every key of the pack record, and every kind of deletion mark, has an owner', () => {
+  const t = ACCESS_JSON();
+  const owners = t.sections.concat(['admin', 'shared']);
+  for (const k of Object.keys(t.keyOwner)) {
+    const o = t.keyOwner[k];
+    (Array.isArray(o) ? o : [o]).forEach((s) => ok(owners.indexOf(s) >= 0, k + ' is owned by ' + s + ', which is no section'));
+    ok(!Array.isArray(o) || o.every((s) => s !== 'admin' && s !== 'shared'), k + ': a bucket inside a list');
+  }
+  Object.keys(t.goneOwner).forEach((g) => ok(t.sections.indexOf(t.goneOwner[g]) >= 0, 'gone.' + g + ' is owned by ' + t.goneOwner[g]));
+  ok(!('gone' in t.keyOwner), 'gone is split by sub-key, not owned whole');
+  const owned = (k) => k === 'gone' || Object.prototype.hasOwnProperty.call(t.keyOwner, k);
+  // 1. freshState's keys, and normalizeState's, as they run.
+  const ctx = sandbox(NORMALIZE_FNS.concat(['freshState']));
+  const fresh = ctx.freshState();
+  const after = ctx.normalizeState(JSON.parse(JSON.stringify(preMigrationState())));
+  for (const k of Object.keys(fresh).concat(Object.keys(after))) ok(owned(k), 'state.' + k + ' has no owning section (keyOwner)');
+  // 2. Every key normalizeState names (d.x), and every state.x anywhere in the page.
+  const named = new Set([...slice('normalizeState').matchAll(/\bd\.([A-Za-z_]\w*)/g)].map((m) => m[1])
+    .concat([...SCRIPT.matchAll(/\bstate\.([A-Za-z_]\w*)/g)].map((m) => m[1])));
+  ok(named.size > 40, 'too few state keys read: ' + named.size);
+  for (const k of named) ok(owned(k), 'state.' + k + ' (named in the page) has no owning section');
+  // 3. Every deletion log (freshGone, and whatever normalizeState keeps).
+  const goneLogs = Object.keys(sandbox(['freshGone']).freshGone());
+  ok(goneLogs.length >= 8, 'too few gone logs');
+  goneLogs.concat(Object.keys(after.gone || {})).forEach((g) => ok(Object.prototype.hasOwnProperty.call(t.goneOwner, g), 'gone.' + g + ' has no owner'));
+  // 4. The admin-only and shared buckets, as the plan has them.
+  eq(Object.keys(t.keyOwner).filter((k) => t.keyOwner[k] === 'admin').sort(), ['archives', 'closedBooks', 'closedGone', 'densAdvancedSummary', 'densAdvancedYear'], 'the admin-only keys (Advance dens: Keith, 2026-10-02)');
+  eq(Object.keys(t.keyOwner).filter((k) => t.keyOwner[k] === 'shared').sort(),
+    ['balooNoticeDismissed', 'fmt', 'movedNoticeDismissed', 'rev', 'startHereDismissed', 'syncLog', 'version'], 'the shared keys');
+  eq([t.keyOwner.statements, t.keyOwner.ledger, t.keyOwner.events, t.keyOwner.attendance, t.goneOwner.ledger, t.goneOwner.scouts],
+    ['ledger', 'ledger', 'calendar', 'attendance', 'ledger', 'roster'], 'a few owners that matter');
+  // 5. Every pack setting the ledger's log names on the book (logSettingEdit and the two inputs that log by hand)
+  // has an owner: a key of the record, or bookLogOwner for a name that is not one.
+  Object.keys(t.bookLogOwner).forEach((k) => ok(t.sections.indexOf(t.bookLogOwner[k]) >= 0 && !(k in t.keyOwner), 'bookLogOwner.' + k));
+  const logged = [...SCRIPT.matchAll(/logSettingEdit\('(\w+)', [^;]*?(?:, '(\w+)')?\);/g)].map((m) => m[2] || m[1])
+    .concat([...SCRIPT.matchAll(/logLedger\('edit', 'book', \{ f: \{ (\w+):/g)].map((m) => m[1]));
+  ok(logged.length >= 10, 'too few logged settings read: ' + logged);
+  logged.forEach((k) => ok(k in t.keyOwner || k in t.bookLogOwner, 'the book log names ' + k + ', which has no owner'));
+});
+
+test('positions: no access decision reads JOBS or myJobs (a leader edits their own job record; a job is a lens)', () => {
+  ok(!/\bJOBS\b|myJobs|hasJob|jobLabel/.test(codeOnly(ACCESS_SRC).replace(/^\/\/.*$/gm, '')), 'functions/_lib/access.js reads a job');
+  ok(!/\bJOBS\b|myJobs|hasJob/.test(accessCopy(SCRIPT, 'index.html')), 'the page\'s ACCESS table names a job');
+  // Nothing on the server knows the page's jobs at all.
+  const files = readdirSync(join(ROOT, 'functions'), { recursive: true }).filter((f) => /\.js$/.test(f));
+  for (const f of files) ok(!/\bJOBS\b|myJobs|hasJob/.test(codeOnly(readFileSync(join(ROOT, 'functions', f), 'utf8'))), f + ' reads a job');
+  // And no page function that will read the table (sectionAccess and friends, once they exist) reads one.
+  const helpers = ['sectionAccess', 'canEditSection', 'canSeeSection', 'canDo', 'canEdit', 'accessFor', 'actionsFor', 'myAccess', 'readOnlySay'];
+  for (const n of helpers) {
+    ok(new RegExp(`^  function ${n}\\(`, 'm').test(SCRIPT), n + ' is missing');
+    ok(!/\bJOBS\b|myJobs|hasJob|leaderForUser|\.jobs\b/.test(codeOnly(slice(n))), n + ' reads a job');
+  }
+});
+
+// Client step 2 (2026-10-02) — the page's access helpers decide as the server does: accessFor and
+// actionsFor are access.js's effectiveAccess and effectiveActions on the page's copy of the table.
+atest('positions: the page\'s sectionAccess, canEditSection, canSeeSection and canDo agree with the server, per role, backend and position', async () => {
+  await apiSetup();
+  const x = sandbox(['ACCESS_TABLE', 'ACCESS_LEVELS', 'arrOf', 'accessFor', 'actionsFor']);
+  const J = (v) => JSON.parse(JSON.stringify(v));
+  const A = API.access;
+  const cases = [['admin', []], ['editor', []], ['viewer', []], ['parent', ['parent']], ['pending', []], ['none', []], ['leader', []], ['leader', ['bogus']]]
+    .concat(POSITION_IDS.map((p) => ['leader', [p]]))
+    .concat([['leader', ['denleader', 'treasurer']], ['leader', ['kernel', 'secretary', 'comms']], ['leader', ['activities', 'advancement']], ['leader', ['parent', 'trainer']]]);
+  for (const [role, held] of cases) {
+    eq(J(x.accessFor(role, held)), J(A.effectiveAccess(role, held)), 'access: ' + role + ' ' + held.join('+'));
+    eq(J(x.actionsFor(role, held)), J(A.effectiveActions(role, held)), 'actions: ' + role + ' ' + held.join('+'));
+  }
+  // myAccess: what it decides from.
+  const c = vm.createContext({});
+  vm.runInContext(`var sync = { user: null, accountsUnavailable: false, myRole: null, myPositions: [], backend: null };`, c);
+  vm.runInContext(['ACCESS_TABLE', 'ACCESS_LEVELS', 'arrOf', 'accessFor', 'actionsFor', 'accountsInForce', 'apiAccounts', 'accessMemo', 'myAccess', 'sectionAccess',
+    'canEditSection', 'canSeeSection', 'canDo', 'canEdit', 'SECTION_SAY', 'readOnlySay'].map(decl).join('\n'), c);
+  const run = (js) => vm.runInContext(js, c);
+  const as = (o) => run(`sync.user = ${o.user === false ? 'null' : '{ uid: "u1" }'}; sync.myRole = ${JSON.stringify(o.role || null)};
+    sync.myPositions = ${JSON.stringify(o.positions || [])}; sync.backend = ${o.api ? '{ startSession: function () {} }' : '{}'};`);
+  const look = () => JSON.parse(run(`JSON.stringify([canEdit(), canEditSection('ledger'), canSeeSection('ledger'), canEditSection('calendar.denmeeting'),
+    sectionAccess('a-camping-trip-id'), canDo('shiftVerify'), canDo('shiftUndo')])`));
+  as({ user: false });
+  eq(look(), [true, true, true, true, 'edit', true, true], 'nobody signed in: everything, as always');
+  as({ role: 'editor' });
+  eq(look(), [true, true, true, true, 'read', true, true], 'Firestore editor: everything but the admin-only, and reviews shifts as before');
+  as({ role: 'viewer' });
+  eq(look(), [false, false, true, false, 'read', false, false], 'Firestore viewer: reads');
+  as({ role: 'parent' });
+  eq(look(), [false, false, false, false, 'hidden', false, false], 'Firestore parent: none of it');
+  as({ role: 'editor', api: true });
+  eq(look(), [false, false, true, false, 'read', false, false], 'the pack\'s server: a retired editor reads, edits nothing');
+  as({ role: 'leader', api: true, positions: ['denleader'] });
+  eq(look(), [true, false, false, true, 'read', true, false], 'a Den Leader: den meetings yes, the ledger hidden, verifies shifts');
+  as({ role: 'leader', api: true, positions: ['treasurer'] });
+  eq(look(), [true, true, true, false, 'read', true, true], 'the Treasurer');
+  as({ role: 'leader', api: true, positions: ['comms'] });
+  eq(look(), [false, false, false, false, 'read', false, false], 'Communications: reads, edits nothing');
+  as({ role: 'admin', api: true });
+  eq(look(), [true, true, true, true, 'edit', true, true], 'an admin');
+  // The words (the treasurer's review of 045e7ac, 2).
+  as({ role: 'leader', api: true, positions: ['kernel'] });
+  eq([run("readOnlySay('ledger')"), run("readOnlySay('sharing')"), run("readOnlySay('')")],
+    ['Your positions don’t let you change the ledger. Ask the Treasurer or a pack admin.', 'Your positions don’t let you change sharing. Ask a pack admin.',
+      'Your positions don’t let you change this. Ask a pack admin.'], 'a leader');
+  as({ role: 'viewer', api: true });
+  eq(run("readOnlySay('ledger')"), 'Your account needs a pack position before you can change anything. Ask a pack admin.', 'a retired viewer');
+  as({ role: 'viewer' });
+  eq(run("readOnlySay('ledger')"), 'Read-only access — ask a pack admin to make you an editor.', 'Firestore keeps its roles');
+  ok(!/make you an editor/.test(SCRIPT.replace(/function readOnlySay[\s\S]*?\n  \}/, '')), 'the old toast, outside readOnlySay (Firestore\'s words)');
+  // Every section the table knows has words.
+  eq(Object.keys(vm.runInContext('SECTION_SAY', c)).sort(), ACCESS_JSON().sections.slice().sort(), 'SECTION_SAY covers the table\'s sections');
+});
+
+atest('positions: the table is the plan\'s matrix, assistants are their principals, and a parent sees nothing', async () => {
+  await apiSetup();
+  const A = API.access;
+  // The approved plan's matrix (2026-10-01), as letters, plus the owner's later decisions: the den
+  // meeting sub-section (a den leader picks the adventure and writes the notes) and attendance.
+  // The five later committee positions (Keith, 2026-10-02) are the last five letters: Secretary
+  // edits the roster, Activities the calendar, the Derby Chair the derby; Communications and the
+  // Trainer read; like the other chairs, all five are kept out of the ledger, dues and fundraisers.
+  const cols = ['chair', 'cubmaster', 'denleader', 'treasurer', 'kernel', 'advancement', 'outdoors', 'membership',
+    'secretary', 'activities', 'derbychair', 'comms', 'trainer'];
+  const plan = {
+    home: 'RRRRRRRR' + 'RRRRR', calendar: 'EERRRRRR' + 'RERRR', 'calendar.denmeeting': 'EEERRRRR' + 'RERRR', attendance: 'EEERRRRR' + 'RRRRR',
+    denplan: 'REERRRRR' + 'RRRRR', derby: 'EERRRRRR' + 'RRERR', camping: 'RERRRRER' + 'RRRRR', roster: 'RRRRRRRE' + 'ERRRR', advancement: 'REERRERR' + 'RRRRR',
+    joining: 'ERRRRRRE' + 'RRRRR', storefronts: 'RRRRERRR' + 'RRRRR', totals: 'RRRRERRR' + 'RRRRR', rewards: 'RRRRERRR' + 'RRRRR',
+    inventory: 'RRHREHHH' + 'HHHHH', council: 'RRHREHHH' + 'HHHHH',
+    budget: 'ERRERRRR' + 'RRRRR', ledger: 'ERHERHHH' + 'HHHHH', dues: 'ERHERHHH' + 'HHHHH', fundraisers: 'ERHERHHH' + 'HHHHH',
+    // Deposits (Keith, 2026-10-02): the treasurer, the chair and the kernel; hidden where the ledger is.
+    deposits: 'ERHEEHHH' + 'HHHHH',
+    sharing: 'RRRRRRRR' + 'RRRRR', people: 'ERHRRRRR' + 'RRRRR', season: 'EERRRRRR' + 'RRRRR'
+  };
+  eq(cols.concat(['asstcub', 'asstden', 'parent']).sort(), A.POSITIONS.slice().sort(), 'the matrix covers every position');
+  const L = { E: 'edit', R: 'read', H: 'hidden' };
+  eq(Object.keys(plan).sort(), A.SECTIONS.slice().sort(), 'the plan covers every section');
+  for (const s of A.SECTIONS) cols.forEach((p, i) => eq(A.ACCESS[p][s], L[plan[s][i]], `${p} / ${s}`));
+  eq(A.ACCESS.asstcub, A.ACCESS.cubmaster, 'the Assistant Cubmaster is the Cubmaster');
+  eq(A.ACCESS.asstden, A.ACCESS.denleader, 'the Assistant Den Leader is the Den Leader');
+  ok(A.SECTIONS.every((s) => A.ACCESS.parent[s] === 'hidden'), 'a parent position sees a section');
+  eq(Object.keys(A.ACCESS), A.POSITIONS, 'ACCESS has every position');
+  // The actions (Keith, 2026-10-02). Verify a shift report and record cash collected: the leaders at the
+  // booth, never a parent. Undo an accept: the kernel, the chair, the treasurer (and the accepter and an
+  // admin, which the endpoint adds).
+  eq(Object.keys(ACCESS_JSON().actions), ['shiftVerify', 'shiftUndo'], 'the actions');
+  eq(ACCESS_JSON().actions.shiftVerify.slice().sort(), ['asstcub', 'asstden', 'chair', 'cubmaster', 'denleader', 'kernel', 'treasurer'], 'shiftVerify');
+  eq(ACCESS_JSON().actions.shiftUndo.slice().sort(), ['chair', 'kernel', 'treasurer'], 'shiftUndo');
+  const acts = (role, ps) => A.effectiveActions(role, ps);
+  eq([acts('admin', []), acts('leader', ['denleader']), acts('leader', ['kernel']), acts('leader', ['comms', 'parent']), acts('editor', ['kernel']), acts('parent', ['parent'])],
+    [{ shiftVerify: true, shiftUndo: true }, { shiftVerify: true, shiftUndo: false }, { shiftVerify: true, shiftUndo: true }, { shiftVerify: false, shiftUndo: false },
+      { shiftVerify: false, shiftUndo: false }, { shiftVerify: false, shiftUndo: false }], 'effectiveActions');
+});
+
+atest('positions: effectiveAccess — admin edits all, a retired editor or viewer only reads, a leader gets the most of their positions', async () => {
+  await apiSetup();
+  const A = API.access, all = A.SECTIONS.concat(['admin', 'shared']);
+  const every = (acc, lvl) => all.every((s) => acc[s] === lvl);
+  ok(every(A.effectiveAccess('admin', []), 'edit'), 'admin');
+  // Retired (Keith, 2026-10-02): an editor reads everything and edits nothing, as a viewer does.
+  ok(every(A.effectiveAccess('editor', ['kernel']), 'read'), 'editor (retired; positions ignored)');
+  ok(every(A.effectiveAccess('viewer', ['chair']), 'read'), 'viewer (positions ignored)');
+  for (const r of ['parent', 'pending', 'none', '', undefined, 'Admin']) ok(every(A.effectiveAccess(r, ['chair']), 'hidden'), 'role ' + r);
+  // The most permissive of several positions.
+  const two = A.effectiveAccess('leader', ['denleader', 'treasurer']);
+  eq([two.ledger, two.inventory, two.attendance, two.calendar, two['calendar.denmeeting'], two.roster, two.shared, two.admin],
+    ['edit', 'read', 'edit', 'read', 'edit', 'read', 'edit', 'read'], 'Den Leader + Treasurer (hidden and read is read)');
+  eq(A.effectiveAccess('leader', ['denleader', 'kernel']).inventory, 'edit', 'hidden loses to edit');
+  eq(A.effectiveAccess('leader', ['denleader', 'advancement']).inventory, 'hidden', 'hidden and hidden');
+  // No positions, or none this file knows: nothing to edit, nothing to see but the buckets.
+  for (const ps of [[], null, ['cor'], ['outdoor'], ['__proto__', 'constructor'], [1, {}]]) {
+    const e = A.effectiveAccess('leader', ps);
+    ok(A.SECTIONS.every((s) => e[s] === 'hidden') && e.shared === 'read' && e.admin === 'read', 'leader with ' + JSON.stringify(ps));
+  }
+  eq(A.effectiveAccess('leader', ['parent']).home, 'hidden', 'a leader whose only position is Parent');
+  // Full calendar carries the den meeting sub-section with it.
+  ok(A.POSITIONS.every((p) => A.ACCESS[p].calendar !== 'edit' || A.ACCESS[p]['calendar.denmeeting'] === 'edit'), 'calendar edit without den meetings');
+  // canEditOwner: a list is any of; a bucket only by name.
+  const k = A.effectiveAccess('leader', ['kernel']);
+  eq([A.canEditOwner(k, ['totals', 'budget']), A.canEditOwner(k, 'budget'), A.canEditOwner(k, 'admin'), A.canEditOwner(k, 'shared'), A.canEditOwner(k, 'nope')],
+    [true, false, false, true, false], 'canEditOwner');
+  eq([A.ownerOfKey('archives'), A.ownerOfKey('somethingNew'), A.ownerOfKey('constructor'), A.ownerOfKey('__proto__'), A.ownerOfGone('ledger'), A.ownerOfGone('later')],
+    ['admin', 'admin', 'admin', 'admin', 'ledger', 'admin'], 'unknown keys fail closed');
+});
+
+atest('positions: sameJson compares objects by key whatever the order, arrays in order, and does not recurse', async () => {
+  await apiSetup();
+  const S = API.access.sameJson;
+  ok(S({ a: 1, b: [1, { c: 2, d: null }] }, JSON.parse('{"b":[1,{"d":null,"c":2}],"a":1}')), 'reordered keys');
+  ok(!S([1, 2], [2, 1]), 'an array reordered is a change');
+  ok(!S({ a: 1 }, { a: 1, b: null }), 'an added key');
+  ok(!S({ a: [] }, { a: {} }) && !S({ a: null }, { a: {} }) && !S('1', 1) && !S(0, false), 'types');
+  ok(!S(JSON.parse('{"__proto__":1}'), {}), 'a __proto__ key is a key');
+  let deepA = 0, deepB = 0;
+  for (let i = 0; i < 200000; i++) { deepA = [deepA]; deepB = [deepB]; }
+  ok(S(deepA, deepB), 'two records nested 200,000 deep');
+  deepB = [deepB];
+  ok(!S(deepA, deepB), 'one level more');
+});
+
+/* ---- positions: the accounts that hold them (migration 0005, members, invites, session) ---- */
+
+// One made-up leader account per position (lead_chair, lead_denleader, …), seeded straight into the tables.
+const POSITION_IDS = ['cubmaster', 'asstcub', 'chair', 'treasurer', 'secretary', 'kernel', 'advancement', 'activities', 'membership', 'outdoors',
+  'derbychair', 'comms', 'trainer', 'denleader', 'asstden', 'parent'];
+POSITION_IDS.concat(['multi', 'none']).forEach((p) => { PEOPLE['lead_' + p] = ['uid-lead-' + p, 'lead-' + p + '@example.com']; });
+// `dens`: the dens a Den Leader or Assistant Den Leader position leads (own-den scope, 2026-10-02);
+// ['Wolf'] when not given, GUARD_BASE's den meeting's den.
+function seedLeader(w, who, positions, role, dens) {
+  w.db.raw.prepare('INSERT INTO members (pack_id, uid, role, name, email, join_code, added_at) VALUES (?, ?, ?, ?, ?, NULL, ?)')
+    .run(API_PACK, PEOPLE[who][0], role || 'leader', 'Test ' + who, PEOPLE[who][1], Date.now());
+  for (const p of positions) {
+    w.db.raw.prepare('INSERT INTO member_positions (pack_id, uid, position, dens) VALUES (?, ?, ?, ?)')
+      .run(API_PACK, PEOPLE[who][0], p, p === 'denleader' || p === 'asstden' ? JSON.stringify(dens || ['Wolf']) : null);
+  }
+  return w;
+}
+const heldBy = (w, who) => w.sql('SELECT position FROM member_positions WHERE pack_id = ? AND uid = ? ORDER BY position', API_PACK, PEOPLE[who][0]).map((r) => r.position);
+
+test('positions: migration 0005 names the same positions as access.js, and keeps every role the API knows', () => {
+  const sql = readFileSync(join(ROOT, 'migrations/0005_positions.sql'), 'utf8');
+  const lists = [...sql.matchAll(/position IN \(([^)]*)\)/g)].map((m) => [...m[1].matchAll(/'([a-z]+)'/g)].map((x) => x[1])).filter((l) => l.indexOf('cubmaster') !== -1);   // the dens CHECKs name the two den positions
+  eq(lists.length, 2, 'two position CHECKs');
+  lists.forEach((l) => eq(l, ACCESS_JSON().positions.map((p) => p.id), 'a position CHECK vs access.js'));
+  const roles = [...sql.matchAll(/role IN \(([^)]*)\)/g)].map((m) => [...m[1].matchAll(/'([a-z]+)'/g)].map((x) => x[1]));
+  const RULES = readFileSync(join(ROOT, 'functions/_lib/rules.js'), 'utf8');
+  const list = (name) => [...new RegExp(`export const ${name} = \\[([^\\]]*)\\];`).exec(RULES)[1].matchAll(/'([^']*)'/g)].map((x) => x[1]);
+  eq(roles, [list('ROLES'), list('INVITE_ROW_ROLES')], 'the members and invites role CHECKs vs rules.js');
+  ok(list('LEADER_ROLES').indexOf('leader') >= 0 && list('INVITE_ROW_ROLES').indexOf('admin') === -1, 'leader is a leader; no invite makes an admin');
+  // editor and viewer are retired (2026-10-02): still legal rows, never a new invite or a role set by name.
+  eq([list('RETIRED_ROLES'), list('INVITE_ROLES'), list('SETTABLE_ROLES')], [['editor', 'viewer'], ['leader', 'parent'], ['admin', 'parent', 'pending']], 'the retired roles');
+  ok(list('INVITE_ROLES').every((r) => list('INVITE_ROW_ROLES').indexOf(r) >= 0), 'a new invite role the table refuses');
+});
+
+const refused0 = (db, q, ...a) => { try { db.prepare(q).run(...a); return false; } catch (e) { return true; } };
+atest('positions: migration 0005 keeps every member, invite, shift report and index, and the CHECKs take leader', async () => {
+  sqliteMod = sqliteMod || await loadSqlite();
+  const db = new sqliteMod.DatabaseSync(':memory:');
+  db.exec('PRAGMA foreign_keys = ON;');
+  const before = MIGRATION_FILES.filter((f) => f < '0005');
+  eq(before, ['0001_init.sql', '0002_deployment.sql', '0003_shift_reports.sql', '0004_shift_report_sales_cash.sql'], 'the migrations before 0005');
+  eq(MIGRATION_FILES.indexOf('0005_positions.sql'), 4, 'positions come after the shift reports');
+  before.forEach((f) => db.exec(readFileSync(join(ROOT, 'migrations', f), 'utf8')));
+  db.exec("INSERT INTO packs (id, created_at) VALUES ('p1', 1), ('p2', 2)");
+  const roles = ['admin', 'editor', 'viewer', 'parent', 'pending'];
+  roles.forEach((r, i) => db.prepare('INSERT INTO members (pack_id, uid, role, name, email, join_code, added_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(i % 2 ? 'p2' : 'p1', 'u' + i, r, 'Test ' + r, r + '@example.com', r === 'pending' ? 'Code1' : null, 100 + i));
+  ['editor', 'viewer', 'parent'].forEach((r, i) => db.prepare('INSERT INTO invites (pack_id, email, role, invited_by_uid, invited_at) VALUES (?, ?, ?, ?, ?)')
+    .run('p1', 'inv' + i + '@example.com', r, 'u0', 200 + i));
+  db.exec("INSERT INTO audit (pack_id, at, uid, action, detail) VALUES ('p1', 1, 'u0', 'member.role', '{}')");
+  db.exec("INSERT INTO pack_state (pack_id, rev, json, device, updated_at) VALUES ('p1', 7, '{\"scouts\":[]}', 'd', 1)");
+  // Shift reports from 0003/0004: one waiting, one accepted with cash collected. The rebuild of
+  // members must not touch them (nothing references members, but the test says so).
+  db.exec("INSERT INTO shift_reports (id, pack_id, sf_id, block_id, te_cents, cash_cents, submitted_by_uid, submitted_by_name, submitted_at, updated_at, status, stamp) VALUES ('r1', 'p1', 'sf1', 'b1', 1000, 200, 'u3', 'Test parent', 10, 10, 'submitted', 's1')");
+  db.exec("INSERT INTO shift_reports (id, pack_id, sf_id, block_id, te_cents, cash_cents, submitted_by_uid, submitted_by_name, submitted_at, updated_at, status, reviewed_by_uid, reviewed_by_name, reviewed_at, accepted_by_uid, accepted_by_name, accepted_at, verified_by_leader, sales_cash_cents, sales_cash_by_uid, sales_cash_at, sales_cash_outcome, stamp) VALUES ('r2', 'p1', 'sf1', 'b2', 3000, 0, 'u3', 'Test parent', 11, 12, 'accepted', 'u0', 'Test admin', 12, 'u0', 'Test admin', 12, 1, 500, 'u0', 13, 'collected', 's2')");
+  ok(db.prepare('SELECT count(*) AS n FROM shift_reports').get().n === 2, 'the shift reports were seeded');
+  const dump = () => ['members', 'invites', 'audit', 'pack_state', 'packs', 'shift_reports'].map((t) => db.prepare('SELECT * FROM ' + t + ' ORDER BY 1, 2').all().map((r) => Object.assign({}, r)));
+  const was = dump();
+  db.exec(readFileSync(join(ROOT, 'migrations/0005_positions.sql'), 'utf8'));
+  // Every row as it was; the shift reports gain the three columns of a cash record's last undo (empty).
+  was[5].forEach((r) => Object.assign(r, { sales_cash_undo_note: null, sales_cash_undo_by_name: null, sales_cash_undo_at: null }));
+  eq(dump(), was, 'every row after the migration');
+  ok(refused0(db, "UPDATE shift_reports SET sales_cash_undo_note = '' WHERE id = 'r2'") && refused0(db, "UPDATE shift_reports SET sales_cash_undo_note = ? WHERE id = 'r2'", 'x'.repeat(301)) &&
+    !refused0(db, "UPDATE shift_reports SET sales_cash_undo_note = 'Counted twice', sales_cash_undo_by_name = 'Test admin', sales_cash_undo_at = 14 WHERE id = 'r2'"),
+    'an undo\'s reason: some words, at most 300 characters');
+  eq(db.prepare('PRAGMA foreign_key_check').all().length, 0, 'foreign keys');
+  const idx = db.prepare("SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'index' AND name = 'members_by_role'").get();
+  ok(idx && idx.tbl_name === 'members' && /\(pack_id, role\)/.test(idx.sql), 'members_by_role');
+  ok(!db.prepare("SELECT 1 FROM sqlite_master WHERE name IN ('members_new', 'invites_new')").get(), 'a rebuild table left behind');
+  const fk = (t) => db.prepare('PRAGMA foreign_key_list(' + t + ')').all().map((r) => r.table + '.' + r.to);
+  eq([fk('members'), fk('invites'), fk('member_positions'), fk('invite_positions')], [['packs.id'], ['packs.id'], ['packs.id'], ['packs.id']], 'foreign keys to packs');
+  const refused = (q, ...a) => { try { db.prepare(q).run(...a); return false; } catch (e) { return true; } };
+  ok(!refused("INSERT INTO members (pack_id, uid, role, added_at) VALUES ('p1', 'uL', 'leader', 1)"), 'a leader member');
+  ok(refused("INSERT INTO members (pack_id, uid, role, added_at) VALUES ('p1', 'uX', 'boss', 1)"), 'a role that is not one');
+  ok(!refused("INSERT INTO invites (pack_id, email, role, invited_by_uid, invited_at) VALUES ('p1', 'l@example.com', 'leader', 'u0', 1)"), 'a leader invite');
+  ok(refused("INSERT INTO invites (pack_id, email, role, invited_by_uid, invited_at) VALUES ('p1', 'a@example.com', 'admin', 'u0', 1)"), 'an admin invite');
+  ok(refused("INSERT INTO members (pack_id, uid, role, added_at) VALUES ('nope', 'uY', 'viewer', 1)"), 'a member of no pack');
+});
+
+atest('positions: the tables hold a position only for a leader, and it never outlives the role, the account or the invite', async () => {
+  const w = await (await apiWorld()).seed({ editor: 'editor', parent: 'parent' });
+  seedLeader(w, 'lead_multi', ['denleader', 'treasurer']);
+  const refused = (q, ...a) => { try { w.db.raw.prepare(q).run(...a); return false; } catch (e) { return /leader/.test(e.message); } };
+  const ins = 'INSERT INTO member_positions (pack_id, uid, position) VALUES (?, ?, ?)';
+  ok(refused(ins, API_PACK, PEOPLE.editor[0], 'chair'), 'a position on an editor');
+  ok(refused(ins, API_PACK, PEOPLE.parent[0], 'chair'), 'a leader position on a parent');
+  ok(!refused(ins, API_PACK, PEOPLE.parent[0], 'parent'), 'Parent on a parent');
+  ok(refused(ins, API_PACK, 'uid-nobody', 'chair'), 'a position on no account');
+  ok((() => { try { w.db.raw.prepare(ins).run(API_PACK, PEOPLE.lead_multi[0], 'boss'); return false; } catch (e) { return true; } })(), 'a position that is not one');
+  w.db.raw.prepare("UPDATE members SET name = 'Renamed' WHERE uid = ?").run(PEOPLE.lead_multi[0]);
+  eq(heldBy(w, 'lead_multi'), ['denleader', 'treasurer'], 'a name change keeps them');
+  w.db.raw.prepare("UPDATE members SET role = 'viewer' WHERE uid = ?").run(PEOPLE.lead_multi[0]);
+  eq(heldBy(w, 'lead_multi'), [], 'a role change takes them');
+  w.db.raw.prepare("UPDATE members SET role = 'leader' WHERE uid = ?").run(PEOPLE.lead_multi[0]);
+  w.db.raw.prepare(ins).run(API_PACK, PEOPLE.lead_multi[0], 'kernel');
+  w.db.raw.prepare('DELETE FROM members WHERE uid = ?').run(PEOPLE.lead_multi[0]);
+  eq(w.sql('SELECT count(*) AS n FROM member_positions WHERE uid = ?', PEOPLE.lead_multi[0])[0].n, 0, 'removing the account takes them');
+  // Invites the same way.
+  w.db.raw.prepare("INSERT INTO invites (pack_id, email, role, invited_by_uid, invited_at) VALUES (?, 'l@example.com', 'leader', 'uid-owner', 1)").run(API_PACK);
+  w.db.raw.prepare("INSERT INTO invites (pack_id, email, role, invited_by_uid, invited_at) VALUES (?, 'v@example.com', 'viewer', 'uid-owner', 1)").run(API_PACK);
+  const iins = 'INSERT INTO invite_positions (pack_id, email, position) VALUES (?, ?, ?)';
+  ok(refused(iins, API_PACK, 'v@example.com', 'chair'), 'a position on a viewer invite');
+  ok(!refused(iins, API_PACK, 'l@example.com', 'chair'), 'a position on a leader invite');
+  w.db.raw.prepare("DELETE FROM invites WHERE email = 'l@example.com'").run();
+  eq(w.sql('SELECT count(*) AS n FROM invite_positions')[0].n, 0, 'revoking the invite takes them');
+});
+
+atest('positions: an admin gives an account its positions (it becomes a leader, or a parent for Parent alone), audited; nobody else can', async () => {
+  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent', pending: 'pending' });
+  const give = (who, target, positions, extra) => w.call(who, 'PATCH', 'member', { uid: PEOPLE[target][0] }, { body: Object.assign({ positions }, extra || {}) });
+  const r = await give('owner', 'editor', ['treasurer', 'denleader']);
+  eq([r.status, r.body.role, r.body.positions], [200, 'leader', ['treasurer', 'denleader']], 'an editor given two positions (in the table\'s order)');
+  eq(heldBy(w, 'editor'), ['denleader', 'treasurer'], 'what the table holds');
+  const a = w.audit('member.positions');
+  eq(a.length, 1, 'one audit row');
+  eq([a[0].uid, JSON.parse(a[0].detail)], ['uid-owner', { target: 'uid-editor', from: { role: 'editor', positions: [] }, to: { role: 'leader', positions: ['treasurer', 'denleader'] } }], 'the audit row');
+  // Again: replaced, not added to.
+  eq((await give('admin2', 'editor', ['kernel'])).body.positions, ['kernel'], 'replaced');
+  eq(heldBy(w, 'editor'), ['kernel'], 'replaced in the table');
+  // Parent alone makes a parent; a pending request can be approved straight into positions.
+  eq([(await give('owner', 'parent', ['parent'])).body.role, heldBy(w, 'parent')], ['parent', ['parent']], 'Parent alone');
+  eq((await give('owner', 'pending', ['membership', 'parent'])).body.role, 'leader', 'a pending request approved as Membership Chair (and a parent)');
+  // The account itself, and the members list, say so; GET is unchanged for one with none.
+  eq((await w.call('editor', 'GET', 'member', { uid: 'uid-editor' })).body.positions, ['kernel'], 'GET your own');
+  const list = (await w.call('viewer', 'GET', 'members')).body.members;
+  eq(list.filter((m) => m.positions).map((m) => [m.uid, m.positions]),
+    [['uid-editor', ['kernel']], ['uid-parent', ['parent']], ['uid-pending', ['membership', 'parent']]], 'the members list');
+  ok(!('positions' in list.filter((m) => m.uid === 'uid-viewer')[0]), 'an account with none has no positions field');
+  // Nobody but an admin: not for someone else, not for yourself.
+  denied(await give('editor', 'viewer', ['chair']), 'a leader giving someone positions');
+  denied(await give('viewer', 'viewer', ['chair']), 'a viewer giving themselves positions');
+  denied(await give('editor', 'editor', ['chair', 'treasurer']), 'a leader giving themselves more');
+  eq(heldBy(w, 'editor'), ['kernel'], 'after the refusals');
+  // A bad list is a 400; so is a role with it.
+  for (const bad of [[], 'chair', ['boss'], ['chair', 'chair'], [1], null, POSITION_IDS.concat(['chair'])]) {
+    eq((await give('owner', 'viewer', bad)).status, 400, 'positions ' + JSON.stringify(bad));
+  }
+  eq((await give('owner', 'viewer', ['chair'], { role: 'leader' })).body.reason, 'role-and-positions', 'role and positions together');
+  eq(w.one('SELECT role FROM members WHERE uid = ?', 'uid-viewer').role, 'viewer', 'after the 400s');
+  // A role change takes the positions with it.
+  eq((await w.call('owner', 'PATCH', 'member', { uid: 'uid-editor' }, { body: { role: 'parent' } })).body.positions, undefined, 'made a parent');
+  eq(heldBy(w, 'editor'), [], 'the positions went with the role');
+  // The last admin cannot be given positions (they would stop being an admin); nothing is written.
+  const one = await (await apiWorld()).seed({});
+  const last = await one.call('owner', 'PATCH', 'member', { uid: 'uid-owner' }, { body: { positions: ['chair'] } });
+  eq([last.status, last.body.error], [409, 'last-admin'], 'the last admin given positions');
+  eq([one.one('SELECT role FROM members WHERE uid = ?', 'uid-owner').role, heldBy(one, 'owner'), one.audit('member.positions').length], ['admin', [], 0], 'after');
+  // Removing the account takes them.
+  await w.call('owner', 'DELETE', 'member', { uid: 'uid-pending' });
+  eq(heldBy(w, 'pending'), [], 'removed with the account');
+});
+
+// Own-den scope (Keith, 2026-10-02): an admin names the dens a Den Leader leads, with the positions; the
+// account, the members list, an invite and the session carry them; nobody else sets them.
+atest('positions: an admin names the dens a den leader leads; the invite, the session and the members list carry them; nobody else can', async () => {
+  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', viewer: 'viewer' });
+  const give = (who, target, body) => w.call(who, 'PATCH', 'member', { uid: PEOPLE[target][0] }, { body });
+  const r = await give('owner', 'editor', { positions: ['denleader', 'treasurer'], dens: ['Bear', 'Wolf'] });
+  eq([r.status, r.body.positions, r.body.dens], [200, ['treasurer', 'denleader'], ['Wolf', 'Bear']], 'a den leader of two dens (in DENS order)');
+  eq(w.sql('SELECT position, dens FROM member_positions WHERE uid = ? ORDER BY position', 'uid-editor').map((x) => [x.position, x.dens]),
+    [['denleader', '["Wolf","Bear"]'], ['treasurer', null]], 'stored on the den position only');
+  eq(JSON.parse(w.audit('member.positions')[0].detail).to, { role: 'leader', positions: ['treasurer', 'denleader'], dens: ['Wolf', 'Bear'] }, 'audited');
+  eq((await w.call('viewer', 'GET', 'members')).body.members.filter((m) => m.uid === 'uid-editor')[0].dens, ['Wolf', 'Bear'], 'the members list');
+  for (const [what, body] of [['a den that is not one', { positions: ['denleader'], dens: ['Dragons'] }], ['a den twice', { positions: ['denleader'], dens: ['Wolf', 'Wolf'] }],
+    ['dens with no den position', { positions: ['treasurer'], dens: ['Wolf'] }], ['dens with no positions', { dens: ['Wolf'] }], ['not a list', { positions: ['denleader'], dens: 'Wolf' }]]) {
+    eq((await give('owner', 'viewer', body)).body.reason, 'dens', what);
+  }
+  denied(await give('editor', 'editor', { positions: ['denleader'], dens: ['Lion'] }), 'a den leader naming their own dens');
+  denied(await give('viewer', 'editor', { dens: ['Lion'] }), 'someone else\'s dens, by a non-admin');
+  eq((await give('owner', 'editor', { positions: ['denleader'] })).body.dens, undefined, 'given again with none: a den leader of no den');
+  // An invite carries them, and signing in on it hands them over.
+  const inv = await w.call('owner', 'PUT', 'invite', { email: PEOPLE.newbie[1] }, { body: { positions: ['asstden'], dens: ['Tiger'] } });
+  eq([inv.status, inv.body.dens], [200, ['Tiger']], 'an invite with a den');
+  eq((await w.call('owner', 'PUT', 'invite', { email: 'x@example.com' }, { body: { positions: ['kernel'], dens: ['Tiger'] } })).body.reason, 'dens', 'an invite with dens and no den position');
+  denied(await w.call('editor', 'PUT', 'invite', { email: 'y@example.com' }, { body: { positions: ['denleader'], dens: ['Tiger'] } }), 'a non-admin\'s invite with dens');
+  const s = await w.session('newbie');
+  eq([s.body.member.positions, s.body.member.dens], [['asstden'], ['Tiger']], 'the session says them');
+});
+
+atest('positions: an invite can carry positions, and signing in on it makes a leader holding exactly those', async () => {
+  const w = await (await apiWorld()).seed({ editor: 'editor' });
+  const inv = (who, body, email) => w.call(who, 'PUT', 'invite', { email: email || PEOPLE.newbie[1] }, { body });
+  const r = await inv('owner', { positions: ['denleader', 'cubmaster'] });
+  eq([r.status, r.body.role, r.body.positions], [200, 'leader', ['cubmaster', 'denleader']], 'a leader invite');
+  eq(JSON.parse(w.audit('invite.write')[0].detail), { email: PEOPLE.newbie[1], role: 'leader', positions: ['cubmaster', 'denleader'] }, 'its audit row');
+  eq((await w.call('owner', 'GET', 'invites')).body.invites.map((v) => v.positions), [['cubmaster', 'denleader']], 'the invites list');
+  eq((await w.call('newbie', 'GET', 'invite', { email: PEOPLE.newbie[1] })).body.positions, ['cubmaster', 'denleader'], 'the invitee reads it');
+  // Written again: replaced.
+  eq((await inv('owner', { positions: ['denleader'], role: 'leader' })).body.positions, ['denleader'], 'replaced, role agreeing');
+  // Refused: a leader invite with no positions, a role that disagrees, a bad list, a non-admin.
+  eq((await inv('owner', { role: 'leader' })).body.reason, 'positions', 'a leader invite without positions');
+  eq((await inv('owner', { role: 'viewer', positions: ['chair'] })).body.reason, 'role-and-positions', 'a role that disagrees');
+  eq((await inv('owner', { positions: ['boss'] })).status, 400, 'a position that is not one');
+  denied(await inv('editor', { positions: ['chair'] }), 'an editor inviting a leader');
+  denied(await inv('editor', { role: 'leader' }), 'an editor inviting a leader (role only)');
+  eq((await w.call('owner', 'GET', 'invite', { email: PEOPLE.newbie[1] })).body.positions, ['denleader'], 'after the refusals');
+  // A parent invite is as it was (no positions field). Editor and viewer are retired: no new invite as either.
+  const plain = await inv('owner', { role: 'parent' }, 'plain@example.com');
+  eq([plain.status, plain.body.positions], [200, undefined], 'a parent invite');
+  for (const r of ['editor', 'viewer']) denied(await inv('owner', { role: r }, 'retired@example.com'), 'a new ' + r + ' invite');
+  // The Chartered Org Rep is not a position (they are made an admin), nor is a misspelt one.
+  for (const p of ['cor', 'outdoor']) eq((await inv('owner', { positions: [p] }, 'retired@example.com')).body.reason, 'positions', 'an invite as ' + p);
+  // Used: the account is a leader with exactly the invite's positions, and the invite is gone with them.
+  const s = await w.session('newbie');
+  eq([s.body.role, s.body.member.positions], ['leader', ['denleader']], 'signing in on it');
+  eq(heldBy(w, 'newbie'), ['denleader'], 'member_positions');
+  eq([w.sql('SELECT count(*) AS n FROM invites WHERE email = ?', PEOPLE.newbie[1])[0].n, w.sql('SELECT count(*) AS n FROM invite_positions')[0].n], [0, 0], 'the invite used up');
+  // A leader reads what leaders read.
+  w.state(3, { scouts: [] });
+  for (const what of ['pack', 'members', 'view', 'rev', 'join']) ok([200].indexOf((await w.call('newbie', 'GET', what)).status) >= 0, 'a leader GET ' + what);
+  eq((await w.call('newbie', 'GET', 'rev')).body.rev, 3, 'a leader gets the rev');
+  denied(await w.call('newbie', 'GET', 'invites'), 'a leader listing invites');
+  // Revoking an invite takes its positions.
+  await inv('owner', { positions: ['chair'] }, 'later@example.com');
+  await w.call('owner', 'DELETE', 'invite', { email: 'later@example.com' });
+  eq(w.sql('SELECT count(*) AS n FROM invite_positions')[0].n, 0, 'revoked');
+});
+
+atest('positions: the parent view stays always published — a leader who edits any section writes it, one who only reads does not, and the allowlist holds for both', async () => {
+  // Owner decision, 2026-10-01: canWriteView = admin, or a leader with Edit on a section (the
+  // editor went with its retirement, 2026-10-02: Communications and the Trainer read, so they don't).
+  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent' });
+  POSITION_IDS.filter((p) => p !== 'parent').forEach((p) => seedLeader(w, 'lead_' + p, [p]));
+  seedLeader(w, 'lead_none', []);
+  const put = (who, body) => w.call(who, 'PUT', 'view', null, { body: body || { packName: 'Test Pack', contact: 'by ' + who } });
+  const readOnly = ['comms', 'trainer', 'parent'];
+  for (const who of ['owner'].concat(POSITION_IDS.filter((p) => readOnly.indexOf(p) === -1).map((p) => 'lead_' + p))) eq((await put(who)).status, 200, who + ' PUT view');
+  for (const who of ['lead_none', 'lead_comms', 'lead_trainer', 'editor', 'viewer', 'parent']) denied(await put(who), who + ' PUT view');
+  eq((await put('lead_denleader', { packName: 'x', budget: {} })).body.reason, 'view-key', 'a leader sending a key the view never has');
+  eq((await put('lead_kernel', { packName: 'x', events: [{ noteInternal: 'x' }] })).body.reason, 'view-note-internal', 'a leader sending a leaders-only note');
+  ok(API.rules.canWriteView('leader', ['denleader']) && !API.rules.canWriteView('leader', []) && !API.rules.canWriteView('leader', ['parent'])
+    && !API.rules.canWriteView('viewer', ['chair']) && !API.rules.canWriteView('editor', []) && !API.rules.canWriteView('leader', ['comms', 'trainer']), 'canWriteView');
+});
+
+/* ---- positions: the server's section guard on the pack PUT (step 4) ---- */
+
+// A pack world with one leader per position (lead_<id>) and the record `base` stored at rev 1; g.put(who, next)
+// saves `next` over it as `who` and puts `base` back afterwards, so every call is one change from the same copy.
+async function guardWorld(base) {
+  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent' });
+  POSITION_IDS.filter((p) => p !== 'parent').forEach((p) => seedLeader(w, 'lead_' + p, [p]));
+  const reset = () => { w.db.raw.prepare('DELETE FROM pack_state').run(); w.state(1, base); };
+  reset();
+  w.put = async (who, next) => {
+    const r = await w.call(who, 'PUT', 'pack', null, { body: next, headers: { 'if-match': '1', 'x-pack-device': 'dev-' + who } });
+    reset();
+    return r;
+  };
+  return w;
+}
+const GUARD_BASE = () => JSON.parse(JSON.stringify({
+  version: 3, rev: 1, packName: 'Test Pack', scouts: [{ id: 's1', name: 'Ada' }], leaders: [{ id: 'l1', name: 'Test Leader' }],
+  events: [{ id: 'e1', kind: 'den', date: '2026-10-06', time: '18:30', den: 'Wolf', adventure: 'a1', note: '', noteInternal: '', packAdv: 'p1' },
+    { id: 'e2', kind: 'pack', date: '2026-10-20', title: 'Pack meeting', note: '' }],
+  attendance: {}, advNotes: {}, derby: { cars: [] }, camping: { trips: [] }, advancement: {}, onboarding: {}, storefronts: [], entries: [],
+  rewardTiers: [], inventory: { products: [] }, popcornCouncil: {}, budget: { activities: [] }, ledger: [{ id: 'L1', amountCents: 500 }],
+  charges: [], fundraisers: [], densAdvancedYear: '', commissionPct: 25, depositDays: 7,
+  book: { openingCents: 0 }, ledgerLog: [], statements: [], syncLog: [], archives: [], closedBooks: [],
+  gone: { ledger: {}, entries: {} }
+}));
+// One change to a key, of whatever kind the key holds.
+function guardChange(rec, k) {
+  const v = rec[k];
+  if (Array.isArray(v)) v.push({ id: 'new-' + k });
+  else if (v && typeof v === 'object') v['new-' + k] = { x: 1 };
+  else if (typeof v === 'number') rec[k] = v + 1;
+  else rec[k] = String(v || '') + ' (changed)';
+  return rec;
+}
+const SECTION_403 = (r, sections, what) => {
+  eq([r.status, r.body.code, r.body.reason, r.body.sections], [403, 'permission-denied', 'section', sections], what + ' (' + r.text.slice(0, 160) + ')');
+};
+
+atest('positions guard: every position × section — a save changing one key lands exactly where the table says Edit', async () => {
+  const w = await guardWorld(GUARD_BASE());
+  const t = ACCESS_JSON(), A = API.access;
+  // A key of the record for each section that owns one alone (home and the den meeting sub-section own none).
+  const keyOf = {};
+  Object.keys(t.keyOwner).forEach((k) => { const o = t.keyOwner[k]; if (typeof o === 'string' && A.SECTIONS.indexOf(o) >= 0 && !keyOf[o]) keyOf[o] = k; });
+  // 'season' owns none since Advance dens became an admin's (Keith, 2026-10-02): its keys are 'admin'.
+  eq(A.SECTIONS.filter((s) => !keyOf[s]), ['home', 'calendar.denmeeting', 'season'], 'sections with no key of their own');
+  let n = 0;
+  for (const p of POSITION_IDS.filter((x) => x !== 'parent')) {
+    for (const s of Object.keys(keyOf)) {
+      const k = keyOf[s];
+      if (!(k in GUARD_BASE())) continue;
+      const r = await w.put('lead_' + p, guardChange(GUARD_BASE(), k));
+      if (A.ACCESS[p][s] === 'edit') eq(r.status, 200, `${p} changing ${k} (${s}): ${r.text.slice(0, 120)}`);
+      else SECTION_403(r, [s], `${p} changing ${k} (${s})`);
+      n += 1;
+    }
+  }
+  ok(n >= 15 * 18, 'too few cases: ' + n);
+  // Both owners of a shared setting: a kernel (totals) and a treasurer (budget) set the commission; a den leader cannot.
+  for (const [who, st] of [['lead_kernel', 200], ['lead_treasurer', 200], ['lead_chair', 200], ['lead_denleader', 403]]) {
+    eq((await w.put(who, Object.assign(GUARD_BASE(), { commissionPct: 30 }))).status, st, who + ' setting the commission');
+  }
+  // An admin changes anything; a retired editor or viewer, nothing (the plain 403: they may not write at all).
+  eq((await w.put('owner', guardChange(guardChange(GUARD_BASE(), 'ledger'), 'archives'))).status, 200, 'an admin');
+  for (const who of ['editor', 'viewer', 'parent']) denied(await w.put(who, guardChange(GUARD_BASE(), 'scouts')), who + ' saving');
+});
+
+atest('positions guard: unchanged, reordered and empty-for-missing keys are no change; the admin-only and unknown keys are an admin\'s; gone is split', async () => {
+  const w = await guardWorld(GUARD_BASE());
+  const same = GUARD_BASE();
+  eq((await w.put('lead_comms', same)).status, 200, 'a read-only leader saving the record unchanged');
+  // Keys in another order, at every level.
+  const deep = {}; Object.keys(same).reverse().forEach((k) => { deep[k] = same[k]; });
+  deep.events = same.events.map((e) => { const o = {}; Object.keys(e).reverse().forEach((k) => { o[k] = e[k]; }); return o; });
+  eq((await w.put('lead_denleader', deep)).status, 200, 'every key in another order');
+  // A key missing on one side and empty on the other.
+  const fewer = GUARD_BASE(); delete fewer.charges; delete fewer.syncLog; fewer.newEmptyThing = [];
+  eq((await w.put('lead_denleader', fewer)).status, 200, 'an empty key dropped, a new empty one');
+  // An array reordered is a change (the ledger's order is its own).
+  const ro = GUARD_BASE(); ro.events.reverse();
+  SECTION_403(await w.put('lead_treasurer', ro), ['calendar'], 'the calendar reordered by a treasurer');
+  // Admin-only: archives, closedBooks, closedGone — and any key nobody planned for.
+  for (const k of ['archives', 'closedBooks']) SECTION_403(await w.put('lead_chair', guardChange(GUARD_BASE(), k)), ['admin'], 'a chair changing ' + k);
+  SECTION_403(await w.put('lead_treasurer', Object.assign(GUARD_BASE(), { closedGone: [{ year: '2025-26', archiveId: 'a' }] })), ['admin'], 'closedGone');
+  SECTION_403(await w.put('lead_chair', Object.assign(GUARD_BASE(), { somethingNew: 1 })), ['admin'], 'an unknown key');
+  SECTION_403(await w.put('lead_chair', Object.assign(GUARD_BASE(), { __proto__x: 1, constructor: { a: 1 } })), ['admin'], 'constructor as a key');
+  // gone, by sub-key: a kernel marks a sale deleted, never a ledger row.
+  const gl = GUARD_BASE(); gl.gone.ledger.L1 = 5;
+  SECTION_403(await w.put('lead_kernel', gl), ['ledger'], 'gone.ledger from a kernel');
+  eq((await w.put('lead_treasurer', gl)).status, 200, 'gone.ledger from a treasurer');
+  const ge = GUARD_BASE(); ge.gone.entries.x = 5;
+  eq((await w.put('lead_kernel', ge)).status, 200, 'gone.entries from a kernel');
+  const gx = GUARD_BASE(); gx.gone.later = { x: 1 };
+  SECTION_403(await w.put('lead_chair', gx), ['admin'], 'a gone sub-key nobody planned for');
+  // Two sections at once: both named, in the table's order.
+  SECTION_403(await w.put('lead_denleader', guardChange(guardChange(GUARD_BASE(), 'ledger'), 'scouts')), ['roster', 'ledger'], 'two refused at once');
+  // A stale save is the 409 it always was, before anything is compared.
+  const stale = await w.call('lead_comms', 'PUT', 'pack', null, { body: guardChange(GUARD_BASE(), 'ledger'), headers: { 'if-match': '0' } });
+  eq([stale.status, stale.body.code], [409, 'aborted'], 'a stale save');
+});
+
+atest('positions guard: a den leader changes a den meeting\'s adventure and notes, and nothing else on the calendar', async () => {
+  const w = await guardWorld(GUARD_BASE());
+  const ev = (f) => { const r = GUARD_BASE(); f(r.events); return r; };
+  for (const [what, f] of [['adventure', (e) => { e[0].adventure = 'a2'; }], ['note', (e) => { e[0].note = 'Bring string'; }],
+    ['noteInternal', (e) => { e[0].noteInternal = 'Leaders only'; }], ['denAdv', (e) => { e[0].denAdv = { Bear: 'b1' }; }],
+    ['events reordered', (e) => { e.reverse(); e[1].adventure = 'a3'; }]]) {
+    for (const who of ['lead_denleader', 'lead_asstden', 'lead_cubmaster', 'lead_activities']) eq((await w.put(who, ev(f))).status, 200, who + ': ' + what);
+    SECTION_403(await w.put('lead_advancement', ev(f)), ['calendar'], 'an advancement chair: ' + what);
+  }
+  for (const [what, f] of [['the date', (e) => { e[0].date = '2026-10-07'; }], ['the time', (e) => { e[0].time = '19:00'; }],
+    ['the den', (e) => { e[0].den = 'Bear'; }], ['the pack\'s pick', (e) => { e[0].packAdv = 'p2'; }], ['a new event', (e) => { e.push({ id: 'e3', kind: 'den', date: '2026-11-01' }); }],
+    ['an event removed', (e) => { e.pop(); }], ['a pack meeting\'s note', (e) => { e[1].note = 'x'; }], ['made a den meeting', (e) => { e[1].kind = 'den'; e[1].adventure = 'a1'; }],
+    ['a note that is not text', (e) => { e[0].note = { x: 1 }; }], ['an adventure field removed', (e) => { delete e[0].adventure; e[0].note = 'x'; e[0].date = '2026-10-08'; }]]) {
+    SECTION_403(await w.put('lead_denleader', ev(f)), ['calendar'], 'a den leader: ' + what);
+    eq((await w.put('lead_cubmaster', ev(f))).status, 200, 'the Cubmaster: ' + what);
+  }
+  // The den meeting sub-section is not the rest of the calendar either: RSVPs and meetings stay the Cubmaster's.
+  SECTION_403(await w.put('lead_denleader', Object.assign(GUARD_BASE(), { rsvps: { e1: { s1: 'yes' } } })), ['calendar'], 'a den leader writing an RSVP');
+  eq((await w.put('lead_denleader', Object.assign(GUARD_BASE(), { attendance: { e1: { s1: true } } }))).status, 200, 'a den leader taking attendance');
+});
+
+atest('positions guard: a den leader edits only their own dens\' meetings — on an All-dens night only their den\'s line; adventures offered are held to their shape', async () => {
+  const base = () => { const r = GUARD_BASE(); r.events.push({ id: 'e3', kind: 'den', date: '2026-10-07', den: 'Bear', adventure: 'b1', note: '', noteInternal: '' },
+    { id: 'e4', kind: 'den', date: '2026-10-08', den: '', adventure: '', note: '', noteInternal: '', packAdv: 'req:1', denAdv: { Bear: 'b2' } },
+    { id: 'e5', kind: 'activity', date: '2026-10-09', title: 'Campout', note: '' }); return r; };
+  const w = await guardWorld(base());
+  const ev = (f) => { const r = base(); f(r.events.reduce((m, e) => { m[e.id] = e; return m; }, {})); return r; };
+  const put = (who, f) => w.put(who, ev(f));
+  eq((await put('lead_denleader', (e) => { e.e1.note = 'Bring string'; })).status, 200, 'their own den (Wolf)');
+  SECTION_403(await put('lead_denleader', (e) => { e.e3.note = 'Bring string'; }), ['calendar'], 'another den\'s meeting (Bear)');
+  SECTION_403(await put('lead_denleader', (e) => { e.e3.adventure = 'b9'; }), ['calendar'], 'another den\'s adventure');
+  eq((await put('lead_denleader', (e) => { e.e4.denAdv = { Bear: 'b2', Wolf: 'w3' }; })).status, 200, 'All dens: their own den\'s line');
+  eq((await put('lead_denleader', (e) => { e.e4.denAdv = { Bear: 'b2', Wolf: false }; })).status, 200, 'All dens: their den not at this meeting');
+  SECTION_403(await put('lead_denleader', (e) => { e.e4.denAdv = { Bear: 'b3' }; }), ['calendar'], 'All dens: another den\'s line');
+  SECTION_403(await put('lead_denleader', (e) => { delete e.e4.denAdv; }), ['calendar'], 'All dens: another den\'s line taken off');
+  for (const [what, f] of [['the note', (e) => { e.e4.note = 'x'; }], ['the leaders\' note', (e) => { e.e4.noteInternal = 'x'; }], ['the adventure', (e) => { e.e4.adventure = 'x'; }],
+    ['adventures offered', (e) => { e.e4.advOffers = [{ key: 'el:x', auto: true }]; }], ['the pack\'s pick', (e) => { e.e4.packAdv = 'req:2'; }]]) {
+    SECTION_403(await put('lead_denleader', f), ['calendar'], 'All dens: ' + what);
+    eq((await put('lead_cubmaster', f)).status, 200, 'the Cubmaster, All dens: ' + what);
+  }
+  // advOffers on their own den's meeting (Keith, 2026-10-02), to the shape the page writes.
+  eq((await put('lead_denleader', (e) => { e.e1.advOffers = [{ key: 'el:Knots', auto: true }, { key: 'req:2', auto: false, dens: ['Wolf'], part: true }]; })).status, 200,
+    'adventures offered on their den meeting');
+  for (const [what, offers] of [['an unknown key', [{ key: 'el:x', auto: true, by: 'me' }]], ['auto not true or false', [{ key: 'el:x', auto: 'yes' }]],
+    ['a long key', [{ key: 'el:' + 'x'.repeat(80), auto: true }]], ['thirteen', Array.from({ length: 13 }, (_, i) => ({ key: 'el:' + i, auto: false }))],
+    ['a den that is not one', [{ key: 'el:x', auto: true, dens: ['Dragons'] }]], ['part false', [{ key: 'el:x', auto: true, part: false }]], ['not a list', { key: 'el:x' }]]) {
+    SECTION_403(await put('lead_denleader', (e) => { e.e1.advOffers = offers; }), ['calendar'], 'adventures offered: ' + what);
+  }
+  SECTION_403(await put('lead_denleader', (e) => { e.e5.advOffers = [{ key: 'el:x', auto: true }]; }), ['calendar'], 'adventures offered at an activity (a campout)');
+  // Finding 7: sizes.
+  SECTION_403(await put('lead_denleader', (e) => { e.e1.note = 'x'.repeat(4001); }), ['calendar'], 'a note over 4,000 characters');
+  eq((await put('lead_denleader', (e) => { e.e1.note = 'x'.repeat(4000); })).status, 200, 'a note of 4,000');
+  SECTION_403(await put('lead_denleader', (e) => { e.e1.adventure = 'x'.repeat(201); }), ['calendar'], 'a long adventure');
+  SECTION_403(await put('lead_denleader', (e) => { e.e4.denAdv = { Bear: 'b2', Wolf: 'x'.repeat(201) }; }), ['calendar'], 'a long den line');
+  SECTION_403(await put('lead_denleader', (e) => { e.e4.denAdv = { Bear: 'b2', Dragons: 'x' }; }), ['calendar'], 'a den line that is not a den');
+  // A den leader with no den changes no den meeting.
+  w.db.raw.prepare("UPDATE member_positions SET dens = NULL WHERE uid = 'uid-lead-asstden'").run();
+  SECTION_403(await put('lead_asstden', (e) => { e.e1.note = 'x'; }), ['calendar'], 'an assistant den leader with no den');
+  w.db.raw.prepare("UPDATE member_positions SET dens = '[\"Wolf\",\"Bear\"]' WHERE uid = 'uid-lead-asstden'").run();
+  eq((await put('lead_asstden', (e) => { e.e3.note = 'x'; e.e1.note = 'y'; })).status, 200, 'one leading two dens, both');
+});
+
+atest('positions guard: statements stay as they are below an admin; a statement added is the caller\'s own and unreviewed', async () => {
+  const st = (o) => Object.assign({ id: 'st-2026-08-31', date: '2026-08-31', statementCents: 1000, by: 'Test Treasurer', byUid: 'uid-lead-treasurer', at: '2026-09-01T00:00:00.000Z' }, o || {});
+  const base = Object.assign(GUARD_BASE(), { statements: [st()] });
+  const w = await guardWorld(base);
+  const withSt = (list) => Object.assign(GUARD_BASE(), { statements: list });
+  const mine = st({ id: 'st-2026-09-30', date: '2026-09-30', byUid: 'uid-lead-treasurer' });
+  eq((await w.put('lead_treasurer', withSt([st(), mine]))).status, 200, 'a treasurer adding their own');
+  eq((await w.put('lead_chair', withSt([st(), st({ id: 'st-2026-09-30', date: '2026-09-30', byUid: 'uid-lead-chair' })]))).status, 200, 'a chair adding their own');
+  eq((await w.put('lead_treasurer', withSt([mine, st()]))).status, 200, 'the same statements in another order');
+  for (const [what, list] of [
+    ['someone else\'s name on a new one', [st(), st({ id: 'st-2026-09-30', byUid: 'uid-lead-chair' })]],
+    ['no name on a new one', [st(), st({ id: 'st-2026-09-30', byUid: '' })]],
+    ['a new one already reviewed', [st(), Object.assign({}, mine, { reviewedAt: 'x', reviewedByUid: 'uid-lead-chair' })]],
+    ['a new one already reopened', [st(), Object.assign({}, mine, { reopenedAt: 'x' })]],
+    ['a review of one there', [st({ reviewedAt: '2026-09-02T00:00:00.000Z', reviewedBy: 'Chair', reviewedByUid: 'uid-lead-chair' })]],
+    ['a reopen of one there', [st({ reopenedAt: '2026-09-02T00:00:00.000Z', reopenWhy: 'x' })]],
+    ['one there changed', [st({ statementCents: 999 })]],
+    ['one there removed', []],
+    ['one there removed, another added', [mine]]]) {
+    SECTION_403(await w.put('lead_treasurer', withSt(list)), ['ledger'], 'a treasurer: ' + what);
+  }
+  SECTION_403(await w.put('lead_kernel', withSt([st(), st({ id: 'k', byUid: 'uid-lead-kernel' })])), ['ledger'], 'a kernel adding one');
+  denied(await w.put('editor', withSt([st({ statementCents: 1 })])), 'a retired editor changing one');
+  eq((await w.put('owner', withSt([st({ reopenedAt: '2026-09-02T00:00:00.000Z', reopenedByUid: 'uid-owner', reopenWhy: 'x' })]))).status, 200, 'an admin reopening one');
+  eq((await w.put('admin2', withSt([]))).status, 200, 'an admin removing one');
+});
+
+atest('positions guard: the sync log and the ledger log are append-only, each new line the caller\'s own; the cap may drop the oldest', async () => {
+  const sl = (id, at, byUid, o) => Object.assign({ id, at, byName: 'X', byUid, key: 'scouts.s1.name', item: 'Ada', field: 'Name', serverValue: 'A', keptValue: 'B',
+    baseValue: '', mineValue: '', kept: 'mine', how: 'item', serverChangedAt: '', serverChangedAfter: '' }, o || {});
+  const old = [sl('sl-1', '2026-09-01T00:00:00.000Z', 'uid-lead-chair'), sl('sl-2', '2026-09-02T00:00:00.000Z', 'uid-owner')];
+  const w = await guardWorld(Object.assign(GUARD_BASE(), { syncLog: old }));
+  const withSl = (list) => Object.assign(GUARD_BASE(), { syncLog: list });
+  const mine = sl('sl-3', '2026-09-03T00:00:00.000Z', 'uid-lead-denleader');
+  eq((await w.put('lead_denleader', withSl(old.concat([mine])))).status, 200, 'a den leader logging their own kept-mine');
+  // A newer page fills in a field an old line did not have (normalizeSyncLog's, as it fills it): still the same line.
+  const oldNoAfter = old.map((e) => { const c = Object.assign({}, e); delete c.serverChangedAfter; return c; });
+  const wo = await guardWorld(Object.assign(GUARD_BASE(), { syncLog: oldNoAfter }));
+  eq((await wo.put('lead_denleader', withSl(old))).status, 200, 'normalizeSyncLog\'s field filled in on the lines there');
+  // Security review of 714a920..045e7ac, 4d: nothing else is added to anyone's line.
+  SECTION_403(await wo.put('lead_denleader', withSl(oldNoAfter.map((e) => Object.assign({}, e, { serverChangedAfter: 'x' })))), ['shared'], 'a filled field with a value');
+  SECTION_403(await w.put('lead_denleader', withSl(old.map((e) => Object.assign({}, e, { note: 'it was me' })))), ['shared'], 'PoC: a field added to someone else\'s line');
+  for (const [what, list] of [['a line in someone else\'s name', old.concat([sl('sl-3', '2026-09-03T00:00:00.000Z', 'uid-lead-chair')])],
+    ['a line with no name', old.concat([sl('sl-3', '2026-09-03T00:00:00.000Z', '')])],
+    ['a line there changed', [old[0], Object.assign({}, old[1], { keptValue: 'C' })]],
+    ['a line there losing a field', [old[0], (() => { const e = Object.assign({}, old[1]); delete e.serverValue; return e; })()]],
+    ['the oldest dropped, the log not full', [old[1], mine]],
+    ['the newest dropped', [old[0]]], ['the log emptied', []], ['the same line twice', old.concat([old[1]])]]) {
+    SECTION_403(await w.put('lead_denleader', withSl(list)), ['shared'], 'the sync log: ' + what);
+  }
+  denied(await w.put('viewer', withSl(old.concat([sl('sl-3', '2026-09-03T00:00:00.000Z', 'uid-viewer')]))), 'a viewer logging');
+  SECTION_403(await w.put('lead_comms', withSl(old.concat([sl('sl-3', '2026-09-03T00:00:00.000Z', 'uid-lead-comms')]))), ['shared'], 'a read-only leader logging');
+  // Full: 500 lines, the oldest goes as a new one comes.
+  const full = []; for (let i = 0; i < 500; i++) full.push(sl('f' + String(i).padStart(3, '0'), '2026-08-01T00:00:' + String(i % 60).padStart(2, '0') + '.' + String(i).padStart(3, '0') + 'Z', 'uid-owner'));
+  full.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id < b.id ? -1 : 1));
+  const wf = await guardWorld(Object.assign(GUARD_BASE(), { syncLog: full }));
+  eq((await wf.put('lead_denleader', Object.assign(GUARD_BASE(), { syncLog: full.slice(1).concat([mine]) }))).status, 200, 'full: the oldest dropped for a new line');
+  SECTION_403(await wf.put('lead_denleader', Object.assign(GUARD_BASE(), { syncLog: full.slice(0, 250).concat(full.slice(251), [mine]) })), ['shared'], 'full: a middle line dropped');
+  // Finding 4: growth, flushing, and the time a line claims.
+  const mineN = (n, at) => { const out = []; for (let i = 0; i < n; i++) out.push(sl('m' + String(i).padStart(3, '0'), at || '2026-09-03T00:00:00.000Z', 'uid-lead-denleader')); return out; };
+  SECTION_403(await wf.put('lead_denleader', Object.assign(GUARD_BASE(), { syncLog: full.concat([mine]) })), ['shared'], 'PoC: past the cap, nothing dropped');
+  SECTION_403(await wf.put('lead_denleader', Object.assign(GUARD_BASE(), { syncLog: full.slice(5).concat([mine]) })), ['shared'], 'full: five dropped for one line');
+  // Security re-check of ce6b8de (2, low): 200 a save let three saves push out everyone's history.
+  SECTION_403(await w.put('lead_denleader', withSl(old.concat(mineN(51)))), ['shared'], '51 lines in one save');
+  eq((await w.put('lead_denleader', withSl(old.concat(mineN(50))))).status, 200, '50 lines in one save (a big keep-mine)');
+  eq([API.access.SYNC_LOG_CAP.add, Number(/var SYNC_LOG_ADD_MAX = (\d+);/.exec(SCRIPT)[1])], [50, 50], 'the page keeps to the server\'s per-save cap');
+  ok(/if \(logged\.length > SYNC_LOG_ADD_MAX\) logged = logged\.slice\(0, SYNC_LOG_ADD_MAX\);/.test(SCRIPT), 'the chooser trims its lines');
+  SECTION_403(await w.put('lead_denleader', withSl(old.concat([sl('sl-9', '2099-01-01T00:00:00.000Z', 'uid-lead-denleader')]))), ['shared'], 'PoC: a line from 2099');
+  const soon = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  eq((await w.put('lead_denleader', withSl(old.concat([sl('sl-9', soon, 'uid-lead-denleader')])))).status, 200, 'a line five minutes ahead (a clock a little fast)');
+  SECTION_403(await w.put('lead_denleader', withSl(old.concat([sl('sl-9', 'yesterday', 'uid-lead-denleader')]))), ['shared'], 'a line with no time');
+  SECTION_403(await w.put('lead_denleader', withSl(old.concat([sl('sl-9', '2026-09-03T00:00:00.000Z', 'uid-lead-denleader', { item: 'x'.repeat(5000) })]))), ['shared'], 'a line over 4 KB');
+  SECTION_403(await wf.put('lead_denleader', Object.assign(GUARD_BASE(), { syncLog: mineN(500, '2099-01-01T00:00:00.000Z') })), ['shared'], 'PoC: the whole log flushed by future lines');
+  // One pass: a long log stored over the cap, and a save that drops a line, answer quickly.
+  const huge = []; for (let i = 0; i < 3000; i++) huge.push(sl('h' + String(i).padStart(5, '0'), '2026-07-01T00:00:00.000Z', 'uid-owner'));
+  const wh = await guardWorld(Object.assign(GUARD_BASE(), { syncLog: huge }));
+  const t0 = Date.now();
+  eq((await wh.put('lead_denleader', Object.assign(GUARD_BASE(), { syncLog: huge.slice(1).concat([mine]) }))).status, 200, 'a log stored over the cap: one in, one out');
+  ok(Date.now() - t0 < 5000, 'the drop check took ' + (Date.now() - t0) + ' ms');
+  SECTION_403(await wh.put('lead_denleader', Object.assign(GUARD_BASE(), { syncLog: huge.concat([mine]) })), ['shared'], 'a log stored over the cap, grown');
+  SECTION_403(await wh.put('lead_denleader', Object.assign(GUARD_BASE(), { syncLog: huge.slice(10).concat([mine]) })), ['shared'], 'full: ten dropped for one line');
+
+  // The ledger's log.
+  const ll = (id, at, byUid, o) => Object.assign({ id, at, by: 'X', byUid, dev: 'd', row: 'L1', op: 'tick' }, o || {});
+  const lold = [ll('ev1', '2026-09-01T00:00:00.000Z', 'uid-lead-treasurer')];
+  const wl = await guardWorld(Object.assign(GUARD_BASE(), { ledgerLog: lold }));
+  const withLl = (list, more) => Object.assign(GUARD_BASE(), { ledgerLog: list }, more || {});
+  // Signed as the member the uid is (final security check of 8dced37: by === signerName).
+  const book = (k, f, who) => ll('ev2', '2026-09-02T00:00:00.000Z', who, { row: 'book', op: 'edit', f: { [k]: f }, by: 'Test ' + String(who).slice(4).replace('-', '_') });
+  eq((await wl.put('lead_treasurer', withLl(lold.concat([ll('ev2', '2026-09-02T00:00:00.000Z', 'uid-lead-treasurer')])))).status, 200, 'a treasurer logging a tick');
+  SECTION_403(await wl.put('lead_treasurer', withLl(lold.concat([ll('ev2', '2026-09-02T00:00:00.000Z', 'uid-lead-chair')]))), ['ledger'], 'a treasurer logging in a chair\'s name');
+  SECTION_403(await wl.put('lead_treasurer', withLl([Object.assign({}, lold[0], { op: 'untick' })])), ['ledger'], 'a treasurer changing a line there');
+  // Security review of 714a920..045e7ac: the ledger's lines are exact, unlike the sync log's. A field
+  // added to a line there rewrites what it says was done, a ledger editor's change or not.
+  SECTION_403(await wl.put('lead_treasurer', withLl([Object.assign({}, lold[0], { why: 'it was always like this' })])), ['ledger'], 'a treasurer adding a reason to a line there');
+  SECTION_403(await wl.put('lead_chair', withLl([Object.assign({}, lold[0], { f: { amountCents: [100, 200] } })].concat([ll('ev2', '2026-09-02T00:00:00.000Z', 'uid-lead-chair')]))),
+    ['ledger'], 'a chair adding a change to a line there, beside a line of their own');
+  eq((await wl.put('owner', withLl([Object.assign({}, lold[0], { why: 'an admin' })]))).status, 200, 'an admin is not compared');
+  SECTION_403(await wl.put('lead_treasurer', withLl([])), ['ledger'], 'a treasurer emptying the log');
+  // Finding 4b's PoC: one huge line from the future, to push everyone else's out.
+  SECTION_403(await wl.put('lead_treasurer', withLl(lold.concat([ll('ev9', '2099-01-01T00:00:00.000Z', 'uid-lead-treasurer', { why: 'x'.repeat(131000) })]))), ['ledger'],
+    'PoC: a 131 KB line from 2099');
+  const few = []; for (let i = 0; i < 51; i++) few.push(ll('n' + i, '2026-09-05T00:00:00.000Z', 'uid-lead-treasurer'));
+  SECTION_403(await wl.put('lead_treasurer', withLl(lold.concat(few))), ['ledger'], 'fifty-one ledger lines in one save');
+  eq((await wl.put('lead_treasurer', withLl(lold.concat(few.slice(1))))).status, 200, 'fifty');
+  eq((await wl.put('lead_treasurer', withLl(lold.concat([ll('ev2', '2026-09-02T00:00:00.000Z', 'uid-lead-treasurer', { rows: Array.from({ length: 400 }, (_, i) => 'row-' + i) })])))).status,
+    200, 'a Tick all naming 400 entries (about 4.4 KB)');
+  // A setting's changer logs it on the book, whoever they are, and only that.
+  eq((await wl.put('lead_kernel', withLl(lold.concat([book('commissionPct', [25, 30], 'uid-lead-kernel')]), { commissionPct: 30 }))).status, 200, 'a kernel logging the commission');
+  eq((await wl.put('lead_kernel', withLl(lold.concat([book('invCommissionPct', [25, 30], 'uid-lead-kernel')])))).status, 200, 'a kernel logging the inventory\'s commission');
+  SECTION_403(await wl.put('lead_kernel', withLl(lold.concat([ll('ev2', '2026-09-02T00:00:00.000Z', 'uid-lead-kernel')]))), ['ledger'], 'a kernel logging a tick');
+  SECTION_403(await wl.put('lead_kernel', withLl(lold.concat([book('councilSettled', [null, 'x'], 'uid-lead-kernel')]))), ['ledger'], 'a kernel logging a settlement');
+  SECTION_403(await wl.put('lead_kernel', withLl(lold.concat([book('commissionPct', [25, 30], 'uid-lead-chair')]), { commissionPct: 30 })), ['ledger'], 'a kernel logging in a chair\'s name');
+  SECTION_403(await wl.put('lead_denleader', withLl(lold.concat([book('commissionPct', [25, 30], 'uid-lead-denleader')]))), ['ledger'], 'a den leader logging the commission');
+  // The byte cap: the oldest goes when the newest it drops would not have fitted.
+  const big = (i, at) => ll('b' + String(i).padStart(4, '0'), at, 'uid-owner', { why: 'w'.repeat(400) });
+  const many = []; for (let i = 0; i < 300; i++) many.push(big(i, '2026-08-01T00:' + String(Math.floor(i / 60)).padStart(2, '0') + ':' + String(i % 60).padStart(2, '0') + '.000Z'));
+  ok(JSON.stringify(many).length > 128 * 1024, 'the test log is over the byte cap');
+  let from = many.length, size = 2;
+  while (from > 0) { const one = JSON.stringify(many[from - 1]).length + (from < many.length ? 1 : 0); if (size + one > 128 * 1024) break; size += one; from -= 1; }
+  const kept = many.slice(from - 1);   // one more than fits: stored like this, a new line pushes the oldest out
+  const wb = await guardWorld(Object.assign(GUARD_BASE(), { ledgerLog: kept }));
+  const add = ll('zz', '2026-09-09T00:00:00.000Z', 'uid-lead-treasurer');
+  eq((await wb.put('lead_treasurer', Object.assign(GUARD_BASE(), { ledgerLog: kept.slice(2).concat([add]) }))).status, 200, 'the byte cap dropping the oldest two');
+  SECTION_403(await wb.put('lead_treasurer', Object.assign(GUARD_BASE(), { ledgerLog: kept.slice(40).concat([add]) })), ['ledger'], 'forty dropped where two would do');
+});
+
+atest('positions guard: a council settlement written below an admin is the caller\'s own; taking it back is any ledger editor\'s', async () => {
+  const cs = (byUid) => ({ on: '2026-11-15', how: 'check', by: 'X', byUid, at: '2026-11-15T00:00:00.000Z' });
+  const w = await guardWorld(GUARD_BASE());
+  const withBook = (b) => Object.assign(GUARD_BASE(), { book: Object.assign({ openingCents: 0 }, b) });
+  eq((await w.put('lead_treasurer', withBook({ councilSettled: cs('uid-lead-treasurer') }))).status, 200, 'a treasurer settling');
+  eq((await w.put('lead_chair', withBook({ councilSettled: cs('uid-lead-chair') }))).status, 200, 'a chair settling');
+  SECTION_403(await w.put('lead_treasurer', withBook({ councilSettled: cs('uid-lead-chair') })), ['ledger'], 'a settlement in someone else\'s name');
+  SECTION_403(await w.put('lead_treasurer', withBook({ councilSettled: 'yes' })), ['ledger'], 'a settlement that is not one');
+  SECTION_403(await w.put('lead_kernel', withBook({ councilSettled: cs('uid-lead-kernel') })), ['ledger'], 'a kernel settling');
+  const ws = await guardWorld(withBook({ councilSettled: cs('uid-lead-chair') }));
+  eq((await ws.put('lead_treasurer', withBook({}))).status, 200, 'a treasurer taking back the chair\'s');
+  eq((await ws.put('lead_treasurer', withBook({ councilSettled: cs('uid-lead-chair'), openingCents: 5 }))).status, 200, 'the book changed, the settlement left as it was');
+  eq((await ws.put('owner', withBook({ councilSettled: cs('uid-lead-kernel') }))).status, 200, 'an admin writes what they like');
+});
+
+/* ---- positions: shift reports and deposits by position (Keith, 2026-10-02) ---- */
+
+atest('positions shift reports: a leader sends; the booth leaders accept (shiftVerify), never a read-only position, and the write re-checks the position', async () => {
+  const w = await srWorld();
+  for (const p of ['denleader', 'kernel', 'treasurer', 'chair', 'comms', 'secretary']) seedLeader(w, 'lead_' + p, [p]);
+  // Any leader sends one, as any approved member does.
+  const sent = await w.report('lead_comms', { blockId: 'b2' });
+  eq(sent.status, 200, 'a Communications leader sending a report');
+  const r1 = (await w.report('parent')).body.report.id;
+  for (const who of ['lead_comms', 'lead_secretary', 'editor', 'viewer', 'parent']) {
+    denied(await w.act(who, r1, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true }), who + ' accepting');
+    denied(await w.act(who, r1, { action: 'return', reviewNote: 'Recount' }), who + ' sending back');
+  }
+  eq((await w.act('lead_denleader', r1, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })).status, 200, 'a den leader accepts');
+  eq(w.one('SELECT accepted_by_uid FROM shift_reports WHERE id = ?', r1).accepted_by_uid, 'uid-lead-denleader', 'the accepter');
+  // A leader reads every report, as leaders do.
+  eq((await w.reports('lead_comms')).body.reports.length, 2, 'a read-only leader reads every report');
+  // The write re-checks the position: one taken away between the check and the write writes nothing.
+  const r3 = (await w.report('parent', { blockId: 'b3' })).body.report.id;
+  const orig = w.db.batch;
+  w.db.batch = function (list) { w.db.batch = orig; w.db.raw.prepare("DELETE FROM member_positions WHERE uid = 'uid-lead-kernel'").run(); return orig.call(w.db, list); };
+  denied(await w.act('lead_kernel', r3, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true }), 'a kernel whose position went mid-request');
+  eq(w.one('SELECT status FROM shift_reports WHERE id = ?', r3).status, 'submitted', 'the report after');
+  // The rule helpers.
+  const R = API.rules;
+  eq([R.canReviewShiftReport('admin', []), R.canReviewShiftReport('leader', ['asstden']), R.canReviewShiftReport('leader', ['trainer']),
+    R.canReviewShiftReport('editor', ['kernel']), R.canReviewShiftReport('parent', ['parent']), R.canSubmitShiftReport('leader')],
+    [true, true, false, false, false, true], 'canReviewShiftReport, canSubmitShiftReport');
+  eq([R.canUndoShiftReport('leader', ['denleader'], 'u1', ['u1']), R.canUndoShiftReport('leader', ['denleader'], 'u1', ['u2']),
+    R.canUndoShiftReport('leader', ['treasurer'], 'u1', ['u2']), R.canUndoShiftReport('leader', ['comms'], 'u1', ['u1']), R.canUndoShiftReport('admin', [], 'u1', [null])],
+    [true, false, true, false, true], 'canUndoShiftReport');
+  // The page's list of who may send is the server's.
+  eq(/  var SHIFT_REPORT_ROLES = (\[[^\]]*\]);/.exec(SCRIPT)[1], /export const SUBMIT_ROLES = (\[[^\]]*\]);/.exec(readFileSync(join(ROOT, 'functions/api/pack/[id]/shift-reports/index.js'), 'utf8'))[1],
+    'SHIFT_REPORT_ROLES vs SUBMIT_ROLES');
+});
+
+atest('positions shift reports: an accept is taken back by the accepter or the undo list (kernel, chair, treasurer, admin), with a reason; so is what became of the cash', async () => {
+  const w = await srWorld();
+  for (const [who, ps] of [['lead_denleader', ['denleader']], ['lead_asstden', ['asstden']], ['lead_kernel', ['kernel']], ['lead_treasurer', ['treasurer']], ['lead_chair', ['chair']]]) seedLeader(w, who, ps);
+  const accepted = async (block, by, salesCash) => {
+    const rid = (await w.report('parent', Object.assign({ blockId: block }, salesCash ? { salesCashCents: salesCash } : {}))).body.report.id;
+    eq((await w.act(by, rid, Object.assign({ action: 'accept', teCents: 12345, cashCents: 2500, collected: true }, salesCash ? { salesCashCents: salesCash } : {}))).status, 200, by + ' accepting on ' + block);
+    return rid;
+  };
+  const back = (who, rid, note) => w.act(who, rid, { action: 'return', reviewNote: note === undefined ? 'Wrong block' : note });
+  const r1 = await accepted('b1', 'lead_denleader');
+  denied(await back('lead_asstden', r1), 'another den leader taking the accept back');
+  eq((await back('lead_denleader', r1, '')).body.reason, 'review-note', 'the accepter, with no reason');
+  eq((await back('lead_denleader', r1)).body.report.status, 'returned', 'the accepter taking it back');
+  for (const [block, who] of [['b2', 'lead_kernel'], ['b3', 'lead_treasurer'], ['b4', 'lead_chair'], ['b5', 'owner']]) {
+    const rid = await accepted(block, 'lead_asstden');
+    eq((await back(who, rid)).body.report.status, 'returned', who + ' taking back a den leader\'s accept');
+  }
+  const audit = w.audit('shift.return');
+  eq(audit.length, 5, 'each take-back audited');
+  eq(JSON.parse(audit[0].detail).from, 'accepted', 'the audit says it was accepted');
+  // A report still waiting is any verifier's to send back.
+  const wait = (await w.report('parent', { blockId: 'b6' })).body.report.id;
+  eq((await back('lead_asstden', wait)).status, 200, 'a den leader sending back a waiting report');
+  // The cash from sales: recorded by any verifier; undone by its recorder, the accepter, or the undo list.
+  const r7 = await accepted('b7', 'lead_denleader', 300);
+  const cash = (who, outcome) => w.act(who, r7, Object.assign({ action: 'salescash', outcome, salesCashCents: 300 }, outcome ? {} : { reviewNote: 'Wrong shift' }));
+  eq((await cash('lead_asstden', 'collected')).body.report.salesCashOutcome, 'collected', 'a den leader recording it collected');
+  eq((await cash('lead_denleader', null)).status, 200, 'the accepter undoing it');
+  eq((await cash('lead_asstden', 'converted')).status, 200, 'recorded again');
+  eq((await cash('lead_asstden', null)).status, 200, 'its recorder undoing it');
+  eq((await cash('lead_asstden', 'collected')).status, 200, 'and again');
+  w.db.raw.prepare("UPDATE shift_reports SET accepted_by_uid = 'uid-owner' WHERE id = ?").run(r7);   // someone else's accept, from here on
+  w.db.raw.prepare("UPDATE shift_reports SET sales_cash_by_uid = 'uid-admin2' WHERE id = ?").run(r7);
+  denied(await cash('lead_asstden', null), 'a den leader undoing another leader\'s record');
+  eq((await cash('lead_kernel', null)).status, 200, 'the kernel undoing it');
+});
+
+atest('positions guard: a booth leader writes a shift report\'s fields on its block, and nothing else of the storefronts', async () => {
+  const blk = (o) => Object.assign({ id: 'b1', label: '10–12', start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }], salesCents: 0, donationsCents: 0,
+    cashCountedBy: '', cashVerifiedBy: '' }, o || {});
+  const sfs = (b, sfo, more) => [Object.assign({ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [b || blk()].concat(more || []) }, sfo || {})];
+  const base = Object.assign(GUARD_BASE(), { storefronts: sfs() });
+  const w = await guardWorld(base);
+  // The server's record of the reports (security review of 714a920..045e7ac, finding 1): r1 waits on b1.
+  const report = (ww, id, o) => {
+    const r = Object.assign({ sf: 'sf1', block: 'b1', te: 12345, cash: 2500, sc: 300, status: 'submitted', from: 'uid-parent', fromName: 'Ada Parent' }, o || {});
+    if (!r.reviewedBy && r.acceptedBy) r.reviewedBy = r.acceptedBy;
+    ww.db.raw.prepare('DELETE FROM shift_reports WHERE id = ?').run(id);
+    ww.db.raw.prepare('INSERT INTO shift_reports (id, pack_id, sf_id, block_id, te_cents, cash_cents, sales_cash_cents, submitted_by_uid, submitted_by_name, submitted_at, updated_at, status, stamp, ' +
+      'accepted_by_uid, accepted_by_name, accepted_at, reviewed_by_uid, reviewed_by_name, reviewed_at, review_note, needs_confirm, confirmed_by_uid, confirmed_by_name, confirmed_at, ' +
+      'sales_cash_outcome, sales_cash_by_uid, sales_cash_by_name, sales_cash_at, verified_by_leader) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, API_PACK, r.sf, r.block, r.te, r.cash, r.sc, r.from, r.fromName, r.status, 'st-' + id, r.acceptedBy || null, r.acceptedBy ? 'X' : null, r.acceptedBy ? 2 : null,
+        r.reviewedBy || null, r.reviewedBy ? 'Y' : null, r.reviewedBy ? 3 : null, r.note || '', r.confirmedBy || r.needs ? 1 : 0, r.confirmedBy || null, r.confirmedBy ? 'Bo Parent' : null,
+        r.confirmedBy ? 2 : null, r.outcome || null, r.outcome ? 'uid-lead-kernel' : null, r.outcome ? 'Test lead_kernel' : null, r.outcome ? 77 : null, r.acceptedBy && !r.confirmedBy ? 1 : 0);
+  };
+  report(w, 'r1');
+  const put = (who, b, sfo, more) => w.put(who, Object.assign(GUARD_BASE(), { storefronts: sfs(b, sfo, more) }));
+  const WAS = { salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '', reportId: '', reportFrom: '', reportApprovedBy: '', reportConfirmedBy: '',
+    reportOverride: '', reportOverrideNote: '', reportCollected: false, reportReturned: null };
+  // An accept as acceptShiftReport writes it: the sender's name, the accepter's member name, collected.
+  const accept = (who, o, po) => blk(Object.assign({ salesCents: 12345, donationsCents: 2500, cashCountedBy: 'Ada Parent', cashVerifiedBy: 'Test ' + who, reportId: 'r1', reportFrom: 'Ada Parent',
+    reportApprovedBy: 'Test ' + who, reportConfirmedBy: '', reportOverride: '', reportOverrideNote: '', reportCollected: true,
+    reportPending: Object.assign({ by: PEOPLE[who][0], at: 1, te: 12345, cash: 2500, was: WAS, wrote: { counted: 'Ada Parent', verified: 'Test ' + who }, override: false, note: '',
+      collected: true, salesCash: 300 }, po || {}),
+    salesCash: [{ reportId: 'r1', cents: 300, from: 'Ada Parent', outcome: null }] }, o || {}));
+  eq((await put('lead_denleader', accept('lead_denleader'))).status, 200, 'a den leader\'s accept on the block');
+  eq((await put('lead_kernel', accept('lead_chair'))).status, 200, 'the kernel edits storefronts: anything');
+  SECTION_403(await put('lead_comms', accept('lead_comms')), ['storefronts'], 'a Communications leader (no shiftVerify)');
+  SECTION_403(await put('lead_denleader', accept('lead_chair')), ['storefronts'], 'a marker in someone else\'s name');
+  SECTION_403(await put('lead_denleader', blk({ salesCents: 99999 })), ['storefronts'], 'the figures, with no accept');
+  SECTION_403(await put('lead_denleader', Object.assign(accept('lead_denleader'), { label: '9–12' })), ['storefronts'], 'a block\'s other field');
+  SECTION_403(await put('lead_denleader', accept('lead_denleader'), { name: 'Safeway' }), ['storefronts'], 'the storefront\'s name');
+  SECTION_403(await w.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs().concat([{ id: 'sf2', name: 'New', blocks: [] }]) })), ['storefronts'], 'a storefront added');
+  SECTION_403(await put('lead_denleader', blk(), null, [blk({ id: 'b2' })]), ['storefronts'], 'a block added');
+  // The review's PoC: figures and names the caller's own marker vouches for, but the report does not.
+  SECTION_403(await put('lead_denleader', accept('lead_denleader', { salesCents: 999999 }, { te: 999999 })), ['storefronts'], 'PoC: any figures, the marker agreeing');
+  SECTION_403(await put('lead_denleader', accept('lead_denleader', { cashVerifiedBy: 'The Treasurer' })), ['storefronts'], 'PoC: a forged verifier');
+  for (const [what, o, po] of [['another sender', { reportFrom: 'Someone Else', cashCountedBy: 'Someone Else' }, { wrote: { counted: 'Someone Else', verified: 'Test lead_denleader' } }],
+    ['another approver', { reportApprovedBy: 'The Cubmaster' }], ['a confirmer the report has not', { reportConfirmedBy: 'Bo Parent' }],
+    ['a report of no block', { reportId: 'r9' }], ['an override with no reason', { reportOverride: 'not-collected', reportCollected: false, cashVerifiedBy: '' },
+      { override: true, collected: false, wrote: { counted: 'Ada Parent', verified: '' } }],
+    ['a `was` the block never held', {}, { was: Object.assign({}, WAS, { salesCents: 50000 }) }], ['the cash from sales changed', { salesCash: [{ reportId: 'r1', cents: 9999, from: 'Ada Parent', outcome: null }] }],
+    ['the cash from sales already collected', { salesCash: [{ reportId: 'r1', cents: 300, from: 'Ada Parent', outcome: { outcome: 'collected', by: 'Me', at: 1 } }] }]]) {
+    SECTION_403(await put('lead_denleader', accept('lead_denleader', o, po)), ['storefronts'], 'an accept with ' + what);
+  }
+  // Not the sender's own, nor one they confirmed; not one another leader has accepted already; not on another block.
+  report(w, 'r1', { from: 'uid-lead-denleader' });
+  SECTION_403(await put('lead_denleader', accept('lead_denleader')), ['storefronts'], 'the sender accepting their own');
+  report(w, 'r1', { confirmedBy: 'uid-lead-denleader' });
+  SECTION_403(await put('lead_denleader', accept('lead_denleader')), ['storefronts'], 'the confirmer accepting it');
+  report(w, 'r1', { status: 'accepted', acceptedBy: 'uid-lead-chair' });
+  SECTION_403(await put('lead_denleader', accept('lead_denleader')), ['storefronts'], 'a report another leader accepted');
+  report(w, 'r1', { block: 'b2' });
+  SECTION_403(await put('lead_denleader', accept('lead_denleader')), ['storefronts'], 'a report of another block');
+  // Two families: the confirming parent verified the cash; the accepter did not collect it.
+  report(w, 'r1', { confirmedBy: 'uid-newbie' });
+  eq((await put('lead_denleader', accept('lead_denleader', { cashVerifiedBy: 'Bo Parent', reportConfirmedBy: 'Bo Parent', reportCollected: false },
+    { collected: false, wrote: { counted: 'Ada Parent', verified: 'Bo Parent' } }))).status, 200, 'a confirmed report: the confirming parent named');
+  report(w, 'r1');
+  // Security re-check of ce6b8de, finding 3: the marker is refused wherever the accept PATCH would refuse it,
+  // with the override the page names for each case.
+  const overrode = (who, kind) => accept(who, { reportOverride: kind, reportOverrideNote: 'Only one parent was there', reportCollected: false, cashVerifiedBy: '' },
+    { override: true, note: 'Only one parent was there', collected: false, wrote: { counted: 'Ada Parent', verified: '' } });
+  const plain0 = accept('lead_denleader', { reportCollected: false, cashVerifiedBy: '' }, { collected: false, wrote: { counted: 'Ada Parent', verified: '' } });
+  report(w, 'r1', { needs: true });
+  SECTION_403(await put('lead_denleader', plain0), ['storefronts'], 'PoC: two families, nobody confirmed, no override');
+  SECTION_403(await put('lead_denleader', accept('lead_denleader')), ['storefronts'], 'two families: collected by the leader instead of a second parent');
+  SECTION_403(await put('lead_denleader', overrode('lead_denleader', 'not-collected')), ['storefronts'], 'two families: the wrong override');
+  eq((await put('lead_denleader', overrode('lead_denleader', 'second-parent'))).status, 200, 'two families: accepted without a second parent, with the reason');
+  report(w, 'r1');
+  SECTION_403(await put('lead_denleader', plain0), ['storefronts'], 'one family, not collected, no override');
+  SECTION_403(await put('lead_denleader', overrode('lead_denleader', 'second-parent')), ['storefronts'], 'one family: the wrong override');
+  eq((await put('lead_denleader', overrode('lead_denleader', 'not-collected'))).status, 200, 'one family, not collected, with the reason');
+  // The sender's family (rules.js sameFamily, from the stored record), as the PATCH reads it.
+  const famScouts = [{ id: 's1', name: 'Ada', familyId: 'f1', parentUids: ['uid-parent'] }, { id: 's2', name: 'Bo', familyId: 'f1', parentUids: ['uid-lead-denleader'] }];
+  const wfam = await guardWorld(Object.assign(GUARD_BASE(), { scouts: famScouts, storefronts: sfs() }));
+  report(wfam, 'r1');
+  const putFam = (who, b) => wfam.put(who, Object.assign(GUARD_BASE(), { scouts: famScouts, storefronts: sfs(b) }));
+  SECTION_403(await putFam('lead_denleader', accept('lead_denleader')), ['storefronts'], 'PoC: the sender\'s family collects and accepts');
+  SECTION_403(await putFam('lead_denleader', overrode('lead_denleader', 'not-collected')), ['storefronts'], 'the sender\'s family: the wrong override');
+  eq((await putFam('lead_denleader', overrode('lead_denleader', 'same-family'))).status, 200, 'the sender\'s family: accepted with the reason');
+  eq((await putFam('lead_asstden', accept('lead_asstden'))).status, 200, 'another family collects and accepts');
+  // Called with no family answer at all, it fails closed: the same family.
+  const den = API.access.effectiveAccess('leader', ['denleader']), denAct = API.access.effectiveActions('leader', ['denleader']);
+  eq(API.access.refusedSections({ storefronts: sfs() }, { storefronts: sfs(accept('lead_denleader')) }, den, 'uid-lead-denleader', denAct,
+    { reports: { r1: { id: 'r1', sf_id: 'sf1', block_id: 'b1', status: 'submitted', te_cents: 12345, cash_cents: 2500, sales_cash_cents: 300, submitted_by_uid: 'uid-parent',
+      submitted_by_name: 'Ada Parent', needs_confirm: 0 } }, name: 'Test lead_denleader', now: Date.now() }), ['storefronts'], 'no sameFamily: refused');
+
+  // From an accept pending on the server: settled, undone, sent back, or taken over.
+  const pend = accept('lead_asstden');
+  const wp = await guardWorld(Object.assign(GUARD_BASE(), { storefronts: sfs(pend) }));
+  const putP = (who, b) => wp.put(who, Object.assign(GUARD_BASE(), { storefronts: sfs(b) }));
+  report(wp, 'r1');
+  const settled = accept('lead_asstden'); delete settled.reportPending;
+  SECTION_403(await putP('lead_denleader', settled), ['storefronts'], 'settled while the report still waits');
+  const undone = blk();   // srRollback with nothing linked before: the link and the accept's own cash entry go
+  SECTION_403(await putP('lead_denleader', undone), ['storefronts'], 'PoC: another leader\'s accept stripped while the report waits');
+  eq((await putP('lead_asstden', undone)).status, 200, 'undone by the leader whose accept it is');
+  eq((await putP('lead_kernel', undone)).status, 200, 'the kernel edits storefronts');
+  report(wp, 'r1', { status: 'accepted', acceptedBy: 'uid-lead-asstden' });
+  eq((await putP('lead_denleader', settled)).status, 200, 'settled once the report is accepted with those figures');
+  SECTION_403(await putP('lead_denleader', undone), ['storefronts'], 'an accept the server holds, undone');
+  report(wp, 'r1', { status: 'returned', reviewedBy: 'uid-lead-chair' });
+  eq((await putP('lead_denleader', undone)).status, 200, 'undone once the report was sent back');
+  SECTION_403(await putP('lead_denleader', blk({ salesCents: 1 })), ['storefronts'], 'undone to other figures');
+  report(wp, 'r1');
+  SECTION_403(await putP('lead_denleader', accept('lead_chair')), ['storefronts'], 'the marker handed to someone else');
+  // srTakeOver: the same accept, this leader's to finish; only for a confirmed one (not collected, not an override).
+  report(wp, 'r1', { confirmedBy: 'uid-newbie' });
+  const conf = (who, by) => accept(who, { cashVerifiedBy: 'Bo Parent', reportConfirmedBy: 'Bo Parent', reportCollected: false, reportApprovedBy: 'Test ' + by },
+    { collected: false, wrote: { counted: 'Ada Parent', verified: 'Bo Parent' } });
+  const wt = await guardWorld(Object.assign(GUARD_BASE(), { storefronts: sfs(conf('lead_asstden', 'lead_asstden')) }));
+  report(wt, 'r1', { confirmedBy: 'uid-newbie' });
+  const putT = (who, b) => wt.put(who, Object.assign(GUARD_BASE(), { storefronts: sfs(b) }));
+  eq((await putT('lead_denleader', conf('lead_denleader', 'lead_denleader'))).status, 200, 'a stuck accept taken over');
+  SECTION_403(await putT('lead_denleader', conf('lead_denleader', 'lead_chair')), ['storefronts'], 'taken over in another\'s name');
+  // An accepted report sent back (returnShiftReport): the link and the verifier go; the warning is the report's reason.
+  const acc = accept('lead_asstden'); delete acc.reportPending;
+  const wr = await guardWorld(Object.assign(GUARD_BASE(), { storefronts: sfs(acc) }));
+  report(wr, 'r1', { status: 'returned', acceptedBy: 'uid-lead-asstden', reviewedBy: 'uid-lead-asstden', note: 'Recount the jar' });
+  const back = (note) => blk({ salesCents: 12345, donationsCents: 2500, cashCountedBy: 'Ada Parent', cashVerifiedBy: '', reportReturned: { note },
+    salesCash: [{ reportId: 'r1', cents: 300, from: 'Ada Parent', outcome: null }] });
+  eq((await wr.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs(back('Recount the jar')) }))).status, 200, 'sent back');
+  SECTION_403(await wr.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs(back('All fine, trust me')) })), ['storefronts'], 'sent back with other words');
+  // The cash from sales: an entry's outcome is the server's, in its words.
+  report(wr, 'r1', { status: 'accepted', acceptedBy: 'uid-lead-asstden', outcome: 'collected' });
+  const cash = (outcome) => Object.assign(JSON.parse(JSON.stringify(acc)), { salesCash: [{ reportId: 'r1', cents: 300, from: 'Ada Parent', outcome }] });
+  eq((await wr.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs(cash({ outcome: 'collected', by: 'Test lead_kernel', at: 77 })) }))).status, 200,
+    'the server\'s record of the cash, mirrored');
+  SECTION_403(await wr.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs(cash({ outcome: 'collected', by: 'Test lead_denleader', at: 77 })) })), ['storefronts'],
+    'collected, in another name');
+  SECTION_403(await wr.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs(cash({ outcome: 'converted', by: 'Test lead_kernel', at: 77 })) })), ['storefronts'],
+    'an outcome the server does not hold');
+});
+
+atest('positions guard: a scout\'s parent accounts and a linked scout\'s family are an admin\'s; so are the record\'s version and format', async () => {
+  const sc = (o) => Object.assign({ id: 's1', name: 'Ada', den: 'Wolf', familyId: '', parentUids: ['uid-parent'] }, o || {});
+  const kid = (o) => Object.assign({ id: 's2', name: 'Bo', den: 'Bear', familyId: '', parentUids: [] }, o || {});
+  const w = await guardWorld(Object.assign(GUARD_BASE(), { scouts: [sc(), kid()] }));
+  const put = (who, scouts, more) => w.put(who, Object.assign(GUARD_BASE(), { scouts }, more || {}));
+  // Security review of 714a920..045e7ac, finding 2: the review's PoC, and its kin.
+  SECTION_403(await put('lead_secretary', [sc({ parentUids: ['uid-parent', 'uid-lead-secretary'] }), kid()]), ['admin'], 'PoC: the secretary links their own account');
+  SECTION_403(await put('lead_membership', [sc({ parentUids: [] }), kid()]), ['admin'], 'a parent unlinked');
+  SECTION_403(await put('lead_membership', [sc({ familyId: 's2' }), kid()]), ['admin'], 'a linked scout moved to another family');
+  SECTION_403(await put('lead_secretary', [sc(), kid(), kid({ id: 's3', parentUids: ['uid-newbie'] })]), ['admin'], 'a scout added already linked');
+  SECTION_403(await put('lead_secretary', [kid()]), ['admin'], 'a linked scout removed');
+  eq((await put('lead_secretary', [sc({ name: 'Ada B.', den: 'Bear' }), kid()])).status, 200, 'a linked scout\'s name and den: the roster\'s');
+  eq((await put('lead_secretary', [sc(), kid({ familyId: 's1' })])).status, 200, 'an unlinked scout joining a family');
+  eq((await put('lead_secretary', [sc(), kid(), kid({ id: 's3' })])).status, 200, 'a scout added, unlinked');
+  eq((await put('lead_secretary', [sc()])).status, 200, 'an unlinked scout removed');
+  eq((await put('admin2', [sc({ parentUids: ['uid-parent', 'uid-newbie'] }), kid()])).status, 200, 'an admin links a parent');
+  // Finding 3: the PoC (any leader with something to edit), and the steps a page takes.
+  const wf = await guardWorld(Object.assign(GUARD_BASE(), { fmt: 5 }));
+  const putF = (who, more) => wf.put(who, Object.assign(GUARD_BASE(), { fmt: 5 }, more));
+  SECTION_403(await putF('lead_derbychair', { fmt: 9999 }), ['admin'], 'PoC: a format no page knows');
+  SECTION_403(await putF('lead_derbychair', { version: 2 }), ['admin'], 'PoC: a version no page reads');
+  SECTION_403(await putF('lead_derbychair', { fmt: 4 }), ['admin'], 'a format taken back');
+  SECTION_403(await putF('lead_derbychair', { fmt: 6.5 }), ['admin'], 'a format that is not a whole number');
+  // Security re-check of ce6b8de, finding 1: "one format up" held every page (the admins' too) at 5.
+  SECTION_403(await putF('lead_secretary', { fmt: 6 }), ['admin'], 'PoC: a secretary sets fmt 6 over every page\'s 5');
+  eq((await putF('lead_derbychair', { fmt: 5 })).status, 200, 'the format as it is');
+  eq((await putF('owner', { fmt: 9999 })).status, 200, 'an admin is not compared');
+  const wl = await guardWorld(Object.assign(GUARD_BASE(), { fmt: 4 }));
+  eq((await wl.put('lead_derbychair', Object.assign(GUARD_BASE(), { fmt: 5 }))).status, 200, 'an older record, raised to the page\'s format');
+  SECTION_403(await wl.put('lead_derbychair', Object.assign(GUARD_BASE(), { fmt: 6 })), ['admin'], 'an older record raised past the page\'s format');
+  const w0 = await guardWorld((() => { const b = GUARD_BASE(); delete b.version; return b; })());
+  const noVer = (more) => { const b = Object.assign(GUARD_BASE(), more); return b; };
+  eq((await w0.put('lead_derbychair', noVer({ version: 1, fmt: 5 }))).status, 200, 'a record that had neither: version 1, and the page\'s format');
+  SECTION_403(await w0.put('lead_derbychair', noVer({ version: 1, fmt: 6 })), ['admin'], 'a first format past the page\'s');
+  eq(API.access.PACK_FORMAT, Number(/var PACK_FORMAT = (\d+);/.exec(SCRIPT)[1]), 'access.js PACK_FORMAT is not the page\'s: every leader\'s save would be refused, or a higher one taken');
+  eq([API.access.fmtOk(5, true, 6, true), API.access.fmtOk(4, true, 5, true), API.access.fmtOk(undefined, false, 5, true), API.access.fmtOk(5, true, 5, true),
+    API.access.fmtOk('4', true, 5, true), API.access.fmtOk(5, true, undefined, false)], [false, true, true, true, false, false], 'fmtOk');
+});
+
+atest('positions guard: deposits — the kernel records a storefront deposit, flagged for the treasurer, and sets the deadline; the rest of the ledger stays the treasurer\'s', async () => {
+  const dep = (o) => Object.assign({ id: 'd1', date: '2026-10-05', description: 'Storefront cash donations banked', amountCents: 25000, direction: 'in', lineId: '', method: 'cash',
+    ref: '', source: 'storefront', donor: '', scoutId: '', reconciled: false, depositFor: 'sf1', depositFrom: '', depositTo: '', enteredBy: 'Test lead_kernel', enteredAt: 'x',
+    enteredByUid: 'uid-lead-kernel', approvedBy: '', approvedAt: '', approvedByUid: '', depositReview: true }, o || {});
+  const w = await guardWorld(GUARD_BASE());
+  const withLedger = (rows, more) => Object.assign(GUARD_BASE(), { ledger: GUARD_BASE().ledger.concat(rows) }, more || {});
+  eq((await w.put('lead_kernel', withLedger([dep()]))).status, 200, 'the kernel recording a deposit');
+  for (const [what, row] of [['not flagged for review', dep({ depositReview: undefined })], ['in someone else\'s name', dep({ enteredByUid: 'uid-lead-treasurer' })],
+    ['money out', dep({ direction: 'out' })], ['not storefront cash', dep({ source: 'donation' })], ['already ticked', dep({ reconciled: true })],
+    ['on a statement', dep({ statementId: 'st-1' })], ['approved', dep({ approvedByUid: 'uid-lead-kernel' })], ['a family\'s payment', dep({ scoutId: 's1' })]]) {
+    SECTION_403(await w.put('lead_kernel', withLedger([JSON.parse(JSON.stringify(row))])), ['ledger'], 'a kernel\'s deposit ' + what);
+  }
+  SECTION_403(await w.put('lead_kernel', Object.assign(GUARD_BASE(), { ledger: [{ id: 'L1', amountCents: 600 }, dep()] })), ['ledger'], 'a kernel changing a row there');
+  SECTION_403(await w.put('lead_kernel', Object.assign(GUARD_BASE(), { ledger: [dep()] })), ['ledger'], 'a kernel removing a row');
+  SECTION_403(await w.put('lead_denleader', withLedger([dep({ enteredByUid: 'uid-lead-denleader' })])), ['ledger'], 'a den leader recording a deposit');
+  // The treasurer: no flag needed for cash someone else collected, on a storefront the record has (the final check:
+  // one covering none is flagged whoever enters it).
+  const sf1 = [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [] }];
+  const wt = await guardWorld(Object.assign(GUARD_BASE(), { storefronts: sf1 }));
+  eq((await wt.put('lead_treasurer', withLedger([dep({ enteredByUid: 'uid-lead-treasurer', depositReview: undefined })], { storefronts: sf1 }))).status, 200, 'the treasurer, no flag needed');
+  SECTION_403(await w.put('lead_treasurer', withLedger([dep({ enteredByUid: 'uid-lead-treasurer', depositReview: undefined })])), ['ledger'],
+    'the treasurer\'s, unflagged, for a storefront the record doesn\'t have');
+  // Its 'add' line in the log (a deposit dated in a reconciled period): the kernel's own, for the deposit it adds.
+  const add = (row, byUid) => ({ id: 'ev-add', at: '2026-09-30T12:00:00.000Z', by: 'K', byUid, dev: 'd', row, op: 'add', why: 'Dated inside the period reconciled' });
+  // The treasurer's review, item 4: a deposit dated where a back-dated add would be logged is refused, so is its log line.
+  SECTION_403(await w.put('lead_kernel', withLedger([dep()], { ledgerLog: [add('d1', 'uid-lead-kernel')] })), ['ledger'], 'the deposit and an add line');
+  SECTION_403(await w.put('lead_kernel', withLedger([dep()], { ledgerLog: [add('L1', 'uid-lead-kernel')] })), ['ledger'], 'an add line for another row');
+  // Security review of 714a920..045e7ac, finding 5 (its PoC first), and the treasurer's item 4.
+  for (const [what, row] of [['PoC: negative, reversing another row', dep({ amountCents: -500000, reverses: 'Y:L1' })], ['of a trillion cents', dep({ amountCents: 1e12 })],
+    ['of $0', dep({ amountCents: 0 })], ['of part of a cent', dep({ amountCents: 100.5 })], ['over $100,000', dep({ amountCents: 10000001 })],
+    ['on a budget line', dep({ lineId: 'act-1' })], ['with a field the form never writes', dep({ chargeId: 'c1' })], ['marked reversed', dep({ reversedBy: 'x' })],
+    ['with no date', dep({ date: 'soon' })], ['a reimbursement', dep({ reimbursement: true })]]) {
+    SECTION_403(await w.put('lead_kernel', withLedger([JSON.parse(JSON.stringify(row))])), ['ledger'], 'a kernel\'s deposit ' + what);
+  }
+  eq((await w.put('lead_kernel', withLedger([dep({ amountCents: 10000000 })]))).status, 200, 'a deposit of $100,000');
+  // Security re-check of ce6b8de, finding 5: no date past a week ahead, ten a save, and signed as the caller.
+  const dayAhead = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+  SECTION_403(await w.put('lead_kernel', withLedger([dep({ date: '2099-12-31' })])), ['ledger'], 'PoC: a deposit dated 2099');
+  SECTION_403(await w.put('lead_kernel', withLedger([dep({ date: dayAhead(9) })])), ['ledger'], 'a deposit dated nine days ahead');
+  eq((await w.put('lead_kernel', withLedger([dep({ date: dayAhead(6) })]))).status, 200, 'a slip dated six days ahead');
+  const tenOf = (n) => Array.from({ length: n }, (_, i) => dep({ id: 'd' + i, amountCents: 10000000 }));
+  SECTION_403(await w.put('lead_kernel', withLedger(tenOf(1000))), ['ledger'], 'PoC: 1000 deposits of $100,000 in one save');
+  SECTION_403(await w.put('lead_kernel', withLedger(tenOf(11))), ['ledger'], 'eleven deposits in one save');
+  eq((await w.put('lead_kernel', withLedger(tenOf(10)))).status, 200, 'ten deposits in one save');
+  SECTION_403(await w.put('lead_kernel', withLedger([dep({ enteredBy: 'Treasurer' })])), ['ledger'], 'PoC: a kernel signing as "Treasurer"');
+  SECTION_403(await w.put('lead_kernel', withLedger([dep({ enteredBy: '' })])), ['ledger'], 'a deposit signed by nobody');
+  eq([API.access.DEPOSIT_AHEAD_DAYS, API.access.DEPOSIT_MAX_CENTS], [Number(/var DEPOSIT_AHEAD_DAYS = (\d+);/.exec(SCRIPT)[1]), Number(/var DEPOSIT_ONLY_MAX_CENTS = (\d+);/.exec(SCRIPT)[1])],
+    'the page\'s limits are not the server\'s');
+  const booked = (book) => guardWorld(Object.assign(GUARD_BASE(), { book }));
+  const wb = await booked({ openingCents: 0, openingDate: '2026-09-01', reconciledThrough: '2026-09-30' });
+  const putB = (row) => wb.put('lead_kernel', Object.assign(GUARD_BASE(), { book: { openingCents: 0, openingDate: '2026-09-01', reconciledThrough: '2026-09-30' },
+    ledger: GUARD_BASE().ledger.concat([row]) }));
+  SECTION_403(await putB(dep({ date: '2026-09-30' })), ['ledger'], 'dated inside the reconciled period');
+  eq((await putB(dep({ date: '2026-10-01' }))).status, 200, 'dated the day after it');
+  SECTION_403(await putB(dep({ date: '2026-08-31' })), ['ledger'], 'dated before the opening date');
+  const wc = await booked({ openingCents: 0, closedAt: '2026-09-01T00:00:00.000Z' });
+  SECTION_403(await wc.put('lead_kernel', Object.assign(GUARD_BASE(), { book: { openingCents: 0, closedAt: '2026-09-01T00:00:00.000Z' }, ledger: GUARD_BASE().ledger.concat([dep()]) })),
+    ['ledger'], 'in a book closed out');
+  SECTION_403(await w.put('lead_kernel', Object.assign(GUARD_BASE(), { ledgerLog: [add('d1', 'uid-lead-kernel')] })), ['ledger'], 'an add line with no deposit');
+  // The deadline: the deposits sub-section, logged on the book by whoever sets it.
+  const days = (who, uid) => w.put(who, Object.assign(GUARD_BASE(), { depositDays: 10,
+    ledgerLog: [{ id: 'ev-dd', at: '2026-09-30T12:00:00.000Z', by: 'Test ' + who, byUid: uid, dev: 'd', row: 'book', op: 'edit', f: { depositDays: [7, 10] } }] }));
+  for (const who of ['lead_kernel', 'lead_treasurer', 'lead_chair']) eq((await days(who, 'uid-' + who.replace('_', '-'))).status, 200, who + ' setting the deposit deadline');
+  SECTION_403(await days('lead_cubmaster', 'uid-lead-cubmaster'), ['ledger', 'deposits'], 'the Cubmaster setting it');
+});
+
+// Security re-check of ce6b8de, finding 4: "never the leader who entered it" was the page's alone. Below an
+// admin the server now holds who may take a deposit's flag off, how it is signed, and that it is logged
+// and audited; a ledger editor's own deposit of cash they collected must carry the flag, as the page says.
+atest('positions guard: a flagged deposit is checked by another ledger editor, signed and logged as the page does it, and audited', async () => {
+  const dep = (o) => Object.assign({ id: 'd1', date: '2026-10-01', description: 'Storefront cash donations banked', amountCents: 25000, direction: 'in', lineId: '', method: 'cash',
+    ref: '', source: 'storefront', donor: '', scoutId: '', reconciled: false, depositFor: 'sf1', depositFrom: '', depositTo: '', enteredBy: 'Test lead_kernel', enteredAt: 'x',
+    enteredByUid: 'uid-lead-kernel', approvedBy: '', approvedAt: '', approvedByUid: '', depositReview: true }, o || {});
+  const own = dep({ id: 'd2', enteredBy: 'Test lead_treasurer', enteredByUid: 'uid-lead-treasurer' });
+  const sfs = [{ id: 'sf1', name: 'Kroger', date: '2026-09-26', blocks: [{ id: 'b1', salesCents: 100, donationsCents: 2500, reportCollected: true, reportApprovedBy: 'Test lead_treasurer' }] },
+    { id: 'sf2', name: 'Publix', date: '2026-09-27', blocks: [{ id: 'b1', salesCents: 100, donationsCents: 900 }] }];
+  const base = Object.assign(GUARD_BASE(), { storefronts: sfs, ledger: GUARD_BASE().ledger.concat([dep(), own]) });
+  const w = await guardWorld(base);
+  const nowIso = () => new Date().toISOString();
+  const reviewed = (row, who, o) => { const e = Object.assign({}, row, { depositReviewedBy: 'Test ' + who, depositReviewedByUid: PEOPLE[who][0], depositReviewedAt: nowIso() }, o || {}); delete e.depositReview; return e; };
+  const line = (row, who, o) => Object.assign({ id: 'lg-rv-' + row, at: nowIso(), by: 'Test ' + who, byUid: PEOPLE[who][0], dev: 'd', row, op: 'edit', f: { depositReview: [true, null] } }, o || {});
+  const put = (who, rows, lines, more) => w.put(who, Object.assign(JSON.parse(JSON.stringify(base)), { ledger: GUARD_BASE().ledger.concat(rows), ledgerLog: lines || [] }, more || {}));
+  const audits = () => w.sql("SELECT action, detail FROM audit WHERE action = 'ledger.deposit.review' ORDER BY id").map((r) => [r.action, JSON.parse(r.detail)]);
+  eq((await put('lead_treasurer', [reviewed(dep(), 'lead_treasurer'), own], [line('d1', 'lead_treasurer')])).status, 200, 'the treasurer checks the kernel\'s deposit');
+  eq(audits(), [['ledger.deposit.review', { count: 1, ids: ['d1'] }]], 'the check is audited');
+  // The review's PoC: the treasurer clears the flag on the deposit of cash they collected themselves.
+  SECTION_403(await put('lead_treasurer', [dep(), reviewed(own, 'lead_treasurer')], [line('d2', 'lead_treasurer')]), ['ledger'], 'PoC: the treasurer clears their own deposit');
+  eq((await put('lead_chair', [dep(), reviewed(own, 'lead_chair')], [line('d2', 'lead_chair')])).status, 200, 'the chair checks the treasurer\'s');
+  for (const [what, row, lines] of [['with no line in the log', reviewed(dep(), 'lead_treasurer'), []],
+    ['logged in another\'s name', reviewed(dep(), 'lead_treasurer'), [line('d1', 'lead_chair')]],
+    ['logged for another row', reviewed(dep(), 'lead_treasurer'), [line('d2', 'lead_treasurer')]],
+    ['PoC: signed as someone else', reviewed(dep(), 'lead_treasurer', { depositReviewedBy: 'The Committee Chair' }), [line('d1', 'lead_treasurer')]],
+    ['PoC: another\'s uid as reviewer', reviewed(dep(), 'lead_treasurer', { depositReviewedByUid: 'uid-lead-chair' }), [line('d1', 'lead_treasurer')]],
+    ['reviewed an hour ago', reviewed(dep(), 'lead_treasurer', { depositReviewedAt: new Date(Date.now() - 3600000).toISOString() }), [line('d1', 'lead_treasurer')]],
+    ['reviewed at no time', reviewed(dep(), 'lead_treasurer', { depositReviewedAt: 'today' }), [line('d1', 'lead_treasurer')]],
+    ['its enterer changed', reviewed(dep(), 'lead_treasurer', { enteredByUid: 'uid-lead-chair' }), [line('d1', 'lead_treasurer')]]]) {
+    SECTION_403(await put('lead_treasurer', [row, own], lines), ['ledger'], 'a check ' + what);
+  }
+  SECTION_403(await put('lead_treasurer', [Object.assign(dep(), { depositReviewedBy: 'Test lead_treasurer' }), own]), ['ledger'], 'a reviewer named on a deposit still flagged');
+  SECTION_403(await put('lead_treasurer', [dep(), own, dep({ id: 'd3', enteredByUid: 'uid-lead-treasurer', enteredBy: 'T', depositReview: undefined, depositReviewedBy: 'X' })]),
+    ['ledger'], 'a deposit added already reviewed');
+  // A ledger editor's own deposit of cash they collected must carry the flag (the page's depositSelfCollected).
+  const mine = (o) => dep(Object.assign({ id: 'd3', enteredBy: 'Test lead_treasurer', enteredByUid: 'uid-lead-treasurer' }, o));
+  SECTION_403(await put('lead_treasurer', [dep(), own, mine({ depositReview: undefined })]), ['ledger'], 'PoC: the treasurer adds their own collected cash unflagged');
+  SECTION_403(await put('lead_treasurer', [dep(), own, mine({ depositReview: undefined, depositFor: '', depositFrom: '2026-09-20', depositTo: '2026-09-30' })]), ['ledger'],
+    'the same storefront, by its dates');
+  eq((await put('lead_treasurer', [dep(), own, mine()])).status, 200, 'flagged');
+  eq((await put('lead_treasurer', [dep(), own, mine({ depositReview: undefined, depositFor: 'sf2' })])).status, 200, 'cash someone else collected, unflagged');
+  eq((await put('lead_chair', [dep(), own, mine({ depositReview: undefined, enteredByUid: 'uid-lead-chair', enteredBy: 'Test lead_chair' })])).status, 200,
+    'the chair\'s deposit of cash the treasurer collected');
+  const salesCashSfs = [{ id: 'sf1', name: 'Kroger', date: '2026-09-26', blocks: [{ id: 'b1', salesCash: [{ reportId: 'r1', cents: 300, from: 'Ada', outcome: { outcome: 'collected', by: 'Test lead_chair', at: 1 } }] }] }];
+  const wsc = await guardWorld(Object.assign(GUARD_BASE(), { storefronts: salesCashSfs }));
+  SECTION_403(await wsc.put('lead_chair', Object.assign(GUARD_BASE(), { storefronts: salesCashSfs, ledger: GUARD_BASE().ledger.concat([mine({ depositReview: undefined, enteredByUid: 'uid-lead-chair' })]) })),
+    ['ledger'], 'the cash from sales the chair marked collected, unflagged');
+  eq((await put('owner', [reviewed(own, 'owner'), dep()], [])).status, 200, 'an admin is not compared');
+  // The kernel can't take it off at all (no ledger edit): the earlier review's PoC, still refused.
+  SECTION_403(await put('lead_kernel', [reviewed(dep(), 'lead_kernel'), own], [line('d1', 'lead_kernel')]), ['ledger'], 'the kernel clears their own');
+  // The final security check of 8dced37 (1), its PoC first: rename the enterer, then clear it.
+  const renamed = Object.assign({}, own, { enteredByUid: 'uid-lead-chair', enteredBy: 'Sam' });
+  SECTION_403(await put('lead_treasurer', [dep(), renamed]), ['ledger'], 'PoC: the treasurer renames who entered their flagged deposit');
+  SECTION_403(await put('lead_treasurer', [dep(), Object.assign({}, own, { enteredAt: 'later' })]), ['ledger'], 'when it was entered changed');
+  SECTION_403(await put('lead_chair', [Object.assign(dep(), { enteredBy: 'Someone' }), own]), ['ledger'], 'another\'s enterer renamed');
+  const wst = await guardWorld(Object.assign(JSON.parse(JSON.stringify(base)), { ledger: GUARD_BASE().ledger.concat([dep(), Object.assign({}, own, { enteredBy: 'pat@example.com' })]) }));
+  eq((await wst.put('lead_treasurer', Object.assign(JSON.parse(JSON.stringify(base)), { ledger: GUARD_BASE().ledger.concat([dep(), Object.assign({}, own, { enteredBy: 'a signed-in leader' })]) }))).status,
+    200, 'an email stamp neutralised as the page does it is no change');
+  const legacy = { id: 'L1', amountCents: 500 };
+  eq((await put('lead_treasurer', [dep(), own].concat([]), [], { ledger: [Object.assign({}, legacy, { enteredBy: '', enteredByUid: '', enteredAt: '' }), dep(), own] })).status, 200,
+    'a row from before the stamps, given empty ones by the page');
+  // ...or delete it and add it again unflagged.
+  SECTION_403(await put('lead_treasurer', [dep()]), ['ledger'], 'PoC: the treasurer removes their own flagged deposit');
+  SECTION_403(await put('lead_treasurer', [dep(), own, mine({ id: 'd9', depositFor: '', depositReview: undefined })]), ['ledger'],
+    'PoC: a storefront deposit that names no storefront, unflagged');
+  eq((await put('lead_treasurer', [dep(), own, mine({ id: 'd9', depositFor: '' })])).status, 200, 'flagged, it lands');
+  // The final check's follow-up: covering no storefront the record has is the same as naming none.
+  SECTION_403(await put('lead_treasurer', [dep(), own, mine({ id: 'd9', depositFor: 'sf-gone', depositReview: undefined })]), ['ledger'], 'a storefront that isn\'t there, unflagged');
+  SECTION_403(await put('lead_treasurer', [dep(), own, mine({ id: 'd9', depositFor: '', depositFrom: '2026-01-01', depositTo: '2026-01-31', depositReview: undefined })]), ['ledger'],
+    'a date range with no storefront in it, unflagged');
+  eq((await put('lead_treasurer', [dep(), own, mine({ id: 'd9', depositFor: 'sf-gone' })])).status, 200, 'flagged, it lands');
+  eq((await put('lead_chair', [dep()])).status, 200, 'the chair removing the treasurer\'s');
+  // The self-collected check reads the stored storefronts, which the same save can't rewrite first.
+  const sClean = JSON.parse(JSON.stringify(sfs)); delete sClean[0].blocks[0].reportApprovedBy;
+  eq(API.access.depositReviewsOk(Object.assign({}, base, { ledger: [] }), { ledger: [mine({ depositReview: undefined })], storefronts: sClean }, 'uid-lead-treasurer', 'Test lead_treasurer',
+    Date.now()), null, 'the storefronts rewritten in the same save');
+  // The page mirrors it: a deposit naming no storefront is flagged, and its enterer doesn't void it while it waits.
+  ok(/\(depOnly \|\| depositSelfCollected\(drEntry\) \|\| depositNamesNone\(drEntry\)\)\) drEntry\.depositReview = true;/.test(SCRIPT), 'the page does not flag a deposit naming no storefront');
+  ok(/if \(sync\.myRole !== 'admin' && vdRow\.depositReview === true && vdRow\.enteredByUid && vdRow\.enteredByUid === ledgerActorUid\(\)\) \{ showToast\(DEPOSIT_OWN_VOID_SAY\); return; \}/.test(SCRIPT),
+    'the page voids its own unchecked deposit');
+  ok(/by: ledgerActor\(\), byUid: ledgerActorUid\(\)/.test(slice('ledgerWho')) && /String\(sync\.myName == null \? '' : sync\.myName\)/.test(slice('ledgerActor')) && /function srSignName\(\) \{ return ledgerActor\(\); \}/.test(SCRIPT),
+    'the ledger log is not signed as the server knows the leader');
+  // The page signs the check as the server knows the leader, and flags its own self-collected deposits.
+  ok(/drv\.depositReviewedBy = srSignName\(\);/.test(SCRIPT) && /drv\.depositReviewedByUid = ledgerActorUid\(\);/.test(SCRIPT) &&
+    /logLedger\('edit', drv\.id, \{ f: \{ depositReview: \[true, null\] \} \}\);/.test(SCRIPT), 'the page\'s check is not what the server takes');
+  ok(/if \(drEntry\.direction === 'in' && drEntry\.source === 'storefront'\) drEntry\.enteredBy = srSignName\(\);/.test(SCRIPT), 'a deposit is not signed as the server knows the leader');
+});
+
+// Security re-check of ce6b8de, finding 2: a Kernel's padded setting lines pushed the ledger's trail out in one save.
+atest('positions guard: a setting line from a leader who doesn\'t keep the books is small and typed; dropping the trail is bounded and audited', async () => {
+  await apiSetup();
+  const p5 = (i) => String(i).padStart(5, '0');
+  const lold = Array.from({ length: 900 }, (_, i) => ({ id: 'l' + p5(i), at: '2026-09-01T00:00:00.000Z', byUid: 't', op: 'add', row: 'r' + i, amountCents: 1000 }));
+  const kern = API.access.effectiveAccess('leader', ['kernel']), now = Date.parse('2026-10-02T12:00:00Z');
+  const big = 'x'.repeat(7900);
+  const adds = Array.from({ length: 16 }, (_, i) => ({ id: 'k' + p5(i), at: '2026-10-02T12:00:00.000Z', byUid: 'kern1', op: 'edit', row: 'book', f: { commissionPct: big } }));
+  let keep = []; for (let i = lold.length - 1; i >= 0; i--) { const t = [lold[i]].concat(keep).concat(adds); if (Buffer.byteLength(JSON.stringify(t)) > 128 * 1024) break; keep = [lold[i]].concat(keep); }
+  ok(keep.length < 100, 'the PoC still pushes most of the trail out (' + keep.length + ' kept)');
+  eq(API.access.refusedSections({ ledgerLog: lold }, { ledgerLog: keep.concat(adds) }, kern, 'kern1', {}, { now }), ['ledger'], 'PoC: 16 padded lines drop 871 of 900');
+  const setLine = (i, f, o) => Object.assign({ id: 'k' + p5(i), at: '2026-10-02T12:00:00.000Z', by: 'Test lead_kernel', byUid: 'kern1', dev: 'dev1', row: 'book', op: 'edit', f }, o || {});
+  const R = (line, name) => API.access.refusedSections({ ledgerLog: lold }, { ledgerLog: lold.concat([line]) }, kern, 'kern1', {}, { now, name: name || 'Test lead_kernel' });
+  eq(R(setLine(1, { commissionPct: [25, '26'] })), [], 'the commission as typed');
+  eq(R(setLine(1, { commissionPct: [null, 26.5] })), [], 'the commission first set');
+  eq(R(setLine(1, { goalCents: [100000, 150000] })), [], 'a goal');
+  eq(R(setLine(1, { cashThroughTrailsEnd: [false, true] })), [], 'cash through Trail\'s End');
+  eq(R(setLine(1, { wagonViaTEFrom: ['2026-09-01', ''] })), [], 'the wagon date cleared');
+  eq(R(setLine(1, { depositDays: [7, 10] })), [], 'the deposit days');
+  for (const [what, line] of [['a commission of words', setLine(1, { commissionPct: [25, 'all of it'] })], ['a goal of words', setLine(1, { goalCents: [0, 'lots'] })],
+    ['a goal that is an object', setLine(1, { goalCents: [0, { from: 1 }] })], ['a wagon date that is not one', setLine(1, { wagonViaTEFrom: ['', 'soon'] })],
+    ['three values', setLine(1, { goalCents: [0, 1, 2] })], ['a field the table does not know', setLine(1, { storefronts: [null, 1] })],
+    ['a key ledgerEvent never writes', setLine(1, { goalCents: [0, 1] }, { why: 'x' })], ['a line over a kilobyte', setLine(1, { goalCents: [0, 1] }, { by: 'x'.repeat(1100) })],
+    // The final security check of 8dced37 (2): signed as the caller, short ids, the rest at most 300 bytes.
+    ['signed as someone else', setLine(1, { goalCents: [0, 1] }, { by: 'The Treasurer' })], ['a padded id', setLine(1, { goalCents: [0, 1] }, { id: 'k'.repeat(41) })],
+    ['a padded device id', setLine(1, { goalCents: [0, 1] }, { dev: 'd'.repeat(41) })], ['no device id', setLine(1, { goalCents: [0, 1] }, { dev: undefined })],
+    ['every setting in one line', setLine(1, { commissionPct: [1, 2], commissionPctOnline: [1, 2], cashScoutPct: [1, 2], invCommissionPct: [1, 2], goalCents: [1, 2],
+      cashGoalCents: [1, 2], stretchGoalCents: [1, 2], orderTotalCents: [1, 2], cashThroughTrailsEnd: [false, true], depositDays: [7, 8] })]]) {
+    eq(R(JSON.parse(JSON.stringify(line))), ['ledger'], 'a kernel\'s setting line: ' + what);
+  }
+  // The longest real line: a 120-character member name (the server's cap), the page's ids, a Firebase uid, the online commission.
+  const longName = 'Zoë Ángeles Montgomery-Fitzwilliam Núñez '.repeat(4).slice(0, 120);   // accents: two bytes each
+  const real = { id: 'lg-mg8x2k3abc1234', at: '2026-10-02T12:00:00.000Z', by: longName, byUid: 'kern1', dev: 'mg8x2k3abc1234', row: 'book', op: 'edit',
+    f: { commissionPctOnline: ['12.75', '13.875'] } };
+  ok(Buffer.byteLength(JSON.stringify(real)) > 300, 'the long name puts the whole line over 300 bytes (the name is not counted): ' + Buffer.byteLength(JSON.stringify(real)));
+  eq(R(real, longName), [], 'the longest real setting line');
+  eq(R(Object.assign({}, real, { f: { wagonViaTEFrom: ['2026-09-01', '2026-10-01'] } }), longName), [], 'the wagon date, with it');
+  // A member with no name: the server signs them 'a signed-in leader', and so does their page (never their display name).
+  const pg = vm.createContext({});
+  vm.runInContext(`var sync = { backend: { startSession: function () {} }, user: { uid: 'k1', displayName: 'Kim Kernel' }, myName: null }, state = { leaders: [] };
+    function accountsInForce() { return true; }`, pg);
+  vm.runInContext(['ledgerActorName', 'ledgerActor', 'srSignName'].map(decl).join('\n'), pg);
+  eq([vm.runInContext('ledgerActor()', pg), vm.runInContext('srSignName()', pg), API.access.signerName(null), API.access.signerName('')],
+    ['a signed-in leader', 'a signed-in leader', 'a signed-in leader', 'a signed-in leader'], 'one fallback, page and server');
+  vm.runInContext("sync.myName = ' Kim K. '", pg);
+  eq([vm.runInContext('ledgerActor()', pg), API.access.signerName(' Kim K. ')], ['Kim K.', 'Kim K.'], 'a name, trimmed alike');
+  const wn = await guardWorld(GUARD_BASE());
+  wn.db.raw.prepare("UPDATE members SET name = '' WHERE uid = 'uid-lead-kernel'").run();
+  const nnLine = (by) => ({ id: 'lg-nn1', at: new Date().toISOString(), by, byUid: 'uid-lead-kernel', dev: 'dev1', row: 'book', op: 'edit', f: { commissionPct: [25, '30'] } });
+  eq((await wn.put('lead_kernel', Object.assign(GUARD_BASE(), { commissionPct: '30', ledgerLog: [nnLine('a signed-in leader')] }))).status, 200, 'a Kernel with no name saving the commission');
+  SECTION_403(await wn.put('lead_kernel', Object.assign(GUARD_BASE(), { commissionPct: '30', ledgerLog: [nnLine('Kim Kernel')] })), ['ledger'], '…signed with their display name instead');
+  // The final check's PoC 5: 50 lines padded to about a kilobyte (id, device, name) dropped 301 of 850.
+  const lold5 = Array.from({ length: 850 }, (_, i) => ({ id: 'l' + p5(i), at: '2026-09-01T00:00:00.000Z', by: 'Pat Treasurer', byUid: 't', dev: 'd1', row: 'r' + i, op: 'add', f: { amountCents: [null, 1000] } }));
+  const pad5 = Array.from({ length: 50 }, (_, i) => ({ id: 'k' + p5(i) + 'x'.repeat(430), at: '2026-10-02T12:00:00.000Z', by: 'K', byUid: 'k1', dev: 'd'.repeat(430), row: 'book', op: 'edit',
+    f: { commissionPct: [20, 21] } }));
+  let keep5 = []; for (let i = lold5.length - 1; i >= 0; i--) { if (Buffer.byteLength(JSON.stringify([lold5[i]].concat(keep5, pad5))) > 128 * 1024) break; keep5.unshift(lold5[i]); }
+  eq(API.access.refusedSections({ ledgerLog: lold5 }, { ledgerLog: keep5.concat(pad5) }, kern, 'k1', {}, { now, name: 'K' }), ['ledger'], 'PoC 5: padded ids and devices');
+  // A ledger editor's Tick all may still name many entries.
+  const tre = API.access.effectiveAccess('leader', ['treasurer']);
+  eq(API.access.refusedSections({ ledgerLog: lold }, { ledgerLog: lold.concat([setLine(1, undefined, { op: 'tick', row: 'L1', byUid: 'tre1', rows: Array.from({ length: 300 }, (_, i) => 'row-' + i) })]) },
+    tre, 'tre1', {}, { now }), [], 'a treasurer\'s long line');
+  // At the byte cap a line may push out two shorter ones (it is longer than one): not refused, or the page could never save it.
+  const sm = (i) => ({ id: 'a' + p5(i), at: '2026-09-01T00:00:00.000Z', byUid: 't', dev: 'device-' + 'd'.repeat(48), row: 'L' + i, op: 'tick' });   // the bytes bind before the count
+  const full = []; let size = 2; for (let i = 0; ; i++) { const one = Buffer.byteLength(JSON.stringify(sm(i))) + (i ? 1 : 0); if (size + one > 128 * 1024) break; size += one; full.push(sm(i)); }
+  const nl = setLine(1, { commissionPct: [25, '26'] }, { by: longName });   // a long (real) name: longer than two old lines
+  const fits = (list) => Buffer.byteLength(JSON.stringify(list)) <= 128 * 1024;
+  let cut = 0; while (!fits(full.slice(cut).concat([nl]))) cut += 1;
+  ok(cut >= 2 && full.length < 1000, 'the test line pushes out ' + cut + ' of ' + full.length);
+  eq(API.access.refusedSections({ ledgerLog: full }, { ledgerLog: full.slice(cut).concat([nl]) }, kern, 'kern1', {}, { now, name: longName }), [], 'one line at the cap, the oldest it needs dropped');
+  eq(API.access.refusedSections({ ledgerLog: full }, { ledgerLog: full.slice(cut + 1).concat([nl]) }, kern, 'kern1', {}, { now, name: longName }), ['ledger'], 'one more than it needs');
+  // The bytes rule on its own: a ledger editor's big lines can't drop more than they add, whatever room there was.
+  const half = full.slice(0, Math.floor(full.length / 2));
+  const bigT = Array.from({ length: 10 }, (_, i) => setLine(50 + i, undefined, { op: 'tick', row: 'L1', byUid: 'tre1', rows: Array.from({ length: 600 }, (_, j) => 'row-' + j) }));
+  eq(API.access.refusedSections({ ledgerLog: half }, { ledgerLog: half.slice(400).concat(bigT) }, tre, 'tre1', {}, { now }), ['ledger'], 'lines dropped from a log with room');
+  // Through the PUT: a drop below an admin is audited, with the ids; an admin's is not.
+  const wl = await guardWorld(Object.assign(GUARD_BASE(), { ledgerLog: full, commissionPct: 25 }));
+  wl.db.raw.prepare('UPDATE members SET name = ? WHERE uid = ?').run(longName, 'uid-lead-kernel');
+  const realLine = Object.assign({}, nl, { byUid: 'uid-lead-kernel', at: new Date().toISOString() });
+  eq((await wl.put('lead_kernel', Object.assign(GUARD_BASE(), { ledgerLog: full.slice(cut).concat([realLine]), commissionPct: '26' }))).status, 200, 'the kernel\'s save at the cap');
+  const drops = wl.sql("SELECT uid, detail FROM audit WHERE action = 'ledger.log.drop'").map((r) => [r.uid, JSON.parse(r.detail)]);
+  eq(drops, [['uid-lead-kernel', { count: cut, oldest: '2026-09-01T00:00:00.000Z', newest: '2026-09-01T00:00:00.000Z', ids: full.slice(0, cut).map((e) => e.id) }]], 'the drop audited');
+  eq((await wl.put('owner', Object.assign(GUARD_BASE(), { ledgerLog: full.slice(cut).concat([Object.assign({}, realLine, { byUid: 'uid-owner' })]), commissionPct: '26' }))).status, 200, 'an admin\'s');
+  eq(wl.sql("SELECT COUNT(*) AS n FROM audit WHERE action = 'ledger.log.drop'")[0].n, 1, 'an admin\'s drop is not audited');
+  const many = API.access.putAudits({ ledgerLog: lold }, { ledgerLog: [] }, 'u', 'n', now);
+  ok(many.length === 1 && many[0].detail.count === 900 && JSON.stringify(many[0].detail).length <= 2000, 'a big drop\'s detail fits the audit table');
+});
+
+test('positions: a kernel\'s deposit keeps its review flag through the page; a settlement names the Chair who approved it', () => {
+  const x = sandbox(['normalizeLedgerRow', 'stableRowId', 'depositForIds', 'DEPOSIT_FOR_MAX', 'LEDGER_METHODS', 'LEDGER_SOURCES', 'councilSettledNormal', 'councilApproverClean',
+    'COUNCIL_SETTLE_HOW', 'ledgerStampClean']);
+  const J = (v) => JSON.parse(JSON.stringify(v));
+  const row = (o) => { const e = Object.assign({ id: 'd1', direction: 'in', source: 'storefront', amountCents: 100 }, o); x.normalizeLedgerRow(e, 'nl'); return J(e); };
+  eq([row({ depositReview: true }).depositReview, 'depositReview' in row({ depositReview: 'yes' }), 'depositReview' in row({ depositReview: true, source: 'donation' })],
+    [true, false, false], 'the flag: true on a storefront deposit, or gone');
+  const S = { on: '2026-12-02', how: 'paid', by: 'Pat', byUid: 'u1', at: '2026-12-02T10:00:00.000Z' };
+  eq([J(x.councilSettledNormal(Object.assign({}, S, { approvedBy: '  Jordan   Lee ' }))).approvedBy, 'approvedBy' in J(x.councilSettledNormal(S)),
+    J(x.councilSettledNormal(Object.assign({}, S, { approvedBy: 'chair@example.com' }))).approvedBy, 'approvedBy' in J(x.councilSettledNormal(Object.assign({}, S, { approvedBy: 7 })))],
+    ['Jordan Lee', false, 'a signed-in leader', false], 'approvedBy: one line, never an email, absent when there is none');
+  ok(/'Approved by ' \+ settled\.approvedBy \+ ', Committee Chair'/.test(slice('councilMoneyLines')), 'the Reconcile card names the Chair');
+  ok(/data-ch="settle-approved"/.test(slice('councilMoneyHtml')) && /esc\(COUNCIL_APPROVER_HINT\)/.test(slice('councilMoneyHtml')), 'the form asks for the Chair, with the hint');
+  eq(vm.runInContext('COUNCIL_APPROVER_HINT', sandbox(['COUNCIL_APPROVER_HINT'])), 'Type the Chair’s name. The Chair should approve before you record this.', 'the hint\'s words');
+  ok(/showToast\('Settled, approved by ' \+ state\.book\.councilSettled\.approvedBy \+ '\. Funds in now counts/.test(SCRIPT), 'the toast names the Chair');
+});
+
+/* ================================================================
    Phase 2 stage C (2026-09-28) — the page's apiBackend against the real server, end to end.
    Each "client" is a sandbox running the page's REAL sync layer (syncStart, the session, the
    feeds, syncPush, onRemoteSnap, removeMember, …) and the REAL apiBackend, sliced from
@@ -16126,7 +17516,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'syncDocIdSource', 'sync', 'fixedSyncBlocked', 'fixedFeedBlocked', 'haltFixedSync', 'syncStop', 'clearAccountsRuntime',
   'syncFail', 'apiBackend', 'backendConfigured', 'loadBackend', 'cloudReady', 'packLinked', 'syncStart', 'subscribeDoc',
   'stopDocFeed', 'stopParentFeed', 'subscribeParentView', 'feedForRole', 'stopLocalWrites', 'applyRoleSubscription',
-  'applyInvitesSubscription', 'applyJoinSubscription', 'isGoogleUser', 'setSyncUser', 'accountsInForce', 'canEdit',
+  'applyInvitesSubscription', 'applyJoinSubscription', 'isGoogleUser', 'setSyncUser', 'accountsInForce', 'canEdit', 'ACCESS_TABLE', 'ACCESS_LEVELS', 'apiAccounts', 'accessFor', 'actionsFor', 'accessMemo', 'myAccess', 'sectionAccess', 'canEditSection', 'canSeeSection', 'canDo', 'SECTION_SAY', 'readOnlySay',
   'parentMode', 'canPreviewParent', 'previewingParent', 'pendingMode', 'gateMode', 'isAdmin', 'adminCount', 'isLastAdmin',
   'recomputeMyRole', 'handleAccountsError', 'startAccounts', 'SESSION_REJECTS', 'startSessionAccounts', 'sessionRole',
   'LEADER_ROLES', 'applyMembersSubscription', 'INVITE_ROLES', 'inviteEmailKey', 'MEMBER_NAME_MAX', 'memberName',
@@ -16146,10 +17536,10 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'srMine', 'srReplaces', 'LEADER_SR_SAY', 'leaderSrMessage', 'srNotNow', 'acceptShiftReport', 'srLanded', 'srSettle', 'srRollback',
   'shiftReportsReconcile', 'shiftReportsAfterPush', 'returnShiftReport', 'leaderShiftReportAct', 'srHandEdited', 'getStorefront',
   'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout', 'shiftConfirmSubmit',
-  'srIConfirmed', 'srFamiliesNow', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'familyKeyOf', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
-  'srParentStore', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
+  'srIConfirmed', 'srFamiliesNow', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'familyKeyOf', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE', 'SR_UNDO_ASK',
+  'srParentStore', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashEntries', 'srMayUndo', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
   'srScheduleRefresh', 'parentDoc', 'parentPreviewDoc', 'shiftReportOpenFor', 'shiftReportToday', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_DAYS', 'isoPlusDays',
-  'srFormOpen', 'srMirror', 'srReasonDraft', 'srNameClean',
+  'srFormOpen', 'srMirror', 'srReasonDraft', 'srNameClean', 'srSignName',
   // Keith (2026-10-02) — Home's family card reads the parent-shaped answer too.
   'srHomeFamilyOn', 'homeShiftsNear',
   'ledgerActor', 'ledgerActorName',
@@ -16303,6 +17693,342 @@ const serverState = (w) => {
   return row ? Object.assign({}, row, { json: JSON.parse(row.json) }) : null;
 };
 
+/* Pack positions, client step 3 (2026-10-02) — a leader's page against the real server: commit() puts
+   back what their positions don't edit; syncPush sends the server's copy of it (a derived change, a
+   legacy statement, another leader's log lines); a part the server still refuses is taken back from
+   the server, once, and said. */
+atest('positions client: a den leader\'s page keeps and sends only what their positions edit; a refused part comes back from the server, once, and is said', async () => {
+  const w = await (await apiWorld()).seed();
+  seedLeader(w, 'lead_denleader', ['denleader'], undefined, ['Wolf']);
+  const den = (id, d, o) => Object.assign({ id, kind: 'den', den: d, date: '2026-10-06', name: d + ' meeting', note: '', noteInternal: '', adventure: '' }, o || {});
+  const pack = PACK_STATE({ events: [den('e1', 'Wolf'), den('e3', 'Bear')], charges: [{ id: 'c0', scoutId: 's1', amountCents: 300 }],
+    syncLog: [{ id: 'sl-old', at: '2026-09-01T00:00:00.000Z', byUid: 'uid-owner', byName: 'Owner' }] });
+  w.state(3, pack);
+  const server = () => serverState(w).json;
+  const d = await (await apiClient(w, 'lead_denleader', { state: pack })).start(1200);
+  eq(d.get('[sync.myRole, sync.myPositions, sync.leadDens, canEditSection("ledger"), canSeeSection("ledger"), canEditSection("calendar.denmeeting"), canDo("shiftVerify")]'),
+    ['leader', ['denleader'], ['Wolf'], false, false, true, true], 'what the page learned from the session');
+  // commit()'s guard: a ledger edit goes back to the server's copy before anything is saved.
+  d.run("state.ledger[0].amountCents = 9; state.events[0].note = 'Bring string'; var back = rollbackUneditable(guardBaseline());");
+  eq(d.get('[back, state.ledger[0].amountCents, state.events[0].note]'), [['ledger'], 100, 'Bring string'], 'the ledger put back, the den meeting kept');
+  d.reset();
+  d.run('commit()');
+  await settle([d], 1200);
+  eq([server().events[0].note, server().ledger[0].amountCents, d.get('sync.mode')], ['Bring string', 100, 'online'], 'the den meeting saved');
+  // A change made for what they can't edit (the charges the attendance raises), and a log line by
+  // someone else this device holds (a restored copy's): the server's copy of each is sent, never refused.
+  d.run("state.charges = [{ id: 'c9', scoutId: 's1', amountCents: 999 }]; state.syncLog = state.syncLog.concat([{ id: 'sl-x', at: '2026-09-02T00:00:00.000Z', byUid: 'uid-lead-chair', byName: 'X' }]);" +
+    " state.events[0].note = 'Bring string and tape'; commit();");
+  await settle([d], 1200);
+  eq([server().events[0].note, server().charges, server().syncLog.map((e) => e.id), d.get('toasts.filter(function (t) { return /wasn/.test(t); }).length')],
+    ['Bring string and tape', pack.charges, ['sl-old'], 0], 'sent as the server has them, and nothing refused');
+  eq([d.get('sync.mode'), d.get('sync.sectionRetried')], ['online', false], 'no refusal');
+  // Another den's meeting: the page sends it (den meetings are theirs to edit), the server refuses the
+  // calendar, the page takes the server's events back and tries once more; said.
+  d.reset();
+  d.run("state.events[1].note = 'Not mine'; commit();");
+  await settle([d], 1200);
+  await settle([d], 1200);
+  eq([server().events[1].note, d.get('state.events[1].note'), d.get('sync.sectionRefused'), d.get('sync.sectionRetried')], ['', '', null, false], 'taken back; the retry landed');
+  eq(d.get('toasts[toasts.length - 1]'), 'Some of your change wasn’t saved, because your positions don’t let you change the calendar. This device now shows the pack’s version.', 'said');
+  eq(d.log.filter((l) => /^PUT \/P$/.test(l)).length, 2, 'refused once, then sent once: ' + d.log.join(', '));
+});
+
+// Keith (2026-10-02): Advance dens is an admin's, on the server too. The record of it (densAdvancedYear,
+// densAdvancedSummary) is 'admin' in the table; no leader below an admin writes it, in any combination of
+// positions, and a leader's page sends the server's copy of it (a default normalizeState fills in included).
+atest('positions guard: only an admin records Advance dens; a Cubmaster\'s ordinary save, and their page, leave it alone', async () => {
+  const t = ACCESS_JSON();
+  eq([t.keyOwner.densAdvancedYear, t.keyOwner.densAdvancedSummary], ['admin', 'admin'], 'the table');
+  const adv = { densAdvancedYear: 2025, densAdvancedSummary: { year: 2025, perDen: [] } };
+  const base = Object.assign(GUARD_BASE(), adv);
+  const w = await guardWorld(base);
+  seedLeader(w, 'newbie', ['chair', 'membership', 'cubmaster']);
+  const put = (who, more) => w.put(who, Object.assign(JSON.parse(JSON.stringify(base)), more));
+  SECTION_403(await put('lead_cubmaster', { densAdvancedYear: 2026 }), ['admin'], 'the Cubmaster recording it');
+  SECTION_403(await put('lead_chair', { densAdvancedYear: 2026 }), ['admin'], 'the Committee Chair recording it');
+  SECTION_403(await put('lead_asstcub', { densAdvancedSummary: { year: 2026, perDen: [] } }), ['admin'], 'the Assistant Cubmaster\'s summary');
+  SECTION_403(await put('newbie', { densAdvancedYear: 2026, scouts: [{ id: 's1', name: 'Ada', den: 'Bear' }] }), ['admin'],
+    'a leader with the season and the roster both: the whole advance');
+  eq((await put('newbie', { scouts: [{ id: 's1', name: 'Ada', den: 'Bear' }] })).status, 200, 'the same leader moving a scout on the roster');
+  eq((await put('owner', { densAdvancedYear: 2026, densAdvancedSummary: { year: 2026, perDen: [] } })).status, 200, 'an admin');
+  const ev = GUARD_BASE().events; ev[1].note = 'Bring a friend';
+  eq((await put('lead_cubmaster', { events: ev })).status, 200, 'the Cubmaster\'s ordinary save, the record of Advance dens as it was');
+  // The page: a record with no densAdvancedYear is normalized to 0 on every device; a Cubmaster's push sends the server's (none).
+  const w2 = await (await apiWorld()).seed();
+  seedLeader(w2, 'lead_cubmaster', ['cubmaster']);
+  const pack = PACK_STATE();
+  delete pack.densAdvancedYear; delete pack.densAdvancedSummary;
+  w2.state(3, pack);
+  const c = await (await apiClient(w2, 'lead_cubmaster', { state: pack })).start(1200);
+  // (apiClient's normalizeState is a stand-in: the real one's defaults, set as it would.)
+  c.run("state.densAdvancedYear = 0; state.densAdvancedSummary = null; state.events.push({ id: 'e-new', kind: 'pack', date: '2026-11-17', title: 'Pack meeting', note: '' }); commit();");
+  await settle([c], 1200);
+  const sj = serverState(w2).json;
+  eq([sj.events.some((e) => e.id === 'e-new'), 'densAdvancedYear' in sj, c.get('sync.mode'), c.get('sync.sectionRetried')], [true, false, 'online', false],
+    'saved, with the server\'s record of Advance dens (none), and nothing refused');
+});
+
+atest('positions client: the treasurer\'s page never sends a statement it made on load, nor rewrites one; the 403 body with sections is read as a refusal', async () => {
+  const w = await (await apiWorld()).seed();
+  seedLeader(w, 'lead_treasurer', ['treasurer']);
+  const st = { id: 'st-1', date: '2026-09-15', statementCents: 1000, byUid: 'uid-owner', by: 'Owner', at: '2026-09-16T00:00:00.000Z' };
+  const pack = PACK_STATE({ statements: [st], book: { openingCents: 0, reconciledThrough: '2026-09-15' } });
+  w.state(3, pack);
+  const t = await (await apiClient(w, 'lead_treasurer', { state: pack })).start(1200);
+  // A legacy statement made on load (normalizeState does it on a device whose book is reconciled
+  // through a date no statement has), and a review written on another device's copy: neither goes.
+  t.run("state.statements.push({ id: 'st-2026-08-31', date: '2026-08-31', byUid: '', legacy: true }); state.statements[0].reviewedAt = 'x';" +
+    " state.ledger.push({ id: 'l2', amountCents: 50, direction: 'in', date: '2026-10-01' }); commit();");
+  await settle([t], 1200);
+  eq([serverState(w).json.statements, serverState(w).json.ledger.map((e) => e.id)], [[st], ['l0', 'l2']], 'the ledger row saved; the statements as the server has them');
+  eq([t.get('sync.mode'), t.get('sync.sectionRetried')], ['online', false], 'no refusal');
+  // The parser: the section refusal's body is a refusal; anything else shaped like it is not the server.
+  const answer = (body) => { try { t.run(`sync.backend.answer({ status: 403, headers: { get: function () { return 'application/json'; } } }, ${JSON.stringify(JSON.stringify(body))})`); return null; } catch (e) { return e; } };
+  const r = answer({ error: 'forbidden', code: 'permission-denied', reason: 'section', sections: ['ledger', 'admin'] });
+  eq([r.code, r.reason, JSON.parse(JSON.stringify(r.sections))], ['permission-denied', 'section', ['ledger', 'admin']], 'a section refusal');
+  eq(answer({ error: 'forbidden', code: 'permission-denied', reason: 'section', sections: 'ledger' }).code, 'unavailable', 'sections not a list');
+  eq(answer({ error: 'forbidden', code: 'permission-denied', reason: 'other', sections: ['ledger'] }).code, 'unavailable', 'another reason');
+  eq(answer({ error: 'forbidden', code: 'permission-denied' }).code, 'permission-denied', 'the fixed body, as before');
+});
+
+test('positions client: the three-way merge takes the server\'s version of what a leader can\'t edit, and never asks about it', () => {
+  const c = vm.createContext({});
+  vm.runInContext(`var sync = { user: { uid: 'u1' }, accountsUnavailable: false, myRole: 'leader', myPositions: ['denleader'], backend: { startSession: function () {} } };
+    function syncThreeWay() {} var SYNC_MERGE_SKIP = ['rev', 'gone', 'ledger'];`, c);
+  vm.runInContext(['ACCESS_TABLE', 'ACCESS_LEVELS', 'arrOf', 'accessFor', 'actionsFor', 'accountsInForce', 'apiAccounts', 'accessMemo', 'myAccess', 'sectionAccess',
+    'canEditSection', 'canSeeSection', 'canDo', 'canEdit', 'sectionGuardOn', 'ownKey', 'keyOwnerOf', 'goneOwnerOf', 'ownerEditable', 'keyWritable', 'syncThreeWayOwnOnly'].map(decl).join('\n'), c);
+  c.three = { merged: { budget: { mine: 1 }, events: [{ id: 'e1', note: 'mine' }], charges: [{ id: 'c1' }], advancement: { s1: 1 } },
+    items: [{ key: '.budget', path: [{ k: 'budget' }] }, { key: '.events#e1', path: [{ k: 'events' }, { id: 'e1' }] }, { key: '.charges', path: [{ k: 'charges' }] }],
+    look: [{ kind: 'chargeboth' }, { kind: 'opening' }] };
+  c.theirs = { budget: { theirs: 1 }, events: [{ id: 'e1', note: 'theirs' }], advancement: { s1: 2 } };
+  const r = JSON.parse(vm.runInContext('JSON.stringify(syncThreeWayOwnOnly(three, theirs))', c));
+  eq([r.merged.budget, r.merged.events[0].note, 'charges' in r.merged, r.merged.advancement, r.items.map((i) => i.key), r.look.map((x) => x.kind)],
+    [{ theirs: 1 }, 'mine', false, { s1: 1 }, ['.events#e1'], ['opening']], 'the budget and the charges the server\'s, not asked; the den meeting and advancement merged as always');
+  vm.runInContext("sync.myRole = 'admin'", c);
+  c.three2 = { merged: { budget: { mine: 1 } }, items: [{ key: '.budget', path: [{ k: 'budget' }] }] };
+  eq(JSON.parse(vm.runInContext('JSON.stringify(syncThreeWayOwnOnly(three2, theirs))', c)).items.length, 1, 'an admin is asked about everything, as before');
+});
+
+// Client step 5 — the page's gates follow the positions: a den leader's page accepts a family's
+// shift report against the real server (the block the server ties to the report, finding 1), and
+// the commit guard keeps a den leader to their own dens' meeting fields and a kernel to deposits.
+atest('positions client: a den leader\'s page accepts a family\'s shift report through the real server, block and all', async () => {
+  await apiSetup();
+  const today = API.rules.packToday();
+  const w = await (await apiWorld()).seed({ parent: 'parent' });
+  seedLeader(w, 'lead_denleader', ['denleader'], undefined, ['Wolf']);
+  const blk = (id) => ({ id, label: id, start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }], salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '' });
+  const pack = PACK_STATE({ scouts: [{ id: 's1', name: 'Ada' }], storefronts: [{ id: 'sf1', name: 'Kroger', date: today, blocks: [blk('b1')] }] });
+  w.state(3, pack);
+  const VIEW = { rev: 3, packName: 'Test Pack', events: [{ kind: 'storefront', sfId: 'sf1', date: today, title: 'Kroger', detail: '', shifts: [{ when: '10–12', blockId: 'b1', families: 1 }] }] };
+  w.db.raw.prepare('INSERT INTO parent_views (pack_id, payload, generated_at) VALUES (?, ?, 1)').run(API_PACK, JSON.stringify(VIEW));
+  const r = await w.call('parent', 'POST', 'shiftReports', null, { body: { sfId: 'sf1', blockId: 'b1', teCents: 12345, cashCents: 2500, attest: true } });
+  eq(r.status, 200, 'the family\'s report');
+  const rid = r.body.report.id;
+  const d = await (await apiClient(w, 'lead_denleader', { state: pack })).start(1200);
+  d.run('buildParentView = function () { return ' + JSON.stringify(VIEW) + '; };');
+  eq(d.get('[canReviewReports(), canDo("shiftUndo"), canEditSection("storefronts")]'), [true, false, false], 'a den leader verifies, but neither undoes others\' nor edits storefronts');
+  d.reset();
+  d.run(`acceptShiftReport('${rid}', { collected: true })`);
+  await settle([d], 1200);
+  await settle([d], 1200);
+  eq(w.one('SELECT status, accepted_by_uid FROM shift_reports WHERE id = ?', rid), { status: 'accepted', accepted_by_uid: 'uid-lead-denleader' }, 'accepted');
+  const b = serverState(w).json.storefronts[0].blocks[0];
+  eq([b.salesCents, b.donationsCents, b.cashCountedBy, b.cashVerifiedBy, b.reportApprovedBy, b.reportPending], [12345, 2500, 'Test parent', 'Test lead_denleader',
+    'Test lead_denleader', undefined], 'the block on the server, signed with the member name, settled');
+  eq(d.get('sync.sectionRetried'), false, 'nothing refused');
+  // Their own accept is theirs to take back; another's is not (the undo list's).
+  eq(d.get(`srMayUndo([${JSON.stringify('uid-lead-denleader')}])`), true, 'their own');
+  eq(d.get(`srMayUndo(['uid-someone'])`), false, 'another leader\'s');
+});
+
+test('positions client: commit()\'s guard keeps a den leader to their dens\' meeting fields, and a kernel to their own flagged deposits', () => {
+  const c = vm.createContext({});
+  vm.runInContext(`var sync = { user: { uid: 'u-k' }, accountsUnavailable: false, myRole: 'leader', myPositions: ['denleader'], leadDens: ['Wolf'], backend: { startSession: function () {} } };
+    var DENS = ['Lion', 'Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light']; function ledgerActorUid() { return sync.user.uid; }`, c);
+  vm.runInContext(['ACCESS_TABLE', 'ACCESS_LEVELS', 'arrOf', 'accessFor', 'actionsFor', 'accountsInForce', 'apiAccounts', 'accessMemo', 'myAccess', 'sectionAccess',
+    'canEditSection', 'canSeeSection', 'canDo', 'canEdit', 'sectionGuardOn', 'canEditDenMeeting', 'denMeetingKeep', 'depositOnlyKeep'].map(decl).join('\n'), c);
+  const J = (js) => JSON.parse(vm.runInContext('JSON.stringify(' + js + ')', c));
+  c.before = [{ id: 'e1', kind: 'den', den: 'Wolf', date: 'd', note: '' }, { id: 'e2', kind: 'den', den: 'Bear', date: 'd', note: '' },
+    { id: 'e3', kind: 'den', den: '', date: 'd', note: '', denAdv: { Bear: 'b' } }, { id: 'e4', kind: 'activity', date: 'd', note: '' }];
+  const after = (f) => { const a = JSON.parse(JSON.stringify(c.before)); f(a); c.after = a; return J('denMeetingKeep(before, after)'); };
+  let r = after((a) => { a[0].note = 'mine'; a[0].advOffers = [{ key: 'el:x', auto: true }]; });
+  eq([r.back, r.list[0].note], [false, 'mine'], 'their own den\'s meeting: kept');
+  r = after((a) => { a[0].note = 'mine'; a[1].note = 'theirs'; a[0].date = 'moved'; });
+  eq([r.back, r.list[0].date, r.list[0].note, r.list[1].note], [true, 'd', '', ''], 'another den\'s, and a date: put back (the whole event)');
+  r = after((a) => { a[2].denAdv = { Bear: 'b', Wolf: 'w' }; });
+  eq([r.back, r.list[2].denAdv], [false, { Bear: 'b', Wolf: 'w' }], 'All dens: their own line');
+  r = after((a) => { a[2].denAdv = { Wolf: 'w' }; });
+  eq([r.back, r.list[2].denAdv], [true, { Bear: 'b' }], 'All dens: another den\'s line taken off, put back');
+  r = after((a) => { a[2].note = 'x'; });
+  eq(r.back, true, 'All dens: the note');
+  r = after((a) => { a.push({ id: 'e9', kind: 'den', den: 'Wolf' }); a.splice(3, 1); });
+  eq([r.back, r.list.map((e) => e.id)], [true, ['e1', 'e2', 'e3', 'e4']], 'a meeting added, an activity removed: put back');
+  // The Kernel: deposits only.
+  vm.runInContext("sync.myPositions = ['kernel'];", c);
+  c.lb = [{ id: 'L1', amountCents: 500 }];
+  const led = (rows) => { c.la = rows; return J('depositOnlyKeep(lb, la)'); };
+  const dep = { id: 'd1', amountCents: 100, direction: 'in', source: 'storefront', enteredByUid: 'u-k', depositReview: true };
+  eq(led([{ id: 'L1', amountCents: 500 }, dep]), { list: [{ id: 'L1', amountCents: 500 }, dep], back: false }, 'their flagged deposit kept');
+  eq(led([{ id: 'L1', amountCents: 9 }, Object.assign({}, dep, { depositReview: undefined })]), { list: [{ id: 'L1', amountCents: 500 }], back: true }, 'a row changed, an unflagged deposit: put back');
+  eq(led([]), { list: [{ id: 'L1', amountCents: 500 }], back: true }, 'a row removed: put back');
+});
+
+// Client step 5 — every canEdit() left in the page means "edits anything at all": the sync, the parent
+// view, the read-only banner, the shared dismiss flags. Everything about a part of the app asks
+// canEditSection (or canDo, or canEditDenMeeting). A new canEdit() elsewhere fails this.
+test('positions client: canEdit() is left only where "edits anything" is meant; every other gate names its section', () => {
+  const ALLOWED = ['commit', 'applyRoleSubscription', 'canEdit', 'keyWritable', 'canPreviewParent', 'canReopenStatement', 'scheduleParentViewRefresh',
+    'writeParentView', 'syncPush', 'onRemoteSnap', 'saveRowChoices', 'keepLocalCopy', 'render', 'handleAction'];
+  const lines = codeOnly(SCRIPT).split('\n');
+  let fn = null;
+  const found = {};
+  lines.forEach((l) => {
+    const m = /^  function ([A-Za-z0-9_]+)\(/.exec(l);
+    if (m) fn = m[1];
+    if (/\bcanEdit\(\)/.test(l.replace(/\/\/.*$/, ''))) found[fn] = (found[fn] || 0) + 1;
+  });
+  eq(Object.keys(found).filter((f) => ALLOWED.indexOf(f) === -1), [], 'canEdit() outside the allowlist');
+  eq(found.handleAction, 1, 'handleAction keeps one: the shared "where things moved" flag');
+  ok(/if \(canEdit\(\)\) save\(\);   \/\/ a shared dismiss flag/.test(SCRIPT), 'that one');
+  // The meeting row: when, which den, which kind and removing it are the calendar's; the notes and the adventure a den leader's on their dens.
+  const mr = slice('renderMeetingRow');
+  ok(/var cal = canEditSection\('calendar'\), calDis = cal \? '' : ' disabled', dmDis = canEditDenMeeting\(m\) \? '' : ' disabled';/.test(mr) &&
+    /data-ch="mtg-kind" data-id="' \+ m\.id \+ '"' \+ calDis/.test(mr) && /\(cal \? tinyDangerBtn\('del-event:'/.test(mr) && /aria-label="Details parents will see" style="width:100%"' \+ dmDis/.test(mr) &&
+    /ui\.repeatOffer === m\.id && cal/.test(mr), 'the meeting row');
+  ok(/\? !canEditSection\('calendar'\) : !canEditDenMeeting\(mtg\)\)/.test(SCRIPT), 'the meeting handler');
+  // Crediting an adventure at a meeting writes advancement: the button and the handler follow it.
+  ok(/if \(canEditSection\('advancement'\) && \(mk\.done\.length \|\| mk\.partial\.length\)\)/.test(slice('meetingAdvMarkFor')) &&
+    /if \(act === 'mtg-adv-mark' \|\| act === 'mtg-adv-partial'\) \{[\s\S]{0,200}if \(!canEditSection\('advancement'\)\) \{ showToast\(readOnlySay\('advancement'\)\); return; \}/.test(SCRIPT), 'Mark done at a meeting');
+});
+
+// Keith (2026-10-02): Advance dens is an admin's, like the close-out; anyone else who reads the season is told so.
+test('positions: Advance dens is a pack admin\'s, and the card says so to everyone else', () => {
+  const ps = slice('renderPackSeason');
+  ok(/if \(canSeeSection\('season'\)\) \{/.test(ps) && /if \(!canAdvanceDens\(\)\) \{[\s\S]{0,300}esc\(ADVANCE_DENS_REFUSED\)/.test(ps) && /data-act="adv-dens"/.test(ps),
+    'the card is not shown with the explanation');
+  ok(/if \(act === 'adv-dens' \|\| act === 'adv-dens-again'\) \{\s*if \(!canAdvanceDens\(\)\) \{ showToast\(ADVANCE_DENS_REFUSED\); return; \}/.test(SCRIPT), 'the handler is not an admin\'s');
+  ok(/function canAdvanceDens\(\) \{ return canReopenStatement\(\); \}/.test(SCRIPT), 'not the close-out\'s gate');
+  ok(/^Only a pack admin advances the dens\./.test(vm.runInContext('ADVANCE_DENS_REFUSED', sandbox(['ADVANCE_DENS_REFUSED']))), 'the words');
+});
+
+// Client step 6 — the Members card on the pack's own server: positions, not editor and viewer.
+test('positions members: the card lists who needs a position first, ticks positions (and a den leader\'s dens), says what they edit, and never offers editor or viewer', () => {
+  const c = vm.createContext({});
+  vm.runInContext(`var sync = { user: { uid: 'u-a' }, accountsUnavailable: false, myRole: 'admin', myPositions: [], leadDens: [], ownerUid: 'u-a', docId: 'P',
+      members: [{ uid: 'u-a', role: 'admin', name: 'Ann Admin', email: 'a@example.com' }, { uid: 'u-e', role: 'editor', name: 'Ed Editor', email: 'e@example.com' },
+        { uid: 'u-v', role: 'viewer', name: 'Vi Viewer', email: 'v@example.com' }, { uid: 'u-l', role: 'leader', name: 'Lee Leader', email: 'l@example.com', positions: ['treasurer', 'denleader'], dens: ['Wolf'] },
+        { uid: 'u-p', role: 'parent', name: 'Pat Parent', email: 'p@example.com' }, { uid: 'u-q', role: 'pending', name: 'Quinn', email: 'q@example.com' }],
+      invites: [{ email: 'new@example.com', role: 'leader', positions: ['kernel'] }], backend: { startSession: function () {}, calls: [],
+        updateMemberPositions: function (d, uid, p, dn) { this.calls.push([uid, p, dn]); return Promise.resolve({}); } } };
+    var ui = { posEdit: null, armed: null }, state = { leaders: [], scouts: [] }, toasts = [];
+    var DENS = ['Lion', 'Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light'];
+    function esc(x) { return String(x == null ? '' : x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+    function isAdmin() { return true; } function cloudReady() { return true; } function isLastAdmin(u) { return u === 'u-a'; }
+    function activeScouts() { return []; } function render() {} function showToast(m) { toasts.push(m); } function accountsToast() {}
+    function tinyDangerBtn(a, l) { return '<button data-act="' + a + '">x</button>'; } function chipPicker() { return ''; } function byScoutName(x) { return x; }`, c);
+  vm.runInContext(['ACCESS_TABLE', 'ACCESS_LEVELS', 'arrOf', 'accessFor', 'accountsInForce', 'apiAccounts', 'SECTION_SAY', 'DEN_POSITIONS', 'positionLabel', 'positionsSay',
+    'positionsEditsSay', 'needsPosition', 'DENS_NEEDED_SAY', 'POSITIONS_FOOTNOTE', 'makeParentBtn', 'positionPickerHtml', 'renderMembersPositions', 'saveMemberPositions', 'memberLinksHtml',
+    'renderInvitesPositions'].map(decl).join('\n') +
+    '\nfunction renderInvitesBlock() { return renderInvitesPositions(); }', c);
+  const run = (js) => vm.runInContext(js, c);
+  const html = run('renderMembersPositions(true, "u-a")');
+  const order = [...html.matchAll(/class="eyebrow"[^>]*>([^<]+)<|class="acct-name">([^<]+)</g)].map((m) => m[1] || m[2]);
+  eq(order, ['Needs a position', 'Ed Editor', 'Vi Viewer', 'Waiting for approval', 'Quinn', 'Members', 'Ann Admin', 'Lee Leader', 'Pat Parent', 'Invite someone', 'Invited — hasn’t signed in yet', 'new@example.com'],
+    'needs a position first, then waiting, then the rest');
+  ok(!/>Approve as Editor<|>Viewer<|value="editor"|value="viewer"/.test(html), 'editor or viewer offered');
+  ok(/Lee Leader<\/span>[\s\S]*?Treasurer, Den Leader \(Wolf\)<\/span>[\s\S]*?Edits: den meetings, attendance, den plans, advancement, the budget, the ledger, deposits, dues and fees and fundraisers\.<\/span>/.test(html),
+    'a leader\'s positions and what they edit: ' + html.slice(html.indexOf('Lee Leader'), html.indexOf('Lee Leader') + 600));
+  ok(/data-act="pos-edit-open" data-uid="u-e">Give positions</.test(html) && /data-act="pos-edit-open" data-uid="u-q">Approve as a leader</.test(html) &&
+    /data-act="pos-edit-open" data-uid="u-l">Change positions</.test(html), 'the buttons');
+  ok(/Kernel/.test(html.slice(html.indexOf('new@example.com'))), 'a leader invite says its positions');
+  // The picker: Den Leader ticked asks which dens.
+  run("ui.posEdit = { uid: 'u-e', positions: ['denleader'], dens: [] }");
+  const ed = run('renderMembersPositions(true, "u-a")');
+  eq((ed.match(/data-ch="pos-tick"/g) || []).length, 16, 'every position, labels from the table');
+  ok(/Which dens do they lead\?/.test(ed) && (ed.match(/data-ch="pos-den"/g) || []).length === 6 && /Edits: den meetings, attendance, den plans and advancement\./.test(ed), 'the dens, and what a Den Leader edits');
+  run("ui.posEdit.dens = ['Bear', 'Wolf']; saveMemberPositions('u-e')");
+  eq(JSON.parse(run('JSON.stringify(sync.backend.calls)')), [['u-e', ['denleader'], ['Wolf', 'Bear']]], 'saved: the positions, and the dens in DENS order');
+  run("ui.posEdit = { uid: 'u-e', positions: ['treasurer'], dens: ['Wolf'] }; sync.backend.calls = []; saveMemberPositions('u-e')");
+  eq(JSON.parse(run('JSON.stringify(sync.backend.calls)')), [['u-e', ['treasurer'], []]], 'no den position: no dens sent');
+  run("ui.posEdit = { uid: 'u-e', positions: [], dens: [] }; sync.backend.calls = []; toasts = []; saveMemberPositions('u-e')");
+  eq([JSON.parse(run('JSON.stringify(sync.backend.calls)')), run('toasts[0]')], [[], 'Tick at least one position, or make them a parent.'], 'none ticked');
+  eq([run("positionsEditsSay(['comms'])"), run("positionsEditsSay(['parent'])"), run("positionsEditsSay(['cubmaster'])")],
+    ['Can look, but not change anything.', '', 'Edits: the calendar, attendance, den plans, the derby, camping, advancement and the season.'], 'the summaries');
+  // The wording review of ce6b8de (1, 9, 8, 11, layout): Make parent takes two taps on a leader's row and says what goes; a pending
+  // row approves as a parent in one; a den position needs a den; the picker says what a position is; the invite's words.
+  ok(/data-act="member-make-parent:u-l">Make parent</.test(html) && /data-act="member-make-parent:u-e">Make parent</.test(html) &&
+    /data-act="member-approve" data-uid="u-q" data-role="parent">Approve as a parent</.test(html) && !/>Parent<\/button>/.test(html), 'the parent buttons');
+  run("ui.armed = 'member-make-parent:u-l'");
+  ok(/danger armed" data-act="member-make-parent:u-l">Tap again: they lose all positions</.test(run('renderMembersPositions(true, "u-a")')), 'a long list: they lose all positions');
+  run("sync.members[3].positions = ['treasurer']");
+  ok(/>Tap again: drops Treasurer</.test(run('renderMembersPositions(true, "u-a")')), 'a short one is named');
+  run("sync.members[3].positions = ['treasurer', 'denleader']; ui.posEdit = null; ui.armed = 'member-make-parent:u-e'");
+  ok(/>Tap again to confirm</.test(run('renderMembersPositions(true, "u-a")')), 'no positions to drop');
+  run("ui.armed = 'member-make-admin:u-l'");
+  ok(/>Tap again to confirm</.test(run('renderMembersPositions(true, "u-a")')) && !/admin edits everything<\/button>/.test(run('renderMembersPositions(true, "u-a")')), 'Make admin\'s second tap fits the button');
+  run("ui.armed = null");
+  ok(/if \(act\.indexOf\('member-make-parent:'\) === 0\) \{\s*var mpUid = act\.slice\('member-make-parent:'\.length\);\s*if \(!isAdmin\(\)\) return;\s*arm\(act, function \(\) \{ setMemberRole\(mpUid, 'parent'\); \}\);/.test(SCRIPT),
+    'the second tap does not make them a parent');
+  run("ui.posEdit = { uid: 'u-e', positions: ['denleader'], dens: [] }; sync.backend.calls = []; toasts = []; saveMemberPositions('u-e')");
+  eq([JSON.parse(run('JSON.stringify(sync.backend.calls)')), run('toasts[0]')], [[], 'Tick the dens they lead.'], 'a Den Leader with no den is not saved');
+  ok(/if \(ivAs === 'leader' && !ivDens\.length && ivPos\.some\(function \(x\) \{ return DEN_POSITIONS\.indexOf\(x\) !== -1; \}\)\) \{ showToast\(DENS_NEEDED_SAY\); return; \}/.test(SCRIPT),
+    'an invite of a Den Leader with no den');
+  ok(/Positions are the pack jobs this person does\. Each one decides what they can change\./.test(run('renderMembersPositions(true, "u-a")')), 'what a position is');
+  ok(/Which dens do they lead\? They can change only those dens’ meetings\./.test(ed), 'the den question');
+  const inv = run("renderInvitesPositions()");
+  ok(/>Invite as<select/.test(inv) && />A leader \(tick their positions\)</.test(inv) && /They get the access you picked as soon as they sign in with Google using that address\./.test(inv) &&
+    /tinyDangerBtn\('invite-revoke:' \+ iv\.email, 'Cancel the invite for ' \+ iv\.email\)/.test(slice('renderInvitesPositions')), 'the invite\'s words');
+  ok(/Ask a pack admin to change it\./.test(run('renderMembersPositions(false, "u-a")')), 'a pack admin');
+  // Item 7: the footnote's fact is the table's. The positions that hide none of the money and popcorn-stock pages are exactly the ones it names.
+  const T = JSON.parse(/\/\*ACCESS-BEGIN\*\/([\s\S]*?)\/\*ACCESS-END\*\//.exec(SCRIPT)[1]);
+  const MONEY = ['ledger', 'dues', 'fundraisers', 'inventory', 'council'];
+  eq(Object.keys(T.access).filter((p) => p !== 'parent' && !MONEY.some((x) => T.access[p].hidden.indexOf(x) !== -1)).sort(), ['asstcub', 'chair', 'cubmaster', 'kernel', 'treasurer'],
+    'the leaders who have the money pages');
+  ok(Object.keys(T.access).filter((p) => p !== 'parent').every((p) => MONEY.every((x) => T.access[p].hidden.indexOf(x) !== -1) ||
+    !MONEY.some((x) => T.access[p].hidden.indexOf(x) !== -1)), 'a position hides some of those pages but not all');
+  ok(run('POSITIONS_FOOTNOTE').indexOf('Only an admin, the Cubmaster and Assistant Cubmaster, the Committee Chair, the Treasurer and the Popcorn Kernel have the ledger, dues, fundraisers and popcorn inventory pages in their menus.') !== -1 &&
+    run('renderMembersPositions(true, "u-a")').indexOf(run('POSITIONS_FOOTNOTE')) !== -1, 'the footnote');
+  ok(/\.pos-grid label \{[^}]*min-height: 44px;/.test(HTML), 'the tick boxes are small targets');
+  // A member who isn't an admin reads their own access.
+  run("sync.myRole = 'leader'; sync.myPositions = ['kernel']; sync.user.uid = 'u-l'");
+  ok(/Your access: <strong>Popcorn Kernel<\/strong>/.test(run('renderMembersPositions(false, "u-l")')), 'a leader\'s own');
+});
+
+test('positions members: a leader record linked to an account shows its positions as its jobs (a lens), and myJobs follows them', () => {
+  const c = vm.createContext({});
+  vm.runInContext(`var sync = { user: { uid: 'u-l', email: 'l@example.com' }, accountsUnavailable: false, myRole: 'leader', myPositions: ['treasurer', 'denleader', 'parent'], leadDens: ['Bear'],
+      backend: { startSession: function () {} }, members: [{ uid: 'u-l', role: 'leader', positions: ['treasurer', 'denleader'], dens: ['Bear'] }] };
+    var state = { leaders: [{ id: 'l1', name: 'Lee', uid: 'u-l', jobs: ['kernel'], dens: ['Wolf'] }] };`, c);
+  vm.runInContext(['JOBS', 'JOB_BY_ID', 'arrOf', 'accountsInForce', 'apiAccounts', 'positionJobs', 'leaderForUser', 'leaderIsDenLeader', 'myJobs', 'myDens'].map(decl).join('\n') +
+    "\nJOBS.forEach(function (j) { JOB_BY_ID[j.id] = j; });", c);
+  const J = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, c)));
+  eq([J('myJobs()'), J('myDens()')], [['treasurer', 'denleader'], ['Bear']], 'the positions (not the record\'s own jobs), and the dens an admin named');
+  vm.runInContext("sync.backend = {}", c);
+  eq([J('myJobs()'), J('myDens()')], [['kernel'], []], 'Firestore: the record\'s jobs, as before');
+  const lr = slice('renderLeaderRow');
+  ok(/var fromPos = acct \? positionJobs\(acct\.role, acct\.positions\) : null;/.test(lr) && /var jobsBlock = fromPos \? posBlock : /.test(lr) && /From their account\\u2019s positions/.test(lr),
+    'the leader row shows the account\'s positions, read-only');
+});
+
+atest('positions members: an admin\'s page gives an account its positions through the real server, and invites a leader with positions', async () => {
+  const w = await (await apiWorld()).seed({ editor: 'editor' });
+  w.state(3, PACK_STATE());
+  const a = await (await apiClient(w, 'owner', { state: PACK_STATE() })).start(1200);
+  a.run("sync.backend.updateMemberPositions(sync.docId, 'uid-editor', ['denleader', 'treasurer'], ['Wolf'])");
+  await settle([a], 1200);
+  eq([w.one('SELECT role FROM members WHERE uid = ?', 'uid-editor').role, heldBy(w, 'editor'), w.one("SELECT dens FROM member_positions WHERE uid = 'uid-editor' AND position = 'denleader'").dens],
+    ['leader', ['denleader', 'treasurer'], '["Wolf"]'], 'the account');
+  a.run("sync.backend.putInvite(sync.docId, 'newbie@example.com', { role: 'leader', positions: ['kernel'], dens: [] })");
+  await settle([a], 1200);
+  const iv = await w.call('owner', 'GET', 'invite', { email: 'newbie@example.com' });
+  eq([iv.body.role, iv.body.positions], ['leader', ['kernel']], 'the invite');
+  a.run("sync.backend.putInvite(sync.docId, 'pa@example.com', { role: 'parent' })");
+  await settle([a], 1200);
+  eq((await w.call('owner', 'GET', 'invite', { email: 'pa@example.com' })).body.role, 'parent', 'a parent invite, as before');
+});
+
 atest('api client: each role signs in with one session call and lands on the feed its role allows', async () => {
   const w = await (await apiWorld()).seed();
   w.state(3, PACK_STATE());
@@ -16356,7 +18082,7 @@ atest('api client: two leaders save at once — the second is refused (409), mer
   const w = await (await apiWorld()).seed();
   w.state(3, PACK_STATE());
   const a = await (await apiClient(w, 'owner')).start();
-  const b = await (await apiClient(w, 'editor')).start();
+  const b = await (await apiClient(w, 'admin2')).start();
   eq([a.get('state.rev'), b.get('state.rev')], [3, 3], 'both start on rev 3');
   // b has read rev 3 and is about to write it; a's save lands in between.
   a.run("state.ledger.push({ id: 'la', amountCents: 500 }); commit()");
@@ -16373,7 +18099,7 @@ atest('api client: two leaders save at once — the second is refused (409), mer
   eq(b.log.filter((l) => /^PUT \/P$/.test(l)).length, 2, 'b did not retry after the conflict');
   const s = serverState(w);
   eq([s.rev, s.json.ledger.map((l) => l.id).sort()], [5, ['l0', 'la', 'lb']], 'the server lost an entry');
-  eq(s.device, 'dev-editor', 'the last writer');
+  eq(s.device, 'dev-admin2', 'the last writer');
   eq(b.get('[state.rev, sync.dirty, sync.clobber, state.ledger.length]'), [5, false, false, 3], 'b after the retry');
   ok(b.get('toasts').some((t) => /Another device saved changes/.test(t)), 'b was not told another device saved');
   // a hears of it at its next poll, and adopts it.
@@ -16534,7 +18260,7 @@ atest('api client: on switch day the owner’s copy is the one copied in, so it 
     eq(owner.get('sync.notice'), path === 'held, then the feed' ? 'awaiting-import' : '', `${path}: the owner’s device before the copy-in`);
     const mf = owner.get(`buildMoveFile({ packId: '${API_PACK}', record: { rev: 41, device: 'fs-dev', json: ${JSON.stringify(JSON.stringify(local))} },
       members: [{ uid: 'uid-owner', role: 'admin', name: 'O', email: 'owner@example.com' },
-        { uid: 'uid-editor', role: 'editor', name: 'E', email: 'editor1@example.com' }], invites: [], joinCfg: null, at: 'now' })`);
+        { uid: 'uid-admin2', role: 'admin', name: 'E', email: 'admin2@example.com' }], invites: [], joinCfg: null, at: 'now' })`);
     const body = owner.get(`moveImportBody(${JSON.stringify(mf)}, '${API_PACK}')`).body;
     eq((await w.call('owner', 'POST', 'import', null, { body })).status, 200, `${path}: the copy-in`);
     owner.reset();
@@ -16546,7 +18272,7 @@ atest('api client: on switch day the owner’s copy is the one copied in, so it 
     eq(owner.get('Object.keys(timers).filter(function (k) { return timers[k].ms === 800 || timers[k].ms === 10000; }).length'), 0,
       `${path}: a save is still scheduled`);
     // An editor renames the pack: a change the append-only merge does not carry.
-    const ed = await (await apiClient(w, 'editor')).start();
+    const ed = await (await apiClient(w, 'admin2')).start();
     await ed.edit("state.packName = 'Renamed Pack'");
     eq(serverState(w).rev, 42, `${path}: the editor’s save`);
     // The owner's device hears it, then saves an edit of its own.
@@ -16569,14 +18295,16 @@ atest('api client: a pack copied in at rev 0 goes in at rev 1, so a first save r
     const where = env.DEPLOY_ENV ? 'production' : 'staging';
     const w = env.DEPLOY_ENV ? await apiWorld(env) : await (await apiWorld()).seed();
     if (env.DEPLOY_ENV) {
-      // In production the editor gets in through the copied roster: bring it in first, then take
-      // the record away again, as if the copy-in were still to come.
+      // In production the second admin gets in through the copied roster: bring it in first, then
+      // take the record away again, as if the copy-in were still to come. (The editor this was,
+      // until that role was retired, 2026-10-02, writes nothing now.)
       await w.session('owner');
-      eq((await w.call('owner', 'POST', 'import', null, { body: importBody() })).status, 200, 'the roster');
+      const roster = importBody().members.concat([{ uid: 'uid-admin2', role: 'admin', name: 'Test Admin2', email: 'admin2@example.com', addedAt: 2500 }]);
+      eq((await w.call('owner', 'POST', 'import', null, { body: importBody({ members: roster }) })).status, 200, 'the roster');
       w.db.raw.prepare('DELETE FROM pack_state').run();
       w.db.raw.prepare('DELETE FROM import_lock').run();
     }
-    const ed = await (await apiClient(w, 'editor', { state: PACK_STATE() })).start();
+    const ed = await (await apiClient(w, 'admin2', { state: PACK_STATE() })).start();
     eq(ed.get('[sync.packMissing, sync.dirty]'), [true, true], `${where}: the editor did not hear "no pack" (the test proves nothing)`);
     let imported = null;
     ed.intercept = async (method) => {
@@ -16601,7 +18329,7 @@ atest('a copy choice closed with Escape keeps saying it waits, and a device that
   w.state(3, PACK_STATE());
   // (Sync conflicts, Keith 2026-10-02 — a device with unsaved work and no base to tell it from an old copy, as one
   // from before the base: still asked, whole copy. One with nothing unsaved takes the server's copy quietly now.)
-  const ed = await (await apiClient(w, 'editor', { state: PACK_STATE({ packName: 'Mine', scouts: [{ id: 'x', name: 'Old' }] }), unsynced: true })).start();
+  const ed = await (await apiClient(w, 'admin2', { state: PACK_STATE({ packName: 'Mine', scouts: [{ id: 'x', name: 'Old' }] }), unsynced: true })).start();
   eq(ed.get('[ui.overlay && ui.overlay.kind, !!sync.conflict]'), ['sync-conflict', true], 'no choice to close (the test proves nothing)');
   ed.run('ui.overlay = null');   // Escape
   // The pill, the sync card's line and its button, from the page's own code.
@@ -16627,11 +18355,10 @@ atest('a copy choice closed with Escape keeps saying it waits, and a device that
     'pressing the pill does not reopen the chooser');
   ok(/\(sync\.conflict \? '<div class="row" style="margin:0 0 8px"><button type="button" class="btn small primary" data-act="sync-choose">'/.test(slice('renderPackSharing')),
     'the sync card has no way back to the choice');
-  // An admin makes the editor a viewer while the choice waits: the device takes the shared copy,
-  // writes nothing, and is no longer waiting.
-  const owner = await (await apiClient(w, 'owner')).start();
-  owner.run("setMemberRole('uid-editor', 'viewer')");
-  await settle([owner]);
+  // The leader becomes view-only while the choice waits: the device takes the shared copy, writes
+  // nothing, and is no longer waiting. (A viewer row is put straight into the table: since editor
+  // and viewer were retired, 2026-10-02, no admin sets either, but the leftover rows still load.)
+  w.db.raw.prepare("UPDATE members SET role = 'viewer' WHERE uid = 'uid-admin2'").run();
   ed.reset();
   await ed.poll();
   await settle([ed], 1200);
@@ -16645,7 +18372,7 @@ atest('a copy choice closed with Escape keeps saying it waits, and a device that
       var adopted = [], rendered = 0, toasts = [];
       function scheduleParentViewRefresh() {} function renderSyncPill() {} function render() { rendered += 1; }
       function syncPush() {} function clearTimeout() {} function setTimeout() {} function save() {} function showToast(m) { toasts.push(m); }
-      function canEdit() { return ${edit}; }
+      function canEdit() { return ${edit}; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function canDo() { return canEdit(); } function canEditDenMeeting() { return canEdit(); } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
       function normalizeState(p) { return p && typeof p === 'object' ? p : null; }
       function adoptRemote(d) { adopted.push(d.rev); sync.conflict = null; return true; }
       var ui = { tab: 'home', overlay: { kind: 'sync-conflict', remote: { rev: 5 } } };
@@ -16672,7 +18399,7 @@ atest('api client: an edit made while a save is out reaches the server, even whe
   // its save of a ledger row is on the wire. The owner then saves before the editor's next push.
   const w = await (await apiWorld()).seed();
   w.state(3, PACK_STATE());
-  const ed = await (await apiClient(w, 'editor', { state: PACK_STATE() })).start();
+  const ed = await (await apiClient(w, 'admin2', { state: PACK_STATE() })).start();
   const owner = await (await apiClient(w, 'owner', { state: PACK_STATE() })).start();
   eq([ed.get('[sync.dirty, state.rev]'), owner.get('[sync.dirty, state.rev]')], [[false, 3], [false, 3]], 'both devices start clean on rev 3');
   let renamed = false;
@@ -16709,7 +18436,7 @@ atest('api client: a pack copied in after a leader’s device heard "no pack" is
   const body = { pack: { rev: 10, device: 'fs-dev', json: JSON.stringify(copied) }, members: [], invites: [], join: null };
   for (const path of ['the seed', 'the 10 s retry', 'the feed, then the seed']) {
     const w = await (await apiWorld()).seed();
-    const ed = await (await apiClient(w, 'editor', { state: PACK_STATE() })).start();
+    const ed = await (await apiClient(w, 'admin2', { state: PACK_STATE() })).start();
     eq(ed.get('[sync.feed, sync.packMissing, sync.remoteRec, sync.dirty]'), ['doc', true, null, true], `${path}: the editor heard "no pack"`);
     ok(ed.get('Object.keys(timers).some(function (k) { return timers[k].ms === 800; })'), `${path}: no seed was scheduled (the test proves nothing)`);
     if (path === 'the 10 s retry') {
@@ -16894,7 +18621,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
       var records = [], merged = [], toasts = [], firstAnswers = [];
       var fakeBe = { serverRevs: ${!!over.serverRevs}, serverTime: function () { return null; },
         pushPack: function (h, build) { var out = build(${JSON.stringify(over.remote)}); if (out.record) records.push(out.record); return now(out.result); } };
-      function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
+      function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
       function mergeRemoteAppendOnly(d) { merged.push(d.rev); return 0; } function holdPushes() { return false; }
       function ledgerRowConflicts() { return []; }   // Phase 3, C6: the merge is stubbed, and so is its pre-check
       function ledgerLookCount() { return 0; } function noteLedgerLookAfterSync() {} function noteLedgerLookFromMerge() {}   // the merge is stubbed; so is what it brings on
@@ -16937,7 +18664,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
       var timers = [], adopted = 0;
       function scheduleParentViewRefresh() {} function renderSyncPill() {} function render() {} function syncPush() {}
       function clearTimeout() {} function setTimeout(fn) { timers.push(fn); return 't'; }
-      function canEdit() { return true; } function save() {} function showToast() {} function canReopenStatement() { return true; }
+      function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; } function save() {} function showToast() {} function canReopenStatement() { return true; }
       function normalizeState(p) { return p && typeof p === 'object' ? p : null; }
       function adoptRemote(d) { adopted += 1; state.rev = d.rev; return true; }
       var ui = { tab: 'home', overlay: null };
@@ -16960,10 +18687,10 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
     const ctx = vm.createContext({});
     vm.runInContext(`
       var pushed = 0;
-      function canEdit() { return true; } function render() {} function showToast() {} function scheduleSyncPush() { pushed += 1; } function canReopenStatement() { return true; }
+      function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; } function render() {} function showToast() {} function scheduleSyncPush() { pushed += 1; } function canReopenStatement() { return true; }
       var ui = { overlay: { kind: 'sync-conflict', remote: { rev: 9 } } }, state = { rev: 2 };
       var sync = { backend: { serverRevs: ${serverRevs} } };
-      ${['seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf', 'keepLocalCopy', 'keepLocalNeedsAdmin'].map(decl).join('\n')}
+      ${['seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf', 'keepLocalCopy', 'keepLocalNeedsAdmin', ...SECTION_GUARD_FNS].map(decl).join('\n')}
       keepLocalCopy();`, ctx);
     return vm.runInContext('[state.rev, pushed, ui.overlay]', ctx);
   };
@@ -17432,7 +19159,7 @@ atest('shift totals: a view built by the real buildParentView is one the server 
   const ctx = pvCtx(SR_STANDINGS_STUBS + `state.storefronts[0].date = '${yesterday}'; state.budget.programYear = ${py};`);
   const view = vm.runInContext('buildParentView(state, { showStandings: true })', ctx);
   const w = await (await apiWorld()).seed();
-  eq((await w.call('editor', 'PUT', 'view', null, { body: view })).status, 200, 'the leader’s page publishes the view');
+  eq((await w.call('admin2', 'PUT', 'view', null, { body: view })).status, 200, 'the leader’s page publishes the view');
   const r = await w.call('parent', 'POST', 'shiftReports', null, { body: { sfId: 'sf1', blockId: 'b2', teCents: 5000, cashCents: 0, attest: true } });
   eq([r.status, r.body.report && r.body.report.blockId], [200, 'b2'], 'a family reports a shift from the published view');
   const bad = await w.call('parent', 'POST', 'shiftReports', null, { body: { sfId: 'sf1', blockId: 'b9', teCents: 1, cashCents: 0, attest: true } });
@@ -17713,7 +19440,7 @@ function srLeaderCtx(o) {
       } } };
     function shiftReportsOn() { return true; }
     function parentMode() { return false; }
-    function canEdit() { return sync.myRole === 'admin' || sync.myRole === 'editor'; }
+    function canEdit() { return sync.myRole === 'admin' || sync.myRole === 'editor'; } function canDo(a) { return canEdit(); } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
     function commit() { if (!canEdit()) return false; commits += 1; return true; }
     function showToast(m) { toasts.push(m); }
     function render() {}
@@ -17725,18 +19452,20 @@ function srLeaderCtx(o) {
        'leaderReportsOn', 'canReviewReports', 'srReports', 'srReport', 'srWaiting', 'srBlockOf', 'srWhen', 'srMine', 'srReplaces',
        'LEADER_SR_SAY', 'leaderSrMessage', 'srNotNow', 'renderShiftReportCard', 'renderBlockReportLine', 'renderShiftReportsBanner',
        'srWaitingOn', 'acceptShiftReport', 'srLanded', 'srSettle', 'srRollback', 'shiftReportsReconcile', 'shiftReportsAfterPush',
-       'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srReasonDraft', 'srNameClean', 'ledgerStampClean', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout',
+       'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srReasonDraft', 'srNameClean', 'srSignName', 'ledgerStampClean', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout',
        'srIConfirmed', 'srFamiliesNow', 'srNeedsCheck', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'SR_CHECK_TE', 'SR_IMPORT_FIRST', 'familyKeyOf',
-       'blockCashCheck', 'signoffFromOf', 'SIGNOFF_FROM_DEFAULT', 'signoffHides', 'isoPlusDays', 'SHIFT_REPORT_DAYS', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
+       'blockCashCheck', 'signoffFromOf', 'SIGNOFF_FROM_DEFAULT', 'signoffHides', 'isoPlusDays', 'SHIFT_REPORT_DAYS', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE', 'SR_UNDO_ASK',
        'srParentStore', 'srHomeFamilyOn', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashHistorySay', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
-       'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay'].map(decl).join('\n')}
+       'srCashEntries', 'srMayUndo', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
+       'SR_CASH_UNDO_QUICK', 'srCashUndoForm', 'srCashUndoSay'].map(decl).join('\n')}
     function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }
     function shiftReportToday() { return todayISO(); }   // the pack's day, here the test's`, ctx);
   const run = (js) => vm.runInContext(js, ctx);
   const get = (js) => JSON.parse(JSON.stringify(run(js) === undefined ? null : run(js)));
   // The save landed: the server's copy is this page's copy.
   const landed = () => run('sync.remoteRec = { rev: 9, json: JSON.stringify(state) }');
-  const answer = async (i, err) => { run(`answers[${i}].${err ? 'rej' : 'res'}(${err ? JSON.stringify(err) : '{}'})`); for (let k = 0; k < 5; k++) await new Promise((r) => setImmediate(r)); };
+  // `body`: what the server answers (the report a PATCH returns), {} when not given.
+  const answer = async (i, err, body) => { run(`answers[${i}].${err ? 'rej' : 'res'}(${err ? JSON.stringify(err) : JSON.stringify(body || {})})`); for (let k = 0; k < 5; k++) await new Promise((r) => setImmediate(r)); };
   return { ctx, run, get, landed, answer, block: (id) => get(`state.storefronts[0].blocks.filter(function (b) { return b.id === '${id}'; })[0]`) };
 }
 const srRep = (over) => Object.assign({ id: 'rep-1', sfId: 'sf1', blockId: 'b1', teCents: 12345, cashCents: 2500, note: 'Counted with Jo', status: 'submitted',
@@ -17878,7 +19607,7 @@ test('shift reports S-3: a viewer reads the card with no buttons, and the sender
   const V = srLeaderCtx({ role: 'viewer', reports: [srRep()] });
   const card = V.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
   ok(/Nora Newfamily<\/strong> sent these totals/.test(card) && /\$123\.45/.test(card) && /\$25\.00/.test(card) && /“Counted with Jo”/.test(card), 'the card’s content');
-  ok(!/<button|<form/.test(card) && /An admin or editor accepts or sends back shift reports\./.test(card), 'a viewer’s card has buttons');
+  ok(!/<button|<form/.test(card) && /A leader at the booth accepts or sends back shift reports: a den leader, the Cubmaster, the Popcorn Kernel, the Treasurer or the Committee Chair\./.test(card), 'a viewer’s card has buttons');
   V.run("acceptShiftReport('rep-1', { collected: true, replaceOk: true }); leaderShiftReportAct('sr-return-open', { dataset: { rid: 'rep-1' } })");
   eq([V.block('b1').salesCents, V.get('commits'), V.get('ui.srReturn')], [0, 0, null], 'a viewer accepted or opened a send-back');
   ok(/<p class="eyebrow"[^>]*>Shift report from a family<\/p>/.test(card), 'the card’s heading');
@@ -17985,7 +19714,7 @@ test('preview as a parent: the parent preview is the leader’s own parent self 
 atest('shift reports S-3: a leader’s page accepts a family’s report against the real server, finishes a lost accept on the next load, and undoes a refused one', async () => {
   await apiSetup();
   const today = API.rules.packToday();
-  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent', pending: 'pending', newbie: 'parent' });
+  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', admin3: 'admin', viewer: 'viewer', parent: 'parent', pending: 'pending', newbie: 'parent' });
   const blk = (id, extra) => Object.assign({ id, label: id, start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }],
     salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '' }, extra || {});
   const pack = PACK_STATE({ scouts: [{ id: 's1', name: 'Ada' }], storefronts: [{ id: 'sf1', name: 'Kroger', date: today,
@@ -18004,7 +19733,7 @@ atest('shift reports S-3: a leader’s page accepts a family’s report against 
     return r.body.report.id;
   };
   const r1 = await send('parent', 'b1', 12345, 2500);
-  const ed = await pin(await apiClient(w, 'editor', { state: pack })).start(1200);
+  const ed = await pin(await apiClient(w, 'admin3', { state: pack })).start(1200);
   ok(ed.log.indexOf('GET /P/shift-reports') >= 0, 'the leader’s page did not read the reports on load: ' + ed.log.join(', '));
   eq(ed.get("srWaiting().map(function (r) { return r.id; })"), [r1], 'the waiting report');
   // Accept: the block first, the save, then the PATCH.
@@ -18014,11 +19743,11 @@ atest('shift reports S-3: a leader’s page accepts a family’s report against 
   await settle([ed], 1200);
   const order = ed.log.filter((l) => /^PUT \/P$|^PATCH \/P\/shift-reports/.test(l));
   eq(order.slice(0, 2), ['PUT /P', 'PATCH /P/shift-reports/' + r1], 'saved, then signed off');
-  eq(w.one('SELECT status, reviewed_by_uid, te_cents FROM shift_reports WHERE id = ?', r1), { status: 'accepted', reviewed_by_uid: 'uid-editor', te_cents: 12345 }, 'the report');
+  eq(w.one('SELECT status, reviewed_by_uid, te_cents FROM shift_reports WHERE id = ?', r1), { status: 'accepted', reviewed_by_uid: 'uid-admin3', te_cents: 12345 }, 'the report');
   const server = () => JSON.parse(w.one('SELECT json FROM pack_state WHERE pack_id = ?', API_PACK).json).storefronts[0].blocks;
   const s1 = server()[0];
   eq([s1.salesCents, s1.donationsCents, s1.cashCountedBy, s1.cashVerifiedBy, s1.reportId, s1.reportFrom, s1.reportPending],
-    [12345, 2500, 'Test parent', 'Test editor', r1, 'Test parent', undefined], 'the block on the server, settled');
+    [12345, 2500, 'Test parent', 'Test admin3', r1, 'Test parent', undefined], 'the block on the server, settled');
   // A lost accept: the PATCH never reaches the server. The next page load finishes it.
   const r2 = await send('newbie', 'b2', 4000, 100);
   ed.run('loadShiftReports()');
@@ -18028,9 +19757,9 @@ atest('shift reports S-3: a leader’s page accepts a family’s report against 
   ed.run(`acceptShiftReport('${r2}', { collected: true })`);
   await settle([ed], 1200);
   await settle([ed], 1200);
-  eq([w.one('SELECT status FROM shift_reports WHERE id = ?', r2).status, server()[1].reportPending && server()[1].reportPending.by], ['submitted', 'uid-editor'],
+  eq([w.one('SELECT status FROM shift_reports WHERE id = ?', r2).status, server()[1].reportPending && server()[1].reportPending.by], ['submitted', 'uid-admin3'],
     'the block saved, the report not signed off');
-  const ed2 = await pin(await apiClient(w, 'editor', { state: JSON.parse(w.one('SELECT json FROM pack_state WHERE pack_id = ?', API_PACK).json) })).start(1200);
+  const ed2 = await pin(await apiClient(w, 'admin3', { state: JSON.parse(w.one('SELECT json FROM pack_state WHERE pack_id = ?', API_PACK).json) })).start(1200);
   await settle([ed2], 1200);
   await settle([ed2], 1200);
   eq(w.one('SELECT status, te_cents FROM shift_reports WHERE id = ?', r2), { status: 'accepted', te_cents: 4000 }, 'the next load finished the accept');
@@ -18050,7 +19779,7 @@ atest('shift reports S-3: a leader’s page accepts a family’s report against 
   ok(ed2.get('toasts').some((t) => /The block is back to what it was\./.test(t)), 'the leader was not told');
   eq(w.one('SELECT status FROM shift_reports WHERE id = ?', r3).status, 'withdrawn', 'the report');
   // The leader's own report: the server and the page both refuse.
-  const r4 = await send('editor', 'b3', 1, 1);
+  const r4 = await send('admin3', 'b3', 1, 1);
   ed2.run('loadShiftReports()');
   await settle([ed2], 1200);
   ed2.run(`acceptShiftReport('${r4}', { collected: true, replaceOk: true })`);
@@ -18098,7 +19827,7 @@ atest('shift reports S-3: a leader’s page accepts a family’s report against 
 async function s4World() {
   PEOPLE.other = PEOPLE.other || ['uid-other', 'other1@example.com'];
   PEOPLE.loose = PEOPLE.loose || ['uid-loose', 'loose1@example.com'];
-  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', viewer: 'viewer', parent: 'parent', pending: 'pending',
+  const w = await (await apiWorld()).seed({ admin2: 'admin', editor: 'editor', admin3: 'admin', viewer: 'viewer', parent: 'parent', pending: 'pending',
     newbie: 'parent', other: 'parent', loose: 'parent' });
   const today = API.rules.packToday();
   const blk = (id, scouts) => ({ id, label: id, start: '10:00', end: '12:00', assignments: scouts.map((s) => ({ scoutId: s, weight: 1 })),
@@ -18208,7 +19937,7 @@ atest('S-4: no pack record, or no such storefront or block in it, and nobody con
 atest('S-4: a leader accepts a confirmed report, or an unconfirmed one only with a written reason', async () => {
   const w = await s4World();
   const rid = (await w.send('parent', 'b1')).body.report.id;
-  const accept = (over) => w.act('editor', rid, Object.assign({ action: 'accept', teCents: 12345, cashCents: 2500, collected: true }, over || {}));
+  const accept = (over) => w.act('admin2', rid, Object.assign({ action: 'accept', teCents: 12345, cashCents: 2500, collected: true }, over || {}));
   eq((await accept()).body.error, 'needs-confirm', 'unconfirmed, no override');
   eq((await accept({ override: true })).body.reason, 'review-note', 'an override with no reason');
   eq((await accept({ override: true, reviewNote: '   ' })).body.reason, 'review-note', 'an override with a blank reason');
@@ -18220,7 +19949,7 @@ atest('S-4: a leader accepts a confirmed report, or an unconfirmed one only with
   // Confirmed: a plain accept, naming the confirmer in the audit.
   const r2 = (await w.send('parent', 'b5')).body.report.id;
   await w.confirm('newbie', r2);
-  const a2 = await w.act('editor', r2, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
+  const a2 = await w.act('admin2', r2, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
   eq([a2.status, a2.body.report.overridden, JSON.parse(w.audit('shift.accept')[0].detail).confirmedBy], [200, false, 'uid-newbie'], 'a confirmed accept');
 });
 
@@ -18231,7 +19960,7 @@ atest('S-4: the sender’s edit clears a confirmation, and a confirm racing an e
   const ed = await w.act('parent', rid, { action: 'edit', teCents: 13000, cashCents: 2500, attest: true });
   eq([ed.body.report.confirmed, ed.body.report.confirmedByName, JSON.parse(w.audit('shift.report.edit')[0].detail).confirmationCleared], [false, null, true],
     'the edit cleared the confirmation');
-  eq((await w.act('editor', rid, { action: 'accept', teCents: 13000, cashCents: 2500, collected: true })).body.error, 'needs-confirm', 'an accept after the edit');
+  eq((await w.act('admin2', rid, { action: 'accept', teCents: 13000, cashCents: 2500, collected: true })).body.error, 'needs-confirm', 'an accept after the edit');
   for (const reverse of [false, true]) {
     const v = await s4World();
     const r = (await v.send('parent', 'b1')).body.report.id;
@@ -18285,19 +20014,19 @@ atest('S-4: a parent who may confirm sees the figures to check — only they, on
 /* Preview as a parent (Keith, 2026-10-01) — GET /shift-reports?as=parent answers any approved role
    exactly as a parent with that uid would be answered: the parent shape, never a leader-only field. */
 const SR_LEADER_ONLY = ['submittedByUid', 'reviewedByUid', 'confirmedByUid', 'acceptedByUid', 'acceptedByName', 'acceptedAt', 'acceptNote', 'collected',
-  'salesCashOutcome', 'salesCashByName', 'salesCashByUid', 'salesCashAt'];
+  'salesCashOutcome', 'salesCashByName', 'salesCashByUid', 'salesCashAt', 'salesCashUndoNote', 'salesCashUndoByName', 'salesCashUndoAt'];
 atest('as a parent: a leader who is also a parent gets exactly a parent’s answer — own reports in the parent shape, others as status, myShifts — and nothing leader-only', async () => {
   const w = await s4World();
   // The editor is a parent too: linked to Ada, as the `parent` account is.
   const st = JSON.parse(w.one('SELECT json FROM pack_state').json);
-  st.scouts.find((sc) => sc.id === 's1').parentUids.push('uid-editor');
+  st.scouts.find((sc) => sc.id === 's1').parentUids.push('uid-admin2');
   w.db.raw.prepare('UPDATE pack_state SET json = ?, rev = rev + 1').run(JSON.stringify(st));
-  const mine = (await w.send('editor', 'b3', { salesCashCents: 100 })).body.report.id;
+  const mine = (await w.send('admin2', 'b3', { salesCashCents: 100 })).body.report.id;
   await w.act('owner', mine, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 100, override: true, reviewNote: 'Test' });
   await w.act('owner', mine, { action: 'salescash', outcome: 'collected', salesCashCents: 100 });
   const theirs = (await w.send('newbie', 'b1')).body.report.id;   // two families: Ada's (the editor's) may confirm it
   await w.send('parent', 'b5');   // Ada's family sends it: the editor, of that family, may not confirm it
-  const g = await w.call('editor', 'GET', 'shiftReports', null, { query: '?as=parent' });
+  const g = await w.call('admin2', 'GET', 'shiftReports', null, { query: '?as=parent' });
   eq(g.status, 200, 'an editor’s parent-shaped GET');
   eq(g.body.reports.map((r) => r.id), [mine], 'their own reports only');
   const own = g.body.reports[0];
@@ -18315,20 +20044,20 @@ atest('as a parent: a leader who is also a parent gets exactly a parent’s answ
   // editor (its confirmer) may not record what became of its cash.
   const sw = await s4World();
   const st2 = JSON.parse(sw.one('SELECT json FROM pack_state').json);
-  st2.scouts.find((sc) => sc.id === 's1').parentUids.push('uid-editor');
+  st2.scouts.find((sc) => sc.id === 's1').parentUids.push('uid-admin2');
   sw.db.raw.prepare('UPDATE pack_state SET json = ?, rev = rev + 1').run(JSON.stringify(st2));
   const cr = (await sw.send('newbie', 'b1', { salesCashCents: 300 })).body.report.id;
-  const seen = (await sw.call('editor', 'GET', 'shiftReports', null, { query: '?as=parent' })).body.others.find((o) => o.id === cr);
-  eq((await sw.act('editor', cr, { action: 'confirm', attest: true, teCents: seen.teCents, cashCents: seen.cashCents, salesCashCents: seen.salesCashCents,
+  const seen = (await sw.call('admin2', 'GET', 'shiftReports', null, { query: '?as=parent' })).body.others.find((o) => o.id === cr);
+  eq((await sw.act('admin2', cr, { action: 'confirm', attest: true, teCents: seen.teCents, cashCents: seen.cashCents, salesCashCents: seen.salesCashCents,
     updatedAt: seen.updatedAt })).status, 200, 'the editor confirms, as a parent');
   eq((await sw.act('owner', cr, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 300 })).status, 200, 'the owner accepts');
-  eq((await sw.act('editor', cr, { action: 'salescash', outcome: 'collected', salesCashCents: 300 })).body.error, 'same-person', 'the confirmer records its cash');
+  eq((await sw.act('admin2', cr, { action: 'salescash', outcome: 'collected', salesCashCents: 300 })).body.error, 'same-person', 'the confirmer records its cash');
   eq(sw.sql("SELECT count(*) AS n FROM audit WHERE action LIKE 'shift.salescash.%'")[0].n, 0, 'audited a refusal');
   eq((await sw.act('owner', cr, { action: 'salescash', outcome: 'collected', salesCashCents: 300 })).status, 200, 'another leader does');
   // Without ?as=parent, the editor reads as a leader, as before.
-  const full = await w.call('editor', 'GET', 'shiftReports');
+  const full = await w.call('admin2', 'GET', 'shiftReports');
   ok(full.body.reports.length >= 3 && full.body.reports.some((r) => r.submittedByUid), 'the leader’s answer, unchanged');
-  eq((await w.call('editor', 'GET', 'shiftReports', null, { query: '?as=leader' })).body.reason, 'as', 'nothing else may be asked');
+  eq((await w.call('admin2', 'GET', 'shiftReports', null, { query: '?as=leader' })).body.reason, 'as', 'nothing else may be asked');
   denied(await w.call('pending', 'GET', 'shiftReports', null, { query: '?as=parent' }), 'pending, as a parent');
   denied(await w.call('stranger', 'GET', 'shiftReports', null, { query: '?as=parent' }), 'a stranger, as a parent');
   eq([(await w.call('loose', 'GET', 'shiftReports')).body.linked, (await w.call('viewer', 'GET', 'shiftReports', null, { query: '?as=parent' })).body.linked],
@@ -18390,10 +20119,10 @@ atest('same family: recording the cash from sales refuses the sender and the sen
     w.db.raw.prepare('UPDATE pack_state SET json = ?, rev = rev + 1').run(JSON.stringify(st));
   };
   // An editor's own report on b2 (one family), accepted by the owner.
-  const mine = (await w.send('editor', 'b2', { salesCashCents: 300 })).body.report.id;
+  const mine = (await w.send('admin3', 'b2', { salesCashCents: 300 })).body.report.id;
   eq((await w.act('owner', mine, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 300, collected: true })).status, 200, 'accepted');
-  const sc = (who, rid, outcome, cents) => w.act(who, rid, { action: 'salescash', outcome, salesCashCents: cents });
-  eq((await sc('editor', mine, 'collected', 300)).body.error, 'same-person', 'the sender recording their own');
+  const sc = (who, rid, outcome, cents) => w.act(who, rid, Object.assign({ action: 'salescash', outcome, salesCashCents: cents }, outcome ? {} : { reviewNote: 'Test' }));
+  eq((await sc('admin3', mine, 'collected', 300)).body.error, 'same-person', 'the sender recording their own');
   // newbie's report on b5, confirmed by Ada's family and accepted by the owner; admin2 is linked to Cy (newbie's family).
   const r3 = (await w.send('newbie', 'b5', { salesCashCents: 400 })).body.report.id;
   await w.confirm('parent', r3);
@@ -18407,9 +20136,9 @@ atest('same family: recording the cash from sales refuses the sender and the sen
   const v = await s4World();
   const rv = (await v.send('newbie', 'b2', { salesCashCents: 100 })).body.report.id;
   v.db.raw.prepare("UPDATE pack_state SET json = '{x', rev = rev + 1").run();
-  eq((await v.act('editor', rv, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 100, collected: true })).body.error, 'same-family',
+  eq((await v.act('admin3', rv, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 100, collected: true })).body.error, 'same-family',
     'an unreadable record: no plain accept');
-  eq((await v.act('editor', rv, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 100, override: true, reviewNote: 'Record broken' })).status, 200,
+  eq((await v.act('admin3', rv, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 100, override: true, reviewNote: 'Record broken' })).status, 200,
     'an override with a reason');
   eq((await v.act('owner', rv, { action: 'salescash', outcome: 'collected', salesCashCents: 100 })).body.error, 'same-family', 'nor a record of the cash');
   // No record at all decides nothing, as before.
@@ -18429,14 +20158,14 @@ atest('same family: a leader in the sender’s family accepts only with a reason
   };
   // One family on b2 (Bo and Cy, famB): newbie sends it. The editor is linked to Cy only — a sibling of Bo.
   const r2 = (await w.send('newbie', 'b2')).body.report.id;
-  link('uid-editor', ['s3']);
+  link('uid-admin3', ['s3']);
   const acc = (who, rid, over) => w.act(who, rid, Object.assign({ action: 'accept', teCents: 12345, cashCents: 2500 }, over || {}));
-  const c = await acc('editor', r2, { collected: true });
+  const c = await acc('admin3', r2, { collected: true });
   eq([c.status, c.body.error], [409, 'same-family'], 'a sibling-linked leader’s collected accept');
-  eq((await acc('editor', r2, {})).body.error, 'same-family', 'a plain accept');
-  eq((await acc('editor', r2, { override: true, reviewNote: '  ' })).body.reason, 'review-note', 'an override with no reason');
+  eq((await acc('admin3', r2, {})).body.error, 'same-family', 'a plain accept');
+  eq((await acc('admin3', r2, { override: true, reviewNote: '  ' })).body.reason, 'review-note', 'an override with no reason');
   eq(w.sql("SELECT count(*) AS n FROM audit WHERE action LIKE 'shift.accept%'")[0].n, 0, 'a refused accept was audited');
-  const o = await acc('editor', r2, { override: true, reviewNote: 'Only leader at the table' });
+  const o = await acc('admin3', r2, { override: true, reviewNote: 'Only leader at the table' });
   eq([o.status, o.body.report.status, o.body.report.overridden, o.body.report.collected], [200, 'accepted', true, false], 'the override, with a reason');
   const a = w.audit('shift.accept.override').map((x) => JSON.parse(x.detail));
   eq([a.length, a[0].sameFamily, a[0].reason, a[0].collected], [1, true, 'Only leader at the table', false], 'audited as an override, same family');
@@ -18455,11 +20184,11 @@ atest('same family: a leader in the sender’s family accepts only with a reason
   v.db.batch = function (list) {
     v.db.batch = orig;
     const st = JSON.parse(v.one('SELECT json FROM pack_state').json);
-    st.scouts.find((sc) => sc.id === 's2').parentUids.push('uid-editor');
+    st.scouts.find((sc) => sc.id === 's2').parentUids.push('uid-admin3');
     v.db.raw.prepare('UPDATE pack_state SET json = ?, rev = rev + 1').run(JSON.stringify(st));
     return orig.call(v.db, list);
   };
-  const late = await v.act('editor', rv, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
+  const late = await v.act('admin3', rv, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
   eq([late.status, late.body.error, v.one('SELECT status FROM shift_reports WHERE id = ?', rv).status], [409, 'pack-moved', 'submitted'],
     'a link added while the accept was on its way: pack-moved, so the page tries again');
   // The rule itself, pure.
@@ -18595,7 +20324,7 @@ atest('S-4: end to end — two parents and a leader, and one parent and a leader
   eq(w.one('SELECT confirmed_by_uid FROM shift_reports WHERE id = ?', rid).confirmed_by_uid, 'uid-newbie', 'confirmed on the server');
   eq(nb.get('saves'), 0, 'the second parent’s page saved the pack');
   // The leader accepts: counted by the sender, verified by the second parent, accepted by the leader.
-  const ed = pin(await apiClient(w, 'editor', { state: w.pack }));
+  const ed = pin(await apiClient(w, 'admin2', { state: w.pack }));
   await ed.start(1200);
   await settle([ed], 1200);
   ed.run(`acceptShiftReport('${rid}', { collected: true })`);
@@ -18604,7 +20333,7 @@ atest('S-4: end to end — two parents and a leader, and one parent and a leader
   const server = () => JSON.parse(w.one('SELECT json FROM pack_state WHERE pack_id = ?', API_PACK).json).storefronts[0].blocks;
   const b1 = server()[0];
   eq([b1.salesCents, b1.cashCountedBy, b1.cashVerifiedBy, b1.reportApprovedBy, b1.reportConfirmedBy, b1.reportPending],
-    [12345, 'Test parent', 'Test newbie', 'Test editor', 'Test newbie', undefined], 'the block on the server');
+    [12345, 'Test parent', 'Test newbie', 'Test admin2', 'Test newbie', undefined], 'the block on the server');
   eq(w.one('SELECT status, overridden FROM shift_reports WHERE id = ?', rid), { status: 'accepted', overridden: 0 }, 'the report');
   // One parent on a two-family shift, nobody confirms: the leader accepts with a reason.
   const r5 = (await w.send('parent', 'b5', { teCents: 5000, cashCents: 0 })).body.report.id;
@@ -18637,16 +20366,17 @@ atest('S-4: end to end — two parents and a leader, and one parent and a leader
    server and the leaders' page. Made-up names and accounts throughout.
    ================================================================ */
 
-// s4World, plus `spouse` (a second account of the sender's family, linked to s1) and the editor
-// linked as a parent of s2 (another family on b1), for the confirmer-may-not-accept rule.
+// s4World, plus `spouse` (a second account of the sender's family, linked to s1) and admin3 (a
+// leader who reviews; the editor until that role was retired, 2026-10-02) linked as a parent of s2
+// (another family on b1), for the confirmer-may-not-accept rule.
 async function r1World() {
   PEOPLE.spouse = PEOPLE.spouse || ['uid-spouse', 'spouse1@example.com'];
   const w = await s4World();
   w.db.raw.prepare("INSERT INTO members (pack_id, uid, role, name, email, join_code, added_at) VALUES (?, 'uid-spouse', 'parent', 'Test spouse', 'spouse1@example.com', NULL, 1)").run(API_PACK);
   const st = JSON.parse(w.one('SELECT json FROM pack_state').json);
   st.scouts[0].parentUids = ['uid-parent', 'uid-spouse'];
-  st.scouts[1].parentUids = ['uid-newbie', 'uid-editor'];
-  st.scouts[2].parentUids = ['uid-newbie', 'uid-editor'];
+  st.scouts[1].parentUids = ['uid-newbie', 'uid-admin3'];
+  st.scouts[2].parentUids = ['uid-newbie', 'uid-admin3'];
   w.db.raw.prepare('UPDATE pack_state SET json = ?, rev = rev + 1').run(JSON.stringify(st));
   return w;
 }
@@ -18723,8 +20453,8 @@ atest('round 1: who verified the cash — the confirming parent, the leader who 
 atest('round 1: a leader who confirmed a report as a parent may not accept it', async () => {
   const w = await r1World();
   const rid = (await w.send('parent', 'b1')).body.report.id;
-  eq((await w.confirm('editor', rid)).status, 200, 'the editor confirms, as Bo’s parent');
-  const a = await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500 });
+  eq((await w.confirm('admin3', rid)).status, 200, 'the leader confirms, as Bo’s parent');
+  const a = await w.act('admin3', rid, { action: 'accept', teCents: 12345, cashCents: 2500 });
   eq([a.status, a.body.error], [409, 'same-person'], 'the confirmer accepting');
   eq((await w.act('owner', rid, { action: 'accept', teCents: 12345, cashCents: 2500 })).status, 200, 'another leader accepting');
 });
@@ -19044,6 +20774,8 @@ test('round 1: the season’s shift reports, as a leaders’ table and a CSV, wi
     srRep({ id: 'rep-3', blockId: 'b2', status: 'returned', reviewNote: 'Recount the jar', submittedAt: Date.parse('2026-10-03T20:00:00Z') }),
     srRep({ id: 'rep-4', blockId: 'gone', status: 'submitted', submittedAt: Date.parse('2026-10-04T20:00:00Z') }),
     srRep({ id: 'rep-5', status: 'accepted', collected: true, acceptedByName: 'Lee Leader', submittedAt: Date.parse('2025-11-01T20:00:00Z'), sfId: 'old', blockId: 'x' })];
+  // Reviews of 045e7ac: the first report's cash record was undone once, with a reason, before it was recorded again.
+  Object.assign(reps[0], { salesCashUndoNote: 'Marked the wrong shift', salesCashUndoByName: 'Kim Kernel', salesCashUndoAt: new Date(2026, 9, 4, 9).getTime() });
   const L = srLeaderCtx({ state: st, reports: reps });
   vm.runInContext(['programYearStartISO', 'programYearEndISO', 'ledgerCsvCell', 'shiftReportHistoryRows', 'SR_HISTORY_HEAD', 'SR_HISTORY_CSV_HEAD',
     'SR_HISTORY_REASONS_HEAD', 'srCashHistorySay', 'shiftReportHistoryCsv', 'srYearLabel', 'srHistoryFileName', 'SR_HISTORY_DONT_SHARE', 'renderShiftReportHistory'].map(decl).join('\n'), L.ctx);
@@ -19058,9 +20790,11 @@ test('round 1: the season’s shift reports, as a leaders’ table and a CSV, wi
   ok(csv.split('\n')[0] === 'Date,Storefront,Shift,Trail’s End,Cash donations,Popcorn sales cash not converted,"Collected / converted by, on",Sent by,Verified by,Accepted by,Status,Block now differs from report', 'the header');
   ok(/2026-10-03,Kroger,10:00–12:00,123\.45,25\.00,20\.00,"collected by Lee Leader, 2026-10-04",Nora Newfamily,confirmed by Bo Parent,Sam Leader,accepted,N/.test(csv), 'the cells');
   ok(/12:00–14:00,80\.00,0\.00,0\.00,,/.test(csv), 'S-5: a report with no cash from sales to collect says 0.00, and nobody collected it');
-  ok(!/SUM|Recount/.test(csv), 'a leader’s reason in the CSV by default');
+  ok(!/SUM|Recount|wrong shift/.test(csv), 'a leader’s reason in the CSV by default');
+  ok(/,"?Cash undone by Kim Kernel, 2026-10-04: Marked the wrong shift"?\n/.test(L.run('shiftReportHistoryCsv(shiftReportHistoryRows(2026), true)')), 'the undo\'s reason, when asked for');
+  ok(/collected by Lee Leader, 2026-10-04<br><span class="small muted">undone by Kim Kernel, 2026-10-04: Marked the wrong shift<\/span>/.test(L.run('renderShiftReportHistory()')), 'and on the screen');
   const csvR = L.run('shiftReportHistoryCsv(shiftReportHistoryRows(2026), true)');
-  ok(csvR.split('\n')[0].endsWith(',Leaders’ reasons (override or sent back)') && /,'=SUM\(A1\)\n/.test(csvR) && /,Recount the jar\n/.test(csvR),
+  ok(csvR.split('\n')[0].endsWith(',Leaders’ reasons (override / sent back / cash record undone)') && /,'=SUM\(A1\)\n/.test(csvR) && /,Recount the jar\n/.test(csvR),
     'asked for: one labelled last column, formula-safe');
   eq(L.run('srHistoryFileName(2026)'), 'shift-reports-2026.csv', 'a generic file name');
   const html = L.run('renderShiftReportHistory()');
@@ -19350,7 +21084,7 @@ test('sign-off from: storefronts before the pack’s sign-off date aren’t aske
   const line = (o) => {
     const x = vm.createContext({});
     vm.runInContext(`var state = ${JSON.stringify({ signoffFrom: o.from, storefronts: o.sfs || [] })}; var ui = ${JSON.stringify(o.ui || {})};
-      function canEdit() { return ${!!o.edit}; } function shiftReportToday() { return '2026-10-05'; } function todayISO() { return '2026-10-05'; }
+      function canEdit() { return ${!!o.edit}; } function canEditSection() { return canEdit(); } function shiftReportToday() { return '2026-10-05'; } function todayISO() { return '2026-10-05'; }
       function fmtDate(d) { return 'D' + d; }
       ${['esc', 'isoPlusDays', 'SIGNOFF_FROM_DEFAULT', 'signoffFromOf', 'signoffHides', 'blockCashCheck', 'signoffFromLine'].map(decl).join('\n')}`, x);
     return vm.runInContext('signoffFromLine()', x);
@@ -19365,10 +21099,14 @@ test('sign-off from: storefronts before the pack’s sign-off date aren’t aske
   ok(/Moving this to D2026-10-01 stops 1 second-adult cash warning on storefronts from D2026-09-15 to D2026-09-30\./.test(dr) &&
     /data-act="signoff-later" data-date="2026-10-01">Move the date</.test(dr) && /data-act="signoff-later-cancel"/.test(dr), 'the later date waits, and says what it stops');
   ok(/Tap again to stop 1 warning/.test(line({ edit: true, from: '2026-09-15', sfs: [{ date: '2026-09-28', blocks: [blank] }], ui: { signoffDraft: '2026-10-01', armed: 'signoff-later:2026-10-01' } })), 'two taps');
-  // The change: never a future date; a later one that hides warnings waits; logged on the book; gated by canEdit.
-  ok(/if \(ch === 'signoff-from'\) \{\s*if \(!canEdit\(\)\) \{ render\(\); return; \}[\s\S]{0,300}if \(soNow > shiftReportToday\(\)\) \{ ui\.signoffDraft = ''; showToast\('Pick today or an earlier date\.'\); render\(\); return; \}\s*if \(soNow > soWas && signoffHides\(state\.storefronts, soWas, soNow, todayISO\(\)\) > 0\) \{ ui\.signoffDraft = soNow;/.test(SCRIPT),
+  // The change: never a future date; a later one that hides warnings waits; logged on the book; gated by the
+  // ledger (pack positions: state.signoffFrom is the books', so a Popcorn Kernel can't skip their own sign-off).
+  ok(/if \(ch === 'signoff-from'\) \{\s*if \(!canEditSection\('ledger'\)\) \{ render\(\); return; \}[\s\S]{0,300}if \(soNow > shiftReportToday\(\)\) \{ ui\.signoffDraft = ''; showToast\('Pick today or an earlier date\.'\); render\(\); return; \}\s*if \(soNow > soWas && signoffHides\(state\.storefronts, soWas, soNow, todayISO\(\)\) > 0\) \{ ui\.signoffDraft = soNow;/.test(SCRIPT),
     'the change');
-  ok(/if \(act === 'signoff-later'\) \{\s*if \(!canEdit\(\)\) return;[\s\S]{0,300}arm\('signoff-later:' \+ soTo, function \(\) \{ setSignoffFrom\(soTo\); \}, ARM_WARNED_MS\);/.test(SCRIPT), 'the confirm');
+  ok(/if \(act === 'signoff-later'\) \{\s*if \(!canEditSection\('ledger'\)\) return;[\s\S]{0,300}arm\('signoff-later:' \+ soTo, function \(\) \{ setSignoffFrom\(soTo\); \}, ARM_WARNED_MS\);/.test(SCRIPT), 'the confirm');
+  // Pack positions: the date is the books' (treasurer, chair, admin), in the page and on the server alike.
+  ok(/if \(!canEditSection\('ledger'\)\) \{/.test(slice('signoffFromLine')), 'the date control does not follow the ledger');
+  eq(JSON.parse(/\/\*ACCESS-BEGIN\*\/([\s\S]*?)\/\*ACCESS-END\*\//.exec(SCRIPT)[1]).keyOwner.signoffFrom, 'ledger', 'state.signoffFrom is not the ledger’s');
   ok(/logLedger\('edit', 'book', \{ f: \{ signoffFrom: \[was, to\] \} \}\);\s*commit\(\);/.test(slice('setSignoffFrom')), 'logged');
   ok(!/myRole/.test(codeOnly(slice('signoffFromLine'))), 'a role compared');
   ok(!/'signoff-later'/.test(/var HELD_ACTS = \[[^\]]*\]/.exec(SCRIPT)[0]), 'the change is allowed while the reload gate holds');
@@ -19517,20 +21255,20 @@ atest('same family: a leader can’t record their own or their family’s cash f
 atest('sent back after its accept: the cash from sales can still be recorded, or marked the same cash as the new report — never stuck, never twice', async () => {
   const w = await srWorld();
   const rid = (await w.report('parent', { blockId: 'b1', salesCashCents: 800 })).body.report.id;
-  const sc = (who, outcome, id) => w.act(who, id || rid, { action: 'salescash', outcome, salesCashCents: 800 });
-  eq((await sc('editor', 'replaced')).body.error, 'report-moved', 'waiting: nothing to record');
-  await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 800, collected: true });
-  eq((await sc('editor', 'replaced')).body.reason, 'outcome', 'replaced, on a report still accepted');
+  const sc = (who, outcome, id) => w.act(who, id || rid, Object.assign({ action: 'salescash', outcome, salesCashCents: 800 }, outcome ? {} : { reviewNote: 'Test' }));
+  eq((await sc('admin3', 'replaced')).body.error, 'report-moved', 'waiting: nothing to record');
+  await w.act('admin3', rid, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 800, collected: true });
+  eq((await sc('admin3', 'replaced')).body.reason, 'outcome', 'replaced, on a report still accepted');
   await w.act('owner', rid, { action: 'return', reviewNote: 'Wrong block' });
-  const rep = await sc('editor', 'replaced');
+  const rep = await sc('admin3', 'replaced');
   eq([rep.status, rep.body.report.status, rep.body.report.salesCashOutcome], [200, 'returned', 'replaced'], 'replaced, once sent back');
   eq(w.audit('shift.salescash.replaced').length, 1, 'audited');
   eq((await sc('owner', null)).body.report.salesCashOutcome, null, 'undone');
   eq((await sc('admin2', 'collected')).body.report.salesCashOutcome, 'collected', 'collected, on a sent-back report');
   // Never on one sent back before any accept.
   const r2 = (await w.report('newbie', { blockId: 'b2', salesCashCents: 800 })).body.report.id;
-  await w.act('editor', r2, { action: 'return', reviewNote: 'Recount' });
-  eq((await sc('editor', 'collected', r2)).body.error, 'report-moved', 'sent back before it was ever accepted');
+  await w.act('admin3', r2, { action: 'return', reviewNote: 'Recount' });
+  eq((await sc('admin3', 'collected', r2)).body.error, 'report-moved', 'sent back before it was ever accepted');
   ok(refusedOutcome(w, rid), 'the table took an outcome that is not one of the three');
   // The page: listed when its block is gone, with the third button; the history says where it went.
   const reps = [srRep({ id: 'back', blockId: 'gone', status: 'returned', acceptedByUid: 'uid-ed', salesCashCents: 800, salesCashOutcome: null }),
@@ -19637,7 +21375,7 @@ atest('S-5: a leader sees the cash to collect, the accept carries it to the bloc
   await L.answer(0);
   // The box: once the accept is on the server, the cash from sales is recorded collected there too.
   eq(L.get('patches[1]'), { rid: 'rep-1', body: { action: 'salescash', outcome: 'collected', salesCashCents: 1525 } }, 'the box’s PATCH, after the accept');
-  await L.answer(1);
+  await L.answer(1, null, { report: { salesCashOutcome: 'collected', salesCashByName: 'Sam Leader', salesCashAt: 5 } });
   eq([L.block('b1').salesCash[0].outcome.outcome, L.block('b1').salesCash[0].outcome.by, L.block('b1').salesCash[0].cents], ['collected', 'Sam Leader', 1525],
     'the block keeps the amount, and says who collected it');
   ok(/Cash from popcorn sales marked collected by Sam Leader\. Deposit it and record it in the ledger as Popcorn money for the council\./.test(L.get('toasts').join('|')), 'said');
@@ -19654,11 +21392,14 @@ atest('S-5: a leader sees the cash to collect, the accept carries it to the bloc
   M.run('var undoIt = null; showToast = function (m, o) { toasts.push(m); undoIt = o && o.onAction; };');
   M.run("srCashAct('sr-cash-collected', { dataset: { rid: 'rep-1' } })");
   eq([M.get('patches[0].body'), M.block('b1').salesCash[0].outcome], [{ action: 'salescash', outcome: 'collected', salesCashCents: 1525 }, null], 'nothing on the block until the server agrees');
-  await M.answer(0);
+  await M.answer(0, null, { report: { salesCashOutcome: 'collected', salesCashByName: 'Sam Leader', salesCashAt: 5 } });
+  // Security review of 714a920..045e7ac, finding 1: the block says it as the server recorded it (the pack's server checks it so).
+  eq(M.block('b1').salesCash[0].outcome, { outcome: 'collected', by: 'Sam Leader', at: 5 }, 'in the server\'s words and time');
   eq([M.block('b1').salesCash[0].outcome.outcome, M.get('toasts').pop()],
     ['collected', 'Marked $15.25 collected by Sam Leader. Deposit it and record it in the ledger as Popcorn money for the council.'], 'collected');
   M.run('undoIt()');
-  eq(M.get('patches[1].body'), { action: 'salescash', outcome: null, salesCashCents: 1525 }, 'Undo asks the server');
+  eq(M.get('patches[1].body'), { action: 'salescash', outcome: null, salesCashCents: 1525, reviewNote: 'Undone right after it was marked, by the leader who marked it' },
+    'Undo on the toast asks the server, saying it was the recorder\'s own quick undo');
   await M.answer(1);
   eq([M.block('b1').salesCash, M.get('toasts').pop()], [[{ reportId: 'rep-1', cents: 1525, from: 'Nora Newfamily', outcome: null }], 'Undone. $15.25 is still to collect.'], 'undone');
   M.run("srCashAct('sr-cash-converted', { dataset: { rid: 'rep-1' } })");
@@ -19668,6 +21409,20 @@ atest('S-5: a leader sees the cash to collect, the accept carries it to the bloc
   M.run("sync.shiftReports.reports[0].salesCashOutcome = 'converted'; sync.shiftReports.reports[0].salesCashByName = 'Lee Leader'; sync.shiftReports.reports[0].salesCashAt = 5;");
   M.run('shiftReportsReconcile()');
   eq(M.block('b1').salesCash[0].outcome, { outcome: 'converted', by: 'Lee Leader', at: 5 }, 'mirrored from the server');
+  // Reviews of 045e7ac: the block's Undo asks why first, and sends nothing without a reason.
+  ok(/data-act="sr-cash-undo-open" data-rid="rep-1">Undo</.test(blk()) && !/data-form="sr-cash-undo"/.test(blk()), 'Undo, no form yet');
+  M.run("srCashAct('sr-cash-undo-open', { dataset: { rid: 'rep-1' } })");
+  ok(/<form data-form="sr-cash-undo" class="sr-return" data-rid="rep-1">[\s\S]*Why undo it\?[\s\S]*<textarea name="reason"[^>]*required>/.test(blk()) && !/sr-cash-undo-open/.test(blk()),
+    'the reason form, in place of the button');
+  const sent = M.get('patches').length;
+  M.run("srSalesCashSet('rep-1', null, false, '   ')");
+  eq([M.get('patches').length, M.get('toasts').pop()], [sent, 'Say why you are undoing it.'], 'no reason: nothing sent');
+  M.run("srSalesCashSet('rep-1', null, false, 'Counted on the wrong shift')");
+  eq(M.get('patches[' + sent + '].body'), { action: 'salescash', outcome: null, salesCashCents: 1525, reviewNote: 'Counted on the wrong shift' }, 'the undo carries the reason');
+  await M.answer(sent);
+  eq([M.block('b1').salesCash[0].outcome, M.get('ui.srCashUndo')], [null, null], 'undone, the form closed');
+  eq(M.run("srCashUndoSay({ salesCashUndoNote: 'Counted twice', salesCashUndoByName: 'Lee Leader', salesCashUndoAt: new Date(2026, 9, 5, 12).getTime() })"),
+    'undone by Lee Leader, 2026-10-05: Counted twice', 'the history\'s words');
   // A viewer reads the line, with no button.
   const V = srLeaderCtx({ role: 'viewer', state: { scouts: [], leaders: [], storefronts: [{ id: 'sf1', name: 'K', date: '2026-10-03', blocks: [
     { id: 'b1', label: 'B', assignments: [], salesCents: 100, donationsCents: 0, salesCash: [{ reportId: 'r9', cents: 100, from: 'Nora', outcome: null }] }] }] } });
@@ -19843,8 +21598,8 @@ test('youth protection: a leader who only collected the cash is not a supervisin
 });
 
 atest('youth protection: an email-shaped name is never written onto a block, sent to a parent, or put in the season’s record', async () => {
-  const ctx = sandbox(['srNameClean', 'ledgerStampClean']);
-  eq([ctx.srNameClean('nora@example.com'), ctx.srNameClean(' Nora Newfamily '), ctx.srNameClean('')], ['a signed-in parent', 'Nora Newfamily', ''], 'srNameClean');
+  const ctx = sandbox(['srNameClean', 'srSignName', 'ledgerStampClean']);
+  eq([ctx.srNameClean('nora@example.com'), ctx.srNameClean(' Nora Newfamily '), ctx.srNameClean('')], ['a signed-in parent', 'Nora Newfamily', ''], 'srNameClean', 'srSignName');
   const L = srLeaderCtx({ reports: [srRep({ submittedByName: 'nora@example.com', needsConfirm: true, confirmed: true, confirmedByName: 'bo@example.com', confirmedByUid: 'uid-bo' })] });
   L.run("acceptShiftReport('rep-1', {})");
   const b = L.block('b1');
@@ -19976,7 +21731,7 @@ function fsGonePair(over) {
   let server = { rev: 3, device: 'd0', updatedAt: 'TS', json: JSON.stringify(Object.assign({}, seed, { rev: 3 })) };
   const dev = (name) => {
     const ctx = fsFeedCtx(Object.assign({}, seed, { rev: 3 }), NORMALIZE_FNS.map(slice).join('\n') +
-      ['keepLocalCopy', 'keepLocalNeedsAdmin', 'KEEP_LOCAL_REFUSED', 'canReopenStatement', 'isAdmin'].map(decl).join('\n') + GONE_EXTRA(name) + `
+      ['keepLocalCopy', 'keepLocalNeedsAdmin', 'KEEP_LOCAL_REFUSED', 'canReopenStatement', 'isAdmin', ...SECTION_GUARD_FNS].map(decl).join('\n') + GONE_EXTRA(name) + `
       sync.deviceId = '${name}';
       fakeFirestore.runTransaction = function (db, body) {
         return body({ get: function (ref) { return now(snapOf(ref.path)); },
@@ -20142,7 +21897,7 @@ function chooserHtml(mine, cloud, over) {
     ${FORMAT_GATE_SRC()}
     function fixedPackMode() { return true; }
     // (Owner decision 22: signed in as \`over.role\`, or, with none, a pack with no accounts, where everyone edits.)
-    function canEdit() { return true; } function accountsInForce() { return ${!!(over && over.role)}; }
+    function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; } function accountsInForce() { return ${!!(over && over.role)}; }
     var sync = { dirty: ${!(over && over.clean)}, myRole: ${JSON.stringify((over && over.role) || '')} };
     var state = ${JSON.stringify(mine)};
     var ui = { armed: null, overlay: Object.assign({ kind: 'sync-conflict', remote: { rev: 4, json: ${JSON.stringify(JSON.stringify(cloud))} } }, ${JSON.stringify(over || {})}) };`, ctx);
@@ -20737,11 +22492,13 @@ const GONE_API_STATE = (over) => PACK_STATE(JSON.parse(JSON.stringify(Object.ass
   scouts: GONE_SEED.scouts, budget: GONE_SEED.budget, entries: GONE_SEED.entries, ledger: GONE_SEED.ledger, fundraisers: GONE_SEED.fundraisers,
   inventory: GONE_SEED.inventory, rsvps: {}, attendance: {}, collected: {}, charges: [], advancement: {}, onboarding: {}, derby: { cars: [] },
   gone: { entries: {}, ledger: {}, distributions: {}, sales: {}, imports: {}, scouts: {}, fundraisers: {}, products: {} } }, over || {}))));
-async function apiGonePair(over) {
+async function apiGonePair(over, bWho) {
   const w = await (await apiWorld()).seed();
   w.state(3, GONE_API_STATE(over));
   const a = await (await apiClient(w, 'owner')).start();
-  const b = await (await apiClient(w, 'editor')).start();
+  // B is a second admin (an editor until that role was retired, 2026-10-02: the server takes nothing
+  // from one now), unless the test asks for someone else.
+  const b = await (await apiClient(w, bWho || 'admin2')).start();
   for (const c of [a, b]) c.run(GONE_EXTRA(c.who));
   eq([a.get('state.rev'), b.get('state.rev')], [3, 3], 'both start on rev 3');
   return { w, a, b, server: () => serverState(w).json, rev: () => serverState(w).rev };
@@ -21370,7 +23127,10 @@ test('C1: close-out opens a new book for the new year, without last year’s asi
     'state.ledgerLog = mergeLedgerLog(ciLog, state.ledgerLog);'].concat(
     // C5 review — a season archive's copy (not the live log): shaped on load (as the live one is,
     // since the security re-check of C5, R4). (C8-5: close-out no longer writes one, the closed book holds the log.)
-    ['a.ledgerLog = mergeLedgerLog(evs, []);']).sort(),
+    ['a.ledgerLog = mergeLedgerLog(evs, []);'],
+    // Pack positions (client step 3) — what a leader's save SENDS (pushBody), not this device's log: the
+    // server's lines and the leader's own new ones.
+    ['out.ledgerLog = mergeLedgerLog(clone(arrOf(srv.ledgerLog)), clone(ownNew(st.ledgerLog, idsOf(srv.ledgerLog))));']).sort(),
     'something else writes the ledger log');
 });
 
@@ -21434,7 +23194,7 @@ atest('C2, api: two devices’ ledger logs are one log after a merge', async () 
   b.run(skew(5000));
   b.run("logLedger('tick', 'l1'); commit()");
   await settle([b], 800);
-  eq(server().ledgerLog.map((e) => [e.op, e.dev]), [['edit', 'dev-owner'], ['tick', 'dev-editor']], 'the merged log');
+  eq(server().ledgerLog.map((e) => [e.op, e.dev]), [['edit', 'dev-owner'], ['tick', 'dev-admin2']], 'the merged log');
 });
 
 /* ================================================================
@@ -21600,6 +23360,9 @@ function c2Page(o) {
     // and 'lg-id10' sorts before 'lg-id9'), so events one test writes stay in the order written.
     Date.now = (function (f) { var t = 0; return function () { t += 1; return f() + t; }; })(Date.now);
     function showToast(m, o) { toasts.push(m); toastOpts.push(o === undefined ? null : o); } function render() { renders += 1; } function commit() { commits += 1; }
+    function canEditSection() { return true; } function readOnlySay() { return ''; } function depositSelfCollected() { return false; } function depositNamesNone() { return false; }
+    var DEPOSIT_ONLY_DATE_SAY = '', DEPOSIT_ONLY_MAX_CENTS = 10000000, DEPOSIT_AHEAD_DAYS = 7;
+    function srSignName() { return ledgerActor(); } function isoPlusDays(iso, n) { var d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
     function setTimeout(f, ms) { armMs.push(ms); return 0; } function clearTimeout() {}
     function refundOverCreditWarning() { return ''; } function entryNeedsReceipt() { return false; } function ledgerLineIsDirect() { return false; }
     function todayISO() { return '2026-10-15'; } function programYearStartISO(py) { return py + '-07-01'; }
@@ -21614,6 +23377,109 @@ function c2Page(o) {
   const get = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, ctx)));
   return { ctx, run: (js) => vm.runInContext(js, ctx), get };
 }
+
+// Keith, 2026-10-02, and the treasurer's review of 045e7ac (4–6): the Kernel records a storefront deposit,
+// flagged for the treasurer; whoever keeps the books checks it against the slip and the bank, or asks;
+// nobody clears their own; a statement holding one asks first; it counts, said "awaiting review".
+test('positions deposits: the Kernel records a flagged storefront deposit; the books\' keeper checks it or asks; nobody clears their own', () => {
+  const review = /    if \(act\.indexOf\('deposit-review-ok:'\) === 0 \|\| act\.indexOf\('deposit-review-ask-open:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  const p = c2Page({ more: ['depositForIds', 'DEPOSIT_FOR_MAX'].map(decl).join('\n') +
+    `\nfunction act2(act, el) { el = el || { dataset: {} }; (function () {\n${review}\n})(); }\nvar DEPOSIT_REVIEW_OWN_SAY = 'own';` });
+  p.run("canEditSection = function (s) { return s === 'deposits'; }; DEPOSIT_ONLY_DATE_SAY = 'the treasurer enters it'; state.storefronts = [];");
+  p.run("ui.ledgerDraft = ledgerDraftDefault(); ui.ledgerDraft.date = '2026-09-10'; ui.ledgerDraft.amount = '250'; ui.ledgerDraft.direction = 'out'; ui.ledgerDraft.lineId = 'x1'; act('ledger-add')");
+  const d = p.get('state.ledger[state.ledger.length - 1]');
+  eq([d.amountCents, d.direction, d.source, d.lineId, d.scoutId, d.depositReview, d.enteredByUid, d.description],
+    [25000, 'in', 'storefront', '', '', true, 'u1', 'Storefront cash donations banked'], 'a storefront deposit, whatever the form said, flagged');
+  const n = p.get('state.ledger.length');
+  p.run("toasts = []; ui.ledgerDraft = ledgerDraftDefault(); ui.ledgerDraft.date = '2026-08-20'; ui.ledgerDraft.amount = '10'; act('ledger-add')");
+  eq([p.get('state.ledger.length'), p.get('toasts')], [n, ['the treasurer enters it']], 'dated in the reconciled period: refused, not warned');
+  // The books' keeper: not the one who entered it.
+  p.run("canEditSection = function () { return true; }; toasts = []; act2('deposit-review-ok:' + state.ledger[state.ledger.length - 1].id)");
+  eq([p.get('state.ledger[state.ledger.length - 1].depositReview'), p.get('toasts')], [true, ['own']], 'their own: not cleared');
+  p.run("sync.user.uid = 'u2'; sync.user.displayName = 'Lee Chair'; act2('deposit-review-ok:' + state.ledger[state.ledger.length - 1].id)");
+  const r = p.get('state.ledger[state.ledger.length - 1]');
+  eq([r.depositReview, r.depositReviewedBy, r.depositReviewedByUid, typeof r.depositReviewedAt, p.get('log()[log().length - 1].f')],
+    [undefined, 'Lee Chair', 'u2', 'string', { depositReview: [true, null] }], 'checked: the flag off, who and when, logged');
+  // A leader who neither keeps the books nor records deposits records nothing.
+  p.run("canEditSection = function () { return false; }; toasts = []; ui.ledgerDraft.amount = '5'; act('ledger-add')");
+  eq(p.get('state.ledger.length'), n, 'a den leader');
+  // The words and the shapes.
+  const say = vm.createContext({});
+  vm.runInContext(['depositsToReviewSay', 'depositReconcileAskSay', 'DEPOSIT_ONLY_SAY', 'DEPOSIT_ONLY_DATE_SAY', 'DEPOSIT_REVIEW_WHY', 'DEPOSIT_REVIEW_OWN_SAY'].map(decl).join('\n'), say);
+  eq([say.depositsToReviewSay(1), say.depositsToReviewSay(3), say.depositReconcileAskSay(2)],
+    ['1 storefront deposit to review', '3 storefront deposits to review',
+      '2 deposits on this statement haven’t been checked against the deposit slip. Review them first, or tap again to reconcile anyway.'], 'the words');
+  ok(/var rlFlag = state\.ledger\.filter\(function \(e\) \{ return e && e\.depositReview === true && e\.reconciled === true && !e\.statementId; \}\)\.length;\s*if \(rlFlag && ui\.armed !== act\) showToast\(depositReconcileAskSay\(rlFlag\)\);\s*arm\(act,/.test(SCRIPT),
+    'reconciling a statement that holds one asks first');
+  ok(/\(e\.depositReview === true \? '<span class="pill bad">not checked yet<\/span>' : ''\)/.test(slice('renderLedgerEntries')), 'it counts, said "not checked yet"');
+  ok(/var h = !canEditSection\('ledger'\) \? \(canEditSection\('deposits'\) \? depositOnlyFormHtml\(dr\) : ''\) : \(/.test(slice('renderLedgerEntries')), 'the forms: the books\' keeper, the deposit recorder, nobody else');
+  ok(/if \(kind === 'deposit-review-ask'\) \{[\s\S]*?daRow\.depositReviewNote = daNote;\s*logLedger\('edit', daRow\.id, \{ f: \{ depositReviewNote: \[daWas, daNote\] \} \}\);/.test(SCRIPT), 'Ask the kernel: kept on the row, logged, flag stays');
+  ok(/if \(drEntry\.source === 'storefront' && drEntry\.direction === 'in' && \(depOnly \|\| depositSelfCollected\(drEntry\) \|\| depositNamesNone\(drEntry\)\)\) drEntry\.depositReview = true;/.test(SCRIPT),
+    'anyone\'s deposit of cash they collected themselves is flagged too');
+  // The review fields survive a load on a storefront deposit, and nowhere else.
+  const x = sandbox(['normalizeLedgerRow', 'stableRowId', 'depositForIds', 'DEPOSIT_FOR_MAX', 'LEDGER_METHODS', 'LEDGER_SOURCES', 'ledgerStampClean']);
+  const row = (o) => { const e = Object.assign({ id: 'd1', direction: 'in', source: 'storefront', amountCents: 100 }, o); x.normalizeLedgerRow(e, 'nl'); return JSON.parse(JSON.stringify(e)); };
+  eq([row({ depositReviewedBy: 'pat@example.com', depositReviewNote: 'x'.repeat(400) }).depositReviewedBy, row({ depositReviewNote: 'x'.repeat(400) }).depositReviewNote.length,
+    'depositReviewNote' in row({ depositReviewNote: 'Recount', source: 'donation' })], ['a signed-in leader', 300, false], 'normalized');
+});
+
+// The page's depositSelfCollected: a deposit of cash this leader collected on a shift it covers.
+test('positions deposits: a deposit of cash the depositor collected themselves is flagged for someone else', () => {
+  const c = vm.createContext({});
+  vm.runInContext(`var state = { storefronts: [{ id: 'sf1', date: '2026-10-03', blocks: [{ id: 'b1', reportCollected: true, reportApprovedBy: 'Kim Kernel' }] },
+    { id: 'sf2', date: '2026-10-10', blocks: [{ id: 'b2', salesCash: [{ reportId: 'r2', cents: 500, from: 'X', outcome: { outcome: 'collected', by: 'Lee', at: 1 } }] }] }] };
+    var me = 'u-k', myName = 'Kim Kernel', reps = [];
+    function ledgerActorUid() { return me; } function srSignName() { return myName; } function srReports() { return reps; }`, c);
+  vm.runInContext(['arrOf', 'depositForIds', 'DEPOSIT_FOR_MAX', 'depositCoveredSfs', 'depositCoveredIn', 'srCashEntries', 'depositSelfCollected'].map(decl).join('\n'), c);
+  const self = (e) => vm.runInContext('depositSelfCollected(' + JSON.stringify(e) + ')', c);
+  eq([self({ depositFor: 'sf1' }), self({ depositFor: 'sf2' }), self({ depositFrom: '2026-10-01', depositTo: '2026-10-05' }), self({ depositFor: '' })],
+    [true, false, true, false], 'accepted saying they collected it; not on another shift; a date range; nothing named');
+  vm.runInContext("myName = 'Lee'", c);
+  eq(self({ depositFor: 'sf2' }), true, 'marked its sales cash collected');
+  vm.runInContext("myName = 'Nobody'; reps = [{ sfId: 'sf2', salesCashOutcome: 'collected', salesCashByUid: 'u-k' }]", c);
+  eq(self({ depositFor: 'sf2' }), true, 'the server\'s record of it, by account');
+});
+
+// The treasurer's sign-off of ce6b8de (1–3): a mixed slip, a storefront banked in two deposits, and a booth
+// leader whose undo the server can't check.
+test('positions deposits: the books\' check names a mixed slip, subtracts a storefront\'s other deposits, and a refused undo says who can', () => {
+  const c = vm.createContext({});
+  vm.runInContext(`function storefrontKeptCents(sf) { return sf.kept; } function fmt(c) { return '$' + (c / 100).toFixed(2); }`, c);
+  vm.runInContext(['arrOf', 'depositForIds', 'DEPOSIT_FOR_MAX', 'depositCoveredIn', 'srCashEntries', 'ledgerUnpaired', 'depositCheckOf', 'depositCheckSay'].map(decl).join('\n'), c);
+  const sfs = [{ id: 'sf1', date: '2026-10-03', kept: 25000, blocks: [{ id: 'b1', salesCash: [{ reportId: 'r1', cents: 4000, outcome: { outcome: 'collected', by: 'K', at: 1 } }] }] },
+    { id: 'sf2', date: '2026-10-04', kept: 10000, blocks: [] }];
+  const dep = (o) => Object.assign({ id: 'd1', direction: 'in', source: 'storefront', amountCents: 25000, depositFor: 'sf1' }, o);
+  const say = (e, ledger) => vm.runInContext('depositCheckSay(depositCheckOf(' + JSON.stringify(e) + ', ' + JSON.stringify(ledger || [e]) + ', ' + JSON.stringify(sfs) + ', false))', c);
+  eq(say(dep()), 'Cash donations kept on that storefront: $250.00. They match.', 'a match');
+  eq(say(dep({ amountCents: 23800 })), 'Cash donations kept on that storefront: $250.00. The deposit is $12.00 less than that.', 'less');
+  eq(say(dep({ amountCents: 29000 })), 'Cash donations kept on that storefront: $250.00. The deposit is $40.00 more than that. ' +
+    'That’s the council’s sales cash. Record it as Popcorn money for the council, not here.', 'a mixed slip: the difference is the sales cash collected');
+  eq(say(dep({ amountCents: 26000 })), 'Cash donations kept on that storefront: $250.00. The deposit is $10.00 more than that.', 'more, not the sales cash');
+  // One storefront banked in two deposits: each is checked against what the other leaves.
+  const a = dep({ amountCents: 10000 }), b = dep({ id: 'd2', amountCents: 15000 });
+  eq([say(a, [a, b]), say(b, [a, b])], ['Cash donations kept on that storefront: $250.00. Other deposits for it: $150.00, so this one should be $100.00. They match.',
+    'Cash donations kept on that storefront: $250.00. Other deposits for it: $100.00, so this one should be $150.00. They match.'], 'a split deposit: no false difference');
+  eq(say(a, [a, b, dep({ id: 'd3', depositFor: 'sf2', amountCents: 999 }), Object.assign(dep({ id: 'd4', amountCents: 500 }), { reversedBy: 'rv-d4' }),
+    dep({ id: 'rv-d4', direction: 'out', amountCents: 500, reverses: 'd4' }), dep({ id: 'd5', source: 'donation' })]),
+    'Cash donations kept on that storefront: $250.00. Other deposits for it: $150.00, so this one should be $100.00. They match.',
+    'not another storefront\'s, a reversed one, or a donation');
+  ok(/Enter only the donations\. If the slip also had sales cash, say so in the description; the Treasurer records that part\./.test(vm.runInContext('DEPOSIT_ONLY_SAY', sandbox(['DEPOSIT_ONLY_SAY']))),
+    'the kernel\'s form does not say to enter only the donations');
+  ok(/esc\(depositCheckSay\(chk\)\)/.test(slice('depositReviewCardHtml')) && /depositCheckOf\(e, state\.ledger, state\.storefronts, viaTE\)/.test(slice('depositReviewCardHtml')), 'the card');
+  // 3: a booth leader's undo refused for a missing report.
+  const u = vm.createContext({});
+  vm.runInContext(`var sync = { srUndoAsk: 0 }; var SECTION_SAY = { storefronts: ['storefronts', 'the Popcorn Kernel'] };`, u);
+  vm.runInContext(['arrOf', 'sectionRefusedSay', 'srUndoAskTake', 'SR_UNDO_ASK'].map(decl).join('\n'), u);
+  vm.runInContext('sync.srUndoAsk = Date.now()', u);
+  eq(vm.runInContext("sectionRefusedSay(['storefronts'], srUndoAskTake())", u),
+    'Your undo wasn’t saved: the pack’s server couldn’t check it against the family’s report. Ask the Popcorn Kernel or Treasurer to undo it.', 'the undo refused');
+  ok(!/Popcorn Kernel or Treasurer/.test(vm.runInContext("sectionRefusedSay(['storefronts'], srUndoAskTake())", u)), 'said once, not on the next refusal');
+  vm.runInContext('sync.srUndoAsk = Date.now() - 600000', u);
+  eq(vm.runInContext('srUndoAskTake()', u), false, 'an undo ten minutes ago is not this refusal');
+  ok(/if \(!canEditSection\('storefronts'\) && !canDo\('shiftUndo'\)\) sync\.srUndoAsk = Date\.now\(\);/.test(slice('srRollback')), 'a booth leader\'s rollback is not noted');
+  ok(/err\.code === 'permission-denied' \? 'You can’t undo another leader’s accept\. ' \+ SR_UNDO_ASK/.test(slice('srUndoServerFirst')), 'a refused undo PATCH is a bare refusal');
+  ok((SCRIPT.match(/sectionRefusedSay\([^)]*, srUndoAskTake\(\)\)/g) || []).length === 2, 'both refusal toasts ask');
+});
 
 test('C2: each change to an entry is one logged edit — every field it changed, before and after, who, when, which device', () => {
   const p = c2Page();
@@ -21922,7 +23788,7 @@ const C2R_MORE = `
   var undo = null, undoWords = null, marks = [], editor = true;
   state.ledgerAside = [];
   ui.voidAsk = null; ui.voidWhy = '';
-  function canEdit() { return editor; }
+  function canEdit() { return editor; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
   function markGone(log, rows, back) { marks.push([log, rows.map(function (x) { return typeof x === 'string' ? x : x.id; }), !!back]); }
   function deleteWithUndo(label, restore, words) { undo = restore; undoWords = [label, words || null]; commit(); }
   // The ✕, the reason typed, and Void it.
@@ -22211,14 +24077,16 @@ const C3_READERS = {
   // Item 11 — storefront cash kept against deposited, and the hint (which reads what is not yet deposited).
   storefrontCashCheck: (L, x, c) => [false, true].map((te) => x.storefrontCashCheck(c.storefronts, L, te)).concat([x.storefrontCashCheck(c.storefronts, L, false, '2026-08-31')]),
   storefrontDepositsNaming: (L, x) => ['sf1', 'gone'].map((id) => x.storefrontDepositsNaming(L, id)),
-  storefrontCashHint: (L, x, c) => [7500, 5000, 2500, 1200, 100].map((a) => x.storefrontCashHint({ direction: 'in', amountCents: a, date: '2026-09-20', source: '' }, c.storefronts, L, false))
+  storefrontCashHint: (L, x, c) => [7500, 5000, 2500, 1200, 100].map((a) => x.storefrontCashHint({ direction: 'in', amountCents: a, date: '2026-09-20', source: '' }, c.storefronts, L, false)),
+  // The treasurer's sign-off of ce6b8de (2) — a deposit's check subtracts the storefront's other deposits.
+  depositCheckOf: (L, x, c) => { const k = x.depositCheckOf({ id: 'zz', amountCents: 7500, depositFor: 'sf1' }, L, c.storefronts, false); return [k.kept, k.others, k.diff, k.salesCash]; }
 };
 // Item 11 — the storefronts those two read: $75 kept between two blocks, $9 of sales cash still out.
 const C3_STOREFRONTS = [{ id: 'sf1', name: 'Kroger', date: '2026-09-01', blocks: [{ donationsCents: 5000 }, { donationsCents: 2500, salesCash: [{ reportId: 'r1', cents: 900, from: '', outcome: null }] }] }];
 // What those readers need besides themselves.
 const READER_DEPS = ['fmt', 'ledgerLogWhen', 'ledgerCsvCell', 'ledgerPairRole', 'ledgerReplacementId', 'ledgerReplacementFor',
   'statementInForce', 'statementReopened', 'fmtDateShort', 'arrOf', 'depositForIds', 'storefrontKeptCents', 'blockSalesCashInHand', 'blockSalesCashParts',
-  'STOREFRONT_HINT_SOURCES', 'STOREFRONT_HINT_DAYS', 'DEPOSIT_FOR_MAX', 'hintWords', 'storefrontDepositName'];
+  'STOREFRONT_HINT_SOURCES', 'STOREFRONT_HINT_DAYS', 'DEPOSIT_FOR_MAX', 'hintWords', 'storefrontDepositName', 'depositCoveredIn', 'srCashEntries'];
 // Security review of C4 (finding 1) — the readers that LIST or COUNT the rows, or tick them. A pair
 // that came apart and was sent back to the ledger is two counted rows that net to $0: these show
 // both (the treasurer ticks the reversal against the statement it is on), and only the balance is
@@ -22307,7 +24175,8 @@ test('C3: nothing outside the book’s own plumbing reads the voided rows, so no
   // Phase 3, C8 — closedBookBuild moves the voided rows to the year they were voided in (closed book or new book); it totals nothing from them.
   // Phase 3, C8 (C8-3) — and the carried rows, which are aside rows too: the Reconcile screen and the Entries block list them
   // (carriedRowsOf), and the tick handler ticks them; none of them is voided money, and reconcileTotals counts them only as an offset.
-  eq([...users].sort(), ['applyLedgerMerge', 'carriedBlockHtml', 'closedBookBuild', 'dropScout', 'freshState', 'handleAction', 'handleChange', 'isStateEmpty', 'keepLostVoids', 'ledgerAsideListHtml', 'ledgerAsideSettle', 'ledgerEntryLabel',
+  // Positions, stage 1 (2026-10-01) — ACCESS_TABLE names the key, to say which section owns it; it reads no row.
+  eq([...users].sort(), ['ACCESS_TABLE', 'applyLedgerMerge', 'carriedBlockHtml', 'closedBookBuild', 'dropScout', 'freshState', 'handleAction', 'handleChange', 'isStateEmpty', 'keepLostVoids', 'ledgerAsideListHtml', 'ledgerAsideSettle', 'ledgerEntryLabel',
     'ledgerLogNames', 'ledgerReverseSlot', 'ledgerScoutsHeld', 'ledgerUnvoidRow',
     // Phase 3, C5 — renderBankStatementSheet names an entry on a statement voided since; it totals nothing from it.
     'ledgerVoidRow', 'mergeLedgerRows', 'mergeRemoteAppendOnly', 'normalizeState', 'noteReconciledFates', 'renderCloseoutOverlay', 'renderLedger', 'renderLedgerEntries', 'renderReconcile', 'renderRowChooser', 'restoreGone',
@@ -24408,6 +26277,7 @@ test('C4 (option B): Entries shows both rows with their pills and the reason; th
     'entryAfterOpening', 'entryOnStatement', 'entrySignedCents', 'reconcileTotals', 'ledgerLocked', 'ledgerDateReconciled', 'entryWantsLine', 'entryRefundsFamily',
     'LEDGER_FILTERS', 'ledgerLockNote', 'ledgerFixButtonHtml', 'ledgerCorrectsLine', ...ASIDE_LIST_FNS]);
   vm.runInContext(decl('RECONCILE_CARRIED_HELP'), x);
+  vm.runInContext('function canEditSection() { return true; } function depositOnlyFormHtml() { return ""; }', x);
   vm.runInContext(`var ui = { ledgerOpen: {}, armed: null, ledgerFilter: {}, fixAsk: null, voidAsk: null };
     var state = { book: { openingCents: 100000, openingDate: '2026-07-01', reconciledThrough: '2026-08-31', statementDate: '2026-09-30', statementCents: 0 }, ledgerAside: [],
       ledger: [
@@ -25171,7 +27041,7 @@ test('Security re-check A and D: the ledger says when two reversals of an entry 
     '<p style="margin:0 0 10px">' + RECHECK_TWO('“&lt;img src=x onerror=alert(1)&gt;”', 'Oct 1 and Oct 5', '$40.00') + '</p></div>', 'the card');
   eq(x.ledgerLookCardHtml([X, rv('rv-X', { amountCents: 5000, reconciled: true })], BOOK).indexOf('Reverse the reversal (open its Detail') !== -1, true, 'the card passes the book on');
   // (C6 reviews: with what a merge said needs a look this session, after the book's own.)
-  ok(/\n    h \+= ledgerLookCardHtml\(state\.ledger, state\.book, sync\.lookNotes, state\.closedBooks\);[^\n]*\n    h \+= '<div class="card"><h2 class="section display">Ledger<\/h2>'/.test(slice('renderLedger')), 'renderLedger does not show it, with the book');
+  ok(/\n    h \+= ledgerLookCardHtml\(state\.ledger, state\.book, sync\.lookNotes, state\.closedBooks\);[^\n]*\n    h \+= depositReviewCardHtml\(\);[^\n]*\n    h \+= '<div class="card"><h2 class="section display">Ledger<\/h2>'/.test(slice('renderLedger')), 'renderLedger does not show it, with the book');
   ok(!/ledgerLook/.test(codeOnly(BPV())) && !/ledgerLook/.test(codeOnly(slice('renderParentApp'))), 'it reaches the parents');
 });
 
@@ -25690,7 +27560,7 @@ test('reload gate: nothing is published to parents while held, and no move file 
     const ctx = vm.createContext({});
     vm.runInContext(FAKE_BE + `
       function buildParentView() { return { events: [] }; }
-      function accountsInForce() { return true; } function canEdit() { return true; }
+      function accountsInForce() { return true; } function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
       function fixedSyncBlocked() { return false; } function clearTimeout() {} function render() {} function renderSyncPill() {}
       var parentViewTimer = null, parentViewFingerprint = null, state = {}, ui = { overlay: null };
       var sync = { backend: fakeBe, docId: 'P', joinLoaded: true, pack: { docId: 'P' }, firstSnap: false };
@@ -25720,7 +27590,7 @@ const gateStoreCtx = (stored) => {
     var localStorage = { getItem: function (k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
       setItem: function (k, v) { store[k] = String(v); } };
     var toasts = [], renders = 0, pushes = 0;
-    function showToast(m) { toasts.push(m); } function render() { renders += 1; } function canEdit() { return true; }
+    function showToast(m) { toasts.push(m); } function render() { renders += 1; } function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
     function syncCharges() {} function scheduleSyncPush() { pushes += 1; } function schedulePersist() {}
     function clearTimeout() {} function freshState() { return { version: 1, scouts: [], fresh: true }; }
     var liveEdit = false, persistTimer = null, persistPending = false, saveWarned = false;
@@ -26043,7 +27913,7 @@ atest('reload gate, api: a newer page’s record on the server holds a leader’
   for (const local of ['empty', 'own copy']) {
     const w = await (await apiWorld()).seed();
     w.state(4, NEWER);
-    const ed = await (await apiClient(w, 'editor', local === 'empty' ? {} : { state: PACK_STATE({ packName: 'Mine' }) })).start(1200);
+    const ed = await (await apiClient(w, 'admin2', local === 'empty' ? {} : { state: PACK_STATE({ packName: 'Mine' }) })).start(1200);
     ed.run(GATE_LINE.map(decl).join('\n'));
     // The client's commit is a stub without the hold; the page's own commit refuses every edit
     // while either hold is on (cae8e9f), so this one does too: the page's line, as it is written.
@@ -26071,7 +27941,7 @@ atest('reload gate, api: a newer page’s record on the server holds a leader’
   // Heard in this page's format first (and published), then a newer page saves and the poll brings it.
   const w = await (await apiWorld()).seed();
   w.state(3, PACK_STATE());
-  const ed = await (await apiClient(w, 'editor')).start(1200);
+  const ed = await (await apiClient(w, 'admin2')).start(1200);
   eq([ed.get('[state.packName, sync.newerFormat]'), ed.log.indexOf('PUT /P/view') >= 0], [['Test Pack', false], true],
     'control: the pack in this page’s format is taken and published');
   apiSetPack(w, 4, NEWER);
@@ -26087,7 +27957,7 @@ atest('reload gate, api: a save that reads a newer page’s record sends nothing
   const run = async (theirs) => {
     const w = await (await apiWorld()).seed();
     w.state(3, PACK_STATE());
-    const ed = await (await apiClient(w, 'editor')).start();
+    const ed = await (await apiClient(w, 'admin2')).start();
     apiSetPack(w, 4, theirs);   // another device's save, which this one has not polled yet
     ed.reset();
     await ed.edit("state.packName = 'Edited'");
@@ -26319,7 +28189,7 @@ function c5View(statements, more) {
     ${['FLEUR', 'ledgerActor', 'ledgerActorUid'].map(decl).join('\n')}
     // Pat Treasurer (u1), an editor, who signed Sep 30.
     var ui = { armed: null }, sync = { user: { uid: 'u1', displayName: 'Pat Treasurer' } }, editor = true, admin = false;
-    function canEdit() { return editor; }
+    function canEdit() { return editor; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
     function isAdmin() { return admin; } function accountsInForce() { return !!sync.user; }
     function todayISO() { return '2026-10-03'; }
     function canReopenStatement() { return false; }
@@ -26443,7 +28313,7 @@ const c5Page = (o) => c2tPage({ book: { reconciledThrough: '2026-09-30' }, more:
   // Who is an admin (admin, as C2T_MORE's canReopenStatement reads it) and whether accounts are in force.
   function isAdmin() { return admin; } function accountsInForce() { return !!sync.user; }
   ui.stReopenAsk = null; ui.stReopenWhy = '';
-  function canEdit() { return editor; }
+  function canEdit() { return editor; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
   function commit() { commits += 1; return true; }   // as the page's says it took the change
   state.statements = [${JSON.stringify(C5_LEGACY())}, ${JSON.stringify(C5_SEP())}];
   function st(id) { return state.statements.find(function (x) { return x.id === id; }); }
@@ -26562,7 +28432,7 @@ test('C5: only an admin can reopen, only the newest statement in force, with a r
     [C5_SEP(), book, true, 'Wrong', '']];
   table.forEach(([st, b, admin, why, want], i) => eq(r.statementReopenRefusal(st, b, admin, why), want, 'case ' + i));
   // Who is an admin here: the role, or a pack with no accounts (everyone edits it all).
-  const who = (o) => { const c = sandbox(['canReopenStatement', 'isAdmin', 'canEdit', 'accountsInForce']); c.sync = o; return c.canReopenStatement(); };
+  const who = (o) => { const c = sandbox(['canReopenStatement', 'isAdmin', 'canEdit', 'accountsInForce', 'arrOf', 'ACCESS_TABLE', 'ACCESS_LEVELS', 'apiAccounts', 'accessFor', 'actionsFor', 'accessMemo', 'myAccess', 'sectionAccess', 'canEditSection', 'canSeeSection', 'canDo', 'SECTION_SAY', 'readOnlySay']); c.sync = o; return c.canReopenStatement(); };
   eq([who({ user: { uid: 'a' }, myRole: 'admin' }), who({ user: { uid: 'a' }, myRole: 'editor' }), who({ user: { uid: 'a' }, myRole: 'viewer' }), who({ user: null })],
     [true, false, false, true], 'canReopenStatement');
 
@@ -28175,7 +30045,7 @@ test('C6, Firestore: while the chooser waits the reload gate drops it, and a lea
 
 atest('C6, api: an entry both devices changed opens the chooser; the pick is logged, pushed, and reaches the other device', async () => {
   const over = { ledger: C3_ROWS, ledgerAside: [], book: C3_SEED.book, ledgerLog: [], statements: [] };
-  const { a, b, server } = await apiGonePair(over);
+  const { w, a, b, server } = await apiGonePair(over);
   for (const c of [a, b]) c.run(C6_EXTRA);
   b.run("editRow('l2', 'description', 'Pizza (B)')");
   await a.edit("editRow('l2', 'description', 'Pizza (A)')");
@@ -28193,8 +30063,8 @@ atest('C6, api: an entry both devices changed opens the chooser; the pick is log
   await a.edit("editRow('l3', 'description', 'Dues (A)')");
   await settle([b], 800);
   eq(c6Asked(b), [['l3']], 'B was not asked about l3');
-  a.run("setMemberRole('uid-editor', 'viewer')");
-  await settle([a]);
+  // View-only by a leftover viewer row (no admin sets one since 2026-10-02).
+  w.db.raw.prepare("UPDATE members SET role = 'viewer' WHERE uid = 'uid-admin2'").run();
   b.reset();
   await b.poll();
   await settle([b], 1200);
@@ -28681,21 +30551,29 @@ test('C6, Firestore: a year closed out separately on two devices is not merged; 
 });
 
 atest('C6, api: a year closed out separately on two devices is not merged; the leader keeps one whole copy', async () => {
-  const { a, b, server } = await apiGonePair();
+  // B is the Treasurer (a leader who edits the ledger, not an admin; the retired editor edits nothing
+  // now): nothing below reaches the server until B is an admin.
+  const w = await (await apiWorld()).seed();
+  seedLeader(w, 'lead_treasurer', ['treasurer']);
+  w.state(3, GONE_API_STATE());
+  const a = await (await apiClient(w, 'owner')).start();
+  const b = await (await apiClient(w, 'lead_treasurer')).start();
+  for (const c of [a, b]) c.run(GONE_EXTRA(c.who));
+  const server = () => serverState(w).json;
   b.run(C6_CLOSE('B', 2).replace('commit()', ''));
   await a.edit(C6_CLOSE('A', 1).replace('commit()', ''));
   b.reset();
   b.run('commit()');
   await settle([b], 800);
   eq([b.log.filter((l) => /^PUT/.test(l)), server().ledger.map((e) => e.id), b.get('ui.overlay && ui.overlay.kind')], [[], ['co-A'], 'sync-conflict'], 'B merged, or wasn’t asked');
-  // Owner decision 22 — B is an editor: keeping its copy over A's close-out is an admin's. Refused, the
+  // Owner decision 22 — B is not an admin: keeping its copy over A's close-out is an admin's. Refused, the
   // choice still open, nothing sent.
   b.run('keepLocalCopy()');
   await settle([b], 800);
   eq([b.get('toasts[toasts.length - 1]'), b.get('ui.overlay && ui.overlay.kind'), b.log.filter((l) => /^PUT/.test(l)), server().archives.map((x) => x.id)],
     [b.get('KEEP_LOCAL_REFUSED'), 'sync-conflict', [], ['arc-A']], 'an editor kept its copy over another close-out');
   // Made an admin, B keeps its own.
-  a.run("setMemberRole('uid-editor', 'admin')");
+  a.run("setMemberRole('uid-lead-treasurer', 'admin')");
   await settle([a]);
   await b.poll();
   await settle([b], 800);
@@ -29309,7 +31187,7 @@ test('C7: Advance dens asks first when Arrow of Light families with no active si
     var ui = { armed: null }, sync = {}, commits = 0, timers = [];
     function todayISO() { return '2026-05-01'; } function uid() { return 'u'; }
     function setTimeout(f, ms) { timers.push(ms || 0); return 1; } function clearTimeout() {} function render() {} function showToast() {}
-    function commit() { commits += 1; return true; } function advPerDenSummary() { return []; }
+    function commit() { commits += 1; return true; } function advPerDenSummary() { return []; } function canAdvanceDens() { return true; }
     var state;
     function load(scouts, charges) {
       state = normalizeState(Object.assign(${JSON.stringify(preMigrationState())}, { scouts: scouts, charges: charges || [], ledger: [] }));
@@ -30127,11 +32005,11 @@ test('C8 security H1: keeping this device’s copy over a cloud copy with a clos
     const ctx = vm.createContext({});
     vm.runInContext(`
       var logged = [], toasts = [], pushed = 0;
-      function canEdit() { return true; } function canReopenStatement() { return ${admin}; } function render() {} function save() {}
+      function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; } function canReopenStatement() { return ${admin}; } function render() {} function save() {}
       function showToast(m) { toasts.push(m); } function scheduleSyncPush() { pushed += 1; } function logLedger(op, row, o) { logged.push([op, row, o && o.why]); }
       var ui = { overlay: { kind: 'sync-conflict', remote: ${JSON.stringify(rec([book]))} } }, state = { rev: 2, budget: { programYear: 2026 }, archives: [], closedBooks: [] };
       var sync = { backend: { serverRevs: false } };
-      ${['seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf', 'keepLocalCopy', 'keepLocalNeedsAdmin', 'KEEP_LOCAL_REFUSED'].map(decl).join('\n')}
+      ${['seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf', 'keepLocalCopy', 'keepLocalNeedsAdmin', 'KEEP_LOCAL_REFUSED', ...SECTION_GUARD_FNS].map(decl).join('\n')}
       keepLocalCopy();`, ctx);
     return J(vm.runInContext('[logged, toasts.length, pushed, !!ui.overlay]', ctx));
   };
@@ -30583,7 +32461,7 @@ const C8R_FNS = ['seasonBookOf', 'closedBookOf', 'closedBookLines', 'closedBookS
   'ledgerStatementName', 'ledgerRowName', 'ledgerEntryNamed', 'fmtDateYear', 'closedRvFormHtml', 'closedBookEntryFor', 'closedBookReversed', 'CLOSED_RV_FAMILY', 'CLOSED_RV_FAMILY_DONE', 'closedRvToast', 'fmtDateShort', 'LEDGER_OP_LABELS', 'LEDGER_FIELD_LABELS', 'ledgerLogValue', 'ledgerEventLines', 'ledgerLogWhen', 'ledgerCap'];
 const c8r = (books, extra) => {
   const x = sandbox(C8R_FNS);
-  vm.runInContext(`var state = { closedBooks: ${JSON.stringify(books)} }; function canEdit() { return true; } var ui = { armed: null }; ${extra || ''}`, x);
+  vm.runInContext(`var state = { closedBooks: ${JSON.stringify(books)} }; function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; } var ui = { armed: null }; ${extra || ''}`, x);
   return x;
 };
 const C8R_FULL = () => C8_BOOK_OF(2026, 'arc-1', {
@@ -30688,7 +32566,7 @@ test('C8-9: a closed year’s entry is reversed by a counted reversal in the cur
   run(`${['closedBookOf', 'closedBookEntryFor', 'closedBookReversed', 'CLOSED_RV_FAMILY', 'CLOSED_RV_FAMILY_DONE', 'closedRvToast', 'fmtDateShort', 'closedRvRefusal', 'ledgerClosedYearReversal', 'ledgerStampClean', 'ledgerContactScrub', 'arrOf', 'closedYearText'].map(decl).join('\n')}
     var logs = []; function logLedger(op, row, more) { logs.push([op, row, more]); }
     function ledgerActor() { return 'Pat Example'; } function ledgerActorUid() { return 'u-pat'; }
-    function canEdit() { return editor; } var editor = true;
+    function canEdit() { return editor; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; } var editor = true;
     state.closedBooks = [${JSON.stringify(book)}]; state.ledger = []; state.ledgerAside = []; ui.armed = null; ui.closedRvId = ''; ui.closedRvWhy = '';`);
   const T = 'tap("closed-rv:2026")';
   // Nothing picked, no reason: refused with words, nothing recorded.
@@ -30725,7 +32603,7 @@ test('C8-9: a closed year’s entry is reversed by a counted reversal in the cur
   const H = heldDispatchCtx('pack');
   vm.runInContext(`toasts = []; ui.closedRvId = 'b'; ${T}; ${T};`, H);
   ok(JSON.parse(JSON.stringify(vm.runInContext('toasts.length', H))) > 0 && vm.runInContext('store[KEY] === before', H), 'refused while held');
-  ok(/if \(canEdit\(\)\) h \+= closedRvFormHtml\(book\);/.test(slice('closedBookBlockHtml')), 'the form is offered to a viewer');
+  ok(/if \(canEditSection\('ledger'\)\) h \+= closedRvFormHtml\(book\);/.test(slice('closedBookBlockHtml')), 'the form is offered to a viewer');
 });
 
 test('C8-9: the form lists the closed year’s entries (full or compact) and is escaped', () => {
@@ -30959,7 +32837,7 @@ test('C8 re-check M-B: a closed book with no season summary is a row of its own 
   const run = (js) => vm.runInContext(js, W), got = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, W)));
   run(`${['seasonBookOf', 'closedBookOf', 'closedBookOrphans', 'closedBookOrphanRow', 'closedBookBlockHtml', 'closedYearText', 'arrOf', 'delSeasonText', 'delSeasonSubject', 'closedGoneAdd', 'mergeClosedGone', 'normalizeClosedGone',
     'ledgerActorUid', 'ledgerContactScrub', 'DEL_SEASON_REFUSED', 'DEL_SEASON_WHY_FIRST'].map(decl).join('\n')}
-    function closedBookLines() { return ['lines']; } function closedBookStatementsHtml() { return 'ST'; } function closedRvFormHtml() { return ''; } function canEdit() { return true; }
+    function closedBookLines() { return ['lines']; } function closedBookStatementsHtml() { return 'ST'; } function closedRvFormHtml() { return ''; } function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
     var logs = []; function logLedger(op, row, more) { logs.push([op, row, more.why]); }
     state.archives = [{ id: 'arc-1', kind: 'season', year: 2026 }]; state.closedGone = [];
     state.closedBooks = [${JSON.stringify(C8_BOOK_OF(2026, 'arc-1'))}, ${JSON.stringify(C8_BOOK_OF(2025, 'arc-0'))}]; ui.armed = null; ui.overlay = null; ui.archiveOpen = {};`);
@@ -31696,7 +33574,7 @@ function sheetCtx(edit = true, notes = {}) {
   const ctx = vm.createContext({});
   vm.runInContext(`var DENS = ${JSON.stringify(['Lion', 'Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light'])};
     var state = { advNotes: ${JSON.stringify(notes)} };
-    function canEdit() { return ${edit}; }
+    function canEdit() { return ${edit}; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function canDo() { return canEdit(); } function canEditDenMeeting() { return canEdit(); } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
     function fmtDateShortYear(iso) { return /^\\d{4}-\\d{2}-\\d{2}$/.test(iso) ? 'Oct 1, 2026' : ''; }
     ${PANEL_FNS.concat(['ADV_NOTE_MAX', 'ADV_PLAN_GUIDE', 'ADV_OFFICIAL_INDEX', 'advPlanKey', 'advPlanFor', 'proseText',
       'advNoteBlock', 'renderAdvPlanSheet']).map(slice).join('\n')}`, ctx);
@@ -31810,7 +33688,7 @@ function noteCtx(edit) {
     ${slice('ADV_NOTE_MAX')}\n${slice('ADV_NOTES_MAX_TOTAL')}
     var state = { advNotes: { 'Wolf :: Bobcat': { text: 'old', by: 'Pat', at: '2026-09-01' } } };
     var EDIT = ${edit}, commits = 0, toasts = [], renders = 0;
-    function canEdit() { return EDIT; }
+    function canEdit() { return EDIT; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
     function commit() { if (!EDIT) return false; commits++; return true; }
     function render() { renders++; }
     function showToast(msg, opts) { toasts.push({ msg: msg, opts: opts }); }
@@ -32862,7 +34740,7 @@ test('lesson plan box: the July check names the plans the dens use that were not
   const fn = slice('homeTasks');
   ok(/var plansHeld = today\.slice\(5, 7\) === '07' \? advPlansHeld\(\) : null;/.test(fn) &&
     /staleAdvPlans\(plansHeld\.data, advPlanKeysUsed\(\), today\)/.test(fn), 'homeTasks does not read the stale plans in July');
-  ok(/if \(todayISO\(\)\.slice\(5, 7\) === '07' && advPlanKeysUsed\(\)\.length\) advPlansWant\(\);\n    var tasks = homeTasks\(\);/.test(SCRIPT), 'Home does not ask for the plans in July');
+  ok(/if \(todayISO\(\)\.slice\(5, 7\) === '07' && advPlanKeysUsed\(\)\.length\) advPlansWant\(\);\n(    \/\/[^\n]*\n)*    var tasks = homeTasks\(\)/.test(SCRIPT), 'Home does not ask for the plans in July');
   const t = vm.createContext({});
   vm.runInContext(`var out = [], today = '2026-07-15', ADVENTURES_VERIFIED = '2026-07-01', HELD = null, KEYS = ${JSON.stringify(keys)};
     function add(job, tier, title, detail) { out.push({ job: job, title: title, detail: detail }); }
@@ -33013,7 +34891,7 @@ test('advOffers: each scout gets their own rank’s version; Lions have no BB Gu
 test('advOffers: recording — auto is one tap for those who attended, an offered elective only for the scouts ticked', () => {
   const auto = /if \(act === 'offer-mark' \|\| act === 'offer-mark-partial'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/!omOffer\.auto\) return;/.test(auto), 'the one-tap button credits an offered elective to everyone');
-  ok(/canEdit\(\)/.test(auto), 'a viewer can record');
+  ok(/canEditSection\('advancement'\)/.test(auto), 'a viewer (or anyone who doesn’t edit advancement) can record');
   // offerMarkable's rows are offerAttendees' `can`, each with what a tap records (§9).
   ok(/offerMarkable\(omEv, omOffer\.key\)\.rows\.forEach/.test(auto) && /var omKind = advKindFor\(r\.scout, r\.name\);/.test(auto) &&
     /r\.would === 'done' && advMarkDone\(r\.scout\.id, omKind, r\.name\)/.test(auto) && /r\.would === 'partial' && advMarkPartial\(r\.scout\.id, omKind, r\.name\)/.test(auto),
@@ -33022,7 +34900,7 @@ test('advOffers: recording — auto is one tap for those who attended, an offere
   const picked = /if \(kind === 'offer-mark-picked'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/fd\.getAll\('scout'\)/.test(picked) && /if \(opIds\.indexOf\(r\.scout\.id\) === -1\) return;/.test(picked) && /advMarkDone/.test(picked),
     'an offered elective is not limited to the ticked scouts who attended');
-  ok(/canEdit\(\)/.test(picked), 'a viewer can record an elective');
+  ok(/canEditSection\('advancement'\)/.test(picked), 'a viewer can record an elective');
   // Nothing in the offer code writes advancement any other way, or 'awarded'.
   for (const n of ['advOffersEditor', 'advOffersMark', 'advOfferMarkFor', 'evOffers', 'offerAttendees']) {
     ok(!/state\.advancement|'awarded'/.test(slice(n).replace(/status === 'awarded'/g, '')), n + ' writes advancement');
@@ -33034,7 +34912,7 @@ test('advOffers: recording — auto is one tap for those who attended, an offere
 
 test('advOffers: editor on campouts and den meetings, with the range-sport rule, and editors only change it', () => {
   const ed = slice('advOffersEditor');
-  ok(/var edit = canEdit\(\);/.test(ed) && !/hasJob\(/.test(ed), 'the editor gates on something other than the role');
+  ok(/var edit = canEditDenMeeting\(ev\);/.test(ed) && !/hasJob\(/.test(ed), 'the editor gates on something other than the role (or position)');
   ok(/Everyone who attends earns it/.test(ed) && /Offered — scouts who choose it/.test(ed), 'the two kinds are not named');
   ok(/den && ADV_RANGE_KEYS\.indexOf\(o\.key\) !== -1/.test(ed) && /class="warn small"/.test(ed), 'a range sport on a den meeting is not warned');
   ok(/Not for ' \+ esc\(denListLabel\(by\.lacks\)\)/.test(ed), 'the ranks an offer is not for are not shown');
@@ -33046,7 +34924,7 @@ test('advOffers: editor on campouts and den meetings, with the range-sport rule,
   // The `ev-` change gate returns on any key it does not know, so an ev-* name would be dead code.
   ok(!/data-ch="ev-offer|data-act="ev-offer/.test(SCRIPT), 'an offer control is behind the ev- gate');
   const add = /if \(kind === 'offer-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/canEdit\(\)/.test(add) && /kind === 'pack'/.test(add) && /ADV_OFFERS_MAX/.test(add) && /advOfferLabel\(oaddKey\)/.test(add), 'adding is not checked');
+  ok(/canEditDenMeeting\(oaddEv\)/.test(add) && /kind === 'pack'/.test(add) && /ADV_OFFERS_MAX/.test(add) && /advOfferLabel\(oaddKey\)/.test(add), 'adding is not checked');
   ok(/evOffers\(oaddEv\)\.map\(offerCopy\)/.test(add), 'adding an offer drops the others’ dens');
   ok(/delete mtg\.advOffers/.test(slice('clearMeetingAdvs')), 'a meeting turned into a pack meeting keeps its offers');
   ok(/ADV_RANGE_KEYS\.indexOf\(m\.packAdv\)/.test(slice('packAdvPicker')), 'a range sport picked for every den is not warned');
@@ -33166,7 +35044,7 @@ test('offers per rank: the editor’s “For:” boxes, the last one kept, edito
   ok(/on && by\.has\.length === 1 \? ' disabled' : ''/.test(ed), 'the last ticked box can be unticked');
   ok(/Not offered to ' \+ esc\(denListLabel\(by\.off\.map/.test(ed), 'a viewer is not told which ranks were left out');
   const h = /if \(ch === 'offer-dens'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/!canEdit\(\)/.test(h) && /commit\(\); return;/.test(h), 'the handler is not gated and committed like offer-auto');
+  ok(/!canEditDenMeeting\(odnEv\)/.test(h) && /commit\(\); return;/.test(h), 'the handler is not gated and committed like offer-auto');
   ok(/if \(!odnOn\.length\) \{ showToast\(/.test(h) && h.indexOf('if (!odnOn.length)') < h.indexOf('odnO.dens = odnOn'), 'unticking every box empties the list');
   ok(/if \(odnOn\.length === odnAll\.length\) delete odnO\.dens; else odnO\.dens = odnOn;/.test(h), 'all ticked is stored as a narrowing');
   ok(/DENS\.indexOf\(el\.dataset\.den\) === -1/.test(h), 'a made-up den is written');
@@ -33175,7 +35053,7 @@ test('offers per rank: the editor’s “For:” boxes, the last one kept, edito
   ok(/data-ch="offer-part"/.test(ed) && /name="part" value="1"> Covers part of it/.test(ed), 'no “Covers part of it” box');
   ok(/\(edit\s*\? '<select data-ch="offer-auto"[^\n]*\n[^\n]*\n[^\n]*\n\s*'<label class="offer-den small"><input type="checkbox" data-ch="offer-part"/.test(ed), 'the part box is not in the editors’ branch');
   const hp = /if \(ch === 'offer-part'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/!canEdit\(\)/.test(hp) && /if \(el\.checked\) opaO\.part = true; else delete opaO\.part;/.test(hp) && /commit\(\); return;/.test(hp), 'the part handler');
+  ok(/!canEditDenMeeting\(opaEv\)/.test(hp) && /if \(el\.checked\) opaO\.part = true; else delete opaO\.part;/.test(hp) && /commit\(\); return;/.test(hp), 'the part handler');
   const ha = /if \(kind === 'offer-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/if \(String\(fd\.get\('part'\) \|\| ''\) === '1'\) oaddNew\.part = true;/.test(ha), 'the add form drops part');
   ok(/if \(!o\.part \|\| o\.name\.toLowerCase\(\) !== want\) return;/.test(slice('advParts')), 'advParts takes an offer that is not a part');
@@ -33347,7 +35225,7 @@ test('the grid cell steps blank → in progress → done → awarded → blank, 
   ok(/adv-legend/.test(adv) && /adv-cell partial" aria-hidden="true">◐<\/span>in progress/.test(adv), 'no legend entry for in progress');
   ok(/data-ch="adv-partial-note"/.test(adv) && /maxlength="' \+ ADV_PARTIAL_NOTE_MAX \+ '"/.test(adv), 'nowhere to write the note');
   const h = /if \(ch === 'adv-partial-note'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/!canEdit\(\)/.test(h) && /advSetNote\(/.test(h) && /commit\(\)/.test(h), 'the note handler');
+  ok(/!canEditSection\('advancement'\)/.test(h) && /advSetNote\(/.test(h) && /commit\(\)/.test(h), 'the note handler');
   // Adding an elective records it done, as it always did — not the cycle's first step.
   const add = /if \(kind === 'adv-add-elect'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/advMarkDone\(aSid, 'elect', aName\)/.test(add) && !/advCycle\(/.test(add), 'adding an elective records it in progress');
@@ -33421,7 +35299,7 @@ test('offerMarkable: at the event, done for a scout at every part with none to c
   ok(/who have been to every ' \+ parts \+ ' so far/.test(slice('meetingAdvMarkFor')), 'the meeting’s early done button is gone');
   const mt = slice('meetingAdvMarkFor');
   ok(/var p = runProgress\(pr, today\), mk = advMarkable\(p, today\);/.test(mt) && /var pr = advRunParts\(r\.run\)/.test(mt), 'the meeting block does not use the parts');
-  ok(/if \(canEdit\(\) && \(mk\.done\.length \|\| mk\.partial\.length\)\)/.test(mt), 'the meeting buttons are not editors only');
+  ok(/if \(canEditSection\('advancement'\) && \(mk\.done\.length \|\| mk\.partial\.length\)\)/.test(mt), 'the meeting buttons are not editors only');
   ok(/data-act="mtg-adv-partial"/.test(mt) && /who attended some/.test(mt) && /partLabel\(pos, of\)/.test(mt), 'the meeting block’s in-progress button or part label');
   ok(/makeupMsgBtn\(r\.run, row\)/.test(mt), 'the make-up message is gone');
   const picked = /if \(kind === 'offer-mark-picked'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
@@ -33486,8 +35364,8 @@ test('make-up copy: who signs follows the rank, at home or at another outing, on
   const card = slice('renderAdventureRunsCard');
   ok(/to make up at home or at another outing/.test(card) && /do the work at home or at another outing/.test(card), 'the card still says at home only');
   for (const n of ['makeupReassure', 'makeupSignText', 'advOfferMarkFor']) ok(!/cannot earn|forfeit|missed out on the adventure/i.test(slice(n)), n);
-  ok(/if \(act === 'adv-cycle'\) \{\n      if \(!canEdit\(\)\) return;/.test(SCRIPT), 'the grid cell is not editors only');
-  ok(/if \(kind === 'adv-add-elect'\) \{\n      if \(!canEdit\(\)\) return;/.test(SCRIPT), 'adding an elective is not editors only');
+  ok(/if \(act === 'adv-cycle'\) \{\n      if \(!canEditSection\('advancement'\)\) return;/.test(SCRIPT), 'the grid cell is not editors only');
+  ok(/if \(kind === 'adv-add-elect'\) \{\n      if \(!canEditSection\('advancement'\)\) return;/.test(SCRIPT), 'adding an elective is not editors only');
   ok(/o\.part \? 'a part, for everyone who attends'/.test(slice('advOfferMarkFor')) && /a part, for everyone who attends/.test(slice('advOffersEditor')),
     'a part does not say so');
 });
@@ -33578,7 +35456,7 @@ test('Fill the calendar: the next untagged All-dens nights in order, skipping an
   ok(/not enough: /.test(r) && /left unscheduled/.test(r), 'a calendar that runs out is not said');
   ok(/if \(edit\) h \+= renderFillCalendar\(today\);/.test(slice('renderDenPlanner')), 'the tool is not editors-only on Den plans');
   const ap = /if \(act === 'fill-apply'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/canEdit\(\)/.test(ap) && /fillCalendarNow\(/.test(ap) && /setPackAdv\(a\.ev, a\.key\)/.test(ap) && /actionLabel: 'Undo'/.test(ap), 'Apply is not checked, recomputed, written through setPackAdv and undoable');
+  ok(/canEditSection\('calendar'\)/.test(ap) && /fillCalendarNow\(/.test(ap) && /setPackAdv\(a\.ev, a\.key\)/.test(ap) && /actionLabel: 'Undo'/.test(ap), 'Apply is not checked, recomputed, written through setPackAdv and undoable');
   ok(/if \(x\.ev\.packAdv !== x\.key\) return;/.test(ap), 'Undo takes back a pick somebody changed since');
   ok(/flc\.rows = ADV_REQ_CATEGORIES\.map\(function \(x, i\) \{ return \{ key: 'req:' \+ i/.test(SCRIPT), 'no "6 required in order"');
   ok(!/fillCal/.test(codeOnly(slice('normalizeState'))) && !/fillCal/.test(codeOnly(BPV())), 'the fill list reached the record or the parent view');
@@ -33871,8 +35749,8 @@ test('item 11: DESIGN-money.md has the posting rule, and the format was raised f
    the council and the pack's check to it. A pass-through, and a settlement step that makes the commission
    actual. Made-up data throughout.
    ================================================================ */
-const KC_FNS = declClosure(['councilKeptTwiceText', 'councilEstimateText', 'ledgerIncomeCents', 'lineActualCents', 'lineIncomeCents', 'entryWantsLine', 'ledgerBalance', 'reconcileTotals', 'commissionLookalikes',
-  'councilMoneyCheck', 'councilMoneyLines', 'councilSettledNormal', 'councilSettledText', 'councilSettlement'], []);
+const KC_FNS = declClosure(['councilSettledBySelf', 'councilKeptTwiceText', 'councilEstimateText', 'ledgerIncomeCents', 'lineActualCents', 'lineIncomeCents', 'entryWantsLine', 'ledgerBalance', 'reconcileTotals', 'commissionLookalikes',
+  'councilMoneyCheck', 'councilMoneyLines', 'councilSettledNormal', 'councilApproverClean', 'councilSettledText', 'councilSettlement'], []);
 const kcRow = (id, cents, dir, o) => c8row(id, (o && o.date) || '2026-11-20', cents, dir, Object.assign({ source: 'council' }, o || {}));
 
 test('council money: neither pack income nor a pack cost, either way, on a line or not; in the bank and the statement', () => {
@@ -33942,7 +35820,7 @@ test('council money: settling makes the commission actual, banked − paid + com
   eq(x.councilMoneyLines(x.councilMoneyCheck(paid), null, 30000).map((l) => l.text), ['Popcorn money for the council: banked $700.00 · paid to the council $400.00 · still held $300.00.'], 'not settled');
   eq(x.councilMoneyLines(x.councilMoneyCheck(paid), st, 31000).map((l) => (l.warn ? '! ' : '') + l.text), [
     'Popcorn money for the council: banked $700.00 · paid to the council $400.00 · still held $300.00.',
-    'Settled with the council on ' + fds + ': the pack paid the council. The commission is actual now: $700.00 banked − $400.00 paid = $300.00, and that is what Funds in counts.',
+    'Settled with the council on ' + fds + ': the pack paid the council. Approved by: not recorded. The commission is actual now: $700.00 banked − $400.00 paid = $300.00, and that is what Funds in counts.',
     '! Sales work out to $310.00 in commission, $10.00 more than settled. Usually that is Show & Sell product the pack paid for and didn’t sell, or sales cash not yet banked as Popcorn money for the council. Check the council’s statement.'], 'settled');
   // Treasurer re-check of 89c08b5 (1, 2) — the estimate lower, and kept storefront cash not banked as such while council money is.
   eq(x.councilMoneyLines(x.councilMoneyCheck(paid), st, 29000, 20000).slice(2).map((l) => (l.warn ? '! ' : '') + l.text), [
@@ -33950,6 +35828,10 @@ test('council money: settling makes the commission actual, banked − paid + com
     '! Storefront cash donations kept $200.00 aren’t banked as ‘Storefront cash donations (kept)’. If they went into a Popcorn money for the council deposit, settling counts them twice in Funds in: once as kept cash and again in the commission. Record that deposit as two rows, one for each source.'],
     'the cross-checks');
   eq(x.councilMoneyLines(x.councilMoneyCheck([]), null, null, 20000), [], 'nothing banked for the council: no question');
+  // The treasurer's review of 045e7ac (1, 2): the approving Chair, and a Chair recording their own approval.
+  const line2 = (o) => x.councilMoneyLines(x.councilMoneyCheck(paid), Object.assign({}, st, o), null)[1].text;
+  ok(line2({ approvedBy: 'Jordan Lee' }).indexOf('the pack paid the council. Approved by Jordan Lee, Committee Chair. The commission') !== -1, 'the Chair named');
+  ok(line2({ approvedBy: 'Jordan Lee', by: 'jordan lee' }).indexOf('Approved by Jordan Lee, Committee Chair (recorded by the Chair). ') !== -1, 'the Chair recorded it');
   const cmh = slice('councilMoneyHtml');
   ok(/var est = computePackTotals\(\)\.commission;/.test(cmh) && /state\.cashThroughTrailsEnd \? 0 : storefrontCashCheck\(/.test(cmh) &&
     /var warn = keptZ > 0 && chk\.banked > 0 \? councilKeptTwiceText\(keptZ\)/.test(cmh) && /' \(sales work out to ' \+ esc\(fmt\(est\)\) \+ '\)'/.test(cmh), 'the Reconcile card and the settle form');
@@ -33967,11 +35849,12 @@ test('council money: settling makes the commission actual, banked − paid + com
 
 test('council money: the settle step is an editor’s, logged on the book, taken back with two taps, and gone at close-out', () => {
   const go = /if \(act === 'council-settle-go'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/canEdit\(\)/.test(go) && /state\.book\.closedAt/.test(go) && /state\.book\.councilSettled = \{ on: sd\.on, how: sd\.how, by: ledgerActor\(\), byUid: ledgerActorUid\(\), at: new Date\(\)\.toISOString\(\) \};/.test(go) &&
+  ok(/canEditSection\('ledger'\)/.test(go) && /state\.book\.closedAt/.test(go) && /state\.book\.councilSettled = \{ on: sd\.on, how: sd\.how, by: ledgerActor\(\), byUid: ledgerActorUid\(\), at: new Date\(\)\.toISOString\(\),\s+approvedBy: councilApproverClean\(sd\.approvedBy\) \};/.test(go) &&
+    /if \(!councilApproverClean\(sd\.approvedBy\)\) \{ showToast\('Enter the name of the Committee Chair who approved the settlement\.'\); return; \}/.test(go) &&
     /logLedger\('settle', 'book', \{ f: \{ councilSettled: \[sdWas \|\| null, councilSettledText\(state\.book\.councilSettled\)\] \} \}\)/.test(go), 'Mark settled');
   const un = /if \(act === 'council-unsettle'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/arm\(act,/.test(un) && /logLedger\('unsettle', 'book'/.test(un) && /delete state\.book\.councilSettled;/.test(un), 'Not settled after all');
-  ok(/h \+= councilMoneyHtml\(\);/.test(slice('renderReconcile')) && /if \(!canEdit\(\) \|\| state\.book\.closedAt\) return h;/.test(slice('councilMoneyHtml')), 'the Reconcile card');
+  ok(/h \+= councilMoneyHtml\(\);/.test(slice('renderReconcile')) && /if \(!canEditSection\('ledger'\) \|\| state\.book\.closedAt\) return h;/.test(slice('councilMoneyHtml')), 'the Reconcile card');
   ok(/ledgerIncomeCents\(state\.ledger, isIncomeLine, b\.startingBalance \|\| 0, !!\(state\.book && state\.book\.councilSettled\)\)/.test(slice('computeBudget')), 'computeBudget does not read the settlement');
   ok(/' as settled with the council: ' \+ fmt\(bud\.councilIn\) \+ ' banked for it \\u2212 ' \+ fmt\(bud\.councilOut\) \+ ' paid to it, plus any commission checks, '/.test(SCRIPT), 'the Funds in sentence');
   // normalizeState keeps it on the book, and a fresh book (close-out) has none.
@@ -34028,7 +35911,7 @@ test('deposit deadline: what each deposit covers, named storefronts first, then 
    unsettle event decides, whichever device saves last. Made-up data.
    ================================================================ */
 test('council settlement merge: the newest settle or unsettle event decides, either way round, and junk stamps are dropped', () => {
-  const x = sandbox(['councilSettledMerged', 'councilSettledNormal', 'councilSettledText', 'COUNCIL_SETTLE_HOW', 'COUNCIL_SETTLE_LABELS', 'arrOf', 'ledgerStampClean']);
+  const x = sandbox(['councilSettledMerged', 'councilSettledNormal', 'councilApproverClean', 'councilSettledText', 'COUNCIL_SETTLE_HOW', 'COUNCIL_SETTLE_LABELS', 'arrOf', 'ledgerStampClean']);
   const S = { on: '2026-12-02', how: 'paid', by: 'Pat', byUid: 'u1', at: '2026-12-02T10:00:00.000Z' };
   const S2 = { on: '2026-12-05', how: 'payout', by: 'Sam', byUid: 'u2', at: '2026-12-05T10:00:00.000Z' };
   const ev = (id, op, at, s) => ({ id: 'lg-' + id, at, op, row: 'book', f: { councilSettled: op === 'settle' ? [null, x.councilSettledText(s)] : [x.councilSettledText(s), null] } });
@@ -34040,6 +35923,12 @@ test('council settlement merge: the newest settle or unsettle event decides, eit
   const again = un.concat([ev('s2', 'settle', '2026-12-05T10:00:00.000Z', S2)]);
   eq(both(S, S2, settled, again), [S2, S2], 'settled again differently: the newest');
   eq(both(S, undefined, [], []), [S, null], 'no event: each device keeps its own, as before');
+  // The treasurer's review of 045e7ac (1): the approver is in the line, and a line written before that still matches.
+  const S3 = Object.assign({}, S, { approvedBy: 'Jordan Lee' });
+  eq([x.councilSettledText(S3), x.councilSettledText(S3, true), x.councilSettledText(S)],
+    ['2026-12-02 · the pack paid the council · approved by Jordan Lee', '2026-12-02 · the pack paid the council', '2026-12-02 · the pack paid the council'], 'the line');
+  const oldEv = { id: 'lg-o', at: '2026-12-06T10:00:00.000Z', op: 'settle', row: 'book', f: { councilSettled: [null, x.councilSettledText(S3, true)] } };
+  eq(both(S2, S3, [], [oldEv]), [S3, S3], 'an old line, with no name, still picks its settlement');
   eq(J(x.councilSettledNormal(Object.assign({}, S, { at: 'x'.repeat(41), byUid: 'u'.repeat(129) }))), Object.assign({}, S, { at: '', byUid: '' }), 'security re-check (3): at and byUid');
   // In the merge: after the lock, same year, neither closed.
   const m = slice('mergeRemoteAppendOnly');
@@ -34122,7 +36011,7 @@ test('wagon cutover: wagon cash dated before it (or undated) is kept as it was, 
   eq(vm.runInContext('WAGON_CUTOVER_NOTE', sandbox(['WAGON_CUTOVER_NOTE'])), 'If this season’s earlier wagon donations were entered in the Trail’s End app, move this to the season’s start.', 'the note');
   ok(/if \(ch === 'wagon-via-te-from'\) \{[\s\S]{0,500}logLedger\('edit', 'book', \{ f: \{ wagonViaTEFrom: \[wcWas, wcNow\] \} \}\)/.test(SCRIPT), 'the change is not logged');
   ok(!/wagonViaTEFrom|wagonKept/.test(codeOnly(BPV())), 'the parent view reads it');
-  ok(/data-ch="wagon-via-te-from" value="' \+ esc\(packT\.wagonCutover\) \+ '"' \+ \(canEdit\(\) \? '' : ' disabled'\)/.test(ss), 'a viewer can change the date');
+  ok(/data-ch="wagon-via-te-from" value="' \+ esc\(packT\.wagonCutover\) \+ '"' \+ \(\(canEditSection\('totals'\) \|\| canEditSection\('budget'\)\) \? '' : ' disabled'\)/.test(ss), 'a viewer can change the date');
   // B2 — the hint asks about wagon cash the pack kept as kept cash; F2 — the money-in help says to bank it so.
   const hx = sandbox(declClosure(['storefrontCashHint', 'storefrontHintText'], []));
   const hw = (o, te, co) => hx.storefrontCashHint(Object.assign({ direction: 'in', amountCents: 500, source: '', description: 'Wagon cash, Oak St' }, o), [], [], !!te, co);
@@ -34440,7 +36329,7 @@ async function sbPhone(o) {
   if (o.theirs) { o.theirs(theirs); apiSetPack(w, 5, Object.assign(theirs, { rev: 5 })); }
   const mine = SB_SEED();
   if (o.mine) o.mine(mine);
-  const ph = await apiClient(w, o.who || 'editor', { state: mine, base: SB_BASE(3, SB_SEED()), unsynced: !!o.unsynced });
+  const ph = await apiClient(w, o.who || 'admin2', { state: mine, base: SB_BASE(3, SB_SEED()), unsynced: !!o.unsynced });
   if (o.before) ph.run(o.before);
   await ph.start(800);
   return { w, ph, server: () => serverState(w) };
@@ -34467,7 +36356,7 @@ atest('sync base, api: unsaved changes and nobody else saved: they go out as any
   w.state(3, SB_SEED());
   const mine = SB_SEED();
   mine.scouts[0].den = 'Bear';
-  const ph = await (await apiClient(w, 'editor', { state: mine, base: SB_BASE(3, SB_SEED()), unsynced: true })).start(800);
+  const ph = await (await apiClient(w, 'admin2', { state: mine, base: SB_BASE(3, SB_SEED()), unsynced: true })).start(800);
   eq([ph.get('ui.overlay && ui.overlay.kind'), sbPuts(ph), serverState(w).rev, serverState(w).json.scouts[0].den], [null, 1, 4, 'Bear'], 'the offline change');
   eq(ph.get('[syncBaseGet().rev, syncUnsynced(), sync.dirty]'), [4, false, false], 'after the save');
 });
@@ -34495,7 +36384,7 @@ atest('sync base, api: a change made offline that overlaps one on the server ope
   let s = server().json;
   eq([server().rev, s.scouts[0].den, s.packName, s.events[0].location], [6, 'Bear', 'Pack 569 Cubs', 'Lake'], 'keeping mine');
   eq(s.syncLog.map((e) => [e.byName, e.item, e.field, e.serverValue, e.keptValue, typeof e.serverChangedAt, !!e.at]),
-    [['Test editor', 'Scout · Ada', 'Den', 'Tiger', 'Bear', 'string', true]], 'the log');
+    [['Test admin2', 'Scout · Ada', 'Den', 'Tiger', 'Bear', 'string', true]], 'the log');
   eq([ph.get('toasts[toasts.length - 1]'), ph.get('[ui.overlay, !!sync.conflict, syncUnsynced()]')], [ph.get('SYNC_PICKS_LOGGED'), [null, false, false]], 'after');
   // Keep the server's, with another change of this device's: that one goes, the item is the server's, nothing logged.
   const t2 = await sbPhone(o);
@@ -34545,11 +36434,11 @@ atest('sync base, api: a viewer is never asked, and takes the pack’s copy', as
 atest('sync base, api: a device from before the base takes the pack’s copy when nothing says it has unsaved work, and is asked when something does', async () => {
   const w = await (await apiWorld()).seed();
   w.state(5, Object.assign(SB_SEED(), { rev: 5, packName: 'Newer' }));
-  const old = await (await apiClient(w, 'editor', { state: SB_SEED() })).start(800);
+  const old = await (await apiClient(w, 'admin2', { state: SB_SEED() })).start(800);
   eq([old.get('[ui.overlay && ui.overlay.kind, state.packName, syncBaseGet() && syncBaseGet().rev]'), sbPuts(old)], [[null, 'Newer', 5], 0], 'quietly');
   const w2 = await (await apiWorld()).seed();
   w2.state(5, Object.assign(SB_SEED(), { rev: 5, packName: 'Newer' }));
-  const dirty = await (await apiClient(w2, 'editor', { state: SB_SEED(), unsynced: true })).start(800);
+  const dirty = await (await apiClient(w2, 'admin2', { state: SB_SEED(), unsynced: true })).start(800);
   eq([dirty.get('[ui.overlay && ui.overlay.kind, state.packName]'), sbPuts(dirty)], [['sync-conflict', 'Test Pack'], 0], 'asked, whole copy');
 });
 
@@ -34557,7 +36446,7 @@ atest('sync base, api: with localStorage full, the session still merges three wa
   const w = await (await apiWorld()).seed();
   w.state(3, SB_SEED());
   const full = "var realSet = localStorage.setItem; localStorage.setItem = function (k, v) { if (k === SYNC_BASE_KEY) throw new Error('QuotaExceededError'); realSet(k, v); };";
-  const ph = await apiClient(w, 'editor', { state: SB_SEED() });
+  const ph = await apiClient(w, 'admin2', { state: SB_SEED() });
   ph.run(full);
   await ph.start(800);
   eq(ph.get('[syncBaseGet() && syncBaseGet().rev, SYNC_BASE_KEY in store]'), [3, false], 'the base in memory, none stored');
@@ -34569,7 +36458,7 @@ atest('sync base, api: with localStorage full, the session still merges three wa
   // A reload with an edit unsent and no base stored: the whole-copy chooser, as before this change.
   ph.run("state.scouts[1].den = 'Lion'; save(); syncMarkUnsynced()");
   apiSetPack(w, 6, Object.assign(SB_SEED(), { rev: 6, packName: 'Again' }));
-  const again = await (await apiClient(w, 'editor', { state: ph.get('state'), unsynced: true })).start(800);
+  const again = await (await apiClient(w, 'admin2', { state: ph.get('state'), unsynced: true })).start(800);
   eq([again.get('ui.overlay && ui.overlay.kind'), sbPuts(again)], ['sync-conflict', 0], 'after the reload');
 });
 
@@ -34616,7 +36505,7 @@ atest('sync fix (security 1, HIGH): a device from before the base never drops of
   const run = async (serverRev, local) => {
     const w = await (await apiWorld()).seed();
     w.state(serverRev, Object.assign(SB_SEED(), { rev: serverRev, packName: 'Newer' }));
-    const c = await apiClient(w, 'editor', { state: local });   // no base, no marker: a page from before this change
+    const c = await apiClient(w, 'admin2', { state: local });   // no base, no marker: a page from before this change
     await c.start(800);
     return [c.get('[ui.overlay && ui.overlay.kind, state.packName]'), sbPuts(c), serverState(w).rev];
   };
@@ -34666,7 +36555,7 @@ atest('sync fix (security 2): a server copy behind this device’s base (a resto
   w.state(3, SB_SEED());
   const mine = SB_SEED();
   mine.scouts[0].den = 'Bear';
-  const c = await apiClient(w, 'editor', { state: mine, base: SB_BASE(6, SB_SEED()), unsynced: true });
+  const c = await apiClient(w, 'admin2', { state: mine, base: SB_BASE(6, SB_SEED()), unsynced: true });
   await c.start(800);
   eq([c.get('[ui.overlay && ui.overlay.kind, !!rowChoice()]'), sbPuts(c)], [['sync-conflict', false], 0], 'merged over a restore at first answer');
   // In a push (the in-session path): the sentinel, and the push hands it to the whole-copy choice.

@@ -7,8 +7,8 @@
 //   2. Already a member: nothing changes — never overwrite a role (re-signing in as an
 //      approved editor must not demote you) — except that the pack owner is always healed
 //      back to admin ('members.update.owner').
-//   3. Not a member: the owner becomes admin; an invitee becomes exactly the invited role and
-//      the invite is used up; a sign-up link visitor with the current code, while the link is
+//   3. Not a member: the owner becomes admin; an invitee becomes exactly the invited role, with
+//      exactly the positions it gave (a 'leader' invite), and the invite is used up; a sign-up link visitor with the current code, while the link is
 //      open, becomes 'pending'. Anyone else gets no row at all.
 // Answers { uid, role, member, ownerUid, rejected }. role null means no access; rejected says
 // why, with the page's own words for it: 'nolink' (no invite, no link), 'badcode' (a link
@@ -20,7 +20,7 @@
 
 import { route, json, readObject, refuse } from '../_lib/http.js';
 import { servedPack, database, authenticate, ownerClaim, memberOf, memberOut, auditStmt, auditIf } from '../_lib/pack.js';
-import { INVITE_ROLES, JOIN_CODE_RE, MEMBER_NAME_MAX } from '../_lib/rules.js';
+import { INVITE_ROW_ROLES, JOIN_CODE_RE, MEMBER_NAME_MAX } from '../_lib/rules.js';
 
 export const JOIN_MAX_TRIES = 10;
 export const JOIN_WINDOW_MS = 60 * 60 * 1000;
@@ -79,12 +79,19 @@ async function session(context) {
     // 3b. members.create.invite — exactly the invited role, taken from the invite row in the
     // same statement, and the invite deleted with it (single-use).
     const inv = await db.prepare('SELECT role FROM invites WHERE pack_id = ? AND email = ?').bind(packId, user.emailKey).first();
-    if (inv && INVITE_ROLES.indexOf(inv.role) !== -1) {
+    // An editor or viewer invite from before the switch still lets its person in (read-only, needing
+    // a position: rules.js RETIRED_ROLES).
+    if (inv && INVITE_ROW_ROLES.indexOf(inv.role) !== -1) {
       await db.batch([
         db.prepare('INSERT INTO members (pack_id, uid, role, name, email, join_code, added_at) ' +
           'SELECT pack_id, ?, role, ?, ?, NULL, ? FROM invites WHERE pack_id = ? AND email = ? ' +
-          "AND role IN ('editor', 'viewer', 'parent') ON CONFLICT (pack_id, uid) DO NOTHING")
+          "AND role IN ('editor', 'viewer', 'leader', 'parent') ON CONFLICT (pack_id, uid) DO NOTHING")
           .bind(user.uid, name, user.email, now, packId, user.emailKey),
+        // The invite's positions, onto the account just made from it (before the invite, and its
+        // positions with it, are deleted below).
+        db.prepare('INSERT INTO member_positions (pack_id, uid, position, dens) SELECT pack_id, ?, position, dens FROM invite_positions ' +
+          'WHERE pack_id = ? AND email = ? AND EXISTS (SELECT 1 FROM members WHERE pack_id = ? AND uid = ? AND added_at = ?)')
+          .bind(user.uid, packId, user.emailKey, packId, user.uid, now),
         auditIf(db, packId, user.uid, 'invite.consume', { email: user.emailKey, role: inv.role }, now,
           'EXISTS (SELECT 1 FROM members WHERE pack_id = ? AND uid = ? AND added_at = ?)', [packId, user.uid, now]),
         db.prepare('DELETE FROM invites WHERE pack_id = ? AND email = ? AND EXISTS (SELECT 1 FROM members WHERE pack_id = ? AND uid = ?)')

@@ -27,6 +27,7 @@
 import { verifyIdToken, TokenError } from './token.js';
 import { refuse, unauthenticated, notFound, unavailable } from './http.js';
 import { UID_RE } from './rules.js';
+import { POSITIONS, DENS } from './access.js';
 
 export const PACK_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 // The highest rev the import accepts. PUT's If-Match takes at most 15 digits (< 1e15), so this
@@ -130,26 +131,73 @@ export async function standingsShown(db, packId) {
   return !row || row.show_standings === 1;
 }
 
-export function memberOf(db, packId, uid) {
-  return db.prepare('SELECT uid, role, name, email, join_code, added_at FROM members WHERE pack_id = ? AND uid = ?')
-    .bind(packId, uid).first();
+// The positions an account holds (member_positions), in the order access.js lists them.
+export async function positionsOf(db, packId, uid) {
+  const r = await db.prepare('SELECT position FROM member_positions WHERE pack_id = ? AND uid = ?').bind(packId, uid).all();
+  const held = (r.results || []).map((x) => x.position);
+  return POSITIONS.filter((p) => held.indexOf(p) !== -1);
 }
-// A member row as the page sees it (the Firestore member doc's field names).
+// The dens an account leads (member_positions.dens on its Den Leader and Assistant Den Leader rows,
+// own-den scope, Keith 2026-10-02), in DENS order; [] for none. A stored name the page does not know
+// is dropped.
+function densFrom(rows) {
+  const held = [];
+  rows.forEach((x) => {
+    let list = [];
+    try { list = x.dens ? JSON.parse(x.dens) : []; } catch (e) { list = []; }
+    if (Array.isArray(list)) list.forEach((d) => { if (typeof d === 'string' && held.indexOf(d) === -1) held.push(d); });
+  });
+  return DENS.filter((d) => held.indexOf(d) !== -1);
+}
+export async function densOf(db, packId, uid) {
+  const r = await db.prepare('SELECT dens FROM member_positions WHERE pack_id = ? AND uid = ? AND dens IS NOT NULL').bind(packId, uid).all();
+  return densFrom(r.results || []);
+}
+// Every account's dens in a pack: uid -> [den], for the members list.
+export async function packDens(db, packId) {
+  const r = await db.prepare('SELECT uid, dens FROM member_positions WHERE pack_id = ? AND dens IS NOT NULL').bind(packId).all();
+  const rows = Object.create(null);
+  (r.results || []).forEach((x) => { (rows[x.uid] = rows[x.uid] || []).push(x); });
+  const by = Object.create(null);
+  Object.keys(rows).forEach((u) => { by[u] = densFrom(rows[u]); });
+  return by;
+}
+// Every account's positions in a pack: uid -> [position], for the members list.
+export async function packPositions(db, packId) {
+  const r = await db.prepare('SELECT uid, position FROM member_positions WHERE pack_id = ?').bind(packId).all();
+  const by = Object.create(null);
+  (r.results || []).forEach((x) => { (by[x.uid] = by[x.uid] || []).push(x.position); });
+  Object.keys(by).forEach((u) => { by[u] = POSITIONS.filter((p) => by[u].indexOf(p) !== -1); });
+  return by;
+}
+// A member row, with the positions it holds (row.positions; [] for none).
+export async function memberOf(db, packId, uid) {
+  const row = await db.prepare('SELECT uid, role, name, email, join_code, added_at FROM members WHERE pack_id = ? AND uid = ?')
+    .bind(packId, uid).first();
+  if (row) { row.positions = await positionsOf(db, packId, uid); row.dens = await densOf(db, packId, uid); }
+  return row;
+}
+// A member row as the page sees it (the Firestore member doc's field names). positions only
+// when it holds any, as joinCode only when it has one.
 export function memberOut(row) {
   if (!row) return null;
   const m = { uid: row.uid, role: row.role, name: row.name, email: row.email, addedAt: row.added_at };
   if (row.join_code) m.joinCode = row.join_code;
+  if (Array.isArray(row.positions) && row.positions.length) m.positions = row.positions.slice();
+  if (Array.isArray(row.dens) && row.dens.length) m.dens = row.dens.slice();
   return m;
 }
 
-// The handler gets { request, env, params, db, user, packId, member, role }.
+// The handler gets { request, env, params, db, user, packId, member, role, positions, dens }.
+// positions are the member's (member_positions), [] for none; dens, the dens they lead, [] for none.
 export function withMember(handler) {
   return async function (context) {
     const user = await authenticate(context.request, context.env);
     const packId = servedPack(context.env, context.params && context.params.id);
     const db = await database(context.env);
     const member = await memberOf(db, packId, user.uid);
-    return handler(Object.assign({}, context, { db, user, packId, member, role: member ? member.role : 'none' }));
+    return handler(Object.assign({}, context, { db, user, packId, member, role: member ? member.role : 'none',
+      positions: member ? member.positions : [], dens: member ? member.dens : [] }));
   };
 }
 
