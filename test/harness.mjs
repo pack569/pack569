@@ -21347,7 +21347,8 @@ test('C2: each change to an entry is one logged edit — every field it changed,
   p.run("change('led-ref', 'u1', '102'); change('led-amount', 'u1', '90.00')");
   eq(p.get('log().length'), 7, 'a change to the same value was logged');
   // The amount commits once, on change — not a keystroke at a time (each would be an edit).
-  ok(/var LEDGER_NOT_LIVE = \['led-amount', 'book-opening'\];/.test(SCRIPT) &&
+  // (Sync fix round 1 — and the goals, now logged on the book too.)
+  ok(/var LEDGER_NOT_LIVE = \['led-amount', 'book-opening', 'goal', 'cash-goal', 'stretch-goal'\];/.test(SCRIPT) &&
      /if \(el && LEDGER_NOT_LIVE\.indexOf\(el\.getAttribute\('data-ch'\)\) === -1\) \{/.test(SCRIPT), 'the amount is committed as it is typed');
 });
 
@@ -25504,7 +25505,7 @@ test('reload gate: a newer tab’s save while this page runs is never saved over
 // deleteWithUndo and two-tap arm, over gateStoreCtx's real load, save and commit. `hold`:
 // 'pack' (a newer record met from the pack: sync.newerFormat), 'device' (this browser's copy is a
 // newer tab's), or '' (nothing held: the control).
-const HELD_DISPATCH_FNS = [...SYNC_BASE_FNS, 'handleAction', 'handleChange', 'handleForm', 'handleFilePick', 'performCloseout', 'deleteWithUndo', 'arm',
+const HELD_DISPATCH_FNS = [...SYNC_BASE_FNS, 'logSettingEdit', 'handleAction', 'handleChange', 'handleForm', 'handleFilePick', 'performCloseout', 'deleteWithUndo', 'arm',
   'heldActAllowed', 'refuseHeldAct', 'HELD_ACTS', 'HELD_ACT_PREFIXES', 'HELD_CHANGES', 'PARENT_ACTS', 'GATE_ACTS',
   'FORMAT_CLOSEOUT', 'FORMAT_BACKUP', 'JSON_BACKUP_NAME', 'jsonBackup', 'toCents', 'closeoutTrimToast', 'CLOSEOUT_REFUSED', 'CLOSEOUT_FAILED', 'CLOUD_COPY_NAME',
   // C8-6 — close-out is refused before the year's last day, and with its last statement unreconciled unless an admin said so.
@@ -25526,6 +25527,7 @@ const heldDispatchCtx = (hold) => {
     function handleImportFile() { picked.push('import'); } function handleMoveFile() { picked.push('move'); }
     function handleIcsImportFile() { picked.push('ics'); } function handleTeFile() { picked.push('te'); }
     function canReopenStatement() { return true; }   // an admin (owner decision 22: close-out is theirs)
+    var logged = []; function logLedger(op, row, more) { logged.push([op, row, more]); }   // (sync fix round 1: a goal edit is logged on the book)
     ${HELD_DISPATCH_FNS.map(decl).join('\n')}
     ${hold === 'pack' ? 'sync.newerFormat = true;' : ''}
     function tap(act, data) { handleAction(act, { dataset: data || {} }); }`, ctx);
@@ -25570,6 +25572,8 @@ test('reload gate: while either hold is on, an edit is refused before it changes
     [0, ['Deleted Akela'], ['pack-year-2026-snapshot.json'], ['Welcome to the 2027 program year'], 2027], 'control: nothing held');
   vm.runInContext("toasts = []; handleChange({ dataset: { ch: 'goal' }, value: '5.00' }); handleFilePick({ id: 'teFile', value: 'x' });", c);
   eq(JSON.parse(JSON.stringify(vm.runInContext('[state.goalCents, picked, toasts]', c))), [500, ['te'], []], 'control: a field and a file');
+  // (Sync fix round 1 — and the goal's change is logged on the book, once; while held, nothing was.)
+  eq(JSON.parse(JSON.stringify(vm.runInContext('logged', c))), [['edit', 'book', { f: { goalCents: [100, 500] } }]], 'control: the goal’s change was not logged');
 });
 
 test('reload gate: an edit that reaches commit() some other way is refused while held from the pack too', () => {
@@ -34048,6 +34052,18 @@ test('sync fix (treasurer 5, 6): the value before either change is shown and log
   ok(/SYNC_BEFORE \+ ' '/.test(slice('renderSyncItems')) && /esc\(SYNC_BOTH_NUMBER\)/.test(slice('renderSyncItems')), 'the chooser shows them');
   eq(decl('SYNC_LOG_INTRO').includes('Each time a leader chose between a change made on their device and one the pack’s server had made since. ') &&
     decl('SYNC_LOG_INTRO').includes('Money changes are listed whichever version was kept.'), true, 'the intro');
+});
+
+test('sync fix (pre-existing gap): a budget line removed takes its collection marks with it, and Undo puts them back', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(`var state = { budget: { activities: [{ id: 'a1', name: 'Hike' }], expenses: [] }, charges: [], collected: { a1: { s1: true }, 'act:a1': { s2: true }, b2: { s1: true } } };
+    ${decl('removeBudgetLine')}
+    var u = removeBudgetLine('a1'); var after = JSON.parse(JSON.stringify(state.collected)); u.restore();`, ctx);
+  eq(J(vm.runInContext('[after, state.collected]', ctx)), [{ b2: { s1: true } }, { b2: { s1: true }, a1: { s1: true }, 'act:a1': { s2: true } }], 'the marks');
+  ok(/if \(ch === 'commission'\) \{ logSettingEdit\('commissionPct', el\.value\); commit\(\); return; \}/.test(slice('handleChange')) &&
+    /if \(ch === 'cash-scout-pct'\) \{ logSettingEdit\('cashScoutPct', el\.value\); commit\(\); return; \}/.test(slice('handleChange')) &&
+    /if \(ch === 'cash-via-te'\) \{ logSettingEdit\('cashThroughTrailsEnd', el\.checked\); commit\(\); return; \}/.test(slice('handleChange')), 'the settings are logged');
+  ok(['goal', 'cash-goal', 'stretch-goal'].every((k) => decl('LEDGER_NOT_LIVE').includes("'" + k + "'")), 'a goal is logged a keystroke at a time');
 });
 
 /* ---------------- report ---------------- */

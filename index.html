@@ -10226,6 +10226,9 @@
     // Item 11 — what a storefront cash deposit covers.
     councilSettled: 'popcorn settled with the council',
     depositDays: 'deposit kept storefront cash within (days)',
+    // Pre-existing gap (sync fix round 1) — the pack's money settings, logged on the book as the deposit days are.
+    commissionPct: 'commission rate (%)', commissionPctOnline: 'online commission rate (%)', cashScoutPct: 'scout credit on cash (%)',
+    cashThroughTrailsEnd: 'cash goes through Trail’s End', goalCents: 'Trail’s End goal', stretchGoalCents: 'stretch goal', cashGoalCents: 'cash donations goal',
     wagonViaTEFrom: 'wagon cash through Trail’s End from',
     depositFor: 'storefronts it covers', depositFrom: 'covers from', depositTo: 'covers to', notStorefront: 'not storefront cash'
   };
@@ -10233,7 +10236,7 @@
   // ({ line, scout, tier, statement, entry }: each id → name or ''). Pure given `names`.
   function ledgerLogValue(k, v, names) {
     if (v === null || v === undefined || v === '') return '(none)';
-    if (k === 'amountCents' || k === 'openingCents' || k === 'statementCents') return typeof v === 'number' ? fmt(v) : String(v);
+    if (k === 'amountCents' || k === 'openingCents' || k === 'statementCents' || k === 'goalCents' || k === 'stretchGoalCents' || k === 'cashGoalCents') return typeof v === 'number' ? fmt(v) : String(v);
     if (k === 'date' || k === 'openingDate' || k === 'reconciledThrough' || k === 'depositFrom' || k === 'depositTo') return fmtDateShort(String(v));
     // Item 11 — a source by the words the form shows it with (an unknown one as it is).
     if (k === 'source' && Object.prototype.hasOwnProperty.call(LEDGER_SOURCE_LABELS, v)) return LEDGER_SOURCE_LABELS[v];
@@ -10406,7 +10409,17 @@
   // The money fields that commit on change only, not as typed (the 'input' listener): each change
   // is one logged event, and "2", "25", "25.0" are not three edits. A blank amount mid-typing
   // would otherwise be refused under the leader's fingers.
-  var LEDGER_NOT_LIVE = ['led-amount', 'book-opening'];
+  // (Sync fix round 1 — and the goals, now logged on the book: one event a change, not a keystroke.)
+  // Sets the pack setting `k` (a top-level state key) to `v`, logging the change on the book when it is one.
+  function logSettingEdit(k, v) {
+    var was = state[k];
+    state[k] = v;
+    if (was === v) return;
+    var f = {};
+    f[k] = [was === undefined ? null : was, v];
+    logLedger('edit', 'book', { f: f });
+  }
+  var LEDGER_NOT_LIVE = ['led-amount', 'book-opening', 'goal', 'cash-goal', 'stretch-goal'];
   // The fields an edit can change (and so the ones an 'edit' event carries). The tick and its
   // stamps are 'tick'/'untick' events, not edits; ids and the E2 entry stamps never change.
   // Item 11 — and what a storefront cash deposit covers (labels, like the budget line).
@@ -20372,11 +20385,18 @@
     var gone = arr.splice(ix, 1)[0];
     var chg = state.charges.filter(function (c) { return c.lineId === id; });
     state.charges = state.charges.filter(function (c) { return c.lineId !== id; });
+    // Pre-existing gap (sync fix round 1) — and its collection marks (state.collected, by the line's id and the
+    // legacy 'act:' key), which would otherwise outlive it; Undo puts them back.
+    var marks = {};
+    [id, 'act:' + id].forEach(function (k) {
+      if (state.collected && Object.prototype.hasOwnProperty.call(state.collected, k)) { marks[k] = state.collected[k]; delete state.collected[k]; }
+    });
     return {
       label: gone.name || (arr === state.budget.activities ? 'activity' : 'expense'),
       restore: function () {
         arr.splice(Math.min(ix, arr.length), 0, gone);
         chg.forEach(function (c) { state.charges.push(c); });
+        Object.keys(marks).forEach(function (k) { state.collected[k] = marks[k]; });
       }
     };
   }
@@ -40385,17 +40405,19 @@
     if (ch === 'ics-paste-text') { if (ui.overlay && ui.overlay.kind === 'ics-paste') ui.overlay.text = el.value; return; }
     // Wave 11 — new-storefront name draft is transient; sync it without persisting/re-rendering.
     if (ch === 'sf-new-name') { ui.sfDraft.name = el.value; return; }
-    if (ch === 'commission') { state.commissionPct = el.value; commit(); return; }
+    // Pre-existing gap (sync fix round 1) — each of these money settings is logged on the book (logSettingEdit), as the
+    // deposit days are; the goals commit on change (LEDGER_NOT_LIVE), so one change is one event.
+    if (ch === 'commission') { logSettingEdit('commissionPct', el.value); commit(); return; }
     // Blank = the same as the main rate, so clearing this is how a pack goes back to one rate.
-    if (ch === 'commission-online') { state.commissionPctOnline = el.value; commit(); return; }
-    if (ch === 'goal') { state.goalCents = toCents(el.value); commit(); return; }
-    if (ch === 'cash-goal') { state.cashGoalCents = toCents(el.value); commit(); return; }
-    if (ch === 'stretch-goal') { state.stretchGoalCents = toCents(el.value); commit(); return; }
-    if (ch === 'cash-via-te') { state.cashThroughTrailsEnd = el.checked; commit(); return; }
+    if (ch === 'commission-online') { logSettingEdit('commissionPctOnline', el.value); commit(); return; }
+    if (ch === 'goal') { logSettingEdit('goalCents', toCents(el.value)); commit(); return; }
+    if (ch === 'cash-goal') { logSettingEdit('cashGoalCents', toCents(el.value)); commit(); return; }
+    if (ch === 'stretch-goal') { logSettingEdit('stretchGoalCents', toCents(el.value)); commit(); return; }
+    if (ch === 'cash-via-te') { logSettingEdit('cashThroughTrailsEnd', el.checked); commit(); return; }
     // Blank = cash earns a scout nothing, which is what every pack record meant before the
     // field existed. Kept as typed (like the commission rates) so a half-typed "3" on the way
     // to "30" doesn't get normalized out from under the cursor.
-    if (ch === 'cash-scout-pct') { state.cashScoutPct = el.value; commit(); return; }
+    if (ch === 'cash-scout-pct') { logSettingEdit('cashScoutPct', el.value); commit(); return; }
     if (ch === 'entry-kind') { ui.entryKind = el.value === 'online' ? 'online' : 'wagon'; render(); return; }   // a view choice, never saved
     // Treasurer re-check of 89c08b5 (5) — the wagon cutover; logged on the book, as the deposit days are.
     if (ch === 'wagon-via-te-from') {
