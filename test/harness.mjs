@@ -1075,6 +1075,8 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'SYNC_LOG_MAX', 'normalizeS
   // Security review — a stored ledger stamp that is an email is neutralised on load.
   'ledgerStampClean',
   'densFromRoleText', 'normalizeSeasonArchive', 'uid', 'pad2', 'todayISO',
+  // Review round 1 — signoffFrom's clamp reads the pack's day.
+  'SHIFT_REPORT_TZ', 'shiftReportToday',
   'parseLegacyTime', 'migrateTierMakeUp', 'freshGone', 'clampGone', 'clampTickTimes', 'clampLogTimes', 'mergeLedgerLog', 'ledgerLogClip', 'utf8Bytes', 'campHash', 'stableRowId', 'newStableId', 'dedupeRowIds', 'normalizeState',
   // Security review of C3 (finding 1) — a row in both lists settles as the merge settles it.
   // Security review of option B (finding 2) — with the pairing, chain and all.
@@ -5860,6 +5862,7 @@ function runSandbox(setup) {
      function activeScouts() { return SCOUTS; }
      function advKindFor() { return 'req'; }
      function advStatus(sid, kind, name) { return (STATUS[sid] || {})[name] || ''; }
+     ${slice('advEarned')}
      function todayISO() { return TODAY; }
      var state = { events: EVENTS, attendance: ATT, budget: { programYear: 2026 } };`, ctx);
   return ctx;
@@ -6021,10 +6024,12 @@ test('the award is presented at the next pack meeting', () => {
 test('the mark-off button credits the run, not the room', () => {
   // The defect this replaces: on a three-meeting adventure the old button credited everyone
   // checked in TONIGHT, so a scout marked at session one who then missed two kept the credit.
-  const m = /if \(act === 'mtg-adv-mark'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
+  const m = /if \(act === 'mtg-adv-mark' \|\| act === 'mtg-adv-partial'\) \{[\s\S]*?\n    \}/.exec(SCRIPT);
   ok(m, 'the mtg-adv-mark action is missing');
   ok(/var mamRun = runForMeeting\(mam, el\.dataset\.den\);/.test(m[0]), 'it does not resolve the run');
-  ok(/mamRun\.prog\.onTrack\.forEach/.test(m[0]),
+  // Since 2026-10-02 the run widened to its parts (advRunParts), and advMarkable says who:
+  // onTrack when every part is held, nobody done while a part is still to come.
+  ok(/var mamMk = advMarkable\(runProgress\(mamParts\)\);/.test(m[0]) && /\(mamPartial \? mamMk\.partial : mamMk\.done\)\.forEach/.test(m[0]),
     'it still credits the attendance book for this one meeting');
   ok(!/state\.attendance\[mam\.id\]/.test(m[0]), 'it still reads tonight’s attendance directly');
 });
@@ -6162,7 +6167,7 @@ test('an adventure that is not on the den’s list is warned about, never refuse
   // Save and den change both re-spell, and neither refuses the value.
   ok(/if \(ch === 'mtg-adv' \|\| ch === 'mtg-den'\) mtg\.adventure = advCanonicalName\(mtg\.den, mtg\.adventure\);/.test(SCRIPT),
     'saving the adventure or changing the den does not normalize the adventure');
-  const mark = /if \(act === 'mtg-adv-mark'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  const mark = /if \(act === 'mtg-adv-mark' \|\| act === 'mtg-adv-partial'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/mamAdv = mamRun\.run\.adventure;/.test(mark), 'Mark done credits the typed spelling, not the run’s');
 });
 
@@ -13081,7 +13086,7 @@ test('D2: a worked block past its day warns when the cash count lacks two differ
   ok(/b\.cashCountedBy = typeof b\.cashCountedBy === 'string' \? b\.cashCountedBy : '';/.test(SCRIPT) &&
     /b\.cashVerifiedBy = typeof b\.cashVerifiedBy === 'string' \? b\.cashVerifiedBy : '';/.test(SCRIPT), 'the cash count is not normalized');
   const rb = slice('renderBlock');
-  ok(/data-ch="b-cash-counted"/.test(rb) && /data-ch="b-cash-verified"/.test(rb) && /blockCashCheck\(b, sf\.date, todayISO\(\)\)/.test(rb),
+  ok(/data-ch="b-cash-counted"/.test(rb) && /data-ch="b-cash-verified"/.test(rb) && /blockCashCheck\(b, sf\.date, todayISO\(\), signoffFromOf\(state\.signoffFrom\)\)/.test(rb),
     'the block editor has no cash-count fields or warning');
   ok(/if \(ch === 'b-cash-counted'\) \{ b\.cashCountedBy = el\.value;/.test(SCRIPT) && /if \(ch === 'b-cash-verified'\) \{[\s\S]{0,300}b\.cashVerifiedBy = el\.value;/.test(SCRIPT),
     'the fields are not stored');
@@ -17299,6 +17304,8 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'srParentStore', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashEntries', 'srMayUndo', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
   'srScheduleRefresh', 'parentDoc', 'parentPreviewDoc', 'shiftReportOpenFor', 'shiftReportToday', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_DAYS', 'isoPlusDays',
   'srFormOpen', 'srMirror', 'srReasonDraft', 'srNameClean', 'srSignName',
+  // Keith (2026-10-02) — Home's family card reads the parent-shaped answer too.
+  'srHomeFamilyOn', 'homeShiftsNear',
   'ledgerActor', 'ledgerActorName',
   ...FORMAT_GATE_FNS];
 const CLIENT_SRC = CLIENT_FNS.map(decl).join('\n');
@@ -17621,8 +17628,8 @@ test('positions client: canEdit() is left only where "edits anything" is meant; 
     /ui\.repeatOffer === m\.id && cal/.test(mr), 'the meeting row');
   ok(/\? !canEditSection\('calendar'\) : !canEditDenMeeting\(mtg\)\)/.test(SCRIPT), 'the meeting handler');
   // Crediting an adventure at a meeting writes advancement: the button and the handler follow it.
-  ok(/if \(backed\.length && canEditSection\('advancement'\)\)/.test(slice('meetingAdvMarkFor')) &&
-    /if \(act === 'mtg-adv-mark'\) \{[\s\S]{0,200}if \(!canEditSection\('advancement'\)\) \{ showToast\(readOnlySay\('advancement'\)\); return; \}/.test(SCRIPT), 'Mark done at a meeting');
+  ok(/if \(canEditSection\('advancement'\) && \(mk\.done\.length \|\| mk\.partial\.length\)\)/.test(slice('meetingAdvMarkFor')) &&
+    /if \(act === 'mtg-adv-mark' \|\| act === 'mtg-adv-partial'\) \{[\s\S]{0,200}if \(!canEditSection\('advancement'\)\) \{ showToast\(readOnlySay\('advancement'\)\); return; \}/.test(SCRIPT), 'Mark done at a meeting');
 });
 
 // Client step 6 — the Members card on the pack's own server: positions, not editor and viewer.
@@ -18783,7 +18790,7 @@ function srStatusCtx(o) {
     ${['esc', 'fmt', 'arrOf', 'isoPlusDays', 'SHIFT_REPORT_ROLES', 'SHIFT_REPORT_DAYS', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_NOTE_MAX',
        'SHIFT_REPORT_ATTEST', 'SHIFT_CONFIRM_ATTEST', 'SHIFT_REPORT_TE_HINT', 'SHIFT_REPORT_CASH_HINT', 'SHIFT_REPORT_CASH_POLICY', 'SHIFT_REPORT_INTRO',
        'SHIFT_REPORT_SALES_CASH_HINT', 'srSalesCashFig', 'srIsMyShift', 'SR_MY_SHIFT', 'srParentStore', 'SR_SHOW_ALL', 'SR_SHOW_MINE', 'SR_UNLINKED',
-       'SR_NONE_MINE', 'SR_PREVIEW_LINE',
+       'SR_NONE_MINE', 'SR_PREVIEW_LINE', 'SR_HOME_HEAD', 'SR_HOME_INTRO', 'srHomeFamilyOn',
        'shiftReportNowHM', 'shiftReportsOffered', 'shiftReportCanSend', 'shiftReportToday', 'SHIFT_REPORT_NOTE_HINT', 'srField', 'shiftReportOpenFor', 'shiftReportsOn', 'shiftReportFor', 'parentShiftReportStatus',
        'parentShiftReportForm', 'parentShiftReportCard', 'parentShiftLines', 'parentShiftConfirmForm'].map(decl).join('\n')}`, ctx);
   return ctx;
@@ -19102,6 +19109,8 @@ function srLeaderCtx(o) {
   };
   vm.runInContext(`
     var state = ${JSON.stringify(st)};
+    // Sign-off checks from (Keith, 2026-10-02): long before these storefronts, unless the test says.
+    if (state.signoffFrom === undefined) state.signoffFrom = '2000-01-01';
     var ui = {};
     var LEADER_ROLES = ['admin', 'editor', 'viewer'];
     var patches = [], answers = [], toasts = [], commits = 0, loads = 0;
@@ -19128,11 +19137,12 @@ function srLeaderCtx(o) {
        'srWaitingOn', 'acceptShiftReport', 'srLanded', 'srSettle', 'srRollback', 'shiftReportsReconcile', 'shiftReportsAfterPush',
        'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srReasonDraft', 'srNameClean', 'srSignName', 'ledgerStampClean', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout',
        'srIConfirmed', 'srFamiliesNow', 'srNeedsCheck', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'SR_CHECK_TE', 'SR_IMPORT_FIRST', 'familyKeyOf',
-       'blockCashCheck', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
-       'srParentStore', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashHistorySay', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
+       'blockCashCheck', 'signoffFromOf', 'SIGNOFF_FROM_DEFAULT', 'signoffHides', 'isoPlusDays', 'SHIFT_REPORT_DAYS', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
+       'srParentStore', 'srHomeFamilyOn', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashHistorySay', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
        'srCashEntries', 'srMayUndo', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
        'SR_CASH_UNDO_QUICK', 'srCashUndoForm', 'srCashUndoSay'].map(decl).join('\n')}
-    function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }`, ctx);
+    function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }
+    function shiftReportToday() { return todayISO(); }   // the pack's day, here the test's`, ctx);
   const run = (js) => vm.runInContext(js, ctx);
   const get = (js) => JSON.parse(JSON.stringify(run(js) === undefined ? null : run(js)));
   // The save landed: the server's copy is this page's copy.
@@ -19367,8 +19377,8 @@ test('preview as a parent: the parent preview is the leader’s own parent self 
     /<form data-form="shift-report"/.test(card), 'the preview card: its line, and the form');
   ok(!/You can’t send them from the preview/.test(SCRIPT), 'the old line');
   // It reads the parent-shaped answer, kept apart from the leader's own.
-  ok(/function srParentStore\(\) \{ return previewingParent\(\) \? sync\.srPreview : sync\.shiftReports; \}/.test(SCRIPT) &&
-    /var key = previewingParent\(\) \? 'srPreview' : 'shiftReports';/.test(slice('loadShiftReports')) &&
+  ok(/function srParentStore\(\) \{ return previewingParent\(\) \|\| srHomeFamilyOn\(\) \? sync\.srPreview : sync\.shiftReports; \}/.test(SCRIPT) &&
+    /var key = only === 'srPreview' \|\| only === 'shiftReports' \? only : previewingParent\(\) \? 'srPreview' : 'shiftReports';/.test(slice('loadShiftReports')) &&
     /sync\.backend\.listShiftReports\(sync\.docId, key === 'srPreview'\)/.test(slice('loadShiftReports')) &&
     /if \(key === 'shiftReports'\) shiftReportsReconcile\(\);/.test(slice('loadShiftReports')), 'the preview’s answer');
   ok(/listShiftReports: function \(docId, asParent\) \{ return this\.call\('GET', this\.packPath\(docId, '\/shift-reports'\) \+ \(asParent \? '\?as=parent' : ''\)\); \}/.test(slice('apiBackend')),
@@ -20327,7 +20337,7 @@ test('round 1: the different-family rule on the leader card, and the storefronts
   ok(!/No parent from another family/.test(L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))")), 'Cy’s parent is another family');
   const ban = L.run('renderShiftReportsBanner()');
   ok(/Figures that need a second adult’s check <span class="pill">2<\/span>/.test(ban), 'the count');
-  ok(/10:00–12:00 · nobody named as verifying the cash/.test(ban) && /12:00–14:00 · sent back after it was accepted/.test(ban) && !/14:00–16:00/.test(ban), 'the rows');
+  ok(/10:00–12:00 · cash count needs a second adult’s name/.test(ban) && /12:00–14:00 · sent back after it was accepted/.test(ban) && !/14:00–16:00/.test(ban), 'the rows');
   eq(srLeaderCtx({ state: st, today: '2026-09-01', reports: [] }).run('renderShiftReportsBanner()'), '', 'a storefront not yet worked');
 });
 
@@ -20385,7 +20395,10 @@ test('round 1: a family page reads the reports again each minute while a shift i
       function parentMode() { return ${o.parent !== false}; }
       function parentDoc() { return ${JSON.stringify({ events: o.events || [] })}; }
       function shiftReportToday() { return '2026-10-03'; }
-      function loadShiftReports() { loads += 1; }
+      function srHomeFamilyOn() { return ${!!o.home}; }
+      sync.srPreview = ${JSON.stringify(o.srPreview || null)};
+      var asked = [];
+      function loadShiftReports(only) { loads += 1; asked.push(only || ''); }
       ${['arrOf', 'isoPlusDays', 'SHIFT_REPORT_DAYS', 'shiftReportOpenFor', 'srScheduleRefresh'].map(decl).join('\n')}
       srScheduleRefresh();`, ctx);
     return ctx;
@@ -20401,6 +20414,15 @@ test('round 1: a family page reads the reports again each minute while a shift i
   const h = run({ events: inWin, hidden: true });
   vm.runInContext('timers[0].fn()', h);
   eq([vm.runInContext('loads', h), vm.runInContext('timers.length', h)], [0, 2], 'a hidden page waits for the next minute');
+  // Keith (2026-10-02): a leader's Home with a shift of their family's in the window reads the
+  // parent-shaped answer each minute too (the second parent at the table); no shift of theirs, no timer.
+  const mine = { loaded: true, myShifts: [{ sfId: 'sf1', blockId: 'b1' }] };
+  const hm = run({ parent: false, home: true, srPreview: mine });
+  eq(vm.runInContext('timers.length', hm), 1, 'Home with a family shift: once a minute');
+  vm.runInContext('timers[0].fn()', hm);
+  eq(vm.runInContext('asked', hm), ['srPreview'], 'Home reads the parent-shaped answer only');
+  eq(vm.runInContext('timers.length', run({ parent: false, home: true, srPreview: { loaded: true, myShifts: [] } })), 0, 'Home, none of theirs');
+  eq(vm.runInContext('timers.length', run({ parent: false, home: false, srPreview: mine })), 0, 'not on Home');
   ok(/srScheduleRefresh\(\);\s*if \(!srFormOpen\(\)\) render\(\);/.test(slice('loadShiftReports')), 'each read schedules the next, and redraws only with no form open');
 });
 
@@ -20509,6 +20531,273 @@ test('my shifts: the family’s card lists only their own family’s shifts, mar
     /sr\.linked = !!\(r && r\.linked === true\);/.test(slice('loadShiftReports')), 'loadShiftReports keeps more than the ids and a yes/no');
 });
 
+/* ================================================================
+   Home's storefront cards (Keith, 2026-10-02). "Your family's shifts" is the parents' shift-totals
+   card on a leader's Home, from the parent-shaped answer, for their own family only; "Storefronts
+   to close" sums up the Storefronts banner behind ONE predicate, homeStorefrontCashOn() (which
+   follows canReviewReports(): position-based access repoints that). Each is '' when there is nothing.
+   ================================================================ */
+
+test('Home family shifts: the parent card on Home lists only the leader’s own family’s shifts, and nothing when unlinked or done', () => {
+  const pv = { events: [srEv('2026-09-30', ['b1']), Object.assign(srEv('2026-10-03', ['b5', 'b6']), { sfId: 'sf2', title: 'Publix' }), srEv('2026-10-01', ['b2'])] };
+  const ctx = (o, set) => { const c = srStatusCtx(Object.assign({ role: 'admin' }, o)); if (set) vm.runInContext(set, c); return c; };
+  const home = (c) => vm.runInContext('parentShiftReportCard', c)(pv, SR_TODAY, true);
+  const LINK = "sync.shiftReports.myShifts = [{ sfId: 'sf2', blockId: 'b6' }]; sync.shiftReports.linked = true;";
+  const h = home(ctx({}, LINK));
+  ok(/<h2 class="section display" id="srCardHead" tabindex="-1">Your family’s storefront shifts<\/h2>/.test(h), 'the heading');
+  ok(h.indexOf('You and your scout worked a storefront shift.') !== -1 && h.indexOf('Worked a popcorn table outside a store') === -1, 'a leader’s first line, not the family’s');
+  eq((h.match(/class="sr-row"/g) || []).length, 1, 'only the family’s own shift');
+  ok(/data-block="b6"/.test(h) && !/data-block="b(1|2|5)"/.test(h), 'another family’s shift is listed');
+  ok(!/Preview:/.test(h) && !/sr-show-all/.test(h), 'the preview line or the toggle on Home');
+  eq((home(ctx({ ui: { srShowAll: true } }, LINK)).match(/class="sr-row"/g) || []).length, 1, 'the Schedule’s "show all" reaches Home');
+  // Linked to no scout: nothing (never the "every shift" list). Not loaded yet: nothing.
+  eq(home(ctx({})), '', 'linked to no scout');
+  eq(home(ctx({ loaded: false })), '', 'before the answer is in');
+  // Linked, none of theirs in the window: nothing to show.
+  eq(home(ctx({}, "sync.shiftReports.linked = true; sync.shiftReports.myShifts = [];")), '', 'none of theirs');
+  // Their own shift's totals accepted: done, so off Home (the Schedule card still lists it).
+  const acc = ctx({ reports: [srReport({ sfId: 'sf2', blockId: 'b6', status: 'accepted', reviewedByName: 'Sam' })] }, LINK);
+  eq(home(acc), '', 'an accepted shift stays on Home');
+  ok(/Accepted by Sam/.test(vm.runInContext('parentShiftReportCard', acc)(pv, SR_TODAY)), 'the Schedule card dropped it');
+  eq(home(ctx({ others: [{ sfId: 'sf2', blockId: 'b6', status: 'accepted' }] }, LINK)), '', 'another family’s accepted totals stay on Home');
+  // Waiting on another family's totals: the status only, never their figures.
+  const theirs = home(ctx({ others: [{ sfId: 'sf2', blockId: 'b6', status: 'submitted', needsConfirm: true, confirmed: false }] }, LINK));
+  ok(/Totals sent\. Waiting for a parent from another family/.test(theirs) && !/\$/.test(theirs.replace(/\$10,000/g, '')), 'another family’s figures on Home');
+  // One they may confirm, though not their family's: there, with its button; and the confirm form under it.
+  const cf = { sfId: 'sf1', blockId: 'b2', status: 'submitted', needsConfirm: true, confirmed: false, canConfirm: true, id: 'r9', teCents: 4200, cashCents: 0, salesCashCents: 0, updatedAt: 1 };
+  const withCf = home(ctx({ others: [cf] }, LINK));
+  ok(/data-act="shift-report-confirm-open" data-sf="sf1" data-block="b2" data-rid="r9"/.test(withCf), 'a report they may confirm');
+  const cfForm = home(ctx({ others: [cf], ui: { shiftConfirm: { rid: 'r9', sfId: 'sf1', blockId: 'b2', attest: true, busy: false, problem: '' } } }, LINK));
+  ok(/<form data-form="shift-report-confirm" id="srForm"/.test(cfForm) && /id="srConfirmAttest" name="attest" checked/.test(cfForm), 'the confirm form, its box kept');
+  // The send form survives a redraw: drawn from ui.shiftReport, as typed.
+  const f = home(ctx({ ui: { shiftReport: { sfId: 'sf2', blockId: 'b6', rid: '', te: '88.10', cash: '4', note: 'jar', attest: true, busy: false, problem: '' } } }, LINK));
+  ok(/<form data-form="shift-report" id="srForm"/.test(f) && /value="88\.10"/.test(f) && />jar<\/textarea>/.test(f) && /id="srAttest" name="attest" checked/.test(f), 'what was typed');
+  // The Schedule's card is unchanged by the new argument: its heading, its intro, the toggle.
+  const sched = vm.runInContext('parentShiftReportCard', ctx({}, LINK))(pv, SR_TODAY);
+  ok(/>Storefront shift totals<\/h2>/.test(sched) && /Worked a popcorn table outside a store/.test(sched) && /sr-show-all/.test(sched), 'the Schedule card');
+});
+
+test('Home family shifts: Home reads the parent-shaped answer, asks for it beside the leader’s own, and only on Home', () => {
+  // srHomeFamilyOn, over stubs.
+  const on = (o) => {
+    const c = vm.createContext({});
+    vm.runInContext(`
+      var ui = { tab: ${JSON.stringify(o.tab || 'home')} };
+      var state = { storefronts: [{ id: 'sf1', date: ${JSON.stringify(o.date || '2026-10-01')} }] };
+      function parentMode() { return ${!!o.parent}; }
+      function shiftReportCanSend() { return ${o.send !== false}; }
+      function shiftReportToday() { return '2026-10-03'; }
+      ${['isoPlusDays', 'SHIFT_REPORT_DAYS', 'shiftReportOpenFor', 'homeShiftsNear', 'srHomeFamilyOn'].map(decl).join('\n')}`, c);
+    return vm.runInContext('srHomeFamilyOn()', c);
+  };
+  eq([on({}), on({ tab: 'popcorn' }), on({ parent: true }), on({ send: false }), on({ date: '2026-09-01' })], [true, false, false, false, false],
+    'Home, not elsewhere, not the preview, not without shift totals, not without a storefront in the window');
+  ok(!/myJobs|hasJob|JOBS|myRole/.test(codeOnly(slice('srHomeFamilyOn'))), 'the Home card is gated by a job or a role');
+  // srParentStore on Home is the parent-shaped answer.
+  const st = vm.createContext({});
+  vm.runInContext(`var sync = { srPreview: 'P', shiftReports: 'L' }; var home = false, prev = false;
+    function previewingParent() { return prev; } function srHomeFamilyOn() { return home; }
+    ${decl('srParentStore')}`, st);
+  eq(vm.runInContext("[srParentStore(), (home = true, srParentStore()), (home = false, prev = true, srParentStore())]", st), ['L', 'P', 'P'], 'the store');
+  // loadShiftReports: on Home both answers, elsewhere the leader's alone; `only`, that one.
+  const ld = (home, only) => {
+    const c = vm.createContext({});
+    vm.runInContext(`
+      var asked = [];
+      var sync = { session: 1, docId: 'P', backend: { listShiftReports: function (d, asParent) { asked.push(asParent ? 'parent' : 'leader'); return { then: function () { return { then: function () {} }; } }; } } };
+      function shiftReportsOn() { return true; }
+      function previewingParent() { return false; }
+      function srHomeFamilyOn() { return ${home}; }
+      ${decl('loadShiftReports')}
+      loadShiftReports(${only ? JSON.stringify(only) : ''});`, c);
+    return vm.runInContext('asked.slice().sort()', c);
+  };
+  eq([ld(true), ld(false), ld(true, 'srPreview'), ld(true, 'shiftReports')], [['leader', 'parent'], ['leader'], ['parent'], ['leader']], 'what is asked for');
+  // A value a promise hands on is not a key.
+  eq(ld(true, { report: {} }), ['leader', 'parent'], '.then(loadShiftReports) passes a value');
+  ok(/if \(w === 'popcorn' \|\| w === 'home'\) loadShiftReports\(\);/.test(slice('gotoNav')), 'going Home reads the reports');
+  // homeFamilyShiftsCard: nothing until the parent-shaped answer says this account is linked.
+  const card = (sr) => {
+    const c = vm.createContext({});
+    vm.runInContext(`var state = {}; var sync = { srPreview: ${JSON.stringify(sr)} }; var built = 0, got = null;
+      function srHomeFamilyOn() { return true; }
+      function shiftReportToday() { return '2026-10-03'; }
+      function buildParentView(s, o) { built += 1; return { events: [{ kind: 'storefront', sfId: 'sf1' }, { kind: 'meeting' }], standings: o.showStandings }; }
+      function parentShiftReportCard(pv, today, home) { got = { pv: pv, today: today, home: home }; return 'CARD'; }
+      ${decl('arrOf')}
+      ${decl('homeFamilyShiftsCard')}`, c);
+    return [vm.runInContext('homeFamilyShiftsCard()', c), vm.runInContext('built', c), JSON.parse(JSON.stringify(vm.runInContext('got', c)))];
+  };
+  eq(card(null), ['', 0, null], 'no answer yet');
+  eq(card({ loaded: true, linked: false, myShifts: [] }), ['', 0, null], 'linked to no scout');
+  eq(card({ loaded: true, linked: true, myShifts: [] }), ['CARD', 1, { pv: { events: [{ kind: 'storefront', sfId: 'sf1' }] }, today: '2026-10-03', home: true }],
+    'the card, over the storefronts only, as Home draws it');
+  // Placed above Needs you; the family card before the storefronts card.
+  const hm = slice('renderHome');
+  const a = hm.indexOf('h += homeFamilyShiftsCard();'), b = hm.indexOf('if (toClose) h += homeStorefrontsCard(toClose);'), c2 = hm.indexOf('/* ----- Needs you ----- */');
+  ok(a > -1 && b > a && c2 > b, 'the order on Home');
+});
+
+test('Home storefronts to close: one predicate gates the card, which sums up the banner a shift to a row', () => {
+  // The predicate, over stubs: canReviewReports() and never the parent preview. No role compared.
+  const pred = (review, parent) => {
+    const c = vm.createContext({});
+    vm.runInContext(`function canReviewReports() { return ${review}; } function parentMode() { return ${parent}; } ${decl('homeStorefrontCashOn')}`, c);
+    return vm.runInContext('homeStorefrontCashOn()', c);
+  };
+  eq([pred(true, false), pred(false, false), pred(true, true)], [true, false, false], 'reviewer, not a reviewer, the parent preview');
+  ok(/function homeStorefrontCashOn\(\) \{ return canReviewReports\(\) && !parentMode\(\); \}/.test(SCRIPT), 'the predicate');
+  for (const f of ['homeStorefrontCashOn', 'homeStorefrontsToClose', 'homeShiftNoTotals', 'homeStorefrontsCard', 'homeFamilyShiftsCard', 'srHomeFamilyOn', 'renderHome'])
+    ok(!/sync\.myRole|myJobs\(\)[\s\S]{0,40}(canReview|canEdit)/.test(codeOnly(slice(f))), f + ' compares a role');
+  const hm = slice('renderHome');
+  ok(/var toClose = homeStorefrontCashOn\(\) \? homeStorefrontsToClose\(\) : null;\s*if \(toClose\) h \+= homeStorefrontsCard\(toClose\);/.test(hm), 'the card is behind the predicate');
+  eq((hm.match(/homeStorefrontsCard\(/g) || []).length, 1, 'the card drawn twice');
+  // A leader's page, the pack's today 2026-10-05: one of each kind of row.
+  const blk = (id, start, o) => Object.assign({ id, label: id, start, end: String(+start.slice(0, 2) + 2).padStart(2, '0') + ':00', assignments: [], salesCents: 0, donationsCents: 0,
+    cashCountedBy: 'Jo', cashVerifiedBy: 'Lee' }, o || {});
+  const st = () => ({ scouts: [{ id: 's1', name: 'Ada Example', familyId: 'fa' }, { id: 's2', name: 'Bo Example', familyId: 'fb' }], leaders: [],
+    storefronts: [
+      { id: 'sf1', name: 'Kroger', date: '2026-09-28', blocks: [
+        blk('b1', '10:00', { assignments: [{ scoutId: 's1', weight: 1 }], salesCents: 500, cashVerifiedBy: '' }),
+        blk('b2', '12:00', { salesCents: 900, salesCash: [{ reportId: 'rep-2', cents: 2000, from: 'Nora', outcome: null }] })] },
+      { id: 'sf2', name: 'Publix', date: '2026-10-01', blocks: [
+        blk('b5', '08:00'), blk('b6', '10:00', { assignments: [{ scoutId: 's1', weight: 1 }] }), blk('b7', '12:00'),
+        blk('b9', '14:00', { assignments: [{ scoutId: 's2', weight: 1 }] })] },
+      { id: 'sf3', name: 'Target', date: '2026-09-10', blocks: [blk('b8', '10:00', { assignments: [{ scoutId: 's1', weight: 1 }] })] },
+      { id: 'sf4', name: 'Aldi', date: '2026-10-05', blocks: [blk('b4', '10:00', { assignments: [{ scoutId: 's1', weight: 1 }] })] }] });
+  const reps = [srRep({ id: 'rep-5', sfId: 'sf2', blockId: 'b5' }), srRep({ id: 'rep-7', sfId: 'sf2', blockId: 'b7', needsConfirm: true, confirmed: false, submittedByName: 'Cy Parent' }),
+    srRep({ id: 'rep-9', sfId: 'sf2', blockId: 'b9', status: 'returned' })];
+  const home = (o) => {
+    const L = srLeaderCtx(Object.assign({ state: st(), today: '2026-10-05', reports: reps }, o));
+    vm.runInContext(['homeStorefrontsToClose', 'homeShiftNoTotals', 'homeStorefrontsCard'].map(decl).join('\n'), L.ctx);
+    return L;
+  };
+  const L = home();
+  const t = L.get('homeStorefrontsToClose()');
+  eq([t.review, t.second, t.none, t.check, t.cash, Object.keys(t.sfIds)], [1, 1, 1, 1, { cents: 2000, n: 1 }, ['sf2']], 'the counts');
+  const h = L.run('homeStorefrontsCard(homeStorefrontsToClose())');
+  ok(/<h2 class="section display">Storefront shifts to finish <span class="pill">5 shifts<\/span><\/h2>/.test(h), 'the heading, with the count of shifts');
+  ok(/1 shift totals to review · 1 waiting for the other family · 1 shift with no totals · 1 cash count needing a second adult · \$20\.00 cash from popcorn sales to collect\. Tap Open on a shift to finish it\./.test(h),
+    'what is waiting, in a line');
+  eq((h.match(/class="spread sr-banner-row"/g) || []).length, 5, 'a row per shift');
+  ok(h.indexOf('Kroger') < h.indexOf('Publix'), 'oldest first');
+  // Each row: the shift on one line, what it needs on the next.
+  ok(/<div><strong>Kroger<\/strong> · D2026-09-28 · 10:00–12:00<\/div><div class="sr-home-needs">cash count needs a second adult’s name<\/div>/.test(h), 'the check row');
+  ok(/12:00–14:00<\/div><div class="sr-home-needs">\$20\.00 cash from popcorn sales to collect · <span class="sr-late-closed">Past 72 hours: Trail’s End may no longer convert this cash\. Collect and deposit it\.<\/span>/.test(h),
+    'the cash row, and the 72 hours, not said as fact');
+  ok(/08:00–10:00<\/div><div class="sr-home-needs">totals from Nora Newfamily to review<\/div>/.test(h), 'the review row');
+  ok(/12:00–14:00<\/div><div class="sr-home-needs">totals from Cy Parent, waiting for the other family to confirm<\/div>/.test(h), 'waiting for the other family');
+  ok(/<strong>Publix<\/strong> · D2026-10-01 · 10:00–12:00<\/div><div class="sr-home-needs">no totals entered or sent<\/div>/.test(h), 'no totals entered or sent');
+  ok(!/Target|Aldi|14:00–16:00/.test(h), 'a no-totals row for a shift over 14 days old, from today, or with a report sent back');
+  ok(/data-act="open-storefront" data-id="sf2" aria-label="Open Publix, D2026-10-01, 08:00–10:00">Open</.test(h), 'each row opens its storefront');
+  ok(!/data-act="sr-(accept|cash|return|override)/.test(h), 'an action on Home');
+  // Before the sign-off date, no "no totals" row (nor a cash-count one).
+  const pre = home({ state: Object.assign(st(), { signoffFrom: '2026-10-02' }) }).get('homeStorefrontsToClose()');
+  eq([pre.none, pre.check], [0, 0], 'before the sign-off date');
+  // What this leader may not do says so: their own report, their family's, cash from their own report.
+  const me = home({ reports: [srRep({ id: 'rep-5', sfId: 'sf2', blockId: 'b5', submittedByUid: 'uid-ed' }),
+    srRep({ id: 'rep-2', sfId: 'sf1', blockId: 'b2', status: 'accepted', salesCashCents: 2000, submittedByUid: 'uid-ed' })] });
+  const mh = me.run('homeStorefrontsCard(homeStorefrontsToClose())');
+  ok(/08:00–10:00<\/div><div class="sr-home-needs">your totals, waiting for another leader<\/div>/.test(mh), 'their own report');
+  ok(/\$20\.00 cash from popcorn sales to collect, for another leader/.test(mh), 'cash from their own report');
+  const famSt = st(); famSt.scouts[0].parentUids = ['uid-ed']; famSt.scouts[1].familyId = 'fa'; famSt.scouts[1].parentUids = ['uid-nora'];
+  ok(/totals from Nora Newfamily to review, for another leader/.test(home({ state: famSt }).run('homeStorefrontsCard(homeStorefrontsToClose())')), 'their family’s report');
+  // A shift no longer on the schedule opens the list.
+  const gone = home({ state: { scouts: [], leaders: [], storefronts: [] }, reports: [srRep({ id: 'rep-x', sfId: 'gone', blockId: 'gone', status: 'accepted', salesCashCents: 700 })] });
+  ok(/<strong>A shift no longer on the schedule<\/strong>[\s\S]*data-act="open-storefront" data-id="" aria-label="Open the storefront list">Open</.test(gone.run('homeStorefrontsCard(homeStorefrontsToClose())')), 'a gone shift');
+  // Nothing waiting, nothing to check, no cash out, nothing unsent: no card.
+  const none = home({ state: { scouts: [], leaders: [], storefronts: [{ id: 'sf1', name: 'K', date: '2026-09-28', blocks: [blk('b1', '10:00', { salesCents: 500 })] }] }, reports: [] });
+  eq(none.run('homeStorefrontsCard(homeStorefrontsToClose())'), '', 'nothing pending: no card');
+  // Needs you's "no money entered yet" steps aside for a storefront on this card (waiting or unsent).
+  ok(/out\[out\.length - 1\]\.sfId = sf\.id;/.test(slice('homeTasks')) &&
+    /if \(toClose\) tasks = tasks\.filter\(function \(t\) \{ return !\(t\.sfId && toClose\.sfIds\[t\.sfId\]\); \}\);/.test(hm), 'the same storefront said twice');
+  ok(/out\.sfIds\[c\.sf\.id\] = true;\s*row\(c\.sf, c\.b\)\.bits\.push\('no totals entered or sent'\);/.test(slice('homeStorefrontsToClose')), 'an unsent shift’s storefront still in Needs you');
+  // The buttons are thumb-sized on a phone, and the date too.
+  ok(/#srCard button\.btn, \.sr-banner-row button\.btn, \.sr-home-close button\.btn, input\.signoff-in \{ min-height: 44px; \}/.test(HTML), '44px targets');
+});
+
+test('sign-off from: storefronts before the pack’s sign-off date aren’t asked for a second adult, and the date is the default unless a leader moves it', () => {
+  // blockCashCheck: a worked past block with a name missing, before and after the date.
+  const c = sandbox(['blockCashCheck']);
+  const blank = { assignments: [{ scoutId: 's1' }], salesCents: 500, cashCountedBy: 'Jo', cashVerifiedBy: '' };
+  eq([c.blockCashCheck(blank, '2026-09-20', '2026-10-05', '2026-10-02'), c.blockCashCheck(blank, '2026-10-03', '2026-10-05', '2026-10-02'),
+    c.blockCashCheck(blank, '2026-10-02', '2026-10-05', '2026-10-02'), c.blockCashCheck(blank, '2026-09-20', '2026-10-05')],
+    ['', 'blank', 'blank', 'blank'], 'before the date: not asked; on or after it: asked; no date given: asked');
+  // normalizeState: never stamped; junk dropped; a date after the pack's today comes back to today.
+  const nz = sandbox(NORMALIZE_FNS);
+  const today = vm.runInContext('shiftReportToday()', nz);
+  const ns = (v) => { const d = { version: 1, scouts: [] }; if (v !== undefined) d.signoffFrom = v; const r = nz.normalizeState(d); return 'signoffFrom' in r ? r.signoffFrom : '(absent)'; };
+  eq([ns(undefined), ns('soon'), ns(5), ns('2026-09-15'), ns('2999-01-01')], ['(absent)', '(absent)', '(absent)', '2026-09-15', today], 'normalizeState');
+  ok(/else if \(d\.signoffFrom > shiftReportToday\(\)\) d\.signoffFrom = shiftReportToday\(\);/.test(slice('normalizeState')), 'the clamp is the pack’s day');
+  const so = sandbox(['signoffFromOf', 'SIGNOFF_FROM_DEFAULT']);
+  eq([so.signoffFromOf('2026-09-15'), so.signoffFromOf(undefined), so.signoffFromOf('x')], ['2026-09-15', '2026-10-02', '2026-10-02'], 'read: absent is the default');
+  // How many warnings a later date stops.
+  const hides = sandbox(['signoffHides', 'blockCashCheck']);
+  const sfs = [{ date: '2026-09-28', blocks: [blank, blank, { assignments: [] }] }, { date: '2026-10-03', blocks: [blank] }, { date: '2026-09-01', blocks: [blank] }];
+  eq([hides.signoffHides(sfs, '2026-09-15', '2026-10-01', '2026-10-05'), hides.signoffHides(sfs, '2026-09-15', '2026-10-04', '2026-10-05')], [2, 3], 'the warnings it stops');
+  // Every place the cash check is asked passes the date; Needs you's "no money entered yet" is not about it.
+  ok(/blockCashCheck\(b, sf\.date, todayISO\(\), signoffFromOf\(state\.signoffFrom\)\)/.test(slice('renderBlock')), 'the block card');
+  ok(/from = signoffFromOf\(state\.signoffFrom\)/.test(slice('srNeedsCheck')) && /blockCashCheck\(b, sf\.date, today, from\)/.test(slice('srNeedsCheck')), 'the banner’s list');
+  eq([...SCRIPT.matchAll(/blockCashCheck\(/g)].length, 4, 'a new place asks the cash check (pass it the sign-off date)');
+  ok(!/signoff/i.test(slice('homeTasks')), 'Needs you’s "no money entered yet" reads the sign-off date');
+  // The banner and Home's card: a pre-date storefront with blank names is not listed; a waiting report and cash still out are.
+  const st = (from) => ({ signoffFrom: from, scouts: [{ id: 's1', name: 'Ada Example' }], leaders: [],
+    storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-09-28', blocks: [
+      { id: 'b1', label: 'Block 1', start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }], salesCents: 500, donationsCents: 0, cashCountedBy: 'Jo', cashVerifiedBy: '' },
+      { id: 'b2', label: 'Block 2', start: '12:00', end: '14:00', assignments: [], salesCents: 900, donationsCents: 0, cashCountedBy: 'Jo', cashVerifiedBy: 'Lee',
+        salesCash: [{ reportId: 'rep-2', cents: 2000, from: 'Nora', outcome: null }] },
+      { id: 'b3', label: 'Block 3', start: '14:00', end: '16:00', assignments: [{ scoutId: 's1', weight: 1 }], salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '' }] }] });
+  const run = (from) => {
+    const L = srLeaderCtx({ state: st(from), today: '2026-10-05', reports: [srRep({ id: 'rep-3', sfId: 'sf1', blockId: 'b3' })] });
+    vm.runInContext(['homeStorefrontsToClose', 'homeShiftNoTotals', 'homeStorefrontsCard'].map(decl).join('\n'), L.ctx);
+    return { ban: L.run('renderShiftReportsBanner()'), home: L.run('homeStorefrontsCard(homeStorefrontsToClose())'), n: L.run('srNeedsCheck().length') };
+  };
+  const after = run('2026-09-01'), before = run('2026-10-02');
+  eq([after.n, before.n], [2, 0], 'needs a second adult’s check: after the date, before it');
+  ok(/Figures that need a second adult’s check/.test(after.ban) && !/Figures that need a second adult’s check|second adult’s name/.test(before.ban), 'the banner');
+  ok(/second adult’s name/.test(after.home) && !/second adult’s name/.test(before.home), 'Home’s card');
+  ok(/Shift reports to review/.test(before.ban) && /cash from popcorn sales to collect/i.test(before.ban), 'a waiting report and cash still out stay in the banner');
+  ok(/totals from Nora Newfamily to review/.test(before.home) && /\$20\.00 cash from popcorn sales to collect/.test(before.home), '…and on Home');
+  ok(/<p class="small muted" style="margin:8px 0 0">Second-adult cash checks from D2026-10-02\.<\/p>/.test(before.ban), 'the banner says from when');
+  // A report sent back after its accept is from shift reports, which are new: still asked about.
+  const rb = st('2026-10-02'); rb.storefronts[0].blocks[0].reportReturned = { note: 'x' };
+  eq(srLeaderCtx({ state: rb, today: '2026-10-05', reports: [] }).run('srNeedsCheck().map(function (c) { return c.why; })'), ['sent back after it was accepted'], 'a sent-back report before the date');
+  // The Storefronts page: the date for whoever may edit storefronts, with its hint; read-only while a
+  // storefront before it is from the last 60 days; a later date waits for a two-tap confirm naming the count.
+  const line = (o) => {
+    const x = vm.createContext({});
+    vm.runInContext(`var state = ${JSON.stringify({ signoffFrom: o.from, storefronts: o.sfs || [] })}; var ui = ${JSON.stringify(o.ui || {})};
+      function canEdit() { return ${!!o.edit}; } function canEditSection() { return canEdit(); } function shiftReportToday() { return '2026-10-05'; } function todayISO() { return '2026-10-05'; }
+      function fmtDate(d) { return 'D' + d; }
+      ${['esc', 'isoPlusDays', 'SIGNOFF_FROM_DEFAULT', 'signoffFromOf', 'signoffHides', 'blockCashCheck', 'signoffFromLine'].map(decl).join('\n')}`, x);
+    return vm.runInContext('signoffFromLine()', x);
+  };
+  const ed = line({ edit: true, from: '2026-09-15' });
+  ok(/<label class="fld small">Ask for a second adult’s cash check on storefronts from<input type="date" class="signoff-in" data-ch="signoff-from" max="2026-10-05" value="2026-09-15" aria-describedby="signoffHint"><\/label>/.test(ed) &&
+    /id="signoffHint"[^>]*>Earlier storefronts aren’t checked for a second adult\.<\/p>/.test(ed), 'the date, with its hint');
+  eq(line({ edit: false, from: '2026-09-15', sfs: [{ date: '2026-06-01', blocks: [] }] }), '', 'a viewer, no recent storefront before it');
+  ok(/Second-adult cash checks start with storefronts on D2026-09-15\. Earlier storefronts aren’t asked about\./.test(line({ edit: false, from: '2026-09-15', sfs: [{ date: '2026-09-01', blocks: [] }] })),
+    'a viewer, a recent storefront before it');
+  const dr = line({ edit: true, from: '2026-09-15', sfs: [{ date: '2026-09-28', blocks: [blank] }], ui: { signoffDraft: '2026-10-01' } });
+  ok(/Moving this to D2026-10-01 stops 1 second-adult cash warning on storefronts from D2026-09-15 to D2026-09-30\./.test(dr) &&
+    /data-act="signoff-later" data-date="2026-10-01">Move the date</.test(dr) && /data-act="signoff-later-cancel"/.test(dr), 'the later date waits, and says what it stops');
+  ok(/Tap again to stop 1 warning/.test(line({ edit: true, from: '2026-09-15', sfs: [{ date: '2026-09-28', blocks: [blank] }], ui: { signoffDraft: '2026-10-01', armed: 'signoff-later:2026-10-01' } })), 'two taps');
+  // The change: never a future date; a later one that hides warnings waits; logged on the book; gated by the
+  // ledger (pack positions: state.signoffFrom is the books', so a Popcorn Kernel can't skip their own sign-off).
+  ok(/if \(ch === 'signoff-from'\) \{\s*if \(!canEditSection\('ledger'\)\) \{ render\(\); return; \}[\s\S]{0,300}if \(soNow > shiftReportToday\(\)\) \{ ui\.signoffDraft = ''; showToast\('Pick today or an earlier date\.'\); render\(\); return; \}\s*if \(soNow > soWas && signoffHides\(state\.storefronts, soWas, soNow, todayISO\(\)\) > 0\) \{ ui\.signoffDraft = soNow;/.test(SCRIPT),
+    'the change');
+  ok(/if \(act === 'signoff-later'\) \{\s*if \(!canEditSection\('ledger'\)\) return;[\s\S]{0,300}arm\('signoff-later:' \+ soTo, function \(\) \{ setSignoffFrom\(soTo\); \}, ARM_WARNED_MS\);/.test(SCRIPT), 'the confirm');
+  // Pack positions: the date is the books' (treasurer, chair, admin), in the page and on the server alike.
+  ok(/if \(!canEditSection\('ledger'\)\) \{/.test(slice('signoffFromLine')), 'the date control does not follow the ledger');
+  eq(JSON.parse(/\/\*ACCESS-BEGIN\*\/([\s\S]*?)\/\*ACCESS-END\*\//.exec(SCRIPT)[1]).keyOwner.signoffFrom, 'ledger', 'state.signoffFrom is not the ledger’s');
+  ok(/logLedger\('edit', 'book', \{ f: \{ signoffFrom: \[was, to\] \} \}\);\s*commit\(\);/.test(slice('setSignoffFrom')), 'logged');
+  ok(!/myRole/.test(codeOnly(slice('signoffFromLine'))), 'a role compared');
+  ok(!/'signoff-later'/.test(/var HELD_ACTS = \[[^\]]*\]/.exec(SCRIPT)[0]), 'the change is allowed while the reload gate holds');
+  ok(/'signoffFrom'/.test(/var SYNC_LOG_MONEY = \{ keys: \[[^\]]*\]/.exec(SCRIPT)[0]), 'a sync decision about it is not logged');
+  ok(/signoffFrom: 'second-adult cash checks from'/.test(SCRIPT), 'the ledger’s word for it');
+  ok(!/signoffFrom/.test(codeOnly(BPV())), 'the parent view reads it');
+});
+
 atest('same family: the leader’s card hides the accept from a leader in the sender’s family, says why, and the override says so on the block', async () => {
   const st = { scouts: [{ id: 's1', name: 'Ada', familyId: 'fam1', parentUids: ['uid-nora'] }, { id: 's2', name: 'Bo', familyId: 'fam1', parentUids: ['uid-ed'] }],
     leaders: [{ id: 'l1', name: 'Sam Leader', uid: 'uid-ed' }], storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [
@@ -20557,7 +20846,8 @@ test('72 hours: one constant holds Trail’s End’s window, counted from the st
   eq(W, { hours: 72, warnHours: 48,
     family: '(Trail’s End’s own deadline is midnight that day for families; leaders can finish it within 72 hours.)',
     late: 'Trail’s End’s Cash to Credit and closeout window ends soon (72 hours). After that, this cash can only be collected and deposited.',
-    closed: 'Trail’s End’s 72-hour window has closed. This cash can’t be converted now: collect it and deposit it as Popcorn money for the council.' }, 'the one constant');
+    closed: 'Past 72 hours: Trail’s End may no longer convert this cash. Collect it and deposit it as Popcorn money for the council.',
+    lateShort: 'Convert soon: Trail’s End’s 72 hours are almost up', closedShort: 'Past 72 hours: Trail’s End may no longer convert this cash. Collect and deposit it.' }, 'the one constant');
   eq(L.run(`srCashAgeLine('2026-10-03', ${start + 50 * 3600000})`), '<p class="small sr-late" style="margin:0 0 6px">' + W.late + '</p>', 'amber says it ends soon');
   eq(L.run(`srCashAgeLine('2026-10-03', ${start + 80 * 3600000})`), '<p class="small sr-late-closed" style="margin:0 0 6px">' + W.closed + '</p>', 'red says it closed');
   eq(L.run(`srCashAgeLine('2026-10-03', ${start})`), '', 'not yet');
@@ -34114,7 +34404,8 @@ test('lesson plan box: the July check names the plans the dens use that were not
    Assigning adventures — 2026-10-01: Plan a meeting on one already on the calendar, Fill the
    calendar, and several adventures at one event (advOffers).
    ===================================================================== */
-const OFFER_FNS = ['packAdvChoices', 'packAdvLabel', 'ADV_OFFERS_MAX', 'ADV_RANGE_KEYS', 'evOffers', 'offerEventDens',
+const OFFER_FNS = ['packAdvChoices', 'packAdvLabel', 'advOfferChoices', 'advOfferLabel', 'offerLabel', 'offerCopy', 'offerDens',
+  'ADV_OFFERS_MAX', 'ADV_RANGE_KEYS', 'evOffers', 'offerEventDens',
   'offerByDen', 'offerAttendees', 'denOfferEntries', 'offersSummary', 'eventDens', 'byScoutName', 'denListLabel',
   'denPlanOpenMeetings', 'fillCalendarPlan', 'planDenMeetingCount', 'fillPlanCount', 'advPlanFor', 'advPlanKey',
   'denPlan', 'setPackAdv'];
@@ -34167,6 +34458,54 @@ test('advOffers: normalizeState keeps valid-looking offers once each, a boolean 
   eq(vm.runInContext('ADV_OFFERS_MAX', sandbox(['ADV_OFFERS_MAX'])), 12, 'the cap and the loader’s literal 12 differ');
 });
 
+test('Webelos Woods: seeded in September for Webelos and Arrow of Light, offering only what NEGA runs', () => {
+  const { SEED_ACTIVITIES, SEED_WOODS_OFFERS, PROGRAM_MONTHS } = sandbox(['PROGRAM_MONTHS', 'PROGRAM_TURN',
+    'PROGRAM_START_MONTH', 'SA_FEES', 'SEED_EXPENSES', 'SEED_ACTIVITIES', 'SEED_WOODS_OFFERS']);
+  const ww = SEED_ACTIVITIES.filter((a) => a.name === 'Webelos Woods')[0];
+  ok(ww, 'no seeded Webelos Woods');
+  eq(PROGRAM_MONTHS[ww.slot], 'September', 'Webelos Woods month');
+  eq(ww.dens, ['Webelos', 'Arrow of Light'], 'Webelos Woods is not limited to Webelos and Arrow of Light');
+  eq(ww.offers, 'woods', 'Webelos Woods offers');
+  // Outdoors and Personal Safety for Arrow of Light only (offer.dens, §9): the patrol campout is
+  // part of Outdoor Adventurer and the first-aid station part of First Aid. Never for Webelos —
+  // NEGA has no hike, and req:3 is Webelos Walkabout for them.
+  // …and as PARTS of those two (offer.part). Keith, 2026-10-02: Let's Camp! (Webelos) is a part
+  // too, and Personal Fitness (req:4) a ticked part for a den that planned and cooked its meal.
+  // Archery and BB Gun are full chances.
+  eq(SEED_WOODS_OFFERS.map((o) => o.key + ':' + o.auto + (o.dens ? ':' + o.dens.join('+') : '') + (o.part ? ':part' : '')),
+    ["el:Let's Camp!:true:Webelos:part", 'el:Archery:false', 'el:BB Gun:false', 'req:3:true:Arrow of Light:part',
+      'req:5:true:Arrow of Light:part', 'req:4:false:part'],
+    'the Webelos Woods offers');
+  const fn = /function seedStandardYear\(\) \{[\s\S]*?\n  \}/.exec(SCRIPT)[0];
+  ok(/dens: \(t\.dens \|\| \[\]\)\.slice\(\)/.test(fn), 'the seed drops a row’s dens');
+  ok(/t\.offers === 'woods' \? SEED_WOODS_OFFERS/.test(fn), 'the seed drops Webelos Woods’ offers');
+  ok(/seedEv\.advOffers = seedOffers\.map\(offerCopy\)/.test(fn), 'the seed drops an offer’s dens');
+  const copy = sandbox(['DENS', 'offerCopy']);
+  eq(JSON.parse(JSON.stringify(SEED_WOODS_OFFERS.map(copy.offerCopy).slice(3))),
+    [{ key: 'req:3', auto: true, dens: ['Arrow of Light'], part: true }, { key: 'req:5', auto: true, dens: ['Arrow of Light'], part: true },
+      { key: 'req:4', auto: false, part: true }],
+    'offerCopy drops dens or part');
+  ok(copy.offerCopy(SEED_WOODS_OFFERS[3]).dens !== SEED_WOODS_OFFERS[3].dens, 'a seeded event shares the seed’s dens array');
+  // The comment that said these were left out has gone with them.
+  ok(!/Left out on purpose: req:3 and req:5/.test(SCRIPT), 'the old comment about req:3/req:5 is still there');
+  // What it means at the event: Arrow of Light's own adventures, and nothing for Webelos.
+  const ctx = offerSandbox(OFFER_SETUP);
+  ctx.WW = SEED_WOODS_OFFERS;
+  vm.runInContext("EVENTS[1].advOffers = WW.map(offerCopy)", ctx);
+  eq(vm.runInContext("offerByDen(EVENTS[1], 'req:3')", ctx),
+    { has: [{ den: 'Arrow of Light', name: 'Outdoor Adventurer' }], lacks: [], off: [{ den: 'Webelos', name: 'Webelos Walkabout' }] },
+    'Webelos Woods offers Webelos Walkabout');
+  eq(vm.runInContext("denOfferEntries('Webelos', [EVENTS[1]], 2026).map(function (o) { return o.name; })", ctx), ["Let's Camp!", 'Archery', 'BB Gun', 'Stronger, Faster, Higher'],
+    'the Webelos get First Aid or Walkabout from Webelos Woods');
+  eq(vm.runInContext("denOfferEntries('Arrow of Light', [EVENTS[1]], 2026).map(function (o) { return o.name; })", ctx), ['Archery', 'BB Gun', 'Outdoor Adventurer', 'First Aid', 'Personal Fitness'],
+    'Arrow of Light’s Webelos Woods adventures');
+  // Narrowed to one rank, an offer is called by that rank's own adventure — never "Outdoors for Arrow of Light".
+  eq(vm.runInContext("evOffers(EVENTS[1]).map(function (o) { return o.label; })", ctx),
+    ["Let's Camp!", 'Archery', 'BB Gun', 'Outdoor Adventurer', 'First Aid', 'Personal Fitness'], 'the offers’ labels');
+  eq(vm.runInContext("offersSummary(evOffers(EVENTS[1]))", ctx),
+    "Let's Camp!, Outdoor Adventurer, First Aid (a part, for everyone who attends) · Archery, BB Gun, Personal Fitness (offered)", 'the agenda line');
+});
+
 test('advOffers: each scout gets their own rank’s version; Lions have no BB Gun, Arrow of Light no Let’s Camp!', () => {
   const ctx = offerSandbox(OFFER_SETUP);
   eq(vm.runInContext('evOffers(EVENTS[0]).map(function (o) { return o.key + ":" + o.auto; })', ctx),
@@ -34178,7 +34517,7 @@ test('advOffers: each scout gets their own rank’s version; Lions have no BB Gu
   eq(camp.lacks, ['Arrow of Light'], 'Arrow of Light is offered Let’s Camp!');
   eq(vm.runInContext("offerByDen(EVENTS[0], 'th:fishing').has.map(function (x) { return x.name; })", ctx),
     ['Go Fish', 'Fish On', 'A Wolf Goes Fishing', 'A Bear Goes Fishing', 'Catch the Big One', 'Fishing'], 'the fishing theme per rank');
-  eq(vm.runInContext("offerByDen(EVENTS[1], \"el:Let's Camp!\")", ctx), { has: [{ den: 'Webelos', name: "Let's Camp!" }], lacks: ['Arrow of Light'] },
+  eq(vm.runInContext("offerByDen(EVENTS[1], \"el:Let's Camp!\")", ctx), { has: [{ den: 'Webelos', name: "Let's Camp!" }], lacks: ['Arrow of Light'], off: [] },
     'a den-limited activity is only for its dens');
   // Who attended and can earn it: checked in, active, the rank has it. Quinn was not there.
   const att = vm.runInContext("offerAttendees(EVENTS[0], \"el:Let's Camp!\")", ctx);
@@ -34189,13 +34528,16 @@ test('advOffers: each scout gets their own rank’s version; Lions have no BB Gu
 });
 
 test('advOffers: recording — auto is one tap for those who attended, an offered elective only for the scouts ticked', () => {
-  const auto = /if \(act === 'offer-mark'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  const auto = /if \(act === 'offer-mark' \|\| act === 'offer-mark-partial'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/!omOffer\.auto\) return;/.test(auto), 'the one-tap button credits an offered elective to everyone');
   ok(/canEditSection\('advancement'\)/.test(auto), 'a viewer (or anyone who doesn’t edit advancement) can record');
-  ok(/offerAttendees\(omEv, omOffer\.key\)\.can\.forEach/.test(auto) && /advMarkDone\(r\.scout\.id, advKindFor\(r\.scout, r\.name\), r\.name\)/.test(auto),
+  // offerMarkable's rows are offerAttendees' `can`, each with what a tap records (§9).
+  ok(/offerMarkable\(omEv, omOffer\.key\)\.rows\.forEach/.test(auto) && /var omKind = advKindFor\(r\.scout, r\.name\);/.test(auto) &&
+    /r\.would === 'done' && advMarkDone\(r\.scout\.id, omKind, r\.name\)/.test(auto) && /r\.would === 'partial' && advMarkPartial\(r\.scout\.id, omKind, r\.name\)/.test(auto),
     'not the same path as mtg-adv-mark (advMarkDone, the scout’s own rank’s name)');
+  ok(/var att = offerAttendees\(ev, key\)/.test(slice('offerMarkable')) && /att\.can\.map/.test(slice('offerMarkable')), 'offerMarkable reads someone other than the attendees the offer is for');
   const picked = /if \(kind === 'offer-mark-picked'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/fd\.getAll\('scout'\)/.test(picked) && /opIds\.indexOf\(r\.scout\.id\) !== -1 && advMarkDone/.test(picked),
+  ok(/fd\.getAll\('scout'\)/.test(picked) && /if \(opIds\.indexOf\(r\.scout\.id\) === -1\) return;/.test(picked) && /advMarkDone/.test(picked),
     'an offered elective is not limited to the ticked scouts who attended');
   ok(/canEditSection\('advancement'\)/.test(picked), 'a viewer can record an elective');
   // Nothing in the offer code writes advancement any other way, or 'awarded'.
@@ -34221,7 +34563,8 @@ test('advOffers: editor on campouts and den meetings, with the range-sport rule,
   // The `ev-` change gate returns on any key it does not know, so an ev-* name would be dead code.
   ok(!/data-ch="ev-offer|data-act="ev-offer/.test(SCRIPT), 'an offer control is behind the ev- gate');
   const add = /if \(kind === 'offer-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/canEditDenMeeting\(oaddEv\)/.test(add) && /kind === 'pack'/.test(add) && /ADV_OFFERS_MAX/.test(add) && /packAdvLabel\(oaddKey\)/.test(add), 'adding is not checked');
+  ok(/canEditDenMeeting\(oaddEv\)/.test(add) && /kind === 'pack'/.test(add) && /ADV_OFFERS_MAX/.test(add) && /advOfferLabel\(oaddKey\)/.test(add), 'adding is not checked');
+  ok(/evOffers\(oaddEv\)\.map\(offerCopy\)/.test(add), 'adding an offer drops the others’ dens');
   ok(/delete mtg\.advOffers/.test(slice('clearMeetingAdvs')), 'a meeting turned into a pack meeting keeps its offers');
   ok(/ADV_RANGE_KEYS\.indexOf\(m\.packAdv\)/.test(slice('packAdvPicker')), 'a range sport picked for every den is not warned');
 });
@@ -34261,12 +34604,421 @@ test('advOffers: the council family campouts are seeded with them; a pack’s ow
     'PROGRAM_START_MONTH', 'SA_FEES', 'SEED_EXPENSES', 'SEED_ACTIVITIES', 'SEED_CAMP_OFFERS']);
   eq(SEED_ACTIVITIES.filter((a) => a.offers === 'council').map((a) => a.name), ['Fall family campout', 'Spring family campout'], 'which seeds offer');
   ok(!SEED_ACTIVITIES.some((a) => /Fort Yargo/.test(a.name) && a.offers), 'the pack-run Fort Yargo trip offers the ranges');
-  eq(JSON.parse(JSON.stringify(SEED_CAMP_OFFERS)), [{ key: "el:Let's Camp!", auto: true }, { key: 'el:Archery', auto: false },
-    { key: 'el:BB Gun', auto: false }, { key: 'th:fishing', auto: false }], 'the owner’s list: Let’s Camp! for all, the rest offered');
+  // Keith, 2026-10-02: Let's Camp! is a PART (offer.part, DESIGN-adventures.md §9) — one campout
+  // records it in progress where the den has two or more parts, which he accepted. The rest stay
+  // full chances.
+  eq(JSON.parse(JSON.stringify(SEED_CAMP_OFFERS)), [{ key: "el:Let's Camp!", auto: true, part: true }, { key: 'el:Archery', auto: false },
+    { key: 'el:BB Gun', auto: false }, { key: 'th:fishing', auto: false }], 'the owner’s list: Let’s Camp! for all, as a part; the rest offered');
   const seed = slice('seedStandardYear');
-  ok(/if \(existing\[t\.name\.toLowerCase\(\)\]\) return;[\s\S]*seedEv\.advOffers = SEED_CAMP_OFFERS\.map/.test(seed), 'offers are put on an existing event');
+  ok(/if \(existing\[t\.name\.toLowerCase\(\)\]\) return;[\s\S]*t\.offers === 'council' \? SEED_CAMP_OFFERS[\s\S]*seedEv\.advOffers = seedOffers\.map/.test(seed), 'offers are put on an existing event');
   const roll = slice('rolloverYear');
   ok(/offers: ev \? evOffers\(ev\)\.map/.test(roll) && /if \(c\.offers\.length\) ev\.advOffers = c\.offers;/.test(roll), 'the rollover drops a campout’s offers');
+});
+
+/* ========================================================================
+   Adventures per rank and in progress — 2026-10-02 (DESIGN-adventures.md §9): an offer narrowed
+   to the ranks it is for (offer.dens), any rank's elective as an offer, 'partial' (◐ in progress)
+   and its note, and an adventure's PARTS — den meetings and events together.
+   ===================================================================== */
+const PARTS_FNS = ['advParts', 'advPartsRun', 'advRunParts', 'advPartsMixed', 'partLabel', 'advMarkable', 'offerMarkable'];
+function partsSandbox(setup) {
+  const ctx = offerSandbox(setup);
+  vm.runInContext(PARTS_FNS.map(slice).join('\n'), ctx);
+  return ctx;
+}
+// Arrow of Light works Outdoor Adventurer at two den meetings (Sep 8, Oct 6), and Webelos Woods
+// (Sep 26, Webelos and Arrow of Light) offers it to Arrow of Light only. Ada was at all three by
+// Oct 6; Bo at Webelos Woods only; Cal at the first meeting only; Dee at none. Wes (Webelos) was
+// at Webelos Woods too. Last spring's campout offered it as well — another program year.
+const PARTS_SETUP = `
+  var TODAY = '2026-09-26';
+  var SCOUTS = [{ id: 'a', name: 'Ada', den: 'Arrow of Light' }, { id: 'b', name: 'Bo', den: 'Arrow of Light' },
+                { id: 'c', name: 'Cal', den: 'Arrow of Light' }, { id: 'd', name: 'Dee', den: 'Arrow of Light' },
+                { id: 'w', name: 'Wes', den: 'Webelos' }, { id: 'l', name: 'Lia', den: 'Lion' }];
+  var STATUS = {};
+  var EVENTS = [
+    { id: 'm1', kind: 'den', den: 'Arrow of Light', date: '2026-09-08', time: '18:30', adventure: 'Outdoor Adventurer' },
+    { id: 'ww', kind: 'activity', name: 'Webelos Woods', dens: ['Webelos', 'Arrow of Light'], date: '2026-09-26',
+      advOffers: [{ key: "el:Let's Camp!", auto: true }, { key: 'el:Archery', auto: false },
+                  { key: 'req:3', auto: true, dens: ['Arrow of Light'], part: true },
+                  { key: 'req:5', auto: true, dens: ['Arrow of Light'], part: true }] },
+    { id: 'm2', kind: 'den', den: 'Arrow of Light', date: '2026-10-06', time: '18:30', adventure: 'Outdoor Adventurer' },
+    { id: 'old', kind: 'activity', name: 'Last spring', dens: [], date: '2026-04-18', advOffers: [{ key: 'req:3', auto: true, part: true }] }
+  ];
+  var ATT = { m1: { a: { scout: 1 }, c: { scout: 1 } }, ww: { a: { scout: 1 }, b: { scout: 1 }, w: { scout: 1 }, l: { scout: 1 } },
+              old: { d: { scout: 1 } } };
+  function atLastMeeting() { TODAY = '2026-10-06'; ATT.m2 = { a: { scout: 1 } }; }`;
+
+test('offers per rank: offer.dens narrows offerByDen, offerAttendees and denOfferEntries, within the event’s dens', () => {
+  const ctx = offerSandbox(OFFER_SETUP);
+  // The all-dens campout offers Outdoors to Wolf and Arrow of Light only.
+  vm.runInContext("EVENTS[0].advOffers.push({ key: 'req:3', auto: true, dens: ['Wolf', 'Arrow of Light'] })", ctx);
+  const by = vm.runInContext("offerByDen(EVENTS[0], 'req:3')", ctx);
+  eq(by.has.map((x) => x.den + ':' + x.name), ['Wolf:Paws on the Path', 'Arrow of Light:Outdoor Adventurer'], 'the ranks it is for');
+  eq(by.off.map((x) => x.den), ['Lion', 'Tiger', 'Bear', 'Webelos'], 'the ranks a leader left out');
+  eq(by.lacks, [], 'every rank has an Outdoors adventure');
+  const att = vm.runInContext("offerAttendees(EVENTS[0], 'req:3')", ctx);
+  eq(att.can.map((r) => r.scout.id + ':' + r.name), ['r:Outdoor Adventurer', 'w:Paws on the Path'], 'who can be credited');
+  eq(att.notFor.map((s) => s.id), ['l', 't'], 'a Lion or Tiger at the campout can be credited with an offer not for them');
+  eq(att.cannot.length, 0, 'a left-out rank was called a rank without the adventure');
+  eq(vm.runInContext("denOfferEntries('Tiger', EVENTS, 2026).filter(function (o) { return o.ev.id === 'c1'; }).map(function (o) { return o.name; })", ctx),
+    ["Let's Camp!", 'BB Gun', 'Fish On'], 'the Tigers are planned an Outdoors left out for them');
+  ok(vm.runInContext("denOfferEntries('Wolf', EVENTS, 2026).some(function (o) { return o.name === 'Paws on the Path'; })", ctx), 'the Wolves lost their Outdoors');
+  // The event's dens bound it: Webelos Woods is for Webelos and Arrow of Light, so a Wolf narrowing
+  // there is for nobody — never quietly for everyone — and a Wolf checked in there is not credited.
+  vm.runInContext("EVENTS[1].advOffers.push({ key: 'th:fishing', auto: true, dens: ['Wolf'] }); ATT.c2 = { w: { scout: 1 }, r: { scout: 1 } };", ctx);
+  eq(vm.runInContext("offerDens(EVENTS[1], 'th:fishing')", ctx), [], 'a narrowing outside the event’s dens fell back to every rank');
+  eq(vm.runInContext("offerByDen(EVENTS[1], 'th:fishing').has.length", ctx), 0, 'an offer for nobody is for somebody');
+  eq(vm.runInContext("offerAttendees(EVENTS[1], \"el:Let's Camp!\").notFor.map(function (s) { return s.id; })", ctx), ['w'],
+    'a Wolf sibling at Webelos Woods is credited with Let’s Camp!');
+  // No dens: every rank at the event, exactly as before.
+  eq(vm.runInContext("offerDens(EVENTS[0], 'el:BB Gun')", ctx), ['Lion', 'Tiger', 'Wolf', 'Bear', 'Webelos', 'Arrow of Light'], 'an offer with no dens was narrowed');
+});
+
+test('offers per rank: the editor’s “For:” boxes, the last one kept, editors only', () => {
+  const ed = slice('advOffersEditor');
+  ok(/if \(edit && able\.length > 1\)/.test(ed) && /data-ch="offer-dens"/.test(ed), 'editors do not get a box per rank');
+  ok(/var able = by\.has\.concat\(by\.off\)/.test(ed), 'the boxes are not the event’s ranks that have the adventure');
+  ok(/esc\(x\.den\) \+ \(x\.name !== x\.den \? ' · ' \+ esc\(x\.name\) : ''\)/.test(ed), 'a box is not labelled with its rank’s own adventure');
+  ok(/on && by\.has\.length === 1 \? ' disabled' : ''/.test(ed), 'the last ticked box can be unticked');
+  ok(/Not offered to ' \+ esc\(denListLabel\(by\.off\.map/.test(ed), 'a viewer is not told which ranks were left out');
+  const h = /if \(ch === 'offer-dens'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/!canEditDenMeeting\(odnEv\)/.test(h) && /commit\(\); return;/.test(h), 'the handler is not gated and committed like offer-auto');
+  ok(/if \(!odnOn\.length\) \{ showToast\(/.test(h) && h.indexOf('if (!odnOn.length)') < h.indexOf('odnO.dens = odnOn'), 'unticking every box empties the list');
+  ok(/if \(odnOn\.length === odnAll\.length\) delete odnO\.dens; else odnO\.dens = odnOn;/.test(h), 'all ticked is stored as a narrowing');
+  ok(/DENS\.indexOf\(el\.dataset\.den\) === -1/.test(h), 'a made-up den is written');
+  ok(HELD_LIST().indexOf("'offer-dens'") === -1 && HELD_LIST().indexOf("'offer-part'") === -1, 'an edit is open while the page is held');
+  // "Covers part of it" (offer.part): a box on each row and on the add form, editors only.
+  ok(/data-ch="offer-part"/.test(ed) && /name="part" value="1"> Covers part of it/.test(ed), 'no “Covers part of it” box');
+  ok(/\(edit\s*\? '<select data-ch="offer-auto"[^\n]*\n[^\n]*\n[^\n]*\n\s*'<label class="offer-den small"><input type="checkbox" data-ch="offer-part"/.test(ed), 'the part box is not in the editors’ branch');
+  const hp = /if \(ch === 'offer-part'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/!canEditDenMeeting\(opaEv\)/.test(hp) && /if \(el\.checked\) opaO\.part = true; else delete opaO\.part;/.test(hp) && /commit\(\); return;/.test(hp), 'the part handler');
+  const ha = /if \(kind === 'offer-add'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/if \(String\(fd\.get\('part'\) \|\| ''\) === '1'\) oaddNew\.part = true;/.test(ha), 'the add form drops part');
+  ok(/if \(!o\.part \|\| o\.name\.toLowerCase\(\) !== want\) return;/.test(slice('advParts')), 'advParts takes an offer that is not a part');
+  // The agenda sheet names the ranks of a narrowed offer.
+  const ctx = offerSandbox(OFFER_SETUP);
+  eq(vm.runInContext("offersSummary([{ label: 'Outdoor Adventurer', auto: true, dens: ['Arrow of Light'] }, { label: 'Archery', auto: false, dens: ['Webelos', 'Arrow of Light'] }])", ctx),
+    'Outdoor Adventurer (everyone who attends) · Archery for Webelos and Arrow of Light (offered)', 'the agenda line');
+  ok(/deleteWithUndo\(offerLabel\(odGone\)/.test(SCRIPT), 'the Undo toast names a one-rank offer by the pack-wide label');
+});
+function HELD_LIST() { return /var HELD_CHANGES = \[[^\]]*\]/.exec(SCRIPT)[0]; }
+
+test('offer choices: any rank’s elective is an offer, never a pick for every den', () => {
+  const ctx = offerSandbox(OFFER_SETUP);
+  const lbl = (k) => vm.runInContext('advOfferLabel(' + JSON.stringify(k) + ')', ctx);
+  const pack = (k) => vm.runInContext('packAdvLabel(' + JSON.stringify(k) + ')', ctx);
+  eq([lbl('el:Knife Safety'), lbl("el:Chef's Knife"), lbl('el:Archery'), lbl('req:3'), lbl('th:fishing')],
+    ['Knife Safety (Arrow of Light)', "Chef's Knife (Webelos)", 'Archery', 'Outdoors', 'Fishing'], 'offer labels');
+  eq([pack('el:Knife Safety'), pack("el:Chef's Knife")], ['', ''], 'one rank’s elective became a pick for every den');
+  // A theme's member is offered as the theme (narrowed), so an event cannot offer it twice.
+  eq([lbl('el:Fishing'), lbl('el:Catch the Big One')], ['', ''], 'a theme member is its own offer');
+  // Every elective of every rank can be offered, one way or the other.
+  const missing = vm.runInContext(`(function () {
+    var out = [];
+    DENS.forEach(function (dn) { ADVENTURES[dn].electives.forEach(function (n) {
+      var direct = !!advOfferLabel('el:' + n);
+      var viaTheme = ADV_ELECTIVE_THEMES.some(function (t) { return t.byDen[dn] === n && advOfferLabel(t.key); });
+      if (!direct && !viaTheme) out.push(dn + ':' + n);
+    }); });
+    return out; })()`, ctx);
+  eq(missing, [], 'electives that cannot be offered');
+  // packAdvChoices is unchanged, and every one of its keys is still an offer.
+  ok(vm.runInContext("packAdvChoices().electives.every(function (x) { return !!advOfferLabel(x.key); })", ctx), 'an All-dens choice is not an offer');
+  ok(vm.runInContext("packAdvChoices().electives.every(function (x) { return x.key.indexOf('el:') !== 0 || packAdvChoices().electives.length && ['Archery', 'BB Gun', 'Slingshot'].concat(x.label).indexOf(x.label) !== -1; })", ctx), 'shape');
+  // An event keeps a one-rank elective; the add form and the label use the offer list.
+  vm.runInContext("EVENTS[1].advOffers.push({ key: 'el:Knife Safety', auto: false })", ctx);
+  eq(vm.runInContext("evOffers(EVENTS[1]).map(function (o) { return o.label; })", ctx), ["Let's Camp!", 'Knife Safety (Arrow of Light)'], 'a one-rank elective was dropped');
+  eq(vm.runInContext("offerByDen(EVENTS[1], 'el:Knife Safety')", ctx), { has: [{ den: 'Arrow of Light', name: 'Knife Safety' }], lacks: ['Webelos'], off: [] },
+    'Knife Safety den by den');
+  ok(/advOfferOptions\('Add an adventure…'/.test(slice('advOffersEditor')), 'the add form lists the All-dens choices');
+  ok(/deleteWithUndo\(offerLabel\(odGone\)/.test(SCRIPT) && /\|\| advOfferLabel\(o\.key\)/.test(slice('offerLabel')), 'a removed one-rank elective is named “adventure”');
+  ok(!/packAdvLabel/.test(slice('evOffers')), 'evOffers validates against the All-dens list');
+});
+
+test('normalizeState: an offer’s dens, an adventure in progress and its note', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(NORMALIZE_FNS.map(slice).join('\n'), ctx);
+  const long = 'x'.repeat(130);
+  const d = ctx.normalizeState({
+    version: 1, scouts: [{ id: 's1', name: 'Ada', den: 'Arrow of Light' }, { id: 's2', name: 'Bo', den: 'Tiger' }],
+    advancement: {
+      s1: { req: { 'First Aid': 'partial', Bobcat: 'done', 'Outdoor Adventurer': 'half', Citizenship: 'partial' },
+            elect: { Archery: 'partial' },
+            notes: { 'req|First Aid': '  needs   the 2-mile hike ', 'req|Bobcat': 'done, so goes', 'elect|Archery': long,
+                     'req|Citizenship': 42, 'bogus|First Aid': 'x', 'nobar': 'x' } },
+      s2: { req: { 'Tiger Roar': 'partial' }, elect: {}, notes: { 'req|Tiger Roar': 'one more night' } }
+    },
+    events: [
+      { id: 'a', kind: 'activity', name: 'Woods', advOffers: [
+        { key: 'req:3', auto: true, dens: ['Arrow of Light', 'Nobody', 'Wolf', 'Arrow of Light'] },
+        { key: 'req:5', auto: true, dens: ['Nobody'] },
+        { key: 'el:Archery', auto: false, dens: 'Wolf', part: 'yes' },
+        { key: 'el:BB Gun', auto: false, dens: [], part: true }] }
+    ]
+  });
+  eq(JSON.parse(JSON.stringify(d.events[0].advOffers)), [
+    { key: 'req:3', auto: true, dens: ['Wolf', 'Arrow of Light'] }, { key: 'req:5', auto: true },
+    { key: 'el:Archery', auto: false }, { key: 'el:BB Gun', auto: false, part: true }],
+    'dens: DENS names once, in rank order, gone when empty; part kept only when true');
+  eq(JSON.parse(JSON.stringify(d.advancement.s1.req)), { 'First Aid': 'partial', Bobcat: 'done', Citizenship: 'partial' }, 'partial is not kept, or junk is');
+  eq(d.advancement.s1.elect.Archery, 'partial', 'an elective in progress was dropped');
+  eq(JSON.parse(JSON.stringify(d.advancement.s1.notes)), { 'req|First Aid': 'needs the 2-mile hike', 'elect|Archery': 'x'.repeat(120) },
+    'notes: trimmed, 120 at most, a string, beside an adventure in progress only');
+  eq(JSON.parse(JSON.stringify(d.advancement.s2)), { req: { "Tiger's Roar": 'partial' }, elect: {}, notes: { "req|Tiger's Roar": 'one more night' } },
+    'a renamed adventure in progress lost its status or its note');
+  // A rename onto a spelling already further on keeps the further one (awarded > done > partial).
+  const d2 = ctx.normalizeState({ version: 1, scouts: [], events: [],
+    advancement: { t: { req: { 'Tiger Roar': 'done', "Tiger's Roar": 'partial' }, elect: {} }, u: { req: { 'Tiger Roar': 'partial', "Tiger's Roar": 'awarded' }, elect: {} } } });
+  eq([d2.advancement.t.req["Tiger's Roar"], d2.advancement.u.req["Tiger's Roar"]], ['done', 'awarded'], 'a rename downgraded a mark');
+  // Only notes: no record.
+  const d3 = ctx.normalizeState({ version: 1, scouts: [], events: [], advancement: { z: { req: {}, elect: {}, notes: { 'req|Bobcat': 'x' } } } });
+  ok(!d3.advancement.z, 'a record of notes alone was kept');
+  ok(!/advOfferLabel|advOfferChoices|offerDens|ADVENTURES\[/.test(codeOnly(slice('normalizeState'))), 'normalizeState reads something assigned after load()');
+});
+
+// The real advancement writers, over a small book.
+function advBookSandbox(book) {
+  const ctx = vm.createContext({});
+  vm.runInContext(`${slice('DENS')}
+    ${slice('ADVENTURES')}
+    var state = { advancement: ${JSON.stringify(book)} };
+    var commits = 0;
+    function commit() { commits += 1; return true; }
+    function esc(s) { return String(s); }
+    ${['advRec', 'advStatus', 'advEarned', 'advPrune', 'advNote', 'advDropNote', 'advSetNote', 'advNextStatus', 'advCycle', 'advKindFor',
+      'advMarkDone', 'advMarkPartial', 'advElectCount', 'scoutAdvComplete', 'bobcatNudgeFor', 'advCellBtn'].map(slice).join('\n')}
+    ${decl('ADV_PARTIAL_NOTE_MAX')}
+    ${decl('ADV_CYCLE')}
+    ${decl('ADV_STATUS_WORDS')}`, ctx);
+  return ctx;
+}
+
+test('in progress is not earned: advEarned in scoutAdvComplete, advElectCount and the Bobcat nudge', () => {
+  const aolReq = ['Bobcat', 'Citizenship', 'Duty to God', 'Outdoor Adventurer', 'Personal Fitness', 'First Aid'];
+  const all = Object.fromEntries(aolReq.map((n) => [n, 'done']));
+  const ctx = advBookSandbox({
+    a: { req: all, elect: { Archery: 'done', Cycling: 'partial' } },
+    b: { req: Object.assign({}, all, { 'First Aid': 'partial' }), elect: { Archery: 'done', Cycling: 'awarded' } },
+    c: { req: all, elect: { Archery: 'done', Cycling: 'awarded' } },
+    n1: { req: { Bobcat: 'partial', Citizenship: 'done' }, elect: {} },
+    n2: { req: { Citizenship: 'partial' }, elect: { Archery: 'partial' } }
+  });
+  const S = (id) => JSON.stringify({ id: id, den: 'Arrow of Light' });
+  eq(vm.runInContext("[advEarned('a', 'elect', 'Cycling'), advEarned('a', 'elect', 'Archery'), advEarned('c', 'elect', 'Cycling'), advEarned('a', 'elect', 'Nope')]", ctx),
+    [false, true, true, false], 'advEarned');
+  eq(vm.runInContext("[advElectCount('a'), advElectCount('b'), advElectCount('n2')]", ctx), [1, 2, 0], 'an elective in progress counted toward the two');
+  eq(vm.runInContext(`[scoutAdvComplete(${S('a')}), scoutAdvComplete(${S('b')}), scoutAdvComplete(${S('c')})]`, ctx), [false, false, true],
+    'a rank with an adventure in progress counted as complete');
+  eq(vm.runInContext("[bobcatNudgeFor('n1'), bobcatNudgeFor('n2'), bobcatNudgeFor('c')]", ctx), [true, false, false],
+    'the Bobcat nudge: Bobcat started is not done; another adventure started is not one finished');
+  // The callers that mean "earned" ask advEarned; the run rows carry it.
+  ok(/earned: advEarned\(s\.id, advKindFor\(s, run\.adventure\), run\.adventure\)/.test(slice('runProgress')), 'a run row has no earned');
+  ok(/earned: advEarned\(s\.id, kind, nm\)/.test(slice('offerAttendees')), 'an offer row has no earned');
+  ok(/complete\.filter\(function \(row\) \{ return !row\.earned; \}\)/.test(slice('packRecognition')), 'Recognition skips a finished scout marked in progress');
+  for (const n of ['renderAdventureRunsCard', 'meetingAdvMarkFor', 'advOfferMarkFor']) {
+    ok(!/filter\(function \((row|r)\) \{ return !?(row|r)\.status; \}\)/.test(slice(n)), n + ' still treats any mark as recorded');
+  }
+});
+
+test('advMarkDone upgrades in progress; advMarkPartial never downgrades; neither commits', () => {
+  const ctx = advBookSandbox({ s: { req: { Bobcat: 'partial', Citizenship: 'done', 'First Aid': 'awarded' }, elect: {}, notes: { 'req|Bobcat': 'one more night' } } });
+  eq(vm.runInContext("[advMarkPartial('s', 'req', 'Citizenship'), advMarkPartial('s', 'req', 'First Aid'), advMarkPartial('s', 'req', 'Bobcat')]", ctx),
+    [false, false, false], 'advMarkPartial wrote over a mark');
+  eq(JSON.parse(JSON.stringify(vm.runInContext('state.advancement.s.req', ctx))), { Bobcat: 'partial', Citizenship: 'done', 'First Aid': 'awarded' }, 'a mark changed');
+  eq(vm.runInContext("advMarkPartial('s', 'req', 'Duty to God')", ctx), true, 'blank did not become in progress');
+  eq(vm.runInContext("advMarkPartial('new', 'elect', 'Archery') && state.advancement.new.elect.Archery", ctx), 'partial', 'a scout with no record');
+  eq(vm.runInContext("[advMarkDone('s', 'req', 'Bobcat'), state.advancement.s.req.Bobcat, 'notes' in state.advancement.s]", ctx), [true, 'done', false],
+    'advMarkDone did not upgrade in progress, or kept its note');
+  eq(vm.runInContext("[advMarkDone('s', 'req', 'Citizenship'), advMarkDone('s', 'req', 'First Aid'), state.advancement.s.req['First Aid']]", ctx),
+    [false, false, 'awarded'], 'advMarkDone downgraded');
+  eq(vm.runInContext('commits', ctx), 0, 'a batch writer committed');
+});
+
+test('the grid cell steps blank → in progress → done → awarded → blank, with its note, look and words', () => {
+  const ctx = advBookSandbox({});
+  const seen = [vm.runInContext("advStatus('s', 'req', 'Bobcat')", ctx)];
+  for (let i = 0; i < 4; i++) {
+    vm.runInContext("advCycle('s', 'req', 'Bobcat')", ctx);
+    seen.push(vm.runInContext("advStatus('s', 'req', 'Bobcat')", ctx));
+  }
+  eq(seen, ['', 'partial', 'done', 'awarded', ''], 'the cycle order');
+  eq(vm.runInContext('commits', ctx), 4, 'a tap on the cell does not commit');
+  ok(vm.runInContext("!state.advancement.s", ctx), 'a cleared cell left an empty record');
+  eq(vm.runInContext("ADV_CYCLE", ctx), ['', 'partial', 'done', 'awarded'], 'ADV_CYCLE');
+  // The note: only in progress, trimmed, at most 120; it goes when the cell moves on.
+  vm.runInContext("advCycle('s', 'req', 'Bobcat')", ctx);
+  eq(vm.runInContext("[advSetNote('s', 'req', 'Bobcat', '  needs   the hike  '), advNote('s', 'req', 'Bobcat')]", ctx), [true, 'needs the hike'], 'the note');
+  eq(vm.runInContext("advSetNote('s', 'req', 'Citizenship', 'x')", ctx), false, 'a note on an adventure not in progress');
+  eq(vm.runInContext("advSetNote('s', 'req', 'Bobcat', '" + 'y'.repeat(200) + "') && advNote('s', 'req', 'Bobcat').length", ctx), 120, 'the cap');
+  const cell = vm.runInContext("advCellBtn('s', 'req', 'Bobcat')", ctx);
+  ok(/class="adv-cell partial"/.test(cell) && />◐<\/button>$/.test(cell), 'the in-progress cell: ' + cell);
+  ok(/aria-label="Bobcat: in progress \(y+\), tap to mark done"/.test(cell), 'the in-progress aria label: ' + cell);
+  vm.runInContext("advCycle('s', 'req', 'Bobcat')", ctx);
+  ok(vm.runInContext("!('notes' in state.advancement.s)", ctx), 'the note outlived in progress');
+  ok(/aria-label="Bobcat: done, tap to mark awarded"/.test(vm.runInContext("advCellBtn('s', 'req', 'Bobcat')", ctx)), 'the done label');
+  ok(/aria-label="Citizenship: not started, tap to mark in progress"/.test(vm.runInContext("advCellBtn('s', 'req', 'Citizenship')", ctx)), 'the blank label');
+  // The look and the legend, and where a leader writes the note.
+  ok(/\.adv-cell\.partial \{[^}]*dashed/.test(SCRIPT_CSS), 'in progress has no look of its own');
+  const adv = slice('renderAdvancement');
+  ok(/adv-legend/.test(adv) && /adv-cell partial" aria-hidden="true">◐<\/span>in progress/.test(adv), 'no legend entry for in progress');
+  ok(/data-ch="adv-partial-note"/.test(adv) && /maxlength="' \+ ADV_PARTIAL_NOTE_MAX \+ '"/.test(adv), 'nowhere to write the note');
+  const h = /if \(ch === 'adv-partial-note'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/!canEditSection\('advancement'\)/.test(h) && /advSetNote\(/.test(h) && /commit\(\)/.test(h), 'the note handler');
+  // Adding an elective records it done, as it always did — not the cycle's first step.
+  const add = /if \(kind === 'adv-add-elect'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/advMarkDone\(aSid, 'elect', aName\)/.test(add) && !/advCycle\(/.test(add), 'adding an elective records it in progress');
+});
+
+test('advParts: a den’s meetings and an event’s offer are the parts of one adventure — pending, missed, tonight', () => {
+  const ctx = partsSandbox(PARTS_SETUP);
+  const parts = vm.runInContext("advParts('Arrow of Light', 'Outdoor Adventurer', 2026).map(function (x) { return x.ev.id + ':' + x.kind + ':' + x.auto; })", ctx);
+  eq(parts, ['m1:session:true', 'ww:offer:true', 'm2:session:true'], 'the parts, in date order, this program year only');
+  eq(vm.runInContext("advParts('Webelos', 'Webelos Walkabout', 2026).length", ctx), 0, 'Webelos Woods became a part of Webelos Walkabout');
+  eq(vm.runInContext("advParts('Arrow of Light', 'First Aid', 2026).map(function (x) { return x.ev.id; })", ctx), ['ww'], 'First Aid');
+  // Sep 26, the Woods weekend itself: tonight is held, the Oct 6 meeting is still to come.
+  const p1 = vm.runInContext("runProgress(advPartsRun('Arrow of Light', 'Outdoor Adventurer', 2026))", ctx);
+  const row = (p, id) => p.scouts.find((r) => r.scout.id === id);
+  eq([row(p1, 'a').count, row(p1, 'a').missed.length, row(p1, 'a').pending.map((e) => e.id).join()], [2, 0, 'm2'], 'Ada on the Woods day');
+  eq(row(p1, 'c').missed.map((e) => e.id), ['ww'], 'Cal, home tonight, has not missed tonight');
+  eq(row(p1, 'b').missed.map((e) => e.id), ['m1'], 'Bo missed the first meeting');
+  eq(p1.scouts.map((r) => r.scout.id), ['a', 'b', 'c', 'd'], 'the den’s active scouts, and nobody else');
+  const mk1 = vm.runInContext("advMarkable(runProgress(advPartsRun('Arrow of Light', 'Outdoor Adventurer', 2026)))", ctx);
+  eq([mk1.multi, mk1.left, mk1.done.map((r) => r.scout.id), mk1.partial.map((r) => r.scout.id)], [true, 1, ['a'], ['b', 'c']],
+    'with a part still to come: done for the scout on track (as runs always were), in progress for those who missed one');
+  // Oct 6, the last meeting: Ada was at all three. Tonight counts as held.
+  vm.runInContext('atLastMeeting()', ctx);
+  const mk2 = vm.runInContext("advMarkable(runProgress(advPartsRun('Arrow of Light', 'Outdoor Adventurer', 2026)))", ctx);
+  eq([mk2.left, mk2.done.map((r) => r.scout.id), mk2.partial.map((r) => r.scout.id)], [0, ['a'], ['b', 'c']],
+    'all held: done for every part, in progress for some, nothing for none');
+  // Already in progress: done when complete (advMarkDone upgrades), never on the in-progress list again.
+  vm.runInContext("STATUS = { a: { 'Outdoor Adventurer': 'partial' }, b: { 'Outdoor Adventurer': 'partial' }, c: { 'Outdoor Adventurer': 'done' } }", ctx);
+  const mk3 = vm.runInContext("advMarkable(runProgress(advPartsRun('Arrow of Light', 'Outdoor Adventurer', 2026)))", ctx);
+  eq([mk3.done.map((r) => r.scout.id), mk3.partial.map((r) => r.scout.id)], [['a'], []], 'marks already there');
+  // A run widened: advRunParts of the den's run is these parts; a run with no event is its sessions.
+  eq(vm.runInContext("advRunParts(adventureRuns()[0]).sessions.map(function (e) { return e.id; })", ctx), ['m1', 'ww', 'm2'], 'the run did not take in the event');
+  ok(vm.runInContext("advPartsMixed(advRunParts(adventureRuns()[0]))", ctx), 'not mixed');
+  vm.runInContext("EVENTS[1].advOffers = EVENTS[1].advOffers.filter(function (o) { return o.key !== 'req:3'; })", ctx);
+  eq(vm.runInContext("advRunParts(adventureRuns()[0]).sessions.map(function (e) { return e.id; })", ctx), ['m1', 'm2'], 'no event: the run’s own sessions');
+  ok(!vm.runInContext("advPartsMixed(advRunParts(adventureRuns()[0]))", ctx), 'sessions only read as mixed');
+  // A full chance (no `part`) is no part of anything: the Woods' Outdoors without it leaves the run as it was.
+  vm.runInContext("EVENTS[1].advOffers.push({ key: 'req:3', auto: true, dens: ['Arrow of Light'] })", ctx);
+  eq(vm.runInContext("advParts('Arrow of Light', 'Outdoor Adventurer', 2026).map(function (x) { return x.ev.id; })", ctx), ['m1', 'm2'],
+    'an offer that is a full chance became a part');
+  // One part on its own is exactly as before: done for everyone at it.
+  const one = vm.runInContext("advMarkable(runProgress(advPartsRun('Arrow of Light', 'First Aid', 2026)))", ctx);
+  eq([one.multi, one.done.map((r) => r.scout.id), one.partial.length], [false, ['a', 'b'], 0], 'a single part');
+  eq(vm.runInContext("[partLabel(2, 3), partLabel(1, 1)]", ctx), ['part 2 of 3', 'one part'], 'partLabel');
+});
+
+test('offerMarkable: at the event, done for a scout at every part with none to come, else in progress; one part as before', () => {
+  const ctx = partsSandbox(PARTS_SETUP);
+  vm.runInContext('atLastMeeting()', ctx);
+  const om = vm.runInContext("offerMarkable(EVENTS[1], 'req:3')", ctx);
+  eq(om.rows.map((r) => r.scout.id + ':' + r.would), ['a:done', 'b:partial'], 'who is done and who is in progress');
+  eq(om.notFor.map((s) => s.id), ['l', 'w'], 'the Webelos scout, or a Lion sibling, is offered Outdoors at Webelos Woods');
+  eq(om.cannot.map((s) => s.id), [], 'a Lion lacks Outdoors');
+  eq([om.groups[0].position, om.groups[0].of], [2, 3], 'part 2 of 3');
+  // Before the last meeting: on track is still done (every part so far), a miss is in progress.
+  vm.runInContext("TODAY = '2026-09-27'; delete ATT.m2;", ctx);
+  eq(vm.runInContext("offerMarkable(EVENTS[1], 'req:3').rows.map(function (r) { return r.would; })", ctx), ['done', 'partial'], 'with a part to come');
+  // Not a part: a full chance, done for everyone at it whatever the den meetings say.
+  vm.runInContext("delete EVENTS[1].advOffers[2].part", ctx);
+  eq(vm.runInContext("offerMarkable(EVENTS[1], 'req:3').rows.map(function (r) { return r.would + ':' + !!r.row; })", ctx), ['done:false', 'done:false'],
+    'a full-chance offer records in progress');
+  vm.runInContext("EVENTS[1].advOffers[2].part = true", ctx);
+  // A single-part offer (Archery here) is done for whoever is ticked, as before.
+  eq(vm.runInContext("offerMarkable(EVENTS[1], 'el:Archery').rows.map(function (r) { return r.scout.id + ':' + r.would + ':' + !!r.row; })", ctx),
+    ['a:done:false', 'b:done:false', 'w:done:false'], 'a one-part offer');
+  // Recording paths: the event block and the meeting block both use the one rule, editors only.
+  const ev = slice('advOfferMarkFor');
+  ok(/var om = offerMarkable\(ev, o\.key\)/.test(ev) && /data-act="offer-mark-partial"/.test(ev) && /if \(edit && \(toDone\.length \|\| toPart\.length\)\)/.test(ev),
+    'the event block does not draw both buttons from offerMarkable for editors');
+  ok(/at every part so far/.test(ev) && /who attended every part/.test(ev) && /in progress for ' \+ toPart\.length/.test(ev), 'the button words');
+  ok(/who have been to every ' \+ parts \+ ' so far/.test(slice('meetingAdvMarkFor')), 'the meeting’s early done button is gone');
+  const mt = slice('meetingAdvMarkFor');
+  ok(/var p = runProgress\(pr, today\), mk = advMarkable\(p, today\);/.test(mt) && /var pr = advRunParts\(r\.run\)/.test(mt), 'the meeting block does not use the parts');
+  ok(/if \(canEditSection\('advancement'\) && \(mk\.done\.length \|\| mk\.partial\.length\)\)/.test(mt), 'the meeting buttons are not editors only');
+  ok(/data-act="mtg-adv-partial"/.test(mt) && /who attended some/.test(mt) && /partLabel\(pos, of\)/.test(mt), 'the meeting block’s in-progress button or part label');
+  ok(/makeupMsgBtn\(r\.run, row\)/.test(mt), 'the make-up message is gone');
+  const picked = /if \(kind === 'offer-mark-picked'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
+  ok(/r\.would === 'done' \? advMarkDone\(r\.scout\.id, opKind, r\.name\) : \(advMarkPartial\(r\.scout\.id, opKind, r\.name\)/.test(picked), 'a ticked scout is not done-or-in-progress');
+  // §3's copy rule still holds over all of it.
+  for (const n of ['meetingAdvMarkFor', 'advOfferMarkFor', 'renderAdventureRunsCard']) {
+    ok(!/cannot earn|forfeit|missed out on the adventure/i.test(slice(n)), n + ' says a missed part loses the adventure');
+  }
+});
+
+test('the Advancement card and Den plans read the parts, and show marks in progress', () => {
+  const card = slice('renderAdventureRunsCard');
+  ok(/var units = advProgressUnits\(\);/.test(card) && /advLoosePartials\(units\)/.test(card), 'the card does not read the parts');
+  ok(/row\.status === 'partial' \? '<span class="pill">in progress<\/span>'/.test(card), 'the card does not show in progress');
+  const units = slice('advProgressUnits');
+  ok(/advRunParts\(run\)/.test(units) && /if \(u\.sessions\.length > 1\) units\.push\(u\)/.test(units), 'events-only adventures of two or more parts are not on the card');
+  const ctx = partsSandbox(PARTS_SETUP);
+  vm.runInContext(['advProgressUnits', 'advLoosePartials', 'byScoutName'].map(slice).join('\n') +
+    "\nfunction advRec(id) { var st = STATUS[id]; if (!st) return null; var r = { req: {}, elect: {} }; Object.keys(st).forEach(function (k) { r.req[k] = st[k]; }); return r; }" +
+    "\nfunction advNote() { return ''; }", ctx);
+  // Let's Camp! at two events as two chances is no unit; as two parts it is one.
+  vm.runInContext("EVENTS.push({ id: 'fc', kind: 'activity', name: 'Fall campout', dens: [], date: '2026-10-17', advOffers: [{ key: \"el:Let's Camp!\", auto: true }] })", ctx);
+  eq(vm.runInContext("advProgressUnits().map(function (u) { return u.den + ':' + u.adventure + ':' + u.sessions.length; })", ctx),
+    ['Arrow of Light:Outdoor Adventurer:3'], 'two chances became parts');
+  vm.runInContext("EVENTS[4].advOffers[0].part = true; EVENTS[1].advOffers[0].part = true;", ctx);
+  eq(vm.runInContext("advProgressUnits().map(function (u) { return u.den + ':' + u.adventure + ':' + u.sessions.length; })", ctx),
+    ['Arrow of Light:Outdoor Adventurer:3', "Webelos:Let's Camp!:2"], 'the units: a run with its event, and an adventure in two event parts');
+  vm.runInContext("STATUS = { a: { 'Outdoor Adventurer': 'partial', 'Duty to God': 'partial' }, b: { Bobcat: 'done' } }", ctx);
+  eq(vm.runInContext("advLoosePartials(advProgressUnits()).map(function (x) { return x.scout.id + ':' + x.name; })", ctx), ['a:Duty to God'],
+    'a mark in progress the card does not show elsewhere');
+  const dp = slice('renderDenPlanner');
+  ok(/denPlanProgress\(den, rq\.name, py\)/.test(dp) && /denPlanProgress\(den, el\.name, py\)/.test(dp), 'Den plans does not say who is in progress');
+  vm.runInContext(slice('denPlanProgress'), ctx);
+  vm.runInContext("STATUS = { a: { 'Outdoor Adventurer': 'partial' }, b: { 'Outdoor Adventurer': 'done' }, c: { 'Outdoor Adventurer': 'awarded' } }", ctx);
+  eq(vm.runInContext("denPlanProgress('Arrow of Light', 'Outdoor Adventurer', 2026)", ctx), '3 parts · 2 recorded · 1 in progress', 'the Den plans line');
+  eq(vm.runInContext("denPlanProgress('Arrow of Light', 'First Aid', 2026)", ctx), '', 'an adventure nobody has, at one event');
+});
+
+test('no top-level name is declared twice (a second var silently replaces the first)', () => {
+  // 2026-10-02: the in-progress note's cap was first written as a second `var ADV_NOTE_MAX = 120`,
+  // which would have cut every den's lesson-plan note (ADV_NOTE_MAX = 4000) to 120 characters.
+  const count = {};
+  for (const m of SCRIPT.matchAll(/^  (?:function ([A-Za-z_$][\w$]*)\(|var ([A-Za-z_$][\w$]*) =)/gm)) {
+    const n = m[1] || m[2];
+    count[n] = (count[n] || 0) + 1;
+  }
+  eq(Object.keys(count).filter((n) => count[n] > 1), [], 'declared more than once');
+});
+
+test('make-up copy: who signs follows the rank, at home or at another outing, on the event block too; the grid is editors only', () => {
+  const ctx = vm.createContext({});
+  vm.runInContext(slice('makeupSignText'), ctx);
+  eq(ctx.makeupSignText(['Wolf']), 'signed by a parent or adult partner, then approved by you', 'Lion to Bear');
+  eq(ctx.makeupSignText(['Arrow of Light', 'Webelos']), 'signed by you as their den leader', 'Webelos and Arrow of Light');
+  eq(ctx.makeupSignText(['Bear', 'Webelos']), 'for Lion to Bear, signed by a parent or adult partner, then approved by you; ' +
+    'for Webelos and Arrow of Light, signed by you as their den leader', 'mixed');
+  const re = slice('makeupReassure');
+  ok(/at home or at another outing/.test(re) && /makeupSignText\(/.test(re) && /does not cost them the/.test(re), 'the reassurance');
+  ok(/makeupReassure\(shortOf/.test(slice('meetingAdvMarkFor')) && /makeupReassure\(missedPart, 'a part'\)/.test(slice('advOfferMarkFor')),
+    'the meeting or the event block lost the reassurance');
+  ok(!/signed by a ' \+\s*'parent, then approved by you/.test(SCRIPT), 'the old rank-blind sentence is still there');
+  const card = slice('renderAdventureRunsCard');
+  ok(/to make up at home or at another outing/.test(card) && /do the work at home or at another outing/.test(card), 'the card still says at home only');
+  for (const n of ['makeupReassure', 'makeupSignText', 'advOfferMarkFor']) ok(!/cannot earn|forfeit|missed out on the adventure/i.test(slice(n)), n);
+  ok(/if \(act === 'adv-cycle'\) \{\n      if \(!canEditSection\('advancement'\)\) return;/.test(SCRIPT), 'the grid cell is not editors only');
+  ok(/if \(kind === 'adv-add-elect'\) \{\n      if \(!canEditSection\('advancement'\)\) return;/.test(SCRIPT), 'adding an elective is not editors only');
+  ok(/o\.part \? 'a part, for everyone who attends'/.test(slice('advOfferMarkFor')) && /a part, for everyone who attends/.test(slice('advOffersEditor')),
+    'a part does not say so');
+});
+
+test('an adventure in progress and its note are leaders only: not in the parent view, the digest or the .ics', () => {
+  const outbound = { buildParentView: codeOnly(BPV()), monthlyDigest: slice('monthlyDigest'), buildICS: slice('buildICS') };
+  Object.keys(outbound).forEach((n) => {
+    ok(!/advancement|advNote|advRec|advStatus|advEarned|ADV_PARTIAL_NOTE_MAX|adv-partial-note|partial'/.test(outbound[n]), n + ' reads advancement, a mark in progress or its note');
+  });
+  // The note is written in one place, and read on leader screens only.
+  const writers = SCRIPT.split('\n').filter((l) => /\.notes\[kind \+ '\|' \+ name\] = /.test(l));
+  eq(writers.length, 1, 'the note is written somewhere other than advSetNote');
+  ok(/advNote\(/.test(slice('renderAdvancement')) && /advNote\(/.test(slice('renderAdventureRunsCard')), 'the note is not on the leader screens');
+  ok(!/advNote|\.notes\b/.test(slice('agendaDetail')), 'the printable agenda carries the note');
 });
 
 test('Plan a meeting: lists this year’s upcoming meetings the den is at with nothing for it, never one that has', () => {

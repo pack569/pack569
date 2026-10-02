@@ -134,6 +134,7 @@ export const ACCESS_TABLE = /*ACCESS-BEGIN*/{
       "ledgerAside": "ledger",
       "ledgerLog": "ledger",
       "statements": "ledger",
+      "signoffFrom": "ledger",
       "depositDays": "deposits",
       "charges": "dues",
       "collected": "dues",
